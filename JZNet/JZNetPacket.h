@@ -1,0 +1,117 @@
+#ifndef MG_PACKET_H_
+#define MG_PACKET_H_
+
+#include <memory>
+#include <map>
+#include <string>
+#include <assert.h>
+#include "JZDataStream.h"
+#include "JZNetDefine.h"
+
+#define PACK_HEAD 0xAA
+#define MG_RECV_BUFFER_SIZE (4 * 1024)
+#define MG_MAX_PACK_SIZE    (256 * 1024)
+
+enum {
+    NetPack_none,
+    NetPack_hand,
+    NetPack_handRes,
+    NetPack_echo,
+
+    NetPack_filePacketStart,    
+    NetPack_fileTransReq,
+    NetPack_fileTransRes,    
+    NetPack_fileDataReq,
+    NetPack_fileDataRes,
+    NetPack_fileResult,
+    NetPack_filePacketEnd,
+
+    FrpPack_Hand,
+    FrpPack_HandRes,
+    FrpPack_Trans,
+    FrpPack_TransRes,
+
+    NetPack_user = 1000,
+};
+
+class JZNetPack
+{
+public:
+    JZNetPack();
+    virtual ~JZNetPack();
+
+    virtual int packetType() const = 0;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+};
+
+typedef std::shared_ptr<JZNetPack> JZNetPackPtr;
+
+// JZNetPackHand
+class JZNetPackHand : public JZNetPack
+{
+public:
+    JZNetPackHand();
+    virtual ~JZNetPackHand();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string nonce;
+};
+
+// JZNetPackHandRes
+class JZNetPackHandRes : public JZNetPack
+{
+public:
+    JZNetPackHandRes();
+    virtual ~JZNetPackHandRes();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+};
+
+
+// JZNetPackEcho
+class JZNetPackEcho : public JZNetPack
+{
+public:
+    JZNetPackEcho();
+    virtual ~JZNetPackEcho();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string text;
+};
+
+template<class T>
+JZNetPack *JZNetPackCreate() { return new T(); }
+
+//JZNetPackManager
+typedef JZNetPack *(*CreatePackFunc)();
+class JZNetPackManager
+{
+public:
+    static JZNetPackManager *instance();
+
+    template<class T>
+    void registPack(int type)
+    {
+        assert(type != NetPack_none && m_packFactory.find(type) == m_packFactory.end());
+        m_packFactory[type] = JZNetPackCreate<T>;
+    }
+
+    JZNetPackPtr createPack(int id);
+
+protected:
+    JZNetPackManager();
+
+    std::map<int, CreatePackFunc> m_packFactory;
+};
+void JZNetPackInit();
+
+#endif // ! MG_PACKET_H_

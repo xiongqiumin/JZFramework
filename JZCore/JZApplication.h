@@ -1,0 +1,44 @@
+#ifndef JZ_APPLICATION_H_
+#define JZ_APPLICATION_H_
+
+#include "JZObject.h"
+#include "JZEventLoop.h"
+#include "JZThread.h"
+#include "JZMutex.h"
+
+class JZApplication : public JZObject
+{
+public:
+    JZApplication();
+    ~JZApplication();    
+
+    std::string applicationFilePath();
+    std::string applicationDirPath();
+
+    JZThread *mainThread();
+    JZThread *currentThread();
+
+    void addThread(JZThread *thread);
+    void removeThread(JZThread *thread);
+    
+    int exec();        
+    void quit();
+    void exit(int code);
+    void processEvents();
+
+    void sendEvent(JZObject *object, JZEvent *event);
+    void postEvent(JZObject *object, JZEvent *event);
+    void postEventAndWait(JZObject *object, JZEvent *event);    
+
+protected:    
+    JZThread *m_mainThread;
+
+    std::vector<JZThread*> m_threads;
+    JZMutex m_mutex;
+    int m_returnCode;
+};
+extern JZApplication *jzApp;
+
+#endif
+
+

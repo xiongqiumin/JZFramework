@@ -258,7 +258,7 @@ JZByteArray JZCrypto::md5(const JZByteArray &buffer)
 
 JZByteArray JZCrypto::fileMd5(const std::string &filepath)
 {
-    constexpr int len = 8 * 1024;
+    constexpr int len = 1024;
 
     JZFile file;
     if(!file.open(filepath.c_str(), "rb"))    

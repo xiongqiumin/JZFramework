@@ -29,6 +29,13 @@ public:
     JZSemaphore *sem;
 };
 
+class JZThreadConfig
+{
+public:
+    int stackSize = 4096;
+    int priority = -1; // 0-16, 16最高, -1 继承当前
+};
+
 class JZApplication;
 class JZThread : public JZObject
 {
@@ -39,7 +46,10 @@ public:
 
     JZThread(JZObject *parent = nullptr);
     virtual ~JZThread();
- 
+     
+    void setConfig(JZThreadConfig config);
+    JZThreadConfig config() const;
+
     bool isRunning() const;
 
     JZThreadId id();
@@ -105,6 +115,7 @@ protected:
     void *m_handle;
 #endif
 
+    JZThreadConfig m_config;
     std::vector<TimerInfo> m_timerList;
     std::queue<JZEventInfo> m_eventList;
     JZConditionVariable m_cv;

@@ -11,7 +11,6 @@
     #include <freertos/FreeRTOS.h>
     #include <freertos/task.h>
     #include <freertos/semphr.h>
-    #define JZ_THREAD_STACK_SIZE 10 * 1024  //freeRtos 栈大小是 word    
 #elif JZ_OS == JZ_OS_RT_THREAD
     #include "rtthread.h"
     #define JZ_THREAD_STACK_SIZE 4096
@@ -73,7 +72,7 @@ JZThreadId JZThread::currentThreadId()
 
 JZThread::JZThread(JZObject *parent)
     :JZObject(parent), sigStarted(this), sigFinished(this)
-{
+{    
     initParam();
 }
 
@@ -111,6 +110,16 @@ void JZThread::initParam()
 #elif JZ_OS == JZ_OS_RT_THREAD
     m_handle = nullptr;
 #endif
+}
+
+void JZThread::setConfig(JZThreadConfig config)
+{
+    m_config = config;        
+}
+
+JZThreadConfig JZThread::config() const
+{
+    return m_config;
 }
 
 bool JZThread::isRunning() const
@@ -165,8 +174,9 @@ void JZThread::requestInterruption()
 void JZThread::start()
 {
     assert(!m_running);
-
+    
     m_running = true;
+    jzApp->addThread(this);
 
 #ifdef JZ_OS_NORMAL           
     m_handle = std::thread([this]{
@@ -183,12 +193,26 @@ void JZThread::start()
     // FreeRTOS：创建任务
     m_waitSem = xSemaphoreCreateBinary();
 
+    int pri = 0;
+    if(m_config.priority == -1)
+        pri = uxTaskPriorityGet(NULL);
+    else
+    {
+        // 1. 先钳位用户输入到 0~16 的合法范围
+        int userPri = m_config.priority;
+        if (userPri < 0) userPri = 0;
+        if (userPri > 16) userPri = 16;
+
+        // 2. 线性映射到 FreeRTOS 合法范围: 0 ~ (configMAX_PRIORITIES - 1)
+        UBaseType_t maxSysPri = configMAX_PRIORITIES - 1;
+        pri = static_cast<UBaseType_t>((userPri * maxSysPri) / 16);
+    }
+
     TaskHandle_t handle;
     BaseType_t ret = xTaskCreate(
         // 任务入口函数（静态函数，通过参数传递 this 指针）
         [](void* arg) {
-            JZThread* thread = static_cast<JZThread*>(arg);            
-            jzApp->addThread(thread);            
+            JZThread* thread = static_cast<JZThread*>(arg);                                    
             thread->run();            
             thread->m_running = false;
             jzApp->removeThread(thread);            
@@ -196,14 +220,15 @@ void JZThread::start()
             xSemaphoreGive((SemaphoreHandle_t)thread->m_waitSem);            
             vTaskDelete(NULL);
         },
-        "jz_thread",
-        JZ_THREAD_STACK_SIZE,
+        m_name.c_str(),
+        m_config.stackSize / 4,
         this,
-        uxTaskPriorityGet(NULL),
+        pri,
         &handle
     );        
     JZ_ASSERT(ret == pdPASS);
     m_handle = handle;
+    jzDebug() << "create thread" << m_handle;
 #elif JZ_OS == JZ_OS_RT_THREAD
     // RT-Thread：创建动态任务
     rt_thread_t task = rt_thread_create(

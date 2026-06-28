@@ -364,7 +364,9 @@ static JZNetThread *g_netThread = nullptr;
 JZNetThread *JZNetThread::instance()
 {
     if (!g_netThread)
+    {        
         g_netThread = new JZNetThread(jzApp);
+    }
 
     return g_netThread;
 }
@@ -372,7 +374,12 @@ JZNetThread *JZNetThread::instance()
 JZNetThread::JZNetThread(JZObject *parent)
     :JZThread(parent)
 {
+    JZThreadConfig cfg;
+    cfg.stackSize = 24 * 1024;
+
     moveToThread(this);
+    setObjectName("JZNetThread");
+    setConfig(cfg);
 
     mg_log_set(MG_LL_ERROR);
     m_mgr = new mg_mgr();

@@ -56,7 +56,7 @@ extern "C" {
 #endif  // !defined(MG_ARCH)
 
 #if !defined(MG_ARCH) || (MG_ARCH == MG_ARCH_CUSTOM)
-#include "mongoose_config.h"  // keep this include
+#include "JZFrameWorkConfig.h"  // keep this include
 #endif
 
 #if !defined(MG_ARCH)
@@ -295,8 +295,8 @@ extern "C" {
 #include <sys/stat.h>
 #endif
 
-#include <FreeRTOS.h>
-#include <task.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define MG_ENABLE_CUSTOM_CALLOC 1
 

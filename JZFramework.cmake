@@ -136,6 +136,32 @@ macro(jzframework_use_modules)
     message(STATUS "JZFramework enabled modules: ${JZFRAMEWORK_ADDED_MODULES}")
 endmacro()
 
+function(jzframework_use_config TEMPLATE_FILE)
+    
+    # 模板文件路径：当前调用CMakeLists.txt所在目录
+    set(SRC_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/${TEMPLATE_FILE}")
+    # 独立 generated 目录
+    set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    # 固定输出文件名
+    set(OUTPUT_HEADER "${GEN_DIR}/JZFrameworkConfig.h")
+
+    if(NOT EXISTS "${SRC_TEMPLATE}")
+        message(FATAL_ERROR "Template file not found: ${SRC_TEMPLATE}")
+    endif()
+
+    file(MAKE_DIRECTORY "${GEN_DIR}")
+
+    configure_file("${SRC_TEMPLATE}" "${OUTPUT_HEADER}" @ONLY)
+
+    # 给 JZFramework 挂载头文件搜索路径
+    target_include_directories(JZFramework PUBLIC "${GEN_DIR}")
+
+    # 模板修改自动重新生成
+    target_sources(JZFramework PRIVATE "${SRC_TEMPLATE}")
+
+    message(STATUS "[JZFramework] Generate config header: ${OUTPUT_HEADER}")
+endfunction()
+
 macro(jzframework_build_binary)
 	foreach(target ${ARGN})
         # 为每个目标设置 BUILD_<target> = ON，并作为缓存变量（可选）

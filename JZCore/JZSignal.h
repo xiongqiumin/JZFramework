@@ -3,13 +3,11 @@
 
 #include <memory>
 #include <vector>
+#include <map>
 #include <functional>
 #include <type_traits>
 #include <tuple>
-#include <assert.h>
 #include "JZEvent.h"
-#include "JZByteArray.h"
-#include "JZDataStream.h"
 #include "JZVariant.h"
 #include "JZObjectPointer.h"
 
@@ -358,23 +356,13 @@ constexpr bool check_signal_and_func_args() {
     // 提取两个元组类型
     using FuncArgsTuple = typename jzsignal::function_traits<Func>::args_tuple;
     using SignalArgsTuple = std::tuple<SignalArgs...>;
-
-    // 1. 判断 SignalArgsTuple size > FuncArgsTuple size（C++14：用 std::tuple_size<T>::value）
-    constexpr std::size_t func_size = std::tuple_size<FuncArgsTuple>::value;
-    constexpr std::size_t signal_size = std::tuple_size<SignalArgsTuple>::value;
-    constexpr bool size_check = (signal_size >= func_size);
-
-    // 2. 判断两个元组都不存在非常量引用
-    constexpr bool no_non_const_ref_check =
-        tuple_all_allowed_types<FuncArgsTuple>::value &&
-        tuple_all_allowed_types<SignalArgsTuple>::value;
-
-    // 3. 判断基础类型一致（仅比较到 SignalArgsTuple 的长度）
-    constexpr bool base_type_check =
-        tuple_base_types_equal_up_to_signal_size<FuncArgsTuple, SignalArgsTuple>::value;
-
-    // 返回三个条件的组合结果
-    return size_check && no_non_const_ref_check && base_type_check;
+    
+    return std::tuple_size<SignalArgsTuple>::value >= std::tuple_size<FuncArgsTuple>::value //1. sig size > slot size
+        // 2. 判断两个元组都不存在非常量引用
+        && tuple_all_allowed_types<FuncArgsTuple>::value
+        && tuple_all_allowed_types<SignalArgsTuple>::value
+        // 3. 判断基础类型一致（仅比较到 SignalArgsTuple 的长度）
+        && tuple_base_types_equal_up_to_signal_size<FuncArgsTuple, SignalArgsTuple>::value;
 }
 
 //slot call
@@ -415,7 +403,7 @@ std::function<void(JZObject*, const JZVariantList &list)> make_async_slot_call(R
 {
     return [func](JZObject *obj, const JZVariantList &list){
         C* cobj = (C*)(obj);
-        slot_call_impl(cobj, func, list, make_index_sequence<sizeof...(Args)>());
+        slot_call_impl(cobj, func, list, std::make_index_sequence<sizeof...(Args)>());
     };
 }
 
@@ -429,7 +417,7 @@ template<typename Func, typename Return, typename... Args>
 std::function<void(const JZVariantList& args)> slot_call_lambda_impl(Func func, Return(*)(Args...))
 {
     return [func](const JZVariantList& args) {
-        deal_slot_call_lambda_impl<Func, Args...>(func, args, make_index_sequence<sizeof...(Args)>());
+        deal_slot_call_lambda_impl<Func, Args...>(func, args, std::make_index_sequence<sizeof...(Args)>());
     };
 }
 

@@ -4,6 +4,8 @@
 #include "JZFileInfo.h"
 #include "JZDir.h"
 
+using namespace std;
+
 // ==================== Windows 平台 ====================
 #ifdef _WIN32
 
@@ -29,9 +31,9 @@ public:
     bool tryWaitForExit();
 
     JZProcess *q_ptr;
-    std::string program;
-    std::vector<std::string> arguments;
-    std::string workingDirectory;
+    string program;
+    vector<string> arguments;
+    string workingDirectory;
     JZProcess::ProcessChannelMode channelMode;
     JZProcess::ProcessState state;
     int exitCode;
@@ -179,7 +181,7 @@ bool JZProcessPrivate::createProcess()
         }
     }
 
-    std::string cmdLine = program;
+    string cmdLine = program;
     for (const auto &arg : arguments)
     {
         if (str_contains(arg, " "))
@@ -410,9 +412,9 @@ public:
     void processRead();
 
     JZProcess *q_ptr;
-    std::string program;
-    std::vector<std::string> arguments;
-    std::string workingDirectory;
+    string program;
+    vector<string> arguments;
+    string workingDirectory;
     JZProcess::ProcessChannelMode channelMode;
     JZProcess::ProcessState state;
     int exitCode;
@@ -572,7 +574,7 @@ bool JZProcessPrivate::createProcess()
             }
         }
 
-        std::vector<char *> argv;
+        vector<char *> argv;
         argv.push_back(const_cast<char *>(program.c_str()));
         for (const auto &arg : arguments)
         {
@@ -959,9 +961,9 @@ public:
     }
 
     JZProcess *q_ptr;
-    std::string program;
-    std::vector<std::string> arguments;
-    std::string workingDirectory;
+    string program;
+    vector<string> arguments;
+    string workingDirectory;
     JZProcess::ProcessChannelMode channelMode;
     JZProcess::ProcessState state;
     int exitCode;
@@ -995,7 +997,7 @@ JZProcess::~JZProcess()
     delete d_ptr;
 }
 
-bool JZProcess::start(const std::string &program, const std::vector<std::string> &arguments)
+bool JZProcess::start(const string &program, const vector<string> &arguments)
 {
     if (d_ptr->state != NotRunning)
     {
@@ -1078,12 +1080,12 @@ void JZProcess::killProcess()
     d_ptr->killProcess();
 }
 
-void JZProcess::setWorkingDirectory(const std::string &dir)
+void JZProcess::setWorkingDirectory(const string &dir)
 {
     d_ptr->workingDirectory = dir;
 }
 
-std::string JZProcess::workingDirectory() const
+string JZProcess::workingDirectory() const
 {
     return d_ptr->workingDirectory;
 }
@@ -1113,12 +1115,12 @@ JZProcess::ExitStatus JZProcess::exitStatus() const
     return d_ptr->exitStatus;
 }
 
-std::string JZProcess::program() const
+string JZProcess::program() const
 {
     return d_ptr->program;
 }
 
-std::vector<std::string> JZProcess::arguments() const
+vector<string> JZProcess::arguments() const
 {
     return d_ptr->arguments;
 }

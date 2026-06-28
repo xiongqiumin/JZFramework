@@ -31,7 +31,7 @@ public:
     JZDir();
     JZDir(const std::string &path);
 
-    string name() const;
+    std::string name() const;
 
     bool exists() const;
     bool exists(const std::string &path) const;
@@ -50,9 +50,9 @@ public:
 
     // 获取目录中所有文件信息
     std::vector<JZFileInfo> entryInfoList(int filter = Files | Dirs | NoDotAndDotDot, int sort = SortNone) const;
-    std::vector<JZFileInfo> entryInfoList(const std::vector<string> &filters,int filter, int sort = SortNone) const;
+    std::vector<JZFileInfo> entryInfoList(const std::vector<std::string> &filters,int filter, int sort = SortNone) const;
     std::vector<std::string> entryList(int filter = Files | Dirs | NoDotAndDotDot,int sort = SortNone) const;
-    std::vector<std::string> entryList(const std::vector<string> &filters, int filter = Files | Dirs | NoDotAndDotDot,int sort = SortNone) const;
+    std::vector<std::string> entryList(const std::vector<std::string> &filters, int filter = Files | Dirs | NoDotAndDotDot,int sort = SortNone) const;
 
 private:
     bool dirExists(const std::string &path) const;

@@ -44,7 +44,7 @@ std::string JZNetworkReply::errorString() const
         case ConnectError:
             return "ConnectError";
         case HttpError:
-            return "HttpError " + to_string(m_statusCode);
+            return "HttpError " + std::to_string(m_statusCode);
         case TimeOutError:
             return "TimeOutError";
         case UserCancelError:

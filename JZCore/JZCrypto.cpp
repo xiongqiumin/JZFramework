@@ -256,7 +256,7 @@ JZByteArray JZCrypto::md5(const JZByteArray &buffer)
     return md5(buffer.data(), buffer.size());
 }
 
-JZByteArray JZCrypto::fileMd5(const string &filepath)
+JZByteArray JZCrypto::fileMd5(const std::string &filepath)
 {
     constexpr int len = 8 * 1024;
 

@@ -3,6 +3,8 @@
 #include "JZLog.h"
 #include "JZStd.h"
 
+using namespace std;
+
 JZDebug::JZDebugData::JZDebugData()
 {
     isSpace = true;
@@ -70,7 +72,7 @@ void JZDebug::setQuote(bool flag)
     d->isQuote = flag;
 }
 
-void JZDebug::append(const std::string &msg)
+void JZDebug::append(const string &msg)
 {
     if (d->isSpace)
     {
@@ -155,11 +157,11 @@ JZDebug &JZDebug::operator<<(const char *str)
     return *this;
 }
 
-JZDebug &JZDebug::operator<<(const std::string &str)
+JZDebug &JZDebug::operator<<(const string &str)
 {
     if(d->isQuote)
     {
-        std::string tmp = "\"" + str_escape(str) + "\"";
+        string tmp = "\"" + str_escape(str) + "\"";
         append(tmp);
     }
     else
@@ -190,7 +192,7 @@ JZDebug jzError()
     return JZDebug(LOG_ERROR);
 }
 
-static std::string vformat(const char *fmt, va_list ap)
+static string vformat(const char *fmt, va_list ap)
 {
     va_list ap_copy;
     va_copy(ap_copy, ap);
@@ -200,16 +202,16 @@ static std::string vformat(const char *fmt, va_list ap)
     if (bufSize <= 0)
         return "";
 
-    std::vector<char> buf(bufSize + 1, 0);
+    vector<char> buf(bufSize + 1, 0);
     vsnprintf(buf.data(), buf.size(), fmt, ap);
-    return std::string(buf.data());
+    return string(buf.data());
 }
 
 void jzDebug(const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    std::string msg = vformat(format, ap);
+    string msg = vformat(format, ap);
     va_end(ap);
     jzDebug().noquote() << msg;
 }
@@ -218,7 +220,7 @@ void jzInfo(const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    std::string msg = vformat(format, ap);
+    string msg = vformat(format, ap);
     va_end(ap);
     jzInfo().noquote() << msg;
 }
@@ -227,7 +229,7 @@ void jzWarning(const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    std::string msg = vformat(format, ap);
+    string msg = vformat(format, ap);
     va_end(ap);
     jzWarning().noquote() << msg;
 }
@@ -236,7 +238,7 @@ void jzError(const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    std::string msg = vformat(format, ap);
+    string msg = vformat(format, ap);
     va_end(ap);
     jzError().noquote() << msg;
 }

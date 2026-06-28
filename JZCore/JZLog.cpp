@@ -200,7 +200,7 @@ void JZLogManager::log(int module_id, int level, const std::string &message)
 #else
     if (m_config.shouldPrintTime)
     {
-        string time_str = cur_time.toString("[HH:mm:ss.zzz]");
+        std::string time_str = cur_time.toString("[HH:mm:ss.zzz]");
         printf("%s ", time_str.c_str());
     }
 

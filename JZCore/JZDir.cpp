@@ -13,10 +13,12 @@
 #include "JZDebug.h"
 #include "JZString.h"
 
-bool JZDir::isAbsolutePath(std::string path)
+using namespace std;
+
+bool JZDir::isAbsolutePath(string path)
 {
 #ifdef _WIN32    
-    if (path.size() >= 3 && std::isalpha(path[0]) && path[1] == ':') {
+    if (path.size() >= 3 && isalpha(path[0]) && path[1] == ':') {
         char sep = path[2];
         if (sep == '\\' || sep == '/')
             return true;
@@ -30,7 +32,7 @@ bool JZDir::isAbsolutePath(std::string path)
 }
 
 
-std::string JZDir::currentPath()
+string JZDir::currentPath()
 {
     // 跨平台获取当前工作目录
 #ifdef _WIN32
@@ -41,13 +43,13 @@ std::string JZDir::currentPath()
 #elif defined(__linux__)
     char* buffer = getcwd(nullptr, 0);
     if (buffer == nullptr)
-        return std::string();
+        return string();
 
-    std::string currentDir(buffer);
+    string currentDir(buffer);
     free(buffer);
     return currentDir;
 #else
-    return std::string();
+    return string();
 #endif
 }
 
@@ -55,12 +57,12 @@ JZDir::JZDir()
 {
 }
 
-JZDir::JZDir(const std::string &path)     
+JZDir::JZDir(const string &path)     
 {
     setPath(path);
 }
 
-bool JZDir::dirExists(const std::string &path) const
+bool JZDir::dirExists(const string &path) const
 {
 #ifdef _WIN32
     DWORD attr = GetFileAttributesA(str_utf8_to_local(path).c_str());
@@ -76,7 +78,7 @@ bool JZDir::dirExists(const std::string &path) const
 #endif
 }
 
-bool JZDir::createDir(const std::string &path) const
+bool JZDir::createDir(const string &path) const
 {
 #ifdef _WIN32
     string local_path = str_utf8_to_local(path);
@@ -89,7 +91,7 @@ bool JZDir::createDir(const std::string &path) const
 #endif
 }
 
-bool JZDir::removeDirRev(const std::string &path) const
+bool JZDir::removeDirRev(const string &path) const
 {
     JZDir dir(path);
     auto list = dir.entryInfoList(Files | Dirs | NoDotAndDotDot);
@@ -120,9 +122,9 @@ bool JZDir::exists() const
     return dirExists(m_path);
 }
 
-bool JZDir::exists(const std::string &path) const
+bool JZDir::exists(const string &path) const
 {
-    std::string dir_path;
+    string dir_path;
 
     if (isAbsolutePath(path))
         dir_path = path;
@@ -133,17 +135,17 @@ bool JZDir::exists(const std::string &path) const
     return dirExists(dir_path);
 }
 
-bool JZDir::mkdir(const std::string &path)
+bool JZDir::mkdir(const string &path)
 {
-    std::string dir_path = absoluteFilePath(path);
+    string dir_path = absoluteFilePath(path);
 
     dir_path = JZFileInfo::weaklyCanonicalPath(dir_path);
     return createDir(dir_path);
 }
 
-bool JZDir::rmdir(const std::string &path)
+bool JZDir::rmdir(const string &path)
 {
-    std::string dir_path = absoluteFilePath(path);
+    string dir_path = absoluteFilePath(path);
     dir_path = JZFileInfo::weaklyCanonicalPath(dir_path);
 
 #ifdef _WIN32
@@ -158,9 +160,9 @@ bool JZDir::rmdir(const std::string &path)
 #endif
 }
 
-bool JZDir::mkpath(const std::string &path)
+bool JZDir::mkpath(const string &path)
 {
-    std::string dir_path = absoluteFilePath(path);
+    string dir_path = absoluteFilePath(path);
 
     // 2. 规范化路径（和 mkdir 保持一致）
     dir_path = JZFileInfo::weaklyCanonicalPath(dir_path);
@@ -173,7 +175,7 @@ bool JZDir::mkpath(const std::string &path)
         pos = dir_path.find_first_of("/\\", pos + 1);
 
         // 截取到当前分隔符的子路径
-        std::string sub_path = dir_path.substr(0, pos);
+        string sub_path = dir_path.substr(0, pos);
 
         // 空路径跳过（根路径 / ）
         if (sub_path.empty())
@@ -190,9 +192,9 @@ bool JZDir::mkpath(const std::string &path)
     return true;
 }
 
-bool JZDir::remove(const std::string &fileName)
+bool JZDir::remove(const string &fileName)
 {
-    std::string full_name = absoluteFilePath(fileName);
+    string full_name = absoluteFilePath(fileName);
     return JZFile::remove(full_name);
 }
 
@@ -201,7 +203,7 @@ bool JZDir::removeRecursively()
     return removeDirRev(absolutePath());
 }
 
-void JZDir::setPath(const std::string &path) 
+void JZDir::setPath(const string &path) 
 {
     m_path = path;
     str_replace(m_path, "\\", "/");
@@ -211,12 +213,12 @@ void JZDir::setPath(const std::string &path)
     }
 }
 
-std::string JZDir::path() const 
+string JZDir::path() const 
 {
     return m_path;
 }
 
-std::string JZDir::absolutePath() const
+string JZDir::absolutePath() const
 {
     if (JZDir::isAbsolutePath(m_path))
         return m_path;
@@ -226,7 +228,7 @@ std::string JZDir::absolutePath() const
     }
 }
 
-std::string JZDir::absoluteFilePath(std::string path) const
+string JZDir::absoluteFilePath(string path) const
 {
     if (JZDir::isAbsolutePath(path))
         return path;
@@ -239,11 +241,11 @@ std::string JZDir::absoluteFilePath(std::string path) const
     }
 }
 
-std::vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
-    std::vector<JZFileInfo> result;
+vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
+    vector<JZFileInfo> result;
 
 #ifdef _WIN32
-    std::string searchPath = str_utf8_to_local(m_path) + "/*";
+    string searchPath = str_utf8_to_local(m_path) + "/*";
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
 
@@ -251,10 +253,10 @@ std::vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
         return result;
 
     do {
-        std::string name = str_local_to_utf8(findData.cFileName);
+        string name = str_local_to_utf8(findData.cFileName);
         if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
 
-        std::string fullPath = m_path + "/" + name;
+        string fullPath = m_path + "/" + name;
         JZFileInfo info(fullPath);
 
         if ((filter & Files) && info.isFile()) {
@@ -273,10 +275,10 @@ std::vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr) {
-        std::string name = entry->d_name;
+        string name = entry->d_name;
         if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
 
-        std::string fullPath = m_path + "/" + name;
+        string fullPath = m_path + "/" + name;
         JZFileInfo info(fullPath);
 
         if ((filter & Files) && info.isFile()) {
@@ -306,7 +308,7 @@ std::vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
     }
 
     if (sort & SortReversed) {
-        std::reverse(result.begin(), result.end());
+        reverse(result.begin(), result.end());
     }
 
     return result;
@@ -368,10 +370,10 @@ static bool matchUnicodeWildcard(const JZString &str, const JZString &pattern, b
     return *p == JZChar('\0');
 }
 
-std::vector<JZFileInfo> JZDir::entryInfoList(const std::vector<string> &filters,int filter, int sort) const
+vector<JZFileInfo> JZDir::entryInfoList(const vector<string> &filters,int filter, int sort) const
 {
     // 预转换所有过滤器为 JZString
-    std::vector<JZString> jzFilters;
+    vector<JZString> jzFilters;
     jzFilters.reserve(filters.size());
     for (const auto &pattern : filters)
     {
@@ -387,7 +389,7 @@ std::vector<JZFileInfo> JZDir::entryInfoList(const std::vector<string> &filters,
     }
 
     auto list = entryInfoList(filter, sort);
-    std::vector<JZFileInfo> result;
+    vector<JZFileInfo> result;
     result.reserve(list.size());
 
     for (const auto &info : list)
@@ -407,9 +409,9 @@ std::vector<JZFileInfo> JZDir::entryInfoList(const std::vector<string> &filters,
     return result;
 }
 
-std::vector<std::string> JZDir::entryList(int filter, int sort) const 
+vector<string> JZDir::entryList(int filter, int sort) const 
 {
-    std::vector<std::string> names;
+    vector<string> names;
     auto infos = entryInfoList(filter, sort);
     for (const auto &info : infos) {
         names.push_back(info.fileName());
@@ -417,9 +419,9 @@ std::vector<std::string> JZDir::entryList(int filter, int sort) const
     return names;
 }
 
-std::vector<std::string> JZDir::entryList(const std::vector<string> &filters, int filter, int sort) const 
+vector<string> JZDir::entryList(const vector<string> &filters, int filter, int sort) const 
 {
-    std::vector<std::string> names;
+    vector<string> names;
     auto infos = entryInfoList(filters, filter, sort);
     for (const auto &info : infos) {
         names.push_back(info.fileName());

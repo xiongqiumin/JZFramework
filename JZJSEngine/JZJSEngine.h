@@ -22,8 +22,6 @@
         return JS_ThrowInternalError(ctx, "%s", e.what()); \
     }
 
-using namespace std;
-
 enum JZJSEngineStatus
 {
     Engine_none,

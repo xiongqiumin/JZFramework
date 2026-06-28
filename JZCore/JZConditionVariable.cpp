@@ -4,11 +4,11 @@
 #ifdef JZ_OS_NORMAL
     #include <chrono>
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    #include "FreeRTOS.h"
-    #include "queue.h"    
-    #include "semphr.h"
+    #include <freertos/FreeRTOS.h>
+    #include <freertos/queue.h>    
+    #include <freertos/semphr.h>
 #elif JZ_OS == JZ_OS_RT_THREAD
-    #include "rtthread.h"
+    #include <rtthread.h>
 #endif
 
 // -------------------------- 构造函数：运行时初始化底层句柄 --------------------------

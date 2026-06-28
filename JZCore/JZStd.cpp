@@ -15,7 +15,9 @@
 #include "JZDebug.h"
 #include "JZString.h"
 
-std::string str_asprintf(const char *fmt, ...)
+using namespace std;
+
+string str_asprintf(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -32,7 +34,7 @@ std::string str_asprintf(const char *fmt, ...)
     }
 
     // 分配足够的内存（+1 是为了 '\0' 结束符）
-    std::string result(len + 1, '\0');
+    string result(len + 1, '\0');
 
     // 第二次调用 vsnprintf 来实际格式化字符串
     vsnprintf(&result[0], result.size(), fmt, args);
@@ -45,63 +47,63 @@ std::string str_asprintf(const char *fmt, ...)
 }
 
 // 可变参数版本
-std::string str_vasprintf(const char *fmt, va_list ap)
+string str_vasprintf(const char *fmt, va_list ap)
 {
     va_list ap_copy;
     va_copy(ap_copy, ap);
 
     // 第一次调用：获取所需缓冲区大小
-    int len = std::vsnprintf(nullptr, 0, fmt, ap_copy);
+    int len = vsnprintf(nullptr, 0, fmt, ap_copy);
     va_end(ap_copy);
 
     if (len < 0) 
         return ""; // 格式化失败
 
     // 分配足够空间（+1 用于 '\0' 结束符）
-    std::string str(len, '\0');
+    string str(len, '\0');
 
     // 第二次调用：实际格式化到字符串
-    std::vsnprintf(&str[0], len + 1, fmt, ap);
+    vsnprintf(&str[0], len + 1, fmt, ap);
 
     return str;
 }
 
-bool str_startsWith(const std::string &str, const std::string &prefix, bool caseSensitive) {
+bool str_startsWith(const string &str, const string &prefix, bool caseSensitive) {
     if (prefix.length() > str.length()) return false;
     if (caseSensitive) {
         return str.compare(0, prefix.length(), prefix) == 0;
     }
     else {
-        std::string s = str_toLower(str);
-        std::string p = str_toLower(prefix);
+        string s = str_toLower(str);
+        string p = str_toLower(prefix);
         return s.compare(0, p.length(), p) == 0;
     }
 }
 
-bool str_endsWith(const std::string &str, const std::string &suffix, bool caseSensitive) {
+bool str_endsWith(const string &str, const string &suffix, bool caseSensitive) {
     if (suffix.length() > str.length()) return false;
     if (caseSensitive) {
         return str.compare(str.length() - suffix.length(), suffix.length(), suffix) == 0;
     }
     else {
-        std::string s = str_toLower(str);
-        std::string su = str_toLower(suffix);
+        string s = str_toLower(str);
+        string su = str_toLower(suffix);
         return s.compare(s.length() - su.length(), su.length(), su) == 0;
     }
 }
 
-bool str_contains(const std::string &str, const std::string &substr, bool caseSensitive) {
+bool str_contains(const string &str, const string &substr, bool caseSensitive) {
     if (caseSensitive) {
-        return str.find(substr) != std::string::npos;
+        return str.find(substr) != string::npos;
     }
     else {
-        std::string s = str_toLower(str);
-        std::string sub = str_toLower(substr);
-        return s.find(sub) != std::string::npos;
+        string s = str_toLower(str);
+        string sub = str_toLower(substr);
+        return s.find(sub) != string::npos;
     }
 }
 
-void str_chop(std::string &str, int n) {
+void str_chop(string &str, int n) {
     if (n <= 0) 
         return;
     
@@ -112,14 +114,14 @@ void str_chop(std::string &str, int n) {
         str = str.substr(0, len - n);
 }
 
-std::string str_mid(const std::string &str, size_t pos, int len) {
+string str_mid(const string &str, size_t pos, int len) {
     if (pos >= str.length()) return "";
     if (len < 0) return str.substr(pos);
     return str.substr(pos, len);
 }
 
 // 取左侧n个字符
-std::string str_left(const std::string &s, size_t n)
+string str_left(const string &s, size_t n)
 {
     if (n >= s.size())
         return s;
@@ -127,61 +129,61 @@ std::string str_left(const std::string &s, size_t n)
 }
 
 // 取右侧n个字符
-std::string str_right(const std::string &s, size_t n)
+string str_right(const string &s, size_t n)
 {
     if (n >= s.size())
         return s;
     return s.substr(s.size() - n, n);
 }
 
-void str_replace(std::string &str, const std::string &oldstr, const std::string &newstr) {    
+void str_replace(string &str, const string &oldstr, const string &newstr) {    
     size_t pos = 0;
-    while ((pos = str.find(oldstr, pos)) != std::string::npos) {
+    while ((pos = str.find(oldstr, pos)) != string::npos) {
         str.replace(pos, oldstr.length(), newstr);
         pos += newstr.length();
     }
 }
 
-void str_remove(std::string &str, const std::string &substr) {    
+void str_remove(string &str, const string &substr) {    
     return str_replace(str, substr, "");
 }
 
-void str_prepend(std::string &src, const std::string &prefix)
+void str_prepend(string &src, const string &prefix)
 {
     src.insert(src.begin(), prefix.begin(), prefix.end());
 }
 
-void str_append(std::string& str, const std::string& other)
+void str_append(string& str, const string& other)
 {
     str += other;
 }
 
-std::string str_toLower(const std::string &str) {
+string str_toLower(const string &str) {
     JZString jz_str = JZString::fromStdString(str);
     return jz_str.toLower().toStdString();
 }
 
-std::string str_toUpper(const std::string &str) {
+string str_toUpper(const string &str) {
     JZString jz_str = JZString::fromStdString(str);
     return jz_str.toUpper().toStdString();
 }
 
-std::string str_trimmed(const std::string &str) {
+string str_trimmed(const string &str) {
     if (str.empty()) return "";
     size_t start = 0;
     size_t end = str.length();
-    while (start < end && std::isspace((unsigned char)str[start])) start++;
-    while (end > start && std::isspace((unsigned char)str[end - 1])) end--;
+    while (start < end && isspace((unsigned char)str[start])) start++;
+    while (end > start && isspace((unsigned char)str[end - 1])) end--;
     return str.substr(start, end - start);
 }
 
-std::string str_normalized(const std::string &str) {
-    std::string trimmed = str_trimmed(str);
-    std::string result;
+string str_normalized(const string &str) {
+    string trimmed = str_trimmed(str);
+    string result;
     result.reserve(trimmed.length());
     bool in_space = false;
     for (char c : trimmed) {
-        if (std::isspace((unsigned char)c)) {
+        if (isspace((unsigned char)c)) {
             if (!in_space) {
                 result += ' ';
                 in_space = true;
@@ -223,11 +225,11 @@ vector<string> str_split(const string &str, const string &sep, JZ::SplitBehavior
     return result;
 }
 
-std::string str_join(const std::vector<std::string> &v, const std::string &sep)
+string str_join(const vector<string> &v, const string &sep)
 {
     if (v.empty()) return "";
 
-    std::string result;
+    string result;
 
     // 预留空间，减少内存分配
     size_t total_len = 0;
@@ -249,7 +251,7 @@ std::string str_join(const std::vector<std::string> &v, const std::string &sep)
     return result;
 }
 
-int str_indexOf(const std::string &str, const std::string &substr, int pos, bool caseSensitive ) 
+int str_indexOf(const string &str, const string &substr, int pos, bool caseSensitive ) 
 {
     if (pos < 0) pos = 0;
     size_t p = static_cast<size_t>(pos);
@@ -260,19 +262,19 @@ int str_indexOf(const std::string &str, const std::string &substr, int pos, bool
     if (caseSensitive) {
         // 大小写敏感：直接查找
         size_t found = str.find(substr, p);
-        return (found == std::string::npos) ? -1 : static_cast<int>(found);
+        return (found == string::npos) ? -1 : static_cast<int>(found);
     }
     else {
         // 忽略大小写：先转换为小写再查找
-        std::string lower_str = str_toLower(str);
-        std::string lower_sub = str_toLower(substr);
+        string lower_str = str_toLower(str);
+        string lower_sub = str_toLower(substr);
 
         size_t found = lower_str.find(lower_sub, p);
-        return (found == std::string::npos) ? -1 : static_cast<int>(found);
+        return (found == string::npos) ? -1 : static_cast<int>(found);
     }
 }
 
-int str_lastIndexOf(const std::string &str, const std::string &substr, int pos, bool caseSensitive) 
+int str_lastIndexOf(const string &str, const string &substr, int pos, bool caseSensitive) 
 {
     if (substr.empty()) {
         if (pos < 0 || static_cast<size_t>(pos) >= str.size())
@@ -286,19 +288,19 @@ int str_lastIndexOf(const std::string &str, const std::string &substr, int pos, 
     if (caseSensitive) {
         // 大小写敏感：直接反向查找
         size_t found = str.rfind(substr, p - 1);
-        return (found == std::string::npos) ? -1 : static_cast<int>(found);
+        return (found == string::npos) ? -1 : static_cast<int>(found);
     }
     else {
         // 忽略大小写：先转换为小写再反向查找
-        std::string lower_str = str_toLower(str);
-        std::string lower_sub = str_toLower(substr);
+        string lower_str = str_toLower(str);
+        string lower_sub = str_toLower(substr);
 
         size_t found = lower_str.rfind(lower_sub, p - 1);
-        return (found == std::string::npos) ? -1 : static_cast<int>(found);
+        return (found == string::npos) ? -1 : static_cast<int>(found);
     }
 }
 
-int str_toInt(const std::string& str, bool* ok, int base)
+int str_toInt(const string& str, bool* ok, int base)
 {
     // 初始化转换状态（仅当ok不为空时操作）
     if (ok != nullptr)
@@ -317,7 +319,7 @@ int str_toInt(const std::string& str, bool* ok, int base)
     char* end_ptr = nullptr;
 
     // 核心转换逻辑（十进制）
-    long int value = std::strtol(str.c_str(), &end_ptr, base);
+    long int value = strtol(str.c_str(), &end_ptr, base);
 
     // 检查转换错误场景
     bool conversion_success = true;
@@ -347,7 +349,7 @@ int str_toInt(const std::string& str, bool* ok, int base)
     return static_cast<int>(value);
 }
 
-double str_toDouble(const std::string& str, bool* ok)
+double str_toDouble(const string& str, bool* ok)
 {
     // 初始化转换状态
     if (ok != nullptr)
@@ -366,7 +368,7 @@ double str_toDouble(const std::string& str, bool* ok)
     char* end_ptr = nullptr;
 
     // 核心：字符串转 double（十进制）
-    double value = std::strtod(str.c_str(), &end_ptr);
+    double value = strtod(str.c_str(), &end_ptr);
 
     bool conversion_success = true;
 
@@ -399,9 +401,9 @@ double str_toDouble(const std::string& str, bool* ok)
     return value;
 }
 
-std::string str_escape(const std::string& src)
+string str_escape(const string& src)
 {
-    std::string dst;
+    string dst;
     dst.reserve(src.size() * 2);  // 预留空间，避免频繁重分配
 
     for (unsigned char ch : src)
@@ -451,7 +453,7 @@ int hex2val(char c)
 }
 
 // Unicode码点转UTF-8字节写入dst
-void codepoint_to_utf8(std::string& dst, char32_t cp)
+void codepoint_to_utf8(string& dst, char32_t cp)
 {
     if (cp <= 0x7F)
     {
@@ -483,7 +485,7 @@ void codepoint_to_utf8(std::string& dst, char32_t cp)
 }
 
 // 读取固定N位十六进制，成功返回数值并更新 idx，失败返回 -1 且不修改 idx
-int read_fixed_hex(const std::string& src, size_t& idx, size_t len)
+int read_fixed_hex(const string& src, size_t& idx, size_t len)
 {
     size_t tmp = idx;
     unsigned int val = 0;
@@ -504,9 +506,9 @@ int read_fixed_hex(const std::string& src, size_t& idx, size_t len)
 
 } // anonymous namespace
 
-std::string str_unescape(const std::string& src)
+string str_unescape(const string& src)
 {
-    std::string dst;
+    string dst;
     dst.reserve(src.size());
     const size_t len = src.size();
     size_t i = 0;
@@ -647,7 +649,7 @@ std::string str_unescape(const std::string& src)
 
 #ifdef _WIN32
 
-std::string str_local_to_utf8(const std::string &str)
+string str_local_to_utf8(const string &str)
 {
     if (str.empty()) return "";
 
@@ -655,20 +657,20 @@ std::string str_local_to_utf8(const std::string &str)
     int wcs_len = MultiByteToWideChar(CP_ACP, 0, str.c_str(), -1, nullptr, 0);
     if (wcs_len <= 1) return ""; // 只有结尾的 \0
 
-    std::wstring wstr(wcs_len - 1, L'\0');
+    wstring wstr(wcs_len - 1, L'\0');
     MultiByteToWideChar(CP_ACP, 0, str.c_str(), -1, &wstr[0], wcs_len);
 
     // 2. UTF-16 -> UTF-8
     int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (utf8_len <= 1) return "";
 
-    std::string utf8_str(utf8_len - 1, '\0');
+    string utf8_str(utf8_len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8_str[0], utf8_len, nullptr, nullptr);
 
     return utf8_str;
 }
 
-std::string str_utf8_to_local(const std::string& utf8_str) {
+string str_utf8_to_local(const string& utf8_str) {
     if (utf8_str.empty())
         return "";
 
@@ -676,31 +678,31 @@ std::string str_utf8_to_local(const std::string& utf8_str) {
     if (wcs_len <= 1)
         return "";
 
-    std::wstring wstr(wcs_len - 1, L'\0');
+    wstring wstr(wcs_len - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, &wstr[0], wcs_len);
     int local_len = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (local_len <= 1)
         return "";
 
-    std::string local_str(local_len - 1, '\0');
+    string local_str(local_len - 1, '\0');
     WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, &local_str[0], local_len, nullptr, nullptr);
     return local_str;
 }
 
-std::wstring str_to_wstr(const std::string& str)
+wstring str_to_wstr(const string& str)
 {
     if (str.empty()) 
         return L"";
     
     int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
     
-    std::wstring wstr(len - 1, L'\0');
+    wstring wstr(len - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], len);
     
     return wstr;
 }
 
-std::string wstr_to_str(const std::wstring &wstr)
+string wstr_to_str(const wstring &wstr)
 {
     if (wstr.empty())
         return "";
@@ -708,7 +710,7 @@ std::string wstr_to_str(const std::wstring &wstr)
     // 获取需要的字节长度，转 UTF-8
     int byteLen = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
 
-    std::string str(byteLen - 1, '\0');
+    string str(byteLen - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], byteLen, nullptr, nullptr);
 
     return str;
@@ -716,26 +718,26 @@ std::string wstr_to_str(const std::wstring &wstr)
 
 #elif defined(__linux__) || defined(__ANDROID__)
 
-std::string str_local_to_utf8(const std::string &str)
+string str_local_to_utf8(const string &str)
 {
     return str;
 }
 
-std::string str_utf8_to_local(const std::string& utf8_str)
+string str_utf8_to_local(const string& utf8_str)
 {
     return utf8_str;
 }
 
-std::wstring str_to_wstr(const std::string& str)
+wstring str_to_wstr(const string& str)
 {
     JZ_ASSERT(0);
-    return std::wstring();
+    return wstring();
 }
 
-std::string wstr_to_str(const std::wstring &str)
+string wstr_to_str(const wstring &str)
 {
     JZ_ASSERT(0);
-    return std::string();
+    return string();
 }
 
 #endif

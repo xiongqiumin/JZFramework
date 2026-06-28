@@ -48,8 +48,8 @@ JZByteArray JZNetPacketProcessor::formatPacket(const JZNetPack *packet)
     JZByteArray buffer;
     JZDataStream s(&buffer);
     s << (uint8_t)PACK_HEAD;
-    s << 0;
-    s << packet->packetType();
+    s << (int32_t)0;
+    s << (int32_t)packet->packetType();
     packet->saveToStream(s);
 
     int *ptr = (int *)(buffer.data() + 1);
@@ -122,7 +122,7 @@ bool JZNetPacketProcessor::parse()
         if (m_buffer.size() < start + packet_size)
             break;                
                 
-        int type = *((int*)(m_buffer.data() + start + 5));
+        int32_t type = *((int32_t*)(m_buffer.data() + start + 5));
         JZNetPackPtr pack = JZNetPackManager::instance()->createPack(type);
         if(!pack)
         {

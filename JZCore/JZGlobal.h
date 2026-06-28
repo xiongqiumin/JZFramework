@@ -9,7 +9,7 @@
 #define JZ_OS_LINUX     1
 #define JZ_OS_FREE_RTOS 2
 #define JZ_OS_RT_THREAD 3
-#define JZ_OS_NONE      4
+
 
 #ifndef JZ_OS
 #if defined(_WIN32) || defined(_WIN64)
@@ -17,7 +17,7 @@
 #elif defined(__linux__)
 #define JZ_OS JZ_OS_LINUX
 #else
-#define JZ_OS JZ_OS_NONE
+#include "JZFrameworkConfig.h"
 #endif
 #endif
 

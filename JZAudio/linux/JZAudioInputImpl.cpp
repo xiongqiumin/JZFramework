@@ -116,7 +116,7 @@ bool JZAudioInputImpl::open(const JZAudioDevice &device)
     // 4. 初始化动态缓冲区（根据采样格式和声道数计算）
     m_bufferFrames = 4096 / snd_pcm_format_width(alsaFormat) / audioFormat.channelCount;
     int bufferSize = m_bufferFrames * snd_pcm_format_width(alsaFormat) / 8 * audioFormat.channelCount;
-    m_buffer = new (std::nothrow) char[bufferSize];
+    m_buffer = new char[bufferSize];
     if (!m_buffer) {
         std::cerr << "分配音频缓冲区失败" << std::endl;
         releaseResources();

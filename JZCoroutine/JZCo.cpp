@@ -7,7 +7,7 @@
 void jzco_init()
 {
     auto co = new JZCoScheduler(jzApp);
-    g_scheduler->init();
+    co->init();
 }
 
 void jzco_yield()
@@ -31,8 +31,6 @@ void jzco_sleep(int ms)
     t.start(ms);
     g_scheduler->yield(task);
     t.stop();
-    if(task->isInterrupt())
-        throw JZCoCoroutineInterrupt();
 }
 
 void jzco_waitThread(std::function<void()> func)
@@ -80,9 +78,9 @@ void jzco_waitAllCoroutine()
     jzco_waitCoroutine(co_list);
 }
 
-JZCoCoroutinePtr jzco_spawn(const std::function<void()> &func)
+JZCoCoroutinePtr jzco_spawn(const std::function<void()> &func, int stack_size)
 {
-    JZCoCoroutinePtr ptr = JZCoCoroutinePtr(new JZCoCoroutine());
+    JZCoCoroutinePtr ptr = JZCoCoroutinePtr(new JZCoCoroutine(stack_size));    
     ptr->setTask(func);
     g_scheduler->startTask(ptr);
     return ptr;

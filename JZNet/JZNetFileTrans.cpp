@@ -8,6 +8,8 @@
 #include "JZCrypto.h"
 #include "JZStd.h"
 
+using namespace std;
+
 JZNetPackFileOperatorReq::JZNetPackFileOperatorReq()
 {
     method = Pull;
@@ -227,17 +229,17 @@ void JZNetFileTrans::setServer(JZNetServer* server)
 	m_server = server;
 }
 
-void JZNetFileTrans::setRootDir(std::string path)
+void JZNetFileTrans::setRootDir(string path)
 {
     m_path = path;
 }
 
-std::string JZNetFileTrans::rootDir()
+string JZNetFileTrans::rootDir()
 {
     return m_path;
 }
 
-std::string JZNetFileTrans::fullPath(std::string path)
+string JZNetFileTrans::fullPath(string path)
 {
     if (JZDir::isAbsolutePath(path))
         return path;
@@ -323,8 +325,8 @@ void JZNetFileTrans::dealOpReq(uint64_t net_id, JZNetPackFileOperatorReq *req)
     }
     else if (req->method == FileTaskType::PushDirSync)
     {
-        vector<std::string> fileList;
-        vector<std::string> fileMd5List;
+        vector<string> fileList;
+        vector<string> fileMd5List;
         JZDir dir;
         if (!dir.exists(remote_path))
             dir.mkdir(remote_path);
@@ -339,7 +341,7 @@ void JZNetFileTrans::dealOpReq(uint64_t net_id, JZNetPackFileOperatorReq *req)
             {                
                 if (!vec_contains(req->fileList, fileList[i]))
                 {
-                    std::string local_path = fullPath(fileList[i]);
+                    string local_path = fullPath(fileList[i]);
                     if (!JZFile::exists(local_path))
                         continue;
 
@@ -574,7 +576,7 @@ void JZNetFileTrans::dealPack(uint64_t net_id, JZNetPackPtr pack)
     }
 }
 
-bool JZNetFileTrans::getFileList(std::string local_dir, std::vector<std::string> &outFileList, std::vector<std::string> &outFileMd5List, bool calcMd5)
+bool JZNetFileTrans::getFileList(string local_dir, vector<string> &outFileList, vector<string> &outFileMd5List, bool calcMd5)
 {
     JZDir dir(local_dir);    
     if (!dir.exists())
@@ -604,10 +606,10 @@ bool JZNetFileTrans::getFileList(std::string local_dir, std::vector<std::string>
     return true;
 }
 
-bool JZNetFileTrans::getTaskFileList(JZNetFileTask *task, std::string local_dir, std::string remote_dir, std::vector<std::string> &remoteFileList, bool calcMd5)
+bool JZNetFileTrans::getTaskFileList(JZNetFileTask *task, string local_dir, string remote_dir, vector<string> &remoteFileList, bool calcMd5)
 {
-    std::vector<std::string> outFileList;
-    std::vector<std::string> outFileMd5List;
+    vector<string> outFileList;
+    vector<string> outFileMd5List;
     if (!getFileList(local_dir, outFileList, outFileMd5List, calcMd5))
         return false;
     
@@ -623,9 +625,9 @@ bool JZNetFileTrans::getTaskFileList(JZNetFileTask *task, std::string local_dir,
     return true;
 }
 
-JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_type, std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_type, string localUrl, string remoteUrl)
 {
-    std::string local_path = fullPath(localUrl);
+    string local_path = fullPath(localUrl);
 
     JZNetFileTaskPtr task = JZNetFileTaskPtr(new JZNetFileTask());
     task->taskId = m_taskId++;
@@ -655,7 +657,7 @@ JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_ty
     }        
     else if (task_type == FileTaskType::PushDir)
     {
-        std::vector<std::string> remoteFileList;
+        vector<string> remoteFileList;
         if(!getTaskFileList(task.get(), localUrl, remoteUrl, remoteFileList, false))
             return JZNetFileTaskPtr();
 
@@ -667,7 +669,7 @@ JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_ty
     }
     else if (task_type == FileTaskType::PushDirSync)
     {
-        std::vector<std::string> remoteFileList;
+        vector<string> remoteFileList;
         if (!getTaskFileList(task.get(), localUrl, remoteUrl, remoteFileList, true))
             return JZNetFileTaskPtr();
 
@@ -707,47 +709,47 @@ JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_ty
     return task;
 }
 
-JZNetFileTaskPtr JZNetFileTrans::checkMd5(uint64_t net_id, std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::checkMd5(uint64_t net_id, string localUrl, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::CheckMd5, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::mkdir(uint64_t net_id, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::mkdir(uint64_t net_id, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::MkDir, string(), remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::rmdir(uint64_t net_id, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::rmdir(uint64_t net_id, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::RmDir, string(), remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pushFile(uint64_t net_id,std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::pushFile(uint64_t net_id,string localUrl, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::Push, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pullFile(uint64_t net_id, std::string remoteUrl, std::string localUrl)
+JZNetFileTaskPtr JZNetFileTrans::pullFile(uint64_t net_id, string remoteUrl, string localUrl)
 {
     return startTask(net_id, FileTaskType::Pull, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pushDir(uint64_t net_id, std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::pushDir(uint64_t net_id, string localUrl, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::PushDir, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pullDir(uint64_t net_id, std::string remoteUrl, std::string localUrl)
+JZNetFileTaskPtr JZNetFileTrans::pullDir(uint64_t net_id, string remoteUrl, string localUrl)
 {
     return startTask(net_id, FileTaskType::PullDir, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pushDirSync(uint64_t net_id, std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::pushDirSync(uint64_t net_id, string localUrl, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::PushDirSync, localUrl, remoteUrl);
 }
 
-JZNetFileTaskPtr JZNetFileTrans::pullDirSync(uint64_t net_id, std::string localUrl, std::string remoteUrl)
+JZNetFileTaskPtr JZNetFileTrans::pullDirSync(uint64_t net_id, string localUrl, string remoteUrl)
 {
     return startTask(net_id, FileTaskType::PullDirSync, localUrl, remoteUrl);
 }

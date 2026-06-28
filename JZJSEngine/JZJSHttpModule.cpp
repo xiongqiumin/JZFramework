@@ -132,7 +132,7 @@ JZNetworkRequest JZJSHttpModule::makeRequest(const std::string& url, const Json:
 // ======================================================================
 void JZJSHttpModule::onNetFinish()
 {
-    JZNetworkReply* reply = dynamic_cast<JZNetworkReply*>(sender());
+    JZNetworkReply* reply = (JZNetworkReply*)(sender());
     reply->deleteLater();
 
     auto it = m_replyMap.find(reply);

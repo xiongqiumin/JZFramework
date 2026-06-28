@@ -4,8 +4,8 @@
 #ifdef JZ_OS_NORMAL
 #include <chrono>
 #elif JZ_OS == JZ_OS_FREE_RTOS
-#include "FreeRTOS.h"
-#include "task.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #elif JZ_OS == JZ_OS_RT_THREAD
 #include <rtthread.h>
 #endif

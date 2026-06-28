@@ -224,20 +224,6 @@ JZNodeRoot *JZNodeFlow::root()
     return m_root;
 }
 
-void JZNodeFlow::addSequence(JZNode *node)
-{
-    addNode(node);
-
-    JZNodeSequence *cur = m_root;
-    while(cur->next)
-    {
-        auto next = dynamic_cast<JZNodeSequence *>(node);
-        JZ_ASSERT(next);
-        cur = next;
-    }
-    cur->next = node;
-}
-
 void JZNodeFlow::addNode(JZNode *node)
 {
     JZ_ASSERT(node->m_flow == nullptr);

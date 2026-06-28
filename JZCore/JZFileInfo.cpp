@@ -33,7 +33,7 @@ std::string JZFileInfo::weaklyCanonicalPath(std::string path)
     processed.push_back(components[0]);
     for (int i = 1; i < (int)components.size(); i++)
     {
-        string comp = components[i];
+        std::string comp = components[i];
         if (comp.empty() || comp == ".") {
             continue;
         }

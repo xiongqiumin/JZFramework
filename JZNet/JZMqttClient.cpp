@@ -148,7 +148,7 @@ void JZMqttClient::onNetEvent(JZNetResEvent* event)
     }
     else if (ev == JZ_NET_EV_MQTT_MSG)
     {
-        JZMqttResPacket *packet = dynamic_cast<JZMqttResPacket*>(event->extData.get());
+        JZMqttResPacket *packet = (JZMqttResPacket*)(event->extData.get());
         JZMqttMessage msg = std::move(packet->message);
         sigMessage.emit(msg);
     }

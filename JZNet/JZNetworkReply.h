@@ -54,7 +54,7 @@ protected:
     JZByteArray m_body;
 
     int m_statusCode;
-    string m_statusText;
+    std::string m_statusText;
     
     uint64_t m_conn;
     int m_timeId;

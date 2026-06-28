@@ -10,10 +10,10 @@
 #include "JZFileInfo.h"
 #include "JZDebug.h"
 
-bool JZFile::remove(string filepath)
+bool JZFile::remove(std::string filepath)
 {
 #ifdef _WIN32    
-    string local_path = str_utf8_to_local(filepath);
+    std::string local_path = str_utf8_to_local(filepath);
     BOOL result = DeleteFileA(local_path.c_str());
     return result == TRUE;
 #elif defined(__linux__)
@@ -24,7 +24,7 @@ bool JZFile::remove(string filepath)
 #endif
 }
 
-bool JZFile::exists(string filepath)
+bool JZFile::exists(std::string filepath)
 {
     return JZFileInfo(filepath).exists();
 }
@@ -44,7 +44,7 @@ bool JZFile::isOpen() const
     return m_fp != nullptr;
 }
 
-bool JZFile::open(string filepath, string mode)
+bool JZFile::open(std::string filepath, std::string mode)
 {
     m_fp = fopen(str_utf8_to_local(filepath).c_str(), mode.c_str());
     return m_fp != nullptr;

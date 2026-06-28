@@ -13,5 +13,5 @@ JZTxScopedRangeLog::~JZTxScopedRangeLog()
 {
     int64_t end = JZPlatform::getTickCountMs();
 
-    LOG_D(m_tag +  " Exit, cost = " + to_string(end - m_time));
+    LOG_D(m_tag +  " Exit, cost = " + std::to_string(end - m_time));
 }

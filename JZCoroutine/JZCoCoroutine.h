@@ -26,7 +26,7 @@ public:
 class JZCoCoroutine
 {
 public:
-    explicit JZCoCoroutine();
+    explicit JZCoCoroutine(int stack_size = 1024);
     virtual ~JZCoCoroutine();
 
     std::string name();

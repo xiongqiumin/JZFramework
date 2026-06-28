@@ -416,7 +416,7 @@ bool JZNetThread::event(JZEvent* event)
 
 void JZNetThread::initTls(mg_connection *conn, const std::string &url_str) { 
     JZUrl url(url_str);
-    string host = url.host();
+    std::string host = url.host();
 
     mg_tls_opts opts;
     memset(&opts, 0, sizeof(mg_tls_opts));
@@ -467,7 +467,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         }
         else if (info.type == JZSocketInfo::MqttClient)
         {
-            JZMgOptPacket *pkt = dynamic_cast<JZMgOptPacket *>(event->extData.get());
+            JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
             conn = mg_mqtt_connect(m_mgr, info.url.c_str(), &pkt->opt, mg_thread_fn, nullptr);
         }
         else if (info.type == JZSocketInfo::MqttServer)
@@ -520,7 +520,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 mg_ws_send(c, buf, len, WEBSOCKET_OP_BINARY);
             else if (event->writeCmd == WriteMqttMessage)
             {
-                JZMgOptPacket *pkt = dynamic_cast<JZMgOptPacket *>(event->extData.get());
+                JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
                 if (pkt->command == JZMgOptPacket::Publish)
                     mg_mqtt_pub(c, &pkt->opt);
                 else if (pkt->command == JZMgOptPacket::Subscribe)
@@ -534,7 +534,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteMqttServerResp)
             {
-                JZMgServerPacket *pkt = dynamic_cast<JZMgServerPacket *>(event->extData.get());
+                JZMgServerPacket *pkt = (JZMgServerPacket *)(event->extData.get());
                 mg_mqtt_send_header(c, pkt->cmd, pkt->flags, pkt->len);
                 if (pkt->buffer.size() > 0)
                     mg_send(c, pkt->buffer.data(), pkt->buffer.size());

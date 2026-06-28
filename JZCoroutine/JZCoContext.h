@@ -11,7 +11,7 @@ JZCoMainContext *createMainContext();
 void destoryMainContext(JZCoMainContext *ctx);
 CO_CONTEXT_HANDLE getMainContextHandle(JZCoMainContext* ctx);
 
-JZCoContext *createContext(JZCoCoroutine *co);
+JZCoContext *createContext(JZCoCoroutine *co,int stack_size);
 void destoryContext(JZCoContext *ctx);
 CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx);
 

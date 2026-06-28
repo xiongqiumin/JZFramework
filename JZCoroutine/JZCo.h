@@ -14,7 +14,7 @@ void jzco_waitCoroutine(const std::vector<JZCoCoroutinePtr> &co_list); //等待�
 void jzco_waitAllCoroutine();
 
 //开启一个协程
-JZCoCoroutinePtr jzco_spawn(const std::function<void()>& func);
+JZCoCoroutinePtr jzco_spawn(const std::function<void()>& func, int stack_size = 1024);
 void jzco_start(JZCoCoroutinePtr co_ptr);
 
 #endif // ! JZCO_H_

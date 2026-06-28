@@ -8,11 +8,10 @@
 
 // 平台相关头文件仅在实现文件中包含
 #if JZ_OS == JZ_OS_FREE_RTOS
-    #include "FreeRTOS.h"
-    #include "task.h"
-    #include "semphr.h"
-    #define JZ_THREAD_STACK_SIZE 1024  //freeRtos 栈大小是 word
-    #define JZ_THREAD_PRIORITY   (configMAX_PRIORITIES/2)
+    #include <freertos/FreeRTOS.h>
+    #include <freertos/task.h>
+    #include <freertos/semphr.h>
+    #define JZ_THREAD_STACK_SIZE 10 * 1024  //freeRtos 栈大小是 word    
 #elif JZ_OS == JZ_OS_RT_THREAD
     #include "rtthread.h"
     #define JZ_THREAD_STACK_SIZE 4096
@@ -200,10 +199,10 @@ void JZThread::start()
         "jz_thread",
         JZ_THREAD_STACK_SIZE,
         this,
-        JZ_THREAD_PRIORITY,
+        uxTaskPriorityGet(NULL),
         &handle
     );        
-    assert(ret == pdPASS);
+    JZ_ASSERT(ret == pdPASS);
     m_handle = handle;
 #elif JZ_OS == JZ_OS_RT_THREAD
     // RT-Thread：创建动态任务

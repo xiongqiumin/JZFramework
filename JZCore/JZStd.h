@@ -9,9 +9,7 @@
 #include <assert.h>
 #include "JZGlobal.h"
 
-using namespace std;
-
-//string
+//std::string
 std::string str_asprintf(const char *fmt, ...);
 std::string str_vasprintf(const char *fmt, va_list ap);
 
@@ -32,8 +30,8 @@ std::string str_trimmed(const std::string &str);
 std::string str_normalized(const std::string &str);
 int str_indexOf(const std::string &str, const std::string &substr, int pos = 0, bool caseSensitive = true);
 int str_lastIndexOf(const std::string &str, const std::string &substr, int pos = -1, bool caseSensitive = true);
-vector<string> str_split(const string &str, const string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);
-string str_join(const vector<string> &str_list, const string &sep);
+std::vector<std::string> str_split(const std::string &str, const std::string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);
+std::string str_join(const std::vector<std::string> &str_list, const std::string &sep);
 
 int str_toInt(const std::string& str, bool* ok = nullptr,int base = 10);
 double str_toDouble(const std::string& str, bool* ok = nullptr);

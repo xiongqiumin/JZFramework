@@ -7,14 +7,14 @@
 class JZFile
 {
 public:
-    static bool exists(string filepath);
-    static bool remove(string filepath);
+    static bool exists(std::string filepath);
+    static bool remove(std::string filepath);
 
     JZFile();
     ~JZFile();
 
     bool isOpen() const;
-    bool open(string filepath,string mode);
+    bool open(std::string filepath,std::string mode);
     void close();
 
     bool atEnd() const;

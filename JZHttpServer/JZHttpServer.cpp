@@ -20,7 +20,7 @@ JZHttpServerClient::~JZHttpServerClient()
 
 void JZHttpServerClient::onNetEvent(JZNetResEvent* event)
 {
-    JZHttpServer* server = dynamic_cast<JZHttpServer*>(parent());
+    JZHttpServer* server = (JZHttpServer*)(parent());
     if (event->event == JZ_NET_EV_HTTP_MSG)
     {
         server->onHttpMessage(this, event->binData);

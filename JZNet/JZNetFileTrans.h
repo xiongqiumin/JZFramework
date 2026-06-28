@@ -30,8 +30,8 @@ public:
 	virtual void saveToStream(JZDataStream& s) const;
 	virtual void loadFromStream(JZDataStream& s);
 
-    int method;
-	int taskId;
+    int32_t method;
+	int32_t taskId;
 
     std::string remoteUrl;
     std::vector<std::string> fileList;   //remote
@@ -50,8 +50,8 @@ public:
     virtual void loadFromStream(JZDataStream& s);
 
     bool ok;
-	int taskId;          //本地id
-	int remoteTaskId;    //远端id        
+	int32_t taskId;          //本地id
+	int32_t remoteTaskId;    //远端id        
     std::vector<std::string> fileList;
     std::vector<std::string> fileMd5List;
 
@@ -69,10 +69,10 @@ public:
 	virtual void saveToStream(JZDataStream& s) const;
 	virtual void loadFromStream(JZDataStream& s);
         
-    int taskId;
-	int remoteTaskId;
+    int32_t taskId;
+	int32_t remoteTaskId;
 	int64_t offset;
-    int fileIndex;
+    int32_t fileIndex;
 };
 
 //JZNetPackFileRes
@@ -86,9 +86,9 @@ public:
 	virtual void saveToStream(JZDataStream& s) const;
 	virtual void loadFromStream(JZDataStream& s);
 	    
-    int taskId;
-	int remoteTaskId;
-    int fileIndex;
+    int32_t taskId;
+	int32_t remoteTaskId;
+    int32_t fileIndex;
     int64_t fileSize;
 	JZByteArray buffer;
 };
@@ -104,7 +104,7 @@ public:
     virtual void saveToStream(JZDataStream& s) const;
     virtual void loadFromStream(JZDataStream& s);
     
-    int remoteTaskId;
+    int32_t remoteTaskId;
     bool isFinish;
 };
 
@@ -121,8 +121,8 @@ public:
 
     FileTaskType type;
     uint64_t netId;
-	int taskId;
-	int remoteTaskId;
+	int32_t taskId;
+	int32_t remoteTaskId;
     Status status;
 
 	JZFile file;	
@@ -130,7 +130,7 @@ public:
 	int64_t offset;    
     int64_t recvTime;
 
-    int fileIndex;
+    int32_t fileIndex;
     std::vector<std::string> fileList;
     std::vector<std::string> fileMd5List;
 };

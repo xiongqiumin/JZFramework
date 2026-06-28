@@ -178,7 +178,7 @@ void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
         //auto JZMgServerPacket *packet = new
         std::shared_ptr<JZMgServerPacket> resp = std::make_shared<JZMgServerPacket>();
 
-        JZMqttResPacket* packet = dynamic_cast<JZMqttResPacket*>(event->extData.get());
+        JZMqttResPacket* packet = (JZMqttResPacket*)(event->extData.get());
         auto* msg = &packet->message;
         auto cmd = msg->cmd;
         switch (cmd)
@@ -311,7 +311,7 @@ void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
     }
     else if (ev == JZ_NET_EV_MQTT_MSG)
     {
-        JZMqttResPacket* packet = dynamic_cast<JZMqttResPacket*>(event->extData.get());
+        JZMqttResPacket* packet = (JZMqttResPacket*)(event->extData.get());
         auto* msg = &packet->message;
         auto it = m_subcribeMap.find(msg->topic);
         if (it != m_subcribeMap.end())

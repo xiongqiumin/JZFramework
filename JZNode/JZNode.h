@@ -113,7 +113,6 @@ public:
     void start();
     void restart();
 
-    void addSequence(JZNode *node);  //添加并串联
     void addNode(JZNode *node);      //只添加
 
     JZNodeRoot *root();

@@ -13,9 +13,9 @@ public:
 };
 
 //JZCoCoroutine
-JZCoCoroutine::JZCoCoroutine()
+JZCoCoroutine::JZCoCoroutine(int stack_size)
 {
-    m_ctx = createContext(this);
+    m_ctx = createContext(this, stack_size);
     m_interrupt = false;
     m_finish = false;
 }
@@ -42,17 +42,12 @@ void JZCoCoroutine::setTask(const std::function<void()>& func)
 
 void JZCoCoroutine::run()
 {
-    if(m_func)
-        m_func();
+    m_func();
 }
 
 void JZCoCoroutine::quit()
 {
     m_interrupt = true;
-    if(g_scheduler->currentCoroutine() == this)
-        throw JZCoCoroutineInterrupt();
-    else
-        g_scheduler->resume(this);
 }
 
 bool JZCoCoroutine::isInterrupt() const

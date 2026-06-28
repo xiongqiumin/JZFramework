@@ -132,7 +132,7 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
     }
     else if (event->event == JZ_NET_EV_ERROR)
     {        
-        string error_str = str_fromUtf8(event->binData);
+        std::string error_str = str_fromUtf8(event->binData);
         sigError.emit();
 
         if (m_state == ConnectingState)

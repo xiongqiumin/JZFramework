@@ -32,7 +32,7 @@ JZCommandLineArgument::JZCommandLineArgument()
 
 //JZCommandLineParser
 JZCommandLineParser::CommandValue::CommandValue()
-    : type(STRING), ptr(nullptr), required(false), parsed(false), shortName("")
+    : type(STRING), ptr(nullptr), parsed(false), required(false), shortName("")
 {
 }
 
@@ -698,7 +698,7 @@ void JZCommandLineParser::printHelp() const
         size_t maxNameLen = 0;
         for (const auto& cmd : m_commands)
         {
-            string name = optionName(cmd);
+            std::string name = optionName(cmd);
             maxNameLen = std::max(maxNameLen, name.size());
         }
 
@@ -707,7 +707,7 @@ void JZCommandLineParser::printHelp() const
 
         for (const auto& cv : m_commands)
         {
-            string name = optionName(cv);
+            std::string name = optionName(cv);
 
             // 输出参数名，固定宽度右对齐冒号
             std::cout << "  " << std::left << std::setw(maxNameLen) << name << ": ";

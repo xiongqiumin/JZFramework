@@ -32,8 +32,9 @@
     JZMqttServer.h
     JZMqttServer.cpp
 	JZMqttPacket.cpp
-	JZMqttPacket_p.h
 	JZMqttPacket.h
+	JZTxClient.cpp
+	JZTxClient.h
     mongoose.h    
     mongoose.c
 )

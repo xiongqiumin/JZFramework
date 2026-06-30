@@ -9,7 +9,8 @@
 #include "JZWebSocket.h"
 #include "JZUrl.h"
 #include "JZScopeGuard.h"
-#include "JZMqttPacket_p.h"
+#include "JZMqttPacket.h"
+#include "JZTx.h"
 
 JZNetEvent mgEventToNetEvent(int ev)
 {
@@ -475,7 +476,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if (info.type == JZSocketInfo::MqttClient)
         {
             JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
-            conn = mg_mqtt_connect(m_mgr, info.url.c_str(), &pkt->opt, mg_thread_fn, nullptr);
+            conn = mg_mqtt_connect(m_mgr, info.url.c_str(), pkt->opt, mg_thread_fn, nullptr);
         }
         else if (info.type == JZSocketInfo::MqttServer)
         {
@@ -529,11 +530,11 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             {
                 JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
                 if (pkt->command == JZMgOptPacket::Publish)
-                    mg_mqtt_pub(c, &pkt->opt);
+                    mg_mqtt_pub(c, pkt->opt);
                 else if (pkt->command == JZMgOptPacket::Subscribe)
-                    mg_mqtt_sub(c, &pkt->opt);
+                    mg_mqtt_sub(c, pkt->opt);
                 else if (pkt->command == JZMgOptPacket::Unsubscribe)
-                    mg_mqtt_unsub(c, &pkt->opt);
+                    mg_mqtt_unsub(c, pkt->opt);
                 else
                 {
                     JZ_UNREACHABLE();
@@ -607,6 +608,7 @@ JZNetObject::~JZNetObject()
 
 bool JZNetObject::event(JZEvent *event)
 {
+    JZTX_FUNC_TRACE
     if (event->type() == JZEvent_netRes) 
     {
         JZNetResEvent *net_event = (JZNetResEvent*)event;

@@ -2,6 +2,7 @@
 #include "JZObject.h"
 #include "JZThread.h"
 #include "JZApplication.h"
+#include "JZTx.h"
 
 JZSignalDestory::JZSignalDestory(JZObject *object)
     :JZSignal<JZObject*>(object)
@@ -202,6 +203,7 @@ std::vector<JZObject *> JZObject::children()
 
 bool JZObject::event(JZEvent *e)
 {
+    JZTX_FUNC_TRACE
     if (e->type() == JZEvent_timer)
     {
         JZTimerEvent *time_event = (JZTimerEvent*)e;

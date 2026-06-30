@@ -351,6 +351,8 @@ bool JZThread::isSpecialEvent(JZEvent* event)
 
 void JZThread::processSpecialEvent(JZEvent* event)
 {
+    JZTX_FUNC_TRACE
+
     if (event->type() == JZEvent_signal)
     {
         JZSignalEvent* signal_event = (JZSignalEvent*)event;
@@ -427,6 +429,8 @@ void JZThread::postEvent(const JZEventInfo &event)
 
 void JZThread::processTimers()
 {
+    JZTX_FUNC_TRACE
+
     int64_t start_time = JZPlatform::getTickCountMs();
     while (true)
     {
@@ -460,6 +464,8 @@ void JZThread::processTimers()
 
 void JZThread::processEvents()
 {    
+    JZTX_FUNC_TRACE
+
     processTimers();
 
     std::vector<JZEventInfo> eventsToProcess;

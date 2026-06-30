@@ -10,6 +10,7 @@
 #include "JZEvent.h"
 #include "JZVariant.h"
 #include "JZObjectPointer.h"
+#include "JZTx.h"
 
 #ifdef emit
 #undef emit
@@ -133,6 +134,7 @@ public:
 
     void emit(Args... args)
     {
+        JZTX_FUNC_TRACE
         if (isBlockSingals(m_object))
             return;
 
@@ -158,7 +160,7 @@ public:
                 popSender(conn.recv);
             }
             else
-            {                
+            {        
                 if (type == AutoConnection || type == QueuedConnection || type == BlockingQueuedConnection)
                 {
                     JZ_ASSERT(conn.slot.packFunc);

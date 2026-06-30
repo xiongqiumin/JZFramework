@@ -9,6 +9,8 @@
 #include "JZTimer.h"
 #include "JZEventLoop.h"
 
+using namespace std;
+
 //JZTest
 void JZTest::exec(int ms)
 {
@@ -21,7 +23,7 @@ JZTest::JZTest() {}
 
 JZTest::~JZTest() {}
 
-void JZTest::addSuite(std::shared_ptr<JZTestSuite> suite) {
+void JZTest::addSuite(shared_ptr<JZTestSuite> suite) {
     testSuites_.push_back(suite);
 }
 
@@ -40,12 +42,12 @@ int JZTest::run(int argc, char** argv)
 bool JZTest::init(int argc, char** argv) 
 {
     JZCommandLineParser parser;
-    std::string testArg;
+    string testArg;
 
     parser.addOption("--test", &testArg, false);
 
     if (!parser.parse(argc, argv)) {
-        std::cerr << "Error parsing command line: " << parser.errorString() << std::endl;
+        cerr << "Error parsing command line: " << parser.errorString() << endl;
         return false;
     }
 
@@ -79,15 +81,15 @@ JZTestResult JZTest::runAllSuites() const
     // 构建要运行的测试列表，同时保存 suite 指针
     struct TestItem
     {
-        std::shared_ptr<JZTestSuite> suitePtr;
-        std::string suiteName;
-        std::string testName;
+        shared_ptr<JZTestSuite> suitePtr;
+        string suiteName;
+        string testName;
     };
-    std::vector<TestItem> testsToRun;
+    vector<TestItem> testsToRun;
 
     for (const auto& suite : testSuites_)
     {
-        std::string suiteName = suite->name();
+        string suiteName = suite->name();
         bool shouldRunSuite = suiteFilters_.empty();
         if (!shouldRunSuite)
         {
@@ -122,7 +124,7 @@ JZTestResult JZTest::runAllSuites() const
             {
                 if (suiteName == suiteFilters_[i] && i < testFilters_.size())
                 {
-                    std::string testName = testFilters_[i];
+                    string testName = testFilters_[i];
                     if (suite->hasTest(testName))
                     {
                         testsToRun.push_back({suite, suiteName, testName});
@@ -135,7 +137,7 @@ JZTestResult JZTest::runAllSuites() const
     int totalTests = static_cast<int>(testsToRun.size());
 
     // 统计实际参与的套件数（去重）
-    std::set<std::string> uniqueSuites;
+    set<string> uniqueSuites;
     for (const auto& item : testsToRun)
     {
         uniqueSuites.insert(item.suiteName);
@@ -143,13 +145,13 @@ JZTestResult JZTest::runAllSuites() const
     int totalSuitesRun = static_cast<int>(uniqueSuites.size());
 
     // 2. 现在打印标题（使用实际数据）
-    std::cout << "====================================" << std::endl;
-    std::cout << "JZTest Framework" << std::endl;
-    std::cout << "Total test suites: " << testSuites_.size()  // 全部套件数
-              << " (running " << totalSuitesRun << ")" << std::endl;
-    std::cout << "Total tests to run: " << totalTests << std::endl;
-    std::cout << "====================================" << std::endl;
-    std::cout << std::endl;
+    cout << "====================================" << endl;
+    cout << "JZTest Framework" << endl;
+    cout << "Total test suites: " << testSuites_.size()  // 全部套件数
+              << " (running " << totalSuitesRun << ")" << endl;
+    cout << "Total tests to run: " << totalTests << endl;
+    cout << "====================================" << endl;
+    cout << endl;
 
     int total = static_cast<int>(testsToRun.size());
     int passed = 0;
@@ -159,7 +161,7 @@ JZTestResult JZTest::runAllSuites() const
     for (int i = 0; i < total; ++i)
     {
         const auto& item = testsToRun[i];
-        std::string displayName = item.suiteName + "." + item.testName;
+        string displayName = item.suiteName + "." + item.testName;
 
         // 计时并运行
         JZElapsedTimer timer;
@@ -173,20 +175,20 @@ JZTestResult JZTest::runAllSuites() const
             ++failed;
 
         // 结果行（包含耗时）
-        std::cout << std::setw(2) << (i + 1) << "/" << total << " Test #" << std::setw(2) << (i + 1) << ": "
-                  << displayName << " ................   " << (result ? "Passed" : "Failed") << "   " << std::fixed
-                  << std::setprecision(3) << (elapsedMs / 1000.0) << " sec" << std::endl;
+        cout << setw(2) << (i + 1) << "/" << total << " Test #" << setw(2) << (i + 1) << ": "
+                  << displayName << " ................   " << (result ? "Passed" : "Failed") << "   " << fixed
+                  << setprecision(3) << (elapsedMs / 1000.0) << " sec" << endl;
     }
 
     // 最终统计
-    std::cout << std::endl;
+    cout << endl;
     double passRate = total > 0 ? (static_cast<double>(passed) / total * 100.0) : 0.0;
-    std::cout << std::fixed << std::setprecision(0) << passRate << "% tests passed, " << failed
-              << " tests failed out of " << total << std::endl;
+    cout << fixed << setprecision(0) << passRate << "% tests passed, " << failed
+              << " tests failed out of " << total << endl;
 
-    std::cout << "====================================" << std::endl;
-    std::cout << "All test suites completed" << std::endl;
-    std::cout << "====================================" << std::endl;
+    cout << "====================================" << endl;
+    cout << "All test suites completed" << endl;
+    cout << "====================================" << endl;
 
     JZTestResult ret;
     ret.passed = passed;

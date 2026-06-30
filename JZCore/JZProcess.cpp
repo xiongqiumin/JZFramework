@@ -3,6 +3,7 @@
 #include "JZElapsedTimer.h"
 #include "JZFileInfo.h"
 #include "JZDir.h"
+#include "JZTx.h"
 
 using namespace std;
 

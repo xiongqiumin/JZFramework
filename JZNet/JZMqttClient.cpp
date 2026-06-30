@@ -4,7 +4,6 @@
 #include "JZElapsedTimer.h"
 #include "JZLog.h"
 #include "JZPlatform.h"
-#include "JZMqttPacket_p.h"
 #include "JZMqttServer.h"
 #include "JZDebug.h"
 

@@ -73,7 +73,7 @@ protected:
     JZTimer *m_timer;
     JZNetClient *m_client;
     bool m_isValid;
-    map<JZTcpSocket *, LocalClientInfo> m_localSocketMap;
+    std::map<JZTcpSocket *, LocalClientInfo> m_localSocketMap;
 };
 
 #endif // JZFRPCLIENT_H_

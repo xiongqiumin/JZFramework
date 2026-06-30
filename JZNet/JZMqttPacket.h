@@ -5,6 +5,37 @@
 #include <vector>
 #include <memory>
 #include "JZByteArray.h"
+#include "JZNetObject.h"
+
+struct mg_mqtt_opts;
+class JZMgOptPacketBuilder;
+class JZMgOptPacket : public JZNetReqEventData
+{
+public:
+    JZMgOptPacket();
+    ~JZMgOptPacket();
+
+    enum MqttCommand
+    {
+        None,
+        Connect,
+        Publish,
+        Subscribe,
+        Unsubscribe,
+    };
+
+    MqttCommand command = None;
+    mg_mqtt_opts *opt;
+
+protected:
+    friend JZMgOptPacketBuilder;
+
+    JZ_DISABLE_COPY(JZMgOptPacket)
+
+    size_t m_offset = 0;
+    std::vector<char> m_buffer;  // 统一存放malloc风格字符串+mg_mqtt_prop数组
+};
+typedef std::shared_ptr<JZMgOptPacket> JZMgOptPacketPtr;
 
 // MQTT5通用属性
 struct JZMqttProp
@@ -49,6 +80,10 @@ struct JZMqttSubOpt
     std::vector<JZMqttProp> props;
 };
 
+JZMgOptPacketPtr makeMgOptPacket(const JZMqttConnectOpt& src);
+JZMgOptPacketPtr makeMgOptPacket(const JZMqttPublishOpt& src);
+JZMgOptPacketPtr makeMgOptPacket(bool is_sub, const JZMqttSubOpt& src);
+
 // JZMqttMessage
 class JZMqttMessage
 {
@@ -64,6 +99,28 @@ public:
 
     // MQTT5属性
     std::vector<JZMqttProp> props;
+};
+
+// 从原生mg_mqtt_message解析(收消息)
+struct mg_mqtt_message;
+void mgMsgToMqttMessage(struct mg_mqtt_message* mg_msg, JZMqttMessage *msg);
+
+class JZMgServerPacket : public JZNetReqEventData
+{
+public:
+    uint8_t cmd;
+    uint8_t flags;
+    uint32_t len;
+    std::vector<uint8_t> buffer;
+};
+
+//JZMqttResPacket
+class JZMqttResPacket : public JZNetResEventData
+{
+public:
+    ~JZMqttResPacket();
+    
+    JZMqttMessage message;
 };
 
 #endif

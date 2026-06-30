@@ -1,4 +1,5 @@
 #include "JZTimer.h"
+#include "JZTx.h"
 
 class JZSingleTimer : public JZObject
 {
@@ -59,6 +60,7 @@ JZTimer::~JZTimer()
 
 void JZTimer::timerEvent(JZTimerEvent *event)
 {
+    JZTX_FUNC_TRACE
     if (m_singleShot)
         stop();
 

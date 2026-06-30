@@ -13,6 +13,7 @@ JZEventLoop::~JZEventLoop()
 
 void JZEventLoop::exec()
 {
+    JZTX_FUNC_TRACE
     m_running = true;
     while (m_running)
     {
@@ -33,5 +34,6 @@ void JZEventLoop::exit()
 
 void JZEventLoop::processEvents()
 {
+    JZTX_FUNC_TRACE
     thread()->processEvents();
 }

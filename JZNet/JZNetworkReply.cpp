@@ -2,6 +2,7 @@
 #include "JZNetworkAccessManager.h"
 #include "JZPlatform.h"
 #include "JZDebug.h"
+#include "JZTx.h"
 
 //JZNetworkReply
 JZNetworkReply::JZNetworkReply(JZNetworkAccessManager *parent)
@@ -106,6 +107,7 @@ void JZNetworkReply::setTimeOut(int64_t timeout)
 
 void JZNetworkReply::emitFinish(NetworkError error)
 {
+    JZTX_FUNC_TRACE
     if (m_error != None)
         return;
 
@@ -124,6 +126,7 @@ void JZNetworkReply::timerEvent(JZTimerEvent* event)
 
 JZByteArray JZNetworkReply::getHttpBody(const JZByteArray& data)
 {
+    JZTX_FUNC_TRACE
     // HTTP 头和 Body 的分隔符：\r\n\r\n
     const char separator[] = "\r\n\r\n";
     const size_t sep_len = sizeof(separator) - 1;  // 固定 4 字节
@@ -145,6 +148,7 @@ JZByteArray JZNetworkReply::getHttpBody(const JZByteArray& data)
 
 void JZNetworkReply::onNetEvent(JZNetResEvent* event)
 {
+    JZTX_FUNC_TRACE
     int ev = event->event;
     if (ev == JZ_NET_EV_HTTP_MSG)
     {

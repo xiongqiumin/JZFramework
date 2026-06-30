@@ -1,8 +1,23 @@
 ﻿#include "JZMqttServer.h"
 #include "JZApplication.h"
 #include "JZLog.h"
-#include "JZMqttPacket_p.h"
 #include "JZDebug.h"
+
+#define MQTT_CMD_CONNECT 1
+#define MQTT_CMD_CONNACK 2
+#define MQTT_CMD_PUBLISH 3
+#define MQTT_CMD_PUBACK 4
+#define MQTT_CMD_PUBREC 5
+#define MQTT_CMD_PUBREL 6
+#define MQTT_CMD_PUBCOMP 7
+#define MQTT_CMD_SUBSCRIBE 8
+#define MQTT_CMD_SUBACK 9
+#define MQTT_CMD_UNSUBSCRIBE 10
+#define MQTT_CMD_UNSUBACK 11
+#define MQTT_CMD_PINGREQ 12
+#define MQTT_CMD_PINGRESP 13
+#define MQTT_CMD_DISCONNECT 14
+#define MQTT_CMD_AUTH 15
 
 using namespace std;
 

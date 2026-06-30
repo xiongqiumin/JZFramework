@@ -1,6 +1,7 @@
 #include "mongoose.h"
 #include "JZNetworkAccessManager.h"
 #include "JZStd.h"
+#include "JZTx.h"
 
 //JZNetworkAccessManager
 JZNetworkAccessManager::JZNetworkAccessManager(JZObject *parent)
@@ -23,6 +24,8 @@ JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 
 JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, const JZByteArray &body)
 {
+    JZTxTracer t(__FUNCTION__);
+
     JZNetworkRequest mutableRequest = request;
 
     int actualBodyLen = body.size();

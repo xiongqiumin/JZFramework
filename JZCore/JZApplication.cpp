@@ -4,6 +4,7 @@
 #include "JZStd.h"
 #include "JZPlatform.h"
 #include "JZDebug.h"
+#include "JZTx.h"
 
 JZApplication *jzApp = nullptr;
 
@@ -33,6 +34,9 @@ JZApplication::~JZApplication()
 
     m_mainThread->m_running = false;
     m_mainThread->detachStdThread();
+    vec_removeAll(m_threads, m_mainThread);
+    JZ_ASSERT(m_threads.empty());
+
     delete m_mainThread;
     jzApp = nullptr;
 }
@@ -79,6 +83,8 @@ void JZApplication::removeThread(JZThread *thread)
 
 int JZApplication::exec()
 {
+    JZTX_FUNC_TRACE
+
     m_mainThread->exec();
     return m_returnCode;
 }
@@ -96,6 +102,7 @@ void JZApplication::exit(int code)
 
 void JZApplication::processEvents()
 {
+    JZTX_FUNC_TRACE
     currentThread()->processEvents();
 }
 

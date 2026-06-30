@@ -255,30 +255,21 @@ bool JZHttpRoute::matchPath(const RoutePattern& pattern, const std::string& path
     return true;
 }
 
-void JZHttpRoute::addRoute(const std::string& path, Handler handler)
+void JZHttpRoute::addRoute(const std::string& path, JZHttpHandler* handler)
 {
     RoutePattern pattern;
     parseRoutePattern(path, pattern);
     pattern.handler = handler;
     pattern.order = m_orderCounter++;
-
-    switch (pattern.type)
-    {
-        case Exact:
-            pattern.priority = 3;
-            break;
-        case Dynamic:
-            pattern.priority = 2;
-            break;
-        case Path:
-            pattern.priority = 1;
-            break;
+    switch (pattern.type) {
+        case Exact:    pattern.priority = 3; break;
+        case Dynamic:  pattern.priority = 2; break;
+        case Path:     pattern.priority = 1; break;
     }
-
     m_routes.push_back(pattern);
 }
 
-bool JZHttpRoute::match(const std::string& path, Handler& handler, std::map<std::string, std::string>& params) const
+bool JZHttpRoute::match(const std::string& path, JZHttpHandler*& handler, std::map<std::string, std::string>& params) const
 {
     params.clear();
 

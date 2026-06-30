@@ -27,6 +27,8 @@
     JZFile.cpp
     JZFileDriver.h
     JZFileDriver.cpp
+    JZResources.h
+    JZResources.cpp
     JZLog.h
     JZLog.cpp
     JZTx.h

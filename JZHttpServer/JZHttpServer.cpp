@@ -24,13 +24,20 @@ void JZHttpServerClient::onNetEvent(JZNetResEvent* event)
     if (event->event == JZ_NET_EV_HTTP_MSG)
     {
         server->onHttpMessage(this, event->binData);
-        deleteLater();
     }
 }
 
 void JZHttpServerClient::response(const JZByteArray& buffer)
 {
     writeConn(m_conn, WriteBin, buffer.data(), buffer.size());
+    deleteLater();
+}
+
+void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
+{
+    writeConn(m_conn, WriteBin, data.data(), data.size());
+    if(is_finish)
+        deleteLater();
 }
 
 //JZHttpServer
@@ -74,7 +81,7 @@ void JZHttpServer::close()
     }
 }
 
-void JZHttpServer::addRoute(const std::string& path, Handler handler)
+void JZHttpServer::addRoute(const std::string& path, JZHttpHandler* handler)
 {
     m_route.addRoute(path, handler);
 }
@@ -129,7 +136,7 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         request.setBody(body);
     }
 
-    JZHttpRoute::Handler handler;
+    JZHttpHandler* handler = nullptr;
     std::map<std::string, std::string> params;
     
     if (m_route.match(uri, handler, params))
@@ -139,9 +146,7 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
             request.setParam(param.first, param.second);
         }
         
-        JZHttpRespone response;
-        handler(request, response);
-        client->response(response.toByteArray());
+        handler->handle(client, request);
     }
     else
     {

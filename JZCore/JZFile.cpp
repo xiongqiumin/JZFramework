@@ -9,6 +9,7 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZFileDriver.h"
+#include "JZResources.h"
 #include "JZDebug.h"
 
 bool JZFile::remove(std::string filepath)
@@ -26,13 +27,14 @@ bool JZFile::remove(std::string filepath)
 
 bool JZFile::exists(std::string filepath)
 {
+    if (!filepath.empty() && filepath[0] == ':')
+    {
+        return JZResources::instance()->find(filepath) != nullptr;
+    }
     return JZFileInfo(filepath).exists();
 }
 
-JZFile::JZFile()
-{
-    m_fp = nullptr;
-}
+JZFile::JZFile() {}
 
 JZFile::~JZFile()
 {
@@ -41,11 +43,20 @@ JZFile::~JZFile()
 
 bool JZFile::isOpen() const
 {
-    return m_fp != nullptr;
+    return m_fp != nullptr || m_res != nullptr;
 }
 
 bool JZFile::open(std::string filepath, std::string mode)
 {
+    if (!filepath.empty() && filepath[0] == ':')
+    {
+        // 资源文件只读，拒绝 a/w 模式
+        if (mode.find_first_of("aw") != std::string::npos)
+            return false;
+        m_res = JZResources::instance()->find(filepath);
+        m_resOffset = 0;
+        return m_res != nullptr;
+    }
     m_fp = fopen(str_utf8_to_local(filepath).c_str(), mode.c_str());
     return m_fp != nullptr;
 }
@@ -57,10 +68,15 @@ void JZFile::close()
         fclose(m_fp);
         m_fp = nullptr;
     }
+    m_res = nullptr;
+    m_resOffset = 0;
 }
 
 int JZFile::size()
 {
+    if (m_res)
+        return m_res->size;
+
     if (!m_fp)
         return 0;
 
@@ -71,31 +87,57 @@ int JZFile::size()
     if (fseek(m_fp, 0, SEEK_END) != 0)
         return 0;
 
-    long size = ftell(m_fp);
+    long sz = ftell(m_fp);
     fseek(m_fp, cur, SEEK_SET);
-    return size;
+    return (int)sz;
 }
 
 bool JZFile::atEnd() const
 {
+    if (m_res)
+        return m_resOffset >= m_res->size;
     if (!m_fp)
         return true;
-
     return feof(m_fp);
 }
 
 void JZFile::seek(int pos)
 {
+    if (m_res)
+    {
+        m_resOffset += pos;
+        if (m_resOffset < 0) 
+            m_resOffset = 0;
+        if (m_resOffset > m_res->size) 
+            m_resOffset = m_res->size;
+        return;
+    }
     fseek(m_fp, pos, SEEK_CUR);
 }
 
-void JZFile::seek(int pos, int set)
+void JZFile::seek(int pos, int origin)
 {
-    fseek(m_fp, pos, set);
+    if (m_res)
+    {
+        switch (origin)
+        {
+            case SEEK_SET: m_resOffset = pos; break;
+            case SEEK_CUR: m_resOffset += pos; break;
+            case SEEK_END: m_resOffset = m_res->size + pos; break;
+        }
+        if (m_resOffset < 0) 
+            m_resOffset = 0;
+        if (m_resOffset > m_res->size) 
+            m_resOffset = m_res->size;
+        return;
+    }
+    fseek(m_fp, pos, origin);
 }
 
 int JZFile::tell()
 {
+    if (m_res)
+        return m_resOffset;
     return ftell(m_fp);
 }
 
@@ -106,6 +148,9 @@ int JZFile::write(const JZByteArray &buffer)
 
 int JZFile::write(const char *buffer, int size)
 {
+    if (m_res)
+        return 0; // 资源只读
+        
     int ret = (int)fwrite(buffer, 1, size, m_fp);
     if (ret != size)
     {
@@ -119,13 +164,22 @@ JZByteArray JZFile::read(int max_size)
     JZByteArray result;
     result.resize(max_size);
 
-    int size = read(result.data(), max_size);
-    result.resize(size);
+    int sz = read(result.data(), max_size);
+    result.resize(sz);
     return result;
 }
 
 int JZFile::read(char *buffer, int size)
 {
+    if (m_res)
+    {
+        int remain = m_res->size - m_resOffset;
+        if (remain <= 0) return 0;
+        int to_read = size < remain ? size : remain;
+        memcpy(buffer, m_res->data + m_resOffset, to_read);
+        m_resOffset += to_read;
+        return to_read;
+    }
     return (int)fread(buffer, 1, size, m_fp);
 }
 

@@ -162,6 +162,35 @@ function(jzframework_use_config TEMPLATE_FILE)
     message(STATUS "[JZFramework] Generate config header: ${OUTPUT_HEADER}")
 endfunction()
 
+# ==================== 资源编译: .qrc → .cpp ====================
+function(jzframework_use_resource QRC_FILE)
+    get_filename_component(QRC_NAME "${QRC_FILE}" NAME_WE)
+    set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(OUT_CPP "${GEN_DIR}/${QRC_NAME}_resources.cpp")
+    get_filename_component(OUT_DIR "${OUT_CPP}" DIRECTORY)
+    file(MAKE_DIRECTORY "${OUT_DIR}")
+
+    if(NOT IS_ABSOLUTE "${QRC_FILE}")
+        set(QRC_ABS "${CMAKE_CURRENT_SOURCE_DIR}/${QRC_FILE}")
+    else()
+        set(QRC_ABS "${QRC_FILE}")
+    endif()
+
+    set(JZ_RES_PY "${JZFRAMEWORK_ROOT_DIR}/tools/jz_resources.py")
+    set(DEPFILE "${OUT_CPP}.d")
+
+    add_custom_command(
+        OUTPUT "${OUT_CPP}"
+        COMMAND python "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
+        DEPENDS "${QRC_ABS}" "${JZ_RES_PY}"
+        DEPFILE "${DEPFILE}"
+        COMMENT "Generating resources: ${QRC_FILE} -> ${OUT_CPP}"
+    )
+
+    target_sources(JZFramework PRIVATE "${OUT_CPP}")
+    message(STATUS "[JZFramework] Resource: ${QRC_FILE} -> ${OUT_CPP}")
+endfunction()
+
 macro(jzframework_build_binary)
 	foreach(target ${ARGN})
         # 为每个目标设置 BUILD_<target> = ON，并作为缓存变量（可选）

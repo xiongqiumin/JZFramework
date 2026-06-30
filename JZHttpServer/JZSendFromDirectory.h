@@ -3,23 +3,20 @@
 
 #include <string>
 
-#include "JZHttpRequest.h"
-#include "JZHttpRespone.h"
+#include "JZHttpHandler.h"
 
-class JZSendFromDirectory
+class JZSendFromDirectory : public JZHttpHandler
 {
 public:
     explicit JZSendFromDirectory(const std::string& rootDir);
-    void operator()(const JZHttpRequest& req, JZHttpRespone& resp);
+    void handle(JZHttpServerClient* client, const JZHttpRequest& req) override;
 
 private:
     std::string localPath(const std::string& userPath);
     bool sendFile(const std::string& filePath, JZHttpRespone& resp);
     std::string getContentType(const std::string& path);
-
-private:
-    void process(const JZHttpRequest& req, JZHttpRespone& resp);
     std::string m_absRoot;
+    bool m_isResource = false;
 };
 
 #endif

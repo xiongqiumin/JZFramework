@@ -15,10 +15,12 @@ public:
     JZHttpServerClient(JZObject *parent = nullptr);
     ~JZHttpServerClient();
 
+    void response(const JZByteArray &buffer);
+    void write(const JZByteArray &data, bool is_finish);  // 流式写入，不关闭连接
+
 protected:
     friend JZHttpServer;
 
-    void response(const JZByteArray &buffer);
     virtual void onNetEvent(JZNetResEvent *event) override;
 
     uint64_t m_conn;
@@ -27,8 +29,6 @@ protected:
 class JZHttpServer : public JZNetObject
 {
 public:
-    using Handler = std::function<void(const JZHttpRequest&, JZHttpRespone&)>;
-
     JZHttpServer(JZObject *parent = nullptr);
     ~JZHttpServer();
 
@@ -36,7 +36,7 @@ public:
     void close();
     bool isListening() const;
 
-    void addRoute(const std::string& path, Handler handler);
+    void addRoute(const std::string& path, JZHttpHandler* handler);
 
 protected:
     friend JZHttpServerClient;

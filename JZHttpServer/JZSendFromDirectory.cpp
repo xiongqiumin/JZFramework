@@ -3,45 +3,63 @@
 #include <algorithm>
 #include "JZDir.h"
 #include "JZFile.h"
+#include "JZFileInfo.h"
+#include "JZHttpServer.h"
 
 JZSendFromDirectory::JZSendFromDirectory(const std::string& rootDir)
 {
-    m_absRoot = JZFileInfo::weaklyCanonicalPath(JZDir(rootDir).absolutePath());
+    if (!rootDir.empty() && rootDir[0] == ':')
+    {
+        m_isResource = true;
+        m_absRoot = rootDir;
+    }
+    else
+    {
+        m_isResource = false;
+        m_absRoot = JZFileInfo::weaklyCanonicalPath(JZDir(rootDir).absolutePath());
+    }
 }
 
-// 核心：路径安全检查（绝对无法绕过）
 std::string JZSendFromDirectory::localPath(const std::string& userPath)
 {
-    string web_path = userPath;
+    std::string web_path = userPath;
     if (str_endsWith(userPath, "/"))
         web_path += "index.html";
 
+    if (m_isResource)
+    {
+        // 去掉 : 前缀 → canonicalize → 加回 :
+        std::string raw = m_absRoot + web_path;  // web_path 已带 /
+        return ":" + JZFileInfo::weaklyCanonicalPath(raw.substr(1));
+    }
+
     JZDir dir(m_absRoot);
-    string path = dir.absoluteFilePath(web_path);
+    std::string path = dir.absoluteFilePath(web_path);
     return JZFileInfo::weaklyCanonicalPath(path);
 }
 
-void JZSendFromDirectory::process(const JZHttpRequest& req, JZHttpRespone& resp)
+void JZSendFromDirectory::handle(JZHttpServerClient* client, const JZHttpRequest& req)
 {
+    JZHttpRespone resp;
     std::string local_path = localPath(req.path());
+
     if (!str_startsWith(local_path, m_absRoot))
     {
         resp.setStatusCode(403);
-        resp.setBody("403 Forbidden: Cannot access outside root directory");
+        resp.setBody("403 Forbidden");
+        client->response(resp.toByteArray());
         return;
     }
-    // 发送文件
-    if (sendFile(local_path, resp))
-        return;
 
-    // 404
+    if (sendFile(local_path, resp))
+    {
+        client->response(resp.toByteArray());
+        return;
+    }
+
     resp.setStatusCode(404);
     resp.setBody("404 Not Found");
-}
-
-void JZSendFromDirectory::operator()(const JZHttpRequest& req, JZHttpRespone& resp)
-{
-    process(req, resp);
+    client->response(resp.toByteArray());
 }
 
 bool JZSendFromDirectory::sendFile(const std::string& filePath, JZHttpRespone& resp)
@@ -51,8 +69,8 @@ bool JZSendFromDirectory::sendFile(const std::string& filePath, JZHttpRespone& r
         return false;
     
     resp.setStatusCode(200);
-    resp.setBody(file.readAll());
     resp.setHeader("Content-Type", getContentType(filePath));
+    resp.setBody(file.readAll());
     file.close();
     return true;
 }
@@ -64,24 +82,15 @@ std::string JZSendFromDirectory::getContentType(const std::string& path)
         return "application/octet-stream";
 
     std::string ext = path.substr(pos);
-    if (ext == ".html")
-        return "text/html; charset=utf-8";
-    if (ext == ".css")
-        return "text/css; charset=utf-8";
-    if (ext == ".js")
-        return "application/javascript; charset=utf-8";
-    if (ext == ".png")
-        return "image/png";
-    if (ext == ".jpg")
-        return "image/jpeg";
-    if (ext == ".jpeg")
-        return "image/jpeg";
-    if (ext == ".ico")
-        return "image/x-icon";
-    if (ext == ".gif")
-        return "image/gif";
-    if (ext == ".svg")
-        return "image/svg+xml";
+    if (ext == ".html") return "text/html; charset=utf-8";
+    if (ext == ".css")  return "text/css; charset=utf-8";
+    if (ext == ".js")   return "application/javascript; charset=utf-8";
+    if (ext == ".png")  return "image/png";
+    if (ext == ".jpg")  return "image/jpeg";
+    if (ext == ".jpeg") return "image/jpeg";
+    if (ext == ".ico")  return "image/x-icon";
+    if (ext == ".gif")  return "image/gif";
+    if (ext == ".svg")  return "image/svg+xml";
 
     return "application/octet-stream";
 }

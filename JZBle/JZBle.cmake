@@ -1,6 +1,20 @@
 ﻿set(JZBLE_SOURCES    
-    JZBle.cpp
-	JZBle.h
+    JZBluetoothDeviceInfo.cpp
+    JZBluetoothDeviceInfo.h
+    JZBluetoothUuid.cpp
+    JZBluetoothUuid.h
+    JZLowEnergyCharacteristic.cpp
+    JZLowEnergyCharacteristic.h
+    JZLowEnergyDescriptor.cpp
+    JZLowEnergyDescriptor.h
+    JZBleDriver.cpp
+    JZBleDriver.h
+    JZBLEController.h
+    JZBLEController.cpp
+    JZBLEService.h
+    JZBLEService.cpp
+    JZBLEDeviceDiscoveryAgent.h
+    JZBLEDeviceDiscoveryAgent.cpp
 )
 convert_to_abs_paths(JZBLE_SOURCES)
 

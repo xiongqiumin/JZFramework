@@ -1,6 +1,6 @@
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
-#elif defined(__linux__)
+#elif JZ_OS == JZ_OS_LINUX
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -8,19 +8,19 @@
 
 #include "JZFile.h"
 #include "JZFileInfo.h"
+#include "JZFileDriver.h"
 #include "JZDebug.h"
 
 bool JZFile::remove(std::string filepath)
 {
-#ifdef _WIN32    
+#if JZ_OS == JZ_OS_WINDOWS
     std::string local_path = str_utf8_to_local(filepath);
-    BOOL result = DeleteFileA(local_path.c_str());
-    return result == TRUE;
-#elif defined(__linux__)
-    int result = unlink(filepath.c_str());
-    return result == 0;
+    return DeleteFileA(local_path.c_str()) == TRUE;
+#elif JZ_OS == JZ_OS_LINUX
+    return unlink(filepath.c_str()) == 0;
 #else
-    return false;
+    auto *drv = JZFileAbstractDriver::instance();
+    return drv ? drv->fileRemove(filepath) : false;
 #endif
 }
 
@@ -65,12 +65,12 @@ int JZFile::size()
         return 0;
 
     long cur = ftell(m_fp);
-    if (cur == -1) 
+    if (cur == -1)
         return 0;
-    
-    if (fseek(m_fp, 0, SEEK_END) != 0) 
+
+    if (fseek(m_fp, 0, SEEK_END) != 0)
         return 0;
-    
+
     long size = ftell(m_fp);
     fseek(m_fp, cur, SEEK_SET);
     return size;
@@ -89,9 +89,9 @@ void JZFile::seek(int pos)
     fseek(m_fp, pos, SEEK_CUR);
 }
 
-void JZFile::seek(int pos, int set) 
-{ 
-    fseek(m_fp, pos, set); 
+void JZFile::seek(int pos, int set)
+{
+    fseek(m_fp, pos, set);
 }
 
 int JZFile::tell()

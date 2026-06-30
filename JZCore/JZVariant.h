@@ -5,7 +5,6 @@
 #include <string.h>
 #include "JZGlobal.h"
 #include "JZMeta.h"
-#include "JZVariant.h"
 #include "JZByteArray.h"
 
 //JZVariant

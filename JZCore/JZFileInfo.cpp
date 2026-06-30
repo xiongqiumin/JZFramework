@@ -2,16 +2,17 @@
 #include <cstdio>
 #include "JZStd.h"
 
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
 #include <io.h>       // _stat
 #include <direct.h>   // _getcwd
 #define stat _stat
-#else
+#elif JZ_OS == JZ_OS_LINUX
 #include <sys/stat.h> // POSIX stat
 #endif
 
 #include "JZFileInfo.h"
 #include "JZDir.h"
+#include "JZFileDriver.h"
 
 bool JZFileInfo::exists(const std::string &path)
 {
@@ -66,8 +67,9 @@ void JZFileInfo::setFile(const std::string &path)
 {
     m_path = path;
 
+#if JZ_OS == JZ_OS_WINDOWS || JZ_OS == JZ_OS_LINUX
     struct stat st;
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     if (stat(str_utf8_to_local(path).c_str(), &st) == 0)
 #else
     if (stat(path.c_str(), &st) == 0)
@@ -75,7 +77,7 @@ void JZFileInfo::setFile(const std::string &path)
     {
         m_exists = true;
 
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
         m_isFile = (st.st_mode & _S_IFREG) != 0;
         m_isDir = (st.st_mode & _S_IFDIR) != 0;
         m_time = static_cast<int64_t>(st.st_mtime) * 1000;
@@ -93,7 +95,39 @@ void JZFileInfo::setFile(const std::string &path)
         m_isFile = false;
         m_isDir = false;
         m_size = 0;
+        m_time = 0;
     }
+#else
+    auto *drv = JZFileAbstractDriver::instance();
+    if (drv)
+    {
+        struct stat st;
+        if (drv->stat(path, &st) == 0)
+        {
+            m_exists = true;
+            m_isFile = S_ISREG(st.st_mode);
+            m_isDir  = S_ISDIR(st.st_mode);
+            m_size   = st.st_size;
+            m_time   = static_cast<int64_t>(st.st_mtime) * 1000;
+        }
+        else
+        {
+            m_exists = false;
+            m_isFile = false;
+            m_isDir  = false;
+            m_size   = 0;
+            m_time   = 0;
+        }
+    }
+    else
+    {
+        m_exists = false;
+        m_isFile = false;
+        m_isDir  = false;
+        m_size   = 0;
+        m_time   = 0;
+    }
+#endif
 }
 
 bool JZFileInfo::exists() const 

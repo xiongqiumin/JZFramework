@@ -1,6 +1,6 @@
-﻿#ifdef _WIN32
+﻿#if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
-#elif defined(__linux__)
+#elif JZ_OS == JZ_OS_LINUX
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -12,44 +12,44 @@
 #include "JZFileInfo.h"
 #include "JZDebug.h"
 #include "JZString.h"
+#include "JZFileDriver.h"
 
 using namespace std;
 
 bool JZDir::isAbsolutePath(string path)
 {
-#ifdef _WIN32    
+#if JZ_OS == JZ_OS_WINDOWS
     if (path.size() >= 3 && isalpha(path[0]) && path[1] == ':') {
         char sep = path[2];
         if (sep == '\\' || sep == '/')
             return true;
     }
-#else
-    if(path.size() >= 1 && path[0] == '/')
-        return true;
-#endif
-
     return false;
+#elif JZ_OS == JZ_OS_LINUX
+    return path.size() >= 1 && path[0] == '/';
+#else
+    auto *drv = JZFileAbstractDriver::instance();
+    return drv ? drv->isAbsolutePath(path) : false;
+#endif
 }
 
 
 string JZDir::currentPath()
 {
-    // 跨平台获取当前工作目录
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     char buffer[512];
     DWORD result = GetCurrentDirectoryA(512, buffer);
     return str_local_to_utf8(buffer);
-
-#elif defined(__linux__)
+#elif JZ_OS == JZ_OS_LINUX
     char* buffer = getcwd(nullptr, 0);
     if (buffer == nullptr)
         return string();
-
     string currentDir(buffer);
     free(buffer);
     return currentDir;
 #else
-    return string();
+    auto *drv = JZFileAbstractDriver::instance();
+    return drv ? drv->currentPath() : string();
 #endif
 }
 
@@ -64,30 +64,30 @@ JZDir::JZDir(const string &path)
 
 bool JZDir::dirExists(const string &path) const
 {
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     DWORD attr = GetFileAttributesA(str_utf8_to_local(path).c_str());
     return (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
-#elif defined(__linux__)
+#elif JZ_OS == JZ_OS_LINUX
     struct stat st;
-    if(stat(path.c_str(), &st) != 0)
-        return false;
-
-    return true;
+    return stat(path.c_str(), &st) == 0;
 #else
-    return false;    
+    auto *drv = JZFileAbstractDriver::instance();
+    if (!drv) return false;
+    struct stat st;
+    return drv->stat(path, &st) == 0;
 #endif
 }
 
 bool JZDir::createDir(const string &path) const
 {
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     string local_path = str_utf8_to_local(path);
     return CreateDirectoryA(local_path.c_str(), NULL) != 0;
-#elif defined(__linux__)
-    int ret = ::mkdir(path.c_str(), 0755);
-    return (ret == 0);
+#elif JZ_OS == JZ_OS_LINUX
+    return ::mkdir(path.c_str(), 0755) == 0;
 #else
-    return false;    
+    auto *drv = JZFileAbstractDriver::instance();
+    return drv ? drv->dirCreate(path) : false;
 #endif
 }
 
@@ -148,15 +148,14 @@ bool JZDir::rmdir(const string &path)
     string dir_path = absoluteFilePath(path);
     dir_path = JZFileInfo::weaklyCanonicalPath(dir_path);
 
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     string local_path = str_utf8_to_local(dir_path);
-    BOOL result = RemoveDirectoryA(local_path.c_str());
-    return result == TRUE;
-#elif defined(__linux__)
-    int result = ::rmdir(dir_path.c_str());
-    return (result == 0);
+    return RemoveDirectoryA(local_path.c_str()) == TRUE;
+#elif JZ_OS == JZ_OS_LINUX
+    return ::rmdir(dir_path.c_str()) == 0;
 #else
-    return false;
+    auto *drv = JZFileAbstractDriver::instance();
+    return drv ? drv->dirRemove(dir_path) : false;
 #endif
 }
 
@@ -244,7 +243,7 @@ string JZDir::absoluteFilePath(string path) const
 vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
     vector<JZFileInfo> result;
 
-#ifdef _WIN32
+#if JZ_OS == JZ_OS_WINDOWS
     string searchPath = str_utf8_to_local(m_path) + "/*";
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
@@ -269,7 +268,7 @@ vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
 
     FindClose(hFind);
     
-#elif defined(__linux__) || defined(__ANDROID__)
+#elif JZ_OS == JZ_OS_LINUX || defined(__ANDROID__)
     DIR *dir = opendir(m_path.c_str());
     if (!dir) return result;
 
@@ -289,6 +288,24 @@ vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
         }
     }
     closedir(dir);
+#else
+    auto *drv = JZFileAbstractDriver::instance();
+    if (drv)
+    {
+        auto names = drv->dirEntryList(m_path);
+        for (auto &name : names)
+        {
+            if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
+
+            string fullPath = m_path + "/" + name;
+            JZFileInfo info(fullPath);
+
+            if ((filter & Files) && info.isFile())
+                result.push_back(info);
+            else if ((filter & Dirs) && info.isDir())
+                result.push_back(info);
+        }
+    }
 #endif
 
     if (sort & SortName) {
@@ -322,11 +339,9 @@ static bool matchUnicodeWildcard(const JZString &str, const JZString &pattern, b
     const JZChar *sStar = nullptr;
     const JZChar *pStar = nullptr;
 
-    // 大小写转换 lambda
     auto toLower = [caseSensitive](JZChar c) -> JZChar
     {
-        if (caseSensitive)
-            return c;
+        if (caseSensitive) return c;
         return c.toLower();
     };
 
@@ -337,56 +352,41 @@ static bool matchUnicodeWildcard(const JZString &str, const JZString &pattern, b
 
         if (pc == JZChar('*'))
         {
-            // 记录 * 的位置：pStar 指向 * 下一个字符，sStar 记录当前字符串位置
             pStar = ++p;
             sStar = s;
         }
         else if (pc == JZChar('?') || pc == sc)
         {
-            // 单个字符匹配成功，同时后移
             p++;
             s++;
         }
         else if (pStar != nullptr)
         {
-            // 【修复核心】匹配失败，说明 * 需要多匹配一个字符
-            s = ++sStar;  // 字符串后移一位
-            p = pStar;    // 模式串回到 * 后面的位置重新匹配
+            s = ++sStar;
+            p = pStar;
         }
         else
         {
-            // 无 * 可用，匹配失败
             return false;
         }
     }
 
-    // 跳过模式串末尾剩余的所有 *
-    while (*p == JZChar('*'))
-    {
-        p++;
-    }
-
-    // 模式串必须全部匹配完成才算成功
+    while (*p == JZChar('*')) p++;
     return *p == JZChar('\0');
 }
 
-vector<JZFileInfo> JZDir::entryInfoList(const vector<string> &filters,int filter, int sort) const
+vector<JZFileInfo> JZDir::entryInfoList(const vector<string> &filters, int filter, int sort) const
 {
-    // 预转换所有过滤器为 JZString
     vector<JZString> jzFilters;
     jzFilters.reserve(filters.size());
     for (const auto &pattern : filters)
     {
         if (!pattern.empty())
-        {
             jzFilters.push_back(JZString::fromStdString(pattern));
-        }
     }
 
     if (jzFilters.empty())
-    {
         return entryInfoList(filter, sort);
-    }
 
     auto list = entryInfoList(filter, sort);
     vector<JZFileInfo> result;
@@ -395,7 +395,6 @@ vector<JZFileInfo> JZDir::entryInfoList(const vector<string> &filters,int filter
     for (const auto &info : list)
     {
         JZString fileName = JZString::fromStdString(info.fileName());
-
         for (const auto &pattern : jzFilters)
         {
             if (matchUnicodeWildcard(fileName, pattern))

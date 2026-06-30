@@ -105,6 +105,7 @@ public:
         Net_Open,
         Net_Write,
         Net_Draining,
+        Net_HttpReplyFinish,
         Net_Close,
     };
 

@@ -27,6 +27,10 @@ def parse_qrc(qrc_path):
             else:
                 alias = prefix.rstrip("/") + "/" + alias.lstrip("/")
 
+            if not is_valid_path(alias):
+                print(f"Error: invalid resource path: {alias}", file=sys.stderr)
+                sys.exit(1)
+
             abs_path = os.path.join(base_dir, rel_path)
             if not os.path.exists(abs_path):
                 print(f"Warning: file not found: {abs_path}", file=sys.stderr)
@@ -35,25 +39,12 @@ def parse_qrc(qrc_path):
     return resources
 
 
-def escape_string(s):
-    """转义字符串为 C++ 字面量"""
-    out = []
-    for ch in s:
-        if ch == '\\':
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == '\n':
-            out.append('\\n')
-        elif ch == '\r':
-            out.append('\\r')
-        elif ch == '\t':
-            out.append('\\t')
-        elif 32 <= ord(ch) < 127:
-            out.append(ch)
-        else:
-            out.append(f'\\x{ord(ch):02x}')
-    return ''.join(out)
+def is_valid_path(name):
+    """检查是否为合法 Linux 路径：无空格、无引号、无控制字符"""
+    for ch in name:
+        if ch.isspace() or ch in ('"', "'", '\\', '*', '?', '<', '>', '|'):
+            return False
+    return True
 
 
 def c_array_name(alias, index):
@@ -106,8 +97,7 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     lines.append("struct JZResourceRegistrar_ {")
     lines.append("    JZResourceRegistrar_() {")
     for alias, arr_name, size in entries:
-        esc_alias = escape_string(alias)
-        lines.append(f'        JZResources::instance()->add("{esc_alias}", {arr_name}, {size});')
+        lines.append(f'        JZResources::instance()->add(":{alias}", {arr_name}, {size});')
     lines.append("    }")
     lines.append("};")
     lines.append("static JZResourceRegistrar_ _jz_resource_registrar;")

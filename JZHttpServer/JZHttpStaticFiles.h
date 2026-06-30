@@ -5,10 +5,10 @@
 
 #include "JZHttpHandler.h"
 
-class JZSendFromDirectory : public JZHttpHandler
+class JZHttpStaticFiles : public JZHttpHandler
 {
 public:
-    explicit JZSendFromDirectory(const std::string& rootDir);
+    explicit JZHttpStaticFiles(const std::string& rootDir);
     void handle(JZHttpServerClient* client, const JZHttpRequest& req) override;
 
 private:

@@ -5,8 +5,8 @@
 	JZHttpRoute.h
     JZHttpRespone.cpp
 	JZHttpRespone.h
-	JZSendFromDirectory.h
-	JZSendFromDirectory.cpp
+	JZHttpStaticFiles.h
+	JZHttpStaticFiles.cpp
     JZHttpServer.cpp
 	JZHttpServer.h
 )

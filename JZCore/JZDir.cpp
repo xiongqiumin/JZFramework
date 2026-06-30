@@ -24,6 +24,9 @@ bool JZDir::isAbsolutePath(string path)
         if (sep == '\\' || sep == '/')
             return true;
     }
+    if (path.size() >= 1 && path[0] == '/')
+        return true;
+
     return false;
 #elif JZ_OS == JZ_OS_LINUX
     return path.size() >= 1 && path[0] == '/';

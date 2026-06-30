@@ -20,24 +20,43 @@ JZHttpServerClient::~JZHttpServerClient()
 
 void JZHttpServerClient::onNetEvent(JZNetResEvent* event)
 {
-    JZHttpServer* server = (JZHttpServer*)(parent());
+    JZHttpServer* server = jzobject_cast<JZHttpServer*>(parent());
+    if (!server) return;
+
     if (event->event == JZ_NET_EV_HTTP_MSG)
     {
         server->onHttpMessage(this, event->binData);
     }
+    else if (event->event == JZ_NET_EV_CLOSE)
+    {
+        deleteLater();
+    }
+}
+
+void JZHttpServerClient::sendFinished()
+{
+    JZNetReqEvent* req = new JZNetReqEvent();
+    req->netCmd = JZNetReqEvent::Net_HttpReplyFinish;
+    req->conn = m_conn;
+
+    auto inst = JZNetThread::instance();
+    jzApp->postEvent(inst, req);
+    inst->wakeUpNet();
 }
 
 void JZHttpServerClient::response(const JZByteArray& buffer)
 {
     writeConn(m_conn, WriteBin, buffer.data(), buffer.size());
-    deleteLater();
+    sendFinished();
 }
 
 void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
 {
     writeConn(m_conn, WriteBin, data.data(), data.size());
     if(is_finish)
-        deleteLater();
+    {
+        sendFinished();
+    }
 }
 
 //JZHttpServer
@@ -83,6 +102,7 @@ void JZHttpServer::close()
 
 void JZHttpServer::addRoute(const std::string& path, JZHttpHandler* handler)
 {
+    handler->setParent(this);
     m_route.addRoute(path, handler);
 }
 

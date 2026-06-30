@@ -548,6 +548,14 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                     mg_send(c, pkt->buffer.data(), pkt->buffer.size());
             }
         }
+        else if (event->netCmd == JZNetReqEvent::Net_HttpReplyFinish)
+        {
+            c->is_resp = 0;
+        }
+        else
+        {   
+            JZ_UNREACHABLE();
+        }
     }
 }
 

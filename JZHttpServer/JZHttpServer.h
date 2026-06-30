@@ -22,6 +22,7 @@ protected:
     friend JZHttpServer;
 
     virtual void onNetEvent(JZNetResEvent *event) override;
+    void sendFinished();
 
     uint64_t m_conn;
 };
@@ -36,6 +37,7 @@ public:
     void close();
     bool isListening() const;
 
+    //path 语法 和 flask 类似, 具体见 JZHttpRoute 文档
     void addRoute(const std::string& path, JZHttpHandler* handler);
 
 protected:

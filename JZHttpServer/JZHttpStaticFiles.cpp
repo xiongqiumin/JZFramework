@@ -1,4 +1,4 @@
-﻿#include "JZSendFromDirectory.h"
+﻿#include "JZHttpStaticFiles.h"
 
 #include <algorithm>
 #include "JZDir.h"
@@ -6,7 +6,7 @@
 #include "JZFileInfo.h"
 #include "JZHttpServer.h"
 
-JZSendFromDirectory::JZSendFromDirectory(const std::string& rootDir)
+JZHttpStaticFiles::JZHttpStaticFiles(const std::string& rootDir)
 {
     if (!rootDir.empty() && rootDir[0] == ':')
     {
@@ -20,7 +20,7 @@ JZSendFromDirectory::JZSendFromDirectory(const std::string& rootDir)
     }
 }
 
-std::string JZSendFromDirectory::localPath(const std::string& userPath)
+std::string JZHttpStaticFiles::localPath(const std::string& userPath)
 {
     std::string web_path = userPath;
     if (str_endsWith(userPath, "/"))
@@ -38,7 +38,7 @@ std::string JZSendFromDirectory::localPath(const std::string& userPath)
     return JZFileInfo::weaklyCanonicalPath(path);
 }
 
-void JZSendFromDirectory::handle(JZHttpServerClient* client, const JZHttpRequest& req)
+void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& req)
 {
     JZHttpRespone resp;
     std::string local_path = localPath(req.path());
@@ -62,7 +62,7 @@ void JZSendFromDirectory::handle(JZHttpServerClient* client, const JZHttpRequest
     client->response(resp.toByteArray());
 }
 
-bool JZSendFromDirectory::sendFile(const std::string& filePath, JZHttpRespone& resp)
+bool JZHttpStaticFiles::sendFile(const std::string& filePath, JZHttpRespone& resp)
 {
     JZFile file;
     if (!file.open(filePath, "rb"))
@@ -75,7 +75,7 @@ bool JZSendFromDirectory::sendFile(const std::string& filePath, JZHttpRespone& r
     return true;
 }
 
-std::string JZSendFromDirectory::getContentType(const std::string& path)
+std::string JZHttpStaticFiles::getContentType(const std::string& path)
 {
     size_t pos = path.find_last_of('.');
     if (pos == std::string::npos)

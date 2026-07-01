@@ -11,9 +11,10 @@ JZSignalDestory::JZSignalDestory(JZObject *object)
 
 void JZSignalDestory::emitDestory()
 {
-    for (int i = 0; i < (int)m_connects.size(); i++)
+    if (!m_connects) return;
+    for (int i = 0; i < (int)m_connects->size(); i++)
     {
-        m_connects[i].type = DirectConnection;
+        (*m_connects)[i].type = DirectConnection;
     }
     emit(m_object);
 }
@@ -56,8 +57,6 @@ const JZObjectMeta* JZObject::metaObject()
 JZObject::JZObject(JZObject *parent)
     :sigDestroyed(this)
 {
-    m_parent = nullptr;
-    m_blockSignals = false;
     m_thread = jzApp->currentThread();
     setParent(parent); 
 
@@ -68,34 +67,46 @@ JZObject::JZObject(JZObject *parent)
 JZObject::JZObject(MainThreadInit)
     :sigDestroyed(this)
 {
-    m_thread = nullptr;
-    m_parent = nullptr;
-    m_blockSignals = false;
-
     m_data = std::make_shared<JZObjectPointerData>();
     m_data->object = this;
 }
 
 JZObject::~JZObject()
 {
-    if(m_thread)
+    {
+        jzApp->globalLock();
+        m_data->object = nullptr;
+        jzApp->globalUnlock();
+    }
+
+    if (m_thread)
+    {
+        //必须在当前线程删除
         JZ_ASSERT(m_thread == jzApp->currentThread());
+    }
 
     if(m_parent)
         m_parent->removeChild(this);
 
+    // 清理子对象
     std::vector<JZObject*> childs = m_childs;
     for (int i = 0; i < (int)childs.size(); i++)
         delete childs[i];
     m_childs.clear();
     
-    for (int i = 0; i < (int)m_timeidList.size(); i++)
-        m_thread->removeTimer(this, m_timeidList[i]);
-    m_timeidList.clear();
+    // JZThread 统一管理定时器，取消本对象所有定时器
+    if (m_thread)
+        m_thread->cancelObjectTimers(this);
 
     m_thread = nullptr;
     m_parent = nullptr;
-    m_data->object = nullptr;
+
+    // 惰性 name 清理
+    if(m_name)
+    {
+        delete m_name;
+        m_name = nullptr;
+    }
 
     sigDestroyed.emitDestory();
 }
@@ -103,7 +114,7 @@ JZObject::~JZObject()
 JZObjectPointer JZObject::guardPointer()
 {
     JZObjectPointer ptr;
-    ptr.m_data = m_data;
+    ptr.data = m_data;
     return ptr;
 }
 
@@ -128,12 +139,18 @@ void JZObject::deleteLater()
 
 void JZObject::setObjectName(const std::string &name)
 {
-    m_name = name;
+    if (name.empty()) {
+        delete m_name;
+        m_name = nullptr;
+    } else {
+        if (!m_name) m_name = new std::string();
+        *m_name = name;
+    }
 }
 
-const std::string &JZObject::objectName() const
+std::string JZObject::objectName() const
 {
-    return m_name;
+    return m_name ? *m_name : std::string();
 }
 
 bool JZObject::isBlockSignals() const
@@ -164,18 +181,24 @@ JZThread *JZObject::thread() const
 
 void JZObject::setProperty(const std::string &name, const JZVariant &varaint)
 {
+    if (!m_properties) 
+        m_properties.reset(new std::map<std::string, JZVariant>());
+    
     if (varaint.isValid())
-        m_properties[name] = varaint;
+        (*m_properties)[name] = varaint;
     else
-        map_remove(m_properties,name);
+        map_remove(*m_properties, name);
 }
 
 const JZVariant &JZObject::property(const std::string &name) const
 {
-    auto it = m_properties.find(name);
-    if (it != m_properties.end())
+    if (!m_properties) 
+        return JZVariant::None();
+    
+    auto it = m_properties->find(name);
+    if (it != m_properties->end())
         return it->second;
-
+    
     return JZVariant::None();
 }
 
@@ -196,7 +219,7 @@ JZObject *JZObject::parent() const
     return m_parent;
 }
 
-std::vector<JZObject *> JZObject::children()
+const std::vector<JZObject *> &JZObject::children() const
 {
     return m_childs;
 }
@@ -229,20 +252,8 @@ void JZObject::customEvent(JZEvent *event)
 
 JZObject *JZObject::sender()
 {
-    if (m_senderQueue.size() == 0)
-        return nullptr;
-
-    return m_senderQueue.back();
-}
-
-void JZObject::pushSender(JZObject *obj)
-{
-    m_senderQueue.push_back(obj);
-}
-
-void JZObject::popSender()
-{
-    m_senderQueue.pop_back();
+    auto &q = m_thread->m_senderQueue;
+    return q.empty() ? nullptr : q.back();
 }
 
 void JZObject::addChild(JZObject *obj)
@@ -256,7 +267,7 @@ void JZObject::removeChild(JZObject *obj)
     vec_removeAll(m_childs, obj);
 }
 
-bool JZObject::hasChild(JZObject* child)
+bool JZObject::hasChild(JZObject* child) const
 {
     if (vec_contains(m_childs, child))
         return true;
@@ -272,16 +283,11 @@ bool JZObject::hasChild(JZObject* child)
 int JZObject::startTimer(int interval)
 {
     JZ_ASSERT(thread() == jzApp->currentThread());
-
-    int id = thread()->addTimer(this, interval);
-    m_timeidList.push_back(id);
-    return id;
+    return thread()->addTimer(this, interval);
 }
 
 void JZObject::killTimer(int id)
 {
     JZ_ASSERT(thread() == jzApp->currentThread());
-
-    vec_removeAll(m_timeidList, id);
     thread()->removeTimer(this, id);
 }

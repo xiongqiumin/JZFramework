@@ -1,36 +1,46 @@
 #include "JZObjectPointer.h"
 #include "JZObject.h"
+#include "JZApplication.h"
 
 //JZObjectPointer
-JZObject* JZObjectPointer::object() const
-{
-    if (!m_data)
-        return nullptr;
-
-    return m_data->object;
-}
-
 JZObjectPointer::operator bool() const
 {
-    return object() != nullptr;
+    return data->object;
 }
 
-bool JZObjectPointer::operator==(const JZObjectPointer& other) const
+JZObject* JZObjectPointer::object() const
 {
-    if (m_data && other.m_data)
-        return m_data->object == other.m_data->object;
-    else if (!m_data && !other.m_data)
-        return true;
-    else
-        return false;
+    return data->object;
 }
 
-bool JZObjectPointer::operator!=(const JZObjectPointer& other) const
+//JZObjectPointerGuard
+JZObjectPointerGuard::JZObjectPointerGuard(JZObjectPointer *pointer)
 {
-    return !(*this == other);
+    m_pointer = pointer;
+    relock();
 }
 
-JZObject* JZObjectPointer::operator->() const
+JZObjectPointerGuard::~JZObjectPointerGuard()
 {
-    return object();
+    unlock();
+}   
+
+void JZObjectPointerGuard::relock()
+{
+    m_isLocked = true;
+    jzApp->globalLock();
+}
+
+void JZObjectPointerGuard::unlock()
+{
+    if (m_isLocked)
+    {
+        jzApp->globalUnlock();
+        m_isLocked = false;
+    }
+}
+
+JZObject* JZObjectPointerGuard::object()
+{
+    return m_pointer->data->object;
 }

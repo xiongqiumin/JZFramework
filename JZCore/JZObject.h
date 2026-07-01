@@ -3,6 +3,8 @@
 
 #include <vector>
 #include <string>
+#include <map>
+#include <memory>
 #include "JZEvent.h"
 #include "JZGlobal.h"
 #include "JZSignal.h"
@@ -66,7 +68,7 @@ public:
     virtual const JZObjectMeta* meta() const;
 
     void setObjectName(const std::string &name);
-    const std::string &objectName() const;
+    std::string objectName() const;
 
     bool isBlockSignals() const;
     void blockSignals(bool flag);
@@ -74,12 +76,12 @@ public:
     void moveToThread(JZThread *thread);
     JZThread *thread() const;
 
-    void setProperty(const std::string &name, const JZVariant &varaint);
-    const JZVariant &property(const std::string &name) const;
+    virtual void setProperty(const std::string &name, const JZVariant &varaint);
+    virtual const JZVariant &property(const std::string &name) const;
 
     void setParent(JZObject *parent);
     JZObject * parent() const;    
-    std::vector<JZObject *> children();
+    const std::vector<JZObject *> &children() const;
 
     void deleteLater();
 
@@ -105,21 +107,17 @@ protected:
 
     void addChild(JZObject *child);
     void removeChild(JZObject *child);
-    bool hasChild(JZObject* child);
+    bool hasChild(JZObject* child) const;
 
     JZObject *sender();
-    void pushSender(JZObject *obj);
-    void popSender();
 
-    std::string m_name;
-    JZObject *m_parent;
-    JZThread *m_thread;
-    bool m_blockSignals;
+    std::string* m_name = nullptr;       // 惰性: 未命名时为 nullptr
+    JZObject *m_parent = nullptr;
+    JZThread *m_thread = nullptr;
+    bool m_blockSignals = false;
     std::vector<JZObject*> m_childs;
-    std::vector<JZObject*> m_senderQueue;
-    std::vector<int> m_timeidList;
     std::shared_ptr<JZObjectPointerData> m_data;
-    std::map<std::string, JZVariant> m_properties;
+    std::unique_ptr<std::map<std::string, JZVariant>> m_properties;
 
 private:
     static JZObjectMeta staticMeta;

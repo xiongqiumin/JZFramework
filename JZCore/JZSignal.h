@@ -25,14 +25,16 @@ enum JZConnectType
 };
 
 class JZObject;
-//JZSignalEvent
-class JZSignalEvent : public JZEvent
+class JZThread;
+//JZAsyncSignalEvent
+class JZAsyncSignalEvent : public JZEvent
 {
 public:
-    JZSignalEvent();
-    ~JZSignalEvent();
+    JZAsyncSignalEvent();
+    ~JZAsyncSignalEvent();
 
-    JZObjectPointer sender;
+    JZObject *sender;  //异步发送只检测接收,不检测发送者是否存在
+    bool hasRecv;
     JZObjectPointer recv;
     std::function<void(JZObject*, const JZVariantList&)> slot;
     std::function<void(const JZVariantList&)> lambdaSlot;
@@ -70,16 +72,17 @@ public:
     JZBaseSignal();
     virtual ~JZBaseSignal();
     
-    void pushSender(JZObjectPointer &recv, JZObject *sender);
-    void popSender(JZObjectPointer &recv);
+    void pushSender(JZThread *thread, JZObject*sender);
+    void popSender(JZThread *thread);
 
     JZObject *currentThread();
     bool isCurrentThread(JZObject *recv); 
 
     bool isBlockSingals(JZObject *object);
     JZObjectPointer guardPointer(JZObject *obj);
-    void postEvent(JZObject *recvier, JZSignalEvent *event);
-    void postEventAndWait(JZObject *recvier, JZSignalEvent *event);
+    void postEvent(JZAsyncSignalEvent* event);
+    void postEvent(JZObject *recvier, JZAsyncSignalEvent *event);
+    void postEventAndWait(JZObject *recvier, JZAsyncSignalEvent *event);
 };
 
 template<typename... Args>
@@ -89,45 +92,48 @@ public:
     JZSignal(JZObject *object)
     {
         m_object = object;
-        m_connectId = 0;
     }
-    virtual ~JZSignal() {
-
-    }
+    virtual ~JZSignal() = default;
 
     int connectCount()
     {
-        return (int)m_connects.size();
+        return m_connects ? (int)m_connects->size() : 0;
     }
 
     int addConnect(JZConnect<Args...> connect)
     {
-        connect.id = m_connectId++;
-        m_connects.push_back(connect);
+        if (!m_connects) m_connects.reset(new std::vector<JZConnect<Args...>>());
+        int nextId = 0;
+        for (auto &c : *m_connects)
+            if (c.id >= nextId) nextId = c.id + 1;
+        connect.id = nextId;
+        m_connects->push_back(connect);
         return connect.id;
     }
 
     void clearConnect()
     {
-        m_connects.clear();
+        if (m_connects) m_connects->clear();
     }
 
     void removeById(int id)
     {
-        for (int i = (int)m_connects.size() - 1; i >= 0; i--)
+        if (!m_connects) return;
+        for (int i = (int)m_connects->size() - 1; i >= 0; i--)
         {
-            if (m_connects[i].id == id) {
-                m_connects.erase(m_connects.begin() + i);
+            if ((*m_connects)[i].id == id) {
+                m_connects->erase(m_connects->begin() + i);
             }
         }
     }
 
     void removeRecvObject(JZObject *object)
     {
-        for (int i = (int)m_connects.size() - 1; i >= 0; --i)
+        if (!m_connects) return;
+        for (int i = (int)m_connects->size() - 1; i >= 0; --i)
         {
-            if (m_connects[i].recv == object) {
-                m_connects.erase(m_connects.begin() + i);
+            if ((*m_connects)[i].recv == object) {
+                m_connects->erase(m_connects->begin() + i);
             }
         }
     }
@@ -135,62 +141,93 @@ public:
     void emit(Args... args)
     {
         JZTX_FUNC_TRACE
-        if (isBlockSingals(m_object))
+        if (isBlockSingals(m_object) || !m_connects)
             return;
-
-        std::vector<JZConnect<Args...>> connect_list = m_connects;
+        
+        std::vector<JZConnect<Args...>> connect_list = *m_connects;
         for (int i = 0; i < (int)connect_list.size(); i++)
         {
             auto& conn = connect_list[i];
-            if (conn.hasRecv && !conn.recv)
-                continue;
-
-            JZObject *sender = m_object;
-            JZObject *recvier = conn.recv.object();
+            
             int type = conn.type;
-
-            if ((type == AutoConnection && isCurrentThread(recvier))
-                || type == DirectConnection)
+            if (conn.hasRecv)
             {
-                pushSender(conn.recv,sender);
-                if(conn.slot.func)
-                    conn.slot.func(recvier, args...);
-                else
-                    conn.slot.lambdaFunc(args...);
-                popSender(conn.recv);
-            }
-            else
-            {        
-                if (type == AutoConnection || type == QueuedConnection || type == BlockingQueuedConnection)
+                //recv 可能在其他线程, 这里需要全局锁
+                JZObjectPointerGuard guard(&conn.recv);
+                JZObject *recvier = guard.object();
+                if (!recvier)
+                    continue;
+
+                bool is_same_thread = isCurrentThread(recvier);
+                if ((type == AutoConnection && is_same_thread)
+                    || type == DirectConnection)
                 {
-                    JZ_ASSERT(conn.slot.packFunc);
+                    guard.unlock();
 
-                    JZSignalEvent *event = new JZSignalEvent();
-                    event->sender = guardPointer(sender);
-                    event->recv = conn.recv;
-                    event->slot = conn.slot.asyncFunc;
-                    event->lambdaSlot = conn.slot.asyncLambdaFunc;
-                    conn.slot.packFunc(event->args, args...);
+                    JZThread* thread = m_object->thread();
+                    JZObject* sender = m_object;
 
-                    JZObject *recv_object = event->recv.object();
-                    if (type == AutoConnection || type == QueuedConnection)
-                        postEvent(recv_object, event);
+                    pushSender(thread, sender);
+                    if (conn.slot.func)
+                        conn.slot.func(recvier, args...);
                     else
-                        postEventAndWait(recv_object, event);
+                        conn.slot.lambdaFunc(args...);
+                    popSender(thread);
                 }
                 else
                 {
-                    JZ_ASSERT(0);
+                    if (type == AutoConnection || type == QueuedConnection || type == BlockingQueuedConnection)
+                    {
+                        JZ_ASSERT(conn.slot.packFunc);
+
+                        JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+                        event->sender = m_object;
+                        event->recv = conn.recv;
+                        event->slot = conn.slot.asyncFunc;
+                        event->lambdaSlot = conn.slot.asyncLambdaFunc;
+                        conn.slot.packFunc(event->args, args...);
+                        if (type == AutoConnection || type == QueuedConnection)
+                            postEvent(recvier, event);
+                        else
+                            postEventAndWait(recvier, event);
+                    }
+                    else
+                    {
+                        JZ_ASSERT(0);
+                    }
+                }
+            }
+            else
+            {
+                if (type == AutoConnection || type == DirectConnection)
+                {
+                    conn.slot.lambdaFunc(args...);
+                }
+                else
+                {
+                    if (type == QueuedConnection)
+                    {
+                        JZ_ASSERT(conn.slot.packFunc);
+
+                        JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+                        event->sender = m_object;
+                        event->lambdaSlot = conn.slot.asyncLambdaFunc;
+                        conn.slot.packFunc(event->args, args...);
+
+                        postEvent(event);
+                    }
+                    else
+                    {
+                        JZ_ASSERT(0);
+                    }
                 }
             }
         }
     }
 
 protected:
-    std::vector<JZConnect<Args...>> m_connects;
-
+    std::unique_ptr<std::vector<JZConnect<Args...>>> m_connects;  // 惰性: 无连接时为 nullptr
     JZObject *m_object;
-    int m_connectId;
 };
 
 typedef JZSignal<> JZSigVoid;

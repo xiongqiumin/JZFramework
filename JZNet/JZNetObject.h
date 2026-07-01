@@ -217,6 +217,8 @@ protected:
     // - 确保网络线程处理任何IO事件前，socket对象已存在且绑定完成
     // onAccept 返回server 新创建的 JZNetObject, 网络线程会进行绑定 object -> conn 
     virtual JZNetObject *onAccept(uint64_t conn);
+    //在net thread移除自身, 需要在一进入析构就调用,避免析构后还在net thread处理事件
+    void removeNetObject();
 
     virtual bool event(JZEvent *event) override;
     virtual void onNetEvent(JZNetResEvent *event) = 0;

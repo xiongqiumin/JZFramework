@@ -5,8 +5,6 @@
 	JZTestSuite.cpp
 	JZTestSuite.h
 )
-
-
 convert_to_abs_paths(JZTEST_SOURCES)
 
 # 添加到目标

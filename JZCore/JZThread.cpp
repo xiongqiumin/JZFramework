@@ -153,11 +153,12 @@ void JZThread::attachStdThread(JZThreadId id)
 
 void JZThread::detachStdThread()
 {
+    jzApp->removeThread(this);    
 #ifdef JZ_OS_NORMAL       
     m_tid = THREAD_ID_NONE;   
 #else
     m_handle = nullptr;
-#endif    
+#endif
 }
 
 bool JZThread::isRequestInterruption() const
@@ -174,13 +175,19 @@ void JZThread::requestInterruption()
 void JZThread::start()
 {
     assert(!m_running);
-    
+        
     m_running = true;
     jzApp->addThread(this);
 
 #ifdef JZ_OS_NORMAL           
-    m_handle = std::thread([this]{
-        jzApp->addThread(this);
+    //加锁保证有tid后才允许
+    std::mutex *tmp_mutex = new std::mutex();
+    tmp_mutex->lock();
+    m_handle = std::thread([this,tmp_mutex]{        
+        tmp_mutex->lock();
+        tmp_mutex->unlock();
+        delete tmp_mutex;
+
         sigStarted.emit();
         this->run();
         m_running = false;
@@ -188,6 +195,7 @@ void JZThread::start()
         jzApp->removeThread(this);
     });
     m_tid = m_handle.get_id();
+    tmp_mutex->unlock();
 
 #elif JZ_OS == JZ_OS_FREE_RTOS
     // FreeRTOS：创建任务
@@ -198,23 +206,24 @@ void JZThread::start()
         pri = uxTaskPriorityGet(NULL);
     else
     {
-        // 1. 先钳位用户输入到 0~16 的合法范围
+        // 1. 先钳位用户输入到 0~15 的合法范围
         int userPri = m_config.priority;
         if (userPri < 0) userPri = 0;
-        if (userPri > 16) userPri = 16;
+        if (userPri > 15) userPri = 15;
 
         // 2. 线性映射到 FreeRTOS 合法范围: 0 ~ (configMAX_PRIORITIES - 1)
         UBaseType_t maxSysPri = configMAX_PRIORITIES - 1;
         pri = static_cast<UBaseType_t>((userPri * maxSysPri) / 16);
     }
-
-    TaskHandle_t handle;
+    
     BaseType_t ret = xTaskCreate(
         // 任务入口函数（静态函数，通过参数传递 this 指针）
         [](void* arg) {
-            JZThread* thread = static_cast<JZThread*>(arg);                                    
+            JZThread* thread = static_cast<JZThread*>(arg);
+            thread->sigStarted.emit();                             
             thread->run();            
             thread->m_running = false;
+            thread->sigFinished.emit();
             jzApp->removeThread(thread);            
 
             xSemaphoreGive((SemaphoreHandle_t)thread->m_waitSem);            
@@ -224,11 +233,9 @@ void JZThread::start()
         m_config.stackSize / 4,
         this,
         pri,
-        &handle
-    );        
-    JZ_ASSERT(ret == pdPASS);
-    m_handle = handle;
-    jzDebug() << "create thread" << m_handle;
+        (TaskHandle_t*)(&m_handle)
+    );
+    JZ_ASSERT(ret == pdPASS);    
 #elif JZ_OS == JZ_OS_RT_THREAD
     // RT-Thread：创建动态任务
     rt_thread_t task = rt_thread_create(
@@ -239,10 +246,12 @@ void JZThread::start()
             JZThread* thread = static_cast<JZThread*>(arg);
             // 注册任务到 jzApp
             jzApp->addThread(thread);
+            thread->sigStarted.emit();
             // 执行任务入口函数
             thread->run();
             // 任务退出：更新状态 + 从 jzApp 移除
             thread->m_running = false;
+            thread->sigFinished.emit();
             jzApp->removeThread(thread);     
             
         },
@@ -256,12 +265,12 @@ void JZThread::start()
         10
     );
     // 检查任务创建是否成功
-    assert(task != RT_NULL);
+    JZ_ASSERT(task != RT_NULL);
     // 启动任务
-    rt_thread_startup(task);
-    // 保存任务句柄和 ID
     m_handle = task;
-#endif
+    rt_thread_startup(task);
+    // 保存任务句柄和 ID    
+#endif    
 }
 
 void JZThread::quit()

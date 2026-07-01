@@ -3,7 +3,7 @@
 
 #include "JZObject.h"
 #include "JZAudioFormat.h"
-#include "JZAudioDevice.h"
+#include "JZAudioDeviceInfo.h"
 
 class JZAudioOutputImpl;
 class JZAudioOutput : public JZObject
@@ -14,7 +14,7 @@ public:
 
     void setFormat(const JZAudioFormat& format);
     bool open();
-    bool open(JZAudioDevice device);
+    bool open(JZAudioDeviceInfo device);
     void close();
     void reset();
     bool write(const JZByteArray& data);

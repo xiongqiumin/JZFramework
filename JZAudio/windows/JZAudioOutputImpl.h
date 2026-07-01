@@ -8,13 +8,14 @@
 #include <mutex>
 #include <list>
 #include "JZAudioOutput.h"
+
 class JZAudioOutputImpl
 {
 public:
     explicit JZAudioOutputImpl(JZAudioOutput* parent);
     ~JZAudioOutputImpl();
 
-    bool open(const JZAudioDevice& device);
+    bool open(const JZAudioDeviceInfo& device);
     void close();
     void reset();
     bool write(const JZByteArray& data);

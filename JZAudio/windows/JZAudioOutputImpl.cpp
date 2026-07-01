@@ -38,7 +38,7 @@ bool JZAudioOutputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX&
     return true;
 }
 
-bool JZAudioOutputImpl::open(const JZAudioDevice& device)
+bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device)
 {
     auto format = m_parent->m_format;
     if (m_isPlaying || m_hWaveOut != nullptr) {

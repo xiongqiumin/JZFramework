@@ -5,7 +5,7 @@
 #include <list>
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
-#include "JZAudioDevice.h"
+#include "JZAudioDeviceInfo.h"
 #include "JZTimer.h"
 
 class JZAudioOutput;
@@ -15,7 +15,7 @@ public:
     explicit JZAudioOutputImpl(JZAudioOutput* parent);
     ~JZAudioOutputImpl();
 
-    bool open(const JZAudioDevice& device);
+    bool open(const JZAudioDeviceInfo& device);
     void close();
     void reset();
     bool write(const JZByteArray& data);

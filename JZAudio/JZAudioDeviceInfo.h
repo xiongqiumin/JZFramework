@@ -4,14 +4,14 @@
 #include <vector>
 #include <string>
 
-class JZAudioDevice 
+class JZAudioDeviceInfo
 {
 public:
-    static std::vector<JZAudioDevice> audioInputList();
-    static std::vector<JZAudioDevice> audioOutputList();
+    static std::vector<JZAudioDeviceInfo> inputList();
+    static std::vector<JZAudioDeviceInfo> outputList();
 
-    JZAudioDevice();
-    virtual ~JZAudioDevice();
+    JZAudioDeviceInfo();
+    virtual ~JZAudioDeviceInfo();
 
     std::string name;
     std::string id;

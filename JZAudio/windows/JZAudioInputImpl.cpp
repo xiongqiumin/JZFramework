@@ -42,7 +42,7 @@ bool JZAudioInputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& 
     return true;
 }
 
-bool JZAudioInputImpl::open(const JZAudioDevice& device)
+bool JZAudioInputImpl::open(const JZAudioDeviceInfo& device)
 {
     if (m_isCapturing || m_hWaveIn != nullptr) {
         return false;

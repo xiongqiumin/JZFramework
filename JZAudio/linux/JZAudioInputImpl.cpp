@@ -44,7 +44,7 @@ snd_pcm_format_t JZAudioInputImpl::mapSampleFormat(JZAudioFormat::SampleFormat f
     }
 }
 
-bool JZAudioInputImpl::open(const JZAudioDevice &device)
+bool JZAudioInputImpl::open(const JZAudioDeviceInfo &device)
 {
     if (m_isOpened) return true;
     if (!m_parent) {

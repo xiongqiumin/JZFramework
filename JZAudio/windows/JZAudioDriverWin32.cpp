@@ -1,12 +1,16 @@
-﻿#include "JZAudioDeviceImpl.h"
-#include "JZAudioInputImpl.h"
+﻿#include "JZAudioDriverWin32.h"
 #include <Windows.h>
 #include <mmsystem.h>
 #include <iostream>
 
-std::vector<JZAudioDevice> JZAudioDeviceImpl::audioInputList()
+JZAudioDriverWin32::JZAudioDriverWin32()
 {
-    std::vector<JZAudioDevice> devices;
+    setInstance(this);
+}
+
+std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioInputList()
+{
+    std::vector<JZAudioDeviceInfo> devices;
 
     int deviceCount = waveInGetNumDevs();
     if (deviceCount == 0) {
@@ -18,7 +22,7 @@ std::vector<JZAudioDevice> JZAudioDeviceImpl::audioInputList()
         WAVEINCAPSA caps;
         MMRESULT result = waveInGetDevCapsA(i, &caps, sizeof(caps));
 
-        JZAudioDevice device;
+        JZAudioDeviceInfo device;
         int channel;
         std::vector<int> sampleRate;
         if (result == MMSYSERR_NOERROR)
@@ -34,9 +38,9 @@ std::vector<JZAudioDevice> JZAudioDeviceImpl::audioInputList()
     return devices;
 }
 
-std::vector<JZAudioDevice> JZAudioDeviceImpl::audioOutputList()
+std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioOutputList()
 {
-    std::vector<JZAudioDevice> devices;
+    std::vector<JZAudioDeviceInfo> devices;
 
     int deviceCount = waveInGetNumDevs();
     if (deviceCount == 0) {
@@ -48,7 +52,7 @@ std::vector<JZAudioDevice> JZAudioDeviceImpl::audioOutputList()
         WAVEOUTCAPSA caps;
         MMRESULT result = waveOutGetDevCapsA(i, &caps, sizeof(caps));
         
-        JZAudioDevice device;
+        JZAudioDeviceInfo device;
         int channel;
         std::vector<int> sampleRate;
         if (result == MMSYSERR_NOERROR) 
@@ -63,3 +67,15 @@ std::vector<JZAudioDevice> JZAudioDeviceImpl::audioOutputList()
 
     return devices;
 }
+
+JZAudioInputImpl *JZAudioDriverWin32::createInput(JZAudioInput* parent)
+{
+    return new JZAudioInputImpl(parent);
+}
+
+JZAudioOutputImpl *JZAudioDriverWin32::createOutput(JZAudioOutput* parent)
+{
+    return new JZAudioOutputImpl(parent);
+}
+
+JZAudioDriverWin32 g_winDriver;

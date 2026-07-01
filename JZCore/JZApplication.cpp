@@ -59,7 +59,7 @@ JZThread *JZApplication::mainThread()
 JZThread *JZApplication::currentThread()
 {
     JZMutexLocker lock(&m_mutex);
-    auto id = JZThread::currentThreadId();    
+    auto id = JZThread::currentThreadId();
     for (int i = 0; i < (int)m_threads.size(); i++)
     {
         if (m_threads[i]->id() == id)

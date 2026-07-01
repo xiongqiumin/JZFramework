@@ -46,7 +46,7 @@ snd_pcm_format_t JZAudioOutputImpl::mapSampleFormat(JZAudioFormat::SampleFormat 
 }
 
 // 打开指定的音频输出设备
-bool JZAudioOutputImpl::open(const JZAudioDevice& device) {
+bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device) {
     if (m_isOpened) {
         std::cerr << "音频输出设备已打开，无需重复初始化" << std::endl;
         return true;

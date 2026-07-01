@@ -5,7 +5,7 @@
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
 #include "JZTimer.h"
-#include "JZAudioDevice.h"
+#include "JZAudioDeviceInfo.h"
 
 class JZAudioInput;
 class JZAudioInputImpl : public JZObject
@@ -14,7 +14,7 @@ public:
     explicit JZAudioInputImpl(JZAudioInput* parent);
     ~JZAudioInputImpl();
 
-    bool open(const JZAudioDevice &device);
+    bool open(const JZAudioDeviceInfo &device);
     void close();
 
 private:

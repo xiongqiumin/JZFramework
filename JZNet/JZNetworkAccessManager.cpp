@@ -24,7 +24,7 @@ JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 
 JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, const JZByteArray &body)
 {
-    JZTxTracer t(__FUNCTION__);
+    JZTX_FUNC_TRACE
 
     JZNetworkRequest mutableRequest = request;
 

@@ -1,18 +1,17 @@
-﻿#if JZ_OS == JZ_OS_WINDOWS
+﻿#include "JZDir.h"
+#include "JZLog.h"
+#include "JZFileInfo.h"
+#include "JZDebug.h"
+#include "JZString.h"
+#include "JZFileDriver.h"
+
+#if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
 #elif JZ_OS == JZ_OS_LINUX
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-
-#include <regex>
-#include "JZDir.h"
-#include "JZLog.h"
-#include "JZFileInfo.h"
-#include "JZDebug.h"
-#include "JZString.h"
-#include "JZFileDriver.h"
 
 using namespace std;
 

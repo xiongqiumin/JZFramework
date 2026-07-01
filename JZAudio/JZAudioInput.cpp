@@ -1,10 +1,11 @@
 #include "JZAudioInput.h"
 #include "JZAudioInputImpl.h"
+#include "JZAudioDriver.h"
 
 JZAudioInput::JZAudioInput(JZObject* parent)
 	:JZObject(parent), sigReadyRead(this)
 {
-	d = new JZAudioInputImpl(this);
+	d = JZAudioDriver::instance()->createInput(this);
 }
 
 JZAudioInput::~JZAudioInput()
@@ -20,14 +21,14 @@ void JZAudioInput::setFormat(JZAudioFormat format)
 
 bool JZAudioInput::open()
 {
-	auto dev_list = JZAudioDevice::audioInputList();
+	auto dev_list = JZAudioDeviceInfo::inputList();
     if(dev_list.size() == 0)
         return false;
 
     return d->open(dev_list[0]);
 }
 
-bool JZAudioInput::open(JZAudioDevice device)
+bool JZAudioInput::open(JZAudioDeviceInfo device)
 {
 	return d->open(device);
 }

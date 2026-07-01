@@ -2,13 +2,13 @@
 #define JZ_AUDIO_DEVICE_IMPL_H_
 
 #include <vector>
-#include "JZAudioDevice.h"
+#include "JZAudioDeviceInfo.h"
 
 class JZAudioDeviceImpl
 {
 public:
-    static std::vector<JZAudioDevice> audioInputList();
-    static std::vector<JZAudioDevice> audioOutputList();
+    static std::vector<JZAudioDeviceInfo> audioInputList();
+    static std::vector<JZAudioDeviceInfo> audioOutputList();
 };
 
 #endif // JZ_AUDIO_DEVICE_IMPL_H_

@@ -957,7 +957,6 @@ JZString JZString::toUpper() const
     int realSize = size();
     for (int i = 0; i < realSize; ++i)
     {
-        auto& jzChar = result.m_chars[i];
         if (result.m_chars[i].isAscii())
             result.m_chars[i] = result.m_chars[i].toUpper();
     }
@@ -973,7 +972,6 @@ JZString JZString::toLower() const
     int realSize = size();
     for (int i = 0; i < realSize; ++i)
     {
-        auto& jzChar = result.m_chars[i];
         if (result.m_chars[i].isAscii())
             result.m_chars[i] = result.m_chars[i].toLower();
     }

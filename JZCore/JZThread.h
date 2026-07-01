@@ -1,4 +1,4 @@
-#ifndef JZ_THREAD_H_
+﻿#ifndef JZ_THREAD_H_
 #define JZ_THREAD_H_
 
 #include <queue>
@@ -33,7 +33,7 @@ class JZThreadConfig
 {
 public:
     int stackSize = 4096;
-    int priority = -1; // 0-16, 16最高, -1 继承当前
+    int priority = -1; // 0-15, 15最高, -1 继承当前
 };
 
 class JZApplication;
@@ -104,7 +104,7 @@ protected:
 
     bool m_running;    
 #ifdef JZ_OS_NORMAL    
-    std::thread::id m_tid;
+    std::thread::id m_tid; //为了attach 必须和 m_handle 分开
     std::thread m_handle;
 #elif JZ_OS == JZ_OS_FREE_RTOS
     void *m_waitSem;

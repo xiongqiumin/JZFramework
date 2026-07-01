@@ -12,7 +12,7 @@ public:
     explicit JZAudioInputImpl(JZAudioInput* parent);
     ~JZAudioInputImpl();
 
-    bool open(const JZAudioDevice& device);
+    bool open(const JZAudioDeviceInfo& device);
     void close();
 
 private:

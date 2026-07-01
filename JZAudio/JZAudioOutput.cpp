@@ -1,9 +1,10 @@
 #include "JZAudioOutput.h"
-#include "JZAudioOutputImpl.h"
+#include "JZAudioDriver.h"
 
 JZAudioOutput::JZAudioOutput(JZObject* parent)
-    : JZObject(parent), sigPlayFinish(this), d(new JZAudioOutputImpl(this))
+    : JZObject(parent), sigPlayFinish(this)
 {
+    d = JZAudioDriver::instance()->createOutput(this);
 }
 
 JZAudioOutput::~JZAudioOutput()
@@ -17,17 +18,16 @@ void JZAudioOutput::setFormat(const JZAudioFormat& format)
     m_format = format;
 }
 
-
 bool JZAudioOutput::open()
 {
-    auto dev_list = JZAudioDevice::audioOutputList();
+    auto dev_list = JZAudioDeviceInfo::outputList();
     if(dev_list.size() == 0)
         return false;
 
     return d->open(dev_list[0]);
 }
 
-bool JZAudioOutput::open(JZAudioDevice device)
+bool JZAudioOutput::open(JZAudioDeviceInfo device)
 {
     return d->open(device);
 }

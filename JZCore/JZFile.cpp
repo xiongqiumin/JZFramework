@@ -1,16 +1,17 @@
+ #include "JZFile.h"
+#include "JZFileInfo.h"
+#include "JZFileDriver.h"
+#include "JZResources.h"
+#include "JZDebug.h"
+#include "string.h"
+
 #if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
 #elif JZ_OS == JZ_OS_LINUX
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif 
-
-#include "JZFile.h"
-#include "JZFileInfo.h"
-#include "JZFileDriver.h"
-#include "JZResources.h"
-#include "JZDebug.h"
+#endif
 
 bool JZFile::remove(std::string filepath)
 {

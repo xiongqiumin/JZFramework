@@ -4,9 +4,9 @@
 #include <cstring>
 
 // 通用设备枚举方法（私有，供 audioInputList/audioOutputList 调用）
-static std::vector<JZAudioDevice> enumerateAudioDevices(bool isLookingForInput)
+static std::vector<JZAudioDeviceInfo> enumerateAudioDevices(bool isLookingForInput)
 {
-    std::vector<JZAudioDevice> devices;
+    std::vector<JZAudioDeviceInfo> devices;
     snd_ctl_t *ctl_handle = nullptr;
     snd_pcm_info_t *pcm_info = nullptr;
     int card = -1;
@@ -73,8 +73,8 @@ static std::vector<JZAudioDevice> enumerateAudioDevices(bool isLookingForInput)
                 device_name = dev_id;
             }
 
-            // 7. 封装 JZAudioDevice 对象并加入列表（仅填充需要的 3 个字段）
-            JZAudioDevice dev;
+            // 7. 封装 JZAudioDeviceInfo 对象并加入列表（仅填充需要的 3 个字段）
+            JZAudioDeviceInfo dev;
             dev.name = device_name;
             dev.id = dev_id;
             dev.isInput = isLookingForInput;
@@ -92,12 +92,12 @@ static std::vector<JZAudioDevice> enumerateAudioDevices(bool isLookingForInput)
     return devices;
 }
 
-std::vector<JZAudioDevice> JZAudioDeviceImpl::audioInputList()
+std::vector<JZAudioDeviceInfo> JZAudioDeviceImpl::audioInputList()
 {
     return enumerateAudioDevices(true);
 }
 
-std::vector<JZAudioDevice> JZAudioDeviceImpl::audioOutputList()
+std::vector<JZAudioDeviceInfo> JZAudioDeviceImpl::audioOutputList()
 {
     return enumerateAudioDevices(false);
 }

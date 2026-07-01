@@ -182,16 +182,30 @@ function(jz_add_resources TARGET_NAME)
 
         set(DEPFILE "${OUT_CPP}.d")
 
+        # 解析 .qrc 提取资源文件，显式声明为 DEPENDS（兼容 MSVC 生成器）
+        file(READ "${QRC_ABS}" QRC_CONTENT)
+        string(REGEX MATCHALL ">[ \t]*([^<>\n]+)[ \t]*<" QRC_MATCHES "${QRC_CONTENT}")
+        set(QRC_RESOURCES "")
+        get_filename_component(QRC_DIR "${QRC_ABS}" DIRECTORY)
+        foreach(MATCH ${QRC_MATCHES})
+            # 剥离 > < 和空白
+            string(REGEX REPLACE "^>[ \t]*" "" RES "${MATCH}")
+            string(REGEX REPLACE "[ \t]*<$" "" RES "${RES}")
+            if(EXISTS "${QRC_DIR}/${RES}")
+                list(APPEND QRC_RESOURCES "${QRC_DIR}/${RES}")
+            endif()
+        endforeach()
+
         add_custom_command(
             OUTPUT "${OUT_CPP}"
             COMMAND python "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
-            DEPENDS "${QRC_ABS}" "${JZ_RES_PY}"
+            DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" ${QRC_RESOURCES}
             DEPFILE "${DEPFILE}"
             COMMENT "Generating resources: ${QRC_FILE} -> ${OUT_CPP}"
         )
 
         list(APPEND OUT_CPPS "${OUT_CPP}")
-        message(STATUS "[JZFramework] Resource: ${QRC_FILE} -> ${OUT_CPP}")
+        message(STATUS "[JZFramework] Resource: ${QRC_FILE} (${QRC_RESOURCES}) -> ${OUT_CPP}")
     endforeach()
 
     add_library(${TARGET_NAME} OBJECT ${OUT_CPPS})
@@ -199,9 +213,9 @@ function(jz_add_resources TARGET_NAME)
 endfunction()
 
 macro(jzframework_build_binary)
-	include(${JZFRAMEWORK_ROOT_DIR}/JZBin/JZBin.cmake)
+	include(${JZFRAMEWORK_ROOT_DIR}/binary/binary.cmake)
 endmacro()
 
 macro(jzframework_build_test)
-	include(${JZFRAMEWORK_ROOT_DIR}/JZTest/JZTest.cmake)
+	include(${JZFRAMEWORK_ROOT_DIR}/test/test.cmake)
 endmacro()

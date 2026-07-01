@@ -54,11 +54,13 @@ def c_array_name(alias, index):
 
 
 def write_depfile(depfile_path, output_path, qrc_path, resources):
-    """生成 Makefile 依赖文件"""
-    deps = [qrc_path]
+    """生成 Makefile/Ninja 依赖文件（统一用正斜杠）"""
+    def _norm(p):
+        return os.path.abspath(p).replace('\\', '/')
+    deps = [_norm(qrc_path)]
     for _, abs_path, _ in resources:
-        deps.append(abs_path)
-    dep_content = f"{output_path}: {' '.join(deps)}\n"
+        deps.append(_norm(abs_path))
+    dep_content = f"{_norm(output_path)}: {' '.join(deps)}\n"
     with open(depfile_path, "w") as f:
         f.write(dep_content)
 

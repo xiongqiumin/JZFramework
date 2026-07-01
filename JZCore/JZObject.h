@@ -76,8 +76,8 @@ public:
     void moveToThread(JZThread *thread);
     JZThread *thread() const;
 
-    void setProperty(const std::string &name, const JZVariant &varaint);
-    const JZVariant &property(const std::string &name) const;
+    virtual void setProperty(const std::string &name, const JZVariant &varaint);
+    virtual const JZVariant &property(const std::string &name) const;
 
     void setParent(JZObject *parent);
     JZObject * parent() const;    

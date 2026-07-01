@@ -11,20 +11,34 @@ public:
     JZObject* object;
 };
 
+class JZObjectPointerGuard;
 class JZObjectPointer
 {
 public:
-    JZObject* object() const;
     operator bool() const;
-    bool operator==(const JZObjectPointer &other) const;
-    bool operator!=(const JZObjectPointer &other) const;
-
-    JZObject* operator->() const;
+    JZObject* object() const;
 
 protected:
     friend JZObject;
+    friend JZObjectPointerGuard;
 
-    std::shared_ptr<JZObjectPointerData> m_data;
+    std::shared_ptr<JZObjectPointerData> data;
+};
+
+class JZObjectPointerGuard
+{
+public:
+    JZObjectPointerGuard(JZObjectPointer *pointer);
+    ~JZObjectPointerGuard();    
+
+    void relock();
+    void unlock();
+
+    JZObject* object();
+
+protected:
+    JZObjectPointer *m_pointer;
+    bool m_isLocked;
 };
 
 #endif

@@ -5,7 +5,7 @@ enum {
     JZEvent_none,
     JZEvent_deleteObject,
     JZEvent_timer,
-    JZEvent_signal,
+    JZEvent_asyncSignal,
     JZEvent_netReq,
     JZEvent_netRes,
     JZEvent_log,

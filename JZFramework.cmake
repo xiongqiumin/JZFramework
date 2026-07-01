@@ -199,9 +199,9 @@ function(jz_add_resources TARGET_NAME)
 endfunction()
 
 macro(jzframework_build_binary)
-	foreach(target ${ARGN})
-        # 为每个目标设置 BUILD_<target> = ON，并作为缓存变量（可选）
-        set(BUILD_${target} ON CACHE BOOL "Build ${target}" FORCE)
-    endforeach()
 	include(${JZFRAMEWORK_ROOT_DIR}/JZBin/JZBin.cmake)
+endmacro()
+
+macro(jzframework_build_test)
+	include(${JZFRAMEWORK_ROOT_DIR}/JZTest/JZTest.cmake)
 endmacro()

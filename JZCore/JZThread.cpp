@@ -293,6 +293,16 @@ void JZThread::wait()
 #endif
 }
 
+void JZThread::pushSender(JZObject *obj)
+{
+    m_senderQueue.push_back(obj);
+}
+
+void JZThread::popSender()
+{
+    m_senderQueue.pop_back();
+}
+
 void JZThread::waitEvents()
 {
     auto now = JZPlatform::getTickCountMs();
@@ -336,50 +346,6 @@ void JZThread::exec()
 void JZThread::run()
 {    
     exec();
-}
-
-bool JZThread::isSpecialEvent(JZEvent* event)
-{
-    int type = event->type();
-    if (type == JZEvent_deleteObject || type == JZEvent_signal)
-        return true;
-
-    return false;
-}
-
-void JZThread::processSpecialEvent(JZEvent* event)
-{
-    JZTX_FUNC_TRACE
-
-    if (event->type() == JZEvent_signal)
-    {
-        JZSignalEvent* signal_event = (JZSignalEvent*)event;
-        if (signal_event->recv)
-            signal_event->recv->pushSender(signal_event->sender.object());
-
-        if (signal_event->slot)
-        {
-            if(signal_event->recv)
-                signal_event->slot(signal_event->recv.object(), signal_event->args);
-        }
-        else
-            signal_event->lambdaSlot(signal_event->args);
-
-        if (signal_event->recv)
-            signal_event->recv->popSender();
-    }
-    else if(event->type() == JZEvent_deleteObject)
-    {
-        JZObjectDeleteEvent* del_event = (JZObjectDeleteEvent*)event;
-        if (del_event->object)
-        {
-            delete del_event->object.object();
-        }
-    }
-    else
-    {
-        JZ_ASSERT(0);
-    }
 }
 
 int JZThread::addTimer(JZObject *object, int intervalMs)
@@ -470,6 +436,13 @@ void JZThread::processTimers()
     }
 }
 
+void JZThread::threadMoveWarning(JZObject *object)
+{
+    std::string name = object->objectName();
+    jzWarning() << "object" << object << "moved after post to thread, current thread:" << this << ", "
+        << "object thread:" << object->thread();
+}
+
 void JZThread::processEvents()
 {    
     JZTX_FUNC_TRACE
@@ -491,16 +464,60 @@ void JZThread::processEvents()
         if (!event.event)
             return;
         
-        if (event.object)
+        if (event.event->type() == JZEvent_asyncSignal)
         {
-            if (isSpecialEvent(event.event))
-                processSpecialEvent(event.event);
+            JZAsyncSignalEvent* signal_event = (JZAsyncSignalEvent*)event.event;
+            if (signal_event->hasRecv)
+            {
+                JZObject* recv = signal_event->recv.object();
+                if (recv)
+                {
+                    if (recv->thread() != this)
+                        threadMoveWarning(recv);
+
+                    JZObject* sender = signal_event->sender;
+                    if (sender)
+                        m_thread->pushSender(sender);
+
+                    if (signal_event->slot)
+                        signal_event->slot(recv, signal_event->args);
+                    else
+                        signal_event->lambdaSlot(signal_event->args);
+
+                    if (sender)
+                        m_thread->popSender();
+                }
+            }
             else
-                event.object->event(event.event);
+            {
+                JZObject* sender = signal_event->sender;
+                if (sender)
+                    m_thread->pushSender(sender);
+
+                signal_event->lambdaSlot(signal_event->args);
+
+                if (sender)
+                    m_thread->popSender();
+            }
+        }
+        else if (event.event->type() == JZEvent_deleteObject)
+        {
+            JZObjectDeleteEvent* del_event = (JZObjectDeleteEvent*)event.event;
+            auto del_obj = del_event->object.object();
+            if(del_obj)
+                delete del_obj;
         }
         else
-        {
-            
+        { 
+            //普通消息
+            JZObject* object = event.object.object();
+            if (object)
+            {
+                if (object->thread() != this)
+                    threadMoveWarning(object);
+                
+                object->event(event.event);
+            }
         }
 
         delete event.event;
@@ -511,14 +528,15 @@ void JZThread::processEvents()
 
 void runOnThread(JZThread* thread, std::function<void()> func)
 {
-    JZSignalEvent* event = new JZSignalEvent();
+    JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
     event->lambdaSlot = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(thread, event);
 }
 
 void runOnThread(JZThread* thread, JZObject* recv, std::function<void()> func)
 {
-    JZSignalEvent* event = new JZSignalEvent();
+    JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+    event->hasRecv = true;
     event->recv = recv->guardPointer();
     event->lambdaSlot = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(thread, event);
@@ -526,7 +544,8 @@ void runOnThread(JZThread* thread, JZObject* recv, std::function<void()> func)
 
 void runOnObject(JZObject* recv, std::function<void()> func)
 {
-    JZSignalEvent* event = new JZSignalEvent();
+    JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+    event->hasRecv = true;
     event->recv = recv->guardPointer();
     event->lambdaSlot = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(recv->thread(), event);

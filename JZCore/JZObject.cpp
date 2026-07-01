@@ -73,6 +73,12 @@ JZObject::JZObject(MainThreadInit)
 
 JZObject::~JZObject()
 {
+    {
+        jzApp->globalLock();
+        m_data->object = nullptr;
+        jzApp->globalUnlock();
+    }
+
     if (m_thread)
     {
         //必须在当前线程删除
@@ -94,7 +100,6 @@ JZObject::~JZObject()
 
     m_thread = nullptr;
     m_parent = nullptr;
-    m_data->object = nullptr;
 
     // 惰性 name 清理
     if(m_name)
@@ -109,7 +114,7 @@ JZObject::~JZObject()
 JZObjectPointer JZObject::guardPointer()
 {
     JZObjectPointer ptr;
-    ptr.m_data = m_data;
+    ptr.data = m_data;
     return ptr;
 }
 
@@ -249,16 +254,6 @@ JZObject *JZObject::sender()
 {
     auto &q = m_thread->m_senderQueue;
     return q.empty() ? nullptr : q.back();
-}
-
-void JZObject::pushSender(JZObject *obj)
-{
-    m_thread->m_senderQueue.push_back(obj);
-}
-
-void JZObject::popSender()
-{
-    m_thread->m_senderQueue.pop_back();
 }
 
 void JZObject::addChild(JZObject *obj)

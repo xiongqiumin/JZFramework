@@ -20,6 +20,9 @@ public:
 
     void addThread(JZThread *thread);
     void removeThread(JZThread *thread);
+
+    void globalLock();
+    void globalUnlock();
     
     int exec();        
     void quit();

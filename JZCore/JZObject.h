@@ -110,8 +110,6 @@ protected:
     bool hasChild(JZObject* child) const;
 
     JZObject *sender();
-    void pushSender(JZObject *obj);
-    void popSender();
 
     std::string* m_name = nullptr;       // 惰性: 未命名时为 nullptr
     JZObject *m_parent = nullptr;

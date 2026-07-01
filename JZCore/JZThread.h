@@ -92,16 +92,18 @@ protected:
     void removeTimer(JZObject *object, int timerId);
     void cancelObjectTimers(JZObject *object);
 
+    void pushSender(JZObject *obj);
+    void popSender();
+
     void waitEvents();
     void wakeUp();
     void exec();
 
-    bool isSpecialEvent(JZEvent* event);
-    void processSpecialEvent(JZEvent* event);
     void postEvent(const JZEventInfo &event);
     void processTimers();
     void processEvents();
-    int indexOfTimer(JZObject *object, int timerId);        
+    int indexOfTimer(JZObject *object, int timerId);
+    void threadMoveWarning(JZObject* object);
 
     bool m_running;    
 #ifdef JZ_OS_NORMAL    

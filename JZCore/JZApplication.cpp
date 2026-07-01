@@ -81,6 +81,16 @@ void JZApplication::removeThread(JZThread *thread)
     vec_removeAll(m_threads, thread);
 }
 
+void JZApplication::globalLock()
+{
+    m_mutex.lock();
+}
+
+void JZApplication::globalUnlock()
+{
+    m_mutex.unlock();
+}
+
 int JZApplication::exec()
 {
     JZTX_FUNC_TRACE

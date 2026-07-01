@@ -2,13 +2,14 @@
 #include "JZSignal.h"
 #include "JZApplication.h"
 
-//JZSignalEvent
-JZSignalEvent::JZSignalEvent()
-    :JZEvent(JZEvent_signal)
+//JZAsyncSignalEvent
+JZAsyncSignalEvent::JZAsyncSignalEvent()
+    :JZEvent(JZEvent_asyncSignal)
 {
+    hasRecv = false;
 }
 
-JZSignalEvent::~JZSignalEvent()
+JZAsyncSignalEvent::~JZAsyncSignalEvent()
 {
 }
 
@@ -21,16 +22,14 @@ JZBaseSignal::~JZBaseSignal()
 {
 }
 
-void JZBaseSignal::pushSender(JZObjectPointer& recv, JZObject *sender)
+void JZBaseSignal::pushSender(JZThread* thread, JZObject *sender)
 {
-    if(recv)
-        recv.object()->pushSender(sender);
+    thread->pushSender(sender);
 }
 
-void JZBaseSignal::popSender(JZObjectPointer& recv)
+void JZBaseSignal::popSender(JZThread* thread)
 {
-    if(recv)
-        recv.object()->popSender();
+    thread->popSender();
 }
 
 JZObject* JZBaseSignal::currentThread()
@@ -56,25 +55,20 @@ JZObjectPointer JZBaseSignal::guardPointer(JZObject *obj)
     return obj->guardPointer();
 }
 
-void JZBaseSignal::postEvent(JZObject *recvier, JZSignalEvent *event)
+void JZBaseSignal::postEvent(JZAsyncSignalEvent* event)
 {
-    if(recvier)
-        jzApp->postEvent(recvier, event);
-    else
-    {
-        JZThread* t = (JZThread*)currentThread();
-        
-        JZEventInfo e(t, event);
-        t->postEvent(e);
-    }
+    JZThread* t = (JZThread*)currentThread();
+
+    JZEventInfo e(t, event);
+    t->postEvent(e);
 }
 
-void JZBaseSignal::postEventAndWait(JZObject *recvier, JZSignalEvent *event)
+void JZBaseSignal::postEvent(JZObject *recvier, JZAsyncSignalEvent*event)
 {
-    if (recvier)
-        jzApp->postEventAndWait(recvier, event);
-    else
-    {
-        JZ_ASSERT(0);
-    }
+    jzApp->postEvent(recvier, event);
+}
+
+void JZBaseSignal::postEventAndWait(JZObject *recvier, JZAsyncSignalEvent *event)
+{
+    jzApp->postEventAndWait(recvier, event);
 }

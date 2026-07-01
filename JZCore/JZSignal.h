@@ -25,14 +25,16 @@ enum JZConnectType
 };
 
 class JZObject;
-//JZSignalEvent
-class JZSignalEvent : public JZEvent
+class JZThread;
+//JZAsyncSignalEvent
+class JZAsyncSignalEvent : public JZEvent
 {
 public:
-    JZSignalEvent();
-    ~JZSignalEvent();
+    JZAsyncSignalEvent();
+    ~JZAsyncSignalEvent();
 
-    JZObjectPointer sender;
+    JZObject *sender;  //异步发送只检测接收,不检测发送者是否存在
+    bool hasRecv;
     JZObjectPointer recv;
     std::function<void(JZObject*, const JZVariantList&)> slot;
     std::function<void(const JZVariantList&)> lambdaSlot;
@@ -70,16 +72,17 @@ public:
     JZBaseSignal();
     virtual ~JZBaseSignal();
     
-    void pushSender(JZObjectPointer &recv, JZObject *sender);
-    void popSender(JZObjectPointer &recv);
+    void pushSender(JZThread *thread, JZObject*sender);
+    void popSender(JZThread *thread);
 
     JZObject *currentThread();
     bool isCurrentThread(JZObject *recv); 
 
     bool isBlockSingals(JZObject *object);
     JZObjectPointer guardPointer(JZObject *obj);
-    void postEvent(JZObject *recvier, JZSignalEvent *event);
-    void postEventAndWait(JZObject *recvier, JZSignalEvent *event);
+    void postEvent(JZAsyncSignalEvent* event);
+    void postEvent(JZObject *recvier, JZAsyncSignalEvent *event);
+    void postEventAndWait(JZObject *recvier, JZAsyncSignalEvent *event);
 };
 
 template<typename... Args>
@@ -145,45 +148,78 @@ public:
         for (int i = 0; i < (int)connect_list.size(); i++)
         {
             auto& conn = connect_list[i];
-            if (conn.hasRecv && !conn.recv)
-                continue;
-
-            JZObject *sender = m_object;
-            JZObject *recvier = conn.recv.object();
+            
             int type = conn.type;
-
-            if ((type == AutoConnection && isCurrentThread(recvier))
-                || type == DirectConnection)
+            if (conn.hasRecv)
             {
-                pushSender(conn.recv,sender);
-                if(conn.slot.func)
-                    conn.slot.func(recvier, args...);
-                else
-                    conn.slot.lambdaFunc(args...);
-                popSender(conn.recv);
-            }
-            else
-            {        
-                if (type == AutoConnection || type == QueuedConnection || type == BlockingQueuedConnection)
+                //recv 可能在其他线程, 这里需要全局锁
+                JZObjectPointerGuard guard(&conn.recv);
+                JZObject *recvier = guard.object();
+                if (!recvier)
+                    continue;
+
+                bool is_same_thread = isCurrentThread(recvier);
+                if ((type == AutoConnection && is_same_thread)
+                    || type == DirectConnection)
                 {
-                    JZ_ASSERT(conn.slot.packFunc);
+                    guard.unlock();
 
-                    JZSignalEvent *event = new JZSignalEvent();
-                    event->sender = guardPointer(sender);
-                    event->recv = conn.recv;
-                    event->slot = conn.slot.asyncFunc;
-                    event->lambdaSlot = conn.slot.asyncLambdaFunc;
-                    conn.slot.packFunc(event->args, args...);
+                    JZThread* thread = m_object->thread();
+                    JZObject* sender = m_object;
 
-                    JZObject *recv_object = event->recv.object();
-                    if (type == AutoConnection || type == QueuedConnection)
-                        postEvent(recv_object, event);
+                    pushSender(thread, sender);
+                    if (conn.slot.func)
+                        conn.slot.func(recvier, args...);
                     else
-                        postEventAndWait(recv_object, event);
+                        conn.slot.lambdaFunc(args...);
+                    popSender(thread);
                 }
                 else
                 {
-                    JZ_ASSERT(0);
+                    if (type == AutoConnection || type == QueuedConnection || type == BlockingQueuedConnection)
+                    {
+                        JZ_ASSERT(conn.slot.packFunc);
+
+                        JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+                        event->sender = m_object;
+                        event->recv = conn.recv;
+                        event->slot = conn.slot.asyncFunc;
+                        event->lambdaSlot = conn.slot.asyncLambdaFunc;
+                        conn.slot.packFunc(event->args, args...);
+                        if (type == AutoConnection || type == QueuedConnection)
+                            postEvent(recvier, event);
+                        else
+                            postEventAndWait(recvier, event);
+                    }
+                    else
+                    {
+                        JZ_ASSERT(0);
+                    }
+                }
+            }
+            else
+            {
+                if (type == AutoConnection || type == DirectConnection)
+                {
+                    conn.slot.lambdaFunc(args...);
+                }
+                else
+                {
+                    if (type == QueuedConnection)
+                    {
+                        JZ_ASSERT(conn.slot.packFunc);
+
+                        JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
+                        event->sender = m_object;
+                        event->lambdaSlot = conn.slot.asyncLambdaFunc;
+                        conn.slot.packFunc(event->args, args...);
+
+                        postEvent(event);
+                    }
+                    else
+                    {
+                        JZ_ASSERT(0);
+                    }
                 }
             }
         }

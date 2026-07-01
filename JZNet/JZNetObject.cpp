@@ -566,7 +566,7 @@ void JZNetThread::wakeUpNet()
 
 void JZNetThread::addObject(JZNetObject *object)
 {
-    bool need_lock = jzApp->currentThread() != this;
+    bool need_lock = JZThread::currentThreadId() != this->id();
     if (need_lock)
     {
         JZMutexLocker locker(&m_mutex);
@@ -584,6 +584,9 @@ void JZNetThread::addObject(JZNetObject *object)
 void JZNetThread::removeObject(JZNetObject *object)
 {
     JZMutexLocker locker(&m_mutex);
+    if(m_objectList.size() == 0)
+        return;
+
     vec_removeAll(m_objectList, object);
     if (m_objectList.size() == 0)
     {
@@ -611,8 +614,13 @@ JZNetObject::JZNetObject(JZObject *parent)
 
 JZNetObject::~JZNetObject()
 {
-    JZNetThread::instance()->removeObject(this);
+    removeNetObject();
 }
+
+void JZNetObject::removeNetObject()
+{
+    JZNetThread::instance()->removeObject(this);
+}   
 
 bool JZNetObject::event(JZEvent *event)
 {
@@ -628,7 +636,7 @@ bool JZNetObject::event(JZEvent *event)
 
 JZNetObject *JZNetObject::onAccept(uint64_t conn)
 {
-    JZ_UNREACHABLE();
+    return nullptr;
 }
 
 void JZNetObject::wakeUpNet()

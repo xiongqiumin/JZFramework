@@ -90,6 +90,7 @@ protected:
 
     int addTimer(JZObject *object, int intervalMs);
     void removeTimer(JZObject *object, int timerId);
+    void cancelObjectTimers(JZObject *object);
 
     void waitEvents();
     void wakeUp();
@@ -118,13 +119,17 @@ protected:
     JZThreadConfig m_config;
     std::vector<TimerInfo> m_timerList;
     std::queue<JZEventInfo> m_eventList;
+    std::vector<JZObject*> m_senderQueue;   // 信号发送栈 (从 JZObject 移入)
     JZConditionVariable m_cv;
     JZMutex m_mutex;
     int m_nextTimerId;
 };
 
+// 在thread所在线程执行
 void runOnThread(JZThread *thread, std::function<void()> func);
+// 在thread所在线程执行, recv 删除后不会执行
 void runOnThread(JZThread *thread, JZObject *recv, std::function<void()> func);
+// 在recv所在线程执行, recv 删除后不会执行
 void runOnObject(JZObject *recv, std::function<void()> func);
 
 #endif // !JZ_THREAD_H_

@@ -89,45 +89,48 @@ public:
     JZSignal(JZObject *object)
     {
         m_object = object;
-        m_connectId = 0;
     }
-    virtual ~JZSignal() {
-
-    }
+    virtual ~JZSignal() = default;
 
     int connectCount()
     {
-        return (int)m_connects.size();
+        return m_connects ? (int)m_connects->size() : 0;
     }
 
     int addConnect(JZConnect<Args...> connect)
     {
-        connect.id = m_connectId++;
-        m_connects.push_back(connect);
+        if (!m_connects) m_connects.reset(new std::vector<JZConnect<Args...>>());
+        int nextId = 0;
+        for (auto &c : *m_connects)
+            if (c.id >= nextId) nextId = c.id + 1;
+        connect.id = nextId;
+        m_connects->push_back(connect);
         return connect.id;
     }
 
     void clearConnect()
     {
-        m_connects.clear();
+        if (m_connects) m_connects->clear();
     }
 
     void removeById(int id)
     {
-        for (int i = (int)m_connects.size() - 1; i >= 0; i--)
+        if (!m_connects) return;
+        for (int i = (int)m_connects->size() - 1; i >= 0; i--)
         {
-            if (m_connects[i].id == id) {
-                m_connects.erase(m_connects.begin() + i);
+            if ((*m_connects)[i].id == id) {
+                m_connects->erase(m_connects->begin() + i);
             }
         }
     }
 
     void removeRecvObject(JZObject *object)
     {
-        for (int i = (int)m_connects.size() - 1; i >= 0; --i)
+        if (!m_connects) return;
+        for (int i = (int)m_connects->size() - 1; i >= 0; --i)
         {
-            if (m_connects[i].recv == object) {
-                m_connects.erase(m_connects.begin() + i);
+            if ((*m_connects)[i].recv == object) {
+                m_connects->erase(m_connects->begin() + i);
             }
         }
     }
@@ -135,10 +138,10 @@ public:
     void emit(Args... args)
     {
         JZTX_FUNC_TRACE
-        if (isBlockSingals(m_object))
+        if (isBlockSingals(m_object) || !m_connects)
             return;
-
-        std::vector<JZConnect<Args...>> connect_list = m_connects;
+        
+        std::vector<JZConnect<Args...>> connect_list = *m_connects;
         for (int i = 0; i < (int)connect_list.size(); i++)
         {
             auto& conn = connect_list[i];
@@ -187,10 +190,8 @@ public:
     }
 
 protected:
-    std::vector<JZConnect<Args...>> m_connects;
-
+    std::unique_ptr<std::vector<JZConnect<Args...>>> m_connects;  // 惰性: 无连接时为 nullptr
     JZObject *m_object;
-    int m_connectId;
 };
 
 typedef JZSignal<> JZSigVoid;

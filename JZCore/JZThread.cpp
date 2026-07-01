@@ -91,9 +91,7 @@ JZThread::~JZThread()
 		delete childs[i];
 	m_childs.clear();
     
-    for (int i = 0; i < (int)m_timeidList.size(); i++)
-        m_thread->removeTimer(this, m_timeidList[i]);
-    m_timeidList.clear();
+    m_thread->cancelObjectTimers(this);
 
 	if (m_thread == this)
 		m_thread = nullptr;
@@ -407,6 +405,16 @@ void JZThread::removeTimer(JZObject *object, int timerId)
     if (idx >= 0)
     {        
         vec_removeAt(m_timerList, idx);
+    }
+}
+
+void JZThread::cancelObjectTimers(JZObject *object)
+{
+    JZ_ASSERT(jzApp->currentThread() == this);
+    for (int i = (int)m_timerList.size() - 1; i >= 0; i--)
+    {
+        if (m_timerList[i].object == object)
+            vec_removeAt(m_timerList, i);
     }
 }
 

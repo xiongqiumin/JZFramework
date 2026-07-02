@@ -1,4 +1,4 @@
-#ifndef JZ_DATA_STREAM_H_
+﻿#ifndef JZ_DATA_STREAM_H_
 #define JZ_DATA_STREAM_H_
 
 #include <string>
@@ -12,14 +12,23 @@ class JZDataStreamImpl;
 class JZDataStream
 {
 public:
+    enum ByteOrder
+    {
+        LittleEndian,
+        BigEndian,
+    };
+
     JZDataStream(JZFile *file);
-    JZDataStream(JZByteArray *buffer);
+    JZDataStream(JZByteArray *buffer, JZ::OpenMode mode);
     JZDataStream(const JZByteArray &buffer);    
     ~JZDataStream();
 
     int writeRawData(const char *s, int len);
     int readRawData(char *s, int len);
     void skipRawData(int offset);
+
+    void setByteOrder(ByteOrder order);
+    ByteOrder byteOrder();
 
     JZDataStream &operator<<(bool i);
     JZDataStream &operator>>(bool &i);
@@ -94,6 +103,30 @@ JZDataStream &operator<<(JZDataStream &s, const std::string &str);
 JZDataStream &operator>>(JZDataStream &s, std::string &str);
 JZDataStream &operator<<(JZDataStream &s, const JZByteArray &buffer);
 JZDataStream &operator>>(JZDataStream &s, JZByteArray &buffer);
+
+// SFINAE 约束：仅枚举类型生效
+template<typename T>
+using EnableIfEnum = typename std::enable_if<std::is_enum<T>::value, int>::type;
+
+// 枚举写入：自动使用枚举底层原生类型序列化
+template<typename T, EnableIfEnum<T> = 0>
+JZDataStream& operator<<(JZDataStream& s, T val)
+{
+    using UnderlyingT = typename std::underlying_type<T>::type;
+    UnderlyingT raw = static_cast<UnderlyingT>(val);
+    return s << raw;
+}
+
+// 枚举读取：按底层类型读出再转回枚举
+template<typename T, EnableIfEnum<T> = 0>
+JZDataStream& operator>>(JZDataStream& s, T& val)
+{
+    using UnderlyingT = typename std::underlying_type<T>::type;
+    UnderlyingT raw{};
+    s >> raw;
+    val = static_cast<T>(raw);
+    return s;
+}
 
 template<class T>
 JZDataStream &operator<<(JZDataStream &s, const std::vector<T> &vec)

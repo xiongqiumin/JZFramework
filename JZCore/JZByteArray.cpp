@@ -87,6 +87,8 @@ JZByteArray JZByteArray::fromBase64(const JZByteArray &base64_in) {
     return out;
 }
 
+JZByteArray fromRawData(const char* buffer, int len);
+
 JZByteArray::JZByteArray()
 {
 }
@@ -236,6 +238,11 @@ void JZByteArray::append(const char *buffer, int len)
 void JZByteArray::append(const JZByteArray &buffer)
 {
     return append(buffer.data(), buffer.size());
+}
+
+JZByteArray JZByteArray::left(int size) const
+{
+    return mid(0, size);
 }
 
 JZByteArray JZByteArray::mid(int start, int len) const

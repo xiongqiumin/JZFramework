@@ -1,4 +1,4 @@
-#ifndef JZ_OBJECT_H_
+﻿#ifndef JZ_OBJECT_H_
 #define JZ_OBJECT_H_
 
 #include <vector>

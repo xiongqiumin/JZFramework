@@ -8,9 +8,7 @@
 
 // 平台相关头文件仅在实现文件中包含
 #if JZ_OS == JZ_OS_FREE_RTOS
-    #include <freertos/FreeRTOS.h>
-    #include <freertos/task.h>
-    #include <freertos/semphr.h>
+    #include "JZFreeRTOS.h"
 #elif JZ_OS == JZ_OS_RT_THREAD
     #include "rtthread.h"
     #define JZ_THREAD_STACK_SIZE 4096

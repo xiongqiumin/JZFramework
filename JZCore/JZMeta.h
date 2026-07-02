@@ -14,8 +14,12 @@ public:
     enum {
         None,
         Bool,
+        Int16,
+        UInt16,
         Int,
+        UInt,
         Int64,
+        UInt64,
         Float,
         Double,
         Pointer,
@@ -116,8 +120,12 @@ int jzMetaTypeId()
 }
 
 JZ_DECLARE_METATYPE_INTERNAL(bool, JZMetaType::Bool);
+JZ_DECLARE_METATYPE_INTERNAL(int16_t, JZMetaType::Int16);
+JZ_DECLARE_METATYPE_INTERNAL(uint16_t, JZMetaType::UInt16);
 JZ_DECLARE_METATYPE_INTERNAL(int, JZMetaType::Int);
+JZ_DECLARE_METATYPE_INTERNAL(unsigned int, JZMetaType::UInt);
 JZ_DECLARE_METATYPE_INTERNAL(int64_t, JZMetaType::Int64);
+JZ_DECLARE_METATYPE_INTERNAL(uint64_t, JZMetaType::UInt64);
 JZ_DECLARE_METATYPE_INTERNAL(float, JZMetaType::Float);
 JZ_DECLARE_METATYPE_INTERNAL(double, JZMetaType::Double);
 JZ_DECLARE_METATYPE_INTERNAL(void*, JZMetaType::Pointer);

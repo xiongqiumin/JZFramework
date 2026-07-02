@@ -1,4 +1,4 @@
-#ifndef JZ_THREAD_H_
+﻿#ifndef JZ_THREAD_H_
 #define JZ_THREAD_H_
 
 #include <queue>

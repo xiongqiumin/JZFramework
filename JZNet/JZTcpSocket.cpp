@@ -111,6 +111,11 @@ void JZTcpSocket::abort()
     closeInternal(true);
 }
 
+void JZTcpSocket::close()
+{
+    disconnectFromHost();
+}   
+
 int JZTcpSocket::read(char* buffer, int len)
 {
     if (len <= 0) {

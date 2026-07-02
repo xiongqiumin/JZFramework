@@ -11,6 +11,7 @@ class JZByteArray
 {
 public:
     static JZByteArray fromBase64(const JZByteArray &base64);
+    static JZByteArray fromRawData(const char* buffer, int len);
 
     JZByteArray();
     JZByteArray(const char *buffer, int len);
@@ -44,6 +45,8 @@ public:
     void push_back(char ch);
     void append(const char *buffer, int len);
     void append(const JZByteArray &buffer);
+
+    JZByteArray left(int size) const;
     JZByteArray mid(int start, int len = -1) const;
     void clear();        
 

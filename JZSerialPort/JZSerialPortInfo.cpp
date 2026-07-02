@@ -4,10 +4,10 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 // Qt-Security score:significant reason:default
 
-#include "qserialportinfo.h"
-#include "qserialportinfo_p.h"
-#include "qserialport.h"
-#include "qserialport_p.h"
+#include "JZSerialPortinfo.h"
+#include "JZSerialPortinfo_p.h"
+#include "JZSerialPort.h"
+#include "JZSerialPort_p.h"
 
 QT_BEGIN_NAMESPACE
 
@@ -15,11 +15,11 @@ QT_BEGIN_NAMESPACE
 // binary compatible. The QScopedPointer had a non-default deleter, but
 // the deleter just provides a static function to use for deletion so we don't
 // include it in this template definition (the deleter-class was deleted).
-static_assert(sizeof(std::unique_ptr<QSerialPortInfoPrivate>)
-              == sizeof(QScopedPointer<QSerialPortInfoPrivate>));
+static_assert(sizeof(std::unique_ptr<JZSerialPortInfoPrivate>)
+              == sizeof(QScopedPointer<JZSerialPortInfoPrivate>));
 
 /*!
-    \class QSerialPortInfo
+    \class JZSerialPortInfo
 
     \brief Provides information about existing serial ports.
 
@@ -28,12 +28,12 @@ static_assert(sizeof(std::unique_ptr<QSerialPortInfoPrivate>)
     \since 5.1
 
     Use the static \l availablePorts() function to generate a list of
-    QSerialPortInfo objects. Each QSerialPortInfo object in the list represents
+    JZSerialPortInfo objects. Each JZSerialPortInfo object in the list represents
     a single serial port and can be queried for the \l {portName}{port name},
     \l {systemLocation}{system location}, \l description, \l manufacturer, and
-    some other hardware parameters. The QSerialPortInfo class can also be
-    used as an input parameter for the \l {QSerialPort::}{setPort()} method of
-    the QSerialPort class.
+    some other hardware parameters. The JZSerialPortInfo class can also be
+    used as an input parameter for the \l {JZSerialPort::}{setPort()} method of
+    the JZSerialPort class.
 
     \section1 Example Usage
 
@@ -54,45 +54,45 @@ static_assert(sizeof(std::unique_ptr<QSerialPortInfoPrivate>)
     the \c {libudev} lookup and only use the information from the
     \c {/sys/class/tty} directory.
 
-    \sa QSerialPort
+    \sa JZSerialPort
 */
 
 /*!
-    Constructs an empty QSerialPortInfo object.
+    Constructs an empty JZSerialPortInfo object.
 
     \sa isNull()
 */
-QSerialPortInfo::QSerialPortInfo()
+JZSerialPortInfo::JZSerialPortInfo()
 {
 }
 
 /*!
     Constructs a copy of \a other.
 */
-QSerialPortInfo::QSerialPortInfo(const QSerialPortInfo &other)
-    : d_ptr(other.d_ptr ? new QSerialPortInfoPrivate(*other.d_ptr) : nullptr)
+JZSerialPortInfo::JZSerialPortInfo(const JZSerialPortInfo &other)
+    : d_ptr(other.d_ptr ? new JZSerialPortInfoPrivate(*other.d_ptr) : nullptr)
 {
 }
 
 /*!
-    Constructs a QSerialPortInfo object from serial \a port.
+    Constructs a JZSerialPortInfo object from serial \a port.
 */
-QSerialPortInfo::QSerialPortInfo(const QSerialPort &port)
-    : QSerialPortInfo(port.portName())
+JZSerialPortInfo::JZSerialPortInfo(const JZSerialPort &port)
+    : JZSerialPortInfo(port.portName())
 {
 }
 
 /*!
-    Constructs a QSerialPortInfo object from serial port \a name.
+    Constructs a JZSerialPortInfo object from serial port \a name.
 
     This constructor finds the relevant serial port among the available ones
     according to the port name \a name, and constructs the serial port info
     instance for that port.
 */
-QSerialPortInfo::QSerialPortInfo(const std::string &name)
+JZSerialPortInfo::JZSerialPortInfo(const std::string &name)
 {
-    const auto infos = QSerialPortInfo::availablePorts();
-    for (const QSerialPortInfo &info : infos) {
+    const auto infos = JZSerialPortInfo::availablePorts();
+    for (const JZSerialPortInfo &info : infos) {
         if (name == info.portName()) {
             *this = info;
             break;
@@ -100,34 +100,34 @@ QSerialPortInfo::QSerialPortInfo(const std::string &name)
     }
 }
 
-QSerialPortInfo::QSerialPortInfo(const QSerialPortInfoPrivate &dd)
-    : d_ptr(new QSerialPortInfoPrivate(dd))
+JZSerialPortInfo::JZSerialPortInfo(const JZSerialPortInfoPrivate &dd)
+    : d_ptr(new JZSerialPortInfoPrivate(dd))
 {
 }
 
 /*!
-    Destroys the QSerialPortInfo object. References to the values in the
+    Destroys the JZSerialPortInfo object. References to the values in the
     object become invalid.
 */
-QSerialPortInfo::~QSerialPortInfo()
+JZSerialPortInfo::~JZSerialPortInfo()
 {
 }
 
 /*!
-    Swaps QSerialPortInfo \a other with this QSerialPortInfo. This operation is
+    Swaps JZSerialPortInfo \a other with this JZSerialPortInfo. This operation is
     very fast and never fails.
 */
-void QSerialPortInfo::swap(QSerialPortInfo &other)
+void JZSerialPortInfo::swap(JZSerialPortInfo &other)
 {
     d_ptr.swap(other.d_ptr);
 }
 
 /*!
-    Sets the QSerialPortInfo object to be equal to \a other.
+    Sets the JZSerialPortInfo object to be equal to \a other.
 */
-QSerialPortInfo& QSerialPortInfo::operator=(const QSerialPortInfo &other)
+JZSerialPortInfo& JZSerialPortInfo::operator=(const JZSerialPortInfo &other)
 {
-    QSerialPortInfo(other).swap(*this);
+    JZSerialPortInfo(other).swap(*this);
     return *this;
 }
 
@@ -136,9 +136,9 @@ QSerialPortInfo& QSerialPortInfo::operator=(const QSerialPortInfo &other)
 
     \sa systemLocation()
 */
-std::string QSerialPortInfo::portName() const
+std::string JZSerialPortInfo::portName() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? std::string() : d->portName;
 }
 
@@ -147,9 +147,9 @@ std::string QSerialPortInfo::portName() const
 
     \sa portName()
 */
-std::string QSerialPortInfo::systemLocation() const
+std::string JZSerialPortInfo::systemLocation() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? std::string() : d->device;
 }
 
@@ -159,9 +159,9 @@ std::string QSerialPortInfo::systemLocation() const
 
     \sa manufacturer(), serialNumber()
 */
-std::string QSerialPortInfo::description() const
+std::string JZSerialPortInfo::description() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? std::string() : d->description;
 }
 
@@ -171,9 +171,9 @@ std::string QSerialPortInfo::description() const
 
     \sa description(), serialNumber()
 */
-std::string QSerialPortInfo::manufacturer() const
+std::string JZSerialPortInfo::manufacturer() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? std::string() : d->manufacturer;
 }
 
@@ -187,9 +187,9 @@ std::string QSerialPortInfo::manufacturer() const
 
     \sa description(), manufacturer()
 */
-std::string QSerialPortInfo::serialNumber() const
+std::string JZSerialPortInfo::serialNumber() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? std::string() : d->serialNumber;
 }
 
@@ -199,9 +199,9 @@ std::string QSerialPortInfo::serialNumber() const
 
     \sa hasVendorIdentifier(), productIdentifier(), hasProductIdentifier()
 */
-uint16_t QSerialPortInfo::vendorIdentifier() const
+uint16_t JZSerialPortInfo::vendorIdentifier() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? 0 : d->vendorIdentifier;
 }
 
@@ -211,9 +211,9 @@ uint16_t QSerialPortInfo::vendorIdentifier() const
 
     \sa hasProductIdentifier(), vendorIdentifier(), hasVendorIdentifier()
 */
-uint16_t QSerialPortInfo::productIdentifier() const
+uint16_t JZSerialPortInfo::productIdentifier() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? 0 : d->productIdentifier;
 }
 
@@ -223,9 +223,9 @@ uint16_t QSerialPortInfo::productIdentifier() const
 
     \sa vendorIdentifier(), productIdentifier(), hasProductIdentifier()
 */
-bool QSerialPortInfo::hasVendorIdentifier() const
+bool JZSerialPortInfo::hasVendorIdentifier() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? false : d->hasVendorIdentifier;
 }
 
@@ -235,32 +235,32 @@ bool QSerialPortInfo::hasVendorIdentifier() const
 
     \sa productIdentifier(), vendorIdentifier(), hasVendorIdentifier()
 */
-bool QSerialPortInfo::hasProductIdentifier() const
+bool JZSerialPortInfo::hasProductIdentifier() const
 {
-    Q_D(const QSerialPortInfo);
+    Q_D(const JZSerialPortInfo);
     return !d ? false : d->hasProductIdentifier;
 }
 
 /*!
-    \fn bool QSerialPortInfo::isNull() const
+    \fn bool JZSerialPortInfo::isNull() const
 
-    Returns whether this QSerialPortInfo object holds a
+    Returns whether this JZSerialPortInfo object holds a
     serial port definition.
 */
 
 /*!
-    \fn set::vector<int32_t> QSerialPortInfo::standardBaudRates()
+    \fn set::vector<int32_t> JZSerialPortInfo::standardBaudRates()
 
     Returns a list of available standard baud rates supported
     by the target platform.
 */
-set::vector<int32_t> QSerialPortInfo::standardBaudRates()
+set::vector<int32_t> JZSerialPortInfo::standardBaudRates()
 {
-    return QSerialPortPrivate::standardBaudRates();
+    return JZSerialPortPrivate::standardBaudRates();
 }
 
 /*!
-    \fn set::vector<QSerialPortInfo> QSerialPortInfo::availablePorts()
+    \fn set::vector<JZSerialPortInfo> JZSerialPortInfo::availablePorts()
 
     Returns a list of available serial ports on the system.
 

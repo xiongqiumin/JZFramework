@@ -1,4 +1,5 @@
 ﻿#include "JZVariant.h"
+#include "JZDataStream.h"
 
 //JZVariant
 const JZVariant &JZVariant::None()
@@ -135,6 +136,27 @@ void JZVariant::operator=(const JZVariant &other)
     }
 }
 
+bool JZVariant::operator==(const JZVariant& other) const
+{
+    if (this == &other)
+        return true;
+
+    if (m_type < JZMetaType::PodEnd && other.m_type < JZMetaType::PodEnd)
+    {
+        bool ret = (memcmp(&m_data, &other.m_data, sizeof(Data)) == 0);
+        return ret;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool JZVariant::operator!=(const JZVariant& other) const
+{
+    return !(*this == other);
+}
+
 int JZVariant::typeId() const
 {
     return m_type;
@@ -247,4 +269,14 @@ void JZVariant::release()
     }
     m_type = JZMetaType::None;
     memset(&m_data, 0, sizeof(Data));
+}
+
+JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec)
+{
+    return s;
+}
+
+JZDataStream& operator>>(JZDataStream& s, JZVariant& vec)
+{
+    return s;
 }

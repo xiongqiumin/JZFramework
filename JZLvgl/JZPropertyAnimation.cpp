@@ -13,7 +13,7 @@ static void s_propExecCb(void* var, int32_t value)
         if (anim) widget->setProperty(anim->m_propName, JZVariant((int)value));
     }
 }
-
+/*
 bool JZPropertyAnimation::setProperty(const std::string& name, int32_t start, int32_t end)
 {
     m_propName = name;
@@ -21,3 +21,4 @@ bool JZPropertyAnimation::setProperty(const std::string& name, int32_t start, in
     setExecCb(s_propExecCb);
     return true;
 }
+*/

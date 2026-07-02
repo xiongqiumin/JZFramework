@@ -1,5 +1,5 @@
 #include "JZAudioDeviceInfo.h"
-#include "JZAudioDriver.h"
+#include "detail/JZAudioDriver.h"
 
 std::vector<JZAudioDeviceInfo> JZAudioDeviceInfo::inputList()
 {

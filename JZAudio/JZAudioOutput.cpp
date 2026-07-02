@@ -1,5 +1,5 @@
 #include "JZAudioOutput.h"
-#include "JZAudioDriver.h"
+#include "detail/JZAudioDriver.h"
 
 JZAudioOutput::JZAudioOutput(JZObject* parent)
     : JZObject(parent), sigPlayFinish(this)

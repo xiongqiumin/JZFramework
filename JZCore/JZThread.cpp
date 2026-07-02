@@ -31,6 +31,13 @@ JZEventInfo::JZEventInfo(JZObject *obj, JZEvent *e)
     sem = nullptr;
 }
 
+//JZThreadConfig
+int JZThreadConfig::stackSizeAlign() const
+{
+    int stack_align = (stackSize + 15) / 16 * 16;
+    return stack_align;
+}
+
 //JZThread
 JZThread::TimerInfo::TimerInfo()
 {
@@ -213,6 +220,8 @@ void JZThread::start()
         UBaseType_t maxSysPri = configMAX_PRIORITIES - 1;
         pri = static_cast<UBaseType_t>((userPri * maxSysPri) / 16);
     }
+
+    int stack_byte_size = m_config.stackSizeAlign();
     
     BaseType_t ret = xTaskCreate(
         // 任务入口函数（静态函数，通过参数传递 this 指针）
@@ -227,8 +236,8 @@ void JZThread::start()
             xSemaphoreGive((SemaphoreHandle_t)thread->m_waitSem);            
             vTaskDelete(NULL);
         },
-        m_name.c_str(),
-        m_config.stackSize / 4,
+        objectName().c_str(),
+        stack_byte_size / sizeof(StackType_t),
         this,
         pri,
         (TaskHandle_t*)(&m_handle)

@@ -289,7 +289,6 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_WS_MSG)
     {
         mg_ws_message *ws_msg = (mg_ws_message*)ev_data;
-        int op = ws_msg->flags & 15;
         event->wsFlag = ws_msg->flags;
         event->binData = JZByteArray(ws_msg->data.buf, (int)ws_msg->data.len);            
     }

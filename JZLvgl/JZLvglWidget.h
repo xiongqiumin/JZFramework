@@ -40,8 +40,8 @@ public:
     void update();
 
     // 预定义属性
-    void setProperty(const std::string& name, const JZVariant& value) override;
-    const JZVariant& property(const std::string& name) const override;
+    virtual void setProperty(const std::string& name, const JZVariant& value) override;
+    virtual const JZVariant& property(const std::string& name) const override;
 
 protected:
     // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）

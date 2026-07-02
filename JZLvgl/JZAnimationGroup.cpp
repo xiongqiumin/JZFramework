@@ -30,7 +30,7 @@ void JZAnimationGroup::addProperty(JZLvglWidget* target, const std::string& name
     anim->setDuration(m_duration);
     anim->setDelay(m_delay);
     anim->setEasingEaseInOut();
-    anim->setProperty(name, from, to);
+    //anim->setProperty(name, from, to);
     addAnimation(anim, (int)startTime);
 }
 

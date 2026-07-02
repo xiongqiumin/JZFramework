@@ -99,7 +99,7 @@ template<class T>
 JZDataStream &operator<<(JZDataStream &s, const std::vector<T> &vec)
 {
     s << (int32_t)vec.size();
-    if (std::is_pod<T>::value)
+    if (std::is_trivially_copyable<T>::value)
     {
         s.writeRawData((const char*)vec.data(),int(vec.size() * sizeof(T)));
     }
@@ -117,7 +117,7 @@ JZDataStream &operator>>(JZDataStream &s, std::vector<T> &vec)
 {
     int32_t size = 0;
     s >> size;
-    if (std::is_pod<T>::value)
+    if (std::is_trivially_copyable<T>::value)
     {
         vec.resize(size);
         s.readRawData((char*)vec.data(),int(vec.size() * sizeof(T)));

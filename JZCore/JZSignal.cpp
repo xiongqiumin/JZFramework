@@ -22,6 +22,11 @@ JZBaseSignal::~JZBaseSignal()
 {
 }
 
+JZThread *JZBaseSignal::objectThread(JZObject*sender)
+{
+    return sender->thread();
+}
+
 void JZBaseSignal::pushSender(JZThread* thread, JZObject *sender)
 {
     thread->pushSender(sender);

@@ -8,22 +8,22 @@
 	JZAudioDeviceInfo.h
     JZAudioDeviceInfo.cpp
 	JZAudioUtils.h
-	JZAudioUtils.cpp
-    JZAudioDriver.h
-    JZAudioDriver.cpp
+	JZAudioUtils.cpp    
 	JZWaveFile.h
 	JZWaveFile.cpp
+    detail/JZAudioDriver.h
+    detail/JZAudioDriver.cpp
 )
 
 if(WIN32)
     # Windows平台：添加Windows特有的音频实现文件
     list(APPEND JZAudio_SOURCES
-        windows/JZAudioInputImpl.cpp
-		windows/JZAudioInputImpl.h
-		windows/JZAudioOutputImpl.cpp
-		windows/JZAudioOutputImpl.h
-        windows/JZAudioDriverLinux.cpp
-		windows/JZAudioDriverLinux.h
+        detail/windows/JZAudioInputWindows.cpp
+		detail/windows/JZAudioInputWindows.h
+		detail/windows/JZAudioOutputWindows.cpp
+		detail/windows/JZAudioOutputWindows.h
+        detail/windows/JZAudioDriverWindows.cpp
+		detail/windows/JZAudioDriverWindows.h
     )
 	
 	target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/windows")
@@ -32,26 +32,16 @@ if(WIN32)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux平台：添加Linux特有的音频实现文件
     list(APPEND JZAudio_SOURCES
-        linux/JZAudioInputImpl.cpp
-        linux/JZAudioInputImpl.h
-        linux/JZAudioOutputImpl.cpp
-        linux/JZAudioOutputImpl.h
-        linux/JZAudioDriverWin32.cpp
-		linux/JZAudioDriverWin32.h
+        detail/linux/JZAudioInputLinux.cpp
+        detail/linux/JZAudioInputLinux.h
+        detail/linux/JZAudioOutputLinux.cpp
+        detail/linux/JZAudioOutputLinux.h
+        detail/linux/JZAudioDriverLinux.cpp
+		detail/linux/JZAudioDriverLinux.h
     )
 	
     target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/linux")
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE asound)
-
-else()
-    list(APPEND JZAudio_SOURCES
-        rtos/JZAudioInputImpl.cpp
-        rtos/JZAudioInputImpl.h
-        rtos/JZAudioOutputImpl.cpp
-        rtos/JZAudioOutputImpl.h
-    )
-
-    target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/rtos")
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE asound)    
 endif()
 
 convert_to_abs_paths(JZAudio_SOURCES)

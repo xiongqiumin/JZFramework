@@ -54,7 +54,7 @@ static int getCurrentStackUse()
     StackType_t dummy;
     StackType_t *sp = &dummy;
     StackType_t *stackLow = xTaskGetStackStart(NULL);
-    UBaseType_t stackWordCnt = JZThread::currentThread()->config().stackSize / 4;
+    UBaseType_t stackWordCnt = JZThread::currentThread()->config().stackSizeAlign() / sizeof(StackType_t);
     StackType_t *stackHigh = stackLow + stackWordCnt;
 
     // 向下增长栈：已用栈 = 初始最高栈地址 - 当前SP

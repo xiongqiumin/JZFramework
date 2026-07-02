@@ -1,6 +1,5 @@
 #include "JZAudioInput.h"
-#include "JZAudioInputImpl.h"
-#include "JZAudioDriver.h"
+#include "detail/JZAudioDriver.h"
 
 JZAudioInput::JZAudioInput(JZObject* parent)
 	:JZObject(parent), sigReadyRead(this)

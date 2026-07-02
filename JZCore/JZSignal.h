@@ -72,6 +72,7 @@ public:
     JZBaseSignal();
     virtual ~JZBaseSignal();
     
+    JZThread *objectThread(JZObject*sender);
     void pushSender(JZThread *thread, JZObject*sender);
     void popSender(JZThread *thread);
 
@@ -164,7 +165,7 @@ public:
                 {
                     guard.unlock();
 
-                    JZThread* thread = m_object->thread();
+                    JZThread* thread = objectThread(m_object);
                     JZObject* sender = m_object;
 
                     pushSender(thread, sender);

@@ -7,7 +7,7 @@ void JZCoContextEndTask(JZCoCoroutine* task)
     g_scheduler->endTask(task);
 }
 
-#ifdef _WIN32 
+#if (JZ_OS == JZ_OS_WINDOWS) 
 
 #include <Windows.h>
 
@@ -96,7 +96,7 @@ VOID CALLBACK FiberFunction(LPVOID lpFiberParameter)
     JZCoContextEndTask(ctx->task);    
 }
 
-#elif defined(__linux__)
+#elif (JZ_OS == JZ_OS_LINUX)
 
 #include "boost_context/fcontext.hpp"
 
@@ -220,45 +220,105 @@ CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx)
     return &ctx->ctx;
 }
 
-#elif (JZ_OS == JZ_OS_FREE_RTOS)
+#elif (JZ_OS == JZ_OS_FREE_RTOS) 
 
-#include <freertos/FreeRTOS.h>
+#include "JZFreeRTOS.h"
 
-// 主上下文（当前FreeRTOS任务作为主线程主纤程）
+/*
+切换原理,新建调度线程, 等待调度消息.收到调度消息后,修改main ctx 的 pxTopOfStack 切换到新的堆栈
+*/
+struct FreeRtosTaskControlBlock       /* The old naming convention is used to prevent breaking kernel aware debuggers. */
+{
+    StackType_t *pxTopOfStack;
+};
+
+struct CoMsg
+{
+    TaskHandle_t cur;
+    TaskHandle_t next;
+};
+
+static void co_scheduler_task(void* arg);
 class JZCoMainContext
 {
 public:
     JZCoMainContext();
     ~JZCoMainContext();
 
+    QueueHandle_t coMsgQueue;
     TaskHandle_t ctx;
+    StackType_t *pxTopOfStack;
 };
+JZCoMainContext *g_mainCtx = nullptr;
 
 // ==================== 主上下文 ====================
 JZCoMainContext::JZCoMainContext()
 {
-    // 等价 ConvertThreadToFiber：把当前任务作为主纤程
     ctx = xTaskGetCurrentTaskHandle();
+    coMsgQueue = xQueueCreate(16, sizeof(CoMsg));
+    pxTopOfStack = nullptr;
 }
 
 JZCoMainContext::~JZCoMainContext()
 {
-    // 等价 ConvertFiberToThread：无需额外操作，任务生命周期由外部管理
+    CoMsg msg;
+    msg.cur = nullptr;
+    msg.next = nullptr;
+    xQueueSend(g_mainCtx->coMsgQueue, &msg, portMAX_DELAY);
+
+    vQueueDelete(coMsgQueue);
+    coMsgQueue = nullptr;
 }
 
 JZCoMainContext *createMainContext()
 {
-    return new JZCoMainContext();
+    g_mainCtx = new JZCoMainContext();
+    xTaskCreate(co_scheduler_task, "app_main", 512, nullptr, configMAX_PRIORITIES - 1, NULL);
+    return g_mainCtx;
 }
 
 void destoryMainContext(JZCoMainContext *ctx)
 {
     delete ctx;
+    g_mainCtx = nullptr;
 }
 
 CO_CONTEXT_HANDLE getMainContextHandle(JZCoMainContext* ctx)
 {
     return ctx->ctx;
+}
+
+void co_scheduler_task(void *arg)
+{
+    BaseType_t ret;
+    CoMsg msg;
+
+    while (true)
+    {
+        ret = xQueueReceive(g_mainCtx->coMsgQueue, &msg, portMAX_DELAY);
+        if (msg.cur == nullptr)
+            break;
+
+        if (ret == pdPASS)
+        {
+            auto cur_tcb = (FreeRtosTaskControlBlock*)msg.cur;
+            auto next_tcb = (FreeRtosTaskControlBlock*)msg.next;
+            if(msg.cur == g_mainCtx->ctx)
+            {
+                //main to co
+                g_mainCtx->pxTopOfStack = cur_tcb->pxTopOfStack;
+                cur_tcb->pxTopOfStack = next_tcb->pxTopOfStack;
+            }
+            else
+            {
+                //co to main
+                cur_tcb->pxTopOfStack = next_tcb->pxTopOfStack; //保存当前堆栈到协程
+                next_tcb->pxTopOfStack = g_mainCtx->pxTopOfStack; //恢复主线程堆栈
+                g_mainCtx->pxTopOfStack = nullptr;
+            }
+        }
+    }
+    vTaskDelete(NULL);
 }
 
 // 协程上下文
@@ -277,19 +337,8 @@ public:
 JZCoContext::JZCoContext(int stack_size)
     : task(nullptr), ctx_(nullptr)
 {
-    jzDebug() << "JZCoContext" << this;
-
-    // 创建任务，创建后立刻挂起，等价 CreateFiberEx
-    BaseType_t ret = xTaskCreate(
-        JZCoContext::CoEntryWrapper,
-        "jz_co",
-        stack_size/4,
-        this,
-        uxTaskPriorityGet(NULL), // 和主任务同优先级
-        &ctx_
-    );
-    JZ_ASSERT(ret == pdPASS);
-    // 创建完成立即挂起，等待手动切换调度
+    BaseType_t xResult = xTaskCreate(CoEntryWrapper, "co_task", 
+        stack_size / sizeof(StackType_t), this, tskIDLE_PRIORITY + 1, &ctx_);
     vTaskSuspend(ctx_);
 }
 
@@ -298,16 +347,14 @@ JZCoContext::~JZCoContext()
     if (ctx_)
     {
         vTaskDelete(ctx_);
+        ctx_ = nullptr;
     }
 }
 
 void JZCoContext::CoEntryWrapper(void* param)
 {
-    JZCoContext* ctx = static_cast<JZCoContext*>(param);
-    jzDebug() << "CoEntryWrapper" << ctx;
-    jzDebug() << "ctx->task" << ctx->task;
+    JZCoContext *ctx = (JZCoContext *)param;    
     ctx->task->run();
-    // 协程执行完毕，回收资源
     JZCoContextEndTask(ctx->task);    
 }
 
@@ -331,19 +378,15 @@ CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx)
 // ==================== 协程切换（核心） ====================
 void switchCoroutine(CO_CONTEXT_HANDLE cur, CO_CONTEXT_HANDLE next)
 {
-    TaskHandle_t hCur = static_cast<TaskHandle_t>(cur);
-    TaskHandle_t hNext = static_cast<TaskHandle_t>(next);
+    CoMsg msg;
+    msg.cur = (TaskHandle_t)cur;
+    msg.next = (TaskHandle_t)next;
 
-    // 挂起当前运行的协程
-    vTaskSuspend(hCur);
-    // 唤醒目标协程
-    vTaskResume(hNext);
-    // 触发FreeRTOS原生PendSV上下文切换，复用官方寄存器保存恢复
-    taskYIELD();
+    xQueueSend(g_mainCtx->coMsgQueue, &msg, portMAX_DELAY);
 }
 
 #else
 
-#error "un support"
+#error "Unsupported OS for coroutine context switching"
 
 #endif

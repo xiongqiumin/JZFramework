@@ -22,6 +22,7 @@ public:
     void disconnectFromHost();
 
     void abort();
+    void close();
 
     int read(char* buffer, int len);
     JZByteArray readAll();

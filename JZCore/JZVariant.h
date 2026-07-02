@@ -8,6 +8,7 @@
 #include "JZByteArray.h"
 
 //JZVariant
+class JZDataStream;
 class JZVariant
 {
 public:
@@ -25,6 +26,9 @@ public:
 
     JZVariant(const JZVariant &other);
     void operator=(const JZVariant &other);
+
+    bool operator==(const JZVariant& other) const;
+    bool operator!=(const JZVariant& other) const;
 
     int typeId() const;
     bool isValid() const;
@@ -112,5 +116,8 @@ template <>
 double JZVariant::value<double>() const;
 template <>
 void *JZVariant::value<void *>() const;
+
+JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec);
+JZDataStream& operator>>(JZDataStream& s, JZVariant& vec);
 
 #endif

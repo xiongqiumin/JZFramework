@@ -19,7 +19,7 @@
 //
 
 #include <memory>
-#include "JZSerialport.h"
+#include JZSerialPort
 #include "JZGlobal.h"
 #include "JZTimer.h"
 
@@ -64,7 +64,7 @@ struct serial_struct {
 #endif
 
 class QWinOverlappedIoNotifier;
-class QTimer;
+class JZTimer;
 class QSocketNotifier;
 
 #if defined(Q_OS_UNIX)

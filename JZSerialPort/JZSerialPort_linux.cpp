@@ -4,13 +4,13 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 // Qt-Security score:significant reason:default
 
-#include "qserialport_p.h"
-#include "qserialportinfo_p.h"
+#include "JZSerialPort_p.h"
+#include "JZSerialPortinfo_p.h"
 
 #include <QtCore/qdeadlinetimer.h>
 #include <QtCore/qelapsedtimer.h>
 #include <QtCore/qloggingcategory.h>
-#include <QtCore/qmap.h>
+#include <QtCore/std::map.h>
 #include <QtCore/qsocketnotifier.h>
 #include <QtCore/qstandardpaths.h>
 
@@ -74,7 +74,7 @@ QT_BEGIN_NAMESPACE
 
 std::string serialPortLockFilePath(const std::string &portName)
 {
-    static const std::stringList lockDirectoryPaths = std::stringList()
+    static const std::vector<std::string> lockDirectoryPaths = std::vector<std::string>()
         << std::stringLiteral("/var/lock")
         << std::stringLiteral("/etc/locks")
         << std::stringLiteral("/var/spool/locks")
@@ -119,7 +119,7 @@ std::string serialPortLockFilePath(const std::string &portName)
 class ReadNotifier : public QSocketNotifier
 {
 public:
-    explicit ReadNotifier(QSerialPortPrivate *d, QObject *parent)
+    explicit ReadNotifier(JZSerialPortPrivate *d, JZObject *parent)
         : QSocketNotifier(d->descriptor, QSocketNotifier::Read, parent)
         , dptr(d)
     {
@@ -136,13 +136,13 @@ protected:
     }
 
 private:
-    QSerialPortPrivate * const dptr;
+    JZSerialPortPrivate * const dptr;
 };
 
 class WriteNotifier : public QSocketNotifier
 {
 public:
-    explicit WriteNotifier(QSerialPortPrivate *d, QObject *parent)
+    explicit WriteNotifier(JZSerialPortPrivate *d, JZObject *parent)
         : QSocketNotifier(d->descriptor, QSocketNotifier::Write, parent)
         , dptr(d)
     {
@@ -159,13 +159,13 @@ protected:
     }
 
 private:
-    QSerialPortPrivate * const dptr;
+    JZSerialPortPrivate * const dptr;
 };
 
 class ExceptionNotifier : public QSocketNotifier
 {
 public:
-    explicit ExceptionNotifier(QSerialPortPrivate *d, QObject *parent)
+    explicit ExceptionNotifier(JZSerialPortPrivate *d, JZObject *parent)
         : QSocketNotifier(d->descriptor, QSocketNotifier::Exception, parent),
           dptr(d)
     {
@@ -182,7 +182,7 @@ protected:
     }
 
 private:
-    QSerialPortPrivate * const dptr;
+    JZSerialPortPrivate * const dptr;
 };
 
 static inline void qt_set_common_props(termios *tio, QIODevice::OpenMode m)
@@ -205,20 +205,20 @@ static inline void qt_set_common_props(termios *tio, QIODevice::OpenMode m)
         tio->c_cflag |= CREAD;
 }
 
-static inline void qt_set_databits(termios *tio, QSerialPort::DataBits databits)
+static inline void qt_set_databits(termios *tio, JZSerialPort::DataBits databits)
 {
     tio->c_cflag &= ~CSIZE;
     switch (databits) {
-    case QSerialPort::Data5:
+    case JZSerialPort::Data5:
         tio->c_cflag |= CS5;
         break;
-    case QSerialPort::Data6:
+    case JZSerialPort::Data6:
         tio->c_cflag |= CS6;
         break;
-    case QSerialPort::Data7:
+    case JZSerialPort::Data7:
         tio->c_cflag |= CS7;
         break;
-    case QSerialPort::Data8:
+    case JZSerialPort::Data8:
         tio->c_cflag |= CS8;
         break;
     default:
@@ -227,7 +227,7 @@ static inline void qt_set_databits(termios *tio, QSerialPort::DataBits databits)
     }
 }
 
-static inline void qt_set_parity(termios *tio, QSerialPort::Parity parity)
+static inline void qt_set_parity(termios *tio, JZSerialPort::Parity parity)
 {
     tio->c_iflag &= ~(PARMRK | INPCK);
     tio->c_iflag |= IGNPAR;
@@ -236,28 +236,28 @@ static inline void qt_set_parity(termios *tio, QSerialPort::Parity parity)
 
 #ifdef CMSPAR
     // Here Installation parity only for GNU/Linux where the macro CMSPAR.
-    case QSerialPort::SpaceParity:
+    case JZSerialPort::SpaceParity:
         tio->c_cflag &= ~PARODD;
         tio->c_cflag |= PARENB | CMSPAR;
         break;
-    case QSerialPort::MarkParity:
+    case JZSerialPort::MarkParity:
         tio->c_cflag |= PARENB | CMSPAR | PARODD;
         break;
 #endif
-    case QSerialPort::NoParity:
+    case JZSerialPort::NoParity:
         tio->c_cflag &= ~PARENB;
         break;
-    case QSerialPort::EvenParity:
+    case JZSerialPort::EvenParity:
         tio->c_cflag &= ~PARODD;
         tio->c_cflag |= PARENB;
         break;
-    case QSerialPort::OddParity:
+    case JZSerialPort::OddParity:
         tio->c_cflag |= PARENB | PARODD;
         break;
     default:
 #ifndef CMSPAR
-    case QSerialPort::SpaceParity:
-    case QSerialPort::MarkParity:
+    case JZSerialPort::SpaceParity:
+    case JZSerialPort::MarkParity:
         qCWarning(lcUnixWarnings, "Space and Mark parity is not supported by the OS.");
 #endif
         tio->c_cflag |= PARENB;
@@ -267,13 +267,13 @@ static inline void qt_set_parity(termios *tio, QSerialPort::Parity parity)
     }
 }
 
-static inline void qt_set_stopbits(termios *tio, QSerialPort::StopBits stopbits)
+static inline void qt_set_stopbits(termios *tio, JZSerialPort::StopBits stopbits)
 {
     switch (stopbits) {
-    case QSerialPort::OneStop:
+    case JZSerialPort::OneStop:
         tio->c_cflag &= ~CSTOPB;
         break;
-    case QSerialPort::TwoStop:
+    case JZSerialPort::TwoStop:
         tio->c_cflag |= CSTOPB;
         break;
     default:
@@ -282,18 +282,18 @@ static inline void qt_set_stopbits(termios *tio, QSerialPort::StopBits stopbits)
     }
 }
 
-static inline void qt_set_flowcontrol(termios *tio, QSerialPort::FlowControl flowcontrol)
+static inline void qt_set_flowcontrol(termios *tio, JZSerialPort::FlowControl flowcontrol)
 {
     switch (flowcontrol) {
-    case QSerialPort::NoFlowControl:
+    case JZSerialPort::NoFlowControl:
         tio->c_cflag &= ~CRTSCTS;
         tio->c_iflag &= ~(IXON | IXOFF | IXANY);
         break;
-    case QSerialPort::HardwareControl:
+    case JZSerialPort::HardwareControl:
         tio->c_cflag |= CRTSCTS;
         tio->c_iflag &= ~(IXON | IXOFF | IXANY);
         break;
-    case QSerialPort::SoftwareControl:
+    case JZSerialPort::SoftwareControl:
         tio->c_cflag &= ~CRTSCTS;
         tio->c_iflag |= IXON | IXOFF | IXANY;
         break;
@@ -304,20 +304,20 @@ static inline void qt_set_flowcontrol(termios *tio, QSerialPort::FlowControl flo
     }
 }
 
-bool QSerialPortPrivate::open(QIODevice::OpenMode mode)
+bool JZSerialPortPrivate::open(QIODevice::OpenMode mode)
 {
-    std::string lockFilePath = serialPortLockFilePath(QSerialPortInfoPrivate::portNameFromSystemLocation(systemLocation));
+    std::string lockFilePath = serialPortLockFilePath(JZSerialPortInfoPrivate::portNameFromSystemLocation(systemLocation));
     bool isLockFileEmpty = lockFilePath.isEmpty();
     if (isLockFileEmpty) {
         qWarning("Failed to create a lock file for opening the device");
-        setError(QSerialPortErrorInfo(QSerialPort::PermissionError, QSerialPort::tr("Permission error while creating lock file")));
+        setError(JZSerialPortErrorInfo(JZSerialPort::PermissionError, JZSerialPort::tr("Permission error while creating lock file")));
         return false;
     }
 
     auto newLockFileScopedPointer = std::make_unique<QLockFile>(lockFilePath);
 
     if (!newLockFileScopedPointer->tryLock()) {
-        setError(QSerialPortErrorInfo(QSerialPort::PermissionError, QSerialPort::tr("Permission error while locking the device")));
+        setError(JZSerialPortErrorInfo(JZSerialPort::PermissionError, JZSerialPort::tr("Permission error while locking the device")));
         return false;
     }
 
@@ -352,7 +352,7 @@ bool QSerialPortPrivate::open(QIODevice::OpenMode mode)
     return true;
 }
 
-void QSerialPortPrivate::close()
+void JZSerialPortPrivate::close()
 {
     if (settingsRestoredOnClose)
         ::tcsetattr(descriptor, TCSANOW, &restoredTermios);
@@ -380,64 +380,64 @@ void QSerialPortPrivate::close()
     gotException = false;
 }
 
-QSerialPort::PinoutSignals QSerialPortPrivate::pinoutSignals()
+JZSerialPort::PinoutSignals JZSerialPortPrivate::pinoutSignals()
 {
     int arg = 0;
 
     if (::ioctl(descriptor, TIOCMGET, &arg) == -1) {
         setError(getSystemError());
-        return QSerialPort::NoSignal;
+        return JZSerialPort::NoSignal;
     }
 
-    QSerialPort::PinoutSignals ret = QSerialPort::NoSignal;
+    JZSerialPort::PinoutSignals ret = JZSerialPort::NoSignal;
 
 #ifdef TIOCM_LE
     if (arg & TIOCM_LE)
-        ret |= QSerialPort::DataSetReadySignal;
+        ret |= JZSerialPort::DataSetReadySignal;
 #endif
 #ifdef TIOCM_DTR
     if (arg & TIOCM_DTR)
-        ret |= QSerialPort::DataTerminalReadySignal;
+        ret |= JZSerialPort::DataTerminalReadySignal;
 #endif
 #ifdef TIOCM_RTS
     if (arg & TIOCM_RTS)
-        ret |= QSerialPort::RequestToSendSignal;
+        ret |= JZSerialPort::RequestToSendSignal;
 #endif
 #ifdef TIOCM_ST
     if (arg & TIOCM_ST)
-        ret |= QSerialPort::SecondaryTransmittedDataSignal;
+        ret |= JZSerialPort::SecondaryTransmittedDataSignal;
 #endif
 #ifdef TIOCM_SR
     if (arg & TIOCM_SR)
-        ret |= QSerialPort::SecondaryReceivedDataSignal;
+        ret |= JZSerialPort::SecondaryReceivedDataSignal;
 #endif
 #ifdef TIOCM_CTS
     if (arg & TIOCM_CTS)
-        ret |= QSerialPort::ClearToSendSignal;
+        ret |= JZSerialPort::ClearToSendSignal;
 #endif
 #ifdef TIOCM_CAR
     if (arg & TIOCM_CAR)
-        ret |= QSerialPort::DataCarrierDetectSignal;
+        ret |= JZSerialPort::DataCarrierDetectSignal;
 #elif defined(TIOCM_CD)
     if (arg & TIOCM_CD)
-        ret |= QSerialPort::DataCarrierDetectSignal;
+        ret |= JZSerialPort::DataCarrierDetectSignal;
 #endif
 #ifdef TIOCM_RNG
     if (arg & TIOCM_RNG)
-        ret |= QSerialPort::RingIndicatorSignal;
+        ret |= JZSerialPort::RingIndicatorSignal;
 #elif defined(TIOCM_RI)
     if (arg & TIOCM_RI)
-        ret |= QSerialPort::RingIndicatorSignal;
+        ret |= JZSerialPort::RingIndicatorSignal;
 #endif
 #ifdef TIOCM_DSR
     if (arg & TIOCM_DSR)
-        ret |= QSerialPort::DataSetReadySignal;
+        ret |= JZSerialPort::DataSetReadySignal;
 #endif
 
     return ret;
 }
 
-bool QSerialPortPrivate::setDataTerminalReady(bool set)
+bool JZSerialPortPrivate::setDataTerminalReady(bool set)
 {
     int status = TIOCM_DTR;
     if (::ioctl(descriptor, set ? TIOCMBIS : TIOCMBIC, &status) == -1) {
@@ -448,7 +448,7 @@ bool QSerialPortPrivate::setDataTerminalReady(bool set)
     return true;
 }
 
-bool QSerialPortPrivate::setRequestToSend(bool set)
+bool JZSerialPortPrivate::setRequestToSend(bool set)
 {
     int status = TIOCM_RTS;
     if (::ioctl(descriptor, set ? TIOCMBIS : TIOCMBIC, &status) == -1) {
@@ -459,15 +459,15 @@ bool QSerialPortPrivate::setRequestToSend(bool set)
     return true;
 }
 
-bool QSerialPortPrivate::flush()
+bool JZSerialPortPrivate::flush()
 {
     return completeAsyncWrite();
 }
 
-bool QSerialPortPrivate::clear(QSerialPort::Directions directions)
+bool JZSerialPortPrivate::clear(JZSerialPort::Directions directions)
 {
-    if (::tcflush(descriptor, (directions == QSerialPort::AllDirections)
-                     ? TCIOFLUSH : (directions & QSerialPort::Input) ? TCIFLUSH : TCOFLUSH) == -1) {
+    if (::tcflush(descriptor, (directions == JZSerialPort::AllDirections)
+                     ? TCIOFLUSH : (directions & JZSerialPort::Input) ? TCIFLUSH : TCOFLUSH) == -1) {
         setError(getSystemError());
         return false;
     }
@@ -475,7 +475,7 @@ bool QSerialPortPrivate::clear(QSerialPort::Directions directions)
     return true;
 }
 
-bool QSerialPortPrivate::sendBreak(int duration)
+bool JZSerialPortPrivate::sendBreak(int duration)
 {
     if (::tcsendbreak(descriptor, duration) == -1) {
         setError(getSystemError());
@@ -485,7 +485,7 @@ bool QSerialPortPrivate::sendBreak(int duration)
     return true;
 }
 
-bool QSerialPortPrivate::setBreakEnabled(bool set)
+bool JZSerialPortPrivate::setBreakEnabled(bool set)
 {
     if (::ioctl(descriptor, set ? TIOCSBRK : TIOCCBRK) == -1) {
         setError(getSystemError());
@@ -495,7 +495,7 @@ bool QSerialPortPrivate::setBreakEnabled(bool set)
     return true;
 }
 
-bool QSerialPortPrivate::waitForReadyRead(int msecs)
+bool JZSerialPortPrivate::waitForReadyRead(int msecs)
 {
     QElapsedTimer stopWatch;
     stopWatch.start();
@@ -517,7 +517,7 @@ bool QSerialPortPrivate::waitForReadyRead(int msecs)
     return false;
 }
 
-bool QSerialPortPrivate::waitForBytesWritten(int msecs)
+bool JZSerialPortPrivate::waitForBytesWritten(int msecs)
 {
     if (writeBuffer.isEmpty() && pendingBytesWritten <= 0)
         return false;
@@ -543,16 +543,16 @@ bool QSerialPortPrivate::waitForBytesWritten(int msecs)
     return false;
 }
 
-bool QSerialPortPrivate::setBaudRate()
+bool JZSerialPortPrivate::setBaudRate()
 {
     if (inputBaudRate == outputBaudRate)
-        return setBaudRate(inputBaudRate, QSerialPort::AllDirections);
+        return setBaudRate(inputBaudRate, JZSerialPort::AllDirections);
 
-    return (setBaudRate(inputBaudRate, QSerialPort::Input)
-        && setBaudRate(outputBaudRate, QSerialPort::Output));
+    return (setBaudRate(inputBaudRate, JZSerialPort::Input)
+        && setBaudRate(outputBaudRate, JZSerialPort::Output));
 }
 
-bool QSerialPortPrivate::setStandardBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setStandardBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
 #ifdef Q_OS_LINUX
     // try to clear custom baud rate, using termios v2
@@ -582,12 +582,12 @@ bool QSerialPortPrivate::setStandardBaudRate(int32_t baudRate, QSerialPort::Dire
     if (!getTermios(&tio))
         return false;
 
-    if ((directions & QSerialPort::Input) && ::cfsetispeed(&tio, baudRate) < 0) {
+    if ((directions & JZSerialPort::Input) && ::cfsetispeed(&tio, baudRate) < 0) {
         setError(getSystemError());
         return false;
     }
 
-    if ((directions & QSerialPort::Output) && ::cfsetospeed(&tio, baudRate) < 0) {
+    if ((directions & JZSerialPort::Output) && ::cfsetospeed(&tio, baudRate) < 0) {
         setError(getSystemError());
         return false;
     }
@@ -597,11 +597,11 @@ bool QSerialPortPrivate::setStandardBaudRate(int32_t baudRate, QSerialPort::Dire
 
 #if defined(Q_OS_LINUX)
 
-bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setCustomBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
-    if (directions != QSerialPort::AllDirections) {
-        setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError,
-                                      QSerialPort::tr("Cannot set custom speed for one direction")));
+    if (directions != JZSerialPort::AllDirections) {
+        setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError,
+                                      JZSerialPort::tr("Cannot set custom speed for one direction")));
         return false;
     }
 
@@ -632,8 +632,8 @@ bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Direct
     serial.custom_divisor = serial.baud_base / baudRate;
 
     if (serial.custom_divisor == 0) {
-        setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError,
-                                      QSerialPort::tr("No suitable custom baud rate divisor")));
+        setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError,
+                                      JZSerialPort::tr("No suitable custom baud rate divisor")));
         return false;
     }
 
@@ -654,11 +654,11 @@ bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Direct
 
 #elif defined(Q_OS_MACOS)
 
-bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setCustomBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
-    if (directions != QSerialPort::AllDirections) {
-        setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError,
-                                      QSerialPort::tr("Cannot set custom speed for one direction")));
+    if (directions != JZSerialPort::AllDirections) {
+        setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError,
+                                      JZSerialPort::tr("Cannot set custom speed for one direction")));
         return false;
     }
 
@@ -670,15 +670,15 @@ bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Direct
 
     return true;
 #else
-    setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError,
-                                  QSerialPort::tr("Custom baud rate is not supported")));
+    setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError,
+                                  JZSerialPort::tr("Custom baud rate is not supported")));
     return false;
 #endif
 }
 
 #elif defined(Q_OS_QNX)
 
-bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setCustomBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
     // On QNX, the values of the 'Bxxxx' constants are set to 'xxxx' (i.e.
     // B115200 is defined to '115200'), which means that literal values can be
@@ -689,33 +689,33 @@ bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Direct
 
 #else
 
-bool QSerialPortPrivate::setCustomBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setCustomBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
     Q_UNUSED(baudRate);
     Q_UNUSED(directions);
 
-    setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError,
-                                  QSerialPort::tr("Custom baud rate is not supported")));
+    setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError,
+                                  JZSerialPort::tr("Custom baud rate is not supported")));
     return false;
 }
 
 #endif
 
-bool QSerialPortPrivate::setBaudRate(int32_t baudRate, QSerialPort::Directions directions)
+bool JZSerialPortPrivate::setBaudRate(int32_t baudRate, JZSerialPort::Directions directions)
 {
     if (baudRate <= 0) {
-        setError(QSerialPortErrorInfo(QSerialPort::UnsupportedOperationError, QSerialPort::tr("Invalid baud rate value")));
+        setError(JZSerialPortErrorInfo(JZSerialPort::UnsupportedOperationError, JZSerialPort::tr("Invalid baud rate value")));
         return false;
     }
 
-    const int32_t unixBaudRate = QSerialPortPrivate::settingFromBaudRate(baudRate);
+    const int32_t unixBaudRate = JZSerialPortPrivate::settingFromBaudRate(baudRate);
 
     return (unixBaudRate > 0)
             ? setStandardBaudRate(unixBaudRate, directions)
             : setCustomBaudRate(baudRate, directions);
 }
 
-bool QSerialPortPrivate::setDataBits(QSerialPort::DataBits dataBits)
+bool JZSerialPortPrivate::setDataBits(JZSerialPort::DataBits dataBits)
 {
     termios tio;
     if (!getTermios(&tio))
@@ -726,7 +726,7 @@ bool QSerialPortPrivate::setDataBits(QSerialPort::DataBits dataBits)
     return setTermios(&tio);
 }
 
-bool QSerialPortPrivate::setParity(QSerialPort::Parity parity)
+bool JZSerialPortPrivate::setParity(JZSerialPort::Parity parity)
 {
     termios tio;
     if (!getTermios(&tio))
@@ -737,7 +737,7 @@ bool QSerialPortPrivate::setParity(QSerialPort::Parity parity)
     return setTermios(&tio);
 }
 
-bool QSerialPortPrivate::setStopBits(QSerialPort::StopBits stopBits)
+bool JZSerialPortPrivate::setStopBits(JZSerialPort::StopBits stopBits)
 {
     termios tio;
     if (!getTermios(&tio))
@@ -748,7 +748,7 @@ bool QSerialPortPrivate::setStopBits(QSerialPort::StopBits stopBits)
     return setTermios(&tio);
 }
 
-bool QSerialPortPrivate::setFlowControl(QSerialPort::FlowControl flowControl)
+bool JZSerialPortPrivate::setFlowControl(JZSerialPort::FlowControl flowControl)
 {
     termios tio;
     if (!getTermios(&tio))
@@ -759,19 +759,19 @@ bool QSerialPortPrivate::setFlowControl(QSerialPort::FlowControl flowControl)
     return setTermios(&tio);
 }
 
-bool QSerialPortPrivate::startAsyncRead()
+bool JZSerialPortPrivate::startAsyncRead()
 {
     setReadNotificationEnabled(true);
     return true;
 }
 
-bool QSerialPortPrivate::readNotification()
+bool JZSerialPortPrivate::readNotification()
 {
-    Q_Q(QSerialPort);
+    Q_Q(JZSerialPort);
 
     // Always buffered, read data from the port into the read buffer
     int64_t newBytes = buffer.size();
-    int64_t bytesToRead = QSERIALPORT_BUFFERSIZE;
+    int64_t bytesToRead = JZSerialPort_BUFFERSIZE;
 
     if (readBufferMaxSize && bytesToRead > (readBufferMaxSize - buffer.size())) {
         bytesToRead = readBufferMaxSize - buffer.size();
@@ -789,9 +789,9 @@ bool QSerialPortPrivate::readNotification()
     buffer.chop(bytesToRead - qMax(readBytes, int64_t(0)));
 
     if (readBytes < 0) {
-        QSerialPortErrorInfo error = getSystemError();
-        if (error.errorCode != QSerialPort::ResourceError)
-            error.errorCode = QSerialPort::ReadError;
+        JZSerialPortErrorInfo error = getSystemError();
+        if (error.errorCode != JZSerialPort::ResourceError)
+            error.errorCode = JZSerialPort::ReadError;
         else
             setReadNotificationEnabled(false);
         setError(error);
@@ -806,7 +806,7 @@ bool QSerialPortPrivate::readNotification()
         if (gotException) {
             setReadNotificationEnabled(false);
             // Force a specific error
-            QSerialPortErrorInfo error = getSystemError(EIO);
+            JZSerialPortErrorInfo error = getSystemError(EIO);
             setError(error);
         }
         return false;
@@ -826,7 +826,7 @@ bool QSerialPortPrivate::readNotification()
     return true;
 }
 
-bool QSerialPortPrivate::startAsyncWrite()
+bool JZSerialPortPrivate::startAsyncWrite()
 {
     if (writeBuffer.isEmpty() || writeSequenceStarted)
         return true;
@@ -834,9 +834,9 @@ bool QSerialPortPrivate::startAsyncWrite()
     // Attempt to write it all in one chunk.
     int64_t written = writeToPort(writeBuffer.readPointer(), writeBuffer.nextDataBlockSize());
     if (written < 0) {
-        QSerialPortErrorInfo error = getSystemError();
-        if (error.errorCode != QSerialPort::ResourceError)
-            error.errorCode = QSerialPort::WriteError;
+        JZSerialPortErrorInfo error = getSystemError();
+        if (error.errorCode != JZSerialPort::ResourceError)
+            error.errorCode = JZSerialPort::WriteError;
         setError(error);
         return false;
     }
@@ -850,9 +850,9 @@ bool QSerialPortPrivate::startAsyncWrite()
     return true;
 }
 
-bool QSerialPortPrivate::completeAsyncWrite()
+bool JZSerialPortPrivate::completeAsyncWrite()
 {
-    Q_Q(QSerialPort);
+    Q_Q(JZSerialPort);
 
     if (pendingBytesWritten > 0) {
         if (!emittedBytesWritten) {
@@ -873,12 +873,12 @@ bool QSerialPortPrivate::completeAsyncWrite()
     return startAsyncWrite();
 }
 
-void QSerialPortPrivate::handleException()
+void JZSerialPortPrivate::handleException()
 {
     gotException = true;
 }
 
-inline bool QSerialPortPrivate::initialize(QIODevice::OpenMode mode)
+inline bool JZSerialPortPrivate::initialize(QIODevice::OpenMode mode)
 {
 #ifdef TIOCEXCL
     if (::ioctl(descriptor, TIOCEXCL) == -1)
@@ -912,7 +912,7 @@ inline bool QSerialPortPrivate::initialize(QIODevice::OpenMode mode)
         setReadNotificationEnabled(true);
 
     // flush IO buffers
-    clear(QSerialPort::AllDirections);
+    clear(JZSerialPort::AllDirections);
 
     exceptionNotifier = new ExceptionNotifier(this, q_func());
     gotException = false;
@@ -921,7 +921,7 @@ inline bool QSerialPortPrivate::initialize(QIODevice::OpenMode mode)
     return true;
 }
 
-int64_t QSerialPortPrivate::writeData(const char *data, int64_t maxSize)
+int64_t JZSerialPortPrivate::writeData(const char *data, int64_t maxSize)
 {
     int64_t toAppend = maxSize;
 
@@ -934,7 +934,7 @@ int64_t QSerialPortPrivate::writeData(const char *data, int64_t maxSize)
     return toAppend;
 }
 
-bool QSerialPortPrivate::setTermios(const termios *tio)
+bool JZSerialPortPrivate::setTermios(const termios *tio)
 {
     if (::tcsetattr(descriptor, TCSANOW, tio) == -1) {
         setError(getSystemError());
@@ -943,7 +943,7 @@ bool QSerialPortPrivate::setTermios(const termios *tio)
     return true;
 }
 
-bool QSerialPortPrivate::getTermios(termios *tio)
+bool JZSerialPortPrivate::getTermios(termios *tio)
 {
     ::memset(tio, 0, sizeof(termios));
     if (::tcgetattr(descriptor, tio) == -1) {
@@ -953,78 +953,78 @@ bool QSerialPortPrivate::getTermios(termios *tio)
     return true;
 }
 
-QSerialPortErrorInfo QSerialPortPrivate::getSystemError(int systemErrorCode) const
+JZSerialPortErrorInfo JZSerialPortPrivate::getSystemError(int systemErrorCode) const
 {
     if (systemErrorCode == -1)
         systemErrorCode = errno;
 
-    QSerialPortErrorInfo error;
+    JZSerialPortErrorInfo error;
     error.errorString = qt_error_string(systemErrorCode);
 
     switch (systemErrorCode) {
     case ENODEV:
-        error.errorCode = QSerialPort::DeviceNotFoundError;
+        error.errorCode = JZSerialPort::DeviceNotFoundError;
         break;
 #ifdef ENOENT
     case ENOENT:
-        error.errorCode = QSerialPort::DeviceNotFoundError;
+        error.errorCode = JZSerialPort::DeviceNotFoundError;
         break;
 #endif
     case EACCES:
-        error.errorCode = QSerialPort::PermissionError;
+        error.errorCode = JZSerialPort::PermissionError;
         break;
     case EBUSY:
-        error.errorCode = QSerialPort::PermissionError;
+        error.errorCode = JZSerialPort::PermissionError;
         break;
     case EAGAIN:
-        error.errorCode = QSerialPort::ResourceError;
+        error.errorCode = JZSerialPort::ResourceError;
         break;
     case EIO:
-        error.errorCode = QSerialPort::ResourceError;
+        error.errorCode = JZSerialPort::ResourceError;
         break;
     case EBADF:
-        error.errorCode = QSerialPort::ResourceError;
+        error.errorCode = JZSerialPort::ResourceError;
         break;
 #ifdef Q_OS_MACOS
     case ENXIO:
-        error.errorCode = QSerialPort::ResourceError;
+        error.errorCode = JZSerialPort::ResourceError;
         break;
 #endif
 #ifdef EINVAL
     case EINVAL:
-        error.errorCode = QSerialPort::UnsupportedOperationError;
+        error.errorCode = JZSerialPort::UnsupportedOperationError;
         break;
 #endif
 #ifdef ENOIOCTLCMD
     case ENOIOCTLCMD:
-        error.errorCode = QSerialPort::UnsupportedOperationError;
+        error.errorCode = JZSerialPort::UnsupportedOperationError;
         break;
 #endif
 #ifdef ENOTTY
     case ENOTTY:
-        error.errorCode = QSerialPort::UnsupportedOperationError;
+        error.errorCode = JZSerialPort::UnsupportedOperationError;
         break;
 #endif
 #ifdef EPERM
     case EPERM:
-        error.errorCode = QSerialPort::PermissionError;
+        error.errorCode = JZSerialPort::PermissionError;
         break;
 #endif
     default:
-        error.errorCode = QSerialPort::UnknownError;
+        error.errorCode = JZSerialPort::UnknownError;
         break;
     }
     return error;
 }
 
-bool QSerialPortPrivate::isReadNotificationEnabled() const
+bool JZSerialPortPrivate::isReadNotificationEnabled() const
 {
     return readNotifier && readNotifier->isEnabled();
 }
 
-void QSerialPortPrivate::setReadNotificationEnabled(bool enable)
+void JZSerialPortPrivate::setReadNotificationEnabled(bool enable)
 {
-    Q_Q(QSerialPort);
+    Q_Q(JZSerialPort);
 
     if (readNotifier) {
         readNotifier->setEnabled(enable);
@@ -1034,14 +1034,14 @@ void QSerialPortPrivate::setReadNotificationEnabled(bool enable)
     }
 }
 
-bool QSerialPortPrivate::isWriteNotificationEnabled() const
+bool JZSerialPortPrivate::isWriteNotificationEnabled() const
 {
     return writeNotifier && writeNotifier->isEnabled();
 }
 
-void QSerialPortPrivate::setWriteNotificationEnabled(bool enable)
+void JZSerialPortPrivate::setWriteNotificationEnabled(bool enable)
 {
-    Q_Q(QSerialPort);
+    Q_Q(JZSerialPort);
 
     if (writeNotifier) {
         writeNotifier->setEnabled(enable);
@@ -1051,12 +1051,12 @@ void QSerialPortPrivate::setWriteNotificationEnabled(bool enable)
     }
 }
 
-bool QSerialPortPrivate::waitForReadOrWrite(bool *selectForRead, bool *selectForWrite,
+bool JZSerialPortPrivate::waitForReadOrWrite(bool *selectForRead, bool *selectForWrite,
                                            bool checkRead, bool checkWrite,
                                            int msecs)
 {
-    Q_ASSERT(selectForRead);
-    Q_ASSERT(selectForWrite);
+    JZ_ASSERT(selectForRead);
+    JZ_ASSERT(selectForWrite);
 
     pollfd pfd = qt_make_pollfd(descriptor, 0);
 
@@ -1072,7 +1072,7 @@ bool QSerialPortPrivate::waitForReadOrWrite(bool *selectForRead, bool *selectFor
         return false;
     }
     if (ret == 0) {
-        setError(QSerialPortErrorInfo(QSerialPort::TimeoutError));
+        setError(JZSerialPortErrorInfo(JZSerialPort::TimeoutError));
         return false;
     }
     if (pfd.revents & POLLNVAL) {
@@ -1085,19 +1085,19 @@ bool QSerialPortPrivate::waitForReadOrWrite(bool *selectForRead, bool *selectFor
     return true;
 }
 
-int64_t QSerialPortPrivate::readFromPort(char *data, int64_t maxSize)
+int64_t JZSerialPortPrivate::readFromPort(char *data, int64_t maxSize)
 {
     return qt_safe_read(descriptor, data, maxSize);
 }
 
-int64_t QSerialPortPrivate::writeToPort(const char *data, int64_t maxSize)
+int64_t JZSerialPortPrivate::writeToPort(const char *data, int64_t maxSize)
 {
     int64_t bytesWritten = 0;
 #if defined(CMSPAR)
     bytesWritten = qt_safe_write(descriptor, data, maxSize);
 #else
-    if (parity != QSerialPort::MarkParity
-            && parity != QSerialPort::SpaceParity) {
+    if (parity != JZSerialPort::MarkParity
+            && parity != JZSerialPort::SpaceParity) {
         bytesWritten = qt_safe_write(descriptor, data, maxSize);
     } else {// Perform parity emulation.
         bytesWritten = writePerChar(data, maxSize);
@@ -1117,7 +1117,7 @@ static inline bool evenParity(quint8 c)
     return c & 1;       //(c7 ^ c3)(c5 ^ c1)(c6 ^ c2)(c4 ^ c0)
 }
 
-int64_t QSerialPortPrivate::writePerChar(const char *data, int64_t maxSize)
+int64_t JZSerialPortPrivate::writePerChar(const char *data, int64_t maxSize)
 {
     termios tio;
     if (!getTermios(&tio))
@@ -1130,7 +1130,7 @@ int64_t QSerialPortPrivate::writePerChar(const char *data, int64_t maxSize)
 
         bool par = evenParity(*data & charMask);
         // False if need EVEN, true if need ODD.
-        par ^= parity == QSerialPort::MarkParity;
+        par ^= parity == JZSerialPort::MarkParity;
         if (par ^ (tio.c_cflag & PARODD)) { // Need switch parity mode?
             tio.c_cflag ^= PARODD;
             //force sending already buffered data, because setTermios(&tio); cleares buffers
@@ -1156,7 +1156,7 @@ int64_t QSerialPortPrivate::writePerChar(const char *data, int64_t maxSize)
 
 #endif //CMSPAR
 
-typedef QMap<int32_t, int32_t> BaudRateMap;
+typedef std::map<int32_t, int32_t> BaudRateMap;
 
 // The OS specific defines can be found in termios.h
 
@@ -1309,19 +1309,19 @@ static const BaudRateMap& standardBaudRateMap()
     return baudRateMap;
 }
 
-int32_t QSerialPortPrivate::settingFromBaudRate(int32_t baudRate)
+int32_t JZSerialPortPrivate::settingFromBaudRate(int32_t baudRate)
 {
     return standardBaudRateMap().value(baudRate);
 }
 
-set::vector<int32_t> QSerialPortPrivate::standardBaudRates()
+set::vector<int32_t> JZSerialPortPrivate::standardBaudRates()
 {
     return standardBaudRateMap().keys();
 }
 
-QSerialPort::Handle QSerialPort::handle() const
+JZSerialPort::Handle JZSerialPort::handle() const
 {
-    Q_D(const QSerialPort);
+    Q_D(const JZSerialPort);
     return d->descriptor;
 }
 

@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 // Qt-Security score:significant reason:default
 
-#ifndef QSERIALPORT_H
-#define QSERIALPORT_H
+#ifndef JZSerialPort_H
+#define JZSerialPort_H
 
 #include "JZObject.h"
 #include "JZSerialPortInfo.h"
@@ -104,6 +104,10 @@ public:
     void close();
     bool isOpen();
 
+    JZByteArray readAll();
+    void write(const JZByteArray &buffer);
+    void write(const char *size,int len);
+
     bool setBaudRate(int32_t baudRate);
     int32_t baudRate() const;
 
@@ -170,4 +174,4 @@ private:
     JZ_DISABLE_COPY(JZSerialPort)
 };
 
-#endif // QSERIALPORT_H
+#endif // JZSerialPort_H

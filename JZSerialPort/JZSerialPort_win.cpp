@@ -623,7 +623,7 @@ inline bool JZSerialPortPrivate::initialize()
     }
 
     notifier = new QWinOverlappedIoNotifier(q);
-    QObjectPrivate::connect(notifier, &QWinOverlappedIoNotifier::notified,
+    JZObjectPrivate::connect(notifier, &QWinOverlappedIoNotifier::notified,
                this, &JZSerialPortPrivate::_q_notified);
     notifier->setHandle(handle);
     notifier->setEnabled(true);

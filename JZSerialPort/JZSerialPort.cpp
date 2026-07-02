@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 // Qt-Security score:significant reason:default
 
-#include "JZSerialPort.h"
+#include JZSerialPort
 #include "JZSerialPortInfo.h"
 #include "JZSerialPortInfoPrivate.h"
 
@@ -147,7 +147,7 @@ void JZSerialPortPrivate::setError(const JZSerialPortErrorInfo &errorInfo)
     For more details about these approaches, refer to the
     \l {Qt Serial Port Examples}{example} applications.
 
-    The JZSerialPort class can also be used with QTextStream and QDataStream's
+    The JZSerialPort class can also be used with QTextStream and JZDataStream's
     stream operators (operator<<() and operator>>()). There is one issue to be
     aware of, though: make sure that enough data is available before attempting
     to read by using the operator>>() overloaded operator.

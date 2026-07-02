@@ -1,4 +1,4 @@
-#include <string.h>
+﻿#include <string.h>
 #include "JZDataStream.h"
 
 //JZDataStream
@@ -16,7 +16,7 @@ JZDataStream::JZDataStream(const JZByteArray &buffer)
     m_file = nullptr;
 }
 
-JZDataStream::JZDataStream(JZByteArray *buffer)
+JZDataStream::JZDataStream(JZByteArray *buffer, JZ::OpenMode mode)
 {
     m_buffer = buffer;
     m_offset = 0;
@@ -70,6 +70,16 @@ void JZDataStream::skipRawData(int offset)
         m_file->seek(offset);
     else
         m_offset += offset;
+}
+
+void JZDataStream::setByteOrder(ByteOrder order)
+{
+
+}
+
+JZDataStream::ByteOrder JZDataStream::byteOrder()
+{
+    return JZDataStream::LittleEndian;
 }
 
 JZDataStream &JZDataStream::operator<<(bool i)

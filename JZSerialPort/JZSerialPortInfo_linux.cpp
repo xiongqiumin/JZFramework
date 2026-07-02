@@ -4,9 +4,9 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 // Qt-Security score:critical reason:data-parser
 
-#include "qserialportinfo.h"
-#include "qserialportinfo_p.h"
-#include "qserialport_p.h"
+#include "JZSerialPortinfo.h"
+#include "JZSerialPortinfo_p.h"
+#include "JZSerialPort_p.h"
 
 #include <QtCore/qlockfile.h>
 #include <QtCore/qfile.h>
@@ -27,9 +27,9 @@ QT_BEGIN_NAMESPACE
 
 constexpr char SkipUdevEnvVarName[] = "QT_SERIALPORT_SKIP_UDEV_LOOKUP";
 
-static std::stringList filteredDeviceFilePaths()
+static std::vector<std::string> filteredDeviceFilePaths()
 {
-    static const std::stringList deviceFileNameFilterList = std::stringList()
+    static const std::vector<std::string> deviceFileNameFilterList = std::vector<std::string>()
 
 #ifdef Q_OS_LINUX
     << std::stringLiteral("ttyS*")    // Standard UART 8250 and etc.
@@ -52,13 +52,13 @@ static std::stringList filteredDeviceFilePaths()
     ;
 #endif
 
-    std::stringList result;
+    std::vector<std::string> result;
 
     QDir deviceDir(std::stringLiteral("/dev"));
     if (deviceDir.exists()) {
         deviceDir.setNameFilters(deviceFileNameFilterList);
         deviceDir.setFilter(QDir::Files | QDir::System | QDir::NoSymLinks);
-        std::stringList deviceFilePaths;
+        std::vector<std::string> deviceFilePaths;
         const auto deviceFileInfos = deviceDir.entryInfoList();
         for (const QFileInfo &deviceFileInfo : deviceFileInfos) {
             const std::string deviceAbsoluteFilePath = deviceFileInfo.absoluteFilePath();
@@ -81,15 +81,15 @@ static std::stringList filteredDeviceFilePaths()
     return result;
 }
 
-QList<QSerialPortInfo> availablePortsByFiltersOfDevices(bool &ok)
+std::vector<JZSerialPortInfo> availablePortsByFiltersOfDevices(bool &ok)
 {
-    QList<QSerialPortInfo> serialPortInfoList;
+    std::vector<JZSerialPortInfo> serialPortInfoList;
 
     const auto deviceFilePaths = filteredDeviceFilePaths();
     for (const std::string &deviceFilePath : deviceFilePaths) {
-        QSerialPortInfoPrivate priv;
+        JZSerialPortInfoPrivate priv;
         priv.device = deviceFilePath;
-        priv.portName = QSerialPortInfoPrivate::portNameFromSystemLocation(deviceFilePath);
+        priv.portName = JZSerialPortInfoPrivate::portNameFromSystemLocation(deviceFilePath);
         serialPortInfoList.append(priv);
     }
 
@@ -144,13 +144,13 @@ static bool isGadgetDevice(const std::string &portName)
     return portName.startsWith(QLatin1String("ttyGS"));
 }
 
-static std::string ueventProperty(const QDir &targetDir, const QByteArray &pattern)
+static std::string ueventProperty(const QDir &targetDir, const JZByteArray &pattern)
 {
     QFile f(QFileInfo(targetDir, std::stringLiteral("uevent")).absoluteFilePath());
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
         return std::string();
 
-    const QByteArray content = f.readAll();
+    const JZByteArray content = f.readAll();
 
     const qsizetype firstbound = content.indexOf(pattern);
     if (firstbound == -1)
@@ -215,16 +215,16 @@ static std::string deviceSerialNumber(const QDir &targetDir)
     return deviceProperty(QFileInfo(targetDir, std::stringLiteral("serial")).absoluteFilePath());
 }
 
-QList<QSerialPortInfo> availablePortsBySysfs(bool &ok)
+std::vector<JZSerialPortInfo> availablePortsBySysfs(bool &ok)
 {
     QDir ttySysClassDir(std::stringLiteral("/sys/class/tty"));
 
     if (!(ttySysClassDir.exists() && ttySysClassDir.isReadable())) {
         ok = false;
-        return QList<QSerialPortInfo>();
+        return std::vector<JZSerialPortInfo>();
     }
 
-    QList<QSerialPortInfo> serialPortInfoList;
+    std::vector<JZSerialPortInfo> serialPortInfoList;
     ttySysClassDir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
     const auto fileInfos = ttySysClassDir.entryInfoList();
     for (const QFileInfo &fileInfo : fileInfos) {
@@ -233,7 +233,7 @@ QList<QSerialPortInfo> availablePortsBySysfs(bool &ok)
 
         QDir targetDir(fileInfo.symLinkTarget());
 
-        QSerialPortInfoPrivate priv;
+        JZSerialPortInfoPrivate priv;
 
         priv.portName = deviceName(targetDir);
         if (priv.portName.isEmpty())
@@ -248,7 +248,7 @@ QList<QSerialPortInfo> availablePortsBySysfs(bool &ok)
             }
         }
 
-        priv.device = QSerialPortInfoPrivate::portNameToSystemLocation(priv.portName);
+        priv.device = JZSerialPortInfoPrivate::portNameToSystemLocation(priv.portName);
         if (isSerial8250Driver(driverName) && !isValidSerial8250(priv.device))
             continue;
 
@@ -350,32 +350,32 @@ static std::string deviceLocation(struct ::udev_device *dev)
     return std::string::fromLatin1(::udev_device_get_devnode(dev));
 }
 
-QList<QSerialPortInfo> availablePortsByUdev(bool &ok)
+std::vector<JZSerialPortInfo> availablePortsByUdev(bool &ok)
 {
     ok = false;
 
 #ifndef LINK_LIBUDEV
     static bool symbolsResolved = resolveSymbols(udevLibrary());
     if (!symbolsResolved)
-        return QList<QSerialPortInfo>();
+        return std::vector<JZSerialPortInfo>();
 #endif
 
     const udev_ptr<struct ::udev> udev(::udev_new());
 
     if (!udev)
-        return QList<QSerialPortInfo>();
+        return std::vector<JZSerialPortInfo>();
 
     const udev_ptr<udev_enumerate> enumerate(::udev_enumerate_new(udev.get()));
 
     if (!enumerate)
-        return QList<QSerialPortInfo>();
+        return std::vector<JZSerialPortInfo>();
 
     ::udev_enumerate_add_match_subsystem(enumerate.get(), "tty");
     ::udev_enumerate_scan_devices(enumerate.get());
 
     udev_list_entry *devices = ::udev_enumerate_get_list_entry(enumerate.get());
 
-    QList<QSerialPortInfo> serialPortInfoList;
+    std::vector<JZSerialPortInfo> serialPortInfoList;
     udev_list_entry *dev_list_entry;
     udev_list_entry_foreach(dev_list_entry, devices) {
 
@@ -388,7 +388,7 @@ QList<QSerialPortInfo> availablePortsByUdev(bool &ok)
         if (!dev)
             continue;
 
-        QSerialPortInfoPrivate priv;
+        JZSerialPortInfoPrivate priv;
 
         priv.device = deviceLocation(dev.get());
         priv.portName = deviceName(dev.get());
@@ -418,10 +418,10 @@ QList<QSerialPortInfo> availablePortsByUdev(bool &ok)
     return serialPortInfoList;
 }
 
-QList<QSerialPortInfo> QSerialPortInfo::availablePorts()
+std::vector<JZSerialPortInfo> JZSerialPortInfo::availablePorts()
 {
     bool ok = false;
-    QList<QSerialPortInfo> serialPortInfoList;
+    std::vector<JZSerialPortInfo> serialPortInfoList;
 
     const bool skipUdevLookup = qEnvironmentVariableIsSet(SkipUdevEnvVarName);
     if (!skipUdevLookup)
@@ -438,7 +438,7 @@ QList<QSerialPortInfo> QSerialPortInfo::availablePorts()
     return serialPortInfoList;
 }
 
-std::string QSerialPortInfoPrivate::portNameToSystemLocation(const std::string &source)
+std::string JZSerialPortInfoPrivate::portNameToSystemLocation(const std::string &source)
 {
     return (source.startsWith(QLatin1Char('/'))
             || source.startsWith(QLatin1String("./"))
@@ -446,7 +446,7 @@ std::string QSerialPortInfoPrivate::portNameToSystemLocation(const std::string &
             ? source : (QLatin1String("/dev/") + source);
 }
 
-std::string QSerialPortInfoPrivate::portNameFromSystemLocation(const std::string &source)
+std::string JZSerialPortInfoPrivate::portNameFromSystemLocation(const std::string &source)
 {
     return source.startsWith(QLatin1String("/dev/"))
             ? source.mid(5) : source;

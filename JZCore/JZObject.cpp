@@ -1,4 +1,4 @@
-#include "JZStd.h"
+﻿#include "JZStd.h"
 #include "JZObject.h"
 #include "JZThread.h"
 #include "JZApplication.h"

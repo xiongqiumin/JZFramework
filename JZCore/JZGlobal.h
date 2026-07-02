@@ -10,7 +10,6 @@
 #define JZ_OS_FREE_RTOS 2
 #define JZ_OS_RT_THREAD 3
 
-
 #ifndef JZ_OS
 #if defined(_WIN32) || defined(_WIN64)
 #define JZ_OS JZ_OS_WINDOWS
@@ -66,6 +65,12 @@
 
 namespace JZ
 {
+enum OpenMode {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+};
+
 enum SplitBehavior
 {
     KeepEmptyParts,  // 保留空字符串项

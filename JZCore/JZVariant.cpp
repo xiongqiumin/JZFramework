@@ -8,7 +8,6 @@ const JZVariant &JZVariant::None()
     return none;
 }
 
-
 template <>
 JZVariant JZVariant::fromValue(const bool &t)
 {
@@ -101,6 +100,14 @@ JZVariant::JZVariant(const std::string &str)
     m_data.meta = meta;
 }
 
+JZVariant::JZVariant(JZVariant &&other) noexcept
+{
+    m_type = other.m_type;
+    m_data = other.m_data;
+    other.m_type = JZMetaType::None;
+    memset(&other.m_data, 0, sizeof(other.m_data));
+}
+
 JZVariant::~JZVariant()
 {
     release();
@@ -134,6 +141,17 @@ void JZVariant::operator=(const JZVariant &other)
     {        
         m_data.meta = other.m_data.meta->clone();
     }
+}
+
+void JZVariant::operator=(JZVariant && other) noexcept
+{
+    if (this == &other)
+        return;
+
+    m_type = other.m_type;
+    m_data = other.m_data;
+    other.m_type = JZMetaType::None;
+    memset(&other.m_data, 0, sizeof(other.m_data));
 }
 
 bool JZVariant::operator==(const JZVariant& other) const
@@ -202,6 +220,33 @@ JZByteArray JZVariant::toByteArray() const
     return value<JZByteArray>();
 }
 
+void *JZVariant::data()
+{
+    if (m_type < JZMetaType::PodEnd)
+        return &m_data;
+    else
+        return m_data.meta->ptr();
+}
+
+const void *JZVariant::data() const
+{
+    if (m_type < JZMetaType::PodEnd)
+        return &m_data;
+    else
+        return m_data.meta->ptr();
+}
+
+void JZVariant::release()
+{    
+    if (m_type >= JZMetaType::PodEnd)
+    {        
+        delete m_data.meta;
+        m_data.meta = nullptr;
+    }
+    m_type = JZMetaType::None;
+    memset(&m_data, 0, sizeof(Data));
+}
+
 template <>
 bool JZVariant::value<bool>() const
 {
@@ -238,37 +283,94 @@ double JZVariant::value<double>() const
 }
 
 template <>
-void *JZVariant::value<void *>() const
+void* JZVariant::value<void*>() const
 {
     JZ_ASSERT(m_type == JZMetaType::Pointer);
     return m_data.ptr;
 }
 
-void *JZVariant::data()
+template <>
+bool& JZVariant::valueRef<bool>()
 {
-    if (m_type < JZMetaType::PodEnd)
-        return &m_data;
-    else
-        return m_data.meta->ptr();
+    JZ_ASSERT(m_type == JZMetaType::Bool);
+    return m_data.b;
 }
 
-const void *JZVariant::data() const
+template <>
+int& JZVariant::valueRef<int>()
 {
-    if (m_type < JZMetaType::PodEnd)
-        return &m_data;
-    else
-        return m_data.meta->ptr();
+    JZ_ASSERT(m_type == JZMetaType::Int);
+    return m_data.i;
 }
 
-void JZVariant::release()
-{    
-    if (m_type >= JZMetaType::PodEnd)
-    {        
-        delete m_data.meta;
-        m_data.meta = nullptr;
-    }
-    m_type = JZMetaType::None;
-    memset(&m_data, 0, sizeof(Data));
+template <>
+int64_t& JZVariant::valueRef<int64_t>()
+{
+    JZ_ASSERT(m_type == JZMetaType::Int64);
+    return m_data.i64;
+}
+
+template <>
+float& JZVariant::valueRef<float>()
+{
+    JZ_ASSERT(m_type == JZMetaType::Float);
+    return m_data.f;
+}
+
+template <>
+double& JZVariant::valueRef<double>()
+{
+    JZ_ASSERT(m_type == JZMetaType::Double);
+    return m_data.d;
+}
+
+template <>
+void*& JZVariant::valueRef<void*>()
+{
+    JZ_ASSERT(m_type == JZMetaType::Pointer);
+    return m_data.ptr;
+}
+
+template <>
+const bool& JZVariant::valueRef<bool>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Bool);
+    return m_data.b;
+}
+
+template <>
+const int& JZVariant::valueRef<int>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Int);
+    return m_data.i;
+}
+
+template <>
+const int64_t& JZVariant::valueRef<int64_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Int64);
+    return m_data.i64;
+}
+
+template <>
+const float& JZVariant::valueRef<float>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Float);
+    return m_data.f;
+}
+
+template <>
+const double& JZVariant::valueRef<double>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Double);
+    return m_data.d;
+}
+
+template <>
+void* const& JZVariant::valueRef<void*>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Pointer);
+    return m_data.ptr;
 }
 
 JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec)

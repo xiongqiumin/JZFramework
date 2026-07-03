@@ -51,11 +51,16 @@ static int getCurrentStackUse()
 
 static int getCurrentStackUse()
 {
+    struct FreeRtosTaskControlBlock       /* The old naming convention is used to prevent breaking kernel aware debuggers. */
+    {
+        StackType_t *pxTopOfStack;
+    };
+
+    FreeRtosTaskControlBlock *tbc = (FreeRtosTaskControlBlock*)xTaskGetCurrentTaskHandle();
+
     StackType_t dummy;
-    StackType_t *sp = &dummy;
-    StackType_t *stackLow = xTaskGetStackStart(NULL);
-    UBaseType_t stackWordCnt = JZThread::currentThread()->config().stackSizeAlign() / sizeof(StackType_t);
-    StackType_t *stackHigh = stackLow + stackWordCnt;
+    StackType_t *sp = &dummy;    
+    StackType_t *stackHigh = tbc->pxTopOfStack;
 
     // 向下增长栈：已用栈 = 初始最高栈地址 - 当前SP
     return int((stackHigh - sp) * sizeof(StackType_t));

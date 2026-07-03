@@ -46,7 +46,7 @@ void JZNetPacketProcessor::append(const char *buffer, int len)
 JZByteArray JZNetPacketProcessor::formatPacket(const JZNetPack *packet)
 {
     JZByteArray buffer;
-    JZDataStream s(&buffer);
+    JZDataStream s(&buffer, JZ::WriteOnly);
     s << (uint8_t)PACK_HEAD;
     s << (int32_t)0;
     s << (int32_t)packet->packetType();
@@ -131,7 +131,7 @@ bool JZNetPacketProcessor::parse()
             return false;
         }
 
-        JZDataStream s(&m_buffer);
+        JZDataStream s(&m_buffer, JZ::ReadOnly);
         s.skipRawData(start + 9);
         pack->loadFromStream(s); 
         m_packList.push_back(pack);

@@ -1,6 +1,8 @@
 #include "JZLvglWidget.h"
 #include <cassert>
 
+JZ_OBJECT_IMPL(JZLvglWidget,JZObject)
+
 JZLvglWidget::JZLvglWidget(JZLvglWidget* parent)
     : JZObject(parent)
 {
@@ -38,7 +40,8 @@ void JZLvglWidget::setParentWidget(JZLvglWidget* parent)
 
 JZLvglWidget* JZLvglWidget::parentWidget() const
 {
-    return (JZLvglWidget*)m_parent;
+    JZLvglWidget* w = jzobject_cast<JZLvglWidget*>(m_parent);
+    return w;
 }
 
 void JZLvglWidget::setLayout(const JZLvglLayout& layout)

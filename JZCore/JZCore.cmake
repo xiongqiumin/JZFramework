@@ -77,8 +77,6 @@
 	JZScopeGuard.cpp
 	JZCommandLineParser.h
 	JZCommandLineParser.cpp
-	JZProcess.h
-	JZProcess.cpp
     JZConsoleInput.h
     JZConsoleInput.cpp
 	JZDeadlineTimer.h

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(JZFramework)
 
+set(CMAKE_CXX_STANDARD 17)
+
 if (MSVC)    
     add_compile_options(/execution-charset:utf-8)
     add_compile_options(/source-charset:utf-8)

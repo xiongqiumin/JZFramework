@@ -10,6 +10,8 @@ typedef lv_obj_t* (*lv_create_fn_t)(lv_obj_t* parent);
 
 class JZLvglWidget : public JZObject
 {
+    JZ_OBJECT_DECLARE(JZLvglWidget)
+
 public:
     explicit JZLvglWidget(JZLvglWidget* parent = nullptr);
     virtual ~JZLvglWidget();

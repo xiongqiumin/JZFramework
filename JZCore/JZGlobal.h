@@ -65,6 +65,14 @@
 
 namespace JZ
 {
+enum ConnectType
+{
+    AutoConnection,
+    DirectConnection,
+    QueuedConnection,
+    BlockingQueuedConnection,
+};
+
 enum OpenMode {
     ReadOnly,
     WriteOnly,

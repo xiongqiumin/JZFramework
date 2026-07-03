@@ -7,10 +7,13 @@ JZAsyncSignalEvent::JZAsyncSignalEvent()
     :JZEvent(JZEvent_asyncSignal)
 {
     hasRecv = false;
+    callback = nullptr;
 }
 
 JZAsyncSignalEvent::~JZAsyncSignalEvent()
 {
+    if(callback)
+        delete callback;
 }
 
 //JZBaseSignal
@@ -39,10 +42,7 @@ JZObject* JZBaseSignal::currentThread()
 
 bool JZBaseSignal::isCurrentThread(JZObject *recv)
 {
-    if (!recv)
-        return true;
-
-    return recv->thread() == jzApp->currentThread();
+    return recv->thread()->id() == JZThread::currentThreadId();
 }
 
 bool JZBaseSignal::isBlockSingals(JZObject *object)

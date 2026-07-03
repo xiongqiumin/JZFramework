@@ -11,10 +11,12 @@ JZSignalDestory::JZSignalDestory(JZObject *object)
 
 void JZSignalDestory::emitDestory()
 {
-    if (!m_connects) return;
+    if (!m_connects) 
+        return;
+
     for (int i = 0; i < (int)m_connects->size(); i++)
     {
-        (*m_connects)[i].type = DirectConnection;
+        (*m_connects)[i]->type = JZ::DirectConnection;
     }
     emit(m_object);
 }
@@ -73,16 +75,16 @@ JZObject::JZObject(MainThreadInit)
 
 JZObject::~JZObject()
 {
+    if(jzApp)
     {
         jzApp->globalLock();
         m_data->object = nullptr;
         jzApp->globalUnlock();
-    }
 
-    if (m_thread)
-    {
-        //必须在当前线程删除
-        JZ_ASSERT(m_thread == jzApp->currentThread());
+        if (m_thread)
+        {
+            JZ_ASSERT(m_thread == jzApp->currentThread());
+        }
     }
 
     if(m_parent)

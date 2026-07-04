@@ -189,7 +189,7 @@ JZByteArray JZFile::readAll()
     JZByteArray ret;
     while (true)
     {
-        JZByteArray tmp = read(32 * 1024);
+        JZByteArray tmp = read(4 * 1024);
         if (tmp.isEmpty())
             break;
 

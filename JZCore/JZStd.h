@@ -146,13 +146,13 @@ V map_value(const std::map<K, V>& map, const K& key, const V& defaultValue = V()
         return defaultValue;
 }
 
-template <typename K, typename V>
-std::vector<K> map_keys(const std::map<K, V>& map)
+template<typename K, typename V>
+std::vector<V> map_values(const std::map<K, V>& map)
 {
-    std::vector<K> list;
+    std::vector<V> list;
     for (const auto& pair : map)
     {
-        list.push_back(pair.first);
+        list.push_back(pair.second);
     }
     return list;
 }
@@ -167,6 +167,17 @@ K map_key(const std::map<K, V>& map, const V& value, const K& defaultKey = K())
             return pair.first;
     }
     return defaultKey;
+}
+
+template <typename K, typename V>
+std::vector<K> map_keys(const std::map<K, V>& map)
+{
+    std::vector<K> list;
+    for (const auto& pair : map)
+    {
+        list.push_back(pair.first);
+    }
+    return list;
 }
 
 template <typename T>

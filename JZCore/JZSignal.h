@@ -232,6 +232,7 @@ namespace jzsignal
 class JZBaseSlotCallback
 {
 public:
+    virtual ~JZBaseSlotCallback(){}
     virtual void invoke(JZObject* obj, const JZVariantList& list) = 0;
 };
 
@@ -320,7 +321,9 @@ public:
     {
         list.clear();
         list.reserve(sizeof...(Args));
-        ((list.emplace_back(JZVariant::fromValue<std::decay_t<Args>>(args)), 0), ...);
+        std::initializer_list<int>{
+            (list.emplace_back(JZVariant::fromValue<std::decay_t<Args>>(args)), 0)...
+        };
     }
 
     template<typename T = void,
@@ -332,7 +335,7 @@ public:
 
     bool isMember()
     {
-        return callback.index() == 0;
+        return memberFunc;
     }
 
     MemberFunc memberFunc;
@@ -455,11 +458,7 @@ public:
                 {
                     guard.unlock();
 
-<<<<<<< HEAD
                     JZThread* thread = objectThread(m_object);
-=======
-                    JZThread* thread = recvier->thread();
->>>>>>> 096a225838e9c5331dad265a77aa1525ae5a8ebe
                     JZObject* sender = m_object;
 
                     pushSender(thread, sender);

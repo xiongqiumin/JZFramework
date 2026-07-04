@@ -28,11 +28,11 @@ JZCoWebSocket::~JZCoWebSocket()
 
 void JZCoWebSocket::connectSignals()
 {
-	connect(&m_client->sigConnected, this, &JZCoWebSocket::onConnected, QueuedConnection);
-	connect(&m_client->sigDisconnected, this, &JZCoWebSocket::onDisconnected, QueuedConnection);
-	connect(&m_client->sigTextMessageReceived, this, &JZCoWebSocket::onTextMessageReceived, QueuedConnection);
-	connect(&m_client->sigBinaryMessageReceived, this, &JZCoWebSocket::onBinaryMessageReceived, QueuedConnection);
-	connect(&m_client->sigError, this, &JZCoWebSocket::onError);
+	connect(&m_client->sigConnected, this, &JZCoWebSocket::onConnected, JZ::QueuedConnection);
+	connect(&m_client->sigDisconnected, this, &JZCoWebSocket::onDisconnected, JZ::QueuedConnection);
+	connect(&m_client->sigTextMessageReceived, this, &JZCoWebSocket::onTextMessageReceived, JZ::QueuedConnection);
+	connect(&m_client->sigBinaryMessageReceived, this, &JZCoWebSocket::onBinaryMessageReceived, JZ::QueuedConnection);
+	connect(&m_client->sigError, this, &JZCoWebSocket::onError, &JZCoWebSocket::onBinaryMessageReceived, JZ::QueuedConnection);
 }
 
 void JZCoWebSocket::yield(int waitType,int timeout)
@@ -174,4 +174,5 @@ void JZCoWebSocket::onBinaryMessageReceived(const JZByteArray& message)
 
 void JZCoWebSocket::onError()
 {
+	m_coCtrl.wakeAll();
 }

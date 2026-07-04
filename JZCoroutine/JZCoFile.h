@@ -9,8 +9,11 @@ public:
     JZCoFile();
     ~JZCoFile();
 
+    JZByteArray read(int max_size);
+    JZByteArray readAll();
+
 protected:
-    JZFile file;
+    JZFile m_file;
 };
 
 #endif // !JZCO_NET_WORK_H

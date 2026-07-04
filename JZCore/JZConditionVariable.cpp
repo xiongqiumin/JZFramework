@@ -92,7 +92,7 @@ void JZConditionVariable::wait(JZMutexLocker& locker)
 #endif
 }
 
-void JZConditionVariable::wait(JZMutexLocker& mutex,std::function<bool()> condition)
+void JZConditionVariable::wait(JZMutexLocker& locker,std::function<bool()> condition)
 {
     wait_for(mutex, -1, condition);
 }

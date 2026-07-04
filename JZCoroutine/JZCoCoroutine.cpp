@@ -2,12 +2,12 @@
 #include "JZCoCoroutine.h"
 #include "JZApplication.h"
 #include "JZDebug.h"
+#include "JZThread.h`"
 
 class JZCoEvent : public JZEvent
 {
 public:
-    JZCoEvent()
-        :JZEvent(JZEvent_co)
+    JZCoEvent() :JZEvent(JZEvent_co)
     {
     }
 };
@@ -258,4 +258,82 @@ void JZCoCondition::wakeAll()
     {
         g_scheduler->resume(co_list[i]);
     }
+}
+
+//JZCoThread
+class JZCoThread : public JZThread
+{
+public:
+    void run()
+    {
+        while(!isRequestInterruption())
+        {
+            JZCoJob job;
+            {
+                JZMutexLocker locker(pool->m_mutex);
+                if(pool->m_jobs.size() > 0)
+                {
+                    job = pool->m_jobs.front();
+                    pool->m_jobs.pop_front();
+                }
+            }            
+
+            if(job.func)
+            {
+                job.func();
+                job.cond->wakeAll();
+            }
+            else
+            {
+                JZMutexLocker locker(pool->m_mutex);
+                pool->m_cond.wait(locker);
+            }
+        }
+    }
+
+    JZCoThreadPool *pool;
+}
+
+//JZCoThreadPool
+JZCoThreadPool *JZCoThreadPool::instance()
+{
+    staic JZCoThreadPool inst;
+    return &inst;
+}
+
+JZCoThreadPool::JZCoThreadPool()
+{
+    for(int i = 0; i < 1; i++)
+    {
+        JZCoThread *t = new JZCoThread();
+        t->setParent(this);
+        t->pool = this;
+        t->start();
+        m_threads.push_back(t);
+    }
+}
+
+JZCoThreadPool::~JZCoThreadPool()
+{
+    for (auto t : m_threads) {
+        t->quit();
+    }
+
+    m_cond.notify_all();
+
+    for (auto t : m_threads) {
+        t->wait();
+    }
+}
+
+void JZCoThreadPool::addTask(JZCoCondition *cond, const std::function<void()> &task)
+{
+    JZCoJob job;
+    job.cond = cond;
+    job.task = task;
+    {
+        JZMutexLocker locker(&m_mutex);
+        m_jobs.push_back(job);
+    }
+    m_cond.notify_one();
 }

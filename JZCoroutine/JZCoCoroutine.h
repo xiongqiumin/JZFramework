@@ -4,18 +4,12 @@
 #include <functional>
 #include <memory>
 #include <vector>
-#include <stdexcept>
+#include <deque>
+#include "JZConditionVariable.h"
 #include "JZCoContext.h"
 #include "JZThread.h"
 
 class JZCoScheduler;
-
-class JZCoCoroutineInterrupt : public std::runtime_error 
-{
-public:
-    JZCoCoroutineInterrupt() 
-        : std::runtime_error("coroutine interrupted") {}
-};
 
 /*
 注意：协程依赖主线程调度，主线程不能阻塞
@@ -53,17 +47,6 @@ protected:
     std::function<void()> m_func;
 };
 typedef std::shared_ptr<JZCoCoroutine> JZCoCoroutinePtr;
-
-class JZCoThread : public JZThread 
-{
-public:
-    JZCoThread(std::function<void()> func);
-
-    virtual void run();
-
-protected:
-    std::function<void()> m_func;
-};
 
 class JZCoScheduler : public JZObject
 {
@@ -111,6 +94,31 @@ protected:
     JZ_DISABLE_COPY(JZCoCondition)
 
     std::vector<JZCoCoroutine*> m_coList;
+};
+
+class JZCoThread;
+class JZCoThreadPool : public JZObject
+{
+public:
+    static JZCoThreadPool *instance();
+    void addTask(JZCoCondition *cond, const std::function<void()> &task);
+    
+protected:
+    friend JZCoThread;
+
+    struct JZCoJob
+    {
+        JZCoCondition *cond;
+        std::function<void()> task;
+    };
+
+    JZCoThreadPool();
+    ~JZCoThreadPool();
+
+    std::vector<JZThread*> m_threads;
+    std::deque<JZCoJob> m_jobs;
+    JZConditionVariable m_cond;
+    JZMutex m_mutex;
 };
 
 #endif // !JZCO_NET_WORK_H

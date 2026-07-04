@@ -4,14 +4,29 @@
 #include "JZCo.h"
 #include "JZNetworkAccessManager.h"
 
+class JZCoNetworkReply : public JZObject
+{
+protected:
+    JZCoNetworkReply(JZCoNetworkAccessManager *manager, JZNetworkReply *reply);
+
+    void waitFinished();
+    JZByteArray readAll();
+
+protected:
+    void onReplyFinished();
+
+    JZCoCondition cond;
+    JZNetworkReply *m_reply;
+};
+
 class JZCoNetworkAccessManager : public JZObject
 {
 public:
-    JZCoNetworkAccessManager();
+    JZCoNetworkAccessManager(JZObject *parent = nullptr);
     ~JZCoNetworkAccessManager();
 
-    JZNetworkReply *get(const JZNetworkRequest &req);
-    JZNetworkReply *post(const JZNetworkRequest &req,const JZByteArray &buffer);
+    JZCoNetworkReply *get(const JZNetworkRequest &req);
+    JZCoNetworkReply *post(const JZNetworkRequest &req,const JZByteArray &buffer);
 
 protected:
     JZNetworkAccessManager *m_manager;

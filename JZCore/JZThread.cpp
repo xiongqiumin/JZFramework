@@ -546,8 +546,8 @@ void runOnThread(JZThread* thread, std::function<void()> func)
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
 
     JZSlotCallback<void>* callback = new JZSlotCallback<void>();
-    //callback->callback = jzsignal::make_async_slot_lambda_call(func);
-    event->callback = callback;
+    event->callback = new JZSlotCallback<void,void>();
+    event->callback->lambdaFunc = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(thread, event);
 }
 
@@ -556,7 +556,8 @@ void runOnThread(JZThread* thread, JZObject* recv, std::function<void()> func)
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
     event->hasRecv = true;
     event->recv = recv->guardPointer();
-    //event->callback = jzsignal::make_async_slot_lambda_call(func);
+    event->callback = new JZSlotCallback<void,void>();
+    event->callback->lambdaFunc = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(thread, event);
 }
 
@@ -565,6 +566,7 @@ void runOnObject(JZObject* recv, std::function<void()> func)
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
     event->hasRecv = true;
     event->recv = recv->guardPointer();
-    //event->callback = jzsignal::make_async_slot_lambda_call(func);
+    event->callback = new JZSlotCallback<void,void>();
+    event->callback->lambdaFunc = jzsignal::make_async_slot_lambda_call(func);
     jzApp->postEvent(recv->thread(), event);
 }

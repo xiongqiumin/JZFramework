@@ -87,8 +87,6 @@ JZByteArray JZByteArray::fromBase64(const JZByteArray &base64_in) {
     return out;
 }
 
-JZByteArray fromRawData(const char* buffer, int len);
-
 JZByteArray::JZByteArray()
 {
 }

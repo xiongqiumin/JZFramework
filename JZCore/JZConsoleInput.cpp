@@ -8,7 +8,6 @@ JZConsoleInput::JZConsoleInput(JZObject* parent)
     :JZObject(parent), sigReceived(this)
 {
     m_running = false;
-    m_prompt = "input:";
 }
     
 JZConsoleInput::~JZConsoleInput() 

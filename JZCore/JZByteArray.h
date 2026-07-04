@@ -11,7 +11,6 @@ class JZByteArray
 {
 public:
     static JZByteArray fromBase64(const JZByteArray &base64);
-    static JZByteArray fromRawData(const char* buffer, int len);
 
     JZByteArray();
     JZByteArray(const char *buffer, int len);

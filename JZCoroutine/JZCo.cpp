@@ -33,19 +33,6 @@ void jzco_sleep(int ms)
     t.stop();
 }
 
-void jzco_waitThread(std::function<void()> func)
-{
-    JZCoThread t(func);
-    t.start();
-    while (true)
-    {
-        if (t.isRunning())
-            jzco_sleep(10);
-        else
-            break;
-    }
-}
-
 void jzco_waitCoroutine(const std::vector<JZCoCoroutinePtr>& co_list)
 {
     while (true)
@@ -76,6 +63,13 @@ void jzco_waitAllCoroutine()
 {
     auto co_list = g_scheduler->coroutineList();
     jzco_waitCoroutine(co_list);
+}
+
+void jzco_submitAndWait(std::function<void()> func)
+{
+    JZCoCondition cond;
+    JZCoThreadPool::instance()->addTask(&cond, func);
+    cond.wait();    
 }
 
 JZCoCoroutinePtr jzco_spawn(const std::function<void()> &func, int stack_size)

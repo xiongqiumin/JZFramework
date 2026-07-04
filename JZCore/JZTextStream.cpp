@@ -131,6 +131,14 @@ JZTextStream &JZTextStream::operator<<(const std::string &str)
         return *this;
 
     writeBomIfNeeded();
-    m_file->write(str.data(), (int)str.size());
+    if(m_codec == Local)
+    {
+        std::string local = str_utf8_to_local(str);
+        m_file->write(local.data(), (int)local.size());
+    }
+    else
+    {
+        m_file->write(str.data(), (int)str.size());
+    }
     return *this;
 }

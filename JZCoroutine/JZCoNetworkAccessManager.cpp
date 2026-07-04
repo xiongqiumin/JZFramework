@@ -1,33 +1,46 @@
 #include "JZCoNetworkAccessManager.h"
 
-JZCoNetworkAccessManager::JZCoNetworkAccessManager()
+JZCoNetworkReply::JZCoNetworkReply(JZCoNetworkAccessManager *manager, JZNetworkReply *reply)
+    :JZObject(manager)
+{
+    m_reply = reply;
+    connect(&reply->sigFinished,this, &JZCoNetworkReply::onReplyFinished);
+}
+
+void JZCoNetworkReply::waitFinished()
+{
+    cond.wait();
+}
+
+void JZCoNetworkReply::onReplyFinished()
+{
+    cond.wakeAll();
+}
+
+JZByteArray JZCoNetworkReply::readAll()
+{
+    return m_reply->readAll();
+}
+
+//JZCoNetworkAccessManager
+JZCoNetworkAccessManager::JZCoNetworkAccessManager(JZObject *parent)
+    :JZObject(parent)
 {
     m_manager = new JZNetworkAccessManager(this);
 }
 
 JZCoNetworkAccessManager::~JZCoNetworkAccessManager()
 {
-    
 }
 
-JZNetworkReply *JZCoNetworkAccessManager::get(const JZNetworkRequest &req)
-{
-    auto co = g_scheduler->currentCoroutine();
-
-    JZNetworkReply *reply = m_manager->get(req);
-    connect(&reply->sigFinished,this,[co]{ g_scheduler->resume(co); });
-    g_scheduler->yield(co);
-
-    return reply;
+JZCoNetworkReply *JZCoNetworkAccessManager::get(const JZNetworkRequest &req)
+{    
+    JZNetworkReply *reply = m_manager->get(req);    
+    return new JZCoNetworkReply(this, reply);
 }
 
-JZNetworkReply *JZCoNetworkAccessManager::post(const JZNetworkRequest &req,const JZByteArray &buffer)
+JZCoNetworkReply *JZCoNetworkAccessManager::post(const JZNetworkRequest &req,const JZByteArray &buffer)
 {
-    auto co = g_scheduler->currentCoroutine();
-
     JZNetworkReply *reply = m_manager->post(req,buffer);
-    connect(&reply->sigFinished,this,[co]{ g_scheduler->resume(co); });
-    g_scheduler->yield(co);
-    
-    return reply;
+    return new JZCoNetworkReply(this, reply);
 }

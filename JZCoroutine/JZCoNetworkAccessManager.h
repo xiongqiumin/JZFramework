@@ -4,6 +4,7 @@
 #include "JZCo.h"
 #include "JZNetworkAccessManager.h"
 
+class JZCoNetworkAccessManager;
 class JZCoNetworkReply : public JZObject
 {
 protected:
@@ -13,6 +14,8 @@ protected:
     JZByteArray readAll();
 
 protected:
+    friend JZCoNetworkAccessManager;
+    
     void onReplyFinished();
 
     JZCoCondition cond;

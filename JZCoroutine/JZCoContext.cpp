@@ -225,7 +225,7 @@ CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx)
 #include "JZFreeRTOS.h"
 
 // 固定块大小
-constexpr size_t BLOCK_SIZE = 512U;
+constexpr int BLOCK_SIZE = 512U;
 
 class JZCOMemPool
 {
@@ -235,7 +235,7 @@ public:
      * @param buffer 外部静态数组/缓冲区
      * @param bufSize 缓冲区总字节数
      */
-    void init(const char* buffer, size_t bufSize)
+    void init(const char* buffer, int bufSize)
     {
         m_poolBuf = reinterpret_cast<uint8_t*>(const_cast<char*>(buffer));
         m_totalSize = bufSize;
@@ -243,7 +243,7 @@ public:
 
         // 清空空闲块集合，初始化所有块为空闲
         m_freeBlocks.clear();
-        for (size_t i = 0; i < m_totalBlocks; ++i)
+        for (int i = 0; i < m_totalBlocks; ++i)
         {
             m_freeBlocks.push_back(i);
         }
@@ -254,7 +254,7 @@ public:
      * @param allocSize 申请字节大小
      * @return 分配内存指针，nullptr分配失败
      */
-    void* alloc(size_t allocSize)
+    void* alloc(int allocSize)
     {
         if (m_freeBlocks.empty())
         {
@@ -263,7 +263,7 @@ public:
         }
 
         // 最少分配1块，向上取整计算需要块数
-        size_t needBlocks = 1;
+        int needBlocks = 1;
         if (allocSize > BLOCK_SIZE)
         {
             needBlocks = (allocSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -277,8 +277,8 @@ public:
         }
 
         // 取出末尾N个空闲块（vector尾部弹出效率最高）
-        size_t firstBlockIdx = m_freeBlocks[m_freeBlocks.size() - needBlocks];
-        for (size_t i = 0; i < needBlocks; ++i)
+        int firstBlockIdx = m_freeBlocks[m_freeBlocks.size() - needBlocks];
+        for (int i = 0; i < needBlocks; ++i)
         {
             m_freeBlocks.pop_back();
         }
@@ -298,16 +298,16 @@ public:
 
         // 计算块下标
         ptrdiff_t offset = reinterpret_cast<uint8_t*>(ptr) - m_poolBuf;
-        if (offset < 0 || static_cast<size_t>(offset) % BLOCK_SIZE != 0)
+        if (offset < 0 || static_cast<int>(offset) % BLOCK_SIZE != 0)
         {
             printf("MemPool free failed: invalid pointer\n");
             return;
         }
 
-        size_t blockIdx = static_cast<size_t>(offset) / BLOCK_SIZE;
+        int blockIdx = static_cast<int>(offset) / BLOCK_SIZE;
 
         // 查找该块是否已经空闲，防止重复释放
-        for (size_t idx : m_freeBlocks)
+        for (int idx : m_freeBlocks)
         {
             if (idx == blockIdx)
             {
@@ -321,16 +321,16 @@ public:
     }
 
     // 状态查询接口
-    size_t getTotalBlocks() const  { return m_totalBlocks; }
-    size_t getFreeBlocks() const   { return m_freeBlocks.size(); }
-    size_t getUsedBlocks() const   { return m_totalBlocks - m_freeBlocks.size(); }
+    int getTotalBlocks() const  { return m_totalBlocks; }
+    int getFreeBlocks() const   { return m_freeBlocks.size(); }
+    int getUsedBlocks() const   { return m_totalBlocks - m_freeBlocks.size(); }
 
 private:
     uint8_t*               m_poolBuf{nullptr};
-    size_t                 m_totalSize{0};
-    size_t                 m_totalBlocks{0};
+    int                 m_totalSize{0};
+    int                 m_totalBlocks{0};
     // vector存储所有空闲块的下标，替代链表
-    std::vector<size_t>    m_freeBlocks;
+    std::vector<int>    m_freeBlocks;
 };
 
 /*
@@ -368,7 +368,7 @@ JZCoMainContext::JZCoMainContext()
     coMsgQueue = xQueueCreate(16, sizeof(CoMsg));
     pxTopOfStack = nullptr;
 
-    StackType_t *main_stack = xTaskGetStackStart(NULL);
+    StackType_t *main_stack = pxTaskGetStackStart(NULL);
     char *buffer = (char *)main_stack;
     memPool.init(buffer, 16 * 1024);
 }
@@ -456,7 +456,7 @@ JZCoContext::JZCoContext(int stack_size)
 {
     //创建co时栈静态分配，保证空间合法.
     int cur_pri = uxTaskPriorityGet(NULL);
-    taskBuffer = g_mainCtx->memPool.alloc(stack_size);
+    taskBuffer = (StackType_t *)g_mainCtx->memPool.alloc(stack_size);
     if(!taskBuffer){
         JZ_ASSERT_X(0,"alloc co stack failed.");
     }

@@ -32,7 +32,7 @@ void JZCoWebSocket::connectSignals()
 	connect(&m_client->sigDisconnected, this, &JZCoWebSocket::onDisconnected, JZ::QueuedConnection);
 	connect(&m_client->sigTextMessageReceived, this, &JZCoWebSocket::onTextMessageReceived, JZ::QueuedConnection);
 	connect(&m_client->sigBinaryMessageReceived, this, &JZCoWebSocket::onBinaryMessageReceived, JZ::QueuedConnection);
-	connect(&m_client->sigError, this, &JZCoWebSocket::onError, &JZCoWebSocket::onBinaryMessageReceived, JZ::QueuedConnection);
+	connect(&m_client->sigError, this, &JZCoWebSocket::onError, JZ::QueuedConnection);
 }
 
 void JZCoWebSocket::yield(int waitType,int timeout)

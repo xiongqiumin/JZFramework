@@ -2,7 +2,7 @@
 #include "JZCoCoroutine.h"
 #include "JZApplication.h"
 #include "JZDebug.h"
-#include "JZThread.h`"
+#include "JZThread.h"
 
 class JZCoEvent : public JZEvent
 {
@@ -70,17 +70,6 @@ void JZCoCoroutine::beforeResume()
 
 void JZCoCoroutine::endTask()
 {
-}
-
-//JZCoThread
-JZCoThread::JZCoThread(std::function<void()> func)
-{
-    m_func = func;
-}
-
-void JZCoThread::run()
-{
-    m_func();
 }
 
 //JZCoScheduler
@@ -268,9 +257,9 @@ public:
     {
         while(!isRequestInterruption())
         {
-            JZCoJob job;
+            JZCoThreadPool::JZCoJob job;
             {
-                JZMutexLocker locker(pool->m_mutex);
+                JZMutexLocker locker(&pool->m_mutex);
                 if(pool->m_jobs.size() > 0)
                 {
                     job = pool->m_jobs.front();
@@ -278,26 +267,26 @@ public:
                 }
             }            
 
-            if(job.func)
+            if(job.task)
             {
-                job.func();
+                job.task();
                 job.cond->wakeAll();
             }
             else
             {
-                JZMutexLocker locker(pool->m_mutex);
+                JZMutexLocker locker(&pool->m_mutex);
                 pool->m_cond.wait(locker);
             }
         }
     }
 
     JZCoThreadPool *pool;
-}
+};
 
 //JZCoThreadPool
 JZCoThreadPool *JZCoThreadPool::instance()
 {
-    staic JZCoThreadPool inst;
+    static JZCoThreadPool inst;
     return &inst;
 }
 

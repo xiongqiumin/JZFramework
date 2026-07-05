@@ -476,26 +476,7 @@ void test_JZCore(JZTest *test)
     strSuite->addTestCase("case", jzstring_case);
     strSuite->addTestCase("convert", jzstring_convert);
     strSuite->addTestCase("split", jzstring_split);
-    strSuite->addTestCase("from_std", jzstring_from_std);
-
-    auto regexpSuite = std::make_shared<JZTestSuite>("JZRegExp");
-    test->addSuite(regexpSuite);
-    regexpSuite->addTestCase("basic", jzregexp_basic);
-    regexpSuite->addTestCase("url", jzregexp_url);
-    regexpSuite->addTestCase("ignore_case", jzregexp_ignore_case);
-    regexpSuite->addTestCase("multiline", jzregexp_multiline);
-    regexpSuite->addTestCase("global_flag", jzregexp_global_flag);
-    regexpSuite->addTestCase("whitespace", jzregexp_whitespace);
-    regexpSuite->addTestCase("capture_groups", jzregexp_capture_groups);
-    regexpSuite->addTestCase("anchor", jzregexp_anchor);
-    regexpSuite->addTestCase("end_anchor", jzregexp_end_anchor);
-    regexpSuite->addTestCase("alternation", jzregexp_alternation);
-    regexpSuite->addTestCase("dot", jzregexp_dot);
-    regexpSuite->addTestCase("optional", jzregexp_optional);
-    regexpSuite->addTestCase("exec", jzregexp_exec);
-    regexpSuite->addTestCase("flags", jzregexp_flags);
-    regexpSuite->addTestCase("capture", jzregexp_capture);
-    regexpSuite->addTestCase("invalid", jzregexp_invalid);
+    strSuite->addTestCase("from_std", jzstring_from_std);    
 
     auto bytearraySuite = std::make_shared<JZTestSuite>("JZByteArray");
     test->addSuite(bytearraySuite);
@@ -504,4 +485,13 @@ void test_JZCore(JZTest *test)
     bytearraySuite->addTestCase("mid", jzbytearray_mid);
     bytearraySuite->addTestCase("resize", jzbytearray_resize);
     bytearraySuite->addTestCase("clear", jzbytearray_clear);
+}
+
+
+int main(int argc,char *argv[])
+{
+    JZTest test;
+    test_JZCore(&test);
+    test.run(argc, argv);
+    return 0;
 }

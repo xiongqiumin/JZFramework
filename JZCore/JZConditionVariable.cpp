@@ -94,7 +94,7 @@ void JZConditionVariable::wait(JZMutexLocker& locker)
 
 void JZConditionVariable::wait(JZMutexLocker& locker,std::function<bool()> condition)
 {
-    wait_for(mutex, -1, condition);
+    wait_for(locker, -1, condition);
 }
 
 // -------------------------- 核心：wait_for（超时 + lambda 条件） --------------------------

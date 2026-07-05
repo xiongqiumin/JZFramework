@@ -20,7 +20,7 @@ JZTcpServer::~JZTcpServer()
 
 bool JZTcpServer::isListening() const
 {
-    return m_listen;
+    return m_listen != 0;
 }
 
 int JZTcpServer::port() const

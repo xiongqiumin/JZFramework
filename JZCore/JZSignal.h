@@ -240,6 +240,22 @@ public:
 template<typename Enable, typename... Args>
 class JZSlotCallback;
 
+template<>
+class JZSlotCallback<void> : public JZBaseSlotCallback
+{
+public:
+    std::function<void(JZObject*)> memberFunc;
+    std::function<void()> lambdaFunc;
+
+    virtual void invoke(JZObject* obj, const JZVariantList& args) override
+    {
+        if (memberFunc)
+            memberFunc(obj);
+        else
+            lambdaFunc();
+    }
+};
+
 template<typename... Args>
 class JZSlotCallback<std::enable_if_t<jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
 {
@@ -549,7 +565,7 @@ template<typename... SignalArgs, typename Func>
 int connect(JZSignal<SignalArgs...>* signal, Func slot, JZ::ConnectType type = JZ::AutoConnection)
 {
     static_assert(jzsignal::check_signal_and_func_args<Func, SignalArgs...>(), "signal slot not match");
-    if constexpr (!jzsignal::IsAllDefined<SignalArgs...>::value) {
+    if(!jzsignal::IsAllDefined<SignalArgs...>::value) {
         // 类型未注册，检查连接类型是否合法
         JZ_ASSERT_X(type == JZ::AutoConnection || type == JZ::DirectConnection,
             "Queued/BlockingQueued connections require all signal argument types to be registered with JZVariant");
@@ -570,8 +586,8 @@ connect(JZSignal<SignalArgs...> *signal, Object *recv, Func slot, JZ::ConnectTyp
 {
     static_assert(jzsignal::is_inherits_v<Object, Func>, "recv type not match");
     static_assert(jzsignal::check_signal_and_func_args<Func, SignalArgs...>(), "signal slot not match");
-    if constexpr (!jzsignal::IsAllDefined<SignalArgs...>::value) {
-        // 类型未注册，检查连接类型是否合法
+    if (!jzsignal::IsAllDefined<SignalArgs...>::value)
+    {
         JZ_ASSERT_X(type == JZ::AutoConnection || type == JZ::DirectConnection,
             "Queued/BlockingQueued connections require all signal argument types to be registered with JZVariant");
     }

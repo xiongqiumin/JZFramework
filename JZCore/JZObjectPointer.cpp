@@ -5,7 +5,7 @@
 //JZObjectPointer
 JZObjectPointer::operator bool() const
 {
-    return data->object;
+    return data->object != nullptr;
 }
 
 JZObject* JZObjectPointer::object() const

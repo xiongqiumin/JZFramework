@@ -126,7 +126,6 @@ protected:
     std::vector<JZObject*> m_senderQueue;   // 信号发送栈 (从 JZObject 移入)
     JZConditionVariable m_cv;
     JZMutex m_mutex;
-    int m_nextTimerId;
 };
 
 // 在thread所在线程执行

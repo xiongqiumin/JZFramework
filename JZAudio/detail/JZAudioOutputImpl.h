@@ -16,7 +16,7 @@ public:
     virtual void reset() = 0;
     virtual bool write(const JZByteArray& data) = 0;
 
-private:
+protected:
     JZAudioOutput *m_device;
 };
 

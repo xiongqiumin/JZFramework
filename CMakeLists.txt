@@ -10,5 +10,5 @@ if (MSVC)
 endif()
 
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZLvgl)
+jzframework_use_modules(JZCore JZAudio JZLvgl)
 jzframework_build_test()

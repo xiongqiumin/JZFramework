@@ -107,7 +107,6 @@ JZThread::~JZThread()
 void JZThread::initParam()
 {
     m_running = false;
-    m_nextTimerId = 1;
 
 #if JZ_OS == JZ_OS_FREE_RTOS
     m_handle = nullptr;
@@ -372,10 +371,17 @@ int JZThread::addTimer(JZObject *object, int intervalMs)
 
     int64_t now = JZPlatform::getTickCountMs();
 
+    int next_time_id = 0;
+    for(size_t i = 0; i < m_timerList.size(); i++)
+    {
+        next_time_id = std::max(next_time_id, m_timerList[i].id);
+    }
+    next_time_id = next_time_id + 1;
+
     TimerInfo info;
     info.object = object;
     info.intervalMs = intervalMs;
-    info.id = m_nextTimerId++;
+    info.id = next_time_id++;
     info.nextTrigger = now + intervalMs;
     m_timerList.push_back(info);
     return info.id;

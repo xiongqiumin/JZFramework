@@ -7,8 +7,8 @@ JZLvglWidget::JZLvglWidget(JZLvglWidget* parent)
     : JZObject(parent)
 {
     auto* plv = parent ? parent->handle() : nullptr;
-    m_lv = lv_obj_create(plv);
-    assert(m_lv);
+    auto obj = lv_obj_create(plv);
+    setLvglObject(obj);
     lv_obj_set_user_data(m_lv, this);
     lv_obj_add_event_cb(m_lv, lvEventCallback, LV_EVENT_ALL, nullptr);
 }
@@ -18,10 +18,13 @@ JZLvglWidget::JZLvglWidget(lv_create_fn_t create, JZLvglWidget* parent)
 {
     assert(create);
     auto* plv = parent ? parent->handle() : nullptr;
-    m_lv = create(plv);
-    assert(m_lv);
-    lv_obj_set_user_data(m_lv, this);
-    lv_obj_add_event_cb(m_lv, lvEventCallback, LV_EVENT_ALL, nullptr);
+    auto obj = create(plv);
+    setLvglObject(obj);    
+}
+
+JZLvglWidget::JZLvglWidget(NoCreate, JZLvglWidget* parent)
+{
+    m_lv = nullptr;
 }
 
 JZLvglWidget::~JZLvglWidget()
@@ -29,6 +32,13 @@ JZLvglWidget::~JZLvglWidget()
     if (m_lv) {
         lv_obj_delete(m_lv);
     }
+}
+
+void JZLvglWidget::setLvglObject(lv_obj_t* obj)
+{
+    m_lv = obj;
+    lv_obj_set_user_data(m_lv, this);
+    lv_obj_add_event_cb(m_lv, lvEventCallback, LV_EVENT_ALL, nullptr);
 }
 
 void JZLvglWidget::setParentWidget(JZLvglWidget* parent)

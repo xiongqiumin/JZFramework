@@ -6,12 +6,7 @@
 class JZScreen : public JZLvglWidget
 {
 public:
-    enum ScreenType{
-        ActiveScreen,
-        CreateNewScreen,
-    };
-
-    JZScreen(ScreenType type = ActiveScreen);
+    JZScreen(lv_obj_t *screen);
     ~JZScreen();
 };
 

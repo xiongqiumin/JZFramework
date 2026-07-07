@@ -69,10 +69,12 @@ void JZTimer::timerEvent(JZTimerEvent *event)
 
 void JZTimer::start(int ms)
 {
-    if (m_timeId == INVAILD_TIMER_ID)
+    if (m_timeId != INVAILD_TIMER_ID)
     {
-        m_timeId = startTimer(ms);
+        return;
     }
+    
+    m_timeId = startTimer(ms);    
 }
 
 void JZTimer::stop()

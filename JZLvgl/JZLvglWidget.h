@@ -46,20 +46,22 @@ public:
     virtual const JZVariant& property(const std::string& name) const override;
 
 protected:
+    struct NoCreate{};
+
+    static void lvEventCallback(lv_event_t* e);
+        
     // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）
     JZLvglWidget(lv_create_fn_t create, JZLvglWidget* parent = nullptr);
+    JZLvglWidget(NoCreate, JZLvglWidget* parent = nullptr);
+    
+    void setLvglObject(lv_obj_t* obj);
 
     virtual void onLvEvent(lv_event_t* e);
     virtual void onKeyPressed(JZKeyEvent* event);
-    virtual void paintEvent(JZPainter* painter);
-
-    lv_obj_t* m_lv = nullptr;
-    static void lvEventCallback(lv_event_t* e);
-
-private:
-    void initWidget(lv_obj_t* parentLv);
+    virtual void paintEvent(JZPainter* painter);    
 
     JZLvglLayout m_layout;
+    lv_obj_t* m_lv = nullptr;
 };
 
 #endif

@@ -12,6 +12,6 @@ public:
     virtual bool open(const JZAudioDeviceInfo& device) = 0;
     virtual void close() = 0;
 
-private:
+protected:
     JZAudioInput *m_device;
 };

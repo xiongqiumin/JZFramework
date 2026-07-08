@@ -19,8 +19,6 @@ public:
     void setRotation(int32_t angle);
     void setPivot(int x, int y);
 
-    void setSrcBySymbol(const char* sym);
-
 private:
     JZImage m_image;
 };

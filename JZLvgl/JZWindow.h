@@ -11,7 +11,8 @@ public:
     explicit JZMainWindow(JZWidget* parent = nullptr);
     JZMainWindow(JZWidget* parent, int w, int h, const std::string& title);
 
-    void addTitleBtn(const void* icon, int32_t btnW);
+    const std::string& JZMainWindow::title() const;
+    void setTitle(const std::string& title);
 };
 
 #endif

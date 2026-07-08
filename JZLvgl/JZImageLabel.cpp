@@ -38,8 +38,3 @@ void JZImageLabel::setPivot(int x, int y)
 {
     lv_image_set_pivot(m_lv, x, y);
 }
-
-void JZImageLabel::setSrcBySymbol(const char* sym)
-{
-    lv_image_set_src(m_lv, sym);
-}

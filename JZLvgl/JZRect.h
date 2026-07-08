@@ -1,6 +1,7 @@
 #ifndef JZ_RECT_H_
 #define JZ_RECT_H_
 
+#include "JZPoint.h"
 #include "JZSize.h"
 
 class JZRect
@@ -20,9 +21,26 @@ public:
     void setHeight(int h);
 
     void setRect(int x, int y, int w, int h);
+
+    // 边
+    int left() const;
+    int top() const;
+    int right() const;
+    int bottom() const;
+
+    // 角
+    JZPoint topLeft() const;
+    JZPoint topRight() const;
+    JZPoint bottomLeft() const;
+    JZPoint bottomRight() const;
+
+    // 中心
+    JZPoint center() const;
+
     JZSize size() const;
 
     bool contains(int px, int py) const;
+    bool contains(const JZPoint& p) const;
     bool isEmpty() const;
 
 private:

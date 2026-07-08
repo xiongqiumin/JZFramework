@@ -25,14 +25,44 @@ void JZRect::setRect(int x, int y, int w, int h)
     m_x = x; m_y = y; m_w = w; m_h = h;
 }
 
+// ==================== 边 ====================
+
+int JZRect::left() const   { return m_x; }
+int JZRect::top() const    { return m_y; }
+int JZRect::right() const  { return m_x + m_w - 1; }
+int JZRect::bottom() const { return m_y + m_h - 1; }
+
+// ==================== 角 ====================
+
+JZPoint JZRect::topLeft() const     { return JZPoint(left(), top()); }
+JZPoint JZRect::topRight() const    { return JZPoint(right(), top()); }
+JZPoint JZRect::bottomLeft() const  { return JZPoint(left(), bottom()); }
+JZPoint JZRect::bottomRight() const { return JZPoint(right(), bottom()); }
+
+// ==================== 中心 ====================
+
+JZPoint JZRect::center() const
+{
+    return JZPoint(m_x + m_w / 2, m_y + m_h / 2);
+}
+
+// ==================== 尺寸 ====================
+
 JZSize JZRect::size() const
 {
     return JZSize(m_w, m_h);
 }
 
+// ==================== 判断 ====================
+
 bool JZRect::contains(int px, int py) const
 {
     return px >= m_x && px <= m_x + m_w && py >= m_y && py <= m_y + m_h;
+}
+
+bool JZRect::contains(const JZPoint& p) const
+{
+    return contains(p.x(), p.y());
 }
 
 bool JZRect::isEmpty() const

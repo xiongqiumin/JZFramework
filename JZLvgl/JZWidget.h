@@ -2,6 +2,9 @@
 #define JZ_LVGL_WIDGET_H_
 
 #include "JZObject.h"
+#include "JZPoint.h"
+#include "JZSize.h"
+#include "JZRect.h"
 #include "JZLayout.h"
 #include "JZKeyEvent.h"
 #include "JZPainter.h"
@@ -21,14 +24,31 @@ public:
     void setParentWidget(JZWidget* parent);
     JZWidget* parentWidget() const;
 
-    // 几何属性
-    void setSize(int w, int h);
-    void setPos(int x, int y);
-    void setSizePos(int w, int h, int x, int y);
-    void center();
-    void hide();
-    void show();
+    // 位置
+    JZPoint pos() const;
+    void move(int x, int y);
+    void move(const JZPoint& p);
+    int x() const;
+    int y() const;
+
+    // 尺寸
+    JZSize size() const;
+    void resize(int w, int h);
+    void resize(const JZSize& s);
+    int width() const;
+    int height() const;
+
+    // 几何
+    JZRect geometry() const;
+    void setGeometry(int x, int y, int w, int h);
+    void setGeometry(const JZRect& r);
+
+    // 可见性
+    void setVisible(bool visible);
     bool isVisible() const;
+
+    void show();
+    void hide();
 
     // 布局
     void setLayout(const JZLayout& layout);

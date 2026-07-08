@@ -14,7 +14,7 @@ JZPushButton::JZPushButton(JZWidget* parent)
 JZPushButton::JZPushButton(JZWidget* parent, int w, int h, const std::string& text)
     : JZPushButton(parent)
 {
-    setSize(w, h);
+    resize(w, h);
     setText(text);
 }
 
@@ -45,10 +45,10 @@ std::string JZPushButton::text() const
 
 void JZPushButton::setWidth(int w)
 {
-    setSize(w, lv_obj_get_height(m_lv));
+    resize(w, height());
 }
 
 void JZPushButton::setHeight(int h)
 {
-    setSize(lv_obj_get_width(m_lv), h);
+    resize(width(), h);
 }

@@ -7,14 +7,13 @@ JZMainWindow::JZMainWindow(JZWidget* parent)
 {
 }
 
-JZMainWindow::JZMainWindow(JZWidget* parent, int w, int h, const std::string& title)
-    : JZMainWindow(parent)
+const std::string& JZMainWindow::title() const
 {
-    setSize(w, h);
-    lv_win_add_title(m_lv, title.c_str());
+    return lv_win_title(m_lv);
 }
 
-void JZMainWindow::addTitleBtn(const void* icon, int32_t btnW)
+void JZMainWindow::setTitle(const std::string& title)
 {
-    lv_win_add_button(m_lv, icon, btnW);
+    resize(w, h);
+    lv_win_add_title(m_lv, title.c_str());
 }

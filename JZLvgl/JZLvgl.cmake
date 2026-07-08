@@ -4,6 +4,8 @@
     JZColor.cpp
     JZSize.h
     JZSize.cpp
+    JZPoint.h
+    JZPoint.cpp
     JZRect.h
     JZRect.cpp
     JZKeyEvent.h

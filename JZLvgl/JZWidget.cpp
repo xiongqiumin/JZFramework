@@ -59,41 +59,104 @@ JZWidget* JZWidget::parentWidget() const
     return w;
 }
 
-void JZWidget::setSize(int w, int h)
+// ==================== 位置 ====================
+
+JZPoint JZWidget::pos() const
 {
-    lv_obj_set_size(m_lv, w, h);
+    return JZPoint(lv_obj_get_x(m_lv), lv_obj_get_y(m_lv));
 }
 
-void JZWidget::setPos(int x, int y)
+void JZWidget::move(int x, int y)
 {
     lv_obj_set_pos(m_lv, x, y);
 }
 
-void JZWidget::setSizePos(int w, int h, int x, int y)
+void JZWidget::move(const JZPoint& p)
+{
+    move(p.x(), p.y());
+}
+
+int JZWidget::x() const
+{
+    return lv_obj_get_x(m_lv);
+}
+
+int JZWidget::y() const
+{
+    return lv_obj_get_y(m_lv);
+}
+
+// ==================== 尺寸 ====================
+
+JZSize JZWidget::size() const
+{
+    return JZSize(lv_obj_get_width(m_lv), lv_obj_get_height(m_lv));
+}
+
+void JZWidget::resize(int w, int h)
 {
     lv_obj_set_size(m_lv, w, h);
-    lv_obj_set_pos(m_lv, x, y);
 }
 
-void JZWidget::center()
+void JZWidget::resize(const JZSize& s)
 {
-    lv_obj_center(m_lv);
+    resize(s.width(), s.height());
 }
 
-void JZWidget::hide()
+int JZWidget::width() const
 {
-    lv_obj_add_flag(m_lv, LV_OBJ_FLAG_HIDDEN);
+    return lv_obj_get_width(m_lv);
+}
+
+int JZWidget::height() const
+{
+    return lv_obj_get_height(m_lv);
+}
+
+// ==================== 几何 ====================
+
+JZRect JZWidget::geometry() const
+{
+    return JZRect(x(), y(), width(), height());
+}
+
+void JZWidget::setGeometry(int x, int y, int w, int h)
+{
+    resize(w, h);
+    move(x, y);
+}
+
+void JZWidget::setGeometry(const JZRect& r)
+{
+    setGeometry(r.x(), r.y(), r.width(), r.height());
+}
+
+// ==================== 可见性 ====================
+
+void JZWidget::setVisible(bool visible)
+{
+    if (visible)
+        lv_obj_remove_flag(m_lv, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(m_lv, LV_OBJ_FLAG_HIDDEN);
 }
 
 void JZWidget::show()
 {
-    lv_obj_remove_flag(m_lv, LV_OBJ_FLAG_HIDDEN);
+    setVisible(true);
+}
+
+void JZWidget::hide()
+{
+    setVisible(false);
 }
 
 bool JZWidget::isVisible() const
 {
     return !lv_obj_has_flag(m_lv, LV_OBJ_FLAG_HIDDEN);
 }
+
+// ==================== 布局 ====================
 
 void JZWidget::setLayout(const JZLayout& layout)
 {
@@ -106,6 +169,8 @@ JZLayout JZWidget::layout() const
     return m_layout;
 }
 
+// ==================== 焦点 ====================
+
 void JZWidget::setFocus()
 {
     lv_group_focus_obj(m_lv);
@@ -116,10 +181,14 @@ bool JZWidget::hasFocus() const
     return lv_obj_has_state(m_lv, LV_STATE_FOCUSED);
 }
 
+// ==================== 重绘 ====================
+
 void JZWidget::update()
 {
     lv_obj_invalidate(m_lv);
 }
+
+// ==================== 事件 ====================
 
 void JZWidget::lvEventCallback(lv_event_t* e)
 {
@@ -157,6 +226,8 @@ void JZWidget::onKeyPressed(JZKeyEvent* event)
 void JZWidget::paintEvent(JZPainter* painter)
 {
 }
+
+// ==================== 属性 ====================
 
 void JZWidget::setProperty(const std::string& name, const JZVariant& value)
 {

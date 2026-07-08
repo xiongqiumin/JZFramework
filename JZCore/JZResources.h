@@ -14,17 +14,17 @@ struct JZResourceData
 class JZResources
 {
 public:
-    static JZResources *instance();
+    static JZResources *instance();    
 
     void add(const std::string &name, const unsigned char *data, int size);
     const JZResourceData *find(const std::string &name) const;
+    std::vector<std::string> resourcesList() const;
 
 private:
     JZResources() = default;
     JZ_DISABLE_COPY(JZResources)
 
     std::map<std::string, JZResourceData> m_resources;
-    static JZResources *s_instance;
 };
 
 #endif // JZ_RESOURCES_H_

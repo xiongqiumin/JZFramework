@@ -54,10 +54,12 @@ bool JZFile::open(std::string filepath, std::string mode)
         // 资源文件只读，拒绝 a/w 模式
         if (mode.find_first_of("aw") != std::string::npos)
             return false;
+
         m_res = JZResources::instance()->find(filepath);
         m_resOffset = 0;
         return m_res != nullptr;
     }
+    
     m_fp = fopen(str_utf8_to_local(filepath).c_str(), mode.c_str());
     return m_fp != nullptr;
 }

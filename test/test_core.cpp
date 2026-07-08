@@ -3,6 +3,9 @@
 #include "JZString.h"
 #include "JZRegExp.h"
 #include "JZByteArray.h"
+#include "JZElapsedTimer.h"
+#include <cstdio>
+#include <cstring>
 
 bool jzstd_str_basic()
 {
@@ -488,8 +491,81 @@ void test_JZCore(JZTest *test)
 }
 
 
+static void benchmark_audio_base64()
+{
+    // 16000Hz, 1秒, 16bit 单声道 PCM = 32000 字节
+    const int sampleRate = 16000;
+    const int durationSec = 1;
+    const int bytesPerSample = 2; // 16bit
+    const int channels = 1;
+    const int totalBytes = sampleRate * durationSec * bytesPerSample * channels; // 32000
+
+    printf("\n========== Audio Benchmark ==========\n");
+    printf("Config: %dHz, %ds, %dbit, %dch => %d bytes\n",
+           sampleRate, durationSec, bytesPerSample * 8, channels, totalBytes);
+
+    // 生成模拟 PCM 数据 (正弦波)
+    JZByteArray srcPcm;
+    srcPcm.resize(totalBytes);
+    for (int i = 0; i < sampleRate; ++i) {
+        int16_t sample = (int16_t)(32767.0 * sin(2.0 * 3.1415926 * 440.0 * i / sampleRate));
+        srcPcm[i * 2] = sample & 0xFF;
+        srcPcm[i * 2 + 1] = (sample >> 8) & 0xFF;
+    }
+
+    const int iterations = 1000;
+
+    // Benchmark: memcpy 拷贝
+    {
+        JZByteArray dst;
+        dst.resize(totalBytes);
+        JZElapsedTimer timer;
+        timer.start();
+        for (int i = 0; i < iterations; ++i) {
+            memcpy(dst.data(), srcPcm.data(), totalBytes);
+        }
+        int64_t elapsedNs = timer.nsecsElapsed();
+        double avgUs = elapsedNs / 1000.0 / iterations;
+        printf("[memcpy]        %d iterations, total: %lld ns, avg: %.2f us\n",
+               iterations, (long long)elapsedNs, avgUs);
+    }
+
+    // Benchmark: JZByteArray::toBase64
+    {
+        JZElapsedTimer timer;
+        timer.start();
+        JZByteArray b64Result;
+        for (int i = 0; i < iterations; ++i) {
+            b64Result = srcPcm.toBase64();
+        }
+        int64_t elapsedNs = timer.nsecsElapsed();
+        double avgUs = elapsedNs / 1000.0 / iterations;
+        printf("[toBase64]      %d iterations, total: %lld ns, avg: %.2f us (output: %d bytes)\n",
+               iterations, (long long)elapsedNs, avgUs, b64Result.size());
+    }
+
+    // Benchmark: JZByteArray::fromBase64
+    {
+        JZByteArray b64Data = srcPcm.toBase64(); // 先编码一次
+        JZElapsedTimer timer;
+        timer.start();
+        JZByteArray decoded;
+        for (int i = 0; i < iterations; ++i) {
+            decoded = JZByteArray::fromBase64(b64Data);
+        }
+        int64_t elapsedNs = timer.nsecsElapsed();
+        double avgUs = elapsedNs / 1000.0 / iterations;
+        printf("[fromBase64]    %d iterations, total: %lld ns, avg: %.2f us (output: %d bytes)\n",
+               iterations, (long long)elapsedNs, avgUs, decoded.size());
+    }
+
+    printf("======================================\n\n");
+}
+
 int main(int argc,char *argv[])
 {
+    benchmark_audio_base64();
+
     JZTest test;
     test_JZCore(&test);
     test.run(argc, argv);

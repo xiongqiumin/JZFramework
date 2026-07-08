@@ -1,9 +1,11 @@
-﻿#pragma once
+﻿#ifndef JZ_AUDIO_INPUT_IMPL_H_
+#define JZ_AUDIO_INPUT_IMPL_H_
 
 #include "JZAudioDeviceInfo.h"
+#include "JZObject.h"
 
 class JZAudioInput;
-class JZAudioInputImpl
+class JZAudioInputImpl : public JZObject
 {
 public:
     explicit JZAudioInputImpl(JZAudioInput* parent);
@@ -15,3 +17,5 @@ public:
 protected:
     JZAudioInput *m_device;
 };
+
+#endif

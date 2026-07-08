@@ -13,6 +13,10 @@
 	JZWaveFile.cpp
     detail/JZAudioDriver.h
     detail/JZAudioDriver.cpp
+    detail/JZAudioInputImpl.h
+    detail/JZAudioInputImpl.cpp
+    detail/JZAudioOutputImpl.h
+    detail/JZAudioOutputImpl.cpp
 )
 
 if(WIN32)

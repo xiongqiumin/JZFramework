@@ -21,6 +21,16 @@ public:
     int channelCount;
     int sampleRate;
     SampleFormat sampleFormat;
+
+    int bytesPerSample() const {
+        switch (sampleFormat) {
+        case UInt8:  return 1;
+        case Int16:  return 2;
+        case Int32:
+        case Float:  return 4;
+        default:     return 0;
+        }
+    }
 };
 
 #endif // !JZ_AUDIO_FORMAT_H_

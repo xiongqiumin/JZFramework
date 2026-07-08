@@ -6,12 +6,12 @@
 class JZKeyEvent
 {
 public:
-    explicit JZKeyEvent(lv_event_t* e) : m_event(e) {}
+    explicit JZKeyEvent(lv_event_t* e);
 
-    uint32_t key() const     { return lv_indev_get_key(lv_indev_active()); }
-    bool isAccepted() const  { return m_accepted; }
-    void accept()            { m_accepted = true; }
-    void ignore()            { m_accepted = false; }
+    uint32_t key() const;
+    bool isAccepted() const;
+    void accept();
+    void ignore();
 
 private:
     lv_event_t* m_event;

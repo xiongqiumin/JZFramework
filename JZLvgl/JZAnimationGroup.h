@@ -6,25 +6,28 @@
 #include "JZPropertyAnimation.h"
 #include <vector>
 
-class JZLvglWidget;
+class JZWidget;
 
 class JZAnimationGroup : public JZObject
 {
-public:
-    JZSigVoid sigFinished;
+    JZ_OBJECT_DECLARE(JZAnimationGroup)
 
+public:
     JZAnimationGroup(JZObject* parent = nullptr);
     ~JZAnimationGroup();
 
     void setDuration(uint32_t ms);
     void setDelay(uint32_t ms);
 
-    void addProperty(JZLvglWidget* target, const std::string& name,
+    void addProperty(JZWidget* target, const std::string& name,
                      int32_t from, int32_t to, uint32_t startTime = 0);
     void addAnimation(JZAbstractAnimation* anim, uint32_t startTime = 0);
 
     void start();
     void stop();
+
+jz_signals:
+    JZSigVoid sigFinished;
 
 private:
     uint32_t m_duration = 300;

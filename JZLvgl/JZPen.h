@@ -2,21 +2,22 @@
 #define JZ_PEN_H_
 
 #include "lvgl.h"
+#include "JZColor.h"
 
 class JZPen
 {
 public:
     JZPen() = default;
-    JZPen(lv_color_t color, int width = 1) : m_color(color), m_width(width) {}
+    JZPen(const JZColor& color, int width = 1);
 
-    void setColor(lv_color_t color) { m_color = color; }
-    lv_color_t color() const        { return m_color; }
+    void setColor(const JZColor& color);
+    JZColor color() const;
 
-    void setWidth(int width)        { m_width = width; }
-    int width() const               { return m_width; }
+    void setWidth(int width);
+    int width() const;
 
 private:
-    lv_color_t m_color = lv_color_black();
+    JZColor m_color = JZColor::Black();
     int m_width = 1;
 };
 

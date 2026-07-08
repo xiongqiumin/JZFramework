@@ -6,12 +6,10 @@
 
 class JZPropertyAnimation : public JZAbstractAnimation
 {
-public:
-    JZPropertyAnimation(JZObject* parent = nullptr)
-        : JZAbstractAnimation(parent) {}
+    JZ_OBJECT_DECLARE(JZPropertyAnimation)
 
-    // 属性名 + 起止值 → 回调中调 widget->setProperty(name, value)
-    //bool setProperty(const std::string& name, int32_t start, int32_t end);
+public:
+    JZPropertyAnimation(JZObject* parent = nullptr);
 
     std::string m_propName;
 };

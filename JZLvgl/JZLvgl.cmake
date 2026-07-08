@@ -1,56 +1,67 @@
-﻿set(JZLvgl_SOURCES
-    JZLvgl.h
+﻿set(JZ_SOURCES
+    JZ.h
+    JZColor.h
+    JZColor.cpp
+    JZSize.h
+    JZSize.cpp
+    JZRect.h
+    JZRect.cpp
     JZKeyEvent.h
+    JZKeyEvent.cpp
     JZPen.h
+    JZPen.cpp
     JZBrush.h
+    JZBrush.cpp
     JZFont.h
+    JZFont.cpp
     JZPainter.h
     JZPainter.cpp
-    JZLvglLayout.h
-    JZLvglLayout.cpp
+    JZLayout.h
+    JZLayout.cpp
     JZAbstractAnimation.h
     JZAbstractAnimation.cpp
     JZPropertyAnimation.h
     JZPropertyAnimation.cpp
     JZAnimationGroup.h
     JZAnimationGroup.cpp
-    JZLvglWidget.h
-    JZLvglWidget.cpp
-    JZLvglButton.h
-    JZLvglButton.cpp
-    JZLvglLabel.h
-    JZLvglLabel.cpp
+    JZWidget.h
+    JZWidget.cpp
+    JZButton.h
+    JZButton.cpp
+    JZLabel.h
+    JZLabel.cpp
     JZImage.h
-    JZLvglImage.h
-    JZLvglImage.cpp
-    JZLvglWindow.h
-    JZLvglWindow.cpp
+    JZImage.cpp
+    JZMainWindow.h
+    JZMainWindow.cpp
     JZScreen.h
     JZScreen.cpp
-    JZLvglSlider.h
-    JZLvglSlider.cpp
-    JZLvglBar.h
-    JZLvglBar.cpp
-    JZLvglSwitch.h
-    JZLvglSwitch.cpp
-    JZLvglCheckbox.h
-    JZLvglCheckbox.cpp
-    JZLvglDropdown.h
-    JZLvglDropdown.cpp
-    JZLvglArc.h
-    JZLvglArc.cpp
-    JZLvglTextarea.h
-    JZLvglTextarea.cpp
-    JZLvglLed.h
-    JZLvglLed.cpp
-    JZLvglRoller.h
-    JZLvglRoller.cpp
-    JZLvglTable.h
-    JZLvglTable.cpp
+    JZSlider.h
+    JZSlider.cpp
+    JZBar.h
+    JZBar.cpp
+    JZSwitch.h
+    JZSwitch.cpp
+    JZCheckbox.h
+    JZCheckbox.cpp
+    JZRadioButton.h
+    JZRadioButton.cpp
+    JZDropdown.h
+    JZDropdown.cpp
+    JZArc.h
+    JZArc.cpp
+    JZTextarea.h
+    JZTextarea.cpp
+    JZLed.h
+    JZLed.cpp
+    JZRoller.h
+    JZRoller.cpp
+    JZTable.h
+    JZTable.cpp
 )
 
-convert_to_abs_paths(JZLvgl_SOURCES)
+convert_to_abs_paths(JZ_SOURCES)
 
 # 添加到目标
-target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZLvgl_SOURCES})
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")

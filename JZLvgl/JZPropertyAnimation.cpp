@@ -1,10 +1,17 @@
 #include "JZPropertyAnimation.h"
-#include "JZLvglWidget.h"
+#include "JZWidget.h"
+
+JZ_OBJECT_IMPL(JZPropertyAnimation, JZAbstractAnimation)
+
+JZPropertyAnimation::JZPropertyAnimation(JZObject* parent)
+    : JZAbstractAnimation(parent)
+{
+}
 
 static void s_propExecCb(void* var, int32_t value)
 {
     auto* lvObj = (lv_obj_t*)var;
-    auto* widget = (JZLvglWidget*)lv_obj_get_user_data(lvObj);
+    auto* widget = (JZWidget*)lv_obj_get_user_data(lvObj);
     if (!widget) return;
     // 从当前运行的动画中找到对应的 anim
     lv_anim_t* a = lv_anim_get(var, s_propExecCb);

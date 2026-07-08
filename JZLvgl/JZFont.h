@@ -5,10 +5,10 @@ class JZFont
 {
 public:
     JZFont() = default;
-    explicit JZFont(int size) : m_size(size) {}
+    explicit JZFont(int size);
 
-    void setSize(int size)      { m_size = size; }
-    int size() const            { return m_size; }
+    void setSize(int size);
+    int size() const;
 
 private:
     int m_size = 14;

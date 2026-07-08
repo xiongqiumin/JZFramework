@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <windows.h>
 #include "lvgl.h"
-#include "JZLvgl.h"
+#include "JZ.h"
 #include "JZApplication.h"
 
 #define MONITOR_HOR_RES 800
@@ -108,11 +108,11 @@ static void createUI()
 {
     auto screen = JZScreen::active();
 
-    auto* title = new JZLvglLabel(screen);
+    auto* title = new JZLabel(screen);
     title->setText("JZFramework LVGL Demo");
     title->center();
 
-    auto* btn = new JZLvglButton(screen);
+    auto* btn = new JZButton(screen);
     btn->setSize(140, 40);
     btn->setSizePos(140, 40, g_width/2 - 70, 80);
     btn->setText("Click Me!");
@@ -124,28 +124,28 @@ static void createUI()
         btn->setText(buf);
     });
 
-    auto* info = new JZLvglLabel(screen);
+    auto* info = new JZLabel(screen);
     info->setText("Welcome!");
     info->setSizePos(300, 30, g_width/2 - 150, 150);
     info->setAlign(LV_TEXT_ALIGN_CENTER);
 
-    // 使用 JZLvglLayout
-    auto* row = new JZLvglWidget(screen);
+    // 使用 JZLayout
+    auto* row = new JZWidget(screen);
     row->setSize(400, 50);
-    row->setLayout(JZLvglLayout::hbox(8, 8));
+    row->setLayout(JZLayout::hbox(8, 8));
     row->setPos(g_width/2 - 200, 220);
 
-    auto* btn2 = new JZLvglButton(row);
+    auto* btn2 = new JZButton(row);
     btn2->setSize(100, 40);
     btn2->setText("Btn A");
     connect(&btn2->sigClicked, [=]() { info->setText("Button A clicked"); });
 
-    auto* btn3 = new JZLvglButton(row);
+    auto* btn3 = new JZButton(row);
     btn3->setSize(100, 40);
     btn3->setText("Btn B");
     connect(&btn3->sigClicked, [=]() { info->setText("Button B clicked"); });
 
-    auto* btn4 = new JZLvglButton(row);
+    auto* btn4 = new JZButton(row);
     btn4->setSize(100, 40);
     btn4->setText("Btn C");
     connect(&btn4->sigClicked, [=]() { info->setText("Button C clicked"); });

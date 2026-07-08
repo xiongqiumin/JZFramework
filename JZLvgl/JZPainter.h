@@ -5,23 +5,24 @@
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZFont.h"
+#include "JZColor.h"
 
 class JZPainter
 {
 public:
     explicit JZPainter(lv_event_t* e);
 
-    void setPen(const JZPen& pen)       { m_pen = pen; }
-    JZPen pen() const                   { return m_pen; }
-    void setBrush(const JZBrush& brush) { m_brush = brush; }
-    JZBrush brush() const               { return m_brush; }
-    void setFont(const JZFont& font)    { m_font = font; }
-    JZFont font() const                 { return m_font; }
+    void setPen(const JZPen& pen);
+    JZPen pen() const;
+    void setBrush(const JZBrush& brush);
+    JZBrush brush() const;
+    void setFont(const JZFont& font);
+    JZFont font() const;
 
     void drawLine(int x1, int y1, int x2, int y2);
     void drawRect(int x, int y, int w, int h);
     void drawRoundRect(int x, int y, int w, int h, int radius);
-    void fillRect(int x, int y, int w, int h, lv_color_t color);
+    void fillRect(int x, int y, int w, int h, const JZColor& color);
     void drawArc(int x, int y, int radius, int startAngle, int endAngle);
     void drawText(int x, int y, const char* text);
 

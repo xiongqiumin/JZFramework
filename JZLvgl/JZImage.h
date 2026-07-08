@@ -7,13 +7,13 @@ class JZImage
 {
 public:
     JZImage() = default;
-    explicit JZImage(const lv_image_dsc_t* dsc) : m_dsc(*dsc) {}
+    explicit JZImage(const lv_image_dsc_t* dsc);
 
-    void setDsc(const lv_image_dsc_t* dsc)  { if (dsc) m_dsc = *dsc; }
-    const lv_image_dsc_t* dsc() const       { return &m_dsc; }
+    void setDsc(const lv_image_dsc_t* dsc);
+    const lv_image_dsc_t* dsc() const;
 
-    int width() const   { return m_dsc.header.w; }
-    int height() const  { return m_dsc.header.h; }
+    int width() const;
+    int height() const;
 
 private:
     lv_image_dsc_t m_dsc = {};

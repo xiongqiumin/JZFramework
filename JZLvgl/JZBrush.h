@@ -2,21 +2,22 @@
 #define JZ_BRUSH_H_
 
 #include "lvgl.h"
+#include "JZColor.h"
 
 class JZBrush
 {
 public:
     JZBrush() = default;
-    JZBrush(lv_color_t color, lv_opa_t opa = LV_OPA_COVER) : m_color(color), m_opa(opa) {}
+    JZBrush(const JZColor& color, lv_opa_t opa = LV_OPA_COVER);
 
-    void setColor(lv_color_t color) { m_color = color; }
-    lv_color_t color() const        { return m_color; }
+    void setColor(const JZColor& color);
+    JZColor color() const;
 
-    void setOpacity(lv_opa_t opa)   { m_opa = opa; }
-    lv_opa_t opacity() const        { return m_opa; }
+    void setOpacity(lv_opa_t opa);
+    lv_opa_t opacity() const;
 
 private:
-    lv_color_t m_color = lv_color_black();
+    JZColor m_color = JZColor::Black();
     lv_opa_t m_opa = LV_OPA_COVER;
 };
 

@@ -1,5 +1,7 @@
 #include "JZAnimationGroup.h"
-#include "JZLvglWidget.h"
+#include "JZWidget.h"
+
+JZ_OBJECT_IMPL(JZAnimationGroup, JZObject)
 
 JZAnimationGroup::JZAnimationGroup(JZObject* parent)
     : JZObject(parent)
@@ -22,7 +24,7 @@ void JZAnimationGroup::setDelay(uint32_t ms)
     m_delay = ms;
 }
 
-void JZAnimationGroup::addProperty(JZLvglWidget* target, const std::string& name,
+void JZAnimationGroup::addProperty(JZWidget* target, const std::string& name,
                                     int32_t from, int32_t to, uint32_t startTime)
 {
     auto* anim = new JZPropertyAnimation();

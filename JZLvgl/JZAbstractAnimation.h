@@ -5,33 +5,36 @@
 #include "JZSignal.h"
 #include "JZObject.h"
 
-class JZLvglWidget;
+class JZWidget;
 
 class JZAbstractAnimation : public JZObject
 {
-public:
-    JZSigVoid sigFinished;
+    JZ_OBJECT_DECLARE(JZAbstractAnimation)
 
+public:
     JZAbstractAnimation(JZObject* parent = nullptr);
     ~JZAbstractAnimation();
 
-    void setTarget(lv_obj_t* obj)         { lv_anim_set_var(&m_anim, obj); m_target = obj; }
-    void setTarget(JZLvglWidget* widget);
+    void setTarget(lv_obj_t* obj);
+    void setTarget(JZWidget* widget);
 
-    void setDuration(uint32_t ms)         { lv_anim_set_duration(&m_anim, ms); }
-    void setDelay(uint32_t ms)            { lv_anim_set_delay(&m_anim, ms); }
+    void setDuration(uint32_t ms);
+    void setDelay(uint32_t ms);
 
-    void setEasingLinear()                { lv_anim_set_path_cb(&m_anim, lv_anim_path_linear); }
-    void setEasingEaseIn()                { lv_anim_set_path_cb(&m_anim, lv_anim_path_ease_in); }
-    void setEasingEaseOut()               { lv_anim_set_path_cb(&m_anim, lv_anim_path_ease_out); }
-    void setEasingEaseInOut()             { lv_anim_set_path_cb(&m_anim, lv_anim_path_ease_in_out); }
-    void setEasingOvershoot()             { lv_anim_set_path_cb(&m_anim, lv_anim_path_overshoot); }
-    void setEasingBounce()                { lv_anim_set_path_cb(&m_anim, lv_anim_path_bounce); }
+    void setEasingLinear();
+    void setEasingEaseIn();
+    void setEasingEaseOut();
+    void setEasingEaseInOut();
+    void setEasingOvershoot();
+    void setEasingBounce();
 
-    void setExecCb(lv_anim_exec_xcb_t cb) { lv_anim_set_exec_cb(&m_anim, cb); }
+    void setExecCb(lv_anim_exec_xcb_t cb);
 
     void start();
     void stop();
+
+jz_signals:
+    JZSigVoid sigFinished;
 
     lv_anim_t m_anim;
     lv_obj_t* m_target = nullptr;

@@ -510,6 +510,85 @@ void switchCoroutine(CO_CONTEXT_HANDLE cur, CO_CONTEXT_HANDLE next)
     xQueueSend(g_mainCtx->coMsgQueue, &msg, portMAX_DELAY);
 }
 
+#elif (JZ_OS == JZ_OS_WASM)
+
+#include <emscripten/fiber.h>
+
+class JZCoMainContext
+{
+public:
+    JZCoMainContext()
+    {
+        emscripten_fiber_init_from_current_context(&fiber, nullptr, 0);
+    }
+    ~JZCoMainContext() {}
+
+    emscripten_fiber_t fiber;
+};
+
+JZCoMainContext *createMainContext()
+{
+    return new JZCoMainContext();
+}
+
+void destoryMainContext(JZCoMainContext *ctx)
+{
+    delete ctx;
+}
+
+CO_CONTEXT_HANDLE getMainContextHandle(JZCoMainContext* ctx)
+{
+    return &ctx->fiber;
+}
+
+class JZCoContext
+{
+public:
+    JZCoContext(int stack_size)
+    {
+        stack.resize(stack_size);
+    }
+    ~JZCoContext()
+    {
+        task = nullptr;
+    }
+
+    JZCoCoroutine* task = nullptr;
+    emscripten_fiber_t fiber;
+    std::vector<char> stack;
+};
+
+static void emCoEntry(void* arg)
+{
+    auto* ctx = static_cast<JZCoContext*>(arg);
+    ctx->task->run();
+    JZCoContextEndTask(ctx->task);
+}
+
+JZCoContext* createContext(JZCoCoroutine *co, int stack_size)
+{
+    auto* c = new JZCoContext(stack_size);
+    c->task = co;
+    emscripten_fiber_create(&c->fiber, emCoEntry, c, c->stack.data(), stack_size);
+    return c;
+}
+
+void destoryContext(JZCoContext *ctx)
+{
+    delete ctx;
+}
+
+CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx)
+{
+    return &ctx->fiber;
+}
+
+void switchCoroutine(CO_CONTEXT_HANDLE cur, CO_CONTEXT_HANDLE next)
+{
+    emscripten_fiber_swap(static_cast<emscripten_fiber_t*>(cur),
+                          static_cast<emscripten_fiber_t*>(next));
+}
+
 #else
 
 #error "Unsupported OS for coroutine context switching"

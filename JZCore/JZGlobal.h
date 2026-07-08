@@ -9,12 +9,15 @@
 #define JZ_OS_LINUX     1
 #define JZ_OS_FREE_RTOS 2
 #define JZ_OS_RT_THREAD 3
+#define JZ_OS_WASM      4
 
 #ifndef JZ_OS
 #if defined(_WIN32) || defined(_WIN64)
 #define JZ_OS JZ_OS_WINDOWS
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__)
 #define JZ_OS JZ_OS_LINUX
+#elif defined(__EMSCRIPTEN__)
+#define JZ_OS JZ_OS_WASM
 #else
 #include "JZFrameworkConfig.h"
 #endif

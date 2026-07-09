@@ -138,6 +138,8 @@ private:
     std::vector<LineSpec> m_rowSpecs;
     int m_hGap = -1;
     int m_vGap = -1;
+    mutable std::vector<lv_coord_t> m_colDescCache;
+    mutable std::vector<lv_coord_t> m_rowDescCache;
 };
 
 #endif // JZ_LVGL_LAYOUT_H_

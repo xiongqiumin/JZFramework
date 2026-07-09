@@ -279,12 +279,11 @@ void JZGridLayout::buildRowDesc(std::vector<lv_coord_t>& out) const
 
 void JZGridLayout::apply(lv_obj_t* obj) const
 {
-    std::vector<lv_coord_t> colDesc, rowDesc;
-    buildColDesc(colDesc);
-    buildRowDesc(rowDesc);
+    buildColDesc(m_colDescCache);
+    buildRowDesc(m_rowDescCache);
 
     lv_obj_set_layout(obj, LV_LAYOUT_GRID);
-    lv_obj_set_grid_dsc_array(obj, colDesc.data(), rowDesc.data());
+    lv_obj_set_grid_dsc_array(obj, m_colDescCache.data(), m_rowDescCache.data());
 
     if (m_marginLeft >= 0) lv_obj_set_style_pad_left(obj, m_marginLeft, 0);
     if (m_marginTop >= 0)  lv_obj_set_style_pad_top(obj, m_marginTop, 0);

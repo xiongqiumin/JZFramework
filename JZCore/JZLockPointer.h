@@ -3,6 +3,7 @@
 
 #include "JZGlobal.h"
 
+//跨线程使用
 template<typename T>
 class JZLockPointer 
 {

@@ -10,6 +10,17 @@
 #include <rtthread.h>
 #endif
 
+static JZPlatformWrapper *g_inst = nullptr;
+void JZPlatform::setInstance(JZPlatformWrapper *inst)
+{
+    g_inst = inst;
+}
+
+JZPlatformWrapper *JZPlatform::instance()
+{
+    return g_inst;
+}
+
 std::string JZPlatform::platform()
 {
 #if defined(_WIN32) || defined(_WIN64)
@@ -25,22 +36,48 @@ std::string JZPlatform::platform()
 
 int64_t JZPlatform::getTickCountMs()
 {
+    if(g_inst)
+        return (g_inst->getTickCountNs() / 1000000);
+
 #ifdef JZ_OS_NORMAL
     // 最简写法：now() → time_since_epoch() → 毫秒数
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    constexpr uint32_t tick_ms = 1000 / configTICK_RATE_HZ;
+    constexpr double tick_ms = 1000.0 / configTICK_RATE_HZ;
     #if configSUPPORT_64_BIT_TICKS
-        return (int64_t)xTaskGetTickCount64() * tick_ms;
+        return (int64_t)(xTaskGetTickCount64() * tick_ms);
     #else
-        return (int64_t)xTaskGetTickCount() * tick_ms;
+        return (int64_t)(xTaskGetTickCount() * tick_ms);
     #endif
 #elif JZ_OS == JZ_OS_RT_THREAD
-    constexpr uint32_t tick_ms = 1000 / RT_TICK_PER_SECOND;
-    return (int64_t)rt_tick_get() * tick_ms;
+    constexpr double tick_ms = 1000.0 / RT_TICK_PER_SECOND;
+    return (int64_t)(rt_tick_get() * tick_ms);
 #else
-    return -1;
+    return 0;
+#endif
+}
+
+int64_t JZPlatform::getTickCountNs()
+{
+    if(g_inst)
+        return g_inst->getTickCountNs();
+
+#ifdef JZ_OS_NORMAL
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+#elif JZ_OS == JZ_OS_FREE_RTOS
+    constexpr uint32_t tick_ns = 1000000000 / configTICK_RATE_HZ;
+    #if configSUPPORT_64_BIT_TICKS
+        return (int64_t)xTaskGetTickCount64() * tick_ns;
+    #else
+        return (int64_t)xTaskGetTickCount() * tick_ns;
+    #endif
+#elif JZ_OS == JZ_OS_RT_THREAD
+    constexpr uint32_t tick_ns = 1000000000 / RT_TICK_PER_SECOND;
+    return (int64_t)rt_tick_get() * tick_ns;
+#else
+    return 0;
 #endif
 }
 

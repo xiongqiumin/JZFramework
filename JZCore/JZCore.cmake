@@ -81,6 +81,8 @@
     JZConsoleInput.cpp
 	JZDeadlineTimer.h
 	JZDeadlineTimer.cpp
+    JZCircleBuffer.cpp
+    JZCircleBuffer.h
 	JZLockPointer.h
 )
 if(WIN32)

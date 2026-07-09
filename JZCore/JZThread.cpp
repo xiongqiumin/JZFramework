@@ -547,6 +547,17 @@ void JZThread::processEvents()
     }
 }
 
+//JZTaskThread
+void JZTaskThread::setTask(const std::function<void()> &task)
+{
+    m_task = task;
+}
+
+void JZTaskThread::run()
+{
+    m_task();
+}
+
 void runOnThread(JZThread* thread, std::function<void()> func)
 {
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();

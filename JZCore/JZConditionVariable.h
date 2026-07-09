@@ -17,10 +17,10 @@ public:
 
     // 基础接口
     void wait(JZMutexLocker& locker);
-    void wait(JZMutexLocker& locker,std::function<bool()> condition);
+    void wait(JZMutexLocker& locker,const std::function<bool()>& condition);
 
     bool wait_for(JZMutexLocker& locker, int timeout_ms);
-    bool wait_for(JZMutexLocker& locker, int timeout_ms, std::function<bool()> condition);
+    bool wait_for(JZMutexLocker& locker, int timeout_ms, const std::function<bool()>& condition);
 
     void notify_one();
     void notify_all();

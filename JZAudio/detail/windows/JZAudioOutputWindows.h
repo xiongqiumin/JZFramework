@@ -8,12 +8,13 @@
 #include <mutex>
 #include <list>
 #include "JZAudioOutput.h"
+#include "detail/JZAudioOutputImpl.h"
 
-class JZAudioOutputImpl
+class JZAudioOutputWindows : public JZAudioOutputImpl
 {
 public:
-    explicit JZAudioOutputImpl(JZAudioOutput* parent);
-    ~JZAudioOutputImpl();
+    explicit JZAudioOutputWindows(JZAudioOutput* parent);
+    ~JZAudioOutputWindows();
 
     bool open(const JZAudioDeviceInfo& device);
     void close();

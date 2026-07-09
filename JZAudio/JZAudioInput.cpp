@@ -18,6 +18,11 @@ void JZAudioInput::setFormat(JZAudioFormat format)
 	m_format = format;
 }
 
+const JZAudioFormat& JZAudioInput::format() const
+{
+	return m_format;
+}
+
 bool JZAudioInput::open()
 {
 	auto dev_list = JZAudioDeviceInfo::inputList();

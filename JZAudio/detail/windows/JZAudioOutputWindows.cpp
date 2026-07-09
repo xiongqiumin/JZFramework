@@ -1,21 +1,20 @@
 ﻿#include <stdexcept>
 #include <iostream>
 #include <cstring>
-#include "JZAudioOutputImpl.h"
-#include "JZAudioDeviceImpl.h"
+#include "JZAudioOutputWindows.h"
 #include "JZThread.h"
 
-JZAudioOutputImpl::JZAudioOutputImpl(JZAudioOutput* parent)
-    : m_parent(parent)
+JZAudioOutputWindows::JZAudioOutputWindows(JZAudioOutput* parent)
+    : JZAudioOutputImpl(parent)
 {
 }
 
-JZAudioOutputImpl::~JZAudioOutputImpl()
+JZAudioOutputWindows::~JZAudioOutputWindows()
 {
     close();
 }
 
-bool JZAudioOutputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt)
+bool JZAudioOutputWindows::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt)
 {
     if (format.channelCount != 1 && format.channelCount != 2) {
         std::cerr << "Unsupported channels: " << format.channelCount << " (only 1/2)" << std::endl;
@@ -38,9 +37,9 @@ bool JZAudioOutputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX&
     return true;
 }
 
-bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device)
+bool JZAudioOutputWindows::open(const JZAudioDeviceInfo& device)
 {
-    auto format = m_parent->m_format;
+    auto format = m_parent->format();
     if (m_isPlaying || m_hWaveOut != nullptr) {
         return false;
     }
@@ -68,7 +67,7 @@ bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device)
     return true;
 }
 
-void JZAudioOutputImpl::close()
+void JZAudioOutputWindows::close()
 {
     std::lock_guard<std::mutex> lock(m_queueMutex);
 
@@ -85,7 +84,7 @@ void JZAudioOutputImpl::close()
     m_hWaveOut = nullptr;
 }
 
-void JZAudioOutputImpl::reset()
+void JZAudioOutputWindows::reset()
 {
     if (m_hWaveOut == nullptr) {
         return;
@@ -95,7 +94,7 @@ void JZAudioOutputImpl::reset()
     cleanupBuffers();
 }
 
-bool JZAudioOutputImpl::write(const JZByteArray& data)
+bool JZAudioOutputWindows::write(const JZByteArray& data)
 {
     std::lock_guard<std::mutex> lock(m_queueMutex);
 
@@ -137,7 +136,7 @@ bool JZAudioOutputImpl::write(const JZByteArray& data)
     return true;
 }
 
-void JZAudioOutputImpl::cleanupBuffers()
+void JZAudioOutputWindows::cleanupBuffers()
 {
     if (m_hWaveOut == nullptr) {
         return;
@@ -158,14 +157,14 @@ void JZAudioOutputImpl::cleanupBuffers()
     m_bufferQueue.clear();
 }
 
-void JZAudioOutputImpl::waveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
+void JZAudioOutputWindows::waveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
     DWORD_PTR dwParam1, DWORD_PTR dwParam2)
 {
     if (uMsg != WOM_DONE) {
         return;
     }
 
-    JZAudioOutputImpl* pImpl = reinterpret_cast<JZAudioOutputImpl*>(dwInstance);
+    JZAudioOutputWindows* pImpl = reinterpret_cast<JZAudioOutputWindows*>(dwInstance);
     WAVEHDR* pHeader = reinterpret_cast<WAVEHDR*>(dwParam1);
 
     if (!pImpl || !pHeader) {

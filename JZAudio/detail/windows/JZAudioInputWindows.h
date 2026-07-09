@@ -4,13 +4,13 @@
 #include <mmsystem.h>
 #include <atomic>
 #include <vector>
+#include "detail/JZAudioInputImpl.h"
 
-class JZAudioInput;
-class JZAudioInputImpl
+class JZAudioInputWindows : public JZAudioInputImpl
 {
 public:
-    explicit JZAudioInputImpl(JZAudioInput* parent);
-    ~JZAudioInputImpl();
+    explicit JZAudioInputWindows(JZAudioInput* parent);
+    ~JZAudioInputWindows();
 
     bool open(const JZAudioDeviceInfo& device);
     void close();

@@ -1,4 +1,4 @@
-#include "JZTable.h"
+#include "JZTableWidget.h"
 
 JZ_OBJECT_IMPL(JZTable, JZWidget)
 

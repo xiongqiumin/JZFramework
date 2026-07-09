@@ -7,7 +7,10 @@
 #include "JZRect.h"
 #include "JZLayout.h"
 #include "JZKeyEvent.h"
-#include "JZPainter.h"
+#include "JZPainterEvent.h"
+#include "JZResizeEvent.h"
+#include "JZShowEvent.h"
+#include "JZCloseEvent.h"
 
 typedef lv_obj_t* (*lv_create_fn_t)(lv_obj_t* parent);
 
@@ -51,8 +54,8 @@ public:
     void hide();
 
     // 布局
-    void setLayout(const JZLayout& layout);
-    JZLayout layout() const;
+    void setLayout(JZLayout* layout);
+    JZLayout* layout() const;
 
     // 焦点
     void setFocus();
@@ -63,7 +66,10 @@ public:
 
     // 预定义属性
     virtual void setProperty(const std::string& name, const JZVariant& value) override;
-    virtual const JZVariant& property(const std::string& name) const override;
+    virtual JZVariant property(const std::string& name) const override;
+
+    // 绘制层（paintEvent 中有效）
+    lv_layer_t* paintLayer() const { return m_paintLayer; }
 
 protected:
     struct NoCreate{};
@@ -71,17 +77,22 @@ protected:
     static void lvEventCallback(lv_event_t* e);
         
     // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）
-    JZWidget(lv_create_fn_t create, JZWidget* parent = nullptr);
-    JZWidget(NoCreate, JZWidget* parent = nullptr);
+    JZWidget(lv_create_fn_t create, JZWidget* parent);
+    JZWidget(NoCreate, JZWidget* parent);
     
     void setLvglObject(lv_obj_t* obj);
 
     virtual void onLvEvent(lv_event_t* e);
     virtual void onKeyPressed(JZKeyEvent* event);
-    virtual void paintEvent(JZPainter* painter);    
+    virtual void paintEvent(JZPainterEvent* event);
 
-    JZLayout m_layout;
+    virtual void showEvent(JZShowEvent* event);
+    virtual void closeEvent(JZCloseEvent* event);
+    virtual void resizeEvent(JZResizeEvent* event);
+
+    JZLayout* m_layout = nullptr;
     lv_obj_t* m_lv = nullptr;
+    lv_layer_t* m_paintLayer = nullptr;
 };
 
 #endif

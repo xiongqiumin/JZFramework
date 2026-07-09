@@ -1,16 +1,21 @@
 #ifndef JZ_PAINTER_H_
 #define JZ_PAINTER_H_
 
-#include "lvgl.h"
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZFont.h"
 #include "JZColor.h"
 
+class JZWidget;
+
+// Forward-declare LVGL types
+typedef struct _lv_layer_t lv_layer_t;
+typedef struct _lv_font_t lv_font_t;
+
 class JZPainter
 {
 public:
-    explicit JZPainter(lv_event_t* e);
+    explicit JZPainter(JZWidget* widget);
 
     void setPen(const JZPen& pen);
     JZPen pen() const;
@@ -29,8 +34,7 @@ public:
     static const lv_font_t* resolveFont(const JZFont& font);
 
 private:
-    lv_event_t* m_event;
-    lv_layer_t* m_layer = nullptr;
+    lv_layer_t* m_layer;
     JZPen m_pen;
     JZBrush m_brush;
     JZFont m_font;

@@ -1,7 +1,6 @@
 #ifndef JZ_PEN_H_
 #define JZ_PEN_H_
 
-#include "lvgl.h"
 #include "JZColor.h"
 
 class JZPen

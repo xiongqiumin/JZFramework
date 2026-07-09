@@ -8,6 +8,11 @@
 
 JZApplication *jzApp = nullptr;
 
+JZApplication* JZApplication::instance()
+{
+    return jzApp;
+}
+
 JZApplication::JZApplication()
     :JZObject(JZObject::MainThreadInit())
 {

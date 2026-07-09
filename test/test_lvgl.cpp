@@ -1,205 +1,224 @@
 #include <stdio.h>
-#include <windows.h>
-#include "lvgl.h"
-#include "JZ.h"
-#include "JZApplication.h"
+#include "JZGuiApplication.h"
+#include "JZWidget.h"
+#include "JZLayout.h"
+#include "JZPushButton.h"
+#include "JZLabel.h"
+#include "JZCheckbox.h"
+#include "JZRadioButton.h"
+#include "JZSwitch.h"
+#include "JZSlider.h"
+#include "JZComboBox.h"
+#include "JZTextEdit.h"
+#include "JZRoller.h"
+#include "JZLedWidget.h"
+#include "JZProgressBar.h"
+#include "JZArcWidget.h"
+#include "JZTableWidget.h"
+#include "JZColor.h"
 
-#define MONITOR_HOR_RES 800
-#define MONITOR_VER_RES 600
+#define W 800
+#define H 600
 
-// --- GDI 全局 ---
-static HWND g_hWnd = NULL;
-static HDC g_hMemDC = NULL;
-static HBITMAP g_hBmp = NULL;
-static VOID * g_pixels = NULL;
-static int g_width = MONITOR_HOR_RES;
-static int g_height = MONITOR_VER_RES;
-static lv_display_t * g_display = NULL;
-static lv_indev_t * g_pointer = NULL;
-static int16_t g_mouse_x = 0;
-static int16_t g_mouse_y = 0;
-static bool g_mouse_pressed = false;
-static int16_t g_wheel = 0;
-
-// --- Tick ---
-static uint32_t my_tick_cb(void)
+class TestWindow : public JZWidget
 {
-    LARGE_INTEGER freq, pc;
-    if(QueryPerformanceFrequency(&freq) && QueryPerformanceCounter(&pc))
-        return (uint32_t)(pc.QuadPart * 1000 / freq.QuadPart);
-    return (uint32_t)GetTickCount();
-}
+public:
+    TestWindow() : JZWidget() {
+        resize(W, H);
+        //setTitle("JZFramework Widgets Demo");
 
-// --- Display flush ---
-static void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
-{
-    HDC hdc = GetDC(g_hWnd);
-    if(hdc) {
-        BitBlt(hdc, area->x1, area->y1, lv_area_get_width(area), lv_area_get_height(area),
-               g_hMemDC, area->x1, area->y1, SRCCOPY);
-        ReleaseDC(g_hWnd, hdc);
+        // Tab bar
+        tabBar = new JZWidget(this);
+        tabBar->resize(W, 35);
+        tabBar->move(0, 35);
+        tabBar->setLayout(new JZHBoxLayout(2, 2));
+
+        // Pages
+        pages = new JZWidget(this);
+        pages->resize(W, H - 75);
+        pages->move(0, 72);
+
+        tabs.resize(4);
+        tabs[0].btn = makeTabBtn("Buttons", 0);
+        tabs[0].container = new JZWidget(pages); tabs[0].container->resize(W, H - 75);
+        createButtonsPage();
+
+        tabs[1].btn = makeTabBtn("Inputs", 1);
+        tabs[1].container = new JZWidget(pages); tabs[1].container->resize(W, H - 75);
+        createInputsPage();
+
+        tabs[2].btn = makeTabBtn("Arc&Table", 2);
+        tabs[2].container = new JZWidget(pages); tabs[2].container->resize(W, H - 75);
+        createArcTablePage();
+
+        tabs[3].btn = makeTabBtn("Layout", 3);
+        tabs[3].container = new JZWidget(pages); tabs[3].container->resize(W, H - 75);
+        createLayoutPage();
+
+        showTab(0);
     }
-    lv_display_flush_ready(disp);
-}
 
-// --- Pointer ---
-static void my_pointer_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
-{
-    data->point.x = g_mouse_x;
-    data->point.y = g_mouse_y;
-    data->state = g_mouse_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-    if(g_wheel) { data->enc_diff = g_wheel; g_wheel = 0; }
-}
+private:
+    struct Tab { JZWidget* container = nullptr; JZPushButton* btn = nullptr; };
+    std::vector<Tab> tabs;
+    JZWidget* tabBar = nullptr;
+    JZWidget* pages = nullptr;
 
-// --- Framebuffer ---
-static bool create_frame_buffer(int w, int h)
-{
-    HDC hdc = GetDC(NULL);
-    g_hMemDC = CreateCompatibleDC(hdc);
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    g_hBmp = CreateDIBSection(g_hMemDC, &bi, DIB_RGB_COLORS, &g_pixels, NULL, 0);
-    ReleaseDC(NULL, hdc);
-    if(!g_hBmp) { DeleteDC(g_hMemDC); return false; }
-    SelectObject(g_hMemDC, g_hBmp);
-    return true;
-}
-
-// --- WndProc ---
-static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch(msg) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps; HDC hdc = BeginPaint(hWnd, &ps);
-        if(g_hMemDC) { RECT r; GetClientRect(hWnd, &r); BitBlt(hdc, 0, 0, r.right, r.bottom, g_hMemDC, 0, 0, SRCCOPY); }
-        EndPaint(hWnd, &ps); return 0;
+    JZPushButton* makeTabBtn(const char* text, int idx) {
+        auto* b = new JZPushButton(tabBar);
+        b->setText(text);
+        b->resize(100, 30);
+        connect(&b->sigClicked, this, [this, idx] { showTab(idx); });
+        return b;
     }
-    case WM_MOUSEMOVE:    g_mouse_x = LOWORD(lParam); g_mouse_y = HIWORD(lParam); break;
-    case WM_LBUTTONDOWN:  g_mouse_pressed = true; g_mouse_x = LOWORD(lParam); g_mouse_y = HIWORD(lParam); break;
-    case WM_LBUTTONUP:    g_mouse_pressed = false; break;
-    case WM_MOUSEWHEEL:   g_wheel += GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA; break;
-    case WM_CLOSE:        DestroyWindow(hWnd); return 0;
-    case WM_DESTROY:      PostQuitMessage(0); return 0;
+
+    void showTab(int idx) {
+        for (int i = 0; i < (int)tabs.size(); ++i)
+            tabs[i].container->setVisible(i == idx);
     }
-    return DefWindowProc(hWnd, msg, wParam, lParam);
-}
 
-static bool initWindow()
-{
-    WNDCLASSEXW wc = { sizeof(wc), CS_HREDRAW | CS_VREDRAW, wndProc, 0, 0, GetModuleHandleW(NULL),
-                       NULL, LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), (HBRUSH)(COLOR_WINDOW + 1), NULL, L"LVGL_GDI", NULL };
-    if(!RegisterClassExW(&wc)) return false;
-    RECT r = { 0, 0, g_width, g_height };
-    AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-    g_hWnd = CreateWindowExW(0, L"LVGL_GDI", L"JZFramework LVGL Demo", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                              CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
-                              NULL, NULL, GetModuleHandleW(NULL), NULL);
-    return g_hWnd != NULL;
-}
+    // === Pages ===
 
-// ===================== UI =====================
+    void createButtonsPage() {
+        auto* p = tabs[0].container;
+        auto* info = new JZLabel(p);
+        info->move(20, 10); info->resize(560, 25);
+        info->setText("Buttons & Toggles");
 
-static void createUI()
-{
-    auto screen = JZScreen::active();
+        auto* btn = new JZPushButton(p);
+        btn->resize(120, 36); btn->move(20, 50); btn->setText("Click Me");
+        connect(&btn->sigClicked, [info] { info->setText("Button clicked!"); });
 
-    auto* title = new JZLabel(screen);
-    title->setText("JZFramework LVGL Demo");
-    title->center();
+        auto* cb = new JZCheckbox(p);
+        cb->move(20, 100); cb->setText("I agree");
+        connect(&cb->sigToggled, [info](bool v) { info->setText(v ? "Checkbox: checked" : "Checkbox: unchecked"); });
 
-    auto* btn = new JZButton(screen);
-    btn->setSize(140, 40);
-    btn->setSizePos(140, 40, g_width/2 - 70, 80);
-    btn->setText("Click Me!");
-    connect(&btn->sigClicked, [=]() {
-        static int count = 0;
-        count++;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "Clicked: %d", count);
-        btn->setText(buf);
-    });
+        auto* radioGrp = new JZWidget(p);
+        radioGrp->resize(200, 100); radioGrp->move(160, 50);
+        auto* r1 = new JZRadioButton(radioGrp, "Option A"); r1->move(0, 0);
+        auto* r2 = new JZRadioButton(radioGrp, "Option B"); r2->move(0, 30);
+        auto* r3 = new JZRadioButton(radioGrp, "Option C"); r3->move(0, 60);
+        r1->setChecked(true);
+        connect(&r1->sigToggled, [info] { info->setText("Radio: A"); });
+        connect(&r2->sigToggled, [info] { info->setText("Radio: B"); });
+        connect(&r3->sigToggled, [info] { info->setText("Radio: C"); });
 
-    auto* info = new JZLabel(screen);
-    info->setText("Welcome!");
-    info->setSizePos(300, 30, g_width/2 - 150, 150);
-    info->setAlign(LV_TEXT_ALIGN_CENTER);
+        auto* sw = new JZSwitch(p);
+        sw->move(20, 150);
+        connect(&sw->sigToggled, [info](bool v) { info->setText(v ? "Switch: ON" : "Switch: OFF"); });
 
-    // 使用 JZLayout
-    auto* row = new JZWidget(screen);
-    row->setSize(400, 50);
-    row->setLayout(JZLayout::hbox(8, 8));
-    row->setPos(g_width/2 - 200, 220);
+        auto* led = new JZLed(p);
+        led->resize(30, 30); led->move(20, 200); led->setColor(JZColor::Red());
+        auto* ledBtn = new JZPushButton(p);
+        ledBtn->resize(80, 30); ledBtn->move(70, 200); ledBtn->setText("Toggle LED");
+        connect(&ledBtn->sigClicked, [led] { static bool on = false; on = !on; on ? led->on() : led->off(); });
+    }
 
-    auto* btn2 = new JZButton(row);
-    btn2->setSize(100, 40);
-    btn2->setText("Btn A");
-    connect(&btn2->sigClicked, [=]() { info->setText("Button A clicked"); });
+    void createInputsPage() {
+        auto* p = tabs[1].container;
+        auto* info = new JZLabel(p);
+        info->move(20, 10); info->resize(560, 25); info->setText("Inputs");
 
-    auto* btn3 = new JZButton(row);
-    btn3->setSize(100, 40);
-    btn3->setText("Btn B");
-    connect(&btn3->sigClicked, [=]() { info->setText("Button B clicked"); });
+        auto* slider = new JZSlider(p);
+        slider->resize(200, 20); slider->move(20, 50);
+        slider->setRange(0, 100); slider->setValue(50);
+        auto* sVal = new JZLabel(p);
+        sVal->move(240, 50); sVal->resize(60, 20); sVal->setText("50");
+        connect(&slider->sigValueChanged, [sVal](int v) { sVal->setText(std::to_string(v)); });
 
-    auto* btn4 = new JZButton(row);
-    btn4->setSize(100, 40);
-    btn4->setText("Btn C");
-    connect(&btn4->sigClicked, [=]() { info->setText("Button C clicked"); });
-}
+        auto* combo = new JZComboBox(p);
+        combo->move(20, 90);
+        combo->addItem("Apple"); combo->addItem("Banana"); combo->addItem("Cherry"); combo->addItem("Date");
+        auto* cVal = new JZLabel(p);
+        cVal->move(180, 90); cVal->resize(120, 20); cVal->setText("Apple");
+        connect(&combo->currentIndexChanged, [combo, cVal](int) { cVal->setText(combo->currentText()); });
 
-// ===================== Main =====================
+        auto* textEdit = new JZTextEdit(p);
+        textEdit->resize(250, 80); textEdit->move(20, 140); textEdit->setText("Edit me...");
 
-int main()
-{
-    JZApplication app;
+        auto* roller = new JZRoller(p);
+        roller->move(300, 50);
+        roller->setOptions("Mon\nTue\nWed\nThu\nFri\nSat\nSun");
+        roller->setVisibleRowCount(3);
 
-    printf("JZFramework LVGL Demo starting...\n");
+        auto* bar = new JZProgressBar(p);
+        bar->resize(200, 15); bar->move(20, 240);
+        bar->setRange(0, 100); bar->setValue(30);
+        auto* bVal = new JZLabel(p);
+        bVal->move(240, 240); bVal->setText("30%");
+        auto* barBtn = new JZPushButton(p);
+        barBtn->resize(60, 25); barBtn->move(20, 265); barBtn->setText("+10%");
+        connect(&barBtn->sigClicked, [bar, bVal] {
+            int v = bar->value() + 10; if (v > 100) v = 0;
+            bar->setValue(v, true);
+            bVal->setText(std::to_string(v) + "%");
+        });
+    }
 
-    if(!initWindow()) { printf("Failed to create window!\n"); return 1; }
-    if(!create_frame_buffer(g_width, g_height)) { printf("Failed to create framebuffer!\n"); return 1; }
+    void createArcTablePage() {
+        auto* p = tabs[2].container;
+        auto* info = new JZLabel(p);
+        info->move(20, 10); info->resize(560, 25); info->setText("Arc & Table");
 
-    lv_init();
-    lv_tick_set_cb(my_tick_cb);
+        auto* arc = new JZArcWidget(p);
+        arc->resize(120, 120); arc->move(20, 40);
+        arc->setRange(0, 100); arc->setValue(40);
+        auto* aVal = new JZLabel(p);
+        aVal->move(50, 170); aVal->resize(80, 20);
+        aVal->setAlign(LV_TEXT_ALIGN_CENTER); aVal->setText("40");
+        connect(&arc->sigValueChanged, [aVal](int v) { aVal->setText(std::to_string(v)); });
 
-    size_t bufSize = (size_t)g_width * g_height * 4;
-    g_display = lv_display_create(g_width, g_height);
-    lv_display_set_flush_cb(g_display, my_flush_cb);
-    lv_display_set_buffers(g_display, g_pixels, NULL, (uint32_t)bufSize, LV_DISPLAY_RENDER_MODE_DIRECT);
+        auto* table = new JZTable(p);
+        table->move(180, 40);
+        table->setSize(4, 4);
+        table->setColWidth(0, 80); table->setColWidth(1, 80); table->setColWidth(2, 80); table->setColWidth(3, 80);
+        table->setCellValue(0, 0, "Name");    table->setCellValue(0, 1, "Score"); table->setCellValue(0, 2, "Rank"); table->setCellValue(0, 3, "Status");
+        table->setCellValue(1, 0, "Alice");   table->setCellValue(1, 1, "95");   table->setCellValue(1, 2, "#1");  table->setCellValue(1, 3, "Pass");
+        table->setCellValue(2, 0, "Bob");     table->setCellValue(2, 1, "87");   table->setCellValue(2, 2, "#2");  table->setCellValue(2, 3, "Pass");
+        table->setCellValue(3, 0, "Charlie"); table->setCellValue(3, 1, "72");   table->setCellValue(3, 2, "#3");  table->setCellValue(3, 3, "Pass");
+    }
 
-    g_pointer = lv_indev_create();
-    lv_indev_set_type(g_pointer, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(g_pointer, my_pointer_read_cb);
+    void createLayoutPage() {
+        auto* p = tabs[3].container;
+        auto* info = new JZLabel(p);
+        info->move(20, 10); info->resize(560, 25); info->setText("Layouts");
 
-    lv_group_t * g = lv_group_create();
-    lv_group_set_default(g);
+        auto* vbox = new JZWidget(p);
+        vbox->resize(150, 200); vbox->move(20, 40);
+        vbox->setLayout(new JZVBoxLayout(4, 4));
+        for (int i = 1; i <= 4; ++i)
+            (new JZPushButton(vbox))->setText(("V" + std::to_string(i)).c_str());
 
-    createUI();
-
-    ShowWindow(g_hWnd, SW_SHOW);
-    UpdateWindow(g_hWnd);
-
-    MSG msg;
-    for(;;) {
-        while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            if(msg.message == WM_QUIT) {
-                lv_deinit();
-                if(g_hBmp) DeleteObject(g_hBmp);
-                if(g_hMemDC) DeleteDC(g_hMemDC);
-                return (int)msg.wParam;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+        auto* hbox = new JZWidget(p);
+        hbox->resize(400, 40); hbox->move(190, 40);
+        hbox->setLayout(new JZHBoxLayout(4, 4));
+        for (int i = 1; i <= 4; ++i) {
+            auto* b = new JZPushButton(hbox);
+            b->resize(80, 30); b->setText(("H" + std::to_string(i)).c_str());
         }
-        
-        app.processEvents();
-        uint32_t wait = lv_timer_handler();
-        if(wait == UINT32_MAX) wait = 5;
-        if(wait > 30) wait = 30;
-        if(wait > 0) MsgWaitForMultipleObjects(0, NULL, FALSE, wait, QS_ALLINPUT);
+
+        auto* grid = new JZWidget(p);
+        grid->resize(320, 150); grid->move(190, 90);
+        auto* gridLay = new JZGridLayout(4, 4);
+        for (int c = 0; c < 3; ++c) gridLay->setColumnMinimumWidth(c, 100);
+        for (int r = 0; r < 3; ++r) gridLay->setRowMinimumHeight(r, 40);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) {
+                char buf[8]; snprintf(buf, 8, "%d,%d", r, c);
+                auto* btn = new JZPushButton(grid);
+                btn->setText(buf);
+                gridLay->addWidget(btn, r, c);
+            }
+        grid->setLayout(gridLay);
     }
+};
+
+int main() {
+    printf("JZFramework Widgets Demo starting...\n");
+
+    JZGUIApplication app;
+    TestWindow w;
+    w.show();
+
     return app.exec();
 }

@@ -1,14 +1,17 @@
-﻿#include "JZAudioDriverWin32.h"
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <mmsystem.h>
 #include <iostream>
+#include "JZAudioDriverWindows.h"
+#include "JZAudioInputWindows.h"
+#include "JZAudioOutputWindows.h"
+#include "JZStd.h"
 
-JZAudioDriverWin32::JZAudioDriverWin32()
+JZAudioDriverWindows::JZAudioDriverWindows()
 {
     setInstance(this);
 }
 
-std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioInputList()
+std::vector<JZAudioDeviceInfo> JZAudioDriverWindows::audioInputList()
 {
     std::vector<JZAudioDeviceInfo> devices;
 
@@ -23,7 +26,6 @@ std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioInputList()
         MMRESULT result = waveInGetDevCapsA(i, &caps, sizeof(caps));
 
         JZAudioDeviceInfo device;
-        int channel;
         std::vector<int> sampleRate;
         if (result == MMSYSERR_NOERROR)
         {
@@ -38,7 +40,7 @@ std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioInputList()
     return devices;
 }
 
-std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioOutputList()
+std::vector<JZAudioDeviceInfo> JZAudioDriverWindows::audioOutputList()
 {
     std::vector<JZAudioDeviceInfo> devices;
 
@@ -53,7 +55,6 @@ std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioOutputList()
         MMRESULT result = waveOutGetDevCapsA(i, &caps, sizeof(caps));
         
         JZAudioDeviceInfo device;
-        int channel;
         std::vector<int> sampleRate;
         if (result == MMSYSERR_NOERROR) 
         {
@@ -68,14 +69,14 @@ std::vector<JZAudioDeviceInfo> JZAudioDriverWin32::audioOutputList()
     return devices;
 }
 
-JZAudioInputImpl *JZAudioDriverWin32::createInput(JZAudioInput* parent)
+JZAudioInputImpl *JZAudioDriverWindows::createInput(JZAudioInput* parent)
 {
-    return new JZAudioInputImpl(parent);
+    return new JZAudioInputWindows(parent);
 }
 
-JZAudioOutputImpl *JZAudioDriverWin32::createOutput(JZAudioOutput* parent)
+JZAudioOutputImpl *JZAudioDriverWindows::createOutput(JZAudioOutput* parent)
 {
-    return new JZAudioOutputImpl(parent);
+    return new JZAudioOutputWindows(parent);
 }
 
-JZAudioDriverWin32 g_winDriver;
+JZAudioDriverWindows g_winDriver;

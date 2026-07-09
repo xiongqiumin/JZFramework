@@ -9,6 +9,8 @@
 class JZApplication : public JZObject
 {
 public:
+    static JZApplication* instance();
+    
     JZApplication();
     ~JZApplication();    
 

@@ -1,26 +1,41 @@
 #include "JZImage.h"
+#include "lvgl.h"
+#include <cstring>
 
-JZImage::JZImage(const lv_image_dsc_t* dsc)
-    : m_dsc(*dsc)
+JZImage::JZImage(const std::string& filePath)
+    : m_filePath(filePath)
 {
 }
 
-void JZImage::setDsc(const lv_image_dsc_t* dsc)
+JZImage::JZImage(const char* data, int len)
 {
-    if (dsc) m_dsc = *dsc;
+    auto* src = (const lv_image_dsc_t*)data;
+    m_dsc.reset(new lv_image_dsc_t(*src));
 }
 
 const lv_image_dsc_t* JZImage::dsc() const
 {
-    return &m_dsc;
+    return m_dsc.get();
+}
+
+bool JZImage::isFile() const
+{
+    return !m_filePath.empty();
+}
+
+std::string JZImage::filePath() const
+{
+    return m_filePath;
 }
 
 int JZImage::width() const
 {
-    return m_dsc.header.w;
+    if (m_dsc) return m_dsc->header.w;
+    return 0;
 }
 
 int JZImage::height() const
 {
-    return m_dsc.header.h;
+    if (m_dsc) return m_dsc->header.h;
+    return 0;
 }

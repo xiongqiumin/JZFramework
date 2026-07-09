@@ -34,7 +34,7 @@ public:
 
 jz_signals:
     JZSigInt currentIndexChanged;   // 当前选中索引变化
-    JZSigStr currentTextChanged;    // 当前选中文本变化
+    JZSigString currentTextChanged;  // 当前选中文本变化
 
 protected:
     void onLvEvent(lv_event_t* e) override;

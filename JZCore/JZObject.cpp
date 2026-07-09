@@ -192,7 +192,7 @@ void JZObject::setProperty(const std::string &name, const JZVariant &varaint)
         map_remove(*m_properties, name);
 }
 
-const JZVariant &JZObject::property(const std::string &name) const
+JZVariant JZObject::property(const std::string &name) const
 {
     if (!m_properties) 
         return JZVariant::None();

@@ -1,5 +1,5 @@
-﻿#ifndef JZ_AUDIO_OUTPIT_IMPL_H_
-#define JZ_AUDIO_OUTPIT_IMPL_H_
+﻿#ifndef JZ_AUDIO_OUTPUT_IMPL_H_
+#define JZ_AUDIO_OUTPUT_IMPL_H_
 
 #include "JZAudioDeviceInfo.h"
 #include "JZByteArray.h"

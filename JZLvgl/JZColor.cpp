@@ -1,4 +1,5 @@
 #include "JZColor.h"
+#include "lvgl.h"
 
 JZColor::JZColor()
     : m_r(0), m_g(0), m_b(0)
@@ -19,14 +20,14 @@ void JZColor::setRgb(uint8_t r, uint8_t g, uint8_t b)
     m_r = r; m_g = g; m_b = b;
 }
 
-lv_color_t JZColor::toLvColor() const
+JZColor::lv_color_pod JZColor::toLvColor() const
 {
-    return lv_color_make(m_r, m_g, m_b);
+    return { m_b, m_g, m_r, 0 };
 }
 
-JZColor JZColor::fromLvColor(lv_color_t c)
+JZColor JZColor::fromLvColor(lv_color_pod c)
 {
-    return JZColor(c.ch.red, c.ch.green, c.ch.blue);
+    return JZColor(c.red, c.green, c.blue);
 }
 
 JZColor JZColor::Black() { return JZColor(0, 0, 0); }

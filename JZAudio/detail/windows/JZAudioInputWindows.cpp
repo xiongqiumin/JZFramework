@@ -1,11 +1,10 @@
 ﻿#include <stdexcept>
 #include <iostream>
-#include "JZAudioInputImpl.h"
-#include "JZAudioDeviceImpl.h"
+#include "JZAudioInputWindows.h"
 #include "JZThread.h"
 
-JZAudioInputImpl::JZAudioInputImpl(JZAudioInput* parent)
-    : m_parent(parent)
+JZAudioInputWindows::JZAudioInputWindows(JZAudioInput* parent)
+    : JZAudioInputImpl(parent)
 {
     for (int i = 0; i < BUFFER_COUNT; i++) {
         m_waveHdr[i].lpData = nullptr;
@@ -14,12 +13,12 @@ JZAudioInputImpl::JZAudioInputImpl(JZAudioInput* parent)
     }
 }
 
-JZAudioInputImpl::~JZAudioInputImpl()
+JZAudioInputWindows::~JZAudioInputWindows()
 {
     close();
 }
 
-bool JZAudioInputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt)
+bool JZAudioInputWindows::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt)
 {
     if (format.channelCount != 1 && format.channelCount != 2) {
         std::cerr << "Unsupported channel count: " << format.channelCount << ", only support 1/2" << std::endl;
@@ -42,13 +41,13 @@ bool JZAudioInputImpl::convertFormat(const JZAudioFormat& format, WAVEFORMATEX& 
     return true;
 }
 
-bool JZAudioInputImpl::open(const JZAudioDeviceInfo& device)
+bool JZAudioInputWindows::open(const JZAudioDeviceInfo& device)
 {
     if (m_isCapturing || m_hWaveIn != nullptr) {
         return false;
     }
 
-    const JZAudioFormat& format = m_parent->m_format;
+    const JZAudioFormat& format = m_parent->format();
     WAVEFORMATEX waveFmt = { 0 };
     if (!convertFormat(format, waveFmt)) {
         return false;
@@ -110,7 +109,7 @@ bool JZAudioInputImpl::open(const JZAudioDeviceInfo& device)
     return true;
 }
 
-void JZAudioInputImpl::close()
+void JZAudioInputWindows::close()
 {
     if (!m_isCapturing || m_hWaveIn == nullptr) {
         return;
@@ -124,7 +123,7 @@ void JZAudioInputImpl::close()
     m_isCapturing = false;
 }
 
-void JZAudioInputImpl::cleanupBuffers()
+void JZAudioInputWindows::cleanupBuffers()
 {
     if (m_hWaveIn == nullptr) {
         return;
@@ -143,14 +142,14 @@ void JZAudioInputImpl::cleanupBuffers()
     }
 }
 
-void JZAudioInputImpl::waveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
+void JZAudioInputWindows::waveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
     DWORD_PTR dwParam1, DWORD_PTR dwParam2)
 {
     if (uMsg != WIM_DATA) {
         return;
     }
 
-    JZAudioInputImpl* pImpl = reinterpret_cast<JZAudioInputImpl*>(dwInstance);
+    JZAudioInputWindows* pImpl = reinterpret_cast<JZAudioInputWindows*>(dwInstance);
     WAVEHDR* pHeader = reinterpret_cast<WAVEHDR*>(dwParam1);
 
     if (!pImpl || !pImpl->m_isCapturing || !pHeader || pHeader->dwBytesRecorded == 0) {

@@ -1,4 +1,5 @@
 #include "JZKeyEvent.h"
+#include "lvgl.h"
 
 JZKeyEvent::JZKeyEvent(lv_event_t* e)
     : m_event(e)

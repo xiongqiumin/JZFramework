@@ -1,0 +1,14 @@
+﻿#pragma once
+#include <vector>
+#include "detail/JZAudioDriver.h"
+
+class JZAudioDriverWindows : public JZAudioDriver
+{
+public:
+    JZAudioDriverWindows();
+
+    virtual std::vector<JZAudioDeviceInfo> audioInputList() override;
+    virtual std::vector<JZAudioDeviceInfo> audioOutputList() override;
+    virtual JZAudioInputImpl *createInput(JZAudioInput* parent) override;
+    virtual JZAudioOutputImpl *createOutput(JZAudioOutput* parent) override;
+};

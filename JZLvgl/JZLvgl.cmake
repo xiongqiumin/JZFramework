@@ -1,5 +1,4 @@
 ﻿set(JZ_SOURCES
-    JZ.h
     JZColor.h
     JZColor.cpp
     JZSize.h
@@ -18,6 +17,14 @@
     JZFont.cpp
     JZPainter.h
     JZPainter.cpp
+    JZPainterEvent.h
+    JZPainterEvent.cpp
+    JZResizeEvent.h
+    JZResizeEvent.cpp
+    JZShowEvent.h
+    JZShowEvent.cpp
+    JZCloseEvent.h
+    JZCloseEvent.cpp
     JZLayout.h
     JZLayout.cpp
     JZAbstractAnimation.h
@@ -28,38 +35,44 @@
     JZAnimationGroup.cpp
     JZWidget.h
     JZWidget.cpp
-    JZButton.h
-    JZButton.cpp
+    JZGuiApplication.h
+    JZGuiApplication.cpp
+    JZPushButton.h
+    JZPushButton.cpp
     JZLabel.h
     JZLabel.cpp
     JZImage.h
     JZImage.cpp
     JZMainWindow.h
     JZMainWindow.cpp
-    JZScreen.h
-    JZScreen.cpp
+    JZDialog.h
+    JZDialog.cpp
+    JZMessageBox.h
+    JZMessageBox.cpp
+    JZDisplayDevice.h
+    JZDisplayDevice.cpp
     JZSlider.h
     JZSlider.cpp
-    JZBar.h
-    JZBar.cpp
+    JZProgressBar.h
+    JZProgressBar.cpp
     JZSwitch.h
     JZSwitch.cpp
     JZCheckbox.h
     JZCheckbox.cpp
     JZRadioButton.h
     JZRadioButton.cpp
-    JZDropdown.h
-    JZDropdown.cpp
-    JZArc.h
-    JZArc.cpp
-    JZTextarea.h
-    JZTextarea.cpp
-    JZLed.h
-    JZLed.cpp
+    JZComboBox.h
+    JZComboBox.cpp
+    JZArcWidget.h
+    JZArcWidget.cpp
+    JZTextEdit.h
+    JZTextEdit.cpp
+    JZLedWidget.h
+    JZLedWidget.cpp
     JZRoller.h
     JZRoller.cpp
-    JZTable.h
-    JZTable.cpp
+    JZTableWidget.h
+    JZTableWidget.cpp
 )
 
 convert_to_abs_paths(JZ_SOURCES)

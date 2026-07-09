@@ -16,7 +16,10 @@ JZImageLabel::JZImageLabel(JZWidget* parent, const JZImage& img)
 void JZImageLabel::setImage(const JZImage& img)
 {
     m_image = img;
-    lv_image_set_src(m_lv, img.dsc());
+    if (img.isFile())
+        lv_image_set_src(m_lv, img.filePath().c_str());
+    else
+        lv_image_set_src(m_lv, img.dsc());
 }
 
 JZImageLabel JZImageLabel::image() const

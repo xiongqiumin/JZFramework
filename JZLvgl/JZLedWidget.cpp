@@ -1,4 +1,5 @@
-#include "JZLed.h"
+#include "JZLedWidget.h"
+#include "lvgl.h"
 
 JZ_OBJECT_IMPL(JZLed, JZWidget)
 
@@ -9,7 +10,10 @@ JZLed::JZLed(JZWidget* parent)
 
 void JZLed::setColor(const JZColor& c)
 {
-    lv_led_set_color(m_lv, c.toLvColor());
+    auto pod = c.toLvColor();
+    lv_color_t lv;
+    lv.red = pod.red; lv.green = pod.green; lv.blue = pod.blue;
+    lv_led_set_color(m_lv, lv);
 }
 
 void JZLed::on()

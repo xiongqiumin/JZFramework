@@ -14,6 +14,7 @@ public:
 	~JZAudioInput();
 
 	void setFormat(JZAudioFormat format);
+	const JZAudioFormat &format() const;
 
 	bool open();
 	bool open(JZAudioDeviceInfo device);

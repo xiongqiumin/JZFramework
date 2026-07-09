@@ -1,7 +1,10 @@
 #ifndef JZ_KEY_EVENT_H_
 #define JZ_KEY_EVENT_H_
 
-#include "lvgl.h"
+#include <cstdint>
+
+// Forward-declare LVGL event type
+typedef struct _lv_event_t lv_event_t;
 
 class JZKeyEvent
 {

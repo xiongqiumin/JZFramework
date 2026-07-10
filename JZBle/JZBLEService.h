@@ -7,14 +7,14 @@
 #include "JZLowEnergyCharacteristic.h"
 #include "JZLowEnergyDescriptor.h"
 
-class JZBleAbstractDriver;
+class JZBleDriver;
 
 class JZBLEServicePrivate
 {
 public:
     class JZBLEService *q_ptr;
     JZBluetoothUuid     serviceUuid;
-    JZBleAbstractDriver *driver = nullptr;
+    JZBleDriver *driver = nullptr;
     std::string         deviceAddress;
 
     enum State { Invalid, DiscoveryRequired, Discovering, Discovered };
@@ -59,7 +59,7 @@ public:
     int error() const;
     std::string errorString() const;
 
-    void setDriver(JZBleAbstractDriver *driver);
+    void setDriver(JZBleDriver *driver);
     void setDeviceAddress(const std::string &address);
 
 jz_signals:

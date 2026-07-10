@@ -9,8 +9,10 @@
     JZLowEnergyDescriptor.h
     JZBleDriver.cpp
     JZBleDriver.h
-    JZBLEController.h
-    JZBLEController.cpp
+    JZBLECentral.h
+    JZBLECentral.cpp
+    JZBLEPeripheral.h
+    JZBLEPeripheral.cpp
     JZBLEService.h
     JZBLEService.cpp
     JZBLEDeviceDiscoveryAgent.h

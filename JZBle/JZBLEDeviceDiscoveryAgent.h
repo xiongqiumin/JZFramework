@@ -5,7 +5,7 @@
 #include "JZSignal.h"
 #include "JZBluetoothDeviceInfo.h"
 
-class JZBleAbstractDriver;
+class JZBleDriver;
 
 class JZBLEDeviceDiscoveryAgentPrivate
 {

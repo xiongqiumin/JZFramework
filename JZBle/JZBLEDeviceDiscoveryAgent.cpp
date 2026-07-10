@@ -28,14 +28,14 @@ JZBLEDeviceDiscoveryAgent::JZBLEDeviceDiscoveryAgent(JZObject *parent)
       sigDeviceDiscovered(this), sigFinished(this), sigError(this),
       d(new JZBLEDeviceDiscoveryAgentPrivate(this)), m_active(false), m_timeout(8000)
 {
-    if (auto *drv = JZBleAbstractDriver::instance())
+    if (auto *drv = JZBleDriver::instance())
         drv->registerAgent(d);
 }
 
 JZBLEDeviceDiscoveryAgent::~JZBLEDeviceDiscoveryAgent()
 {
     stop();
-    if (auto *drv = JZBleAbstractDriver::instance())
+    if (auto *drv = JZBleDriver::instance())
         drv->unregisterAgent(d);
     delete d;
 }
@@ -44,7 +44,7 @@ bool JZBLEDeviceDiscoveryAgent::isActive() const { return m_active; }
 
 void JZBLEDeviceDiscoveryAgent::start()
 {
-    JZBleAbstractDriver *drv = JZBleAbstractDriver::instance();
+    JZBleDriver *drv = JZBleDriver::instance();
     if (!drv) return;
     if (!drv->isBluetoothAvailable())
     {
@@ -63,7 +63,7 @@ void JZBLEDeviceDiscoveryAgent::start()
 
 void JZBLEDeviceDiscoveryAgent::stop()
 {
-    JZBleAbstractDriver *drv = JZBleAbstractDriver::instance();
+    JZBleDriver *drv = JZBleDriver::instance();
     if (!drv) return;
     m_active = false;
     drv->stopScan();

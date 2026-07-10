@@ -1,6 +1,7 @@
 #include "JZBleDriverEsp32.h"
-#include "JZBLEController.h"
 #include "JZBLEService.h"
+#include "JZBLECentral.h"
+#include "JZBLEPeripheral.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZStd.h"
 
@@ -50,7 +51,7 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
 
     switch (event->type)
     {
-    case BLE_GAP_EVENT_DISC:   // arg = this（扫描），多播给所有 Controller & Agent
+    case BLE_GAP_EVENT_DISC:   // arg = this（扫描），多播给所有 Agent
     {
         JZBluetoothDeviceInfo info;
         info.setAddress(addrToString(event->disc.addr.val));
@@ -58,21 +59,17 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
         struct ble_hs_adv_fields f;
         if (ble_hs_adv_parse_fields(&f, event->disc.data, event->disc.length_data) == 0 && f.name && f.name_len > 0)
             info.setName(std::string((const char *)f.name, f.name_len));
-        for (auto *d : self->m_controllers)
-            JZBLEControllerPrivate::onDeviceDiscovered(d, info);
         for (auto *d : self->m_agents)
             JZBLEDeviceDiscoveryAgentPrivate::onDeviceDiscovered(d, info);
         break;
     }
     case BLE_GAP_EVENT_DISC_COMPLETE:
         self->m_scanning = false;
-        for (auto *d : self->m_controllers)
-            JZBLEControllerPrivate::onScanFinished(d);
         for (auto *d : self->m_agents)
             JZBLEDeviceDiscoveryAgentPrivate::onScanFinished(d);
         break;
 
-    case BLE_GAP_EVENT_CONNECT:  // arg 可能是 ctrlD (ble_gap_connect) 或 phrD (ble_gap_adv_start)
+    case BLE_GAP_EVENT_CONNECT:  // arg 可能是 JZBLECentral* (ble_gap_connect) 或 JZBLEPeripheral* (ble_gap_adv_start)
     {
         struct ble_gap_conn_desc desc;
         ble_gap_conn_find(event->connect.conn_handle, &desc);
@@ -83,19 +80,19 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
             if (event->connect.status == 0)
             {
                 self->m_periphConnHandle = event->connect.conn_handle;
-                JZBLEControllerPrivate::onClientConnected((JZBLEControllerPrivate *)arg);
+                JZBLEPeripheral::onClientConnected((JZBLEPeripheral *)arg);
             }
         }
         else
         {
-            auto *d = (JZBLEControllerPrivate *)arg;
+            auto *d = (JZBLECentral *)arg;
             if (event->connect.status == 0)
             {
                 self->setConnHandle(addr, event->connect.conn_handle);
-                JZBLEControllerPrivate::onDeviceConnected(d, addr.c_str());
+                JZBLECentral::onDeviceConnected(d, addr.c_str());
             }
             else
-                JZBLEControllerPrivate::onError(d, 0, "GAP connect failed");
+                JZBLECentral::onError(d, 0, "GAP connect failed");
         }
         break;
     }
@@ -105,14 +102,14 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
         if (self->m_advertising)
         {
             self->m_periphConnHandle = -1;
-            JZBLEControllerPrivate::onClientDisconnected((JZBLEControllerPrivate *)arg);
+            JZBLEPeripheral::onClientDisconnected((JZBLEPeripheral *)arg);
         }
         else
         {
             self->removeConnHandle(addr);
             if (self->m_disconnectCtrl)
             {
-                JZBLEControllerPrivate::onDeviceDisconnected(self->m_disconnectCtrl, addr.c_str());
+                JZBLECentral::onDeviceDisconnected(self->m_disconnectCtrl, addr.c_str());
                 self->m_disconnectCtrl = nullptr;
             }
         }
@@ -136,7 +133,7 @@ static int onGattcSvcEvent(uint16_t conn_handle, uint16_t attr_handle, struct bl
                             union ble_gatt_event_data *eventData, void *arg)
 {
     if (error->status == 0 || error->status == BLE_HS_EDONE)
-        JZBLEControllerPrivate::onServicesDiscovered((JZBLEControllerPrivate *)arg, "");
+        JZBLECentral::onServicesDiscovered((JZBLECentral *)arg, "");
     return 0;
 }
 
@@ -183,20 +180,22 @@ void JZBleDriverEsp32::startScan()
 void JZBleDriverEsp32::stopScan() { m_scanning = false; ble_gap_disc_cancel(); }
 bool JZBleDriverEsp32::isScanning() { return m_scanning; }
 
-void JZBleDriverEsp32::connectToDevice(const std::string &addr, JZBLEControllerPrivate *d)
+void JZBleDriverEsp32::connectToDevice(JZBLECentral *d)
 {
-    ble_addr_t peer; peer.type = BLE_ADDR_PUBLIC; addrFromString(addr, peer.val);
+    ble_addr_t peer; 
+    peer.type = BLE_ADDR_PUBLIC; 
+    addrFromString(d->deviceInfo().address(), peer.val);
     ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &peer, BLE_HS_FOREVER, nullptr, onGapEvent, d);
 }
-void JZBleDriverEsp32::disconnectFromDevice(const std::string &addr, JZBLEControllerPrivate *d)
+void JZBleDriverEsp32::disconnectFromDevice(JZBLECentral *d)
 {
     m_disconnectCtrl = d;
-    int h = getConnHandle(addr);
+    int h = getConnHandle(d->deviceInfo().address());
     if (h >= 0) ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
 }
-bool JZBleDriverEsp32::isConnected(const std::string &addr) { return getConnHandle(addr) >= 0; }
+bool JZBleDriverEsp32::isConnected(JZBLECentral *d) { return getConnHandle(d->deviceInfo().address()) >= 0; }
 
-void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLEControllerPrivate *d)
+void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLECentral *d)
 {
     int h = getConnHandle(addr);
     if (h >= 0) ble_gattc_disc_all_svcs(h, onGattcSvcEvent, d);
@@ -225,7 +224,7 @@ void JZBleDriverEsp32::writeDescriptor(const std::string &addr, const std::strin
     { int h = getConnHandle(addr); if (h < 0) return; ble_gattc_write_flat(h, 0, v.data(), v.size(), onGattcRWEvent, d); }
 
 // ==================== Peripheral ====================
-void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEControllerPrivate *d)
+void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEPeripheral *d)
 {
     m_advertising = true;
     m_periphConnHandle = -1;
@@ -346,7 +345,7 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
                                     struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)conn_handle; (void)arg;
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleAbstractDriver::instance());
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
     if (!self || !self->m_periphCtrlPriv) return BLE_ATT_ERR_UNLIKELY;
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR && ctxt->om)
@@ -357,8 +356,8 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
             if (kv.second.valHandle == attr_handle)
             {
                 std::string val((const char *)ctxt->om->om_data, ctxt->om->om_len);
-                JZBLEControllerPrivate::onCharWritten(self->m_periphCtrlPriv,
-                                                      kv.first.c_str(), val.c_str());
+                JZBLEPeripheral::onCharWritten(self->m_periphCtrlPriv,
+                                               kv.first.c_str(), val.c_str());
                 break;
             }
         }

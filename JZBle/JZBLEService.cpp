@@ -16,7 +16,7 @@ void JZBLEServicePrivate::onCharacteristicsDiscovered(JZBLEServicePrivate *d, co
 {
     std::string a(addr), s(svc);
     runOnObject(d->q_ptr, [d, a, s]() {
-        JZBleAbstractDriver *drv = JZBleAbstractDriver::instance();
+        JZBleDriver *drv = JZBleDriver::instance();
         if (a == d->deviceAddress && s == d->serviceUuid.toString() && drv) {
             auto infos = drv->characteristics(a, s);
             d->charList.clear();
@@ -117,5 +117,5 @@ JZLowEnergyCharacteristic JZBLEService::characteristic(const JZBluetoothUuid &u)
 int JZBLEService::state() const { return d->state; }
 int JZBLEService::error() const { return d->error; }
 std::string JZBLEService::errorString() const { return d->errorMsg; }
-void JZBLEService::setDriver(JZBleAbstractDriver *drv) { d->driver = drv; }
+void JZBLEService::setDriver(JZBleDriver *drv) { d->driver = drv; }
 void JZBLEService::setDeviceAddress(const std::string &a) { d->deviceAddress = a; }

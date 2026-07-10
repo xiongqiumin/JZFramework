@@ -20,6 +20,6 @@ set(LV_BUILD_LVGL_H_SIMPLE_INCLUDE ON CACHE BOOL "")
 add_subdirectory(${LVGL_ROOT_DIR} ${CMAKE_BINARY_DIR}/lvgl)
 
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZAudio JZLvgl)
+jzframework_use_modules(JZCore JZAudio JZLvgl JZBle)
 target_link_libraries(JZFramework PRIVATE lvgl)
 jzframework_build_test()

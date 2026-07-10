@@ -4,7 +4,7 @@
 #include "JZBleDriver.h"
 #include <map>
 
-class JZBleDriverEsp32 : public JZBleAbstractDriver
+class JZBleDriverEsp32 : public JZBleDriver
 {
 public:
     JZBleDriverEsp32();
@@ -17,11 +17,11 @@ public:
     void stopScan() override;
     bool isScanning() override;
 
-    void connectToDevice(const std::string& address, JZBLEControllerPrivate *d) override;
-    void disconnectFromDevice(const std::string& address, JZBLEControllerPrivate *d) override;
-    bool isConnected(const std::string& address) override;
+    void connectToDevice(JZBLECentral *d) override;
+    void disconnectFromDevice(JZBLECentral *d) override;
+    bool isConnected(JZBLECentral *d) override;
 
-    void discoverServices(const std::string& address, JZBLEControllerPrivate *d) override;
+    void discoverServices(const std::string& address, JZBLECentral *d) override;
     std::vector<JZBluetoothUuid> services(const std::string& address) override;
 
     void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
@@ -44,7 +44,7 @@ public:
                           const std::string& value, JZBLEServicePrivate *d) override;
 
     void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
-                           JZBLEControllerPrivate *d) override;
+                           JZBLEPeripheral *d) override;
     void stopAdvertising() override;
     void peripheralSendNotify(const std::string& charUuid, const std::string& value) override;
     void peripheralSendIndicate(const std::string& charUuid, const std::string& value) override;
@@ -63,14 +63,14 @@ private:
 
     bool m_scanning = false;
     bool m_advertising = false;
-    JZBLEControllerPrivate *m_disconnectCtrl = nullptr;
+    JZBLECentral *m_disconnectCtrl = nullptr;
 
     int m_periphConnHandle = -1;  // Peripheral client 连接句柄
     struct PeriphCharInfo { std::string svcUuid; uint16_t valHandle; int properties; };
     std::map<std::string, PeriphCharInfo> m_periphCharMap;  // charUuid → handles/props
-    JZBLEControllerPrivate *m_periphCtrlPriv = nullptr;    // 当前 Peripheral Controller
+    JZBLEPeripheral *m_periphCtrlPriv = nullptr;    // 当前 Peripheral
     static int onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
-                            struct ble_gatt_access_ctxt *ctxt, void *arg);
+                            struct ble_gap_access_ctxt *ctxt, void *arg);
 
     std::map<std::string, int> m_connMap;
     std::map<std::string, std::vector<JZBluetoothUuid>> m_svcCache;

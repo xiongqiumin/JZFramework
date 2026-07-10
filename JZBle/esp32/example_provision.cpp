@@ -1,7 +1,8 @@
 // ==================== ESP32 回环自我配网演示（新 JZBle API 版） ====================
 // 单个 ESP32 同时运行 Central + Peripheral，扫描自己、连自己、给自己发 WiFi 密码
 
-#include "JZBLEController.h"
+#include "JZBLECentral.h"
+#include "JZBLEPeripheral.h"
 #include "JZBLEService.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZBleDriverEsp32.h"
@@ -30,7 +31,7 @@ public:
         , sigCredentialsReceived(this)
         , m_controller(nullptr)
     {
-        m_controller = JZBLEController::createPeripheral(this);
+        m_controller = new JZBLEPeripheral(this);
         m_controller->addService(PROV_SVC);
         m_controller->addCharacteristic(PROV_SVC, CHAR_SSID, CHC_Write, "");
         m_controller->addCharacteristic(PROV_SVC, CHAR_PWD,  CHC_Write, "");
@@ -95,12 +96,12 @@ private:
 
             // 模拟 WiFi 连接成功，通知 Central
             LOG_I("[Peripheral] (simulated) WiFi connected!");
-            JZBleAbstractDriver::instance()->peripheralSendNotify(CHAR_STAT.toString(), "connected");
+            m_controller->sendNotification(CHAR_STAT, "connected");
             sigProvisionDone.emit();
         }
     }
 
-    JZBLEController *m_controller;
+    JZBLEPeripheral *m_controller;
     std::string m_ssid;
     std::string m_password;
 };
@@ -175,13 +176,13 @@ private:
             m_scanTargetFound = true;
             m_agent->stop();
 
-            m_controller = JZBLEController::createCentral(info, this);
+            m_controller = new JZBLECentral(this);
             connect(&m_controller->sigConnected,         this, &ProvCentral::onConnected);
             connect(&m_controller->sigDiscoveryFinished, this, &ProvCentral::onServicesDiscovered);
             connect(&m_controller->sigError,             this, &ProvCentral::onError);
 
             m_step = Step::Connecting;
-            m_controller->connectToDevice();
+            m_controller->connectToDevice(info);
         }
     }
 
@@ -195,7 +196,7 @@ private:
     void onServicesDiscovered()
     {
         LOG_I("[Central] services discovered");
-        m_service = m_controller->createServiceObject(PROV_SVC, this);
+        m_service = m_controller->createService(PROV_SVC);
         connect(&m_service->sigCharacteristicWritten, this, &ProvCentral::onCharWritten);
         connect(&m_service->sigCharacteristicChanged, this, &ProvCentral::onNotify);
 
@@ -243,16 +244,16 @@ private:
         }
     }
 
-    void onError(int err)
+    void onError(const std::string &msg)
     {
-        LOG_E("[Central] error code:%d, msg:%s, current step:%d",
-              err, m_controller->errorString().c_str(), static_cast<int>(m_step));
+        LOG_E("[Central] error: %s, current step:%d",
+              msg.c_str(), static_cast<int>(m_step));
         m_step = Step::Scanning;
         m_scanTargetFound = false;
     }
 
     JZBLEDeviceDiscoveryAgent *m_agent;
-    JZBLEController *m_controller;
+    JZBLECentral *m_controller;
     JZBLEService    *m_service;
     Step m_step;
     std::string m_ssid;
@@ -266,7 +267,7 @@ JZ_OBJECT_IMPL(ProvCentral, JZObject)
 int main()
 {
     JZApplication app;
-    JZBleAbstractDriver::setInstance(new JZBleDriverEsp32());
+    JZBleDriver::setInstance(new JZBleDriverEsp32());
 
     // Peripheral: 等待被配网
     ProvPeripheral *phr = new ProvPeripheral();
@@ -283,7 +284,7 @@ int main()
     });
 
     // 配网完成后退出事件循环释放资源
-    connect(ctrl, &ProvCentral::sigProvisionDone, [&app, phr, ctrl]() {
+    connect(&ctrl->sigProvisionDone, [&app, phr, ctrl]() {
         delete phr;
         delete ctrl;
         app.quit();

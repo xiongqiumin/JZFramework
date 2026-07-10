@@ -7,7 +7,7 @@
 class JZPlatform
 {
 public:
-    static int64_t getTickCountMs();  // 得到系统启动时间,单调递增
+    static int64_t getTickCountMs();  // 得到系统启动时间,单调递增(毫秒)
 
 	static std::string platform();
 	static std::string applicationFilePath();

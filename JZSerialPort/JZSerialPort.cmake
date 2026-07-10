@@ -1,6 +1,7 @@
 ﻿set(JZSerialPort_SOURCES    
     JZSerialPort.h
     JZSerialPort.cpp
+	JZSerialPortInfo.h
 	JZSerialPortDriver.h
 	JZSerialPortDriver.cpp
 )

@@ -3,6 +3,10 @@ set(JZSIMULATOR_SOURCES
     JZBleSimPack.cpp
 	JZBleDriverSimulator.h
 	JZBleDriverSimulator.cpp
+	JZGpioSimPack.h
+	JZGpioSimPack.cpp
+	JZGpioDriverSimulator.h
+	JZGpioDriverSimulator.cpp
 )
 convert_to_abs_paths(JZSIMULATOR_SOURCES)
 

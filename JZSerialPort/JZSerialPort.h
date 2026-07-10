@@ -2,9 +2,12 @@
 #define JZSerialPort_H
 
 #include "JZObject.h"
+#include "JZByteArray.h"
 #include "JZSerialPortInfo.h"
 
-class JZSerialPortPrivate;
+// JZSerialPort 是面向用户的串口类。它自身不做平台相关的收发，
+// 所有底层操作都委派给单例 JZSerialPortDriver（例如 JZSerialDriverEsp32）。
+// 接收到的数据由驱动通过 onDataReceived() 异步推送进来，并通过 sigReadyRead 通知。
 class JZSerialPort : public JZObject
 {
 public:
@@ -32,7 +35,7 @@ public:
         Data7 = 7,
         Data8 = 8
     };
-    
+
     enum Parity {
         NoParity = 0,
         EvenParity = 2,
@@ -55,24 +58,27 @@ public:
 
     explicit JZSerialPort(JZObject *parent = nullptr);
     explicit JZSerialPort(const std::string &name, JZObject *parent = nullptr);
-    explicit JZSerialPort(const JZSerialPortInfo &info, JZObject *parent = nullptr);
     virtual ~JZSerialPort();
 
     void setPortName(const std::string &name);
     std::string portName() const;
 
-    void setPort(const JZSerialPortInfo &info);
+    // 枚举系统可用串口（委派给驱动）。未安装驱动时返回空列表。
+    static std::vector<JZSerialPortInfo> availablePorts();
+
+    // 返回当前端口对应的串口信息（按端口名匹配）。
+    JZSerialPortInfo portInfo() const;
 
     bool open();
     void close();
-    bool isOpen();
+    bool isOpen() const;
 
-	JZByteArray read(int max_size);
-	int read(char *size,int max_size);
+    JZByteArray read(int max_size);
+    int read(char *data, int max_size);
     JZByteArray readAll();
-	
+
     void write(const JZByteArray &buffer);
-    void write(const char *size,int len);
+    void write(const char *data, int len);
 
     bool setBaudRate(int32_t baudRate);
     int32_t baudRate() const;
@@ -89,10 +95,23 @@ public:
     bool setFlowControl(FlowControl flowControl);
     FlowControl flowControl() const;
 
+    // 由底层驱动异步调用：把收到的数据放入接收缓冲并发出 sigReadyRead
+    void onDataReceived(const JZByteArray &data);
+
+jz_signals:
+    JZSigVoid sigReadyRead;
+
 protected:
     JZ_DISABLE_COPY(JZSerialPort)
-	
-	JZSerialPortPrivate *d;
+
+    std::string   m_portName;
+    bool          m_open = false;
+    int32_t       m_baudRate = Baud9600;
+    DataBits      m_dataBits = Data8;
+    Parity        m_parity = NoParity;
+    StopBits      m_stopBits = OneStop;
+    FlowControl   m_flowControl = NoFlowControl;
+    JZByteArray   m_readBuffer;
 };
 
 #endif // JZSerialPort_H

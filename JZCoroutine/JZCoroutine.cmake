@@ -31,6 +31,20 @@ if(HAS_JZNet)
     list(APPEND JZCO_SOURCES ${JZCO_NET_SOURCES})
 endif()
 
+set(JZCO_BLE_SOURCES
+    JZCoBleCentral.cpp
+    JZCoBleCentral.h
+    JZCoBleService.cpp
+    JZCoBleService.h
+    JZCoBleDiscoveryAgent.cpp
+    JZCoBleDiscoveryAgent.h
+)
+
+jz_module_exists(JZBle HAS_JZBLE)
+if(HAS_JZBLE)
+    list(APPEND JZCO_SOURCES ${JZCO_BLE_SOURCES})
+endif()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
 # 自动判断架构

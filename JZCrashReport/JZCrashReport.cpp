@@ -14,6 +14,10 @@ std::string JZCrashReportManager::makeReport(const JZCrashReport &report)
 
     std::string reportStr;
     reportStr += "==================== Crash Report ====================\n";
+    if (!report.platform.empty())
+    {
+        reportStr += "Platform: " + report.platform + "\n";
+    }
     reportStr += sigBuf;
     reportStr += "\n";
     if(!report.assert.empty())

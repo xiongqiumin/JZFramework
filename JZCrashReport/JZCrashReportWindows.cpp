@@ -20,6 +20,7 @@ void JZCrashReportSignalHandler(int sig)
     if (d->callback)
     {
         JZCrashReport rpt;
+        rpt.platform = "windows";
         d->callback(rpt);
     }
 }
@@ -42,4 +43,9 @@ void JZCrashReportManager::init(JZCrashCallback callback)
     d->callback = callback;
 
     SetUnhandledExceptionFilter(Win32ExceptionHandler);
+}
+
+JZOptional<JZCrashReport> JZCrashReportManager::takePendingReport()
+{
+    return JZOptional<JZCrashReport>();  // Windows 平台无复位持久化崩溃记录
 }

@@ -21,6 +21,8 @@ set(MODULE_DEPENDS_JZAgent "JZNet;JZJson")
 set(MODULE_DEPENDS_JZJSEngine "JZNet;JZJson")
 set(MODULE_DEPENDS_JZLvgl "JZCore")
 set(MODULE_DEPENDS_JZSimulator "JZBle;JZNet;JZLvgl;JZGpio")
+set(MODULE_DEPENDS_JZCamera "JZCore")
+set(MODULE_DEPENDS_JZCrashReport "JZCore;JZNet")
 
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
 message(STATUS "JZFramework root directory: ${JZFRAMEWORK_ROOT_DIR}")

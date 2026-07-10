@@ -1,6 +1,8 @@
 ﻿set(JZCrashReport_SOURCES    
     JZCrashReport.h
     JZCrashReport.cpp
+    JZCrashReportPost.h
+    JZCrashReportPost.cpp
 )
 
 if(WIN32)
@@ -10,6 +12,10 @@ if(WIN32)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND JZCrashReport_SOURCES
         JZCrashReportLinux.cpp
+    )
+elseif(DEFINED ESP_PLATFORM OR DEFINED CONFIG_IDF_TARGET)
+    list(APPEND JZCrashReport_SOURCES
+        JZCrashReportEsp32.cpp
     )
 endif()
 

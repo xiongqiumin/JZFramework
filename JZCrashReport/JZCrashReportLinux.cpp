@@ -43,6 +43,7 @@ void JZCrashReportSignalHandler(int sig)
     snprintf(buf, sizeof(buf), "程序崩溃，信号：%d", sig);
 
     JZCrashReport report;
+    report.platform = "linux";
     report.assert = JZLogManager::instance()->fatalError();
     report.signal = sig;
     report.msg = buf;
@@ -89,4 +90,9 @@ void JZCrashReportManager::init(JZCrashCallback callback) {
     sigaction(SIGFPE,  &sa, nullptr);  // 除零
     sigaction(SIGILL,  &sa, nullptr);  // 非法指令
     sigaction(SIGBUS,  &sa, nullptr);  // 总线错误
+}
+
+JZOptional<JZCrashReport> JZCrashReportManager::takePendingReport()
+{
+    return JZOptional<JZCrashReport>();  // Linux 平台无复位持久化崩溃记录
 }

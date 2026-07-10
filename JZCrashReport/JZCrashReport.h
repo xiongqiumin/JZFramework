@@ -10,6 +10,7 @@ struct JZCrashReport
     std::string stack;   // 堆栈字符串
     int         signal;  // 崩溃信号
     std::string msg;     // 错误信息
+    std::string platform;// 平台标识: "esp32" / "linux" / "windows"
 };
 
 typedef void (*JZCrashCallback)(JZCrashReport result);
@@ -22,6 +23,12 @@ public:
     static JZCrashReportManager* instance();
 
     void init(JZCrashCallback callback);
+
+    // 取回"上次复位前的崩溃报告"(若有)。ESP32 上崩溃信息在 panic 上下文写入
+    // RTC_NOINIT 内存, 复位后由本函数在正常上下文中读取并清零, 供业务层上报。
+    // 非 ESP32 平台(Windows/Linux)无持久化, 恒返回空。
+    JZOptional<JZCrashReport> takePendingReport();
+
     std::string makeReport(const JZCrashReport &report);
 
 private:

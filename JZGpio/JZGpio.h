@@ -2,6 +2,7 @@
 #define JZ_GPIO_H_
 
 #include "JZObject.h"
+#include "JZGpioInfo.h"
 
 // JZGpio 是面向用户的 GPIO 引脚类。它自身不做平台相关操作，
 // 所有底层动作都委派给单例 JZGpioDriver（如 JZGpioDriverEsp32 / JZGpioDriverSimulator）。

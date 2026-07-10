@@ -1,5 +1,6 @@
 #include "JZWidget.h"
 #include "JZGuiApplication.h"
+#include "lvgl.h"
 #include <cassert>
 
 JZ_OBJECT_IMPL(JZWidget,JZObject)
@@ -250,6 +251,8 @@ void JZWidget::onLvEvent(lv_event_t* e)
             resizeEvent(&re); 
             break;
         }
+    default:
+        break;        
     }
 }
 

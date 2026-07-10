@@ -4,6 +4,7 @@
 #include "JZObject.h"
 #include "JZGpio.h"
 #include "JZGpioInfo.h"
+#include "JZTimer.h"
 
 // JZGpioButton 是基于 JZGpio 的按键抽象。
 // 它把一个输入引脚封装成"按键", 负责消抖并识别:

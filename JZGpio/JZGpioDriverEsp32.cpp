@@ -212,6 +212,7 @@ void JZGpioDriverEsp32::close(JZGpio *gpio)
 
     if (m_waveMutex)
         xSemaphoreTake((SemaphoreHandle_t)m_waveMutex, portMAX_DELAY);
+
     PinState &st = it->second;
     st.waveRunning = false;            // 波形任务会在下一轮检测到并停止输出
     if (st.pwmRunning && st.ledcChannel >= 0)
@@ -236,6 +237,7 @@ bool JZGpioDriverEsp32::setDirection(JZGpio *gpio, JZGpio::Direction dir)
     auto it = m_pins.find(gpio->pin());
     if (it == m_pins.end())
         return false;
+
     it->second.dir = dir;
     gpio_mode_t m = (dir == JZGpio::Output) ? GPIO_MODE_OUTPUT : GPIO_MODE_INPUT;
     return gpio_set_direction((gpio_num_t)gpio->pin(), m) == ESP_OK;
@@ -246,6 +248,7 @@ bool JZGpioDriverEsp32::setPull(JZGpio *gpio, JZGpio::Pull pull)
     auto it = m_pins.find(gpio->pin());
     if (it == m_pins.end())
         return false;
+
     it->second.pull = pull;
     gpio_pull_mode_t m = GPIO_FLOATING;
     if (pull == JZGpio::PullUp)   m = GPIO_PULLUP_ONLY;

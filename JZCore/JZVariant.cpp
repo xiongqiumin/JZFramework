@@ -375,7 +375,7 @@ void* const& JZVariant::valueRef<void*>() const
 
 JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
 {
-    s << v.typeId();
+    s << (int32_t)v.typeId();
     switch (v.typeId())
     {
         case JZMetaType::Bool:      s << (int8_t)(v.toBool() ? 1 : 0); break;
@@ -395,7 +395,7 @@ JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
 
 JZDataStream& operator>>(JZDataStream& s, JZVariant& v)
 {
-    int t = 0;
+    int32_t t = 0;
     s >> t;
     switch (t)
     {

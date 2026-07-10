@@ -14,6 +14,10 @@ class JZBLEService;
 class JZBLECentral : public JZObject 
 {
     JZ_OBJECT_DECLARE(JZBLECentral)
+
+    // 仅允许 BLE 驱动基类访问受保护的静态分发方法,
+    // 具体驱动(如 JZBleDriverSimulator/Esp32/Ac79)统一通过 JZBleDriver 的转发中转调用。
+    friend class JZBleDriver;
     
 public:
     enum State { Unconnected, Connecting, Connected, Discovering };

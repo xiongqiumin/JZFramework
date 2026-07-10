@@ -80,7 +80,7 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
             if (event->connect.status == 0)
             {
                 self->m_periphConnHandle = event->connect.conn_handle;
-                JZBLEPeripheral::onClientConnected((JZBLEPeripheral *)arg);
+                JZBleDriver::peripheralOnClientConnected((JZBLEPeripheral *)arg);
             }
         }
         else
@@ -89,10 +89,10 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
             if (event->connect.status == 0)
             {
                 self->setConnHandle(addr, event->connect.conn_handle);
-                JZBLECentral::onDeviceConnected(d, addr.c_str());
+                JZBleDriver::centralOnDeviceConnected(d, addr.c_str());
             }
             else
-                JZBLECentral::onError(d, 0, "GAP connect failed");
+                JZBleDriver::centralOnError(d, 0, "GAP connect failed");
         }
         break;
     }
@@ -102,14 +102,14 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
         if (self->m_advertising)
         {
             self->m_periphConnHandle = -1;
-            JZBLEPeripheral::onClientDisconnected((JZBLEPeripheral *)arg);
+            JZBleDriver::peripheralOnClientDisconnected((JZBLEPeripheral *)arg);
         }
         else
         {
             self->removeConnHandle(addr);
             if (self->m_disconnectCtrl)
             {
-                JZBLECentral::onDeviceDisconnected(self->m_disconnectCtrl, addr.c_str());
+                JZBleDriver::centralOnDeviceDisconnected(self->m_disconnectCtrl, addr.c_str());
                 self->m_disconnectCtrl = nullptr;
             }
         }
@@ -133,7 +133,7 @@ static int onGattcSvcEvent(uint16_t conn_handle, uint16_t attr_handle, struct bl
                             union ble_gatt_event_data *eventData, void *arg)
 {
     if (error->status == 0 || error->status == BLE_HS_EDONE)
-        JZBLECentral::onServicesDiscovered((JZBLECentral *)arg, "");
+        JZBleDriver::centralOnServicesDiscovered((JZBLECentral *)arg, "");
     return 0;
 }
 
@@ -356,7 +356,7 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
             if (kv.second.valHandle == attr_handle)
             {
                 std::string val((const char *)ctxt->om->om_data, ctxt->om->om_len);
-                JZBLEPeripheral::onCharWritten(self->m_periphCtrlPriv,
+                JZBleDriver::peripheralOnCharWritten(self->m_periphCtrlPriv,
                                                kv.first.c_str(), val.c_str());
                 break;
             }

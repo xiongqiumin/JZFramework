@@ -1,6 +1,7 @@
 ﻿#ifndef JZ_VARIIANT_H_
 #define JZ_VARIIANT_H_
 
+#include <map>
 #include <string>
 #include <string.h>
 #include "JZGlobal.h"
@@ -112,6 +113,7 @@ protected:
 };
 
 typedef std::vector<JZVariant> JZVariantList;
+typedef std::map<std::string,JZVariant> JZVariantMap;
 
 // fromValue 特化声明
 template <>

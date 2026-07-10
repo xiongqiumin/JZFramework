@@ -69,6 +69,18 @@ public:
     virtual void peripheralSendNotify(const std::string& charUuid, const std::string& value) = 0;
     virtual void peripheralSendIndicate(const std::string& charUuid, const std::string& value) = 0;
 
+    // === 事件转发中转 (JZBLECentral / JZBLEPeripheral 的 friend) ===
+    // 具体驱动不得直接调用 JZBLECentral / JZBLEPeripheral 的受保护静态分发方法,
+    // 统一经由此处转发, 避免在子类中暴露 friend 关系。
+    static void centralOnDeviceConnected(JZBLECentral *self, const char *addr);
+    static void centralOnDeviceDisconnected(JZBLECentral *self, const char *addr);
+    static void centralOnServicesDiscovered(JZBLECentral *self, const char *addr);
+    static void centralOnError(JZBLECentral *self, int code, const char *msg);
+
+    static void peripheralOnClientConnected(JZBLEPeripheral *self);
+    static void peripheralOnClientDisconnected(JZBLEPeripheral *self);
+    static void peripheralOnCharWritten(JZBLEPeripheral *self, const char *charUuid, const char *value);
+
 protected:
     JZ_DISABLE_COPY(JZBleDriver)
 

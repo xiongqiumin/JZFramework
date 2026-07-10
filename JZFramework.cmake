@@ -17,6 +17,8 @@ set(MODULE_DEPENDS_JZSerialPort "JZCore")
 set(MODULE_DEPENDS_JZCoroutine "JZCore")
 set(MODULE_DEPENDS_JZAgent "JZNet;JZJson")
 set(MODULE_DEPENDS_JZJSEngine "JZNet;JZJson")
+set(MODULE_DEPENDS_JZLvgl "JZCore")
+set(MODULE_DEPENDS_JZSimulator "JZBle;JZNet;JZLvgl")
 
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
 message(STATUS "JZFramework root directory: ${JZFRAMEWORK_ROOT_DIR}")
@@ -218,4 +220,8 @@ endmacro()
 
 macro(jzframework_build_test)
 	include(${JZFRAMEWORK_ROOT_DIR}/test/test.cmake)
+endmacro()
+
+macro(jzframework_build_simulator)
+	include(${JZFRAMEWORK_ROOT_DIR}/simulator/simulator.cmake)
 endmacro()

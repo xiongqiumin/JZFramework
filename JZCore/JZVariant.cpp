@@ -373,12 +373,43 @@ void* const& JZVariant::valueRef<void*>() const
     return m_data.ptr;
 }
 
-JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec)
+JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
 {
+    s << v.typeId();
+    switch (v.typeId())
+    {
+        case JZMetaType::Bool:      s << (int8_t)(v.toBool() ? 1 : 0); break;
+        case JZMetaType::Int:       s << (int32_t)v.toInt(); break;
+        case JZMetaType::Int64:     s << (int64_t)v.toInt64(); break;
+        case JZMetaType::Float:     s << v.toFloat(); break;
+        case JZMetaType::Double:    s << v.toDouble(); break;
+        case JZMetaType::String:    s << v.toString(); break;
+        case JZMetaType::ByteArray: s << v.toByteArray(); break;
+        default: {
+            JZ_ASSERT(0);
+            break;
+        }
+    }
     return s;
 }
 
-JZDataStream& operator>>(JZDataStream& s, JZVariant& vec)
+JZDataStream& operator>>(JZDataStream& s, JZVariant& v)
 {
+    int t = 0;
+    s >> t;
+    switch (t)
+    {
+        case JZMetaType::Bool:      { int8_t b; s >> b; v = JZVariant(b != 0); } break;
+        case JZMetaType::Int:       { int32_t i; s >> i; v = JZVariant((int)i); } break;
+        case JZMetaType::Int64:     { int64_t i; s >> i; v = JZVariant(i); } break;
+        case JZMetaType::Float:     { float f; s >> f; v = JZVariant(f); } break;
+        case JZMetaType::Double:    { double d; s >> d; v = JZVariant(d); } break;
+        case JZMetaType::String:    { std::string st; s >> st; v = JZVariant(st); } break;
+        case JZMetaType::ByteArray: { JZByteArray ba; s >> ba; v = JZVariant::fromValue(ba); } break;
+        default: {
+            JZ_ASSERT(0);
+            break;
+        }
+    }
     return s;
 }

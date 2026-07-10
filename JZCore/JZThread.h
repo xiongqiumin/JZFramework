@@ -2,6 +2,7 @@
 #define JZ_THREAD_H_
 
 #include <queue>
+#include <functional>
 #include "JZObject.h"
 #include "JZEventLoop.h"
 #include "JZConditionVariable.h"
@@ -126,6 +127,17 @@ protected:
     std::vector<JZObject*> m_senderQueue;   // 信号发送栈 (从 JZObject 移入)
     JZConditionVariable m_cv;
     JZMutex m_mutex;
+};
+
+class JZTaskThread : public JZThread
+{
+public:
+    void setTask(const std::function<void()> &task);
+
+protected:
+    virtual void run();
+
+    std::function<void()> m_task;    
 };
 
 // 在thread所在线程执行

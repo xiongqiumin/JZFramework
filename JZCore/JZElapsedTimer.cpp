@@ -1,5 +1,6 @@
 #include "JZGlobal.h"
 #include "JZElapsedTimer.h"
+#include "JZPlatform.h"
 
 #ifdef JZ_OS_NORMAL
 #include <chrono>
@@ -66,28 +67,7 @@ void JZElapsedTimer::start() {
 }
 
 // 内部辅助函数：获取当前系统时间（纳秒）
-int64_t JZElapsedTimer::currentTimeNs() const{
-#ifdef JZ_OS_NORMAL
-    // 标准C++实现（裸机/桌面系统）
-    auto now = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now.time_since_epoch()
-        ).count();
-
-#elif JZ_OS == JZ_OS_FREE_RTOS    
-    TickType_t tick = xTaskGetTickCount();
-    // Tick转纳秒：tick * (1000000000 / configTICK_RATE_HZ)
-    int64_t ns = (int64_t)tick * (1000000000 / configTICK_RATE_HZ);
-    return ns;
-
-#elif JZ_OS == JZ_OS_RT_THREAD
-    rt_uint32_t tick = rt_tick_get();
-    // 基础版：tick转纳秒
-    int64_t ns = (int64_t)tick * 1000000;
-    return ns;
-
-#else
-    return 0;
-#endif
-
+int64_t JZElapsedTimer::currentTimeNs() const
+{
+    return JZPlatform::getTickCountNs();
 }

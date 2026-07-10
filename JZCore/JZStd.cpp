@@ -716,7 +716,7 @@ string wstr_to_str(const wstring &wstr)
     return str;
 }
 
-#elif defined(__linux__) || defined(__ANDROID__)
+#else
 
 string str_local_to_utf8(const string &str)
 {

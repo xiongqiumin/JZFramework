@@ -11,16 +11,136 @@
     #include <rtthread.h>
 #endif
 
+#if JZ_OS == JZ_OS_FREE_RTOS
+
+class FreeRtosCv {
+
+public:
+    FreeRtosCv() : event_group_(xEventGroupCreate()), mutex_(xSemaphoreCreateMutex()) {
+        available_bits_ = (1 << MAX_BITS) - 1;
+    }
+
+    ~FreeRtosCv() { vEventGroupDelete(event_group_); vSemaphoreDelete(mutex_); }
+
+    bool wait_for(SemaphoreHandle_t lock, int timeout_ms)
+    {
+        bool first = true;
+        return wait_for(lock, timeout_ms, [&first]{
+            if(first)
+            {
+                first = false;
+                return false;
+            }
+            else
+                return true;
+        });
+    }
+
+    bool wait_for(SemaphoreHandle_t lock, int timeout_ms, const std::function<bool()>& cond) 
+    {
+        while (!cond()) {
+            uint32_t my_bit = allocate_bit();
+            if (!my_bit) 
+            {
+                JZ_ASSERT_X(0, "to many wait for");
+                return false;
+            }
+
+            TaskHandle_t self = xTaskGetCurrentTaskHandle();
+
+            // 入队
+            xSemaphoreTake(mutex_, portMAX_DELAY);
+            waiters_.push_back({self, my_bit});
+            xSemaphoreGive(mutex_);
+
+            // 释放锁，等待事件
+            xSemaphoreGive(lock);
+            TickType_t ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+            EventBits_t triggered = xEventGroupWaitBits(event_group_, my_bit, pdTRUE, pdFALSE, ticks);
+            xSemaphoreTake(lock, portMAX_DELAY);
+
+            // 出队
+            remove_self(self, my_bit);
+            free_bit(my_bit);
+
+            if ((triggered & my_bit) == 0) {
+                return false; // 超时
+            }
+            // 唤醒后循环检查条件
+        }
+        return true;
+    }
+
+    void notify_one() {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        if (waiters_.empty()) { xSemaphoreGive(mutex_); return; }
+        uint32_t bit = waiters_.front().bit_mask; // 取队首
+        xSemaphoreGive(mutex_);
+        xEventGroupSetBits(event_group_, bit);
+    }
+
+    void notify_all() {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        if (waiters_.empty()) { 
+            xSemaphoreGive(mutex_); 
+            return; 
+        }
+        
+        EventBits_t bits = 0;
+        for (auto& w : waiters_) 
+            bits |= w.bit_mask;
+        xSemaphoreGive(mutex_);
+        xEventGroupSetBits(event_group_, bits);
+    }
+
+private:
+    struct WaitingTask {
+        TaskHandle_t handle;
+        uint32_t bit_mask;
+    };
+
+    uint32_t allocate_bit() {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        if (available_bits_ == 0) { xSemaphoreGive(mutex_); return 0; }
+        uint32_t bit = available_bits_ & -available_bits_;
+        available_bits_ &= ~bit;
+        xSemaphoreGive(mutex_);
+        return bit;
+    }
+
+    void free_bit(uint32_t bit) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        available_bits_ |= bit;
+        xSemaphoreGive(mutex_);
+    }
+
+    void remove_self(TaskHandle_t self, uint32_t bit) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        for (auto it = waiters_.begin(); it != waiters_.end(); ++it) {
+            if (it->handle == self && it->bit_mask == bit) {
+                waiters_.erase(it);
+                break;
+            }
+        }
+        xSemaphoreGive(mutex_);
+    }    
+
+    
+    static constexpr int MAX_BITS = 24;
+    EventGroupHandle_t event_group_;
+    SemaphoreHandle_t mutex_;
+    std::vector<WaitingTask> waiters_;
+    uint32_t available_bits_;
+};
+
+#endif
+
 // -------------------------- 构造函数：运行时初始化底层句柄 --------------------------
 JZConditionVariable::JZConditionVariable() {
     #ifdef JZ_OS_NORMAL
         
-    #elif JZ_OS == JZ_OS_FREE_RTOS
-        // FreeRTOS：创建队列并绑定到 void* m_cv
-        QueueHandle_t queue = xQueueCreate(1, sizeof(uint8_t));
-        JZ_ASSERT(queue != NULL);
-
-        m_cv = static_cast<void*>(queue);
+    #elif JZ_OS == JZ_OS_FREE_RTOS        
+        m_cv = new FreeRtosCv();
     #elif JZ_OS == JZ_OS_RT_THREAD
         // RT-Thread：创建条件变量并绑定到 void* m_cv
         rt_cond_t cond = rt_cond_create("jz_cv", RT_IPC_FLAG_PRIO);
@@ -53,10 +173,8 @@ void JZConditionVariable::notify_one() {
 #ifdef JZ_OS_NORMAL
     m_cv.notify_one();
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    // 从 void* 转换为 FreeRTOS 队列句柄
-    QueueHandle_t queue = static_cast<QueueHandle_t>(m_cv);
-    uint8_t dummy = 1;
-    xQueueSend(queue, &dummy, 0); // 非阻塞发送
+    FreeRtosCv *cv = (FreeRtosCv *)m_cv;
+    return cv->notify_one();
 #elif JZ_OS == JZ_OS_RT_THREAD
     // 从 void* 转换为 RT-Thread 条件变量句柄
     rt_cond_t cond = static_cast<rt_cond_t>(m_cv);
@@ -69,7 +187,8 @@ void JZConditionVariable::notify_all() {
 #ifdef JZ_OS_NORMAL
     m_cv.notify_all();
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    JZ_ASSERT(!"FreeRTOS JZConditionVariable does NOT support notify_all()! Use notify_one() instead.");
+    FreeRtosCv *cv = (FreeRtosCv *)m_cv;
+    return cv->notify_all();
 #elif JZ_OS == JZ_OS_RT_THREAD
     rt_cond_t cond = static_cast<rt_cond_t>(m_cv);
     rt_cond_broadcast(cond);
@@ -78,21 +197,11 @@ void JZConditionVariable::notify_all() {
 
 // -------------------------- 基础 wait：复用 wait_for --------------------------
 void JZConditionVariable::wait(JZMutexLocker& locker)
-{
-#ifdef JZ_OS_NORMAL
-    // 普通系统：正确使用 std::unique_lock 包装 mutex（避免析构解锁）
-    JZMutex* mutex = locker.mutex();
-    JZ_ASSERT(mutex);
-    
-    std::unique_lock<std::mutex> lock(mutex->m_mutex, std::adopt_lock);        
-    m_cv.wait(lock);
-    lock.release();
-#else
+{   
     wait_for(locker, -1);
-#endif
 }
 
-void JZConditionVariable::wait(JZMutexLocker& locker,std::function<bool()> condition)
+void JZConditionVariable::wait(JZMutexLocker& locker,const std::function<bool()>& condition)
 {
     wait_for(locker, -1, condition);
 }
@@ -127,48 +236,9 @@ bool JZConditionVariable::wait_for(JZMutexLocker& locker, int timeout_ms)
     return ret;
 
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    // FreeRTOS：基于队列+互斥体实现条件变量超时等待
-    JZMutex* mutex = locker.mutex();
-    JZ_ASSERT(mutex && m_cv);
-
-    QueueHandle_t cond_queue = static_cast<QueueHandle_t>(m_cv);
-    SemaphoreHandle_t mutex_hdl = static_cast<SemaphoreHandle_t>(mutex->m_mutex);
-
-    // 转换超时时间（UINT32_MAX 表示永久等待）
-    TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY
-        : pdMS_TO_TICKS(timeout_ms);
-    // 兜底：避免 pdMS_TO_TICKS 返回 0 导致无等待
-    if (timeout_ms != -1 && timeout_ticks == 0) {
-        timeout_ticks = 1;
-    }
-    
-    TickType_t remaining_tick = timeout_ticks;
-    
-    // 2. 解锁互斥体（必须检查返回值，避免解锁失败）
-    BaseType_t give_ret = xSemaphoreGive(mutex_hdl);
-    if (give_ret != pdTRUE) {
-        JZ_ASSERT(false && "Failed to unlock FreeRTOS mutex");
-        return false;
-    }
-
-    xQueueReset(cond_queue);
-
-    // 3. 等待队列信号（带剩余超时）
-    uint8_t dummy;    
-    BaseType_t queue_ret = xQueueReceive(cond_queue, &dummy, remaining_tick);
-
-    // 4. 重新加锁互斥体（永久等待，确保加锁成功）
-    BaseType_t take_ret = xSemaphoreTake(mutex_hdl, portMAX_DELAY);
-    JZ_ASSERT(take_ret == pdTRUE);
-
-    // 5. 处理队列等待结果
-    if (queue_ret == pdTRUE) {
-        return true;
-    }
-    else {
-        // 超时/队列错误：最终检查条件
-        return false;
-    }    
+    FreeRtosCv *cv = (FreeRtosCv *)m_cv;
+    SemaphoreHandle_t handle = (SemaphoreHandle_t)locker.mutex()->m_mutex;
+    return cv->wait_for(handle, timeout_ms);
 
 #elif JZ_OS == JZ_OS_RT_THREAD
     // RT-Thread：基于原生条件变量实现
@@ -203,7 +273,7 @@ bool JZConditionVariable::wait_for(JZMutexLocker& locker, int timeout_ms)
     return false;
 }
 
-bool JZConditionVariable::wait_for(JZMutexLocker& locker, int timeout_ms, std::function<bool()> condition) {
+bool JZConditionVariable::wait_for(JZMutexLocker& locker, int timeout_ms, const std::function<bool()>& condition) {
     // 前置检查：条件为空直接返回失败
     JZ_ASSERT(condition);
 
@@ -233,55 +303,9 @@ bool JZConditionVariable::wait_for(JZMutexLocker& locker, int timeout_ms, std::f
     return cond_met;
 
 #elif JZ_OS == JZ_OS_FREE_RTOS
-    // FreeRTOS：基于队列+互斥体实现条件变量超时等待
-    JZMutex* mutex = locker.mutex();
-    JZ_ASSERT (mutex && m_cv) ;
-
-    QueueHandle_t cond_queue = static_cast<QueueHandle_t>(m_cv);
-    SemaphoreHandle_t mutex_hdl = static_cast<SemaphoreHandle_t>(mutex->m_mutex);
-
-    // 转换超时时间（UINT32_MAX 表示永久等待）
-    TickType_t timeout_ticks = (timeout_ms == -1)? portMAX_DELAY 
-                                : pdMS_TO_TICKS(timeout_ms);
-    // 兜底：避免 pdMS_TO_TICKS 返回 0 导致无等待
-    if (timeout_ms != -1 && timeout_ticks == 0) {
-        timeout_ticks = 1;
-    }
-
-    TickType_t start_tick = xTaskGetTickCount();
-    TickType_t remaining_tick = timeout_ticks;
-
-    xQueueReset(cond_queue);
-    while (true) {
-        // 1. 优先检查条件：满足则直接返回
-        if (condition()) {
-            return true;
-        }
-
-        // 2. 解锁互斥体（必须检查返回值，避免解锁失败）
-        BaseType_t give_ret = xSemaphoreGive(mutex_hdl);
-        JZ_ASSERT(give_ret == pdTRUE);
-
-        // 3. 等待队列信号（带剩余超时）
-        uint8_t dummy;
-        BaseType_t queue_ret = xQueueReceive(cond_queue, &dummy, remaining_tick);
-
-        // 4. 重新加锁互斥体（永久等待，确保加锁成功）
-        BaseType_t take_ret = xSemaphoreTake(mutex_hdl, portMAX_DELAY);
-        JZ_ASSERT(take_ret == pdTRUE);
-         
-        // 5. 处理队列等待结果
-        if (queue_ret == pdTRUE) {
-            // 被 notify_one 唤醒：更新剩余超时（防无符号数溢出）
-            if (timeout_ms != -1) {
-                TickType_t elapsed = xTaskGetTickCount() - start_tick;
-                remaining_tick = (elapsed < remaining_tick) ? (remaining_tick - elapsed) : 0;
-            }
-        } else {
-            // 超时/队列错误：最终检查条件
-            return condition();
-        }
-    }
+    FreeRtosCv *cv = (FreeRtosCv *)m_cv;
+    SemaphoreHandle_t handle = (SemaphoreHandle_t)locker.mutex()->m_mutex;
+    return cv->wait_for(handle, timeout_ms, condition);
 
 #elif JZ_OS == JZ_OS_RT_THREAD
     // RT-Thread：基于原生条件变量实现

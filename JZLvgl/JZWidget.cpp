@@ -1,5 +1,5 @@
 #include "JZWidget.h"
-#include "JZGuiApplication.h"
+#include "JZApplication.h"
 #include "lvgl.h"
 #include <cassert>
 
@@ -36,11 +36,9 @@ JZWidget::~JZWidget()
         lv_obj_delete(m_lv);
     }
 
-    // 无 screen 剩余 → 退出
+    // 顶层 widget 销毁 → 退出应用
     if (!m_parent && jzApp) {
-        auto* guiApp = dynamic_cast<JZGUIApplication*>(jzApp);
-        if (guiApp && guiApp->screenCount() == 0)
-            guiApp->quit();
+        jzApp->quit();
     }
 }
 

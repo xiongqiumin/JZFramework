@@ -25,8 +25,6 @@
     JZFileInfo.cpp
     JZFile.h
     JZFile.cpp
-    JZFileDriver.h
-    JZFileDriver.cpp
     JZResources.h
     JZResources.cpp
     JZLog.h
@@ -43,6 +41,8 @@
 	JZObjectPointer.cpp
 	JZApplication.h
     JZApplication.cpp
+    JZDriver.h
+    JZDriver.cpp
     JZEventLoop.h
     JZEventLoop.cpp
     JZSemaphore.h
@@ -85,8 +85,14 @@
     JZCircleBuffer.h
 	JZLockPointer.h
 )
+
 if(WIN32)
     list(APPEND JZCORE_SOURCES JZPlatformWin32.cpp)
+endif()
+
+# 平台驱动
+if(ESP_PLATFORM)
+    list(APPEND JZGpio_SOURCES JZPlatformWrapperEsp32.h JZPlatformWrapperEsp32.cpp)
 endif()
 
 convert_to_abs_paths(JZCORE_SOURCES)

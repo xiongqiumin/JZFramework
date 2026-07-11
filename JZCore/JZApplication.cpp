@@ -5,6 +5,11 @@
 #include "JZPlatform.h"
 #include "JZDebug.h"
 #include "JZTx.h"
+#include "JZDriver.h"
+
+#ifdef HAS_JZLvgl
+#include "lvgl.h"
+#endif
 
 JZApplication *jzApp = nullptr;
 
@@ -26,10 +31,22 @@ JZApplication::JZApplication()
     m_mainThread->m_running = true;
 
     m_thread = m_mainThread;    
+
+    JZDriver::init();
+
+#ifdef HAS_JZLvgl
+    m_lvglTimer = startTimer(33);
+#endif
 }
 
 JZApplication::~JZApplication()
 {
+#ifdef HAS_JZLvgl
+    killTimer(m_lvglTimer);
+#endif
+
+    JZDriver::deinit();
+
     std::vector<JZObject*> childs = m_childs;
     for (int i = 0; i < (int)childs.size(); i++)
         delete childs[i];
@@ -119,6 +136,14 @@ void JZApplication::processEvents()
 {
     JZTX_FUNC_TRACE
     currentThread()->processEvents();
+}
+
+void JZApplication::timerEvent(JZTimerEvent *event)
+{
+#ifdef HAS_JZLvgl
+    if (event->id() == m_lvglTimer)
+        lv_timer_handler();
+#endif
 }
 
 void JZApplication::sendEvent(JZObject *object, JZEvent *event)

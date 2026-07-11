@@ -10,6 +10,11 @@ constexpr double JZ_PI = 3.14159265358979323846;
 } // namespace
 
 // ==================== 引脚枚举 ====================
+bool JZGpioDriverSimulator::supportsPin(int pin)
+{
+    return pin >= 0 && pin <= 27;
+}
+
 std::vector<JZGpioInfo> JZGpioDriverSimulator::availableGpios()
 {
     // 模拟设备暴露的引脚集合(可由设备端配置, 这里给默认值 GPIO0~GPIO27)

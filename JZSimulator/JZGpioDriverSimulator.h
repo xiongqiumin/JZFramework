@@ -21,6 +21,7 @@ public:
     JZGpioDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZGpioDriverSimulator() override;
 
+    bool supportsPin(int pin) override;
     std::vector<JZGpioInfo> availableGpios() override;
 
     bool open(JZGpio *gpio) override;

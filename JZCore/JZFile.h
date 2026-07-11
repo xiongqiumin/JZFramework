@@ -35,7 +35,11 @@ public:
 protected:
     JZ_DISABLE_COPY(JZFile)
 
+#ifdef JZ_OS_NORMAL
     FILE *m_fp = nullptr;
+#else
+    void *m_fp = nullptr;
+#endif
     const JZResourceData *m_res = nullptr;
     int m_resOffset = 0;
 };

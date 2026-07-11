@@ -12,7 +12,7 @@
 
 #include "JZFileInfo.h"
 #include "JZDir.h"
-#include "JZFileDriver.h"
+#include "JZPlatform.h"
 
 bool JZFileInfo::exists(const std::string &path)
 {
@@ -98,35 +98,12 @@ void JZFileInfo::setFile(const std::string &path)
         m_time = 0;
     }
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    if (drv)
-    {
-        struct stat st;
-        if (drv->stat(path, &st) == 0)
-        {
-            m_exists = true;
-            m_isFile = S_ISREG(st.st_mode);
-            m_isDir  = S_ISDIR(st.st_mode);
-            m_size   = st.st_size;
-            m_time   = static_cast<int64_t>(st.st_mtime) * 1000;
-        }
-        else
-        {
-            m_exists = false;
-            m_isFile = false;
-            m_isDir  = false;
-            m_size   = 0;
-            m_time   = 0;
-        }
-    }
-    else
-    {
-        m_exists = false;
-        m_isFile = false;
-        m_isDir  = false;
-        m_size   = 0;
-        m_time   = 0;
-    }
+    JZFileStat stat = JZPlatform::instance()->fileStat(path);
+    m_exists = stat.exists;
+    m_isFile = stat.isFile;
+    m_isDir  = stat.isDir;
+    m_size   = stat.size;
+    m_time   = stat.lastModified;
 #endif
 }
 

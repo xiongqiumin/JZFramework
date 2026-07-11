@@ -11,6 +11,12 @@ set(JZWIFI_SOURCES
     JZWifiAutoConnectService.h
     JZWifi.h
 )
+
+# 平台驱动
+if(ESP_PLATFORM)
+    list(APPEND JZWIFI_SOURCES JZWifiDriverEsp32.h JZWifiDriverEsp32.cpp)
+endif()
+
 convert_to_abs_paths(JZWIFI_SOURCES)
 
 # 添加到目标

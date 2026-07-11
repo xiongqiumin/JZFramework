@@ -36,11 +36,14 @@ public:
     void postEventAndWait(JZObject *object, JZEvent *event);    
 
 protected:    
+    virtual void timerEvent(JZTimerEvent *event) override;
+
     JZThread *m_mainThread;
 
     std::vector<JZThread*> m_threads;
     JZMutex m_mutex;
     int m_returnCode;
+    int m_lvglTimer = 0;
 };
 extern JZApplication *jzApp;
 

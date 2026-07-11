@@ -1,6 +1,7 @@
 ﻿#include "JZPlatform.h"
 #include "JZApplication.h"
 #include "JZStd.h"
+#include "JZDebug.h"
 
 #ifdef JZ_OS_NORMAL
 #include <chrono>
@@ -13,6 +14,12 @@
 static JZPlatformWrapper *g_inst = nullptr;
 void JZPlatform::setInstance(JZPlatformWrapper *inst)
 {
+    if (g_inst && g_inst != inst)
+    {
+        if (inst)
+            jzWarning("JZPlatformWrapper instance already set, replacing old driver");
+        delete g_inst;
+    }
     g_inst = inst;
 }
 
@@ -20,6 +27,8 @@ JZPlatformWrapper *JZPlatform::instance()
 {
     return g_inst;
 }
+
+// ==================== 平台信息 ====================
 
 std::string JZPlatform::platform()
 {
@@ -40,7 +49,6 @@ int64_t JZPlatform::getTickCountMs()
         return (g_inst->getTickCountNs() / 1000000);
 
 #ifdef JZ_OS_NORMAL
-    // 最简写法：now() → time_since_epoch() → 毫秒数
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 #elif JZ_OS == JZ_OS_FREE_RTOS
@@ -100,48 +108,28 @@ std::string JZPlatform::applicationTmpPath()
 
 #elif defined(__linux__)
 
-#include <unistd.h>  // 提供 readlink() 函数
-#include <limits.h>  // 提供 PATH_MAX 常量（路径最大长度）
+#include <unistd.h>
+#include <limits.h>
 
 std::string JZPlatform::applicationFilePath()
 {
-    // 定义缓冲区存储程序完整路径，PATH_MAX 系统最大路径长度(4096)
     char buffer[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-
-    // 处理所有读取失败/异常情况
     if (len == -1 || len == 0 || len >= sizeof(buffer) - 1)
-    {
-        return "";  // 读取失败/空路径/路径超长，返回空字符串
-    }
-
-    // 手动添加C字符串结束符，readlink不会自动添加，必须加
+        return "";
     buffer[len] = '\0';
     return buffer;
 }
 
 std::string JZPlatform::applicationDirPath() {
-    // 定义缓冲区存储程序完整路径，PATH_MAX 系统最大路径长度(4096)
     char buffer[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-
-    // 处理所有读取失败/异常情况
-    if (len == -1 || len == 0 || len >= sizeof(buffer)-1) {
-        return ""; // 读取失败/空路径/路径超长，返回空字符串
-    }
-
-    // 手动添加C字符串结束符，readlink不会自动添加，必须加
+    if (len == -1 || len == 0 || len >= sizeof(buffer)-1)
+        return "";
     buffer[len] = '\0';
-
-    // ========== 核心修复逻辑：截取目录路径，剔除文件名 ==========
-    // strrchr：从右向左查找第一个 '/' 分隔符的位置
     char* lastSlash = strrchr(buffer, '/');
-    if (lastSlash != nullptr) {
-        // 找到最后一个/，从该位置截断，只保留目录部分
+    if (lastSlash != nullptr)
         *lastSlash = '\0';
-    }
-
-    // 返回最终的【程序所在目录路径】
     return std::string(buffer);
 }
 
@@ -174,19 +162,8 @@ std::string JZPlatform::applicationTmpPath()
 
 #else
 
-std::string JZPlatform::applicationFilePath()
-{
-    return std::string();
-}
-
-std::string JZPlatform::applicationDirPath()
-{
-    return std::string();
-}
-
-std::string JZPlatform::applicationTmpPath()
-{
-    return std::string();
-}
+std::string JZPlatform::applicationFilePath()  { return std::string(); }
+std::string JZPlatform::applicationDirPath()   { return std::string(); }
+std::string JZPlatform::applicationTmpPath()   { return std::string(); }
 
 #endif

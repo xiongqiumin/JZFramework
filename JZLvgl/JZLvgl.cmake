@@ -35,8 +35,6 @@
     JZAnimationGroup.cpp
     JZWidget.h
     JZWidget.cpp
-    JZGuiApplication.h
-    JZGuiApplication.cpp
     JZPushButton.h
     JZPushButton.cpp
     JZLabel.h

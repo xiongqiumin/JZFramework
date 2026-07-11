@@ -4,8 +4,10 @@
 #include "JZObject.h"
 #include "JZGpioInfo.h"
 
+class JZGpioDriver;
+
 // JZGpio 是面向用户的 GPIO 引脚类。它自身不做平台相关操作，
-// 所有底层动作都委派给单例 JZGpioDriver（如 JZGpioDriverEsp32 / JZGpioDriverSimulator）。
+// 所有底层动作都委派给 JZGpioDriver（如 JZGpioDriverEsp32 / JZGpioDriverSimulator）。
 //
 // 功能:
 //   - 数字输入/输出 (read / write)
@@ -57,10 +59,10 @@ public:
     };
 
     explicit JZGpio(JZObject *parent = nullptr);
-    explicit JZGpio(int pin, JZObject *parent = nullptr);
+    explicit JZGpio(int pin, JZObject *parent = nullptr);    
     virtual ~JZGpio();
 
-    void setPin(int pin);
+    void setPin(int pin);    
     int  pin() const;
 
     // 枚举当前平台可用 GPIO 引脚(委派给驱动单例)
@@ -129,6 +131,7 @@ jz_signals:
 protected:
     JZ_DISABLE_COPY(JZGpio)
 
+    JZGpioDriver *m_drv = nullptr;
     int        m_pin = -1;
     bool       m_open = false;
     Direction  m_direction = Input;

@@ -2,7 +2,6 @@
 #include "JZLabel.h"
 #include "JZPushButton.h"
 #include "JZLayout.h"
-#include "JZGuiApplication.h"
 
 JZ_OBJECT_IMPL(JZMessageBox, JZDialog)
 

@@ -9,7 +9,7 @@ JZGpio::JZGpio(JZObject *parent)
 JZGpio::JZGpio(int pin, JZObject *parent)
     : JZObject(parent), sigLevelChanged(this), sigTriggered(this)
 {
-    m_pin = pin;
+    setPin(pin);
 }
 
 JZGpio::~JZGpio()
@@ -20,6 +20,7 @@ JZGpio::~JZGpio()
 void JZGpio::setPin(int pin)
 {
     m_pin = pin;
+    m_drv = JZGpioDriver::findDriver(pin);
 }
 
 int JZGpio::pin() const
@@ -29,18 +30,16 @@ int JZGpio::pin() const
 
 std::vector<JZGpioInfo> JZGpio::availableGpios()
 {
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
-        return drv->availableGpios();
-    return {};
+    return JZGpioDriver::allAvailableGpios();
 }
 
 bool JZGpio::open()
 {
-    JZGpioDriver *drv = JZGpioDriver::instance();
-    if (!drv || m_pin < 0)
+    JZ_ASSERT_X(m_drv, "JZGpio: no driver found for pin");
+    if (!m_drv || m_pin < 0)
         return false;
 
-    m_open = drv->open(this);
+    m_open = m_drv->open(this);
     return m_open;
 }
 
@@ -49,11 +48,11 @@ void JZGpio::close()
     if (!m_open)
         return;
 
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
+    if (m_drv)
     {
-        drv->stopWaveform(this);
-        drv->stopPwm(this);
-        drv->close(this);
+        m_drv->stopWaveform(this);
+        m_drv->stopPwm(this);
+        m_drv->close(this);
     }
 
     m_open = false;
@@ -72,8 +71,8 @@ bool JZGpio::setDirection(Direction dir)
     m_direction = dir;
     if (m_open)
     {
-        if (JZGpioDriver *drv = JZGpioDriver::instance())
-            return drv->setDirection(this, dir);
+        if (m_drv)
+            return m_drv->setDirection(this, dir);
         return false;
     }
     return true;
@@ -89,8 +88,8 @@ bool JZGpio::setPull(Pull pull)
     m_pull = pull;
     if (m_open)
     {
-        if (JZGpioDriver *drv = JZGpioDriver::instance())
-            return drv->setPull(this, pull);
+        if (m_drv)
+            return m_drv->setPull(this, pull);
         return false;
     }
     return true;
@@ -106,9 +105,9 @@ bool JZGpio::write(int level)
 {
     if (!m_open)
         return false;
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
+    if (m_drv)
     {
-        if (drv->write(this, level ? High : Low))
+        if (m_drv->write(this, level ? High : Low))
         {
             m_level = level ? High : Low;
             return true;
@@ -121,9 +120,9 @@ int JZGpio::read() const
 {
     if (!m_open)
         return -1;
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
+    if (m_drv)
     {
-        int v = drv->read(const_cast<JZGpio *>(this));
+        int v = m_drv->read(const_cast<JZGpio *>(this));
         if (v >= 0)
             const_cast<JZGpio *>(this)->m_level = v ? High : Low;
         return v;
@@ -139,8 +138,7 @@ bool JZGpio::startPwm(int freqHz, float dutyCycle)
     if (dutyCycle < 0.0f) dutyCycle = 0.0f;
     if (dutyCycle > 1.0f) dutyCycle = 1.0f;
 
-    JZGpioDriver *drv = JZGpioDriver::instance();
-    if (!drv)
+    if (!m_drv)
         return false;
 
     // PWM 与波形互斥
@@ -149,7 +147,7 @@ bool JZGpio::startPwm(int freqHz, float dutyCycle)
 
     m_pwmFreq = freqHz;
     m_pwmDuty = dutyCycle;
-    m_pwmRunning = drv->startPwm(this, freqHz, dutyCycle);
+    m_pwmRunning = m_drv->startPwm(this, freqHz, dutyCycle);
     return m_pwmRunning;
 }
 
@@ -160,8 +158,8 @@ bool JZGpio::setPwmFrequency(int freqHz)
     m_pwmFreq = freqHz;
     if (m_pwmRunning)
     {
-        if (JZGpioDriver *drv = JZGpioDriver::instance())
-            return drv->setPwmFrequency(this, freqHz);
+        if (m_drv)
+            return m_drv->setPwmFrequency(this, freqHz);
         return false;
     }
     return true;
@@ -174,8 +172,8 @@ bool JZGpio::setPwmDuty(float dutyCycle)
     m_pwmDuty = dutyCycle;
     if (m_pwmRunning)
     {
-        if (JZGpioDriver *drv = JZGpioDriver::instance())
-            return drv->setPwmDuty(this, dutyCycle);
+        if (m_drv)
+            return m_drv->setPwmDuty(this, dutyCycle);
         return false;
     }
     return true;
@@ -185,8 +183,8 @@ void JZGpio::stopPwm()
 {
     if (!m_pwmRunning)
         return;
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
-        drv->stopPwm(this);
+    if (m_drv)
+        m_drv->stopPwm(this);
     m_pwmRunning = false;
 }
 
@@ -211,8 +209,7 @@ bool JZGpio::startWaveform(Waveform type, int freqHz, int amplitude, int offset)
     if (!m_open || freqHz <= 0 || type == WaveNone)
         return false;
 
-    JZGpioDriver *drv = JZGpioDriver::instance();
-    if (!drv)
+    if (!m_drv)
         return false;
 
     // 波形与 PWM 互斥
@@ -223,7 +220,7 @@ bool JZGpio::startWaveform(Waveform type, int freqHz, int amplitude, int offset)
     m_waveFreq = freqHz;
     m_waveAmplitude = amplitude;
     m_waveOffset = offset;
-    m_waveRunning = drv->startWaveform(this, type, freqHz, amplitude, offset);
+    m_waveRunning = m_drv->startWaveform(this, type, freqHz, amplitude, offset);
     if (!m_waveRunning)
         m_waveform = WaveNone;
     return m_waveRunning;
@@ -233,8 +230,8 @@ void JZGpio::stopWaveform()
 {
     if (!m_waveRunning)
         return;
-    if (JZGpioDriver *drv = JZGpioDriver::instance())
-        drv->stopWaveform(this);
+    if (m_drv)
+        m_drv->stopWaveform(this);
     m_waveRunning = false;
     m_waveform = WaveNone;
 }
@@ -255,8 +252,8 @@ bool JZGpio::setTriggerEdge(Edge edge)
     m_triggerEdge = edge;
     if (m_open)
     {
-        if (JZGpioDriver *drv = JZGpioDriver::instance())
-            return drv->setTriggerEdge(this, edge);
+        if (m_drv)
+            return m_drv->setTriggerEdge(this, edge);
         return false;
     }
     return true;

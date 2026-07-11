@@ -18,6 +18,12 @@
     JZBLEDeviceDiscoveryAgent.h
     JZBLEDeviceDiscoveryAgent.cpp
 )
+
+# 平台驱动
+if(ESP_PLATFORM)
+    list(APPEND JZBLE_SOURCES JZBleDriverEsp32.h JZBleDriverEsp32.cpp)
+endif()
+
 convert_to_abs_paths(JZBLE_SOURCES)
 
 # 添加到目标

@@ -1,5 +1,4 @@
 #include "JZDisplayDevice.h"
-#include "JZGuiApplication.h"
 #include "JZStd.h"
 
 #if JZ_OS == JZ_OS_WINDOWS

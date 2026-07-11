@@ -5,19 +5,28 @@
 #include "JZGpio.h"
 #include "JZGpioInfo.h"
 
-// GPIO 驱动抽象基类(单例)。具体平台(ESP32 / 模拟器 / 主机)实现自己的子类,
-// 并在程序初始化时通过 setInstance() 安装。JZGpio 的所有底层操作都委派给它。
+// GPIO 驱动抽象基类。支持注册多个驱动实例(如 MCU 原生 GPIO + I2C 扩展 GPIO),
+// 通过 addInstance() 注册, JZGpio 按引脚号查找对应驱动。
 class JZGpioDriver
 {
 public:
     JZGpioDriver() = default;
     virtual ~JZGpioDriver() = default;
 
-    static JZGpioDriver *instance();
-    static void setInstance(JZGpioDriver *inst);
-    static void clearInstance();
+    static void addInstance(JZGpioDriver *inst);
+    static void clearInstances();
+    static std::vector<JZGpioDriver*> instances();
 
-    // 枚举当前平台可用 GPIO 引脚。各平台驱动自行实现。
+    // 根据引脚号查找驱动, 找不到返回 nullptr
+    static JZGpioDriver *findDriver(int pin);
+
+    // 汇总所有驱动的可用引脚列表
+    static std::vector<JZGpioInfo> allAvailableGpios();
+
+    // 查询本驱动是否支持指定引脚
+    virtual bool supportsPin(int pin) = 0;
+
+    // 枚举本驱动可用 GPIO 引脚
     virtual std::vector<JZGpioInfo> availableGpios() = 0;
 
     // 打开 / 关闭 / 查询
@@ -49,7 +58,7 @@ public:
 protected:
     JZ_DISABLE_COPY(JZGpioDriver)
 
-    static JZGpioDriver *s_instance;
+    static std::vector<JZGpioDriver*> s_instances;
 };
 
 #endif // !JZ_GPIO_DRIVER_H_

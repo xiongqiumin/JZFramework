@@ -16,6 +16,7 @@ public:
     JZGpioDriverEsp32();
     ~JZGpioDriverEsp32() override;
 
+    bool supportsPin(int pin) override;
     std::vector<JZGpioInfo> availableGpios() override;
 
     bool open(JZGpio *gpio) override;

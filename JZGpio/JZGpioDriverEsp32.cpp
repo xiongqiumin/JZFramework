@@ -30,6 +30,13 @@ inline bool isDacPin(int pin) { return pin == 25 || pin == 26; }
 JZGpioDriverEsp32::JZGpioDriverEsp32() = default;
 
 // ==================== 引脚枚举 ====================
+bool JZGpioDriverEsp32::supportsPin(int pin)
+{
+    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT)
+        return false;
+    return (SOC_GPIO_VALID_GPIO_MASK >> pin) & 0x1;
+}
+
 // ESP-IDF 没有运行时枚举 GPIO 的接口, 但提供编译期芯片能力宏:
 //   SOC_GPIO_PIN_COUNT              引脚数量
 //   SOC_GPIO_VALID_GPIO_MASK        物理有效 GPIO 位掩码

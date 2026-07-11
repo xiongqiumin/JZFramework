@@ -1,8 +1,8 @@
- #include "JZFile.h"
+#include "JZFile.h"
 #include "JZFileInfo.h"
-#include "JZFileDriver.h"
 #include "JZResources.h"
 #include "JZDebug.h"
+#include "JZPlatform.h"
 #include "string.h"
 
 #if JZ_OS == JZ_OS_WINDOWS
@@ -21,8 +21,7 @@ bool JZFile::remove(std::string filepath)
 #elif JZ_OS == JZ_OS_LINUX
     return unlink(filepath.c_str()) == 0;
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    return drv ? drv->fileRemove(filepath) : false;
+    return JZPlatform::instance()->fileRemove(filepath);
 #endif
 }
 
@@ -49,9 +48,10 @@ bool JZFile::isOpen() const
 
 bool JZFile::open(std::string filepath, std::string mode)
 {
+    close();
+
     if (!filepath.empty() && filepath[0] == ':')
     {
-        // 资源文件只读，拒绝 a/w 模式
         if (mode.find_first_of("aw") != std::string::npos)
             return false;
 
@@ -59,16 +59,25 @@ bool JZFile::open(std::string filepath, std::string mode)
         m_resOffset = 0;
         return m_res != nullptr;
     }
-    
+
+#ifdef JZ_OS_NORMAL
     m_fp = fopen(str_utf8_to_local(filepath).c_str(), mode.c_str());
     return m_fp != nullptr;
+#else
+    m_fp = JZPlatform::instance()->fopen(filepath.c_str(), mode.c_str());
+    return m_fp != nullptr;
+#endif
 }
 
 void JZFile::close()
 {
     if (m_fp)
     {
+#ifdef JZ_OS_NORMAL
         fclose(m_fp);
+#else
+        JZPlatform::instance()->fclose(m_fp);
+#endif
         m_fp = nullptr;
     }
     m_res = nullptr;
@@ -83,6 +92,7 @@ int JZFile::size()
     if (!m_fp)
         return 0;
 
+#ifdef JZ_OS_NORMAL
     long cur = ftell(m_fp);
     if (cur == -1)
         return 0;
@@ -93,6 +103,15 @@ int JZFile::size()
     long sz = ftell(m_fp);
     fseek(m_fp, cur, SEEK_SET);
     return (int)sz;
+#else
+    auto *inst = JZPlatform::instance();
+    long cur = inst->ftell(m_fp);
+    if (cur == -1) return 0;
+    if (inst->fseek(m_fp, 0, SEEK_END) != 0) return 0;
+    long sz = inst->ftell(m_fp);
+    inst->fseek(m_fp, cur, SEEK_SET);
+    return (int)sz;
+#endif
 }
 
 bool JZFile::atEnd() const
@@ -101,7 +120,11 @@ bool JZFile::atEnd() const
         return m_resOffset >= m_res->size;
     if (!m_fp)
         return true;
+#ifdef JZ_OS_NORMAL
     return feof(m_fp);
+#else
+    return JZPlatform::instance()->feof(m_fp);
+#endif
 }
 
 void JZFile::seek(int pos)
@@ -115,7 +138,11 @@ void JZFile::seek(int pos)
             m_resOffset = m_res->size;
         return;
     }
+#ifdef JZ_OS_NORMAL
     fseek(m_fp, pos, SEEK_CUR);
+#else
+    JZPlatform::instance()->fseek(m_fp, pos, SEEK_CUR);
+#endif
 }
 
 void JZFile::seek(int pos, int origin)
@@ -134,14 +161,22 @@ void JZFile::seek(int pos, int origin)
             m_resOffset = m_res->size;
         return;
     }
+#ifdef JZ_OS_NORMAL
     fseek(m_fp, pos, origin);
+#else
+    JZPlatform::instance()->fseek(m_fp, pos, origin);
+#endif
 }
 
 int JZFile::tell()
 {
     if (m_res)
         return m_resOffset;
+#ifdef JZ_OS_NORMAL
     return ftell(m_fp);
+#else
+    return (int)JZPlatform::instance()->ftell(m_fp);
+#endif
 }
 
 int JZFile::write(const JZByteArray &buffer)
@@ -153,13 +188,22 @@ int JZFile::write(const char *buffer, int size)
 {
     if (m_res)
         return 0; // 资源只读
-        
+
+#ifdef JZ_OS_NORMAL
     int ret = (int)fwrite(buffer, 1, size, m_fp);
     if (ret != size)
     {
         jzError() << "JZFile::write failed: requested " << size << " bytes, actual written " << ret;
     }
     return ret;
+#else
+    int ret = (int)JZPlatform::instance()->fwrite(buffer, size, m_fp);
+    if (ret != size)
+    {
+        jzError() << "JZFile::write failed: requested " << size << " bytes, actual written " << ret;
+    }
+    return ret;
+#endif
 }
 
 JZByteArray JZFile::read(int max_size)
@@ -183,7 +227,11 @@ int JZFile::read(char *buffer, int size)
         m_resOffset += to_read;
         return to_read;
     }
+#ifdef JZ_OS_NORMAL
     return (int)fread(buffer, 1, size, m_fp);
+#else
+    return (int)JZPlatform::instance()->fread(buffer, size, m_fp);
+#endif
 }
 
 JZByteArray JZFile::readAll()

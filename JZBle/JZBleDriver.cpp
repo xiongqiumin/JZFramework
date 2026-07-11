@@ -3,6 +3,7 @@
 #include "JZBLECentral.h"
 #include "JZBLEPeripheral.h"
 #include "JZStd.h"
+#include "JZDebug.h"
 
 JZBleDriver *JZBleDriver::s_instance = nullptr;
 
@@ -11,7 +12,16 @@ JZBleDriver *JZBleDriver::instance()
     JZ_ASSERT_X(s_instance,"JZBleDriver not init");
     return s_instance; 
 }
-void JZBleDriver::setInstance(JZBleDriver *inst) { s_instance = inst; }
+void JZBleDriver::setInstance(JZBleDriver *inst) 
+{ 
+    if (s_instance && s_instance != inst) 
+    {
+        if (inst)
+            jzWarning("JZBleDriver instance already set, replacing old driver");
+        delete s_instance;
+    }
+    s_instance = inst; 
+}
 
 void JZBleDriver::registerAgent(JZBLEDeviceDiscoveryAgentPrivate *d)
 { 

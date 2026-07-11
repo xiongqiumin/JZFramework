@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "JZGuiApplication.h"
+#include "JZApplication.h"
 #include "JZWidget.h"
 #include "JZLayout.h"
 #include "JZPushButton.h"
@@ -216,7 +216,7 @@ private:
 int main() {
     printf("JZFramework Widgets Demo starting...\n");
 
-    JZGUIApplication app;
+    JZApplication app;
     TestWindow w;
     w.show();
 

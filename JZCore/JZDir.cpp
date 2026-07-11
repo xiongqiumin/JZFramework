@@ -3,7 +3,7 @@
 #include "JZFileInfo.h"
 #include "JZDebug.h"
 #include "JZString.h"
-#include "JZFileDriver.h"
+#include "JZPlatform.h"
 
 #if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
@@ -27,11 +27,8 @@ bool JZDir::isAbsolutePath(string path)
         return true;
 
     return false;
-#elif JZ_OS == JZ_OS_LINUX
-    return path.size() >= 1 && path[0] == '/';
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    return drv ? drv->isAbsolutePath(path) : false;
+    return path.size() >= 1 && path[0] == '/';
 #endif
 }
 
@@ -50,8 +47,7 @@ string JZDir::currentPath()
     free(buffer);
     return currentDir;
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    return drv ? drv->currentPath() : string();
+    return JZPlatform::instance()->currentPath();
 #endif
 }
 
@@ -73,10 +69,8 @@ bool JZDir::dirExists(const string &path) const
     struct stat st;
     return stat(path.c_str(), &st) == 0;
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    if (!drv) return false;
-    struct stat st;
-    return drv->stat(path, &st) == 0;
+    auto st = JZPlatform::instance()->fileStat(path);
+    return st.exists;
 #endif
 }
 
@@ -88,8 +82,7 @@ bool JZDir::createDir(const string &path) const
 #elif JZ_OS == JZ_OS_LINUX
     return ::mkdir(path.c_str(), 0755) == 0;
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    return drv ? drv->dirCreate(path) : false;
+    return JZPlatform::instance()->dirCreate(path);
 #endif
 }
 
@@ -156,8 +149,7 @@ bool JZDir::rmdir(const string &path)
 #elif JZ_OS == JZ_OS_LINUX
     return ::rmdir(dir_path.c_str()) == 0;
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    return drv ? drv->dirRemove(dir_path) : false;
+    return JZPlatform::instance()->dirRemove(dir_path);
 #endif
 }
 
@@ -291,22 +283,18 @@ vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
     }
     closedir(dir);
 #else
-    auto *drv = JZFileAbstractDriver::instance();
-    if (drv)
+    auto names = JZPlatform::instance()->dirEntryList(m_path);
+    for (auto &name : names)
     {
-        auto names = drv->dirEntryList(m_path);
-        for (auto &name : names)
-        {
-            if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
+        if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
 
-            string fullPath = m_path + "/" + name;
-            JZFileInfo info(fullPath);
+        string fullPath = m_path + "/" + name;
+        JZFileInfo info(fullPath);
 
-            if ((filter & Files) && info.isFile())
-                result.push_back(info);
-            else if ((filter & Dirs) && info.isDir())
-                result.push_back(info);
-        }
+        if ((filter & Files) && info.isFile())
+            result.push_back(info);
+        else if ((filter & Dirs) && info.isDir())
+            result.push_back(info);
     }
 #endif
 

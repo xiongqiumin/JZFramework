@@ -3,6 +3,7 @@
 #include "JZWifiStation.h"
 #include "JZWifiAp.h"
 #include "JZWifiScanner.h"
+#include "JZDebug.h"
 
 JZWifiDriver *JZWifiDriver::s_instance = nullptr;
 
@@ -11,7 +12,16 @@ JZWifiDriver *JZWifiDriver::instance()
     JZ_ASSERT_X(s_instance, "JZWifiDriver not init");
     return s_instance;
 }
-void JZWifiDriver::setInstance(JZWifiDriver *inst) { s_instance = inst; }
+void JZWifiDriver::setInstance(JZWifiDriver *inst) 
+{ 
+    if (s_instance && s_instance != inst) 
+    {
+        if (inst)
+            jzWarning("JZWifiDriver instance already set, replacing old driver");
+        delete s_instance;
+    }
+    s_instance = inst; 
+}
 
 // ==================== 事件转发中转 ====================
 // JZWifiDriver 是各管理类的 friend, 这里把受保护的静态分发方法封装为公开的

@@ -114,7 +114,8 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
     }
     else if (event->event == JZ_NET_EV_WS_MSG)
     {        
-        int op = event->wsFlag & 15;
+        JZWsResData *ws = (JZWsResData*)(event->extData.get());
+        int op = ws->wsFlag & 15;
         if (op == JZ_WEBSOCKET_OP_TEXT) {            
             sigTextMessageReceived.emit(str_fromUtf8(event->binData));
         }

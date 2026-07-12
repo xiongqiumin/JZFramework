@@ -70,6 +70,7 @@ public:
     virtual void stationDisconnect(JZWifiStation *w) = 0;
     virtual bool isStationConnected(JZWifiStation *w) = 0;
     virtual std::string stationIpAddress(JZWifiStation *w) = 0;
+    virtual int stationRssi(JZWifiStation *w) = 0;
 
     // === Access Point (做服务) ===
     virtual void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) = 0;

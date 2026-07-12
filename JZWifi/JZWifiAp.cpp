@@ -12,10 +12,9 @@ void JZWifiAp::onStarted(JZObjectPointer self)
     auto *obj = (JZWifiAp *)guard.object();
     if (!obj)
         return;
-
-    std::string a(ip ? ip : "");
+    
     runOnObject(obj, [obj]() {
-        obj->m_state = Starting;        
+        obj->m_state = Started;
         obj->sigStarted.emit();
     });
 }
@@ -29,7 +28,6 @@ void JZWifiAp::onStopped(JZObjectPointer self)
 
     runOnObject(obj, [obj]() {
         obj->m_state = None;
-        obj->m_ip.clear();
         obj->m_stationCount = 0;
         obj->sigStopped.emit();
     });
@@ -76,23 +74,22 @@ JZWifiAp::JZWifiAp(JZObject *parent)
 
 JZWifiAp::~JZWifiAp()
 {
-    auto *drv = getDriver();
-    drv->apStop(this);    
+    auto *drv = JZWifiDriver::instance();
+    if (drv)
+        drv->apStop(this);
     if (m_state == Started)
     {        
         sigStopped.emit();
     }
 }
 
-JZWifiDriver *JZWifiAp::getDriver() { return JZWifiDriver::instance(); }
-
 // ==================== Access Point (做服务) ====================
 void JZWifiAp::start(const JZWifiApConfig &config)
 {
     m_state = Starting;
     m_config = config;
-    
-    auto *drv = getDriver();    
+
+    auto *drv = JZWifiDriver::instance();
     drv->apStart(this, config);
 }
 
@@ -100,10 +97,12 @@ void JZWifiAp::stop()
 {
     m_state = Stoping;
 
-    auto *drv = getDriver();
+    auto *drv = JZWifiDriver::instance();
     drv->apStop(this);
 }
 
-bool JZWifiAp::isRunning() const { return m_running; }
+bool JZWifiAp::isRunning() const { 
+    return (m_state == Starting || m_state == Started); 
+}
 int  JZWifiAp::connectedStationCount() const { return m_stationCount; }
-std::string JZWifiAp::ipAddress() const { return m_ip; }
+JZWifiAp::State JZWifiAp::state() const{ return m_state; }

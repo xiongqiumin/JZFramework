@@ -21,6 +21,7 @@ public:
     void stationDisconnect(JZWifiStation *w) override;
     bool isStationConnected(JZWifiStation *w) override;
     std::string stationIpAddress(JZWifiStation *w) override;
+    int stationRssi(JZWifiStation *w) override;
 
     // === Access Point (做服务) ===
     void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) override;

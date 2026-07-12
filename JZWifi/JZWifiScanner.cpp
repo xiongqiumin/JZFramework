@@ -38,7 +38,7 @@ JZ_OBJECT_IMPL(JZWifiScanner, JZObject)
 
 JZWifiScanner::JZWifiScanner(JZObject *parent)
     : JZObject(parent),
-      sigResult(this), sigFinished(this), sigError(this)
+      sigFinished(this), sigError(this)
 {
 }
 
@@ -47,32 +47,34 @@ JZWifiScanner::~JZWifiScanner()
     stop();
 }
 
-JZWifiDriver *JZWifiScanner::getDriver() { return JZWifiDriver::instance(); }
-
 void JZWifiScanner::start()
 {
-    auto *drv = getDriver();    
+    auto *drv = JZWifiDriver::instance();
     if (m_active) 
     {
         jzWarning() << "JZWifiScanner allready stared";
         return;
     }
 
-    m_results.clear();
+    m_result = JZWifiScanResult();
     m_active = true;
     drv->scanStart(this);
 }
 
 void JZWifiScanner::stop()
 {
-    auto *drv = getDriver();
-    drv->scanStop(this);
+    if(m_active)
+    {
+        auto *drv = JZWifiDriver::instance();
+        drv->scanStop(this);
 
-    m_active = false;
+        m_active = false;
+    }
 }
 
 bool JZWifiScanner::isActive() const { return m_active; }
 
-std::vector<JZWifiScanResult> JZWifiScanner::results() const { 
-    return m_results; 
+const JZWifiScanResult &JZWifiScanner::result() const
+{
+    return m_result;
 }

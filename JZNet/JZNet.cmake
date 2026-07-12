@@ -7,6 +7,8 @@
 	JZTcpSocket.h
 	JZTcpServer.cpp
 	JZTcpServer.h
+	JZUdpSocket.cpp
+	JZUdpSocket.h
     JZNetClient.cpp
     JZNetClient.h
     JZNetPacket.cpp

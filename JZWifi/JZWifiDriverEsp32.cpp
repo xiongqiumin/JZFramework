@@ -95,16 +95,14 @@ void JZWifiDriverEsp32::updateMode()
 {
     bool enable_ap = false;
     bool enable_sta = false;
-    {        
-        JZObjectPointerGuard guard(m_apWifi);
-        auto obj = (JZWifiAp *)guard.object();
+    {                
+        auto obj = (JZWifiAp *)m_apWifi.object();
         if(obj)
             enable_ap = (obj->state() == JZWifiAp::Starting || obj->state() == JZWifiAp::Started); 
     }
 
-    {
-        JZObjectPointerGuard guard(m_staWifi);
-        auto obj = (JZWifiStation *)guard.object();
+    {        
+        auto obj = (JZWifiStation *)m_staWifi.object();
         if(obj)
             enable_sta = (obj->state() == JZWifiStation::Connecting || obj->state() == JZWifiStation::Connected); 
     }
@@ -130,7 +128,6 @@ void JZWifiDriverEsp32::updateMode()
 // ==================== 事件分发 ====================
 void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, void *event_data)
 {
-    jzDebug() << "JZWifiDriverEsp32::handleEvent" << event_id;
     if (event_base == WIFI_EVENT)
     {
         switch (event_id)
@@ -141,7 +138,7 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
             break;
 
         case WIFI_EVENT_STA_DISCONNECTED: {
-            jzDebug() << "wifi event WIFI_EVENT_STA_CONNECTED";            
+            jzDebug() << "wifi event WIFI_EVENT_STA_DISCONNECTED";
             if (m_staWifi)
             {
                 JZWifiDriver::onStationDisconnected(m_staWifi);
@@ -183,9 +180,7 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
             break;
         }
 
-        case WIFI_EVENT_SCAN_DONE: {
-            jzDebug() << "wifi scan finished";
-            m_scanning = false;
+        case WIFI_EVENT_SCAN_DONE: {                
             if (!m_scanTarget)
                 break;
                 
@@ -208,6 +203,7 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
                 }
             }
             JZWifiDriver::onScanFinished(m_scanTarget, ap_result);
+            m_scanTarget = JZObjectPointer();
             break;
         }
 
@@ -284,6 +280,15 @@ bool JZWifiDriverEsp32::isStationConnected(JZWifiStation *w)
 std::string JZWifiDriverEsp32::stationIpAddress(JZWifiStation *w)
 {
     return w->ipAddress();
+}
+
+int JZWifiDriverEsp32::stationRssi(JZWifiStation *w)
+{
+    (void)w;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        return ap.rssi;
+    return -127;
 }
 
 // ==================== Access Point (做服务) ====================
@@ -364,11 +369,10 @@ void JZWifiDriverEsp32::scanStart(JZWifiScanner *s)
 
 void JZWifiDriverEsp32::scanStop(JZWifiScanner *s)
 {
-    (void)s;
+    JZ_ASSERT_X(s == m_scanTarget.object(),"scanStop invalid param");
+
     if (m_scanTarget) {
         esp_wifi_scan_stop();
-
-        m_scanTarget = JZObjectPointer();
     }    
 }
 

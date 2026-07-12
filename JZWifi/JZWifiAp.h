@@ -33,7 +33,8 @@ public:
     void stop();
     bool isRunning() const;
     int connectedStationCount() const;
-    std::string ipAddress() const;
+
+    State state() const;
 
 jz_signals:
     JZSignal<> sigStarted;
@@ -46,8 +47,6 @@ protected:
     static void onStopped(JZObjectPointer self);
     static void onStationConnected(JZObjectPointer self, const char *mac, const char *ip);
     static void onStationDisconnected(JZObjectPointer self, const char *mac, const char *ip);
-
-    JZWifiDriver *getDriver();
 
     State m_state = None;
     int m_stationCount = 0;

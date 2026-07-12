@@ -152,10 +152,11 @@ void JZNetworkReply::onNetEvent(JZNetResEvent* event)
     int ev = event->event;
     if (ev == JZ_NET_EV_HTTP_MSG)
     {
-        m_statusCode = event->httpCode;
-        m_statusText = event->httpCodeText;
+        JZHttpResData *http = (JZHttpResData*)(event->extData.get());
+        m_statusCode = http->httpCode;
+        m_statusText = http->httpCodeText;
         m_body = getHttpBody(event->binData);
-        if (event->httpCode >= 200 && event->httpCode < 300)
+        if (http->httpCode >= 200 && http->httpCode < 300)
         {
             emitFinish(JZNetworkReply::NoError);
         }

@@ -7,6 +7,8 @@
 #include "JZDebug.h"
 #include "JZPlatform.h"
 #include "JZWebSocket.h"
+#include "JZNetworkReply.h"
+#include "JZUdpSocket.h"
 #include "JZUrl.h"
 #include "JZScopeGuard.h"
 #include "JZMqttPacket.h"
@@ -187,8 +189,6 @@ JZNetResEvent::JZNetResEvent()
 {
     conn = 0;
     event = JZ_NET_EV_ERROR;
-    httpCode = 0;
-    wsFlag = 0;
 }
 
 JZNetResEvent::~JZNetResEvent()
@@ -223,6 +223,18 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         {
             event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
             mg_iobuf_del(&c->recv, 0, c->recv.len);
+        }
+        else if (it->second.type == JZSocketInfo::UdpSocket ||
+                 it->second.type == JZSocketInfo::UdpListen)
+        {
+            event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
+            mg_iobuf_del(&c->recv, 0, c->recv.len);
+            auto ptr = std::make_shared<JZUdpResData>();
+            char *ip_str = mg_mprintf("%M", mg_print_ip, &c->rem);
+            ptr->peerIp = std::string(ip_str);
+            mg_free(ip_str);
+            ptr->peerPort = mg_ntohs(c->rem.port);
+            event->extData = ptr;
         }
     }
     else if (ev == MG_EV_ACCEPT)
@@ -273,9 +285,11 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             }
         }
 
-        event->httpCode = mg_http_status(hm);
+        auto http_ptr = std::make_shared<JZHttpResData>();
+        http_ptr->httpCode = mg_http_status(hm);
         if (conn_it->second.type == JZSocketInfo::HttpClient)
-            event->httpCodeText = getHttpCodeText(hm->head.buf, (int)hm->head.len);
+            http_ptr->httpCodeText = getHttpCodeText(hm->head.buf, (int)hm->head.len);
+        event->extData = http_ptr;
         event->binData = JZByteArray(hm->message.buf, (int)hm->message.len);
     }
     else if (ev == MG_EV_WS_OPEN)
@@ -289,7 +303,9 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_WS_MSG)
     {
         mg_ws_message *ws_msg = (mg_ws_message*)ev_data;
-        event->wsFlag = ws_msg->flags;
+        auto ws_ptr = std::make_shared<JZWsResData>();
+        ws_ptr->wsFlag = ws_msg->flags;
+        event->extData = ws_ptr;
         event->binData = JZByteArray(ws_msg->data.buf, (int)ws_msg->data.len);            
     }
     else if (ev == MG_EV_MQTT_OPEN)
@@ -452,6 +468,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
         else if (info.type == JZSocketInfo::TcpServer)
             conn = mg_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+        else if (info.type == JZSocketInfo::UdpSocket)
+            conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+        else if (info.type == JZSocketInfo::UdpListen)
+            conn = mg_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
         else if (info.type == JZSocketInfo::HttpClient)
         {
             conn = mg_http_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
@@ -545,6 +565,21 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 mg_mqtt_send_header(c, pkt->cmd, pkt->flags, pkt->len);
                 if (pkt->buffer.size() > 0)
                     mg_send(c, pkt->buffer.data(), pkt->buffer.size());
+            }
+            else if (event->writeCmd == WriteUdp)
+            {
+                JZUdpWriteData *udp_data = (JZUdpWriteData *)(event->extData.get());
+                if (udp_data && !udp_data->ip.empty())
+                {
+                    mg_addr addr;
+                    memset(&addr, 0, sizeof(addr));
+                    if (mg_aton(mg_str(udp_data->ip.c_str()), &addr))
+                    {
+                        addr.port = mg_htons((uint16_t)udp_data->port);
+                        c->rem = addr;
+                    }
+                }
+                mg_send(c, buf, len);
             }
         }
         else if (event->netCmd == JZNetReqEvent::Net_HttpReplyFinish)

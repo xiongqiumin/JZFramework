@@ -6,6 +6,14 @@
 #include "JZNetworkRequest.h"
 
 class JZWebSocketServer;
+
+// WebSocket response data
+class JZWsResData : public JZNetResEventData
+{
+public:
+    int wsFlag;
+};
+
 class JZWebSocket : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZWebSocket)

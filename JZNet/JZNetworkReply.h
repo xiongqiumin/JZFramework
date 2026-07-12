@@ -6,6 +6,15 @@
 #include "JZNetworkRequest.h"
 
 class JZNetworkAccessManager;
+
+// HTTP response data
+class JZHttpResData : public JZNetResEventData
+{
+public:
+    int httpCode;
+    std::string httpCodeText;
+};
+
 class JZNetworkReply : public JZNetObject
 {
 public:

@@ -16,10 +16,12 @@ set(JZCO_SOURCES
 set(JZCO_NET_SOURCES
 	JZCoNetworkAccessManager.cpp
     JZCoNetworkAccessManager.h
-	JZCoTcpSocket.cpp
+    JZCoTcpSocket.cpp
 	JZCoTcpSocket.h
     JZCoTcpServer.cpp
-	JZCoTcpServer.h
+    JZCoTcpServer.h
+    JZCoUdpSocket.cpp
+    JZCoUdpSocket.h
     JZCoWebSocket.cpp
 	JZCoWebSocket.h
     JZCoWebSocketServer.cpp

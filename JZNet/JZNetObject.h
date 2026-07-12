@@ -57,6 +57,7 @@ enum SocketWrite
     WriteWebSocketBin,
     WriteMqttMessage,
     WriteMqttServerResp,
+    WriteUdp,
 };
 
 struct JZSocketInfo
@@ -66,6 +67,8 @@ struct JZSocketInfo
         None,
         TcpSocket,
         TcpServer,
+        UdpSocket,
+        UdpListen,
         HttpClient,
         HttpServerClient, //服务端的连接
         HttpServer,
@@ -141,13 +144,6 @@ public:
     JZNetEvent event;
     uint64_t conn;
     JZByteArray binData;
-
-    //http
-    int httpCode;
-    std::string httpCodeText;
-
-    //ws
-    int wsFlag;
 
     // ext
     std::shared_ptr<JZNetResEventData> extData;

@@ -13,6 +13,8 @@ JZObjectPointer::operator bool() const
 
 JZObject* JZObjectPointer::object() const
 {
+    if (!data)
+        return nullptr;
     return data->object;
 }
 
@@ -45,5 +47,7 @@ void JZObjectPointerGuard::unlock()
 
 JZObject* JZObjectPointerGuard::object()
 {
+    if (!m_pointer->data)
+        return nullptr;
     return m_pointer->data->object;
 }

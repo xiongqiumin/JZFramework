@@ -47,11 +47,8 @@ void JZWifiDriver::onApStationConnected(JZObjectPointer self, const char *mac, c
 void JZWifiDriver::onApStationDisconnected(JZObjectPointer self, const char *mac, const char *ip)
 { JZWifiAp::onStationDisconnected(self, mac, ip); }
 
-void JZWifiDriver::onScanResult(JZObjectPointer self, const JZWifiScanResult &r)
-{ JZWifiScanner::onResult(self, r); }
-
-void JZWifiDriver::onScanFinished(JZObjectPointer self)
-{ JZWifiScanner::onFinished(self); }
+void JZWifiDriver::onScanFinished(JZObjectPointer self, const JZWifiScanResult &r)
+{ JZWifiScanner::onFinished(self, r); }
 
 void JZWifiDriver::onScanError(JZObjectPointer self, int code, const char *msg)
 { JZWifiScanner::onError(self, code, msg); }

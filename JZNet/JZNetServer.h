@@ -2,6 +2,7 @@
 #define MG_SERVER_H_
 
 #include <map>
+#include <deque>
 #include "JZNetObject.h"
 
 class JZNetClient;
@@ -24,8 +25,10 @@ public:
 
     void closeClient(uint64_t c);
 
+    JZNetClient* nextPendingConnection();
+
 jz_signals:    
-    JZSignal<uint64_t> sigAccept;
+    JZSigVoid sigAccept;
     JZSignal<uint64_t> sigDisconnect;
     JZSignal<uint64_t, JZNetPackPtr> sigPacketReceive;
 
@@ -41,6 +44,7 @@ protected:
     uint64_t m_listen;
     std::string m_token;
     std::map<uint64_t, JZNetClient*> m_clients;
+    std::deque<JZNetClient*> m_pendingConnections;
 };
 
 

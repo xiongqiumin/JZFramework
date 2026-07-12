@@ -2,6 +2,7 @@
 #define JZ_TCP_SERVER_H_
 
 #include <map>
+#include <deque>
 #include "JZNetObject.h"
 #include "JZTcpSocket.h"
 
@@ -17,8 +18,10 @@ public:
     void close();
     bool isListening() const;
 
+    JZTcpSocket* nextPendingConnection();
+
 jz_signals:    
-    JZSignal<JZTcpSocket*> sigAccept;    
+    JZSigVoid sigAccept;    
 
 protected:
     virtual JZNetObject *onAccept(uint64_t conn) override;
@@ -26,6 +29,7 @@ protected:
 
     int m_port;
     uint64_t m_listen;
+    std::deque<JZTcpSocket*> m_pendingConnections;
 };
 
 #endif // ! MG_SERVER_H_

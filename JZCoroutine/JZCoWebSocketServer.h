@@ -18,7 +18,7 @@ public:
     JZCoWebSocket* accept();
 
 protected:
-    void onAccept(JZWebSocket* socket);
+    void onAccept();
     JZCoWebSocket* getPendingSocket();
 
     JZWebSocketServer* m_server;

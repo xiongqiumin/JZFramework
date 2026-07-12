@@ -20,7 +20,7 @@ public:
     JZCoTcpSocket* accept(int timeout = -1);
 
 protected:
-    void onAccept(JZTcpSocket* socket);
+    void onAccept();
 
 protected:
     JZTcpServer *m_server;

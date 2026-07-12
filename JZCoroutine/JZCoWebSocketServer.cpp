@@ -35,8 +35,12 @@ bool JZCoWebSocketServer::isListening() const
 	return m_server->isListening();
 }
 
-void JZCoWebSocketServer::onAccept(JZWebSocket* web_socket)
+void JZCoWebSocketServer::onAccept()
 {
+	JZWebSocket* web_socket = m_server->nextPendingConnection();
+	if (!web_socket)
+		return;
+
 	JZCoWebSocket* co_socket = new JZCoWebSocket(this, web_socket);
 	m_pendingList.push_back(co_socket);
 	m_coCtrl.wakeAll();

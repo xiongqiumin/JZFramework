@@ -58,11 +58,22 @@ JZNetObject* JZWebSocketServer::onAccept(uint64_t conn)
         if (socket_ptr)
         {
             JZWebSocket* socket = (JZWebSocket*)socket_ptr.object();
-            this->sigAccept.emit(socket);
+            m_pendingConnections.push_back(socket);
+            this->sigAccept.emit();
         }
     };
 
     runOnThread(this->thread(), this, notify);
+    return socket;
+}
+
+JZWebSocket* JZWebSocketServer::nextPendingConnection()
+{
+    if (m_pendingConnections.empty())
+        return nullptr;
+
+    JZWebSocket* socket = m_pendingConnections.front();
+    m_pendingConnections.pop_front();
     return socket;
 }
 

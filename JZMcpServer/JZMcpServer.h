@@ -52,7 +52,7 @@ private:
     friend class JZMcpHttpHandler;
 
     // WebSocket 回调
-    void onWsAccept(JZWebSocket* socket);
+    void onWsAccept();
     void onWsMessage(const std::string& text);
 
     JZMcpCore*        m_core;

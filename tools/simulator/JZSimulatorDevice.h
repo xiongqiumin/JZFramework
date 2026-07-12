@@ -28,7 +28,7 @@ public:
     void run(int port = 19123);
 
 private:
-    void onAccept(uint64_t c);
+    void onAccept();
     void onDisconnect(uint64_t c);
     void onPacket(uint64_t c, JZNetPackPtr pack);
     void handlePack(uint64_t c, const JZVariantMap &map);

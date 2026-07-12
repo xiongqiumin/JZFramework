@@ -53,9 +53,9 @@ public:
 		startTime = now;
 	}
 
-	void onServerAccecpt(JZWebSocket* socket)
+	void onServerAccecpt()
 	{
-		server_socket = socket;
+		server_socket = server->nextPendingConnection();
 		connect(&server_socket->sigTextMessageReceived, this, &JZWebSocketTest::onServerRecv);
 	}
 
@@ -201,8 +201,12 @@ public:
     }
 
     // ===================== 服务端接收 & 回传 =====================
-    void onServerAccept(JZWebSocket* socket) 
+    void onServerAccept() 
     {    
+        JZWebSocket* socket = server->nextPendingConnection();
+        if (!socket)
+            return;
+
         connect(&socket->sigConnected, this, &JZWebSocketTestMultiThread::onClientDisConnect);
         connect(&socket->sigTextMessageReceived, this, &JZWebSocketTestMultiThread::onClientRecv);
 

@@ -76,11 +76,22 @@ JZNetObject* JZMqttServer::onAccept(uint64_t conn)
         if (socket_ptr)
         {
             JZMqttClient* socket = (JZMqttClient*)socket_ptr.object();
-            this->sigAccept.emit(socket);
+            m_pendingConnections.push_back(socket);
+            this->sigAccept.emit();
         }
     };
 
     runOnThread(this->thread(), this, notify);
+    return socket;
+}
+
+JZMqttClient* JZMqttServer::nextPendingConnection()
+{
+    if (m_pendingConnections.empty())
+        return nullptr;
+
+    JZMqttClient* socket = m_pendingConnections.front();
+    m_pendingConnections.pop_front();
     return socket;
 }
 

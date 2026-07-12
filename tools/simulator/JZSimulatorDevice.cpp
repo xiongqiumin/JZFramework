@@ -108,9 +108,13 @@ void JZSimulatorDevice::run(int port)
     log("BLE Simulator started, listening on port " + std::to_string(port));
 }
 
-void JZSimulatorDevice::onAccept(uint64_t c)
+void JZSimulatorDevice::onAccept()
 {
-    m_clientConn = c;
+    JZNetClient* client = m_server->nextPendingConnection();
+    if (!client)
+        return;
+
+    m_clientConn = client->m_serverId;
     log("driver connected");
     updateStatus();
 }

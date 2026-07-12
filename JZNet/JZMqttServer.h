@@ -2,6 +2,7 @@
 #define JZ_NET_MQTT_SERVER_H_
 
 #include <map>
+#include <deque>
 #include "JZMqttClient.h"
 #include "JZOptional.h"
 
@@ -15,8 +16,10 @@ public:
     void close();
     bool isListening() const;
 
+    JZMqttClient* nextPendingConnection();
+
 jz_signals: 
-    JZSignal<JZMqttClient*> sigAccept;
+    JZSigVoid sigAccept;
 
 protected:
     friend JZMqttClient;
@@ -41,6 +44,7 @@ protected:
 
     uint64_t m_listen;
     std::map<std::string, std::vector<JZMqttClient *>> m_subcribeMap;
+    std::deque<JZMqttClient*> m_pendingConnections;
 };
 
 #endif  // ! MG_SERVER_H_

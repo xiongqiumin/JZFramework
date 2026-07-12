@@ -15,7 +15,11 @@ int main()
 
     JZTcpServer local_server;
     local_server.listen(7777);
-    connect(&local_server.sigAccept, [](JZTcpSocket *socket) {
+    connect(&local_server.sigAccept, [&local_server] {
+        JZTcpSocket *socket = local_server.nextPendingConnection();
+        if (!socket)
+            return;
+
         connect(&socket->sigReadyRead, [socket] {
                 JZByteArray recv = socket->readAll();
                 string recv_str = str_fromUtf8(recv);

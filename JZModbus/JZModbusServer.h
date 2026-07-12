@@ -30,7 +30,7 @@ public:
 
 protected:
     void onComRead();
-    void onNewConnect(JZTcpSocket* socket);
+    void onNewConnect();
     void onTcpRead();
     void onTcpDisconnected();
 

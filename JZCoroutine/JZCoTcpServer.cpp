@@ -54,8 +54,12 @@ JZCoTcpSocket* JZCoTcpServer::accept(int timeout)
     return nullptr;
 }
 
-void JZCoTcpServer::onAccept(JZTcpSocket* socket)
+void JZCoTcpServer::onAccept()
 {
+    JZTcpSocket* socket = m_server->nextPendingConnection();
+    if (!socket)
+        return;
+
     auto coSock = new JZCoTcpSocket(this);
     coSock->m_socket = socket;
     coSock->m_socket->setParent(this);

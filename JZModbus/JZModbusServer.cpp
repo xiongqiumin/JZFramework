@@ -159,8 +159,12 @@ void JZModbusServer::stop()
     }
 }
 
-void JZModbusServer::onNewConnect(JZTcpSocket* socket)
+void JZModbusServer::onNewConnect()
 {
+    JZTcpSocket* socket = m_tcpServer->nextPendingConnection();
+    if (!socket)
+        return;
+
     connect(&socket->sigReadyRead, this, &JZModbusServer::onTcpRead);
     connect(&socket->sigDisconnect, this, &JZModbusServer::onTcpDisconnected);
 

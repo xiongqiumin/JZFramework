@@ -62,12 +62,12 @@ protected:
         int connectId;
     };
 
-    void onNewAccept(uint64_t c);
+    void onNewAccept();
     void onDisconnect(uint64_t);
     void onRecvPacket(uint64_t c, JZNetPackPtr packet);
 
     //rpc    
-    void onFrpcAccept(JZTcpSocket *c);    
+    void onFrpcAccept();
     void onFrpcRead();    
     void onFrpcClose();
 

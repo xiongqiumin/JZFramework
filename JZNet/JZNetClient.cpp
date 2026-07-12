@@ -236,7 +236,8 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
                 if (c != INVALID_NET_HANDLE)
                 {
                     m_state = ConnectedState;
-                    m_server->sigAccept.emit(c);
+                    m_server->m_pendingConnections.push_back(this);
+                    m_server->sigAccept.emit();
                 }
                 else
                 {

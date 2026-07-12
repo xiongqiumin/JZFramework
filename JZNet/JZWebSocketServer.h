@@ -5,6 +5,7 @@
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
 #include "JZWebSocket.h"
+#include <deque>
 
 class JZWebSocketServer : public JZNetObject
 {
@@ -18,14 +19,17 @@ public:
     void close();
     bool isListening() const;
 
+    JZWebSocket* nextPendingConnection();
+
 jz_signals:
-    JZSignal<JZWebSocket*> sigAccept;
+    JZSigVoid sigAccept;
 
 protected:    
     virtual JZNetObject* onAccept(uint64_t conn); 
     virtual void onNetEvent(JZNetResEvent*event) override;
 
     uint64_t m_listen;
+    std::deque<JZWebSocket*> m_pendingConnections;
 };
 
 #endif // !JZ_WEB_SOCKET_H_

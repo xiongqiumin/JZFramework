@@ -8,7 +8,7 @@ using namespace std;
 
 JZTcpServer::JZTcpServer(JZObject *parent)
     :JZNetObject(parent), sigAccept(this)
-{   
+{
     m_port = 0;
     m_listen = INVALID_NET_HANDLE;        
 }
@@ -68,11 +68,22 @@ JZNetObject* JZTcpServer::onAccept(uint64_t conn)
         if (socket_ptr)
         {
             JZTcpSocket* socket = (JZTcpSocket*)socket_ptr.object();
-            this->sigAccept.emit(socket);
+            m_pendingConnections.push_back(socket);
+            this->sigAccept.emit();
         }
     };
 
     runOnThread(this->thread(), this, notify);
+    return socket;
+}
+
+JZTcpSocket* JZTcpServer::nextPendingConnection()
+{
+    if (m_pendingConnections.empty())
+        return nullptr;
+
+    JZTcpSocket* socket = m_pendingConnections.front();
+    m_pendingConnections.pop_front();
     return socket;
 }
 

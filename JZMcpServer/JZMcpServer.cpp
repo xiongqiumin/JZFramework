@@ -129,8 +129,12 @@ bool JZMcpServer::listenWebSocket(int port)
     return true;
 }
 
-void JZMcpServer::onWsAccept(JZWebSocket* socket)
+void JZMcpServer::onWsAccept()
 {
+    JZWebSocket* socket = m_ws->nextPendingConnection();
+    if (!socket)
+        return;
+
     connect(&socket->sigTextMessageReceived, this, &JZMcpServer::onWsMessage);
     connect(&socket->sigDisconnected, this, [socket]() { socket->deleteLater(); });
 }

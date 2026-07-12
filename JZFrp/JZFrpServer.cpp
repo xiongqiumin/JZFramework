@@ -153,8 +153,13 @@ void JZFrpServer::closeRemoteClients()
     m_remoteInfo.clear();
 }
 
-void JZFrpServer::onNewAccept(uint64_t c)
+void JZFrpServer::onNewAccept()
 {    
+    JZNetClient* client = m_server->nextPendingConnection();
+    if (!client)
+        return;
+
+    uint64_t c = client->m_serverId;
     auto frp = std::make_shared<FrpConnection>();
     frp->frpc = c;
     m_frpClient[c] = frp;    
@@ -269,10 +274,13 @@ void JZFrpServer::onRecvPacket(uint64_t c, JZNetPackPtr packet)
     }
 }
 
-void JZFrpServer::onFrpcAccept(JZTcpSocket *c)
+void JZFrpServer::onFrpcAccept()
 {        
     JZTcpServer *server = (JZTcpServer *)sender();
     int port = server->port();
+    JZTcpSocket *c = server->nextPendingConnection();
+    if (!c)
+        return;
     
     FrpConnection *frp = getFrpClientByPort(port);
     JZ_ASSERT(frp);

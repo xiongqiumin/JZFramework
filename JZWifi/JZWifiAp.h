@@ -18,6 +18,13 @@ class JZWifiAp : public JZObject
     friend class JZWifiDriver;
 
 public:
+    enum State{
+        None,
+        Starting,
+        Started,    
+        Stoping,    
+    };
+
     JZWifiAp(JZObject *parent = nullptr);
     ~JZWifiAp() override;
 
@@ -35,16 +42,16 @@ jz_signals:
     JZSignal<const std::string&, const std::string&> sigStationDisconnected; // mac, ip
 
 protected:
-    static void onStarted(JZWifiAp *self, const char *ip);
-    static void onStopped(JZWifiAp *self);
-    static void onStationConnected(JZWifiAp *self, const char *mac, const char *ip);
-    static void onStationDisconnected(JZWifiAp *self, const char *mac, const char *ip);
+    static void onStarted(JZObjectPointer self);
+    static void onStopped(JZObjectPointer self);
+    static void onStationConnected(JZObjectPointer self, const char *mac, const char *ip);
+    static void onStationDisconnected(JZObjectPointer self, const char *mac, const char *ip);
 
     JZWifiDriver *getDriver();
 
-    bool m_running = false;
+    State m_state = None;
     int m_stationCount = 0;
-    std::string m_ip;
+    JZWifiApConfig m_config;
 };
 
 #endif // !JZ_WIFI_AP_H_

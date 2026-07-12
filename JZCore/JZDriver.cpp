@@ -1,3 +1,4 @@
+#include "JZPlatform.h"
 #include "JZDriver.h"
 
 // === 头文件 ===
@@ -38,24 +39,6 @@ void JZDriver::init()
 #endif
 }
 
-// ==================== deinit ====================
-
-void JZDriver::deinit()
-{
-#ifdef HAS_JZBle
-    JZBleDriver::setInstance(nullptr);
-#endif
-
-#ifdef HAS_JZWifi
-    JZWifiDriver::setInstance(nullptr);
-#endif
-
-#ifdef HAS_JZGpio
-    JZGpioDriver::clearInstances();
-#endif
-
-    JZPlatform::setInstance(nullptr);
-}
 
 #else
 
@@ -74,19 +57,37 @@ void JZDriver::init()
 {
 #ifdef HAS_JZLvgl
 #ifdef _WIN32
-    lvgl_init();
+    lv_init();    
+    
+    int w = 800, h = 600;
+    auto display = lv_windows_create_display(L"", w, h, 100, false, false);
+    lv_windows_acquire_pointer_indev(display);
+    lv_windows_acquire_keypad_indev(display);
+    lv_windows_acquire_encoder_indev(display);
+
+    // 让 lv_windows_display_timer_callback 尽早执行，初始化 draw buffer
+    lv_timer_handler();
 #endif
 #endif
 }
 
+#endif
+
+// ==================== deinit ====================
 
 void JZDriver::deinit()
 {
-#ifdef HAS_JZLvgl
-#ifdef _WIN32
-    lvgl_deinit();
+#ifdef HAS_JZBle
+    JZBleDriver::setInstance(nullptr);
 #endif
-#endif
-}
 
+#ifdef HAS_JZWifi
+    JZWifiDriver::setInstance(nullptr);
 #endif
+
+#ifdef HAS_JZGpio
+    JZGpioDriver::clearInstances();
+#endif
+
+    JZPlatform::setInstance(nullptr);
+}

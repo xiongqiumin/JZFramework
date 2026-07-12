@@ -141,10 +141,11 @@ protected:
 };
 
 // 在thread所在线程执行
-void runOnThread(JZThread *thread, std::function<void()> func);
+void runOnThread(JZThread *thread, const std::function<void()> &func);
 // 在thread所在线程执行, recv 删除后不会执行
-void runOnThread(JZThread *thread, JZObject *recv, std::function<void()> func);
+void runOnThread(JZThread *thread, JZObject *recv, const std::function<void()> &func);
 // 在recv所在线程执行, recv 删除后不会执行
-void runOnObject(JZObject *recv, std::function<void()> func);
+void runOnObject(JZObject *recv, const std::function<void()> &func);
+void runOnObject(JZObjectPointer recv, const std::function<void()> &func);
 
 #endif // !JZ_THREAD_H_

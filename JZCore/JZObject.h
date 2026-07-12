@@ -108,6 +108,7 @@ protected:
     void addChild(JZObject *child);
     void removeChild(JZObject *child);
     bool hasChild(JZObject* child) const;
+    void clearGuardPointer();
 
     JZObject *sender();
 
@@ -127,7 +128,7 @@ template<class T>
 T jzobject_cast(JZObject* obj)
 {
     using RawType = std::remove_pointer_t<T>;
-    if (obj->meta()->isChildOf(RawType::metaObject())) {
+    if (obj && obj->meta()->isChildOf(RawType::metaObject())) {
         return static_cast<T>(obj);
     }
     else {

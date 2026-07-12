@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstring>
 
+JZPlatformWrapperEsp32::~JZPlatformWrapperEsp32()
+{
+}
 // ==================== 时间 ====================
 
 int64_t JZPlatformWrapperEsp32::getTickCountNs()

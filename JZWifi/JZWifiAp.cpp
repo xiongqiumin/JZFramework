@@ -6,42 +6,61 @@
 // ==================== 事件转发 ====================
 // JZWifiAp 是 JZWifiDriver 的 friend, 受保护的静态分发方法统一在对象所在线程
 // 上执行, 保证信号直连、状态一致 (参考 JZBLEPeripheral)。
-void JZWifiAp::onStarted(JZWifiAp *self, const char *ip)
+void JZWifiAp::onStarted(JZObjectPointer self)
 {
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiAp *)guard.object();
+    if (!obj)
+        return;
+
     std::string a(ip ? ip : "");
-    runOnObject(self, [self, a]() {
-        self->m_running = true;
-        self->m_ip = a;
-        self->sigStarted.emit();
+    runOnObject(obj, [obj]() {
+        obj->m_state = Starting;        
+        obj->sigStarted.emit();
     });
 }
 
-void JZWifiAp::onStopped(JZWifiAp *self)
+void JZWifiAp::onStopped(JZObjectPointer self)
 {
-    runOnObject(self, [self]() {
-        self->m_running = false;
-        self->m_ip.clear();
-        self->m_stationCount = 0;
-        self->sigStopped.emit();
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiAp *)guard.object();
+    if (!obj)
+        return;
+
+    runOnObject(obj, [obj]() {
+        obj->m_state = None;
+        obj->m_ip.clear();
+        obj->m_stationCount = 0;
+        obj->sigStopped.emit();
     });
 }
 
-void JZWifiAp::onStationConnected(JZWifiAp *self, const char *mac, const char *ip)
+void JZWifiAp::onStationConnected(JZObjectPointer self, const char *mac, const char *ip)
 {
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiAp *)guard.object();
+    if (!obj)
+        return;
+
     std::string m(mac ? mac : ""), i(ip ? ip : "");
-    runOnObject(self, [self, m, i]() {
-        self->m_stationCount++;
-        self->sigStationConnected.emit(m, i);
+    runOnObject(obj, [obj, m, i]() {
+        obj->m_stationCount++;
+        obj->sigStationConnected.emit(m, i);
     });
 }
 
-void JZWifiAp::onStationDisconnected(JZWifiAp *self, const char *mac, const char *ip)
+void JZWifiAp::onStationDisconnected(JZObjectPointer self, const char *mac, const char *ip)
 {
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiAp *)guard.object();
+    if (!obj)
+        return;
+
     std::string m(mac ? mac : ""), i(ip ? ip : "");
-    runOnObject(self, [self, m, i]() {
-        if (self->m_stationCount > 0)
-            self->m_stationCount--;
-        self->sigStationDisconnected.emit(m, i);
+    runOnObject(obj, [obj, m, i]() {
+        if (obj->m_stationCount > 0)
+            obj->m_stationCount--;
+        obj->sigStationDisconnected.emit(m, i);
     });
 }
 
@@ -52,14 +71,16 @@ JZWifiAp::JZWifiAp(JZObject *parent)
     : JZObject(parent),
       sigStarted(this), sigStopped(this),
       sigStationConnected(this), sigStationDisconnected(this)
-{
+{    
 }
 
 JZWifiAp::~JZWifiAp()
 {
-    if (auto *drv = getDriver()) {
-        if (m_running)
-            drv->apStop(this);
+    auto *drv = getDriver();
+    drv->apStop(this);    
+    if (m_state == Started)
+    {        
+        sigStopped.emit();
     }
 }
 
@@ -68,15 +89,19 @@ JZWifiDriver *JZWifiAp::getDriver() { return JZWifiDriver::instance(); }
 // ==================== Access Point (做服务) ====================
 void JZWifiAp::start(const JZWifiApConfig &config)
 {
-    auto *drv = getDriver();
-    if (!drv) { jzWarning() << "JZWifiAp: 未设置 WiFi 驱动实例"; return; }
+    m_state = Starting;
+    m_config = config;
+    
+    auto *drv = getDriver();    
     drv->apStart(this, config);
 }
 
 void JZWifiAp::stop()
 {
-    if (auto *drv = getDriver())
-        drv->apStop(this);
+    m_state = Stoping;
+
+    auto *drv = getDriver();
+    drv->apStop(this);
 }
 
 bool JZWifiAp::isRunning() const { return m_running; }

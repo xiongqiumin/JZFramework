@@ -155,8 +155,7 @@ static int onGattcRWEvent(uint16_t conn_handle, uint16_t attr_handle, struct ble
 
 // ==================== 构造/析构 ====================
 JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), m_disconnectCtrl(nullptr)
-{
-    nvs_flash_init();
+{    
     esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     esp_bt_controller_config_t c = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     esp_bt_controller_init(&c); esp_bt_controller_enable(ESP_BT_MODE_BLE);

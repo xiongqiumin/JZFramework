@@ -6,30 +6,45 @@
 // ==================== 事件转发 ====================
 // JZWifiStation 是 JZWifiDriver 的 friend, 受保护的静态分发方法统一在对象所在线程
 // 上执行, 保证信号直连、状态一致 (参考 JZBLECentral)。
-void JZWifiStation::onConnected(JZWifiStation *self, const char *ip)
+void JZWifiStation::onConnected(JZObjectPointer self, const char *ip)
 {
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiStation *)guard.object();
+    if (!obj)
+        return;
+
     std::string a(ip ? ip : "");
-    runOnObject(self, [self, a]() {
-        self->m_connected = true;
-        self->m_ip = a;
-        self->sigConnected.emit();
+    runOnObject(obj, [obj, a]() {
+        obj->m_connected = true;
+        obj->m_ip = a;
+        obj->sigConnected.emit();
     });
 }
 
-void JZWifiStation::onDisconnected(JZWifiStation *self)
+void JZWifiStation::onDisconnected(JZObjectPointer self)
 {
-    runOnObject(self, [self]() {
-        self->m_connected = false;
-        self->m_ip.clear();
-        self->sigDisconnected.emit();
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiStation *)guard.object();
+    if (!obj)
+        return;
+
+    runOnObject(obj, [obj]() {
+        obj->m_connected = false;
+        obj->m_ip.clear();
+        obj->sigDisconnected.emit();
     });
 }
 
-void JZWifiStation::onError(JZWifiStation *self, int code, const char *msg)
+void JZWifiStation::onError(JZObjectPointer self, int code, const char *msg)
 {
+    JZObjectPointerGuard guard(&self);
+    auto *obj = (JZWifiStation *)guard.object();
+    if (!obj)
+        return;
+
     std::string m(msg ? msg : "");
-    runOnObject(self, [self, code, m]() {
-        self->sigError.emit(code, m);
+    runOnObject(obj, [obj, code, m]() {
+        obj->sigError.emit(code, m);
     });
 }
 
@@ -44,27 +59,46 @@ JZWifiStation::JZWifiStation(JZObject *parent)
 
 JZWifiStation::~JZWifiStation()
 {
-    if (auto *drv = getDriver()) {
-        if (m_connected)
+    if (auto *drv = getDriver()) 
+    {
+        if (m_state == Connected)
+        {
             drv->stationDisconnect(this);
+            sigDisconnected.emit();
+        }
     }
 }
 
 JZWifiDriver *JZWifiStation::getDriver() { return JZWifiDriver::instance(); }
 
 // ==================== Station (连接) ====================
-void JZWifiStation::connect(const JZWifiConfig &config)
+void JZWifiStation::connectToAp(const JZWifiConfig &config)
 {
-    auto *drv = getDriver();
-    if (!drv) { jzWarning() << "JZWifiStation: 未设置 WiFi 驱动实例"; return; }
+    if(m_state != None)
+    {
+        jzWarning() << "JZWifiStation state is" << m_state << ", can't connect";
+        return; 
+    }    
+    
+    auto *drv = getDriver();    
+    m_state = Connecting;
     drv->stationConnect(this, config);
 }
 
-void JZWifiStation::disconnect()
+void JZWifiStation::disconnectFromAp()
 {
-    if (auto *drv = getDriver())
-        drv->stationDisconnect(this);
+    if(m_state == None || m_state == Disconnecting)
+        return;
+
+    auto *drv = getDriver();
+    drv->stationDisconnect(this);
 }
 
-bool JZWifiStation::isConnected() const { return m_connected; }
-std::string JZWifiStation::ipAddress() const { return m_ip; }
+bool JZWifiStation::isConnected() const 
+{ 
+    return m_state == Connected; 
+}
+
+std::string JZWifiStation::ipAddress() const { 
+    return m_ip; 
+}

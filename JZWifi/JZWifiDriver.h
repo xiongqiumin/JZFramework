@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "JZStd.h"
+#include "JZObjectPointer.h"
 
 class JZWifiStation;
 class JZWifiAp;
@@ -36,11 +37,16 @@ struct JZWifiApConfig
 // WiFi 扫描结果: 一个可被发现的 AP
 struct JZWifiScanResult
 {
-    std::string ssid;          // 网络名
-    int rssi = 0;              // 信号强度(dBm), 负值, 绝对值越小信号越强
-    std::string bssid;         // AP MAC 地址
-    int channel = 0;           // 主信道
-    int authMode = 0;          // 加密方式 (平台相关, 如 ESP-IDF 的 WIFI_AUTH_*)
+    struct ApInfo
+    {
+        std::string ssid;          // 网络名
+        int rssi = 0;              // 信号强度(dBm), 负值, 绝对值越小信号越强
+        std::string bssid;         // AP MAC 地址
+        int channel = 0;           // 主信道
+        int authMode = 0;          // 加密方式 (平台相关, 如 ESP-IDF 的 WIFI_AUTH_*)
+    };
+
+    std::vector<ApInfo> apList;    
 };
 
 // WiFi 驱动抽象基类 (单例)。
@@ -77,16 +83,15 @@ public:
     virtual bool isScanning(JZWifiScanner *s) = 0;
 
     // === 事件转发中转 (JZWifiStation / JZWifiAp / JZWifiScanner 的 friend) ===
-    static void onStationConnected(JZWifiStation *self, const char *ip);
-    static void onStationDisconnected(JZWifiStation *self);
-    static void onStationError(JZWifiStation *self, int code, const char *msg);
-    static void onApStarted(JZWifiAp *self, const char *ip);
-    static void onApStopped(JZWifiAp *self);
-    static void onApStationConnected(JZWifiAp *self, const char *mac, const char *ip);
-    static void onApStationDisconnected(JZWifiAp *self, const char *mac, const char *ip);
-    static void onScanResult(JZWifiScanner *self, const JZWifiScanResult &r);
-    static void onScanFinished(JZWifiScanner *self);
-    static void onScanError(JZWifiScanner *self, int code, const char *msg);
+    static void onStationConnected(JZObjectPointer self, const char *ip);
+    static void onStationDisconnected(JZObjectPointer self);
+    static void onStationError(JZObjectPointer self, int code, const char *msg);
+    static void onApStarted(JZObjectPointer self);
+    static void onApStopped(JZObjectPointer self);
+    static void onApStationConnected(JZObjectPointer self, const char *mac, const char *ip);
+    static void onApStationDisconnected(JZObjectPointer self, const char *mac, const char *ip);    
+    static void onScanFinished(JZObjectPointer self, const JZWifiScanResult &r);
+    static void onScanError(JZObjectPointer self, int code, const char *msg);
 
 protected:
     JZ_DISABLE_COPY(JZWifiDriver)

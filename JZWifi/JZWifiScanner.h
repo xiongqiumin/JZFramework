@@ -28,15 +28,13 @@ public:
     // 最近一次扫描发现的 AP 列表 (按信号强度降序)
     std::vector<JZWifiScanResult> results() const;
 
-jz_signals:
-    JZSignal<const JZWifiScanResult&> sigResult;   // 每发现一个 AP
-    JZSignal<> sigFinished;                         // 扫描完成
+jz_signals:    
+    JZSignal<const JZWifiScanResult&> sigFinished; //扫描完成
     JZSignal<int, const std::string&> sigError;
 
-protected:
-    static void onResult(JZWifiScanner *self, const JZWifiScanResult &r);
-    static void onFinished(JZWifiScanner *self);
-    static void onError(JZWifiScanner *self, int code, const char *msg);
+protected:    
+    static void onFinished(JZObjectPointer self, const JZWifiScanResult &r);
+    static void onError(JZObjectPointer self, int code, const char *msg);
 
     JZWifiDriver *getDriver();
 

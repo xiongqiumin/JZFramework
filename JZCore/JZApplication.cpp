@@ -141,8 +141,8 @@ void JZApplication::processEvents()
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
 #ifdef HAS_JZLvgl
-    if (event->id() == m_lvglTimer)
-        lv_timer_handler();
+    //if (event->id() == m_lvglTimer)
+    //    lv_timer_handler();
 #endif
 }
 

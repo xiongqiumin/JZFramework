@@ -1,6 +1,8 @@
 #ifndef JZ_DRIVER_H_
 #define JZ_DRIVER_H_
 
+#include "JZGlobal.h"
+
 class JZDriver
 {
 public:

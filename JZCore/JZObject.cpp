@@ -75,17 +75,7 @@ JZObject::JZObject(MainThreadInit)
 
 JZObject::~JZObject()
 {
-    if(jzApp)
-    {
-        jzApp->globalLock();
-        m_data->object = nullptr;
-        jzApp->globalUnlock();
-
-        if (m_thread)
-        {
-            JZ_ASSERT(m_thread == jzApp->currentThread());
-        }
-    }
+    clearGuardPointer();    
 
     if(m_parent)
         m_parent->removeChild(this);
@@ -111,6 +101,23 @@ JZObject::~JZObject()
     }
 
     sigDestroyed.emitDestory();
+}
+
+void JZObject::clearGuardPointer()
+{
+    if (m_thread){
+        JZ_ASSERT(m_thread->id() == JZThread::currentThreadId());
+    }
+
+    if(!m_data->object)
+        return;
+
+    if(jzApp)
+    {
+        jzApp->globalLock();
+        m_data->object = nullptr;
+        jzApp->globalUnlock();        
+    }
 }
 
 JZObjectPointer JZObject::guardPointer()

@@ -5,6 +5,9 @@
 //JZObjectPointer
 JZObjectPointer::operator bool() const
 {
+    if(!data)
+        return false;
+
     return data->object != nullptr;
 }
 

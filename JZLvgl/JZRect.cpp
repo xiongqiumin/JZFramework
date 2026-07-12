@@ -1,4 +1,5 @@
 #include "JZRect.h"
+#include "JZDebug.h"
 
 JZRect::JZRect()
     : m_x(0), m_y(0), m_w(0), m_h(0)
@@ -68,4 +69,11 @@ bool JZRect::contains(const JZPoint& p) const
 bool JZRect::isEmpty() const
 {
     return m_w <= 0 || m_h <= 0;
+}
+
+
+JZDebug operator<<(JZDebug d, const JZRect &rc)
+{
+    d.append(str_asprintf("{%d,%d,%d,%d}",rc.x(),rc.y(),rc.width(),rc.height()).c_str());
+    return d;
 }

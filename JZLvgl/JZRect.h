@@ -4,6 +4,7 @@
 #include "JZPoint.h"
 #include "JZSize.h"
 
+class JZDebug;
 class JZRect
 {
 public:
@@ -49,5 +50,6 @@ private:
     int m_w = 0;
     int m_h = 0;
 };
+JZDebug operator<<(JZDebug d, const JZRect &rc);
 
 #endif // JZ_RECT_H_

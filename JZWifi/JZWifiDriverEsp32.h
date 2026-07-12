@@ -2,6 +2,7 @@
 #define JZ_WIFI_DRIVER_ESP32_H_
 
 #include "JZWifiDriver.h"
+#include "JZObjectPointer.h"
 #include <string>
 
 // ESP32 (ESP-IDF) 平台下的 WiFi 驱动实现。
@@ -32,25 +33,22 @@ public:
     void scanStop(JZWifiScanner *s) override;
     bool isScanning(JZWifiScanner *s) override;
 
+    // 事件回调入口 (由自由函数 wifi_event_handler 调用)
+    void handleEvent(const char *event_base, int32_t event_id, void *event_data);
+
 private:
     void ensureInit();
     void ensureStarted();
     void updateMode();
-    void handleEvent(const char *event_base, int32_t event_id, void *event_data);
 
-    JZWifiStation *m_staWifi = nullptr;
-    JZWifiAp *m_apWifi = nullptr;
-    JZWifiScanner *m_scanTarget = nullptr;
-    JZWifiConfig m_staCfg;
-    JZWifiApConfig m_apCfg;
-
-    bool m_staWanted = false;   // 用户请求连接
-    bool m_apWanted = false;    // 用户请求开启 AP
+    JZObjectPointer m_scanTarget;       
+    JZObjectPointer m_staWifi;
+    JZObjectPointer m_apWifi;         
+        
     bool m_staUp = false;       // 已连上并获取到 IP
     bool m_apUp = false;
     bool m_inited = false;
-    bool m_started = false;
-    bool m_scanning = false;
+    bool m_started = false;    
     std::string m_staIp;
     std::string m_apIp;
 };

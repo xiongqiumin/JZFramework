@@ -10,6 +10,8 @@ JZWifiAutoConnectService::JZWifiAutoConnectService(JZObject *parent)
       m_station(new JZWifiStation(this))
 {
     connect(&m_scanner->sigFinished, this, &JZWifiAutoConnectService::onScanFinished);
+    connect(&m_scanner->sigError, this, &JZWifiAutoConnectService::onScanError);
+
     connect(&m_station->sigConnected, this, &JZWifiAutoConnectService::onStationConnected);
     connect(&m_station->sigDisconnected, this, &JZWifiAutoConnectService::onStationDisconnected);
     connect(&m_station->sigError, this, &JZWifiAutoConnectService::onStationError);
@@ -69,12 +71,26 @@ void JZWifiAutoConnectService::start()
 
 void JZWifiAutoConnectService::stop()
 {
-    if (!m_active) return;
+    if (!m_active) 
+        return;
+
     m_active = false;
-    if (m_timerId != INVAILD_TIMER_ID) { killTimer(m_timerId); m_timerId = INVAILD_TIMER_ID; }
+    if (m_timerId != INVAILD_TIMER_ID) 
+    { 
+        killTimer(m_timerId); 
+        m_timerId = INVAILD_TIMER_ID; 
+    }
+
     m_scanner->stop();
     m_effectiveInterval = m_intervalMs;
     m_failBlacklist.clear();
+
+    
+}
+
+void JZWifiAutoConnectService::disconnectFromAp()
+{
+    m_station->disconnectFromAp();
 }
 
 bool JZWifiAutoConnectService::isActive() const { return m_active; }
@@ -98,7 +114,9 @@ void JZWifiAutoConnectService::onScanFinished()
     evaluateAndConnect();
 
     // 退避策略: 每次扫描若仍未连上, 间隔翻倍(上限 m_maxBackoffMs); 一旦连上即复位为基础间隔
-    if (m_connecting) return;                              // 正在连接, 维持当前间隔
+    if (m_connecting) 
+        return;                              // 正在连接, 维持当前间隔
+
     if (!m_connectedSsid.empty()) {
         m_effectiveInterval = m_intervalMs;
     } else {
@@ -106,6 +124,11 @@ void JZWifiAutoConnectService::onScanFinished()
         m_effectiveInterval = (next > m_maxBackoffMs) ? m_maxBackoffMs : next;
     }
     armTimer();
+}
+
+void JZWifiAutoConnectService::onScanError(int code, const std::string &msg)
+{
+    jzDebug() << "scan error code" << code << ", message" << msg;
 }
 
 void JZWifiAutoConnectService::onStationConnected()
@@ -165,15 +188,20 @@ void JZWifiAutoConnectService::evaluateAndConnect()
             if (r.rssi > bestRssi) { bestRssi = r.rssi; best = &c; }
         }
     }
-    if (!best) return;                                   // 当前无可见候选
+    if (!best) 
+        return;                                   // 当前无可见候选
 
-    if (m_connectedSsid == best->ssid) return;           // 已是最强目标
+    if (m_connectedSsid == best->ssid) 
+        return;           // 已是最强目标
 
     // 已连接其它候选时, 仅当新目标明显更强才切换 (避免抖动)
     if (!m_connectedSsid.empty() && bestRssi <= m_connectedRssi + m_switchHysteresis)
         return;
 
-    if (m_connecting) return;
+    if (m_connecting) 
+        return;
+
+    m_station->disconnectFromAp();
 
     m_connecting = true;
     m_pendingSsid = best->ssid;
@@ -183,5 +211,5 @@ void JZWifiAutoConnectService::evaluateAndConnect()
     JZWifiConfig cfg;
     cfg.ssid = best->ssid;
     cfg.password = best->password;
-    m_station->connect(cfg);
+    m_station->connectToAp(cfg);
 }

@@ -12,6 +12,12 @@
 #endif
 
 static JZPlatformWrapper *g_inst = nullptr;
+JZPlatformWrapper::~JZPlatformWrapper()
+{
+
+}
+
+//JZPlatform
 void JZPlatform::setInstance(JZPlatformWrapper *inst)
 {
     if (g_inst && g_inst != inst)

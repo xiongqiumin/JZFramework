@@ -558,7 +558,7 @@ void JZTaskThread::run()
     m_task();
 }
 
-void runOnThread(JZThread* thread, std::function<void()> func)
+void runOnThread(JZThread* thread, const std::function<void()> &func)
 {
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
 
@@ -568,7 +568,7 @@ void runOnThread(JZThread* thread, std::function<void()> func)
     jzApp->postEvent(thread, event);
 }
 
-void runOnThread(JZThread* thread, JZObject* recv, std::function<void()> func)
+void runOnThread(JZThread* thread, JZObject* recv, const std::function<void()> &func)
 {
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
     event->hasRecv = true;
@@ -580,7 +580,7 @@ void runOnThread(JZThread* thread, JZObject* recv, std::function<void()> func)
     jzApp->postEvent(thread, event);
 }
 
-void runOnObject(JZObject* recv, std::function<void()> func)
+void runOnObject(JZObject* recv, const std::function<void()> &func)
 {
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
     event->hasRecv = true;
@@ -590,4 +590,14 @@ void runOnObject(JZObject* recv, std::function<void()> func)
     callback->lambdaFunc = func;
     event->callback = callback;
     jzApp->postEvent(recv->thread(), event);
+}
+
+void runOnObject(JZObjectPointer recv, const std::function<void()> &func)
+{
+    JZObjectPointerGuard guard(&recv);
+    auto obj = guard.object();
+    if(!obj)
+        return;
+
+    runOnObject(obj, func);
 }

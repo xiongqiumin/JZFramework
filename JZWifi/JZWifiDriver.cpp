@@ -26,32 +26,32 @@ void JZWifiDriver::setInstance(JZWifiDriver *inst)
 // ==================== 事件转发中转 ====================
 // JZWifiDriver 是各管理类的 friend, 这里把受保护的静态分发方法封装为公开的
 // 转发入口, 具体驱动只调用本层, 不直接碰 friend 关系。
-void JZWifiDriver::onStationConnected(JZWifiStation *self, const char *ip)
+void JZWifiDriver::onStationConnected(JZObjectPointer self, const char *ip)
 { JZWifiStation::onConnected(self, ip); }
 
-void JZWifiDriver::onStationDisconnected(JZWifiStation *self)
+void JZWifiDriver::onStationDisconnected(JZObjectPointer self)
 { JZWifiStation::onDisconnected(self); }
 
-void JZWifiDriver::onStationError(JZWifiStation *self, int code, const char *msg)
+void JZWifiDriver::onStationError(JZObjectPointer self, int code, const char *msg)
 { JZWifiStation::onError(self, code, msg); }
 
-void JZWifiDriver::onApStarted(JZWifiAp *self, const char *ip)
-{ JZWifiAp::onStarted(self, ip); }
+void JZWifiDriver::onApStarted(JZObjectPointer self)
+{ JZWifiAp::onStarted(self); }
 
-void JZWifiDriver::onApStopped(JZWifiAp *self)
+void JZWifiDriver::onApStopped(JZObjectPointer self)
 { JZWifiAp::onStopped(self); }
 
-void JZWifiDriver::onApStationConnected(JZWifiAp *self, const char *mac, const char *ip)
+void JZWifiDriver::onApStationConnected(JZObjectPointer self, const char *mac, const char *ip)
 { JZWifiAp::onStationConnected(self, mac, ip); }
 
-void JZWifiDriver::onApStationDisconnected(JZWifiAp *self, const char *mac, const char *ip)
+void JZWifiDriver::onApStationDisconnected(JZObjectPointer self, const char *mac, const char *ip)
 { JZWifiAp::onStationDisconnected(self, mac, ip); }
 
-void JZWifiDriver::onScanResult(JZWifiScanner *self, const JZWifiScanResult &r)
+void JZWifiDriver::onScanResult(JZObjectPointer self, const JZWifiScanResult &r)
 { JZWifiScanner::onResult(self, r); }
 
-void JZWifiDriver::onScanFinished(JZWifiScanner *self)
+void JZWifiDriver::onScanFinished(JZObjectPointer self)
 { JZWifiScanner::onFinished(self); }
 
-void JZWifiDriver::onScanError(JZWifiScanner *self, int code, const char *msg)
+void JZWifiDriver::onScanError(JZObjectPointer self, int code, const char *msg)
 { JZWifiScanner::onError(self, code, msg); }

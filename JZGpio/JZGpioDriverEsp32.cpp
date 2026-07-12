@@ -4,8 +4,9 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
-#include "driver/dac.h"
-#include "soc/gpio_caps.h"
+#if SOC_DAC_SUPPORTED
+#include "driver/dac_oneshot.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -88,6 +89,13 @@ JZGpioDriverEsp32::~JZGpioDriverEsp32()
         {
             if (it->second.pwmRunning && it->second.ledcChannel >= 0)
                 freeLedcChannel(it->second.ledcChannel);
+#if SOC_DAC_SUPPORTED
+            if (it->second.dacHandle)
+            {
+                dac_oneshot_del_channel((dac_oneshot_handle_t)it->second.dacHandle);
+                it->second.dacHandle = nullptr;
+            }
+#endif
             if (it->second.isrAdded)
                 gpio_isr_handler_remove((gpio_num_t)p);
         }
@@ -224,6 +232,13 @@ void JZGpioDriverEsp32::close(JZGpio *gpio)
     st.waveRunning = false;            // 波形任务会在下一轮检测到并停止输出
     if (st.pwmRunning && st.ledcChannel >= 0)
         freeLedcChannel(st.ledcChannel);
+#if SOC_DAC_SUPPORTED
+    if (st.dacHandle)
+    {
+        dac_oneshot_del_channel((dac_oneshot_handle_t)st.dacHandle);
+        st.dacHandle = nullptr;
+    }
+#endif
     if (st.isrAdded)
         gpio_isr_handler_remove((gpio_num_t)pin);
 
@@ -405,13 +420,18 @@ void JZGpioDriverEsp32::waveTask(void *arg)
 
             int value = st.waveOffset + (int)(s * st.waveAmp + 0.5);
 
-            if (st.useDac && st.gpio)
+            if (st.useDac && st.gpio
+#if SOC_DAC_SUPPORTED
+                && st.dacHandle
+#endif
+                )
             {
                 int v = value;
                 if (v < 0) v = 0;
                 if (v > 255) v = 255;
-                dac_channel_t ch = (st.gpio->pin() == 25) ? DAC_CHANNEL_1 : DAC_CHANNEL_2;
-                dac_output_voltage(ch, (uint8_t)v);
+#if SOC_DAC_SUPPORTED
+                dac_oneshot_output_voltage((dac_oneshot_handle_t)st.dacHandle, (uint8_t)v);
+#endif
             }
             else if (st.pwmRunning && st.ledcChannel >= 0)
             {
@@ -446,8 +466,19 @@ bool JZGpioDriverEsp32::startWaveform(JZGpio *gpio, JZGpio::Waveform type, int f
 
     if (st.useDac)
     {
-        dac_channel_t ch = (gpio->pin() == 25) ? DAC_CHANNEL_1 : DAC_CHANNEL_2;
-        dac_output_enable(ch);
+#if SOC_DAC_SUPPORTED
+        // 如果已有旧句柄则先释放
+        if (st.dacHandle)
+        {
+            dac_oneshot_del_channel((dac_oneshot_handle_t)st.dacHandle);
+            st.dacHandle = nullptr;
+        }
+        dac_oneshot_config_t dacCfg = {};
+        dacCfg.chan_id = (gpio->pin() == 25) ? DAC_CHAN_0 : DAC_CHAN_1;
+        dac_oneshot_handle_t dacH = nullptr;
+        if (dac_oneshot_new_channel(&dacCfg, &dacH) == ESP_OK)
+            st.dacHandle = dacH;
+#endif
     }
     else if (!st.pwmRunning)
     {
@@ -486,10 +517,16 @@ void JZGpioDriverEsp32::stopWaveform(JZGpio *gpio)
     if (m_waveMutex)
         xSemaphoreGive((SemaphoreHandle_t)m_waveMutex);
 
-    if (st.useDac)
+    if (st.useDac
+#if SOC_DAC_SUPPORTED
+        && st.dacHandle
+#endif
+        )
     {
-        dac_channel_t ch = (gpio->pin() == 25) ? DAC_CHANNEL_1 : DAC_CHANNEL_2;
-        dac_output_disable(ch);
+#if SOC_DAC_SUPPORTED
+        dac_oneshot_del_channel((dac_oneshot_handle_t)st.dacHandle);
+        st.dacHandle = nullptr;
+#endif
     }
     st.waveform = JZGpio::WaveNone;
 }

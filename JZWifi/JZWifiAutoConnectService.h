@@ -74,18 +74,22 @@ public:
 jz_signals:
     JZSignal<const std::string&> sigConnecting;   // 正在连接某 ssid
     JZSignal<const std::string&> sigConnected;    // 已连接到某 ssid
+    JZSignal<> sigDisconnected;  
     JZSignal<int, const std::string&> sigError;
 
 protected:
     void timerEvent(JZTimerEvent *event) override;
 
     void onScanFinished();
+    void onScanError(int code, const std::string &msg);
+
     void onStationConnected();
     void onStationDisconnected();
     void onStationError(int code, const std::string &msg);
 
     void evaluateAndConnect();
     void armTimer();                              // 按当前 m_effectiveInterval 重启周期定时器
+    void disconnectFromAp();
 
     JZWifiScanner *m_scanner;
     JZWifiStation *m_station;

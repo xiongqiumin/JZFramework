@@ -62,6 +62,9 @@ private:
         int              waveOffset = 0;
         double           wavePhase = 0.0;
         bool             useDac = false;
+#if SOC_DAC_SUPPORTED
+        void            *dacHandle = nullptr;  // dac_oneshot_handle_t
+#endif
     };
 
     static void isrHandler(void *arg);   // GPIO ISR (IRAM)

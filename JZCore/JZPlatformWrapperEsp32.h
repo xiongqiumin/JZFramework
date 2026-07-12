@@ -4,6 +4,8 @@
 class JZPlatformWrapperEsp32 : public JZPlatformWrapper
 {
 public:
+    virtual ~JZPlatformWrapperEsp32() override;
+
     int64_t getTickCountNs() override;
 
     // === 文件句柄操作 ===

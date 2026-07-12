@@ -17,7 +17,7 @@ struct JZFileStat
 class JZPlatformWrapper
 {
 public:
-	virtual ~JZPlatformWrapper() = default;
+	virtual ~JZPlatformWrapper();
 
 	virtual int64_t getTickCountNs() = 0;
 

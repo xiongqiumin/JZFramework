@@ -9,7 +9,7 @@ if (MSVC)
     add_compile_options(/bigobj)
 endif()
 
-set(LVGL_ROOT_DIR "C:/Users/7052/Desktop/work/lib/lvgl")
+set(LVGL_ROOT_DIR "F:/mcu/jz_app/managed_components/lvgl__lvgl")
 
 set(LV_BUILD_CONF_DIR "${CMAKE_SOURCE_DIR}/test" CACHE PATH "")
 set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "")
@@ -20,6 +20,6 @@ set(LV_BUILD_LVGL_H_SIMPLE_INCLUDE ON CACHE BOOL "")
 add_subdirectory(${LVGL_ROOT_DIR} ${CMAKE_BINARY_DIR}/lvgl)
 
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZAudio JZLvgl JZBle JZWifi JZSimulator)
+jzframework_use_modules(JZCore JZNet JZLvgl)
 target_link_libraries(JZFramework PRIVATE lvgl)
 jzframework_build_test()

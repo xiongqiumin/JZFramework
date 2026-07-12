@@ -607,7 +607,7 @@ std::enable_if_t<!std::is_member_pointer<Func>::value, int>
 connect(JZSignal<SignalArgs...>* signal, Object* recv, Func slot, JZ::ConnectType type = JZ::AutoConnection)
 {
     static_assert(jzsignal::check_signal_and_func_args<Func, SignalArgs...>(), "signal slot not match");
-    if constexpr (!jzsignal::IsAllDefined<SignalArgs...>::value) {
+    if(!jzsignal::IsAllDefined<SignalArgs...>::value) {
         // 类型未注册，检查连接类型是否合法
         JZ_ASSERT_X(type == JZ::AutoConnection || type == JZ::DirectConnection,
             "Queued/BlockingQueued connections require all signal argument types to be registered with JZVariant");

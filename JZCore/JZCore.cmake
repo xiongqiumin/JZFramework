@@ -92,7 +92,7 @@ endif()
 
 # 平台驱动
 if(ESP_PLATFORM)
-    list(APPEND JZGpio_SOURCES JZPlatformWrapperEsp32.h JZPlatformWrapperEsp32.cpp)
+    list(APPEND JZCORE_SOURCES JZPlatformWrapperEsp32.cpp)
 endif()
 
 convert_to_abs_paths(JZCORE_SOURCES)

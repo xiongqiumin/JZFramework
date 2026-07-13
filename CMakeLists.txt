@@ -20,6 +20,6 @@ endif()
 #add_subdirectory(${LVGL_ROOT_DIR} ${CMAKE_BINARY_DIR}/lvgl)
 
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZNet JZHttpServer)
+jzframework_use_modules(JZCore JZNet JZHttpServer JZCoroutine)
 #target_link_libraries(JZFramework PRIVATE lvgl)
 jzframework_build_test()

@@ -7,15 +7,26 @@
 class JZCoNetworkAccessManager;
 class JZCoNetworkReply : public JZObject
 {
-protected:
-    JZCoNetworkReply(JZCoNetworkAccessManager *manager, JZNetworkReply *reply);
-
+public:
+    // 协程等待请求完成 / 读取响应体(供外部调用者使用)
     void waitFinished();
+    
+    void close();
+
+    JZNetworkReply::NetworkError error() const;    
+    std::string errorString() const;
+
+    int httpStatusCode() const;
+    std::string httpStatusCodeText() const;
+    bool isFinished() const;
+
     JZByteArray readAll();
 
 protected:
     friend JZCoNetworkAccessManager;
-    
+
+    JZCoNetworkReply(JZCoNetworkAccessManager *manager, JZNetworkReply *reply);
+
     void onReplyFinished();
 
     JZCoCondition cond;

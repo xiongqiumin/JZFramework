@@ -8,6 +8,7 @@
 #include "JZConditionVariable.h"
 #include "JZCoContext.h"
 #include "JZThread.h"
+#include "JZSignal.h"
 
 class JZCoScheduler;
 
@@ -65,6 +66,9 @@ public:
     void resume(JZCoCoroutine *co);
 
     void startTask(JZCoCoroutinePtr task);
+
+jz_signals:
+    JZSignal<JZCoCoroutine*> sigFinished;
 
 protected:
     friend void JZCoContextEndTask(JZCoCoroutine* task);

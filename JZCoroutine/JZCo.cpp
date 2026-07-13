@@ -1,4 +1,5 @@
 ﻿#include "JZCo.h"
+#include "JZCoWatch.h"
 #include "JZPlatform.h"
 #include "JZTimer.h"
 #include "JZApplication.h"
@@ -35,6 +36,7 @@ void jzco_sleep(int ms)
 
 void jzco_waitCoroutine(const std::vector<JZCoCoroutinePtr>& co_list)
 {
+    
     while (true)
     {
         bool all_finish = true;
@@ -61,8 +63,30 @@ void jzco_waitCoroutine(const std::vector<JZCoCoroutinePtr>& co_list)
 
 void jzco_waitAllCoroutine()
 {
-    auto co_list = g_scheduler->coroutineList();
-    jzco_waitCoroutine(co_list);
+    // 协程可能在其内部再启动协程, 不能用某一时刻的快照一次等待
+    // JZCoWatch 绑定 g_scheduler, 每收到 sigFinished 就判断调度器里是否已全部结束
+    JZCoWatch watch;
+    watch.waitScheduler();
+}
+
+void jzco_waitCoroutineAny(const std::vector<JZCoCoroutinePtr> &co_list)
+{
+    if (co_list.empty())
+        return;
+
+    // 上下文相关的等待由 JZCoWatch 内部处理:
+    //   协程内 -> JZCoCondition 让出(调度出去); 主线程 -> JZEventLoop 等待
+    JZCoWatch watch;
+    watch.waitAny(co_list);
+}
+
+void jzco_waitCoroutineAll(const std::vector<JZCoCoroutinePtr> &co_list)
+{
+    if (co_list.empty())
+        return;
+
+    JZCoWatch watch;
+    watch.waitAll(co_list);
 }
 
 void jzco_submitAndWait(std::function<void()> func)

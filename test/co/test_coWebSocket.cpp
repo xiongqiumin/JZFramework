@@ -2,11 +2,16 @@
 #include <chrono>
 #include <string>
 #include <vector>
+
 #include "JZCo.h"
-#include "JZCoNetwork.h"
+#include "JZCoWebSocket.h"
+#include "JZCoWebSocketServer.h"
+#include "JZNetworkRequest.h"
 #include "JZTimer.h"
 #include "JZDebug.h"
 #include "JZApplication.h"
+
+#include "co_test_common.h"    // CO_TEST_ASSERT (失败即 exit(1))
 
 using namespace std;
 
@@ -18,11 +23,18 @@ public:
 
     // 8客户端并发
     static const int CLIENT_NUM = 8;
+    // 每客户端回环轮数(有限, 便于自动化测试结束)
+    static const int ROUNDS = 50;
+
     vector<JZCoCoroutinePtr> client_cos;
 
     // 服务端
-    JZCoWebSocketServer* co_server;
+    JZCoWebSocketServer* co_server = nullptr;
     int port = 18000;
+
+    // 测试停止标志(所有客户端完成回环后置位, 让服务端 accept 退出)
+    atomic<bool> m_stop{false};
+    atomic<int> m_finishedClients{0};
 
 public:
     JZWebSocketTest() {
@@ -74,8 +86,8 @@ public:
 
         jzDebug() << "服务端启动成功 port:" << port;
 
-        // 协程循环 accept
-        while (true) {
+        // 协程循环 accept (置位 m_stop 后退出)
+        while (!m_stop) {
             JZCoWebSocket* socket = co_server->accept(); // 协程等待
             if (!socket) continue;
 
@@ -114,8 +126,8 @@ public:
 
         jzDebug() << "客户端" << clientId << "连接成功";
 
-        // 回环循环（协程同步写法）
-        while (true) {
+        // 回环循环（协程同步写法, 有限轮数）
+        while (send_seq < (uint64_t)ROUNDS) {
             // 1. 发送
             string send_msg = prefix + to_string(send_seq);
             client.sendTextMessage(send_msg);
@@ -147,15 +159,33 @@ public:
             expect_seq++;
             msgCount++;
         }
+
+        // 客户端完成: 统计并决定是否让服务端停止 accept
+        int n = ++m_finishedClients;
+        if (n == CLIENT_NUM)
+            m_stop = true;
     }
 };
 
-int main()
+// ===================== 测试入口 (供 test_co.cpp 编排调用) =====================
+int test_coWebSocket()
 {
-    JZApplication app;
-    jzco_init();
+    jzDebug() << "########## 协程 WebSocket 测试 (8 客户端并发 echo 回环) ##########";
 
-	JZWebSocketTest test;
+    JZWebSocketTest test;
+    // 等 8 个客户端完成回环
+    jzco_waitCoroutine(test.client_cos);
+    // 让服务端 accept 退出并等待所有协程结束
+    test.m_stop = true;
+    if (test.co_server)
+        test.co_server->close();
+    jzco_waitAllCoroutine();
 
-	return app.exec();
+    CO_TEST_ASSERT(test.m_finishedClients == JZWebSocketTest::CLIENT_NUM,
+                   "部分客户端未跑完回环, 完成数=" + to_string(test.m_finishedClients));
+    CO_TEST_ASSERT(test.msgCount == JZWebSocketTest::CLIENT_NUM * JZWebSocketTest::ROUNDS,
+                   "回环消息总数不足, 实际=" + to_string(test.msgCount));
+
+    jzDebug() << "【OK】协程 WebSocket 回环通过 (" << test.msgCount << " 条 echo)";
+    return 0;
 }

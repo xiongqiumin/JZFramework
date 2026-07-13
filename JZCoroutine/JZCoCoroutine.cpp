@@ -7,9 +7,12 @@
 class JZCoEvent : public JZEvent
 {
 public:
-    JZCoEvent() :JZEvent(JZEvent_co)
+    JZCoEvent() 
+        :JZEvent(JZEvent_co)
     {
     }
+
+    JZCoCoroutinePtr task;
 };
 
 //JZCoCoroutine
@@ -76,6 +79,7 @@ void JZCoCoroutine::endTask()
 JZCoScheduler* g_scheduler = nullptr;
 JZCoScheduler::JZCoScheduler(JZObject* parent)
     :JZObject(parent)
+    ,sigFinished(this)
 {
     JZ_ASSERT(!g_scheduler);
 
@@ -157,17 +161,22 @@ void JZCoScheduler::endTask(JZCoCoroutine *task)
 
     task->m_finish = true;
     task->m_ctx = nullptr;
+
+    JZCoCoroutinePtr task_ptr;
     for (int i = 0; i < m_coList.size(); i++)
     {
         if (m_coList[i].get() == task)
         {
+            task_ptr = m_coList[i];
             task->endTask();
             vec_removeAt(m_coList,i);
             break;
         }
     }
 
-    jzApp->postEvent(this,new JZCoEvent());
+    auto event = new JZCoEvent();
+    event->task = task_ptr;
+    jzApp->postEvent(this, event);
     switchCoroutine(cur,next);
 }
 
@@ -196,8 +205,12 @@ void JZCoScheduler::onClearContext()
 bool JZCoScheduler::event(JZEvent* event)
 {
     if (event->type() == JZEvent_co)
-    {
+    {   
         onClearContext();
+        
+        JZCoEvent *co_event = (JZCoEvent *)event;
+        // 通知协程监视器(如 JZCoWatch) 该协程已结束
+        sigFinished.emit(co_event->task.get());
         return true;
     }
 

@@ -5,6 +5,7 @@
 #include <deque>
 #include "JZMqttClient.h"
 #include "JZOptional.h"
+#include "JZTimer.h"
 
 class JZMqttServer : public JZNetObject
 {
@@ -36,15 +37,39 @@ protected:
         std::vector<SubscribeTopic> topics;
     };
 
+    struct SubEntry
+    {
+        JZMqttClient *client;
+        uint8_t qos;
+    };
+
+    struct ClientConnState
+    {
+        uint16_t keepAlive = 0;
+        uint64_t lastActiveMs = 0;
+        bool hasWill = false;
+        JZMqttPublishOpt will;
+    };
+
     virtual JZNetObject *onAccept(uint64_t conn) override;
     virtual void onNetEvent(JZNetResEvent *event) override;
     void onClientDisconnect();
     void onClinetNetEvent(JZMqttClient *client, JZNetResEvent *event);
     JZOptional<SubscribePacket> parseSubscribeMessage(char *data, int size);
+    JZOptional<ClientConnState> parseConnect(const JZByteArray &dgram);
+    void onKeepaliveTimer();
+
+    // 主题过滤器匹配(+ 单层级, # 多层级), 支持通配符
+    static bool topicMatch(const std::string &filter, const std::string &topic);
+    // 向新订阅者投递已保留(retained)消息
+    void deliverRetained(JZMqttClient *client, const std::string &filter, uint8_t subQos);
 
     uint64_t m_listen;
-    std::map<std::string, std::vector<JZMqttClient *>> m_subcribeMap;
+    std::map<std::string, std::vector<SubEntry>> m_subcribeMap;
+    std::map<std::string, JZMqttPublishOpt> m_retainedMap;
+    std::map<JZMqttClient*, ClientConnState> m_clientState;
     std::deque<JZMqttClient*> m_pendingConnections;
+    JZTimer *m_keepaliveTimer = nullptr;
 };
 
 #endif  // ! MG_SERVER_H_

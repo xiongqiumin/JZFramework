@@ -345,8 +345,6 @@ int JZWifiDriverEsp32::apStationCount(JZWifiAp *w)
 // ==================== Scan (扫描) ====================
 void JZWifiDriverEsp32::scanStart(JZWifiScanner *s)
 {
-    jzDebug() << "JZWifiDriverEsp32::scanStart";
-
     ensureInit();
     ensureStarted();
 
@@ -361,8 +359,7 @@ void JZWifiDriverEsp32::scanStart(JZWifiScanner *s)
 
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
     if (err != ESP_OK) {
-        jzDebug() << "JZWifiDriverEsp32::scanStart failed" << err;
-
+        jzWarning() << "JZWifiDriverEsp32::scanStart failed" << err;        
         JZWifiDriver::onScanError(m_scanTarget, (int)err, "esp_wifi_scan_start failed");
     }
 }

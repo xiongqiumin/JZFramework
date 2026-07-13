@@ -1,5 +1,5 @@
-#ifndef JZ_OBJECT_POINTEER_H_
-#define JZ_OBJECT_POINTEER_H_
+#ifndef JZ_OBJECT_POINTER_H_
+#define JZ_OBJECT_POINTER_H_
 
 #include <memory>
 #include "JZGlobal.h"

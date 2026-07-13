@@ -42,8 +42,33 @@ template <>
 JZVariant JZVariant::fromValue(void *const &t)
 {
     JZVariant v;
+    memset(&v.m_data, 0, sizeof(v.m_data));
     v.m_data.ptr = t;
     return v;
+}
+
+template <>
+JZVariant JZVariant::fromValue(const int16_t &t)
+{
+    return JZVariant(t);
+}
+
+template <>
+JZVariant JZVariant::fromValue(const uint16_t &t)
+{
+    return JZVariant(t);
+}
+
+template <>
+JZVariant JZVariant::fromValue(const unsigned int &t)
+{
+    return JZVariant(t);
+}
+
+template <>
+JZVariant JZVariant::fromValue(const uint64_t &t)
+{
+    return JZVariant(t);
 }
 
 JZVariant::JZVariant()
@@ -55,30 +80,35 @@ JZVariant::JZVariant()
 JZVariant::JZVariant(bool b)
 {
     m_type = JZMetaType::Bool;
+    memset(&m_data, 0, sizeof(m_data));   // 保证 POD union 内存在各类型下一致
     m_data.b = b;
 }
 
 JZVariant::JZVariant(int i)
 {
     m_type = JZMetaType::Int;
+    memset(&m_data, 0, sizeof(m_data));
     m_data.i = i;
 }
 
 JZVariant::JZVariant(int64_t i64)
 {
     m_type = JZMetaType::Int64;
+    memset(&m_data, 0, sizeof(m_data));
     m_data.i64 = i64;
 }
 
 JZVariant::JZVariant(float f)
 {
     m_type = JZMetaType::Float;
+    memset(&m_data, 0, sizeof(m_data));
     m_data.f = f;
 }
 
 JZVariant::JZVariant(double d)
 {
     m_type = JZMetaType::Double;
+    memset(&m_data, 0, sizeof(m_data));
     m_data.d = d;
 }
 
@@ -98,6 +128,34 @@ JZVariant::JZVariant(const std::string &str)
     auto meta = new JZMeta<std::string>();
     meta->data = str;
     m_data.meta = meta;
+}
+
+JZVariant::JZVariant(int16_t i16)
+{
+    m_type = JZMetaType::Int16;
+    memset(&m_data, 0, sizeof(m_data));
+    m_data.i16 = i16;
+}
+
+JZVariant::JZVariant(uint16_t ui16)
+{
+    m_type = JZMetaType::UInt16;
+    memset(&m_data, 0, sizeof(m_data));
+    m_data.ui16 = ui16;
+}
+
+JZVariant::JZVariant(unsigned int ui)
+{
+    m_type = JZMetaType::UInt;
+    memset(&m_data, 0, sizeof(m_data));
+    m_data.ui = ui;
+}
+
+JZVariant::JZVariant(uint64_t ui64)
+{
+    m_type = JZMetaType::UInt64;
+    memset(&m_data, 0, sizeof(m_data));
+    m_data.ui64 = ui64;
 }
 
 JZVariant::JZVariant(const JZVariantMap &m)
@@ -177,15 +235,14 @@ bool JZVariant::operator==(const JZVariant& other) const
     if (this == &other)
         return true;
 
-    if (m_type < JZMetaType::PodEnd && other.m_type < JZMetaType::PodEnd)
-    {
-        bool ret = (memcmp(&m_data, &other.m_data, sizeof(Data)) == 0);
-        return ret;
-    }
-    else
-    {
+    if (m_type != other.m_type)
         return false;
-    }
+
+    // POD 类型在构造时已整体清零 union, 内存一致, 可直接按位比较
+    if (m_type < JZMetaType::PodEnd)
+        return memcmp(&m_data, &other.m_data, sizeof(Data)) == 0;
+
+    return false;   // 非 POD(字符串/容器等) 不按位比较
 }
 
 bool JZVariant::operator!=(const JZVariant& other) const
@@ -318,6 +375,34 @@ void* JZVariant::value<void*>() const
 }
 
 template <>
+int16_t JZVariant::value<int16_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Int16);
+    return m_data.i16;
+}
+
+template <>
+uint16_t JZVariant::value<uint16_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt16);
+    return m_data.ui16;
+}
+
+template <>
+unsigned int JZVariant::value<unsigned int>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt);
+    return m_data.ui;
+}
+
+template <>
+uint64_t JZVariant::value<uint64_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt64);
+    return m_data.ui64;
+}
+
+template <>
 bool& JZVariant::valueRef<bool>()
 {
     JZ_ASSERT(m_type == JZMetaType::Bool);
@@ -357,6 +442,34 @@ void*& JZVariant::valueRef<void*>()
 {
     JZ_ASSERT(m_type == JZMetaType::Pointer);
     return m_data.ptr;
+}
+
+template <>
+int16_t& JZVariant::valueRef<int16_t>()
+{
+    JZ_ASSERT(m_type == JZMetaType::Int16);
+    return m_data.i16;
+}
+
+template <>
+uint16_t& JZVariant::valueRef<uint16_t>()
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt16);
+    return m_data.ui16;
+}
+
+template <>
+unsigned int& JZVariant::valueRef<unsigned int>()
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt);
+    return m_data.ui;
+}
+
+template <>
+uint64_t& JZVariant::valueRef<uint64_t>()
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt64);
+    return m_data.ui64;
 }
 
 template <>
@@ -401,6 +514,34 @@ void* const& JZVariant::valueRef<void*>() const
     return m_data.ptr;
 }
 
+template <>
+const int16_t& JZVariant::valueRef<int16_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::Int16);
+    return m_data.i16;
+}
+
+template <>
+const uint16_t& JZVariant::valueRef<uint16_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt16);
+    return m_data.ui16;
+}
+
+template <>
+const unsigned int& JZVariant::valueRef<unsigned int>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt);
+    return m_data.ui;
+}
+
+template <>
+const uint64_t& JZVariant::valueRef<uint64_t>() const
+{
+    JZ_ASSERT(m_type == JZMetaType::UInt64);
+    return m_data.ui64;
+}
+
 JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
 {
     s << (int32_t)v.typeId();
@@ -411,6 +552,9 @@ JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
         case JZMetaType::Int64:     s << (int64_t)v.toInt64(); break;
         case JZMetaType::Float:     s << v.toFloat(); break;
         case JZMetaType::Double:    s << v.toDouble(); break;
+        case JZMetaType::Int16:     s << (int16_t)v.value<int16_t>(); break;
+        case JZMetaType::UInt:      s << (uint32_t)v.value<unsigned int>(); break;
+        case JZMetaType::UInt64:    s << (uint64_t)v.value<uint64_t>(); break;
         case JZMetaType::String:    s << v.toString(); break;
         case JZMetaType::ByteArray: s << v.toByteArray(); break;
         case JZMetaType::VariantMap: {
@@ -444,6 +588,9 @@ JZDataStream& operator>>(JZDataStream& s, JZVariant& v)
         case JZMetaType::Int64:     { int64_t i; s >> i; v = JZVariant(i); } break;
         case JZMetaType::Float:     { float f; s >> f; v = JZVariant(f); } break;
         case JZMetaType::Double:    { double d; s >> d; v = JZVariant(d); } break;
+        case JZMetaType::Int16:     { int16_t i; s >> i; v = JZVariant(i); } break;
+        case JZMetaType::UInt:      { uint32_t i; s >> i; v = JZVariant((unsigned int)i); } break;
+        case JZMetaType::UInt64:    { uint64_t i; s >> i; v = JZVariant(i); } break;
         case JZMetaType::String:    { std::string st; s >> st; v = JZVariant(st); } break;
         case JZMetaType::ByteArray: { JZByteArray ba; s >> ba; v = JZVariant::fromValue(ba); } break;
         case JZMetaType::VariantMap: {

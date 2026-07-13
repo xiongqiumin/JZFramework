@@ -176,6 +176,8 @@ protected:
 
     virtual void run() override;
     virtual bool event(JZEvent* event) override;
+    
+    void onFinished();
     void onNetEvent(JZNetReqEvent* event);
     void initTls(mg_connection *conn,const std::string &url);
     void bindObject(uint64_t conn, JZNetObject* object);
@@ -185,7 +187,7 @@ protected:
     std::map<uint64_t, ConnInfo> m_connMap;
     std::vector<JZNetObject*> m_objectList;
     std::map<int, std::vector<int>> m_eventFilter;
-    JZMutex m_mutex;
+    JZMutex m_objectMutex;
 };
 
 

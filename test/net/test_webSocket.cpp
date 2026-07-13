@@ -21,9 +21,9 @@ class JZWebSocketTest : public JZObject
 public:
     std::atomic<uint64_t> send_seq = 0;		  // 客户端发送序号
     std::atomic<uint64_t> expect_recv_seq = 0; // 期望接收的序号
-    JZWebSocketServer* server;
-    JZWebSocket* client;
-    JZWebSocket* server_socket;
+    JZWebSocketServer* server = nullptr;
+    JZWebSocket* client = nullptr;
+    JZWebSocket* server_socket = nullptr;
     NetTpsCounter m_tps{"WebSocket 单线程"};
 
     JZWebSocketTest(JZEventLoop *loop)
@@ -85,10 +85,20 @@ public:
     string serverUrl;
     int threadId = 0;
 
-    WebSocketClientThread(const string& url, int id) : serverUrl(url), threadId(id) {}
+    WebSocketClientThread(const string& url, int id) : serverUrl(url), threadId(id) 
+    {
+        moveToThread(this);
+        connect(&sigFinished, this, &WebSocketClientThread::onFinished);
+    }
+
+    void onFinished()
+    {
+        client->disconnectFromHost();
+        moveToThread(m_parent->thread());
+    }
 
     void run() override {
-        client = new JZWebSocket();
+        client = new JZWebSocket(this);
         connect(&client->sigTextMessageReceived, this, [this](const string& text) {
             sendMessage(text);
         });
@@ -123,6 +133,7 @@ public:
         string url = "ws://127.0.0.1:" + to_string(port);
         for (int i = 0; i < CLIENT_THREAD_COUNT; i++) {
             auto thread = new WebSocketClientThread(url, i);
+            thread->setParent(this);
             thread->start();
             clientThreads.push_back(thread);
         }
@@ -136,6 +147,7 @@ public:
         for (auto t : clientThreads) {
             t->quit();
             t->wait();
+            delete t;
         }
     }
 

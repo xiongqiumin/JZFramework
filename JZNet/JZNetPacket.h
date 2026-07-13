@@ -46,6 +46,7 @@ public:
 };
 
 typedef std::shared_ptr<JZNetPack> JZNetPackPtr;
+JZ_DECLARE_METATYPE_INTERNAL(JZNetPackPtr, JZMetaType::NetPackPtr);
 
 // JZNetPackHand
 class JZNetPackHand : public JZNetPack

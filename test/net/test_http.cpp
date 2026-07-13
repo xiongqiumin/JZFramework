@@ -78,7 +78,9 @@ public:
         m_expect++;
         m_tps.hit();
         reply->deleteLater();
-        sendNext();
+
+        //现在没有 keep alive, 不停发送会耗光资源. 限制一下
+        JZTimer::singleShot(100, this, [this]() { sendNext(); });   // 每 100ms 发一个
     }
 
     int m_port;
@@ -98,6 +100,15 @@ public:
     HttpTestClientThread(const string &url, NetTpsCounter *tps, uint64_t startSeq)
         : m_url(url), m_tps(tps), m_startSeq(startSeq)
     {
+        moveToThread(this);
+        connect(&sigFinished, this, &HttpTestClientThread::onFinished);
+    }
+
+    void onFinished()
+    {
+        delete m_net;
+        m_net = nullptr;
+        moveToThread(m_parent->thread());
     }
 
     void run() override
@@ -131,7 +142,7 @@ public:
         m_expect++;
         m_tps->hit();
         reply->deleteLater();
-        sendNext();
+        JZTimer::singleShot(100, this, [this]() { sendNext(); });   // 每 100ms 发一个
     }
 
     string m_url;
@@ -162,6 +173,7 @@ public:
         for (int i = 0; i < CLIENT_THREAD_COUNT; i++)
         {
             auto t = new HttpTestClientThread(url, &m_tps, i * 1000000ULL);
+            t->setParent(this);
             t->start();
             threads.push_back(t);
         }
@@ -177,6 +189,7 @@ public:
         {
             t->quit();
             t->wait();
+            delete t;
         }
     }
 };
@@ -188,7 +201,7 @@ int test_http_single()
     HttpTestSingle test(&loop, 18104);
     loop.exec();
     double tps = test.m_tps.average();
-    netCheckTps("HTTP 单线程", tps);
+    netCheckTps("HTTP 单线程", tps, 5);
     g_netTestActive = false;
     return (int)tps;
 }
@@ -200,7 +213,7 @@ int test_http_multi()
     HttpTestMultiThread test(&loop, 18108);
     loop.exec();
     double tps = test.m_tps.average();
-    netCheckTps("HTTP 多线程", tps);
+    netCheckTps("HTTP 多线程", tps, 5);
     g_netTestActive = false;
     return (int)tps;
 }

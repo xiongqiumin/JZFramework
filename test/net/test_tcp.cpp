@@ -95,7 +95,16 @@ class TcpClientThread : public JZThread
 {
 public:
     TcpClientThread(const string &host, int port, NetTpsCounter *tps)
-        : m_host(host), m_port(port), m_tps(tps) {}
+        : m_host(host), m_port(port), m_tps(tps) 
+    {
+        moveToThread(this);
+        connect(&sigFinished, this, &TcpClientThread::onFinished);
+    }
+
+    void onFinished()
+    {
+        moveToThread(m_parent->thread());
+    }
 
     void run() override
     {
@@ -157,6 +166,7 @@ public:
         {
             auto t = new TcpClientThread("127.0.0.1", port, &m_tps);
             t->start();
+            t->setParent(this);
             threads.push_back(t);
         }
 
@@ -171,6 +181,7 @@ public:
         {
             t->quit();
             t->wait();
+            delete t;
         }
     }
 

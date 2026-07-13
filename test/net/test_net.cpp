@@ -1,3 +1,4 @@
+#include "JZApplication.h"
 #include "JZDebug.h"
 
 // 各模块单独实现, 暴露独立的 test_xxx() 入口
@@ -8,8 +9,9 @@ int test_mqtt();
 int test_http();
 int test_netServer();
 
-int test_net()
+int main()
 {
+    JZApplication a;
     jzDebug() << "########## Net 模块综合测试: 逐个运行 TCP / UDP / WebSocket / MQTT / HTTP / JZNetServer ##########";
 
     test_tcp();
@@ -32,9 +34,4 @@ int test_net()
 
     jzDebug() << "【Benchmark】PASS: 所有 net 模块均正常收发 (TCP/UDP/WebSocket/MQTT/HTTP/JZNetServer)";
     return 0;
-}
-
-int main()
-{
-    return test_net();
 }

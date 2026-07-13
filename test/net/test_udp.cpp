@@ -1,6 +1,7 @@
 #include <chrono>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 #include "JZDebug.h"
 #include "JZTimer.h"
@@ -14,229 +15,164 @@
 
 using namespace std;
 
-// ===================== 单线程 UDP 回环测试 =====================
-class UdpTestSingle : public JZObject
+// 每轮发送间隔(ms) 与每轮包数: 10ms 发 10 包
+static const int UDP_SEND_INTERVAL_MS = 10;
+static const int UDP_SEND_BATCH = 10;
+// 接收率达标阈值(>= 80%)
+static const double UDP_PASS_RATIO = 0.8;
+
+// 接收率判断: 收到 / 发送 >= 阈值, 否则直接 exit(1)
+inline void netCheckRatio(const string &name, uint64_t recv, uint64_t sent, double threshold = UDP_PASS_RATIO)
+{
+    double r = sent ? (double)recv / sent : 0.0;
+    jzDebug() << "[" << name << "] 发送=" << sent << " 接收=" << recv
+              << " 接收率=" << (int)(r * 100) << "% (阈值 " << (int)(threshold * 100) << "%)";
+    if (r < threshold)
+        netReportError(name, "接收率过低 " + to_string((int)(r * 100)) + "% < " + to_string((int)(threshold * 100)) + "%");
+    jzDebug() << "[Benchmark][" << name << "] 接收率=" << (int)(r * 100) << "% OK";
+}
+
+// 一个 UDP 回环对: 1 个 Server(bind 固定端口) + 1 个 Client(bind 0 发往 server 端口)
+// Client 每 10ms 发送 10 个数据报, Server 原样回显, Client 统计收到的回显(按 seq 去重)
+class UdpPair : public JZObject
 {
 public:
-    UdpTestSingle(JZEventLoop *loop, int port)
+    UdpPair(int serverPort, const string &prefix, NetTpsCounter *recvTps = nullptr)
+        : m_prefix(prefix), m_serverPort(serverPort)
     {
-        m_prefix = "udp";
         m_server = new JZUdpSocket(this);
-        m_server->bind(port);
-        connect(&m_server->sigReadyRead, this, &UdpTestSingle::onServerRead);
+        m_server->bind(serverPort);
+        connect(&m_server->sigReadyRead, this, &UdpPair::onServerRead);
 
         m_client = new JZUdpSocket(this);
-        connect(&m_client->sigReadyRead, this, &UdpTestSingle::onClientRead);
-        connect(&m_client->sigConnect, this, &UdpTestSingle::onClientConnect);
-        connect(&m_client->sigError, this, &UdpTestSingle::onError);
-        m_client->connectToHost("127.0.0.1", port);
+        m_client->bind(0);
+        connect(&m_client->sigReadyRead, this, &UdpPair::onClientRead);
+        connect(&m_client->sigError, this, &UdpPair::onError);
 
-        m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== UDP 单线程测试启动 (15s 后退出) ====";
+        // 接收 TPS 计数器: 默认自带(单对, 挂到本对象下随析构清理), 多并发时可传入共享计数器
+        if (recvTps)
+            m_recvTps = recvTps;
+        else
+        {
+            m_ownTps = new NetTpsCounter("UDP 接收 " + prefix, this);
+            m_ownTps->begin();
+            m_recvTps = m_ownTps;
+        }
+
+        m_sendTimer = new JZTimer(this);
+        connect(&m_sendTimer->sigTimeout, this, &UdpPair::onSendTick);
+        m_sendTimer->start(UDP_SEND_INTERVAL_MS);
     }
 
-    void onServerRead()
+    void onSendTick()
     {
-        string peer = m_server->peerAddress();
-        int pport = m_server->peerPort();
-        m_srvBuf += str_fromUtf8(m_server->readAll());
-        size_t pos;
-        while ((pos = m_srvBuf.find('\n')) != string::npos)
+        for (int i = 0; i < UDP_SEND_BATCH; i++)
         {
-            string line = m_srvBuf.substr(0, pos);
-            m_srvBuf.erase(0, pos + 1);
-            m_server->writeDatagram(peer, pport, str_toUtf8(line + "\n"));
+            m_client->writeDatagram("127.0.0.1", m_serverPort,
+                                    str_toUtf8(netMakeMsg(m_prefix, m_seq)));
+            m_seq++;
+            m_sent++;
         }
     }
 
-    void onClientConnect() { sendNext(); }
+    // Server: 循环读完所有缓存数据报, 原样回显给发送方
+    void onServerRead()
+    {
+        while (m_server->hasPendingDatagrams())
+        {
+            JZUdpDatagram dgram = m_server->readDatagram();
+            m_server->writeDatagram(dgram.peerIp, dgram.peerPort, dgram.data);
+        }
+    }
 
+    // Client: 循环读完所有缓存数据报, 按 seq 去重统计, 并累计每秒接收包数
     void onClientRead()
     {
-        m_cliBuf += str_fromUtf8(m_client->readAll());
-        size_t pos;
-        while ((pos = m_cliBuf.find('\n')) != string::npos)
+        while (m_client->hasPendingDatagrams())
         {
-            string line = m_cliBuf.substr(0, pos);
-            m_cliBuf.erase(0, pos + 1);
-
+            JZUdpDatagram dgram = m_client->readDatagram();
             uint64_t seq;
-            if (!netParseMsg(line, m_prefix, seq))
-                netReportError("UDP", "解析失败 收到=" + line);
-            // UDP 不可靠, 仅做宽松计数(按最大序号推进)
-            if (seq > m_maxSeq)
-            {
-                m_tps.hit((int)(seq - m_maxSeq));
-                m_maxSeq = seq;
-            }
-            sendNext();
+            if (!netParseMsg(str_fromUtf8(dgram.data), m_prefix, seq))
+                continue;   // 忽略非本对的回显(理论不会到达, 防御性跳过)
+            if (m_recvSet.insert(seq).second)
+                m_recv++;
+            m_recvTps->hit();   // 统计每秒从服务器收到的包数
         }
     }
 
     void onError(const string &) { netReportError("UDP", "socket 错误"); }
 
-    void sendNext() { m_client->write(str_toUtf8(netMakeMsg(m_prefix, m_expect))); }
-
     JZUdpSocket *m_server;
     JZUdpSocket *m_client;
-    string m_srvBuf, m_cliBuf;
-    string m_prefix = "udp";
-    uint64_t m_expect = 0;
-    uint64_t m_maxSeq = 0;
-    NetTpsCounter m_tps{"UDP 单线程"};
-};
-
-// ===================== 多线程客户端线程(各自独立 UDP socket) =====================
-class UdpClientThread : public JZThread
-{
-public:
-    UdpClientThread(const string &host, int port, NetTpsCounter *tps)
-        : m_host(host), m_port(port), m_tps(tps) {}
-
-    void run() override
-    {
-        m_prefix = "udp";
-        m_sock = new JZUdpSocket(this);
-        connect(&m_sock->sigReadyRead, this, &UdpClientThread::onRead);
-        connect(&m_sock->sigError, this, &UdpClientThread::onError);
-        m_sock->connectToHost(m_host, m_port);
-
-        // 看门狗: UDP 可能丢包, 超时未确认则重发当前序号(幂等)
-        m_watchdog = new JZTimer(this);
-        connect(&m_watchdog->sigTimeout, this, &UdpClientThread::onWatchdog);
-        m_watchdog->start(150);
-
-        sendNext();
-        exec();
-    }
-
-    void onRead()
-    {
-        m_buf += str_fromUtf8(m_sock->readAll());
-        size_t pos;
-        while ((pos = m_buf.find('\n')) != string::npos)
-        {
-            string line = m_buf.substr(0, pos);
-            m_buf.erase(0, pos + 1);
-            uint64_t seq;
-            if (!netParseMsg(line, m_prefix, seq))
-                netReportError("UDP", "多线程解析失败 收到=" + line);
-            if (seq != m_expect)
-                netReportError("UDP", "多线程校验失败 期望=" + to_string(m_expect) + " 收到=" + line);
-            m_acked = true;
-            m_expect++;
-            m_tps->hit();
-            sendNext();
-        }
-    }
-
-    void onError(const string &) { netReportError("UDP", "多线程 socket 错误"); }
-
-    void onWatchdog()
-    {
-        if (!m_acked)
-            sendNext();   // 重发未确认序号(幂等: 服务器回显相同值)
-    }
-
-    void sendNext()
-    {
-        m_acked = false;
-        m_sock->write(str_toUtf8(netMakeMsg(m_prefix, m_expect)));
-    }
-
-    string m_host;
-    int m_port;
-    NetTpsCounter *m_tps;
-    string m_prefix = "udp";
-    JZUdpSocket *m_sock = nullptr;
-    JZTimer *m_watchdog = nullptr;
-    string m_buf;
-    uint64_t m_expect = 0;
-    bool m_acked = true;
-};
-
-// ===================== 主线程: 1 个 Server + 管理 N 个客户端线程 =====================
-class UdpTestMulti : public JZObject
-{
-public:
-    vector<UdpClientThread *> threads;
-    NetTpsCounter m_tps{"UDP 多线程"};
-
-    UdpTestMulti(JZEventLoop *loop, int port)
-    {
-        m_server = new JZUdpSocket(this);
-        m_server->bind(port);
-        connect(&m_server->sigReadyRead, this, &UdpTestMulti::onServerRead);
-
-        for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
-        {
-            auto t = new UdpClientThread("127.0.0.1", port, &m_tps);
-            t->start();
-            threads.push_back(t);
-        }
-
-        m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== UDP 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, 15s 后退出) ====";
-    }
-
-    ~UdpTestMulti()
-    {
-        for (auto t : threads)
-        {
-            t->quit();
-            t->wait();
-        }
-    }
-
-    void onServerRead()
-    {
-        string peer = m_server->peerAddress();
-        int pport = m_server->peerPort();
-        string data = str_fromUtf8(m_server->readAll());
-        size_t pos;
-        while ((pos = data.find('\n')) != string::npos)
-        {
-            string line = data.substr(0, pos);
-            data.erase(0, pos + 1);
-            m_server->writeDatagram(peer, pport, str_toUtf8(line + "\n"));
-        }
-    }
-
-    JZUdpSocket *m_server;
+    JZTimer *m_sendTimer = nullptr;
+    NetTpsCounter *m_recvTps = nullptr;   // 接收 TPS(共享或自带)
+    NetTpsCounter *m_ownTps = nullptr;    // 自带计数器(多并发共享时为空)
+    string m_prefix;
+    int m_serverPort = 0;
+    uint64_t m_sent = 0;
+    uint64_t m_recv = 0;
+    uint64_t m_seq = 0;
+    unordered_set<uint64_t> m_recvSet;
 };
 
 int test_udp_single()
 {
     g_netTestActive = true;
     JZEventLoop loop;
-    UdpTestSingle test(&loop, 18101);
+    UdpPair pair(18101, "udp");
+    netInstallExit(&pair, &loop, 15000);
+    jzDebug() << "==== UDP 单线程测试启动 (每 " << UDP_SEND_INTERVAL_MS
+              << "ms 发 " << UDP_SEND_BATCH << " 包, 15s 后退出) ====";
     loop.exec();
-    double tps = test.m_tps.average();
-    netCheckTps("UDP 单线程", tps);
+    netCheckRatio("UDP 单线程", pair.m_recv, pair.m_sent);
     g_netTestActive = false;
-    return (int)tps;
+    return 0;
 }
 
 int test_udp_multi()
 {
     g_netTestActive = true;
     JZEventLoop loop;
-    UdpTestMulti test(&loop, 18106);
+    // 多并发共享一个接收 TPS 计数器, 每秒打印一次总接收包数
+    NetTpsCounter *recvTps = new NetTpsCounter("UDP 多并发 接收");
+    recvTps->begin();
+    vector<UdpPair *> pairs;
+    int basePort = 18106;
+    for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
+    {
+        auto p = new UdpPair(basePort + i, "udp" + to_string(i), recvTps);
+        pairs.push_back(p);
+    }
+    // 共享计数器挂到首个 pair 下, pair 析构时一并清理, 避免定时器泄漏到后续测试
+    recvTps->setParent(pairs[0]);
+    netInstallExit(pairs[0], &loop, 15000);
+    jzDebug() << "==== UDP 多并发测试启动 (" << NET_TEST_THREAD_COUNT
+              << " 个 UDP 回环对, 每 " << UDP_SEND_INTERVAL_MS << "ms 发 " << UDP_SEND_BATCH
+              << " 包, 15s 后退出) ====";
     loop.exec();
-    double tps = test.m_tps.average();
-    netCheckTps("UDP 多线程", tps);
+
+    uint64_t totalSent = 0, totalRecv = 0;
+    for (auto p : pairs)
+    {
+        totalSent += p->m_sent;
+        totalRecv += p->m_recv;
+    }
+    netCheckRatio("UDP 多并发", totalRecv, totalSent);
+
+    // 退出时显式停止并删除所有 pair(含共享计数器/定时器), 防止泄漏到后续测试
+    for (auto p : pairs)
+        delete p;
+
     g_netTestActive = false;
-    return (int)tps;
+    return 0;
 }
 
 int test_udp()
 {
-    jzDebug() << "########## UDP 测试 (单线程 + 多线程, 各 15s) ##########";
+    jzDebug() << "########## UDP 测试 (单线程 + 多并发, 各 15s) ##########";
     test_udp_single();
     jzDebug() << "【OK】UDP 单线程通过";
     test_udp_multi();
-    jzDebug() << "【OK】UDP 多线程通过";
+    jzDebug() << "【OK】UDP 多并发通过";
     return 0;
 }

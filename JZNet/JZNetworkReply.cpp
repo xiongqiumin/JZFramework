@@ -85,7 +85,7 @@ void JZNetworkReply::close()
         m_timeId = INVAILD_TIMER_ID;
     }
 
-    if (m_conn)
+    if (m_conn != INVALID_NET_HANDLE)
     {
         closeConn(m_conn, true);
         m_conn = INVALID_NET_HANDLE;

@@ -109,7 +109,11 @@ class MqttClientThread : public JZThread
 {
 public:
     MqttClientThread(int port, NetTpsCounter *tps, int id)
-        : m_port(port), m_tps(tps), m_id(id) {}
+        : m_port(port), m_tps(tps), m_id(id) 
+    {
+        moveToThread(this);
+        connect(&sigFinished, this, &MqttClientThread::onFinished);
+    }
 
     void run() override
     {
@@ -177,6 +181,14 @@ public:
         m_sendSeq++;
     }
 
+    void onFinished()
+    {
+        m_warmup->stop();
+        m_client->disconnectFromHost();
+        delete m_client;
+        moveToThread(m_parent->thread());
+    }
+
     int m_port;
     NetTpsCounter *m_tps;
     int m_id;
@@ -203,6 +215,7 @@ public:
         for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
         {
             auto t = new MqttClientThread(port, &m_tps, i);
+            t->setParent(this);
             t->start();
             threads.push_back(t);
         }
@@ -218,6 +231,7 @@ public:
         {
             t->quit();
             t->wait();
+            delete t;
         }
     }
 

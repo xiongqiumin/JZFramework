@@ -58,15 +58,23 @@ inline void netInstallExit(JZObject *owner, JZEventLoop *loop, int ms)
 class NetTpsCounter : public JZObject
 {
 public:
-    NetTpsCounter(const std::string &name) : m_name(name) {}
+    NetTpsCounter(const std::string &name, JZObject *parent = nullptr) : JZObject(parent), m_name(name) {}
 
     void begin()
     {
         m_start = std::chrono::steady_clock::now();
         m_totalStart = m_start;
-        JZTimer *t = new JZTimer(this);
-        connect(&t->sigTimeout, this, &NetTpsCounter::onTick);
-        t->start(1000);
+        if (!m_timer)
+            m_timer = new JZTimer(this);
+        connect(&m_timer->sigTimeout, this, &NetTpsCounter::onTick);
+        m_timer->start(1000);
+    }
+
+    // 停止每秒打印(测试结束时调用, 防止定时器泄漏到后续测试持续 tick)
+    void stop()
+    {
+        if (m_timer)
+            m_timer->stop();
     }
 
     // 累计消息数(默认 +1), 线程安全(原子)
@@ -89,6 +97,7 @@ public:
     }
 
     std::string m_name;
+    JZTimer *m_timer = nullptr;
     std::atomic<int> m_count{0};
     std::atomic<int64_t> m_total{0};
     std::chrono::steady_clock::time_point m_start;

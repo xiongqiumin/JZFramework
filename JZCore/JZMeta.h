@@ -25,10 +25,12 @@ public:
         Pointer,
 
         PodEnd,
+
         String,
         ByteArray,
         VariantMap,
         VariantList,
+        NetPackPtr,
     };
 };
 

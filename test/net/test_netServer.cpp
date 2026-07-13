@@ -86,7 +86,16 @@ class NetServerClientThread : public JZThread
 {
 public:
     NetServerClientThread(const string &host, int port, NetTpsCounter *tps)
-        : m_host(host), m_port(port), m_tps(tps) {}
+        : m_host(host), m_port(port), m_tps(tps) 
+    {
+        moveToThread(this);
+        connect(&sigFinished, this, &NetServerClientThread::onFinished);
+    }
+
+    void onFinished()
+    {
+        moveToThread(m_parent->thread());
+    }
 
     void run() override
     {
@@ -138,6 +147,7 @@ public:
         for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
         {
             auto t = new NetServerClientThread("127.0.0.1", port, &m_tps);
+            t->setParent(this);
             t->start();
             threads.push_back(t);
         }
@@ -153,6 +163,7 @@ public:
         {
             t->quit();
             t->wait();
+            delete t;
         }
     }
 

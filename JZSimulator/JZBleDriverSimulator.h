@@ -3,7 +3,7 @@
 
 #include "JZBleDriver.h"
 #include "JZNetClient.h"
-#include "JZBleSimPack.h"
+#include "JZSimPack.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -63,7 +63,7 @@ public:
 
 private:
     void onPacket(JZNetPackPtr pack);
-    void sendSim(int msg, const JZVariantMap &m);
+    void sendSim(JZSimCmd cmd, const JZVariantMap &m);
     int  getConnHandle(const std::string &a);
 
     JZNetClient *m_client = nullptr;

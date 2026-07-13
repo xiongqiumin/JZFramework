@@ -1,5 +1,5 @@
 #include "JZGpioDriverSimulator.h"
-#include "JZGpioSimPack.h"
+#include "JZSimPack.h"
 #include "JZSignal.h"
 #include "JZApplication.h"
 #include <cmath>
@@ -32,7 +32,7 @@ std::vector<JZGpioInfo> JZGpioDriverSimulator::availableGpios()
 
 JZGpioDriverSimulator::JZGpioDriverSimulator(const std::string &ip, int port)
 {
-    JZGpioSimPack::ensureRegistered();
+    JZSimPack::ensureRegistered();
 
     m_client = new JZNetClient();
     connect(&m_client->sigPacketReceive, [this](JZNetPackPtr p) { onPacket(p); });
@@ -56,13 +56,13 @@ JZGpioDriverSimulator::~JZGpioDriverSimulator()
     }
 }
 
-void JZGpioDriverSimulator::sendSim(int msg, const JZVariantMap &m)
+void JZGpioDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
     if (!m_client || !m_client->isConnect())
         return;
-    JZGpioSimPack pack;
-    pack.map = m;
-    simSetInt(pack.map, "msg", msg);
+    JZSimPack pack;
+    pack.cmd = cmd;
+    pack.data = m;
     m_client->sendPacket(&pack);
 }
 
@@ -74,9 +74,9 @@ bool JZGpioDriverSimulator::open(JZGpio *gpio)
     m_levelCache[pin] = JZGpio::Low;
 
     JZVariantMap m;
-    simSetInt(m, "pin", pin);
-    simSetInt(m, "dir", gpio->direction());
-    simSetInt(m, "pull", gpio->pull());
+    m["pin"] = JZVariant(pin);
+    m["dir"] = JZVariant(gpio->direction());
+    m["pull"] = JZVariant(gpio->pull());
     sendSim(SIM_GPIO_CMD_OPEN, m);
 
     // open 前已设置触发边沿则同步给设备
@@ -89,7 +89,7 @@ void JZGpioDriverSimulator::close(JZGpio *gpio)
 {
     int pin = gpio->pin();
     JZVariantMap m;
-    simSetInt(m, "pin", pin);
+    m["pin"] = JZVariant(pin);
     sendSim(SIM_GPIO_CMD_CLOSE, m);
     m_pins.erase(pin);
     m_levelCache.erase(pin);
@@ -104,8 +104,8 @@ bool JZGpioDriverSimulator::isOpen(JZGpio *gpio)
 bool JZGpioDriverSimulator::setDirection(JZGpio *gpio, JZGpio::Direction dir)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "dir", dir);
+    m["pin"] = JZVariant(gpio->pin());
+    m["dir"] = JZVariant(dir);
     sendSim(SIM_GPIO_CMD_SET_DIR, m);
     return true;
 }
@@ -113,8 +113,8 @@ bool JZGpioDriverSimulator::setDirection(JZGpio *gpio, JZGpio::Direction dir)
 bool JZGpioDriverSimulator::setPull(JZGpio *gpio, JZGpio::Pull pull)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "pull", pull);
+    m["pin"] = JZVariant(gpio->pin());
+    m["pull"] = JZVariant(pull);
     sendSim(SIM_GPIO_CMD_SET_PULL, m);
     return true;
 }
@@ -125,8 +125,8 @@ bool JZGpioDriverSimulator::write(JZGpio *gpio, int level)
     int pin = gpio->pin();
     m_levelCache[pin] = level ? JZGpio::High : JZGpio::Low;
     JZVariantMap m;
-    simSetInt(m, "pin", pin);
-    simSetInt(m, "level", level ? 1 : 0);
+    m["pin"] = JZVariant(pin);
+    m["level"] = JZVariant(level ? 1 : 0);
     sendSim(SIM_GPIO_CMD_WRITE, m);
     return true;
 }
@@ -139,7 +139,7 @@ int JZGpioDriverSimulator::read(JZGpio *gpio)
 
     // 同时向设备请求一次刷新
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
+    m["pin"] = JZVariant(gpio->pin());
     sendSim(SIM_GPIO_CMD_READ, m);
     return lv;
 }
@@ -148,9 +148,9 @@ int JZGpioDriverSimulator::read(JZGpio *gpio)
 bool JZGpioDriverSimulator::startPwm(JZGpio *gpio, int freqHz, float duty)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "freq", freqHz);
-    simSetInt(m, "duty", (int)(duty * 1000.0f + 0.5f)); // 千分比
+    m["pin"] = JZVariant(gpio->pin());
+    m["freq"] = JZVariant(freqHz);
+    m["duty"] = JZVariant((int)(duty * 1000.0f + 0.5f)); // 千分比
     sendSim(SIM_GPIO_CMD_PWM_START, m);
     return true;
 }
@@ -158,8 +158,8 @@ bool JZGpioDriverSimulator::startPwm(JZGpio *gpio, int freqHz, float duty)
 bool JZGpioDriverSimulator::setPwmFrequency(JZGpio *gpio, int freqHz)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "freq", freqHz);
+    m["pin"] = JZVariant(gpio->pin());
+    m["freq"] = JZVariant(freqHz);
     sendSim(SIM_GPIO_CMD_PWM_FREQ, m);
     return true;
 }
@@ -167,8 +167,8 @@ bool JZGpioDriverSimulator::setPwmFrequency(JZGpio *gpio, int freqHz)
 bool JZGpioDriverSimulator::setPwmDuty(JZGpio *gpio, float duty)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "duty", (int)(duty * 1000.0f + 0.5f));
+    m["pin"] = JZVariant(gpio->pin());
+    m["duty"] = JZVariant((int)(duty * 1000.0f + 0.5f));
     sendSim(SIM_GPIO_CMD_PWM_DUTY, m);
     return true;
 }
@@ -176,7 +176,7 @@ bool JZGpioDriverSimulator::setPwmDuty(JZGpio *gpio, float duty)
 void JZGpioDriverSimulator::stopPwm(JZGpio *gpio)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
+    m["pin"] = JZVariant(gpio->pin());
     sendSim(SIM_GPIO_CMD_PWM_STOP, m);
 }
 
@@ -272,8 +272,8 @@ void JZGpioDriverSimulator::onWaveTimeout()
 bool JZGpioDriverSimulator::setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge)
 {
     JZVariantMap m;
-    simSetInt(m, "pin", gpio->pin());
-    simSetInt(m, "edge", edge);
+    m["pin"] = JZVariant(gpio->pin());
+    m["edge"] = JZVariant(edge);
     sendSim(SIM_GPIO_CMD_SET_TRIGGER, m);
     return true;
 }
@@ -281,20 +281,20 @@ bool JZGpioDriverSimulator::setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge)
 // ==================== 报文分发 ====================
 void JZGpioDriverSimulator::onPacket(JZNetPackPtr pack)
 {
-    auto *sp = dynamic_cast<JZGpioSimPack *>(pack.get());
+    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
     if (!sp)
         return;
 
-    const JZVariantMap &map = sp->map;
-    int msg = sp->msg();
+    const JZVariantMap &map = sp->data;
+    JZSimCmd cmd = sp->cmd;
 
-    switch (msg)
+    switch (cmd)
     {
     case SIM_GPIO_EVT_LEVEL:
     case SIM_GPIO_EVT_READ_RESULT:
     {
-        int pin = simGetInt(map, "pin");
-        int level = simGetInt(map, "level");
+        int pin = map.at("pin").toInt();
+        int level = map.at("level").toInt();
         m_levelCache[pin] = level ? JZGpio::High : JZGpio::Low;
         auto it = m_pins.find(pin);
         if (it != m_pins.end() && it->second)

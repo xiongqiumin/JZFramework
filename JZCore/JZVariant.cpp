@@ -100,6 +100,24 @@ JZVariant::JZVariant(const std::string &str)
     m_data.meta = meta;
 }
 
+JZVariant::JZVariant(const JZVariantMap &m)
+{
+    m_type = JZMetaType::VariantMap;
+
+    auto meta = new JZMeta<JZVariantMap>();
+    meta->data = m;
+    m_data.meta = meta;
+}
+
+JZVariant::JZVariant(const JZVariantList &l)
+{
+    m_type = JZMetaType::VariantList;
+
+    auto meta = new JZMeta<JZVariantList>();
+    meta->data = l;
+    m_data.meta = meta;
+}
+
 JZVariant::JZVariant(JZVariant &&other) noexcept
 {
     m_type = other.m_type;
@@ -218,6 +236,16 @@ std::string JZVariant::toString() const
 JZByteArray JZVariant::toByteArray() const
 {
     return value<JZByteArray>();
+}
+
+JZVariantMap JZVariant::toMap() const
+{
+    return value<JZVariantMap>();
+}
+
+JZVariantList JZVariant::toList() const
+{
+    return value<JZVariantList>();
 }
 
 void *JZVariant::data()
@@ -385,6 +413,18 @@ JZDataStream& operator<<(JZDataStream& s, const JZVariant& v)
         case JZMetaType::Double:    s << v.toDouble(); break;
         case JZMetaType::String:    s << v.toString(); break;
         case JZMetaType::ByteArray: s << v.toByteArray(); break;
+        case JZMetaType::VariantMap: {
+            const JZVariantMap &m = v.valueRef<JZVariantMap>();
+            s << (int32_t)m.size();
+            for (auto &kv : m) { s << kv.first; s << kv.second; }
+            break;
+        }
+        case JZMetaType::VariantList: {
+            const JZVariantList &l = v.valueRef<JZVariantList>();
+            s << (int32_t)l.size();
+            for (auto &e : l) s << e;
+            break;
+        }
         default: {
             JZ_ASSERT(0);
             break;
@@ -406,6 +446,28 @@ JZDataStream& operator>>(JZDataStream& s, JZVariant& v)
         case JZMetaType::Double:    { double d; s >> d; v = JZVariant(d); } break;
         case JZMetaType::String:    { std::string st; s >> st; v = JZVariant(st); } break;
         case JZMetaType::ByteArray: { JZByteArray ba; s >> ba; v = JZVariant::fromValue(ba); } break;
+        case JZMetaType::VariantMap: {
+            int32_t n; s >> n;
+            JZVariantMap m;
+            for (int32_t i = 0; i < n; i++) {
+                std::string k; s >> k;
+                JZVariant val; s >> val;
+                m[k] = val;
+            }
+            v = JZVariant(m);
+            break;
+        }
+        case JZMetaType::VariantList: {
+            int32_t n; s >> n;
+            JZVariantList l;
+            l.resize(n);
+            for (int32_t i = 0; i < n; i++) {
+                JZVariant val; s >> val;
+                l[i] = val;
+            }
+            v = JZVariant(l);
+            break;
+        }
         default: {
             JZ_ASSERT(0);
             break;

@@ -1,5 +1,5 @@
 #include "JZBleDriverSimulator.h"
-#include "JZBleSimPack.h"
+#include "JZSimPack.h"
 #include "JZBLEPeripheral.h"
 #include "JZBLECentral.h"
 #include "JZBLEService.h"
@@ -17,7 +17,7 @@ static bool contains(const std::vector<std::string> &v, const std::string &u)
 
 JZBleDriverSimulator::JZBleDriverSimulator(const std::string &ip, int port)
 {
-    JZBleSimPack::ensureRegistered();
+    JZSimPack::ensureRegistered();
 
     m_client = new JZNetClient();
     connect(&m_client->sigPacketReceive, [this](JZNetPackPtr p) { onPacket(p); });
@@ -30,13 +30,13 @@ JZBleDriverSimulator::~JZBleDriverSimulator() {}
 bool JZBleDriverSimulator::isBluetoothAvailable() { return true; }
 bool JZBleDriverSimulator::isBluetoothEnabled()   { return m_client && m_client->isConnect(); }
 
-void JZBleDriverSimulator::sendSim(int msg, const JZVariantMap &m)
+void JZBleDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
     if (!m_client || !m_client->isConnect())
         return;
-    JZBleSimPack pack;
-    pack.map = m;
-    simSetInt(pack.map, "msg", msg);
+    JZSimPack pack;
+    pack.cmd = cmd;
+    pack.data = m;
     m_client->sendPacket(&pack);
 }
 
@@ -66,13 +66,13 @@ void JZBleDriverSimulator::connectToDevice(JZBLECentral *d)
 {
     std::string addr = d->deviceInfo().address();
     m_centralByAddr[addr] = d;
-    JZVariantMap m; simSetStr(m, "addr", addr);
+    JZVariantMap m; m["addr"] = JZVariant(addr);
     sendSim(SIM_CMD_CONNECT, m);
 }
 void JZBleDriverSimulator::disconnectFromDevice(JZBLECentral *d)
 {
     std::string addr = d->deviceInfo().address();
-    JZVariantMap m; simSetStr(m, "addr", addr);
+    JZVariantMap m; m["addr"] = JZVariant(addr);
     sendSim(SIM_CMD_DISCONNECT, m);
 }
 bool JZBleDriverSimulator::isConnected(JZBLECentral *d)
@@ -85,7 +85,7 @@ void JZBleDriverSimulator::discoverServices(const std::string &address, JZBLECen
 {
     m_svcDiscoverCtrl = d;
     m_svcDiscoverAddr = address;
-    JZVariantMap m; simSetStr(m, "addr", address);
+    JZVariantMap m; m["addr"] = JZVariant(address);
     sendSim(SIM_CMD_DISCOVER_SVC, m);
 }
 std::vector<JZBluetoothUuid> JZBleDriverSimulator::services(const std::string &address)
@@ -100,7 +100,7 @@ void JZBleDriverSimulator::discoverCharacteristics(const std::string &address, c
     m_chrDiscoverCtrl = d;
     m_chrDiscoverAddr = address;
     m_chrDiscoverSvc  = serviceUuid;
-    JZVariantMap m; simSetStr(m, "addr", address); simSetStr(m, "svc", serviceUuid);
+    JZVariantMap m; m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid);
     sendSim(SIM_CMD_DISCOVER_CHR, m);
 }
 std::vector<JZLowEnergyCharacteristic> JZBleDriverSimulator::characteristics(const std::string &address,
@@ -121,7 +121,7 @@ void JZBleDriverSimulator::readCharacteristic(const std::string &address, const 
     int h = it2->second;
     Ctx cx; cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.d = d;
     m_readCtx[h] = cx;
-    JZVariantMap m; simSetStr(m, "addr", address); simSetStr(m, "svc", serviceUuid); simSetStr(m, "chr", charUuid);
+    JZVariantMap m; m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid); m["chr"] = JZVariant(charUuid);
     sendSim(SIM_CMD_READ, m);
 }
 void JZBleDriverSimulator::writeCharacteristic(const std::string &address, const std::string &serviceUuid,
@@ -136,8 +136,8 @@ void JZBleDriverSimulator::writeCharacteristic(const std::string &address, const
     Ctx cx; cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.value = value; cx.d = d;
     m_writeCtx[h] = cx;
     JZVariantMap m;
-    simSetStr(m, "addr", address); simSetStr(m, "svc", serviceUuid); simSetStr(m, "chr", charUuid);
-    simSetStr(m, "val", value); simSetInt(m, "nrs", writeNoResponse ? 1 : 0);
+    m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid); m["chr"] = JZVariant(charUuid);
+    m["val"] = JZVariant(value); m["nrs"] = JZVariant(writeNoResponse ? 1 : 0);
     sendSim(SIM_CMD_WRITE, m);
 }
 void JZBleDriverSimulator::enableNotification(const std::string &address, const std::string &serviceUuid,
@@ -145,8 +145,8 @@ void JZBleDriverSimulator::enableNotification(const std::string &address, const 
 {
     (void)d;
     JZVariantMap m;
-    simSetStr(m, "addr", address); simSetStr(m, "svc", serviceUuid); simSetStr(m, "chr", charUuid);
-    simSetInt(m, "en", enable ? 1 : 0);
+    m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid); m["chr"] = JZVariant(charUuid);
+    m["en"] = JZVariant(enable ? 1 : 0);
     sendSim(SIM_CMD_ENABLE_NOTIFY, m);
 }
 void JZBleDriverSimulator::readDescriptor(const std::string &address, const std::string &serviceUuid,
@@ -166,7 +166,7 @@ void JZBleDriverSimulator::writeDescriptor(const std::string &address, const std
 void JZBleDriverSimulator::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
     m_periphChars.push_back({svcUuid, charUuid, properties});
-    JZVariantMap m; simSetStr(m, "svc", svcUuid); simSetStr(m, "chr", charUuid); simSetInt(m, "props", properties);
+    JZVariantMap m; m["svc"] = JZVariant(svcUuid); m["chr"] = JZVariant(charUuid); m["props"] = JZVariant(properties);
     sendSim(SIM_CMD_ADD_PERIPH_CHR, m);
 }
 void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &serviceUuids,
@@ -175,7 +175,11 @@ void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::
     m_periphCtrl = d;
     std::vector<std::string> su;
     for (auto &u : serviceUuids) su.push_back(u.toString());
-    JZVariantMap m; simSetStr(m, "name", name); simSetStrs(m, "su", su);
+    JZVariantMap m; m["name"] = JZVariant(name); {
+    JZVariantList _l; _l.reserve(su.size());
+    for (auto &_e : su) _l.push_back(JZVariant(_e));
+    m["su"] = JZVariant::fromValue(_l);
+}
     sendSim(SIM_CMD_START_ADV, m);
 }
 void JZBleDriverSimulator::stopAdvertising()
@@ -187,30 +191,37 @@ void JZBleDriverSimulator::stopAdvertising()
 }
 void JZBleDriverSimulator::peripheralSendNotify(const std::string &charUuid, const std::string &value)
 {
-    JZVariantMap m; simSetStr(m, "chr", charUuid); simSetStr(m, "val", value);
+    JZVariantMap m; m["chr"] = JZVariant(charUuid); m["val"] = JZVariant(value);
     sendSim(SIM_CMD_SEND_NOTIFY, m);
 }
 void JZBleDriverSimulator::peripheralSendIndicate(const std::string &charUuid, const std::string &value)
 {
-    JZVariantMap m; simSetStr(m, "chr", charUuid); simSetStr(m, "val", value);
+    JZVariantMap m; m["chr"] = JZVariant(charUuid); m["val"] = JZVariant(value);
     sendSim(SIM_CMD_SEND_INDICATE, m);
 }
 
 // ===================== 报文分发 =====================
 void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
 {
-    auto *sp = dynamic_cast<JZBleSimPack *>(pack.get());
+    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
     if (!sp) return;
 
-    const JZVariantMap &map = sp->map;
-    int msg = sp->msg();
+    const JZVariantMap &map = sp->data;
+    JZSimCmd cmd = sp->cmd;
 
-    switch (msg) {
+    switch (cmd) {
     case SIM_EVT_SCAN_RESULT: {
-        std::string addr = simGetStr(map, "addr");
-        std::string name = simGetStr(map, "name");
-        int rssi = simGetInt(map, "rssi");
-        std::vector<std::string> su = simGetStrs(map, "su");
+        std::string addr = map.at("addr").toString();
+        std::string name = map.at("name").toString();
+        int rssi = map.at("rssi").toInt();
+        std::vector<std::string> su;
+{
+    auto _it = map.find("su");
+    if (_it != map.end() && _it->second.typeId() == jzMetaTypeId<JZVariantList>()) {
+        const JZVariantList &_l = _it->second.valueRef<JZVariantList>();
+        for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) su.push_back(_e.toString());
+    }
+}
         JZBluetoothDeviceInfo info;
         info.setAddress(addr);
         info.setName(name);
@@ -223,8 +234,8 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_CONNECTED: {
-        std::string addr = simGetStr(map, "addr");
-        int role = simGetInt(map, "role");
+        std::string addr = map.at("addr").toString();
+        int role = map.at("role").toInt();
         if (role == 0) {
             m_connMap[addr] = 1;
             auto it = m_centralByAddr.find(addr);
@@ -237,8 +248,8 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_DISCONNECTED: {
-        std::string addr = simGetStr(map, "addr");
-        int role = simGetInt(map, "role");
+        std::string addr = map.at("addr").toString();
+        int role = map.at("role").toInt();
         if (role == 0) {
             m_connMap.erase(addr);
             auto it = m_centralByAddr.find(addr);
@@ -251,8 +262,15 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_SERVICES: {
-        std::string addr = simGetStr(map, "addr");
-        std::vector<std::string> su = simGetStrs(map, "su");
+        std::string addr = map.at("addr").toString();
+        std::vector<std::string> su;
+{
+    auto _it = map.find("su");
+    if (_it != map.end() && _it->second.typeId() == jzMetaTypeId<JZVariantList>()) {
+        const JZVariantList &_l = _it->second.valueRef<JZVariantList>();
+        for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) su.push_back(_e.toString());
+    }
+}
         std::vector<JZBluetoothUuid> vu;
         for (auto &s : su) vu.push_back(JZBluetoothUuid(s));
         m_svcCache[addr] = vu;
@@ -261,9 +279,16 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_CHARACTERISTICS: {
-        std::string addr = simGetStr(map, "addr");
-        std::string svc  = simGetStr(map, "svc");
-        std::vector<std::string> cls = simGetStrs(map, "chars");
+        std::string addr = map.at("addr").toString();
+        std::string svc  = map.at("svc").toString();
+        std::vector<std::string> cls;
+{
+    auto _it = map.find("chars");
+    if (_it != map.end() && _it->second.typeId() == jzMetaTypeId<JZVariantList>()) {
+        const JZVariantList &_l = _it->second.valueRef<JZVariantList>();
+        for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) cls.push_back(_e.toString());
+    }
+}
         std::vector<JZLowEnergyCharacteristic> chars;
         for (auto &e : cls) {
             size_t p = e.find('|');
@@ -286,10 +311,10 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_READ_RESULT: {
-        std::string addr = simGetStr(map, "addr");
-        std::string svc  = simGetStr(map, "svc");
-        std::string chr  = simGetStr(map, "chr");
-        std::string val  = simGetStr(map, "val");
+        std::string addr = map.at("addr").toString();
+        std::string svc  = map.at("svc").toString();
+        std::string chr  = map.at("chr").toString();
+        std::string val  = map.at("val").toString();
         int h = 0;
         auto it = m_charValHandle.find(addr + "|" + svc);
         if (it != m_charValHandle.end()) {
@@ -304,9 +329,9 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_WRITE_RESULT: {
-        std::string addr = simGetStr(map, "addr");
-        std::string svc  = simGetStr(map, "svc");
-        std::string chr  = simGetStr(map, "chr");
+        std::string addr = map.at("addr").toString();
+        std::string svc  = map.at("svc").toString();
+        std::string chr  = map.at("chr").toString();
         int h = 0;
         auto it = m_charValHandle.find(addr + "|" + svc);
         if (it != m_charValHandle.end()) {
@@ -322,10 +347,10 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_NOTIFY_RX: {
-        std::string addr = simGetStr(map, "addr");
-        std::string svc  = simGetStr(map, "svc");
-        std::string chr  = simGetStr(map, "chr");
-        std::string val  = simGetStr(map, "val");
+        std::string addr = map.at("addr").toString();
+        std::string svc  = map.at("svc").toString();
+        std::string chr  = map.at("chr").toString();
+        std::string val  = map.at("val").toString();
         int h = 0;
         auto it = m_charValHandle.find(addr + "|" + svc);
         if (it != m_charValHandle.end()) {
@@ -338,8 +363,8 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         break;
     }
     case SIM_EVT_CHAR_WRITTEN: {
-        std::string chr = simGetStr(map, "chr");
-        std::string val = simGetStr(map, "val");
+        std::string chr = map.at("chr").toString();
+        std::string val = map.at("val").toString();
         if (m_periphCtrl) JZBleDriver::peripheralOnCharWritten(m_periphCtrl, chr.c_str(), val.c_str());
         break;
     }

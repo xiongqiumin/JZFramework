@@ -3,7 +3,7 @@
 
 #include "JZGpioDriver.h"
 #include "JZNetClient.h"
-#include "JZGpioSimPack.h"
+#include "JZSimPack.h"
 #include "JZTimer.h"
 #include <map>
 #include <string>
@@ -46,7 +46,7 @@ public:
 
 private:
     void onPacket(JZNetPackPtr pack);
-    void sendSim(int msg, const JZVariantMap &m);
+    void sendSim(JZSimCmd cmd, const JZVariantMap &m);
 
     // 波形本地生成
     struct WaveState

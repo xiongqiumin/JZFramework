@@ -1,12 +1,12 @@
 set(JZSIMULATOR_SOURCES
-    JZBleSimPack.h
-    JZBleSimPack.cpp
+    JZSimPack.h
+    JZSimPack.cpp
 	JZBleDriverSimulator.h
 	JZBleDriverSimulator.cpp
-	JZGpioSimPack.h
-	JZGpioSimPack.cpp
 	JZGpioDriverSimulator.h
 	JZGpioDriverSimulator.cpp
+	JZWifiDriverSimulator.h
+	JZWifiDriverSimulator.cpp
 )
 convert_to_abs_paths(JZSIMULATOR_SOURCES)
 

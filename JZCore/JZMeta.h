@@ -27,6 +27,8 @@ public:
         PodEnd,
         String,
         ByteArray,
+        VariantMap,
+        VariantList,
     };
 };
 

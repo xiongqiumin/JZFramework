@@ -23,6 +23,8 @@ public:
     JZVariant(double d);
     JZVariant(const char *str);
     JZVariant(const std::string &str);
+    JZVariant(const JZVariantMap &m);
+    JZVariant(const JZVariantList &l);
     JZVariant(JZVariant&&) noexcept;
     ~JZVariant();
 
@@ -43,6 +45,8 @@ public:
     double toDouble() const;
     std::string toString() const;
     JZByteArray toByteArray() const;
+    JZVariantMap toMap() const;
+    JZVariantList toList() const;
 
     template <class T>
     static JZVariant fromValue(const T &t)
@@ -114,6 +118,10 @@ protected:
 
 typedef std::vector<JZVariant> JZVariantList;
 typedef std::map<std::string,JZVariant> JZVariantMap;
+
+// JZVariantMap / JZVariantList 作为 JZVariant 的内置值类型(固定元类型 id, 随 JZVariant 一起序列化/拷贝)
+JZ_DECLARE_METATYPE_INTERNAL(JZVariantMap,  JZMetaType::VariantMap)
+JZ_DECLARE_METATYPE_INTERNAL(JZVariantList, JZMetaType::VariantList)
 
 // fromValue 特化声明
 template <>

@@ -3,7 +3,7 @@
 
 #include "JZObject.h"
 #include "JZNetServer.h"
-#include "JZBleSimPack.h"
+#include "JZSimPack.h"
 #include <string>
 #include <vector>
 
@@ -31,9 +31,9 @@ private:
     void onAccept();
     void onDisconnect(uint64_t c);
     void onPacket(uint64_t c, JZNetPackPtr pack);
-    void handlePack(uint64_t c, const JZVariantMap &map);
+    void handlePack(uint64_t c, const JZSimPack &p);
 
-    void sendToDriver(int msg, const JZVariantMap &m);
+    void sendToDriver(JZSimCmd cmd, const JZVariantMap &m);
     void log(const std::string &text);
     void updateStatus();
 

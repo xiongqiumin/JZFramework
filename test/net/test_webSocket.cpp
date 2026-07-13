@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 
-#include "JZCo.h"
 #include "JZDebug.h"
 #include "JZWebSocketServer.h"
 #include "JZWebSocket.h"

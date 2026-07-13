@@ -27,8 +27,8 @@ public:
     JZVariant(uint16_t ui16);
     JZVariant(unsigned int ui);
     JZVariant(uint64_t ui64);
-    JZVariant(const JZVariantMap &m);
-    JZVariant(const JZVariantList &l);
+    JZVariant(const std::map<std::string, JZVariant> &m);
+    JZVariant(const std::vector<JZVariant>&l);
     JZVariant(JZVariant&&) noexcept;
     ~JZVariant();
 
@@ -49,8 +49,8 @@ public:
     double toDouble() const;
     std::string toString() const;
     JZByteArray toByteArray() const;
-    JZVariantMap toMap() const;
-    JZVariantList toList() const;
+    std::map<std::string, JZVariant> toMap() const;
+    std::vector<JZVariant> toList() const;
 
     template <class T>
     static JZVariant fromValue(const T &t)

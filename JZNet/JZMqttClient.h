@@ -38,7 +38,7 @@ protected:
     {
         uint16_t packetId;
         JZMqttPublishOpt opt;
-        uint64_t sendTimeMs;
+        int64_t sendTimeMs;
     };
 
     void onNetEvent(JZNetResEvent*event);

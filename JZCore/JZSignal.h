@@ -431,7 +431,7 @@ public:
         if (!m_connects) return;
         for (int i = (int)m_connects->size() - 1; i >= 0; i--)
         {
-            if ((*m_connects)[i].id == id) {
+            if ((*m_connects)[i]->id == id) {
                 m_connects->erase(m_connects->begin() + i);
             }
         }

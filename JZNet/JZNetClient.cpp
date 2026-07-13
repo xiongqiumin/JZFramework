@@ -21,7 +21,8 @@ JZNetClient::JZNetClient(JZObject *parent)
 }
 
 JZNetClient::~JZNetClient()
-{    
+{
+    disconnectFromHost();
 }
 
 SocketState JZNetClient::state() const

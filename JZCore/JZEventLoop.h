@@ -12,13 +12,14 @@ public:
     JZEventLoop();
     ~JZEventLoop();
 
-    void exec();
-    void exit();
+    int exec();
+    void exit(int code);
     void quit();
     void processEvents();
 
 protected:    
     bool m_running;
+    int m_code;
 };
 
 

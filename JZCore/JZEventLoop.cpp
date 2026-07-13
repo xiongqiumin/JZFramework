@@ -5,13 +5,14 @@
 JZEventLoop::JZEventLoop()
 {
     m_running = false;
+    m_code = 0;
 }
 
 JZEventLoop::~JZEventLoop()
 {
 }
 
-void JZEventLoop::exec()
+int JZEventLoop::exec()
 {
     JZTX_FUNC_TRACE
     m_running = true;
@@ -20,16 +21,18 @@ void JZEventLoop::exec()
         processEvents();
         thread()->waitEvents();
     }    
+    return m_code;
 }
 
 void JZEventLoop::quit()
 {
-    exit();
+    exit(0);
 }
 
-void JZEventLoop::exit()
+void JZEventLoop::exit(int code)
 {
-    m_running = false;        
+    m_code = code; 
+    m_running = false;       
 }
 
 void JZEventLoop::processEvents()

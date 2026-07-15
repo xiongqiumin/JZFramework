@@ -1,7 +1,7 @@
 set(JZSIMULATOR_SOURCES
-    JZSimulatorDevice.h
-    JZSimulatorDevice.cpp
-	main.cpp
+    JZSimulator.h
+    JZSimulator.cpp
+    main.cpp
 )
 convert_to_abs_paths(JZSIMULATOR_SOURCES)
 

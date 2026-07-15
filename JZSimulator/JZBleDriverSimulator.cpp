@@ -95,7 +95,7 @@ std::vector<JZBluetoothUuid> JZBleDriverSimulator::services(const std::string &a
 }
 
 void JZBleDriverSimulator::discoverCharacteristics(const std::string &address, const std::string &serviceUuid,
-                                                   JZBLEServicePrivate *d)
+                                                   JZBLEService *d)
 {
     m_chrDiscoverCtrl = d;
     m_chrDiscoverAddr = address;
@@ -112,7 +112,7 @@ std::vector<JZLowEnergyCharacteristic> JZBleDriverSimulator::characteristics(con
 
 // ===================== Central: 读写/通知 =====================
 void JZBleDriverSimulator::readCharacteristic(const std::string &address, const std::string &serviceUuid,
-                                              const std::string &charUuid, JZBLEServicePrivate *d)
+                                              const std::string &charUuid, JZBLEService *d)
 {
     auto it = m_charValHandle.find(address + "|" + serviceUuid);
     if (it == m_charValHandle.end()) return;
@@ -126,7 +126,7 @@ void JZBleDriverSimulator::readCharacteristic(const std::string &address, const 
 }
 void JZBleDriverSimulator::writeCharacteristic(const std::string &address, const std::string &serviceUuid,
                                                const std::string &charUuid, const std::string &value,
-                                               bool writeNoResponse, JZBLEServicePrivate *d)
+                                               bool writeNoResponse, JZBLEService *d)
 {
     auto it = m_charValHandle.find(address + "|" + serviceUuid);
     if (it == m_charValHandle.end()) return;
@@ -141,7 +141,7 @@ void JZBleDriverSimulator::writeCharacteristic(const std::string &address, const
     sendSim(SIM_CMD_WRITE, m);
 }
 void JZBleDriverSimulator::enableNotification(const std::string &address, const std::string &serviceUuid,
-                                              const std::string &charUuid, bool enable, JZBLEServicePrivate *d)
+                                              const std::string &charUuid, bool enable, JZBLEService *d)
 {
     (void)d;
     JZVariantMap m;
@@ -151,21 +151,25 @@ void JZBleDriverSimulator::enableNotification(const std::string &address, const 
 }
 void JZBleDriverSimulator::readDescriptor(const std::string &address, const std::string &serviceUuid,
                                           const std::string &charUuid, const std::string &descUuid,
-                                          JZBLEServicePrivate *d)
+                                          JZBLEService *d)
 {
-    JZBLEServicePrivate::onDescriptorRead(d, address.c_str(), serviceUuid.c_str(), descUuid.c_str(), "");
+    JZBLEService::onDescriptorRead(d, address.c_str(), serviceUuid.c_str(), descUuid.c_str(), "");
 }
 void JZBleDriverSimulator::writeDescriptor(const std::string &address, const std::string &serviceUuid,
                                            const std::string &charUuid, const std::string &descUuid,
-                                           const std::string &value, JZBLEServicePrivate *d)
+                                           const std::string &value, JZBLEService *d)
 {
-    JZBLEServicePrivate::onDescriptorWritten(d, address.c_str(), serviceUuid.c_str(), descUuid.c_str(), value.c_str(), true);
+    JZBLEService::onDescriptorWritten(d, address.c_str(), serviceUuid.c_str(), descUuid.c_str(), value.c_str(), true);
 }
 
 // ===================== Peripheral =====================
 void JZBleDriverSimulator::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
-    m_periphChars.push_back({svcUuid, charUuid, properties});
+    PeriphChar pc;
+    pc.svc = svcUuid;
+    pc.chr = charUuid;
+    pc.props = properties;
+    m_periphChars.push_back(pc);
     JZVariantMap m; simSetStr(m, "svc", svcUuid); simSetStr(m, "chr", charUuid); simSetInt(m, "props", properties);
     sendSim(SIM_CMD_ADD_PERIPH_CHR, m);
 }
@@ -282,7 +286,7 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         }
         m_charCache[addr + "|" + svc] = chars;
         if (m_chrDiscoverCtrl)
-            JZBLEServicePrivate::onCharacteristicsDiscovered(m_chrDiscoverCtrl, addr.c_str(), svc.c_str());
+            JZBLEService::onCharacteristicsDiscovered(m_chrDiscoverCtrl, addr.c_str(), svc.c_str());
         break;
     }
     case SIM_EVT_READ_RESULT: {
@@ -298,7 +302,7 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         }
         auto cit = m_readCtx.find(h);
         if (cit != m_readCtx.end()) {
-            JZBLEServicePrivate::onCharacteristicRead(cit->second.d, addr.c_str(), svc.c_str(), val.c_str());
+            JZBLEService::onCharacteristicRead(cit->second.d, addr.c_str(), svc.c_str(), val.c_str());
             m_readCtx.erase(cit);
         }
         break;
@@ -315,7 +319,7 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         }
         auto cit = m_writeCtx.find(h);
         if (cit != m_writeCtx.end()) {
-            JZBLEServicePrivate::onCharacteristicWritten(cit->second.d, addr.c_str(), svc.c_str(),
+            JZBLEService::onCharacteristicWritten(cit->second.d, addr.c_str(), svc.c_str(),
                                                          cit->second.value.c_str(), true);
             m_writeCtx.erase(cit);
         }
@@ -334,7 +338,7 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         }
         auto cit = m_ntfCtx.find(h);
         if (cit != m_ntfCtx.end())
-            JZBLEServicePrivate::onCharacteristicChanged(cit->second.d, addr.c_str(), svc.c_str(), val.c_str());
+            JZBLEService::onCharacteristicChanged(cit->second.d, addr.c_str(), svc.c_str(), val.c_str());
         break;
     }
     case SIM_EVT_CHAR_WRITTEN: {

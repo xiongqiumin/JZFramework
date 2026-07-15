@@ -35,23 +35,23 @@ public:
     std::vector<JZBluetoothUuid> services(const std::string& address) override;
 
     void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
-                                 JZBLEServicePrivate *d) override;
+                                 JZBLEService *d) override;
     std::vector<JZLowEnergyCharacteristic> characteristics(const std::string& address,
                                                           const std::string& serviceUuid) override;
 
     void readCharacteristic(const std::string& address, const std::string& serviceUuid,
-                            const std::string& charUuid, JZBLEServicePrivate *d) override;
+                            const std::string& charUuid, JZBLEService *d) override;
     void writeCharacteristic(const std::string& address, const std::string& serviceUuid,
                              const std::string& charUuid, const std::string& value,
-                             bool writeNoResponse, JZBLEServicePrivate *d) override;
+                             bool writeNoResponse, JZBLEService *d) override;
     void enableNotification(const std::string& address, const std::string& serviceUuid,
-                            const std::string& charUuid, bool enable, JZBLEServicePrivate *d) override;
+                            const std::string& charUuid, bool enable, JZBLEService *d) override;
     void readDescriptor(const std::string& address, const std::string& serviceUuid,
                         const std::string& charUuid, const std::string& descUuid,
-                        JZBLEServicePrivate *d) override;
+                        JZBLEService *d) override;
     void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                          const std::string& charUuid, const std::string& descUuid,
-                         const std::string& value, JZBLEServicePrivate *d) override;
+                         const std::string& value, JZBLEService *d) override;
 
     // === Peripheral ===
     void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
@@ -74,7 +74,7 @@ private:
     std::map<std::string, JZBLECentral*>  m_centralByAddr;
     JZBLECentral *m_svcDiscoverCtrl = nullptr;
     std::string      m_svcDiscoverAddr;
-    JZBLEServicePrivate *m_chrDiscoverCtrl = nullptr;
+    JZBLEService *m_chrDiscoverCtrl = nullptr;
     std::string      m_chrDiscoverAddr;
     std::string      m_chrDiscoverSvc;
 
@@ -83,7 +83,7 @@ private:
     std::map<std::string, std::map<std::string, int>>                    m_charValHandle; // addr|svc -> chr -> handle
     int m_handleCounter = 0;
 
-    struct Ctx { std::string addr, svc, chr, value; JZBLEServicePrivate *d = nullptr; };
+    struct Ctx { std::string addr, svc, chr, value; JZBLEService *d = nullptr; };
     std::map<int, Ctx> m_readCtx;
     std::map<int, Ctx> m_ntfCtx;
     std::map<int, Ctx> m_writeCtx;

@@ -8,7 +8,6 @@ class JZBluetoothUuid
 {
 public:
     JZBluetoothUuid();
-    explicit JZBluetoothUuid(uint16_t uuid16);
     explicit JZBluetoothUuid(uint32_t uuid32);
     explicit JZBluetoothUuid(const std::string &uuid128);
     JZBluetoothUuid(const JZBluetoothUuid &other);

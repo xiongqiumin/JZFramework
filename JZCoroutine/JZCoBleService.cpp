@@ -1,6 +1,6 @@
 #include "JZCoBleService.h"
 
-// JZBLEServicePrivate::Discovered 的取值，用于判断发现完成
+// JZBLEService::Discovered 的取值，用于判断发现完成
 static const int kBleServiceDiscovered = 3;
 
 JZCoBleService::JZCoBleService(JZBLEService *service, JZObject *parent)

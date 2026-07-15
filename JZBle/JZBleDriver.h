@@ -12,7 +12,6 @@
 class JZBLEPeripheral;
 class JZBLECentral;
 class JZBLEService;
-class JZBLEServicePrivate;
 class JZBLEDeviceDiscoveryAgentPrivate;
 
 class JZBleDriver
@@ -43,23 +42,23 @@ public:
     virtual std::vector<JZBluetoothUuid> services(const std::string& address) = 0;
 
     virtual void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
-                                          JZBLEServicePrivate *d) = 0;
+                                          JZBLEService *d) = 0;
     virtual std::vector<JZLowEnergyCharacteristic> characteristics(
         const std::string& address, const std::string& serviceUuid) = 0;
 
     virtual void readCharacteristic(const std::string& address, const std::string& serviceUuid,
-                                     const std::string& charUuid, JZBLEServicePrivate *d) = 0;
+                                     const std::string& charUuid, JZBLEService *d) = 0;
     virtual void writeCharacteristic(const std::string& address, const std::string& serviceUuid,
                                       const std::string& charUuid, const std::string& value,
-                                      bool writeNoResponse, JZBLEServicePrivate *d) = 0;
+                                      bool writeNoResponse, JZBLEService *d) = 0;
     virtual void enableNotification(const std::string& address, const std::string& serviceUuid,
-                                     const std::string& charUuid, bool enable, JZBLEServicePrivate *d) = 0;
+                                     const std::string& charUuid, bool enable, JZBLEService *d) = 0;
     virtual void readDescriptor(const std::string& address, const std::string& serviceUuid,
                                  const std::string& charUuid, const std::string& descUuid,
-                                 JZBLEServicePrivate *d) = 0;
+                                 JZBLEService *d) = 0;
     virtual void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                                   const std::string& charUuid, const std::string& descUuid,
-                                  const std::string& value, JZBLEServicePrivate *d) = 0;
+                                  const std::string& value, JZBLEService *d) = 0;
 
     // === Peripheral ===
     virtual void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) {}

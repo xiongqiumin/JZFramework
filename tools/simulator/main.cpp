@@ -1,11 +1,11 @@
 #include "JZApplication.h"
-#include "JZSimulatorDevice.h"
+#include "JZSimulator.h"
 
-// JZ BLE Simulator 设备端入口: 启动 LVGL 界面并监听来自 JZBleDriverSimulator 的连接。
+// JZ BLE Simulator: 启动 LVGL 界面, 监听来自 JZBleDriverSimulator 的 BLE 仿真请求
 int main()
 {
     JZApplication app;
-    JZSimulatorDevice device;
-    device.run(19123);
+    JZSimulator sim;
+    sim.run(19123);
     return app.exec();
 }

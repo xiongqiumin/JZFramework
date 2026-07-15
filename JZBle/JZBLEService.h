@@ -9,40 +9,14 @@
 
 class JZBleDriver;
 
-class JZBLEServicePrivate
-{
-public:
-    class JZBLEService *q_ptr;
-    JZBluetoothUuid     serviceUuid;
-    JZBleDriver *driver = nullptr;
-    std::string         deviceAddress;
-
-    enum State { Invalid, DiscoveryRequired, Discovering, Discovered };
-    enum ErrorCode { NoError, OperationError, ReadError, WriteError, DescriptorReadError, DescriptorWriteError, UnknownError };
-
-    State     state = DiscoveryRequired;
-    ErrorCode error = NoError;
-    std::string errorMsg;
-    std::vector<JZLowEnergyCharacteristic> charList;
-
-    JZBLEServicePrivate(class JZBLEService *q, const JZBluetoothUuid &uuid);
-
-    JZLowEnergyCharacteristic findChar(const JZBluetoothUuid &uuid) const;
-
-    // 静态分发方法
-    static void onCharacteristicsDiscovered(JZBLEServicePrivate *d, const char *addr, const char *svcUuid);
-    static void onCharacteristicRead(JZBLEServicePrivate *d, const char *addr, const char *svcUuid, const char *value);
-    static void onCharacteristicWritten(JZBLEServicePrivate *d, const char *addr, const char *svcUuid, const char *value, bool ok);
-    static void onCharacteristicChanged(JZBLEServicePrivate *d, const char *addr, const char *svcUuid, const char *value);
-    static void onDescriptorRead(JZBLEServicePrivate *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value);
-    static void onDescriptorWritten(JZBLEServicePrivate *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value, bool ok);
-};
-
 class JZBLEService : public JZObject
 {
     JZ_OBJECT_DECLARE(JZBLEService)
 
 public:
+    enum State { Invalid, DiscoveryRequired, Discovering, Discovered };
+    enum ErrorCode { NoError, OperationError, ReadError, WriteError, DescriptorReadError, DescriptorWriteError, UnknownError };
+
     explicit JZBLEService(const JZBluetoothUuid &serviceUuid, JZObject *parent = nullptr);
     ~JZBLEService() override;
 
@@ -52,15 +26,27 @@ public:
     void readDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid);
     void writeDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid, const std::string &value);
 
-    JZBluetoothUuid serviceUuid() const;
     std::vector<JZLowEnergyCharacteristic> characteristics() const;
     JZLowEnergyCharacteristic characteristic(const JZBluetoothUuid &uuid) const;
+    JZBluetoothUuid serviceUuid() const { return m_serviceUuid; }
     int state() const;
     int error() const;
     std::string errorString() const;
 
     void setDriver(JZBleDriver *driver);
     void setDeviceAddress(const std::string &address);
+
+    // 驱动回调需直接读取
+    JZBluetoothUuid m_serviceUuid;
+    std::string     deviceAddress;
+
+    // 静态分发方法（供驱动回调路由，参数为本服务对象指针）
+    static void onCharacteristicsDiscovered(JZBLEService *d, const char *addr, const char *svcUuid);
+    static void onCharacteristicRead(JZBLEService *d, const char *addr, const char *svcUuid, const char *value);
+    static void onCharacteristicWritten(JZBLEService *d, const char *addr, const char *svcUuid, const char *value, bool ok);
+    static void onCharacteristicChanged(JZBLEService *d, const char *addr, const char *svcUuid, const char *value);
+    static void onDescriptorRead(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value);
+    static void onDescriptorWritten(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value, bool ok);
 
 jz_signals:
     JZSignal<int> sigStateChanged;
@@ -73,7 +59,15 @@ jz_signals:
 
 protected:
     JZ_DISABLE_COPY(JZBLEService)
-    JZBLEServicePrivate *d;
+
+    JZBleDriver *driver = nullptr;
+
+    State     m_state = DiscoveryRequired;
+    ErrorCode m_error = NoError;
+    std::string errorMsg;
+    std::vector<JZLowEnergyCharacteristic> charList;
+
+    JZLowEnergyCharacteristic findChar(const JZBluetoothUuid &uuid) const;
 };
 
 #endif // JZBLESERVICE_H

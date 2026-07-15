@@ -2,22 +2,19 @@
 #include "JZBleDriver.h"
 #include "JZThread.h"
 
-// ==================== JZBLEServicePrivate 静态分发 ====================
-JZBLEServicePrivate::JZBLEServicePrivate(class JZBLEService *q, const JZBluetoothUuid &uuid)
-    : q_ptr(q), serviceUuid(uuid) {}
-
-JZLowEnergyCharacteristic JZBLEServicePrivate::findChar(const JZBluetoothUuid &uuid) const
+// ==================== JZBLEService 静态分发 ====================
+JZLowEnergyCharacteristic JZBLEService::findChar(const JZBluetoothUuid &uuid) const
 {
     for (const auto &ch : charList) { if (ch.uuid() == uuid) return ch; }
     return JZLowEnergyCharacteristic();
 }
 
-void JZBLEServicePrivate::onCharacteristicsDiscovered(JZBLEServicePrivate *d, const char *addr, const char *svc)
+void JZBLEService::onCharacteristicsDiscovered(JZBLEService *d, const char *addr, const char *svc)
 {
     std::string a(addr), s(svc);
-    runOnObject(d->q_ptr, [d, a, s]() {
+    runOnObject(d, [d, a, s]() {
         JZBleDriver *drv = JZBleDriver::instance();
-        if (a == d->deviceAddress && s == d->serviceUuid.toString() && drv) {
+        if (a == d->deviceAddress && s == d->m_serviceUuid.toString() && drv) {
             auto infos = drv->characteristics(a, s);
             d->charList.clear();
             for (auto &i : infos) {
@@ -27,47 +24,47 @@ void JZBLEServicePrivate::onCharacteristicsDiscovered(JZBLEServicePrivate *d, co
                 ch.setValue(i.value());
                 d->charList.push_back(ch);
             }
-            d->state = Discovered;
-            d->q_ptr->sigStateChanged.emit(d->state);
+            d->m_state = Discovered;
+            d->sigStateChanged.emit(d->m_state);
         }
     });
 }
-void JZBLEServicePrivate::onCharacteristicRead(JZBLEServicePrivate *d, const char *addr, const char *svc, const char *val)
+void JZBLEService::onCharacteristicRead(JZBLEService *d, const char *addr, const char *svc, const char *val)
 {
     std::string a(addr), s(svc), v(val ? val : "");
-    runOnObject(d->q_ptr, [d, a, s, v]() {
-        if (a == d->deviceAddress && s == d->serviceUuid.toString())
-            d->q_ptr->sigCharacteristicRead.emit(d->findChar(JZBluetoothUuid(s)), v);
+    runOnObject(d, [d, a, s, v]() {
+        if (a == d->deviceAddress && s == d->m_serviceUuid.toString())
+            d->sigCharacteristicRead.emit(d->findChar(JZBluetoothUuid(s)), v);
     });
 }
-void JZBLEServicePrivate::onCharacteristicWritten(JZBLEServicePrivate *d, const char *addr, const char *svc, const char *val, bool)
+void JZBLEService::onCharacteristicWritten(JZBLEService *d, const char *addr, const char *svc, const char *val, bool)
 {
     std::string a(addr), s(svc), v(val ? val : "");
-    runOnObject(d->q_ptr, [d, a, s, v]() {
-        if (a == d->deviceAddress && s == d->serviceUuid.toString())
-            d->q_ptr->sigCharacteristicWritten.emit(d->findChar(JZBluetoothUuid(s)), v);
+    runOnObject(d, [d, a, s, v]() {
+        if (a == d->deviceAddress && s == d->m_serviceUuid.toString())
+            d->sigCharacteristicWritten.emit(d->findChar(JZBluetoothUuid(s)), v);
     });
 }
-void JZBLEServicePrivate::onCharacteristicChanged(JZBLEServicePrivate *d, const char *addr, const char *svc, const char *val)
+void JZBLEService::onCharacteristicChanged(JZBLEService *d, const char *addr, const char *svc, const char *val)
 {
     std::string a(addr), s(svc), v(val ? val : "");
-    runOnObject(d->q_ptr, [d, a, s, v]() {
-        if (a == d->deviceAddress && s == d->serviceUuid.toString())
-            d->q_ptr->sigCharacteristicChanged.emit(d->findChar(JZBluetoothUuid(s)), v);
+    runOnObject(d, [d, a, s, v]() {
+        if (a == d->deviceAddress && s == d->m_serviceUuid.toString())
+            d->sigCharacteristicChanged.emit(d->findChar(JZBluetoothUuid(s)), v);
     });
 }
-void JZBLEServicePrivate::onDescriptorRead(JZBLEServicePrivate *d, const char *, const char *, const char *, const char *val)
+void JZBLEService::onDescriptorRead(JZBLEService *d, const char *, const char *, const char *, const char *val)
 {
     std::string v(val ? val : "");
-    runOnObject(d->q_ptr, [d, v]() {
-        d->q_ptr->sigDescriptorRead.emit(JZLowEnergyDescriptor(), v);
+    runOnObject(d, [d, v]() {
+        d->sigDescriptorRead.emit(JZLowEnergyDescriptor(), v);
     });
 }
-void JZBLEServicePrivate::onDescriptorWritten(JZBLEServicePrivate *d, const char *, const char *, const char *, const char *val, bool)
+void JZBLEService::onDescriptorWritten(JZBLEService *d, const char *, const char *, const char *, const char *val, bool)
 {
     std::string v(val ? val : "");
-    runOnObject(d->q_ptr, [d, v]() {
-        d->q_ptr->sigDescriptorWritten.emit(JZLowEnergyDescriptor(), v);
+    runOnObject(d, [d, v]() {
+        d->sigDescriptorWritten.emit(JZLowEnergyDescriptor(), v);
     });
 }
 
@@ -76,46 +73,45 @@ JZ_OBJECT_IMPL(JZBLEService, JZObject)
 
 JZBLEService::JZBLEService(const JZBluetoothUuid &svc, JZObject *p)
     : JZObject(p),
+      m_serviceUuid(svc),
       sigStateChanged(this), sigCharacteristicRead(this), sigCharacteristicWritten(this),
-      sigCharacteristicChanged(this), sigDescriptorRead(this), sigDescriptorWritten(this), sigError(this),
-      d(new JZBLEServicePrivate(this, svc)) {}
-JZBLEService::~JZBLEService() { delete d; }
+      sigCharacteristicChanged(this), sigDescriptorRead(this), sigDescriptorWritten(this), sigError(this) {}
+JZBLEService::~JZBLEService() {}
 
 void JZBLEService::discoverDetails()
 {
-    if (d->driver && !d->deviceAddress.empty())
+    if (driver && !deviceAddress.empty())
     {
-        d->state = JZBLEServicePrivate::Discovering;
-        sigStateChanged.emit(d->state);
-        d->driver->discoverCharacteristics(d->deviceAddress, d->serviceUuid.toString(), d);
+        m_state = Discovering;
+        sigStateChanged.emit(m_state);
+        driver->discoverCharacteristics(deviceAddress, m_serviceUuid.toString(), this);
     }
 }
 void JZBLEService::readCharacteristic(const JZBluetoothUuid &cuuid)
 {
-    if (d->driver && !d->deviceAddress.empty())
-        d->driver->readCharacteristic(d->deviceAddress, d->serviceUuid.toString(), cuuid.toString(), d);
+    if (driver && !deviceAddress.empty())
+        driver->readCharacteristic(deviceAddress, m_serviceUuid.toString(), cuuid.toString(), this);
 }
 void JZBLEService::writeCharacteristic(const JZBluetoothUuid &cuuid, const std::string &v, bool nrs)
 {
-    if (d->driver && !d->deviceAddress.empty())
-        d->driver->writeCharacteristic(d->deviceAddress, d->serviceUuid.toString(), cuuid.toString(), v, nrs, d);
+    if (driver && !deviceAddress.empty())
+        driver->writeCharacteristic(deviceAddress, m_serviceUuid.toString(), cuuid.toString(), v, nrs, this);
 }
 void JZBLEService::readDescriptor(const JZBluetoothUuid &cuuid, const JZBluetoothUuid &duuid)
 {
-    if (d->driver && !d->deviceAddress.empty())
-        d->driver->readDescriptor(d->deviceAddress, d->serviceUuid.toString(), cuuid.toString(), duuid.toString(), d);
+    if (driver && !deviceAddress.empty())
+        driver->readDescriptor(deviceAddress, m_serviceUuid.toString(), cuuid.toString(), duuid.toString(), this);
 }
 void JZBLEService::writeDescriptor(const JZBluetoothUuid &cuuid, const JZBluetoothUuid &duuid, const std::string &v)
 {
-    if (d->driver && !d->deviceAddress.empty())
-        d->driver->writeDescriptor(d->deviceAddress, d->serviceUuid.toString(), cuuid.toString(), duuid.toString(), v, d);
+    if (driver && !deviceAddress.empty())
+        driver->writeDescriptor(deviceAddress, m_serviceUuid.toString(), cuuid.toString(), duuid.toString(), v, this);
 }
 
-JZBluetoothUuid JZBLEService::serviceUuid() const { return d->serviceUuid; }
-std::vector<JZLowEnergyCharacteristic> JZBLEService::characteristics() const { return d->charList; }
-JZLowEnergyCharacteristic JZBLEService::characteristic(const JZBluetoothUuid &u) const { return d->findChar(u); }
-int JZBLEService::state() const { return d->state; }
-int JZBLEService::error() const { return d->error; }
-std::string JZBLEService::errorString() const { return d->errorMsg; }
-void JZBLEService::setDriver(JZBleDriver *drv) { d->driver = drv; }
-void JZBLEService::setDeviceAddress(const std::string &a) { d->deviceAddress = a; }
+std::vector<JZLowEnergyCharacteristic> JZBLEService::characteristics() const { return charList; }
+JZLowEnergyCharacteristic JZBLEService::characteristic(const JZBluetoothUuid &u) const { return findChar(u); }
+int JZBLEService::state() const { return m_state; }
+int JZBLEService::error() const { return m_error; }
+std::string JZBLEService::errorString() const { return errorMsg; }
+void JZBLEService::setDriver(JZBleDriver *drv) { driver = drv; }
+void JZBLEService::setDeviceAddress(const std::string &a) { deviceAddress = a; }

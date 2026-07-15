@@ -227,5 +227,5 @@ macro(jzframework_build_test)
 endmacro()
 
 macro(jzframework_build_simulator)
-	include(${JZFRAMEWORK_ROOT_DIR}/simulator/simulator.cmake)
+	include(${JZFRAMEWORK_ROOT_DIR}/tools/simulator/simulator.cmake)
 endmacro()

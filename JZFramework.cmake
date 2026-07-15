@@ -20,7 +20,7 @@ set(MODULE_DEPENDS_JZCoroutine "JZCore")
 set(MODULE_DEPENDS_JZAgent "JZNet;JZJson")
 set(MODULE_DEPENDS_JZJSEngine "JZNet;JZJson")
 set(MODULE_DEPENDS_JZLvgl "JZCore")
-set(MODULE_DEPENDS_JZSimulator "JZBle;JZNet;JZLvgl;JZGpio")
+set(MODULE_DEPENDS_JZSimulator "JZBle;JZNet;JZGpio")
 set(MODULE_DEPENDS_JZCamera "JZCore")
 set(MODULE_DEPENDS_JZCrashReport "JZCore;JZNet")
 
@@ -224,8 +224,4 @@ endmacro()
 
 macro(jzframework_build_test)
 	include(${JZFRAMEWORK_ROOT_DIR}/test/test.cmake)
-endmacro()
-
-macro(jzframework_build_simulator)
-	include(${JZFRAMEWORK_ROOT_DIR}/tools/simulator/simulator.cmake)
 endmacro()

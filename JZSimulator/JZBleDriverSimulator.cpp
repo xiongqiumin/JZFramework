@@ -65,12 +65,13 @@ bool JZBleDriverSimulator::isScanning() { return m_scanning; }
 void JZBleDriverSimulator::connectToDevice(JZBLECentral *d)
 {
     std::string addr = d->deviceInfo().address();
-    m_centralByAddr[addr] = d;
+    m_central = d;   // 单一上报目标（事件仅带 addr，无法指明具体对象）
     JZVariantMap m; simSetStr(m, "addr", addr);
     sendSim(SIM_CMD_CONNECT, m);
 }
 void JZBleDriverSimulator::disconnectFromDevice(JZBLECentral *d)
 {
+    if (m_central == d) m_central = nullptr;
     std::string addr = d->deviceInfo().address();
     JZVariantMap m; simSetStr(m, "addr", addr);
     sendSim(SIM_CMD_DISCONNECT, m);
@@ -231,9 +232,8 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         int role = simGetInt(map, "role");
         if (role == 0) {
             m_connMap[addr] = 1;
-            auto it = m_centralByAddr.find(addr);
-            if (it != m_centralByAddr.end())
-                JZBleDriver::centralOnDeviceConnected(it->second, addr.c_str());
+            if (m_central)
+                JZBleDriver::centralOnDeviceConnected(m_central, addr.c_str());
         } else {
             m_periphConnHandle = 1;
             if (m_periphCtrl) JZBleDriver::peripheralOnClientConnected(m_periphCtrl);
@@ -245,9 +245,8 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         int role = simGetInt(map, "role");
         if (role == 0) {
             m_connMap.erase(addr);
-            auto it = m_centralByAddr.find(addr);
-            if (it != m_centralByAddr.end())
-                JZBleDriver::centralOnDeviceDisconnected(it->second, addr.c_str());
+            if (m_central)
+                JZBleDriver::centralOnDeviceDisconnected(m_central, addr.c_str());
         } else {
             m_periphConnHandle = -1;
             if (m_periphCtrl) JZBleDriver::peripheralOnClientDisconnected(m_periphCtrl);

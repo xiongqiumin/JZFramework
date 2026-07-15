@@ -68,6 +68,10 @@ public:
 
     void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
 
+    // 绑定密钥透传：上层回灌 / 主动配对
+    void setBondKey(const std::string& addr, const JZBleDriver::JZBleBondKey& key) override;
+    void requestPairing(const std::string& addr) override;
+
 private:
     // ---- 工具 ----
     static std::string addrToString(const uint8_t *addr);
@@ -112,6 +116,13 @@ private:
     static int onGattcAck(uint16_t conn_handle, const struct ble_gatt_error *error,
                             struct ble_gatt_attr *attr, void *arg);
     static int sendPeriphData(int connHandle, uint16_t valHandle, const std::string &value, bool indicate);
+
+    // ---- 绑定密钥 store 回调（驱动不持久化，仅内存缓存 + 上报上层）----
+    static int storeReadCb(int obj_type, const union ble_store_key *key, union ble_store_value *dst);
+    static int storeWriteCb(int obj_type, const union ble_store_value *val);
+    static int storeDeleteCb(int obj_type, const union ble_store_key *key);
+    static JZBleBondKey secToBondKey(int obj_type, const struct ble_store_value_sec *sec);
+    static void bondKeyToSec(const JZBleBondKey &key, struct ble_store_value_sec *sec);
 
     // ---- Central GATT 缓存 ----
     struct GattCharInfo {
@@ -176,6 +187,10 @@ private:
     std::map<int, std::string> m_connToAddr;                 // conn_handle -> addr
     std::map<std::string, ConnGatt> m_gatt;                 // addr -> GATT 缓存
     std::map<std::string, JZBLEService*> m_svcPtrCache; // "addr|svc" -> service 指针（通知路由用）
+
+    // 绑定密钥内存缓存（key = obj_type:addr）。驱动不持久化，仅本次会话使用；
+    // 持久化由上层通过 BondKeyReporter 接收后自行处理，并在重连前用 setBondKey 回灌。
+    std::map<std::string, JZBleBondKey> m_bondStore;
 };
 
 #endif // !JZ_BLE_DRIVER_ESP32_H_

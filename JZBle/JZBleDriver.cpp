@@ -49,6 +49,9 @@ void JZBleDriver::centralOnServicesDiscovered(JZBLECentral *self, const char *ad
 void JZBleDriver::centralOnError(JZBLECentral *self, int code, const char *msg)
 { JZBLECentral::onError(self, code, msg); }
 
+void JZBleDriver::centralOnBondKeyReported(JZBLECentral *self, const std::string &addr, const JZBleBondKey &key)
+{ JZBLECentral::onBondKeyReported(self, addr, key); }
+
 void JZBleDriver::peripheralOnClientConnected(JZBLEPeripheral *self)
 { JZBLEPeripheral::onClientConnected(self); }
 

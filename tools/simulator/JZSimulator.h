@@ -7,14 +7,18 @@
 #include <string>
 #include <vector>
 
-class JZMainWindow;
-class JZLabel;
-class JZTextEdit;
-class JZSwitch;
-class JZPushButton;
-class JZWidget;
+// 前向声明 Qt 控件
+class QMainWindow;
+class QWidget;
+class QStackedWidget;
+class QLabel;
+class QLineEdit;
+class QTextEdit;
+class QCheckBox;
+class QPushButton;
+class QVBoxLayout;
 
-// 模拟 BLE 设备: JZNetServer 接收 JZBleDriverSimulator 指令, LVGL 界面支持两个角色
+// 模拟 BLE 设备: JZNetServer 接收 JZBleDriverSimulator 指令, Qt 界面支持两个角色
 class JZSimulator : public JZObject
 {
     JZ_OBJECT_DECLARE(JZSimulator)
@@ -29,11 +33,11 @@ public:
     };
     struct CharRow {
         SimChar    *ch = nullptr;
-        JZTextEdit *valueEdit = nullptr;
+        QLineEdit  *valueEdit = nullptr;
     };
     struct PeriphCharRow {
         SimChar    *ch = nullptr;
-        JZTextEdit *valueEdit = nullptr;
+        QLineEdit  *valueEdit = nullptr;
     };
 
     JZSimulator(JZObject *parent = nullptr);
@@ -85,23 +89,25 @@ private:
     std::vector<SimChar> m_periphChars;
     std::vector<PeriphCharRow> m_periphRows;
 
-    // ---- UI 控件 ----
-    JZMainWindow *m_win = nullptr;
-    JZWidget     *m_leftPanel = nullptr;
-    JZWidget     *m_rightStack = nullptr;
-    JZWidget     *m_pagePeripheral = nullptr;
-    JZWidget     *m_pageCentral    = nullptr;
-    JZWidget     *m_pageConfig     = nullptr;
-    std::vector<JZPushButton *> m_tabBtns;
+    // ---- UI 控件 (Qt) ----
+    QMainWindow     *m_win = nullptr;
+    QWidget         *m_central = nullptr;
+    QStackedWidget  *m_stack = nullptr;
+    QWidget         *m_pagePeripheral = nullptr;
+    QWidget         *m_pageCentral    = nullptr;
+    QWidget         *m_pageConfig     = nullptr;
+    std::vector<QPushButton *> m_tabBtns;
 
-    JZTextEdit   *m_nameEdit = nullptr;
-    JZSwitch     *m_advSwitch = nullptr;
-    JZWidget     *m_charContainer = nullptr;
-    JZWidget     *m_periphCharContainer = nullptr;
+    QLineEdit   *m_nameEdit = nullptr;
+    QCheckBox   *m_advSwitch = nullptr;
+    QWidget     *m_charContainer = nullptr;
+    QVBoxLayout *m_charLayout = nullptr;
+    QWidget     *m_periphCharContainer = nullptr;
+    QVBoxLayout *m_periphCharLayout = nullptr;
 
     // 全局底部区域
-    JZLabel      *m_statusLabel = nullptr;
-    JZTextEdit   *m_logEdit = nullptr;
+    QLabel      *m_statusLabel = nullptr;
+    QTextEdit   *m_logEdit = nullptr;
 };
 
 #endif // !JZ_SIMULATOR_H_

@@ -11,7 +11,6 @@
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/ble_store.h"
-#include "store/config/ble_store_config.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/util/util.h"
@@ -21,6 +20,7 @@
 
 #include <cstdio>
 #include <cinttypes>
+#include <cstring>
 
 // Peripheral GATT 定义（必须长期存活，不能为局部变量）
 struct PeriphGatt {
@@ -261,6 +261,20 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_SUBSCRIBE:
     case BLE_GAP_EVENT_MTU:
         break;
+
+    case BLE_GAP_EVENT_SECURITY:
+    {
+        // 配对/绑定状态机事件。Just Works（无 io_cap）下无需交互，返回 0 让 SMP 继续；
+        // 若改用密码配对，需在此根据 event->security.state 处理 PASSKEY 显示/确认。
+        // 密钥本身由 storeWriteCb 在 SMP 过程中写入并上报，无需在此处理。
+        break;
+    }
+    case BLE_GAP_EVENT_ENC_CHANGE:
+    {
+        // 链路加密状态变化：配对完成或重连用已存 LTK 恢复加密时触发。
+        // 此时加密已建立，对应绑定密钥此前已通过 sigBondKeyReported 上报。
+        break;
+    }
     }
     return 0;
 }
@@ -447,10 +461,20 @@ JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), 
     ble_hs_cfg.reset_cb = onHostReset;
     ble_hs_cfg.sync_cb = onHostSync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    // 该 NimBLE 版本无 ble_store_config_init()，直接挂接 store 回调
-    ble_hs_cfg.store_read_cb = ble_store_config_read;
-    ble_hs_cfg.store_write_cb = ble_store_config_write;
-    ble_hs_cfg.store_delete_cb = ble_store_config_delete;
+    // 自定义 store：驱动不持久化密钥，仅内存缓存 + 上报上层（由上层决定如何存储/恢复）
+    ble_hs_cfg.store_read_cb = storeReadCb;
+    ble_hs_cfg.store_write_cb = storeWriteCb;
+    ble_hs_cfg.store_delete_cb = storeDeleteCb;
+
+    // 启用安全管理器（配对/绑定）。不配置则 security_initiate 不会生成/存储密钥，
+    // storeWriteCb 也就不会触发，sigBondKeyReported 无从上报。
+    ble_hs_cfg.sm_bonding = 1;                                   // 允许绑定，配对产物写入 store
+    ble_hs_cfg.sm_mitm    = 0;                                   // Just Works，无需密码交互
+    ble_hs_cfg.sm_sc      = 1;                                   // 安全连接（Secure Connections）
+    ble_hs_cfg.sm_io_cap  = BLE_HS_IO_NO_INPUT_OUTPUT;           // 无输入输出 → Just Works
+    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC;     // 本机分发加密密钥(LTK)
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC     // 对端分发 LTK（storeWriteCb 捕获）
+                                  | BLE_SM_PAIR_KEY_DIST_ID;     // 以及 IRK（隐私地址解析）
     nimble_port_freertos_init([](void *) { nimble_port_run(); });
 }
 void JZBleDriverEsp32::onHostReset(int)
@@ -520,6 +544,103 @@ JZBleDriverEsp32::~JZBleDriverEsp32() { delete m_periphGatt; }
 bool JZBleDriverEsp32::isBluetoothAvailable() { return true; }
 bool JZBleDriverEsp32::isBluetoothEnabled()   { return true; }
 
+// ==================== 绑定密钥 store（驱动不持久化） ====================
+// 密钥仅缓存在 m_bondStore（本次会话），配对时上报上层，重连时由上层回灌。
+static std::string bondStoreKey(int obj_type, const std::string &addr)
+{
+    return std::to_string(obj_type) + ":" + addr;
+}
+
+JZBleDriverEsp32::JZBleBondKey JZBleDriverEsp32::secToBondKey(int obj_type, const struct ble_store_value_sec *sec)
+{
+    JZBleBondKey k;
+    k.objType      = (uint8_t)obj_type;
+    k.peerAddr      = addrToString(sec->peer_addr.val);
+    k.peerAddrType  = sec->peer_addr.type;
+    k.keySize       = sec->key_size;
+    k.ediv          = sec->ediv;
+    k.randNum       = sec->rand_num;
+    memcpy(k.ltk,  sec->ltk,  16); k.ltkPresent  = sec->ltk_present;
+    memcpy(k.irk,  sec->irk,  16); k.irkPresent  = sec->irk_present;
+    memcpy(k.csrk, sec->csrk, 16); k.csrkPresent = sec->csrk_present;
+    k.authenticated = sec->authenticated;
+    k.secureConnections = sec->sc;
+    return k;
+}
+
+void JZBleDriverEsp32::bondKeyToSec(const JZBleBondKey &k, struct ble_store_value_sec *sec)
+{
+    memset(sec, 0, sizeof(*sec));
+    addrFromString(k.peerAddr, sec->peer_addr.val);
+    sec->peer_addr.type = k.peerAddrType;
+    sec->key_size    = k.keySize;
+    sec->ediv        = k.ediv;
+    sec->rand_num    = k.randNum;
+    memcpy(sec->ltk,  k.ltk,  16); sec->ltk_present  = k.ltkPresent;
+    memcpy(sec->irk,  k.irk,  16); sec->irk_present  = k.irkPresent;
+    memcpy(sec->csrk, k.csrk, 16); sec->csrk_present = k.csrkPresent;
+    sec->authenticated = k.authenticated;
+    sec->sc            = k.secureConnections;
+}
+
+int JZBleDriverEsp32::storeReadCb(int obj_type, const union ble_store_key *key, union ble_store_value *dst)
+{
+    if (!key || !dst) return BLE_HS_EINVAL;
+    std::string addr;
+    if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC)
+        addr = addrToString(key->sec.peer_addr.val);
+    else
+        return BLE_HS_ENOENT;   // CCCD 等不缓存，按未找到处理
+
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto it = self->m_bondStore.find(bondStoreKey(obj_type, addr));
+    if (it == self->m_bondStore.end()) return BLE_HS_ENOENT;
+
+    bondKeyToSec(it->second, &dst->sec);
+    return 0;
+}
+
+int JZBleDriverEsp32::storeWriteCb(int obj_type, const union ble_store_value *val)
+{
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC) {
+        std::string addr = addrToString(val->sec.peer_addr.val);
+        JZBleBondKey key = secToBondKey(obj_type, &val->sec);
+        self->m_bondStore[bondStoreKey(obj_type, addr)] = key;
+        // 分别上报 PEER_SEC(对端密钥) 与 OUR_SEC(本机密钥)：两者都需持久化，
+        // 外设角色重连加密依赖 OUR_SEC，故不跳过。
+        if (self->m_bondCentral)
+            JZBleDriver::centralOnBondKeyReported(self->m_bondCentral, addr, key);
+        return 0;
+    }
+    return 0;   // 其他类型（CCCD 等）忽略，不持久化
+}
+
+int JZBleDriverEsp32::storeDeleteCb(int obj_type, const union ble_store_key *key)
+{
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    std::string addr;
+    if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC)
+        addr = addrToString(key->sec.peer_addr.val);
+    else
+        return BLE_HS_ENOENT;
+    self->m_bondStore.erase(bondStoreKey(obj_type, addr));
+    return 0;
+}
+
+void JZBleDriverEsp32::setBondKey(const std::string &addr, const JZBleBondKey &key)
+{
+    // 写入内存缓存，重连加密时 storeReadCb 据此取回；不调用 ble_store_write 以避免递归/重复上报。
+    // 按 key.objType 定位（PEER_SEC / OUR_SEC 各自独立），外设角色重连加密依赖 OUR_SEC。
+    m_bondStore[bondStoreKey(key.objType, addr)] = key;
+}
+
+void JZBleDriverEsp32::requestPairing(const std::string &addr)
+{
+    int h = getConnHandle(addr);
+    if (h >= 0) ble_gap_security_initiate(h);
+}
+
 // ==================== Central ====================
 void JZBleDriverEsp32::startScan()
 {
@@ -534,6 +655,7 @@ bool JZBleDriverEsp32::isScanning() { return m_scanning; }
 void JZBleDriverEsp32::connectToDevice(JZBLECentral *d)
 {
     m_centralSet.insert(d);
+    m_bondCentral = d;   // 单一上报目标（NimBLE 静态回调无法指明具体对象，只支持一个）
     ble_addr_t peer;
     peer.type = BLE_ADDR_PUBLIC;
     addrFromString(d->deviceInfo().address(), peer.val);
@@ -541,6 +663,7 @@ void JZBleDriverEsp32::connectToDevice(JZBLECentral *d)
 }
 void JZBleDriverEsp32::disconnectFromDevice(JZBLECentral *d)
 {
+    if (m_bondCentral == d) m_bondCentral = nullptr;
     int h = getConnHandle(d->deviceInfo().address());
     if (h >= 0) ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
 }

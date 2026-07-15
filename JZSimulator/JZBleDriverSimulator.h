@@ -71,7 +71,8 @@ private:
 
     // Central 状态
     std::map<std::string, int>            m_connMap;
-    std::map<std::string, JZBLECentral*>  m_centralByAddr;
+    // 连接事件仅带 addr、无 object 指针，故只支持单个 Central（最近一次 connect 的）
+    JZBLECentral *m_central = nullptr;
     JZBLECentral *m_svcDiscoverCtrl = nullptr;
     std::string      m_svcDiscoverAddr;
     JZBLEService *m_chrDiscoverCtrl = nullptr;

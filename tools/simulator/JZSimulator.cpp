@@ -4,15 +4,20 @@
 #include "JZSignal.h"
 #include "JZThread.h"
 #include "JZStd.h"
-
-#include "JZMainWindow.h"
-#include "JZWidget.h"
-#include "JZLayout.h"
-#include "JZLabel.h"
-#include "JZTextEdit.h"
-#include "JZSwitch.h"
-#include "JZPushButton.h"
 #include "JZNetClient.h"
+
+#include <QApplication>
+#include <QMainWindow>
+#include <QWidget>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QLabel>
+#include <QLineEdit>
+#include <QTextEdit>
+#include <QCheckBox>
+#include <QStackedWidget>
+#include <QString>
 
 #include <algorithm>
 
@@ -27,6 +32,7 @@ JZSimulator::JZSimulator(JZObject *parent) : JZObject(parent) {}
 JZSimulator::~JZSimulator()
 {
     if (m_server) { m_server->close(); delete m_server; m_server = nullptr; }
+    if (m_win) { delete m_win; m_win = nullptr; }
 }
 
 // ======================== 启动 ========================
@@ -61,8 +67,6 @@ void JZSimulator::run(int port)
 
     buildUI();
 
-    m_pageCentral->hide();
-    m_pageConfig->hide();
     switchTab(0);
 
     m_win->show();
@@ -72,156 +76,215 @@ void JZSimulator::run(int port)
 // ======================== UI 构建 ========================
 void JZSimulator::buildUI()
 {
-    m_win = new JZMainWindow(nullptr, 780, 700, "JZ BLE Simulator");
+    m_win = new QMainWindow(nullptr);
+    m_win->setWindowTitle("JZ BLE Simulator");
+    m_win->resize(780, 700);
 
-    // 根: 垂直布局 — 上面是标签区, 下面是全局日志
-    auto *root = new JZWidget(m_win);
-    root->resize(780, 700);
-    root->setLayout(new JZVBoxLayout(0, 0));
+    m_central = new QWidget(m_win);
+    m_win->setCentralWidget(m_central);
+
+    auto *root = new QVBoxLayout(m_central);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(8);
 
     // ---- 上部: 水平 — 左标签 + 右内容 ----
-    auto *topArea = new JZWidget(root);
-    topArea->resize(780, 520);
-    topArea->setLayout(new JZHBoxLayout(0, 0));
+    auto *topArea = new QWidget(m_central);
+    auto *topLayout = new QHBoxLayout(topArea);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(8);
 
     // 左标签
-    m_leftPanel = new JZWidget(topArea);
-    m_leftPanel->resize(180, 520);
-    m_leftPanel->setLayout(new JZVBoxLayout(0, 0));
+    auto *leftPanel = new QWidget(topArea);
+    leftPanel->setFixedWidth(180);
+    auto *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(6);
 
-    auto *tabPeriph = new JZPushButton(m_leftPanel); tabPeriph->setText("BLE Peripheral");
-    tabPeriph->resize(180, 50);
-    auto *tabCent   = new JZPushButton(m_leftPanel); tabCent->setText("BLE Central");
-    tabCent->resize(180, 50);
-    auto *tabConf   = new JZPushButton(m_leftPanel); tabConf->setText("Config");
-    tabConf->resize(180, 50);
-    auto *spacer    = new JZWidget(m_leftPanel); spacer->resize(180, 370);
+    auto *tabPeriph = new QPushButton("BLE Peripheral", leftPanel);
+    auto *tabCent   = new QPushButton("BLE Central", leftPanel);
+    auto *tabConf   = new QPushButton("Config", leftPanel);
+    leftLayout->addWidget(tabPeriph);
+    leftLayout->addWidget(tabCent);
+    leftLayout->addWidget(tabConf);
+    leftLayout->addStretch(1);
 
     m_tabBtns = {tabPeriph, tabCent, tabConf};
-    connect(&tabPeriph->sigClicked, this, [this]() { switchTab(0); });
-    connect(&tabCent->sigClicked,   this, [this]() { switchTab(1); });
-    connect(&tabConf->sigClicked,   this, [this]() { switchTab(2); });
+    QObject::connect(tabPeriph, &QPushButton::clicked, this, [this]() { switchTab(0); });
+    QObject::connect(tabCent,   &QPushButton::clicked, this, [this]() { switchTab(1); });
+    QObject::connect(tabConf,   &QPushButton::clicked, this, [this]() { switchTab(2); });
 
     // 右堆叠
-    m_rightStack = new JZWidget(topArea);
-    m_rightStack->resize(600, 520);
-    m_rightStack->setLayout(new JZVBoxLayout(0, 0));
-
+    m_stack = new QStackedWidget(topArea);
     buildPeripheralPage();
     buildCentralPage();
     buildConfigPage();
+    m_stack->addWidget(m_pagePeripheral);
+    m_stack->addWidget(m_pageCentral);
+    m_stack->addWidget(m_pageConfig);
+
+    topLayout->addWidget(leftPanel);
+    topLayout->addWidget(m_stack, 1);
+
+    root->addWidget(topArea, 1);
 
     // ---- 下部: 全局状态 + 日志 ----
-    auto *bottomArea = new JZWidget(root);
-    bottomArea->resize(780, 180);
-    bottomArea->setLayout(new JZVBoxLayout(4, 4));
+    auto *bottomArea = new QWidget(m_central);
+    auto *bottomLayout = new QVBoxLayout(bottomArea);
+    bottomLayout->setContentsMargins(0, 0, 0, 0);
+    bottomLayout->setSpacing(4);
 
-    auto *statusRow = new JZWidget(bottomArea); statusRow->setLayout(new JZHBoxLayout(4, 4));
-    auto *sl = new JZLabel(statusRow); sl->setText("Status:");
-    m_statusLabel = new JZLabel(statusRow);
-    m_statusLabel->setText("idle");
+    auto *statusRow = new QWidget(bottomArea);
+    auto *statusLayout = new QHBoxLayout(statusRow);
+    statusLayout->setContentsMargins(0, 0, 0, 0);
+    statusLayout->setSpacing(4);
+    auto *sl = new QLabel("Status:", statusRow);
+    m_statusLabel = new QLabel("idle", statusRow);
+    statusLayout->addWidget(sl);
+    statusLayout->addWidget(m_statusLabel, 1);
 
-    auto *logLabel = new JZLabel(bottomArea); logLabel->setText("Log:");
-    m_logEdit = new JZTextEdit(bottomArea);
-    m_logEdit->resize(770, 140);
-    m_logEdit->setText("");
+    auto *logLabel = new QLabel("Log:", bottomArea);
+    m_logEdit = new QTextEdit(bottomArea);
+    m_logEdit->setReadOnly(true);
+
+    bottomLayout->addWidget(statusRow);
+    bottomLayout->addWidget(logLabel);
+    bottomLayout->addWidget(m_logEdit, 1);
+
+    root->addWidget(bottomArea);
 }
 
 void JZSimulator::buildPeripheralPage()
 {
-    m_pagePeripheral = new JZWidget(m_rightStack);
-    m_pagePeripheral->resize(600, 520);
-    m_pagePeripheral->setLayout(new JZVBoxLayout(6, 6));
+    m_pagePeripheral = new QWidget();
+    auto *layout = new QVBoxLayout(m_pagePeripheral);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
 
-    auto *title = new JZLabel(m_pagePeripheral);
-    title->setText("Device as BLE Peripheral");
+    layout->addWidget(new QLabel("Device as BLE Peripheral"));
 
     // 设备名
-    auto *nameRow = new JZWidget(m_pagePeripheral); nameRow->setLayout(new JZHBoxLayout(4, 4));
-    auto *nl = new JZLabel(nameRow); nl->setText("Device Name:");
-    m_nameEdit = new JZTextEdit(nameRow); m_nameEdit->setText(m_name); m_nameEdit->resize(200, 28);
-    auto *applyBtn = new JZPushButton(nameRow); applyBtn->setText("Apply");
-    connect(&applyBtn->sigClicked, this, [this]() {
-        m_name = m_nameEdit->text();
+    auto *nameRow = new QWidget(m_pagePeripheral);
+    auto *nameLayout = new QHBoxLayout(nameRow);
+    nameLayout->setContentsMargins(0, 0, 0, 0);
+    nameLayout->setSpacing(4);
+    nameLayout->addWidget(new QLabel("Device Name:"));
+    m_nameEdit = new QLineEdit(m_pagePeripheral);
+    m_nameEdit->setText(QString::fromStdString(m_name));
+    nameLayout->addWidget(m_nameEdit);
+    auto *applyBtn = new QPushButton("Apply", m_pagePeripheral);
+    nameLayout->addWidget(applyBtn);
+    nameLayout->addStretch(1);
+    QObject::connect(applyBtn, &QPushButton::clicked, this, [this]() {
+        m_name = m_nameEdit->text().toStdString();
         log("Device name -> " + m_name);
     });
+    layout->addWidget(nameRow);
 
     // 广播
-    auto *advRow = new JZWidget(m_pagePeripheral); advRow->setLayout(new JZHBoxLayout(4, 4));
-    auto *al = new JZLabel(advRow); al->setText("Advertising:");
-    m_advSwitch = new JZSwitch(advRow);
-    connect(&m_advSwitch->sigToggled, this, [this](bool v) {
+    auto *advRow = new QWidget(m_pagePeripheral);
+    auto *advLayout = new QHBoxLayout(advRow);
+    advLayout->setContentsMargins(0, 0, 0, 0);
+    advLayout->setSpacing(4);
+    advLayout->addWidget(new QLabel("Advertising:"));
+    m_advSwitch = new QCheckBox(m_pagePeripheral);
+    advLayout->addWidget(m_advSwitch);
+    advLayout->addStretch(1);
+    QObject::connect(m_advSwitch, &QCheckBox::toggled, this, [this](bool v) {
         m_advertising = v;
         log(v ? "Device advertising ON" : "Device advertising OFF");
         updateStatus();
     });
+    layout->addWidget(advRow);
 
-    auto *hint = new JZLabel(m_pagePeripheral);
-    hint->setText("Notify -> App Central  |  App Central can Read/Write these chars");
+    layout->addWidget(new QLabel("Notify -> App Central  |  App Central can Read/Write these chars"));
 
     // 特征列表
-    m_charContainer = new JZWidget(m_pagePeripheral); m_charContainer->setLayout(new JZVBoxLayout(4, 4));
+    m_charContainer = new QWidget(m_pagePeripheral);
+    m_charLayout = new QVBoxLayout(m_charContainer);
+    m_charLayout->setContentsMargins(0, 0, 0, 0);
+    m_charLayout->setSpacing(4);
     for (auto &ch : m_chars) {
-        auto *row = new JZWidget(m_charContainer); row->setLayout(new JZHBoxLayout(4, 4));
-        auto *hl = new JZLabel(row); hl->setText(ch.chr.substr(0, 8) + "...");
-        auto *vl = new JZLabel(row); vl->setText("Val:");
-        auto *ve = new JZTextEdit(row); ve->setText(ch.value); ve->resize(120, 28);
-        auto *nb = new JZPushButton(row); nb->setText("Notify");
+        auto *row = new QWidget(m_charContainer);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(4);
+        rowLayout->addWidget(new QLabel(QString::fromStdString(ch.chr.substr(0, 8) + "...")));
+        rowLayout->addWidget(new QLabel("Val:"));
+        auto *ve = new QLineEdit(m_charContainer);
+        ve->setText(QString::fromStdString(ch.value));
+        ve->setFixedWidth(120);
+        rowLayout->addWidget(ve);
+        auto *nb = new QPushButton("Notify", m_charContainer);
+        rowLayout->addWidget(nb);
+        rowLayout->addStretch(1);
+
         CharRow r; r.ch = &ch; r.valueEdit = ve;
-        connect(&nb->sigClicked, this, [this, r]() { onDeviceNotify(r); });
+        QObject::connect(nb, &QPushButton::clicked, this, [this, r]() { onDeviceNotify(r); });
         m_rows.push_back(r);
     }
+    layout->addWidget(m_charContainer);
+    layout->addStretch(1);
 }
 
 void JZSimulator::buildCentralPage()
 {
-    m_pageCentral = new JZWidget(m_rightStack);
-    m_pageCentral->resize(600, 520);
-    m_pageCentral->setLayout(new JZVBoxLayout(6, 6));
+    m_pageCentral = new QWidget();
+    auto *layout = new QVBoxLayout(m_pageCentral);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
 
-    auto *title = new JZLabel(m_pageCentral);
-    title->setText("Device as BLE Central (App Peripheral upstream test)");
+    layout->addWidget(new QLabel("Device as BLE Central (App Peripheral upstream test)"));
 
-    auto *ctrlRow = new JZWidget(m_pageCentral); ctrlRow->setLayout(new JZHBoxLayout(4, 4));
-    auto *connBtn = new JZPushButton(ctrlRow); connBtn->setText("Connect to App Peripheral");
-    connect(&connBtn->sigClicked, this, &JZSimulator::onSimulateCentralConnect);
-    auto *discBtn = new JZPushButton(ctrlRow); discBtn->setText("Disconnect");
-    connect(&discBtn->sigClicked, this, &JZSimulator::onDisconnectPeriphClient);
+    auto *ctrlRow = new QWidget(m_pageCentral);
+    auto *ctrlLayout = new QHBoxLayout(ctrlRow);
+    ctrlLayout->setContentsMargins(0, 0, 0, 0);
+    ctrlLayout->setSpacing(4);
+    auto *connBtn = new QPushButton("Connect to App Peripheral", m_pageCentral);
+    auto *discBtn = new QPushButton("Disconnect", m_pageCentral);
+    ctrlLayout->addWidget(connBtn);
+    ctrlLayout->addWidget(discBtn);
+    ctrlLayout->addStretch(1);
+    QObject::connect(connBtn, &QPushButton::clicked, this, &JZSimulator::onSimulateCentralConnect);
+    QObject::connect(discBtn, &QPushButton::clicked, this, &JZSimulator::onDisconnectPeriphClient);
+    layout->addWidget(ctrlRow);
 
-    auto *hint = new JZLabel(m_pageCentral);
-    hint->setText("App Peripheral chs appear here, Write tests upstream flow (onBleCharWritten)");
+    layout->addWidget(new QLabel("App Peripheral chs appear here, Write tests upstream flow (onBleCharWritten)"));
 
-    m_periphCharContainer = new JZWidget(m_pageCentral); m_periphCharContainer->setLayout(new JZVBoxLayout(4, 4));
-    auto *empty = new JZLabel(m_periphCharContainer);
-    empty->setText("  (waiting for App Peripheral to advertise...)");
+    m_periphCharContainer = new QWidget(m_pageCentral);
+    m_periphCharLayout = new QVBoxLayout(m_periphCharContainer);
+    m_periphCharLayout->setContentsMargins(0, 0, 0, 0);
+    m_periphCharLayout->setSpacing(4);
+    m_periphCharLayout->addWidget(new QLabel("  (waiting for App Peripheral to advertise...)"));
+    layout->addWidget(m_periphCharContainer);
+    layout->addStretch(1);
 }
 
 void JZSimulator::buildConfigPage()
 {
-    m_pageConfig = new JZWidget(m_rightStack);
-    m_pageConfig->resize(600, 520);
-    m_pageConfig->setLayout(new JZVBoxLayout(6, 6));
+    m_pageConfig = new QWidget();
+    auto *layout = new QVBoxLayout(m_pageConfig);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
 
-    auto *title = new JZLabel(m_pageConfig);
-    title->setText("Config");
-
-    auto *info = new JZLabel(m_pageConfig);
-    info->setText("Default GATT chars are defined in JZSimulator::run().\n"
-                  "Edit this file to change pre-configured services/characteristics.");
+    layout->addWidget(new QLabel("Config"));
+    layout->addWidget(new QLabel("Default GATT chars are defined in JZSimulator::run().\n"
+                                 "Edit this file to change pre-configured services/characteristics."));
+    layout->addStretch(1);
 }
 
 void JZSimulator::switchTab(int idx)
 {
-    if (idx == 0)      { m_pagePeripheral->show(); m_pageCentral->hide(); m_pageConfig->hide(); }
-    else if (idx == 1) { m_pagePeripheral->hide(); m_pageCentral->show(); m_pageConfig->hide(); }
-    else               { m_pagePeripheral->hide(); m_pageCentral->hide(); m_pageConfig->show(); }
+    if (idx < 0 || idx > 2) return;
+    m_stack->setCurrentIndex(idx);
+    for (size_t i = 0; i < m_tabBtns.size(); i++)
+        m_tabBtns[i]->setEnabled(i != (size_t)idx);
 }
 
 // ======================== Peripheral 页操作 ========================
 void JZSimulator::onDeviceNotify(CharRow r)
 {
     if (m_centralAddr.empty()) { log("Notify: no App Central connected"); return; }
-    std::string val = r.valueEdit ? r.valueEdit->text() : r.ch->value;
+    std::string val = r.valueEdit ? r.valueEdit->text().toStdString() : r.ch->value;
     r.ch->value = val;
     JZVariantMap m;
     simSetStr(m, "addr", m_centralAddr);
@@ -256,7 +319,7 @@ void JZSimulator::onDisconnectPeriphClient()
 void JZSimulator::onPeriphWrite(PeriphCharRow r)
 {
     if (m_periphClientAddr.empty()) { log("Write: not connected to App Peripheral"); return; }
-    std::string val = r.valueEdit ? r.valueEdit->text() : r.ch->value;
+    std::string val = r.valueEdit ? r.valueEdit->text().toStdString() : r.ch->value;
     r.ch->value = val;
     JZVariantMap m; simSetStr(m, "chr", r.ch->chr); simSetStr(m, "val", val);
     sendToDriver(SIM_EVT_CHAR_WRITTEN, m);
@@ -265,30 +328,39 @@ void JZSimulator::onPeriphWrite(PeriphCharRow r)
 
 void JZSimulator::rebuildPeriphCharUI()
 {
-    if (!m_periphCharContainer) return;
-    delete m_periphCharContainer;
-    m_periphCharContainer = new JZWidget(m_pageCentral);
-    m_periphCharContainer->setLayout(new JZVBoxLayout(4, 4));
+    if (!m_periphCharLayout) return;
+
+    // 清空旧内容
+    while (QLayoutItem *item = m_periphCharLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) delete w;
+        delete item;
+    }
     m_periphRows.clear();
 
     if (m_periphChars.empty()) {
-        auto *ph = new JZLabel(m_periphCharContainer);
-        ph->setText("  (App Peripheral chars will appear here)");
+        m_periphCharLayout->addWidget(new QLabel("  (App Peripheral chars will appear here)"));
     } else {
-        auto *pnl = new JZLabel(m_periphCharContainer);
-        pnl->setText("App Peripheral: " + m_periphName);
+        m_periphCharLayout->addWidget(new QLabel(QString::fromStdString("App Peripheral: " + m_periphName)));
         for (auto &ch : m_periphChars) {
-            auto *row = new JZWidget(m_periphCharContainer); row->setLayout(new JZHBoxLayout(4, 4));
-            auto *hl = new JZLabel(row); hl->setText(ch.chr.substr(0, 8) + "...");
-            auto *vl = new JZLabel(row); vl->setText("Val:");
-            auto *ve = new JZTextEdit(row); ve->setText(ch.value); ve->resize(120, 28);
-            auto *wb = new JZPushButton(row); wb->setText("Write");
+            auto *row = new QWidget(m_periphCharContainer);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 0, 0, 0);
+            rowLayout->setSpacing(4);
+            rowLayout->addWidget(new QLabel(QString::fromStdString(ch.chr.substr(0, 8) + "...")));
+            rowLayout->addWidget(new QLabel("Val:"));
+            auto *ve = new QLineEdit(m_periphCharContainer);
+            ve->setText(QString::fromStdString(ch.value));
+            ve->setFixedWidth(120);
+            rowLayout->addWidget(ve);
+            auto *wb = new QPushButton("Write", m_periphCharContainer);
+            rowLayout->addWidget(wb);
+            rowLayout->addStretch(1);
+
             PeriphCharRow r; r.ch = &ch; r.valueEdit = ve;
-            connect(&wb->sigClicked, this, [this, r]() { onPeriphWrite(r); });
+            QObject::connect(wb, &QPushButton::clicked, this, [this, r]() { onPeriphWrite(r); });
             m_periphRows.push_back(r);
         }
     }
-    m_periphCharContainer->show();
 }
 
 // ======================== 网络 ========================
@@ -338,7 +410,7 @@ void JZSimulator::sendToDriver(int msg, const JZVariantMap &m)
 void JZSimulator::log(const std::string &t)
 {
     if (!m_logEdit) return;
-    m_logEdit->setText(m_logEdit->text() + t + "\n");
+    m_logEdit->append(QString::fromStdString(t));
 }
 
 void JZSimulator::updateStatus()
@@ -348,7 +420,7 @@ void JZSimulator::updateStatus()
     if (!m_periphClientAddr.empty()) s += "App Peripheral connected | ";
     if (!m_centralAddr.empty()) s += "App Central connected";
     if (s.empty()) s = "idle";
-    m_statusLabel->setText(s);
+    m_statusLabel->setText(QString::fromStdString(s));
 }
 
 // ======================== 指令处理 ========================

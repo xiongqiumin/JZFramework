@@ -15,7 +15,7 @@ using namespace std;
 void JZTest::exec(int ms)
 {
     JZEventLoop loop;
-    JZTimer::singleShot(ms, [&loop] { loop.exit(); });
+    JZTimer::singleShot(ms, [&loop] { loop.exit(0); });
     loop.exec();
 }
 

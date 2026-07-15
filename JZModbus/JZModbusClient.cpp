@@ -190,6 +190,46 @@ bool JZModbusClient::isBusy()
     return (m_req.function != -1);
 }
 
+bool JZModbusClient::isIo()
+{
+    return (m_com != nullptr || m_socket != nullptr);
+}
+
+void JZModbusClient::ioWaitForReadyRead(int ms)
+{
+    if (m_socket)
+        m_socket->waitForReadyRead(ms);
+    else if (m_com)
+    {
+        // 串口无 bytesAvailable 接口: 仅驱动事件循环让 onDataReceived 把数据
+        // 推入接收缓冲, 真正的读取由后续 ioReadAll() 完成(此处不消费缓冲区)
+        JZElapsedTimer t;
+        t.start();
+        while (t.elapsed() < ms)
+        {
+            if (jzApp)
+                jzApp->processEvents();
+        }
+    }
+}
+
+void JZModbusClient::ioWrite(const JZByteArray &buffer)
+{
+    if (m_socket)
+        m_socket->write(buffer);
+    else if (m_com)
+        m_com->write(buffer);
+}
+
+JZByteArray JZModbusClient::ioReadAll()
+{
+    if (m_socket)
+        return m_socket->readAll();
+    else if (m_com)
+        return m_com->readAll();
+    return JZByteArray();
+}
+
 bool JZModbusClient::waitFinish()
 {
     if (!isIo() || !isBusy())
@@ -222,15 +262,15 @@ JZModebusReply JZModbusClient::waitPacket()
     while (t.elapsed() < 5 * 1000)
     {                
         ioWaitForReadyRead(10);
-        
-        if (m_io->bytesAvailable())
+
+        JZByteArray data = ioReadAll();
+        if (!data.isEmpty())
         {
-            m_buffer.append(ioReadAll());
+            m_buffer.append(data);
             int rc = dealBuffer(reply);
             if (rc != MODBUS_WAIT_RECV)
                 break;
         }
-        
     }
     m_waitRecv = false;    
     m_req.clear();    

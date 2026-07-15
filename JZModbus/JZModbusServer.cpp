@@ -146,16 +146,20 @@ void JZModbusServer::stop()
     if (m_tcpServer)
     {
         m_tcpServer->close();
-        
+
         //断开所有连接
         auto socket_list = map_keys(m_tcpClients);
         for (int i = 0; i < socket_list.size(); i++)
         {
             socket_list[i]->close();
         }
-        jzApp->processEvents();
+        if (jzApp)
+            jzApp->processEvents();
 
-        JZ_ASSERT(m_tcpClients.size() == 0);
+        // 事件循环可能已停止, 对端的断开信号未必送达, 这里仅清空连接表。
+        // socket 本身是 server 的子对象(nextPendingConnection 时已挂父),
+        // 由对象树负责析构, 切勿手动 delete 以免双重释放。
+        m_tcpClients.clear();
     }
 }
 

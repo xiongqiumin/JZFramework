@@ -13,7 +13,7 @@ public:
     ~JZEventLoop();
 
     int exec();
-    void exit(int code);
+    void exit(int code = 0);
     void quit();
     void processEvents();
 

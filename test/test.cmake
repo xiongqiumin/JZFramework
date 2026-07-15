@@ -19,6 +19,16 @@ convert_to_abs_paths(TEST_NET_SOURCES)
 add_executable(test_net ${TEST_NET_SOURCES})
 target_link_libraries(test_net JZFramework)
 
+#test_modbus (Modbus 协议级自测: 不依赖真实网络/串口, 纯编解码往返)
+# 仅编译协议相关的 Modbus 源文件(避免引入尚未完成的 JZModbusClient/Server)
+set(TEST_MODBUS_SOURCES
+    test_modbus.cpp)
+convert_to_abs_paths(TEST_MODBUS_SOURCES)
+
+add_executable(test_modbus ${TEST_MODBUS_SOURCES})
+target_include_directories(test_modbus PRIVATE "${CMAKE_CURRENT_LIST_DIR}/net")
+target_link_libraries(test_modbus JZFramework)
+
 #test_co (协程综合测试: 基础库 + 网络 TCP/UDP/WebSocket/HTTP)
 # 各子模块独立文件, 由 co/test_co.cpp 统一编排调用 (参考 test/net/test_net.cpp)
 set(TEST_CO_SOURCES

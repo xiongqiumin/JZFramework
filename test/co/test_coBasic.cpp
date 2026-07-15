@@ -24,7 +24,7 @@ static void testCoSpawnBasics()
     vector<JZCoCoroutinePtr> cos;
     for (int i = 0; i < 5; i++)
         cos.push_back(jzco_spawn([&]() { done++; }));
-    jzco_waitCoroutine(cos);
+    jzco_waitAll(cos);
     CO_TEST_ASSERT(done == 5, "应完成 5 个协程, 实际=" + to_string(done));
     jzDebug() << "【OK】协程 spawn/wait 基本能力正确";
 }
@@ -82,7 +82,7 @@ static void testCoMutexBlocking()
         m.unlock();
     });
 
-    jzco_waitCoroutine({coB});   // 只等 B
+    jzco_waitAll({coB});   // 只等 B
     CO_TEST_ASSERT(bGotLock, "B 应当在 A 释放锁之后才获得锁 (互斥/阻塞正确)");
     jzDebug() << "【OK】JZCoMutex 阻塞+互斥正确 (B 等待 A 释放后获得锁)";
 }
@@ -103,7 +103,7 @@ static void testCoSemaphore()
         jzco_sleep(20); sem.release(1);
         jzco_sleep(20); sem.release(1);
     });
-    jzco_waitCoroutine({consumer, producer});
+    jzco_waitAll({consumer, producer});
 
     CO_TEST_ASSERT(consumerDone == 1, "消费者未被唤醒 (信号量阻塞/唤醒失败)");
     CO_TEST_ASSERT(sem.available() == 0, "消费后 available 应为 0, 实际=" + to_string(sem.available()));
@@ -122,7 +122,7 @@ static void testCoSemaphore()
         bool ok = s3.tryAcquire(1, 50);
         CO_TEST_ASSERT(!ok, "超时应返回 false");
     });
-    jzco_waitCoroutine({t});
+    jzco_waitAll({t});
 
     jzDebug() << "【OK】JZCoSemaphore 计数/阻塞/唤醒/超时正确";
 }
@@ -140,13 +140,14 @@ static void testCoCondition()
         for (int i = 0; i < 2; i++)
             waiters.push_back(jzco_spawn([&]() { cond.wait(); woken++; }));
 
-        jzco_sleep(30);                          // 等两个 waiter 真正进入等待
+        jzApp->processEvents();                         // 等两个 waiter 真正进入等待
         JZTimer::singleShot(0, [&]() { cond.wakeOne(); });
-        jzco_sleep(30);
+        
+        jzApp->processEvents();
         CO_TEST_ASSERT(woken == 1, "wakeOne 后应唤醒 1 个, 实际=" + to_string(woken));
 
-        JZTimer::singleShot(0, [&]() { cond.wakeOne(); });
-        jzco_waitCoroutine(waiters);
+        cond.wakeOne();
+        jzco_waitAny(waiters);
         CO_TEST_ASSERT(woken == 2, "再次 wakeOne 后应唤醒 2 个, 实际=" + to_string(woken));
     }
 
@@ -158,9 +159,9 @@ static void testCoCondition()
         for (int i = 0; i < 3; i++)
             waiters.push_back(jzco_spawn([&]() { cond.wait(); woken++; }));
 
-        jzco_sleep(30);
+        jzApp->processEvents();
         JZTimer::singleShot(0, [&]() { cond.wakeAll(); });
-        jzco_waitCoroutine(waiters);
+        jzco_waitAll(waiters);
         CO_TEST_ASSERT(woken == 3, "wakeAll 后应唤醒 3 个, 实际=" + to_string(woken));
     }
 

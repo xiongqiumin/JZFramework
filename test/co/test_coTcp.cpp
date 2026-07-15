@@ -50,7 +50,7 @@ static void testCoTcp()
         client.disconnectFromHost();
     });
 
-    jzco_waitCoroutine({serverCo, clientCo});
+    jzco_waitAll({serverCo, clientCo});
     jzDebug() << "【OK】协程 TCP 回环通过 (" << rounds << " 轮 echo)";
 }
 

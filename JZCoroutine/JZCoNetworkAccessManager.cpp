@@ -4,6 +4,7 @@ JZCoNetworkReply::JZCoNetworkReply(JZCoNetworkAccessManager *manager, JZNetworkR
     :JZObject(manager)
 {
     m_reply = reply;
+    m_reply->setParent(this);
     connect(&reply->sigFinished,this, &JZCoNetworkReply::onReplyFinished);
 }
 

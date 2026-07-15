@@ -16,6 +16,7 @@ class JZCoScheduler;
 注意：协程依赖主线程调度，主线程不能阻塞
      协程中不要执行事件循环和信号响应，有调度风险
      假设协程co1 调用event loop, 这时触发切换到co2, co2 让出时切换回main, 无法切换回co1 
+     同理, 也不能在协程中切换到其他协程, co1 直接切换到 co2, co1 信息就丢失了. 切换统一使用JZCoCondition
      协程让出后 -> 总是唤醒主线程 -> 再由主线程调度
 */
 class JZCoCoroutine

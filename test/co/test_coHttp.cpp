@@ -60,10 +60,11 @@ static void testCoHttp()
             uint64_t seq;
             CO_TEST_ASSERT(coParseMsg(str_fromUtf8(resp), "http", seq) && seq == (uint64_t)i,
                            "协程 HTTP 回显校验失败 期望=" + to_string(i) + " 收到=" + str_fromUtf8(resp));
+            reply->deleteLater();
         }
     });
 
-    jzco_waitCoroutine({co});
+    jzco_waitAll({co});
     jzDebug() << "【OK】协程 HTTP 回环通过 (" << rounds << " 轮 echo)";
 }
 

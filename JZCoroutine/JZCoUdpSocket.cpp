@@ -62,8 +62,6 @@ void JZCoUdpSocket::onReadyRead()
         dg.peerIp = dgram.peerIp;
         dg.peerPort = dgram.peerPort;
         dg.data = dgram.data;
-        m_lastPeerIp = dgram.peerIp;
-        m_lastPeerPort = dgram.peerPort;
         m_recvQueue.push_back(std::move(dg));
     }
     if (m_waitType == WaitRead)

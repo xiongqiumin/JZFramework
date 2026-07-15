@@ -20,7 +20,7 @@ static const int8_t base64_decode_table[128] = {
 };
 
 JZByteArray JZByteArray::fromBase64(const JZByteArray &base64_in) {
-    const std::vector<char> &base64 = base64_in.m_vec;
+    const JZByteVector &base64 = base64_in.m_vec;
     const size_t len = base64.size();
 
     if (len == 0)
@@ -139,7 +139,7 @@ JZByteArray JZByteArray::toHex() const
 {
     JZByteArray ret;
     const char hex[] = "0123456789abcdef";
-    std::vector<char> &vec = ret.m_vec;
+    JZByteVector &vec = ret.m_vec;
     vec.resize(m_vec.size() * 2);
 
     for (size_t i = 0; i < m_vec.size(); i++)
@@ -155,8 +155,8 @@ JZByteArray JZByteArray::toBase64() const
 {
     JZByteArray out;
 
-    const std::vector<char> &buffer = this->m_vec;
-    std::vector<char> &result = out.m_vec;
+    const JZByteVector &buffer = this->m_vec;
+    JZByteVector &result = out.m_vec;
     size_t len = buffer.size();
     if (len == 0)
         return out;

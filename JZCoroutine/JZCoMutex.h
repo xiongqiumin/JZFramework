@@ -3,6 +3,7 @@
 
 #include <queue>
 #include "JZGlobal.h"
+#include "JZCoCoroutine.h"
 
 class JZCoCoroutine;
 class JZCoMutex
@@ -18,8 +19,8 @@ public:
 protected:
     JZ_DISABLE_COPY(JZCoMutex);
 
-    bool m_locked;               
-    std::queue<JZCoCoroutine*> m_coWaitList;
+    bool m_locked;
+    JZCoCondition m_cond;
 };
 
 //JZCoMutexLocker

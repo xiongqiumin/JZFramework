@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <cstddef>
 #include "JZGlobal.h"
 
 struct JZFileStat
@@ -20,6 +21,11 @@ public:
 	virtual ~JZPlatformWrapper();
 
 	virtual int64_t getTickCountNs() = 0;
+
+	// === 内存分配 ===
+	// 默认走标准 malloc/free; 具体平台可重写(如 esp32 从 PSRAM 分配)
+	virtual void* malloc(size_t size);
+	virtual void  free(void *ptr);
 
 	// === 文件句柄操作 ===
 	virtual void* fopen(const char *filepath, const char *mode) = 0;
@@ -48,6 +54,10 @@ public:
 
     static int64_t getTickCountMs();
 	static int64_t getTickCountNs();
+
+	// 内存分配: 有平台实例时走实例(如 esp32 PSRAM), 否则退化到标准 malloc/free
+	static void* malloc(size_t size);
+	static void  free(void *ptr);
 
 	static std::string platform();
 	static std::string applicationFilePath();

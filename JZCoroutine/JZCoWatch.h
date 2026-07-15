@@ -30,7 +30,7 @@ public:
     // 等待调度器中所有协程执行完毕(不依赖某一时刻快照)
     // 每收到一个 sigFinished 就检查调度器里是否已无未结束协程,
     // 因此协程内部再启动的协程也会被一并等待。
-    void waitScheduler();
+    void waitAllCoroutines();
 
 protected:
     void onFinished(JZCoCoroutine *co);

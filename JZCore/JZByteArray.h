@@ -5,6 +5,7 @@
 #include <string>
 #include "JZGlobal.h"
 #include "JZMeta.h"
+#include "JZAllocator.h"
 
 class JZDebug;
 class JZByteArray
@@ -15,6 +16,10 @@ public:
     JZByteArray();
     JZByteArray(const char *buffer, int len);
     ~JZByteArray();
+
+    // 显式默认 move: 用户析构会抑制隐式 move, 不写这里 std::move 会退化成深拷贝
+    JZByteArray(JZByteArray&&) noexcept = default;
+    JZByteArray& operator=(JZByteArray&&) noexcept = default;
 
     JZByteArray toHex() const;
     JZByteArray toBase64() const;
@@ -50,7 +55,9 @@ public:
     void clear();        
 
 private:
-    std::vector<char> m_vec;
+    typedef std::vector<char, JZAllocator<char>> JZByteVector;
+
+    JZByteVector m_vec;
 };
 JZ_DECLARE_METATYPE_INTERNAL(JZByteArray, JZMetaType::ByteArray);
 JZDebug operator<<(JZDebug d, const JZByteArray &bytes);

@@ -1,6 +1,9 @@
 #include "JZCoTcpServer.h"
 
+
 // ========================== JZCoTcpServer ==========================
+JZ_OBJECT_IMPL(JZCoTcpServer, JZObject)
+
 JZCoTcpServer::JZCoTcpServer(JZObject *parent)
     : JZObject(parent)
 {

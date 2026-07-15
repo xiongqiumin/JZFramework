@@ -56,7 +56,7 @@ public:
     }
 
     ~JZWebSocketTest() {
-        jzco_waitAllCoroutine();
+        jzco_waitAllCoroutines();
     }
 
     // ===================== TPS 统计 =====================
@@ -174,12 +174,12 @@ int test_coWebSocket()
 
     JZWebSocketTest test;
     // 等 8 个客户端完成回环
-    jzco_waitCoroutine(test.client_cos);
+    jzco_waitAll(test.client_cos);
     // 让服务端 accept 退出并等待所有协程结束
     test.m_stop = true;
     if (test.co_server)
         test.co_server->close();
-    jzco_waitAllCoroutine();
+    jzco_waitAllCoroutines();
 
     CO_TEST_ASSERT(test.m_finishedClients == JZWebSocketTest::CLIENT_NUM,
                    "部分客户端未跑完回环, 完成数=" + to_string(test.m_finishedClients));

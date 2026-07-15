@@ -29,21 +29,16 @@ void JZCoMutex::lock()
         return;
     }
 
-    m_coWaitList.push(g_scheduler->currentCoroutine());
-    g_scheduler->yield(m_coWaitList.back());
+    m_cond.wait();
 }
 
 void JZCoMutex::unlock()
 {
-    if (m_coWaitList.empty())
+    if (m_locked)
     {
         m_locked = false;
-        return;
+        m_cond.wakeOne();
     }
-
-    JZCoCoroutine* co = m_coWaitList.front();
-    m_coWaitList.pop();
-    g_scheduler->resume(co);
 }
 
 //JZCoMutexLocker

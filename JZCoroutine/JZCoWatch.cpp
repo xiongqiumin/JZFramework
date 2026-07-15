@@ -127,7 +127,7 @@ void JZCoWatch::waitAll(const std::vector<JZCoCoroutinePtr> &co_list)
     m_mode = Mode::None;
 }
 
-void JZCoWatch::waitScheduler()
+void JZCoWatch::waitAllCoroutines()
 {
     // 调度器已无未结束协程, 直接返回
     bool all_finish = true;

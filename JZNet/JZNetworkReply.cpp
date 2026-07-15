@@ -5,7 +5,7 @@
 #include "JZTx.h"
 
 //JZNetworkReply
-JZNetworkReply::JZNetworkReply(JZNetworkAccessManager *parent)
+JZNetworkReply::JZNetworkReply(JZObject *parent)
     :JZNetObject(parent), sigFinished(this)
 {
     m_error = None;

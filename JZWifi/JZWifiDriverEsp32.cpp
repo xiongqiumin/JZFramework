@@ -58,11 +58,6 @@ JZWifiDriverEsp32::~JZWifiDriverEsp32()
     esp_wifi_deinit();
 }
 
-bool JZWifiDriverEsp32::isWifiAvailable() 
-{ 
-    return true; 
-}
-
 void JZWifiDriverEsp32::ensureInit()
 {
     if (m_inited)

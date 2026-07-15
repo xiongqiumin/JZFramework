@@ -27,18 +27,15 @@ public:
     JZBleDriverEsp32();
     ~JZBleDriverEsp32() override;
 
-    bool isBluetoothAvailable() override;
-    bool isBluetoothEnabled() override;
+    void startScan(JZBLEDeviceDiscoveryAgent *agent) override;
+    void stopScan(JZBLEDeviceDiscoveryAgent *agent) override;
+    bool isScanning(JZBLEDeviceDiscoveryAgent *agent) override;
 
-    void startScan() override;
-    void stopScan() override;
-    bool isScanning() override;
+    void connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys) override;
+    void disconnectFromDevice(JZBLEController *d) override;
+    bool isConnected(JZBLEController *d) override;
 
-    void connectToDevice(JZBLECentral *d) override;
-    void disconnectFromDevice(JZBLECentral *d) override;
-    bool isConnected(JZBLECentral *d) override;
-
-    void discoverServices(const std::string& address, JZBLECentral *d) override;
+    void discoverServices(const std::string& address, JZBLEController *d) override;
     std::vector<JZBluetoothUuid> services(const std::string& address) override;
 
     void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
@@ -68,7 +65,7 @@ public:
 
     void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
 
-    // 绑定密钥透传：上层回灌 / 主动配对
+    // 绑定密钥透传：Central 密钥经 connectToDevice(keys) 注入 / Peripheral 密钥经 setBondKey 预灌 / 主动配对
     void setBondKey(const std::string& addr, const JZBleDriver::JZBleBondKey& key) override;
     void requestPairing(const std::string& addr) override;
 
@@ -92,7 +89,11 @@ private:
     void ensureDescriptorsDiscovered(const std::string &addr, const std::string &svc);
     void buildPeriphGatt();
 
-    static int onGapEvent(struct ble_gap_event *event, void *arg);
+    // GAP 事件回调：按角色拆分为三个独立回调，arg 类型由各注册点固定，
+    // 因此回调内部无需运行时 cast 或角色判断，直接按固定类型使用 arg。
+    static int onScanGapEvent(struct ble_gap_event *event, void *arg);    // arg = driver(this)，扫描
+    static int onPeriphGapEvent(struct ble_gap_event *event, void *arg); // arg = JZBLEPeripheral*
+    static int onCentralGapEvent(struct ble_gap_event *event, void *arg);// arg = JZBLEController*
     static void onHostSync();
     static void onHostReset(int reason);
     static int onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
@@ -171,10 +172,6 @@ private:
     JZBLEPeripheral *m_periphCtrlPriv = nullptr;    // 当前 Peripheral
     PeriphGatt *m_periphGatt = nullptr;              // 长期存活的 GATT 定义
 
-    // 活跃实例集合：用于在 GAP 事件中区分事件来源（避免 stopAdvertising 清空
-    // m_periphCtrlPriv 后，旧连接的 DISCONNECT 被误判为 Central 而崩溃）
-    std::set<JZBLEPeripheral *> m_periphSet;
-    std::set<JZBLECentral *>     m_centralSet;
 
     // 延迟广播（等待 host sync）
     bool m_synced = false;
@@ -189,7 +186,7 @@ private:
     std::map<std::string, JZBLEService*> m_svcPtrCache; // "addr|svc" -> service 指针（通知路由用）
 
     // 绑定密钥内存缓存（key = obj_type:addr）。驱动不持久化，仅本次会话使用；
-    // 持久化由上层通过 BondKeyReporter 接收后自行处理，并在重连前用 setBondKey 回灌。
+    // 持久化由上层通过 BondKeyReporter 接收后自行处理，并在重连时经 connectToDevice(keys) 注入。
     std::map<std::string, JZBleBondKey> m_bondStore;
 };
 

@@ -19,19 +19,18 @@ public:
     JZBleDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZBleDriverSimulator() override;
 
-    bool isBluetoothAvailable() override;
-    bool isBluetoothEnabled() override;
+
 
     // === Central ===
-    void startScan() override;
-    void stopScan() override;
-    bool isScanning() override;
+    void startScan(JZBLEDeviceDiscoveryAgent *agent) override;
+    void stopScan(JZBLEDeviceDiscoveryAgent *agent) override;
+    bool isScanning(JZBLEDeviceDiscoveryAgent *agent) override;
 
-    void connectToDevice(JZBLECentral *d) override;
-    void disconnectFromDevice(JZBLECentral *d) override;
-    bool isConnected(JZBLECentral *d) override;
+    void connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys) override;
+    void disconnectFromDevice(JZBLEController *d) override;
+    bool isConnected(JZBLEController *d) override;
 
-    void discoverServices(const std::string& address, JZBLECentral *d) override;
+    void discoverServices(const std::string& address, JZBLEController *d) override;
     std::vector<JZBluetoothUuid> services(const std::string& address) override;
 
     void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
@@ -68,12 +67,13 @@ private:
 
     JZNetClient *m_client = nullptr;
     bool m_scanning = false;
+    JZObjectPointer m_scanAgent;
 
     // Central 状态
     std::map<std::string, int>            m_connMap;
     // 连接事件仅带 addr、无 object 指针，故只支持单个 Central（最近一次 connect 的）
-    JZBLECentral *m_central = nullptr;
-    JZBLECentral *m_svcDiscoverCtrl = nullptr;
+    JZBLEController *m_central = nullptr;
+    JZBLEController *m_svcDiscoverCtrl = nullptr;
     std::string      m_svcDiscoverAddr;
     JZBLEService *m_chrDiscoverCtrl = nullptr;
     std::string      m_chrDiscoverAddr;

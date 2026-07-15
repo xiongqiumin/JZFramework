@@ -53,25 +53,21 @@ void JZBLEPeripheral::addCharacteristic(const JZBluetoothUuid &serviceUuid, cons
                                          int properties, const std::string &initialValue)
 {
     (void)initialValue;
-    if (auto *drv = getDriver())
-        drv->addPeripheralCharacteristic(serviceUuid.toString(), charUuid.toString(), properties);
+    getDriver()->addPeripheralCharacteristic(serviceUuid.toString(), charUuid.toString(), properties);
 }
 
 void JZBLEPeripheral::startAdvertising(const std::string &localName)
 {
-    if (auto *drv = getDriver())
-    {
-        drv->startAdvertising(localName.empty() ? "JZBle" : localName, m_serviceList, this);
-        m_advertising = true;
-    }
+    auto *drv = getDriver();
+    drv->startAdvertising(localName.empty() ? "JZBle" : localName, m_serviceList, this);
+    m_advertising = true;
 }
 
 void JZBLEPeripheral::stopAdvertising()
 {
     if (m_advertising)
     {
-        if (auto *drv = getDriver())
-            drv->stopAdvertising();
+        getDriver()->stopAdvertising();
         m_advertising = false;
     }
 }
@@ -80,6 +76,5 @@ bool JZBLEPeripheral::isAdvertising() const { return m_advertising; }
 
 void JZBLEPeripheral::sendNotification(const JZBluetoothUuid &charUuid, const std::string &value)
 {
-    if (auto *drv = getDriver())
-        drv->peripheralSendNotify(charUuid.toString(), value);
+    getDriver()->peripheralSendNotify(charUuid.toString(), value);
 }

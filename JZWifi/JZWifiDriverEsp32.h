@@ -14,8 +14,6 @@ public:
     JZWifiDriverEsp32();
     ~JZWifiDriverEsp32() override;
 
-    bool isWifiAvailable() override;
-
     // === Station (连接) ===
     void stationConnect(JZWifiStation *w, const JZWifiConfig &cfg) override;
     void stationDisconnect(JZWifiStation *w) override;

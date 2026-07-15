@@ -1,7 +1,7 @@
 #include "JZBleDriverSimulator.h"
 #include "JZBleSimPack.h"
 #include "JZBLEPeripheral.h"
-#include "JZBLECentral.h"
+#include "JZBLEController.h"
 #include "JZBLEService.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZSignal.h"
@@ -27,8 +27,6 @@ JZBleDriverSimulator::JZBleDriverSimulator(const std::string &ip, int port)
 }
 
 JZBleDriverSimulator::~JZBleDriverSimulator() {}
-bool JZBleDriverSimulator::isBluetoothAvailable() { return true; }
-bool JZBleDriverSimulator::isBluetoothEnabled()   { return m_client && m_client->isConnect(); }
 
 void JZBleDriverSimulator::sendSim(int msg, const JZVariantMap &m)
 {
@@ -47,42 +45,49 @@ int JZBleDriverSimulator::getConnHandle(const std::string &a)
 }
 
 // ===================== Central: 扫描 =====================
-void JZBleDriverSimulator::startScan()
+void JZBleDriverSimulator::startScan(JZBLEDeviceDiscoveryAgent *agent)
 {
+    m_scanAgent = agent->guardPointer();
     m_scanning = true;
     JZVariantMap m;
     sendSim(SIM_CMD_SCAN_START, m);
 }
-void JZBleDriverSimulator::stopScan()
+void JZBleDriverSimulator::stopScan(JZBLEDeviceDiscoveryAgent *agent)
 {
+    JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
     m_scanning = false;
+    m_scanAgent = JZObjectPointer();
     JZVariantMap m;
     sendSim(SIM_CMD_SCAN_STOP, m);
 }
-bool JZBleDriverSimulator::isScanning() { return m_scanning; }
+bool JZBleDriverSimulator::isScanning(JZBLEDeviceDiscoveryAgent *agent)
+{
+    return agent ? (agent == (JZBLEDeviceDiscoveryAgent *)m_scanAgent.object()) : false;
+}
 
 // ===================== Central: 连接 =====================
-void JZBleDriverSimulator::connectToDevice(JZBLECentral *d)
+void JZBleDriverSimulator::connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys)
 {
     std::string addr = d->deviceInfo().address();
     m_central = d;   // 单一上报目标（事件仅带 addr，无法指明具体对象）
+    // 密钥由 connectToDevice(keys) 传入（模拟器不实现密钥库，仅保持语义一致）
     JZVariantMap m; simSetStr(m, "addr", addr);
     sendSim(SIM_CMD_CONNECT, m);
 }
-void JZBleDriverSimulator::disconnectFromDevice(JZBLECentral *d)
+void JZBleDriverSimulator::disconnectFromDevice(JZBLEController *d)
 {
     if (m_central == d) m_central = nullptr;
     std::string addr = d->deviceInfo().address();
     JZVariantMap m; simSetStr(m, "addr", addr);
     sendSim(SIM_CMD_DISCONNECT, m);
 }
-bool JZBleDriverSimulator::isConnected(JZBLECentral *d)
+bool JZBleDriverSimulator::isConnected(JZBLEController *d)
 {
     return getConnHandle(d->deviceInfo().address()) >= 0;
 }
 
 // ===================== Central: 服务/特征发现 =====================
-void JZBleDriverSimulator::discoverServices(const std::string &address, JZBLECentral *d)
+void JZBleDriverSimulator::discoverServices(const std::string &address, JZBLEController *d)
 {
     m_svcDiscoverCtrl = d;
     m_svcDiscoverAddr = address;
@@ -216,15 +221,15 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         std::string name = simGetStr(map, "name");
         int rssi = simGetInt(map, "rssi");
         std::vector<std::string> su = simGetStrs(map, "su");
-        JZBluetoothDeviceInfo info;
+        JZBLEDeviceInfo info;
         info.setAddress(addr);
         info.setName(name);
         info.setRssi(rssi);
         std::vector<JZBluetoothUuid> uu;
         for (auto &s : su) uu.push_back(JZBluetoothUuid(s));
         info.setServiceUuids(uu);
-        for (auto *a : m_agents)
-            JZBLEDeviceDiscoveryAgentPrivate::onDeviceDiscovered(a, info);
+        if (m_scanAgent)
+            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)m_scanAgent.object(), info);
         break;
     }
     case SIM_EVT_CONNECTED: {

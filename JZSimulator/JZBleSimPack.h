@@ -38,6 +38,7 @@ enum JZBleSimMsg {
     SIM_EVT_CHAR_WRITTEN,
     SIM_EVT_ADV_STATE,
     SIM_EVT_LOG,
+    SIM_EVT_BUSY,        // 服务器已达最大连接数 (单客户端限制), 拒绝新连接
 };
 
 // ============ JZVariantMap 读写辅助 ============

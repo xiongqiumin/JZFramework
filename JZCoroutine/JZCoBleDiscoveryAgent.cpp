@@ -28,7 +28,7 @@ void JZCoBleDiscoveryAgent::yield(WaitType type, int timeout)
     m_waitType = WaitNone;
 }
 
-JZResult<std::vector<JZBluetoothDeviceInfo>> JZCoBleDiscoveryAgent::scan(int timeout)
+JZResult<std::vector<JZBLEDeviceInfo>> JZCoBleDiscoveryAgent::scan(int timeout)
 {
     m_error = false;
     m_errorMsg.clear();
@@ -42,12 +42,12 @@ JZResult<std::vector<JZBluetoothDeviceInfo>> JZCoBleDiscoveryAgent::scan(int tim
     m_agent->stop();
 
     if (m_error)
-        return JZResult<std::vector<JZBluetoothDeviceInfo>>::Error(m_errorMsg);
+        return JZResult<std::vector<JZBLEDeviceInfo>>::Error(m_errorMsg);
 
-    return JZResult<std::vector<JZBluetoothDeviceInfo>>::Ok(m_devices);
+    return JZResult<std::vector<JZBLEDeviceInfo>>::Ok(m_devices);
 }
 
-void JZCoBleDiscoveryAgent::onDeviceDiscovered(const JZBluetoothDeviceInfo &info)
+void JZCoBleDiscoveryAgent::onDeviceDiscovered(const JZBLEDeviceInfo &info)
 {
     m_devices.push_back(info);
 }

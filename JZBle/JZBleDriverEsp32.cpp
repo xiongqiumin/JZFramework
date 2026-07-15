@@ -1,6 +1,6 @@
 #include "JZBleDriverEsp32.h"
 #include "JZBLEService.h"
-#include "JZBLECentral.h"
+#include "JZBLEController.h"
 #include "JZBLEPeripheral.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZStd.h"
@@ -160,84 +160,100 @@ void JZBleDriverEsp32::ensureDescriptorsDiscovered(const std::string &addr, cons
 }
 
 // ==================== GAP 回调 — arg 透传自 NimBLE 调用 ====================
-int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
+// ==================== GAP 事件回调（按角色拆分） ====================
+// 三个独立回调分别对应扫描 / Peripheral / Central，arg 类型由各注册点固定，
+// 因此回调内部无需运行时 cast 或角色判断，直接按固定类型使用 arg。
+
+int JZBleDriverEsp32::onScanGapEvent(struct ble_gap_event *event, void *arg)
 {
     auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
-
     switch (event->type)
     {
-    case BLE_GAP_EVENT_DISC:   // arg = this（扫描）
+    case BLE_GAP_EVENT_DISC:   // arg = this（driver）
     {
-        JZBluetoothDeviceInfo info;
+        JZBLEDeviceInfo info;
         info.setAddress(addrToString(event->disc.addr.val));
         info.setRssi(event->disc.rssi);
         struct ble_hs_adv_fields f;
         if (ble_hs_adv_parse_fields(&f, event->disc.data, event->disc.length_data) == 0 && f.name && f.name_len > 0)
             info.setName(std::string((const char *)f.name, f.name_len));
-        for (auto *d : self->m_agents)
-            JZBLEDeviceDiscoveryAgentPrivate::onDeviceDiscovered(d, info);
+        if (self->m_scanAgent)
+            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)self->m_scanAgent.object(), info);
         break;
     }
     case BLE_GAP_EVENT_DISC_COMPLETE:
         self->m_scanning = false;
-        for (auto *d : self->m_agents)
-            JZBLEDeviceDiscoveryAgentPrivate::onScanFinished(d);
+        if (self->m_scanAgent)
+        {
+            JZBLEDeviceDiscoveryAgent::onScanFinished((JZBLEDeviceDiscoveryAgent *)self->m_scanAgent.object());
+            self->m_scanAgent = JZObjectPointer();
+        }
         break;
+    }
+    return 0;
+}
 
+int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
+{
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *periph = static_cast<JZBLEPeripheral *>(arg);  // arg 固定为 JZBLEPeripheral*
+    switch (event->type)
+    {
+    case BLE_GAP_EVENT_CONNECT:
+        // Peripheral：对端连上本机
+        if (event->connect.status == 0)
+        {
+            self->m_periphConnHandle = event->connect.conn_handle;
+            self->m_periphCtrlPriv = periph;
+            JZBleDriver::peripheralOnClientConnected(periph);
+        }
+        break;
+    case BLE_GAP_EVENT_DISCONNECT:
+    {
+        std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
+        self->m_periphConnHandle = -1;
+        self->m_periphCtrlPriv = nullptr;
+        JZBleDriver::peripheralOnClientDisconnected(periph);
+        break;
+    }
+    case BLE_GAP_EVENT_SUBSCRIBE:
+    case BLE_GAP_EVENT_MTU:
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        break;  // peripheral 侧暂不处理
+    }
+    return 0;
+}
+
+int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
+{
+    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *cent = static_cast<JZBLEController *>(arg);  // arg 固定为 JZBLEController*
+    switch (event->type)
+    {
     case BLE_GAP_EVENT_CONNECT:
     {
         struct ble_gap_conn_desc desc;
         ble_gap_conn_find(event->connect.conn_handle, &desc);
         std::string addr = addrToString(desc.peer_id_addr.val);
-
-        auto *periph = (JZBLEPeripheral *)arg;
-        auto *cent   = (JZBLECentral *)arg;
-        if (self->m_periphSet.count(periph))
+        if (event->connect.status == 0)
         {
-            // Peripheral：对端连上本机
-            if (event->connect.status == 0)
-            {
-                self->m_periphConnHandle = event->connect.conn_handle;
-                self->m_periphCtrlPriv = periph;
-                JZBleDriver::peripheralOnClientConnected(periph);
-            }
+            self->setConnHandle(addr, event->connect.conn_handle);
+            JZBleDriver::centralOnDeviceConnected(cent, addr.c_str());
         }
-        else if (self->m_centralSet.count(cent))
-        {
-            // Central：本机连上对端
-            if (event->connect.status == 0)
-            {
-                self->setConnHandle(addr, event->connect.conn_handle);
-                JZBleDriver::centralOnDeviceConnected(cent, addr.c_str());
-            }
-            else
-                JZBleDriver::centralOnError(cent, 0, "GAP connect failed");
-        }
+        else
+            JZBleDriver::centralOnError(cent, 0, "GAP connect failed");
         break;
     }
     case BLE_GAP_EVENT_DISCONNECT:
     {
         std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
-        auto *periph = (JZBLEPeripheral *)arg;
-        auto *cent   = (JZBLECentral *)arg;
-        if (self->m_periphSet.count(periph))
-        {
-            self->m_periphSet.erase(periph);
-            self->m_periphConnHandle = -1;
-            self->m_periphCtrlPriv = nullptr;
-            JZBleDriver::peripheralOnClientDisconnected(periph);
-        }
-        else if (self->m_centralSet.count(cent))
-        {
-            self->m_centralSet.erase(cent);
-            self->removeConnHandle(addr);
-            JZBleDriver::centralOnDeviceDisconnected(cent, addr.c_str());
-        }
+        self->removeConnHandle(addr);
+        JZBleDriver::centralOnDeviceDisconnected(cent, addr.c_str());
         break;
     }
     case BLE_GAP_EVENT_NOTIFY_RX:
     {
-        // arg 是连接回调（Central 的 JZBLECentral*）。按 conn_handle + attr_handle 路由到具体服务。
+        // 本机作为 Central 收到对端通知，按 conn_handle + attr_handle 路由到具体服务。
         uint16_t h   = event->notify_rx.conn_handle;
         uint16_t attr = event->notify_rx.attr_handle;
         std::string addr = self->connHandleToAddr(h);
@@ -258,23 +274,9 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
         }
         break;
     }
-    case BLE_GAP_EVENT_SUBSCRIBE:
     case BLE_GAP_EVENT_MTU:
-        break;
-
-    case BLE_GAP_EVENT_SECURITY:
-    {
-        // 配对/绑定状态机事件。Just Works（无 io_cap）下无需交互，返回 0 让 SMP 继续；
-        // 若改用密码配对，需在此根据 event->security.state 处理 PASSKEY 显示/确认。
-        // 密钥本身由 storeWriteCb 在 SMP 过程中写入并上报，无需在此处理。
-        break;
-    }
     case BLE_GAP_EVENT_ENC_CHANGE:
-    {
-        // 链路加密状态变化：配对完成或重连用已存 LTK 恢复加密时触发。
-        // 此时加密已建立，对应绑定密钥此前已通过 sigBondKeyReported 上报。
-        break;
-    }
+        break;  // central 侧暂不处理
     }
     return 0;
 }
@@ -283,7 +285,7 @@ int JZBleDriverEsp32::onGapEvent(struct ble_gap_event *event, void *arg)
 int JZBleDriverEsp32::onGattcSvcEvent(uint16_t conn_handle, const struct ble_gatt_error *error,
                                         const struct ble_gatt_svc *svc, void *arg)
 {
-    auto *d = (JZBLECentral *)arg;
+    auto *d = (JZBLEController *)arg;
     std::string addr = d->deviceInfo().address();
     auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
     if (error->status == BLE_HS_EDONE)
@@ -532,7 +534,7 @@ void JZBleDriverEsp32::onHostSync()
         struct ble_gap_adv_params p; memset(&p, 0, sizeof(p));
         p.conn_mode = BLE_GAP_CONN_MODE_UND; p.disc_mode = BLE_GAP_DISC_MODE_GEN;
         ble_gap_adv_start(self->m_ownAddrType, nullptr, BLE_HS_FOREVER, &p,
-                          onGapEvent, self->m_pendingAdvPeriph);
+                          onPeriphGapEvent, self->m_pendingAdvPeriph);
 
         self->m_pendingAdv = false;
         self->m_pendingAdvName.clear();
@@ -541,8 +543,6 @@ void JZBleDriverEsp32::onHostSync()
     }
 }
 JZBleDriverEsp32::~JZBleDriverEsp32() { delete m_periphGatt; }
-bool JZBleDriverEsp32::isBluetoothAvailable() { return true; }
-bool JZBleDriverEsp32::isBluetoothEnabled()   { return true; }
 
 // ==================== 绑定密钥 store（驱动不持久化） ====================
 // 密钥仅缓存在 m_bondStore（本次会话），配对时上报上层，重连时由上层回灌。
@@ -642,34 +642,46 @@ void JZBleDriverEsp32::requestPairing(const std::string &addr)
 }
 
 // ==================== Central ====================
-void JZBleDriverEsp32::startScan()
+void JZBleDriverEsp32::startScan(JZBLEDeviceDiscoveryAgent *agent)
 {
-    if (m_scanning) return;
+    JZ_ASSERT_X(!m_scanAgent, "ble allready start scan");
+    m_scanAgent = agent->guardPointer();
     m_scanning = true;
     struct ble_gap_disc_params p; memset(&p, 0, sizeof(p)); p.passive = 1;
-    ble_gap_disc(m_ownAddrType, BLE_HS_FOREVER, &p, onGapEvent, this);
+    ble_gap_disc(m_ownAddrType, BLE_HS_FOREVER, &p, onScanGapEvent, this);
 }
-void JZBleDriverEsp32::stopScan() { m_scanning = false; ble_gap_disc_cancel(); }
-bool JZBleDriverEsp32::isScanning() { return m_scanning; }
-
-void JZBleDriverEsp32::connectToDevice(JZBLECentral *d)
+void JZBleDriverEsp32::stopScan(JZBLEDeviceDiscoveryAgent *agent)
 {
-    m_centralSet.insert(d);
+    JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
+    m_scanning = false;
+    ble_gap_disc_cancel();
+}
+bool JZBleDriverEsp32::isScanning(JZBLEDeviceDiscoveryAgent *agent)
+{
+    return agent ? (agent == (JZBLEDeviceDiscoveryAgent *)m_scanAgent.object()) : false;
+}
+
+void JZBleDriverEsp32::connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys)
+{
     m_bondCentral = d;   // 单一上报目标（NimBLE 静态回调无法指明具体对象，只支持一个）
+    // 连接前回灌该设备的绑定密钥，重连时驱动据此恢复加密通道
+    std::string addr = d->deviceInfo().address();
+    for (const auto &key : keys)
+        m_bondStore[bondStoreKey(key.objType, addr)] = key;
     ble_addr_t peer;
     peer.type = BLE_ADDR_PUBLIC;
-    addrFromString(d->deviceInfo().address(), peer.val);
-    ble_gap_connect(m_ownAddrType, &peer, BLE_HS_FOREVER, nullptr, onGapEvent, d);
+    addrFromString(addr, peer.val);
+    ble_gap_connect(m_ownAddrType, &peer, BLE_HS_FOREVER, nullptr, onCentralGapEvent, d);
 }
-void JZBleDriverEsp32::disconnectFromDevice(JZBLECentral *d)
+void JZBleDriverEsp32::disconnectFromDevice(JZBLEController *d)
 {
     if (m_bondCentral == d) m_bondCentral = nullptr;
     int h = getConnHandle(d->deviceInfo().address());
     if (h >= 0) ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
 }
-bool JZBleDriverEsp32::isConnected(JZBLECentral *d) { return getConnHandle(d->deviceInfo().address()) >= 0; }
+bool JZBleDriverEsp32::isConnected(JZBLEController *d) { return getConnHandle(d->deviceInfo().address()) >= 0; }
 
-void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLECentral *d)
+void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLEController *d)
 {
     int h = getConnHandle(addr);
     if (h >= 0) ble_gattc_disc_all_svcs(h, onGattcSvcEvent, (void *)d);
@@ -815,7 +827,6 @@ void JZBleDriverEsp32::buildPeriphGatt()
 
 void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEPeripheral *d)
 {
-    m_periphSet.insert(d);
     m_periphCtrlPriv = d;
 
     // host 尚未就绪：延迟到 sync_cb
@@ -858,16 +869,15 @@ void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vect
 
     struct ble_gap_adv_params p; memset(&p, 0, sizeof(p));
     p.conn_mode = BLE_GAP_CONN_MODE_UND; p.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    ble_gap_adv_start(m_ownAddrType, nullptr, BLE_HS_FOREVER, &p, onGapEvent, d);
+    ble_gap_adv_start(m_ownAddrType, nullptr, BLE_HS_FOREVER, &p, onPeriphGapEvent, d);
 }
 
 void JZBleDriverEsp32::stopAdvertising()
 {
     m_advertising = false;
     m_periphConnHandle = -1;
-    // 不在此清空 m_periphCtrlPriv / 不 erase m_periphSet：
-    // 若旧连接仍存活，其后续 DISCONNECT 需靠集合判定来源，否则会误判为 Central 而崩溃。
-    // 这些在 DISCONNECT peripheral 分支中清理。
+    // 不清空 m_periphCtrlPriv：角色由回调类型（onPeriphGapEvent / onCentralGapEvent）
+    // 保证，旧连接的后续 DISCONNECT 会正确路由到 Peripheral 分支，不会误判为 Central。
     ble_gap_adv_stop();
 }
 

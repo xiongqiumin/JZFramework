@@ -8,7 +8,7 @@ JZCoBleCentral::JZCoBleCentral(JZObject *parent)
     , m_discoveryFinished(false)
     , m_error(false)
 {
-    m_central = new JZBLECentral(this);
+    m_central = new JZBLEController(this);
     connectSignals();
 }
 
@@ -35,7 +35,7 @@ void JZCoBleCentral::yield(WaitType type, int timeout)
 //=======================================================================
 // 连接设备
 //=======================================================================
-JZResult<void> JZCoBleCentral::connectToDevice(const JZBluetoothDeviceInfo &info, int timeout)
+JZResult<void> JZCoBleCentral::connectToDevice(const JZBLEDeviceInfo &info, int timeout)
 {
     if (m_connected)
         return JZResult<void>::Error("already connected");
@@ -79,7 +79,7 @@ JZResult<std::vector<JZBluetoothUuid>> JZCoBleCentral::discoverServices(int time
     return JZResult<std::vector<JZBluetoothUuid>>::Error("discover timeout");
 }
 
-const JZBluetoothDeviceInfo &JZCoBleCentral::deviceInfo() const
+const JZBLEDeviceInfo &JZCoBleCentral::deviceInfo() const
 {
     return m_central->deviceInfo();
 }

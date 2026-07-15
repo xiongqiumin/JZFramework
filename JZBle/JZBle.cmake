@@ -1,6 +1,6 @@
-﻿set(JZBLE_SOURCES    
-    JZBluetoothDeviceInfo.cpp
-    JZBluetoothDeviceInfo.h
+set(JZBLE_SOURCES    
+    JZBLEDeviceInfo.cpp
+    JZBLEDeviceInfo.h
     JZBluetoothUuid.cpp
     JZBluetoothUuid.h
     JZLowEnergyCharacteristic.cpp
@@ -9,8 +9,8 @@
     JZLowEnergyDescriptor.h
     JZBleDriver.cpp
     JZBleDriver.h
-    JZBLECentral.h
-    JZBLECentral.cpp
+    JZBLEController.h
+    JZBLEController.cpp
     JZBLEPeripheral.h
     JZBLEPeripheral.cpp
     JZBLEService.h

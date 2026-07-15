@@ -14,7 +14,7 @@ void JZBLEService::onCharacteristicsDiscovered(JZBLEService *d, const char *addr
     std::string a(addr), s(svc);
     runOnObject(d, [d, a, s]() {
         JZBleDriver *drv = JZBleDriver::instance();
-        if (a == d->deviceAddress && s == d->m_serviceUuid.toString() && drv) {
+        if (a == d->deviceAddress && s == d->m_serviceUuid.toString()) {
             auto infos = drv->characteristics(a, s);
             d->charList.clear();
             for (auto &i : infos) {

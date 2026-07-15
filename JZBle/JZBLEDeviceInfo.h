@@ -1,21 +1,21 @@
-#ifndef JZ_BLUETOOTH_DEVICE_INFO_H_
-#define JZ_BLUETOOTH_DEVICE_INFO_H_
+#ifndef JZ_BLE_DEVICE_INFO_H_
+#define JZ_BLE_DEVICE_INFO_H_
 
 #include <string>
 #include <vector>
 #include <stdint.h>
 #include "JZBluetoothUuid.h"
 
-class JZBluetoothDeviceInfo
+class JZBLEDeviceInfo
 {
 public:
-    JZBluetoothDeviceInfo();
-    JZBluetoothDeviceInfo(const JZBluetoothDeviceInfo &other);
-    ~JZBluetoothDeviceInfo();
+    JZBLEDeviceInfo();
+    JZBLEDeviceInfo(const JZBLEDeviceInfo &other);
+    ~JZBLEDeviceInfo();
 
-    JZBluetoothDeviceInfo &operator=(const JZBluetoothDeviceInfo &other);
-    bool operator==(const JZBluetoothDeviceInfo &other) const;
-    bool operator!=(const JZBluetoothDeviceInfo &other) const;
+    JZBLEDeviceInfo &operator=(const JZBLEDeviceInfo &other);
+    bool operator==(const JZBLEDeviceInfo &other) const;
+    bool operator!=(const JZBLEDeviceInfo &other) const;
 
     std::string address() const;
     void        setAddress(const std::string &address);
@@ -38,4 +38,4 @@ private:
     std::vector<JZBluetoothUuid> m_serviceUuids;
 };
 
-#endif // !JZ_BLUETOOTH_DEVICE_INFO_H_
+#endif // !JZ_BLE_DEVICE_INFO_H_

@@ -5,7 +5,7 @@
 #include "JZCoBleCentral.h"
 #include "JZCoBleService.h"
 #include "JZCoBleDiscoveryAgent.h"
-#include "JZBluetoothDeviceInfo.h"
+#include "JZBLEDeviceInfo.h"
 #include "JZLowEnergyCharacteristic.h"
 #include "JZDebug.h"
 #include "JZApplication.h"
@@ -47,7 +47,7 @@ public:
             return;
         }
 
-        const vector<JZBluetoothDeviceInfo> &devices = sr.value();
+        const vector<JZBLEDeviceInfo> &devices = sr.value();
         jzDebug() << "发现设备数:" << devices.size();
         for (auto &d : devices)
             jzDebug() << "  " << d.address() << " " << d.name();
@@ -59,14 +59,14 @@ public:
 
         // 根据 addr 选择要连接的设备
         auto it = find_if(devices.begin(), devices.end(),
-                          [this](const JZBluetoothDeviceInfo &d) {
+                          [this](const JZBLEDeviceInfo &d) {
                               return d.address() == m_addr;
                           });
         if (it == devices.end()) {
             jzDebug() << "未找到地址匹配的设备:" << m_addr;
             return;
         }
-        JZBluetoothDeviceInfo info = *it;
+        JZBLEDeviceInfo info = *it;
 
         // 连接设备
         JZCoBleCentral central(this);

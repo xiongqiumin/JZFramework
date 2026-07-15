@@ -62,8 +62,6 @@ public:
     static JZWifiDriver *instance();
     static void setInstance(JZWifiDriver *inst);
 
-    virtual bool isWifiAvailable() = 0;
-
     // === Station (连接) ===
     // 调用方把自身(JZWifiStation*)作为 arg 透传, 事件回传时据此分发到对应对象
     virtual void stationConnect(JZWifiStation *w, const JZWifiConfig &cfg) = 0;

@@ -5,7 +5,7 @@
 
 // ==================== 事件转发 ====================
 // JZWifiStation 是 JZWifiDriver 的 friend, 受保护的静态分发方法统一在对象所在线程
-// 上执行, 保证信号直连、状态一致 (参考 JZBLECentral)。
+// 上执行, 保证信号直连、状态一致 (参考 JZBLEController)。
 void JZWifiStation::onConnected(JZObjectPointer self, const char *ip)
 {
     JZObjectPointerGuard guard(&self);

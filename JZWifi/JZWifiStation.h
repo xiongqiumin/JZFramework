@@ -8,7 +8,7 @@
 // JZWifiStation 表示 WiFi 站点(Station)角色: 作为客户端连接外部 AP (连接)。
 // 底层操作委派给单例 JZWifiDriver。底层事件由驱动经 JZWifiDriver 的转发中转
 // 回到本类的静态分发方法 (本类是 JZWifiDriver 的 friend), 再以信号形式通知上层,
-// 与 JZBLECentral 的设计一致。
+// 与 JZBLEController 的设计一致。
 class JZWifiStation : public JZObject
 {
     JZ_OBJECT_DECLARE(JZWifiStation)    

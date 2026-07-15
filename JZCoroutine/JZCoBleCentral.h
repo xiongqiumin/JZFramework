@@ -2,8 +2,8 @@
 #define JZCO_BLE_CENTRAL_H_
 
 #include "JZCo.h"
-#include "JZBLECentral.h"
-#include "JZBluetoothDeviceInfo.h"
+#include "JZBLEController.h"
+#include "JZBLEDeviceInfo.h"
 #include "JZBluetoothUuid.h"
 #include "JZResult.h"
 
@@ -11,7 +11,7 @@
 
 class JZCoBleService;
 
-// JZBLECentral 的协程封装
+// JZBLEController 的协程封装
 // 在协程中调用 connectToDevice / discoverServices，异步结果通过 JZCoCondition 等待，返回 JZResult。
 // 创建出的 JZCoBleService 由本对象管理生命周期（作为子对象），
 // 与本对象同线程，保证信号直连、协程正确恢复（参考 JZCoTcpSocket）。
@@ -22,13 +22,13 @@ public:
     ~JZCoBleCentral() override;
 
     // 连接设备，超时返回错误
-    JZResult<void> connectToDevice(const JZBluetoothDeviceInfo &info, int timeout = 30 * 1000);
+    JZResult<void> connectToDevice(const JZBLEDeviceInfo &info, int timeout = 30 * 1000);
     void disconnectFromDevice();
 
     // 发现服务，返回服务 uuid 列表
     JZResult<std::vector<JZBluetoothUuid>> discoverServices(int timeout = 30 * 1000);
 
-    const JZBluetoothDeviceInfo &deviceInfo() const;
+    const JZBLEDeviceInfo &deviceInfo() const;
 
     // 创建协程版服务封装（生命周期由本对象管理）
     JZCoBleService *createService(const JZBluetoothUuid &uuid);
@@ -49,7 +49,7 @@ protected:
     void onDiscoveryFinished();
     void onError(const std::string &msg);
 
-    JZBLECentral *m_central;
+    JZBLEController *m_central;
     WaitType      m_waitType;
     JZCoCondition m_coCtrl;
 

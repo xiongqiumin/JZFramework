@@ -1,7 +1,7 @@
 // ==================== ESP32 回环自我配网演示（新 JZBle API 版） ====================
 // 单个 ESP32 同时运行 Central + Peripheral，扫描自己、连自己、给自己发 WiFi 密码
 
-#include "JZBLECentral.h"
+#include "JZBLEController.h"
 #include "JZBLEPeripheral.h"
 #include "JZBLEService.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
@@ -165,7 +165,7 @@ private:
         Done
     };
 
-    void onScanResult(const JZBluetoothDeviceInfo &info)
+    void onScanResult(const JZBLEDeviceInfo &info)
     {
         if (m_step != Step::Scanning || m_scanTargetFound) return;
         LOG_D("[Central] found: %s (rssi=%d)", info.name().c_str(), info.rssi());
@@ -176,7 +176,7 @@ private:
             m_scanTargetFound = true;
             m_agent->stop();
 
-            m_controller = new JZBLECentral(this);
+            m_controller = new JZBLEController(this);
             connect(&m_controller->sigConnected,         this, &ProvCentral::onConnected);
             connect(&m_controller->sigDiscoveryFinished, this, &ProvCentral::onServicesDiscovered);
             connect(&m_controller->sigError,             this, &ProvCentral::onError);
@@ -253,7 +253,7 @@ private:
     }
 
     JZBLEDeviceDiscoveryAgent *m_agent;
-    JZBLECentral *m_controller;
+    JZBLEController *m_controller;
     JZBLEService    *m_service;
     Step m_step;
     std::string m_ssid;

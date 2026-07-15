@@ -4,15 +4,16 @@
 #include <string>
 #include <vector>
 #include "JZStd.h"
-#include "JZBluetoothDeviceInfo.h"
+#include "JZObjectPointer.h"
+#include "JZBLEDeviceInfo.h"
 #include "JZBluetoothUuid.h"
 #include "JZLowEnergyCharacteristic.h"
 #include "JZLowEnergyDescriptor.h"
 
 class JZBLEPeripheral;
-class JZBLECentral;
+class JZBLEController;
 class JZBLEService;
-class JZBLEDeviceDiscoveryAgentPrivate;
+class JZBLEDeviceDiscoveryAgent;
 
 class JZBleDriver
 {
@@ -23,22 +24,16 @@ public:
     static JZBleDriver *instance();
     static void setInstance(JZBleDriver *inst);
 
-    virtual bool isBluetoothAvailable() = 0;
-    virtual bool isBluetoothEnabled() = 0;
+    // === Central 扫描（参考 JZWifiDriverEsp32，由发起扫描的 Agent 自行传入自身）===
+    virtual void startScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
+    virtual void stopScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
+    virtual bool isScanning(JZBLEDeviceDiscoveryAgent *agent) = 0;
 
-    // === Central 扫描结果多播给 Discovery Agent ===
-    void registerAgent(JZBLEDeviceDiscoveryAgentPrivate *d);
-    void unregisterAgent(JZBLEDeviceDiscoveryAgentPrivate *d);
+    virtual void connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys) = 0;
+    virtual void disconnectFromDevice(JZBLEController *d) = 0;
+    virtual bool isConnected(JZBLEController *d) = 0;
 
-    virtual void startScan() = 0;
-    virtual void stopScan() = 0;
-    virtual bool isScanning() = 0;
-
-    virtual void connectToDevice(JZBLECentral *d) = 0;
-    virtual void disconnectFromDevice(JZBLECentral *d) = 0;
-    virtual bool isConnected(JZBLECentral *d) = 0;
-
-    virtual void discoverServices(const std::string& address, JZBLECentral *d) = 0;
+    virtual void discoverServices(const std::string& address, JZBLEController *d) = 0;
     virtual std::vector<JZBluetoothUuid> services(const std::string& address) = 0;
 
     virtual void discoverCharacteristics(const std::string& address, const std::string& serviceUuid,
@@ -70,7 +65,8 @@ public:
 
     // === 绑定密钥透传（驱动不持久化，改由上层负责存储/恢复）===
     // 配对完成后密钥通过 sigBondKeyReported 信号上报（跨线程经 runOnObject 切到 Central 线程）；
-    // 连接(重连)前由上层用 setBondKey 回灌，驱动据此在内存中恢复加密会话。
+    // Central 重连加密所需的密钥由上层在调用 connectToDevice(keys) 时一并传入；
+    // Peripheral 重连加密所需的密钥由上层在连接建立前通过 setBondKey 预灌。
     // 驱动自身不做任何 Flash/文件持久化。
     struct JZBleBondKey {
         std::string peerAddr;        // "xx:xx:xx:xx:xx:xx"
@@ -89,20 +85,23 @@ public:
         bool        secureConnections = false;
     };
 
-    // 连接/重连前由上层把之前上报的密钥回灌，驱动据此恢复加密会话
-    virtual void setBondKey(const std::string& addr, const JZBleBondKey& key) { (void)addr; (void)key; }
     // 主动发起配对（配对完成后密钥通过 sigBondKeyReported 信号上报）
     virtual void requestPairing(const std::string& addr) { (void)addr; }
 
-    // === 事件转发中转 (JZBLECentral / JZBLEPeripheral 的 friend) ===
-    // 具体驱动不得直接调用 JZBLECentral / JZBLEPeripheral 的受保护静态分发方法,
+    // Peripheral 角色：被连方在连接建立前由上层预灌绑定密钥，
+    // 以便已配对 Central 重连并请求加密时，storeReadCb 能据此恢复加密会话。
+    // Central 角色无需调用本接口（密钥随 connectToDevice(keys) 注入）。
+    virtual void setBondKey(const std::string& addr, const JZBleBondKey& key) { (void)addr; (void)key; }
+
+    // === 事件转发中转 (JZBLEController / JZBLEPeripheral 的 friend) ===
+    // 具体驱动不得直接调用 JZBLEController / JZBLEPeripheral 的受保护静态分发方法,
     // 统一经由此处转发, 避免在子类中暴露 friend 关系。
-    static void centralOnDeviceConnected(JZBLECentral *self, const char *addr);
-    static void centralOnDeviceDisconnected(JZBLECentral *self, const char *addr);
-    static void centralOnServicesDiscovered(JZBLECentral *self, const char *addr);
-    static void centralOnError(JZBLECentral *self, int code, const char *msg);
+    static void centralOnDeviceConnected(JZBLEController *self, const char *addr);
+    static void centralOnDeviceDisconnected(JZBLEController *self, const char *addr);
+    static void centralOnServicesDiscovered(JZBLEController *self, const char *addr);
+    static void centralOnError(JZBLEController *self, int code, const char *msg);
     // 配对完成上报：驱动在 NimBLE 线程捕获密钥后，经此中转切到 Central 线程 emit 信号
-    static void centralOnBondKeyReported(JZBLECentral *self, const std::string &addr, const JZBleBondKey &key);
+    static void centralOnBondKeyReported(JZBLEController *self, const std::string &addr, const JZBleBondKey &key);
 
     static void peripheralOnClientConnected(JZBLEPeripheral *self);
     static void peripheralOnClientDisconnected(JZBLEPeripheral *self);
@@ -111,11 +110,11 @@ public:
 protected:
     JZ_DISABLE_COPY(JZBleDriver)
 
-    // 扫描结果多播给 Discovery Agent
-    std::vector<JZBLEDeviceDiscoveryAgentPrivate*> m_agents;
+    // 当前正在扫描的 Discovery Agent（参考 JZWifiDriverEsp32 的 m_scanTarget）
+    JZObjectPointer m_scanAgent;
     // 绑定密钥上报目标。NimBLE 的 store 回调是静态的，无法指明具体 Central 对象，
     // 故只支持单个（最近一次 connect 的）Central，不做多对象路由。
-    JZBLECentral *m_bondCentral = nullptr;
+    JZBLEController *m_bondCentral = nullptr;
     static JZBleDriver *s_instance;
 };
 

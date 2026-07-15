@@ -34,6 +34,8 @@ set(SIM_PACKET_SOURCES
 set(SIM_SOURCES
     JZSimulator.h
     JZSimulator.cpp
+    MainWindow.h
+    MainWindow.cpp
     main.cpp
 )
 convert_to_abs_paths(SIM_SOURCES)

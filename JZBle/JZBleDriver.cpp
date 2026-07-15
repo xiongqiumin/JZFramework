@@ -1,6 +1,6 @@
 #include "JZBleDriver.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
-#include "JZBLECentral.h"
+#include "JZBLEController.h"
 #include "JZBLEPeripheral.h"
 #include "JZStd.h"
 #include "JZDebug.h"
@@ -23,34 +23,23 @@ void JZBleDriver::setInstance(JZBleDriver *inst)
     s_instance = inst; 
 }
 
-void JZBleDriver::registerAgent(JZBLEDeviceDiscoveryAgentPrivate *d)
-{ 
-    if (!vec_contains(m_agents, d)) 
-        m_agents.push_back(d); 
-}
-
-void JZBleDriver::unregisterAgent(JZBLEDeviceDiscoveryAgentPrivate *d)
-{ 
-    vec_removeAll(m_agents, d); 
-}
-
 // ==================== 事件转发中转 ====================
-// JZBleDriver 是 JZBLECentral / JZBLEPeripheral 的 friend, 这里把受保护的
+// JZBleDriver 是 JZBLEController / JZBLEPeripheral 的 friend, 这里把受保护的
 // 静态分发方法封装为公开的转发入口, 具体驱动只调用本层, 不直接碰 friend 关系。
-void JZBleDriver::centralOnDeviceConnected(JZBLECentral *self, const char *addr)
-{ JZBLECentral::onDeviceConnected(self, addr); }
+void JZBleDriver::centralOnDeviceConnected(JZBLEController *self, const char *addr)
+{ JZBLEController::onDeviceConnected(self, addr); }
 
-void JZBleDriver::centralOnDeviceDisconnected(JZBLECentral *self, const char *addr)
-{ JZBLECentral::onDeviceDisconnected(self, addr); }
+void JZBleDriver::centralOnDeviceDisconnected(JZBLEController *self, const char *addr)
+{ JZBLEController::onDeviceDisconnected(self, addr); }
 
-void JZBleDriver::centralOnServicesDiscovered(JZBLECentral *self, const char *addr)
-{ JZBLECentral::onServicesDiscovered(self, addr); }
+void JZBleDriver::centralOnServicesDiscovered(JZBLEController *self, const char *addr)
+{ JZBLEController::onServicesDiscovered(self, addr); }
 
-void JZBleDriver::centralOnError(JZBLECentral *self, int code, const char *msg)
-{ JZBLECentral::onError(self, code, msg); }
+void JZBleDriver::centralOnError(JZBLEController *self, int code, const char *msg)
+{ JZBLEController::onError(self, code, msg); }
 
-void JZBleDriver::centralOnBondKeyReported(JZBLECentral *self, const std::string &addr, const JZBleBondKey &key)
-{ JZBLECentral::onBondKeyReported(self, addr, key); }
+void JZBleDriver::centralOnBondKeyReported(JZBLEController *self, const std::string &addr, const JZBleBondKey &key)
+{ JZBLEController::onBondKeyReported(self, addr, key); }
 
 void JZBleDriver::peripheralOnClientConnected(JZBLEPeripheral *self)
 { JZBLEPeripheral::onClientConnected(self); }

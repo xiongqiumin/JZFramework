@@ -11,6 +11,7 @@ int test_coTcp();
 int test_coUdp();
 int test_coWebSocket();
 int test_coHttp();
+int test_coSerialPort();
 
 int main()
 {
@@ -23,7 +24,7 @@ int main()
         std::exit(1);
     });
 
-    jzDebug() << "########## 协程综合测试: 逐个运行 基础库 / TCP / UDP / WebSocket / HTTP ##########";
+    jzDebug() << "########## 协程综合测试: 逐个运行 基础库 / TCP / UDP / WebSocket / HTTP / SerialPort ##########";
 
     test_coBasic();
     jzDebug() << "【OK】协程基础库 通过";
@@ -40,6 +41,9 @@ int main()
     test_coHttp();
     jzDebug() << "【OK】协程 HTTP 通过";
 
-    jzDebug() << "====== 所有协程测试通过 (基础库 + 网络 TCP/UDP/WebSocket/HTTP) ======";
+    test_coSerialPort();
+    jzDebug() << "【OK】协程串口 通过";
+
+    jzDebug() << "====== 所有协程测试通过 (基础库 + 网络 TCP/UDP/WebSocket/HTTP + 串口) ======";
     return 0;
 }

@@ -37,8 +37,17 @@ set(TEST_CO_SOURCES
     co/test_coTcp.cpp
     co/test_coUdp.cpp
     co/test_coWebSocket.cpp
-    co/test_coHttp.cpp)
+    co/test_coHttp.cpp
+    co/test_coSerialPort.cpp)
 convert_to_abs_paths(TEST_CO_SOURCES)
 
 add_executable(test_co ${TEST_CO_SOURCES})
 target_link_libraries(test_co JZFramework)
+
+#test_serialPort (串口驱动自测: 纯逻辑 + 可选真实回环)
+set(TEST_SERIALPORT_SOURCES
+    test_serialPort.cpp)
+convert_to_abs_paths(TEST_SERIALPORT_SOURCES)
+
+add_executable(test_serialPort ${TEST_SERIALPORT_SOURCES})
+target_link_libraries(test_serialPort JZFramework)

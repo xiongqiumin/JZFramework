@@ -16,7 +16,6 @@ public:
 
     static JZSerialPortDriver *instance();
     static void setInstance(JZSerialPortDriver *inst);
-    static void clearInstance();
 
     // 枚举当前系统可用串口。各平台驱动自行实现。
     virtual std::vector<JZSerialPortInfo> availablePorts() = 0;

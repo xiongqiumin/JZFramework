@@ -19,6 +19,9 @@
 #ifdef HAS_JZGpio
 #include "JZGpioDriverEsp32.h"
 #endif
+#ifdef HAS_JZSerialPort
+#include "JZSerialDriverEsp32.h"
+#endif
 
 // ==================== init ====================
 
@@ -37,6 +40,10 @@ void JZDriver::init()
 #ifdef HAS_JZGpio
     JZGpioDriver::addInstance(new JZGpioDriverEsp32());
 #endif
+
+#ifdef HAS_JZSerialPort
+    JZSerialPortDriver::setInstance(new JZSerialDriverEsp32());
+#endif
 }
 
 
@@ -51,6 +58,14 @@ void JZDriver::init()
 #include "JZGpioDriverSimulator.h"
 #endif
 #endif // HAS_JZSimulator
+
+#ifdef HAS_JZSerialPort
+#if defined(_WIN32)
+#include "JZSerialDriverWindows.h"
+#elif defined(__linux__)
+#include "JZSerialDriverLinux.h"
+#endif
+#endif // HAS_JZSerialPort
 
 
 void JZDriver::init()
@@ -67,6 +82,14 @@ void JZDriver::init()
 
     // 让 lv_windows_display_timer_callback 尽早执行，初始化 draw buffer
     lv_timer_handler();
+#endif
+#endif
+
+#ifdef HAS_JZSerialPort
+#if defined(_WIN32)
+    JZSerialPortDriver::setInstance(new JZSerialDriverWindows());
+#elif defined(__linux__)
+    JZSerialPortDriver::setInstance(new JZSerialDriverLinux());
 #endif
 #endif
 }
@@ -87,6 +110,11 @@ void JZDriver::deinit()
 
 #ifdef HAS_JZGpio
     JZGpioDriver::clearInstances();
+#endif
+
+#ifdef HAS_JZSerialPort
+    // JZSerialPortDriver::setInstance 仅保存指针，这里负责释放已创建的驱动实例
+    JZSerialPortDriver::setInstance(nullptr);
 #endif
 
     JZPlatform::setInstance(nullptr);

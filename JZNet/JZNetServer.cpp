@@ -117,14 +117,14 @@ void JZNetServer::onClientPackReceive(JZNetPackPtr ptr)
     sigPacketReceive.emit(id, ptr);
 }
 
-JZNetClient* JZNetServer::nextPendingConnection()
+uint64_t JZNetServer::nextPendingConnection()
 {
     if (m_pendingConnections.empty())
-        return nullptr;
+        return 0;
 
     JZNetClient* client = m_pendingConnections.front();
     m_pendingConnections.pop_front();
-    return client;
+    return client->m_serverId;
 }
 
 JZNetObject *JZNetServer::onAccept(uint64_t conn)
@@ -146,7 +146,8 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
         {
             JZNetClient *socket = (JZNetClient *)socket_ptr.object();
             m_clients[conn] = socket;
-            
+            m_pendingConnections.push_back(socket);            
+
             JZNetPackHand hand;
             if (m_token.empty())
             {

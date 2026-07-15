@@ -25,7 +25,8 @@ public:
 
     void closeClient(uint64_t c);
 
-    JZNetClient* nextPendingConnection();
+    // 取出一个待处理的新连接, 返回其连接 id (0 表示无新连接)
+    uint64_t nextPendingConnection();
 
 jz_signals:    
     JZSigVoid sigAccept;

@@ -1,4 +1,8 @@
 #include "JZOTAFileDriver.h"
+#include "JZNetworkAccessManager.h"
+#include "JZNetworkReply.h"
+#include "JZNetworkRequest.h"
+#include "JZFile.h"
 #include "JZDir.h"
 #include "JZCrypto.h"
 #include "JZDebug.h"
@@ -12,13 +16,28 @@ static std::string jzOtaDirNameOf(const std::string &path)
     return path.substr(0, pos);
 }
 
-JZOTAFileDriver::JZOTAFileDriver()
+JZOTAFileDriver::JZOTAFileDriver(JZObject *parent)
+    :JZObject(parent)
+    ,sigStarted(this)
+    ,sigProgress(this)
+    ,sigError(this)
+    ,sigNoUpdate(this)
+    ,sigFinished(this)
+    ,m_file(new JZFile())
 {
 }
 
-JZOTAFileDriver::JZOTAFileDriver(const std::string &filePath)
-    : m_path(filePath)
+JZOTAFileDriver::~JZOTAFileDriver()
 {
+    cancel();
+    delete m_file;
+    m_file = nullptr;
+}
+
+void JZOTAFileDriver::setNetworkAccessManager(JZNetworkAccessManager *manager)
+{
+    m_manager = manager;
+    m_ownManager = false;
 }
 
 void JZOTAFileDriver::setFilePath(const std::string &filePath)
@@ -31,88 +50,205 @@ std::string JZOTAFileDriver::filePath() const
     return m_path;
 }
 
-int64_t JZOTAFileDriver::totalSize()
+void JZOTAFileDriver::setChunkSize(int64_t chunkSize)
 {
-    return m_total;
+    if (chunkSize > 0)
+        m_chunkSize = chunkSize;
 }
 
-bool JZOTAFileDriver::verify(const JZOTAUpdateInfo &info)
+std::string JZOTAFileDriver::tempPath() const
 {
-    m_expectMd5 = info.md5;
+    return m_path + ".part";
+}
 
-    // 已存在且 md5 一致 -> 已是最新, 无需升级
-    if (!m_expectMd5.empty() && JZFile::exists(m_path))
+bool JZOTAFileDriver::start(const std::string &url, const std::string &expectMd5)
+{
+    if (m_running)
+        return false;
+
+    m_url = url;
+    m_expectMd5 = expectMd5;
+    m_offset = 0;
+    m_written = 0;
+
+    // 已是最新: 目标文件 md5 匹配则跳过
+    if (!m_expectMd5.empty() && !m_path.empty() && JZFile::exists(m_path))
     {
         std::string cur = str_fromUtf8(JZCrypto::fileMd5(m_path).toHex());
         if (cur == m_expectMd5)
-            return false;
+        {
+            sigNoUpdate.emit();
+            return true;
+        }
     }
-    return true;
-}
 
-bool JZOTAFileDriver::begin(int64_t totalSize)
-{
-    m_total = totalSize;
-
+    // 确保父目录存在
     std::string dir = jzOtaDirNameOf(m_path);
     if (!dir.empty() && !JZDir(dir).exists())
     {
         if (!JZDir().mkpath(dir))
         {
             jzError() << "JZOTAFileDriver: mkdir failed" << dir;
+            fail("mkdir failed: " + dir);
             return false;
         }
     }
 
-    if (!m_file.open(m_path, "wb"))
+    if (!m_file->open(tempPath(), "wb"))
     {
-        jzError() << "JZOTAFileDriver: open failed" << m_path;
+        jzError() << "JZOTAFileDriver: open temp failed" << tempPath();
+        fail("open temp failed");
         return false;
     }
+
+    if (!m_manager)
+    {
+        m_manager = new JZNetworkAccessManager(this);
+        m_ownManager = true;
+    }
+
+    m_running = true;
+    sigStarted.emit();
+    downloadChunk();
     return true;
 }
 
-int64_t JZOTAFileDriver::write(int64_t offset, const JZByteArray &buffer)
+void JZOTAFileDriver::downloadChunk()
 {
-    m_file.seek((int)offset, SEEK_SET);
-    return m_file.write(buffer);
+    int64_t end = m_offset + m_chunkSize - 1;
+    JZNetworkRequest req(m_url);
+    req.setRawHeader("Range", "bytes=" + std::to_string(m_offset) + "-" + std::to_string(end));
+
+    m_reply = m_manager->get(req);
+    connect(&m_reply->sigFinished, this, &JZOTAFileDriver::onChunkFinished);
 }
 
-bool JZOTAFileDriver::finish()
+void JZOTAFileDriver::onChunkFinished()
 {
-    m_file.close();
-
-    // 写入完成后做完整性校验
-    if (!m_expectMd5.empty() && JZFile::exists(m_path))
+    if (m_reply->error() != JZNetworkReply::NoError)
     {
-        std::string cur = str_fromUtf8(JZCrypto::fileMd5(m_path).toHex());
+        std::string err = "download failed: " + m_reply->errorString();
+        m_reply->deleteLater();
+        m_reply = nullptr;
+        fail(err);
+        return;
+    }
+
+    int status = m_reply->httpStatusCode();
+    JZByteArray data = m_reply->readAll();
+    m_reply->deleteLater();
+    m_reply = nullptr;
+
+    if (data.isEmpty())
+    {
+        // 末尾: 之前已写入数据则视为完成, 否则失败
+        if (m_written > 0)
+            finishSuccess();
+        else
+            fail("download empty response");
+        return;
+    }
+
+    // 服务器不支持 Range(返回 200 完整文件): 首个分块即为全部内容, 写完即结束,
+    // 避免对不支持 Range 的服务器反复请求整文件导致死循环。
+    bool partial = (status == 206);
+
+    m_file->seek((int)m_offset, SEEK_SET);
+    int written = m_file->write(data);
+    if (written < 0)
+    {
+        fail("write temp failed");
+        return;
+    }
+
+    m_offset += data.size();
+    m_written = m_offset;
+    sigProgress.emit(progress());
+
+    if (!partial || (int64_t)data.size() < m_chunkSize)
+        finishSuccess();
+    else
+        downloadChunk();
+}
+
+void JZOTAFileDriver::finishSuccess()
+{
+    m_file->close();
+
+    // 完整性校验
+    if (!m_expectMd5.empty())
+    {
+        std::string cur = str_fromUtf8(JZCrypto::fileMd5(tempPath()).toHex());
         if (cur != m_expectMd5)
         {
-            jzError() << "JZOTAFileDriver: md5 mismatch after write, expect=" << m_expectMd5
+            jzError() << "JZOTAFileDriver: md5 mismatch, expect=" << m_expectMd5
                       << " actual=" << cur;
-            return false;
+            cleanupTemp();
+            m_running = false;
+            sigError.emit("md5 mismatch");
+            return;
         }
     }
-    return true;
+
+    // 原子替换: 先删目标(Windows 下 rename 不能覆盖), 再重命名临时文件
+    if (!m_path.empty() && JZFile::exists(m_path))
+        JZFile::remove(m_path);
+    if (std::rename(tempPath().c_str(), m_path.c_str()) != 0)
+    {
+        jzError() << "JZOTAFileDriver: rename failed" << tempPath() << "->" << m_path;
+        cleanupTemp();
+        m_running = false;
+        sigError.emit("rename temp failed");
+        return;
+    }
+
+    m_running = false;
+    sigFinished.emit();
 }
 
-void JZOTAFileDriver::reboot()
+void JZOTAFileDriver::fail(const std::string &err)
 {
-    // 文件/主机场景无需重启以生效(新固件即落盘文件), 此处为空操作。
-    // 真实设备驱动应在此置 boot 标志并调用平台 reboot()。
-    jzDebug() << "JZOTAFileDriver: reboot (no-op for file target)";
+    if (m_reply)
+    {
+        m_reply->deleteLater();
+        m_reply = nullptr;
+    }
+    cleanupTemp();
+    m_running = false;
+    sigError.emit(err);
 }
 
 void JZOTAFileDriver::cancel()
 {
-    m_file.close();
-    m_total = 0;
-    m_expectMd5.clear();
-
-    // 删除半成品文件, 避免下次 verify 误判 / 残留损坏文件
-    if (!m_path.empty() && JZFile::exists(m_path))
+    if (m_reply)
     {
-        if (!JZFile::remove(m_path))
-            jzWarning() << "JZOTAFileDriver: remove partial file failed" << m_path;
+        m_reply->deleteLater();
+        m_reply = nullptr;
     }
+    cleanupTemp();
+    m_running = false;
+}
+
+void JZOTAFileDriver::cleanupTemp()
+{
+    if (m_file->isOpen())
+        m_file->close();
+    if (!tempPath().empty() && JZFile::exists(tempPath()))
+    {
+        if (!JZFile::remove(tempPath()))
+            jzWarning() << "JZOTAFileDriver: remove temp failed" << tempPath();
+    }
+}
+
+bool JZOTAFileDriver::isRunning() const
+{
+    return m_running;
+}
+
+double JZOTAFileDriver::progress() const
+{
+    // 顺序 Range 下载无法预先获知总大小, 运行中进度未知
+    if (m_running)
+        return -1.0;
+    return m_written > 0 ? 1.0 : 0.0;
 }

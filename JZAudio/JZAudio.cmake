@@ -11,8 +11,8 @@
 	JZAudioUtils.cpp    
 	JZWaveFile.h
 	JZWaveFile.cpp
-    detail/JZAudioDriver.h
-    detail/JZAudioDriver.cpp
+    JZAudioDriver.h
+    JZAudioDriver.cpp
     detail/JZAudioInputImpl.h
     detail/JZAudioInputImpl.cpp
     detail/JZAudioOutputImpl.h

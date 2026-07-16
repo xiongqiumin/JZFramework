@@ -18,7 +18,8 @@ class JZNetworkReply;
  *   3. 校验通过                                  -> 使用 HTTP Range 分块下载, 逐块写入 driver
  *   4. 全部写入完成                               -> 发射 sigFinished; 失败发射 sigError
  *
- * 写入与校验行为由外部注入的 JZOTADriver 决定(默认可用 JZOTAFileDriver)。
+ * 写入与校验行为由外部注入的 JZOTADriver(固件驱动, 如 JZOTAESP32Driver)决定。
+ * 仅更新文件 / 资源(配置、脚本、模型等)请改用独立的 JZOTAFileDriver。
  */
 class JZOTA : public JZObject
 {

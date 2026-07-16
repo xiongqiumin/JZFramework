@@ -1,9 +1,6 @@
 #include "JZCircleBuffer.h"
 #include <cstring>      // std::memcpy
-#include <algorithm>    // std::min
-
-// 假设 JZMutex 和 JZMutexLocker 的实现已包含，此处仅作声明引用
-// 若外部库需要链接，请确保正确包含实现文件
+#include <algorithm>    // std::min / std::max
 
 JZCircleBuffer::JZCircleBuffer(int initCap, bool enableDynamic)
     : m_head(0)
@@ -11,7 +8,48 @@ JZCircleBuffer::JZCircleBuffer(int initCap, bool enableDynamic)
     , m_dataLen(0)
     , m_dynamicMode(enableDynamic)
 {
-    m_buffer.resize(initCap);
+    if (initCap > 0)
+        m_buffer.resize(static_cast<size_t>(initCap));
+}
+
+void JZCircleBuffer::setDynamic(bool enableDynamic)
+{
+    m_dynamicMode = enableDynamic;
+}
+
+bool JZCircleBuffer::isDynamic() const
+{
+    JZMutexLocker locker(&m_mutex);
+    return m_dynamicMode;
+}
+
+void JZCircleBuffer::resize(int newCap)
+{
+    if (newCap <= 0)
+        return;
+
+    std::vector<char> newBuf(newCap);
+    if (m_dataLen > 0)
+    {
+        // 允许缩小: 至多保留 newCap 字节(从队首 head 拷贝), 多余数据直接丢弃
+        int keep = std::min(m_dataLen, newCap);
+        const int cap = static_cast<int>(m_buffer.size());
+        int part1 = std::min(keep, cap - m_head);
+        std::memcpy(newBuf.data(), m_buffer.data() + m_head, part1);
+        if (keep > part1)
+            std::memcpy(newBuf.data() + part1, m_buffer.data(), keep - part1);
+        m_dataLen = keep;
+    }
+    else
+    {
+        m_dataLen = 0;
+    }
+
+    m_buffer.swap(newBuf);
+
+    // ★ 线性化后数据落在 [0, m_dataLen), 必须重置头尾索引
+    m_head = 0;
+    m_tail = m_dataLen;
 }
 
 bool JZCircleBuffer::write(const char* data, int len)
@@ -28,15 +66,12 @@ bool JZCircleBuffer::write(const char* data, int len)
     if (!m_dynamicMode && freeSpace < len)
         return false;
 
-    // 动态扩容模式：空间不足则扩容至满足写入需求，2倍倍增
+    // 动态扩容模式：空间不足则扩容至满足写入需求, 2倍倍增(至少容纳本次写入)
     if (freeSpace < len)
     {
-        int newCap = cap;
-        while ((newCap - m_dataLen) < len)
-            newCap *= 2;
-
+        int newCap = std::max(cap * 2, cap + len);
         std::vector<char> newBuf(newCap);
-        // 将环形数据拷贝为连续线性（修复空缓冲区 bug）
+        // 将环形数据拷贝为连续线性(空缓冲时无数据可拷, copyCircleToLinear 已处理)
         copyCircleToLinear(newBuf.data());
         m_buffer.swap(newBuf);
         m_head = 0;
@@ -85,13 +120,13 @@ int JZCircleBuffer::read(char* data, int len)
     return readTotal;
 }
 
-int JZCircleBuffer::getSize()
+int JZCircleBuffer::size() const
 {
     JZMutexLocker locker(&m_mutex);
     return m_dataLen;
 }
 
-int JZCircleBuffer::getCapacity()
+int JZCircleBuffer::capacity() const
 {
     JZMutexLocker locker(&m_mutex);
     return static_cast<int>(m_buffer.size());

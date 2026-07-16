@@ -1,25 +1,16 @@
 #include "JZBluetoothUuid.h"
 #include "JZStd.h"
+#include <cinttypes>
 
 JZBluetoothUuid::JZBluetoothUuid()
 {
-}
-
-JZBluetoothUuid::JZBluetoothUuid(uint16_t uuid16)
-{
-    // 16-bit UUID → 128-bit: 0000xxxx-0000-1000-8000-00805F9B34FB
-    char buf[64];
-    snprintf(buf, sizeof(buf),
-             "0000%04x-0000-1000-8000-00805f9b34fb",
-             uuid16);
-    m_uuid = buf;
 }
 
 JZBluetoothUuid::JZBluetoothUuid(uint32_t uuid32)
 {
     char buf[64];
     snprintf(buf, sizeof(buf),
-             "%08x-0000-1000-8000-00805f9b34fb",
+             "%08" PRIx32 "-0000-1000-8000-00805f9b34fb",
              uuid32);
     m_uuid = buf;
 }

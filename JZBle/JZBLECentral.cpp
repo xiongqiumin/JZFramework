@@ -4,6 +4,9 @@
 #include "JZDebug.h"
 #include "JZThread.h"
 
+// 绑定密钥结构需跨线程经信号传递，注册 metatype（此处 JZBleDriver 已完整定义）
+JZ_DECLARE_METATYPE(JZBleDriver::JZBleBondKey)
+
 // ==================== JZBLECentral 静态分发 ====================
 void JZBLECentral::onDeviceConnected(JZBLECentral *self, const char *addr)
 {
@@ -49,11 +52,19 @@ void JZBLECentral::onError(JZBLECentral *self, int, const char *msg)
     });
 }
 
+void JZBLECentral::onBondKeyReported(JZBLECentral *self, const std::string &addr, const JZBleDriver::JZBleBondKey &key)
+{
+    // 在 NimBLE 主机线程被调用，切到 Central 所在线程后再 emit 信号，保证跨线程安全
+    runOnObject(self, [self, addr, key]() {
+        self->sigBondKeyReported.emit(addr, key);
+    });
+}
+
 // ==================== JZBLECentral ====================
 JZ_OBJECT_IMPL(JZBLECentral, JZObject)
 
 JZBLECentral::JZBLECentral(JZObject *parent)
-    :JZObject(parent),sigConnected(this), sigDisconnected(this), sigDiscoveryFinished(this), sigError(this), sigStateChanged(this)
+    :JZObject(parent),sigConnected(this), sigDisconnected(this), sigDiscoveryFinished(this), sigError(this), sigStateChanged(this), sigBondKeyReported(this)
 {
 }
 

@@ -90,7 +90,16 @@ void JZWifiAutoConnectService::stop()
     m_failBlacklist.clear();    
 }
 
-bool JZWifiAutoConnectService::isActive() const { return m_active; }
+bool JZWifiAutoConnectService::isActive() const 
+{ 
+    return m_active; 
+}
+
+bool JZWifiAutoConnectService::isConnected() const
+{
+    return !m_connectedSsid.empty();
+}
+
 JZWifiConnectInfo JZWifiAutoConnectService::connectedInfo() const 
 { 
     JZWifiConnectInfo info;
@@ -113,11 +122,14 @@ void JZWifiAutoConnectService::timerEvent(JZTimerEvent *event)
     if (isStationConnecting()) 
         return;                              
     
-        // 已连接且信号良好: 跳过本次周期扫描以省电
-    if (!m_connectedSsid.empty() && m_connectedRssi >= m_config.goodRssiThreshold)
+    // 已连接时: 信号尚可(>= poorRssiThreshold)则维持连接并跳过本次周期扫描以省电;
+    // 仅当信号变差(< poorRssiThreshold)才重新扫描, 寻找更优 AP 漫游
+    if (!m_connectedSsid.empty() && m_connectedRssi >= m_config.poorRssiThreshold)
         return;
     
-    if (!m_scanner->isActive()) {
+    if (!m_scanner->isActive()) 
+    {
+        jzDebug() << "connect rssi" << m_connectedRssi << ", poor threshold" << m_config.poorRssiThreshold << ", rescan";
         m_scanner->start();
         sigScanning.emit();
     }
@@ -202,6 +214,7 @@ void JZWifiAutoConnectService::onStationError(int code, const std::string &msg)
 
 void JZWifiAutoConnectService::onStationRssiChanged(int rssi)
 {
+    jzDebug() << "connected rssi change to" << rssi;
     m_connectedRssi = rssi;
     sigRssiChanged.emit(rssi);
 }
@@ -251,6 +264,8 @@ void JZWifiAutoConnectService::evaluateAndConnect()
     if (!m_connectedSsid.empty() && bestRssi <= m_connectedRssi + m_config.switchHysteresis)
         return;
 
+    jzDebug() << "connect ssid" << m_connectedSsid << ", rssi" << m_connectedRssi << ", best ssid" << 
+        best->ssid << ", rssi" << bestRssi;
     m_station->disconnectFromAp();
     
     m_pendingSsid = *best;        

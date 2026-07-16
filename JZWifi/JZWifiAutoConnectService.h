@@ -27,7 +27,7 @@ struct JZWifiAutoConnectServiceConfig
     int scanIntervalMs = 15000;                 // 基础扫描间隔(毫秒)
     int maxBackoffMs = 60000;                   // 退避上限(毫秒)
     int switchHysteresis = 5;                   // 切换迟滞(dBm): 仅当新候选比当前强出该值才切换
-    int goodRssiThreshold = -60;                // 信号良好阈值(dBm): 超过则跳过周期扫描以省电
+    int poorRssiThreshold = -75;                // 信号差阈值(dBm): 已连接时低于此值才重新扫描以漫游, 否则跳过周期扫描省电
     int failBlockBaseMs = 10000;                // 首次失败冷却(毫秒)
     int failBlockMaxMs = 120000;               // 冷却上限(毫秒)
     int rssiIntervalMs = 15000;                // RSSI 轮询间隔(毫秒)
@@ -61,6 +61,7 @@ public:
     bool isActive() const;
 
     // 当前已连接信息(未连接时 ssid 为空)
+    bool isConnected() const;
     JZWifiConnectInfo connectedInfo() const;
 
     // 最近一次扫描结果

@@ -42,6 +42,10 @@ jz_signals:
     JZSignal<> sigDiscoveryFinished;
     JZSigString sigError;
     JZSignal<State> sigStateChanged;
+    // 配对完成后由驱动经 runOnObject 切到本线程 emit，参数为对端地址与绑定密钥。
+    // 会分别上报 PEER_SEC(对端密钥) 与 OUR_SEC(本机密钥)，上层应两者都持久化，
+    // 重连前用 setBondKey 按 key.objType 各自回灌，外设角色重连加密依赖 OUR_SEC。
+    JZSignal<const std::string&, const JZBleDriver::JZBleBondKey&> sigBondKeyReported;
 
 protected:
     JZBleDriver *getDriver();
@@ -50,6 +54,7 @@ protected:
     static void onDeviceDisconnected(JZBLECentral *self, const char *addr);
     static void onServicesDiscovered(JZBLECentral *self, const char *addr);
     static void onError(JZBLECentral *self, int code, const char *msg);
+    static void onBondKeyReported(JZBLECentral *self, const std::string &addr, const JZBleDriver::JZBleBondKey &key);
 
     State                     m_state = Unconnected;
     std::string               m_errorMsg;

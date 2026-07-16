@@ -35,6 +35,7 @@ JZApplication::JZApplication()
     JZDriver::init();
 
 #ifdef HAS_JZLvgl
+    m_lvglTick = JZPlatform::getTickCountMs();
     m_lvglTimer = startTimer(33);
 #endif
 }
@@ -141,8 +142,13 @@ void JZApplication::processEvents()
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
 #ifdef HAS_JZLvgl
-    //if (event->id() == m_lvglTimer)
-    //    lv_timer_handler();
+    if (event->id() == m_lvglTimer)
+    {
+        auto cur_tick = JZPlatform::getTickCountMs();
+        lv_tick_inc(cur_tick - m_lvglTick);
+        m_lvglTick = cur_tick;
+        lv_timer_handler();
+    }
 #endif
 }
 

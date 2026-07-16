@@ -19,6 +19,9 @@
 #ifdef HAS_JZGpio
 #include "JZGpioDriverEsp32.h"
 #endif
+#ifdef HAS_JZSensor
+#include "JZSensorDriverEsp32.h"
+#endif
 #ifdef HAS_JZSerialPort
 #include "JZSerialDriverEsp32.h"
 #endif
@@ -39,6 +42,10 @@ void JZDriver::init()
 
 #ifdef HAS_JZGpio
     JZGpioDriver::addInstance(new JZGpioDriverEsp32());
+#endif
+
+#ifdef HAS_JZSensor
+    JZSensorDriver::addInstance(new JZSensorDriverEsp32());
 #endif
 
 #ifdef HAS_JZSerialPort
@@ -110,6 +117,10 @@ void JZDriver::deinit()
 
 #ifdef HAS_JZGpio
     JZGpioDriver::clearInstances();
+#endif
+
+#ifdef HAS_JZSensor
+    JZSensorDriver::clearInstances();
 #endif
 
 #ifdef HAS_JZSerialPort

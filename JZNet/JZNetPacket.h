@@ -29,7 +29,6 @@ enum {
     FrpPack_Hand,
     FrpPack_HandRes,
     FrpPack_Trans,
-    FrpPack_TransRes,
 
     NetPack_user = 1000,
 };

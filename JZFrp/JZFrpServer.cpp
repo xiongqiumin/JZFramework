@@ -159,7 +159,7 @@ void JZFrpServer::onNewAccept()
     if (!client)
         return;
 
-    uint64_t c = client->m_serverId;
+    uint64_t c = client->serverId();
     auto frp = std::make_shared<FrpConnection>();
     frp->frpc = c;
     m_frpClient[c] = frp;    
@@ -203,6 +203,11 @@ void JZFrpServer::onRecvPacket(uint64_t c, JZNetPackPtr packet)
         for (int i = 0; i < pack_hand->serverPortList.size(); i++)
         {
             int serverPort = pack_hand->serverPortList[i];
+            if (frp->frps.count(serverPort))
+            {
+                error = "duplicate server port " + to_string(serverPort);
+                break;
+            }
 
             auto mgr_info = std::make_shared<RemoteInfo>();
             frp->frps[serverPort] = mgr_info;
@@ -263,6 +268,10 @@ void JZFrpServer::onRecvPacket(uint64_t c, JZNetPackPtr packet)
             {
                 remote_c->abort();
                 remote_c->deleteLater();
+
+                auto frps_it = frp->frps.find(pack_trans->serverPort);
+                if (frps_it != frp->frps.end())
+                    map_remove(frps_it->second->remoteConnects, pack_trans->connectId);
             }
         }
         else

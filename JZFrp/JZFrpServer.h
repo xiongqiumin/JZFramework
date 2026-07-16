@@ -51,7 +51,6 @@ protected:
         bool valid;
         uint64_t frpc;  // FRP 客户端连接
         std::map<int, std::shared_ptr<RemoteInfo>> frps;  // 一个client 可能有多个端口，一个端口有多个客户
-        std::string nonce;  // 随机数，用于认证
     };
 
     struct RemoteClientInfo

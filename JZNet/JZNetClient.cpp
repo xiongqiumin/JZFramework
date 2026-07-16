@@ -30,6 +30,11 @@ SocketState JZNetClient::state() const
     return m_state;
 }
 
+uint64_t JZNetClient::serverId() const
+{
+    return m_serverId;
+}
+
 void JZNetClient::setToken(std::string token)
 {
     m_token = token;

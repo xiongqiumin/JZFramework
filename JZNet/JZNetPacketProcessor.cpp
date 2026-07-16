@@ -52,8 +52,10 @@ JZByteArray JZNetPacketProcessor::formatPacket(const JZNetPack *packet)
     s << (int32_t)packet->packetType();
     packet->saveToStream(s);
 
-    int *ptr = (int *)(buffer.data() + 1);
-    *ptr = buffer.size();
+    // buffer 底层为 char 缓冲区(1 字节对齐), 直接转 int* 写入是未对齐访问(UB, ARM 会 hardfault)
+    // 用 memcpy 写入原生字节序的 int32_t
+    int32_t size = (int32_t)buffer.size();
+    memcpy(buffer.data() + 1, &size, sizeof(int32_t));
     JZ_ASSERT(buffer.size() < MG_MAX_PACK_SIZE);
 
     if (m_password != 0)
@@ -111,7 +113,8 @@ bool JZNetPacketProcessor::parse()
             return false;
         }
 
-        int packet_size = *((int*)(m_buffer.data() + start + 1));
+        int32_t packet_size;
+        memcpy(&packet_size, m_buffer.data() + start + 1, sizeof(int32_t));   // 未对齐安全读取
         if(packet_size < 0 || packet_size > MG_MAX_PACK_SIZE)
         {
             LOG_W("pack size error");
@@ -122,7 +125,8 @@ bool JZNetPacketProcessor::parse()
         if (m_buffer.size() < start + packet_size)
             break;                
                 
-        int32_t type = *((int32_t*)(m_buffer.data() + start + 5));
+        int32_t type;
+        memcpy(&type, m_buffer.data() + start + 5, sizeof(int32_t));   // 未对齐安全读取
         JZNetPackPtr pack = JZNetPackManager::instance()->createPack(type);
         if(!pack)
         {

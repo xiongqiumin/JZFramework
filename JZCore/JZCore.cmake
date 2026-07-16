@@ -5,6 +5,7 @@
 	JZString.cpp
 	JZRegExp.h
 	JZRegExp.cpp
+    JZAllocator.h
     JZByteArray.h
     JZByteArray.cpp    
     JZDataStream.h

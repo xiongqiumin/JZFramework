@@ -28,6 +28,7 @@ public:
 
     // 写入 operator <<
     JZTextStream& operator<<(const std::string& str);
+    JZTextStream& operator<<(JZ::EndFlag endl);
 
 private:
     JZ_DISABLE_COPY(JZTextStream)

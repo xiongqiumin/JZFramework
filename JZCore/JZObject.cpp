@@ -174,7 +174,7 @@ void JZObject::blockSignals(bool flag)
 
 void JZObject::moveToThread(JZThread *thread)
 {
-    JZ_ASSERT(thread);
+    JZ_ASSERT(thread && m_thread == jzApp->currentThread());
     
     m_thread = thread;
     for (int i = 0; i < (int)m_childs.size(); i++)

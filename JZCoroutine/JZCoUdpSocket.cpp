@@ -10,13 +10,12 @@ JZCoUdpSocket::JZCoUdpSocket(JZObject *parent)
 
 JZCoUdpSocket::~JZCoUdpSocket()
 {
-    disconnectFromHost();
+    m_socket->close();
 }
 
 void JZCoUdpSocket::connectSignals()
 {
-    connect(&m_socket->sigConnect, this, &JZCoUdpSocket::onConnected);
-    connect(&m_socket->sigDisconnect, this, &JZCoUdpSocket::onDisconnected);
+    // 新的 JZUdpSocket 仅提供 sigReadyRead / sigError 两个信号
     connect(&m_socket->sigReadyRead, this, &JZCoUdpSocket::onReadyRead);
     connect(&m_socket->sigError, this, &JZCoUdpSocket::onError);
 }
@@ -31,27 +30,6 @@ void JZCoUdpSocket::yield(WaitType type, int timeout)
 bool JZCoUdpSocket::bind(int port)
 {
     return m_socket->bind(port);
-}
-
-bool JZCoUdpSocket::connectToHost(std::string ip, int port, int timeout)
-{
-    if (isConnected())
-        return true;
-
-    m_lastError.clear();
-    m_socket->connectToHost(ip, port);
-    yield(WaitConnect, timeout);
-    return isConnected();
-}
-
-void JZCoUdpSocket::disconnectFromHost()
-{
-    m_socket->disconnectFromHost();
-}
-
-void JZCoUdpSocket::abort()
-{
-    m_socket->abort();
 }
 
 void JZCoUdpSocket::close()
@@ -72,15 +50,21 @@ bool JZCoUdpSocket::isConnected() const
 //=======================================================================
 //  信号处理
 //=======================================================================
-void JZCoUdpSocket::onConnected()
+void JZCoUdpSocket::onReadyRead()
 {
-    if (m_waitType == WaitConnect)
-        m_coCtrl.wakeAll();
-}
-
-void JZCoUdpSocket::onDisconnected()
-{
-    if (m_waitType != WaitNone)
+    // 新的 JZUdpSocket 在内部用 deque 缓冲多个数据报, 一次 sigReadyRead 可能到达
+    // 多个数据报。这里全部取入接收队列, 否则剩余数据报不会再次触发 sigReadyRead,
+    // 导致 receive() 永久挂起。
+    while (m_socket->hasPendingDatagrams())
+    {
+        JZUdpDatagram dgram = m_socket->readDatagram();
+        JZCoUdpDatagram dg;
+        dg.peerIp = dgram.peerIp;
+        dg.peerPort = dgram.peerPort;
+        dg.data = dgram.data;
+        m_recvQueue.push_back(std::move(dg));
+    }
+    if (m_waitType == WaitRead)
         m_coCtrl.wakeAll();
 }
 
@@ -88,17 +72,6 @@ void JZCoUdpSocket::onError(const std::string &error)
 {
     m_lastError = error;
     if (m_waitType != WaitNone)
-        m_coCtrl.wakeAll();
-}
-
-void JZCoUdpSocket::onReadyRead()
-{
-    JZCoUdpDatagram dg;
-    dg.peerIp = m_socket->peerAddress();
-    dg.peerPort = m_socket->peerPort();
-    dg.data = m_socket->readAll();
-    m_recvQueue.push_back(std::move(dg));
-    if (m_waitType == WaitRead)
         m_coCtrl.wakeAll();
 }
 
@@ -137,16 +110,6 @@ JZResult<JZCoUdpDatagram> JZCoUdpSocket::receive(int ms)
 //=======================================================================
 //  发送
 //=======================================================================
-void JZCoUdpSocket::write(const JZByteArray &buffer)
-{
-    m_socket->write(buffer);
-}
-
-void JZCoUdpSocket::write(const char *buffer, int len)
-{
-    m_socket->write(buffer, len);
-}
-
 void JZCoUdpSocket::writeDatagram(const std::string &ip, int port, const JZByteArray &buffer)
 {
     m_socket->writeDatagram(ip, port, buffer);
@@ -157,17 +120,7 @@ void JZCoUdpSocket::writeDatagram(const std::string &ip, int port, const char *b
     m_socket->writeDatagram(ip, port, buffer, len);
 }
 
-std::string JZCoUdpSocket::peerAddress() const
+bool JZCoUdpSocket::hasPendingDatagrams() const
 {
-    return m_socket->peerAddress();
-}
-
-int JZCoUdpSocket::peerPort() const
-{
-    return m_socket->peerPort();
-}
-
-int JZCoUdpSocket::pendingDatagramCount() const
-{
-    return static_cast<int>(m_recvQueue.size());
+    return m_socket->hasPendingDatagrams();
 }

@@ -11,6 +11,10 @@ set(JZCO_SOURCES
 	JZCoMutex.h
     JZCoSemaphore.cpp
     JZCoSemaphore.h
+    JZCoWatch.cpp
+    JZCoWatch.h
+    JZCoSerialPort.cpp
+    JZCoSerialPort.h
 )
 
 set(JZCO_NET_SOURCES

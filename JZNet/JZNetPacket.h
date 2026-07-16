@@ -29,7 +29,6 @@ enum {
     FrpPack_Hand,
     FrpPack_HandRes,
     FrpPack_Trans,
-    FrpPack_TransRes,
 
     NetPack_user = 1000,
 };
@@ -46,6 +45,7 @@ public:
 };
 
 typedef std::shared_ptr<JZNetPack> JZNetPackPtr;
+JZ_DECLARE_METATYPE_INTERNAL(JZNetPackPtr, JZMetaType::NetPackPtr);
 
 // JZNetPackHand
 class JZNetPackHand : public JZNetPack

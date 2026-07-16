@@ -110,6 +110,7 @@ JZNetObject* JZHttpServer::onAccept(uint64_t conn)
 {
     JZHttpServerClient* client = new JZHttpServerClient(this);
     client->m_conn = conn;
+    client->moveToThread(this->thread());
     return client;
 }
 
@@ -134,8 +135,6 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
     
     std::string uri(hm.uri.buf, hm.uri.len);
     request.setPath(uri);
-    
-    jzDebug() << "onHttpMessage" << uri;
 
     std::string query(hm.query.buf, hm.query.len);
     request.setQuery(query);

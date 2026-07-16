@@ -36,7 +36,8 @@ public:
     int stackSizeAlign() const;
 
     int stackSize = 4096;
-    int priority = -1; // 0-15, 15最高, -1 继承当前
+    int priority = -1;   // 0-15, 15最高, -1 继承当前
+    int cpuCore = -1;       // cpu core
 };
 
 class JZApplication;

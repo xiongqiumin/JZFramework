@@ -15,6 +15,7 @@ JZObject* JZObjectPointer::object() const
 {
     if (!data)
         return nullptr;
+        
     return data->object;
 }
 

@@ -2,8 +2,17 @@
 #define JZ_UDP_SOCKET_H_
 
 #include <string>
+#include <deque>
 #include "JZNetObject.h"
 #include "JZNetPacket.h"
+
+// 单个接收的数据报(含发送方地址)
+struct JZUdpDatagram
+{
+    JZByteArray data;
+    std::string peerIp;
+    int peerPort = 0;
+};
 
 // UDP response data (sender address of received datagram)
 class JZUdpResData : public JZNetResEventData
@@ -31,36 +40,19 @@ public:
 
     SocketState state() const;
 
-    // Bind to a local port for receiving from any peer (UDP server mode)
+    // 绑定到本地端口, 接收任意对端的数据报(对应 QUdpSocket::bind)
     bool bind(int port);
-    // Connect to a remote host, setting default send/recv destination (UDP client mode)
-    void connectToHost(std::string ip, int port);
-    bool waitForConnected(int ms = 30 * 1000);
-    void disconnectFromHost();
-
-    void abort();
     void close();
 
-    int read(char* buffer, int len);
-    JZByteArray readAll();
-    bool waitForReadyRead(int ms);
-
-    // Write to the connected/bound default destination
-    void write(const JZByteArray &buffer);
-    void write(const char *buffer, int len);
-    // Write to a specific destination (for bound mode)
+    // 发送数据报到指定目标(对应 QUdpSocket::writeDatagram)
     void writeDatagram(const std::string &ip, int port, const JZByteArray &buffer);
     void writeDatagram(const std::string &ip, int port, const char *buffer, int len);
 
-    // Sender of the last received datagram
-    std::string peerAddress() const;
-    int peerPort() const;
-
+    // 读取一个数据报(含发送方地址), 队列为空时返回空数据报(对应 QUdpSocket::readDatagram)
+    JZUdpDatagram readDatagram();
     bool hasPendingDatagrams() const;
 
 jz_signals:
-    JZSigVoid sigConnect;
-    JZSigVoid sigDisconnect;
     JZSigVoid sigReadyRead;
     JZSigString sigError;
 
@@ -68,12 +60,12 @@ protected:
     void onNetEvent(JZNetResEvent *event) override;
     void closeInternal(bool is_error);
 
-    JZByteArray m_buffer;
-
-    uint64_t m_client;
-    SocketState m_state;
+    std::deque<JZUdpDatagram> m_datagrams;  // 按数据报逐个保存
     std::string m_peerAddr;
-    int m_peerPort;
+    int m_peerPort = 0;
+
+    uint64_t m_client = INVALID_NET_HANDLE;
+    SocketState m_state = UnconnectedState;
 };
 
 #endif

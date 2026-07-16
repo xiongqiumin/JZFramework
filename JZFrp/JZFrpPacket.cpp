@@ -71,30 +71,9 @@ void JZFrpTrans::loadFromStream(JZDataStream &s)
     s >> data;
 }
 
-//JZFrpTransRes
-int JZFrpTransRes::packetType() const
-{
-    return FrpPack_TransRes;
-}
-
-void JZFrpTransRes::saveToStream(JZDataStream &s) const
-{
-    s << type;
-    s << serverPort;
-    s << connectId;  //id 
-}
-
-void JZFrpTransRes::loadFromStream(JZDataStream &s)
-{
-    s >> type;
-    s >> serverPort;
-    s >> connectId;  //id 
-}
-
 void JZFrpPacketInit() 
 {   
     JZNetPackManager::instance()->registPack<JZFrpHand>(FrpPack_Hand);
     JZNetPackManager::instance()->registPack<JZFrpHandRes>(FrpPack_HandRes);
     JZNetPackManager::instance()->registPack<JZFrpTrans>(FrpPack_Trans);
-    JZNetPackManager::instance()->registPack<JZFrpTransRes>(FrpPack_TransRes);
 }

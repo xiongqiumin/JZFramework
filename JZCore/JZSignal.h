@@ -431,7 +431,7 @@ public:
         if (!m_connects) return;
         for (int i = (int)m_connects->size() - 1; i >= 0; i--)
         {
-            if ((*m_connects)[i].id == id) {
+            if ((*m_connects)[i]->id == id) {
                 m_connects->erase(m_connects->begin() + i);
             }
         }
@@ -455,6 +455,7 @@ public:
             return;
         
         auto connect_list = *m_connects;
+        std::vector<int> deadIds;
         for (int i = 0; i < (int)connect_list.size(); i++)
         {
             auto& conn = *connect_list[i];
@@ -466,13 +467,17 @@ public:
                 JZObjectPointerGuard guard(&conn.recv);
                 JZObject *recvier = guard.object();
                 if (!recvier)
+                {
+                    deadIds.push_back(conn.id);   // 收集已失效连接, 遍历结束后统一删除
                     continue;
+                }
 
                 bool is_same_thread = isCurrentThread(recvier);
+
                 if ((type == JZ::AutoConnection && is_same_thread)
                     || type == JZ::DirectConnection)
                 {
-                    guard.unlock();
+                    guard.unlock();   // 同步路径: 调用槽前解锁, 允许槽内重入/析构
 
                     JZThread* thread = objectThread(m_object);
                     JZObject* sender = m_object;
@@ -546,6 +551,10 @@ public:
                 }
             }
         }
+
+        // 清理本次 emit 中发现的失效连接
+        for (int id : deadIds)
+            removeById(id);
     }
 
 protected:

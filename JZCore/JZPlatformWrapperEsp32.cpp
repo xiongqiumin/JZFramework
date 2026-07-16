@@ -1,5 +1,6 @@
 #include "JZPlatformWrapperEsp32.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -15,6 +16,24 @@ int64_t JZPlatformWrapperEsp32::getTickCountNs()
 {
     int64_t now_us = esp_timer_get_time();
     return now_us * 1000;
+}
+
+// ==================== 内存分配 ====================
+void* JZPlatformWrapperEsp32::malloc(size_t size)
+{
+#ifdef CONFIG_SPIRAM
+    // 优先PSRAM，PSRAM不足自动分配内部SRAM，一次调用完成
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_INTERNAL);
+#else
+    // 无PSRAM硬件/未开启，仅内部内存
+    return heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+#endif
+}
+
+void JZPlatformWrapperEsp32::free(void *ptr)
+{
+    // heap_caps_free 可释放 PSRAM 与内部内存
+    heap_caps_free(ptr);
 }
 
 // ==================== 文件句柄操作 ====================

@@ -67,7 +67,12 @@
 #define jz_signals public
 
 namespace JZ
+{    
+enum EndFlag
 {
+    endl,
+};
+
 enum ConnectType
 {
     AutoConnection,

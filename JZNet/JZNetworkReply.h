@@ -27,7 +27,7 @@ public:
         UserCancelError,
     };
 
-    JZNetworkReply(JZNetworkAccessManager *object);
+    JZNetworkReply(JZObject*object);
     ~JZNetworkReply();    
 
     void open(const JZNetworkRequest& request);

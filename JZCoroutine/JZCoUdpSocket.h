@@ -15,6 +15,11 @@ struct JZCoUdpDatagram
     JZByteArray data;
 };
 
+// 协程 UDP 套接字: 包装新的 JZUdpSocket (无连接的纯数据报 API, 类似 QUdpSocket)
+//   - bind(port): 绑定本地端口, 接收任意对端的数据报
+//   - writeDatagram(ip, port, ...): 发送到指定对端
+//   - receive(): 协程等待并读取一个数据报(含发送方地址)
+//   UDP 没有连接概念, 故不提供 connectToHost / disconnectFromHost / abort / 连接态 write
 class JZCoUdpSocket : public JZObject
 {
 public:
@@ -23,11 +28,6 @@ public:
 
     // 绑定本地端口（接收任意对端的数据报，UDP 服务端模式），同步返回
     bool bind(int port);
-    // 连接远端主机，设置默认收发目的地址（UDP 客户端模式），协程等待连接结果
-    bool connectToHost(std::string ip, int port, int timeout = 30 * 1000);
-
-    void disconnectFromHost();
-    void abort();
     void close();
 
     SocketState state() const;
@@ -36,24 +36,16 @@ public:
     // 读取单个数据报（保留数据报边界，含发送方地址）
     JZResult<JZCoUdpDatagram> receive(int ms = -1);
 
-    // 发送到已连接的默认目的地址
-    void write(const JZByteArray &buffer);
-    void write(const char *buffer, int len);
-    // 发送到指定目的地址（绑定模式下）
+    // 发送到指定目的地址（UDP 数据报模式, 无连接概念）
     void writeDatagram(const std::string &ip, int port, const JZByteArray &buffer);
     void writeDatagram(const std::string &ip, int port, const char *buffer, int len);
 
-    // 最近一次接收的数据报的发送方地址
-    std::string peerAddress() const;
-    int peerPort() const;
-
-    int pendingDatagramCount() const;
+    bool hasPendingDatagrams() const;
 
 protected:
     enum WaitType
     {
         WaitNone,
-        WaitConnect,
         WaitRead,
     };
 
@@ -61,8 +53,6 @@ protected:
     void yield(WaitType type, int timeout = -1);
     bool waitForReadyRead(int timeout);
 
-    void onConnected();
-    void onDisconnected();
     void onReadyRead();
     void onError(const std::string &error);
 

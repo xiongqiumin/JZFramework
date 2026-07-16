@@ -3,6 +3,8 @@
 
 #include "JZNetObject.h"
 #include "JZMqttPacket.h"
+#include "JZTimer.h"
+#include <map>
 
 class JZMqttServer;
 class JZMgOptPacket;
@@ -32,13 +34,28 @@ jz_signals:
 protected:
     friend JZMqttServer;
 
+    struct MqttOutboundQos
+    {
+        uint16_t packetId;
+        JZMqttPublishOpt opt;
+        int64_t sendTimeMs;
+    };
+
     void onNetEvent(JZNetResEvent*event);
     void closeInternal(bool is_error);
     void write(const std::shared_ptr<JZMgOptPacket> packet);
+    void onQosTimer();
+    void onPubAck(uint16_t id);
+    void clearOutboundQos();
 
     uint64_t m_client;
     JZMqttServer *m_server;
     SocketState m_state;
+
+    // 出站 QoS1/2 可靠投递跟踪(内存级, 不依赖文件系统)
+    std::map<uint16_t, MqttOutboundQos> m_outboundQos;
+    uint16_t m_nextPacketId = 0;
+    JZTimer *m_qosTimer = nullptr;
 };
 
 #endif

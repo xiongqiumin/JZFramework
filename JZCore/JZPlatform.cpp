@@ -2,6 +2,7 @@
 #include "JZApplication.h"
 #include "JZStd.h"
 #include "JZDebug.h"
+#include <cstdlib>
 
 #ifdef JZ_OS_NORMAL
 #include <chrono>
@@ -15,6 +16,16 @@ static JZPlatformWrapper *g_inst = nullptr;
 JZPlatformWrapper::~JZPlatformWrapper()
 {
 
+}
+
+void* JZPlatformWrapper::malloc(size_t size)
+{
+    return ::malloc(size);
+}
+
+void JZPlatformWrapper::free(void *ptr)
+{
+    ::free(ptr);
 }
 
 //JZPlatform
@@ -32,6 +43,22 @@ void JZPlatform::setInstance(JZPlatformWrapper *inst)
 JZPlatformWrapper *JZPlatform::instance()
 {
     return g_inst;
+}
+
+void* JZPlatform::malloc(size_t size)
+{
+    if (g_inst)
+        return g_inst->malloc(size);
+        
+    return ::malloc(size);
+}
+
+void JZPlatform::free(void *ptr)
+{
+    if (g_inst)
+        g_inst->free(ptr);
+    else
+        ::free(ptr);
 }
 
 // ==================== 平台信息 ====================

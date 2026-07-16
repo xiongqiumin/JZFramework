@@ -56,18 +56,6 @@ public:
     JZByteArray data;
 };
 
-class JZFrpTransRes : public JZNetPack
-{
-public:
-    virtual int packetType() const;
-    virtual void saveToStream(JZDataStream &s) const;
-    virtual void loadFromStream(JZDataStream &s);
-
-    int type;
-    int serverPort;
-    int connectId;  //id
-};
-
 // 初始化 FRP 数据包管理器
 void JZFrpPacketInit();
 

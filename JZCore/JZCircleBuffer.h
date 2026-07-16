@@ -9,16 +9,23 @@ class JZCircleBuffer
 public:
     /**
      * @brief 构造环形缓冲
-     * @param initCap 初始容量
-     * @param enableDynamic true=动态扩容 false=固定容量
+     * @param initCap 初始容量(字节), 默认 1024; <=0 时不预分配
+     * @param enableDynamic true=动态扩容 false=固定容量(默认)
      */
-    explicit JZCircleBuffer(int initCap, bool enableDynamic = false);
+    explicit JZCircleBuffer(int initCap = 1024, bool enableDynamic = false);
 
-    // 禁止拷贝、移动（多线程缓冲区不允许复制）
-    JZCircleBuffer(const JZCircleBuffer&) = delete;
-    JZCircleBuffer& operator=(const JZCircleBuffer&) = delete;
-    JZCircleBuffer(JZCircleBuffer&&) = delete;
-    JZCircleBuffer& operator=(JZCircleBuffer&&) = delete;
+    void setDynamic(bool enableDynamic);
+    bool isDynamic() const;
+    
+    /**
+     * @brief 调整缓冲容量(字节); 大于当前数据则扩容保留全部, 小于当前数据则缩小并丢弃多余(从队尾丢弃)
+     * @param newCap 目标新容量(字节); <=0 时直接忽略
+     */
+    void resize(int newCap);
+    void clear();
+
+    int size() const;
+    int capacity() const;
 
     /**
      * @brief 写入指定长度数据，必须全部写入才返回true，不足则整体失败
@@ -36,15 +43,6 @@ public:
      */
     int read(char* data, int len);
 
-    // 获取当前有效数据长度
-    int getSize();
-
-    // 获取缓冲区总容量
-    int getCapacity();
-
-    // 清空所有数据
-    void clear();
-
 private:
     /**
      * @brief 将环形缓冲区数据拷贝到线性连续内存（扩容专用）
@@ -53,7 +51,9 @@ private:
     void copyCircleToLinear(char* dst);
 
 private:
-    JZMutex m_mutex;
+    JZ_DISABLE_COPY(JZCircleBuffer)
+
+    mutable JZMutex m_mutex;
     std::vector<char> m_buffer;
     int m_head;
     int m_tail;

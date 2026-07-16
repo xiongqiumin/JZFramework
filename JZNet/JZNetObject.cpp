@@ -334,7 +334,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         event->binData = str_toUtf8(err_msg);
     }
 
-    JZMutexLocker locker(&inst->m_mutex);
+    JZMutexLocker locker(&inst->m_objectMutex);
     if (accept_id != INVALID_NET_HANDLE)
     {
         auto accept_it = inst->m_connMap.find(accept_id);
@@ -391,8 +391,9 @@ JZNetThread::JZNetThread(JZObject *parent)
     :JZThread(parent)
 {
     JZThreadConfig cfg;
-    cfg.stackSize = 24 * 1024;
+    cfg.stackSize = 8 * 1024;
 
+    connect(&sigFinished, this, &JZNetThread::onFinished);
     moveToThread(this);
     setObjectName("JZNetThread");
     setConfig(cfg);
@@ -413,8 +414,14 @@ JZNetThread::~JZNetThread()
 
     mg_mgr_free(m_mgr);
     delete m_mgr;
+    m_mgr = nullptr;
    
     g_netThread = nullptr;
+}
+
+void JZNetThread::onFinished()
+{
+    moveToThread(m_parent->thread());
 }
 
 void JZNetThread::run()
@@ -603,9 +610,9 @@ void JZNetThread::addObject(JZNetObject *object)
     bool need_lock = JZThread::currentThreadId() != this->id();
     if (need_lock)
     {
-        JZMutexLocker locker(&m_mutex);
+        JZMutexLocker locker(&m_objectMutex);
         m_objectList.push_back(object);
-        if (m_objectList.size() == 1)
+        if (m_objectList.size() == 1 && !isRunning())
             start();
     }
     else
@@ -617,17 +624,18 @@ void JZNetThread::addObject(JZNetObject *object)
 
 void JZNetThread::removeObject(JZNetObject *object)
 {
-    JZMutexLocker locker(&m_mutex);
+    JZMutexLocker locker(&m_objectMutex);
     if(m_objectList.size() == 0)
         return;
 
     vec_removeAll(m_objectList, object);
-    if (m_objectList.size() == 0)
+    for(auto &it : m_connMap)
     {
-        locker.unlock();
-
-        quit();
-        wait();
+        if (it.second.object.object() == object) 
+        {
+            it.second.object = JZObjectPointer();
+            break;
+        }
     }
 }
 

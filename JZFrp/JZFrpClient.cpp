@@ -172,7 +172,9 @@ void JZFrpClient::replyInvalidClient(int serverPort, int connectId)
 {
     jzWarning("JZFrpClient invalid client, serverPort = %d, connectId = %d", serverPort, connectId);
 
-    JZFrpTransRes trans_res;
+    // 注意：必须发 FrpPack_Trans(FrpTrans_Error)，服务端才会处理并关闭对应外部连接。
+    // 之前发的是 FrpPack_TransRes，而服务端 onRecvPacket 不处理该类型，回执被静默丢弃。
+    JZFrpTrans trans_res;
     trans_res.type = FrpTrans_Error;
     trans_res.serverPort = serverPort;
     trans_res.connectId = connectId;
@@ -287,13 +289,6 @@ void JZFrpClient::onLocalConnect()
     }
 
     jzDebug("local client connect %p", c);
-    LocalClientInfo *config = &m_localSocketMap[c];
-
-    JZFrpTransRes trans;
-    trans.type = FrpTrans_Connect;
-    trans.serverPort = config->serverPort;
-    trans.connectId = config->connectId;
-    m_client->sendPacket(&trans);
 }
 
 void JZFrpClient::onLocalDisconnect()
@@ -354,6 +349,5 @@ void JZFrpClient::onLocalError(const std::string &error)
     trans.data = str_toUtf8(error);
     m_client->sendPacket(&trans);
 
-    if (m_client->state() == ConnectingState)
-        removeLocalClient(c);
+    removeLocalClient(c);
 }

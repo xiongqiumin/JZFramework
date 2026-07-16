@@ -30,6 +30,7 @@ JZFramework 主要模块：
 | **JZFrp** | FRP 内网穿透模块 | JZNet |
 | **JZBle** | 蓝牙通信模块 | JZCore |
 | **JZHttpServer** | HTTP 服务器模块 | JZNet |
+| **JZSensor** | 传感器模块（温度/湿度/气压等，驱动可扩展） | JZCore |
 
 ### 二、CMake 集成
 

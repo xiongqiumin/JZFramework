@@ -81,7 +81,7 @@ static void paramUnpack(JZModbusParam *p, const std::vector<uint16_t>& buffer)
 {
     T value = 0;
     const char *ptr = (const char *)buffer.data();
-    JZByteArray bytes = JZByteArray::fromRawData(ptr, (int)buffer.size() * 2);
+    JZByteArray bytes((const char *)ptr, (int)buffer.size() * 2);
     JZDataStream s(&bytes, JZ::ReadOnly);
     s.setByteOrder(p->byteOrder);
 

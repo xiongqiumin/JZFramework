@@ -1,5 +1,5 @@
-﻿#ifndef JZ_VARIIANT_H_
-#define JZ_VARIIANT_H_
+﻿#ifndef JZ_VARIANT_H_
+#define JZ_VARIANT_H_
 
 #include <map>
 #include <string>
@@ -23,6 +23,12 @@ public:
     JZVariant(double d);
     JZVariant(const char *str);
     JZVariant(const std::string &str);
+    JZVariant(int16_t i16);
+    JZVariant(uint16_t ui16);
+    JZVariant(unsigned int ui);
+    JZVariant(uint64_t ui64);
+    JZVariant(const std::map<std::string, JZVariant> &m);
+    JZVariant(const std::vector<JZVariant>&l);
     JZVariant(JZVariant&&) noexcept;
     ~JZVariant();
 
@@ -43,6 +49,8 @@ public:
     double toDouble() const;
     std::string toString() const;
     JZByteArray toByteArray() const;
+    std::map<std::string, JZVariant> toMap() const;
+    std::vector<JZVariant> toList() const;
 
     template <class T>
     static JZVariant fromValue(const T &t)
@@ -50,8 +58,6 @@ public:
         JZVariant v;
         v.m_type = jzMetaTypeId<T>();
 
-        JZ_ASSERT(v.m_type >= JZMetaType::PodEnd);
-        
         JZMeta<T> *meta = new JZMeta<T>();
         meta->data = t;
         v.m_data.meta = meta;
@@ -65,8 +71,7 @@ public:
             return T();
 
         JZ_ASSERT(m_type == jzMetaTypeId<T>());
-        JZ_ASSERT(m_type >= JZMetaType::PodEnd);
-        
+
         auto meta = (JZMeta<T>*)m_data.meta;
         return meta->data;
     }
@@ -75,7 +80,6 @@ public:
     T& valueRef()
     {
         JZ_ASSERT(m_type == jzMetaTypeId<T>());
-        JZ_ASSERT(m_type >= JZMetaType::PodEnd);
 
         auto meta = (JZMeta<T>*)m_data.meta;
         return meta->data;
@@ -85,7 +89,6 @@ public:
     const T& valueRef() const
     {
         JZ_ASSERT(m_type == jzMetaTypeId<T>());
-        JZ_ASSERT(m_type >= JZMetaType::PodEnd);
 
         auto meta = (JZMeta<T>*)m_data.meta;
         return meta->data;
@@ -102,6 +105,8 @@ protected:
         unsigned int ui;
         int64_t i64;
         uint64_t ui64;
+        int16_t i16;
+        uint16_t ui16;
         float f;
         double d;
         void *ptr;
@@ -114,6 +119,10 @@ protected:
 
 typedef std::vector<JZVariant> JZVariantList;
 typedef std::map<std::string,JZVariant> JZVariantMap;
+
+// JZVariantMap / JZVariantList 作为 JZVariant 的内置值类型(固定元类型 id, 随 JZVariant 一起序列化/拷贝)
+JZ_DECLARE_METATYPE_INTERNAL(JZVariantMap,  JZMetaType::VariantMap)
+JZ_DECLARE_METATYPE_INTERNAL(JZVariantList, JZMetaType::VariantList)
 
 // fromValue 特化声明
 template <>
@@ -128,6 +137,14 @@ template <>
 JZVariant JZVariant::fromValue(const double &t);
 template <>
 JZVariant JZVariant::fromValue(void *const &t);
+template <>
+JZVariant JZVariant::fromValue(const int16_t &t);
+template <>
+JZVariant JZVariant::fromValue(const uint16_t &t);
+template <>
+JZVariant JZVariant::fromValue(const unsigned int &t);
+template <>
+JZVariant JZVariant::fromValue(const uint64_t &t);
 
 // value 特化声明
 template <>
@@ -142,6 +159,14 @@ template <>
 double JZVariant::value<double>() const;
 template <>
 void *JZVariant::value<void *>() const;
+template <>
+int16_t JZVariant::value<int16_t>() const;
+template <>
+uint16_t JZVariant::value<uint16_t>() const;
+template <>
+unsigned int JZVariant::value<unsigned int>() const;
+template <>
+uint64_t JZVariant::value<uint64_t>() const;
 
 //==================== valueRef 非const 可读写版本声明 ====================
 template <>
@@ -156,6 +181,14 @@ template <>
 double& JZVariant::valueRef<double>();
 template <>
 void*& JZVariant::valueRef<void*>();
+template <>
+int16_t& JZVariant::valueRef<int16_t>();
+template <>
+uint16_t& JZVariant::valueRef<uint16_t>();
+template <>
+unsigned int& JZVariant::valueRef<unsigned int>();
+template <>
+uint64_t& JZVariant::valueRef<uint64_t>();
 
 //==================== valueRef const 只读版本声明 ====================
 template <>
@@ -170,6 +203,14 @@ template <>
 const double& JZVariant::valueRef<double>() const;
 template <>
 void* const& JZVariant::valueRef<void*>() const;
+template <>
+const int16_t& JZVariant::valueRef<int16_t>() const;
+template <>
+const uint16_t& JZVariant::valueRef<uint16_t>() const;
+template <>
+const unsigned int& JZVariant::valueRef<unsigned int>() const;
+template <>
+const uint64_t& JZVariant::valueRef<uint64_t>() const;
 
 JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec);
 JZDataStream& operator>>(JZDataStream& s, JZVariant& vec);

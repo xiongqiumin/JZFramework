@@ -213,6 +213,11 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
         std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
         self->m_periphConnHandle = -1;
         self->m_periphCtrlPriv = nullptr;
+        // 重置所有特征的订阅状态（对端已断开）
+        for (auto &kv : self->m_periphCharMap) {
+            kv.second.subscribedNotify = false;
+            kv.second.subscribedIndicate = false;
+        }
         JZBleDriver::peripheralOnClientDisconnected(periph);
         break;
     }
@@ -241,7 +246,10 @@ int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
             JZBleDriver::centralOnDeviceConnected(cent, addr.c_str());
         }
         else
+        {
+            self->m_bondCentralByAddr.erase(addr);  // 连接失败，移除路由表项
             JZBleDriver::centralOnError(cent, 0, "GAP connect failed");
+        }
         break;
     }
     case BLE_GAP_EVENT_DISCONNECT:
@@ -608,9 +616,10 @@ int JZBleDriverEsp32::storeWriteCb(int obj_type, const union ble_store_value *va
         JZBleBondKey key = secToBondKey(obj_type, &val->sec);
         self->m_bondStore[bondStoreKey(obj_type, addr)] = key;
         // 分别上报 PEER_SEC(对端密钥) 与 OUR_SEC(本机密钥)：两者都需持久化，
-        // 外设角色重连加密依赖 OUR_SEC，故不跳过。
-        if (self->m_bondCentral)
-            JZBleDriver::centralOnBondKeyReported(self->m_bondCentral, addr, key);
+        // 外设角色重连加密依赖 OUR_SEC，故不跳过。按对端地址路由到对应 Central。
+        auto bit = self->m_bondCentralByAddr.find(addr);
+        if (bit != self->m_bondCentralByAddr.end())
+            JZBleDriver::centralOnBondKeyReported(bit->second, addr, key);
         return 0;
     }
     return 0;   // 其他类型（CCCD 等）忽略，不持久化
@@ -663,9 +672,10 @@ bool JZBleDriverEsp32::isScanning(JZBLEDeviceDiscoveryAgent *agent)
 
 void JZBleDriverEsp32::connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys)
 {
-    m_bondCentral = d;   // 单一上报目标（NimBLE 静态回调无法指明具体对象，只支持一个）
-    // 连接前回灌该设备的绑定密钥，重连时驱动据此恢复加密通道
+    // 按对端地址记录上报目标，支持多 Central 并发（避免单一目标误路由）
     std::string addr = d->deviceInfo().address();
+    m_bondCentralByAddr[addr] = d;
+    // 连接前回灌该设备的绑定密钥，重连时驱动据此恢复加密通道
     for (const auto &key : keys)
         m_bondStore[bondStoreKey(key.objType, addr)] = key;
     ble_addr_t peer;
@@ -675,7 +685,7 @@ void JZBleDriverEsp32::connectToDevice(JZBLEController *d, const std::vector<JZB
 }
 void JZBleDriverEsp32::disconnectFromDevice(JZBLEController *d)
 {
-    if (m_bondCentral == d) m_bondCentral = nullptr;
+    m_bondCentralByAddr.erase(d->deviceInfo().address());
     int h = getConnHandle(d->deviceInfo().address());
     if (h >= 0) ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
 }
@@ -684,7 +694,11 @@ bool JZBleDriverEsp32::isConnected(JZBLEController *d) { return getConnHandle(d-
 void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLEController *d)
 {
     int h = getConnHandle(addr);
-    if (h >= 0) ble_gattc_disc_all_svcs(h, onGattcSvcEvent, (void *)d);
+    if (h < 0) return;
+    // 清空该地址的旧 GATT 缓存，避免重连/重复发现时服务与特征重复累积。
+    // 后续 discoverCharacteristics 会重新填充 chars/handleMap，并重建 m_svcPtrCache。
+    m_gatt[addr] = ConnGatt();
+    ble_gattc_disc_all_svcs(h, onGattcSvcEvent, (void *)d);
 }
 std::vector<JZBluetoothUuid> JZBleDriverEsp32::services(const std::string &addr)
 {
@@ -933,6 +947,41 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
         }
         return BLE_ATT_ERR_UNLIKELY;
     }
+    else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_DSC && ctxt->om)
+    {
+        // CCCD 写入：记录对端订阅状态（notify / indicate）
+        uint16_t val = 0;
+        if (ctxt->om->om_len >= 1) val = ctxt->om->om_data[0];
+        if (ctxt->om->om_len >= 2) val |= (uint16_t)(ctxt->om->om_data[1] << 8);
+        // CCCD 归属 val_handle < attr_handle 且最接近的特征
+        uint16_t bestVal = 0; std::string bestKey;
+        for (auto &kv : self->m_periphCharMap)
+            if (kv.second.valHandle < attr_handle && kv.second.valHandle >= bestVal) {
+                bestVal = kv.second.valHandle; bestKey = kv.first;
+            }
+        if (!bestKey.empty()) {
+            auto &ci = self->m_periphCharMap[bestKey];
+            ci.subscribedNotify   = (val & 0x0001) != 0;
+            ci.subscribedIndicate = (val & 0x0002) != 0;
+        }
+        return 0;
+    }
+    else if (ctxt->op == BLE_GATT_ACCESS_OP_READ_DSC)
+    {
+        // CCCD 读回当前订阅状态
+        uint16_t bestVal = 0; std::string bestKey;
+        for (auto &kv : self->m_periphCharMap)
+            if (kv.second.valHandle < attr_handle && kv.second.valHandle >= bestVal) {
+                bestVal = kv.second.valHandle; bestKey = kv.first;
+            }
+        if (!bestKey.empty()) {
+            auto &ci = self->m_periphCharMap[bestKey];
+            uint16_t v = (ci.subscribedIndicate ? 0x0002 : 0) | (ci.subscribedNotify ? 0x0001 : 0);
+            int rc = os_mbuf_append(ctxt->om, &v, sizeof(v));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        return BLE_ATT_ERR_UNLIKELY;
+    }
     return BLE_ATT_ERR_UNLIKELY;
 }
 
@@ -940,6 +989,7 @@ void JZBleDriverEsp32::peripheralSendNotify(const std::string &charUuid, const s
 {
     auto it = m_periphCharMap.find(charUuid);
     if (it == m_periphCharMap.end()) return;
+    if (!it->second.subscribedNotify) return;   // 对端未订阅 notify，跳过
     sendPeriphData(m_periphConnHandle, it->second.valHandle, value, false);
 }
 
@@ -947,5 +997,6 @@ void JZBleDriverEsp32::peripheralSendIndicate(const std::string &charUuid, const
 {
     auto it = m_periphCharMap.find(charUuid);
     if (it == m_periphCharMap.end()) return;
+    if (!it->second.subscribedIndicate) return;  // 对端未订阅 indicate，跳过
     sendPeriphData(m_periphConnHandle, it->second.valHandle, value, true);
 }

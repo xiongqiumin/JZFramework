@@ -161,6 +161,8 @@ private:
         uint16_t valHandle = 0;
         int properties = 0;
         std::string value;
+        bool subscribedNotify = false;    // 对端已订阅 notify
+        bool subscribedIndicate = false;  // 对端已订阅 indicate
     };
 
     bool m_scanning = false;
@@ -184,6 +186,9 @@ private:
     std::map<int, std::string> m_connToAddr;                 // conn_handle -> addr
     std::map<std::string, ConnGatt> m_gatt;                 // addr -> GATT 缓存
     std::map<std::string, JZBLEService*> m_svcPtrCache; // "addr|svc" -> service 指针（通知路由用）
+
+    // 绑定密钥上报目标（按对端地址路由，支持多 Central 并发，避免单一目标误路由）
+    std::map<std::string, JZBLEController *> m_bondCentralByAddr;
 
     // 绑定密钥内存缓存（key = obj_type:addr）。驱动不持久化，仅本次会话使用；
     // 持久化由上层通过 BondKeyReporter 接收后自行处理，并在重连时经 connectToDevice(keys) 注入。

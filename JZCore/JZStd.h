@@ -91,6 +91,9 @@ void vec_append(std::vector<T>& dst, const std::vector<T>& src)
 template<typename T>
 std::vector<T> vec_mid(const std::vector<T>& vec, int start, int count = -1)
 {
+    if(count == 0)
+        return std::vector<T>();
+
     int n = static_cast<int>(vec.size());
     JZ_ASSERT(start >= 0 && start < n && (count >= 0 || count == -1));
 

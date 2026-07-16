@@ -112,9 +112,7 @@ protected:
 
     // 当前正在扫描的 Discovery Agent（参考 JZWifiDriverEsp32 的 m_scanTarget）
     JZObjectPointer m_scanAgent;
-    // 绑定密钥上报目标。NimBLE 的 store 回调是静态的，无法指明具体 Central 对象，
-    // 故只支持单个（最近一次 connect 的）Central，不做多对象路由。
-    JZBLEController *m_bondCentral = nullptr;
+    // 绑定密钥上报目标由各具体驱动自行维护（按对端地址路由，支持多 Central 并发）。
     static JZBleDriver *s_instance;
 };
 

@@ -2,6 +2,9 @@
 #include "JZApplication.h"
 #include "JZLog.h"
 #include "JZDebug.h"
+#include "JZPlatform.h"
+#include "JZTimer.h"
+#include <algorithm>
 
 #define MQTT_CMD_CONNECT 1
 #define MQTT_CMD_CONNACK 2
@@ -25,6 +28,8 @@ JZMqttServer::JZMqttServer(JZObject* parent)
     :JZNetObject(parent), sigAccept(this)
 {
     m_listen = INVALID_NET_HANDLE;
+    m_keepaliveTimer = new JZTimer(this);
+    connect(&m_keepaliveTimer->sigTimeout, this, &JZMqttServer::onKeepaliveTimer);
 }
 
 JZMqttServer::~JZMqttServer()
@@ -49,11 +54,16 @@ bool JZMqttServer::listen(int port)
     if (!m_listen)
         return false;
 
+    m_keepaliveTimer->start(1000);   // 每秒扫描一次心跳超时
     return true;
 }
 
 void JZMqttServer::close()
 {
+    if (m_keepaliveTimer)
+        m_keepaliveTimer->stop();
+    m_clientState.clear();
+
     if (m_listen)
     {
         closeConn(m_listen, false);
@@ -102,11 +112,40 @@ void JZMqttServer::onNetEvent(JZNetResEvent* event)
 void JZMqttServer::onClientDisconnect()
 {
     auto client = (JZMqttClient*) sender();
-    auto it = m_subcribeMap.begin();
-    while (it != m_subcribeMap.end())
+
+    // 异常断开: 发布遗嘱(LWT)
+    auto sit = m_clientState.find(client);
+    if (sit != m_clientState.end())
+    {
+        if (sit->second.hasWill)
+        {
+            const JZMqttPublishOpt& will = sit->second.will;
+            for (auto& kv : m_subcribeMap)
+            {
+                if (!topicMatch(kv.first, will.topic))
+                    continue;
+                for (auto& entry : kv.second)
+                {
+                    JZMqttPublishOpt opt = will;
+                    opt.qos = std::min<uint8_t>(will.qos, entry.qos);
+                    entry.client->publish(opt);
+                }
+            }
+        }
+        m_clientState.erase(sit);
+    }
+
+    // 清理该客户端的全部订阅
+    for (auto it = m_subcribeMap.begin(); it != m_subcribeMap.end(); )
     {
         auto& subscribers = it->second;
-        vec_removeAll(subscribers, client);
+        for (size_t i = 0; i < subscribers.size(); )
+        {
+            if (subscribers[i].client == client)
+                subscribers.erase(subscribers.begin() + i);
+            else
+                i++;
+        }
 
         if (subscribers.empty())
             it = m_subcribeMap.erase(it);
@@ -196,61 +235,206 @@ JZOptional<JZMqttServer::SubscribePacket> JZMqttServer::parseSubscribeMessage(ch
     return packet;
 }
 
+static std::vector<std::string> mqttSplitLevels(const std::string& s)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : s)
+    {
+        if (c == '/') { out.push_back(cur); cur.clear(); }
+        else cur += c;
+    }
+    out.push_back(cur);
+    return out;
+}
+
+bool JZMqttServer::topicMatch(const std::string& filter, const std::string& topic)
+{
+    auto f = mqttSplitLevels(filter);
+    auto t = mqttSplitLevels(topic);
+    for (size_t i = 0; i < f.size(); i++)
+    {
+        if (f[i] == "#")
+            return true;                       // 匹配剩余所有层级(含零层)
+        if (i >= t.size())
+            return false;
+        if (f[i] == "+")
+            continue;                          // 匹配单个层级
+        if (f[i] != t[i])
+            return false;
+    }
+    return f.size() == t.size();
+}
+
+void JZMqttServer::deliverRetained(JZMqttClient* client, const std::string& filter, uint8_t subQos)
+{
+    for (auto& kv : m_retainedMap)
+    {
+        if (!topicMatch(filter, kv.first))
+            continue;
+        JZMqttPublishOpt opt = kv.second;
+        opt.qos = std::min<uint8_t>(opt.qos, subQos);
+        opt.retain = true;                     // 投递给新订阅者时置 retain 标志
+        client->publish(opt);
+    }
+}
+
+JZOptional<JZMqttServer::ClientConnState> JZMqttServer::parseConnect(const JZByteArray& dgram)
+{
+    const uint8_t* p = (const uint8_t*)dgram.data();
+    int len = dgram.size();
+    int pos = 0;
+    if (len < 2 || (p[pos] & 0xF0) != 0x10)
+        return JZOptional<ClientConnState>::None();   // 非 CONNECT
+    pos++;
+
+    // 跳过剩余长度(varint)
+    while (pos < len && (p[pos] & 0x80)) pos++;
+    if (pos >= len) return JZOptional<ClientConnState>::None();
+    pos++;
+
+    // 协议名 "MQTT"
+    if (pos + 2 > len) return JZOptional<ClientConnState>::None();
+    uint16_t nameLen = (uint16_t(p[pos]) << 8) | p[pos + 1];
+    pos += 2;
+    if (pos + nameLen > len) return JZOptional<ClientConnState>::None();
+    std::string name((const char*)p + pos, nameLen);
+    pos += nameLen;
+    if (name != "MQTT")
+        return JZOptional<ClientConnState>::None();
+
+    // 协议级别(3/4/5)
+    if (pos + 1 > len) return JZOptional<ClientConnState>::None();
+    uint8_t level = p[pos++];
+    if (level != 3 && level != 4 && level != 5)
+        return JZOptional<ClientConnState>::None();
+
+    // 连接标志
+    if (pos + 1 > len) return JZOptional<ClientConnState>::None();
+    uint8_t flags = p[pos++];
+    bool willRetain = flags & 0x20;
+    uint8_t willQos = (flags >> 3) & 0x03;
+    bool willFlag = flags & 0x04;
+
+    // Keep Alive
+    if (pos + 2 > len) return JZOptional<ClientConnState>::None();
+    ClientConnState st;
+    st.keepAlive = (uint16_t(p[pos]) << 8) | p[pos + 1];
+    pos += 2;
+
+    auto readStr = [&](std::string& out) -> bool {
+        if (pos + 2 > len) return false;
+        uint16_t sl = (uint16_t(p[pos]) << 8) | p[pos + 1];
+        pos += 2;
+        if (pos + sl > len) return false;
+        out.assign((const char*)p + pos, sl);
+        pos += sl;
+        return true;
+    };
+
+    std::string clientId;
+    if (!readStr(clientId)) return JZOptional<ClientConnState>::None();
+    if (willFlag)
+    {
+        std::string wt, wm;
+        if (!readStr(wt) || !readStr(wm)) return JZOptional<ClientConnState>::None();
+        st.hasWill = true;
+        st.will.topic = wt;
+        st.will.payload = wm;
+        st.will.qos = willQos;
+        st.will.retain = willRetain;
+    }
+    if (flags & 0x80) { std::string s; if (!readStr(s)) return JZOptional<ClientConnState>::None(); }  // user
+    if (flags & 0x40) { std::string s; if (!readStr(s)) return JZOptional<ClientConnState>::None(); }  // pass
+
+    return st;
+}
+
+void JZMqttServer::onKeepaliveTimer()
+{
+    uint64_t now = (uint64_t)JZPlatform::getTickCountMs();
+    for (auto it = m_clientState.begin(); it != m_clientState.end(); )
+    {
+        auto& st = it->second;
+        if (st.keepAlive > 0 && now - st.lastActiveMs > (uint64_t)st.keepAlive * 1500)
+        {
+            JZMqttClient* c = it->first;
+            it++;
+            if (c->m_client != INVALID_NET_HANDLE)
+                closeConn(c->m_client, true);   // 心跳超时: 视为异常断开, 触发遗嘱
+        }
+        else
+        {
+            it++;
+        }
+    }
+}
+
 void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
 {
     int ev = event->event;
+
+    // 任意 MQTT 报文都刷新心跳计时
+    auto sit = m_clientState.find(client);
+    if (sit != m_clientState.end())
+        sit->second.lastActiveMs = JZPlatform::getTickCountMs();
+
+    if (ev == JZ_NET_EV_CLOSE)
+    {
+        if (client->m_client != INVALID_NET_HANDLE)
+        {
+            client->m_client = INVALID_NET_HANDLE;
+            client->closeInternal(false);   // 触发 sigDisconnect → 清理订阅 + 遗嘱
+        }
+        return;
+    }
+
     if (ev == JZ_NET_EV_MQTT_CMD)
     {
-        //auto JZMgServerPacket *packet = new
         std::shared_ptr<JZMgServerPacket> resp = std::make_shared<JZMgServerPacket>();
 
         JZMqttResPacket* packet = (JZMqttResPacket*)(event->extData.get());
         auto* msg = &packet->message;
         auto cmd = msg->cmd;
+        bool needClose = false;
+        bool noResponse = false;
         switch (cmd)
         {
             case MQTT_CMD_CONNECT:
             {
                 uint8_t rc = 0;
+                auto opt = parseConnect(msg->rawPacket);
+                if (!opt.isSome())
+                    rc = 1;                 // 不可接受的协议名/版本
+                else
+                    m_clientState[client] = opt.value();
+
                 resp->cmd = MQTT_CMD_CONNACK;
                 resp->flags = 0;
                 resp->len = 2;
                 resp->buffer = {0x00, rc};
+
+                if (rc != 0)
+                    needClose = true;       // 协议错误: 回 CONNACK 后断开
                 break;
             }
             case MQTT_CMD_PUBLISH:
             {
-                uint8_t qos = msg->qos;
-                if (qos == 1)
-                {
-                    resp->cmd = MQTT_CMD_PUBACK;
-                    resp->flags = 0;
-                    resp->len = 2;
-                    resp->buffer = {(uint8_t)(msg->id >> 8), (uint8_t)msg->id};
-                }
-                else if (qos == 2)
-                {
-                    resp->cmd = MQTT_CMD_PUBREC;
-                    resp->flags = 0;
-                    resp->len = 2;
-                    resp->buffer = {(uint8_t)(msg->id >> 8), (uint8_t)msg->id};
-                }
+                // 入站 QoS 确认(PUBACK/PUBREC)由 mongoose 自动回
+                // 消息转发在 JZ_NET_EV_MQTT_MSG 分支处理, 此处无需回包
+                noResponse = true;
                 break;
             }
             case MQTT_CMD_PUBREC:
             {
-                resp->cmd = MQTT_CMD_PUBREL;
-                resp->flags = 0x02;
-                resp->len = 2;
-                resp->buffer = {(uint8_t)(msg->id >> 8), (uint8_t)msg->id};
+                // 入站 PUBREC → mongoose 已自动回 PUBREL, 无需回包
+                noResponse = true;
                 break;
             }
             case MQTT_CMD_PUBREL:
             {
-                resp->cmd = MQTT_CMD_PUBCOMP;
-                resp->flags = 0;
-                resp->len = 2;
-                resp->buffer = {(uint8_t)(msg->id >> 8), (uint8_t)msg->id};
+                // 入站 PUBREL → mongoose 已自动回 PUBCOMP, 无需回包
+                noResponse = true;
                 break;
             }
             case MQTT_CMD_SUBSCRIBE:
@@ -270,10 +454,15 @@ void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
                     for (auto& top : subcribe.topics)
                     {
                         auto& subscribers = m_subcribeMap[top.topic];
-                        if (!vec_contains(subscribers, client))
+                        bool found = false;
+                        for (auto& e : subscribers)
                         {
-                            subscribers.push_back(client);
+                            if (e.client == client) { e.qos = top.qos; found = true; break; }
                         }
+                        if (!found)
+                            subscribers.push_back({client, top.qos});
+
+                        deliverRetained(client, top.topic, top.qos);
                     }
                 }
                 else
@@ -303,7 +492,13 @@ void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
                         if (it != m_subcribeMap.end())
                         {
                             auto& subscribers = it->second;
-                            vec_removeAll(subscribers, client);
+                            for (size_t i = 0; i < subscribers.size(); )
+                            {
+                                if (subscribers[i].client == client)
+                                    subscribers.erase(subscribers.begin() + i);
+                                else
+                                    i++;
+                            }
 
                             if (subscribers.empty())
                                 m_subcribeMap.erase(it);
@@ -324,33 +519,73 @@ void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
                 resp->len = 0;
                 break;
             }
+            case MQTT_CMD_DISCONNECT:
+            {
+                // 优雅断开: 不发布遗嘱
+                auto dit = m_clientState.find(client);
+                if (dit != m_clientState.end())
+                    dit->second.hasWill = false;
+                break;
+            }
+            case MQTT_CMD_PUBACK:
+            case MQTT_CMD_PUBCOMP:
+            {
+                // 订阅者对 broker 出站 QoS 消息的确认: 清除重传跟踪, 无需回包
+                client->onPubAck(msg->id);
+                noResponse = true;
+                break;
+            }
             default:
                 break;
         }
 
-        JZNetReqEvent* req = new JZNetReqEvent();
-        req->netCmd = JZNetReqEvent::Net_Write;
-        req->writeCmd = WriteMqttServerResp;
-        req->conn = client->m_client;
-        req->extData = resp;
-        postReqEvent(req);
+        if (!noResponse)
+        {
+            JZNetReqEvent* req = new JZNetReqEvent();
+            req->netCmd = JZNetReqEvent::Net_Write;
+            req->writeCmd = WriteMqttServerResp;
+            req->conn = client->m_client;
+            req->extData = resp;
+            postReqEvent(req);
+        }
+
+        if (needClose)
+            closeConn(client->m_client, true);
     }
     else if (ev == JZ_NET_EV_MQTT_MSG)
     {
         JZMqttResPacket* packet = (JZMqttResPacket*)(event->extData.get());
         auto* msg = &packet->message;
-        auto it = m_subcribeMap.find(msg->topic);
-        if (it != m_subcribeMap.end())
+
+        // 处理 retain: 缓存最新保留消息(空 payload 表示清除)
+        bool retain = (msg->rawPacket.size() > 0) && (msg->rawPacket[0] & 0x01);
+        if (retain)
         {
-            auto& subscribers = it->second;
-            for (int i = 0; i < (int)subscribers.size(); i++)
+            JZMqttPublishOpt ropt;
+            ropt.topic = msg->topic;
+            ropt.payload = msg->payload;
+            ropt.props = msg->props;
+            ropt.qos = msg->qos;
+            if (ropt.payload.empty())
+                m_retainedMap.erase(msg->topic);
+            else
+                m_retainedMap[msg->topic] = ropt;
+        }
+
+        // 转发给所有匹配的订阅者, 生效 QoS = min(发布QoS, 订阅QoS)
+        for (auto& kv : m_subcribeMap)
+        {
+            if (!topicMatch(kv.first, msg->topic))
+                continue;
+
+            for (auto& entry : kv.second)
             {
                 JZMqttPublishOpt opt;
                 opt.topic = msg->topic;
                 opt.payload = msg->payload;
-                opt.props = msg->props; 
-
-                subscribers[i]->publish(opt);
+                opt.props = msg->props;
+                opt.qos = std::min<uint8_t>(msg->qos, entry.qos);
+                entry.client->publish(opt);
             }
         }
     }

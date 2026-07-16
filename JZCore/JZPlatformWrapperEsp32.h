@@ -8,6 +8,10 @@ public:
 
     int64_t getTickCountNs() override;
 
+    // === 内存分配(优先 PSRAM) ===
+    void* malloc(size_t size) override;
+    void  free(void *ptr) override;
+
     // === 文件句柄操作 ===
     void* fopen(const char *filepath, const char *mode) override;
     int fclose(void *fp) override;

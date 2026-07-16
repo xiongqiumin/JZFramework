@@ -5,6 +5,7 @@
 #include <string>
 #include "JZGlobal.h"
 #include "JZMeta.h"
+#include "JZAllocator.h"
 
 class JZDebug;
 class JZByteArray
@@ -15,6 +16,14 @@ public:
     JZByteArray();
     JZByteArray(const char *buffer, int len);
     ~JZByteArray();
+
+    // 用户析构会抑制隐式 move, 这里显式默认 move 让 std::move 走指针转移而非深拷贝
+    // 同时显式默认 copy: 声明任一 move 操作会删除隐式 copy, 而框架中大量按值拷贝 JZByteArray,
+    // 必须保留 copy 语义(深拷贝)
+    JZByteArray(const JZByteArray&) = default;
+    JZByteArray& operator=(const JZByteArray&) = default;
+    JZByteArray(JZByteArray&&) noexcept = default;
+    JZByteArray& operator=(JZByteArray&&) noexcept = default;
 
     JZByteArray toHex() const;
     JZByteArray toBase64() const;
@@ -50,7 +59,9 @@ public:
     void clear();        
 
 private:
-    std::vector<char> m_vec;
+    typedef std::vector<char, JZAllocator<char>> JZByteVector;
+
+    JZByteVector m_vec;
 };
 JZ_DECLARE_METATYPE_INTERNAL(JZByteArray, JZMetaType::ByteArray);
 JZDebug operator<<(JZDebug d, const JZByteArray &bytes);

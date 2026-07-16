@@ -10,10 +10,9 @@ JZSerialPortDriver *JZSerialPortDriver::instance()
 
 void JZSerialPortDriver::setInstance(JZSerialPortDriver *inst)
 {
+    if(s_instance)
+    {
+        delete s_instance;
+    }
     s_instance = inst;
-}
-
-void JZSerialPortDriver::clearInstance()
-{
-    s_instance = nullptr;
 }

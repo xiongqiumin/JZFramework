@@ -1,12 +1,12 @@
 ﻿#include <string>
 #include <unordered_map>
-#include <fstream>
 #include <algorithm>
 #include <vector>
 #include <utility>
 #include "JZSettings.h"
 #include "JZStd.h"
 #include "JZDebug.h"
+#include "JZTextStream.h"
 
 // 构造函数
 JZSettings::JZSettings()
@@ -21,23 +21,25 @@ JZSettings::~JZSettings()
 // 打开加载INI文件，标准INI解析：支持;注释、空行、[Section]分组、key=value键值对
 bool JZSettings::open(const std::string& iniFilePath)
 {
-    std::ifstream ifs(iniFilePath, std::ios::in);
-    if (!ifs.is_open())
+    JZFile file;
+    if (!file.open(iniFilePath, "rt"))
     {
         m_isFileOpen = false;
         m_iniFilePath.clear();
         return false;
     }
 
+    JZTextStream stream(&file);
+
     m_iniFilePath = iniFilePath;
     m_isFileOpen = true;
     m_iniData.clear();
     std::string currentSection;
-    std::string line;
 
-    int lineNum = 0;  // 行号计数器，在 while 循环之前定义
-    while (std::getline(ifs, line))
+    int lineNum = 0;  // 行号计数器
+    while (!stream.atEnd())
     {
+        std::string line = stream.readLine();
         lineNum++;  // 每读取一行，行号+1
 
         // 去除首尾空格和制表符
@@ -95,7 +97,7 @@ bool JZSettings::open(const std::string& iniFilePath)
         m_iniData[fullKey] = std::string(val);
     }
 
-    ifs.close();
+    file.close();
     return true;
 }
 
@@ -305,9 +307,12 @@ void JZSettings::sync()
         return;
 
     // 清空文件内容，重新写入标准INI格式
-    std::ofstream ofs(m_iniFilePath, std::ios::out | std::ios::trunc);
-    if (!ofs.is_open())
+    JZFile file;
+    if (!file.open(m_iniFilePath, "wb"))
         return;
+
+    JZTextStream stream(&file);
+    stream.setCodec(JZTextStream::UTF8); // 默认 UTF8 编码，不带 BOM
 
     std::string currentWriteGroup;
     // 遍历所有内存中的配置项，写入标准INI格式
@@ -326,13 +331,12 @@ void JZSettings::sync()
             currentWriteGroup = group;
             if (!group.empty())
             {
-                ofs << "\n[" << group << "]\n";
+                stream << "\n[" << group << "]\n";
             }
         }
         // 写入 键=值 标准格式
-        ofs << key << "=" << value << "\n";
+        stream << key << "=" << value << "\n";
     }
 
-    ofs.flush(); // 强制刷入磁盘
-    ofs.close();
+    file.close();
 }

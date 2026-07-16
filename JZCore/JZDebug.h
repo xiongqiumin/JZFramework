@@ -7,14 +7,6 @@
 #include <memory>
 #include "JZLog.h"
 
-namespace JZ 
-{
-enum EndFlag
-{
-    endl,
-};
-}
-
 class JZDebug
 {
 public:

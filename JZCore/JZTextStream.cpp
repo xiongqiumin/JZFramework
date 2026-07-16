@@ -35,7 +35,6 @@ void JZTextStream::skipUTF8BOM()
     size_t readCount = bom.size();
 
     bool isUTF8BOM = (readCount == 3) && (bom[0] == (char)0xEF) && (bom[1] == (char)0xBB) && (bom[2] == (char)0xBF);
-
     if (!isUTF8BOM)
     {
         m_file->seek(0, SEEK_SET);
@@ -141,4 +140,13 @@ JZTextStream &JZTextStream::operator<<(const std::string &str)
         m_file->write(str.data(), (int)str.size());
     }
     return *this;
+}
+
+JZTextStream& JZTextStream::operator<<(JZ::EndFlag endl)
+{
+    if (!m_file)
+        return *this;
+
+    writeBomIfNeeded();
+    m_file->write("\n", 1);
 }

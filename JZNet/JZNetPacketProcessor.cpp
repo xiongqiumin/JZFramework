@@ -1,4 +1,5 @@
 ﻿#include <assert.h>
+#include <cstring>
 #include "JZNetPacketProcessor.h"
 #include "JZLog.h"
 #include "JZCrypto.h"

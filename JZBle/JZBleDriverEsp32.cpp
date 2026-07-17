@@ -464,10 +464,15 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), m_ownAddrType(BLE_OWN_ADDR_PUBLIC)
 {
     m_periphGatt = new PeriphGatt();
-    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-    esp_bt_controller_config_t c = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    esp_bt_controller_init(&c); esp_bt_controller_enable(ESP_BT_MODE_BLE);
-    nimble_port_init();
+
+    // nimble_port_init() 内部会处理 controller mem_release + init + enable + host init
+    // 不要手动调 esp_bt_controller_init/enable，否则和 nimble_port_init 内部重复初始化导致失败
+    esp_err_t ret = nimble_port_init();
+    if (ret != ESP_OK) {
+        printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
+        return;
+    }
+
     ble_hs_cfg.reset_cb = onHostReset;
     ble_hs_cfg.sync_cb = onHostSync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;

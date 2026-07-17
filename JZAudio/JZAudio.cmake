@@ -53,3 +53,4 @@ convert_to_abs_paths(JZAudio_SOURCES)
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZAudio_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/detail")

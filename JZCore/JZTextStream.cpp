@@ -149,4 +149,5 @@ JZTextStream& JZTextStream::operator<<(JZ::EndFlag endl)
 
     writeBomIfNeeded();
     m_file->write("\n", 1);
+    return *this;
 }

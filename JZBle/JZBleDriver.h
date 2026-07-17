@@ -24,6 +24,28 @@ public:
     static JZBleDriver *instance();
     static void setInstance(JZBleDriver *inst);
 
+    // === 绑定密钥结构体（必须在 connectToDevice 声明之前定义）===
+    // 配对完成后密钥通过 sigBondKeyReported 信号上报（跨线程经 runOnObject 切到 Central 线程）；
+    // Central 重连加密所需的密钥由上层在调用 connectToDevice(keys) 时一并传入；
+    // Peripheral 重连加密所需的密钥由上层在连接建立前通过 setBondKey 预灌。
+    // 驱动自身不做任何 Flash/文件持久化。
+    struct JZBleBondKey {
+        std::string peerAddr;        // "xx:xx:xx:xx:xx:xx"
+        uint8_t     peerAddrType = 0;// BLE_ADDR_PUBLIC / BLE_ADDR_RANDOM
+        uint8_t     objType = 0;     // BLE_STORE_OBJ_TYPE_PEER_SEC / OUR_SEC，回灌时据此定位
+        uint8_t     keySize = 0;
+        uint16_t    ediv = 0;
+        uint64_t    randNum = 0;
+        uint8_t     ltk[16] = {0};
+        bool        ltkPresent = false;
+        uint8_t     irk[16] = {0};
+        bool        irkPresent = false;
+        uint8_t     csrk[16] = {0};
+        bool        csrkPresent = false;
+        bool        authenticated = false;
+        bool        secureConnections = false;
+    };
+
     // === Central 扫描（参考 JZWifiDriverEsp32，由发起扫描的 Agent 自行传入自身）===
     virtual void startScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
     virtual void stopScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
@@ -62,28 +84,6 @@ public:
     virtual void stopAdvertising() = 0;
     virtual void peripheralSendNotify(const std::string& charUuid, const std::string& value) = 0;
     virtual void peripheralSendIndicate(const std::string& charUuid, const std::string& value) = 0;
-
-    // === 绑定密钥透传（驱动不持久化，改由上层负责存储/恢复）===
-    // 配对完成后密钥通过 sigBondKeyReported 信号上报（跨线程经 runOnObject 切到 Central 线程）；
-    // Central 重连加密所需的密钥由上层在调用 connectToDevice(keys) 时一并传入；
-    // Peripheral 重连加密所需的密钥由上层在连接建立前通过 setBondKey 预灌。
-    // 驱动自身不做任何 Flash/文件持久化。
-    struct JZBleBondKey {
-        std::string peerAddr;        // "xx:xx:xx:xx:xx:xx"
-        uint8_t     peerAddrType = 0;// BLE_ADDR_PUBLIC / BLE_ADDR_RANDOM
-        uint8_t     objType = 0;     // BLE_STORE_OBJ_TYPE_PEER_SEC / OUR_SEC，回灌时据此定位
-        uint8_t     keySize = 0;
-        uint16_t    ediv = 0;
-        uint64_t    randNum = 0;
-        uint8_t     ltk[16] = {0};
-        bool        ltkPresent = false;
-        uint8_t     irk[16] = {0};
-        bool        irkPresent = false;
-        uint8_t     csrk[16] = {0};
-        bool        csrkPresent = false;
-        bool        authenticated = false;
-        bool        secureConnections = false;
-    };
 
     // 主动发起配对（配对完成后密钥通过 sigBondKeyReported 信号上报）
     virtual void requestPairing(const std::string& addr) { (void)addr; }

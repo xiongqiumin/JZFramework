@@ -4,8 +4,8 @@
 #include <vector>
 #include "JZGlobal.h"
 #include "JZAudioDeviceInfo.h"
-#include "JZAudioInputImpl.h"
-#include "JZAudioOutputImpl.h"
+#include "detail/JZAudioInputImpl.h"
+#include "detail/JZAudioOutputImpl.h"
 
 class JZAudioDriver
 {

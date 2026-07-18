@@ -74,6 +74,15 @@ void JZDriver::init()
 #endif
 #endif // HAS_JZSerialPort
 
+#ifdef HAS_JZAudio
+#include "JZAudio/JZAudioDriver.h"
+#if defined(_WIN32)
+#include "JZAudio/detail/windows/JZAudioDriverWindows.h"
+#elif defined(__linux__)
+#include "JZAudio/detail/linux/JZAudioDriverLinux.h"
+#endif
+#endif // HAS_JZAudio
+
 
 void JZDriver::init()
 {
@@ -97,6 +106,14 @@ void JZDriver::init()
     JZSerialPortDriver::setInstance(new JZSerialDriverWindows());
 #elif defined(__linux__)
     JZSerialPortDriver::setInstance(new JZSerialDriverLinux());
+#endif
+#endif
+
+#ifdef HAS_JZAudio
+#if defined(_WIN32)
+    JZAudioDriver::setInstance(new JZAudioDriverWindows());
+#elif defined(__linux__)
+    JZAudioDriver::setInstance(new JZAudioDriverLinux());
 #endif
 #endif
 }

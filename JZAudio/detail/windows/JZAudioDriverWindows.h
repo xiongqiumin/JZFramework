@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include <vector>
-#include "detail/JZAudioDriver.h"
+#include "JZAudioDriver.h"
 
 class JZAudioDriverWindows : public JZAudioDriver
 {

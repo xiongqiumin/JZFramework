@@ -4,6 +4,7 @@
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZBluetoothUuid.h"
+#include "JZByteArray.h"
 #include <string>
 #include <vector>
 
@@ -34,8 +35,8 @@ public:
     void stopAdvertising();
     bool isAdvertising() const;
 
-    // 从机数据推送
-    void sendNotification(const JZBluetoothUuid &charUuid, const std::string &value);
+    // 从机数据推送（value 为二进制载荷，使用 JZByteArray 以支持任意字节）
+    void sendNotification(const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
     int state() const;
     int error() const;
@@ -44,14 +45,15 @@ public:
 jz_signals:
     JZSignal<> sigClientConnected;
     JZSignal<> sigClientDisconnected;
-    JZSignal<const std::string&, const std::string&> sigCharacteristicWritten;
+    // (写入数据的特征 UUID, 写入的二进制值)
+    JZSignal<const JZBluetoothUuid&, const JZByteArray&> sigCharacteristicWritten;
 
 protected:
     JZBleDriver *getDriver();
 
     static void onClientConnected(JZBLEPeripheral *self);
     static void onClientDisconnected(JZBLEPeripheral *self);
-    static void onCharWritten(JZBLEPeripheral *self, const char *charUuid, const char *value);
+    static void onCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
     State     m_state = Unconnected;
     ErrorCode m_error = NoError;

@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
+#include "JZDebug.h"
 
 JZPlatformWrapperEsp32::~JZPlatformWrapperEsp32()
 {
@@ -21,13 +22,19 @@ int64_t JZPlatformWrapperEsp32::getTickCountNs()
 // ==================== 内存分配 ====================
 void* JZPlatformWrapperEsp32::malloc(size_t size)
 {
+// 在分配函数中替换原代码
+void* ptr = nullptr;
 #ifdef CONFIG_SPIRAM
-    // 优先PSRAM，PSRAM不足自动分配内部SRAM，一次调用完成
-    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_INTERNAL);
+    ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);    
 #else
-    // 无PSRAM硬件/未开启，仅内部内存
-    return heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    // 无 PSRAM 硬件或未开启，只使用内部内存
+    ptr = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
 #endif
+
+    if (ptr == nullptr) {
+        jzError("Allocation failed for size %d bytes", (int)size);
+    }
+    return ptr;
 }
 
 void JZPlatformWrapperEsp32::free(void *ptr)

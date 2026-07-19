@@ -19,10 +19,9 @@ void JZBLEPeripheral::onClientDisconnected(JZBLEPeripheral *self)
         self->sigClientDisconnected.emit();
     });
 }
-void JZBLEPeripheral::onCharWritten(JZBLEPeripheral *self, const char *charUuid, const char *value)
+void JZBLEPeripheral::onCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    std::string c(charUuid), v(value ? value : "");
-    runOnObject(self, [self, c, v]() { self->sigCharacteristicWritten.emit(c, v); });
+    runOnObject(self, [self, charUuid, value]() { self->sigCharacteristicWritten.emit(charUuid, value); });
 }
 
 // ==================== JZBLEPeripheral ====================
@@ -74,7 +73,7 @@ void JZBLEPeripheral::stopAdvertising()
 
 bool JZBLEPeripheral::isAdvertising() const { return m_advertising; }
 
-void JZBLEPeripheral::sendNotification(const JZBluetoothUuid &charUuid, const std::string &value)
+void JZBLEPeripheral::sendNotification(const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    getDriver()->peripheralSendNotify(charUuid.toString(), value);
+    getDriver()->peripheralSendNotify(charUuid, value);
 }

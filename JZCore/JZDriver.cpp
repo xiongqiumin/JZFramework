@@ -33,7 +33,7 @@ void JZDriver::init()
     JZPlatform::setInstance(new JZPlatformWrapperEsp32());
 
 #ifdef HAS_JZBle
-    JZBleDriver::setInstance(new JZBleDriverEsp32());
+    JZBleDriver::setInstance(new JZBleDriverEsp32());    
 #endif
 
 #ifdef HAS_JZWifi

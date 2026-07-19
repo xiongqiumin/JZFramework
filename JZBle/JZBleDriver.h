@@ -9,6 +9,7 @@
 #include "JZBluetoothUuid.h"
 #include "JZLowEnergyCharacteristic.h"
 #include "JZLowEnergyDescriptor.h"
+#include "JZByteArray.h"
 
 class JZBLEPeripheral;
 class JZBLEController;
@@ -45,7 +46,7 @@ public:
         bool        authenticated = false;
         bool        secureConnections = false;
     };
-
+    
     // === Central 扫描（参考 JZWifiDriverEsp32，由发起扫描的 Agent 自行传入自身）===
     virtual void startScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
     virtual void stopScan(JZBLEDeviceDiscoveryAgent *agent) = 0;
@@ -66,7 +67,7 @@ public:
     virtual void readCharacteristic(const std::string& address, const std::string& serviceUuid,
                                      const std::string& charUuid, JZBLEService *d) = 0;
     virtual void writeCharacteristic(const std::string& address, const std::string& serviceUuid,
-                                      const std::string& charUuid, const std::string& value,
+                                      const std::string& charUuid, const JZByteArray& value,
                                       bool writeNoResponse, JZBLEService *d) = 0;
     virtual void enableNotification(const std::string& address, const std::string& serviceUuid,
                                      const std::string& charUuid, bool enable, JZBLEService *d) = 0;
@@ -75,15 +76,15 @@ public:
                                  JZBLEService *d) = 0;
     virtual void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                                   const std::string& charUuid, const std::string& descUuid,
-                                  const std::string& value, JZBLEService *d) = 0;
+                                  const JZByteArray& value, JZBLEService *d) = 0;
 
     // === Peripheral ===
     virtual void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) {}
     virtual void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
                                    JZBLEPeripheral *d) = 0;
     virtual void stopAdvertising() = 0;
-    virtual void peripheralSendNotify(const std::string& charUuid, const std::string& value) = 0;
-    virtual void peripheralSendIndicate(const std::string& charUuid, const std::string& value) = 0;
+    virtual void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) = 0;
+    virtual void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) = 0;
 
     // 主动发起配对（配对完成后密钥通过 sigBondKeyReported 信号上报）
     virtual void requestPairing(const std::string& addr) { (void)addr; }
@@ -105,7 +106,7 @@ public:
 
     static void peripheralOnClientConnected(JZBLEPeripheral *self);
     static void peripheralOnClientDisconnected(JZBLEPeripheral *self);
-    static void peripheralOnCharWritten(JZBLEPeripheral *self, const char *charUuid, const char *value);
+    static void peripheralOnCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
 protected:
     JZ_DISABLE_COPY(JZBleDriver)

@@ -20,6 +20,7 @@
 #include "JZSignal.h"
 #include "JZDebug.h"
 #include "JZTimer.h"
+#include "JZByteArray.h"
 
 // 自定义服务/特征 UUID
 static JZBluetoothUuid SVC_UUID(static_cast<uint32_t>(0xFFF0));
@@ -36,13 +37,12 @@ public:
 
         // 1. 创建模拟驱动
         m_driver = new JZBleDriverSimulator("127.0.0.1", 19123);
-        JZBleDriver::setInstance(m_driver);
 
         // 2. 创建 Peripheral
         m_periph = new JZBLEPeripheral(this);
         connect(&m_periph->sigClientConnected,      [this]() { onConnected(); });
         connect(&m_periph->sigClientDisconnected,   [this]() { onDisconnected(); });
-        connect(&m_periph->sigCharacteristicWritten, [this](const std::string &uuid, const std::string &val) {
+        connect(&m_periph->sigCharacteristicWritten, [this](const JZBluetoothUuid &uuid, const JZByteArray &val) {
             onCharWritten(uuid, val);
         });
 
@@ -81,10 +81,10 @@ private:
         m_periph->startAdvertising("JZ_TestPeriph");
     }
 
-    void onCharWritten(const std::string &uuid, const std::string &val)
+    void onCharWritten(const JZBluetoothUuid &uuid, const JZByteArray &val)
     {
-        printf("[事件] 收到写入: uuid=%s  value=\"%s\" (%zu bytes)\n",
-               uuid.c_str(), val.c_str(), val.size());
+        printf("[事件] 收到写入: uuid=%s  value=\"%s\" (%d bytes)\n",
+               uuid.toString().c_str(), str_fromUtf8(val).c_str(), val.size());
     }
 
     void onTimer()
@@ -94,10 +94,10 @@ private:
         m_counter++;
         char buf[64];
         snprintf(buf, sizeof(buf), "tick-%d", m_counter);
-        std::string val(buf);
+        JZByteArray val = str_toUtf8(buf);
 
         m_periph->sendNotification(CHR_UUID, val);
-        printf("[通知] sendNotification: \"%s\"\n", val.c_str());
+        printf("[通知] sendNotification: \"%s\"\n", str_fromUtf8(val).c_str());
     }
 
     JZBleDriverSimulator *m_driver = nullptr;

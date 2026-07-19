@@ -10,6 +10,7 @@
 #include "JZApplication.h"
 #include "JZLog.h"
 #include "JZTimer.h"
+#include "JZByteArray.h"
 
 static const JZBluetoothUuid PROV_SVC ("0000fff0-0000-1000-8000-00805f9b34fb");
 static const JZBluetoothUuid CHAR_SSID("0000fff1-0000-1000-8000-00805f9b34fb");
@@ -69,23 +70,23 @@ private:
         m_password.clear();
     }
 
-    void onCharWritten(const std::string &charUuid, const std::string &value)
+    void onCharWritten(const JZBluetoothUuid &charUuid, const JZByteArray &value)
     {
-        LOG_I("[Peripheral] Write Char:%s, len:%zu", charUuid.c_str(), value.size());
+        LOG_I("[Peripheral] Write Char:%s, len:%d", charUuid.toString().c_str(), value.size());
         if (value.size() > 64)
         {
             LOG_W("[Peripheral] recv data too long, drop");
             return;
         }
 
-        if (charUuid == CHAR_SSID.toString())
+        if (charUuid == CHAR_SSID)
         {
-            m_ssid = value;
+            m_ssid = str_fromUtf8(value);
             LOG_I("[Peripheral] Recv SSID: %s", m_ssid.c_str());
         }
-        else if (charUuid == CHAR_PWD.toString())
+        else if (charUuid == CHAR_PWD)
         {
-            m_password = value;
+            m_password = str_fromUtf8(value);
             if (m_ssid.empty())
             {
                 LOG_E("[Peripheral] Password received before SSID, invalid order");
@@ -96,7 +97,7 @@ private:
 
             // 模拟 WiFi 连接成功，通知 Central
             LOG_I("[Peripheral] (simulated) WiFi connected!");
-            m_controller->sendNotification(CHAR_STAT, "connected");
+            m_controller->sendNotification(CHAR_STAT, str_toUtf8("connected"));
             sigProvisionDone.emit();
         }
     }
@@ -210,17 +211,17 @@ private:
     {
         if (m_step != Step::WritingSsid) return;
         LOG_I("[Central] writing SSID...");
-        m_service->writeCharacteristic(CHAR_SSID, m_ssid, false);
+        m_service->writeCharacteristic(CHAR_SSID, str_toUtf8(m_ssid), false);
     }
 
-    void onCharWritten(const JZLowEnergyCharacteristic &ch, const std::string &value)
+    void onCharWritten(const JZLowEnergyCharacteristic &ch, const JZByteArray &value)
     {
         (void)ch; (void)value;
         if (m_step == Step::WritingSsid)
         {
             m_step = Step::WritingPassword;
             LOG_I("[Central] writing password...");
-            m_service->writeCharacteristic(CHAR_PWD, m_password, false);
+            m_service->writeCharacteristic(CHAR_PWD, str_toUtf8(m_password), false);
         }
         else if (m_step == Step::WritingPassword)
         {
@@ -229,11 +230,11 @@ private:
         }
     }
 
-    void onNotify(const JZLowEnergyCharacteristic &ch, const std::string &value)
+    void onNotify(const JZLowEnergyCharacteristic &ch, const JZByteArray &value)
     {
         (void)ch;
-        LOG_I("[Central] recv status notify: %s", value.c_str());
-        if (value == "connected" && m_step == Step::WaitingStatus)
+        LOG_I("[Central] recv status notify: %s", str_fromUtf8(value).c_str());
+        if (str_fromUtf8(value) == "connected" && m_step == Step::WaitingStatus)
         {
             LOG_I("========================================");
             LOG_I("  Self-provision complete!");
@@ -267,7 +268,6 @@ JZ_OBJECT_IMPL(ProvCentral, JZObject)
 int main()
 {
     JZApplication app;
-    JZBleDriver::setInstance(new JZBleDriverEsp32());
 
     // Peripheral: 等待被配网
     ProvPeripheral *phr = new ProvPeripheral();

@@ -12,6 +12,7 @@ JZBleDriver *JZBleDriver::instance()
     JZ_ASSERT_X(s_instance,"JZBleDriver not init");
     return s_instance; 
 }
+
 void JZBleDriver::setInstance(JZBleDriver *inst) 
 { 
     if (s_instance && s_instance != inst) 
@@ -47,5 +48,5 @@ void JZBleDriver::peripheralOnClientConnected(JZBLEPeripheral *self)
 void JZBleDriver::peripheralOnClientDisconnected(JZBLEPeripheral *self)
 { JZBLEPeripheral::onClientDisconnected(self); }
 
-void JZBleDriver::peripheralOnCharWritten(JZBLEPeripheral *self, const char *charUuid, const char *value)
+void JZBleDriver::peripheralOnCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value)
 { JZBLEPeripheral::onCharWritten(self, charUuid, value); }

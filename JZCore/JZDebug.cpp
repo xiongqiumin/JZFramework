@@ -213,7 +213,7 @@ void jzDebug(const char *format, ...)
     va_start(ap, format);
     string msg = vformat(format, ap);
     va_end(ap);
-    jzDebug().noquote() << msg;
+    jzDebug() << msg.c_str();
 }
 
 void jzInfo(const char *format, ...)
@@ -222,7 +222,7 @@ void jzInfo(const char *format, ...)
     va_start(ap, format);
     string msg = vformat(format, ap);
     va_end(ap);
-    jzInfo().noquote() << msg;
+    jzInfo() << msg.c_str();
 }
 
 void jzWarning(const char *format, ...)
@@ -231,7 +231,7 @@ void jzWarning(const char *format, ...)
     va_start(ap, format);
     string msg = vformat(format, ap);
     va_end(ap);
-    jzWarning().noquote() << msg;
+    jzWarning() << msg.c_str();
 }
 
 void jzError(const char *format, ...)
@@ -240,5 +240,5 @@ void jzError(const char *format, ...)
     va_start(ap, format);
     string msg = vformat(format, ap);
     va_end(ap);
-    jzError().noquote() << msg;
+    jzError() << msg.c_str();
 }

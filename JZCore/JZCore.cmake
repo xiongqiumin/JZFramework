@@ -96,8 +96,43 @@ if(ESP_PLATFORM)
     list(APPEND JZCORE_SOURCES JZPlatformWrapperEsp32.cpp)
 endif()
 
+# ---- base64 (libbase64, 直接源码引用, 非独立库) ----
+set(BASE64_DIR "${CMAKE_CURRENT_LIST_DIR}/base64")
+list(APPEND JZCORE_SOURCES
+    ${BASE64_DIR}/lib/lib.c
+    ${BASE64_DIR}/lib/codec_choose.c
+    ${BASE64_DIR}/lib/tables/tables.c
+    ${BASE64_DIR}/lib/arch/generic/codec.c
+    ${BASE64_DIR}/lib/arch/ssse3/codec.c
+    ${BASE64_DIR}/lib/arch/sse41/codec.c
+    ${BASE64_DIR}/lib/arch/sse42/codec.c
+    ${BASE64_DIR}/lib/arch/avx/codec.c
+    ${BASE64_DIR}/lib/arch/avx2/codec.c
+    ${BASE64_DIR}/lib/arch/avx512/codec.c
+    ${BASE64_DIR}/lib/arch/neon32/codec.c
+    ${BASE64_DIR}/lib/arch/neon64/codec.c
+)
+
 convert_to_abs_paths(JZCORE_SOURCES)
 
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZCORE_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${BASE64_DIR}/include")
+target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${BASE64_DIR}/lib")
+target_compile_definitions(${JZ_MODULE_TARGET} PRIVATE BASE64_STATIC_DEFINE _SCL_SECURE_NO_WARNINGS)
+
+# base64 SIMD 逐文件编译选项 (与原库 CMake 一致)
+if(MSVC)
+    set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c   PROPERTIES COMPILE_FLAGS "/arch:AVX")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c  PROPERTIES COMPILE_FLAGS "/arch:AVX2")
+elseif(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/ssse3/codec.c  PROPERTIES COMPILE_FLAGS "-mssse3")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/sse41/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.1")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/sse42/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.2")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c    PROPERTIES COMPILE_FLAGS "-mavx")
+    set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c   PROPERTIES COMPILE_FLAGS "-mavx2")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/neon32/codec.c PROPERTIES COMPILE_FLAGS "-mfpu=neon")
+    endif()
+endif()

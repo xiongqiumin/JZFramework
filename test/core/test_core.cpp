@@ -516,55 +516,7 @@ static void benchmark_audio_base64()
         srcPcm[i * 2 + 1] = (sample >> 8) & 0xFF;
     }
 
-    const int iterations = 1000;
-
-    // Benchmark: memcpy 拷贝
-    {
-        JZByteArray dst;
-        dst.resize(totalBytes);
-        JZElapsedTimer timer;
-        timer.start();
-        for (int i = 0; i < iterations; ++i) {
-            memcpy(dst.data(), srcPcm.data(), totalBytes);
-        }
-        int64_t elapsedNs = timer.nsecsElapsed();
-        double avgUs = elapsedNs / 1000.0 / iterations;
-        printf("[memcpy]        %d iterations, total: %lld ns, avg: %.2f us\n",
-               iterations, (long long)elapsedNs, avgUs);
-    }
-
-    // Benchmark: JZByteArray::toBase64
-    {
-        JZElapsedTimer timer;
-        timer.start();
-        JZByteArray b64Result;
-        for (int i = 0; i < iterations; ++i) {
-            b64Result = srcPcm.toBase64();
-        }
-        int64_t elapsedNs = timer.nsecsElapsed();
-        double avgUs = elapsedNs / 1000.0 / iterations;
-        printf("[toBase64]      %d iterations, total: %lld ns, avg: %.2f us (output: %d bytes)\n",
-               iterations, (long long)elapsedNs, avgUs, b64Result.size());
-    }
-
-    // Benchmark: JZByteArray::fromBase64
-    {
-        JZByteArray b64Data = srcPcm.toBase64(); // 先编码一次
-        JZElapsedTimer timer;
-        timer.start();
-        JZByteArray decoded;
-        for (int i = 0; i < iterations; ++i) {
-            decoded = JZByteArray::fromBase64(b64Data);
-        }
-        int64_t elapsedNs = timer.nsecsElapsed();
-        double avgUs = elapsedNs / 1000.0 / iterations;
-        printf("[fromBase64]    %d iterations, total: %lld ns, avg: %.2f us (output: %d bytes)\n",
-               iterations, (long long)elapsedNs, avgUs, decoded.size());
-    }
-
-    printf("======================================\n\n");
-
-    // 自适应 benchmark 演示: 目标总耗时 100ms, 迭代数自动推算
+    // 自适应 benchmark: 目标总耗时 100ms, 迭代数自动推算 (含预热, 报稳态值)
     printf("---------- Adaptive Benchmark (JZBenchmark) ----------\n");
     JZBenchmark bm(/*targetMs=*/100);
     JZByteArray b64Data = srcPcm.toBase64(); // 复用编码数据
@@ -581,9 +533,53 @@ static void benchmark_audio_base64()
     printf("-----------------------------------------------------\n\n");
 }
 
+static void benchmark_base64_512()
+{
+    // 1 秒@16kHz: 共 16000 个 short (32000 字节), 按 512 short (1024 字节) 分块
+    const int totalShorts = 16000;
+    const int chunkShorts = 512;
+    const int stepBytes   = chunkShorts * 2;   // 每块 1024 字节
+    const int totalBytes  = totalShorts * 2;   // 32000 字节
+
+    printf("\n========== Base64 Loop Benchmark (for i<16000 step 512, toBase64) ==========\n");
+
+    // 生成 1 秒音频数据 (伪随机 short)
+    JZByteArray src;
+    src.resize(totalBytes);
+    for (int i = 0; i < totalShorts; ++i) {
+        short v = (short)((i * 31 + 7) & 0xFFFF);
+        src[i * 2]     = (char)(v & 0xFF);
+        src[i * 2 + 1] = (char)((v >> 8) & 0xFF);
+    }
+
+    JZByteArray dst, decoded;
+
+    // 预编码各块, 供解码循环使用
+    std::vector<JZByteArray> b64Chunks;
+    b64Chunks.reserve(totalShorts / chunkShorts);
+    for (int i = 0; i < totalShorts; i += chunkShorts)
+        b64Chunks.push_back(src.mid(i * 2, stepBytes).toBase64());
+
+    // 测试这两个循环本身: 每次对 512-short 块编/解码, 跑满约 1 秒
+    JZBenchmark bm(/*targetMs=*/1000);
+    JZ_BENCH(bm, "toBase64 loop(16000/512)", [&]() {
+        for (int i = 0; i < totalShorts; i += chunkShorts) {
+            dst = src.mid(i * 2, stepBytes).toBase64();
+        }
+    });
+    JZ_BENCH(bm, "fromBase64 loop(16000/512)", [&]() {
+        for (size_t k = 0; k < b64Chunks.size(); ++k) {
+            decoded = JZByteArray::fromBase64(b64Chunks[k]);
+        }
+    });
+
+    printf("============================================================================\n\n");
+}
+
 int main(int argc,char *argv[])
 {
     benchmark_audio_base64();
+    benchmark_base64_512();
 
     JZApplication app;
 

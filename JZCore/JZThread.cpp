@@ -558,26 +558,16 @@ void JZTaskThread::run()
     m_task();
 }
 
-void runOnThread(JZThread* thread, const std::function<void()> &func)
+void runOnThread(JZThread* thread, const std::function<void()>& func)
 {
     JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
 
     auto callback = new JZSlotCallback<void>();
     callback->lambdaFunc = func;
     event->callback = callback;
-    jzApp->postEvent(thread, event);
-}
 
-void runOnThread(JZThread* thread, JZObject* recv, const std::function<void()> &func)
-{
-    JZAsyncSignalEvent* event = new JZAsyncSignalEvent();
-    event->hasRecv = true;
-    event->recv = recv->guardPointer();
-
-    auto callback = new JZSlotCallback<void>();
-    callback->lambdaFunc = func;
-    event->callback = callback;
-    jzApp->postEvent(thread, event);
+    JZEventInfo e(thread, event);
+    thread->postEvent(e);
 }
 
 void runOnObject(JZObject* recv, const std::function<void()> &func)

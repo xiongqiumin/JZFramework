@@ -35,7 +35,7 @@ public:
     }
 
     ~JZCoBleTest() {
-        jzco_waitAllCoroutine();
+        jzco_waitAllCoroutines();
     }
 
     void centralCoroutine() {
@@ -124,25 +124,12 @@ protected:
     string m_addr;
 };
 
-int main(int argc, char *argv[])
+int test_coBle()
 {
     JZApplication app;
     jzco_init();
 
     string addr;
-    JZCommandLineParser parser;
-    parser.setDescription("协程式 BLE 测试");
-    parser.addArgument("addr", &addr, true);   // 必选：扫描后用于匹配要连接的设备地址
-    if (!parser.parse(argc, argv)) {
-        parser.printHelp();
-        return -1;
-    }
-
-    if (!isValidBleAddress(addr)) {
-        jzDebug() << "非法的 BLE 地址:" << addr;
-        return -1;
-    }
-
     JZCoBleTest test(addr);
 
     return app.exec();

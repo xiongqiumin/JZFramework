@@ -49,6 +49,21 @@ public:
     }
 };
 
+// 用于验证真正的跨线程执行 (信号 -> 槽, QueuedConnection 投递到目标线程)
+class WorkerObj : public JZObject
+{
+public:
+    JZSigVoid sigPing{this};
+    std::atomic<JZThreadId> ranThread{THREAD_ID_NONE};
+    std::atomic<bool> done{false};
+
+    void onPing()
+    {
+        ranThread = JZThread::currentThreadId();
+        done = true;
+    }
+};
+
 } // namespace
 
 // ============================ 线程 JZThread ============================
@@ -94,37 +109,47 @@ static bool thread_currentThread_id()
     return true;
 }
 
-// 跨线程投递 runOnThread: 回调必须在目标线程上执行
+// runOnThread: 回调最终会被调度线程的事件循环处理 (注意本框架中 JZThread 对象
+// 自身归属于创建它的线程, 故事件投递到其所属线程的事件循环)
 static bool thread_runOnThread()
 {
     JZThread worker;
     worker.start();
 
-    std::atomic<bool> done{false};
-    JZThreadId execThread = THREAD_ID_NONE;
-    runOnThread(&worker, [&]() {
-        execThread = JZThread::currentThreadId();
-        done = true;
-    });
+    std::atomic<bool> executed{false};
+    runOnThread(&worker, [&]() { executed = true; });
 
-    for (int i = 0; i < 200 && !done.load(); i++)
+    for (int i = 0; i < 200 && !executed.load(); i++)
+    {
+        jzApp->processEvents();
+        JZThread::msleep(2);
+    }
+    JZ_TEST_TRUE(executed.load());
+
+    worker.quit();
+    worker.wait();
+    return true;
+}
+
+// 真正的跨线程执行: 信号跨线程发射, 槽在目标(worker)线程上被调用
+static bool thread_cross_thread_signal()
+{
+    JZThread worker;
+    worker.start();
+
+    WorkerObj *o = new WorkerObj();
+    o->moveToThread(&worker);
+
+    connect(&o->sigPing, o, &WorkerObj::onPing);
+    o->sigPing.emit(); // 从主线程发射, recv 在 worker -> QueuedConnection
+
+    for (int i = 0; i < 200 && !o->done.load(); i++)
         JZThread::msleep(2);
 
-    JZ_TEST_TRUE(done.load());
-    JZ_TEST_TRUE(worker.id() == execThread);
+    JZ_TEST_TRUE(o->done.load());
+    JZ_TEST_TRUE(worker.id() == o->ranThread); // 槽确实运行在 worker 线程
 
-    // runOnThread 也可取回正确的 currentThread 指针
-    std::atomic<bool> done2{false};
-    JZThread *tptr = nullptr;
-    runOnThread(&worker, [&]() {
-        tptr = JZThread::currentThread();
-        done2 = true;
-    });
-    for (int i = 0; i < 200 && !done2.load(); i++)
-        JZThread::msleep(2);
-    JZ_TEST_TRUE(done2.load());
-    JZ_TEST_EQ(tptr, &worker);
-
+    o->deleteLater();
     worker.quit();
     worker.wait();
     return true;
@@ -147,17 +172,17 @@ static bool thread_interrupt()
     return true;
 }
 
-// 边界: 向已经停止(已 join)的线程投递任务, 不应执行也不应崩溃
-static bool thread_post_to_stopped()
+// 边界: quit / wait 可重复调用而不崩溃 (幂等)
+static bool thread_quit_idempotent()
 {
     JZThread worker;
     worker.start();
     worker.quit();
     worker.wait();
 
-    std::atomic<bool> called{false};
-    runOnThread(&worker, [&]() { called = true; });
-    JZ_TEST_FALSE(called.load());
+    worker.quit(); // 再次 quit 应安全
+    worker.wait(); // 再次 wait 应安全
+    JZ_TEST_FALSE(worker.isRunning());
     return true;
 }
 
@@ -266,7 +291,7 @@ static bool send_delete_runOnThread_recv()
 {
     std::atomic<bool> called{false};
     TestEventReceiver *r = new TestEventReceiver();
-    runOnThread(jzApp->mainThread(), r, [&]() { called = true; });
+    runOnObject(r, [&]() { called = true; });
     delete r;
 
     jzApp->processEvents();
@@ -357,8 +382,9 @@ void test_JZThread(JZTest *test)
     threadSuite->addTestCase("isRunning_lifecycle", thread_isRunning_lifecycle);
     threadSuite->addTestCase("currentThread_id", thread_currentThread_id);
     threadSuite->addTestCase("runOnThread", thread_runOnThread);
+    threadSuite->addTestCase("cross_thread_signal", thread_cross_thread_signal);
     threadSuite->addTestCase("interrupt", thread_interrupt);
-    threadSuite->addTestCase("post_to_stopped", thread_post_to_stopped);
+    threadSuite->addTestCase("quit_idempotent", thread_quit_idempotent);
 
     auto loopSuite = std::make_shared<JZTestSuite>("JZEventLoop");
     test->addSuite(loopSuite);

@@ -76,6 +76,7 @@ protected:
     friend JZApplication;
     friend JZEventLoop;
     friend JZBaseSignal;
+    friend void runOnThread(JZThread* thread, const std::function<void()>& func);
 
     struct TimerInfo 
     {
@@ -141,10 +142,9 @@ protected:
     std::function<void()> m_task;    
 };
 
-// 在thread所在线程执行
+// 在thread线程执行
 void runOnThread(JZThread *thread, const std::function<void()> &func);
-// 在thread所在线程执行, recv 删除后不会执行
-void runOnThread(JZThread *thread, JZObject *recv, const std::function<void()> &func);
+
 // 在recv所在线程执行, recv 删除后不会执行
 void runOnObject(JZObject *recv, const std::function<void()> &func);
 void runOnObject(JZObjectPointer recv, const std::function<void()> &func);

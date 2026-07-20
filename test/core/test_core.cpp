@@ -5,6 +5,7 @@
 #include "JZByteArray.h"
 #include "JZElapsedTimer.h"
 #include "JZApplication.h"
+#include "JZThread.h"
 #include "test_thread.h"
 #include <cstdio>
 #include <cstring>
@@ -562,6 +563,22 @@ static void benchmark_audio_base64()
     }
 
     printf("======================================\n\n");
+
+    // 自适应 benchmark 演示: 目标总耗时 100ms, 迭代数自动推算
+    printf("---------- Adaptive Benchmark (JZBenchmark) ----------\n");
+    JZBenchmark bm(/*targetMs=*/100);
+    JZByteArray b64Data = srcPcm.toBase64(); // 复用编码数据
+    JZByteArray dst, decoded, b64Result;
+    dst.resize(totalBytes); // 确保目标缓冲区足够大
+
+    JZ_BENCH(bm, "memcpy(32KB)", [&]() { memcpy(dst.data(), srcPcm.data(), totalBytes); });
+    JZ_BENCH(bm, "toBase64(32KB)", [&]() { b64Result = srcPcm.toBase64(); });
+    JZ_BENCH(bm, "fromBase64", [&]() { decoded = JZByteArray::fromBase64(b64Data); });
+
+    // 慢操作演示: 单次很耗时, 总时长被限制在 [minSec, maxSec] 内 (默认 0.01s~2s)
+    JZBenchmark slowBm(/*targetMs=*/100);
+    JZ_BENCH(slowBm, "sleep_1ms", [&]() { JZThread::msleep(1); });
+    printf("-----------------------------------------------------\n\n");
 }
 
 int main(int argc,char *argv[])

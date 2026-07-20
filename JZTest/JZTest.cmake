@@ -4,6 +4,8 @@
 	JZTestMacro.h
 	JZTestSuite.cpp
 	JZTestSuite.h
+	JZBenchmark.cpp
+	JZBenchmark.h
 )
 convert_to_abs_paths(JZTEST_SOURCES)
 

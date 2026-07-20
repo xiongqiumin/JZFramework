@@ -166,7 +166,7 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
         }
     };
 
-    runOnThread(this->thread(), this, notify);
+    runOnObject(this, notify);
     return socket;
 }
 

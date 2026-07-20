@@ -2,6 +2,7 @@
 #define JZ_BLE_DRIVER_ESP32_H_
 
 #include "JZBleDriver.h"
+#include "JZByteArray.h"
 #include <map>
 #include <set>
 #include <vector>
@@ -26,7 +27,7 @@ class JZBleDriverEsp32 : public JZBleDriver
 public:
     JZBleDriverEsp32();
     ~JZBleDriverEsp32() override;
-
+    
     void startScan(JZBLEDeviceDiscoveryAgent *agent) override;
     void stopScan(JZBLEDeviceDiscoveryAgent *agent) override;
     bool isScanning(JZBLEDeviceDiscoveryAgent *agent) override;
@@ -46,7 +47,7 @@ public:
     void readCharacteristic(const std::string& address, const std::string& serviceUuid,
                              const std::string& charUuid, JZBLEService *d) override;
     void writeCharacteristic(const std::string& address, const std::string& serviceUuid,
-                              const std::string& charUuid, const std::string& value,
+                              const std::string& charUuid, const JZByteArray& value,
                               bool writeNoResponse, JZBLEService *d) override;
     void enableNotification(const std::string& address, const std::string& serviceUuid,
                              const std::string& charUuid, bool enable, JZBLEService *d) override;
@@ -55,13 +56,13 @@ public:
                          JZBLEService *d) override;
     void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                           const std::string& charUuid, const std::string& descUuid,
-                          const std::string& value, JZBLEService *d) override;
+                          const JZByteArray& value, JZBLEService *d) override;
 
     void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
                            JZBLEPeripheral *d) override;
     void stopAdvertising() override;
-    void peripheralSendNotify(const std::string& charUuid, const std::string& value) override;
-    void peripheralSendIndicate(const std::string& charUuid, const std::string& value) override;
+    void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
+    void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
 
     void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
 
@@ -116,7 +117,7 @@ private:
                                     struct ble_gatt_attr *attr, void *arg);
     static int onGattcAck(uint16_t conn_handle, const struct ble_gatt_error *error,
                             struct ble_gatt_attr *attr, void *arg);
-    static int sendPeriphData(int connHandle, uint16_t valHandle, const std::string &value, bool indicate);
+    static int sendPeriphData(int connHandle, uint16_t valHandle, const JZByteArray &value, bool indicate);
 
     // ---- 绑定密钥 store 回调（驱动不持久化，仅内存缓存 + 上报上层）----
     static int storeReadCb(int obj_type, const union ble_store_key *key, union ble_store_value *dst);
@@ -141,7 +142,8 @@ private:
     };
     struct PendingDsc {
         enum Type { Notify, Read, Write } type;
-        std::string svc, chr, desc, value;
+        std::string svc, chr, desc;
+        JZByteArray value;
         bool enable = false;
         JZBLEService *d = nullptr;
     };
@@ -160,7 +162,7 @@ private:
         std::string svcUuid;
         uint16_t valHandle = 0;
         int properties = 0;
-        std::string value;
+        JZByteArray value;
         bool subscribedNotify = false;    // 对端已订阅 notify
         bool subscribedIndicate = false;  // 对端已订阅 indicate
     };

@@ -4,6 +4,7 @@
 #include "JZBLEPeripheral.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZStd.h"
+#include "JZByteArray.h"
 
 #include "esp_bt.h"
 #include "nimble/nimble_port.h"
@@ -21,6 +22,8 @@
 #include <cstdio>
 #include <cinttypes>
 #include <cstring>
+
+static JZBleDriverEsp32 *g_driver = nullptr;
 
 // Peripheral GATT 定义（必须长期存活，不能为局部变量）
 struct PeriphGatt {
@@ -166,7 +169,7 @@ void JZBleDriverEsp32::ensureDescriptorsDiscovered(const std::string &addr, cons
 
 int JZBleDriverEsp32::onScanGapEvent(struct ble_gap_event *event, void *arg)
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     switch (event->type)
     {
     case BLE_GAP_EVENT_DISC:   // arg = this（driver）
@@ -195,7 +198,7 @@ int JZBleDriverEsp32::onScanGapEvent(struct ble_gap_event *event, void *arg)
 
 int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     auto *periph = static_cast<JZBLEPeripheral *>(arg);  // arg 固定为 JZBLEPeripheral*
     switch (event->type)
     {
@@ -231,7 +234,7 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
 
 int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     auto *cent = static_cast<JZBLEController *>(arg);  // arg 固定为 JZBLEController*
     switch (event->type)
     {
@@ -275,8 +278,9 @@ int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
                 auto pit = self->m_svcPtrCache.find(addr + "|" + svc);
                 if (pit != self->m_svcPtrCache.end() && event->notify_rx.om)
                 {
-                    std::string v((const char *)event->notify_rx.om->om_data, event->notify_rx.om->om_len);
-                    JZBLEService::onCharacteristicChanged(pit->second, addr.c_str(), svc.c_str(), v.c_str());
+                    JZByteArray v;
+                    v.append((const char *)event->notify_rx.om->om_data, (int)event->notify_rx.om->om_len);
+                    JZBLEService::onCharacteristicChanged(pit->second, addr.c_str(), svc.c_str(), v);
                 }
             }
         }
@@ -295,7 +299,7 @@ int JZBleDriverEsp32::onGattcSvcEvent(uint16_t conn_handle, const struct ble_gat
 {
     auto *d = (JZBLEController *)arg;
     std::string addr = d->deviceInfo().address();
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     if (error->status == BLE_HS_EDONE)
     {
         JZBleDriver::centralOnServicesDiscovered(d, addr.c_str());
@@ -314,7 +318,7 @@ int JZBleDriverEsp32::onGattcCharEvent(uint16_t conn_handle, const struct ble_ga
     auto *d = (JZBLEService *)arg;
     std::string addr = d->deviceAddress;
     std::string svc = d->m_serviceUuid.toString();
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     if (error->status == BLE_HS_EDONE)
     {
         // 发现完成：构建 JZLowEnergyCharacteristic 列表并通知上层
@@ -351,10 +355,10 @@ int JZBleDriverEsp32::onGattcReadEvent(uint16_t conn_handle, const struct ble_ga
     if (!d) return 0;
     std::string addr = d->deviceAddress;
     std::string svc = d->m_serviceUuid.toString();
-    std::string val;
+    JZByteArray val;
     if (error->status == 0 && attr && attr->om)
-        val.assign((const char *)attr->om->om_data, attr->om->om_len);
-    JZBLEService::onCharacteristicRead(d, addr.c_str(), svc.c_str(), val.c_str());
+        val.append((const char *)attr->om->om_data, (int)attr->om->om_len);
+    JZBLEService::onCharacteristicRead(d, addr.c_str(), svc.c_str(), val);
     return 0;
 }
 
@@ -366,9 +370,9 @@ int JZBleDriverEsp32::onGattcWriteEvent(uint16_t conn_handle, const struct ble_g
     std::string addr = d->deviceAddress;
     std::string svc = d->m_serviceUuid.toString();
     bool ok = (error->status == 0 || error->status == BLE_HS_EDONE);
-    std::string val;
-    if (attr && attr->om) val.assign((const char *)attr->om->om_data, attr->om->om_len);
-    JZBLEService::onCharacteristicWritten(d, addr.c_str(), svc.c_str(), val.c_str(), ok);
+    JZByteArray val;
+    if (attr && attr->om) val.append((const char *)attr->om->om_data, (int)attr->om->om_len);
+    JZBLEService::onCharacteristicWritten(d, addr.c_str(), svc.c_str(), val, ok);
     return 0;
 }
 
@@ -437,10 +441,10 @@ int JZBleDriverEsp32::onGattcReadDscEvent(uint16_t conn_handle, const struct ble
     auto *d = (JZBLEService *)arg;
     if (!d) return 0;
     std::string addr = d->deviceAddress, svc = d->m_serviceUuid.toString();
-    std::string val;
+    JZByteArray val;
     if (error->status == 0 && attr && attr->om)
-        val.assign((const char *)attr->om->om_data, attr->om->om_len);
-    JZBLEService::onDescriptorRead(d, addr.c_str(), svc.c_str(), "", val.c_str());
+        val.append((const char *)attr->om->om_data, (int)attr->om->om_len);
+    JZBLEService::onDescriptorRead(d, addr.c_str(), svc.c_str(), "", val);
     return 0;
 }
 int JZBleDriverEsp32::onGattcWriteDscEvent(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -450,9 +454,9 @@ int JZBleDriverEsp32::onGattcWriteDscEvent(uint16_t conn_handle, const struct bl
     if (!d) return 0;
     std::string addr = d->deviceAddress, svc = d->m_serviceUuid.toString();
     bool ok = (error->status == 0 || error->status == BLE_HS_EDONE);
-    std::string val;
-    if (attr && attr->om) val.assign((const char *)attr->om->om_data, attr->om->om_len);
-    JZBLEService::onDescriptorWritten(d, addr.c_str(), svc.c_str(), "", val.c_str(), ok);
+    JZByteArray val;
+    if (attr && attr->om) val.append((const char *)attr->om->om_data, (int)attr->om->om_len);
+    JZBLEService::onDescriptorWritten(d, addr.c_str(), svc.c_str(), "", val, ok);
     return 0;
 }
 int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct ble_gatt_attr *, void *)
@@ -463,6 +467,7 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 // ==================== 构造/析构 ====================
 JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), m_ownAddrType(BLE_OWN_ADDR_PUBLIC)
 {
+    g_driver = this;
     m_periphGatt = new PeriphGatt();
 
     // nimble_port_init() 内部会处理 controller mem_release + init + enable + host init
@@ -492,14 +497,24 @@ JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), 
                                   | BLE_SM_PAIR_KEY_DIST_ID;     // 以及 IRK（隐私地址解析）
     nimble_port_freertos_init([](void *) { nimble_port_run(); });
 }
+
+JZBleDriverEsp32::~JZBleDriverEsp32() 
+{ 
+    delete m_periphGatt; 
+    g_driver = nullptr;
+}
+
 void JZBleDriverEsp32::onHostReset(int)
 {
     // 复位时可做清理，这里保持简单
 }
+
 void JZBleDriverEsp32::onHostSync()
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
-    if (!self) return;
+    auto *self = g_driver;
+    if (!self) 
+        return;
+
     int rc = ble_hs_util_ensure_addr(0); // 优先公钥地址
     if (rc != 0) return;
     rc = ble_hs_id_infer_auto(0, &self->m_ownAddrType);
@@ -555,7 +570,6 @@ void JZBleDriverEsp32::onHostSync()
         self->m_pendingAdvPeriph = nullptr;
     }
 }
-JZBleDriverEsp32::~JZBleDriverEsp32() { delete m_periphGatt; }
 
 // ==================== 绑定密钥 store（驱动不持久化） ====================
 // 密钥仅缓存在 m_bondStore（本次会话），配对时上报上层，重连时由上层回灌。
@@ -605,7 +619,7 @@ int JZBleDriverEsp32::storeReadCb(int obj_type, const union ble_store_key *key, 
     else
         return BLE_HS_ENOENT;   // CCCD 等不缓存，按未找到处理
 
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     auto it = self->m_bondStore.find(bondStoreKey(obj_type, addr));
     if (it == self->m_bondStore.end()) return BLE_HS_ENOENT;
 
@@ -615,7 +629,7 @@ int JZBleDriverEsp32::storeReadCb(int obj_type, const union ble_store_key *key, 
 
 int JZBleDriverEsp32::storeWriteCb(int obj_type, const union ble_store_value *val)
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC) {
         std::string addr = addrToString(val->sec.peer_addr.val);
         JZBleBondKey key = secToBondKey(obj_type, &val->sec);
@@ -632,7 +646,7 @@ int JZBleDriverEsp32::storeWriteCb(int obj_type, const union ble_store_value *va
 
 int JZBleDriverEsp32::storeDeleteCb(int obj_type, const union ble_store_key *key)
 {
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     std::string addr;
     if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC)
         addr = addrToString(key->sec.peer_addr.val);
@@ -746,7 +760,7 @@ void JZBleDriverEsp32::readCharacteristic(const std::string &addr, const std::st
     if (vh == 0) return;
     ble_gattc_read(h, vh, onGattcReadEvent, (void *)d);
 }
-void JZBleDriverEsp32::writeCharacteristic(const std::string &addr, const std::string &svc, const std::string &c, const std::string &v, bool nrs, JZBLEService *d)
+void JZBleDriverEsp32::writeCharacteristic(const std::string &addr, const std::string &svc, const std::string &c, const JZByteArray &v, bool nrs, JZBLEService *d)
 {
     int h = getConnHandle(addr); if (h < 0) return;
     uint16_t vh = findCharValHandle(addr, svc, c);
@@ -780,7 +794,7 @@ void JZBleDriverEsp32::readDescriptor(const std::string &addr, const std::string
     it->second.pendingDsc.push_back(p);
     ensureDescriptorsDiscovered(addr, svc);
 }
-void JZBleDriverEsp32::writeDescriptor(const std::string &addr, const std::string &svc, const std::string &c, const std::string &desc, const std::string &v, JZBLEService *d)
+void JZBleDriverEsp32::writeDescriptor(const std::string &addr, const std::string &svc, const std::string &c, const std::string &desc, const JZByteArray &v, JZBLEService *d)
 {
     int h = getConnHandle(addr); if (h < 0) return;
     uint16_t dh = findDscHandle(addr, svc, c, desc);
@@ -902,12 +916,12 @@ void JZBleDriverEsp32::stopAdvertising()
 
 void JZBleDriverEsp32::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
-    m_periphCharMap[charUuid] = { svcUuid, 0, properties, "" };
+    m_periphCharMap[charUuid] = { svcUuid, 0, properties, JZByteArray() };
 }
 
-int JZBleDriverEsp32::sendPeriphData(int connHandle, uint16_t valHandle, const std::string &value, bool indicate)
+int JZBleDriverEsp32::sendPeriphData(int connHandle, uint16_t valHandle, const JZByteArray &value, bool indicate)
 {
-    if (connHandle < 0 || valHandle == 0 || value.empty()) return -1;
+    if (connHandle < 0 || valHandle == 0 || value.isEmpty()) return -1;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(value.data(), (uint16_t)value.size());
     if (!om) return -1;
     int rc = indicate
@@ -922,7 +936,7 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
                                     struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)conn_handle; (void)arg;
-    auto *self = static_cast<JZBleDriverEsp32 *>(JZBleDriver::instance());
+    auto *self = g_driver;
     if (!self || !self->m_periphCtrlPriv) return BLE_ATT_ERR_UNLIKELY;
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR && ctxt->om)
@@ -931,10 +945,11 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
         {
             if (kv.second.valHandle == attr_handle)
             {
-                std::string val((const char *)ctxt->om->om_data, ctxt->om->om_len);
+                JZByteArray val;
+                val.append((const char *)ctxt->om->om_data, (int)ctxt->om->om_len);
                 kv.second.value = val;   // 保存以便后续读取
                 JZBleDriver::peripheralOnCharWritten(self->m_periphCtrlPriv,
-                                               kv.first.c_str(), val.c_str());
+                                               JZBluetoothUuid(kv.first), val);
                 return 0;
             }
         }
@@ -990,17 +1005,17 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
     return BLE_ATT_ERR_UNLIKELY;
 }
 
-void JZBleDriverEsp32::peripheralSendNotify(const std::string &charUuid, const std::string &value)
+void JZBleDriverEsp32::peripheralSendNotify(const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    auto it = m_periphCharMap.find(charUuid);
+    auto it = m_periphCharMap.find(charUuid.toString());
     if (it == m_periphCharMap.end()) return;
     if (!it->second.subscribedNotify) return;   // 对端未订阅 notify，跳过
     sendPeriphData(m_periphConnHandle, it->second.valHandle, value, false);
 }
 
-void JZBleDriverEsp32::peripheralSendIndicate(const std::string &charUuid, const std::string &value)
+void JZBleDriverEsp32::peripheralSendIndicate(const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    auto it = m_periphCharMap.find(charUuid);
+    auto it = m_periphCharMap.find(charUuid.toString());
     if (it == m_periphCharMap.end()) return;
     if (!it->second.subscribedIndicate) return;  // 对端未订阅 indicate，跳过
     sendPeriphData(m_periphConnHandle, it->second.valHandle, value, true);

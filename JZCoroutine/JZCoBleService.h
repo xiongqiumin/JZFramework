@@ -7,6 +7,7 @@
 #include "JZLowEnergyDescriptor.h"
 #include "JZBluetoothUuid.h"
 #include "JZResult.h"
+#include "JZByteArray.h"
 
 #include <map>
 #include <queue>
@@ -28,18 +29,18 @@ public:
     JZResult<std::vector<JZLowEnergyCharacteristic>> discoverDetails(int ms = -1);
 
     // 读取特征值，返回特征值内容
-    JZResult<std::string> readCharacteristic(const JZBluetoothUuid &charUuid, int ms = -1);
+    JZResult<JZByteArray> readCharacteristic(const JZBluetoothUuid &charUuid, int ms = -1);
 
     // 写入特征值。writeNoResponse=true 时不等待写完成回调（fire and forget）
-    JZResult<void> writeCharacteristic(const JZBluetoothUuid &charUuid, const std::string &value,
+    JZResult<void> writeCharacteristic(const JZBluetoothUuid &charUuid, const JZByteArray &value,
                                        bool writeNoResponse = false, int ms = -1);
 
-    JZResult<std::string> readDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid, int ms = -1);
+    JZResult<JZByteArray> readDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid, int ms = -1);
     JZResult<void> writeDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid,
-                                   const std::string &value, int ms = -1);
+                                   const JZByteArray &value, int ms = -1);
 
     // 等待一次通知/指示（需在已通过写 CCCD 描述符开启通知后调用）
-    JZResult<std::string> waitForChanged(const JZBluetoothUuid &charUuid, int ms = -1);
+    JZResult<JZByteArray> waitForChanged(const JZBluetoothUuid &charUuid, int ms = -1);
 
 protected:
     enum WaitType
@@ -57,11 +58,11 @@ protected:
     void yield(WaitType type, int timeout);
 
     void onStateChanged(int state);
-    void onCharacteristicRead(const JZLowEnergyCharacteristic &ch, const std::string &value);
-    void onCharacteristicWritten(const JZLowEnergyCharacteristic &ch, const std::string &value);
-    void onCharacteristicChanged(const JZLowEnergyCharacteristic &ch, const std::string &value);
-    void onDescriptorRead(const JZLowEnergyDescriptor &desc, const std::string &value);
-    void onDescriptorWritten(const JZLowEnergyDescriptor &desc, const std::string &value);
+    void onCharacteristicRead(const JZLowEnergyCharacteristic &ch, const JZByteArray &value);
+    void onCharacteristicWritten(const JZLowEnergyCharacteristic &ch, const JZByteArray &value);
+    void onCharacteristicChanged(const JZLowEnergyCharacteristic &ch, const JZByteArray &value);
+    void onDescriptorRead(const JZLowEnergyDescriptor &desc, const JZByteArray &value);
+    void onDescriptorWritten(const JZLowEnergyDescriptor &desc, const JZByteArray &value);
     void onError(int code);
 
     JZBLEService *m_service;
@@ -74,10 +75,10 @@ protected:
 
     bool            m_discoverDone;
     bool            m_hasResult;  // read/write 结果是否有效
-    std::string     m_resultValue;
+    JZByteArray     m_resultValue;
 
     // 通知缓存（按特征 uuid 排队），供 waitForChanged 消费
-    std::map<JZBluetoothUuid, std::queue<std::string>> m_changedMap;
+    std::map<JZBluetoothUuid, std::queue<JZByteArray>> m_changedMap;
 };
 
 #endif // JZCO_BLE_SERVICE_H_

@@ -34,7 +34,9 @@ void JZPlatform::setInstance(JZPlatformWrapper *inst)
     if (g_inst && g_inst != inst)
     {
         if (inst)
+        {
             jzWarning("JZPlatformWrapper instance already set, replacing old driver");
+        }
         delete g_inst;
     }
     g_inst = inst;

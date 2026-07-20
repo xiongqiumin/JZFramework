@@ -6,6 +6,7 @@
 #include "JZBluetoothUuid.h"
 #include "JZLowEnergyCharacteristic.h"
 #include "JZLowEnergyDescriptor.h"
+#include "JZByteArray.h"
 
 class JZBleDriver;
 
@@ -22,9 +23,9 @@ public:
 
     void discoverDetails();
     void readCharacteristic(const JZBluetoothUuid &charUuid);
-    void writeCharacteristic(const JZBluetoothUuid &charUuid, const std::string &value, bool writeNoResponse = false);
+    void writeCharacteristic(const JZBluetoothUuid &charUuid, const JZByteArray &value, bool writeNoResponse = false);
     void readDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid);
-    void writeDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid, const std::string &value);
+    void writeDescriptor(const JZBluetoothUuid &charUuid, const JZBluetoothUuid &descUuid, const JZByteArray &value);
 
     std::vector<JZLowEnergyCharacteristic> characteristics() const;
     JZLowEnergyCharacteristic characteristic(const JZBluetoothUuid &uuid) const;
@@ -42,19 +43,19 @@ public:
 
     // 静态分发方法（供驱动回调路由，参数为本服务对象指针）
     static void onCharacteristicsDiscovered(JZBLEService *d, const char *addr, const char *svcUuid);
-    static void onCharacteristicRead(JZBLEService *d, const char *addr, const char *svcUuid, const char *value);
-    static void onCharacteristicWritten(JZBLEService *d, const char *addr, const char *svcUuid, const char *value, bool ok);
-    static void onCharacteristicChanged(JZBLEService *d, const char *addr, const char *svcUuid, const char *value);
-    static void onDescriptorRead(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value);
-    static void onDescriptorWritten(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const char *value, bool ok);
+    static void onCharacteristicRead(JZBLEService *d, const char *addr, const char *svcUuid, const JZByteArray &value);
+    static void onCharacteristicWritten(JZBLEService *d, const char *addr, const char *svcUuid, const JZByteArray &value, bool ok);
+    static void onCharacteristicChanged(JZBLEService *d, const char *addr, const char *svcUuid, const JZByteArray &value);
+    static void onDescriptorRead(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const JZByteArray &value);
+    static void onDescriptorWritten(JZBLEService *d, const char *addr, const char *svcUuid, const char *charUuid, const JZByteArray &value, bool ok);
 
 jz_signals:
     JZSignal<int> sigStateChanged;
-    JZSignal<const JZLowEnergyCharacteristic&, const std::string&> sigCharacteristicRead;
-    JZSignal<const JZLowEnergyCharacteristic&, const std::string&> sigCharacteristicWritten;
-    JZSignal<const JZLowEnergyCharacteristic&, const std::string&> sigCharacteristicChanged;
-    JZSignal<const JZLowEnergyDescriptor&, const std::string&> sigDescriptorRead;
-    JZSignal<const JZLowEnergyDescriptor&, const std::string&> sigDescriptorWritten;
+    JZSignal<const JZLowEnergyCharacteristic&, const JZByteArray&> sigCharacteristicRead;
+    JZSignal<const JZLowEnergyCharacteristic&, const JZByteArray&> sigCharacteristicWritten;
+    JZSignal<const JZLowEnergyCharacteristic&, const JZByteArray&> sigCharacteristicChanged;
+    JZSignal<const JZLowEnergyDescriptor&, const JZByteArray&> sigDescriptorRead;
+    JZSignal<const JZLowEnergyDescriptor&, const JZByteArray&> sigDescriptorWritten;
     JZSignal<int> sigError;
 
 protected:

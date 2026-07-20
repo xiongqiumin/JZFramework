@@ -2,6 +2,7 @@
 #define JZ_BLE_DRIVER_SIMULATOR_H_
 
 #include "JZBleDriver.h"
+#include "JZByteArray.h"
 #include "JZNetClient.h"
 #include "JZSimPack.h"
 #include <map>
@@ -41,7 +42,7 @@ public:
     void readCharacteristic(const std::string& address, const std::string& serviceUuid,
                             const std::string& charUuid, JZBLEService *d) override;
     void writeCharacteristic(const std::string& address, const std::string& serviceUuid,
-                             const std::string& charUuid, const std::string& value,
+                             const std::string& charUuid, const JZByteArray& value,
                              bool writeNoResponse, JZBLEService *d) override;
     void enableNotification(const std::string& address, const std::string& serviceUuid,
                             const std::string& charUuid, bool enable, JZBLEService *d) override;
@@ -50,15 +51,15 @@ public:
                         JZBLEService *d) override;
     void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                          const std::string& charUuid, const std::string& descUuid,
-                         const std::string& value, JZBLEService *d) override;
+                         const JZByteArray& value, JZBLEService *d) override;
 
     // === Peripheral ===
     void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
     void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
                           JZBLEPeripheral *d) override;
     void stopAdvertising() override;
-    void peripheralSendNotify(const std::string& charUuid, const std::string& value) override;
-    void peripheralSendIndicate(const std::string& charUuid, const std::string& value) override;
+    void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
+    void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
 
 private:
     void onPacket(JZNetPackPtr pack);
@@ -84,7 +85,7 @@ private:
     std::map<std::string, std::map<std::string, int>>                    m_charValHandle; // addr|svc -> chr -> handle
     int m_handleCounter = 0;
 
-    struct Ctx { std::string addr, svc, chr, value; JZBLEService *d = nullptr; };
+    struct Ctx { std::string addr, svc, chr; JZByteArray value; JZBLEService *d = nullptr; };
     std::map<int, Ctx> m_readCtx;
     std::map<int, Ctx> m_ntfCtx;
     std::map<int, Ctx> m_writeCtx;

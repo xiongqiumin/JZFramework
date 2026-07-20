@@ -64,7 +64,7 @@ JZResult<std::vector<JZLowEnergyCharacteristic>> JZCoBleService::discoverDetails
 //=======================================================================
 // 读取特征
 //=======================================================================
-JZResult<std::string> JZCoBleService::readCharacteristic(const JZBluetoothUuid &charUuid, int ms)
+JZResult<JZByteArray> JZCoBleService::readCharacteristic(const JZBluetoothUuid &charUuid, int ms)
 {
     m_error = false;
     m_errorMsg.clear();
@@ -76,18 +76,18 @@ JZResult<std::string> JZCoBleService::readCharacteristic(const JZBluetoothUuid &
     yield(WaitRead, ms);
 
     if (m_error)
-        return JZResult<std::string>::Error(m_errorMsg);
+        return JZResult<JZByteArray>::Error(m_errorMsg);
     if (m_hasResult && m_waitUuid == charUuid)
-        return JZResult<std::string>::Ok(m_resultValue);
+        return JZResult<JZByteArray>::Ok(m_resultValue);
 
-    return JZResult<std::string>::Error("read timeout");
+    return JZResult<JZByteArray>::Error("read timeout");
 }
 
 //=======================================================================
 // 写入特征
 //=======================================================================
 JZResult<void> JZCoBleService::writeCharacteristic(const JZBluetoothUuid &charUuid,
-                                                    const std::string &value,
+                                                    const JZByteArray &value,
                                                     bool writeNoResponse,
                                                     int ms)
 {
@@ -115,7 +115,7 @@ JZResult<void> JZCoBleService::writeCharacteristic(const JZBluetoothUuid &charUu
 //=======================================================================
 // 读/写描述符
 //=======================================================================
-JZResult<std::string> JZCoBleService::readDescriptor(const JZBluetoothUuid &charUuid,
+JZResult<JZByteArray> JZCoBleService::readDescriptor(const JZBluetoothUuid &charUuid,
                                                       const JZBluetoothUuid &descUuid,
                                                       int ms)
 {
@@ -129,16 +129,16 @@ JZResult<std::string> JZCoBleService::readDescriptor(const JZBluetoothUuid &char
     yield(WaitDescRead, ms);
 
     if (m_error)
-        return JZResult<std::string>::Error(m_errorMsg);
+        return JZResult<JZByteArray>::Error(m_errorMsg);
     if (m_hasResult && m_waitUuid == descUuid)
-        return JZResult<std::string>::Ok(m_resultValue);
+        return JZResult<JZByteArray>::Ok(m_resultValue);
 
-    return JZResult<std::string>::Error("read descriptor timeout");
+    return JZResult<JZByteArray>::Error("read descriptor timeout");
 }
 
 JZResult<void> JZCoBleService::writeDescriptor(const JZBluetoothUuid &charUuid,
                                                 const JZBluetoothUuid &descUuid,
-                                                const std::string &value,
+                                                const JZByteArray &value,
                                                 int ms)
 {
     m_error = false;
@@ -163,13 +163,13 @@ JZResult<void> JZCoBleService::writeDescriptor(const JZBluetoothUuid &charUuid,
 //=======================================================================
 // 等待通知/指示
 //=======================================================================
-JZResult<std::string> JZCoBleService::waitForChanged(const JZBluetoothUuid &charUuid, int ms)
+JZResult<JZByteArray> JZCoBleService::waitForChanged(const JZBluetoothUuid &charUuid, int ms)
 {
     auto it = m_changedMap.find(charUuid);
     if (it != m_changedMap.end() && !it->second.empty()) {
-        std::string v = it->second.front();
+        JZByteArray v = it->second.front();
         it->second.pop();
-        return JZResult<std::string>::Ok(v);
+        return JZResult<JZByteArray>::Ok(v);
     }
 
     m_waitUuid = charUuid;
@@ -177,9 +177,9 @@ JZResult<std::string> JZCoBleService::waitForChanged(const JZBluetoothUuid &char
 
     auto it2 = m_changedMap.find(charUuid);
     if (it2 != m_changedMap.end() && !it2->second.empty()) {
-        std::string v = it2->second.front();
+        JZByteArray v = it2->second.front();
         it2->second.pop();
-        return JZResult<std::string>::Ok(v);
+        return JZResult<JZByteArray>::Ok(v);
     }
 
     if (m_error)
@@ -200,7 +200,7 @@ void JZCoBleService::onStateChanged(int state)
     }
 }
 
-void JZCoBleService::onCharacteristicRead(const JZLowEnergyCharacteristic &ch, const std::string &value)
+void JZCoBleService::onCharacteristicRead(const JZLowEnergyCharacteristic &ch, const JZByteArray &value)
 {
     m_hasResult = true;
     m_resultValue = value;
@@ -209,7 +209,7 @@ void JZCoBleService::onCharacteristicRead(const JZLowEnergyCharacteristic &ch, c
         m_coCtrl.wakeAll();
 }
 
-void JZCoBleService::onCharacteristicWritten(const JZLowEnergyCharacteristic &ch, const std::string &value)
+void JZCoBleService::onCharacteristicWritten(const JZLowEnergyCharacteristic &ch, const JZByteArray &value)
 {
     m_hasResult = true;
     m_resultValue = value;
@@ -218,14 +218,14 @@ void JZCoBleService::onCharacteristicWritten(const JZLowEnergyCharacteristic &ch
         m_coCtrl.wakeAll();
 }
 
-void JZCoBleService::onCharacteristicChanged(const JZLowEnergyCharacteristic &ch, const std::string &value)
+void JZCoBleService::onCharacteristicChanged(const JZLowEnergyCharacteristic &ch, const JZByteArray &value)
 {
     m_changedMap[ch.uuid()].push(value);
     if (m_waitType == WaitChanged && m_waitUuid == ch.uuid())
         m_coCtrl.wakeAll();
 }
 
-void JZCoBleService::onDescriptorRead(const JZLowEnergyDescriptor &desc, const std::string &value)
+void JZCoBleService::onDescriptorRead(const JZLowEnergyDescriptor &desc, const JZByteArray &value)
 {
     m_hasResult = true;
     m_resultValue = value;
@@ -234,7 +234,7 @@ void JZCoBleService::onDescriptorRead(const JZLowEnergyDescriptor &desc, const s
         m_coCtrl.wakeAll();
 }
 
-void JZCoBleService::onDescriptorWritten(const JZLowEnergyDescriptor &desc, const std::string &value)
+void JZCoBleService::onDescriptorWritten(const JZLowEnergyDescriptor &desc, const JZByteArray &value)
 {
     m_hasResult = true;
     m_resultValue = value;

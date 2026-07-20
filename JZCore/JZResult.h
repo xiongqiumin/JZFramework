@@ -295,4 +295,7 @@ private:
     std::string m_error;
 };
 
+// 拉入与 JZDebug 的流式输出算子 (定义见 detail/JZDebugDetail.h, 仅当 JZDebug 也可见时生成).
+#include "detail/JZDebugDetail.h"
+
 #endif  // !JZ_RESULT_H_

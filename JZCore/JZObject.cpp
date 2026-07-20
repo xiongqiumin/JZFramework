@@ -3,6 +3,7 @@
 #include "JZThread.h"
 #include "JZApplication.h"
 #include "JZTx.h"
+#include "JZDebug.h"
 
 JZSignalDestory::JZSignalDestory(JZObject *object)
     :JZSignal<JZObject*>(object)
@@ -299,4 +300,14 @@ void JZObject::killTimer(int id)
 {
     JZ_ASSERT(thread() == jzApp->currentThread());
     thread()->removeTimer(this, id);
+}
+
+JZDebug operator<<(JZDebug d, const JZObject& obj)
+{
+    d << "JZObject(" << obj.className();
+    std::string name = obj.objectName();
+    if (!name.empty())
+        d << ", " << name;
+    d << ")";
+    return d;
 }

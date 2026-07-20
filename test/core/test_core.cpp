@@ -9,6 +9,9 @@
 #include "test_thread.h"
 #include <cstdio>
 #include <cstring>
+#include "JZDebug.h"
+#include "JZOptional.h"
+#include "JZResult.h"
 
 bool jzstd_str_basic()
 {
@@ -576,8 +579,32 @@ static void benchmark_base64_512()
     printf("============================================================================\n\n");
 }
 
+static void smoke_debug_optional_result()
+{
+    // 验证 JZDebug 对 JZOptional / JZResult 的流式输出 (含 void 特化)
+    JZOptional<int> oi = JZOptional<int>::Some(42);
+    JZOptional<int> on = JZOptional<int>::None();
+    JZOptional<void> ov = JZOptional<void>::Some();
+    JZOptional<void> onv = JZOptional<void>::None();
+
+    JZResult<int> ri = JZResult<int>::Ok(7);
+    JZResult<int> re = JZResult<int>::Error(3, "boom");
+    JZResult<void> rv = JZResult<void>::Ok();
+    JZResult<void> rev = JZResult<void>::Error(5, "fail");
+
+    jzInfo() << "smoke JZOptional<int> Some:" << oi;
+    jzInfo() << "smoke JZOptional<int> None:" << on;
+    jzInfo() << "smoke JZOptional<void> Some:" << ov;
+    jzInfo() << "smoke JZOptional<void> None:" << onv;
+    jzInfo() << "smoke JZResult<int> Ok:" << ri;
+    jzInfo() << "smoke JZResult<int> Err:" << re;
+    jzInfo() << "smoke JZResult<void> Ok:" << rv;
+    jzInfo() << "smoke JZResult<void> Err:" << rev;
+}
+
 int main(int argc,char *argv[])
 {
+    smoke_debug_optional_result();
     benchmark_audio_base64();
     benchmark_base64_512();
 

@@ -1,6 +1,7 @@
 #include "JZObjectPointer.h"
-#include "JZObject.h"
 #include "JZApplication.h"
+#include "JZDebug.h"
+#include "JZObject.h"
 
 //JZObjectPointer
 JZObjectPointer::operator bool() const
@@ -51,4 +52,13 @@ JZObject* JZObjectPointerGuard::object()
     if (!m_pointer->data)
         return nullptr;
     return m_pointer->data->object;
+}
+
+JZDebug operator<<(JZDebug d, const JZObjectPointer& p)
+{
+    if (p)
+        d = d << *p.object();
+    else
+        d << "JZObjectPointer(null)";
+    return d;
 }

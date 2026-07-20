@@ -5,6 +5,8 @@
 #include "JZGlobal.h"
 
 class JZObject;
+class JZDebug;
+
 class JZObjectPointerData
 {
 public:
@@ -40,5 +42,8 @@ protected:
     JZObjectPointer *m_pointer;
     bool m_isLocked;
 };
+
+
+JZDebug operator<<(JZDebug d, const JZObjectPointer& p);
 
 #endif

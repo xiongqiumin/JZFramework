@@ -136,4 +136,6 @@ T jzobject_cast(JZObject* obj)
     }
 }
 
+JZDebug operator<<(JZDebug d, const JZObject& obj);
+
 #endif

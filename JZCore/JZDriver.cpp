@@ -6,6 +6,22 @@
 #include "lvgl.h"
 #endif
 
+#ifdef HAS_JZBle
+#include "JZBleDriver.h"
+#endif
+#ifdef HAS_JZWifi
+#include "JZWifiDriver.h"
+#endif
+#ifdef HAS_JZGpio
+#include "JZGpioDriver.h"
+#endif
+#ifdef HAS_JZSensor
+#include "JZSensorDriver.h"
+#endif
+#ifdef HAS_JZSerialPort
+#include "JZSerialPortDriver.h"
+#endif
+
 #ifdef ESP_PLATFORM
 
 #include "JZPlatformWrapperEsp32.h"

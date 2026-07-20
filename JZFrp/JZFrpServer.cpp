@@ -49,7 +49,6 @@ JZFrpServer::FrpConnection::FrpConnection()
 {
     valid = false;
     frpc = INVALID_NET_HANDLE;
-    nonce = JZUuid().toString();
 }
 
 JZFrpServer::FrpConnection::~FrpConnection()
@@ -155,16 +154,15 @@ void JZFrpServer::closeRemoteClients()
 
 void JZFrpServer::onNewAccept()
 {    
-    JZNetClient* client = m_server->nextPendingConnection();
+    uint64_t client = m_server->nextPendingConnection();
     if (!client)
         return;
 
-    uint64_t c = client->serverId();
     auto frp = std::make_shared<FrpConnection>();
-    frp->frpc = c;
-    m_frpClient[c] = frp;    
+    frp->frpc = client;
+    m_frpClient[client] = frp;
 
-    jzDebug() << "FrpServer new connect" << c;
+    jzDebug() << "FrpServer new connect" << client;
 }
 
 void JZFrpServer::onDisconnect(uint64_t c)

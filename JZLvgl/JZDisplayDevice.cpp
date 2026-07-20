@@ -2,11 +2,6 @@
 #include "JZStd.h"
 #include "lvgl.h"
 
-#if JZ_OS == JZ_OS_WINDOWS
-#include "src/drivers/windows/lv_windows_display.h"
-#include "src/drivers/windows/lv_windows_input.h"
-#endif
-
 JZDisplayDevice::JZDisplayDevice(lv_display_t* display)
     :JZWidget(NoCreate(), nullptr)
 {

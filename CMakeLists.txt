@@ -9,17 +9,31 @@ if (MSVC)
     add_compile_options(/bigobj)
 endif()
 
-#set(LVGL_ROOT_DIR "F:/mcu/jz_app/managed_components/lvgl__lvgl")
+# LVGL源码路径，空表示禁用
+set(LVGL_ROOT_PATH "" CACHE PATH "Path to LVGL source root. Leave empty to disable.")
 
-#set(LV_BUILD_CONF_DIR "${CMAKE_SOURCE_DIR}/test" CACHE PATH "")
-#set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "")
-#set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "")
-#set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "")
-#set(LV_BUILD_LVGL_H_SIMPLE_INCLUDE ON CACHE BOOL "")
+if(LVGL_ROOT_PATH)
+    if(NOT IS_DIRECTORY ${LVGL_ROOT_PATH})
+        message(FATAL_ERROR "LVGL_ROOT_PATH '${LVGL_ROOT_PATH}' is not a valid directory.")
+    endif()
 
-#add_subdirectory(${LVGL_ROOT_DIR} ${CMAKE_BINARY_DIR}/lvgl)
+    set(LV_BUILD_CONF_DIR "${CMAKE_SOURCE_DIR}/test" CACHE PATH "")
+    set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "")
+    set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "")
+    set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "")
+    set(LV_BUILD_LVGL_H_SIMPLE_INCLUDE ON CACHE BOOL "")
+
+    message(STATUS "LVGL enabled, source: ${LVGL_ROOT_PATH}")
+    add_subdirectory(${LVGL_ROOT_PATH} ${CMAKE_BINARY_DIR}/lvgl)
+else()
+    message(STATUS "LVGL disabled (LVGL_ROOT_PATH is empty)")
+endif()
 
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZNet JZBle JZLvgl)
-target_link_libraries(JZFramework PRIVATE lvgl)
-jzframework_build_test()
+jzframework_use_modules(JZCore JZNet JZAgent JZBle JZCamera JZCoroutine JZCrashReport
+    JZCv JZFrp JZGpio JZHttpServer JZJSEngine JZJson JZLvgl JZMcpServer JZModbus JZNode
+    JZOTA JZSensor JZSerialPort JZWifi JZTest)
+
+add_subdirectory(demo)
+add_subdirectory(test)
+add_subdirectory(tools)

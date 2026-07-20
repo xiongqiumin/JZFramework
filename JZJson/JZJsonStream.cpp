@@ -1,6 +1,10 @@
 #include "JZJsonStream.h"
 
+#include <string>
+#include <vector>
 #include "JZStd.h"
+
+using namespace std;
 
 JZJsonStream::JZJsonStream()
 {

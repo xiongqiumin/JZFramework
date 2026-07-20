@@ -14,7 +14,6 @@ public:
     ~JZNetClient();
 
     SocketState state() const;
-    uint64_t serverId() const;
 
     void setToken(std::string token);
     std::string token();

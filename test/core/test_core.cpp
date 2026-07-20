@@ -4,6 +4,8 @@
 #include "JZRegExp.h"
 #include "JZByteArray.h"
 #include "JZElapsedTimer.h"
+#include "JZApplication.h"
+#include "test_thread.h"
 #include <cstdio>
 #include <cstring>
 
@@ -566,8 +568,11 @@ int main(int argc,char *argv[])
 {
     benchmark_audio_base64();
 
+    JZApplication app;
+
     JZTest test;
     test_JZCore(&test);
+    test_JZThread(&test);
     test.run(argc, argv);
     return 0;
 }

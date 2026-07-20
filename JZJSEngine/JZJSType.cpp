@@ -1,8 +1,8 @@
 ﻿#include "JZJSType.h"
-
+#include "JZJSEngine.h"
 #include <assert.h>
 
-#include "JZJSEngine.h"
+using namespace std;
 
 // CFunctionParam
 CFunctionParam::CFunctionParam()

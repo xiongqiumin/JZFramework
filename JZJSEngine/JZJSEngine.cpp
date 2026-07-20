@@ -19,6 +19,7 @@
 #include "JZStd.h"
 
 using namespace jsbind;
+using namespace std;
 
 class JZJSEngineInternalFunction
 {

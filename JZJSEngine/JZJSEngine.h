@@ -75,7 +75,7 @@ public:
     bool isInterruption() const;
     void wait(int ms);  // 会被打断
 
-    int ctypeidToType(string ctypeid);
+    int ctypeidToType(std::string ctypeid);
     int jsTypeToType(int js_type);
     int typeToJSType(int type);
     int jsValueType(JSValue v);
@@ -117,9 +117,9 @@ public:
     void setPromiseResolve(int handle, const std::vector<JZJSValuePtr>& result);
     void setPromiseReject(int handle, const std::string& error);
 
-    void registFunction(JSValue this_val, string name, shared_ptr<CFunction> func);
-    void registAsyncFunction(JSValue this_val, string name,
-                             shared_ptr<CFunction> func);  // CFunction 第一个是promise handle, 后面是正常参数
+    void registFunction(JSValue this_val, std::string name, std::shared_ptr<CFunction> func);
+    void registAsyncFunction(JSValue this_val, std::string name, 
+        std::shared_ptr<CFunction> func);  // CFunction 第一个是promise handle, 后面是正常参数
     void registClass(const CClassDefine& define, int id = JSType_none);
 
     template <class T>
@@ -154,13 +154,13 @@ protected:
     {
         TypeInfo();
 
-        string name;
+        std::string name;
         int type;
         int jsType;  // 这里的jsType 是 tag 和 class_id 组合，有潜在问题，先这样
-        string ctypeId;
+        std::string ctypeId;
         int valueType;
         CClassDefine classDefine;
-        shared_ptr<vector<JSCFunctionListEntry>> funcList;
+        std::shared_ptr<std::vector<JSCFunctionListEntry>> funcList;
     };
 
     struct TimerTask
@@ -187,22 +187,22 @@ protected:
     std::string workDir();
     std::string fullPath(std::string& path);
 
-    string typeName(int type);
+    std::string typeName(int type);
 
     bool isVectorType(int type);
     void print(JSValueConst this_val, int argc, JSValueConst* argv);
-    string printObject(JSValue value);
+    std::string printObject(JSValue value);
 
-    string makeTypeErrorText(int i, int type);
-    string makeGetPropErrorText(std::string error);
+    std::string makeTypeErrorText(int i, int type);
+    std::string makeGetPropErrorText(std::string error);
 
     JSValue makeParamNumError(int num);
     JSValue makeTypeError(int i, int type);
-    JSValue makeOpenFileError(string file);
+    JSValue makeOpenFileError(std::string file);
 
     void* constructor(int type);
     void deconstructor(JSValue value);
-    string getExceptionDescript‌(JSValue exc);
+    std::string getExceptionDescript‌(JSValue exc);
 
     int setInterval(JSValue callback, int64_t interval, bool once);
     void clearInterval(int id);
@@ -226,11 +226,11 @@ protected:
 
     bool load(const std::string& file);
     bool loadScript(const std::string& script);
-    string getPropertyStr(JSValue var, string prop);
+    std::string getPropertyStr(JSValue var, std::string prop);
 
-    void updateFunction(shared_ptr<CFunction> func);
+    void updateFunction(std::shared_ptr<CFunction> func);
     void registType(TypeInfo type_info);
-    void registBase(string name, int type, int js_type, string ctypeid);
+    void registBase(std::string name, int type, int js_type, std::string ctypeid);
 
     void setStatus(JZJSEngineStatus status);
     void onExceptionOccurred(std::string error);
@@ -244,17 +244,17 @@ protected:
     void startEngineTimer();
     void stopEngineTimer();
 
-    vector<shared_ptr<CFunction>> m_funcList;
+    std::vector<std::shared_ptr<CFunction>> m_funcList;
 
-    map<int, TypeInfo> m_typeMap;
-    map<string, int> m_cTypeMap;
-    map<int, int> m_jsTypeMap;
+    std::map<int, TypeInfo> m_typeMap;
+    std::map<std::string, int> m_cTypeMap;
+    std::map<int, int> m_jsTypeMap;
 
     int m_timeTaskId;
-    vector<TimerTask> m_timeTasks;
+    std::vector<TimerTask> m_timeTasks;
 
     int m_promiseTaskId;
-    map<int, std::shared_ptr<PromiseTask>> m_promiseTask;
+    std::map<int, std::shared_ptr<PromiseTask>> m_promiseTask;
 
     std::string m_runtimeError;
     std::string m_promiseError;

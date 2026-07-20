@@ -6,7 +6,7 @@ JZCamera::JZCamera(JZObject *parent)
     , sigError(this)
 {
     m_timer = new JZTimer(this);
-    connect(m_timer, &JZTimer::sigTimeout, this, &JZCamera::onTimeout);
+    connect(&m_timer->sigTimeout, this, &JZCamera::onTimeout);
 }
 
 JZCamera::~JZCamera()

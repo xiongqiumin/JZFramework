@@ -314,7 +314,7 @@ void JZAgent::llmRequest()
     req.setRawHeader("Authorization", "Bearer " + m_config.modelToken);
 
     Json::FastWriter write;
-    string json_str = write.write(request_body);
+    std::string json_str = write.write(request_body);
 
     JZByteArray req_buffer = str_toUtf8(json_str);
     m_llmReply = m_net->post(req, req_buffer);
@@ -369,7 +369,7 @@ void JZAgent::processToolCall(ToolCall& tool)
 // LLMHistory
 Json::Value LLMHistory::toJson() const
 {
-    string role_str;
+    std::string role_str;
     Json::Value history_msg;
 
     if (role == Role::User)
@@ -660,7 +660,7 @@ void JZAgent::llmLoop()
     }
     catch (const std::exception& e)
     {
-        llmError(string("内部错误:") + e.what());
+        llmError(std::string("内部错误:") + e.what());
     }
 }
 
@@ -691,7 +691,7 @@ void JZAgent::onLLMRequest()
         return;
     }
 
-    string json_message = str_fromUtf8(net_reply->readAll());
+    std::string json_message = str_fromUtf8(net_reply->readAll());
 
     Json::Value result;
     Json::Reader reader;

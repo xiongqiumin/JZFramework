@@ -49,7 +49,7 @@ struct LLMContext
     bool fromJson(const Json::Value& root);
     Json::Value toJson() const;
 
-    vector<LLMHistory> history;
+    std::vector<LLMHistory> history;
     JZAgentTokenUsage usage;
 };
 

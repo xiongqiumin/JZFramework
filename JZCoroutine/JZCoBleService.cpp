@@ -183,9 +183,9 @@ JZResult<JZByteArray> JZCoBleService::waitForChanged(const JZBluetoothUuid &char
     }
 
     if (m_error)
-        return JZResult<std::string>::Error(m_errorMsg);
+        return JZResult<JZByteArray>::Error(m_errorMsg);
 
-    return JZResult<std::string>::Error("wait for changed timeout");
+    return JZResult<JZByteArray>::Error("wait for changed timeout");
 }
 
 //=======================================================================

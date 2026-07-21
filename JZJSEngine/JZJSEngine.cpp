@@ -540,6 +540,7 @@ void JZJSEngine::pause()
 void JZJSEngine::resetUncaughtError()
 {
     JS_ResetUncatchableError(m_ctx);
+    startEngineTimer();   // onExceptionOccurred 已 stopEngineTimer, 必须重启, 否则 execOnce 永不再触发
     setStatus(Engine_running);
 }
 
@@ -624,8 +625,12 @@ std::string JZJSEngine::getPropertyStr(JSValue var, std::string name)
 
     JSValue prop = JS_GetPropertyStr(m_ctx, var, name.c_str());
     const char* msg = JS_ToCString(m_ctx, prop);
-    ret = msg;
-    JS_FreeCString(m_ctx, msg);
+    if (msg)
+    {
+        ret = msg;
+        JS_FreeCString(m_ctx, msg);
+    }
+    JS_FreeValue(m_ctx, prop);   // prop 也是 JS_GetPropertyStr 返回的引用, 必须释放
 
     return ret;
 }
@@ -1139,6 +1144,7 @@ void JZJSEngine::setPromiseResolve(int handle, const std::vector<JZJSValuePtr>& 
     }
 
     JSValue ret = JS_Call(m_ctx, task->resolve, JS_UNDEFINED, value_list.size(), value_list.data());
+    JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     map_remove(m_promiseTask, handle);
 }
 
@@ -1154,6 +1160,7 @@ void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
 
     JSValue args[] = {error};
     JSValue ret = JS_Call(m_ctx, task->reject, JS_UNDEFINED, 1, args);
+    JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     JS_FreeValue(m_ctx, error);
 
     map_remove(m_promiseTask, handle);
@@ -1188,7 +1195,7 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
     {
         int arg_type = func->params[i].type;
         int js_type = jsValueType(argv[i]);
-        if (js_type != arg_type)
+        if (js_type != arg_type && !canConvert(js_type, arg_type))
         {
             string input_type = typeName(js_type);
             string need_type = typeName(arg_type);
@@ -1220,7 +1227,7 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
     {
         int arg_type = func->params[i + 1].type;
         int js_type = jsValueType(argv[i]);
-        if (js_type != arg_type)
+        if (js_type != arg_type && !canConvert(js_type, arg_type))
         {
             string input_type = typeName(js_type);
             string need_type = typeName(arg_type);

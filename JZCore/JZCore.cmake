@@ -103,15 +103,26 @@ list(APPEND JZCORE_SOURCES
     ${BASE64_DIR}/lib/codec_choose.c
     ${BASE64_DIR}/lib/tables/tables.c
     ${BASE64_DIR}/lib/arch/generic/codec.c
-    ${BASE64_DIR}/lib/arch/ssse3/codec.c
-    ${BASE64_DIR}/lib/arch/sse41/codec.c
-    ${BASE64_DIR}/lib/arch/sse42/codec.c
-    ${BASE64_DIR}/lib/arch/avx/codec.c
-    ${BASE64_DIR}/lib/arch/avx2/codec.c
-    ${BASE64_DIR}/lib/arch/avx512/codec.c
-    ${BASE64_DIR}/lib/arch/neon32/codec.c
-    ${BASE64_DIR}/lib/arch/neon64/codec.c
 )
+
+# x86 SIMD 加速仅在 x86 平台编译（ESP32 等交叉编译平台不适用）
+if(NOT ESP_PLATFORM)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86|x86_64|AMD64|i[3-6]86")
+        list(APPEND JZCORE_SOURCES
+            ${BASE64_DIR}/lib/arch/ssse3/codec.c
+            ${BASE64_DIR}/lib/arch/sse41/codec.c
+            ${BASE64_DIR}/lib/arch/sse42/codec.c
+            ${BASE64_DIR}/lib/arch/avx/codec.c
+            ${BASE64_DIR}/lib/arch/avx2/codec.c
+            ${BASE64_DIR}/lib/arch/avx512/codec.c
+        )
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64")
+        list(APPEND JZCORE_SOURCES
+            ${BASE64_DIR}/lib/arch/neon32/codec.c
+            ${BASE64_DIR}/lib/arch/neon64/codec.c
+        )
+    endif()
+endif()
 
 convert_to_abs_paths(JZCORE_SOURCES)
 
@@ -123,16 +134,19 @@ target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${BASE64_DIR}/lib")
 target_compile_definitions(${JZ_MODULE_TARGET} PRIVATE BASE64_STATIC_DEFINE _SCL_SECURE_NO_WARNINGS)
 
 # base64 SIMD 逐文件编译选项 (与原库 CMake 一致)
-if(MSVC)
-    set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c   PROPERTIES COMPILE_FLAGS "/arch:AVX")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c  PROPERTIES COMPILE_FLAGS "/arch:AVX2")
-elseif(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/ssse3/codec.c  PROPERTIES COMPILE_FLAGS "-mssse3")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/sse41/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.1")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/sse42/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.2")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c    PROPERTIES COMPILE_FLAGS "-mavx")
-    set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c   PROPERTIES COMPILE_FLAGS "-mavx2")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
-        set_source_files_properties(${BASE64_DIR}/lib/arch/neon32/codec.c PROPERTIES COMPILE_FLAGS "-mfpu=neon")
+# 仅 x86 平台启用 SIMD 编译选项，ESP32 平台由 generic 实现处理
+if(NOT ESP_PLATFORM)
+    if(MSVC)
+        set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c   PROPERTIES COMPILE_FLAGS "/arch:AVX")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c  PROPERTIES COMPILE_FLAGS "/arch:AVX2")
+    elseif(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/ssse3/codec.c  PROPERTIES COMPILE_FLAGS "-mssse3")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/sse41/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.1")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/sse42/codec.c  PROPERTIES COMPILE_FLAGS "-msse4.2")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/avx/codec.c    PROPERTIES COMPILE_FLAGS "-mavx")
+        set_source_files_properties(${BASE64_DIR}/lib/arch/avx2/codec.c   PROPERTIES COMPILE_FLAGS "-mavx2")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+            set_source_files_properties(${BASE64_DIR}/lib/arch/neon32/codec.c PROPERTIES COMPILE_FLAGS "-mfpu=neon")
+        endif()
     endif()
 endif()

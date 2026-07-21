@@ -167,34 +167,29 @@ private:
         bool subscribedIndicate = false;  // 对端已订阅 indicate
     };
 
-    bool m_scanning = false;
-    bool m_advertising = false;
+    // ---- 共享 ----
     uint8_t m_ownAddrType = 0;  // 0 = BLE_OWN_ADDR_PUBLIC
+    std::map<std::string, JZBleBondKey> m_bondStore; // obj_type:addr -> 密钥
 
-    int m_periphConnHandle = -1;  // Peripheral client 连接句柄
-    std::map<std::string, PeriphCharInfo> m_periphCharMap;  // charUuid -> handles/props/value
-    JZBLEPeripheral *m_periphCtrlPriv = nullptr;    // 当前 Peripheral
-    PeriphGatt *m_periphGatt = nullptr;              // 长期存活的 GATT 定义
-
-
-    // 延迟广播（等待 host sync）
-    bool m_synced = false;
+    // ---- Peripheral (从机) ----
+    enum class State { None, Starting, Started };
+    State m_advertState = State::None;
+    int m_periphConnHandle = -1;
+    JZBLEPeripheral *m_periphCtrlPriv = nullptr;
+    JZBLEPeripheral *m_pendingAdvPeriph = nullptr;
+    PeriphGatt *m_periphGatt = nullptr;
+    std::map<std::string, PeriphCharInfo> m_periphCharMap; // charUuid -> info
     bool m_pendingAdv = false;
     std::string m_pendingAdvName;
     std::vector<JZBluetoothUuid> m_pendingAdvUuids;
-    JZBLEPeripheral *m_pendingAdvPeriph = nullptr;
 
+    // ---- Central (主机) ----
+    bool m_scanning = false;
     std::map<std::string, int> m_connMap;
-    std::map<int, std::string> m_connToAddr;                 // conn_handle -> addr
-    std::map<std::string, ConnGatt> m_gatt;                 // addr -> GATT 缓存
-    std::map<std::string, JZBLEService*> m_svcPtrCache; // "addr|svc" -> service 指针（通知路由用）
-
-    // 绑定密钥上报目标（按对端地址路由，支持多 Central 并发，避免单一目标误路由）
+    std::map<int, std::string> m_connToAddr;
+    std::map<std::string, ConnGatt> m_gatt;
+    std::map<std::string, JZBLEService*> m_svcPtrCache;    // "addr|svc" -> service
     std::map<std::string, JZBLEController *> m_bondCentralByAddr;
-
-    // 绑定密钥内存缓存（key = obj_type:addr）。驱动不持久化，仅本次会话使用；
-    // 持久化由上层通过 BondKeyReporter 接收后自行处理，并在重连时经 connectToDevice(keys) 注入。
-    std::map<std::string, JZBleBondKey> m_bondStore;
 };
 
 #endif // !JZ_BLE_DRIVER_ESP32_H_

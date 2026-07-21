@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.10)
 project(JZSimulator)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_AUTOMOC ON)
 
 if (MSVC)    
     add_compile_options(/execution-charset:utf-8)
@@ -10,20 +9,15 @@ if (MSVC)
     add_compile_options(/bigobj)
 endif()
 
-# ======================== Qt ========================
-# Qt5.15 安装路径 (msvc2015_64), 可用 -DQt5_DIR 覆盖
-set(Qt5_DIR "C:/Qt5.15/5.15.2/msvc2015_64/lib/cmake/Qt5" CACHE PATH "Qt5 cmake 目录")
-find_package(Qt5 REQUIRED COMPONENTS Widgets)
-
 # ======================== JZFramework 库 ========================
 # 独立引用外部 JZFramework.cmake, 编译 JZFramework 静态库 (不与主 CMakeLists 关联)
-# 仅启用 simulator 所需的底层模块, 不引入 JZSimulator 模块 (避免拉入驱动侧代码)
+# 界面改由 JZHttpServer + 网页提供, 仅需网络与 HTTP 服务相关模块
 set(JZFRAMEWORK_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 include("${JZFRAMEWORK_ROOT}/JZFramework.cmake")
-jzframework_use_modules(JZCore JZNet)
+jzframework_use_modules(JZCore JZNet JZHttpServer JZJson)
 
 # ======================== 直接引用 JZSimulator 的网络包源码 ========================
-# simulator 界面只需与驱动通信的网络包定义, 直接包含源文件, 不编译整个 JZSimulator 模块
+# simulator 只需与驱动通信的网络包定义, 直接包含源文件, 不编译整个 JZSimulator 模块
 set(JZSIMULATOR_MODULE_DIR "${JZFRAMEWORK_ROOT}/JZSimulator")
 set(SIM_PACKET_SOURCES
     ${JZSIMULATOR_MODULE_DIR}/JZBleSimPack.h
@@ -34,12 +28,18 @@ set(SIM_PACKET_SOURCES
 set(SIM_SOURCES
     JZSimulator.h
     JZSimulator.cpp
-    MainWindow.h
-    MainWindow.cpp
+    JZSimWebServer.h
+    JZSimWebServer.cpp
     main.cpp
 )
 convert_to_abs_paths(SIM_SOURCES)
 
 add_executable(JZSimulator ${SIM_SOURCES} ${SIM_PACKET_SOURCES})
 target_include_directories(JZSimulator PRIVATE ${JZSIMULATOR_MODULE_DIR})
-target_link_libraries(JZSimulator PRIVATE JZFramework Qt5::Widgets)
+
+# 网页根目录: 由 JZHttpStaticFiles 在运行时静态服务 web/ 下的文件
+set(WEB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/web")
+file(TO_CMAKE_PATH "${WEB_ROOT}" WEB_ROOT)
+target_compile_definitions(JZSimulator PRIVATE JZ_SIM_WEB_ROOT="${WEB_ROOT}")
+
+target_link_libraries(JZSimulator PRIVATE JZFramework)

@@ -70,14 +70,8 @@ bool JZBleDriverSimulator::isScanning(JZBLEDeviceDiscoveryAgent *agent)
 void JZBleDriverSimulator::connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys)
 {
     std::string addr = d->deviceInfo().address();
-<<<<<<< HEAD
-    m_central = d;   // 单一上报目标（事件仅带 addr，无法指明具体对象）
-    // 密钥由 connectToDevice(keys) 传入（模拟器不实现密钥库，仅保持语义一致）
-    JZVariantMap m; simSetStr(m, "addr", addr);
-=======
     m_centralByAddr[addr] = d;
     JZVariantMap m; m["addr"] = JZVariant(addr);
->>>>>>> 4be69fd25136706bf9eb4a53b0f2a788b7f1b0cd
     sendSim(SIM_CMD_CONNECT, m);
 }
 void JZBleDriverSimulator::disconnectFromDevice(JZBLEController *d)

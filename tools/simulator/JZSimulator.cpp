@@ -5,15 +5,39 @@
 #include "JZThread.h"
 #include "JZStd.h"
 #include "JZNetClient.h"
+#include "JZJson.h"
 
 #include <algorithm>
-#include <QString>
 
 JZ_OBJECT_IMPL(JZSimulator, JZObject)
 
 static bool contains(const std::vector<std::string> &v, const std::string &u)
 {
     return std::find(v.begin(), v.end(), u) != v.end();
+}
+
+// 将 SimChar 列表序列化为 Json::Value 数组
+static Json::Value charsToJson(const std::vector<JZSimulator::SimChar> &chars)
+{
+    Json::Value arr(Json::arrayValue);
+    for (const auto &ch : chars) {
+        Json::Value o;
+        o["svc"]       = ch.svc;
+        o["chr"]       = ch.chr;
+        o["props"]     = ch.props;
+        o["value"]     = ch.value;
+        o["notifying"] = ch.notifying;
+        arr.append(std::move(o));
+    }
+    return arr;
+}
+
+// 将 Json::Value 写为紧凑 JSON 字符串 (使用 JZJson / jsoncpp)
+static std::string writeJson(const Json::Value &v)
+{
+    Json::FastWriter writer;
+    writer.omitEndingLineFeed();
+    return writer.write(v);
 }
 
 JZSimulator::JZSimulator(JZObject *parent) : JZObject(parent)
@@ -64,6 +88,33 @@ std::string JZSimulator::statusText() const
     return s;
 }
 
+std::string JZSimulator::stateJson() const
+{
+    Json::Value root;
+    root["status"]         = statusText();
+    root["deviceName"]     = m_name;
+    root["advertising"]    = m_advertising;
+    root["hasCentral"]     = hasCentral();
+    root["hasPeriphClient"] = hasPeriphClient();
+    root["periphName"]     = m_periphName;
+    root["chars"]          = charsToJson(m_chars);
+    root["periphChars"]    = charsToJson(m_periphChars);
+    return writeJson(root);
+}
+
+std::string JZSimulator::logsJson(size_t since) const
+{
+    Json::Value root;
+    root["count"] = static_cast<Json::UInt64>(m_logs.size());
+    Json::Value arr(Json::arrayValue);
+    if (since < m_logs.size()) {
+        for (size_t i = since; i < m_logs.size(); i++)
+            arr.append(m_logs[i]);
+    }
+    root["logs"] = arr;
+    return writeJson(root);
+}
+
 // ======================== 操作命令 ========================
 void JZSimulator::setDeviceName(const std::string& name)
 {
@@ -75,7 +126,6 @@ void JZSimulator::setAdvertising(bool on)
 {
     m_advertising = on;
     log(on ? "Device advertising ON" : "Device advertising OFF");
-    notifyStateChanged();
 }
 
 void JZSimulator::notifyChar(size_t index, const std::string& value)
@@ -101,7 +151,6 @@ void JZSimulator::connectCentral()
     JZVariantMap m; simSetStr(m, "addr", m_periphClientAddr); simSetInt(m, "role", 1);
     sendToDriver(SIM_EVT_CONNECTED, m);
     log("Connected to App Peripheral (simulated central)");
-    notifyStateChanged();
 }
 
 void JZSimulator::disconnectCentral()
@@ -111,7 +160,6 @@ void JZSimulator::disconnectCentral()
     sendToDriver(SIM_EVT_DISCONNECTED, m);
     log("Disconnected from App Peripheral");
     m_periphClientAddr.clear();
-    notifyStateChanged();
 }
 
 void JZSimulator::writePeriphChar(size_t index, const std::string& value)
@@ -146,7 +194,6 @@ void JZSimulator::onAccept()
 
     m_clientConn = conn;
     log("driver connected");
-    notifyStateChanged();
 }
 
 void JZSimulator::onDisconnect(uint64_t c)
@@ -158,8 +205,6 @@ void JZSimulator::onDisconnect(uint64_t c)
         m_periphName.clear();
         m_periphChars.clear();
         log("driver disconnected");
-        notifyStateChanged();
-        if (m_bridge) emit m_bridge->periphCharsChanged();
     }
 }
 
@@ -184,12 +229,11 @@ void JZSimulator::sendToDriver(int msg, const JZVariantMap &m)
 
 void JZSimulator::log(const std::string &t)
 {
-    if (m_bridge) emit m_bridge->logAppended(QString::fromStdString(t));
-}
-
-void JZSimulator::notifyStateChanged()
-{
-    if (m_bridge) emit m_bridge->stateChanged();
+    m_logs.push_back(t);
+    // 限制日志数量, 避免无限增长
+    const size_t kMaxLogs = 2000;
+    if (m_logs.size() > kMaxLogs)
+        m_logs.erase(m_logs.begin(), m_logs.begin() + (m_logs.size() - kMaxLogs));
 }
 
 // ======================== 指令处理 ========================
@@ -216,7 +260,6 @@ void JZSimulator::handlePack(uint64_t c, const JZVariantMap &map)
         JZVariantMap m; simSetStr(m, "addr", m_centralAddr); simSetInt(m, "role", 0);
         sendToDriver(SIM_EVT_CONNECTED, m);
         log("App Central connected: " + m_centralAddr);
-        notifyStateChanged();
         break;
     }
     case SIM_CMD_DISCONNECT: {
@@ -226,7 +269,6 @@ void JZSimulator::handlePack(uint64_t c, const JZVariantMap &map)
             JZVariantMap m; simSetStr(m, "addr", addr); simSetInt(m, "role", 0);
             sendToDriver(SIM_EVT_DISCONNECTED, m);
             log("App Central disconnected: " + addr);
-            notifyStateChanged();
         }
         break;
     }
@@ -295,13 +337,10 @@ void JZSimulator::handlePack(uint64_t c, const JZVariantMap &map)
     case SIM_CMD_START_ADV: {
         m_periphName = simGetStr(map, "name");
         log("App Peripheral advertising: " + m_periphName);
-        notifyStateChanged();
-        if (m_bridge) emit m_bridge->periphCharsChanged();
         break;
     }
     case SIM_CMD_STOP_ADV:
         log("App Peripheral stopped advertising");
-        notifyStateChanged();
         break;
     case SIM_CMD_SEND_NOTIFY: {
         std::string chr = simGetStr(map, "chr"), val = simGetStr(map, "val");

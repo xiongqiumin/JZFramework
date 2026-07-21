@@ -1,39 +1,31 @@
-#include <QApplication>
-#include <QTimer>
-
 #include "JZApplication.h"
+#include "JZDebug.h"
 #include "JZSimulator.h"
-#include "MainWindow.h"
+#include "JZSimWebServer.h"
 
-// JZ BLE Simulator: Qt 作为主事件循环驱动界面, JZ 事件循环由定时器桥接
+// JZ BLE Simulator: 使用 JZFramework 事件循环驱动网络与 Web 服务
+// 界面改由 JZHttpServer 提供的网页承载 (默认 http://127.0.0.1:8080)
 int main(int argc, char *argv[])
 {
-    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);    
+    int webPort = 8080;   // 网页端口
+    int simPort = 19123;  // 与驱动通信端口
 
-    // Qt 应用: 作为主事件循环驱动界面
-    QApplication app(argc, argv);
+    JZApplication app;
 
-    // JZ 框架应用: 提供 jzApp 与事件循环 (网络事件派发)
-    JZApplication jz_app;
-
-    // 模型/控制器
+    // 模型/控制器: BLE 仿真逻辑 + 与驱动的网络通信
     JZSimulator sim;
-    // Qt 桥接器: 把模型事件以 Qt 信号派发到 UI 线程 (生命周期归属 Qt 对象树)
-    JZSimulatorBridge bridge(&app);
-    sim.setBridge(&bridge);
-    // 视图: 构造时连接 bridge 信号并构建界面 (此时 GATT 已预置, 可读数据)
-    MainWindow w(&sim, &bridge);
-    // 启动网络监听
-    sim.start(19123);
-    w.show();
+    sim.start(simPort);
 
-    // 用 Qt 定时器周期性驱动 JZ 事件循环, 派发网络(后台线程)投递到主线程的事件
-    QTimer jzPump;
-    QObject::connect(&jzPump, &QTimer::timeout, []() 
-    { 
-        jzApp->processEvents(); 
-    });
-    jzPump.start(20);
+    // 界面: 基于 JZHttpServer 的网页
+    JZSimWebServer web(&sim);
+    if (!web.start(webPort)) {
+        jzWarning() << "Web server failed to listen on port" << webPort;
+        return 1;
+    }
+
+    jzDebug() << "JZ BLE Simulator running";
+    jzDebug() << "  Web UI     : http://127.0.0.1:" << webPort;
+    jzDebug() << "  Driver port:" << simPort;
 
     return app.exec();
 }

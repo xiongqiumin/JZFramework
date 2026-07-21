@@ -3,10 +3,10 @@
 
 #include "JZWidget.h"
 
-class JZDisplayDevice : public JZWidget
+class JZDisplayDevice
 {
 public:
-    JZDisplayDevice(lv_display_t* m_display);    
+    JZDisplayDevice(int w,int h);    
     ~JZDisplayDevice();
 
     lv_display_t* displayHandle() const;

@@ -37,3 +37,4 @@ jzframework_use_modules(JZCore JZNet JZAgent JZBle JZCamera JZCoroutine JZCrashR
 add_subdirectory(demo)
 add_subdirectory(test)
 add_subdirectory(tools)
+add_subdirectory(binary)

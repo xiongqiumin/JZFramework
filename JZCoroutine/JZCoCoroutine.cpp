@@ -298,7 +298,8 @@ public:
             if(job.task)
             {
                 job.task();
-                job.cond->wakeAll();
+                JZCoCondition* cond = job.cond;
+                runOnThread(jzApp->mainThread(), [cond]{ cond->wakeAll(); });
             }
             else
             {
@@ -314,11 +315,12 @@ public:
 //JZCoThreadPool
 JZCoThreadPool *JZCoThreadPool::instance()
 {
-    static JZCoThreadPool inst;
-    return &inst;
+    static JZCoThreadPool *inst = new JZCoThreadPool(jzApp);
+    return inst;
 }
 
-JZCoThreadPool::JZCoThreadPool()
+JZCoThreadPool::JZCoThreadPool(JZObject *parent)
+    :JZObject(parent)
 {
     for(int i = 0; i < 1; i++)
     {

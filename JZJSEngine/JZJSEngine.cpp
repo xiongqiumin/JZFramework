@@ -55,11 +55,11 @@ public:
         }
 
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        int id = 0;
+        int id;
         if (magic == 0)
-            engine->setInterval(argv[0], interval_ms, false);
+            id = engine->setInterval(argv[0], interval_ms, false);
         else
-            engine->setInterval(argv[0], interval_ms, true);
+            id = engine->setInterval(argv[0], interval_ms, true);
 
         return JS_NewInt32(ctx, id);
     }
@@ -233,7 +233,10 @@ JZJSEngine::PromiseTask::~PromiseTask()
 {
     if (ctx)
     {
+        // 必须释放 resolve 和 reject 两个闭包, 否则在 JS_FreeRuntime 时
+        // gc_obj_list 仍非空, 触发 list_empty 断言
         JS_FreeValue(ctx, resolve);
+        JS_FreeValue(ctx, reject);
     }
 }
 
@@ -289,6 +292,8 @@ void JZJSEngine::initJSEnv()
     registVector<string>();
 
     registConsole();
+
+    setStatus(Engine_pause);
 }
 
 void JZJSEngine::deinitJSEnv()
@@ -498,11 +503,10 @@ void JZJSEngine::setStatus(JZJSEngineStatus status)
 {
     if (m_status != status)
     {
-        assert((m_status == Engine_none && status == Engine_running) ||
-               (m_status == Engine_running &&
-                (status == Engine_pause || status == Engine_error || status == Engine_none)) ||
-               (m_status == Engine_pause && (status == Engine_running || status == Engine_none)) ||
-               (m_status == Engine_error && (status == Engine_running || status == Engine_none)));
+        assert((m_status == Engine_none && (status == Engine_pause || status == Engine_running)) ||
+               (m_status == Engine_running && (status == Engine_pause || status == Engine_error || status == Engine_none)) ||
+               (m_status == Engine_pause && (status == Engine_running || status == Engine_error || status == Engine_none)) ||
+               (m_status == Engine_error && status == Engine_none));
 
         LOG_FMT_I("engine status changed %d -> %d", m_status, status);
 
@@ -1228,11 +1232,16 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
     int promise_handle = m_promiseTaskId++;
 
     std::shared_ptr<PromiseTask> task = std::make_shared<PromiseTask>();
+    task->ctx = m_ctx;
 
     JSValue resolving_funcs[2];
     JSValue promise = JS_NewPromiseCapability(m_ctx, resolving_funcs);
     task->resolve = JS_DupValue(m_ctx, resolving_funcs[0]);
     task->reject = JS_DupValue(m_ctx, resolving_funcs[1]);
+    // JS_NewPromiseCapability 返回的 resolving_funcs 带 +1 引用, 调用方必须释放,
+    // 否则这两个闭包对象会泄漏, 导致 JS_FreeRuntime 时 gc_obj_list 非空而断言失败
+    JS_FreeValue(m_ctx, resolving_funcs[0]);
+    JS_FreeValue(m_ctx, resolving_funcs[1]);
     m_promiseTask[promise_handle] = task;
 
     JSValue handle_value = JS_NewInt32(m_ctx, promise_handle);
@@ -1246,7 +1255,8 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
         }
         func->call(m_ctx, async_args.data());
 
-        JS_FreeValue(m_ctx, promise);
+        // 注意: promise 的所有权转移给调用方(JS 异步函数返回值), 这里不能释放,
+        // 否则返回的 promise 已被释放, 后续 GC 对该对象再 decref 会触发 ref_count 断言
         JS_FreeValue(m_ctx, handle_value);
         return promise;
     }
@@ -1320,22 +1330,30 @@ void JZJSEngine::execOnce()
     while (true)
     {
         int64_t now = currentMs();
-        int64_t max_gap = 0;
+        int64_t max_gap = -1;   // 用 -1 作初值, 任意 cur_gap >= 0 都视为到期
 
         int max_task = -1;
         for (int i = 0; i < (int)m_timeTasks.size(); i++)
         {
             int64_t cur_gap = now - m_timeTasks[i].next_run_time;
-            if (cur_gap > max_gap)
+            if (cur_gap >= 0 && cur_gap > max_gap)
             {
-                cur_gap = max_gap;
+                max_gap = cur_gap;
                 max_task = i;
             }
         }
         if (max_task == -1)
             break;
 
-        JSValue result = JS_Call(m_ctx, m_timeTasks[max_task].callback, JS_UNDEFINED, 0, nullptr);
+        // 记录 id: 回调内部可能调用 clearInterval 删除本任务, 之后不能再按旧索引访问
+        int task_id = m_timeTasks[max_task].id;
+
+        // 复制一份独立引用再执行: 回调内部可能调用 clearInterval 释放自身,
+        // 若不持有独立引用, JS_Call 执行期间该 JS 对象会被提前释放导致崩溃
+        JSValue callback = JS_DupValue(m_ctx, m_timeTasks[max_task].callback);
+        JSValue result = JS_Call(m_ctx, callback, JS_UNDEFINED, 0, nullptr);
+        JS_FreeValue(m_ctx, callback);
+
         if (JS_IsException(result))
         {
             unHandleException();
@@ -1344,14 +1362,28 @@ void JZJSEngine::execOnce()
         }
 
         JS_FreeValue(m_ctx, result);
-        if (m_timeTasks[max_task].runOnce)
+
+        // 按 id 重新查找该任务, 若已被 clearInterval 删除则跳过重排
+        int idx = -1;
+        for (int i = 0; i < (int)m_timeTasks.size(); i++)
         {
-            JS_FreeValue(m_ctx, m_timeTasks[max_task].callback);
-            vec_removeAt(m_timeTasks, max_task);
+            if (m_timeTasks[i].id == task_id)
+            {
+                idx = i;
+                break;
+            }
+        }
+        if (idx == -1)
+            continue;
+
+        if (m_timeTasks[idx].runOnce)
+        {
+            JS_FreeValue(m_ctx, m_timeTasks[idx].callback);
+            vec_removeAt(m_timeTasks, idx);
         }
         else
         {
-            m_timeTasks[max_task].next_run_time += m_timeTasks[max_task].interval;
+            m_timeTasks[idx].next_run_time += m_timeTasks[idx].interval;
         }
     }
 

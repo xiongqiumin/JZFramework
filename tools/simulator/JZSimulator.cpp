@@ -1,6 +1,39 @@
 #include "JZSimulator.h"
-#include "JZBleSimPack.h"
+#include "JZSimPack.h"
 #include "JZDataStream.h"
+
+// 本地副本: JZVariantMap 读写辅助, 配套 JZSimPack 使用 (不依赖已废弃的 JZBleSimPack.h)
+static inline int simGetInt(const JZVariantMap &m, const std::string &k, int def = 0)
+{
+    auto it = m.find(k);
+    if (it == m.end()) return def;
+    const JZVariant &v = it->second;
+    int t = v.typeId();
+    if (t == JZMetaType::Int)   return v.toInt();
+    if (t == JZMetaType::Int64) return (int)v.toInt64();
+    return def;
+}
+static inline std::string simGetStr(const JZVariantMap &m, const std::string &k, const std::string &def = "")
+{
+    auto it = m.find(k);
+    if (it == m.end()) return def;
+    const JZVariant &v = it->second;
+    return v.typeId() == JZMetaType::String ? v.toString() : def;
+}
+static inline void simSetInt(JZVariantMap &m, const std::string &k, int v)
+{
+    m[k] = JZVariant(v);
+}
+static inline void simSetStr(JZVariantMap &m, const std::string &k, const std::string &v)
+{
+    m[k] = JZVariant(v);
+}
+static inline void simSetStrs(JZVariantMap &m, const std::string &k, const std::vector<std::string> &v)
+{
+    std::string s;
+    for (size_t i = 0; i < v.size(); i++) { if (i) s += ';'; s += v[i]; }
+    m[k] = JZVariant(s);
+}
 #include "JZSignal.h"
 #include "JZThread.h"
 #include "JZStd.h"
@@ -42,7 +75,7 @@ static std::string writeJson(const Json::Value &v)
 
 JZSimulator::JZSimulator(JZObject *parent) : JZObject(parent)
 {
-    JZBleSimPack::ensureRegistered();
+    JZSimPack::ensureRegistered();
 
     // 预置 GATT 表 (Device as Peripheral)
     SimChar c1; c1.svc = "0000FFF0-0000-1000-8000-00805f9b34fb";
@@ -184,8 +217,8 @@ void JZSimulator::onAccept()
     if (m_clientConn != 0) {
         JZVariantMap m;
         simSetInt(m, "msg", SIM_EVT_BUSY);
-        JZBleSimPack pack;
-        pack.map = m;
+        JZSimPack pack;
+        pack.data = m;
         m_server->sendPacket(conn, &pack);
         m_server->closeClient(conn);
         log("rejected new connection (busy): a client is already connected");
@@ -210,20 +243,20 @@ void JZSimulator::onDisconnect(uint64_t c)
 
 void JZSimulator::onPacket(uint64_t c, JZNetPackPtr pack)
 {
-    auto *sp = dynamic_cast<JZBleSimPack *>(pack.get());
+    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
     if (!sp) return;
     runOnObject(this, [this, c, pack]() {
-        auto *p = static_cast<JZBleSimPack *>(pack.get());
-        handlePack(c, p->map);
+        auto *p = static_cast<JZSimPack *>(pack.get());
+        handlePack(c, p->data);
     });
 }
 
 void JZSimulator::sendToDriver(int msg, const JZVariantMap &m)
 {
     if (!m_server) return;
-    JZBleSimPack pack;
-    pack.map = m;
-    simSetInt(pack.map, "msg", msg);
+    JZSimPack pack;
+    pack.data = m;
+    simSetInt(pack.data, "msg", msg);
     m_server->sendPacketToAll(&pack);
 }
 

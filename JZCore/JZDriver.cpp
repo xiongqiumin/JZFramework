@@ -42,6 +42,10 @@
 #include "JZSerialDriverEsp32.h"
 #endif
 
+#ifdef HAS_JZNet
+#include "JZNet/JZNetPacket.h"
+#endif
+
 // ==================== init ====================
 
 void JZDriver::init()
@@ -66,6 +70,10 @@ void JZDriver::init()
 
 #ifdef HAS_JZSerialPort
     JZSerialPortDriver::setInstance(new JZSerialDriverEsp32());
+#endif
+
+#ifdef HAS_JZNet
+    JZNetPackInit();
 #endif
 }
 
@@ -99,23 +107,14 @@ void JZDriver::init()
 #endif
 #endif // HAS_JZAudio
 
+#ifdef HAS_JZNet
+#include "JZNet/JZNetPacket.h"
+#endif
+
+
 
 void JZDriver::init()
 {
-#ifdef HAS_JZLvgl
-#ifdef _WIN32
-    lv_init();    
-    
-    int w = 800, h = 600;
-    auto display = lv_windows_create_display(L"", w, h, 100, false, false);
-    lv_windows_acquire_pointer_indev(display);
-    lv_windows_acquire_keypad_indev(display);
-    lv_windows_acquire_encoder_indev(display);
-
-    // 让 lv_windows_display_timer_callback 尽早执行，初始化 draw buffer
-    lv_timer_handler();
-#endif
-#endif
 
 #ifdef HAS_JZSerialPort
 #if defined(_WIN32)
@@ -131,6 +130,10 @@ void JZDriver::init()
 #elif defined(__linux__)
     JZAudioDriver::setInstance(new JZAudioDriverLinux());
 #endif
+#endif
+
+#ifdef HAS_JZNet
+    JZNetPackInit();
 #endif
 }
 

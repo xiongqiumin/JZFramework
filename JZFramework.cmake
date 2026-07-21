@@ -182,6 +182,7 @@ function(jz_add_resources TARGET_NAME)
     foreach(QRC_FILE ${ARGN})
         get_filename_component(QRC_NAME "${QRC_FILE}" NAME_WE)
         set(OUT_CPP "${GEN_DIR}/${QRC_NAME}_resources.cpp")
+        set(OUT_H "${GEN_DIR}/${QRC_NAME}_resources.h")
 
         if(NOT IS_ABSOLUTE "${QRC_FILE}")
             set(QRC_ABS "${CMAKE_CURRENT_SOURCE_DIR}/${QRC_FILE}")
@@ -206,7 +207,7 @@ function(jz_add_resources TARGET_NAME)
         endforeach()
 
         add_custom_command(
-            OUTPUT "${OUT_CPP}"
+            OUTPUT "${OUT_CPP}" "${OUT_H}"
             COMMAND python "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
             DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" ${QRC_RESOURCES}
             DEPFILE "${DEPFILE}"
@@ -217,14 +218,8 @@ function(jz_add_resources TARGET_NAME)
         message(STATUS "[JZFramework] Resource: ${QRC_FILE} (${QRC_RESOURCES}) -> ${OUT_CPP}")
     endforeach()
 
-    add_library(${TARGET_NAME} OBJECT ${OUT_CPPS})
-    target_link_libraries(${TARGET_NAME} PUBLIC JZFramework)
+    add_library(${TARGET_NAME} STATIC ${OUT_CPPS})
+    target_link_libraries(${TARGET_NAME} PRIVATE JZFramework)
+    # 生成的头文件(声明 jzres_xxx_init)加入接口包含目录, 供调用方 #include "xxx_resources.h"
+    target_include_directories(${TARGET_NAME} PUBLIC "${GEN_DIR}")
 endfunction()
-
-macro(jzframework_build_binary)
-	include(${JZFRAMEWORK_ROOT_DIR}/binary/binary.cmake)
-endmacro()
-
-macro(jzframework_build_test)
-	include(${JZFRAMEWORK_ROOT_DIR}/test/test.cmake)
-endmacro()

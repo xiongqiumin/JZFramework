@@ -3,7 +3,7 @@
 
 #include "JZObject.h"
 #include "JZNetServer.h"
-#include "JZBleSimPack.h"
+#include "JZSimPack.h"
 #include <string>
 #include <vector>
 

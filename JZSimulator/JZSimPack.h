@@ -43,6 +43,7 @@ enum JZSimCmd {
     SIM_EVT_CHAR_WRITTEN,
     SIM_EVT_ADV_STATE,
     SIM_EVT_LOG,
+    SIM_EVT_BUSY,        // 服务器已达最大连接数 (单客户端限制), 拒绝新连接
 
     // ---- GPIO: Driver -> Device (编号从 100 起, 与 BLE 不冲突) ----
     SIM_GPIO_CMD_OPEN = 100,

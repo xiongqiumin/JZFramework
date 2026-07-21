@@ -65,18 +65,85 @@ def write_depfile(depfile_path, output_path, qrc_path, resources):
         f.write(dep_content)
 
 
+def safe_identifier(prefix):
+    """将 qrc 的 prefix 转换为合法的 C++ 标识符 (用于 jzres_xxx_init 的函数名)"""
+    s = prefix.strip()
+    if s.startswith('/'):
+        s = s[1:]
+    safe = ''.join(ch if ch.isalnum() or ch == '_' else '_' for ch in s)
+    if safe and safe[0].isdigit():
+        safe = '_' + safe
+    return safe
+
+
+def validate_prefix(prefix):
+    """校验 prefix 合法性: 作为资源前缀与 jzres_<prefix>_init 的函数名。
+
+    返回 (ok, info): ok 为 True 时 info 为安全的标识符; 否则 info 为错误说明。
+    """
+    if prefix is None:
+        return False, "prefix attribute is missing"
+    p = prefix.strip()
+    s = p[1:] if p.startswith('/') else p
+    if s == "":
+        return False, "empty prefix (prefix must be a non-empty segment, e.g. prefix=\"/images\")"
+    if '/' in s:
+        return False, f"prefix '{prefix}' must be a single segment (no internal '/')"
+    if not all(ch.isalnum() or ch == '_' for ch in s):
+        return False, f"prefix '{prefix}' contains invalid characters; only [A-Za-z0-9_] are allowed"
+    if s[0].isdigit():
+        return False, f"prefix '{prefix}' must not start with a digit"
+    return True, safe_identifier(prefix)
+
+
 def generate_cpp(resources, qrc_path, output_path, depfile=None):
-    """生成 C++ 源文件和头文件"""
+    """生成 C++ 源文件和头文件。一个 .qrc 只允许一个资源组(prefix), 生成单个 jzres_<prefix>_init()"""
     qrc_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(qrc_dir, exist_ok=True)
-
-    stem = os.path.splitext(os.path.basename(qrc_path))[0]
-    safe_stem = ''.join(ch if ch.isalnum() or ch == '_' else '_' for ch in stem)
-    init_func = f"jzres_{safe_stem}_init"
 
     header_path = os.path.splitext(output_path)[0] + ".h"
     header_name = os.path.basename(header_path)
     guard = "JZRES_" + '_'.join(ch.upper() if ch.isalnum() else '_' for ch in os.path.splitext(os.path.basename(output_path))[0]) + "_H_"
+
+    # === 校验 prefix 合法性, 且一个 .qrc 只允许一个资源组 ===
+    prefix_errors = []
+    distinct = {}   # safe -> prefix
+    for alias, abs_path, prefix in resources:
+        ok, info = validate_prefix(prefix)
+        if not ok:
+            prefix_errors.append(f"  prefix '{prefix}': {info}")
+            continue
+        safe = info
+        if safe in distinct:
+            if distinct[safe] != prefix:
+                prefix_errors.append(
+                    f"  prefix '{prefix}' and '{distinct[safe]}' "
+                    f"both map to 'jzres_{safe}_init' (conflict)")
+        else:
+            distinct[safe] = prefix
+
+    if not prefix_errors and len(distinct) != 1:
+        found = ", ".join(f"'{p}'" for p in distinct.values())
+        prefix_errors.append(
+            f"  a .qrc must contain exactly one resource group (prefix); found {len(distinct)}: {found}")
+
+    if prefix_errors:
+        print("Error: invalid or conflicting resource prefixes:", file=sys.stderr)
+        for e in prefix_errors:
+            print(e, file=sys.stderr)
+        sys.exit(1)
+
+    safe = next(iter(distinct))
+    group_prefix = distinct[safe]
+
+    # === 读取文件内容并生成 C 数组 ===
+    entries = []
+    for i, (alias, abs_path, _) in enumerate(resources):
+        with open(abs_path, "rb") as f:
+            data = f.read()
+        size = len(data)
+        arr_name = c_array_name(alias, i)
+        entries.append((alias, arr_name, size, data))
 
     # === 生成头文件 ===
     hlines = []
@@ -84,7 +151,7 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     hlines.append(f"#ifndef {guard}")
     hlines.append(f"#define {guard}")
     hlines.append("")
-    hlines.append(f"bool {init_func}();")
+    hlines.append(f"bool jzres_{safe}_init();")
     hlines.append("")
     hlines.append(f"#endif // {guard}")
     hlines.append("")
@@ -99,15 +166,8 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     lines.append(f'#include "{header_name}"')
     lines.append("")
 
-    entries = []
-    for i, (alias, abs_path, _) in enumerate(resources):
-        with open(abs_path, "rb") as f:
-            data = f.read()
-
-        size = len(data)
-        arr_name = c_array_name(alias, i)
-
-        lines.append(f"// {alias} ({abs_path})")
+    for alias, arr_name, size, data in entries:
+        lines.append(f"// {alias}")
         lines.append(f"static const unsigned char {arr_name}[] = {{")
         for j in range(0, size, 20):
             chunk = data[j:j+20]
@@ -116,8 +176,6 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
         lines.append("};")
         lines.append("")
 
-        entries.append((alias, arr_name, size))
-
     lines.append("// resource init")
     lines.append("namespace {")
     lines.append("static bool _jz_resources_inited_ = false;")
@@ -125,12 +183,12 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     lines.append("static void _jz_resources_register_() {")
     lines.append("    if (_jz_resources_inited_) return;")
     lines.append("    _jz_resources_inited_ = true;")
-    for alias, arr_name, size in entries:
+    for alias, arr_name, size, data in entries:
         lines.append(f'    JZResources::instance()->add(":{alias}", {arr_name}, {size});')
     lines.append("}")
     lines.append("} // namespace")
     lines.append("")
-    lines.append(f"bool {init_func}() {{")
+    lines.append(f"bool jzres_{safe}_init() {{")
     lines.append("    if (_jz_resources_inited_) return false;")
     lines.append("    _jz_resources_register_();")
     lines.append("    return true;")
@@ -144,7 +202,7 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
         write_depfile(depfile, output_path, qrc_path, resources)
 
     print(f"Generated: {header_path}")
-    print(f"Generated: {output_path} ({len(entries)} resources)")
+    print(f"Generated: {output_path} ({len(entries)} resources, group '{group_prefix}')")
 
 
 def main():

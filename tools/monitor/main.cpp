@@ -2,22 +2,25 @@
 #include "JZDebug.h"
 #include "JZMonitor.h"
 
-// JZ BLE Simulator: 使用 JZFramework 事件循环驱动网络与 Web 服务
-// 界面改由 JZHttpServer 提供的网页承载 (默认 http://127.0.0.1:8080)
+// JZ Monitor: 使用 JZFramework 事件循环驱动 HTTP 服务与 TCP 监控
+//   Web 控制台 : http://127.0.0.1:<webPort>
+//   监控通信    : tcp://127.0.0.1:<monitorPort>
 int main(int argc, char *argv[])
 {
-    int webPort = 8080;   // 网页端口
-    int monitorPort = 19123;  // 与驱动通信端口
+    int webPort = 8080;       // 网页端口
+    int monitorPort = 19123;  // 监控通信端口
 
     JZApplication app;
-	
-	JZMonitor monitor;
-    monitor.start(webPort, monitorPort);
 
+    JZMonitor monitor;
     if (!monitor.start(webPort, monitorPort)) {
-        jzWarning() << "Web server failed to listen on port" << webPort;
+        jzWarning() << "Monitor failed to start";
         return 1;
     }
-	
+
+    jzDebug() << "JZ Monitor running";
+    jzDebug() << "  Web UI      : http://127.0.0.1:" << webPort;
+    jzDebug() << "  Monitor port:" << monitorPort;
+
     return app.exec();
 }

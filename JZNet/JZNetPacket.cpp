@@ -2,6 +2,10 @@
 #include "JZNetPacket.h"
 #include "JZNetFileTrans.h"
 
+#ifdef HAS_JZFrp
+#include "JZFrp/JZFrpPacket.h"
+#endif
+
 //JZNetPack
 JZNetPack::JZNetPack()
 {
@@ -115,4 +119,8 @@ void JZNetPackInit()
     JZNetPackManager::instance()->registPack<JZNetPackEcho>(NetPack_echo);
 
     JZNetFileTrans::registPack();
+
+#ifdef HAS_JZFrp
+    JZFrpPacketInit();
+#endif
 }

@@ -117,7 +117,7 @@ protected:
         std::function<void()> task;
     };
 
-    JZCoThreadPool();
+    JZCoThreadPool(JZObject *object);
     ~JZCoThreadPool();
 
     std::vector<JZThread*> m_threads;

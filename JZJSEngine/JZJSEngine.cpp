@@ -241,7 +241,7 @@ JZJSEngine::PromiseTask::~PromiseTask()
 }
 
 JZJSEngine::JZJSEngine(JZObject* parent)
-    : JZObject(parent), sigStartResult(this), sigStatus(this), sigLog(this), sigError(this)
+    : JZObject(parent), sigStatus(this), sigLog(this), sigError(this)
 {
     m_ctx = nullptr;
     m_rt = nullptr;
@@ -1408,5 +1408,16 @@ void JZJSEngine::execOnce()
                 return;
             }
         }
+    }
+
+    // 所有 pending job 处理完后, 若仍存在未处理的 promise 拒绝,
+    // 仍要触发 Engine_error。否则 QuickJS 在"无更多 job 时才回调 rejection tracker"
+    // 的实现下, m_promiseError 会被永久漏检, 引擎永远停在 running 态。
+    if (!m_promiseError.empty())
+    {
+        std::string err = m_promiseError;
+        m_promiseError.clear();
+        onExceptionOccurred(err);
+        return;
     }
 }

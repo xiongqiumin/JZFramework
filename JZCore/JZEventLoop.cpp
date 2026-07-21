@@ -32,7 +32,8 @@ void JZEventLoop::quit()
 void JZEventLoop::exit(int code)
 {
     m_code = code; 
-    m_running = false;       
+    m_running = false;
+    thread()->wakeUp();   // 立即唤醒 waitEvents, 让 exec() 循环尽快退出
 }
 
 void JZEventLoop::processEvents()

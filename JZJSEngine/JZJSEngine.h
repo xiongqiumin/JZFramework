@@ -142,7 +142,7 @@ public:
         registType(info);
     }
 
-    jz_signals : JZSigBool sigStartResult;
+jz_signals:
     JZSigInt sigStatus;
     JZSigString sigLog;
     JZSigString sigError;

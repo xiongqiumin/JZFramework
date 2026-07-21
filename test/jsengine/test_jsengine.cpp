@@ -2,6 +2,7 @@
 
 #include "JZDebug.h"
 #include "JZApplication.h"
+#include "JZEventLoop.h"
 #include "JZTimer.h"
 #include "JZCo.h"
 #include "JZJSEngine.h"
@@ -28,6 +29,7 @@ struct MyMath
 int main()
 {
     JZApplication a;
+    JZEventLoop loop;                // 事件循环: 可重入, 每次 exec() 都重新运行
     jzco_init();                     // 初始化 jzco 协程调度器(主线程)
 
     JZJSEngine engine;
@@ -125,19 +127,19 @@ int main()
             g_timer_timeout = timeout_ok;
             g_timer_interval = interval_count;
             g_timer_done = true;
-            if (allDone()) a.quit();
+            if (allDone()) loop.quit();
         }));
     engine.registFunction(engine.globalObject(), "reportResult",
         jsbind::createFunction([&](int v) -> void {
             g_async_result = v;
             g_async_done = true;
-            if (allDone()) a.quit();
+            if (allDone()) loop.quit();
         }));
     engine.registFunction(engine.globalObject(), "reportError",
         jsbind::createFunction([&](const string &s) -> void {
             g_async_err = s;
             g_async_err_done = true;
-            if (allDone()) a.quit();
+            if (allDone()) loop.quit();
         }));
 
     // 13. setTimeout 单次触发 + setInterval 多次触发并用 clearInterval 停止
@@ -205,17 +207,114 @@ int main()
     // 统一事件循环: 定时器与异步全部完成, 或 5s 看门狗超时退出
     JZTimer watchdog;
     watchdog.setSingleShot(true);
-    connect(&watchdog.sigTimeout, [&a]() {
+    connect(&watchdog.sigTimeout, [&loop]() {
             jzDebug() << "[watchdog] timeout";
-            a.quit();
+            loop.quit();
         });
     watchdog.start(5000);
-    a.exec();
+    loop.exec();
 
     check("setTimeout fired once", g_timer_done && g_timer_timeout == 1);
     check("setInterval fired 3 times then cleared", g_timer_done && g_timer_interval == 3);
     check("async delayAdd + compute", g_async_done && g_async_result == 5057);
     check("async reject caught", g_async_err_done && g_async_err == "async error test");
+
+    // ==================== 补充用例: 定时器取消 / 自然多次 / 异常态 ====================
+
+    // 引擎一旦进入 Engine_error, 主动退出事件循环, 使异常态用例可以确定性结束
+    connect(&engine.sigStatus, [&loop](int s) { if (s == Engine_error) loop.quit(); });
+
+    // 14. clearTimeout 取消尚未触发的 setTimeout (回归 #1: setInterval/setTimeout 必须返回真实 id)
+    {
+        bool timeout_fired = false;
+        engine.registFunction(engine.globalObject(), "onTimeoutFired",
+            jsbind::createFunction([&](int v) -> void {
+                timeout_fired = (v == 1);
+                loop.quit();
+            }));
+        engine.eval(
+            "(function() {"
+            "  var id = setTimeout(function() { onTimeoutFired(1); }, 50);"
+            "  clearTimeout(id);"                 // 立即取消, 不应再触发
+            "})();");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(300);        // 若未被取消, 50ms 就会触发并提前退出
+        loop.exec();
+
+        check("clearTimeout cancels setTimeout", !timeout_fired);
+    }
+
+    // 15. setInterval 自然多次触发 (验证 reschedule 路径, 不依赖 clearInterval 的取消时机)
+    {
+        int interval_count = 0;
+        engine.registFunction(engine.globalObject(), "onIntervalTick",
+            jsbind::createFunction([&](int c) -> void {
+                interval_count = c;
+                if (c >= 5)
+                    loop.quit();   // 只在达到目标次数后退出; JS 侧已 clearInterval(id) 停止
+            }));
+        engine.eval(
+            "(function() {"
+            "  var count = 0;"
+            "  var id = setInterval(function() {"
+            "    count = count + 1;"
+            "    if (count >= 5) clearInterval(id);"   // 自然达到次数后自行停止, 不再泄漏
+            "    onIntervalTick(count);"
+            "  }, 30);"
+            "})();");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(2000);
+        loop.exec();
+
+        check("setInterval fires repeatedly (reschedule)", interval_count >= 5);
+    }
+
+    // 16. 定时器回调抛异常 -> 引擎进入 Engine_error 并停止定时器
+    {
+        engine.eval(
+            "(function() {"
+            "  setTimeout(function() { throw new Error('timer boom'); }, 30);"
+            "})();");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(2000);
+        loop.exec();
+
+        check("timer callback exception -> Engine_error", engine.status() == Engine_error);
+    }
+
+    // 17. 未处理的 Promise 拒绝 -> 引擎进入 Engine_error (重新 init 以恢复 running 态)
+    {
+        engine.deinit();
+        engine.init();
+        engine.start();
+
+        engine.registAsyncFunction(engine.globalObject(), "asyncReject2",
+            jsbind::createFunction([&engine](int handle) -> void {
+                jzco_spawn([&engine, handle]() {
+                    jzco_sleep(10);
+                    engine.setPromiseReject(handle, "unhandled reject");
+                }, 256 * 1024);
+            }));
+
+        engine.eval("(async function() { await asyncReject2(); })();");  // 不捕获 -> 未处理拒绝
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(2000);
+        loop.exec();
+
+        check("unhandled promise rejection -> Engine_error", engine.status() == Engine_error);
+    }
 
     engine.stop();
     engine.deinit();

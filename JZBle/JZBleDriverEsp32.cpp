@@ -23,6 +23,10 @@
 #include <cinttypes>
 #include <cstring>
 
+// 前向声明
+static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
+extern "C" void ble_gatts_show_local(void);
+
 static JZBleDriverEsp32 *g_driver = nullptr;
 
 // Peripheral GATT 定义（必须长期存活，不能为局部变量）
@@ -468,7 +472,7 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 }
 
 // ==================== 构造/析构 ====================
-JZBleDriverEsp32::JZBleDriverEsp32() : m_advertState(State::None), m_scanning(false), m_ownAddrType(BLE_OWN_ADDR_PUBLIC)
+JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_advertState(State::None), m_scanning(false)
 {
     g_driver = this;
     m_periphGatt = new PeriphGatt();
@@ -476,6 +480,7 @@ JZBleDriverEsp32::JZBleDriverEsp32() : m_advertState(State::None), m_scanning(fa
     // 配置 NimBLE Host（在 nimble_port_init() 之前设置）
     ble_hs_cfg.reset_cb = onHostReset;
     ble_hs_cfg.sync_cb = onHostSync;
+    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_hs_cfg.store_read_cb = storeReadCb;
     ble_hs_cfg.store_write_cb = storeWriteCb;
@@ -505,6 +510,30 @@ void JZBleDriverEsp32::onHostReset(int)
     // 复位时可做清理，这里保持简单
 }
 
+// NimBLE GATT 注册回调（记录服务/特征/描述符注册信息）
+static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
+{
+    (void)arg;
+    char buf[BLE_UUID_STR_LEN];
+    switch (ctxt->op) {
+    case BLE_GATT_REGISTER_OP_SVC:
+        printf("BLE: register svc %s handle=%d\n",
+               ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf), ctxt->svc.handle);
+        break;
+    case BLE_GATT_REGISTER_OP_CHR:
+        printf("BLE: register chr %s def_handle=%d val_handle=%d\n",
+               ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
+               ctxt->chr.def_handle, ctxt->chr.val_handle);
+        break;
+    case BLE_GATT_REGISTER_OP_DSC:
+        printf("BLE: register dsc %s handle=%d\n",
+               ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf), ctxt->dsc.handle);
+        break;
+    default:
+        break;
+    }
+}
+
 void JZBleDriverEsp32::onHostSync()
 {
     auto *self = g_driver;
@@ -521,25 +550,6 @@ void JZBleDriverEsp32::onHostSync()
 
     self->m_advertState = State::Started;
     printf("BLE: host synced\n");
-
-    // 注册 GATT 服务
-    if (self->m_periphGatt) {
-        printf("BLE: building GATT, charMap size=%d\n", (int)self->m_periphCharMap.size());
-        self->buildPeriphGatt();
-        for (size_t i = 0; i < self->m_periphGatt->svcDefs.size(); i++) {
-            auto &sd = self->m_periphGatt->svcDefs[i];
-            if (sd.uuid) {
-                char buf[40];
-                ble_uuid_to_str(sd.uuid, buf);
-                printf("BLE: svcDef[%zu] uuid=%s\n", i, buf);
-            }
-        }
-        int rc2 = ble_gatts_count_cfg(self->m_periphGatt->svcDefs.data());
-        if (rc2 == 0)
-            rc2 = ble_gatts_add_svcs(self->m_periphGatt->svcDefs.data());
-        if (rc2 != 0)
-            printf("BLE: GATT service register failed, rc=%d\n", rc2);
-    }
 
     printf("BLE: onHostSync pendingAdv=%d\n", self->m_pendingAdv);
 
@@ -824,22 +834,28 @@ void JZBleDriverEsp32::buildPeriphGatt()
     m_periphGatt->chrDefs.clear();
     m_periphGatt->svcDefs.clear();
 
-    std::map<std::string, std::vector<std::string>> svcChars;  // svcUuid -> [charUuids]
+    std::map<std::string, std::vector<std::string>> svcChars;
     for (auto &kv : m_periphCharMap)
         svcChars[kv.second.svcUuid].push_back(kv.first);
 
+    // resize 一把创建所有元素，地址终生不变，NimBLE 存的裸指针永远安全
+    size_t svcCount = svcChars.size();
+    size_t totalChars = m_periphCharMap.size();
+    m_periphGatt->svcUuids.resize(svcCount);
+    m_periphGatt->chrUuids.resize(totalChars);
+    m_periphGatt->chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
+    m_periphGatt->svcDefs.resize(svcCount + 1);           // svcs + 终止符
+
+    size_t svcIdx = 0, chrUuidIdx = 0, chrDefIdx = 0, svcDefIdx = 0;
+
     for (auto &sc : svcChars)
     {
-        ble_uuid_any_t svcUuid;
-        uuidFromString(sc.first, &svcUuid);
-        m_periphGatt->svcUuids.push_back(svcUuid);   // 存入长期存活的成员
+        uuidFromString(sc.first, &m_periphGatt->svcUuids[svcIdx]);
 
-        auto startIdx = m_periphGatt->chrDefs.size();
+        size_t chrStartIdx = chrDefIdx;
         for (auto &cuuid : sc.second)
         {
-            ble_uuid_any_t cu;
-            uuidFromString(cuuid, &cu);
-            m_periphGatt->chrUuids.push_back(cu);
+            uuidFromString(cuuid, &m_periphGatt->chrUuids[chrUuidIdx]);
 
             int props = m_periphCharMap[cuuid].properties;
             ble_gatt_chr_flags nimFlags = 0;
@@ -850,22 +866,29 @@ void JZBleDriverEsp32::buildPeriphGatt()
             if (props & 0x10) nimFlags |= BLE_GATT_CHR_F_WRITE_NO_RSP;
 
             ble_gatt_chr_def cd = {};
-            cd.uuid = &m_periphGatt->chrUuids.back().u;
+            cd.uuid = &m_periphGatt->chrUuids[chrUuidIdx].u;
             cd.access_cb = onGattAccess;
-            cd.val_handle = &m_periphCharMap[cuuid].valHandle; // NimBLE 自动分配并回写
+            cd.val_handle = &m_periphCharMap[cuuid].valHandle;
             cd.flags = nimFlags;
             cd.min_key_size = 0;
-            m_periphGatt->chrDefs.push_back(cd);
+            m_periphGatt->chrDefs[chrDefIdx] = cd;
+
+            chrUuidIdx++;
+            chrDefIdx++;
         }
-        m_periphGatt->chrDefs.push_back(ble_gatt_chr_def{});  // 终止符
+        m_periphGatt->chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
+        chrDefIdx++;
 
         ble_gatt_svc_def sd = {};
         sd.type = BLE_GATT_SVC_TYPE_PRIMARY;
-        sd.uuid = &m_periphGatt->svcUuids.back().u;
-        sd.characteristics = &m_periphGatt->chrDefs[startIdx];
-        m_periphGatt->svcDefs.push_back(sd);
+        sd.uuid = &m_periphGatt->svcUuids[svcIdx].u;
+        sd.characteristics = &m_periphGatt->chrDefs[chrStartIdx];
+        m_periphGatt->svcDefs[svcDefIdx] = sd;
+
+        svcIdx++;
+        svcDefIdx++;
     }
-    m_periphGatt->svcDefs.push_back(ble_gatt_svc_def{});  // 终止符
+    m_periphGatt->svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
 }
 
 void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEPeripheral *d)
@@ -880,6 +903,22 @@ void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vect
         printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
         return;
     }
+
+    // GAP 服务初始化（同 gap_init() 例子）
+    ble_svc_gap_init();
+    ble_svc_gap_device_name_set(name.c_str());
+
+    // GATT 服务注册（必须在 host task 启动之前完成）
+    ble_svc_gatt_init();
+    buildPeriphGatt();
+    int rc2 = ble_gatts_count_cfg(m_periphGatt->svcDefs.data());
+    if (rc2 == 0)
+        rc2 = ble_gatts_add_svcs(m_periphGatt->svcDefs.data());
+    if (rc2 != 0) {
+        printf("BLE: GATT service register failed, rc=%d\n", rc2);
+        return;
+    }
+    printf("BLE: GATT services registered OK, count=%d\n", (int)m_periphGatt->svcDefs.size());
 
     m_periphCtrlPriv = d;
     m_advertState = State::Starting;

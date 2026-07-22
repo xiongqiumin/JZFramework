@@ -12,16 +12,6 @@
 #include "JZJSType.h"
 #include "JZObject.h"
 
-#define JS_CATCH_CPP(inst)                                 \
-    try                                                    \
-    {                                                      \
-        (inst);                                            \
-    }                                                      \
-    catch (std::exception & e)                             \
-    {                                                      \
-        return JS_ThrowInternalError(ctx, "%s", e.what()); \
-    }
-
 enum JZJSEngineStatus
 {
     Engine_none,
@@ -202,7 +192,7 @@ protected:
 
     void* constructor(int type);
     void deconstructor(JSValue value);
-    std::string getExceptionDescript‌(JSValue exc);
+    std::string getExceptionDescript(JSValue exc);
 
     int setInterval(JSValue callback, int64_t interval, bool once);
     void clearInterval(int id);

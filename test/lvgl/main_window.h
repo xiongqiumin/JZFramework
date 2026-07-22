@@ -1,49 +1,68 @@
 #pragma once
 
-#include "JZLabel.h"
 #include "JZWidget.h"
-#include "JZWebSocket.h"
-#include "JZTimer.h"
+#include "JZLabel.h"
+#include "JZPushButton.h"
+#include "JZSlider.h"
+#include "JZProgressBar.h"
+#include "JZSwitch.h"
+#include "JZCheckbox.h"
+#include "JZRadioButton.h"
+#include "JZListWidget.h"
+#include "JZComboBox.h"
+#include "JZArcWidget.h"
+#include "JZTextEdit.h"
+#include "JZLedWidget.h"
+#include "JZRoller.h"
+#include "JZTableWidget.h"
+#include "JZImageLabel.h"
+#include "JZStackedWidget.h"
+#include "JZColor.h"
 
+#include <vector>
+#include <string>
+
+// 挂载所有已实现控件: 左侧 JZListWidget 选择, 右侧 JZStackedWidget 预览, 底部日志
 class MainWindow : public JZWidget
 {
 public:
-    MainWindow();
+    explicit MainWindow(JZWidget* parent);
     ~MainWindow();
 
 private:
     void setupUi();
+    JZWidget* makePage();
+    void buildPages();
 
-    // 按键
-    void onBtnPressed();
-    void onBtnReleased();
-    void onWifiKeyPressed();
-    void onAudioDataReady(const JZByteArray &data);
+    // 日志
+    void log(const std::string& line);
 
-    // WiFi
-    void onWifiConnecting(const std::string &ssid);
-    void onWifiConnected(const std::string &ssid);
-    void onWifiConnectError(int code, const std::string &message);
-    
-    // WebSocket
-    void wsOnConnected();
-    void wsOnDisconnected();
-    void wsOnBinaryMessage(const JZByteArray &data);
+    // 选择
+    void onSelectChanged(int idx);
 
-    // 播放
-    void onPlayFinish();
+    // 通用信号槽
+    void onLogVoid();
+    void onLogInt(int v);
+    void onLogBool(bool b);
+    void onLogString(const std::string& s);
 
-    // 内存
-    void updateMemLabel();
-    
-    JZLabel      *m_statusLabel;  // 状态(屏幕中央)
-    JZLabel      *m_wifiLabel;    // WiFi状态(右上角)
-    JZLabel      *m_memLabel;     // 内存(右下角)
-    JZTimer      *m_memTimer;
+    // 交互演示
+    void onPbInc();
+    void onLedToggle();
+    void onLogTextEdit();
+    void onLabelUpdate();
 
-    JZWebSocket              *m_wsClient;    
+    JZListWidget    *m_list = nullptr;
+    JZWidget        *m_top = nullptr;
+    JZStackedWidget *m_preview = nullptr;
+    JZTextEdit      *m_log = nullptr;
+    std::string      m_logText;
+    std::vector<std::string> m_names;
 
-    bool m_wsConnected;
-    bool m_isRecording;
-    int  m_recordBytes;
+    // 交互演示用到的控件引用
+    JZProgressBar *m_pb = nullptr;
+    int  m_pbVal = 0;
+    JZLedWidget *m_led = nullptr;
+    JZTextEdit *m_te = nullptr;
+    JZLabel    *m_labelDemo = nullptr;
 };

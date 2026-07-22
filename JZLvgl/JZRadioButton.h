@@ -22,7 +22,12 @@ jz_signals:
     JZSigVoid sigToggled;   // 选中时触发
 
 protected:
+    void paintEvent(JZPainterEvent* event) override;
     void onLvEvent(lv_event_t* e) override;
+
+    lv_obj_t* m_label = nullptr;
+    lv_obj_t* m_indicator = nullptr;   // 透明占位, 为圆环预留布局宽度
+    bool m_checked = false;
 };
 
 #endif

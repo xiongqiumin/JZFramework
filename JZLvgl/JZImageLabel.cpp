@@ -7,12 +7,6 @@ JZImageLabel::JZImageLabel(JZWidget* parent)
 {
 }
 
-JZImageLabel::JZImageLabel(JZWidget* parent, const JZImage& img)
-    : JZImage(parent)
-{
-    setImage(img);
-}
-
 void JZImageLabel::setImage(const JZImage& img)
 {
     m_image = img;
@@ -22,7 +16,7 @@ void JZImageLabel::setImage(const JZImage& img)
         lv_image_set_src(m_lv, img.dsc());
 }
 
-JZImageLabel JZImageLabel::image() const
+JZImage JZImageLabel::image() const
 {
     return m_image;
 }

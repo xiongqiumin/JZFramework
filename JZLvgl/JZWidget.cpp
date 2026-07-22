@@ -8,7 +8,7 @@ JZ_OBJECT_IMPL(JZWidget,JZObject)
 JZWidget::JZWidget(JZWidget* parent)
     : JZObject(parent)
 {
-    auto* plv = parent ? parent->handle() : lv_screen_active();
+    auto* plv =parent->handle();
     auto obj = lv_obj_create(plv);
     setLvglObject(obj);
 }
@@ -17,7 +17,7 @@ JZWidget::JZWidget(lv_create_fn_t create, JZWidget* parent)
     : JZObject(parent)
 {
     assert(create);
-    auto* plv = parent ? parent->handle() : lv_screen_active();
+    auto* plv = parent->handle();
     auto obj = create(plv);
     setLvglObject(obj);    
 }
@@ -30,15 +30,8 @@ JZWidget::JZWidget(NoCreate, JZWidget* parent)
 JZWidget::~JZWidget()
 {
     delete m_layout;
-
-    // 顶层 widget: 删除对应 screen（级联删除 m_lv）
     if (m_lv) {
         lv_obj_delete(m_lv);
-    }
-
-    // 顶层 widget 销毁 → 退出应用
-    if (!m_parent && jzApp) {
-        jzApp->quit();
     }
 }
 
@@ -177,9 +170,12 @@ bool JZWidget::isVisible() const
 
 void JZWidget::setLayout(JZLayout* layout)
 {
-    delete m_layout;
+    if(m_layout)
+        delete m_layout;
+    
     m_layout = layout;
-    m_layout->apply(m_lv);
+    if(m_layout)
+        m_layout->apply(m_lv);
 }
 
 JZLayout* JZWidget::layout() const
@@ -233,9 +229,11 @@ void JZWidget::onLvEvent(lv_event_t* e)
         { JZKeyEvent ke(e); onKeyPressed(&ke); }
         break;
     case LV_EVENT_DRAW_MAIN:
-        { m_paintLayer = lv_event_get_layer(e);
-          JZPainterEvent pe; paintEvent(&pe);
-          m_paintLayer = nullptr; }
+        {
+            m_paintLayer = lv_event_get_layer(e);
+            JZPainterEvent pe; paintEvent(&pe);
+            m_paintLayer = nullptr;
+        }
         break;
     case LV_EVENT_SIZE_CHANGED:
         { 

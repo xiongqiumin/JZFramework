@@ -1,14 +1,14 @@
 #include "JZLedWidget.h"
 #include "lvgl.h"
 
-JZ_OBJECT_IMPL(JZLed, JZWidget)
+JZ_OBJECT_IMPL(JZLedWidget, JZWidget)
 
-JZLed::JZLed(JZWidget* parent)
+JZLedWidget::JZLedWidget(JZWidget* parent)
     : JZWidget(lv_led_create, parent)
 {
 }
 
-void JZLed::setColor(const JZColor& c)
+void JZLedWidget::setColor(const JZColor& c)
 {
     auto pod = c.toLvColor();
     lv_color_t lv;
@@ -16,17 +16,17 @@ void JZLed::setColor(const JZColor& c)
     lv_led_set_color(m_lv, lv);
 }
 
-void JZLed::on()
+void JZLedWidget::on()
 {
     lv_led_on(m_lv);
 }
 
-void JZLed::off()
+void JZLedWidget::off()
 {
     lv_led_off(m_lv);
 }
 
-void JZLed::toggle()
+void JZLedWidget::toggle()
 {
     lv_led_toggle(m_lv);
 }

@@ -11,13 +11,18 @@ class JZLayout
 {
 public:
     virtual ~JZLayout() = default;
-    virtual void apply(lv_obj_t* obj) const = 0;
+
+    // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存目标供后续 updateLayout 使用
+    void apply(lv_obj_t* obj);
+    // 将当前 items / 参数重新布局到目标容器 (增删 / 改属性后调用一次)
+    void updateLayout();
 
     int spacing() const { return m_gap; }
-    void setSpacing(int gap) { m_gap = gap; }
+    void setSpacing(int gap) { m_gap = gap; updateLayout(); }
 
     void setContentsMargins(int left, int top, int right, int bottom) {
         m_marginLeft = left; m_marginTop = top; m_marginRight = right; m_marginBottom = bottom;
+        updateLayout();
     }
     void getContentsMargins(int* left, int* top, int* right, int* bottom) const {
         if (left)   *left   = m_marginLeft;
@@ -27,6 +32,9 @@ public:
     }
 
 protected:
+    virtual void doLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
+
+    lv_obj_t* m_target = nullptr;  // 已被 apply 过的容器
     int m_gap = 0;
     int m_marginLeft = 0;
     int m_marginTop = 0;
@@ -66,10 +74,11 @@ public:
     void removeAt(int index);
     void clear();
 
-    void applyTo(lv_obj_t* obj, lv_flex_flow_t flow) const;
-
 protected:
-    mutable std::vector<Item> m_items;
+    void doLayout() override;
+    virtual lv_flex_flow_t flexFlow() const = 0;
+
+    std::vector<Item> m_items;
 
 private:
     void clearSpacers();
@@ -79,14 +88,16 @@ class JZHBoxLayout : public JZBoxLayout
 {
 public:
     using JZBoxLayout::JZBoxLayout;
-    void apply(lv_obj_t* obj) const override;
+protected:
+    lv_flex_flow_t flexFlow() const override { return LV_FLEX_FLOW_ROW; }
 };
 
 class JZVBoxLayout : public JZBoxLayout
 {
 public:
     using JZBoxLayout::JZBoxLayout;
-    void apply(lv_obj_t* obj) const override;
+protected:
+    lv_flex_flow_t flexFlow() const override { return LV_FLEX_FLOW_COLUMN; }
 };
 
 class JZGridLayout : public JZLayout
@@ -127,7 +138,8 @@ public:
     int columnCount() const;
     int count() const { return (int)m_items.size(); }
 
-    void apply(lv_obj_t* obj) const override;
+protected:
+    void doLayout() override;
 
 private:
     void buildColDesc(std::vector<lv_coord_t>& out) const;

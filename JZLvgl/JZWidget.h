@@ -19,7 +19,7 @@ class JZWidget : public JZObject
     JZ_OBJECT_DECLARE(JZWidget)
 
 public:
-    explicit JZWidget(JZWidget* parent = nullptr);
+    explicit JZWidget(JZWidget* parent);
     virtual ~JZWidget();
 
     lv_obj_t* handle() const;
@@ -78,7 +78,7 @@ protected:
         
     // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）
     JZWidget(lv_create_fn_t create, JZWidget* parent);
-    JZWidget(NoCreate, JZWidget* parent);
+    JZWidget(NoCreate, JZWidget* parent = nullptr);
     
     void setLvglObject(lv_obj_t* obj);
 

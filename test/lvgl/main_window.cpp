@@ -1,134 +1,298 @@
 #include "main_window.h"
 #include "JZDebug.h"
+#include "JZLayout.h"
 #include "lvgl.h"
-#include <cstring>
-#include <cmath>
 
-MainWindow::MainWindow()    
-    :m_wsConnected(false)
-    ,m_isRecording(false)
-    ,m_recordBytes(0)
+MainWindow::MainWindow(JZWidget* parent)
+    : JZWidget(parent)
 {
+    m_names = {
+        "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
+        "RadioButton", "ComboBox", "ArcWidget", "TextEdit", "Led",
+        "Roller", "Table", "ImageLabel"
+    };
+
     setupUi();
-    resize(320,240);    
-
-    // ---- 内存监控 ----
-    m_memTimer = new JZTimer(this);
-    m_memTimer->setSingleShot(false);
-    connect(&m_memTimer->sigTimeout, this, &MainWindow::updateMemLabel);
-    m_memTimer->start(1000);
-    updateMemLabel();
-
-    // ---- WebSocket (WiFi 连上后再连) ----
-    m_wsClient = new JZWebSocket(this);
-    connect(&m_wsClient->sigConnected,              this, &MainWindow::wsOnConnected);
-    connect(&m_wsClient->sigDisconnected,           this, &MainWindow::wsOnDisconnected);
-    connect(&m_wsClient->sigBinaryMessageReceived,  this, &MainWindow::wsOnBinaryMessage);
+    resize(800, 600);
 }
 
 MainWindow::~MainWindow()
-{    
-    m_wsClient->disconnectFromHost();
+{
 }
-
-// ==================== UI ====================
 
 void MainWindow::setupUi()
 {
-    // 状态标签: 屏幕中央
-    m_statusLabel = new JZLabel(this);
-    m_statusLabel->setAlign(LV_TEXT_ALIGN_CENTER);
-    lv_obj_align(m_statusLabel->handle(), LV_ALIGN_CENTER, 0, 0);
-    m_statusLabel->setText("Hold KEY0 to talk");
+    // 中间容器: 左列表 + 右预览
+    m_top = new JZWidget(this);
+    m_top->resize(LV_PCT(100), LV_PCT(100));
 
-    // WiFi 标签: 右上角
-    m_wifiLabel = new JZLabel(this);
-    lv_obj_align(m_wifiLabel->handle(), LV_ALIGN_TOP_RIGHT, -4, 4);
-    lv_obj_set_style_text_font(m_wifiLabel->handle(), &lv_font_montserrat_14, 0);
-    m_wifiLabel->setText("WiFi: Off");
+    m_list = new JZListWidget(m_top);
+    m_list->addItems(m_names);
+    m_list->resize(150, LV_PCT(100));
 
-    // 内存标签: 右下角
-    m_memLabel = new JZLabel(this);
-    lv_obj_align(m_memLabel->handle(), LV_ALIGN_BOTTOM_RIGHT, -2, -2);
-    lv_obj_set_style_text_font(m_memLabel->handle(), &lv_font_montserrat_14, 0);
+    m_preview = new JZStackedWidget(m_top);
+    m_preview->resize(LV_PCT(100), LV_PCT(100));
+
+    JZHBoxLayout* topLayout = new JZHBoxLayout(4, 4);
+    topLayout->addWidget(m_list, 0);    // 固定宽
+    topLayout->addWidget(m_preview, 1); // 占剩余宽度
+    m_top->setLayout(topLayout);
+    lv_obj_set_flex_align(m_top->handle(), LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    // 底部日志
+    m_log = new JZTextEdit(this);
+    m_log->resize(LV_PCT(100), 120);
+
+    // 主布局: 上(列表+预览) + 下(日志)
+    JZVBoxLayout* mainLayout = new JZVBoxLayout(4, 4);
+    mainLayout->addWidget(m_top, 1);    // 占主要空间
+    mainLayout->addWidget(m_log, 0);    // 固定高
+    setLayout(mainLayout);
+    lv_obj_set_flex_align(handle(), LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    buildPages();
+    m_list->setCurrentIndex(0);
+    connect(&m_list->currentIndexChanged, this, &MainWindow::onSelectChanged);
+
+    log("ready. select a widget on the left.");
 }
 
-// ==================== WiFi ====================
-
-void MainWindow::onWifiKeyPressed()
+JZWidget* MainWindow::makePage()
 {
-    jzDebug() << "MainWindow: KEY2 pressed, start scan and connect";
-    m_wifiLabel->setText("WiFi: Scanning...");
-    m_statusLabel->setText("Scanning...");
+    JZWidget* page = new JZWidget(m_preview);
+    page->setLayout(new JZVBoxLayout(10, 10));
+    lv_obj_set_flex_align(page->handle(), LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    return page;
 }
 
-void MainWindow::onWifiConnecting(const std::string &ssid)
+void MainWindow::log(const std::string& line)
 {
-    jzDebug() << "MainWindow: WiFi connecting to" << ssid;
-    m_wifiLabel->setText("WiFi: " + ssid);
+    m_logText += line + "\n";
+    if (m_logText.size() > 800)
+        m_logText = m_logText.substr(m_logText.size() - 800);
+    m_log->setText(m_logText);
 }
 
-void MainWindow::onWifiConnected(const std::string &ssid)
+void MainWindow::onSelectChanged(int idx)
 {
-    jzDebug() << "MainWindow: WiFi connected to" << ssid;
-    m_wifiLabel->setText("WiFi: " + ssid);
-
+    if (idx < 0 || idx >= (int)m_names.size()) return;
+    m_preview->setCurrentIndex(idx);
+    log("select: " + m_names[idx]);
 }
 
-void MainWindow::onWifiConnectError(int code, const std::string &message)
+void MainWindow::onLogVoid()        { log("event: clicked"); }
+void MainWindow::onLogInt(int v)    { log("value: " + std::to_string(v)); }
+void MainWindow::onLogBool(bool b)  { log("state: " + std::string(b ? "on" : "off")); }
+void MainWindow::onLogString(const std::string& s) { log("text: " + s); }
+
+void MainWindow::onPbInc()
 {
-    jzDebug() << "MainWindow: WiFi connected error code" << code << ", message" << message;
+    m_pbVal = (m_pbVal + 10) % 110;
+    if (m_pb) m_pb->setValue(m_pbVal, true);
+    log("progress: " + std::to_string(m_pbVal));
 }
 
-// ==================== WebSocket ====================
-
-void MainWindow::wsOnConnected()
+void MainWindow::onLedToggle()
 {
+    if (m_led) {
+        static bool on = true;
+        if (on) m_led->off(); else m_led->on();
+        on = !on;
+    }
+    log("led toggled");
 }
 
-void MainWindow::wsOnDisconnected()
+void MainWindow::onLogTextEdit()
 {
-    jzDebug() << "MainWindow: WS disconnected";
-    m_wsConnected = false;
-    m_statusLabel->setText("WS Disconnected");
+    if (m_te)
+        log("edit: " + m_te->text());
 }
 
-void MainWindow::wsOnBinaryMessage(const JZByteArray &data)
+void MainWindow::onLabelUpdate()
 {
+    static int n = 0;
+    n++;
+    if (m_labelDemo)
+        m_labelDemo->setText("updated " + std::to_string(n));
+    log("label updated: " + std::to_string(n));
 }
 
-void MainWindow::onPlayFinish()
+void MainWindow::buildPages()
 {
-    jzDebug() << "MainWindow: play finish";
-    m_statusLabel->setText("Hold KEY0 to talk");
-}
+    // ---- Label ----
+    {
+        JZWidget* page = makePage();
+        JZLabel* l = new JZLabel(page);
+        l->setAlign(LV_TEXT_ALIGN_CENTER);
+        l->setText("Hello LVGL");
+        m_labelDemo = l;
+        JZPushButton* b = new JZPushButton(page, 100, 32, "Update");
+        connect(&b->sigClicked, this, &MainWindow::onLabelUpdate);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(l);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
 
-// ==================== 按键 ====================
+    // ---- PushButton ----
+    {
+        JZWidget* page = makePage();
+        JZPushButton* b = new JZPushButton(page, 120, 44, "Click Me");
+        connect(&b->sigClicked, this, &MainWindow::onLogVoid);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
 
-void MainWindow::onBtnPressed()
-{
-    m_statusLabel->setText("Sending...");
-}
+    // ---- Slider ----
+    {
+        JZWidget* page = makePage();
+        JZSlider* s = new JZSlider(page);
+        s->setRange(0, 100);
+        s->setValue(50);
+        lv_obj_set_width(s->handle(), 150);
+        connect(&s->sigValueChanged, this, &MainWindow::onLogInt);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(s);
+        m_preview->addWidget(page);
+    }
 
-void MainWindow::onBtnReleased()
-{
-    jzDebug() << "MainWindow: button released";
-    if (!m_isRecording) return;
-    m_isRecording = false;
-    m_statusLabel->setText("Hold KEY0 to talk");
-}
+    // ---- ProgressBar ----
+    {
+        JZWidget* page = makePage();
+        JZProgressBar* p = new JZProgressBar(page);
+        m_pb = p;
+        m_pbVal = 60;
+        p->setRange(0, 100);
+        p->setValue(m_pbVal, true);
+        lv_obj_set_width(p->handle(), 150);
+        JZPushButton* b = new JZPushButton(page, 90, 28, "+10");
+        connect(&b->sigClicked, this, &MainWindow::onPbInc);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(p);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
 
-void MainWindow::onAudioDataReady(const JZByteArray &data)
-{
-    if (!m_isRecording || !m_wsConnected) return;
+    // ---- Switch ----
+    {
+        JZWidget* page = makePage();
+        JZSwitch* sw = new JZSwitch(page);
+        connect(&sw->sigToggled, this, &MainWindow::onLogBool);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(sw);
+        m_preview->addWidget(page);
+    }
 
-    m_recordBytes += data.size();
-    m_wsClient->sendBinaryMessage(data);
-}
+    // ---- Checkbox ----
+    {
+        JZWidget* page = makePage();
+        JZCheckbox* c = new JZCheckbox(page);
+        c->setText("Enable");
+        connect(&c->sigToggled, this, &MainWindow::onLogBool);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(c);
+        m_preview->addWidget(page);
+    }
 
-// ==================== 内存 ====================
+    // ---- RadioButton ----
+    {
+        JZWidget* page = makePage();
+        JZRadioButton* r1 = new JZRadioButton(page, "Option A");
+        JZRadioButton* r2 = new JZRadioButton(page, "Option B");
+        connect(&r1->sigToggled, this, &MainWindow::onLogVoid);
+        connect(&r2->sigToggled, this, &MainWindow::onLogVoid);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(r1);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(r2);
+        m_preview->addWidget(page);
+    }
 
-void MainWindow::updateMemLabel()
-{
-    m_memLabel->setText("m buf");
+    // ---- ComboBox ----
+    {
+        JZWidget* page = makePage();
+        JZComboBox* cb = new JZComboBox(page);
+        cb->addItems({ "Red", "Green", "Blue" });
+        connect(&cb->currentIndexChanged, this, &MainWindow::onLogInt);
+        connect(&cb->currentTextChanged, this, &MainWindow::onLogString);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(cb);
+        m_preview->addWidget(page);
+    }
+
+    // ---- ArcWidget ----
+    {
+        JZWidget* page = makePage();
+        JZArcWidget* arc = new JZArcWidget(page);
+        arc->setRange(0, 360);
+        arc->setValue(120);
+        lv_obj_set_size(arc->handle(), 100, 100);
+        connect(&arc->sigValueChanged, this, &MainWindow::onLogInt);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(arc);
+        m_preview->addWidget(page);
+    }
+
+    // ---- TextEdit ----
+    {
+        JZWidget* page = makePage();
+        JZTextEdit* te = new JZTextEdit(page);
+        m_te = te;
+        te->setText("edit me");
+        lv_obj_set_size(te->handle(), 160, 70);
+        JZPushButton* b = new JZPushButton(page, 90, 28, "Log");
+        connect(&b->sigClicked, this, &MainWindow::onLogTextEdit);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(te);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
+
+    // ---- Led ----
+    {
+        JZWidget* page = makePage();
+        JZLedWidget* led = new JZLedWidget(page);
+        m_led = led;
+        led->setColor(JZColor::Red());
+        led->on();
+        JZPushButton* b = new JZPushButton(page, 80, 28, "Toggle");
+        connect(&b->sigClicked, this, &MainWindow::onLedToggle);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(led);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
+
+    // ---- Roller ----
+    {
+        JZWidget* page = makePage();
+        JZRoller* rl = new JZRoller(page);
+        rl->setOptions("One\nTwo\nThree\nFour", LV_ROLLER_MODE_NORMAL);
+        rl->setVisibleRowCount(3);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(rl);
+        m_preview->addWidget(page);
+    }
+
+    // ---- Table ----
+    {
+        JZWidget* page = makePage();
+        JZTableWidget* tbl = new JZTableWidget(page);
+        tbl->setColumnCount(3);
+        tbl->setRowCount(3);
+        tbl->setHorizontalHeaderLabels({ "Id", "Name", "Val" });
+        tbl->setCellValue(0, 0, "1");
+        tbl->setCellValue(0, 1, "Alpha");
+        tbl->setCellValue(0, 2, "99");
+        tbl->setCellValue(1, 0, "2");
+        tbl->setCellValue(1, 1, "Beta");
+        tbl->setCellValue(1, 2, "88");
+        tbl->setCellValue(2, 0, "3");
+        tbl->setCellValue(2, 1, "Gamma");
+        tbl->setCellValue(2, 2, "77");
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(tbl);
+        m_preview->addWidget(page);
+    }
+
+    // ---- ImageLabel ----
+    {
+        JZWidget* page = makePage();
+        JZImageLabel* img = new JZImageLabel(page);
+        lv_obj_set_size(img->handle(), 60, 60);
+        JZLabel* note = new JZLabel(page);
+        note->setText("(no image loaded)");
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(img);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(note);
+        m_preview->addWidget(page);
+    }
+
+    m_preview->setCurrentIndex(0);
 }

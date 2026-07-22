@@ -4,12 +4,12 @@
 #include "JZWidget.h"
 #include "JZColor.h"
 
-class JZLed : public JZWidget
+class JZLedWidget : public JZWidget
 {
-    JZ_OBJECT_DECLARE(JZLed)
+    JZ_OBJECT_DECLARE(JZLedWidget)
 
 public:
-    explicit JZLed(JZWidget* parent = nullptr);
+    explicit JZLedWidget(JZWidget* parent = nullptr);
 
     void setColor(const JZColor& c);
     void on();

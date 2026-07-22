@@ -39,6 +39,8 @@
     JZPushButton.cpp
     JZLabel.h
     JZLabel.cpp
+	JZImageLabel.h
+	JZImageLabel.cpp
     JZImage.h
     JZImage.cpp
     JZMainWindow.h
@@ -49,6 +51,12 @@
     JZMessageBox.cpp
     JZDisplayDevice.h
     JZDisplayDevice.cpp
+    JZStackedWidget.h
+    JZStackedWidget.cpp
+    JZScrollArea.h
+    JZScrollArea.cpp
+    JZListWidget.h
+    JZListWidget.cpp
     JZSlider.h
     JZSlider.cpp
     JZProgressBar.h

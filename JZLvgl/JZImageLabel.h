@@ -10,10 +10,9 @@ class JZImageLabel : public JZWidget
 
 public:
     explicit JZImageLabel(JZWidget* parent = nullptr);
-    JZImageLabel(JZWidget* parent, const JZImage& img);
 
     void setImage(const JZImage& img);
-    JZImageLabel image() const;
+    JZImage image() const;
 
     void setScale(uint16_t zoom);
     void setRotation(int32_t angle);

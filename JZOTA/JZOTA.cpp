@@ -2,17 +2,17 @@
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkReply.h"
 #include "JZNetworkRequest.h"
+#include "JZFile.h"
 #include "json/json.h"
 #include "JZDebug.h"
 
 JZOTA::JZOTA(JZObject *parent)
     :JZObject(parent)
-    ,sigStarted(this)
     ,sigInfoReady(this)
     ,sigProgress(this)
     ,sigError(this)
-    ,sigNoUpdate(this)
     ,sigFinished(this)
+    ,m_manager(this)
 {
 }
 
@@ -21,48 +21,39 @@ JZOTA::~JZOTA()
     cancel();
 }
 
-void JZOTA::setNetworkAccessManager(JZNetworkAccessManager *manager)
-{
-    m_manager = manager;
-    m_ownManager = false;
-}
-
-void JZOTA::setDriver(JZOTADriver *driver)
-{
-    m_driver = driver;
-}
-
 void JZOTA::setChunkSize(int64_t chunkSize)
 {
     if (chunkSize > 0)
         m_chunkSize = chunkSize;
 }
 
-bool JZOTA::start(const std::string &infoUrl)
+void JZOTA::queryOTAInfo(const std::string &infoUrl)
 {
     if (m_state != Idle)
-        return false;
-
-    if (!m_driver)
-    {
-        jzError() << "JZOTA: driver not set";
-        return false;
-    }
-
-    if (!m_manager)
-    {
-        m_manager = new JZNetworkAccessManager(this);
-        m_ownManager = true;
-    }
+        return;
 
     m_infoUrl = infoUrl;
     m_state = Checking;
-    sigStarted.emit();
 
     JZNetworkRequest req(infoUrl);
-    m_reply = m_manager->get(req);
+    m_reply = m_manager.get(req);
     connect(&m_reply->sigFinished, this, &JZOTA::onInfoFinished);
+}
+
+bool JZOTA::startOTA()
+{
+    if (m_state != Idle)
+        return false;
+    if (m_info.url.empty())
+        return false;
+
+    startDownload();
     return true;
+}
+
+void JZOTA::stopOTA()
+{
+    cancel();
 }
 
 void JZOTA::cancel()
@@ -73,8 +64,8 @@ void JZOTA::cancel()
         m_reply = nullptr;
     }
 
-    if (m_driver && (m_state == Downloading || m_state == Writing))
-        m_driver->cancel();
+    if (m_state == Downloading || m_state == Writing)
+        JZOTADriver::instance()->cancel();
 
     m_state = Idle;
 }
@@ -98,6 +89,38 @@ double JZOTA::progress() const
     if (m_state == Checking)
         return 0.0;
     return (double)m_written / (double)m_total;
+}
+
+JZResult<JZOTAMeta> JZOTA::readCurrentMeta()
+{
+    static const char *kResource = ":/JZOTA/meta";
+
+    JZFile file;
+    if (!file.open(kResource, "rb"))
+        return JZResult<JZOTAMeta>::Error(std::string("resource not found: ") + kResource);
+
+    JZByteArray data = file.readAll();
+    file.close();
+
+    std::string text((const char *)data.data(), (size_t)data.size());
+
+    Json::Value root;
+    Json::CharReaderBuilder builder;
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    std::string errs;
+    if (text.empty() || !reader->parse(text.data(), text.data() + text.size(), &root, &errs))
+        return JZResult<JZOTAMeta>::Error(std::string("JZOTAMeta parse failed: ") + errs);
+    if (!root.isObject())
+        return JZResult<JZOTAMeta>::Error("JZOTAMeta invalid format");
+
+    JZOTAMeta meta;
+    meta.version    = root.isMember("version")    ? root["version"].asString()    : "";
+    meta.productId  = root.isMember("productId")  ? root["productId"].asString()  : "";
+    meta.hwVersion  = root.isMember("hwVersion")  ? root["hwVersion"].asString()  : "";
+    meta.upgradeTime= root.isMember("upgradeTime")? root["upgradeTime"].asInt64() : 0;
+    meta.infoUrl    = root.isMember("infoUrl")    ? root["infoUrl"].asString()    : "";
+    meta.data       = root.isMember("data")       ? root["data"].asString()       : "";
+    return JZResult<JZOTAMeta>::Ok(meta);
 }
 
 const JZOTAUpdateInfo &JZOTA::info() const
@@ -168,7 +191,6 @@ void JZOTA::onInfoFinished()
         return;
     }
     m_info = info;
-    sigInfoReady.emit();
 
     if (m_info.url.empty())
     {
@@ -177,15 +199,18 @@ void JZOTA::onInfoFinished()
         return;
     }
 
-    // 交由驱动校验(如: 已是最新则跳过)
-    if (!m_driver->verify(m_info))
+    // 获得信息后自行校验, 结果存入 m_info.needUpdate(不自动开始升级)
+    auto r = JZOTADriver::instance()->verify(m_info);
+    if (r.isError())
     {
-        m_state = NoUpdate;
-        sigNoUpdate.emit();
+        m_state = Error;
+        sigError.emit(r.errorMessage());
         return;
     }
+    m_info.needUpdate = r.value();
 
-    startDownload();
+    m_state = Idle;
+    sigInfoReady.emit();
 }
 
 void JZOTA::startDownload()
@@ -199,7 +224,7 @@ void JZOTA::startDownload()
     {
         // 已知大小 -> HTTP Range 分块下载
         m_useRange = true;
-        if (!m_driver->begin(m_total))
+        if (!JZOTADriver::instance()->begin(m_total))
         {
             m_state = Error;
             sigError.emit("driver begin failed");
@@ -212,7 +237,7 @@ void JZOTA::startDownload()
         // 未知大小 -> 整体下载
         m_useRange = false;
         JZNetworkRequest req(m_info.url);
-        m_reply = m_manager->get(req);
+        m_reply = m_manager.get(req);
         connect(&m_reply->sigFinished, this, &JZOTA::onFullFinished);
     }
 }
@@ -232,7 +257,7 @@ void JZOTA::downloadChunk()
     JZNetworkRequest req(m_info.url);
     req.setRawHeader("Range", "bytes=" + std::to_string(m_offset) + "-" + std::to_string(end));
 
-    m_reply = m_manager->get(req);
+    m_reply = m_manager.get(req);
     connect(&m_reply->sigFinished, this, &JZOTA::onChunkFinished);
 }
 
@@ -243,7 +268,7 @@ void JZOTA::onChunkFinished()
         std::string err = "download failed: " + m_reply->errorString();
         m_reply->deleteLater();
         m_reply = nullptr;
-        m_driver->finish();
+        JZOTADriver::instance()->finish();
         m_state = Error;
         sigError.emit(err);
         return;
@@ -255,16 +280,16 @@ void JZOTA::onChunkFinished()
 
     if (data.isEmpty())
     {
-        m_driver->finish();
+        JZOTADriver::instance()->finish();
         m_state = Error;
         sigError.emit("download empty chunk");
         return;
     }
 
-    int64_t written = m_driver->write(m_offset, data);
+    int64_t written = JZOTADriver::instance()->write(m_offset, data);
     if (written < 0)
     {
-        m_driver->finish();
+        JZOTADriver::instance()->finish();
         m_state = Error;
         sigError.emit("driver write failed");
         return;
@@ -296,17 +321,17 @@ void JZOTA::onFullFinished()
     m_total = data.size();
     m_state = Writing;
 
-    if (!m_driver->begin(m_total))
+    if (!JZOTADriver::instance()->begin(m_total))
     {
         m_state = Error;
         sigError.emit("driver begin failed");
         return;
     }
 
-    int64_t written = m_driver->write(0, data);
+    int64_t written = JZOTADriver::instance()->write(0, data);
     if (written < 0)
     {
-        m_driver->finish();
+        JZOTADriver::instance()->finish();
         m_state = Error;
         sigError.emit("driver write failed");
         return;
@@ -314,7 +339,7 @@ void JZOTA::onFullFinished()
     m_written = written;
     sigProgress.emit(progress());
 
-    if (!m_driver->finish())
+    if (!JZOTADriver::instance()->finish())
     {
         m_state = Error;
         sigError.emit("driver finish failed");
@@ -326,12 +351,12 @@ void JZOTA::onFullFinished()
 
     // 按服务端策略决定是否重启以生效新固件
     if (m_info.reboot)
-        m_driver->reboot();
+        JZOTADriver::instance()->reboot();
 }
 
 void JZOTA::finishSuccess()
 {
-    if (!m_driver->finish())
+    if (!JZOTADriver::instance()->finish())
     {
         m_state = Error;
         sigError.emit("driver finish failed");
@@ -342,5 +367,5 @@ void JZOTA::finishSuccess()
 
     // 按服务端策略决定是否重启以生效新固件
     if (m_info.reboot)
-        m_driver->reboot();
+        JZOTADriver::instance()->reboot();
 }

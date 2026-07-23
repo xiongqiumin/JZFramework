@@ -3,15 +3,13 @@ set(JZOTA_SOURCES
     JZOTA.cpp
     JZOTADriver.h
     JZOTADriver.cpp
-    JZOTAFileDriver.h
-    JZOTAFileDriver.cpp
 )
 
 # 平台相关驱动，仅编译对应平台的实现
 if(ESP_PLATFORM)
     list(APPEND JZOTA_SOURCES
-        JZOTAESP32Driver.h
-        JZOTAESP32Driver.cpp
+        JZOTADriverEsp32.h
+        JZOTADriverEsp32.cpp
     )
 endif()
 

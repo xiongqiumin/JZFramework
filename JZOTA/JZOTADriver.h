@@ -3,42 +3,12 @@
 
 #include "JZStd.h"
 #include "JZByteArray.h"
+#include "JZResult.h"
 #include <cstdint>
 #include <string>
 
-// 升级信息(由服务端 manifest 提供, 服务端一定支持 HTTP Range)
-struct JZOTAUpdateInfo {
-    // ---------- 标识 / 版本 ----------
-    std::string version;     // 目标固件版本号
-    std::string buildId;     // 构建号 / commit hash
-    std::string channel;     // 发布通道: stable / beta / dev
-
-    // ---------- 设备匹配(防刷错固件, 由 driver 决定如何校验) ----------
-    std::string productId;   // 产品 / 型号 id, 不匹配应拒绝升级
-    std::string hwVersion;   // 目标硬件版本, 不兼容应拒绝升级
-    std::string minVersion;  // 允许升级的最低当前版本(防跨版本不兼容)
-
-    // ---------- 下载 ----------
-    std::string url;         // 主下载地址
-    std::string mirror;      // 备用镜像地址(主地址失败可回退)
-    int64_t size = 0;        // 固件总大小(字节), <=0 表示未知(此时整体下载)
-
-    // ---------- 完整性 / 安全 ----------
-    std::string md5;         // md5(hex), 写入后校验
-    std::string sha256;      // 可选, 更强完整性校验
-    std::string signature;   // 可选, 服务端签名(驱动可验签)
-    std::string signAlgo;    // 签名算法: "rsa" / "ecdsa" / ...
-
-    // ---------- 升级策略(供上层调度 / UI 使用) ----------
-    bool mandatory = false;  // 是否强制升级
-    bool reboot = true;      // 完成后是否需要重启
-    std::string applyMode;   // 应用时机: "now" / "nextBoot"
-    std::string releaseNote; // 更新说明 / changelog
-    std::string publishTime; // 发布时间(ISO8601)
-
-    // ---------- 源 ----------
-    std::string infoUrl;     // 本 manifest 自身地址(便于回显 / 审计)
-};
+// 升级信息结构体定义见 JZOTA.h
+struct JZOTAUpdateInfo;
 
 /*
  * JZOTADriver: OTA 写入抽象层
@@ -51,8 +21,13 @@ public:
     JZOTADriver() = default;
     virtual ~JZOTADriver() = default;
 
-    // 校验升级信息: 返回 true 表示需要执行升级, false 表示无需升级(如已是最新)
-    virtual bool verify(const JZOTAUpdateInfo &info) = 0;
+    // 全局驱动实例: 在 JZDriver::init 中按平台安装。
+    static void setInstance(JZOTADriver *inst);
+    static JZOTADriver *instance();
+
+
+    // 校验升级信息: Ok(true)=需要升级, Ok(false)=无需升级(如已是最新), Error=校验失败(环境/兼容问题)
+    virtual JZResult<bool> verify(const JZOTAUpdateInfo &info) = 0;
 
     // 期望写入的总字节数(用于进度计算)。未知返回 -1
     virtual int64_t totalSize() = 0;
@@ -81,6 +56,8 @@ public:
 
 protected:
     JZ_DISABLE_COPY(JZOTADriver)
+
+    static JZOTADriver *m_inst;
 };
 
 #endif // !JZ_OTA_DRIVER_H_

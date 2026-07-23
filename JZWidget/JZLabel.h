@@ -14,8 +14,8 @@ public:
     void setText(const std::string& text);
     std::string text() const;
 
-    void setAlign(lv_text_align_t align);
-    void setLongMode(lv_label_long_mode_t mode);
+    void setAlign(int align);
+    void setLongMode(int mode);
 };
 
 #endif

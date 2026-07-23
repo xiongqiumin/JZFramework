@@ -1,7 +1,5 @@
 #ifndef JZ_WIDGET_LAYOUT_H_
 #define JZ_WIDGET_LAYOUT_H_
-
-#include "lvgl.h"
 #include <vector>
 #include <cstddef>
 
@@ -13,7 +11,7 @@ public:
     virtual ~JZLayout() = default;
 
     // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存目标供后续 updateLayout 使用
-    void apply(lv_obj_t* obj);
+    void apply(void* obj);
     // 将当前 items / 参数重新布局到目标容器 (增删 / 改属性后调用一次)
     void updateLayout();
 
@@ -34,7 +32,7 @@ public:
 protected:
     virtual void doLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
 
-    lv_obj_t* m_target = nullptr;  // 已被 apply 过的容器
+    void* m_target = nullptr;  // 已被 apply 过的容器
     int m_gap = 0;
     int m_marginLeft = 0;
     int m_marginTop = 0;
@@ -54,7 +52,7 @@ public:
     struct Item {
         ItemType type;
         JZWidget* widget = nullptr;
-        lv_obj_t* spacer = nullptr;
+        void* spacer = nullptr;
         int stretch = 0;
         int spaceSize = 0;
     };
@@ -76,7 +74,7 @@ public:
 
 protected:
     void doLayout() override;
-    virtual lv_flex_flow_t flexFlow() const = 0;
+    virtual int flexFlow() const = 0;
 
     std::vector<Item> m_items;
 
@@ -89,7 +87,7 @@ class JZHBoxLayout : public JZBoxLayout
 public:
     using JZBoxLayout::JZBoxLayout;
 protected:
-    lv_flex_flow_t flexFlow() const override { return LV_FLEX_FLOW_ROW; }
+    int flexFlow() const override { return 0; }
 };
 
 class JZVBoxLayout : public JZBoxLayout
@@ -97,7 +95,7 @@ class JZVBoxLayout : public JZBoxLayout
 public:
     using JZBoxLayout::JZBoxLayout;
 protected:
-    lv_flex_flow_t flexFlow() const override { return LV_FLEX_FLOW_COLUMN; }
+    int flexFlow() const override { return 1; }
 };
 
 class JZGridLayout : public JZLayout
@@ -109,13 +107,13 @@ public:
         int col = 0;
         int rowSpan = 1;
         int colSpan = 1;
-        lv_grid_align_t colAlign = LV_GRID_ALIGN_STRETCH;
-        lv_grid_align_t rowAlign = LV_GRID_ALIGN_STRETCH;
+        int colAlign = 0;
+        int rowAlign = 0;
     };
 
     struct LineSpec {
         int stretch = 0;
-        lv_coord_t minSize = -1;
+        int minSize = -1;
     };
 
     JZGridLayout(int pad = 0, int gap = 0);
@@ -126,8 +124,8 @@ public:
 
     void setRowStretch(int row, int stretch);
     void setColumnStretch(int col, int stretch);
-    void setRowMinimumHeight(int row, lv_coord_t minHeight);
-    void setColumnMinimumWidth(int col, lv_coord_t minWidth);
+    void setRowMinimumHeight(int row, int minHeight);
+    void setColumnMinimumWidth(int col, int minWidth);
 
     void setHorizontalSpacing(int spacing);
     void setVerticalSpacing(int spacing);
@@ -142,16 +140,16 @@ protected:
     void doLayout() override;
 
 private:
-    void buildColDesc(std::vector<lv_coord_t>& out) const;
-    void buildRowDesc(std::vector<lv_coord_t>& out) const;
+    void buildColDesc(std::vector<int>& out) const;
+    void buildRowDesc(std::vector<int>& out) const;
 
     std::vector<Item> m_items;
     std::vector<LineSpec> m_colSpecs;
     std::vector<LineSpec> m_rowSpecs;
     int m_hGap = -1;
     int m_vGap = -1;
-    mutable std::vector<lv_coord_t> m_colDescCache;
-    mutable std::vector<lv_coord_t> m_rowDescCache;
+    mutable std::vector<int> m_colDescCache;
+    mutable std::vector<int> m_rowDescCache;
 };
 
 #endif // JZ_WIDGET_LAYOUT_H_

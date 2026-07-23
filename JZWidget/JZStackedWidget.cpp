@@ -1,6 +1,6 @@
 #include "JZStackedWidget.h"
 #include "JZStd.h"
-#include "lvgl.h"
+
 
 JZ_OBJECT_IMPL(JZStackedWidget, JZWidget)
 
@@ -10,46 +10,10 @@ JZStackedWidget::JZStackedWidget(JZWidget* parent)
 }
 
 int JZStackedWidget::addWidget(JZWidget* w)
-{
-    if (!w) return -1;
-
-    m_pages.push_back(w);
-    w->setParentWidget(this);
-
-    // page 铺满容器, 用百分比尺寸自动跟随容器大小
-    lv_obj_t* h = w->handle();
-    lv_obj_set_pos(h, 0, 0);
-    lv_obj_set_size(h, LV_PCT(100), LV_PCT(100));
-
-    int idx = (int)m_pages.size() - 1;
-    if (m_current < 0)
-        setCurrentIndex(0);
-    else
-        updateVisibility();
-    return idx;
-}
+{ return 0; }
 
 void JZStackedWidget::insertWidget(int index, JZWidget* w)
-{
-    if (!w) return;
-    if (index < 0) index = 0;
-    if (index > (int)m_pages.size()) index = (int)m_pages.size();
-
-    m_pages.insert(m_pages.begin() + index, w);
-    w->setParentWidget(this);
-
-    lv_obj_t* h = w->handle();
-    lv_obj_set_pos(h, 0, 0);
-    lv_obj_set_size(h, LV_PCT(100), LV_PCT(100));
-
-    // 在当前页之前插入, 当前索引顺移
-    if (m_current >= index) m_current++;
-
-    if (m_current < 0)
-        setCurrentIndex(0);
-    else
-        updateVisibility();
-}
+{}
 
 void JZStackedWidget::removeWidget(int index)
 {

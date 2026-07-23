@@ -10,7 +10,7 @@ class JZRoller : public JZWidget
 public:
     explicit JZRoller(JZWidget* parent = nullptr);
 
-    void setOptions(const std::string& opts, lv_roller_mode_t mode = LV_ROLLER_MODE_NORMAL);
+    void setOptions(const std::string& opts, int mode = 0);
     void setVisibleRowCount(uint8_t n);
     void setSelected(uint32_t idx, bool anim = false);
     uint32_t selected() const;

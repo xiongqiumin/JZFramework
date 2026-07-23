@@ -10,9 +10,6 @@
 class JZWidget;
 
 // Forward-declare LVGL types
-typedef struct _lv_layer_t lv_layer_t;
-typedef struct _lv_font_t lv_font_t;
-
 class JZPainter
 {
 public:
@@ -35,10 +32,10 @@ public:
     // 绘制图像(仅支持已解码的 dsc 图像; 文件路径图像会被忽略)
     void drawImage(const JZImage& img, int x, int y, int w, int h);
 
-    static const lv_font_t* resolveFont(const JZFont& font);
+    static const void* resolveFont(const JZFont& font);
 
 private:
-    lv_layer_t* m_layer;
+    void* m_layer;
     int m_ox = 0;   // 绘制原点 x(绝对坐标, 由 widget 提供)
     int m_oy = 0;   // 绘制原点 y
     JZPen m_pen;

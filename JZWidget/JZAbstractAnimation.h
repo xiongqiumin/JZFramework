@@ -4,7 +4,10 @@
 #include "JZSignal.h"
 #include "JZObject.h"
 
+typedef void (*JZAnimExecCb)(void*, int32_t);
+
 class JZWidget;
+
 
 class JZAbstractAnimation : public JZObject
 {
@@ -14,7 +17,7 @@ public:
     JZAbstractAnimation(JZObject* parent = nullptr);
     ~JZAbstractAnimation();
 
-    void setTarget(lv_obj_t* obj);
+    void setTarget(void* obj);
     void setTarget(JZWidget* widget);
 
     void setDuration(uint32_t ms);
@@ -27,7 +30,7 @@ public:
     void setEasingOvershoot();
     void setEasingBounce();
 
-    void setExecCb(lv_anim_exec_xcb_t cb);
+    void setExecCb(JZAnimExecCb cb);
 
     void start();
     void stop();
@@ -35,11 +38,11 @@ public:
 jz_signals:
     JZSigVoid sigFinished;
 
-    lv_anim_t m_anim;
-    lv_obj_t* m_target = nullptr;
+    void* m_anim = nullptr;
+    void* m_target = nullptr;
 
 private:
-    static void s_readyCb(lv_anim_t* a);
+    static void s_readyCb(void* a);
 };
 
 #endif

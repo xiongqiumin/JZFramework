@@ -37,7 +37,7 @@ jz_signals:
     JZSigString currentTextChanged;  // 当前选中文本变化
 
 protected:
-    void onLvEvent(lv_event_t* e) override;
+    void onLvEvent(void* e) override;
 };
 
 #endif

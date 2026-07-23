@@ -3,22 +3,16 @@
 JZ_OBJECT_IMPL(JZCheckbox, JZWidget)
 
 JZCheckbox::JZCheckbox(JZWidget* parent)
-    : JZWidget(lv_checkbox_create, parent)
+    : JZWidget(parent)
     , sigToggled(this)
 {
 }
 
 void JZCheckbox::setText(const std::string& text)
-{
-    lv_checkbox_set_text(m_lv, text.c_str());
-}
+{}
 
 std::string JZCheckbox::text() const
-{
-    return lv_checkbox_get_text(m_lv);
-}
+{ return {}; }
 
 bool JZCheckbox::isChecked() const
-{
-    return lv_obj_has_state(m_lv, LV_STATE_CHECKED);
-}
+{ return false; }

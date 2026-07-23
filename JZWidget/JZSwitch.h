@@ -18,7 +18,7 @@ jz_signals:
     JZSigBool sigToggled;
 
 protected:
-    void onLvEvent(lv_event_t* e) override;
+    void onLvEvent(void* e) override;
 };
 
 #endif

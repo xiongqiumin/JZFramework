@@ -6,14 +6,14 @@
 class JZDisplayDevice : public JZWidget
 {
 public:
-    JZDisplayDevice(lv_display_t* display);
+    JZDisplayDevice(void* display);
     JZDisplayDevice(int w,int h);    
     ~JZDisplayDevice();
 
-    lv_display_t* displayHandle() const;
+    void* displayHandle() const;
 
 private:
-    lv_display_t* m_display;
+    void* m_display = nullptr;
 };
 
 #endif

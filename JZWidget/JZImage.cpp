@@ -7,14 +7,11 @@ JZImage::JZImage(const std::string& filePath)
 }
 
 JZImage::JZImage(const char* data, int len)
-{
-    auto* src = (const lv_image_dsc_t*)data;
-    m_dsc.reset(new lv_image_dsc_t(*src));
-}
+{}
 
-const lv_image_dsc_t* JZImage::dsc() const
+const void* JZImage::dsc() const
 {
-    return m_dsc.get();
+    return m_dsc;
 }
 
 bool JZImage::isFile() const
@@ -29,12 +26,10 @@ std::string JZImage::filePath() const
 
 int JZImage::width() const
 {
-    if (m_dsc) return m_dsc->header.w;
     return 0;
 }
 
 int JZImage::height() const
 {
-    if (m_dsc) return m_dsc->header.h;
     return 0;
 }

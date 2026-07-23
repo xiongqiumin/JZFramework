@@ -12,7 +12,7 @@ public:
     explicit JZPushButton(JZWidget* parent = nullptr);
     JZPushButton(JZWidget* parent, int w, int h, const std::string& text);
 
-    lv_obj_t* labelHandle() const;
+    void* labelHandle() const;
 
     void setText(const std::string& text);
     std::string text() const;
@@ -24,10 +24,10 @@ jz_signals:
     JZSigVoid sigClicked;
 
 protected:
-    void onLvEvent(lv_event_t* e) override;
+    void onLvEvent(void* e) override;
 
 private:
-    lv_obj_t* m_label = nullptr;
+    void* m_label = nullptr;
 };
 
 #endif

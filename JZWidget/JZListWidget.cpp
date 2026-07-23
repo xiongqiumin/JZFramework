@@ -1,5 +1,5 @@
 #include "JZListWidget.h"
-#include "lvgl.h"
+
 #include "JZColor.h"
 #include "JZBrush.h"
 #include "JZPen.h"
@@ -13,12 +13,7 @@ JZ_OBJECT_IMPL(JZListWidget, JZScrollArea)
 JZListWidget::JZListWidget(JZWidget* parent)
     : JZScrollArea(parent)
     , currentIndexChanged(this)
-{
-    lv_obj_set_style_pad_all(m_lv, 0, 0);
-    lv_obj_set_scroll_dir(m_lv, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(m_lv, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_radius(m_lv, 0, 0);
-}
+{}
 
 JZListWidget::~JZListWidget()
 {
@@ -249,27 +244,8 @@ void JZListWidget::paintEvent(JZPainterEvent*)
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
-void JZListWidget::onLvEvent(lv_event_t* e)
-{
-    JZScrollArea::onLvEvent(e);
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        lv_indev_t* indev = lv_event_get_indev(e);
-        if (!indev) return;
-        lv_point_t pt;
-        lv_indev_get_point(indev, &pt);
-        lv_area_t a; lv_obj_get_coords(m_lv, &a);
-        int localY = pt.y - a.y1;
-        int localX = pt.x - a.x1;
-        int sy = scrollY();
-        int perRow = itemsPerRow();
-        int rh = rowHeight();
-        int row = (localY + sy) / rh;
-        int col = (m_mode == ImageMode) ? (localX / cellWidth()) : 0;
-        int index = row * perRow + col;
-        if (index >= 0 && index < (int)m_items.size())
-            setCurrentIndex(index);
-    }
-}
+void JZListWidget::onLvEvent(void* e)
+{ return; }
 
 void JZListWidget::showEvent(JZShowEvent* e)
 {

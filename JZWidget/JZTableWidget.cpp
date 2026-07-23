@@ -1,5 +1,5 @@
 #include "JZTableWidget.h"
-#include "lvgl.h"
+
 #include "JZColor.h"
 #include "JZBrush.h"
 #include "JZPen.h"
@@ -16,11 +16,7 @@ JZTableWidget::JZTableWidget(JZWidget* parent)
     : JZScrollArea(parent)
     , currentRowChanged(this)
     , currentColumnChanged(this)
-{
-    lv_obj_set_style_pad_all(m_lv, 0, 0);
-    lv_obj_set_scroll_dir(m_lv, static_cast<lv_dir_t>(LV_DIR_HOR | LV_DIR_VER));
-    lv_obj_set_scrollbar_mode(m_lv, LV_SCROLLBAR_MODE_AUTO);
-}
+{}
 
 JZTableWidget::~JZTableWidget()
 {
@@ -314,27 +310,8 @@ void JZTableWidget::paintEvent(JZPainterEvent*)
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
-void JZTableWidget::onLvEvent(lv_event_t* e)
-{
-    JZScrollArea::onLvEvent(e);
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        lv_indev_t* indev = lv_event_get_indev(e);
-        if (!indev) return;
-        lv_point_t pt;
-        lv_indev_get_point(indev, &pt);
-        lv_area_t a; lv_obj_get_coords(m_lv, &a);
-        int localX = pt.x - a.x1;
-        int localY = pt.y - a.y1;
-        int hh = headerHeight();
-        if (localY < hh) return;   // 点击表头不选中单元格
-        int sx = scrollX();
-        int sy = scrollY();
-        int col = colFromX(localX + sx);
-        int row = (localY + sy - hh) / m_rowHeight;
-        if (row >= 0 && row < (int)m_grid.size() && col >= 0 && col < m_cols)
-            setCurrentCell(row, col);
-    }
-}
+void JZTableWidget::onLvEvent(void* e)
+{ return; }
 
 void JZTableWidget::showEvent(JZShowEvent* e)
 {

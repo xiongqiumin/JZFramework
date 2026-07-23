@@ -19,16 +19,6 @@ void JZColor::setRgb(uint8_t r, uint8_t g, uint8_t b)
     m_r = r; m_g = g; m_b = b;
 }
 
-JZColor::lv_color_pod JZColor::toLvColor() const
-{
-    return { m_b, m_g, m_r, 0 };
-}
-
-JZColor JZColor::fromLvColor(lv_color_pod c)
-{
-    return JZColor(c.red, c.green, c.blue);
-}
-
 JZColor JZColor::Black() { return JZColor(0, 0, 0); }
 JZColor JZColor::White() { return JZColor(255, 255, 255); }
 JZColor JZColor::Red()   { return JZColor(255, 0, 0); }

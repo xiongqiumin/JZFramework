@@ -12,7 +12,10 @@
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
 
-typedef lv_obj_t* (*lv_create_fn_t)(lv_obj_t* parent);
+// LVGL 类型前向声明: JZWidget 不再在构建期依赖 LVGL
+typedef void* (*JZCreateFn)(void* parent);
+
+
 
 class JZWidget : public JZObject
 {
@@ -22,7 +25,7 @@ public:
     explicit JZWidget(JZWidget* parent);
     virtual ~JZWidget();
 
-    lv_obj_t* handle() const;
+    void* handle() const;
 
     void setParentWidget(JZWidget* parent);
     JZWidget* parentWidget() const;
@@ -69,20 +72,20 @@ public:
     virtual JZVariant property(const std::string& name) const override;
 
     // 绘制层（paintEvent 中有效）
-    lv_layer_t* paintLayer() const { return m_paintLayer; }
+    void* paintLayer() const { return m_paintLayer; }
 
 protected:
     struct NoCreate{};
 
-    static void lvEventCallback(lv_event_t* e);
+    static void lvEventCallback(void* e);
         
     // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）
-    JZWidget(lv_create_fn_t create, JZWidget* parent);
+    JZWidget(JZCreateFn create, JZWidget* parent);
     JZWidget(NoCreate, JZWidget* parent = nullptr);
     
-    void setLvglObject(lv_obj_t* obj);
+    void setLvglObject(void* obj);
 
-    virtual void onLvEvent(lv_event_t* e);
+    virtual void onLvEvent(void* e);
     virtual void onKeyPressed(JZKeyEvent* event);
     virtual void paintEvent(JZPainterEvent* event);
 
@@ -91,8 +94,8 @@ protected:
     virtual void resizeEvent(JZResizeEvent* event);
 
     JZLayout* m_layout = nullptr;
-    lv_obj_t* m_lv = nullptr;
-    lv_layer_t* m_paintLayer = nullptr;
+    void* m_lv = nullptr;
+    void* m_paintLayer = nullptr;
 };
 
 #endif

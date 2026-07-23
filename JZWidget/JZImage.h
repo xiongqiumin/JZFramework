@@ -3,7 +3,6 @@
 
 #include <memory>
 #include <string>
-
 class JZImage
 {
 public:
@@ -11,7 +10,7 @@ public:
     explicit JZImage(const std::string& filePath);
     JZImage(const char* data, int len);
 
-    const lv_image_dsc_t* dsc() const;
+    const void* dsc() const;
 
     bool isFile() const;
     std::string filePath() const;
@@ -20,7 +19,7 @@ public:
     int height() const;
 
 private:
-    std::shared_ptr<lv_image_dsc_t> m_dsc;
+    void* m_dsc = nullptr;
     std::string m_filePath;
 };
 

@@ -1,5 +1,4 @@
 #include "JZImage.h"
-#include "lvgl.h"
 #include <cstring>
 
 JZImage::JZImage(const std::string& filePath)

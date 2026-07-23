@@ -1,7 +1,6 @@
 #ifndef JZ_ABSTRACT_ANIMATION_H_
 #define JZ_ABSTRACT_ANIMATION_H_
 
-#include "lvgl.h"
 #include "JZSignal.h"
 #include "JZObject.h"
 

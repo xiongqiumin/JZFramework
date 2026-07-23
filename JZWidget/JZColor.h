@@ -15,12 +15,6 @@ public:
 
     void setRgb(uint8_t r, uint8_t g, uint8_t b);
 
-    // LVGL 互转（内部使用，声明在 .cpp）
-    struct lv_color_pod { uint8_t blue, green, red, alpha; };
-
-    lv_color_pod toLvColor() const;
-    static JZColor fromLvColor(lv_color_pod c);
-
     // 预定义颜色
     static JZColor Black();
     static JZColor White();

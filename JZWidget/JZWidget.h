@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_WIDGET_H_
-#define JZ_LVGL_WIDGET_H_
+#ifndef JZ_WIDGET_WIDGET_H_
+#define JZ_WIDGET_WIDGET_H_
 
 #include "JZObject.h"
 #include "JZPoint.h"

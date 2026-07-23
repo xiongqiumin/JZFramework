@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_WINDOW_H_
-#define JZ_LVGL_WINDOW_H_
+#ifndef JZ_WIDGET_WINDOW_H_
+#define JZ_WIDGET_WINDOW_H_
 
 #include "JZDisplayDevice.h"
 

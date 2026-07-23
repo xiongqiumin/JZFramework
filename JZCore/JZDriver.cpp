@@ -1,11 +1,6 @@
 #include "JZPlatform.h"
 #include "JZDriver.h"
 
-// === 头文件 ===
-#ifdef HAS_JZLvgl
-#include "lvgl.h"
-#endif
-
 #ifdef HAS_JZBle
 #include "JZBleDriver.h"
 #endif

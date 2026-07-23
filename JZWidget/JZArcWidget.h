@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_ARC_H_
-#define JZ_LVGL_ARC_H_
+#ifndef JZ_WIDGET_ARC_H_
+#define JZ_WIDGET_ARC_H_
 
 #include "JZWidget.h"
 #include "JZSignal.h"

@@ -1,14 +1,13 @@
 #include "JZKeyEvent.h"
-#include "lvgl.h"
 
-JZKeyEvent::JZKeyEvent(lv_event_t* e)
-    : m_event(e)
+JZKeyEvent::JZKeyEvent()
+    : JZEvent(JZEvent_key)
 {
 }
 
 uint32_t JZKeyEvent::key() const
 {
-    return lv_indev_get_key(lv_indev_active());
+    return 0;
 }
 
 bool JZKeyEvent::isAccepted() const

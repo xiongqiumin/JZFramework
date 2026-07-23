@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_LED_H_
-#define JZ_LVGL_LED_H_
+#ifndef JZ_WIDGET_LED_H_
+#define JZ_WIDGET_LED_H_
 
 #include "JZWidget.h"
 #include "JZColor.h"

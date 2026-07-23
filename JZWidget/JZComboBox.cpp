@@ -27,31 +27,11 @@ void JZComboBox::insertItem(int index, const std::string& text)
 
 void JZComboBox::removeItem(int index)
 {
-    int cnt = count();
-    if (index < 0 || index >= cnt)
-        return;
-
-    // 从 LVGL options 字符串重建（跳过要删除的项）
-    const char* opts = lv_dropdown_get_options(m_lv);
-    std::string newOpts;
-    int i = 0;
-    const char* p = opts ? opts : "";
-    while (*p) {
-        const char* start = p;
-        while (*p && *p != '\n') ++p;
-        if (i != index) {
-            if (!newOpts.empty()) newOpts += '\n';
-            newOpts.append(start, p - start);
-        }
-        ++i;
-        if (*p == '\n') ++p;
-    }
-    lv_dropdown_set_options(m_lv, newOpts.c_str());
+    
 }
 
 void JZComboBox::clear()
 {
-    lv_dropdown_set_options(m_lv, "");
 }
 
 int JZComboBox::currentIndex() const

@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_TEXTAREA_H_
-#define JZ_LVGL_TEXTAREA_H_
+#ifndef JZ_WIDGET_TEXTAREA_H_
+#define JZ_WIDGET_TEXTAREA_H_
 
 #include "JZWidget.h"
 

@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_TABLE_H_
-#define JZ_LVGL_TABLE_H_
+#ifndef JZ_WIDGET_TABLE_H_
+#define JZ_WIDGET_TABLE_H_
 
 #include "JZScrollArea.h"
 #include "JZImage.h"

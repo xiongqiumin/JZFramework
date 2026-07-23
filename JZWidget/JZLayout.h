@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_LAYOUT_H_
-#define JZ_LVGL_LAYOUT_H_
+#ifndef JZ_WIDGET_LAYOUT_H_
+#define JZ_WIDGET_LAYOUT_H_
 
 #include "lvgl.h"
 #include <vector>
@@ -154,4 +154,4 @@ private:
     mutable std::vector<lv_coord_t> m_rowDescCache;
 };
 
-#endif // JZ_LVGL_LAYOUT_H_
+#endif // JZ_WIDGET_LAYOUT_H_

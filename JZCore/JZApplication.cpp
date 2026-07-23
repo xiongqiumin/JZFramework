@@ -7,10 +7,6 @@
 #include "JZTx.h"
 #include "JZDriver.h"
 
-#ifdef HAS_JZLvgl
-#include "lvgl.h"
-#endif
-
 JZApplication *jzApp = nullptr;
 
 JZApplication* JZApplication::instance()
@@ -33,19 +29,10 @@ JZApplication::JZApplication()
     m_thread = m_mainThread;    
 
     JZDriver::init();
-
-#ifdef HAS_JZLvgl
-    m_lvglTick = JZPlatform::getTickCountMs();
-    m_lvglTimer = startTimer(33);
-#endif
 }
 
 JZApplication::~JZApplication()
 {
-#ifdef HAS_JZLvgl
-    killTimer(m_lvglTimer);
-#endif
-
     JZDriver::deinit();
 
     std::vector<JZObject*> childs = m_childs;
@@ -141,15 +128,6 @@ void JZApplication::processEvents()
 
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
-#ifdef HAS_JZLvgl
-    if (event->id() == m_lvglTimer)
-    {
-        auto cur_tick = JZPlatform::getTickCountMs();
-        lv_tick_inc(cur_tick - m_lvglTick);
-        m_lvglTick = cur_tick;
-        lv_timer_handler();
-    }
-#endif
 }
 
 void JZApplication::sendEvent(JZObject *object, JZEvent *event)

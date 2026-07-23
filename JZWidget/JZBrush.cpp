@@ -1,5 +1,4 @@
 #include "JZBrush.h"
-#include "lvgl.h"
 
 JZBrush::JZBrush(const JZColor& color, uint8_t opa)
     : m_color(color), m_opa(opa)

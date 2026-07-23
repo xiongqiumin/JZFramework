@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_SLIDER_H_
-#define JZ_LVGL_SLIDER_H_
+#ifndef JZ_WIDGET_SLIDER_H_
+#define JZ_WIDGET_SLIDER_H_
 
 #include "JZWidget.h"
 #include "JZSignal.h"

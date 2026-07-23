@@ -1,6 +1,5 @@
 #include "JZDisplayDevice.h"
 #include "JZStd.h"
-#include "lvgl.h"
 
 JZDisplayDevice::JZDisplayDevice(lv_display_t* display)
     :JZWidget(NoCreate())

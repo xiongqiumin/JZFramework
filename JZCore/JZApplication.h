@@ -43,9 +43,6 @@ protected:
     std::vector<JZThread*> m_threads;
     JZMutex m_mutex;
     int m_returnCode;
-
-    int m_lvglTimer = 0;
-    int64_t m_lvglTick = 0;
 };
 extern JZApplication *jzApp;
 

@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_BUTTON_H_
-#define JZ_LVGL_BUTTON_H_
+#ifndef JZ_WIDGET_BUTTON_H_
+#define JZ_WIDGET_BUTTON_H_
 
 #include "JZWidget.h"
 #include "JZSignal.h"

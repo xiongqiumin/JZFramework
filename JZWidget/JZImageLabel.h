@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_IMAGE_H_
-#define JZ_LVGL_IMAGE_H_
+#ifndef JZ_WIDGET_IMAGE_H_
+#define JZ_WIDGET_IMAGE_H_
 
 #include "JZWidget.h"
 #include "JZImage.h"

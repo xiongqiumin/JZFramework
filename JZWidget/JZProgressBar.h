@@ -1,5 +1,5 @@
-#ifndef JZ_LVGL_BAR_H_
-#define JZ_LVGL_BAR_H_
+#ifndef JZ_WIDGET_BAR_H_
+#define JZ_WIDGET_BAR_H_
 
 #include "JZWidget.h"
 

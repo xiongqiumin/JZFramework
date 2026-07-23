@@ -1,7 +1,6 @@
 #ifndef JZ_IMAGE_H_
 #define JZ_IMAGE_H_
 
-#include "lvgl.h"
 #include <memory>
 #include <string>
 

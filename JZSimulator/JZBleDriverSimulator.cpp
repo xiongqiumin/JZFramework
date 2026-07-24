@@ -217,26 +217,18 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
 
     switch (cmd) {
     case SIM_EVT_SCAN_RESULT: {
-<<<<<<< HEAD
-        std::string addr = simGetStr(map, "addr");
-        std::string name = simGetStr(map, "name");
-        int rssi = simGetInt(map, "rssi");
-        std::vector<std::string> su = simGetStrs(map, "su");
-        JZBLEDeviceInfo info;
-=======
         std::string addr = map.at("addr").toString();
         std::string name = map.at("name").toString();
         int rssi = map.at("rssi").toInt();
         std::vector<std::string> su;
-{
-    auto _it = map.find("su");
-    if (_it != map.end() && _it->second.typeId() == jzMetaTypeId<JZVariantList>()) {
-        const JZVariantList &_l = _it->second.valueRef<JZVariantList>();
-        for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) su.push_back(_e.toString());
-    }
-}
+        {
+            auto _it = map.find("su");
+            if (_it != map.end() && _it->second.typeId() == jzMetaTypeId<JZVariantList>()) {
+                const JZVariantList &_l = _it->second.valueRef<JZVariantList>();
+                for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) su.push_back(_e.toString());
+            }
+        }
         JZBluetoothDeviceInfo info;
->>>>>>> 4be69fd25136706bf9eb4a53b0f2a788b7f1b0cd
         info.setAddress(addr);
         info.setName(name);
         info.setRssi(rssi);

@@ -1,6 +1,11 @@
 ﻿set(JZ_SOURCES
     JZColor.h
     JZColor.cpp
+    JZDrawBuffer.h
+    JZDrawBuffer.cpp
+    JZDrawTask.h
+    JZLayer.h
+    JZLayer.cpp
     JZSize.h
     JZSize.cpp
     JZPoint.h
@@ -79,6 +84,8 @@
     JZRoller.cpp
     JZTableWidget.h
     JZTableWidget.cpp
+	
+	lvgl/draw
 )
 
 convert_to_abs_paths(JZ_SOURCES)

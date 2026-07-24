@@ -1,7 +1,13 @@
 #include "main_window.h"
 #include "JZDebug.h"
 #include "JZLayout.h"
-#include "lvgl.h"
+
+// 主窗口尺寸 (原 lv_obj 百分比由固定像素近似)
+static constexpr int kW = 800;
+static constexpr int kH = 600;
+
+// 文本对齐 (原 LV_TEXT_ALIGN_*)
+enum { JZAlignLeft = 0, JZAlignCenter = 1, JZAlignRight = 2 };
 
 MainWindow::MainWindow(JZWidget* parent)
     : JZWidget(parent)
@@ -24,31 +30,28 @@ void MainWindow::setupUi()
 {
     // 中间容器: 左列表 + 右预览
     m_top = new JZWidget(this);
-    m_top->resize(LV_PCT(100), LV_PCT(100));
 
     m_list = new JZListWidget(m_top);
     m_list->addItems(m_names);
-    m_list->resize(150, LV_PCT(100));
+    m_list->resize(150, kH);
 
     m_preview = new JZStackedWidget(m_top);
-    m_preview->resize(LV_PCT(100), LV_PCT(100));
+    m_preview->resize(kW, kH);
 
     JZHBoxLayout* topLayout = new JZHBoxLayout(4, 4);
     topLayout->addWidget(m_list, 0);    // 固定宽
     topLayout->addWidget(m_preview, 1); // 占剩余宽度
     m_top->setLayout(topLayout);
-    lv_obj_set_flex_align(m_top->handle(), LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     // 底部日志
     m_log = new JZTextEdit(this);
-    m_log->resize(LV_PCT(100), 120);
+    m_log->resize(kW, 120);
 
     // 主布局: 上(列表+预览) + 下(日志)
     JZVBoxLayout* mainLayout = new JZVBoxLayout(4, 4);
     mainLayout->addWidget(m_top, 1);    // 占主要空间
     mainLayout->addWidget(m_log, 0);    // 固定高
     setLayout(mainLayout);
-    lv_obj_set_flex_align(handle(), LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     buildPages();
     m_list->setCurrentIndex(0);
@@ -61,7 +64,6 @@ JZWidget* MainWindow::makePage()
 {
     JZWidget* page = new JZWidget(m_preview);
     page->setLayout(new JZVBoxLayout(10, 10));
-    lv_obj_set_flex_align(page->handle(), LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     return page;
 }
 
@@ -123,8 +125,8 @@ void MainWindow::buildPages()
     {
         JZWidget* page = makePage();
         JZLabel* l = new JZLabel(page);
-        l->setAlign(LV_TEXT_ALIGN_CENTER);
-        l->setText("Hello LVGL");
+        l->setAlign(JZAlignCenter);
+        l->setText("Hello");
         m_labelDemo = l;
         JZPushButton* b = new JZPushButton(page, 100, 32, "Update");
         connect(&b->sigClicked, this, &MainWindow::onLabelUpdate);
@@ -148,7 +150,7 @@ void MainWindow::buildPages()
         JZSlider* s = new JZSlider(page);
         s->setRange(0, 100);
         s->setValue(50);
-        lv_obj_set_width(s->handle(), 150);
+        s->resize(150, s->height());
         connect(&s->sigValueChanged, this, &MainWindow::onLogInt);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(s);
         m_preview->addWidget(page);
@@ -162,7 +164,7 @@ void MainWindow::buildPages()
         m_pbVal = 60;
         p->setRange(0, 100);
         p->setValue(m_pbVal, true);
-        lv_obj_set_width(p->handle(), 150);
+        p->resize(150, p->height());
         JZPushButton* b = new JZPushButton(page, 90, 28, "+10");
         connect(&b->sigClicked, this, &MainWindow::onPbInc);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(p);
@@ -218,7 +220,7 @@ void MainWindow::buildPages()
         JZArcWidget* arc = new JZArcWidget(page);
         arc->setRange(0, 360);
         arc->setValue(120);
-        lv_obj_set_size(arc->handle(), 100, 100);
+        arc->resize(100, 100);
         connect(&arc->sigValueChanged, this, &MainWindow::onLogInt);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(arc);
         m_preview->addWidget(page);
@@ -230,7 +232,7 @@ void MainWindow::buildPages()
         JZTextEdit* te = new JZTextEdit(page);
         m_te = te;
         te->setText("edit me");
-        lv_obj_set_size(te->handle(), 160, 70);
+        te->resize(160, 70);
         JZPushButton* b = new JZPushButton(page, 90, 28, "Log");
         connect(&b->sigClicked, this, &MainWindow::onLogTextEdit);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(te);
@@ -256,7 +258,7 @@ void MainWindow::buildPages()
     {
         JZWidget* page = makePage();
         JZRoller* rl = new JZRoller(page);
-        rl->setOptions("One\nTwo\nThree\nFour", LV_ROLLER_MODE_NORMAL);
+        rl->setOptions("One\nTwo\nThree\nFour");
         rl->setVisibleRowCount(3);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(rl);
         m_preview->addWidget(page);
@@ -286,7 +288,7 @@ void MainWindow::buildPages()
     {
         JZWidget* page = makePage();
         JZImageLabel* img = new JZImageLabel(page);
-        lv_obj_set_size(img->handle(), 60, 60);
+        img->resize(60, 60);
         JZLabel* note = new JZLabel(page);
         note->setText("(no image loaded)");
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(img);

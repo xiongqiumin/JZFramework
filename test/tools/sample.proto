@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+enum Color
+{
+    Red = 0;
+    Green = 1;
+    Blue = 2;
+}
+
+message Point
+{
+    double x = 1;
+    double y = 2;
+}
+
+message Shape
+{
+    std::string name = 1;
+    Color color = 2;
+    repeated Point points = 3;
+    optional int score = 4;
+    map<std::string, std::string> attrs = 5;
+}

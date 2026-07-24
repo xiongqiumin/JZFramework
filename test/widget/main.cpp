@@ -6,8 +6,6 @@
 
 int app_main(int argc, char* argv[])
 {
-    lv_init();
-
     JZApplication app;
 
     JZDisplayDevice device(800, 600);

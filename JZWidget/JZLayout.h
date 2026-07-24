@@ -10,10 +10,9 @@ class JZLayout
 public:
     virtual ~JZLayout() = default;
 
-    // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存目标供后续 updateLayout 使用
-    void apply(void* obj);
-    // 将当前 items / 参数重新布局到目标容器 (增删 / 改属性后调用一次)
-    void updateLayout();
+    // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存容器供后续 updateLayout 使用
+    void apply(JZWidget* container);
+    virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
 
     int spacing() const { return m_gap; }
     void setSpacing(int gap) { m_gap = gap; updateLayout(); }
@@ -30,9 +29,8 @@ public:
     }
 
 protected:
-    virtual void doLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
 
-    void* m_target = nullptr;  // 已被 apply 过的容器
+    JZWidget* m_container = nullptr;  // 已被 apply 过的容器
     int m_gap = 0;
     int m_marginLeft = 0;
     int m_marginTop = 0;
@@ -73,7 +71,7 @@ public:
     void clear();
 
 protected:
-    void doLayout() override;
+    void updateLayout() override;
     virtual int flexFlow() const = 0;
 
     std::vector<Item> m_items;
@@ -137,7 +135,7 @@ public:
     int count() const { return (int)m_items.size(); }
 
 protected:
-    void doLayout() override;
+    void updateLayout() override;
 
 private:
     void buildColDesc(std::vector<int>& out) const;

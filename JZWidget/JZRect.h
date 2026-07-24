@@ -44,6 +44,11 @@ public:
     bool contains(const JZPoint& p) const;
     bool isEmpty() const;
 
+    // 几何运算: 交集(无交返回空矩形) / 并集外接框 / 是否相交
+    JZRect intersect(const JZRect& other) const;
+    JZRect united(const JZRect& other) const;
+    bool intersects(const JZRect& other) const;
+
 private:
     int m_x = 0;
     int m_y = 0;

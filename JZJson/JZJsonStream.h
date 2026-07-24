@@ -54,7 +54,7 @@ public:
         if (isError())
             return false;
 
-        int pre_level = m_values.size();
+        int pre_level = (int)m_values.size();
         if (!switchToMember(name))
             return false;
 
@@ -114,9 +114,9 @@ public:
         if (isError())
             return false;
 
-        int pre_level = m_values.size();
+        int pre_level = (int)m_values.size();
         int last_idx = str_lastIndexOf(name, ".");
-        string child_name;
+        std::string child_name;
         if (last_idx == -1)
         {
             child_name = name;

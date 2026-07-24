@@ -1,5 +1,6 @@
 #include "JZRect.h"
 #include "JZDebug.h"
+#include <algorithm>
 
 JZRect::JZRect()
     : m_x(0), m_y(0), m_w(0), m_h(0)
@@ -71,6 +72,34 @@ bool JZRect::isEmpty() const
     return m_w <= 0 || m_h <= 0;
 }
 
+// ==================== 几何运算 ====================
+
+JZRect JZRect::intersect(const JZRect& o) const
+{
+    int x1 = std::max(left(),   o.left());
+    int y1 = std::max(top(),    o.top());
+    int x2 = std::min(right(),  o.right());
+    int y2 = std::min(bottom(), o.bottom());
+    if (x2 < x1 || y2 < y1)
+        return JZRect();
+    return JZRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1);
+}
+
+JZRect JZRect::united(const JZRect& o) const
+{
+    if (isEmpty()) return o;
+    if (o.isEmpty()) return *this;
+    int x1 = std::min(left(),   o.left());
+    int y1 = std::min(top(),    o.top());
+    int x2 = std::max(right(),  o.right());
+    int y2 = std::max(bottom(), o.bottom());
+    return JZRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1);
+}
+
+bool JZRect::intersects(const JZRect& o) const
+{
+    return !intersect(o).isEmpty();
+}
 
 JZDebug operator<<(JZDebug d, const JZRect &rc)
 {

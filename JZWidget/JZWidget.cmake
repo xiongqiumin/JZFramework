@@ -1,0 +1,113 @@
+﻿set(JZ_SOURCES
+    JZColor.h
+    JZColor.cpp
+    JZDrawBuffer.h
+    JZDrawBuffer.cpp
+    JZDrawTask.h
+    JZLayer.h
+    JZLayer.cpp
+    JZSize.h
+    JZSize.cpp
+    JZPoint.h
+    JZPoint.cpp
+    JZRect.h
+    JZRect.cpp
+    JZKeyEvent.h
+    JZKeyEvent.cpp
+    JZPen.h
+    JZPen.cpp
+    JZBrush.h
+    JZBrush.cpp
+    JZFont.h
+    JZFont.cpp
+    JZPainter.h
+    JZPainter.cpp
+    JZPainterEvent.h
+    JZPainterEvent.cpp
+    JZResizeEvent.h
+    JZResizeEvent.cpp
+    JZShowEvent.h
+    JZShowEvent.cpp
+    JZCloseEvent.h
+    JZCloseEvent.cpp
+    JZLayout.h
+    JZLayout.cpp
+    JZAbstractAnimation.h
+    JZAbstractAnimation.cpp
+    JZPropertyAnimation.h
+    JZPropertyAnimation.cpp
+    JZAnimationGroup.h
+    JZAnimationGroup.cpp
+    JZWidget.h
+    JZWidget.cpp
+    JZPushButton.h
+    JZPushButton.cpp
+    JZLabel.h
+    JZLabel.cpp
+	JZImageLabel.h
+	JZImageLabel.cpp
+    JZImage.h
+    JZImage.cpp
+    JZMainWindow.h
+    JZMainWindow.cpp
+    JZDialog.h
+    JZDialog.cpp
+    JZMessageBox.h
+    JZMessageBox.cpp
+    JZDisplayDevice.h
+    JZDisplayDevice.cpp
+    JZStackedWidget.h
+    JZStackedWidget.cpp
+    JZScrollArea.h
+    JZScrollArea.cpp
+    JZListWidget.h
+    JZListWidget.cpp
+    JZSlider.h
+    JZSlider.cpp
+    JZProgressBar.h
+    JZProgressBar.cpp
+    JZSwitch.h
+    JZSwitch.cpp
+    JZCheckbox.h
+    JZCheckbox.cpp
+    JZRadioButton.h
+    JZRadioButton.cpp
+    JZComboBox.h
+    JZComboBox.cpp
+    JZArcWidget.h
+    JZArcWidget.cpp
+    JZTextEdit.h
+    JZTextEdit.cpp
+    JZLedWidget.h
+    JZLedWidget.cpp
+    JZRoller.h
+    JZRoller.cpp
+	JZTableWidget.h
+	JZTableWidget.cpp
+)
+
+convert_to_abs_paths(JZ_SOURCES)
+
+# 添加到目标
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
+target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# ==================== LVGL 后端依赖 ====================
+# JZWidget 直接 #include "lvgl.h", 绘制走 LVGL 的 lv_draw_* API。
+# LVGL 源码根由 CMakeCache 的 LVGL_ROOT_PATH 指定 (外部仓库);
+# 预编译的静态库位于 build/lvgl/lib/<Config>/lvgl.lib, 直接链接即可,
+# 不要再把 lvgl 内部源码 (lvgl/draw 等) 编进 JZFramework, 否则会与 lvgl.lib 重复符号。
+if(LVGL_ROOT_PATH AND EXISTS "${LVGL_ROOT_PATH}/lvgl.h")
+    target_include_directories(${JZ_MODULE_TARGET} PUBLIC
+        "${LVGL_ROOT_PATH}"
+        "${LVGL_ROOT_PATH}/include"
+        "${LVGL_ROOT_PATH}/include/lvgl"
+        "${CMAKE_CURRENT_LIST_DIR}/../test"   # lv_conf.h
+        "${CMAKE_BINARY_DIR}/lvgl"            # 生成的简单 lvgl.h
+    )
+    set(_lvgl_lib_dir "${CMAKE_BINARY_DIR}/lvgl/lib")
+    target_link_libraries(${JZ_MODULE_TARGET} PUBLIC
+        "$<$<CONFIG:Debug>:${_lvgl_lib_dir}/Debug/lvgl.lib>"
+        "$<$<CONFIG:Release>:${_lvgl_lib_dir}/Release/lvgl.lib>"
+    )
+endif()

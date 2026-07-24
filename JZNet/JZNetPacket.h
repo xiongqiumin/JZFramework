@@ -98,6 +98,10 @@ class JZNetPackManager
 public:
     static JZNetPackManager *instance();
 
+    // 全局包大小上限: 所有 JZNetPacketProcessor 共享, 运行时可配置
+    static int maxPackSize() { return s_maxPackSize; }
+    static void setMaxPackSize(int size) { if (size > 0) s_maxPackSize = size; }
+
     template<class T>
     void registPack(int type)
     {
@@ -109,6 +113,8 @@ public:
 
 protected:
     JZNetPackManager();
+
+    static int s_maxPackSize;  // 全局最大包大小限制(字节)
 
     std::map<int, CreatePackFunc> m_packFactory;
 };

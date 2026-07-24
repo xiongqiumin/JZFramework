@@ -1,0 +1,30 @@
+// 演示: 使用 proto 原生的 package 作为 C++ namespace
+package demo;
+
+enum Color
+{
+    Red = 0;
+    Green = 1;
+    Blue = 2;
+}
+
+message Point
+{
+    double x;
+    double y;
+}
+
+message Shape
+{
+	int32 i32;
+	int64 i64;
+	uint32 u32;
+	uint64 u64;
+	string str;
+	bytes buffer;
+    std::string name;
+    Color color;
+    repeated Point points;
+    optional int score;
+    map<std::string, std::string> attrs;
+}

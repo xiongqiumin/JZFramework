@@ -78,8 +78,13 @@ bool JZHttpServer::isListening() const
 
 bool JZHttpServer::listen(int port)
 {    
+    return listen("0.0.0.0", port);
+}
+
+bool JZHttpServer::listen(std::string ip, int port)
+{    
     char ip_addr[32];
-    sprintf(ip_addr, "0.0.0.0:%d", port);    
+    sprintf(ip_addr, "%s:%d", ip.c_str(), port);    
 
     JZSocketInfo info;
     info.url = ip_addr;

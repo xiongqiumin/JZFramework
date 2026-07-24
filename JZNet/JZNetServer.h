@@ -16,6 +16,7 @@ public:
     std::string token();
 
     bool listen(int port);
+    bool listen(std::string ip, int port);
     void close();
     bool isListening() const;  
 

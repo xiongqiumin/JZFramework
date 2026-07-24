@@ -54,7 +54,7 @@ public:
         if (isError())
             return false;
 
-        int pre_level = m_values.size();
+        int pre_level = (int)m_values.size();
         if (!switchToMember(name))
             return false;
 
@@ -114,7 +114,7 @@ public:
         if (isError())
             return false;
 
-        int pre_level = m_values.size();
+        int pre_level = (int)m_values.size();
         int last_idx = str_lastIndexOf(name, ".");
         std::string child_name;
         if (last_idx == -1)
@@ -173,6 +173,36 @@ public:
 
         push(name, &(*value)[name]);
         *this << t;
+        pop();
+        return true;
+    }
+
+    // 写入可选成员：有值则写入值，无值（JZOptional::None）则写入 null。
+    // 注意：传入的是 JZOptional<T> 本身（而非 .value()），否则 None 时 .value() 会断言失败。
+    template <class T>
+    bool writeMemberOptional(const std::string& name, const JZOptional<T>& t)
+    {
+        Json::Value* value = curValue();
+        if (value->type() != Json::nullValue && value->type() != Json::objectValue)
+        {
+            m_errorString = "is not object";
+            return false;
+        }
+
+        if (value->type() != Json::objectValue || value->isMember(name))
+        {
+            m_errorString = name + " is exist";
+            return false;
+        }
+
+        if (t.isNone())
+        {
+            (*value)[name] = Json::nullValue;
+            return true;
+        }
+
+        push(name, &(*value)[name]);
+        *this << t.value();
         pop();
         return true;
     }
@@ -276,81 +306,6 @@ void operator>>(JZJsonStream& s, std::map<std::string, T>& mapData)
         mapData.emplace(key, std::move(t));
     }
 }
-
-class JsonObjectReader
-{
-public:
-    // 构造函数：检查当前值是否为对象
-    explicit JsonObjectReader(JZJsonStream& json_stream)
-        : s(json_stream)
-    {
-        if (!s.curValue()->isObject())
-        {
-            s.setErrorString("is not object");
-        }
-        else
-        {
-            current_member_list = s.curValue()->getMemberNames();
-        }
-    }
-
-    virtual ~JsonObjectReader() = default;
-
-    // 强制读取成员，若成员不存在或类型不匹配则设置错误
-    template <class T>
-    bool read(const std::string& name, T& ptr)
-    {
-        if (s.isError())
-            return false;
-
-        read_member_list.push_back(name);
-        return s.readMember(name, ptr);
-    }
-
-    // 可选读取成员：若成员存在则读取并覆盖 ptr，否则保持 ptr 原值（不设置错误）
-    template <class T>
-    bool readOptional(const std::string& name, JZOptional<T> &ptr)
-    {
-        if (s.isError())
-            return false;
-        
-        read_member_list.push_back(name);
-        return s.readMemberOptional(name, ptr);
-    }
-
-    // 可选读取成员：若成员存在则读取并覆盖 ptr，否则保持 ptr 原值（不设置错误）
-    template <class T>
-    bool readDefault(const std::string& name, T& ptr, const T &value = T())
-    {
-        if (s.isError())
-            return false;
-        
-        read_member_list.push_back(name);
-        return s.readMemberDefault(name, ptr, value);
-    }
-
-    // 检查是否有未知成员（已读取列表之外的成员）
-    bool checkUnknownMember()
-    {
-        if (s.isError())
-            return false;
-        
-        for (const auto& member : current_member_list)
-        {
-            if (std::find(read_member_list.begin(), read_member_list.end(), member) == read_member_list.end())
-            {
-                s.setErrorString("unknown member " + member);
-                return false;
-            }
-        }
-        return true;
-    }
-
-private:
-    JZJsonStream& s;                               // 使用引用，避免拷贝
-    std::vector<std::string> current_member_list;
-    std::vector<std::string> read_member_list;   // 记录已读取的成员名
-};
 
 class JZJsonHelper
 {

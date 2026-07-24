@@ -541,7 +541,7 @@ void JZJSEngine::resetUncaughtError()
 {
     JS_ResetUncatchableError(m_ctx);
     startEngineTimer();   // onExceptionOccurred 已 stopEngineTimer, 必须重启, 否则 execOnce 永不再触发
-    setStatus(Engine_running);
+    setStatus(Engine_pause);
 }
 
 void JZJSEngine::resume()
@@ -594,7 +594,7 @@ bool JZJSEngine::loadScript(const std::string& js_code)
     if (JS_IsException(result))
     {
         JSValue exc = JS_GetException(m_ctx);
-        std::string runtimeError = getExceptionDescript‌(exc);
+        std::string runtimeError = getExceptionDescript(exc);
         JS_FreeValue(m_ctx, exc);
 
         JS_FreeValue(m_ctx, result);
@@ -640,7 +640,7 @@ bool JZJSEngine::isException(JSValue value)
     return JS_IsException(value);
 }
 
-std::string JZJSEngine::getExceptionDescript‌(JSValue exc)
+std::string JZJSEngine::getExceptionDescript(JSValue exc)
 {
     std::string msg = getPropertyStr(exc, "message");
     std::string stack = getPropertyStr(exc, "stack");
@@ -651,7 +651,7 @@ std::string JZJSEngine::getExceptionDescript‌(JSValue exc)
 void JZJSEngine::unHandleException()
 {
     JSValue exc = JS_GetException(m_ctx);
-    std::string runtimeError = getExceptionDescript‌(exc);
+    std::string runtimeError = getExceptionDescript(exc);
     JS_FreeValue(m_ctx, exc);
 
     onExceptionOccurred(runtimeError);
@@ -659,20 +659,24 @@ void JZJSEngine::unHandleException()
 
 void JZJSEngine::unHandlePromiseReject(JSValueConst promise, JSValueConst reason)
 {
+    std::string err;
     if (JS_IsException(reason))
     {
         JSValue exc = JS_GetException(m_ctx);
-        std::string runtimeError = getExceptionDescript‌(exc);
+        err = getExceptionDescript(exc);   // 保留真实异常文本, 而非写死的 "unHandle Exception"
         JS_FreeValue(m_ctx, exc);
-
-        m_promiseError = "unHandle Exception";
     }
-    else if (JS_IsError(m_ctx, reason))
-        m_promiseError = getExceptionDescript‌(reason);
+    else if (JS_IsError(reason))
+        err = getExceptionDescript(reason);
     else
     {
-        m_promiseError = printObject(reason);
+        err = printObject(reason);
     }
+
+    // 多个未处理拒绝累积, 避免只保留最后一个
+    if (!m_promiseError.empty())
+        m_promiseError += "\n";
+    m_promiseError += err;
 }
 
 JZJSEngine::PromiseTask* JZJSEngine::getPromiseTask(int handle)
@@ -1365,6 +1369,19 @@ void JZJSEngine::execOnce()
         {
             unHandleException();
             JS_FreeValue(m_ctx, result);
+
+            // 移除本次触发失败的定时器任务: 否则 resetUncaughtError 之后它会再次
+            // 到期并重复触发(回调必然再次抛异常)。clearInterval 已在回调内执行的
+            // 情况由 task_id 查找保护, 找不到则跳过。
+            for (int i = 0; i < (int)m_timeTasks.size(); i++)
+            {
+                if (m_timeTasks[i].id == task_id)
+                {
+                    JS_FreeValue(m_ctx, m_timeTasks[i].callback);
+                    vec_removeAt(m_timeTasks, i);
+                    break;
+                }
+            }
             return;
         }
 

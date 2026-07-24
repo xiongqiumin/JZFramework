@@ -302,24 +302,48 @@ void JZJsonStream::operator>>(JZString& t)
 // JZJsonHelper
 bool JZJsonHelper::isRpcSuccess(const Json::Value& res, std::string& errMsg)
 {
-    if (res.isMember("error") && !res["error"].isNull())
+    // JSON-RPC 2.0: 响应必须是对象, 且含 "jsonrpc": "2.0"
+    if (!res.isObject())
     {
-        if (res["error"].isObject())
-        {
-            errMsg = res["error"]["message"].asString();
-        }
-        else if (res["error"].isString())
-        {
-            errMsg = res["error"].asString();
-        }
-        else
-        {
-            errMsg = "unknown error";
-        }
+        errMsg = "invalid JSON-RPC response: not an object";
         return false;
     }
-    else
+    if (!res.isMember("jsonrpc") || !res["jsonrpc"].isString() ||
+        res["jsonrpc"].asString() != "2.0")
+    {
+        errMsg = "invalid JSON-RPC response: missing or wrong 'jsonrpc' (expect \"2.0\")";
+        return false;
+    }
+
+    // 错误响应: 必须含 "error" 对象, 其中 code(int) 与 message(string) 为必填
+    if (res.isMember("error"))
+    {
+        const Json::Value& error = res["error"];
+        if (!error.isObject())
+        {
+            errMsg = "invalid JSON-RPC error: 'error' must be an object {code, message}";
+            return false;
+        }
+        if (!error.isMember("code") || !error["code"].isInt())
+        {
+            errMsg = "invalid JSON-RPC error: missing integer 'code'";
+            return false;
+        }
+        if (!error.isMember("message") || !error["message"].isString())
+        {
+            errMsg = "invalid JSON-RPC error: missing string 'message'";
+            return false;
+        }
+        errMsg = error["message"].asString();
+        return false;
+    }
+
+    // 成功响应: 必须含 "result" (与 error 互斥)
+    if (res.isMember("result"))
     {
         return true;
     }
+
+    errMsg = "invalid JSON-RPC response: neither 'result' nor 'error' present";
+    return false;
 }

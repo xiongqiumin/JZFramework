@@ -13,6 +13,7 @@ public:
     ~JZTcpServer();
 
     bool listen(int port);
+    bool listen(std::string ip, int port);
     int port() const;
 
     void close();

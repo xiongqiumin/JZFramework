@@ -10,6 +10,7 @@ enum {
     JZEvent_netRes,
     JZEvent_log,
     JZEvent_co,
+    JZEvent_key,
     JZEvent_user = 1000,
 };
 

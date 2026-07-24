@@ -1,3 +1,14 @@
 #include "JZOTADriver.h"
 
-// 纯虚基类, 无需实现。具体逻辑由派生类(如 JZOTAESP32Driver)提供。
+JZOTADriver *JZOTADriver::m_inst = nullptr;
+
+void JZOTADriver::setInstance(JZOTADriver *inst)
+{
+    m_inst = inst;
+}
+
+JZOTADriver *JZOTADriver::instance()
+{
+    JZ_ASSERT_X(m_inst, "JZOTADriver::setInstance first");
+    return m_inst;
+}

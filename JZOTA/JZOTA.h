@@ -6,61 +6,112 @@
 #include <string>
 #include <cstdint>
 
-class JZNetworkAccessManager;
+#include "JZNetworkAccessManager.h"
 class JZNetworkReply;
+
+// 升级信息(由服务端 manifest 提供, 服务端一定支持 HTTP Range)
+struct JZOTAUpdateInfo {
+    // ---------- 标识 / 版本 ----------
+    std::string version;     // 目标固件版本号
+    std::string buildId;     // 构建号 / commit hash
+    std::string channel;     // 发布通道: stable / beta / dev
+
+    // ---------- 设备匹配(防刷错固件, 由 driver 决定如何校验) ----------
+    std::string productId;   // 产品 / 型号 id, 不匹配应拒绝升级
+    std::string hwVersion;   // 目标硬件版本, 不兼容应拒绝升级
+    std::string minVersion;  // 允许升级的最低当前版本(防跨版本不兼容)
+
+    // ---------- 下载 ----------
+    std::string url;         // 主下载地址
+    std::string mirror;      // 备用镜像地址(主地址失败可回退)
+    int64_t size = 0;        // 固件总大小(字节), <=0 表示未知(此时整体下载)
+
+    // ---------- 完整性 / 安全 ----------
+    std::string md5;         // md5(hex), 写入后校验
+    std::string sha256;      // 可选, 更强完整性校验
+    std::string signature;   // 可选, 服务端签名(驱动可验签)
+    std::string signAlgo;    // 签名算法: "rsa" / "ecdsa" / ...
+
+    // ---------- 升级策略(供上层调度 / UI 使用) ----------
+    bool mandatory = false;  // 是否强制升级
+    bool reboot = true;      // 完成后是否需要重启
+    std::string applyMode;   // 应用时机: "now" / "nextBoot"
+    std::string releaseNote; // 更新说明 / changelog
+    std::string publishTime; // 发布时间(ISO8601)
+
+    // ---------- 源 ----------
+    std::string infoUrl;     // 本 manifest 自身地址(便于回显 / 审计)
+
+    // ---------- 校验结果(由 JZOTA::queryOTAInfo 填充) ----------
+    bool needUpdate = false; // 经 driver 校验后是否需要升级; true=需要, false=无需(如已是最新)
+};
+
+// 当前固件自描述元数据: 作为资源 ":/JZOTA/meta" 编入镜像, 由 JZOTA::readCurrentMeta 读取用于校验。
+// 元数据随镜像一起分发(与 bin 一体), 升级后新固件自带自己的 meta。
+struct JZOTAMeta {
+    std::string version;     // 当前固件版本号
+    std::string productId;   // 产品 / 型号 id(用于防刷错机型)
+    std::string hwVersion;   // 硬件版本(用于兼容性校验)
+    int64_t upgradeTime = 0; // 上次升级时间(epoch 秒), 0=未知
+    std::string infoUrl;     // 上次升级来源 manifest 地址
+    std::string data;        // 扩展数据(透传的自由字符串, 如备注 / 自定义字段)
+};
+
 
 /*
  * JZOTA: OTA 升级客户端(仅客户端)
  *
  * 流程:
- *   1. start(infoUrl)                            -> 获取升级信息(manifest JSON)
- *   2. 解析出 JZOTAUpdateInfo, 发射 sigInfoReady  -> 交由 JZOTADriver::verify 校验
- *   3. 校验通过                                  -> 使用 HTTP Range 分块下载, 逐块写入 driver
+ *   1. queryOTAInfo(infoUrl)                     -> 获取并校验升级信息, 结果存入 info().needUpdate, 发射 sigInfoReady
+ *   2. 调用方依据 info().needUpdate 决定是否继续
+ *   3. startOTA()                                -> 使用 HTTP Range 分块下载, 逐块写入 driver(不再校验)
  *   4. 全部写入完成                               -> 发射 sigFinished; 失败发射 sigError
  *
- * 写入与校验行为由外部注入的 JZOTADriver(固件驱动, 如 JZOTAESP32Driver)决定。
- * 仅更新文件 / 资源(配置、脚本、模型等)请改用独立的 JZOTAFileDriver。
+ * 写入与校验行为由 JZOTADriver(固件驱动, 如 JZOTADriverEsp32)决定,
+ * 通过 JZOTADriver::instance() 获取; 驱动实例在 JZDriver::init 中按平台安装。
  */
 class JZOTA : public JZObject
 {
 public:
+    // 读取当前固件自描述元数据(资源 ":/JZOTA/meta")。
+    // Ok(meta)=读取并解析成功; Error=资源缺失或解析失败。
+    static JZResult<JZOTAMeta> readCurrentMeta();
+
     enum State {
         Idle,
         Checking,     // 获取升级信息中
         Downloading,  // 分块下载 / 写入中
         Writing,
         Finished,
-        NoUpdate,     // 已是最新, 无需升级
         Error,
     };
 
     JZOTA(JZObject *parent = nullptr);
     ~JZOTA();
 
-    // 设置网络访问管理器(可复用已有实例)。为空时 start() 内部自动创建一个
-    void setNetworkAccessManager(JZNetworkAccessManager *manager);
-    // 设置写入驱动(必填)
-    void setDriver(JZOTADriver *driver);
-
     // 设置分块大小(字节), 默认 64KB
     void setChunkSize(int64_t chunkSize);
 
-    // 启动 OTA: 从 infoUrl 获取升级信息并按流程执行
-    bool start(const std::string &infoUrl);
+    // 获取升级信息(manifest JSON), 成功后发射 sigInfoReady; 不会自动开始升级
+    void queryOTAInfo(const std::string &infoUrl);    
+    const JZOTAUpdateInfo &info() const;     // 最近一次获取的升级信息
+
+    // 在 queryOTAInfo 之后调用: 开始分块下载 / 写入; 返回 false 表示状态错误或信息无效
+    bool startOTA();
+
+    // 停止当前 OTA(获取信息或下载 / 写入)
+    void stopOTA();
 
     void cancel();
     bool isRunning() const;
 
     State state() const;
     double progress() const;                 // [0, 1]
-    const JZOTAUpdateInfo &info() const;     // 最近一次获取的升级信息
 
 jz_signals:
-    JZSigVoid sigStarted;
     JZSigVoid sigInfoReady;    // 升级信息已获取, 可通过 info() 读取
     JZSigDouble sigProgress;   // 写入进度 0..1
     JZSigString sigError;      // 错误信息
-    JZSigVoid sigNoUpdate;     // 已是最新, 无需升级
     JZSigVoid sigFinished;     // 成功完成
 
 protected:
@@ -73,8 +124,7 @@ protected:
 
     bool parseInfo(const std::string &text, JZOTAUpdateInfo &out);
 
-    JZNetworkAccessManager *m_manager = nullptr;
-    JZOTADriver *m_driver = nullptr;
+    JZNetworkAccessManager m_manager;
     JZNetworkReply *m_reply = nullptr;
 
     State m_state = Idle;
@@ -84,7 +134,6 @@ protected:
     int64_t m_total = 0;
     int64_t m_offset = 0;
     int64_t m_written = 0;
-    bool m_ownManager = false;
     bool m_useRange = false;
 };
 

@@ -17,6 +17,10 @@
 #include "JZSerialPortDriver.h"
 #endif
 
+#ifdef HAS_JZOTA
+#include "JZOTADriver.h"
+#endif
+
 #ifdef ESP_PLATFORM
 
 #include "JZPlatformWrapperEsp32.h"
@@ -35,6 +39,10 @@
 #endif
 #ifdef HAS_JZSerialPort
 #include "JZSerialDriverEsp32.h"
+#endif
+
+#ifdef HAS_JZOTA
+#include "JZOTADriverEsp32.h"
 #endif
 
 #ifdef HAS_JZNet
@@ -65,6 +73,10 @@ void JZDriver::init()
 
 #ifdef HAS_JZSerialPort
     JZSerialPortDriver::setInstance(new JZSerialDriverEsp32());
+#endif
+
+#ifdef HAS_JZOTA
+    JZOTADriver::setInstance(new JZOTADriverEsp32());
 #endif
 
 #ifdef HAS_JZNet
@@ -157,6 +169,10 @@ void JZDriver::deinit()
 #ifdef HAS_JZSerialPort
     // JZSerialPortDriver::setInstance 仅保存指针，这里负责释放已创建的驱动实例
     JZSerialPortDriver::setInstance(nullptr);
+#endif
+
+#ifdef HAS_JZOTA
+    JZOTADriver::setInstance(nullptr);
 #endif
 
     JZPlatform::setInstance(nullptr);

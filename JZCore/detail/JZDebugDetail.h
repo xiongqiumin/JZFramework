@@ -25,44 +25,64 @@
 #  ifdef JZ_OPTIONAL_H_
 #    ifndef JZ_DEBUG_OPTIONAL_OP_DEFINED
 #      define JZ_DEBUG_OPTIONAL_OP_DEFINED
+
+// 主模板：非 void 类型
 template<typename T>
 JZDebug operator<<(JZDebug d, const JZOptional<T>& opt)
 {
     bool spaceFlag = d.isSpace();
     d.setSpace(false);
-    if constexpr (std::is_void_v<T>) {
-        d << (opt.isNone() ? "None" : "Some");
-    } else {
-        if (opt.isNone())
-            d << "None";
-        else
-            d << "Some(" << opt.value() << ")";
-    }
+    if (opt.isNone())
+        d << "None";
+    else
+        d << "Some(" << opt.value() << ")";
     d.setSpace(spaceFlag);
     return d;
 }
+
+// 特化：void 类型
+template<>
+JZDebug operator<<(JZDebug d, const JZOptional<void>& opt)
+{
+    bool spaceFlag = d.isSpace();
+    d.setSpace(false);
+    d << (opt.isNone() ? "None" : "Some");
+    d.setSpace(spaceFlag);
+    return d;
+}
+
 #    endif
 #  endif
 
 #  ifdef JZ_RESULT_H_
 #    ifndef JZ_DEBUG_RESULT_OP_DEFINED
 #      define JZ_DEBUG_RESULT_OP_DEFINED
+
+// 主模板：非 void 类型
 template<typename T>
 JZDebug operator<<(JZDebug d, const JZResult<T>& r)
 {
     bool spaceFlag = d.isSpace();
     d.setSpace(false);
-    if constexpr (std::is_void_v<T>) {
-        d << (r.isOk() ? "Ok" : "Err");
-    } else {
-        if (r.isOk())
-            d << "Ok(" << r.value() << ")";
-        else
-            d << "Err(" << r.errorCode() << ":" << r.errorMessage() << ")";
-    }
+    if (r.isOk())
+        d << "Ok(" << r.value() << ")";
+    else
+        d << "Err(" << r.errorCode() << ":" << r.errorMessage() << ")";
     d.setSpace(spaceFlag);
     return d;
 }
+
+// 特化：void 类型
+template<>
+JZDebug operator<<(JZDebug d, const JZResult<void>& r)
+{
+    bool spaceFlag = d.isSpace();
+    d.setSpace(false);
+    d << (r.isOk() ? "Ok" : "Err");
+    d.setSpace(spaceFlag);
+    return d;
+}
+
 #    endif
 #  endif
 

@@ -23,6 +23,10 @@
 #include <cinttypes>
 #include <cstring>
 
+// 前向声明
+static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
+extern "C" void ble_gatts_show_local(void);
+
 static JZBleDriverEsp32 *g_driver = nullptr;
 
 // Peripheral GATT 定义（必须长期存活，不能为局部变量）
@@ -31,7 +35,6 @@ struct PeriphGatt {
     std::vector<ble_uuid_any_t>   chrUuids;
     std::vector<ble_gatt_chr_def> chrDefs;
     std::vector<ble_gatt_svc_def> svcDefs;
-    bool registered = false;
 };
 
 // ==================== 工具 ====================
@@ -206,12 +209,16 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
         // Peripheral：对端连上本机
         if (event->connect.status == 0)
         {
+            printf("BLE: client connected, handle=%d\n", event->connect.conn_handle);
             self->m_periphConnHandle = event->connect.conn_handle;
             self->m_periphCtrlPriv = periph;
             JZBleDriver::peripheralOnClientConnected(periph);
+        } else {
+            printf("BLE: connect failed, status=%d\n", event->connect.status);
         }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        printf("BLE: client disconnected, reason=%d\n", event->disconnect.reason);
     {
         std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
         self->m_periphConnHandle = -1;
@@ -465,37 +472,31 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 }
 
 // ==================== 构造/析构 ====================
-JZBleDriverEsp32::JZBleDriverEsp32() : m_scanning(false), m_advertising(false), m_ownAddrType(BLE_OWN_ADDR_PUBLIC)
+JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_advertState(State::None), m_scanning(false)
 {
     g_driver = this;
     m_periphGatt = new PeriphGatt();
 
-    // nimble_port_init() 内部会处理 controller mem_release + init + enable + host init
-    // 不要手动调 esp_bt_controller_init/enable，否则和 nimble_port_init 内部重复初始化导致失败
-    esp_err_t ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
-        return;
-    }
-
+    // 配置 NimBLE Host（在 nimble_port_init() 之前设置）
     ble_hs_cfg.reset_cb = onHostReset;
     ble_hs_cfg.sync_cb = onHostSync;
+    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    // 自定义 store：驱动不持久化密钥，仅内存缓存 + 上报上层（由上层决定如何存储/恢复）
     ble_hs_cfg.store_read_cb = storeReadCb;
     ble_hs_cfg.store_write_cb = storeWriteCb;
     ble_hs_cfg.store_delete_cb = storeDeleteCb;
 
-    // 启用安全管理器（配对/绑定）。不配置则 security_initiate 不会生成/存储密钥，
-    // storeWriteCb 也就不会触发，sigBondKeyReported 无从上报。
-    ble_hs_cfg.sm_bonding = 1;                                   // 允许绑定，配对产物写入 store
-    ble_hs_cfg.sm_mitm    = 0;                                   // Just Works，无需密码交互
-    ble_hs_cfg.sm_sc      = 1;                                   // 安全连接（Secure Connections）
-    ble_hs_cfg.sm_io_cap  = BLE_HS_IO_NO_INPUT_OUTPUT;           // 无输入输出 → Just Works
-    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC;     // 本机分发加密密钥(LTK)
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC     // 对端分发 LTK（storeWriteCb 捕获）
-                                  | BLE_SM_PAIR_KEY_DIST_ID;     // 以及 IRK（隐私地址解析）
-    nimble_port_freertos_init([](void *) { nimble_port_run(); });
+    // 启用安全管理器（配对/绑定）
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm    = 0;
+    ble_hs_cfg.sm_sc      = 1;
+    ble_hs_cfg.sm_io_cap  = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC
+                                  | BLE_SM_PAIR_KEY_DIST_ID;
+
+    // nimble_port_init() 延迟到 startAdvertising() 中调用，
+    // 确保 addService/addCharacteristic 先于 host sync 完成注册
 }
 
 JZBleDriverEsp32::~JZBleDriverEsp32() 
@@ -509,6 +510,30 @@ void JZBleDriverEsp32::onHostReset(int)
     // 复位时可做清理，这里保持简单
 }
 
+// NimBLE GATT 注册回调（记录服务/特征/描述符注册信息）
+static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
+{
+    (void)arg;
+    char buf[BLE_UUID_STR_LEN];
+    switch (ctxt->op) {
+    case BLE_GATT_REGISTER_OP_SVC:
+        printf("BLE: register svc %s handle=%d\n",
+               ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf), ctxt->svc.handle);
+        break;
+    case BLE_GATT_REGISTER_OP_CHR:
+        printf("BLE: register chr %s def_handle=%d val_handle=%d\n",
+               ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
+               ctxt->chr.def_handle, ctxt->chr.val_handle);
+        break;
+    case BLE_GATT_REGISTER_OP_DSC:
+        printf("BLE: register dsc %s handle=%d\n",
+               ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf), ctxt->dsc.handle);
+        break;
+    default:
+        break;
+    }
+}
+
 void JZBleDriverEsp32::onHostSync()
 {
     auto *self = g_driver;
@@ -516,26 +541,21 @@ void JZBleDriverEsp32::onHostSync()
         return;
 
     int rc = ble_hs_util_ensure_addr(0); // 优先公钥地址
-    if (rc != 0) return;
+    if (rc != 0) {
+        printf("BLE: ble_hs_util_ensure_addr failed, rc=%d\n", rc);
+        return;
+    }
     rc = ble_hs_id_infer_auto(0, &self->m_ownAddrType);
     if (rc != 0) self->m_ownAddrType = BLE_OWN_ADDR_PUBLIC;
 
-    self->m_synced = true;
+    self->m_advertState = State::Started;
+    printf("BLE: host synced\n");
 
-    // 注册 GATT 服务（必须在 host sync 之后、首次广播之前完成）
-    if (self->m_periphGatt && !self->m_periphGatt->registered)
-    {
-        self->buildPeriphGatt();
-        int rc2 = ble_gatts_count_cfg(self->m_periphGatt->svcDefs.data());
-        if (rc2 == 0)
-            rc2 = ble_gatts_add_svcs(self->m_periphGatt->svcDefs.data());
-        self->m_periphGatt->registered = (rc2 == 0);
-    }
+    printf("BLE: onHostSync pendingAdv=%d\n", self->m_pendingAdv);
 
     // 处理延迟广播请求
     if (self->m_pendingAdv && self->m_pendingAdvPeriph)
     {
-        self->m_advertising = true;
         self->m_periphConnHandle = -1;
         self->m_periphCtrlPriv = self->m_pendingAdvPeriph;
 
@@ -814,22 +834,28 @@ void JZBleDriverEsp32::buildPeriphGatt()
     m_periphGatt->chrDefs.clear();
     m_periphGatt->svcDefs.clear();
 
-    std::map<std::string, std::vector<std::string>> svcChars;  // svcUuid -> [charUuids]
+    std::map<std::string, std::vector<std::string>> svcChars;
     for (auto &kv : m_periphCharMap)
         svcChars[kv.second.svcUuid].push_back(kv.first);
 
+    // resize 一把创建所有元素，地址终生不变，NimBLE 存的裸指针永远安全
+    size_t svcCount = svcChars.size();
+    size_t totalChars = m_periphCharMap.size();
+    m_periphGatt->svcUuids.resize(svcCount);
+    m_periphGatt->chrUuids.resize(totalChars);
+    m_periphGatt->chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
+    m_periphGatt->svcDefs.resize(svcCount + 1);           // svcs + 终止符
+
+    size_t svcIdx = 0, chrUuidIdx = 0, chrDefIdx = 0, svcDefIdx = 0;
+
     for (auto &sc : svcChars)
     {
-        ble_uuid_any_t svcUuid;
-        uuidFromString(sc.first, &svcUuid);
-        m_periphGatt->svcUuids.push_back(svcUuid);   // 存入长期存活的成员
+        uuidFromString(sc.first, &m_periphGatt->svcUuids[svcIdx]);
 
-        auto startIdx = m_periphGatt->chrDefs.size();
+        size_t chrStartIdx = chrDefIdx;
         for (auto &cuuid : sc.second)
         {
-            ble_uuid_any_t cu;
-            uuidFromString(cuuid, &cu);
-            m_periphGatt->chrUuids.push_back(cu);
+            uuidFromString(cuuid, &m_periphGatt->chrUuids[chrUuidIdx]);
 
             int props = m_periphCharMap[cuuid].properties;
             ble_gatt_chr_flags nimFlags = 0;
@@ -840,94 +866,114 @@ void JZBleDriverEsp32::buildPeriphGatt()
             if (props & 0x10) nimFlags |= BLE_GATT_CHR_F_WRITE_NO_RSP;
 
             ble_gatt_chr_def cd = {};
-            cd.uuid = &m_periphGatt->chrUuids.back().u;
+            cd.uuid = &m_periphGatt->chrUuids[chrUuidIdx].u;
             cd.access_cb = onGattAccess;
-            cd.val_handle = &m_periphCharMap[cuuid].valHandle; // NimBLE 自动分配并回写
+            cd.val_handle = &m_periphCharMap[cuuid].valHandle;
             cd.flags = nimFlags;
             cd.min_key_size = 0;
-            m_periphGatt->chrDefs.push_back(cd);
+            m_periphGatt->chrDefs[chrDefIdx] = cd;
+
+            chrUuidIdx++;
+            chrDefIdx++;
         }
-        m_periphGatt->chrDefs.push_back(ble_gatt_chr_def{});  // 终止符
+        m_periphGatt->chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
+        chrDefIdx++;
 
         ble_gatt_svc_def sd = {};
         sd.type = BLE_GATT_SVC_TYPE_PRIMARY;
-        sd.uuid = &m_periphGatt->svcUuids.back().u;
-        sd.characteristics = &m_periphGatt->chrDefs[startIdx];
-        m_periphGatt->svcDefs.push_back(sd);
+        sd.uuid = &m_periphGatt->svcUuids[svcIdx].u;
+        sd.characteristics = &m_periphGatt->chrDefs[chrStartIdx];
+        m_periphGatt->svcDefs[svcDefIdx] = sd;
+
+        svcIdx++;
+        svcDefIdx++;
     }
-    m_periphGatt->svcDefs.push_back(ble_gatt_svc_def{});  // 终止符
+    m_periphGatt->svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
 }
 
 void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEPeripheral *d)
 {
-    m_periphCtrlPriv = d;
+    if (m_advertState != State::None) {
+        printf("BLE: startAdvertising: state=%d, expected None\n", (int)m_advertState);
+        return;
+    }    
 
-    // host 尚未就绪：延迟到 sync_cb
-    if (!m_synced) {
-        m_pendingAdv = true;
-        m_pendingAdvName = name;
-        m_pendingAdvUuids = uuids;
-        m_pendingAdvPeriph = d;
+    esp_err_t ret = nimble_port_init();
+    if (ret != ESP_OK) {
+        printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
         return;
     }
 
-    // 已就绪但 GATT 服务尚未注册
-    if (!m_periphGatt->registered)
-    {
-        buildPeriphGatt();
-        int rc = ble_gatts_count_cfg(m_periphGatt->svcDefs.data());
-        if (rc == 0)
-            rc = ble_gatts_add_svcs(m_periphGatt->svcDefs.data());
-        m_periphGatt->registered = (rc == 0);
+    // GAP 服务初始化（同 gap_init() 例子）
+    ble_svc_gap_init();
+    ble_svc_gap_device_name_set(name.c_str());
+
+    // GATT 服务注册（必须在 host task 启动之前完成）
+    ble_svc_gatt_init();
+    buildPeriphGatt();
+    int rc2 = ble_gatts_count_cfg(m_periphGatt->svcDefs.data());
+    if (rc2 == 0)
+        rc2 = ble_gatts_add_svcs(m_periphGatt->svcDefs.data());
+    if (rc2 != 0) {
+        printf("BLE: GATT service register failed, rc=%d\n", rc2);
+        return;
     }
+    printf("BLE: GATT services registered OK, count=%d\n", (int)m_periphGatt->svcDefs.size());
 
-    m_advertising = true;
-    m_periphConnHandle = -1;
+    m_periphCtrlPriv = d;
+    m_advertState = State::Starting;
 
-    struct ble_hs_adv_fields f; memset(&f, 0, sizeof(f));
-    f.name = (uint8_t *)name.c_str(); f.name_len = name.size(); f.name_is_complete = 1;
-    f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    std::vector<ble_uuid16_t> u16; u16.reserve(uuids.size());
-    std::vector<ble_uuid128_t> u128; u128.reserve(uuids.size());
-    for (auto &u : uuids) {
-        std::string s = u.toString();
-        ble_uuid_any_t tmp; uuidFromString(s, &tmp);
-        if (tmp.u.type == BLE_UUID_TYPE_16) u16.push_back(*(ble_uuid16_t*)&tmp.u);
-        else if (tmp.u.type == BLE_UUID_TYPE_128) u128.push_back(*(ble_uuid128_t*)&tmp.u);
-    }
-    if (!u16.empty()) { f.uuids16 = u16.data(); f.num_uuids16 = u16.size(); f.uuids16_is_complete = 1; }
-    if (!u128.empty()) { f.uuids128 = u128.data(); f.num_uuids128 = u128.size(); f.uuids128_is_complete = 1; }
-
-    ble_gap_adv_set_fields(&f);
-
-    struct ble_gap_adv_params p; memset(&p, 0, sizeof(p));
-    p.conn_mode = BLE_GAP_CONN_MODE_UND; p.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    ble_gap_adv_start(m_ownAddrType, nullptr, BLE_HS_FOREVER, &p, onPeriphGapEvent, d);
+    // 在 nimble_port_freertos_init 之前设 pending，
+    // 防止 NimBLE 任务在 pending 设完前就触发 onHostSync
+    m_pendingAdv = true;
+    m_pendingAdvName = name;
+    m_pendingAdvUuids = uuids;
+    m_pendingAdvPeriph = d;
+    nimble_port_freertos_init([](void *) { nimble_port_run(); });
 }
 
 void JZBleDriverEsp32::stopAdvertising()
 {
-    m_advertising = false;
-    m_periphConnHandle = -1;
-    // 不清空 m_periphCtrlPriv：角色由回调类型（onPeriphGapEvent / onCentralGapEvent）
-    // 保证，旧连接的后续 DISCONNECT 会正确路由到 Peripheral 分支，不会误判为 Central。
+    if (m_advertState == State::None) return;
+
+    printf("BLE: stop + deinit NimBLE\n");
     ble_gap_adv_stop();
+    nimble_port_stop();
+    nimble_port_deinit();
+
+    m_advertState = State::None;
+    m_pendingAdv = false;
+    m_pendingAdvName.clear();
+    m_pendingAdvUuids.clear();
+    m_pendingAdvPeriph = nullptr;
+    m_periphConnHandle = -1;
 }
 
 void JZBleDriverEsp32::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
+    if (m_advertState != State::None) {
+        printf("BLE: cannot add char after NimBLE started (svc=%s chr=%s)\n", svcUuid.c_str(), charUuid.c_str());
+        return;
+    }
     m_periphCharMap[charUuid] = { svcUuid, 0, properties, JZByteArray() };
+    printf("BLE: add char svc=%s chr=%s props=0x%x\n", svcUuid.c_str(), charUuid.c_str(), properties);
 }
 
 int JZBleDriverEsp32::sendPeriphData(int connHandle, uint16_t valHandle, const JZByteArray &value, bool indicate)
 {
     if (connHandle < 0 || valHandle == 0 || value.isEmpty()) return -1;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(value.data(), (uint16_t)value.size());
-    if (!om) return -1;
+    if (!om) {
+        printf("BLE: sendPeriphData mbuf alloc failed, size=%d\n", (int)value.size());
+        return -1;
+    }
     int rc = indicate
         ? ble_gatts_indicate_custom(connHandle, valHandle, om)
         : ble_gatts_notify_custom(connHandle, valHandle, om);
-    if (rc != 0) os_mbuf_free_chain(om);
+    if (rc != 0) {
+        printf("BLE: sendPeriphData notify/indicate failed, rc=%d\n", rc);
+        os_mbuf_free_chain(om);
+    }
     return rc;
 }
 
@@ -953,6 +999,7 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
                 return 0;
             }
         }
+        printf("BLE: onGattAccess WRITE: attr_handle %d not found in charMap\n", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR)
@@ -965,6 +1012,7 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
                 return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
             }
         }
+        printf("BLE: onGattAccess READ: attr_handle %d not found in charMap\n", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_DSC && ctxt->om)

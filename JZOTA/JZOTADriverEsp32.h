@@ -1,13 +1,14 @@
-#ifndef JZ_OTA_ESP32_DRIVER_H_
-#define JZ_OTA_ESP32_DRIVER_H_
+#ifndef JZ_OTA_DRIVER_ESP32_H_
+#define JZ_OTA_DRIVER_ESP32_H_
 
 #include "JZOTADriver.h"
+#include "JZOTA.h"
 #include "JZByteArray.h"
 #include "esp_ota.h"
 #include "esp_partition.h"
 
 /*
- * JZOTAESP32Driver: ESP32 (ESP-IDF) 平台下的 OTA 写入驱动
+ * JZOTADriverEsp32: ESP32 (ESP-IDF) 平台下的 OTA 写入驱动
  *
  * 基于 ESP-IDF 的 OTA 分区机制:
  *   verify  -> 选定下一个 OTA 更新分区, 并校验空间是否足够
@@ -19,14 +20,14 @@
  * 注: 镜像完整性由 ESP-IDF 在 esp_ota_end 内校验(配置了 SHA-256 / 安全启动时),
  *     因此本驱动不再单独做 md5 回读校验(避免整片 Flash 回读)。
  */
-class JZOTAESP32Driver : public JZOTADriver
+class JZOTADriverEsp32 : public JZOTADriver
 {
 public:
-    JZOTAESP32Driver();
-    ~JZOTAESP32Driver() override;
+    JZOTADriverEsp32();
+    ~JZOTADriverEsp32() override;
 
-    // 校验升级信息: 存在可用 OTA 分区且容量足够则返回 true
-    bool verify(const JZOTAUpdateInfo &info) override;
+    // 校验升级信息: 存在可用 OTA 分区且容量足够则返回 Ok(true)
+    JZResult<bool> verify(const JZOTAUpdateInfo &info) override;
 
     // 期望写入的总字节数(用于进度计算)
     int64_t totalSize() override;
@@ -56,4 +57,4 @@ private:
     int64_t m_written = 0;
 };
 
-#endif // !JZ_OTA_ESP32_DRIVER_H_
+#endif // !JZ_OTA_DRIVER_ESP32_H_

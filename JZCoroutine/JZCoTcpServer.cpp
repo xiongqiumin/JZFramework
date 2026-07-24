@@ -21,6 +21,11 @@ bool JZCoTcpServer::listen(int port)
     return m_server->listen(port);
 }
 
+bool JZCoTcpServer::listen(std::string ip, int port)
+{
+    return m_server->listen(ip, port);
+}
+
 void JZCoTcpServer::close()
 {
     for (auto s : m_pendingList)

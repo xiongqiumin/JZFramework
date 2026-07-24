@@ -12,6 +12,7 @@ public:
     ~JZCoWebSocketServer();
 
     bool listen(int port);
+    bool listen(std::string ip, int port);
     void close();
     bool isListening() const;
 

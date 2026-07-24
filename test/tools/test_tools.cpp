@@ -10,6 +10,9 @@
 // Proto: jz_add_proto_json 生成的聚合头 (sample.proto -> jz_test_tools_proto.h)
 #include "jz_test_tools_proto.h"
 
+// sample.proto 中所有类型位于 demo namespace
+using namespace demo;
+
 static int g_fail = 0;
 
 #define JZTEST_CHECK(cond, msg)                                        \
@@ -54,13 +57,23 @@ static void testProtoLoopback()
     a.score = 10;
     a.attrs["kind"] = "polygon";
 
-    // 序列化
-    Json::Value j = a.toJson();
+    // 序列化 -> Json::Value
+    Json::Value j;
+    {
+        JZJsonStream s;
+        s.open(&j);
+        s << a;
+        JZTEST_CHECK(!s.isError(), "Shape 序列化成功");
+    }
 
     // 回环: 反序列化回来并逐字段比对
     Shape b;
-    std::string err;
-    JZTEST_CHECK(b.fromJson(j, err), "Shape fromJson 成功 (" + err + ")");
+    {
+        JZJsonStream s;
+        s.open(&j);
+        s >> b;
+        JZTEST_CHECK(!s.isError(), "Shape 反序列化成功 (" + s.errorString() + ")");
+    }
 
     JZTEST_CHECK(b.name == a.name, "字段 name 回环一致");
     JZTEST_CHECK(b.color == a.color, "字段 color 回环一致");
@@ -100,7 +113,12 @@ static void testResourceProtoLoopback()
         return;
 
     Shape s;
-    JZTEST_CHECK(s.fromJson(obj, perr), "从内嵌资源反序列化 Shape (" + perr + ")");
+    {
+        JZJsonStream stream;
+        stream.open(&obj);
+        stream >> s;
+        JZTEST_CHECK(!stream.isError(), "从内嵌资源反序列化 Shape (" + stream.errorString() + ")");
+    }
     JZTEST_CHECK(s.name == "triangle", "联合回环 name 正确");
     JZTEST_CHECK(s.color == Color::Blue, "联合回环 color 正确");
     JZTEST_CHECK(s.points.size() == 3, "联合回环 points 数量正确");
@@ -108,7 +126,13 @@ static void testResourceProtoLoopback()
     JZTEST_CHECK(s.attrs["kind"] == "polygon", "联合回环 attrs 正确");
 
     // 再序列化回去, 与原始 JSON 文本比对(回环)
-    Json::Value back = s.toJson();
+    Json::Value back;
+    {
+        JZJsonStream stream;
+        stream.open(&back);
+        stream << s;
+        JZTEST_CHECK(!stream.isError(), "联合回环 再序列化");
+    }
     JZTEST_CHECK(back["name"].asString() == "triangle",
                  "联合回环 序列化->反序列化->再序列化 一致");
 }

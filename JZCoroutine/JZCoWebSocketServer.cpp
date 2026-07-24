@@ -21,6 +21,11 @@ bool JZCoWebSocketServer::listen(int port)
 	return m_server->listen(port);
 }
 
+bool JZCoWebSocketServer::listen(std::string ip, int port)
+{
+	return m_server->listen(ip, port);
+}
+
 void JZCoWebSocketServer::close()
 {
 	for (int i = 0; i < m_pendingList.size(); i++)

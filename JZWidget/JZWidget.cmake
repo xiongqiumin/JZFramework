@@ -93,13 +93,3 @@ convert_to_abs_paths(JZ_SOURCES)
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
-
-<<<<<<< HEAD:JZWidget/JZWidget.cmake
-=======
-if(ESP_PLATFORM)
-    target_link_libraries(${JZ_MODULE_TARGET} PUBLIC idf::lvgl__lvgl)
-else()
-    target_link_libraries(${JZ_MODULE_TARGET} PUBLIC lvgl)
-endif()
->>>>>>> 8c9ec2ecf1d5ed4e1126e25704b90c299003e400:JZLvgl/JZLvgl.cmake
-

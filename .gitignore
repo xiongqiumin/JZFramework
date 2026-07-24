@@ -4,7 +4,6 @@
 build*
 *.iml
 .gradle
-/local.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -17,3 +16,5 @@ build*
 .externalNativeBuild
 .cxx
 local.properties
+__pycache__
+

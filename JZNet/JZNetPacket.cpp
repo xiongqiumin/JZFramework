@@ -93,6 +93,8 @@ void JZNetPackEcho::loadFromStream(JZDataStream &s)
 }
 
 //JZNetPackManager
+int JZNetPackManager::s_maxPackSize = MG_MAX_PACK_SIZE;
+
 JZNetPackManager *JZNetPackManager::instance()
 {
     static JZNetPackManager inst;

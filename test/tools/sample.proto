@@ -1,4 +1,5 @@
-syntax = "proto3";
+// 演示: 使用 proto 原生的 package 作为 C++ namespace
+package demo;
 
 enum Color
 {
@@ -9,15 +10,21 @@ enum Color
 
 message Point
 {
-    double x = 1;
-    double y = 2;
+    double x;
+    double y;
 }
 
 message Shape
 {
-    std::string name = 1;
-    Color color = 2;
-    repeated Point points = 3;
-    optional int score = 4;
-    map<std::string, std::string> attrs = 5;
+	int32 i32;
+	int64 i64;
+	uint32 u32;
+	uint64 u64;
+	string str;
+	bytes buffer;
+    std::string name;
+    Color color;
+    repeated Point points;
+    optional int score;
+    map<std::string, std::string> attrs;
 }

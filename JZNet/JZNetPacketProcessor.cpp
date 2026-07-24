@@ -48,16 +48,24 @@ JZByteArray JZNetPacketProcessor::formatPacket(const JZNetPack *packet)
 {
     JZByteArray buffer;
     JZDataStream s(&buffer, JZ::WriteOnly);
+    s.setMaxSize(JZNetPackManager::maxPackSize());   // 写入上限 = 全局包大小上限
     s << (uint8_t)PACK_HEAD;
     s << (int32_t)0;
     s << (int32_t)packet->packetType();
     packet->saveToStream(s);
 
+    // 序列化过程中任一处超出全局上限, 流会立即置错, 这里统一拦截
+    if (s.isError())
+    {
+        LOG_FMT_F("formatPacket: %s (global limit %d)\n",
+                  s.errorString().c_str(), JZNetPackManager::maxPackSize());
+        return JZByteArray();
+    }
+
     // buffer 底层为 char 缓冲区(1 字节对齐), 直接转 int* 写入是未对齐访问(UB, ARM 会 hardfault)
     // 用 memcpy 写入原生字节序的 int32_t
     int32_t size = (int32_t)buffer.size();
     memcpy(buffer.data() + 1, &size, sizeof(int32_t));
-    JZ_ASSERT(buffer.size() < MG_MAX_PACK_SIZE);
 
     if (m_password != 0)
         JZCrypto::xorshift32Stream(buffer.data(), buffer.size(), m_sendShift);
@@ -116,9 +124,10 @@ bool JZNetPacketProcessor::parse()
 
         int32_t packet_size;
         memcpy(&packet_size, m_buffer.data() + start + 1, sizeof(int32_t));   // 未对齐安全读取
-        if(packet_size < 0 || packet_size > MG_MAX_PACK_SIZE)
+        if(packet_size < 0 || packet_size > JZNetPackManager::maxPackSize())
         {
-            LOG_W("pack size error");
+            LOG_FMT_W("pack size error: %d (global limit %d)\n",
+                      packet_size, JZNetPackManager::maxPackSize());
             m_buffer.clear();
             return false;
         }

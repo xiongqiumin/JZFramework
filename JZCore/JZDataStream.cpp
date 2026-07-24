@@ -7,6 +7,9 @@ JZDataStream::JZDataStream(JZFile *file)
     m_file = file;
     m_offset = 0;
     m_buffer = nullptr;
+    m_error = false;
+    m_errorString.clear();
+    m_maxSize = -1;
 }
 
 JZDataStream::JZDataStream(const JZByteArray &buffer)
@@ -14,6 +17,9 @@ JZDataStream::JZDataStream(const JZByteArray &buffer)
     m_buffer = (JZByteArray*)&buffer;
     m_offset = 0;
     m_file = nullptr;
+    m_error = false;
+    m_errorString.clear();
+    m_maxSize = -1;
 }
 
 JZDataStream::JZDataStream(JZByteArray *buffer, JZ::OpenMode mode)
@@ -21,20 +27,54 @@ JZDataStream::JZDataStream(JZByteArray *buffer, JZ::OpenMode mode)
     m_buffer = buffer;
     m_offset = 0;
     m_file = nullptr;
+    m_error = false;
+    m_errorString.clear();
+    m_maxSize = -1;
 }
 
 JZDataStream::~JZDataStream()
 {
 }
 
+void JZDataStream::setError(const std::string& msg)
+{
+    m_error = true;
+    m_errorString = msg;
+}
+
+void JZDataStream::clearError()
+{
+    m_error = false;
+    m_errorString.clear();
+}
+
+bool JZDataStream::checkReadCapacity(int64_t need) const
+{
+    if (need < 0)
+        return false;
+    if (m_file)
+        return true;   // 文件流不预判容量
+    if (!m_buffer)
+        return false;
+    int64_t rem = (int64_t)m_buffer->size() - (int64_t)m_offset;
+    return need <= rem;
+}
+
 int JZDataStream::writeRawData(const char *s, int len)
 {
+    if (m_error)
+        return 0;
     if (m_file)
     {
         len = m_file->write(s, len);
     }
     else
     {
+        if (m_maxSize >= 0 && (int64_t)m_offset + len > m_maxSize)
+        {
+            setError("JZDataStream: writeRawData exceeds max size");
+            return 0;
+        }
         if (m_offset + len > m_buffer->size())
             m_buffer->resize(m_offset + len);
 
@@ -46,6 +86,8 @@ int JZDataStream::writeRawData(const char *s, int len)
 
 int JZDataStream::readRawData(char *s, int len)
 {
+    if (m_error)
+        return 0;
     if (m_file)
     {
         len = m_file->read(s, len);
@@ -53,7 +95,11 @@ int JZDataStream::readRawData(char *s, int len)
     else
     {
         if (m_offset + len > m_buffer->size())
-            len = m_buffer->size() - m_offset;
+        {
+            // 内存流不足: 设置错误, 不再读取 (避免越界/截断)
+            setError("JZDataStream: readRawData out of range");
+            return 0;
+        }
 
         if (len > 0)
         {
@@ -66,6 +112,8 @@ int JZDataStream::readRawData(char *s, int len)
 
 void JZDataStream::skipRawData(int offset)
 {
+    if (m_error)
+        return;
     if (m_file)
         m_file->seek(offset);
     else
@@ -216,6 +264,8 @@ JZDataStream &JZDataStream::operator>>(double &i)
 
 JZDataStream &operator<<(JZDataStream &s, const std::string &str)
 {
+    if (s.isError())
+        return s;
     s << (int32_t)str.size();
     s.writeRawData(str.data(), (int)str.size());
     return s;
@@ -223,15 +273,31 @@ JZDataStream &operator<<(JZDataStream &s, const std::string &str)
 
 JZDataStream &operator>>(JZDataStream &s, std::string &str)
 {
+    if (s.isError())
+        return s;
     int32_t size;
     s >> size;
+    if (s.isError())
+        return s;
+    if (size < 0)
+    {
+        s.setError("JZDataStream: invalid string size");
+        return s;
+    }
+    if (!s.checkReadCapacity((int64_t)size))
+    {
+        s.setError("JZDataStream: string size exceeds available buffer");
+        return s;
+    }
     str.resize(size);
-    s.readRawData(&str[0],size);
+    s.readRawData(&str[0], size);
     return s;
 }
 
 JZDataStream &operator<<(JZDataStream &s, const JZByteArray &buffer)
 {
+    if (s.isError())
+        return s;
     s << (int32_t)buffer.size();
     s.writeRawData(buffer.data(), buffer.size());
     return s;
@@ -239,8 +305,22 @@ JZDataStream &operator<<(JZDataStream &s, const JZByteArray &buffer)
 
 JZDataStream &operator>>(JZDataStream &s, JZByteArray &buffer)
 {
+    if (s.isError())
+        return s;
     int32_t size;
     s >> size;
+    if (s.isError())
+        return s;
+    if (size < 0)
+    {
+        s.setError("JZDataStream: invalid buffer size");
+        return s;
+    }
+    if (!s.checkReadCapacity((int64_t)size))
+    {
+        s.setError("JZDataStream: buffer size exceeds available buffer");
+        return s;
+    }
     buffer.resize(size);
     s.readRawData(buffer.data(), size);
     return s;

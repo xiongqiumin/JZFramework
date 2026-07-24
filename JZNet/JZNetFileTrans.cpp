@@ -1,4 +1,5 @@
 ﻿#include <assert.h>
+#include <cctype>
 #include "JZDir.h"
 #include "JZFileInfo.h"
 #include "JZNetFileTrans.h"
@@ -231,7 +232,10 @@ void JZNetFileTrans::setServer(JZNetServer* server)
 
 void JZNetFileTrans::setRootDir(string path)
 {
-    m_path = path;
+    if (path.empty())
+        m_path.clear();
+    else
+        m_path = JZFileInfo::weaklyCanonicalPath(JZDir(path).absolutePath());
 }
 
 string JZNetFileTrans::rootDir()
@@ -241,13 +245,33 @@ string JZNetFileTrans::rootDir()
 
 string JZNetFileTrans::fullPath(string path)
 {
-    if (JZDir::isAbsolutePath(path))
+    if (m_path.empty())
         return path;
+
+    string candidate;
+    if (JZDir::isAbsolutePath(path))
+    {
+        // 不信任外部传入的绝对路径: 忽略其绝对性, 当作相对 m_path 的路径处理,
+        // 去掉可能的盘符(C:)与前导分隔符后再拼到沙箱根目录下
+        string p = path;
+        if (p.size() >= 2 && isalpha((unsigned char)p[0]) && p[1] == ':')
+            p = p.substr(2);
+        while (!p.empty() && (p[0] == '/' || p[0] == '\\'))
+            p = p.substr(1);
+        candidate = JZDir(m_path).absoluteFilePath(p);
+    }
     else
     {
-        assert(!m_path.empty());
-        return JZDir(m_path).absoluteFilePath(path);        
+        candidate = JZDir(m_path).absoluteFilePath(path);
     }
+
+    // 归一化(折叠 . / ..)后, 必须仍位于沙箱根目录内, 否则判定为路径穿越, 返回空
+    string root = JZFileInfo::weaklyCanonicalPath(m_path);
+    candidate = JZFileInfo::weaklyCanonicalPath(candidate);
+    if (candidate != root && !str_startsWith(candidate, root + "/"))
+        return string();
+
+    return candidate;
 }
 
 void JZNetFileTrans::closeConn(uint64_t net_id)
@@ -287,7 +311,7 @@ void JZNetFileTrans::dealOpReq(uint64_t net_id, JZNetPackFileOperatorReq *req)
 
     string remote_path = fullPath(req->remoteUrl);
     bool ret = false;
-    if(!str_startsWith(remote_path,m_path)){
+    if(remote_path.empty() || (!str_startsWith(remote_path, m_path + "/") && remote_path != m_path)){
         goto req_end;
     }
 

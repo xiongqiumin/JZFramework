@@ -613,6 +613,7 @@ def generate(enums, messages, proto_path, header_path, cpp_path, includes=None):
     hparts.append("#include <string>")
     hparts.append("#include <vector>")
     hparts.append("#include <map>")
+    hparts.append("#include \"JZByteArray.h\"")
     if includes:
         hparts.append("")
         hparts.append("// ---- custom includes (#include) ----")

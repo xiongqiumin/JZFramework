@@ -5,10 +5,26 @@
 
 #include <algorithm>
 
+#include "lvgl.h"
+
 JZDisplayDevice::JZDisplayDevice(void* display)
     : JZWidget(NoCreate())
     , m_layer(0, 0)
 {
+    m_disp = reinterpret_cast<lv_display_t*>(display);
+    if (m_disp) {
+        // 把图层尺寸同步为显示分辨率 (drawTask 用 buffer 宽高当 HOR_RES/VER_RES)
+        int w = lv_display_get_horizontal_resolution(m_disp);
+        int h = lv_display_get_vertical_resolution(m_disp);
+        m_layer.resize(w, h);
+
+        // 挂载 LVGL 后端: 直接把 screen 的 layer 交给 JZLayer::drawTask 绘制,
+        // 不创建任何 lv_obj (等价参考 demo 的 setup 部分)。
+        lv_obj_t* scr = lv_screen_active();
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+        lv_obj_add_flag(scr, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+        lv_obj_add_event_cb(scr, drawEventCb, LV_EVENT_DRAW_TASK_ADDED, this);
+    }
 }
 
 JZDisplayDevice::JZDisplayDevice(int w, int h)
@@ -23,6 +39,24 @@ JZDisplayDevice::~JZDisplayDevice()
 {
 }
 
+/* LVGL 刷新回调: 屏幕 layer 开始绘制时, LVGL 会就主 draw_task 发一次
+ * LV_EVENT_DRAW_TASK_ADDED 事件。这里拿到正在刷新的 layer, 交给 JZLayer 直接画。 */
+void JZDisplayDevice::drawEventCb(lv_event_t* e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_TASK_ADDED)
+        return;
+
+    lv_draw_task_t* task = lv_event_get_draw_task(e);
+    lv_draw_dsc_base_t* base = (lv_draw_dsc_base_t*)lv_draw_task_get_draw_dsc(task);
+    if (base->part != LV_PART_MAIN)
+        return;
+
+    lv_layer_t* layer = base->layer;
+    JZDisplayDevice* self = (JZDisplayDevice*)lv_event_get_user_data(e);
+    if (self)
+        self->m_layer.drawTask(layer);
+}
+
 void JZDisplayDevice::invalidate(const JZRect& rect)
 {
     // 等价 lv_inv_area: 只把矩形并入脏区域, 不触发绘制。
@@ -33,6 +67,15 @@ void JZDisplayDevice::invalidate(const JZRect& rect)
 
 void JZDisplayDevice::refresh()
 {
+    // LVGL 后端: 直接驱动 LVGL 把屏幕全屏标脏并同步刷新; 刷新时 drawEventCb 调
+    // JZLayer::drawTask() 把整屏画到正在刷新的 layer 上 (flush 由 LVGL 的 flush_cb 完成)。
+    if (m_disp) {
+        m_layer.nextFrame();
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(m_disp);
+        return;
+    }
+
     if (m_layer.buffer()->width() == 0 || m_layer.buffer()->height() == 0)
         return;
     if (m_dirtyRect.isEmpty())

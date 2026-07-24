@@ -14,11 +14,10 @@
 #include "JZResizeEvent.h"
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
+#include "lvgl.h"
 
 // LVGL 类型前向声明: JZWidget 不再在构建期依赖 LVGL
 typedef void* (*JZCreateFn)(void* parent);
-
-
 
 class JZWidget : public JZObject
 {
@@ -28,7 +27,7 @@ public:
     explicit JZWidget(JZWidget* parent);
     virtual ~JZWidget();
 
-    void* handle() const;
+    void* layer() const { return m_paintLayer; }
 
     void setParentWidget(JZWidget* parent);
     JZWidget* parentWidget() const;
@@ -125,6 +124,9 @@ public:
 
     // 绘制层（paintEvent 中有效）
     void* paintLayer() const { return m_paintLayer; }
+
+    // 底层 LVGL 对象句柄 (lv_obj 等)
+    void* handle() const;
 
 protected:
     struct NoCreate{};

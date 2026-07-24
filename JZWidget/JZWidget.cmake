@@ -82,10 +82,8 @@
     JZLedWidget.cpp
     JZRoller.h
     JZRoller.cpp
-    JZTableWidget.h
-    JZTableWidget.cpp
-	
-	lvgl/draw
+	JZTableWidget.h
+	JZTableWidget.cpp
 )
 
 convert_to_abs_paths(JZ_SOURCES)
@@ -93,3 +91,23 @@ convert_to_abs_paths(JZ_SOURCES)
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# ==================== LVGL 后端依赖 ====================
+# JZWidget 直接 #include "lvgl.h", 绘制走 LVGL 的 lv_draw_* API。
+# LVGL 源码根由 CMakeCache 的 LVGL_ROOT_PATH 指定 (外部仓库);
+# 预编译的静态库位于 build/lvgl/lib/<Config>/lvgl.lib, 直接链接即可,
+# 不要再把 lvgl 内部源码 (lvgl/draw 等) 编进 JZFramework, 否则会与 lvgl.lib 重复符号。
+if(LVGL_ROOT_PATH AND EXISTS "${LVGL_ROOT_PATH}/lvgl.h")
+    target_include_directories(${JZ_MODULE_TARGET} PUBLIC
+        "${LVGL_ROOT_PATH}"
+        "${LVGL_ROOT_PATH}/include"
+        "${LVGL_ROOT_PATH}/include/lvgl"
+        "${CMAKE_CURRENT_LIST_DIR}/../test"   # lv_conf.h
+        "${CMAKE_BINARY_DIR}/lvgl"            # 生成的简单 lvgl.h
+    )
+    set(_lvgl_lib_dir "${CMAKE_BINARY_DIR}/lvgl/lib")
+    target_link_libraries(${JZ_MODULE_TARGET} PUBLIC
+        "$<$<CONFIG:Debug>:${_lvgl_lib_dir}/Debug/lvgl.lib>"
+        "$<$<CONFIG:Release>:${_lvgl_lib_dir}/Release/lvgl.lib>"
+    )
+endif()

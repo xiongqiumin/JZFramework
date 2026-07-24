@@ -4,7 +4,7 @@
 #include "JZOTADriver.h"
 #include "JZOTA.h"
 #include "JZByteArray.h"
-#include "esp_ota.h"
+#include "esp_ota_ops.h"
 #include "esp_partition.h"
 
 /*

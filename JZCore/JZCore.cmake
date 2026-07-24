@@ -60,6 +60,7 @@
     JZTimer.cpp
     JZDebug.h
     JZDebug.cpp
+    detail/JZDebugDetail.cpp
     JZUuid.h
     JZUuid.cpp
     JZMeta.h

@@ -40,16 +40,9 @@ JZDebug operator<<(JZDebug d, const JZOptional<T>& opt)
     return d;
 }
 
-// 特化：void 类型
+// 特化：void 类型 (显式特化非模板, 定义见 JZDebugDetail.cpp, 此处仅声明)
 template<>
-JZDebug operator<<(JZDebug d, const JZOptional<void>& opt)
-{
-    bool spaceFlag = d.isSpace();
-    d.setSpace(false);
-    d << (opt.isNone() ? "None" : "Some");
-    d.setSpace(spaceFlag);
-    return d;
-}
+JZDebug operator<<(JZDebug d, const JZOptional<void>& opt);
 
 #    endif
 #  endif
@@ -72,16 +65,9 @@ JZDebug operator<<(JZDebug d, const JZResult<T>& r)
     return d;
 }
 
-// 特化：void 类型
+// 特化：void 类型 (显式特化非模板, 定义见 JZDebugDetail.cpp, 此处仅声明)
 template<>
-JZDebug operator<<(JZDebug d, const JZResult<void>& r)
-{
-    bool spaceFlag = d.isSpace();
-    d.setSpace(false);
-    d << (r.isOk() ? "Ok" : "Err");
-    d.setSpace(spaceFlag);
-    return d;
-}
+JZDebug operator<<(JZDebug d, const JZResult<void>& r);
 
 #    endif
 #  endif

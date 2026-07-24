@@ -72,14 +72,14 @@ public:
 
         int pre_level = m_values.size();
         int last_idx = str_lastIndexOf(name, ".");
-        string child_name;
+        std::string child_name;
         if (last_idx == -1)
         {
             child_name = name;
         }
         else
         {
-            string parent_name = str_mid(name, 0, last_idx);
+            std::string parent_name = str_mid(name, 0, last_idx);
             if (!switchToMember(parent_name))
                 return false;
 
@@ -116,14 +116,14 @@ public:
 
         int pre_level = m_values.size();
         int last_idx = str_lastIndexOf(name, ".");
-        string child_name;
+        std::string child_name;
         if (last_idx == -1)
         {
             child_name = name;
         }
         else
         {
-            string parent_name = str_mid(name, 0, last_idx);
+            std::string parent_name = str_mid(name, 0, last_idx);
             if (!switchToMember(parent_name))
                 return false;
 
@@ -200,7 +200,7 @@ void operator<<(JZJsonStream& s, const std::vector<T>& list)
     for (int i = 0; i < (int)list.size(); i++)
     {
         Json::Value v;
-        s.push("[" + to_string(i) + "]", &v);
+        s.push("[" + std::to_string(i) + "]", &v);
         s << list[i];
         s.pop();
 
@@ -224,7 +224,7 @@ void operator>>(JZJsonStream& s, std::vector<T>& list)
     {
         T t;
 
-        s.push("[" + to_string(i) + "]", &(*value)[i]);
+        s.push("[" + std::to_string(i) + "]", &(*value)[i]);
         s >> t;
         s.pop();
 

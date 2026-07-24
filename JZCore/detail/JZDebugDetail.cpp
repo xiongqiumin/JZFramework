@@ -7,8 +7,10 @@
 #include "JZDebug.h"
 #include "JZOptional.h"
 #include "JZResult.h"
+#include "JZDebugDetail.h"
 
 // JZOptional<void> 特化定义
+template<>
 JZDebug operator<<(JZDebug d, const JZOptional<void>& opt)
 {
     bool spaceFlag = d.isSpace();
@@ -19,11 +21,12 @@ JZDebug operator<<(JZDebug d, const JZOptional<void>& opt)
 }
 
 // JZResult<void> 特化定义
+template<>
 JZDebug operator<<(JZDebug d, const JZResult<void>& r)
 {
     bool spaceFlag = d.isSpace();
     d.setSpace(false);
-    d << (r.isOk() ? "Ok" : "Err");
+    d << (r.isOk() ? "Ok" : "Error");
     d.setSpace(spaceFlag);
     return d;
 }

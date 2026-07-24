@@ -16,6 +16,3 @@ void JZSlider::setValue(int32_t v)
 
 int32_t JZSlider::value() const
 { return 0; }
-
-void JZSlider::onLvEvent(void* e)
-{}

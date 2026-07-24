@@ -145,8 +145,6 @@ _BASIC_TYPE_MAP = {
     "float": "float",
     "int32": "int32_t",
     "int64": "int64_t",
-    "uint32": "uint32_t",
-    "uint64": "uint64_t",
     "bool": "bool",
     "string": "std::string",
     "bytes": "JZByteArray",

@@ -1,12 +1,15 @@
-#include "JZPainter.h"
-#include "JZWidget.h"
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include "JZPainter.h"
+#include "JZWidget.h"
+#include "JZDisplayDevice.h"
 
 JZPainter::JZPainter(JZWidget* widget)
-{
-    m_layer = nullptr;
+{       
+    JZDisplayDevice *device = widget->display();
+    if(device)
+        m_layer = device->layer();
 }
 
 void JZPainter::setPen(const JZPen& pen)
@@ -41,11 +44,13 @@ JZFont JZPainter::font() const
 
 void JZPainter::drawLine(int x1, int y1, int x2, int y2)
 {
-    if (!m_layer) return;
+    if (!m_layer) 
+        return;
+
     JZDrawTask t;
     t.type = JZDrawTaskType::Rect;
     t.clip = m_clip;
-    t.color = toPixel(m_pen.color());
+    t.color = m_pen.color();
     if (x1 == x2) {
         int y = std::min(y1, y2), h = std::abs(y2 - y1) + 1;
         t.area = JZRect(m_ox + x1, m_oy + y, 1, h);
@@ -63,12 +68,14 @@ void JZPainter::drawLine(int x1, int y1, int x2, int y2)
 
 void JZPainter::drawRect(int x, int y, int w, int h)
 {
-    if (!m_layer) return;
+    if (!m_layer) 
+        return;
+
     JZDrawTask t;
     t.type = JZDrawTaskType::Border;
     t.area = JZRect(m_ox + x, m_oy + y, w, h);
     t.clip = m_clip;
-    t.color = toPixel(m_pen.color());
+    t.color = m_pen.color();
     t.borderWidth = m_pen.width() > 0 ? m_pen.width() : 1;
     m_layer->addTask(t);
 }
@@ -80,19 +87,21 @@ void JZPainter::drawRoundRect(int x, int y, int w, int h, int radius)
     t.type = JZDrawTaskType::Rect;
     t.area = JZRect(m_ox + x, m_oy + y, w, h);
     t.clip = m_clip;
-    t.color = toPixel(m_brush.color());
+    t.color = m_brush.color();
     t.radius = radius; // TODO: JZLayer 暂按直角填充
     m_layer->addTask(t);
 }
 
 void JZPainter::fillRect(int x, int y, int w, int h, const JZColor& color)
 {
-    if (!m_layer) return;
+    if (!m_layer) 
+        return;
+
     JZDrawTask t;
     t.type = JZDrawTaskType::Rect;
     t.area = JZRect(m_ox + x, m_oy + y, w, h);
     t.clip = m_clip;
-    t.color = toPixel(color);
+    t.color = color;
     m_layer->addTask(t);
 }
 
@@ -109,9 +118,4 @@ void JZPainter::drawText(int x, int y, const char* text)
 void JZPainter::drawImage(const JZImage& img, int x, int y, int w, int h)
 {
     // TODO: 图像混合 (参考 lv_draw_image / draw/sw)
-}
-
-const void* JZPainter::resolveFont(const JZFont& font)
-{
-    return nullptr;
 }

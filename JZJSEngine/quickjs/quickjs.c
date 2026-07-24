@@ -102,6 +102,8 @@ const char* JS_GetVersion(void) {
 #undef STRINFIGY_
 #undef STRINGIFY
 
+#define DBL_1p63 (9223372036854775808.0)
+
 static inline JSValueConst *vc(JSValue *vals)
 {
     return (JSValueConst *)vals;
@@ -13767,7 +13769,7 @@ static int JS_ToInt64SatFree(JSContext *ctx, int64_t *pres, JSValue val)
             } else {
                 if (d < INT64_MIN)
                     *pres = INT64_MIN;
-                else if (d >= 0x1p63)
+                else if (d >= DBL_1p63)
                     *pres = INT64_MAX;
                 else
                     *pres = (int64_t)d;
@@ -56147,7 +56149,7 @@ static double set_date_fields(double fields[minimum_length(7)], int is_local) {
 
     /* adjust for local time and clip */
     if (is_local) {
-        int64_t ti = tv < INT64_MIN ? INT64_MIN : tv >= 0x1p63 ? INT64_MAX : (int64_t)tv;
+        int64_t ti = tv < INT64_MIN ? INT64_MIN : tv >= DBL_1p63 ? INT64_MAX : (int64_t)tv;
         tv += getTimezoneOffset(ti) * 60000;
     }
     d = time_clip(tv);
@@ -59277,7 +59279,7 @@ static JSValue js_typed_array_indexOf(JSContext *ctx, JSValueConst this_val,
     } else
     if (tag == JS_TAG_FLOAT64) {
         d = JS_VALUE_GET_FLOAT64(argv[0]);
-        if (d >= INT64_MIN && d < 0x1p63) {
+        if (d >= INT64_MIN && d < DBL_1p63) {
             v64 = d;
             is_int = (v64 == d);
         }
@@ -61266,7 +61268,7 @@ static JSValue js_atomics_wait(JSContext *ctx,
     }
     if (JS_ToFloat64(ctx, &d, argv[3]))
         return JS_EXCEPTION;
-    if (isnan(d) || d >= 0x1p63)
+    if (isnan(d) || d >= DBL_1p63)
         timeout = INT64_MAX;
     else if (d < 0)
         timeout = 0;

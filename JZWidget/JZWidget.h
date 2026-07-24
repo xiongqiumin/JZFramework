@@ -14,20 +14,14 @@
 #include "JZResizeEvent.h"
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
-#include "lvgl.h"
-
-// LVGL 类型前向声明: JZWidget 不再在构建期依赖 LVGL
-typedef void* (*JZCreateFn)(void* parent);
 
 class JZWidget : public JZObject
 {
     JZ_OBJECT_DECLARE(JZWidget)
 
 public:
-    explicit JZWidget(JZWidget* parent);
+    explicit JZWidget(JZWidget* parent = nullptr);
     virtual ~JZWidget();
-
-    void* layer() const { return m_paintLayer; }
 
     void setParentWidget(JZWidget* parent);
     JZWidget* parentWidget() const;
@@ -48,6 +42,8 @@ public:
     void resize(const JZSize& s);
     int width() const;
     int height() const;
+
+    JZRect rect() const;
 
     // 尺寸约束
     void setFixedSize(int w, int h);
@@ -83,18 +79,13 @@ public:
     void setHorizontalPolicy(SizePolicy p);
     void setVerticalPolicy(SizePolicy p);
 
-    // 基准尺寸 (参考 Qt QWidget::baseSize), 作为 sizeHint 的来源
-    JZSize baseSize() const;
-    void setBaseSize(const JZSize& s);
-    void setBaseSize(int w, int h);
-
     // 期望尺寸 (参考 Qt QWidget::sizeHint); 设置了 baseSize 时返回 baseSize, 否则回退到当前尺寸
     JZSize sizeHint() const;
 
     // 几何
     JZRect geometry() const;
     void setGeometry(int x, int y, int w, int h);
-    void setGeometry(const JZRect& r);
+    void setGeometry(const JZRect& r);    
 
     // 可见性
     void setVisible(bool visible);
@@ -117,53 +108,33 @@ public:
 
     // 重绘
     void update();
+    void invalidate(const JZRect &rc);
 
     // 预定义属性
     virtual void setProperty(const std::string& name, const JZVariant& value) override;
     virtual JZVariant property(const std::string& name) const override;
 
-    // 绘制层（paintEvent 中有效）
-    void* paintLayer() const { return m_paintLayer; }
-
-    // 底层 LVGL 对象句柄 (lv_obj 等)
-    void* handle() const;
-
-protected:
-    struct NoCreate{};
-
-    static void lvEventCallback(void* e);
-        
-    // 子类用此构造函数创建 lv_obj（传入 lv_xxx_create 函数指针）
-    JZWidget(JZCreateFn create, JZWidget* parent);
-    JZWidget(NoCreate, JZWidget* parent = nullptr);
-    
-    void setLvglObject(void* obj);
-
-    virtual void onLvEvent(void* e);
-    virtual void onKeyPressed(JZKeyEvent* event);
-    virtual void paintEvent(JZPainterEvent* event);
-
+protected:    
     virtual void showEvent(JZShowEvent* event);
     virtual void closeEvent(JZCloseEvent* event);
     virtual void resizeEvent(JZResizeEvent* event);
 
+    virtual void paintEvent(JZPainterEvent* event);    
+
     JZLayout* m_layout = nullptr;
-    void* m_lv = nullptr;
-    void* m_paintLayer = nullptr;
 
     int m_minW = 0;
     int m_minH = 0;
     int m_maxW = INT_MAX;
     int m_maxH = INT_MAX;
 
-    SizePolicy m_hPolicy = SizePolicy::Preferred;
-    SizePolicy m_vPolicy = SizePolicy::Preferred;
-    JZSize m_baseSize;
+    SizePolicy m_horPolicy = SizePolicy::Preferred;
+    SizePolicy m_verPolicy = SizePolicy::Preferred;
 
     int m_x = 0;
     int m_y = 0;
-    int m_w = 0;
-    int m_h = 0;
+    int m_width = 0;
+    int m_height = 0;
 
     bool m_visible = true;
     bool m_opaque = true;

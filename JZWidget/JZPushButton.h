@@ -23,9 +23,6 @@ public:
 jz_signals:
     JZSigVoid sigClicked;
 
-protected:
-    void onLvEvent(void* e) override;
-
 private:
     void* m_label = nullptr;
 };

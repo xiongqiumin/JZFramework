@@ -12,6 +12,9 @@ namespace JZTestInternal {
         oss << value;
         return oss.str();
     }
+    
+    template<>
+    std::string toString(const std::nullptr_t&);
 
     inline void throwAssertionFailure(const std::string& message, const char* file, int line) {
         std::ostringstream oss;

@@ -22,6 +22,3 @@ void JZArcWidget::setAngles(uint16_t bgStart, uint16_t bgEnd)
 
 void JZArcWidget::setRotation(uint16_t rot)
 {}
-
-void JZArcWidget::onLvEvent(void* e)
-{}

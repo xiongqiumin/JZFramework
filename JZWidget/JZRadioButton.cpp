@@ -55,6 +55,3 @@ void JZRadioButton::paintEvent(JZPainterEvent*)
         p.fillRect(cx - dd / 2, cy - dd / 2, dd, dd, JZColor(0x33, 0x66, 0xcc));
     }
 }
-
-void JZRadioButton::onLvEvent(void* e)
-{}

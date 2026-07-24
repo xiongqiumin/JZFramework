@@ -60,6 +60,7 @@
     JZTimer.cpp
     JZDebug.h
     JZDebug.cpp
+    detail/JZDebugDetail.h
     detail/JZDebugDetail.cpp
     JZUuid.h
     JZUuid.cpp
@@ -104,26 +105,14 @@ list(APPEND JZCORE_SOURCES
     ${BASE64_DIR}/lib/codec_choose.c
     ${BASE64_DIR}/lib/tables/tables.c
     ${BASE64_DIR}/lib/arch/generic/codec.c
-)
-
-# x86 SIMD 加速仅在 x86 平台编译（ESP32 等交叉编译平台不适用）
-if(NOT ESP_PLATFORM)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86|x86_64|AMD64|i[3-6]86")
-        list(APPEND JZCORE_SOURCES
-            ${BASE64_DIR}/lib/arch/ssse3/codec.c
-            ${BASE64_DIR}/lib/arch/sse41/codec.c
-            ${BASE64_DIR}/lib/arch/sse42/codec.c
-            ${BASE64_DIR}/lib/arch/avx/codec.c
-            ${BASE64_DIR}/lib/arch/avx2/codec.c
-            ${BASE64_DIR}/lib/arch/avx512/codec.c
-        )
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64")
-        list(APPEND JZCORE_SOURCES
-            ${BASE64_DIR}/lib/arch/neon32/codec.c
-            ${BASE64_DIR}/lib/arch/neon64/codec.c
-        )
-    endif()
-endif()
+    ${BASE64_DIR}/lib/arch/ssse3/codec.c
+    ${BASE64_DIR}/lib/arch/sse41/codec.c
+    ${BASE64_DIR}/lib/arch/sse42/codec.c
+    ${BASE64_DIR}/lib/arch/avx/codec.c
+    ${BASE64_DIR}/lib/arch/avx2/codec.c
+    ${BASE64_DIR}/lib/arch/avx512/codec.c
+    ${BASE64_DIR}/lib/arch/neon32/codec.c
+    ${BASE64_DIR}/lib/arch/neon64/codec.c)
 
 convert_to_abs_paths(JZCORE_SOURCES)
 

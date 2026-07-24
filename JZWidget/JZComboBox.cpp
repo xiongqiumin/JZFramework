@@ -44,6 +44,3 @@ std::string JZComboBox::itemText(int index) const
 
 int JZComboBox::count() const
 { return 0; }
-
-void JZComboBox::onLvEvent(void* e)
-{}

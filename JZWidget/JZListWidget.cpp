@@ -244,8 +244,6 @@ void JZListWidget::paintEvent(JZPainterEvent*)
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
-void JZListWidget::onLvEvent(void* e)
-{ return; }
 
 void JZListWidget::showEvent(JZShowEvent* e)
 {

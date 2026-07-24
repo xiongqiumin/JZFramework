@@ -67,7 +67,6 @@ jz_signals:
     JZSigInt currentIndexChanged;
 
 protected:
-    void onLvEvent(void* e) override;
     void showEvent(JZShowEvent* e) override;
     void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;

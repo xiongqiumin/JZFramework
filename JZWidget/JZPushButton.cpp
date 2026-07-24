@@ -19,9 +19,6 @@ void* JZPushButton::labelHandle() const
     return m_label;
 }
 
-void JZPushButton::onLvEvent(void* e)
-{}
-
 void JZPushButton::setText(const std::string& text)
 {}
 

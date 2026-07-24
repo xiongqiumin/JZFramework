@@ -49,11 +49,6 @@ public:
     bool canScrollVertically() const;
 
 protected:
-    void onLvEvent(void* e) override;
-
-    // 滚动发生时回调(绘制由 LVGL 自动触发, 此处用于子类额外处理)
-    virtual void onScroll();
-
     JZWidget* m_content = nullptr;   // 透明占位: 仅用于撑开滚动范围
 };
 

@@ -1,6 +1,7 @@
 ﻿set(JZTEST_SOURCES    
     JZTest.cpp
-	JZTest.h
+	JZTest.h	
+	JZTestMacro.cpp
 	JZTestMacro.h
 	JZTestSuite.cpp
 	JZTestSuite.h

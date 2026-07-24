@@ -23,7 +23,6 @@ jz_signals:
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
-    void onLvEvent(void* e) override;
 
     void* m_label = nullptr;
     void* m_indicator = nullptr;   // 透明占位, 为圆环预留布局宽度

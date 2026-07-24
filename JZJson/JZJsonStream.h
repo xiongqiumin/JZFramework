@@ -3,6 +3,7 @@
 
 #include "JZStd.h"
 #include "JZString.h"
+#include "JZByteArray.h"
 #include "JZOptional.h"
 #include "json/json.h"
 
@@ -47,6 +48,9 @@ public:
 
     void operator<<(const JZString& t);
     void operator>>(JZString& t);
+
+    void operator<<(const JZByteArray& t);
+    void operator>>(JZByteArray& t);
 
     template <class T>
     bool readMember(const std::string& name, T& t)

@@ -60,7 +60,7 @@ JZDebug operator<<(JZDebug d, const JZResult<T>& r)
     if (r.isOk())
         d << "Ok(" << r.value() << ")";
     else
-        d << "Err(" << r.errorCode() << ":" << r.errorMessage() << ")";
+        d << "Error(" << r.errorCode() << ":" << r.errorMessage() << ")";
     d.setSpace(spaceFlag);
     return d;
 }

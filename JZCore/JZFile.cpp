@@ -48,7 +48,11 @@ bool JZFile::isOpen() const
 
 bool JZFile::open(std::string filepath, std::string mode)
 {
-    close();
+    if (m_fp)
+    {
+        jzWarning() << "allready open";
+        return false;
+    }
 
     if (!filepath.empty() && filepath[0] == ':')
     {

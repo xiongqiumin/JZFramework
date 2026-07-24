@@ -1,6 +1,7 @@
 
 
-add_executable(test_net test_http.cpp
+add_executable(test_net net_test_common.cpp
+	test_http.cpp
 	test_mqtt.cpp
 	test_net.cpp
 	test_netServer.cpp

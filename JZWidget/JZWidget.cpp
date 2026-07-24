@@ -11,33 +11,13 @@ JZWidget::JZWidget(JZWidget* parent)
     : JZObject(parent)
 {}
 
-JZWidget::JZWidget(JZCreateFn create, JZWidget* parent)
-    : JZObject(parent)
-{
-    assert(create);
-    auto* plv = parent->handle();
-    auto obj = create(plv);
-    setLvglObject(obj);    
-}
-
-JZWidget::JZWidget(NoCreate, JZWidget* parent)
-{
-    m_lv = nullptr;
-}
-
 JZWidget::~JZWidget()
 {}
 
-void* JZWidget::handle() const
-{
-    return m_lv;
-}
-
-void JZWidget::setLvglObject(void* obj)
-{}
-
 void JZWidget::setParentWidget(JZWidget* parent)
-{}
+{
+    setParent(parent);
+}
 
 JZWidget* JZWidget::parentWidget() const
 {
@@ -81,16 +61,16 @@ int JZWidget::y() const
 // ==================== 尺寸 ====================
 
 JZSize JZWidget::size() const
-{ return JZSize(m_w, m_h); }
+{ return JZSize(m_width, m_height); }
 
 void JZWidget::resize(int w, int h)
 {
     w = std::max(m_minW, std::min(w, m_maxW));
     h = std::max(m_minH, std::min(h, m_maxH));
-    if (w == m_w && h == m_h)
+    if (w == m_width && h == m_height)
         return;
-    m_w = w;
-    m_h = h;
+    m_width = w;
+    m_height = h;
     if (m_layout)
         m_layout->updateLayout();
 }
@@ -172,61 +152,49 @@ int JZWidget::maximumHeight() const
 { return m_maxH; }
 
 int JZWidget::width() const
-{ return m_w; }
+{ return m_width; }
 
 int JZWidget::height() const
-{ return m_h; }
+{ return m_height; }
+
+JZRect JZWidget::rect() const
+{
+    return JZRect(0, 0, m_width, m_height);
+}
 
 // ==================== 尺寸策略 / baseSize ====================
 
 JZWidget::SizePolicy JZWidget::horizontalPolicy() const
-{ return m_hPolicy; }
+{ return m_horPolicy; }
 
 JZWidget::SizePolicy JZWidget::verticalPolicy() const
-{ return m_vPolicy; }
+{ return m_verPolicy; }
 
 void JZWidget::setSizePolicy(SizePolicy h, SizePolicy v)
 {
-    m_hPolicy = h;
-    m_vPolicy = v;
+    m_horPolicy = h;
+    m_verPolicy = v;
     if (m_layout)
         m_layout->updateLayout();
 }
 
 void JZWidget::setHorizontalPolicy(SizePolicy p)
 {
-    m_hPolicy = p;
+    m_horPolicy = p;
     if (m_layout)
         m_layout->updateLayout();
 }
 
 void JZWidget::setVerticalPolicy(SizePolicy p)
 {
-    m_vPolicy = p;
+    m_verPolicy = p;
     if (m_layout)
         m_layout->updateLayout();
-}
-
-JZSize JZWidget::baseSize() const
-{ return m_baseSize; }
-
-void JZWidget::setBaseSize(const JZSize& s)
-{
-    m_baseSize = s;
-    if (m_layout)
-        m_layout->updateLayout();
-}
-
-void JZWidget::setBaseSize(int w, int h)
-{
-    setBaseSize(JZSize(w, h));
 }
 
 JZSize JZWidget::sizeHint() const
 {
-    if (!m_baseSize.isEmpty())
-        return m_baseSize;
-    return JZSize(m_w, m_h);
+    return JZSize(0, 0);
 }
 
 // ==================== 几何 ====================
@@ -308,25 +276,14 @@ bool JZWidget::hasFocus() const
 { return false; }
 
 // ==================== 重绘 ====================
+void JZWidget::invalidate(const JZRect &rc)
+{
+
+}
 
 void JZWidget::update()
 {
-    // 等价 lv_obj_invalidate: 只把矩形登记到显示设备的脏区域集合,
-    // 不生成任何 paintEvent / draw_task (那些在刷新遍历时才产生)。
-    if (auto* d = display())
-        d->invalidate(geometry());
-}
-
-// ==================== 事件 ====================
-
-void JZWidget::lvEventCallback(void* e)
-{ return; }
-
-void JZWidget::onLvEvent(void* e)
-{}
-
-void JZWidget::onKeyPressed(JZKeyEvent* event)
-{
+    invalidate(rect());
 }
 
 void JZWidget::paintEvent(JZPainterEvent*)

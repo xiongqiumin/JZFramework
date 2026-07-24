@@ -20,8 +20,10 @@ public:
 
     void setPen(const JZPen& pen);
     JZPen pen() const;
+
     void setBrush(const JZBrush& brush);
     JZBrush brush() const;
+
     void setFont(const JZFont& font);
     JZFont font() const;
 
@@ -39,12 +41,9 @@ public:
 
     void drawImage(const JZImage& img, int x, int y, int w, int h);
 
-    static const void* resolveFont(const JZFont& font);
-
 private:
-    static JZPixel toPixel(const JZColor& c) { return JZPixel{255, c.red(), c.green(), c.blue()}; }
-
     JZLayer* m_layer = nullptr;
+    
     int m_ox = 0;
     int m_oy = 0;
     JZRect m_clip;

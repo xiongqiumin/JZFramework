@@ -18,8 +18,6 @@ message Shape
 {
 	int32 i32;
 	int64 i64;
-	uint32 u32;
-	uint64 u64;
 	string str;
 	bytes buffer;
     std::string name;

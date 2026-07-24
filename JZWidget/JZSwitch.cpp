@@ -13,6 +13,3 @@ void JZSwitch::setState(bool on)
 
 bool JZSwitch::isOn() const
 { return false; }
-
-void JZSwitch::onLvEvent(void* e)
-{}

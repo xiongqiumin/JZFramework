@@ -299,6 +299,26 @@ void JZJsonStream::operator>>(JZString& t)
     t = JZString::fromStdString(value->asString());
 }
 
+void JZJsonStream::operator<<(const JZByteArray& t)
+{
+    auto* value = curValue();
+    std::string str = str_fromUtf8(t.toBase64());
+    *value = str;
+}
+
+void JZJsonStream::operator>>(JZByteArray& t)
+{
+    auto* value = curValue();
+    if (value->type() != Json::stringValue)
+    {
+        makeError("value not string");
+        return;
+    }
+    std::string string = value->asString();
+    JZByteArray buffer(string.data(), (int)string.size());
+    t = JZByteArray::fromBase64(buffer);
+}
+
 // JZJsonHelper
 bool JZJsonHelper::isRpcSuccess(const Json::Value& res, std::string& errMsg)
 {

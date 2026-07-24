@@ -70,10 +70,3 @@ bool JZScrollArea::canScrollVertically() const
 {
     return contentHeight() > viewportHeight();
 }
-
-void JZScrollArea::onLvEvent(void* e)
-{}
-
-void JZScrollArea::onScroll()
-{
-}

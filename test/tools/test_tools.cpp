@@ -5,10 +5,10 @@
 #include "JZDebug.h"
 #include "JZResources.h"
 
-// 资源: jz_add_resources 生成 (res.qrc, prefix=/data -> jzres_data_init)
-#include "jz_data_resources.h"
-// Proto: jz_add_proto_json 生成的聚合头 (sample.proto -> jz_test_tools_proto.h)
-#include "jz_test_tools_proto.h"
+// 资源: jz_add_resources 生成 (res.qrc -> jz_res_resources.h, prefix=/data -> jzres_data_init)
+#include "jz_res_resources.h"
+// Proto: jz_add_proto_json 生成 (sample.proto -> jz_sample_pb.h / jz_sample_pb.cpp)
+#include "jz_sample_pb.h"
 
 // sample.proto 中所有类型位于 demo namespace
 using namespace demo;

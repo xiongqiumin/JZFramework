@@ -310,9 +310,6 @@ void JZTableWidget::paintEvent(JZPainterEvent*)
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
-void JZTableWidget::onLvEvent(void* e)
-{ return; }
-
 void JZTableWidget::showEvent(JZShowEvent* e)
 {
     JZScrollArea::showEvent(e);

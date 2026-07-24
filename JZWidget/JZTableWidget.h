@@ -67,7 +67,6 @@ jz_signals:
     JZSigInt currentColumnChanged;
 
 protected:
-    void onLvEvent(void* e) override;
     void showEvent(JZShowEvent* e) override;
     void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;   // 绘制冻结表头

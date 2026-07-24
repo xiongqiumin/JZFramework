@@ -19,7 +19,6 @@ jz_signals:
     JZSigInt sigValueChanged;
 
 protected:
-    void onLvEvent(void* e) override;
 };
 
 #endif

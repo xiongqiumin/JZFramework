@@ -14,25 +14,12 @@
 
 using namespace std;
 
-// 确保 echo 等包类型已在 JZNetPackManager 注册
-static void ensureNetPackInit()
-{
-    static bool inited = false;
-    if (!inited)
-    {
-        JZNetPackInit();
-        inited = true;
-    }
-}
-
 // ===================== 单线程 JZNetServer 回环测试 =====================
 class NetServerSingleTest : public JZObject
 {
 public:
     NetServerSingleTest(JZEventLoop *loop, int port)
-    {
-        ensureNetPackInit();
-
+    {        
         server = new JZNetServer(this);
         server->listen(port);
         connect(&server->sigAccept, this, &NetServerSingleTest::onAccept);
@@ -137,8 +124,6 @@ public:
 
     NetServerMultiTest(JZEventLoop *loop, int port)
     {
-        ensureNetPackInit();
-
         server = new JZNetServer(this);
         server->listen(port);
         connect(&server->sigPacketReceive, this, &NetServerMultiTest::onServerRecv);

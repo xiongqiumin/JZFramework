@@ -44,7 +44,10 @@ public:
 
     void onClientConnect()
     {
-        m_client->subscribe({m_topic, 1});   // QoS1: 验证可靠投递
+        JZMqttSubOpt opt;        
+        opt.topic = m_topic;
+        opt.qos = 1;
+        m_client->subscribe(opt);   // QoS1: 验证可靠投递
 
         // 订阅生效有异步延迟, 用 warmup 定时器在收到首条回声前持续重试
         m_warmup = new JZTimer(this);
@@ -134,7 +137,10 @@ public:
 
     void onConnect()
     {
-        m_client->subscribe({m_topic, 1});
+        JZMqttSubOpt opt;
+        opt.topic = m_topic;
+        opt.qos = 1;
+        m_client->subscribe(opt);
         m_warmup = new JZTimer(this);
         connect(&m_warmup->sigTimeout, this, &MqttClientThread::onWarmup);
         m_warmup->start(500);

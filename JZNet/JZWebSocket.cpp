@@ -136,7 +136,7 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
         std::string error_str = str_fromUtf8(event->binData);
         sigError.emit();
 
-        if (m_state == ConnectingState)
+        if (m_state != UnconnectedState)
             closeInternal(true);
     }
 }

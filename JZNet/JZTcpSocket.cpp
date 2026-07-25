@@ -53,7 +53,7 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
         std::string error = str_fromUtf8(event->binData);
         sigError.emit(error);
 
-        if (m_state == ConnectingState)
+        if (m_state != UnconnectedState)
             closeInternal(true);
     }
 }

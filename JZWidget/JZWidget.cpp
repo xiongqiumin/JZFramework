@@ -9,10 +9,35 @@ JZ_OBJECT_IMPL(JZWidget,JZObject)
 
 JZWidget::JZWidget(JZWidget* parent)
     : JZObject(parent)
-{}
+{
+    m_minW = 0;
+    m_minH = 0;
+    m_maxW = INT_MAX;
+    m_maxH = INT_MAX;
+
+    m_horPolicy = Preferred;
+    m_verPolicy = Preferred;
+
+    m_x = 0;
+    m_y = 0;
+    m_width = 0;
+    m_height = 0;
+
+    if (parent)
+    {
+        auto device = jzobject_cast<JZDisplayDevice*>(parent);
+        if(device)
+            resize(device->width(), device->height());
+
+        m_visible = device? false: true;
+    }
+    else
+        m_visible = false;
+}
 
 JZWidget::~JZWidget()
-{}
+{
+}
 
 void JZWidget::setParentWidget(JZWidget* parent)
 {
@@ -53,15 +78,21 @@ void JZWidget::move(const JZPoint& p)
 }
 
 int JZWidget::x() const
-{ return m_x; }
+{ 
+    return m_x; 
+}
 
 int JZWidget::y() const
-{ return m_y; }
+{ 
+    return m_y; 
+}
 
 // ==================== 尺寸 ====================
 
 JZSize JZWidget::size() const
-{ return JZSize(m_width, m_height); }
+{ 
+    return JZSize(m_width, m_height); 
+}
 
 void JZWidget::resize(int w, int h)
 {
@@ -162,6 +193,11 @@ JZRect JZWidget::rect() const
     return JZRect(0, 0, m_width, m_height);
 }
 
+JZRect JZWidget::toGlobal(const JZRect &rect) const
+{
+    return rect;
+}
+
 // ==================== 尺寸策略 / baseSize ====================
 
 JZWidget::SizePolicy JZWidget::horizontalPolicy() const
@@ -221,6 +257,7 @@ void JZWidget::setVisible(bool visible)
 {
     if (m_visible == visible)
         return;
+
     m_visible = visible;
     update();
 }
@@ -240,15 +277,10 @@ void JZWidget::hide()
 }
 
 bool JZWidget::isVisible() const
-{ return m_visible; }
-
-void JZWidget::setOpaque(bool opaque)
-{
-    m_opaque = opaque;
+{ 
+    return m_visible; 
 }
 
-bool JZWidget::isOpaque() const
-{ return m_opaque; }
 
 // ==================== 布局 ====================
 
@@ -278,7 +310,12 @@ bool JZWidget::hasFocus() const
 // ==================== 重绘 ====================
 void JZWidget::invalidate(const JZRect &rc)
 {
+    auto device = this->display();
+    if (!device)
+        return;
 
+    JZRect global_rc = toGlobal(rc);
+    device->makeInvalidate(global_rc);
 }
 
 void JZWidget::update()

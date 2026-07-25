@@ -1,11 +1,10 @@
+#include <algorithm>
 #include "JZDisplayDevice.h"
 #include "JZWidget.h"
 #include "JZPainter.h"
 #include "JZPainterEvent.h"
-
-#include <algorithm>
-
 #include "lvgl.h"
+#include "JZStd.h"
 
 
 /* LVGL 刷新回调: 屏幕 layer 开始绘制时, LVGL 会就主 draw_task 发一次
@@ -31,37 +30,89 @@ void drawEventCb(lv_event_t* e)
 */
 
 //JZDisplayDevice
+JZ_OBJECT_IMPL(JZDisplayDevice, JZWidget)
+
+std::vector<JZDisplayDevice*> JZDisplayDevice::displayList;
+
 JZDisplayDevice::JZDisplayDevice(lv_display_t* display)
 {
-    m_disp = reinterpret_cast<lv_display_t*>(display);
-    if (m_disp) {
-        // 把图层尺寸同步为显示分辨率 (drawTask 用 buffer 宽高当 HOR_RES/VER_RES)
+    m_disp = display;
+   
+    // 把图层尺寸同步为显示分辨率 (drawTask 用 buffer 宽高当 HOR_RES/VER_RES)
 /*        int w = lv_display_get_horizontal_resolution(m_disp);
-        int h = lv_display_get_vertical_resolution(m_disp);        
+    int h = lv_display_get_vertical_resolution(m_disp);        
 
-        // 挂载 LVGL 后端: 直接把 screen 的 layer 交给 JZLayer::drawTask 绘制,
-        // 不创建任何 lv_obj (等价参考 demo 的 setup 部分)。
-        lv_obj_t* scr = lv_screen_active();
-        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-        lv_obj_add_flag(scr, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
-        lv_obj_add_event_cb(scr, drawEventCb, LV_EVENT_DRAW_TASK_ADDED, this);
+    // 挂载 LVGL 后端: 直接把 screen 的 layer 交给 JZLayer::drawTask 绘制,
+    // 不创建任何 lv_obj (等价参考 demo 的 setup 部分)。
+    lv_obj_t* scr = lv_screen_active();
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_add_flag(scr, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    lv_obj_add_event_cb(scr, drawEventCb, LV_EVENT_DRAW_TASK_ADDED, this);
 */
-    }
+    m_visible = true;
+    displayList.push_back(this);
+    startTimer(33);
 }
 
 JZDisplayDevice::JZDisplayDevice(int w, int h)
 {
+    m_visible = true;
     setGeometry(0, 0, w, h);
-    setOpaque(true);
+    displayList.push_back(this);
+    startTimer(33);
 }
 
 JZDisplayDevice::~JZDisplayDevice()
 {
+    vec_removeAll(displayList, this);
+}
+
+void JZDisplayDevice::timerEvent(JZTimerEvent *e)
+{
+    refresh();
+}
+
+bool JZDisplayDevice::event(JZEvent *e)
+{
+    return JZObject::event(e);    
 }
 
 JZLayer *JZDisplayDevice::layer()
 {
     return &m_layer;
+}
+
+void JZDisplayDevice::makeInvalidate(const JZRect &rc)
+{
+    if (m_invalidRect.isEmpty())
+        m_invalidRect = rc;
+    else
+        m_invalidRect = m_invalidRect.intersect(rc);
+}
+
+void JZDisplayDevice::refresh()
+{
+    if (m_invalidRect.isEmpty())
+        return;
+
+    std::vector<JZWidget*> widget_list;
+    std::vector<JZRect> coverage = { m_invalidRect };
+    
+    const auto& ch = this->children();
+    for (int i = (int)ch.size() - 1; i >= 0; --i) {
+        auto* c = jzobject_cast<JZWidget*>(ch[i]);
+        if (c)
+            collectFrontToBack(c, m_invalidRect, coverage, widget_list);
+    }
+    m_invalidRect.clear();
+
+    for (auto w : widget_list)
+    {
+        JZPainterEvent event;
+        w->event(&event);
+    }
+
+    m_layer.redraw();    
 }
 
 // ==================== 剔除遍历 ====================
@@ -72,7 +123,7 @@ JZLayer *JZDisplayDevice::layer()
 void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::vector<JZRect>& coverage,
                                          std::vector<JZWidget*>& out)
 {
-    JZRect wa = w->geometry().intersect(area);
+    JZRect wa = w->toGlobal(w->geometry()).intersect(area);
     if (wa.isEmpty() || !w->isVisible())
         return;
 
@@ -95,8 +146,7 @@ void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::v
     }
     if (!covered) {
         out.push_back(w);
-        if (w->isOpaque())
-            coverage.push_back(wa);
+        coverage.push_back(wa);
     }
 }
 

@@ -45,6 +45,8 @@ public:
 
     JZRect rect() const;
 
+    JZRect toGlobal(const JZRect &rect) const;
+
     // 尺寸约束
     void setFixedSize(int w, int h);
     void setFixedWidth(int w);
@@ -64,7 +66,7 @@ public:
     int maximumHeight() const;
 
     // 尺寸策略 (参考 Qt QSizePolicy::Policy)
-    enum class SizePolicy : uint8_t {
+    enum SizePolicy {
         Fixed,            // 严格使用 sizeHint, 不增不减
         Minimum,          // 可用空间不足时保持最小, 富余时可增长
         Maximum,          // 可用空间不足时可收缩, 富余时保持 sizeHint
@@ -115,6 +117,8 @@ public:
     virtual JZVariant property(const std::string& name) const override;
 
 protected:    
+    friend JZDisplayDevice;
+
     virtual void showEvent(JZShowEvent* event);
     virtual void closeEvent(JZCloseEvent* event);
     virtual void resizeEvent(JZResizeEvent* event);
@@ -123,21 +127,20 @@ protected:
 
     JZLayout* m_layout = nullptr;
 
-    int m_minW = 0;
-    int m_minH = 0;
-    int m_maxW = INT_MAX;
-    int m_maxH = INT_MAX;
+    int m_minW;
+    int m_minH;
+    int m_maxW;
+    int m_maxH;
 
-    SizePolicy m_horPolicy = SizePolicy::Preferred;
-    SizePolicy m_verPolicy = SizePolicy::Preferred;
+    SizePolicy m_horPolicy;
+    SizePolicy m_verPolicy;
 
-    int m_x = 0;
-    int m_y = 0;
-    int m_width = 0;
-    int m_height = 0;
+    int m_x;
+    int m_y;
+    int m_width;
+    int m_height;
 
-    bool m_visible = true;
-    bool m_opaque = true;
+    bool m_visible;
 };
 
 #endif

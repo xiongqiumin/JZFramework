@@ -12,9 +12,6 @@ int app_main(int argc, char* argv[])
     MainWindow window(&device);
     window.show();
 
-    JZEventLoop loop;
-    loop.exec();
-
     return app.exec();
 }
 

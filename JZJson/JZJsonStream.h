@@ -163,13 +163,15 @@ public:
     bool writeMember(const std::string& name, const T& t)
     {
         Json::Value* value = curValue();
-        if (value->type() != Json::nullValue && value->type() != Json::objectValue)
+        if (value->type() == Json::nullValue)
+            *value = Json::objectValue;
+        if (value->type() != Json::objectValue)
         {
             m_errorString = "is not object";
             return false;
         }
 
-        if (value->type() != Json::objectValue || value->isMember(name))
+        if (value->isMember(name))
         {
             m_errorString = name + " is exist";
             return false;
@@ -187,13 +189,15 @@ public:
     bool writeMemberOptional(const std::string& name, const JZOptional<T>& t)
     {
         Json::Value* value = curValue();
-        if (value->type() != Json::nullValue && value->type() != Json::objectValue)
+        if (value->type() == Json::nullValue)
+            *value = Json::objectValue;
+        if (value->type() != Json::objectValue)
         {
             m_errorString = "is not object";
             return false;
         }
 
-        if (value->type() != Json::objectValue || value->isMember(name))
+        if (value->isMember(name))
         {
             m_errorString = name + " is exist";
             return false;

@@ -19,7 +19,6 @@ MainWindow::MainWindow(JZWidget* parent)
     };
 
     setupUi();
-    resize(800, 600);
 }
 
 MainWindow::~MainWindow()

@@ -10,6 +10,10 @@ enum {
     JZEvent_netRes,
     JZEvent_log,
     JZEvent_co,
+    JZEvent_paint,
+    JZEvent_show,
+    JZEvent_hide,
+    JZEvent_resize,
     JZEvent_key,
     JZEvent_user = 1000,
 };

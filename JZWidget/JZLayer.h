@@ -16,8 +16,8 @@ public:
     void clearTasks() { m_tasks.clear(); }
     const std::vector<JZDrawTask>& tasks() const { return m_tasks; }
 
-    // 执行本帧所有 task, 写进 buffer (每个 task 按 area∩clip∩buffer 裁剪)
-    void dispatch();
+    // 执行本帧所有 task, 写进 buffer
+    void redraw();
 
 private:    
     std::vector<JZDrawTask> m_tasks;    

@@ -141,14 +141,18 @@ def _strip_includes(text):
 # 基本类型映射: 仅这些 proto 标量类型会被翻译成对应 C++ 类型;
 # 其余类型 (自定义 message/enum、std 容器、带 :: 限定的类型等) 原样透传, 不做转换。
 _BASIC_TYPE_MAP = {
-    "double": "double",
-    "float": "float",
+    "bool":"bool",    
     "int32": "int32_t",
-    "int64": "int64_t",
-    "bool": "bool",
+    "int64": "int64_t",    
+    "float": "float",
+    "double": "double",    
     "string": "std::string",
     "bytes": "JZByteArray",
 }
+
+# 这些 C++ 基础标量类型 (由 proto 标量翻译而来) 在生成的 struct 中默认初始化为 0
+# (bool/int32/int64/float/double)。其余类型 (string/bytes/message/enum/容器) 不默认 0。
+_SCALAR_DEFAULT_ZERO = {"bool", "int32_t", "int64_t", "float", "double"}
 
 
 def parse_type(tokens, i):
@@ -552,7 +556,10 @@ def _message_code(m, type_qname):
     members = []
     for f in m["fields"]:
         cpp_type = _qualify(f["cpp_type"], type_qname)
-        members.append(f"    {cpp_type} {f['name']};")
+        # 基础数值/布尔标量默认初始化为 0 (proto3 标量零值语义), 其余类型不加默认初始化
+        # (string/bytes/message/enum/容器类型默认构造即可, 如 std::string 空串、vector 空等)。
+        init = " = 0" if f["elem_type"] in _SCALAR_DEFAULT_ZERO else ""
+        members.append(f"    {cpp_type} {f['name']}{init};")
 
     member_block = "\n".join(members) if members else "    // (无字段)"
 
@@ -578,6 +585,7 @@ def _message_impl(m, type_qname):
                 f'    s.writeMemberOptional("{jn}", t.{f["name"]});'
             )
         else:
+            # 必填字段 (plain / repeated / map): 缺失即报错, 不使用默认值。
             read_lines.append(f'    s.readMember("{jn}", t.{f["name"]});')
             write_lines.append(f'    s.writeMember("{jn}", t.{f["name"]});')
 

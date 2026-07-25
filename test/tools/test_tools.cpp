@@ -34,8 +34,8 @@ static void testResourceLoopback()
 {
     jzres_data_init();
 
-    const JZResourceData *rd = JZResources::instance()->find(":data/shape.json");
-    JZTEST_CHECK(rd != nullptr, "资源 :data/shape.json 已注册");
+    const JZResourceData *rd = JZResources::instance()->find(":/data/shape.json");
+    JZTEST_CHECK(rd != nullptr, "资源 :/data/shape.json 已注册");
     if (!rd)
         return;
 
@@ -52,8 +52,10 @@ static void testProtoLoopback()
     Shape a;
     a.name = "triangle";
     a.color = Color::Blue;
-    a.points.push_back(Point{0.0, 0.0});
-    a.points.push_back(Point{1.0, 0.0});
+    Point p;
+    p.x = 0.0; p.y = 0.0; a.points.push_back(p);
+    p.x = 1.0; p.y = 0.0; a.points.push_back(p);
+    p.x = 7.0; p.y = 6.0; a.points.push_back(p);
     a.score = 10;
     a.attrs["kind"] = "polygon";
 
@@ -95,7 +97,7 @@ static void testProtoLoopback()
 // 读资源 -> 解析 JSON -> 反序列化 -> 再序列化, 验证往返一致
 static void testResourceProtoLoopback()
 {
-    const JZResourceData *rd = JZResources::instance()->find(":data/shape.json");
+    const JZResourceData *rd = JZResources::instance()->find(":/data/shape.json");
     if (!rd)
     {
         JZTEST_CHECK(false, "资源缺失, 跳过联合回环");

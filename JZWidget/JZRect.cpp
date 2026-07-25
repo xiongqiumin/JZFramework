@@ -12,6 +12,14 @@ JZRect::JZRect(int x, int y, int w, int h)
 {
 }
 
+void JZRect::clear()
+{
+    m_x = 0; 
+    m_y = 0;
+    m_w = 0;
+    m_h = 0;
+}
+
 int JZRect::x() const      { return m_x; }
 int JZRect::y() const      { return m_y; }
 int JZRect::width() const  { return m_w; }

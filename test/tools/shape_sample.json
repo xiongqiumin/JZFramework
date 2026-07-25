@@ -1,4 +1,8 @@
 {
+    "i32": 7,
+    "i64": 42,
+    "str": "hello",
+    "buffer": "",
     "name": "triangle",
     "color": 2,
     "points": [

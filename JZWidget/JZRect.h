@@ -11,6 +11,8 @@ public:
     JZRect();
     JZRect(int x, int y, int w, int h);
 
+    void clear();
+
     int x() const;
     int y() const;
     int width() const;

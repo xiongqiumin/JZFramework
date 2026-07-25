@@ -9,6 +9,6 @@ JZLayer::JZLayer()
 {
 }
 
-void JZLayer::dispatch()
+void JZLayer::redraw()
 {    
 }

@@ -11,7 +11,12 @@ JZImage::JZImage(const char* data, int len)
 
 const void* JZImage::dsc() const
 {
-    return m_dsc;
+    return m_data ? m_data->dsc() : nullptr;
+}
+
+std::shared_ptr<JZImageData> JZImage::data() const
+{
+    return m_data;
 }
 
 bool JZImage::isFile() const

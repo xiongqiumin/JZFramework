@@ -208,9 +208,9 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
     }
 }
 
-void JZListWidget::paintEvent(JZPainterEvent*)
+void JZListWidget::paintEvent(JZPainterEvent* event)
 {
-    JZPainter p(this);
+    JZPainter& p = *event->painter();
 
     int viewW = viewportWidth();
     int viewH = viewportHeight();

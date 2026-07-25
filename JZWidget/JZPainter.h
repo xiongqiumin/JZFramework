@@ -27,7 +27,12 @@ public:
     void setFont(const JZFont& font);
     JZFont font() const;
 
-    // 绘制原点 (由刷新遍历按 widget 绝对坐标设置)
+    // 保存/恢复绘制状态 (pen/brush/font)。同时向绘制流追加一个 Changed
+    // 绘制任务, 记录状态快照, 供 JZLayer 序列化/回放。
+    void save();
+    void restore();
+
+    // 绘制原点: 构造时按 widget 全局坐标自动设置, 提供 setOrigin 供手动偏移。
     void setOrigin(int ox, int oy) { m_ox = ox; m_oy = oy; }
     void setClip(const JZRect& clip) { m_clip = clip; }
 
@@ -36,17 +41,30 @@ public:
     void drawRoundRect(int x, int y, int w, int h, int radius);
     void fillRect(int x, int y, int w, int h, const JZColor& color);
 
+    // 角度单位: 1/10 度 (与 LVGL 一致: 0=3点方向, 90=6点方向, 顺时针递增)
     void drawArc(int x, int y, int radius, int startAngle, int endAngle);
     void drawText(int x, int y, const char* text);
 
     void drawImage(const JZImage& img, int x, int y, int w, int h);
 
 private:
+    // 粗略裁剪: 图元显示坐标包围盒与裁剪区(优先用 m_clip, 否则用屏幕)不相交则丢弃。
+    bool isCulled(const JZRect& displayBounds) const;
+
+    struct State {
+        JZPen pen;
+        JZBrush brush;
+        JZFont font;
+    };
+
     JZLayer* m_layer = nullptr;
-    
+
     int m_ox = 0;
     int m_oy = 0;
     JZRect m_clip;
+    JZRect m_screen;            // 屏幕可见区域, 用于完全出屏的粗略剔除
+    std::vector<State> m_stack; // save/restore 状态栈
+
     JZPen m_pen;
     JZBrush m_brush;
     JZFont m_font;

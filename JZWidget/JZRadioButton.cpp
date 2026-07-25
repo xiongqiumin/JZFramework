@@ -36,9 +36,9 @@ void JZRadioButton::setChecked(bool on)
     update();
 }
 
-void JZRadioButton::paintEvent(JZPainterEvent*)
+void JZRadioButton::paintEvent(JZPainterEvent* event)
 {
-    JZPainter p(this);
+    JZPainter& p = *event->painter();
     int d = 18;
     int y = (height() - d) / 2;
     int cx = d / 2;

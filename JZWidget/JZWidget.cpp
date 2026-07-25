@@ -195,7 +195,19 @@ JZRect JZWidget::rect() const
 
 JZRect JZWidget::toGlobal(const JZRect &rect) const
 {
-    return rect;
+    // 沿父链累加局部坐标, 把本地矩形换算到显示设备坐标系。
+    // 注意: 仅累加 widget 自身的位置偏移 (m_x, m_y); 各祖先的尺寸/缩放不影响子节点原点,
+    // 子节点的 geometry 已相对父 widget 的左上角 (0,0)。
+    int gx = rect.x();
+    int gy = rect.y();
+
+    const JZWidget* w = this;
+    while (w) {
+        gx += w->m_x;
+        gy += w->m_y;
+        w = w->parentWidget();
+    }
+    return JZRect(gx, gy, rect.width(), rect.height());
 }
 
 // ==================== 尺寸策略 / baseSize ====================

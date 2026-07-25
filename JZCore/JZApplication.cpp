@@ -7,6 +7,11 @@
 #include "JZTx.h"
 #include "JZDriver.h"
 
+#ifdef HAS_JZWidget
+#include "lvgl.h"
+#include "JZDisplayDevice.h"
+#endif
+
 JZApplication *jzApp = nullptr;
 
 JZApplication* JZApplication::instance()
@@ -21,6 +26,9 @@ JZApplication::JZApplication()
     jzApp = this;
 
     m_returnCode = 0;
+    m_lvglTimer = 0;
+    m_lvglTick = JZPlatform::getTickCountMs();
+
     m_mainThread = new JZThread(JZObject::MainThreadInit());
     m_mainThread->attachStdThread(JZThread::currentThreadId());    
     m_mainThread->moveToThread(m_mainThread);
@@ -29,10 +37,18 @@ JZApplication::JZApplication()
     m_thread = m_mainThread;    
 
     JZDriver::init();
+
+#ifdef HAS_JZWidget
+    m_lvglTimer = startTimer(33);
+#endif
 }
 
 JZApplication::~JZApplication()
 {
+#ifdef HAS_JZWidget
+    killTimer(m_lvglTimer);
+#endif
+
     JZDriver::deinit();
 
     std::vector<JZObject*> childs = m_childs;
@@ -128,6 +144,17 @@ void JZApplication::processEvents()
 
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
+#ifdef HAS_JZWidget
+    if (event->id() == m_lvglTimer)
+    {
+        auto cur_tick = JZPlatform::getTickCountMs();
+        lv_tick_inc(cur_tick - m_lvglTick);
+        m_lvglTick = cur_tick;
+
+        JZDisplayDevice::refresh();
+        lv_timer_handler();
+    }
+#endif
 }
 
 void JZApplication::sendEvent(JZObject *object, JZEvent *event)

@@ -9,7 +9,6 @@
 
 /* LVGL 刷新回调: 屏幕 layer 开始绘制时, LVGL 会就主 draw_task 发一次
 * LV_EVENT_DRAW_TASK_ADDED 事件。这里拿到正在刷新的 layer, 交给 JZLayer 直接画。 */
-/*
 void drawEventCb(lv_event_t* e)
 {
     if (lv_event_get_code(e) != LV_EVENT_DRAW_TASK_ADDED)
@@ -22,54 +21,65 @@ void drawEventCb(lv_event_t* e)
 
     lv_layer_t* layer = base->layer;
     JZDisplayDevice* self = (JZDisplayDevice*)lv_event_get_user_data(e);
-    if (self)
-    {
-
-    }
+    self->layer()->redraw(layer);
 }
-*/
 
 //JZDisplayDevice
 JZ_OBJECT_IMPL(JZDisplayDevice, JZWidget)
 
 std::vector<JZDisplayDevice*> JZDisplayDevice::displayList;
 
+void JZDisplayDevice::refresh()
+{
+    for (auto device : displayList)
+        device->redraw();
+}
+
 JZDisplayDevice::JZDisplayDevice(lv_display_t* display)
 {
-    m_disp = display;
-   
-    // 把图层尺寸同步为显示分辨率 (drawTask 用 buffer 宽高当 HOR_RES/VER_RES)
-/*        int w = lv_display_get_horizontal_resolution(m_disp);
-    int h = lv_display_get_vertical_resolution(m_disp);        
+    setDisplay(display);
+}
 
-    // 挂载 LVGL 后端: 直接把 screen 的 layer 交给 JZLayer::drawTask 绘制,
-    // 不创建任何 lv_obj (等价参考 demo 的 setup 部分)。
+JZDisplayDevice::JZDisplayDevice(int w, int h)
+{    
+#ifdef _WIN32
+    if (displayList.size() == 0)
+        lv_init();
+
+    auto display = lv_windows_create_display(L"JZWidget", w, h, 100, false, false);
+    lv_windows_acquire_pointer_indev(display);
+    lv_windows_acquire_keypad_indev(display);
+    lv_windows_acquire_encoder_indev(display);
+#else
+    auto display = lv_display_create(w, h);
+#endif // _WIN32
+
+    setDisplay(display);
+}
+
+void JZDisplayDevice::setDisplay(lv_display_t* display)
+{
+    displayList.push_back(this);
+    m_disp = display;    
+
+    // 把图层尺寸同步为显示分辨率 (drawTask 用 buffer 宽高当 HOR_RES/VER_RES)
+    int w = lv_display_get_horizontal_resolution(m_disp);
+    int h = lv_display_get_vertical_resolution(m_disp);
+
+    // 挂载 LVGL 后端: 直接把 screen 的 layer 交给 JZLayer 绘制, 不创建任何 lv_obj。
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
     lv_obj_add_event_cb(scr, drawEventCb, LV_EVENT_DRAW_TASK_ADDED, this);
-*/
-    m_visible = true;
-    displayList.push_back(this);
-    startTimer(33);
-}
 
-JZDisplayDevice::JZDisplayDevice(int w, int h)
-{
     m_visible = true;
     setGeometry(0, 0, w, h);
     displayList.push_back(this);
-    startTimer(33);
 }
 
 JZDisplayDevice::~JZDisplayDevice()
 {
     vec_removeAll(displayList, this);
-}
-
-void JZDisplayDevice::timerEvent(JZTimerEvent *e)
-{
-    refresh();
 }
 
 bool JZDisplayDevice::event(JZEvent *e)
@@ -90,29 +100,40 @@ void JZDisplayDevice::makeInvalidate(const JZRect &rc)
         m_invalidRect = m_invalidRect.intersect(rc);
 }
 
-void JZDisplayDevice::refresh()
+void JZDisplayDevice::redraw()
 {
     if (m_invalidRect.isEmpty())
         return;
 
+    // 先保存脏区作为本次绘制的裁剪区/绘制区域, 随后清空已处理标记。
+    JZRect clip = m_invalidRect;
+
     std::vector<JZWidget*> widget_list;
-    std::vector<JZRect> coverage = { m_invalidRect };
-    
+    std::vector<JZRect> coverage = { clip };
+
     const auto& ch = this->children();
     for (int i = (int)ch.size() - 1; i >= 0; --i) {
         auto* c = jzobject_cast<JZWidget*>(ch[i]);
         if (c)
-            collectFrontToBack(c, m_invalidRect, coverage, widget_list);
+            collectFrontToBack(c, clip, coverage, widget_list);
     }
     m_invalidRect.clear();
 
+    // 统一创建 painter 并注入: 每个 widget 一次 paintEvent 对应一个 painter,
+    // 其裁剪区设为脏区(绘制区域), 超出该区域的图元由 JZPainter 粗略剔除不提交。
     for (auto w : widget_list)
     {
+        JZPainter painter(w);
+        painter.setClip(clip);
+
         JZPainterEvent event;
+        event.setPainter(&painter);
+        event.setRect(clip);
         w->event(&event);
     }
 
-    m_layer.redraw();    
+    lv_obj_t *screen = lv_display_get_screen_active(m_disp);
+    lv_obj_invalidate(screen);
 }
 
 // ==================== 剔除遍历 ====================

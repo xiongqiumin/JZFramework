@@ -257,9 +257,9 @@ void JZTableWidget::paintHeader(JZPainter& p)
 // ----------------------------------------------------------------------------
 // 绘制(表体 + 冻结表头)
 // ----------------------------------------------------------------------------
-void JZTableWidget::paintEvent(JZPainterEvent*)
+void JZTableWidget::paintEvent(JZPainterEvent* event)
 {
-    JZPainter p(this);
+    JZPainter& p = *event->painter();
 
     int sx = scrollX();
     int sy = scrollY();

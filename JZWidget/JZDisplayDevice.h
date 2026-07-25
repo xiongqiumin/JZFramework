@@ -20,25 +20,27 @@
 typedef struct _lv_display_t lv_display_t;
 class JZDisplayDevice : public JZWidget
 {
-    JZ_OBJECT_DECLARE(JZDisplayDevice)
+    JZ_OBJECT_DECLARE(JZDisplayDevice)    
 
 public:    
+    static void refresh();
+
     JZDisplayDevice(lv_display_t* display);
     JZDisplayDevice(int w, int h);
     ~JZDisplayDevice();
     
     JZLayer *layer();
-    void makeInvalidate(const JZRect &rc);    
-    void refresh();
+    void makeInvalidate(const JZRect &rc);        
 
 private:
     virtual bool event(JZEvent *e) override;
-    virtual void timerEvent(JZTimerEvent *e) override;
+    void setDisplay(lv_display_t* disp);
 
     void collectFrontToBack(JZWidget* w, const JZRect& area, std::vector<JZRect>& coverage, std::vector<JZWidget*>& out);
 
     std::vector<JZWidget*> cullList(JZWidget* root, const JZRect& area);
     static std::vector<JZDisplayDevice*> displayList;
+    void redraw();
 
     lv_display_t* m_disp = nullptr; // 外部传入的 LVGL display; 为空则走软件渲染路径
     JZLayer m_layer;

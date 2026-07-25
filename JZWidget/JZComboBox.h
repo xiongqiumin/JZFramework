@@ -39,6 +39,11 @@ jz_signals:
     JZSigString currentTextChanged;  // 当前选中文本变化
 
 protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    std::vector<std::string> m_items;
+    int m_current = -1;
 };
 
 #endif

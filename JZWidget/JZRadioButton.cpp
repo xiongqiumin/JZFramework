@@ -19,10 +19,12 @@ JZRadioButton::JZRadioButton(JZWidget* parent, const std::string& text)
 }
 
 void JZRadioButton::setText(const std::string& text)
-{}
+{
+    m_text = text;
+}
 
 std::string JZRadioButton::text() const
-{ return {}; }
+{ return m_text; }
 
 bool JZRadioButton::isChecked() const
 {
@@ -38,7 +40,7 @@ void JZRadioButton::setChecked(bool on)
 
 void JZRadioButton::paintEvent(JZPainterEvent* event)
 {
-    JZPainter& p = *event->painter();
+    JZPainter p(this);
     int d = 18;
     int y = (height() - d) / 2;
     int cx = d / 2;
@@ -54,6 +56,12 @@ void JZRadioButton::paintEvent(JZPainterEvent* event)
         int dd = 8;
         p.fillRect(cx - dd / 2, cy - dd / 2, dd, dd, JZColor(0x33, 0x66, 0xcc));
     }
+
+    // 文本
+    p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+    p.setFont(JZFont(14));
+    if (!m_text.empty())
+        p.drawText(d + 6, (height() - 14) / 2, m_text.c_str());
 }
 
 JZSize JZRadioButton::sizeHint() const

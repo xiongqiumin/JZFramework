@@ -26,6 +26,7 @@ jz_signals:
 
 protected:
     void closeEvent(JZCloseEvent* event) override;
+    void paintEvent(JZPainterEvent* event) override;
 
     Result m_result;
 };

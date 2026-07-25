@@ -27,6 +27,7 @@ public:
     void setGeometry(int x, int y, int w, int h) override;
     void setGeometry(const JZRect& r) override;
     JZSize sizeHint() const override;
+    void paintEvent(JZPainterEvent* event) override;
 
 private:
     void updateVisibility();

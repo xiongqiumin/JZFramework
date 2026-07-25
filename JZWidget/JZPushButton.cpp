@@ -1,4 +1,5 @@
 #include "JZPushButton.h"
+#include "JZPainter.h"
 
 JZ_OBJECT_IMPL(JZPushButton, JZWidget)
 
@@ -20,10 +21,12 @@ void* JZPushButton::labelHandle() const
 }
 
 void JZPushButton::setText(const std::string& text)
-{}
+{
+    m_text = text;
+}
 
 std::string JZPushButton::text() const
-{ return {}; }
+{ return m_text; }
 
 void JZPushButton::setWidth(int w)
 {
@@ -40,4 +43,23 @@ JZSize JZPushButton::sizeHint() const
     int w = m_width > 0 ? m_width : 90;
     int h = m_height > 0 ? m_height : 30;
     return JZSize(w, h);
+}
+
+void JZPushButton::paintEvent(JZPainterEvent* event)
+{
+    JZPainter p(this);
+    int w = width(), h = height();
+
+    p.setBrush(JZBrush(JZColor(0xe0, 0xe0, 0xe0)));
+    p.setPen(JZPen(JZColor(0x80, 0x80, 0x80), 1));
+    p.drawRoundRect(0, 0, w, h, 4);
+
+    p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+    p.setFont(JZFont(14));
+    if (!m_text.empty()) {
+        int tw = (int)m_text.size() * 7;
+        int tx = (w - tw) / 2;
+        int ty = (h - 14) / 2;
+        p.drawText(tx, ty, m_text.c_str());
+    }
 }

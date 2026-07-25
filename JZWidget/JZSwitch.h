@@ -19,6 +19,10 @@ jz_signals:
     JZSigBool sigToggled;
 
 protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    bool m_on = false;
 };
 
 #endif

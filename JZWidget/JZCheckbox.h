@@ -15,9 +15,17 @@ public:
     void setText(const std::string& text);
     std::string text() const;
     bool isChecked() const;
+    void setChecked(bool on);
 
 jz_signals:
     JZSigBool sigToggled;
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    std::string m_text;
+    bool m_checked = false;
 };
 
 #endif

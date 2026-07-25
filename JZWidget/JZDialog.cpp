@@ -1,5 +1,6 @@
 #include "JZDialog.h"
 #include "JZEventLoop.h"
+#include "JZPainter.h"
 
 JZ_OBJECT_IMPL(JZDialog, JZWidget)
 
@@ -47,4 +48,13 @@ void JZDialog::reject()
 void JZDialog::closeEvent(JZCloseEvent*)
 {
     reject();
+}
+
+void JZDialog::paintEvent(JZPainterEvent* event)
+{
+    JZPainter p(this);
+    int w = width(), h = height();
+    p.setBrush(JZBrush(JZColor(0xff, 0xff, 0xff)));
+    p.setPen(JZPen(JZColor(0x40, 0x40, 0x40), 1));
+    p.drawRoundRect(0, 0, w, h, 6);
 }

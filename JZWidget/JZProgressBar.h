@@ -14,6 +14,14 @@ public:
     void setRange(int32_t min, int32_t max);
     void setValue(int32_t v, bool anim = false);
     int32_t value() const;
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    int32_t m_min = 0;
+    int32_t m_max = 100;
+    int32_t m_value = 0;
 };
 
 #endif

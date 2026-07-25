@@ -28,6 +28,7 @@ protected:
     void* m_label = nullptr;
     void* m_indicator = nullptr;   // 透明占位, 为圆环预留布局宽度
     bool m_checked = false;
+    std::string m_text;
 };
 
 #endif

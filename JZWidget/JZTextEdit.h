@@ -15,6 +15,13 @@ public:
     std::string text() const;
 
     void setPassword(bool pw);
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    std::string m_text;
+    bool m_password = false;
 };
 
 #endif

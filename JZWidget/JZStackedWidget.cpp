@@ -1,5 +1,6 @@
 #include "JZStackedWidget.h"
 #include "JZStd.h"
+#include "JZPainter.h"
 #include <algorithm>
 
 
@@ -133,4 +134,13 @@ JZSize JZStackedWidget::sizeHint() const
         s = JZSize(std::max(s.width(), ps.width()), std::max(s.height(), ps.height()));
     }
     return s;
+}
+
+void JZStackedWidget::paintEvent(JZPainterEvent* event)
+{
+    JZPainter p(this);
+    int w = width(), h = height();
+    p.setBrush(JZBrush(JZColor(0xe8, 0xe8, 0xe8)));
+    p.setPen(JZPen(JZColor(0xe8, 0xe8, 0xe8), 1));
+    p.drawRect(0, 0, w, h);
 }

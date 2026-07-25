@@ -24,8 +24,12 @@ public:
 jz_signals:
     JZSigVoid sigClicked;
 
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
 private:
     void* m_label = nullptr;
+    std::string m_text;
 };
 
 #endif

@@ -20,6 +20,12 @@ jz_signals:
     JZSigInt sigValueChanged;
 
 protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    int32_t m_min = 0;
+    int32_t m_max = 100;
+    int32_t m_value = 0;
 };
 
 #endif

@@ -9,6 +9,9 @@ class JZMainWindow : public JZWidget
 
 public:
     explicit JZMainWindow(JZDisplayDevice *device);
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
 };
 
 #endif

@@ -259,7 +259,7 @@ void JZTableWidget::paintHeader(JZPainter& p)
 // ----------------------------------------------------------------------------
 void JZTableWidget::paintEvent(JZPainterEvent* event)
 {
-    JZPainter& p = *event->painter();
+    JZPainter p(this);
 
     int sx = scrollX();
     int sy = scrollY();

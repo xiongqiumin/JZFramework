@@ -19,6 +19,9 @@ public:
     void setRotation(int32_t angle);
     void setPivot(int x, int y);
 
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
 private:
     JZImage m_image;
 };

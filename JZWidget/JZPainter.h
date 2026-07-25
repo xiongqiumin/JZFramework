@@ -39,6 +39,8 @@ public:
     void drawLine(int x1, int y1, int x2, int y2);
     void drawRect(int x, int y, int w, int h);
     void drawRoundRect(int x, int y, int w, int h, int radius);
+
+    void fillRect(const JZRect &rc, const JZColor& color);
     void fillRect(int x, int y, int w, int h, const JZColor& color);
 
     // 角度单位: 1/10 度 (与 LVGL 一致: 0=3点方向, 90=6点方向, 顺时针递增)

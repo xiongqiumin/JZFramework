@@ -164,6 +164,11 @@ void JZPainter::drawRoundRect(int x, int y, int w, int h, int radius)
     m_layer->addTask(border);
 }
 
+void JZPainter::fillRect(const JZRect &rc, const JZColor& color)
+{
+    fillRect(rc.x(), rc.y(), rc.width(), rc.height(), color);
+}
+
 void JZPainter::fillRect(int x, int y, int w, int h, const JZColor& color)
 {
     if (!m_layer)

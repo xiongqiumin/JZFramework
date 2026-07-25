@@ -34,6 +34,8 @@ private:
     JZWidget* makePage();
     void buildPages();
 
+    virtual void paintEvent(JZPainterEvent *event) override;
+
     // 日志
     void log(const std::string& line);
 

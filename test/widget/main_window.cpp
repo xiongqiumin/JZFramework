@@ -25,6 +25,12 @@ MainWindow::~MainWindow()
 {
 }
 
+void MainWindow::paintEvent(JZPainterEvent *event)
+{
+    JZPainter pt(this);
+    pt.fillRect(rect(), JZColor::Red);
+}
+
 void MainWindow::setupUi()
 {
     // 中间容器: 左列表 + 右预览

@@ -87,12 +87,13 @@
 
 convert_to_abs_paths(JZ_SOURCES)
 
+set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf.h CACHE FILEPATH "LVGL config" FORCE)
 include(${CMAKE_CURRENT_LIST_DIR}/lvgl/lvgl.cmake)
 
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
-target_compile_definitions(${JZ_MODULE_TARGET} PRIVATE LV_CONF_INCLUDE_SIMPLE)
+
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/lvgl")
 target_link_libraries(${JZ_MODULE_TARGET} PRIVATE lvgl)

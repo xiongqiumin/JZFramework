@@ -90,6 +90,16 @@ JZThread::JZThread(JZObject::MainThreadInit init)
 
 JZThread::~JZThread()
 {        
+    // 排空未处理事件队列: 释放裸指针 event 与信号量, 避免线程销毁时泄漏
+    while (!m_eventList.empty())
+    {
+        JZEventInfo &event = m_eventList.front();        
+        if (event.sem)
+            event.sem->release();
+        delete event.event;
+        m_eventList.pop();
+    }    
+
     //thread 无效了,这里要特殊处理下,先删除
     std::vector<JZObject*> childs = m_childs;
 	for (int i = 0; i < (int)childs.size(); i++)

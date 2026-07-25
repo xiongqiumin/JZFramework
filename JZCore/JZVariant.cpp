@@ -224,6 +224,7 @@ void JZVariant::operator=(JZVariant && other) noexcept
     if (this == &other)
         return;
 
+    release();
     m_type = other.m_type;
     m_data = other.m_data;
     other.m_type = JZMetaType::None;

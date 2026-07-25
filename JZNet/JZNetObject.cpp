@@ -392,6 +392,7 @@ JZNetThread::JZNetThread(JZObject *parent)
 {
     JZThreadConfig cfg;
     cfg.stackSize = 8 * 1024;
+    cfg.priority = 5;
 
     connect(&sigFinished, this, &JZNetThread::onFinished);
     moveToThread(this);

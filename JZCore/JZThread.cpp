@@ -446,10 +446,10 @@ void JZThread::processTimers()
         if (time.id == INVAILD_TIMER_ID)
             return;
 
-        JZTimerEvent* timer_event = new JZTimerEvent(time.id);
+        JZTimerEvent timer_event(time.id);
         JZ_ASSERT(time.object->thread() == this);
 
-        time.object->event(timer_event);
+        time.object->event(&timer_event);        
 
         int idx = indexOfTimer(time.object, time.id);
         if (idx >= 0)

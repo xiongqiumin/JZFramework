@@ -4,6 +4,7 @@
 build*
 *.iml
 .gradle
+.codebuddy
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml

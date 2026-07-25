@@ -14,6 +14,9 @@ class JZPainterEvent : public JZEvent
 public:
     explicit JZPainterEvent();
 
+    void setPainter(JZPainter* painter) { m_painter = painter; }
+    JZPainter* painter() const { return m_painter; }
+
     void setRect(const JZRect& rect) { m_rect = rect; }
     JZRect rect() const { return m_rect; }
 

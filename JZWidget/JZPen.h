@@ -16,7 +16,7 @@ public:
     int width() const;
 
 private:
-    JZColor m_color = JZColor::Black();
+    JZColor m_color;
     int m_width = 1;
 };
 

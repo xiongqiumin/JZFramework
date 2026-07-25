@@ -19,7 +19,7 @@ public:
     uint8_t opacity() const;
 
 private:
-    JZColor m_color = JZColor::Black();
+    JZColor m_color;
     uint8_t m_opa = kOpaCover;
 };
 

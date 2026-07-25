@@ -74,7 +74,6 @@ void JZDisplayDevice::setDisplay(lv_display_t* display)
 
     m_visible = true;
     setGeometry(0, 0, w, h);
-    displayList.push_back(this);
 }
 
 JZDisplayDevice::~JZDisplayDevice()
@@ -84,7 +83,21 @@ JZDisplayDevice::~JZDisplayDevice()
 
 bool JZDisplayDevice::event(JZEvent *e)
 {
-    return JZObject::event(e);    
+    if(e->type() == JZEvent_paint)
+    { 
+        paintEvent((JZPainterEvent *)e);
+        return true;
+    }
+    else
+    {
+        return JZObject::event(e);
+    }
+}
+
+void JZDisplayDevice::paintEvent(JZPainterEvent *event)
+{
+    JZPainter pt(this);
+    pt.fillRect(rect(), JZColor::White);
 }
 
 JZLayer *JZDisplayDevice::layer()
@@ -110,15 +123,10 @@ void JZDisplayDevice::redraw()
 
     std::vector<JZWidget*> widget_list;
     std::vector<JZRect> coverage = { clip };
-
-    const auto& ch = this->children();
-    for (int i = (int)ch.size() - 1; i >= 0; --i) {
-        auto* c = jzobject_cast<JZWidget*>(ch[i]);
-        if (c)
-            collectFrontToBack(c, clip, coverage, widget_list);
-    }
+    collectFrontToBack(this, clip, coverage, widget_list);
     m_invalidRect.clear();
 
+    std::reverse(widget_list.begin(), widget_list.end());
     // 统一创建 painter 并注入: 每个 widget 一次 paintEvent 对应一个 painter,
     // 其裁剪区设为脏区(绘制区域), 超出该区域的图元由 JZPainter 粗略剔除不提交。
     for (auto w : widget_list)
@@ -144,9 +152,11 @@ void JZDisplayDevice::redraw()
 void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::vector<JZRect>& coverage,
                                          std::vector<JZWidget*>& out)
 {
-    JZRect wa = w->toGlobal(w->geometry()).intersect(area);
+    JZRect wa = w->toGlobal(w->rect()).intersect(area);
+    /*
     if (wa.isEmpty() || !w->isVisible())
         return;
+    */
 
     // 先处理子节点(前到后), 使上层子节点先贡献覆盖, 再判断本节点(本节点在子节点之后)
     const auto& ch = w->children();
@@ -165,17 +175,8 @@ void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::v
             break;
         }
     }
-    if (!covered) {
+    /*if (!covered)*/ {
         out.push_back(w);
         coverage.push_back(wa);
     }
-}
-
-std::vector<JZWidget*> JZDisplayDevice::cullList(JZWidget* root, const JZRect& area)
-{
-    std::vector<JZWidget*> frontToBack;
-    std::vector<JZRect> coverage;
-    collectFrontToBack(root, area, coverage, frontToBack);
-    std::reverse(frontToBack.begin(), frontToBack.end()); // -> 后到前(正确 z 序)
-    return frontToBack;
 }

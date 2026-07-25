@@ -15,3 +15,10 @@ std::string JZTextEdit::text() const
 
 void JZTextEdit::setPassword(bool pw)
 {}
+
+JZSize JZTextEdit::sizeHint() const
+{
+    int w = m_width > 0 ? m_width : 160;
+    int h = m_height > 0 ? m_height : 70;
+    return JZSize(w, h);
+}

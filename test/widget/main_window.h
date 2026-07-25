@@ -10,10 +10,7 @@
 #include "JZRadioButton.h"
 #include "JZListWidget.h"
 #include "JZComboBox.h"
-#include "JZArcWidget.h"
 #include "JZTextEdit.h"
-#include "JZLedWidget.h"
-#include "JZRoller.h"
 #include "JZTableWidget.h"
 #include "JZImageLabel.h"
 #include "JZStackedWidget.h"
@@ -34,8 +31,6 @@ private:
     JZWidget* makePage();
     void buildPages();
 
-    virtual void paintEvent(JZPainterEvent *event) override;
-
     // 日志
     void log(const std::string& line);
 
@@ -50,7 +45,6 @@ private:
 
     // 交互演示
     void onPbInc();
-    void onLedToggle();
     void onLogTextEdit();
     void onLabelUpdate();
 
@@ -64,7 +58,6 @@ private:
     // 交互演示用到的控件引用
     JZProgressBar *m_pb = nullptr;
     int  m_pbVal = 0;
-    JZLedWidget *m_led = nullptr;
     JZTextEdit *m_te = nullptr;
     JZLabel    *m_labelDemo = nullptr;
 };

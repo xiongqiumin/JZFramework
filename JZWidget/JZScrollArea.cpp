@@ -70,3 +70,10 @@ bool JZScrollArea::canScrollVertically() const
 {
     return contentHeight() > viewportHeight();
 }
+
+JZSize JZScrollArea::sizeHint() const
+{
+    if (m_width > 0 && m_height > 0)
+        return JZSize(m_width, m_height);
+    return JZSize(120, 120);
+}

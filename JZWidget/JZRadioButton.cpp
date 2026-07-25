@@ -55,3 +55,8 @@ void JZRadioButton::paintEvent(JZPainterEvent* event)
         p.fillRect(cx - dd / 2, cy - dd / 2, dd, dd, JZColor(0x33, 0x66, 0xcc));
     }
 }
+
+JZSize JZRadioButton::sizeHint() const
+{
+    return JZSize(96, 20);
+}

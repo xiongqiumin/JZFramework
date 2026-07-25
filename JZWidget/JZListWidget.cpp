@@ -190,7 +190,7 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
             p.drawImage(item->icon, ix, iy, iconSize, iconSize);
             textX = ix + iconSize + 6;
         }
-        JZBrush brush; brush.setColor(sel ? JZColor::White() : JZColor::Black()); p.setBrush(brush);
+        JZBrush brush; brush.setColor(sel ? JZColor::White: JZColor::Black); p.setBrush(brush);
         JZFont font(14); p.setFont(font);
         int ty = rect.y() + (rect.height() - 16) / 2;
         p.drawText(textX, ty, item->text.c_str());
@@ -201,7 +201,7 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
             int cy = rect.y() + 2;
             p.drawImage(item->icon, cx, cy, iconSize, iconSize);
         }
-        JZBrush brush; brush.setColor(sel ? JZColor::White() : JZColor::Black()); p.setBrush(brush);
+        JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
         JZFont font(12); p.setFont(font);
         int ty = rect.y() + rect.height() - 16;
         p.drawText(rect.x() + 2, ty, item->text.c_str());

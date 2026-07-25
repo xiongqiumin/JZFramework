@@ -13,3 +13,8 @@ void JZSwitch::setState(bool on)
 
 bool JZSwitch::isOn() const
 { return false; }
+
+JZSize JZSwitch::sizeHint() const
+{
+    return JZSize(52, 26);
+}

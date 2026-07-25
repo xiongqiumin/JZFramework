@@ -48,6 +48,9 @@ public:
     // 内容是否可滚动(超出视口)
     bool canScrollVertically() const;
 
+    // 期望尺寸: 已显式设置尺寸则用之, 否则回落到默认 120x120
+    JZSize sizeHint() const override;
+
 protected:
     JZWidget* m_content = nullptr;   // 透明占位: 仅用于撑开滚动范围
 };

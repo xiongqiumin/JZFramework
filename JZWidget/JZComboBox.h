@@ -13,6 +13,8 @@ class JZComboBox : public JZWidget
 public:
     explicit JZComboBox(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
+
     // 添加项
     void addItem(const std::string& text);
     void addItems(const std::vector<std::string>& texts);

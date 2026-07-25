@@ -112,7 +112,7 @@ void JZLayer::redraw(lv_layer_t *layer)
             dsc.text = t->text.c_str();
             dsc.color = toLvColor(t->color);
             dsc.opa   = t->opacity;
-            //dsc.font  = lv_font_default();   // TODO: 按 t->font.size() 选字号
+            dsc.font = LV_FONT_DEFAULT;
             dsc.align = LV_TEXT_ALIGN_LEFT;
             lv_area_t a;
             a.x1 = t->area.left();

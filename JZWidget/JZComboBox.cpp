@@ -44,3 +44,9 @@ std::string JZComboBox::itemText(int index) const
 
 int JZComboBox::count() const
 { return 0; }
+
+JZSize JZComboBox::sizeHint() const
+{
+    int w = m_width > 0 ? m_width : 120;
+    return JZSize(w, 28);
+}

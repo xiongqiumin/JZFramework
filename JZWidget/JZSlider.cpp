@@ -16,3 +16,9 @@ void JZSlider::setValue(int32_t v)
 
 int32_t JZSlider::value() const
 { return 0; }
+
+JZSize JZSlider::sizeHint() const
+{
+    int w = m_width > 0 ? m_width : 120;
+    return JZSize(w, 24);
+}

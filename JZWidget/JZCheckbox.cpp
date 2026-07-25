@@ -16,3 +16,8 @@ std::string JZCheckbox::text() const
 
 bool JZCheckbox::isChecked() const
 { return false; }
+
+JZSize JZCheckbox::sizeHint() const
+{
+    return JZSize(96, 24);
+}

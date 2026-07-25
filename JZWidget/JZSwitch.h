@@ -11,6 +11,7 @@ class JZSwitch : public JZWidget
 public:
     explicit JZSwitch(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
     void setState(bool on);
     bool isOn() const;
 

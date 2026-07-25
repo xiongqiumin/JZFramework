@@ -14,8 +14,7 @@ MainWindow::MainWindow(JZWidget* parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-        "RadioButton", "ComboBox", "ArcWidget", "TextEdit", "Led",
-        "Roller", "Table", "ImageLabel"
+        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel"
     };
 
     setupUi();
@@ -23,12 +22,6 @@ MainWindow::MainWindow(JZWidget* parent)
 
 MainWindow::~MainWindow()
 {
-}
-
-void MainWindow::paintEvent(JZPainterEvent *event)
-{
-    JZPainter pt(this);
-    pt.fillRect(rect(), JZColor::Red);
 }
 
 void MainWindow::setupUi()
@@ -97,16 +90,6 @@ void MainWindow::onPbInc()
     m_pbVal = (m_pbVal + 10) % 110;
     if (m_pb) m_pb->setValue(m_pbVal, true);
     log("progress: " + std::to_string(m_pbVal));
-}
-
-void MainWindow::onLedToggle()
-{
-    if (m_led) {
-        static bool on = true;
-        if (on) m_led->off(); else m_led->on();
-        on = !on;
-    }
-    log("led toggled");
 }
 
 void MainWindow::onLogTextEdit()
@@ -219,18 +202,6 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
-    // ---- ArcWidget ----
-    {
-        JZWidget* page = makePage();
-        JZArcWidget* arc = new JZArcWidget(page);
-        arc->setRange(0, 360);
-        arc->setValue(120);
-        arc->resize(100, 100);
-        connect(&arc->sigValueChanged, this, &MainWindow::onLogInt);
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(arc);
-        m_preview->addWidget(page);
-    }
-
     // ---- TextEdit ----
     {
         JZWidget* page = makePage();
@@ -242,30 +213,6 @@ void MainWindow::buildPages()
         connect(&b->sigClicked, this, &MainWindow::onLogTextEdit);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(te);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
-        m_preview->addWidget(page);
-    }
-
-    // ---- Led ----
-    {
-        JZWidget* page = makePage();
-        JZLedWidget* led = new JZLedWidget(page);
-        m_led = led;
-        led->setColor(JZColor::Red());
-        led->on();
-        JZPushButton* b = new JZPushButton(page, 80, 28, "Toggle");
-        connect(&b->sigClicked, this, &MainWindow::onLedToggle);
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(led);
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
-        m_preview->addWidget(page);
-    }
-
-    // ---- Roller ----
-    {
-        JZWidget* page = makePage();
-        JZRoller* rl = new JZRoller(page);
-        rl->setOptions("One\nTwo\nThree\nFour");
-        rl->setVisibleRowCount(3);
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(rl);
         m_preview->addWidget(page);
     }
 

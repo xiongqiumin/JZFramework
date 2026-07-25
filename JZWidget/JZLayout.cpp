@@ -84,7 +84,15 @@ inline bool policyExpands(JZWidget::SizePolicy p)
 void JZLayout::apply(JZWidget* container)
 {
     m_container = container;
-    updateLayout();
+    relayout();
+}
+
+void JZLayout::relayout()
+{
+    if (m_container) {
+        m_container->updateLayout();   // 重排自身子控件(含本次变更)
+        m_container->updateGeometry(); // 向上级联: 父布局按新 sizeHint 重排
+    }
 }
 
 // ==================== JZBoxLayout ====================
@@ -108,7 +116,7 @@ void JZBoxLayout::addWidget(JZWidget* widget, int stretch)
     it.widget = widget;
     it.stretch = stretch < 0 ? 0 : stretch;
     m_items.push_back(it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::addSpacing(int size)
@@ -117,7 +125,7 @@ void JZBoxLayout::addSpacing(int size)
     it.type = SpacerItem;
     it.spaceSize = size < 0 ? 0 : size;
     m_items.push_back(it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::addStretch(int stretch)
@@ -126,7 +134,7 @@ void JZBoxLayout::addStretch(int stretch)
     it.type = StretchItem;
     it.stretch = stretch <= 0 ? 1 : stretch;
     m_items.push_back(it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::insertWidget(int index, JZWidget* widget, int stretch)
@@ -139,7 +147,7 @@ void JZBoxLayout::insertWidget(int index, JZWidget* widget, int stretch)
         m_items.push_back(it);
     else
         m_items.insert(m_items.begin() + index, it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::insertSpacing(int index, int size)
@@ -151,7 +159,7 @@ void JZBoxLayout::insertSpacing(int index, int size)
         m_items.push_back(it);
     else
         m_items.insert(m_items.begin() + index, it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::insertStretch(int index, int stretch)
@@ -163,7 +171,7 @@ void JZBoxLayout::insertStretch(int index, int stretch)
         m_items.push_back(it);
     else
         m_items.insert(m_items.begin() + index, it);
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::removeAt(int index)
@@ -173,7 +181,7 @@ void JZBoxLayout::clear()
 {
     clearSpacers();
     m_items.clear();
-    updateLayout();
+    relayout();
 }
 
 void JZBoxLayout::clearSpacers()
@@ -233,7 +241,8 @@ void JZBoxLayout::updateLayout()
             int hintCross = horiz ? hs.height() : hs.width();
             int cmn = horiz ? it.widget->minimumHeight() : it.widget->minimumWidth();
             int cmx = horiz ? it.widget->maximumHeight() : it.widget->maximumWidth();
-            int desired = policyExpands(cp) ? crossAvail : hintCross;
+            bool fillCross = it.stretch > 0 || policyExpands(cp);
+            int desired = fillCross ? crossAvail : hintCross;
             int crossSize = std::max(cmn, std::min(desired, cmx));
             int crossPos = crossOrigin + (crossAvail - crossSize) / 2;
             int x = horiz ? cursor     : crossPos;
@@ -244,6 +253,34 @@ void JZBoxLayout::updateLayout()
         }
         cursor += mainSize[i] + m_gap;
     }
+}
+
+JZSize JZBoxLayout::sizeHint() const
+{
+    int n = (int)m_items.size();
+    if (n == 0 || !m_container)
+        return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
+
+    bool horiz = (flexFlow() == 0);
+    int main = 0;
+    int cross = 0;
+    for (int i = 0; i < n; ++i) {
+        const auto& it = m_items[i];
+        if (it.type == WidgetItem && it.widget) {
+            JZSize hs = it.widget->sizeHint();
+            if (horiz) { main += hs.width();  cross = std::max(cross, hs.height()); }
+            else       { main += hs.height(); cross = std::max(cross, hs.width()); }
+        } else if (it.type == SpacerItem) {
+            main += std::max(0, it.spaceSize);
+        }
+        // StretchItem 无固有尺寸, 不计入 hint
+    }
+    main += m_gap * (n - 1);
+    int w = horiz ? (m_marginLeft + m_marginRight + main)
+                  : (m_marginLeft + m_marginRight + cross);
+    int h = horiz ? (m_marginTop + m_marginBottom + cross)
+                  : (m_marginTop + m_marginBottom + main);
+    return JZSize(w, h);
 }
 
 // ==================== JZGridLayout ====================
@@ -269,7 +306,7 @@ void JZGridLayout::addWidget(JZWidget* widget, int fromRow, int fromCol, int row
     it.rowSpan = rowSpan > 0 ? rowSpan : 1;
     it.colSpan = colSpan > 0 ? colSpan : 1;
     m_items.push_back(it);
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setRowStretch(int row, int stretch)
@@ -277,7 +314,7 @@ void JZGridLayout::setRowStretch(int row, int stretch)
     if (row < 0) return;
     if ((size_t)row >= m_rowSpecs.size()) m_rowSpecs.resize(row + 1);
     m_rowSpecs[row].stretch = stretch;
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setColumnStretch(int col, int stretch)
@@ -285,7 +322,7 @@ void JZGridLayout::setColumnStretch(int col, int stretch)
     if (col < 0) return;
     if ((size_t)col >= m_colSpecs.size()) m_colSpecs.resize(col + 1);
     m_colSpecs[col].stretch = stretch;
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setRowMinimumHeight(int row, int minHeight)
@@ -293,7 +330,7 @@ void JZGridLayout::setRowMinimumHeight(int row, int minHeight)
     if (row < 0) return;
     if ((size_t)row >= m_rowSpecs.size()) m_rowSpecs.resize(row + 1);
     m_rowSpecs[row].minSize = minHeight;
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setColumnMinimumWidth(int col, int minWidth)
@@ -301,19 +338,19 @@ void JZGridLayout::setColumnMinimumWidth(int col, int minWidth)
     if (col < 0) return;
     if ((size_t)col >= m_colSpecs.size()) m_colSpecs.resize(col + 1);
     m_colSpecs[col].minSize = minWidth;
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setHorizontalSpacing(int spacing)
 {
     m_hGap = spacing;
-    updateLayout();
+    relayout();
 }
 
 void JZGridLayout::setVerticalSpacing(int spacing)
 {
     m_vGap = spacing;
-    updateLayout();
+    relayout();
 }
 
 int JZGridLayout::rowCount() const
@@ -461,4 +498,29 @@ void JZGridLayout::updateLayout()
         int gy = cellY + (cellH - h) / 2;
         it.widget->setGeometry(gx, gy, w, h);
     }
+}
+
+JZSize JZGridLayout::sizeHint() const
+{
+    int cols = columnCount();
+    int rows = rowCount();
+    if (cols <= 0 || rows <= 0)
+        return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
+
+    std::vector<int> colHint(cols, 0), rowHint(rows, 0);
+    for (const auto& it : m_items) {
+        if (!it.widget) continue;
+        JZSize hs = it.widget->sizeHint();
+        if (it.colSpan == 1) colHint[it.col] = std::max(colHint[it.col], hs.width());
+        if (it.rowSpan == 1) rowHint[it.row] = std::max(rowHint[it.row], hs.height());
+    }
+    int w = m_marginLeft + m_marginRight;
+    int h = m_marginTop + m_marginBottom;
+    for (int c = 0; c < cols; ++c) w += colHint[c];
+    for (int r = 0; r < rows; ++r) h += rowHint[r];
+    int hGap = horizontalSpacing();
+    int vGap = verticalSpacing();
+    w += hGap * (cols - 1);
+    h += vGap * (rows - 1);
+    return JZSize(w, h);
 }

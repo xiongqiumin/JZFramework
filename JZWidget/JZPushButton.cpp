@@ -34,3 +34,10 @@ void JZPushButton::setHeight(int h)
 {
     resize(width(), h);
 }
+
+JZSize JZPushButton::sizeHint() const
+{
+    int w = m_width > 0 ? m_width : 90;
+    int h = m_height > 0 ? m_height : 30;
+    return JZSize(w, h);
+}

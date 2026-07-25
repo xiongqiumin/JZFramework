@@ -2,6 +2,7 @@
 #define JZ_WIDGET_LAYOUT_H_
 #include <vector>
 #include <cstddef>
+#include "JZSize.h"
 
 class JZWidget;
 
@@ -13,6 +14,7 @@ public:
     // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存容器供后续 updateLayout 使用
     void apply(JZWidget* container);
     virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
+    virtual JZSize sizeHint() const { return JZSize(0, 0); }  // 容器期望尺寸: 内容 hints 之和
 
     int spacing() const { return m_gap; }
     void setSpacing(int gap) { m_gap = gap; updateLayout(); }
@@ -29,6 +31,10 @@ public:
     }
 
 protected:
+
+    // 重排容器自身子控件, 并向上级联(容器 sizeHint 因增删 item/改约束而变,
+    // 父布局需按新 sizeHint 重排)。等价于 JZWidget::updateGeometry() 的容器侧入口。
+    void relayout();
 
     JZWidget* m_container = nullptr;  // 已被 apply 过的容器
     int m_gap = 0;
@@ -57,6 +63,8 @@ public:
 
     JZBoxLayout(int pad = 0, int spacing = 0);
     ~JZBoxLayout() override;
+
+    JZSize sizeHint() const override;
 
     void addWidget(JZWidget* widget, int stretch = 0);
     void addSpacing(int size);
@@ -133,6 +141,8 @@ public:
     int rowCount() const;
     int columnCount() const;
     int count() const { return (int)m_items.size(); }
+
+    JZSize sizeHint() const override;
 
 protected:
     void updateLayout() override;

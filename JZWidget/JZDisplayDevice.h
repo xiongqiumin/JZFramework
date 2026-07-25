@@ -34,11 +34,12 @@ public:
 
 private:
     virtual bool event(JZEvent *e) override;
+    virtual void paintEvent(JZPainterEvent *event) override;
+
     void setDisplay(lv_display_t* disp);
 
     void collectFrontToBack(JZWidget* w, const JZRect& area, std::vector<JZRect>& coverage, std::vector<JZWidget*>& out);
-
-    std::vector<JZWidget*> cullList(JZWidget* root, const JZRect& area);
+    
     static std::vector<JZDisplayDevice*> displayList;
     void redraw();
 

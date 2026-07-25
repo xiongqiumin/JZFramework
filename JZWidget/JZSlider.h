@@ -11,6 +11,7 @@ class JZSlider : public JZWidget
 public:
     explicit JZSlider(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
     void setRange(int32_t min, int32_t max);
     void setValue(int32_t v);
     int32_t value() const;

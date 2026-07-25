@@ -12,6 +12,7 @@ public:
     explicit JZPushButton(JZWidget* parent = nullptr);
     JZPushButton(JZWidget* parent, int w, int h, const std::string& text);
 
+    JZSize sizeHint() const override;
     void* labelHandle() const;
 
     void setText(const std::string& text);

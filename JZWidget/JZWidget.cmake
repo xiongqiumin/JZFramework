@@ -72,15 +72,9 @@
     JZRadioButton.h
     JZRadioButton.cpp
     JZComboBox.h
-    JZComboBox.cpp
-    JZArcWidget.h
-    JZArcWidget.cpp
+    JZComboBox.cpp    
     JZTextEdit.h
-    JZTextEdit.cpp
-    JZLedWidget.h
-    JZLedWidget.cpp
-    JZRoller.h
-    JZRoller.cpp
+    JZTextEdit.cpp    
 	JZTableWidget.h
 	JZTableWidget.cpp
 )

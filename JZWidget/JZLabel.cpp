@@ -14,13 +14,19 @@ JZLabel::JZLabel(JZWidget* parent, const std::string& text)
 }
 
 void JZLabel::setText(const std::string& text)
-{}
+{
+}
 
 std::string JZLabel::text() const
-{ return {}; }
+{ 
+    return {}; 
+}
 
 void JZLabel::setAlign(int align)
-{}
+{
+}
 
-void JZLabel::setLongMode(int mode)
-{}
+JZSize JZLabel::sizeHint() const
+{
+    return JZSize(80, 20);
+}

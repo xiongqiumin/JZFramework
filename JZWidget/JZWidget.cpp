@@ -50,13 +50,13 @@ JZWidget* JZWidget::parentWidget() const
     return w;
 }
 
-class JZDisplayDevice* JZWidget::display() const
+class JZDisplayDevice* JZWidget::display()
 {
-    JZObject* p = m_parent;
+    JZWidget* p = (JZWidget*)this;
     while (p) {
         if (auto* d = jzobject_cast<JZDisplayDevice*>(p))
             return d;
-        p = p->parent();
+        p = p->parentWidget();
     }
     return nullptr;
 }
@@ -222,26 +222,26 @@ void JZWidget::setSizePolicy(SizePolicy h, SizePolicy v)
 {
     m_horPolicy = h;
     m_verPolicy = v;
-    if (m_layout)
-        m_layout->updateLayout();
+    updateGeometry();   // 策略影响父布局如何排本控件, 需向上级联
 }
 
 void JZWidget::setHorizontalPolicy(SizePolicy p)
 {
     m_horPolicy = p;
-    if (m_layout)
-        m_layout->updateLayout();
+    updateGeometry();
 }
 
 void JZWidget::setVerticalPolicy(SizePolicy p)
 {
     m_verPolicy = p;
-    if (m_layout)
-        m_layout->updateLayout();
+    updateGeometry();
 }
 
 JZSize JZWidget::sizeHint() const
 {
+    // 容器: 优先用布局计算的内容期望尺寸; 叶子控件由子类重写返回固有尺寸。
+    if (m_layout)
+        return m_layout->sizeHint();
     return JZSize(0, 0);
 }
 
@@ -303,7 +303,30 @@ void JZWidget::setLayout(JZLayout* layout)
     
     m_layout = layout;
     if(m_layout)
-        m_layout->apply(this);
+    {
+        m_layout->apply(this);  // 内部 updateLayout(): 重排自身子控件
+        updateGeometry();       // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
+    }
+}
+
+void JZWidget::updateLayout()
+{
+    if (m_layout)
+        m_layout->updateLayout();
+}
+
+void JZWidget::updateGeometry()
+{
+    // 本控件尺寸特征改变(策略/约束/布局内容), 父布局将其作为 item 必须重排,
+    // 再继续向上传播到整条祖先链。
+    // 注意: 不在此重排自身子控件 —— 父布局经 setGeometry 设置本控件几何后,
+    // resize() 会自动触发本控件 updateLayout(), 从而级联向下重排子控件。
+    if (JZWidget* p = parentWidget())
+    {
+        if (p->m_layout)
+            p->m_layout->updateLayout();
+        p->updateGeometry();
+    }
 }
 
 JZLayout* JZWidget::layout() const
@@ -333,6 +356,17 @@ void JZWidget::invalidate(const JZRect &rc)
 void JZWidget::update()
 {
     invalidate(rect());
+}
+
+bool JZWidget::event(JZEvent* e)
+{
+    if (e->type() == JZEvent_paint)
+    {
+        paintEvent((JZPainterEvent*)e);
+        return true;
+    }
+
+    return JZObject::event(e);
 }
 
 void JZWidget::paintEvent(JZPainterEvent*)

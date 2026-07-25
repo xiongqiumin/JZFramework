@@ -213,7 +213,7 @@ void JZTableWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidget
         textX = ix + iconSize + 4;
     }
 
-    JZBrush brush; brush.setColor(sel ? JZColor::White() : JZColor::Black()); p.setBrush(brush);
+    JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
     JZFont font(13); p.setFont(font);
     int ty = rect.y() + (rect.height() - 14) / 2;
     p.drawText(textX, ty, item->text.c_str());
@@ -234,7 +234,7 @@ void JZTableWidget::paintHeader(JZPainter& p)
 
     p.fillRect(0, 0, viewW, hh, JZColor(0xe8, 0xe8, 0xe8));
 
-    JZBrush brush; brush.setColor(JZColor::Black()); p.setBrush(brush);
+    JZBrush brush; brush.setColor(JZColor::Black); p.setBrush(brush);
     JZFont font(13); p.setFont(font);
 
     for (int c = 0; c < m_cols; c++) {

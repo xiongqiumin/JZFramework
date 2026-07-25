@@ -11,6 +11,7 @@ class JZImageLabel : public JZWidget
 public:
     explicit JZImageLabel(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
     void setImage(const JZImage& img);
     JZImage image() const;
 

@@ -11,6 +11,7 @@ class JZCheckbox : public JZWidget
 public:
     explicit JZCheckbox(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
     void setText(const std::string& text);
     std::string text() const;
     bool isChecked() const;

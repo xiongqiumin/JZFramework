@@ -27,7 +27,7 @@ public:
     JZWidget* parentWidget() const;
 
     // 找到所属显示设备 (向上回溯到 JZDisplayDevice)
-    class JZDisplayDevice* display() const;
+    class JZDisplayDevice* display();
 
     // 位置
     JZPoint pos() const;
@@ -81,13 +81,13 @@ public:
     void setHorizontalPolicy(SizePolicy p);
     void setVerticalPolicy(SizePolicy p);
 
-    // 期望尺寸 (参考 Qt QWidget::sizeHint); 设置了 baseSize 时返回 baseSize, 否则回退到当前尺寸
-    JZSize sizeHint() const;
+    // 期望尺寸 (参考 Qt QWidget::sizeHint); 默认回退到当前尺寸, 容器/控件可重写
+    virtual JZSize sizeHint() const;
 
     // 几何
     JZRect geometry() const;
-    void setGeometry(int x, int y, int w, int h);
-    void setGeometry(const JZRect& r);    
+    virtual void setGeometry(int x, int y, int w, int h);
+    virtual void setGeometry(const JZRect& r);
 
     // 可见性
     void setVisible(bool visible);
@@ -97,12 +97,19 @@ public:
     void hide();
 
     // 不透明度: 用于刷新遍历时的"剔除"判断 (等价 LVGL lv_obj 的 opaque 标志)
-    void setOpaque(bool opaque);
-    bool isOpaque() const;
+    void setOpaque(int opaque);
+    int opaque() const;
 
     // 布局
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
+
+    // 重排:
+    //   updateLayout()   只重排自身子控件(布局应用 / resize 内部使用, 不向上传播);
+    //   updateGeometry() 在本控件尺寸特征(策略/约束/布局内容)变化后, 向上级联重排
+    //                    (父布局持有本控件作为 item, 必须重排; 再继续向上直到根)。
+    void updateLayout();
+    void updateGeometry();
 
     // 焦点
     void setFocus();
@@ -119,10 +126,10 @@ public:
 protected:    
     friend JZDisplayDevice;
 
+    virtual bool event(JZEvent* event) override;
     virtual void showEvent(JZShowEvent* event);
     virtual void closeEvent(JZCloseEvent* event);
     virtual void resizeEvent(JZResizeEvent* event);
-
     virtual void paintEvent(JZPainterEvent* event);    
 
     JZLayout* m_layout = nullptr;

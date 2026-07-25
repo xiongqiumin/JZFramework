@@ -10,6 +10,7 @@ class JZTextEdit : public JZWidget
 public:
     explicit JZTextEdit(JZWidget* parent = nullptr);
 
+    JZSize sizeHint() const override;
     void setText(const std::string& text);
     std::string text() const;
 

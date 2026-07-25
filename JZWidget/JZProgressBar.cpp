@@ -15,3 +15,9 @@ void JZProgressBar::setValue(int32_t v, bool anim)
 
 int32_t JZProgressBar::value() const
 { return 0; }
+
+JZSize JZProgressBar::sizeHint() const
+{
+    int w = m_width > 0 ? m_width : 120;
+    return JZSize(w, 16);
+}

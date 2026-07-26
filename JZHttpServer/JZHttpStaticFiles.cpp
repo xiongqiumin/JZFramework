@@ -118,7 +118,7 @@ void JZHttpStaticFiles::writeStreamFile(JZHttpServerClient* client)
     it->second.pendingSize += size;
     it->second.remainSize -= size;
     bool is_last = (it->second.remainSize == 0);
-    client->write(m_streamBuffer.data(), m_streamBuffer.size(), is_last);
+    client->write(m_streamBuffer.data(), size, is_last);
     if (is_last)
         closeStreamFile(client);
 }

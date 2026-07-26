@@ -32,12 +32,15 @@ JZThread *JZBaseSignal::objectThread(JZObject*sender)
 
 void JZBaseSignal::pushSender(JZThread* thread, JZObject *sender)
 {
-    thread->pushSender(sender);
+    //sigDestroy 时 thread 已经删除
+    if(thread)
+        thread->pushSender(sender);
 }
 
 void JZBaseSignal::popSender(JZThread* thread)
 {
-    thread->popSender();
+    if (thread)
+        thread->popSender();
 }
 
 JZObject* JZBaseSignal::currentThread()

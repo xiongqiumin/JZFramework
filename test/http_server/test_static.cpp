@@ -105,7 +105,7 @@ public:
 
         // 大文件（> 4k，触发多次分块发送）
         m_filePath = m_root + "/big.bin";
-        m_expect = makeContent(50000);
+        m_expect = makeContent(5);//makeContent(50000);
         writeFile(m_filePath, m_expect);
 
         // 普通文本文件

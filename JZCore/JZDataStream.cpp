@@ -12,9 +12,9 @@ JZDataStream::JZDataStream(JZFile *file)
     m_maxSize = -1;
 }
 
-JZDataStream::JZDataStream(const JZByteArray &buffer)
+JZDataStream::JZDataStream(const JZByteArray *buffer)
 {
-    m_buffer = (JZByteArray*)&buffer;
+    m_buffer = (JZByteArray*)buffer;
     m_offset = 0;
     m_file = nullptr;
     m_error = false;

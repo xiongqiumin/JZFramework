@@ -21,16 +21,30 @@ JZHttpServerClient::~JZHttpServerClient()
 void JZHttpServerClient::onNetEvent(JZNetResEvent* event)
 {
     JZHttpServer* server = jzobject_cast<JZHttpServer*>(parent());
-    if (!server) return;
+    if (!server) 
+        return;
+
+    // 流式响应：上一次写入已落 socket，回调 handler 继续写下一块
+    if (m_handle)
+        m_handle->onNetEvent(this, event);
 
     if (event->event == JZ_NET_EV_HTTP_MSG)
     {
         server->onHttpMessage(this, event->binData);
     }
+    else if (event->event == JZ_NET_EV_WRITE)
+    {        
+    }
     else if (event->event == JZ_NET_EV_CLOSE)
     {
+        m_handle = nullptr;
         deleteLater();
     }
+}
+
+void JZHttpServerClient::setHandle(JZHttpHandler* handle)
+{
+    m_handle = handle;
 }
 
 void JZHttpServerClient::sendFinished()
@@ -46,16 +60,21 @@ void JZHttpServerClient::sendFinished()
 
 void JZHttpServerClient::response(const JZByteArray& buffer)
 {
-    writeConn(m_conn, WriteBin, buffer.data(), buffer.size());
-    sendFinished();
+    write(buffer.data(), buffer.size(), true);        
 }
 
 void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
 {
-    writeConn(m_conn, WriteBin, data.data(), data.size());
-    if(is_finish)
+    write(data.data(), data.size(), is_finish);    
+}
+
+void JZHttpServerClient::write(const char *data, int size, bool is_finish)
+{
+    writeConn(m_conn, WriteBin, data, size);
+    if (is_finish)
     {
         sendFinished();
+        m_handle = nullptr;
     }
 }
 

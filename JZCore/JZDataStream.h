@@ -19,8 +19,8 @@ public:
     };
 
     JZDataStream(JZFile *file);
-    JZDataStream(JZByteArray *buffer, JZ::OpenMode mode);
-    JZDataStream(const JZByteArray &buffer);    
+    JZDataStream(const JZByteArray *buffer);
+    JZDataStream(JZByteArray *buffer, JZ::OpenMode mode);    
     ~JZDataStream();
 
     int writeRawData(const char *s, int len);

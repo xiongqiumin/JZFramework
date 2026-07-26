@@ -18,10 +18,8 @@ using namespace std;
 bool JZDir::isAbsolutePath(string path)
 {
 #if JZ_OS == JZ_OS_WINDOWS
-    if (path.size() >= 3 && isalpha(path[0]) && path[1] == ':') {
-        char sep = path[2];
-        if (sep == '\\' || sep == '/')
-            return true;
+    if (path.size() >= 2 && isalpha(path[0]) && path[1] == ':') {
+        return true;
     }
     if (path.size() >= 1 && path[0] == '/')
         return true;
@@ -166,6 +164,8 @@ bool JZDir::mkpath(const string &path)
     {
         // 查找下一个路径分隔符 /
         pos = dir_path.find_first_of("/\\", pos + 1);
+        if (pos == string::npos)
+            pos = dir_path.size();   // 已到最后一段，处理末尾组件后结束循环
 
         // 截取到当前分隔符的子路径
         string sub_path = dir_path.substr(0, pos);

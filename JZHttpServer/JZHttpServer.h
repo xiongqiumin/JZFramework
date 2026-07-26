@@ -7,6 +7,7 @@
 #include "JZHttpRequest.h"
 #include "JZHttpRespone.h"
 #include "JZHttpRoute.h"
+#include "JZHttpHandler.h"
 
 class JZHttpServer;
 class JZHttpServerClient : public JZNetObject
@@ -15,8 +16,12 @@ public:
     JZHttpServerClient(JZObject *parent = nullptr);
     ~JZHttpServerClient();
 
+    void setHandle(JZHttpHandler *handle);
     void response(const JZByteArray &buffer);
-    void write(const JZByteArray &data, bool is_finish);  // 流式写入，不关闭连接
+
+    // 流式写入，is_finish=true 时结束响应（复用/关闭连接）
+    void write(const JZByteArray &data, bool is_finish);  
+    void write(const char *data, int size, bool is_finish);
 
 protected:
     friend JZHttpServer;
@@ -25,6 +30,8 @@ protected:
     void sendFinished();
 
     uint64_t m_conn;
+
+    JZHttpHandler *m_handle = nullptr;
 };
 
 class JZHttpServer : public JZNetObject

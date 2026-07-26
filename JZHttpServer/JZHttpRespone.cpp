@@ -107,7 +107,7 @@ void JZHttpRespone::setFile(const JZByteArray& data, const std::string& filename
     setBody(data);
 }
 
-JZByteArray JZHttpRespone::toByteArray() const
+JZByteArray JZHttpRespone::toHeadByteArray(int contentLength) const
 {
     std::ostringstream oss;
     oss << "HTTP/1.1 " << m_statusCode << " " << m_statusText << "\r\n";
@@ -117,11 +117,16 @@ JZByteArray JZHttpRespone::toByteArray() const
         oss << pair.first << ": " << pair.second << "\r\n";
     }
 
-    oss << "Content-Length: " << m_body.size() << "\r\n";
+    oss << "Content-Length: " << contentLength << "\r\n";
     oss << "\r\n";
 
     std::string headerStr = oss.str();
-    JZByteArray result(headerStr.c_str(), headerStr.size());
+    return JZByteArray(headerStr.c_str(), (int)headerStr.size());
+}
+
+JZByteArray JZHttpRespone::toByteArray() const
+{
+    JZByteArray result = toHeadByteArray((int)m_body.size());
     result.append(m_body);
 
     return result;

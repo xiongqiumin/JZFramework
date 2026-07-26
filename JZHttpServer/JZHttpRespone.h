@@ -35,6 +35,8 @@ public:
     void setFile(const JZByteArray& data, const std::string& filename);
 
     JZByteArray toByteArray() const;
+    // 仅序列化响应头，Content-Length 使用传入的值（用于流式分块发送 body）
+    JZByteArray toHeadByteArray(int contentLength) const;
 
     static std::string getStatusText(int code);
 

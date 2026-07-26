@@ -28,7 +28,8 @@ void JZCircleBuffer::resize(int newCap)
     if (newCap <= 0)
         return;
 
-    std::vector<char> newBuf(newCap);
+    JZByteArray newBuf;
+    newBuf.resize(newCap);
     if (m_dataLen > 0)
     {
         // 允许缩小: 至多保留 newCap 字节(从队首 head 拷贝), 多余数据直接丢弃
@@ -70,7 +71,8 @@ bool JZCircleBuffer::write(const char* data, int len)
     if (freeSpace < len)
     {
         int newCap = std::max(cap * 2, cap + len);
-        std::vector<char> newBuf(newCap);
+        JZByteArray newBuf;
+        newBuf.resize(newCap);
         // 将环形数据拷贝为连续线性(空缓冲时无数据可拷, copyCircleToLinear 已处理)
         copyCircleToLinear(newBuf.data());
         m_buffer.swap(newBuf);

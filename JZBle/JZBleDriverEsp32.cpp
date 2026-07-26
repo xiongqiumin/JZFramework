@@ -937,7 +937,11 @@ void JZBleDriverEsp32::stopAdvertising()
     if (m_advertState == State::None) return;
 
     printf("BLE: stop + deinit NimBLE\n");
-    ble_gap_adv_stop();
+    // 注意: 不显式调用 ble_gap_adv_stop(), 因为它是异步的（仅将 GAP procedure
+    // 投递到 NimBLE host task 事件队列中）, 如果立即跟上 nimble_port_stop()
+    // 会在 host task 处理停止广播的中途拆除 GAP/Host 内部结构, 造成竞态崩溃。
+    // nimble_port_stop() → ble_hs_stop() 会安全停止所有 NimBLE 子系统(含广播),
+    // ESP-IDF 官方示例也是这种模式。
     nimble_port_stop();
     nimble_port_deinit();
 

@@ -26,38 +26,6 @@ SocketState JZTcpSocket::state() const
     return m_state;
 }
 
-void JZTcpSocket::onNetEvent(JZNetResEvent *event)
-{
-    int ev = event->event;
-    if(ev == JZ_NET_EV_CONNECT)
-    { 
-        m_buffer.clear();
-        m_state = ConnectedState;            
-        sigConnect.emit();
-    }
-    else if(ev == JZ_NET_EV_CLOSE)
-    {         
-        if (m_client != INVALID_NET_HANDLE)
-        {
-            m_client = INVALID_NET_HANDLE;
-            closeInternal(false);
-        }
-    }    
-    else if (ev == JZ_NET_EV_READ)
-    {        
-        m_buffer.append(event->binData.data(), event->binData.size());
-        sigReadyRead.emit();
-    }
-    else if (ev == JZ_NET_EV_ERROR)
-    {
-        std::string error = str_fromUtf8(event->binData);
-        sigError.emit(error);
-
-        if (m_state != UnconnectedState)
-            closeInternal(true);
-    }
-}
-
 void JZTcpSocket::connectToHost(std::string ip, int port)
 {
     JZ_ASSERT(!m_client);
@@ -165,4 +133,47 @@ void JZTcpSocket::write(const JZByteArray& buffer)
 void JZTcpSocket::write(const char* buffer, int len)
 {
     writeConn(m_client, WriteBin, buffer, len);
+}
+
+void JZTcpSocket::onNetEvent(JZNetResEvent *event)
+{
+    if (m_client == INVALID_NET_HANDLE)
+        return;
+
+    //可能先发送了error, 内部已经断开，后续发close    
+    if (m_client != event->conn && event->event == JZ_NET_EV_CLOSE)        
+        return;
+
+    JZ_ASSERT(m_client == event->conn);
+          
+    int ev = event->event;
+    if(ev == JZ_NET_EV_CONNECT)
+    { 
+        m_buffer.clear();
+        m_state = ConnectedState;            
+        sigConnect.emit();
+    }
+    else if(ev == JZ_NET_EV_CLOSE)
+    {         
+        if (m_client != INVALID_NET_HANDLE)
+        {
+            sigError.emit();
+            
+            m_client = INVALID_NET_HANDLE;
+            closeInternal(false);
+        }
+    }    
+    else if (ev == JZ_NET_EV_READ)
+    {        
+        m_buffer.append(event->binData.data(), event->binData.size());
+        sigReadyRead.emit();
+    }
+    else if (ev == JZ_NET_EV_ERROR)
+    {
+        std::string error = str_fromUtf8(event->binData);
+        sigError.emit(error);
+
+        if (m_state != UnconnectedState)
+            closeInternal(true);
+    }
 }

@@ -222,8 +222,13 @@ public:
         {
             auto t = new MqttClientThread(port, &m_tps, i);
             t->setParent(this);
-            t->start();
             threads.push_back(t);
+        }
+        // 所有线程的 parent-child 关系建立完毕后再统一 start，
+        // 避免前一个线程 run() 中修改 m_childs 与后一个线程的 setParent 遍历同一 m_childs 产生数据竞争
+        for (auto t : threads)
+        {
+            t->start();
         }
 
         m_tps.begin();

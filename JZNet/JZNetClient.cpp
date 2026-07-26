@@ -179,6 +179,15 @@ void JZNetClient::clearPacket()
 
 void JZNetClient::onNetEvent(JZNetResEvent *event)
 {
+    if (m_client == INVALID_NET_HANDLE)
+        return;
+
+    //可能先发送了error, 内部已经断开，后续发close    
+    if (m_client != event->conn && event->event == JZ_NET_EV_CLOSE)        
+        return;
+
+    JZ_ASSERT(m_client == event->conn);
+    
     int ev = event->event;
     if (ev == JZ_NET_EV_CONNECT)
     {

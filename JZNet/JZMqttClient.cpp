@@ -171,7 +171,7 @@ void JZMqttClient::onNetEvent(JZNetResEvent* event)
 {
     if (m_server)
     {
-        m_server->onClinetNetEvent(this, event);
+        m_server->onClientNetEvent(this, event);
         return;
     }
 

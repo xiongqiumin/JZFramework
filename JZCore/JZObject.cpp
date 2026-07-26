@@ -215,12 +215,15 @@ JZVariant JZObject::property(const std::string &name) const
 void JZObject::setParent(JZObject *parent)
 {
     if (m_parent)
+    {
         m_parent->removeChild(this);
-    
-    m_parent = parent;
+        m_parent = nullptr;
+    }
+        
     if (parent)
     {
         parent->addChild(this);
+        m_parent = parent;
     }
 }
 
@@ -268,7 +271,7 @@ JZObject *JZObject::sender()
 
 void JZObject::addChild(JZObject *obj)
 {
-    JZ_ASSERT(!obj->hasChild(this) && !hasChild(obj));
+    JZ_ASSERT(obj != this && !obj->hasChild(this) && !hasChild(obj));
     m_childs.push_back(obj);
 }
 
@@ -279,13 +282,13 @@ void JZObject::removeChild(JZObject *obj)
 
 bool JZObject::hasChild(JZObject* child) const
 {
-    if (vec_contains(m_childs, child))
-        return true;
-
-    for (int i = 0; i < (int)m_childs.size(); i++)
+    auto parent = child->parent();
+    while (parent)
     {
-        if (m_childs[i]->hasChild(child))
+        if (parent == this)
             return true;
+
+        parent = parent->parent();
     }
     return false;
 }

@@ -105,6 +105,10 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
 {
     if (m_conn == INVALID_NET_HANDLE)
         return;
+    
+    //可能先发送了error, 内部已经断开，后续发close
+    if (m_conn != event->conn && event->event == JZ_NET_EV_CLOSE)        
+        return;
 
     JZ_ASSERT(m_conn == event->conn);
     if (event->event == JZ_NET_EV_WS_OPEN)
@@ -127,6 +131,8 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
     {                
         if (m_conn != INVALID_NET_HANDLE)
         {
+            sigError.emit();
+
             m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }

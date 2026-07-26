@@ -634,7 +634,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
 
 send_end:            
             if(!send_finished)
+            {
+                jzWarning() << "send faild, net draining";
                 c->is_draining = 1;
+            }
         }
         else if (event->netCmd == JZNetReqEvent::Net_HttpReplyFinish)
         {

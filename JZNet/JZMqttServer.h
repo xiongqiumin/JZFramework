@@ -54,7 +54,7 @@ protected:
     virtual JZNetObject *onAccept(uint64_t conn) override;
     virtual void onNetEvent(JZNetResEvent *event) override;
     void onClientDisconnect();
-    void onClinetNetEvent(JZMqttClient *client, JZNetResEvent *event);
+    void onClientNetEvent(JZMqttClient *client, JZNetResEvent *event);
     JZOptional<SubscribePacket> parseSubscribeMessage(char *data, int size);
     JZOptional<ClientConnState> parseConnect(const JZByteArray &dgram);
     void onKeepaliveTimer();

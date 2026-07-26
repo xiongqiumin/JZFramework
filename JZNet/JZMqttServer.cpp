@@ -370,7 +370,7 @@ void JZMqttServer::onKeepaliveTimer()
     }
 }
 
-void JZMqttServer::onClinetNetEvent(JZMqttClient* client, JZNetResEvent* event)
+void JZMqttServer::onClientNetEvent(JZMqttClient* client, JZNetResEvent* event)
 {
     int ev = event->event;
 

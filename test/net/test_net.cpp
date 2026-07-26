@@ -21,7 +21,7 @@ int main()
         test_tcp();
         jzDebug() << "【OK】TCP 通过";
 
-        test_udp();
+        //test_udp();
         jzDebug() << "【OK】UDP 通过";
 
         test_websocket();

@@ -484,7 +484,18 @@ void JZThread::processEvents()
     processTimers();
 
     std::vector<JZEventInfo> eventsToProcess;
-    while (true)
+    int max_event = 0;
+    int event_processed = 0;
+
+    {
+        //单轮只处理已在队列的数据
+        JZMutexLocker lock(&m_mutex);
+        max_event = m_eventList.size();
+        if (max_event == 0)
+            return;
+    }
+
+    while (event_processed < max_event)
     {
         JZEventInfo event;
         {
@@ -554,6 +565,8 @@ void JZThread::processEvents()
         delete event.event;
         if (event.sem)
             event.sem->release();
+
+        event_processed++;
     }
 }
 

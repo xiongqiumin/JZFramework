@@ -32,6 +32,7 @@ protected:
     uint64_t m_conn;
 
     JZHttpHandler *m_handle = nullptr;
+    bool m_keepAlive = true;  // HTTP/1.1 默认 keep-alive, HTTP/1.0 由 Connection 头决定
 };
 
 class JZHttpServer : public JZNetObject

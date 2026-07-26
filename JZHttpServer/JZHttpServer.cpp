@@ -55,6 +55,13 @@ void JZHttpServerClient::sendFinished()
 
     auto inst = JZNetThread::instance();
     jzApp->postEvent(inst, req);
+
+    // 非 keep-alive: 通知 mongoose 响应完成后关闭连接
+    if (!m_keepAlive)
+    {
+        closeConn(m_conn, false);
+    }
+
     inst->wakeUpNet();
 }
 
@@ -74,7 +81,6 @@ void JZHttpServerClient::write(const char *data, int size, bool is_finish)
     if (is_finish)
     {
         sendFinished();
-        m_handle = nullptr;
     }
 }
 
@@ -150,6 +156,16 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         response.setText("Bad Request");
         client->response(response.toByteArray());
         return;
+    }
+
+    // 判断 keep-alive: HTTP/1.1 默认 keep-alive，除非 Connection: close
+    client->m_keepAlive = true;
+    struct mg_str *conn_hdr = mg_http_get_header(&hm, "Connection");
+    if (conn_hdr)
+    {
+        std::string conn_val(conn_hdr->buf, conn_hdr->len);
+        if (conn_val == "close" || conn_val == "Close")
+            client->m_keepAlive = false;
     }
 
     JZHttpRequest request;

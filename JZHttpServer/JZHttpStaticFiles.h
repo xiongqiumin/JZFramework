@@ -25,6 +25,7 @@ private:
         JZFile file;
         int remainSize;
         int pendingSize;
+        int sigDestroyedId = -1;
     };
 
     bool openStreamFile(JZHttpServerClient* client, const std::string& path);
@@ -33,8 +34,10 @@ private:
 
     std::string localPath(const std::string& userPath);
     std::string getContentType(const std::string& path);
+    
     std::string m_absRoot;
     int m_chunkSize = 64 * 1024;
+    int m_cacheMaxAge = 3600;  // 缓存时长（秒），默认 1 小时
     std::map<JZHttpServerClient*, StreamState> m_streams;
     JZByteArray m_streamBuffer;
 };

@@ -25,6 +25,9 @@ public:
     void resize(int newCap);
     void clear();
 
+    /** 丢弃队首最旧的 len 字节; 若 len >= 数据量则清空 */
+    void dropOldest(int len);
+
     int size() const;
     int capacity() const;
 

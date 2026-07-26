@@ -103,9 +103,9 @@ public:
         m_root = jzApp->applicationDirPath() + "/http_static_root";
         ensureDir(m_root);
 
-        // 大文件（> 4k，触发多次分块发送）
+        // 大文件（> chunkSize，触发多次分块发送，也用于 Range 测试）
         m_filePath = m_root + "/big.bin";
-        m_expect = makeContent(5);//makeContent(50000);
+        m_expect = makeContent(50000);
         writeFile(m_filePath, m_expect);
 
         // 普通文本文件
@@ -113,12 +113,14 @@ public:
         writeFile(m_root + "/index.html", m_html);
     }
 
-    void fetch(const string &path, int expectCode, const JZByteArray &expectBody)
+    void fetch(const string &path, int expectCode, const JZByteArray &expectBody, const string &range = "")
     {
         m_expectCode = expectCode;
         m_expectBody = expectBody;
 
         JZNetworkRequest req(m_url + path);
+        if (!range.empty())
+            req.setRawHeader("Range", range);
         JZNetworkReply *reply = m_net->get(req);
         connect(&reply->sigFinished, this, [this, reply]() { onFinished(reply); });
     }
@@ -154,6 +156,42 @@ public:
             LOG("[test] big.bin streaming OK (%d bytes)", m_expect.size());
             m_step = 2;
             fetch("/index.html", 200, m_html);
+        }
+        else if (m_step == 2)
+        {
+            // 普通文本通过，测 Range: 前 1000 字节
+            LOG("[test] index.html OK, fetching range bytes=0-999 (206)...");
+            m_step = 3;
+            fetch("/big.bin", 206, m_expect.mid(0, 1000), "bytes=0-999");
+        }
+        else if (m_step == 3)
+        {
+            // 中段 1000-1999
+            LOG("[test] range 0-999 OK, fetching range bytes=1000-1999 (206)...");
+            m_step = 4;
+            fetch("/big.bin", 206, m_expect.mid(1000, 1000), "bytes=1000-1999");
+        }
+        else if (m_step == 4)
+        {
+            // 后缀范围: 最后 500 字节
+            int n = m_expect.size();
+            LOG("[test] range 1000-1999 OK, fetching range bytes=-500 (206)...");
+            m_step = 5;
+            fetch("/big.bin", 206, m_expect.mid(n - 500, 500), "bytes=-500");
+        }
+        else if (m_step == 5)
+        {
+            // 越界范围: 416
+            LOG("[test] suffix -500 OK, fetching out-of-range bytes=999999- (416)...");
+            m_step = 6;
+            fetch("/big.bin", 416, JZByteArray(), "bytes=999999-");
+        }
+        else if (m_step == 6)
+        {
+            // 整体范围: bytes=0- 应返回完整内容（206）
+            LOG("[test] 416 OK, fetching range bytes=0- (206, full)...");
+            m_step = 7;
+            fetch("/big.bin", 206, m_expect, "bytes=0-");
         }
         else
         {

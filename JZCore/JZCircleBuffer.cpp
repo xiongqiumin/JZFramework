@@ -1,4 +1,5 @@
 #include "JZCircleBuffer.h"
+#include "JZDebug.h"
 #include <cstring>      // std::memcpy
 #include <algorithm>    // std::min / std::max
 
@@ -63,12 +64,8 @@ bool JZCircleBuffer::write(const char* data, int len)
     const int cap = static_cast<int>(m_buffer.size());
     int freeSpace = cap - m_dataLen;
 
-    // 固定容量模式：空闲不足直接失败
-    if (!m_dynamicMode && freeSpace < len)
-        return false;
-
     // 动态扩容模式：空间不足则扩容至满足写入需求, 2倍倍增(至少容纳本次写入)
-    if (freeSpace < len)
+    if (m_dynamicMode && freeSpace < len)
     {
         int newCap = std::max(cap * 2, cap + len);
         JZByteArray newBuf;
@@ -78,6 +75,30 @@ bool JZCircleBuffer::write(const char* data, int len)
         m_buffer.swap(newBuf);
         m_head = 0;
         m_tail = m_dataLen;
+    }
+    // 固定容量模式：空间不足则丢弃旧数据，保留最新
+    else if (!m_dynamicMode && freeSpace < len)
+    {
+        jzWarning("JZCircleBuffer: buffer full, dropping oldest data "
+                  "(cap=%d, used=%d, need=%d)", cap, m_dataLen, len);
+
+        if (len > cap) {
+            // 单次写入超过总容量，只保留尾部最新数据
+            std::memcpy(m_buffer.data(), data + len - cap, cap);
+            m_head = 0;
+            m_tail = cap;
+            m_dataLen = cap;
+            return true;
+        }
+
+        // 丢弃队首最旧数据，多丢一些：至少丢弃一半容量，给后续写入留余量
+        int drop = std::max(len - freeSpace, cap / 2);
+        if (drop >= m_dataLen) {
+            clear();
+        } else {
+            m_head = (m_head + drop) % cap;
+            m_dataLen -= drop;
+        }
     }
 
     // 分段写入环形区
@@ -140,6 +161,21 @@ void JZCircleBuffer::clear()
     m_head = 0;
     m_tail = 0;
     m_dataLen = 0;
+}
+
+void JZCircleBuffer::dropOldest(int bytes)
+{
+    if (bytes <= 0)
+        return;
+
+    JZMutexLocker locker(&m_mutex);
+    if (bytes >= m_dataLen) {
+        clear();
+        return;
+    }
+    const int cap = static_cast<int>(m_buffer.size());
+    m_head = (m_head + bytes) % cap;
+    m_dataLen -= bytes;
 }
 
 void JZCircleBuffer::copyCircleToLinear(char* dst)

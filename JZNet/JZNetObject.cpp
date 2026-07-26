@@ -244,7 +244,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     {        
         long *bytes_written = (long*)ev_data;
         JZDataStream s(&event->binData, JZ::WriteOnly);
-        s << (int)(*bytes_written);
+        s << (int32_t)(*bytes_written);
     }
     else if (ev == MG_EV_ACCEPT)
     {

@@ -14,6 +14,9 @@
 #include "JZMqttPacket.h"
 #include "JZTx.h"
 
+int JZNET_MAX_RECV = 3 * 1024 * 1024;
+int JZNET_MAX_SEND = 3 * 1024 * 1024;
+
 JZNetEvent mgEventToNetEvent(int ev)
 {
     switch (ev)
@@ -555,7 +558,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             if (event->writeCmd == WriteBin)
             {
                 // 防止 send buffer 无限膨胀导致 OOM
-                if(c->send.len + len > MAX_SEND_BUFFER)
+                if(c->send.len + len > JZNET_MAX_SEND)
                 {
                     send_finished = false;
                     goto send_end;
@@ -564,7 +567,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteWebSocketText)
             {
-                if(c->send.len + len > MAX_SEND_BUFFER)
+                if(c->send.len + len > JZNET_MAX_SEND)
                 {
                     send_finished = false;
                     goto send_end;
@@ -573,7 +576,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteWebSocketBin)
             {
-                if(c->send.len + len > MAX_SEND_BUFFER)
+                if(c->send.len + len > JZNET_MAX_SEND)
                 {
                     send_finished = false;
                     goto send_end;
@@ -582,7 +585,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteMqttMessage)
             {
-                if(c->send.len > MAX_SEND_BUFFER)
+                if(c->send.len > JZNET_MAX_SEND)
                 {
                     send_finished = false;
                     goto send_end;
@@ -607,7 +610,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 mg_mqtt_send_header(c, pkt->cmd, pkt->flags, pkt->len);
                 if (pkt->buffer.size() > 0)
                 {
-                    if(c->send.len + pkt->buffer.size() > MAX_SEND_BUFFER)
+                    if(c->send.len + pkt->buffer.size() > JZNET_MAX_SEND)
                     {
                         c->is_draining = 1;
                         return;
@@ -793,4 +796,11 @@ void JZNetObject::writeConn(uint64_t conn, SocketWrite type, const void *buf, in
     auto inst = JZNetThread::instance();
     jzApp->postEvent(inst, req);
     inst->wakeUpNet();
+}
+
+//JZNet
+void JZNet::setConfig(JZNetConfig config)
+{
+    JZNET_MAX_RECV = config.maxRecvSize;
+    JZNET_MAX_SEND = config.maxSendSize;
 }

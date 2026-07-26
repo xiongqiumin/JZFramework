@@ -8,7 +8,6 @@
 class JZNetObject;
 
 constexpr uint64_t INVALID_NET_HANDLE = 0;
-constexpr size_t MAX_SEND_BUFFER = 512UL * 1024UL;  // 3MB, 对齐 MG_MAX_RECV_SIZE
 
 enum JZNetEvent
 {
@@ -196,7 +195,7 @@ class JZNetObject : public JZObject
 {
     JZ_OBJECT_DECLARE(JZNetObject)
 
-public:
+public:    
     JZNetObject(JZObject *parent = nullptr);
     virtual ~JZNetObject();
 
@@ -227,6 +226,20 @@ protected:
     uint64_t openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data = std::shared_ptr<JZNetReqEventData>());
     void closeConn(uint64_t conn,bool closeImmediate);
     void writeConn(uint64_t conn, SocketWrite type, const void *buf, int len);
+};
+
+
+class JZNetConfig
+{
+public:
+    int maxRecvSize = 3 * 1024 * 1024;  //单个连接最大接收缓冲区
+    int maxSendSize = 3 * 1024 * 1024;  //单个连接最大发送缓冲区
+};
+
+class JZNet
+{
+public:
+    static void setConfig(JZNetConfig config);
 };
 
 #endif // !JZ_NET_OBJECT_H_

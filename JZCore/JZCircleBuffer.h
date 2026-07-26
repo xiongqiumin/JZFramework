@@ -3,6 +3,7 @@
 
 #include <vector>
 #include "JZMutex.h"
+#include "JZByteArray.h"
 
 class JZCircleBuffer
 {
@@ -54,7 +55,7 @@ private:
     JZ_DISABLE_COPY(JZCircleBuffer)
 
     mutable JZMutex m_mutex;
-    std::vector<char> m_buffer;
+    JZByteArray m_buffer;
     int m_head;
     int m_tail;
     int m_dataLen;

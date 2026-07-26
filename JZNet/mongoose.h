@@ -981,9 +981,8 @@ struct timeval {
 #define MG_IO_SIZE 512  // Granularity of the send/recv IO buffer growth
 #endif
 
-#ifndef MG_MAX_RECV_SIZE
-#define MG_MAX_RECV_SIZE (3UL * 1024UL * 1024UL)  // Maximum recv IO buffer size
-#endif
+extern int JZNET_MAX_RECV;
+#define MG_MAX_RECV_SIZE JZNET_MAX_RECV
 
 #ifndef MG_DATA_SIZE
 #define MG_DATA_SIZE 32  // struct mg_connection :: data size

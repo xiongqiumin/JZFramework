@@ -145,7 +145,7 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
         return;
 
     JZ_ASSERT(m_client == event->conn);
-          
+
     int ev = event->event;
     if(ev == JZ_NET_EV_CONNECT)
     { 
@@ -157,7 +157,7 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
     {         
         if (m_client != INVALID_NET_HANDLE)
         {
-            sigError.emit();
+            sigError.emit("disconnect by server");
             
             m_client = INVALID_NET_HANDLE;
             closeInternal(false);

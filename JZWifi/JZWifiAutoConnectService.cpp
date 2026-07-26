@@ -16,7 +16,6 @@ JZWifiAutoConnectService::JZWifiAutoConnectService(JZObject *parent)
     connect(&m_station->sigConnected, this, &JZWifiAutoConnectService::onStationConnected);
     connect(&m_station->sigDisconnected, this, &JZWifiAutoConnectService::onStationDisconnected);
     connect(&m_station->sigError, this, &JZWifiAutoConnectService::onStationError);
-    connect(&m_station->sigRssiChanged, this, &JZWifiAutoConnectService::onStationRssiChanged);
 
     m_connectTimer = new JZTimer(this);
     connect(&m_connectTimer->sigTimeout, this, &JZWifiAutoConnectService::onConnectTimer);
@@ -82,6 +81,7 @@ void JZWifiAutoConnectService::stop()
         killTimer(m_timerId); 
         m_timerId = INVAILD_TIMER_ID; 
     }
+    stopRssiMonitor();
 
     m_scanner->stop();
     m_station->disconnectFromAp();
@@ -115,6 +115,10 @@ bool JZWifiAutoConnectService::isStationConnecting()
 
 void JZWifiAutoConnectService::timerEvent(JZTimerEvent *event)
 {
+    if (event->id() == m_rssiTimerId) {
+        onRssiPoll();
+        return;
+    }
     if (event->id() != m_timerId) 
         return;
 
@@ -193,7 +197,7 @@ void JZWifiAutoConnectService::onStationConnected()
     m_lastRoamScanMs = JZPlatform::getTickCountMs();
 
     m_failBlacklist.erase(m_connectedSsid);     // 连上即清除该 ssid 的失败黑名单
-    m_station->startRssiMonitor(m_config.rssiIntervalMs);  // 启动 RSSI 轮询, 实时跟踪信号变化
+    startRssiMonitor();                          // 启动 RSSI 轮询, 实时跟踪信号变化
     sigConnected.emit(m_connectedSsid);
 }
 
@@ -201,7 +205,7 @@ void JZWifiAutoConnectService::onStationDisconnected()
 {    
     jzDebug() << "JZWifiAutoConnectService::onStationDisconnected";
     if (!m_connectedSsid.empty()) {
-        m_station->stopRssiMonitor();
+        stopRssiMonitor();
         sigDisconnected.emit();
 
         m_connectedSsid.clear();
@@ -254,11 +258,31 @@ void JZWifiAutoConnectService::onStationError(int code, const std::string &msg)
     }
 }
 
-void JZWifiAutoConnectService::onStationRssiChanged(int rssi)
+void JZWifiAutoConnectService::startRssiMonitor()
 {
-    jzDebug() << "connected rssi change to" << rssi;
-    m_connectedRssi = rssi;
-    sigRssiChanged.emit(rssi);
+    if (m_rssiTimerId != INVAILD_TIMER_ID)
+        killTimer(m_rssiTimerId);
+    m_rssiTimerId = startTimer(m_config.rssiIntervalMs > 0 ? m_config.rssiIntervalMs : 15000);
+}
+
+void JZWifiAutoConnectService::stopRssiMonitor()
+{
+    if (m_rssiTimerId != INVAILD_TIMER_ID) {
+        killTimer(m_rssiTimerId);
+        m_rssiTimerId = INVAILD_TIMER_ID;
+    }
+}
+
+void JZWifiAutoConnectService::onRssiPoll()
+{
+    if (m_connectedSsid.empty())
+        return;
+    int cur = m_station->currentRssi();
+    if (cur != m_connectedRssi) {
+        m_connectedRssi = cur;
+        jzDebug() << "connected rssi change to" << cur;
+        sigRssiChanged.emit(cur);
+    }
 }
 
 void JZWifiAutoConnectService::onConnectTimer()

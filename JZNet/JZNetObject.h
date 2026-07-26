@@ -8,6 +8,7 @@
 class JZNetObject;
 
 constexpr uint64_t INVALID_NET_HANDLE = 0;
+constexpr size_t MAX_SEND_BUFFER = 512UL * 1024UL;  // 3MB, 对齐 MG_MAX_RECV_SIZE
 
 enum JZNetEvent
 {

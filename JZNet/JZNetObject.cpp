@@ -545,17 +545,49 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         }
         else if (event->netCmd == JZNetReqEvent::Net_Write)
         {
-            char* buf = event->buffer.data();
+            if(c->is_draining || c->is_closing)
+                return;
+
+            const char* buf = event->buffer.data();
             int len = event->buffer.size();
+
             bool send_finished = true;
             if (event->writeCmd == WriteBin)
+            {
+                // 防止 send buffer 无限膨胀导致 OOM
+                if(c->send.len + len > MAX_SEND_BUFFER)
+                {
+                    send_finished = false;
+                    goto send_end;
+                }
                 send_finished = mg_send(c, buf, len);
+            }
             else if (event->writeCmd == WriteWebSocketText)
+            {
+                if(c->send.len + len > MAX_SEND_BUFFER)
+                {
+                    send_finished = false;
+                    goto send_end;
+                }
                 send_finished = (mg_ws_send(c, buf, len, WEBSOCKET_OP_TEXT) >= len);
+            }
             else if (event->writeCmd == WriteWebSocketBin)
+            {
+                if(c->send.len + len > MAX_SEND_BUFFER)
+                {
+                    send_finished = false;
+                    goto send_end;
+                }
                 send_finished = (mg_ws_send(c, buf, len, WEBSOCKET_OP_BINARY) >= len);
+            }
             else if (event->writeCmd == WriteMqttMessage)
             {
+                if(c->send.len > MAX_SEND_BUFFER)
+                {
+                    send_finished = false;
+                    goto send_end;
+                }
+
                 //mqtt 不需要检测， 发送失败会自动断开
                 JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
                 if (pkt->command == JZMgOptPacket::Publish)
@@ -574,10 +606,18 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 JZMgServerPacket *pkt = (JZMgServerPacket *)(event->extData.get());
                 mg_mqtt_send_header(c, pkt->cmd, pkt->flags, pkt->len);
                 if (pkt->buffer.size() > 0)
+                {
+                    if(c->send.len + pkt->buffer.size() > MAX_SEND_BUFFER)
+                    {
+                        c->is_draining = 1;
+                        return;
+                    }
                     send_finished = mg_send(c, pkt->buffer.data(), pkt->buffer.size());
+                }
             }
             else if (event->writeCmd == WriteUdp)
             {
+                //udp 也不检测失败（UDP 不走 iobuf，无需限制）
                 JZUdpWriteData *udp_data = (JZUdpWriteData *)(event->extData.get());
                 if (udp_data && !udp_data->ip.empty())
                 {
@@ -589,9 +629,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                         c->rem = addr;
                     }
                 }
-                send_finished = mg_send(c, buf, len);
+                mg_send(c, buf, len);
             }
 
+send_end:            
             if(!send_finished)
                 c->is_draining = 1;
         }

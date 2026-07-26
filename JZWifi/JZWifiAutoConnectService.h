@@ -94,7 +94,11 @@ protected:
     void onStationConnected();
     void onStationDisconnected();
     void onStationError(int code, const std::string &msg);
-    void onStationRssiChanged(int rssi);
+
+    // RSSI 轮询: 连接成功后由本服务自管定时器轮询 station->currentRssi(), 变化则发 sigRssiChanged
+    void startRssiMonitor();
+    void stopRssiMonitor();
+    void onRssiPoll();
 
     void onConnectTimer();
     
@@ -109,6 +113,7 @@ protected:
     bool m_active = false;
     int m_effectiveInterval = 15000;              // 当前生效间隔(退避时翻倍)
     int m_timerId = INVAILD_TIMER_ID;
+    int m_rssiTimerId = INVAILD_TIMER_ID;         // RSSI 轮询定时器
 
     std::map<std::string, WifiFailInfo> m_failBlacklist;
 

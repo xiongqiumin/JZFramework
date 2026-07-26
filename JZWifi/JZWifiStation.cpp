@@ -36,8 +36,7 @@ void JZWifiStation::onDisconnected(JZObjectPointer self)
         // esp_wifi_disconnect 断开, 只有真正失败才会上报), 按真实掉线处理。
         obj->m_state = JZWifiStation::None;
         obj->m_ip.clear();
-        obj->m_bssid.clear();
-        obj->m_lastRssi = -127;
+        obj->m_bssid.clear();        
         obj->sigDisconnected.emit();
     });
 }
@@ -74,14 +73,12 @@ JZ_OBJECT_IMPL(JZWifiStation, JZObject)
 
 JZWifiStation::JZWifiStation(JZObject *parent)
     : JZObject(parent),
-      sigConnected(this), sigDisconnected(this), sigError(this),
-      sigRssiChanged(this)
+      sigConnected(this), sigDisconnected(this), sigError(this)
 {
 }
 
 JZWifiStation::~JZWifiStation()
-{
-    stopRssiMonitor();
+{    
     auto *drv = JZWifiDriver::instance();
     if (drv && m_state == Connected)
     {
@@ -145,7 +142,7 @@ std::string JZWifiStation::ipAddress() const {
     return m_ip; 
 }
 
-int JZWifiStation::rssi() const
+int JZWifiStation::currentRssi() const
 {
     auto *drv = JZWifiDriver::instance();
     return drv ? drv->stationRssi(const_cast<JZWifiStation *>(this)) : -127;
@@ -159,41 +156,11 @@ std::string JZWifiStation::bssid() const
 
 int JZWifiStation::signalStrength() const
 {
-    int r = rssi();
+    int r = currentRssi();
     if (r >= -50) return 5;
     if (r >= -60) return 4;
     if (r >= -70) return 3;
     if (r >= -80) return 2;
     if (r >= -90) return 1;
     return 0;
-}
-
-void JZWifiStation::startRssiMonitor(int intervalMs)
-{
-    if (m_rssiTimerId != INVAILD_TIMER_ID)
-        killTimer(m_rssiTimerId);
-    m_rssiTimerId = startTimer(intervalMs > 0 ? intervalMs : 5000);
-}
-
-void JZWifiStation::stopRssiMonitor()
-{
-    if (m_rssiTimerId != INVAILD_TIMER_ID) {
-        killTimer(m_rssiTimerId);
-        m_rssiTimerId = INVAILD_TIMER_ID;
-    }
-}
-
-void JZWifiStation::timerEvent(JZTimerEvent *event)
-{
-    if (event->id() == m_rssiTimerId) {
-        if (m_state != Connected)
-            return;
-        int cur = rssi();
-        if (cur != m_lastRssi) {
-            m_lastRssi = cur;
-            sigRssiChanged.emit(cur);
-        }
-        return;
-    }
-    JZObject::timerEvent(event);
 }

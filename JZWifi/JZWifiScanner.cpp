@@ -49,8 +49,23 @@ JZWifiScanner::~JZWifiScanner()
 
 void JZWifiScanner::start()
 {
+    m_cfg = JZScanConfig{};   // 默认: 普通扫描(全信道, 不过滤 SSID)
+    doStart();
+}
+
+void JZWifiScanner::startRoamScan(const std::string &ssid, bool scanAllChannels)
+{
+    m_cfg = JZScanConfig{};
+    m_cfg.roamScan = true;
+    m_cfg.ssid = ssid;
+    m_cfg.scanAllChannels = scanAllChannels;
+    doStart();
+}
+
+void JZWifiScanner::doStart()
+{
     auto *drv = JZWifiDriver::instance();
-    if (m_active) 
+    if (m_active)
     {
         jzWarning() << "JZWifiScanner allready stared";
         return;
@@ -58,7 +73,7 @@ void JZWifiScanner::start()
 
     m_result = JZWifiScanResult();
     m_active = true;
-    drv->scanStart(this);
+    drv->scanStart(this, m_cfg);
 }
 
 void JZWifiScanner::stop()

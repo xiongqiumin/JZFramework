@@ -19,6 +19,7 @@ public:
         Connecting,
         Connected,
         Disconnecting,
+        Switching,       // 已连接态切换到另一 AP 的过程中(中间断开被吞掉, 不发包 sigDisconnected)
     };
 
     JZWifiStation(JZObject *parent = nullptr);
@@ -27,12 +28,20 @@ public:
     // ==================== Station (连接) ====================
     void connectToAp(const JZWifiConfig &config);
     void disconnectFromAp();
+    // 已连接态切换到另一个 AP(同 SSID 更强 BSSID 或不同 SSID), 不停回 None, 无额外延迟
+    void switchToAp(const JZWifiConfig &config);
     bool isConnected() const;    
     State state() const;
     std::string ipAddress() const;
 
     // 当前连接 AP 的信号强度(dBm), 未连接返回 -127
     int rssi() const;
+
+    // 当前连接 AP 的 BSSID(MAC 字符串), 未连接返回空串(由连接事件缓存, 非实时查询)
+    std::string bssid() const;
+
+
+
 
     // 将 RSSI(dBm) 转换为 0~5 格信号强度, 统一阈值, 与平台无关
     //   5: >= -50  (极强)
@@ -58,14 +67,16 @@ protected:
     // 具体驱动(如 JZWifiDriverEsp32)统一通过 JZWifiDriver 的转发中转调用。
     friend class JZWifiDriver;
 
-    static void onConnected(JZObjectPointer self, const char *ip);
+    static void onConnected(JZObjectPointer self, const char *ip, const char *bssid);
     static void onDisconnected(JZObjectPointer self);
     static void onError(JZObjectPointer self, int code, const char *msg);
+    static void onStationSwitched(JZObjectPointer self, bool ok, const char *bssid);  // 切换结果(ok=false 表示失败)
 
     void timerEvent(JZTimerEvent *event) override;
 
     State m_state = None;
     std::string m_ip;
+    std::string m_bssid;        // 当前连接 AP 的 BSSID(MAC), 由连接事件回传缓存(非实时查询)
     int m_rssiTimerId = INVAILD_TIMER_ID;
     int m_lastRssi = -127;
 };

@@ -35,6 +35,19 @@ static void macToStr(const uint8_t *mac, char out[18])
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+// 把 "xx:xx:xx:xx:xx:xx" 解析为 6 字节 MAC, 成功返回 true
+static bool strToMac(const std::string &s, uint8_t mac[6])
+{
+    unsigned b[6] = {0};
+    if (sscanf(s.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x",
+               &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+        for (int i = 0; i < 6; i++)
+            mac[i] = (uint8_t)b[i];
+        return true;
+    }
+    return false;
+}
+
 // ==================== 事件回调 (注册到 esp_event) ====================
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -134,6 +147,23 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
 
         case WIFI_EVENT_STA_DISCONNECTED: {
             jzDebug() << "wifi event WIFI_EVENT_STA_DISCONNECTED";
+            if (m_switchInterm) {
+                // 切换过程中的中间断开(由 stationSwitch 内的 esp_wifi_disconnect 触发):
+                // 吞掉, 不上报, 也不清空 m_staWifi(后续连上仍需用它)。
+                // 标记置否, 进入"等待切换结果"阶段; 若连上 -> GOT_IP 成功, 若再次断开 -> 切换失败。
+                m_switchInterm = false;
+                break;
+            }
+            if (m_switching) {
+                // 切换失败(中间断开之后仍连不上新 AP): 上报断线,
+                // 由上层按真实掉线处理(触发全链路重连)
+                m_switching = false;
+                if (m_staWifi) {
+                    JZWifiDriver::onStationDisconnected(m_staWifi);
+                    m_staWifi = JZObjectPointer();
+                }
+                break;
+            }
             if (m_staWifi)
             {
                 JZWifiDriver::onStationDisconnected(m_staWifi);
@@ -213,11 +243,22 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
         case IP_EVENT_STA_GOT_IP: {
             jzDebug() << "wifi event IP_EVENT_STA_GOT_IP";
             auto *e = static_cast<ip_event_got_ip_t *>(event_data);
-            std::string staIp = ipToStr(e->ip_info.ip.addr);            
+            std::string staIp = ipToStr(e->ip_info.ip.addr);
+            // 取当前已连 AP 的 BSSID, 随连接事件一起回传(避免单独的实时查询接口)
+            std::string staBssid;
+            wifi_ap_record_t ap;
+            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+                char mac[18];
+                macToStr(ap.bssid, mac);
+                staBssid = mac;
+            }
             if (m_staWifi)
             {
-                JZWifiDriver::onStationConnected(m_staWifi, staIp.c_str());
+                JZWifiDriver::onStationConnected(m_staWifi, staIp.c_str(), staBssid.c_str());
             }
+            // 切换成功: 复位切换标记
+            m_switching = false;
+            m_switchInterm = false;
             break;
         }
 
@@ -241,6 +282,16 @@ void JZWifiDriverEsp32::stationConnect(JZWifiStation *w, const JZWifiConfig &cfg
     wc.sta.threshold.authmode = cfg.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
     wc.sta.pmf_cfg.capable = true;
     wc.sta.pmf_cfg.required = false;
+    // 指定目标 AP 的 BSSID: 用于同 SSID 漫游时钉选更强的那个物理 AP
+    if (!cfg.bssid.empty()) {
+        uint8_t mac[6];
+        if (strToMac(cfg.bssid, mac)) {
+            wc.sta.bssid_set = 1;
+            memcpy(wc.sta.bssid, mac, sizeof(mac));
+        } else {
+            jzWarning() << "JZWifiDriverEsp32: invalid bssid" << cfg.bssid.c_str();
+        }
+    }
     esp_wifi_set_config(WIFI_IF_STA, &wc);
 
     if (!cfg.dhcp) {
@@ -265,6 +316,58 @@ void JZWifiDriverEsp32::stationDisconnect(JZWifiStation *w)
 {        
     esp_wifi_disconnect();
     updateMode();
+}
+
+void JZWifiDriverEsp32::stationSwitch(JZWifiStation *w, const JZWifiConfig &cfg)
+{
+    // 已连接态切换到另一 AP(同 SSID 更强 BSSID 或不同 SSID):
+    // 更新目标配置并重新连接。底层会先断开旧 AP, 该中间断开事件由 JZWifiStation
+    // 以 Switching 态吞掉; 随后连上新 AP 时 onStationConnected 回传新 BSSID。
+    // 注意: 不重设 m_staWifi(仍绑定同一个 JZWifiStation 对象, stationConnect 的断言不适用)。
+    wifi_config_t wc = {};
+    strncpy(reinterpret_cast<char *>(wc.sta.ssid), cfg.ssid.c_str(), sizeof(wc.sta.ssid) - 1);
+    strncpy(reinterpret_cast<char *>(wc.sta.password), cfg.password.c_str(), sizeof(wc.sta.password) - 1);
+    wc.sta.threshold.authmode = cfg.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    wc.sta.pmf_cfg.capable = true;
+    wc.sta.pmf_cfg.required = false;
+    if (!cfg.bssid.empty()) {
+        uint8_t mac[6];
+        if (strToMac(cfg.bssid, mac)) {
+            wc.sta.bssid_set = 1;
+            memcpy(wc.sta.bssid, mac, sizeof(mac));
+        } else {
+            jzWarning() << "JZWifiDriverEsp32: invalid bssid" << cfg.bssid.c_str();
+        }
+    }
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+
+    if (!cfg.dhcp) {
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta) {
+            esp_netif_dhcpc_stop(sta);
+            esp_netif_ip_info_t ipinfo;
+            memset(&ipinfo, 0, sizeof(ipinfo));
+            ipinfo.ip.addr = parseIp(cfg.ip);
+            ipinfo.gw.addr = parseIp(cfg.gateway);
+            ipinfo.netmask.addr = parseIp(cfg.subnet);
+            esp_netif_set_ip_info(sta, &ipinfo);
+        }
+    }
+
+    // 重新连接: 先断开当前 AP, 再连到新 AP
+    m_switching = true;
+    m_switchInterm = true;   // 等待吞掉 esp_wifi_disconnect 触发的"中间断开"
+    esp_wifi_disconnect();
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        // esp_wifi_connect 同步失败: 直接视为切换失败, 上报断线(清空 m_staWifi)
+        m_switching = false;
+        m_switchInterm = false;
+        if (m_staWifi) {
+            JZWifiDriver::onStationDisconnected(m_staWifi);
+            m_staWifi = JZObjectPointer();
+        }
+    }
 }
 
 bool JZWifiDriverEsp32::isStationConnected(JZWifiStation *w)
@@ -338,7 +441,7 @@ int JZWifiDriverEsp32::apStationCount(JZWifiAp *w)
 }
 
 // ==================== Scan (扫描) ====================
-void JZWifiDriverEsp32::scanStart(JZWifiScanner *s)
+void JZWifiDriverEsp32::scanStart(JZWifiScanner *s, const JZScanConfig &cfg)
 {
     ensureInit();
     ensureStarted();
@@ -351,6 +454,25 @@ void JZWifiDriverEsp32::scanStart(JZWifiScanner *s)
     scan_cfg.bssid = nullptr;
     scan_cfg.channel = 0;
     scan_cfg.show_hidden = false;
+
+    // 低影响漫游扫描: 减小对已建立 WiFi 链路的打扰(避免断流/卡顿)
+    if (cfg.roamScan) {
+        // 1) passive 扫描: 仅监听 beacon, 不发 probe request, 降低对链路的打扰
+        scan_cfg.scan_type = WIFI_SCAN_TYPE_PASSIVE;
+    }
+    // 2) 仅扫当前信道: 射频不必离开 home channel, 进一步避免业务中断
+    //    scanAllChannels=false 时生效; 若需跨信道发现同名 AP 漫游, 传 true 改扫全信道
+    if (!cfg.scanAllChannels) {
+        uint8_t cur_chan = 0;
+        wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+        if (esp_wifi_get_channel(&cur_chan, &second) == ESP_OK && cur_chan != 0)
+            scan_cfg.channel = cur_chan;
+    }
+    // 3) 按 SSID 过滤(漫游时聚焦已连 SSID, 结果更干净); 空则不限制
+    if (!cfg.ssid.empty()) {
+        m_scanSsid = cfg.ssid;
+        scan_cfg.ssid = (uint8_t *)m_scanSsid.c_str();
+    }
 
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
     if (err != ESP_OK) {

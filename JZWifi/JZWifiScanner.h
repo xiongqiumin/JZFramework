@@ -21,7 +21,8 @@ public:
     JZWifiScanner(JZObject *parent = nullptr);
     ~JZWifiScanner() override;
 
-    void start();
+    void start();                                          // 普通扫描(全信道, 不过滤 SSID)
+    void startRoamScan(const std::string &ssid, bool scanAllChannels); // 低影响漫游扫描: ssid=聚焦的 SSID, scanAllChannels=false 时仅扫当前信道
     void stop();
     bool isActive() const;
     const JZWifiScanResult &result() const;
@@ -31,12 +32,15 @@ jz_signals:
     JZSignal<int, const std::string&> sigError;
 
 protected:
+    void doStart();
+
     static void onFinished(JZObjectPointer self, const JZWifiScanResult &r);
     static void onError(JZObjectPointer self, int code, const char *msg);
 
     JZWifiScanResult m_result;
 
     bool m_active = false;
+    JZScanConfig m_cfg;            // 本次扫描配置(普通 / 低影响漫游)
 };
 
 #endif // !JZ_WIFI_SCANNER_H_

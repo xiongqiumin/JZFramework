@@ -66,13 +66,28 @@ void JZWifiDriverSimulator::stationConnect(JZWifiStation *w, const JZWifiConfig 
 
     // 成功: 本地视为已连接(不发网络包)
     m_staWifi = w->guardPointer();
-    JZWifiDriver::onStationConnected(m_staWifi, localIp().c_str());
+    std::string staBssid = cfg.bssid.empty() ? std::string("00:11:22:33:44:55") : cfg.bssid;
+    JZWifiDriver::onStationConnected(m_staWifi, localIp().c_str(), staBssid.c_str());
 }
 
 void JZWifiDriverSimulator::stationDisconnect(JZWifiStation *w)
 {
     m_staWifi = JZObjectPointer();
     JZWifiDriver::onStationDisconnected(w->guardPointer());
+}
+
+void JZWifiDriverSimulator::stationSwitch(JZWifiStation *w, const JZWifiConfig &cfg)
+{
+    // 模拟: 直接视为已切到新 AP(本地校验, 不发网络包), 不发中间断开事件
+    bool ok = (cfg.ssid == kApSsid) && (cfg.password == kApPassword);
+    if (!ok) {
+        // 切换失败: 发送断线事件(由上层按真实掉线处理, 触发全链路重连)
+        m_staWifi = JZObjectPointer();
+        JZWifiDriver::onStationDisconnected(w->guardPointer());
+        return;
+    }
+    std::string staBssid = cfg.bssid.empty() ? std::string("00:11:22:33:44:55") : cfg.bssid;
+    JZWifiDriver::onStationConnected(w->guardPointer(), localIp().c_str(), staBssid.c_str());
 }
 
 bool JZWifiDriverSimulator::isStationConnected(JZWifiStation *w)
@@ -141,8 +156,11 @@ int JZWifiDriverSimulator::apStationCount(JZWifiAp *w)
 
 // ==================== Scan (扫描) ====================
 // 扫描为本地行为: 直接返回固定结果 jz_simulator_ap(不发网络包)。
-void JZWifiDriverSimulator::scanStart(JZWifiScanner *s)
+// 注: 忽略 JZScanConfig 标记(模拟环境无真实射频, 无"低影响"概念)。
+void JZWifiDriverSimulator::scanStart(JZWifiScanner *s, const JZScanConfig &cfg)
 {
+    (void)cfg;
+
     JZWifiScanResult r;
     JZWifiScanResult::ApInfo ap;
     ap.ssid = "jz_simulator_ap";

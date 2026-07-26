@@ -26,14 +26,17 @@ void JZWifiDriver::setInstance(JZWifiDriver *inst)
 // ==================== 事件转发中转 ====================
 // JZWifiDriver 是各管理类的 friend, 这里把受保护的静态分发方法封装为公开的
 // 转发入口, 具体驱动只调用本层, 不直接碰 friend 关系。
-void JZWifiDriver::onStationConnected(JZObjectPointer self, const char *ip)
-{ JZWifiStation::onConnected(self, ip); }
+void JZWifiDriver::onStationConnected(JZObjectPointer self, const char *ip, const char *bssid)
+{ JZWifiStation::onConnected(self, ip, bssid); }
 
 void JZWifiDriver::onStationDisconnected(JZObjectPointer self)
 { JZWifiStation::onDisconnected(self); }
 
 void JZWifiDriver::onStationError(JZObjectPointer self, int code, const char *msg)
 { JZWifiStation::onError(self, code, msg); }
+
+void JZWifiDriver::onStationSwitched(JZObjectPointer self, bool ok, const char *bssid)
+{ JZWifiStation::onStationSwitched(self, ok, bssid); }
 
 void JZWifiDriver::onApStarted(JZObjectPointer self)
 { JZWifiAp::onStarted(self); }

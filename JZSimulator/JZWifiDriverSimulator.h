@@ -33,9 +33,11 @@ public:
     // === Station (连接) ===
     void stationConnect(JZWifiStation *w, const JZWifiConfig &cfg) override;
     void stationDisconnect(JZWifiStation *w) override;
+    void stationSwitch(JZWifiStation *w, const JZWifiConfig &cfg) override;
     bool isStationConnected(JZWifiStation *w) override;
     std::string stationIpAddress(JZWifiStation *w) override;
     int stationRssi(JZWifiStation *w) override;
+
 
     // === Access Point (做服务) ===
     void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) override;
@@ -44,7 +46,7 @@ public:
     int  apStationCount(JZWifiAp *w) override;
 
     // === Scan (扫描) ===
-    void scanStart(JZWifiScanner *s) override;
+    void scanStart(JZWifiScanner *s, const JZScanConfig &cfg) override;
     void scanStop(JZWifiScanner *s) override;
     bool isScanning(JZWifiScanner *s) override;
 

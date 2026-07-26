@@ -15,6 +15,7 @@ struct JZWifiConfig
 {
     std::string ssid;
     std::string password;
+    std::string bssid;            // 目标 AP 的 MAC (可选); 非空时连接时钉选该 BSSID, 空则交给驱动自选(用于同 SSID 漫游)
     bool dhcp = true;             // true: 动态获取 IP; false: 使用静态 IP
     std::string ip;               // 静态 IP (dhcp=false 时有效)
     std::string gateway;
@@ -32,6 +33,14 @@ struct JZWifiApConfig
     std::string ip = "192.168.4.1";
     std::string gateway = "192.168.4.1";
     std::string subnet = "255.255.255.0";
+};
+
+// WiFi 扫描配置: 描述一次扫描的行为(普通扫描 / 低影响漫游扫描)
+struct JZScanConfig
+{
+    bool roamScan = false;        // 低影响漫游扫描: 底层驱动改用 passive + 可选仅扫当前信道, 减小对已建链路的打扰
+    std::string ssid;             // 扫描过滤的 SSID(空=不过滤)
+    bool scanAllChannels = true;  // true=扫全信道; false=仅扫当前信道(最低打扰, 但无法跨信道漫游)
 };
 
 // WiFi 扫描结果: 一个可被发现的 AP
@@ -66,9 +75,11 @@ public:
     // 调用方把自身(JZWifiStation*)作为 arg 透传, 事件回传时据此分发到对应对象
     virtual void stationConnect(JZWifiStation *w, const JZWifiConfig &cfg) = 0;
     virtual void stationDisconnect(JZWifiStation *w) = 0;
+    virtual void stationSwitch(JZWifiStation *w, const JZWifiConfig &cfg) = 0;  // 已连接态切换到另一 AP(同/不同 SSID), 不停回 None
     virtual bool isStationConnected(JZWifiStation *w) = 0;
     virtual std::string stationIpAddress(JZWifiStation *w) = 0;
     virtual int stationRssi(JZWifiStation *w) = 0;
+
 
     // === Access Point (做服务) ===
     virtual void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) = 0;
@@ -77,14 +88,15 @@ public:
     virtual int  apStationCount(JZWifiAp *w) = 0;
 
     // === Scan (扫描) ===
-    virtual void scanStart(JZWifiScanner *s) = 0;
+    virtual void scanStart(JZWifiScanner *s, const JZScanConfig &cfg) = 0;
     virtual void scanStop(JZWifiScanner *s) = 0;
     virtual bool isScanning(JZWifiScanner *s) = 0;
 
     // === 事件转发中转 (JZWifiStation / JZWifiAp / JZWifiScanner 的 friend) ===
-    static void onStationConnected(JZObjectPointer self, const char *ip);
+    static void onStationConnected(JZObjectPointer self, const char *ip, const char *bssid = "");
     static void onStationDisconnected(JZObjectPointer self);
     static void onStationError(JZObjectPointer self, int code, const char *msg);
+    static void onStationSwitched(JZObjectPointer self, bool ok, const char *bssid = "");  // 切换结果: ok=false 表示 stationSwitch 失败
     static void onApStarted(JZObjectPointer self);
     static void onApStopped(JZObjectPointer self);
     static void onApStationConnected(JZObjectPointer self, const char *mac, const char *ip);

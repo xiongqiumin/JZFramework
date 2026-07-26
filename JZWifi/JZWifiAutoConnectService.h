@@ -27,10 +27,13 @@ struct JZWifiAutoConnectServiceConfig
     int scanIntervalMs = 15000;                 // 基础扫描间隔(毫秒)
     int maxBackoffMs = 60000;                   // 退避上限(毫秒)
     int switchHysteresis = 5;                   // 切换迟滞(dBm): 仅当新候选比当前强出该值才切换
-    int poorRssiThreshold = -75;                // 信号差阈值(dBm): 已连接时低于此值才重新扫描以漫游, 否则跳过周期扫描省电
+    int poorRssiThreshold = -80;                // 信号差阈值(dBm): 已连接时低于此值才重新扫描以漫游, 否则跳过周期扫描省电
     int failBlockBaseMs = 10000;                // 首次失败冷却(毫秒)
     int failBlockMaxMs = 120000;               // 冷却上限(毫秒)
-    int rssiIntervalMs = 15000;                // RSSI 轮询间隔(毫秒)
+    int rssiIntervalMs = 15000;                  // RSSI 轮询间隔(毫秒)
+    int roamScanIntervalMs = 60000;              // 已连接且信号处于漫游扫描区间时, 按此间隔周期扫描以发现更强的同名 AP 漫游(<=0 不主动漫游扫描)
+    int roamScanRssiThreshold = -70;             // 漫游扫描阈值(dBm): 已连接且信号高于此值(RSSI 更大/信号更好)时不主动漫游扫描以省电; 低于此值(且高于 poorRssiThreshold)才按 roamScanIntervalMs 周期扫描寻找更强同名 AP                // RSSI 轮询间隔(毫秒)
+    bool roamScanAllChannels = false;            // 漫游扫描是否扫全信道: true=跨信道漫游(能发现不同信道上的同名 AP, 但扫描时射频离当前信道稍久); false=仅扫当前信道(打扰最小, 但无法跨信道漫游)
 };
 
 struct JZWifiConnectInfo
@@ -111,8 +114,13 @@ protected:
 
     std::string m_connectedSsid;
     int m_connectedRssi = -127;
+    std::string m_connectedBssid;        // 当前连接的 AP BSSID(用于同 SSID 漫游判断)
     JZWifiCredential m_pendingSsid;
     int m_pendingRssi = -127;
+    std::string m_pendingBssid;          // 待连接 AP BSSID(钉选目标 AP); 空表示不限
+    bool m_pendingIsRoam = false;        // 本次连接是否为同 SSID 漫游
+    std::map<std::string, int64_t> m_bssidBlock;  // 漫游失败临时屏蔽的 BSSID -> 冷却到期时间戳
+    int64_t m_lastRoamScanMs = 0;        // 上次漫游扫描时间(ms), 用于按 roamScanIntervalMs 节流
 
     JZWifiScanResult m_lastResults;
     JZTimer *m_connectTimer;

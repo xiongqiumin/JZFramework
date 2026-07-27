@@ -2,6 +2,7 @@
 #include "JZNetworkAccessManager.h"
 #include "JZStd.h"
 #include "JZTx.h"
+#include "JZDebug.h"
 
 //from mongoose
 static bool is_hex_digit(int c) {
@@ -27,7 +28,7 @@ static int skip_chunk(const char* buf, int len, int* pl, int* dl) {
 
 //JZNetworkConnect
 JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
-    :JZNetObject()
+    :JZNetObject(manager), sigDisconnected(this)
 {  
     m_conn = INVALID_NET_HANDLE;
     m_reply = nullptr;
@@ -59,6 +60,15 @@ void JZNetworkConnect::open(const std::string& url)
     m_recvTime = JZPlatform::getTickCountMs();
 }
 
+void JZNetworkConnect::reopen()
+{
+    writeConn(m_conn, WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+    if(m_timeId != INVALID_TIMER_ID)
+        m_timeId = startTimer(200);
+
+    m_recvTime = JZPlatform::getTickCountMs();
+}
+
 void JZNetworkConnect::close()
 {
     if (m_reply)
@@ -66,15 +76,6 @@ void JZNetworkConnect::close()
 
     if (m_conn != INVALID_NET_HANDLE)
         closeConn(m_conn, false);
-
-    for (int i = 0; i < (int)m_manager->m_netConnects.size(); i++)
-    {
-        if (m_manager->m_netConnects[i] == this)
-        {
-            vec_removeAt(m_manager->m_netConnects, i);
-            break;
-        }
-    }
 }
 
 JZByteArray JZNetworkConnect::getHttpBody(const JZByteArray& data)
@@ -104,8 +105,15 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
     if (m_reply)
     {
         m_reply->m_conn = nullptr;
-        m_reply->emitFinish(error);
+        auto reply = m_reply;
         m_reply = nullptr;
+        reply->emitFinish(error);
+    }
+
+    if (m_timeId != INVALID_TIMER_ID)
+    {
+        killTimer(m_timeId);
+        m_timeId = INVALID_TIMER_ID;
     }
 
     if (m_chunkMode)
@@ -114,7 +122,13 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
 
 void JZNetworkConnect::timerEvent(JZTimerEvent* event)
 {
-    if (m_timeOut != -1 && JZPlatform::getTickCountMs() - m_recvTime > m_timeOut)
+    if (!m_reply)
+    {
+        close();
+        return;
+    }
+
+    if (m_reply->m_timeOut != -1 && JZPlatform::getTickCountMs() - m_recvTime > m_reply->m_timeOut)
     {
         emitFinish(JZNetworkReply::TimeOutError);
         close();
@@ -170,7 +184,17 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
 void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 {
     JZTX_FUNC_TRACE
+
     int ev = event->event;
+    if (ev == JZ_NET_EV_CLOSE)
+    {
+        emitFinish(JZNetworkReply::ConnectError);
+        sigDisconnected.emit();
+        return;
+    }
+    if (!m_reply)
+        return;
+
     if (ev == JZ_NET_EV_HTTP_MSG)
     {
         JZHttpResData *http = (JZHttpResData*)(event->extData.get());
@@ -204,10 +228,6 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     else if (ev == JZ_NET_EV_TLS_HS)
     {
     }
-    else if (ev == JZ_NET_EV_CLOSE)
-    {
-        emitFinish(JZNetworkReply::ConnectError);
-    }
     else if (ev == JZ_NET_EV_ERROR)
     {
         emitFinish(JZNetworkReply::ConnectError);
@@ -234,24 +254,38 @@ JZNetworkAccessManager::~JZNetworkAccessManager()
 {    
 }
 
+void JZNetworkAccessManager::onDisconnected()
+{
+    auto conn = jzobject_cast<JZNetworkConnect*>(sender());
+    for (int i = 0; i < (int)m_netConnects.size(); i++)
+    {
+        if (m_netConnects[i] == conn)
+        {
+            vec_removeAt(m_netConnects, i);
+            break;
+        }
+    }
+}
+
 void JZNetworkAccessManager::open(JZNetworkReply *reply, const std::string &url)
 {
     for(size_t i = 0; i < m_netConnects.size(); i++)
     {
         auto conn = m_netConnects[i];
-        if(conn->url() == url && conn->m_reply == nullptr)
+        if (conn->url() == url && conn->m_reply == nullptr)
         {
             conn->m_reply = reply;
             reply->m_conn = conn;
-            conn->writeConn(conn->m_conn, WriteBin, reply->m_send.data(), reply->m_send.size());
+            conn->reopen();
             return;
         }
     }
 
-    JZNetworkConnect *conn = new JZNetworkConnect(this);
+    JZNetworkConnect* conn = new JZNetworkConnect(this);
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->open(url);
+    connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);
 }
 

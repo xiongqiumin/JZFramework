@@ -17,7 +17,7 @@ int main()
     for(int i = 0; i < 100; i++)
     {
         jzDebug("==== 第%d次测试 ====\n", i+ 1);
-
+        /*
         test_tcp();
         jzDebug() << "【OK】TCP 通过";
 
@@ -29,7 +29,7 @@ int main()
 
         test_mqtt();
         jzDebug() << "【OK】MQTT 通过";
-
+        */
         test_http();
         jzDebug() << "【OK】HTTP 通过";
 

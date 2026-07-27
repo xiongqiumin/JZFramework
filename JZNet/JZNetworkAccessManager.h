@@ -13,6 +13,9 @@ public:
     JZNetworkConnect(JZNetworkAccessManager *manager);
     ~JZNetworkConnect();
 
+jz_signals:
+    JZSigVoid sigDisconnected;
+
 protected:
     friend JZNetworkAccessManager;
     friend JZNetworkReply;
@@ -23,6 +26,7 @@ protected:
 
     std::string url();
     void open(const std::string& url);
+    void reopen();
     void close();
     
     JZByteArray getHttpBody(const JZByteArray& data);
@@ -37,7 +41,6 @@ protected:
     
     int m_timeId;
     int64_t m_recvTime;
-    int64_t m_timeOut;
     bool m_chunkMode;
 };
 
@@ -54,6 +57,7 @@ protected:
     friend JZNetworkConnect;
 
     void open(JZNetworkReply *reply, const std::string &url);
+    void onDisconnected();
 
     std::vector<JZNetworkConnect*> m_netConnects;
 };

@@ -6,30 +6,17 @@
 
 //JZNetworkReply
 JZNetworkReply::JZNetworkReply(JZObject *parent)
-    :JZNetObject(parent), sigFinished(this)
+    :JZObject(parent), sigReadyRead(this), sigFinished(this)
 {
     m_error = None;
     m_statusCode = 0;
-    m_conn = INVALID_NET_HANDLE;    
-    m_recvTime = 0;
-    m_timeId = INVAILD_TIMER_ID;
+    m_conn = nullptr;
     m_timeOut = 30 * 1000;
 }
 
 JZNetworkReply::~JZNetworkReply()
 {
     close();
-}
-
-void JZNetworkReply::open(const JZNetworkRequest& request)
-{
-    JZSocketInfo info;
-    info.type = JZSocketInfo::HttpClient;
-    info.url = request.url();
-    
-    m_conn = openConn(info);
-    m_timeId = startTimer(200);
-    m_recvTime = JZPlatform::getTickCountMs();
 }
 
 JZNetworkReply::NetworkError JZNetworkReply::error() const
@@ -79,20 +66,11 @@ JZByteArray JZNetworkReply::readAll()
 
 void JZNetworkReply::close()
 {
-    if (m_timeId != INVAILD_TIMER_ID)
+    if (m_conn != nullptr)
     {
-        killTimer(m_timeId);
-        m_timeId = INVAILD_TIMER_ID;
-    }
-
-    if (m_conn != INVALID_NET_HANDLE)
-    {
-        closeConn(m_conn, true);
-        m_conn = INVALID_NET_HANDLE;
-
-        emitFinish(UserCancelError);
+        m_conn->emitFinish(UserCancelError);
+        m_conn = nullptr;
     }    
-    m_recvTime = 0;
 }
 
 int64_t JZNetworkReply::timeout() const
@@ -113,75 +91,4 @@ void JZNetworkReply::emitFinish(NetworkError error)
 
     m_error = error;
     sigFinished.emit();    
-}
-
-void JZNetworkReply::timerEvent(JZTimerEvent* event)
-{
-    if (m_timeOut != -1 && JZPlatform::getTickCountMs() - m_recvTime > m_timeOut)
-    {
-        emitFinish(TimeOutError);
-        close();
-    }
-}
-
-JZByteArray JZNetworkReply::getHttpBody(const JZByteArray& data)
-{
-    JZTX_FUNC_TRACE
-    // HTTP 头和 Body 的分隔符：\r\n\r\n
-    const char separator[] = "\r\n\r\n";
-    const size_t sep_len = sizeof(separator) - 1;  // 固定 4 字节
-
-    // 查找分隔符位置
-    auto sep_pos = std::search(data.begin(), data.end(), separator, separator + sep_len);
-
-    // 没找到分隔符 → 返回空
-    if (sep_pos == data.end())
-    {
-        return JZByteArray();
-    }
-
-    // 分隔符之后的所有内容 = Body
-    sep_pos += sep_len;
-    size_t body_len = data.end() - sep_pos;
-    return JZByteArray(sep_pos, body_len);
-}
-
-void JZNetworkReply::onNetEvent(JZNetResEvent* event)
-{
-    JZTX_FUNC_TRACE
-    int ev = event->event;
-    if (ev == JZ_NET_EV_HTTP_MSG)
-    {
-        JZHttpResData *http = (JZHttpResData*)(event->extData.get());
-        m_statusCode = http->httpCode;
-        m_statusText = http->httpCodeText;
-        m_body = getHttpBody(event->binData);
-        if (http->httpCode >= 200 && http->httpCode < 300)
-        {
-            emitFinish(JZNetworkReply::NoError);
-        }
-        else
-        {
-            emitFinish(JZNetworkReply::HttpError);
-        }
-    }
-    else if (ev == JZ_NET_EV_CONNECT)
-    {
-        writeConn(m_conn, WriteBin, m_send.data(), m_send.size());
-    }
-    else if (ev == JZ_NET_EV_TLS_HS)
-    {
-    }
-    else if (ev == JZ_NET_EV_CLOSE)
-    {
-        emitFinish(JZNetworkReply::ConnectError);
-    }
-    else if (ev == JZ_NET_EV_ERROR)
-    {
-        emitFinish(JZNetworkReply::ConnectError);
-    }
-    else if (ev == JZ_NET_EV_READ)
-    {
-        m_recvTime = JZPlatform::getTickCountMs();
-    }
 }

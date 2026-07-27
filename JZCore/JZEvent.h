@@ -18,7 +18,7 @@ enum {
     JZEvent_user = 1000,
 };
 
-#define INVAILD_TIMER_ID (0)
+#define INVALID_TIMER_ID (0)
 
 class JZEvent
 {

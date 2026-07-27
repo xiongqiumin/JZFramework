@@ -50,7 +50,7 @@ void JZWifiAutoConnectService::clearFailBlacklist(const std::string &ssid)
 
 void JZWifiAutoConnectService::armTimer()
 {
-    if (m_timerId != INVAILD_TIMER_ID) 
+    if (m_timerId != INVALID_TIMER_ID) 
         killTimer(m_timerId);
 
     m_timerId = startTimer(m_effectiveInterval);
@@ -76,10 +76,10 @@ void JZWifiAutoConnectService::stop()
         return;
 
     m_active = false;
-    if (m_timerId != INVAILD_TIMER_ID) 
+    if (m_timerId != INVALID_TIMER_ID) 
     { 
         killTimer(m_timerId); 
-        m_timerId = INVAILD_TIMER_ID; 
+        m_timerId = INVALID_TIMER_ID; 
     }
     stopRssiMonitor();
 
@@ -260,16 +260,16 @@ void JZWifiAutoConnectService::onStationError(int code, const std::string &msg)
 
 void JZWifiAutoConnectService::startRssiMonitor()
 {
-    if (m_rssiTimerId != INVAILD_TIMER_ID)
+    if (m_rssiTimerId != INVALID_TIMER_ID)
         killTimer(m_rssiTimerId);
     m_rssiTimerId = startTimer(m_config.rssiIntervalMs > 0 ? m_config.rssiIntervalMs : 15000);
 }
 
 void JZWifiAutoConnectService::stopRssiMonitor()
 {
-    if (m_rssiTimerId != INVAILD_TIMER_ID) {
+    if (m_rssiTimerId != INVALID_TIMER_ID) {
         killTimer(m_rssiTimerId);
-        m_rssiTimerId = INVAILD_TIMER_ID;
+        m_rssiTimerId = INVALID_TIMER_ID;
     }
 }
 

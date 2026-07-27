@@ -251,7 +251,7 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_promiseTaskId = 0;
     m_objectId = JSType_objectUser;
 
-    m_timer = INVAILD_TIMER_ID;
+    m_timer = INVALID_TIMER_ID;
     m_interrupt = false;
     m_status = Engine_none;
 }
@@ -553,7 +553,7 @@ void JZJSEngine::resume()
 
 void JZJSEngine::startEngineTimer()
 {
-    if (m_timer == INVAILD_TIMER_ID)
+    if (m_timer == INVALID_TIMER_ID)
     {
         m_timer = startTimer(10);
         LOG_I("startEngineTimer");
@@ -562,10 +562,10 @@ void JZJSEngine::startEngineTimer()
 
 void JZJSEngine::stopEngineTimer()
 {
-    if (m_timer != INVAILD_TIMER_ID)
+    if (m_timer != INVALID_TIMER_ID)
     {
         killTimer(m_timer);
-        m_timer = INVAILD_TIMER_ID;
+        m_timer = INVALID_TIMER_ID;
 
         LOG_I("stopEngineTimer");
     }

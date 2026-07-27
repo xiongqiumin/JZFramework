@@ -40,7 +40,7 @@ int JZThreadConfig::stackSizeAlign() const
 JZThread::TimerInfo::TimerInfo()
 {
     object = nullptr;
-    id = INVAILD_TIMER_ID;
+    id = INVALID_TIMER_ID;
     intervalMs = 0;
     nextTrigger = 0;
 }
@@ -453,7 +453,7 @@ void JZThread::processTimers()
                 }
             }
         }
-        if (time.id == INVAILD_TIMER_ID)
+        if (time.id == INVALID_TIMER_ID)
             return;
 
         JZTimerEvent timer_event(time.id);

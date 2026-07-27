@@ -30,6 +30,8 @@ enum JZNetEvent
     JZ_NET_EV_MQTT_MSG,   // MQTT PUBLISH received        struct mg_mqtt_message *
     JZ_NET_EV_MQTT_OPEN,  // MQTT CONNACK received        int *connack_status_code
     JZ_NET_EV_SNTP_TIME,  // SNTP time received           uint64_t *epoch_millis
+
+    JZ_NET_EV_HTTP_CHUNK_MODE = 256,
 };
 const char *netEventString(int event);
 
@@ -70,6 +72,7 @@ struct JZSocketInfo
         UdpSocket,
         UdpListen,
         HttpClient,
+        HttpClientChunked,
         HttpServerClient, //服务端的连接
         HttpServer,
         WebSocket,
@@ -170,6 +173,17 @@ protected:
     };
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
+
+    // HttpClient 流式解析状态(net 线程内持续存在, 跨多次 MG_EV_READ)
+    struct JZHttpClientParse
+    {
+        bool headerDone = false;     // 响应头是否已解析
+        int statusCode = 0;          // HTTP 状态码
+        bool isSse = false;          // Content-Type: text/event-stream
+        bool chunked = false;        // Transfer-Encoding: chunked
+        int64_t contentLength = -1;  // Content-Length(未知为 -1)
+        int64_t bodyReceived = 0;    // 已上送的 body 字节数
+    };
 
     JZNetThread(JZObject *parent);
     ~JZNetThread();

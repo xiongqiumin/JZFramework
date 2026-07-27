@@ -988,7 +988,7 @@ JZProcess::JZProcess(JZObject *parent)
       sigReadyReadStandardOutput(this),
       sigReadyReadStandardError(this),
       d_ptr(new JZProcessPrivate(this)),
-      m_timerId(INVAILD_TIMER_ID)
+      m_timerId(INVALID_TIMER_ID)
 {
 }
 
@@ -1039,7 +1039,7 @@ void JZProcess::timerEvent(JZTimerEvent *event)
 void JZProcess::finished(int exitCode, JZProcess::ExitStatus exitStatus)
 {
     killTimer(m_timerId);
-    m_timerId = INVAILD_TIMER_ID;
+    m_timerId = INVALID_TIMER_ID;
 
     d_ptr->state = NotRunning;
     d_ptr->closeHandles();

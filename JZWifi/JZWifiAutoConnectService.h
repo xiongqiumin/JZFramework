@@ -112,8 +112,8 @@ protected:
     JZWifiAutoConnectServiceConfig m_config;
     bool m_active = false;
     int m_effectiveInterval = 15000;              // 当前生效间隔(退避时翻倍)
-    int m_timerId = INVAILD_TIMER_ID;
-    int m_rssiTimerId = INVAILD_TIMER_ID;         // RSSI 轮询定时器
+    int m_timerId = INVALID_TIMER_ID;
+    int m_rssiTimerId = INVALID_TIMER_ID;         // RSSI 轮询定时器
 
     std::map<std::string, WifiFailInfo> m_failBlacklist;
 

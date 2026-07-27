@@ -232,12 +232,54 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         {
             event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
             mg_iobuf_del(&c->recv, 0, c->recv.len);
+
             auto ptr = std::make_shared<JZUdpResData>();
             char *ip_str = mg_mprintf("%M", mg_print_ip, &c->rem);
             ptr->peerIp = std::string(ip_str);
             mg_free(ip_str);
             ptr->peerPort = mg_ntohs(c->rem.port);
             event->extData = ptr;
+        }
+        else if (it->second.type == JZSocketInfo::HttpClientChunked)
+        {
+            if (c->recv.len > 0)
+            {
+                event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
+                mg_iobuf_del(&c->recv, 0, c->recv.len);
+            }
+        }
+    }
+    else if (ev == MG_EV_HTTP_HDRS)
+    {
+        auto it = inst->m_connMap.find(c->id);
+        if (it->second.type == JZSocketInfo::HttpClient)
+        {
+            mg_http_message* hm = (mg_http_message*)ev_data;
+
+            bool is_chunked = false;
+            struct mg_str* te;
+            if ((te = mg_http_get_header(hm, "Transfer-Encoding")) != NULL) {
+                if (mg_strcasecmp(*te, mg_str("chunked")) == 0) {
+                    is_chunked = true;
+                }
+            }
+
+            // 判断是不是 chunk, 如果是的话, 自己解析, mg http_cb预留了这样的判断
+            if (is_chunked)
+            {
+                it->second.type = JZSocketInfo::HttpClientChunked;
+                event->event = JZ_NET_EV_HTTP_CHUNK_MODE;
+
+                auto http_ptr = std::make_shared<JZHttpResData>();
+                http_ptr->httpCode = mg_http_status(hm);
+                http_ptr->httpCodeText = getHttpCodeText(hm->head.buf, (int)hm->head.len);
+                event->extData = http_ptr;
+                
+                uint8_t *msg_buf = c->recv.buf + hm->head.len;
+                int msg_len = c->recv.len - hm->head.len;
+                event->binData = JZByteArray((char*)msg_buf, msg_len);
+                mg_iobuf_del(&c->recv, 0, c->recv.len);
+            }
         }
     }
     else if (ev == MG_EV_WRITE)

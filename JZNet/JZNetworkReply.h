@@ -15,7 +15,8 @@ public:
     std::string httpCodeText;
 };
 
-class JZNetworkReply : public JZNetObject
+class JZNetworkConnect;
+class JZNetworkReply : public JZObject
 {
 public:
     enum NetworkError {
@@ -30,7 +31,6 @@ public:
     JZNetworkReply(JZObject*object);
     ~JZNetworkReply();    
 
-    void open(const JZNetworkRequest& request);
     void close();
 
     int64_t timeout() const;
@@ -46,14 +46,13 @@ public:
     JZByteArray readAll();
 
 jz_signals:
+    JZSigVoid sigReadyRead;
     JZSigVoid sigFinished;
 
 protected:    
     friend JZNetworkAccessManager;
+    friend JZNetworkConnect;
 
-    JZByteArray getHttpBody(const JZByteArray& data);
-    virtual void onNetEvent(JZNetResEvent* event) override;
-    virtual void timerEvent(JZTimerEvent *event) override;
     void emitFinish(NetworkError error);
 
     NetworkError m_error;
@@ -65,10 +64,9 @@ protected:
     int m_statusCode;
     std::string m_statusText;
     
-    uint64_t m_conn;
-    int m_timeId;
-    int64_t m_recvTime;
-    int64_t m_timeOut;
+    JZNetworkRequest m_request;
+    JZNetworkConnect *m_conn;
+    int m_timeOut;
 };
 
 #endif // !JZ_NEWWORK_REPLY_H_

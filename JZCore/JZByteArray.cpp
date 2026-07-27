@@ -104,6 +104,39 @@ void JZByteArray::reserve(int size)
     m_vec.reserve(size);
 }
 
+void JZByteArray::remove(int offset, int size)
+{
+    // 边界1：非法参数直接返回
+    if (offset < 0 || size <= 0)
+        return;
+
+    const size_t vec_sz = m_vec.size();
+    const size_t off = static_cast<size_t>(offset);
+    const size_t del_len = static_cast<size_t>(size);
+
+    // 边界2：删除起点超出数组，无操作
+    if (off >= vec_sz)
+        return;
+
+    // 边界3：删除区间截断到数组末尾，防止越界
+    size_t actual_del = del_len;
+    if (off + actual_del > vec_sz)
+        actual_del = vec_sz - off;
+
+    // 待保留数据起始位置
+    const size_t src = off + actual_del;
+    // 剩余有效字节数量
+    const size_t remain = vec_sz - src;
+
+    if (remain > 0)
+    {
+        // 原地前移内存，覆盖被删除区域
+        memmove(m_vec.data() + off, m_vec.data() + src, remain);
+    }
+    // 截断vector长度
+    m_vec.resize(vec_sz - actual_del);
+}
+
 int JZByteArray::size() const
 {
     return (int)m_vec.size();

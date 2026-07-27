@@ -49,7 +49,7 @@ void JZTimer::singleShot(int msec, JZObject *object, std::function<void()> func)
 JZTimer::JZTimer(JZObject *parent)
     :JZObject(parent), sigTimeout(this)
 {
-    m_timeId = INVAILD_TIMER_ID;
+    m_timeId = INVALID_TIMER_ID;
     m_singleShot = false;
 }
 
@@ -69,7 +69,7 @@ void JZTimer::timerEvent(JZTimerEvent *event)
 
 void JZTimer::start(int ms)
 {
-    if (m_timeId != INVAILD_TIMER_ID)
+    if (m_timeId != INVALID_TIMER_ID)
     {
         return;
     }
@@ -79,16 +79,16 @@ void JZTimer::start(int ms)
 
 void JZTimer::stop()
 {
-    if (m_timeId != INVAILD_TIMER_ID)
+    if (m_timeId != INVALID_TIMER_ID)
     {
         killTimer(m_timeId);
-        m_timeId = INVAILD_TIMER_ID;
+        m_timeId = INVALID_TIMER_ID;
     }
 }
 
 bool JZTimer::isActive() const
 {
-    return m_timeId != INVAILD_TIMER_ID;
+    return m_timeId != INVALID_TIMER_ID;
 }
 
 bool JZTimer::isSingleShot() const

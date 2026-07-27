@@ -7,6 +7,40 @@
 #include "JZNetworkRequest.h"
 #include "JZNetworkReply.h"
 
+class JZNetworkConnect : public JZNetObject
+{
+public:
+    JZNetworkConnect(JZNetworkAccessManager *manager);
+    ~JZNetworkConnect();
+
+protected:
+    friend JZNetworkAccessManager;
+    friend JZNetworkReply;
+
+    virtual void onNetEvent(JZNetResEvent* event) override;
+    virtual void timerEvent(JZTimerEvent *event) override;
+    void emitFinish(JZNetworkReply::NetworkError error);
+
+    std::string url();
+    void open(const std::string& url);
+    void close();
+    
+    JZByteArray getHttpBody(const JZByteArray& data);
+    void appendChunk(const JZByteArray& data);
+
+    std::string m_url;
+    uint64_t m_conn;
+
+    JZByteArray m_chunkBuffer;
+    JZNetworkReply *m_reply;
+    JZNetworkAccessManager* m_manager;
+    
+    int m_timeId;
+    int64_t m_recvTime;
+    int64_t m_timeOut;
+    bool m_chunkMode;
+};
+
 class JZNetworkAccessManager : public JZObject
 {
 public:
@@ -17,7 +51,11 @@ public:
     JZNetworkReply *post(const JZNetworkRequest &request, const JZByteArray &buffer);
 
 protected:    
-    friend JZNetworkReply;
+    friend JZNetworkConnect;
+
+    void open(JZNetworkReply *reply, const std::string &url);
+
+    std::vector<JZNetworkConnect*> m_netConnects;
 };
 
 

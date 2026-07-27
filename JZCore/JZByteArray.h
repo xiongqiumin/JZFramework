@@ -38,6 +38,8 @@ public:
     void fill(char value);
     void reserve(int size);
 
+    void remove(int offset, int size);
+
     char *data(); 
     const char *data() const;
     const char *constData() const;

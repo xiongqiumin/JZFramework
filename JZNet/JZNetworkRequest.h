@@ -41,7 +41,7 @@ public:
     std::string buildWebSocketHeader() const;
 
 protected:
-    std::string m_url;
+    JZUrl m_url;
     std::map<std::string,std::string> m_headers;
 };
 

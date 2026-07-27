@@ -488,12 +488,11 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
 }
 
 // 根据 base URL 解析重定向 Location（支持绝对/协议相对/根相对/相对路径）
-static std::string resolveRedirectUrl(const std::string &baseUrl, const std::string &location)
+static std::string resolveRedirectUrl(const JZUrl &base, const std::string &location)
 {
     if (str_startsWith(location, "http://") || str_startsWith(location, "https://"))
         return location;
 
-    JZUrl base(baseUrl);
     std::string authority = base.scheme() + "://" + base.host();
     if (base.port() != 0)
         authority += ":" + std::to_string(base.port());
@@ -521,14 +520,14 @@ bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::st
     if (reply->m_redirectCount >= reply->m_maxRedirects)
         return false;
 
-    std::string newUrl = resolveRedirectUrl(reply->m_request.url(), location);
+    std::string newUrl = resolveRedirectUrl(reply->m_request.urlObject(), location);
     if (newUrl.empty())
         return false;
 
     // 重定向策略校验（AllAllowed 跳过）
     if (reply->m_redirectPolicy != JZNetworkReply::AllAllowed)
     {
-        JZUrl base(reply->m_request.url());
+        const JZUrl &base = reply->m_request.urlObject();
         JZUrl target(newUrl);
         if (reply->m_redirectPolicy == JZNetworkReply::SameOrigin)
         {

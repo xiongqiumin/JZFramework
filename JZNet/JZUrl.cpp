@@ -165,6 +165,8 @@ const std::string& JZUrl::host() const { return m_host; }
 
 uint16_t JZUrl::port() const { return m_port; }
 
+const std::string& JZUrl::path() const { return m_path; }
+
 void JZUrl::parse_url(std::string url) 
 {
     // 清空所有成员

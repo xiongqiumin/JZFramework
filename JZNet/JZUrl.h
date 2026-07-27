@@ -36,6 +36,7 @@ public:
     const std::string& scheme() const;
     const std::string& host() const;
     uint16_t port() const;
+    const std::string& path() const;
 
     const JZUrlQuery &query();
     void setQuery(const JZUrlQuery& query);

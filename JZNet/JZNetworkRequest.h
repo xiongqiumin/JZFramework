@@ -25,10 +25,12 @@ public:
 
     std::string url() const;
     void setUrl(const std::string &url);
+    std::string hostKey() const;   // scheme://host:port，用于连接池复用
 
     void setHeader(KnownHeaders header, const std::string &headerValue);
     void setRawHeader(const std::string &headerName, const std::string &headerValue);
     const std::map<std::string, std::string> &rawHeaders() const;
+    bool isConnectionClose() const;
 
     std::string buildHttpHeader(HttpMethod method) const;
     std::string buildWebSocketHeader() const;

@@ -1,6 +1,7 @@
 ﻿#include "JZAgent.h"
 
 #include <atomic>
+#include <sstream>
 
 #include "JZApplication.h"
 #include "JZDateTime.h"
@@ -42,6 +43,10 @@ void JZAgent::clear()
     m_inTransaction = false;
     m_streamEnabled = false;
     m_toolError = 0;
+
+    m_streamBuffer.clear();
+    m_streamContent.clear();
+    m_streamToolCalls.clear();
 }
 
 const LLMContext* JZAgent::context() const
@@ -319,6 +324,15 @@ void JZAgent::llmRequest()
     JZByteArray req_buffer = str_toUtf8(json_str);
     m_llmReply = m_net->post(req, req_buffer);
     connect(&m_llmReply->sigFinished, this, &JZAgent::onLLMRequest);
+    if (m_streamEnabled)
+    {
+        // 流式响应走分块(SSE)：实时读取增量
+        connect(&m_llmReply->sigReadyRead, this, &JZAgent::onLLMStreamReadyRead);
+        // 每次请求重新累积
+        m_streamBuffer.clear();
+        m_streamContent.clear();
+        m_streamToolCalls.clear();
+    }
 
     m_llmReply->setTimeOut(360 * 1000);
     m_llmReqInfo.requestTime = JZPlatform::getTickCountMs();
@@ -664,6 +678,109 @@ void JZAgent::llmLoop()
     }
 }
 
+void JZAgent::onLLMStreamReadyRead()
+{
+    auto net_reply = (JZNetworkReply*)sender();
+    if (net_reply != m_llmReply)
+        return;
+
+    JZByteArray data = net_reply->readAll();
+    if (data.isEmpty())
+        return;
+
+    m_streamBuffer.append(str_fromUtf8(data));
+
+    // 按 SSE 事件边界 "\n\n" 切分，逐事件处理
+    size_t pos = 0;
+    while (true)
+    {
+        size_t sep = m_streamBuffer.find("\n\n", pos);
+        if (sep == std::string::npos)
+            break;
+        std::string event = m_streamBuffer.substr(pos, sep - pos);
+        pos = sep + 2;
+        processSSEEvent(event);
+    }
+    // 保留不完整的尾部，等待后续数据
+    m_streamBuffer.erase(0, pos);
+}
+
+void JZAgent::processSSEEvent(const std::string& event)
+{
+    std::istringstream iss(event);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.compare(0, 5, "data:") != 0)
+            continue;   // 跳过 :ping / event: 等非 data 行
+        std::string payload = line.substr(5);
+        size_t p = payload.find_first_not_of(' ');
+        if (p != std::string::npos)
+            payload = payload.substr(p);
+        processSSEData(payload);
+    }
+}
+
+void JZAgent::processSSEData(const std::string& payload)
+{
+    if (payload == "[DONE]")
+        return;
+
+    Json::Value result;
+    Json::Reader reader;
+    if (!reader.parse(payload, result))
+        return;   // 心跳/注释等非 JSON，忽略
+
+    Json::Value choices = result["choices"];
+    if (!choices.isArray() || choices.size() == 0)
+        return;
+
+    Json::Value delta = choices[0]["delta"];
+    std::string content = delta["content"].asString();
+    if (!content.empty())
+    {
+        m_streamContent += content;
+        sigReply.emit(content);   // 实时增量回调
+    }
+
+    // 累积 tool_calls（按 index 合并增量片段）
+    if (delta.isMember("tool_calls") && delta["tool_calls"].isArray())
+    {
+        for (const auto& tc : delta["tool_calls"])
+        {
+            int index = tc.get("index", (int)m_streamToolCalls.size()).asInt();
+            if (index < 0)
+                index = 0;
+            if (index >= (int)m_streamToolCalls.size())
+                m_streamToolCalls.resize(index + 1);
+            ToolCall& call = m_streamToolCalls[index];
+            if (tc.isMember("id") && !tc["id"].asString().empty())
+                call.id = tc["id"].asString();
+            if (tc.isMember("type") && !tc["type"].asString().empty())
+                call.type = tc["type"].asString();
+            if (tc.isMember("function"))
+            {
+                const Json::Value& fn = tc["function"];
+                if (fn.isMember("name") && !fn["name"].asString().empty())
+                    call.function_name = fn["name"].asString();
+                if (fn.isMember("arguments"))
+                    call.function_args += fn["arguments"].asString();
+            }
+        }
+    }
+
+    // usage（部分厂商在最后一个 chunk 返回）
+    Json::Value usage = result["usage"];
+    if (usage.isObject())
+    {
+        m_context.usage.prompt_tokens += usage.get("prompt_tokens", 0).asInt();
+        m_context.usage.completion_tokens += usage.get("completion_tokens", 0).asInt();
+        m_context.usage.total_tokens += usage.get("total_tokens", 0).asInt();
+    }
+}
+
 void JZAgent::onLLMRequest()
 {
     auto net_reply = (JZNetworkReply*)sender();
@@ -690,6 +807,32 @@ void JZAgent::onLLMRequest()
         }
         return;
     }
+
+    if (m_streamEnabled && (!m_streamContent.empty() || !m_streamToolCalls.empty()))
+    {
+        // 流式收尾：增量已通过 sigReadyRead 实时回调，这里把累积内容并入历史
+        LLMHistory reply;
+        reply.role = LLMHistory::Assistant;
+        reply.content = m_streamContent;
+
+        if (!m_streamToolCalls.empty())
+        {
+            for (auto& call : m_streamToolCalls)
+            {
+                reply.toolRequest.push_back(call);
+                m_context.history.push_back(reply);
+                processToolCall(call);
+            }
+        }
+        else
+        {
+            if (!m_streamContent.empty())
+                m_context.history.push_back(reply);
+            llmLoop();
+        }
+        return;
+    }
+    // 未真正流式（provider 忽略 stream 参数，返回整包 JSON）时降级为非流式解析
 
     std::string json_message = str_fromUtf8(net_reply->readAll());
 

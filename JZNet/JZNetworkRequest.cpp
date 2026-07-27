@@ -69,6 +69,16 @@ std::string JZNetworkRequest::url() const
 { 
     return m_url; 
 }
+
+std::string JZNetworkRequest::hostKey() const
+{
+    UrlParts parts = parseUrl(m_url);
+    std::string scheme = parts.is_https ? "https" : "http";
+    std::string key = scheme + "://" + parts.host;
+    if ((parts.is_https && parts.port != 443) || (!parts.is_https && parts.port != 80))
+        key += ":" + std::to_string(parts.port);
+    return key;
+}
     
 void JZNetworkRequest::setUrl(const std::string& url) 
 { 
@@ -83,6 +93,27 @@ void JZNetworkRequest::setRawHeader(const std::string& headerName, const std::st
 const std::map<std::string, std::string>& JZNetworkRequest::rawHeaders() const
 {
     return m_headers;
+}
+    
+bool JZNetworkRequest::isConnectionClose() const
+{
+    auto it = m_headers.find("Connection");
+    if (it == m_headers.end())
+        return false;
+
+    // 不区分大小写比较 "close"
+    const std::string& v = it->second;
+    if (v.size() != 5)
+        return false;
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        char c = v[i];
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c - 'A' + 'a');
+        if (c != "close"[i])
+            return false;
+    }
+    return true;
 }
     
 void JZNetworkRequest::setHeader(KnownHeaders header, const std::string &headerValue)

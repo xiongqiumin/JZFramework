@@ -35,6 +35,7 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     m_recvTime = 0;
     m_timeId = INVALID_TIMER_ID;
     m_chunkMode = false;
+    m_closing = false;
     m_manager = manager;
 }
 
@@ -62,6 +63,8 @@ void JZNetworkConnect::open(const std::string& url)
 
 void JZNetworkConnect::reopen()
 {
+    resetConnection();
+
     writeConn(m_conn, WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
     if(m_timeId != INVALID_TIMER_ID)
         m_timeId = startTimer(200);
@@ -69,13 +72,30 @@ void JZNetworkConnect::reopen()
     m_recvTime = JZPlatform::getTickCountMs();
 }
 
+void JZNetworkConnect::resetConnection()
+{
+    // keep-alive：清空上一次请求/响应遗留的状态，使连接可复用
+    m_chunkMode = false;
+    m_chunkBuffer.clear();
+    m_closing = false;
+}
+
+void JZNetworkConnect::closeConnection()
+{
+    m_closing = true;
+    if (m_conn != INVALID_NET_HANDLE)
+    {
+        closeConn(m_conn, false);
+        m_conn = INVALID_NET_HANDLE;
+    }
+}
+
 void JZNetworkConnect::close()
 {
     if (m_reply)
         emitFinish(JZNetworkReply::ConnectError);
-
-    if (m_conn != INVALID_NET_HANDLE)
-        closeConn(m_conn, false);
+    else
+        closeConnection();
 }
 
 JZByteArray JZNetworkConnect::getHttpBody(const JZByteArray& data)
@@ -116,22 +136,28 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
         m_timeId = INVALID_TIMER_ID;
     }
 
-    if (m_chunkMode)
-        close();
+    resetConnection();
+
+    // 复用前重置空闲回收定时器
+    if (m_timeId != INVALID_TIMER_ID)
+        killTimer(m_timeId);
+    m_timeId = startTimer((int)m_manager->m_connectionIdleTimeoutMs);
+    m_recvTime = JZPlatform::getTickCountMs();
 }
 
 void JZNetworkConnect::timerEvent(JZTimerEvent* event)
 {
     if (!m_reply)
     {
-        close();
+        // keep-alive 空闲连接：超过空闲超时则回收
+        if (JZPlatform::getTickCountMs() - m_recvTime >= m_manager->m_connectionIdleTimeoutMs)
+            close();
         return;
     }
 
     if (m_reply->m_timeOut != -1 && JZPlatform::getTickCountMs() - m_recvTime > m_reply->m_timeOut)
     {
         emitFinish(JZNetworkReply::TimeOutError);
-        close();
     }
 }
 
@@ -143,9 +169,10 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
     int buf_len = m_chunkBuffer.size();
 
     int ofs = 0;
+    int cl = 0;
     do
     {
-        int o = 0, pl, dl, cl, len = buf_len;
+        int o = 0, pl, dl, len = buf_len;
         bool has_data = false;
 
         // Find zero-length chunk (the end of the body)
@@ -155,7 +182,7 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
             const char* data_ptr = s + ofs + o + pl;
             m_reply->m_body.append(data_ptr, dl);
             has_data = true;
-            
+
             o += cl;
         }
         ofs += o;
@@ -164,18 +191,21 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
 
         if (cl == 0)
         {
-            break;  // No zero-len chunk, buffer more data
+            break;  // 数据尚未完整，等待更多数据
         }
         if (cl < 0) {
+            m_chunkBuffer.remove(0, ofs);
             emitFinish(JZNetworkReply::ConnectError);
             closeConn(m_conn, true);
-            break;
+            return;
         }
 
         // 命中0长度结束块 dl=0，把结束块字节也计入ofs
         ofs += cl;
-        // Zero chunk found. Second pass: strip + relocate
+        // 先裁剪已消费数据，再结束（keep-alive 时 emitFinish 会清空缓冲）
+        m_chunkBuffer.remove(0, ofs);
         emitFinish(JZNetworkReply::NoError);
+        return;
     } while (0);
 
     m_chunkBuffer.remove(0, ofs);
@@ -188,8 +218,10 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     int ev = event->event;
     if (ev == JZ_NET_EV_CLOSE)
     {
+        m_closing = true;
         emitFinish(JZNetworkReply::ConnectError);
         sigDisconnected.emit();
+        deleteLater();
         return;
     }
     if (!m_reply)
@@ -247,11 +279,40 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 //JZNetworkAccessManager
 JZNetworkAccessManager::JZNetworkAccessManager(JZObject *parent)
     :JZObject(parent)
-{    
+{
+    m_maxConnectionsPerHost = 6;
+    m_connectionIdleTimeoutMs = 30 * 1000;
 }
 
 JZNetworkAccessManager::~JZNetworkAccessManager()
-{    
+{
+    // 显式关闭所有池中连接，避免依赖子对象析构顺序
+    // 先快照并清空原容器：close() 可能经 sigDisconnected → onDisconnected
+    // 修改 m_netConnects，清空后其查找不会再命中，避免遍历中误改
+    std::vector<JZNetworkConnect*> connects = m_netConnects;
+    m_netConnects.clear();
+    for (JZNetworkConnect* conn : connects)
+        conn->close();
+}
+
+void JZNetworkAccessManager::setMaxConnectionsPerHost(int n)
+{
+    m_maxConnectionsPerHost = n;
+}
+
+int JZNetworkAccessManager::maxConnectionsPerHost() const
+{
+    return m_maxConnectionsPerHost;
+}
+
+void JZNetworkAccessManager::setConnectionIdleTimeout(int64_t ms)
+{
+    m_connectionIdleTimeoutMs = ms;
+}
+
+int64_t JZNetworkAccessManager::connectionIdleTimeout() const
+{
+    return m_connectionIdleTimeoutMs;
 }
 
 void JZNetworkAccessManager::onDisconnected()
@@ -267,24 +328,75 @@ void JZNetworkAccessManager::onDisconnected()
     }
 }
 
-void JZNetworkAccessManager::open(JZNetworkReply *reply, const std::string &url)
+JZNetworkConnect* JZNetworkAccessManager::findIdleConnection(const std::string &hostKey)
 {
-    for(size_t i = 0; i < m_netConnects.size(); i++)
+    for (size_t i = 0; i < m_netConnects.size(); i++)
     {
         auto conn = m_netConnects[i];
-        if (conn->url() == url && conn->m_reply == nullptr)
+        if (conn->m_hostKey == hostKey && conn->m_reply == nullptr && !conn->m_closing)
+            return conn;
+    }
+    return nullptr;
+}
+
+int JZNetworkAccessManager::connectionCount(const std::string &hostKey)
+{
+    int count = 0;
+    for (size_t i = 0; i < m_netConnects.size(); i++)
+    {
+        if (m_netConnects[i]->m_hostKey == hostKey)
+            count++;
+    }
+    return count;
+}
+
+// 超过每主机上限时，回收最久未使用的空闲连接（LRU）
+void JZNetworkAccessManager::evictIdleConnection(const std::string &hostKey)
+{
+    JZNetworkConnect* oldest = nullptr;
+    int64_t oldestTime = 0;
+    for (size_t i = 0; i < m_netConnects.size(); i++)
+    {
+        auto conn = m_netConnects[i];
+        if (conn->m_hostKey == hostKey && conn->m_reply == nullptr && !conn->m_closing)
         {
-            conn->m_reply = reply;
-            reply->m_conn = conn;
-            conn->reopen();
-            return;
+            if (!oldest || conn->m_recvTime < oldestTime)
+            {
+                oldest = conn;
+                oldestTime = conn->m_recvTime;
+            }
         }
     }
+    if (oldest)
+        oldest->close();
+}
 
-    JZNetworkConnect* conn = new JZNetworkConnect(this);
+void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest &request)
+{
+    std::string hostKey = request.hostKey();
+
+    // 1) 复用同一主机的空闲连接（按主机复用，而非完整 URL）
+    JZNetworkConnect* conn = findIdleConnection(hostKey);
+    if (conn)
+    {
+        conn->m_reply = reply;
+        reply->m_conn = conn;
+        conn->m_requestClose = reply->m_request.isConnectionClose();
+        conn->reopen();
+        return;
+    }
+
+    // 2) 超过每主机连接上限时，先回收一个空闲连接再新建
+    if (connectionCount(hostKey) >= m_maxConnectionsPerHost)
+        evictIdleConnection(hostKey);
+
+    // 3) 新建连接
+    conn = new JZNetworkConnect(this);
     conn->m_reply = reply;
     reply->m_conn = conn;
-    conn->open(url);
+    conn->m_hostKey = hostKey;
+    conn->m_requestClose = reply->m_request.isConnectionClose();
+    conn->open(request.url());
     connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);
 }
@@ -292,8 +404,10 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const std::string &url)
 JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 {
     JZNetworkReply* reply = new JZNetworkReply(this);
+    reply->m_request = request;
+
     reply->m_send = str_toUtf8(request.buildHttpHeader(JZNetworkRequest::Get));        
-    open(reply, request.url());
+    open(reply, request);
     return reply;
 }
 
@@ -302,14 +416,14 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
     JZTX_FUNC_TRACE
 
     JZNetworkRequest mutableRequest = request;
-
     int actualBodyLen = body.size();
     mutableRequest.setHeader(JZNetworkRequest::ContentLengthHeader, std::to_string(actualBodyLen));
-    
+
     JZNetworkReply *reply = new JZNetworkReply(this);
+    reply->m_request = mutableRequest;
     reply->m_send = str_toUtf8(mutableRequest.buildHttpHeader(JZNetworkRequest::Post));        
     reply->m_send.append(body);
-    open(reply, request.url());
+    open(reply, mutableRequest);
 
     return reply;
 }

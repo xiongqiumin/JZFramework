@@ -138,6 +138,9 @@ protected:
     void clear();
     void llmRequest();
     void onLLMRequest();
+    void onLLMStreamReadyRead();
+    void processSSEEvent(const std::string& event);
+    void processSSEData(const std::string& payload);
 
     std::string getContent(const Json::Value& value);
 
@@ -171,6 +174,11 @@ protected:
     JZAgentConfig m_config;
     std::string m_error;
     bool m_streamEnabled;
+
+    // 流式响应(SSE)解析状态，单次请求内有效
+    std::string m_streamBuffer;              // 原始 SSE 文本累积缓冲
+    std::string m_streamContent;             // 累积的正文增量
+    std::vector<ToolCall> m_streamToolCalls; // 按 index 累积的 tool_calls
 };
 
 #endif

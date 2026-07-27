@@ -273,6 +273,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
                 auto http_ptr = std::make_shared<JZHttpResData>();
                 http_ptr->httpCode = mg_http_status(hm);
                 http_ptr->httpCodeText = getHttpCodeText(hm->head.buf, (int)hm->head.len);
+
                 event->extData = http_ptr;
                 
                 uint8_t *msg_buf = c->recv.buf + hm->head.len;
@@ -339,7 +340,9 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         auto http_ptr = std::make_shared<JZHttpResData>();
         http_ptr->httpCode = mg_http_status(hm);
         if (conn_it->second.type == JZSocketInfo::HttpClient)
+        {
             http_ptr->httpCodeText = getHttpCodeText(hm->head.buf, (int)hm->head.len);
+        }
         event->extData = http_ptr;
         event->binData = JZByteArray(hm->message.buf, (int)hm->message.len);
     }

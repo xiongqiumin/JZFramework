@@ -32,7 +32,11 @@ protected:
     JZByteArray getHttpBody(const JZByteArray& data);
     void appendChunk(const JZByteArray& data);
 
+    void resetConnection();   // keep-alive：重置状态以便复用连接
+    void closeConnection();   // 真正关闭底层连接
+
     std::string m_url;
+    std::string m_hostKey;    // 连接池 key：scheme://host:port（按主机复用）
     uint64_t m_conn;
 
     JZByteArray m_chunkBuffer;
@@ -42,6 +46,7 @@ protected:
     int m_timeId;
     int64_t m_recvTime;
     bool m_chunkMode;
+    bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
 };
 
 class JZNetworkAccessManager : public JZObject
@@ -53,13 +58,26 @@ public:
     JZNetworkReply *get(const JZNetworkRequest &request);
     JZNetworkReply *post(const JZNetworkRequest &request, const JZByteArray &buffer);
 
+    // 连接池管理
+    void setMaxConnectionsPerHost(int n);
+    int maxConnectionsPerHost() const;
+    void setConnectionIdleTimeout(int64_t ms);
+    int64_t connectionIdleTimeout() const;
+
 protected:    
     friend JZNetworkConnect;
 
-    void open(JZNetworkReply *reply, const std::string &url);
+    JZNetworkConnect* findIdleConnection(const std::string &hostKey);
+    void evictIdleConnection(const std::string &hostKey);
+    int connectionCount(const std::string &hostKey);
+
+    void open(JZNetworkReply *reply, const JZNetworkRequest &request);
     void onDisconnected();
 
     std::vector<JZNetworkConnect*> m_netConnects;
+
+    int m_maxConnectionsPerHost;     // 每个主机最大连接数
+    int64_t m_connectionIdleTimeoutMs; // 空闲连接回收超时
 };
 
 

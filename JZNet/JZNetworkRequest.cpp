@@ -95,27 +95,6 @@ const std::map<std::string, std::string>& JZNetworkRequest::rawHeaders() const
     return m_headers;
 }
     
-bool JZNetworkRequest::isConnectionClose() const
-{
-    auto it = m_headers.find("Connection");
-    if (it == m_headers.end())
-        return false;
-
-    // 不区分大小写比较 "close"
-    const std::string& v = it->second;
-    if (v.size() != 5)
-        return false;
-    for (size_t i = 0; i < v.size(); i++)
-    {
-        char c = v[i];
-        if (c >= 'A' && c <= 'Z')
-            c = (char)(c - 'A' + 'a');
-        if (c != "close"[i])
-            return false;
-    }
-    return true;
-}
-    
 void JZNetworkRequest::setHeader(KnownHeaders header, const std::string &headerValue)
 {
     switch (header) {
@@ -124,6 +103,24 @@ void JZNetworkRequest::setHeader(KnownHeaders header, const std::string &headerV
             break;
         case ContentLengthHeader:
             setRawHeader("Content-Length", headerValue);
+            break;
+        case AuthorizationHeader:
+            setRawHeader("Authorization", headerValue);
+            break;
+        case UserAgentHeader:
+            setRawHeader("User-Agent", headerValue);
+            break;
+        case ConnectionHeader:
+            setRawHeader("Connection", headerValue);
+            break;
+        case CookieHeader:
+            setRawHeader("Cookie", headerValue);
+            break;
+        case HostHeader:
+            setRawHeader("Host", headerValue);
+            break;
+        case AcceptHeader:
+            setRawHeader("Accept", headerValue);
             break;
         default: {
             JZ_ASSERT(false);

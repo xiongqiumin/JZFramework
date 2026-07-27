@@ -16,7 +16,13 @@ public:
 
     enum KnownHeaders {
         ContentTypeHeader,
-        ContentLengthHeader,        
+        ContentLengthHeader,
+        AuthorizationHeader,
+        UserAgentHeader,
+        ConnectionHeader,
+        CookieHeader,
+        HostHeader,
+        AcceptHeader,
     };    
 
     JZNetworkRequest();
@@ -30,7 +36,6 @@ public:
     void setHeader(KnownHeaders header, const std::string &headerValue);
     void setRawHeader(const std::string &headerName, const std::string &headerValue);
     const std::map<std::string, std::string> &rawHeaders() const;
-    bool isConnectionClose() const;
 
     std::string buildHttpHeader(HttpMethod method) const;
     std::string buildWebSocketHeader() const;

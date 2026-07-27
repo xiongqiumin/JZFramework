@@ -381,7 +381,6 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     {
         conn->m_reply = reply;
         reply->m_conn = conn;
-        conn->m_requestClose = reply->m_request.isConnectionClose();
         conn->reopen();
         return;
     }
@@ -395,7 +394,6 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;
-    conn->m_requestClose = reply->m_request.isConnectionClose();
     conn->open(request.url());
     connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);

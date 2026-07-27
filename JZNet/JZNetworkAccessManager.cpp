@@ -4,6 +4,25 @@
 #include "JZTx.h"
 #include "JZDebug.h"
 
+#include <cctype>
+
+static std::string toLowerStr(const std::string &s)
+{
+    std::string r = s;
+    for (char &c : r)
+        c = (char)std::tolower((unsigned char)c);
+    return r;
+}
+
+static std::string trimStr(const std::string &s)
+{
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos)
+        return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
 //from mongoose
 static bool is_hex_digit(int c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
@@ -233,6 +252,45 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         m_reply->m_statusCode = http->httpCode;
         m_reply->m_statusText = http->httpCodeText;
         m_reply->m_body = getHttpBody(event->binData);
+
+        // event->binData 为完整 HTTP 报文，仅解析一次：提取 head / Location / 所有头
+        std::string location;
+        struct mg_http_message hm;
+        if (mg_http_parse(event->binData.data(), (size_t)event->binData.size(), &hm) <= 0)
+        {
+            // 报文解析失败：连接异常，关闭并上报错误
+            emitFinish(JZNetworkReply::ConnectError);
+            closeConn(m_conn, true);
+            return;
+        }
+
+        m_reply->m_head.assign(hm.head.buf, hm.head.len);
+
+        m_reply->m_headers.clear();
+        for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
+        {
+            struct mg_str *name = &hm.headers[i].name;
+            if (name->len == 0)
+                break;   // 头数组以空 name 结尾
+            std::string key = toLowerStr(std::string(name->buf, name->len));
+            std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
+            m_reply->m_headers[key] = val;
+        }
+
+        struct mg_str *loc = mg_http_get_header(&hm, "Location");
+        if (loc)
+            location.assign(loc->buf, loc->len);
+
+        // 3xx 重定向
+        bool isRedirect = (http->httpCode == 301 || http->httpCode == 302 ||
+                           http->httpCode == 303 || http->httpCode == 307 ||
+                           http->httpCode == 308);
+        if (isRedirect && !location.empty())
+        {
+            if (m_manager->followRedirect(m_reply, location))
+                return;   // 已发起重定向请求，不结束 reply
+        }
+
         if (http->httpCode >= 200 && http->httpCode < 300)
         {
             emitFinish(JZNetworkReply::NoError);
@@ -403,6 +461,7 @@ JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 {
     JZNetworkReply* reply = new JZNetworkReply(this);
     reply->m_request = request;
+    reply->m_method = JZNetworkRequest::Get;
 
     reply->m_send = str_toUtf8(request.buildHttpHeader(JZNetworkRequest::Get));        
     open(reply, request);
@@ -419,9 +478,114 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
 
     JZNetworkReply *reply = new JZNetworkReply(this);
     reply->m_request = mutableRequest;
+    reply->m_method = JZNetworkRequest::Post;
+    reply->m_postBody = body;
     reply->m_send = str_toUtf8(mutableRequest.buildHttpHeader(JZNetworkRequest::Post));        
     reply->m_send.append(body);
     open(reply, mutableRequest);
 
     return reply;
+}
+
+// 根据 base URL 解析重定向 Location（支持绝对/协议相对/根相对/相对路径）
+static std::string resolveRedirectUrl(const std::string &baseUrl, const std::string &location)
+{
+    if (str_startsWith(location, "http://") || str_startsWith(location, "https://"))
+        return location;
+
+    JZUrl base(baseUrl);
+    std::string authority = base.scheme() + "://" + base.host();
+    if (base.port() != 0)
+        authority += ":" + std::to_string(base.port());
+
+    if (str_startsWith(location, "//"))
+        return base.scheme() + ":" + location;
+
+    if (!location.empty() && location[0] == '/')
+        return authority + location;
+
+    // 相对路径：基于当前 path 所在目录
+    std::string path = base.url();
+    size_t q = path.find('?');
+    if (q != std::string::npos)
+        path = path.substr(0, q);
+    size_t lastSlash = path.rfind('/');
+    std::string dir = (lastSlash != std::string::npos) ? path.substr(0, lastSlash + 1) : (authority + "/");
+    return dir + location;
+}
+
+bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::string &location)
+{
+    if (reply->m_redirectPolicy == JZNetworkReply::NoRedirect)
+        return false;
+    if (reply->m_redirectCount >= reply->m_maxRedirects)
+        return false;
+
+    std::string newUrl = resolveRedirectUrl(reply->m_request.url(), location);
+    if (newUrl.empty())
+        return false;
+
+    // 重定向策略校验（AllAllowed 跳过）
+    if (reply->m_redirectPolicy != JZNetworkReply::AllAllowed)
+    {
+        JZUrl base(reply->m_request.url());
+        JZUrl target(newUrl);
+        if (reply->m_redirectPolicy == JZNetworkReply::SameOrigin)
+        {
+            if (target.scheme() != base.scheme() ||
+                target.host() != base.host() ||
+                target.port() != base.port())
+                return false;
+        }
+        else if (reply->m_redirectPolicy == JZNetworkReply::SameHost)
+        {
+            if (target.host() != base.host())
+                return false;
+        }
+    }
+
+    int code = reply->m_statusCode;
+
+    // 决定重定向后的方法与 body：
+    // 307/308 保持原方法；303 一律转 GET；301/302 的 POST 传统上转 GET
+    JZNetworkRequest::HttpMethod method = reply->m_method;
+    JZByteArray body = reply->m_postBody;
+    if (code == 303 || (code != 307 && code != 308 && method == JZNetworkRequest::Post)) {
+        method = JZNetworkRequest::Get;
+        body.clear();
+    }
+
+    // 重置 reply 状态，准备发送新请求
+    reply->m_redirectCount++;
+    reply->m_request.setUrl(newUrl);
+    reply->m_method = method;
+    reply->m_postBody = body;
+    reply->m_body.clear();
+    reply->m_error = JZNetworkReply::None;
+    reply->m_statusCode = 0;
+    reply->m_statusText.clear();
+    reply->m_head.clear();
+    reply->m_headers.clear();
+
+    // 重建发送缓冲
+    if (method == JZNetworkRequest::Post) {
+        int len = body.size();
+        reply->m_request.setHeader(JZNetworkRequest::ContentLengthHeader, std::to_string(len));
+        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Post));
+        reply->m_send.append(body);
+    }
+    else {
+        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Get));
+    }
+
+    // 从当前连接摘除 reply，交给 open 重新分配连接（同主机可复用 keep-alive 连接）
+    JZNetworkConnect* oldConn = reply->m_conn;
+    if (oldConn) {
+        oldConn->m_reply = nullptr;
+        oldConn->resetConnection();
+    }
+    reply->m_conn = nullptr;
+
+    open(reply, reply->m_request);
+    return true;
 }

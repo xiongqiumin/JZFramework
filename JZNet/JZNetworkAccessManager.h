@@ -74,6 +74,9 @@ protected:
     void open(JZNetworkReply *reply, const JZNetworkRequest &request);
     void onDisconnected();
 
+    // 重定向：返回 true 表示已发起重定向请求（未结束 reply）
+    bool followRedirect(JZNetworkReply *reply, const std::string &location);
+
     std::vector<JZNetworkConnect*> m_netConnects;
 
     int m_maxConnectionsPerHost;     // 每个主机最大连接数

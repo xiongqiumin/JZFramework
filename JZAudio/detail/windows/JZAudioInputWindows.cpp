@@ -47,7 +47,7 @@ bool JZAudioInputWindows::open(const JZAudioDeviceInfo& device)
         return false;
     }
 
-    const JZAudioFormat& format = m_parent->format();
+    const JZAudioFormat& format = m_device->format();
     WAVEFORMATEX waveFmt = { 0 };
     if (!convertFormat(format, waveFmt)) {
         return false;
@@ -158,7 +158,7 @@ void JZAudioInputWindows::waveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstanc
     }
 
     JZByteArray audioData((char*)pHeader->lpData, pHeader->dwBytesRecorded);
-    JZAudioInput* input = pImpl->m_parent;
+    JZAudioInput* input = pImpl->m_device;
     runOnObject(input, [input, audioData] { input->sigReadyRead.emit(audioData); });
 
     waveInAddBuffer(hwi, pHeader, sizeof(WAVEHDR));

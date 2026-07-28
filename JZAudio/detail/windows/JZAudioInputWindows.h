@@ -18,15 +18,12 @@ public:
 private:
     static void CALLBACK waveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
         DWORD_PTR dwParam1, DWORD_PTR dwParam2);
+    static const int BUFFER_COUNT = 3;
 
     bool convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt);
     void cleanupBuffers();
 
-    JZAudioInput* m_parent = nullptr;
     HWAVEIN m_hWaveIn = nullptr;
-    std::atomic<bool> m_isCapturing = false;
-
-
-    static const int BUFFER_COUNT = 3; 
     WAVEHDR m_waveHdr[BUFFER_COUNT] = { 0 };
+    std::atomic<bool> m_isCapturing = false;
 };

@@ -46,7 +46,7 @@ static JZAgentConfig loadConfig(int argc, char **argv)
 class AgentTester : public JZObject
 {
 public:
-    enum Step { Guess, Math, Role, Done };
+    enum Step { Guess, Math, Role, Async, Done };
 
     AgentTester(JZEventLoop *loop, const JZAgentConfig &cfg)
         : m_loop(loop), m_config(cfg)
@@ -84,8 +84,10 @@ protected:
             setupGuess();
         else if (m_step == Math)
             setupMath();
-        else
+        else if (m_step == Role)
             setupRole();
+        else
+            setupAsync();
 
         m_pollTimer->start(300);
     }
@@ -202,6 +204,55 @@ protected:
         m_agent->request("你是谁？");
     }
 
+    // 场景4：异步工具（JZAgentAsyncFunctionTool）
+    // 异步工具不在 function 中直接返回结果，而是自行在"完成后"调用
+    // agent->toolCallResult(...) 把结果交还；Agent 会据此继续驱动对话。
+    void setupAsync()
+    {
+        ToolDefine def;
+        def.name = "asyncAdd";
+        def.description = "异步加法工具：将两个数相加后返回，内部模拟一次异步后端调用（延迟后回传结果）。";
+        ParamSchema a;
+        a.name = "a";
+        a.type = NUMBER;
+        a.description = "操作数 a";
+        ParamSchema b;
+        b.name = "b";
+        b.type = NUMBER;
+        b.description = "操作数 b";
+        def.parameters.push_back(a);
+        def.parameters.push_back(b);
+        def.required_parameters.push_back("a");
+        def.required_parameters.push_back("b");
+
+        auto impl = std::make_shared<JZAgentAsyncFunctionTool>();
+        impl->function = [](JZAgent *agent, const ToolCall &call) {
+            double x = call.params["a"].asDouble();
+            double y = call.params["b"].asDouble();
+            // 模拟异步后端（如网络/IO）：延迟 500ms 后再把结果交还。
+            JZTimer::singleShot(500, [agent, id = call.id, x, y]() {
+                ToolCallResult r;
+                r.id = id;
+                r.isOk = true;
+                double v = x + y;
+                if (std::isfinite(v) && std::floor(v) == v)
+                    r.result = std::to_string((long long)v);
+                else
+                    r.result = std::to_string(v);
+                agent->toolCallResult(r);
+            });
+        };
+        def.impl = impl;
+        m_agent->addTool(def);
+
+        m_agent->setSystemPrompt(
+            "你是一个助手。当需要做两个数相加时，请调用 asyncAdd 工具，"
+            "不要心算，等工具返回结果后用一句话给出答案。");
+
+        jzDebug().nospace() << "[场景4 异步工具] 提问: 100 + 200 = ? (预期 300)";
+        m_agent->request("请帮我用异步工具计算 100 + 200 等于多少？");
+    }
+
     // 流式增量（仅作进度展示）
     void onReply(std::string text)
     {
@@ -268,6 +319,12 @@ protected:
             bool ok = finalText.find("小智") != std::string::npos;
             jzDebug().nospace() << "[场景3 结果] 关键词\"小智\"检查: " << (ok ? "PASS" : "FAIL");
         }
+        else if (m_step == Async) {
+            jzDebug().nospace() << "[场景4 结果] 模型回答: " << finalText;
+            jzDebug().nospace() << "[场景4 结果] 工具调用次数: " << countToolMessages();
+            bool ok = finalText.find("300") != std::string::npos;
+            jzDebug().nospace() << "[场景4 结果] 关键词\"300\"检查: " << (ok ? "PASS" : "FAIL");
+        }
 
         // 延迟到事件循环空闲再推进，避免与 sigError/sigFinished 同步级联冲突
         JZAgent *a = m_agent;
@@ -284,6 +341,10 @@ protected:
         }
         else if (m_step == Math) {
             m_step = Role;
+            runCurrentScenario();
+        }
+        else if (m_step == Role) {
+            m_step = Async;
             runCurrentScenario();
         }
         else {

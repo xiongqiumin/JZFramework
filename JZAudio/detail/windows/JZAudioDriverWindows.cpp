@@ -8,7 +8,6 @@
 
 JZAudioDriverWindows::JZAudioDriverWindows()
 {
-    setInstance(this);
 }
 
 std::vector<JZAudioDeviceInfo> JZAudioDriverWindows::audioInputList()
@@ -78,5 +77,3 @@ JZAudioOutputImpl *JZAudioDriverWindows::createOutput(JZAudioOutput* parent)
 {
     return new JZAudioOutputWindows(parent);
 }
-
-JZAudioDriverWindows g_winDriver;

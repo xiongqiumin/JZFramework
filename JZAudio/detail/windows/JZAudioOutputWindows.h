@@ -22,18 +22,17 @@ public:
     bool write(const JZByteArray& data);
 
 private:
+    static const int MAX_BUFFER_COUNT = 4;
     static void CALLBACK waveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
         DWORD_PTR dwParam1, DWORD_PTR dwParam2);
 
     bool convertFormat(const JZAudioFormat& format, WAVEFORMATEX& waveFmt);
     void cleanupBuffers();
 
-    JZAudioOutput* m_parent = nullptr;
     HWAVEOUT m_hWaveOut = nullptr;
     std::atomic<bool> m_isPlaying = false;
     std::list<WAVEHDR*> m_bufferQueue;
     std::mutex m_queueMutex;
-    static const int MAX_BUFFER_COUNT = 4;
 };
 
 #endif // !JZ_AUDIO_OUTPIT_IMPL_H_

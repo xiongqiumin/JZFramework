@@ -39,7 +39,7 @@ bool JZAudioOutputWindows::convertFormat(const JZAudioFormat& format, WAVEFORMAT
 
 bool JZAudioOutputWindows::open(const JZAudioDeviceInfo& device)
 {
-    auto format = m_parent->format();
+    auto format = m_device->format();
     if (m_isPlaying || m_hWaveOut != nullptr) {
         return false;
     }
@@ -186,7 +186,7 @@ void JZAudioOutputWindows::waveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInst
     delete pHeader;
 
     if (pImpl->m_bufferQueue.empty()) {
-        auto output = pImpl->m_parent;
+        auto output = pImpl->m_device;
         runOnObject(output, [output] { output->sigPlayFinish.emit(); });
     }
 }

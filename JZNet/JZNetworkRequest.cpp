@@ -5,33 +5,24 @@ JZNetworkRequest::JZNetworkRequest()
 {
 }
 
-JZNetworkRequest::JZNetworkRequest(const std::string &url)
-{
-    m_url.setUrl(url);
-}
-
 JZNetworkRequest::JZNetworkRequest(const JZUrl &url)
 {
     m_url = url;
 }
 
-std::string JZNetworkRequest::url() const 
-{ 
-    return m_url.url(); 
+JZNetworkRequest::JZNetworkRequest(const std::string& url)
+{
+    m_url.setUrl(url);
 }
 
-std::string JZNetworkRequest::hostKey() const
+const JZUrl& JZNetworkRequest::url() const
 {
-    std::string scheme = m_url.scheme();
-    std::string key = scheme + "://" + m_url.host();
-    if ((scheme == "https" && m_url.port() != 443) || (scheme == "http" && m_url.port() != 80))
-        key += ":" + std::to_string(m_url.port());
-    return key;
+    return m_url;
 }
-    
-void JZNetworkRequest::setUrl(const std::string& url) 
+
+void JZNetworkRequest::setUrl(const JZUrl& url)
 { 
-    m_url.setUrl(url); 
+    m_url = url; 
 }
     
 void JZNetworkRequest::setRawHeader(const std::string& headerName, const std::string& headerValue)

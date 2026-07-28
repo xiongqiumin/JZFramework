@@ -13,6 +13,7 @@ include(JZFramework.cmake)
 jzframework_use_modules(JZCore JZNet JZAgent JZBle JZCamera JZCoroutine JZCrashReport
     JZCv JZFrp JZGpio JZHttpServer JZJSEngine JZJson JZWidget JZMcpServer JZModbus JZNode
     JZOTA JZSensor JZSerialPort JZWifi JZTest)
+target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 add_subdirectory(demo)
 add_subdirectory(test)

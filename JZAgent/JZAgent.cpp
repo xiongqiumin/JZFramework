@@ -82,30 +82,33 @@ void JZAgent::init(JZAgentConfig config)
 
     std::string system_root = readFile(m_config.rootPath + "/system.md");
     if (!system_root.empty())
-        m_systemPrompt = system_root;
-    else
-        m_systemPrompt = "你是一个人助理,请友好的回答问题,并协助用户完成任务.";
-    
-    if (m_systemPrompt.size() == 0 || m_systemPrompt.back() != '\n')
-        m_systemPrompt.append("\n");
-
-    JZDir skills_dir(m_config.rootPath + "/skills");
-    if (skills_dir.exists())
     {
-        // 使用JZDir遍历目录：仅文件、排除.和..、按名称排序
-        std::vector<JZFileInfo> file_list =
-            skills_dir.entryInfoList(JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
+        m_systemPrompt = system_root;
+        if (m_systemPrompt.size() == 0 || m_systemPrompt.back() != '\n')
+            m_systemPrompt.append("\n");
 
-        // 遍历所有技能文件
-        for (const auto& file_info : file_list)
+        JZDir skills_dir(m_config.rootPath + "/skills");
+        if (skills_dir.exists())
         {
-            auto ret = loadSkill(file_info.fileName(), file_info.filePath() + "/skill.md");
-            m_skills.push_back(ret.value());
-        }
-    }
+            // 使用JZDir遍历目录：仅文件、排除.和..、按名称排序
+            std::vector<JZFileInfo> file_list =
+                skills_dir.entryInfoList(JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
 
-    m_systemPrompt += "\n";
-    m_systemPrompt += buildSkillSummary();
+            // 遍历所有技能文件
+            for (const auto& file_info : file_list)
+            {
+                auto ret = loadSkill(file_info.fileName(), file_info.filePath() + "/skill.md");
+                m_skills.push_back(ret.value());
+            }
+        }
+
+        m_systemPrompt += "\n";
+        m_systemPrompt += buildSkillSummary();
+    }
+    else
+    {
+        m_systemPrompt = "你是一个人助理,请友好的回答问题,并协助用户完成任务.";
+    }
 }
 
 std::string JZAgent::systemPrompt()
@@ -314,7 +317,7 @@ void JZAgent::llmRequest()
     }
 
     JZNetworkRequest req;
-    req.setUrl(m_config.modelUrl);
+    req.setUrl(JZUrl(m_config.modelUrl));
     req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Authorization", "Bearer " + m_config.modelToken);
 
@@ -334,7 +337,7 @@ void JZAgent::llmRequest()
         m_streamToolCalls.clear();
     }
 
-    m_llmReply->setTimeOut(360 * 1000);
+    m_llmReply->setTimeOut(30 * 1000);
     m_llmReqInfo.requestTime = JZPlatform::getTickCountMs();
 }
 
@@ -725,13 +728,19 @@ void JZAgent::processSSEEvent(const std::string& event)
 
 void JZAgent::processSSEData(const std::string& payload)
 {
+    if (payload.empty())
+        return;   // 空 data 行：SSE keep-alive 心跳，无内容，跳过
     if (payload == "[DONE]")
         return;
 
     Json::Value result;
     Json::Reader reader;
     if (!reader.parse(payload, result))
-        return;   // 心跳/注释等非 JSON，忽略
+    {
+        jzDebug() << "SSE payload 解析失败, 原始内容=[" << payload << "]";
+        llmError("SSE数据解析错误: " + reader.getFormattedErrorMessages());
+        return;
+    }
 
     Json::Value choices = result["choices"];
     if (!choices.isArray() || choices.size() == 0)

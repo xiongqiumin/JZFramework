@@ -31,7 +31,7 @@ bool JZWebSocket::isConnect() const
 
 void JZWebSocket::connectToHost(const std::string &uri)
 {
-    connectToHost(JZNetworkRequest(uri));
+    connectToHost(JZNetworkRequest(JZUrl(uri)));
 }
 
 void JZWebSocket::connectToHost(const JZNetworkRequest &req)
@@ -40,7 +40,7 @@ void JZWebSocket::connectToHost(const JZNetworkRequest &req)
 
     JZSocketInfo info;
     info.type = JZSocketInfo::WebSocket;
-    info.url = req.url();
+    info.url = req.url().url();
     info.websocketExt = req.buildWebSocketHeader();
     m_conn = openConn(info);
     m_state = ConnectingState;    

@@ -110,7 +110,7 @@ void JZJSHttpModule::fetch(int promiseHandle, const std::string& url, const Json
 JZNetworkRequest JZJSHttpModule::makeRequest(const std::string& url, const Json::Value& options)
 {
     JZNetworkRequest req;
-    req.setUrl(url);
+    req.setUrl(JZUrl(url));
 
     if (options["headers"].isObject())
     {

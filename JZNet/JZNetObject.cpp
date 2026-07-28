@@ -17,6 +17,8 @@
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 
+static mg_event_handler_t g_mg_http_cb = nullptr;
+
 JZNetEvent mgEventToNetEvent(int ev)
 {
     switch (ev)
@@ -537,6 +539,8 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if (info.type == JZSocketInfo::HttpClient)
         {
             conn = mg_http_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+            if(!g_mg_http_cb)
+                g_mg_http_cb = conn->pfn;
             if (str_startsWith(info.url, "https://")) {
                 initTls(conn, info.url);
             }
@@ -688,6 +692,26 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
 
 send_end:            
             if(!send_finished)
+            {
+                jzWarning() << "send faild, net draining";
+                c->is_draining = 1;
+            }
+        }
+        else if (event->netCmd == JZNetReqEvent::Net_HttpClientReopen)
+        {
+            const char* buf = event->buffer.data();
+            int len = event->buffer.size();
+
+            //重置http
+            c->pfn = g_mg_http_cb;
+            conn_it->second.type = JZSocketInfo::HttpClient;
+            // 防止 send buffer 无限膨胀导致 OOM
+            bool send_finished = false;
+            if (c->send.len + len <= JZNET_MAX_SEND)
+            {
+                send_finished = mg_send(c, buf, len);
+            }
+            if (!send_finished) 
             {
                 jzWarning() << "send faild, net draining";
                 c->is_draining = 1;

@@ -254,7 +254,7 @@ void JZUrl::set_default_port()
     }
 }
 
-const JZUrlQuery &JZUrl::query()
+const JZUrlQuery &JZUrl::query() const
 {
     return m_query;
 }

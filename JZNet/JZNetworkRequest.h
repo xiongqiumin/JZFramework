@@ -26,12 +26,11 @@ public:
     };    
 
     JZNetworkRequest();
-    JZNetworkRequest(const std::string &url);
+    JZNetworkRequest(const std::string& url);
     JZNetworkRequest(const JZUrl &url);
 
-    std::string url() const;
-    void setUrl(const std::string &url);
-    std::string hostKey() const;   // scheme://host:port，用于连接池复用
+    const JZUrl& JZNetworkRequest::url() const;
+    void setUrl(const JZUrl &url);
 
     void setHeader(KnownHeaders header, const std::string &headerValue);
     void setRawHeader(const std::string &headerName, const std::string &headerValue);

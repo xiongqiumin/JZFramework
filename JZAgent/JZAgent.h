@@ -94,16 +94,16 @@ public:
     JZAgent(JZObject* parent = nullptr);
     ~JZAgent();
 
-    const LLMContext* context() const;
-    
-    bool streamEnabled() const;
-    void setStreamEnabled(bool enabled);
-
     void init(JZAgentConfig root_path);
+    
+    const LLMContext* context() const;
     
     void setSystemPrompt(std::string prompt);
     std::string systemPrompt();
     std::string toolsPrompt();
+
+    bool streamEnabled() const;
+    void setStreamEnabled(bool enabled);
 
     void transaction();  //暂时不提交
     void commit();       //提交  

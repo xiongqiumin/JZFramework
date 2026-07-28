@@ -84,7 +84,12 @@ void JZNetworkConnect::reopen()
 {
     resetConnection();
 
-    writeConn(m_conn, WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+    JZNetReqEvent* req = new JZNetReqEvent();
+    req->netCmd = JZNetReqEvent::Net_HttpClientReopen;
+    req->conn = m_conn;
+    req->buffer = m_reply->m_send;
+    postReqEvent(req);
+
     if(m_timeId != INVALID_TIMER_ID)
         m_timeId = startTimer(200);
 
@@ -429,9 +434,19 @@ void JZNetworkAccessManager::evictIdleConnection(const std::string &hostKey)
         oldest->close();
 }
 
+std::string JZNetworkAccessManager::hostKey(const JZNetworkRequest& request) const
+{
+    auto& url = request.url();
+    std::string scheme = url.scheme();
+    std::string key = scheme + "://" + url.host();
+    if ((scheme == "https" && url.port() != 443) || (scheme == "http" && url.port() != 80))
+        key += ":" + std::to_string(url.port());
+    return key;
+}
+
 void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest &request)
 {
-    std::string hostKey = request.hostKey();
+    std::string hostKey = this->hostKey(request);
 
     // 1) 复用同一主机的空闲连接（按主机复用，而非完整 URL）
     JZNetworkConnect* conn = findIdleConnection(hostKey);
@@ -452,7 +467,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;
-    conn->open(request.url());
+    conn->open(request.url().url());
     connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);
 }
@@ -520,14 +535,14 @@ bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::st
     if (reply->m_redirectCount >= reply->m_maxRedirects)
         return false;
 
-    std::string newUrl = resolveRedirectUrl(reply->m_request.urlObject(), location);
+    std::string newUrl = resolveRedirectUrl(reply->m_request.url(), location);
     if (newUrl.empty())
         return false;
 
     // 重定向策略校验（AllAllowed 跳过）
     if (reply->m_redirectPolicy != JZNetworkReply::AllAllowed)
     {
-        const JZUrl &base = reply->m_request.urlObject();
+        const JZUrl &base = reply->m_request.url();
         JZUrl target(newUrl);
         if (reply->m_redirectPolicy == JZNetworkReply::SameOrigin)
         {
@@ -556,7 +571,7 @@ bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::st
 
     // 重置 reply 状态，准备发送新请求
     reply->m_redirectCount++;
-    reply->m_request.setUrl(newUrl);
+    reply->m_request.setUrl(JZUrl(newUrl));
     reply->m_method = method;
     reply->m_postBody = body;
     reply->m_body.clear();

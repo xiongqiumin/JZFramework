@@ -13,8 +13,6 @@ set(JZCO_SOURCES
     JZCoSemaphore.h
     JZCoWatch.cpp
     JZCoWatch.h
-    JZCoSerialPort.cpp
-    JZCoSerialPort.h
 )
 
 set(JZCO_NET_SOURCES
@@ -49,6 +47,16 @@ set(JZCO_BLE_SOURCES
 jz_module_exists(JZBle HAS_JZBLE)
 if(HAS_JZBLE)
     list(APPEND JZCO_SOURCES ${JZCO_BLE_SOURCES})
+endif()
+
+set(JZCO_SERIAL_SOURCES
+	JZCoSerialPort.cpp
+    JZCoSerialPort.h
+)
+
+jz_module_exists(JZSerialPort HAS_JZSerialPort)
+if(HAS_JZBLE)
+    list(APPEND JZCO_SOURCES ${JZCO_SERIAL_SOURCES})
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")

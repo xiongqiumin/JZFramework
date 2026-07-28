@@ -38,7 +38,7 @@ public:
     uint16_t port() const;
     const std::string& path() const;
 
-    const JZUrlQuery &query();
+    const JZUrlQuery &query() const;
     void setQuery(const JZUrlQuery& query);
 
 private:

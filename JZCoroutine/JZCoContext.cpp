@@ -230,107 +230,127 @@ constexpr int BLOCK_SIZE = 512U;
 class JZCOMemPool
 {
 public:
-    /**
-     * @brief 使用外部静态缓冲区初始化内存池
-     * @param buffer 外部静态数组/缓冲区
-     * @param bufSize 缓冲区总字节数
-     */
-    void init(const char* buffer, int bufSize)
+    void init(uint8_t* buffer, uint32_t bufSize)
     {
-        m_poolBuf = reinterpret_cast<uint8_t*>(const_cast<char*>(buffer));
+        m_poolBuf = buffer;
         m_totalSize = bufSize;
         m_totalBlocks = bufSize / BLOCK_SIZE;
 
-        // 清空空闲块集合，初始化所有块为空闲
-        m_freeBlocks.clear();
-        for (int i = 0; i < m_totalBlocks; ++i)
-        {
-            m_freeBlocks.push_back(i);
-        }
+        JZ_ASSERT(buffer != nullptr);
+        JZ_ASSERT((bufSize % BLOCK_SIZE) == 0U);
+        JZ_ASSERT(m_totalBlocks > 0U);
+
+        m_blockState.assign(m_totalBlocks, 0U);
     }
 
-    /**
-     * @brief 内存分配，最小分配512字节
-     * @param allocSize 申请字节大小
-     * @return 分配内存指针，nullptr分配失败
-     */
     void* alloc(int allocSize)
     {
-        if (m_freeBlocks.empty())
+        JZ_ASSERT(allocSize > 0);
+        JZ_ASSERT(m_totalBlocks > 0U);
+
+        const uint32_t reqSize = static_cast<uint32_t>(allocSize);
+        const uint32_t needBlocks = (reqSize + BLOCK_SIZE - 1U) / BLOCK_SIZE;
+
+        JZ_ASSERT(needBlocks <= m_totalBlocks);
+        JZ_ASSERT(getFreeBlocks() >= needBlocks);
+
+        uint32_t consecutive = 0U;
+        uint32_t startIdx = 0U;
+        bool found = false;
+        for (uint32_t i = 0; i < m_totalBlocks; ++i)
         {
-            printf("MemPool alloc failed: no free blocks\n");
-            return nullptr;
-        }
-
-        // 最少分配1块，向上取整计算需要块数
-        int needBlocks = 1;
-        if (allocSize > BLOCK_SIZE)
-        {
-            needBlocks = (allocSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        }
-
-        // 空闲块不足
-        if (needBlocks > m_freeBlocks.size())
-        {
-            printf("MemPool alloc failed: need %zu blocks, free %zu\n", needBlocks, m_freeBlocks.size());
-            return nullptr;
-        }
-
-        // 取出末尾N个空闲块（vector尾部弹出效率最高）
-        int firstBlockIdx = m_freeBlocks[m_freeBlocks.size() - needBlocks];
-        for (int i = 0; i < needBlocks; ++i)
-        {
-            m_freeBlocks.pop_back();
-        }
-
-        // 返回对应块起始地址
-        return m_poolBuf + firstBlockIdx * BLOCK_SIZE;
-    }
-
-    /**
-     * @brief 释放内存块
-     * @param ptr alloc返回的内存指针
-     */
-    void free(void* ptr)
-    {
-        if (ptr == nullptr || m_poolBuf == nullptr)
-            return;
-
-        // 计算块下标
-        ptrdiff_t offset = reinterpret_cast<uint8_t*>(ptr) - m_poolBuf;
-        if (offset < 0 || static_cast<int>(offset) % BLOCK_SIZE != 0)
-        {
-            printf("MemPool free failed: invalid pointer\n");
-            return;
-        }
-
-        int blockIdx = static_cast<int>(offset) / BLOCK_SIZE;
-
-        // 查找该块是否已经空闲，防止重复释放
-        for (int idx : m_freeBlocks)
-        {
-            if (idx == blockIdx)
+            if (m_blockState[i] == 0U)
             {
-                printf("MemPool free warning: double free\n");
-                return;
+                if (consecutive == 0U)
+                    startIdx = i;
+                consecutive++;
+                if (consecutive >= needBlocks)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            else
+            {
+                consecutive = 0U;
             }
         }
+        JZ_ASSERT(found);
 
-        // 归还到空闲块vector
-        m_freeBlocks.push_back(blockIdx);
+        m_blockState[startIdx] = needBlocks;
+        for (uint32_t i = 1U; i < needBlocks; ++i)
+        {
+            m_blockState[startIdx + i] = 1U;
+        }
+
+        return m_poolBuf + startIdx * BLOCK_SIZE;
     }
 
-    // 状态查询接口
-    int getTotalBlocks() const  { return m_totalBlocks; }
-    int getFreeBlocks() const   { return m_freeBlocks.size(); }
-    int getUsedBlocks() const   { return m_totalBlocks - m_freeBlocks.size(); }
+    void free(void* ptr)
+    {
+        JZ_ASSERT(ptr != nullptr);
+        JZ_ASSERT(m_poolBuf != nullptr);
+
+        uint8_t* p = reinterpret_cast<uint8_t*>(ptr);
+        const ptrdiff_t offset = p - m_poolBuf;
+        const uint32_t offUint = static_cast<uint32_t>(offset);
+
+        JZ_ASSERT(offset >= 0);
+        JZ_ASSERT(offUint < m_totalSize);
+        JZ_ASSERT((offUint % BLOCK_SIZE) == 0U);
+
+        const uint32_t firstIdx = offUint / BLOCK_SIZE;
+        const uint32_t blockCount = m_blockState[firstIdx];
+
+        JZ_ASSERT(blockCount != 0U);
+        JZ_ASSERT(blockCount <= (m_totalBlocks - firstIdx));
+
+        for (uint32_t i = 1U; i < blockCount; ++i)
+        {
+            const uint32_t curIdx = firstIdx + i;
+            JZ_ASSERT(m_blockState[curIdx] == 1U);
+        }
+
+        for (uint32_t i = 0U; i < blockCount; ++i)
+        {
+            m_blockState[firstIdx + i] = 0U;
+        }
+    }
+
+    uint32_t getTotalBlocks() const
+    {
+        return m_totalBlocks;
+    }
+
+    uint32_t getFreeBlocks() const
+    {
+        uint32_t cnt = 0U;
+        for (uint32_t val : m_blockState)
+        {
+            if (val == 0U)
+                cnt++;
+        }
+        return cnt;
+    }
+
+    uint32_t getUsedBlocks() const
+    {
+        return m_totalBlocks - getFreeBlocks();
+    }
+
+    void reset()
+    {
+        if (m_totalBlocks > 0U)
+            m_blockState.assign(m_totalBlocks, 0U);
+    }
 
 private:
-    uint8_t*               m_poolBuf{nullptr};
-    int                 m_totalSize{0};
-    int                 m_totalBlocks{0};
-    // vector存储所有空闲块的下标，替代链表
-    std::vector<int>    m_freeBlocks;
+    static constexpr uint32_t BLOCK_SIZE = 64U;
+
+    uint8_t* m_poolBuf{ nullptr };
+    uint32_t                m_totalSize{ 0U };
+    uint32_t                m_totalBlocks{ 0U };
+    std::vector<uint32_t>   m_blockState;
 };
 
 /*
@@ -370,7 +390,7 @@ JZCoMainContext::JZCoMainContext()
 
     StackType_t *main_stack = pxTaskGetStackStart(NULL);
     char *buffer = (char *)main_stack;
-    memPool.init(buffer, 16 * 1024);
+    memPool.init((uint8_t * )buffer, 16 * 1024);
 }
 
 JZCoMainContext::~JZCoMainContext()

@@ -52,17 +52,11 @@ void JZHttpServerClient::sendFinished()
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_HttpReplyFinish;
     req->conn = m_conn;
-
-    auto inst = JZNetThread::instance();
-    jzApp->postEvent(inst, req);
+    postReqEvent(req);
 
     // 非 keep-alive: 通知 mongoose 响应完成后关闭连接
     if (!m_keepAlive)
-    {
         closeConn(m_conn, false);
-    }
-
-    inst->wakeUpNet();
 }
 
 void JZHttpServerClient::response(const JZByteArray& buffer)

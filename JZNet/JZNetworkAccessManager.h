@@ -71,6 +71,7 @@ protected:
     void evictIdleConnection(const std::string &hostKey);
     int connectionCount(const std::string &hostKey);
 
+    std::string hostKey(const JZNetworkRequest& request) const;
     void open(JZNetworkReply *reply, const JZNetworkRequest &request);
     void onDisconnected();
 

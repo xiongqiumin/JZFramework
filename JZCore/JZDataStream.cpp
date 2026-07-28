@@ -122,7 +122,7 @@ void JZDataStream::skipRawData(int offset)
 
 void JZDataStream::setByteOrder(ByteOrder order)
 {
-
+    JZ_ASSERT(order == JZDataStream::LittleEndian);
 }
 
 JZDataStream::ByteOrder JZDataStream::byteOrder()

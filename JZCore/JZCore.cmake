@@ -82,15 +82,18 @@
 	JZCommandLineParser.cpp
     JZConsoleInput.h
     JZConsoleInput.cpp
-	JZDeadlineTimer.h
-	JZDeadlineTimer.cpp
     JZCircleBuffer.cpp
     JZCircleBuffer.h
-	JZLockPointer.h
+	JZMutexPointer.h
 )
 
 if(WIN32)
     list(APPEND JZCORE_SOURCES JZPlatformWin32.cpp)
+    list(APPEND JZCORE_SOURCES JZProcess.cpp)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND JZCORE_SOURCES JZProcess.cpp)
 endif()
 
 # 平台驱动

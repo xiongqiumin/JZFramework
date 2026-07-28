@@ -175,46 +175,18 @@ private:
     alignas(T) unsigned char m_data[sizeof(T)];  // 使用 alignas 替代 aligned_storage
 };
 
-// void 特化
+// void 特化: 仅声明, 成员实现见 JZOptional.cpp
 template <>
 class JZOptional<void>
 {
 public:
-    static JZOptional None()
-    {
-        return JZOptional();
-    }
-
-    static JZOptional Some()
-    {
-        JZOptional ret;
-        ret.m_hasValue = true;
-        return ret;
-    }
-
-    JZOptional() : m_hasValue(false)
-    {
-    }
-
-    explicit operator bool() const noexcept
-    {
-        return isSome();
-    }
-
-    bool isSome() const
-    {
-        return m_hasValue;
-    }
-
-    bool isNone() const
-    {
-        return !m_hasValue;
-    }
-
-    void reset()
-    {
-        m_hasValue = false;
-    }
+    static JZOptional None();
+    static JZOptional Some();
+    JZOptional();
+    explicit operator bool() const noexcept;
+    bool isSome() const;
+    bool isNone() const;
+    void reset();
 
 private:
     bool m_hasValue;

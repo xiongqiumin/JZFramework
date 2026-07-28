@@ -215,79 +215,22 @@ private:
     std::string m_error;
 };
 
-// void 特化
+// void 特化: 仅声明, 成员实现见 JZResult.cpp
 template <>
 class JZResult<void>
 {
 public:
-    static JZResult Ok()
-    {
-        JZResult ret;
-        ret.m_isOk = true;
-        ret.m_code = 0;
-        return ret;
-    }
-
-    static JZResult Error(const std::string& error_msg)
-    {
-        return Error(1, error_msg);
-    }
-
-    static JZResult Error(int code, const std::string& error_msg)
-    {
-        JZResult ret;
-        ret.m_isOk = false;
-        ret.m_code = code;
-        ret.m_error = error_msg;
-        return ret;
-    }
-
-    JZResult(JZResultStatus error)
-    {
-        m_code = error.code;
-        m_error = error.message;
-        m_isOk = false;
-    }
-
-    JZResult()
-    {
-        m_isOk = false;
-        m_code = 1;
-    }
-
-    bool isOk() const
-    {
-        return m_isOk;
-    }
-
-    bool isError() const
-    {
-        return !m_isOk;
-    }
-
-    explicit operator bool() const
-    {
-        return m_isOk;
-    }
-
-    int errorCode() const
-    {
-        return m_code;
-    }
-
-    const std::string& errorMessage() const
-    {
-        assert(isError() && "JZResult<void>::errorMessage() called on Ok");
-        return m_error;
-    }
-    
-    JZResultStatus status() const
-    {
-        JZResultStatus err;
-        err.code = m_code;
-        err.message = m_error;
-        return err;
-    }
+    static JZResult Ok();
+    static JZResult Error(const std::string& error_msg);
+    static JZResult Error(int code, const std::string& error_msg);
+    JZResult(JZResultStatus error);
+    JZResult();
+    bool isOk() const;
+    bool isError() const;
+    explicit operator bool() const;
+    int errorCode() const;
+    const std::string& errorMessage() const;
+    JZResultStatus status() const;
 
 private:
     bool m_isOk = false;

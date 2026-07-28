@@ -15,6 +15,7 @@ JZCircleBuffer::JZCircleBuffer(int initCap, bool enableDynamic)
 
 void JZCircleBuffer::setDynamic(bool enableDynamic)
 {
+    JZMutexLocker locker(&m_mutex);
     m_dynamicMode = enableDynamic;
 }
 
@@ -49,7 +50,7 @@ void JZCircleBuffer::resize(int newCap)
 
     m_buffer.swap(newBuf);
 
-    // ★ 线性化后数据落在 [0, m_dataLen), 必须重置头尾索引
+    // 线性化后数据落在 [0, m_dataLen), 必须重置头尾索引
     m_head = 0;
     m_tail = m_dataLen;
 }

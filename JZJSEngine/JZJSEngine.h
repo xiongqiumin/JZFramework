@@ -45,6 +45,8 @@ public:
     void init();
     void deinit();
 
+    void setWorkDir(const std::string& dir);
+
     void start();
     void stop();
     void resume();

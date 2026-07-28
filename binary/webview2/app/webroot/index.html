@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="utf-8" />
+    <title>JZWebView2 + JS Engine</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; }
+        button { margin: .25rem; padding: .5rem 1rem; }
+        pre { background: #f4f4f4; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>JZWebView2 + JS Engine (Node-like)</h1>
+    <p>静态页来自 <code>app/webroot</code>，动态 API 来自 <code>app/scripts</code> 里的 JS。</p>
+    <div>
+        <button onclick="call('/api/hello')">GET /api/hello</button>
+        <button onclick="call('/api/echo?a=1&b=2')">GET /api/echo?a=1&b=2</button>
+        <button onclick="call('/api/user/42')">GET /api/user/42</button>
+        <button onclick="call('/api/time')">GET /api/time (async)</button>
+        <button onclick="call('/api/node')">GET /api/node (fetch)</button>
+        <button onclick="call('/api/ping')">GET /api/ping</button>
+        <button onclick="postEcho()">POST /api/echo</button>
+    </div>
+    <pre id="out">点击按钮试试…</pre>
+
+    <script>
+        async function call(url) {
+            const out = document.getElementById('out');
+            out.textContent = '请求中: ' + url;
+            try {
+                const r = await fetch(url);
+                const t = await r.text();
+                out.textContent = r.status + ' ' + r.headers.get('x-powered-by') + '\n' + t;
+            } catch (e) {
+                out.textContent = 'error: ' + e;
+            }
+        }
+        async function postEcho() {
+            const out = document.getElementById('out');
+            const r = await fetch('/api/echo', { method: 'POST', body: 'hello from page' });
+            out.textContent = r.status + '\n' + await r.text();
+        }
+    </script>
+</body>
+</html>

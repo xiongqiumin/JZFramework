@@ -271,6 +271,11 @@ void JZJSEngine::deinit()
     deinitJSEnv();
 }
 
+void JZJSEngine::setWorkDir(const std::string& dir)
+{
+    m_workDir = dir;
+}
+
 void JZJSEngine::initJSEnv()
 {
     initTypeMap();

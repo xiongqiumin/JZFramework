@@ -41,6 +41,7 @@ public:
     std::string content;
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
+    JZAgentTokenUsage usage;            // 本轮 token 增量（仅 Assistant 回复由响应 usage 填充）
 
     Json::Value toJson() const;
     bool fromJson(const Json::Value& root);
@@ -59,8 +60,11 @@ struct LLMContext
     bool fromJson(const Json::Value& root);
     Json::Value toJson() const;
 
+    // 根据 history 中每条历史的 usage（增量）重算累计 usage
+    void recalcUsage();
+
     std::vector<std::shared_ptr<LLMHistory>> history;
-    JZAgentTokenUsage usage;
+    JZAgentTokenUsage usage;  // 累计 token = sum(history[i].usage)
 };
 
 // 请求：承载类型、id 与对应负载
@@ -91,19 +95,44 @@ typedef std::shared_ptr<JZAgentRequest> JZAgentRequestPtr;
 class JZAgentConfig
 {
 public:
+    enum TokenStrategy {
+        TokenError,    // 超出预算直接报错终止
+        TokenTruncate, // 超出则裁剪最旧历史后重试
+        TokenCompress, // 超出则压缩历史（暂未实现）
+    };
+
+    std::string rootPath;
+    
     std::string modelUrl;
     std::string modelName;
     std::string modelToken;
+    
+    int netTimeout = 30000; // 网络请求超时（毫秒），默认 30s
 
-    std::string rootPath;
     int maxRounds = 100;
     int maxToolError = 3;   // 工具连续失败上限，超过则终止任务
+    int maxToken = 100000;  // 单次任务 token 预算上限，超出触发 maxTokenError
+
+    TokenStrategy tokenStrategy = TokenError;
 };
 
 class JZAgent : public JZObject
 {
 public:
-    enum State{None, WaitingReply, Idle};
+    enum State{Inactive, WaitingReply, Idle};
+
+    // Agent 错误分类：在 JZNetworkReply::NetworkError 基础上补充 ToolCallError
+    enum AgentError {
+        None,
+        NoError,
+        ConnectError,
+        HttpError,
+        TimeOutError,
+        ToolCallError,
+        UserCancelError,
+        MaxRoundError,   // 达到最大对话轮次
+        MaxTokenError,   // token 预算超出
+    };
 
     JZAgent(JZObject* parent = nullptr);
     ~JZAgent();
@@ -175,7 +204,7 @@ protected:
     void processToolCall(ToolCall &call);
 
     void llmLoop();
-    void llmError(std::string reply);
+    void llmError(AgentError error, std::string error_string = std::string());
     void llmEnd();
 
     std::string m_systemPrompt;
@@ -199,15 +228,13 @@ protected:
     JZNetworkAccessManager* m_net;
     JZAgentConfig m_config;
     std::string m_error;
+    AgentError m_errorCode = AgentError::None;  // 未设置错误时为 None
     bool m_streamEnabled;
 
     // 单次请求内累积的回复（流式与非流式统一使用）。
-    // 单次 LLM 回复对应一条 assistant 历史，但用 vector 承载以便统一并入 m_context.history。
-    // 流式过程中工具调用可能被分片，故只在响应完整后（[DONE]/整包）才执行。
-    std::vector<std::shared_ptr<LLMHistory>> m_replyHistory;
-
-    // 流式响应(SSE)原始文本累积缓冲
-    std::string m_streamBuffer;
+    // 单次 LLM 回复对应一条 assistant 历史，流式过程中工具调用可能被分片，
+    // 故只在响应完整后（[DONE]/整包）才执行。
+    std::shared_ptr<LLMHistory> m_replyHistory;
 };
 
 #endif

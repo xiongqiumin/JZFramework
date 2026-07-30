@@ -20,7 +20,7 @@ JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
-    m_state = None;
+    m_state = State::Inactive;
 
     clear();
 }
@@ -45,8 +45,9 @@ void JZAgent::clear()
     m_streamEnabled = false;
     m_toolError = 0;
 
-    m_replyHistory.clear();
-    m_streamBuffer.clear();
+    m_replyHistory = std::shared_ptr<LLMHistory>();
+
+    m_state = State::Inactive;   // 重置：未运行/已停止
 }
 
 const LLMContext* JZAgent::context() const
@@ -163,7 +164,7 @@ void JZAgent::request(std::string user_prompt)
 
 void JZAgent::stop()
 {
-    llmEnd();
+    llmError(UserCancelError, "user cancel");
 }
 
 std::string JZAgent::errorString()
@@ -287,16 +288,18 @@ Json::Value JZAgent::buildTools()
 
 void JZAgent::llmRequest()
 {
+    m_errorCode = AgentError::None;
+    m_error.clear();
     m_currentRound++;
     if (m_currentRound >= m_config.maxRounds)
     {
         jzDebug() << "Max dialogue rounds reached:";
-        llmError("执行任务超时");
+        llmError(MaxRoundError, "执行任务超时");
         return;
     }
 
     // 每次请求重新累积（流式与非流式统一）
-    m_replyHistory.clear();
+    m_replyHistory = std::shared_ptr<LLMHistory>();
 
     // 设置 model 字段
     Json::Value request_body;
@@ -326,16 +329,15 @@ void JZAgent::llmRequest()
 
     JZByteArray req_buffer = str_toUtf8(json_str);
     m_llmReply = m_net->post(req, req_buffer);
+    m_state = WaitingReply;   // 请求已发出：等待 LLM/工具响应（流式与非流式统一）
     connect(&m_llmReply->sigFinished, this, &JZAgent::onLLMRequest);
     if (m_streamEnabled)
     {
         // 流式响应走分块(SSE)：实时读取增量
         connect(&m_llmReply->sigReadyRead, this, &JZAgent::onLLMStreamReadyRead);
-        // 每次请求重新累积原始缓冲
-        m_streamBuffer.clear();
     }
 
-    m_llmReply->setTimeOut(30 * 1000);
+    m_llmReply->setTimeOut(m_config.netTimeout);
     m_llmReqInfo.requestTime = JZPlatform::getTickCountMs();
 }
 
@@ -476,6 +478,17 @@ void LLMContext::clear()
     usage = JZAgentTokenUsage();
 }
 
+void LLMContext::recalcUsage()
+{
+    usage = JZAgentTokenUsage();
+    for (const auto& h : history)
+    {
+        usage.prompt_tokens     += h->usage.prompt_tokens;
+        usage.completion_tokens += h->usage.completion_tokens;
+        usage.total_tokens      += h->usage.total_tokens;
+    }
+}
+
 Json::Value LLMContext::toJson() const
 {
     Json::Value root;
@@ -576,11 +589,15 @@ const SkillDefine* JZAgent::skill(const std::string& name)
     return nullptr;
 }
 
-void JZAgent::llmError(std::string reply)
+void JZAgent::llmError(AgentError error, std::string error_string)
 {
-    jzDebug() << "llm end:" << reply;
-    sigError.emit(reply);
-    llmEnd();
+    if(m_errorCode == AgentError::None)
+    {
+        m_errorCode = error;
+        m_error = error_string;
+        sigError.emit(error_string);
+        llmEnd();
+    }
 }
 
 void JZAgent::llmEnd()
@@ -595,13 +612,12 @@ void JZAgent::processResponseDelta(const std::string &content,
                                    const Json::Value &usage)
 {
     // 单次回复对应唯一一条 assistant 历史，首次增量时创建
-    if (m_replyHistory.empty())
+    if (!m_replyHistory)
     {
-        auto reply = std::make_shared<LLMHistory>();
-        reply->role = LLMHistory::Assistant;
-        m_replyHistory.push_back(reply);
+        m_replyHistory = std::make_shared<LLMHistory>();
+        m_replyHistory->role = LLMHistory::Assistant;
     }
-    LLMHistory& reply = *m_replyHistory.back();
+    LLMHistory& reply = *m_replyHistory;
 
     if (!content.empty())
     {
@@ -638,22 +654,29 @@ void JZAgent::processResponseDelta(const std::string &content,
 
     if (usage.isObject())
     {
-        m_context.usage.prompt_tokens     += usage.get("prompt_tokens", 0).asInt();
-        m_context.usage.completion_tokens += usage.get("completion_tokens", 0).asInt();
-        m_context.usage.total_tokens      += usage.get("total_tokens", 0).asInt();
+        int prompt = usage.get("prompt_tokens", 0).asInt();
+        int completion = usage.get("completion_tokens", 0).asInt();
+        int total = usage.get("total_tokens", 0).asInt();
+
+        // 记录本轮（Assistant 回复）token 增量：reply 恒为 Assistant，usage 仅来自回复。
+        // context.usage 不再在此累加，而是由 history 重算得到，避免裁剪历史后无法回落。
+        reply.usage.prompt_tokens     = prompt;
+        reply.usage.completion_tokens = completion;
+        reply.usage.total_tokens      = total;
     }
 }
 
 void JZAgent::finalizeResponse()
 {
-    if (m_replyHistory.empty())
+    if (!m_replyHistory)
         return;
 
-    auto reply = m_replyHistory.back();
+    auto reply = m_replyHistory;
     if (!reply->toolRequest.empty())
     {
         // assistant 消息只入历史一次，所有 tool_calls 复用同一条
         m_context.history.push_back(reply);
+        m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
         for (auto& call : reply->toolRequest)
             processToolCall(call);
     }
@@ -661,6 +684,8 @@ void JZAgent::finalizeResponse()
     {
         if (!reply->content.empty())
             m_context.history.push_back(reply);
+        m_state = Idle;   // 已产出最终回复且无需工具：本轮任务结束，进入空闲
+        m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
         llmLoop();
     }
 }
@@ -675,9 +700,37 @@ void JZAgent::llmLoop()
     if (m_llmReply)
         return;
 
-    if (m_context.usage.total_tokens > 10 * 10000)
+    if (m_context.usage.total_tokens > m_config.maxToken)
     {
-        llmError("token out of limit: " + std::to_string(m_context.usage.total_tokens));
+        // 超出预算：按策略处理
+        if (m_config.tokenStrategy == JZAgentConfig::TokenTruncate)
+        {
+            // 统计非 system 历史条目，砍掉最旧的一半（system 不砍）
+            int nonSys = 0;
+            for (const auto& h : m_context.history)
+                if (h->role != LLMHistory::System)
+                    nonSys++;
+            int toRemove = nonSys / 2;
+            if (toRemove > 0)
+            {
+                for (auto it = m_context.history.begin();
+                     it != m_context.history.end() && toRemove > 0; )
+                {
+                    if ((*it)->role != LLMHistory::System)
+                    {
+                        it = m_context.history.erase(it);
+                        toRemove--;
+                    }
+                    else
+                        ++it;
+                }
+                m_context.recalcUsage();  // 历史已裁剪，重算累计 usage 使其回落
+                llmRequest();
+                return;
+            }
+        }
+        // 无法继续裁剪（非 system 历史不足）则报错终止
+        llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
         return;
     }
 
@@ -721,7 +774,7 @@ void JZAgent::llmLoop()
 
                 if (m_toolError >= m_config.maxToolError)
                 {
-                    llmError("当前服务不可用,请稍后重试");
+                    llmError(ToolCallError, "当前服务不可用,请稍后重试");
                     return;
                 }
             }
@@ -742,7 +795,7 @@ void JZAgent::llmLoop()
     }
     catch (const std::exception& e)
     {
-        llmError(std::string("内部错误:") + e.what());
+        llmError(NoError, std::string("内部错误:") + e.what());
     }
 }
 
@@ -756,21 +809,18 @@ void JZAgent::onLLMStreamReadyRead()
     if (data.isEmpty())
         return;
 
-    m_streamBuffer.append(str_fromUtf8(data));
-
-    // 按 SSE 事件边界 "\n\n" 切分，逐事件处理
+    // readAll 已返回完整数据（可能包含一个或多个 SSE 事件），直接按事件边界切分处理
+    std::string buffer = str_fromUtf8(data);
     size_t pos = 0;
     while (true)
     {
-        size_t sep = m_streamBuffer.find("\n\n", pos);
+        size_t sep = buffer.find("\n\n", pos);
         if (sep == std::string::npos)
             break;
-        std::string event = m_streamBuffer.substr(pos, sep - pos);
+        std::string event = buffer.substr(pos, sep - pos);
         pos = sep + 2;
         processSSEEvent(event);
     }
-    // 保留不完整的尾部，等待后续数据
-    m_streamBuffer.erase(0, pos);
 }
 
 void JZAgent::processSSEEvent(const std::string& event)
@@ -803,7 +853,7 @@ void JZAgent::processSSEData(const std::string& payload)
     if (!reader.parse(payload, result))
     {
         jzDebug() << "SSE payload 解析失败, 原始内容=[" << payload << "]";
-        llmError("SSE数据解析错误: " + reader.getFormattedErrorMessages());
+        llmError(NoError, "SSE数据解析错误: " + reader.getFormattedErrorMessages());
         return;
     }
 
@@ -835,23 +885,22 @@ void JZAgent::onLLMRequest()
 
     if (net_reply->error() != JZNetworkReply::NoError)
     {
-        llmError("网络错误" + net_reply->errorString());
-        auto body = net_reply->readAll();
-        if (!body.isEmpty())
+        AgentError errCode = NoError;
+        switch (net_reply->error())
         {
-            jzWarning().noquote() << "网络错误:" << net_reply->errorString()
-                << ", detail:" << str_fromUtf8(body);
+            case JZNetworkReply::ConnectError:    errCode = ConnectError; break;
+            case JZNetworkReply::HttpError:       errCode = HttpError; break;
+            case JZNetworkReply::TimeOutError:    errCode = TimeOutError; break;
+            case JZNetworkReply::UserCancelError: errCode = UserCancelError; break;
+            default:                              errCode = ConnectError; break;
         }
-        else
-        {
-            jzWarning().noquote() << "网络错误:" + net_reply->errorString();
-        }
+        llmError(errCode, "网络错误" + net_reply->errorString());
         return;
     }
 
     // 流式模式：增量已通过 sigReadyRead -> processResponseDelta 累积进
     // m_replyHistory；仅在累积为空时（provider 忽略 stream 返回整包）降级按非流式整包解析。
-    if (!m_streamEnabled || m_replyHistory.empty())
+    if (!m_streamEnabled || !m_replyHistory)
     {
         std::string json_message = str_fromUtf8(net_reply->readAll());
 
@@ -859,7 +908,7 @@ void JZAgent::onLLMRequest()
         Json::Reader reader;
         if (!reader.parse(json_message, result))
         {
-            llmError("json解析错误:" + reader.getFormattedErrorMessages());
+            llmError(NoError, "json解析错误:" + reader.getFormattedErrorMessages());
             return;
         }
 

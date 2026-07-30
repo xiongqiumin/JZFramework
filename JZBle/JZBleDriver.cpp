@@ -42,11 +42,12 @@ void JZBleDriver::centralOnError(JZBLEController *self, int code, const char *ms
 void JZBleDriver::centralOnBondKeyReported(JZBLEController *self, const std::string &addr, const JZBleBondKey &key)
 { JZBLEController::onBondKeyReported(self, addr, key); }
 
-void JZBleDriver::peripheralOnClientConnected(JZBLEPeripheral *self)
-{ JZBLEPeripheral::onClientConnected(self); }
+void JZBleDriver::peripheralOnClientConnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect)
+{ JZBLEPeripheral::onClientConnected(self, connect); }
 
-void JZBleDriver::peripheralOnClientDisconnected(JZBLEPeripheral *self)
-{ JZBLEPeripheral::onClientDisconnected(self); }
+void JZBleDriver::peripheralOnClientDisconnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect)
+{ JZBLEPeripheral::onClientDisconnected(self, connect); }
 
-void JZBleDriver::peripheralOnCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value)
-{ JZBLEPeripheral::onCharWritten(self, charUuid, value); }
+void JZBleDriver::peripheralOnCharWritten(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect,
+                                          const JZBluetoothUuid &charUuid, const JZByteArray &value)
+{ JZBLEPeripheral::onCharWritten(self, connect, charUuid, value); }

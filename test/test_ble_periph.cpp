@@ -96,8 +96,8 @@ private:
         snprintf(buf, sizeof(buf), "tick-%d", m_counter);
         JZByteArray val = str_toUtf8(buf);
 
-        m_periph->sendNotification(CHR_UUID, val);
-        printf("[通知] sendNotification: \"%s\"\n", str_fromUtf8(val).c_str());
+        m_periph->sendNotify(CHR_UUID, val);
+        printf("[通知] sendNotify: \"%s\"\n", str_fromUtf8(val).c_str());
     }
 
     JZBleDriverSimulator *m_driver = nullptr;

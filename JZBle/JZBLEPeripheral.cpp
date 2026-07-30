@@ -5,23 +5,30 @@
 // ==================== JZBLEPeripheral 静态分发 ====================
 JZBleDriver *JZBLEPeripheral::getDriver() { return JZBleDriver::instance(); }
 
-void JZBLEPeripheral::onClientConnected(JZBLEPeripheral *self)
+void JZBLEPeripheral::onClientConnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect)
 {
-    runOnObject(self, [self]() {
-        self->m_state = Connected;
-        self->sigClientConnected.emit();
+    runOnObject(self, [self, connect]() {
+        self->m_connects.push_back(connect);
+        self->sigConnected.emit(connect.get());
     });
 }
-void JZBLEPeripheral::onClientDisconnected(JZBLEPeripheral *self)
+void JZBLEPeripheral::onClientDisconnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect)
 {
-    runOnObject(self, [self]() {
-        self->m_state = Unconnected;
-        self->sigClientDisconnected.emit();
+    runOnObject(self, [self, connect]() {
+        for (int i = 0; i < (int)self->m_connects.size(); i++) {
+            if (self->m_connects[i].get() == connect.get()) {
+                self->m_connects.erase(self->m_connects.begin() + i);
+                break;
+            }
+        }
+        self->sigDisconnected.emit(connect.get());
     });
 }
-void JZBLEPeripheral::onCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value)
+void JZBLEPeripheral::onCharWritten(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect, const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    runOnObject(self, [self, charUuid, value]() { self->sigCharacteristicWritten.emit(charUuid, value); });
+    runOnObject(self, [self, connect, charUuid, value]() { 
+        self->sigCharacteristicWritten.emit(connect.get(), charUuid, value); 
+    });
 }
 
 // ==================== JZBLEPeripheral ====================
@@ -29,36 +36,48 @@ JZ_OBJECT_IMPL(JZBLEPeripheral, JZObject)
 
 JZBLEPeripheral::JZBLEPeripheral(JZObject *parent)
     : JZObject(parent),
-      sigClientConnected(this), sigClientDisconnected(this), sigCharacteristicWritten(this)
+      sigConnected(this), sigDisconnected(this), sigCharacteristicWritten(this)
 {
 }
 
 JZBLEPeripheral::~JZBLEPeripheral()
 {
     stopAdvertising();
+
+    auto connects = m_connects;
+    for(auto connect : connects)
+        disconnectFromDevice(connect.get());
 }
 
-int JZBLEPeripheral::state() const { return m_state; }
-int JZBLEPeripheral::error() const { return m_error; }
-std::string JZBLEPeripheral::errorString() const { return m_errorMsg; }
+void JZBLEPeripheral::disconnectFromDevice(JZBLEPeripheralConnect *connect)
+{
+    int con_idx = -1;
+    for(int i = 0; i < (int)m_connects.size(); i++)
+    {
+        if(m_connects[i].get() == connect)
+        {
+            con_idx = i;
+            break;
+        }
+    }
+    if(con_idx == -1)
+        return;
+
+    auto *drv = getDriver();
+    drv->peripheralDisconnect(this, connect);
+    sigDisconnected.emit(connect);   
+}
 
 // === Peripheral ===
-void JZBLEPeripheral::addService(const JZBluetoothUuid &serviceUuid)
+void JZBLEPeripheral::addService(const JZBleServiceData &serviceUuid)
 {
     m_serviceList.push_back(serviceUuid);
 }
 
-void JZBLEPeripheral::addCharacteristic(const JZBluetoothUuid &serviceUuid, const JZBluetoothUuid &charUuid,
-                                         int properties, const std::string &initialValue)
-{
-    (void)initialValue;
-    getDriver()->addPeripheralCharacteristic(serviceUuid.toString(), charUuid.toString(), properties);
-}
-
-void JZBLEPeripheral::startAdvertising(const std::string &localName)
+void JZBLEPeripheral::startAdvertising()
 {
     auto *drv = getDriver();
-    drv->startAdvertising(localName.empty() ? "JZBle" : localName, m_serviceList, this);
+    drv->startAdvertising(this);
     m_advertising = true;
 }
 
@@ -66,14 +85,20 @@ void JZBLEPeripheral::stopAdvertising()
 {
     if (m_advertising)
     {
-        getDriver()->stopAdvertising();
+        getDriver()->stopAdvertising(this);
         m_advertising = false;
     }
 }
 
 bool JZBLEPeripheral::isAdvertising() const { return m_advertising; }
 
-void JZBLEPeripheral::sendNotification(const JZBluetoothUuid &charUuid, const JZByteArray &value)
+void JZBLEPeripheral::sendNotify(JZBLEPeripheralConnect *connect, const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
-    getDriver()->peripheralSendNotify(charUuid, value);
+    getDriver()->peripheralSendNotify(this, connect, charUuid, value);
+}
+
+void JZBLEPeripheral::sendNotifyToAll(const JZBluetoothUuid &charUuid, const JZByteArray &value)
+{
+    for(auto &c : m_connects)
+        getDriver()->peripheralSendNotify(this, c.get(), charUuid, value);
 }

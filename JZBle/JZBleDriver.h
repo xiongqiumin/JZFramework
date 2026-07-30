@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 #include "JZStd.h"
 #include "JZObjectPointer.h"
 #include "JZBLEDeviceInfo.h"
@@ -12,11 +13,12 @@
 #include "JZByteArray.h"
 
 class JZBLEPeripheral;
+class JZBLEPeripheralConnect;
 class JZBLEController;
 class JZBLEService;
 class JZBLEDeviceDiscoveryAgent;
 
-class JZBleDriver
+class JZBleDriver : public JZObject
 {
 public:
     JZBleDriver() = default;
@@ -79,12 +81,10 @@ public:
                                   const JZByteArray& value, JZBLEService *d) = 0;
 
     // === Peripheral ===
-    virtual void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) {}
-    virtual void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
-                                   JZBLEPeripheral *d) = 0;
-    virtual void stopAdvertising() = 0;
-    virtual void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) = 0;
-    virtual void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) = 0;
+    virtual void startAdvertising(JZBLEPeripheral *d)  = 0;
+    virtual void stopAdvertising(JZBLEPeripheral *d)  = 0;
+    virtual void peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid& charUuid, const JZByteArray& value)  = 0;
+    virtual void peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect) = 0;
 
     // 主动发起配对（配对完成后密钥通过 sigBondKeyReported 信号上报）
     virtual void requestPairing(const std::string& addr) { (void)addr; }
@@ -104,9 +104,10 @@ public:
     // 配对完成上报：驱动在 NimBLE 线程捕获密钥后，经此中转切到 Central 线程 emit 信号
     static void centralOnBondKeyReported(JZBLEController *self, const std::string &addr, const JZBleBondKey &key);
 
-    static void peripheralOnClientConnected(JZBLEPeripheral *self);
-    static void peripheralOnClientDisconnected(JZBLEPeripheral *self);
-    static void peripheralOnCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value);
+    static void peripheralOnClientConnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect);
+    static void peripheralOnClientDisconnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect);
+    static void peripheralOnCharWritten(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect,
+                                        const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
 protected:
     JZ_DISABLE_COPY(JZBleDriver)

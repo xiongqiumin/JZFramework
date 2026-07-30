@@ -3,10 +3,12 @@
 
 #include "JZBleDriver.h"
 #include "JZByteArray.h"
+#include "JZMutex.h"
 #include <map>
 #include <set>
 #include <vector>
 #include <string>
+#include <memory>
 
 // 前置声明：避免在头文件引入 NimBLE 头文件。NimBLE 类型需要 syscfg 等
 // 配置，只能在 .cpp 中（已包含 nimble_port 之后）使用完整定义。
@@ -22,12 +24,37 @@ struct ble_gatt_attr;
 struct ble_gatt_dsc;
 struct PeriphGatt;
 
+// 从机特征定义（GATT 表为服务端共享；订阅状态改为按连接记录，见 JZBLEPeripheralConnectEsp32::subs）
+struct PeriphCharInfo {
+    uint16_t valHandle = 0;
+    int properties = 0;
+    JZByteArray value;
+};
+
+class JZBLEPeripheralConnectEsp32 : public JZBLEPeripheralConnect
+{
+public:
+    virtual ~JZBLEPeripheralConnectEsp32()
+    {
+    }
+
+    int periphConnHandle = -1;
+
+    // 每个连接独立的订阅状态（特征 UUID 字符串 -> 订阅标记），多连接互不影响
+    struct CharSub {
+        bool subscribedNotify   = false;
+        bool subscribedIndicate = false;
+    };
+    std::map<std::string, CharSub> subs;  // charUuid.toString() -> 订阅状态
+}
+
 class JZBleDriverEsp32 : public JZBleDriver
 {
 public:
     JZBleDriverEsp32();
     ~JZBleDriverEsp32() override;
     
+    //主机
     void startScan(JZBLEDeviceDiscoveryAgent *agent) override;
     void stopScan(JZBLEDeviceDiscoveryAgent *agent) override;
     bool isScanning(JZBLEDeviceDiscoveryAgent *agent) override;
@@ -57,20 +84,53 @@ public:
     void writeDescriptor(const std::string& address, const std::string& serviceUuid,
                           const std::string& charUuid, const std::string& descUuid,
                           const JZByteArray& value, JZBLEService *d) override;
-
-    void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
-                           JZBLEPeripheral *d) override;
-    void stopAdvertising() override;
-    void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
-    void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
-
-    void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
+    
+    //从机
+    void startAdvertising(JZBLEPeripheral *d) override;
+    void stopAdvertising(JZBLEPeripheral *d) override;
+    void peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
+    void peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect);
 
     // 绑定密钥透传：Central 密钥经 connectToDevice(keys) 注入 / Peripheral 密钥经 setBondKey 预灌 / 主动配对
     void setBondKey(const std::string& addr, const JZBleDriver::JZBleBondKey& key) override;
     void requestPairing(const std::string& addr) override;
 
 private:
+    // ---- Central GATT 缓存 ----
+    struct GattCharInfo {
+        JZBluetoothUuid uuid;
+        uint16_t valHandle = 0;
+        int properties = 0;
+    };
+    struct GattSvcInfo {
+        JZBluetoothUuid uuid;
+        uint16_t startHandle = 0, endHandle = 0;
+    };
+    struct GattDscInfo {
+        JZBluetoothUuid uuid;
+        uint16_t handle = 0;
+    };
+    struct PendingDsc {
+        enum Type { Notify, Read, Write } type;
+        std::string svc, chr, desc;
+        JZByteArray value;
+        bool enable = false;
+        JZBLEService *d = nullptr;
+    };
+    struct ConnGatt {
+        std::vector<GattSvcInfo> svcs;
+        std::map<std::string, std::vector<GattCharInfo>> chars;        // svcStr -> chars
+        std::map<std::string, std::vector<GattDscInfo>> dscs;         // "svc|char" -> dscs
+        std::map<uint16_t, std::pair<std::string,std::string>> handleMap; // valHandle -> (svc, char)
+        std::map<std::string, uint16_t> cccd;                        // "svc|char" -> cccd handle
+        bool dscDiscovering = false;
+        std::vector<PendingDsc> pendingDsc;
+    };
+
+    bool nimbleInit();
+    void nimbleDeinit();
+    void onAdvertisingStart();
+
     // ---- 工具 ----
     static std::string addrToString(const uint8_t *addr);
     static void       addrFromString(const std::string &str, uint8_t *addrOut);
@@ -80,7 +140,7 @@ private:
     static bool uuidEqual(const JZBluetoothUuid &a, const std::string &b);
     // 把任意格式 UUID 字符串规范化为 128-bit 小写形式（用于 map key）
     static std::string normalizeUuid(const std::string &s);
-    int  getConnHandle(const std::string &address);
+    int  getConnHandle(const std::string &address) const;
     void setConnHandle(const std::string &address, int handle);
     void removeConnHandle(const std::string &address);
     std::string connHandleToAddr(int handle) const;
@@ -126,60 +186,19 @@ private:
     static JZBleBondKey secToBondKey(int obj_type, const struct ble_store_value_sec *sec);
     static void bondKeyToSec(const JZBleBondKey &key, struct ble_store_value_sec *sec);
 
-    // ---- Central GATT 缓存 ----
-    struct GattCharInfo {
-        JZBluetoothUuid uuid;
-        uint16_t valHandle = 0;
-        int properties = 0;
-    };
-    struct GattSvcInfo {
-        JZBluetoothUuid uuid;
-        uint16_t startHandle = 0, endHandle = 0;
-    };
-    struct GattDscInfo {
-        JZBluetoothUuid uuid;
-        uint16_t handle = 0;
-    };
-    struct PendingDsc {
-        enum Type { Notify, Read, Write } type;
-        std::string svc, chr, desc;
-        JZByteArray value;
-        bool enable = false;
-        JZBLEService *d = nullptr;
-    };
-    struct ConnGatt {
-        std::vector<GattSvcInfo> svcs;
-        std::map<std::string, std::vector<GattCharInfo>> chars;        // svcStr -> chars
-        std::map<std::string, std::vector<GattDscInfo>> dscs;         // "svc|char" -> dscs
-        std::map<uint16_t, std::pair<std::string,std::string>> handleMap; // valHandle -> (svc, char)
-        std::map<std::string, uint16_t> cccd;                        // "svc|char" -> cccd handle
-        bool dscDiscovering = false;
-        std::vector<PendingDsc> pendingDsc;
-    };
-
-    // ---- Peripheral GATT 特征（值用于读回）----
-    struct PeriphCharInfo {
-        std::string svcUuid;
-        uint16_t valHandle = 0;
-        int properties = 0;
-        JZByteArray value;
-        bool subscribedNotify = false;    // 对端已订阅 notify
-        bool subscribedIndicate = false;  // 对端已订阅 indicate
-    };
-
     // ---- 共享 ----
+    mutable JZMutex m_mutex;   // 保护所有跨线程共享状态（应用线程 <-> NimBLE 任务线程）
+    bool m_bleInit = false;
     uint8_t m_ownAddrType = 0;  // 0 = BLE_OWN_ADDR_PUBLIC
     std::map<std::string, JZBleBondKey> m_bondStore; // obj_type:addr -> 密钥
 
     // ---- Peripheral (从机) ----
     enum class State { None, Starting, Started };
     State m_advertState = State::None;
-    int m_periphConnHandle = -1;
     JZBLEPeripheral *m_periphCtrlPriv = nullptr;
-    JZBLEPeripheral *m_pendingAdvPeriph = nullptr;
-    PeriphGatt *m_periphGatt = nullptr;
+    PeriphGatt m_periphGatt;
     std::map<std::string, PeriphCharInfo> m_periphCharMap; // charUuid -> info
-    bool m_pendingAdv = false;
+    std::map<int, std::shared_ptr<JZBLEPeripheralConnectEsp32>> m_periphConnMap; // conn_handle -> 连接
     std::string m_pendingAdvName;
     std::vector<JZBluetoothUuid> m_pendingAdvUuids;
 

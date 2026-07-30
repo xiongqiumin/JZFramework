@@ -5,6 +5,8 @@
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZStd.h"
 #include "JZByteArray.h"
+#include "JZScopeGuard.h"
+#include "JZMutex.h"
 
 #include "esp_bt.h"
 #include "nimble/nimble_port.h"
@@ -183,18 +185,28 @@ int JZBleDriverEsp32::onScanGapEvent(struct ble_gap_event *event, void *arg)
         struct ble_hs_adv_fields f;
         if (ble_hs_adv_parse_fields(&f, event->disc.data, event->disc.length_data) == 0 && f.name && f.name_len > 0)
             info.setName(std::string((const char *)f.name, f.name_len));
-        if (self->m_scanAgent)
-            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)self->m_scanAgent.object(), info);
+        JZObjectPointer agent;
+        {
+            JZMutexLocker lk(&self->m_mutex);
+            agent = self->m_scanAgent;
+        }
+        if (agent)
+            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)agent.object(), info);
         break;
     }
     case BLE_GAP_EVENT_DISC_COMPLETE:
-        self->m_scanning = false;
-        if (self->m_scanAgent)
+    {
+        JZObjectPointer agent;
         {
-            JZBLEDeviceDiscoveryAgent::onScanFinished((JZBLEDeviceDiscoveryAgent *)self->m_scanAgent.object());
+            JZMutexLocker lk(&self->m_mutex);
+            self->m_scanning = false;
+            agent = self->m_scanAgent;
             self->m_scanAgent = JZObjectPointer();
         }
+        if (agent)
+            JZBLEDeviceDiscoveryAgent::onScanFinished((JZBLEDeviceDiscoveryAgent *)agent.object());
         break;
+    }
     }
     return 0;
 }
@@ -209,10 +221,16 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
         // Peripheral：对端连上本机
         if (event->connect.status == 0)
         {
-            printf("BLE: client connected, handle=%d\n", event->connect.conn_handle);
-            self->m_periphConnHandle = event->connect.conn_handle;
-            self->m_periphCtrlPriv = periph;
-            JZBleDriver::peripheralOnClientConnected(periph);
+            int h = event->connect.conn_handle;
+            printf("BLE: client connected, handle=%d\n", h);
+            std::shared_ptr<JZBLEPeripheralConnectEsp32> conn;
+            {
+                JZMutexLocker lk(&self->m_mutex);
+                conn = std::make_shared<JZBLEPeripheralConnectEsp32>();
+                conn->periphConnHandle = h;
+                self->m_periphConnMap[h] = conn;   // 多连接：按 conn_handle 记录
+            }
+            JZBleDriver::peripheralOnClientConnected(periph, conn);
         } else {
             printf("BLE: connect failed, status=%d\n", event->connect.status);
         }
@@ -220,15 +238,18 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         printf("BLE: client disconnected, reason=%d\n", event->disconnect.reason);
     {
-        std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
-        self->m_periphConnHandle = -1;
-        self->m_periphCtrlPriv = nullptr;
-        // 重置所有特征的订阅状态（对端已断开）
-        for (auto &kv : self->m_periphCharMap) {
-            kv.second.subscribedNotify = false;
-            kv.second.subscribedIndicate = false;
+        int h = event->disconnect.conn.handle;
+        std::shared_ptr<JZBLEPeripheralConnectEsp32> conn;
+        {
+            JZMutexLocker lk(&self->m_mutex);
+            auto it = self->m_periphConnMap.find(h);
+            if (it != self->m_periphConnMap.end()) {
+                conn = it->second;                 // 持有引用，断开回调执行前保持存活
+                self->m_periphConnMap.erase(it);   // 多连接：仅移除该连接
+            }
         }
-        JZBleDriver::peripheralOnClientDisconnected(periph);
+        // 订阅状态按连接记录，连接断开后随 conn 对象一起销毁，无需重置全局状态
+        JZBleDriver::peripheralOnClientDisconnected(periph, conn);
         break;
     }
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -252,12 +273,18 @@ int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
         std::string addr = addrToString(desc.peer_id_addr.val);
         if (event->connect.status == 0)
         {
-            self->setConnHandle(addr, event->connect.conn_handle);
+            {
+                JZMutexLocker lk(&self->m_mutex);
+                self->setConnHandle(addr, event->connect.conn_handle);
+            }
             JZBleDriver::centralOnDeviceConnected(cent, addr.c_str());
         }
         else
         {
-            self->m_bondCentralByAddr.erase(addr);  // 连接失败，移除路由表项
+            {
+                JZMutexLocker lk(&self->m_mutex);
+                self->m_bondCentralByAddr.erase(addr);  // 连接失败，移除路由表项
+            }
             JZBleDriver::centralOnError(cent, 0, "GAP connect failed");
         }
         break;
@@ -265,7 +292,10 @@ int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
     {
         std::string addr = addrToString(event->disconnect.conn.peer_id_addr.val);
-        self->removeConnHandle(addr);
+        {
+            JZMutexLocker lk(&self->m_mutex);
+            self->removeConnHandle(addr);
+        }
         JZBleDriver::centralOnDeviceDisconnected(cent, addr.c_str());
         break;
     }
@@ -274,23 +304,29 @@ int JZBleDriverEsp32::onCentralGapEvent(struct ble_gap_event *event, void *arg)
         // 本机作为 Central 收到对端通知，按 conn_handle + attr_handle 路由到具体服务。
         uint16_t h   = event->notify_rx.conn_handle;
         uint16_t attr = event->notify_rx.attr_handle;
-        std::string addr = self->connHandleToAddr(h);
-        auto git = self->m_gatt.find(addr);
-        if (git != self->m_gatt.end())
+        std::string addr, svc;
+        JZBLEService *svcPtr = nullptr;
+        JZByteArray v;
         {
-            auto hit = git->second.handleMap.find(attr);
-            if (hit != git->second.handleMap.end())
+            JZMutexLocker lk(&self->m_mutex);
+            addr = self->connHandleToAddr(h);
+            auto git = self->m_gatt.find(addr);
+            if (git != self->m_gatt.end())
             {
-                const std::string &svc = hit->second.first;
-                auto pit = self->m_svcPtrCache.find(addr + "|" + svc);
-                if (pit != self->m_svcPtrCache.end() && event->notify_rx.om)
+                auto hit = git->second.handleMap.find(attr);
+                if (hit != git->second.handleMap.end())
                 {
-                    JZByteArray v;
-                    v.append((const char *)event->notify_rx.om->om_data, (int)event->notify_rx.om->om_len);
-                    JZBLEService::onCharacteristicChanged(pit->second, addr.c_str(), svc.c_str(), v);
+                    svc = hit->second.first;
+                    auto pit = self->m_svcPtrCache.find(addr + "|" + svc);
+                    if (pit != self->m_svcPtrCache.end() && event->notify_rx.om)
+                        svcPtr = pit->second;
                 }
             }
+            if (event->notify_rx.om)
+                v.append((const char *)event->notify_rx.om->om_data, (int)event->notify_rx.om->om_len);
         }
+        if (svcPtr)
+            JZBLEService::onCharacteristicChanged(svcPtr, addr.c_str(), svc.c_str(), v);
         break;
     }
     case BLE_GAP_EVENT_MTU:
@@ -314,6 +350,7 @@ int JZBleDriverEsp32::onGattcSvcEvent(uint16_t conn_handle, const struct ble_gat
     }
     if (error->status == 0 && svc)
     {
+        JZMutexLocker lk(&self->m_mutex);
         self->m_gatt[addr].svcs.push_back({ bleUuidToJZ(&svc->uuid.u), svc->start_handle, svc->end_handle });
     }
     return 0;
@@ -328,23 +365,17 @@ int JZBleDriverEsp32::onGattcCharEvent(uint16_t conn_handle, const struct ble_ga
     auto *self = g_driver;
     if (error->status == BLE_HS_EDONE)
     {
-        // 发现完成：构建 JZLowEnergyCharacteristic 列表并通知上层
-        std::vector<JZLowEnergyCharacteristic> list;
-        auto &chars = self->m_gatt[addr].chars[svc];
-        for (auto &c : chars)
+        // 发现完成：触发 descriptor 发现（锁内），然后锁外通知上层。
         {
-            JZLowEnergyCharacteristic ch;
-            ch.setUuid(c.uuid);
-            ch.setProperties(c.properties);
-            list.push_back(ch);
+            JZMutexLocker lk(&self->m_mutex);
+            self->ensureDescriptorsDiscovered(addr, svc);
         }
-        // 触发 descriptor 发现（用于后续订阅/描述符读写）
-        self->ensureDescriptorsDiscovered(addr, svc);
         JZBLEService::onCharacteristicsDiscovered(d, addr.c_str(), svc.c_str());
         return 0;
     }
     if (error->status == 0 && chr)
     {
+        JZMutexLocker lk(&self->m_mutex);
         GattCharInfo ci;
         ci.uuid = bleUuidToJZ(&chr->uuid.u);
         ci.valHandle = chr->val_handle;
@@ -388,55 +419,62 @@ int JZBleDriverEsp32::onGattcDscEvent(uint16_t conn_handle, const struct ble_gat
 {
     (void)attr_handle;
     auto *self = static_cast<JZBleDriverEsp32 *>(arg);
-    std::string addr = self->connHandleToAddr(conn_handle);
-    auto it = self->m_gatt.find(addr);
-    if (it == self->m_gatt.end()) return 0;
-
-    if (error->status == BLE_HS_EDONE)
+    std::string addr;
     {
-        it->second.dscDiscovering = false;
-        auto pend = std::move(it->second.pendingDsc);
-        it->second.pendingDsc.clear();
-        for (auto &p : pend)
-        {
-            if (p.type == PendingDsc::Notify)
-            {
-                std::string key = p.svc + "|" + p.chr;
-                auto cit = it->second.cccd.find(key);
-                if (cit != it->second.cccd.end())
-                    self->writeCccd(conn_handle, cit->second, p.enable);
-            }
-            else if (p.type == PendingDsc::Read)
-            {
-                uint16_t dh = self->findDscHandle(addr, p.svc, p.chr, p.desc);
-                if (dh) ble_gattc_read(conn_handle, dh, onGattcReadDscEvent, (void *)p.d);
-            }
-            else if (p.type == PendingDsc::Write)
-            {
-                uint16_t dh = self->findDscHandle(addr, p.svc, p.chr, p.desc);
-                if (dh) ble_gattc_write_flat(conn_handle, dh, p.value.data(), p.value.size(), onGattcWriteDscEvent, (void *)p.d);
-            }
-        }
-        return 0;
+        JZMutexLocker lk(&self->m_mutex);
+        addr = self->connHandleToAddr(conn_handle);
     }
-    if (error->status == 0 && dsc)
     {
-        // ble_gatt_dsc 仅有 handle/uuid，无所属特征信息。
-        // 描述符 handle 必大于其所属特征的 val_handle，且介于本特征与下一特征之间。
-        // 故归属到 val_handle < dsc->handle 且最接近的特征。
-        JZBluetoothUuid du = bleUuidToJZ(&dsc->uuid.u);
-        uint16_t bestVal = 0;
-        std::string bestKey;
-        for (auto &sc : it->second.chars)
-            for (auto &ch : sc.second)
-                if (ch.valHandle < dsc->handle && ch.valHandle >= bestVal) {
-                    bestVal = ch.valHandle;
-                    bestKey = sc.first + "|" + ch.uuid.toString();
+        JZMutexLocker lk(&self->m_mutex);
+        auto it = self->m_gatt.find(addr);
+        if (it == self->m_gatt.end()) return 0;
+
+        if (error->status == BLE_HS_EDONE)
+        {
+            it->second.dscDiscovering = false;
+            auto pend = std::move(it->second.pendingDsc);
+            it->second.pendingDsc.clear();
+            for (auto &p : pend)
+            {
+                if (p.type == PendingDsc::Notify)
+                {
+                    std::string key = p.svc + "|" + p.chr;
+                    auto cit = it->second.cccd.find(key);
+                    if (cit != it->second.cccd.end())
+                        self->writeCccd(conn_handle, cit->second, p.enable);
                 }
-        if (!bestKey.empty()) {
-            it->second.dscs[bestKey].push_back({ du, dsc->handle });
-            if (du.toUInt16() == 0x2902) // CCCD
-                it->second.cccd[bestKey] = dsc->handle;
+                else if (p.type == PendingDsc::Read)
+                {
+                    uint16_t dh = self->findDscHandle(addr, p.svc, p.chr, p.desc);
+                    if (dh) ble_gattc_read(conn_handle, dh, onGattcReadDscEvent, (void *)p.d);
+                }
+                else if (p.type == PendingDsc::Write)
+                {
+                    uint16_t dh = self->findDscHandle(addr, p.svc, p.chr, p.desc);
+                    if (dh) ble_gattc_write_flat(conn_handle, dh, p.value.data(), p.value.size(), onGattcWriteDscEvent, (void *)p.d);
+                }
+            }
+            return 0;
+        }
+        if (error->status == 0 && dsc)
+        {
+            // ble_gatt_dsc 仅有 handle/uuid，无所属特征信息。
+            // 描述符 handle 必大于其所属特征的 val_handle，且介于本特征与下一特征之间。
+            // 故归属到 val_handle < dsc->handle 且最接近的特征。
+            JZBluetoothUuid du = bleUuidToJZ(&dsc->uuid.u);
+            uint16_t bestVal = 0;
+            std::string bestKey;
+            for (auto &sc : it->second.chars)
+                for (auto &ch : sc.second)
+                    if (ch.valHandle < dsc->handle && ch.valHandle >= bestVal) {
+                        bestVal = ch.valHandle;
+                        bestKey = sc.first + "|" + ch.uuid.toString();
+                    }
+            if (!bestKey.empty()) {
+                it->second.dscs[bestKey].push_back({ du, dsc->handle });
+                if (du.toUInt16() == 0x2902) // CCCD
+                    it->second.cccd[bestKey] = dsc->handle;
+            }
         }
     }
     return 0;
@@ -475,7 +513,6 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_advertState(State::None), m_scanning(false)
 {
     g_driver = this;
-    m_periphGatt = new PeriphGatt();
 
     // 配置 NimBLE Host（在 nimble_port_init() 之前设置）
     ble_hs_cfg.reset_cb = onHostReset;
@@ -494,15 +531,65 @@ JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_adv
     ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC
                                   | BLE_SM_PAIR_KEY_DIST_ID;
-
-    // nimble_port_init() 延迟到 startAdvertising() 中调用，
-    // 确保 addService/addCharacteristic 先于 host sync 完成注册
 }
 
 JZBleDriverEsp32::~JZBleDriverEsp32() 
 { 
-    delete m_periphGatt; 
     g_driver = nullptr;
+}
+
+bool JZBleDriverEsp32::nimbleInit()
+{
+    // m_bleInit 仅由应用线程访问（nimbleInit/nimbleDeinit 均在应用线程调用），
+    // 不与 NimBLE 任务线程共享，无需加锁。
+    if (m_bleInit)
+        return true;
+
+    esp_err_t ret = nimble_port_init();
+    if (ret != ESP_OK) {
+        printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
+        return false;
+    }
+
+    // 启动 NimBLE 主机任务（合并自 nimbleTaskStart）
+    nimble_port_freertos_init([](void *) { nimble_port_run(); });
+
+    m_bleInit = true;
+    return true;
+}
+
+void JZBleDriverEsp32::nimbleDeinit()
+{
+    if (!m_bleInit)
+        return;
+
+    // 只有在没有任何活跃角色时才真正释放 NimBLE 主机任务。否则仅停止当前角色，
+    // 但保留协议栈（扫描 / 广播 / 已有连接仍依赖它）。
+    // 注意：连接句柄的移除发生在 NimBLE 线程的 GAP 断开回调里（异步），
+    // 因此本函数必须在“应用线程”上下文调用——绝不可在 GAP 回调内调用，
+    // 否则 nimble_port_wait() 会与自身死锁。
+    bool busy;
+    {
+        JZMutexLocker lk(&m_mutex);
+        busy = m_scanning                                  // 仍在扫描（Central）
+             || m_advertState != State::None                // 仍在广播（Peripheral）
+             || !m_connMap.empty()                          // 仍有主机(Central)连接
+             || !m_periphConnMap.empty();                   // 仍有从机(Peripheral)客户端连接
+    }
+    if (busy)
+        return;
+
+    printf("BLE: no active role, deinit NimBLE\n");
+    // 停止并等待 NimBLE 主机任务退出（合并自 nimbleTaskStop）。
+    // 必须在锁外执行 nimble_port_wait()：NimBLE 任务退出时会跑 GAP 断开等回调，
+    // 那些回调也要取同一把锁，持锁等待会与自身（NimBLE 任务）死锁。
+    nimble_port_stop();
+    nimble_port_wait();
+    nimble_port_deinit();
+    {
+        JZMutexLocker lk(&m_mutex);
+        m_bleInit = false;
+    }
 }
 
 void JZBleDriverEsp32::onHostReset(int)
@@ -534,10 +621,10 @@ static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
     }
 }
 
-void JZBleDriverEsp32::onHostSync()
+void JZBleDriverEsp32::onAdvertisingStart()
 {
-    auto *self = g_driver;
-    if (!self) 
+    auto self = g_driver;
+    if (self->m_advertState != State::Starting)
         return;
 
     int rc = ble_hs_util_ensure_addr(0); // 优先公钥地址
@@ -546,49 +633,52 @@ void JZBleDriverEsp32::onHostSync()
         return;
     }
     rc = ble_hs_id_infer_auto(0, &self->m_ownAddrType);
-    if (rc != 0) self->m_ownAddrType = BLE_OWN_ADDR_PUBLIC;
+    if (rc != 0)
+        self->m_ownAddrType = BLE_OWN_ADDR_PUBLIC;
 
     self->m_advertState = State::Started;
-    printf("BLE: host synced\n");
+    printf("BLE: host synced, start advertising\n");
 
-    printf("BLE: onHostSync pendingAdv=%d\n", self->m_pendingAdv);
+    // 广播数据
+    struct ble_hs_adv_fields f; memset(&f, 0, sizeof(f));
+    f.name = (uint8_t *)self->m_pendingAdvName.c_str();
+    f.name_len = self->m_pendingAdvName.size();
+    f.name_is_complete = 1;
+    f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
 
-    // 处理延迟广播请求
-    if (self->m_pendingAdv && self->m_pendingAdvPeriph)
-    {
-        self->m_periphConnHandle = -1;
-        self->m_periphCtrlPriv = self->m_pendingAdvPeriph;
-
-        // 广播数据
-        struct ble_hs_adv_fields f; memset(&f, 0, sizeof(f));
-        f.name = (uint8_t *)self->m_pendingAdvName.c_str();
-        f.name_len = self->m_pendingAdvName.size();
-        f.name_is_complete = 1;
-        f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-
-        std::vector<ble_uuid16_t> u16; u16.reserve(self->m_pendingAdvUuids.size());
-        std::vector<ble_uuid128_t> u128; u128.reserve(self->m_pendingAdvUuids.size());
-        for (auto &u : self->m_pendingAdvUuids) {
-            std::string s = u.toString();
-            ble_uuid_any_t tmp; uuidFromString(s, &tmp);
-            if (tmp.u.type == BLE_UUID_TYPE_16) u16.push_back(*(ble_uuid16_t*)&tmp.u);
-            else if (tmp.u.type == BLE_UUID_TYPE_128) u128.push_back(*(ble_uuid128_t*)&tmp.u);
-        }
-        if (!u16.empty()) { f.uuids16 = u16.data(); f.num_uuids16 = u16.size(); f.uuids16_is_complete = 1; }
-        if (!u128.empty()) { f.uuids128 = u128.data(); f.num_uuids128 = u128.size(); f.uuids128_is_complete = 1; }
-
-        ble_gap_adv_set_fields(&f);
-
-        struct ble_gap_adv_params p; memset(&p, 0, sizeof(p));
-        p.conn_mode = BLE_GAP_CONN_MODE_UND; p.disc_mode = BLE_GAP_DISC_MODE_GEN;
-        ble_gap_adv_start(self->m_ownAddrType, nullptr, BLE_HS_FOREVER, &p,
-                          onPeriphGapEvent, self->m_pendingAdvPeriph);
-
-        self->m_pendingAdv = false;
-        self->m_pendingAdvName.clear();
-        self->m_pendingAdvUuids.clear();
-        self->m_pendingAdvPeriph = nullptr;
+    std::vector<ble_uuid16_t> u16; u16.reserve(self->m_pendingAdvUuids.size());
+    std::vector<ble_uuid128_t> u128; u128.reserve(self->m_pendingAdvUuids.size());
+    for (auto &u : self->m_pendingAdvUuids) {
+        std::string s = u.toString();
+        ble_uuid_any_t tmp; uuidFromString(s, &tmp);
+        if (tmp.u.type == BLE_UUID_TYPE_16) u16.push_back(*(ble_uuid16_t*)&tmp.u);
+        else if (tmp.u.type == BLE_UUID_TYPE_128) u128.push_back(*(ble_uuid128_t*)&tmp.u);
     }
+    if (!u16.empty()) { f.uuids16 = u16.data(); f.num_uuids16 = u16.size(); f.uuids16_is_complete = 1; }
+    if (!u128.empty()) { f.uuids128 = u128.data(); f.num_uuids128 = u128.size(); f.uuids128_is_complete = 1; }
+
+    ble_gap_adv_set_fields(&f);
+
+    struct ble_gap_adv_params p; memset(&p, 0, sizeof(p));
+    p.conn_mode = BLE_GAP_CONN_MODE_UND; p.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    ble_gap_adv_start(self->m_ownAddrType, nullptr, BLE_HS_FOREVER, &p,
+                        onPeriphGapEvent, self->m_periphCtrlPriv);
+
+    self->m_pendingAdvName.clear();
+    self->m_pendingAdvUuids.clear();
+}
+
+void JZBleDriverEsp32::onHostSync()
+{
+    JZMutexLocker lk(&m_mutex);
+    JZScopeGuard guard([]{
+        if(g_driver->m_advertState == State::Starting)
+            g_driver->m_advertState = State::None;
+    });
+
+    // 主机同步完成：若处于 Starting（首次/重新初始化后），开启广播
+    if (g_driver->m_advertState == State::Starting)
+        g_driver->onAdvertisingStart();   // 调用方已持锁
 }
 
 // ==================== 绑定密钥 store（驱动不持久化） ====================
@@ -640,6 +730,7 @@ int JZBleDriverEsp32::storeReadCb(int obj_type, const union ble_store_key *key, 
         return BLE_HS_ENOENT;   // CCCD 等不缓存，按未找到处理
 
     auto *self = g_driver;
+    JZMutexLocker lk(&self->m_mutex);
     auto it = self->m_bondStore.find(bondStoreKey(obj_type, addr));
     if (it == self->m_bondStore.end()) return BLE_HS_ENOENT;
 
@@ -653,12 +744,18 @@ int JZBleDriverEsp32::storeWriteCb(int obj_type, const union ble_store_value *va
     if (obj_type == BLE_STORE_OBJ_TYPE_PEER_SEC || obj_type == BLE_STORE_OBJ_TYPE_OUR_SEC) {
         std::string addr = addrToString(val->sec.peer_addr.val);
         JZBleBondKey key = secToBondKey(obj_type, &val->sec);
-        self->m_bondStore[bondStoreKey(obj_type, addr)] = key;
-        // 分别上报 PEER_SEC(对端密钥) 与 OUR_SEC(本机密钥)：两者都需持久化，
-        // 外设角色重连加密依赖 OUR_SEC，故不跳过。按对端地址路由到对应 Central。
-        auto bit = self->m_bondCentralByAddr.find(addr);
-        if (bit != self->m_bondCentralByAddr.end())
-            JZBleDriver::centralOnBondKeyReported(bit->second, addr, key);
+        JZBLEController *ctrl = nullptr;
+        {
+            JZMutexLocker lk(&self->m_mutex);
+            self->m_bondStore[bondStoreKey(obj_type, addr)] = key;
+            // 分别上报 PEER_SEC(对端密钥) 与 OUR_SEC(本机密钥)：两者都需持久化，
+            // 外设角色重连加密依赖 OUR_SEC，故不跳过。按对端地址路由到对应 Central。
+            auto bit = self->m_bondCentralByAddr.find(addr);
+            if (bit != self->m_bondCentralByAddr.end())
+                ctrl = bit->second;
+        }
+        if (ctrl)
+            JZBleDriver::centralOnBondKeyReported(ctrl, addr, key);
         return 0;
     }
     return 0;   // 其他类型（CCCD 等）忽略，不持久化
@@ -672,6 +769,7 @@ int JZBleDriverEsp32::storeDeleteCb(int obj_type, const union ble_store_key *key
         addr = addrToString(key->sec.peer_addr.val);
     else
         return BLE_HS_ENOENT;
+    JZMutexLocker lk(&self->m_mutex);
     self->m_bondStore.erase(bondStoreKey(obj_type, addr));
     return 0;
 }
@@ -680,18 +778,24 @@ void JZBleDriverEsp32::setBondKey(const std::string &addr, const JZBleBondKey &k
 {
     // 写入内存缓存，重连加密时 storeReadCb 据此取回；不调用 ble_store_write 以避免递归/重复上报。
     // 按 key.objType 定位（PEER_SEC / OUR_SEC 各自独立），外设角色重连加密依赖 OUR_SEC。
+    JZMutexLocker lk(&m_mutex);
     m_bondStore[bondStoreKey(key.objType, addr)] = key;
 }
 
 void JZBleDriverEsp32::requestPairing(const std::string &addr)
 {
-    int h = getConnHandle(addr);
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr);
+    }
     if (h >= 0) ble_gap_security_initiate(h);
 }
 
 // ==================== Central ====================
 void JZBleDriverEsp32::startScan(JZBLEDeviceDiscoveryAgent *agent)
 {
+    JZMutexLocker lk(&m_mutex);
     JZ_ASSERT_X(!m_scanAgent, "ble allready start scan");
     m_scanAgent = agent->guardPointer();
     m_scanning = true;
@@ -700,12 +804,17 @@ void JZBleDriverEsp32::startScan(JZBLEDeviceDiscoveryAgent *agent)
 }
 void JZBleDriverEsp32::stopScan(JZBLEDeviceDiscoveryAgent *agent)
 {
-    JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
-    m_scanning = false;
+    {
+        JZMutexLocker lk(&m_mutex);
+        JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
+        m_scanning = false;
+    }
     ble_gap_disc_cancel();
+    nimbleDeinit();   // 若无其它活跃角色/连接则释放协议栈（nimbleDeinit 内部自锁）
 }
 bool JZBleDriverEsp32::isScanning(JZBLEDeviceDiscoveryAgent *agent)
 {
+    JZMutexLocker lk(&m_mutex);
     return agent ? (agent == (JZBLEDeviceDiscoveryAgent *)m_scanAgent.object()) : false;
 }
 
@@ -713,10 +822,13 @@ void JZBleDriverEsp32::connectToDevice(JZBLEController *d, const std::vector<JZB
 {
     // 按对端地址记录上报目标，支持多 Central 并发（避免单一目标误路由）
     std::string addr = d->deviceInfo().address();
-    m_bondCentralByAddr[addr] = d;
-    // 连接前回灌该设备的绑定密钥，重连时驱动据此恢复加密通道
-    for (const auto &key : keys)
-        m_bondStore[bondStoreKey(key.objType, addr)] = key;
+    {
+        JZMutexLocker lk(&m_mutex);
+        m_bondCentralByAddr[addr] = d;
+        // 连接前回灌该设备的绑定密钥，重连时驱动据此恢复加密通道
+        for (const auto &key : keys)
+            m_bondStore[bondStoreKey(key.objType, addr)] = key;
+    }
     ble_addr_t peer;
     peer.type = BLE_ADDR_PUBLIC;
     addrFromString(addr, peer.val);
@@ -724,23 +836,40 @@ void JZBleDriverEsp32::connectToDevice(JZBLEController *d, const std::vector<JZB
 }
 void JZBleDriverEsp32::disconnectFromDevice(JZBLEController *d)
 {
-    m_bondCentralByAddr.erase(d->deviceInfo().address());
-    int h = getConnHandle(d->deviceInfo().address());
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        m_bondCentralByAddr.erase(d->deviceInfo().address());
+        h = getConnHandle(d->deviceInfo().address());
+    }
     if (h >= 0) ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
+    // 此时连接尚未真正移除（异步，待 GAP 断开回调），故仅做状态检查；
+    // 若本就是最后一个连接且其它角色均空闲，等断开事件处理完、下次 nimbleDeinit
+    // （如随后的 stopAdvertising/stopScan）调用时即会真正释放协议栈。
+    nimbleDeinit();
 }
-bool JZBleDriverEsp32::isConnected(JZBLEController *d) { return getConnHandle(d->deviceInfo().address()) >= 0; }
+bool JZBleDriverEsp32::isConnected(JZBLEController *d)
+{
+    JZMutexLocker lk(&m_mutex);
+    return getConnHandle(d->deviceInfo().address()) >= 0;
+}
 
 void JZBleDriverEsp32::discoverServices(const std::string &addr, JZBLEController *d)
 {
-    int h = getConnHandle(addr);
-    if (h < 0) return;
-    // 清空该地址的旧 GATT 缓存，避免重连/重复发现时服务与特征重复累积。
-    // 后续 discoverCharacteristics 会重新填充 chars/handleMap，并重建 m_svcPtrCache。
-    m_gatt[addr] = ConnGatt();
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr);
+        if (h < 0) return;
+        // 清空该地址的旧 GATT 缓存，避免重连/重复发现时服务与特征重复累积。
+        // 后续 discoverCharacteristics 会重新填充 chars/handleMap，并重建 m_svcPtrCache。
+        m_gatt[addr] = ConnGatt();
+    }
     ble_gattc_disc_all_svcs(h, onGattcSvcEvent, (void *)d);
 }
 std::vector<JZBluetoothUuid> JZBleDriverEsp32::services(const std::string &addr)
 {
+    JZMutexLocker lk(&m_mutex);
     auto it = m_gatt.find(addr);
     if (it == m_gatt.end()) return {};
     std::vector<JZBluetoothUuid> r;
@@ -750,15 +879,20 @@ std::vector<JZBluetoothUuid> JZBleDriverEsp32::services(const std::string &addr)
 
 void JZBleDriverEsp32::discoverCharacteristics(const std::string &addr, const std::string &svc, JZBLEService *d)
 {
-    int h = getConnHandle(addr);
-    if (h < 0) return;
-    m_svcPtrCache[addr + "|" + svc] = d;   // 通知路由用
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr);
+        if (h < 0) return;
+        m_svcPtrCache[addr + "|" + svc] = d;   // 通知路由用
+    }
     ble_uuid_any_t u; uuidFromString(svc, &u);
     // uuid 已限定特征，handle 范围用全范围即可，避免 svc 字符串格式不一致导致匹配失败
     ble_gattc_disc_chrs_by_uuid(h, 0x0001, 0xFFFF, &u.u, onGattcCharEvent, (void *)d);
 }
 std::vector<JZLowEnergyCharacteristic> JZBleDriverEsp32::characteristics(const std::string &addr, const std::string &svc)
 {
+    JZMutexLocker lk(&m_mutex);
     auto it = m_gatt.find(addr);
     if (it == m_gatt.end()) return {};
     auto cit = it->second.chars.find(svc);
@@ -775,64 +909,86 @@ std::vector<JZLowEnergyCharacteristic> JZBleDriverEsp32::characteristics(const s
 
 void JZBleDriverEsp32::readCharacteristic(const std::string &addr, const std::string &svc, const std::string &c, JZBLEService *d)
 {
-    int h = getConnHandle(addr); if (h < 0) return;
-    uint16_t vh = findCharValHandle(addr, svc, c);
+    int h; uint16_t vh = 0;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr); if (h < 0) return;
+        vh = findCharValHandle(addr, svc, c);
+    }
     if (vh == 0) return;
     ble_gattc_read(h, vh, onGattcReadEvent, (void *)d);
 }
 void JZBleDriverEsp32::writeCharacteristic(const std::string &addr, const std::string &svc, const std::string &c, const JZByteArray &v, bool nrs, JZBLEService *d)
 {
-    int h = getConnHandle(addr); if (h < 0) return;
-    uint16_t vh = findCharValHandle(addr, svc, c);
+    int h; uint16_t vh = 0;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr); if (h < 0) return;
+        vh = findCharValHandle(addr, svc, c);
+    }
     if (vh == 0) return;
     if (nrs) ble_gattc_write_no_rsp_flat(h, vh, v.data(), v.size());
     else     ble_gattc_write_flat(h, vh, v.data(), v.size(), onGattcWriteEvent, (void *)d);
 }
 void JZBleDriverEsp32::enableNotification(const std::string &addr, const std::string &svc, const std::string &c, bool en, JZBLEService *d)
 {
-    int h = getConnHandle(addr); if (h < 0) return;
-    std::string key = svc + "|" + normalizeUuid(c);
-    auto it = m_gatt.find(addr);
-    if (it == m_gatt.end()) return;
-    auto cit = it->second.cccd.find(key);
-    if (cit != it->second.cccd.end()) {
-        writeCccd(h, cit->second, en);
-    } else {
-        PendingDsc p; p.type = PendingDsc::Notify; p.svc = svc; p.chr = normalizeUuid(c); p.enable = en; p.d = d;
-        it->second.pendingDsc.push_back(p);
-        ensureDescriptorsDiscovered(addr, svc);
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr); if (h < 0) return;
+        std::string key = svc + "|" + normalizeUuid(c);
+        auto it = m_gatt.find(addr);
+        if (it == m_gatt.end()) return;
+        auto cit = it->second.cccd.find(key);
+        if (cit != it->second.cccd.end()) {
+            writeCccd(h, cit->second, en);
+        } else {
+            PendingDsc p; p.type = PendingDsc::Notify; p.svc = svc; p.chr = normalizeUuid(c); p.enable = en; p.d = d;
+            it->second.pendingDsc.push_back(p);
+            ensureDescriptorsDiscovered(addr, svc);
+        }
     }
 }
 void JZBleDriverEsp32::readDescriptor(const std::string &addr, const std::string &svc, const std::string &c, const std::string &desc, JZBLEService *d)
 {
-    int h = getConnHandle(addr); if (h < 0) return;
-    uint16_t dh = findDscHandle(addr, svc, c, desc);
-    if (dh) { ble_gattc_read(h, dh, onGattcReadDscEvent, (void *)d); return; }
-    auto it = m_gatt.find(addr);
-    if (it == m_gatt.end()) return;
-    PendingDsc p; p.type = PendingDsc::Read; p.svc = svc; p.chr = c; p.desc = desc; p.d = d;
-    it->second.pendingDsc.push_back(p);
-    ensureDescriptorsDiscovered(addr, svc);
+    int h; uint16_t dh = 0; bool queued = false;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr); if (h < 0) return;
+        dh = findDscHandle(addr, svc, c, desc);
+        if (dh) { ble_gattc_read(h, dh, onGattcReadDscEvent, (void *)d); return; }
+        auto it = m_gatt.find(addr);
+        if (it == m_gatt.end()) return;
+        PendingDsc p; p.type = PendingDsc::Read; p.svc = svc; p.chr = c; p.desc = desc; p.d = d;
+        it->second.pendingDsc.push_back(p);
+        ensureDescriptorsDiscovered(addr, svc);
+        queued = true;
+    }
+    (void)queued;
 }
 void JZBleDriverEsp32::writeDescriptor(const std::string &addr, const std::string &svc, const std::string &c, const std::string &desc, const JZByteArray &v, JZBLEService *d)
 {
-    int h = getConnHandle(addr); if (h < 0) return;
-    uint16_t dh = findDscHandle(addr, svc, c, desc);
-    if (dh) { ble_gattc_write_flat(h, dh, v.data(), v.size(), onGattcWriteDscEvent, (void *)d); return; }
-    auto it = m_gatt.find(addr);
-    if (it == m_gatt.end()) return;
-    PendingDsc p; p.type = PendingDsc::Write; p.svc = svc; p.chr = c; p.desc = desc; p.value = v; p.d = d;
-    it->second.pendingDsc.push_back(p);
-    ensureDescriptorsDiscovered(addr, svc);
+    int h; uint16_t dh = 0;
+    {
+        JZMutexLocker lk(&m_mutex);
+        h = getConnHandle(addr); if (h < 0) return;
+        dh = findDscHandle(addr, svc, c, desc);
+        if (dh) { ble_gattc_write_flat(h, dh, v.data(), v.size(), onGattcWriteDscEvent, (void *)d); return; }
+        auto it = m_gatt.find(addr);
+        if (it == m_gatt.end()) return;
+        PendingDsc p; p.type = PendingDsc::Write; p.svc = svc; p.chr = c; p.desc = desc; p.value = v; p.d = d;
+        it->second.pendingDsc.push_back(p);
+        ensureDescriptorsDiscovered(addr, svc);
+    }
 }
 
 // ==================== Peripheral ====================
 void JZBleDriverEsp32::buildPeriphGatt()
 {
-    m_periphGatt->svcUuids.clear();
-    m_periphGatt->chrUuids.clear();
-    m_periphGatt->chrDefs.clear();
-    m_periphGatt->svcDefs.clear();
+    m_periphGatt.svcUuids.clear();
+    m_periphGatt.chrUuids.clear();
+    m_periphGatt.chrDefs.clear();
+    m_periphGatt.svcDefs.clear();
 
     std::map<std::string, std::vector<std::string>> svcChars;
     for (auto &kv : m_periphCharMap)
@@ -841,21 +997,21 @@ void JZBleDriverEsp32::buildPeriphGatt()
     // resize 一把创建所有元素，地址终生不变，NimBLE 存的裸指针永远安全
     size_t svcCount = svcChars.size();
     size_t totalChars = m_periphCharMap.size();
-    m_periphGatt->svcUuids.resize(svcCount);
-    m_periphGatt->chrUuids.resize(totalChars);
-    m_periphGatt->chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
-    m_periphGatt->svcDefs.resize(svcCount + 1);           // svcs + 终止符
+    m_periphGatt.svcUuids.resize(svcCount);
+    m_periphGatt.chrUuids.resize(totalChars);
+    m_periphGatt.chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
+    m_periphGatt.svcDefs.resize(svcCount + 1);           // svcs + 终止符
 
     size_t svcIdx = 0, chrUuidIdx = 0, chrDefIdx = 0, svcDefIdx = 0;
 
     for (auto &sc : svcChars)
     {
-        uuidFromString(sc.first, &m_periphGatt->svcUuids[svcIdx]);
+        uuidFromString(sc.first, &m_periphGatt.svcUuids[svcIdx]);
 
         size_t chrStartIdx = chrDefIdx;
         for (auto &cuuid : sc.second)
         {
-            uuidFromString(cuuid, &m_periphGatt->chrUuids[chrUuidIdx]);
+            uuidFromString(cuuid, &m_periphGatt.chrUuids[chrUuidIdx]);
 
             int props = m_periphCharMap[cuuid].properties;
             ble_gatt_chr_flags nimFlags = 0;
@@ -866,101 +1022,127 @@ void JZBleDriverEsp32::buildPeriphGatt()
             if (props & 0x10) nimFlags |= BLE_GATT_CHR_F_WRITE_NO_RSP;
 
             ble_gatt_chr_def cd = {};
-            cd.uuid = &m_periphGatt->chrUuids[chrUuidIdx].u;
+            cd.uuid = &m_periphGatt.chrUuids[chrUuidIdx].u;
             cd.access_cb = onGattAccess;
             cd.val_handle = &m_periphCharMap[cuuid].valHandle;
             cd.flags = nimFlags;
             cd.min_key_size = 0;
-            m_periphGatt->chrDefs[chrDefIdx] = cd;
+            m_periphGatt.chrDefs[chrDefIdx] = cd;
 
             chrUuidIdx++;
             chrDefIdx++;
         }
-        m_periphGatt->chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
+        m_periphGatt.chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
         chrDefIdx++;
 
         ble_gatt_svc_def sd = {};
         sd.type = BLE_GATT_SVC_TYPE_PRIMARY;
-        sd.uuid = &m_periphGatt->svcUuids[svcIdx].u;
-        sd.characteristics = &m_periphGatt->chrDefs[chrStartIdx];
-        m_periphGatt->svcDefs[svcDefIdx] = sd;
+        sd.uuid = &m_periphGatt.svcUuids[svcIdx].u;
+        sd.characteristics = &m_periphGatt.chrDefs[chrStartIdx];
+        m_periphGatt.svcDefs[svcDefIdx] = sd;
 
         svcIdx++;
         svcDefIdx++;
     }
-    m_periphGatt->svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
+    m_periphGatt.svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
 }
 
-void JZBleDriverEsp32::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &uuids, JZBLEPeripheral *d)
+void JZBleDriverEsp32::startAdvertising(JZBLEPeripheral *d)
 {
-    if (m_advertState != State::None) {
-        printf("BLE: startAdvertising: state=%d, expected None\n", (int)m_advertState);
-        return;
-    }    
+    // 守卫检查与“无连接”前提（持锁，避免与 NimBLE 事件回调并发访问共享状态）
+    {
+        JZMutexLocker lk(&m_mutex);
+        if (m_advertState != State::None) {
+            printf("BLE: startAdvertising: state=%d, expected None\n", (int)m_advertState);
+            return;
+        }
 
-    esp_err_t ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        printf("BLE: nimble_port_init failed: %s\n", esp_err_to_name(ret));
-        return;
+        // 动态修改服务前提：不能有任何已连接设备（Central / Peripheral 客户端）。
+        // 否则 ble_gatts_reset() 会破坏正在进行的 GATT 通信，导致对端夭折。
+        if (!m_connMap.empty() || !m_periphConnMap.empty()) {
+            printf("BLE: startAdvertising error: device connected, cannot reset GATT services\n");
+            return;
+        }
     }
 
-    // GAP 服务初始化（同 gap_init() 例子）
-    ble_svc_gap_init();
-    ble_svc_gap_device_name_set(name.c_str());
-
-    // GATT 服务注册（必须在 host task 启动之前完成）
-    ble_svc_gatt_init();
-    buildPeriphGatt();
-    int rc2 = ble_gatts_count_cfg(m_periphGatt->svcDefs.data());
-    if (rc2 == 0)
-        rc2 = ble_gatts_add_svcs(m_periphGatt->svcDefs.data());
-    if (rc2 != 0) {
-        printf("BLE: GATT service register failed, rc=%d\n", rc2);
+    // nimbleInit 内部自锁，且会启动 NimBLE 主机任务；必须在释放锁后再调用，避免嵌套加锁
+    if(!nimbleInit())
         return;
+
+    // 重新构建并激活 GATT 服务表（支持运行时动态修改服务）：
+    //   1) ble_gatts_reset()        清空当前服务数据库
+    //   2) ble_svc_gap/gatt_init()  注册内置 GAP/GATT 服务
+    //   3) ble_gatts_add_svcs()     注册自定义服务
+    //   4) ble_gatts_start()        使新服务对远端设备生效（关键点）
+    {
+        JZMutexLocker lk(&m_mutex);
+        ble_gatts_reset();
+        ble_svc_gap_init();
+        ble_svc_gap_device_name_set(name.c_str());
+        ble_svc_gatt_init();
+        buildPeriphGatt();
+        int rc2 = ble_gatts_count_cfg(m_periphGatt.svcDefs.data());
+        if (rc2 == 0)
+            rc2 = ble_gatts_add_svcs(m_periphGatt.svcDefs.data());
+        if (rc2 == 0)
+            rc2 = ble_gatts_start();
+        if (rc2 != 0) {
+            printf("BLE: GATT service start failed, rc=%d\n", rc2);
+            return;
+        }
+        printf("BLE: GATT services started OK, count=%d\n", (int)m_periphGatt.svcDefs.size());
+
+        m_periphCtrlPriv = d;
+        m_advertState = State::Starting;
+
+        m_pendingAdvName = name;
+        m_pendingAdvUuids = uuids;
+
+        // 若主机已同步（任务仍在运行，例如扫描期间叠加广播），直接开启广播；
+        // 否则交由 onHostSync 在同步完成后开启。
+        if (ble_hs_synced())
+            onAdvertisingStart();
     }
-    printf("BLE: GATT services registered OK, count=%d\n", (int)m_periphGatt->svcDefs.size());
-
-    m_periphCtrlPriv = d;
-    m_advertState = State::Starting;
-
-    // 在 nimble_port_freertos_init 之前设 pending，
-    // 防止 NimBLE 任务在 pending 设完前就触发 onHostSync
-    m_pendingAdv = true;
-    m_pendingAdvName = name;
-    m_pendingAdvUuids = uuids;
-    m_pendingAdvPeriph = d;
-    nimble_port_freertos_init([](void *) { nimble_port_run(); });
 }
 
-void JZBleDriverEsp32::stopAdvertising()
+void JZBleDriverEsp32::stopAdvertising(JZBLEPeripheral *d)
 {
-    if (m_advertState == State::None) return;
+    {
+        JZMutexLocker lk(&m_mutex);
+        if (m_advertState == State::None)
+            return;
 
-    printf("BLE: stop + deinit NimBLE\n");
-    // 注意: 不显式调用 ble_gap_adv_stop(), 因为它是异步的（仅将 GAP procedure
-    // 投递到 NimBLE host task 事件队列中）, 如果立即跟上 nimble_port_stop()
-    // 会在 host task 处理停止广播的中途拆除 GAP/Host 内部结构, 造成竞态崩溃。
-    // nimble_port_stop() → ble_hs_stop() 会安全停止所有 NimBLE 子系统(含广播),
-    // ESP-IDF 官方示例也是这种模式。
-    nimble_port_stop();
-    nimble_port_deinit();
+        printf("BLE: stop + deinit NimBLE\n");
 
-    m_advertState = State::None;
-    m_pendingAdv = false;
-    m_pendingAdvName.clear();
-    m_pendingAdvUuids.clear();
-    m_pendingAdvPeriph = nullptr;
-    m_periphConnHandle = -1;
+        m_advertState = State::None;
+        m_periphCtrlPriv = nullptr;
+        m_pendingAdvName.clear();
+        m_pendingAdvUuids.clear();
+    }
+    nimbleDeinit();
 }
 
-void JZBleDriverEsp32::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
+void JZBleDriverEsp32::peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid& charUuid, const JZByteArray& value)
 {
-    if (m_advertState != State::None) {
-        printf("BLE: cannot add char after NimBLE started (svc=%s chr=%s)\n", svcUuid.c_str(), charUuid.c_str());
-        return;
+    (void)d;
+    auto c = (JZBLEPeripheralConnectEsp32*)connect;
+    if (!c || c->periphConnHandle < 0) return;
+    int valHandle = 0; bool indicate = false, notify = false;
+    {
+        JZMutexLocker lk(&m_mutex);
+        auto it = m_periphCharMap.find(charUuid.toString());
+        if (it == m_periphCharMap.end()) return;
+        valHandle = it->second.valHandle;
+        auto sub = c->subs.find(charUuid.toString());
+        if (sub == c->subs.end()) return;
+        // 由驱动根据对端订阅状态路由：订阅 indicate 走 indicate，否则订阅 notify 走 notify
+        indicate = sub->second.subscribedIndicate;
+        notify   = sub->second.subscribedNotify;
     }
-    m_periphCharMap[charUuid] = { svcUuid, 0, properties, JZByteArray() };
-    printf("BLE: add char svc=%s chr=%s props=0x%x\n", svcUuid.c_str(), charUuid.c_str(), properties);
+    if (indicate)
+        sendPeriphData(c->periphConnHandle, valHandle, value, true);
+    else if (notify)
+        sendPeriphData(c->periphConnHandle, valHandle, value, false);
 }
 
 int JZBleDriverEsp32::sendPeriphData(int connHandle, uint16_t valHandle, const JZByteArray &value, bool indicate)
@@ -981,58 +1163,99 @@ int JZBleDriverEsp32::sendPeriphData(int connHandle, uint16_t valHandle, const J
     return rc;
 }
 
-// GATT access 回调：处理 Peripheral 端的特征读写
+void JZBleDriverEsp32::peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect)
+{
+    (void)d;
+    int h;
+    {
+        JZMutexLocker lk(&m_mutex);
+        auto c = (JZBLEPeripheralConnectEsp32*)connect;
+        h = (c && c->periphConnHandle >= 0) ? c->periphConnHandle : -1;
+    }
+    if (h >= 0)
+        ble_gap_terminate(h, BLE_ERR_REM_USER_CONN_TERM);
+    // 同 disconnectFromDevice：断开是异步的，连接句柄此时仍在 m_periphConnMap 中，
+    // 故这里通常只是状态检查；真正的释放会在断开事件处理完、下次 nimbleDeinit 时触发。
+    nimbleDeinit();
+}
+
+// GATT access 回调：处理 Peripheral 端的特征读写（在 NimBLE 任务线程内执行）
 int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
                                     struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle; (void)arg;
+    (void)arg;
     auto *self = g_driver;
-    if (!self || !self->m_periphCtrlPriv) return BLE_ATT_ERR_UNLIKELY;
+    if (!self) return BLE_ATT_ERR_UNLIKELY;
+    {
+        JZMutexLocker lk(&self->m_mutex);
+        if (!self->m_periphCtrlPriv) return BLE_ATT_ERR_UNLIKELY;
+    }
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR && ctxt->om)
     {
-        for (auto &kv : self->m_periphCharMap)
+        // 在锁内读/写共享状态（m_periphConnMap / m_periphCharMap / m_periphCtrlPriv），
+        // 锁外再调用上层回调，避免用户代码回灌驱动造成同一非递归锁重入死锁。
+        std::shared_ptr<JZBLEPeripheralConnect> conn;
+        JZBLEPeripheral *periph = nullptr;
+        JZByteArray val;
+        JZBluetoothUuid uuid;
+        bool found = false;
         {
-            if (kv.second.valHandle == attr_handle)
+            JZMutexLocker lk(&self->m_mutex);
+            auto cit = self->m_periphConnMap.find(conn_handle);
+            conn  = cit != self->m_periphConnMap.end() ? cit->second : nullptr;
+            periph = self->m_periphCtrlPriv;
+            for (auto &kv : self->m_periphCharMap)
             {
-                JZByteArray val;
-                val.append((const char *)ctxt->om->om_data, (int)ctxt->om->om_len);
-                kv.second.value = val;   // 保存以便后续读取
-                JZBleDriver::peripheralOnCharWritten(self->m_periphCtrlPriv,
-                                               JZBluetoothUuid(kv.first), val);
-                return 0;
+                if (kv.second.valHandle == attr_handle)
+                {
+                    val.append((const char *)ctxt->om->om_data, (int)ctxt->om->om_len);
+                    kv.second.value = val;   // 保存以便后续读取
+                    uuid = JZBluetoothUuid(kv.first);
+                    found = true;
+                    break;
+                }
             }
+        }
+        if (found) {
+            JZBleDriver::peripheralOnCharWritten(periph, conn, uuid, val);
+            return 0;
         }
         printf("BLE: onGattAccess WRITE: attr_handle %d not found in charMap\n", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR)
     {
-        for (auto &kv : self->m_periphCharMap)
+        JZByteArray val;
         {
-            if (kv.second.valHandle == attr_handle)
-            {
-                int rc = os_mbuf_append(ctxt->om, kv.second.value.data(), kv.second.value.size());
-                return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-            }
+            JZMutexLocker lk(&self->m_mutex);
+            for (auto &kv : self->m_periphCharMap)
+                if (kv.second.valHandle == attr_handle) { val = kv.second.value; break; }
+        }
+        if (!val.isEmpty()) {
+            int rc = os_mbuf_append(ctxt->om, val.data(), val.size());
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         printf("BLE: onGattAccess READ: attr_handle %d not found in charMap\n", attr_handle);
         return BLE_ATT_ERR_UNLIKELY;
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_DSC && ctxt->om)
     {
-        // CCCD 写入：记录对端订阅状态（notify / indicate）
+        // CCCD 写入：记录该连接对端的订阅状态（notify / indicate）
         uint16_t val = 0;
         if (ctxt->om->om_len >= 1) val = ctxt->om->om_data[0];
         if (ctxt->om->om_len >= 2) val |= (uint16_t)(ctxt->om->om_data[1] << 8);
+        JZMutexLocker lk(&self->m_mutex);
         // CCCD 归属 val_handle < attr_handle 且最接近的特征
         uint16_t bestVal = 0; std::string bestKey;
         for (auto &kv : self->m_periphCharMap)
             if (kv.second.valHandle < attr_handle && kv.second.valHandle >= bestVal) {
                 bestVal = kv.second.valHandle; bestKey = kv.first;
             }
-        if (!bestKey.empty()) {
-            auto &ci = self->m_periphCharMap[bestKey];
+        auto cit = self->m_periphConnMap.find(conn_handle);
+        JZBLEPeripheralConnectEsp32 *conn = cit != self->m_periphConnMap.end() ? cit->second.get() : nullptr;
+        if (conn && !bestKey.empty()) {
+            auto &ci = conn->subs[bestKey];
             ci.subscribedNotify   = (val & 0x0001) != 0;
             ci.subscribedIndicate = (val & 0x0002) != 0;
         }
@@ -1040,35 +1263,24 @@ int JZBleDriverEsp32::onGattAccess(uint16_t conn_handle, uint16_t attr_handle,
     }
     else if (ctxt->op == BLE_GATT_ACCESS_OP_READ_DSC)
     {
-        // CCCD 读回当前订阅状态
-        uint16_t bestVal = 0; std::string bestKey;
-        for (auto &kv : self->m_periphCharMap)
-            if (kv.second.valHandle < attr_handle && kv.second.valHandle >= bestVal) {
-                bestVal = kv.second.valHandle; bestKey = kv.first;
+        // CCCD 读回该连接当前订阅状态
+        uint16_t v = 0;
+        {
+            JZMutexLocker lk(&self->m_mutex);
+            uint16_t bestVal = 0; std::string bestKey;
+            for (auto &kv : self->m_periphCharMap)
+                if (kv.second.valHandle < attr_handle && kv.second.valHandle >= bestVal) {
+                    bestVal = kv.second.valHandle; bestKey = kv.first;
+                }
+            auto cit = self->m_periphConnMap.find(conn_handle);
+            JZBLEPeripheralConnectEsp32 *conn = cit != self->m_periphConnMap.end() ? cit->second.get() : nullptr;
+            if (conn && !bestKey.empty()) {
+                auto &ci = conn->subs[bestKey];
+                v = (ci.subscribedIndicate ? 0x0002 : 0) | (ci.subscribedNotify ? 0x0001 : 0);
             }
-        if (!bestKey.empty()) {
-            auto &ci = self->m_periphCharMap[bestKey];
-            uint16_t v = (ci.subscribedIndicate ? 0x0002 : 0) | (ci.subscribedNotify ? 0x0001 : 0);
-            int rc = os_mbuf_append(ctxt->om, &v, sizeof(v));
-            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
-        return BLE_ATT_ERR_UNLIKELY;
+        int rc = os_mbuf_append(ctxt->om, &v, sizeof(v));
+        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     return BLE_ATT_ERR_UNLIKELY;
-}
-
-void JZBleDriverEsp32::peripheralSendNotify(const JZBluetoothUuid &charUuid, const JZByteArray &value)
-{
-    auto it = m_periphCharMap.find(charUuid.toString());
-    if (it == m_periphCharMap.end()) return;
-    if (!it->second.subscribedNotify) return;   // 对端未订阅 notify，跳过
-    sendPeriphData(m_periphConnHandle, it->second.valHandle, value, false);
-}
-
-void JZBleDriverEsp32::peripheralSendIndicate(const JZBluetoothUuid &charUuid, const JZByteArray &value)
-{
-    auto it = m_periphCharMap.find(charUuid.toString());
-    if (it == m_periphCharMap.end()) return;
-    if (!it->second.subscribedIndicate) return;  // 对端未订阅 indicate，跳过
-    sendPeriphData(m_periphConnHandle, it->second.valHandle, value, true);
 }

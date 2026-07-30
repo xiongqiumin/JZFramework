@@ -10,55 +10,76 @@
 
 class JZBleDriver;
 
+class JZBleServiceData
+{
+public:
+    struct CharData 
+    {
+        const JZBluetoothUuid &charUuid;
+        int properties = 0;
+        JZByteArray value;
+    };
+
+    void setUuid(const JZBluetoothUuid &uuid); // 设置服务UUID
+    const JZBluetoothUuid &uuid() const;
+
+    void addCharacteristic(const JZBluetoothUuid &charUuid, int properties, const JZByteArray &initialValue = JZByteArray());
+    const std::vector<CharData> &characteristic() const;
+
+protected:
+    JZBluetoothUuid m_uuid;
+    std::vector<CharData> m_charList;
+};
+
+class JZBLEPeripheralConnect
+{
+public:
+    virtual ~JZBLEPeripheralConnect();
+};
+
 class JZBLEPeripheral : public JZObject
 {
     JZ_OBJECT_DECLARE(JZBLEPeripheral)
 
-    // 仅允许 BLE 驱动基类访问受保护的静态分发方法,
-    // 具体驱动统一通过 JZBleDriver 的转发中转调用。
-    friend class JZBleDriver;
-
 public:
-    enum State { Unconnected, Connecting, Connected, Discovering, Disconnecting, Error };
     enum ErrorCode { NoError, ConnectionError, ServiceError, UnknownError };
 
     JZBLEPeripheral(JZObject *parent = nullptr);
     ~JZBLEPeripheral() override;
 
+    std::string localName();
+    void setLocalName(std::string m_localName);
+
     // 从机专属接口
-    void addService(const JZBluetoothUuid &serviceUuid);
-    void addCharacteristic(const JZBluetoothUuid &serviceUuid,
-                           const JZBluetoothUuid &charUuid,
-                           int properties,
-                           const std::string &initialValue = "");
-    void startAdvertising(const std::string &localName = "");
+    void addService(const JZBleServiceData &serviceUuid);
+    void startAdvertising();
     void stopAdvertising();
     bool isAdvertising() const;
 
-    // 从机数据推送（value 为二进制载荷，使用 JZByteArray 以支持任意字节）
-    void sendNotification(const JZBluetoothUuid &charUuid, const JZByteArray &value);
+    void disconnectFromDevice(JZBLEPeripheralConnect *connect);
 
-    int state() const;
-    int error() const;
-    std::string errorString() const;
+    void sendNotify(JZBLEPeripheralConnect *connect, const JZBluetoothUuid &charUuid, const JZByteArray &value);
+    void sendNotifyToAll(const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
 jz_signals:
-    JZSignal<> sigClientConnected;
-    JZSignal<> sigClientDisconnected;
-    // (写入数据的特征 UUID, 写入的二进制值)
-    JZSignal<const JZBluetoothUuid&, const JZByteArray&> sigCharacteristicWritten;
+    JZSignal<JZBLEPeripheralConnect*> sigConnected;
+    JZSignal<JZBLEPeripheralConnect*> sigDisconnected;
+    JZSignal<JZBLEPeripheralConnect*, const JZBluetoothUuid&, const JZByteArray&> sigCharacteristicWritten;
 
 protected:
+    friend class JZBleDriver;
+
     JZBleDriver *getDriver();
 
-    static void onClientConnected(JZBLEPeripheral *self);
-    static void onClientDisconnected(JZBLEPeripheral *self);
-    static void onCharWritten(JZBLEPeripheral *self, const JZBluetoothUuid &charUuid, const JZByteArray &value);
+    static void onClientConnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect);
+    static void onClientDisconnected(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect);
+    static void onCharWritten(JZBLEPeripheral *self, std::shared_ptr<JZBLEPeripheralConnect> connect, const JZBluetoothUuid &charUuid, const JZByteArray &value);
 
-    State     m_state = Unconnected;
     ErrorCode m_error = NoError;
     std::string m_errorMsg;
-    std::vector<JZBluetoothUuid> m_serviceList;
+    std::string m_localName;
+    std::vector<JZBleServiceData> m_serviceList;
+    std::vector<std::shared_ptr<JZBLEPeripheralConnect>> m_connects;
     bool      m_advertising = false;
 };
 

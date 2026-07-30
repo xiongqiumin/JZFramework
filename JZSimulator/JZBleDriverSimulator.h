@@ -5,6 +5,7 @@
 #include "JZByteArray.h"
 #include "JZNetClient.h"
 #include "JZSimPack.h"
+#include "JZMutex.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -58,8 +59,10 @@ public:
     void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
                           JZBLEPeripheral *d) override;
     void stopAdvertising() override;
-    void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
-    void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
+    void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value);
+    void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value);
+    void peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
+    void peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect) override;
 
 private:
     void onPacket(JZNetPackPtr pack);
@@ -94,7 +97,10 @@ private:
     struct PeriphChar { std::string svc, chr; int props = 0; };
     std::vector<PeriphChar> m_periphChars;
     JZBLEPeripheral *m_periphCtrl = nullptr;
+    std::shared_ptr<JZBLEPeripheralConnect> m_periphConnect;
     int m_periphConnHandle = -1;
+
+    mutable JZMutex m_mutex;   // 保护所有跨线程共享状态（应用线程 <-> 网络接收线程）
 };
 
 #endif // !JZ_BLE_DRIVER_SIMULATOR_H_

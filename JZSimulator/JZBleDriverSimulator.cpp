@@ -48,54 +48,62 @@ int JZBleDriverSimulator::getConnHandle(const std::string &a)
 // ===================== Central: 扫描 =====================
 void JZBleDriverSimulator::startScan(JZBLEDeviceDiscoveryAgent *agent)
 {
-    m_scanAgent = agent->guardPointer();
-    m_scanning = true;
+    { JZMutexLocker lk(&m_mutex); m_scanAgent = agent->guardPointer(); m_scanning = true; }
     JZVariantMap m;
     sendSim(SIM_CMD_SCAN_START, m);
 }
 void JZBleDriverSimulator::stopScan(JZBLEDeviceDiscoveryAgent *agent)
 {
-    JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
-    m_scanning = false;
-    m_scanAgent = JZObjectPointer();
+    { JZMutexLocker lk(&m_mutex);
+      JZ_ASSERT_X(agent == m_scanAgent.object(), "stopScan invalid param");
+      m_scanning = false;
+      m_scanAgent = JZObjectPointer(); }
     JZVariantMap m;
     sendSim(SIM_CMD_SCAN_STOP, m);
 }
 bool JZBleDriverSimulator::isScanning(JZBLEDeviceDiscoveryAgent *agent)
 {
+    JZMutexLocker lk(&m_mutex);
     return agent ? (agent == (JZBLEDeviceDiscoveryAgent *)m_scanAgent.object()) : false;
 }
 
 // ===================== Central: 连接 =====================
 void JZBleDriverSimulator::connectToDevice(JZBLEController *d, const std::vector<JZBleBondKey>& keys)
 {
+    (void)keys;
     std::string addr = d->deviceInfo().address();
-    m_centralByAddr[addr] = d;
+    // 设计上仅支持单个 Central（最近一次 connect 的），连接事件按 m_central 路由；
+    // m_central 同时被网络接收线程读取，需加锁。
+    {
+        JZMutexLocker lk(&m_mutex);
+        m_central = d;
+    }
     JZVariantMap m; m["addr"] = JZVariant(addr);
     sendSim(SIM_CMD_CONNECT, m);
 }
 void JZBleDriverSimulator::disconnectFromDevice(JZBLEController *d)
 {
-    if (m_central == d) m_central = nullptr;
+    { JZMutexLocker lk(&m_mutex); if (m_central == d) m_central = nullptr; }
     std::string addr = d->deviceInfo().address();
     JZVariantMap m; m["addr"] = JZVariant(addr);
     sendSim(SIM_CMD_DISCONNECT, m);
 }
 bool JZBleDriverSimulator::isConnected(JZBLEController *d)
 {
+    JZMutexLocker lk(&m_mutex);
     return getConnHandle(d->deviceInfo().address()) >= 0;
 }
 
 // ===================== Central: 服务/特征发现 =====================
 void JZBleDriverSimulator::discoverServices(const std::string &address, JZBLEController *d)
 {
-    m_svcDiscoverCtrl = d;
-    m_svcDiscoverAddr = address;
+    { JZMutexLocker lk(&m_mutex); m_svcDiscoverCtrl = d; m_svcDiscoverAddr = address; }
     JZVariantMap m; m["addr"] = JZVariant(address);
     sendSim(SIM_CMD_DISCOVER_SVC, m);
 }
 std::vector<JZBluetoothUuid> JZBleDriverSimulator::services(const std::string &address)
 {
+    JZMutexLocker lk(&m_mutex);
     auto it = m_svcCache.find(address);
     return it != m_svcCache.end() ? it->second : std::vector<JZBluetoothUuid>();
 }
@@ -103,15 +111,14 @@ std::vector<JZBluetoothUuid> JZBleDriverSimulator::services(const std::string &a
 void JZBleDriverSimulator::discoverCharacteristics(const std::string &address, const std::string &serviceUuid,
                                                    JZBLEService *d)
 {
-    m_chrDiscoverCtrl = d;
-    m_chrDiscoverAddr = address;
-    m_chrDiscoverSvc  = serviceUuid;
+    { JZMutexLocker lk(&m_mutex); m_chrDiscoverCtrl = d; m_chrDiscoverAddr = address; m_chrDiscoverSvc = serviceUuid; }
     JZVariantMap m; m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid);
     sendSim(SIM_CMD_DISCOVER_CHR, m);
 }
 std::vector<JZLowEnergyCharacteristic> JZBleDriverSimulator::characteristics(const std::string &address,
                                                                             const std::string &serviceUuid)
 {
+    JZMutexLocker lk(&m_mutex);
     auto it = m_charCache.find(address + "|" + serviceUuid);
     return it != m_charCache.end() ? it->second : std::vector<JZLowEnergyCharacteristic>();
 }
@@ -120,13 +127,17 @@ std::vector<JZLowEnergyCharacteristic> JZBleDriverSimulator::characteristics(con
 void JZBleDriverSimulator::readCharacteristic(const std::string &address, const std::string &serviceUuid,
                                               const std::string &charUuid, JZBLEService *d)
 {
-    auto it = m_charValHandle.find(address + "|" + serviceUuid);
-    if (it == m_charValHandle.end()) return;
-    auto it2 = it->second.find(charUuid);
-    if (it2 == it->second.end()) return;
-    int h = it2->second;
-    Ctx cx; cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.d = d;
-    m_readCtx[h] = cx;
+    int h = 0; Ctx cx;
+    {
+        JZMutexLocker lk(&m_mutex);
+        auto it = m_charValHandle.find(address + "|" + serviceUuid);
+        if (it == m_charValHandle.end()) return;
+        auto it2 = it->second.find(charUuid);
+        if (it2 == it->second.end()) return;
+        h = it2->second;
+        cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.d = d;
+        m_readCtx[h] = cx;
+    }
     JZVariantMap m; m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid); m["chr"] = JZVariant(charUuid);
     sendSim(SIM_CMD_READ, m);
 }
@@ -134,13 +145,17 @@ void JZBleDriverSimulator::writeCharacteristic(const std::string &address, const
                                                const std::string &charUuid, const JZByteArray &value,
                                                bool writeNoResponse, JZBLEService *d)
 {
-    auto it = m_charValHandle.find(address + "|" + serviceUuid);
-    if (it == m_charValHandle.end()) return;
-    auto it2 = it->second.find(charUuid);
-    if (it2 == it->second.end()) return;
-    int h = it2->second;
-    Ctx cx; cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.value = value; cx.d = d;
-    m_writeCtx[h] = cx;
+    int h = 0; Ctx cx;
+    {
+        JZMutexLocker lk(&m_mutex);
+        auto it = m_charValHandle.find(address + "|" + serviceUuid);
+        if (it == m_charValHandle.end()) return;
+        auto it2 = it->second.find(charUuid);
+        if (it2 == it->second.end()) return;
+        h = it2->second;
+        cx.addr = address; cx.svc = serviceUuid; cx.chr = charUuid; cx.value = value; cx.d = d;
+        m_writeCtx[h] = cx;
+    }
     JZVariantMap m;
     m["addr"] = JZVariant(address); m["svc"] = JZVariant(serviceUuid); m["chr"] = JZVariant(charUuid);
     m["val"] = JZVariant(str_fromUtf8(value)); m["nrs"] = JZVariant(writeNoResponse ? 1 : 0);
@@ -171,6 +186,7 @@ void JZBleDriverSimulator::writeDescriptor(const std::string &address, const std
 // ===================== Peripheral =====================
 void JZBleDriverSimulator::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
+    // m_periphChars 仅由应用线程访问（网络接收线程从不读取），无需加锁。
     m_periphChars.push_back({svcUuid, charUuid, properties});
     JZVariantMap m; m["svc"] = JZVariant(svcUuid); m["chr"] = JZVariant(charUuid); m["props"] = JZVariant(properties);
     sendSim(SIM_CMD_ADD_PERIPH_CHR, m);
@@ -178,7 +194,7 @@ void JZBleDriverSimulator::addPeripheralCharacteristic(const std::string &svcUui
 void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &serviceUuids,
                                             JZBLEPeripheral *d)
 {
-    m_periphCtrl = d;
+    { JZMutexLocker lk(&m_mutex); m_periphCtrl = d; }
     std::vector<std::string> su;
     for (auto &u : serviceUuids) su.push_back(u.toString());
     JZVariantMap m; m["name"] = JZVariant(name); {
@@ -190,10 +206,9 @@ void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::
 }
 void JZBleDriverSimulator::stopAdvertising()
 {
+    { JZMutexLocker lk(&m_mutex); m_periphConnHandle = -1; m_periphCtrl = nullptr; }
     JZVariantMap m;
     sendSim(SIM_CMD_STOP_ADV, m);
-    m_periphConnHandle = -1;
-    m_periphCtrl = nullptr;
 }
 void JZBleDriverSimulator::peripheralSendNotify(const JZBluetoothUuid &charUuid, const JZByteArray &value)
 {
@@ -206,7 +221,23 @@ void JZBleDriverSimulator::peripheralSendIndicate(const JZBluetoothUuid &charUui
     sendSim(SIM_CMD_SEND_INDICATE, m);
 }
 
+void JZBleDriverSimulator::peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid &charUuid, const JZByteArray &value)
+{
+    (void)d; (void)connect;
+    // 模拟器不区分订阅状态，notify / indicate 都发出，由对端按需接收
+    peripheralSendNotify(charUuid, value);
+    peripheralSendIndicate(charUuid, value);
+}
+
+void JZBleDriverSimulator::peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect)
+{
+    (void)d; (void)connect;
+    stopAdvertising();
+}
+
 // ===================== 报文分发 =====================
+// onPacket 在网络接收线程中执行，与公有方法（应用线程）共享全部状态，
+// 故每个 case 都先加锁取出所需数据/指针，再释放锁后调用上层回调，避免重入死锁。
 void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
 {
     auto *sp = dynamic_cast<JZSimPack *>(pack.get());
@@ -235,20 +266,38 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         std::vector<JZBluetoothUuid> uu;
         for (auto &s : su) uu.push_back(JZBluetoothUuid(s));
         info.setServiceUuids(uu);
-        if (m_scanAgent)
-            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)m_scanAgent.object(), info);
+        JZObjectPointer agent;
+        {
+            JZMutexLocker lk(&m_mutex);
+            agent = m_scanAgent;
+        }
+        if (agent)
+            JZBLEDeviceDiscoveryAgent::onDeviceDiscovered((JZBLEDeviceDiscoveryAgent *)agent.object(), info);
         break;
     }
     case SIM_EVT_CONNECTED: {
         std::string addr = map.at("addr").toString();
         int role = map.at("role").toInt();
         if (role == 0) {
-            m_connMap[addr] = 1;
-            if (m_central)
-                JZBleDriver::centralOnDeviceConnected(m_central, addr.c_str());
+            JZBLEController *ctrl = nullptr;
+            {
+                JZMutexLocker lk(&m_mutex);
+                m_connMap[addr] = 1;
+                ctrl = m_central;
+            }
+            if (ctrl)
+                JZBleDriver::centralOnDeviceConnected(ctrl, addr.c_str());
         } else {
-            m_periphConnHandle = 1;
-            if (m_periphCtrl) JZBleDriver::peripheralOnClientConnected(m_periphCtrl);
+            std::shared_ptr<JZBLEPeripheralConnect> connect;
+            JZBLEPeripheral *periph = nullptr;
+            {
+                JZMutexLocker lk(&m_mutex);
+                m_periphConnHandle = 1;
+                connect = std::make_shared<JZBLEPeripheralConnect>();
+                m_periphConnect = connect;
+                periph = m_periphCtrl;
+            }
+            if (periph) JZBleDriver::peripheralOnClientConnected(periph, connect);
         }
         break;
     }
@@ -256,12 +305,25 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         std::string addr = map.at("addr").toString();
         int role = map.at("role").toInt();
         if (role == 0) {
-            m_connMap.erase(addr);
-            if (m_central)
-                JZBleDriver::centralOnDeviceDisconnected(m_central, addr.c_str());
+            JZBLEController *ctrl = nullptr;
+            {
+                JZMutexLocker lk(&m_mutex);
+                m_connMap.erase(addr);
+                ctrl = m_central;
+            }
+            if (ctrl)
+                JZBleDriver::centralOnDeviceDisconnected(ctrl, addr.c_str());
         } else {
-            m_periphConnHandle = -1;
-            if (m_periphCtrl) JZBleDriver::peripheralOnClientDisconnected(m_periphCtrl);
+            JZBLEPeripheral *periph = nullptr;
+            std::shared_ptr<JZBLEPeripheralConnect> connect;
+            {
+                JZMutexLocker lk(&m_mutex);
+                m_periphConnHandle = -1;
+                periph = m_periphCtrl;
+                connect = m_periphConnect;
+                m_periphConnect.reset();
+            }
+            if (periph) JZBleDriver::peripheralOnClientDisconnected(periph, connect);
         }
         break;
     }
@@ -277,9 +339,14 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
 }
         std::vector<JZBluetoothUuid> vu;
         for (auto &s : su) vu.push_back(JZBluetoothUuid(s));
-        m_svcCache[addr] = vu;
-        if (m_svcDiscoverCtrl)
-            JZBleDriver::centralOnServicesDiscovered(m_svcDiscoverCtrl, addr.c_str());
+        JZBLEController *ctrl = nullptr;
+        {
+            JZMutexLocker lk(&m_mutex);
+            m_svcCache[addr] = vu;
+            ctrl = m_svcDiscoverCtrl;
+        }
+        if (ctrl)
+            JZBleDriver::centralOnServicesDiscovered(ctrl, addr.c_str());
         break;
     }
     case SIM_EVT_CHARACTERISTICS: {
@@ -294,24 +361,29 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
     }
 }
         std::vector<JZLowEnergyCharacteristic> chars;
-        for (auto &e : cls) {
-            size_t p = e.find('|');
-            if (p == std::string::npos) continue;
-            std::string chu = e.substr(0, p);
-            int props = std::stoi(e.substr(p + 1));
-            JZLowEnergyCharacteristic c;
-            c.setUuid(JZBluetoothUuid(chu));
-            c.setProperties(props);
-            chars.push_back(c);
-            int h = ++m_handleCounter;
-            m_charValHandle[addr + "|" + svc][chu] = h;
-            Ctx cx; cx.addr = addr; cx.svc = svc; cx.chr = chu; cx.d = m_chrDiscoverCtrl;
-            m_readCtx[h] = cx;
-            m_ntfCtx[h]  = cx;
+        JZBLEService *ctrl = nullptr;
+        {
+            JZMutexLocker lk(&m_mutex);
+            for (auto &e : cls) {
+                size_t p = e.find('|');
+                if (p == std::string::npos) continue;
+                std::string chu = e.substr(0, p);
+                int props = std::stoi(e.substr(p + 1));
+                JZLowEnergyCharacteristic c;
+                c.setUuid(JZBluetoothUuid(chu));
+                c.setProperties(props);
+                chars.push_back(c);
+                int h = ++m_handleCounter;
+                m_charValHandle[addr + "|" + svc][chu] = h;
+                Ctx cx; cx.addr = addr; cx.svc = svc; cx.chr = chu; cx.d = m_chrDiscoverCtrl;
+                m_readCtx[h] = cx;
+                m_ntfCtx[h]  = cx;
+            }
+            m_charCache[addr + "|" + svc] = chars;
+            ctrl = m_chrDiscoverCtrl;
         }
-        m_charCache[addr + "|" + svc] = chars;
-        if (m_chrDiscoverCtrl)
-            JZBLEService::onCharacteristicsDiscovered(m_chrDiscoverCtrl, addr.c_str(), svc.c_str());
+        if (ctrl)
+            JZBLEService::onCharacteristicsDiscovered(ctrl, addr.c_str(), svc.c_str());
         break;
     }
     case SIM_EVT_READ_RESULT: {
@@ -320,35 +392,46 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         std::string chr  = map.at("chr").toString();
         std::string valStr = map.at("val").toString();
         JZByteArray val(valStr.data(), (int)valStr.size());
-        int h = 0;
-        auto it = m_charValHandle.find(addr + "|" + svc);
-        if (it != m_charValHandle.end()) {
-            auto it2 = it->second.find(chr);
-            if (it2 != it->second.end()) h = it2->second;
+        JZBLEService *d = nullptr;
+        {
+            JZMutexLocker lk(&m_mutex);
+            int h = 0;
+            auto it = m_charValHandle.find(addr + "|" + svc);
+            if (it != m_charValHandle.end()) {
+                auto it2 = it->second.find(chr);
+                if (it2 != it->second.end()) h = it2->second;
+            }
+            auto cit = m_readCtx.find(h);
+            if (cit != m_readCtx.end()) {
+                d = cit->second.d;
+                m_readCtx.erase(cit);
+            }
         }
-        auto cit = m_readCtx.find(h);
-        if (cit != m_readCtx.end()) {
-            JZBLEService::onCharacteristicRead(cit->second.d, addr.c_str(), svc.c_str(), val);
-            m_readCtx.erase(cit);
-        }
+        if (d) JZBLEService::onCharacteristicRead(d, addr.c_str(), svc.c_str(), val);
         break;
     }
     case SIM_EVT_WRITE_RESULT: {
         std::string addr = map.at("addr").toString();
         std::string svc  = map.at("svc").toString();
         std::string chr  = map.at("chr").toString();
-        int h = 0;
-        auto it = m_charValHandle.find(addr + "|" + svc);
-        if (it != m_charValHandle.end()) {
-            auto it2 = it->second.find(chr);
-            if (it2 != it->second.end()) h = it2->second;
+        JZByteArray val;
+        JZBLEService *d = nullptr;
+        {
+            JZMutexLocker lk(&m_mutex);
+            int h = 0;
+            auto it = m_charValHandle.find(addr + "|" + svc);
+            if (it != m_charValHandle.end()) {
+                auto it2 = it->second.find(chr);
+                if (it2 != it->second.end()) h = it2->second;
+            }
+            auto cit = m_writeCtx.find(h);
+            if (cit != m_writeCtx.end()) {
+                d = cit->second.d;
+                val = cit->second.value;
+                m_writeCtx.erase(cit);
+            }
         }
-        auto cit = m_writeCtx.find(h);
-        if (cit != m_writeCtx.end()) {
-            JZBLEService::onCharacteristicWritten(cit->second.d, addr.c_str(), svc.c_str(),
-                                                         cit->second.value, true);
-            m_writeCtx.erase(cit);
-        }
+        if (d) JZBLEService::onCharacteristicWritten(d, addr.c_str(), svc.c_str(), val, true);
         break;
     }
     case SIM_EVT_NOTIFY_RX: {
@@ -357,22 +440,34 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
         std::string chr  = map.at("chr").toString();
         std::string valStr = map.at("val").toString();
         JZByteArray val(valStr.data(), (int)valStr.size());
-        int h = 0;
-        auto it = m_charValHandle.find(addr + "|" + svc);
-        if (it != m_charValHandle.end()) {
-            auto it2 = it->second.find(chr);
-            if (it2 != it->second.end()) h = it2->second;
+        JZBLEService *d = nullptr;
+        {
+            JZMutexLocker lk(&m_mutex);
+            int h = 0;
+            auto it = m_charValHandle.find(addr + "|" + svc);
+            if (it != m_charValHandle.end()) {
+                auto it2 = it->second.find(chr);
+                if (it2 != it->second.end()) h = it2->second;
+            }
+            auto cit = m_ntfCtx.find(h);
+            if (cit != m_ntfCtx.end())
+                d = cit->second.d;
         }
-        auto cit = m_ntfCtx.find(h);
-        if (cit != m_ntfCtx.end())
-            JZBLEService::onCharacteristicChanged(cit->second.d, addr.c_str(), svc.c_str(), val);
+        if (d) JZBLEService::onCharacteristicChanged(d, addr.c_str(), svc.c_str(), val);
         break;
     }
     case SIM_EVT_CHAR_WRITTEN: {
         std::string chr = map.at("chr").toString();
         std::string val = map.at("val").toString();
         JZByteArray bval(val.data(), (int)val.size());
-        if (m_periphCtrl) JZBleDriver::peripheralOnCharWritten(m_periphCtrl, JZBluetoothUuid(chr), bval);
+        JZBLEPeripheral *periph = nullptr;
+        std::shared_ptr<JZBLEPeripheralConnect> connect;
+        {
+            JZMutexLocker lk(&m_mutex);
+            periph = m_periphCtrl;
+            connect = m_periphConnect;
+        }
+        if (periph) JZBleDriver::peripheralOnCharWritten(periph, connect, JZBluetoothUuid(chr), bval);
         break;
     }
     default:

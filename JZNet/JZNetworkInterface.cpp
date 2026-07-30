@@ -9,6 +9,7 @@
 #include <iphlpapi.h>
 #elif JZ_OS == JZ_OS_LINUX
 #include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #else

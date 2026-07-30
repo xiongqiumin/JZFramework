@@ -29,7 +29,7 @@ public:
     JZNetworkRequest(const std::string& url);
     JZNetworkRequest(const JZUrl &url);
 
-    const JZUrl& JZNetworkRequest::url() const;
+    const JZUrl& url() const;
     void setUrl(const JZUrl &url);
 
     void setHeader(KnownHeaders header, const std::string &headerValue);

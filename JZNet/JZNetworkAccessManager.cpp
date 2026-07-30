@@ -298,6 +298,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 
         if (http->httpCode >= 200 && http->httpCode < 300)
         {
+            m_reply->sigReadyRead.emit();
             emitFinish(JZNetworkReply::NoError);
         }
         else

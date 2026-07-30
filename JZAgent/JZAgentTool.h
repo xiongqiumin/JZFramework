@@ -5,6 +5,8 @@
 #include <functional>
 #include "json/json.h"
 #include "JZOptional.h"
+#include "JZObject.h"
+#include "JZSignal.h"
 
 // 1. 参数类型枚举
 enum ParamType
@@ -42,7 +44,7 @@ struct ParamSchema
     JZOptional<std::string> pattern;
 };
 
-// 3. 工具定义（OpenAI 标准结构）
+// 3. 工具调用请求（OpenAI 标准结构）
 struct ToolCall
 {
     Json::Value toJson() const;
@@ -52,7 +54,7 @@ struct ToolCall
     std::string type;
     std::string function_name;
     std::string function_args;
-    
+
     //function_args 解析结果
     Json::Value params;
 };
@@ -66,9 +68,7 @@ struct ToolCallResult
     std::string result;
 };
 
-class JZAgentTool;
-typedef std::shared_ptr<JZAgentTool> JZAgentToolPtr;
-
+// 4. 工具定义（OpenAI 标准结构）
 struct ToolDefine
 {
     Json::Value toJson() const;
@@ -78,43 +78,29 @@ struct ToolDefine
     std::string description;
     std::vector<ParamSchema> parameters;
     std::vector<std::string> required_parameters;
-
-    JZAgentToolPtr impl;
 };
 
-//JZAgentTool
 class JZAgent;
-class JZAgentTool
+
+// 5. 工具基类
+class JZAgentTool : public JZObject
 {
 public:
     JZAgentTool();
     virtual ~JZAgentTool();
 
-    virtual void call(JZAgent *agent, const ToolCall &params) = 0;
-};
+    const std::string &toolName() const;
+    const ToolDefine &toolDefine() const;
+    void setToolDefine(const ToolDefine &def);
 
-//JZAgentFunctionTool
-class JZAgentFunctionTool : public JZAgentTool
-{
-public:
-    JZAgentFunctionTool();
-    virtual ~JZAgentFunctionTool();
+    // 统一调用接口：agent 在需要执行工具时传入自身与已解析的参数
+    virtual void call(const ToolCall &params) = 0;
 
-    virtual void call(JZAgent *agent, const ToolCall &params) override;
+jz_signals:
+    JZSignal<ToolCallResult> sigResult;
 
-    std::function<ToolCallResult(JZAgent *agent, const ToolCall &params)> function;
-};
-
-//JZAgentAsyncFunctionTool
-class JZAgentAsyncFunctionTool : public JZAgentTool
-{
-public:
-    JZAgentAsyncFunctionTool();
-    virtual ~JZAgentAsyncFunctionTool();
-
-    virtual void call(JZAgent *agent, const ToolCall &params) override;
-
-    std::function<void(JZAgent *agent, const ToolCall &params)> function;
+protected:
+    ToolDefine m_toolDefine;
 };
 
 #endif  // !JZ_AGENT_TOOL_H_

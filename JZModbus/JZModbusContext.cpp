@@ -1,4 +1,5 @@
-﻿#include "JZModbusContext.h"
+﻿#include <string.h>
+#include "JZModbusContext.h"
 
 #ifndef FALSE
 #define FALSE 0

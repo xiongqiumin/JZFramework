@@ -160,9 +160,9 @@ void destoryMainContext(JZCoMainContext *ctx)
 
 //JZCoCoroutine
 void FiberFunction(boost_context::transfer_t t);
-JZCoContext* createContext(JZCoCoroutine *co)
+JZCoContext* createContext(JZCoCoroutine *co, int stack_size)
 {    
-    JZCoContext *coctx = new JZCoContext();
+    JZCoContext *coctx = new JZCoContext(stack_size);
     coctx->ctx.task = co;
     
     // 为协程创建 fiber_context，使用固定大小的堆栈

@@ -1,21 +1,22 @@
-#ifndef JZ_AUDIO_INPUT_IMPL_H_
-#define JZ_AUDIO_INPUT_IMPL_H_
+#ifndef JZ_AUDIO_INPUT_LINUX_H_
+#define JZ_AUDIO_INPUT_LINUX_H_
 
 #include <alsa/asoundlib.h>
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
 #include "JZTimer.h"
 #include "JZAudioDeviceInfo.h"
+#include "detail/JZAudioInputImpl.h"
 
 class JZAudioInput;
-class JZAudioInputImpl : public JZObject
+class JZAudioInputLinux : public JZAudioInputImpl
 {
 public:
-    explicit JZAudioInputImpl(JZAudioInput* parent);
-    ~JZAudioInputImpl();
+    explicit JZAudioInputLinux(JZAudioInput* parent);
+    ~JZAudioInputLinux();
 
-    bool open(const JZAudioDeviceInfo &device);
-    void close();
+    bool open(const JZAudioDeviceInfo &device) override;
+    void close() override;
 
 private:
     // 实际处理音频数据的函数

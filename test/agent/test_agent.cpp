@@ -13,6 +13,28 @@
 #include "JZCommandLineParser.h"
 #include "JZDebug.h"
 
+// 工具基类已统一为：call(const ToolCall&) 实现逻辑，并通过 sigResult 返回结果。
+// 下面两个本地工具用于测试，等价于原 JZAgentFunctionTool / JZAgentAsyncFunctionTool。
+class FunctionTool : public JZAgentTool
+{
+public:
+    std::function<ToolCallResult(const ToolCall&)> function;
+    void call(const ToolCall& params) override
+    {
+        sigResult.emit(function(params));
+    }
+};
+
+class AsyncFunctionTool : public JZAgentTool
+{
+public:
+    std::function<void(JZAgentTool*, const ToolCall&)> function;
+    void call(const ToolCall& params) override
+    {
+        function(this, params);
+    }
+};
+
 // ------------------------------------------------------------------
 // 配置（通过命令行注入；未设置时使用占位默认值）
 //   --modelUrl   例如 http://localhost:8000/v1/chat/completions
@@ -116,8 +138,9 @@ protected:
         def.parameters.push_back(p);
         def.required_parameters.push_back("number");
 
-        auto impl = std::make_shared<JZAgentFunctionTool>();
-        impl->function = [this](JZAgent *, const ToolCall &call) -> ToolCallResult {
+        auto *tool = new FunctionTool();
+        tool->setToolDefine(def);
+        tool->function = [this](const ToolCall &call) -> ToolCallResult {
             ToolCallResult r;
             r.id = call.id;
             r.isOk = true;
@@ -131,8 +154,7 @@ protected:
                 r.result = "猜对了！";
             return r;
         };
-        def.impl = impl;
-        m_agent->addTool(def);
+        m_agent->addTool(tool);
 
         jzDebug().nospace() << "[场景1 猜数字] 秘密数字已生成(1~10000)，请模型开始猜...";
         m_agent->request("我们开始玩猜数字游戏吧，请猜一个 1 到 10000 之间的整数。");
@@ -141,7 +163,7 @@ protected:
     void setupMath()
     {
         auto makeMath = [](const std::string &name, const std::string &desc,
-                          std::function<double(double, double)> op, bool isDiv) {
+                          std::function<double(double, double)> op, bool isDiv) -> JZAgentTool* {
             ToolDefine def;
             def.name = name;
             def.description = desc;
@@ -158,8 +180,9 @@ protected:
             def.required_parameters.push_back("a");
             def.required_parameters.push_back("b");
 
-            auto impl = std::make_shared<JZAgentFunctionTool>();
-            impl->function = [op, isDiv](JZAgent *, const ToolCall &call) -> ToolCallResult {
+            auto *tool = new FunctionTool();
+            tool->setToolDefine(def);
+            tool->function = [op, isDiv](const ToolCall &call) -> ToolCallResult {
                 ToolCallResult r;
                 r.id = call.id;
                 r.isOk = true;
@@ -177,8 +200,7 @@ protected:
                     r.result = std::to_string(v);
                 return r;
             };
-            def.impl = impl;
-            return def;
+            return tool;
         };
 
         m_agent->setSystemPrompt(
@@ -204,9 +226,9 @@ protected:
         m_agent->request("你是谁？");
     }
 
-    // 场景4：异步工具（JZAgentAsyncFunctionTool）
-    // 异步工具不在 function 中直接返回结果，而是自行在"完成后"调用
-    // agent->toolCallResult(...) 把结果交还；Agent 会据此继续驱动对话。
+    // 场景4：异步工具（AsyncFunctionTool）
+    // 异步工具不在 function 中直接返回结果，而是自行在"完成后"通过
+    // sigResult 把结果交还；Agent 会据此继续驱动对话。
     void setupAsync()
     {
         ToolDefine def;
@@ -225,12 +247,13 @@ protected:
         def.required_parameters.push_back("a");
         def.required_parameters.push_back("b");
 
-        auto impl = std::make_shared<JZAgentAsyncFunctionTool>();
-        impl->function = [](JZAgent *agent, const ToolCall &call) {
+        auto *tool = new AsyncFunctionTool();
+        tool->setToolDefine(def);
+        tool->function = [](JZAgentTool *tool, const ToolCall &call) {
             double x = call.params["a"].asDouble();
             double y = call.params["b"].asDouble();
             // 模拟异步后端（如网络/IO）：延迟 500ms 后再把结果交还。
-            JZTimer::singleShot(500, [agent, id = call.id, x, y]() {
+            JZTimer::singleShot(500, [tool, id = call.id, x, y]() {
                 ToolCallResult r;
                 r.id = id;
                 r.isOk = true;
@@ -239,11 +262,10 @@ protected:
                     r.result = std::to_string((long long)v);
                 else
                     r.result = std::to_string(v);
-                agent->toolCallResult(r);
+                tool->sigResult.emit(r);
             });
         };
-        def.impl = impl;
-        m_agent->addTool(def);
+        m_agent->addTool(tool);
 
         m_agent->setSystemPrompt(
             "你是一个助手。当需要做两个数相加时，请调用 asyncAdd 工具，"
@@ -281,8 +303,9 @@ protected:
         const LLMContext *ctx = m_agent->context();
         if (ctx->history.empty())
             return;
-        const LLMHistory &last = ctx->history.back();
-        if (last.role == LLMHistory::Assistant && last.toolRequest.empty())
+        const std::shared_ptr<LLMHistory> &last = ctx->history.back();
+        if (last->role == LLMHistory::Assistant &&
+            last->toolRequest.empty())
             finishStep();
     }
 
@@ -290,7 +313,7 @@ protected:
     {
         int n = 0;
         for (const auto &h : m_agent->context()->history)
-            if (h.role == LLMHistory::Tool)
+            if (h->role == LLMHistory::Tool)
                 n++;
         return n;
     }
@@ -303,8 +326,8 @@ protected:
 
         const LLMContext *ctx = m_agent->context();
         std::string finalText;
-        if (!ctx->history.empty() && ctx->history.back().role == LLMHistory::Assistant)
-            finalText = ctx->history.back().content;
+        if (!ctx->history.empty() && ctx->history.back()->role == LLMHistory::Assistant)
+            finalText = ctx->history.back()->content;
 
         if (m_step == Guess) {
             jzDebug().nospace() << "[场景1 结果] 秘密数字=" << m_secret

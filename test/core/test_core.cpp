@@ -13,6 +13,7 @@
 #include "JZDebug.h"
 #include "JZOptional.h"
 #include "JZResult.h"
+#include "math.h"
 
 bool jzstd_str_basic()
 {

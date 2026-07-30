@@ -20,6 +20,7 @@ JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
+    m_state = None;
 
     clear();
 }
@@ -44,9 +45,8 @@ void JZAgent::clear()
     m_streamEnabled = false;
     m_toolError = 0;
 
+    m_replyHistory.clear();
     m_streamBuffer.clear();
-    m_streamContent.clear();
-    m_streamToolCalls.clear();
 }
 
 const LLMContext* JZAgent::context() const
@@ -263,7 +263,7 @@ Json::Value JZAgent::buildContext()
 
     for (const auto& item : m_context.history)
     {
-        Json::Value history_msg = item.toJson();
+        Json::Value history_msg = item->toJson();
         messages.append(history_msg);
     }
 
@@ -278,10 +278,7 @@ Json::Value JZAgent::buildTools()
     {
         Json::Value tool_def;
         tool_def["type"] = "function";
-
-        Json::Value func = tool.toJson();
-        tool_def["function"] = func;
-
+        tool_def["function"] = tool->toolDefine().toJson();
         tools.append(tool_def);
     }
 
@@ -297,6 +294,9 @@ void JZAgent::llmRequest()
         llmError("执行任务超时");
         return;
     }
+
+    // 每次请求重新累积（流式与非流式统一）
+    m_replyHistory.clear();
 
     // 设置 model 字段
     Json::Value request_body;
@@ -331,110 +331,73 @@ void JZAgent::llmRequest()
     {
         // 流式响应走分块(SSE)：实时读取增量
         connect(&m_llmReply->sigReadyRead, this, &JZAgent::onLLMStreamReadyRead);
-        // 每次请求重新累积
+        // 每次请求重新累积原始缓冲
         m_streamBuffer.clear();
-        m_streamContent.clear();
-        m_streamToolCalls.clear();
     }
 
     m_llmReply->setTimeOut(30 * 1000);
     m_llmReqInfo.requestTime = JZPlatform::getTickCountMs();
 }
 
-ToolDefine* JZAgent::getTool(std::string name)
+JZAgentTool* JZAgent::getTool(const std::string &name)
 {
     for (int i = 0; i < m_tools.size(); i++)
     {
-        if (m_tools[i].name == name)
-            return &m_tools[i];
+        if (m_tools[i]->toolName() == name)
+            return m_tools[i];
     }
 
     return nullptr;
 }
 
-void JZAgent::processToolCall(ToolCall& tool)
+void JZAgent::processToolCall(ToolCall& tool_call)
 {
-    jzDebug() << "tool call:" << tool.function_name;
+    jzDebug() << "tool call:" << tool_call.function_name;
 
-    ToolDefine *def = getTool(tool.function_name);
-    if (!def)
+    JZAgentTool *tool = getTool(tool_call.function_name);
+    if (!tool)
     {
         ToolCallResult response;
-        response.id = tool.id;
+        response.id = tool_call.id;
         response.isOk = false;
-        response.result = "没有这个tool:" + tool.function_name;
-        toolCallResult(response);
+        response.result = "没有这个tool:" + tool_call.function_name;
+        onToolCallResult(response);
         return;
     }
 
     Json::Value param;
     Json::Reader reader;
-    if (!reader.parse(tool.function_args, param))
+    if (!reader.parse(tool_call.function_args, param))
     {
         ToolCallResult response;
-        response.id = tool.id;
+        response.id = tool_call.id;
         response.isOk = false;
         response.result = "解析json失败: " + reader.getFormattedErrorMessages();
-        toolCallResult(response);
+        onToolCallResult(response);
         return;
     }
 
-    tool.params = param;
-    def->impl->call(this, tool);
+    tool_call.params = param;
+    // 统一接口：把已解析的参数交给工具，工具通过 sigResult 回传结果
+    tool->call(tool_call);
 }
 
 // LLMHistory
-Json::Value LLMHistory::toJson() const
+std::string LLMHistory::roleToString(Role r)
 {
-    std::string role_str;
-    Json::Value history_msg;
-
-    if (role == Role::User)
-        role_str = "user";
-    else if (role == Role::Assistant)
-        role_str = "assistant";
-    else if (role == Role::System)
-        role_str = "system";
-    else if (role == Role::Tool)
-        role_str = "tool";
-    else
+    switch (r)
     {
-        JZ_UNREACHABLE();
+    case User:       return "user";
+    case Assistant:  return "assistant";
+    case System:     return "system";
+    case Tool:       return "tool";
     }
-    history_msg["role"] = role_str;
-    history_msg["content"] = content;
-
-    // 3. 处理 assistant 角色的 tool_calls 字段
-    if (role == LLMHistory::Assistant && !toolRequest.empty())
-    {
-        Json::Value tool_calls_array(Json::arrayValue);
-        for (const auto& tc : toolRequest)
-        {
-            tool_calls_array.append(tc.toJson());
-        }
-        history_msg["tool_calls"] = tool_calls_array;
-    }
-
-    // 4. 处理 tool 角色的 tool_call_id 字段
-    if (role == LLMHistory::Tool && !toolResponseId.empty())
-    {
-        history_msg["tool_call_id"] = toolResponseId;
-    }
-
-    return history_msg;
+    JZ_UNREACHABLE();
+    return "";
 }
 
-bool LLMHistory::fromJson(const Json::Value& root)
+bool LLMHistory::parseRole(const Json::Value& root)
 {
-    if (!root.isObject())
-        return false;
-
-    // 清空当前数据
-    role = User;
-    content.clear();
-    toolRequest.clear();
-    toolResponseId.clear();
-
     std::string role_str = root["role"].asString();
     if (role_str == "user")
         role = User;
@@ -445,26 +408,55 @@ bool LLMHistory::fromJson(const Json::Value& root)
     else if (role_str == "tool")
         role = Tool;
     else
-    {
         return false;
+    return true;
+}
+
+Json::Value LLMHistory::toJson() const
+{
+    Json::Value history_msg;
+    history_msg["role"] = roleToString(role);
+    history_msg["content"] = content;
+
+    // 处理 assistant 角色的 tool_calls 字段
+    if (role == LLMHistory::Assistant && !toolRequest.empty())
+    {
+        Json::Value tool_calls_array(Json::arrayValue);
+        for (const auto& tc : toolRequest)
+            tool_calls_array.append(tc.toJson());
+        history_msg["tool_calls"] = tool_calls_array;
     }
 
-    // 2. 内容
+    // 处理 tool 角色的 tool_call_id 字段
+    if (role == LLMHistory::Tool && !toolResponseId.empty())
+        history_msg["tool_call_id"] = toolResponseId;
+
+    return history_msg;
+}
+
+bool LLMHistory::fromJson(const Json::Value& root)
+{
+    if (!root.isObject())
+        return false;
+
+    content.clear();
+    toolRequest.clear();
+    toolResponseId.clear();
+
+    if (!parseRole(root))
+        return false;
+
     content = root["content"].asString();
 
-    // 3. tool response id
     if (root.isMember("tool_response_id"))
         toolResponseId = root["tool_response_id"].asString();
 
-    // 4. tool request 数组
     const Json::Value& tools = root["tool_request"];
     if (tools.isArray())
     {
         for (const auto& t : tools)
         {
             ToolCall call;
-            // 这里依赖你 ToolCall 已有 fromJson
-            // 如果没有，我下面也给你写好
             call.fromJson(t);
             toolRequest.push_back(call);
         }
@@ -490,7 +482,7 @@ Json::Value LLMContext::toJson() const
 
     Json::Value arr(Json::arrayValue);
     for (const auto& h : history)
-        arr.append(h.toJson());
+        arr.append(h->toJson());
     root["history"] = arr;
 
     Json::Value u;
@@ -521,8 +513,8 @@ bool LLMContext::fromJson(const Json::Value& root)
     {
         for (const auto& item : hist)
         {
-            LLMHistory h;
-            h.fromJson(item);
+            auto h = std::make_shared<LLMHistory>();
+            h->fromJson(item);
             history.push_back(h);
         }
     }
@@ -536,34 +528,37 @@ JZAgentRequest::JZAgentRequest(Type param_type, int param_id)
     id = param_id;
 }
 
-JZAgentRequestPtr makeAgentParam(JZAgentRequest::Type param_type)
+JZAgentRequestPtr JZAgent::makeAgentParam(JZAgentRequest::Type param_type)
 {
-    static std::atomic<int> llm_param_id(0);
-    JZAgentRequestPtr ptr = std::make_shared<JZAgentRequest>(param_type, llm_param_id++);
-    return ptr;
+    return std::make_shared<JZAgentRequest>(param_type, m_paramIdGen++);
 }
 
-void JZAgent::addTool(const ToolDefine& tool)
+void JZAgent::addTool(JZAgentTool *tool)
 {
+    JZ_ASSERT(tool->parent() == nullptr);
+    tool->setParent(this);
+    connect(&tool->sigResult, this, &JZAgent::onToolCallResult);
     m_tools.push_back(tool);
 }
 
-void JZAgent::toolCallResult(const ToolCallResult &response)
+const JZAgentTool* JZAgent::tool(const std::string &name) const
+{
+    for (int i = 0; i < m_tools.size(); i++)
+    {
+        if (m_tools[i]->toolName() == name)
+            return m_tools[i];
+    }
+    return nullptr;
+}
+
+void JZAgent::onToolCallResult(const ToolCallResult &response)
 {
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::ToolCallResultPrompt);
     req->toolCallResult = response;
     m_requests.push_back(req);
-    llmLoop();
-}
-
-const ToolDefine* JZAgent::tool(const std::string& name)
-{
-    for (int i = 0; i < m_tools.size(); i++)
-    {
-        if (m_tools[i].name == name)
-            return &m_tools[i];
-    }
-    return nullptr;
+    JZTimer::singleShot(0,[this]{
+        llmLoop();
+    });
 }
 
 void JZAgent::addSkill(const SkillDefine& tool)
@@ -594,10 +589,80 @@ void JZAgent::llmEnd()
     sigFinished.emit();
 }
 
-std::string JZAgent::getContent(const Json::Value& result)
+// 统一的响应增量处理
+void JZAgent::processResponseDelta(const std::string &content,
+                                   const Json::Value &tool_calls,
+                                   const Json::Value &usage)
 {
-    std::string content = result["choices"][0]["message"]["content"].asString();
-    return content;
+    // 单次回复对应唯一一条 assistant 历史，首次增量时创建
+    if (m_replyHistory.empty())
+    {
+        auto reply = std::make_shared<LLMHistory>();
+        reply->role = LLMHistory::Assistant;
+        m_replyHistory.push_back(reply);
+    }
+    LLMHistory& reply = *m_replyHistory.back();
+
+    if (!content.empty())
+    {
+        reply.content += content;
+        sigReply.emit(content);   // 实时增量回调（流式与非流式一致）
+    }
+
+    // 累积 tool_calls：流式按 index 合并增量片段，非流式无 index 时直接追加
+    if (tool_calls.isArray())
+    {
+        for (const auto& tc : tool_calls)
+        {
+            int index = tc.get("index", (int)reply.toolRequest.size()).asInt();
+            if (index < 0)
+                index = 0;
+            if (index >= (int)reply.toolRequest.size())
+                reply.toolRequest.resize(index + 1);
+
+            ToolCall& call = reply.toolRequest[index];
+            if (tc.isMember("id") && !tc["id"].asString().empty())
+                call.id = tc["id"].asString();
+            if (tc.isMember("type") && !tc["type"].asString().empty())
+                call.type = tc["type"].asString();
+            if (tc.isMember("function"))
+            {
+                const Json::Value& fn = tc["function"];
+                if (fn.isMember("name") && !fn["name"].asString().empty())
+                    call.function_name = fn["name"].asString();
+                if (fn.isMember("arguments"))
+                    call.function_args += fn["arguments"].asString();
+            }
+        }
+    }
+
+    if (usage.isObject())
+    {
+        m_context.usage.prompt_tokens     += usage.get("prompt_tokens", 0).asInt();
+        m_context.usage.completion_tokens += usage.get("completion_tokens", 0).asInt();
+        m_context.usage.total_tokens      += usage.get("total_tokens", 0).asInt();
+    }
+}
+
+void JZAgent::finalizeResponse()
+{
+    if (m_replyHistory.empty())
+        return;
+
+    auto reply = m_replyHistory.back();
+    if (!reply->toolRequest.empty())
+    {
+        // assistant 消息只入历史一次，所有 tool_calls 复用同一条
+        m_context.history.push_back(reply);
+        for (auto& call : reply->toolRequest)
+            processToolCall(call);
+    }
+    else
+    {
+        if (!reply->content.empty())
+            m_context.history.push_back(reply);
+        llmLoop();
+    }
 }
 
 void JZAgent::llmLoop()
@@ -626,35 +691,35 @@ void JZAgent::llmLoop()
         {
             auto req = request_list[i];
 
-            LLMHistory chat;
+            auto chat = std::make_shared<LLMHistory>();
             if (req->type == JZAgentRequest::UserPrompt)
             {
                 jzDebug() << "user:" << req->userPrompt;
 
-                chat.role = LLMHistory::User;
-                chat.content = req->userPrompt;
+                chat->role = LLMHistory::User;
+                chat->content = req->userPrompt;
             }
             else if (req->type == JZAgentRequest::SystemPrompt)
             {
                 jzDebug() << "system:" << req->systemPrompt;
 
-                chat.role = LLMHistory::System;
-                chat.content = req->systemPrompt;
+                chat->role = LLMHistory::System;
+                chat->content = req->systemPrompt;
             }
             else if (req->type == JZAgentRequest::ToolCallResultPrompt)
             {
                 jzDebug() << "tool result:" << req->toolCallResult.result;
 
-                chat.role = LLMHistory::Tool;
-                chat.content = req->toolCallResult.result;
-                chat.toolResponseId = req->toolCallResult.id;
+                chat->role = LLMHistory::Tool;
+                chat->content = req->toolCallResult.result;
+                chat->toolResponseId = req->toolCallResult.id;
 
                 if (!req->toolCallResult.isOk)
                     m_toolError++;
                 else
                     m_toolError = 0;
 
-                if (m_toolError >= 3)
+                if (m_toolError >= m_config.maxToolError)
                 {
                     llmError("当前服务不可用,请稍后重试");
                     return;
@@ -748,46 +813,13 @@ void JZAgent::processSSEData(const std::string& payload)
 
     Json::Value delta = choices[0]["delta"];
     std::string content = delta["content"].asString();
-    if (!content.empty())
-    {
-        m_streamContent += content;
-        sigReply.emit(content);   // 实时增量回调
-    }
 
-    // 累积 tool_calls（按 index 合并增量片段）
+    Json::Value tool_calls(Json::arrayValue);
     if (delta.isMember("tool_calls") && delta["tool_calls"].isArray())
-    {
-        for (const auto& tc : delta["tool_calls"])
-        {
-            int index = tc.get("index", (int)m_streamToolCalls.size()).asInt();
-            if (index < 0)
-                index = 0;
-            if (index >= (int)m_streamToolCalls.size())
-                m_streamToolCalls.resize(index + 1);
-            ToolCall& call = m_streamToolCalls[index];
-            if (tc.isMember("id") && !tc["id"].asString().empty())
-                call.id = tc["id"].asString();
-            if (tc.isMember("type") && !tc["type"].asString().empty())
-                call.type = tc["type"].asString();
-            if (tc.isMember("function"))
-            {
-                const Json::Value& fn = tc["function"];
-                if (fn.isMember("name") && !fn["name"].asString().empty())
-                    call.function_name = fn["name"].asString();
-                if (fn.isMember("arguments"))
-                    call.function_args += fn["arguments"].asString();
-            }
-        }
-    }
+        tool_calls = delta["tool_calls"];
 
-    // usage（部分厂商在最后一个 chunk 返回）
     Json::Value usage = result["usage"];
-    if (usage.isObject())
-    {
-        m_context.usage.prompt_tokens += usage.get("prompt_tokens", 0).asInt();
-        m_context.usage.completion_tokens += usage.get("completion_tokens", 0).asInt();
-        m_context.usage.total_tokens += usage.get("total_tokens", 0).asInt();
-    }
+    processResponseDelta(content, tool_calls, usage);
 }
 
 void JZAgent::onLLMRequest()
@@ -817,101 +849,35 @@ void JZAgent::onLLMRequest()
         return;
     }
 
-    if (m_streamEnabled && (!m_streamContent.empty() || !m_streamToolCalls.empty()))
+    // 流式模式：增量已通过 sigReadyRead -> processResponseDelta 累积进
+    // m_replyHistory；仅在累积为空时（provider 忽略 stream 返回整包）降级按非流式整包解析。
+    if (!m_streamEnabled || m_replyHistory.empty())
     {
-        // 流式收尾：增量已通过 sigReadyRead 实时回调，这里把累积内容并入历史
-        LLMHistory reply;
-        reply.role = LLMHistory::Assistant;
-        reply.content = m_streamContent;
+        std::string json_message = str_fromUtf8(net_reply->readAll());
 
-        if (!m_streamToolCalls.empty())
+        Json::Value result;
+        Json::Reader reader;
+        if (!reader.parse(json_message, result))
         {
-            for (auto& call : m_streamToolCalls)
-            {
-                reply.toolRequest.push_back(call);
-                m_context.history.push_back(reply);
-                processToolCall(call);
-            }
+            llmError("json解析错误:" + reader.getFormattedErrorMessages());
+            return;
         }
-        else
-        {
-            if (!m_streamContent.empty())
-                m_context.history.push_back(reply);
-            llmLoop();
-        }
-        return;
-    }
-    // 未真正流式（provider 忽略 stream 参数，返回整包 JSON）时降级为非流式解析
 
-    std::string json_message = str_fromUtf8(net_reply->readAll());
+        Json::Value choices = result["choices"];
+        if (!choices.isArray() || choices.size() == 0)
+            throw std::runtime_error("LLM返回格式错误");
 
-    Json::Value result;
-    Json::Reader reader;
-    if (!reader.parse(json_message, result))
-    {
-        llmError("json解析错误:" + reader.getFormattedErrorMessages());
-        return;
+        Json::Value message = result["choices"][0]["message"];
+        std::string content = message["content"].asString();
+
+        Json::Value tool_calls(Json::arrayValue);
+        if (message.isMember("tool_calls") && message["tool_calls"].isArray())
+            tool_calls = message["tool_calls"];
+
+        Json::Value usage = result["usage"];
+        processResponseDelta(content, tool_calls, usage);
     }
 
-    Json::Value choices = result["choices"];
-    if (!choices.isArray() || choices.size() == 0)
-        throw std::runtime_error("LLM返回格式错误");
-
-    Json::Value first_choice = result["choices"][0];
-    Json::Value message = first_choice["message"];
-    std::string content = message["content"].asString();
-    std::string finish_reason = first_choice["finish_reason"].asString();
-
-    Json::Value usage = result["usage"];
-    if (usage.isObject())
-    {
-        int prompt_tokens = usage["prompt_tokens"].asInt();          // 输入
-        int completion_tokens = usage["completion_tokens"].asInt();  // 输出
-        int total_tokens = usage["total_tokens"].asInt();            // 总计
-        
-        jzDebug() << "延迟:" << llm_delay << "输入token:" << prompt_tokens 
-            << "输出token:" << completion_tokens << "总token:" << total_tokens;
-
-        m_context.usage.prompt_tokens += prompt_tokens;
-        m_context.usage.completion_tokens += completion_tokens;
-        m_context.usage.total_tokens += total_tokens;
-    }
-
-    LLMHistory reply;
-    reply.role = LLMHistory::Assistant;
-    reply.content = content;
-
-    if (!content.empty())
-    {
-        jzDebug() << "assistant:" << content;
-        sigReply.emit(content);
-    }
-
-    // 处理工具调用（tool_calls）场景 - OpenAI 标准格式
-    if (message.isMember("tool_calls") && message["tool_calls"].isArray())
-    {
-        Json::Value tool_calls = message["tool_calls"];
-        for (const auto& tc : tool_calls)
-        {
-            // 构建 tool_call 对象
-            ToolCall tool_call;
-            tool_call.id = tc["id"].asString();
-            tool_call.type = tc["type"].asString();
-            tool_call.function_name = tc["function"]["name"].asString();
-            tool_call.function_args = tc["function"]["arguments"].asString();
-
-            // 将工具调用添加到 history 的 toolRequest 中
-            reply.toolRequest.push_back(tool_call);
-            m_context.history.push_back(reply);
-
-            processToolCall(tool_call);
-        }
-    }
-    else
-    {
-        // 其他情况也保存到历史
-        m_context.history.push_back(reply);
-    }
-
-    llmLoop();
+    // 流式与非流式统一收尾
+    finalizeResponse();
 }

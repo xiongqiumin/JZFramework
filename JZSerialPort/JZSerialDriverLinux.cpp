@@ -9,6 +9,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <dirent.h>
+#include "JZDebug.h"
 
 #ifndef CMSPAR
 #define CMSPAR 010000000000   // 标记/空格校验（Linux glibc 常定义，缺失时兜底）

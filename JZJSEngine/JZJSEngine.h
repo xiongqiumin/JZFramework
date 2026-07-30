@@ -129,7 +129,7 @@ public:
         info.name = "vector<" + typeName(value_type) + ">";
         info.type = object_id;
         info.jsType = JS_TAG_OBJECT;
-        info.ctypeId = typeid(vector<T>).name();
+        info.ctypeId = typeid(std::vector<T>).name();
         info.valueType = value_type;
         registType(info);
     }

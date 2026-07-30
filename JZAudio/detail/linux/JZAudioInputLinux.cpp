@@ -3,7 +3,7 @@
 #include <iostream>
 #include <cstring>
 #include <stdexcept>
-#include "JZAudioInputImpl.h"
+#include "JZAudioInputLinux.h"
 #include "JZAudioInput.h"
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
@@ -11,23 +11,24 @@
 #include "JZDebug.h"
 #include "JZAudioDeviceImpl.h"
 
-JZAudioInputImpl::JZAudioInputImpl(JZAudioInput* parent)
-    : m_parent(parent)
+JZAudioInputLinux::JZAudioInputLinux(JZAudioInput* parent)
+    : JZAudioInputImpl(parent)
+    , m_parent(parent)
     , m_pcmHandle(nullptr)
     , m_isOpened(false)
     , m_buffer(nullptr)
     , m_bufferFrames(0)
 {
     m_audioTimer = new JZTimer(this);
-    connect(&m_audioTimer->sigTimeout,this, &JZAudioInputImpl::onAudioTimer);
+    connect(&m_audioTimer->sigTimeout,this, &JZAudioInputLinux::onAudioTimer);
 }
 
-JZAudioInputImpl::~JZAudioInputImpl() {
+JZAudioInputLinux::~JZAudioInputLinux() {
     close();
 }
 
 // 核心：将JZAudioFormat的采样格式映射为ALSA格式
-snd_pcm_format_t JZAudioInputImpl::mapSampleFormat(JZAudioFormat::SampleFormat format) {
+snd_pcm_format_t JZAudioInputLinux::mapSampleFormat(JZAudioFormat::SampleFormat format) {
     switch (format) {
         case JZAudioFormat::UInt8:
             return SND_PCM_FORMAT_U8;      // 8位无符号整型
@@ -44,7 +45,7 @@ snd_pcm_format_t JZAudioInputImpl::mapSampleFormat(JZAudioFormat::SampleFormat f
     }
 }
 
-bool JZAudioInputImpl::open(const JZAudioDeviceInfo &device)
+bool JZAudioInputLinux::open(const JZAudioDeviceInfo &device)
 {
     if (m_isOpened) return true;
     if (!m_parent) {
@@ -52,7 +53,7 @@ bool JZAudioInputImpl::open(const JZAudioDeviceInfo &device)
         return false;
     }
 
-    JZAudioFormat audioFormat = m_parent->m_format;
+    JZAudioFormat audioFormat = m_parent->format();
 
     // 2. 打开ALSA音频采集设备（使用指定的设备ID）
     int ret = snd_pcm_open(&m_pcmHandle, device.id.c_str(), SND_PCM_STREAM_CAPTURE, 0);
@@ -161,7 +162,7 @@ bool JZAudioInputImpl::open(const JZAudioDeviceInfo &device)
     return true;
 }
 
-void JZAudioInputImpl::close() {
+void JZAudioInputLinux::close() {
     if (!m_isOpened) 
         return;
 
@@ -178,7 +179,7 @@ void JZAudioInputImpl::close() {
     m_isOpened = false;
 }
 
-void JZAudioInputImpl::releaseResources() {
+void JZAudioInputLinux::releaseResources() {
     if (m_pcmHandle) {
         snd_pcm_close(m_pcmHandle);
         m_pcmHandle = nullptr;
@@ -188,7 +189,7 @@ void JZAudioInputImpl::releaseResources() {
 
 
 // 实际处理音频数据（基于动态配置的格式）
-void JZAudioInputImpl::onAudioTimer() 
+void JZAudioInputLinux::onAudioTimer() 
 {
     if (!m_pcmHandle || !m_isOpened || !m_parent || !m_buffer) 
         return;
@@ -203,10 +204,10 @@ void JZAudioInputImpl::onAudioTimer()
         }
     }
 
-    snd_pcm_format_t alsaFormat = mapSampleFormat(m_parent->m_format.sampleFormat);
+    snd_pcm_format_t alsaFormat = mapSampleFormat(m_parent->format().sampleFormat);
     // ========== 修正多通道处理核心 ==========
-    // 1. 获取音频通道数（需确保m_parent->m_format.channelCount已正确初始化）
-    unsigned int channel_count = m_parent->m_format.channelCount;
+    // 1. 获取音频通道数（需确保m_parent->format().channelCount已正确初始化）
+    unsigned int channel_count = m_parent->format().channelCount;
     // 2. 正确计算每帧字节数：每采样字节数 × 通道数
     int frame_size = (snd_pcm_format_width(alsaFormat) / 8) * channel_count;
     // =======================================

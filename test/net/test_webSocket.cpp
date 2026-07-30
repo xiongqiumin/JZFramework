@@ -19,8 +19,8 @@ static const string WS_PREFIX = "hello world ";
 class JZWebSocketTest : public JZObject
 {
 public:
-    std::atomic<uint64_t> send_seq = 0;		  // 客户端发送序号
-    std::atomic<uint64_t> expect_recv_seq = 0; // 期望接收的序号
+    std::atomic<uint64_t> send_seq{0};		  // 客户端发送序号
+    std::atomic<uint64_t> expect_recv_seq{0}; // 期望接收的序号
     JZWebSocketServer* server = nullptr;
     JZWebSocket* client = nullptr;
     JZWebSocket* server_socket = nullptr;
@@ -117,7 +117,7 @@ class JZWebSocketTestMultiThread : public JZObject
 public:
     static const int CLIENT_THREAD_COUNT = 16;
     std::vector<WebSocketClientThread*> clientThreads;
-    std::atomic<uint64_t> send_seq = 0;
+    std::atomic<uint64_t> send_seq{0};
     std::map<JZWebSocket*, uint64_t> expect_recv_map;
     JZWebSocketServer* server = nullptr;
     int port = 18000;

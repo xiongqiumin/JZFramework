@@ -81,7 +81,11 @@
 
 convert_to_abs_paths(JZ_SOURCES)
 
-set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf.h CACHE FILEPATH "LVGL config" FORCE)
+if(WIN32)
+    set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf_windows.h CACHE FILEPATH "LVGL config" FORCE)
+else()
+    set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf_linux.h CACHE FILEPATH "LVGL config" FORCE)
+endif()
 include(${CMAKE_CURRENT_LIST_DIR}/lvgl/lvgl.cmake)
 
 # 添加到目标
@@ -90,4 +94,9 @@ target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/lvgl")
+if(NOT WIN32)
+    find_package(X11 REQUIRED)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE X11::X11)
+endif()
+
 target_link_libraries(${JZ_MODULE_TARGET} PRIVATE lvgl)

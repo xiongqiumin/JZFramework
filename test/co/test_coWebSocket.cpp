@@ -18,7 +18,7 @@ using namespace std;
 class JZWebSocketTest : public JZObject
 {
 public:
-    atomic<int> msgCount = 0;
+    atomic<int> msgCount{0};
     chrono::steady_clock::time_point startTime;
 
     // 8客户端并发

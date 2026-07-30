@@ -42,6 +42,8 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         detail/linux/JZAudioOutputLinux.h
         detail/linux/JZAudioDriverLinux.cpp
 		detail/linux/JZAudioDriverLinux.h
+        detail/linux/JZAudioDeviceImpl.cpp
+		detail/linux/JZAudioDeviceImpl.h
     )
 	
     target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/linux")

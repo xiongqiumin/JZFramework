@@ -1,7 +1,7 @@
 #include <alsa/asoundlib.h>
 #include <iostream>
 #include <cstring>
-#include "JZAudioOutputImpl.h"
+#include "JZAudioOutputLinux.h"
 #include "JZAudioOutput.h"
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
@@ -9,8 +9,9 @@
 #include "JZDebug.h"
 
 // 构造函数
-JZAudioOutputImpl::JZAudioOutputImpl(JZAudioOutput* parent)
-    : m_parent(parent)
+JZAudioOutputLinux::JZAudioOutputLinux(JZAudioOutput* parent)
+    : JZAudioOutputImpl(parent)
+    , m_parent(parent)
     , m_pcmHandle(nullptr)
     , m_isOpened(false)
     , m_periodSize(0)
@@ -19,16 +20,16 @@ JZAudioOutputImpl::JZAudioOutputImpl(JZAudioOutput* parent)
     m_silenceFilled = 0;
 
     m_audioTimer = new JZTimer(this);
-    connect(&m_audioTimer->sigTimeout,this, &JZAudioOutputImpl::onAudioTimerTimeout);
+    connect(&m_audioTimer->sigTimeout,this, &JZAudioOutputLinux::onAudioTimerTimeout);
 }
 
 // 析构函数
-JZAudioOutputImpl::~JZAudioOutputImpl() {
+JZAudioOutputLinux::~JZAudioOutputLinux() {
     close(); // 析构时确保关闭设备
 }
 
 // 采样格式映射（和输入类保持一致）
-snd_pcm_format_t JZAudioOutputImpl::mapSampleFormat(JZAudioFormat::SampleFormat format) {
+snd_pcm_format_t JZAudioOutputLinux::mapSampleFormat(JZAudioFormat::SampleFormat format) {
     switch (format) {
         case JZAudioFormat::UInt8:
             return SND_PCM_FORMAT_U8;
@@ -46,13 +47,13 @@ snd_pcm_format_t JZAudioOutputImpl::mapSampleFormat(JZAudioFormat::SampleFormat 
 }
 
 // 打开指定的音频输出设备
-bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device) {
+bool JZAudioOutputLinux::open(const JZAudioDeviceInfo& device) {
     if (m_isOpened) {
         std::cerr << "音频输出设备已打开，无需重复初始化" << std::endl;
         return true;
     }
 
-    const JZAudioFormat& parentFormat = m_parent->m_format;
+    const JZAudioFormat& parentFormat = m_parent->format();
 
     // 2. 参数合法性检查
     if (parentFormat.channelCount <= 0 || parentFormat.sampleRate <= 0) {
@@ -82,7 +83,7 @@ bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device) {
     }
 
     // 5.2 设置采样格式（映射自父类m_format）
-    auto audio_format = m_parent->m_format;
+    auto audio_format = m_parent->format();
     snd_pcm_format_t alsaFormat = mapSampleFormat(audio_format.sampleFormat);
     ret = snd_pcm_hw_params_set_format(m_pcmHandle, params, alsaFormat);
     if (ret < 0) {
@@ -144,7 +145,7 @@ bool JZAudioOutputImpl::open(const JZAudioDeviceInfo& device) {
 }
 
 // 关闭音频输出设备
-void JZAudioOutputImpl::close() {
+void JZAudioOutputLinux::close() {
     if (!m_isOpened) 
         return;
 
@@ -164,7 +165,7 @@ void JZAudioOutputImpl::close() {
     m_periodSize = 0;
 }
 
-void JZAudioOutputImpl::reset()
+void JZAudioOutputLinux::reset()
 {
     m_buffer.clear();
     if (m_pcmHandle) {
@@ -173,7 +174,7 @@ void JZAudioOutputImpl::reset()
     }
 }
 
-void JZAudioOutputImpl::playFinished()
+void JZAudioOutputLinux::playFinished()
 {
     m_audioTimer->stop();
     m_buffer.clear();
@@ -185,7 +186,7 @@ void JZAudioOutputImpl::playFinished()
 }
 
 // 释放ALSA设备资源
-void JZAudioOutputImpl::releaseResources() {
+void JZAudioOutputLinux::releaseResources() {
     if (m_pcmHandle) {
         snd_pcm_close(m_pcmHandle);
         m_pcmHandle = nullptr;
@@ -194,7 +195,7 @@ void JZAudioOutputImpl::releaseResources() {
 
 // 写入音频数据并播放
 // 写入数据（仅追加到缓存，不变）
-bool JZAudioOutputImpl::write(const JZByteArray& data) {
+bool JZAudioOutputLinux::write(const JZByteArray& data) {
     if (!m_isOpened || data.isEmpty()) {
         std::cerr << "无法写入音频数据：设备未打开或数据为空" << std::endl;
         return false;
@@ -221,14 +222,14 @@ bool JZAudioOutputImpl::write(const JZByteArray& data) {
     return true;
 }
 
-int JZAudioOutputImpl::getBytesPerFrame() 
+int JZAudioOutputLinux::getBytesPerFrame() 
 {
-    snd_pcm_format_t alsaFormat = mapSampleFormat(m_parent->m_format.sampleFormat);
+    snd_pcm_format_t alsaFormat = mapSampleFormat(m_parent->format().sampleFormat);
     int sampleWidth = snd_pcm_format_width(alsaFormat) / 8;
-    return sampleWidth * m_parent->m_format.channelCount;
+    return sampleWidth * m_parent->format().channelCount;
 }
 
-JZByteArray JZAudioOutputImpl::generateSilence(int frames) {
+JZByteArray JZAudioOutputLinux::generateSilence(int frames) {
     int bytesPerFrame = getBytesPerFrame();
     JZByteArray silence;
     silence.resize(frames * bytesPerFrame, 0);
@@ -236,7 +237,7 @@ JZByteArray JZAudioOutputImpl::generateSilence(int frames) {
 }
 
 // 统一定时器回调：整合缓存填充 + sigPlayFinish 触发逻辑
-void JZAudioOutputImpl::onAudioTimerTimeout() {
+void JZAudioOutputLinux::onAudioTimerTimeout() {
     if (!m_isOpened || !m_pcmHandle || !m_isPlay)
         return;
 
@@ -247,7 +248,7 @@ void JZAudioOutputImpl::onAudioTimerTimeout() {
     }
 
     // 计算100ms对应的帧数
-    int targetFrames100ms = (m_parent->m_format.sampleRate * 100) / 1000;
+    int targetFrames100ms = (m_parent->format().sampleRate * 100) / 1000;
     
     // 1. 查询可用帧数
     snd_pcm_sframes_t availFrames = snd_pcm_avail_update(m_pcmHandle);

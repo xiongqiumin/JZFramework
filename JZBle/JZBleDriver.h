@@ -11,6 +11,7 @@
 #include "JZLowEnergyCharacteristic.h"
 #include "JZLowEnergyDescriptor.h"
 #include "JZByteArray.h"
+#include "JZObject.h"
 
 class JZBLEPeripheral;
 class JZBLEPeripheralConnect;

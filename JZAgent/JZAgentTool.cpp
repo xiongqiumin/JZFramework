@@ -1,5 +1,6 @@
 ﻿#include "JZAgentTool.h"
-#include "JZAgent.h"
+
+#include "json/json.h"
 
 // ------------------------------
 // 类型转换函数
@@ -219,7 +220,6 @@ ToolCallResult::ToolCallResult()
     isOk = false;
 }
 
-
 // ToolDefine
 Json::Value ToolDefine::toJson() const
 {
@@ -289,6 +289,7 @@ bool ToolDefine::fromJson(const Json::Value& func)
 
 //JZAgentTool
 JZAgentTool::JZAgentTool()
+    : sigResult(this)
 {
 }
 
@@ -296,31 +297,17 @@ JZAgentTool::~JZAgentTool()
 {
 }
 
-//JZAgentFunctionTool
-JZAgentFunctionTool::JZAgentFunctionTool()
+const std::string &JZAgentTool::toolName() const
 {
+    return m_toolDefine.name;
 }
 
-JZAgentFunctionTool::~JZAgentFunctionTool()
+const ToolDefine &JZAgentTool::toolDefine() const
 {
+    return m_toolDefine;
 }
 
-void JZAgentFunctionTool::call(JZAgent* agent, const ToolCall& params)
+void JZAgentTool::setToolDefine(const ToolDefine &def)
 {
-    ToolCallResult response = function(agent, params);
-    agent->toolCallResult(response);
-}
-
-//JZAgentAsyncFunctionTool
-JZAgentAsyncFunctionTool::JZAgentAsyncFunctionTool()
-{
-}
-
-JZAgentAsyncFunctionTool::~JZAgentAsyncFunctionTool()
-{
-}
-
-void JZAgentAsyncFunctionTool::call(JZAgent* agent, const ToolCall& params)
-{
-    function(agent, params);
+    m_toolDefine = def;
 }

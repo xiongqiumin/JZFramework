@@ -1,5 +1,5 @@
-#ifndef JZ_AUDIO_OUTPUT_IMPL_H_
-#define JZ_AUDIO_OUTPUT_IMPL_H_
+#ifndef JZ_AUDIO_OUTPUT_LINUX_H_
+#define JZ_AUDIO_OUTPUT_LINUX_H_
 
 #include <alsa/asoundlib.h>
 #include <list>
@@ -7,18 +7,19 @@
 #include "JZByteArray.h"
 #include "JZAudioDeviceInfo.h"
 #include "JZTimer.h"
+#include "detail/JZAudioOutputImpl.h"
 
 class JZAudioOutput;
-class JZAudioOutputImpl : public JZObject
+class JZAudioOutputLinux : public JZAudioOutputImpl
 {
 public:
-    explicit JZAudioOutputImpl(JZAudioOutput* parent);
-    ~JZAudioOutputImpl();
+    explicit JZAudioOutputLinux(JZAudioOutput* parent);
+    ~JZAudioOutputLinux();
 
-    bool open(const JZAudioDeviceInfo& device);
-    void close();
-    void reset();
-    bool write(const JZByteArray& data);
+    bool open(const JZAudioDeviceInfo& device) override;
+    void close() override;
+    void reset() override;
+    bool write(const JZByteArray& data) override;
 
 private:
     void onAudioTimerTimeout();
@@ -32,10 +33,10 @@ private:
     JZByteArray generateSilence(int frames);
 
     JZTimer* m_audioTimer;
-    JZAudioOutput* m_parent;          // 父类指针，读取m_format
-    snd_pcm_t* m_pcmHandle;           // ALSA音频输出设备句柄
-    bool m_isOpened;                  // 设备是否已打开
-    snd_pcm_uframes_t m_periodSize;   // ALSA周期大小（优化写入效率）
+    JZAudioOutput* m_parent;         // 父类指针，读取m_format
+    snd_pcm_t* m_pcmHandle;          // ALSA音频输出设备句柄
+    bool m_isOpened;                 // 设备是否已打开
+    snd_pcm_uframes_t m_periodSize;  // ALSA周期大小（优化写入效率）
     bool m_isPlay;
     JZByteArray m_buffer;
     int m_silenceFilled;

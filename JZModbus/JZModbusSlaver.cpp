@@ -1,4 +1,5 @@
 ﻿#include <memory.h>
+#include <climits>
 #include "JZModbusSlaver.h"
 
 JZModbusSlaver::JZModbusSlaver(JZObject *parent)

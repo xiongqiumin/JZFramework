@@ -17,14 +17,22 @@ class JZMcpTool;
  * 职责:
  *   - JSON-RPC 2.0 的解析 / 序列化(从 JSON 文本输入到 JSON 文本输出)
  *   - 工具注册与管理(registerTool / tools/list): 工具以 JZMcpTool 对象形式注册
-     *   - 工具调用: 通过 runToolAsync() 提交执行, 连接 JZMcpTool 的完成信号
-     *     (sigFinished / sigCanceled, 均携带请求 id), 工具发射信号时回调 ProcessCallback
-     *     把响应回送给对端
+ *   - 工具调用: 通过 runToolAsync() 提交执行, 连接 JZMcpTool 的完成信号
+ *     (sigFinished / sigCanceled, 均携带请求 id), 工具发射信号时回调 ProcessCallback
+ *     把响应回送给对端
  *   - 取消: 收到 notifications/cancelled 时, 通过 cancelRequest() 调用对应工具的 cancel()
+ *
+ * 协议版本: 2026-07-28(最新, 无状态, 不做兼容)。
+ *   - 无 initialize 握手; 协议版本与客户端能力由每请求/每响应的 _meta
+ *     (io.modelcontextprotocol/protocolVersion 等)携带。
+ *   - 服务器信息通过 server/discover 暴露, 并在每个 result 的 _meta 中附带
+ *     io.modelcontextprotocol/serverInfo。
+ *   - 所有 result 带 resultType("complete" / "input_required")。
  *
  * JZMcpCore 不关心传输方式(HTTP / WebSocket / 纯文本)。
  * 它由 JZMcpServer(后端)持有, 后端负责把输入喂给 process()、并把
  * process() 产生的输出通过回调发回对端。
+
  */
 class JZMcpCore : public JZObject
 {
@@ -41,8 +49,11 @@ public:
     explicit JZMcpCore(JZObject* parent = nullptr);
     ~JZMcpCore();
 
-    // 设置服务器信息(出现在 initialize 响应中)
+    // 设置服务器信息(出现在 server/discover 响应与 result 的 _meta.serverInfo 中)
     void setServerInfo(const std::string& name, const std::string& version);
+
+    // 设置可选的服务器说明(出现在 server/discover 响应 instructions 字段, 2026-07-28)
+    void setInstructions(const std::string& instructions) { m_instructions = instructions; }
 
     /**
      * 注册一个工具对象。
@@ -88,7 +99,19 @@ private:
     Json::Value dispatch(const Json::Value& request, bool& isNotification,
                          ProcessCallback cb, bool& asyncHandled);
 
-    Json::Value onInitialize(const Json::Value& params);
+    // _meta 命名空间常量(io.modelcontextprotocol/*)
+    static const char* kMetaProtocolVersion;
+    static const char* kMetaClientCapabilities;
+    static const char* kMetaServerInfo;
+    static const char* kMetaClientInfo;
+
+    // 校验请求 _meta 中的协议版本: 不一致返回 UnsupportedProtocolVersionError(-32022),
+    // 否则返回 null。versionMismatch 为 true 时表示缺少 _meta 也视为不兼容(严格模式)。
+    Json::Value checkProtocolVersion(const Json::Value& request) const;
+
+    // server/discover: 替代旧版 initialize 握手, 暴露版本/能力/身份
+    Json::Value onDiscover() const;
+
     Json::Value onToolsList();
     void onToolsCall(const Json::Value& id, const Json::Value& params,
                      ProcessCallback cb, bool& asyncHandled);
@@ -108,6 +131,10 @@ private:
     // JSON-RPC 响应/错误构造(纯 Json::Value)
     static Json::Value makeResult(const Json::Value& id, const Json::Value& result);
     static Json::Value makeError(const Json::Value& id, int code, const std::string& message);
+    static Json::Value makeErrorData(const Json::Value& id, int code,
+                                     const std::string& message, const Json::Value& data);
+    // 给 result 补充 _meta.serverInfo(2026-07-28 要求每响应附带服务器身份)
+    Json::Value withServerMeta(const Json::Value& result) const;
 
     // JSON 文本 <-> Json::Value
     static bool parseJson(const std::string& text, Json::Value& out);
@@ -119,6 +146,7 @@ private:
     std::string        m_serverName;
     std::string        m_serverVersion;
     std::string        m_protocolVersion;
+    std::string        m_instructions;      // 可选, initialize 响应的 instructions 字段
     std::vector<Tool>  m_tools;
     int                m_nextToolId;    // 自增分配 toolId
     std::map<std::string, PendingRequest> m_running;        // requestId 键 -> 在途请求

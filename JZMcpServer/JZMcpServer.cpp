@@ -13,6 +13,7 @@
 // ======================================================================
 // HTTP 处理器: 把 POST /mcp 的 body 交给 JZMcpCore 处理
 // ======================================================================
+
 class JZMcpHttpHandler : public JZHttpHandler
 {
 public:
@@ -24,8 +25,8 @@ public:
 
         // 允许简单的跨域访问(方便浏览器端 MCP 客户端调试)
         resp.setHeader("Access-Control-Allow-Origin", "*");
-        resp.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-        resp.setHeader("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id");
+        resp.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        resp.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
 
         const std::string method = req.methodString();
 

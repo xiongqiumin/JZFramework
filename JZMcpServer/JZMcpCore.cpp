@@ -17,11 +17,23 @@ static const int kRequestCancelled = -32800;  // MCP: 请求被取消
 // ======================================================================
 // JZMcpCore
 // ======================================================================
+// 本服务器声明支持的(最新)MCP 协议版本。2026-07-28 无状态协议, 不做兼容。
+static const char* kSupportedProtocolVersion = "2026-07-28";
+
+// 2026-07-18 起移除 initialize 握手: 协议版本/能力改走每请求 _meta 命名空间。
+const char* JZMcpCore::kMetaProtocolVersion   = "io.modelcontextprotocol/protocolVersion";
+const char* JZMcpCore::kMetaClientCapabilities = "io.modelcontextprotocol/clientCapabilities";
+const char* JZMcpCore::kMetaServerInfo         = "io.modelcontextprotocol/serverInfo";
+const char* JZMcpCore::kMetaClientInfo         = "io.modelcontextprotocol/clientInfo";
+
+// 2026-07-28 错误码(替代旧版 -32602 + supported)
+static const int kUnsupportedProtocolVersion = -32022;
+
 JZMcpCore::JZMcpCore(JZObject* parent)
     : JZObject(parent)
     , m_serverName("JZMcpServer")
     , m_serverVersion("1.0.0")
-    , m_protocolVersion("2024-11-05")
+    , m_protocolVersion(kSupportedProtocolVersion)
     , m_nextToolId(0)
 {
 }
@@ -196,9 +208,17 @@ Json::Value JZMcpCore::dispatch(const Json::Value& request, bool& isNotification
         return makeError(id, kInvalidRequest, "Missing method");
     }
 
+    // 2026-07-28: 每请求必须在 _meta 携带协议版本(无状态, 无握手)。
+    // 版本不兼容直接返回 UnsupportedProtocolVersionError(-32022)。
+    Json::Value verErr = checkProtocolVersion(request);
+    if (!verErr.isNull())
+    {
+        verErr["id"] = id;     // 带上请求 id, 便于客户端匹配
+        return verErr;
+    }
+
     // ---- 通知类 ----
-    if (method == "notifications/initialized" ||
-        method.rfind("notifications/", 0) == 0)
+    if (method.rfind("notifications/", 0) == 0)
     {
         // notifications/cancelled: 取消对应的在途请求(后续由 sigCanceled 回送响应)
         if (method == "notifications/cancelled")
@@ -209,15 +229,11 @@ Json::Value JZMcpCore::dispatch(const Json::Value& request, bool& isNotification
     }
 
     // ---- 请求类 ----
-    if (method == "initialize")
+    if (method == "server/discover")
     {
+        // 替代旧版 initialize: 暴露版本/能力/身份(无需 _meta 版本也可调用, 用于探测)
         isNotification = false;
-        return makeResult(id, onInitialize(params));
-    }
-    if (method == "ping")
-    {
-        isNotification = false;
-        return makeResult(id, Json::Value(Json::objectValue));
+        return makeResult(id, onDiscover());
     }
     if (method == "tools/list")
     {
@@ -235,15 +251,35 @@ Json::Value JZMcpCore::dispatch(const Json::Value& request, bool& isNotification
     return makeError(id, kMethodNotFound, "Method not found: " + method);
 }
 
-Json::Value JZMcpCore::onInitialize(const Json::Value& params)
+Json::Value JZMcpCore::checkProtocolVersion(const Json::Value& request) const
 {
-    // 尽量回显客户端请求的协议版本
-    std::string proto = params.get("protocolVersion", m_protocolVersion).asString();
-    if (proto.empty())
-        proto = m_protocolVersion;
+    // 2026-07-28: 协议版本由每请求 _meta[kMetaProtocolVersion] 携带, 无握手。
+    // 缺省或版本不匹配直接返回 UnsupportedProtocolVersionError(-32022, data.supported)。
+    const Json::Value& meta = request.isMember("_meta") ? request["_meta"]
+                                                        : Json::Value::null;
+    std::string clientVersion;
+    if (meta.isObject() && meta.isMember(kMetaProtocolVersion))
+        clientVersion = meta[kMetaProtocolVersion].asString();
 
+    if (clientVersion != kSupportedProtocolVersion)
+    {
+        Json::Value data(Json::objectValue);
+        Json::Value supported(Json::arrayValue);
+        supported.append(kSupportedProtocolVersion);
+        data["supported"] = supported;
+        if (!clientVersion.empty())
+            data["requested"] = clientVersion;
+        return makeErrorData(Json::Value::null, kUnsupportedProtocolVersion,
+                             "Unsupported protocol version: " + clientVersion, data);
+    }
+    return Json::Value::null;
+}
+
+Json::Value JZMcpCore::onDiscover() const
+{
+    // 替代旧版 initialize: 暴露服务器支持的协议版本/能力/身份。
     Json::Value result(Json::objectValue);
-    result["protocolVersion"] = proto;
+    result["protocolVersion"] = m_protocolVersion;
 
     Json::Value capabilities(Json::objectValue);
     Json::Value toolsCap(Json::objectValue);
@@ -256,7 +292,26 @@ Json::Value JZMcpCore::onInitialize(const Json::Value& params)
     serverInfo["version"] = m_serverVersion;
     result["serverInfo"] = serverInfo;
 
+    // 2026-07-28: 可选服务器说明
+    if (!m_instructions.empty())
+        result["instructions"] = m_instructions;
+
     return result;
+}
+
+Json::Value JZMcpCore::withServerMeta(const Json::Value& result) const
+{
+    // 2026-07-28: 每个 result 的 _meta 中附带服务器身份。
+    Json::Value out = result;
+    Json::Value meta(Json::objectValue);
+    if (out.isObject() && out.isMember("_meta"))
+        meta = out["_meta"];
+    Json::Value serverInfo(Json::objectValue);
+    serverInfo["name"] = m_serverName;
+    serverInfo["version"] = m_serverVersion;
+    meta[kMetaServerInfo] = serverInfo;
+    out["_meta"] = meta;
+    return out;
 }
 
 Json::Value JZMcpCore::onToolsList()
@@ -331,11 +386,22 @@ Json::Value JZMcpCore::makeResult(const Json::Value& id, const Json::Value& resu
     Json::Value resp(Json::objectValue);
     resp["jsonrpc"] = "2.0";
     resp["id"] = id;
-    resp["result"] = result;
+
+    // 2026-07-28: 所有 result 必须带 resultType("complete" / "input_required")
+    Json::Value res = result;
+    if (!res.isMember("resultType"))
+        res["resultType"] = "complete";
+    resp["result"] = withServerMeta(res);   // 附带 _meta.serverInfo
     return resp;
 }
 
 Json::Value JZMcpCore::makeError(const Json::Value& id, int code, const std::string& message)
+{
+    return makeErrorData(id, code, message, Json::Value::null);
+}
+
+Json::Value JZMcpCore::makeErrorData(const Json::Value& id, int code,
+                                     const std::string& message, const Json::Value& data)
 {
     Json::Value resp(Json::objectValue);
     resp["jsonrpc"] = "2.0";
@@ -343,6 +409,8 @@ Json::Value JZMcpCore::makeError(const Json::Value& id, int code, const std::str
     Json::Value error(Json::objectValue);
     error["code"] = code;
     error["message"] = message;
+    if (!data.isNull())
+        error["data"] = data;
     resp["error"] = error;
     return resp;
 }

@@ -16,7 +16,7 @@ class JZWebSocket;
  * JZMcpServer —— MCP 后端传输层。
  *
  * 持有 JZMcpCore(协议核心), 并对外提供多种接入方式:
- *   - HTTP:    listenHttp(port, path)   —— Streamable HTTP, POST 端点
+ *   - HTTP:    listenHttp(port, path)   —— Streamable HTTP(POST 端点, 2026-07-28 无会话)
  *   - WS:      listenWebSocket(port)    —— WebSocket 文本帧
  *   - 纯文本:  processText(in, cb)       —— 异步处理 JSON 文本, 结果通过回调返回
  *

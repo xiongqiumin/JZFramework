@@ -148,7 +148,8 @@ int main(int argc, char* argv[])
     jzInfo() << "  WebSocket 端点: ws://127.0.0.1:" << wsPort;
 
     // 后端3: 纯文本(示例代码, 实际使用时可把任意字符串喂入 processText, 结果通过回调异步返回)
-    // server.processText(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})",
+    // 2026-07-28: 每请求需在 _meta 携带协议版本(无 initialize 握手)。
+    // server.processText(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
     //     [](bool hasResponse, const std::string& outJson) {
     //         if (hasResponse) jzInfo() << "RESP:" << outJson;
     //     });

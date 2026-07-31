@@ -4,11 +4,20 @@
 #include <cstddef>
 #include <new>
 #include <type_traits>
+#include <memory>
 #include "JZPlatform.h"
 
+#if defined(JZ_OS_NORMAL)
 /*
-JZAllocator: 走 JZPlatform::malloc/free 的 STL 兼容分配器。
+普通平台 (Windows / Linux): 直接复用标准 std::allocator,
+不再绕道 JZPlatform::malloc/free, 行为一致且零开销。
+*/
+template <class T>
+using JZAllocator = std::allocator<T>;
 
+#else
+/*
+嵌入式平台 (esp32 等): 走 JZPlatform::malloc/free 的 STL 兼容分配器。
 在 esp32 上 JZPlatform 实例会优先从 PSRAM 分配, 其它平台退化为标准 malloc/free。
 可用于 std::vector 等容器, 例如 JZByteArray 内部缓冲区。
 */
@@ -55,5 +64,7 @@ bool operator!=(const JZAllocator<T> &, const JZAllocator<U> &) noexcept
 {
     return false;
 }
+
+#endif // JZ_OS_NORMAL
 
 #endif // !JZ_ALLOCATOR_H_

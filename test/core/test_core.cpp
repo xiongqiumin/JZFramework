@@ -14,6 +14,8 @@
 #include "JZOptional.h"
 #include "JZResult.h"
 #include "math.h"
+#include "JZDataStream.h"
+#include <vector>
 
 bool jzstd_str_basic()
 {
@@ -446,6 +448,207 @@ bool jzbytearray_clear()
     return true;
 }
 
+// ---- JZDataStream 字节序正确性验证 ----
+// 这些用例验证: 大小端都能正确序列化/反序列化, 且大端确实做了字节交换,
+// 单字节类型不受字节序影响, 与主机字节序无关(任何平台都能跑通)。
+
+static bool jzdatastream_endian_roundtrip()
+{
+    int32_t val = 0x12345678;
+
+    // 小端写入再读回
+    JZByteArray leBuf;
+    JZDataStream wle(&leBuf, JZ::WriteOnly);
+    wle << val;
+    int32_t leBack = 0;
+    JZDataStream rle(&leBuf, JZ::ReadOnly);
+    rle >> leBack;
+    JZ_TEST_EQ(leBack, val);
+
+    // 大端写入再读回
+    JZByteArray beBuf;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly);
+    wbe.setByteOrder(JZDataStream::BigEndian);
+    wbe << val;
+    int32_t beBack = 0;
+    JZDataStream rbe(&beBuf, JZ::ReadOnly);
+    rbe.setByteOrder(JZDataStream::BigEndian);
+    rbe >> beBack;
+    JZ_TEST_EQ(beBack, val);
+
+    // 小端与大端的字节序列互为逆序(证明大端确实做了字节交换)
+    JZ_TEST_EQ(leBuf.size(), beBuf.size());
+    for (int i = 0; i < (int)leBuf.size(); ++i)
+        JZ_TEST_EQ((uint8_t)leBuf[i], (uint8_t)beBuf[beBuf.size() - 1 - i]);
+
+    return true;
+}
+
+static bool jzdatastream_endian_cross_order()
+{
+    // 小端写入, 大端读出 => 得到字节反转后的值
+    JZByteArray buf;
+    JZDataStream w(&buf, JZ::WriteOnly);
+    w << (int32_t)0x12345678;
+
+    int32_t r = 0;
+    JZDataStream rds(&buf, JZ::ReadOnly);
+    rds.setByteOrder(JZDataStream::BigEndian);
+    rds >> r;
+    JZ_TEST_EQ(r, (int32_t)0x78563412);
+
+    return true;
+}
+
+static bool jzdatastream_endian_byte_pattern()
+{
+    // 大端下, 0x11223344 的 4 个字节应为 11 22 33 44 (与主机字节序无关)
+    JZByteArray beBuf;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly);
+    wbe.setByteOrder(JZDataStream::BigEndian);
+    wbe << (int32_t)0x11223344;
+    JZ_TEST_EQ((uint8_t)beBuf[0], (uint8_t)0x11);
+    JZ_TEST_EQ((uint8_t)beBuf[1], (uint8_t)0x22);
+    JZ_TEST_EQ((uint8_t)beBuf[2], (uint8_t)0x33);
+    JZ_TEST_EQ((uint8_t)beBuf[3], (uint8_t)0x44);
+
+    // 小端下应为 44 33 22 11
+    JZByteArray leBuf;
+    JZDataStream wle(&leBuf, JZ::WriteOnly);
+    wle << (int32_t)0x11223344;
+    JZ_TEST_EQ((uint8_t)leBuf[0], (uint8_t)0x44);
+    JZ_TEST_EQ((uint8_t)leBuf[1], (uint8_t)0x33);
+    JZ_TEST_EQ((uint8_t)leBuf[2], (uint8_t)0x22);
+    JZ_TEST_EQ((uint8_t)leBuf[3], (uint8_t)0x11);
+
+    return true;
+}
+
+static bool jzdatastream_endian_float_double()
+{
+    double d = 3.141592653589793;
+    JZByteArray leBuf, beBuf;
+
+    JZDataStream wle(&leBuf, JZ::WriteOnly); wle << d;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly); wbe.setByteOrder(JZDataStream::BigEndian); wbe << d;
+
+    // 大小端字节序列互为逆序
+    JZ_TEST_EQ(leBuf.size(), beBuf.size());
+    for (int i = 0; i < (int)leBuf.size(); ++i)
+        JZ_TEST_EQ((uint8_t)leBuf[i], (uint8_t)beBuf[beBuf.size() - 1 - i]);
+
+    // 同序读回应得到原值
+    double dle = 0, dbe = 0;
+    JZDataStream rle(&leBuf, JZ::ReadOnly); rle >> dle;
+    JZDataStream rbe(&beBuf, JZ::ReadOnly); rbe.setByteOrder(JZDataStream::BigEndian); rbe >> dbe;
+    JZ_TEST_EQ(dle, d);
+    JZ_TEST_EQ(dbe, d);
+
+    return true;
+}
+
+static bool jzdatastream_endian_uint8_noswap()
+{
+    // 单字节类型不受字节序影响
+    JZByteArray leBuf, beBuf;
+    JZDataStream wle(&leBuf, JZ::WriteOnly); wle << (uint8_t)0xAB;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly); wbe.setByteOrder(JZDataStream::BigEndian); wbe << (uint8_t)0xAB;
+    JZ_TEST_EQ(leBuf.size(), 1);
+    JZ_TEST_EQ(beBuf.size(), 1);
+    JZ_TEST_EQ((uint8_t)leBuf[0], (uint8_t)0xAB);
+    JZ_TEST_EQ((uint8_t)beBuf[0], (uint8_t)0xAB);
+
+    uint8_t rle = 0, rbe = 0;
+    JZDataStream rle2(&leBuf, JZ::ReadOnly); rle2 >> rle;
+    JZDataStream rbe2(&beBuf, JZ::ReadOnly); rbe2.setByteOrder(JZDataStream::BigEndian); rbe2 >> rbe;
+    JZ_TEST_EQ(rle, (uint8_t)0xAB);
+    JZ_TEST_EQ(rbe, (uint8_t)0xAB);
+    return true;
+}
+
+static bool jzdatastream_endian_vector()
+{
+    std::vector<uint32_t> v = {0x11223344u, 0x55667788u, 0x99AABBCCu};
+
+    // 大端写入: 前 4 字节为 size 字段, 之后每个元素应为大端字节排列(与主机序无关)
+    JZByteArray beBuf;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly);
+    wbe.setByteOrder(JZDataStream::BigEndian);
+    wbe << v;
+    JZ_TEST_EQ((uint8_t)beBuf[4], (uint8_t)0x11);
+    JZ_TEST_EQ((uint8_t)beBuf[5], (uint8_t)0x22);
+    JZ_TEST_EQ((uint8_t)beBuf[6], (uint8_t)0x33);
+    JZ_TEST_EQ((uint8_t)beBuf[7], (uint8_t)0x44);
+
+    // 大端读回应得到原 vector
+    std::vector<uint32_t> vr;
+    JZDataStream rbe(&beBuf, JZ::ReadOnly);
+    rbe.setByteOrder(JZDataStream::BigEndian);
+    rbe >> vr;
+    JZ_TEST_EQ(vr.size(), v.size());
+    for (size_t i = 0; i < v.size(); ++i)
+        JZ_TEST_EQ((uint32_t)vr[i], (uint32_t)v[i]);
+
+    // 小端写入: 前 4 字节为 size 字段, 首元素字节应为 44 33 22 11
+    JZByteArray leBuf;
+    JZDataStream wle(&leBuf, JZ::WriteOnly);
+    wle << v;
+    JZ_TEST_EQ((uint8_t)leBuf[4], (uint8_t)0x44);
+    JZ_TEST_EQ((uint8_t)leBuf[5], (uint8_t)0x33);
+    JZ_TEST_EQ((uint8_t)leBuf[6], (uint8_t)0x22);
+    JZ_TEST_EQ((uint8_t)leBuf[7], (uint8_t)0x11);
+
+    std::vector<uint32_t> vrl;
+    JZDataStream rle(&leBuf, JZ::ReadOnly);
+    rle >> vrl;
+    JZ_TEST_EQ(vrl.size(), v.size());
+    for (size_t i = 0; i < v.size(); ++i)
+        JZ_TEST_EQ((uint32_t)vrl[i], (uint32_t)v[i]);
+
+    return true;
+}
+
+static bool jzdatastream_endian_vector_bool()
+{
+    // std::vector<bool> 是位压缩特化, 必须逐元素序列化(走显式特化, 不走批量裸写)。
+    std::vector<bool> v = {true, false, true, true, false, true, false, false};
+
+    // 小端写入: 每个 bool 占 1 字节(0/1), 头部为 size
+    JZByteArray leBuf;
+    JZDataStream wle(&leBuf, JZ::WriteOnly);
+    wle << v;
+    JZ_TEST_EQ((int32_t)leBuf.size(), (int32_t)(4 + v.size()));   // 4(size) + 8(bool)
+    JZ_TEST_EQ((uint8_t)leBuf[4], (uint8_t)1);   // v[0]=true
+    JZ_TEST_EQ((uint8_t)leBuf[5], (uint8_t)0);   // v[1]=false
+
+    std::vector<bool> vrl;
+    JZDataStream rle(&leBuf, JZ::ReadOnly);
+    rle >> vrl;
+    JZ_TEST_EQ(vrl.size(), v.size());
+    for (size_t i = 0; i < v.size(); ++i)
+        JZ_TEST_TRUE((bool)vrl[i] == (bool)v[i]);
+
+    // 大端写入: bool 单字节无字节序问题, 但 size 字段(4 字节)仍受字节序影响,
+    // 故大小端缓冲整体不会逐字节相同, 只验证元素部分(跳过 4 字节 size)一致。
+    JZByteArray beBuf;
+    JZDataStream wbe(&beBuf, JZ::WriteOnly);
+    wbe.setByteOrder(JZDataStream::BigEndian);
+    wbe << v;
+    JZ_TEST_EQ(beBuf.size(), leBuf.size());
+    for (int i = 4; i < (int)leBuf.size(); ++i)   // 跳过 size 字段
+        JZ_TEST_EQ((uint8_t)beBuf[i], (uint8_t)leBuf[i]);
+
+    std::vector<bool> vrb;
+    JZDataStream rbe(&beBuf, JZ::ReadOnly);
+    rbe.setByteOrder(JZDataStream::BigEndian);
+    rbe >> vrb;
+    JZ_TEST_EQ(vrb.size(), v.size());
+    for (size_t i = 0; i < v.size(); ++i)
+        JZ_TEST_TRUE((bool)vrb[i] == (bool)v[i]);
+
+    return true;
+}
+
 void test_JZCore(JZTest *test)
 {
     auto stdSuite = std::make_shared<JZTestSuite>("JZStd");
@@ -496,6 +699,16 @@ void test_JZCore(JZTest *test)
     bytearraySuite->addTestCase("mid", jzbytearray_mid);
     bytearraySuite->addTestCase("resize", jzbytearray_resize);
     bytearraySuite->addTestCase("clear", jzbytearray_clear);
+
+    auto dataStreamSuite = std::make_shared<JZTestSuite>("JZDataStream");
+    test->addSuite(dataStreamSuite);
+    dataStreamSuite->addTestCase("endian_roundtrip", jzdatastream_endian_roundtrip);
+    dataStreamSuite->addTestCase("endian_cross_order", jzdatastream_endian_cross_order);
+    dataStreamSuite->addTestCase("endian_byte_pattern", jzdatastream_endian_byte_pattern);
+    dataStreamSuite->addTestCase("endian_float_double", jzdatastream_endian_float_double);
+    dataStreamSuite->addTestCase("endian_uint8_noswap", jzdatastream_endian_uint8_noswap);
+    dataStreamSuite->addTestCase("endian_vector", jzdatastream_endian_vector);
+    dataStreamSuite->addTestCase("endian_vector_bool", jzdatastream_endian_vector_bool);
 }
 
 static void smoke_debug_optional_result()

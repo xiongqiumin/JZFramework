@@ -1,5 +1,6 @@
 #include <string.h>
 #include "JZSharedBuffer.h"
+#include "JZPlatform.h"
 
 //JZSharedBufferData
 JZSharedBufferData::JZSharedBufferData()
@@ -17,7 +18,7 @@ JZSharedBufferData::~JZSharedBufferData()
 void JZSharedBufferData::alloc(int alloc_size)
 {
     release();
-    buffer = (char*)malloc(alloc_size);
+    buffer = (char*)JZPlatform::malloc(alloc_size);
     isOwner = true;
     size = alloc_size;
 }
@@ -25,7 +26,7 @@ void JZSharedBufferData::alloc(int alloc_size)
 void JZSharedBufferData::release()
 {
     if (isOwner)
-        free(buffer);
+        JZPlatform::free(buffer);
 
     isOwner = false;
     buffer = nullptr;

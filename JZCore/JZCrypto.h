@@ -8,7 +8,6 @@ class JZCrypto
 public:
     static JZByteArray md5(const char *buffer, int size);
     static JZByteArray md5(const JZByteArray &buffer);
-    static JZByteArray fileMd5(const std::string &filePath);
 
     //原地异或
     static void xorshift32Stream(char *buffer, int size, uint32_t &rngState);

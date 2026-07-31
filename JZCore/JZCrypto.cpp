@@ -256,34 +256,6 @@ JZByteArray JZCrypto::md5(const JZByteArray &buffer)
     return md5(buffer.data(), buffer.size());
 }
 
-JZByteArray JZCrypto::fileMd5(const std::string &filepath)
-{
-    constexpr int len = 1024;
-
-    JZFile file;
-    if(!file.open(filepath.c_str(), "rb"))    
-        return JZByteArray();
-
-    MD5_CTX ctx;
-    MD5_Init(&ctx);        
-
-    char buffer[len];
-    while (true)
-    {
-        int size = file.read(buffer, len);
-        if (size == 0)
-            break;
-
-        MD5_Update(&ctx, buffer, size);
-    }    
-    
-    unsigned char md5[16];
-    MD5_Final(md5, &ctx);
-    file.close();
-
-    return JZByteArray((char*)md5,16);
-}
-
 void JZCrypto::xorshift32Stream(char *buffer, int size, uint32_t& rngState)
 {
     uint8_t *data = (uint8_t *)buffer;

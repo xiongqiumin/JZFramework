@@ -44,7 +44,6 @@ jz_signals:
     JZSignal<int, const std::string&> sigError;
 
 private:
-    JZ_DISABLE_COPY(JZBLEDeviceDiscoveryAgent)
     bool m_active = false;
     int  m_timeout = 8000;
 };

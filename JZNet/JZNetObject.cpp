@@ -546,7 +546,9 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
         }
         else if (info.type == JZSocketInfo::HttpServer)
+        {
             conn = mg_http_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+        }
         else if (info.type == JZSocketInfo::WebSocket)
         {
             conn = mg_ws_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr, "%s", info.websocketExt.c_str());
@@ -562,6 +564,9 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         {
             JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
             conn = mg_mqtt_connect(m_mgr, info.url.c_str(), pkt->opt, mg_thread_fn, nullptr);
+            if (str_startsWith(info.url, "mqtts://")) {
+                initTls(conn, info.url);
+            }
         }
         else if (info.type == JZSocketInfo::MqttServer)
         {

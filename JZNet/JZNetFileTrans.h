@@ -171,7 +171,8 @@ public:
     void closeConn(uint64_t net_id);
 	bool recvPack(uint64_t net_id,JZNetPackPtr pack);    
 
-protected:	
+protected:
+    std::string fileKey(const std::string &filepath);
     int getLocalTaskId(const JZNetPack* pack);
 	void sendPack(uint64_t net_id, const JZNetPack* pack);	
     void sendFileReq(JZNetFileTask* task);

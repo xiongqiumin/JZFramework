@@ -51,11 +51,4 @@ private:
     double m_maxSec;
 };
 
-// 便捷宏: JZ_BENCH(bm, "名字", 被测代码lambda);
-// 例: JZ_BENCH(bm, "memcpy", [&]() { memcpy(dst, src, n); });
-// 注意: 第三参数为 lambda 表达式(体内逗号在括号/花括号内, 不会被宏参数拆分),
-//       以兼容 MSVC 旧预处理器(其可变参数宏展开存在已知问题)。
-#define JZ_BENCH(benchmark, name, LAMBDA) \
-    (benchmark).runAndPrint(name, LAMBDA)
-
 #endif

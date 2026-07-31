@@ -301,6 +301,37 @@ bool JZNetFileTrans::recvPack(uint64_t net_id, JZNetPackPtr pack)
     return true;
 }
 
+
+std::string JZNetFileTrans::fileKey(const std::string &filepath)
+{
+    constexpr int len = 1024;
+
+    JZFile file;
+    if(!file.open(filepath.c_str(), "rb"))    
+        return std::string();
+/*
+    MD5_CTX ctx;
+    MD5_Init(&ctx);        
+
+    char buffer[len];
+    while (true)
+    {
+        int size = file.read(buffer, len);
+        if (size == 0)
+            break;
+
+        MD5_Update(&ctx, buffer, size);
+    }    
+    
+    unsigned char md5[16];
+    MD5_Final(md5, &ctx);
+    file.close();
+
+    return str_fromUtf8(JZByteArray((char*)md5,16).toHex());
+*/
+    return std::string();
+}
+
 void JZNetFileTrans::dealOpReq(uint64_t net_id, JZNetPackFileOperatorReq *req)
 {
     JZNetPackFileOperatorRes res;
@@ -410,7 +441,7 @@ void JZNetFileTrans::dealOpReq(uint64_t net_id, JZNetPackFileOperatorReq *req)
     {
         JZFile file;
 
-        string remote_md5 = str_fromUtf8(JZCrypto::fileMd5(remote_path).toHex());
+        string remote_md5 = fileKey(remote_path);
         ret = (remote_md5 == req->fileMd5List[0]);
     }
     else if (req->method == FileTaskType::MkDir)
@@ -620,7 +651,7 @@ bool JZNetFileTrans::getFileList(string local_dir, vector<string> &outFileList, 
         else
         {
             outFileList.push_back(file_list[i].filePath());
-            string md5 = str_fromUtf8(JZCrypto::fileMd5(file_list[i].filePath()).toHex());
+            string md5 = fileKey(file_list[i].filePath());
             if (md5.size() != 32)
                 return false;
 
@@ -705,7 +736,7 @@ JZNetFileTaskPtr JZNetFileTrans::startTask(uint64_t net_id, FileTaskType task_ty
     }
     else if (task_type == FileTaskType::CheckMd5)
     {
-        string localFileMd5 = str_fromUtf8(JZCrypto::fileMd5(local_path).toHex());
+        string localFileMd5 = fileKey(local_path);
         if (localFileMd5.empty())
             return JZNetFileTaskPtr();
 

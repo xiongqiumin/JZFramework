@@ -221,7 +221,7 @@ int test_http_multi()
 int test_http()
 {
     jzDebug() << "########## HTTP 测试 (单线程 + 多线程, 各 15s) ##########";
-    //test_http_single();
+    test_http_single();
     jzDebug() << "【OK】HTTP 单线程通过";
     test_http_multi();
     jzDebug() << "【OK】HTTP 多线程通过";

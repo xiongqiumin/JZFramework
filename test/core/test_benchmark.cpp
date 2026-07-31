@@ -1,4 +1,5 @@
 #include "JZByteArray.h"
+#include "JZDataStream.h"
 #include "JZVariant.h"
 #include "JZCircleBuffer.h"
 #include "JZAllocator.h"
@@ -41,13 +42,13 @@ static void benchmark_audio_base64()
     JZByteArray dst, decoded, b64Result;
     dst.resize(totalBytes); // 确保目标缓冲区足够大
 
-    JZ_BENCH(bm, "memcpy(32KB)", [&]() { memcpy(dst.data(), srcPcm.data(), totalBytes); });
-    JZ_BENCH(bm, "toBase64(32KB)", [&]() { b64Result = srcPcm.toBase64(); });
-    JZ_BENCH(bm, "fromBase64", [&]() { decoded = JZByteArray::fromBase64(b64Data); });
+    bm.runAndPrint("memcpy(32KB)", [&]() { memcpy(dst.data(), srcPcm.data(), totalBytes); });
+    bm.runAndPrint("toBase64(32KB)", [&]() { b64Result = srcPcm.toBase64(); });
+    bm.runAndPrint("fromBase64", [&]() { decoded = JZByteArray::fromBase64(b64Data); });
 
     // 慢操作演示: 单次很耗时, 总时长被限制在 [minSec, maxSec] 内 (默认 0.01s~2s)
     JZBenchmark slowBm(/*targetMs=*/100);
-    JZ_BENCH(slowBm, "sleep_1ms", [&]() { JZThread::msleep(1); });
+    slowBm.runAndPrint("sleep_1ms", [&]() { JZThread::msleep(1); });
     printf("-----------------------------------------------------\n\n");
 }
 
@@ -80,12 +81,12 @@ static void benchmark_base64_512()
 
     // 测试这两个循环本身: 每次对 512-short 块编/解码, 跑满约 1 秒
     JZBenchmark bm(/*targetMs=*/1000);
-    JZ_BENCH(bm, "toBase64 loop(16000/512)", [&]() {
+    bm.runAndPrint("toBase64 loop(16000/512)", [&]() {
         for (int i = 0; i < totalShorts; i += chunkShorts) {
             dst = src.mid(i * 2, stepBytes).toBase64();
         }
     });
-    JZ_BENCH(bm, "fromBase64 loop(16000/512)", [&]() {
+    bm.runAndPrint("fromBase64 loop(16000/512)", [&]() {
         for (size_t k = 0; k < b64Chunks.size(); ++k) {
             decoded = JZByteArray::fromBase64(b64Chunks[k]);
         }
@@ -115,16 +116,16 @@ static void benchmark_variant()
     size_t listSink = 0;
 
     JZBenchmark bm(/*targetMs=*/100);
-    JZ_BENCH(bm, "construct(int)", [&]() { JZVariant v(12345); });
-    JZ_BENCH(bm, "construct(string)", [&]() { JZVariant v(std::string("benchmark")); });
-    JZ_BENCH(bm, "toInt", [&]() { sinkInt += intVar.toInt(); });
-    JZ_BENCH(bm, "toDouble", [&]() { sinkDbl += dblVar.toDouble(); });
-    JZ_BENCH(bm, "toString", [&]() { strSink += strVar.toString().size(); });
-    JZ_BENCH(bm, "toList", [&]() { listSink += listVar.toList().size(); });
-    JZ_BENCH(bm, "fromValue<int>", [&]() { JZVariant v = JZVariant::fromValue<int>(777); });
-    JZ_BENCH(bm, "value<int>", [&]() { sinkInt += customVar.value<int>(); });
-    JZ_BENCH(bm, "copy", [&]() { JZVariant v(intVar); });
-    JZ_BENCH(bm, "operator=", [&]() { JZVariant v; v = intVar; });
+    bm.runAndPrint("construct(int)", [&]() { JZVariant v(12345); });
+    bm.runAndPrint("construct(string)", [&]() { JZVariant v(std::string("benchmark")); });
+    bm.runAndPrint("toInt", [&]() { sinkInt += intVar.toInt(); });
+    bm.runAndPrint("toDouble", [&]() { sinkDbl += dblVar.toDouble(); });
+    bm.runAndPrint("toString", [&]() { strSink += strVar.toString().size(); });
+    bm.runAndPrint("toList", [&]() { listSink += listVar.toList().size(); });
+    bm.runAndPrint("fromValue<int>", [&]() { JZVariant v = JZVariant::fromValue<int>(777); });
+    bm.runAndPrint("value<int>", [&]() { sinkInt += customVar.value<int>(); });
+    bm.runAndPrint("copy", [&]() { JZVariant v(intVar); });
+    bm.runAndPrint("operator=", [&]() { JZVariant v; v = intVar; });
 
     printf("  [sink] int=%d dbl=%.6f strSize=%zu listSize=%zu\n",
            sinkInt, sinkDbl, strSink, listSink);
@@ -140,18 +141,18 @@ static void benchmark_bytearray_ops()
     JZByteArray sink;
 
     JZBenchmark bm(/*targetMs=*/100);
-    JZ_BENCH(bm, "append(4KB)", [&]() { JZByteArray b; b.append(src.data(), 4096); });
-    JZ_BENCH(bm, "mid(2KB@1KB)", [&]() { sink = src.mid(1024, 2048); });
-    JZ_BENCH(bm, "remove(2KB@1KB)", [&]() {
+    bm.runAndPrint("append(4KB)", [&]() { JZByteArray b; b.append(src.data(), 4096); });
+    bm.runAndPrint("mid(2KB@1KB)", [&]() { sink = src.mid(1024, 2048); });
+    bm.runAndPrint("remove(2KB@1KB)", [&]() {
         JZByteArray b(src);
         b.remove(1024, 2048);
         sink = b;
     });
-    JZ_BENCH(bm, "left(2KB)", [&]() { sink = src.left(2048); });
-    JZ_BENCH(bm, "resize+fill(4KB)", [&]() { JZByteArray b; b.resize(4096, 'x'); });
-    JZ_BENCH(bm, "toHex(4KB)", [&]() { sink = src.toHex(); });
-    JZ_BENCH(bm, "copy(4KB)", [&]() { JZByteArray b(src); });
-    JZ_BENCH(bm, "operator[]", [&]() {
+    bm.runAndPrint("left(2KB)", [&]() { sink = src.left(2048); });
+    bm.runAndPrint("resize+fill(4KB)", [&]() { JZByteArray b; b.resize(4096, 'x'); });
+    bm.runAndPrint("toHex(4KB)", [&]() { sink = src.toHex(); });
+    bm.runAndPrint("copy(4KB)", [&]() { JZByteArray b(src); });
+    bm.runAndPrint("operator[]", [&]() {
         volatile char c = 0;
         for (int i = 0; i < 4096; ++i)
             c ^= (char)src[i];
@@ -175,15 +176,15 @@ static void benchmark_circlebuffer()
     JZCircleBuffer growBuf(1024, /*enableDynamic=*/true);
 
     JZBenchmark bm(/*targetMs=*/100);
-    JZ_BENCH(bm, "write+read(1KB,fixed)", [&]() {
+    bm.runAndPrint("write+read(1KB,fixed)", [&]() {
         if (fixedBuf.write(wbuf, block))
             (void)fixedBuf.read(rbuf, block);
     });
-    JZ_BENCH(bm, "write+read(1KB,dynamic)", [&]() {
+    bm.runAndPrint("write+read(1KB,dynamic)", [&]() {
         if (dynBuf.write(wbuf, block))
             (void)dynBuf.read(rbuf, block);
     });
-    JZ_BENCH(bm, "write grow(2KB,1KB cap)", [&]() {
+    bm.runAndPrint("write grow(2KB,1KB cap)", [&]() {
         growBuf.write(wbuf, 2048);
         growBuf.clear();
     });
@@ -195,27 +196,27 @@ static void benchmark_alloc()
 {
     printf("\n========== JZAllocator Benchmark ==========\n");
 
-    // 别名避免在 JZ_BENCH 宏参数里出现 '<int, ...>' 逗号 (宏按逗号拆分参数)
+    // 别名: 避免在 lambda 内写 '<int, ...>' 这类带逗号的类型参数, 可读性更好
     using JZIntVec = std::vector<int, JZAllocator<int>>;
 
     JZBenchmark bm(/*targetMs=*/100);
 
-    JZ_BENCH(bm, "JZAllocator malloc+free(1KB)", [&]() {
+    bm.runAndPrint("JZAllocator malloc+free(1KB)", [&]() {
         JZAllocator<char> a;
         char *p = a.allocate(1024);
         a.deallocate(p, 1024);
     });
-    JZ_BENCH(bm, "std malloc+free(1KB)", [&]() {
+    bm.runAndPrint("std malloc+free(1KB)", [&]() {
         char *p = (char *)std::malloc(1024);
         std::free(p);
     });
-    JZ_BENCH(bm, "vector<int,JZAllocator> push 1K", [&]() {
+    bm.runAndPrint("vector<int,JZAllocator> push 1K", [&]() {
         JZIntVec v;
         v.reserve(1024);
         for (int i = 0; i < 1024; ++i)
             v.push_back(i);
     });
-    JZ_BENCH(bm, "vector<int,std::alloc> push 1K", [&]() {
+    bm.runAndPrint("vector<int,std::alloc> push 1K", [&]() {
         std::vector<int> v;
         v.reserve(1024);
         for (int i = 0; i < 1024; ++i)
@@ -244,7 +245,7 @@ static void benchmark_stl()
     for (int i = 0; i < n; ++i)
         baseMap[i] = i * 2;
 
-    // 别名避免在 JZ_BENCH 宏参数里出现 '<int, int>' 逗号
+    // 别名: 避免在 lambda 内写 '<int, int>' 这类带逗号的类型参数, 可读性更好
     using MapT = std::map<int, int>;
 
     size_t sink = 0;
@@ -253,51 +254,51 @@ static void benchmark_stl()
     JZBenchmark bm(/*targetMs=*/100);
 
     // ---- std::vector ----
-    JZ_BENCH(bm, "vector push_back 1K", [&]() {
+    bm.runAndPrint("vector push_back 1K", [&]() {
         std::vector<int> v;
         v.reserve(n);
         for (int i = 0; i < n; ++i)
             v.push_back(i);
     });
-    JZ_BENCH(bm, "vector copy 1K", [&]() { std::vector<int> v(base); });
-    JZ_BENCH(bm, "vector append(range)", [&]() {
+    bm.runAndPrint("vector copy 1K", [&]() { std::vector<int> v(base); });
+    bm.runAndPrint("vector append(range)", [&]() {
         std::vector<int> v;
         v.insert(v.end(), base.begin(), base.end());
     });
-    JZ_BENCH(bm, "vector random access 1K", [&]() {
+    bm.runAndPrint("vector random access 1K", [&]() {
         int c = 0;
         for (int i = 0; i < n; ++i)
             c += base[(i * 7) % n];
         intSink += c;
     });
-    JZ_BENCH(bm, "vector find 1K", [&]() {
+    bm.runAndPrint("vector find 1K", [&]() {
         intSink += (int)(std::find(base.begin(), base.end(), 777) != base.end());
     });
 
     // ---- std::string ----
-    JZ_BENCH(bm, "string concat 256x8", [&]() {
+    bm.runAndPrint("string concat 256x8", [&]() {
         std::string s;
         s.reserve(4096);
         for (int i = 0; i < 256; ++i)
             s += "abcdefgh";
     });
-    JZ_BENCH(bm, "string copy 2KB", [&]() { std::string s(baseStr); });
-    JZ_BENCH(bm, "string find", [&]() {
+    bm.runAndPrint("string copy 2KB", [&]() { std::string s(baseStr); });
+    bm.runAndPrint("string find", [&]() {
         sink += baseStr.find("cdef");
     });
-    JZ_BENCH(bm, "string substr(1KB)", [&]() {
+    bm.runAndPrint("string substr(1KB)", [&]() {
         std::string s = baseStr.substr(512, 1024);
         sink += s.size();
     });
 
     // ---- std::map ----
-    JZ_BENCH(bm, "map insert 1K", [&]() {
+    bm.runAndPrint("map insert 1K", [&]() {
         MapT m;
         for (int i = 0; i < n; ++i)
             m[i] = i * 2;
     });
-    JZ_BENCH(bm, "map copy 1K", [&]() { MapT m(baseMap); });
-    JZ_BENCH(bm, "map lookup 1K", [&]() {
+    bm.runAndPrint("map copy 1K", [&]() { MapT m(baseMap); });
+    bm.runAndPrint("map lookup 1K", [&]() {
         int c = 0;
         for (int i = 0; i < n; ++i)
             c += baseMap.find(i)->second;
@@ -305,6 +306,67 @@ static void benchmark_stl()
     });
 
     printf("  [sink] strFind=%zu intSink=%d\n", sink, intSink);
+    printf("-----------------------------------------------------\n\n");
+}
+
+static void benchmark_datastream_endian()
+{
+    printf("\n========== JZDataStream Endian Benchmark ==========\n");
+
+    const int n = 1 << 18;   // 262144 个 uint32 => 约 1MB
+    std::vector<uint32_t> data;
+    data.reserve(n);
+    for (int i = 0; i < n; ++i)
+        data.push_back((uint32_t)(i * 2654435761u + 1));
+
+    JZByteArray buf;
+    JZByteArray tmp;
+    tmp.resize(n * (int)sizeof(uint32_t));   // 预分配, 隔离 memcpy 本身开销
+
+    int64_t sink = 0;
+    JZBenchmark bm(/*targetMs=*/100);
+
+    // 基准: 直接 memcpy 原始数据(理论上限)
+    bm.runAndPrint("memcpy(1MB uint32)", [&]() {
+        memcpy(tmp.data(), data.data(), n * sizeof(uint32_t));
+        sink += tmp.size();
+    });
+
+    // 小端(=主机序): 走批量裸写, 同设备零交换 => 应接近 memcpy 速度
+    bm.runAndPrint("write vector<uint32> LE (native,bulk)", [&]() {
+        buf.clear();
+        JZDataStream s(&buf, JZ::WriteOnly);
+        s << data;
+        sink += buf.size();
+    });
+
+    // 大端: 需逐元素换序 => 验证交换引入的开销
+    bm.runAndPrint("write vector<uint32> BE (swap)", [&]() {
+        buf.clear();
+        JZDataStream s(&buf, JZ::WriteOnly);
+        s.setByteOrder(JZDataStream::BigEndian);
+        s << data;
+        sink += buf.size();
+    });
+
+    // 读回: 小端(批量裸读)
+    bm.runAndPrint("read vector<uint32> LE (native,bulk)", [&]() {
+        JZDataStream s(&buf, JZ::ReadOnly);
+        std::vector<uint32_t> out;
+        s >> out;
+        for (uint32_t v : out) sink += v;
+    });
+
+    // 读回: 大端(逐元素换序)
+    bm.runAndPrint("read vector<uint32> BE (swap)", [&]() {
+        JZDataStream s(&buf, JZ::ReadOnly);
+        s.setByteOrder(JZDataStream::BigEndian);
+        std::vector<uint32_t> out;
+        s >> out;
+        for (uint32_t v : out) sink += v;
+    });
+
+    printf("  [sink] %lld\n", (long long)sink);
     printf("-----------------------------------------------------\n\n");
 }
 
@@ -317,4 +379,5 @@ void test_benchmark()
     benchmark_circlebuffer();
     benchmark_alloc();
     benchmark_stl();
+    benchmark_datastream_endian();
 }

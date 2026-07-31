@@ -7,6 +7,7 @@ JZDataStream::JZDataStream(JZFile *file)
     m_file = file;
     m_offset = 0;
     m_buffer = nullptr;
+    m_byteOrder = LittleEndian;
     m_error = false;
     m_errorString.clear();
     m_maxSize = -1;
@@ -17,6 +18,7 @@ JZDataStream::JZDataStream(const JZByteArray *buffer)
     m_buffer = (JZByteArray*)buffer;
     m_offset = 0;
     m_file = nullptr;
+    m_byteOrder = LittleEndian;
     m_error = false;
     m_errorString.clear();
     m_maxSize = -1;
@@ -27,6 +29,7 @@ JZDataStream::JZDataStream(JZByteArray *buffer, JZ::OpenMode mode)
     m_buffer = buffer;
     m_offset = 0;
     m_file = nullptr;
+    m_byteOrder = LittleEndian;
     m_error = false;
     m_errorString.clear();
     m_maxSize = -1;
@@ -122,12 +125,12 @@ void JZDataStream::skipRawData(int offset)
 
 void JZDataStream::setByteOrder(ByteOrder order)
 {
-    JZ_ASSERT(order == JZDataStream::LittleEndian);
+    m_byteOrder = order;
 }
 
 JZDataStream::ByteOrder JZDataStream::byteOrder()
 {
-    return JZDataStream::LittleEndian;
+    return m_byteOrder;
 }
 
 JZDataStream &JZDataStream::operator<<(bool i)

@@ -102,3 +102,22 @@ void JZBLEPeripheral::sendNotifyToAll(const JZBluetoothUuid &charUuid, const JZB
     for(auto &c : m_connects)
         getDriver()->peripheralSendNotify(this, c.get(), charUuid, value);
 }
+
+std::string JZBLEPeripheral::localName() { return m_localName; }
+
+void JZBLEPeripheral::setLocalName(std::string name) { m_localName = std::move(name); }
+
+// ==================== JZBLEPeripheralConnect ====================
+JZBLEPeripheralConnect::~JZBLEPeripheralConnect() {}
+
+// ==================== JZBleServiceData ====================
+void JZBleServiceData::setUuid(const JZBluetoothUuid &uuid) { m_uuid = uuid; }
+
+const JZBluetoothUuid &JZBleServiceData::uuid() const { return m_uuid; }
+
+void JZBleServiceData::addCharacteristic(const JZBluetoothUuid &charUuid, int properties, const JZByteArray &initialValue)
+{
+    m_charList.push_back({charUuid, properties, initialValue});
+}
+
+const std::vector<JZBleServiceData::CharData> &JZBleServiceData::characteristic() const { return m_charList; }

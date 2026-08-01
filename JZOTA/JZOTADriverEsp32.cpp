@@ -2,10 +2,6 @@
 #include "JZDebug.h"
 #include "esp_system.h"
 
-#ifndef OTA_SIZE_UNKNOWN
-#define OTA_SIZE_UNKNOWN ((size_t)-1)
-#endif
-
 JZOTADriverEsp32::JZOTADriverEsp32()
 {
 }
@@ -14,13 +10,13 @@ JZOTADriverEsp32::~JZOTADriverEsp32()
 {
 }
 
-JZResult<bool> JZOTADriverEsp32::verify(const JZOTAUpdateInfo &info)
+JZResult<void> JZOTADriverEsp32::verify(const JZOTAUpdateInfo &info)
 {
     m_updatePartition = esp_ota_get_next_update_partition(nullptr);
     if (!m_updatePartition)
     {
         jzError() << "JZOTADriverEsp32: no OTA update partition found";
-        return JZResult<bool>::Error("no OTA update partition found");
+        return JZResult<void>::Error("no OTA update partition found");
     }
 
     // 容量检查: 已知大小且超出分区则拒绝
@@ -28,45 +24,13 @@ JZResult<bool> JZOTADriverEsp32::verify(const JZOTAUpdateInfo &info)
     {
         jzError() << "JZOTADriverEsp32: firmware too large" << info.size
                   << " > partition" << m_updatePartition->size;
-        return JZResult<bool>::Error("firmware too large for partition");
+        return JZResult<void>::Error("firmware too large for partition");
     }
 
     jzDebug() << "JZOTADriverEsp32: update partition=" << m_updatePartition->label
-              << " size=" << m_updatePartition->size;
+              << " size=" << m_updatePartition->size;    
 
-    // 读取当前固件自带元数据(资源 :/JZOTA/meta), 与待升级信息比对
-    auto metaRes = JZOTA::readCurrentMeta();
-    if (metaRes.isOk())
-    {
-        const JZOTAMeta &cur = metaRes.value();
-
-        // 版本相同: 已是最新, 无需升级
-        if (!cur.version.empty() && cur.version == info.version)
-        {
-            jzDebug() << "JZOTADriverEsp32: already at version" << info.version << ", skip";
-            return JZResult<bool>::Ok(false);
-        }
-
-        // 机型 / 硬件不匹配: 拒绝, 防止刷错固件
-        if (!cur.productId.empty() && !info.productId.empty() && cur.productId != info.productId)
-        {
-            jzError() << "JZOTADriverEsp32: product mismatch, current=" << cur.productId
-                      << " target=" << info.productId;
-            return JZResult<bool>::Error("product mismatch");
-        }
-        if (!cur.hwVersion.empty() && !info.hwVersion.empty() && cur.hwVersion != info.hwVersion)
-        {
-            jzError() << "JZOTADriverEsp32: hw version mismatch, current=" << cur.hwVersion
-                      << " target=" << info.hwVersion;
-            return JZResult<bool>::Error("hw version mismatch");
-        }
-    }
-    else
-    {
-        jzWarning() << "JZOTADriverEsp32: readCurrentMeta failed:" << metaRes.errorMessage();
-    }
-
-    return JZResult<bool>::Ok(true);
+    return JZResult<void>::Ok();
 }
 
 int64_t JZOTADriverEsp32::totalSize()
@@ -89,8 +53,7 @@ bool JZOTADriverEsp32::begin(int64_t totalSize)
         }
     }
 
-    size_t image_size = (m_total > 0) ? (size_t)m_total : OTA_SIZE_UNKNOWN;
-    esp_err_t err = esp_ota_begin(m_updatePartition, image_size, &m_otaHandle);
+    esp_err_t err = esp_ota_begin(m_updatePartition, (size_t)m_total, &m_otaHandle);
     if (err != ESP_OK)
     {
         jzError() << "JZOTADriverEsp32: esp_ota_begin failed" << err;
@@ -158,6 +121,22 @@ void JZOTADriverEsp32::markValid()
     esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
     if (err != ESP_OK)
         jzWarning() << "JZOTADriverEsp32: mark_app_valid_cancel_rollback failed" << err;
+}
+
+bool JZOTADriverEsp32::isOTAReboot()
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return false;
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(running, &state) != ESP_OK)
+        return false;
+    return state == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+void JZOTADriverEsp32::rollback()
+{
+    jzDebug() << "JZOTADriverEsp32: rollback to previous firmware";
+    esp_ota_mark_app_invalid_rollback_and_reboot();
 }
 
 void JZOTADriverEsp32::cancel()

@@ -6,6 +6,7 @@
 #include <string>
 #include <cstdint>
 
+#include "json/json.h"
 #include "JZNetworkAccessManager.h"
 class JZNetworkReply;
 
@@ -14,7 +15,6 @@ struct JZOTAUpdateInfo {
     // ---------- 标识 / 版本 ----------
     std::string version;     // 目标固件版本号
     std::string buildId;     // 构建号 / commit hash
-    std::string channel;     // 发布通道: stable / beta / dev
 
     // ---------- 设备匹配(防刷错固件, 由 driver 决定如何校验) ----------
     std::string productId;   // 产品 / 型号 id, 不匹配应拒绝升级
@@ -22,25 +22,15 @@ struct JZOTAUpdateInfo {
     std::string minVersion;  // 允许升级的最低当前版本(防跨版本不兼容)
 
     // ---------- 下载 ----------
-    std::string url;         // 主下载地址
-    std::string mirror;      // 备用镜像地址(主地址失败可回退)
+    std::string url;         // 主下载地址    
     int64_t size = 0;        // 固件总大小(字节), <=0 表示未知(此时整体下载)
 
-    // ---------- 完整性 / 安全 ----------
-    std::string md5;         // md5(hex), 写入后校验
-    std::string sha256;      // 可选, 更强完整性校验
-    std::string signature;   // 可选, 服务端签名(驱动可验签)
-    std::string signAlgo;    // 签名算法: "rsa" / "ecdsa" / ...
+    // 签名
+    std::string signature;
 
-    // ---------- 升级策略(供上层调度 / UI 使用) ----------
-    bool mandatory = false;  // 是否强制升级
-    bool reboot = true;      // 完成后是否需要重启
-    std::string applyMode;   // 应用时机: "now" / "nextBoot"
-    std::string releaseNote; // 更新说明 / changelog
-    std::string publishTime; // 发布时间(ISO8601)
-
-    // ---------- 源 ----------
-    std::string infoUrl;     // 本 manifest 自身地址(便于回显 / 审计)
+    // ---------- 升级策略 / 扩展(供上层调度 / UI 使用) ----------    
+    // 上层可通过 extra["reboot"].asBool() 等直接读取
+    Json::Value extra;
 
     // ---------- 校验结果(由 JZOTA::queryOTAInfo 填充) ----------
     bool needUpdate = false; // 经 driver 校验后是否需要升级; true=需要, false=无需(如已是最新)
@@ -75,7 +65,17 @@ class JZOTA : public JZObject
 public:
     // 读取当前固件自描述元数据(资源 ":/JZOTA/meta")。
     // Ok(meta)=读取并解析成功; Error=资源缺失或解析失败。
-    static JZResult<JZOTAMeta> readCurrentMeta();
+    JZResult<JZOTAMeta> readCurrentMeta();
+
+    // 确认当前运行固件有效(防回滚)。应在业务初始化自检成功后才调用。
+    void markValid();
+
+    // 当前启动是否为 OTA 升级后的首次启动(固件处于 PENDING_VERIFY 状态)。
+    bool isOTAReboot();
+
+    // 主动回滚: 标记当前固件无效, 回退到上一有效版本并重启。
+    // 调用后设备重启, 不会返回。
+    void rollback();
 
     enum State {
         Idle,
@@ -91,6 +91,10 @@ public:
 
     // 设置分块大小(字节), 默认 64KB
     void setChunkSize(int64_t chunkSize);
+
+    // 下载失败重试次数, 默认 3, 设为 0 则禁用重试
+    void setMaxRetries(int maxRetries);
+    int maxRetries() const;
 
     // 获取升级信息(manifest JSON), 成功后发射 sigInfoReady; 不会自动开始升级
     void queryOTAInfo(const std::string &infoUrl);    
@@ -113,16 +117,18 @@ jz_signals:
     JZSigDouble sigProgress;   // 写入进度 0..1
     JZSigString sigError;      // 错误信息
     JZSigVoid sigFinished;     // 成功完成
+    JZSigInt sigRetry;         // 下载重试, 参数为当前重试次数(1..maxRetries)
 
 protected:
     void onInfoFinished();
     void startDownload();
     void downloadChunk();
     void onChunkFinished();
-    void onFullFinished();      // size 未知时的整体下载
     void finishSuccess();
+    bool retryDownload();
 
     bool parseInfo(const std::string &text, JZOTAUpdateInfo &out);
+    JZResult<bool> verify(const JZOTAUpdateInfo &info);
 
     JZNetworkAccessManager m_manager;
     JZNetworkReply *m_reply = nullptr;
@@ -134,7 +140,8 @@ protected:
     int64_t m_total = 0;
     int64_t m_offset = 0;
     int64_t m_written = 0;
-    bool m_useRange = false;
+    int m_retryCount = 0;
+    int m_maxRetries = 3;
 };
 
 #endif // !JZ_OTA_H_

@@ -26,8 +26,8 @@ public:
     static JZOTADriver *instance();
 
 
-    // 校验升级信息: Ok(true)=需要升级, Ok(false)=无需升级(如已是最新), Error=校验失败(环境/兼容问题)
-    virtual JZResult<bool> verify(const JZOTAUpdateInfo &info) = 0;
+    // 校验能否升级: Ok()=环境就绪(分区存在且容量足够), Error=校验失败
+    virtual JZResult<void> verify(const JZOTAUpdateInfo &info) = 0;
 
     // 期望写入的总字节数(用于进度计算)。未知返回 -1
     virtual int64_t totalSize() = 0;
@@ -46,13 +46,23 @@ public:
     virtual void cancel() = 0;
 
     // 应用并重启以生效新固件(机制由具体驱动实现: 置 boot 标志 + 重启 / 主机场景可为空操作)。
-    // 由 JZOTA 在 finish() 成功后、依据 info.reboot 策略决定是否调用。
+    // 由 JZOTA 在 finish() 成功后、依据 info.extra["reboot"] 策略决定是否调用。
     virtual void reboot() = 0;
 
     // 确认"当前正在运行的固件"有效(仅 ESP32 等支持回滚的平台有意义)。
     // 应用应在自身初始化 / 自检成功后才调用; 调用前若发生崩溃重启,
     // bootloader 会自动回退到上一有效版本。默认空实现(不支持回滚的平台无需处理)。
     virtual void markValid() {}
+
+    // 当前启动是否为 OTA 升级后的首次启动(固件未经验证 / 处于回滚观察期)。
+    // ESP32: 运行分区状态 == ESP_OTA_IMG_PENDING_VERIFY 时返回 true。
+    // 其他平台默认 false。
+    virtual bool isOTAReboot() { return false; }
+
+    // 主动回滚: 标记当前固件为无效, 回退到上一有效版本并重启。
+    // 仅 ESP32 等支持回滚的平台有意义; 默认空实现。
+    // 调用后设备会重启, 不会再返回。
+    virtual void rollback() {}
 
 protected:
     JZ_DISABLE_COPY(JZOTADriver)

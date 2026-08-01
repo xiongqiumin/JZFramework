@@ -26,8 +26,8 @@ public:
     JZOTADriverEsp32();
     ~JZOTADriverEsp32() override;
 
-    // 校验升级信息: 存在可用 OTA 分区且容量足够则返回 Ok(true)
-    JZResult<bool> verify(const JZOTAUpdateInfo &info) override;
+    // 校验能否升级: 存在可用 OTA 分区且容量足够则返回 Ok()
+    JZResult<void> verify(const JZOTAUpdateInfo &info) override;
 
     // 期望写入的总字节数(用于进度计算)
     int64_t totalSize() override;
@@ -49,6 +49,12 @@ public:
 
     // 确认当前运行固件有效(防回滚: 调用前崩溃则下次启动回退旧版本)
     void markValid() override;
+
+    // 当前启动是否为 OTA 升级后的首次启动(PENDING_VERIFY 状态)
+    bool isOTAReboot() override;
+
+    // 主动回滚: 标记当前固件无效, 回退上一版本并重启
+    void rollback() override;
 
 private:
     const esp_partition_t *m_updatePartition = nullptr;

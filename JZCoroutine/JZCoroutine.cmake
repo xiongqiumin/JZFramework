@@ -55,8 +55,13 @@ set(JZCO_SERIAL_SOURCES
 )
 
 jz_module_exists(JZSerialPort HAS_JZSerialPort)
-if(HAS_JZBLE)
+if(HAS_JZSerialPort)
     list(APPEND JZCO_SOURCES ${JZCO_SERIAL_SOURCES})
+endif()
+
+# JZCoProcess only on platforms where JZProcess is available (Win/Linux)
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND JZCO_SOURCES JZCoProcess.cpp JZCoProcess.h)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")

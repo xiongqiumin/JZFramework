@@ -383,3 +383,21 @@ bool JZSerialDriverWindows::setFlowControl(JZSerialPort *port, JZSerialPort::Flo
     }
     return SetCommState(st->handle, &dcb) == TRUE;
 }
+
+bool JZSerialDriverWindows::setDtr(JZSerialPort *port, bool level)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    PortState *st = stateOf(port->portName());
+    if (!st || st->handle == INVALID_HANDLE_VALUE)
+        return false;
+    return EscapeCommFunction(st->handle, level ? SETDTR : CLRDTR) != FALSE;
+}
+
+bool JZSerialDriverWindows::setRts(JZSerialPort *port, bool level)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    PortState *st = stateOf(port->portName());
+    if (!st || st->handle == INVALID_HANDLE_VALUE)
+        return false;
+    return EscapeCommFunction(st->handle, level ? SETRTS : CLRRTS) != FALSE;
+}

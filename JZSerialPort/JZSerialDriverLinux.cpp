@@ -437,3 +437,37 @@ bool JZSerialDriverLinux::setFlowControl(JZSerialPort *port, JZSerialPort::FlowC
     }
     return tcsetattr(st->fd, TCSANOW, &t) == 0;
 }
+
+bool JZSerialDriverLinux::setDtr(JZSerialPort *port, bool level)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    PortState *st = stateOf(port->portName());
+    if (!st || st->fd < 0)
+        return false;
+
+    int status = 0;
+    if (ioctl(st->fd, TIOCMGET, &status) < 0)
+        return false;
+    if (level)
+        status |= TIOCM_DTR;
+    else
+        status &= ~TIOCM_DTR;
+    return ioctl(st->fd, TIOCMSET, &status) == 0;
+}
+
+bool JZSerialDriverLinux::setRts(JZSerialPort *port, bool level)
+{
+    std::lock_guard<std::mutex> lk(m_mutex);
+    PortState *st = stateOf(port->portName());
+    if (!st || st->fd < 0)
+        return false;
+
+    int status = 0;
+    if (ioctl(st->fd, TIOCMGET, &status) < 0)
+        return false;
+    if (level)
+        status |= TIOCM_RTS;
+    else
+        status &= ~TIOCM_RTS;
+    return ioctl(st->fd, TIOCMSET, &status) == 0;
+}

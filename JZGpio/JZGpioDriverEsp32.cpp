@@ -65,20 +65,22 @@ std::vector<JZGpioInfo> JZGpioDriverEsp32::availableGpios()
 
 JZGpioDriverEsp32::~JZGpioDriverEsp32()
 {
-    // 停止波形任务 (m_running=false 后任务自行退出)
+    // 1) 通知所有任务退出
     m_running = false;
-    if (m_waveTask)
+    m_scanRunning = false;
+    // 唤醒可能阻塞在 xQueueReceive 的 dispatch 任务, 使其立即检查 m_running 并退出
+    if (m_isrQueue)
     {
-        vTaskDelay(pdMS_TO_TICKS(30));
-        m_waveTask = nullptr;
+        IsrEvent ev{-1, -1};
+        xQueueSend((QueueHandle_t)m_isrQueue, &ev, 0);
     }
-    // 停止分发任务
-    if (m_dispatchTask)
-    {
-        vTaskDelay(pdMS_TO_TICKS(30));
-        m_dispatchTask = nullptr;
-    }
+    // 等待任务真正退出后再释放共享资源, 避免 use-after-free
+    if (m_dispatchTask && m_exitSem)
+        xSemaphoreTake((SemaphoreHandle_t)m_exitSem, pdMS_TO_TICKS(200));
+    if (m_waveTask && m_exitSem)
+        xSemaphoreTake((SemaphoreHandle_t)m_exitSem, pdMS_TO_TICKS(200));
 
+    // 2) 释放各引脚资源
     std::vector<int> pins;
     for (auto &kv : m_pins)
         pins.push_back(kv.first);
@@ -110,6 +112,11 @@ JZGpioDriverEsp32::~JZGpioDriverEsp32()
     {
         vSemaphoreDelete((SemaphoreHandle_t)m_waveMutex);
         m_waveMutex = nullptr;
+    }
+    if (m_exitSem)
+    {
+        vSemaphoreDelete((SemaphoreHandle_t)m_exitSem);
+        m_exitSem = nullptr;
     }
 }
 
@@ -154,22 +161,30 @@ void JZGpioDriverEsp32::dispatchTask(void *arg)
 {
     auto *self = static_cast<JZGpioDriverEsp32 *>(arg);
     IsrEvent ev;
-    // 记录每个引脚上一次电平, 用于在任务上下文中判定变化
-    while (self->m_running)
+    while (self->m_running && self->m_scanRunning)
     {
         if (xQueueReceive((QueueHandle_t)self->m_isrQueue, &ev, pdMS_TO_TICKS(50)) == pdTRUE)
         {
-            // 逐个输入引脚复查电平, 变化则回调
+            // 逐个输入引脚复查电平, 仅在电平真正变化时回调
             for (auto &kv : self->m_pins)
             {
                 PinState &st = kv.second;
                 if (st.dir != JZGpio::Input || st.edge == JZGpio::NoEdge || !st.gpio)
                     continue;
                 int lv = gpio_get_level((gpio_num_t)kv.first);
-                st.gpio->onLevelChanged(lv);
+                if (st.lastLevel < 0)
+                    st.lastLevel = lv;          // 首次采样只记录基线, 不触发回调
+                else if (lv != st.lastLevel)
+                {
+                    st.lastLevel = lv;
+                    st.gpio->onLevelChanged(lv);
+                }
             }
         }
     }
+    self->m_dispatchTask = nullptr;
+    if (self->m_exitSem)
+        xSemaphoreGive((SemaphoreHandle_t)self->m_exitSem);
     vTaskDelete(nullptr);
 }
 
@@ -202,11 +217,14 @@ bool JZGpioDriverEsp32::open(JZGpio *gpio)
     // 惰性初始化 ISR 服务 + 分发任务
     if (!m_isrQueue)
         m_isrQueue = xQueueCreate(16, sizeof(IsrEvent));
+    if (!m_exitSem)
+        m_exitSem = xSemaphoreCreateCounting(2, 0);
     if (!m_isrServiceInstalled)
         m_isrServiceInstalled = (gpio_install_isr_service(0) == ESP_OK);
     if (!m_running)
     {
         m_running = true;
+        m_scanRunning = true;
         xTaskCreate(dispatchTask, "jz_gpio_disp", 4096, this, 10,
                     (TaskHandle_t *)&m_dispatchTask);
     }
@@ -377,6 +395,8 @@ void JZGpioDriverEsp32::ensureWaveTask()
         return;
     if (!m_waveMutex)
         m_waveMutex = xSemaphoreCreateMutex();
+    if (!m_exitSem)
+        m_exitSem = xSemaphoreCreateCounting(2, 0);
     xTaskCreate(waveTask, "jz_gpio_wave", 3072, this, 9, (TaskHandle_t *)&m_waveTask);
 }
 
@@ -454,6 +474,8 @@ void JZGpioDriverEsp32::waveTask(void *arg)
     }
 
     self->m_waveTask = nullptr;
+    if (self->m_exitSem)
+        xSemaphoreGive((SemaphoreHandle_t)self->m_exitSem);
     vTaskDelete(nullptr);
 }
 
@@ -464,7 +486,9 @@ bool JZGpioDriverEsp32::startWaveform(JZGpio *gpio, JZGpio::Waveform type, int f
         return false;
     PinState &st = it->second;
 
-    if (st.useDac)
+    bool dacPin = isDacPin(gpio->pin());
+    st.useDac = false;
+    if (dacPin)
     {
 #if SOC_DAC_SUPPORTED
         // 如果已有旧句柄则先释放
@@ -477,10 +501,14 @@ bool JZGpioDriverEsp32::startWaveform(JZGpio *gpio, JZGpio::Waveform type, int f
         dacCfg.chan_id = (gpio->pin() == 25) ? DAC_CHAN_0 : DAC_CHAN_1;
         dac_oneshot_handle_t dacH = nullptr;
         if (dac_oneshot_new_channel(&dacCfg, &dacH) == ESP_OK)
+        {
             st.dacHandle = dacH;
+            st.useDac = true;   // 仅当 DAC 句柄创建成功才走 DAC 路径
+        }
 #endif
+        // DAC 不可用(或不支持)时回落到 PWM 载波
     }
-    else if (!st.pwmRunning)
+    if (!st.useDac && !st.pwmRunning)
     {
         // 非 DAC 引脚需要先建立一个 PWM 载波以便调制幅值
         if (!startPwm(gpio, freqHz > 1000 ? freqHz : 5000, 0.0f))
@@ -495,7 +523,6 @@ bool JZGpioDriverEsp32::startWaveform(JZGpio *gpio, JZGpio::Waveform type, int f
     st.waveAmp = amplitude;
     st.waveOffset = offset;
     st.wavePhase = 0.0;
-    st.useDac = isDacPin(gpio->pin());
     st.waveRunning = true;
     if (m_waveMutex)
         xSemaphoreGive((SemaphoreHandle_t)m_waveMutex);
@@ -527,6 +554,13 @@ void JZGpioDriverEsp32::stopWaveform(JZGpio *gpio)
         dac_oneshot_del_channel((dac_oneshot_handle_t)st.dacHandle);
         st.dacHandle = nullptr;
 #endif
+    }
+    else if (st.pwmRunning && st.ledcChannel >= 0)
+    {
+        // 非 DAC 脚: 同时停止用于调制幅值的 PWM 载波, 否则会一直输出最后占空比
+        freeLedcChannel(st.ledcChannel);
+        st.ledcChannel = -1;
+        st.pwmRunning = false;
     }
     st.waveform = JZGpio::WaveNone;
 }

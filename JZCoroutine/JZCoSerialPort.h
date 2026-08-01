@@ -45,6 +45,14 @@ public:
     void write(const JZByteArray &buffer);
     void write(const char *data, int len);
 
+    // 硬件控制信号（DTR / RTS）
+    bool setDtr(bool level);
+    bool setRts(bool level);
+
+    // ESP 常用快捷操作
+    bool resetDevice();       // DTR=0, RTS=0 → 复位
+    bool enterBootloader();   // DTR=0, RTS=1 → 进入下载模式
+
 protected:
     enum WaitType
     {

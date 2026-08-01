@@ -43,6 +43,11 @@ inline int32_t  jzByteSwap(int32_t  v) { return (int32_t)  JZ_BSWAP32((uint32_t)
 inline int64_t  jzByteSwap(int64_t  v) { return (int64_t)  JZ_BSWAP64((uint64_t)v); }
 inline float    jzByteSwap(float    v) { uint32_t u; memcpy(&u, &v, 4); u = JZ_BSWAP32(u); memcpy(&v, &u, 4); return v; }
 inline double   jzByteSwap(double   v) { uint64_t u; memcpy(&u, &v, 8); u = JZ_BSWAP64(u); memcpy(&v, &u, 8); return v; }
+// 1 字节类型不需要字节交换, 直接返回(避免 writePad/readPad 模板中 bool/char 重载歧义)
+inline bool          jzByteSwap(bool v)          { return v; }
+inline char          jzByteSwap(char v)          { return v; }
+inline signed char   jzByteSwap(signed char v)   { return v; }
+inline unsigned char jzByteSwap(unsigned char v) { return v; }
 #undef JZ_BSWAP16
 #undef JZ_BSWAP32
 #undef JZ_BSWAP64

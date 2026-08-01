@@ -65,6 +65,7 @@ private:
 #if SOC_DAC_SUPPORTED
         void            *dacHandle = nullptr;  // dac_oneshot_handle_t
 #endif
+        int              lastLevel = -1;       // 扫描用: 上一次读取到的电平(-1 表示尚未采样)
     };
 
     static void isrHandler(void *arg);   // GPIO ISR (IRAM)
@@ -81,8 +82,10 @@ private:
     void *m_dispatchTask = nullptr;   // TaskHandle_t
     void *m_waveTask = nullptr;       // TaskHandle_t
     void *m_waveMutex = nullptr;      // SemaphoreHandle_t (保护 m_pins 并发访问)
+    void *m_exitSem = nullptr;        // SemaphoreHandle_t (计数信号量, 析构时等待任务退出)
     bool  m_isrServiceInstalled = false;
-    bool  m_running = false;
+    bool  m_running = false;        // 整体运行标志(析构时置 false, 停止所有任务)
+    bool  m_scanRunning = false;    // 扫描(dispatch)任务标志, 与波形任务相互独立
     unsigned m_ledcChannelMask = 0;   // LEDC 通道占用位图
 };
 

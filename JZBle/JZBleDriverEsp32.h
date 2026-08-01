@@ -2,6 +2,7 @@
 #define JZ_BLE_DRIVER_ESP32_H_
 
 #include "JZBleDriver.h"
+#include "JZBLEPeripheral.h"   // 完整定义 JZBLEPeripheralConnect（基类需要完整类型）
 #include "JZByteArray.h"
 #include "JZMutex.h"
 #include <map>
@@ -26,6 +27,7 @@ struct PeriphGatt;
 
 // 从机特征定义（GATT 表为服务端共享；订阅状态改为按连接记录，见 JZBLEPeripheralConnectEsp32::subs）
 struct PeriphCharInfo {
+    std::string svcUuid;     // 所属 Service UUID 字符串
     uint16_t valHandle = 0;
     int properties = 0;
     JZByteArray value;
@@ -46,7 +48,7 @@ public:
         bool subscribedIndicate = false;
     };
     std::map<std::string, CharSub> subs;  // charUuid.toString() -> 订阅状态
-}
+};
 
 class JZBleDriverEsp32 : public JZBleDriver
 {
@@ -196,7 +198,7 @@ private:
     enum class State { None, Starting, Started };
     State m_advertState = State::None;
     JZBLEPeripheral *m_periphCtrlPriv = nullptr;
-    PeriphGatt m_periphGatt;
+    PeriphGatt *m_periphGatt = nullptr;  // 完整定义见 .cpp（含 NimBLE 类型，头文件仅前置声明）
     std::map<std::string, PeriphCharInfo> m_periphCharMap; // charUuid -> info
     std::map<int, std::shared_ptr<JZBLEPeripheralConnectEsp32>> m_periphConnMap; // conn_handle -> 连接
     std::string m_pendingAdvName;

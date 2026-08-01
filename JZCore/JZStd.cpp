@@ -717,101 +717,14 @@ string wstr_to_str(const wstring &wstr)
 }
 
 #else
-
-static_assert(sizeof(wchar_t) == 4, "This code only works on Linux/macOS (wchar_t 4 bytes UTF32)");
-
-string str_local_to_utf8(const string &str)
-{
-    return str;
-}
-
-string str_utf8_to_local(const string& utf8_str)
-{
-    return utf8_str;
-}
-
 wstring str_to_wstr(const string& utf8)
-{
-    std::wstring out;
-    out.reserve(utf8.size());
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(utf8.data());
-    size_t len = utf8.size();
-    size_t i = 0;
-
-    while (i < len)
-    {
-        uint32_t code = 0;
-        uint8_t c = p[i];
-        if ((c & 0x80) == 0)
-        {
-            code = c;
-            i += 1;
-        }
-        else if ((c & 0xE0) == 0xC0)
-        {
-            if (i + 1 >= len) break;
-            code = ((c & 0x1F) << 6) | (p[i+1] & 0x3F);
-            i += 2;
-        }
-        else if ((c & 0xF0) == 0xE0)
-        {
-            if (i + 2 >= len) break;
-            code = ((c & 0x0F) << 12) | ((p[i+1] & 0x3F) << 6) | (p[i+2] & 0x3F);
-            i += 3;
-        }
-        else if ((c & 0xF8) == 0xF0)
-        {
-            if (i + 3 >= len) break;
-            code = ((c & 0x07) << 18) | ((p[i+1] & 0x3F) << 12) | ((p[i+2] & 0x3F) << 6) | (p[i+3] & 0x3F);
-            i += 4;
-        }
-        else
-        {
-            ++i;
-            continue;
-        }
-        // Linux wchar_t=4，直接存入完整码点，无代理对
-        out.push_back(static_cast<wchar_t>(code));
-    }
-    return out;
+{    
+    return wstring();
 }
 
 string wstr_to_str(const wstring &wstr)
 {
-    std::string out;
-    out.reserve(wstr.size() * 4);
-    size_t len = wstr.size();
-    size_t i = 0;
-
-    while (i < len)
-    {
-        uint32_t code = static_cast<uint32_t>(wstr[i]);
-        ++i;
-
-        if (code <= 0x7F)
-        {
-            out.push_back(static_cast<char>(code));
-        }
-        else if (code <= 0x7FF)
-        {
-            out.push_back(static_cast<char>(0xC0 | ((code >> 6) & 0x1F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        }
-        else if (code <= 0xFFFF)
-        {
-            out.push_back(static_cast<char>(0xE0 | ((code >> 12) & 0x0F)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        }
-        else if (code <= 0x10FFFF)
-        {
-            out.push_back(static_cast<char>(0xF0 | ((code >> 18) & 0x07)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-        }
-    }
-    return out;
+    return string();
 }
 
 #endif

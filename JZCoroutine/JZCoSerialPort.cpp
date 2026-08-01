@@ -109,6 +109,46 @@ JZSerialPort::FlowControl JZCoSerialPort::flowControl() const
 }
 
 //=======================================================================
+// 硬件控制信号
+//=======================================================================
+bool JZCoSerialPort::setDtr(bool level)
+{
+    return m_port->setDtr(level);
+}
+
+bool JZCoSerialPort::setRts(bool level)
+{
+    return m_port->setRts(level);
+}
+
+bool JZCoSerialPort::resetDevice()
+{
+    // ESP32 自动复位电路：DTR=0 且 RTS=0 时 EN 被拉低 → 芯片复位
+    if (!m_port->setDtr(false) || !m_port->setRts(false))
+        return false;
+    jzco_sleep(100);
+    if (!m_port->setDtr(true) || !m_port->setRts(true))
+        return false;
+    jzco_sleep(50);
+    return true;
+}
+
+bool JZCoSerialPort::enterBootloader()
+{
+    // ESP32 下载模式：DTR=0 拉低 EN, RTS=1 拉低 IO0 → 进入下载模式
+    if (!m_port->setDtr(false) || !m_port->setRts(true))
+        return false;
+    jzco_sleep(100);
+    if (!m_port->setDtr(true))
+        return false;
+    jzco_sleep(50);
+    if (!m_port->setRts(false))
+        return false;
+    jzco_sleep(50);
+    return true;
+}
+
+//=======================================================================
 // 信号处理：后台线程推送 -> 缓存 -> 唤醒等待协程
 //=======================================================================
 void JZCoSerialPort::onDataReceived()

@@ -274,3 +274,19 @@ bool JZSerialDriverEsp32::setFlowControl(JZSerialPort *port, JZSerialPort::FlowC
     return uart_set_hw_flow_ctrl((uart_port_t)it->second.uartNum,
                                  UART_HW_FLOWCTRL_DISABLE, 0) == ESP_OK;
 }
+
+bool JZSerialDriverEsp32::setDtr(JZSerialPort *port, bool level)
+{
+    auto it = m_ports.find(port->portName());
+    if (it == m_ports.end())
+        return false;
+    return uart_set_dtr((uart_port_t)it->second.uartNum, level ? 1 : 0) == ESP_OK;
+}
+
+bool JZSerialDriverEsp32::setRts(JZSerialPort *port, bool level)
+{
+    auto it = m_ports.find(port->portName());
+    if (it == m_ports.end())
+        return false;
+    return uart_set_rts((uart_port_t)it->second.uartNum, level ? 1 : 0) == ESP_OK;
+}

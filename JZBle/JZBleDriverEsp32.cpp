@@ -117,7 +117,7 @@ std::string JZBleDriverEsp32::normalizeUuid(const std::string &s)
     return bleUuidToJZ(&u.u).toString();
 }
 
-int  JZBleDriverEsp32::getConnHandle(const std::string &a) { auto it = m_connMap.find(a); return it != m_connMap.end() ? it->second : -1; }
+int  JZBleDriverEsp32::getConnHandle(const std::string &a) const { auto it = m_connMap.find(a); return it != m_connMap.end() ? it->second : -1; }
 void JZBleDriverEsp32::setConnHandle(const std::string &a, int h) { m_connMap[a] = h; m_connToAddr[h] = a; }
 void JZBleDriverEsp32::removeConnHandle(const std::string &a)
 {
@@ -238,7 +238,7 @@ int JZBleDriverEsp32::onPeriphGapEvent(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         printf("BLE: client disconnected, reason=%d\n", event->disconnect.reason);
     {
-        int h = event->disconnect.conn.handle;
+        int h = event->disconnect.conn.conn_handle;
         std::shared_ptr<JZBLEPeripheralConnectEsp32> conn;
         {
             JZMutexLocker lk(&self->m_mutex);
@@ -513,6 +513,7 @@ int JZBleDriverEsp32::onGattcAck(uint16_t, const struct ble_gatt_error *, struct
 JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_advertState(State::None), m_scanning(false)
 {
     g_driver = this;
+    m_periphGatt = new PeriphGatt();
 
     // 配置 NimBLE Host（在 nimble_port_init() 之前设置）
     ble_hs_cfg.reset_cb = onHostReset;
@@ -536,6 +537,7 @@ JZBleDriverEsp32::JZBleDriverEsp32() : m_ownAddrType(BLE_OWN_ADDR_PUBLIC), m_adv
 JZBleDriverEsp32::~JZBleDriverEsp32() 
 { 
     g_driver = nullptr;
+    delete m_periphGatt;
 }
 
 bool JZBleDriverEsp32::nimbleInit()
@@ -584,7 +586,7 @@ void JZBleDriverEsp32::nimbleDeinit()
     // 必须在锁外执行 nimble_port_wait()：NimBLE 任务退出时会跑 GAP 断开等回调，
     // 那些回调也要取同一把锁，持锁等待会与自身（NimBLE 任务）死锁。
     nimble_port_stop();
-    nimble_port_wait();
+    // nimble_port_wait() removed in newer NimBLE; nimble_port_stop() already handles cleanup
     nimble_port_deinit();
     {
         JZMutexLocker lk(&m_mutex);
@@ -670,7 +672,7 @@ void JZBleDriverEsp32::onAdvertisingStart()
 
 void JZBleDriverEsp32::onHostSync()
 {
-    JZMutexLocker lk(&m_mutex);
+    JZMutexLocker lk(&g_driver->m_mutex);
     JZScopeGuard guard([]{
         if(g_driver->m_advertState == State::Starting)
             g_driver->m_advertState = State::None;
@@ -985,10 +987,10 @@ void JZBleDriverEsp32::writeDescriptor(const std::string &addr, const std::strin
 // ==================== Peripheral ====================
 void JZBleDriverEsp32::buildPeriphGatt()
 {
-    m_periphGatt.svcUuids.clear();
-    m_periphGatt.chrUuids.clear();
-    m_periphGatt.chrDefs.clear();
-    m_periphGatt.svcDefs.clear();
+    m_periphGatt->svcUuids.clear();
+    m_periphGatt->chrUuids.clear();
+    m_periphGatt->chrDefs.clear();
+    m_periphGatt->svcDefs.clear();
 
     std::map<std::string, std::vector<std::string>> svcChars;
     for (auto &kv : m_periphCharMap)
@@ -997,21 +999,21 @@ void JZBleDriverEsp32::buildPeriphGatt()
     // resize 一把创建所有元素，地址终生不变，NimBLE 存的裸指针永远安全
     size_t svcCount = svcChars.size();
     size_t totalChars = m_periphCharMap.size();
-    m_periphGatt.svcUuids.resize(svcCount);
-    m_periphGatt.chrUuids.resize(totalChars);
-    m_periphGatt.chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
-    m_periphGatt.svcDefs.resize(svcCount + 1);           // svcs + 终止符
+    m_periphGatt->svcUuids.resize(svcCount);
+    m_periphGatt->chrUuids.resize(totalChars);
+    m_periphGatt->chrDefs.resize(totalChars + svcCount);  // chars + 每服务终止符
+    m_periphGatt->svcDefs.resize(svcCount + 1);           // svcs + 终止符
 
     size_t svcIdx = 0, chrUuidIdx = 0, chrDefIdx = 0, svcDefIdx = 0;
 
     for (auto &sc : svcChars)
     {
-        uuidFromString(sc.first, &m_periphGatt.svcUuids[svcIdx]);
+        uuidFromString(sc.first, &m_periphGatt->svcUuids[svcIdx]);
 
         size_t chrStartIdx = chrDefIdx;
         for (auto &cuuid : sc.second)
         {
-            uuidFromString(cuuid, &m_periphGatt.chrUuids[chrUuidIdx]);
+            uuidFromString(cuuid, &m_periphGatt->chrUuids[chrUuidIdx]);
 
             int props = m_periphCharMap[cuuid].properties;
             ble_gatt_chr_flags nimFlags = 0;
@@ -1022,29 +1024,29 @@ void JZBleDriverEsp32::buildPeriphGatt()
             if (props & 0x10) nimFlags |= BLE_GATT_CHR_F_WRITE_NO_RSP;
 
             ble_gatt_chr_def cd = {};
-            cd.uuid = &m_periphGatt.chrUuids[chrUuidIdx].u;
+            cd.uuid = &m_periphGatt->chrUuids[chrUuidIdx].u;
             cd.access_cb = onGattAccess;
             cd.val_handle = &m_periphCharMap[cuuid].valHandle;
             cd.flags = nimFlags;
             cd.min_key_size = 0;
-            m_periphGatt.chrDefs[chrDefIdx] = cd;
+            m_periphGatt->chrDefs[chrDefIdx] = cd;
 
             chrUuidIdx++;
             chrDefIdx++;
         }
-        m_periphGatt.chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
+        m_periphGatt->chrDefs[chrDefIdx] = ble_gatt_chr_def{};  // 终止符
         chrDefIdx++;
 
         ble_gatt_svc_def sd = {};
         sd.type = BLE_GATT_SVC_TYPE_PRIMARY;
-        sd.uuid = &m_periphGatt.svcUuids[svcIdx].u;
-        sd.characteristics = &m_periphGatt.chrDefs[chrStartIdx];
-        m_periphGatt.svcDefs[svcDefIdx] = sd;
+        sd.uuid = &m_periphGatt->svcUuids[svcIdx].u;
+        sd.characteristics = &m_periphGatt->chrDefs[chrStartIdx];
+        m_periphGatt->svcDefs[svcDefIdx] = sd;
 
         svcIdx++;
         svcDefIdx++;
     }
-    m_periphGatt.svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
+    m_periphGatt->svcDefs[svcDefIdx] = ble_gatt_svc_def{};  // 终止符
 }
 
 void JZBleDriverEsp32::startAdvertising(JZBLEPeripheral *d)
@@ -1078,25 +1080,27 @@ void JZBleDriverEsp32::startAdvertising(JZBLEPeripheral *d)
         JZMutexLocker lk(&m_mutex);
         ble_gatts_reset();
         ble_svc_gap_init();
-        ble_svc_gap_device_name_set(name.c_str());
+        ble_svc_gap_device_name_set(d->localName().c_str());
         ble_svc_gatt_init();
         buildPeriphGatt();
-        int rc2 = ble_gatts_count_cfg(m_periphGatt.svcDefs.data());
+        int rc2 = ble_gatts_count_cfg(m_periphGatt->svcDefs.data());
         if (rc2 == 0)
-            rc2 = ble_gatts_add_svcs(m_periphGatt.svcDefs.data());
+            rc2 = ble_gatts_add_svcs(m_periphGatt->svcDefs.data());
         if (rc2 == 0)
             rc2 = ble_gatts_start();
         if (rc2 != 0) {
             printf("BLE: GATT service start failed, rc=%d\n", rc2);
             return;
         }
-        printf("BLE: GATT services started OK, count=%d\n", (int)m_periphGatt.svcDefs.size());
+        printf("BLE: GATT services started OK, count=%d\n", (int)m_periphGatt->svcDefs.size());
 
         m_periphCtrlPriv = d;
         m_advertState = State::Starting;
 
-        m_pendingAdvName = name;
-        m_pendingAdvUuids = uuids;
+        m_pendingAdvName = d->localName();
+        m_pendingAdvUuids.clear();
+        for (auto &svc : d->m_serviceList)
+            m_pendingAdvUuids.push_back(svc.uuid());
 
         // 若主机已同步（任务仍在运行，例如扫描期间叠加广播），直接开启广播；
         // 否则交由 onHostSync 在同步完成后开启。

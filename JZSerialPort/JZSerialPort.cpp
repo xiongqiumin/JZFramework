@@ -207,6 +207,24 @@ JZSerialPort::FlowControl JZSerialPort::flowControl() const
     return m_flowControl;
 }
 
+bool JZSerialPort::setDtr(bool level)
+{
+    if (!m_open)
+        return false;
+    if (JZSerialPortDriver *drv = JZSerialPortDriver::instance())
+        return drv->setDtr(this, level);
+    return false;
+}
+
+bool JZSerialPort::setRts(bool level)
+{
+    if (!m_open)
+        return false;
+    if (JZSerialPortDriver *drv = JZSerialPortDriver::instance())
+        return drv->setRts(this, level);
+    return false;
+}
+
 void JZSerialPort::onDataReceived(const JZByteArray &data)
 {
     if (data.size() <= 0)

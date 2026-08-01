@@ -9,6 +9,7 @@
 #include <vector>
 
 class JZBleDriver;
+class JZBleDriverEsp32;
 
 class JZBleServiceData
 {
@@ -68,6 +69,7 @@ jz_signals:
 
 protected:
     friend class JZBleDriver;
+    friend class JZBleDriverEsp32;
 
     JZBleDriver *getDriver();
 

@@ -31,6 +31,8 @@ public:
     bool setParity(JZSerialPort *port, JZSerialPort::Parity parity) override;
     bool setStopBits(JZSerialPort *port, JZSerialPort::StopBits stopBits) override;
     bool setFlowControl(JZSerialPort *port, JZSerialPort::FlowControl flowControl) override;
+    bool setDtr(JZSerialPort *port, bool level) override;
+    bool setRts(JZSerialPort *port, bool level) override;
 
 private:
     struct PortState

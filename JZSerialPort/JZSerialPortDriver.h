@@ -36,6 +36,10 @@ public:
     virtual bool setStopBits(JZSerialPort *port, JZSerialPort::StopBits stopBits) = 0;
     virtual bool setFlowControl(JZSerialPort *port, JZSerialPort::FlowControl flowControl) = 0;
 
+    // 硬件控制信号（DTR / RTS）。用于触发目标芯片复位/烧录模式。
+    virtual bool setDtr(JZSerialPort *port, bool level) = 0;
+    virtual bool setRts(JZSerialPort *port, bool level) = 0;
+
 protected:
     JZ_DISABLE_COPY(JZSerialPortDriver)
 

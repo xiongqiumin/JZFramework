@@ -208,7 +208,7 @@ function(jz_add_resources TARGET_NAME)
 
         add_custom_command(
             OUTPUT "${OUT_CPP}" "${OUT_H}"
-            COMMAND python3 "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
+            COMMAND ${CMAKE_COMMAND} -E env python "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
             DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" ${QRC_RESOURCES}
             DEPFILE "${DEPFILE}"
             COMMENT "Generating resources: ${QRC_FILE} -> ${OUT_CPP}"
@@ -254,7 +254,7 @@ function(jz_add_proto_json TARGET_NAME)
 
         add_custom_command(
             OUTPUT "${OUT_CPP}" "${OUT_H}"
-            COMMAND python3 "${JZ_PROTO_PY}" "${PROTO_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
+            COMMAND ${CMAKE_COMMAND} -E env python "${JZ_PROTO_PY}" "${PROTO_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
             DEPENDS "${PROTO_ABS}" "${JZ_PROTO_PY}"
             DEPFILE "${DEPFILE}"
             COMMENT "Generating proto json: ${PROTO_FILE} -> ${OUT_CPP}"

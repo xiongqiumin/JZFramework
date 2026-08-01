@@ -95,6 +95,10 @@ public:
     bool setFlowControl(FlowControl flowControl);
     FlowControl flowControl() const;
 
+    // 硬件控制信号
+    bool setDtr(bool level);
+    bool setRts(bool level);
+
     // 由底层驱动异步调用：把收到的数据放入接收缓冲并发出 sigReadyRead
     void onDataReceived(const JZByteArray &data);
 

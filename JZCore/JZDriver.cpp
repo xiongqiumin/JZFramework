@@ -21,6 +21,14 @@
 #include "JZOTADriver.h"
 #endif
 
+#ifdef HAS_JZAudio
+#include "JZAudio/JZAudioDriver.h"
+#endif
+
+#ifdef HAS_JZSerialPort
+#include "JZSerialPortDriver.h"
+#endif
+
 #ifdef ESP_PLATFORM
 
 #include "JZPlatformWrapperEsp32.h"
@@ -45,9 +53,8 @@
 #include "JZOTADriverEsp32.h"
 #endif
 
-#else
+#elif defined(HAS_JZSimulator)
 
-#ifdef HAS_JZSimulator
 #ifdef HAS_JZBle
 #include "JZBleDriverSimulator.h"
 #endif
@@ -67,7 +74,8 @@
 #ifdef HAS_JZOTA
 #include "JZOTADriverSimulator.h"
 #endif
-#endif // HAS_JZSimulator
+
+#endif
 
 #ifdef HAS_JZSerialPort
 #if defined(_WIN32)
@@ -78,7 +86,6 @@
 #endif // HAS_JZSerialPort
 
 #ifdef HAS_JZAudio
-#include "JZAudio/JZAudioDriver.h"
 #if defined(_WIN32)
 #include "JZAudio/detail/windows/JZAudioDriverWindows.h"
 #elif defined(__linux__)

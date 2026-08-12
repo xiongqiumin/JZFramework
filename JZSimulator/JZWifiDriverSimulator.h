@@ -6,7 +6,7 @@
 #include "JZWifiAp.h"
 #include "JZWifiScanner.h"
 #include "JZSimPack.h"
-#include "JZNetClient.h"
+#include "JZSimulatorClient.h"
 #include "JZObjectPointer.h"
 #include <map>
 #include <string>
@@ -28,7 +28,13 @@ public:
     JZWifiDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZWifiDriverSimulator() override;
 
-    bool isWifiAvailable() override;
+    // 取当前 WiFi 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
+    static JZWifiDriverSimulator *simInstance();
+
+    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(WiFi 段)网络包
+    void onRecv(JZSimPack *pack);
+
+    bool isWifiAvailable();
 
     // === Station (连接) ===
     void stationConnect(JZWifiStation *w, const JZWifiConfig &cfg) override;
@@ -51,14 +57,13 @@ public:
     bool isScanning(JZWifiScanner *s) override;
 
 private:
-    void onPacket(JZNetPackPtr pack);                 // 来自模拟器的事件
     void sendApCmd(const JZSimPack &pack); // 上行: Driver->模拟器 (ap_start/ap_stop)
 
     // Station 连接只接受这组凭证
     static constexpr const char *kApSsid = "jz_simulator_ap";
     static constexpr const char *kApPassword = "123456";
 
-    JZNetClient   *m_client = nullptr;
+    JZSimulatorClient *m_sim = nullptr;
     JZObjectPointer m_apWifi;        // 当前 AP 对象(用于回传站点事件)
     JZObjectPointer m_staWifi;       // 当前 Station 对象
     std::map<std::string, std::string> m_apStations; // 当前连接到本 AP 的站点: mac -> ip

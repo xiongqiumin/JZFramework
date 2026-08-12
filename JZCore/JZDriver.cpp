@@ -45,46 +45,6 @@
 #include "JZOTADriverEsp32.h"
 #endif
 
-#ifdef HAS_JZNet
-#include "JZNet/JZNetPacket.h"
-#endif
-
-// ==================== init ====================
-
-void JZDriver::init()
-{
-    JZPlatform::setInstance(new JZPlatformWrapperEsp32());
-
-#ifdef HAS_JZBle
-    JZBleDriver::setInstance(new JZBleDriverEsp32());    
-#endif
-
-#ifdef HAS_JZWifi
-    JZWifiDriver::setInstance(new JZWifiDriverEsp32());
-#endif
-
-#ifdef HAS_JZGpio
-    JZGpioDriver::addInstance(new JZGpioDriverEsp32());
-#endif
-
-#ifdef HAS_JZSensor
-    JZSensorDriver::addInstance(new JZSensorDriverEsp32());
-#endif
-
-#ifdef HAS_JZSerialPort
-    JZSerialPortDriver::setInstance(new JZSerialDriverEsp32());
-#endif
-
-#ifdef HAS_JZOTA
-    JZOTADriver::setInstance(new JZOTADriverEsp32());
-#endif
-
-#ifdef HAS_JZNet
-    JZNetPackInit();
-#endif
-}
-
-
 #else
 
 #ifdef HAS_JZSimulator
@@ -94,6 +54,18 @@ void JZDriver::init()
 
 #ifdef HAS_JZGpio
 #include "JZGpioDriverSimulator.h"
+#endif
+
+#ifdef HAS_JZWifi
+#include "JZWifiDriverSimulator.h"
+#endif
+
+#ifdef HAS_JZSensor
+#include "JZSensorDriverSimulator.h"
+#endif
+
+#ifdef HAS_JZOTA
+#include "JZOTADriverSimulator.h"
 #endif
 #endif // HAS_JZSimulator
 
@@ -114,23 +86,148 @@ void JZDriver::init()
 #endif
 #endif // HAS_JZAudio
 
+#endif
+
 #ifdef HAS_JZNet
 #include "JZNet/JZNetPacket.h"
 #endif
 
 
+// ==================== 模块初始化 / 反初始化 ====================
+// 平台相关的宏判断收敛在各模块内部，JZDriver::init/deinit 不再包含任何宏。
 
-void JZDriver::init()
+static void jzDriverInitPlatform()
 {
+#ifdef ESP_PLATFORM
+    JZPlatform::setInstance(new JZPlatformWrapperEsp32());
+#endif
+}
 
+static void jzDriverDeinitPlatform()
+{
+    JZPlatform::setInstance(nullptr);
+}
+
+static void jzDriverInitBle()
+{
+#ifdef HAS_JZBle
+#ifdef ESP_PLATFORM
+    JZBleDriver::setInstance(new JZBleDriverEsp32());
+#elif defined(HAS_JZSimulator)
+    JZBleDriver::setInstance(new JZBleDriverSimulator());
+#endif
+#endif
+}
+
+static void jzDriverDeinitBle()
+{
+#ifdef HAS_JZBle
+    JZBleDriver::setInstance(nullptr);
+#endif
+}
+
+static void jzDriverInitWifi()
+{
+#ifdef HAS_JZWifi
+#ifdef ESP_PLATFORM
+    JZWifiDriver::setInstance(new JZWifiDriverEsp32());
+#elif defined(HAS_JZSimulator)
+    JZWifiDriver::setInstance(new JZWifiDriverSimulator());
+#endif
+#endif
+}
+
+static void jzDriverDeinitWifi()
+{
+#ifdef HAS_JZWifi
+    JZWifiDriver::setInstance(nullptr);
+#endif
+}
+
+static void jzDriverInitGpio()
+{
+#ifdef HAS_JZGpio
+#ifdef ESP_PLATFORM
+    JZGpioDriver::addInstance(new JZGpioDriverEsp32());
+#elif defined(HAS_JZSimulator)
+    JZGpioDriver::addInstance(new JZGpioDriverSimulator());
+#endif
+#endif
+}
+
+static void jzDriverDeinitGpio()
+{
+#ifdef HAS_JZGpio
+    JZGpioDriver::clearInstances();
+#endif
+}
+
+static void jzDriverInitSensor()
+{
+#ifdef HAS_JZSensor
+#ifdef ESP_PLATFORM
+    JZSensorDriver::addInstance(new JZSensorDriverEsp32());
+#elif defined(HAS_JZSimulator)
+    JZSensorDriver::addInstance(new JZSensorDriverSimulator());
+#endif
+#endif
+}
+
+static void jzDriverDeinitSensor()
+{
+#ifdef HAS_JZSensor
+    JZSensorDriver::clearInstances();
+#endif
+}
+
+static void jzDriverInitSerialPort()
+{
 #ifdef HAS_JZSerialPort
-#if defined(_WIN32)
+#ifdef ESP_PLATFORM
+    JZSerialPortDriver::setInstance(new JZSerialDriverEsp32());
+#elif defined(_WIN32)
     JZSerialPortDriver::setInstance(new JZSerialDriverWindows());
 #elif defined(__linux__)
     JZSerialPortDriver::setInstance(new JZSerialDriverLinux());
 #endif
 #endif
+}
 
+static void jzDriverDeinitSerialPort()
+{
+#ifdef HAS_JZSerialPort
+    // JZSerialPortDriver::setInstance 仅保存指针，这里负责释放已创建的驱动实例
+    JZSerialPortDriver::setInstance(nullptr);
+#endif
+}
+
+static void jzDriverInitOta()
+{
+#ifdef HAS_JZOTA
+#ifdef ESP_PLATFORM
+    JZOTADriver::setInstance(new JZOTADriverEsp32());
+#elif defined(HAS_JZSimulator)
+    JZOTADriver::setInstance(new JZOTADriverSimulator());
+#endif
+#endif
+}
+
+static void jzDriverDeinitOta()
+{
+#ifdef HAS_JZOTA
+    JZOTADriver::setInstance(nullptr);
+#endif
+}
+
+static void jzDriverInitNet()
+{
+#ifdef HAS_JZNet
+    JZNetPackInit();
+#endif
+}
+
+static void jzDriverInitAudio()
+{
 #ifdef HAS_JZAudio
 #if defined(_WIN32)
     JZAudioDriver::setInstance(new JZAudioDriverWindows());
@@ -138,42 +235,43 @@ void JZDriver::init()
     JZAudioDriver::setInstance(new JZAudioDriverLinux());
 #endif
 #endif
+}
 
-#ifdef HAS_JZNet
-    JZNetPackInit();
+static void jzDriverDeinitAudio()
+{
+#ifdef HAS_JZAudio
+    JZAudioDriver::setInstance(nullptr);
 #endif
 }
 
-#endif
 
-// ==================== deinit ====================
+// ==================== init / deinit ====================
+
+void JZDriver::init()
+{
+    jzDriverInitPlatform();
+
+    jzDriverInitBle();
+    jzDriverInitWifi();
+    jzDriverInitGpio();
+    jzDriverInitSensor();
+    jzDriverInitSerialPort();
+    jzDriverInitOta();
+
+    jzDriverInitNet();
+    jzDriverInitAudio();
+}
 
 void JZDriver::deinit()
 {
-#ifdef HAS_JZBle
-    JZBleDriver::setInstance(nullptr);
-#endif
+    jzDriverDeinitBle();
+    jzDriverDeinitWifi();
+    jzDriverDeinitGpio();
+    jzDriverDeinitSensor();
+    jzDriverDeinitSerialPort();
+    jzDriverDeinitOta();
 
-#ifdef HAS_JZWifi
-    JZWifiDriver::setInstance(nullptr);
-#endif
+    jzDriverDeinitAudio();
 
-#ifdef HAS_JZGpio
-    JZGpioDriver::clearInstances();
-#endif
-
-#ifdef HAS_JZSensor
-    JZSensorDriver::clearInstances();
-#endif
-
-#ifdef HAS_JZSerialPort
-    // JZSerialPortDriver::setInstance 仅保存指针，这里负责释放已创建的驱动实例
-    JZSerialPortDriver::setInstance(nullptr);
-#endif
-
-#ifdef HAS_JZOTA
-    JZOTADriver::setInstance(nullptr);
-#endif
-
-    JZPlatform::setInstance(nullptr);
+    jzDriverDeinitPlatform();
 }

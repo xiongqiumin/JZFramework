@@ -16,7 +16,7 @@ class JZBleServiceData
 public:
     struct CharData 
     {
-        const JZBluetoothUuid &charUuid;
+        JZBluetoothUuid charUuid;
         int properties = 0;
         JZByteArray value;
     };
@@ -50,6 +50,9 @@ public:
 
     std::string localName();
     void setLocalName(std::string m_localName);
+
+    // 返回已添加的服务列表（驱动侧据此构建 GATT / 广播数据）
+    const std::vector<JZBleServiceData> &serviceList() const { return m_serviceList; }
 
     // 从机专属接口
     void addService(const JZBleServiceData &serviceUuid);

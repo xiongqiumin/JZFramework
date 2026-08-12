@@ -117,7 +117,11 @@ const JZBluetoothUuid &JZBleServiceData::uuid() const { return m_uuid; }
 
 void JZBleServiceData::addCharacteristic(const JZBluetoothUuid &charUuid, int properties, const JZByteArray &initialValue)
 {
-    m_charList.push_back({charUuid, properties, initialValue});
+    CharData cd;
+    cd.charUuid = charUuid;
+    cd.properties = properties;
+    cd.value = initialValue;
+    m_charList.push_back(cd);
 }
 
 const std::vector<JZBleServiceData::CharData> &JZBleServiceData::characteristic() const { return m_charList; }

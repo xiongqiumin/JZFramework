@@ -535,7 +535,17 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if (info.type == JZSocketInfo::UdpSocket)
             conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
         else if (info.type == JZSocketInfo::UdpListen)
+        {
             conn = mg_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+#if JZ_OS == JZ_OS_WINDOWS
+            BOOL bBroadcast = TRUE;
+            setsockopt((SOCKET)conn->fd, SOL_SOCKET, SO_BROADCAST, (char*)&bBroadcast, sizeof(bBroadcast));
+#elif JZ_OS == JZ_OS_LINUX
+            int bBroadcast = 1;
+            int optLen = sizeof(int);
+            setsockopt(conn->fd, SOL_SOCKET, SO_BROADCAST, (const void*)&bBroadcast, optLen);
+#endif            
+        }
         else if (info.type == JZSocketInfo::HttpClient)
         {
             conn = mg_http_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);

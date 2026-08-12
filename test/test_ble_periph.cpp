@@ -16,7 +16,6 @@
 #include "JZBleDriverSimulator.h"
 #include "JZBLEPeripheral.h"
 #include "JZBluetoothUuid.h"
-#include "JZBleSimPack.h"
 #include "JZSignal.h"
 #include "JZDebug.h"
 #include "JZTimer.h"

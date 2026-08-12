@@ -1,0 +1,46 @@
+# JZFramework ESP-IDF 组件清单
+# 由 tools/release/esp32.py 自动生成, 请勿手工修改
+# 该文件供 IDF 组件管理器使用, 描述组件名/版本/依赖。
+
+name: jzframework
+version: "1.0.0"
+description: JZFramework shared headers bundle for ESP32
+maintainer: JZFramework <maintainer@example.com>
+url: https://example.com/jzframework
+tags:
+  - framework
+  - esp32
+dependencies:
+  JZCore:
+    version: "*"
+    require: public
+  JZAgent:
+    version: "*"
+    require: public
+  JZAudio:
+    version: "*"
+    require: public
+  JZBle:
+    version: "*"
+    require: public
+  JZCoroutine:
+    version: "*"
+    require: public
+  JZFrp:
+    version: "*"
+    require: public
+  JZGpio:
+    version: "*"
+    require: public
+  JZHttpServer:
+    version: "*"
+    require: public
+  JZModbus:
+    version: "*"
+    require: public
+  JZSerialPort:
+    version: "*"
+    require: public
+  JZWifi:
+    version: "*"
+    require: public

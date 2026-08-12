@@ -2,7 +2,7 @@
 #define JZ_GPIO_DRIVER_SIMULATOR_H_
 
 #include "JZGpioDriver.h"
-#include "JZNetClient.h"
+#include "JZSimulatorClient.h"
 #include "JZSimPack.h"
 #include "JZTimer.h"
 #include <map>
@@ -20,6 +20,12 @@ class JZGpioDriverSimulator : public JZGpioDriver
 public:
     JZGpioDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZGpioDriverSimulator() override;
+
+    // 取当前 GPIO 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
+    static JZGpioDriverSimulator *simInstance();
+
+    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(GPIO 段)网络包
+    void onRecv(JZSimPack *pack);
 
     bool supportsPin(int pin) override;
     std::vector<JZGpioInfo> availableGpios() override;
@@ -45,7 +51,6 @@ public:
     bool setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge) override;
 
 private:
-    void onPacket(JZNetPackPtr pack);
     void sendSim(JZSimCmd cmd, const JZVariantMap &m);
 
     // 波形本地生成
@@ -60,7 +65,7 @@ private:
     void onWaveTimeout();          // JZTimer 超时: 推进所有活动波形并推送给用户
     void updateWaveTimer();        // 依据活动波形重算定时器周期(每个周期采样 ~32 点)
 
-    JZNetClient *m_client = nullptr;
+    JZSimulatorClient *m_sim = nullptr;
     JZTimer      *m_waveTimer = nullptr;  // 波形生成定时器
     int          m_waveTimerMs = 5;      // 当前定时器周期(ms)
 

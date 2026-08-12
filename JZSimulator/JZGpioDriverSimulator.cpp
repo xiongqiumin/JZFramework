@@ -32,13 +32,9 @@ std::vector<JZGpioInfo> JZGpioDriverSimulator::availableGpios()
 
 JZGpioDriverSimulator::JZGpioDriverSimulator(const std::string &ip, int port)
 {
-    JZSimPack::ensureRegistered();
-
-    m_client = new JZNetClient();
-    connect(&m_client->sigPacketReceive, [this](JZNetPackPtr p) { onPacket(p); });
-    m_client->connectToHost(ip, port);
-    if (jzApp)
-        m_client->waitForConnected(500);
+    (void)ip;
+    (void)port;
+    m_sim = JZSimulatorClient::instance();
 }
 
 JZGpioDriverSimulator::~JZGpioDriverSimulator()
@@ -49,21 +45,16 @@ JZGpioDriverSimulator::~JZGpioDriverSimulator()
         delete m_waveTimer;
         m_waveTimer = nullptr;
     }
-    if (m_client)
-    {
-        delete m_client;
-        m_client = nullptr;
-    }
 }
 
 void JZGpioDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
-    if (!m_client || !m_client->isConnect())
-        return;
-    JZSimPack pack;
-    pack.cmd = cmd;
-    pack.data = m;
-    m_client->sendPacket(&pack);
+    m_sim->sendSim(cmd, m);
+}
+
+JZGpioDriverSimulator *JZGpioDriverSimulator::simInstance()
+{
+    return dynamic_cast<JZGpioDriverSimulator *>(JZGpioDriver::s_instances[0]);
 }
 
 // ==================== 打开 / 关闭 ====================
@@ -279,12 +270,8 @@ bool JZGpioDriverSimulator::setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge)
 }
 
 // ==================== 报文分发 ====================
-void JZGpioDriverSimulator::onPacket(JZNetPackPtr pack)
+void JZGpioDriverSimulator::onRecv(JZSimPack *sp)
 {
-    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
-    if (!sp)
-        return;
-
     const JZVariantMap &map = sp->data;
     JZSimCmd cmd = sp->cmd;
 

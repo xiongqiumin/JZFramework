@@ -66,6 +66,12 @@ enum JZSimCmd {
     SIM_WIFI_AP_START = 200,
     SIM_WIFI_AP_STOP,
     SIM_WIFI_STATION_INFO,
+
+    // ---- OTA: Driver -> Device / Device -> Driver (编号从 300 起) ----
+    SIM_OTA_CMD_BASE = 300,
+
+    // ---- Sensor: Driver -> Device / Device -> Driver (编号从 400 起) ----
+    SIM_SENSOR_CMD_BASE = 400,
 };
 
 // 一个已接入本 AP 的站点(station)完整信息。
@@ -83,6 +89,8 @@ struct JZWifiStationInfo {
 class JZSimPack : public JZNetPack
 {
 public:
+    static constexpr int PackType = NetPack_user + 1;
+
     JZSimPack();
     int packetType() const override;
     void saveToStream(JZDataStream &s) const override;

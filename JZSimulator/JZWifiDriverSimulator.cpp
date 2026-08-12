@@ -22,22 +22,13 @@ std::string localIp()
 // ==================== 构造 / 析构 ====================
 JZWifiDriverSimulator::JZWifiDriverSimulator(const std::string &ip, int port)
 {
-    JZSimPack::ensureRegistered();
-
-    m_client = new JZNetClient();
-    connect(&m_client->sigPacketReceive, [this](JZNetPackPtr p) { onPacket(p); });
-    m_client->connectToHost(ip, port);
-    if (jzApp)
-        m_client->waitForConnected(500);
+    (void)ip;
+    (void)port;
+    m_sim = JZSimulatorClient::instance();
 }
 
 JZWifiDriverSimulator::~JZWifiDriverSimulator()
 {
-    if (m_client)
-    {
-        delete m_client;
-        m_client = nullptr;
-    }
 }
 
 bool JZWifiDriverSimulator::isWifiAvailable()
@@ -47,10 +38,14 @@ bool JZWifiDriverSimulator::isWifiAvailable()
 
 void JZWifiDriverSimulator::sendApCmd(const JZSimPack &pack)
 {
-    if (!m_client || !m_client->isConnect())
-        return;
-    m_client->sendPacket(&pack);
+    m_sim->sendSim(pack.cmd, pack.data);
 }
+
+JZWifiDriverSimulator *JZWifiDriverSimulator::simInstance()
+{
+    return dynamic_cast<JZWifiDriverSimulator *>(JZWifiDriver::instance());
+}
+
 
 // ==================== Station (连接) ====================
 // Station 连接为本地行为: 仅做凭证校验, 成功即视为已连接(不发网络包)。
@@ -184,13 +179,8 @@ bool JZWifiDriverSimulator::isScanning(JZWifiScanner *s)
 }
 
 // ==================== 报文分发 (下行: 模拟器 -> Driver) ====================
-void JZWifiDriverSimulator::onPacket(JZNetPackPtr pack)
+void JZWifiDriverSimulator::onRecv(JZSimPack *sp)
 {
-    // 下行包: 模拟器回传"当前连接到本 AP 的所有站点"完整信息
-    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
-    if (!sp)
-        return;
-
     if (!m_apWifi)
         return;
 

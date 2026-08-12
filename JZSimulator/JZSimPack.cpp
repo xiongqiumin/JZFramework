@@ -128,7 +128,7 @@ void JZSimPack::ensureRegistered()
 {
     if (s_simRegistered)
         return;
-    JZNetPackManager::instance()->registPack<JZSimPack>(NetPack_user + 1);
+    JZNetPackManager::instance()->registPack<JZSimPack>(JZSimPack::PackType);
     s_simRegistered = true;
 }
 

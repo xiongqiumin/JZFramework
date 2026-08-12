@@ -3,7 +3,7 @@
 
 #include "JZBleDriver.h"
 #include "JZByteArray.h"
-#include "JZNetClient.h"
+#include "JZSimulatorClient.h"
 #include "JZSimPack.h"
 #include "JZMutex.h"
 #include <map>
@@ -21,6 +21,11 @@ public:
     JZBleDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZBleDriverSimulator() override;
 
+    // 取当前 BLE 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
+    static JZBleDriverSimulator *simInstance();
+
+    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(BLE 段)网络包
+    void onRecv(JZSimPack *pack);
 
 
     // === Central ===
@@ -55,21 +60,22 @@ public:
                          const JZByteArray& value, JZBLEService *d) override;
 
     // === Peripheral ===
-    void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties) override;
-    void startAdvertising(const std::string& name, const std::vector<JZBluetoothUuid>& serviceUuids,
-                          JZBLEPeripheral *d) override;
-    void stopAdvertising() override;
+    // 注：以下方法需与基类 JZBleDriver 的虚函数签名严格一致才能 override。
+    // addPeripheralCharacteristic / peripheralSendNotify(value) / peripheralSendIndicate(value)
+    // 是 Simulator 自有的辅助方法，不属于基类虚接口，故不带 override。
+    void addPeripheralCharacteristic(const std::string& svcUuid, const std::string& charUuid, int properties);
+    void startAdvertising(JZBLEPeripheral *d) override;
+    void stopAdvertising(JZBLEPeripheral *d) override;
     void peripheralSendNotify(const JZBluetoothUuid& charUuid, const JZByteArray& value);
     void peripheralSendIndicate(const JZBluetoothUuid& charUuid, const JZByteArray& value);
     void peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect, const JZBluetoothUuid& charUuid, const JZByteArray& value) override;
     void peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect) override;
 
 private:
-    void onPacket(JZNetPackPtr pack);
     void sendSim(JZSimCmd cmd, const JZVariantMap &m);
     int  getConnHandle(const std::string &a);
 
-    JZNetClient *m_client = nullptr;
+    JZSimulatorClient *m_sim = nullptr;
     bool m_scanning = false;
     JZObjectPointer m_scanAgent;
 

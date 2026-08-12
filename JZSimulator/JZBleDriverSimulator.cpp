@@ -4,6 +4,7 @@
 #include "JZBLEController.h"
 #include "JZBLEService.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
+#include "JZBLEDeviceInfo.h"
 #include "JZSignal.h"
 #include "JZApplication.h"
 #include "JZStd.h"
@@ -18,25 +19,16 @@ static bool contains(const std::vector<std::string> &v, const std::string &u)
 
 JZBleDriverSimulator::JZBleDriverSimulator(const std::string &ip, int port)
 {
-    JZSimPack::ensureRegistered();
-
-    m_client = new JZNetClient();
-    connect(&m_client->sigPacketReceive, [this](JZNetPackPtr p) { onPacket(p); });
-    m_client->connectToHost(ip, port);
-    if (jzApp)
-        m_client->waitForConnected(500);
+    (void)ip;
+    (void)port;
+    m_sim = JZSimulatorClient::instance();
 }
 
 JZBleDriverSimulator::~JZBleDriverSimulator() {}
 
 void JZBleDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
-    if (!m_client || !m_client->isConnect())
-        return;
-    JZSimPack pack;
-    pack.cmd = cmd;
-    pack.data = m;
-    m_client->sendPacket(&pack);
+    m_sim->sendSim(cmd, m);
 }
 
 int JZBleDriverSimulator::getConnHandle(const std::string &a)
@@ -44,6 +36,12 @@ int JZBleDriverSimulator::getConnHandle(const std::string &a)
     auto it = m_connMap.find(a);
     return it != m_connMap.end() ? it->second : -1;
 }
+
+JZBleDriverSimulator *JZBleDriverSimulator::simInstance()
+{
+    return dynamic_cast<JZBleDriverSimulator *>(JZBleDriver::instance());
+}
+
 
 // ===================== Central: 扫描 =====================
 void JZBleDriverSimulator::startScan(JZBLEDeviceDiscoveryAgent *agent)
@@ -187,16 +185,21 @@ void JZBleDriverSimulator::writeDescriptor(const std::string &address, const std
 void JZBleDriverSimulator::addPeripheralCharacteristic(const std::string &svcUuid, const std::string &charUuid, int properties)
 {
     // m_periphChars 仅由应用线程访问（网络接收线程从不读取），无需加锁。
-    m_periphChars.push_back({svcUuid, charUuid, properties});
+    PeriphChar pc; pc.svc = svcUuid; pc.chr = charUuid; pc.props = properties;
+    m_periphChars.push_back(pc);
     JZVariantMap m; m["svc"] = JZVariant(svcUuid); m["chr"] = JZVariant(charUuid); m["props"] = JZVariant(properties);
     sendSim(SIM_CMD_ADD_PERIPH_CHR, m);
 }
-void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::vector<JZBluetoothUuid> &serviceUuids,
-                                            JZBLEPeripheral *d)
+void JZBleDriverSimulator::startAdvertising(JZBLEPeripheral *d)
 {
     { JZMutexLocker lk(&m_mutex); m_periphCtrl = d; }
+    // name / serviceUuids 从 JZBLEPeripheral 取得（与基类签名保持一致，不含这些参数）
+    std::string name = d ? d->localName() : std::string();
     std::vector<std::string> su;
-    for (auto &u : serviceUuids) su.push_back(u.toString());
+    if (d) {
+        for (auto &svc : d->serviceList())
+            su.push_back(svc.uuid().toString());
+    }
     JZVariantMap m; m["name"] = JZVariant(name); {
     JZVariantList _l; _l.reserve(su.size());
     for (auto &_e : su) _l.push_back(JZVariant(_e));
@@ -204,8 +207,9 @@ void JZBleDriverSimulator::startAdvertising(const std::string &name, const std::
 }
     sendSim(SIM_CMD_START_ADV, m);
 }
-void JZBleDriverSimulator::stopAdvertising()
+void JZBleDriverSimulator::stopAdvertising(JZBLEPeripheral *d)
 {
+    (void)d;
     { JZMutexLocker lk(&m_mutex); m_periphConnHandle = -1; m_periphCtrl = nullptr; }
     JZVariantMap m;
     sendSim(SIM_CMD_STOP_ADV, m);
@@ -231,18 +235,15 @@ void JZBleDriverSimulator::peripheralSendNotify(JZBLEPeripheral *d, JZBLEPeriphe
 
 void JZBleDriverSimulator::peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeripheralConnect *connect)
 {
-    (void)d; (void)connect;
-    stopAdvertising();
+    (void)connect;
+    stopAdvertising(d);
 }
 
 // ===================== 报文分发 =====================
-// onPacket 在网络接收线程中执行，与公有方法（应用线程）共享全部状态，
+// onRecv 在网络接收线程中执行，与公有方法（应用线程）共享全部状态，
 // 故每个 case 都先加锁取出所需数据/指针，再释放锁后调用上层回调，避免重入死锁。
-void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
+void JZBleDriverSimulator::onRecv(JZSimPack *sp)
 {
-    auto *sp = dynamic_cast<JZSimPack *>(pack.get());
-    if (!sp) return;
-
     const JZVariantMap &map = sp->data;
     JZSimCmd cmd = sp->cmd;
 
@@ -259,7 +260,7 @@ void JZBleDriverSimulator::onPacket(JZNetPackPtr pack)
                 for (auto &_e : _l) if (_e.typeId() == JZMetaType::String) su.push_back(_e.toString());
             }
         }
-        JZBluetoothDeviceInfo info;
+        JZBLEDeviceInfo info;
         info.setAddress(addr);
         info.setName(name);
         info.setRssi(rssi);

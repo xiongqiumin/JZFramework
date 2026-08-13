@@ -727,4 +727,16 @@ string wstr_to_str(const wstring &wstr)
     return string();
 }
 
+// 非 Windows 环境下，本地编码即 UTF-8，二者等价（直接透传）。
+// 框架在 Linux 下以 UTF-8 处理文件名/文本，故无需转换。
+string str_local_to_utf8(const string &str)
+{
+    return str;
+}
+
+string str_utf8_to_local(const string& utf8_str)
+{
+    return utf8_str;
+}
+
 #endif

@@ -204,7 +204,7 @@ bool JZWaveFile::writeHeader()
     hdr.data_size = (uint32_t)m_dataSize;
 
     // 跳转回文件头写入（写入模式）或仅在打开时写入（data_size=0）
-    m_file.seek(0);
+    m_file.seek(0, SEEK_SET);
     JZByteArray header(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
     int written = m_file.write(header);
     if (written != (int)sizeof(hdr)) {

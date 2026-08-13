@@ -681,9 +681,13 @@ void JZAgent::finalizeResponse()
     {
         if (!reply->content.empty())
             m_context.history.push_back(reply);
+
         m_state = Idle;   // 已产出最终回复且无需工具：本轮任务结束，进入空闲
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
-        llmLoop();
+        if(m_requests.empty())
+            sigFinished.emit();
+        else
+            llmLoop();
     }
 }
 

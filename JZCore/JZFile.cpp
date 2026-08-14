@@ -57,7 +57,11 @@ bool JZFile::open(std::string filepath, std::string mode)
     if (!filepath.empty() && filepath[0] == ':')
     {
         if (mode.find_first_of("aw") != std::string::npos)
+        {
+            jzWarning() << "JZFile::open failed: resource path " << filepath
+                        << " is read-only, mode \"" << mode << "\" not allowed";
             return false;
+        }
 
         m_res = JZResources::instance()->find(filepath);
         m_resOffset = 0;
@@ -94,15 +98,24 @@ int JZFile::size()
         return m_res->size;
 
     if (!m_fp)
+    {
+        jzWarning() << "JZFile::size failed: file not open";
         return 0;
+    }
 
 #ifdef JZ_OS_NORMAL
     long cur = ftell(m_fp);
     if (cur == -1)
+    {
+        jzWarning() << "JZFile::size failed: ftell error";
         return 0;
+    }
 
     if (fseek(m_fp, 0, SEEK_END) != 0)
+    {
+        jzWarning() << "JZFile::size failed: fseek error";
         return 0;
+    }
 
     long sz = ftell(m_fp);
     fseek(m_fp, cur, SEEK_SET);
@@ -110,8 +123,16 @@ int JZFile::size()
 #else
     auto *inst = JZPlatform::instance();
     long cur = inst->ftell(m_fp);
-    if (cur == -1) return 0;
-    if (inst->fseek(m_fp, 0, SEEK_END) != 0) return 0;
+    if (cur == -1)
+    {
+        jzWarning() << "JZFile::size failed: ftell error";
+        return 0;
+    }
+    if (inst->fseek(m_fp, 0, SEEK_END) != 0)
+    {
+        jzWarning() << "JZFile::size failed: fseek error";
+        return 0;
+    }
     long sz = inst->ftell(m_fp);
     inst->fseek(m_fp, cur, SEEK_SET);
     return (int)sz;
@@ -123,7 +144,10 @@ bool JZFile::atEnd() const
     if (m_res)
         return m_resOffset >= m_res->size;
     if (!m_fp)
+    {
+        jzWarning() << "JZFile::atEnd: file not open, treat as end";
         return true;
+    }
 #ifdef JZ_OS_NORMAL
     return feof(m_fp);
 #else
@@ -191,21 +215,16 @@ int JZFile::write(const JZByteArray &buffer)
 int JZFile::write(const char *buffer, int size)
 {
     if (m_res)
-        return 0; // 资源只读
+    {
+        jzWarning() << "JZFile::write failed: resource is read-only";
+        return 0;
+    }
 
 #ifdef JZ_OS_NORMAL
     int ret = (int)fwrite(buffer, 1, size, m_fp);
-    if (ret != size)
-    {
-        jzError() << "JZFile::write failed: requested " << size << " bytes, actual written " << ret;
-    }
     return ret;
 #else
     int ret = (int)JZPlatform::instance()->fwrite(buffer, size, m_fp);
-    if (ret != size)
-    {
-        jzError() << "JZFile::write failed: requested " << size << " bytes, actual written " << ret;
-    }
     return ret;
 #endif
 }

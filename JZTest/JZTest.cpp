@@ -8,15 +8,20 @@
 #include "JZApplication.h"
 #include "JZTimer.h"
 #include "JZEventLoop.h"
+#include "JZElapsedTimer.h"
 
 using namespace std;
 
 //JZTest
 void JZTest::exec(int ms)
 {
-    JZEventLoop loop;
-    JZTimer::singleShot(ms, [&loop] { loop.exit(0); });
-    loop.exec();
+    JZElapsedTimer t;
+    t.start();
+    while(t.elapsed() < ms)
+    {
+        jzApp->processEvents();
+        JZThread::msleep(10);
+    }
 }
 
 JZTest::JZTest() {}

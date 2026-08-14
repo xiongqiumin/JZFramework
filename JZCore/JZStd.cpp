@@ -717,14 +717,193 @@ string wstr_to_str(const wstring &wstr)
 }
 
 #else
-wstring str_to_wstr(const string& utf8)
-{    
-    return wstring();
+// 非 Windows 平台手写 UTF-8 <-> wstring 编解码，不依赖任何第三方库。
+// wchar_t 宽度随平台/编译器而定：
+//   - Linux / macOS（GCC、Clang）：wchar_t 为 32 位（UTF-32）
+//   - ESP32（esp-idf / GCC xtensa）、Windows：wchar_t 为 16 位（UTF-16）
+// 因此这里同时实现 UTF-32 与 UTF-16 两条路径，并在编译期按 sizeof(wchar_t) 分发。
+
+// ---- 公共：UTF-8 解码为码点（uint32_t） ----
+static bool jz_utf8_decode(const string& utf8, size_t& i, uint32_t& cp)
+{
+    const size_t n = utf8.size();
+    if (i >= n)
+        return false;
+
+    unsigned char c = static_cast<unsigned char>(utf8[i]);
+    int extra = 0;
+    cp = 0;
+
+    if (c < 0x80) {
+        cp = c;
+        extra = 0;
+    } else if ((c & 0xE0) == 0xC0) {
+        cp = c & 0x1F;
+        extra = 1;
+    } else if ((c & 0xF0) == 0xE0) {
+        cp = c & 0x0F;
+        extra = 2;
+    } else if ((c & 0xF8) == 0xF0) {
+        cp = c & 0x07;
+        extra = 3;
+    } else {
+        return false; // 非法起始字节
+    }
+
+    if (i + static_cast<size_t>(extra) >= n)
+        return false; // 字节不足
+
+    for (int k = 1; k <= extra; ++k) {
+        unsigned char cc = static_cast<unsigned char>(utf8[i + k]);
+        if ((cc & 0xC0) != 0x80)
+            return false; // 非法后续字节
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+
+    // 剔除去重编码（过长的 UTF-8 形式）及越界
+    if (cp > 0x10FFFF ||
+        (extra == 1 && cp < 0x80) ||
+        (extra == 2 && cp < 0x800) ||
+        (extra == 3 && cp < 0x10000)) {
+        return false;
+    }
+
+    i += static_cast<size_t>(extra) + 1;
+    return true;
 }
 
-string wstr_to_str(const wstring &wstr)
+// ---- 公共：码点（uint32_t）编码为 UTF-8 ----
+static void jz_utf8_encode(string& out, uint32_t cp)
 {
-    return string();
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+#if defined(__SIZEOF_WCHAR_T__) && (__SIZEOF_WCHAR_T__ == 4) || (defined(SIZEOF_WCHAR_T) && SIZEOF_WCHAR_T == 4) || (defined(_WCHAR_T_SIZE) && _WCHAR_T_SIZE == 4)
+
+// ===== wchar_t 为 32 位（UTF-32）：Linux / macOS =====
+
+static wstring jz_utf8_to_wide(const string& utf8)
+{
+    wstring out;
+    out.reserve(utf8.size());
+
+    size_t i = 0;
+    uint32_t cp = 0;
+    while (i < utf8.size()) {
+        if (jz_utf8_decode(utf8, i, cp)) {
+            out.push_back(static_cast<wchar_t>(cp));
+        } else {
+            // 跳过非法字节，输出替换字符
+            ++i;
+            out.push_back(static_cast<wchar_t>(0xFFFD));
+        }
+    }
+    return out;
+}
+
+static string jz_wide_to_utf8(const wstring& wstr)
+{
+    string out;
+    out.reserve(wstr.size());
+    for (wchar_t wc : wstr) {
+        uint32_t cp = static_cast<uint32_t>(wc);
+        // UTF-32 下代理项区间非法
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            jz_utf8_encode(out, 0xFFFD);
+            continue;
+        }
+        jz_utf8_encode(out, cp);
+    }
+    return out;
+}
+
+#else
+
+// ===== wchar_t 为 16 位（UTF-16）：ESP32 / Windows（非 Windows 分支） =====
+
+static wstring jz_utf8_to_wide(const string& utf8)
+{
+    wstring out;
+    out.reserve(utf8.size());
+
+    size_t i = 0;
+    uint32_t cp = 0;
+    while (i < utf8.size()) {
+        if (!jz_utf8_decode(utf8, i, cp)) {
+            ++i;
+            out.push_back(static_cast<wchar_t>(0xFFFD));
+            continue;
+        }
+        if (cp <= 0xFFFF) {
+            out.push_back(static_cast<wchar_t>(cp));
+        } else {
+            // 辅助平面：编码为代理项对（surrogate pair）
+            cp -= 0x10000;
+            out.push_back(static_cast<wchar_t>(0xD800 | (cp >> 10)));
+            out.push_back(static_cast<wchar_t>(0xDC00 | (cp & 0x3FF)));
+        }
+    }
+    return out;
+}
+
+static string jz_wide_to_utf8(const wstring& wstr)
+{
+    string out;
+    out.reserve(wstr.size());
+
+    size_t i = 0;
+    const size_t n = wstr.size();
+    while (i < n) {
+        uint32_t c = static_cast<uint16_t>(wstr[i]);
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            uint32_t lo = static_cast<uint16_t>(wstr[i + 1]);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                uint32_t cp = 0x10000 + (((c - 0xD800) << 10) | (lo - 0xDC00));
+                jz_utf8_encode(out, cp);
+                i += 2;
+                continue;
+            }
+        }
+        if (c >= 0xD800 && c <= 0xDFFF) {
+            // 孤立代理项，按替换字符处理
+            jz_utf8_encode(out, 0xFFFD);
+            ++i;
+            continue;
+        }
+        jz_utf8_encode(out, c);
+        ++i;
+    }
+    return out;
+}
+
+#endif
+
+wstring str_to_wstr(const string& utf8)
+{
+    if (utf8.empty())
+        return L"";
+    return jz_utf8_to_wide(utf8);
+}
+
+string wstr_to_str(const wstring& wstr)
+{
+    if (wstr.empty())
+        return "";
+    return jz_wide_to_utf8(wstr);
 }
 
 // 非 Windows 环境下，本地编码即 UTF-8，二者等价（直接透传）。

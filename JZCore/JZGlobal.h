@@ -95,5 +95,6 @@ enum SplitBehavior
 }
 
 void jzassert_log(const char *file, int line, const char *message);
+const char *jzVersion();
 
 #endif

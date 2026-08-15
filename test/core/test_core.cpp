@@ -5,6 +5,8 @@
 #include "JZByteArray.h"
 #include "JZElapsedTimer.h"
 #include "JZApplication.h"
+#include "JZTimer.h"
+#include "JZObject.h"
 #include "JZThread.h"
 #include "test_thread.h"
 #include "test_mutexpointer.h"
@@ -178,13 +180,13 @@ bool jzstd_str_convert_numeric_base()
 
 bool jzstd_str_encoding_convert()
 {
-    std::string utf8 = str_local_to_utf8("test");
+    std::string utf8 = str_local_to_utf8("test一下中文test");
     std::string local = str_utf8_to_local(utf8);
-    JZ_TEST_EQ(local, "test");
+    JZ_TEST_EQ(local, "test一下中文test");
 
-    std::wstring wstr = str_to_wstr("test");
+    std::wstring wstr = str_to_wstr("test一下中文test");
     std::string str = wstr_to_str(wstr);
-    JZ_TEST_EQ(str, "test");
+    JZ_TEST_EQ(str, "test一下中文test");
     return true;
 }
 
@@ -649,6 +651,74 @@ static bool jzdatastream_endian_vector_bool()
     return true;
 }
 
+bool jztimer_singleShot()
+{
+    jzInfo() << "jztimer_singleShot begin";
+
+    JZObject root;
+    JZTimer timer(&root);
+    timer.setSingleShot(true);
+
+    int fired = 0;
+    connect(&timer.sigTimeout, [&fired]() { fired += 1; });
+
+    timer.start(100);
+
+    // 等待足够时间让单次定时器触发一次
+    JZTest::exec(500);
+
+    jzInfo() << "jztimer_singleShot fired = " << fired;
+    JZ_TEST_EQ(fired, 1);
+    return true;
+}
+
+bool jztimer_repeat()
+{
+    jzInfo() << "jztimer_repeat begin";
+
+    JZObject root;
+    JZTimer timer(&root);
+    timer.setSingleShot(false);
+
+    int fired = 0;
+    connect(&timer.sigTimeout, [&fired]() { fired += 1; });
+
+    timer.start(100);
+
+    // 等待约 1 秒，预期触发多次
+    JZTest::exec(1000);
+    timer.stop();
+
+    jzInfo() << "jztimer_repeat fired = " << fired;
+    // 误差范围内：至少应触发 5 次（1s / 100ms）
+    JZ_TEST_TRUE(fired >= 5);
+    return true;
+}
+
+bool jztimer_stop()
+{
+    jzInfo() << "jztimer_stop begin";
+
+    JZObject root;
+    JZTimer timer(&root);
+
+    int fired = 0;
+    connect(&timer.sigTimeout, [&fired]() { fired += 1; });
+
+    timer.start(100);
+    JZTest::exec(200);
+    timer.stop();
+
+    int before = fired;
+    // 停止后等待，不应再触发
+    JZTest::exec(500);
+
+    jzInfo() << "jztimer_stop before = " << before
+             << ", after = " << fired;
+    JZ_TEST_EQ(fired, before);
+    return true;
+}
+
 void test_JZCore(JZTest *test)
 {
     auto stdSuite = std::make_shared<JZTestSuite>("JZStd");
@@ -709,6 +779,12 @@ void test_JZCore(JZTest *test)
     dataStreamSuite->addTestCase("endian_uint8_noswap", jzdatastream_endian_uint8_noswap);
     dataStreamSuite->addTestCase("endian_vector", jzdatastream_endian_vector);
     dataStreamSuite->addTestCase("endian_vector_bool", jzdatastream_endian_vector_bool);
+
+    auto timerSuite = std::make_shared<JZTestSuite>("JZTimer");
+    test->addSuite(timerSuite);
+    timerSuite->addTestCase("singleShot", jztimer_singleShot);
+    timerSuite->addTestCase("repeat", jztimer_repeat);
+    timerSuite->addTestCase("stop", jztimer_stop);
 }
 
 static void smoke_debug_optional_result()
@@ -741,6 +817,7 @@ int main(int argc,char *argv[])
 
     JZTest test;
     
+    jzDebug() << jzVersion();
     smoke_debug_optional_result();
     test_benchmark();
     test_JZCore(&test);

@@ -3,6 +3,16 @@
 # 防止文件被重复 include
 include_guard(GLOBAL)
 
+# ==================== Python 解释器 ====================
+# 部分代码生成脚本 (jz_resources.py / jz_proto_json.py) 依赖 Python。
+# 使用 CMake 标准 FindPython3 模块探测解释器 (兼容 python3 / python / py -3 launcher)。
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    set(JZ_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+else()
+    message(FATAL_ERROR "[JZFramework] Python3 interpreter not found; code generation steps requiring python will fail.")
+endif()
+
 # 创建全局的 JZFramework 库目标（静态库）
 add_library(JZFramework STATIC "")
 
@@ -30,6 +40,9 @@ set(MODULE_DEPENDS_JZOTA "JZCore;JZNet;JZJson")
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
 message(STATUS "JZFramework root directory: ${JZFRAMEWORK_ROOT_DIR}")
 target_include_directories(JZFramework PUBLIC "${JZFRAMEWORK_ROOT_DIR}")
+
+# ==================== 生成版本头文件 jz_version.h ====================
+include("${JZFRAMEWORK_ROOT_DIR}/cmake/jz_version.cmake")
 
 # 已添加模块的缓存列表（防止重复添加）
 set(JZFRAMEWORK_ADDED_MODULES "" CACHE INTERNAL "")
@@ -208,7 +221,7 @@ function(jz_add_resources TARGET_NAME)
 
         add_custom_command(
             OUTPUT "${OUT_CPP}" "${OUT_H}"
-            COMMAND ${CMAKE_COMMAND} -E env python "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
+            COMMAND ${CMAKE_COMMAND} -E env "${JZ_PYTHON_EXECUTABLE}" "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
             DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" ${QRC_RESOURCES}
             DEPFILE "${DEPFILE}"
             COMMENT "Generating resources: ${QRC_FILE} -> ${OUT_CPP}"
@@ -254,7 +267,7 @@ function(jz_add_proto_json TARGET_NAME)
 
         add_custom_command(
             OUTPUT "${OUT_CPP}" "${OUT_H}"
-            COMMAND ${CMAKE_COMMAND} -E env python "${JZ_PROTO_PY}" "${PROTO_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
+            COMMAND ${CMAKE_COMMAND} -E env "${JZ_PYTHON_EXECUTABLE}" "${JZ_PROTO_PY}" "${PROTO_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
             DEPENDS "${PROTO_ABS}" "${JZ_PROTO_PY}"
             DEPFILE "${DEPFILE}"
             COMMENT "Generating proto json: ${PROTO_FILE} -> ${OUT_CPP}"

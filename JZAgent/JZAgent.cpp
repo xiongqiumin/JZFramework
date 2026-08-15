@@ -293,7 +293,6 @@ void JZAgent::llmRequest()
     m_currentRound++;
     if (m_currentRound >= m_config.maxRounds)
     {
-        jzDebug() << "Max dialogue rounds reached:";
         llmError(MaxRoundError, "执行任务超时");
         return;
     }
@@ -354,8 +353,6 @@ JZAgentTool* JZAgent::getTool(const std::string &name)
 
 void JZAgent::processToolCall(ToolCall& tool_call)
 {
-    jzDebug() << "tool call:" << tool_call.function_name;
-
     JZAgentTool *tool = getTool(tool_call.function_name);
     if (!tool)
     {
@@ -684,9 +681,13 @@ void JZAgent::finalizeResponse()
     {
         if (!reply->content.empty())
             m_context.history.push_back(reply);
+
         m_state = Idle;   // 已产出最终回复且无需工具：本轮任务结束，进入空闲
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
-        llmLoop();
+        if(m_requests.empty())
+            sigFinished.emit();
+        else
+            llmLoop();
     }
 }
 
@@ -747,22 +748,16 @@ void JZAgent::llmLoop()
             auto chat = std::make_shared<LLMHistory>();
             if (req->type == JZAgentRequest::UserPrompt)
             {
-                jzDebug() << "user:" << req->userPrompt;
-
                 chat->role = LLMHistory::User;
                 chat->content = req->userPrompt;
             }
             else if (req->type == JZAgentRequest::SystemPrompt)
             {
-                jzDebug() << "system:" << req->systemPrompt;
-
                 chat->role = LLMHistory::System;
                 chat->content = req->systemPrompt;
             }
             else if (req->type == JZAgentRequest::ToolCallResultPrompt)
             {
-                jzDebug() << "tool result:" << req->toolCallResult.result;
-
                 chat->role = LLMHistory::Tool;
                 chat->content = req->toolCallResult.result;
                 chat->toolResponseId = req->toolCallResult.id;
@@ -852,7 +847,6 @@ void JZAgent::processSSEData(const std::string& payload)
     Json::Reader reader;
     if (!reader.parse(payload, result))
     {
-        jzDebug() << "SSE payload 解析失败, 原始内容=[" << payload << "]";
         llmError(NoError, "SSE数据解析错误: " + reader.getFormattedErrorMessages());
         return;
     }

@@ -543,7 +543,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
 #elif JZ_OS == JZ_OS_LINUX
             int bBroadcast = 1;
             int optLen = sizeof(int);
-            setsockopt(conn->fd, SOL_SOCKET, SO_BROADCAST, (const void*)&bBroadcast, optLen);
+            setsockopt((int)(intptr_t)conn->fd, SOL_SOCKET, SO_BROADCAST, (const void*)&bBroadcast, optLen);
 #endif            
         }
         else if (info.type == JZSocketInfo::HttpClient)

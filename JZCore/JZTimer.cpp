@@ -1,5 +1,6 @@
 #include "JZTimer.h"
 #include "JZTx.h"
+#include "JZDebug.h"
 
 class JZSingleTimer : public JZObject
 {
@@ -71,6 +72,7 @@ void JZTimer::start(int ms)
 {
     if (m_timeId != INVALID_TIMER_ID)
     {
+        jzWarning() << "timer allready stated";
         return;
     }
     

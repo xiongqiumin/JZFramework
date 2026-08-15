@@ -4,38 +4,19 @@
 #include "JZFile.h"
 #include "JZAudioFormat.h"
 
-// WAV 文件头结构（PCM 格式）
-#pragma pack(push, 1)
-struct WavHeader {
-    // RIFF chunk
-    char     riff_id[4];       // "RIFF"
-    uint32_t riff_size;        // 文件大小 - 8
-    char     wave_id[4];       // "WAVE"
-    // fmt chunk
-    char     fmt_id[4];        // "fmt "
-    uint32_t fmt_size;         // fmt chunk 大小 (16 for PCM)
-    uint16_t audio_format;     // 1 = PCM
-    uint16_t num_channels;     // 声道数
-    uint32_t sample_rate;      // 采样率
-    uint32_t byte_rate;        // 每秒字节数
-    uint16_t block_align;      // 每帧字节数
-    uint16_t bits_per_sample;  // 位深
-    // data chunk
-    char     data_id[4];       // "data"
-    uint32_t data_size;        // PCM 数据大小
-};
-#pragma pack(pop)
-
 class JZWaveFile
 {
 public:
     JZWaveFile();
     ~JZWaveFile();
 
-    // 打开 WAV 文件（支持资源路径如 :/audio/xxx.wav）
+    // 打开 WAV 文件（只读，支持资源路径如 :/audio/xxx.wav）
     bool open(const std::string& filepath);
 
-    // 关闭文件
+    // 创建并打开 WAV 文件用于写入，按指定音频格式写入 PCM 数据
+    bool create(const std::string& filepath, const JZAudioFormat& format);
+
+    // 关闭文件（写入模式下会补齐并回写 WAV 头中的大小字段）
     void close();
 
     // 是否已打开
@@ -46,6 +27,10 @@ public:
 
     // 读取全部 PCM 数据
     JZByteArray readAll();
+
+    // 写入 PCM 数据（仅在 create() 写入模式下有效）
+    // 每次写入后会自动回写 WAV 头中的大小字段，close() 时也会再次兜底更新
+    int write(const JZByteArray& data);
 
     // 重置读取位置到数据起始处（用于循环播放）
     void reset();
@@ -61,12 +46,14 @@ public:
 
 private:
     bool parseHeader();
+    bool writeHeader();
 
     JZFile m_file;
     JZAudioFormat m_format;
     int m_dataSize;       // PCM 数据大小（字节）
     int m_dataOffset;     // PCM 数据在文件中的起始偏移
     int m_readPos;        // 当前读取位置（相对于数据起始）
+    bool m_writeMode;     // 是否为写入模式
 };
 
 #endif  // ! JZ_WAVE_FILE_H_

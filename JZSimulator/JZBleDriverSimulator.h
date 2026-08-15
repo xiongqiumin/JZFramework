@@ -3,7 +3,7 @@
 
 #include "JZBleDriver.h"
 #include "JZByteArray.h"
-#include "JZSimulatorClient.h"
+#include "JZSimServer.h"
 #include "JZSimPack.h"
 #include "JZMutex.h"
 #include <map>
@@ -24,7 +24,7 @@ public:
     // 取当前 BLE 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZBleDriverSimulator *simInstance();
 
-    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(BLE 段)网络包
+    // 由 JZSimServer 按模块段路由调用, 处理下行(BLE 段)网络包
     void onRecv(JZSimPack *pack);
 
 
@@ -75,7 +75,7 @@ private:
     void sendSim(JZSimCmd cmd, const JZVariantMap &m);
     int  getConnHandle(const std::string &a);
 
-    JZSimulatorClient *m_sim = nullptr;
+    JZSimServer *m_sim = nullptr;
     bool m_scanning = false;
     JZObjectPointer m_scanAgent;
 

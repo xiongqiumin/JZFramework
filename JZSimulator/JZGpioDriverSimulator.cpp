@@ -34,7 +34,7 @@ JZGpioDriverSimulator::JZGpioDriverSimulator(const std::string &ip, int port)
 {
     (void)ip;
     (void)port;
-    m_sim = JZSimulatorClient::instance();
+    m_sim = JZSimServer::instance();
 }
 
 JZGpioDriverSimulator::~JZGpioDriverSimulator()

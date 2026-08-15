@@ -1,8 +1,8 @@
 set(JZSIMULATOR_SOURCES
     JZSimPack.h
     JZSimPack.cpp
-    JZSimulatorClient.h
-    JZSimulatorClient.cpp
+    JZSimServer.h
+    JZSimServer.cpp
 )
 
 # JZSimulator 依赖 JZBle/JZNet/JZGpio，这些模块始终存在
@@ -50,3 +50,6 @@ convert_to_abs_paths(JZSIMULATOR_SOURCES)
 
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZSIMULATOR_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# 去掉外部网络连接(JZNet)，改为内嵌 JZHttpServer 控制。
+# 依赖通过 MODULE_DEPENDS_JZSimulator (JZHttpServer / JZJson) 解析。

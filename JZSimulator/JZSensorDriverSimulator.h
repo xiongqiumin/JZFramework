@@ -16,7 +16,7 @@ public:
     // 取当前 Sensor 模拟驱动的(首个)实例(多实例模型, 仅作路由目标)。
     static JZSensorDriverSimulator *simInstance();
 
-    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(Sensor 段)网络包
+    // 由 JZSimServer 按模块段路由调用, 处理下行(Sensor 段)网络包
     void onRecv(JZSimPack *pack);
 
     bool supportsId(const std::string &id) override;

@@ -2,7 +2,7 @@
 #define JZ_GPIO_DRIVER_SIMULATOR_H_
 
 #include "JZGpioDriver.h"
-#include "JZSimulatorClient.h"
+#include "JZSimServer.h"
 #include "JZSimPack.h"
 #include "JZTimer.h"
 #include <map>
@@ -24,7 +24,7 @@ public:
     // 取当前 GPIO 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZGpioDriverSimulator *simInstance();
 
-    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(GPIO 段)网络包
+    // 由 JZSimServer 按模块段路由调用, 处理下行(GPIO 段)网络包
     void onRecv(JZSimPack *pack);
 
     bool supportsPin(int pin) override;
@@ -65,7 +65,7 @@ private:
     void onWaveTimeout();          // JZTimer 超时: 推进所有活动波形并推送给用户
     void updateWaveTimer();        // 依据活动波形重算定时器周期(每个周期采样 ~32 点)
 
-    JZSimulatorClient *m_sim = nullptr;
+    JZSimServer *m_sim = nullptr;
     JZTimer      *m_waveTimer = nullptr;  // 波形生成定时器
     int          m_waveTimerMs = 5;      // 当前定时器周期(ms)
 

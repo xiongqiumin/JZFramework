@@ -15,7 +15,7 @@ public:
     // 取当前 OTA 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZOTADriverSimulator *simInstance();
 
-    // 由 JZSimulatorClient 按模块段路由调用, 处理下行(OTA 段)网络包
+    // 由 JZSimServer 按模块段路由调用, 处理下行(OTA 段)网络包
     void onRecv(JZSimPack *pack);
 
     JZResult<void> verify(const JZOTAUpdateInfo &info) override;

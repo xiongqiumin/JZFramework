@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../css/style.css"></head>
+<body><div class="drv">
+    <h2>WiFi 模拟驱动</h2>
+    <div class="desc">模拟 WiFi Station / AP，无需 ESP32 真机。</div>
+
+    <div class="card">
+        <h3>启动 AP</h3>
+        <div class="row">
+            <input id="ssid" placeholder="ssid" value="jz_sim_ap">
+            <input id="psk" placeholder="password" value="123456" style="width:110px">
+            <button onclick="apStart()">AP Start</button>
+            <button class="ghost" onclick="apStop()">AP Stop</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Station 连接</h3>
+        <div class="row">
+            <input id="st_ssid" placeholder="ssid" value="jz_simulator_ap">
+            <input id="st_psk" placeholder="password" value="123456" style="width:110px">
+            <button onclick="stationConnect()">Connect</button>
+            <button class="ghost" onclick="stationDisconnect()">Disconnect</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>已关联对象</h3>
+        <div id="assoc">加载中...</div>
+    </div>
+</div>
+<script>
+function post(path, body){ fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+function apStart(){ post('/sim/pack',{cmd:201,data:{ssid:document.getElementById('ssid').value,password:document.getElementById('psk').value}}); }
+function apStop(){ post('/sim/pack',{cmd:202,data:{}}); }
+function stationConnect(){ post('/sim/pack',{cmd:203,data:{ssid:document.getElementById('st_ssid').value,password:document.getElementById('st_psk').value}}); }
+function stationDisconnect(){ post('/sim/pack',{cmd:204,data:{}}); }
+function load(){
+    fetch('/sim/state').then(r=>r.json()).then(j=>{
+        const st = j.state || {};
+        const items = (st.associations||[]).filter(a=>a.category==='wifi');
+        document.getElementById('assoc').innerHTML = items.length
+            ? items.map(a=>`<div class="kv"><span class="k">${a.id}</span><span class="v">${a.label}</span></div>`).join('')
+            : '<div class="kv">暂无</div>';
+    }).catch(()=>{});
+}
+load(); setInterval(load, 2000);
+</script></body></html>

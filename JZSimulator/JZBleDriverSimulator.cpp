@@ -22,12 +22,28 @@ JZBleDriverSimulator::JZBleDriverSimulator(const std::string &ip, int port)
     (void)ip;
     (void)port;
     m_sim = JZSimServer::instance();
+    m_sim->registerSimulator(this);
+    m_sim->start("ble");
 }
 
-JZBleDriverSimulator::~JZBleDriverSimulator() {}
+JZBleDriverSimulator::~JZBleDriverSimulator()
+{
+    if (m_sim)
+    {
+        m_sim->unregisterSimulator(this);
+        m_sim->stop("ble");
+    }
+}
+
+bool JZBleDriverSimulator::support(JZSimCmd cmd) const
+{
+    int c = (int)cmd;
+    return c >= 0 && c < 100; // SIM_BLE_CMD_BASE .. SIM_BLE_CMD_BASE+100
+}
 
 void JZBleDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
+    sigSim.emit(cmd, m);
     m_sim->sendSim(cmd, m);
 }
 
@@ -77,12 +93,14 @@ void JZBleDriverSimulator::connectToDevice(JZBLEController *d, const std::vector
         m_central = d;
     }
     JZVariantMap m; m["addr"] = JZVariant(addr);
+    m_sim->addAssoc("ble", "central:" + addr, "BLE central " + addr);
     sendSim(SIM_CMD_CONNECT, m);
 }
 void JZBleDriverSimulator::disconnectFromDevice(JZBLEController *d)
 {
     { JZMutexLocker lk(&m_mutex); if (m_central == d) m_central = nullptr; }
     std::string addr = d->deviceInfo().address();
+    m_sim->removeAssoc("ble", "central:" + addr);
     JZVariantMap m; m["addr"] = JZVariant(addr);
     sendSim(SIM_CMD_DISCONNECT, m);
 }
@@ -205,12 +223,14 @@ void JZBleDriverSimulator::startAdvertising(JZBLEPeripheral *d)
     for (auto &_e : su) _l.push_back(JZVariant(_e));
     m["su"] = JZVariant::fromValue(_l);
 }
+    m_sim->addAssoc("ble", "peripheral", "BLE peripheral " + name);
     sendSim(SIM_CMD_START_ADV, m);
 }
 void JZBleDriverSimulator::stopAdvertising(JZBLEPeripheral *d)
 {
     (void)d;
     { JZMutexLocker lk(&m_mutex); m_periphConnHandle = -1; m_periphCtrl = nullptr; }
+    m_sim->removeAssoc("ble", "peripheral");
     JZVariantMap m;
     sendSim(SIM_CMD_STOP_ADV, m);
 }
@@ -242,10 +262,10 @@ void JZBleDriverSimulator::peripheralDisconnect(JZBLEPeripheral *d, JZBLEPeriphe
 // ===================== 报文分发 =====================
 // onRecv 在网络接收线程中执行，与公有方法（应用线程）共享全部状态，
 // 故每个 case 都先加锁取出所需数据/指针，再释放锁后调用上层回调，避免重入死锁。
-void JZBleDriverSimulator::onRecv(JZSimPack *sp)
+void JZBleDriverSimulator::onRecv(const JZSimPack &pack)
 {
-    const JZVariantMap &map = sp->data;
-    JZSimCmd cmd = sp->cmd;
+    const JZVariantMap &map = pack.data;
+    JZSimCmd cmd = pack.cmd;
 
     switch (cmd) {
     case SIM_EVT_SCAN_RESULT: {

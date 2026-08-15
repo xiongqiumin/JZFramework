@@ -51,5 +51,9 @@ convert_to_abs_paths(JZSIMULATOR_SOURCES)
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZSIMULATOR_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 
+# 内嵌网页资源: http/simulator.qrc -> 静态库 JZSimulator_resources(暴露 jzres_simulator_init())
+jz_add_resources(JZSimulator_resources ${CMAKE_CURRENT_LIST_DIR}/http/simulator.qrc)
+target_link_libraries(${JZ_MODULE_TARGET} PRIVATE JZSimulator_resources)
+
 # 去掉外部网络连接(JZNet)，改为内嵌 JZHttpServer 控制。
 # 依赖通过 MODULE_DEPENDS_JZSimulator (JZHttpServer / JZJson) 解析。

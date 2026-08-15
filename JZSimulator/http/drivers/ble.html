@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../css/style.css"></head>
+<body><div class="drv">
+    <h2>BLE 模拟驱动</h2>
+    <div class="desc">模拟 BLE 外设（GATT 服务/特征值），可被中心设备扫描、连接、读写。</div>
+
+    <div class="card">
+        <h3>设备信息</h3>
+        <div class="kv"><span class="k">DevAddr</span><span class="v" id="devAddr">-</span></div>
+        <div class="kv"><span class="k">Name</span><span class="v" id="name">-</span></div>
+        <div class="kv"><span class="k">Advertising</span><span class="v" id="adv">-</span></div>
+        <div class="kv"><span class="k">Central</span><span class="v" id="central">-</span></div>
+    </div>
+
+    <div class="card">
+        <h3>GATT 特征值</h3>
+        <div id="chars">加载中...</div>
+    </div>
+
+    <div class="card">
+        <h3>模拟中心动作</h3>
+        <div class="row">
+            <button onclick="action('simulateCentralConnect')">中心连接</button>
+            <button class="ghost" onclick="action('disconnectClient')">断开中心</button>
+            <button class="ghost" onclick="action('notify')">触发 Notify</button>
+        </div>
+    </div>
+</div>
+<script>
+function action(a) {
+    fetch('/sim/control', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ action: a, addr: 'AA:BB:CC:DD:EE:FF' })
+    });
+}
+function load() {
+    fetch('/sim/state').then(r=>r.json()).then(j=>{
+        const st = j.state || {};
+        document.getElementById('devAddr').textContent = st.devAddr || '-';
+        document.getElementById('name').textContent = st.name || '-';
+        document.getElementById('adv').textContent = st.advertising ? 'true' : 'false';
+        document.getElementById('central').textContent = st.centralAddr || '-';
+        const cs = st.chars || [];
+        document.getElementById('chars').innerHTML = cs.length
+            ? cs.map(c=>`<div class="kv"><span class="k">${c.svc}/${c.chr}</span><span class="v">${c.value} (props=${c.props})</span></div>`).join('')
+            : '<div class="kv">暂无</div>';
+    }).catch(()=>{});
+}
+load(); setInterval(load, 2000);
+</script></body></html>

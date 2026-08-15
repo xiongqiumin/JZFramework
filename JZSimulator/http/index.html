@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JZSimServer 模拟驱动控制台</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <aside id="sidebar">
+            <div class="brand">JZSimServer</div>
+            <div class="brand-sub">模拟驱动控制台</div>
+            <ul id="driver-list">
+                <li class="placeholder">加载中...</li>
+            </ul>
+            <div id="conn-state" class="conn">● 已连接</div>
+            <div class="side-btns">
+                <button id="btn-config-load" class="side-btn">加载配置</button>
+                <button id="btn-config-save" class="side-btn">保存配置</button>
+            </div>
+        </aside>
+        <main id="content">
+            <iframe id="panel" src="drivers/empty.html"></iframe>
+        </main>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

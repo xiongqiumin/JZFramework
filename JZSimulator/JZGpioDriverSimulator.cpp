@@ -4,6 +4,8 @@
 #include "JZApplication.h"
 #include <cmath>
 
+JZ_OBJECT_IMPL(JZGpioDriverSimulator, JZObject)
+
 namespace
 {
 constexpr double JZ_PI = 3.14159265358979323846;
@@ -35,10 +37,17 @@ JZGpioDriverSimulator::JZGpioDriverSimulator(const std::string &ip, int port)
     (void)ip;
     (void)port;
     m_sim = JZSimServer::instance();
+    m_sim->registerSimulator(this);
+    m_sim->start("gpio");
 }
 
 JZGpioDriverSimulator::~JZGpioDriverSimulator()
 {
+    if (m_sim)
+    {
+        m_sim->unregisterSimulator(this);
+        m_sim->stop("gpio");
+    }
     if (m_waveTimer)
     {
         m_waveTimer->stop();
@@ -47,8 +56,15 @@ JZGpioDriverSimulator::~JZGpioDriverSimulator()
     }
 }
 
+bool JZGpioDriverSimulator::support(JZSimCmd cmd) const
+{
+    int c = (int)cmd;
+    return c >= 100 && c < 200; // SIM_GPIO_CMD_BASE .. SIM_GPIO_CMD_BASE+100
+}
+
 void JZGpioDriverSimulator::sendSim(JZSimCmd cmd, const JZVariantMap &m)
 {
+    sigSim.emit(cmd, m);
     m_sim->sendSim(cmd, m);
 }
 
@@ -63,6 +79,11 @@ bool JZGpioDriverSimulator::open(JZGpio *gpio)
     int pin = gpio->pin();
     m_pins[pin] = gpio;
     m_levelCache[pin] = JZGpio::Low;
+
+    // open 时与 JZSimServer 建立关联, 网页端可显示该 GPIO 资源
+    std::string label = "GPIO" + std::to_string(pin) + " (" +
+        (gpio->direction() == JZGpio::Input ? "in" : "out") + ")";
+    m_sim->addAssoc("gpio", "pin:" + std::to_string(pin), label);
 
     JZVariantMap m;
     m["pin"] = JZVariant(pin);
@@ -84,6 +105,7 @@ void JZGpioDriverSimulator::close(JZGpio *gpio)
     sendSim(SIM_GPIO_CMD_CLOSE, m);
     m_pins.erase(pin);
     m_levelCache.erase(pin);
+    m_sim->removeAssoc("gpio", "pin:" + std::to_string(pin));
 }
 
 bool JZGpioDriverSimulator::isOpen(JZGpio *gpio)
@@ -270,10 +292,10 @@ bool JZGpioDriverSimulator::setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge)
 }
 
 // ==================== 报文分发 ====================
-void JZGpioDriverSimulator::onRecv(JZSimPack *sp)
+void JZGpioDriverSimulator::onRecv(const JZSimPack &pack)
 {
-    const JZVariantMap &map = sp->data;
-    JZSimCmd cmd = sp->cmd;
+    const JZVariantMap &map = pack.data;
+    JZSimCmd cmd = pack.cmd;
 
     switch (cmd)
     {

@@ -1,6 +1,7 @@
 ﻿#include "JZDir.h"
 #include "JZLog.h"
 #include "JZFileInfo.h"
+#include "JZResources.h"
 #include "JZDebug.h"
 #include "JZString.h"
 #include "JZPlatform.h"
@@ -17,6 +18,10 @@ using namespace std;
 
 bool JZDir::isAbsolutePath(string path)
 {
+    // 资源路径以 ':/' 开头, 视为绝对路径 (与 JZFile/JZFileInfo 一致)
+    if (JZFileInfo::isResourcePath(path))
+        return true;
+
 #if JZ_OS == JZ_OS_WINDOWS
     if (path.size() >= 2 && isalpha(path[0]) && path[1] == ':') {
         return true;
@@ -112,6 +117,21 @@ string JZDir::name() const
 
 bool JZDir::exists() const
 {
+    if (isResource())
+    {
+        // 资源组存在 == 该组下至少注册了一个资源
+        std::string group_prefix = m_path;
+        if (group_prefix.back() != '/')
+            group_prefix += '/';
+
+        auto all = JZResources::instance()->resourcesList();
+        for (const auto &name : all)
+        {
+            if (name.rfind(group_prefix, 0) == 0)
+                return true;
+        }
+        return false;
+    }
     return dirExists(m_path);
 }
 
@@ -213,7 +233,9 @@ string JZDir::path() const
 
 string JZDir::absolutePath() const
 {
-    if (JZDir::isAbsolutePath(m_path))
+    if (isResource())
+        return m_path;
+    else if (JZDir::isAbsolutePath(m_path))
         return m_path;
     else
     {
@@ -234,8 +256,61 @@ string JZDir::absoluteFilePath(string path) const
     }
 }
 
+bool JZDir::isResource() const
+{
+    return JZFileInfo::isResourcePath(m_path);
+}
+
 vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
     vector<JZFileInfo> result;
+
+    // 资源目录: 路径以 ':/' 开头, 列出该资源组下的所有资源项
+    if (JZFileInfo::isResourcePath(m_path))
+    {
+        std::string group_prefix = m_path;
+        if (group_prefix.back() != '/')
+            group_prefix += '/';
+
+        auto all = JZResources::instance()->resourcesList();
+        for (const auto &name : all)
+        {
+            if (name.rfind(group_prefix, 0) != 0)
+                continue;
+
+            // 资源组下的直接子项 (不含更深层级)
+            std::string sub = name.substr(group_prefix.size());
+            if (sub.empty())
+                continue;
+            if (sub.find('/') != std::string::npos)
+                continue;
+
+            JZFileInfo info(name);
+            if ((filter & Files) && info.isFile())
+                result.push_back(info);
+            else if ((filter & Dirs) && info.isDir())
+                result.push_back(info);
+        }
+
+        if (sort & SortName) {
+            std::sort(result.begin(), result.end(), [](const JZFileInfo &a, const JZFileInfo &b) {
+                return a.fileName() < b.fileName();
+            });
+        }
+        else if (sort & SortSize) {
+            std::sort(result.begin(), result.end(), [](const JZFileInfo &a, const JZFileInfo &b) {
+                return a.size() < b.size();
+            });
+        }
+        else if (sort & SortTime) {
+            std::sort(result.begin(), result.end(), [](const JZFileInfo &a, const JZFileInfo &b) {
+                return a.lastModified() < b.lastModified();
+            });
+        }
+        if (sort & SortReversed)
+            reverse(result.begin(), result.end());
+
+        return result;
+    }
 
 #if JZ_OS == JZ_OS_WINDOWS
     string searchPath = str_utf8_to_local(m_path) + "/*";

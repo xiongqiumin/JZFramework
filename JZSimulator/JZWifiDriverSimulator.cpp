@@ -4,6 +4,8 @@
 #include "JZSignal.h"
 #include "JZApplication.h"
 
+JZ_OBJECT_IMPL(JZWifiDriverSimulator, JZObject)
+
 namespace
 {
 // 模拟驱动返回的信号强度, 仅用于让上层拿到一个"看起来正常"的值。
@@ -25,10 +27,23 @@ JZWifiDriverSimulator::JZWifiDriverSimulator(const std::string &ip, int port)
     (void)ip;
     (void)port;
     m_sim = JZSimServer::instance();
+    m_sim->registerSimulator(this);
+    m_sim->start("wifi");
 }
 
 JZWifiDriverSimulator::~JZWifiDriverSimulator()
 {
+    if (m_sim)
+    {
+        m_sim->unregisterSimulator(this);
+        m_sim->stop("wifi");
+    }
+}
+
+bool JZWifiDriverSimulator::support(JZSimCmd cmd) const
+{
+    int c = (int)cmd;
+    return c >= 200 && c < 300; // SIM_WIFI_CMD_BASE .. SIM_WIFI_CMD_BASE+100
 }
 
 bool JZWifiDriverSimulator::isWifiAvailable()
@@ -38,6 +53,7 @@ bool JZWifiDriverSimulator::isWifiAvailable()
 
 void JZWifiDriverSimulator::sendApCmd(const JZSimPack &pack)
 {
+    sigSim.emit(pack.cmd, pack.data);
     m_sim->sendSim(pack.cmd, pack.data);
 }
 
@@ -48,12 +64,41 @@ JZWifiDriverSimulator *JZWifiDriverSimulator::simInstance()
 
 
 // ==================== Station (连接) ====================
+// 连接规则: 凭证须匹配服务端配置(config()["wifi"]["aps"])中的某个 AP; 否则失败。
+// 返回匹配 AP 的 bssid(配置里若提供), 否则回退默认 bssid。
+static std::string matchApBssid(const JZWifiConfig &cfg)
+{
+    const Json::Value& wifiCfg = JZSimServer::instance()->config()["wifi"];
+    const Json::Value& aps = (wifiCfg.isObject() && wifiCfg.isMember("aps")) ? wifiCfg["aps"] : Json::Value(Json::arrayValue);
+    if (aps.isArray())
+    {
+        for (auto it = aps.begin(); it != aps.end(); ++it)
+        {
+            const Json::Value& a = *it;
+            std::string ssid = a.isMember("ssid") ? a["ssid"].asString() : std::string();
+            std::string pwd  = a.isMember("password") ? a["password"].asString() : std::string();
+            if (ssid == cfg.ssid && pwd == cfg.password)
+                return a.isMember("bssid") ? a["bssid"].asString() : std::string();
+        }
+    }
+    return std::string();   // 未匹配
+}
+
 // Station 连接为本地行为: 仅做凭证校验, 成功即视为已连接(不发网络包)。
 void JZWifiDriverSimulator::stationConnect(JZWifiStation *w, const JZWifiConfig &cfg)
 {
-    // 连接规则: 仅接受指定 AP 的凭证, 其它一律失败
-    bool ok = (cfg.ssid == kApSsid) && (cfg.password == kApPassword);
-    if (!ok)
+    std::string bssid = matchApBssid(cfg);
+    if (bssid.empty() && !cfg.ssid.empty())
+    {
+        // 未匹配任何配置 AP(或无配置), 回退到原固定凭证规则, 保证基础联调可用
+        if (!(cfg.ssid == kApSsid && cfg.password == kApPassword))
+        {
+            JZWifiDriver::onStationError(w->guardPointer(), -1, "invalid ssid or password");
+            return;
+        }
+        bssid = "00:11:22:33:44:55";
+    }
+    else if (bssid.empty())
     {
         JZWifiDriver::onStationError(w->guardPointer(), -1, "invalid ssid or password");
         return;
@@ -61,27 +106,37 @@ void JZWifiDriverSimulator::stationConnect(JZWifiStation *w, const JZWifiConfig 
 
     // 成功: 本地视为已连接(不发网络包)
     m_staWifi = w->guardPointer();
-    std::string staBssid = cfg.bssid.empty() ? std::string("00:11:22:33:44:55") : cfg.bssid;
+    m_staSsid = cfg.ssid;
+    m_staPassword = cfg.password;
+    m_sim->addAssoc("wifi", "station", "WiFi station " + cfg.ssid);
+    std::string staBssid = bssid.empty() ? std::string("00:11:22:33:44:55") : bssid;
     JZWifiDriver::onStationConnected(m_staWifi, localIp().c_str(), staBssid.c_str());
 }
 
 void JZWifiDriverSimulator::stationDisconnect(JZWifiStation *w)
 {
     m_staWifi = JZObjectPointer();
+    m_staSsid.clear();
+    m_staPassword.clear();
+    m_sim->removeAssoc("wifi", "station");
     JZWifiDriver::onStationDisconnected(w->guardPointer());
 }
 
 void JZWifiDriverSimulator::stationSwitch(JZWifiStation *w, const JZWifiConfig &cfg)
 {
     // 模拟: 直接视为已切到新 AP(本地校验, 不发网络包), 不发中间断开事件
-    bool ok = (cfg.ssid == kApSsid) && (cfg.password == kApPassword);
-    if (!ok) {
+    std::string bssid = matchApBssid(cfg);
+    if (bssid.empty() && !(cfg.ssid == kApSsid && cfg.password == kApPassword))
+    {
         // 切换失败: 发送断线事件(由上层按真实掉线处理, 触发全链路重连)
         m_staWifi = JZObjectPointer();
         JZWifiDriver::onStationDisconnected(w->guardPointer());
         return;
     }
-    std::string staBssid = cfg.bssid.empty() ? std::string("00:11:22:33:44:55") : cfg.bssid;
+    std::string staBssid = bssid.empty() ? std::string("00:11:22:33:44:55") : bssid;
+    m_staWifi = w->guardPointer();
+    m_staSsid = cfg.ssid;
+    m_staPassword = cfg.password;
     JZWifiDriver::onStationConnected(w->guardPointer(), localIp().c_str(), staBssid.c_str());
 }
 
@@ -119,6 +174,7 @@ void JZWifiDriverSimulator::apStart(JZWifiAp *w, const JZWifiApConfig &cfg)
     pack.setStr("ap_ip", cfg.ip);
     pack.setStr("ap_gateway", cfg.gateway);
     pack.setStr("ap_subnet", cfg.subnet);
+    m_sim->addAssoc("wifi", "ap", "WiFi AP " + cfg.ssid);
     sendApCmd(pack);
 
     // 本地立即视为已启动(模拟器随后通过 station_info 包回传站点接入/断开)
@@ -129,6 +185,7 @@ void JZWifiDriverSimulator::apStop(JZWifiAp *w)
 {
     JZSimPack pack;
     pack.cmd = SIM_WIFI_AP_STOP;
+    m_sim->removeAssoc("wifi", "ap");
     sendApCmd(pack);
 
     m_apStations.clear();
@@ -156,14 +213,36 @@ void JZWifiDriverSimulator::scanStart(JZWifiScanner *s, const JZScanConfig &cfg)
 {
     (void)cfg;
 
+    // 扫描结果由服务端配置(JZSimServer::config()["wifi"]["aps"])决定外围 AP 列表
+    const Json::Value& wifiCfg = JZSimServer::instance()->config()["wifi"];
+    const Json::Value& aps = (wifiCfg.isObject() && wifiCfg.isMember("aps")) ? wifiCfg["aps"] : Json::Value(Json::arrayValue);
+
     JZWifiScanResult r;
-    JZWifiScanResult::ApInfo ap;
-    ap.ssid = "jz_simulator_ap";
-    ap.rssi = -50;
-    ap.bssid = "00:11:22:33:44:55";
-    ap.channel = 6;
-    ap.authMode = 0;   // WIFI_AUTH_OPEN
-    r.apList.push_back(ap);
+    if (aps.isArray())
+    {
+        for (auto it = aps.begin(); it != aps.end(); ++it)
+        {
+            const Json::Value& a = *it;
+            JZWifiScanResult::ApInfo ap;
+            ap.ssid  = a.isMember("ssid")  ? a["ssid"].asString()  : std::string();
+            ap.bssid = a.isMember("bssid") ? a["bssid"].asString() : std::string();
+            ap.rssi  = a.isMember("rssi")  ? a["rssi"].asInt()      : -50;
+            ap.channel = a.isMember("channel") ? a["channel"].asInt() : 6;
+            ap.authMode = a.isMember("auth") ? a["auth"].asInt() : 0;  // 默认 OPEN
+            r.apList.push_back(ap);
+        }
+    }
+    if (r.apList.empty())
+    {
+        // 无配置时回退到固定结果, 保证上层联调有可用 AP
+        JZWifiScanResult::ApInfo ap;
+        ap.ssid = "jz_simulator_ap";
+        ap.rssi = -50;
+        ap.bssid = "00:11:22:33:44:55";
+        ap.channel = 6;
+        ap.authMode = 0;
+        r.apList.push_back(ap);
+    }
     JZWifiDriver::onScanFinished(s->guardPointer(), r);
 }
 
@@ -179,14 +258,26 @@ bool JZWifiDriverSimulator::isScanning(JZWifiScanner *s)
 }
 
 // ==================== 报文分发 (下行: 模拟器 -> Driver) ====================
-void JZWifiDriverSimulator::onRecv(JZSimPack *sp)
+void JZWifiDriverSimulator::onRecv(const JZSimPack &pack)
 {
+    // 外围 AP 清单变更事件: server 对 wifi.aps 做 diff 后发出(增/删/改)。
+    // scan 结果由 scanStart 实时读 config(), 无需维护缓存; 仅当变更使当前 station
+    // 凭证失效时断开 station(如密码/ssid 改变、AP 被删除)。rssi 改变不影响连接。
+    if (pack.cmd == SIM_WIFI_AP_ADDED ||
+        pack.cmd == SIM_WIFI_AP_UPDATED ||
+        pack.cmd == SIM_WIFI_AP_REMOVED)
+    {
+        jzDebug() << "JZWifiDriverSimulator: wifi ap event" << (int)pack.cmd;
+        checkStationCredential();
+        return;
+    }
+
     if (!m_apWifi)
         return;
 
     // 使用成员 API(统一 JZResult)读取下行 station_info 中的完整站点列表
-    auto macs = sp->getStrList("stations_macs");
-    auto ips  = sp->getStrList("stations_ips");
+    auto macs = pack.getStrList("stations_macs");
+    auto ips  = pack.getStrList("stations_ips");
     std::vector<JZWifiStationInfo> stations;
     if (macs.isOk() && ips.isOk())
     {
@@ -218,4 +309,24 @@ void JZWifiDriverSimulator::onRecv(JZSimPack *sp)
             JZWifiDriver::onApStationDisconnected(m_apWifi, kv.first.c_str(), kv.second.c_str());
     }
     m_apStations = next;
+}
+
+// 配置 wifi.aps 变更后调用: 当前 station 凭证在新配置中若已无匹配 AP, 断开 station,
+// 让上层按真实掉线处理(触发重连)。固定凭证(kApSsid/kApPassword)不受配置影响。
+void JZWifiDriverSimulator::checkStationCredential()
+{
+    if (!m_staWifi || m_staSsid.empty())
+        return;
+    if (m_staSsid == kApSsid && m_staPassword == kApPassword)
+        return;   // 固定凭证连接, 配置变更不影响
+    JZWifiConfig staCfg;
+    staCfg.ssid = m_staSsid;
+    staCfg.password = m_staPassword;
+    std::string bssid = matchApBssid(staCfg);
+    if (bssid.empty())
+    {
+        jzDebug() << "JZWifiDriverSimulator: station credential no longer matches config -> disconnect";
+        auto* w = static_cast<JZWifiStation*>(m_staWifi.object());
+        stationDisconnect(w);
+    }
 }

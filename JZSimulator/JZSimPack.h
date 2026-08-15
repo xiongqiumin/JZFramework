@@ -6,6 +6,7 @@
 #include "JZResult.h"
 #include <string>
 #include <vector>
+#include <json/value.h>
 
 // ============================================================================
 // 统一的模拟器命令枚举: 覆盖 BLE / GPIO / WiFi 等所有模拟器。
@@ -66,6 +67,12 @@ enum JZSimCmd {
     SIM_WIFI_AP_START = 200,
     SIM_WIFI_AP_STOP,
     SIM_WIFI_STATION_INFO,
+    // 配置细化事件(Device -> Driver): simServer 对 wifi.aps 做 diff 后发出,
+    // 驱动在 onRecv 中按具体变更处理(如刷新 scan 结果 / 断开失效 station)。
+    // 每个事件携带单个 ap 的完整对象(json 字段), REMOVED 携带被删 ap 的标识。
+    SIM_WIFI_AP_ADDED   = 291,   // 新增一个外围 AP
+    SIM_WIFI_AP_REMOVED = 292,   // 删除一个外围 AP
+    SIM_WIFI_AP_UPDATED = 293,   // 某个外围 AP 字段变化(ssid/password/rssi/bssid/auth...)
 
     // ---- OTA: Driver -> Device / Device -> Driver (编号从 300 起) ----
     SIM_OTA_CMD_BASE = 300,
@@ -101,6 +108,9 @@ public:
 
     JZSimCmd     cmd = SIM_CMD_NONE;
     JZVariantMap data;
+    // 可选的整体 JSON 载荷: 配置细化事件(如 SIM_WIFI_AP_*)用它承载单个 ap 对象。
+    // 该事件不经网络序列化(进程内 onClientPacket 直投), 故无需进 save/loadFromStream。
+    Json::Value   json;
 
     // ===== 写入 (key 支持多级, 如 "a.b.c", 中间节点自动建为 map) =====
     void setInt(const std::string &key, int v);

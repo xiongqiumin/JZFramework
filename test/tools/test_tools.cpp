@@ -4,6 +4,8 @@
 
 #include "JZDebug.h"
 #include "JZResources.h"
+#include "JZFileInfo.h"
+#include "JZDir.h"
 
 // 资源: jz_add_resources 生成 (res.qrc -> jz_res_resources.h, prefix=/data -> jzres_data_init)
 #include "jz_res_resources.h"
@@ -139,12 +141,86 @@ static void testResourceProtoLoopback()
                  "联合回环 序列化->反序列化->再序列化 一致");
 }
 
+// ============ 多级资源读取 + JZDir + weaklyCanonicalPath ============
+static void listResourceTree(const std::string &group, int depth)
+{
+    JZDir dir(group);
+    if (!dir.exists())
+        return;
+    for (const auto &info : dir.entryInfoList(JZDir::Files))
+    {
+        JZTEST_CHECK(info.isResource(),
+                     std::string(depth * 2, ' ') + "资源: " + info.filePath());
+        JZTEST_CHECK(info.exists() && info.size() > 0,
+                     std::string(depth * 2, ' ') + "  exists & size>0 (" +
+                         std::to_string(info.size()) + ")");
+    }
+}
+
+static void testResourceDirAndWeakPath()
+{
+    jzres_data_init();
+
+    // res.qrc (prefix=/data) 注册的多级资源:
+    //   :/data/shape.json
+    //   :/data/config/foo.bin
+    //   :/data/config/network/wifi.bin   (第三层)
+    //   :/data/config/network/eth.bin    (第三层)
+    //   :/data/img/logo.txt
+    //   :/data/img/icons/home.txt        (第三层)
+    //   :/data/img/icons/back.txt        (第三层)
+    JZTEST_CHECK(JZDir(":/data").isResource(), "JZDir(':/data') 是资源目录");
+    JZTEST_CHECK(JZDir(":/data").exists(), "JZDir(':/data') exists");
+
+    // 1) JZDir 按资源组逐级读取多级资源 (资源组为 ':/group', 直接子项不含更深层级)
+    auto top = JZDir(":/data").entryInfoList(JZDir::Files);
+    JZTEST_CHECK(top.size() == 1 && top[0].fileName() == "shape.json",
+                 "JZDir(':/data') 列出直接子资源 shape.json");
+
+    // 第二层: config / img 下各自的直接子资源
+    listResourceTree(":/data/config", 1);   // :/data/config/foo.bin
+    listResourceTree(":/data/img", 1);       // :/data/img/logo.txt
+
+    // 第三层: 用 JZDir 进入子目录再读取 (多级目录逐级下钻)
+    listResourceTree(":/data/config/network", 2); // wifi.bin, eth.bin
+    listResourceTree(":/data/img/icons", 2);       // home.txt, back.txt
+
+    // 2) 递归遍历 :/data 下所有层级的资源 (跨多级)
+    int count = 0;
+    for (const auto &name : JZResources::instance()->resourcesList())
+    {
+        if (name.rfind(":/data/", 0) != 0)
+            continue;
+        JZFileInfo fi(name);
+        JZTEST_CHECK(fi.isResource() && fi.exists(),
+                     "递归资源 " + name + " 可读, size=" + std::to_string(fi.size()));
+        count++;
+    }
+    JZTEST_CHECK(count == 7, ":/data 下共 7 个资源(跨三级目录)");
+
+    // 3) weaklyCanonicalPath 对资源路径: 保留 ':' 前缀, 规整 // 与 ..
+    JZTEST_CHECK(JZFileInfo::weaklyCanonicalPath(":/data/img/logo.txt") ==
+                     ":/data/img/logo.txt",
+                 "weakPath 资源路径原样返回");
+    JZTEST_CHECK(JZFileInfo::weaklyCanonicalPath("://data//img/logo.txt") ==
+                     ":/data/img/logo.txt",
+                 "weakPath 资源路径去重 '//' 且保留 ':'");
+    JZTEST_CHECK(JZFileInfo::weaklyCanonicalPath(":/data/../data/img/logo.txt") ==
+                     ":/data/img/logo.txt",
+                 "weakPath 资源路径折叠 '..' 且保留 ':'");
+    // 普通文件绝对路径 (对照组)
+    JZTEST_CHECK(JZFileInfo::weaklyCanonicalPath("/data/./img/../img/logo.txt") ==
+                     "/data/img/logo.txt",
+                 "weakPath 普通绝对路径规整");
+}
+
 int main()
 {
     jzDebug() << "########## test_tools: 资源 + Proto 回环测试 ##########";
     testResourceLoopback();
     testProtoLoopback();
     testResourceProtoLoopback();
+    testResourceDirAndWeakPath();
 
     if (g_fail == 0)
         jzDebug() << "【全部通过】";

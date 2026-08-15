@@ -2,21 +2,33 @@
 #define JZ_OTA_DRIVER_SIMULATOR_H_
 
 #include "JZOTADriver.h"
+#include "JZSimServer.h"
+#include "JZObject.h"
 #include "JZSimPack.h"
+#include "JZSignal.h"
 
 // OTA 模拟驱动(暂未实现)。仅作为 JZSimulator 平台下的占位实现,
 // 保证 JZDriver::init 在 simulator 配置下可正常注册。功能待补充。
-class JZOTADriverSimulator : public JZOTADriver
+class JZOTADriverSimulator : public JZOTADriver, public JZSimulator, public JZObject
 {
+    JZ_OBJECT_DECLARE(JZOTADriverSimulator)
 public:
-    JZOTADriverSimulator() = default;
-    ~JZOTADriverSimulator() override = default;
+    JZOTADriverSimulator();
+    ~JZOTADriverSimulator() override;
 
     // 取当前 OTA 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZOTADriverSimulator *simInstance();
 
-    // 由 JZSimServer 按模块段路由调用, 处理下行(OTA 段)网络包
-    void onRecv(JZSimPack *pack);
+    // JZSimulator 接口: 下行路由判断 / 下行处理。
+    bool support(JZSimCmd cmd) const override;
+    void onRecv(const JZSimPack &pack) override;
+
+    // 每次本驱动与模拟器交互都会通过此信号广播。
+    JZSignal<JZSimCmd, const JZVariantMap&> sigSim{this};
+
+private:
+    JZSimServer *m_sim = nullptr;
+    void sendSim(JZSimCmd cmd, const JZVariantMap &m);
 
     JZResult<void> verify(const JZOTAUpdateInfo &info) override;
     int64_t totalSize() override;

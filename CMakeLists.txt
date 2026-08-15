@@ -12,7 +12,7 @@ endif()
 include(JZFramework.cmake)
 jzframework_use_modules(JZCore JZNet JZAgent JZAudio JZBle JZCamera JZCoroutine JZCrashReport
     JZCv JZFrp JZGpio JZHttpServer JZJSEngine JZJson JZMcpServer JZModbus JZNode
-    JZOTA JZSensor JZSerialPort JZWifi JZTest)
+    JZOTA JZSensor JZSerialPort JZWifi JZTest JZSimulator)
 target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 add_subdirectory(demo)

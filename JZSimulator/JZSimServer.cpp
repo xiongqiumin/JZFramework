@@ -7,9 +7,42 @@
 #include "JZJson.h"
 #include "JZStd.h"
 
+// 网页静态资源(由 JZSimulator/http/simulator.qrc 经 jz_add_resources 生成)
+#include "jz_simulator_resources.h"
+
 #include <algorithm>
+#include <set>
 #include <json/reader.h>
 #include <json/writer.h>
+
+// 由 cmd 推断所属驱动类别(与 JZSimulator::support 的区间约定保持一致)
+static std::string categoryOf(JZSimCmd cmd)
+{
+    int c = (int)cmd;
+    if (c >= 0   && c < 100) return "ble";
+    if (c >= 100 && c < 200) return "gpio";
+    if (c >= 200 && c < 300) return "wifi";
+    if (c >= 300 && c < 400) return "ota";
+    if (c >= 400 && c < 500) return "sensor";
+    return "ble";
+}
+
+// 当前已注册(即 Has_xxx 启用)的驱动类别列表
+static std::vector<std::string> availableCategories(const std::vector<JZSimulator*>& sims)
+{
+    std::set<std::string> cats;
+    // 用各 driver 自身 support() 判断其覆盖区间, 推断类别
+    const JZSimCmd probes[] = { SIM_CMD_SCAN_START, SIM_GPIO_CMD_OPEN,
+                                 SIM_WIFI_AP_START, SIM_OTA_CMD_BASE, SIM_SENSOR_CMD_BASE };
+    for (auto* sim : sims) {
+        if (!sim) continue;
+        for (JZSimCmd c : probes) {
+            if (sim->support(c))
+                cats.insert(categoryOf(c));
+        }
+    }
+    return std::vector<std::string>(cats.begin(), cats.end());
+}
 
 // JSON / Variant 辅助(自由函数)
 static JZVariant jsonToVariant(const Json::Value& v);
@@ -52,6 +85,14 @@ bool JZSimServer::startHttp(int port)
     if (m_http)
         return true;
 
+    // 注册编译进二进制的网页资源(:/simulator/...)
+    static bool s_resInited = false;
+    if (!s_resInited) {
+        jzres_simulator_init();
+        s_resInited = true;
+    }
+    m_static = new JZHttpStaticFiles(":/simulator");
+
     m_http = new JZHttpServer(this);
 
     // 内部 handler: 把请求分派到 JZSimServer 的公开处理方法。
@@ -73,6 +114,21 @@ bool JZSimServer::startHttp(int port)
                 sim->handleHttpPack(client, req);
             else if (path == "/sim/state")
                 sim->handleHttpState(client);
+            else if (path == "/sim/associations")
+                sim->handleHttpAssociations(client);
+            else if (path == "/sim/config")
+                sim->handleHttpConfig(client, req);
+            else if (path == "/" || path == "/index.html" || path == "/sim" || path == "/sim/")
+                sim->handleHttpIndex(client);
+            else if (str_startsWith(path, "/drivers/"))
+                sim->handleHttpDriverPage(client, path.substr(std::string("/drivers/").size()));
+            else if (str_startsWith(path, "/css/") || str_startsWith(path, "/js/")
+                     || str_startsWith(path, "/drivers/") || path == "/index.html")
+            {
+                // 相对路径资源(:/simulator 前缀下), 直接交给资源静态处理器
+                JZHttpRequest sub = req;
+                sim->m_static->handle(client, sub);
+            }
             else
             {
                 JZHttpRespone resp;
@@ -88,6 +144,12 @@ bool JZSimServer::startHttp(int port)
     m_http->addRoute("/sim/control", h);
     m_http->addRoute("/sim/pack", h);
     m_http->addRoute("/sim/state", h);
+    m_http->addRoute("/sim/associations", h);
+    m_http->addRoute("/sim/config", h);
+    m_http->addRoute("/drivers", h);
+    m_http->addRoute("/sim/static", h);
+    m_http->addRoute("/sim", h);
+    m_http->addRoute("/", h);
 
     if (!m_http->listen(port))
     {
@@ -109,6 +171,11 @@ void JZSimServer::stopHttp()
         delete m_http;
         m_http = nullptr;
     }
+    if (m_static)
+    {
+        delete m_static;
+        m_static = nullptr;
+    }
 }
 
 bool JZSimServer::isHttpRunning() const
@@ -124,14 +191,44 @@ void JZSimServer::sendSim(JZSimCmd cmd, JZVariantMap data)
     handlePack(pack);
 }
 
+// ===================== 引用计数启动/停止 =====================
+void JZSimServer::start(const std::string& module)
+{
+    m_refCount++;
+    jzDebug() << "JZSimServer::start(" << module << ") ref=" << m_refCount;
+    if (m_refCount == 1)
+        startHttp();
+}
+
+void JZSimServer::stop(const std::string& module)
+{
+    if (m_refCount > 0)
+        m_refCount--;
+    jzDebug() << "JZSimServer::stop(" << module << ") ref=" << m_refCount;
+    if (m_refCount == 0)
+        stopHttp();
+}
+
+void JZSimServer::registerSimulator(JZSimulator* sim)
+{
+    if (sim && std::find(m_simulators.begin(), m_simulators.end(), sim) == m_simulators.end())
+        m_simulators.push_back(sim);
+}
+
+void JZSimServer::unregisterSimulator(JZSimulator* sim)
+{
+    auto it = std::find(m_simulators.begin(), m_simulators.end(), sim);
+    if (it != m_simulators.end())
+        m_simulators.erase(it);
+}
+
 // 收到"Device -> driver"事件时, 路由到各 driver simulator 的 onRecv。
 void JZSimServer::onClientPacket(const JZSimPack& pack)
 {
-    for (auto it : m_recvMap)
+    for (auto* sim : m_simulators)
     {
-        JZSimulator* sim = it.second;
         if (sim && sim->support(pack.cmd))
-            sim->onRecv(pack.cmd, pack.data);
+            sim->onRecv(pack);
     }
 }
 
@@ -348,14 +445,137 @@ Json::Value JZSimServer::getStateJson() const
         chars.append(c);
     }
     root["chars"] = chars;
+
+    // 关联资源(供网页端显示)
+    Json::Value assocs(Json::arrayValue);
+    for (auto& kv : m_assocs) {
+        Json::Value a;
+        a["category"] = kv.second.category;
+        a["id"] = kv.second.id;
+        a["label"] = kv.second.label;
+        assocs.append(a);
+    }
+    root["associations"] = assocs;
+
+    // 当前启用的驱动类别(Has_xxx 决定: 仅注册到 JZSimServer 的驱动才出现)
+    Json::Value drivers(Json::arrayValue);
+    for (auto& cat : availableCategories(m_simulators))
+        drivers.append(cat);
+    root["availableDrivers"] = drivers;
+
+    // 全部驱动类别(网页默认全显示, 服务端把未启用的放进 disabledDrivers 隐藏)
+    const char* allCats[] = { "gpio", "ble", "wifi", "sensor", "ota" };
+    Json::Value disabled(Json::arrayValue);
+    std::set<std::string> enabled;
+    for (auto it = drivers.begin(); it != drivers.end(); ++it)
+        enabled.insert(it->asString());
+    for (auto* c : allCats)
+        if (!enabled.count(c))
+            disabled.append(c);
+    root["disabledDrivers"] = disabled;
+    root["config"] = m_config;
     return root;
+}
+
+void JZSimServer::addAssoc(const std::string& category, const std::string& id, const std::string& label)
+{
+    AssocInfo info;
+    info.category = category;
+    info.id = id;
+    info.label = label;
+    m_assocs[category + ":" + id] = info;
+    jzDebug() << "assoc +" << category << ":" << id << "(" << label << ")";
+}
+
+void JZSimServer::removeAssoc(const std::string& category, const std::string& id)
+{
+    m_assocs.erase(category + ":" + id);
+    jzDebug() << "assoc -" << category << ":" << id;
+}
+
+void JZSimServer::setConfig(const Json::Value& cfg)
+{
+    // 先对新旧配置做 diff, 针对具体变更向各驱动发送语义化事件(而不是笼统的"配置变了")。
+    diffWifiConfig(m_config, cfg);
+    // 其它 category(gpio/sensor/ble/ota)的 diff 可在此追加。
+
+    m_config = cfg;
+    jzDebug() << "JZSimServer: config updated (in-memory)";
+}
+
+// 取 ap 的唯一标识: 优先 bssid, 否则回退 ssid(同一 ssid 多 AP 场景下以 bssid 区分)。
+static std::string apKey(const Json::Value& ap)
+{
+    if (ap.isMember("bssid") && !ap["bssid"].asString().empty())
+        return ap["bssid"].asString();
+    return ap.isMember("ssid") ? ap["ssid"].asString() : std::string();
+}
+
+// 比较新旧 wifi.aps, 发出 SIM_WIFI_AP_ADDED / REMOVED / UPDATED。
+void JZSimServer::diffWifiConfig(const Json::Value& oldCfg, const Json::Value& newCfg)
+{
+    const Json::Value empty;
+    const Json::Value& oldAps = (oldCfg.isMember("wifi") && oldCfg["wifi"].isMember("aps"))
+                                ? oldCfg["wifi"]["aps"] : empty;
+    const Json::Value& newAps = (newCfg.isMember("wifi") && newCfg["wifi"].isMember("aps"))
+                                ? newCfg["wifi"]["aps"] : empty;
+
+    // 旧 ap 按 key 建索引
+    std::map<std::string, const Json::Value*> oldMap;
+    for (const auto& a : oldAps)
+        oldMap[apKey(a)] = &a;
+
+    // 遍历新 ap: 新增 or 更新
+    for (const auto& a : newAps)
+    {
+        std::string key = apKey(a);
+        auto it = oldMap.find(key);
+        if (it == oldMap.end())
+        {
+            JZSimPack pack;
+            pack.cmd = SIM_WIFI_AP_ADDED;
+            pack.json = a;
+            onClientPacket(pack);
+        }
+        else
+        {
+            // 已存在: 逐字段比较, 任意字段不同则视为 UPDATED(携带新对象)。
+            const Json::Value& o = *it->second;
+            bool changed = (o.size() != a.size());
+            for (const auto& name : a.getMemberNames())
+            {
+                if (!o.isMember(name) || o[name].toStyledString() != a[name].toStyledString())
+                {
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed)
+            {
+                JZSimPack pack;
+                pack.cmd = SIM_WIFI_AP_UPDATED;
+                pack.json = a;
+                onClientPacket(pack);
+            }
+            oldMap.erase(it);
+        }
+    }
+
+    // oldMap 中剩余的即为被删除的 ap
+    for (const auto& kv : oldMap)
+    {
+        JZSimPack pack;
+        pack.cmd = SIM_WIFI_AP_REMOVED;
+        pack.json = *kv.second;
+        onClientPacket(pack);
+    }
 }
 
 // ===================== HTTP 处理 =====================
 void JZSimServer::handleHttpControl(JZHttpServerClient* client, const JZHttpRequest& req)
 {
     Json::Value body; Json::Reader reader;
-    if (!req.body().empty()) {
+    if (req.body().size() != 0) {
         reader.parse(std::string(req.body().data(), req.body().size()), body);
     }
 
@@ -389,7 +609,7 @@ void JZSimServer::handleHttpControl(JZHttpServerClient* client, const JZHttpRequ
 
     Json::Value out;
     out["status"] = "ok";
-    out["events"] = variantEventsToJson();
+    out["events"] = JZSimServer::variantEventsToJson(m_pendingEvents);
     out["state"] = getStateJson();
     client->response(jsonResponse(out));
 }
@@ -398,7 +618,7 @@ void JZSimServer::handleHttpPack(JZHttpServerClient* client, const JZHttpRequest
 {
     // 外部直接驱动 "Device -> driver" 事件(例如从网页触发应用侧收到 notify)
     Json::Value body; Json::Reader reader;
-    if (req.body().empty() || !reader.parse(std::string(req.body().data(), req.body().size()), body)) {
+    if (req.body().size() == 0 || !reader.parse(std::string(req.body().data(), req.body().size()), body)) {
         JZHttpRespone resp;
         resp.setStatusCode(400);
         resp.setJson(R"({"error":"invalid json"})");
@@ -421,7 +641,7 @@ void JZSimServer::handleHttpPack(JZHttpServerClient* client, const JZHttpRequest
 
     Json::Value out;
     out["status"] = "ok";
-    out["events"] = variantEventsToJson();
+    out["events"] = JZSimServer::variantEventsToJson(m_pendingEvents);
     client->response(jsonResponse(out));
 }
 
@@ -432,6 +652,77 @@ void JZSimServer::handleHttpState(JZHttpServerClient* client)
     out["httpRunning"] = isHttpRunning();
     out["state"] = getStateJson();
     client->response(jsonResponse(out));
+}
+
+void JZSimServer::handleHttpAssociations(JZHttpServerClient* client)
+{
+    Json::Value out;
+    out["status"] = "ok";
+    Json::Value assocs(Json::arrayValue);
+    for (auto& kv : m_assocs) {
+        Json::Value a;
+        a["category"] = kv.second.category;
+        a["id"] = kv.second.id;
+        a["label"] = kv.second.label;
+        assocs.append(a);
+    }
+    out["associations"] = assocs;
+    client->response(jsonResponse(out));
+}
+
+// GET /sim/config -> 返回当前配置(运行时内存)
+// POST /sim/config -> 解析 body(JSON) 写入配置, 返回写入后的配置
+void JZSimServer::handleHttpConfig(JZHttpServerClient* client, const JZHttpRequest& req)
+{
+    if (req.method() == JZHttpRequest::POST)
+    {
+        const std::string body = str_fromUtf8(req.body());
+        Json::Value cfg;
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::unique_ptr<Json::CharReader> reader(rb.newCharReader());
+        if (body.empty() || !reader->parse(body.data(), body.data() + body.size(), &cfg, &err))
+        {
+            Json::Value e;
+            e["status"] = "error";
+            e["message"] = "invalid config json: " + err;
+            client->response(jsonResponse(e));
+            return;
+        }
+        // 写入配置并通知各驱动(中断基于旧配置的连接)
+        setConfig(cfg);
+    }
+    Json::Value out;
+    out["status"] = "ok";
+    out["config"] = m_config;
+    client->response(jsonResponse(out));
+}
+
+// 根页面: 转发到 :/simulator/index.html
+void JZSimServer::handleHttpIndex(JZHttpServerClient* client)
+{
+    JZHttpRequest req;
+    req.setPath("/index.html");
+    m_static->handle(client, req);
+}
+
+// 具体驱动页面: /drivers/<cat> 或 /drivers/<cat>.html 映射到 :/simulator/drivers/<cat>.html
+void JZSimServer::handleHttpDriverPage(JZHttpServerClient* client, const std::string& catPath)
+{
+    std::string category = catPath;
+    // 去掉可能的 .html 后缀
+    if (str_endsWith(category, ".html"))
+        category = category.substr(0, category.size() - 5);
+    // 防止路径穿越
+    if (category.find('/') != std::string::npos || category.find('\\') != std::string::npos)
+        category.clear();
+
+    JZHttpRequest req;
+    if (category.empty())
+        req.setPath("/drivers/empty.html");
+    else
+        req.setPath("/drivers/" + category + ".html");
+    m_static->handle(client, req);
 }
 
 // ===================== JSON 辅助 =====================
@@ -488,7 +779,7 @@ static JZVariant jsonToVariant(const Json::Value& v)
     return JZVariant();
 }
 
-static Json::Value variantEventsToJson(const std::vector<JZSimPack>& events)
+Json::Value JZSimServer::variantEventsToJson(const std::vector<JZSimPack>& events)
 {
     Json::Value arr(Json::arrayValue);
     for (auto& e : events) {

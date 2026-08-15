@@ -48,6 +48,8 @@ public:
     std::string absolutePath() const;
     std::string absoluteFilePath(std::string path) const;
 
+    bool isResource() const;   // 路径以 ':' 开头, 指向 JZResources 中的资源组
+
     // 获取目录中所有文件信息
     std::vector<JZFileInfo> entryInfoList(int filter = Files | Dirs | NoDotAndDotDot, int sort = SortNone) const;
     std::vector<JZFileInfo> entryInfoList(const std::vector<std::string> &filters,int filter, int sort = SortNone) const;

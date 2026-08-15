@@ -7,13 +7,15 @@
 #include "JZWifiScanner.h"
 #include "JZSimPack.h"
 #include "JZSimServer.h"
+#include "JZObject.h"
+#include "JZSignal.h"
 #include "JZObjectPointer.h"
 #include <map>
 #include <string>
 
 // WiFi 模拟驱动: 与 JZGpioDriverSimulator / JZBleDriverSimulator 类似,
-// 通过 JZNetClient 把 WiFi 操作封装成网络包发往 JZSimulatorDevice (运行 JZNetServer + LVGL 界面),
-// 由后者模拟真实的 WiFi 芯片行为并把结果/事件回传。应用侧可像使用 Esp32 驱动一样使用它。
+// 通过 JZSimServer (内嵌 HTTP Server) 把 WiFi 操作上报; 网页/API 触发的动作
+// 经 JZSimServer 路由回 onRecv。应用侧可像使用 Esp32 驱动一样使用它。
 //
 // 适用场景: 在 PC 上联调上层 WiFi 相关业务逻辑(Station / AP / Scan)而无需 ESP32 真机。
 //
@@ -22,8 +24,9 @@
 // 只有 AP 的启动/停止需要发往模拟器(上行 ap_start/ap_stop),
 // 站点(station)的接入与断开由模拟器通过下行 station_info 包回传,
 // 驱动据此与本地集合做差分, 触发接入/断开事件。
-class JZWifiDriverSimulator : public JZWifiDriver
+class JZWifiDriverSimulator : public JZWifiDriver, public JZSimulator, public JZObject
 {
+    JZ_OBJECT_DECLARE(JZWifiDriverSimulator)
 public:
     JZWifiDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZWifiDriverSimulator() override;
@@ -31,8 +34,12 @@ public:
     // 取当前 WiFi 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZWifiDriverSimulator *simInstance();
 
-    // 由 JZSimServer 按模块段路由调用, 处理下行(WiFi 段)网络包
-    void onRecv(JZSimPack *pack);
+    // JZSimulator 接口: 下行路由判断 / 下行处理。
+    bool support(JZSimCmd cmd) const override;
+    void onRecv(const JZSimPack &pack) override;
+
+    // 每次本驱动与模拟器交互(sendApCmd 发出指令 / onRecv 收到回发)都会通过此信号广播。
+    JZSignal<JZSimCmd, const JZVariantMap&> sigSim{this};
 
     bool isWifiAvailable();
 
@@ -58,6 +65,8 @@ public:
 
 private:
     void sendApCmd(const JZSimPack &pack); // 上行: Driver->模拟器 (ap_start/ap_stop)
+    // 配置 wif.aps 变更后: 若当前 station 凭证在新配置中已无匹配 AP, 断开 station。
+    void checkStationCredential();
 
     // Station 连接只接受这组凭证
     static constexpr const char *kApSsid = "jz_simulator_ap";
@@ -66,6 +75,8 @@ private:
     JZSimServer *m_sim = nullptr;
     JZObjectPointer m_apWifi;        // 当前 AP 对象(用于回传站点事件)
     JZObjectPointer m_staWifi;       // 当前 Station 对象
+    std::string m_staSsid;           // 当前 station 连接所用的 ssid(用于判断配置变更是否使其失效)
+    std::string m_staPassword;       // 当前 station 连接所用的 password
     std::map<std::string, std::string> m_apStations; // 当前连接到本 AP 的站点: mac -> ip
 };
 

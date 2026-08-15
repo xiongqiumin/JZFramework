@@ -3,7 +3,9 @@
 
 #include "JZGpioDriver.h"
 #include "JZSimServer.h"
+#include "JZObject.h"
 #include "JZSimPack.h"
+#include "JZSignal.h"
 #include "JZTimer.h"
 #include <map>
 #include <string>
@@ -15,8 +17,9 @@ class JZNetPack;
 // 由后者模拟真实引脚行为并把电平事件回传; 波形则由本驱动借助 JZTimer 在本地生成
 // (周期采样 -> 计算电平 -> onLevelChanged), 无需依赖远端设备。
 // 应用侧可像使用 Esp32 驱动一样使用它。
-class JZGpioDriverSimulator : public JZGpioDriver
+class JZGpioDriverSimulator : public JZGpioDriver, public JZSimulator, public JZObject
 {
+    JZ_OBJECT_DECLARE(JZGpioDriverSimulator)
 public:
     JZGpioDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
     ~JZGpioDriverSimulator() override;
@@ -24,8 +27,13 @@ public:
     // 取当前 GPIO 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZGpioDriverSimulator *simInstance();
 
-    // 由 JZSimServer 按模块段路由调用, 处理下行(GPIO 段)网络包
-    void onRecv(JZSimPack *pack);
+    // JZSimulator 接口: 下行路由判断 / 下行处理。
+    bool support(JZSimCmd cmd) const override;
+    void onRecv(const JZSimPack &pack) override;
+
+    // 每次本驱动与模拟器交互(sendSim 发出指令 / onRecv 收到回发)都会通过此信号广播,
+    // 上层或测试代码可 connect 订阅以观测交互。
+    JZSignal<JZSimCmd, const JZVariantMap&> sigSim{this};
 
     bool supportsPin(int pin) override;
     std::vector<JZGpioInfo> availableGpios() override;

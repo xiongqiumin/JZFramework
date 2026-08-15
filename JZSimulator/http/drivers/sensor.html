@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../css/style.css"></head>
+<body><div class="drv">
+    <h2>Sensor 模拟驱动</h2>
+    <div class="desc">传感器模拟（占位实现，后续按具体传感器类型补充）。</div>
+
+    <div class="card">
+        <h3>已关联对象</h3>
+        <div id="assoc">加载中...</div>
+    </div>
+    <div class="card">
+        <h3>说明</h3>
+        <div class="kv">驱动在 open 时通过 JZSimServer::addAssoc 上报接入的传感器对象，本页展示其运行状态。</div>
+    </div>
+</div>
+<script>
+function load(){
+    fetch('/sim/state').then(r=>r.json()).then(j=>{
+        const st = j.state || {};
+        const items = (st.associations||[]).filter(a=>a.category==='sensor');
+        document.getElementById('assoc').innerHTML = items.length
+            ? items.map(a=>`<div class="kv"><span class="k">${a.id}</span><span class="v">${a.label}</span></div>`).join('')
+            : '<div class="kv">暂无</div>';
+    }).catch(()=>{});
+}
+load(); setInterval(load, 2000);
+</script></body></html>

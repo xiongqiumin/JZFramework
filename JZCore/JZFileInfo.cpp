@@ -12,6 +12,7 @@
 
 #include "JZFileInfo.h"
 #include "JZDir.h"
+#include "JZResources.h"
 #include "JZPlatform.h"
 
 bool JZFileInfo::exists(const std::string &path)
@@ -21,6 +22,31 @@ bool JZFileInfo::exists(const std::string &path)
 
 std::string JZFileInfo::weaklyCanonicalPath(std::string path)
 {
+    // 资源路径: 以 ':/' 开头, 保留 ':' 前缀, 仅规整其余部分
+    if (JZFileInfo::isResourcePath(path))
+    {
+        std::string body = path;
+        str_replace(body, "\\", "/");
+        while (str_contains(body, "//"))
+            str_replace(body, "//", "/");
+
+        std::string rest = body.substr(2);   // 去掉 ":/"
+        std::vector<std::string> processed;
+        for (const auto &comp : str_split(rest, "/"))
+        {
+            if (comp.empty() || comp == ".")
+                continue;
+            else if (comp == "..")
+            {
+                if (!processed.empty())
+                    processed.pop_back();
+            }
+            else
+                processed.push_back(comp);
+        }
+        return ":/" + str_join(processed, "/");
+    }
+
     assert(JZDir::isAbsolutePath(path));
 
     str_replace(path, "\\", "/");
@@ -54,7 +80,7 @@ std::string JZFileInfo::weaklyCanonicalPath(std::string path)
 
 
 JZFileInfo::JZFileInfo()
-    : m_exists(false), m_isFile(false), m_isDir(false), m_size(0), m_time(0)
+    : m_isResource(false), m_exists(false), m_isFile(false), m_isDir(false), m_size(0), m_time(0)
 {
 }
 
@@ -66,6 +92,12 @@ JZFileInfo::JZFileInfo(const std::string &path)
 void JZFileInfo::setFile(const std::string &path) 
 {
     m_path = path;
+
+    if (JZFileInfo::isResourcePath(path))
+    {
+        setResource(path);
+        return;
+    }
 
 #if JZ_OS == JZ_OS_WINDOWS || JZ_OS == JZ_OS_LINUX
     struct stat st;
@@ -117,9 +149,42 @@ bool JZFileInfo::isFile() const
     return m_isFile;
 }
 
-bool JZFileInfo::isDir() const 
+bool JZFileInfo::isDir() const
 {
     return m_isDir;
+}
+
+bool JZFileInfo::isResource() const
+{
+    return m_isResource;
+}
+
+bool JZFileInfo::isResourcePath(const std::string &path)
+{
+    return path.rfind(":/", 0) == 0;
+}
+
+void JZFileInfo::setResource(const std::string &path)
+{
+    m_isResource = true;
+
+    auto *res = JZResources::instance()->find(path);
+    if (res != nullptr)
+    {
+        m_exists = true;
+        m_isFile = true;
+        m_isDir = false;
+        m_size = res->size;
+        m_time = 0;
+    }
+    else
+    {
+        m_exists = false;
+        m_isFile = false;
+        m_isDir = false;
+        m_size = 0;
+        m_time = 0;
+    }
 }
 
 std::string JZFileInfo::fileName() const 

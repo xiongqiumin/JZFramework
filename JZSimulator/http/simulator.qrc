@@ -1,0 +1,14 @@
+<!DOCTYPE RCC>
+<RCC>
+    <qresource prefix="/simulator">
+        <file>index.html</file>
+        <file>css/style.css</file>
+        <file>js/app.js</file>
+        <file>drivers/gpio.html</file>
+        <file>drivers/ble.html</file>
+        <file>drivers/wifi.html</file>
+        <file>drivers/sensor.html</file>
+        <file>drivers/ota.html</file>
+        <file>drivers/empty.html</file>
+    </qresource>
+</RCC>

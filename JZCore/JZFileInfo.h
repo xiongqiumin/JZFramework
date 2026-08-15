@@ -9,6 +9,7 @@ class JZFileInfo
 public:
     static bool exists(const std::string &path);
     static std::string weaklyCanonicalPath(std::string path);
+    static bool isResourcePath(const std::string &path);   // 资源路径: 以 ':/' 开头
 
     JZFileInfo();
     JZFileInfo(const std::string &path);
@@ -18,6 +19,8 @@ public:
     bool exists() const;
     bool isFile() const;
     bool isDir()  const;
+
+    bool isResource() const;     // 路径以 ':' 开头, 指向 JZResources 注册的资源
 
     std::string fileName() const;
     std::string filePath() const;
@@ -30,7 +33,10 @@ public:
     int64_t lastModified() const;
 
 private:
+    void setResource(const std::string &path);
+
     std::string m_path;
+    bool m_isResource;
     bool m_exists;
     bool m_isFile;
     bool m_isDir;

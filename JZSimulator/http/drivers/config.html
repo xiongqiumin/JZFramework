@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="card">
+        <h3>外围设备配置（运行时内存）</h3>
+        <p class="hint">按类别组织各驱动的外围设备清单，例如 wifi.aps；保存后生效于运行时内存，重启清空。</p>
+        <textarea id="config-text" spellcheck="false" placeholder='{"wifi":{"aps":[{"ssid":"home","password":"123","rssi":-55,"bssid":"AA:BB:CC:DD:EE:01","auth":1}]}}'></textarea>
+    </div>
+    <div class="card row">
+        <button id="load" class="btn">加载配置</button>
+        <button id="save" class="btn primary">保存配置</button>
+        <span id="msg" class="msg"></span>
+    </div>
+<script>
+const API = { config: '/sim/config' };
+function showMsg(s, ok) {
+    const m = document.getElementById('msg');
+    m.textContent = s || '';
+    m.className = 'msg' + (ok ? ' ok' : (s ? ' err' : ''));
+}
+function loadConfig() {
+    fetch(API.config)
+        .then(r => r.json())
+        .then(j => {
+            if (j.status === 'error') { showMsg(j.message || '加载失败', false); return; }
+            document.getElementById('config-text').value = JSON.stringify(j.config || {}, null, 2);
+            showMsg('已加载当前配置', true);
+        })
+        .catch(() => showMsg('加载失败(未连接服务端)', false));
+}
+// 供父页(index.html 的"保存配置"按钮)调用
+function saveConfig() {
+    let cfg;
+    try { cfg = JSON.parse(document.getElementById('config-text').value); }
+    catch (e) { showMsg('JSON 解析失败: ' + e.message, false); return; }
+    fetch(API.config, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+    })
+    .then(r => r.json())
+    .then(j => {
+        if (j.status === 'error') { showMsg(j.message || '保存失败', false); return; }
+        document.getElementById('config-text').value = JSON.stringify(j.config || {}, null, 2);
+        showMsg('已保存(生效于运行时内存)', true);
+    })
+    .catch(() => showMsg('保存失败(未连接服务端)', false));
+}
+document.getElementById('load').addEventListener('click', loadConfig);
+document.getElementById('save').addEventListener('click', saveConfig);
+loadConfig();
+</script>
+</body>
+</html>

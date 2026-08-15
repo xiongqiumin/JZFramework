@@ -2,5 +2,11 @@
 <RCC>
     <qresource prefix="/data">
         <file alias="shape.json">shape_sample.json</file>
+        <file alias="config/foo.bin">config/foo.bin</file>
+        <file alias="config/network/wifi.bin">config/network/wifi.bin</file>
+        <file alias="config/network/eth.bin">config/network/eth.bin</file>
+        <file alias="img/logo.txt">img/logo.txt</file>
+        <file alias="img/icons/home.txt">img/icons/home.txt</file>
+        <file alias="img/icons/back.txt">img/icons/back.txt</file>
     </qresource>
 </RCC>

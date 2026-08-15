@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="../css/style.css"></head>
+<body><div class="drv">
+    <h2>GPIO 模拟驱动</h2>
+    <div class="desc">在 PC 上模拟 GPIO 电平输入/输出，无需真实硬件。</div>
+
+    <div class="card">
+        <h3>已关联对象</h3>
+        <div id="assoc" class="kv">加载中...</div>
+    </div>
+</div>
+<script>
+function load() {
+    fetch('/sim/state').then(r=>r.json()).then(j=>{
+        const st = j.state || {};
+        const items = (st.associations||[]).filter(a=>a.category==='gpio');
+        document.getElementById('assoc').innerHTML = items.length
+            ? items.map(a=>`<div class="kv"><span class="k">${a.id}</span><span class="v">${a.label}</span></div>`).join('')
+            : '<div class="kv">暂无</div>';
+    }).catch(()=>{});
+}
+load(); setInterval(load, 2000);
+</script></body></html>

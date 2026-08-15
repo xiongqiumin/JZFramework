@@ -27,7 +27,7 @@ bool JZFile::remove(std::string filepath)
 
 bool JZFile::exists(std::string filepath)
 {
-    if (!filepath.empty() && filepath[0] == ':')
+    if (JZFileInfo::isResourcePath(filepath))
     {
         return JZResources::instance()->find(filepath) != nullptr;
     }
@@ -54,7 +54,7 @@ bool JZFile::open(std::string filepath, std::string mode)
         return false;
     }
 
-    if (!filepath.empty() && filepath[0] == ':')
+    if (JZFileInfo::isResourcePath(filepath))
     {
         if (mode.find_first_of("aw") != std::string::npos)
         {

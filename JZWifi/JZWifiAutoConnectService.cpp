@@ -84,10 +84,14 @@ void JZWifiAutoConnectService::stop()
     stopRssiMonitor();
 
     m_scanner->stop();
-    m_station->disconnectFromAp();
 
     m_effectiveInterval = m_config.scanIntervalMs;
     m_failBlacklist.clear();    
+}
+
+void JZWifiAutoConnectService::disconnectFromAp()
+{
+    m_station->disconnectFromAp();
 }
 
 bool JZWifiAutoConnectService::isActive() const 

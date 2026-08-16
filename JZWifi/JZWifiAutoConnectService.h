@@ -59,8 +59,14 @@ public:
     // 失败黑名单: 手动清空(不传 ssid 则全部清空)
     void clearFailBlacklist(const std::string &ssid = std::string());
 
+    // 启动自动连接服务调度: 启动周期定时器 + 扫描 + 评估连接 + 漫游 + 断线重连。
+    // 仅控制调度逻辑, 不会主动断开已有的底层 WiFi 连接。
     void start();
+    // 停止自动连接服务调度: 停止周期定时器与扫描, 清理黑名单与状态; 不主动断开当前 WiFi 连接。
+    // 如需彻底断开连接, 请另行调用 disconnectFromAp()。
     void stop();
+    // 主动断开底层 WiFi 连接(仅断开连接, 不影响服务调度: 若服务仍 active, 下一轮扫描会重新连接)。
+    void disconnectFromAp();
     bool isActive() const;
 
     // 当前已连接信息(未连接时 ssid 为空)

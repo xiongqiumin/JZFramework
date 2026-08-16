@@ -43,7 +43,9 @@ public:
             return nullptr;
         void *p = JZPlatform::malloc(n * sizeof(T));
         if (!p)
-            throw std::bad_alloc();
+        {
+            JZ_ASSERT(0);
+        }
         return static_cast<T*>(p);
     }
 

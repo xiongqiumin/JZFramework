@@ -29,19 +29,24 @@ public:
     JZWebSocketTest(JZEventLoop *loop)
     {
         int port = 18000;
-        server = new JZWebSocketServer(this);
-        server->listen(port);
-        connect(&server->sigAccept, this, &JZWebSocketTest::onServerAccecpt);
+        if (g_option.enableServer)
+        {
+            server = new JZWebSocketServer(this);
+            server->listen(port);
+            connect(&server->sigAccept, this, &JZWebSocketTest::onServerAccecpt);
+        }
 
-        client = new JZWebSocket(this);
-        client->connectToHost(JZNetworkRequest("ws://127.0.0.1:" + to_string(port)));
-
-        connect(&client->sigConnected, this, &JZWebSocketTest::onClientConnect);
-        connect(&client->sigTextMessageReceived, this, &JZWebSocketTest::onClientRecv);
+        if (g_option.enableClient)
+        {
+            client = new JZWebSocket(this);
+            client->connectToHost(JZNetworkRequest("ws://" + g_option.host + ":" + to_string(port)));
+            connect(&client->sigConnected, this, &JZWebSocketTest::onClientConnect);
+            connect(&client->sigTextMessageReceived, this, &JZWebSocketTest::onClientRecv);
+        }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== WebSocket 单线程测试启动 (15s 后退出) ====";
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== WebSocket 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
     }
 
     void onServerAccecpt()
@@ -53,6 +58,8 @@ public:
     void onServerRecv(const string& text)
     {
         server_socket->sendTextMessage(text);   // 原样回传
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 在接收时计时
+            m_tps.hit();
     }
 
     void onClientRecv(const string &text)
@@ -67,7 +74,8 @@ public:
         expect_recv_seq++;
         uint64_t current_seq = send_seq.fetch_add(1);
         client->sendTextMessage(WS_PREFIX + to_string(current_seq));
-        m_tps.hit();
+        if (g_option.enableClient)
+            m_tps.hit();
     }
 
     void onClientConnect()
@@ -126,26 +134,32 @@ public:
     JZWebSocketTestMultiThread(JZEventLoop *loop, int p = 18001)
     {
         port = p;
-        server = new JZWebSocketServer(this);
-        server->listen(port);
-        connect(&server->sigAccept, this, &JZWebSocketTestMultiThread::onServerAccept);
-
-        string url = "ws://127.0.0.1:" + to_string(port);
-        for (int i = 0; i < CLIENT_THREAD_COUNT; i++) {
-            auto thread = new WebSocketClientThread(url, i);
-            thread->setParent(this);
-            clientThreads.push_back(thread);
+        if (g_option.enableServer)
+        {
+            server = new JZWebSocketServer(this);
+            server->listen(port);
+            connect(&server->sigAccept, this, &JZWebSocketTestMultiThread::onServerAccept);
         }
-        // 所有线程的 parent-child 关系建立完毕后再统一 start，
-        // 避免前一个线程 run() 中 new JZWebSocket(this) 修改 m_childs
-        // 与后一个线程的 setParent 遍历同一 m_childs 产生数据竞争
-        for (auto t : clientThreads) {
-            t->start();
+
+        string url = "ws://" + g_option.host + ":" + to_string(port);
+        if (g_option.enableClient)
+        {
+            for (int i = 0; i < CLIENT_THREAD_COUNT; i++) {
+                auto thread = new WebSocketClientThread(url, i);
+                thread->setParent(this);
+                clientThreads.push_back(thread);
+            }
+            // 所有线程的 parent-child 关系建立完毕后再统一 start，
+            // 避免前一个线程 run() 中 new JZWebSocket(this) 修改 m_childs
+            // 与后一个线程的 setParent 遍历同一 m_childs 产生数据竞争
+            for (auto t : clientThreads) {
+                t->start();
+            }
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== WebSocket 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, 15s 后退出) ====";
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== WebSocket 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
     }
 
     ~JZWebSocketTestMultiThread() {
@@ -202,6 +216,7 @@ int test_websocket_single()
     double tps = test.m_tps.average();
     netCheckTps("WebSocket 单线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 
@@ -214,6 +229,7 @@ int test_websocket_multi()
     double tps = test.m_tps.average();
     netCheckTps("WebSocket 多线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 

@@ -23,23 +23,29 @@ public:
     {
         m_prefix = "mqtt";
         m_topic = "test/bench";
-        m_server = new JZMqttServer(this);
-        m_server->listen(port);
+        if (g_option.enableServer)
+        {
+            m_server = new JZMqttServer(this);
+            m_server->listen(port);
+        }
 
-        m_client = new JZMqttClient(this);
-        connect(&m_client->sigConnect, this, &MqttTestSingle::onClientConnect);
-        connect(&m_client->sigMessage, this, &MqttTestSingle::onClientMsg);
-        connect(&m_client->sigDisconnect, this, &MqttTestSingle::onDisconnect);
+        if (g_option.enableClient)
+        {
+            m_client = new JZMqttClient(this);
+            connect(&m_client->sigConnect, this, &MqttTestSingle::onClientConnect);
+            connect(&m_client->sigMessage, this, &MqttTestSingle::onClientMsg);
+            connect(&m_client->sigDisconnect, this, &MqttTestSingle::onDisconnect);
 
-        JZMqttConnectOpt opt;
-        opt.clientId = "bench";
-        opt.cleanSession = true;
-        opt.keepAlive = 30;
-        m_client->connectToHost("mqtt://127.0.0.1:" + to_string(port), opt);
+            JZMqttConnectOpt opt;
+            opt.clientId = "bench";
+            opt.cleanSession = true;
+            opt.keepAlive = 30;
+            m_client->connectToHost("mqtt://" + g_option.host + ":" + to_string(port), opt);
+        }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== MQTT 单线程测试启动 (15s 后退出, QoS1 可靠投递) ====";
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== MQTT 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出, QoS1 可靠投递) ====";
     }
 
     void onClientConnect()
@@ -131,7 +137,7 @@ public:
         opt.clientId = "bench" + to_string(m_id);
         opt.cleanSession = true;
         opt.keepAlive = 30;
-        m_client->connectToHost("mqtt://127.0.0.1:" + to_string(m_port), opt);
+        m_client->connectToHost("mqtt://" + g_option.host + ":" + to_string(m_port), opt);
         exec();
     }
 
@@ -215,25 +221,31 @@ public:
 
     MqttTestMulti(JZEventLoop *loop, int port)
     {
-        m_server = new JZMqttServer(this);
-        m_server->listen(port);
-
-        for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
+        if (g_option.enableServer)
         {
-            auto t = new MqttClientThread(port, &m_tps, i);
-            t->setParent(this);
-            threads.push_back(t);
+            m_server = new JZMqttServer(this);
+            m_server->listen(port);
         }
-        // 所有线程的 parent-child 关系建立完毕后再统一 start，
-        // 避免前一个线程 run() 中修改 m_childs 与后一个线程的 setParent 遍历同一 m_childs 产生数据竞争
-        for (auto t : threads)
+
+        if (g_option.enableClient)
         {
-            t->start();
+            for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
+            {
+                auto t = new MqttClientThread(port, &m_tps, i);
+                t->setParent(this);
+                threads.push_back(t);
+            }
+            // 所有线程的 parent-child 关系建立完毕后再统一 start，
+            // 避免前一个线程 run() 中修改 m_childs 与后一个线程的 setParent 遍历同一 m_childs 产生数据竞争
+            for (auto t : threads)
+            {
+                t->start();
+            }
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== MQTT 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, 15s 后退出) ====";
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== MQTT 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
     }
 
     ~MqttTestMulti()
@@ -258,6 +270,7 @@ int test_mqtt_single()
     double tps = test.m_tps.average();
     netCheckTps("MQTT 单线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 
@@ -270,6 +283,7 @@ int test_mqtt_multi()
     double tps = test.m_tps.average();
     netCheckTps("MQTT 多线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 

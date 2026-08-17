@@ -10,6 +10,15 @@
 
 #define NET_TEST_THREAD_COUNT 8
 
+struct TestOption
+{
+    bool enableServer = true;
+    bool enableClient = true;
+    int loopTime = 15000;
+    int delayTime = 0;
+    std::string host = "127.0.0.1";   // 客户端连接的目标服务器地址(由 --server 指定)
+};
+
 // 各 net 模块测试共用的工具函数
 std::string netMakeMsg(const std::string &prefix, uint64_t seq);
 
@@ -56,3 +65,4 @@ public:
 
 // 结束判断: 平均 TPS 是否达到阈值, 否则视为 benchmark 不达标直接 exit(1)
 void netCheckTps(const std::string &name, double tps, double threshold = 200.0);
+extern TestOption g_option;

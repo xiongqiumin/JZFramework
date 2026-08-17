@@ -1,5 +1,7 @@
 #include "net_test_common.h"
 
+TestOption g_option;
+
 std::string netMakeMsg(const std::string &prefix, uint64_t seq)
 {
     return prefix + " " + std::to_string(seq) + "\n";

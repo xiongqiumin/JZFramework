@@ -25,12 +25,16 @@ using namespace std;
 class HttpEchoHandler : public JZHttpHandler
 {
 public:
+    NetTpsCounter *serverTps = nullptr;   // 纯服务器模式时由测试注入, 用于接收计时
+
     void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
     {
         JZHttpRespone resp;
         resp.setStatusCode(200);
         resp.setContentType("text/plain");
         resp.setBody(req.body());   // 原样回显 body
+        if (serverTps)
+            serverTps->hit();       // 服务器接收时计时(纯服务器模式由测试注入)
         client->response(resp.toByteArray());
     }
 };
@@ -43,18 +47,28 @@ public:
         : m_port(port)
     {
         m_prefix = "http";
-        m_url = "http://127.0.0.1:" + to_string(port);
+        m_url = "http://" + g_option.host + ":" + to_string(port);
 
-        m_server = new JZHttpServer(this);
-        m_server->listen(port);
-        m_server->addRoute("/test", new HttpEchoHandler());
+        if (g_option.enableServer)
+        {
+            m_server = new JZHttpServer(this);
+            m_server->listen(port);
+            auto *h = new HttpEchoHandler();
+            if (!g_option.enableClient)   // 纯服务器模式: 用服务器接收计时
+                h->serverTps = &m_tps;
+            m_server->addRoute("/test", h);
+        }
 
-        m_net = new JZNetworkAccessManager(this);
+        if (g_option.enableClient)
+        {
+            m_net = new JZNetworkAccessManager(this);
+        }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== HTTP 单线程测试启动 (15s 后退出) ====";
-        sendNext();
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== HTTP 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableClient)
+            sendNext();
     }
 
     void sendNext()
@@ -76,7 +90,8 @@ public:
         if (!netParseMsg(body, m_prefix, seq) || seq != m_expect)
             netReportError("HTTP", "回显校验失败 期望=" + to_string(m_expect) + " 收到=" + body);
         m_expect++;
-        m_tps.hit();
+        if (g_option.enableClient)
+            m_tps.hit();
         reply->deleteLater();
 
         //现在没有 keep alive, 不停发送会耗光资源. 限制一下
@@ -140,7 +155,8 @@ public:
         if (!netParseMsg(body, m_prefix, seq) || seq != m_expect)
             netReportError("HTTP", "多线程回显校验失败 期望=" + to_string(m_expect) + " 收到=" + body);
         m_expect++;
-        m_tps->hit();
+        if (g_option.enableClient)
+            m_tps->hit();
         reply->deleteLater();
         JZTimer::singleShot(10, this, [this]() { sendNext(); });   // 每 100ms 发一个
     }
@@ -165,22 +181,31 @@ public:
 
     HttpTestMultiThread(JZEventLoop *loop, int port)
     {
-        string url = "http://127.0.0.1:" + to_string(port);
-        m_server = new JZHttpServer(this);
-        m_server->listen(port);
-        m_server->addRoute("/test", new HttpEchoHandler());
-
-        for (int i = 0; i < CLIENT_THREAD_COUNT; i++)
+        string url = "http://" + g_option.host + ":" + to_string(port);
+        if (g_option.enableServer)
         {
-            auto t = new HttpTestClientThread(url, &m_tps, i * 1000000ULL);
-            t->setParent(this);
-            t->start();
-            threads.push_back(t);
+            m_server = new JZHttpServer(this);
+            m_server->listen(port);
+            auto *h = new HttpEchoHandler();
+            if (!g_option.enableClient)   // 纯服务器模式: 用服务器接收计时
+                h->serverTps = &m_tps;
+            m_server->addRoute("/test", h);
+        }
+
+        if (g_option.enableClient)
+        {
+            for (int i = 0; i < CLIENT_THREAD_COUNT; i++)
+            {
+                auto t = new HttpTestClientThread(url, &m_tps, i * 1000000ULL);
+                t->setParent(this);
+                t->start();
+                threads.push_back(t);
+            }
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== HTTP 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, 15s 后退出) ====";
+        netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== HTTP 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
     }
 
     ~HttpTestMultiThread()
@@ -203,6 +228,7 @@ int test_http_single()
     double tps = test.m_tps.average();
     netCheckTps("HTTP 单线程", tps, 5);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 
@@ -215,6 +241,7 @@ int test_http_multi()
     double tps = test.m_tps.average();
     netCheckTps("HTTP 多线程", tps, 5);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 

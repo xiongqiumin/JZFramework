@@ -40,14 +40,20 @@ public:
     UdpPair(int serverPort, const string &prefix, NetTpsCounter *recvTps = nullptr)
         : m_prefix(prefix), m_serverPort(serverPort)
     {
-        m_server = new JZUdpSocket(this);
-        m_server->bind(serverPort);
-        connect(&m_server->sigReadyRead, this, &UdpPair::onServerRead);
+        if (g_option.enableServer)
+        {
+            m_server = new JZUdpSocket(this);
+            m_server->bind(serverPort);
+            connect(&m_server->sigReadyRead, this, &UdpPair::onServerRead);
+        }
 
-        m_client = new JZUdpSocket(this);
-        m_client->bind(0);
-        connect(&m_client->sigReadyRead, this, &UdpPair::onClientRead);
-        connect(&m_client->sigError, this, &UdpPair::onError);
+        if (g_option.enableClient)
+        {
+            m_client = new JZUdpSocket(this);
+            m_client->bind(0);
+            connect(&m_client->sigReadyRead, this, &UdpPair::onClientRead);
+            connect(&m_client->sigError, this, &UdpPair::onError);
+        }
 
         // 接收 TPS 计数器: 默认自带(单对, 挂到本对象下随析构清理), 多并发时可传入共享计数器
         if (recvTps)
@@ -59,16 +65,19 @@ public:
             m_recvTps = m_ownTps;
         }
 
-        m_sendTimer = new JZTimer(this);
-        connect(&m_sendTimer->sigTimeout, this, &UdpPair::onSendTick);
-        m_sendTimer->start(UDP_SEND_INTERVAL_MS);
+        if (g_option.enableClient)
+        {
+            m_sendTimer = new JZTimer(this);
+            connect(&m_sendTimer->sigTimeout, this, &UdpPair::onSendTick);
+            m_sendTimer->start(UDP_SEND_INTERVAL_MS);
+        }
     }
 
     void onSendTick()
     {
         for (int i = 0; i < UDP_SEND_BATCH; i++)
         {
-            m_client->writeDatagram("127.0.0.1", m_serverPort,
+            m_client->writeDatagram(g_option.host, m_serverPort,
                                     str_toUtf8(netMakeMsg(m_prefix, m_seq)));
             m_seq++;
             m_sent++;
@@ -82,6 +91,8 @@ public:
         {
             JZUdpDatagram dgram = m_server->readDatagram();
             m_server->writeDatagram(dgram.peerIp, dgram.peerPort, dgram.data);
+            if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 在接收时计时
+                m_recvTps->hit();
         }
     }
 
@@ -96,7 +107,8 @@ public:
                 continue;   // 忽略非本对的回显(理论不会到达, 防御性跳过)
             if (m_recvSet.insert(seq).second)
                 m_recv++;
-            m_recvTps->hit();   // 统计每秒从服务器收到的包数
+            if (g_option.enableClient)
+                m_recvTps->hit();   // 客户端模式: 统计从服务器收到的包
         }
     }
 
@@ -120,12 +132,13 @@ int test_udp_single()
     g_netTestActive = true;
     JZEventLoop loop;
     UdpPair pair(18101, "udp");
-    netInstallExit(&pair, &loop, 15000);
+    netInstallExit(&pair, &loop, g_option.loopTime);
     jzDebug() << "==== UDP 单线程测试启动 (每 " << UDP_SEND_INTERVAL_MS
-              << "ms 发 " << UDP_SEND_BATCH << " 包, 15s 后退出) ====";
+              << "ms 发 " << UDP_SEND_BATCH << " 包, " << (g_option.loopTime / 1000) << "s 后退出) ====";
     loop.exec();
     netCheckRatio("UDP 单线程", pair.m_recv, pair.m_sent);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return 0;
 }
 
@@ -145,10 +158,10 @@ int test_udp_multi()
     }
     // 共享计数器挂到首个 pair 下, pair 析构时一并清理, 避免定时器泄漏到后续测试
     recvTps->setParent(pairs[0]);
-    netInstallExit(pairs[0], &loop, 15000);
+    netInstallExit(pairs[0], &loop, g_option.loopTime);
     jzDebug() << "==== UDP 多并发测试启动 (" << NET_TEST_THREAD_COUNT
               << " 个 UDP 回环对, 每 " << UDP_SEND_INTERVAL_MS << "ms 发 " << UDP_SEND_BATCH
-              << " 包, 15s 后退出) ====";
+              << " 包, " << (g_option.loopTime / 1000) << "s 后退出) ====";
     loop.exec();
 
     uint64_t totalSent = 0, totalRecv = 0;
@@ -164,6 +177,7 @@ int test_udp_multi()
         delete p;
 
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return 0;
 }
 

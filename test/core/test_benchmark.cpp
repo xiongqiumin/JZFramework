@@ -5,6 +5,7 @@
 #include "JZAllocator.h"
 #include "JZTest.h"
 #include "JZThread.h"
+#include "JZApplication.h"
 #include "math.h"
 #include <cstring>
 #include <cstdlib>
@@ -380,4 +381,11 @@ void test_benchmark()
     benchmark_alloc();
     benchmark_stl();
     benchmark_datastream_endian();
+}
+
+int main(int argc, char *argv[])
+{
+    JZApplication app;
+    test_benchmark();
+    return 0;
 }

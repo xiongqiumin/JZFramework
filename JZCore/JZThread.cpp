@@ -333,7 +333,7 @@ void JZThread::popSender()
 void JZThread::waitEvents()
 {
     auto now = JZPlatform::getTickCountMs();
-    int64_t wait_ms = 100;
+    int64_t wait_ms = 1000;
 
     JZMutexLocker lock(&m_mutex);
     if (!m_running)

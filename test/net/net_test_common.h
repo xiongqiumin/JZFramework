@@ -35,6 +35,13 @@ void netReportError(const std::string &where, const std::string &detail);
 // 安装一个定时器, ms 毫秒后退出事件循环
 void netInstallExit(JZObject *owner, JZEventLoop *loop, int ms);
 
+// 纯服务器模式生命周期管理(纯服务器时使用):
+// - 启动后等待首个客户端连接, 超过 waitMs 仍未连接则退出(watchdog)
+// - 首个连接到达后(需调用方在 onAccept 中调用返回的 bench->onConnected()),
+//   再运行 runMs 然后退出事件循环
+class NetServerBench;
+NetServerBench *serverInstallExit(JZObject *owner, JZEventLoop *loop, int waitMs, int runMs);
+
 // TPS 计数器: 每 1s 打印一次吞吐率并清零, 各模块共用避免重复实现
 // 同时累计总消息数, 供结束时计算整体平均 TPS 用于 benchmark 判断
 class NetTpsCounter : public JZObject
@@ -52,15 +59,53 @@ public:
 
     void onTick();
 
-    // 整体平均 TPS(从 begin 到调用时刻), 用于结束后的 benchmark 判断
+    // 整体平均 TPS = 总消息数 / g_option.loopTime(秒), 用于结束后的 benchmark 判断
     double average() const;
+
+    // 累计总消息数
+    int64_t total() const { return m_total.load(); }
 
     std::string m_name;
     JZTimer *m_timer = nullptr;
     std::atomic<int> m_count{0};
     std::atomic<int64_t> m_total{0};
     std::chrono::steady_clock::time_point m_start;
-    std::chrono::steady_clock::time_point m_totalStart;
+};
+
+// 服务器模式生命周期管理(纯服务器时使用):
+// - 启动后等待首个客户端连接, 超过 waitMs 仍未连接则退出(watchdog)
+// - 首个连接到达后, 再运行 runMs 然后退出
+class NetServerBench : public JZObject
+{
+public:
+    NetServerBench(JZObject *owner, JZEventLoop *loop, int waitMs, int runMs)
+        : m_loop(loop)
+    {
+        (void)owner;
+        m_timer = new JZTimer(this);
+        m_timer->setSingleShot(true);
+        connect(&m_timer->sigTimeout, this, &NetServerBench::onTimeout);
+        m_timer->start(waitMs);
+    }
+
+    // 首个客户端连接时调用, 切换到 runMs 退出计时
+    void onConnected()
+    {
+        if (m_hasConnected.exchange(true))
+            return;   // 仅首次
+        m_timer->stop();
+        m_timer->start(m_runMs);
+    }
+
+    bool hasConnected() const { return m_hasConnected.load(); }
+
+private:
+    void onTimeout() { m_loop->quit(); }
+
+    JZEventLoop *m_loop;
+    int m_runMs = 20000;
+    JZTimer *m_timer = nullptr;
+    std::atomic<bool> m_hasConnected{false};
 };
 
 // 结束判断: 平均 TPS 是否达到阈值, 否则视为 benchmark 不达标直接 exit(1)

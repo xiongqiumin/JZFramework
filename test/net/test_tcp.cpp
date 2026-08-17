@@ -40,15 +40,22 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== TCP 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== TCP 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     void onAccept()
     {
         m_serverSock = m_server->nextPendingConnection();
         if (m_serverSock)
+        {
+            if (m_bench)
+                m_bench->onConnected();
             connect(&m_serverSock->sigReadyRead, this, &TcpTestSingle::onServerRead);
+        }
     }
 
     void onServerRead()
@@ -97,6 +104,7 @@ public:
     string m_prefix = "tcp";
     uint64_t m_expect = 0;
     NetTpsCounter m_tps{"TCP 单线程"};
+    NetServerBench *m_bench = nullptr;
 };
 
 // ===================== 多线程客户端线程(各自独立连接) =====================
@@ -165,6 +173,7 @@ class TcpTestMulti : public JZObject
 public:
     vector<TcpClientThread *> threads;
     NetTpsCounter m_tps{"TCP 多线程"};
+    NetServerBench *m_bench = nullptr;
 
     TcpTestMulti(JZEventLoop *loop, int port)
     {
@@ -187,9 +196,12 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
         jzDebug() << "==== TCP 多线程测试启动 (" << NET_TEST_THREAD_COUNT
-                  << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+                  << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     ~TcpTestMulti()
@@ -206,7 +218,11 @@ public:
     {
         auto *s = m_server->nextPendingConnection();
         if (s)
+        {
+            if (m_bench)
+                m_bench->onConnected();
             connect(&s->sigReadyRead, this, &TcpTestMulti::onServerRead);
+        }
     }
 
     void onServerRead()

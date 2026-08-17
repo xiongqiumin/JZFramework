@@ -40,6 +40,11 @@ void netInstallExit(JZObject *owner, JZEventLoop *loop, int ms)
     t->start(ms);
 }
 
+NetServerBench *serverInstallExit(JZObject *owner, JZEventLoop *loop, int waitMs, int runMs)
+{
+    return new NetServerBench(owner, loop, waitMs, runMs);
+}
+
 NetTpsCounter::NetTpsCounter(const std::string &name, JZObject *parent)
     : JZObject(parent), m_name(name)
 {
@@ -48,7 +53,6 @@ NetTpsCounter::NetTpsCounter(const std::string &name, JZObject *parent)
 void NetTpsCounter::begin()
 {
     m_start = std::chrono::steady_clock::now();
-    m_totalStart = m_start;
     if (!m_timer)
         m_timer = new JZTimer(this);
     connect(&m_timer->sigTimeout, this, &NetTpsCounter::onTick);
@@ -71,14 +75,18 @@ void NetTpsCounter::onTick()
 {
     auto now = std::chrono::steady_clock::now();
     double el = std::chrono::duration<double>(now - m_start).count();
-    jzDebug() << "[" << m_name << " TPS] " << (m_count.exchange(0) / el);
+    int n = m_count.exchange(0);
+    if (n > 0)   // 无流量(未启动/无客户端连接)时不打印
+        jzDebug() << "[" << m_name << " TPS] " << (n / el);
     m_start = now;
 }
 
 double NetTpsCounter::average() const
 {
-    auto now = std::chrono::steady_clock::now();
-    double el = std::chrono::duration<double>(now - m_totalStart).count();
+    // 平均 TPS 分母固定按 15 秒算(客户端实际发送时长);
+    // 纯服务器模式 g_option.loopTime 为退出等待时长(30s), 不能用作平均分母
+    int ms = (g_option.enableServer && !g_option.enableClient) ? 15000 : g_option.loopTime;
+    double el = ms / 1000.0;
     return el > 0 ? (double)m_total / el : 0.0;
 }
 

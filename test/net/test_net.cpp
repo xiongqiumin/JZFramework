@@ -28,7 +28,7 @@ int main(int argc, char *argv[])
     {
         g_option.enableServer = true;
         g_option.enableClient = false;
-        g_option.loopTime = 15000;
+        g_option.loopTime = 30000;   // 等待客户端连接 30s
         g_option.delayTime = 0;
     }
     else if (mode == "client")
@@ -37,11 +37,16 @@ int main(int argc, char *argv[])
         g_option.enableClient = true;
         g_option.delayTime = 10 * 1000;
     }
-    else // local
+    else if (mode == "local")
     {
         g_option.enableServer = true;
         g_option.enableClient = true;
         g_option.delayTime = 0;
+    }
+    else
+    {
+        jzDebug() << "[错误] 未知模式 '" << mode << "', 仅支持: local / server / client";
+        return 1;
     }
 
     jzDebug() << "########## Net 模块综合测试 (mode=" << mode
@@ -50,7 +55,7 @@ int main(int argc, char *argv[])
     test_tcp();
     jzDebug() << "【OK】TCP 通过";
 
-    //test_udp();
+    test_udp();
     jzDebug() << "【OK】UDP 通过";
 
     test_websocket();

@@ -41,11 +41,19 @@ public:
         m_tps.begin();
         if (g_option.enableClient)
             sendNext();                       // 启动 ping-pong
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== JZNetServer 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)
+            m_bench = serverInstallExit(this, loop, 30000, 20000);   // 等30s连接, 连接后跑20s
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== JZNetServer 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
-    void onAccept() { jzDebug() << "[JZNetServer] 单线程 accept"; }
+    void onAccept()
+    {
+        jzDebug() << "[JZNetServer] 单线程 accept";
+        if (m_bench)
+            m_bench->onConnected();
+    }
 
     // Server 收到任意客户端包, 原样回传
     void onServerRecv(uint64_t id, JZNetPackPtr p) { server->sendPacket(id, p.get()); }
@@ -73,6 +81,7 @@ public:
     JZNetServer *server = nullptr;
     JZNetClient *client = nullptr;
     NetTpsCounter m_tps{"JZNetServer 单线程"};
+    NetServerBench *m_bench = nullptr;
 };
 
 // ===================== 多线程客户端线程(各自独立连接) =====================
@@ -135,6 +144,7 @@ public:
         {
             server = new JZNetServer(this);
             server->listen(port);
+            connect(&server->sigAccept, this, &NetServerMultiTest::onAccept);
             connect(&server->sigPacketReceive, this, &NetServerMultiTest::onServerRecv);
             connect(&server->sigDisconnect, this, &NetServerMultiTest::onDisconnect);
         }
@@ -151,8 +161,17 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== JZNetServer 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)
+            m_bench = serverInstallExit(this, loop, 30000, 20000);   // 等30s连接, 连接后跑20s
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== JZNetServer 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
+    }
+
+    void onAccept()
+    {
+        if (m_bench)
+            m_bench->onConnected();
     }
 
     ~NetServerMultiTest()
@@ -171,6 +190,7 @@ public:
     void onDisconnect(uint64_t /*id*/) {}
 
     JZNetServer *server = nullptr;
+    NetServerBench *m_bench = nullptr;
 };
 
 int test_netServer_single()

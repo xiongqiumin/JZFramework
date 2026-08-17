@@ -18,26 +18,15 @@ using namespace std;
 // 每轮发送间隔(ms) 与每轮包数: 10ms 发 10 包
 static const int UDP_SEND_INTERVAL_MS = 10;
 static const int UDP_SEND_BATCH = 10;
-// 接收率达标阈值(>= 80%)
-static const double UDP_PASS_RATIO = 0.8;
-
-// 接收率判断: 收到 / 发送 >= 阈值, 否则直接 exit(1)
-inline void netCheckRatio(const string &name, uint64_t recv, uint64_t sent, double threshold = UDP_PASS_RATIO)
-{
-    double r = sent ? (double)recv / sent : 0.0;
-    jzDebug() << "[" << name << "] 发送=" << sent << " 接收=" << recv
-              << " 接收率=" << (int)(r * 100) << "% (阈值 " << (int)(threshold * 100) << "%)";
-    if (r < threshold)
-        netReportError(name, "接收率过低 " + to_string((int)(r * 100)) + "% < " + to_string((int)(threshold * 100)) + "%");
-    jzDebug() << "[Benchmark][" << name << "] 接收率=" << (int)(r * 100) << "% OK";
-}
+// 接收 TPS 达标阈值(>= 500)
+static const double UDP_PASS_TPS = 500.0;
 
 // 一个 UDP 回环对: 1 个 Server(bind 固定端口) + 1 个 Client(bind 0 发往 server 端口)
 // Client 每 10ms 发送 10 个数据报, Server 原样回显, Client 统计收到的回显(按 seq 去重)
 class UdpPair : public JZObject
 {
 public:
-    UdpPair(int serverPort, const string &prefix, NetTpsCounter *recvTps = nullptr)
+    UdpPair(int serverPort, const string &prefix, NetTpsCounter *recvTps = nullptr, JZEventLoop *loop = nullptr)
         : m_prefix(prefix), m_serverPort(serverPort)
     {
         if (g_option.enableServer)
@@ -45,6 +34,10 @@ public:
             m_server = new JZUdpSocket(this);
             m_server->bind(serverPort);
             connect(&m_server->sigReadyRead, this, &UdpPair::onServerRead);
+            if (!g_option.enableClient)   // 纯服务器模式: 首次接收即视为连接到达, 之后跑20s
+            {
+                m_bench = serverInstallExit(this, loop, 30000, 20000);
+            }
         }
 
         if (g_option.enableClient)
@@ -87,6 +80,8 @@ public:
     // Server: 循环读完所有缓存数据报, 原样回显给发送方
     void onServerRead()
     {
+        if (m_bench)
+            m_bench->onConnected();
         while (m_server->hasPendingDatagrams())
         {
             JZUdpDatagram dgram = m_server->readDatagram();
@@ -119,6 +114,7 @@ public:
     JZTimer *m_sendTimer = nullptr;
     NetTpsCounter *m_recvTps = nullptr;   // 接收 TPS(共享或自带)
     NetTpsCounter *m_ownTps = nullptr;    // 自带计数器(多并发共享时为空)
+    NetServerBench *m_bench = nullptr;
     string m_prefix;
     int m_serverPort = 0;
     uint64_t m_sent = 0;
@@ -131,12 +127,28 @@ int test_udp_single()
 {
     g_netTestActive = true;
     JZEventLoop loop;
-    UdpPair pair(18101, "udp");
-    netInstallExit(&pair, &loop, g_option.loopTime);
+    UdpPair pair(18101, "udp", nullptr, &loop);
+    if (!(g_option.enableServer && !g_option.enableClient))
+        netInstallExit(&pair, &loop, g_option.loopTime);
     jzDebug() << "==== UDP 单线程测试启动 (每 " << UDP_SEND_INTERVAL_MS
-              << "ms 发 " << UDP_SEND_BATCH << " 包, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+              << "ms 发 " << UDP_SEND_BATCH << " 包, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     loop.exec();
-    netCheckRatio("UDP 单线程", pair.m_recv, pair.m_sent);
+    if (g_option.enableServer && !g_option.enableClient)
+    {
+        // 纯服务器模式: 本机无发送方, 无法统计收发率, 仅校验服务器接收 TPS 达标
+        double tps = pair.m_recvTps->average();
+        jzDebug() << "[" << "UDP 单线程" << "] 服务器接收总包数=" << pair.m_recvTps->total()
+                  << " 平均接收TPS=" << tps << " (阈值 200)";
+        if (tps < 200)
+            netReportError("UDP 单线程", "服务器接收TPS过低 " + to_string((int)tps) + " < 200");
+        jzDebug() << "[Benchmark]["
+                  << "UDP 单线程"
+                  << "] 接收TPS=" << tps << " OK";
+    }
+    else
+    {
+        netCheckTps("UDP 单线程", pair.m_recvTps->average(), UDP_PASS_TPS);
+    }
     g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return 0;
@@ -153,24 +165,34 @@ int test_udp_multi()
     int basePort = 18106;
     for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
     {
-        auto p = new UdpPair(basePort + i, "udp" + to_string(i), recvTps);
+        auto p = new UdpPair(basePort + i, "udp" + to_string(i), recvTps, &loop);
         pairs.push_back(p);
     }
     // 共享计数器挂到首个 pair 下, pair 析构时一并清理, 避免定时器泄漏到后续测试
     recvTps->setParent(pairs[0]);
-    netInstallExit(pairs[0], &loop, g_option.loopTime);
+    if (!(g_option.enableServer && !g_option.enableClient))
+        netInstallExit(pairs[0], &loop, g_option.loopTime);
     jzDebug() << "==== UDP 多并发测试启动 (" << NET_TEST_THREAD_COUNT
               << " 个 UDP 回环对, 每 " << UDP_SEND_INTERVAL_MS << "ms 发 " << UDP_SEND_BATCH
-              << " 包, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+              << " 包, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     loop.exec();
 
-    uint64_t totalSent = 0, totalRecv = 0;
-    for (auto p : pairs)
+    if (g_option.enableServer && !g_option.enableClient)
     {
-        totalSent += p->m_sent;
-        totalRecv += p->m_recv;
+        // 纯服务器模式: 本机无发送方, 仅校验服务器接收 TPS 达标
+        double tps = recvTps->average();
+        jzDebug() << "[" << "UDP 多并发" << "] 服务器接收总包数=" << recvTps->total()
+                  << " 平均接收TPS=" << tps << " (阈值 200)";
+        if (tps < 200)
+            netReportError("UDP 多并发", "服务器接收TPS过低 " + to_string((int)tps) + " < 200");
+        jzDebug() << "[Benchmark]["
+                  << "UDP 多并发"
+                  << "] 接收TPS=" << tps << " OK";
     }
-    netCheckRatio("UDP 多并发", totalRecv, totalSent);
+    else
+    {
+        netCheckTps("UDP 多并发", recvTps->average(), UDP_PASS_TPS);
+    }
 
     // 退出时显式停止并删除所有 pair(含共享计数器/定时器), 防止泄漏到后续测试
     for (auto p : pairs)

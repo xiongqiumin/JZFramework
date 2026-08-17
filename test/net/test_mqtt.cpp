@@ -44,8 +44,20 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== MQTT 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出, QoS1 可靠投递) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+        {
+            connect(&m_server->sigAccept, this, &MqttTestSingle::onAccept);
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        }
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== MQTT 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出, QoS1 可靠投递) ====";
+    }
+
+    void onAccept()
+    {
+        if (m_bench)
+            m_bench->onConnected();
     }
 
     void onClientConnect()
@@ -111,6 +123,7 @@ public:
     uint64_t m_expect = 0;
     uint64_t m_sendSeq = 0;
     NetTpsCounter m_tps{ "MQTT 单线程" };
+    NetServerBench *m_bench = nullptr;
 };
 
 // ===================== 多线程客户端线程(各自独立连接 + 独立主题) =====================
@@ -244,8 +257,20 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== MQTT 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+        {
+            connect(&m_server->sigAccept, this, &MqttTestMulti::onAccept);
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        }
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== MQTT 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
+    }
+
+    void onAccept()
+    {
+        if (m_bench)
+            m_bench->onConnected();
     }
 
     ~MqttTestMulti()
@@ -259,6 +284,7 @@ public:
     }
 
     JZMqttServer *m_server;
+    NetServerBench *m_bench = nullptr;
 };
 
 int test_mqtt_single()

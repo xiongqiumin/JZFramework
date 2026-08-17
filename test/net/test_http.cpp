@@ -26,6 +26,7 @@ class HttpEchoHandler : public JZHttpHandler
 {
 public:
     NetTpsCounter *serverTps = nullptr;   // 纯服务器模式时由测试注入, 用于接收计时
+    NetServerBench *bench = nullptr;      // 纯服务器模式时由测试注入, 用于首次连接计时
 
     void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
     {
@@ -35,6 +36,8 @@ public:
         resp.setBody(req.body());   // 原样回显 body
         if (serverTps)
             serverTps->hit();       // 服务器接收时计时(纯服务器模式由测试注入)
+        if (bench)
+            bench->onConnected();   // 首次请求视为连接到达, 启动 run 计时
         client->response(resp.toByteArray());
     }
 };
@@ -55,7 +58,11 @@ public:
             m_server->listen(port);
             auto *h = new HttpEchoHandler();
             if (!g_option.enableClient)   // 纯服务器模式: 用服务器接收计时
+            {
                 h->serverTps = &m_tps;
+                m_bench = serverInstallExit(this, loop, 30000, 20000);   // 等30s连接, 连接后跑20s
+                h->bench = m_bench;
+            }
             m_server->addRoute("/test", h);
         }
 
@@ -65,8 +72,13 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== HTTP 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)
+        {
+            // 纯服务器模式退出计时由 m_bench 控制
+        }
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== HTTP 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
         if (g_option.enableClient)
             sendNext();
     }
@@ -104,6 +116,7 @@ public:
     JZHttpServer *m_server;
     JZNetworkAccessManager *m_net;
     NetTpsCounter m_tps{"HTTP 单线程"};
+    NetServerBench *m_bench = nullptr;
     uint64_t m_sendSeq = 0;
     uint64_t m_expect = 0;
 };
@@ -188,7 +201,11 @@ public:
             m_server->listen(port);
             auto *h = new HttpEchoHandler();
             if (!g_option.enableClient)   // 纯服务器模式: 用服务器接收计时
+            {
                 h->serverTps = &m_tps;
+                m_bench = serverInstallExit(this, loop, 30000, 20000);   // 等30s连接, 连接后跑20s
+                h->bench = m_bench;
+            }
             m_server->addRoute("/test", h);
         }
 
@@ -204,8 +221,13 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== HTTP 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)
+        {
+            // 纯服务器模式退出计时由 m_bench 控制
+        }
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== HTTP 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     ~HttpTestMultiThread()
@@ -217,6 +239,8 @@ public:
             delete t;
         }
     }
+
+    NetServerBench *m_bench = nullptr;
 };
 
 int test_http_single()

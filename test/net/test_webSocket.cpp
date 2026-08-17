@@ -25,6 +25,7 @@ public:
     JZWebSocket* client = nullptr;
     JZWebSocket* server_socket = nullptr;
     NetTpsCounter m_tps{"WebSocket 单线程"};
+    NetServerBench *m_bench = nullptr;
 
     JZWebSocketTest(JZEventLoop *loop)
     {
@@ -45,13 +46,18 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== WebSocket 单线程测试启动 (" << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== WebSocket 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     void onServerAccecpt()
     {
         server_socket = server->nextPendingConnection();
+        if (m_bench)
+            m_bench->onConnected();
         connect(&server_socket->sigTextMessageReceived, this, &JZWebSocketTest::onServerRecv);
     }
 
@@ -92,6 +98,7 @@ public:
     JZWebSocket* client = nullptr;
     string serverUrl;
     int threadId = 0;
+    NetTpsCounter *tps = nullptr;
 
     WebSocketClientThread(const string& url, int id) : serverUrl(url), threadId(id) 
     {
@@ -109,6 +116,7 @@ public:
         client = new JZWebSocket(this);
         connect(&client->sigTextMessageReceived, this, [this](const string& text) {
             sendMessage(text);
+            tps->hit();
         });
         client->connectToHost(JZNetworkRequest(serverUrl));
         exec(); // 线程事件循环
@@ -130,6 +138,7 @@ public:
     JZWebSocketServer* server = nullptr;
     int port = 18000;
     NetTpsCounter m_tps{"WebSocket 多线程"};
+    NetServerBench *m_bench = nullptr;
 
     JZWebSocketTestMultiThread(JZEventLoop *loop, int p = 18001)
     {
@@ -147,6 +156,7 @@ public:
             for (int i = 0; i < CLIENT_THREAD_COUNT; i++) {
                 auto thread = new WebSocketClientThread(url, i);
                 thread->setParent(this);
+                thread->tps = &m_tps;
                 clientThreads.push_back(thread);
             }
             // 所有线程的 parent-child 关系建立完毕后再统一 start，
@@ -158,8 +168,11 @@ public:
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, g_option.loopTime);
-        jzDebug() << "==== WebSocket 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.loopTime / 1000) << "s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== WebSocket 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     ~JZWebSocketTestMultiThread() {
@@ -175,6 +188,8 @@ public:
         JZWebSocket* socket = server->nextPendingConnection();
         if (!socket)
             return;
+        if (m_bench)
+            m_bench->onConnected();
 
         connect(&socket->sigDisconnected, this, &JZWebSocketTestMultiThread::onClientDisConnect);
         connect(&socket->sigTextMessageReceived, this, &JZWebSocketTestMultiThread::onClientRecv);
@@ -186,7 +201,6 @@ public:
 
     void onClientDisConnect()
     {
-        netReportError("WebSocket", "多线程连接中断");
     }
 
     void onClientRecv(const string& text)
@@ -203,7 +217,8 @@ public:
         uint64_t curr = send_seq.fetch_add(1);
         expect_recv_map[socket] = curr;
         socket->sendTextMessage(WS_PREFIX + to_string(curr));
-        m_tps.hit();
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 在接收时计时
+            m_tps.hit();
     }
 };
 

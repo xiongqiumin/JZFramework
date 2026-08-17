@@ -810,7 +810,6 @@ static void smoke_debug_optional_result()
     jzInfo() << "smoke JZResult<void> Err:" << rev;
 }
 
-void test_benchmark();
 int main(int argc,char *argv[])
 {
     JZApplication app;
@@ -819,7 +818,6 @@ int main(int argc,char *argv[])
     
     jzDebug() << jzVersion();
     smoke_debug_optional_result();
-    test_benchmark();
     test_JZCore(&test);
     test_JZThread(&test);
     test_JZMutexPointer(&test);

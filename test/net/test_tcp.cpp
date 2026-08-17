@@ -23,26 +23,39 @@ public:
     TcpTestSingle(JZEventLoop *loop, int port)
     {
         m_prefix = "tcp";
-        m_server = new JZTcpServer(this);
-        m_server->listen(port);
-        connect(&m_server->sigAccept, this, &TcpTestSingle::onAccept);
+        if(g_option.enableServer)
+        {
+            m_server = new JZTcpServer(this);
+            m_server->listen(port);
+            connect(&m_server->sigAccept, this, &TcpTestSingle::onAccept);
+        }
 
-        m_client = new JZTcpSocket(this);
-        connect(&m_client->sigConnect, this, &TcpTestSingle::onClientConnect);
-        connect(&m_client->sigReadyRead, this, &TcpTestSingle::onClientRead);
-        connect(&m_client->sigError, this, &TcpTestSingle::onError);
-        m_client->connectToHost("127.0.0.1", port);
+        if(g_option.enableClient)
+        {
+            m_client = new JZTcpSocket(this);
+            connect(&m_client->sigConnect, this, &TcpTestSingle::onClientConnect);
+            connect(&m_client->sigReadyRead, this, &TcpTestSingle::onClientRead);
+            connect(&m_client->sigError, this, &TcpTestSingle::onError);
+            m_client->connectToHost(g_option.host, port);
+        }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== TCP 单线程测试启动 (15s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== TCP 单线程测试启动 (" << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     void onAccept()
     {
         m_serverSock = m_server->nextPendingConnection();
         if (m_serverSock)
+        {
+            if (m_bench)
+                m_bench->onConnected();
             connect(&m_serverSock->sigReadyRead, this, &TcpTestSingle::onServerRead);
+        }
     }
 
     void onServerRead()
@@ -55,6 +68,8 @@ public:
             m_srvBuf.erase(0, pos + 1);
             m_serverSock->write(str_toUtf8(line + "\n"));   // 原样回传
         }
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 在接收时计时
+            m_tps.hit();
     }
 
     void onClientConnect() { sendNext(); }
@@ -72,7 +87,8 @@ public:
             if (!netParseMsg(line, m_prefix, seq) || seq != m_expect)
                 netReportError("TCP", "校验失败 期望=" + to_string(m_expect) + " 收到=" + line);
             m_expect++;
-            m_tps.hit();
+            if (g_option.enableClient)
+                m_tps.hit();
             sendNext();
         }
     }
@@ -81,13 +97,14 @@ public:
 
     void sendNext() { m_client->write(str_toUtf8(netMakeMsg(m_prefix, m_expect))); }
 
-    JZTcpServer *m_server;
+    JZTcpServer *m_server = nullptr;
     JZTcpSocket *m_serverSock = nullptr;
-    JZTcpSocket *m_client;
+    JZTcpSocket *m_client = nullptr;
     string m_srvBuf, m_cliBuf;
     string m_prefix = "tcp";
     uint64_t m_expect = 0;
     NetTpsCounter m_tps{"TCP 单线程"};
+    NetServerBench *m_bench = nullptr;
 };
 
 // ===================== 多线程客户端线程(各自独立连接) =====================
@@ -131,7 +148,8 @@ public:
             if (!netParseMsg(line, m_prefix, seq) || seq != m_expect)
                 netReportError("TCP", "多线程校验失败 期望=" + to_string(m_expect) + " 收到=" + line);
             m_expect++;
-            m_tps->hit();
+            if (g_option.enableClient)
+                m_tps->hit();
             sendNext();
         }
     }
@@ -155,24 +173,35 @@ class TcpTestMulti : public JZObject
 public:
     vector<TcpClientThread *> threads;
     NetTpsCounter m_tps{"TCP 多线程"};
+    NetServerBench *m_bench = nullptr;
 
     TcpTestMulti(JZEventLoop *loop, int port)
     {
-        m_server = new JZTcpServer(this);
-        m_server->listen(port);
-        connect(&m_server->sigAccept, this, &TcpTestMulti::onAccept);
-
-        for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
+        if (g_option.enableServer)
         {
-            auto t = new TcpClientThread("127.0.0.1", port, &m_tps);
-            t->start();
-            t->setParent(this);
-            threads.push_back(t);
+            m_server = new JZTcpServer(this);
+            m_server->listen(port);
+            connect(&m_server->sigAccept, this, &TcpTestMulti::onAccept);
+        }
+
+        if (g_option.enableClient)
+        {
+            for (int i = 0; i < NET_TEST_THREAD_COUNT; i++)
+            {
+                auto t = new TcpClientThread(g_option.host, port, &m_tps);
+                t->start();
+                t->setParent(this);
+                threads.push_back(t);
+            }
         }
 
         m_tps.begin();
-        netInstallExit(this, loop, 15000);
-        jzDebug() << "==== TCP 多线程测试启动 (" << NET_TEST_THREAD_COUNT << " 客户端, 15s 后退出) ====";
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 等30s连接, 连接后跑20s
+            m_bench = serverInstallExit(this, loop, 30000, 20000);
+        else
+            netInstallExit(this, loop, g_option.loopTime);
+        jzDebug() << "==== TCP 多线程测试启动 (" << NET_TEST_THREAD_COUNT
+                  << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
     ~TcpTestMulti()
@@ -189,7 +218,11 @@ public:
     {
         auto *s = m_server->nextPendingConnection();
         if (s)
+        {
+            if (m_bench)
+                m_bench->onConnected();
             connect(&s->sigReadyRead, this, &TcpTestMulti::onServerRead);
+        }
     }
 
     void onServerRead()
@@ -204,6 +237,8 @@ public:
             buf.erase(0, pos + 1);
             sock->write(str_toUtf8(line + "\n"));   // 原样回传
         }
+        if (g_option.enableServer && !g_option.enableClient)   // 纯服务器模式: 在接收时计时
+            m_tps.hit();
     }
 
     JZTcpServer *m_server;
@@ -219,6 +254,7 @@ int test_tcp_single()
     double tps = test.m_tps.average();
     netCheckTps("TCP 单线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 
@@ -231,6 +267,7 @@ int test_tcp_multi()
     double tps = test.m_tps.average();
     netCheckTps("TCP 多线程", tps);
     g_netTestActive = false;
+    JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }
 

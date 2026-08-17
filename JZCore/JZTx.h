@@ -42,7 +42,7 @@ protected:
     uint64_t m_tid;
 };
 
-#if 1
+#if 0
 #define JZTX_TRACE(name) JZTxTracer __func_scoped_range##__LINE__(name);
 #define JZTX_FUNC_TRACE  JZTxTracer __func_scoped_range##__LINE__(JZTxFixedStr{__FUNCTION__, sizeof(__FUNCTION__) - 1});
 #else

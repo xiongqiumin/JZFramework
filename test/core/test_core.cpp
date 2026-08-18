@@ -10,6 +10,7 @@
 #include "JZThread.h"
 #include "test_thread.h"
 #include "test_mutexpointer.h"
+#include "test_rwlock.h"
 #include <cstdio>
 #include <cstring>
 #include "JZDebug.h"
@@ -821,6 +822,7 @@ int main(int argc,char *argv[])
     test_JZCore(&test);
     test_JZThread(&test);
     test_JZMutexPointer(&test);
+    test_JZReadWriteLock(&test);
     test.run(argc, argv);
     return 0;
 }

@@ -6,6 +6,9 @@
 #include "JZTest.h"
 #include "JZThread.h"
 #include "JZApplication.h"
+#include "JZMutex.h"
+#include "JZReadWriteLock.h"
+#include "JZElapsedTimer.h"
 #include "math.h"
 #include <cstring>
 #include <cstdlib>
@@ -13,6 +16,8 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <atomic>
+#include <thread>
 
 static void benchmark_audio_base64()
 {
@@ -371,6 +376,181 @@ static void benchmark_datastream_endian()
     printf("-----------------------------------------------------\n\n");
 }
 
+// ============================ 并发锁 Benchmark ============================
+// 固定时长内, 开 N 个线程反复 加锁 -> 临界区(模拟读/写) -> 解锁,
+// 用原子计数统计总操作次数, 计时得出吞吐 (ops/s)。
+// 临界区内做不可优化的累加, 模拟真实的读/写工作, 体现锁的争用开销。
+
+namespace {
+
+// 临界区内的工作量: 读(轻) / 写(重), 都做不可优化累加
+struct WorkCounter
+{
+    int64_t reads = 0;    // 读操作累计
+    int64_t writes = 0;   // 写操作累计
+    int64_t readVal = 0;  // 读累加 (防优化)
+    int64_t writeVal = 0; // 写累加 (防优化)
+
+    // 模拟读工作: 一段轻计算, 增加临界区耗时以贴近真实读场景
+    void doReadWork()
+    {
+        int64_t acc = 0;
+        for (int i = 0; i < 8; ++i)
+            acc += (i * 31 + 7);
+        readVal += acc;
+        ++reads;
+    }
+
+    // 模拟写工作: 更重的计算
+    void doWriteWork()
+    {
+        int64_t acc = 0;
+        for (int i = 0; i < 32; ++i)
+            acc += (i * 131 + 17);
+        writeVal += acc;
+        ++writes;
+    }
+};
+
+// 并发执行一段加锁循环, 直到时间到; 返回该线程完成的操作数
+template <typename LockFn, typename WorkFn>
+int64_t run_lock_loop(int durationMs, std::atomic<bool> &start,
+                      LockFn lockFn, WorkFn workFn)
+{
+    while (!start.load())
+        ; // 等待发令
+
+    JZElapsedTimer timer;
+    timer.start();
+    int64_t ops = 0;
+    while (timer.hasExpired(durationMs) == false)
+    {
+        lockFn();
+        workFn();
+        ++ops;
+    }
+    return ops;
+}
+
+// 打印并发锁吞吐对比结果
+void print_lock_bench(const char *title, const char *desc,
+                      int64_t ops, int64_t elapsedNs, int threads)
+{
+    double sec = double(elapsedNs) / 1e9;
+    double opsPerSec = sec > 0 ? double(ops) / sec : 0.0;
+    printf("  %-42s : %10.0f ops/s  (%d threads, %lld ops, %.3f s)\n",
+           title, opsPerSec, threads, (long long)ops, sec);
+    (void)desc;
+}
+
+} // namespace
+
+// 多读多写: 对比 读写锁 与 普通 mutex 的吞吐
+static void benchmark_rwlock()
+{
+    printf("\n========== RWLock vs Mutex Benchmark (多读多写) ==========\n");
+
+    const int readThreads = 4;  // 读者线程数
+    const int writeThreads = 2; // 写者线程数
+    const int durationMs = 500; // 每项测 500ms
+
+    // ---- 场景 1: 读写锁, 多读多写 ----
+    {
+        JZReadWriteLock lock;
+        WorkCounter wc;
+        std::atomic<bool> start{false};
+        std::vector<std::thread> threads;
+        std::vector<std::int64_t> perOps(readThreads + writeThreads, 0);
+
+        for (int i = 0; i < readThreads; ++i)
+        {
+            threads.emplace_back([&, i]() {
+                perOps[i] = run_lock_loop(durationMs, start,
+                    [&]() { lock.lockForRead(); },
+                    [&]() { wc.doReadWork(); lock.unlockRead(); });
+            });
+        }
+        for (int i = 0; i < writeThreads; ++i)
+        {
+            threads.emplace_back([&, i]() {
+                perOps[readThreads + i] = run_lock_loop(durationMs, start,
+                    [&]() { lock.lockForWrite(); },
+                    [&]() { wc.doWriteWork(); lock.unlockWrite(); });
+            });
+        }
+
+        start = true;
+        JZElapsedTimer timer;
+        timer.start();
+        for (auto &t : threads) t.join();
+        int64_t elapsed = timer.nsecsElapsed();
+
+        int64_t totalOps = 0;
+        for (int64_t v : perOps) totalOps += v;
+        print_lock_bench("RWLock (4读+2写)", "多读多写", totalOps, elapsed, readThreads + writeThreads);
+        printf("  [check] reads=%lld writes=%lld (写者优先下写者不会饿死)\n",
+               (long long)wc.reads, (long long)wc.writes);
+    }
+
+    // ---- 场景 2: 普通 mutex, 同线程数 ----
+    {
+        JZMutex lock;
+        WorkCounter wc;
+        std::atomic<bool> start{false};
+        std::vector<std::thread> threads;
+        std::vector<std::int64_t> perOps(readThreads + writeThreads, 0);
+
+        for (int i = 0; i < readThreads + writeThreads; ++i)
+        {
+            threads.emplace_back([&, i]() {
+                perOps[i] = run_lock_loop(durationMs, start,
+                    [&]() { lock.lock(); },
+                    [&]() { wc.doReadWork(); lock.unlock(); });
+            });
+        }
+
+        start = true;
+        JZElapsedTimer timer;
+        timer.start();
+        for (auto &t : threads) t.join();
+        int64_t elapsed = timer.nsecsElapsed();
+
+        int64_t totalOps = 0;
+        for (int64_t v : perOps) totalOps += v;
+        print_lock_bench("Mutex (4读+2写)", "所有线程同一把锁", totalOps, elapsed, readThreads + writeThreads);
+    }
+
+    // ---- 场景 3: 读写锁, 纯多读 (体现读并发优势) ----
+    {
+        JZReadWriteLock lock;
+        WorkCounter wc;
+        std::atomic<bool> start{false};
+        std::vector<std::thread> threads;
+        std::vector<std::int64_t> perOps(readThreads, 0);
+
+        for (int i = 0; i < readThreads; ++i)
+        {
+            threads.emplace_back([&, i]() {
+                perOps[i] = run_lock_loop(durationMs, start,
+                    [&]() { lock.lockForRead(); },
+                    [&]() { wc.doReadWork(); lock.unlockRead(); });
+            });
+        }
+
+        start = true;
+        JZElapsedTimer timer;
+        timer.start();
+        for (auto &t : threads) t.join();
+        int64_t elapsed = timer.nsecsElapsed();
+
+        int64_t totalOps = 0;
+        for (int64_t v : perOps) totalOps += v;
+        print_lock_bench("RWLock (4纯读)", "只读并发", totalOps, elapsed, readThreads);
+    }
+
+    printf("-----------------------------------------------------\n\n");
+}
+
 void test_benchmark()
 {
     benchmark_audio_base64();
@@ -381,6 +561,7 @@ void test_benchmark()
     benchmark_alloc();
     benchmark_stl();
     benchmark_datastream_endian();
+    benchmark_rwlock();
 }
 
 int main(int argc, char *argv[])

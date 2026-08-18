@@ -50,6 +50,8 @@
     JZSemaphore.cpp
     JZMutex.h
     JZMutex.cpp
+    JZReadWriteLock.h
+    JZReadWriteLock.cpp
     JZCrypto.h
     JZCrypto.cpp
     JZElapsedTimer.h

@@ -114,6 +114,7 @@ public:
         Net_HttpClientReopen,
         Net_HttpReplyFinish,
         Net_Close,
+        Net_SetReadLimit,
     };
 
     JZNetReqEvent();
@@ -130,6 +131,9 @@ public:
 
     //ext
     std::shared_ptr<JZNetReqEventData> extData;
+
+    // setReadLimit 参数: 下行接收限速(字节/秒)
+    int64_t readLimitBytesPerSec = 0;
 };
 
 //JZNetResEvent
@@ -171,6 +175,11 @@ protected:
         JZObjectPointer object;
         mg_connection *c;
         uint64_t acceptId;  //这个conn 是由那个 server accept的, acceptId 和服务 object 关联
+
+        // 下行接收限速(单位 字节/秒, 0=不限速): 在 MG_EV_POLL 里按令牌桶决定 is_full
+        int64_t readLimitBytesPerSec = 0;
+        int64_t readBudget = 0;   // 当前可用接收预算(字节)
+        int64_t readLastMs = 0;   // 上次更新预算的时间(ms)
     };
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
@@ -214,6 +223,10 @@ public:
     JZNetObject(JZObject *parent = nullptr);
     virtual ~JZNetObject();
 
+    // 设置下行接收限速(字节/秒), 0=不限速。内部按令牌桶在 net thread 控制 TCP 接收窗口
+    void setReadLimit(int64_t rateBytesPerSec);
+    int64_t readLimit() const { return m_readLimitBytesPerSec; }
+
 protected:        
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
 
@@ -241,6 +254,9 @@ protected:
     uint64_t openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data = std::shared_ptr<JZNetReqEventData>());
     void closeConn(uint64_t conn,bool closeImmediate);
     void writeConn(uint64_t conn, SocketWrite type, const void *buf, int len);
+
+    int64_t m_readLimitBytesPerSec = 0;   // 本对象下行接收限速(字节/秒), 0=不限速
+    uint64_t m_connId = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
 };
 
 

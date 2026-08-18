@@ -204,7 +204,29 @@ JZNetResEvent::~JZNetResEvent()
 void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
 {
     JZNetThread *inst = JZNetThread::instance();
-    if (ev == MG_EV_POLL || ev == MG_EV_WAKEUP || ev == MG_EV_RESOLVE)
+    if (ev == MG_EV_POLL)
+    {
+        // 下行接收限速: 每轮 poll 按令牌桶更新 is_full, 控制 net thread 是否 recv
+        // 仅 TCP 在 POLL 补充预算并控制 is_full; UDP 的限速预算由 READ 分支按数据报独立管理
+        auto it = inst->m_connMap.find((uint64_t)c->id);
+        if (it != inst->m_connMap.end() && !c->is_udp && it->second.readLimitBytesPerSec > 0)
+        {
+            int64_t now = JZPlatform::getTickCountMs();
+            int64_t dt = now - it->second.readLastMs;
+            if (dt > 0)
+            {
+                // 预算按字节/秒累计, 整数运算: readBudget += rate * dt / 1000
+                it->second.readBudget += it->second.readLimitBytesPerSec * dt / 1000;
+                it->second.readLastMs = now;
+                if (it->second.readBudget > it->second.readLimitBytesPerSec)
+                    it->second.readBudget = it->second.readLimitBytesPerSec;   // 预算上限=1s配额
+            }
+            // TCP: 预算耗尽 -> is_full=1 停读, 窗口收缩使对端降速
+            c->is_full = (it->second.readBudget <= 0);
+        }
+        return;
+    }
+    else if (ev == MG_EV_WAKEUP || ev == MG_EV_RESOLVE)
         return;
     else if (ev == MG_EV_OPEN)
     {
@@ -224,6 +246,10 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     if (ev == MG_EV_READ)
     {
         auto it = inst->m_connMap.find(c->id);
+        // TCP: 收到数据扣减下行限速预算(预算为负表示超发, 下轮 poll 会停读补回来)
+        // UDP: 预算处理在 UDP 分支按数据报独立进行, 这里不参与
+        if (it->second.readLimitBytesPerSec > 0 && !c->is_udp)
+            it->second.readBudget -= (int64_t)c->recv.len;
         if (it->second.type == JZSocketInfo::TcpSocket)
         {
             event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
@@ -232,6 +258,29 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         else if (it->second.type == JZSocketInfo::UdpSocket ||
                  it->second.type == JZSocketInfo::UdpListen)
         {
+            // UDP 下行限速(按数据报粒度令牌桶): 先按时间补预算, 再判断该包预算是否足够;
+            // 预算不足则直接丢弃该数据报(无 TCP 窗口背压), 不构造事件上送
+            if (it->second.readLimitBytesPerSec > 0)
+            {
+                int64_t now = JZPlatform::getTickCountMs();
+                int64_t dt = now - it->second.readLastMs;
+                if (dt > 0)
+                {
+                    it->second.readBudget += it->second.readLimitBytesPerSec * dt / 1000;
+                    if (it->second.readBudget > it->second.readLimitBytesPerSec)
+                        it->second.readBudget = it->second.readLimitBytesPerSec;   // 上限=1s配额
+                    it->second.readLastMs = now;
+                }
+                if (it->second.readBudget < (int64_t)c->recv.len)
+                {
+                    // 预算不够该数据报: 丢弃
+                    mg_iobuf_del(&c->recv, 0, c->recv.len);
+                    delete event;
+                    return;
+                }
+                it->second.readBudget -= (int64_t)c->recv.len;   // 够则扣减
+            }
+
             event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
             mg_iobuf_del(&c->recv, 0, c->recv.len);
 
@@ -595,7 +644,12 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             conn_info.type = info.type;
             conn_info.object = object->guardPointer();
             conn_info.c = conn;
+            conn_info.readLimitBytesPerSec = object->readLimit();   // 应用对象预设的下行限速
+            conn_info.readLastMs = JZPlatform::getTickCountMs();
             m_connMap[conn->id] = conn_info;
+            // TCP 限速时先停读; UDP 不停读(由 READ 分支按数据报丢弃)
+            if (conn_info.readLimitBytesPerSec > 0 && !conn->is_udp)
+                conn->is_full = 1;
         }
     }
     else
@@ -615,6 +669,17 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if(event->netCmd == JZNetReqEvent::Net_Close)
         {
             c->is_closing = 1;
+        }
+        else if (event->netCmd == JZNetReqEvent::Net_SetReadLimit)
+        {
+            // 下行接收限速: 更新 ConnInfo 限速参数
+            conn_it->second.readLimitBytesPerSec = event->readLimitBytesPerSec;
+            conn_it->second.readBudget = 0;
+            conn_it->second.readLastMs = JZPlatform::getTickCountMs();
+            // TCP: 限速时先停读(is_full=1), 由 MG_EV_POLL 按令牌桶恢复
+            // UDP: 不停读(is_full 会让 recv 全停导致一个都收不到), 由 READ 分支按数据报丢弃
+            if (!c->is_udp)
+                c->is_full = (event->readLimitBytesPerSec > 0);
         }
         else if (event->netCmd == JZNetReqEvent::Net_Write)
         {
@@ -836,6 +901,18 @@ void JZNetObject::postReqEvent(JZNetReqEvent *req)
     inst->wakeUpNet();
 }
 
+void JZNetObject::setReadLimit(int64_t rateBytesPerSec)
+{
+    if (rateBytesPerSec < 0) rateBytesPerSec = 0;
+    m_readLimitBytesPerSec = rateBytesPerSec;
+
+    JZNetReqEvent *req = new JZNetReqEvent();
+    req->netCmd = JZNetReqEvent::Net_SetReadLimit;
+    req->conn = m_connId;
+    req->readLimitBytesPerSec = rateBytesPerSec;
+    postReqEvent(req);
+}
+
 uint64_t JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data)
 {
     JZSemaphore sem;
@@ -855,6 +932,8 @@ uint64_t JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetRe
     inst->wakeUpNet();
     sem.acquire();
 
+    if (result.conn != INVALID_NET_HANDLE)
+        m_connId = result.conn;
     return result.conn;
 }
 

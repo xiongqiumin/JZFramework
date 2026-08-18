@@ -102,6 +102,8 @@ void JZNetworkConnect::resetConnection()
     m_chunkMode = false;
     m_chunkBuffer.clear();
     m_closing = false;
+    // 断开/复用前重置下行限速, 避免限速残留到连接复用
+    setReadLimit(0);
 }
 
 void JZNetworkConnect::closeConnection()

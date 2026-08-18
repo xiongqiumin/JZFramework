@@ -65,6 +65,10 @@ public:
 
     JZByteArray readAll();
 
+    // 下行接收限速(字节/秒), 0=不限速。转发到底层 JZNetworkConnect(socket)
+    void setReadLimit(int64_t rateBytesPerSec);
+    int64_t readLimit() const { return m_readLimitBytesPerSec; }
+
 jz_signals:
     JZSigVoid sigReadyRead;
     JZSigVoid sigFinished;
@@ -89,6 +93,7 @@ protected:
     JZNetworkRequest m_request;
     JZNetworkConnect *m_conn;
     int m_timeOut;
+    int64_t m_readLimitBytesPerSec = 0;   // 下行接收限速(字节/秒), 断开后重置为0
 
     // 重定向支持
     RedirectPolicy m_redirectPolicy;

@@ -11,15 +11,13 @@
 //   bidir   上下行:   同时发 + 收, 分别统计发送/接收吞吐
 //
 // 用法示例:
-//   ./test_tcp_bench --role client --mode up   --host 127.0.0.1 --port 18200 -t 15
-//   ./test_tcp_bench --role client --mode down --host 192.168.1.5 --port 5201 -t 15
-//   ./test_tcp_bench --role client --mode bidir --host 127.0.0.1 --port 18200 -t 15
-//   ./test_tcp_bench --role server --port 18200 -t 20   (配合 iperf3 -c 127.0.0.1 -p 18200)
+//   ./test_tcp_bench --mode up   --host 127.0.0.1 --port 18200 -t 15
+//   ./test_tcp_bench --mode down --host 192.168.1.5 --port 5201 -t 15
+//   ./test_tcp_bench --mode bidir --host 127.0.0.1 --port 18200 -t 15
 //
 // 配合 iperf3 对测:
-//   JZ 做 client 上行:  iperf3 -s            ;  ./test_tcp_bench --role client --mode up --host 127.0.0.1 --port 5201
-//   JZ 做 client 下行:  iperf3 -s -R 或 iperf3 -s -i1 ; ./test_tcp_bench --role client --mode down ...
-//   JZ 做 server 对测:  ./test_tcp_bench --role server --port 5201 ; iperf3 -c 127.0.0.1 -p 5201
+//   JZ 做 client 上行:  iperf3 -s            ;  ./test_tcp_bench --mode up --host 127.0.0.1 --port 5201
+//   JZ 做 client 下行:  iperf3 -s -R 或 iperf3 -s -i1 ; ./test_tcp_bench --mode down ...
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +26,7 @@
 #include <string>
 #include <cstdlib>
 #include <cerrno>
+#include <climits>
 
 // iperf 协议 (POSIX 控制握手) 所需头
 #include <unistd.h>
@@ -43,24 +42,68 @@
 #include "JZByteArray.h"
 #include "JZTcpServer.h"
 #include "JZTcpSocket.h"
+#include "JZUdpSocket.h"
 #include "JZDebug.h"
 #include "JZCommandLineParser.h"
 
 using namespace std;
 
 // ---------------- 命令行与全局配置 ----------------
-enum Role   { RoleClient, RoleServer };
 enum Mode   { ModeUp, ModeDown, ModeBidir };
 
-static Role  g_role = RoleClient;
 static Mode  g_mode = ModeBidir;
 static string g_host = "127.0.0.1";
 static int   g_port = 18200;
 static int   g_seconds = 15;
 static int   g_chunkSize = 64 * 1024;   // 单块发送字节数
 static int   g_sendIntervalMs = 1;      // 上行灌数据定时器间隔
-static double g_rateBps = 0.0;          // 0=尽力灌, >0 限速(B/s)
+static double g_rateBps = 125000.0;     // 上下行限速(B/s), 默认 1Mb/s = 125000 B/s; 0=不限速
 static bool  g_iperfProto = false;      // 是否启用 iperf3 协议(配合 iperf3 -s 对测)
+static bool  g_udp = false;             // iperf 协议是否用 UDP 传输
+
+// 限速控制定时器周期(ms): 上行按预算灌数据, 下行按预算读取触发背压
+static int   g_throttleMs = 50;
+
+// 发送灌数据定时器间隔: 限速时用较长的 throttle 周期(避免每 tick 只发几百字节), 否则用 --interval
+static int txIntervalMs() { return g_rateBps > 0.0 ? g_throttleMs : g_sendIntervalMs; }
+
+static long long nowMs();   // 前向声明(定义在下方)
+
+// 限速预算器: 按 g_rateBps 累计可用字节预算
+class RateBudget
+{
+public:
+    void reset(double rateBps)
+    {
+        m_rateBps = rateBps;
+        m_budget = 0.0;
+        m_lastMs = nowMs();
+    }
+    // 返回当前可用预算(字节), 取后清零待 spend
+    long long take()
+    {
+        if (m_rateBps <= 0.0) return LLONG_MAX;   // 不限速
+        long long now = nowMs();
+        long long dt = now - m_lastMs;
+        if (dt > 0)
+        {
+            m_budget += m_rateBps * dt / 1000.0;
+            m_lastMs = now;
+            if (m_budget > m_rateBps) m_budget = m_rateBps;   // 预算上限=1秒配额, 防积压
+        }
+        long long v = (long long)m_budget;
+        m_budget -= v;
+        if (v < 0) v = 0;
+        return v;
+    }
+    // 预算是否不足(用于判断是否该等待)
+    bool exhausted() const { return m_budget <= 0.0; }
+
+private:
+    double m_rateBps = 0.0;
+    double m_budget = 0.0;
+    long long m_lastMs = 0;
+};
 
 static long long nowMs()
 {
@@ -115,6 +158,8 @@ public:
         : m_loop(loop)
     {
         m_txData.resize(g_chunkSize, 'x');
+        m_txBudget.reset(g_rateBps);
+        m_rxBudget.reset(g_rateBps);
     }
 
     virtual ~BenchConn() {}
@@ -126,8 +171,24 @@ protected:
     JZEventLoop *m_loop = nullptr;
     JZByteArray m_txData;
     Throughput m_tx, m_rx;
+    RateBudget m_txBudget, m_rxBudget;   // 上下行限速预算
     bool m_done = false;
     JZTimer *m_txTimer = nullptr;
+
+    // 发送 n 字节(限速), 返回实际允许发送的字节数
+    long long txBudget(long long n)
+    {
+        long long allow = m_txBudget.take();
+        if (allow < 0) allow = 0;
+        return n < allow ? n : allow;
+    }
+    // 接收统计限速: 返回配额内应计入 m_rx 的字节数
+    long long rxBudget(long long n)
+    {
+        long long allow = m_rxBudget.take();
+        if (allow < 0) allow = 0;
+        return n < allow ? n : allow;
+    }
 
     // 统计打印定时器
     void startPrintTimer(JZObject *owner)
@@ -170,25 +231,19 @@ public:
             startTxTimer();
     }
 
-    // 灌数据: 根据目标速率决定每 tick 写多少
+    // 灌数据: 按限速预算决定每 tick 发多少
     void onTxTick()
     {
-        long long n = g_chunkSize;
-        if (g_rateBps > 0.0)
-        {
-            // 限速: 每个 tick 应发的字节 = 目标速率 * 间隔秒
-            double want = g_rateBps * g_sendIntervalMs / 1000.0;
-            n = (long long)want;
-            if (n < 1) n = 1;
-            if (n > (long long)g_chunkSize) n = g_chunkSize;
-        }
+        long long n = txBudget(g_chunkSize);
+        if (n <= 0) return;   // 预算不足, 下个 tick 再发
         writeChunk(n);
     }
 
     void onRead()
     {
         JZByteArray buf = m_conn->readAll();
-        m_rx.add(buf.size());
+        // 下行限速: 只统计配额内的字节数
+        m_rx.add(rxBudget(buf.size()));
     }
 
     void onDisconnect()
@@ -217,7 +272,7 @@ private:
         if (m_txTimer) return;
         m_txTimer = new JZTimer(this);
         connect(&m_txTimer->sigTimeout, this, &BenchClient::onTxTick);
-        m_txTimer->start(g_sendIntervalMs);
+        m_txTimer->start(txIntervalMs());
     }
 
     // 用固定大小块写满, 不足一块时补零
@@ -270,18 +325,20 @@ static std::string ipfMakeCookie()
 
 // 构造 iperf 参数 JSON, 并拼接 [uint32 网络序长度][json]
 // mode: up=client发(默认), down=reverse(client收), bidir=bidirectional(双工)
-static JZByteArray ipfBuildParams(int seconds, int blksize, Mode mode)
+// udp: true=UDP传输(JSON 用 udp:true), false=TCP
+static JZByteArray ipfBuildParams(int seconds, int blksize, Mode mode, bool udp)
 {
     char json[1024];
+    const char *transport_field = udp ? "\"udp\":true" : "\"tcp\":true";
     const char *mode_field = "";
     if (mode == ModeDown)
         mode_field = ",\"reverse\":true";
     else if (mode == ModeBidir)
         mode_field = ",\"bidirectional\":true";
     snprintf(json, sizeof(json),
-             "{\"tcp\":true,\"omit\":0,\"time\":%d,\"num\":0,\"blockcount\":0,"
+             "{%s,\"omit\":0,\"time\":%d,\"num\":0,\"blockcount\":0,"
              "\"parallel\":1,\"len\":%d%s,\"client_version\":\"3.21\"}",
-             seconds, blksize, mode_field);
+             transport_field, seconds, blksize, mode_field);
     uint32_t len = htonl((uint32_t)strlen(json));
     JZByteArray out;
     out.append((const char *)&len, sizeof(len));
@@ -327,7 +384,7 @@ public:
             if (b == IPF_STATE_PARAM_EXCHANGE && !m_paramsSent)
             {
                 m_paramsSent = true;
-                JZByteArray params = ipfBuildParams(g_seconds, g_chunkSize, g_mode);
+                JZByteArray params = ipfBuildParams(g_seconds, g_chunkSize, g_mode, g_udp);
                 m_ctrl->write(params);
                 jzDebug() << "[iperf-client] 已发参数 JSON, 等待 CREATE_STREAMS";
             }
@@ -421,12 +478,16 @@ private:
     void onRxConnConnect()
     {
         m_rxConn->write(g_ipfCookie.data(), (int)g_ipfCookie.size());
-        jzDebug() << "[iperf-client] 接收流已建立, 等待 server 数据";
+        // 下行限速: 通过框架 setReadLimit 用 TCP 窗口真实限制对端发送速率
+        if (g_rateBps > 0)
+            m_rxConn->setReadLimit((int64_t)g_rateBps);
+        jzDebug() << "[iperf-client] 接收流已建立, 等待 server 数据 (下行限速 "
+                  << (g_rateBps > 0 ? fmtRate(g_rateBps) : "无") << ")";
     }
 
     void onRxConnRead()
     {
-        // 统计从 server 收到的数据
+        // 对端已被 setReadLimit 限速, 直接统计实际收到
         m_rx.add(m_rxConn->readAll().size());
     }
 
@@ -435,14 +496,13 @@ private:
         if (m_txTimer) return;
         m_txTimer = new JZTimer(this);
         connect(&m_txTimer->sigTimeout, this, &IperfClient::onTxTick);
-        m_txTimer->start(g_sendIntervalMs);
+        m_txTimer->start(txIntervalMs());
     }
 
     void onTxTick()
     {
-        long long n = g_chunkSize;
-        if (g_rateBps > 0.0)
-            n = (long long)(g_rateBps * g_sendIntervalMs / 1000.0);
+        long long n = txBudget(g_chunkSize);
+        if (n <= 0) return;   // 预算不足, 下个 tick 再发
         long long written = 0;
         while (written < n)
         {
@@ -462,59 +522,160 @@ private:
     bool m_paramsSent = false;
 };
 
-// ---------- 服务器端 (配合外部 client 工具对测) ----------
-// 外部 client 连上后:
-//   - 外部 client 发数据 (JZ 测下行/接收): 我们 readAll 计数
-//   - 外部 client 期望收数据 (JZ 测上行/发送): 我们按模式灌数据
-class BenchServer : public BenchConn
+// ---------- iperf3 UDP client (--proto iperf --transport udp) ----------
+// 控制连接用 TCP 握手(cookie+JSON udp:true+CREATE_STREAMS), 数据连接用 JZUdpSocket
+// 数据报格式(iperf3 64bit): sec(4网络序) + usec(4网络序) + pcount(8网络序) + payload
+#define IPF_UDP_CONNECT_MSG   0x36373839U   // "6789" client 发给 server 的 UDP 连接请求
+#define IPF_UDP_CONNECT_REPLY 0x39383736U   // "9876" server 回的 UDP 连接确认
+
+class IperfUdpClient : public BenchConn
 {
 public:
-    BenchServer(JZEventLoop *loop, int port)
-        : BenchConn(loop)
+    IperfUdpClient(JZEventLoop *loop, int port)
+        : BenchConn(loop), m_port(port)
     {
-        m_server = new JZTcpServer(this);
-        m_server->listen(port);
-        connect(&m_server->sigAccept, this, &BenchServer::onAccept);
-        m_rx.start();
+        // 控制连接(TCP)握手
+        m_ctrl = new JZTcpSocket(this);
+        connect(&m_ctrl->sigConnect, this, &IperfUdpClient::onCtrlConnect);
+        connect(&m_ctrl->sigReadyRead, this, &IperfUdpClient::onCtrlRead);
+        connect(&m_ctrl->sigError, this, &IperfUdpClient::onError);
+        m_ctrl->connectToHost(g_host, m_port);
         m_tx.start();
+        m_rx.start();
         startPrintTimer(this);
-        jzDebug() << "[server] 监听 " << port << " 等待外部 client...";
+        jzDebug() << "[iperf-udp] 控制连接(TCP) " << g_host << ":" << m_port;
     }
 
-    void onAccept()
+    void onCtrlConnect()
     {
-        JZTcpSocket *sock = m_server->nextPendingConnection();
-        if (!sock) return;
-        jzDebug() << "[server] 有 client 连接进入";
-        connect(&sock->sigReadyRead, this, [this, sock]() {
-            m_rx.add(sock->readAll().size());
-        });
-        connect(&sock->sigDisconnect, this, [this, sock]() {
-            jzDebug() << "[server] client 断开";
-        });
-        connect(&sock->sigError, this, [](const string &) {
-            jzDebug() << "[server] socket 错误";
-        });
-        // 上行灌数据(server 主动发), 配合需要数据的外部 client(如 nc 读取)
-        m_txTimer = new JZTimer(this);
-        m_txData.resize(g_chunkSize, 'y');
-        connect(&m_txTimer->sigTimeout, this, [this, sock]() {
-            sock->write(m_txData.data(), (int)m_txData.size());
-            m_tx.add(m_txData.size());
-        });
-        m_txTimer->start(g_sendIntervalMs);
+        m_ctrl->write(g_ipfCookie.data(), (int)g_ipfCookie.size());
+        jzDebug() << "[iperf-udp] 已发 cookie, 等待 server 参数交换";
+    }
+
+    void onCtrlRead()
+    {
+        m_ctrlBuf += str_fromUtf8(m_ctrl->readAll());
+        for (size_t i = 0; i < m_ctrlBuf.size(); i++)
+        {
+            signed char b = (signed char)m_ctrlBuf[i];
+            if (b == IPF_STATE_PARAM_EXCHANGE && !m_paramsSent)
+            {
+                m_paramsSent = true;
+                JZByteArray params = ipfBuildParams(g_seconds, g_chunkSize, g_mode, true);  // udp
+                m_ctrl->write(params);
+                jzDebug() << "[iperf-udp] 已发参数 JSON, 等待 CREATE_STREAMS";
+            }
+            else if (b == IPF_STATE_CREATE_STREAMS)
+            {
+                jzDebug() << "[iperf-udp] 收到 CREATE_STREAMS, 建立 UDP 数据流";
+                openUdp();
+                m_ctrlBuf.clear();
+                break;
+            }
+        }
+    }
+
+    void onError(const string &)
+    {
+        jzDebug() << "[iperf-udp] 控制连接错误";
     }
 
     virtual void printSummary() override
     {
-        jzDebug() << "  server 发送(TX): " << fmtRate(m_tx.finalBps())
+        jzDebug() << "  client 发送(TX): " << fmtRate(m_tx.finalBps())
                   << "  总 " << (long long)m_tx.total() << "B";
-        jzDebug() << "  server 接收(RX): " << fmtRate(m_rx.finalBps())
+        jzDebug() << "  client 接收(RX): " << fmtRate(m_rx.finalBps())
                   << "  总 " << (long long)m_rx.total() << "B";
     }
 
-    JZTcpServer *m_server = nullptr;
+    void sendTestEnd()
+    {
+        if (!m_ctrl) return;
+        signed char st = IPF_STATE_TEST_END;
+        m_ctrl->write((const char *)&st, 1);
+    }
+
+private:
+    // 建立 UDP 数据流: bind 本地端口, 发 UDP_CONNECT_MSG 到 server UDP 端口
+    void openUdp()
+    {
+        if (m_udp) return;
+        m_udp = new JZUdpSocket(this);
+        connect(&m_udp->sigReadyRead, this, &IperfUdpClient::onUdpRead);
+        connect(&m_udp->sigError, this, &IperfUdpClient::onError);
+        // bind 本地任意端口
+        for (int p = 0; p < 200; p++)
+        {
+            if (m_udp->bind(30000 + p)) { jzDebug() << "[iperf-udp] 本地 UDP 端口 = " << (30000 + p); break; }
+        }
+        // 发 UDP 连接请求(4字节 magic), server 回 REPLY 后开始收发
+        uint32_t msg = htonl(IPF_UDP_CONNECT_MSG);
+        m_udp->writeDatagram(g_host, m_port, (const char *)&msg, 4);
+        // 下行限速: UDP 通过 setReadLimit 丢弃超额
+        if (g_rateBps > 0)
+            m_udp->setReadLimit((int64_t)g_rateBps);
+        m_udpConnected = true;
+        jzDebug() << "[iperf-udp] UDP 数据流已建立, 目标 " << g_host << ":" << m_port
+                  << " (下行限速 " << (g_rateBps > 0 ? fmtRate(g_rateBps) : "无") << ")";
+        // 上行: 启动发送定时器
+        if (g_mode != ModeDown)
+            startTx();
+    }
+
+    void startTx()
+    {
+        if (m_txTimer) return;
+        m_txTimer = new JZTimer(this);
+        connect(&m_txTimer->sigTimeout, this, &IperfUdpClient::onTxTick);
+        m_txTimer->start(txIntervalMs());
+    }
+
+    // 上行 UDP 发送: 构造 iperf UDP 头 + payload
+    void onTxTick()
+    {
+        long long n = txBudget(g_chunkSize);
+        if (n <= 0 || !m_udp || !m_udpConnected) return;
+        // 每包一个 iperf 数据报: 头(16B) + 数据(不超过 max 有效载荷)
+        while (n > 0)
+        {
+            JZByteArray pkt;
+            uint32_t sec = htonl((uint32_t)time(nullptr));
+            uint32_t usec = htonl((uint32_t)(m_useMicro % 1000000));
+            m_useMicro += 1000;
+            uint64_t pcount = htobe64(++m_pcount);
+            pkt.append((const char *)&sec, 4);
+            pkt.append((const char *)&usec, 4);
+            pkt.append((const char *)&pcount, 8);
+            int payload = (int)(n < (long long)(g_chunkSize - 16) ? n : (long long)(g_chunkSize - 16));
+            if (payload < 0) payload = 0;
+            pkt.append(m_txData.data(), payload);
+            m_udp->writeDatagram(g_host, m_port, pkt);
+            m_tx.add(pkt.size());
+            n -= payload + 16;
+        }
+    }
+
+    void onUdpRead()
+    {
+        // 收到数据报
+        while (m_udp->hasPendingDatagrams())
+        {
+            JZUdpDatagram dg = m_udp->readDatagram();
+            m_rx.add(dg.data.size());
+        }
+    }
+
+    int m_port;
+    JZTcpSocket *m_ctrl = nullptr;      // 控制连接(TCP)
+    JZUdpSocket *m_udp = nullptr;       // UDP 数据连接
+    std::string m_ctrlBuf;
+    bool m_paramsSent = false;
+    bool m_udpConnected = false;
+    uint64_t m_pcount = 0;              // iperf UDP 包序号
+    uint64_t m_useMicro = 0;            // 伪微秒时间戳
 };
+
+
 
 // ---------------- main ----------------
 static bool parseArgs(int argc, char **argv)
@@ -522,8 +683,7 @@ static bool parseArgs(int argc, char **argv)
     JZCommandLineParser parser;
     parser.setDescription("TCP client 上下行压测 (配合 iperf3/nc 等 Linux 压测工具)");
 
-    std::string role, mode, protoStr;
-    parser.addOption("--role", &role);
+    std::string mode, protoStr, transportStr;
     parser.addOption("--mode", &mode);
     parser.addOption("--host", &g_host);
     parser.addOption("--port", &g_port);
@@ -532,6 +692,7 @@ static bool parseArgs(int argc, char **argv)
     parser.addOption("--interval", &g_sendIntervalMs);
     parser.addOption("--rate", &g_rateBps);
     parser.addOption("--proto", &protoStr);
+    parser.addOption("--transport", &transportStr);
 
     if (!parser.parse(argc, argv))
     {
@@ -541,12 +702,6 @@ static bool parseArgs(int argc, char **argv)
         return false;
     }
 
-    if (parser.isOptionProvided("--role"))
-    {
-        if (role == "client") g_role = RoleClient;
-        else if (role == "server") g_role = RoleServer;
-        else { fprintf(stderr, "未知 --role '%s' (仅支持 client/server)\n", role.c_str()); return false; }
-    }
     if (parser.isOptionProvided("--mode"))
     {
         if (mode == "up") g_mode = ModeUp;
@@ -559,6 +714,12 @@ static bool parseArgs(int argc, char **argv)
         if (protoStr == "iperf") g_iperfProto = true;
         else if (protoStr == "raw") g_iperfProto = false;
         else { fprintf(stderr, "未知 --proto '%s' (仅支持 raw/iperf)\n", protoStr.c_str()); return false; }
+    }
+    if (parser.isOptionProvided("--transport"))
+    {
+        if (transportStr == "tcp") g_udp = false;
+        else if (transportStr == "udp") g_udp = true;
+        else { fprintf(stderr, "未知 --transport '%s' (仅支持 tcp/udp)\n", transportStr.c_str()); return false; }
     }
     return true;
 }
@@ -575,28 +736,24 @@ int main(int argc, char **argv)
 
     BenchConn *bench = nullptr;
 
-    if (g_role == RoleServer)
+    if (g_iperfProto)
     {
-        bench = new BenchServer(&loop, g_port);
-    }
-    else if (g_iperfProto)
-    {
-        // iperf3 协议模式: 纯 JZTcpSocket 异步握手
-        jzDebug() << "==== TCP client 压测 (iperf3 协议): 对端=" << g_host << ":"
-                  << g_port << " 时长=" << g_seconds << "s ====";
+        // iperf3 协议模式: 控制握手 + 数据连接(按 transport 选 TCP/UDP)
+        jzDebug() << "==== " << (g_udp ? "UDP" : "TCP") << " client 压测 (iperf3 协议): 对端="
+                  << g_host << ":" << g_port << " 时长=" << g_seconds << "s ====";
         g_ipfCookie = ipfMakeCookie();
-        bench = new IperfClient(&loop, g_port);
+        if (g_udp)
+            bench = new IperfUdpClient(&loop, g_port);
+        else
+            bench = new IperfClient(&loop, g_port);
     }
     else
     {
         bench = new BenchClient(&loop, g_port);
-        if (g_role == RoleClient)
-        {
-            jzDebug() << "==== TCP client 压测: 角色=client 模式="
-                      << (g_mode == ModeUp ? "上行(发)" : (g_mode == ModeDown ? "下行(收)" : "上下行"))
-                      << " 对端=" << g_host << ":" << g_port
-                      << " 时长=" << g_seconds << "s 块=" << g_chunkSize << "B ====";
-        }
+        jzDebug() << "==== TCP client 压测: 模式="
+                  << (g_mode == ModeUp ? "上行(发)" : (g_mode == ModeDown ? "下行(收)" : "上下行"))
+                  << " 对端=" << g_host << ":" << g_port
+                  << " 时长=" << g_seconds << "s 块=" << g_chunkSize << "B ====";
     }
 
     // 一次性定时器退出事件循环
@@ -610,10 +767,18 @@ int main(int argc, char **argv)
     long long elMs = nowMs() - begin;
 
     // iperf 协议: 发送 TEST_END 让 iperf3 server 正常收尾
-    if (g_iperfProto && g_role == RoleClient)
+    if (g_iperfProto)
     {
-        IperfClient *ic = dynamic_cast<IperfClient *>(bench);
-        if (ic) ic->sendTestEnd();
+        if (g_udp)
+        {
+            IperfUdpClient *ic = dynamic_cast<IperfUdpClient *>(bench);
+            if (ic) ic->sendTestEnd();
+        }
+        else
+        {
+            IperfClient *ic = dynamic_cast<IperfClient *>(bench);
+            if (ic) ic->sendTestEnd();
+        }
         JZThread::msleep(300);   // 等 server 处理收尾
     }
 

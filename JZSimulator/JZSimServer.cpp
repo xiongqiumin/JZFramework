@@ -1,4 +1,5 @@
 #include "JZSimServer.h"
+#include "JZApplication.h"
 
 #include "JZDataStream.h"
 #include "JZByteArray.h"
@@ -57,7 +58,7 @@ static JZSimServer* g_simInstance = nullptr;
 JZSimServer* JZSimServer::instance()
 {
     if (!g_simInstance)
-        g_simInstance = new JZSimServer();
+        g_simInstance = new JZSimServer(jzApp);
     return g_simInstance;
 }
 
@@ -204,7 +205,7 @@ void JZSimServer::stop(const std::string& module)
 {
     if (m_refCount > 0)
         m_refCount--;
-    jzDebug() << "JZSimServer::stop(" << module << ") ref=" << m_refCount;
+
     if (m_refCount == 0)
         stopHttp();
 }

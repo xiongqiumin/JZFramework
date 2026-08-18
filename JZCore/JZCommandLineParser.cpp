@@ -306,6 +306,7 @@ JZCommandLineOption JZCommandLineParser::parseOptionName(const std::string& name
         else if (trimmed.size() > 1 && trimmed[0] == '-')
         {
             // 短选项
+            JZ_ASSERT(trimmed.size() == 2);
             result.shortName = trimmed;
         }
         else

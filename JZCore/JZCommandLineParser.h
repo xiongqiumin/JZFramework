@@ -34,6 +34,7 @@ public:
 
     void setDescription(const std::string& description);
 
+    // name supports single "-t" or "--time", or combined "-t,--time"
     void addOption(const std::string& name, std::string* value, bool required = false);
     void addOption(const std::string& name, int* value, bool required = false);
     void addOption(const std::string& name, double* value, bool required = false);

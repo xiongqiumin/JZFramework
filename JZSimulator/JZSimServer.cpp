@@ -154,13 +154,12 @@ bool JZSimServer::startHttp(int port)
 
     if (!m_http->listen(port))
     {
-        jzDebug() << "JZSimServer: HTTP server listen failed on port" << port;
+        jzWarning() << "JZSimServer: HTTP server listen failed on port" << port;
         delete m_http;
         m_http = nullptr;
         return false;
     }
 
-    jzDebug() << "JZSimServer: HTTP server listening on port" << port;
     return true;
 }
 
@@ -196,7 +195,6 @@ void JZSimServer::sendSim(JZSimCmd cmd, JZVariantMap data)
 void JZSimServer::start(const std::string& module)
 {
     m_refCount++;
-    jzDebug() << "JZSimServer::start(" << module << ") ref=" << m_refCount;
     if (m_refCount == 1)
         startHttp();
 }

@@ -56,7 +56,13 @@ public:
     }
 
     // Server 收到任意客户端包, 原样回传
-    void onServerRecv(uint64_t id, JZNetPackPtr p) { server->sendPacket(id, p.get()); }
+    void onServerRecv(uint64_t id, JZNetPackPtr p) 
+    {
+        if (g_option.enableServer && !g_option.enableClient) 
+            m_tps.hit(1);
+
+        server->sendPacket(id, p.get()); 
+    }
 
     void onDisconnect(uint64_t id)
     {
@@ -174,7 +180,7 @@ public:
             m_bench->onConnected();
     }
 
-    ~NetServerMultiTest()
+    void stop()
     {
         for (auto t : threads)
         {
@@ -182,10 +188,21 @@ public:
             t->wait();
             delete t;
         }
+        threads.clear();
+    }
+
+    ~NetServerMultiTest()
+    {
+        stop();
     }
 
     // Server 收到任意客户端包, 原样回传给对应客户端
-    void onServerRecv(uint64_t id, JZNetPackPtr p) { server->sendPacket(id, p.get()); }
+    void onServerRecv(uint64_t id, JZNetPackPtr p) { 
+        if (g_option.enableServer && !g_option.enableClient) 
+            m_tps.hit(1);
+        
+        server->sendPacket(id, p.get()); 
+    }
 
     void onDisconnect(uint64_t /*id*/) {}
 
@@ -212,9 +229,11 @@ int test_netServer_multi()
     JZEventLoop loop;
     NetServerMultiTest test(&loop, 18110);
     loop.exec();
+    g_netTestActive = false;
+
+    test.stop();
     double tps = test.m_tps.average();
     netCheckTps("JZNetServer 多线程", tps);
-    g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }

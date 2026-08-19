@@ -353,7 +353,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         // 服务端 TLS: 监听连接若配置了证书, 则对 accept 出的连接初始化 TLS
         if (!listen_it->second.ssl.sslCert.empty())
         {
-            inst->initTls(c, listen_it->second.ssl);
+            inst->initTls(c, listen_it->second.ssl, "");
         }
 
         if (listen_it->second.type == JZSocketInfo::TcpServer)

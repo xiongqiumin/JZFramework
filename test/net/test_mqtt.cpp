@@ -275,7 +275,7 @@ public:
             m_bench->onConnected();
     }
 
-    ~MqttTestMulti()
+    void stop()
     {
         for (auto t : threads)
         {
@@ -283,6 +283,12 @@ public:
             t->wait();
             delete t;
         }
+        threads.clear();
+    }
+
+    ~MqttTestMulti()
+    {
+        stop();
     }
 
     JZMqttServer *m_server;
@@ -296,7 +302,9 @@ int test_mqtt_single()
     MqttTestSingle test(&loop, 18103);
     loop.exec();
     double tps = test.m_tps.average();
-    netCheckTps("MQTT 单线程", tps);
+    if(g_option.enableClient)
+        netCheckTps("MQTT 单线程", tps);
+    
     g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
@@ -308,9 +316,13 @@ int test_mqtt_multi()
     JZEventLoop loop;
     MqttTestMulti test(&loop, 18107);
     loop.exec();
-    double tps = test.m_tps.average();
-    netCheckTps("MQTT 多线程", tps);
     g_netTestActive = false;
+
+    test.stop();
+    double tps = test.m_tps.average();
+    if(g_option.enableClient)
+        netCheckTps("MQTT 多线程", tps);
+
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }

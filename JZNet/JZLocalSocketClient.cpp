@@ -2,7 +2,6 @@
 #include "JZLocalSocketServer.h"
 #include "JZLocalSocketThread.h"
 #include "JZApplication.h"
-#include "JZLogger.h"
 #include "JZUrl.h"
 
 #include <cstring>

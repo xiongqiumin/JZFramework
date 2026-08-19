@@ -204,7 +204,7 @@ public:
                   << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
-    ~TcpTestMulti()
+    void stop()
     {
         for (auto t : threads)
         {
@@ -212,6 +212,12 @@ public:
             t->wait();
             delete t;
         }
+        threads.clear();
+    }
+
+    ~TcpTestMulti()
+    {
+        stop();
     }
 
     void onAccept()
@@ -264,9 +270,11 @@ int test_tcp_multi()
     JZEventLoop loop;
     TcpTestMulti test(&loop, 18105);
     loop.exec();
+    g_netTestActive = false;
+
+    test.stop();
     double tps = test.m_tps.average();
     netCheckTps("TCP 多线程", tps);
-    g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }

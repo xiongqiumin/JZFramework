@@ -175,12 +175,18 @@ public:
         jzDebug() << "==== WebSocket 多线程测试启动 (" << CLIENT_THREAD_COUNT << " 客户端, " << (g_option.enableServer && !g_option.enableClient ? string("连接后20s") : to_string(g_option.loopTime / 1000) + "s") << " 后退出) ====";
     }
 
-    ~JZWebSocketTestMultiThread() {
+    void stop()
+    {
         for (auto t : clientThreads) {
             t->quit();
             t->wait();
             delete t;
         }
+        clientThreads.clear();
+    }
+
+    ~JZWebSocketTestMultiThread() {
+        stop();
     }
 
     void onServerAccept()
@@ -241,9 +247,11 @@ int test_websocket_multi()
     JZEventLoop loop;
     JZWebSocketTestMultiThread test(&loop, 18001);
     loop.exec();
+    g_netTestActive = false;
+
+    test.stop();
     double tps = test.m_tps.average();
     netCheckTps("WebSocket 多线程", tps);
-    g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }

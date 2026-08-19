@@ -138,6 +138,20 @@ std::string JZObject::className() const
     return meta()->name;
 }
 
+bool JZObject::inherits(const char* className) const
+{
+    if (!className)
+        return false;
+    const JZObjectMeta* cur = meta();
+    while (cur)
+    {
+        if (cur->name == className)
+            return true;
+        cur = cur->parent;
+    }
+    return false;
+}
+
 void JZObject::deleteLater()
 {
     JZObjectDeleteEvent *event = new JZObjectDeleteEvent();

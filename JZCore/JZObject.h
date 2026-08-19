@@ -67,6 +67,8 @@ public:
     std::string className() const;
     virtual const JZObjectMeta* meta() const;
 
+    bool inherits(const char* className) const;
+
     void setObjectName(const std::string &name);
     std::string objectName() const;
 

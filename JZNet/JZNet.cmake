@@ -41,6 +41,12 @@
     JZNetworkInterface.cpp
     mongoose.h    
     mongoose.c
+    JZLocalSocketClient.cpp
+    JZLocalSocketClient.h
+    JZLocalSocketServer.cpp
+    JZLocalSocketServer.h
+    JZLocalSocketThread.cpp
+    JZLocalSocketThread.h
 )
 convert_to_abs_paths(JZNET_SOURCES)
 

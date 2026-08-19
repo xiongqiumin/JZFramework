@@ -62,6 +62,20 @@ enum SocketWrite
     WriteUdp,
 };
 
+// TLS 配置: CA 证书 / 本端证书 / 本端私钥 / 是否跳过校验
+struct JZSSLConfig
+{
+    std::string sslCa;            // CA 证书内容(PEM): 客户端校验服务端 / 服务端双向认证
+    std::string sslCert;          // 证书内容(PEM): 服务端=服务器证书 / 客户端=客户端证书
+    std::string sslKey;           // 私钥内容(PEM): 与 sslCert 配对
+    bool sslSkipVerify = false;   // 客户端是否跳过证书校验(仅客户端角色生效)
+
+    bool isEmpty() const
+    {
+        return sslCa.empty() && sslCert.empty() && sslKey.empty() && !sslSkipVerify;
+    }
+};
+
 struct JZSocketInfo
 {
     enum ConnType
@@ -86,12 +100,6 @@ struct JZSocketInfo
     ConnType type;
     std::string url;
     std::string websocketExt;
-
-    // TLS 配置
-    std::string sslCa;        // CA 证书内容(PEM): 客户端校验服务端 / 服务端双向认证
-    std::string sslCert;      // 证书内容(PEM): 服务端
-    std::string sslKey;       // 私钥内容(PEM): 服务端
-    bool sslSkipVerify = false;  // 客户端是否跳过证书校验
 };
 
 class JZNetOpenReq
@@ -188,9 +196,7 @@ protected:
         int64_t readLastMs = 0;   // 上次更新预算的时间(ms)
 
         // 服务端 TLS 证书(监听连接配置, accept 出的连接据此初始化 TLS)
-        std::string sslCa;        // CA 证书内容(PEM): 双向认证
-        std::string sslCert;      // 证书内容(PEM)
-        std::string sslKey;       // 私钥内容(PEM)
+        JZSSLConfig ssl;
     };
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
@@ -214,7 +220,7 @@ protected:
     
     void onFinished();
     void onNetEvent(JZNetReqEvent* event);
-    void initTls(mg_connection *conn,const JZSocketInfo &info);
+    void initTls(mg_connection *conn, const JZSSLConfig &ssl, const std::string &host);
     void bindObject(uint64_t conn, JZNetObject* object);
 
     mg_mgr *m_mgr;
@@ -248,13 +254,13 @@ public:
                 const std::string &localCertPem,
                 const std::string &localKeyPem,
                 bool skipVerify = false);
+    void setSsl(const JZSSLConfig &ssl);
+
+    const JZSSLConfig &sslConfig() const { return m_ssl; }
 
 protected:
     // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。
-    std::string m_sslCa;             // CA 证书(PEM)
-    std::string m_sslCert;           // 本端证书(PEM): 服务端=服务器证书/客户端=客户端证书
-    std::string m_sslKey;            // 本端私钥(PEM)
-    bool m_sslSkipVerify = false;    // 客户端跳过对端校验
+    JZSSLConfig m_ssl;
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
 

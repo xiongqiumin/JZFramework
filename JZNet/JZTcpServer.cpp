@@ -43,9 +43,6 @@ bool JZTcpServer::listen(std::string ip, int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::TcpServer;
-    info.sslCa = m_sslCa;
-    info.sslCert = m_sslCert;
-    info.sslKey = m_sslKey;
     m_listen = openConn(info);
     if (!m_listen)
         return false;                    

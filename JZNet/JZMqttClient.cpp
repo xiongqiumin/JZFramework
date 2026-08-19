@@ -45,10 +45,6 @@ void JZMqttClient::connectToHost(std::string url, const JZMqttConnectOpt& opt)
     JZSocketInfo info;
     info.type = JZSocketInfo::MqttClient;
     info.url = url;
-    info.sslCa = m_sslCa;
-    info.sslCert = m_sslCert;
-    info.sslKey = m_sslKey;
-    info.sslSkipVerify = m_sslSkipVerify;
     m_client = openConn(info, pkt);
     m_state = ConnectingState;
 }

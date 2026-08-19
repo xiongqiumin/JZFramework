@@ -42,10 +42,6 @@ void JZWebSocket::connectToHost(const JZNetworkRequest &req)
     info.type = JZSocketInfo::WebSocket;
     info.url = req.url().url();
     info.websocketExt = req.buildWebSocketHeader();
-    info.sslCa = m_sslCa;
-    info.sslCert = m_sslCert;
-    info.sslKey = m_sslKey;
-    info.sslSkipVerify = m_sslSkipVerify;
     m_conn = openConn(info);
     m_state = ConnectingState;    
 }

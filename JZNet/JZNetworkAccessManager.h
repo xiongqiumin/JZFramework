@@ -73,6 +73,7 @@ public:
                 const std::string &clientCertPem,
                 const std::string &clientKeyPem,
                 bool skipVerify = false);
+    void setSsl(const JZSSLConfig &ssl);
 
 protected:    
     friend JZNetworkConnect;
@@ -94,10 +95,7 @@ protected:
     int64_t m_connectionIdleTimeoutMs; // 空闲连接回收超时
 
     // HTTPS 客户端 TLS 配置
-    std::string m_sslCa;            // CA 证书(PEM)
-    std::string m_sslCert;          // 客户端证书(PEM)
-    std::string m_sslKey;           // 客户端私钥(PEM)
-    bool m_sslSkipVerify = false;   // 跳过服务端校验
+    JZSSLConfig m_ssl;              // 客户端 TLS 配置
 };
 
 

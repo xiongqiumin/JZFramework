@@ -33,6 +33,11 @@ JZNetworkReply::~JZNetworkReply()
     close();
 }
 
+JZNetworkConnect *JZNetworkReply::connect()
+{
+    return m_conn;
+}
+
 JZNetworkReply::NetworkError JZNetworkReply::error() const
 {
     return m_error;

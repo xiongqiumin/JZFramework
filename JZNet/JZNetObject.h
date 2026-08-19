@@ -86,6 +86,12 @@ struct JZSocketInfo
     ConnType type;
     std::string url;
     std::string websocketExt;
+
+    // TLS 配置
+    std::string sslCa;        // CA 证书内容(PEM): 客户端校验服务端 / 服务端双向认证
+    std::string sslCert;      // 证书内容(PEM): 服务端
+    std::string sslKey;       // 私钥内容(PEM): 服务端
+    bool sslSkipVerify = false;  // 客户端是否跳过证书校验
 };
 
 class JZNetOpenReq
@@ -180,6 +186,11 @@ protected:
         int64_t readLimitBytesPerSec = 0;
         int64_t readBudget = 0;   // 当前可用接收预算(字节)
         int64_t readLastMs = 0;   // 上次更新预算的时间(ms)
+
+        // 服务端 TLS 证书(监听连接配置, accept 出的连接据此初始化 TLS)
+        std::string sslCa;        // CA 证书内容(PEM): 双向认证
+        std::string sslCert;      // 证书内容(PEM)
+        std::string sslKey;       // 私钥内容(PEM)
     };
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
@@ -203,7 +214,7 @@ protected:
     
     void onFinished();
     void onNetEvent(JZNetReqEvent* event);
-    void initTls(mg_connection *conn,const std::string &url);
+    void initTls(mg_connection *conn,const JZSocketInfo &info);
     void bindObject(uint64_t conn, JZNetObject* object);
 
     mg_mgr *m_mgr;
@@ -227,7 +238,24 @@ public:
     void setReadLimit(int64_t rateBytesPerSec);
     int64_t readLimit() const { return m_readLimitBytesPerSec; }
 
-protected:        
+    // 统一设置 TLS 配置(需在 listen/connectToHost 前调用, 且每次建连时读取当前值)
+    //  - caPem:        信任的 CA 证书(PEM)。服务端用于校验客户端证书(双向认证);
+    //                  客户端用于校验服务端证书, 为空则跳过证书校验。
+    //  - localCertPem: 本端证书(PEM)。服务端=服务器证书; 客户端=客户端证书(双向认证); 空则无。
+    //  - localKeyPem:  本端私钥(PEM), 与 localCertPem 配对。
+    //  - skipVerify:   客户端是否跳过对端证书校验(仅客户端角色生效, 默认 false)。
+    void setSsl(const std::string &caPem,
+                const std::string &localCertPem,
+                const std::string &localKeyPem,
+                bool skipVerify = false);
+
+protected:
+    // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。
+    std::string m_sslCa;             // CA 证书(PEM)
+    std::string m_sslCert;           // 本端证书(PEM): 服务端=服务器证书/客户端=客户端证书
+    std::string m_sslKey;            // 本端私钥(PEM)
+    bool m_sslSkipVerify = false;    // 客户端跳过对端校验
+
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
 
     // 【核心问题】必须将accept核心逻辑放在网络线程执行，原因如下：
@@ -265,6 +293,8 @@ class JZNetConfig
 public:
     int maxRecvSize = 3 * 1024 * 1024;  //单个连接最大接收缓冲区
     int maxSendSize = 3 * 1024 * 1024;  //单个连接最大发送缓冲区
+    std::string dns4;  // IPv4 DNS 服务器, 为空则不配置
+    std::string dns6;  // IPv6 DNS 服务器, 为空则不配置
 };
 
 class JZNet

@@ -73,6 +73,11 @@ void JZNetworkConnect::open(const std::string& url)
     JZSocketInfo info;
     info.type = JZSocketInfo::HttpClient;
     info.url = url;
+    // 从本连接继承的 JZNetObject TLS 配置(由 manager 通过 setSsl 下发)
+    info.sslCa = m_sslCa;
+    info.sslCert = m_sslCert;
+    info.sslKey = m_sslKey;
+    info.sslSkipVerify = m_sslSkipVerify;
     
     m_url = url;
     m_conn = openConn(info);
@@ -381,6 +386,17 @@ int64_t JZNetworkAccessManager::connectionIdleTimeout() const
     return m_connectionIdleTimeoutMs;
 }
 
+void JZNetworkAccessManager::setSsl(const std::string &caPem,
+                                     const std::string &clientCertPem,
+                                     const std::string &clientKeyPem,
+                                     bool skipVerify)
+{
+    m_sslCa = caPem;
+    m_sslCert = clientCertPem;
+    m_sslKey = clientKeyPem;
+    m_sslSkipVerify = skipVerify;
+}
+
 void JZNetworkAccessManager::onDisconnected()
 {
     auto conn = jzobject_cast<JZNetworkConnect*>(sender());
@@ -467,6 +483,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 
     // 3) 新建连接
     conn = new JZNetworkConnect(this);
+    conn->setSsl(m_sslCa, m_sslCert, m_sslKey, m_sslSkipVerify);
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;

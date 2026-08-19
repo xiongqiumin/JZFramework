@@ -16,6 +16,7 @@
 
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
+static JZNetConfig g_netConfig;
 
 static mg_event_handler_t g_mg_http_cb = nullptr;
 
@@ -349,6 +350,18 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         auto conn_it = inst->m_connMap.find(c->id);
         conn_it->second.acceptId = listen_it->first;
 
+        // 服务端 TLS: 监听连接若配置了证书, 则对 accept 出的连接初始化 TLS
+        if (!listen_it->second.sslCert.empty())
+        {
+            JZSocketInfo info;
+            info.type = listen_it->second.type;
+            info.url = "tls://";
+            info.sslCa = listen_it->second.sslCa;
+            info.sslCert = listen_it->second.sslCert;
+            info.sslKey = listen_it->second.sslKey;
+            inst->initTls(c, info);
+        }
+
         if (listen_it->second.type == JZSocketInfo::TcpServer)
         { 
             conn_it->second.type = JZSocketInfo::TcpSocket;
@@ -507,8 +520,8 @@ JZNetThread::JZNetThread(JZObject *parent)
     mg_log_set(MG_LL_ERROR);
     m_mgr = new mg_mgr();
     mg_mgr_init(m_mgr);
-    m_mgr->dns4.url = "udp://223.5.5.5:53";    // 阿里云 IPv4 DNS
-    m_mgr->dns6.url = "udp://[2400:3200::1]:53";  // 阿里云 IPv6 DNS
+    m_mgr->dns4.url = g_netConfig.dns4.empty() ? "udp://223.5.5.5:53" : g_netConfig.dns4.c_str();   // IPv4 DNS, 为空用阿里云
+    m_mgr->dns6.url = g_netConfig.dns6.empty() ? "udp://[2400:3200::1]:53" : g_netConfig.dns6.c_str();  // IPv6 DNS, 为空用阿里云
 
     mg_wakeup_init(m_mgr);
 }
@@ -550,15 +563,57 @@ bool JZNetThread::event(JZEvent* event)
     return JZObject::event(event);
 }
 
-void JZNetThread::initTls(mg_connection *conn, const std::string &url_str) { 
-    JZUrl url(url_str);
-    std::string host = url.host();
-
+void JZNetThread::initTls(mg_connection *conn, const JZSocketInfo &info)
+{
     mg_tls_opts opts;
     memset(&opts, 0, sizeof(mg_tls_opts));
-    opts.skip_verification = 1;
-    opts.name.buf = (char*)host.c_str();
-    opts.name.len = host.size();
+
+    if (conn->is_client)
+    {
+        // ===== 客户端 =====
+        JZUrl url(info.url);
+        std::string host = url.host();
+        opts.name.buf = (char *)host.c_str();
+        opts.name.len = host.size();
+        // 默认跳过校验(兼容原行为); 设置了 CA 且未显式跳过时才校验
+        opts.skip_verification = info.sslCa.empty() || info.sslSkipVerify;
+        if (!info.sslCa.empty())
+        {
+            opts.ca.buf = (char *)info.sslCa.c_str();
+            opts.ca.len = info.sslCa.size();
+        }
+        // 客户端证书(双向认证)
+        if (!info.sslCert.empty())
+        {
+            opts.cert.buf = (char *)info.sslCert.c_str();
+            opts.cert.len = info.sslCert.size();
+        }
+        if (!info.sslKey.empty())
+        {
+            opts.key.buf = (char *)info.sslKey.c_str();
+            opts.key.len = info.sslKey.size();
+        }
+    }
+    else
+    {
+        // ===== 服务端 =====
+        if (!info.sslCert.empty())
+        {
+            opts.cert.buf = (char *)info.sslCert.c_str();
+            opts.cert.len = info.sslCert.size();
+        }
+        if (!info.sslKey.empty())
+        {
+            opts.key.buf = (char *)info.sslKey.c_str();
+            opts.key.len = info.sslKey.size();
+        }
+        // 双向认证: 需同时有 CA 和客户端证书
+        if (!info.sslCa.empty())
+        {
+            opts.ca.buf = (char *)info.sslCa.c_str();
+            opts.ca.len = info.sslCa.size();
+        }
+    }
 
     mg_tls_init(conn, &opts);
 }
@@ -578,7 +633,12 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
 
         mg_connection *conn = nullptr;    
         if (info.type == JZSocketInfo::TcpSocket)
+        {
             conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+            // 裸 TCP 客户端 TLS: 配置了证书/CA 时初始化(隐式 TLS)
+            if (!info.sslCa.empty() || !info.sslCert.empty())
+                initTls(conn, info);
+        }
         else if (info.type == JZSocketInfo::TcpServer)
             conn = mg_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
         else if (info.type == JZSocketInfo::UdpSocket)
@@ -601,7 +661,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             if(!g_mg_http_cb)
                 g_mg_http_cb = conn->pfn;
             if (str_startsWith(info.url, "https://")) {
-                initTls(conn, info.url);
+                initTls(conn, info);
             }
         }
         else if (info.type == JZSocketInfo::HttpServer)
@@ -612,7 +672,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         {
             conn = mg_ws_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr, "%s", info.websocketExt.c_str());
             if (str_startsWith(info.url, "wss://")) {
-                initTls(conn, info.url);
+                initTls(conn, info);
             }
         }
         else if (info.type == JZSocketInfo::WebSocketListen)
@@ -624,7 +684,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             JZMgOptPacket *pkt = (JZMgOptPacket *)(event->extData.get());
             conn = mg_mqtt_connect(m_mgr, info.url.c_str(), pkt->opt, mg_thread_fn, nullptr);
             if (str_startsWith(info.url, "mqtts://")) {
-                initTls(conn, info.url);
+                initTls(conn, info);
             }
         }
         else if (info.type == JZSocketInfo::MqttServer)
@@ -646,6 +706,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             conn_info.c = conn;
             conn_info.readLimitBytesPerSec = object->readLimit();   // 应用对象预设的下行限速
             conn_info.readLastMs = JZPlatform::getTickCountMs();
+            // 监听连接保存证书, accept 出的连接据此初始化服务端 TLS
+            conn_info.sslCa = info.sslCa;
+            conn_info.sslCert = info.sslCert;
+            conn_info.sslKey = info.sslKey;
             m_connMap[conn->id] = conn_info;
             // TCP 限速时先停读; UDP 不停读(由 READ 分支按数据报丢弃)
             if (conn_info.readLimitBytesPerSec > 0 && !conn->is_udp)
@@ -913,6 +977,17 @@ void JZNetObject::setReadLimit(int64_t rateBytesPerSec)
     postReqEvent(req);
 }
 
+void JZNetObject::setSsl(const std::string &caPem,
+                         const std::string &localCertPem,
+                         const std::string &localKeyPem,
+                         bool skipVerify)
+{
+    m_sslCa = caPem;
+    m_sslCert = localCertPem;
+    m_sslKey = localKeyPem;
+    m_sslSkipVerify = skipVerify;
+}
+
 uint64_t JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data)
 {
     JZSemaphore sem;
@@ -970,6 +1045,7 @@ void JZNetObject::writeConn(uint64_t conn, SocketWrite type, const void *buf, in
 //JZNet
 void JZNet::setConfig(JZNetConfig config)
 {
+    g_netConfig = config;
     JZNET_MAX_RECV = config.maxRecvSize;
     JZNET_MAX_SEND = config.maxSendSize;
 }

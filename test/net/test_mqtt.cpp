@@ -86,8 +86,9 @@ public:
     void onClientMsg(const JZMqttMessage &msg)
     {
         uint64_t seq;
-        if (!netParseMsg(msg.payload, m_prefix, seq))
-            netReportError("MQTT", "解析失败 收到=" + msg.payload);
+        std::string payload = str_fromUtf8(msg.payload);
+        if (!netParseMsg(payload, m_prefix, seq))
+            netReportError("MQTT", "解析失败 收到=" + payload);
         if (seq == m_expect)
         {
             m_expect++;
@@ -110,7 +111,7 @@ public:
         JZMqttPublishOpt opt;
         opt.topic = m_topic;
         opt.qos = 1;     // 触发新实现的 QoS1 出站可靠投递
-        opt.payload = netMakeMsg(m_prefix, m_sendSeq);
+        opt.payload = str_toUtf8(netMakeMsg(m_prefix, m_sendSeq));
         m_client->publish(opt);
         m_sendSeq++;
     }
@@ -178,8 +179,9 @@ public:
     void onMsg(const JZMqttMessage &msg)
     {
         uint64_t seq;
-        if (!netParseMsg(msg.payload, m_prefix, seq))
-            netReportError("MQTT", "多线程解析失败 收到=" + msg.payload);
+        std::string payload = str_fromUtf8(msg.payload);
+        if (!netParseMsg(payload, m_prefix, seq))
+            netReportError("MQTT", "多线程解析失败 收到=" + payload);
         if (seq == m_expect)
         {
             m_expect++;
@@ -201,7 +203,7 @@ public:
         JZMqttPublishOpt opt;
         opt.topic = m_topic;
         opt.qos = 1;
-        opt.payload = netMakeMsg(m_prefix, m_sendSeq);
+        opt.payload = str_toUtf8(netMakeMsg(m_prefix, m_sendSeq));
         m_client->publish(opt);
         m_sendSeq++;
     }

@@ -65,7 +65,7 @@ struct JZMqttConnectOpt
 struct JZMqttPublishOpt
 {
     std::string topic;
-    std::string payload;
+    JZByteArray payload;   // 消息负载(可为二进制)
     uint8_t qos = 0;
     bool retain = false;
     int retransmitId = 0;
@@ -89,7 +89,7 @@ class JZMqttMessage
 {
 public:
     std::string topic;
-    std::string payload;
+    JZByteArray payload;   // 消息负载(可为二进制)
     JZByteArray rawPacket;
 
     uint16_t id{};

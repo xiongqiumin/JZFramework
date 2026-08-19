@@ -62,6 +62,10 @@ void JZNetClient::connectToHost(std::string ip, int port)
     JZSocketInfo info;
     info.type = JZSocketInfo::TcpSocket;
     info.url = ip + ":" + to_string(port);
+    info.sslCa = m_sslCa;
+    info.sslCert = m_sslCert;
+    info.sslKey = m_sslKey;
+    info.sslSkipVerify = m_sslSkipVerify;
     m_client = openConn(info);
     m_state = ConnectingState;    
 }

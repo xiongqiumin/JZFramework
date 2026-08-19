@@ -86,8 +86,9 @@ public:
     void onClientMsg(const JZMqttMessage &msg)
     {
         uint64_t seq;
-        if (!netParseMsg(msg.payload, m_prefix, seq))
-            netReportError("MQTT", "解析失败 收到=" + msg.payload);
+        std::string payload = str_fromUtf8(msg.payload);
+        if (!netParseMsg(payload, m_prefix, seq))
+            netReportError("MQTT", "解析失败 收到=" + payload);
         if (seq == m_expect)
         {
             m_expect++;
@@ -110,7 +111,7 @@ public:
         JZMqttPublishOpt opt;
         opt.topic = m_topic;
         opt.qos = 1;     // 触发新实现的 QoS1 出站可靠投递
-        opt.payload = netMakeMsg(m_prefix, m_sendSeq);
+        opt.payload = str_toUtf8(netMakeMsg(m_prefix, m_sendSeq));
         m_client->publish(opt);
         m_sendSeq++;
     }
@@ -178,8 +179,9 @@ public:
     void onMsg(const JZMqttMessage &msg)
     {
         uint64_t seq;
-        if (!netParseMsg(msg.payload, m_prefix, seq))
-            netReportError("MQTT", "多线程解析失败 收到=" + msg.payload);
+        std::string payload = str_fromUtf8(msg.payload);
+        if (!netParseMsg(payload, m_prefix, seq))
+            netReportError("MQTT", "多线程解析失败 收到=" + payload);
         if (seq == m_expect)
         {
             m_expect++;
@@ -201,7 +203,7 @@ public:
         JZMqttPublishOpt opt;
         opt.topic = m_topic;
         opt.qos = 1;
-        opt.payload = netMakeMsg(m_prefix, m_sendSeq);
+        opt.payload = str_toUtf8(netMakeMsg(m_prefix, m_sendSeq));
         m_client->publish(opt);
         m_sendSeq++;
     }
@@ -273,7 +275,7 @@ public:
             m_bench->onConnected();
     }
 
-    ~MqttTestMulti()
+    void stop()
     {
         for (auto t : threads)
         {
@@ -281,6 +283,12 @@ public:
             t->wait();
             delete t;
         }
+        threads.clear();
+    }
+
+    ~MqttTestMulti()
+    {
+        stop();
     }
 
     JZMqttServer *m_server;
@@ -294,7 +302,9 @@ int test_mqtt_single()
     MqttTestSingle test(&loop, 18103);
     loop.exec();
     double tps = test.m_tps.average();
-    netCheckTps("MQTT 单线程", tps);
+    if(g_option.enableClient)
+        netCheckTps("MQTT 单线程", tps);
+    
     g_netTestActive = false;
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
@@ -306,9 +316,13 @@ int test_mqtt_multi()
     JZEventLoop loop;
     MqttTestMulti test(&loop, 18107);
     loop.exec();
-    double tps = test.m_tps.average();
-    netCheckTps("MQTT 多线程", tps);
     g_netTestActive = false;
+
+    test.stop();
+    double tps = test.m_tps.average();
+    if(g_option.enableClient)
+        netCheckTps("MQTT 多线程", tps);
+
     JZThread::msleep(g_option.delayTime);
     return (int)tps;
 }

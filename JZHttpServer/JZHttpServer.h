@@ -46,6 +46,10 @@ public:
     void close();
     bool isListening() const;
 
+    // HTTPS 服务端 TLS 配置见基类 JZNetObject::setSsl(caPem, certPem, keyPem)。
+    // 例: server.setSsl("", serverCert, serverKey);  // 单向认证
+    //     server.setSsl(caCert, serverCert, serverKey);  // 双向认证
+
     //path 语法 和 flask 类似, 具体见 JZHttpRoute 文档
     void addRoute(const std::string& path, JZHttpHandler* handler);
 

@@ -17,6 +17,8 @@ public:
     void close();
     bool isListening() const;
 
+    // MQTTS 服务端 TLS 配置见基类 JZNetObject::setSsl(caPem, certPem, keyPem)。
+
     JZMqttClient* nextPendingConnection();
 
 jz_signals: 

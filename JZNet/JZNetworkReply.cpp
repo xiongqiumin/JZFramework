@@ -33,6 +33,11 @@ JZNetworkReply::~JZNetworkReply()
     close();
 }
 
+JZNetworkConnect *JZNetworkReply::connect()
+{
+    return m_conn;
+}
+
 JZNetworkReply::NetworkError JZNetworkReply::error() const
 {
     return m_error;
@@ -102,6 +107,14 @@ void JZNetworkReply::close()
         m_conn->emitFinish(UserCancelError);
         m_conn = nullptr;
     }    
+}
+
+void JZNetworkReply::setReadLimit(int64_t rateBytesPerSec)
+{
+    if (rateBytesPerSec < 0) rateBytesPerSec = 0;
+    m_readLimitBytesPerSec = rateBytesPerSec;
+    if (m_conn != nullptr)
+        m_conn->setReadLimit(rateBytesPerSec);
 }
 
 int64_t JZNetworkReply::timeout() const

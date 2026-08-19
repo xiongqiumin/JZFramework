@@ -4,5 +4,9 @@ add_executable(test_http_server
 add_executable(test_http
     test_http.cpp)
 
+add_executable(test_https
+    test_https.cpp)
+
 target_link_libraries(test_http_server JZFramework)
 target_link_libraries(test_http JZFramework)
+target_link_libraries(test_https JZFramework)

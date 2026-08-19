@@ -340,7 +340,7 @@ JZOptional<JZMqttServer::ClientConnState> JZMqttServer::parseConnect(const JZByt
         if (!readStr(wt) || !readStr(wm)) return JZOptional<ClientConnState>::None();
         st.hasWill = true;
         st.will.topic = wt;
-        st.will.payload = wm;
+        st.will.payload = JZByteArray(wm.data(), (int)wm.size());
         st.will.qos = willQos;
         st.will.retain = willRetain;
     }
@@ -566,7 +566,7 @@ void JZMqttServer::onClientNetEvent(JZMqttClient* client, JZNetResEvent* event)
             ropt.payload = msg->payload;
             ropt.props = msg->props;
             ropt.qos = msg->qos;
-            if (ropt.payload.empty())
+            if (ropt.payload.isEmpty())
                 m_retainedMap.erase(msg->topic);
             else
                 m_retainedMap[msg->topic] = ropt;

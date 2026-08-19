@@ -21,6 +21,8 @@ public:
     void connectToHost(std::string url, const JZMqttConnectOpt &opt = JZMqttConnectOpt());
     bool waitForConnected(int ms = 30 * 1000);
     void disconnectFromHost();
+
+    // MQTTS 客户端 TLS 配置见基类 JZNetObject::setSsl(caPem, clientCertPem, clientKeyPem, skipVerify)。
     
     int publish(const JZMqttPublishOpt &opt);
     void subscribe(const JZMqttSubOpt &opt);

@@ -20,6 +20,7 @@ public:
     JZMgOptPacketBuilder(JZMgOptPacket* pkt);
 
     mg_str buildStr(const std::string &text);
+    mg_str buildStr(const JZByteArray &data);
     mg_mqtt_prop* allocPropArr(size_t count);
     mg_mqtt_prop buildProp(const JZMqttProp &sp);
 
@@ -47,6 +48,23 @@ mg_str JZMgOptPacketBuilder::buildStr(const std::string& s)
     d->m_buffer[d->m_offset++] = '\0';
 
     return mg_str_n(&d->m_buffer[pos], s.size());
+}
+
+// 二进制负载: 拷贝进buffer, 返回mg_str(不区分是否为文本)
+mg_str JZMgOptPacketBuilder::buildStr(const JZByteArray& data)
+{
+    int sz = data.size();
+    if (sz == 0)
+        return mg_str{nullptr, 0};
+
+    JZ_ASSERT(d->m_offset + (size_t)sz + 1 <= d->m_buffer.size());
+
+    size_t pos = d->m_offset;
+    memcpy(&d->m_buffer[d->m_offset], data.data(), (size_t)sz);
+    d->m_offset += (size_t)sz;
+    d->m_buffer[d->m_offset++] = '\0';
+
+    return mg_str_n(&d->m_buffer[pos], (size_t)sz);
 }
 
 // 内部：单个属性存入buffer
@@ -152,7 +170,7 @@ JZMgOptPacketPtr makeMgOptPacket(bool is_sub, const JZMqttSubOpt& src)
 void mgMsgToMqttMessage(struct mg_mqtt_message* msg, JZMqttMessage* mqtt_msg)
 {
     mqtt_msg->topic.assign(msg->topic.buf, msg->topic.len);
-    mqtt_msg->payload.assign(msg->data.buf, msg->data.len);
+    mqtt_msg->payload = JZByteArray(msg->data.buf, (int)msg->data.len);
     mqtt_msg->rawPacket = JZByteArray(msg->dgram.buf, msg->dgram.len);
 
     mqtt_msg->id = msg->id;

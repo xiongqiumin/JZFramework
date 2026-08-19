@@ -20,6 +20,8 @@ public:
     void close();
     bool isListening() const;
 
+    // WSS 服务端 TLS 配置见基类 JZNetObject::setSsl(caPem, certPem, keyPem)。
+
     JZWebSocket* nextPendingConnection();
 
 jz_signals:

@@ -5,6 +5,7 @@
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
 
+class JZNetworkConnect;
 class JZNetworkAccessManager;
 
 // HTTP response data
@@ -15,7 +16,6 @@ public:
     std::string httpCodeText;
 };
 
-class JZNetworkConnect;
 class JZNetworkReply : public JZObject
 {
 public:
@@ -39,6 +39,10 @@ public:
     ~JZNetworkReply();    
 
     void close();
+
+    // 设置下行接收限速(字节/秒), 0=不限速
+    void setReadLimit(int64_t rateBytesPerSec);
+    int64_t readLimit() const { return m_readLimitBytesPerSec; }
 
     int64_t timeout() const;
     void setTimeOut(int64_t timeout);
@@ -65,6 +69,8 @@ public:
 
     JZByteArray readAll();
 
+    JZNetworkConnect *connect();
+
 jz_signals:
     JZSigVoid sigReadyRead;
     JZSigVoid sigFinished;
@@ -89,6 +95,7 @@ protected:
     JZNetworkRequest m_request;
     JZNetworkConnect *m_conn;
     int m_timeOut;
+    int64_t m_readLimitBytesPerSec = 0;   // 下行接收限速(字节/秒), 断开后重置为0
 
     // 重定向支持
     RedirectPolicy m_redirectPolicy;

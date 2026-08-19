@@ -64,6 +64,17 @@ public:
     void setConnectionIdleTimeout(int64_t ms);
     int64_t connectionIdleTimeout() const;
 
+    // 统一设置 HTTPS 客户端 TLS 配置(需在发起请求前设置)
+    //  - caPem:        CA 证书(PEM), 用于校验服务端证书; 为空则跳过校验。
+    //  - clientCertPem: 客户端证书(PEM), 用于双向认证(可选); 空则无。
+    //  - clientKeyPem:  客户端私钥(PEM)。
+    //  - skipVerify:    是否跳过服务端证书校验(默认 false)。
+    void setSsl(const std::string &caPem,
+                const std::string &clientCertPem,
+                const std::string &clientKeyPem,
+                bool skipVerify = false);
+    void setSsl(const JZSSLConfig &ssl);
+
 protected:    
     friend JZNetworkConnect;
 
@@ -82,6 +93,9 @@ protected:
 
     int m_maxConnectionsPerHost;     // 每个主机最大连接数
     int64_t m_connectionIdleTimeoutMs; // 空闲连接回收超时
+
+    // HTTPS 客户端 TLS 配置
+    JZSSLConfig m_ssl;              // 客户端 TLS 配置
 };
 
 

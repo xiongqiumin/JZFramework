@@ -73,7 +73,7 @@ void JZNetworkConnect::open(const std::string& url)
     JZSocketInfo info;
     info.type = JZSocketInfo::HttpClient;
     info.url = url;
-    
+
     m_url = url;
     m_conn = openConn(info);
     m_timeId = startTimer(200);
@@ -102,6 +102,8 @@ void JZNetworkConnect::resetConnection()
     m_chunkMode = false;
     m_chunkBuffer.clear();
     m_closing = false;
+    // 断开/复用前重置下行限速, 避免限速残留到连接复用
+    setReadLimit(0);
 }
 
 void JZNetworkConnect::closeConnection()
@@ -379,6 +381,22 @@ int64_t JZNetworkAccessManager::connectionIdleTimeout() const
     return m_connectionIdleTimeoutMs;
 }
 
+void JZNetworkAccessManager::setSsl(const std::string &caPem,
+                                     const std::string &clientCertPem,
+                                     const std::string &clientKeyPem,
+                                     bool skipVerify)
+{
+    m_ssl.sslCa = caPem;
+    m_ssl.sslCert = clientCertPem;
+    m_ssl.sslKey = clientKeyPem;
+    m_ssl.sslSkipVerify = skipVerify;
+}
+
+void JZNetworkAccessManager::setSsl(const JZSSLConfig &ssl)
+{
+    m_ssl = ssl;
+}
+
 void JZNetworkAccessManager::onDisconnected()
 {
     auto conn = jzobject_cast<JZNetworkConnect*>(sender());
@@ -465,6 +483,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 
     // 3) 新建连接
     conn = new JZNetworkConnect(this);
+    conn->setSsl(m_ssl);
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;

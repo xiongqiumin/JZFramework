@@ -29,6 +29,8 @@ public:
     void disconnectFromHost();
     bool isConnect() const;
 
+    // WSS 客户端 TLS 配置见基类 JZNetObject::setSsl(caPem, clientCertPem, clientKeyPem, skipVerify)。
+
     bool waitForConnected(int ms = 5000);
 
     void sendTextMessage(const std::string &message);

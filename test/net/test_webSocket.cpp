@@ -177,6 +177,11 @@ public:
 
     void stop()
     {
+        if (m_bench)
+        {
+            m_bench->stop();
+            m_bench = nullptr;
+        }
         for (auto t : clientThreads) {
             t->quit();
             t->wait();

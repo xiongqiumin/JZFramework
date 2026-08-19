@@ -99,8 +99,36 @@ public:
 
     bool hasConnected() const { return m_hasConnected.load(); }
 
+    // 测试结束(loop.exec 返回)后必须调用, 停止定时器并释放自身,
+    // 否则 m_timer 仍挂在主线程 timerList, 主线程析构后可能再次触发 onTimeout
+    // -> m_loop(栈上 JZEventLoop)已析构 -> JZThread::wakeUp 访问已释放的 m_cv 段错误
+    void stop()
+    {
+        if (m_timer)
+        {
+            m_timer->stop();
+            delete m_timer;
+            m_timer = nullptr;
+        }
+        delete this;
+    }
+
 private:
-    void onTimeout() { m_loop->quit(); }
+    ~NetServerBench()
+    {
+        if (m_timer)
+        {
+            m_timer->stop();
+            delete m_timer;
+            m_timer = nullptr;
+        }
+    }
+
+    void onTimeout()
+    {
+        if (m_loop)
+            m_loop->quit();
+    }
 
     JZEventLoop *m_loop;
     int m_runMs = 20000;

@@ -36,15 +36,10 @@ public:
         resp.setBody(req.body());   // 原样回显 body
         if (serverTps)
             serverTps->hit();       // 服务器接收时计时(纯服务器模式由测试注入)
-        if (bench || m_first)
-        {
-            bench->onConnected();   // 首次请求视为连接到达, 启动 run 计时
-            m_first = false;
-        }
+        if (bench)
+            bench->onConnected();   // 首次请求视为连接到达, 启动 run 计时(仅纯服务器模式注入 bench)
         client->response(resp.toByteArray());
     }
-
-    bool m_first = true;
 };
 
 // ===================== 单线程测试(主事件循环内跑一个客户端) =====================

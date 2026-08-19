@@ -16,6 +16,8 @@ struct TestOption
     bool enableClient = true;
     int loopTime = 15000;
     int delayTime = 0;
+    int port = 18100;                  // 监听/连接端口(由 --port 指定)
+    double threshold = 200.0;          // TPS 通过阈值(由 --threshold 指定, 默认 200)
     std::string host = "127.0.0.1";   // 客户端连接的目标服务器地址(由 --server 指定)
 };
 

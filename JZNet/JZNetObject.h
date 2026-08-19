@@ -247,6 +247,7 @@ protected:
 class JZNetConfig
 {
 public:
+    int threadPriority = 6;
     int maxRecvSize = 3 * 1024 * 1024;  //单个连接最大接收缓冲区
     int maxSendSize = 3 * 1024 * 1024;  //单个连接最大发送缓冲区
 };

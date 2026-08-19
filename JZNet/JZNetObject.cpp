@@ -14,6 +14,7 @@
 #include "JZMqttPacket.h"
 #include "JZTx.h"
 
+static int JZNET_THREAD_PRIORITY = 6;
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 
@@ -448,7 +449,7 @@ JZNetThread::JZNetThread(JZObject *parent)
 {
     JZThreadConfig cfg;
     cfg.stackSize = 8 * 1024;
-    cfg.priority = 5;
+    cfg.priority = JZNET_THREAD_PRIORITY;
 
     connect(&sigFinished, this, &JZNetThread::onFinished);
     moveToThread(this);
@@ -627,7 +628,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             bool send_finished = true;
             if (event->writeCmd == WriteBin)
             {
-                // 防止 send buffer 无限膨胀导致 OOM
+                // 防止 send buffer 无限膨胀导致 OOM:
                 if(c->send.len + len > JZNET_MAX_SEND)
                 {
                     send_finished = false;
@@ -680,10 +681,11 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 mg_mqtt_send_header(c, pkt->cmd, pkt->flags, pkt->len);
                 if (pkt->buffer.size() > 0)
                 {
+                    len = pkt->buffer.size();
                     if(c->send.len + pkt->buffer.size() > JZNET_MAX_SEND)
                     {
-                        c->is_draining = 1;
-                        return;
+                        send_finished = false;
+                        goto send_end;
                     }
                     send_finished = mg_send(c, pkt->buffer.data(), pkt->buffer.size());
                 }
@@ -708,8 +710,8 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
 send_end:            
             if(!send_finished)
             {
-                jzWarning() << "send faild, net draining";
-                c->is_draining = 1;
+                jzWarning() << "send faild, net close buf len" << c->send.len << ", try len" << len;
+                c->is_closing = 1;
             }
         }
         else if (event->netCmd == JZNetReqEvent::Net_HttpClientReopen)
@@ -728,8 +730,8 @@ send_end:
             }
             if (!send_finished) 
             {
-                jzWarning() << "send faild, net draining";
-                c->is_draining = 1;
+                jzWarning() << "send faild, net close buf len" << c->send.len << ", try len" << len;
+                c->is_closing = 1;
             }
         }
         else if (event->netCmd == JZNetReqEvent::Net_HttpReplyFinish)

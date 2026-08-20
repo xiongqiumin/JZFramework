@@ -29,8 +29,6 @@ protected:
     virtual void onNetEvent(JZNetResEvent *event) override;
     void sendFinished();
 
-    uint64_t m_conn;
-
     JZHttpHandler *m_handle = nullptr;
     bool m_keepAlive = true;  // HTTP/1.1 默认 keep-alive, HTTP/1.0 由 Connection 头决定
 };
@@ -60,7 +58,6 @@ protected:
     virtual void onNetEvent(JZNetResEvent *event) override;
     void onHttpMessage(JZHttpServerClient *client, const JZByteArray &buffer);
 
-    uint64_t m_listen;
     JZHttpRoute m_route;
 };
 

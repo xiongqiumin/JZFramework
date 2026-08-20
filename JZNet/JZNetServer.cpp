@@ -11,7 +11,7 @@ using namespace std;
 JZNetServer::JZNetServer(JZObject *parent)
     : JZNetObject(parent), sigAccept(this), sigDisconnect(this), sigPacketReceive(this)
 {   
-    m_listen = INVALID_NET_HANDLE;        
+    m_conn = INVALID_NET_HANDLE;        
 }
 
 JZNetServer::~JZNetServer()
@@ -31,7 +31,7 @@ std::string JZNetServer::token()
 
 bool JZNetServer::isListening() const
 {
-    return m_listen != INVALID_NET_HANDLE;
+    return m_conn != INVALID_NET_HANDLE;
 }
 
 bool JZNetServer::listen(int port)
@@ -47,8 +47,7 @@ bool JZNetServer::listen(std::string ip, int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::TcpServer;
-    m_listen = openConn(info);
-    if (!m_listen)
+    if (!openConn(info))
         return false;                    
     
     return true;
@@ -57,10 +56,10 @@ bool JZNetServer::listen(std::string ip, int port)
 
 void JZNetServer::close()
 {
-    if (m_listen)
+    if (m_conn)
     {
-        closeConn(m_listen, false);
-        m_listen = INVALID_NET_HANDLE;
+        closeConn(false);
+        m_conn = INVALID_NET_HANDLE;
     }
 }
 
@@ -135,7 +134,7 @@ uint64_t JZNetServer::nextPendingConnection()
 JZNetObject *JZNetServer::onAccept(uint64_t conn)
 {
     JZNetClient *socket = new JZNetClient(this);
-    socket->m_client = conn;
+    socket->m_conn = conn;
     socket->m_state = ConnectingState;
     socket->moveToThread(this->thread());
     socket->m_server = this;

@@ -49,7 +49,6 @@ protected:
     virtual void onNetEvent(JZNetResEvent* event) override;
     void closeInternal(bool is_error);
 
-    uint64_t m_conn;
     SocketState m_state;
 };
 

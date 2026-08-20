@@ -43,7 +43,6 @@ protected:
     void onNetEvent(JZNetResEvent*event);
     virtual JZNetObject *onAccept(uint64_t conn) override;
 
-    uint64_t m_listen;
     std::string m_token;
     std::map<uint64_t, JZNetClient*> m_clients;
     std::deque<JZNetClient*> m_pendingConnections;

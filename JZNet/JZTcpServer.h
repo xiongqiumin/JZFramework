@@ -29,7 +29,6 @@ protected:
     virtual void onNetEvent(JZNetResEvent* event) override;
 
     int m_port;
-    uint64_t m_listen;
     std::deque<JZTcpSocket*> m_pendingConnections;
 };
 

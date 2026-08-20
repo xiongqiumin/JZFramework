@@ -15,6 +15,14 @@
 #include "JZTx.h"
 
 static int JZNET_THREAD_PRIORITY = 6;
+
+// MQTT 剩余长度字段(变长 1~4 字节)编码后的字节数
+static uint8_t mqttVarintSize(size_t length)
+{
+    uint8_t bytes = 0;
+    do { bytes++; length /= 0x80; } while (length > 0);
+    return bytes;
+}
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 static JZNetConfig g_netConfig;
@@ -364,16 +372,16 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         }
         else if (listen_it->second.type == JZSocketInfo::HttpServer)
         {
-            conn_it->second.type = JZSocketInfo::HttpServerClient;
+            conn_it->second.type = JZSocketInfo::HttpClientServer;
             accept_id = listen_it->first;
         }
         else if (listen_it->second.type == JZSocketInfo::WebSocketListen)
         {
-            conn_it->second.type = JZSocketInfo::WebServerClient;
+            conn_it->second.type = JZSocketInfo::WebSocketServer;
         }
         else if (listen_it->second.type == JZSocketInfo::MqttServer)
         {
-            conn_it->second.type = JZSocketInfo::MqttServerClient;
+            conn_it->second.type = JZSocketInfo::MqttClientServer;
             accept_id = listen_it->first;
         }
         else
@@ -386,14 +394,18 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         mg_http_message* hm = (mg_http_message*)ev_data;
 
         auto conn_it = inst->m_connMap.find(c->id);
-        if (conn_it->second.type == JZSocketInfo::WebServerClient)
+        if (conn_it->second.type == JZSocketInfo::WebSocketServer)
         {
             auto type = mg_http_get_header(hm, "Upgrade");
             if (type && std::string(type->buf, type->len) == "websocket")
             {
                 mg_ws_upgrade(c, hm, "");
-                return;
             }
+            else
+            {
+                c->is_closing = true;
+            }
+            return;
         }
 
         auto http_ptr = std::make_shared<JZHttpResData>();
@@ -408,7 +420,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_WS_OPEN)
     {
         auto it = inst->m_connMap.find(c->id);
-        if (it->second.type == JZSocketInfo::WebServerClient)
+        if (it->second.type == JZSocketInfo::WebSocketServer)
         {
             accept_id = it->second.acceptId;
         }
@@ -451,15 +463,21 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     if (accept_id != INVALID_NET_HANDLE)
     {
         auto accept_it = inst->m_connMap.find(accept_id);
-        JZNetObject* accept_object = nullptr;
         if (accept_it != inst->m_connMap.end())
-            accept_object = (JZNetObject*)accept_it->second.object.object();
-            
-        if (accept_object && vec_contains(inst->m_objectList, accept_object))
         {
-            JZNetObject *bind_object = accept_object->onAccept(event->conn);
-            if (bind_object)
-                inst->bindObject(event->conn, bind_object);
+            JZNetObject *accept_object = (JZNetObject*)accept_it->second.object.object();
+            if (vec_contains(inst->m_objectList, accept_object))
+            {
+                auto conn_it = inst->m_connMap.find(event->conn);
+
+                JZNetObject *bind_object = accept_object->onAccept(event->conn);
+                if (bind_object)
+                {
+                    inst->bindObject(event->conn, bind_object);
+                    if(conn_it->second.type == JZSocketInfo::WebSocketServer)
+                        bind_object->m_pendingBytes = c->send.len; //accept 之前协议握手的
+                }
+            }
         }
         delete event;
         return;
@@ -945,7 +963,7 @@ bool JZNetObject::event(JZEvent *event)
     JZTX_FUNC_TRACE
     if (event->type() == JZEvent_netRes) 
     {
-        JZNetResEvent *net_event = (JZNetResEvent*)event;
+        JZNetResEvent* net_event = (JZNetResEvent*)event;
         onNetEvent(net_event);
     }
 
@@ -964,9 +982,16 @@ void JZNetObject::wakeUpNet()
 
 void JZNetObject::postReqEvent(JZNetReqEvent *req)
 {
+    JZ_ASSERT(req->conn == m_conn);
+
     auto inst = JZNetThread::instance();
     jzApp->postEvent(inst, req);
     inst->wakeUpNet();
+}
+
+int JZNetObject::pendingWriteBytes() const
+{
+    return m_pendingBytes;
 }
 
 void JZNetObject::setReadLimit(int64_t rateBytesPerSec)
@@ -976,29 +1001,29 @@ void JZNetObject::setReadLimit(int64_t rateBytesPerSec)
 
     JZNetReqEvent *req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_SetReadLimit;
-    req->conn = m_connId;
+    req->conn = m_conn;
     req->readLimitBytesPerSec = rateBytesPerSec;
     postReqEvent(req);
 }
 
-void JZNetObject::setSsl(const std::string &caPem,
-                         const std::string &localCertPem,
-                         const std::string &localKeyPem,
-                         bool skipVerify)
-{
-    m_ssl.sslCa = caPem;
-    m_ssl.sslCert = localCertPem;
-    m_ssl.sslKey = localKeyPem;
-    m_ssl.sslSkipVerify = skipVerify;
-}
-
-void JZNetObject::setSsl(const JZSSLConfig &ssl)
+void JZNetObject::setSslConfig(const JZSSLConfig &ssl)
 {
     m_ssl = ssl;
 }
 
-uint64_t JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data)
+void JZNetObject::setSsl(const std::string &caPem, const std::string &certPem, const std::string &keyPem)
 {
+    JZSSLConfig ssl;
+    ssl.sslCa = caPem;
+    ssl.sslCert = certPem;
+    ssl.sslKey = keyPem;
+    setSslConfig(ssl);
+}
+
+bool JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data)
+{
+    JZ_ASSERT(m_conn == INVALID_NET_HANDLE);
+
     JZSemaphore sem;
 
     JZNetOpenReq result;
@@ -1017,38 +1042,46 @@ uint64_t JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetRe
     sem.acquire();
 
     if (result.conn != INVALID_NET_HANDLE)
-        m_connId = result.conn;
-    return result.conn;
+    {
+        m_conn = result.conn;
+        m_connType = info.type;
+    }
+
+    return (result.conn != INVALID_NET_HANDLE);
 }
 
-void JZNetObject::closeConn(uint64_t conn, bool isError)
+void JZNetObject::closeConn(bool closeImmediate)
 {    
-    JZ_ASSERT(conn != INVALID_NET_HANDLE);
+    if(m_conn == INVALID_NET_HANDLE)
+    {
+        return;
+    }
 
     JZNetReqEvent* req = new JZNetReqEvent();
-    if(!isError)
+    req->conn = m_conn;
+    if(!closeImmediate)
         req->netCmd = JZNetReqEvent::Net_Draining;
     else
         req->netCmd = JZNetReqEvent::Net_Close;
 
-    req->conn = conn;
-
     auto inst = JZNetThread::instance();
     jzApp->postEvent(inst, req);
     inst->wakeUpNet();
+
+    m_conn = INVALID_NET_HANDLE;
+    m_connType = JZSocketInfo::None;
+    m_pendingBytes = 0;
 }
 
-void JZNetObject::writeConn(uint64_t conn, SocketWrite type, const void *buf, int len)
+void JZNetObject::writeConn(SocketWrite type, const void *buf, int len)
 {
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_Write;
     req->writeCmd = type;
-    req->conn = conn;
+    req->conn = m_conn;
     req->buffer = JZByteArray((const char*)buf, len);
 
-    auto inst = JZNetThread::instance();
-    jzApp->postEvent(inst, req);
-    inst->wakeUpNet();
+    postReqEvent(req);
 }
 
 //JZNet

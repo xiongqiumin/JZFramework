@@ -66,7 +66,6 @@ protected:
     // 向新订阅者投递已保留(retained)消息
     void deliverRetained(JZMqttClient *client, const std::string &filter, uint8_t subQos);
 
-    uint64_t m_listen;
     std::map<std::string, std::vector<SubEntry>> m_subcribeMap;
     std::map<std::string, JZMqttPublishOpt> m_retainedMap;
     std::map<JZMqttClient*, ClientConnState> m_clientState;

@@ -44,7 +44,6 @@ protected:
     void closeInternal(bool is_error);
     void sendHandPacket(const JZNetPack *packet);
     
-    uint64_t m_client;
     JZNetPacketProcessor m_packet;
     std::string m_error;        
     bool m_waitPacket;

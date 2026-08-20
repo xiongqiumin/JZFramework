@@ -19,7 +19,7 @@ JZ_OBJECT_IMPL(JZMqttClient, JZNetObject)
 JZMqttClient::JZMqttClient(JZObject* parent) 
     : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigMessage(this)
 {
-    m_client = INVALID_NET_HANDLE;
+    m_conn = INVALID_NET_HANDLE;
     m_state = UnconnectedState;
     m_server = nullptr;
     m_qosTimer = new JZTimer(this);
@@ -38,14 +38,14 @@ SocketState JZMqttClient::state() const
 
 void JZMqttClient::connectToHost(std::string url, const JZMqttConnectOpt& opt)
 {
-    JZ_ASSERT(!m_client);
+    JZ_ASSERT(!m_conn);
 
     auto pkt = makeMgOptPacket(opt);
 
     JZSocketInfo info;
     info.type = JZSocketInfo::MqttClient;
     info.url = url;
-    m_client = openConn(info, pkt);
+    openConn(info, pkt);
     m_state = ConnectingState;
 }
 
@@ -68,11 +68,11 @@ bool JZMqttClient::waitForConnected(int ms)
 
 void JZMqttClient::closeInternal(bool is_error)
 {
-    if (m_client != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
         clearOutboundQos();          // 连接断开, 在途 QoS 消息作废
-        closeConn(m_client, is_error);
-        m_client = INVALID_NET_HANDLE;
+        closeConn(is_error);
+        m_conn = INVALID_NET_HANDLE;
     }
 
     int pre_state = m_state;
@@ -91,7 +91,7 @@ void JZMqttClient::write(const std::shared_ptr<JZMgOptPacket> packet)
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_Write;
     req->writeCmd = WriteMqttMessage;
-    req->conn = m_client;
+    req->conn = m_conn;
     req->extData = packet;
 
     auto inst = JZNetThread::instance();
@@ -178,9 +178,9 @@ void JZMqttClient::onNetEvent(JZNetResEvent* event)
     switch (event->event)
     {
     case JZ_NET_EV_CLOSE:
-        if (m_client != INVALID_NET_HANDLE)
+        if (m_conn != INVALID_NET_HANDLE)
         {
-            m_client = INVALID_NET_HANDLE;
+            m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }
         break;

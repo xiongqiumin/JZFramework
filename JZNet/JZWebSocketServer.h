@@ -31,7 +31,6 @@ protected:
     virtual JZNetObject* onAccept(uint64_t conn); 
     virtual void onNetEvent(JZNetResEvent*event) override;
 
-    uint64_t m_listen;
     std::deque<JZWebSocket*> m_pendingConnections;
 };
 

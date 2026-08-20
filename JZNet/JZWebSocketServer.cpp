@@ -8,7 +8,7 @@ JZ_OBJECT_IMPL(JZWebSocketServer, JZNetObject)
 JZWebSocketServer::JZWebSocketServer(JZObject *parent)
     :JZNetObject(parent), sigAccept(this)
 {
-    m_listen = INVALID_NET_HANDLE;
+    m_conn = INVALID_NET_HANDLE;
 }
 
 JZWebSocketServer::~JZWebSocketServer()
@@ -18,16 +18,16 @@ JZWebSocketServer::~JZWebSocketServer()
 
 void JZWebSocketServer::close()
 {
-    if (m_listen != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_listen, true);
-        m_listen = INVALID_NET_HANDLE;
+        closeConn(true);
+        m_conn = INVALID_NET_HANDLE;
     }
 }
 
 bool JZWebSocketServer::isListening() const
 {
-    return (m_listen != INVALID_NET_HANDLE);
+    return (m_conn != INVALID_NET_HANDLE);
 }
 
 bool JZWebSocketServer::listen(int port)
@@ -43,8 +43,7 @@ bool JZWebSocketServer::listen(std::string ip, int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::WebSocketListen;
-    m_listen = openConn(info);
-    if (!m_listen)
+    if (!openConn(info))
         return false;
 
     return true;
@@ -54,6 +53,7 @@ JZNetObject* JZWebSocketServer::onAccept(uint64_t conn)
 {
     JZWebSocket* socket = new JZWebSocket(this);
     socket->m_conn = conn;
+    socket->m_connType = JZSocketInfo::WebSocketServer;
     socket->m_state = ConnectedState;
     socket->moveToThread(this->thread());
 

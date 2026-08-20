@@ -75,7 +75,7 @@ void JZNetworkConnect::open(const std::string& url)
     info.url = url;
 
     m_url = url;
-    m_conn = openConn(info);
+    openConn(info);
     m_timeId = startTimer(200);
     m_recvTime = JZPlatform::getTickCountMs();
 }
@@ -111,7 +111,7 @@ void JZNetworkConnect::closeConnection()
     m_closing = true;
     if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_conn, false);
+        closeConn(false);
         m_conn = INVALID_NET_HANDLE;
     }
 }
@@ -222,7 +222,7 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
         if (cl < 0) {
             m_chunkBuffer.remove(0, ofs);
             emitFinish(JZNetworkReply::ConnectError);
-            closeConn(m_conn, true);
+            closeConn(true);
             return;
         }
 
@@ -267,7 +267,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         {
             // 报文解析失败：连接异常，关闭并上报错误
             emitFinish(JZNetworkReply::ConnectError);
-            closeConn(m_conn, true);
+            closeConn(true);
             return;
         }
 
@@ -321,7 +321,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     }
     else if (ev == JZ_NET_EV_CONNECT)
     {
-        writeConn(m_conn, WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+        writeConn(WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
     }
     else if (ev == JZ_NET_EV_TLS_HS)
     {
@@ -483,7 +483,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 
     // 3) 新建连接
     conn = new JZNetworkConnect(this);
-    conn->setSsl(m_ssl);
+    conn->setSslConfig(m_ssl);
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;

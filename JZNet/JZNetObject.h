@@ -87,13 +87,13 @@ struct JZSocketInfo
         UdpListen,
         HttpClient,
         HttpClientChunked,
-        HttpServerClient, //服务端的连接
+        HttpClientServer, //服务端的连接
         HttpServer,
         WebSocket,
-        WebServerClient,  //服务端的websocket
+        WebSocketServer,  //服务端的websocket
         WebSocketListen,  //服务端的侦听
         MqttClient,
-        MqttServerClient,  //服务端的mqtt client
+        MqttClientServer,  //服务端的mqtt client
         MqttServer,
     };
 
@@ -240,23 +240,16 @@ public:
     JZNetObject(JZObject *parent = nullptr);
     virtual ~JZNetObject();
 
+    int pendingWriteBytes() const;
+
     // 设置下行接收限速(字节/秒), 0=不限速。内部按令牌桶在 net thread 控制 TCP 接收窗口
     void setReadLimit(int64_t rateBytesPerSec);
     int64_t readLimit() const { return m_readLimitBytesPerSec; }
 
-    // 统一设置 TLS 配置(需在 listen/connectToHost 前调用, 且每次建连时读取当前值)
-    //  - caPem:        信任的 CA 证书(PEM)。服务端用于校验客户端证书(双向认证);
-    //                  客户端用于校验服务端证书, 为空则跳过证书校验。
-    //  - localCertPem: 本端证书(PEM)。服务端=服务器证书; 客户端=客户端证书(双向认证); 空则无。
-    //  - localKeyPem:  本端私钥(PEM), 与 localCertPem 配对。
-    //  - skipVerify:   客户端是否跳过对端证书校验(仅客户端角色生效, 默认 false)。
-    void setSsl(const std::string &caPem,
-                const std::string &localCertPem,
-                const std::string &localKeyPem,
-                bool skipVerify = false);
-    void setSsl(const JZSSLConfig &ssl);
-
+    void setSslConfig(const JZSSLConfig &ssl);
     const JZSSLConfig &sslConfig() const { return m_ssl; }
+    // 便捷接口: 等价于 setSslConfig({caPem, certPem, keyPem, false})
+    void setSsl(const std::string &caPem, const std::string &certPem, const std::string &keyPem);
 
 protected:
     // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。
@@ -285,12 +278,14 @@ protected:
     void wakeUpNet();
 
     void postReqEvent(JZNetReqEvent *event);
-    uint64_t openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data = std::shared_ptr<JZNetReqEventData>());
-    void closeConn(uint64_t conn,bool closeImmediate);
-    void writeConn(uint64_t conn, SocketWrite type, const void *buf, int len);
+    bool openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEventData> data = std::shared_ptr<JZNetReqEventData>());
+    void closeConn(bool closeImmediate);
+    void writeConn(SocketWrite type, const void *buf, int len);
 
     int64_t m_readLimitBytesPerSec = 0;   // 本对象下行接收限速(字节/秒), 0=不限速
-    uint64_t m_connId = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
+    uint64_t m_conn = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
+    JZSocketInfo::ConnType m_connType = JZSocketInfo::None;
+    int m_pendingBytes = 0;
 };
 
 

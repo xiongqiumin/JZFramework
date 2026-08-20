@@ -28,9 +28,9 @@ void JZUdpSocket::onNetEvent(JZNetResEvent *event)
     int ev = event->event;
     if (ev == JZ_NET_EV_CLOSE)
     {
-        if (m_client != INVALID_NET_HANDLE)
+        if (m_conn != INVALID_NET_HANDLE)
         {
-            m_client = INVALID_NET_HANDLE;
+            m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }
     }
@@ -56,13 +56,12 @@ void JZUdpSocket::onNetEvent(JZNetResEvent *event)
 
 bool JZUdpSocket::bind(int port)
 {
-    JZ_ASSERT(!m_client);
+    JZ_ASSERT(!m_conn);
 
     JZSocketInfo info;
     info.type = JZSocketInfo::UdpListen;
     info.url = "udp://:" + to_string(port);
-    m_client = openConn(info);
-    if (m_client == INVALID_NET_HANDLE)
+    if (!openConn(info))
         return false;
 
     m_state = ConnectedState;
@@ -71,10 +70,10 @@ bool JZUdpSocket::bind(int port)
 
 void JZUdpSocket::closeInternal(bool is_error)
 {
-    if (m_client != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_client, is_error);
-        m_client = INVALID_NET_HANDLE;
+        closeConn(is_error);
+        m_conn = INVALID_NET_HANDLE;
     }
     m_datagrams.clear();
 
@@ -100,7 +99,7 @@ void JZUdpSocket::writeDatagram(const std::string &ip, int port, const char *buf
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_Write;
     req->writeCmd = WriteUdp;
-    req->conn = m_client;
+    req->conn = m_conn;
     req->buffer = JZByteArray(buffer, len);
     req->extData = data;
     postReqEvent(req);

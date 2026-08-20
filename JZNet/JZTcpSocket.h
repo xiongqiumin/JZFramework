@@ -45,7 +45,6 @@ protected:
 
     JZByteArray m_buffer;
 
-    uint64_t m_client;
     SocketState m_state;
 };
 

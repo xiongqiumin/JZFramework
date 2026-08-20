@@ -37,7 +37,6 @@ protected:
 
     std::string m_url;
     std::string m_hostKey;    // 连接池 key：scheme://host:port（按主机复用）
-    uint64_t m_conn;
 
     JZByteArray m_chunkBuffer;
     JZNetworkReply *m_reply;

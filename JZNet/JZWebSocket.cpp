@@ -42,7 +42,7 @@ void JZWebSocket::connectToHost(const JZNetworkRequest &req)
     info.type = JZSocketInfo::WebSocket;
     info.url = req.url().url();
     info.websocketExt = req.buildWebSocketHeader();
-    m_conn = openConn(info);
+    openConn(info);
     m_state = ConnectingState;    
 }
 
@@ -50,7 +50,7 @@ void JZWebSocket::closeInternal(bool flag)
 {
     if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_conn, flag);
+        closeConn(flag);
         m_conn = INVALID_NET_HANDLE;
     }
 
@@ -90,7 +90,15 @@ void JZWebSocket::sendTextMessage(const std::string &message)
     if (m_conn == INVALID_NET_HANDLE)
         return;
 
-    writeConn(m_conn, WriteWebSocketText, message.data(), (int)message.size());
+    // WebSocket 帧头开销: 长度 <126 -> 2字节, <65536 -> 4字节, 否则 10字节
+    // client 端额外带 4 字节掩码(与回执 write_size=mg_ws_send 返回值口径一致)
+    size_t len = message.size();
+    size_t hdr = (len < 126) ? 2 : (len < 65536 ? 4 : 10);
+    if (m_connType == JZSocketInfo::WebSocket)
+        hdr += 4;
+    m_pendingBytes += (int)(len + hdr);
+
+    writeConn(WriteWebSocketText, message.data(), (int)message.size());
 }
 
 void JZWebSocket::sendBinaryMessage(const JZByteArray &message)
@@ -98,7 +106,13 @@ void JZWebSocket::sendBinaryMessage(const JZByteArray &message)
     if (m_conn == INVALID_NET_HANDLE)
         return;
 
-    writeConn(m_conn, WriteWebSocketBin, message.data(), message.size());
+    size_t len = message.size();
+    size_t hdr = (len < 126) ? 2 : (len < 65536 ? 4 : 10);
+    if (m_connType == JZSocketInfo::WebSocket)
+        hdr += 4;
+    m_pendingBytes += (int)(len + hdr);
+
+    writeConn(WriteWebSocketBin, message.data(), message.size());
 }
 
 void JZWebSocket::onNetEvent(JZNetResEvent*event)
@@ -125,6 +139,18 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
         }
         else if (op == JZ_WEBSOCKET_OP_BINARY) {
             sigBinaryMessageReceived.emit(event->binData);
+        }
+    }
+    else if (event->event == JZ_NET_EV_WRITE)
+    {
+        if(m_state == ConnectedState)
+        {
+            JZDataStream s(&event->binData);
+            int32_t write_size = 0;
+            s >> write_size;
+
+            m_pendingBytes -= write_size;
+            JZ_ASSERT(m_pendingBytes >= 0);
         }
     }
     else if (event->event == JZ_NET_EV_CLOSE)

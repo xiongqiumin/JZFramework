@@ -10,7 +10,7 @@ JZTcpServer::JZTcpServer(JZObject *parent)
     :JZNetObject(parent), sigAccept(this)
 {
     m_port = 0;
-    m_listen = INVALID_NET_HANDLE;        
+    m_conn = INVALID_NET_HANDLE;        
 }
 
 JZTcpServer::~JZTcpServer()
@@ -20,7 +20,7 @@ JZTcpServer::~JZTcpServer()
 
 bool JZTcpServer::isListening() const
 {
-    return m_listen != 0;
+    return m_conn != 0;
 }
 
 int JZTcpServer::port() const
@@ -43,8 +43,7 @@ bool JZTcpServer::listen(std::string ip, int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::TcpServer;
-    m_listen = openConn(info);
-    if (!m_listen)
+    if (!openConn(info))
         return false;                    
     
     return true;
@@ -52,18 +51,18 @@ bool JZTcpServer::listen(std::string ip, int port)
 
 void JZTcpServer::close()
 {
-    if (m_listen != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_listen, false);
+        closeConn(false);
         m_port = 0;
-        m_listen = INVALID_NET_HANDLE;
+        m_conn = INVALID_NET_HANDLE;
     }
 }
 
 JZNetObject* JZTcpServer::onAccept(uint64_t conn)
 {
     JZTcpSocket* socket = new JZTcpSocket(this);
-    socket->m_client = conn;
+    socket->m_conn = conn;
     socket->m_state = ConnectedState;
     socket->moveToThread(this->thread());
 

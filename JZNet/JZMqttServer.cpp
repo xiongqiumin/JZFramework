@@ -27,7 +27,7 @@ using namespace std;
 JZMqttServer::JZMqttServer(JZObject* parent) 
     :JZNetObject(parent), sigAccept(this)
 {
-    m_listen = INVALID_NET_HANDLE;
+    m_conn = INVALID_NET_HANDLE;
     m_keepaliveTimer = new JZTimer(this);
     connect(&m_keepaliveTimer->sigTimeout, this, &JZMqttServer::onKeepaliveTimer);
 }
@@ -39,7 +39,7 @@ JZMqttServer::~JZMqttServer()
 
 bool JZMqttServer::isListening() const
 {
-    return m_listen;
+    return m_conn;
 }
 
 bool JZMqttServer::listen(int port)
@@ -50,8 +50,7 @@ bool JZMqttServer::listen(int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::MqttServer;
-    m_listen = openConn(info);
-    if (!m_listen)
+    if (!openConn(info))
         return false;
 
     m_keepaliveTimer->start(1000);   // 每秒扫描一次心跳超时
@@ -64,18 +63,19 @@ void JZMqttServer::close()
         m_keepaliveTimer->stop();
     m_clientState.clear();
 
-    if (m_listen)
+    if (m_conn)
     {
-        closeConn(m_listen, false);
-        m_listen = INVALID_NET_HANDLE;
+        closeConn(false);
+        m_conn = INVALID_NET_HANDLE;
     }
 }
 
 JZNetObject* JZMqttServer::onAccept(uint64_t conn)
 {
     JZMqttClient* socket = new JZMqttClient(this);
-    socket->m_client = conn;
+    socket->m_conn = conn;
     socket->m_state = ConnectedState;
+    socket->m_connType = JZSocketInfo::MqttClientServer;
     socket->m_server = this;
     socket->moveToThread(this->thread());
     connect(&socket->sigDisconnect, this, &JZMqttServer::onClientDisconnect);
@@ -360,8 +360,8 @@ void JZMqttServer::onKeepaliveTimer()
         {
             JZMqttClient* c = it->first;
             it++;
-            if (c->m_client != INVALID_NET_HANDLE)
-                closeConn(c->m_client, true);   // 心跳超时: 视为异常断开, 触发遗嘱
+            if (c->m_conn != INVALID_NET_HANDLE)
+                c->closeConn(true);   // 心跳超时: 视为异常断开, 触发遗嘱
         }
         else
         {
@@ -381,9 +381,9 @@ void JZMqttServer::onClientNetEvent(JZMqttClient* client, JZNetResEvent* event)
 
     if (ev == JZ_NET_EV_CLOSE)
     {
-        if (client->m_client != INVALID_NET_HANDLE)
+        if (client->m_conn != INVALID_NET_HANDLE)
         {
-            client->m_client = INVALID_NET_HANDLE;
+            client->m_conn = INVALID_NET_HANDLE;
             client->closeInternal(false);   // 触发 sigDisconnect → 清理订阅 + 遗嘱
         }
         return;
@@ -544,13 +544,13 @@ void JZMqttServer::onClientNetEvent(JZMqttClient* client, JZNetResEvent* event)
             JZNetReqEvent* req = new JZNetReqEvent();
             req->netCmd = JZNetReqEvent::Net_Write;
             req->writeCmd = WriteMqttServerResp;
-            req->conn = client->m_client;
+            req->conn = client->m_conn;
             req->extData = resp;
-            postReqEvent(req);
+            client->postReqEvent(req);
         }
 
         if (needClose)
-            closeConn(client->m_client, true);
+            client->closeConn(true);
     }
     else if (ev == JZ_NET_EV_MQTT_MSG)
     {

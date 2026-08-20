@@ -12,7 +12,7 @@ JZ_OBJECT_IMPL(JZTcpSocket, JZNetObject)
 JZTcpSocket::JZTcpSocket(JZObject *parent)
     : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigReadyRead(this), sigError(this)
 {    
-    m_client = INVALID_NET_HANDLE;  
+    m_conn = INVALID_NET_HANDLE;  
     m_state = UnconnectedState;
 }
 
@@ -28,12 +28,12 @@ SocketState JZTcpSocket::state() const
 
 void JZTcpSocket::connectToHost(std::string ip, int port)
 {
-    JZ_ASSERT(!m_client);
+    JZ_ASSERT(!m_conn);
 
     JZSocketInfo info;
     info.type = JZSocketInfo::TcpSocket;
     info.url = ip + ":" + to_string(port);
-    m_client = openConn(info);
+    openConn(info);
     m_state = ConnectingState;    
 }
 
@@ -56,10 +56,10 @@ bool JZTcpSocket::waitForConnected(int ms)
 
 void JZTcpSocket::closeInternal(bool is_error)
 {
-    if (m_client != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_client, is_error);
-        m_client = INVALID_NET_HANDLE;
+        closeConn(is_error);
+        m_conn = INVALID_NET_HANDLE;
     }
     m_buffer.clear();
 
@@ -127,24 +127,26 @@ bool JZTcpSocket::waitForReadyRead(int ms)
 
 void JZTcpSocket::write(const JZByteArray& buffer)
 {
-    writeConn(m_client, WriteBin, buffer.data(), buffer.size());
+    m_pendingBytes += (int)buffer.size();   // 裸 TCP 数据, 无帧头开销
+    writeConn(WriteBin, buffer.data(), buffer.size());
 }
 
 void JZTcpSocket::write(const char* buffer, int len)
 {
-    writeConn(m_client, WriteBin, buffer, len);
+    m_pendingBytes += len;                  // 裸 TCP 数据, 无帧头开销
+    writeConn(WriteBin, buffer, len);
 }
 
 void JZTcpSocket::onNetEvent(JZNetResEvent *event)
 {
-    if (m_client == INVALID_NET_HANDLE)
+    if (m_conn == INVALID_NET_HANDLE)
         return;
 
     //可能先发送了error, 内部已经断开，后续发close    
-    if (m_client != event->conn && event->event == JZ_NET_EV_CLOSE)        
+    if (m_conn != event->conn && event->event == JZ_NET_EV_CLOSE)        
         return;
 
-    JZ_ASSERT(m_client == event->conn);
+    JZ_ASSERT(m_conn == event->conn);
 
     int ev = event->event;
     if(ev == JZ_NET_EV_CONNECT)
@@ -155,11 +157,11 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
     }
     else if(ev == JZ_NET_EV_CLOSE)
     {         
-        if (m_client != INVALID_NET_HANDLE)
+        if (m_conn != INVALID_NET_HANDLE)
         {
             sigError.emit("disconnect by server");
             
-            m_client = INVALID_NET_HANDLE;
+            m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }
     }    
@@ -167,6 +169,15 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
     {        
         m_buffer.append(event->binData.data(), event->binData.size());
         sigReadyRead.emit();
+    }
+    else if (ev == JZ_NET_EV_WRITE)
+    {
+        JZDataStream s(&event->binData);
+        int32_t write_size = 0;
+        s >> write_size;
+
+        m_pendingBytes -= write_size;
+        JZ_ASSERT(m_pendingBytes >= 0);
     }
     else if (ev == JZ_NET_EV_ERROR)
     {

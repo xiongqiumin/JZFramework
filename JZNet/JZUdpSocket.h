@@ -64,7 +64,6 @@ protected:
     std::string m_peerAddr;
     int m_peerPort = 0;
 
-    uint64_t m_client = INVALID_NET_HANDLE;
     SocketState m_state = UnconnectedState;
 };
 

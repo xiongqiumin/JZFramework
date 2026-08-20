@@ -15,7 +15,7 @@ JZHttpServerClient::JZHttpServerClient(JZObject* parent)
 
 JZHttpServerClient::~JZHttpServerClient()
 {
-    closeConn(m_conn, false);
+    closeConn(false);
 }
 
 void JZHttpServerClient::onNetEvent(JZNetResEvent* event)
@@ -56,7 +56,7 @@ void JZHttpServerClient::sendFinished()
 
     // 非 keep-alive: 通知 mongoose 响应完成后关闭连接
     if (!m_keepAlive)
-        closeConn(m_conn, false);
+        closeConn(false);
 }
 
 void JZHttpServerClient::response(const JZByteArray& buffer)
@@ -71,7 +71,7 @@ void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
 
 void JZHttpServerClient::write(const char *data, int size, bool is_finish)
 {
-    writeConn(m_conn, WriteBin, data, size);
+    writeConn(WriteBin, data, size);
     if (is_finish)
     {
         sendFinished();
@@ -82,7 +82,7 @@ void JZHttpServerClient::write(const char *data, int size, bool is_finish)
 JZHttpServer::JZHttpServer(JZObject* parent)
     :JZNetObject(parent)
 {   
-    m_listen = INVALID_NET_HANDLE;        
+    m_conn = INVALID_NET_HANDLE;        
 }
 
 JZHttpServer::~JZHttpServer()
@@ -92,7 +92,7 @@ JZHttpServer::~JZHttpServer()
 
 bool JZHttpServer::isListening() const
 {
-    return m_listen;
+    return m_conn;
 }
 
 bool JZHttpServer::listen(int port)
@@ -108,8 +108,8 @@ bool JZHttpServer::listen(std::string ip, int port)
     JZSocketInfo info;
     info.url = ip_addr;
     info.type = JZSocketInfo::HttpServer;
-    m_listen = openConn(info);
-    if (!m_listen)
+    m_conn = openConn(info);
+    if (!m_conn)
         return false;                    
     
     return true;
@@ -117,10 +117,10 @@ bool JZHttpServer::listen(std::string ip, int port)
 
 void JZHttpServer::close()
 {
-    if (m_listen)
+    if (m_conn)
     {
-        closeConn(m_listen, false);
-        m_listen = INVALID_NET_HANDLE;
+        closeConn(false);
+        m_conn = INVALID_NET_HANDLE;
     }
 }
 
@@ -134,6 +134,7 @@ JZNetObject* JZHttpServer::onAccept(uint64_t conn)
 {
     JZHttpServerClient* client = new JZHttpServerClient(this);
     client->m_conn = conn;
+    client->m_connType = JZSocketInfo::HttpClientServer;
     client->moveToThread(this->thread());
     return client;
 }

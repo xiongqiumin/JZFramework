@@ -50,7 +50,6 @@ protected:
     void onPubAck(uint16_t id);
     void clearOutboundQos();
 
-    uint64_t m_client;
     JZMqttServer *m_server;
     SocketState m_state;
 

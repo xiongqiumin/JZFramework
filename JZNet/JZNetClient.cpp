@@ -13,7 +13,7 @@ using namespace std;
 JZNetClient::JZNetClient(JZObject *parent)
     : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigPacketReceive(this)
 {    
-    m_client = INVALID_NET_HANDLE;  
+    m_conn = INVALID_NET_HANDLE;  
     m_serverId = INVALID_NET_HANDLE;    
     m_waitPacket = false;
     m_state = UnconnectedState;
@@ -57,12 +57,12 @@ void JZNetClient::clearLastError()
 
 void JZNetClient::connectToHost(std::string ip, int port)
 {
-    JZ_ASSERT(!m_client);
+    JZ_ASSERT(!m_conn);
 
     JZSocketInfo info;
     info.type = JZSocketInfo::TcpSocket;
     info.url = ip + ":" + to_string(port);
-    m_client = openConn(info);
+    openConn(info);
     m_state = ConnectingState;    
 }
 
@@ -90,10 +90,10 @@ bool JZNetClient::isConnect()
 
 void JZNetClient::closeInternal(bool is_error)
 {
-    if (m_client != INVALID_NET_HANDLE)
+    if (m_conn != INVALID_NET_HANDLE)
     {
-        closeConn(m_client, is_error);
-        m_client = INVALID_NET_HANDLE;
+        closeConn(is_error);
+        m_conn = INVALID_NET_HANDLE;
     }
 
     m_packet.clearPacket();
@@ -107,7 +107,7 @@ void JZNetClient::closeInternal(bool is_error)
 
 void JZNetClient::disconnectFromHost()
 {
-    if (m_client)
+    if (m_conn)
     {
         closeInternal(false);                  
     }
@@ -116,7 +116,7 @@ void JZNetClient::disconnectFromHost()
 void JZNetClient::sendHandPacket(const JZNetPack *packet)
 {
     JZByteArray buffer = m_packet.formatPacket(packet);
-    writeConn(m_client, WriteBin, buffer.data(), buffer.size());
+    writeConn(WriteBin, buffer.data(), buffer.size());
 }
 
 void JZNetClient::sendPacket(const JZNetPack *packet)
@@ -130,7 +130,7 @@ void JZNetClient::sendPacket(const JZNetPack *packet)
     LOG_NET_D("%s send %d", m_name.c_str(), packet->packetType());
 
     JZByteArray buffer = m_packet.formatPacket(packet);
-    writeConn(m_client, WriteBin, buffer.data(), buffer.size());
+    writeConn(WriteBin, buffer.data(), buffer.size());
 }
 
 JZNetPackPtr JZNetClient::waitPacket(int ms)
@@ -140,7 +140,7 @@ JZNetPackPtr JZNetClient::waitPacket(int ms)
 
 JZNetPackPtr JZNetClient::waitPacketByType(int packet_type,int ms)
 {
-    if (!m_client)
+    if (!m_conn)
         return JZNetPackPtr();
 
     int64_t t = JZPlatform::getTickCountMs();
@@ -179,14 +179,14 @@ void JZNetClient::clearPacket()
 
 void JZNetClient::onNetEvent(JZNetResEvent *event)
 {
-    if (m_client == INVALID_NET_HANDLE)
+    if (m_conn == INVALID_NET_HANDLE)
         return;
 
     //可能先发送了error, 内部已经断开，后续发close    
-    if (m_client != event->conn && event->event == JZ_NET_EV_CLOSE)        
+    if (m_conn != event->conn && event->event == JZ_NET_EV_CLOSE)        
         return;
 
-    JZ_ASSERT(m_client == event->conn);
+    JZ_ASSERT(m_conn == event->conn);
     
     int ev = event->event;
     if (ev == JZ_NET_EV_CONNECT)
@@ -195,9 +195,9 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
     }
     else if (ev == JZ_NET_EV_CLOSE)
     {
-        if (m_client)
+        if (m_conn)
         {
-            m_client = INVALID_NET_HANDLE;
+            m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }
     }
@@ -206,7 +206,7 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
         m_packet.append(event->binData.data(), event->binData.size());
         if (!m_packet.parse())
         {
-            closeConn(m_client, true);
+            closeConn(true);
             disconnectFromHost();
             return;
         }
@@ -251,12 +251,12 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
                 }
                 else
                 {
-                    closeConn(m_client, true);
+                    closeConn(true);
                 }
             }
             else
             {
-                jzWarning() << "unknow pacekt in connecting state" << pkt->packetType(); 
+                jzWarning() << "unknow packet in connecting state" << pkt->packetType(); 
                 closeInternal(true);
             }
 

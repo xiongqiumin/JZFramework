@@ -126,9 +126,7 @@ void JZNetClient::sendPacket(const JZNetPack *packet)
         jzWarning() << "not connected";
         return;
     }
-        
-    LOG_NET_D("%s send %d", m_name.c_str(), packet->packetType());
-
+    
     JZByteArray buffer = m_packet.formatPacket(packet);
     writeConn(WriteBin, buffer.data(), buffer.size());
 }
@@ -159,7 +157,6 @@ JZNetPackPtr JZNetClient::waitPacketByType(int packet_type,int ms)
 
         if (pkt)
         {            
-            LOG_NET_D("%s recv %d", m_name.c_str(), pkt->packetType());
             m_waitPacket = false;
             return pkt;
         }
@@ -286,7 +283,6 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
             auto pkt = m_packet.takePacket();
             if (pkt)
             {
-                LOG_NET_D("%s recv %d", m_name.c_str(), pkt->packetType());
                 sigPacketReceive.emit(pkt);
             }
             else

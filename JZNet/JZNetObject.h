@@ -6,6 +6,8 @@
 #include "JZThread.h"
 
 class JZNetObject;
+class mg_connection;
+class mg_mgr;
 
 constexpr uint64_t INVALID_NET_HANDLE = 0;
 
@@ -230,7 +232,6 @@ protected:
     std::map<int, std::vector<int>> m_eventFilter;
     JZMutex m_objectMutex;
 };
-
 
 class JZNetObject : public JZObject
 {

@@ -6,7 +6,6 @@
 #include <string>
 #include <assert.h>
 #include "JZDataStream.h"
-#include "JZNetDefine.h"
 
 #define PACK_HEAD 0xAA
 #define MG_RECV_BUFFER_SIZE (4 * 1024)

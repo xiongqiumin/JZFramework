@@ -965,6 +965,7 @@ bool JZNetObject::event(JZEvent *event)
     {
         JZNetResEvent* net_event = (JZNetResEvent*)event;
         onNetEvent(net_event);
+        return true;
     }
 
     return JZObject::event(event);

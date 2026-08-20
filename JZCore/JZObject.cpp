@@ -319,12 +319,17 @@ void JZObject::killTimer(int id)
     thread()->removeTimer(this, id);
 }
 
-JZDebug operator<<(JZDebug d, const JZObject& obj)
+JZDebug operator<<(JZDebug d, const JZObject *obj)
 {
-    d << "JZObject(" << obj.className();
-    std::string name = obj.objectName();
+    char buffer[64] = {};
+    snprintf(buffer,64,"%p", obj);
+
+    std::string line;
+    line = obj->className() + "(" + buffer;
+    std::string name = obj->objectName();
     if (!name.empty())
-        d << ", " << name;
-    d << ")";
+        line += ", " + name;
+    line += ")";
+    d << line.c_str();
     return d;
 }

@@ -57,7 +57,7 @@ JZObject* JZObjectPointerGuard::object()
 JZDebug operator<<(JZDebug d, const JZObjectPointer& p)
 {
     if (p)
-        d = d << *p.object();
+        d = d << p.object();
     else
         d << "JZObjectPointer(null)";
     return d;

@@ -50,7 +50,8 @@ private:
     bool m_switchInterm = false;// 切换中间断开(esp_wifi_disconnect 触发)待吞掉标记
     bool m_apUp = false;
     bool m_inited = false;
-    bool m_started = false;    
+    bool m_started = false;     // esp_wifi_start() 已返回 OK(WiFi 处于 STARTING/STARTED)
+    bool m_staStarted = false;  // 已收到 WIFI_EVENT_STA_START, STA 真正就绪可扫描/连接
     std::string m_staIp;
     std::string m_apIp;
     std::string m_scanSsid;     // 扫描过滤的 SSID(透传到 wifi_scan_config_t.ssid, 需跨 scanStart 保持有效)

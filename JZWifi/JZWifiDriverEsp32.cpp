@@ -93,8 +93,15 @@ void JZWifiDriverEsp32::ensureInit()
 void JZWifiDriverEsp32::ensureStarted()
 {
     if (!m_started) {
-        esp_wifi_start();
-        m_started = true;
+        esp_err_t err = esp_wifi_start();
+        if (err == ESP_OK) {
+            m_started = true;
+        } else {
+            // 启动失败不置 m_started, 下次调用可重试; 同时打日志便于定位
+            // (scan/connect 在此之前调用会得到 ESP_ERR_WIFI_NOT_START 等错误)。
+            m_staStarted = false;
+            jzWarning() << "JZWifiDriverEsp32::ensureStarted failed" << err;
+        }
     }
 }
 
@@ -127,6 +134,7 @@ void JZWifiDriverEsp32::updateMode()
         {
             esp_wifi_stop();
             m_started = false;
+            m_staStarted = false;
         }
         return;
     }
@@ -140,6 +148,16 @@ void JZWifiDriverEsp32::handleEvent(const char *event_base, int32_t event_id, vo
     {
         switch (event_id)
         {
+        case WIFI_EVENT_STA_START:
+            // STA 真正就绪(esp_wifi_start 是异步的, 此事件后才可扫描/连接)。
+            // m_staStarted 供 scanStart 轮询等待使用, 避免异步竞争导致 ESP_FAIL。
+            m_staStarted = true;
+            break;
+
+        case WIFI_EVENT_STA_STOP:
+            m_staStarted = false;
+            break;
+
         case WIFI_EVENT_STA_CONNECTED:
             // 仅表示链路层关联成功, 不设 m_staUp; 等拿到 IP 才算真正连接
             jzDebug() << "wifi event WIFI_EVENT_STA_CONNECTED";
@@ -446,8 +464,46 @@ void JZWifiDriverEsp32::scanStart(JZWifiScanner *s, const JZScanConfig &cfg)
     ensureInit();
     ensureStarted();
 
-    JZ_ASSERT_X(!m_scanTarget, "wify allready start scan");
-    
+    // 扫描必须处于 STA(或 APSTA) 模式: 上层未发起连接(m_staWifi 为空)时,
+    // updateMode() 不会主动置 STA 模式, 甚至可能在无 sta/ap 对象时 esp_wifi_stop()。
+    // 这里显式确保 STA 模式, 使扫描不依赖连接流程的副作用。
+    {
+        wifi_mode_t cur = WIFI_MODE_NULL;
+        if (esp_wifi_get_mode(&cur) == ESP_OK) {
+            if (cur != WIFI_MODE_STA && cur != WIFI_MODE_APSTA) {
+                esp_wifi_set_mode(WIFI_MODE_STA);
+            }
+        } else {
+            esp_wifi_set_mode(WIFI_MODE_STA);
+        }
+    }
+
+    // esp_wifi_start() 是异步的: 返回 OK 后 WiFi 处于 STARTING 状态, 需等
+    // WIFI_EVENT_STA_START 才真正就绪。若此刻立即 esp_wifi_scan_start(), 会因
+    // 状态/模式未就绪返回 ESP_FAIL(-1)。这里轮询等待 STA 真正启动(最多 ~500ms),
+    // 超时则说明 WiFi 启动异常, 走失败分支由上层退避重试。
+    if (!m_staStarted) {
+        int wait_ms = 0;
+        while (!m_staStarted && wait_ms < 500) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            wait_ms += 20;
+        }
+        if (!m_staStarted) {
+            jzWarning() << "JZWifiDriverEsp32::scanStart: STA not started within timeout";
+            JZWifiDriver::onScanError(s->guardPointer(), (int)ESP_ERR_WIFI_NOT_STARTED,
+                                      "STA not started");
+            return;
+        }
+    }
+
+    // 上次扫描可能因 esp_wifi_scan_start 失败 / SCAN_DONE 事件丢失而残留 m_scanTarget
+    // (此时上层 m_active 已被 onScanError/onFinished 复位, 但 driver 层 target 未复位),
+    // 若直接断言会 FATAL 崩溃。这里做防御性复位: 忽略陈旧 target, 重新发起扫描。
+    if (m_scanTarget) {
+        jzWarning() << "JZWifiDriverEsp32::scanStart: stale scan target, reset";
+        m_scanTarget = JZObjectPointer();
+    }
+
     m_scanTarget = s->guardPointer();    
     wifi_scan_config_t scan_cfg = {};
     scan_cfg.ssid = nullptr;
@@ -478,16 +534,27 @@ void JZWifiDriverEsp32::scanStart(JZWifiScanner *s, const JZScanConfig &cfg)
     if (err != ESP_OK) {
         jzWarning() << "JZWifiDriverEsp32::scanStart failed" << err;        
         JZWifiDriver::onScanError(m_scanTarget, (int)err, "esp_wifi_scan_start failed");
+        // 失败必须复位 m_scanTarget: 否则残留后, 上层 m_active 已被 onScanError 复位,
+        // 下一次 start 会因 "m_scanTarget 非空" 触发断言崩溃。
+        m_scanTarget = JZObjectPointer();
     }
 }
 
 void JZWifiDriverEsp32::scanStop(JZWifiScanner *s)
 {
-    JZ_ASSERT_X(s == m_scanTarget.object(),"scanStop invalid param");
+    // 扫描状态本身易失(可能 SCAN_DONE 已复位 m_scanTarget 但上层 m_active 尚未复位),
+    // 此处不适用致命断言, 改为防御性检查。
+    if (s != m_scanTarget.object()) {
+        jzWarning() << "JZWifiDriverEsp32::scanStop invalid param";
+        return;
+    }
 
     if (m_scanTarget) {
         esp_wifi_scan_stop();
-    }    
+        // 主动复位, 不依赖 WIFI_EVENT_SCAN_DONE(STOPPED) 事件到达: 该事件可能晚到
+        // 甚至丢失, 残留 m_scanTarget 会导致下一次 scanStart 误判"正在扫描"。
+        m_scanTarget = JZObjectPointer();
+    }
 }
 
 bool JZWifiDriverEsp32::isScanning(JZWifiScanner *s)

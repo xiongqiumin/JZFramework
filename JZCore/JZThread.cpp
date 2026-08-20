@@ -231,8 +231,15 @@ void JZThread::start()
     }
 
     int stack_byte_size = m_config.stackSizeAlign();
-    
-    BaseType_t ret = xTaskCreate(
+
+    // 绑核: cpuCore < 0 表示不绑定(使用 tskNO_AFFINITY); 否则绑定到指定核。
+    // 注意 ESP-IDF 的 xTaskCreatePinnedToCore 最后一个参数为 UBaseType_t coreID,
+    // tskNO_AFFINITY 表示由调度器自由分配(等价于未绑核行为)。
+    UBaseType_t coreAffinity = tskNO_AFFINITY;
+    if (m_config.cpuCore >= 0)
+        coreAffinity = static_cast<UBaseType_t>(m_config.cpuCore);
+
+    BaseType_t ret = xTaskCreatePinnedToCore(
         // 任务入口函数（静态函数，通过参数传递 this 指针）
         [](void* arg) {
             JZThread* thread = static_cast<JZThread*>(arg);
@@ -249,7 +256,8 @@ void JZThread::start()
         stack_byte_size / sizeof(StackType_t),
         this,
         pri,
-        (TaskHandle_t*)(&m_handle)
+        (TaskHandle_t*)(&m_handle),
+        coreAffinity
     );
     JZ_ASSERT(ret == pdPASS);    
 #elif JZ_OS == JZ_OS_RT_THREAD

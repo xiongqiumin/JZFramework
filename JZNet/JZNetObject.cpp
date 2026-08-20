@@ -14,15 +14,6 @@
 #include "JZMqttPacket.h"
 #include "JZTx.h"
 
-static int JZNET_THREAD_PRIORITY = 6;
-
-// MQTT 剩余长度字段(变长 1~4 字节)编码后的字节数
-static uint8_t mqttVarintSize(size_t length)
-{
-    uint8_t bytes = 0;
-    do { bytes++; length /= 0x80; } while (length > 0);
-    return bytes;
-}
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 static JZNetConfig g_netConfig;
@@ -523,7 +514,8 @@ JZNetThread::JZNetThread(JZObject *parent)
 {
     JZThreadConfig cfg;
     cfg.stackSize = 8 * 1024;
-    cfg.priority = JZNET_THREAD_PRIORITY;
+    cfg.priority = g_netConfig.netThreadPriority;
+    cfg.cpuCore = g_netConfig.netThreadCore;
 
     connect(&sigFinished, this, &JZNetThread::onFinished);
     moveToThread(this);

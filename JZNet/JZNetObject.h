@@ -293,7 +293,9 @@ protected:
 class JZNetConfig
 {
 public:
-    int threadPriority = 6;
+    int netThreadPriority = 6;
+    int netThreadCore = -1;    // cpu core
+
     int maxRecvSize = 3 * 1024 * 1024;  //单个连接最大接收缓冲区
     int maxSendSize = 3 * 1024 * 1024;  //单个连接最大发送缓冲区
     std::string dns4;  // IPv4 DNS 服务器, 为空则不配置

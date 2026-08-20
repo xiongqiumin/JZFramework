@@ -2,9 +2,10 @@
 #include "JZNetServer.h"
 #include "JZLog.h"
 #include "JZApplication.h"
+#include "JZPlatform.h"
 #include "JZNetClient.h"
 #include "JZNetPacket.h"
-#include "JZUuid.h"
+#include "JZDebug.h"
 
 using namespace std;
 
@@ -12,10 +13,20 @@ JZNetServer::JZNetServer(JZObject *parent)
     : JZNetObject(parent), sigAccept(this), sigDisconnect(this), sigPacketReceive(this)
 {   
     m_conn = INVALID_NET_HANDLE;        
+
+    m_timer = new JZTimer(this);
+    m_timer->setSingleShot(false);
+    connect(&m_timer->sigTimeout, this, &JZNetServer::onHandTimer);
+    m_timer->start(1000);
 }
 
 JZNetServer::~JZNetServer()
 {    
+    if (m_timer)
+    {
+        m_timer->stop();
+        delete m_timer;
+    }
     close();    
 }
 
@@ -101,11 +112,12 @@ void JZNetServer::onClientDisconnect()
     JZNetClient *socket = (JZNetClient *)sender();
     socket->deleteLater();
     
-    auto id = socket->m_serverId;
+    auto id = socket->m_conn;
     auto it = m_clients.find(id);
     if (it == m_clients.end())
         return;
 
+    removeHandInfo(id);
     m_clients.erase(id);
     sigDisconnect.emit(id);
 }
@@ -113,7 +125,7 @@ void JZNetServer::onClientDisconnect()
 void JZNetServer::onClientPackReceive(JZNetPackPtr ptr)
 {
     JZNetClient *socket = (JZNetClient *)sender();
-    auto id = socket->m_serverId;
+    auto id = socket->m_conn;
     auto it = m_clients.find(id);
     if (it == m_clients.end())
         return;
@@ -128,7 +140,7 @@ uint64_t JZNetServer::nextPendingConnection()
 
     JZNetClient* client = m_pendingConnections.front();
     m_pendingConnections.pop_front();
-    return client->m_serverId;
+    return client->m_conn;
 }
 
 JZNetObject *JZNetServer::onAccept(uint64_t conn)
@@ -138,7 +150,6 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
     socket->m_state = ConnectingState;
     socket->moveToThread(this->thread());
     socket->m_server = this;
-    socket->m_serverId = conn;
 
     connect(&socket->sigDisconnect, this, &JZNetServer::onClientDisconnect);
     connect(&socket->sigPacketReceive, this, &JZNetServer::onClientPackReceive);
@@ -150,28 +161,50 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
         {
             JZNetClient *socket = (JZNetClient *)socket_ptr.object();
             m_clients[conn] = socket;
-            m_pendingConnections.push_back(socket);            
+            // 握手由客户端发起(发送 Hand),服务器收到后回 HandRes,
+            // 连接就绪在握手完成时通过 sigAccept 通知,这里不再入队
 
-            JZNetPackHand hand;
-            if (m_token.empty())
-            {
-                socket->sendHandPacket(&hand);
-            }
-            else
-            {
-                // 必须先发送一个没加密的,在加密
-                hand.nonce = JZUuid::createUuid().toString();
-                socket->sendHandPacket(&hand);
-
-                std::string token = "JZ" + hand.nonce + m_token;
-                socket->setToken(token);
-                socket->m_packet.setPassword(token);
-            }
+            // 记录握手起始时间,由服务器的 1 秒定时器统一判断超时
+            m_handTime[conn] = JZPlatform::getTickCountMs();
         }
     };
 
     runOnObject(this, notify);
     return socket;
+}
+
+void JZNetServer::removeHandInfo(uint64_t conn)
+{
+    auto it = m_handTime.find(conn);
+    if (it != m_handTime.end())
+        m_handTime.erase(it);
+}
+
+void JZNetServer::onHandTimer()
+{
+    uint64_t now = JZPlatform::getTickCountMs();
+    for (auto it = m_handTime.begin(); it != m_handTime.end(); )
+    {
+        uint64_t conn = it->first;
+        auto cit = m_clients.find(conn);
+        if (cit == m_clients.end() || cit->second->state() != ConnectingState)
+        {
+            // 连接已断开或握手已完成,清理记录
+            it = m_handTime.erase(it);
+            continue;
+        }
+
+        if (now - it->second >= 30000)
+        {
+            jzWarning() << "handshake timeout, close connection" << conn;
+            cit->second->closeInternal(true);
+            it = m_handTime.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 void JZNetServer::onNetEvent(JZNetResEvent*event)

@@ -4,6 +4,7 @@
 #include <map>
 #include <deque>
 #include "JZNetObject.h"
+#include "JZTimer.h"
 
 class JZNetClient;
 class JZNetServer : public JZNetObject
@@ -43,9 +44,15 @@ protected:
     void onNetEvent(JZNetResEvent*event);
     virtual JZNetObject *onAccept(uint64_t conn) override;
 
+    void onHandTimer();
+    void removeHandInfo(uint64_t conn);
+
+    JZTimer *m_timer;
     std::string m_token;
     std::map<uint64_t, JZNetClient*> m_clients;
     std::deque<JZNetClient*> m_pendingConnections;
+    // 记录每个连接进入握手(ConnectingState)的起始时间,用于超时判断
+    std::map<uint64_t, int64_t> m_handTime;
 };
 
 

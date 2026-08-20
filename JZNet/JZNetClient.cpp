@@ -7,6 +7,7 @@
 #include "JZCrypto.h"
 #include "JZNetServer.h"
 #include "JZDebug.h"
+#include "JZUuid.h"
 
 using namespace std;
 
@@ -14,7 +15,6 @@ JZNetClient::JZNetClient(JZObject *parent)
     : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigPacketReceive(this)
 {    
     m_conn = INVALID_NET_HANDLE;  
-    m_serverId = INVALID_NET_HANDLE;    
     m_waitPacket = false;
     m_state = UnconnectedState;
     m_server = nullptr;
@@ -192,6 +192,18 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
     if (ev == JZ_NET_EV_CONNECT)
     {
         m_packet.clearPacket();
+
+        // 客户端主动发起握手,先给服务器发送 Hand
+        if (m_server == nullptr && m_state == ConnectingState)
+        {
+            JZNetPackHand hand;
+            if (!m_token.empty())
+            {
+                // 必须先发送一个没加密的,在加密
+                hand.nonce = JZUuid::createUuid().toString();
+            }
+            sendHandPacket(&hand);
+        }
     }
     else if (ev == JZ_NET_EV_CLOSE)
     {
@@ -216,48 +228,53 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
             auto pkt = m_packet.takePacket();
             if (!pkt)
                 return;
-            
-            if (pkt->packetType() == NetPack_hand)
+
+            if (m_server == nullptr)
             {
-                JZNetPackHand *hand = (JZNetPackHand *)pkt.get();
-                if (hand->nonce.empty() != m_token.empty())
+                // 客户端侧:等待服务器的握手回包
+                if (pkt->packetType() == NetPack_handRes)
                 {
-                    jzWarning() << "client server token not equal";
-                    closeInternal(true);
-                }
-                else
-                {
-                    if (!hand->nonce.empty())
-                    {
-                        std::string token = "JZ" + hand->nonce + m_token;
-                        m_packet.setPassword(token);
-                    }
-
-                    JZNetPackHandRes hand_res;
-                    sendHandPacket(&hand_res);
-
                     m_state = ConnectedState;
                     sigConnect.emit();
                 }
-            }
-            else if (pkt->packetType() == NetPack_handRes)
-            {
-                uint64_t c = map_key(m_server->m_clients, this, INVALID_NET_HANDLE);
-                if (c != INVALID_NET_HANDLE)
-                {
-                    m_state = ConnectedState;
-                    m_server->m_pendingConnections.push_back(this);
-                    m_server->sigAccept.emit();
-                }
                 else
                 {
-                    closeConn(true);
+                    jzWarning() << "unknow packet in connecting state" << pkt->packetType();
+                    closeInternal(true);
                 }
             }
             else
             {
-                jzWarning() << "unknow packet in connecting state" << pkt->packetType(); 
-                closeInternal(true);
+                // 服务器侧:收到客户端的 Hand,校验后回 HandRes
+                if (pkt->packetType() == NetPack_hand)
+                {
+                    JZNetPackHand *hand = (JZNetPackHand *)pkt.get();
+                    if (hand->nonce.empty() != m_token.empty())
+                    {
+                        jzWarning() << "client server token not equal";
+                        closeInternal(true);
+                    }
+                    else
+                    {
+                        if (!hand->nonce.empty())
+                        {
+                            std::string token = "JZ" + hand->nonce + m_token;
+                            m_packet.setPassword(token);
+                        }
+
+                        JZNetPackHandRes hand_res;
+                        sendHandPacket(&hand_res);
+
+                        m_state = ConnectedState;
+                        m_server->m_pendingConnections.push_back(this);
+                        m_server->sigAccept.emit();
+                    }
+                }
+                else
+                {
+                    jzWarning() << "unknow packet in connecting state" << pkt->packetType();
+                    closeInternal(true);
+                }
             }
 
             if (m_state != ConnectedState)

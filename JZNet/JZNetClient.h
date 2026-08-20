@@ -43,14 +43,13 @@ protected:
     void setLastError(std::string error);    
     void closeInternal(bool is_error);
     void sendHandPacket(const JZNetPack *packet);
-    
+
     JZNetPacketProcessor m_packet;
     std::string m_error;        
     bool m_waitPacket;
     SocketState m_state;
     JZNetServer *m_server;
-    uint64_t m_serverId;
-    std::string m_token;
+    std::string m_token; 
 };
 
 

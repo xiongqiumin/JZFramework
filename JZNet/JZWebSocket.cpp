@@ -97,7 +97,7 @@ void JZWebSocket::sendTextMessage(const std::string &message)
     if (m_connType == JZSocketInfo::WebSocket)
         hdr += 4;
     m_pendingBytes += (int)(len + hdr);
-
+    
     writeConn(WriteWebSocketText, message.data(), (int)message.size());
 }
 
@@ -148,9 +148,10 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
             JZDataStream s(&event->binData);
             int32_t write_size = 0;
             s >> write_size;
-
+            
             m_pendingBytes -= write_size;
-            JZ_ASSERT(m_pendingBytes >= 0);
+            if(m_pendingBytes < 0) //可能有握手ping pong之类的
+                m_pendingBytes = 0;
         }
     }
     else if (event->event == JZ_NET_EV_CLOSE)

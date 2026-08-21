@@ -59,10 +59,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
 // ==================== 构造/析构 ====================
 JZWifiDriverEsp32::JZWifiDriverEsp32()
-{
-    // 连接切换超时定时器: stationSwitch 中途连不上时, 由 onSwitchTimeout 复位 m_switching 并上报失败
-    connect(&m_switchTimer.sigTimeout, this, &JZWifiDriverEsp32::onSwitchTimeout);
-    m_switchTimer.setSingleShot(true);
+{    
 }
 
 JZWifiDriverEsp32::~JZWifiDriverEsp32()

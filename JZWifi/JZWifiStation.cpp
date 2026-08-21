@@ -57,13 +57,16 @@ void JZWifiStation::onStationSwitched(JZObjectPointer self, bool ok, const char 
             // 切换成功: 回到 Connected, 更新 BSSID(新 AP), IP 一般不变(同子网)予以保留
             obj->m_state = JZWifiStation::Connected;
             obj->m_bssid = b;
+            obj->sigSwitched.emit();
         } else {
             // 切换失败: 未连上任何 AP, 回到 None
+            int pre_state = obj->m_state;
             obj->m_state = JZWifiStation::None;
             obj->m_ip.clear();
             obj->m_bssid.clear();
-        }
-        obj->sigSwitched.emit();
+            if(obj->m_state == JZWifiStation::Connected)
+                obj->sigDisconnected.emit();
+        }        
     });
 }
 

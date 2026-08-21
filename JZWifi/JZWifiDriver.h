@@ -5,6 +5,7 @@
 #include <vector>
 #include "JZStd.h"
 #include "JZObjectPointer.h"
+#include "JZObject.h"
 
 class JZWifiStation;
 class JZWifiAp;
@@ -80,7 +81,6 @@ public:
     virtual std::string stationIpAddress(JZWifiStation *w) = 0;
     virtual int stationRssi(JZWifiStation *w) = 0;
 
-
     // === Access Point (做服务) ===
     virtual void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) = 0;
     virtual void apStop(JZWifiAp *w) = 0;
@@ -91,6 +91,9 @@ public:
     virtual void scanStart(JZWifiScanner *s, const JZScanConfig &cfg) = 0;
     virtual void scanStop(JZWifiScanner *s) = 0;
     virtual bool isScanning(JZWifiScanner *s) = 0;
+
+protected:
+    JZ_DISABLE_COPY(JZWifiDriver)
 
     // === 事件转发中转 (JZWifiStation / JZWifiAp / JZWifiScanner 的 friend) ===
     static void onStationConnected(JZObjectPointer self, const char *ip, const char *bssid = "");
@@ -103,9 +106,6 @@ public:
     static void onApStationDisconnected(JZObjectPointer self, const char *mac, const char *ip);    
     static void onScanFinished(JZObjectPointer self, const JZWifiScanResult &r);
     static void onScanError(JZObjectPointer self, int code, const char *msg);
-
-protected:
-    JZ_DISABLE_COPY(JZWifiDriver)
 
     static JZWifiDriver *s_instance;
 };

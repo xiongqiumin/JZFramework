@@ -465,8 +465,6 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
                 if (bind_object)
                 {
                     inst->bindObject(event->conn, bind_object);
-                    if(conn_it->second.type == JZSocketInfo::WebSocketServer)
-                        bind_object->m_pendingBytes = c->send.len; //accept 之前协议握手的
                 }
             }
         }

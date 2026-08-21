@@ -52,7 +52,7 @@ public:
 jz_signals:
     JZSignal<> sigConnected;
     JZSignal<> sigDisconnected;
-    JZSignal<> sigSwitched;     // 切换结果(成功/失败), 结果经 state()/bssid() 查询; 与 sigDisconnected 区分: 切换失败不发包 sigDisconnected
+    JZSignal<> sigSwitched;     // 切换成功, 切换失败会发送 sigDisconnected
     JZSignal<int, const std::string&> sigError;
 
 protected:

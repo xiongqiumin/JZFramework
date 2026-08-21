@@ -19,7 +19,7 @@ public:
         Connecting,
         Connected,
         Disconnecting,
-        Switching,       // 已连接态切换到另一 AP 的过程中(中间断开被吞掉, 不发包 sigDisconnected)
+        Switching,       // 已连接态切换到另一 AP 的过程中(结果经 sigSwitched 上报, 不再走 sigDisconnected)
     };
 
     JZWifiStation(JZObject *parent = nullptr);
@@ -40,9 +40,6 @@ public:
     // 当前连接 AP 的 BSSID(MAC 字符串), 未连接返回空串(由连接事件缓存, 非实时查询)
     std::string bssid() const;
 
-
-
-
     // 将 RSSI(dBm) 转换为 0~5 格信号强度, 统一阈值, 与平台无关
     //   5: >= -50  (极强)
     //   4: >= -60  (良好)
@@ -55,6 +52,7 @@ public:
 jz_signals:
     JZSignal<> sigConnected;
     JZSignal<> sigDisconnected;
+    JZSignal<> sigSwitched;     // 切换结果(成功/失败), 结果经 state()/bssid() 查询; 与 sigDisconnected 区分: 切换失败不发包 sigDisconnected
     JZSignal<int, const std::string&> sigError;
 
 protected:
@@ -65,7 +63,7 @@ protected:
     static void onConnected(JZObjectPointer self, const char *ip, const char *bssid);
     static void onDisconnected(JZObjectPointer self);
     static void onError(JZObjectPointer self, int code, const char *msg);
-    static void onStationSwitched(JZObjectPointer self, bool ok, const char *bssid);  // 切换结果(ok=false 表示失败)
+    static void onStationSwitched(JZObjectPointer self, bool ok, const char *bssid);  // 切换结果(ok=false 表示失败), 更新状态并发 sigSwitched
 
     State m_state = None;
     std::string m_ip;

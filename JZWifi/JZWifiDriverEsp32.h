@@ -32,22 +32,29 @@ public:
     void scanStart(JZWifiScanner *s, const JZScanConfig &cfg) override;
     void scanStop(JZWifiScanner *s) override;
     bool isScanning(JZWifiScanner *s) override;
+    // STA 真正就绪后在扫描线程执行的实际扫描发起(被 scanStart 直接调, 或被
+    // WIFI_EVENT_STA_START 回调经 runOnObject 派发调用)。调用前必须保证 STA 已就绪。
+    void doScanStart();
+    // 统一上报扫描错误并复位扫描态(m_scanTarget/m_scanPending), 供 scanStart/doScanStart
+    // 等各处复用, 避免重复样板且保证复位一致(否则残留 target 会让下次 start 误判)。
+    void scanError(const JZObjectPointer &scanner, int err, const char *msg);
 
     // 事件回调入口 (由自由函数 wifi_event_handler 调用)
     void handleEvent(const char *event_base, int32_t event_id, void *event_data);
 
 private:
     void ensureInit();
-    void ensureStarted();
-    void updateMode();
+    bool ensureStarted();
+    bool updateMode();
 
     JZObjectPointer m_scanTarget;       
+    bool m_scanPending = false;  // scanStart 已登记, 但 STA 尚未就绪(等 WIFI_EVENT_STA_START 再真正发起)
+    JZScanConfig m_scanCfg;      // 待发/进行中扫描的配置, 供 doScanStart(另一线程)使用
     JZObjectPointer m_staWifi;
     JZObjectPointer m_apWifi;         
         
     bool m_staUp = false;       // 已连上并获取到 IP
-    bool m_switching = false;   // stationSwitch 进行中(来自上层 switchToAp), 直到切换成功/失败才复位
-    bool m_switchInterm = false;// 切换中间断开(esp_wifi_disconnect 触发)待吞掉标记
+    bool m_switching = false;   // stationSwitch 进行中(来自上层 switchToAp), 直到 GOT_IP(成功) 或中间断开(失败) 才复位
     bool m_apUp = false;
     bool m_inited = false;
     bool m_started = false;     // esp_wifi_start() 已返回 OK(WiFi 处于 STARTING/STARTED)

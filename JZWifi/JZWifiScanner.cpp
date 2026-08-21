@@ -14,8 +14,12 @@ void JZWifiScanner::onFinished(JZObjectPointer self, const JZWifiScanResult &r)
         return;
 
     runOnObject(obj, [obj, r]() {
-        obj->m_active = false;
-        obj->sigFinished.emit(r);
+        if(obj->m_active)
+        {
+            obj->m_active = false;
+            obj->m_result = r;
+            obj->sigFinished.emit(r);
+        }
     });
 }
 
@@ -28,8 +32,11 @@ void JZWifiScanner::onError(JZObjectPointer self, int code, const char *msg)
 
     std::string m(msg ? msg : "");
     runOnObject(obj, [obj, code, m]() {
-        obj->m_active = false;
-        obj->sigError.emit(code, m);
+        if(obj->m_active)
+        {
+            obj->m_active = false;
+            obj->sigError.emit(code, m);
+        }
     });
 }
 

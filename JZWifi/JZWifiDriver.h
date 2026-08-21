@@ -62,7 +62,7 @@ struct JZWifiScanResult
 // 具体平台(如 JZWifiDriverEsp32)实现其纯虚接口, 并通过本类的静态转发中转
 // 把底层事件回传给 JZWifiStation / JZWifiAp / JZWifiScanner
 // (三者均是 JZWifiDriver 的 friend, 受保护的静态分发方法不对外暴露)。
-class JZWifiDriver
+class JZWifiDriver : public JZObject
 {
 public:
     JZWifiDriver() = default;

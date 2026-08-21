@@ -32,8 +32,9 @@ void JZWifiStation::onDisconnected(JZObjectPointer self)
 
     jzDebug() << "onDisconnected";
     runOnObject(obj, [obj]() {
-        // 切换(Switching)过程中收到的断开 = 切换失败(驱动层已吞掉中间的
-        // esp_wifi_disconnect 断开, 只有真正失败才会上报), 按真实掉线处理。
+        // 切换(Switching)过程中收到 onDisconnected = 切换失败: 驱动层断线状态机会
+        // 吞掉 esp_wifi_disconnect 触发的中间断开(reason==WIFI_REASON_ASSOC_LEAVE),
+        // 只有真正失败(非 ASSOC_LEAVE 掉线或 connect 同步失败)才会走到这里上报。
         obj->m_state = JZWifiStation::None;
         obj->m_ip.clear();
         obj->m_bssid.clear();        
@@ -48,11 +49,22 @@ void JZWifiStation::onStationSwitched(JZObjectPointer self, bool ok, const char 
     if (!obj)
         return;
 
-    // 当前模型: 切换成功由 onStationConnected(带 IP) 上报,
-    // 切换失败由 onStationDisconnected 上报, 因此本回调当前无驱动调用方。
-    // 保留作为上层可选的成功/失败通知扩展点。
-    (void)ok;
-    (void)bssid;
+    // 切换结果(成功/失败)经本回调上报, 在对象线程更新状态并发 sigSwitched。
+    // 注意: 切换过程中驱动层不会另发 sigConnected/sigDisconnected, 由本回调统一代表切换结果。
+    std::string b(bssid ? bssid : "");
+    runOnObject(obj, [obj, ok, b]() {
+        if (ok) {
+            // 切换成功: 回到 Connected, 更新 BSSID(新 AP), IP 一般不变(同子网)予以保留
+            obj->m_state = JZWifiStation::Connected;
+            obj->m_bssid = b;
+        } else {
+            // 切换失败: 未连上任何 AP, 回到 None
+            obj->m_state = JZWifiStation::None;
+            obj->m_ip.clear();
+            obj->m_bssid.clear();
+        }
+        obj->sigSwitched.emit();
+    });
 }
 
 void JZWifiStation::onError(JZObjectPointer self, int code, const char *msg)
@@ -73,7 +85,7 @@ JZ_OBJECT_IMPL(JZWifiStation, JZObject)
 
 JZWifiStation::JZWifiStation(JZObject *parent)
     : JZObject(parent),
-      sigConnected(this), sigDisconnected(this), sigError(this)
+      sigConnected(this), sigDisconnected(this), sigSwitched(this), sigError(this)
 {
 }
 
@@ -124,7 +136,8 @@ void JZWifiStation::switchToAp(const JZWifiConfig &config)
         return;
 
     jzDebug() << "switchToAp" << config.ssid << config.bssid;
-    m_state = Switching;          // 切换中: 中间断开事件由 onDisconnected 吞掉
+    m_state = Switching;          // 切换中: 驱动层会吞掉 esp_wifi_disconnect 触发的
+                                   // 中间断开(reason==WIFI_REASON_ASSOC_LEAVE), 真实失败才回调
     drv->stationSwitch(this, config);
 }
 

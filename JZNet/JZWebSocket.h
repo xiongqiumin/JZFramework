@@ -32,7 +32,7 @@ public:
 
     bool waitForConnected(int ms = 5000);
 
-    void setAutoPing(bool enable, int intervalMs = 60 * 1000, int timeoutMs = 15000);
+    void setAutoPing(bool enable, int intervalMs = 60 * 1000, int timeoutMs = 5000);
     // 手动发送一帧 PING(通常无需调用, 由 setAutoPing 自动管理)
     void sendPing();
 

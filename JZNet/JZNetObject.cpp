@@ -207,6 +207,8 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     JZNetThread *inst = JZNetThread::instance();
     if (ev == MG_EV_POLL)
     {
+        inst->printNetConnect();
+
         // 下行接收限速: 每轮 poll 按令牌桶更新 is_full, 控制 net thread 是否 recv
         // 仅 TCP 在 POLL 补充预算并控制 is_full; UDP 的限速预算由 READ 分支按数据报独立管理
         auto it = inst->m_connMap.find((uint64_t)c->id);
@@ -416,6 +418,14 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             accept_id = it->second.acceptId;
         }
     }
+    else if (ev == MG_EV_WS_CTL)
+    {
+        mg_ws_message *ws_msg = (mg_ws_message*)ev_data;
+        auto ws_ptr = std::make_shared<JZWsResData>();
+        ws_ptr->wsFlag = ws_msg->flags;
+        event->extData = ws_ptr;
+        event->binData = JZByteArray(ws_msg->data.buf, (int)ws_msg->data.len);     
+    }
     else if (ev == MG_EV_WS_MSG)
     {
         mg_ws_message *ws_msg = (mg_ws_message*)ev_data;
@@ -459,8 +469,6 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             JZNetObject *accept_object = (JZNetObject*)accept_it->second.object.object();
             if (vec_contains(inst->m_objectList, accept_object))
             {
-                auto conn_it = inst->m_connMap.find(event->conn);
-
                 JZNetObject *bind_object = accept_object->onAccept(event->conn);
                 if (bind_object)
                 {
@@ -551,9 +559,105 @@ void JZNetThread::run()
     while (m_running)
     {
         mg_mgr_poll(m_mgr, 20);
-        processEvents();
+        processEvents();        
     }
 }
+
+void JZNetThread::printNetConnect()
+{
+#if 0
+    // 每隔 5 秒打印一次, 其余轮询静默
+    static JZElapsedTimer printTimer;
+    static const int64_t kPrintIntervalMs = 5000;
+    if (!printTimer.isValid())
+        printTimer.start();
+    if (!printTimer.hasExpired(kPrintIntervalMs))
+        return;
+    printTimer.restart();
+
+    // 格式化 mg_addr 为 "ip:port" 字符串
+    auto formatMgAddr = [](const struct mg_addr *addr) -> std::string {
+        if (addr == nullptr)
+            return "(null)";
+        char buf[64] = { 0 };
+        if (!addr->is_ip6)
+        {            
+            uint8_t *ip = (uint8_t *)&addr->addr.ip4;
+            snprintf(buf, sizeof(buf), "%u.%u.%u.%u:%u",
+                ip[0], ip[1], ip[2], ip[3], ntohs(addr->port));
+        }
+        else{
+            strcpy(buf,"(ip6)");
+        }
+        return std::string(buf);
+    };
+
+    // 打印单条连接(不用宏, 普通函数对象)
+    auto printOneConn = [&](uint64_t connId, const ConnInfo &info, int idx) {
+        mg_connection *c = info.c;
+        std::string localAddr = c ? formatMgAddr(&c->loc) : "?";
+        std::string remoteAddr = c ? formatMgAddr(&c->rem) : "?";
+
+        std::string state;
+        if (c)
+        {
+            if (c->is_connecting) state = "connecting";
+            else if (c->is_closing) state = "closing";
+            else if (c->is_accepted) state = "accepted";
+            else if (c->is_client) state = "client";
+            else if (c->is_listening) state = "listening";
+            else state = "established";
+        }
+        else
+        {
+            state = "no-conn";
+        }
+
+        const char *typeName = "None";
+        switch (info.type)
+        {
+            case JZSocketInfo::TcpSocket:        typeName = "TcpSocket"; break;
+            case JZSocketInfo::TcpServer:        typeName = "TcpServer"; break;
+            case JZSocketInfo::UdpSocket:        typeName = "UdpSocket"; break;
+            case JZSocketInfo::UdpListen:        typeName = "UdpListen"; break;
+            case JZSocketInfo::HttpClient:       typeName = "HttpClient"; break;
+            case JZSocketInfo::HttpClientChunked:typeName = "HttpClientChunked"; break;
+            case JZSocketInfo::HttpClientServer: typeName = "HttpClientServer"; break;
+            case JZSocketInfo::HttpServer:       typeName = "HttpServer"; break;
+            case JZSocketInfo::WebSocket:        typeName = "WebSocket"; break;
+            case JZSocketInfo::WebSocketServer:  typeName = "WebSocketServer"; break;
+            case JZSocketInfo::WebSocketListen:  typeName = "WebSocketListen"; break;
+            case JZSocketInfo::MqttClient:       typeName = "MqttClient"; break;
+            case JZSocketInfo::MqttClientServer: typeName = "MqttClientServer"; break;
+            case JZSocketInfo::MqttServer:       typeName = "MqttServer"; break;
+            default:                             typeName = "None"; break;
+        }
+
+        size_t recvLen = (c && c->recv.buf) ? c->recv.len : 0;
+        size_t sendLen = (c && c->send.buf) ? c->send.len : 0;
+
+        jzInfo() << "  [" << idx << "] id=" << connId
+                 << " type=" << typeName
+                 << " local=" << localAddr
+                 << " remote=" << remoteAddr
+                 << " state=" << state
+                 << " send=" << sendLen
+                 << " recv=" << recvLen;
+    };
+
+    JZMutexLocker lock(&m_objectMutex);
+
+    jzInfo() << "[NetThread] connections:" << (int)m_connMap.size();
+
+    int index = 0;
+    for (auto &kv : m_connMap)
+    {
+        printOneConn(kv.first, kv.second, index);
+        index++;
+    }
+#endif // JZ_NET_DEBUG_PRINT    
+}
+
 
 bool JZNetThread::event(JZEvent* event)
 {

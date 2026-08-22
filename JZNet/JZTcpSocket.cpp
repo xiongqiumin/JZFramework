@@ -34,7 +34,8 @@ void JZTcpSocket::connectToHost(std::string ip, int port)
     info.type = JZSocketInfo::TcpSocket;
     info.url = ip + ":" + to_string(port);
     openConn(info);
-    m_state = ConnectingState;    
+    m_state = ConnectingState;
+    m_pendingBytes = 0;
 }
 
 bool JZTcpSocket::waitForConnected(int ms)
@@ -56,6 +57,7 @@ bool JZTcpSocket::waitForConnected(int ms)
 
 void JZTcpSocket::closeInternal(bool is_error)
 {
+    m_pendingBytes = 0;
     if (m_conn != INVALID_NET_HANDLE)
     {
         closeConn(is_error);

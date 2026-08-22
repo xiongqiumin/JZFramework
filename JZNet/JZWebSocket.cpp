@@ -47,11 +47,13 @@ void JZWebSocket::connectToHost(const JZNetworkRequest &req)
     info.url = req.url().url();
     info.websocketExt = req.buildWebSocketHeader();
     openConn(info);
-    m_state = ConnectingState;    
+    m_state = ConnectingState;
+    m_pendingBytes = 0;
 }
 
 void JZWebSocket::closeInternal(bool flag)
 {
+    m_pendingBytes = 0;
     stopAutoPing();
     if (m_conn != INVALID_NET_HANDLE)
     {
@@ -205,15 +207,20 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
         sigConnected.emit();
         startAutoPing();
     }
-    else if (event->event == JZ_NET_EV_WS_MSG)
-    {        
+    else if (event->event == JZ_NET_EV_WS_CTL)
+    {
         JZWsResData *ws = (JZWsResData*)(event->extData.get());
         int op = ws->wsFlag & 15;
         if (op == JZ_WEBSOCKET_OP_PONG) {
             // 对端回应了 pong, 连接存活
             onPongReceived();
         }
-        else if (op == JZ_WEBSOCKET_OP_TEXT) {            
+    }
+    else if (event->event == JZ_NET_EV_WS_MSG)
+    {                
+        JZWsResData *ws = (JZWsResData*)(event->extData.get());
+        int op = ws->wsFlag & 15;
+        if (op == JZ_WEBSOCKET_OP_TEXT) {            
             sigTextMessageReceived.emit(str_fromUtf8(event->binData));
         }
         else if (op == JZ_WEBSOCKET_OP_BINARY) {

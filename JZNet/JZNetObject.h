@@ -226,6 +226,9 @@ protected:
     void initTls(mg_connection *conn, const JZSSLConfig &ssl, const std::string &host);
     void bindObject(uint64_t conn, JZNetObject* object);
 
+    // 每隔 5 秒打印一次当前网络连接概况(连接数 / 每个连接的本地远端地址、类型、状态)    
+    void printNetConnect();
+
     mg_mgr *m_mgr;
 
     std::map<uint64_t, ConnInfo> m_connMap;

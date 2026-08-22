@@ -177,7 +177,7 @@ void JZLocalSocketClient::disconnectFromHost()
     }
 }
 
-bool JZLocalSocketClient::isConnect() const
+bool JZLocalSocketClient::isConnected() const
 {
     return m_connected;
 }
@@ -187,13 +187,13 @@ bool JZLocalSocketClient::waitForConnected(int ms)
     int waited = 0;
     while (waited < ms)
     {
-        if (isConnect())
+        if (isConnected())
             return true;
         JZApplication::instance()->processEvents();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         waited += 10;
     }
-    return isConnect();
+    return isConnected();
 }
 
 bool JZLocalSocketClient::waitForReadyRead(int ms)

@@ -3,6 +3,7 @@
 #include <cstring>
 #include "JZAudioOutputWindows.h"
 #include "JZThread.h"
+#include "JZDebug.h"
 
 JZAudioOutputWindows::JZAudioOutputWindows(JZAudioOutput* parent)
     : JZAudioOutputImpl(parent)
@@ -69,35 +70,51 @@ bool JZAudioOutputWindows::open(const JZAudioDeviceInfo& device)
 
 void JZAudioOutputWindows::close()
 {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-
-    if (!m_isPlaying || m_hWaveOut == nullptr) {
-        return;
+    // 必须先离开 m_queueMutex 作用域, 否则 waveOutReset/Close 等待 WOM_DONE 回调时,
+    // 回调(waveOutProc)也要拿同一把锁 -> 死锁, 表现为卡在 waveOutReset。
+    HWAVEOUT h = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (!m_isPlaying || m_hWaveOut == nullptr) {
+            return;
+        }
+        m_isPlaying = false;
+        h = m_hWaveOut;
+        m_hWaveOut = nullptr;
     }
 
-    m_isPlaying = false;
-    waveOutReset(m_hWaveOut);
-
-    cleanupBuffers();
-
-    waveOutClose(m_hWaveOut);
-    m_hWaveOut = nullptr;
+    // 不调用 waveOutReset: 它会同步等待设备停止/所有 WOM_DONE 回调,
+    // 当设备被别的程序占用时可能长时间阻塞(卡在 wdmaud.drv)。
+    // 改用 waveOutPause(立即返回) + waveOutClose(强制释放所有 pending 缓冲, 不等应用层确认)。
+    waveOutPause(h);
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        cleanupBuffers();
+    }
+    waveOutClose(h);
 }
 
 void JZAudioOutputWindows::reset()
 {
-    if (m_hWaveOut == nullptr) {
-        return;
+    HWAVEOUT h = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (m_hWaveOut == nullptr) {
+            return;
+        }
+        h = m_hWaveOut;
     }
 
-    waveOutReset(m_hWaveOut);
-    cleanupBuffers();
+    // 同上: 用 Pause + (调用方负责后续 close) 替代会同步等待的 waveOutReset。
+    waveOutPause(h);
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        cleanupBuffers();
+    }
 }
 
 bool JZAudioOutputWindows::write(const JZByteArray& data)
 {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-
     if (!m_isPlaying || m_hWaveOut == nullptr || data.isEmpty()) {
         return false;
     }
@@ -115,16 +132,33 @@ bool JZAudioOutputWindows::write(const JZByteArray& data)
     pHeader->dwBufferLength = static_cast<DWORD>(data.size());
     pHeader->dwFlags = 0;
 
-    MMRESULT result = waveOutPrepareHeader(m_hWaveOut, pHeader, sizeof(WAVEHDR));
-    if (result != MMSYSERR_NOERROR) {
-        delete[] pBuffer;
-        delete pHeader;
-        std::cerr << "waveOutPrepareHeader failed: " << result << std::endl;
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (m_hWaveOut == nullptr) {
+            delete[] pBuffer;
+            delete pHeader;
+            return false;
+        }
+        MMRESULT result = waveOutPrepareHeader(m_hWaveOut, pHeader, sizeof(WAVEHDR));
+        if (result != MMSYSERR_NOERROR) {
+            delete[] pBuffer;
+            delete pHeader;
+            std::cerr << "waveOutPrepareHeader failed: " << result << std::endl;
+            return false;
+        }
+        // 注意: waveOutWrite 在锁外调用, 避免设备被别的程序占用时(wdmaud.drv 同步等待)
+        // 阻塞本线程(通常是主线程/网络线程)导致界面卡死, 也避免与 waveOutProc 回调死锁。
+        m_bufferQueue.push_back(pHeader);
     }
-
-    result = waveOutWrite(m_hWaveOut, pHeader, sizeof(WAVEHDR));
+    jzDebug() << "waveOutWrite";
+    MMRESULT result = waveOutWrite(m_hWaveOut, pHeader, sizeof(WAVEHDR));
     if (result != MMSYSERR_NOERROR) {
+        {
+            std::lock_guard<std::mutex> lock(m_queueMutex);
+            auto it = std::find(m_bufferQueue.begin(), m_bufferQueue.end(), pHeader);
+            if (it != m_bufferQueue.end())
+                m_bufferQueue.erase(it);
+        }
         waveOutUnprepareHeader(m_hWaveOut, pHeader, sizeof(WAVEHDR));
         delete[] pBuffer;
         delete pHeader;
@@ -132,7 +166,6 @@ bool JZAudioOutputWindows::write(const JZByteArray& data)
         return false;
     }
 
-    m_bufferQueue.push_back(pHeader);
     return true;
 }
 

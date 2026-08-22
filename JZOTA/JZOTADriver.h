@@ -52,17 +52,17 @@ public:
     // 确认"当前正在运行的固件"有效(仅 ESP32 等支持回滚的平台有意义)。
     // 应用应在自身初始化 / 自检成功后才调用; 调用前若发生崩溃重启,
     // bootloader 会自动回退到上一有效版本。默认空实现(不支持回滚的平台无需处理)。
-    virtual void markValid() {}
+    virtual void markValid() = 0;
 
     // 当前启动是否为 OTA 升级后的首次启动(固件未经验证 / 处于回滚观察期)。
     // ESP32: 运行分区状态 == ESP_OTA_IMG_PENDING_VERIFY 时返回 true。
     // 其他平台默认 false。
-    virtual bool isOTAReboot() { return false; }
+    virtual bool isOTAReboot() = 0;
 
     // 主动回滚: 标记当前固件为无效, 回退到上一有效版本并重启。
     // 仅 ESP32 等支持回滚的平台有意义; 默认空实现。
     // 调用后设备会重启, 不会再返回。
-    virtual void rollback() {}
+    virtual void rollback() = 0;
 
 protected:
     JZ_DISABLE_COPY(JZOTADriver)

@@ -54,7 +54,7 @@ public:
     void connectToHost(const JZNetworkRequest& req);
     void disconnectFromHost();
 
-    bool isConnect() const;
+    bool isConnected() const;
     bool waitForConnected(int ms);
     bool waitForReadyRead(int ms);
 

@@ -1,4 +1,4 @@
-﻿#ifndef JZ_NET_OBJECT_H_
+#ifndef JZ_NET_OBJECT_H_
 #define JZ_NET_OBJECT_H_
 
 #include "JZObject.h"
@@ -59,6 +59,7 @@ enum SocketWrite
     WriteBin,
     WriteWebSocketText,
     WriteWebSocketBin,
+    WriteWebSocketPing,
     WriteMqttMessage,
     WriteMqttServerResp,
     WriteUdp,
@@ -130,7 +131,7 @@ public:
         Net_HttpClientReopen,
         Net_HttpReplyFinish,
         Net_Close,
-        Net_SetReadLimit,
+        Net_SetReadLimit,        
     };
 
     JZNetReqEvent();

@@ -51,7 +51,7 @@ bool JZCoWebSocket::connectToHost(const JZNetworkRequest& req, int timeout)
 
 	m_client->connectToHost(req);
 	yield(WaitConnect,timeout);
-	return m_client->isConnect();
+	return m_client->isConnected();
 }
 
 void JZCoWebSocket::disconnectFromHost()
@@ -59,9 +59,9 @@ void JZCoWebSocket::disconnectFromHost()
 	m_client->disconnectFromHost();
 }
 
-bool JZCoWebSocket::isConnect() const
+bool JZCoWebSocket::isConnected() const
 {
-	return m_client->isConnect();
+	return m_client->isConnected();
 }
 
 void JZCoWebSocket::sendTextMessage(const std::string& message)

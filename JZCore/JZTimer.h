@@ -15,6 +15,7 @@ public:
 
     void start(int ms);
     void stop();
+    void restart();
 
     bool isActive() const;
     bool isSingleShot() const;
@@ -27,6 +28,7 @@ protected:
     virtual void timerEvent(JZTimerEvent *event) override;
 
     int m_timeId;
+    int m_gap;
     bool m_singleShot;
 };
 

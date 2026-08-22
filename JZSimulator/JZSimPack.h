@@ -77,9 +77,6 @@ enum JZSimCmd {
     SIM_WIFI_AP_REMOVED = 292,   // 删除一个外围 AP
     SIM_WIFI_AP_UPDATED = 293,   // 某个外围 AP 字段变化(ssid/password/rssi/bssid/auth...)
 
-    // ---- OTA: Driver -> Device / Device -> Driver (编号从 300 起) ----
-    SIM_OTA_CMD_BASE = 300,
-
     // ---- Sensor: Driver -> Device / Device -> Driver (编号从 400 起) ----
     SIM_SENSOR_CMD_BASE = 400,
 };

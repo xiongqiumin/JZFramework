@@ -52,6 +52,7 @@ JZTimer::JZTimer(JZObject *parent)
 {
     m_timeId = INVALID_TIMER_ID;
     m_singleShot = false;
+    m_gap = 0;
 }
 
 JZTimer::~JZTimer()
@@ -76,7 +77,8 @@ void JZTimer::start(int ms)
         return;
     }
     
-    m_timeId = startTimer(ms);    
+    m_gap = ms;
+    m_timeId = startTimer(ms);
 }
 
 void JZTimer::stop()
@@ -86,6 +88,12 @@ void JZTimer::stop()
         killTimer(m_timeId);
         m_timeId = INVALID_TIMER_ID;
     }
+}
+
+void JZTimer::restart()
+{
+    stop();
+    startTimer(m_gap);
 }
 
 bool JZTimer::isActive() const

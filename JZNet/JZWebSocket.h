@@ -4,6 +4,7 @@
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
+#include "JZTimer.h"
 
 class JZWebSocketServer;
 
@@ -27,11 +28,13 @@ public:
     void connectToHost(const std::string &uri);
     void connectToHost(const JZNetworkRequest &req);
     void disconnectFromHost();
-    bool isConnect() const;
-
-    // WSS 客户端 TLS 配置见基类 JZNetObject::setSsl(caPem, clientCertPem, clientKeyPem, skipVerify)。
+    bool isConnected() const;
 
     bool waitForConnected(int ms = 5000);
+
+    void setAutoPing(bool enable, int intervalMs = 60 * 1000, int timeoutMs = 15000);
+    // 手动发送一帧 PING(通常无需调用, 由 setAutoPing 自动管理)
+    void sendPing();
 
     void sendTextMessage(const std::string &message);
     void sendBinaryMessage(const JZByteArray &message);
@@ -49,7 +52,20 @@ protected:
     virtual void onNetEvent(JZNetResEvent* event) override;
     void closeInternal(bool is_error);
 
+    // 自动 ping 相关
+    void onPingTick();
+    void onPongReceived();
+    void startAutoPing();
+    void stopAutoPing();
+
     SocketState m_state;
+
+    bool m_autoPing = false;        // 是否开启自动 ping
+    int m_pingIntervalMs = 15000;   // ping 间隔
+    int m_pingTimeoutMs = 5000;     // 等待 pong 超时
+    JZTimer m_pingTimer;            // 周期 tick(每秒) 的定时器
+    int64_t m_lastPingMs = 0;       // 上次发出 ping 的时间戳
+    bool m_recvPong = true;    
 };
 
 #endif // !JZ_WEB_SOCKET_H_

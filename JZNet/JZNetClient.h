@@ -20,7 +20,7 @@ public:
 
     void connectToHost(std::string ip, int port);
     void disconnectFromHost();
-    bool isConnect();
+    bool isConnected();
     bool waitForConnected(int ms);
 
     void sendPacket(const JZNetPack *packet);

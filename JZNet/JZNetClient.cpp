@@ -83,7 +83,7 @@ bool JZNetClient::waitForConnected(int ms)
     return false;
 }
 
-bool JZNetClient::isConnect()
+bool JZNetClient::isConnected()
 {
     return m_state == ConnectedState;
 }

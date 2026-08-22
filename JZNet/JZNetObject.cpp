@@ -1,4 +1,4 @@
-﻿#include "mongoose.h"
+#include "mongoose.h"
 #include "JZNetObject.h"
 #include "JZTx.h"
 #include "JZApplication.h"
@@ -792,6 +792,15 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                     goto send_end;
                 }
                 send_finished = (mg_ws_send(c, buf, len, WEBSOCKET_OP_BINARY) >= len);
+            }
+            else if (event->writeCmd == WriteWebSocketPing)
+            {
+                if(c->send.len + len > JZNET_MAX_SEND)
+                {
+                    send_finished = false;
+                    goto send_end;
+                }
+                send_finished = (mg_ws_send(c, buf, len, WEBSOCKET_OP_PING) >= len);
             }
             else if (event->writeCmd == WriteMqttMessage)
             {

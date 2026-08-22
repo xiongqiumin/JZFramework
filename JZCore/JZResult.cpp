@@ -7,6 +7,7 @@ JZResult<void> JZResult<void>::Ok()
     JZResult<void> ret;
     ret.m_isOk = true;
     ret.m_code = 0;
+    ret.m_error.clear();
     return ret;
 }
 
@@ -35,6 +36,7 @@ JZResult<void>::JZResult()
 {
     m_isOk = false;
     m_code = 1;
+    m_error = "undefine";
 }
 
 bool JZResult<void>::isOk() const

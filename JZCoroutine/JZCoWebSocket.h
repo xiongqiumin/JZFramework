@@ -22,7 +22,7 @@ public:
 
     bool connectToHost(const JZNetworkRequest& req, int timeout = 5000);
     void disconnectFromHost();
-    bool isConnect() const;
+    bool isConnected() const;
 
     void sendTextMessage(const std::string& message);
     void sendBinaryMessage(const JZByteArray& message);

@@ -316,7 +316,7 @@ void JZLocalSocketThread::doWrite(JZLocalSocketClient* client, const JZByteArray
         sent += n;
     }
 #else
-    if (client->isConnect())
+    if (client->isConnected())
     {
         JZLocalSocketServer* server = JZLocalSocketServer::findServer(client->name());
         if (server)

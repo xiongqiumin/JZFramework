@@ -23,7 +23,6 @@ static std::string categoryOf(JZSimCmd cmd)
     if (c >= 0   && c < 100) return "ble";
     if (c >= 100 && c < 200) return "gpio";
     if (c >= 200 && c < 300) return "wifi";
-    if (c >= 300 && c < 400) return "ota";
     if (c >= 400 && c < 500) return "sensor";
     return "ble";
 }
@@ -34,7 +33,7 @@ static std::vector<std::string> availableCategories(const std::vector<SimEntry>&
     std::set<std::string> cats;
     // 用各 driver 自身 support() 判断其覆盖区间, 推断类别
     const JZSimCmd probes[] = { SIM_CMD_SCAN_START, SIM_GPIO_CMD_OPEN,
-                                 SIM_WIFI_AP_START, SIM_OTA_CMD_BASE, SIM_SENSOR_CMD_BASE };
+                                 SIM_WIFI_AP_START, SIM_SENSOR_CMD_BASE };
     for (auto& sim : sims) {
         if (!sim.supportFn) continue;
         for (JZSimCmd c : probes) {
@@ -520,7 +519,7 @@ Json::Value JZSimServer::getStateJson() const
     root["availableDrivers"] = drivers;
 
     // 全部驱动类别(网页默认全显示, 服务端把未启用的放进 disabledDrivers 隐藏)
-    const char* allCats[] = { "gpio", "ble", "wifi", "sensor", "ota" };
+    const char* allCats[] = { "gpio", "ble", "wifi", "sensor" };
     Json::Value disabled(Json::arrayValue);
     std::set<std::string> enabled;
     for (auto it = drivers.begin(); it != drivers.end(); ++it)
@@ -553,7 +552,7 @@ void JZSimServer::setConfig(const Json::Value& cfg)
 {
     // 先对新旧配置做 diff, 针对具体变更向各驱动发送语义化事件(而不是笼统的"配置变了")。
     diffWifiConfig(m_config, cfg);
-    // 其它 category(gpio/sensor/ble/ota)的 diff 可在此追加。
+    // 其它 category(gpio/sensor/ble)的 diff 可在此追加。
 
     m_config = cfg;
     jzDebug() << "JZSimServer: config updated (in-memory)";

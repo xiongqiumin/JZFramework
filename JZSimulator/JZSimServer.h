@@ -10,24 +10,18 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <functional>
 
 class JZHttpServerClient;
 class JZSimPack;
 
-// 模拟驱动基类: 每个具体驱动模拟器(JZGpioDriverSimulator 等)继承并实现一个区间。
-// JZSimServer 持有一组 JZSimulator*, 下行(cmd -> 驱动)时按 support() 路由,
-// 调用对应驱动的 onRecv() 把网页/API 触发的动作交回具体驱动。
-class JZSimulator
-{
-public:
-    virtual ~JZSimulator() = default;
+// 模拟驱动下行路由回调类型(替代原 JZSimulator 抽象接口, 避免多继承)。
+// 注册时由各驱动 simulator 把自己的 support/onRecv 以 lambda 形式绑定进来。
+using JZSimSupportFn = std::function<bool(JZSimCmd)>;
+using JZSimRecvFn   = std::function<void(const JZSimPack&)>;
 
-    // 该 cmd 是否属于本模拟器负责的区间(用于下行路由)。
-    virtual bool support(JZSimCmd cmd) const = 0;
-
-    // 下行处理: 网页/API 触发的驱动动作经此回到具体驱动。
-    virtual void onRecv(const JZSimPack& pack) = 0;
-};
+// 一个已注册驱动(下行路由)的条目
+struct SimEntry { int token; JZSimSupportFn supportFn; JZSimRecvFn recvFn; };
 
 // 模拟器服务器: 内置一个 JZHttpServer, 去掉原来的外部网络连接(JZNetClient).
 // 外部通过 HTTP 接口控制模拟器(驱动 driver 收发、触发 Device 侧动作、读取状态),
@@ -50,9 +44,9 @@ public:
     void start(const std::string& module);
     void stop(const std::string& module);
 
-    // 注册/注销模拟驱动(用于下行路由)。
-    void registerSimulator(JZSimulator* sim);
-    void unregisterSimulator(JZSimulator* sim);
+    // 注册/注销模拟驱动(用于下行路由)。返回值为该驱动的注册令牌, 注销时回传。
+    int registerSimulator(JZSimSupportFn supportFn, JZSimRecvFn recvFn);
+    void unregisterSimulator(int token);
 
     // 启动内嵌 HTTP 服务器, 监听指定端口。返回是否成功(一般经 start/stop 间接调用)。
     bool startHttp(int port = 19123);
@@ -138,7 +132,8 @@ private:
     JZHttpServer* m_http = nullptr;
     JZHttpStaticFiles* m_static = nullptr;     // 资源静态文件(:/simulator)
     int m_refCount = 0;                       // start()/stop() 引用计数
-    std::vector<JZSimulator*> m_simulators;    // 已注册驱动(下行路由)
+    std::vector<SimEntry> m_simulators;    // 已注册驱动(下行路由)
+    int m_simTokenSeq = 0;                 // 注册令牌自增序号
 
     std::string m_devAddr = "AA:BB:CC:DD:EE:FF";
     std::string m_name    = "JZSimDev";

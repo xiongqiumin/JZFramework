@@ -16,7 +16,7 @@
 #include <json/reader.h>
 #include <json/writer.h>
 
-// 由 cmd 推断所属驱动类别(与 JZSimulator::support 的区间约定保持一致)
+// 由 cmd 推断所属驱动类别(与各 driver 注册时 support 回调的区间约定保持一致)
 static std::string categoryOf(JZSimCmd cmd)
 {
     int c = (int)cmd;
@@ -29,16 +29,16 @@ static std::string categoryOf(JZSimCmd cmd)
 }
 
 // 当前已注册(即 Has_xxx 启用)的驱动类别列表
-static std::vector<std::string> availableCategories(const std::vector<JZSimulator*>& sims)
+static std::vector<std::string> availableCategories(const std::vector<SimEntry>& sims)
 {
     std::set<std::string> cats;
     // 用各 driver 自身 support() 判断其覆盖区间, 推断类别
     const JZSimCmd probes[] = { SIM_CMD_SCAN_START, SIM_GPIO_CMD_OPEN,
                                  SIM_WIFI_AP_START, SIM_OTA_CMD_BASE, SIM_SENSOR_CMD_BASE };
-    for (auto* sim : sims) {
-        if (!sim) continue;
+    for (auto& sim : sims) {
+        if (!sim.supportFn) continue;
         for (JZSimCmd c : probes) {
-            if (sim->support(c))
+            if (sim.supportFn(c))
                 cats.insert(categoryOf(c));
         }
     }
@@ -74,6 +74,17 @@ JZSimServer::JZSimServer(JZObject* parent)
                        "0000FFF2-0000-1000-8000-00805f9b34fb", 0x01 | 0x02, "world"});
     m_chars.push_back({"0000FFB0-0000-1000-8000-00805f9b34fb",
                        "0000FFB1-0000-1000-8000-00805f9b34fb", 0x01 | 0x04, "1234"});
+
+    // 预置 WiFi 默认配置: 无外部配置时扫描也能返回可用 AP。
+    // 该默认 AP 同时作为 Station 连接的固定凭证(ssid/password)来源, 不再在驱动内硬编码。
+    Json::Value ap(Json::objectValue);
+    ap["ssid"]  = "jz_simulator_ap";
+    ap["password"] = "123456";
+    ap["bssid"] = "00:11:22:33:44:55";
+    ap["rssi"]  = -50;
+    ap["channel"] = 6;
+    ap["auth"]  = 0;   // OPEN
+    m_config["wifi"]["aps"].append(ap);
 }
 
 JZSimServer::~JZSimServer()
@@ -208,26 +219,32 @@ void JZSimServer::stop(const std::string& module)
         stopHttp();
 }
 
-void JZSimServer::registerSimulator(JZSimulator* sim)
+int JZSimServer::registerSimulator(JZSimSupportFn supportFn, JZSimRecvFn recvFn)
 {
-    if (sim && std::find(m_simulators.begin(), m_simulators.end(), sim) == m_simulators.end())
-        m_simulators.push_back(sim);
+    int token = ++m_simTokenSeq;
+    m_simulators.push_back({token, supportFn, recvFn});
+    return token;
 }
 
-void JZSimServer::unregisterSimulator(JZSimulator* sim)
+void JZSimServer::unregisterSimulator(int token)
 {
-    auto it = std::find(m_simulators.begin(), m_simulators.end(), sim);
-    if (it != m_simulators.end())
-        m_simulators.erase(it);
+    for (auto it = m_simulators.begin(); it != m_simulators.end(); ++it)
+    {
+        if (it->token == token)
+        {
+            m_simulators.erase(it);
+            return;
+        }
+    }
 }
 
 // 收到"Device -> driver"事件时, 路由到各 driver simulator 的 onRecv。
 void JZSimServer::onClientPacket(const JZSimPack& pack)
 {
-    for (auto* sim : m_simulators)
+    for (auto& sim : m_simulators)
     {
-        if (sim && sim->support(pack.cmd))
-            sim->onRecv(pack);
+        if (sim.supportFn && sim.supportFn(pack.cmd) && sim.recvFn)
+            sim.recvFn(pack);
     }
 }
 
@@ -364,6 +381,46 @@ void JZSimServer::handlePack(const JZSimPack& p)
         std::string chr = p.data.at("chr").toString();
         std::string val = p.data.at("val").toString();
         jzDebug() << "app peripheral indicated" << chr << "=" << val;
+        break;
+    }
+    case SIM_WIFI_STATION_CONNECT: {
+        // 校验凭证: 必须与当前 wifi.aps 配置中某个 AP 的 ssid/password 一致。
+        std::string ssid = p.data.at("ssid").toString();
+        std::string pwd  = p.data.at("password").toString();
+        std::string bssid = p.data.at("bssid").toString();
+        bool matched = false;
+        const Json::Value& wifiCfg = m_config["wifi"];
+        const Json::Value& aps = (wifiCfg.isObject() && wifiCfg.isMember("aps")) ? wifiCfg["aps"] : Json::Value(Json::arrayValue);
+        if (aps.isArray())
+        {
+            for (auto it = aps.begin(); it != aps.end(); ++it)
+            {
+                const Json::Value& a = *it;
+                std::string aSsid = a.isMember("ssid") ? a["ssid"].asString() : std::string();
+                std::string aPwd  = a.isMember("password") ? a["password"].asString() : std::string();
+                if (aSsid == ssid && aPwd == pwd)
+                {
+                    matched = true;
+                    if (bssid.empty() && a.isMember("bssid"))
+                        bssid = a["bssid"].asString();
+                    break;
+                }
+            }
+        }
+        JZVariantMap m;
+        m["ok"] = JZVariant(matched);
+        m["ssid"] = JZVariant(ssid);
+        m["password"] = JZVariant(pwd);
+        if (matched)
+            m["bssid"] = JZVariant(bssid);
+        else
+            m["reason"] = JZVariant(std::string("invalid ssid or password"));
+        sendToDriver(SIM_WIFI_STATION_RESULT, m);
+        jzDebug() << "wifi station connect ->" << (matched ? "ok" : "fail") << ssid;
+        break;
+    }
+    case SIM_WIFI_STATION_DISCONNECT: {
+        jzDebug() << "wifi station disconnect";
         break;
     }
     default:

@@ -24,7 +24,7 @@
 // 只有 AP 的启动/停止需要发往模拟器(上行 ap_start/ap_stop),
 // 站点(station)的接入与断开由模拟器通过下行 station_info 包回传,
 // 驱动据此与本地集合做差分, 触发接入/断开事件。
-class JZWifiDriverSimulator : public JZWifiDriver, public JZSimulator, public JZObject
+class JZWifiDriverSimulator : public JZWifiDriver
 {
     JZ_OBJECT_DECLARE(JZWifiDriverSimulator)
 public:
@@ -33,10 +33,6 @@ public:
 
     // 取当前 WiFi 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZWifiDriverSimulator *simInstance();
-
-    // JZSimulator 接口: 下行路由判断 / 下行处理。
-    bool support(JZSimCmd cmd) const override;
-    void onRecv(const JZSimPack &pack) override;
 
     // 每次本驱动与模拟器交互(sendApCmd 发出指令 / onRecv 收到回发)都会通过此信号广播。
     JZSignal<JZSimCmd, const JZVariantMap&> sigSim{this};
@@ -64,17 +60,18 @@ public:
     bool isScanning(JZWifiScanner *s) override;
 
 private:
+    // 下行路由判断 / 下行处理(由注册进 JZSimServer 的 lambda 转发, 不再多继承)。
+    bool support(JZSimCmd cmd) const;
+    void onRecv(const JZSimPack &pack);
+
     void sendApCmd(const JZSimPack &pack); // 上行: Driver->模拟器 (ap_start/ap_stop)
     // 配置 wif.aps 变更后: 若当前 station 凭证在新配置中已无匹配 AP, 断开 station。
     void checkStationCredential();
 
-    // Station 连接只接受这组凭证
-    static constexpr const char *kApSsid = "jz_simulator_ap";
-    static constexpr const char *kApPassword = "123456";
-
     JZSimServer *m_sim = nullptr;
+    int m_simToken = 0;               // JZSimServer 注册令牌
     JZObjectPointer m_apWifi;        // 当前 AP 对象(用于回传站点事件)
-    JZObjectPointer m_staWifi;       // 当前 Station 对象
+    JZObjectPointer m_staWifi;       // 当前 Station 对象(连接请求发出后即记录, 等待模拟器回发结果)
     std::string m_staSsid;           // 当前 station 连接所用的 ssid(用于判断配置变更是否使其失效)
     std::string m_staPassword;       // 当前 station 连接所用的 password
     std::map<std::string, std::string> m_apStations; // 当前连接到本 AP 的站点: mac -> ip

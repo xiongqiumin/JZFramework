@@ -11,7 +11,9 @@ JZOTADriverSimulator *JZOTADriverSimulator::simInstance()
 JZOTADriverSimulator::JZOTADriverSimulator()
 {
     m_sim = JZSimServer::instance();
-    m_sim->registerSimulator(this);
+    m_simToken = m_sim->registerSimulator(
+        [this](JZSimCmd cmd) { return support(cmd); },
+        [this](const JZSimPack &pack) { onRecv(pack); });
     m_sim->start("ota");
 }
 
@@ -19,7 +21,7 @@ JZOTADriverSimulator::~JZOTADriverSimulator()
 {
     if (m_sim)
     {
-        m_sim->unregisterSimulator(this);
+        m_sim->unregisterSimulator(m_simToken);
         m_sim->stop("ota");
     }
 }

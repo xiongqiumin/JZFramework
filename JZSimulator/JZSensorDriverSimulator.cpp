@@ -13,7 +13,9 @@ JZSensorDriverSimulator::JZSensorDriverSimulator()
     if (!s_inst)
         s_inst = this;
     m_sim = JZSimServer::instance();
-    m_sim->registerSimulator(this);
+    m_simToken = m_sim->registerSimulator(
+        [this](JZSimCmd cmd) { return support(cmd); },
+        [this](const JZSimPack &pack) { onRecv(pack); });
     m_sim->start("sensor");
 }
 
@@ -21,7 +23,7 @@ JZSensorDriverSimulator::~JZSensorDriverSimulator()
 {
     if (m_sim)
     {
-        m_sim->unregisterSimulator(this);
+        m_sim->unregisterSimulator(m_simToken);
         m_sim->stop("sensor");
     }
     if (s_inst == this)

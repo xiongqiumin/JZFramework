@@ -22,7 +22,9 @@ JZBleDriverSimulator::JZBleDriverSimulator(const std::string &ip, int port)
     (void)ip;
     (void)port;
     m_sim = JZSimServer::instance();
-    m_sim->registerSimulator(this);
+    m_simToken = m_sim->registerSimulator(
+        [this](JZSimCmd cmd) { return support(cmd); },
+        [this](const JZSimPack &pack) { onRecv(pack); });
     m_sim->start("ble");
 }
 
@@ -30,7 +32,7 @@ JZBleDriverSimulator::~JZBleDriverSimulator()
 {
     if (m_sim)
     {
-        m_sim->unregisterSimulator(this);
+        m_sim->unregisterSimulator(m_simToken);
         m_sim->stop("ble");
     }
 }

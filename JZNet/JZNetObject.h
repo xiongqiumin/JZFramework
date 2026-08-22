@@ -6,8 +6,8 @@
 #include "JZThread.h"
 
 class JZNetObject;
-class mg_connection;
-class mg_mgr;
+struct mg_connection;
+struct mg_mgr;
 
 constexpr uint64_t INVALID_NET_HANDLE = 0;
 

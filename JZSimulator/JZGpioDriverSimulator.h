@@ -17,7 +17,7 @@ class JZNetPack;
 // 由后者模拟真实引脚行为并把电平事件回传; 波形则由本驱动借助 JZTimer 在本地生成
 // (周期采样 -> 计算电平 -> onLevelChanged), 无需依赖远端设备。
 // 应用侧可像使用 Esp32 驱动一样使用它。
-class JZGpioDriverSimulator : public JZGpioDriver, public JZSimulator, public JZObject
+class JZGpioDriverSimulator : public JZGpioDriver, public JZObject
 {
     JZ_OBJECT_DECLARE(JZGpioDriverSimulator)
 public:
@@ -26,10 +26,6 @@ public:
 
     // 取当前 GPIO 驱动单例(仅当其为模拟驱动时返回, 否则 nullptr)
     static JZGpioDriverSimulator *simInstance();
-
-    // JZSimulator 接口: 下行路由判断 / 下行处理。
-    bool support(JZSimCmd cmd) const override;
-    void onRecv(const JZSimPack &pack) override;
 
     // 每次本驱动与模拟器交互(sendSim 发出指令 / onRecv 收到回发)都会通过此信号广播,
     // 上层或测试代码可 connect 订阅以观测交互。
@@ -59,6 +55,10 @@ public:
     bool setTriggerEdge(JZGpio *gpio, JZGpio::Edge edge) override;
 
 private:
+    // 下行路由判断 / 下行处理(由注册进 JZSimServer 的 lambda 转发, 不再多继承)。
+    bool support(JZSimCmd cmd) const;
+    void onRecv(const JZSimPack &pack);
+
     void sendSim(JZSimCmd cmd, const JZVariantMap &m);
 
     // 波形本地生成
@@ -74,6 +74,7 @@ private:
     void updateWaveTimer();        // 依据活动波形重算定时器周期(每个周期采样 ~32 点)
 
     JZSimServer *m_sim = nullptr;
+    int m_simToken = 0;               // JZSimServer 注册令牌
     JZTimer      *m_waveTimer = nullptr;  // 波形生成定时器
     int          m_waveTimerMs = 5;      // 当前定时器周期(ms)
 

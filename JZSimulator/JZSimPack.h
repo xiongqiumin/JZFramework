@@ -67,6 +67,9 @@ enum JZSimCmd {
     SIM_WIFI_AP_START = 200,
     SIM_WIFI_AP_STOP,
     SIM_WIFI_STATION_INFO,
+    SIM_WIFI_STATION_CONNECT,        // Driver -> Device: 请求连接外部 AP(ssid/password)
+    SIM_WIFI_STATION_DISCONNECT,     // Driver -> Device: 请求断开 station
+    SIM_WIFI_STATION_RESULT,         // Device -> Driver: 连接结果(ok + bssid/ip, 或失败原因)
     // 配置细化事件(Device -> Driver): simServer 对 wifi.aps 做 diff 后发出,
     // 驱动在 onRecv 中按具体变更处理(如刷新 scan 结果 / 断开失效 station)。
     // 每个事件携带单个 ap 的完整对象(json 字段), REMOVED 携带被删 ap 的标识。

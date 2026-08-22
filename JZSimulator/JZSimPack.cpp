@@ -217,9 +217,14 @@ JZResult<int64_t> JZSimPack::getInt64(const std::string &key) const
 
 JZResult<bool> JZSimPack::getBool(const std::string &key) const
 {
-    auto r = getInt(key);
+    auto r = getField(data, key);
     if (r.isError()) return JZResult<bool>::Error(r.errorCode(), r.errorMessage());
-    return JZResult<bool>::Ok(r.value() != 0);
+    const JZVariant &v = r.value();
+    int t = v.typeId();
+    if (t == JZMetaType::Bool)  return JZResult<bool>::Ok(v.toBool());
+    if (t == JZMetaType::Int)   return JZResult<bool>::Ok(v.toInt() != 0);
+    if (t == JZMetaType::Int64) return JZResult<bool>::Ok(v.toInt64() != 0);
+    return JZResult<bool>::Error("not a bool: " + key);
 }
 
 JZResult<std::string> JZSimPack::getStr(const std::string &key) const

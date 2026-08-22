@@ -56,6 +56,7 @@ public:
             // 释放锁，等待事件
             xSemaphoreGive(lock);
             TickType_t ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+            if (timeout_ms > 0 && ticks == 0) ticks = 1;   // [修复] 100Hz tick 下 <10ms 正超时被截断为 0 -> 忙轮询, 提升为最小 1 tick
             EventBits_t triggered = xEventGroupWaitBits(event_group_, my_bit, pdTRUE, pdFALSE, ticks);
             xSemaphoreTake(lock, portMAX_DELAY);
 

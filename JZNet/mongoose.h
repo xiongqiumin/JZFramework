@@ -56,7 +56,7 @@ extern "C" {
 #endif  // !defined(MG_ARCH)
 
 #if !defined(MG_ARCH) || (MG_ARCH == MG_ARCH_CUSTOM)
-#include "JZFrameWorkConfig.h"  // keep this include
+#include "JZFrameworkConfig.h"  // keep this include
 #endif
 
 #if !defined(MG_ARCH)

@@ -222,7 +222,7 @@ CO_CONTEXT_HANDLE getCoContextHandle(JZCoContext* ctx)
 
 #elif (JZ_OS == JZ_OS_FREE_RTOS) 
 
-#include "JZFreeRTOS.h"
+#include "JZCore/private/JZFreeRTOS.h"
 
 // 固定块大小
 constexpr int BLOCK_SIZE = 512U;

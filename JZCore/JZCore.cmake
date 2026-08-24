@@ -124,6 +124,7 @@ convert_to_abs_paths(JZCORE_SOURCES)
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZCORE_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}/private")
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${BASE64_DIR}/include")
 target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${BASE64_DIR}/lib")
 target_compile_definitions(${JZ_MODULE_TARGET} PRIVATE BASE64_STATIC_DEFINE _SCL_SECURE_NO_WARNINGS)

@@ -47,7 +47,7 @@ static int getCurrentStackUse()
 
 #elif JZ_OS == JZ_OS_FREE_RTOS
 
-#include "JZFreeRtos.h"
+#include "JZCore/private/JZFreeRTOS.h"
 
 static int getCurrentStackUse()
 {

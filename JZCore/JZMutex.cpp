@@ -2,7 +2,7 @@
 #include "JZMutex.h"
 
 #if JZ_OS == JZ_OS_FREE_RTOS    
-    #include "JZFreeRTOS.h"
+    #include "JZCore/private/JZFreeRTOS.h"
     #define MUTEX_FREERTOS ((SemaphoreHandle_t)m_mutex)
 #elif JZ_OS == JZ_OS_RT_THREAD    
     #include <rtthread.h>

@@ -32,7 +32,7 @@ public:
 
 jz_signals:    
     JZSigVoid sigAccept;
-    JZSignal<uint64_t> sigDisconnect;
+    JZSignal<uint64_t> sigDisconnected;
     JZSignal<uint64_t, JZNetPackPtr> sigPacketReceive;
 
 protected:

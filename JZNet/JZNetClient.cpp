@@ -12,7 +12,7 @@
 using namespace std;
 
 JZNetClient::JZNetClient(JZObject *parent)
-    : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigPacketReceive(this)
+    : JZNetObject(parent), sigConnected(this), sigDisconnected(this), sigPacketReceive(this)
 {    
     m_conn = INVALID_NET_HANDLE;  
     m_waitPacket = false;
@@ -102,7 +102,7 @@ void JZNetClient::closeInternal(bool is_error)
     int pre_state = m_state;
     m_state = UnconnectedState;
     if (pre_state == ConnectedState)
-        sigDisconnect.emit();
+        sigDisconnected.emit();
 }
 
 void JZNetClient::disconnectFromHost()
@@ -232,7 +232,7 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
                 if (pkt->packetType() == NetPack_handRes)
                 {
                     m_state = ConnectedState;
-                    sigConnect.emit();
+                    sigConnected.emit();
                 }
                 else
                 {

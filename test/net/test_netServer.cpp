@@ -26,7 +26,7 @@ public:
             server->listen(port);
             connect(&server->sigAccept, this, &NetServerSingleTest::onAccept);
             connect(&server->sigPacketReceive, this, &NetServerSingleTest::onServerRecv);
-            connect(&server->sigDisconnect, this, &NetServerSingleTest::onDisconnect);
+            connect(&server->sigDisconnected, this, &NetServerSingleTest::onDisconnect);
         }
 
         if (g_option.enableClient)
@@ -118,13 +118,13 @@ public:
             echo.text = "hello jznet";
             client->sendPacket(&echo);
         });
-        connect(&client->sigConnect, this, [this, client]()
+        connect(&client->sigConnected, this, [this, client]()
         {
             JZNetPackEcho echo;
             echo.text = "hello jznet";
             client->sendPacket(&echo);
         });
-        connect(&client->sigDisconnect, this, [this]()
+        connect(&client->sigDisconnected, this, [this]()
         {
             netReportError("JZNetServer", "多线程 client 异常断开");
         });
@@ -152,7 +152,7 @@ public:
             server->listen(port);
             connect(&server->sigAccept, this, &NetServerMultiTest::onAccept);
             connect(&server->sigPacketReceive, this, &NetServerMultiTest::onServerRecv);
-            connect(&server->sigDisconnect, this, &NetServerMultiTest::onDisconnect);
+            connect(&server->sigDisconnected, this, &NetServerMultiTest::onDisconnect);
         }
 
         if (g_option.enableClient)

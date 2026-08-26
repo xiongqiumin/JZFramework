@@ -16,6 +16,7 @@ public:
     ~JZTcpSocket();
 
     SocketState state() const;
+    bool isConnected() const;
 
     void connectToHost(std::string ip, int port);
     bool waitForConnected(int ms = 30 * 1000);
@@ -32,8 +33,8 @@ public:
     void write(const char *buffer,int len);
     
 jz_signals:
-    JZSigVoid sigConnect;
-    JZSigVoid sigDisconnect;
+    JZSigVoid sigConnected;
+    JZSigVoid sigDisconnected;
     JZSigVoid sigReadyRead;
     JZSigString sigError;
 

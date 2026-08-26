@@ -92,7 +92,7 @@ JZFrpServer::JZFrpServer(JZObject *parent)
 {
     m_server = new JZNetServer(parent);
     connect(&m_server->sigAccept, this, &JZFrpServer::onNewAccept);
-    connect(&m_server->sigDisconnect, this, &JZFrpServer::onDisconnect);
+    connect(&m_server->sigDisconnected, this, &JZFrpServer::onDisconnect);
     connect(&m_server->sigPacketReceive, this, &JZFrpServer::onRecvPacket);
 
 }
@@ -302,7 +302,7 @@ void JZFrpServer::onFrpcAccept()
     remote_info.connectId = connect_id;
     remote_info.serverPort = port;
     m_remoteInfo[c] = remote_info;
-    connect(&c->sigDisconnect, this, &JZFrpServer::onFrpcClose);
+    connect(&c->sigDisconnected, this, &JZFrpServer::onFrpcClose);
     connect(&c->sigReadyRead, this, &JZFrpServer::onFrpcRead);
     
     mgr_info->remoteConnects[connect_id] = c;

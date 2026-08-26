@@ -212,7 +212,7 @@ public:
 
         m_client = new JZMqttClient(this);
         m_client->setSsl(kServerCertPem, "", "");
-        connect(&m_client->sigConnect, this, &MqttsTest::onClientConnect);
+        connect(&m_client->sigConnected, this, &MqttsTest::onClientConnect);
         connect(&m_client->sigMessage, this, &MqttsTest::onClientMsg);
 
         JZMqttConnectOpt opt;
@@ -277,7 +277,7 @@ public:
 
         m_client = new JZTcpSocket(this);
         m_client->setSsl(kServerCertPem, "", "");   // 用服务端证书作为 CA 校验
-        connect(&m_client->sigConnect, this, &TcpSslTest::onClientConnect);
+        connect(&m_client->sigConnected, this, &TcpSslTest::onClientConnect);
         connect(&m_client->sigReadyRead, this, &TcpSslTest::onClientRead);
         connect(&m_client->sigError, this, &TcpSslTest::onError);
         m_client->connectToHost("127.0.0.1", port);
@@ -351,9 +351,9 @@ public:
 
         m_client = new JZNetClient(this);
         m_client->setSsl(kServerCertPem, "", "");   // 用服务端证书作为 CA 校验
-        connect(&m_client->sigConnect, this, &NetSslTest::onClientConnect);
+        connect(&m_client->sigConnected, this, &NetSslTest::onClientConnect);
         connect(&m_client->sigPacketReceive, this, &NetSslTest::onClientPacket);
-        connect(&m_client->sigDisconnect, this, &NetSslTest::onError);
+        connect(&m_client->sigDisconnected, this, &NetSslTest::onError);
         m_client->connectToHost("127.0.0.1", port);
 
         m_exitTimer = new JZTimer(this);

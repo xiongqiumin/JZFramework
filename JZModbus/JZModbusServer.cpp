@@ -170,7 +170,7 @@ void JZModbusServer::onNewConnect()
         return;
 
     connect(&socket->sigReadyRead, this, &JZModbusServer::onTcpRead);
-    connect(&socket->sigDisconnect, this, &JZModbusServer::onTcpDisconnected);
+    connect(&socket->sigDisconnected, this, &JZModbusServer::onTcpDisconnected);
 
     m_tcpClients[socket] = JZByteArray();
 }

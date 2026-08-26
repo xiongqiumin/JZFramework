@@ -32,8 +32,8 @@ public:
     void clearLastError();
    
 jz_signals:
-    JZSigVoid sigConnect;
-    JZSigVoid sigDisconnect;
+    JZSigVoid sigConnected;
+    JZSigVoid sigDisconnected;
     JZSignal<JZNetPackPtr> sigPacketReceive;
 
 protected:

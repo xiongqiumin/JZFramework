@@ -10,7 +10,7 @@
 using namespace std;
 
 JZNetServer::JZNetServer(JZObject *parent)
-    : JZNetObject(parent), sigAccept(this), sigDisconnect(this), sigPacketReceive(this)
+    : JZNetObject(parent), sigAccept(this), sigDisconnected(this), sigPacketReceive(this)
 {   
     m_conn = INVALID_NET_HANDLE;        
 
@@ -119,7 +119,7 @@ void JZNetServer::onClientDisconnect()
 
     removeHandInfo(id);
     m_clients.erase(id);
-    sigDisconnect.emit(id);
+    sigDisconnected.emit(id);
 }
 
 void JZNetServer::onClientPackReceive(JZNetPackPtr ptr)
@@ -151,7 +151,7 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
     socket->moveToThread(this->thread());
     socket->m_server = this;
 
-    connect(&socket->sigDisconnect, this, &JZNetServer::onClientDisconnect);
+    connect(&socket->sigDisconnected, this, &JZNetServer::onClientDisconnect);
     connect(&socket->sigPacketReceive, this, &JZNetServer::onClientPackReceive);
 
     JZObjectPointer socket_ptr = socket->guardPointer();

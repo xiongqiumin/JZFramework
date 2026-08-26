@@ -60,7 +60,7 @@ public:
             return;   // 已经连上
 
         auto *c = new JZTcpSocket(this);
-        connect(&c->sigConnect, this, &FrpTestSingle::onRemoteConnect);
+        connect(&c->sigConnected, this, &FrpTestSingle::onRemoteConnect);
         connect(&c->sigReadyRead, this, &FrpTestSingle::onRemoteRead);
         connect(&c->sigError, [this, c](const string &) {
                 jzDebug() << "remote connect to proxy failed, retry...";

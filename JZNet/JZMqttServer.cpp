@@ -78,7 +78,7 @@ JZNetObject* JZMqttServer::onAccept(uint64_t conn)
     socket->m_connType = JZSocketInfo::MqttClientServer;
     socket->m_server = this;
     socket->moveToThread(this->thread());
-    connect(&socket->sigDisconnect, this, &JZMqttServer::onClientDisconnect);
+    connect(&socket->sigDisconnected, this, &JZMqttServer::onClientDisconnect);
 
     JZObjectPointer socket_ptr = socket->guardPointer();
     auto notify = [this, socket_ptr]
@@ -384,7 +384,7 @@ void JZMqttServer::onClientNetEvent(JZMqttClient* client, JZNetResEvent* event)
         if (client->m_conn != INVALID_NET_HANDLE)
         {
             client->m_conn = INVALID_NET_HANDLE;
-            client->closeInternal(false);   // 触发 sigDisconnect → 清理订阅 + 遗嘱
+            client->closeInternal(false);   // 触发 sigDisconnected → 清理订阅 + 遗嘱
         }
         return;
     }

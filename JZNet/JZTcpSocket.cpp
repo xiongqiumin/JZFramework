@@ -10,7 +10,7 @@ using namespace std;
 JZ_OBJECT_IMPL(JZTcpSocket, JZNetObject)
 
 JZTcpSocket::JZTcpSocket(JZObject *parent)
-    : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigReadyRead(this), sigError(this)
+    : JZNetObject(parent), sigConnected(this), sigDisconnected(this), sigReadyRead(this), sigError(this)
 {    
     m_conn = INVALID_NET_HANDLE;  
     m_state = UnconnectedState;
@@ -24,6 +24,11 @@ JZTcpSocket::~JZTcpSocket()
 SocketState JZTcpSocket::state() const
 {
     return m_state;
+}
+
+bool JZTcpSocket::isConnected() const
+{
+    return (m_state == ConnectedState);
 }
 
 void JZTcpSocket::connectToHost(std::string ip, int port)
@@ -68,7 +73,7 @@ void JZTcpSocket::closeInternal(bool is_error)
     int pre_state = m_state;
     m_state = UnconnectedState;
     if (pre_state == ConnectedState)
-        sigDisconnect.emit();
+        sigDisconnected.emit();
 }
 
 void JZTcpSocket::disconnectFromHost()
@@ -155,7 +160,7 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
     { 
         m_buffer.clear();
         m_state = ConnectedState;            
-        sigConnect.emit();
+        sigConnected.emit();
     }
     else if(ev == JZ_NET_EV_CLOSE)
     {         

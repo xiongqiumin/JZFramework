@@ -17,7 +17,7 @@ static const uint64_t QOS_RETRANSMIT_MS = 5000;   // 出站 QoS 未确认时的�
 JZ_OBJECT_IMPL(JZMqttClient, JZNetObject)
 
 JZMqttClient::JZMqttClient(JZObject* parent) 
-    : JZNetObject(parent), sigConnect(this), sigDisconnect(this), sigMessage(this)
+    : JZNetObject(parent), sigConnected(this), sigDisconnected(this), sigMessage(this)
 {
     m_conn = INVALID_NET_HANDLE;
     m_state = UnconnectedState;
@@ -78,7 +78,7 @@ void JZMqttClient::closeInternal(bool is_error)
     int pre_state = m_state;
     m_state = UnconnectedState;
     if (pre_state == ConnectedState)
-        sigDisconnect.emit();
+        sigDisconnected.emit();
 }
 
 void JZMqttClient::disconnectFromHost()
@@ -186,7 +186,7 @@ void JZMqttClient::onNetEvent(JZNetResEvent* event)
         break;
     case JZ_NET_EV_MQTT_OPEN:
         m_state = ConnectedState;
-        sigConnect.emit();
+        sigConnected.emit();
         break;
     case JZ_NET_EV_MQTT_CMD:
     {

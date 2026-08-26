@@ -43,7 +43,7 @@ public:
     bool waitForConnected(int ms);
 
 jz_signals: 
-    JZSigVoid sigConnect;
+    JZSigVoid sigConnected;
 
 protected:
     struct LocalClientInfo

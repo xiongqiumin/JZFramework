@@ -33,7 +33,7 @@ public:
         if(g_option.enableClient)
         {
             m_client = new JZTcpSocket(this);
-            connect(&m_client->sigConnect, this, &TcpTestSingle::onClientConnect);
+            connect(&m_client->sigConnected, this, &TcpTestSingle::onClientConnect);
             connect(&m_client->sigReadyRead, this, &TcpTestSingle::onClientRead);
             connect(&m_client->sigError, this, &TcpTestSingle::onError);
             m_client->connectToHost(g_option.host, port);
@@ -127,7 +127,7 @@ public:
     {
         m_prefix = "tcp";
         m_sock = new JZTcpSocket(this);
-        connect(&m_sock->sigConnect, this, &TcpClientThread::onConnect);
+        connect(&m_sock->sigConnected, this, &TcpClientThread::onConnect);
         connect(&m_sock->sigReadyRead, this, &TcpClientThread::onRead);
         connect(&m_sock->sigError, this, &TcpClientThread::onError);
         m_sock->connectToHost(m_host, m_port);

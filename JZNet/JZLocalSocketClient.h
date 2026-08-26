@@ -42,8 +42,8 @@ class JZLocalSocketClient : public JZObject
     friend class JZLocalSocketServer;
 
 jz_signals:
-    JZSigVoid sigConnect;
-    JZSigVoid sigDisconnect;
+    JZSigVoid sigConnected;
+    JZSigVoid sigDisconnected;
     JZSigVoid sigReadyRead;
     JZSigString sigError;
 
@@ -72,11 +72,11 @@ protected:
     int socketFd() const { return m_sock; }
     void setSocketFd(int fd) { m_sock = fd; }
 
-    // 供 JZLocalSocketThread 在 accept 后标记已连接并触发 sigConnect
+    // 供 JZLocalSocketThread 在 accept 后标记已连接并触发 sigConnected
     void markConnected()
     {
         m_connected = true;
-        sigConnect.emit();
+        sigConnected.emit();
     }
 
 private:

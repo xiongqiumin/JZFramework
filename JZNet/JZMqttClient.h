@@ -29,8 +29,8 @@ public:
     void unsubscribe(const JZMqttSubOpt &opt);
 
 jz_signals:
-    JZSigVoid sigConnect;
-    JZSigVoid sigDisconnect;
+    JZSigVoid sigConnected;
+    JZSigVoid sigDisconnected;
     JZSignal<const JZMqttMessage &> sigMessage;
 
 protected:

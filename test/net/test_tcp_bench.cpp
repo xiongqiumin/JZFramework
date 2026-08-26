@@ -212,9 +212,9 @@ public:
         : BenchConn(loop)
     {
         m_conn = new JZTcpSocket(this);
-        connect(&m_conn->sigConnect, this, &BenchClient::onConnect);
+        connect(&m_conn->sigConnected, this, &BenchClient::onConnect);
         connect(&m_conn->sigReadyRead, this, &BenchClient::onRead);
-        connect(&m_conn->sigDisconnect, this, &BenchClient::onDisconnect);
+        connect(&m_conn->sigDisconnected, this, &BenchClient::onDisconnect);
         connect(&m_conn->sigError, this, &BenchClient::onError);
         m_conn->connectToHost(g_host, port);
 
@@ -355,7 +355,7 @@ public:
     {
         // 阶段 0: 建立控制连接
         m_ctrl = new JZTcpSocket(this);
-        connect(&m_ctrl->sigConnect, this, &IperfClient::onCtrlConnect);
+        connect(&m_ctrl->sigConnected, this, &IperfClient::onCtrlConnect);
         connect(&m_ctrl->sigReadyRead, this, &IperfClient::onCtrlRead);
         connect(&m_ctrl->sigError, this, &IperfClient::onError);
         m_ctrl->connectToHost(g_host, m_port);
@@ -444,7 +444,7 @@ private:
     {
         if (m_txConn) return;
         m_txConn = new JZTcpSocket(this);
-        connect(&m_txConn->sigConnect, this, &IperfClient::onTxConnConnect);
+        connect(&m_txConn->sigConnected, this, &IperfClient::onTxConnConnect);
         connect(&m_txConn->sigReadyRead, this, &IperfClient::onTxConnRead);
         connect(&m_txConn->sigError, this, &IperfClient::onError);
         m_txConn->connectToHost(g_host, m_port);
@@ -468,7 +468,7 @@ private:
     {
         if (m_rxConn) return;
         m_rxConn = new JZTcpSocket(this);
-        connect(&m_rxConn->sigConnect, this, &IperfClient::onRxConnConnect);
+        connect(&m_rxConn->sigConnected, this, &IperfClient::onRxConnConnect);
         connect(&m_rxConn->sigReadyRead, this, &IperfClient::onRxConnRead);
         connect(&m_rxConn->sigError, this, &IperfClient::onError);
         m_rxConn->connectToHost(g_host, m_port);
@@ -536,7 +536,7 @@ public:
     {
         // 控制连接(TCP)握手
         m_ctrl = new JZTcpSocket(this);
-        connect(&m_ctrl->sigConnect, this, &IperfUdpClient::onCtrlConnect);
+        connect(&m_ctrl->sigConnected, this, &IperfUdpClient::onCtrlConnect);
         connect(&m_ctrl->sigReadyRead, this, &IperfUdpClient::onCtrlRead);
         connect(&m_ctrl->sigError, this, &IperfUdpClient::onError);
         m_ctrl->connectToHost(g_host, m_port);

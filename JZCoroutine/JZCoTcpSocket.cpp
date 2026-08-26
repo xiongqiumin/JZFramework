@@ -16,8 +16,8 @@ JZCoTcpSocket::~JZCoTcpSocket()
 
 void JZCoTcpSocket::connectSignals()
 {
-    connect(&m_socket->sigConnect, this, &JZCoTcpSocket::onConnected);
-    connect(&m_socket->sigDisconnect, this, &JZCoTcpSocket::onDisconnected);
+    connect(&m_socket->sigConnected, this, &JZCoTcpSocket::onConnected);
+    connect(&m_socket->sigDisconnected, this, &JZCoTcpSocket::onDisconnected);
     connect(&m_socket->sigReadyRead, this, &JZCoTcpSocket::onReadyRead);
 }
 

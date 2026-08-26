@@ -25,7 +25,7 @@ void JZFrpClientConfig::addProxy(std::string name, std::string localIp, int loca
 
 // JZFrpClient 实现
 JZFrpClient::JZFrpClient() 
-    : sigConnect(this)
+    : sigConnected(this)
 {        
     m_isValid = false;
     m_timer = new JZTimer(this);
@@ -53,8 +53,8 @@ void JZFrpClient::connectToServer()
     JZ_ASSERT(!m_client);
 
     m_client = new JZNetClient(this);
-    connect(&m_client->sigConnect, this, &JZFrpClient::onConnect);
-    connect(&m_client->sigDisconnect, this, &JZFrpClient::onDisconnect);
+    connect(&m_client->sigConnected, this, &JZFrpClient::onConnect);
+    connect(&m_client->sigDisconnected, this, &JZFrpClient::onDisconnect);
     connect(&m_client->sigPacketReceive, this, &JZFrpClient::onRecvPacket);
     m_timer->start(15000);
 
@@ -221,8 +221,8 @@ void JZFrpClient::onRecvPacket(JZNetPackPtr packet)
             //connect 等待连接成功后发送
             JZTcpSocket *socket = new JZTcpSocket(this);
             socket->connectToHost(localAddr, localPort);
-            connect(&socket->sigConnect, this, &JZFrpClient::onLocalConnect);
-            connect(&socket->sigDisconnect, this, &JZFrpClient::onLocalDisconnect);
+            connect(&socket->sigConnected, this, &JZFrpClient::onLocalConnect);
+            connect(&socket->sigDisconnected, this, &JZFrpClient::onLocalDisconnect);
             connect(&socket->sigError, this, &JZFrpClient::onLocalError);
             connect(&socket->sigReadyRead, this, &JZFrpClient::onLocalRead);
 

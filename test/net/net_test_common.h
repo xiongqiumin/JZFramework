@@ -28,7 +28,7 @@ bool netParseMsg(const std::string &line, const std::string &prefix, uint64_t &s
 
 // 测试是否处于活跃运行状态: 正常运行时为 true;
 // 进入析构/退出阶段(事件循环已返回, 正在关闭 socket/线程)置 false,
-// 避免关闭 socket 触发的 sigError/sigDisconnect 等正常事件被误判为错误而 exit(1)
+// 避免关闭 socket 触发的 sigError/sigDisconnected 等正常事件被误判为错误而 exit(1)
 extern std::atomic<bool> g_netTestActive;
 
 // 任一模块发现错误立即 exit(1), 终止整个测试进程

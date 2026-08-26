@@ -109,7 +109,7 @@ void JZModbusClient::initRtu(std::string com, int baud, JZSerialPort::DataBits d
 void JZModbusClient::initTcp(std::string ip, int port)
 {
     m_socket = new JZTcpSocket(this);
-    connect(&m_socket->sigConnect, this, &JZModbusClient::onTcpConnected);
+    connect(&m_socket->sigConnected, this, &JZModbusClient::onTcpConnected);
     connect(&m_socket->sigError, this, &JZModbusClient::onTcpErrorOccurred);
     connect(&m_socket->sigReadyRead, this, &JZModbusClient::onReadyRead);
     initTcpContext(m_ctx);

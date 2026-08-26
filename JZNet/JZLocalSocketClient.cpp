@@ -51,8 +51,8 @@ JZLocalSocketNotifyEvent::JZLocalSocketNotifyEvent(JZObject* receiver, bool conn
 // ===========================================================================
 JZLocalSocketClient::JZLocalSocketClient(JZObject* parent)
     : JZObject(parent)
-    , sigConnect(this)
-    , sigDisconnect(this)
+    , sigConnected(this)
+    , sigDisconnected(this)
     , sigReadyRead(this)
     , sigError(this)
 {
@@ -136,7 +136,7 @@ void JZLocalSocketClient::connectToHost(const JZNetworkRequest& req)
 #  endif
     m_connected = true;
     JZLocalSocketThread::instance()->addObject(this);
-    sigConnect.emit();
+    sigConnected.emit();
 #else
     // 嵌入式: 通过全局变量访问同进程内的服务端
     JZLocalSocketServer* server = JZLocalSocketServer::findServer(m_name);
@@ -149,7 +149,7 @@ void JZLocalSocketClient::connectToHost(const JZNetworkRequest& req)
     m_connected = true;
     server->attachClient(this);
     JZLocalSocketThread::instance()->addObject(this);
-    sigConnect.emit();
+    sigConnected.emit();
 #endif
 }
 
@@ -173,7 +173,7 @@ void JZLocalSocketClient::disconnectFromHost()
     if (m_connected)
     {
         m_connected = false;
-        sigDisconnect.emit();
+        sigDisconnected.emit();
     }
 }
 
@@ -259,9 +259,9 @@ void JZLocalSocketClient::customEvent(JZEvent* event)
     {
         auto* e = static_cast<JZLocalSocketNotifyEvent*>(event);
         if (e->m_connected)
-            sigConnect.emit();
+            sigConnected.emit();
         else
-            sigDisconnect.emit();
+            sigDisconnected.emit();
     }
     else
     {

@@ -32,9 +32,9 @@ public:
         if (g_option.enableClient)
         {
             m_client = new JZMqttClient(this);
-            connect(&m_client->sigConnect, this, &MqttTestSingle::onClientConnect);
+            connect(&m_client->sigConnected, this, &MqttTestSingle::onClientConnect);
             connect(&m_client->sigMessage, this, &MqttTestSingle::onClientMsg);
-            connect(&m_client->sigDisconnect, this, &MqttTestSingle::onDisconnect);
+            connect(&m_client->sigDisconnected, this, &MqttTestSingle::onDisconnect);
 
             JZMqttConnectOpt opt;
             opt.clientId = "bench";
@@ -143,9 +143,9 @@ public:
         m_prefix = "mqtt";
         m_topic = "test/bench/" + to_string(m_id);
         m_client = new JZMqttClient(this);
-        connect(&m_client->sigConnect, this, &MqttClientThread::onConnect);
+        connect(&m_client->sigConnected, this, &MqttClientThread::onConnect);
         connect(&m_client->sigMessage, this, &MqttClientThread::onMsg);
-        connect(&m_client->sigDisconnect, this, &MqttClientThread::onDisconnect);
+        connect(&m_client->sigDisconnected, this, &MqttClientThread::onDisconnect);
 
         JZMqttConnectOpt opt;
         opt.clientId = "bench" + to_string(m_id);

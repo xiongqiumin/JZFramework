@@ -32,7 +32,9 @@ public:
     const std::string& path() const;
     void setPath(const std::string& path);
 
-    const std::string& query() const;
+    std::string query() const;
+    // 设置原始 query 串(如 "a=1&b=2")。内部会立即解析并**覆盖**整个参数表,
+    // 之后可直接用 queryParam()/queryParams() 取参数(值已做 URL 解码)。
     void setQuery(const std::string& query);
 
     const std::string& header(const std::string& key) const;
@@ -62,7 +64,6 @@ private:
     Method m_method;
     std::string m_methodString;
     std::string m_path;
-    std::string m_query;
     std::map<std::string, std::string> m_headers;
     std::map<std::string, std::string> m_params;
     std::map<std::string, std::string> m_queryParams;

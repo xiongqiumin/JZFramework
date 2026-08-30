@@ -172,7 +172,7 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
     request.setPath(uri);
 
     std::string query(hm.query.buf, hm.query.len);
-    request.setQuery(query);
+    request.setQuery(query);   // 内部自动解析并填充 queryParam() / queryParams()
     
     for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
     {

@@ -1,4 +1,6 @@
 #include "main_window.h"
+#include "JZDialog.h"
+#include "JZMessageBox.h"
 #include "JZDebug.h"
 #include "JZLayout.h"
 
@@ -14,7 +16,7 @@ MainWindow::MainWindow(JZWidget* parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel"
+        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel", "Dialog"
     };
 
     setupUi();
@@ -248,5 +250,20 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
+    // ---- Dialog ----
+    {
+        JZWidget* page = makePage();
+        JZPushButton* b = new JZPushButton(page, 140, 36, "Open Dialog");
+        connect(&b->sigClicked, this, &MainWindow::onDialogTest);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
+
     m_preview->setCurrentIndex(0);
+}
+
+void MainWindow::onDialogTest()
+{
+    int r = JZMessageBox::question(this, "Question", "Dialog smoke: continue?")->exec();
+    log(std::string("dialog finished: ") + (r == JZDialog::Accepted ? "Accepted" : "Rejected"));
 }

@@ -26,10 +26,13 @@ jz_signals:
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
+    void mouseReleaseEvent(JZMouseEvent* event) override;
 
 private:
     void* m_label = nullptr;
     std::string m_text;
+    bool m_pressed = false;
 };
 
 #endif

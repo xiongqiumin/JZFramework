@@ -366,10 +366,38 @@ bool JZWidget::event(JZEvent* e)
         return true;
     }
 
+    if (e->type() == JZEvent_mouse)
+    {
+        JZMouseEvent* me = (JZMouseEvent*)e;
+        switch (me->mouseType()) {
+        case JZMouseEvent::Press:   mousePressEvent(me);   return true;
+        case JZMouseEvent::Release: mouseReleaseEvent(me); return true;
+        case JZMouseEvent::Move:    mouseMoveEvent(me);    return true;
+        case JZMouseEvent::Wheel:   wheelEvent(me);        return true;
+        }
+        return true;
+    }
+
     return JZObject::event(e);
 }
 
 void JZWidget::paintEvent(JZPainterEvent*)
+{
+}
+
+void JZWidget::mousePressEvent(JZMouseEvent*)
+{
+}
+
+void JZWidget::mouseReleaseEvent(JZMouseEvent*)
+{
+}
+
+void JZWidget::mouseMoveEvent(JZMouseEvent*)
+{
+}
+
+void JZWidget::wheelEvent(JZMouseEvent*)
 {
 }
 

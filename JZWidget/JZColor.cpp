@@ -33,6 +33,7 @@ JZColor::JZColor(ColorEnum color)
 uint8_t JZColor::red() const   { return m_r; }
 uint8_t JZColor::green() const { return m_g; }
 uint8_t JZColor::blue() const  { return m_b; }
+uint8_t JZColor::alpha() const { return m_a; }
 
 void JZColor::setRgb(uint8_t r, uint8_t g, uint8_t b)
 {

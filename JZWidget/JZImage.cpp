@@ -7,11 +7,15 @@ JZImage::JZImage(const std::string& filePath)
 }
 
 JZImage::JZImage(const char* data, int len)
-{}
-
-const void* JZImage::dsc() const
 {
-    return m_data ? m_data->dsc() : nullptr;
+    // TODO: 图像解码 (PNG/JPEG) 后填充 JZImageData
+    (void)data;
+    (void)len;
+}
+
+bool JZImage::isNull() const
+{
+    return !m_data || m_data->width() <= 0 || m_data->height() <= 0;
 }
 
 std::shared_ptr<JZImageData> JZImage::data() const
@@ -31,10 +35,10 @@ std::string JZImage::filePath() const
 
 int JZImage::width() const
 {
-    return 0;
+    return m_data ? m_data->width() : 0;
 }
 
 int JZImage::height() const
 {
-    return 0;
+    return m_data ? m_data->height() : 0;
 }

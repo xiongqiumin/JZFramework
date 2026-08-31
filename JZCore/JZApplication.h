@@ -44,8 +44,7 @@ protected:
     JZMutex m_mutex;
     int m_returnCode;
 
-    int m_lvglTimer;
-    int64_t m_lvglTick;
+    int m_uiTimer;
 };
 extern JZApplication *jzApp;
 

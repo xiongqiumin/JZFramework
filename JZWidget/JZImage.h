@@ -3,15 +3,34 @@
 
 #include <memory>
 #include <string>
+#include <vector>
+#include <cstdint>
 
+// 图像数据: RGBA8888 像素缓冲, 渲染后端 (JZImGuiBackend) 懒上传为 GPU 纹理。
 class JZImageData
 {
 public:
-    const void* dsc() const { return m_dsc; }
-    void setDsc(const void* dsc) { m_dsc = dsc; }
+    int width() const { return m_w; }
+    int height() const { return m_h; }
+    const uint8_t* pixels() const { return m_pixels.empty() ? nullptr : m_pixels.data(); }
+
+    void setPixels(int w, int h, const uint8_t* rgba)
+    {
+        m_w = w;
+        m_h = h;
+        if (w > 0 && h > 0 && rgba)
+            m_pixels.assign(rgba, rgba + (size_t)w * h * 4);
+        else {
+            m_w = 0;
+            m_h = 0;
+            m_pixels.clear();
+        }
+    }
 
 private:
-    const void* m_dsc = nullptr;   // 指向 lv_image_dsc_t (或文件路径)
+    int m_w = 0;
+    int m_h = 0;
+    std::vector<uint8_t> m_pixels;
 };
 
 class JZImage
@@ -21,7 +40,7 @@ public:
     explicit JZImage(const std::string& filePath);
     JZImage(const char* data, int len);
 
-    const void* dsc() const;
+    bool isNull() const;   // 无像素数据
     std::shared_ptr<JZImageData> data() const;
 
     bool isFile() const;

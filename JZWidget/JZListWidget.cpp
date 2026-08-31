@@ -184,7 +184,7 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
     if (m_mode == ListMode) {
         int iconSize = 20;
         int textX = rect.x() + 6;
-        if (item->icon.dsc()) {
+        if (!item->icon.isNull()) {
             int ix = rect.x() + 6;
             int iy = rect.y() + (rect.height() - iconSize) / 2;
             p.drawImage(item->icon, ix, iy, iconSize, iconSize);
@@ -196,7 +196,7 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
         p.drawText(textX, ty, item->text.c_str());
     } else {
         int iconSize = rect.height() - 22;
-        if (iconSize > 0 && item->icon.dsc()) {
+        if (iconSize > 0 && !item->icon.isNull()) {
             int cx = rect.x() + (rect.width() - iconSize) / 2;
             int cy = rect.y() + 2;
             p.drawImage(item->icon, cx, cy, iconSize, iconSize);

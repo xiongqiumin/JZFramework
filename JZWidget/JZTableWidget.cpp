@@ -206,7 +206,7 @@ void JZTableWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidget
 
     int iconSize = 16;
     int textX = rect.x() + 4;
-    if (item->icon.dsc()) {
+    if (!item->icon.isNull()) {
         int ix = rect.x() + 4;
         int iy = rect.y() + (rect.height() - iconSize) / 2;
         p.drawImage(item->icon, ix, iy, iconSize, iconSize);

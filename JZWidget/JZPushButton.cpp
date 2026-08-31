@@ -50,7 +50,9 @@ void JZPushButton::paintEvent(JZPainterEvent* event)
     JZPainter p(this);
     int w = width(), h = height();
 
-    p.setBrush(JZBrush(JZColor(0xe0, 0xe0, 0xe0)));
+    // 按下时底色加深, 给出按压反馈
+    JZColor bg = m_pressed ? JZColor(0xc0, 0xc0, 0xc0) : JZColor(0xe0, 0xe0, 0xe0);
+    p.setBrush(JZBrush(bg));
     p.setPen(JZPen(JZColor(0x80, 0x80, 0x80), 1));
     p.drawRoundRect(0, 0, w, h, 4);
 
@@ -62,4 +64,18 @@ void JZPushButton::paintEvent(JZPainterEvent* event)
         int ty = (h - 14) / 2;
         p.drawText(tx, ty, m_text.c_str());
     }
+}
+
+void JZPushButton::mousePressEvent(JZMouseEvent* event)
+{
+    m_pressed = true;
+    update();
+}
+
+void JZPushButton::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (m_pressed)
+        sigClicked.emit();
+    m_pressed = false;
+    update();
 }

@@ -5,6 +5,7 @@ add_subdirectory(jsengine)
 add_subdirectory(tools)
 add_subdirectory(http_server)
 add_subdirectory(agent)
+add_subdirectory(widget)
 
 
 add_executable(test_frp test_frp.cpp net/net_test_common.cpp)

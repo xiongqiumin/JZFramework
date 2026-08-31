@@ -29,6 +29,10 @@
     JZShowEvent.cpp
     JZCloseEvent.h
     JZCloseEvent.cpp
+    JZMouseEvent.h
+    JZMouseEvent.cpp
+    JZImGuiBackend.h
+    JZImGuiBackend.cpp
     JZLayout.h
     JZLayout.cpp
     JZAbstractAnimation.h
@@ -49,6 +53,8 @@
     JZImage.cpp
     JZMainWindow.h
     JZMainWindow.cpp
+    JZWindow.h
+    JZWindow.cpp
     JZDialog.h
     JZDialog.cpp
     JZMessageBox.h
@@ -81,22 +87,17 @@
 
 convert_to_abs_paths(JZ_SOURCES)
 
-if(WIN32)
-    set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf_windows.h CACHE FILEPATH "LVGL config" FORCE)
-else()
-    set(LV_BUILD_CONF_PATH ${CMAKE_CURRENT_LIST_DIR}/lvgl/lv_conf_linux.h CACHE FILEPATH "LVGL config" FORCE)
-endif()
-include(${CMAKE_CURRENT_LIST_DIR}/lvgl/lvgl.cmake)
+# ImGui 绘图后端 (FetchContent 拉取, 仅作为底层 2D 绘图器)
+include("${JZFRAMEWORK_ROOT_DIR}/cmake/imgui.cmake")
 
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
-
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
-target_include_directories(${JZ_MODULE_TARGET} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/lvgl")
-if(NOT WIN32)
-    find_package(X11 REQUIRED)
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE X11::X11)
-endif()
 
-target_link_libraries(${JZ_MODULE_TARGET} PRIVATE lvgl)
+if(WIN32)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE imgui)
+else()
+    # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
+    message(STATUS "[JZWidget] No render backend on this platform (logic only)")
+endif()

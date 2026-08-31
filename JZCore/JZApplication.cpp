@@ -8,7 +8,6 @@
 #include "JZDriver.h"
 
 #ifdef HAS_JZWidget
-#include "lvgl.h"
 #include "JZDisplayDevice.h"
 #endif
 
@@ -26,27 +25,25 @@ JZApplication::JZApplication()
     jzApp = this;
 
     m_returnCode = 0;
-    m_lvglTimer = 0;
-    m_lvglTick = JZPlatform::getTickCountMs();
 
     m_mainThread = new JZThread(JZObject::MainThreadInit());
-    m_mainThread->attachStdThread(JZThread::currentThreadId());    
+    m_mainThread->attachStdThread(JZThread::currentThreadId());
     m_mainThread->moveToThread(m_mainThread);
     m_mainThread->m_running = true;
 
-    m_thread = m_mainThread;    
+    m_thread = m_mainThread;
 
     JZDriver::init();
 
 #ifdef HAS_JZWidget
-    m_lvglTimer = startTimer(33);
+    m_uiTimer = startTimer(33);
 #endif
 }
 
 JZApplication::~JZApplication()
 {
 #ifdef HAS_JZWidget
-    killTimer(m_lvglTimer);
+    killTimer(m_uiTimer);
 #endif
 
     JZDriver::deinit();
@@ -145,14 +142,12 @@ void JZApplication::processEvents()
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
 #ifdef HAS_JZWidget
-    if (event->id() == m_lvglTimer)
+    if (event->id() == m_uiTimer)
     {
-        auto cur_tick = JZPlatform::getTickCountMs();
-        lv_tick_inc(cur_tick - m_lvglTick);
-        m_lvglTick = cur_tick;
-
+        // 1. 泵送渲染后端窗口消息 (鼠标/键盘 -> 控件树分发)
+        JZDisplayDevice::processEvents();
+        // 2. 有脏区则遍历控件树收集绘制任务, 交给 ImGui 后端渲染并 Present
         JZDisplayDevice::refresh();
-        lv_timer_handler();
     }
 #endif
 }

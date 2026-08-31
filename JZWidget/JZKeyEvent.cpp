@@ -1,13 +1,14 @@
 #include "JZKeyEvent.h"
 
-JZKeyEvent::JZKeyEvent()
+JZKeyEvent::JZKeyEvent(uint32_t key)
     : JZEvent(JZEvent_key)
+    , m_key(key)
 {
 }
 
 uint32_t JZKeyEvent::key() const
 {
-    return 0;
+    return m_key;
 }
 
 bool JZKeyEvent::isAccepted() const

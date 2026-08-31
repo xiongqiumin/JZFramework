@@ -47,6 +47,7 @@ private:
     void onPbInc();
     void onLogTextEdit();
     void onLabelUpdate();
+    void onDialogTest();
 
     JZListWidget    *m_list = nullptr;
     JZWidget        *m_top = nullptr;

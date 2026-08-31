@@ -7,7 +7,7 @@
 class JZKeyEvent : public JZEvent
 {
 public:
-    explicit JZKeyEvent();
+    explicit JZKeyEvent(uint32_t key = 0);
 
     uint32_t key() const;
     bool isAccepted() const;
@@ -15,6 +15,7 @@ public:
     void ignore();
 
 private:
+    uint32_t m_key = 0;
     bool m_accepted = false;
 };
 

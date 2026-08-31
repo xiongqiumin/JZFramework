@@ -10,6 +10,7 @@
 #include <cstdint>
 #include "JZLayout.h"
 #include "JZKeyEvent.h"
+#include "JZMouseEvent.h"
 #include "JZPainterEvent.h"
 #include "JZResizeEvent.h"
 #include "JZShowEvent.h"
@@ -38,7 +39,7 @@ public:
 
     // 尺寸
     JZSize size() const;
-    void resize(int w, int h);
+    virtual void resize(int w, int h);   // 虚: 显示设备重写以同步原生窗口尺寸
     void resize(const JZSize& s);
     int width() const;
     int height() const;
@@ -123,14 +124,21 @@ public:
     virtual void setProperty(const std::string& name, const JZVariant& value) override;
     virtual JZVariant property(const std::string& name) const override;
 
-protected:    
+protected:
     friend JZDisplayDevice;
 
     virtual bool event(JZEvent* event) override;
     virtual void showEvent(JZShowEvent* event);
     virtual void closeEvent(JZCloseEvent* event);
     virtual void resizeEvent(JZResizeEvent* event);
-    virtual void paintEvent(JZPainterEvent* event);    
+    virtual void paintEvent(JZPainterEvent* event);
+
+    // 鼠标事件 (坐标为逻辑像素, localPos 相对本控件)。命中检测由
+    // JZDisplayDevice 完成, ImGui 等渲染后端不参与交互。
+    virtual void mousePressEvent(JZMouseEvent* event);
+    virtual void mouseReleaseEvent(JZMouseEvent* event);
+    virtual void mouseMoveEvent(JZMouseEvent* event);
+    virtual void wheelEvent(JZMouseEvent* event);
 
     JZLayout* m_layout = nullptr;
 

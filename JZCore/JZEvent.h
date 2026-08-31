@@ -15,6 +15,7 @@ enum {
     JZEvent_hide,
     JZEvent_resize,
     JZEvent_key,
+    JZEvent_mouse,
     JZEvent_user = 1000,
 };
 

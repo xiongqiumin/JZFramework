@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JZCodeAgent</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="side-head">
+            <span class="side-title">工作区</span>
+            <button id="btnRefresh" class="icon-btn" title="刷新">⟳</button>
+        </div>
+        <div id="curPath" class="cur-path">.</div>
+        <ul id="fileList" class="file-list"></ul>
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div class="brand">
+                <span id="statusDot" class="dot"></span>
+                <span>JZCodeAgent</span>
+            </div>
+            <div id="meta" class="meta"></div>
+            <div class="actions">
+                <button id="btnConfig" class="btn ghost">设置</button>
+                <button id="btnClear" class="btn ghost">清空</button>
+                <button id="btnStop" class="btn danger" disabled>停止</button>
+            </div>
+        </header>
+
+        <div id="chat" class="chat"></div>
+
+        <footer class="composer">
+            <textarea id="input" rows="3"
+                placeholder="描述要完成的任务，例如：在 JZAgent 里增加 token 统计，然后编译验证"></textarea>
+            <div class="composer-bar">
+                <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+                <button id="btnSend" class="btn primary">发送</button>
+            </div>
+        </footer>
+    </main>
+</div>
+
+<div id="configModal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head">
+            <span>设置</span>
+            <button class="icon-btn" data-close="configModal">✕</button>
+        </div>
+        <div class="modal-body">
+            <label>模型接口地址 (OpenAI 兼容)
+                <input id="cfgUrl" type="text" spellcheck="false">
+            </label>
+            <label>模型名称
+                <input id="cfgName" type="text" spellcheck="false">
+            </label>
+            <label>API Key
+                <input id="cfgToken" type="password" spellcheck="false">
+            </label>
+            <label>工作区根目录
+                <input id="cfgWorkspace" type="text" spellcheck="false">
+            </label>
+            <label>默认编译命令
+                <input id="cfgBuild" type="text" spellcheck="false">
+            </label>
+            <label>默认运行命令
+                <input id="cfgRun" type="text" spellcheck="false">
+            </label>
+        </div>
+        <div class="modal-foot">
+            <button class="btn ghost" data-close="configModal">取消</button>
+            <button id="btnSaveConfig" class="btn primary">保存</button>
+        </div>
+    </div>
+</div>
+
+<div id="fileModal" class="modal hidden">
+    <div class="modal-card wide">
+        <div class="modal-head">
+            <span id="fileTitle">文件</span>
+            <button class="icon-btn" data-close="fileModal">✕</button>
+        </div>
+        <div class="modal-body">
+            <pre id="fileContent" class="file-content"></pre>
+        </div>
+    </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

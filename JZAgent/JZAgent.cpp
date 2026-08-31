@@ -683,6 +683,14 @@ void JZAgent::finalizeResponse()
             m_context.history.push_back(reply);
 
         m_state = Idle;   // 已产出最终回复且无需工具：本轮任务结束，进入空闲
+
+        // 本轮任务结束：复位轮次/活跃标记，使下一次 request() 是一轮全新的任务。
+        // 否则常驻型应用（如代码助手服务）里 m_currentRound 会跨任务一直累加，
+        // 累计到 maxRounds 后直接报"执行任务超时"。
+        m_currentRound = 0;
+        m_isActive = false;
+        m_toolError = 0;
+
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
         if(m_requests.empty())
             sigFinished.emit();

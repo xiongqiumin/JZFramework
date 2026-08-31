@@ -27,13 +27,20 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <cstdint>
+#include <random>
 
-// iperf 协议 (POSIX 控制握手) 所需头
+// iperf 协议 (POSIX 控制握手) 所需头: 实际只用到 htonl/ntohl 等字节序转换
+#ifdef _WIN32
+#include <winsock2.h>              // 必须早于 windows.h, 故放在本文件最前面的 include 块
+#pragma comment(lib, "ws2_32.lib")
+#else
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#endif
 
 #include "JZApplication.h"
 #include "JZEventLoop.h"
@@ -47,6 +54,23 @@
 #include "JZCommandLineParser.h"
 
 using namespace std;
+
+// ---------------- 跨平台兼容 ----------------
+// Windows 没有 getpid / htobe64, 这里给出等价实现, 使本压测工具在 Win32 下也能编译
+#ifdef _WIN32
+#include <process.h>
+static int benchGetPid() { return (int)_getpid(); }
+#else
+static int benchGetPid() { return (int)getpid(); }
+#endif
+
+// 64 位主机序 -> 网络序(大端)。POSIX 的 htobe64 在 Windows 上不存在, 用 htonl 组合出来。
+static uint64_t benchHtobe64(uint64_t v)
+{
+    uint32_t hi = htonl((uint32_t)(v >> 32));
+    uint32_t lo = htonl((uint32_t)(v & 0xFFFFFFFFull));
+    return ((uint64_t)lo << 32) | (uint64_t)hi;
+}
 
 // ---------------- 命令行与全局配置 ----------------
 enum Mode   { ModeUp, ModeDown, ModeBidir };
@@ -316,10 +340,12 @@ static std::string g_ipfCookie;
 static std::string ipfMakeCookie()
 {
     static const char rndchars[] = "abcdefghijklmnopqrstuvwxyz234567";
-    unsigned seed = (unsigned)nowMs() ^ (unsigned)getpid();
+    // 用 <random> 代替 POSIX 的 rand_r, 保证 Windows 下也能编译
+    static std::mt19937 gen((unsigned)nowMs() ^ (unsigned)benchGetPid());
+    std::uniform_int_distribution<int> dis(0, (int)(sizeof(rndchars) - 2));
     std::string c(IPF_COOKIE_SIZE, '\0');
     for (int i = 0; i < IPF_COOKIE_SIZE - 1; i++)
-        c[i] = rndchars[rand_r(&seed) % (sizeof(rndchars) - 1)];
+        c[i] = rndchars[dis(gen)];
     return c;
 }
 
@@ -642,7 +668,7 @@ private:
             uint32_t sec = htonl((uint32_t)time(nullptr));
             uint32_t usec = htonl((uint32_t)(m_useMicro % 1000000));
             m_useMicro += 1000;
-            uint64_t pcount = htobe64(++m_pcount);
+            uint64_t pcount = benchHtobe64(++m_pcount);
             pkt.append((const char *)&sec, 4);
             pkt.append((const char *)&usec, 4);
             pkt.append((const char *)&pcount, 8);

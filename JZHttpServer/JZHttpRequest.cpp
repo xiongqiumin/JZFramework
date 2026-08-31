@@ -3,6 +3,11 @@
 #include "mongoose.h"
 #include "JZDebug.h"
 
+#ifdef DELETE
+#undef DELETE
+#endif // DELETE
+
+
 namespace
 {
 // URL 解码: 直接复用 mongoose 的 mg_url_decode(is_form_url_encoded=1 时 '+' -> 空格)。

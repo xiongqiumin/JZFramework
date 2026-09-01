@@ -5,6 +5,7 @@
 #include "JZLayer.h"
 #include "JZDrawTask.h"
 #include "JZImage.h"
+#include "JZFontMetrics.h"
 #include "JZDisplayDevice.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -107,6 +108,72 @@ static const FontFamily& jzFontFamily()
     return family;
 }
 
+// ==================== 字体度量引擎 (注册到 JZFontMetrics) ====================
+namespace {
+
+class GdiFontEngine : public JZFontEngine
+{
+public:
+    GdiFontEngine()
+    {
+        m_hdc = CreateCompatibleDC(nullptr);
+        m_graphics = new Graphics(m_hdc);
+        m_graphics->SetTextRenderingHint(TextRenderingHintAntiAlias);
+    }
+
+    ~GdiFontEngine() override
+    {
+        delete m_graphics;
+        m_graphics = nullptr;
+        if (m_hdc) {
+            DeleteDC(m_hdc);
+            m_hdc = nullptr;
+        }
+    }
+
+    int textWidth(const std::string& text, int pixelSize) override
+    {
+        std::wstring wtext = utf8ToUtf16(text);
+        if (wtext.empty())
+            return 0;
+
+        Font font(probeFamily(pixelSize), (REAL)pixelSize, FontStyleRegular, UnitPixel);
+        RectF layout(0.0f, 0.0f, 1000000.0f, (REAL)(pixelSize * 4));
+        RectF bounds;
+        // GenericTypographic: 紧贴字形无外边距, 适合做居中对齐
+        m_graphics->MeasureString(wtext.c_str(), (INT)wtext.size(), &font, layout,
+                                  StringFormat::GenericTypographic(), &bounds);
+        return (int)(bounds.Width + 0.5f);
+    }
+
+    int textHeight(int pixelSize) override
+    {
+        Font font(probeFamily(pixelSize), (REAL)pixelSize, FontStyleRegular, UnitPixel);
+        return (int)(font.GetHeight(m_graphics) + 0.5f);
+    }
+
+private:
+    const FontFamily* probeFamily(int pixelSize)
+    {
+        Font probe(&jzFontFamily(), (REAL)pixelSize, FontStyleRegular, UnitPixel);
+        return (probe.GetLastStatus() == Ok) ? &jzFontFamily()
+                                             : FontFamily::GenericSansSerif();
+    }
+
+    HDC m_hdc = nullptr;
+    Graphics* m_graphics = nullptr;
+};
+
+GdiFontEngine* s_fontEngine = nullptr;
+
+int& fontEngineRefCount()
+{
+    static int refCount = 0;
+    return refCount;
+}
+
+} // namespace
+
 // ==================== 生命周期 ====================
 JZGdiBackend::JZGdiBackend()
 {
@@ -122,6 +189,12 @@ bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW,
     m_widgetDevice = device;
     if (!hwnd || !gdiplusLifetime().acquire())
         return false;
+
+    // 字体度量引擎 (进程级, 引用计数与 GDI+ 生命周期一致)
+    if (fontEngineRefCount()++ == 0) {
+        s_fontEngine = new GdiFontEngine();
+        JZFontMetrics::setEngine(s_fontEngine);
+    }
 
     m_hwnd = hwnd;
     m_physW = physicalW;
@@ -139,6 +212,14 @@ void JZGdiBackend::destroy()
 
     releaseMemBitmap();
     m_hwnd = nullptr;
+
+    // 字体度量引擎先于 GdiplusShutdown 注销
+    if (fontEngineRefCount() > 0 && --fontEngineRefCount() == 0) {
+        JZFontMetrics::setEngine(nullptr);
+        delete s_fontEngine;
+        s_fontEngine = nullptr;
+    }
+
     gdiplusLifetime().release();
 }
 
@@ -224,20 +305,71 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
     Graphics& g = *(Graphics*)graphics;
     const float s = m_widgetDevice ? m_widgetDevice->scale() : 1.0f;
 
-    for (auto& task : layer->tasks())
-    {
-        // 每个任务按自身脏区裁剪 (逻辑像素 -> 物理像素)
-        bool clipped = !task->clip.isEmpty();
-        if (clipped) {
-            RectF c = toGdiRect(task->clip, s);
+    // 绘制流状态机: 几何任务只携带 geometry, 样式 (pen/brush/font) 与裁剪 (clip)
+    // 由 Push (保存当前状态并应用新状态) / Pop (回退) 维护。
+    struct StreamState {
+        JZPen pen;
+        JZBrush brush;
+        JZFont font;
+        JZRect clip;
+    };
+    std::vector<StreamState> stack;
+    StreamState cur;   // 默认: 空 clip (无裁剪) + 默认 pen/brush/font
+
+    JZRect appliedClip;   // 当前已应用到 Graphics 的裁剪 (全局坐标)
+    bool clipApplied = false;
+    auto applyClip = [&](const JZRect& clip) {
+        if (clipApplied && clip.x() == appliedClip.x() && clip.y() == appliedClip.y() &&
+            clip.width() == appliedClip.width() && clip.height() == appliedClip.height())
+            return;
+        if (clipApplied && !appliedClip.isEmpty())
+            g.ResetClip();
+        if (!clip.isEmpty()) {
+            RectF c = toGdiRect(clip, s);
             g.SetClip(Rect((INT)c.X, (INT)c.Y, (INT)(c.Width + 0.5f), (INT)(c.Height + 0.5f)));
         }
+        appliedClip = clip;
+        clipApplied = true;
+    };
 
+    for (auto& task : layer->tasks())
+    {
         switch (task->type) {
+        case JZDrawTask::Push: {
+            auto* t = static_cast<JZDrawPushTask*>(task.get());
+            stack.push_back(cur);
+            cur.pen = t->pen;
+            cur.brush = t->brush;
+            cur.font = t->font;
+            cur.clip = t->clip;
+            applyClip(cur.clip);
+            break;
+        }
+        case JZDrawTask::Pop: {
+            if (!stack.empty()) {
+                cur = stack.back();
+                stack.pop_back();
+            } else {
+                cur = StreamState();
+            }
+            applyClip(cur.clip);
+            break;
+        }
+        case JZDrawTask::Change: {
+            auto* t = static_cast<JZDrawChangeTask*>(task.get());
+            if (t->pen.isSome())   cur.pen = t->pen.value();
+            if (t->brush.isSome()) cur.brush = t->brush.value();
+            if (t->font.isSome())  cur.font = t->font.value();
+            if (t->clip.isSome()) {
+                cur.clip = t->clip.value();
+                applyClip(cur.clip);
+            }
+            break;
+        }
         case JZDrawTask::Line: {
             auto* t = static_cast<JZLineTask*>(task.get());
-            float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
-            Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+            float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+            Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
             g.DrawLine(&pen, t->x1 * s, t->y1 * s, t->x2 * s, t->y2 * s);
             break;
         }
@@ -257,8 +389,8 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
         case JZDrawTask::Border: {
             auto* t = static_cast<JZBorderTask*>(task.get());
             RectF r = toGdiRect(t->area, s);
-            float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
-            Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+            float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+            Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
             if (t->radius > 0) {
                 GraphicsPath p;
                 addRoundRectPath(p, r, t->radius * s);
@@ -277,8 +409,8 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             if (sweep < 0.0f)
                 sweep += 360.0f;
             if (sweep > 0.0f && radius > 0.0f) {
-                float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
-                Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+                float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+                Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
                 RectF rc(t->arcCx * s - radius, t->arcCy * s - radius, radius * 2.0f, radius * 2.0f);
                 g.DrawArc(&pen, rc, t->arcStartAngle / 10.0f, sweep);
             }
@@ -291,12 +423,12 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
                 // Font 禁止赋值, 先探测可用字体族, 再一次性构造
                 const FontFamily* family = &jzFontFamily();
                 {
-                    Font probe(family, t->font.size() * s, FontStyleRegular, UnitPixel);
+                    Font probe(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
                     if (probe.GetLastStatus() != Ok)
                         family = FontFamily::GenericSansSerif();
                 }
-                Font font(family, t->font.size() * s, FontStyleRegular, UnitPixel);
-                SolidBrush br(toGdiColor(t->color, t->opacity));
+                Font font(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
+                SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));
                 g.DrawString(wtext.c_str(), (int)wtext.size(), &font,
                              PointF(t->area.x() * s, t->area.y() * s), &br);
             }
@@ -311,14 +443,10 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             }
             break;
         }
-        case JZDrawTask::Changed:
         case JZDrawTask::None:
         default:
             break;
         }
-
-        if (clipped)
-            g.ResetClip();
     }
 }
 

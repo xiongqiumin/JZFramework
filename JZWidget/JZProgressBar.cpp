@@ -1,5 +1,6 @@
 #include "JZProgressBar.h"
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
 #include <algorithm>
 #include <cstdio>
 
@@ -55,7 +56,9 @@ void JZProgressBar::paintEvent(JZPainterEvent* event)
     char buf[16];
     snprintf(buf, sizeof(buf), "%d%%", pct);
     std::string txt(buf);
+    JZFont font(11);
     p.setPen(JZPen(JZColor(0x33, 0x33, 0x33), 1));
-    p.setFont(JZFont(11));
-    p.drawText(w / 2 - (int)txt.size() * 3, (h - 12) / 2, txt.c_str());
+    p.setFont(font);
+    p.drawText(JZFontMetrics::centerX(txt, font, w),
+               JZFontMetrics::centerY(font, h), txt.c_str());
 }

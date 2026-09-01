@@ -5,6 +5,7 @@
 #include "JZPoint.h"
 #include "JZSize.h"
 #include "JZRect.h"
+#include "JZStyleSet.h"
 
 #include <climits>
 #include <cstdint>
@@ -110,6 +111,11 @@ public:
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
 
+    // 控件样式 (背景/边框/圆角/padding)。paintEvent 内经 JZStylePainter 主动绘制;
+    // 后续由样式表 (JZStyleSheet) 解析填充。
+    JZStyleSet& style() { return m_style; }
+    const JZStyleSet& style() const { return m_style; }
+
     // 重排:
     //   updateLayout()   只重排自身子控件(布局应用 / resize 内部使用, 不向上传播);
     //   updateGeometry() 在本控件尺寸特征(策略/约束/布局内容)变化后, 向上级联重排
@@ -148,6 +154,8 @@ protected:
     virtual void wheelEvent(JZMouseEvent* event);
 
     JZLayout* m_layout = nullptr;
+
+    JZStyleSet m_style;
 
     int m_minW;
     int m_minH;

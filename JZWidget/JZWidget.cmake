@@ -19,6 +19,11 @@
     JZBrush.cpp
     JZFont.h
     JZFont.cpp
+    JZFontMetrics.h
+    JZFontMetrics.cpp
+    JZStyleSet.h
+    JZStylePainter.h
+    JZStylePainter.cpp
     JZPainter.h
     JZPainter.cpp
     JZPainterEvent.h

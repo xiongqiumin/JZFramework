@@ -58,6 +58,10 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
     if (clip.isEmpty())
         return;
 
+    // 记录本轮脏区: JZPainter 构造时取 dirty ∩ 控件 rect 作为裁剪
+    // (控件在 paintEvent 里自建 JZPainter, clip 权威设定点在构造函数)
+    m_dirty = clip;
+
     std::vector<JZWidget*> widget_list;
     std::vector<JZRect> coverage = { root->rect() };
     collectFrontToBack(root, clip, coverage, widget_list);

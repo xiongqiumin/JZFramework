@@ -1,5 +1,6 @@
 #include "JZPushButton.h"
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
 
 JZ_OBJECT_IMPL(JZPushButton, JZWidget)
 
@@ -56,14 +57,12 @@ void JZPushButton::paintEvent(JZPainterEvent* event)
     p.setPen(JZPen(JZColor(0x80, 0x80, 0x80), 1));
     p.drawRoundRect(0, 0, w, h, 4);
 
+    JZFont font(14);
     p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-    p.setFont(JZFont(14));
-    if (!m_text.empty()) {
-        int tw = (int)m_text.size() * 7;
-        int tx = (w - tw) / 2;
-        int ty = (h - 14) / 2;
-        p.drawText(tx, ty, m_text.c_str());
-    }
+    p.setFont(font);
+    if (!m_text.empty())
+        p.drawText(JZFontMetrics::centerX(m_text, font, w),
+                   JZFontMetrics::centerY(font, h), m_text.c_str());
 }
 
 void JZPushButton::mousePressEvent(JZMouseEvent* event)

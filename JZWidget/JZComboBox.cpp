@@ -1,5 +1,6 @@
 #include "JZComboBox.h"
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
 
 JZ_OBJECT_IMPL(JZComboBox, JZWidget)
 
@@ -91,10 +92,10 @@ void JZComboBox::paintEvent(JZPainterEvent* event)
     p.drawRoundRect(0, 0, w, h, 3);
 
     p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-    p.setFont(JZFont(14));
-    if (m_current >= 0 && m_current < (int)m_items.size()) {
-        p.drawText(4, (h - 14) / 2, m_items[m_current].c_str());
-    }
+    JZFont font(14);
+    p.setFont(font);
+    if (m_current >= 0 && m_current < (int)m_items.size())
+        p.drawText(4, JZFontMetrics::centerY(font, h), m_items[m_current].c_str());
 
     // 下拉箭头
     int ax = w - 16, ay = h / 2;

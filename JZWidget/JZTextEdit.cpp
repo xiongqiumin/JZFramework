@@ -1,5 +1,8 @@
 #include "JZTextEdit.h"
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
+
+#include <vector>
 
 JZ_OBJECT_IMPL(JZTextEdit, JZWidget)
 
@@ -42,25 +45,33 @@ void JZTextEdit::paintEvent(JZPainterEvent* event)
     if (m_text.empty())
         return;
 
+    JZFont font(14);
     p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-    p.setFont(JZFont(14));
+    p.setFont(font);
+    int lineH = JZFontMetrics::textHeight(font);
 
     std::string disp = m_password ? std::string(m_text.size(), '*') : m_text;
 
-    // 多行: 按 '\n' 分行绘制 (单行文本只有一行, 逻辑相同)
-    const int lineHeight = 18;
-    const int textH = 14;
+    // 按 '\n' 分行
+    std::vector<std::string> lines;
     size_t start = 0;
-    int row = 0;
-    while (2 + row * lineHeight + textH <= h) {
+    while (true) {
         size_t end = disp.find('\n', start);
-        std::string line = (end == std::string::npos)
-            ? disp.substr(start) : disp.substr(start, end - start);
-        if (!line.empty())
-            p.drawText(4, 2 + row * lineHeight, line.c_str());
+        lines.push_back((end == std::string::npos)
+            ? disp.substr(start) : disp.substr(start, end - start));
         if (end == std::string::npos)
             break;
         start = end + 1;
-        ++row;
+    }
+
+    // 单行垂直居中, 多行顶部对齐
+    int step = lineH + 2;
+    int y0 = (lines.size() == 1) ? (h - lineH) / 2 : 2;
+    for (size_t r = 0; r < lines.size(); ++r) {
+        int y = y0 + (int)r * step;
+        if (y + lineH > h)
+            break;
+        if (!lines[r].empty())
+            p.drawText(4, y, lines[r].c_str());
     }
 }

@@ -1,5 +1,6 @@
 #include "JZCheckbox.h"
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
 
 JZ_OBJECT_IMPL(JZCheckbox, JZWidget)
 
@@ -52,7 +53,8 @@ void JZCheckbox::paintEvent(JZPainterEvent* event)
     }
 
     p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-    p.setFont(JZFont(14));
+    JZFont font(14);
+    p.setFont(font);
     if (!m_text.empty())
-        p.drawText(d + 6, (h - 14) / 2, m_text.c_str());
+        p.drawText(d + 6, JZFontMetrics::centerY(font, h), m_text.c_str());
 }

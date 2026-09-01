@@ -1,6 +1,7 @@
 #include "JZRadioButton.h"
 
 #include "JZPainter.h"
+#include "JZFontMetrics.h"
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZColor.h"
@@ -58,10 +59,11 @@ void JZRadioButton::paintEvent(JZPainterEvent* event)
     }
 
     // 文本
+    JZFont font(14);
     p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-    p.setFont(JZFont(14));
+    p.setFont(font);
     if (!m_text.empty())
-        p.drawText(d + 6, (height() - 14) / 2, m_text.c_str());
+        p.drawText(d + 6, JZFontMetrics::centerY(font, height()), m_text.c_str());
 }
 
 JZSize JZRadioButton::sizeHint() const

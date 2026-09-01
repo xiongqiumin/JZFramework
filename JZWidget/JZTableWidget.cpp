@@ -4,6 +4,7 @@
 #include "JZBrush.h"
 #include "JZPen.h"
 #include "JZFont.h"
+#include "JZFontMetrics.h"
 
 JZ_OBJECT_IMPL(JZTableWidget, JZScrollArea)
 
@@ -215,7 +216,7 @@ void JZTableWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidget
 
     JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
     JZFont font(13); p.setFont(font);
-    int ty = rect.y() + (rect.height() - 14) / 2;
+    int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
     p.drawText(textX, ty, item->text.c_str());
 
     // 列/行分隔线
@@ -243,7 +244,7 @@ void JZTableWidget::paintHeader(JZPainter& p)
         if (cx + cw < 0 || cx > viewW) continue;
 
         std::string txt = (c < (int)m_headerLabels.size()) ? m_headerLabels[c] : "";
-        p.drawText(cx + 4, (hh - 14) / 2 + 2, txt.c_str());
+        p.drawText(cx + 4, JZFontMetrics::centerY(font, hh), txt.c_str());
 
         JZPen pen(JZColor(0xbb, 0xbb, 0xbb), 1); p.setPen(pen);
         p.drawLine(cx + cw, 1, cx + cw, hh - 1);

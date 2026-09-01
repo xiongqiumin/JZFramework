@@ -30,6 +30,10 @@ public:
     void init(void* hwnd, int width, int height);
     JZLayer* layer();
 
+    // 本轮重绘的脏区 (全局坐标), JZPainter 构造时以此 ∩ 控件 rect 为裁剪
+    void setDirtyRect(const JZRect& rc) { m_dirty = rc; }
+    const JZRect& dirtyRect() const { return m_dirty; }
+
     float scale() const;                   // DPI 缩放 (逻辑 -> 物理像素)
     void setScale(float scale);            // DPI 变化 (重建字体)
 
@@ -43,6 +47,7 @@ private:
     JZGdiBackend* m_backend = nullptr;
     JZLayer m_layer;
     float m_scale = 1.0f;
+    JZRect m_dirty;   // 本轮重绘脏区 (render 时更新)
 };
 
 #endif

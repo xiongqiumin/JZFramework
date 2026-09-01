@@ -61,6 +61,12 @@ class JZWindow* JZWidget::window()
     return nullptr;
 }
 
+class JZWindow* JZWidget::window() const
+{
+    // window() 不修改对象状态, const 重载复用非 const 版本
+    return const_cast<JZWidget*>(this)->window();
+}
+
 // ==================== 位置 ====================
 
 JZPoint JZWidget::pos() const
@@ -361,12 +367,22 @@ JZLayout* JZWidget::layout() const
 }
 
 // ==================== 焦点 ====================
+// 焦点是窗口级概念: 同一原生窗口 (HWND) 内的多个自绘控件共享一个 HWND,
+// 故焦点实际指向"当前接收键盘/IME 的控件" (m_focusWidget), 由 JZWindow 持有;
+// 控件只负责请求/查询, 真正的进/出焦点事件由 JZWindow::setFocusWidget 派发。
 
 void JZWidget::setFocus()
-{ return; }
+{
+    JZWindow* win = window();
+    if (win)
+        win->setFocusWidget(this);
+}
 
 bool JZWidget::hasFocus() const
-{ return false; }
+{
+    JZWindow* win = window();
+    return win && win->focusWidget() == this;
+}
 
 // ==================== 重绘 ====================
 void JZWidget::invalidate(const JZRect &rc)
@@ -412,6 +428,36 @@ bool JZWidget::event(JZEvent* e)
         return true;
     }
 
+    // 键盘: 由消息层构造 (WM_KEYDOWN -> isPress()==true, WM_KEYUP -> false)
+    if (e->type() == JZEvent_key)
+    {
+        JZKeyEvent* ke = (JZKeyEvent*)e;
+        if (ke->isPress())
+            keyPressEvent(ke);
+        else
+            keyReleaseEvent(ke);
+        return true;
+    }
+
+    // 输入法: 由消息层把 WM_IME_* 翻译后投递给焦点控件
+    if (e->type() == JZEvent_ime)
+    {
+        imeEvent((JZImeEvent*)e);
+        return true;
+    }
+
+    if (e->type() == JZEvent_focusIn)
+    {
+        focusInEvent(e);
+        return true;
+    }
+
+    if (e->type() == JZEvent_focusOut)
+    {
+        focusOutEvent(e);
+        return true;
+    }
+
     return JZObject::event(e);
 }
 
@@ -432,6 +478,26 @@ void JZWidget::mouseMoveEvent(JZMouseEvent*)
 }
 
 void JZWidget::wheelEvent(JZMouseEvent*)
+{
+}
+
+void JZWidget::keyPressEvent(JZKeyEvent*)
+{
+}
+
+void JZWidget::keyReleaseEvent(JZKeyEvent*)
+{
+}
+
+void JZWidget::imeEvent(JZImeEvent*)
+{
+}
+
+void JZWidget::focusInEvent(JZEvent*)
+{
+}
+
+void JZWidget::focusOutEvent(JZEvent*)
 {
 }
 

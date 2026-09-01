@@ -11,6 +11,7 @@
 #include <cstdint>
 #include "JZLayout.h"
 #include "JZKeyEvent.h"
+#include "JZImeEvent.h"
 #include "JZMouseEvent.h"
 #include "JZPainterEvent.h"
 #include "JZResizeEvent.h"
@@ -31,6 +32,7 @@ public:
 
     // 找到所属显示设备 (回溯到根控件, 由其提供渲染设备)
     class JZWindow* window();
+    class JZWindow* window() const;
 
     // 位置
     JZPoint pos() const;
@@ -152,6 +154,19 @@ protected:
     virtual void mouseReleaseEvent(JZMouseEvent* event);
     virtual void mouseMoveEvent(JZMouseEvent* event);
     virtual void wheelEvent(JZMouseEvent* event);
+
+    // 键盘事件: key 为平台虚拟键码, text 为该键产生的可打印文本 (UTF-8)。
+    // IME 上屏的内容**不走**这里, 走 imeEvent() 的 ResultStr。
+    virtual void keyPressEvent(JZKeyEvent* event);
+    virtual void keyReleaseEvent(JZKeyEvent* event);
+
+    // 输入法事件: 组字 / 上屏 / 候选窗定位。控件收到后自绘组字串,
+    // 并在需要时把光标位置回写给 IME (由控件自己调用平台 IMM 接口)。
+    virtual void imeEvent(JZImeEvent* event);
+
+    // 焦点进出: 文本控件在此开关光标闪烁, 并接上 / 断开输入上下文。
+    virtual void focusInEvent(JZEvent* event);
+    virtual void focusOutEvent(JZEvent* event);
 
     JZLayout* m_layout = nullptr;
 

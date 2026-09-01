@@ -1,4 +1,10 @@
-﻿set(JZ_SOURCES
+﻿# JZWidget 目前仅支持 Windows 平台 (GDI+ 渲染后端 / 原生窗口)。
+# 非 Windows 平台暂不编译此模块。
+if(NOT WIN32)
+    return()
+endif()
+
+set(JZ_SOURCES
     JZColor.h
     JZColor.cpp
     JZDrawTask.h
@@ -13,6 +19,8 @@
     JZRect.cpp
     JZKeyEvent.h
     JZKeyEvent.cpp
+    JZImeEvent.h
+    JZImeEvent.cpp
     JZPen.h
     JZPen.cpp
     JZBrush.h
@@ -86,6 +94,8 @@
     JZRadioButton.cpp
     JZComboBox.h
     JZComboBox.cpp    
+    JZLineEdit.h
+    JZLineEdit.cpp
     JZTextEdit.h
     JZTextEdit.cpp    
 	JZTableWidget.h
@@ -101,7 +111,7 @@ target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}
 
 if(WIN32)
     # GDI+ 绘图后端 (临时方案; 后续如需 GPU 渲染, 按同样接口接入新后端)
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus imm32)
 else()
     # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
     message(STATUS "[JZWidget] No render backend on this platform (logic only)")

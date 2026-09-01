@@ -1,10 +1,10 @@
 #include "JZMainWindow.h"
 #include "JZPainter.h"
 
-JZ_OBJECT_IMPL(JZMainWindow, JZWidget)
+JZ_OBJECT_IMPL(JZMainWindow, JZWindow)
 
 JZMainWindow::JZMainWindow(JZWidget* parent)
-    : JZWidget(parent)
+    : JZWindow(parent)
 {
 }
 

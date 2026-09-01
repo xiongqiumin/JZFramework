@@ -40,6 +40,9 @@ public:
     // 遍历渲染树 (含剔除) -> 各控件 paintEvent -> backend 渲染并 Present
     void render(JZWidget* root, const JZRect& rc);
 
+    // 原生窗口尺寸变化 (WM_SIZE): 同步后端交换链尺寸 (物理像素)
+    void resize(int width, int height);
+
 private:
     void collectFrontToBack(JZWidget* w, const JZRect& area,
                             std::vector<JZRect>& coverage, std::vector<JZWidget*>& out);

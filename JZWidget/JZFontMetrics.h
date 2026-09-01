@@ -12,6 +12,16 @@ public:
     virtual ~JZFontEngine() = default;
     virtual int textWidth(const std::string& text, int pixelSize) = 0;
     virtual int textHeight(int pixelSize) = 0;
+
+    // ---- 文本控件 (光标定位 / 垂直居中) 所需 ----
+    // 带默认实现: 后端不实现也能工作, 只是垂直居中会有 1~2px 偏差。
+    // 精确实现参考 JZGdiBackend::GdiFontEngine (GDI+ FontFamily::GetCellAscent 等)。
+    //   ascent:          基线以上高度
+    //   descent:         基线以下高度
+    //   internalLeading: 字体内部行距 (位于字符 cell 顶部, 字形之上的空白)
+    virtual int ascent(int pixelSize)          { return textHeight(pixelSize) * 4 / 5; }
+    virtual int descent(int pixelSize)         { return textHeight(pixelSize) - ascent(pixelSize); }
+    virtual int internalLeading(int pixelSize) { return 0; }
 };
 
 // 字体度量门面 (静态): 控件在 paintEvent / sizeHint 中测量文本,
@@ -30,8 +40,25 @@ public:
     static int centerX(const std::string& text, const JZFont& font, int width);
     static int centerY(const JZFont& font, int height);
 
+    // ---- 文本控件专用 ----
+
+    // 前 charCount 个**码点**的宽度 (光标定位必备)。
+    // 注意按码点计数而非字节: 直接按字节截断会切断 UTF-8 序列。
+    static int textWidth(const std::string& text, const JZFont& font, int charCount);
+
+    static int ascent(const JZFont& font);
+    static int descent(const JZFont& font);
+    static int internalLeading(const JZFont& font);
+
+    // 单行文本在 height 内垂直居中时, 绘制起始 y (字符 cell 顶部)。
+    // 必须扣掉 internalLeading, 否则字形会比视觉中心低 1~2px (中文尤其明显)。
+    static int centeredTextTop(const JZFont& font, int height);
+
+    // 字形"可视矩形"高度 = textHeight - internalLeading, 用于画选区/下划线底色
+    static int visualHeight(const JZFont& font);
+
 private:
     static int estimateWidth(const std::string& text, int pixelSize);
 };
 
-#endif // JZ_FONT_METRICS_H_
+#endif

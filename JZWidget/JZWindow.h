@@ -34,6 +34,22 @@ public:
     void doPaint(const JZRect& rc);    // 重绘指定区域 (paint task 执行)
     virtual void resize(int w, int h) override;        // 同步原生窗口尺寸
 
+    // 原生窗口句柄: Win32 下即 HWND, 窗口未创建 (惰性) 时返回 nullptr。
+    // 文本控件要用它调用 IMM 接口把光标位置回写给输入法。
+    void* nativeHandle() const { return m_hwnd; }
+
+    // ---- 焦点 (窗口级: 同 HWND 内多控件共享, 由本窗口持有当前焦点控件) ----
+    JZWidget* focusWidget() const { return m_focusWidget; }
+    void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
+
+    // 输入分发 (由 WndProc 调用, 命中测试后投递到控件 / 转发给焦点控件)
+    bool dispatchMouse(JZMouseEvent::MouseType t, JZMouseEvent::Button b,
+                       const JZPoint& global, int wheelDelta);
+    bool dispatchKey(uint32_t key, bool press, bool repeat);
+    bool dispatchChar(const std::string& text);
+    void postIme(JZImeEvent* ev);
+    void onWindowFocus(bool got);   // WM_SETFOCUS/WM_KILLFOCUS: 管理 IMC + 派发焦点事件
+
     // ---- 由 WndProc / 对话框调用 ----
     void windowResized(int logicalW, int logicalH);   // 原生窗口尺寸变化 (WM_SIZE)
     void dpiChanged();                                 // 显示器 DPI 变化 (WM_DPICHANGED)
@@ -45,6 +61,10 @@ protected:
     virtual void hideEvent(JZHideEvent* event) override;
     virtual void paintEvent(JZPainterEvent* event) override;
 
+    // 命中测试: 返回包含全局逻辑坐标的最深层可见控件 (不含子窗口/根自身)
+    JZWidget* hitTest(const JZPoint& global);
+    JZWidget* hitTestRec(JZWidget* w, const JZPoint& global);
+
 protected:
     void createWindow();
 
@@ -52,6 +72,9 @@ protected:
     void* m_hwnd = nullptr;             // HWND (头文件零 Win32 类型)
     bool m_windowCreated = false;       // 原生窗口是否已创建 (惰性, showEvent 触发)
     std::string m_title;
+
+    JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
+    void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (WM_SETFOCUS 时建立)
 };
 
 #endif // JZ_WINDOW_H_

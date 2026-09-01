@@ -1,7 +1,5 @@
 #include "JZGdiBackend.h"
 
-#ifdef _WIN32
-
 #include "JZLayer.h"
 #include "JZDrawTask.h"
 #include "JZImage.h"
@@ -16,6 +14,16 @@
 #endif
 #include <windows.h>
 #include <objidl.h>   // IStream/PROPID: WIN32_LEAN_AND_MEAN 会排除 ole2, GDI+ 需要
+
+// GDI+ 的头文件里使用了无限定的 min/max。上面定义了 NOMINMAX 会屏蔽掉
+// windows.h 的 min/max 宏, 导致 GdiplusTypes.h 报 C3861; 这里在 Gdiplus
+// 命名空间内引入 std 版本供其使用 (VS2015 + Win8.1 SDK 下必现)。
+#include <algorithm>
+namespace Gdiplus {
+    using std::min;
+    using std::max;
+}
+
 #include <gdiplus.h>
 
 #include <string>
@@ -152,7 +160,38 @@ public:
         return (int)(font.GetHeight(m_graphics) + 0.5f);
     }
 
+    // 以下三个供文本控件做光标定位与垂直居中:
+    // GDI+ 的 CellAscent/CellDescent/LineSpacing 是"设计单位"(以 em 为单位),
+    // 需按 emHeight 换算到像素; LineSpacing - Ascent - Descent 即 internalLeading
+    // (位于字符 cell 顶部、字形之上的空白), 不扣掉它文字会视觉偏低。
+    int ascent(int pixelSize) override
+    {
+        return designToPixel(probeFamily(pixelSize)->GetCellAscent(FontStyleRegular), pixelSize);
+    }
+
+    int descent(int pixelSize) override
+    {
+        return designToPixel(probeFamily(pixelSize)->GetCellDescent(FontStyleRegular), pixelSize);
+    }
+
+    int internalLeading(int pixelSize) override
+    {
+        const FontFamily* fam = probeFamily(pixelSize);
+        int spacing = designToPixel(fam->GetLineSpacing(FontStyleRegular), pixelSize);
+        int rest = spacing - ascent(pixelSize) - descent(pixelSize);
+        return (rest > 0) ? rest : 0;
+    }
+
 private:
+    // 设计单位 -> 像素
+    int designToPixel(UINT16 design, int pixelSize)
+    {
+        UINT16 em = probeFamily(pixelSize)->GetEmHeight(FontStyleRegular);
+        if (em == 0)
+            return 0;
+        return (int)((float)design * pixelSize / (float)em + 0.5f);
+    }
+
     const FontFamily* probeFamily(int pixelSize)
     {
         Font probe(&jzFontFamily(), (REAL)pixelSize, FontStyleRegular, UnitPixel);
@@ -479,16 +518,3 @@ void* JZGdiBackend::imageBitmap(const JZImageData* img)
     m_bitmaps[img] = bmp;
     return bmp;
 }
-
-#else // !_WIN32
-
-// 非 Windows 平台: 暂无渲染后端, 仅保留逻辑层可编译运行
-JZGdiBackend::JZGdiBackend() {}
-JZGdiBackend::~JZGdiBackend() {}
-bool JZGdiBackend::init(JZDisplayDevice*, void*, unsigned, unsigned) { return false; }
-void JZGdiBackend::destroy() {}
-void JZGdiBackend::render(JZLayer*) {}
-void JZGdiBackend::resizeSwapChain(unsigned, unsigned) {}
-void JZGdiBackend::rebuildFonts() {}
-
-#endif // _WIN32

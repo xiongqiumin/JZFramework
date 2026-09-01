@@ -47,6 +47,12 @@ void JZDisplayDevice::setScale(float scale)
     if (m_backend)
         m_backend->rebuildFonts();   // 字号随 DPI 缩放
 }
+
+void JZDisplayDevice::resize(int width, int height)
+{
+    if (m_backend)
+        m_backend->resizeSwapChain((unsigned)width, (unsigned)height);
+}
 // ==================== 渲染 ====================
 // 遍历渲染树 (含剔除) -> 各控件 paintEvent 收集任务 -> backend 渲染并 Present。
 void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)

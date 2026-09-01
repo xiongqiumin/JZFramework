@@ -1,9 +1,9 @@
 #ifndef JZ_WIDGET_WINDOW_H_
 #define JZ_WIDGET_WINDOW_H_
 
-#include "JZWidget.h"
+#include "JZWindow.h"
 
-class JZMainWindow : public JZWidget
+class JZMainWindow : public JZWindow
 {
     JZ_OBJECT_DECLARE(JZMainWindow)
 

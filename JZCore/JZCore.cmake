@@ -3,6 +3,8 @@ set(JZCORE_SOURCES
     JZGlobal.cpp
 	JZString.h
 	JZString.cpp
+	JZUtf8Iterator.h
+	JZUtf8Iterator.cpp
 	JZRegExp.h
 	JZRegExp.cpp
     JZAllocator.h

@@ -159,6 +159,9 @@ public:
 
 ### L4 生成层 — AI 建 UI
 
+**两种等价序列化: JSON schema (程序友好) 与 HTML 标签 (LLM 最熟)。**
+命名原则: **一份名字三处用 —— C++ 类名 = HTML 标签名 = CSS 类型选择器** (大小写敏感, 无第二套映射表)。
+
 声明式 schema (与语义树同源, agent 可读也可写):
 
 ```json
@@ -188,6 +191,34 @@ public:
 - schema 即 agent 的输出协议 —— JZAgent 配一个 `build_ui` tool, 参数就是 schema;
 - 校验: 用 JZAgentTool 的 ParamSchema 机制约束 LLM 输出, 非法字段拒绝;
 - 布局直接复用现有 JZBoxLayout/JZGridLayout (margin/spacing/stretch 语义已就绪)。
+
+#### L4.1 HTML 标签格式 (与 JSON 等价)
+
+- 标签 = 类名 (`<JZComboBox>`); 属性 → 控件 API (`id`→objectName, `class`→styleClass 多类,
+  `style`→内联样式, `value`→数据 API); `on-xxx` → 信号接线 (bindActions);
+- 数据项用子标签 (`<option value="mcp">规则引擎</option>` → m_items, 不产生子控件);
+- 布局走容器属性 (`layout="vbox" spacing="4" margin="8"`, 子项 `stretch="1"`);
+- `<jz-ui>` 根 + `<style>` 块 = Vue SFC 等价物 (结构+样式+接线, LLM 单次输出整套界面)。
+
+```html
+<jz-ui>
+  <style>
+    JZComboBox { border: 1px solid var(--border); border-radius: 4px; }
+    .config-select:focus { border-color: var(--accent); }
+  </style>
+  <JZComboBox id="llmRole" class="config-select" value="mcp">
+      <option value="mcp">规则引擎</option>
+      <option value="llm">云端LLM</option>
+  </JZComboBox>
+</jz-ui>
+```
+
+全家族映射 (标签=类名): `<JZWindow title layout>` / `<JZLabel text align>` / `<JZPushButton
+text onClick>` / `<JZComboBox><option>` / `<JZTextEdit text password>` / `<JZSlider min max
+value>` / `<JZSwitch|JZCheckbox|JZRadioButton checked text>` / `<JZListWidget><item>` /
+`<JZTableWidget><column>` / `<JZImageLabel src>` / `<JZWidget layout>`。
+
+HTML 与 JSON 由 JZUiBuilder 归一到同一中间模型 (控件树+属性表), AI 爱用哪个用哪个。
 
 ### L5 会话层 — UI 内嵌 AI
 

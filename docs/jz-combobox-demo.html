@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>JZComboBox ::part 样式契约验证</title>
+<style>
+    /* ===== 主题令牌 (等价 :root 变量, M1) ===== */
+    :root {
+        --border: #d4dbe6;
+        --text: #333;
+        --text-dim: #888;
+        --accent: #3498db;
+        --accent-dim: #2b4a86;
+        --bg-input: #fff;
+    }
+
+    body {
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: #f5f7fa; margin: 0; padding: 24px; color: #333;
+    }
+    .card {
+        background: #fff; border-radius: 8px; padding: 20px 24px;
+        margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,.06);
+    }
+    h2 { margin: 0 0 14px; font-size: 16px; color: #2c3e50;
+         border-bottom: 2px solid #3498db; padding-bottom: 8px; }
+    .row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+    .note { font-size: 12px; color: #888; margin-top: 10px; line-height: 1.7; }
+    #log { background: #fafafa; border: 1px solid #eee; border-radius: 4px;
+           padding: 10px; font: 12px/1.6 Consolas, monospace; min-height: 60px;
+           max-height: 140px; overflow: auto; white-space: pre-wrap; }
+
+    /* 样式契约验证: 全部视觉定义走 ::part + 宿主类 + 令牌
+       (Shadow 内部 <style> 只含结构, 不含外观 —— 这就是要验证的点) */
+
+    /* -- UA 默认 -- */
+    jz-combobox { display: inline-flex; }
+    jz-combobox::part(display) {
+        min-width: 180px; padding: 8px 12px; font-size: 14px; color: var(--text);
+        background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px 0 0 4px;
+    }
+    jz-combobox::part(arrow) {
+        padding: 8px 10px; font-size: 12px; color: var(--text-dim);
+        background: var(--bg-input); border: 1px solid var(--border); border-left: none;
+        border-radius: 0 4px 4px 0;
+    }
+    jz-combobox::part(arrow):hover { color: var(--accent); }
+    jz-combobox.open::part(arrow) { transform: rotate(180deg); }   /* 开合状态 -> 部件样式 */
+    jz-combobox::part(popup) {
+        background: #fff; border: 1px solid var(--border); border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.15); padding: 4px 0;
+        max-height: 160px; overflow-y: auto;                       /* 选项多时可滚动 */
+    }
+    jz-combobox::part(option) { padding: 8px 14px; font-size: 14px; color: var(--text); }
+    jz-combobox::part(option):hover { background: #eef4ff; }
+    jz-combobox::part(option selected) { background: var(--accent); color: #fff; }
+
+    /* -- 变体 1: primary (宿主类 + part 覆盖, 含 popup) -- */
+    jz-combobox.primary::part(display) {
+        border-color: var(--accent); color: var(--accent); font-weight: 600;
+        border-radius: 20px 0 0 20px;
+    }
+    jz-combobox.primary::part(arrow) {
+        color: #fff; background: var(--accent); border-color: var(--accent);
+        border-radius: 0 20px 20px 0;
+    }
+    jz-combobox.primary::part(popup) { border-color: var(--accent); border-radius: 10px; }
+    jz-combobox.primary::part(option):hover { background: #e8f4ff; }
+
+    /* -- 变体 2: big-arrow (纯 ::part(arrow) 自定义) -- */
+    jz-combobox.big-arrow::part(arrow) {
+        font-size: 18px; padding: 6px 16px; color: #e74c3c;
+        border: 1px solid #e74c3c; border-left: none; border-radius: 0 6px 6px 0;
+    }
+    jz-combobox.big-arrow::part(arrow):hover { background: #fdeceb; }
+    jz-combobox.big-arrow::part(arrow):active { background: #f5b7b1; }
+    jz-combobox.big-arrow::part(popup) { border-color: #e74c3c; }
+
+    /* -- 变体 3: arrow-left (箭头换边: 标准 CSS order, 零 JS) -- */
+    jz-combobox.arrow-left::part(arrow) {
+        order: -1;
+        border: 1px solid var(--border); border-right: none;
+        border-radius: 4px 0 0 4px;
+    }
+    jz-combobox.arrow-left::part(display) {
+        border: 1px solid var(--border); border-left: none;
+        border-radius: 0 4px 4px 0;
+    }
+    jz-combobox.arrow-left.open::part(arrow) { color: var(--accent); }
+
+    /* -- 变体 4: dark (仅覆盖令牌, 组件规则零改动) -- */
+    .dark-scope {
+        --border: #3a414d; --text: #e6e9ef; --text-dim: #8b94a3;
+        --accent: #4f8cff; --bg-input: #10141a; background: #0f1115;
+        padding: 16px; border-radius: 8px;
+    }
+    .dark-scope jz-combobox::part(popup) { background: #161a21; }
+</style>
+</head>
+<body>
+
+<div class="card">
+    <h2>1. UA 默认</h2>
+    <div class="row">
+        <jz-combobox id="c1" value="mcp">
+            <option value="mcp">规则引擎</option>
+            <option value="llm">云端LLM</option>
+            <option value="match">简单匹配</option>
+        </jz-combobox>
+    </div>
+</div>
+
+<div class="card">
+    <h2>2. 同一组件, 不同 style (宿主类 + part 覆盖, popup 也各自定义)</h2>
+    <div class="row">
+        <jz-combobox class="primary" value="mcp">
+            <option value="mcp">规则引擎</option>
+            <option value="llm">云端LLM</option>
+        </jz-combobox>
+        <jz-combobox class="big-arrow" value="pcm">
+            <option value="pcm">PCM</option>
+            <option value="opus">Opus</option>
+            <option value="wav">WAV</option>
+            <option value="mp3">MP3</option>
+            <option value="aac">AAC</option>
+            <option value="flac">FLAC</option>
+            <option value="ogg">OGG</option>
+            <option value="amr">AMR</option>
+            <option value="g711">G711</option>
+            <option value="g722">G722</option>
+        </jz-combobox>
+    </div>
+    <div class="note">big-arrow: popup 超过 max-height 后可滚动 (overflow 由 ::part(popup) 定义)。</div>
+</div>
+
+<div class="card">
+    <h2>3. 箭头换边 (标准 CSS order, 零 JS) + 状态类开合反馈</h2>
+    <div class="row">
+        <jz-combobox class="arrow-left" value="opus">
+            <option value="opus">Opus</option>
+            <option value="pcm">PCM</option>
+            <option value="mp3">MP3</option>
+        </jz-combobox>
+        <span class="note" style="margin:0">箭头在左 = ::part(arrow) { order: -1 }; 展开时箭头变色旋转。</span>
+    </div>
+</div>
+
+<div class="card dark-scope">
+    <h2 style="color:#e6e9ef; border-color:#4f8cff;">4. dark 主题 (仅覆盖令牌, 组件规则零改动)</h2>
+    <div class="row">
+        <jz-combobox value="mcp">
+            <option value="mcp">规则引擎</option>
+            <option value="llm">云端LLM</option>
+        </jz-combobox>
+    </div>
+</div>
+
+<div class="card">
+    <h2>5. 事件契约 (CustomEvent: change)</h2>
+    <div id="log"></div>
+    <div class="note">
+        验证清单: 1) part(display/arrow/popup/option) 全部可被外部 CSS 定义;
+        2) part + 伪类 (:hover/:active); 3) part 多 token (option selected);
+        4) 宿主类变体 (primary/big-arrow/arrow-left); 5) 令牌穿透 Shadow DOM (dark);
+        6) popup 为独立浮层 (fixed, 不被父裁剪) + 点外关闭 + Escape + 可滚动;
+        7) change CustomEvent; 8) 箭头换边 = CSS order; 9) .open 状态类 -> 箭头旋转。
+        命名注: 浏览器要求自定义标签含连字符 (jz-combobox); JZFramework 引擎无此限制,
+        标签即类名 (JZComboBox)。part 契约两边一致。
+    </div>
+</div>
+<script>
+/* ===== JZComboBox Web Component =====
+   JS 部分: 在真实框架中由 C++ (JZComboBox) 实现;
+   浏览器 demo 用 JS 模拟, 结构/契约与设计一致。
+   内部实现自由: 本例 display/arrow 为真实节点, popup 为独立浮层 ——
+   外部 CSS 只认 part 名, 实现变化不影响样式契约。 */
+class JZComboBox extends HTMLElement {
+    static get observedAttributes() { return ["value"]; }
+
+    constructor() {
+        super();
+        this._open = false;
+        this._current = -1;
+        this._options = [];
+        this._inited = false;
+        this._root = this.attachShadow({ mode: "open" });
+        this._root.innerHTML = `
+            <style>
+                :host { display: inline-flex; align-items: stretch; }
+                .popup { position: fixed; display: none; z-index: 1000; }
+            </style>
+            <div part="display"></div>
+            <div part="arrow">▼</div>
+            <div class="popup" part="popup"></div>
+        `;
+        this._display = this._root.querySelector("[part=display]");
+        this._arrow   = this._root.querySelector("[part=arrow]");
+        this._popup   = this._root.querySelector(".popup");
+    }
+
+    connectedCallback() {
+        if (this._inited) return;
+        this._inited = true;
+        /* 关键: HTML 解析期 connectedCallback 触发时 <option> 子节点可能未就绪,
+           延迟到 DOMContentLoaded 再采集, 否则列表为空。 */
+        if (document.readyState === "loading")
+            document.addEventListener("DOMContentLoaded", () => this._init());
+        else
+            this._init();
+    }
+
+    _init() {
+        // 采集 <option> 子标签 (数据项, 不产生可见子控件)
+        [...this.querySelectorAll("option")].forEach(o => this._options.push({
+            value: o.getAttribute("value") ?? o.textContent.trim(),
+            text: o.textContent.trim()
+        }));
+
+        const init = this.getAttribute("value");
+        this._current = this._options.findIndex(o => o.value === init);
+        this._syncDisplay();
+
+        this._display.addEventListener("click", () => this.open());
+        this._arrow.addEventListener("click", e => { e.stopPropagation(); this.toggle(); });
+
+        this._popup.addEventListener("click", e => {
+            const opt = e.target.closest('[part~="option"]');
+            if (opt) this.select(+opt.dataset.index);
+        });
+
+        // 点外关闭 (composedPath 穿透 Shadow DOM)
+        document.addEventListener("click", e => {
+            if (!this._open) return;
+            const path = e.composedPath();
+            if (path.includes(this) || path.includes(this._popup)) return;
+            this.close();
+        });
+
+        // Escape 关闭 / 方向键移动
+        document.addEventListener("keydown", e => {
+            if (!this._open) return;
+            if (e.key === "Escape") this.close();
+            if (e.key === "ArrowDown") { e.preventDefault(); this._move(1); }
+            if (e.key === "ArrowUp")   { e.preventDefault(); this._move(-1); }
+        });
+
+        this._syncPopup();
+        this._syncDisplay();
+        if (this.hasAttribute("value")) this._emit(false);
+    }
+
+    attributeChangedCallback(_n, _o, v) {
+        if (!this._inited || v == null || !this._options.length) return;
+        const i = this._options.findIndex(o => o.value === v);
+        if (i >= 0) { this._current = i; this._syncDisplay(); this._syncPopup(); }
+    }
+
+    open() {
+        if (this._open) return;
+        this._popup.style.display = "block";
+        const r = this._display.getBoundingClientRect();
+        this._popup.style.minWidth = r.width + "px";
+        this._popup.style.left = r.left + "px";
+        let top = r.bottom + 4;
+        if (top + this._popup.offsetHeight > innerHeight) top = r.top - this._popup.offsetHeight - 4;
+        this._popup.style.top = top + "px";
+        this._open = true;
+        this.setAttribute("aria-expanded", "true");
+        this.classList.add("open");                          // 状态类: 部件样式联动
+    }
+
+    close() {
+        if (!this._open) return;
+        this._popup.style.display = "none";
+        this._open = false;
+        this.setAttribute("aria-expanded", "false");
+        this.classList.remove("open");
+    }
+
+    toggle() { this._open ? this.close() : this.open(); }
+
+    select(i) {
+        if (i < 0 || i >= this._options.length) return;
+        this._current = i;
+        this._syncDisplay();
+        this._syncPopup();
+        this.close();
+        this._emit(true);
+    }
+
+    _move(d) {
+        const n = Math.min(this._options.length - 1, Math.max(0, this._current + d));
+        if (n !== this._current) { this._current = n; this._syncDisplay(); this._syncPopup(); }
+    }
+
+    _syncDisplay() {
+        const o = this._options[this._current];
+        this._display.textContent = o ? o.text : "";
+    }
+
+    _syncPopup() {
+        this._popup.textContent = "";
+        this._options.forEach((o, i) => {
+            const el = document.createElement("div");
+            // 多 token part: option selected —— 外部 CSS 用 ::part(option selected) 命中
+            el.setAttribute("part", "option" + (i === this._current ? " selected" : ""));
+            el.setAttribute("role", "option");
+            el.setAttribute("aria-selected", i === this._current ? "true" : "false");
+            el.dataset.index = i;
+            el.textContent = o.text;
+            this._popup.append(el);
+        });
+    }
+
+    _emit(log) {
+        const o = this._options[this._current];
+        this.dispatchEvent(new CustomEvent("change", {
+            bubbles: true,
+            detail: { index: this._current, value: o?.value ?? "", text: o?.text ?? "" }
+        }));
+        if (log && o) window.logChange(`change: id="${this.id}" value="${o.value}" text="${o.text}"`);
+    }
+}
+customElements.define("jz-combobox", JZComboBox);
+
+/* ===== 事件日志 ===== */
+window.logChange = msg => {
+    const el = document.getElementById("log");
+    if (el) { el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
+};
+document.addEventListener("change", e => {
+    if (e.target.tagName === "JZ-COMBOBOX" && e.detail)
+        window.logChange(`change: id="${e.target.id}" value="${e.detail.value}" text="${e.detail.text}"`);
+});
+</script>
+</body>
+</html>

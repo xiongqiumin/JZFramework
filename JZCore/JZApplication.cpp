@@ -7,10 +7,6 @@
 #include "JZTx.h"
 #include "JZDriver.h"
 
-#ifdef HAS_JZWidget
-#include "JZDisplayDevice.h"
-#endif
-
 JZApplication *jzApp = nullptr;
 
 JZApplication* JZApplication::instance()
@@ -34,18 +30,10 @@ JZApplication::JZApplication()
     m_thread = m_mainThread;
 
     JZDriver::init();
-
-#ifdef HAS_JZWidget
-    m_uiTimer = startTimer(33);
-#endif
 }
 
 JZApplication::~JZApplication()
 {
-#ifdef HAS_JZWidget
-    killTimer(m_uiTimer);
-#endif
-
     JZDriver::deinit();
 
     std::vector<JZObject*> childs = m_childs;
@@ -141,15 +129,6 @@ void JZApplication::processEvents()
 
 void JZApplication::timerEvent(JZTimerEvent *event)
 {
-#ifdef HAS_JZWidget
-    if (event->id() == m_uiTimer)
-    {
-        // 1. 泵送渲染后端窗口消息 (鼠标/键盘 -> 控件树分发)
-        JZDisplayDevice::processEvents();
-        // 2. 有脏区则遍历控件树收集绘制任务, 交给 ImGui 后端渲染并 Present
-        JZDisplayDevice::refresh();
-    }
-#endif
 }
 
 void JZApplication::sendEvent(JZObject *object, JZEvent *event)

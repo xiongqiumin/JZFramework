@@ -42,9 +42,7 @@ protected:
 
     std::vector<JZThread*> m_threads;
     JZMutex m_mutex;
-    int m_returnCode;
-
-    int m_uiTimer;
+    int m_returnCode;;
 };
 extern JZApplication *jzApp;
 

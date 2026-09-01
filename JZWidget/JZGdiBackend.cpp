@@ -1,0 +1,366 @@
+#include "JZGdiBackend.h"
+
+#ifdef _WIN32
+
+#include "JZLayer.h"
+#include "JZDrawTask.h"
+#include "JZImage.h"
+#include "JZDisplayDevice.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <objidl.h>   // IStream/PROPID: WIN32_LEAN_AND_MEAN 会排除 ole2, GDI+ 需要
+#include <gdiplus.h>
+
+#include <string>
+#include <vector>
+
+using namespace Gdiplus;
+
+// ==================== GDI+ 进程级生命周期 (多窗口共享, 引用计数) ====================
+namespace {
+
+struct GdiplusLifetime
+{
+    ULONG_PTR token = 0;
+    int refCount = 0;
+
+    bool acquire()
+    {
+        if (refCount++ == 0) {
+            GdiplusStartupInput input;
+            if (GdiplusStartup(&token, &input, nullptr) != Ok) {
+                refCount = 0;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void release()
+    {
+        if (refCount > 0 && --refCount == 0) {
+            GdiplusShutdown(token);
+            token = 0;
+        }
+    }
+};
+
+GdiplusLifetime& gdiplusLifetime()
+{
+    static GdiplusLifetime life;
+    return life;
+}
+
+} // namespace
+
+// ==================== 绘制辅助 ====================
+static Color toGdiColor(const JZColor& c, uint8_t opacity)
+{
+    uint8_t a = (uint8_t)((c.alpha() * opacity) / 255);
+    return Color(a, c.red(), c.green(), c.blue());
+}
+
+// JZRect (宽 = right - left + 1) -> GDI+ 物理像素 [x, x + w*s)
+static RectF toGdiRect(const JZRect& rc, float scale)
+{
+    return RectF(rc.x() * scale, rc.y() * scale, rc.width() * scale, rc.height() * scale);
+}
+
+static std::wstring utf8ToUtf16(const std::string& text)
+{
+    if (text.empty())
+        return std::wstring();
+    int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0);
+    std::wstring out(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), &out[0], len);
+    return out;
+}
+
+// 圆角矩形路径 (radius 已含缩放)
+static void addRoundRectPath(GraphicsPath& path, const RectF& r, float radius)
+{
+    if (radius <= 0.0f) {
+        path.AddRectangle(r);
+        return;
+    }
+    float d = radius * 2.0f;
+    if (d > r.Width)  d = r.Width;
+    if (d > r.Height) d = r.Height;
+    radius = d * 0.5f;
+    path.AddArc(r.X, r.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+// 文本字体族 (优先微软雅黑, 失败回退)
+static const FontFamily& jzFontFamily()
+{
+    static FontFamily family(L"Microsoft YaHei");
+    return family;
+}
+
+// ==================== 生命周期 ====================
+JZGdiBackend::JZGdiBackend()
+{
+}
+
+JZGdiBackend::~JZGdiBackend()
+{
+    destroy();
+}
+
+bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH)
+{
+    m_widgetDevice = device;
+    if (!hwnd || !gdiplusLifetime().acquire())
+        return false;
+
+    m_hwnd = hwnd;
+    m_physW = physicalW;
+    m_physH = physicalH;
+    createMemBitmap(physicalW, physicalH);   // 尺寸为 0 时失败, render 会跳过
+    return true;
+}
+
+void JZGdiBackend::destroy()
+{
+    // 缓存位图必须在 GdiplusShutdown 之前释放
+    for (auto& kv : m_bitmaps)
+        delete (Bitmap*)kv.second;
+    m_bitmaps.clear();
+
+    releaseMemBitmap();
+    m_hwnd = nullptr;
+    gdiplusLifetime().release();
+}
+
+// ==================== 双缓冲位图 ====================
+bool JZGdiBackend::createMemBitmap(unsigned physicalW, unsigned physicalH)
+{
+    releaseMemBitmap();
+    if (!m_hwnd || physicalW == 0 || physicalH == 0)
+        return false;
+
+    HDC dc = GetDC((HWND)m_hwnd);
+    m_memDC = CreateCompatibleDC(dc);
+
+    BITMAPINFO bmi;
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = (LONG)physicalW;
+    bmi.bmiHeader.biHeight = -(LONG)physicalH;   // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    m_memBmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC((HWND)m_hwnd, dc);
+
+    if (!m_memDC || !m_memBmp) {
+        releaseMemBitmap();
+        return false;
+    }
+    m_oldBmp = (void*)SelectObject((HDC)m_memDC, (HBITMAP)m_memBmp);
+    return true;
+}
+
+void JZGdiBackend::releaseMemBitmap()
+{
+    if (m_memDC && m_memBmp)
+        SelectObject((HDC)m_memDC, (HBITMAP)m_oldBmp);
+    if (m_memDC) { DeleteDC((HDC)m_memDC);       m_memDC = nullptr; }
+    if (m_memBmp) { DeleteObject((HBITMAP)m_memBmp); m_memBmp = nullptr; }
+    m_oldBmp = nullptr;
+}
+
+void JZGdiBackend::resizeSwapChain(unsigned physicalW, unsigned physicalH)
+{
+    if (physicalW == 0 || physicalH == 0)
+        return;
+    m_physW = physicalW;
+    m_physH = physicalH;
+    createMemBitmap(physicalW, physicalH);
+}
+
+void JZGdiBackend::rebuildFonts()
+{
+    // GDI+ 字体按绘制任务即时创建, DPI 变化无需重建
+}
+
+// ==================== 渲染 ====================
+void JZGdiBackend::render(JZLayer* layer)
+{
+    if (!m_hwnd || !m_memDC || !layer)
+        return;
+    if (m_physW == 0 || m_physH == 0)
+        return;
+
+    {
+        // 任务回放到内存位图 (保留上帧内容, 脏区由各任务的 clip 覆盖)
+        Graphics g((HDC)m_memDC);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        g.SetCompositingQuality(CompositingQualityHighSpeed);
+        replayTasks(&g, layer);
+    }   // Graphics 先析构, 再提交到屏幕
+
+    HDC wdc = GetDC((HWND)m_hwnd);
+    BitBlt(wdc, 0, 0, (int)m_physW, (int)m_physH, (HDC)m_memDC, 0, 0, SRCCOPY);
+    ReleaseDC((HWND)m_hwnd, wdc);
+
+    layer->clearTasks();
+}
+
+void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
+{
+    Graphics& g = *(Graphics*)graphics;
+    const float s = m_widgetDevice ? m_widgetDevice->scale() : 1.0f;
+
+    for (auto& task : layer->tasks())
+    {
+        // 每个任务按自身脏区裁剪 (逻辑像素 -> 物理像素)
+        bool clipped = !task->clip.isEmpty();
+        if (clipped) {
+            RectF c = toGdiRect(task->clip, s);
+            g.SetClip(Rect((INT)c.X, (INT)c.Y, (INT)(c.Width + 0.5f), (INT)(c.Height + 0.5f)));
+        }
+
+        switch (task->type) {
+        case JZDrawTask::Line: {
+            auto* t = static_cast<JZLineTask*>(task.get());
+            float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
+            Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+            g.DrawLine(&pen, t->x1 * s, t->y1 * s, t->x2 * s, t->y2 * s);
+            break;
+        }
+        case JZDrawTask::Rect: {
+            auto* t = static_cast<JZFillRectTask*>(task.get());
+            RectF r = toGdiRect(t->area, s);
+            SolidBrush br(toGdiColor(t->color, t->opacity));
+            if (t->radius > 0) {
+                GraphicsPath p;
+                addRoundRectPath(p, r, t->radius * s);
+                g.FillPath(&br, &p);
+            } else {
+                g.FillRectangle(&br, r);
+            }
+            break;
+        }
+        case JZDrawTask::Border: {
+            auto* t = static_cast<JZBorderTask*>(task.get());
+            RectF r = toGdiRect(t->area, s);
+            float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
+            Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+            if (t->radius > 0) {
+                GraphicsPath p;
+                addRoundRectPath(p, r, t->radius * s);
+                g.DrawPath(&pen, &p);
+            } else {
+                g.DrawRectangle(&pen, r);
+            }
+            break;
+        }
+        case JZDrawTask::Arc: {
+            auto* t = static_cast<JZArcTask*>(task.get());
+            // 角度: 1/10 度, 0 = 3 点方向, 顺时针; GDI+ 屏幕坐标系 (y 向下)
+            // 正角度同为顺时针, 直接换算即可。
+            float radius = s * (t->arcRadius > 0 ? t->arcRadius : 1);
+            float sweep = (t->arcEndAngle - t->arcStartAngle) / 10.0f;
+            if (sweep < 0.0f)
+                sweep += 360.0f;
+            if (sweep > 0.0f && radius > 0.0f) {
+                float w = s * (t->pen.width() > 0 ? t->pen.width() : 1);
+                Pen pen(toGdiColor(t->pen.color(), t->opacity), w);
+                RectF rc(t->arcCx * s - radius, t->arcCy * s - radius, radius * 2.0f, radius * 2.0f);
+                g.DrawArc(&pen, rc, t->arcStartAngle / 10.0f, sweep);
+            }
+            break;
+        }
+        case JZDrawTask::Text: {
+            auto* t = static_cast<JZTextTask*>(task.get());
+            if (!t->text.empty()) {
+                std::wstring wtext = utf8ToUtf16(t->text);
+                // Font 禁止赋值, 先探测可用字体族, 再一次性构造
+                const FontFamily* family = &jzFontFamily();
+                {
+                    Font probe(family, t->font.size() * s, FontStyleRegular, UnitPixel);
+                    if (probe.GetLastStatus() != Ok)
+                        family = FontFamily::GenericSansSerif();
+                }
+                Font font(family, t->font.size() * s, FontStyleRegular, UnitPixel);
+                SolidBrush br(toGdiColor(t->color, t->opacity));
+                g.DrawString(wtext.c_str(), (int)wtext.size(), &font,
+                             PointF(t->area.x() * s, t->area.y() * s), &br);
+            }
+            break;
+        }
+        case JZDrawTask::Image: {
+            auto* t = static_cast<JZImageTask*>(task.get());
+            if (t->image && t->image->pixels()) {
+                Bitmap* bmp = (Bitmap*)imageBitmap(t->image.get());
+                if (bmp)
+                    g.DrawImage(bmp, toGdiRect(t->area, s));
+            }
+            break;
+        }
+        case JZDrawTask::Changed:
+        case JZDrawTask::None:
+        default:
+            break;
+        }
+
+        if (clipped)
+            g.ResetClip();
+    }
+}
+
+// RGBA8888 -> GDI+ 32bppARGB (内存字节序 BGRA), 懒缓存
+void* JZGdiBackend::imageBitmap(const JZImageData* img)
+{
+    auto it = m_bitmaps.find(img);
+    if (it != m_bitmaps.end())
+        return it->second;
+
+    if (!img->pixels() || img->width() <= 0 || img->height() <= 0)
+        return nullptr;
+
+    int w = img->width();
+    int h = img->height();
+    std::vector<uint8_t> bgra((size_t)w * h * 4);
+    const uint8_t* src = img->pixels();
+    for (size_t i = 0; i < (size_t)w * h; ++i) {
+        bgra[i * 4 + 0] = src[i * 4 + 2];
+        bgra[i * 4 + 1] = src[i * 4 + 1];
+        bgra[i * 4 + 2] = src[i * 4 + 0];
+        bgra[i * 4 + 3] = src[i * 4 + 3];
+    }
+
+    Bitmap* bmp = new Bitmap(w, h, w * 4, PixelFormat32bppARGB, bgra.data());
+    if (bmp->GetLastStatus() != Ok) {
+        delete bmp;
+        return nullptr;
+    }
+    m_bitmaps[img] = bmp;
+    return bmp;
+}
+
+#else // !_WIN32
+
+// 非 Windows 平台: 暂无渲染后端, 仅保留逻辑层可编译运行
+JZGdiBackend::JZGdiBackend() {}
+JZGdiBackend::~JZGdiBackend() {}
+bool JZGdiBackend::init(JZDisplayDevice*, void*, unsigned, unsigned) { return false; }
+void JZGdiBackend::destroy() {}
+void JZGdiBackend::render(JZLayer*) {}
+void JZGdiBackend::resizeSwapChain(unsigned, unsigned) {}
+void JZGdiBackend::rebuildFonts() {}
+
+#endif // _WIN32

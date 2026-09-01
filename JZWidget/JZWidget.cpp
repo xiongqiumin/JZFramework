@@ -1,9 +1,11 @@
+#include <cassert>
+#include <algorithm>
+#include <cstdio>
+
 #include "JZWidget.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
-
-#include <cassert>
-#include <algorithm>
+#include "JZWindow.h"
 
 JZ_OBJECT_IMPL(JZWidget,JZObject)
 
@@ -25,11 +27,7 @@ JZWidget::JZWidget(JZWidget* parent)
 
     if (parent)
     {
-        auto device = jzobject_cast<JZDisplayDevice*>(parent);
-        if(device)
-            resize(device->width(), device->height());
-
-        m_visible = device? false: true;
+        m_visible = true;
     }
     else
         m_visible = false;
@@ -50,12 +48,14 @@ JZWidget* JZWidget::parentWidget() const
     return w;
 }
 
-class JZDisplayDevice* JZWidget::display()
+class JZWindow* JZWidget::window()
 {
     JZWidget* p = (JZWidget*)this;
-    while (p) {
-        if (auto* d = jzobject_cast<JZDisplayDevice*>(p))
-            return d;
+    while (p)
+    {
+        if (p->inherits("JZWindow"))
+            return (JZWindow*)p;
+
         p = p->parentWidget();
     }
     return nullptr;
@@ -192,22 +192,43 @@ JZRect JZWidget::rect() const
 {
     return JZRect(0, 0, m_width, m_height);
 }
+// ==================== 坐标映射 ====================
 
-JZRect JZWidget::toGlobal(const JZRect &rect) const
+JZPoint JZWidget::mapTo(JZWidget* parent, const JZPoint& pos) const
 {
-    // 沿父链累加局部坐标, 把本地矩形换算到显示设备坐标系。
-    // 注意: 仅累加 widget 自身的位置偏移 (m_x, m_y); 各祖先的尺寸/缩放不影响子节点原点,
-    // 子节点的 geometry 已相对父 widget 的左上角 (0,0)。
-    int gx = rect.x();
-    int gy = rect.y();
-
+    // accumulate offsets from this up to (excluding) parent
+    JZPoint result = pos;
     const JZWidget* w = this;
-    while (w) {
-        gx += w->m_x;
-        gy += w->m_y;
+    while (w && w != parent)
+    {
+        result += JZPoint(w->x(), w->y());
         w = w->parentWidget();
     }
-    return JZRect(gx, gy, rect.width(), rect.height());
+    return result;
+}
+
+JZPoint JZWidget::mapToGlobal(const JZPoint& pos) const
+{
+    JZPoint result = pos;
+    const JZWidget* w = this;
+    while (w)
+    {
+        result += JZPoint(w->x(), w->y());
+        w = w->parentWidget();
+    }
+    return result;
+}
+
+JZRect JZWidget::mapTo(JZWidget* parent, const JZRect& rc) const
+{
+    JZPoint tl = mapTo(parent, rc.topLeft());
+    return JZRect(tl.x(), tl.y(), rc.width(), rc.height());
+}
+
+JZRect JZWidget::mapToGlobal(const JZRect& rc) const
+{
+    JZPoint tl = mapToGlobal(rc.topLeft());
+    return JZRect(tl.x(), tl.y(), rc.width(), rc.height());
 }
 
 // ==================== 尺寸策略 / baseSize ====================
@@ -239,10 +260,11 @@ void JZWidget::setVerticalPolicy(SizePolicy p)
 
 JZSize JZWidget::sizeHint() const
 {
-    // 容器: 优先用布局计算的内容期望尺寸; 叶子控件由子类重写返回固有尺寸。
+    // 容器: 优先用布局计算的内容期望尺寸;
+    // 叶子控件: 无显式 hint 时以当前尺寸为期望 (手动 resize 的尺寸在布局中生效)。
     if (m_layout)
         return m_layout->sizeHint();
-    return JZSize(0, 0);
+    return JZSize(m_width, m_height);
 }
 
 // ==================== 几何 ====================
@@ -286,6 +308,10 @@ void JZWidget::show()
 void JZWidget::hide()
 {
     setVisible(false);
+    {
+        JZHideEvent he;
+        hideEvent(&he);
+    }
 }
 
 bool JZWidget::isVisible() const
@@ -345,12 +371,20 @@ bool JZWidget::hasFocus() const
 // ==================== 重绘 ====================
 void JZWidget::invalidate(const JZRect &rc)
 {
-    auto device = this->display();
-    if (!device)
+    auto window = this->window();
+    if (!window)
         return;
 
-    JZRect global_rc = toGlobal(rc);
-    device->makeInvalidate(global_rc);
+    JZRect global_rc = mapTo(window, rc);
+    JZInvalidateEvent* event = new JZInvalidateEvent();
+    event->rect = global_rc;
+    jzApp->postEvent(window, event);
+}
+
+bool JZWidget::sendEvent(JZEvent* event)
+{
+    // 调用虚 event() (参数名遮蔽成员函数, 须显式限定)
+    return this->JZWidget::event(event);
 }
 
 void JZWidget::update()
@@ -402,6 +436,10 @@ void JZWidget::wheelEvent(JZMouseEvent*)
 }
 
 void JZWidget::showEvent(JZShowEvent*)
+{
+}
+
+void JZWidget::hideEvent(JZHideEvent*)
 {
 }
 

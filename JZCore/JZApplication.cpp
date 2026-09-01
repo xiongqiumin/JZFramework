@@ -6,6 +6,13 @@
 #include "JZDebug.h"
 #include "JZTx.h"
 #include "JZDriver.h"
+#ifndef HAS_JZWidget
+#error NO_HAS_JZWidget_DEFINE
+#endif
+
+#ifdef _WIN32
+#include "JZWin32Thread.h"
+#endif
 
 JZApplication *jzApp = nullptr;
 
@@ -22,7 +29,11 @@ JZApplication::JZApplication()
 
     m_returnCode = 0;
 
+#ifdef _WIN32
+    m_mainThread = new JZWin32Thread();
+#else
     m_mainThread = new JZThread(JZObject::MainThreadInit());
+#endif
     m_mainThread->attachStdThread(JZThread::currentThreadId());
     m_mainThread->moveToThread(m_mainThread);
     m_mainThread->m_running = true;
@@ -106,7 +117,8 @@ int JZApplication::exec()
 {
     JZTX_FUNC_TRACE
 
-    m_mainThread->exec();
+    // virtual dispatch: JZWin32Thread::run on Windows (standard message loop)
+    m_mainThread->run();
     return m_returnCode;
 }
 

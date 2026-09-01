@@ -4,22 +4,21 @@
 #include <memory>
 #include "JZPainter.h"
 #include "JZWidget.h"
+#include "JZWindow.h"
 #include "JZDisplayDevice.h"
 
 JZPainter::JZPainter(JZWidget* widget)
 {
-    JZDisplayDevice *device = widget->display();
-    if (device) {
+    JZDisplayDevice *device = widget->window()->device();
+    if (device)
         m_layer = device->layer();
-        // 屏幕可见区域 = 显示设备几何 (0,0,w,h), 用于完全出屏的粗略剔除。
-        m_screen = device->geometry();
-    }
 
     // 坐标转换: 绘制原点对齐到本 widget 在显示坐标下的左上角,
     // 这样 widget 内部用本地坐标 (0,0) 绘制即可, 由 m_ox/m_oy 平移到屏幕坐标。
-    JZRect g = widget->toGlobal(widget->rect());
+    JZRect g = widget->mapTo(widget->window(), widget->rect());
     m_ox = g.left();
     m_oy = g.top();
+    m_screen = widget->window()->rect();
 
     // 进入 JZPainter 时发送一次 Changed, 记录绘制流起始的 pen/brush/font 状态快照。
     if (m_layer) {

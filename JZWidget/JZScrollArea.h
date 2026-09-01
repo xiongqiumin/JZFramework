@@ -54,6 +54,14 @@ public:
     void paintEvent(JZPainterEvent* event) override;
 
 protected:
+    void resizeEvent(JZResizeEvent* event) override;
+    void clampScroll();   // 把滚动偏移 clamp 到 [0, content - viewport]
+
+    int m_contentW = -1;   // 内容总宽; -1 = 跟随视口 (该方向不滚动)
+    int m_contentH = -1;
+    int m_scrollX = 0;
+    int m_scrollY = 0;
+
     JZWidget* m_content = nullptr;   // 透明占位: 仅用于撑开滚动范围
 };
 

@@ -12,7 +12,7 @@ static constexpr int kH = 600;
 enum { JZAlignLeft = 0, JZAlignCenter = 1, JZAlignRight = 2 };
 
 MainWindow::MainWindow(JZWidget* parent)
-    : JZWidget(parent)
+    : JZWindow(parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",

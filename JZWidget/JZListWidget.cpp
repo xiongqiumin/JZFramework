@@ -216,6 +216,9 @@ void JZListWidget::paintEvent(JZPainterEvent* event)
     int viewH = viewportHeight();
     int sy = scrollY();
 
+    // 视口白底, 防止项与项之间残留旧帧内容
+    p.fillRect(0, 0, viewW, viewH, JZColor::White);
+
     int perRow = itemsPerRow();
     int rh = rowHeight();
     int cw = cellWidth();

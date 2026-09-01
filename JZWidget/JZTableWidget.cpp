@@ -271,6 +271,10 @@ void JZTableWidget::paintEvent(JZPainterEvent* event)
     int hh = headerHeight();
 
     // ---- 可见表体 ----
+    // 表体白底 (表头以下区域), 未选中单元格透出白底
+    if (cols > 0)
+        p.fillRect(0, hh, viewW, std::max(0, viewH - hh), JZColor::White);
+
     if (cols > 0 && rows > 0) {
         int firstCol = 0;
         while (firstCol < cols && m_colOffsets[firstCol] + m_colWidths[firstCol] <= sx)

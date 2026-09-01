@@ -10,6 +10,7 @@ enum {
     JZEvent_netRes,
     JZEvent_log,
     JZEvent_co,
+    JZEvent_invalidate,
     JZEvent_paint,
     JZEvent_show,
     JZEvent_hide,

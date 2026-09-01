@@ -1,4 +1,4 @@
-﻿#ifndef JZ_THREAD_H_
+#ifndef JZ_THREAD_H_
 #define JZ_THREAD_H_
 
 #include <queue>
@@ -65,7 +65,9 @@ public:
     void wait();    
 
     bool isRequestInterruption() const;
-    void requestInterruption();
+    virtual void requestInterruption();
+
+
 
 jz_signals:
     JZSigVoid sigStarted;
@@ -101,7 +103,7 @@ protected:
     void popSender();
 
     void waitEvents();
-    void wakeUp();
+    virtual void wakeUp();
     void exec();
 
     void postEvent(const JZEventInfo &event);

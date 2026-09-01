@@ -1,6 +1,6 @@
 #pragma once
 
-#include "JZWidget.h"
+#include "JZWindow.h"
 #include "JZLabel.h"
 #include "JZPushButton.h"
 #include "JZSlider.h"
@@ -20,10 +20,10 @@
 #include <string>
 
 // 挂载所有已实现控件: 左侧 JZListWidget 选择, 右侧 JZStackedWidget 预览, 底部日志
-class MainWindow : public JZWidget
+class MainWindow : public JZWindow
 {
 public:
-    explicit MainWindow(JZWidget* parent);
+    explicit MainWindow(JZWidget* parent = nullptr);
     ~MainWindow();
 
 private:

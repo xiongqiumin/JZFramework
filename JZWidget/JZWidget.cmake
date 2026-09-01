@@ -27,12 +27,14 @@
     JZResizeEvent.cpp
     JZShowEvent.h
     JZShowEvent.cpp
+	JZHideEvent.h
+	JZHideEvent.cpp
     JZCloseEvent.h
     JZCloseEvent.cpp
     JZMouseEvent.h
     JZMouseEvent.cpp
-    JZImGuiBackend.h
-    JZImGuiBackend.cpp
+    JZGdiBackend.h
+    JZGdiBackend.cpp
     JZLayout.h
     JZLayout.cpp
     JZAbstractAnimation.h
@@ -87,16 +89,14 @@
 
 convert_to_abs_paths(JZ_SOURCES)
 
-# ImGui 绘图后端 (FetchContent 拉取, 仅作为底层 2D 绘图器)
-include("${JZFRAMEWORK_ROOT_DIR}/cmake/imgui.cmake")
-
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 
 if(WIN32)
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE imgui)
+    # GDI+ 绘图后端 (临时方案; 后续如需 GPU 渲染, 按同样接口接入新后端)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus)
 else()
     # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
     message(STATUS "[JZWidget] No render backend on this platform (logic only)")

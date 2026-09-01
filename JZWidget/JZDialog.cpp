@@ -5,19 +5,14 @@
 
 JZ_OBJECT_IMPL(JZDialog, JZWindow)
 
-JZDialog::JZDialog(int w, int h, const std::string& title, JZWidget* parent)
-    : JZWindow(w, h, title.empty() ? "Dialog" : title)
+JZDialog::JZDialog(JZWidget* parent)
+    : JZWindow(parent)
     , sigAccepted(this)
     , sigRejected(this)
     , sigFinished(this)
     , m_result(Rejected)
 {
-    // 构造后先隐藏原生窗口, exec()/show 时再显示
-    setWindowVisible(false);
-
-    // parent 仅作内存所有权, 不进入其可视控件树 (遍历/命中检测会跳过设备节点)
-    if (parent)
-        setParent(parent);
+    resize(320, 240);
 }
 
 JZDialog::Result JZDialog::result() const
@@ -28,17 +23,13 @@ JZDialog::Result JZDialog::result() const
 int JZDialog::exec()
 {
     m_result = Rejected;
-    setWindowVisible(true);
-
-    // 模态: 屏蔽其它设备窗口输入
-    JZDisplayDevice::setOthersInputEnabled(this, false);
+    show();
 
     JZEventLoop loop;
     connect(&sigFinished, [&loop](int) { loop.quit(); });
     loop.exec();
 
-    JZDisplayDevice::setOthersInputEnabled(this, true);
-    setWindowVisible(false);
+    hide();
 
     return m_result;
 }
@@ -48,7 +39,7 @@ void JZDialog::accept()
     m_result = Accepted;
     sigAccepted.emit();
     sigFinished.emit((int)Accepted);
-    setWindowVisible(false);
+    hide();
 }
 
 void JZDialog::reject()
@@ -56,7 +47,7 @@ void JZDialog::reject()
     m_result = Rejected;
     sigRejected.emit();
     sigFinished.emit((int)Rejected);
-    setWindowVisible(false);
+    hide();
 }
 
 void JZDialog::closeEvent(JZCloseEvent*)
@@ -64,12 +55,6 @@ void JZDialog::closeEvent(JZCloseEvent*)
     reject();
 }
 
-void JZDialog::requestClose()
-{
-    // 原生窗口 WM_CLOSE: 对话框关闭为 reject, 不退出应用
-    JZCloseEvent ev;
-    closeEvent(&ev);
-}
 
 void JZDialog::paintEvent(JZPainterEvent* event)
 {

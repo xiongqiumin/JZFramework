@@ -6,7 +6,7 @@
 #include <vector>
 #include <cstdint>
 
-// 图像数据: RGBA8888 像素缓冲, 渲染后端 (JZImGuiBackend) 懒上传为 GPU 纹理。
+// 图像数据: RGBA8888 像素缓冲, 渲染后端 (JZGdiBackend) 懒缓存为位图。
 class JZImageData
 {
 public:

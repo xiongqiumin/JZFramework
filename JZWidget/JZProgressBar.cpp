@@ -1,6 +1,7 @@
 #include "JZProgressBar.h"
 #include "JZPainter.h"
 #include <algorithm>
+#include <cstdio>
 
 JZ_OBJECT_IMPL(JZProgressBar, JZWidget)
 
@@ -48,4 +49,13 @@ void JZProgressBar::paintEvent(JZPainterEvent* event)
         p.setBrush(JZBrush(JZColor(0x33, 0x99, 0x33)));
         p.drawRoundRect(0, 0, fillW, h, h / 2);
     }
+
+    // 居中百分比文本
+    int pct = (range > 0) ? (100 * (m_value - m_min)) / range : 0;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d%%", pct);
+    std::string txt(buf);
+    p.setPen(JZPen(JZColor(0x33, 0x33, 0x33), 1));
+    p.setFont(JZFont(11));
+    p.drawText(w / 2 - (int)txt.size() * 3, (h - 12) / 2, txt.c_str());
 }

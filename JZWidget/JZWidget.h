@@ -15,6 +15,7 @@
 #include "JZResizeEvent.h"
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
+#include "JZHideEvent.h"
 
 class JZWidget : public JZObject
 {
@@ -27,8 +28,8 @@ public:
     void setParentWidget(JZWidget* parent);
     JZWidget* parentWidget() const;
 
-    // 找到所属显示设备 (向上回溯到 JZDisplayDevice)
-    class JZDisplayDevice* display();
+    // 找到所属显示设备 (回溯到根控件, 由其提供渲染设备)
+    class JZWindow* window();
 
     // 位置
     JZPoint pos() const;
@@ -46,7 +47,11 @@ public:
 
     JZRect rect() const;
 
-    JZRect toGlobal(const JZRect &rect) const;
+    JZPoint mapTo(JZWidget* parent, const JZPoint& rect) const;
+    JZPoint mapToGlobal(const JZPoint& rect) const;
+
+    JZRect mapTo(JZWidget *parent, const JZRect& rect) const;
+    JZRect mapToGlobal(const JZRect &rect) const;
 
     // 尺寸约束
     void setFixedSize(int w, int h);
@@ -120,15 +125,17 @@ public:
     void update();
     void invalidate(const JZRect &rc);
 
+    // 事件投递 (显示设备向控件树分发鼠标/键盘事件用)
+    bool sendEvent(JZEvent* event);
+
     // 预定义属性
     virtual void setProperty(const std::string& name, const JZVariant& value) override;
     virtual JZVariant property(const std::string& name) const override;
 
 protected:
-    friend JZDisplayDevice;
-
     virtual bool event(JZEvent* event) override;
     virtual void showEvent(JZShowEvent* event);
+    virtual void hideEvent(JZHideEvent* event);
     virtual void closeEvent(JZCloseEvent* event);
     virtual void resizeEvent(JZResizeEvent* event);
     virtual void paintEvent(JZPainterEvent* event);

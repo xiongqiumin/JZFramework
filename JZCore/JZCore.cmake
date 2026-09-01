@@ -1,4 +1,4 @@
-﻿set(JZCORE_SOURCES
+set(JZCORE_SOURCES
     JZGlobal.h
     JZGlobal.cpp
 	JZString.h
@@ -20,6 +20,8 @@
     JZStd.cpp
     JZThread.h
     JZThread.cpp
+    JZWin32Thread.h
+    JZWin32Thread.cpp
     JZDir.h
     JZDir.cpp
     JZFileInfo.h

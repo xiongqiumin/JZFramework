@@ -7,7 +7,7 @@ JZ_OBJECT_IMPL(JZMessageBox, JZDialog)
 
 JZMessageBox::JZMessageBox(JZWidget* parent, const std::string& title,
                            const std::string& text, bool hasCancel)
-    : JZDialog(300, 150, title.empty() ? "Message" : title, parent)
+    : JZDialog(parent)
 {
     // 文本
     auto* textLabel = new JZLabel(this);

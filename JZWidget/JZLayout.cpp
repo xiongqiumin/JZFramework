@@ -14,15 +14,16 @@ std::vector<int> distributeAxis(int avail,
                                 const std::vector<int>& weight)
 {
     std::vector<int> size(hint.size(), 0);
-    int usedFixed = 0;
+    int usedFixed = 0;   // weight==0 项占用
+    int usedFlex = 0;    // weight>0 项的初始 hint 占用 (增长时以此为基准)
     int totalW = 0;
     for (size_t i = 0; i < hint.size(); ++i) {
         size[i] = std::max(mn[i], std::min(hint[i], mx[i]));
-        if (weight[i] > 0) totalW += weight[i];
-        else usedFixed += size[i];
+        if (weight[i] > 0) { totalW += weight[i]; usedFlex += size[i]; }
+        else               usedFixed += size[i];
     }
 
-    int remaining = avail - usedFixed;
+    int remaining = avail - usedFixed - usedFlex;
     if (remaining > 0 && totalW > 0) {
         int guard = 0;
         while (remaining > 0 && guard < 4096) {
@@ -241,9 +242,11 @@ void JZBoxLayout::updateLayout()
             int hintCross = horiz ? hs.height() : hs.width();
             int cmn = horiz ? it.widget->minimumHeight() : it.widget->minimumWidth();
             int cmx = horiz ? it.widget->maximumHeight() : it.widget->maximumWidth();
-            bool fillCross = it.stretch > 0 || policyExpands(cp);
+            // 交叉轴: 除 Fixed 外一律填满 (HBox 子项填满高度 / VBox 子项填满宽度)
+            bool fillCross = it.stretch > 0 || cp != JZWidget::SizePolicy::Fixed;
             int desired = fillCross ? crossAvail : hintCross;
-            int crossSize = std::max(cmn, std::min(desired, cmx));
+            // clamp 到交叉可用空间, 防止 hint 大于容器时溢出
+            int crossSize = std::max(cmn, std::min(desired, std::min(cmx, crossAvail)));
             int crossPos = crossOrigin + (crossAvail - crossSize) / 2;
             int x = horiz ? cursor     : crossPos;
             int y = horiz ? crossPos   : cursor;

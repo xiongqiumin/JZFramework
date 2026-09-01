@@ -40,14 +40,24 @@ void JZSlider::paintEvent(JZPainterEvent* event)
 
     int trackH = 4;
     int ty = (h - trackH) / 2;
+
+    // 滑轨
     p.setBrush(JZBrush(JZColor(0xcc, 0xcc, 0xcc)));
     p.setPen(JZPen(JZColor(0xbb, 0xbb, 0xbb), 1));
     p.drawRoundRect(2, ty, w - 4, trackH, trackH / 2);
 
+    // 滑块位置 + 已填充部分 (value 左侧高亮)
     int range = m_max - m_min;
     int pos = (range > 0) ? (w - 12) * (m_value - m_min) / range + 6 : w / 2;
+    if (pos > 6) {
+        p.setBrush(JZBrush(JZColor(0x33, 0x66, 0xcc)));
+        p.setPen(JZPen(JZColor(0x33, 0x66, 0xcc), 1));
+        p.drawRoundRect(6, ty, pos - 6, trackH, trackH / 2);
+    }
+
+    // 滑块 (白底蓝边圆点)
     int knob = 12;
-    p.setBrush(JZBrush(JZColor(0x33, 0x66, 0xcc)));
+    p.setBrush(JZBrush(JZColor(0xff, 0xff, 0xff)));
     p.setPen(JZPen(JZColor(0x33, 0x66, 0xcc), 1));
     p.drawRoundRect(pos - knob / 2, (h - knob) / 2, knob, knob, knob / 2);
 }

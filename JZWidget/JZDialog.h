@@ -18,7 +18,7 @@ class JZDialog : public JZWindow
 public:
     enum Result { Rejected = 0, Accepted = 1 };
 
-    JZDialog(int w, int h, const std::string& title = "Dialog", JZWidget* parent = nullptr);
+    JZDialog(JZWidget* parent = nullptr);
 
     Result result() const;
 
@@ -34,7 +34,6 @@ jz_signals:
 protected:
     void closeEvent(JZCloseEvent* event) override;
     void paintEvent(JZPainterEvent* event) override;
-    void requestClose() override;
 
     Result m_result;
 };

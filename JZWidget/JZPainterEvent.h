@@ -6,9 +6,17 @@
 
 class JZPainter;
 
-// 在刷新遍历中由 JZDisplayDevice::refresh() 统一创建 JZPainter 并注入。
-// 子类通过 painter() 拿到当前图层的绘制入口, 通过 rect() 拿到本次需要重绘的绘制区域
-// (等价脏区/裁剪区, 供虚拟列表、表格等只绘制可见部分)。
+class JZInvalidateEvent : public JZEvent
+{
+public:
+    explicit JZInvalidateEvent();
+
+    JZRect rect;
+};
+
+// Created by the render scheduler during the refresh traversal.
+// Widgets get the painter via painter() and the paint area via rect()
+// (dirty/clip area, for virtual lists/tables to paint visible parts only).
 class JZPainterEvent : public JZEvent
 {
 public:
@@ -16,8 +24,7 @@ public:
 
     void setPainter(JZPainter* painter) { m_painter = painter; }
     JZPainter* painter() const { return m_painter; }
-
-    void setRect(const JZRect& rect) { m_rect = rect; }
+    void setRect(const JZRect& rc) { m_rect = rc; }
     JZRect rect() const { return m_rect; }
 
 private:

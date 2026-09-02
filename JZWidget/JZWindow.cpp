@@ -22,17 +22,8 @@
 #include <imm.h>
 #include <cmath>
 
-// Per-Monitor V2 DPI 感知 (逻辑像素 * scale = 物理像素 的基础)
-static void jzEnableDpiAwareness()
-{
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    if (!user32)
-        return;
-    auto fn = (BOOL(WINAPI*)(HANDLE))GetProcAddress(user32, "SetProcessDpiAwarenessContext");
-    if (fn)
-        fn((HANDLE)-4);   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-}
-
+// Per-Monitor V2 DPI 感知 (逻辑像素 * scale = 物理像素 的基础):
+// 进程级声明已由 JZWin32Thread 构造完成 (SetProcessDpiAwarenessContext)。
 static UINT jzQueryDpi(HWND hwnd)
 {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -482,8 +473,6 @@ void JZWindow::createWindow()
     if (m_windowCreated)
         return;
     m_windowCreated = true;
-
-    jzEnableDpiAwareness();
 
     int w = width(), h = height();
     m_device->setScale(jzQueryDpi(nullptr) / 96.0f);   // 初次设定 DPI 缩放

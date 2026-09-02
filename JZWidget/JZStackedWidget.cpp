@@ -121,11 +121,6 @@ void JZStackedWidget::setGeometry(int x, int y, int w, int h)
         p->setGeometry(0, 0, w, h);
 }
 
-void JZStackedWidget::setGeometry(const JZRect& r)
-{
-    JZWidget::setGeometry(r);
-}
-
 JZSize JZStackedWidget::sizeHint() const
 {
     JZSize s(0, 0);

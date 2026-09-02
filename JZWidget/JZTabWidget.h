@@ -36,7 +36,6 @@ public:
 
     void resize(int w, int h) override;
     void setGeometry(int x, int y, int w, int h) override;
-    void setGeometry(const JZRect& r) override;
     JZSize sizeHint() const override;
 
 jz_signals:

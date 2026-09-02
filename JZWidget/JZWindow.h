@@ -19,6 +19,7 @@
 //     app.exec();
 //
 // 离屏渲染等高级用法直接使用 JZDisplayDevice (setRootWidget + backend 手动驱动)。
+
 class JZWindow : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZWindow)

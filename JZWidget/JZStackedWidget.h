@@ -25,7 +25,6 @@ public:
 
     // 页面铺满本控件; sizeHint 取所有页面的最大期望尺寸
     void setGeometry(int x, int y, int w, int h) override;
-    void setGeometry(const JZRect& r) override;
     JZSize sizeHint() const override;
     void paintEvent(JZPainterEvent* event) override;
 

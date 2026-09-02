@@ -102,11 +102,6 @@ void JZTabWidget::setGeometry(int x, int y, int w, int h)
     relayout();
 }
 
-void JZTabWidget::setGeometry(const JZRect& r)
-{
-    setGeometry(r.x(), r.y(), r.width(), r.height());
-}
-
 JZSize JZTabWidget::sizeHint() const
 {
     JZSize s = m_stack ? m_stack->sizeHint() : JZSize(0, 0);

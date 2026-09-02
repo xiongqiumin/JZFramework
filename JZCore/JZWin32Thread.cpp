@@ -12,6 +12,11 @@
 JZWin32Thread::JZWin32Thread()
     : JZThread(JZObject::MainThreadInit())
 {
+#ifdef HAS_JZWidget
+    // 进程 DPI 感知 (Per-Monitor V2): 主线程构造即声明, 先于任何原生窗口
+    // (含本线程 message-only window) 与三方库占坑。首次调用生效, 之后失败无害。
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+#endif
     { FILE* f = fopen("c:/Users/7052/Desktop/other/JZFramework/build/diag.log", "a"); if (f) { fprintf(f, "diag: JZWin32Thread ctor enter"); fclose(f); } }
     m_wakeupMsg = WM_APP + 0x4A17;
     createMessageWindow();

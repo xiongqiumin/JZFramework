@@ -6,6 +6,7 @@
 #include "JZString.h"
 #include "JZDebug.h"
 #include "JZStd.h"
+#include "JZUtf8Iterator.h"
 
 JZChar::JZChar()
 {
@@ -148,59 +149,20 @@ JZString JZString::fromStdString(const std::string& stdStr)
 {
     JZString jzStr;
     auto& dest = jzStr.m_chars;
-    const uint8_t* src = reinterpret_cast<const uint8_t*>(stdStr.data());
     size_t len = stdStr.size();
     size_t idx = 0;
 
     dest.clear();
     while (idx < len)
     {
-        uint8_t lead = src[idx];
-        size_t byteCnt = 0;
         char32_t cp = 0;
+        int byteCnt = 0;
 
-        if ((lead & 0x80) == 0x00)
+        // 解码统一走 JZUtf8Iterator (非法首字节/续字节/截断均返回 false)
+        if (!JZUtf8Iterator::decode(stdStr.data(), len, idx, cp, byteCnt))
         {
-            byteCnt = 1;
-            cp = lead;
-        }
-        else if ((lead & 0xE0) == 0xC0)
-        {
-            byteCnt = 2;
-            cp = lead & 0x1F;
-        }
-        else if ((lead & 0xF0) == 0xE0)
-        {
-            byteCnt = 3;
-            cp = lead & 0x0F;
-        }
-        else if ((lead & 0xF8) == 0xF0)
-        {
-            byteCnt = 4;
-            cp = lead & 0x07;
-        }
-        else
-        {
-            jzWarning() << "Invalid UTF-8 encoding: invalid leading byte at index " << idx;
+            jzWarning() << "Invalid UTF-8 encoding: bad byte sequence at index " << idx;
             return JZString();
-        }
-
-        if (idx + byteCnt > len)
-        {
-            jzWarning() << "Invalid UTF-8 encoding: insufficient trailing bytes at index " << idx;
-            return JZString();
-        }
-
-        // 校验并拼接后续字节
-        for (size_t j = 1; j < byteCnt; ++j)
-        {
-            uint8_t b = src[idx + j];
-            if ((b & 0xC0) != 0x80)
-            {
-                jzWarning() << "Invalid UTF-8 encoding: invalid continuation byte at index " << idx + j;
-                return JZString();
-            }
-            cp = (cp << 6) | (b & 0x3F);
         }
 
         // 校验超长编码、代理对、合法Unicode范围
@@ -224,7 +186,7 @@ JZString JZString::fromStdString(const std::string& stdStr)
         }
 
         dest.push_back(JZChar(cp));
-        idx += byteCnt;
+        idx += static_cast<size_t>(byteCnt);
     }
 
     // 保证最后一个是 0
@@ -406,29 +368,7 @@ std::string JZString::toStdString() const
     {
         char32_t cp = m_chars[i].data;
 
-        if (cp <= 0x7F)
-        {
-            stdStr.push_back(static_cast<char>(cp));
-        }
-        else if (cp <= 0x7FF)
-        {
-            stdStr.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
-            stdStr.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        }
-        else if (cp <= 0xFFFF)
-        {
-            stdStr.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
-            stdStr.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            stdStr.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        }
-        else if (cp <= 0x10FFFF)
-        {
-            stdStr.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
-            stdStr.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-            stdStr.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            stdStr.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        }
-        else
+        if (cp > 0x10FFFF)
         {
             // 防御性处理：正常情况下不会进入，因为 fromStdString 已保证码点合法
             jzWarning().nospace() << "JZString::toStdString: invalid code point "
@@ -436,10 +376,11 @@ std::string JZString::toStdString() const
                         << ", replacing with U+FFFD";
 
             // 输出替换字符 U+FFFD 的 UTF-8 编码：EF BF BD
-            stdStr.push_back('\xEF');
-            stdStr.push_back('\xBF');
-            stdStr.push_back('\xBD');
+            stdStr += "\xEF\xBF\xBD";
+            continue;
         }
+
+        JZUtf8Iterator::encode(cp, stdStr);
     }
 
     return stdStr;

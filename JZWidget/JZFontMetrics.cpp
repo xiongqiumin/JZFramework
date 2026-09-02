@@ -1,4 +1,5 @@
 #include "JZFontMetrics.h"
+#include "JZUtf8Iterator.h"
 
 #include <cstdint>
 
@@ -38,16 +39,12 @@ static std::string utf8Prefix(const std::string& text, int charCount)
     int count = 0;
     size_t i = 0;
     while (i < text.size() && count < charCount) {
-        unsigned char lead = static_cast<unsigned char>(text[i]);
-        size_t len = 1;
-        if ((lead & 0x80) == 0x00)       len = 1;
-        else if ((lead & 0xE0) == 0xC0)  len = 2;
-        else if ((lead & 0xF0) == 0xE0)  len = 3;
-        else if ((lead & 0xF8) == 0xF0)  len = 4;
-
+        char32_t cp;
+        int len;
+        if (!JZUtf8Iterator::decode(text.data(), text.size(), i, cp, len))
+            break;                    // 非法/截断字节: 前缀止步于此
         if (i + len > text.size())
-            break;
-
+            break;                    // 截断的多字节序列留在前缀之外
         i += len;
         ++count;
     }
@@ -116,23 +113,15 @@ int JZFontMetrics::estimateWidth(const std::string& text, int pixelSize)
     int w = 0;
     size_t i = 0;
     while (i < text.size()) {
-        unsigned char c = (unsigned char)text[i];
-        uint32_t cp = c;
-        int len = 1;
-        if (c >= 0xF0)      { cp = c & 0x07u; len = 4; }
-        else if (c >= 0xE0) { cp = c & 0x0Fu; len = 3; }
-        else if (c >= 0xC0) { cp = c & 0x1Fu; len = 2; }
-
-        bool valid = true;
-        for (int k = 1; k < len; ++k) {
-            if (i + k >= text.size()) { valid = false; break; }
-            unsigned char cc = (unsigned char)text[i + k];
-            if ((cc & 0xC0u) != 0x80u) { valid = false; break; }
-            cp = (cp << 6) | (cc & 0x3Fu);
+        char32_t cp;
+        int len;
+        if (JZUtf8Iterator::decode(text.data(), text.size(), i, cp, len)) {
+            i += len;
+        } else {
+            cp = static_cast<unsigned char>(text[i]);   // 非法/截断字节: 按单字节窄字符跳过
+            i += 1;
         }
-
         w += (cp >= 0x2E80) ? pixelSize : (pixelSize * 11) / 20;
-        i += valid ? len : 1;
     }
     return w;
 }

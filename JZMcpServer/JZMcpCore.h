@@ -129,7 +129,7 @@ private:
     const Tool* findTool(int toolId) const;
 
     // JSON-RPC 响应/错误构造(纯 Json::Value)
-    static Json::Value makeResult(const Json::Value& id, const Json::Value& result);
+    Json::Value makeResult(const Json::Value& id, const Json::Value& result);
     static Json::Value makeError(const Json::Value& id, int code, const std::string& message);
     static Json::Value makeErrorData(const Json::Value& id, int code,
                                      const std::string& message, const Json::Value& data);

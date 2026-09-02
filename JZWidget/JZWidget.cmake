@@ -78,6 +78,8 @@ set(JZ_SOURCES
     JZDisplayDevice.cpp
     JZStackedWidget.h
     JZStackedWidget.cpp
+    JZTabWidget.h
+    JZTabWidget.cpp
     JZScrollArea.h
     JZScrollArea.cpp
     JZListWidget.h
@@ -108,6 +110,20 @@ convert_to_abs_paths(JZ_SOURCES)
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# ---- AI/MCP 工具桥 (可选): JZMcpServer 模块参与构建时, 把语义树/截图/驱动
+#      暴露为 MCP 工具 (get_ui_state / ui_screenshot / ui_invoke)。
+#      注意: JZMcpServer 需在 jzframework_use_modules 中排在 JZWidget 之前。
+jz_module_exists(JZMcpServer JZ_HAS_MCP_SERVER)
+if(JZ_HAS_MCP_SERVER)
+    set(JZ_AI_SOURCES
+        JZUiMcpTools.h
+        JZUiMcpTools.cpp
+    )
+    convert_to_abs_paths(JZ_AI_SOURCES)
+    target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_AI_SOURCES})
+    message(STATUS "[JZWidget] JZMcpServer enabled -> AI MCP tools (JZUiMcpBridge) added")
+endif()
 
 if(WIN32)
     # GDI+ 绘图后端 (临时方案; 后续如需 GPU 渲染, 按同样接口接入新后端)

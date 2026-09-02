@@ -70,6 +70,36 @@ add_library(MyApp STATIC "")
 jzframework_target_modules(MyApp JZCore JZNet)
 ```
 
+#### 模块系统细节与可选依赖 (条件编译)
+
+每个模块对应一个子目录 + 一个 `<模块名>.cmake` 配置文件，通过 `MODULE_DEPENDS_<模块名>`
+声明依赖，`jzframework_use_modules` 会递归补齐依赖。两遍处理：
+
+1. **声明遍**：给 JZFramework 目标挂 `HAS_<模块名>` 编译定义（所有请求的模块+依赖都会挂），
+   C++ 代码里可用 `#ifdef HAS_JZMcpServer` 做源码级开关；
+2. **添加遍**：按依赖顺序 include 各模块的 `<模块名>.cmake`，模块在其中把自己源文件
+   `target_sources` 到 `${JZ_MODULE_TARGET}`（即 JZFramework 目标）。
+
+**可选依赖**（B 模块存在时，A 模块才编译某些增强源文件）：在 A 的 cmake 文件里用
+`jz_module_exists` 判断，命中后追加源文件：
+
+```cmake
+# JZWidget.cmake 片段: JZMcpServer 参与构建时，把语义树/截图/驱动暴露为 MCP 工具
+jz_module_exists(JZMcpServer JZ_HAS_MCP_SERVER)
+if(JZ_HAS_MCP_SERVER)
+    set(JZ_AI_SOURCES
+        JZUiMcpTools.h
+        JZUiMcpTools.cpp
+    )
+    convert_to_abs_paths(JZ_AI_SOURCES)
+    target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_AI_SOURCES})
+endif()
+```
+
+**注意**：`jz_module_exists` 只认"已添加"的模块，因此可选依赖的模块
+（本例 `JZMcpServer`）必须在 `jzframework_use_modules` 里**排在使用方模块（本例 `JZWidget`）之前**，
+否则判断时它还未被添加。已添加的模块可在 C++ 侧用 `#ifdef HAS_<模块名>` 守卫使用处。
+
 ### 三、核心组件使用
 
 #### 3.1 应用程序入口

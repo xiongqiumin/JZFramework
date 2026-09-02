@@ -14,6 +14,7 @@
 #include "JZTableWidget.h"
 #include "JZImageLabel.h"
 #include "JZStackedWidget.h"
+#include "JZTabWidget.h"
 #include "JZColor.h"
 
 #include <vector>

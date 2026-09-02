@@ -16,7 +16,8 @@ MainWindow::MainWindow(JZWidget* parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel", "Dialog"
+        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel", "Dialog",
+        "TabWidget"
     };
 
     setupUi();
@@ -256,6 +257,39 @@ void MainWindow::buildPages()
         JZPushButton* b = new JZPushButton(page, 140, 36, "Open Dialog");
         connect(&b->sigClicked, this, &MainWindow::onDialogTest);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
+        m_preview->addWidget(page);
+    }
+
+    // ---- TabWidget ----
+    {
+        JZWidget* page = makePage();
+        JZTabWidget* tabs = new JZTabWidget(page);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(tabs, 1);
+
+        JZWidget* tabA = new JZWidget();
+        tabA->setLayout(new JZVBoxLayout(10, 10));
+        JZLabel* la = new JZLabel(tabA);
+        la->setText("Tab A content");
+        la->setAlign(JZAlignCenter);
+        static_cast<JZVBoxLayout*>(tabA->layout())->addWidget(la);
+
+        JZWidget* tabB = new JZWidget();
+        tabB->setLayout(new JZVBoxLayout(10, 10));
+        JZPushButton* bb = new JZPushButton(tabB, 120, 32, "Btn in Tab B");
+        connect(&bb->sigClicked, this, &MainWindow::onLogVoid);
+        static_cast<JZVBoxLayout*>(tabB->layout())->addWidget(bb);
+
+        JZWidget* tabC = new JZWidget();
+        tabC->setLayout(new JZVBoxLayout(10, 10));
+        JZCheckbox* cc = new JZCheckbox(tabC);
+        cc->setText("Checkbox in Tab C");
+        connect(&cc->sigToggled, this, &MainWindow::onLogBool);
+        static_cast<JZVBoxLayout*>(tabC->layout())->addWidget(cc);
+
+        tabs->addTab(tabA, "A");
+        tabs->addTab(tabB, "B");
+        tabs->addTab(tabC, "C");
+        connect(&tabs->currentChanged, this, &MainWindow::onLogInt);
         m_preview->addWidget(page);
     }
 

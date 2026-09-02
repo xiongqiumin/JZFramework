@@ -92,6 +92,57 @@ void JZWin32Thread::dealPaint()
     m_paintTask.clear();
 }
 
+// 一轮循环体: 全量处理框架事件 + 提交脏区绘制, run() 与 execModal() 共用。
+// 轮首复位唤醒标记: 本轮会清空事件队列, 之后新到事件经 wakeUp 重新投递。
+void JZWin32Thread::processAndPaint()
+{
+    m_wakePending = false;
+    processEvents();
+    dealPaint();
+}
+
+// 通用模态循环 (DialogBoxParam 语义): 可见期间泵 Win32 消息 + 处理框架事件 +
+// 绘制脏区; 禁用/恢复 owner (disableOwner=false 供下拉弹层 — 主窗口保持可用,
+// 外点由弹层鼠标抓取吞掉)。hide() 即退出。与 run() 共享 processAndPaint 轮体;
+// 可重入 (模态中再开模态各自独立栈帧, m_paintTask 同线程顺序访问)。
+int JZWin32Thread::execModal(JZWindow* window, bool disableOwner)
+{
+    HWND hwnd = (HWND)window->nativeHandle();
+    HWND owner = hwnd ? GetWindow(hwnd, GW_OWNER) : nullptr;
+    bool ownerDisabled = (disableOwner && owner && IsWindowEnabled(owner));
+    if (ownerDisabled)
+        EnableWindow(owner, FALSE);
+
+    bool quit = false;
+    MSG msg;
+    while (!quit && window->isVisible() && window->nativeHandle())
+    {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)   // 应用退出: 归还消息并结束
+            {
+                PostQuitMessage((int)msg.wParam);
+                quit = true;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (quit || !window->isVisible() || !window->nativeHandle())
+            break;
+
+        processAndPaint();   // 与主循环同一套轮体: 框架事件 + 脏区绘制
+        MsgWaitForMultipleObjectsEx(0, nullptr, 30, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
+    if (ownerDisabled)
+    {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    return 0;
+}
+
 // Message loop with one-shot timer wakeups: each round processes framework
 // events, arms a SetTimer for the next framework timer gap, then blocks in
 // GetMessage pumping ALL thread window messages (JZWindow input/render).
@@ -101,15 +152,10 @@ void JZWin32Thread::run()
     MSG msg;
     while (m_running)
     {
-        // 复位唤醒标记: 本轮 processEvents 会全量处理事件队列, 此刻之后
-        // (轮内/阻塞期间) 新到的事件经 wakeUp 重新投递唤醒消息
-        m_wakePending = false;
-
-        // 1. framework event queue + expired timers
+        // 1. framework event queue + expired timers + paint
         //    invalidate 事件由 JZWindow::event 正常派发时经 invalidate() 合成进
-        //    m_paintTask (不再扫队列抽取), 本轮 dealPaint 统一绘制。
-        processEvents();
-        dealPaint();
+        //    m_paintTask, processAndPaint 统一绘制。
+        processAndPaint();
         if (!m_running)
             break;
 

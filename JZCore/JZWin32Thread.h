@@ -4,6 +4,7 @@
 #include "JZThread.h"
 #include "JZRect.h"
 #include <vector>
+#include <atomic>
 #include "JZWindow.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -37,11 +38,21 @@ private:
     void createMessageWindow();
     void dealPaint();
 
+    // 一轮循环体: 全量处理框架事件 + 提交脏区绘制 (run 与模态循环共用)。
+    // 轮首复位唤醒标记: 本轮清空事件队列, 之后新到事件经 wakeUp 重新投递。
+    void processAndPaint();
+
 public:
     // 合成脏区: JZWindow 收到 invalidate 事件后调这里 (窗口所在主线程),
-    // 同窗口脏区合并进 paint task, 由 run() 每轮 dealPaint 统一绘制提交。
+    // 同窗口脏区合并进 paint task, 由每轮 dealPaint 统一绘制提交。
     // 不主动 wakeUp: 调用发生在 processEvents 派发中, 本轮 dealPaint 紧随其后。
     void invalidate(JZWindow* window, const JZRect& rc);
+
+    // 通用模态循环 (DialogBoxParam 语义): 可见期间泵 Win32 消息 + 处理框架
+    // 事件 + 绘制脏区; 禁用/恢复 owner (disableOwner=false 供下拉弹层用,
+    // 主窗口保持可用, 外点由弹层鼠标抓取吞掉)。hide() 即退出。
+    // 与 run() 共享 processAndPaint 轮体; 可重入 (模态中再开模态独立栈帧)。
+    int execModal(JZWindow* window, bool disableOwner = true);
 
 private:
 

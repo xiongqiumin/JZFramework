@@ -170,8 +170,10 @@ void JZComboBox::showPopup()
     int screenH = (int)(GetSystemMetrics(SM_CYSCREEN) / s);
     JZPoint pos = (below.y() + h <= screenH) ? below : above;
 
-    m_popup->show();            // 惰性创建 + SetCapture
+    // 先定位再显示: moveScreen 惰性记录, createWindow 时作为初始位置
+    // (ShowWindow 前就位, 无闪烁)
     m_popup->moveScreen(pos.x(), pos.y());
+    m_popup->show();            // 惰性创建 + SetCapture
     m_popupList->setFocus();    // 键盘导航交给列表
     m_popup->execModal(false);  // 不禁用 owner; 外点由弹层抓取吞掉
 }

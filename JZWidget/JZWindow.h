@@ -49,11 +49,19 @@ public:
     void showMaximized();
     void showNormal();
 
-    // 屏幕逻辑坐标定位 (popup 等自定位窗口; 物理像素换算在内部)
+    // 屏幕逻辑坐标定位 (popup 等自定位窗口; 物理像素换算在内部)。
+    // 惰性: 窗口未创建时只记录位置, createWindow 时作为原生窗口初始位置;
+    // 显式定位会关闭显示自动居中 (等价 Qt 的 WA_Moved)。
     void moveScreen(int x, int y);
 
-    // 通用模态循环: 可见期间泵 Win32 消息 + 框架事件 + 渲染;
+    // 显示时自动定位 (Modal/Popup 默认开): 未显式 moveScreen 定位时相对
+    // owner 窗口居中 (无 owner 则 CW_USEDEFAULT)。Normal 窗口不受影响。
+    void setAutoPosition(bool on) { m_autoPosition = on; }
+    bool isAutoPosition() const { return m_autoPosition; }
+
+    // 通用模态循环: 可见期间泵 Win32 消息 + 处理框架事件 + 绘制脏区;
     // 禁用/恢复 owner (disableOwner=false 时不禁用, 供下拉弹层用)。hide() 即退出。
+    // 循环体在 JZWin32Thread (与主循环共享 processAndPaint 轮体), 此处仅转发。
     int execModal(bool disableOwner = true);
 
     // 原生窗口句柄: Win32 下即 HWND, 窗口未创建 (惰性) 时返回 nullptr。
@@ -117,6 +125,12 @@ protected:
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (WM_SETFOCUS 时建立)
+
+    // 显示定位: 显式 moveScreen 记录 (等价 Qt WA_Moved) 优先于自动居中
+    bool m_autoPosition = true;         // 显示时相对 owner 居中 (Modal/Popup)
+    bool m_hasScreenPos = false;        // 用户显式 moveScreen 过
+    int  m_screenX = 0;                 // 记录的屏幕逻辑坐标 (窗口未创建时暂存)
+    int  m_screenY = 0;
 };
 
 #endif // JZ_WINDOW_H_

@@ -515,9 +515,27 @@ void JZWindow::createWindow()
             owner = (HWND)pw->nativeHandle();
     }
 
+    // 初始位置 (等价 Qt: create_sys 用 crect 初始化, 出现即就位无跳变):
+    //   1. 显式 moveScreen 记录的屏幕逻辑坐标 (WA_Moved 等价) —— 优先;
+    //   2. Modal/Popup 自动定位: 相对 owner 窗口居中;
+    //   3. 其余 (Normal 主窗口等) CW_USEDEFAULT 交给 Windows 级联。
+    int posX = CW_USEDEFAULT, posY = CW_USEDEFAULT;
+    float s = m_device->scale();
+    if (m_hasScreenPos) {
+        posX = (int)std::lround(m_screenX * s);
+        posY = (int)std::lround(m_screenY * s);
+    } else if (m_autoPosition && m_windowType != Normal && owner) {
+        RECT orc;
+        if (GetWindowRect(owner, &orc)) {
+            int physW = rc.right - rc.left, physH = rc.bottom - rc.top;
+            posX = orc.left + ((orc.right - orc.left) - physW) / 2;
+            posY = orc.top + ((orc.bottom - orc.top) - physH) / 2;
+        }
+    }
+
     std::wstring wtitle = jzUtf8ToUtf16(m_title);
     m_hwnd = CreateWindowExW(exStyle, L"JZWindowWndClass", wtitle.c_str(), style,
-                             CW_USEDEFAULT, CW_USEDEFAULT,
+                             posX, posY,
                              rc.right - rc.left, rc.bottom - rc.top,
                              owner, nullptr, GetModuleHandleW(nullptr), this);
     if (m_hwnd) {
@@ -659,6 +677,13 @@ bool JZWindow::event(JZEvent* e)
             mt->invalidate(this, ev->rect);
         return true;
     }
+
+    // 队列派发的合成鼠标 (postEvent, 如 AI 驱动的点击): 走与 WndProc 实时
+    // 路径同构的命中测试分发。点击引发的槽函数在此派发栈内执行 —— 其中的
+    // 模态循环不阻塞调用方 (如 AI 驱动已先收尾回报)。
+    if (e->type() == JZEvent_mouse)
+        return onWindowProcess(e);
+
     return JZWidget::event(e);
 }
 
@@ -805,9 +830,15 @@ void JZWindow::showNormal()
         ShowWindow((HWND)m_hwnd, SW_RESTORE);
 }
 
-// 屏幕逻辑坐标定位 (popup 等自定位窗口): 物理像素 = 逻辑 * scale
+// 屏幕逻辑坐标定位 (popup 等自定位窗口): 物理像素 = 逻辑 * scale。
+// 惰性: 窗口未创建时只记录 (createWindow 时作为初始位置), 显式定位会关闭
+// 显示自动居中 (等价 Qt 的 WA_Moved)。
 void JZWindow::moveScreen(int x, int y)
 {
+    m_screenX = x;
+    m_screenY = y;
+    m_hasScreenPos = true;
+    m_autoPosition = false;
     if (!m_hwnd || !m_device)
         return;
     float s = m_device->scale();
@@ -831,45 +862,13 @@ JZPoint JZWidget::mapToScreen(const JZPoint& pos) const
 }
 
 // ==================== 通用模态循环 ====================
-// JZDialog::exec 与 popup 弹层共用: 可见期间泵 Win32 消息 + 框架事件 + 渲染,
-// hide() 即退出。owner 禁用/恢复 (DialogBoxParam 语义; disableOwner=false
-// 供下拉弹层用 — 主窗口保持可用, 外点由弹层鼠标抓取吞掉)。
+// JZDialog::exec 与 popup 弹层共用。循环体位于 JZWin32Thread (与主循环共享
+// processAndPaint 轮体: 泵 Win32 消息 + 框架事件 + 脏区绘制, owner 禁用/
+// 恢复为 DialogBoxParam 语义), 此处仅转发, 控件层无需感知线程。
 int JZWindow::execModal(bool disableOwner)
 {
-    HWND owner = m_hwnd ? GetWindow((HWND)m_hwnd, GW_OWNER) : nullptr;
-    bool ownerDisabled = (disableOwner && owner && IsWindowEnabled(owner));
-    if (ownerDisabled)
-        EnableWindow(owner, FALSE);
-
-    bool quit = false;
-    MSG msg;
-    while (!quit && isVisible() && m_hwnd)
-    {
-        while (!quit && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (msg.message == WM_QUIT)   // 应用退出: 归还消息并结束
-            {
-                PostQuitMessage((int)msg.wParam);
-                quit = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        if (quit || !isVisible() || !m_hwnd)
-            break;
-
-        jzApp->processEvents();   // 框架事件队列 + 到期定时器
-        doPaint(rect());
-        MsgWaitForMultipleObjectsEx(0, nullptr, 30, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-    }
-
-    if (ownerDisabled)
-    {
-        EnableWindow(owner, TRUE);
-        SetActiveWindow(owner);
-    }
-    return 0;
+    auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread());
+    return mt ? mt->execModal(this, disableOwner) : 0;
 }
 
 // ==================== 键盘 ====================

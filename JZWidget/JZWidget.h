@@ -108,8 +108,8 @@ public:
 
     // 几何
     JZRect geometry() const;
+    void setGeometry(const JZRect& r);
     virtual void setGeometry(int x, int y, int w, int h);
-    virtual void setGeometry(const JZRect& r);
 
     // 可见性
     void setVisible(bool visible);

@@ -35,7 +35,15 @@ public:
 
     // 绘制原点: 构造时按 widget 全局坐标自动设置, 提供 setOrigin 供手动偏移。
     void setOrigin(int ox, int oy) { m_ox = ox; m_oy = oy; }
-    void setClip(const JZRect& clip);   // 裁剪属于绘制流状态, 变更时发 Push
+
+    // 裁剪属于绘制流状态, 变更时发 Push。
+    //   setClip(rc)      rc 为**显示(窗口)坐标** (与构造函数里的 m_clip 同一空间);
+    //                    供 JZDisplayDevice 这类按整屏脏区设裁剪的调用方使用。
+    //   setClipLocal(rc) rc 为**控件本地坐标**, 与 drawXxx 各接口一致;
+    //                    paintEvent 内部一律用这个。
+    // 两者不可混用: 把本地坐标当全局传, 裁剪区会落到窗口左上角, 内容被整片裁掉。
+    void setClip(const JZRect& clip);
+    void setClipLocal(const JZRect& local);
 
     void drawLine(int x1, int y1, int x2, int y2);
     void drawRect(int x, int y, int w, int h);

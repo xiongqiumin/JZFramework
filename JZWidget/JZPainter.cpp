@@ -100,6 +100,15 @@ void JZPainter::setClip(const JZRect& clip)
     m_layer->addTask(t);
 }
 
+void JZPainter::setClipLocal(const JZRect& local)
+{
+    // 裁剪在绘制流里一律以显示(窗口)坐标表示: isCulled 拿它减去图元的显示包围盒,
+    // 后端 replayTasks 直接 g.SetClip(它 * scale)。所以本地坐标必须先平移,
+    // 否则裁剪区会被放到窗口左上角, 控件内容整片消失。
+    setClip(JZRect(m_ox + local.x(), m_oy + local.y(),
+                   local.width(), local.height()));
+}
+
 void JZPainter::save()
 {
     // save 语义: 绘制流栈 +1 (Push 携带当前状态, 状态内容不变)。

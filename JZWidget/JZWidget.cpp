@@ -397,12 +397,6 @@ void JZWidget::invalidate(const JZRect &rc)
     jzApp->postEvent(window, event);
 }
 
-bool JZWidget::sendEvent(JZEvent* event)
-{
-    // 调用虚 event() (参数名遮蔽成员函数, 须显式限定)
-    return this->JZWidget::event(event);
-}
-
 void JZWidget::update()
 {
     invalidate(rect());

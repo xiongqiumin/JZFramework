@@ -7,7 +7,8 @@
 // 顶层窗口 = 原生窗口宿主 + 根控件。
 //   - 组合一个 JZDisplayDevice (渲染调度), 自身作为渲染树根;
 //   - 拥有原生 Win32 窗口的创建/销毁、WndProc 消息循环、显隐、DPI 响应;
-//     鼠标/键盘消息经 逻辑像素 换算后交给设备分发到控件树 (ImGui 只负责绘图);
+//     WndProc 把鼠标/键盘消息翻译成 JZEvent 后经 onWindowProcess 分发到控件树
+//     (ImGui 只负责绘图);
 //   - 窗口惰性创建: 构造零系统资源, 首次 show() (showEvent) 才创建并显示。
 //
 // 用法:
@@ -42,17 +43,20 @@ public:
     JZWidget* focusWidget() const { return m_focusWidget; }
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
-    // 输入分发 (由 WndProc 调用, 命中测试后投递到控件 / 转发给焦点控件)
-    bool dispatchMouse(JZMouseEvent::MouseType t, JZMouseEvent::Button b,
-                       const JZPoint& global, int wheelDelta);
-    bool dispatchKey(uint32_t key, bool press, bool repeat);
-    bool dispatchChar(const std::string& text);
-    void postIme(JZImeEvent* ev);
-    void onWindowFocus(bool got);   // WM_SETFOCUS/WM_KILLFOCUS: 管理 IMC + 派发焦点事件
+    // 事件处理统一入口: WndProc 把 Win32 消息翻译成 JZEvent 后调到这里,
+    // 按类型分发 (鼠标 -> 命中测试, 键盘 -> 从焦点逐级上传, IME -> 焦点控件)。
+    // 返回 true 表示事件已被处理 (WndProc 不再转交 DefWindowProc)。
+    bool onWindowProcess(JZEvent* event);
 
     // ---- 由 WndProc / 对话框调用 ----
     void windowResized(int logicalW, int logicalH);   // 原生窗口尺寸变化 (WM_SIZE)
     void dpiChanged();                                 // 显示器 DPI 变化 (WM_DPICHANGED)
+
+    // WM_CLOSE 入口: 触发框架关闭流程 closeEvent, 重写方 accept/ignore 表态,
+    // 这里统一执行关闭动作。返回是否真的关闭。
+    bool requestClose();
+    // 原生窗口已销毁 (WM_DESTROY): 清宿主状态避免句柄悬空, 之后 show() 可重建。
+    void nativeDestroyed();
 
 protected:
     // 显隐: show() 首次触发 showEvent -> 惰性创建原生窗口并显示;
@@ -64,6 +68,12 @@ protected:
     // 命中测试: 返回包含全局逻辑坐标的最深层可见控件 (不含子窗口/根自身)
     JZWidget* hitTest(const JZPoint& global);
     JZWidget* hitTestRec(JZWidget* w, const JZPoint& global);
+
+    // 输入分发 (onWindowProcess 按事件类型调用)
+    bool dispatchMouse(JZMouseEvent* ev);   // 命中测试定位控件, 回填 localPos 后投递
+    bool dispatchKey(JZKeyEvent* ev);       // 键盘: 从焦点控件起, 未处理的键逐级向上传播
+    void dispatchIme(JZImeEvent* ev);       // IME: 投递给焦点控件
+    void onWindowFocus(bool got);           // 窗口获/失焦: 管理 IMC + 派发焦点进/出事件
 
 protected:
     void createWindow();

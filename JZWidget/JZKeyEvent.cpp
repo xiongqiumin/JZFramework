@@ -7,6 +7,7 @@ JZKeyEvent::JZKeyEvent(uint32_t key, uint32_t modifiers, const std::string& text
     , m_text(text)
     , m_repeat(repeat)
 {
+    ignore();   // 键盘默认未接收: 未处理的键沿父链逐级上传 (JZWindow::dispatchKey)
 }
 
 uint32_t JZKeyEvent::key() const
@@ -37,19 +38,4 @@ bool JZKeyEvent::isPress() const
 void JZKeyEvent::setPress(bool press)
 {
     m_press = press;
-}
-
-bool JZKeyEvent::isAccepted() const
-{
-    return m_accepted;
-}
-
-void JZKeyEvent::accept()
-{
-    m_accepted = true;
-}
-
-void JZKeyEvent::ignore()
-{
-    m_accepted = false;
 }

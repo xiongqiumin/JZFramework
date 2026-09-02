@@ -38,17 +38,12 @@ public:
     bool ctrl()  const { return (m_modifiers & CtrlModifier)  != 0; }
     bool alt()   const { return (m_modifiers & AltModifier)   != 0; }
 
-    bool isAccepted() const;
-    void accept();
-    void ignore();
-
 private:
     uint32_t    m_key = 0;
     uint32_t    m_modifiers = NoModifier;
     std::string m_text;
     bool        m_repeat = false;
     bool        m_press = true;
-    bool        m_accepted = false;
 };
 
 #endif // JZ_KEY_EVENT_H_

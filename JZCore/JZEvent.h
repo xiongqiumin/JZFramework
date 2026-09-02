@@ -17,6 +17,7 @@ enum {
     JZEvent_resize,
     JZEvent_key,
     JZEvent_mouse,
+    JZEvent_close,
     JZEvent_user = 1000,
 };
 
@@ -30,8 +31,16 @@ public:
 
     int type() const;
 
+    // 事件表态 (Qt 语义): 默认接受, handler 里 ignore() 才否决。
+    // "无人处理需逐级上传"的事件类型 (键盘/IME) 在各自构造里改为默认 ignore(),
+    // 由处理成功的 handler accept() 表示已消费。
+    bool isAccepted() const { return m_accepted; }
+    void accept() { m_accepted = true; }
+    void ignore() { m_accepted = false; }
+
 protected:
     int m_type;
+    bool m_accepted = true;
 };
 
 class JZTimerEvent : public JZEvent

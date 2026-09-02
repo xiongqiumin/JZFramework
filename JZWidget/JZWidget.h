@@ -133,15 +133,15 @@ public:
     void update();
     void invalidate(const JZRect &rc);
 
-    // 事件投递 (显示设备向控件树分发鼠标/键盘事件用)
-    bool sendEvent(JZEvent* event);
+    // 事件分发入口 (JZObject::event 重写, Qt 风格 public):
+    // 按事件类型分派到 paintEvent/mouseXxxEvent/keyXxxEvent/imeEvent/focusXxxEvent。
+    virtual bool event(JZEvent* event) override;
 
     // 预定义属性
     virtual void setProperty(const std::string& name, const JZVariant& value) override;
     virtual JZVariant property(const std::string& name) const override;
 
 protected:
-    virtual bool event(JZEvent* event) override;
     virtual void showEvent(JZShowEvent* event);
     virtual void hideEvent(JZHideEvent* event);
     virtual void closeEvent(JZCloseEvent* event);

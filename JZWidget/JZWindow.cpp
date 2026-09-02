@@ -122,8 +122,9 @@ JZWindow::~JZWindow()
 }
 
 // ==================== WndProc ====================
-// 窗口消息处理: 鼠标/键盘 -> 逻辑像素 -> 设备分发到控件树。
-// ImGui (纯绘图后端) 不接触任何消息。
+// 平台翻译层: 输入类消息 (鼠标/键盘/字符/IME/窗口焦点) 翻译成 JZEvent 后,
+// 统一交给 JZWindow::onWindowProcess 分发到控件树; 窗口生命周期消息
+// (WM_SIZE/WM_DPICHANGED/WM_PAINT/WM_CLOSE) 不对应 JZEvent 类型, 直接处理。
 
 // UTF-16 (wchar_t) -> UTF-8 (IME / WM_CHAR 用)
 static std::string jzUtf16ToUtf8(const wchar_t* w, int len)
@@ -137,19 +138,38 @@ static std::string jzUtf16ToUtf8(const wchar_t* w, int len)
     return out;
 }
 
+// Shift/Ctrl/Alt 当前按下状态 -> JZKeyEvent::Modifier 位组合
+static uint32_t jzCurrentKeyModifiers()
+{
+    uint32_t mods = JZKeyEvent::NoModifier;
+    if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= JZKeyEvent::ShiftModifier;
+    if (GetKeyState(VK_CONTROL) & 0x8000) mods |= JZKeyEvent::CtrlModifier;
+    if (GetKeyState(VK_MENU)    & 0x8000) mods |= JZKeyEvent::AltModifier;
+    return mods;
+}
+
+// 鼠标消息 -> JZMouseEvent (物理像素 -> 逻辑像素; localPos 由 dispatchMouse 命中后回填)
+static bool jzSendMouseEvent(JZWindow* self, JZMouseEvent::MouseType t, JZMouseEvent::Button b,
+                             LPARAM lParam, int wheelDelta = 0)
+{
+    JZMouseEvent ev(t, b, jzPhysicalToLogical(lParam, self->device()->scale()),
+                    JZPoint(), wheelDelta);
+    return self->onWindowProcess(&ev);
+}
+
 static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    JZWindow* self = (JZWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    if (!self)
-        return DefWindowProcW(hwnd, msg, wParam, lParam);
-
-    switch (msg) {
-    case WM_CREATE: {
+    if (msg == WM_CREATE) {
         auto* cs = (CREATESTRUCTW*)lParam;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         return 0;
     }
 
+    JZWindow* self = (JZWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (!self)
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    
+    switch (msg) {
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED && lParam != 0) {
             unsigned physW = LOWORD(lParam);
@@ -170,74 +190,83 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
         return 0;
 
-    // ---- 鼠标: 物理像素 / scale -> 逻辑像素, 命中测试后投递给控件 ----
+    // ---- 鼠标: 物理像素 / scale -> 逻辑像素, 翻译成 JZMouseEvent 走 onWindowProcess ----
     case WM_MOUSEMOVE:
-        self->dispatchMouse(JZMouseEvent::Move, JZMouseEvent::NoButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Move, JZMouseEvent::NoButton, lParam))
+            return 0;
+        break;
 
     case WM_LBUTTONDOWN:
-        self->dispatchMouse(JZMouseEvent::Press, JZMouseEvent::LeftButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Press, JZMouseEvent::LeftButton, lParam))
+            return 0;
+        break;
 
     case WM_LBUTTONUP:
-        self->dispatchMouse(JZMouseEvent::Release, JZMouseEvent::LeftButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Release, JZMouseEvent::LeftButton, lParam))
+            return 0;
+        break;
 
     case WM_RBUTTONDOWN:
-        self->dispatchMouse(JZMouseEvent::Press, JZMouseEvent::RightButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Press, JZMouseEvent::RightButton, lParam))
+            return 0;
+        break;
 
     case WM_RBUTTONUP:
-        self->dispatchMouse(JZMouseEvent::Release, JZMouseEvent::RightButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Release, JZMouseEvent::RightButton, lParam))
+            return 0;
+        break;
 
     case WM_MBUTTONDOWN:
-        self->dispatchMouse(JZMouseEvent::Press, JZMouseEvent::MiddleButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Press, JZMouseEvent::MiddleButton, lParam))
+            return 0;
+        break;
 
     case WM_MBUTTONUP:
-        self->dispatchMouse(JZMouseEvent::Release, JZMouseEvent::MiddleButton,
-                            jzPhysicalToLogical(lParam, self->device()->scale()), 0);
-        return 0;
+        if (jzSendMouseEvent(self, JZMouseEvent::Release, JZMouseEvent::MiddleButton, lParam))
+            return 0;
+        break;
 
     case WM_MOUSEWHEEL: {
         POINT pt = { (int16_t)LOWORD(lParam), (int16_t)HIWORD(lParam) };
         ScreenToClient(hwnd, &pt);
         float s = self->device()->scale();
-        JZPoint logical((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
-        self->dispatchMouse(JZMouseEvent::Wheel, JZMouseEvent::NoButton, logical,
-                            GET_WHEEL_DELTA_WPARAM(wParam) / 120);
-        return 0;
+        JZMouseEvent ev(JZMouseEvent::Wheel, JZMouseEvent::NoButton,
+                        JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s)),
+                        JZPoint(), GET_WHEEL_DELTA_WPARAM(wParam) / 120);
+        if (self->onWindowProcess(&ev))
+            return 0;
+        break;
     }
 
-    // ---- 键盘: 转发给当前焦点控件 ----
+    // ---- 键盘: 翻译成 JZKeyEvent, 从焦点控件起逐级向上传播 ----
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if ((UINT)wParam == VK_PROCESSKEY)
             break;   // IME 接管, 交给 WM_IME_*
-        if (self->dispatchKey((uint32_t)wParam, true, (lParam & (1u << 30)) != 0))
-            return 0;
+        {
+            JZKeyEvent ev((uint32_t)wParam, jzCurrentKeyModifiers(), std::string(),
+                          (lParam & (1u << 30)) != 0);
+            if (self->onWindowProcess(&ev))
+                return 0;
+        }
         break;
 
     case WM_KEYUP:
-    case WM_SYSKEYUP:
-        if (self->dispatchKey((uint32_t)wParam, false, false))
+    case WM_SYSKEYUP: {
+        JZKeyEvent ev((uint32_t)wParam, jzCurrentKeyModifiers(), std::string(), false);
+        ev.setPress(false);
+        if (self->onWindowProcess(&ev))
             return 0;
         break;
+    }
 
-    // 直接键入字符 (ASCII / 半角): IME 中文走 WM_IME_COMPOSITION, 不走这里
+    // 直接键入字符 (ASCII / 半角): 同样是 JZKeyEvent (text 非空); IME 中文走 WM_IME_COMPOSITION
     case WM_CHAR: {
         if ((wchar_t)wParam == VK_PROCESSKEY)
             return 0;
         wchar_t wch = (wchar_t)wParam;
-        std::string utf8 = jzUtf16ToUtf8(&wch, 1);
-        if (self->dispatchChar(utf8))
+        JZKeyEvent ev(0, jzCurrentKeyModifiers(), jzUtf16ToUtf8(&wch, 1), false);
+        if (self->onWindowProcess(&ev))
             return 0;
         break;
     }
@@ -245,13 +274,13 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     // ---- 输入法 (IME) ----
     case WM_IME_STARTCOMPOSITION: {
         JZImeEvent ev(JZImeEvent::StartComposition);
-        self->postIme(&ev);
+        self->onWindowProcess(&ev);
         return 0;
     }
 
     case WM_IME_ENDCOMPOSITION: {
         JZImeEvent ev(JZImeEvent::EndComposition);
-        self->postIme(&ev);
+        self->onWindowProcess(&ev);
         return 0;
     }
 
@@ -259,7 +288,7 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         if (wParam == IMN_OPENCANDIDATE || wParam == IMN_CHANGECANDIDATE ||
             wParam == IMN_CLOSECANDIDATE) {
             JZImeEvent ev(JZImeEvent::Candidate);
-            self->postIme(&ev);
+            self->onWindowProcess(&ev);
         }
         return 0;
 
@@ -309,21 +338,30 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
             ImmReleaseContext(hwnd, hImc);
         }
-        self->postIme(&ev);
+        self->onWindowProcess(&ev);
         return 0;   // 关键: 不转发 DefWindowProc, 否则 IME 默认行为干扰
     }
 
-    case WM_SETFOCUS:
-        self->onWindowFocus(true);
+    // ---- 窗口焦点: 翻译成 focusIn/focusOut 事件 ----
+    case WM_SETFOCUS: {
+        JZEvent ev(JZEvent_focusIn);
+        self->onWindowProcess(&ev);
         return 0;
+    }
 
-    case WM_KILLFOCUS:
-        self->onWindowFocus(false);
+    case WM_KILLFOCUS: {
+        JZEvent ev(JZEvent_focusOut);
+        self->onWindowProcess(&ev);
         return 0;
+    }
 
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        self->requestClose();   // 走框架关闭流程 (closeEvent 可拦截, 不直接销毁)
         return 0;
+
+    case WM_DESTROY:
+        self->nativeDestroyed();
+        break;
 
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -403,11 +441,19 @@ void JZWindow::createWindow()
     DWORD style = WS_OVERLAPPEDWINDOW;
     RECT rc = jzWindowRectForClient(nullptr, style, w, h, m_device->scale());
 
+    // 顶层窗口的 hWndParent 即 owner (DialogBoxParam 模态 / Z 序 / 共命运的基础):
+    // 取父链上所属窗口 (对话框以父级所在的窗口为 owner)。
+    HWND owner = nullptr;
+    if (JZWidget* p = parentWidget()) {
+        if (JZWindow* pw = p->window())
+            owner = (HWND)pw->nativeHandle();
+    }
+
     std::wstring wtitle = jzUtf8ToUtf16(m_title);
     m_hwnd = CreateWindowExW(0, L"JZWindowWndClass", wtitle.c_str(), style,
                              CW_USEDEFAULT, CW_USEDEFAULT,
                              rc.right - rc.left, rc.bottom - rc.top,
-                             nullptr, nullptr, GetModuleHandleW(nullptr), this);
+                             owner, nullptr, GetModuleHandleW(nullptr), this);
     if (m_hwnd) {
         unsigned physW = (unsigned)std::lround(w * m_device->scale());
         unsigned physH = (unsigned)std::lround(h * m_device->scale());
@@ -482,11 +528,11 @@ void JZWindow::setFocusWidget(JZWidget* w)
     m_focusWidget = w;
     if (old) {
         JZEvent ev(JZEvent_focusOut);
-        old->sendEvent(&ev);
+        old->event(&ev);
     }
     if (w) {
         JZEvent ev(JZEvent_focusIn);
-        w->sendEvent(&ev);
+        w->event(&ev);
     }
 }
 
@@ -516,57 +562,70 @@ JZWidget* JZWindow::hitTestRec(JZWidget* w, const JZPoint& global)
     return nullptr;
 }
 
-// ==================== 输入分发 ====================
-bool JZWindow::dispatchMouse(JZMouseEvent::MouseType t, JZMouseEvent::Button b,
-                             const JZPoint& global, int wheelDelta)
+// ==================== 事件统一入口 ====================
+// WndProc 把平台消息翻译成 JZEvent 后调到这里, 按类型分发:
+//   鼠标 -> 命中测试定位目标控件;  键盘 -> 从焦点控件逐级向上传播;
+//   IME  -> 焦点控件;              窗口焦点 -> onWindowFocus (IMC + 焦点事件)。
+// 返回 true 表示事件已被处理, WndProc 不再转交 DefWindowProc。
+bool JZWindow::onWindowProcess(JZEvent* event)
 {
-    JZWidget* hit = hitTest(global);
+    switch (event->type()) {
+    case JZEvent_mouse:
+        return dispatchMouse((JZMouseEvent*)event);
+    case JZEvent_key:
+        return dispatchKey((JZKeyEvent*)event);
+    case JZEvent_ime:
+        dispatchIme((JZImeEvent*)event);
+        return true;
+    case JZEvent_focusIn:
+        onWindowFocus(true);
+        return true;
+    case JZEvent_focusOut:
+        onWindowFocus(false);
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ==================== 输入分发 ====================
+// 鼠标: 命中测试定位最深可见控件, 回填 localPos 后投递; 左键按下同时切换焦点。
+bool JZWindow::dispatchMouse(JZMouseEvent* ev)
+{
+    JZWidget* hit = hitTest(ev->globalPos());
     if (hit) {
         JZRect gr = hit->mapToGlobal(hit->rect());
-        JZPoint local(global.x() - gr.left(), global.y() - gr.top());
-        JZMouseEvent ev(t, b, global, local, wheelDelta);
-        hit->sendEvent(&ev);
+        ev->setLocalPos(JZPoint(ev->globalPos().x() - gr.left(),
+                                ev->globalPos().y() - gr.top()));
+        hit->event(ev);
         // 左键按下: 把焦点交给命中控件 (点击切换焦点)
-        if (t == JZMouseEvent::Press && b == JZMouseEvent::LeftButton)
+        if (ev->mouseType() == JZMouseEvent::Press && ev->button() == JZMouseEvent::LeftButton)
             hit->setFocus();
-    } else if (t == JZMouseEvent::Press && b == JZMouseEvent::LeftButton) {
+    } else if (ev->mouseType() == JZMouseEvent::Press && ev->button() == JZMouseEvent::LeftButton) {
         setFocusWidget(nullptr);   // 点空白: 清空焦点
     }
     return true;
 }
 
-bool JZWindow::dispatchKey(uint32_t key, bool press, bool repeat)
+// 键盘: 从焦点控件开始, 未被 accept 的键逐级向上 (父控件) 传播,
+// 直到被接受或整条控件链都不要 -> 返回 false, 由 WndProc 转交 DefWindowProc
+// (Tab / Alt 菜单等系统默认行为)。
+bool JZWindow::dispatchKey(JZKeyEvent* ev)
 {
-    if (!m_focusWidget)
-        return false;
-    uint32_t mods = JZKeyEvent::NoModifier;
-    if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= JZKeyEvent::ShiftModifier;
-    if (GetKeyState(VK_CONTROL) & 0x8000) mods |= JZKeyEvent::CtrlModifier;
-    if (GetKeyState(VK_MENU)    & 0x8000) mods |= JZKeyEvent::AltModifier;
-    JZKeyEvent ev(key, mods, std::string(), repeat);
-    ev.setPress(press);
-    m_focusWidget->sendEvent(&ev);
-    return true;
+    for (JZWidget* w = m_focusWidget; w; w = w->parentWidget()) {
+        ev->ignore();   // 每一级重新给处理机会
+        w->event(ev);
+        if (ev->isAccepted())
+            return true;
+    }
+    return false;
 }
 
-bool JZWindow::dispatchChar(const std::string& text)
-{
-    if (!m_focusWidget)
-        return false;
-    uint32_t mods = JZKeyEvent::NoModifier;
-    if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= JZKeyEvent::ShiftModifier;
-    if (GetKeyState(VK_CONTROL) & 0x8000) mods |= JZKeyEvent::CtrlModifier;
-    if (GetKeyState(VK_MENU)    & 0x8000) mods |= JZKeyEvent::AltModifier;
-    JZKeyEvent ev(0, mods, text, false);
-    ev.setPress(true);
-    m_focusWidget->sendEvent(&ev);
-    return true;
-}
-
-void JZWindow::postIme(JZImeEvent* ev)
+// IME: 组字/上屏/候选事件只投递给焦点控件。
+void JZWindow::dispatchIme(JZImeEvent* ev)
 {
     if (m_focusWidget)
-        m_focusWidget->sendEvent(ev);
+        m_focusWidget->event(ev);
 }
 
 // WM_SETFOCUS / WM_KILLFOCUS: 窗口级管理 IMC, 并派发焦点进/出事件。
@@ -583,14 +642,36 @@ void JZWindow::onWindowFocus(bool got)
         }
         if (m_focusWidget) {
             JZEvent ev(JZEvent_focusIn);
-            m_focusWidget->sendEvent(&ev);
+            m_focusWidget->event(&ev);
         }
     } else {
         if (m_focusWidget) {
             JZEvent ev(JZEvent_focusOut);
-            m_focusWidget->sendEvent(&ev);
+            m_focusWidget->event(&ev);
         }
         ImmAssociateContext((HWND)m_hwnd, nullptr);  // 窗口失焦: 断开 IMC
     }
+}
+
+// ==================== 关闭流程 ====================
+// WM_CLOSE -> 框架关闭流程: 触发 closeEvent, 重写方以 accept/ignore 表态,
+// 真正的关闭动作 (销毁原生窗口) 统一在这里执行。返回是否真的关闭。
+// (JZDialog::closeEvent 会 ignore() 并转为 reject: 只隐藏、不销毁, 可复用。)
+bool JZWindow::requestClose()
+{
+    JZCloseEvent ev;
+    closeEvent(&ev);
+    if (ev.isAccepted() && m_hwnd)
+        DestroyWindow((HWND)m_hwnd);   // -> WM_DESTROY -> nativeDestroyed
+    return ev.isAccepted();
+}
+
+// 原生窗口已销毁 (WM_DESTROY): 清宿主状态避免句柄悬空;
+// 之后 show() 经 createWindow 会重新创建。
+void JZWindow::nativeDestroyed()
+{
+    m_hwnd = nullptr;
+    m_windowCreated = false;
+    m_focusWidget = nullptr;
 }
 

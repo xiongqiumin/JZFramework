@@ -63,11 +63,6 @@ public:
     int compCursor() const { return m_compCursor; }
     void setCompCursor(int pos) { m_compCursor = pos; }
 
-    // 接受/忽略: 与 JZKeyEvent 一致, 便于消息层判断是否继续走默认处理
-    bool isAccepted() const;
-    void accept();
-    void ignore();
-
     // ---- UTF-16 下标 <-> 码点下标 换算 ----
     static int utf16Length(const std::string& utf8);
     static int utf16ToCodePointIndex(const std::string& utf8, int utf16Index);
@@ -79,7 +74,6 @@ private:
     std::string m_result;
     std::vector<unsigned char> m_attr;
     int m_compCursor = 0;
-    bool m_accepted = false;
 };
 
 // 组字字符属性 (与 IMM 的 ATTR_* 一致), 便于控件决定下划线/反显样式

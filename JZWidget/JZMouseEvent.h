@@ -30,6 +30,7 @@ public:
     Button button() const { return m_button; }
     const JZPoint& globalPos() const { return m_globalPos; }
     const JZPoint& localPos() const { return m_localPos; }
+    void setLocalPos(const JZPoint& p) { m_localPos = p; }   // 分发层命中测试后回填
     int wheelDelta() const { return m_wheelDelta; }   // 滚轮格数 (120 原始增量 / 120)
 
 private:

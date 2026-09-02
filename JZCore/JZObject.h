@@ -87,6 +87,9 @@ public:
 
     void deleteLater();
 
+    // 事件分发入口 (Qt 风格 public): 窗口/显示设备直接向对象投递 JZEvent 时调用
+    virtual bool event(JZEvent *e);
+
 jz_signals:
     JZSignalDestory sigDestroyed;
 
@@ -101,9 +104,8 @@ protected:
     JZObject(MainThreadInit);
 
     int startTimer(int interval);
-    void killTimer(int id);    
+    void killTimer(int id);
 
-    virtual bool event(JZEvent *e);
     virtual void timerEvent(JZTimerEvent *event);
     virtual void customEvent(JZEvent *event);    
 

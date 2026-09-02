@@ -83,7 +83,7 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
         JZPainterEvent event;
         event.setPainter(&painter);
         event.setRect(clip);
-        w->sendEvent(&event);
+        w->event(&event);
     }
 
     m_backend->render(&m_layer);

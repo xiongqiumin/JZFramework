@@ -24,6 +24,14 @@ class JZWindow : public JZWidget
     JZ_OBJECT_DECLARE(JZWindow)
 
 public:
+    // 窗口形态 (惰性创建, show() 前设置):
+    //   Normal — 常规顶层窗口 (可缩放);  Popup — 无边框浮层 (不进任务栏,
+    //   鼠标抓取: 点外部/Esc 自动关闭, 供下拉等使用);  Modal — 对话框框形
+    //   (标题栏+关闭, 无最小/最大化), 配合 execModal() 使用。
+    enum WindowType { Normal, Popup, Modal };
+    void setWindowType(WindowType t) { m_windowType = t; }
+    WindowType windowType() const { return m_windowType; }
+
     JZWindow(JZWidget* parent = nullptr);   // 默认尺寸 800x600
     JZWindow(int w, int h, const std::string& title = "JZWindow", JZWidget* parent = nullptr);
     ~JZWindow();
@@ -35,9 +43,26 @@ public:
     void doPaint(const JZRect& rc);    // 重绘指定区域 (paint task 执行)
     virtual void resize(int w, int h) override;        // 同步原生窗口尺寸
 
+    // 置顶; 最小化/最大化/还原
+    void setTop(bool on);
+    void showMinimized();
+    void showMaximized();
+    void showNormal();
+
+    // 屏幕逻辑坐标定位 (popup 等自定位窗口; 物理像素换算在内部)
+    void moveScreen(int x, int y);
+
+    // 通用模态循环: 可见期间泵 Win32 消息 + 框架事件 + 渲染;
+    // 禁用/恢复 owner (disableOwner=false 时不禁用, 供下拉弹层用)。hide() 即退出。
+    int execModal(bool disableOwner = true);
+
     // 原生窗口句柄: Win32 下即 HWND, 窗口未创建 (惰性) 时返回 nullptr。
     // 文本控件要用它调用 IMM 接口把光标位置回写给输入法。
     void* nativeHandle() const { return m_hwnd; }
+
+    // ---- AI 语义 ----
+    std::string aiRole() const override { return "window"; }
+    std::string aiName() const override { return m_title; }
 
     // ---- 焦点 (窗口级: 同 HWND 内多控件共享, 由本窗口持有当前焦点控件) ----
     JZWidget* focusWidget() const { return m_focusWidget; }
@@ -64,6 +89,7 @@ protected:
     virtual void showEvent(JZShowEvent* event) override;
     virtual void hideEvent(JZHideEvent* event) override;
     virtual void paintEvent(JZPainterEvent* event) override;
+    virtual void keyPressEvent(JZKeyEvent* event) override;
 
     // 命中测试: 返回包含全局逻辑坐标的最深层可见控件 (不含子窗口/根自身)
     JZWidget* hitTest(const JZPoint& global);
@@ -82,6 +108,8 @@ protected:
     void* m_hwnd = nullptr;             // HWND (头文件零 Win32 类型)
     bool m_windowCreated = false;       // 原生窗口是否已创建 (惰性, showEvent 触发)
     std::string m_title;
+    WindowType m_windowType = Normal;
+    bool m_top = false;                 // 置顶
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (WM_SETFOCUS 时建立)

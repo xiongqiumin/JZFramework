@@ -17,6 +17,9 @@ public:
 
     void setAlign(int align);
 
+    // ---- AI 语义 ----
+    std::string aiText() const override { return m_text; }
+
 protected:
     void paintEvent(JZPainterEvent* event) override;
 

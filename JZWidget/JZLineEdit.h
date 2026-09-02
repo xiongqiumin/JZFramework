@@ -44,6 +44,11 @@ public:
     void setMaxLength(int n);                       // 0 = 不限
     int  maxLength() const;
 
+    // ---- AI 语义 ----
+    std::string aiRole() const override { return "textbox"; }
+    std::string aiText() const override { return m_text.toStdString(); }
+    std::vector<JZAiAction> aiActions() const override { return {{"setText", "string 新文本"}}; }
+
     // ---- 光标与选区 ----
     int  cursorPosition() const;
     void setCursorPosition(int pos);

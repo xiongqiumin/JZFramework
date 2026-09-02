@@ -2,8 +2,11 @@
 #include "JZDisplayDevice.h"
 #include "JZPainter.h"
 #include "JZImeEvent.h"
+#include "JZApplication.h"
 
 #include <algorithm>
+#include <climits>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -168,8 +171,55 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     JZWindow* self = (JZWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if (!self)
         return DefWindowProcW(hwnd, msg, wParam, lParam);
-    
+
+    // ---- popup 型窗口: 鼠标抓取期间, 客户区外的按下/移动 -> 关闭并吞掉 ----
+    // (按下关闭同时吞掉点击, 避免点 combo 自身出现"关闭又立刻重开"的 toggle)
+    if (self->windowType() == JZWindow::Popup &&
+        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN ||
+         msg == WM_MOUSEMOVE)) {
+        float s = self->device() ? self->device()->scale() : 1.0f;
+        int px = (int16_t)LOWORD(lParam);
+        int py = (int16_t)HIWORD(lParam);
+        bool outside = (px < 0 || py < 0 ||
+                        px >= (int)std::lround(self->width() * s) ||
+                        py >= (int)std::lround(self->height() * s));
+        if (outside) {
+            if (msg != WM_MOUSEMOVE)
+                self->hide();
+            return 0;   // 吞掉
+        }
+    }
+
     switch (msg) {
+
+    // 尺寸上下限: 对接 JZWidget 的 min/max 约束 (用户拖拽缩放也生效)
+    case WM_GETMINMAXINFO: {
+        DefWindowProcW(hwnd, msg, wParam, lParam);   // 先取系统默认
+        if (self && self->device()) {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            float s = self->device()->scale();
+            DWORD st = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+            RECT pad = { 0, 0, 0, 0 };
+            HMODULE user32 = GetModuleHandleW(L"user32.dll");
+            UINT dpi = jzQueryDpi(hwnd);
+            auto adjustForDpi = (BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT))
+                (user32 ? GetProcAddress(user32, "AdjustWindowRectExForDpi") : nullptr);
+            if (adjustForDpi)
+                adjustForDpi(&pad, st, FALSE, 0, dpi);
+            else
+                AdjustWindowRectEx(&pad, st, FALSE, 0);
+            int ncx = pad.right - pad.left;   // 非客户区补偿
+            int ncy = pad.bottom - pad.top;
+            mmi->ptMinTrackSize.x = (int)std::lround(self->minimumWidth() * s) + ncx;
+            mmi->ptMinTrackSize.y = (int)std::lround(self->minimumHeight() * s) + ncy;
+            if (self->maximumWidth() < INT_MAX)
+                mmi->ptMaxTrackSize.x = (int)std::lround(self->maximumWidth() * s) + ncx;
+            if (self->maximumHeight() < INT_MAX)
+                mmi->ptMaxTrackSize.y = (int)std::lround(self->maximumHeight() * s) + ncy;
+        }
+        return 0;
+    }
+
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED && lParam != 0) {
             unsigned physW = LOWORD(lParam);
@@ -389,7 +439,7 @@ static void registerWindowClass()
     WNDCLASSEXW wc;
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;   // popup/modal 类窗口带投影
     wc.lpfnWndProc = jzWindowWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));   // IDC_ARROW
@@ -438,7 +488,21 @@ void JZWindow::createWindow()
 
     registerWindowClass();
 
-    DWORD style = WS_OVERLAPPEDWINDOW;
+    DWORD style = 0;
+    DWORD exStyle = 0;
+    switch (m_windowType) {
+    case Modal:
+        style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME;   // 对话框框形 (无最小/最大化)
+        break;
+    case Popup:
+        style = WS_POPUP;
+        exStyle = WS_EX_TOOLWINDOW;   // 无边框浮层, 不进任务栏
+        break;
+    case Normal:
+    default:
+        style = WS_OVERLAPPEDWINDOW;
+        break;
+    }
     RECT rc = jzWindowRectForClient(nullptr, style, w, h, m_device->scale());
 
     // 顶层窗口的 hWndParent 即 owner (DialogBoxParam 模态 / Z 序 / 共命运的基础):
@@ -450,7 +514,7 @@ void JZWindow::createWindow()
     }
 
     std::wstring wtitle = jzUtf8ToUtf16(m_title);
-    m_hwnd = CreateWindowExW(0, L"JZWindowWndClass", wtitle.c_str(), style,
+    m_hwnd = CreateWindowExW(exStyle, L"JZWindowWndClass", wtitle.c_str(), style,
                              CW_USEDEFAULT, CW_USEDEFAULT,
                              rc.right - rc.left, rc.bottom - rc.top,
                              owner, nullptr, GetModuleHandleW(nullptr), this);
@@ -458,6 +522,9 @@ void JZWindow::createWindow()
         unsigned physW = (unsigned)std::lround(w * m_device->scale());
         unsigned physH = (unsigned)std::lround(h * m_device->scale());
         m_device->init(m_hwnd, physW, physH);
+        if (m_top)
+            SetWindowPos((HWND)m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
@@ -466,16 +533,22 @@ void JZWindow::showEvent(JZShowEvent* event)
     JZWidget::showEvent(event);
 
     createWindow();
-    if (m_hwnd)
+    if (m_hwnd) {
         ShowWindow((HWND)m_hwnd, SW_SHOW);
+        if (m_windowType == Popup)
+            SetCapture((HWND)m_hwnd);   // 弹层: 抓取鼠标, 实现点外部关闭 (见 WndProc)
+    }
 }
 
 void JZWindow::hideEvent(JZHideEvent* event)
 {
     JZWidget::hideEvent(event);
 
-    if (m_windowCreated && m_hwnd)
+    if (m_windowCreated && m_hwnd) {
+        if (m_windowType == Popup)
+            ReleaseCapture();
         ShowWindow((HWND)m_hwnd, SW_HIDE);
+    }
 }
 
 void JZWindow::paintEvent(JZPainterEvent* event)
@@ -673,5 +746,116 @@ void JZWindow::nativeDestroyed()
     m_hwnd = nullptr;
     m_windowCreated = false;
     m_focusWidget = nullptr;
+}
+
+// ==================== 窗口属性 ====================
+
+// 置顶: 已创建的原生窗口立即生效, 未创建的记录标记待创建时套用
+void JZWindow::setTop(bool on)
+{
+    if (m_top == on)
+        return;
+    m_top = on;
+    if (m_hwnd)
+        SetWindowPos((HWND)m_hwnd, on ? HWND_TOPMOST : HWND_NOTOPMOST,
+                     0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void JZWindow::showMinimized()
+{
+    if (m_hwnd)
+        ShowWindow((HWND)m_hwnd, SW_MINIMIZE);   // -> WM_SIZE (SIZE_MINIMIZED 被忽略)
+}
+
+void JZWindow::showMaximized()
+{
+    if (m_hwnd)
+        ShowWindow((HWND)m_hwnd, SW_MAXIMIZE);
+}
+
+void JZWindow::showNormal()
+{
+    if (m_hwnd)
+        ShowWindow((HWND)m_hwnd, SW_RESTORE);
+}
+
+// 屏幕逻辑坐标定位 (popup 等自定位窗口): 物理像素 = 逻辑 * scale
+void JZWindow::moveScreen(int x, int y)
+{
+    if (!m_hwnd || !m_device)
+        return;
+    float s = m_device->scale();
+    SetWindowPos((HWND)m_hwnd, nullptr,
+                 (int)std::lround(x * s), (int)std::lround(y * s),
+                 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// 控件坐标 -> 屏幕逻辑坐标: 树内累加到窗口根, ClientToScreen + DPI 换算。
+// 窗口未创建/非 Win32 时退化为树内坐标。
+JZPoint JZWidget::mapToScreen(const JZPoint& pos) const
+{
+    JZWindow* win = window();
+    if (!win || !win->nativeHandle() || !win->device())
+        return mapToGlobal(pos);
+    JZPoint inWin = mapTo(win, pos);
+    float s = win->device()->scale();
+    POINT pt = { (int)std::lround(inWin.x() * s), (int)std::lround(inWin.y() * s) };
+    ClientToScreen((HWND)win->nativeHandle(), &pt);
+    return JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
+}
+
+// ==================== 通用模态循环 ====================
+// JZDialog::exec 与 popup 弹层共用: 可见期间泵 Win32 消息 + 框架事件 + 渲染,
+// hide() 即退出。owner 禁用/恢复 (DialogBoxParam 语义; disableOwner=false
+// 供下拉弹层用 — 主窗口保持可用, 外点由弹层鼠标抓取吞掉)。
+int JZWindow::execModal(bool disableOwner)
+{
+    HWND owner = m_hwnd ? GetWindow((HWND)m_hwnd, GW_OWNER) : nullptr;
+    bool ownerDisabled = (disableOwner && owner && IsWindowEnabled(owner));
+    if (ownerDisabled)
+        EnableWindow(owner, FALSE);
+
+    bool quit = false;
+    MSG msg;
+    while (!quit && isVisible() && m_hwnd)
+    {
+        while (!quit && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)   // 应用退出: 归还消息并结束
+            {
+                PostQuitMessage((int)msg.wParam);
+                quit = true;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (quit || !isVisible() || !m_hwnd)
+            break;
+
+        jzApp->processEvents();   // 框架事件队列 + 到期定时器
+        doPaint(rect());
+        MsgWaitForMultipleObjectsEx(0, nullptr, 30, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
+    if (ownerDisabled)
+    {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    return 0;
+}
+
+// ==================== 键盘 ====================
+
+// Popup 型: Esc 隐藏 (模态循环退出); 其余交基类
+void JZWindow::keyPressEvent(JZKeyEvent* event)
+{
+    if (m_windowType == Popup && event->key() == VK_ESCAPE) {
+        hide();
+        event->accept();
+        return;
+    }
+    JZWidget::keyPressEvent(event);
 }
 

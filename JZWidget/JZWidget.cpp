@@ -1,5 +1,6 @@
 #include <cassert>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 
 #include "JZWidget.h"
@@ -518,3 +519,133 @@ void JZWidget::setProperty(const std::string& name, const JZVariant& value)
 
 JZVariant JZWidget::property(const std::string& name) const
 { return {}; }
+
+// ==================== AI 语义层 (对齐 Android AccessibilityNodeInfo) ====================
+
+// 默认 role (className 槽位): 类名去 "JZ" 前缀小写 ("JZPushButton" -> "pushbutton")
+std::string JZWidget::aiRole() const
+{
+    std::string cls = className();
+    if (cls.size() > 2 && cls.compare(0, 2, "JZ") == 0)
+        cls = cls.substr(2);
+    for (auto& ch : cls)
+        ch = (char)tolower((unsigned char)ch);
+    return cls;
+}
+
+std::string JZWidget::aiText() const
+{
+    return {};
+}
+
+// contentDesc 槽位: objectName 优先, 否则退化为 role
+std::string JZWidget::aiName() const
+{
+    if (!objectName().empty())
+        return objectName();
+    return aiRole();
+}
+
+bool JZWidget::aiChecked() const
+{
+    return false;
+}
+
+bool JZWidget::aiRangeValue(int& value, int& min, int& max) const
+{
+    return false;
+}
+
+std::vector<std::string> JZWidget::aiItems() const
+{
+    return {};
+}
+
+std::vector<JZAiAction> JZWidget::aiActions() const
+{
+    return {};
+}
+
+// 无障碍树导出: 只含可见控件 (对 AI 是去噪); boundsInScreen 为屏幕逻辑坐标
+Json::Value JZWidget::dumpSemanticTree(int maxDepth) const
+{
+    Json::Value node(Json::objectValue);
+    std::string role = aiRole();
+    node["className"] = role;
+    if (!objectName().empty())
+        node["viewId"] = objectName();
+
+    std::string text = aiText();
+    if (!text.empty())
+        node["text"] = text;
+    node["contentDesc"] = aiName();
+
+    // boundsInScreen: 屏幕逻辑坐标 (跨窗口/弹层都能对准像素)
+    JZPoint sp = mapToScreen(JZPoint(0, 0));
+    Json::Value bounds(Json::arrayValue);
+    bounds.append(sp.x());
+    bounds.append(sp.y());
+    bounds.append(width());
+    bounds.append(height());
+    node["boundsInScreen"] = bounds;
+
+    node["visible"] = isVisible();
+
+    // 能力位: 由动作清单与角色推导
+    auto acts = aiActions();
+    bool clickable = false;
+    Json::Value actArr(Json::arrayValue);
+    for (const auto& a : acts) {
+        if (a.name == "click")
+            clickable = true;
+        Json::Value o(Json::objectValue);
+        o["name"] = a.name;
+        if (!a.params.empty())
+            o["params"] = a.params;
+        actArr.append(o);
+    }
+    node["clickable"] = clickable;
+    if (!actArr.empty())
+        node["actions"] = actArr;
+
+    bool checkable = (role == "checkbox" || role == "switch" || role == "radiobutton");
+    if (checkable) {
+        node["checkable"] = true;
+        node["checked"] = aiChecked();
+    }
+    node["editable"] = (role == "textbox");
+    node["scrollable"] = (role == "list" || role == "scrollarea" ||
+                          role == "tablewidget" || role == "textedit");
+
+    int rv, rmn, rmx;
+    if (aiRangeValue(rv, rmn, rmx)) {
+        Json::Value r(Json::objectValue);
+        r["value"] = rv;
+        r["min"] = rmn;
+        r["max"] = rmx;
+        node["range"] = r;   // RangeInfo
+    }
+
+    auto items = aiItems();
+    if (!items.empty()) {
+        Json::Value arr(Json::arrayValue);
+        for (const auto& s : items)
+            arr.append(s);
+        node["items"] = arr;   // 框架扩展: owner-draw 列表无法展开成子节点
+    }
+
+    if (maxDepth != 0) {
+        Json::Value childArr(Json::arrayValue);
+        for (auto* obj : children()) {
+            auto* c = jzobject_cast<JZWidget*>(obj);
+            if (!c || jzobject_cast<JZWindow*>(c))
+                continue;                     // 子窗口 (对话框/弹层) 有各自的树
+            if (!c->isVisible())
+                continue;
+            childArr.append(c->dumpSemanticTree(maxDepth - 1));
+        }
+        if (!childArr.empty())
+            node["children"] = childArr;
+    }
+    return node;
+}

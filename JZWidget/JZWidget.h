@@ -9,6 +9,8 @@
 
 #include <climits>
 #include <cstdint>
+#include <vector>
+#include "json/json.h"
 #include "JZLayout.h"
 #include "JZKeyEvent.h"
 #include "JZImeEvent.h"
@@ -18,6 +20,13 @@
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
 #include "JZHideEvent.h"
+
+// AI 语义动作 (ai-native-design L1): invoke 工具按 name 分发
+struct JZAiAction
+{
+    std::string name;     // "click" / "setValue" / "toggle" / "select" / "setText"
+    std::string params;   // 参数说明 (v1 简化为人类可读描述)
+};
 
 class JZWidget : public JZObject
 {
@@ -52,6 +61,10 @@ public:
 
     JZPoint mapTo(JZWidget* parent, const JZPoint& rect) const;
     JZPoint mapToGlobal(const JZPoint& rect) const;
+
+    // 控件坐标 -> 屏幕逻辑坐标 (popup 等自定位窗口放置用;
+    // 窗口未创建/非 Win32 时退化为 mapToGlobal 的树内坐标)
+    JZPoint mapToScreen(const JZPoint& pos) const;
 
     JZRect mapTo(JZWidget *parent, const JZRect& rect) const;
     JZRect mapToGlobal(const JZRect &rect) const;
@@ -132,6 +145,23 @@ public:
     // 重绘
     void update();
     void invalidate(const JZRect &rc);
+
+    // ---- AI 语义接口 (对齐 Android AccessibilityNodeInfo 形态, ai-native-design L1) ----
+    // 各控件按需重写 (每个 3~8 行); dumpSemanticTree 统一序列化成无障碍树
+    virtual std::string aiRole() const;   // className 槽位: "window"/"button"/"textbox"...
+                                          // (默认: 类名去 JZ 前缀小写)
+    virtual std::string aiText() const;   // text 槽位: 可见文本 (按钮/输入框/标签; 默认空)
+    virtual std::string aiName() const;   // contentDesc 槽位: 人类可读名 (默认 objectName, 空则 role)
+    virtual bool aiChecked() const;       // checked 槽位 (checkbox/switch/radio)
+    virtual bool aiRangeValue(int& value, int& min, int& max) const;  // slider/progress 的 RangeInfo
+    virtual std::vector<std::string> aiItems() const;   // combo/list/tab 的条目摘要 (扩展字段)
+    virtual std::vector<JZAiAction> aiActions() const;  // 支持的动作 (click/setValue/setText/select)
+
+    // 无障碍树导出 (AccessibilityNodeInfo 风格):
+    //   {className, viewId?, text?, contentDesc, boundsInScreen, visible,
+    //    clickable, checkable?, checked?, editable, scrollable, range?, items?, actions?, children[]}
+    // boundsInScreen 为屏幕逻辑坐标 (跨窗口/弹层也能对准); 只导出可见控件; maxDepth<0 不限深
+    Json::Value dumpSemanticTree(int maxDepth = -1) const;
 
     // 事件分发入口 (JZObject::event 重写, Qt 风格 public):
     // 按事件类型分派到 paintEvent/mouseXxxEvent/keyXxxEvent/imeEvent/focusXxxEvent。

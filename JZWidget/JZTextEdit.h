@@ -51,6 +51,11 @@ public:
     void setCursorBlinkPeriod(int ms);
     void setTextMargins(int left, int top, int right, int bottom);
 
+    // ---- AI 语义 ----
+    std::string aiRole() const override { return "textbox"; }
+    std::string aiText() const override { return m_text.toStdString(); }
+    std::vector<JZAiAction> aiActions() const override { return {{"setText", "string 新文本"}}; }
+
 jz_signals:
     JZSignal<const std::string&> sigTextChanged;
     JZSigVoid sigCursorPositionChanged;

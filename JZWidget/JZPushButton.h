@@ -21,6 +21,11 @@ public:
     void setWidth(int w);
     void setHeight(int h);
 
+    // ---- AI 语义 ----
+    std::string aiRole() const override { return "button"; }
+    std::string aiText() const override { return m_text; }
+    std::vector<JZAiAction> aiActions() const override { return {{"click", ""}}; }
+
 jz_signals:
     JZSigVoid sigClicked;
 

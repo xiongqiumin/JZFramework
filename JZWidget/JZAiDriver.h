@@ -68,6 +68,9 @@ jz_signals:
 
 protected:
     void onTick();
+    void doArrive();   // 到达后执行动作 (经 runOnObject 投递, 脱离 timer 栈:
+                       // 合成点击/onArrive 可能开模态循环, 嵌在 processTimers
+                       // 栈内会被重入的 processTimers 再次触发 onTick)
     void finish(bool ok, const std::string& msg);
 
 private:

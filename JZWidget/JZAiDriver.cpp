@@ -4,6 +4,8 @@
 #include "JZPainter.h"
 #include "JZFontMetrics.h"
 #include "JZMouseEvent.h"
+#include "JZThread.h"
+#include "JZApplication.h"
 #include <algorithm>
 #include <cmath>
 
@@ -225,31 +227,47 @@ void JZAiDriver::onTick()
         m_overlay->setCursorPos(m_cursorPos);
 
         if (m_tick >= m_totalTicks) {
-            // 到达目标: click 类先出涟漪再合成真实点击; 其它直调动作
+            // 到达目标: 动作经 doArrive 投递到事件派发上下文执行 (脱离 timer 栈,
+            // 防止 onArrive 里的模态循环与 processTimers 重入互踩), 本 tick 结束。
+            // m_actTicks < 0 表示停留计时等 doArrive 执行完才开始
             m_phase = PhaseActing;
-            m_actTicks = kActTicks;
-            if (m_performClick) {
-                m_overlay->startClickEffect(m_to);
-                JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton,
-                                   m_to, JZPoint(), 0);
-                m_root->onWindowProcess(&press);
-                JZMouseEvent release(JZMouseEvent::Release, JZMouseEvent::LeftButton,
-                                     m_to, JZPoint(), 0);
-                m_root->onWindowProcess(&release);
-            }
-            if (m_onArrive) {
-                auto fn = m_onArrive;
-                m_onArrive = nullptr;
-                fn();
-            }
+            m_actTicks = -1;
+            runOnObject(this, [this]() { doArrive(); });
         }
         return;
     }
 
-    // PhaseActing: 涟漪/停留展示, 结束后回报
+    // PhaseActing: 等待 doArrive 执行 (m_actTicks < 0), 之后涟漪/停留展示, 结束回报
+    if (m_actTicks < 0)
+        return;
     m_overlay->tickEffect();
     if (--m_actTicks <= 0)
         finish(true, "ok");
+}
+
+// 到达后的动作 (事件派发上下文): click 类先出涟漪再合成真实点击; 其它直调
+void JZAiDriver::doArrive()
+{
+    if (m_phase == PhaseIdle)   // 投递期间被取消/结束: 丢弃动作
+        return;
+    if (m_performClick) {
+        m_overlay->startClickEffect(m_to);
+        // 合成点击投递到事件队列 (JZWindow::event 派发): 按钮槽 —— 及其可能
+        // 打开的模态框 —— 在独立派发上下文执行, 不阻塞本函数, AI 序列立即
+        // 收尾回报 (回报语义 = 点击已落地, 而非点击引发的模态流结束)
+        JZMouseEvent* press = new JZMouseEvent(JZMouseEvent::Press, JZMouseEvent::LeftButton,
+                                               m_to, JZPoint(), 0);
+        jzApp->postEvent(m_root, press);
+        JZMouseEvent* release = new JZMouseEvent(JZMouseEvent::Release, JZMouseEvent::LeftButton,
+                                                 m_to, JZPoint(), 0);
+        jzApp->postEvent(m_root, release);
+    }
+    if (m_onArrive) {
+        auto fn = std::move(m_onArrive);
+        m_onArrive = nullptr;
+        fn();
+    }
+    m_actTicks = kActTicks;   // 动作完成, 开始停留展示计时
 }
 
 void JZAiDriver::finish(bool ok, const std::string& msg)

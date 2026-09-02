@@ -1,8 +1,10 @@
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
 #include "JZPainter.h"
+#include "JZPainterEvent.h"
 #include "JZImeEvent.h"
 #include "JZApplication.h"
+#include "JZWin32Thread.h"
 
 #include <algorithm>
 #include <climits>
@@ -643,6 +645,23 @@ JZWidget* JZWindow::hitTestRec(JZWidget* w, const JZPoint& global)
 }
 
 // ==================== 事件统一入口 ====================
+
+// 事件队列派发入口: invalidate 在此合成到主线程 paint task (本轮 dealPaint 绘制)。
+// 不再由线程扫队列抽取 —— 那依赖事件在快照前后的时序, 定时器回调里 update()
+// 发出的重绘会被派发循环吞掉 (画面冻结); 走正常事件派发则任何上下文都不丢。
+bool JZWindow::event(JZEvent* e)
+{
+    if (e->type() == JZEvent_invalidate)
+    {
+        JZInvalidateEvent* ev = (JZInvalidateEvent*)e;
+        auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread());
+        if (mt)
+            mt->invalidate(this, ev->rect);
+        return true;
+    }
+    return JZWidget::event(e);
+}
+
 // WndProc 把平台消息翻译成 JZEvent 后调到这里, 按类型分发:
 //   鼠标 -> 命中测试定位目标控件;  键盘 -> 从焦点控件逐级向上传播;
 //   IME  -> 焦点控件;              窗口焦点 -> onWindowFocus (IMC + 焦点事件)。

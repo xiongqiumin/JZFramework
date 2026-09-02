@@ -5,7 +5,6 @@
 #include <cstdint>
 
 #ifdef HAS_JZWidget
-#include "JZPainterEvent.h"
 #include "JZWindow.h"
 #endif
 
@@ -70,51 +69,26 @@ void JZWin32Thread::createMessageWindow()
 
 void JZWin32Thread::wakeUp()
 {
+    // 已有唤醒消息在途时不重复投递: 循环每轮会把事件队列全量处理一遍,
+    // 一次唤醒即可带走全部待处理事件。标记由 run() 轮首复位。
+    if (m_wakePending.exchange(true))
+        return;
     PostMessageW((HWND)m_msgHwnd, m_wakeupMsg, 0, 0);   // thread-safe
 }
 
-void JZWin32Thread::collectInvaildEvents()
+void JZWin32Thread::invalidate(JZWindow* window, const JZRect& rc)
 {
-#ifdef HAS_JZWidget
-    // 从框架事件队列抽取 JZEvent_invalidate, 转成 paint task (同窗口合并脏区)
-    std::queue<JZEventInfo> keep;
+    // 同窗口脏区合并; 任务在 run() 每轮 dealPaint 中统一绘制并清空
+    JZMutexLocker lock(&m_mutex);
+    for (auto& t : m_paintTask)
     {
-        JZMutexLocker lock(&m_mutex);
-        while (!m_eventList.empty())
+        if (t.window == window)
         {
-            JZEventInfo info = m_eventList.front();
-            m_eventList.pop();
-
-            if (info.event && info.event->type() == JZEvent_invalidate)
-            {
-                JZInvalidateEvent* ev = (JZInvalidateEvent*)info.event;
-                JZWindow* win = (JZWindow*)info.object.object();
-                if (win)
-                {
-                    bool merged = false;
-                    for (auto& t : m_paintTask)
-                    {
-                        if (t.window == win)
-                        {
-                            t.rc = t.rc.united(ev->rect);
-                            merged = true;
-                            break;
-                        }
-                    }
-                    if (!merged)
-                        m_paintTask.push_back({ win, ev->rect });
-                }
-                delete ev;
-                if (info.sem)
-                    info.sem->release();
-                continue;
-            }
-
-            keep.push(info);   // 其它事件留给 processEvents 正常处理
+            t.rc = t.rc.united(rc);
+            return;
         }
-        m_eventList.swap(keep);
     }
-#endif
+    m_paintTask.push_back({ window, rc });
 }
 
 void JZWin32Thread::dealPaint()
@@ -133,11 +107,14 @@ void JZWin32Thread::run()
     MSG msg;
     while (m_running)
     {
+        // 复位唤醒标记: 本轮 processEvents 会全量处理事件队列, 此刻之后
+        // (轮内/阻塞期间) 新到的事件经 wakeUp 重新投递唤醒消息
+        m_wakePending = false;
+
         // 1. framework event queue + expired timers
-        m_paintTask.clear();
-        collectInvaildEvents();
+        //    invalidate 事件由 JZWindow::event 正常派发时经 invalidate() 合成进
+        //    m_paintTask (不再扫队列抽取), 本轮 dealPaint 统一绘制。
         processEvents();
-        collectInvaildEvents();
         dealPaint();
         if (!m_running)
             break;

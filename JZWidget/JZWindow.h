@@ -73,6 +73,10 @@ public:
     // 返回 true 表示事件已被处理 (WndProc 不再转交 DefWindowProc)。
     bool onWindowProcess(JZEvent* event);
 
+    // 事件入口: invalidate 在此合成到主线程 paint task (不依赖队列扫描),
+    // 其余交基类按类型分发。
+    bool event(JZEvent* event) override;
+
     // ---- 由 WndProc / 对话框调用 ----
     void windowResized(int logicalW, int logicalH);   // 原生窗口尺寸变化 (WM_SIZE)
     void dpiChanged();                                 // 显示器 DPI 变化 (WM_DPICHANGED)

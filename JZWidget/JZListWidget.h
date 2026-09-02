@@ -70,6 +70,7 @@ protected:
     void showEvent(JZShowEvent* e) override;
     void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
 
     void updateContentSize();
     void defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetItem* item, int index);

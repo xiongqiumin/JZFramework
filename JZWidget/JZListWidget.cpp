@@ -249,6 +249,26 @@ void JZListWidget::paintEvent(JZPainterEvent* event)
 // 事件
 // ----------------------------------------------------------------------------
 
+// 点击选择: 视口坐标 + 滚动偏移 -> 内容坐标 -> 行列 -> 项索引
+void JZListWidget::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZScrollArea::mousePressEvent(event);
+        return;
+    }
+
+    const int perRow = itemsPerRow();
+    const int rh = rowHeight();
+    if (perRow <= 0 || rh <= 0)
+        return;
+
+    int row = (event->localPos().y() + scrollY()) / rh;
+    int col = (m_mode == ListMode) ? 0 : event->localPos().x() / cellWidth();
+    int index = row * perRow + col;
+    if (index >= 0 && index < (int)m_items.size())
+        setCurrentIndex(index);
+}
+
 void JZListWidget::showEvent(JZShowEvent* e)
 {
     JZScrollArea::showEvent(e);

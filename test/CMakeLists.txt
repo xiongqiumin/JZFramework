@@ -5,8 +5,10 @@ add_subdirectory(jsengine)
 add_subdirectory(tools)
 add_subdirectory(http_server)
 add_subdirectory(agent)
-add_subdirectory(widget)
 
+if(WIN32)
+add_subdirectory(widget)
+endif()
 
 add_executable(test_frp test_frp.cpp net/net_test_common.cpp)
 target_link_libraries(test_frp JZFramework)

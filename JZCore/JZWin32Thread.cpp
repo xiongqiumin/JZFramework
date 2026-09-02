@@ -1,14 +1,8 @@
 #include "JZWin32Thread.h"
-
 #include "JZMutex.h"
 #include "JZPlatform.h"
 #include <cstdint>
-
-#ifdef HAS_JZWidget
 #include "JZWindow.h"
-#endif
-
-#ifdef _WIN32
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -145,4 +139,3 @@ void JZWin32Thread::run()
     }
     KillTimer((HWND)m_msgHwnd, 1);
 }
-#endif // _WIN32

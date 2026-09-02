@@ -1,16 +1,10 @@
 #ifndef JZ_WIN32_THREAD_H_
 #define JZ_WIN32_THREAD_H_
 
-#ifdef _WIN32
-
 #include "JZThread.h"
 #include "JZRect.h"
 #include <vector>
-#include <atomic>
-
-#ifdef HAS_JZWidget
 #include "JZWindow.h"
-#endif
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -59,7 +53,5 @@ private:
 
     std::vector<PaintTask> m_paintTask;
 };
-
-#endif // _WIN32
 
 #endif // JZ_WIN32_THREAD_H_

@@ -78,15 +78,43 @@ public:
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
     // ---- 输入法 (IME) 输入上下文 ----
-    // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联/断开必须在
-    // 窗口级统一做: 窗口有焦点 **且** 焦点控件 imeEnabled() 时才关联, 否则
-    // ImmAssociateContext(NULL) 断开 (断开后 ImmGetContext 返回 NULL, 本窗口
-    // 不再产生任何 IME 消息)。控件级别不要各自去关联/断开。
+    // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联必须在窗口级
+    // 统一做: 窗口创建后**始终关联**, 焦点是否接受输入法只影响 IME 的 UI 与组字
+    // (见 imeActive())。
+    //
+    // 不要再按焦点频繁 ImmAssociateContext(NULL) 断开又关联: IMC 一旦断开重连,
+    // 输入法会把该窗口的输入状态重新初始化成默认 (native = 中文), 用户在别处切
+    // 的英文状态就没了 —— 表现正是"一聚焦输入框输入法就自动变中文"。
+    // 控件级别不要各自去关联/断开。
     void updateImeContext();
+
+    // 当前焦点是否接受输入法输入 (窗口有焦点 && 焦点控件 imeEnabled())。
+    // false 时: 组字被取消、IME 的所有 UI (候选窗/组字窗/状态窗) 一律不显示,
+    // 但 IMC 保持关联, 中英状态不动。
+    bool imeActive() const { return m_imeActive; }
 
     // 让 IME 的组字窗/候选窗使用与本窗口一致的字体, 并保证输入法处于打开状态。
     // 由文本控件在 focusInEvent 里调用, fontPixelSize 为其正文字号 (逻辑像素)。
+    // 注: "输入法打开"是硬需求 (关闭则完全无法组字), 但**中英模式**默认不动,
+    // 见 setImeForceNativeMode。
     void prepareIme(int fontPixelSize);
+
+    // 文本控件获得焦点时是否强制切到中文(native) 模式。默认 false:
+    // 尊重用户当前的中/英状态, 聚焦只保证输入法处于打开状态。
+    // 置 true 则每次聚焦都把 IME 拧到中文 (参考实现 test_ime 的
+    // kForceChineseOnFocus); 适合"纯中文录入"场景, 但会覆盖用户手动切的状态。
+    void setImeForceNativeMode(bool on) { m_imeForceNative = on; }
+    bool imeForceNativeMode() const { return m_imeForceNative; }
+
+    // 放弃当前未上屏的组字 (ImmNotifyIME CPS_CANCEL); imeActive() 转 false 时调用
+    void cancelImeComposition();
+
+    // 主动通知 IME 更新 UI 显示状态 (重发一次 WM_IME_SETCONTEXT)。
+    // 必须显式发: 这条消息通常只在窗口获得/失去焦点时由系统发一次, 而那一刻焦点
+    // 控件往往还不存在 (imeActive() 为 false), IME 就记住了"本窗口不显示任何 UI",
+    // 之后开始组字也不再弹候选窗。组字窗仍由控件自绘, 永远不交给 IME。
+    // IMC 全程保持关联, 所以重发它不会重置中/英状态。
+    void updateImeUi(bool show);
 
     // 本次组字是否已通过 GCS_RESULTSTR 上屏 (用于 WM_IME_CHAR 去重)
     bool imeGotResult() const { return m_imeGotResult; }
@@ -143,6 +171,8 @@ protected:
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
     bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏
+    bool m_imeActive = false;           // 当前焦点是否接受 IME (见 imeActive())
+    bool m_imeForceNative = false;      // 聚焦时是否强制切中文模式 (见 setImeForceNativeMode)
 
     // 显示定位: 显式 moveScreen 记录 (等价 Qt WA_Moved) 优先于自动居中
     bool m_autoPosition = true;         // 显示时相对 owner 居中 (Modal/Popup)

@@ -325,11 +325,21 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     // 不让系统画组字窗: 组字串由控件在 paintEvent 里自绘, 候选窗仍交给 IME,
     // 位置由 CANDIDATEFORM 指定。必须 break 继续走 DefWindowProc (不能 return 0),
     // 否则 IME 收不到窗口上下文, 候选窗/状态窗不会正确建立。
+    //
+    // 焦点不接受输入法时 (imeActive() == false) 连候选窗/状态窗一起隐藏:
+    // 这是"断开 IMC"的替代做法 —— IMC 保持关联, 中英状态不被重置。
     case WM_IME_SETCONTEXT:
         lParam &= ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW);
+        if (!self->imeActive())
+            lParam &= ~static_cast<LPARAM>(ISC_SHOWUIALL);
         break;
 
     case WM_IME_STARTCOMPOSITION: {
+        if (!self->imeActive()) {
+            self->cancelImeComposition();   // 焦点不支持输入: 组字立即取消, 不上屏
+            return 0;
+        }
+        self->updateImeUi(true);            // 兜底: 确保候选窗 UI 已打开
         self->setImeGotResult(false);
         JZImeEvent ev(JZImeEvent::StartComposition);
         self->onWindowProcess(&ev);
@@ -349,6 +359,8 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         // 否则部分输入法 (搜狗/五笔等) 的中英状态、状态窗不刷新。
         if (wParam == IMN_OPENCANDIDATE || wParam == IMN_CHANGECANDIDATE ||
             wParam == IMN_CLOSECANDIDATE) {
+            if (!self->imeActive())
+                return 0;                   // 不接受输入: 不定位候选窗
             JZImeEvent ev(JZImeEvent::Candidate);
             self->onWindowProcess(&ev);
             return 0;
@@ -356,6 +368,11 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         break;
 
     case WM_IME_COMPOSITION: {
+        // 焦点不接受输入法: 组字内容一律不派发 (也不上屏)
+        if (!self->imeActive()) {
+            self->cancelImeComposition();
+            return 0;
+        }
         // 标志严格按 lParam 置位: 构造时不能预先带 CompStr, 否则只有
         // GCS_CURSORPOS 时控件会拿空组字串覆盖掉正在显示的组字内容。
         JZImeEvent ev(0);
@@ -385,35 +402,27 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
                 // 组字光标位置 (UTF-16 下标): 无条件读。微软拼音逐字母输入时
                 // lParam 往往只有 GCS_COMPSTR|GCS_COMPATTR、不带 GCS_CURSORPOS 位,
-                // 只按位读会一直拿到 0, 插入点光标就永远停在组字串最前面。
-                // 读法: 缓冲区形式优先; 失败再试返回值形式 (参考实现 test_ime 的读法);
-                // 两种都拿不到则落到组字串末尾 —— 打字过程中光标本来就该跟着组字串走,
-                // 拿不到真实值时停在开头比停在末尾错误得多。
-                LONG pos = -1;
-                LONG buf = 0;
-                if (ImmGetCompositionStringW(hImc, GCS_CURSORPOS, &buf, sizeof(LONG)) > 0) {
-                    pos = buf;
-                } else {
-                    LONG rv = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
-                    if (rv > 0)
-                        pos = rv;
-                }
-                if (pos < 0 || pos > (LONG)wcomp.size())
+                // 只按位读会一直拿不到, 插入点光标就永远停在组字串最前面。
+                //
+                // 只能用**返回值形式**: ImmGetCompositionString 对 GCS_CURSORPOS
+                // 不写缓冲区、直接把位置当返回值, 所以"缓冲区形式"会返回 >0 让人
+                // 误判成功, 而 buf 始终是初值 0 —— 正是"光标不跟到末尾"的根因。
+                //
+                // lParam 未带 GCS_CURSORPOS 位时读到 0 视为失败, 落到组字串末尾:
+                // 打字过程中光标本来就该跟着组字串走; 真要把光标移到组字串开头,
+                // IME 会置位显式下发, 由下面那个分支按 0 处理。
+                LONG pos = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
+                if (pos < 0 || (pos == 0 && !(lParam & GCS_CURSORPOS)))
+                    pos = (LONG)wcomp.size();
+                if (pos > (LONG)wcomp.size())
                     pos = (LONG)wcomp.size();
                 ev.setCompCursor((int)pos);
                 ev.setFlag(JZImeEvent::CursorPos);
             }
-            // 光标单独变化 (组字串未变, 如组字串内按方向键)
+            // 光标单独变化 (组字串未变, 如组字串内按方向键 / Home)
             if (lParam & GCS_CURSORPOS) {
-                LONG pos = -1;
-                LONG buf = 0;
-                if (ImmGetCompositionStringW(hImc, GCS_CURSORPOS, &buf, sizeof(LONG)) > 0) {
-                    pos = buf;
-                } else {
-                    LONG rv = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
-                    if (rv > 0)
-                        pos = rv;
-                }
+                // 同上用返回值形式; 位已置起说明 IME 明确下发了位置, 0 也当真
+                LONG pos = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
                 if (pos >= 0) {
                     ev.setCompCursor((int)pos);
                     ev.setFlag(JZImeEvent::CursorPos);
@@ -841,31 +850,79 @@ void JZWindow::onWindowFocus(bool got)
     }
 }
 
-// IMC 关联: 窗口有键盘焦点 **且** 焦点控件需要输入法时才把默认 IMC 关联到本
-// HWND; 其余情况一律断开 (ImmAssociateContext(NULL) 后 ImmGetContext 返回
-// NULL, 本窗口不再产生任何 IME 消息, 输入法也不会弹窗)。
+// IMC 关联: 窗口创建后**始终保持关联**, 只按焦点是否接受输入法来开关 IME 的
+// UI 与组字 (m_imeActive)。
+//
+// 关键: 不能按焦点频繁 ImmAssociateContext(NULL) 断开。IMC 断开后 ImmGetContext
+// 返回 NULL, 再次关联时输入法会把该窗口的输入状态重新初始化成默认值 —— 中文
+// (native) 模式, 于是"一聚焦输入框输入法就自动从英文变中文"。断开期间用户在
+// 别处切的中/英状态也同步不回来。
 void JZWindow::updateImeContext()
 {
     if (!m_hwnd)
         return;
 
-    const bool want = m_hasWindowFocus && m_focusWidget && m_focusWidget->imeEnabled();
-
-    if (want) {
-        if (!m_imeContext) {
-            // 兜底: 若从未缓存过 (如窗口在旧版本逻辑下已断开), 先恢复默认关联再取。
-            // 直接 ImmGetContext 在已断开时只会拿到 NULL。
+    // 确保已缓存默认 IMC (正常情况 createWindow 时已缓存)
+    if (!m_imeContext) {
+        HIMC hImc = ImmGetContext((HWND)m_hwnd);
+        if (!hImc) {
+            // 已断开或从未关联: 先恢复默认关联再取
             ImmAssociateContextEx((HWND)m_hwnd, nullptr, IACE_DEFAULT);
-            HIMC hImc = ImmGetContext((HWND)m_hwnd);
-            if (hImc) {
-                m_imeContext = hImc;
-                ImmReleaseContext((HWND)m_hwnd, hImc);
-            }
+            hImc = ImmGetContext((HWND)m_hwnd);
         }
-        if (m_imeContext)
+        if (hImc) {
+            m_imeContext = hImc;
+            ImmReleaseContext((HWND)m_hwnd, hImc);
+        }
+    }
+
+    // 只在"尚未关联 / 关联的 IMC 不对"时才真正关联一次: 重复关联同一个 IMC
+    // 同样会触发 WM_IME_SETCONTEXT, 让输入法有机会重置状态。
+    if (m_imeContext) {
+        HIMC cur = ImmGetContext((HWND)m_hwnd);
+        const bool attached = (cur != nullptr && cur == reinterpret_cast<HIMC>(m_imeContext));
+        if (cur)
+            ImmReleaseContext((HWND)m_hwnd, cur);
+        if (!attached)
             ImmAssociateContext((HWND)m_hwnd, reinterpret_cast<HIMC>(m_imeContext));
-    } else {
-        ImmAssociateContext((HWND)m_hwnd, nullptr);
+    }
+
+    const bool want = m_hasWindowFocus && m_focusWidget && m_focusWidget->imeEnabled();
+    const bool wasActive = m_imeActive;
+    m_imeActive = want;
+
+    // 焦点是否接受输入法发生了变化: 主动重发 WM_IME_SETCONTEXT 让 IME 更新 UI
+    // (系统只在窗口得失焦点时发一次, 那时焦点控件可能还没定, 见 updateImeUi 说明)
+    if (wasActive != want)
+        updateImeUi(want);
+
+    // 焦点不接受输入法: 取消未上屏的组字。CPS_CANCEL 会带回 WM_IME_ENDCOMPOSITION,
+    // 由消息层派发给焦点控件清掉自绘的组字串。
+    if (wasActive && !want)
+        cancelImeComposition();
+}
+
+// 主动重发 WM_IME_SETCONTEXT。组字窗由控件自绘, 故永远不带 ISC_SHOWUICOMPOSITIONWINDOW。
+void JZWindow::updateImeUi(bool show)
+{
+    if (!m_hwnd)
+        return;
+
+    const LPARAM lp = ISC_SHOWUIALL & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW);
+    SendMessageW((HWND)m_hwnd, WM_IME_SETCONTEXT,
+                 show ? TRUE : FALSE, show ? lp : static_cast<LPARAM>(0));
+}
+
+// 放弃本次组字 (不上屏)
+void JZWindow::cancelImeComposition()
+{
+    if (!m_hwnd)
+        return;
+
+    HIMC hImc = ImmGetContext((HWND)m_hwnd);
+    if (hImc) {
+        ImmNotifyIME(hImc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+        ImmReleaseContext((HWND)m_hwnd, hImc);
     }
 }
 
@@ -894,13 +951,16 @@ void JZWindow::prepareIme(int fontPixelSize)
     if (!ImmGetOpenStatus(hImc))
         ImmSetOpenStatus(hImc, TRUE);
 
-    // 参考实现 (test_ime::EnsureIME): 获得焦点时切到中文(native)模式,
-    // 否则输入法停留在英数状态, 按键全部直接上屏, 永远不会开始组字。
-    DWORD conv = 0, sent = 0;
-    if (ImmGetConversionStatus(hImc, &conv, &sent)) {
-        if ((conv & IME_CMODE_NATIVE) == 0) {
-            conv |= IME_CMODE_NATIVE;
-            ImmSetConversionStatus(hImc, conv, sent);
+    // 中英模式: 默认**不动**, 尊重用户在系统里切的状态 (否则聚焦一个输入框就会
+    // 把输入法从英文拧成中文, 很反直觉)。需要"纯中文录入"时调
+    // setImeForceNativeMode(true), 等价于参考实现 test_ime 的 kForceChineseOnFocus。
+    if (m_imeForceNative) {
+        DWORD conv = 0, sent = 0;
+        if (ImmGetConversionStatus(hImc, &conv, &sent)) {
+            if ((conv & IME_CMODE_NATIVE) == 0) {
+                conv |= IME_CMODE_NATIVE;
+                ImmSetConversionStatus(hImc, conv, sent);
+            }
         }
     }
 

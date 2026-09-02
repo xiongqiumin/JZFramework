@@ -34,6 +34,10 @@ using namespace Gdiplus;
 // ==================== GDI+ 进程级生命周期 (多窗口共享, 引用计数) ====================
 namespace {
 
+// 字体族缓存的清理 (定义见下面的"字体族缓存"小节)。
+// 必须在 GdiplusShutdown 之前调用: GDI+ 一旦关闭, 再析构任何 GDI+ 对象都会崩。
+void jzReleaseFontFamily();
+
 struct GdiplusLifetime
 {
     ULONG_PTR token = 0;
@@ -54,6 +58,7 @@ struct GdiplusLifetime
     void release()
     {
         if (refCount > 0 && --refCount == 0) {
+            jzReleaseFontFamily();      // 缓存的 GDI+ 对象必须先于 Shutdown 销毁
             GdiplusShutdown(token);
             token = 0;
         }
@@ -109,12 +114,30 @@ static void addRoundRectPath(GraphicsPath& path, const RectF& r, float radius)
     path.CloseFigure();
 }
 
-// 文本字体族 (优先微软雅黑, 失败回退)
-static const FontFamily& jzFontFamily()
+// ==================== 字体族缓存 ====================
+// 刻意**不用**函数内 static FontFamily: 那会在 main() 返回后的静态析构阶段才销毁,
+// 而 GDI+ 随最后一个窗口的销毁就已经 GdiplusShutdown() 了 —— 在已关闭的 GDI+ 上
+// 析构对象, 会在 FontFamily::~FontFamily 里进 GdiPlus.dll 访问已释放状态直接崩。
+// (位图缓存、字体度量引擎同理, 都在 JZGdiBackend::destroy() 里提前释放。)
+namespace {
+
+FontFamily* g_fontFamily = nullptr;
+
+// 文本字体族 (优先微软雅黑, 失败回退到 GenericSansSerif)
+const FontFamily& jzFontFamily()
 {
-    static FontFamily family(L"Microsoft YaHei");
-    return family;
+    if (!g_fontFamily)
+        g_fontFamily = new FontFamily(L"Microsoft YaHei");
+    return *g_fontFamily;
 }
+
+void jzReleaseFontFamily()
+{
+    delete g_fontFamily;
+    g_fontFamily = nullptr;
+}
+
+} // namespace
 
 // ==================== 字体度量引擎 (注册到 JZFontMetrics) ====================
 namespace {

@@ -77,13 +77,6 @@ static RECT jzWindowRectForClient(HWND hwnd, DWORD style, int logicalW, int logi
     return rc;
 }
 
-// 所有存活窗口 (消息泵/模态遍历用)
-static std::vector<JZWindow*>& jzWindowList()
-{
-    static std::vector<JZWindow*> list;
-    return list;
-}
-
 JZ_OBJECT_IMPL(JZWindow, JZWidget)
 
 JZWindow::JZWindow(JZWidget* parent)
@@ -94,7 +87,10 @@ JZWindow::JZWindow(JZWidget* parent)
 
     JZWidget::resize(800, 600);   // non-virtual: avoid ctor-time virtual dispatch
 
-    jzWindowList().push_back(this);
+    // 登记到顶层窗口列表 (JZApplication::topLevelWindows / activeWindow,
+    // 以及"最后一个窗口关闭则退出"的判定都基于它)
+    if (jzApp)
+        jzApp->addTopLevelWindow(this);
 }
 
 JZWindow::JZWindow(int w, int h, const std::string& title, JZWidget* parent)
@@ -106,8 +102,8 @@ JZWindow::JZWindow(int w, int h, const std::string& title, JZWidget* parent)
 
 JZWindow::~JZWindow()
 {
-    std::vector<JZWindow*>& list = jzWindowList();
-    list.erase(std::remove(list.begin(), list.end(), this), list.end());
+    if (jzApp)
+        jzApp->removeTopLevelWindow(this);
 
     if (m_hwnd) {
         DestroyWindow((HWND)m_hwnd);
@@ -839,6 +835,9 @@ bool JZWindow::dispatchIme(JZImeEvent* ev)
 void JZWindow::onWindowFocus(bool got)
 {
     m_hasWindowFocus = got;
+    if (got && jzApp)
+        jzApp->setActiveWindow(this);       // JZApplication::activeWindow() 的回退值
+
     if (!got && m_focusWidget) {
         JZEvent ev(JZEvent_focusOut);       // 先派发: 控件在此取消未上屏的组字
         m_focusWidget->event(&ev);
@@ -990,6 +989,12 @@ void JZWindow::nativeDestroyed()
     m_hasWindowFocus = false;
     m_imeContext = nullptr;
     m_imeGotResult = false;
+    m_imeActive = false;
+
+    // 最后一个可见顶层窗口关闭 -> 退出事件循环 (jzApp->quit())。
+    // 可用 jzApp->setQuitOnLastWindowClosed(false) 关掉这个行为。
+    if (jzApp)
+        jzApp->notifyWindowClosed(this);
 }
 
 // ==================== 窗口属性 ====================

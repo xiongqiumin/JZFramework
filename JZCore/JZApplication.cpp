@@ -1,4 +1,5 @@
 #include <thread>
+#include <algorithm>
 #include <assert.h>
 #include "JZApplication.h"
 #include "JZStd.h"
@@ -6,9 +7,7 @@
 #include "JZDebug.h"
 #include "JZTx.h"
 #include "JZDriver.h"
-#ifndef HAS_JZWidget
-#error NO_HAS_JZWidget_DEFINE
-#endif
+#include "JZWindow.h"
 
 #ifdef _WIN32
 #include "JZWin32Thread.h"
@@ -169,3 +168,71 @@ void JZApplication::postEventAndWait(JZObject *object, JZEvent *event)
 
     sem.acquire();
 }
+
+
+// ==================== 顶层窗口 ====================
+// 实现放在本文件而不是拆到 JZWidget: JZCore 的编译单元本就能看到 JZWindow
+// (JZWin32Thread 亦如此), 不必为一个列表再多一层转发。
+#ifdef HAS_JZWidget
+std::vector<JZWindow*> JZApplication::topLevelWindows() const
+{
+    return m_topLevelWindows;
+}
+
+JZWindow* JZApplication::activeWindow()
+{
+    for (auto* w : m_topLevelWindows) {
+        if (w->isVisible() && w->isActiveWindow())
+            return w;
+    }
+    // 应用整体失焦: 退回最近激活过、且仍存活可见的窗口
+    if (m_activeWindow &&
+        std::find(m_topLevelWindows.begin(), m_topLevelWindows.end(), m_activeWindow)
+        != m_topLevelWindows.end() &&
+        m_activeWindow->isVisible() && m_activeWindow->nativeHandle())
+        return m_activeWindow;
+    return nullptr;
+}
+
+void JZApplication::setActiveWindow(JZWindow* w)
+{
+    m_activeWindow = w;
+}
+
+void JZApplication::addTopLevelWindow(JZWindow* w)
+{
+    if (!w)
+        return;
+    // 幂等: 重复登记会让"最后一个窗口关闭"的判定失真
+    if (std::find(m_topLevelWindows.begin(), m_topLevelWindows.end(), w)
+        != m_topLevelWindows.end())
+        return;
+    m_topLevelWindows.push_back(w);
+}
+
+void JZApplication::removeTopLevelWindow(JZWindow* w)
+{
+    m_topLevelWindows.erase(
+        std::remove(m_topLevelWindows.begin(), m_topLevelWindows.end(), w),
+        m_topLevelWindows.end());
+    if (m_activeWindow == w)
+        m_activeWindow = nullptr;
+}
+
+// 原生窗口被销毁 (WM_DESTROY) 时由 JZWindow 调用。
+// 判定"还有可见窗口"而不是"还有窗口对象": 只关闭、未销毁的对象 (如 hide 的
+// JZDialog 可复用) 不再算存活, 否则关掉主窗口后程序永远退不出去。
+void JZApplication::notifyWindowClosed(JZWindow*)
+{
+    if (!m_quitOnLastWindowClosed)
+        return;
+    for (auto* w : m_topLevelWindows) {
+        if (w->isVisible() && w->nativeHandle())
+            return;                 // 还有可见的顶层窗口
+    }
+    quit();
+    // Win32 主循环阻塞在 GetMessage: quit() 只置标志 + notify 条件变量, 唤醒不了
+    // 消息泵 (最长要等一个心跳周期)。补一次 wakeUp 让退出立即生效。
+    m_mainThread->wakeUp();
+}
+#endif

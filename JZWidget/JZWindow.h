@@ -77,6 +77,10 @@ public:
     JZWidget* focusWidget() const { return m_focusWidget; }
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
+    // 是否活动窗口: 原生窗口持有键盘焦点 (由 WM_SETFOCUS / WM_KILLFOCUS 维护)。
+    // JZApplication::activeWindow() 依据它判定当前活动窗口。
+    bool isActiveWindow() const { return m_hasWindowFocus; }
+
     // ---- 输入法 (IME) 输入上下文 ----
     // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联必须在窗口级
     // 统一做: 窗口创建后**始终关联**, 焦点是否接受输入法只影响 IME 的 UI 与组字

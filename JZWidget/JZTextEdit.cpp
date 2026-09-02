@@ -68,7 +68,9 @@ JZTextEdit::JZTextEdit(JZWidget* parent)
 
 JZTextEdit::~JZTextEdit()
 {
-    setIMEContextEnabled(false);
+    // 注: 输入上下文 (IMC) 是 HWND 级的, 由所属窗口统一关联/断开
+    // (JZWindow::updateImeContext), 控件析构时不能去动它 —— 否则会把同窗口
+    // 其它输入框的输入法一起关掉。
 }
 
 JZSize JZTextEdit::sizeHint() const
@@ -111,14 +113,20 @@ std::string JZTextEdit::placeholderText() const
 void JZTextEdit::setReadOnly(bool readOnly)
 {
     m_readOnly = readOnly;
-    if (readOnly)
-        setIMEContextEnabled(false);
+    // 只读状态变化会影响 imeEnabled(), 让所属窗口重算 IMC 关联
+    if (JZWindow* win = window())
+        win->updateImeContext();
     update();
 }
 
 bool JZTextEdit::isReadOnly() const
 {
     return m_readOnly;
+}
+
+bool JZTextEdit::imeEnabled() const
+{
+    return !m_readOnly;
 }
 
 void JZTextEdit::setLineWrap(bool wrap)
@@ -525,7 +533,7 @@ void JZTextEdit::paintEvent(JZPainterEvent*)
     const int clipH = h - m_marginTop - m_marginBottom;
     if (clipW <= 0 || clipH <= 0)
         return;
-    p.setClip(JZRect(m_marginLeft, m_marginTop, clipW, clipH));
+    p.setClipLocal(JZRect(m_marginLeft, m_marginTop, clipW, clipH));
 
     // 行内垂直居中: 先按"可视高度"居中得到字形顶 bTop, 再减 internalLeading 得文字 cell 顶
     const int pad   = (lh - visH) / 2;
@@ -907,8 +915,10 @@ void JZTextEdit::imeEvent(JZImeEvent* event)
         m_composing = !m_comp.isEmpty();
     }
 
-    if (event->hasFlag(JZImeEvent::CursorPos) || event->hasFlag(JZImeEvent::CompStr)) {
-        m_compCursor = JZImeEvent::utf16ToCodePointIndex(event->compString(),
+    if (event->hasFlag(JZImeEvent::CursorPos)) {
+        // 换算基准必须是当前组字串 (m_comp): 单独 GCS_CURSORPOS 到来时
+        // event->compString() 为空, 用它换算会把光标打到 0。
+        m_compCursor = JZImeEvent::utf16ToCodePointIndex(m_comp.toStdString(),
                                                          event->compCursor());
         if (m_compCursor < 0)
             m_compCursor = 0;
@@ -992,16 +1002,17 @@ void JZTextEdit::updateIMEWindowPos()
         + JZFontMetrics::textWidth(m_text.mid(L.start, L.length).toStdString(), font, col);
     const int startY = contentTop() + L.y + pad;
 
-    JZPoint gTop = mapToGlobal(JZPoint(startX, startY));
-    JZPoint gBot = mapToGlobal(JZPoint(startX, startY + visH));
+    // mapToScreen: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
+    // ÷scale)。不要用 mapToGlobal —— 那是控件树内累加坐标, 只在根窗口位于
+    // (0,0) 时才碰巧等于客户区坐标。
+    const JZPoint sTop = mapToScreen(JZPoint(startX, startY));
+    const JZPoint sBot = mapToScreen(JZPoint(startX, startY + visH));
 
     POINT pt, ptBot;
-    pt.x    = toPhysical(gTop.x(), scale);
-    pt.y    = toPhysical(gTop.y(), scale);
-    ptBot.x = toPhysical(gBot.x(), scale);
-    ptBot.y = toPhysical(gBot.y(), scale);
-    ClientToScreen(hwnd, &pt);
-    ClientToScreen(hwnd, &ptBot);
+    pt.x    = toPhysical(sTop.x(), scale);
+    pt.y    = toPhysical(sTop.y(), scale);
+    ptBot.x = toPhysical(sBot.x(), scale);
+    ptBot.y = toPhysical(sBot.y(), scale);
 
     // 组字窗锚点: 微软拼音的候选条就是照这个点摆的
     COMPOSITIONFORM cf;
@@ -1055,30 +1066,15 @@ void JZTextEdit::completeComposition()
     m_compCursor = 0;
 }
 
-void JZTextEdit::setIMEContextEnabled(bool enable)
-{
-    HWND hwnd = nativeHwndOf(this);
-    if (!hwnd)
-        return;
-
-    if (enable) {
-        if (!m_imeContext)
-            return;
-        ImmAssociateContext(hwnd, reinterpret_cast<HIMC>(m_imeContext));
-    } else {
-        cancelComposition();
-        // 断开后 ImmGetContext 返回 NULL, 本窗口不再产生任何 IME 消息
-        ImmAssociateContext(hwnd, nullptr);
-    }
-}
-
 // ==================== 焦点 ====================
 
 void JZTextEdit::focusInEvent(JZEvent*)
 {
-    // 注: IME 输入上下文 (IMC) 由所属窗口在 WM_SETFOCUS 时统一关联,
-    // 所有控件共享同一个 HWND/IMC, 故控件焦点切换时不再重新关联/断开,
-    // 以免断开影响同窗口内其它控件的输入。
+    // 注: IME 输入上下文 (IMC) 由所属窗口统一关联/断开 (JZWindow::updateImeContext,
+    // 依据 imeEnabled())。这里只负责让输入法的字体/状态与本控件对齐。
+    if (JZWindow* win = window())
+        win->prepareIme(kFontPixelSize);
+
     m_cursorOn = true;
     resetCursorBlink();
     update();

@@ -42,6 +42,20 @@ const int kImeCompOffsetY = 0;      // 组字窗锚点: 相对字形顶部的垂
 const int kImeCandOffsetX = 0;      // 候选窗左上角: 相对组字起点的水平偏移
 const int kImeCandOffsetY = 4;      // 候选窗左上角: 相对字形底部的垂直偏移
 
+// 显示文本: 密码模式把每个码点替换成 '*'
+// 注意**所有**宽度测量 (光标偏移 / 点击定位 / IME 锚点) 都必须走它,
+// 否则密码模式下光标、命中点与 '*' 的实际显示位置越输越偏。
+JZString toDisplay(const JZString& s, bool password)
+{
+    if (!password)
+        return s;
+
+    JZString out;
+    for (int i = 0; i < s.size(); ++i)
+        out.push_back(JZChar('*'));
+    return out;
+}
+
 } // namespace
 
 JZ_OBJECT_IMPL(JZLineEdit, JZWidget)
@@ -60,7 +74,9 @@ JZLineEdit::JZLineEdit(JZWidget* parent)
 
 JZLineEdit::~JZLineEdit()
 {
-    setIMEContextEnabled(false);
+    // 注: 输入上下文 (IMC) 是 HWND 级的, 由所属窗口统一关联/断开
+    // (JZWindow::updateImeContext), 控件析构时不能去动它 —— 否则会把同窗口
+    // 其它输入框的输入法一起关掉。
 }
 
 JZSize JZLineEdit::sizeHint() const
@@ -116,14 +132,21 @@ bool JZLineEdit::isPassword() const
 void JZLineEdit::setReadOnly(bool readOnly)
 {
     m_readOnly = readOnly;
-    if (readOnly)
-        setIMEContextEnabled(false);
+    // 只读状态变化会影响 imeEnabled(), 让所属窗口重算 IMC 关联
+    if (JZWindow* win = window())
+        win->updateImeContext();
     update();
 }
 
 bool JZLineEdit::isReadOnly() const
 {
     return m_readOnly;
+}
+
+bool JZLineEdit::imeEnabled() const
+{
+    // 密码框不接输入法: 组字串会明文出现在候选窗 / 系统组字窗里
+    return !m_readOnly && !m_password;
 }
 
 void JZLineEdit::setMaxLength(int n)
@@ -319,7 +342,7 @@ int JZLineEdit::textOriginX() const
 int JZLineEdit::indexFromX(int x) const
 {
     JZFont font(kFontPixelSize);
-    std::string utf8 = m_text.toStdString();
+    std::string utf8 = toDisplay(m_text, m_password).toStdString();
     int rel = x - textOriginX() + m_scrollX;
 
     int best = 0;
@@ -339,10 +362,10 @@ int JZLineEdit::indexFromX(int x) const
 int JZLineEdit::cursorOffsetX() const
 {
     JZFont font(kFontPixelSize);
-    int x = JZFontMetrics::textWidth(m_text.toStdString(), font, m_cursor);
+    int x = JZFontMetrics::textWidth(toDisplay(m_text, m_password).toStdString(), font, m_cursor);
     if (m_composing && !m_comp.isEmpty()) {
         int n = std::max(0, std::min(m_compCursor, m_comp.size()));
-        x += JZFontMetrics::textWidth(m_comp.toStdString(), font, n);
+        x += JZFontMetrics::textWidth(toDisplay(m_comp, m_password).toStdString(), font, n);
     }
     return x;
 }
@@ -376,23 +399,6 @@ void JZLineEdit::onCursorTimer()
 
 // ==================== 绘制 ====================
 
-namespace {
-
-// 显示文本: 密码模式把每个码点替换成 '*'
-// 注意宽度测量同样要用它, 否则光标会与显示内容对不齐
-JZString toDisplay(const JZString& s, bool password)
-{
-    if (!password)
-        return s;
-
-    JZString out;
-    for (int i = 0; i < s.size(); ++i)
-        out.push_back(JZChar('*'));
-    return out;
-}
-
-} // namespace
-
 void JZLineEdit::paintEvent(JZPainterEvent*)
 {
     JZPainter p(this);
@@ -416,7 +422,7 @@ void JZLineEdit::paintEvent(JZPainterEvent*)
     const int clipW = w - m_marginLeft - m_marginRight;
     if (clipW <= 0)
         return;
-    p.setClip(JZRect(m_marginLeft, 1, clipW, h - 2));
+    p.setClipLocal(JZRect(m_marginLeft, 1, clipW, h - 2));
 
     const JZString disp   = toDisplay(m_text, m_password);
     const std::string u8  = disp.toStdString();
@@ -738,9 +744,11 @@ void JZLineEdit::imeEvent(JZImeEvent* event)
         m_composing = !m_comp.isEmpty();
     }
 
-    if (event->hasFlag(JZImeEvent::CursorPos) || event->hasFlag(JZImeEvent::CompStr)) {
-        // 光标位置同样是 UTF-16 下标
-        m_compCursor = JZImeEvent::utf16ToCodePointIndex(event->compString(),
+    if (event->hasFlag(JZImeEvent::CursorPos)) {
+        // 光标位置同样是 UTF-16 下标。换算基准必须是当前组字串 (m_comp):
+        // 单独 GCS_CURSORPOS 到来时 event->compString() 是空的, 用它换算会把
+        // 光标打到 0, 组字串里的插入点看起来"跳回开头"。
+        m_compCursor = JZImeEvent::utf16ToCodePointIndex(m_comp.toStdString(),
                                                          event->compCursor());
         if (m_compCursor < 0)
             m_compCursor = 0;
@@ -814,21 +822,23 @@ void JZLineEdit::updateIMEWindowPos()
     // 锚点取**组字起点**而非当前光标: 组字时光标会在组字串里移动,
     // 若用光标位置, 候选条左边缘会跟着一路右移, 看起来就是"偏了"
     const int startX = textOriginX() - m_scrollX
-                     + JZFontMetrics::textWidth(m_text.toStdString(), font, selStart());
+                     + JZFontMetrics::textWidth(toDisplay(m_text, m_password).toStdString(),
+                                                font, selStart());
     const int visTop = JZFontMetrics::centeredTextTop(font, height())
                      + JZFontMetrics::internalLeading(font);
     const int visH   = JZFontMetrics::visualHeight(font);
 
-    JZPoint gTop = mapToGlobal(JZPoint(startX, visTop));
-    JZPoint gBot = mapToGlobal(JZPoint(startX, visTop + visH));
+    // mapToScreen: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
+    // ÷scale)。不要用 mapToGlobal —— 那是控件树内累加坐标, 只在根窗口位于
+    // (0,0) 时才碰巧等于客户区坐标。
+    const JZPoint sTop = mapToScreen(JZPoint(startX, visTop));
+    const JZPoint sBot = mapToScreen(JZPoint(startX, visTop + visH));
 
     POINT pt, ptBot;
-    pt.x    = toPhysical(gTop.x(), scale);
-    pt.y    = toPhysical(gTop.y(), scale);
-    ptBot.x = toPhysical(gBot.x(), scale);
-    ptBot.y = toPhysical(gBot.y(), scale);
-    ClientToScreen(hwnd, &pt);
-    ClientToScreen(hwnd, &ptBot);
+    pt.x    = toPhysical(sTop.x(), scale);
+    pt.y    = toPhysical(sTop.y(), scale);
+    ptBot.x = toPhysical(sBot.x(), scale);
+    ptBot.y = toPhysical(sBot.y(), scale);
 
     // 组字窗锚点: 微软拼音的候选条就是照这个点摆的
     COMPOSITIONFORM cf;
@@ -883,30 +893,15 @@ void JZLineEdit::completeComposition()
     m_compCursor = 0;
 }
 
-void JZLineEdit::setIMEContextEnabled(bool enable)
-{
-    HWND hwnd = nativeHwndOf(this);
-    if (!hwnd)
-        return;
-
-    if (enable) {
-        if (!m_imeContext)
-            return;
-        ImmAssociateContext(hwnd, reinterpret_cast<HIMC>(m_imeContext));
-    } else {
-        cancelComposition();
-        // 断开后 ImmGetContext 返回 NULL, 本窗口不再产生任何 IME 消息
-        ImmAssociateContext(hwnd, nullptr);
-    }
-}
-
 // ==================== 焦点 ====================
 
 void JZLineEdit::focusInEvent(JZEvent*)
 {
-    // 注: IME 输入上下文 (IMC) 由所属窗口在 WM_SETFOCUS 时统一关联,
-    // 所有控件共享同一个 HWND/IMC, 故控件焦点切换时不再重新关联/断开,
-    // 以免断开影响同窗口内其它控件的输入。
+    // 注: IME 输入上下文 (IMC) 由所属窗口统一关联/断开 (JZWindow::updateImeContext,
+    // 依据 imeEnabled())。这里只负责让输入法的字体/状态与本控件对齐。
+    if (JZWindow* win = window())
+        win->prepareIme(kFontPixelSize);
+
     m_cursorOn = true;
     resetCursorBlink();
     update();

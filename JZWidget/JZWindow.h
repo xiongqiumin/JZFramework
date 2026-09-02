@@ -77,6 +77,21 @@ public:
     JZWidget* focusWidget() const { return m_focusWidget; }
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
+    // ---- 输入法 (IME) 输入上下文 ----
+    // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联/断开必须在
+    // 窗口级统一做: 窗口有焦点 **且** 焦点控件 imeEnabled() 时才关联, 否则
+    // ImmAssociateContext(NULL) 断开 (断开后 ImmGetContext 返回 NULL, 本窗口
+    // 不再产生任何 IME 消息)。控件级别不要各自去关联/断开。
+    void updateImeContext();
+
+    // 让 IME 的组字窗/候选窗使用与本窗口一致的字体, 并保证输入法处于打开状态。
+    // 由文本控件在 focusInEvent 里调用, fontPixelSize 为其正文字号 (逻辑像素)。
+    void prepareIme(int fontPixelSize);
+
+    // 本次组字是否已通过 GCS_RESULTSTR 上屏 (用于 WM_IME_CHAR 去重)
+    bool imeGotResult() const { return m_imeGotResult; }
+    void setImeGotResult(bool v) { m_imeGotResult = v; }
+
     // 事件处理统一入口: WndProc 把 Win32 消息翻译成 JZEvent 后调到这里,
     // 按类型分发 (鼠标 -> 命中测试, 键盘 -> 从焦点逐级上传, IME -> 焦点控件)。
     // 返回 true 表示事件已被处理 (WndProc 不再转交 DefWindowProc)。
@@ -111,7 +126,7 @@ protected:
     // 输入分发 (onWindowProcess 按事件类型调用)
     bool dispatchMouse(JZMouseEvent* ev);   // 命中测试定位控件, 回填 localPos 后投递
     bool dispatchKey(JZKeyEvent* ev);       // 键盘: 从焦点控件起, 未处理的键逐级向上传播
-    void dispatchIme(JZImeEvent* ev);       // IME: 投递给焦点控件
+    bool dispatchIme(JZImeEvent* ev);       // IME: 投递给焦点控件; 无焦点控件返回 false
     void onWindowFocus(bool got);           // 窗口获/失焦: 管理 IMC + 派发焦点进/出事件
 
 protected:
@@ -125,7 +140,9 @@ protected:
     bool m_top = false;                 // 置顶
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
-    void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (WM_SETFOCUS 时建立)
+    void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
+    bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
+    bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏
 
     // 显示定位: 显式 moveScreen 记录 (等价 Qt WA_Moved) 优先于自动居中
     bool m_autoPosition = true;         // 显示时相对 owner 居中 (Modal/Popup)

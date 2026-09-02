@@ -3,6 +3,7 @@
 #include "JZMessageBox.h"
 #include "JZDebug.h"
 #include "JZLayout.h"
+#include "JZLineEdit.h"
 
 // 主窗口尺寸 (原 lv_obj 百分比由固定像素近似)
 static constexpr int kW = 800;
@@ -16,7 +17,7 @@ MainWindow::MainWindow(JZWidget* parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-        "RadioButton", "ComboBox", "TextEdit", "Table", "ImageLabel", "Dialog",
+        "RadioButton", "ComboBox", "LineEdit", "TextEdit", "Table", "ImageLabel", "Dialog",
         "TabWidget"
     };
 
@@ -204,7 +205,16 @@ void MainWindow::buildPages()
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(cb);
         m_preview->addWidget(page);
     }
-
+    
+    // ---- LineEdit ----
+    {
+        JZWidget* page = makePage();
+        JZLineEdit* line_edit = new JZLineEdit(page);
+        line_edit->setText("edit me");
+        line_edit->resize(160, 70);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(line_edit);
+        m_preview->addWidget(page);
+    }
     // ---- TextEdit ----
     {
         JZWidget* page = makePage();

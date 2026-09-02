@@ -307,6 +307,12 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_CHAR: {
         if ((wchar_t)wParam == VK_PROCESSKEY)
             return 0;
+        // 只有可打印字符才交给控件插入。TranslateMessage 会为控制键也生成 WM_CHAR
+        // (退格 0x08 / 回车 0x0D / Esc 0x1B / Del 0x7F ...), 这些都已经由
+        // WM_KEYDOWN 处理过; 若在这里再当文本插入, 控制字符会被写进文本里,
+        // 表现就是退格/删除"按了没反应"(长度没变, 只是那个字符被替换成控制符)。
+        if (wParam < 0x20 || wParam == 0x7F)
+            break;
         wchar_t wch = (wchar_t)wParam;
         JZKeyEvent ev(0, jzCurrentKeyModifiers(), jzUtf16ToUtf8(&wch, 1), false);
         if (self->onWindowProcess(&ev))
@@ -315,74 +321,134 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
 
     // ---- 输入法 (IME) ----
+
+    // 不让系统画组字窗: 组字串由控件在 paintEvent 里自绘, 候选窗仍交给 IME,
+    // 位置由 CANDIDATEFORM 指定。必须 break 继续走 DefWindowProc (不能 return 0),
+    // 否则 IME 收不到窗口上下文, 候选窗/状态窗不会正确建立。
+    case WM_IME_SETCONTEXT:
+        lParam &= ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW);
+        break;
+
     case WM_IME_STARTCOMPOSITION: {
+        self->setImeGotResult(false);
         JZImeEvent ev(JZImeEvent::StartComposition);
         self->onWindowProcess(&ev);
         return 0;
     }
 
     case WM_IME_ENDCOMPOSITION: {
+        self->setImeGotResult(false);
         JZImeEvent ev(JZImeEvent::EndComposition);
         self->onWindowProcess(&ev);
         return 0;
     }
 
     case WM_IME_NOTIFY:
+        // 只有候选窗相关消息自己消化; 其余 (IMN_SETOPENSTATUS /
+        // IMN_SETCONVERSIONMODE / IMN_GUIDELINE 等) 必须下传 DefWindowProc,
+        // 否则部分输入法 (搜狗/五笔等) 的中英状态、状态窗不刷新。
         if (wParam == IMN_OPENCANDIDATE || wParam == IMN_CHANGECANDIDATE ||
             wParam == IMN_CLOSECANDIDATE) {
             JZImeEvent ev(JZImeEvent::Candidate);
             self->onWindowProcess(&ev);
+            return 0;
         }
-        return 0;
+        break;
 
     case WM_IME_COMPOSITION: {
-        JZImeEvent ev(JZImeEvent::CompStr);
+        // 标志严格按 lParam 置位: 构造时不能预先带 CompStr, 否则只有
+        // GCS_CURSORPOS 时控件会拿空组字串覆盖掉正在显示的组字内容。
+        JZImeEvent ev(0);
         HIMC hImc = ImmGetContext(hwnd);
         if (hImc) {
-            // 组字串 (未上屏)
-            if (lParam & GCS_COMPSTR) {
+            // 组字串 (未上屏)。lParam == 0 表示组字内容被清空 (退格删完等),
+            // 同样要通知控件, 否则残留组字串不会消失。
+            std::wstring wcomp;
+            if ((lParam & GCS_COMPSTR) || lParam == 0) {
                 LONG len = ImmGetCompositionStringW(hImc, GCS_COMPSTR, nullptr, 0);
                 if (len > 0) {
-                    std::wstring wcomp((size_t)(len / (int)sizeof(wchar_t)), 0);
+                    wcomp.resize((size_t)(len / (int)sizeof(wchar_t)));
                     ImmGetCompositionStringW(hImc, GCS_COMPSTR, &wcomp[0], len);
-                    ev.setCompString(jzUtf16ToUtf8(wcomp.c_str(), (int)wcomp.size()));
-                } else {
-                    ev.setCompString("");
                 }
+                ev.setCompString(jzUtf16ToUtf8(wcomp.c_str(), (int)wcomp.size()));
                 ev.setFlag(JZImeEvent::CompStr);
-            }
-            // 每字符属性 (下标按 UTF-16)
-            if (lParam & GCS_COMPATTR) {
+
+                // 每字符属性 (下标按 UTF-16): 必须与组字串同批读取,
+                // 单独 GCS_COMPATTR 到来时属性会与已缩短的组字串错位。
                 LONG alen = ImmGetCompositionStringW(hImc, GCS_COMPATTR, nullptr, 0);
+                std::vector<unsigned char> attr;
                 if (alen > 0) {
-                    std::vector<unsigned char> attr((size_t)alen, 0);
+                    attr.assign((size_t)alen, 0);
                     ImmGetCompositionStringW(hImc, GCS_COMPATTR, attr.data(), alen);
-                    ev.setCompAttr(attr);
                 }
-            }
-            // 光标位置 (UTF-16 下标)
-            if (lParam & GCS_CURSORPOS) {
-                LONG cur = 0;
-                ImmGetCompositionStringW(hImc, GCS_CURSORPOS, &cur, sizeof(LONG));
-                ev.setCompCursor((int)cur);
+                ev.setCompAttr(attr);
+
+                // 组字光标位置 (UTF-16 下标): 无条件读。微软拼音逐字母输入时
+                // lParam 往往只有 GCS_COMPSTR|GCS_COMPATTR、不带 GCS_CURSORPOS 位,
+                // 只按位读会一直拿到 0, 插入点光标就永远停在组字串最前面。
+                // 读法: 缓冲区形式优先; 失败再试返回值形式 (参考实现 test_ime 的读法);
+                // 两种都拿不到则落到组字串末尾 —— 打字过程中光标本来就该跟着组字串走,
+                // 拿不到真实值时停在开头比停在末尾错误得多。
+                LONG pos = -1;
+                LONG buf = 0;
+                if (ImmGetCompositionStringW(hImc, GCS_CURSORPOS, &buf, sizeof(LONG)) > 0) {
+                    pos = buf;
+                } else {
+                    LONG rv = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
+                    if (rv > 0)
+                        pos = rv;
+                }
+                if (pos < 0 || pos > (LONG)wcomp.size())
+                    pos = (LONG)wcomp.size();
+                ev.setCompCursor((int)pos);
                 ev.setFlag(JZImeEvent::CursorPos);
+            }
+            // 光标单独变化 (组字串未变, 如组字串内按方向键)
+            if (lParam & GCS_CURSORPOS) {
+                LONG pos = -1;
+                LONG buf = 0;
+                if (ImmGetCompositionStringW(hImc, GCS_CURSORPOS, &buf, sizeof(LONG)) > 0) {
+                    pos = buf;
+                } else {
+                    LONG rv = ImmGetCompositionStringW(hImc, GCS_CURSORPOS, nullptr, 0);
+                    if (rv > 0)
+                        pos = rv;
+                }
+                if (pos >= 0) {
+                    ev.setCompCursor((int)pos);
+                    ev.setFlag(JZImeEvent::CursorPos);
+                }
             }
             // 结果串 (上屏)
             if (lParam & GCS_RESULTSTR) {
                 LONG rlen = ImmGetCompositionStringW(hImc, GCS_RESULTSTR, nullptr, 0);
+                std::string res;
                 if (rlen > 0) {
                     std::wstring wres((size_t)(rlen / (int)sizeof(wchar_t)), 0);
                     ImmGetCompositionStringW(hImc, GCS_RESULTSTR, &wres[0], rlen);
-                    ev.setResultString(jzUtf16ToUtf8(wres.c_str(), (int)wres.size()));
-                } else {
-                    ev.setResultString("");
+                    res = jzUtf16ToUtf8(wres.c_str(), (int)wres.size());
                 }
+                ev.setResultString(res);
                 ev.setFlag(JZImeEvent::ResultStr);
             }
             ImmReleaseContext(hwnd, hImc);
         }
-        self->onWindowProcess(&ev);
-        return 0;   // 关键: 不转发 DefWindowProc, 否则 IME 默认行为干扰
+        if (ev.flags() != 0) {
+            if (ev.hasFlag(JZImeEvent::ResultStr) && !ev.resultString().empty())
+                self->setImeGotResult(true);
+            self->onWindowProcess(&ev);
+        }
+        return 0;   // 关键: 不转发 DefWindowProc, 否则它会再补一次 WM_CHAR 重复上屏
+    }
+
+    // 兼容老式输入法: 结果串若已由 GCS_RESULTSTR 上屏, 这里不能再插一次
+    case WM_IME_CHAR: {
+        if (!self->imeGotResult() && wParam >= 0x20 && wParam != 0x7F) {
+            wchar_t wch = (wchar_t)wParam;
+            JZKeyEvent ev(0, jzCurrentKeyModifiers(), jzUtf16ToUtf8(&wch, 1), false);
+            self->onWindowProcess(&ev);
+        }
+        return 0;
     }
 
     // ---- 窗口焦点: 翻译成 focusIn/focusOut 事件 ----
@@ -534,6 +600,17 @@ void JZWindow::createWindow()
         if (m_top)
             SetWindowPos((HWND)m_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+        // 立即缓存默认输入上下文 (IMC)。关键: 之后若需要断开 (ImmAssociateContext(NULL)),
+        // ImmGetContext 会返回 NULL, 默认 IMC 句柄再也拿不到 —— 整个窗口的输入法就废了。
+        // 参考实现 (test_ime WM_CREATE) 也是创建时立刻缓存。聚焦/失焦切换时复用此句柄。
+        if (!m_imeContext) {
+            HIMC hImc = ImmGetContext((HWND)m_hwnd);
+            if (hImc) {
+                m_imeContext = hImc;
+                ImmReleaseContext((HWND)m_hwnd, hImc);
+            }
+        }
     }
 }
 
@@ -609,9 +686,12 @@ void JZWindow::setFocusWidget(JZWidget* w)
     JZWidget* old = m_focusWidget;
     m_focusWidget = w;
     if (old) {
-        JZEvent ev(JZEvent_focusOut);
+        JZEvent ev(JZEvent_focusOut);       // 先派发: 控件在此取消未上屏的组字
         old->event(&ev);
     }
+    // 焦点切换后重算 IMC: 焦点落到非文本控件上就断开,
+    // 否则打字会在后台组字却没有任何控件显示它。
+    updateImeContext();
     if (w) {
         JZEvent ev(JZEvent_focusIn);
         w->event(&ev);
@@ -688,8 +768,9 @@ bool JZWindow::onWindowProcess(JZEvent* event)
     case JZEvent_key:
         return dispatchKey((JZKeyEvent*)event);
     case JZEvent_ime:
-        dispatchIme((JZImeEvent*)event);
-        return true;
+        // 无焦点控件时返回 false, 交回 DefWindowProc —— 不要静默吞掉,
+        // 否则 IME 消息没有去处, 组字内容会凭空消失。
+        return dispatchIme((JZImeEvent*)event);
     case JZEvent_focusIn:
         onWindowFocus(true);
         return true;
@@ -734,36 +815,96 @@ bool JZWindow::dispatchKey(JZKeyEvent* ev)
     return false;
 }
 
-// IME: 组字/上屏/候选事件只投递给焦点控件。
-void JZWindow::dispatchIme(JZImeEvent* ev)
+// IME: 组字/上屏/候选事件只投递给焦点控件; 无焦点控件返回 false (交回系统)。
+bool JZWindow::dispatchIme(JZImeEvent* ev)
 {
-    if (m_focusWidget)
-        m_focusWidget->event(ev);
+    if (!m_focusWidget)
+        return false;
+    m_focusWidget->event(ev);
+    return true;
 }
 
-// WM_SETFOCUS / WM_KILLFOCUS: 窗口级管理 IMC, 并派发焦点进/出事件。
-// 同 HWND 内多控件共享一个 IMC, 故只在窗口获/失焦时关联/断开,
-// 控件间切换焦点只改 m_focusWidget (setFocusWidget), 不碰 IMC。
+// WM_SETFOCUS / WM_KILLFOCUS: 派发焦点进/出事件, 并重算 IMC 关联。
+// 同 HWND 内多控件共享一个 IMC, 关联/断开一律走 updateImeContext(),
+// 控件自身不再各自操作 (否则一个控件断开会影响同窗口其它控件)。
 void JZWindow::onWindowFocus(bool got)
 {
-    if (got) {
-        HIMC hImc = ImmGetContext((HWND)m_hwnd);
-        if (hImc) {
-            m_imeContext = hImc;                    // 记下默认 IMC
-            ImmAssociateContext((HWND)m_hwnd, hImc); // 窗口级关联
-            ImmReleaseContext((HWND)m_hwnd, hImc);
-        }
-        if (m_focusWidget) {
-            JZEvent ev(JZEvent_focusIn);
-            m_focusWidget->event(&ev);
-        }
-    } else {
-        if (m_focusWidget) {
-            JZEvent ev(JZEvent_focusOut);
-            m_focusWidget->event(&ev);
-        }
-        ImmAssociateContext((HWND)m_hwnd, nullptr);  // 窗口失焦: 断开 IMC
+    m_hasWindowFocus = got;
+    if (!got && m_focusWidget) {
+        JZEvent ev(JZEvent_focusOut);       // 先派发: 控件在此取消未上屏的组字
+        m_focusWidget->event(&ev);
     }
+    updateImeContext();
+    if (got && m_focusWidget) {
+        JZEvent ev(JZEvent_focusIn);
+        m_focusWidget->event(&ev);
+    }
+}
+
+// IMC 关联: 窗口有键盘焦点 **且** 焦点控件需要输入法时才把默认 IMC 关联到本
+// HWND; 其余情况一律断开 (ImmAssociateContext(NULL) 后 ImmGetContext 返回
+// NULL, 本窗口不再产生任何 IME 消息, 输入法也不会弹窗)。
+void JZWindow::updateImeContext()
+{
+    if (!m_hwnd)
+        return;
+
+    const bool want = m_hasWindowFocus && m_focusWidget && m_focusWidget->imeEnabled();
+
+    if (want) {
+        if (!m_imeContext) {
+            // 兜底: 若从未缓存过 (如窗口在旧版本逻辑下已断开), 先恢复默认关联再取。
+            // 直接 ImmGetContext 在已断开时只会拿到 NULL。
+            ImmAssociateContextEx((HWND)m_hwnd, nullptr, IACE_DEFAULT);
+            HIMC hImc = ImmGetContext((HWND)m_hwnd);
+            if (hImc) {
+                m_imeContext = hImc;
+                ImmReleaseContext((HWND)m_hwnd, hImc);
+            }
+        }
+        if (m_imeContext)
+            ImmAssociateContext((HWND)m_hwnd, reinterpret_cast<HIMC>(m_imeContext));
+    } else {
+        ImmAssociateContext((HWND)m_hwnd, nullptr);
+    }
+}
+
+// 让 IME 的组字窗/候选窗字体与本窗口一致, 并保证输入法处于打开状态。
+// 字体族与 GDI+ 绘制侧保持一致 (JZGdiBackend::jzFontFamily)。
+void JZWindow::prepareIme(int fontPixelSize)
+{
+    if (!m_hwnd)
+        return;
+
+    HIMC hImc = ImmGetContext((HWND)m_hwnd);
+    if (!hImc)
+        return;
+
+    const int dpi = (int)jzQueryDpi((HWND)m_hwnd);
+
+    LOGFONTW lf;
+    ZeroMemory(&lf, sizeof(lf));
+    lf.lfHeight = -MulDiv(fontPixelSize, dpi, 96);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+    wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+    ImmSetCompositionFontW(hImc, &lf);
+
+    if (!ImmGetOpenStatus(hImc))
+        ImmSetOpenStatus(hImc, TRUE);
+
+    // 参考实现 (test_ime::EnsureIME): 获得焦点时切到中文(native)模式,
+    // 否则输入法停留在英数状态, 按键全部直接上屏, 永远不会开始组字。
+    DWORD conv = 0, sent = 0;
+    if (ImmGetConversionStatus(hImc, &conv, &sent)) {
+        if ((conv & IME_CMODE_NATIVE) == 0) {
+            conv |= IME_CMODE_NATIVE;
+            ImmSetConversionStatus(hImc, conv, sent);
+        }
+    }
+
+    ImmReleaseContext((HWND)m_hwnd, hImc);
 }
 
 // ==================== 关闭流程 ====================
@@ -786,6 +927,9 @@ void JZWindow::nativeDestroyed()
     m_hwnd = nullptr;
     m_windowCreated = false;
     m_focusWidget = nullptr;
+    m_hasWindowFocus = false;
+    m_imeContext = nullptr;
+    m_imeGotResult = false;
 }
 
 // ==================== 窗口属性 ====================

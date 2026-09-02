@@ -56,6 +56,9 @@ public:
     std::string aiText() const override { return m_text.toStdString(); }
     std::vector<JZAiAction> aiActions() const override { return {{"setText", "string 新文本"}}; }
 
+    // 可编辑时需要输入法; 窗口据此关联/断开 IMC
+    bool imeEnabled() const override;
+
 jz_signals:
     JZSignal<const std::string&> sigTextChanged;
     JZSigVoid sigCursorPositionChanged;
@@ -108,7 +111,6 @@ private:
     void updateIMEWindowPos();
     void cancelComposition();
     void completeComposition();
-    void setIMEContextEnabled(bool enable);
 
 private:
     JZString m_text;
@@ -139,8 +141,6 @@ private:
     JZString m_comp;
     std::vector<unsigned char> m_compAttr;
     int  m_compCursor = 0;
-
-    void* m_imeContext = nullptr;     // 平台输入上下文 (Win32: HIMC)
 };
 
 #endif

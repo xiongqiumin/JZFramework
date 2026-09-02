@@ -147,6 +147,11 @@ public:
     void setFocus();
     bool hasFocus() const;
 
+    // 本控件当前是否需要输入法 (IME): 默认 false —— 焦点落在按钮/列表等非文本
+    // 控件上时, 窗口会据此断开输入上下文, 避免"输入了但没有任何控件显示组字"。
+    // 文本类控件 (JZLineEdit / JZTextEdit) 重写为可编辑时返回 true。
+    virtual bool imeEnabled() const { return false; }
+
     // 重绘
     void update();
     void invalidate(const JZRect &rc);

@@ -49,6 +49,9 @@ public:
     std::string aiText() const override { return m_text.toStdString(); }
     std::vector<JZAiAction> aiActions() const override { return {{"setText", "string 新文本"}}; }
 
+    // 可编辑 (且非密码框) 时需要输入法; 窗口据此关联/断开 IMC
+    bool imeEnabled() const override;
+
     // ---- 光标与选区 ----
     int  cursorPosition() const;
     void setCursorPosition(int pos);
@@ -104,7 +107,6 @@ private:
     void updateIMEWindowPos();
     void cancelComposition();
     void completeComposition();          // 结束组字并把内容落屏
-    void setIMEContextEnabled(bool enable);
 
 private:
     JZString m_text;
@@ -130,8 +132,6 @@ private:
     JZString m_comp;                        // 组字串 (未上屏)
     std::vector<unsigned char> m_compAttr;  // 每码点的属性 (JZImeAttr_*)
     int  m_compCursor = 0;                  // 光标在组字串中的码点位置
-
-    void* m_imeContext = nullptr;           // 平台输入上下文 (Win32: HIMC)
 };
 
 #endif // JZ_LINE_EDIT_H_

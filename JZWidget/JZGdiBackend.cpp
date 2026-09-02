@@ -468,8 +468,13 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
                 }
                 Font font(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
                 SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));
+                // 绘制与测量 (GdiFontEngine::textWidth) 必须用同一 StringFormat:
+                // 默认格式在文字上下留 ~1/6 em 的内边距, 会让"测出的光标位置"与
+                // "实际画出来的文字"错开 (输入框光标不贴字 / 垂直居中偏低)。
+                // GenericTypographic 紧贴字形, 两者完全一致。
                 g.DrawString(wtext.c_str(), (int)wtext.size(), &font,
-                             PointF(t->area.x() * s, t->area.y() * s), &br);
+                             PointF(t->area.x() * s, t->area.y() * s),
+                             StringFormat::GenericTypographic(), &br);
             }
             break;
         }

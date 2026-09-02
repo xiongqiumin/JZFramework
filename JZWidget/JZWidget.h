@@ -122,6 +122,11 @@ public:
     void setOpaque(int opaque);
     int opaque() const;
 
+    // 命中测试透传 (AI 鼠标等全窗覆盖层): 自身不拦截鼠标事件 (hitTest 跳过),
+    // 但子控件 (如覆盖层上的取消按钮) 正常参与命中
+    void setPassThrough(bool on) { m_passThrough = on; }
+    bool isPassThrough() const { return m_passThrough; }
+
     // 布局
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
@@ -216,6 +221,7 @@ protected:
     int m_height;
 
     bool m_visible;
+    bool m_passThrough = false;
 };
 
 #endif

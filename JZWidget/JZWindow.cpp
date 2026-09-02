@@ -628,6 +628,13 @@ JZWidget* JZWindow::hitTestRec(JZWidget* w, const JZPoint& global)
         JZRect gr = c->mapToGlobal(c->rect());
         if (global.x() >= gr.left() && global.x() < gr.right() &&
             global.y() >= gr.top()  && global.y() < gr.bottom()) {
+            if (c->isPassThrough()) {
+                // 透传覆盖层 (AI 鼠标等): 自身不拦截, 只考虑其子控件 (如取消按钮)
+                JZWidget* deeper = hitTestRec(c, global);
+                if (deeper)
+                    return deeper;
+                continue;   // 透传给更下层的控件
+            }
             JZWidget* deeper = hitTestRec(c, global);
             return deeper ? deeper : c;
         }

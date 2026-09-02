@@ -80,6 +80,8 @@ set(JZ_SOURCES
     JZStackedWidget.cpp
     JZTabWidget.h
     JZTabWidget.cpp
+    JZAiDriver.h
+    JZAiDriver.cpp
     JZScrollArea.h
     JZScrollArea.cpp
     JZListWidget.h

@@ -1,0 +1,262 @@
+#include "JZAiDriver.h"
+#include "JZWindow.h"
+#include "JZPushButton.h"
+#include "JZPainter.h"
+#include "JZFontMetrics.h"
+#include "JZMouseEvent.h"
+#include <algorithm>
+#include <cmath>
+
+JZ_OBJECT_IMPL(JZAiOverlay, JZWidget)
+JZ_OBJECT_IMPL(JZAiDriver, JZObject)
+
+// ==================== 覆盖层 ====================
+
+JZAiOverlay::JZAiOverlay(JZWidget* parent)
+    : JZWidget(parent)
+    , sigCancelRequested(this)
+    , m_cursorPos(30, 30)   // AI 光标初始位置: 左上角
+{
+    setPassThrough(true);   // 自身不拦鼠标, 只放行"取消"按钮
+
+    m_cancelBtn = new JZPushButton(this, 54, 26, "取消");
+    m_cancelBtn->hide();
+    connect(&m_cancelBtn->sigClicked, [this]() {
+        sigCancelRequested.emit();
+    });
+}
+
+void JZAiOverlay::setCursorPos(const JZPoint& pos)
+{
+    m_cursorPos = pos;
+    update();
+}
+
+void JZAiOverlay::setStatusText(const std::string& text)
+{
+    m_statusText = text;
+    layoutBanner();
+    update();
+}
+
+void JZAiOverlay::startClickEffect(const JZPoint& pos)
+{
+    m_effectOn = true;
+    m_effectPos = pos;
+    m_effectTick = 0;
+    update();
+}
+
+void JZAiOverlay::tickEffect()
+{
+    if (!m_effectOn)
+        return;
+    if (++m_effectTick > 12)
+        m_effectOn = false;
+    update();
+}
+
+// 尺寸对齐父窗口; 尺寸变化时对"新旧区域并集"失效 —— 覆盖层长高后
+// 原区域外若残留旧帧像素 (如旧状态条文字), 不会被 update(rect) 覆盖到
+void JZAiOverlay::syncToParent()
+{
+    JZWidget* p = parentWidget();
+    if (!p)
+        return;
+    JZRect oldRc = rect();
+    setGeometry(0, 0, p->width(), p->height());
+    JZRect nowRc = rect();
+    if (nowRc.x() != oldRc.x() || nowRc.y() != oldRc.y() ||
+        nowRc.width() != oldRc.width() || nowRc.height() != oldRc.height())
+        invalidate(oldRc.united(nowRc));
+    layoutBanner();
+}
+
+// 状态条布局 (左下角): 与绘制分离, 在文本/尺寸变化时确定性地就位
+void JZAiOverlay::layoutBanner()
+{
+    if (m_statusText.empty()) {
+        m_bannerRect = JZRect();
+        m_cancelBtn->setVisible(false);
+        return;
+    }
+
+    JZFont font(14);
+    int textW = JZFontMetrics::textWidth(m_statusText, font);
+    int bh = 34;
+    int bx = 12;
+    int by = std::max(0, height() - bh - 12);
+    int bw = textW + 84;   // 文本 + 取消按钮区域
+
+    m_bannerRect = JZRect(bx, by, bw, bh);
+    m_cancelBtn->setGeometry(bx + 4, by + 4, 54, bh - 8);
+    m_cancelBtn->setVisible(true);
+}
+
+// 绘制只读 m_bannerRect, 不做任何几何变更
+void JZAiOverlay::paintEvent(JZPainterEvent*)
+{
+    JZPainter p(this);
+
+    // ---- 状态条 (左下角, 半透明深色圆角条) ----
+    if (!m_bannerRect.isEmpty()) {
+        JZFont font(14);
+        p.setFont(font);
+        p.setBrush(JZBrush(JZColor(0x22, 0x24, 0x2a, 225)));
+        p.setPen(JZPen(JZColor(0x22, 0x24, 0x2a, 225), 1));
+        p.drawRoundRect(m_bannerRect.x(), m_bannerRect.y(),
+                        m_bannerRect.width(), m_bannerRect.height(), 8);
+        p.setPen(JZPen(JZColor(0xff, 0xff, 0xff), 1));
+        p.drawText(m_bannerRect.x() + 4 + 54 + 10,
+                   m_bannerRect.y() + JZFontMetrics::centerY(font, m_bannerRect.height()),
+                   m_statusText.c_str());
+    }
+
+    // ---- 点击涟漪 (扩散圆环, 渐隐) ----
+    if (m_effectOn) {
+        int r = 8 + m_effectTick * 3;
+        int alpha = std::max(40, 220 - m_effectTick * 22);
+        p.setPen(JZPen(JZColor(0x33, 0x66, 0xcc, (uint8_t)alpha), 2));
+        p.drawArc(m_effectPos.x(), m_effectPos.y(), r, 0, 3600);
+        p.setPen(JZPen(JZColor(0x33, 0x66, 0xcc, (uint8_t)(alpha / 2)), 2));
+        p.drawArc(m_effectPos.x(), m_effectPos.y(), r / 2 + 2, 0, 3600);
+    }
+
+    // ---- AI 光标 (经典箭头, 白底黑边) ----
+    drawArrow(p, m_cursorPos);
+}
+
+// 经典箭头: 多边形扫描线填充, 两遍 (黑描边 + 白色本体)
+void JZAiOverlay::drawArrow(JZPainter& p, const JZPoint& pos) const
+{
+    static const JZPoint pts[] = {
+        {0, 0}, {0, 17}, {4, 13}, {7, 20}, {10, 19}, {7, 12}, {12, 12}
+    };
+    const int n = (int)(sizeof(pts) / sizeof(pts[0]));
+
+    for (int pass = 0; pass < 2; ++pass) {
+        JZColor col = (pass == 0) ? JZColor(0x20, 0x20, 0x20) : JZColor(0xff, 0xff, 0xff);
+        int grow = (pass == 0) ? 1 : 0;   // 第一遍外扩 1px 充当描边
+        for (int y = 0; y <= 20; ++y) {
+            int xs[8];
+            int cnt = 0;
+            for (int i = 0; i < n; ++i) {
+                const JZPoint& a = pts[i];
+                const JZPoint& b = pts[(i + 1) % n];
+                if ((a.y() <= y && b.y() > y) || (b.y() <= y && a.y() > y)) {
+                    xs[cnt++] = a.x() + (b.x() - a.x()) * (y - a.y()) / (b.y() - a.y());
+                }
+            }
+            std::sort(xs, xs + cnt);
+            for (int k = 0; k + 1 < cnt; k += 2)
+                p.fillRect(pos.x() + xs[k] - grow, pos.y() + y - grow,
+                           xs[k + 1] - xs[k] + 1 + grow * 2, 1, col);
+        }
+    }
+}
+
+// ==================== 驱动 ====================
+
+JZAiDriver::JZAiDriver(JZWindow* root, JZObject* parent)
+    : JZObject(parent)
+    , sigDone(this)
+    , m_root(root)
+{
+    m_overlay = new JZAiOverlay(root);
+    m_overlay->hide();
+
+    m_timer = new JZTimer(this);
+    connect(&m_timer->sigTimeout, this, &JZAiDriver::onTick);
+}
+
+int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
+                             const std::string& statusText, std::function<void()> onArrive)
+{
+    if (m_phase != PhaseIdle || !target || !m_root || !m_root->nativeHandle())
+        return -1;   // 忙 / 目标无效
+
+    ++m_seq;
+    m_cancelRequested = false;
+    m_performClick = performClick;
+    m_onArrive = std::move(onArrive);
+    m_from = m_cursorPos;
+    m_to = target->mapToGlobal(JZPoint(target->width() / 2, target->height() / 2));
+
+    m_overlay->syncToParent();
+    m_overlay->setStatusText(statusText);
+    m_overlay->setCursorPos(m_cursorPos);
+    m_overlay->show();
+
+    // 移动时长随距离走 (慢速, 有"过程感"): 300~1200ms
+    int dist = std::abs(m_to.x() - m_from.x()) + std::abs(m_to.y() - m_from.y());
+    int duration = std::min(1200, std::max(300, dist * 3 / 2));
+    m_totalTicks = std::max(1, duration / kTickMs);
+    m_tick = 0;
+    m_phase = PhaseMoving;
+    m_timer->start(kTickMs);
+    return m_seq;
+}
+
+void JZAiDriver::cancel()
+{
+    if (m_phase != PhaseIdle)
+        m_cancelRequested = true;   // 下个 tick 生效
+}
+
+void JZAiDriver::onTick()
+{
+    if (m_phase == PhaseIdle) {
+        m_timer->stop();
+        return;
+    }
+    if (m_cancelRequested) {
+        finish(false, "操作已被用户取消");
+        return;
+    }
+
+    if (m_phase == PhaseMoving) {
+        ++m_tick;
+        float t = (m_totalTicks <= 0) ? 1.0f : (float)m_tick / m_totalTicks;
+        t = std::min(1.0f, t);
+        float e = t * t * (3.0f - 2.0f * t);   // smoothstep 缓动
+        m_cursorPos = JZPoint(
+            m_from.x() + (int)std::lround((m_to.x() - m_from.x()) * e),
+            m_from.y() + (int)std::lround((m_to.y() - m_from.y()) * e));
+        m_overlay->setCursorPos(m_cursorPos);
+
+        if (m_tick >= m_totalTicks) {
+            // 到达目标: click 类先出涟漪再合成真实点击; 其它直调动作
+            m_phase = PhaseActing;
+            m_actTicks = kActTicks;
+            if (m_performClick) {
+                m_overlay->startClickEffect(m_to);
+                JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton,
+                                   m_to, JZPoint(), 0);
+                m_root->onWindowProcess(&press);
+                JZMouseEvent release(JZMouseEvent::Release, JZMouseEvent::LeftButton,
+                                     m_to, JZPoint(), 0);
+                m_root->onWindowProcess(&release);
+            }
+            if (m_onArrive) {
+                auto fn = m_onArrive;
+                m_onArrive = nullptr;
+                fn();
+            }
+        }
+        return;
+    }
+
+    // PhaseActing: 涟漪/停留展示, 结束后回报
+    m_overlay->tickEffect();
+    if (--m_actTicks <= 0)
+        finish(true, "ok");
+}
+
+void JZAiDriver::finish(bool ok, const std::string& msg)
+{
+    m_timer->stop();
+    m_phase = PhaseIdle;
+    m_onArrive = nullptr;
+    m_overlay->hide();
+    sigDone.emit(m_seq, ok, msg);
+}

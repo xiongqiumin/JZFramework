@@ -19,15 +19,23 @@ public:
     bool isChecked() const;
     void setChecked(bool on);
 
+    // ---- AI 语义 ----
+    std::string aiText() const override { return m_text; }
+    bool aiChecked() const override { return m_checked; }
+    std::vector<JZAiAction> aiActions() const override { return {{"click", ""}}; }
+
 jz_signals:
     JZSigVoid sigToggled;   // 选中时触发
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
+    void mouseReleaseEvent(JZMouseEvent* event) override;
 
     void* m_label = nullptr;
     void* m_indicator = nullptr;   // 透明占位, 为圆环预留布局宽度
     bool m_checked = false;
+    bool m_pressed = false;
     std::string m_text;
 };
 

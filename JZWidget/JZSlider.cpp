@@ -61,3 +61,41 @@ void JZSlider::paintEvent(JZPainterEvent* event)
     p.setPen(JZPen(JZColor(0x33, 0x66, 0xcc), 1));
     p.drawRoundRect(pos - knob / 2, (h - knob) / 2, knob, knob, knob / 2);
 }
+
+// ==================== 鼠标交互 ====================
+// 命中位置 -> 值: 滑块中心对齐, 与 paintEvent 的 6px 内边距一致
+int JZSlider::valueFromPos(int x) const
+{
+    int range = m_max - m_min;
+    int span = width() - 12;
+    if (range <= 0 || span <= 0)
+        return m_value;
+    int pos = std::max(6, std::min(x, width() - 6));
+    return m_min + (int32_t)((int64_t)(pos - 6) * range / span);
+}
+
+void JZSlider::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZWidget::mousePressEvent(event);
+        return;
+    }
+    m_dragging = true;
+    setValue(valueFromPos(event->localPos().x()));
+    update();
+    sigValueChanged.emit(m_value);
+}
+
+void JZSlider::mouseMoveEvent(JZMouseEvent* event)
+{
+    if (!m_dragging)
+        return;   // 未按下时的悬停移动不改变值
+    setValue(valueFromPos(event->localPos().x()));
+    update();
+    sigValueChanged.emit(m_value);
+}
+
+void JZSlider::mouseReleaseEvent(JZMouseEvent* event)
+{
+    m_dragging = false;
+}

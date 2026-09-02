@@ -135,3 +135,13 @@ void JZScrollArea::paintEvent(JZPainterEvent* event)
     p.setPen(JZPen(JZColor(0xdd, 0xdd, 0xdd), 1));
     p.drawRect(0, 0, w, h);
 }
+
+// 滚轮: 纵向滚动 (一格 40px); 不可滚动时交基类 (内容不超出视口的子类不受影响)
+void JZScrollArea::wheelEvent(JZMouseEvent* event)
+{
+    if (canScrollVertically() && event->wheelDelta() != 0) {
+        scrollToY(m_scrollY - event->wheelDelta() * 40);
+        return;
+    }
+    JZWidget::wheelEvent(event);
+}

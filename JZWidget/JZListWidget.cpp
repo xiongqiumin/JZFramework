@@ -1,10 +1,20 @@
 #include "JZListWidget.h"
 
+#include <algorithm>
+
 #include "JZColor.h"
 #include "JZBrush.h"
 #include "JZPen.h"
 #include "JZFont.h"
 #include "JZFontMetrics.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 JZ_OBJECT_IMPL(JZListWidget, JZScrollArea)
 
@@ -14,6 +24,7 @@ JZ_OBJECT_IMPL(JZListWidget, JZScrollArea)
 JZListWidget::JZListWidget(JZWidget* parent)
     : JZScrollArea(parent)
     , currentIndexChanged(this)
+    , sigActivated(this)
 {}
 
 JZListWidget::~JZListWidget()
@@ -265,8 +276,53 @@ void JZListWidget::mousePressEvent(JZMouseEvent* event)
     int row = (event->localPos().y() + scrollY()) / rh;
     int col = (m_mode == ListMode) ? 0 : event->localPos().x() / cellWidth();
     int index = row * perRow + col;
-    if (index >= 0 && index < (int)m_items.size())
+    if (index >= 0 && index < (int)m_items.size()) {
         setCurrentIndex(index);
+        sigActivated.emit(index);   // 点击即激活 (下拉弹层收编用)
+    }
+}
+
+// 键盘: Up/Down 移动选择 (带滚动可见), Enter 激活; Esc ignore 冒泡给弹层关闭
+void JZListWidget::keyPressEvent(JZKeyEvent* event)
+{
+    switch (event->key()) {
+    case VK_UP:
+    case VK_DOWN: {
+        if (m_items.empty()) {
+            event->accept();
+            return;
+        }
+        int idx = m_current + (event->key() == VK_UP ? -1 : 1);
+        idx = std::max(0, std::min(idx, (int)m_items.size() - 1));
+        if (idx != m_current) {
+            setCurrentIndex(idx);
+
+            // 选择行滚入视口
+            int top = idx * rowHeight();
+            int bottom = top + rowHeight();
+            if (top < scrollY())
+                scrollToY(top);
+            else if (bottom > scrollY() + viewportHeight())
+                scrollToY(bottom - viewportHeight());
+        }
+        event->accept();
+        return;
+    }
+
+    case VK_RETURN:
+        if (m_current >= 0)
+            sigActivated.emit(m_current);
+        event->accept();
+        return;
+
+    case VK_ESCAPE:
+        event->ignore();   // 冒泡: Popup 型窗口按 Esc 隐藏
+        return;
+
+    default:
+        break;
+    }
+    JZScrollArea::keyPressEvent(event);
 }
 
 void JZListWidget::showEvent(JZShowEvent* e)

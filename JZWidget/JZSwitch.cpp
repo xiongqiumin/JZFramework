@@ -38,3 +38,26 @@ void JZSwitch::paintEvent(JZPainterEvent* event)
     p.setPen(JZPen(JZColor(0xaa, 0xaa, 0xaa), 1));
     p.drawRoundRect(kx, 2, knob, knob, knob / 2);
 }
+
+// ==================== 鼠标交互 ====================
+// 左键按下 + 本控件内释放 -> 切换状态 (Qt 按钮语义)
+void JZSwitch::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() == JZMouseEvent::LeftButton)
+        m_pressed = true;
+}
+
+void JZSwitch::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZWidget::mouseReleaseEvent(event);
+        return;
+    }
+    bool wasPressed = m_pressed;
+    m_pressed = false;
+    if (!wasPressed)
+        return;   // 释放前不是本控件按下 (如别处拖入), 不切换
+    m_on = !m_on;
+    update();
+    sigToggled.emit(m_on);
+}

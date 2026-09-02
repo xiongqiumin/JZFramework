@@ -58,3 +58,26 @@ void JZCheckbox::paintEvent(JZPainterEvent* event)
     if (!m_text.empty())
         p.drawText(d + 6, JZFontMetrics::centerY(font, h), m_text.c_str());
 }
+
+// ==================== 鼠标交互 ====================
+// 左键按下 + 本控件内释放 -> 翻转选中态
+void JZCheckbox::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() == JZMouseEvent::LeftButton)
+        m_pressed = true;
+}
+
+void JZCheckbox::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZWidget::mouseReleaseEvent(event);
+        return;
+    }
+    bool wasPressed = m_pressed;
+    m_pressed = false;
+    if (!wasPressed)
+        return;
+    setChecked(!m_checked);
+    update();
+    sigToggled.emit(m_checked);
+}

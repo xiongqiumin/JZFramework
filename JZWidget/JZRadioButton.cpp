@@ -36,6 +36,17 @@ void JZRadioButton::setChecked(bool on)
 {
     if (m_checked == on) return;
     m_checked = on;
+    // 同一父级下的兄弟单选钮自动互斥 (Qt autoExclusive 风格)
+    if (on && parentWidget()) {
+        const auto& ch = parentWidget()->children();
+        for (auto* obj : ch) {
+            auto* r = jzobject_cast<JZRadioButton*>(obj);
+            if (r && r != this && r->m_checked) {
+                r->m_checked = false;
+                r->update();
+            }
+        }
+    }
     update();
 }
 
@@ -69,4 +80,26 @@ void JZRadioButton::paintEvent(JZPainterEvent* event)
 JZSize JZRadioButton::sizeHint() const
 {
     return JZSize(96, 20);
+}
+
+// ==================== 鼠标交互 ====================
+// 左键按下 + 本控件内释放 -> 选中 (已是选中态则不重复发信号)
+void JZRadioButton::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() == JZMouseEvent::LeftButton)
+        m_pressed = true;
+}
+
+void JZRadioButton::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZWidget::mouseReleaseEvent(event);
+        return;
+    }
+    bool wasPressed = m_pressed;
+    m_pressed = false;
+    if (!wasPressed || m_checked)
+        return;
+    setChecked(true);
+    sigToggled.emit();
 }

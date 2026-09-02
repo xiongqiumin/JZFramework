@@ -65,12 +65,27 @@ public:
 
 jz_signals:
     JZSigInt currentIndexChanged;
+    JZSigInt sigActivated;   // 激活 (点击项 / Enter), 下拉弹层收编用
+
+public:
+    // ---- AI 语义 ----
+    std::string aiRole() const override { return "list"; }
+    std::string aiText() const override { return itemText(m_current); }
+    std::vector<std::string> aiItems() const override
+    {
+        std::vector<std::string> v;
+        for (const auto& it : m_items)
+            v.push_back(it.text);
+        return v;
+    }
+    std::vector<JZAiAction> aiActions() const override { return {{"select", "number 项索引"}}; }
 
 protected:
     void showEvent(JZShowEvent* e) override;
     void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
+    void keyPressEvent(JZKeyEvent* event) override;
 
     void updateContentSize();
     void defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetItem* item, int index);

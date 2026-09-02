@@ -52,6 +52,7 @@ public:
     JZSize sizeHint() const override;
 
     void paintEvent(JZPainterEvent* event) override;
+    void wheelEvent(JZMouseEvent* event) override;
 
 protected:
     void resizeEvent(JZResizeEvent* event) override;

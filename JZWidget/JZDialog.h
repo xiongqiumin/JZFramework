@@ -6,8 +6,9 @@
 
 // 对话框 = 独立原生窗口 (继承 JZWindow, 自持渲染设备)。
 //   - parent 仅作为内存所有权 (JZObject 父), 不进入其可视控件树;
-//   - exec() 模态: 显示窗口 -> 屏蔽其它设备窗口输入 -> 嵌套事件循环
-//     (JZEventLoop 驱动定时器, 渲染与消息泵照常) -> 关闭后恢复;
+//   - exec() 模态 (DialogBoxParam 语义): 对话框挂 owner (父链所属窗口,
+//     JZWindow::createWindow 传 hWndParent), exec 禁用 owner -> 自管嵌套循环
+//     (参考 JZWin32Thread::run: 泵 Win32 消息 + 框架事件/定时器 + 整窗直绘) -> 退出恢复;
 //   - accept()/reject() 结束 exec 并隐藏窗口; 原生 WM_CLOSE 走 reject。
 //
 //     JZMessageBox::question(&win, "Confirm", "Sure?")->exec();

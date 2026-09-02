@@ -217,16 +217,24 @@ void JZLogManager::log(int module_id, int level, const std::string &message)
 #endif
     }
 
-    for (int i = (int)module->recvObjects.size() - 1; i >= 0; i--)
+    // 退出临界区后再派发事件, 避免持锁调用 postEvent 引发锁顺序反转/死锁
+    std::vector<JZObject *> recvObjects = module->recvObjects;
+    std::string fatalMsg;
+    bool isFatal = (level == LOG_FATAL);
+    if (isFatal)
+        fatalMsg = message;
+
+    locker.unlock();
+
+    for (int i = (int)recvObjects.size() - 1; i >= 0; i--)
     {
         JZLogEvent *event = new JZLogEvent();
         event->log = log_ptr;
-        jzApp->postEvent(module->recvObjects[i], event);
+        jzApp->postEvent(recvObjects[i], event);
     }
 
-    if (level == LOG_FATAL) {
-        m_fatalError = message;
-        locker.unlock();
+    if (isFatal) {
+        m_fatalError = fatalMsg;
         abort();  // 触发 SIGABRT，生成 tombstone 供后续分析
     }
 }

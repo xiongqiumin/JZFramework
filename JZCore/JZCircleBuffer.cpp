@@ -34,11 +34,13 @@ void JZCircleBuffer::resize(int newCap)
     newBuf.resize(newCap);
     if (m_dataLen > 0)
     {
-        // 允许缩小: 至多保留 newCap 字节(从队首 head 拷贝), 多余数据直接丢弃
+        // 缩小: 保留最新的 newCap 字节(丢弃最旧的数据)
         int keep = std::min(m_dataLen, newCap);
         const int cap = static_cast<int>(m_buffer.size());
-        int part1 = std::min(keep, cap - m_head);
-        std::memcpy(newBuf.data(), m_buffer.data() + m_head, part1);
+        // 最旧数据从 m_head 开始, 丢弃最老则应从(队尾往前 keep 字节)作为新起点拷贝
+        int start = (m_head + m_dataLen - keep) % cap;
+        int part1 = std::min(keep, cap - start);
+        std::memcpy(newBuf.data(), m_buffer.data() + start, part1);
         if (keep > part1)
             std::memcpy(newBuf.data() + part1, m_buffer.data(), keep - part1);
         m_dataLen = keep;

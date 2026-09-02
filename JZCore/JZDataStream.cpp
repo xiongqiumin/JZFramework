@@ -1,4 +1,5 @@
 ﻿#include <string.h>
+#include <cstdio>
 #include "JZDataStream.h"
 
 //JZDataStream
@@ -118,7 +119,7 @@ void JZDataStream::skipRawData(int offset)
     if (m_error)
         return;
     if (m_file)
-        m_file->seek(offset);
+        m_file->seek(offset, SEEK_CUR);   // seek 现为绝对定位, 用相对模式跳过 offset 字节
     else
         m_offset += offset;
 }

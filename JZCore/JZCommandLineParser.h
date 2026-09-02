@@ -36,10 +36,12 @@ public:
 
     // name supports single "-t" or "--time", or combined "-t,--time"
     void addOption(const std::string& name, std::string* value, bool required = false);
+    void addEnumOption(const std::string& name, std::string* value, const std::vector<std::string>& enumValues, bool required = false);
     void addOption(const std::string& name, int* value, bool required = false);
     void addOption(const std::string& name, double* value, bool required = false);
     void addOption(const std::string& name, bool* value, bool required = false);
     void addOption(const JZCommandLineOption& opt, std::string* value);
+    void addEnumOption(const JZCommandLineOption& opt, std::string* value, const std::vector<std::string>& enumValues);
     void addOption(const JZCommandLineOption& opt, int* value);
     void addOption(const JZCommandLineOption& opt, double* value);
     void addOption(const JZCommandLineOption& opt, bool* value);
@@ -70,7 +72,8 @@ private:
             STRING,
             INT,
             DOUBLE,
-            BOOL
+            BOOL,
+            ENUM
         };
 
         Type type;
@@ -80,6 +83,7 @@ private:
         std::string name;
         std::string shortName;
         std::string description;
+        std::vector<std::string> enumValues;   // 仅 ENUM 类型有效: 允许取值的字符串集合
 
         CommandValue();
     };

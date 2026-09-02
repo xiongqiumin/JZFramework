@@ -19,7 +19,7 @@ public:
     bool isDynamic() const;
     
     /**
-     * @brief 调整缓冲容量(字节); 大于当前数据则扩容保留全部, 小于当前数据则缩小并丢弃多余(从队尾丢弃)
+     * @brief 调整缓冲容量(字节); 大于当前数据则扩容保留全部, 小于当前数据则缩小并丢弃最旧的多余数据(保留最新)
      * @param newCap 目标新容量(字节); <=0 时直接忽略
      */
     void resize(int newCap);

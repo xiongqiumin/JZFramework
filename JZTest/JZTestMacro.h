@@ -75,10 +75,10 @@ namespace JZTestInternal {
         } \
     } while(0)
 
-#define JZ_TEST_GT(expected, actual) \
+#define JZ_TEST_GT(actual, expected) \
     do { \
-        auto _jz_expected = (expected); \
         auto _jz_actual = (actual); \
+        auto _jz_expected = (expected); \
         if (!(_jz_actual > _jz_expected)) { \
             JZTestInternal::throwAssertionFailure( \
                 "Expected " + JZTestInternal::toString(_jz_actual) + \
@@ -87,10 +87,10 @@ namespace JZTestInternal {
         } \
     } while(0)
 
-#define JZ_TEST_GE(expected, actual) \
+#define JZ_TEST_GE(actual, expected) \
     do { \
-        auto _jz_expected = (expected); \
         auto _jz_actual = (actual); \
+        auto _jz_expected = (expected); \
         if (!(_jz_actual >= _jz_expected)) { \
             JZTestInternal::throwAssertionFailure( \
                 "Expected " + JZTestInternal::toString(_jz_actual) + \
@@ -99,10 +99,10 @@ namespace JZTestInternal {
         } \
     } while(0)
 
-#define JZ_TEST_LT(expected, actual) \
+#define JZ_TEST_LT(actual, expected) \
     do { \
-        auto _jz_expected = (expected); \
         auto _jz_actual = (actual); \
+        auto _jz_expected = (expected); \
         if (!(_jz_actual < _jz_expected)) { \
             JZTestInternal::throwAssertionFailure( \
                 "Expected " + JZTestInternal::toString(_jz_actual) + \
@@ -111,10 +111,10 @@ namespace JZTestInternal {
         } \
     } while(0)
 
-#define JZ_TEST_LE(expected, actual) \
+#define JZ_TEST_LE(actual, expected) \
     do { \
-        auto _jz_expected = (expected); \
         auto _jz_actual = (actual); \
+        auto _jz_expected = (expected); \
         if (!(_jz_actual <= _jz_expected)) { \
             JZTestInternal::throwAssertionFailure( \
                 "Expected " + JZTestInternal::toString(_jz_actual) + \

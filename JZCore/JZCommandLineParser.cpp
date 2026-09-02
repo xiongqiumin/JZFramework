@@ -52,6 +52,13 @@ void JZCommandLineParser::addOption(const std::string& name, std::string* value,
     addOption(opt, value);
 }
 
+void JZCommandLineParser::addEnumOption(const std::string& name, std::string* value, const std::vector<std::string>& enumValues, bool required)
+{
+    JZCommandLineOption opt = parseOptionName(name);
+    opt.required = required;
+    addEnumOption(opt, value, enumValues);
+}
+
 void JZCommandLineParser::addOption(const std::string& name, int* value, bool required)
 {
     JZCommandLineOption opt = parseOptionName(name);
@@ -83,6 +90,21 @@ void JZCommandLineParser::addOption(const JZCommandLineOption& opt, std::string*
     cv.name = opt.name;
     cv.shortName = opt.shortName;
     cv.description = opt.description;
+    m_commands.push_back(cv);
+}
+
+void JZCommandLineParser::addEnumOption(const JZCommandLineOption& opt, std::string* value, const std::vector<std::string>& enumValues)
+{
+    JZ_ASSERT(enumValues.size() > 0);
+    CommandValue cv;
+    cv.type = CommandValue::ENUM;
+    cv.ptr = value;
+    cv.required = opt.required;
+    cv.parsed = false;
+    cv.name = opt.name;
+    cv.shortName = opt.shortName;
+    cv.description = opt.description;
+    cv.enumValues = enumValues;
     m_commands.push_back(cv);
 }
 
@@ -525,6 +547,33 @@ bool JZCommandLineParser::parse(int argc, char** argv)
                     *static_cast<std::string*>(cmd->ptr) = str_local_to_utf8(valueStr);
                     break;
 
+                case CommandValue::ENUM:
+                {
+                    bool matched = false;
+                    std::string utf8Val = str_local_to_utf8(valueStr);
+                    for (const auto& e : cmd->enumValues)
+                    {
+                        if (e == utf8Val)
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched)
+                    {
+                        std::string allowed;
+                        for (size_t k = 0; k < cmd->enumValues.size(); k++)
+                        {
+                            if (k) allowed += ", ";
+                            allowed += cmd->enumValues[k];
+                        }
+                        reportError("option " + opt_name + " must be one of {" + allowed + "}, got \"" + valueStr + "\"");
+                        return false;
+                    }
+                    *static_cast<std::string*>(cmd->ptr) = utf8Val;
+                    break;
+                }
+
                 case CommandValue::INT:
                 {
                     bool ok;
@@ -657,6 +706,17 @@ void JZCommandLineParser::printHelp() const
             case CommandValue::BOOL:
                 result += "bool";
                 break;
+            case CommandValue::ENUM:
+            {
+                result += "enum{";
+                for (size_t k = 0; k < cv.enumValues.size(); k++)
+                {
+                    if (k) result += ", ";
+                    result += cv.enumValues[k];
+                }
+                result += "}";
+                break;
+            }
         }
 
         // 非必填才输出默认值
@@ -666,6 +726,9 @@ void JZCommandLineParser::printHelp() const
             switch (cv.type)
             {
                 case CommandValue::STRING:
+                    result += "\"" + *static_cast<std::string*>(cv.ptr) + "\"";
+                    break;
+                case CommandValue::ENUM:
                     result += "\"" + *static_cast<std::string*>(cv.ptr) + "\"";
                     break;
                 case CommandValue::INT:

@@ -15,3 +15,8 @@ target_link_libraries(test_benchmark JZFramework)
 add_executable(test_benchmark_io
     test_benchmark_io.cpp)
 target_link_libraries(test_benchmark_io JZFramework)
+
+# JZProcess 独立测试 (独立 exe)
+add_executable(test_process
+    test_process.cpp)
+target_link_libraries(test_process JZFramework)

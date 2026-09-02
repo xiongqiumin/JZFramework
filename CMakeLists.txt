@@ -15,7 +15,11 @@ jzframework_use_modules(JZCore JZNet JZAgent JZAudio JZBle JZCamera JZCoroutine 
     JZOTA JZSensor JZSerialPort JZWifi JZTest JZSimulator JZWidget)
 target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
+option(BUILD_TEST "Build the JZFramework test suite" ON)
+
 add_subdirectory(demo)
-add_subdirectory(test)
+if(BUILD_TEST)
+    add_subdirectory(test)
+endif()
 add_subdirectory(tools)
 add_subdirectory(binary)

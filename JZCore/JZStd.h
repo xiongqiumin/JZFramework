@@ -184,7 +184,7 @@ std::vector<K> map_keys(const std::map<K, V>& map)
 }
 
 template <typename T>
-inline void jzDeleteAll(const std::vector<T> &c)
+inline void jzDeleteAll(std::vector<T> &c)
 {
     auto begin = c.begin();
     auto end = c.end();
@@ -195,7 +195,7 @@ inline void jzDeleteAll(const std::vector<T> &c)
 }
 
 template <typename K, typename V>
-inline void jzDeleteAll(const std::map<K, V> &c)
+inline void jzDeleteAll(std::map<K, V> &c)
 {
     auto begin = c.begin();
     auto end = c.end();

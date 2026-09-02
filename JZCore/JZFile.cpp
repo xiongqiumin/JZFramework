@@ -159,7 +159,7 @@ void JZFile::seek(int pos)
 {
     if (m_res)
     {
-        m_resOffset += pos;
+        m_resOffset = pos;
         if (m_resOffset < 0) 
             m_resOffset = 0;
         if (m_resOffset > m_res->size) 
@@ -167,9 +167,9 @@ void JZFile::seek(int pos)
         return;
     }
 #ifdef JZ_OS_NORMAL
-    fseek(m_fp, pos, SEEK_CUR);
+    fseek(m_fp, pos, SEEK_SET);
 #else
-    JZPlatform::instance()->fseek(m_fp, pos, SEEK_CUR);
+    JZPlatform::instance()->fseek(m_fp, pos, SEEK_SET);
 #endif
 }
 

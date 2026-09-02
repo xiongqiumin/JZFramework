@@ -9,18 +9,53 @@
 #endif
 #include <windows.h>
 
+// 如果您的 Windows SDK 版本较旧（低于 10.0.15063），这些常量可能未定义，手动补上
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_UNAWARE           ((HANDLE)-1)
+#define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE      ((HANDLE)-2)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE ((HANDLE)-3)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)-4)
+#endif
+
+// 定义函数指针类型
+typedef BOOL(WINAPI *SetProcessDpiAwarenessContextPtr)(HANDLE);
+
+void InitializeDpiAwareness()
+{
+    // 1. 动态获取 user32.dll 中的函数地址（避免静态链接导致 OldSystem 无法启动）
+    HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+    if (!hUser32)
+        return;
+
+    auto pSetDpiAwareness = (SetProcessDpiAwarenessContextPtr)
+        GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+
+    if (!pSetDpiAwareness)
+    {
+        // 系统为 Windows 10 1607 之前版本（如 Win7/8/8.1），该 API 不存在
+        // 可考虑调用旧的 SetProcessDPIAware() 做基础缩放，但无法实现 Per-Monitor
+        // 这里选择放弃，让系统按默认 100% 缩放处理
+        return;
+    }
+
+    // 2. 优先尝试 V2（Per-Monitor V2，支持子窗口缩放，Win10 1703+ 专属）
+    if (pSetDpiAwareness(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+    {
+        // 成功启用 V2（系统 >= 1703）
+        return;
+    }
+
+    // 3. V2 失败（系统为 1607，或者发生了其他错误），回退到 V1（Per-Monitor V1）
+    //    注意：1607 支持该 API 和 V1 常量，但 V2 常量未被识别，传入 -4 会返回 FALSE
+    pSetDpiAwareness(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+}
+
 JZWin32Thread::JZWin32Thread()
     : JZThread(JZObject::MainThreadInit())
 {
-#ifdef HAS_JZWidget
-    // 进程 DPI 感知 (Per-Monitor V2): 主线程构造即声明, 先于任何原生窗口
-    // (含本线程 message-only window) 与三方库占坑。首次调用生效, 之后失败无害。
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-#endif
-    { FILE* f = fopen("c:/Users/7052/Desktop/other/JZFramework/build/diag.log", "a"); if (f) { fprintf(f, "diag: JZWin32Thread ctor enter"); fclose(f); } }
+    InitializeDpiAwareness();    
     m_wakeupMsg = WM_APP + 0x4A17;
-    createMessageWindow();
-    { FILE* f = fopen("c:/Users/7052/Desktop/other/JZFramework/build/diag.log", "a"); if (f) { fprintf(f, "diag: msgwnd created"); fclose(f); } }
+    createMessageWindow();    
 }
 
 JZWin32Thread::~JZWin32Thread()

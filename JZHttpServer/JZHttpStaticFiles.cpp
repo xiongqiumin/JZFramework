@@ -9,6 +9,7 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZHttpServer.h"
+#include "JZStd.h"
 
 // 解析 Range 头，返回:
 //   0 - 无有效范围（按普通 200 返回全部）
@@ -69,7 +70,7 @@ static int httpMonthFromName(const char *m)
                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     for (int i = 0; i < 12; i++)
     {
-        if (strcasecmp(kMonth[i], m) == 0)
+        if (str_toLower(m) == str_toLower(kMonth[i]))
             return i + 1;
     }
     return 0;

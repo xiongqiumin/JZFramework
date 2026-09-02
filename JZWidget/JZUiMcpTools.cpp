@@ -1,6 +1,7 @@
 #include "JZUiMcpTools.h"
 #include "JZMcpCore.h"
 #include "JZWindow.h"
+#include "JZAiDriver.h"
 #include "JZPushButton.h"
 #include "JZSlider.h"
 #include "JZSwitch.h"
@@ -11,6 +12,8 @@
 #include "JZLineEdit.h"
 #include "JZTextEdit.h"
 #include "JZMouseEvent.h"
+#include "JZApplication.h"
+#include "JZThread.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -100,22 +103,6 @@ static JZWidget* resolveWidget(JZWidget* w, const std::string& target)
     return nullptr;
 }
 
-// 在控件中心合成一次真实鼠标点击 (走 onWindowProcess 完整命中测试链路)
-static bool clickWidget(JZWidget* w, std::string* err)
-{
-    JZWindow* win = w->window();
-    if (!win || !win->nativeHandle()) {
-        *err = "目标控件不在已创建的窗口内";
-        return false;
-    }
-    JZPoint c = w->mapToGlobal(JZPoint(w->width() / 2, w->height() / 2));
-    JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton, c, JZPoint(), 0);
-    win->onWindowProcess(&press);
-    JZMouseEvent release(JZMouseEvent::Release, JZMouseEvent::LeftButton, c, JZPoint(), 0);
-    win->onWindowProcess(&release);
-    return true;
-}
-
 static std::string wideToUtf8(const std::wstring& ws)
 {
     if (ws.empty())
@@ -163,9 +150,12 @@ JZUiGetStateTool::JZUiGetStateTool(JZWindow* root, JZObject* parent)
 
 void JZUiGetStateTool::run(const Json::Value& id, const Json::Value& args)
 {
+    // MCP 请求来自 HTTP/WS 线程: 控件树操作必须投递到 UI 线程执行
     int maxDepth = args.get("maxDepth", -1).asInt();
-    Json::Value tree = m_root->dumpSemanticTree(maxDepth);
-    sigFinished.emit(id, makeTextResult(tree.toStyledString()));
+    runOnThread(jzApp->mainThread(), [this, id, maxDepth]() {
+        Json::Value tree = m_root->dumpSemanticTree(maxDepth);
+        sigFinished.emit(id, makeTextResult(tree.toStyledString()));
+    });
 }
 
 // ==================== ui_screenshot ====================
@@ -182,6 +172,14 @@ JZUiScreenshotTool::JZUiScreenshotTool(JZWindow* root, JZObject* parent)
 void JZUiScreenshotTool::run(const Json::Value& id, const Json::Value& args)
 {
     (void)args;
+    // GDI+/窗口操作线程亲和: 投递到 UI 线程执行
+    runOnThread(jzApp->mainThread(), [this, id]() {
+        screenshot(id);
+    });
+}
+
+void JZUiScreenshotTool::screenshot(const Json::Value& id)
+{
     if (!m_root->nativeHandle()) {
         sigFinished.emit(id, makeTextResult("窗口尚未创建 (未 show)", true));
         return;
@@ -244,19 +242,47 @@ void JZUiScreenshotTool::run(const Json::Value& id, const Json::Value& args)
 
 // ==================== ui_invoke ====================
 
-JZUiInvokeTool::JZUiInvokeTool(JZWindow* root, JZObject* parent)
+JZUiInvokeTool::JZUiInvokeTool(JZWindow* root, JZAiDriver* driver, JZObject* parent)
     : JZMcpTool(parent)
     , m_root(root)
+    , m_driver(driver)
 {
     setName("ui_invoke");
-    setDescription("驱动控件交互。target: '#viewId' 按对象名, 或 className(role) 如 'button'/'slider'; "
+    setDescription("驱动控件交互 (AI 鼠标可见移动)。target: '#viewId' 按对象名, 或 className(role) 如 'button'/'slider'; "
                    "action: click|toggle|setValue|setText|select; value: setValue/setText/select 的参数。"
-                   "click 在控件中心合成一次真实鼠标点击 (走完整命中测试)。");
+                   "异步: AI 光标移动到目标后执行, 可用状态条上的取消按钮中断。");
     setInputSchema(makeSchema({{"target", "string"}, {"action", "string"}, {"value", "string"}},
                               {"target", "action"}));
+    connect(&m_driver->sigDone, this, &JZUiInvokeTool::onAiDone);
+}
+
+void JZUiInvokeTool::onAiDone(int seq, bool ok, const std::string& msg)
+{
+    if (m_pendingSeq != seq || m_pendingId.isNull())
+        return;
+    sigFinished.emit(m_pendingId, makeTextResult(msg, !ok));
+    m_pendingId = Json::Value::null;
+    m_pendingSeq = -1;
+}
+
+void JZUiInvokeTool::cancel(const Json::Value& id)
+{
+    (void)id;
+    // 用户/MCP 取消: 中断驱动序列, 最终结果经 onAiDone 正常回送
+    if (m_driver)
+        m_driver->cancel();
 }
 
 void JZUiInvokeTool::run(const Json::Value& id, const Json::Value& args)
+{
+    // 解析/驱动全部在 UI 线程执行; 序列完成/取消后经 onAiDone 回送
+    Json::Value capturedArgs = args;
+    runOnThread(jzApp->mainThread(), [this, id, capturedArgs]() {
+        invokeOnUi(id, capturedArgs);
+    });
+}
+
+void JZUiInvokeTool::invokeOnUi(const Json::Value& id, const Json::Value& args)
 {
     std::string target = args.get("target", "").asString();
     std::string action = args.get("action", "").asString();
@@ -266,40 +292,63 @@ void JZUiInvokeTool::run(const Json::Value& id, const Json::Value& args)
         sigFinished.emit(id, makeTextResult("target 与 action 必填", true));
         return;
     }
+    if (m_driver->busy()) {
+        sigFinished.emit(id, makeTextResult("AI 操作进行中, 请等待或先取消", true));
+        return;
+    }
     JZWidget* w = resolveWidget(m_root, target);
     if (!w) {
         sigFinished.emit(id, makeTextResult("未找到目标: " + target, true));
         return;
     }
 
-    std::string err;
+    // 动作分派: needClick = 到达后合成真实点击; 其它在到达回调里直调
+    std::string verb;
+    bool needClick = false;
+    std::function<void()> onArrive;
+
     if (action == "click" || action == "toggle") {
-        // click 语义覆盖 button/checkbox/switch/radiobutton/tab (toggle 即点击)
-        if (!clickWidget(w, &err)) {
-            sigFinished.emit(id, makeTextResult(err, true));
-            return;
-        }
+        verb = "点击";
+        needClick = true;   // click 语义覆盖 button/checkbox/switch/radiobutton/tab
     } else if (action == "setValue" || action == "setText") {
+        verb = "设置";
         if (auto* s = jzobject_cast<JZSlider*>(w)) {
-            s->setValue(value.asInt());
-            s->sigValueChanged.emit(s->value());
+            if (!value.isNumeric()) {
+                sigFinished.emit(id, makeTextResult("setValue 需要 number 参数", true));
+                return;
+            }
+            int v = value.asInt();
+            onArrive = [s, v]() {
+                s->setValue(v);
+                s->sigValueChanged.emit(s->value());
+            };
         } else if (auto* le = jzobject_cast<JZLineEdit*>(w)) {
-            le->setText(value.asString());
+            std::string v = value.asString();
+            onArrive = [le, v]() { le->setText(v); };
         } else if (auto* te = jzobject_cast<JZTextEdit*>(w)) {
-            te->setText(value.asString());
+            std::string v = value.asString();
+            onArrive = [te, v]() { te->setText(v); };
         } else {
             sigFinished.emit(id, makeTextResult(
                 "目标 (" + w->aiRole() + ") 不支持 " + action, true));
             return;
         }
     } else if (action == "select") {
+        verb = "选择";
+        if (!value.isNumeric()) {
+            sigFinished.emit(id, makeTextResult("select 需要 number 参数", true));
+            return;
+        }
+        int idx = value.asInt();
         if (auto* cb = jzobject_cast<JZComboBox*>(w)) {
-            cb->setCurrentIndex(value.asInt());
-            cb->update();
-            cb->currentIndexChanged.emit(cb->currentIndex());
-            cb->currentTextChanged.emit(cb->currentText());
+            onArrive = [cb, idx]() {
+                cb->setCurrentIndex(idx);
+                cb->update();
+                cb->currentIndexChanged.emit(cb->currentIndex());
+                cb->currentTextChanged.emit(cb->currentText());
+            };
         } else if (auto* lw = jzobject_cast<JZListWidget*>(w)) {
-            lw->setCurrentIndex(value.asInt());
+            onArrive = [lw, idx]() { lw->setCurrentIndex(idx); };
         } else {
             sigFinished.emit(id, makeTextResult(
                 "目标 (" + w->aiRole() + ") 不支持 select", true));
@@ -310,7 +359,18 @@ void JZUiInvokeTool::run(const Json::Value& id, const Json::Value& args)
         return;
     }
 
-    sigFinished.emit(id, makeTextResult("invoke ok: " + target + " -> " + action));
+    // 状态条: "AI 正在点击: 'Update'" — 描述用可见文本, 无则用 role
+    std::string desc = w->aiText();
+    if (desc.empty())
+        desc = w->aiRole();
+    std::string status = "AI 正在" + verb + ": " + desc;
+
+    m_pendingSeq = m_driver->moveToWidget(w, needClick, status, std::move(onArrive));
+    if (m_pendingSeq < 0) {
+        sigFinished.emit(id, makeTextResult("AI 操作进行中, 请等待或先取消", true));
+        return;
+    }
+    m_pendingId = id;   // 序列已启动, 结果经 onAiDone 回送
 }
 
 // ==================== JZUiMcpBridge ====================
@@ -319,8 +379,9 @@ JZUiMcpBridge::JZUiMcpBridge(JZWindow* root, JZObject* parent)
     : JZMcpServer(parent)
     , m_root(root)
 {
+    m_driver = new JZAiDriver(root, this);
     core()->setServerInfo("JZUi", "0.1.0");
     core()->registerTool(new JZUiGetStateTool(m_root, core()));
     core()->registerTool(new JZUiScreenshotTool(m_root, core()));
-    core()->registerTool(new JZUiInvokeTool(m_root, core()));
+    core()->registerTool(new JZUiInvokeTool(m_root, m_driver, core()));
 }

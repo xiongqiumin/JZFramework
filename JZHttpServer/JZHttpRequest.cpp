@@ -2,6 +2,7 @@
 #include "JZHttpRequest.h"
 #include "mongoose.h"
 #include "JZDebug.h"
+#include "JZStd.h"
 
 #ifdef DELETE
 #undef DELETE
@@ -124,7 +125,8 @@ void JZHttpRequest::setQuery(const std::string& query)
 const std::string& JZHttpRequest::header(const std::string& key) const
 {
     static const std::string empty;
-    auto it = m_headers.find(key);
+    // HTTP 头名大小写不敏感 (RFC 7230)，统一以小写 key 查找
+    auto it = m_headers.find(str_toLower(key));
     if (it != m_headers.end())
         return it->second;
     return empty;
@@ -132,7 +134,8 @@ const std::string& JZHttpRequest::header(const std::string& key) const
 
 void JZHttpRequest::setHeader(const std::string& key, const std::string& value)
 {
-    m_headers[key] = value;
+    // 以规范化小写 key 存储，保证查找大小写不敏感
+    m_headers[str_toLower(key)] = value;
 }
 
 const std::map<std::string, std::string>& JZHttpRequest::headers() const

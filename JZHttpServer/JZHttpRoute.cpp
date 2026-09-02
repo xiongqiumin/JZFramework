@@ -167,11 +167,14 @@ bool JZHttpRoute::matchDynamic(const RoutePattern& pattern, const std::string& p
 
             std::string nextSegment;
             size_t nextStart = end + 1;
-            size_t slashPos = patternPath.find('/', nextStart);
-            if (slashPos != std::string::npos)
-            {
-                nextSegment = patternPath.substr(nextStart, slashPos - nextStart);
-            }
+            // nextStart 指向参数后的分隔符 '/'，nextSegment 必须包含这个 '/'，
+            // 否则 /user/<id>/posts 类的路由会被贪婪匹配到末尾（id 变成 "42/posts"）。
+            // 下一个分隔符是下一个 '/' 或下一个参数 '<'（取二者中先出现者）。
+            size_t nextDelim = patternPath.find_first_of("/<", nextStart + 1);
+            if (nextDelim != std::string::npos)
+                nextSegment = patternPath.substr(nextStart, nextDelim - nextStart);
+            else
+                nextSegment = patternPath.substr(nextStart);
 
             std::string paramValue;
             if (!nextSegment.empty())

@@ -92,7 +92,8 @@ JZHttpServer::~JZHttpServer()
 
 bool JZHttpServer::isListening() const
 {
-    return m_conn;
+    // m_conn 为 uint64 连接句柄，显式转为 bool 语义，避免误用其数值
+    return m_conn != INVALID_NET_HANDLE;
 }
 
 bool JZHttpServer::listen(int port)

@@ -59,6 +59,43 @@ static int parseRange(const std::string& header, int fileSize, long long& start,
     return 1;
 }
 
+// 将 RFC 1123 / asctime 形式的 HTTP 日期解析为 epoch 毫秒。
+// 注意: 与 JZHttpStaticFiles 内部 buildFileTime 一致，按"本地时间"解释
+// (本模块 Last-Modified 实际以本地时间格式化却标 GMT，此处保持同样的解释以保证
+//  If-Modified-Since 与文件 mtime 的可比性，避免引入时区偏移)。
+static int httpMonthFromName(const char *m)
+{
+    static const char *kMonth[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    for (int i = 0; i < 12; i++)
+    {
+        if (strcasecmp(kMonth[i], m) == 0)
+            return i + 1;
+    }
+    return 0;
+}
+
+static int64_t parseHttpDate(const std::string &s)
+{
+    int day = 0, year = 0, hour = 0, min = 0, sec = 0;
+    char mon[4] = {0};
+    // RFC 1123: "Sun, 02 Sep 2026 12:00:00 GMT"
+    if (sscanf(s.c_str(), "%*3s, %d %3s %d %d:%d:%d", &day, mon, &year, &hour, &min, &sec) == 6)
+    {
+        int m = httpMonthFromName(mon);
+        if (m > 0)
+            return JZDateTime(year, m, day, hour, min, sec).toMSecsSinceEpoch();
+    }
+    // asctime: "Sun Sep  2 12:00:00 2026"
+    if (sscanf(s.c_str(), "%*3s %3s %d %d:%d:%d %d", mon, &day, &hour, &min, &sec, &year) == 6)
+    {
+        int m = httpMonthFromName(mon);
+        if (m > 0)
+            return JZDateTime(year, m, day, hour, min, sec).toMSecsSinceEpoch();
+    }
+    return -1;
+}
+
 JZHttpStaticFiles::JZHttpStaticFiles(const std::string& rootDir)
 {
     // 以 ':' 开头的 rootDir 表示资源路径（如 ":/xxx"），否则为文件系统目录。
@@ -134,8 +171,11 @@ void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& 
         // 304 Not Modified：匹配则直接返回，不打开文件流
         const std::string& ifNoneMatch = req.header("If-None-Match");
         const std::string& ifModSince = req.header("If-Modified-Since");
+        // 按时间比较而非字符串精确相等：容忍客户端日期格式/精度差异
+        // (文件自给定时间后未被修改 -> 304)
+        int64_t ifModTime = parseHttpDate(ifModSince);
         if ((!etag.empty() && ifNoneMatch == etag) ||
-            (!lastModified.empty() && ifModSince == lastModified))
+            (!lastModified.empty() && ifModTime >= 0 && fileInfo.lastModified() <= ifModTime))
         {
             resp.setStatusCode(304);
             resp.setHeader("Cache-Control", "public, max-age=" + std::to_string(m_cacheMaxAge));

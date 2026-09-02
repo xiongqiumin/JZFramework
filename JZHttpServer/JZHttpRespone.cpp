@@ -1,5 +1,6 @@
 #include "JZHttpRespone.h"
 #include <sstream>
+#include "JZStd.h"
 
 JZHttpRespone::JZHttpRespone()
     : m_statusCode(200)
@@ -36,7 +37,8 @@ void JZHttpRespone::setStatusText(const std::string& text)
 const std::string& JZHttpRespone::header(const std::string& key) const
 {
     static const std::string empty;
-    auto it = m_headers.find(key);
+    // HTTP 头名大小写不敏感 (RFC 7230)，统一以小写 key 查找
+    auto it = m_headers.find(str_toLower(key));
     if (it != m_headers.end())
         return it->second;
     return empty;
@@ -44,12 +46,12 @@ const std::string& JZHttpRespone::header(const std::string& key) const
 
 void JZHttpRespone::setHeader(const std::string& key, const std::string& value)
 {
-    m_headers[key] = value;
+    m_headers[str_toLower(key)] = value;
 }
 
 void JZHttpRespone::removeHeader(const std::string& key)
 {
-    m_headers.erase(key);
+    m_headers.erase(str_toLower(key));
 }
 
 const std::map<std::string, std::string>& JZHttpRespone::headers() const

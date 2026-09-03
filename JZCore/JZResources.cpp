@@ -21,7 +21,11 @@ JZResources *JZResources::instance()
 
 void JZResources::add(const std::string &name, const unsigned char *data, int size, int64_t mtime)
 {
-    m_resources[name] = {data, size, mtime};
+    JZResourceData res_data;
+    res_data.data = data;
+    res_data.size = size;
+    res_data.mtime = mtime;
+    m_resources[name] = res_data;
 }
 
 const JZResourceData *JZResources::find(const std::string &name) const

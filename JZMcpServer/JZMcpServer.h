@@ -37,6 +37,7 @@ public:
     bool listenHttp(int port, const std::string& path = "/mcp");
     // WebSocket: 在 port 监听, 文本帧即 JSON-RPC 请求
     bool listenWebSocket(int port);
+    bool listenWebSocket(std::string ip,int port);
     // 纯文本: 异步处理一段 JSON 文本, 结果通过回调返回。
     //   cb 签名: void(bool hasResponse, const std::string& outJson)
     //     - hasResponse: 是否有响应体(整段为通知时为 false, 此时 outJson 为空)

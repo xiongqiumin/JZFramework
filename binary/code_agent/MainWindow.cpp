@@ -27,7 +27,9 @@ void InputEdit::keyPressEvent(JZKeyEvent* event)
         sigSend.emit();
         return;
     }
-    JZTextEdit::keyPressEvent(event);
+    // 组字期间 Ctrl+Enter 也要发送 (composing 判定在基类内部)
+    // 已上屏内容之外: 转交抽象基类处理 (含多行回车换行)
+    JZAbstractTextEdit::keyPressEvent(event);
 }
 
 // ==================== SettingsDialog ====================

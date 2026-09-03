@@ -106,6 +106,8 @@ set(JZ_SOURCES
     JZRadioButton.cpp
     JZComboBox.h
     JZComboBox.cpp    
+    JZAbstractTextEdit.h
+    JZAbstractTextEdit.cpp
     JZLineEdit.h
     JZLineEdit.cpp
     JZTextEdit.h

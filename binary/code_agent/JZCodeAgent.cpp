@@ -141,32 +141,6 @@ void JZCodeAgent::applyLlmConfig(const JZAgentConfig &llm)
     addLog("info", "大模型配置已更新: " + llm.modelName + " (" + llm.modelUrl + ")");
 }
 
-void JZCodeAgent::setBuildCommand(const string &cmd)
-{
-    m_codeConfig.buildCommand = cmd;
-    for (auto *tool : m_tools)
-    {
-        auto *cmd_tool = dynamic_cast<JZCommandTool *>(tool);
-        if (cmd_tool && cmd_tool->toolName() == "build")
-            cmd_tool->setDefaultCommand(cmd);
-    }
-    if (m_agent)
-        m_agent->setSystemPrompt(buildSystemPrompt());
-}
-
-void JZCodeAgent::setRunCommand(const string &cmd)
-{
-    m_codeConfig.runCommand = cmd;
-    for (auto *tool : m_tools)
-    {
-        auto *cmd_tool = dynamic_cast<JZCommandTool *>(tool);
-        if (cmd_tool && cmd_tool->toolName() == "run")
-            cmd_tool->setDefaultCommand(cmd);
-    }
-    if (m_agent)
-        m_agent->setSystemPrompt(buildSystemPrompt());
-}
-
 bool JZCodeAgent::setWorkspace(const string &path)
 {
     JZDir dir(path);
@@ -224,20 +198,6 @@ void JZCodeAgent::buildAgent()
     addTool(new JZReadFileTool());
     addTool(new JZSearchCodeTool());
     addTool(new JZModifyCodeTool());
-
-    JZCommandTool *build_tool = new JZCommandTool();
-    build_tool->setup("build",
-                      "编译工程。命令在 work_dir（默认工作区根目录）下执行，返回退出码与 stdout/stderr。"
-                      "修改代码之后应当调用本工具验证是否能通过编译。",
-                      m_codeConfig.buildCommand, m_codeConfig.buildTimeout);
-    addTool(build_tool);
-
-    JZCommandTool *run_tool = new JZCommandTool();
-    run_tool->setup("run",
-                    "运行程序。命令在 work_dir（默认工作区根目录）下执行，返回退出码与 stdout/stderr。"
-                    "超过 timeout 毫秒会被强制终止，需要长时间运行的服务请加上超时参数或放到后台。",
-                    m_codeConfig.runCommand, m_codeConfig.runTimeout);
-    addTool(run_tool);
 }
 
 void JZCodeAgent::abortTools()

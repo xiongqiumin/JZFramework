@@ -13,10 +13,6 @@ class CodeAgentConfig
 {
 public:
     std::string workspace;      // 工作区根目录，所有文件操作都限制在此目录内
-    std::string buildCommand;   // 默认编译命令
-    std::string runCommand;     // 默认运行命令
-    int buildTimeout = 10 * 60 * 1000;  // 编译超时(毫秒)
-    int runTimeout = 60 * 1000;         // 运行超时(毫秒)
 };
 
 // 一条会话日志，网页端按 id 增量拉取
@@ -57,9 +53,8 @@ public:
 
     const CodeAgentConfig &codeConfig() const;
     const JZAgentConfig &llmConfig() const;
-    void setBuildCommand(const std::string &cmd);
-    void setRunCommand(const std::string &cmd);
     bool setWorkspace(const std::string &path);
+
     // 更新大模型配置（保留会话日志，重建底层 agent）
     void applyLlmConfig(const JZAgentConfig &llm);
 

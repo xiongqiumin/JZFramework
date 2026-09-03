@@ -3,6 +3,8 @@ set(CODE_AGENT_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    ChatView.h
+    ChatView.cpp
     JZCodeTools.h
     JZCodeTools.cpp
     JZCodeAgent.h

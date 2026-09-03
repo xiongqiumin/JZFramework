@@ -116,9 +116,7 @@ void MainWindow::setupUi()
     m_statusLabel = new JZLabel(this);
     m_statusLabel->setText("未配置");
 
-    m_outputEdit = new JZTextEdit(this);
-    m_outputEdit->setReadOnly(true);
-    m_outputEdit->setLineWrap(true);
+    m_chatView = new ChatView(this);
 
     // 输入区容器: 左侧多行输入框 + 右侧按钮列。
     // 注意: 放进某个容器 layout 的控件, 其父必须就是该容器,
@@ -149,7 +147,7 @@ void MainWindow::setupUi()
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(m_statusLabel, 0);
-    mainLayout->addWidget(m_outputEdit, 1);
+    mainLayout->addWidget(m_chatView, 1);
     mainLayout->addWidget(inputArea, 0);
     setLayout(mainLayout);
 
@@ -166,8 +164,6 @@ void MainWindow::loadConfig()
     m_cfg.modelName.clear();
     m_cfg.modelToken.clear();
     m_cfg.workspace = JZPlatform::applicationDirPath();
-    m_cfg.buildCommand.clear();
-    m_cfg.runCommand.clear();
 
     string path = JZPlatform::applicationDirPath() + "/code_agent.json";
     ifstream f(path);
@@ -183,8 +179,6 @@ void MainWindow::loadConfig()
     if (root.isMember("modelName"))    m_cfg.modelName = root["modelName"].asString();
     if (root.isMember("modelToken"))   m_cfg.modelToken = root["modelToken"].asString();
     if (root.isMember("workspace"))    m_cfg.workspace = root["workspace"].asString();
-    if (root.isMember("buildCommand")) m_cfg.buildCommand = root["buildCommand"].asString();
-    if (root.isMember("runCommand"))   m_cfg.runCommand = root["runCommand"].asString();
 
     if (m_cfg.workspace.empty())
         m_cfg.workspace = JZPlatform::applicationDirPath();
@@ -197,8 +191,6 @@ void MainWindow::saveConfig()
     root["modelName"] = m_cfg.modelName;
     root["modelToken"] = m_cfg.modelToken;
     root["workspace"] = m_cfg.workspace;
-    root["buildCommand"] = m_cfg.buildCommand;
-    root["runCommand"] = m_cfg.runCommand;
 
     Json::StyledWriter writer;
     string path = JZPlatform::applicationDirPath() + "/code_agent.json";
@@ -217,19 +209,16 @@ void MainWindow::applyConfig()
 
     CodeAgentConfig code;
     code.workspace = m_cfg.workspace;
-    code.buildCommand = m_cfg.buildCommand;
-    code.runCommand = m_cfg.runCommand;
 
     m_agent->init(llm, code);
 
-    m_outputText.clear();
+    m_chatView->clear();
     m_renderedId = 0;
-    m_openAssistant = false;
     const auto& logs = m_agent->logs();
     for (size_t i = 0; i < logs.size(); i++)
         appendLog(logs[i]);
     m_renderedId = m_agent->logSeq();
-    m_outputEdit->setText(m_outputText);
+    m_chatView->scrollToBottom();
 
     updateStatus();
 }
@@ -246,39 +235,17 @@ void MainWindow::updateStatus()
 void MainWindow::appendLog(const CodeAgentLog& log)
 {
     if (log.type == "user")
-    {
-        m_openAssistant = false;
-        m_outputText += "你: " + log.text + "\n";
-    }
+        m_chatView->appendUser(log.text);
     else if (log.type == "delta")
-    {
-        if (!m_openAssistant)
-        {
-            m_outputText += "\n助手: ";
-            m_openAssistant = true;
-        }
-        m_outputText += log.text;
-    }
+        m_chatView->appendAssistantDelta(log.text);
     else if (log.type == "tool_call")
-    {
-        m_openAssistant = false;
-        m_outputText += "\n[工具调用] " + (log.name.empty() ? "" : log.name + " ") + log.text + "\n";
-    }
+        m_chatView->appendTool(log.name, log.text);
     else if (log.type == "tool_result")
-    {
-        m_openAssistant = false;
-        m_outputText += log.text + "\n";
-    }
+        m_chatView->appendToolResult(log.text);
     else if (log.type == "error")
-    {
-        m_openAssistant = false;
-        m_outputText += "\n[错误] " + log.text + "\n";
-    }
+        m_chatView->appendError(log.text);
     else if (log.type == "info")
-    {
-        m_openAssistant = false;
-        m_outputText += log.text + "\n";
-    }
+        m_chatView->appendInfo(log.text);
 }
 
 void MainWindow::onSend()
@@ -310,14 +277,13 @@ void MainWindow::onClear()
         return;
 
     m_agent->clearHistory();
-    m_outputText.clear();
     m_renderedId = 0;
-    m_openAssistant = false;
+    m_chatView->clear();
     const auto& logs = m_agent->logs();
     for (size_t i = 0; i < logs.size(); i++)
         appendLog(logs[i]);
     m_renderedId = m_agent->logSeq();
-    m_outputEdit->setText(m_outputText);
+    m_chatView->scrollToBottom();
 }
 
 void MainWindow::onSettings()
@@ -344,7 +310,6 @@ void MainWindow::onPoll()
         for (int i = m_renderedId; i < seq; i++)
             appendLog(logs[i]);
         m_renderedId = seq;
-        m_outputEdit->setText(m_outputText);
     }
 
     bool busy = m_agent->isBusy();
@@ -352,11 +317,7 @@ void MainWindow::onPoll()
     {
         m_busy = busy;
         if (!busy)
-        {
-            m_openAssistant = false;
-            m_outputText += "\n";
-            m_outputEdit->setText(m_outputText);
-        }
+            m_chatView->endStream();
     }
 }
 

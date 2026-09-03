@@ -2,10 +2,11 @@
 #define JZ_CODE_AGENT_MAINWINDOW_H_
 
 #include "JZWindow.h"
-#include "JZTextEdit.h"
 #include "JZDialog.h"
 #include "JZKeyEvent.h"
+#include "JZTextEdit.h"
 #include "JZCodeAgent.h"
+#include "ChatView.h"
 
 #include "JZLineEdit.h"
 #include "JZPushButton.h"
@@ -21,8 +22,6 @@ struct AppConfig
     std::string modelName;
     std::string modelToken;
     std::string workspace;
-    std::string buildCommand;
-    std::string runCommand;
 };
 
 // 多行输入：Ctrl+Enter 发送
@@ -81,7 +80,7 @@ private:
     void appendLog(const CodeAgentLog& log);
 
     JZCodeAgent*  m_agent = nullptr;
-    JZTextEdit*   m_outputEdit = nullptr;
+    ChatView*     m_chatView = nullptr;
     InputEdit*    m_inputEdit = nullptr;
     JZPushButton* m_sendBtn = nullptr;
     JZPushButton* m_stopBtn = nullptr;
@@ -90,9 +89,7 @@ private:
     JZLabel*      m_statusLabel = nullptr;
     JZTimer*      m_pollTimer = nullptr;
 
-    std::string m_outputText;
     int  m_renderedId = 0;
-    bool m_openAssistant = false;
     bool m_busy = false;
 
     AppConfig m_cfg;

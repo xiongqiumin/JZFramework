@@ -7,7 +7,35 @@
 #include "JZResources.h"
 #include "JZStd.h"
 
+#include <fstream>
+
 using namespace std;
+
+// 把 Json::Value 写入文件 (UTF-8, 多行)
+static bool writeJsonFile(const string &path, const Json::Value &v)
+{
+    ofstream f(path, ios::binary);
+    if (!f.is_open())
+        return false;
+    Json::StyledWriter w;
+    string s = w.write(v);
+    f.write(s.data(), (streamsize)s.size());
+    return (bool)f;
+}
+
+// 从文件读 Json::Value (文件不存在返回空对象)
+static Json::Value readJsonFile(const string &path)
+{
+    ifstream f(path, ios::binary);
+    if (!f.is_open())
+        return Json::Value();
+    Json::CharReaderBuilder rb;
+    Json::Value v;
+    string errs;
+    if (!Json::parseFromStream(rb, f, &v, &errs))
+        return Json::Value();
+    return v;
+}
 
 static Json::Value makeOk()
 {
@@ -66,6 +94,8 @@ bool JZCodeAgentServer::start(JZCodeAgent *agent, int port)
     addApi("/api/config");
     addApi("/api/files");
     addApi("/api/file");
+    addApi("/api/asr");
+    addApi("/api/tts");
     addApi("/favicon.ico");
 
     if (!m_server->listen(port))
@@ -140,6 +170,10 @@ void JZCodeAgentServer::handleApi(JZHttpServerClient *client, const JZHttpReques
         handleFiles(client, req);
     else if (route == "/api/file")
         handleFile(client, req);
+    else if (route == "/api/asr")
+        handleAsr(client, req);
+    else if (route == "/api/tts")
+        handleTts(client, req);
     else if (route == "/favicon.ico")
         handleFavicon(client);
     else
@@ -223,9 +257,9 @@ void JZCodeAgentServer::handleConfig(JZHttpServerClient *client, const JZHttpReq
         root["modelUrl"] = m_agent->llmConfig().modelUrl;
         root["modelName"] = m_agent->llmConfig().modelName;
         root["modelToken"] = m_agent->llmConfig().modelToken;
-        root["workspace"] = m_agent->codeConfig().workspace;
-        root["buildCommand"] = m_agent->codeConfig().buildCommand;
-        root["runCommand"] = m_agent->codeConfig().runCommand;
+        root["port"] = m_port;
+        root["speechWs"] = m_speechWs;
+        root["localPlay"] = m_localPlay;
         replyJson(client, 200, root);
         return;
     }
@@ -236,20 +270,6 @@ void JZCodeAgentServer::handleConfig(JZHttpServerClient *client, const JZHttpReq
     {
         replyError(client, 400, error);
         return;
-    }
-
-    if (body.isMember("buildCommand"))
-        m_agent->setBuildCommand(body["buildCommand"].asString());
-    if (body.isMember("runCommand"))
-        m_agent->setRunCommand(body["runCommand"].asString());
-    if (body.isMember("workspace"))
-    {
-        string ws = body["workspace"].asString();
-        if (!ws.empty() && !m_agent->setWorkspace(ws))
-        {
-            replyError(client, 400, "工作区目录不存在: " + ws);
-            return;
-        }
     }
 
     JZAgentConfig llm = m_agent->llmConfig();
@@ -272,7 +292,73 @@ void JZCodeAgentServer::handleConfig(JZHttpServerClient *client, const JZHttpReq
     if (llmChanged)
         m_agent->applyLlmConfig(llm);
 
+    // 服务自身配置
+    bool speechChanged = false;
+    if (body.isMember("port"))
+        m_port = str_toInt(body["port"].asString());
+    if (body.isMember("speechWs"))
+    {
+        m_speechWs = body["speechWs"].asString();
+        speechChanged = true;
+    }
+    if (body.isMember("localPlay"))
+    {
+        m_localPlay = body["localPlay"].asBool();
+        speechChanged = true;
+    }
+    if (speechChanged && m_speech)
+    {
+        // 热重连语音客户端, 应用新的 WS 地址 / 本地播放开关
+        m_speech->disconnect();
+        m_speech->setLocalPlay(m_localPlay);
+        if (!m_speech->connectServer(m_speechWs))
+            jzWarning() << " 语音服务重连失败: " << m_speechWs;
+    }
+
+    saveConfig();
     replyJson(client, 200, makeOk());
+}
+
+bool JZCodeAgentServer::loadConfig()
+{
+    if (m_configPath.empty())
+        return false;
+    Json::Value cfg = readJsonFile(m_configPath);
+    if (cfg.isNull() || !cfg.isObject())
+        return false;   // 文件不存在或损坏, 用默认值
+
+    if (cfg.isMember("modelUrl") || cfg.isMember("modelName") || cfg.isMember("modelToken"))
+    {
+        JZAgentConfig llm = m_agent->llmConfig();
+        if (cfg.isMember("modelUrl"))   llm.modelUrl = cfg["modelUrl"].asString();
+        if (cfg.isMember("modelName"))  llm.modelName = cfg["modelName"].asString();
+        if (cfg.isMember("modelToken")) llm.modelToken = cfg["modelToken"].asString();
+        m_agent->applyLlmConfig(llm);
+    }
+
+    if (cfg.isMember("port"))          m_port = str_toInt(cfg["port"].asString());
+    if (cfg.isMember("speechWs"))      m_speechWs = cfg["speechWs"].asString();
+    if (cfg.isMember("localPlay"))     m_localPlay = cfg["localPlay"].asBool();
+    return true;
+}
+
+bool JZCodeAgentServer::saveConfig()
+{
+    if (m_configPath.empty())
+        return false;
+    Json::Value cfg;
+    cfg["modelUrl"] = m_agent->llmConfig().modelUrl;
+    cfg["modelName"] = m_agent->llmConfig().modelName;
+    cfg["modelToken"] = m_agent->llmConfig().modelToken;
+    cfg["port"] = m_port;
+    cfg["speechWs"] = m_speechWs;
+    cfg["localPlay"] = m_localPlay;
+    if (!writeJsonFile(m_configPath, cfg))
+    {
+        jzWarning() << " 配置保存失败: " << m_configPath;
+        return false;
+    }
+    return true;
 }
 
 void JZCodeAgentServer::handleFiles(JZHttpServerClient *client, const JZHttpRequest &req)
@@ -325,6 +411,77 @@ void JZCodeAgentServer::handleFile(JZHttpServerClient *client, const JZHttpReque
     root["path"] = rel;
     root["content"] = text;
     root["truncated"] = truncated;
+    replyJson(client, 200, root);
+}
+
+void JZCodeAgentServer::handleAsr(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (!m_speech || !m_speech->isConnected())
+    {
+        replyError(client, 503, "语音服务未连接 (请确认 ugreen-server 已启动并可访问)");
+        return;
+    }
+
+    Json::Value body;
+    string error;
+    if (!parseBody(req, body, error))
+    {
+        replyError(client, 400, error);
+        return;
+    }
+
+    string audio = body.get("audio", "").asString();
+    if (audio.empty())
+    {
+        replyError(client, 400, "audio 不能为空 (16k/单声道/16bit PCM 的 base64)");
+        return;
+    }
+
+    string text;
+    if (!m_speech->asr(audio, text))
+    {
+        replyError(client, 502, "ASR 识别失败 (详见服务端日志)");
+        return;
+    }
+
+    Json::Value root = makeOk();
+    root["text"] = text;
+    replyJson(client, 200, root);
+}
+
+void JZCodeAgentServer::handleTts(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (!m_speech || !m_speech->isConnected())
+    {
+        replyError(client, 503, "语音服务未连接 (请确认 ugreen-server 已启动并可访问)");
+        return;
+    }
+
+    Json::Value body;
+    string error;
+    if (!parseBody(req, body, error))
+    {
+        replyError(client, 400, error);
+        return;
+    }
+
+    string text = body.get("text", "").asString();
+    if (str_trimmed(text).empty())
+    {
+        replyError(client, 400, "text 不能为空");
+        return;
+    }
+
+    string wav;
+    if (!m_speech->tts(text, wav))
+    {
+        replyError(client, 502, "TTS 合成失败 (详见服务端日志)");
+        return;
+    }
+
+    Json::Value root = makeOk();
+    root["audio"] = wav;            // 16k/单声道/16bit PCM 封装的 WAV (base64)
+    root["format"] = "wav";
     replyJson(client, 200, root);
 }
 

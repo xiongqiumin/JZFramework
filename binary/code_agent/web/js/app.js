@@ -98,6 +98,12 @@ function finalizeAssistant() {
     if (!pendingAssistant) return;
     const raw = pendingAssistant._raw || '';
     pendingAssistant.innerHTML = renderMd(raw);
+    const sp = document.createElement('button');
+    sp.className = 'speak-btn';
+    sp.textContent = '🔊';
+    sp.title = '朗读此回复';
+    sp.onclick = () => speakText(raw);
+    pendingAssistant.appendChild(sp);
     pendingAssistant = null;
 }
 
@@ -295,14 +301,18 @@ function showModal(id) { $(id).classList.remove('hidden'); }
 function hideModal(id) { $(id).classList.add('hidden'); }
 
 async function openConfig() {
-    const data = await api('/api/config');
-    $('cfgUrl').value = data.modelUrl || '';
-    $('cfgName').value = data.modelName || '';
-    $('cfgToken').value = data.modelToken || '';
-    $('cfgWorkspace').value = data.workspace || '';
-    $('cfgBuild').value = data.buildCommand || '';
-    $('cfgRun').value = data.runCommand || '';
-    showModal('configModal');
+    showModal('configModal');   // 先弹出, 再异步填值, 避免接口慢/失败时“点不开”
+    try {
+        const data = await api('/api/config');
+        $('cfgUrl').value = data.modelUrl || '';
+        $('cfgName').value = data.modelName || '';
+        $('cfgToken').value = data.modelToken || '';
+        $('cfgPort').value = data.port || 18080;
+        $('cfgSpeechWs').value = data.speechWs || '';
+        $('cfgLocalPlay').checked = !!data.localPlay;
+    } catch (e) {
+        console.error('加载配置失败', e);
+    }
 }
 
 async function saveConfig() {
@@ -310,9 +320,9 @@ async function saveConfig() {
         modelUrl: $('cfgUrl').value,
         modelName: $('cfgName').value,
         modelToken: $('cfgToken').value,
-        workspace: $('cfgWorkspace').value,
-        buildCommand: $('cfgBuild').value,
-        runCommand: $('cfgRun').value
+        port: parseInt($('cfgPort').value, 10) || 18080,
+        speechWs: $('cfgSpeechWs').value.trim(),
+        localPlay: $('cfgLocalPlay').checked
     });
     if (!res.ok) {
         alert(res.error || '保存失败');
@@ -352,6 +362,8 @@ function init() {
     $('btnConfig').onclick = openConfig;
     $('btnSaveConfig').onclick = saveConfig;
     $('btnRefresh').onclick = () => loadFiles(curPath);
+    $('btnMic').onclick = onMic;
+    $('btnSpeak').onclick = onSpeak;
 
     $('input').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -378,6 +390,143 @@ function init() {
     loadFiles('');
     poll();
     setInterval(poll, 400);
+}
+
+/* ---------------- 语音: 录音(ASR) + 朗读(TTS) ----------------
+ * 后端 /api/asr、/api/tts 对接 ugreen-server (见 JZSpeechClient)。
+ * 录音: 浏览器用 Web Audio 采集麦克风采样, 重采样到 16k 单声道 16bit PCM 后 base64 上传。
+ */
+let recState = null;   // { stream, ctx, proc, pcm: Float32Array[] }
+
+function bytesToBase64(bytes) {   // bytes: Uint8Array -> base64 字符串
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk)
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return btoa(bin);
+}
+
+function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+}
+
+// 线性插值重采样 (语音够用)
+function resample(input, fromRate, toRate) {
+    const ratio = fromRate / toRate;
+    const newLen = Math.round(input.length / ratio);
+    const out = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+        const idx = i * ratio;
+        const i0 = Math.floor(idx);
+        const i1 = Math.min(i0 + 1, input.length - 1);
+        const frac = idx - i0;
+        out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+    }
+    return out;
+}
+
+async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx({ sampleRate: 16000 });
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const pcm = [];
+    proc.onaudioprocess = (e) => {
+        pcm.push(Float32Array.from(e.inputBuffer.getChannelData(0)));
+    };
+    src.connect(proc);
+    proc.connect(ctx.destination);   // 必须连到 destination 才会触发 onaudioprocess
+    recState = { stream, ctx, proc, pcm };
+    $('btnMic').textContent = '■ 停止';
+    $('btnMic').classList.add('rec');
+}
+
+function stopRecording() {
+    if (!recState) return null;
+    const { stream, ctx, proc, pcm } = recState;
+    try { proc.disconnect(); ctx.suspend(); } catch (e) {}
+    stream.getTracks().forEach((t) => t.stop());
+
+    let total = 0;
+    pcm.forEach((a) => total += a.length);
+    const merged = new Float32Array(total);
+    let off = 0;
+    pcm.forEach((a) => { merged.set(a, off); off += a.length; });
+
+    // 浏览器可能不支持 16k 采样率, 这里重采样到 16k
+    let out = merged;
+    if (ctx.sampleRate !== 16000)
+        out = resample(merged, ctx.sampleRate, 16000);
+
+    const int16 = new Int16Array(out.length);
+    for (let i = 0; i < out.length; i++) {
+        const s = Math.max(-1, Math.min(1, out[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    recState = null;
+    $('btnMic').textContent = '🎤 录音';
+    $('btnMic').classList.remove('rec');
+    return bytesToBase64(new Uint8Array(int16.buffer));
+}
+
+async function onMic() {
+    if (recState) {
+        const b64 = stopRecording();
+        if (b64) await sendAsr(b64);
+    } else {
+        try { await startRecording(); }
+        catch (e) { alert('无法访问麦克风: ' + (e && e.message ? e.message : e)); }
+    }
+}
+
+async function sendAsr(b64) {
+    $('btnMic').disabled = true;
+    try {
+        const res = await postJson('/api/asr', { audio: b64 });
+        if (res.ok) {
+            $('input').value = res.text;
+            $('input').focus();
+        } else {
+            alert(res.error || '识别失败');
+        }
+    } catch (e) {
+        alert('识别请求失败: ' + e);
+    } finally {
+        $('btnMic').disabled = false;
+    }
+}
+
+async function onSpeak() {
+    let text = $('input').value.trim();
+    if (!text) {
+        const el = document.querySelector('.bubble.assistant');
+        if (el) text = el._raw || el.textContent;
+    }
+    if (text) await speakText(text);
+}
+
+async function speakText(text) {
+    $('btnSpeak').disabled = true;
+    try {
+        const res = await postJson('/api/tts', { text });
+        if (res.ok) {
+            const blob = new Blob([base64ToBytes(res.audio)], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const a = new Audio(url);
+            a.play();
+            a.onended = () => URL.revokeObjectURL(url);
+        } else {
+            alert(res.error || '合成失败');
+        }
+    } catch (e) {
+        alert('合成请求失败: ' + e);
+    } finally {
+        $('btnSpeak').disabled = false;
+    }
 }
 
 init();

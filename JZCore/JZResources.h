@@ -3,12 +3,14 @@
 
 #include <string>
 #include <map>
+#include <cstdint>
 #include "JZStd.h"
 
 struct JZResourceData
 {
     const unsigned char *data;
     int size;
+    int64_t mtime = 0;   // 源文件修改时间(ms, 构建时由 jz_resources.py 冻结, 运行期不变)
 };
 
 class JZResources
@@ -16,8 +18,9 @@ class JZResources
 public:
     static JZResources *instance();    
 
-    void add(const std::string &name, const unsigned char *data, int size);
+    void add(const std::string &name, const unsigned char *data, int size, int64_t mtime = 0);
     const JZResourceData *find(const std::string &name) const;
+    bool contains(const std::string &name) const;
     std::vector<std::string> resourcesList() const;
 
 private:

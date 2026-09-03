@@ -110,8 +110,12 @@ set(JZ_SOURCES
     JZLineEdit.cpp
     JZTextEdit.h
     JZTextEdit.cpp    
-	JZTableWidget.h
+    JZTableWidget.h
 	JZTableWidget.cpp
+    JZTreeWidget.h
+    JZTreeWidget.cpp
+    JZDesktopServices.h
+    JZDesktopServices.cpp
 )
 
 convert_to_abs_paths(JZ_SOURCES)
@@ -137,7 +141,7 @@ endif()
 
 if(WIN32)
     # GDI+ 绘图后端 (临时方案; 后续如需 GPU 渲染, 按同样接口接入新后端)
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus imm32)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus imm32 shell32)
 else()
     # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
     message(STATUS "[JZWidget] No render backend on this platform (logic only)")

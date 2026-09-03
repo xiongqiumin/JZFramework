@@ -142,8 +142,10 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
         with open(abs_path, "rb") as f:
             data = f.read()
         size = len(data)
+        # 源文件修改时间(ms, 与 JZFileInfo::m_time 单位一致), 构建时冻结
+        mtime = int(os.path.getmtime(abs_path) * 1000)
         arr_name = c_array_name(alias, i)
-        entries.append((alias, arr_name, size, data))
+        entries.append((alias, arr_name, size, mtime, data))
 
     # === 生成头文件 ===
     hlines = []
@@ -166,7 +168,7 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     lines.append(f'#include "{header_name}"')
     lines.append("")
 
-    for alias, arr_name, size, data in entries:
+    for alias, arr_name, size, mtime, data in entries:
         lines.append(f"// {alias}")
         lines.append(f"static const unsigned char {arr_name}[] = {{")
         for j in range(0, size, 20):
@@ -183,8 +185,8 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     lines.append("static void _jz_resources_register_() {")
     lines.append("    if (_jz_resources_inited_) return;")
     lines.append("    _jz_resources_inited_ = true;")
-    for alias, arr_name, size, data in entries:
-        lines.append(f'    JZResources::instance()->add(":{alias}", {arr_name}, {size});')
+    for alias, arr_name, size, mtime, data in entries:
+        lines.append(f'    JZResources::instance()->add(":{alias}", {arr_name}, {size}, {mtime});')
     lines.append("}")
     lines.append("} // namespace")
     lines.append("")

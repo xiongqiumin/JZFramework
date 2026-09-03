@@ -38,6 +38,8 @@
             <textarea id="input" rows="3"
                 placeholder="描述要完成的任务，例如：在 JZAgent 里增加 token 统计，然后编译验证"></textarea>
             <div class="composer-bar">
+                <button id="btnMic" class="btn ghost" title="录音转文字">🎤 录音</button>
+                <button id="btnSpeak" class="btn ghost" title="朗读文字或最后一条回复">🔊 朗读</button>
                 <span class="hint">Enter 发送 · Shift+Enter 换行</span>
                 <button id="btnSend" class="btn primary">发送</button>
             </div>
@@ -52,24 +54,31 @@
             <button class="icon-btn" data-close="configModal">✕</button>
         </div>
         <div class="modal-body">
-            <label>模型接口地址 (OpenAI 兼容)
-                <input id="cfgUrl" type="text" spellcheck="false">
-            </label>
-            <label>模型名称
-                <input id="cfgName" type="text" spellcheck="false">
-            </label>
-            <label>API Key
-                <input id="cfgToken" type="password" spellcheck="false">
-            </label>
-            <label>工作区根目录
-                <input id="cfgWorkspace" type="text" spellcheck="false">
-            </label>
-            <label>默认编译命令
-                <input id="cfgBuild" type="text" spellcheck="false">
-            </label>
-            <label>默认运行命令
-                <input id="cfgRun" type="text" spellcheck="false">
-            </label>
+            <div class="cfg-group">
+                <div class="cfg-group-title">模型</div>
+                <label>模型接口地址 (OpenAI 兼容)
+                    <input id="cfgUrl" type="text" spellcheck="false">
+                </label>
+                <label>模型名称
+                    <input id="cfgName" type="text" spellcheck="false">
+                </label>
+                <label>API Key
+                    <input id="cfgToken" type="password" spellcheck="false">
+                </label>
+            </div>
+            <div class="cfg-group">
+                <div class="cfg-group-title">服务</div>
+                <label>监听端口
+                    <input id="cfgPort" type="number" min="1" max="65535">
+                </label>
+                <label>语音服务 (ugreen-server WebSocket)
+                    <input id="cfgSpeechWs" type="text" spellcheck="false" placeholder="ws://127.0.0.1:8000">
+                </label>
+                <label class="checkbox">
+                    <input id="cfgLocalPlay" type="checkbox"> 在服务端本机用 JZAudio 直接播放 TTS
+                </label>
+            </div>
+            <p class="tip">端口修改需重启程序生效；语音服务地址保存后立即重连。</p>
         </div>
         <div class="modal-foot">
             <button class="btn ghost" data-close="configModal">取消</button>

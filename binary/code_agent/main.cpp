@@ -3,23 +3,17 @@
 // 启动后在浏览器打开 http://127.0.0.1:<port> 即可使用。
 // 大模型通过 OpenAI 兼容接口调用（DashScope / vLLM / Ollama 等均可）。
 //
-// 常用参数:
-//   --port        监听端口，默认 18080
-//   --workspace   工作区根目录，默认当前目录（所有文件操作都限制在此目录内）
-//   --modelUrl    OpenAI 兼容的 chat/completions 地址
-//   --modelName   模型名
-//   --modelToken  API Key
-//   --build       默认编译命令，默认 "cmake --build build --config Release"
-//   --run         默认运行命令
-
+// 所有运行参数（模型、工作区、端口、语音服务等）不再通过命令行传入，
+// 改由网页设置面板读写，并持久化到本地的 code_agent.json（位于 exe 所在目录）。
+//
 #include "JZApplication.h"
-#include "JZCommandLineParser.h"
 #include "JZDebug.h"
 #include "JZDir.h"
 
 #include "JZCodeAgent.h"
 #include "JZCodeAgentServer.h"
-#include "JZWebView.h"
+#include "JZSpeechClient.h"
+#include "JZDesktopServices.h"
 
 using namespace std;
 
@@ -35,6 +29,7 @@ int main(int argc, char *argv[])
 
     JZApplication app;
 
+    // 默认配置（首次运行、本地无配置文件时使用）。之后可在网页设置面板修改并保存。
     JZAgentConfig llm;
     llm.modelUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
     llm.modelName = "qwen-plus";
@@ -51,56 +46,45 @@ int main(int argc, char *argv[])
 #endif
     code.runCommand = "";
 
-    int port = 18080;
-
-    JZCommandLineParser parser;
-    parser.setDescription("JZCodeAgent - 基于 JZAgent 的本地代码助手（网页版）");
-    parser.addOption("--port", &port);
-    parser.addOption("--workspace", &code.workspace);
-    parser.addOption("--modelUrl", &llm.modelUrl);
-    parser.addOption("--modelName", &llm.modelName);
-    parser.addOption("--modelToken", &llm.modelToken);
-    parser.addOption("--build", &code.buildCommand);
-    parser.addOption("--run", &code.runCommand);
-
-    if (!parser.parse(argc, argv))
-    {
-        jzError() << parser.errorString();
-        parser.printHelp();
-        return 1;
-    }
-
-    JZDir workspace(code.workspace);
-    if (!workspace.exists())
-    {
-        jzError() << "工作区目录不存在: " << code.workspace;
-        return 1;
-    }
-
     JZCodeAgent agent;
     agent.init(llm, code);
 
+    // 配置持久化到 exe 所在目录的 code_agent.json，启动前先把文件里的覆盖项应用进来
     JZCodeAgentServer server;
-    if (!server.start(&agent, port))
+    server.setAgent(&agent);
+    server.setConfigPath(app.applicationDirPath() + "/code_agent.json");
+    server.loadConfig();
+
+    if (!server.start(&agent, server.port()))
         return 1;
 
+    // 语音客户端: 对接 ugreen-server 的 ASR/TTS (网页录音/播放能力)
+    JZSpeechClient speech;
+    speech.setLocalPlay(server.localPlay());
+    if (speech.connectServer(server.speechWs()))
+        jzInfo() << " 语音服务已连接: " << server.speechWs();
+    else
+        jzWarning() << " 语音服务连接失败: " << server.speechWs()
+                     << " (ASR/TTS 不可用, 其余功能正常)";
+    server.setSpeechClient(&speech);
+
     jzInfo() << "==================================================";
-    jzInfo().noquote() << " JZCodeAgent 已启动: http://127.0.0.1:" + to_string(port);
+    jzInfo().noquote() << " JZCodeAgent 已启动: http://127.0.0.1:" + to_string(server.port());
     jzInfo() << " 工作区  : " << agent.codeConfig().workspace;
     jzInfo() << " 模型    : " << agent.llmConfig().modelName << " (" << agent.llmConfig().modelUrl << ")";
     jzInfo() << " 编译命令: " << agent.codeConfig().buildCommand;
     jzInfo() << " 运行命令: " << agent.codeConfig().runCommand;
+    jzInfo() << " 语音    : " << server.speechWs();
     jzInfo() << "==================================================";
 
-    // 用 JZWebView(libcef) 窗口承载前端（启动即弹出）
-    JZWebView webview;
-
-    std::string url = "http://127.0.0.1:" + to_string(port);
-
-    // 窗口关闭后（sigClosed 在窗口彻底销毁后发出）退出主循环
-    connect(&webview.sigClosed, [&app]() { app.exit(0); });
-
-    webview.open(url, "JZCodeAgent - " + url, nullptr);
+    // 启动后用系统默认浏览器打开网页版 UI
+    {
+        std::string url = "http://127.0.0.1:" + std::to_string(server.port());
+        if (JZDesktopServices::openUrl(url))
+            jzInfo().noquote() << " 已在浏览器打开: " + url;
+        else
+            jzWarning().noquote() << " 无法自动打开浏览器, 请手动访问: " + url;
+    }
 
     return app.exec();
 }

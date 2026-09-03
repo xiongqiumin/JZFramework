@@ -19,9 +19,9 @@ JZResources *JZResources::instance()
     return &inst;
 }
 
-void JZResources::add(const std::string &name, const unsigned char *data, int size)
+void JZResources::add(const std::string &name, const unsigned char *data, int size, int64_t mtime)
 {
-    m_resources[name] = {data, size};
+    m_resources[name] = {data, size, mtime};
 }
 
 const JZResourceData *JZResources::find(const std::string &name) const
@@ -46,6 +46,11 @@ const JZResourceData *JZResources::find(const std::string &name) const
         return nullptr;
     } 
     return &it->second;
+}
+
+bool JZResources::contains(const std::string &name) const
+{
+    return m_resources.find(name) != m_resources.end();
 }
 
 std::vector<std::string> JZResources::resourcesList() const

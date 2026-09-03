@@ -175,7 +175,7 @@ void JZFileInfo::setResource(const std::string &path)
         m_isFile = true;
         m_isDir = false;
         m_size = res->size;
-        m_time = 0;
+        m_time = res->mtime;
     }
     else
     {

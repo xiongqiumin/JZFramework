@@ -12,6 +12,8 @@ set(CODE_AGENT_SOURCES
     JZCodeAgent.cpp
     JZCodeAgentServer.h
     JZCodeAgentServer.cpp
+    JZSpeechClient.h
+    JZSpeechClient.cpp
 )
 
 # 内嵌网页资源: web/code_agent.qrc -> 静态库 code_agent_web (暴露 jzres_code_agent_init())

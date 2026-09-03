@@ -28,6 +28,9 @@
 // 与消息层的关系: 本类只提供事件入口 (keyPressEvent / imeEvent / focusXxxEvent),
 // 由平台消息层把 WM_KEY* / WM_IME_* 翻译后投递进来。未接消息层时控件能正常
 // 显示, 只是无法输入。
+
+class JZUndoStack;
+
 class JZAbstractTextEdit : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZAbstractTextEdit)
@@ -59,6 +62,17 @@ public:
     void setCursorBlinkPeriod(int ms);              // <=0 关闭闪烁
     void setTextMargins(int left, int top, int right, int bottom);  // 多行版本
     void setTextMargins(int left, int right);                       // 单行版本 (只改左右)
+
+    // ---- 撤销 / 重做 (仿 Qt QUndoStack) ----
+    // 合并策略: 相邻的用户编辑 (输入/删除/IME 上屏) 在 5 秒内合并为一步,
+    // 超过 5 秒另起一步; 粘贴/剪切每次单独算一步, 不与相邻输入合并。
+    void undo();
+    void redo();
+    bool canUndo() const;
+    bool canRedo() const;
+    void setUndoLimit(int limit);       // 0 = 不限制 (默认)
+    int  undoLimit() const;
+    void clearUndoHistory();            // 丢弃全部历史 (setText 内部已自动调用)
 
     // 可编辑 (非只读; 单行且非密码) 时需要输入法; 窗口据此关联/断开 IMC
     bool imeEnabled() const override;
@@ -107,6 +121,17 @@ protected:
     int  m_marginBottom = 4;
 
 private:
+    class EditCommand;                    // 撤销命令, 定义在 .cpp
+
+    // ---- 文本修改统一入口 (全部通过撤销栈) ----
+    // 把 [pos, pos+len) 替换为 after, 记为一步 (可合并)。isolated = true 时
+    // 该命令不与前后命令合并 (粘贴用)。
+    void replaceRangeWithUndo(int pos, int removeLen, const JZString& after,
+                              bool isolated = false);
+    void applyEditRangeRaw(int pos, int removeLen, const JZString& after);
+    // 撤销/重做收尾: 设光标 + afterContentChanged() (重建行/发信号)
+    void finishEditRange(int cursor, int anchor);
+
     // 一行布局结果 (文本变化后由 relayout() 重建)
     struct LineLayout {
         int start = 0;    // 行首码点索引
@@ -127,7 +152,7 @@ private:
     int  selStart() const;
     int  selEnd() const;
     void deleteSelection();
-    void insertText(const JZString& s);
+    void insertText(const JZString& s, bool isolated = false);
     void moveCursor(int pos, bool select);
     void moveCursorVertical(int deltaLine, bool select);
     void selectWordAt(int pos);
@@ -164,6 +189,9 @@ private:
 
     long long m_lastClickMs = 0;                  // 双击检测 (不依赖消息层)
     int  m_lastClickX = 0;
+
+    // 撤销/重做历史 (仿 QUndoStack); 编辑入口统一走 replaceRangeWithUndo
+    JZUndoStack* m_undoStack = nullptr;
 
     // 组字 (composition) 状态
     bool m_composing = false;

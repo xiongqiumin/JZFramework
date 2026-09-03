@@ -1,5 +1,7 @@
 #include "JZAbstractTextEdit.h"
 
+#include "JZUndoStack.h"
+
 #include "JZPainter.h"
 #include "JZFontMetrics.h"
 #include "JZMouseEvent.h"
@@ -77,12 +79,16 @@ bool isWordChar(char32_t c)
            (c >= 0xF900 && c <= 0xFAFF);     // CJK 兼容
 }
 
-// 单调时钟毫秒数, 用于自建双击检测
+// 单调时钟毫秒数, 用于自建双击检测 / 撤销合并时间窗
 long long nowMs()
 {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
+
+// 连续编辑合并时间窗: 5 秒内的相邻编辑 (输入/删除/IME 上屏) 记为一撤销步,
+// 超过 5 秒另起一步 (2026-09-03 约定)。
+const long long kUndoMergeWindowMs = 5000;
 
 // 所属原生窗口句柄; 窗口尚未创建 (惰性) 时返回 nullptr
 HWND nativeHwndOf(JZWidget* w)
@@ -101,6 +107,90 @@ LONG toPhysical(int v, float scale)
 
 } // namespace
 
+// ==================== 文本编辑撤销命令 ====================
+// 一步命令 = 一串"补丁", 每个补丁是 [pos, pos+len) 的文本替换:
+//   redo  = 正序应用所有补丁 (把 removed 换成 inserted);
+//   undo  = 逆序反向应用 (把 inserted 换回 removed)。
+// 连续编辑通过 JZUndoStack 的合并协议合并: 新命令与栈顶命令时间差在
+// kUndoMergeWindowMs (5 秒) 内且都不是"独立命令"(粘贴) 时, 栈顶命令
+// 把新命令的补丁追加进来, 于是撤销一步回到整段编辑之前。
+class JZAbstractTextEdit::EditCommand : public JZUndoCommand
+{
+public:
+    struct Patch {
+        int pos;
+        JZString removed;
+        JZString inserted;
+    };
+
+    EditCommand(JZAbstractTextEdit* owner,
+                int pos, const JZString& removed, const JZString& inserted,
+                bool isolated, long long timeMs,
+                int cursorBefore, int anchorBefore,
+                int cursorAfter, int anchorAfter)
+        : m_owner(owner)
+        , m_isolated(isolated)
+        , m_timeMs(timeMs)
+        , m_cursorBefore(cursorBefore)
+        , m_anchorBefore(anchorBefore)
+        , m_cursorAfter(cursorAfter)
+        , m_anchorAfter(anchorAfter)
+    {
+        m_patches.push_back(Patch{ pos, removed, inserted });
+    }
+
+    int id() const override { return 1; }   // 所有文本编辑命令同 id -> 可尝试合并
+
+    bool canMergeWith(const JZUndoCommand* other) const override
+    {
+        if (m_isolated)
+            return false;
+        const EditCommand* o = dynamic_cast<const EditCommand*>(other);
+        if (!o || o->m_isolated || o->m_owner != m_owner)
+            return false;
+        // 时间窗: 新命令发生时刻与栈顶命令最后编辑时刻相隔 <= 5 秒
+        const long long dt = o->m_timeMs - m_timeMs;
+        return dt >= 0 && dt <= kUndoMergeWindowMs;
+    }
+
+    void mergeWith(const JZUndoCommand* other) override
+    {
+        const EditCommand* o = static_cast<const EditCommand*>(other);
+        for (const Patch& p : o->m_patches)
+            m_patches.push_back(p);
+        m_timeMs = o->m_timeMs;         // 时间窗随最新编辑滚动
+        m_cursorAfter = o->m_cursorAfter;
+        m_anchorAfter = o->m_anchorAfter;
+    }
+
+    void undo() override
+    {
+        for (int i = static_cast<int>(m_patches.size()) - 1; i >= 0; --i) {
+            const Patch& p = m_patches[static_cast<size_t>(i)];
+            m_owner->applyEditRangeRaw(p.pos, static_cast<int>(p.inserted.size()),
+                                       p.removed);
+        }
+        m_owner->finishEditRange(m_cursorBefore, m_anchorBefore);
+    }
+
+    void redo() override
+    {
+        for (const Patch& p : m_patches) {
+            m_owner->applyEditRangeRaw(p.pos, static_cast<int>(p.removed.size()),
+                                       p.inserted);
+        }
+        m_owner->finishEditRange(m_cursorAfter, m_anchorAfter);
+    }
+
+private:
+    JZAbstractTextEdit* m_owner = nullptr;
+    std::vector<Patch> m_patches;
+    bool m_isolated = false;            // true = 粘贴等独立操作, 不与相邻命令合并
+    long long m_timeMs = 0;             // 最近一次编辑的单调时钟毫秒
+    int m_cursorBefore = 0, m_anchorBefore = 0;
+    int m_cursorAfter  = 0, m_anchorAfter  = 0;
+};
+
 JZ_OBJECT_IMPL(JZAbstractTextEdit, JZWidget)
 
 JZAbstractTextEdit::JZAbstractTextEdit(JZWidget* parent, bool singleLine)
@@ -114,6 +204,8 @@ JZAbstractTextEdit::JZAbstractTextEdit(JZWidget* parent, bool singleLine)
     m_cursorTimer = new JZTimer(this);
     m_cursorTimer->setSingleShot(false);
     connect(&m_cursorTimer->sigTimeout, this, &JZAbstractTextEdit::onCursorTimer);
+
+    m_undoStack = new JZUndoStack;
     relayout();
 }
 
@@ -122,6 +214,8 @@ JZAbstractTextEdit::~JZAbstractTextEdit()
     // 注: 输入上下文 (IMC) 是 HWND 级的, 由所属窗口统一关联/断开
     // (JZWindow::updateImeContext), 控件析构时不能去动它 —— 否则会把同窗口
     // 其它输入框的输入法一起关掉。
+    delete m_undoStack;     // 释放全部撤销历史 (命令的 undo/redo 不再被调用)
+    m_undoStack = nullptr;
 }
 
 // ==================== 属性 ====================
@@ -133,6 +227,11 @@ void JZAbstractTextEdit::setText(const std::string& text)
         next = flattenNewlines(next);
     if (m_maxLength > 0 && next.size() > m_maxLength)
         next = next.left(m_maxLength);
+
+    // 程序整体设值会令旧编辑历史失效 (Qt setText 同样清空 undo/redo);
+    // 文本未变时保留历史, 避免周期性 setText 意外打断用户输入
+    if (!(m_text == next))
+        m_undoStack->clear();
 
     m_text = next;
     m_cursor = m_anchor = m_text.size();
@@ -174,6 +273,47 @@ bool JZAbstractTextEdit::isReadOnly() const
     return m_readOnly;
 }
 
+// ==================== 撤销 / 重做 ====================
+
+void JZAbstractTextEdit::undo()
+{
+    if (m_readOnly)
+        return;
+    m_undoStack->undo();
+}
+
+void JZAbstractTextEdit::redo()
+{
+    if (m_readOnly)
+        return;
+    m_undoStack->redo();
+}
+
+bool JZAbstractTextEdit::canUndo() const
+{
+    return !m_readOnly && m_undoStack && m_undoStack->canUndo();
+}
+
+bool JZAbstractTextEdit::canRedo() const
+{
+    return !m_readOnly && m_undoStack && m_undoStack->canRedo();
+}
+
+void JZAbstractTextEdit::setUndoLimit(int limit)
+{
+    m_undoStack->setUndoLimit(limit);
+}
+
+int JZAbstractTextEdit::undoLimit() const
+{
+    return m_undoStack->undoLimit();
+}
+
+void JZAbstractTextEdit::clearUndoHistory()
+{
+    m_undoStack->clear();
+}
+
 bool JZAbstractTextEdit::imeEnabled() const
 {
     // 密码框不接输入法: 组字串会明文出现在候选窗 / 系统组字窗里
@@ -189,8 +329,10 @@ void JZAbstractTextEdit::setPasswordMode(bool password)
 void JZAbstractTextEdit::setMaxLengthLimit(int n)
 {
     m_maxLength = n;
-    if (m_maxLength > 0 && m_text.size() > m_maxLength)
+    if (m_maxLength > 0 && m_text.size() > m_maxLength) {
         m_text = m_text.left(m_maxLength);
+        m_undoStack->clear();       // 文本被外力截断, 历史补丁不再一致
+    }
 }
 
 void JZAbstractTextEdit::setLineWrapMode(bool wrap)
@@ -452,44 +594,77 @@ void JZAbstractTextEdit::setSelection(int start, int length)
     update();
 }
 
+// 把 [pos, pos+len) 替换为 after, 作为一步撤销命令提交 (push 会立即 redo)。
+// isolated = true 表示独立命令 (粘贴), 不与前后编辑合并。
+void JZAbstractTextEdit::replaceRangeWithUndo(int pos, int removeLen,
+                                              const JZString& after, bool isolated)
+{
+    pos = std::max(0, std::min(pos, m_text.size()));
+    removeLen = std::max(0, std::min(removeLen, m_text.size() - pos));
+    const JZString removed = m_text.mid(pos, removeLen);
+    if (removed.isEmpty() && after.isEmpty())
+        return;                         // 无实际变化
+
+    const int beforeCursor = m_cursor;
+    const int beforeAnchor = m_anchor;
+    const int afterCursor  = pos + after.size();
+    const long long now = nowMs();
+
+    EditCommand* cmd = new EditCommand(this, pos, removed, after, isolated, now,
+                                       beforeCursor, beforeAnchor,
+                                       afterCursor, afterCursor);
+    m_undoStack->push(cmd);             // push 内部执行 redo(): 文本已改
+}
+
+// 撤销命令内部调用: 只改文本数据, 不动光标/不发信号 (由 finishEditRange 收尾)
+void JZAbstractTextEdit::applyEditRangeRaw(int pos, int removeLen,
+                                           const JZString& after)
+{
+    m_text.replace(pos, removeLen, after);
+}
+
+// 撤销/重做后的统一收尾: 光标 -> 重建行布局/滚动/重绘/IME 定位/信号
+void JZAbstractTextEdit::finishEditRange(int cursor, int anchor)
+{
+    m_cursor = std::max(0, std::min(cursor, m_text.size()));
+    m_anchor = std::max(0, std::min(anchor, m_text.size()));
+    afterContentChanged();
+    refreshDesiredColumn();
+}
+
 void JZAbstractTextEdit::deleteSelection()
 {
     if (!hasSelection())
         return;
     const int s = selStart();
-    m_text.remove(s, selectionLength());
-    m_cursor = m_anchor = s;
-    relayout();
+    replaceRangeWithUndo(s, selEnd() - s, JZString(), false);
 }
 
-// 上屏文字的唯一入口: 替换选区 -> 插入 -> 同步锚点 -> 重建行布局
-void JZAbstractTextEdit::insertText(const JZString& s)
+// 上屏文字的唯一入口: 替换选区 -> 插入 (整体算一步撤销)。
+// isolated = true 时作为独立命令 (粘贴), 不与相邻输入合并。
+void JZAbstractTextEdit::insertText(const JZString& s, bool isolated)
 {
     if (s.isEmpty())
         return;
 
-    deleteSelection();
+    const bool sel = hasSelection();
+    const int start = sel ? selStart() : m_cursor;
+    const int removeLen = sel ? selectionLength() : 0;
 
     JZString ins = s;
     if (m_singleLine)
         ins = flattenNewlines(ins);
     if (m_maxLength > 0) {
-        int room = m_maxLength - m_text.size();
+        const int room = m_maxLength - (m_text.size() - removeLen);
         if (room <= 0)
             return;
         if (ins.size() > room)
             ins = ins.left(room);
     }
+    if (ins.isEmpty())
+        return;
 
-    m_text.insert(m_cursor, ins);
-    m_cursor += ins.size();
-    m_anchor = m_cursor;        // 必须同步, 否则刚输入的内容会被当成选区
-
-    relayout();
-    ensureCursorVisible();
-    resetCursorBlink();
-    update();
-    sigTextChanged.emit(text());
+    replaceRangeWithUndo(start, removeLen, ins, isolated);
 }
 
 // 注意: 这里不更新 m_desiredColumn —— 上下移动时要沿用记忆列,
@@ -882,6 +1057,8 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         case 'C': copyToClipboard();                     event->accept(); return;
         case 'X': if (!m_readOnly) cutToClipboard();     event->accept(); return;
         case 'V': if (!m_readOnly) pasteFromClipboard(); event->accept(); return;
+        case 'Z': if (shift) redo(); else undo();        event->accept(); return;
+        case 'Y': redo();                                event->accept(); return;
         default: break;     // Ctrl+Home / Ctrl+End 落到下面的 switch
         }
     }
@@ -949,13 +1126,9 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         if (hasSelection()) {
             deleteSelection();
         } else if (m_cursor > 0) {
-            m_text.remove(m_cursor - 1, 1);
-            --m_cursor;
-            m_anchor = m_cursor;
+            replaceRangeWithUndo(m_cursor - 1, 1, JZString(), false);
         }
-        afterContentChanged();
-        refreshDesiredColumn();
-        event->accept();
+        event->accept();        // 收尾 (重排/光标/信号) 由撤销命令完成
         return;
 
     case VK_DELETE:
@@ -963,11 +1136,8 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         if (hasSelection()) {
             deleteSelection();
         } else if (m_cursor < m_text.size()) {
-            m_text.remove(m_cursor, 1);
-            m_anchor = m_cursor;
+            replaceRangeWithUndo(m_cursor, 1, JZString(), false);
         }
-        afterContentChanged();
-        refreshDesiredColumn();
         event->accept();
         return;
 
@@ -1241,8 +1411,9 @@ void JZAbstractTextEdit::cutToClipboard()
         return;
 
     copyToClipboard();
-    deleteSelection();
-    afterContentChanged();
+    // 剪切 = 复制 + 删除; 删除作独立一步撤销 (不与前后编辑合并)
+    const int s = selStart();
+    replaceRangeWithUndo(s, selEnd() - s, JZString(), true);
 }
 
 void JZAbstractTextEdit::pasteFromClipboard()
@@ -1280,7 +1451,8 @@ void JZAbstractTextEdit::pasteFromClipboard()
             }
             // 单行: 换行由 insertText 统一替换成空格
 
-            insertText(JZString::fromStdString(u8));
+            // 粘贴作为独立一步撤销, 不与前后编辑合并 (isolated = true)
+            insertText(JZString::fromStdString(u8), true);
             return;
         }
     }

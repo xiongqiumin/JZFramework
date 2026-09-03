@@ -30,6 +30,9 @@ public:
     void endStream();
     void clear();
 
+    // 显示/隐藏末尾"等待回复中..."状态卡(有指令在排队等待时由上层调用)
+    void setWait(bool show);
+
     // 立即滚到底 (清空/初始化时用)
     void scrollToBottom();
 
@@ -61,6 +64,10 @@ private:
     int  m_scrollY = 0;
     bool m_autoFollow = true;              // 是否自动跟随到底部
     int  m_totalH = 0;                     // 内容总高 (含上下外边距)
+
+    bool m_waitShow = false;               // 是否显示"等待回复中..."状态卡
+    std::vector<std::string> m_waitLines;  // 等待卡换行结果
+    int  m_waitH = 0;                      // 等待卡高度 (含上方间距)
 };
 
 #endif // !JZ_CODE_AGENT_CHATVIEW_H_

@@ -970,8 +970,17 @@ void JZWindow::cancelImeComposition()
     }
 }
 
-// 让 IME 的组字窗/候选窗字体与本窗口一致, 并保证输入法处于打开状态。
+// 让 IME 的组字窗/候选窗字体与本窗口一致。
 // 字体族与 GDI+ 绘制侧保持一致 (JZGdiBackend::jzFontFamily)。
+//
+// 重要: 默认**完全不碰** IME 的 open/conversion 状态 (中英模式), 只设组字字体。
+// 对微软拼音这类输入法, 英文模式在 IMM 层就表现为 open=false; 若这里无条件
+// ImmSetOpenStatus(TRUE), 用户一切到英文、再聚焦任意输入框就会被强制拧回中文
+// —— 表现正是"聚焦 lineEdit 输入法自动变中文"。IMC 已在窗口级全程保持关联,
+// 语言栏/转换模式由系统与用户维护, 聚焦无需也不应改动。
+//
+// 仅当 m_imeForceNative (setImeForceNativeMode(true), "纯中文录入"场景) 才强制
+// 打开并切到中文(native), 等价于参考实现 test_ime 的 kForceChineseOnFocus。
 void JZWindow::prepareIme(int fontPixelSize)
 {
     if (!m_hwnd)
@@ -992,13 +1001,9 @@ void JZWindow::prepareIme(int fontPixelSize)
     wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
     ImmSetCompositionFontW(hImc, &lf);
 
-    if (!ImmGetOpenStatus(hImc))
-        ImmSetOpenStatus(hImc, TRUE);
-
-    // 中英模式: 默认**不动**, 尊重用户在系统里切的状态 (否则聚焦一个输入框就会
-    // 把输入法从英文拧成中文, 很反直觉)。需要"纯中文录入"时调
-    // setImeForceNativeMode(true), 等价于参考实现 test_ime 的 kForceChineseOnFocus。
     if (m_imeForceNative) {
+        if (!ImmGetOpenStatus(hImc))
+            ImmSetOpenStatus(hImc, TRUE);
         DWORD conv = 0, sent = 0;
         if (ImmGetConversionStatus(hImc, &conv, &sent)) {
             if ((conv & IME_CMODE_NATIVE) == 0) {

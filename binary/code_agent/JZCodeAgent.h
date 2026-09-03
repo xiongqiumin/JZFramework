@@ -1,6 +1,7 @@
 #ifndef JZ_CODE_AGENT_H_
 #define JZ_CODE_AGENT_H_
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,9 @@ public:
     void clearHistory();
     bool isBusy() const;
 
+    // 是否有指令在排队/刚续发仍等待回复(供界面显示"等待回复中...")
+    bool waitingReply() const;
+
     // 会话日志（id 单调递增，网页端用 since 做增量拉取）
     int logSeq() const;
     const std::vector<CodeAgentLog> &logs() const;
@@ -86,6 +90,11 @@ protected:
     int m_logId = 0;
     bool m_busy = false;
     bool m_stopping = false;
+
+    // 运行期间新到的指令缓存(自管队列, 不依赖 JZAgent 的 m_requests)，
+    // 等上一步(当前任务)发完后由 onFinished 取出继续发送。
+    std::deque<std::string> m_pendingQueue;
+    bool m_waiting = false;      // 队列有缓存 或 刚把缓存发出还在等回复
 };
 
 #endif // !JZ_CODE_AGENT_H_

@@ -96,6 +96,21 @@ void ChatView::relayout()
         if (i + 1 < m_msgs.size())
             total += kGap;
     }
+
+    // 等待状态卡：紧随最后一条消息之后，同样参与滚动总高
+    m_waitH = 0;
+    if (m_waitShow)
+    {
+        JZFont font(14);
+        int cardW = width() - 2 * kOuter - (kScrollBarW + 4) - 2 * kCardPad;
+        if (cardW < 20)
+            cardW = 20;
+        wrapText("等待回复中...", font, cardW, m_waitLines);
+        int lh = JZFontMetrics::textHeight(font) + kLineGap;
+        m_waitH = kHeaderH + (int)m_waitLines.size() * lh + 2 * kCardPad;
+        total += kGap + m_waitH;
+    }
+
     total += kOuter;                      // 底部外边距
     m_totalH = total;
 }
@@ -199,10 +214,23 @@ void ChatView::clear()
 {
     m_msgs.clear();
     m_streamMsg = nullptr;
+    m_waitShow = false;
+    m_waitLines.clear();
+    m_waitH = 0;
     m_scrollY = 0;
     m_autoFollow = true;
     m_totalH = 2 * kOuter;
     update();
+}
+
+void ChatView::setWait(bool show)
+{
+    if (m_waitShow == show)
+        return;
+    m_waitShow = show;
+    if (!m_waitShow)
+        m_waitLines.clear();
+    afterChange();
 }
 
 // ==================== 事件 ====================
@@ -297,6 +325,28 @@ void ChatView::paintEvent(JZPainterEvent* event)
             p.drawText(contentLeft + kCardPad, ty + li * lh, m.lines[li].c_str());
 
         y += m.cardH + kGap;
+    }
+
+    // "等待回复中..." 状态卡：画在最后一条消息之后，用醒目一点的浅黄色
+    if (m_waitShow && m_waitH > 0 && y + m_waitH >= 0 && y <= h)
+    {
+        JZColor bg(0xFF, 0xF9, 0xE0), border(0xF2, 0xE3, 0xC2);
+        JZColor head(0xA8, 0x6A, 0x00), body(0x8A, 0x6D, 0x3A);
+
+        p.setBrush(JZBrush(bg));
+        p.setPen(JZPen(border, 1));
+        p.drawRoundRect(contentLeft, y, cardW, m_waitH, 8);
+
+        p.setFont(headerFont);
+        p.setPen(JZPen(head, 1));
+        p.drawText(contentLeft + kCardPad, y + (kHeaderH - JZFontMetrics::textHeight(headerFont)) / 2,
+                   "等待中");
+
+        p.setFont(bodyFont);
+        p.setPen(JZPen(body, 1));
+        int ty = y + kHeaderH;
+        for (size_t li = 0; li < m_waitLines.size(); li++)
+            p.drawText(contentLeft + kCardPad, ty + li * lh, m_waitLines[li].c_str());
     }
 
     // 滚动条 (内容高于视口时)

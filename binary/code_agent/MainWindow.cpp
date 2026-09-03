@@ -258,18 +258,16 @@ void MainWindow::appendLog(const CodeAgentLog& log)
 
 void MainWindow::onSend()
 {
-    if (m_busy)
-        return;
-
     string text = m_inputEdit->text();
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
         text.pop_back();
     if (text.empty())
         return;
 
+    // busy 时也照常提交: JZCodeAgent 会缓存到队列, 等上一步发完自动继续
     m_agent->request(text);
     m_inputEdit->setText("");
-    m_busy = true;
+    m_busy = m_agent->isBusy();
 }
 
 void MainWindow::onStop()
@@ -346,6 +344,9 @@ void MainWindow::onPoll()
         if (!busy)
             m_chatView->endStream();
     }
+
+    // 有指令在排队/续发等待回复时, 在回复后面显示"等待回复中..."
+    m_chatView->setWait(m_agent->waitingReply());
 }
 
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)

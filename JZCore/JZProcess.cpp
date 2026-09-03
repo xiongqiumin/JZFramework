@@ -252,47 +252,58 @@ void JZProcessPrivate::normal(JZByteArray &buffer)
 
 void JZProcessPrivate::processRead()
 {
-    char buffer[4096];
-    DWORD bytesRead;
-
-    if (ReadFile(hStdoutRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0)
+    // Windows 匿名管道的 ReadFile 是**阻塞**的: 写端未关闭且当前无数据时, ReadFile
+    // 会一直等到有数据, 从而让调用它的 onReadTimer(事件循环/主线程) 卡死。
+    // 必须先 PeekNamedPipe 探测: 有数据才 ReadFile(此时立即返回不阻塞);
+    // Peek 失败且为 ERROR_BROKEN_PIPE 表示写端已关闭(进程退出/管道断开),
+    // 此时 ReadFile 会立即返回剩余数据直到 EOF(返回 0), 用来排空最后的数据;
+    // avail==0 直接跳过, 避免阻塞。
+    auto readChannel = [this](HANDLE h, JZByteArray &buf, char &tail, JZSigVoid &sig) -> bool
     {
-        if (stdOutTail != 0)
+        if (h == INVALID_HANDLE_VALUE)
+            return false;
+
+        char buffer[4096];
+        DWORD bytesRead = 0;
+
+        DWORD avail = 0;
+        if (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr))
         {
-            stdoutBuffer.push_back(stdOutTail);
-            stdOutTail = 0;
+            if (avail == 0)
+                return false;            // 无数据, 跳过(不阻塞)
+            DWORD toRead = (avail < sizeof(buffer)) ? avail : (DWORD)sizeof(buffer);
+            if (!ReadFile(h, buffer, toRead, &bytesRead, nullptr) || bytesRead == 0)
+                return false;
         }
-        if (buffer[bytesRead - 1] == '\r')
+        else
         {
-            stdOutTail = '\r';
+            // 写端已关闭(进程退出): 最后一次 ReadFile 排空剩余, 不会阻塞
+            if (GetLastError() != ERROR_BROKEN_PIPE)
+                return false;
+            if (!ReadFile(h, buffer, (DWORD)sizeof(buffer), &bytesRead, nullptr) || bytesRead == 0)
+                return false;
+        }
+
+        if (tail != 0)
+        {
+            buf.push_back(tail);
+            tail = 0;
+        }
+        if (bytesRead > 0 && buffer[bytesRead - 1] == '\r')
+        {
+            tail = '\r';
             bytesRead--;
         }
-        stdoutBuffer.append(buffer, (int)bytesRead);
-        normal(stdoutBuffer);
+        buf.append(buffer, (int)bytesRead);
+        normal(buf);
+        sig.emit();
+        return true;
+    };
 
-        q_ptr->sigReadyReadStandardOutput.emit();
-    }
+    readChannel(hStdoutRead, stdoutBuffer, stdOutTail, q_ptr->sigReadyReadStandardOutput);
 
     if (channelMode == JZProcess::SeparateChannels)
-    {
-        if (ReadFile(hStderrRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0)
-        {
-            if (stdErrTail != 0)
-            {
-                stderrBuffer.push_back(stdErrTail);
-                stdErrTail = 0;
-            }
-            if (buffer[bytesRead - 1] == '\r')
-            {
-                stdErrTail = '\r';
-                bytesRead--;
-            }
-            stderrBuffer.append(buffer, (int)bytesRead);
-            normal(stderrBuffer);
-
-            q_ptr->sigReadyReadStandardError.emit();
-        }
-    }
+        readChannel(hStderrRead, stderrBuffer, stdErrTail, q_ptr->sigReadyReadStandardError);
 }
 
 void JZProcessPrivate::onReadTimer()

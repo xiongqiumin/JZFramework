@@ -269,7 +269,7 @@ void JZCodeAgent::addLog(const string &type, const string &text, const string &n
 string JZCodeAgent::buildSystemPrompt() const
 {
     string text;
-    text += "你是一个运行在本地的代码助手 JZCodeAgent，可以查看、搜索、修改、编译和运行工作区中的代码。\n";
+    text += "你是一个运行在本地的代码助手 JZCodeAgent，可以查看、搜索、修改、编译和运行工作区中的代码。编译统一使用cmake\n";
     text += "\n## 工作区\n";
     text += "根目录: " + m_codeConfig.workspace + "\n";
     text += "所有路径参数都使用相对于该目录的相对路径（根目录用 \".\" 表示）。" \
@@ -279,13 +279,6 @@ string JZCodeAgent::buildSystemPrompt() const
     text += "- read_file   读取文本文件，可按行号范围读取，返回内容带行号\n";
     text += "- search_code 在代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\"\n";
     text += "- modify_code 修改或新建文件（old_str 留空表示用 new_str 覆盖整个文件）\n";
-    text += "- build       编译工程";
-    if (!m_codeConfig.buildCommand.empty())
-        text += "，默认命令: " + m_codeConfig.buildCommand;
-    text += "\n";
-    text += "- run         运行程序";
-    if (!m_codeConfig.runCommand.empty())
-        text += "，默认命令: " + m_codeConfig.runCommand;
     text += "\n";
     text += "\n## 工作原则\n";
     text += "1. 修改代码之前必须先用 read_file 或 search_code 确认原文，严禁凭记忆猜测文件内容。\n";

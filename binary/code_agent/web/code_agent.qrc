@@ -1,9 +1,0 @@
-<!DOCTYPE RCC>
-<RCC>
-    <qresource prefix="/code_agent">
-        <file>index.html</file>
-        <file>favicon.svg</file>
-        <file>css/style.css</file>
-        <file>js/app.js</file>
-    </qresource>
-</RCC>

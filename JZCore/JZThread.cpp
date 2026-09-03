@@ -448,32 +448,46 @@ void JZThread::processTimers()
     JZTX_FUNC_TRACE
 
     int64_t start_time = JZPlatform::getTickCountMs();
-    while (true)
+    // 只拷贝已到期的定时器(避免整表快照), 按 nextTrigger 升序排序后遍历:
+    // 1) 一次调用对每个定时器只扫描一次 => 0 间隔也不会死循环;
+    // 2) 排序后按时间先后触发, 语义更合理;
+    // 3) 快照防止 event() 中增删定时器破坏本轮迭代。
+    std::vector<TimerInfo> due_list;
+    for (const auto& t : m_timerList)
     {
-        TimerInfo time;
-        {
-            for (int i = 0; i < (int)m_timerList.size(); i++)
-            {
-                if (start_time >= m_timerList[i].nextTrigger)
-                {
-                    time = m_timerList[i];
-                    break;
-                }
-            }
-        }
-        if (time.id == INVALID_TIMER_ID)
-            return;
+        if (start_time >= t.nextTrigger)
+            due_list.push_back(t);
+    }
+    std::sort(due_list.begin(), due_list.end(),
+              [](const TimerInfo& a, const TimerInfo& b) { return a.nextTrigger < b.nextTrigger; });
 
-        JZTimerEvent timer_event(time.id);
-        JZ_ASSERT(time.object->thread() == this);
+    for (const auto& t : due_list)
+    {
+        // 本轮开始后才被删除的定时器跳过(快照里还保留, 但真实列表已无)
+        if (indexOfTimer(t.object, t.id) < 0)
+            continue;
 
-        time.object->event(&timer_event);        
+        JZTimerEvent timer_event(t.id);
+        JZ_ASSERT(t.object->thread() == this);
 
-        int idx = indexOfTimer(time.object, time.id);
+        t.object->event(&timer_event);
+
+        int idx = indexOfTimer(t.object, t.id);
         if (idx >= 0)
         {
             TimerInfo* ptr = &m_timerList[idx];
-            ptr->nextTrigger = start_time + ptr->intervalMs;
+            if (ptr->intervalMs <= 0)
+            {
+                // 0 间隔(或负数): 本轮只触发一次(快照单遍扫描保证), 不人为节流。
+                // 续约到"当前时刻", 下一轮 exec 立即再次到期 → 频率由事件循环转速决定, 无上限。
+                ptr->nextTrigger = JZPlatform::getTickCountMs();
+            }
+            else
+            {
+                // 正常间隔: 本轮只触发一次, 续约到 start_time + interval 即可。
+                // (t 能进入 due_list 已保证 start_time >= nextTrigger, 无需再 max)
+                ptr->nextTrigger = start_time + ptr->intervalMs;
+            }
         }
     }
 }

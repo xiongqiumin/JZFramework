@@ -143,8 +143,8 @@ void JZWin32Thread::processAndPaint()
 
 // 通用模态循环 (DialogBoxParam 语义): 可见期间泵 Win32 消息 + 处理框架事件 +
 // 绘制脏区; 禁用/恢复 owner (disableOwner=false 供下拉弹层 — 主窗口保持可用,
-// 外点由弹层鼠标抓取吞掉)。hide() 即退出。与 run() 共享 processAndPaint 轮体;
-// 可重入 (模态中再开模态各自独立栈帧, m_paintTask 同线程顺序访问)。
+// 外点由弹层鼠标抓取吞掉)。hide() 即退出。与 run() 共用 pumpOnce() 轮体(同样按框架
+// 定时器 gap 唤醒, 模态内游戏定时器也能精确触发); 可重入 (模态中再开模态独立栈帧)。
 int JZWin32Thread::execModal(JZWindow* window, bool disableOwner)
 {
     HWND hwnd = (HWND)window->nativeHandle();
@@ -153,26 +153,13 @@ int JZWin32Thread::execModal(JZWindow* window, bool disableOwner)
     if (ownerDisabled)
         EnableWindow(owner, FALSE);
 
-    bool quit = false;
-    MSG msg;
-    while (!quit && window->isVisible() && window->nativeHandle())
+    while (window->isVisible() && window->nativeHandle())
     {
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (msg.message == WM_QUIT)   // 应用退出: 归还消息并结束
-            {
-                PostQuitMessage((int)msg.wParam);
-                quit = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        if (quit || !window->isVisible() || !window->nativeHandle())
+        // 退出条件: 窗口隐藏(正常关弹层) 或 线程停止/收到 WM_QUIT。
+        // pumpOnce 在 WM_QUIT / app.quit() 时都已置 m_running=false, run() 循环靠该标志退出,
+        // 此处无需再 PostQuitMessage(否则嵌套模态下会按层数多发且冗余)。
+        if (!pumpOnce())
             break;
-
-        processAndPaint();   // 与主循环同一套轮体: 框架事件 + 脏区绘制
-        MsgWaitForMultipleObjectsEx(0, nullptr, 30, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
     if (ownerDisabled)
@@ -183,45 +170,62 @@ int JZWin32Thread::execModal(JZWindow* window, bool disableOwner)
     return 0;
 }
 
-// Message loop with one-shot timer wakeups: each round processes framework
-// events, arms a SetTimer for the next framework timer gap, then blocks in
-// GetMessage pumping ALL thread window messages (JZWindow input/render).
-void JZWin32Thread::run()
+// 共享一轮: 处理框架事件+绘制 -> 算 gap 并 SetTimer 唤醒 -> GetMessageW 阻塞等一条
+// -> PeekMessageW 排空剩余。返回 false 表示 WM_QUIT 或线程停止(m_running=false)。
+bool JZWin32Thread::pumpOnce()
 {
-    { FILE* f = fopen("c:/Users/7052/Desktop/other/JZFramework/build/diag.log", "a"); if (f) { fprintf(f, "diag: run enter"); fclose(f); } }
-    MSG msg;
-    while (m_running)
+    // 1. 框架事件队列 + 到期定时器 + 脏区绘制
+    //    invalidate 事件由 JZWindow::event 正常派发时经 invalidate() 合成进
+    //    m_paintTask, processAndPaint 统一绘制。
+    processAndPaint();
+    if (!m_running)
+        return false;
+
+    // 2. 算下一个框架定时器的间隔, 启动(重置)唤醒定时器
+    //    定时器本身不触发逻辑, 只给消息泵"发 WM_TIMER 唤醒", 回到 processTimers 处理。
+    int64_t gap = 1000;
     {
-        // 1. framework event queue + expired timers + paint
-        //    invalidate 事件由 JZWindow::event 正常派发时经 invalidate() 合成进
-        //    m_paintTask, processAndPaint 统一绘制。
-        processAndPaint();
-        if (!m_running)
-            break;
-
-        // 2. arm a one-shot timer for the next framework timer gap
-        int64_t gap = 1000;
+        JZMutexLocker lock(&m_mutex);
+        int64_t now = JZPlatform::getTickCountMs();
+        for (size_t i = 0; i < m_timerList.size(); ++i)
         {
-            JZMutexLocker lock(&m_mutex);
-            int64_t now = JZPlatform::getTickCountMs();
-            for (size_t i = 0; i < m_timerList.size(); ++i)
-            {
-                int64_t g = m_timerList[i].nextTrigger - now;
-                if (g < gap)
-                    gap = g;
-            }
+            int64_t g = m_timerList[i].nextTrigger - now;
+            if (g < gap)
+                gap = g;
         }
-        if (gap < 0) gap = 0;
-        if (gap > 1000) gap = 1000;
-        SetTimer((HWND)m_msgHwnd, 1, (UINT)gap, nullptr);
+    }
+    if (gap < 0) gap = 0;            // 已到期: 立即唤醒
+    else if (gap == 0) gap = 1;      // 0 间隔: 留 1ms 让出, 否则 GetMessage 立即返回忙转饿死 GUI
+    if (gap > 1000) gap = 1000;
+    SetTimer((HWND)m_msgHwnd, 1, (UINT)gap, nullptr);
 
-        // 3. block pumping one message (JZWindow input/render timer/wakeup/WM_TIMER)
-        int ret = GetMessageW(&msg, nullptr, 0, 0);
-        if (ret <= 0)
-            break;
+    // 3. 阻塞等到一条消息(定时器唤醒/输入); GetMessageW 返回即代表有消息可派发
+    MSG msg;
+    if (!GetMessageW(&msg, nullptr, 0, 0))
+    {
+        m_running = false;          // WM_QUIT(0) 或错误(-1)
+        return false;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+
+    // 4. 本轮队列里剩余消息一次性排空(输入/定时器/重绘), 输入延迟更低
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+    {
+        if (msg.message == WM_QUIT) { m_running = false; return false; }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
-        KillTimer((HWND)m_msgHwnd, 1);   // one-shot: re-armed next round
+    }
+    return true;
+}
+
+// 消息泵: 复用 pumpOnce() 循环体, 由 m_running 控制退出。
+void JZWin32Thread::run()
+{
+    while (m_running)
+    {
+        if (!pumpOnce())
+            break;
     }
     KillTimer((HWND)m_msgHwnd, 1);
 }

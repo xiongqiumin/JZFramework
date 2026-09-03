@@ -42,6 +42,11 @@ private:
     // 轮首复位唤醒标记: 本轮清空事件队列, 之后新到事件经 wakeUp 重新投递。
     void processAndPaint();
 
+    // run() 与 execModal() 共用的"处理 + 唤醒 + 阻塞"一轮:
+    //   processAndPaint() -> 算 gap 并 SetTimer(gap) 唤醒 -> GetMessageW 阻塞等一条
+    //   -> PeekMessageW 排空剩余。返回 false 表示收到 WM_QUIT 或线程停止(m_running=false)。
+    bool pumpOnce();
+
 public:
     // 合成脏区: JZWindow 收到 invalidate 事件后调这里 (窗口所在主线程),
     // 同窗口脏区合并进 paint task, 由每轮 dealPaint 统一绘制提交。

@@ -112,7 +112,7 @@ JZHttpStaticFiles::JZHttpStaticFiles(const std::string& rootDir)
 std::string JZHttpStaticFiles::localPath(const std::string& userPath)
 {
     std::string web_path = userPath;
-    if (str_endsWith(userPath, "/"))
+    if (str_endsWith(web_path, "/"))
         web_path += "index.html";
 
     if (str_startsWith(m_absRoot, ":/"))
@@ -203,7 +203,14 @@ void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& 
     resp.setHeader("Accept-Ranges", "bytes");
 
     if (isResource)
-        resp.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    {
+        // 入口 index.html 必须每次校验(no-cache), 否则浏览器永久缓存旧 HTML 而看不到新的 ?v= 引用;
+        // 其它静态资源(js/css/图片等)内容不变则 URL 不变, 可安全 immutable 长缓存
+        if (str_endsWith(local_path, "index.html"))
+            resp.setHeader("Cache-Control", "no-cache");
+        else
+            resp.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    }
     else
     {
         resp.setHeader("Cache-Control", "public, max-age=" + std::to_string(m_cacheMaxAge));

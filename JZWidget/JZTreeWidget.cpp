@@ -37,6 +37,20 @@ JZTreeWidgetItem::~JZTreeWidgetItem()
     m_children.clear();
 }
 
+void JZTreeWidgetItem::setText(const std::string& text)
+{
+    m_text = text;
+    if (m_widget)
+        m_widget->itemChanged(this);
+}
+
+void JZTreeWidgetItem::setIcon(const JZImage& icon)
+{
+    m_icon = icon;
+    if (m_widget)
+        m_widget->itemChanged(this);
+}
+
 void JZTreeWidgetItem::setWidget(JZTreeWidget* w)
 {
     m_widget = w;
@@ -97,7 +111,7 @@ JZTreeWidgetItem* JZTreeWidgetItem::child(int index) const
     return m_children[index];
 }
 
-int JZTreeWidgetItem::indexOfChild(JZTreeWidgetItem* child) const
+int JZTreeWidgetItem::indexOfChild(const JZTreeWidgetItem* child) const
 {
     auto it = std::find(m_children.begin(), m_children.end(), child);
     return (it == m_children.end()) ? -1 : (int)(it - m_children.begin());

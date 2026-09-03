@@ -26,9 +26,9 @@ public:
     JZTreeWidget* treeWidget() const { return m_widget; }
     JZTreeWidgetItem* parent() const { return m_parent; }
 
-    void setText(const std::string& text) { m_text = text; if (m_widget) m_widget->itemChanged(this); }
+    void setText(const std::string& text);
     std::string text() const { return m_text; }
-    void setIcon(const JZImage& icon) { m_icon = icon; if (m_widget) m_widget->itemChanged(this); }
+    void setIcon(const JZImage& icon);
     JZImage icon() const { return m_icon; }
     void setData(const JZVariant& data) { m_data = data; }
     JZVariant data() const { return m_data; }
@@ -41,7 +41,7 @@ public:
     int childCount() const { return (int)m_children.size(); }
     JZTreeWidgetItem* child(int index) const;
     int childIndex() const;                          // 自身在父节点中的索引(top-level 返回 -1)
-    int indexOfChild(JZTreeWidgetItem* child) const;
+    int indexOfChild(const JZTreeWidgetItem* child) const;
 
     bool isExpanded() const { return m_expanded; }
     void setExpanded(bool exp);                       // 折叠态由树维护可见行, 故经由树通知
@@ -69,6 +69,8 @@ private:
 class JZTreeWidget : public JZScrollArea
 {
     JZ_OBJECT_DECLARE(JZTreeWidget)
+
+    friend class JZTreeWidgetItem;   // 允许节点回调树的 protected 方法(rebuildVisible 等)
 
 public:
     explicit JZTreeWidget(JZWidget* parent = nullptr);

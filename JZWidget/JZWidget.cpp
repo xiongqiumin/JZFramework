@@ -3,6 +3,11 @@
 #include <cctype>
 #include <cstdio>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include "JZWidget.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
@@ -224,14 +229,16 @@ JZPoint JZWidget::mapTo(JZWidget* parent, const JZPoint& pos) const
 
 JZPoint JZWidget::mapToGlobal(const JZPoint& pos) const
 {
-    JZPoint result = pos;
-    const JZWidget* w = this;
-    while (w)
-    {
-        result += JZPoint(w->x(), w->y());
-        w = w->parentWidget();
-    }
-    return result;
+    // 与 Qt 一致: 返回真实屏幕逻辑坐标。
+    // 先换算到所属窗口的局部坐标, 再 ×scale -> ClientToScreen -> ÷scale 得到屏幕坐标。
+    JZWindow* win = window();
+    if (!win || !win->nativeHandle() || !win->device())
+        return mapTo(win, pos);   // 无原生窗口: 退化为控件树内累加坐标
+    JZPoint inWin = mapTo(win, pos);
+    float s = win->device()->scale();
+    POINT pt = { (int)std::lround(inWin.x() * s), (int)std::lround(inWin.y() * s) };
+    ClientToScreen((HWND)win->nativeHandle(), &pt);
+    return JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
 }
 
 JZRect JZWidget::mapTo(JZWidget* parent, const JZRect& rc) const
@@ -607,7 +614,7 @@ Json::Value JZWidget::dumpSemanticTree(int maxDepth) const
     node["contentDesc"] = aiName();
 
     // boundsInScreen: 屏幕逻辑坐标 (跨窗口/弹层都能对准像素)
-    JZPoint sp = mapToScreen(JZPoint(0, 0));
+    JZPoint sp = mapToGlobal(JZPoint(0, 0));
     Json::Value bounds(Json::arrayValue);
     bounds.append(sp.x());
     bounds.append(sp.y());

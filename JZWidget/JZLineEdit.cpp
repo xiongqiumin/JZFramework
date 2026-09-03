@@ -828,11 +828,10 @@ void JZLineEdit::updateIMEWindowPos()
                      + JZFontMetrics::internalLeading(font);
     const int visH   = JZFontMetrics::visualHeight(font);
 
-    // mapToScreen: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
-    // ÷scale)。不要用 mapToGlobal —— 那是控件树内累加坐标, 只在根窗口位于
-    // (0,0) 时才碰巧等于客户区坐标。
-    const JZPoint sTop = mapToScreen(JZPoint(startX, visTop));
-    const JZPoint sBot = mapToScreen(JZPoint(startX, visTop + visH));
+    // mapToGlobal: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
+    // ÷scale), 与 Qt 一致; IME 候选条按此锚点摆放。
+    const JZPoint sTop = mapToGlobal(JZPoint(startX, visTop));
+    const JZPoint sBot = mapToGlobal(JZPoint(startX, visTop + visH));
 
     POINT pt, ptBot;
     pt.x    = toPhysical(sTop.x(), scale);

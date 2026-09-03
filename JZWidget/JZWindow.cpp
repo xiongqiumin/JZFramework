@@ -144,7 +144,8 @@ static uint32_t jzCurrentKeyModifiers()
 static bool jzSendMouseEvent(JZWindow* self, JZMouseEvent::MouseType t, JZMouseEvent::Button b,
                              LPARAM lParam, int wheelDelta = 0)
 {
-    JZMouseEvent ev(t, b, jzPhysicalToLogical(lParam, self->device()->scale()),
+    // globalPos 换算为屏幕逻辑坐标 (Qt globalPos 语义), localPos 由 dispatchMouse 命中后回填
+    JZMouseEvent ev(t, b, self->mapToGlobal(jzPhysicalToLogical(lParam, self->device()->scale())),
                     JZPoint(), wheelDelta);
     return self->onWindowProcess(&ev);
 }
@@ -161,11 +162,12 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     if (!self)
         return DefWindowProcW(hwnd, msg, wParam, lParam);
 
-    // ---- popup 型窗口: 鼠标抓取期间, 客户区外的按下/移动 -> 关闭并吞掉 ----
-    // (按下关闭同时吞掉点击, 避免点 combo 自身出现"关闭又立刻重开"的 toggle)
+    // ---- popup 型窗口: 鼠标抓取期间, 客户区外的"按下" -> 关闭并吞掉 ----
+    // (仅按下关闭, 吞掉该点击, 避免点 combo 自身出现"关闭又立刻重开"的 toggle;
+    //  注意: 不能对 WM_MOUSEMOVE 关窗 —— 菜单弹出后光标从标题移到下拉项途中
+    //  必然经过客户区外的间隙, 一旦按 move 关窗菜单立刻消失)
     if (self->windowType() == JZWindow::Popup &&
-        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN ||
-         msg == WM_MOUSEMOVE)) {
+        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)) {
         float s = self->device() ? self->device()->scale() : 1.0f;
         int px = (int16_t)LOWORD(lParam);
         int py = (int16_t)HIWORD(lParam);
@@ -266,8 +268,9 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         break;
 
     case WM_MOUSEWHEEL: {
+        // WM_MOUSEWHEEL 的 lParam 为屏幕物理像素坐标 -> 直接 /scale 即屏幕逻辑坐标
+        // (Qt globalPos 语义); 不再 ScreenToClient。
         POINT pt = { (int16_t)LOWORD(lParam), (int16_t)HIWORD(lParam) };
-        ScreenToClient(hwnd, &pt);
         float s = self->device()->scale();
         JZMouseEvent ev(JZMouseEvent::Wheel, JZMouseEvent::NoButton,
                         JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s)),
@@ -529,6 +532,12 @@ JZDisplayDevice* JZWindow::device()
     return m_device;
 }
 
+void JZWindow::setDeviceScale(float scale)
+{
+    m_scaleExplicit = true;
+    m_device->setScale(scale);
+}
+
 // 重绘指定区域: 遍历控件树(含剔除) -> 各控件 paintEvent -> backend 渲染
 void JZWindow::doPaint(const JZRect& rc)
 {
@@ -546,7 +555,17 @@ void JZWindow::createWindow()
     m_windowCreated = true;
 
     int w = width(), h = height();
-    m_device->setScale(jzQueryDpi(nullptr) / 96.0f);   // 初次设定 DPI 缩放
+    // 初次设定 DPI 缩放: 已显式设定 (popup 跟随 owner 显示器) 则保留;
+    // 否则优先取 owner 所在显示器 DPI, 没有 owner 再退主屏 DPI (多屏/HiDPI 下
+    // 弹层与 owner 才在同一坐标系)。
+    if (!m_scaleExplicit) {
+        HWND owner = nullptr;
+        if (JZWidget* p = parentWidget()) {
+            if (JZWindow* pw = p->window())
+                owner = (HWND)pw->nativeHandle();
+        }
+        m_device->setScale(jzQueryDpi(owner) / 96.0f);
+    }
 
     registerWindowClass();
 
@@ -818,9 +837,10 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
     // 用于拖拽, 光标冲出控件命中带也不丢 move/up。
     JZWidget* hit = m_mouseGrabber ? m_mouseGrabber : hitTest(ev->globalPos());
     if (hit) {
-        JZRect gr = hit->mapToGlobal(hit->rect());
-        ev->setLocalPos(JZPoint(ev->globalPos().x() - gr.left(),
-                                ev->globalPos().y() - gr.top()));
+        // localPos = 屏幕坐标 - 命中控件屏幕左上角 (Qt 语义: globalPos - mapToGlobal(rect.topLeft))
+        JZPoint gTop = hit->mapToGlobal(hit->rect().topLeft());
+        ev->setLocalPos(JZPoint(ev->globalPos().x() - gTop.x(),
+                                ev->globalPos().y() - gTop.y()));
         hit->event(ev);
         // 左键按下: 把焦点交给命中控件 (点击切换焦点)
         if (ev->mouseType() == JZMouseEvent::Press && ev->button() == JZMouseEvent::LeftButton)
@@ -1068,20 +1088,6 @@ void JZWindow::moveScreen(int x, int y)
     SetWindowPos((HWND)m_hwnd, nullptr,
                  (int)std::lround(x * s), (int)std::lround(y * s),
                  0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-}
-
-// 控件坐标 -> 屏幕逻辑坐标: 树内累加到窗口根, ClientToScreen + DPI 换算。
-// 窗口未创建/非 Win32 时退化为树内坐标。
-JZPoint JZWidget::mapToScreen(const JZPoint& pos) const
-{
-    JZWindow* win = window();
-    if (!win || !win->nativeHandle() || !win->device())
-        return mapToGlobal(pos);
-    JZPoint inWin = mapTo(win, pos);
-    float s = win->device()->scale();
-    POINT pt = { (int)std::lround(inWin.x() * s), (int)std::lround(inWin.y() * s) };
-    ClientToScreen((HWND)win->nativeHandle(), &pt);
-    return JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
 }
 
 // ==================== 通用模态循环 ====================

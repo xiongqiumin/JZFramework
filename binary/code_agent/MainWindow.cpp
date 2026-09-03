@@ -116,6 +116,11 @@ void MainWindow::setupUi()
     m_statusLabel = new JZLabel(this);
     m_statusLabel->setText("未配置");
 
+    // 菜单栏: 顶部 File 菜单, 目前只提供"打开目录"(切换工作区)
+    m_menuBar = new JZMenuBar(this);
+    JZMenu* fileMenu = m_menuBar->addMenu("文件");
+    fileMenu->addAction("打开目录", [this]() { onOpenDirectory(); });
+
     m_chatView = new ChatView(this);
 
     // 输入区容器: 左侧多行输入框 + 右侧按钮列。
@@ -146,6 +151,7 @@ void MainWindow::setupUi()
     inputArea->setLayout(inputLayout);
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
+    mainLayout->addWidget(m_menuBar, 0);
     mainLayout->addWidget(m_statusLabel, 0);
     mainLayout->addWidget(m_chatView, 1);
     mainLayout->addWidget(inputArea, 0);
@@ -299,6 +305,25 @@ void MainWindow::onSettings()
         saveConfig();
         applyConfig();
     }
+}
+
+void MainWindow::onOpenDirectory()
+{
+    if (m_busy)
+        return;
+
+    std::string dir = JZFileDialog::getExistingDirectory(this, "选择工作区目录", m_cfg.workspace);
+    if (dir.empty())
+        return;
+
+    if (!m_agent->setWorkspace(dir))
+        return;
+
+    m_cfg.workspace = dir;
+    saveConfig();
+    updateStatus();
+    m_chatView->appendInfo("已切换到工作区: " + dir);
+    m_chatView->scrollToBottom();
 }
 
 void MainWindow::onPoll()

@@ -96,7 +96,7 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
 // "前到后"累计不透明覆盖, 收集需要绘制的 widget, 最后反转成"后到前"绘制顺序。
 void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::vector<JZRect>& coverage, std::vector<JZWidget*>& out)
 {
-    JZRect wa = w->mapToGlobal(w->rect()).intersect(area);
+    JZRect wa = w->mapTo(w->window(), w->rect()).intersect(area);
 
     // 先处理子节点(前到后), 使上层子节点先贡献覆盖, 再判断本节点(本节点在子节点之后)
     // 注意: 挂在本树下的其它窗口(如对话框)有各自的渲染设备, 不属于本可视树, 跳过;

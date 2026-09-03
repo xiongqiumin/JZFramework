@@ -1002,11 +1002,10 @@ void JZTextEdit::updateIMEWindowPos()
         + JZFontMetrics::textWidth(m_text.mid(L.start, L.length).toStdString(), font, col);
     const int startY = contentTop() + L.y + pad;
 
-    // mapToScreen: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
-    // ÷scale)。不要用 mapToGlobal —— 那是控件树内累加坐标, 只在根窗口位于
-    // (0,0) 时才碰巧等于客户区坐标。
-    const JZPoint sTop = mapToScreen(JZPoint(startX, startY));
-    const JZPoint sBot = mapToScreen(JZPoint(startX, startY + visH));
+    // mapToGlobal: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
+    // ÷scale), 与 Qt 一致; IME 候选条按此锚点摆放。
+    const JZPoint sTop = mapToGlobal(JZPoint(startX, startY));
+    const JZPoint sBot = mapToGlobal(JZPoint(startX, startY + visH));
 
     POINT pt, ptBot;
     pt.x    = toPhysical(sTop.x(), scale);

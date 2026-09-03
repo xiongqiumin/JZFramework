@@ -5,7 +5,8 @@
 #include "JZPoint.h"
 
 // 鼠标事件: 坐标均为逻辑像素 (HiDPI 缩放已由显示设备换算)。
-// globalPos 相对显示设备左上角, localPos 相对目标控件左上角。
+// globalPos 为屏幕逻辑坐标 (与 Qt 的 QMouseEvent::globalPos 一致);
+// localPos 为相对目标控件左上角的逻辑坐标 (命中分发时回填)。
 class JZMouseEvent : public JZEvent
 {
 public:

@@ -60,11 +60,11 @@ public:
     JZRect rect() const;
 
     JZPoint mapTo(JZWidget* parent, const JZPoint& rect) const;
-    JZPoint mapToGlobal(const JZPoint& rect) const;
 
-    // 控件坐标 -> 屏幕逻辑坐标 (popup 等自定位窗口放置用;
-    // 窗口未创建/非 Win32 时退化为 mapToGlobal 的树内坐标)
-    JZPoint mapToScreen(const JZPoint& pos) const;
+    // 控件坐标 -> 屏幕逻辑坐标 (与 Qt 的 mapToGlobal 一致; popup/IME 等
+    // 自定位窗口放置、合成鼠标事件 globalPos 对齐均用它)。无原生窗口时退化
+    // 为控件树内累加坐标。
+    JZPoint mapToGlobal(const JZPoint& rect) const;
 
     JZRect mapTo(JZWidget *parent, const JZRect& rect) const;
     JZRect mapToGlobal(const JZRect &rect) const;

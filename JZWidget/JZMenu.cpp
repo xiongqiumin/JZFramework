@@ -1,0 +1,490 @@
+#include "JZMenu.h"
+#include "JZAction.h"
+#include "JZWindow.h"
+#include "JZPainter.h"
+#include "JZFont.h"
+#include "JZFontMetrics.h"
+#include "JZPen.h"
+#include "JZBrush.h"
+#include "JZColor.h"
+
+#include <algorithm>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+// ==================== 内部: 菜单内容绘制控件 ====================
+// JZMenuView 是弹层 (JZWindow::Popup) 内的唯一子控件, 负责把 JZMenu 的
+// 条目 (JZAction) 自绘出来, 并处理鼠标/键盘交互。它不持有数据, 只引用 JZMenu。
+class JZMenuView : public JZWidget
+{
+    JZ_OBJECT_DECLARE(JZMenuView)
+public:
+    explicit JZMenuView(JZWidget* parent = nullptr)
+        : JZWidget(parent) {}
+
+    void setMenu(JZMenu* m) { m_menu = m; }
+    JZMenu* menu() const { return m_menu; }
+
+    void setOwner(JZWindow* w) { m_owner = w; }
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
+    void mouseMoveEvent(JZMouseEvent* event) override;
+    void mouseReleaseEvent(JZMouseEvent* event) override;
+    void keyPressEvent(JZKeyEvent* event) override;
+
+private:
+    void openSubMenu(int index);
+    void closeSubMenu();
+    void stepHover(int dir);
+
+    JZMenu* m_menu = nullptr;
+    JZWindow* m_owner = nullptr;
+    JZMenu* m_submenu = nullptr;   // 当前打开的子菜单
+};
+
+JZ_OBJECT_IMPL(JZMenuView, JZWidget)
+
+// 布局常量
+static const int kMenuFont = 13;
+static const int kItemH = 28;
+static const int kSepH = 9;
+static const int kPadX = 6;
+static const int kIconW = 20;      // 勾选/图标列宽
+static const int kTextX = kPadX + kIconW;
+static const int kRightPad = 12;
+static const int kShortcutGap = 18;
+static const int kArrowW = 12;
+static const int kMinWidth = 120;
+
+void JZMenuView::paintEvent(JZPainterEvent* event)
+{
+    JZPainter p(this);
+    int w = width(), h = height();
+
+    p.fillRect(0, 0, w, h, JZColor(0xfa, 0xfa, 0xfa));
+    p.setPen(JZPen(JZColor(0xb4, 0xb4, 0xb4), 1));
+    p.drawRect(0, 0, w, h);
+
+    JZFont font(kMenuFont);
+    for (int i = 0; i < m_menu->itemCount(); ++i) {
+        JZAction* a = m_menu->actionAt(i);
+        JZRect r = m_menu->itemRect(i);
+
+        if (a->isSeparator()) {
+            p.setPen(JZPen(JZColor(0xd8, 0xd8, 0xd8), 1));
+            int y = r.top() + r.height() / 2;
+            p.drawLine(kPadX, y, w - kPadX, y);
+            continue;
+        }
+
+        bool hovered = (i == m_menu->hoverIndex()) && a->isEnabled();
+        if (hovered)
+            p.fillRect(r.left(), r.top(), r.width(), r.height(), JZColor(0x2d, 0x6c, 0xdf));
+
+        JZColor textCol = a->isEnabled()
+            ? (hovered ? JZColor(0xff, 0xff, 0xff) : JZColor(0x20, 0x20, 0x20))
+            : JZColor(0xa6, 0xa6, 0xa6);
+        p.setPen(JZPen(textCol, 1));
+        p.setFont(font);
+
+        // 勾选标记
+        if (a->isCheckable() && a->isChecked()) {
+            int cx = kPadX + 4, cy = r.top() + r.height() / 2;
+            p.drawLine(cx, cy, cx + 4, cy + 4);
+            p.drawLine(cx + 4, cy + 4, cx + 9, cy - 5);
+        }
+
+        // 文本
+        int ty = JZFontMetrics::centerY(font, r.height()) + r.top();
+        p.drawText(kTextX, ty, a->text().c_str());
+
+        // 快捷键 (右对齐)
+        if (!a->shortcut().empty()) {
+            int sw = JZFontMetrics::textWidth(a->shortcut(), font);
+            int sx = w - kRightPad - sw - (a->subMenu() ? kArrowW : 0);
+            p.drawText(sx, ty, a->shortcut().c_str());
+        }
+
+        // 子菜单箭头
+        if (a->subMenu()) {
+            int ax = w - kRightPad - 2;
+            int ay = r.top() + r.height() / 2;
+            p.drawLine(ax, ay - 4, ax + 5, ay);
+            p.drawLine(ax + 5, ay, ax, ay + 4);
+        }
+    }
+}
+
+void JZMenuView::mousePressEvent(JZMouseEvent* event)
+{
+    // 按下即展开/收起子菜单; 叶子项在 release 时触发
+    int idx = m_menu->hitTestItem(event->localPos().y());
+    if (idx < 0)
+        return;
+    JZAction* a = m_menu->actionAt(idx);
+    if (a->isEnabled() && a->subMenu())
+        openSubMenu(idx);
+}
+
+void JZMenuView::mouseMoveEvent(JZMouseEvent* event)
+{
+    int idx = m_menu->hitTestItem(event->localPos().y());
+    if (idx != m_menu->hoverIndex()) {
+        m_menu->setHoverIndex(idx);
+        update();
+    }
+    if (idx >= 0) {
+        JZAction* a = m_menu->actionAt(idx);
+        if (a->isEnabled() && a->subMenu()) {
+            if (m_submenu != a->subMenu())
+                openSubMenu(idx);
+        } else {
+            closeSubMenu();
+        }
+    }
+}
+
+void JZMenuView::mouseReleaseEvent(JZMouseEvent* event)
+{
+    int idx = m_menu->hitTestItem(event->localPos().y());
+    if (idx < 0)
+        return;
+    JZAction* a = m_menu->actionAt(idx);
+    if (!a->isEnabled() || a->isSeparator())
+        return;
+    if (a->subMenu()) {        // 点子菜单头: 展开, 不触发
+        openSubMenu(idx);
+        return;
+    }
+    m_menu->activateAction(idx);
+}
+
+void JZMenuView::keyPressEvent(JZKeyEvent* event)
+{
+    if (event->key() == VK_DOWN) {
+        stepHover(1); event->accept();
+    } else if (event->key() == VK_UP) {
+        stepHover(-1); event->accept();
+    } else if (event->key() == VK_RIGHT) {
+        int cur = m_menu->hoverIndex();
+        if (cur >= 0) {
+            JZAction* a = m_menu->actionAt(cur);
+            if (a->isEnabled() && a->subMenu())
+                openSubMenu(cur);
+        }
+        event->accept();
+    } else if (event->key() == VK_LEFT) {
+        if (m_menu->parentMenu())
+            m_menu->hidePopup();
+        event->accept();
+    } else if (event->key() == VK_RETURN || event->key() == VK_SPACE) {
+        int cur = m_menu->hoverIndex();
+        if (cur >= 0) {
+            JZAction* a = m_menu->actionAt(cur);
+            if (a->isEnabled() && a->subMenu())
+                openSubMenu(cur);
+            else
+                m_menu->activateAction(cur);
+        }
+        event->accept();
+    }
+}
+
+void JZMenuView::stepHover(int dir)
+{
+    int n = m_menu->itemCount();
+    if (n == 0)
+        return;
+    int cur = m_menu->hoverIndex();
+    int i = (cur < 0) ? 0 : cur;
+    for (int step = 0; step < n; ++step) {
+        i = (i + dir + n) % n;
+        if (i == cur)
+            break;
+        JZAction* a = m_menu->actionAt(i);
+        if (!a->isSeparator() && a->isEnabled())
+            break;
+    }
+    if (i != cur) {
+        m_menu->setHoverIndex(i);
+        update();
+    }
+}
+
+void JZMenuView::openSubMenu(int index)
+{
+    closeSubMenu();
+    JZAction* a = m_menu->actionAt(index);
+    JZMenu* sub = a ? a->subMenu() : nullptr;
+    if (!sub)
+        return;
+
+    sub->setParentMenu(m_menu);
+    JZRect ir = m_menu->itemRect(index);
+    JZPoint gp = this->mapToGlobal(ir.topLeft());
+    int rightEdge = gp.x() + ir.width();
+    JZRect anchor(rightEdge, gp.y(), rightEdge, gp.y() + ir.height());
+    sub->popup(m_owner, anchor, true);   // 嵌套模态: 阻塞直到子菜单关闭
+    m_submenu = sub;
+}
+
+void JZMenuView::closeSubMenu()
+{
+    if (m_submenu) {
+        m_submenu->hidePopup();
+        m_submenu = nullptr;
+    }
+}
+
+// ==================== JZMenu ====================
+JZ_OBJECT_IMPL(JZMenu, JZObject)
+
+JZMenu::JZMenu(JZObject* parent)
+    : JZObject(parent)
+    , aboutToShow(this)
+    , aboutToHide(this)
+{
+}
+
+JZMenu::JZMenu(const std::string& title, JZObject* parent)
+    : JZMenu(parent)
+{
+    m_title = title;
+}
+
+JZMenu::~JZMenu()
+{
+    if (m_popup)
+        delete m_popup;   // 顺带删除内部 JZMenuView
+}
+
+void JZMenu::setTitle(const std::string& title)
+{
+    m_title = title;
+}
+
+std::string JZMenu::title() const
+{
+    return m_title;
+}
+
+void JZMenu::setIcon(const JZImage& icon)
+{
+    m_icon = icon;
+}
+
+const JZImage& JZMenu::icon() const
+{
+    return m_icon;
+}
+
+JZAction* JZMenu::addAction(const std::string& text)
+{
+    JZAction* a = new JZAction(text, this);
+    m_actions.push_back(a);
+    return a;
+}
+
+JZAction* JZMenu::addAction(const std::string& text, std::function<void()> triggered)
+{
+    JZAction* a = addAction(text);
+    if (triggered)
+        connect(&a->triggered, [triggered]() { triggered(); });
+    return a;
+}
+
+JZAction* JZMenu::addAction(JZAction* action)
+{
+    if (!action)
+        return nullptr;
+    action->setParent(this);
+    m_actions.push_back(action);
+    return action;
+}
+
+void JZMenu::addSeparator()
+{
+    JZAction* a = new JZAction(this);
+    a->setSeparator(true);
+    m_actions.push_back(a);
+}
+
+JZMenu* JZMenu::addMenu(const std::string& title)
+{
+    JZMenu* sub = new JZMenu(title, this);
+    JZAction* a = new JZAction(title, this);
+    a->setSubMenu(sub);
+    m_actions.push_back(a);
+    return sub;
+}
+
+void JZMenu::clear()
+{
+    for (auto* a : m_actions)
+        delete a;
+    m_actions.clear();
+    m_itemRects.clear();
+}
+
+int JZMenu::actionCount() const
+{
+    return (int)m_actions.size();
+}
+
+JZAction* JZMenu::actionAt(int index) const
+{
+    if (index >= 0 && index < (int)m_actions.size())
+        return m_actions[index];
+    return nullptr;
+}
+
+void JZMenu::updateLayout()
+{
+    JZFont font(kMenuFont);
+    int w = 0;
+    int y = 2;
+    m_itemRects.clear();
+
+    for (auto* a : m_actions) {
+        if (a->isSeparator()) {
+            m_itemRects.push_back(JZRect(0, y, 10, kSepH));
+            y += kSepH;
+            continue;
+        }
+        int total = kTextX + JZFontMetrics::textWidth(a->text(), font) + kRightPad;
+        if (!a->shortcut().empty())
+            total += JZFontMetrics::textWidth(a->shortcut(), font) + kShortcutGap;
+        if (a->subMenu())
+            total += kArrowW;
+        w = std::max(w, total);
+        m_itemRects.push_back(JZRect(0, y, 10, kItemH));
+        y += kItemH;
+    }
+    y += 2;
+    if (w < kMinWidth)
+        w = kMinWidth;
+    m_contentSize = JZSize(w, y);
+    for (auto& r : m_itemRects)
+        r.setWidth(w);
+}
+
+int JZMenu::hitTestItem(int y) const
+{
+    for (int i = 0; i < (int)m_itemRects.size(); ++i) {
+        if (y >= m_itemRects[i].top() && y < m_itemRects[i].bottom())
+            return i;
+    }
+    return -1;
+}
+
+void JZMenu::activateAction(int index)
+{
+    if (index < 0 || index >= (int)m_actions.size())
+        return;
+    JZAction* a = m_actions[index];
+    if (!a || !a->isEnabled() || a->isSeparator())
+        return;
+    if (a->isCheckable())
+        a->setChecked(!a->isChecked());
+    a->triggered.emit();
+    closeAll();
+}
+
+void JZMenu::closeAll()
+{
+    if (m_parentMenu)
+        m_parentMenu->closeAll();
+    hidePopup();
+}
+
+void JZMenu::ensurePopup()
+{
+    if (m_popup) {
+        delete m_popup;     // 同时删除内部 JZMenuView
+        m_popup = nullptr;
+        m_view = nullptr;
+    }
+    m_popup = new JZWindow(nullptr);
+    m_popup->setWindowType(JZWindow::Popup);
+    m_popup->setAutoPosition(false);
+    m_view = new JZMenuView(m_popup);
+    m_view->setMenu(this);
+}
+
+void JZMenu::popup(JZWindow* owner, const JZRect& anchor, bool asSubmenu)
+{
+    if (m_actions.empty())
+        return;
+
+    ensurePopup();
+    updateLayout();
+    aboutToShow.emit();
+
+    // 浮层跟随 owner 的 DPI 缩放: 否则 createWindow 会用主屏 DPI, 与 mapToGlobal
+    // (owner 缩放) 算出的 anchor 不在同一坐标系, 多屏/HiDPI 下弹层错位、尺寸不对。
+    if (owner && owner->device())
+        m_popup->setDeviceScale(owner->device()->scale());
+
+    int cw = m_contentSize.width();
+    int ch = m_contentSize.height();
+    m_view->setOwner(owner);
+    m_view->setGeometry(0, 0, cw, ch);
+    m_popup->resize(cw, ch);
+
+    float s = (owner && owner->device()) ? owner->device()->scale() : 1.0f;
+    int screenW = (int)(GetSystemMetrics(SM_CXSCREEN) / s);
+    int screenH = (int)(GetSystemMetrics(SM_CYSCREEN) / s);
+
+    JZPoint pos = asSubmenu
+        ? JZPoint(anchor.right(), anchor.top())
+        : JZPoint(anchor.left(), anchor.bottom());
+
+    if (asSubmenu) {
+        if (pos.x() + cw > screenW)
+            pos.setX(anchor.left() - cw);                 // 向左翻
+        if (pos.y() + ch > screenH)
+            pos.setY(std::max(0, screenH - ch));
+    } else {
+        if (pos.x() + cw > screenW)
+            pos.setX(std::max(0, screenW - cw));
+        if (pos.y() + ch > screenH)
+            pos.setY(anchor.top() - ch);                  // 向上翻
+    }
+
+    m_popup->moveScreen(pos.x(), pos.y());
+    m_popup->show();
+    m_view->setFocus();
+    m_popup->execModal(false);     // 不禁用 owner; 外点/Esc 由弹层抓取关闭
+
+    aboutToHide.emit();
+    m_hover = -1;
+}
+
+void JZMenu::hidePopup()
+{
+    if (isPopupOpen())
+        m_popup->hide();
+}
+
+bool JZMenu::isPopupOpen() const
+{
+    return m_popup && m_popup->isVisible();
+}
+
+std::vector<std::string> JZMenu::aiItems() const
+{
+    std::vector<std::string> v;
+    for (auto* a : m_actions) {
+        if (!a->isSeparator())
+            v.push_back(a->text());
+    }
+    return v;
+}

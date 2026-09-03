@@ -182,7 +182,7 @@ int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
     m_performClick = performClick;
     m_onArrive = std::move(onArrive);
     m_from = m_cursorPos;
-    m_to = target->mapToGlobal(JZPoint(target->width() / 2, target->height() / 2));
+    m_to = target->mapTo(target->window(), JZPoint(target->width() / 2, target->height() / 2));
 
     m_overlay->syncToParent();
     m_overlay->setStatusText(statusText);
@@ -255,11 +255,13 @@ void JZAiDriver::doArrive()
         // 合成点击投递到事件队列 (JZWindow::event 派发): 按钮槽 —— 及其可能
         // 打开的模态框 —— 在独立派发上下文执行, 不阻塞本函数, AI 序列立即
         // 收尾回报 (回报语义 = 点击已落地, 而非点击引发的模态流结束)
+        // m_to 为 m_root 客户区坐标, 合成事件需屏幕逻辑坐标 (Qt globalPos 语义)
+        JZPoint gTo = m_root->mapToGlobal(m_to);
         JZMouseEvent* press = new JZMouseEvent(JZMouseEvent::Press, JZMouseEvent::LeftButton,
-                                               m_to, JZPoint(), 0);
+                                               gTo, JZPoint(), 0);
         jzApp->postEvent(m_root, press);
         JZMouseEvent* release = new JZMouseEvent(JZMouseEvent::Release, JZMouseEvent::LeftButton,
-                                                 m_to, JZPoint(), 0);
+                                                 gTo, JZPoint(), 0);
         jzApp->postEvent(m_root, release);
     }
     if (m_onArrive) {

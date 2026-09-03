@@ -44,6 +44,10 @@ public:
     void doPaint(const JZRect& rc);    // 重绘指定区域 (paint task 执行)
     virtual void resize(int w, int h) override;        // 同步原生窗口尺寸
 
+    // 显式设定 DPI 缩放 (popup 等浮层跟随 owner 显示器, 多屏/HiDPI 下避免与主屏错配);
+    // 一经设定, createWindow 不再用主屏 DPI 覆盖。
+    void setDeviceScale(float scale);
+
     // 置顶; 最小化/最大化/还原
     void setTop(bool on);
     void showMinimized();
@@ -173,6 +177,7 @@ protected:
     JZDisplayDevice* m_device = nullptr;
     void* m_hwnd = nullptr;             // HWND (头文件零 Win32 类型)
     bool m_windowCreated = false;       // 原生窗口是否已创建 (惰性, showEvent 触发)
+    bool m_scaleExplicit = false;        // 已显式设定 DPI (setDeviceScale), createWindow 不覆盖
     std::string m_title;
     WindowType m_windowType = Normal;
     bool m_top = false;                 // 置顶

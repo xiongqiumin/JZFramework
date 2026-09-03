@@ -12,6 +12,9 @@
 #include "JZPushButton.h"
 #include "JZLabel.h"
 #include "JZTimer.h"
+#include "JZMenuBar.h"
+#include "JZMenu.h"
+#include "JZFileDialog.h"
 
 #include <string>
 
@@ -75,6 +78,7 @@ private:
     void onStop();
     void onClear();
     void onSettings();
+    void onOpenDirectory();
     void onPoll();
 
     void appendLog(const CodeAgentLog& log);
@@ -86,6 +90,7 @@ private:
     JZPushButton* m_stopBtn = nullptr;
     JZPushButton* m_clearBtn = nullptr;
     JZPushButton* m_settingsBtn = nullptr;
+    JZMenuBar*    m_menuBar = nullptr;
     JZLabel*      m_statusLabel = nullptr;
     JZTimer*      m_pollTimer = nullptr;
 

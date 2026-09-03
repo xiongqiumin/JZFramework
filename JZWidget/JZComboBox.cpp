@@ -164,8 +164,8 @@ void JZComboBox::showPopup()
     m_popup->resize(width(), h);
 
     // 位置: combo 左下角; 屏幕下方放不下则向上翻
-    JZPoint below = mapToScreen(JZPoint(0, height()));
-    JZPoint above = mapToScreen(JZPoint(0, 0)) - JZPoint(0, h);
+    JZPoint below = mapToGlobal(JZPoint(0, height()));
+    JZPoint above = mapToGlobal(JZPoint(0, 0)) - JZPoint(0, h);
     float s = (window() && window()->device()) ? window()->device()->scale() : 1.0f;
     int screenH = (int)(GetSystemMetrics(SM_CYSCREEN) / s);
     JZPoint pos = (below.y() + h <= screenH) ? below : above;

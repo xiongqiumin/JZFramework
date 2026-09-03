@@ -636,10 +636,33 @@ void JZWindow::hideEvent(JZHideEvent* event)
     JZWidget::hideEvent(event);
 
     if (m_windowCreated && m_hwnd) {
+        // 窗口隐藏: 任何进行中的鼠标抓取都失效 (控件可能已被移除/不可见)
+        if (m_mouseGrabber)
+            releaseMouse(nullptr);
         if (m_windowType == Popup)
             ReleaseCapture();
         ShowWindow((HWND)m_hwnd, SW_HIDE);
     }
+}
+
+// ==================== 鼠标抓取 ====================
+void JZWindow::grabMouse(JZWidget* w)
+{
+    if (!w)
+        return;
+    m_mouseGrabber = w;          // 后续鼠标事件直发 w (见 dispatchMouse)
+    if (m_hwnd)
+        SetCapture((HWND)m_hwnd); // 含客户区外的 move/up 都路由到本窗口
+}
+
+void JZWindow::releaseMouse(JZWidget* w)
+{
+    // w==nullptr: 强制解除; 否则仅当 w 是当前 grabber 时才解除 (避免误伤别人的抓取)
+    if (w && w != m_mouseGrabber)
+        return;
+    m_mouseGrabber = nullptr;
+    if (m_hwnd && (GetCapture() == (HWND)m_hwnd))
+        ReleaseCapture();
 }
 
 void JZWindow::paintEvent(JZPainterEvent* event)
@@ -791,7 +814,9 @@ bool JZWindow::onWindowProcess(JZEvent* event)
 // 鼠标: 命中测试定位最深可见控件, 回填 localPos 后投递; 左键按下同时切换焦点。
 bool JZWindow::dispatchMouse(JZMouseEvent* ev)
 {
-    JZWidget* hit = hitTest(ev->globalPos());
+    // 鼠标抓取: 所有鼠标事件 (含窗口客户区外) 直发 grabber, 跳过命中测试。
+    // 用于拖拽, 光标冲出控件命中带也不丢 move/up。
+    JZWidget* hit = m_mouseGrabber ? m_mouseGrabber : hitTest(ev->globalPos());
     if (hit) {
         JZRect gr = hit->mapToGlobal(hit->rect());
         ev->setLocalPos(JZPoint(ev->globalPos().x() - gr.left(),

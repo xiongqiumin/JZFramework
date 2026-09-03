@@ -195,6 +195,13 @@ protected:
     virtual void mouseMoveEvent(JZMouseEvent* event);
     virtual void wheelEvent(JZMouseEvent* event);
 
+    // 鼠标抓取: 抓取后所有鼠标事件 (含窗口客户区外) 直发本控件,
+    // 直到 releaseMouse 或窗口隐藏。用于拖拽 (滑块/分隔条) 避免光标
+    // 冲出控件命中带时丢失 mouseMove/mouseRelease。等价于 Qt::grabMouse。
+    void grabMouse();
+    void releaseMouse();
+    bool hasMouseGrab() const;
+
     // 键盘事件: key 为平台虚拟键码, text 为该键产生的可打印文本 (UTF-8)。
     // IME 上屏的内容**不走**这里, 走 imeEvent() 的 ResultStr。
     virtual void keyPressEvent(JZKeyEvent* event);

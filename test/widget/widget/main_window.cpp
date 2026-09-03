@@ -18,7 +18,7 @@ MainWindow::MainWindow(JZWidget* parent)
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
         "RadioButton", "ComboBox", "LineEdit", "TextEdit", "Table", "ImageLabel", "Dialog",
-        "TabWidget"
+        "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox"
     };
 
     setupUi();
@@ -303,6 +303,82 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
+    // ---- Splitter ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
+        // 横向分隔: 左(浅蓝, stretch 1) / 右(浅绿, stretch 2), 可拖动分隔条调整占比
+        JZSplitter* sp = new JZSplitter(JZSplitter::Horizontal, page);
+        sp->setHandleWidth(6);
+        sp->setStretchFactor(0, 1);
+        sp->setStretchFactor(1, 2);
+
+        ColorPanel* left = new ColorPanel(JZColor(173, 216, 230), sp);   // light blue
+        ColorPanel* right = new ColorPanel(JZColor(144, 238, 144), sp);  // light green
+
+        sp->addWidget(left);
+        sp->addWidget(right);
+
+        connect(&sp->sigSplitterMoved, this, &MainWindow::onSplitterMoved);
+        vlay->addWidget(sp, 1);
+        m_preview->addWidget(page);
+    }
+
+    // ---- SpinBox ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+        JZSpinBox* sb = new JZSpinBox(page);
+        sb->setRange(0, 100);
+        sb->setValue(42);
+        sb->setSuffix(" %");
+        sb->resize(120, sb->height());
+        connect(&sb->sigValueChanged, this, &MainWindow::onSpinValueChanged);
+        vlay->addWidget(sb);
+        m_preview->addWidget(page);
+    }
+
+    // ---- ScrollBar ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+        JZScrollBar* hb = new JZScrollBar(JZScrollBar::Horizontal, page);
+        hb->setRange(0, 200);
+        hb->setPageStep(40);
+        hb->resize(240, 16);
+        connect(&hb->sigValueChanged, this, &MainWindow::onScrollValueChanged);
+        JZScrollBar* vb = new JZScrollBar(JZScrollBar::Vertical, page);
+        vb->setRange(0, 200);
+        vb->setPageStep(40);
+        vb->resize(16, 160);
+        connect(&vb->sigValueChanged, this, &MainWindow::onScrollValueChanged);
+        vlay->addWidget(hb);
+        vlay->addWidget(vb);
+        m_preview->addWidget(page);
+    }
+
+    // ---- GroupBox ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
+        JZGroupBox* gb = new JZGroupBox("Settings", page);
+        JZVBoxLayout* glay = new JZVBoxLayout(8, 8);
+        gb->contentWidget()->setLayout(glay);
+        JZCheckbox* cb = new JZCheckbox(gb->contentWidget());
+        cb->setText("Enable feature");
+        glay->addWidget(cb);
+        JZSpinBox* sb = new JZSpinBox(gb->contentWidget());
+        sb->setRange(0, 100);
+        sb->setValue(10);
+        glay->addWidget(sb);
+        glay->addWidget(new JZPushButton(gb->contentWidget(), 100, 28, "Apply"));
+
+        vlay->addWidget(gb, 0);
+        m_preview->addWidget(page);
+    }
+
     m_preview->setCurrentIndex(0);
 }
 
@@ -310,4 +386,20 @@ void MainWindow::onDialogTest()
 {
     int r = JZMessageBox::question(this, "Question", "Dialog smoke: continue?")->exec();
     log(std::string("dialog finished: ") + (r == JZDialog::Accepted ? "Accepted" : "Rejected"));
+}
+
+void MainWindow::onSplitterMoved(int pos, int handleIndex)
+{
+    log("splitter moved: handle=" + std::to_string(handleIndex) +
+        " pos=" + std::to_string(pos));
+}
+
+void MainWindow::onSpinValueChanged(int v)
+{
+    log("spin value: " + std::to_string(v));
+}
+
+void MainWindow::onScrollValueChanged(int v)
+{
+    log("scroll value: " + std::to_string(v));
 }

@@ -60,7 +60,10 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
     if (!root || !m_backend)
         return;
 
-    JZRect clip = rc.intersect(root->rect());
+    // 整窗重绘: 忽略传入的脏区 rc, 每帧重画整窗。
+    // 现代 Windows/DWM 下呈现本就整屏合成, 应用层脏区只省 GDI+ 绘制,
+    // 且易因漏算旧位产生残影; 直接全量重绘, 上层 invalidate/合并逻辑保持不变。
+    JZRect clip = root->rect();
     if (clip.isEmpty())
         return;
 

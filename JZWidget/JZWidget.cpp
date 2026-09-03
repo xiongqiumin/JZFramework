@@ -75,8 +75,13 @@ JZPoint JZWidget::pos() const
 
 void JZWidget::move(int x, int y)
 {
+    if (m_x == x && m_y == y)
+        return;
+    // 旧位置先并入脏区: 后台缓冲持久不清, 不重绘旧位会留残影(背景没清空)
+    invalidate(rect());
     m_x = x;
     m_y = y;
+    update();   // 新位置并入脏区
 }
 
 void JZWidget::move(const JZPoint& p)
@@ -107,10 +112,13 @@ void JZWidget::resize(int w, int h)
     h = std::max(m_minH, std::min(h, m_maxH));
     if (w == m_width && h == m_height)
         return;
+    // 旧尺寸先并入脏区: 缩小时腾出的区域需重绘, 否则后台缓冲残影
+    invalidate(rect());
     m_width = w;
     m_height = h;
     if (m_layout)
         m_layout->updateLayout();
+    update();   // 新尺寸并入脏区
 }
 
 void JZWidget::resize(const JZSize& s)
@@ -474,6 +482,24 @@ void JZWidget::mouseMoveEvent(JZMouseEvent*)
 
 void JZWidget::wheelEvent(JZMouseEvent*)
 {
+}
+
+void JZWidget::grabMouse()
+{
+    if (JZWindow* win = window())
+        win->grabMouse(this);
+}
+
+void JZWidget::releaseMouse()
+{
+    if (JZWindow* win = window())
+        win->releaseMouse(this);
+}
+
+bool JZWidget::hasMouseGrab() const
+{
+    const JZWindow* win = window();
+    return win && win->mouseGrabber() == this;
 }
 
 void JZWidget::keyPressEvent(JZKeyEvent*)

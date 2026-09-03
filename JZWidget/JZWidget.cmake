@@ -88,6 +88,14 @@ set(JZ_SOURCES
     JZListWidget.cpp
     JZSlider.h
     JZSlider.cpp
+    JZSpinBox.h
+    JZSpinBox.cpp
+    JZScrollBar.h
+    JZScrollBar.cpp
+    JZGroupBox.h
+    JZGroupBox.cpp
+    JZSplitter.h
+    JZSplitter.cpp
     JZProgressBar.h
     JZProgressBar.cpp
     JZSwitch.h

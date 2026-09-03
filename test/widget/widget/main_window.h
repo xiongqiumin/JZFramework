@@ -15,10 +15,30 @@
 #include "JZImageLabel.h"
 #include "JZStackedWidget.h"
 #include "JZTabWidget.h"
+#include "JZSplitter.h"
+#include "JZSpinBox.h"
+#include "JZScrollBar.h"
+#include "JZGroupBox.h"
 #include "JZColor.h"
 
 #include <vector>
 #include <string>
+
+// 带背景色的演示面板: 让分隔条缩放效果可见
+class ColorPanel : public JZWidget
+{
+public:
+    explicit ColorPanel(const JZColor& c, JZWidget* parent = nullptr)
+        : JZWidget(parent), m_color(c) {}
+
+    void paintEvent(JZPainterEvent* event) override {
+        (void)event;
+        JZPainter p(this);
+        p.fillRect(rect(), m_color);
+    }
+
+    JZColor m_color;
+};
 
 // 挂载所有已实现控件: 左侧 JZListWidget 选择, 右侧 JZStackedWidget 预览, 底部日志
 class MainWindow : public JZWindow
@@ -49,6 +69,9 @@ private:
     void onLogTextEdit();
     void onLabelUpdate();
     void onDialogTest();
+    void onSplitterMoved(int pos, int handleIndex);
+    void onSpinValueChanged(int v);
+    void onScrollValueChanged(int v);
 
     JZListWidget    *m_list = nullptr;
     JZWidget        *m_top = nullptr;

@@ -77,6 +77,12 @@ public:
     JZWidget* focusWidget() const { return m_focusWidget; }
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
+    // 鼠标抓取 (窗口级: 同 HWND 同时仅一个 grabber)。抓取后所有鼠标事件
+    // (含客户区外) 直发 w, 直到 releaseMouse 或窗口隐藏。SetCapture 由本窗口托管。
+    void grabMouse(JZWidget* w);            // w 成为 grabber 并 SetCapture(HWND)
+    void releaseMouse(JZWidget* w = nullptr); // w==nullptr(或当前 grabber) 时解除抓取
+    JZWidget* mouseGrabber() const { return m_mouseGrabber; }
+
     // 是否活动窗口: 原生窗口持有键盘焦点 (由 WM_SETFOCUS / WM_KILLFOCUS 维护)。
     // JZApplication::activeWindow() 依据它判定当前活动窗口。
     bool isActiveWindow() const { return m_hasWindowFocus; }
@@ -172,6 +178,7 @@ protected:
     bool m_top = false;                 // 置顶
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
+    JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
     bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏

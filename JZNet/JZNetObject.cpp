@@ -14,6 +14,8 @@
 #include "JZMqttPacket.h"
 #include "JZTx.h"
 
+extern "C" mg_event_handler_t mg_get_http_cb();
+
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 static JZNetConfig g_netConfig;
@@ -407,7 +409,7 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             }
             else
             {
-                c->is_closing = true;
+                c->is_closing = 1;
             }
             return;
         }
@@ -545,6 +547,7 @@ JZNetThread::JZNetThread(JZObject *parent)
     m_mgr->dns4.url = g_netConfig.dns4.empty() ? "udp://223.5.5.5:53" : g_netConfig.dns4.c_str();   // IPv4 DNS, 为空用阿里云
     m_mgr->dns6.url = g_netConfig.dns6.empty() ? "udp://[2400:3200::1]:53" : g_netConfig.dns6.c_str();  // IPv6 DNS, 为空用阿里云
 
+    g_mg_http_cb = mg_get_http_cb();
     mg_wakeup_init(m_mgr);
 }
 
@@ -786,8 +789,6 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if (info.type == JZSocketInfo::HttpClient)
         {
             conn = mg_http_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
-            if(!g_mg_http_cb)
-                g_mg_http_cb = conn->pfn;
             if (str_startsWith(info.url, "https://")) {
                 initTls(conn, ssl, sslHost);
             }

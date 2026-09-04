@@ -274,8 +274,12 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     if (ev == JZ_NET_EV_CLOSE)
     {
         m_closing = true;
-        emitFinish(JZNetworkReply::ConnectError);
-        sigDisconnected.emit();
+        if (m_conn != INVALID_NET_HANDLE)
+        {
+            m_conn = INVALID_NET_HANDLE;
+            emitFinish(JZNetworkReply::ConnectError);
+            sigDisconnected.emit();
+        }
         deleteLater();
         return;
     }
@@ -284,7 +288,6 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 
     if (ev == JZ_NET_EV_HTTP_MSG)
     {
-        // HTTPS 经 HTTP 代理：第一次收到的 HTTP 响应是代理对 CONNECT 的回复，需先升级 TLS
         JZHttpResData *http = (JZHttpResData*)(event->extData.get());
         m_reply->m_statusCode = http->httpCode;
         m_reply->m_statusText = http->httpCodeText;
@@ -600,6 +603,25 @@ void JZNetworkAccessManager::evictIdleConnection(const std::string &hostKey)
 
 std::string JZNetworkAccessManager::hostKey(const JZNetworkRequest& request) const
 {
+    bool httpProxy  = useHttpProxy(m_proxyConfig, request);
+    bool httpsProxy = useHttpsProxy(m_proxyConfig, request);
+
+    if (httpsProxy)
+    {
+        // 物理连到代理，CONNECT 隧道绑定到具体 https 目标：key 含代理地址 + 目标主机，
+        // 既区分不同代理，又避免把隧道复用到其它 https 目标（隧道不可跨目标复用）。
+        auto& url = request.url();
+        return "proxy-https://" + m_proxyConfig->host + ":" + std::to_string(m_proxyConfig->port)
+             + "/" + url.host() + ":" + std::to_string(url.port());
+    }
+    if (httpProxy)
+    {
+        // 物理连到代理；请求行带绝对 URL，同一代理连接可服务任意 http 目标，
+        // 故 key 仅含代理地址（与目标主机无关），从而最大化代理连接复用。
+        return "proxy-http://" + m_proxyConfig->host + ":" + std::to_string(m_proxyConfig->port);
+    }
+
+    // 直连：物理端点即目标主机，按 scheme + host + port 生成 key。
     auto& url = request.url();
     std::string scheme = url.scheme();
     std::string key = scheme + "://" + url.host();
@@ -619,7 +641,8 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     if (useHttpProxy(m_proxyConfig, request) || httpsProxy)
         connectUrl = "http://" + m_proxyConfig->host + ":" + std::to_string(m_proxyConfig->port);
 
-    // 1) 复用同一主机的空闲连接（按主机复用，而非完整 URL）
+    // 1) 复用空闲连接：hostKey 已区分直连 / 代理转发 / https 代理隧道，
+    //    故复用到的连接其物理模式（含 http、https）必然与本次请求一致。
     JZNetworkConnect* conn = findIdleConnection(hostKey);
     if (conn)
     {

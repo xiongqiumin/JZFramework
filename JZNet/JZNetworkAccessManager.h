@@ -39,7 +39,7 @@ protected:
     std::string buildConnectRequest(); // 构造发给代理的 CONNECT 请求
 
     std::string m_url;
-    std::string m_hostKey;    // 连接池 key：scheme://host:port（按主机复用）
+    std::string m_hostKey;    // 连接池 key：区分直连 / http代理转发 / https代理隧道（按物理连接模式复用）
 
     JZByteArray m_chunkBuffer;
     JZNetworkReply *m_reply;

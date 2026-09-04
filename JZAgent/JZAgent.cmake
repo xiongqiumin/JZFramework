@@ -3,6 +3,8 @@
     JZAgent.cpp
 	JZAgentTool.h
 	JZAgentTool.cpp
+	JZMcpClient.h
+	JZMcpClient.cpp
 )
 
 convert_to_abs_paths(JZAGENT_SOURCES)

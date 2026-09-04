@@ -114,7 +114,14 @@ public:
     int maxToken = 100000;  // 单次任务 token 预算上限，超出触发 maxTokenError
 
     TokenStrategy tokenStrategy = TokenError;
+
+    // 附加到聊天请求体上的自定义字段, 用于对接各家私有参数
+    // (如 vLLM 的 chat_template_kwargs={"enable_thinking":false}、max_tokens 等),
+    // 与框架自己生成的字段同名时以本字段为准。
+    Json::Value extraBody;
 };
+
+class JZMcpClient;
 
 class JZAgent : public JZObject
 {
@@ -148,6 +155,11 @@ public:
     void addTool(JZAgentTool *tool);
     const JZAgentTool* tool(const std::string &name) const;
 
+    // 接入一个 MCP 客户端: agent 接管 client 的所有权, 并把它的远端工具登记进来。
+    // client 需先 startXxx() 成功(已连上并拉到工具列表); 与本地工具重名的远端工具会被跳过。
+    // 代理工具本身仍归 client 所有, client 销毁时会自动从本 agent 的工具表中移除。
+    void addMcp(JZMcpClient *client);
+
     bool streamEnabled() const;
     void setStreamEnabled(bool enabled);
 
@@ -174,6 +186,15 @@ protected:
     {
         int64_t requestTime;
     };
+
+    // 一个 MCP 客户端及其登记进来的代理工具(工具归 client 所有)
+    struct McpEntry
+    {
+        JZMcpClient *client = nullptr;
+        std::vector<JZAgentTool*> tools;
+    };
+
+    void onMcpDestroyed(JZObject *obj);
 
     std::string readFile(std::string filepath);
 
@@ -209,6 +230,7 @@ protected:
 
     std::string m_systemPrompt;
     std::vector<JZAgentTool*> m_tools;
+    std::vector<McpEntry> m_mcpEntries;
     std::vector<SkillDefine> m_skills;
     LLMContext m_context;
     int m_toolError;

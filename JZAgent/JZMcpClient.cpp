@@ -1,0 +1,768 @@
+#include "JZMcpClient.h"
+
+#include <cctype>
+#include <sstream>
+
+#include "JZApplication.h"
+#include "JZByteArray.h"
+#include "JZDebug.h"
+#include "JZElapsedTimer.h"
+#include "JZNetworkAccessManager.h"
+#include "JZNetworkReply.h"
+#include "JZNetworkRequest.h"
+#include "JZProcess.h"
+#include "JZStd.h"
+#include "JZThread.h"
+#include "JZTimer.h"
+#include "JZUrl.h"
+#include "JZWebSocket.h"
+
+// 协议版本: 与 JZMcpCore 一致, 只支持无状态的 2026-07-28(无 initialize 握手)
+static const char *kProtocolVersion = "2026-07-28";
+
+static const char *kMetaProtocolVersion = "io.modelcontextprotocol/protocolVersion";
+static const char *kMetaClientInfo = "io.modelcontextprotocol/clientInfo";
+
+static const int kClientError = -32000;      // 本地错误(超时 / 连接不可用)
+
+// ==================== JSON 工具 ====================
+static bool mcpParseJson(const std::string &text, Json::Value &out)
+{
+    if (text.empty())
+        return false;
+
+    Json::CharReaderBuilder builder;
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    std::string errs;
+    const char *begin = text.data();
+    const char *end = begin + text.size();
+    return reader->parse(begin, end, &out, &errs);
+}
+
+static std::string mcpWriteJson(const Json::Value &value)
+{
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    builder["emitUTF8"] = true;
+    return Json::writeString(builder, value);
+}
+
+static Json::Value mcpMakeError(int code, const std::string &message)
+{
+    Json::Value err(Json::objectValue);
+    err["code"] = code;
+    err["message"] = message;
+    return err;
+}
+
+// MCP 工具结果 -> 纯文本(content 数组里的 text 片段拼接)
+static std::string mcpContentToText(const Json::Value &result)
+{
+    const Json::Value &content = result["content"];
+    std::string text;
+    if (content.isArray())
+    {
+        for (const auto &c : content)
+        {
+            if (c.isObject() && c.get("type", "").asString() == "text")
+                text += c.get("text", "").asString();
+            else if (c.isString())
+                text += c.asString();
+            else
+                text += mcpWriteJson(c);
+            text += "\n";
+        }
+    }
+    else if (content.isString())
+    {
+        text = content.asString();
+    }
+    else if (result.isMember("structuredContent"))
+    {
+        text = mcpWriteJson(result["structuredContent"]);
+    }
+    else
+    {
+        text = mcpWriteJson(result);
+    }
+    return text;
+}
+
+// 远端 inputSchema(JSON Schema) -> JZAgent 的 ToolDefine
+static void schemaToToolDefine(const Json::Value &schema, ToolDefine &def)
+{
+    const Json::Value &props = schema["properties"];
+    if (props.isObject())
+    {
+        for (const std::string &key : props.getMemberNames())
+        {
+            ParamSchema p;
+            p.name = key;
+            if (p.fromJson(props[key]))
+                def.parameters.push_back(p);
+        }
+    }
+
+    const Json::Value &required = schema["required"];
+    if (required.isArray())
+    {
+        for (const auto &r : required)
+            def.required_parameters.push_back(r.asString());
+    }
+}
+
+// ==================== JZMcpClientTool ====================
+JZMcpClientTool::JZMcpClientTool(JZMcpClient *client)
+    : m_client(client)
+{
+}
+
+void JZMcpClientTool::call(const ToolCall &params)
+{
+    ToolCallResult result;
+    result.id = params.id;
+
+    if (!m_client || !m_client->isReady())
+    {
+        result.isOk = false;
+        result.result = "MCP 连接不可用: " + toolName();
+        sigResult.emit(result);
+        return;
+    }
+
+    // 远端工具名不保存在代理里, 每次从 client 的映射表查
+    std::string remote_name = m_client->remoteToolName(toolName());
+    if (remote_name.empty())
+    {
+        result.isOk = false;
+        result.result = "MCP 工具未登记: " + toolName();
+        sigResult.emit(result);
+        return;
+    }
+
+    // call 需要异步等待, 故保存一份请求上下文交给回调
+    ToolCall call = params;
+    m_client->callTool(remote_name, params.params,
+                       [this, call](bool ok, const Json::Value &value)
+    {
+        onCallDone(call, ok, value);
+    });
+}
+
+void JZMcpClientTool::onCallDone(const ToolCall &call, bool ok, const Json::Value &value)
+{
+    ToolCallResult result;
+    result.id = call.id;
+
+    if (!ok)
+    {
+        result.isOk = false;
+        result.result = "MCP 调用失败(" + toolName() + "): " + value.get("message", "").asString();
+    }
+    else
+    {
+        result.isOk = !value.get("isError", false).asBool();
+        result.result = mcpContentToText(value);
+    }
+
+    if (result.result.empty())
+        result.result = "(无输出)";
+
+    sigResult.emit(result);
+}
+
+// ==================== JZMcpClient ====================
+JZ_OBJECT_IMPL(JZMcpClient, JZObject)
+
+JZMcpClient::JZMcpClient(JZObject *parent)
+    : JZObject(parent)
+{
+}
+
+JZMcpClient::~JZMcpClient()
+{
+    close();
+}
+
+bool JZMcpClient::startProcess(const std::string &program, const std::vector<std::string> &arguments,
+                               int timeoutMs)
+{
+    if (!prepareConnect())
+        return false;
+
+    m_transport = Process;
+
+    std::string prog = program;
+#ifdef _WIN32
+    // CreateProcess 的命令行里, 含空格的可执行文件路径必须带引号
+    if (prog.find(' ') != std::string::npos && prog.front() != '"')
+        prog = "\"" + prog + "\"";
+#endif
+
+    m_process = new JZProcess(this);
+    connect(&m_process->sigReadyReadStandardOutput, this, &JZMcpClient::onProcessOutput);
+    connect(&m_process->sigFinished, this, [this](int code, JZProcess::ExitStatus)
+    {
+        setFailed("MCP 进程退出, 退出码 " + std::to_string(code));
+    });
+
+    if (!m_process->start(prog, arguments))
+    {
+        m_error = "启动 MCP 进程失败: " + program;
+        close();
+        return false;
+    }
+
+    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
+    {
+        close();
+        return false;
+    }
+    return true;
+}
+
+bool JZMcpClient::startHttp(const std::string &url, int timeoutMs)
+{
+    if (!prepareConnect())
+        return false;
+
+    m_transport = Http;
+    m_url = url;
+    m_net = new JZNetworkAccessManager(this);
+
+    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
+    {
+        close();
+        return false;
+    }
+    return true;
+}
+
+bool JZMcpClient::startWebSocket(const std::string &url, int timeoutMs)
+{
+    if (!prepareConnect())
+        return false;
+
+    m_transport = WebSocket;
+    m_url = url;
+
+    m_ws = new JZWebSocket(this);
+    connect(&m_ws->sigTextMessageReceived, this, &JZMcpClient::onWsMessage);
+    connect(&m_ws->sigDisconnected, this, [this]()
+    {
+        setFailed("MCP WebSocket 连接已断开");
+    });
+    connect(&m_ws->sigError, this, [this]()
+    {
+        setFailed("MCP WebSocket 连接错误");
+    });
+
+    m_ws->connectToHost(url);
+    if (!m_ws->waitForConnected(timeoutMs))
+    {
+        m_error = "连接 MCP WebSocket 失败: " + url;
+        close();
+        return false;
+    }
+
+    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
+    {
+        close();
+        return false;
+    }
+    return true;
+}
+
+void JZMcpClient::close()
+{
+    clearPending(true);
+    m_ready = false;
+    m_transport = None;
+    m_readBuffer.clear();
+
+    if (m_process)
+    {
+        m_process->killProcess();
+        m_process->deleteLater();
+        m_process = nullptr;
+    }
+    if (m_ws)
+    {
+        m_ws->disconnectFromHost();
+        m_ws->deleteLater();
+        m_ws = nullptr;
+    }
+    if (m_net)
+    {
+        m_net->deleteLater();
+        m_net = nullptr;
+    }
+}
+
+bool JZMcpClient::isReady() const
+{
+    return m_ready;
+}
+
+JZMcpClient::Transport JZMcpClient::transport() const
+{
+    return m_transport;
+}
+
+const std::string &JZMcpClient::errorString() const
+{
+    return m_error;
+}
+
+const std::vector<JZAgentTool*> &JZMcpClient::tools() const
+{
+    return m_tools;
+}
+
+JZAgentTool *JZMcpClient::tool(const std::string &name) const
+{
+    for (auto *t : m_tools)
+    {
+        if (t->toolName() == name)
+            return t;
+    }
+    return nullptr;
+}
+
+void JZMcpClient::setToolPrefix(const std::string &prefix)
+{
+    m_toolPrefix = prefix;
+}
+
+const std::string &JZMcpClient::toolPrefix() const
+{
+    return m_toolPrefix;
+}
+
+// 默认前缀: 服务器名 + "__", 只保留函数名合法字符 [A-Za-z0-9_-]
+std::string JZMcpClient::makeLocalName(const std::string &remoteName) const
+{
+    std::string prefix = m_toolPrefix;
+    if (prefix.empty())
+    {
+        std::string name = m_serverName.empty() ? std::string("mcp") : m_serverName;
+        for (char c : name)
+            prefix += (isalnum((unsigned char)c) || c == '_' || c == '-') ? c : '_';
+        prefix += "__";
+    }
+    return prefix + remoteName;
+}
+
+std::string JZMcpClient::remoteToolName(const std::string &localName) const
+{
+    auto it = m_remoteNames.find(localName);
+    return (it == m_remoteNames.end()) ? std::string() : it->second;
+}
+
+void JZMcpClient::setCallTimeout(int ms)
+{
+    m_callTimeoutMs = ms;
+}
+
+int JZMcpClient::callTimeout() const
+{
+    return m_callTimeoutMs;
+}
+
+std::string JZMcpClient::serverName() const
+{
+    return m_serverName;
+}
+
+std::string JZMcpClient::serverVersion() const
+{
+    return m_serverVersion;
+}
+
+// ==================== 请求 / 响应 ====================
+Json::Value JZMcpClient::makeRequest(const std::string &method, const Json::Value &params,
+                                     const std::string &protocolVersion)
+{
+    Json::Value req(Json::objectValue);
+    req["jsonrpc"] = "2.0";
+    req["method"] = method;
+    if (!params.isNull())
+        req["params"] = params;
+
+    // 2026-07-28: 协议版本与客户端身份走每请求的 _meta
+    Json::Value meta(Json::objectValue);
+    meta[kMetaProtocolVersion] = protocolVersion.empty() ? std::string(kProtocolVersion) : protocolVersion;
+    Json::Value clientInfo(Json::objectValue);
+    clientInfo["name"] = "JZMcpClient";
+    clientInfo["version"] = "1.0.0";
+    meta[kMetaClientInfo] = clientInfo;
+    req["_meta"] = meta;
+
+    req["id"] = m_nextId++;
+    return req;
+}
+
+int JZMcpClient::sendRequest(const std::string &method, const Json::Value &params, ReplyCallback cb,
+                             int timeoutMs, const std::string &protocolVersion)
+{
+    Json::Value req = makeRequest(method, params, protocolVersion);
+    int id = req["id"].asInt();
+
+    JZTimer *timer = new JZTimer(this);
+    timer->setSingleShot(true);
+    connect(&timer->sigTimeout, this, [this, id]()
+    {
+        auto it = m_pending.find(id);
+        if (it == m_pending.end())
+            return;
+
+        ReplyCallback cb = it->second.cb;
+        JZTimer *t = it->second.timer;
+        m_pending.erase(it);
+        if (t)
+        {
+            t->stop();
+            t->deleteLater();
+        }
+        if (cb)
+            cb(false, mcpMakeError(kClientError, "请求超时"));
+    });
+
+    Pending p;
+    p.cb = cb;
+    p.timer = timer;
+    m_pending[id] = p;
+    timer->start(timeoutMs);
+
+    if (!sendRaw(mcpWriteJson(req)))
+    {
+        finishPending(id, false, mcpMakeError(kClientError, "发送请求失败"));
+        return -1;
+    }
+    return id;
+}
+
+bool JZMcpClient::sendRaw(const std::string &text)
+{
+    if (m_transport == Process)
+    {
+        if (!m_process || m_process->state() == JZProcess::NotRunning)
+            return false;
+        // stdio: 一行一条 JSON-RPC
+        return m_process->write(str_toUtf8(text + "\n")) > 0;
+    }
+    else if (m_transport == Http)
+    {
+        JZNetworkRequest req;
+        req.setUrl(JZUrl(m_url));
+        req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
+        req.setRawHeader("Accept", "application/json, text/event-stream");
+
+        JZNetworkReply *reply = m_net->post(req, str_toUtf8(text));
+        if (!reply)
+            return false;
+
+        connect(&reply->sigFinished, this, [this, reply]() { onHttpReply(reply); });
+        reply->setTimeOut(m_callTimeoutMs + 5000);
+        return true;
+    }
+    else if (m_transport == WebSocket)
+    {
+        if (!m_ws || !m_ws->isConnected())
+            return false;
+        m_ws->sendTextMessage(text);
+        return true;
+    }
+
+    return false;
+}
+
+void JZMcpClient::onRecvText(const std::string &text)
+{
+    Json::Value msg;
+    if (mcpParseJson(text, msg))
+    {
+        handleMessage(msg);
+        return;
+    }
+
+    // Streamable HTTP 可能返回 SSE: 逐行取 data: 负载
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.compare(0, 5, "data:") != 0)
+            continue;
+
+        std::string payload = line.substr(5);
+        size_t p = payload.find_first_not_of(' ');
+        if (p != std::string::npos)
+            payload = payload.substr(p);
+        if (payload.empty() || payload == "[DONE]")
+            continue;
+
+        Json::Value value;
+        if (mcpParseJson(payload, value))
+            handleMessage(value);
+    }
+}
+
+void JZMcpClient::handleMessage(const Json::Value &msg)
+{
+    if (!msg.isObject())
+        return;
+
+    // 无 id 的是通知(如 notifications/...), 客户端目前不处理
+    if (!msg.isMember("id") || !msg["id"].isInt())
+        return;
+
+    int id = msg["id"].asInt();
+    if (msg.isMember("error"))
+        finishPending(id, false, msg["error"]);
+    else
+        finishPending(id, true, msg.isMember("result") ? msg["result"] : Json::Value(Json::objectValue));
+}
+
+void JZMcpClient::finishPending(int id, bool ok, const Json::Value &value)
+{
+    auto it = m_pending.find(id);
+    if (it == m_pending.end())
+        return;
+
+    ReplyCallback cb = it->second.cb;
+    JZTimer *timer = it->second.timer;
+    m_pending.erase(it);
+
+    if (timer)
+    {
+        timer->stop();
+        timer->deleteLater();
+    }
+    if (cb)
+        cb(ok, value);
+}
+
+void JZMcpClient::clearPending(bool notify)
+{
+    std::map<int, Pending> pending;
+    pending.swap(m_pending);
+    if (!notify)
+        return;
+
+    Json::Value err = mcpMakeError(kClientError, m_error.empty() ? std::string("连接已关闭") : m_error);
+    for (auto &kv : pending)
+    {
+        if (kv.second.timer)
+        {
+            kv.second.timer->stop();
+            kv.second.timer->deleteLater();
+        }
+        if (kv.second.cb)
+            kv.second.cb(false, err);
+    }
+}
+
+void JZMcpClient::setFailed(const std::string &error)
+{
+    if (m_error.empty())
+        m_error = error;
+    m_ready = false;
+    clearPending(true);
+}
+
+void JZMcpClient::pump(int ms)
+{
+    if (jzApp)
+        jzApp->processEvents();
+    JZThread::msleep(ms);
+}
+
+bool JZMcpClient::runSync(const std::string &method, const Json::Value &params, Json::Value &result,
+                          int timeoutMs)
+{
+    bool done = false;
+    bool ok = false;
+    Json::Value value;
+
+    int id = sendRequest(method, params, [&](bool o, const Json::Value &v)
+    {
+        done = true;
+        ok = o;
+        value = v;
+    }, timeoutMs);
+    if (id < 0)
+    {
+        m_error = "发送请求失败: " + method;
+        return false;
+    }
+
+    JZElapsedTimer timer;
+    timer.start();
+    while (!done && !timer.hasExpired(timeoutMs))
+        pump(5);
+
+    if (!done)
+    {
+        // 只撤销本次请求, 不影响其它在途调用
+        auto it = m_pending.find(id);
+        if (it != m_pending.end())
+        {
+            if (it->second.timer)
+            {
+                it->second.timer->stop();
+                it->second.timer->deleteLater();
+            }
+            m_pending.erase(it);
+        }
+        m_error = "等待响应超时: " + method;
+        return false;
+    }
+    if (!ok)
+    {
+        m_error = method + " 失败: " + value.get("message", "").asString() +
+                  " (code " + std::to_string(value.get("code", 0).asInt()) + ")";
+        return false;
+    }
+
+    result = value;
+    return true;
+}
+
+bool JZMcpClient::prepareConnect()
+{
+    close();
+    m_error.clear();
+
+    // 三种传输都靠 JZApplication 的事件循环驱动(进程读管道 / HTTP / WebSocket)
+    if (!jzApp)
+    {
+        m_error = "MCP 客户端依赖事件循环, 请先创建 JZApplication";
+        return false;
+    }
+    return true;
+}
+
+// 2026-07-28 无状态协议: 不做 initialize 握手, 只用 server/discover 探测服务器身份,
+// 协议版本随每个请求的 _meta 携带。不支持需要握手的旧版服务器。
+bool JZMcpClient::handshake(int timeoutMs)
+{
+    Json::Value result;
+    if (!runSync("server/discover", Json::Value(Json::objectValue), result, timeoutMs))
+        return false;
+
+    m_protocolVersion = result.get("protocolVersion", kProtocolVersion).asString();
+    if (result.isMember("serverInfo"))
+    {
+        m_serverName = result["serverInfo"].get("name", "").asString();
+        m_serverVersion = result["serverInfo"].get("version", "").asString();
+    }
+    return true;
+}
+
+bool JZMcpClient::fetchTools(int timeoutMs)
+{
+    Json::Value result;
+    if (!runSync("tools/list", Json::Value(Json::objectValue), result, timeoutMs))
+        return false;
+
+    const Json::Value &tools = result["tools"];
+    if (!tools.isArray())
+    {
+        m_error = "tools/list 返回格式错误";
+        return false;
+    }
+
+    // 重连: 清掉上一批代理工具与名字映射(此时不应有在途调用)
+    for (auto *t : m_tools)
+        delete t;
+    m_tools.clear();
+    m_remoteNames.clear();
+
+    // 描述里标注来源, 便于大模型区分同名/近似的工具
+    std::string source_tag = "[mcp:" + (m_serverName.empty() ? std::string("mcp") : m_serverName) + "] ";
+
+    for (const auto &t : tools)
+    {
+        std::string name = t.get("name", "").asString();
+        if (name.empty())
+            continue;
+
+        std::string local_name = makeLocalName(name);
+
+        ToolDefine def;
+        def.name = local_name;
+        def.description = source_tag + t.get("description", "").asString();
+        schemaToToolDefine(t.get("inputSchema", Json::Value(Json::objectValue)), def);
+
+        JZMcpClientTool *tool = new JZMcpClientTool(this);
+        tool->setParent(this);
+        tool->setToolDefine(def);
+        m_tools.push_back(tool);
+
+        m_remoteNames[local_name] = name;
+    }
+
+    m_ready = true;
+    return true;
+}
+
+// ==================== 传输层事件 ====================
+void JZMcpClient::onProcessOutput()
+{
+    if (!m_process)
+        return;
+
+    JZByteArray data = m_process->readAllStandardOutput();
+    if (data.isEmpty())
+        return;
+
+    m_readBuffer.append(data.data(), data.size());
+
+    size_t pos;
+    while ((pos = m_readBuffer.find('\n')) != std::string::npos)
+    {
+        std::string line = m_readBuffer.substr(0, pos);
+        m_readBuffer.erase(0, pos + 1);
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (!line.empty())
+            onRecvText(line);
+    }
+}
+
+void JZMcpClient::onHttpReply(JZNetworkReply *reply)
+{
+    reply->deleteLater();
+
+    if (reply->error() != JZNetworkReply::NoError)
+    {
+        setFailed("HTTP 请求失败: " + reply->errorString());
+        return;
+    }
+
+    onRecvText(str_fromUtf8(reply->readAll()));
+}
+
+void JZMcpClient::onWsMessage(const std::string &text)
+{
+    onRecvText(text);
+}
+
+// ==================== tools/call ====================
+void JZMcpClient::callTool(const std::string &name, const Json::Value &args, ReplyCallback cb)
+{
+    if (!m_ready)
+    {
+        if (cb)
+            cb(false, mcpMakeError(kClientError, "MCP 连接不可用"));
+        return;
+    }
+
+    Json::Value params(Json::objectValue);
+    params["name"] = name;
+    params["arguments"] = args.isNull() ? Json::Value(Json::objectValue) : args;
+
+    sendRequest("tools/call", params, cb, m_callTimeoutMs, m_protocolVersion);
+}

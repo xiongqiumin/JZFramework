@@ -5,6 +5,7 @@
 
 #include "JZApplication.h"
 #include "JZDateTime.h"
+#include "JZMcpClient.h"
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZElapsedTimer.h"
@@ -318,6 +319,13 @@ void JZAgent::llmRequest()
         request_body["tool_choice"] = "auto";
     }
 
+    // 调用方自定义字段(各家私有参数)最后合并, 允许覆盖上面的默认值
+    if (m_config.extraBody.isObject())
+    {
+        for (const std::string &key : m_config.extraBody.getMemberNames())
+            request_body[key] = m_config.extraBody[key];
+    }
+
     JZNetworkRequest req;
     req.setUrl(JZUrl(m_config.modelUrl));
     req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
@@ -549,6 +557,56 @@ void JZAgent::addTool(JZAgentTool *tool)
     tool->setParent(this);
     connect(&tool->sigResult, this, &JZAgent::onToolCallResult);
     m_tools.push_back(tool);
+}
+
+void JZAgent::addMcp(JZMcpClient *client)
+{
+    JZ_ASSERT(client->parent() == nullptr);
+    // 客户端及其代理工具都归本 agent 所有
+    client->setParent(this);
+    connect(&client->sigDestroyed, this, &JZAgent::onMcpDestroyed);
+
+    McpEntry entry;
+    entry.client = client;
+    for (auto *tool : client->tools())
+    {
+        if (getTool(tool->toolName()))
+        {
+            jzWarning() << "mcp tool name conflict, skipped:" << tool->toolName();
+            continue;
+        }
+
+        // 工具归 client 所有, 这里只登记调用入口
+        connect(&tool->sigResult, this, &JZAgent::onToolCallResult);
+        m_tools.push_back(tool);
+        entry.tools.push_back(tool);
+    }
+    m_mcpEntries.push_back(entry);
+}
+
+// client 被单独销毁时(其代理工具已随之析构), 把残留指针从工具表里摘掉。
+// 注意: 此时不能再访问 client 的任何成员, 只能比对指针。
+void JZAgent::onMcpDestroyed(JZObject *obj)
+{
+    for (auto it = m_mcpEntries.begin(); it != m_mcpEntries.end(); ++it)
+    {
+        if (it->client != obj)
+            continue;
+
+        for (auto *tool : it->tools)
+        {
+            for (auto ti = m_tools.begin(); ti != m_tools.end(); ++ti)
+            {
+                if (*ti == tool)
+                {
+                    m_tools.erase(ti);
+                    break;
+                }
+            }
+        }
+        m_mcpEntries.erase(it);
+        return;
+    }
 }
 
 const JZAgentTool* JZAgent::tool(const std::string &name) const

@@ -198,6 +198,15 @@ void JZCodeAgent::buildAgent()
     addTool(new JZReadFileTool());
     addTool(new JZSearchCodeTool());
     addTool(new JZModifyCodeTool());
+
+    // 通用命令工具: 命令完全由 command 参数给出, 默认超时 5 分钟
+    auto *cmd_tool = new JZCommandTool();
+    cmd_tool->setup("run_command",
+                    "在工作区里执行一条命令行命令（编译、运行程序、跑脚本等都可以）。" \
+                    "command 给出完整命令，如 cmake --build build、build/Debug/demo.exe、python test.py。" \
+                    "程序必须能自行结束，超时会被强制终止。返回退出码、耗时与 stdout/stderr。",
+                    string(), 300000);
+    addTool(cmd_tool);
 }
 
 void JZCodeAgent::abortTools()
@@ -234,17 +243,19 @@ string JZCodeAgent::buildSystemPrompt() const
     text += "根目录: " + m_codeConfig.workspace + "\n";
     text += "所有路径参数都使用相对于该目录的相对路径（根目录用 \".\" 表示）。" \
             "绝对路径必须位于工作区之内，越界会被拒绝。\n";
+
     text += "\n## 可用工具\n";
     text += "- list_dir    列出目录内容，目录名以 \"/\" 结尾\n";
     text += "- read_file   读取文本文件，可按行号范围读取，返回内容带行号\n";
     text += "- search_code 在代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\"\n";
     text += "- modify_code 修改或新建文件（old_str 留空表示用 new_str 覆盖整个文件）\n";
+    text += "- run_command 执行一条命令行命令，返回退出码与 stdout/stderr（默认超时 5 分钟）\n";
     text += "\n";
     text += "\n## 工作原则\n";
     text += "1. 修改代码之前必须先用 read_file 或 search_code 确认原文，严禁凭记忆猜测文件内容。\n";
     text += "2. modify_code 的 old_str 必须与文件中的内容逐字符一致（含缩进与换行），且默认要求唯一匹配；\n";
     text += "   若匹配到多处，请补充更多上下文使其唯一，或显式设置 replace_all=true。\n";
-    text += "3. 每次修改之后用 build 编译验证，必要时再用 run 运行验证，直到没有错误为止。\n";
+    text += "3. 每次修改之后用 run_command 编译验证，必要时再运行程序验证，直到没有错误为止（编译统一用 cmake）。\n";
     text += "4. 编译或运行报错时，先从输出里定位到具体文件与行号再动手改，不要盲目试错。\n";
     text += "5. 一次只做最小必要的改动，不要顺手重构无关代码。\n";
     text += "6. 任务完成后用简洁的中文总结：改了哪些文件、编译与运行的结果如何。\n";

@@ -897,8 +897,9 @@ void JZCommandTool::setup(const string &name, const string &desc, const string &
     def.name = name;
     def.description = desc;
     def.parameters.push_back(makeParam("command", STRING,
-                                       "要执行的完整命令；留空则使用设置中的默认命令(" +
-                                           (defaultCommand.empty() ? "未配置" : defaultCommand) + ")"));
+                                       defaultCommand.empty()
+                                           ? string("要执行的完整命令（必填），如 cmake --build build 或 build/Debug/demo.exe")
+                                           : ("要执行的完整命令；留空则使用默认命令(" + defaultCommand + ")")));
     def.parameters.push_back(makeParam("work_dir", STRING, "工作目录，相对工作区根目录，默认工作区根目录"));
     def.parameters.push_back(makeParam("timeout", NUMBER, "超时时间(毫秒)，默认 " + to_string(timeoutMs / 1000) + " 秒"));
     setToolDefine(def);

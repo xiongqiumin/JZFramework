@@ -416,7 +416,7 @@ void GameRunner::finish(const string &reason)
     const FiveChessRoom *r = curRoom();
     if (r)
     {
-        jzInfo() << "最终棋盘:\n" << r->board.toText();
+        jzInfo().noquote() << "最终棋盘:\n" << r->board.toText();
         jzInfo() << "共 " << r->moveCount << " 手, 结果:" << FiveChessHall::resultName(r->result);
         jzInfo() << "黑方:" << m_players[FC_COLOR_BLACK].name
                  << " | 白方:" << m_players[FC_COLOR_WHITE].name;

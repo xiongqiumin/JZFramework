@@ -58,12 +58,25 @@ bool JZCodeAgent::isBusy() const
     return m_busy;
 }
 
+bool JZCodeAgent::waitingReply() const
+{
+    return m_waiting;
+}
+
 void JZCodeAgent::request(const string &text)
 {
-    if (m_busy || text.empty())
+    if (text.empty())
         return;
 
     addLog("user", text);
+    if (m_busy)
+    {
+        // 正在运行: 指令缓存到自己队列, 等上一步发完后由 onFinished 继续发送
+        m_pendingQueue.push_back(text);
+        m_waiting = true;
+        return;
+    }
+
     m_busy = true;
     m_agent->request(text);
 }
@@ -75,8 +88,12 @@ void JZCodeAgent::stop()
 
     m_stopping = true;
     abortTools();
-    m_agent->stop();
+    m_agent->stop();   // 同步触发 onError/onFinished, 二者均因 m_stopping 提前返回
     m_stopping = false;
+
+    // 丢弃缓存的指令, 与"停止当前任务"语义一致
+    m_pendingQueue.clear();
+    m_waiting = false;
     m_busy = false;
 
     addLog("info", "已停止当前任务");
@@ -88,6 +105,8 @@ void JZCodeAgent::stop()
 void JZCodeAgent::clearHistory()
 {
     abortTools();
+    m_pendingQueue.clear();
+    m_waiting = false;
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
@@ -279,6 +298,10 @@ string JZCodeAgent::buildSystemPrompt() const
 void JZCodeAgent::onReply(const string &text)
 {
     addLog("delta", text);
+
+    // 收到任何文本: 当前这条已开始回复; 若队列已空则不再等待
+    if (m_pendingQueue.empty())
+        m_waiting = false;
 }
 
 void JZCodeAgent::onError(const string &text)
@@ -287,15 +310,36 @@ void JZCodeAgent::onError(const string &text)
         return;
 
     addLog("error", text);
+    // busy 终态交给随后同步触发的 onFinished 统一裁决
     m_busy = false;
 }
 
 void JZCodeAgent::onFinished()
 {
-    m_busy = false;
+    if (m_stopping)
+        return;
+
+    if (!m_pendingQueue.empty())
+    {
+        // 上一步已发完: 取出缓存的第一条继续发送, 期间 busy 保持占用
+        string next = m_pendingQueue.front();
+        m_pendingQueue.pop_front();
+        m_busy = true;
+        m_waiting = true;
+        m_agent->request(next);
+    }
+    else
+    {
+        m_waiting = false;
+        m_busy = false;
+    }
 }
 
 void JZCodeAgent::onToolLog(const string &type, const string &name, const string &text)
 {
     addLog(type == "call" ? "tool_call" : "tool_result", text, name);
+
+    // 工具已开始执行也算"有输出", 若队列已空则结束等待提示
+    if (m_pendingQueue.empty())
+        m_waiting = false;
 }

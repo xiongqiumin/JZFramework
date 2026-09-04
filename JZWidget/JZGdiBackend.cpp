@@ -26,10 +26,31 @@ namespace Gdiplus {
 
 #include <gdiplus.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 using namespace Gdiplus;
+
+namespace {
+
+// 全框架文本测量/绘制的**唯一** StringFormat, 语义对齐 Qt QFontMetrics:
+// 空格 (含尾随空格/纯空格) 一律按字形计宽并绘制。
+//   - GenericTypographic: 紧贴字形, 无 GenericDefault 的 ~1/6em 内边距 (居中/光标定位必须);
+//   - MeasureTrailingSpaces: GDI+ 默认会忽略字符串末尾的空格 (测 0 宽/不绘制),
+//     与 Qt 语义相悖, 必须显式补上。
+// 测量 (GdiFontEngine::textWidth) 与绘制 (Text 任务) 共用这一份, 不允许出现第二种
+// "忽略尾随空格"的格式, 否则光标/点击定位与实际绘制会错开。
+// 注: StringFormat 拷贝构造是 protected, 只能从 GenericTypographic() 的共享单例指针
+// clone 出新实例再改 flag (绝不改单例本身), 故这里返回 unique_ptr 由调用方持有。
+std::unique_ptr<StringFormat> jzTextFormat()
+{
+    auto fmt = std::make_unique<StringFormat>(StringFormat::GenericTypographic());
+    fmt->SetFormatFlags(fmt->GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
+    return fmt;
+}
+
+} // namespace
 
 // ==================== GDI+ 进程级生命周期 (多窗口共享, 引用计数) ====================
 namespace {
@@ -171,9 +192,10 @@ public:
         Font font(probeFamily(pixelSize), (REAL)pixelSize, FontStyleRegular, UnitPixel);
         RectF layout(0.0f, 0.0f, 1000000.0f, (REAL)(pixelSize * 4));
         RectF bounds;
-        // GenericTypographic: 紧贴字形无外边距, 适合做居中对齐
-        m_graphics->MeasureString(wtext.c_str(), (INT)wtext.size(), &font, layout,
-                                  StringFormat::GenericTypographic(), &bounds);
+        // 统一 Qt 语义的文本格式 (见 jzTextFormat): 空格照常计宽,
+        // 与绘制侧 (JZTextTask) 严格一致, 保证光标/滚动/点击定位不偏。
+        std::unique_ptr<StringFormat> fmt = jzTextFormat();
+        m_graphics->MeasureString(wtext.c_str(), (INT)wtext.size(), &font, layout, fmt.get(), &bounds);
         return (int)(bounds.Width + 0.5f);
     }
 
@@ -491,13 +513,11 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
                 }
                 Font font(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
                 SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));
-                // 绘制与测量 (GdiFontEngine::textWidth) 必须用同一 StringFormat:
-                // 默认格式在文字上下留 ~1/6 em 的内边距, 会让"测出的光标位置"与
-                // "实际画出来的文字"错开 (输入框光标不贴字 / 垂直居中偏低)。
-                // GenericTypographic 紧贴字形, 两者完全一致。
+                // 统一 Qt 语义的文本格式 (见 jzTextFormat): 与测量侧
+                // (GdiFontEngine::textWidth) 严格一致, 空格照常绘制。
+                std::unique_ptr<StringFormat> fmt = jzTextFormat();
                 g.DrawString(wtext.c_str(), (int)wtext.size(), &font,
-                             PointF(t->area.x() * s, t->area.y() * s),
-                             StringFormat::GenericTypographic(), &br);
+                             PointF(t->area.x() * s, t->area.y() * s), fmt.get(), &br);
             }
             break;
         }

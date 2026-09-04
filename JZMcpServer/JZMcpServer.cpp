@@ -115,10 +115,15 @@ bool JZMcpServer::listenHttp(int port, const std::string& path)
 
 bool JZMcpServer::listenWebSocket(int port)
 {
+    return listenWebSocket("0.0.0.0", port);    
+}
+
+bool JZMcpServer::listenWebSocket(std::string ip, int port)
+{
     if (!m_ws)
         m_ws = new JZWebSocketServer(this);
 
-    if (!m_ws->listen(port))
+    if (!m_ws->listen(ip, port))
     {
         jzError() << "JZMcpServer(WebSocket) failed to listen on port" << port;
         return false;
@@ -126,7 +131,7 @@ bool JZMcpServer::listenWebSocket(int port)
 
     connect(&m_ws->sigAccept, this, &JZMcpServer::onWsAccept);
 
-    jzInfo() << "JZMcpServer(WebSocket) listening on ws://0.0.0.0:" << port;
+    jzInfo().nospace() << "JZMcpServer(WebSocket) listening on ws://" + ip + ":" + std::to_string(port);
     return true;
 }
 

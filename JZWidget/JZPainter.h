@@ -46,9 +46,14 @@ public:
     void setClipLocal(const JZRect& local);
 
     void drawLine(int x1, int y1, int x2, int y2);
+    // 描边矩形/圆角矩形 (用当前 pen), 语义对齐 Qt QPainter::drawRect:
+    // 边框恰好包住与 fillRect(x,y,w,h) 相同的像素矩形外圈 [x..x+w-1]×[y..y+h-1],
+    // 线条整体落在矩形内 (几何按半笔宽内缩), 因此不会越过控件 clip 造成右/下缺边。
     void drawRect(int x, int y, int w, int h);
     void drawRoundRect(int x, int y, int w, int h, int radius);
 
+    // 填充矩形 (对齐 Qt QPainter::fillRect): 填充像素 [x..x+w-1]×[y..y+h-1],
+    // 与 JZRect 闭区间语义 (right=x+w-1) 一致。同参数下 drawRect 描其外圈边框。
     void fillRect(const JZRect &rc, const JZColor& color);
     void fillRect(int x, int y, int w, int h, const JZColor& color);
 

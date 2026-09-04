@@ -1,7 +1,7 @@
 #ifndef JZ_CODE_AGENT_MAINWINDOW_H_
 #define JZ_CODE_AGENT_MAINWINDOW_H_
 
-#include "JZWindow.h"
+#include "JZMainWindow.h"
 #include "JZDialog.h"
 #include "JZKeyEvent.h"
 #include "JZTextEdit.h"
@@ -42,7 +42,7 @@ struct AppConfig
     std::string proxyPassword;
 };
 
-// 多行输入：Ctrl+Enter 发送；发送按钮嵌入输入框内部左下角（忙碌时变"停止"）
+// 多行输入：Ctrl+Enter 发送；发送按钮用 selfLayout 锚在输入框内部右下角（忙碌时变"停止"）
 class InputEdit : public JZTextEdit
 {
     JZ_OBJECT_DECLARE(InputEdit)
@@ -54,7 +54,6 @@ public:
 
 protected:
     void keyPressEvent(JZKeyEvent* event) override;
-    void resizeEvent(JZResizeEvent* event) override;
 
 private:
     void onSendClicked();
@@ -84,9 +83,10 @@ protected:
     JZPushButton* m_wsBrowseBtn = nullptr;
 };
 
-// 主窗口：菜单栏 + 状态/工具条(清空、设置) + ChatView + 底部输入框(内嵌发送按钮)，
+// 主窗口：直接继承 JZMainWindow 骨架。菜单栏经 addMenuBar 置顶，
+// 内容区(状态/工具条 + ChatView + 底部输入框)整体作为中央控件 setCentralWidget 挂载。
 // 复用 JZCodeAgent 的本地代码助手能力
-class MainWindow : public JZWindow
+class MainWindow : public JZMainWindow
 {
     JZ_OBJECT_DECLARE(MainWindow)
 public:

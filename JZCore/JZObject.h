@@ -85,6 +85,17 @@ public:
     JZObject * parent() const;    
     const std::vector<JZObject *> &children() const;
 
+    // ---- 事件过滤 (Qt 风格) ----
+    // installEventFilter: 把 filterObj 注册为本对象的过滤器。之后本对象收到任何
+    //   事件 (同步 sendEvent / 异步队列 / 定时器) 时, 会先按注册顺序调用每个
+    //   过滤器 filterObj->eventFilter(this, event); 任一返回 true 则事件被拦截,
+    //   不再进入本对象自身的 event()/xxxEvent()。
+    //   - 同一 filter 重复安装被忽略 (列表内只保留一份)。
+    //   - 过滤器对象必须活得比本对象久 (或由本对象先析构); filter 先析构会留下
+    //     悬垂指针, 使用方须先 removeEventFilter。
+    void installEventFilter(JZObject *filterObj);
+    void removeEventFilter(JZObject *filterObj);
+
     void deleteLater();    
 
 jz_signals:
@@ -103,9 +114,8 @@ protected:
     int startTimer(int interval);
     void killTimer(int id);
 
-    // 事件分发入口 (Qt 风格 public): 窗口/显示设备直接向对象投递 JZEvent 时调用
     virtual bool event(JZEvent *e);
-    virtual bool eventFilter(JZEvent *e);
+    virtual bool eventFilter(JZObject *watched, JZEvent *event);
     virtual void timerEvent(JZTimerEvent *event);
     virtual void customEvent(JZEvent *event);    
 
@@ -125,6 +135,13 @@ protected:
     std::unique_ptr<std::map<std::string, JZVariant>> m_properties;
 
 private:
+    // 依次询问所有事件过滤器 (拷贝遍历, 允许回调中 install/remove); 
+    // 任一返回 true 则拦截, 返回 true。仅 JZApplication::sendEvent 与
+    // JZThread::notify 这两个"事件进入对象"的统一入口调用。
+    bool applyEventFilters(JZEvent *event);
+
+    std::vector<JZObject*> m_eventFilters;
+
     static JZObjectMeta staticMeta;
 };
 

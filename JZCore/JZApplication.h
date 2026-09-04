@@ -57,7 +57,10 @@ public:
     void notifyWindowClosed(JZWindow* w);
 #endif
 
+    // 同步派发: 同线程经目标线程 notify (先过对象事件过滤器链, 拦截则不派发);
+    // 跨线程投递到目标线程并阻塞等待处理完。
     void sendEvent(JZObject *object, JZEvent *event);
+    // 异步投递: 立即返回, 目标线程事件循环取出后同样经 notify/过滤器。
     void postEvent(JZObject *object, JZEvent *event);    
 
 protected:    

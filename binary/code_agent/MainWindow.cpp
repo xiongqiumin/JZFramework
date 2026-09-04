@@ -125,7 +125,13 @@ InputEdit::InputEdit(JZWidget* parent)
     // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
     const int btnW = 70, btnH = 30;
     m_sendBtn = new JZPushButton(this, btnW, btnH, "发送");
-    m_sendBtn->move(width() - m_sendBtn->width() - 8, height() - btnH - 6);
+
+    // selfLayout 锚定右下角: 右/下锚点下正 dx/dy 向内取反 = 距右/底边距 8/6,
+    // 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
+    auto* layout = new JZSelfLayout();
+    layout->addWidget(m_sendBtn, JZSelfLayout::BottomRight, 8, 6);
+    setLayout(layout);
+
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
 
     setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
@@ -142,13 +148,6 @@ void InputEdit::keyPressEvent(JZKeyEvent* event)
     // 组字期间 Ctrl+Enter 也要发送 (composing 判定在基类内部)
     // 已上屏内容之外: 转交抽象基类处理 (含多行回车换行)
     JZAbstractTextEdit::keyPressEvent(event);
-}
-
-void InputEdit::resizeEvent(JZResizeEvent* event)
-{
-    JZAbstractTextEdit::resizeEvent(event);
-    // 随输入框尺寸变化把按钮钉在左下角
-    m_sendBtn->move(width() - m_sendBtn->width() - 8, height() - m_sendBtn->height() - 6);
 }
 
 void InputEdit::onSendClicked()
@@ -237,7 +236,7 @@ void SettingsDialog::onAccept()
 
 // ==================== MainWindow ====================
 MainWindow::MainWindow(JZWidget* parent)
-    : JZWindow(parent)
+    : JZMainWindow(parent)
 {
     resize(900, 640);
     setTitle("JZCodeAgent");
@@ -261,16 +260,19 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    // 菜单栏: 顶部 File 菜单, 目前只提供"打开目录"(切换工作区)
+    // 菜单栏: 顶部 File 菜单, 目前只提供"打开目录"(切换工作区)。
+    // addMenuBar 会把它插到主窗口第 0 项并自动 reparent。
     m_menuBar = new JZMenuBar(this);
     JZMenu* fileMenu = m_menuBar->addMenu("文件");
     fileMenu->addAction("打开目录", [this]() { onOpenDirectory(); });
+    addMenuBar(m_menuBar);
 
-    m_chatView = new ChatView(this);
+    // 中央区: 工具条 + 聊天视图 + 底部输入框, 整体作为中央控件挂载。
+    // 注意: JZLayout::addWidget 不会自动 reparent, 放进容器布局的子控件父必须就是该容器。
+    JZWidget* central = new JZWidget(this);
 
     // ChatView 上方的工具条: 左侧状态信息, 右侧 [清空][设置]
-    // 注意: JZLayout::addWidget 不会自动 reparent, 放进容器布局的子控件父必须就是该容器。
-    JZWidget* topBar = new JZWidget(this);
+    JZWidget* topBar = new JZWidget(central);
     topBar->setFixedHeight(32);
     JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
     m_statusLabel = new JZLabel(topBar);
@@ -282,19 +284,22 @@ void MainWindow::setupUi()
     topLayout->addWidget(m_settingsBtn, 0);
     topBar->setLayout(topLayout);
 
-    // 底部输入区: 只有多行输入框(固定高度), 发送按钮由 InputEdit 内嵌在左下角,
-    // InputEdit::resizeEvent 里随宽度/高度变化自动调整按钮位置。
-    m_inputEdit = new InputEdit(this);
+    m_chatView = new ChatView(central);
+
+    // 底部输入区: 只有多行输入框(固定高度), 发送按钮由 InputEdit 用 selfLayout
+    // 锚定在右下角, 输入框尺寸变化时自动重排。
+    m_inputEdit = new InputEdit(central);
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setFixedHeight(104);
     m_inputEdit->setPlaceholderText("输入任务，回车换行；Ctrl+Enter 或点[发送]");
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
-    mainLayout->addWidget(m_menuBar, 0);
     mainLayout->addWidget(topBar, 0);
     mainLayout->addWidget(m_chatView, 1);
     mainLayout->addWidget(m_inputEdit, 0);
-    setLayout(mainLayout);
+    central->setLayout(mainLayout);
+
+    setCentralWidget(central);
 
     connect(&m_inputEdit->sendButton()->sigClicked, this, &MainWindow::onSendButton);
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
@@ -588,4 +593,4 @@ void MainWindow::onPoll()
 
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
 JZ_OBJECT_IMPL(SettingsDialog, JZDialog)
-JZ_OBJECT_IMPL(MainWindow, JZWindow)
+JZ_OBJECT_IMPL(MainWindow, JZMainWindow)

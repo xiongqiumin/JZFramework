@@ -26,6 +26,7 @@ namespace Gdiplus {
 
 #include <gdiplus.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -368,6 +369,11 @@ bool JZGdiBackend::createMemBitmap(unsigned physicalW, unsigned physicalH)
         releaseMemBitmap();
         return false;
     }
+    // CreateDIBSection 的新内存未初始化。整窗渲染虽会全量重画, 但逻辑 rect*scale
+    // 与客户区物理尺寸存在取整差时最外圈像素可能无人绘制 —— 预填白色兜底,
+    // 杜绝边缘露出未初始化内存 (黑/杂色/透明花边)。
+    if (bits)
+        memset(bits, 0xFF, (size_t)physicalW * physicalH * 4);
     m_oldBmp = (void*)SelectObject((HDC)m_memDC, (HBITMAP)m_memBmp);
     return true;
 }
@@ -384,6 +390,10 @@ void JZGdiBackend::releaseMemBitmap()
 void JZGdiBackend::resizeSwapChain(unsigned physicalW, unsigned physicalH)
 {
     if (physicalW == 0 || physicalH == 0)
+        return;
+    // 尺寸没变 (拖动过程中的冗余 WM_SIZE 等) 就不重建位图:
+    // 避免每帧重复分配 DIB + 清空内容 (拖动 resize 时同步渲染本就要尽量轻)。
+    if (physicalW == m_physW && physicalH == m_physH)
         return;
     m_physW = physicalW;
     m_physH = physicalH;
@@ -510,15 +520,30 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
         }
         case JZDrawTask::Border: {
             auto* t = static_cast<JZBorderTask*>(task.get());
+            float pw = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+            if (pw <= 0.0f)
+                break;
             RectF r = toGdiRect(t->area, s);
-            float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
-            Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
+            Pen pen(toGdiColor(cur.pen.color(), t->opacity), pw);
+
+            // 描边几何须向内缩半笔宽, 与 Qt drawRect 语义对齐:
+            //   fillRect(x,y,w,h) 填充像素 [x..x+w-1]×[y..y+h-1] (RectF 外缘 = 像素右/下开口);
+            //   drawRect/drawRoundRect 描这条像素矩形的外圈边框, 线条中心应落在像素格线上。
+            // 若不内缩而把笔心放在控件外缘 (矩形几何边界), 则右/下侧有半笔宽越出控件,
+            // 被绘制流 clip (脏区∩控件 rect) 整段裁掉 —— 表现为边框右/下缺边、四边半透明淡边。
+            // 内缩半笔宽后: 1px 笔 → 中心恰在像素格线, 抗锯齿整像素满覆盖; 2px 笔 (如
+            // lineEdit 焦点高亮) → 恰好铺满最外两圈像素, 四边完整且与填充外缘贴合。
+            float half = pw * 0.5f;
+            half = std::min(half, std::min(r.Width, r.Height) * 0.5f); // 过窄时防几何翻负
+            RectF ir(r.X + half, r.Y + half,
+                     r.Width - 2.0f * half, r.Height - 2.0f * half);
             if (t->radius > 0) {
+                // 半径同步减 half: 内缩后圆弧圆心与 fillRect 圆角填充完全重合, 描边紧贴外缘
                 GraphicsPath p;
-                addRoundRectPath(p, r, t->radius * s);
+                addRoundRectPath(p, ir, std::max(0.0f, t->radius * s - half));
                 g.DrawPath(&pen, &p);
             } else {
-                g.DrawRectangle(&pen, r);
+                g.DrawRectangle(&pen, ir);
             }
             break;
         }

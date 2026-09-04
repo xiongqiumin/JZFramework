@@ -267,7 +267,41 @@ bool JZObject::event(JZEvent *e)
     return true;
 }
 
-bool JZObject::eventFilter(JZEvent *e)
+void JZObject::installEventFilter(JZObject *filterObj)
+{
+    if (!filterObj)
+        return;
+    for (JZObject* f : m_eventFilters)
+        if (f == filterObj)
+            return;   // 已安装, 忽略重复
+    m_eventFilters.push_back(filterObj);
+}
+
+void JZObject::removeEventFilter(JZObject *filterObj)
+{
+    for (auto it = m_eventFilters.begin(); it != m_eventFilters.end(); ++it)
+    {
+        if (*it == filterObj)
+        {
+            m_eventFilters.erase(it);
+            return;
+        }
+    }
+}
+
+bool JZObject::applyEventFilters(JZEvent *event)
+{
+    // 拷贝遍历: 允许过滤器回调里 install/remove, 原列表变化不影响本轮迭代
+    const std::vector<JZObject*> filters = m_eventFilters;
+    for (JZObject* f : filters)
+    {
+        if (f && f->eventFilter(this, event))
+            return true;   // 拦截: 事件不再进入本对象
+    }
+    return false;
+}
+
+bool JZObject::eventFilter(JZObject* watched, JZEvent* event)
 {
     return false;
 }

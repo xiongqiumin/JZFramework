@@ -111,7 +111,7 @@ public:
     std::string modelName;
     std::string modelToken;
     
-    int netTimeout = 30000; // 网络请求超时（毫秒），默认 30s
+    int netTimeout = 120 * 1000; // 网络请求超时（毫秒），默认 30s
 
     int maxRounds = 100;
     int maxToolError = 3;   // 工具连续失败上限，超过则终止任务

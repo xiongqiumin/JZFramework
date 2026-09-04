@@ -470,7 +470,7 @@ void JZThread::processTimers()
         JZTimerEvent timer_event(t.id);
         JZ_ASSERT(t.object->thread() == this);
 
-        t.object->event(&timer_event);
+        notify(t.object, &timer_event);   // 统一入口: 定时器事件同样过过滤器链
 
         int idx = indexOfTimer(t.object, t.id);
         if (idx >= 0)
@@ -501,6 +501,10 @@ void JZThread::threadMoveWarning(JZObject *object)
 
 void JZThread::notify(JZObject *object, JZEvent *event)
 {
+    // 事件进入对象的统一咽喉 (sendEvent 同步 / 异步队列 / 定时器都汇聚于此):
+    // 先过对象的事件过滤器链, 被拦截则不再派发到 object->event()。
+    if (object->applyEventFilters(event))
+        return;
     object->event(event);
 }
 

@@ -215,9 +215,11 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         if (wParam != SIZE_MINIMIZED && lParam != 0) {
             unsigned physW = LOWORD(lParam);
             unsigned physH = HIWORD(lParam);
-            self->device()->resize((int)physW, (int)physH);
             float s = self->device()->scale();
-            self->windowResized((int)std::lround(physW / s), (int)std::lround(physH / s));
+            self->device()->resize((int)physW, (int)physH);
+            // 逻辑尺寸向上取整: 保证 rect()*scale >= 客户区物理尺寸, 根控件
+            // 背景 fillRect 覆盖整幅位图, 最外圈像素不会被漏绘成未初始化内存。
+            self->windowResized((int)std::ceil(physW / s), (int)std::ceil(physH / s));
         }
         return 0;
 
@@ -704,16 +706,18 @@ void JZWindow::resize(int w, int h)
     }
 }
 
-// 原生窗口尺寸变化 (WM_SIZE): 更新根控件几何 + 整体重绘。
+// 原生窗口尺寸变化 (WM_SIZE): 更新根控件几何 + 立即整窗重绘。
 // resizeEvent 已由 JZWidget::resize 统一派发 (窗口与普通控件一视同仁), 此处不再手动补发。
+// 关键: 拖动 resize 时 WM_SIZE 由系统模态循环派发, 该循环不经过框架事件队列
+// (processAndPaint/processEvents 跑不到) —— 只 update() 排队的话拖动全程画面不刷新,
+// 松手才补一帧; 且位图已按新客户区重建, 未绘制像素直接 BitBlt 上屏会露未初始化
+// DIB 内存。因此这里直接同步渲染, 拖动过程每步实时重绘。
 void JZWindow::windowResized(int logicalW, int logicalH)
 {
-    if (logicalW == width() && logicalH == height())
-        return;
+    if (logicalW != width() || logicalH != height())
+        JZWidget::resize(logicalW, logicalH);
 
-    JZWidget::resize(logicalW, logicalH);
-
-    update();
+    doPaint(rect());
 }
 
 // 显示器 DPI 变化 (WM_DPICHANGED): 更新设备缩放 (重建字体)
@@ -731,14 +735,14 @@ void JZWindow::setFocusWidget(JZWidget* w)
     m_focusWidget = w;
     if (old) {
         JZEvent ev(JZEvent_focusOut);       // 先派发: 控件在此取消未上屏的组字
-        old->event(&ev);
+        jzApp->sendEvent(old, &ev);
     }
     // 焦点切换后重算 IMC: 焦点落到非文本控件上就断开,
     // 否则打字会在后台组字却没有任何控件显示它。
     updateImeContext();
     if (w) {
         JZEvent ev(JZEvent_focusIn);
-        w->event(&ev);
+        jzApp->sendEvent(w, &ev);
     }
 }
 
@@ -838,7 +842,7 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
         JZPoint gTop = hit->mapToGlobal(hit->rect().topLeft());
         ev->setLocalPos(JZPoint(ev->globalPos().x() - gTop.x(),
                                 ev->globalPos().y() - gTop.y()));
-        hit->event(ev);
+        jzApp->sendEvent(hit, ev);   // 同步派发, 过 hit 的事件过滤器链
         // 左键按下: 把焦点交给命中控件 (点击切换焦点)
         if (ev->mouseType() == JZMouseEvent::Press && ev->button() == JZMouseEvent::LeftButton)
             hit->setFocus();
@@ -855,7 +859,7 @@ bool JZWindow::dispatchKey(JZKeyEvent* ev)
 {
     for (JZWidget* w = m_focusWidget; w; w = w->parentWidget()) {
         ev->ignore();   // 每一级重新给处理机会
-        w->event(ev);
+        jzApp->sendEvent(w, ev);   // 同步派发; 每级先过该控件的事件过滤器链
         if (ev->isAccepted())
             return true;
     }
@@ -867,7 +871,7 @@ bool JZWindow::dispatchIme(JZImeEvent* ev)
 {
     if (!m_focusWidget)
         return false;
-    m_focusWidget->event(ev);
+    jzApp->sendEvent(m_focusWidget, ev);   // 同步派发, 过焦点控件的过滤器链
     return true;
 }
 
@@ -882,12 +886,12 @@ void JZWindow::onWindowFocus(bool got)
 
     if (!got && m_focusWidget) {
         JZEvent ev(JZEvent_focusOut);       // 先派发: 控件在此取消未上屏的组字
-        m_focusWidget->event(&ev);
+        jzApp->sendEvent(m_focusWidget, &ev);
     }
     updateImeContext();
     if (got && m_focusWidget) {
         JZEvent ev(JZEvent_focusIn);
-        m_focusWidget->event(&ev);
+        jzApp->sendEvent(m_focusWidget, &ev);
     }
 }
 

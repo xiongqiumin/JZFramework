@@ -85,10 +85,7 @@ public:
     JZObject * parent() const;    
     const std::vector<JZObject *> &children() const;
 
-    void deleteLater();
-
-    // 事件分发入口 (Qt 风格 public): 窗口/显示设备直接向对象投递 JZEvent 时调用
-    virtual bool event(JZEvent *e);
+    void deleteLater();    
 
 jz_signals:
     JZSignalDestory sigDestroyed;
@@ -106,6 +103,9 @@ protected:
     int startTimer(int interval);
     void killTimer(int id);
 
+    // 事件分发入口 (Qt 风格 public): 窗口/显示设备直接向对象投递 JZEvent 时调用
+    virtual bool event(JZEvent *e);
+    virtual bool eventFilter(JZEvent *e);
     virtual void timerEvent(JZTimerEvent *event);
     virtual void customEvent(JZEvent *event);    
 

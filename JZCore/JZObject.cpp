@@ -267,6 +267,11 @@ bool JZObject::event(JZEvent *e)
     return true;
 }
 
+bool JZObject::eventFilter(JZEvent *e)
+{
+    return false;
+}
+
 void JZObject::timerEvent(JZTimerEvent *event)
 {
 

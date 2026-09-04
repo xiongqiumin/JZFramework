@@ -15,6 +15,52 @@
 #include "JZStd.h"
 #include "JZPlatform.h"
 
+// ==================== 多模态: 图片 data URL ====================
+// 只解前 16 个 base64 字符(对应 12 字节)判断图片类型, 避免为了认类型把整图解一遍
+static std::string detectImageMime(const std::string &base64)
+{
+    std::string head = base64.substr(0, 16);
+    while (!head.empty() && (head.back() == '\n' || head.back() == '\r' || head.back() == ' '))
+        head.pop_back();
+
+    JZByteArray raw = JZByteArray::fromBase64(JZByteArray(head.data(), (int)head.size()));
+    const char *d = raw.data();
+    int n = raw.size();
+
+    if (n >= 8 && (unsigned char)d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G')
+        return "image/png";
+    if (n >= 3 && (unsigned char)d[0] == 0xFF && (unsigned char)d[1] == 0xD8)
+        return "image/jpeg";
+    if (n >= 6 && d[0] == 'G' && d[1] == 'I' && d[2] == 'F')
+        return "image/gif";
+    if (n >= 12 && d[0] == 'R' && d[1] == 'I' && d[2] == 'F' && d[3] == 'F' &&
+        d[8] == 'W' && d[9] == 'E' && d[10] == 'B' && d[11] == 'P')
+        return "image/webp";
+    if (n >= 2 && d[0] == 'B' && d[1] == 'M')
+        return "image/bmp";
+
+    return "image/png";   // 认不出来按 png 处理
+}
+
+// base64 文本 -> data URL; 本身就是 data URL / http 地址时原样返回
+static std::string makeImageDataUrl(const JZByteArray &image_base64)
+{
+    std::string b64(image_base64.data(), image_base64.size());
+
+    size_t b = b64.find_first_not_of(" \t\r\n");
+    size_t e = b64.find_last_not_of(" \t\r\n");
+    if (b == std::string::npos)
+        return std::string();
+    b64 = b64.substr(b, e - b + 1);
+
+    if (b64.compare(0, 5, "data:") == 0 ||
+        b64.compare(0, 7, "http://") == 0 ||
+        b64.compare(0, 8, "https://") == 0)
+        return b64;
+
+    return "data:" + detectImageMime(b64) + ";base64," + b64;
+}
+
 // JZAgent
 JZAgent::JZAgent(JZObject* parent) : JZObject(parent), 
     sigReply(this), sigFinished(this), sigError(this)
@@ -159,6 +205,32 @@ void JZAgent::request(std::string user_prompt)
 
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
     req->userPrompt = user_prompt;
+    m_requests.push_back(req);
+    llmLoop();
+}
+
+void JZAgent::request(const std::string &text, const std::string &image_url)
+{
+    requestWithImages(text, { image_url });
+}
+
+void JZAgent::request(const std::string &text, const JZByteArray &image_base64)
+{
+    requestWithImages(text, { makeImageDataUrl(image_base64) });
+}
+
+void JZAgent::requestWithImages(const std::string &text, const std::vector<std::string> &images)
+{
+    if (!m_isActive)
+    {
+        m_isActive = true;
+        m_currentRound = 0;
+        m_toolError = 0;
+    }
+
+    JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
+    req->userPrompt = text;
+    req->images = images;
     m_requests.push_back(req);
     llmLoop();
 }
@@ -423,7 +495,32 @@ Json::Value LLMHistory::toJson() const
 {
     Json::Value history_msg;
     history_msg["role"] = roleToString(role);
-    history_msg["content"] = content;
+
+    // 带图片时 content 必须是数组: [{type:text,...},{type:image_url,...}]
+    // 不带图片时保持原来的字符串形式, 与单模态完全一致
+    if (!images.empty())
+    {
+        Json::Value parts(Json::arrayValue);
+        if (!content.empty())
+        {
+            Json::Value text_part(Json::objectValue);
+            text_part["type"] = "text";
+            text_part["text"] = content;
+            parts.append(text_part);
+        }
+        for (const auto &url : images)
+        {
+            Json::Value image_part(Json::objectValue);
+            image_part["type"] = "image_url";
+            image_part["image_url"]["url"] = url;
+            parts.append(image_part);
+        }
+        history_msg["content"] = parts;
+    }
+    else
+    {
+        history_msg["content"] = content;
+    }
 
     // 处理 assistant 角色的 tool_calls 字段
     if (role == LLMHistory::Assistant && !toolRequest.empty())
@@ -447,13 +544,33 @@ bool LLMHistory::fromJson(const Json::Value& root)
         return false;
 
     content.clear();
+    images.clear();
     toolRequest.clear();
     toolResponseId.clear();
 
     if (!parseRole(root))
         return false;
 
-    content = root["content"].asString();
+    // 单模态是字符串, 多模态是 content 数组
+    const Json::Value &c = root["content"];
+    if (c.isString())
+    {
+        content = c.asString();
+    }
+    else if (c.isArray())
+    {
+        for (const auto &part : c)
+        {
+            if (!part.isObject())
+                continue;
+
+            std::string type = part.get("type", "").asString();
+            if (type == "text")
+                content += part.get("text", "").asString();
+            else if (type == "image_url")
+                images.push_back(part["image_url"].get("url", "").asString());
+        }
+    }
 
     if (root.isMember("tool_response_id"))
         toolResponseId = root["tool_response_id"].asString();
@@ -816,6 +933,7 @@ void JZAgent::llmLoop()
             {
                 chat->role = LLMHistory::User;
                 chat->content = req->userPrompt;
+                chat->images = req->images;
             }
             else if (req->type == JZAgentRequest::SystemPrompt)
             {

@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "JZNetworkAccessManager.h"
+#include "JZByteArray.h"
 #include "JZOptional.h"
 #include "JZResult.h"
 #include "JZAgentTool.h"
@@ -39,6 +40,7 @@ public:
 
     Role role;
     std::string content;
+    std::vector<std::string> images;    // 附带的图片(data URL), 多模态消息用
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
     JZAgentTokenUsage usage;            // 本轮 token 增量（仅 Assistant 回复由响应 usage 填充）
@@ -86,6 +88,7 @@ public:
 
     std::string userPrompt;
     std::string systemPrompt;
+    std::vector<std::string> images;   // 随本条 user 消息一起发送的图片(data URL)
 
     ToolCall toolCall;
     ToolCallResult toolCallResult;
@@ -168,6 +171,15 @@ public:
 
     void systemRequest(std::string sys_prompt);
     void request(std::string user_prompt);  // 发送用户消息
+
+    // 发送带一张图片的用户消息(多模态), 图片与文字在同一条 user 消息里:
+    //   text + image_url   ->  一条消息, 而不是两条
+    //   image_url  : 图片地址(http://... 或 data:...), 原样作为 image_url.url 发送
+    //   image_base64: 图片的 base64 文本, mime 按内容自动识别后拼成 data URL
+    // 注意: 历史里保存的就是拼好的 data URL, 每轮重发的字节完全一致, 利于服务端前缀缓存。
+    void request(const std::string &text, const std::string &image_url);
+    void request(const std::string &text, const JZByteArray &image_base64);
+
     void stop();
 
     void addSkill(const SkillDefine& tool);
@@ -200,6 +212,9 @@ protected:
 
     // 生成一条请求（带递增 id）
     JZAgentRequestPtr makeAgentParam(JZAgentRequest::Type param_type);
+
+    // 带图片的 user 消息: images 为拼好的 data URL
+    void requestWithImages(const std::string &text, const std::vector<std::string> &images);
 
     void clear();
     void llmRequest();

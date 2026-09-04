@@ -148,12 +148,9 @@ int main(int argc, char *argv[])
     jzDebug() << "[代理] " << pc.host << ":" << pc.port
               << (pc.user.empty() ? " (无认证)" : " (带认证 user=" + pc.user + ")");
 
-    // 代理管理器: 所有经代理的请求走它
-    JZNetworkAccessManager mgr;
+    
     JZSSLConfig ssl_config;
     ssl_config.sslSkipVerify = true;   // 本地自签名证书, 跳过校验仅验证连通性
-    mgr.setSsl(ssl_config);
-    mgr.setProxy(pc);
 
     // 直连管理器: 用于"无代理"直连测试, 与上面代理管理器区分开,
     // 可验证 hostKey 正确区分直连 / 代理转发 / https 代理隧道(不互相错误复用)。
@@ -162,8 +159,8 @@ int main(int argc, char *argv[])
 
     bool allOk = true;
     
-    int send_time = 6;
-    /*
+    int send_time = 3;
+    
     jzDebug() << "==== 无代理(直连): " << httpTarget << " ====";
     for (int i = 0; i < send_time; i++)
     {
@@ -182,6 +179,11 @@ int main(int argc, char *argv[])
             allOk = false;
         }
     }
+
+    // 代理管理器: 所有经代理的请求走它
+    JZNetworkAccessManager mgr;
+    mgr.setSsl(ssl_config);
+    mgr.setProxy(pc);
 
     // TLS: 默认跳过证书校验(sslCa 为空), 仅验证代理隧道连通性; 如需校验可传入 CA PEM
     // ---- http 目标经代理转t发 ----
@@ -203,7 +205,6 @@ int main(int argc, char *argv[])
             allOk = false;
         }
     }
-    */
 
     // ---- https 目标经代理 CONNECT 隧道 ----
     jzDebug() << "==== [2/2] HTTPS 经代理隧道: " << httpsTarget << " ====";

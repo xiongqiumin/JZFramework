@@ -40,6 +40,7 @@ public:
 
     Role role;
     std::string content;
+    std::string thinking;               // 推理/思考过程(reasoning_content/thinking), 仅实时上抛, 不回写模型上下文
     std::vector<std::string> images;    // 附带的图片(data URL), 多模态消息用
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
@@ -196,6 +197,7 @@ public:
 
 jz_signals: 
     JZSigString sigReply;
+    JZSigString sigThinking;   // 推理/思考增量(实时), 与 sigReply 并行
     JZSigString sigError;
     JZSigVoid   sigFinished;
 
@@ -231,6 +233,7 @@ protected:
 
     // 统一的响应增量处理：流式(SSE 分块)与非流式(整包)共用同一条累积/回调路径
     void processResponseDelta(const std::string &content,
+                              const std::string &thinking,
                               const Json::Value &tool_calls,
                               const Json::Value &usage);
     // 请求收尾：把累积的回复并入历史，并在需要工具时驱动工具调用

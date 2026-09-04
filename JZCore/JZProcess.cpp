@@ -182,7 +182,12 @@ bool JZProcessPrivate::createProcess()
         }
     }
 
-    string cmdLine = program;
+    // 程序路径若含空格必须加引号, 否则 CreateProcess 解析命令行首 token 会被截断,
+    // 也容易触发带全局 CreateProcess Hook 的第三方模块(如 MozartBreathCore.dll)崩溃
+    string programToken = program;
+    if (str_contains(programToken, " "))
+        programToken = "\"" + programToken + "\"";
+    string cmdLine = programToken;
     for (const auto &arg : arguments)
     {
         if (str_contains(arg, " "))
@@ -192,16 +197,18 @@ bool JZProcessPrivate::createProcess()
     }
 
     BOOL success;
+    // 传入绝对路径作为 lpApplicationName, 可绕过部分 Hook 对命令行首 token 的重新解析
+    const char *appName = JZDir::isAbsolutePath(program) ? program.c_str() : nullptr;
     if (!workingDirectory.empty())
     {
         string work_dir = workingDirectory;
         str_replace(work_dir, "/", "\\");
-        success = CreateProcessA(nullptr, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, TRUE, 0, nullptr,
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, TRUE, 0, nullptr,
                                  work_dir.c_str(), &si, &pi);
     }
     else
     {
-        success = CreateProcessA(nullptr, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, TRUE, 0, nullptr,
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, TRUE, 0, nullptr,
                                  nullptr, &si, &pi);
     }
 
@@ -215,6 +222,8 @@ bool JZProcessPrivate::createProcess()
 
     if (!success)
     {
+        DWORD err = GetLastError();
+        jzError() << "CreateProcess failed. program:" << program << " wd:" << workingDirectory << " err:" << (int)err;
         CloseHandle(hStdinWrite);
         CloseHandle(hStdoutRead);
         hStdinWrite = hStdoutRead = INVALID_HANDLE_VALUE;

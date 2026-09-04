@@ -42,6 +42,23 @@ static std::string detectImageMime(const std::string &base64)
     return "image/png";   // 认不出来按 png 处理
 }
 
+// 各家推理模型的思考字段名不同: DeepSeek/Qwen=reasoning_content, Ollama=thinking, OpenAI=reasoning
+// 取第一个非空的值, 没有则返回空串。
+static std::string extractThinking(const Json::Value &node)
+{
+    const char *candidates[] = { "reasoning_content", "thinking", "reasoning" };
+    for (const char *name : candidates)
+    {
+        if (node.isMember(name))
+        {
+            std::string v = node[name].asString();
+            if (!v.empty())
+                return v;
+        }
+    }
+    return "";
+}
+
 // base64 文本 -> data URL; 本身就是 data URL / http 地址时原样返回
 static std::string makeImageDataUrl(const JZByteArray &image_base64)
 {
@@ -848,6 +865,7 @@ void JZAgent::llmEnd()
 
 // 统一的响应增量处理
 void JZAgent::processResponseDelta(const std::string &content,
+                                   const std::string &thinking,
                                    const Json::Value &tool_calls,
                                    const Json::Value &usage)
 {
@@ -863,6 +881,12 @@ void JZAgent::processResponseDelta(const std::string &content,
     {
         reply.content += content;
         sigReply.emit(content);   // 实时增量回调（流式与非流式一致）
+    }
+
+    if (!thinking.empty())
+    {
+        reply.thinking += thinking;
+        sigThinking.emit(thinking);   // 思考过程实时增量上抛（与 sigReply 并行）
     }
 
     // 累积 tool_calls：流式按 index 合并增量片段，非流式无 index 时直接追加
@@ -1109,13 +1133,14 @@ void JZAgent::processSSEData(const std::string& payload)
 
     Json::Value delta = choices[0]["delta"];
     std::string content = delta["content"].asString();
+    std::string thinking = extractThinking(delta);
 
     Json::Value tool_calls(Json::arrayValue);
     if (delta.isMember("tool_calls") && delta["tool_calls"].isArray())
         tool_calls = delta["tool_calls"];
 
     Json::Value usage = result["usage"];
-    processResponseDelta(content, tool_calls, usage);
+    processResponseDelta(content, thinking, tool_calls, usage);
 }
 
 void JZAgent::onLLMRequest()
@@ -1164,13 +1189,14 @@ void JZAgent::onLLMRequest()
 
         Json::Value message = result["choices"][0]["message"];
         std::string content = message["content"].asString();
+        std::string thinking = extractThinking(message);
 
         Json::Value tool_calls(Json::arrayValue);
         if (message.isMember("tool_calls") && message["tool_calls"].isArray())
             tool_calls = message["tool_calls"];
 
         Json::Value usage = result["usage"];
-        processResponseDelta(content, tool_calls, usage);
+        processResponseDelta(content, thinking, tool_calls, usage);
     }
 
     // 流式与非流式统一收尾

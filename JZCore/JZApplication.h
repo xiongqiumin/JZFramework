@@ -58,17 +58,17 @@ public:
 #endif
 
     void sendEvent(JZObject *object, JZEvent *event);
-    void postEvent(JZObject *object, JZEvent *event);
-    void postEventAndWait(JZObject *object, JZEvent *event);    
+    void postEvent(JZObject *object, JZEvent *event);    
 
 protected:    
     virtual void timerEvent(JZTimerEvent *event) override;
-
+    void postEventAndWait(JZObject *object, JZEvent *event);
+    
     JZThread *m_mainThread;
 
     std::vector<JZThread*> m_threads;
     JZMutex m_mutex;
-    int m_returnCode;;
+    int m_returnCode;
 
 #ifdef HAS_JZWidget
     // 顶层窗口 (由 JZWindow 构造/析构维护)

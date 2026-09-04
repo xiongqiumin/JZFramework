@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 
 #include "JZDir.h"
 #include "JZFile.h"
@@ -2176,8 +2178,6 @@ static string searchField(const Json::Value &obj, const std::vector<string> &key
 
 JZWebSearchTool::JZWebSearchTool()
 {
-    m_net = new JZNetworkAccessManager(this);
-
     ToolDefine def;
     def.name = "web_search";
     def.description = "联网搜索：给定查询词，返回若干条网页搜索结果（标题、链接、摘要）。" \
@@ -2193,12 +2193,9 @@ void JZWebSearchTool::setSearchUrlTemplate(const string &urlTemplate)
     m_searchUrlTemplate = urlTemplate;
 }
 
-void JZWebSearchTool::setProxy(const string &host, int port, const string &user, const string &password)
+void JZWebSearchTool::setNetworkAccessManager(JZNetworkAccessManager *net)
 {
-    m_proxyHost = host;
-    m_proxyPort = port;
-    m_proxyUser = user;
-    m_proxyPassword = password;
+    m_net = net;
 }
 
 void JZWebSearchTool::call(const ToolCall &params)
@@ -2237,15 +2234,8 @@ void JZWebSearchTool::call(const ToolCall &params)
         m_reply = nullptr;
     }
 
-    if (!m_proxyHost.empty())
-    {
-        JZProxyConfig pc;
-        pc.host = m_proxyHost;
-        pc.port = m_proxyPort;
-        pc.user = m_proxyUser;
-        pc.password = m_proxyPassword;
-        m_net->setProxy(pc);
-    }
+    // 共享管理器必须由调用方注入（setNetworkAccessManager），未注入属于非法使用
+    JZ_ASSERT(m_net);
 
     JZNetworkRequest req(url);
     req.setHeader(JZNetworkRequest::UserAgentHeader, "JZCodeAgent/1.0");
@@ -2363,5 +2353,337 @@ void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call, int 
     for (int i = 0; i < n; i++)
         text += to_string(i + 1) + ". " + results[i] + "\n";
     finish(call, true, text);
+}
+
+// ==================== JZWebFetchTool ====================
+// 把一段响应字节按声明的字符集转成 UTF-8：
+//   - utf-8 / 未声明：直接按 UTF-8 解码
+//   - 其它（gbk / gb2312 / big5 等）：经 str_local_to_utf8 按系统本地代码页转 UTF-8
+//     （中文系统本地代码页为 936，可正确解 gbk；非中文系统为尽力而为）
+// 注：本文件已包含 JZAgentTool.h，其枚举含 BOOLEAN，不能再 include <windows.h>，
+//     故复用 JZStd 里的 str_local_to_utf8（其 windows 调用在独立 TU，不冲突）。
+static string fetchDecode(const JZByteArray &body, const string &charset)
+{
+    int n = body.size();
+    if (n == 0)
+        return string();
+
+    string lower = charset;
+    for (char &c : lower)
+        c = (char)::tolower((unsigned char)c);
+
+    bool utf8 = lower.empty() || lower.find("utf-8") != string::npos ||
+                lower.find("utf8") != string::npos;
+    if (utf8)
+        return str_fromUtf8(JZByteArray(body.data(), n));
+
+    // 非 UTF-8：按系统本地代码页尽力转换（中文系统可正确解 gbk）
+    string local((const char *)body.data(), n);
+    return str_local_to_utf8(local);
+}
+
+// 极简 HTML -> 纯文本：去 script/style、块级标签换换行、去其余标签、解实体、压空白。
+static string htmlToText(const string &html)
+{
+    string s = html;
+
+    // 1. 去掉 <script>...</script> 与 <style>...</style>（大小写不敏感）
+    auto dropBlock = [&](const char *tag)
+    {
+        string open = string("<") + tag;
+        string close = string("</") + tag + ">";
+        string low = s;
+        for (char &c : low) c = (char)::tolower((unsigned char)c);
+        size_t pos = 0;
+        for (;;)
+        {
+            size_t i = low.find(open, pos);
+            if (i == string::npos) break;
+            size_t j = low.find(close, i);
+            if (j == string::npos) break;
+            size_t end = j + close.size();
+            s.erase(i, end - i);
+            low.erase(i, end - i);
+            pos = i;
+        }
+    };
+    dropBlock("script");
+    dropBlock("style");
+
+    // 2. 块级标签后补换行，便于阅读
+    static const char *brk[] = {
+        "<br", "<p", "</p", "<div", "</div", "<li", "</li",
+        "<tr", "</tr", "<h1", "<h2", "<h3", "<h4", "<h5", "<h6",
+        "</h", "<table", "</table", "<ul", "</ul", "<ol", "</ol",
+        "<section", "<article", "<header", "<footer", "<nav"
+    };
+    for (const char *b : brk)
+    {
+        string low = s;
+        for (char &c : low) c = (char)::tolower((unsigned char)c);
+        size_t p = 0;
+        for (;;)
+        {
+            size_t i = low.find(b, p);
+            if (i == string::npos) break;
+            s.insert(i, "\n");
+            low.insert(i, "\n");
+            p = i + (int)strlen(b) + 1;
+        }
+    }
+
+    // 3. 去所有剩余标签 <...>
+    {
+        string out;
+        bool inTag = false;
+        for (char c : s)
+        {
+            if (c == '<') inTag = true;
+            else if (c == '>') inTag = false;
+            else if (!inTag) out.push_back(c);
+        }
+        s = out;
+    }
+
+    // 4. 解常用实体
+    auto replaceAll = [](string &t, const string &from, const string &to)
+    {
+        size_t p = 0;
+        for (;;)
+        {
+            size_t i = t.find(from, p);
+            if (i == string::npos) break;
+            t.replace(i, from.size(), to);
+            p = i + to.size();
+        }
+    };
+    replaceAll(s, "&nbsp;", " ");
+    replaceAll(s, "&amp;", "&");
+    replaceAll(s, "&lt;", "<");
+    replaceAll(s, "&gt;", ">");
+    replaceAll(s, "&quot;", "\"");
+    replaceAll(s, "&#39;", "'");
+    replaceAll(s, "&apos;", "'");
+
+    // 数字实体 &#NN; / &#xHH;
+    for (;;)
+    {
+        size_t i = s.find("&#");
+        if (i == string::npos) break;
+        size_t j = s.find(';', i);
+        if (j == string::npos) break;
+        string num = s.substr(i + 2, j - i - 2);
+        int code = 0;
+        if (!num.empty() && (num[0] == 'x' || num[0] == 'X'))
+            code = (int)strtol(num.c_str() + 1, nullptr, 16);
+        else
+            code = (int)strtol(num.c_str(), nullptr, 10);
+        if (code > 0 && code < 0x110000)
+        {
+            char buf[5] = {0, 0, 0, 0, 0};
+            if (code < 0x80)
+                buf[0] = (char)code;
+            else if (code < 0x800)
+            {
+                buf[0] = (char)(0xC0 | (code >> 6));
+                buf[1] = (char)(0x80 | (code & 0x3F));
+            }
+            else if (code < 0x10000)
+            {
+                buf[0] = (char)(0xE0 | (code >> 12));
+                buf[1] = (char)(0x80 | ((code >> 6) & 0x3F));
+                buf[2] = (char)(0x80 | (code & 0x3F));
+            }
+            else
+            {
+                buf[0] = (char)(0xF0 | (code >> 18));
+                buf[1] = (char)(0x80 | ((code >> 12) & 0x3F));
+                buf[2] = (char)(0x80 | ((code >> 6) & 0x3F));
+                buf[3] = (char)(0x80 | (code & 0x3F));
+            }
+            s.replace(i, j - i + 1, buf);
+        }
+        else
+            s.replace(i, j - i + 1, "?");
+    }
+
+    // 5. 压空白：连续换行压成最多两个，其它连续空白压成单空格
+    string out;
+    int nlrun = 0;
+    for (char c : s)
+    {
+        if (c == '\n' || c == '\r')
+        {
+            nlrun++;
+            if (nlrun <= 2) out.push_back('\n');
+        }
+        else if (c == ' ' || c == '\t')
+        {
+            nlrun = 0;
+            if (!out.empty() && out.back() != ' ' && out.back() != '\n')
+                out.push_back(' ');
+        }
+        else
+        {
+            nlrun = 0;
+            out.push_back(c);
+        }
+    }
+    size_t a = out.find_first_not_of(" \t\r\n");
+    if (a == string::npos) return string();
+    size_t b = out.find_last_not_of(" \t\r\n");
+    return out.substr(a, b - a + 1);
+}
+
+JZWebFetchTool::JZWebFetchTool()
+{
+    ToolDefine def;
+    def.name = "web_fetch";
+    def.description = "抓取指定网页的正文并以纯文本返回，用于获取搜索结果中某条链接的详细内容、" \
+                      "官方文档、API 说明等。返回的是网页转换后的纯文本（已按 max_chars 截断），" \
+                      "不是原始 HTML。仅支持 http/https。";
+    def.parameters.push_back(makeParam("url", STRING, "要抓取的网页 URL（http/https）"));
+    def.parameters.push_back(makeParam("max_chars", NUMBER, "返回正文的最大字符数，默认 20000，最多 200000"));
+    def.required_parameters.push_back("url");
+    setToolDefine(def);
+}
+
+void JZWebFetchTool::setNetworkAccessManager(JZNetworkAccessManager *net)
+{
+    m_net = net;
+}
+
+void JZWebFetchTool::call(const ToolCall &params)
+{
+    string url = str_trimmed(params.params.get("url", "").asString());
+    if (url.empty())
+    {
+        finish(params, false, "参数 url 不能为空");
+        return;
+    }
+
+    JZUrl u(url);
+    string scheme = u.scheme();
+    for (char &c : scheme) c = (char)::tolower((unsigned char)c);
+    if (scheme != "http" && scheme != "https")
+    {
+        finish(params, false, "仅支持 http/https 链接，不支持: " + (scheme.empty() ? "(无协议)" : scheme));
+        return;
+    }
+
+    int maxChars = params.params.get("max_chars", 20000).asInt();
+    if (maxChars < 500) maxChars = 500;
+    if (maxChars > 200000) maxChars = 200000;
+
+    emitLog("call", url);
+
+    // 取消上一次仍在进行中的请求
+    if (m_reply)
+    {
+        m_reply->close();
+        m_reply = nullptr;
+    }
+
+    // 共享管理器必须由调用方注入（setNetworkAccessManager），未注入属于非法使用
+    JZ_ASSERT(m_net);
+
+    JZNetworkRequest req(url);
+    req.setHeader(JZNetworkRequest::UserAgentHeader, "JZCodeAgent/1.0");
+    req.setHeader(JZNetworkRequest::AcceptHeader, "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.8");
+
+    m_reply = m_net->get(req);
+    if (!m_reply)
+    {
+        finish(params, false, "创建网络请求失败");
+        return;
+    }
+    m_reply->setFollowRedirects(true);
+    m_reply->setRedirectPolicy(JZNetworkReply::AllAllowed);
+    m_reply->setMaxRedirects(5);
+    m_reply->setTimeOut(30000);
+
+    JZNetworkReply *reply = m_reply;
+    connect(&reply->sigFinished, this, [this, reply, params, maxChars]()
+    {
+        if (m_reply == reply)
+            m_reply = nullptr;
+        handleReply(reply, params, maxChars);
+    });
+}
+
+void JZWebFetchTool::handleReply(JZNetworkReply *reply, const ToolCall &call, int maxChars)
+{
+    JZNetworkReply::NetworkError err = reply->error();
+    if (err != JZNetworkReply::NoError && err != JZNetworkReply::None)
+    {
+        finish(call, false, "网页抓取失败: " + reply->errorString());
+        return;
+    }
+    int code = reply->httpStatusCode();
+    if (code < 200 || code >= 300)
+    {
+        finish(call, false, "网页返回 HTTP " + to_string(code) +
+               (code == 0 ? "（无法连接，请检查网络/代理设置）" : string()));
+        return;
+    }
+
+    string ctype = reply->header("content-type");
+    string mime = ctype;
+    size_t sc = mime.find(';');
+    if (sc != string::npos)
+        mime = mime.substr(0, sc);
+    for (char &c : mime) c = (char)::tolower((unsigned char)c);
+
+    if (!mime.empty())
+    {
+        bool binary = mime.find("image/") == 0 || mime.find("audio/") == 0 ||
+                      mime.find("video/") == 0 || mime == "application/pdf" ||
+                      mime == "application/zip" || mime == "application/octet-stream" ||
+                      mime.find("font/") == 0;
+        if (binary)
+        {
+            finish(call, false, "不支持抓取该类型的资源: " + mime);
+            return;
+        }
+    }
+
+    JZByteArray raw = reply->readAll();
+    const int kMaxRaw = 5 * 1024 * 1024;   // 5MB 上限，避免大文件撑爆内存
+    if (raw.size() > kMaxRaw)
+        raw = raw.left(kMaxRaw);
+
+    // 取 charset（去除首尾引号）
+    string charset;
+    size_t cpos = ctype.find("charset=");
+    if (cpos != string::npos)
+        charset = ctype.substr(cpos + 8);
+    charset = str_trimmed(charset);
+    if (!charset.empty() && (charset.front() == '"' || charset.front() == '\''))
+        charset = charset.substr(1);
+    if (!charset.empty() && (charset.back() == '"' || charset.back() == '\''))
+        charset.pop_back();
+
+    string text = fetchDecode(raw, charset);
+
+    // 仅对 html/xml 做标签清洗；纯文本/json 等原样返回
+    bool isHtml = mime.find("html") != string::npos ||
+                  mime.find("xml") != string::npos ||
+                  text.find("<!doctype") != string::npos ||
+                  text.find("<html") != string::npos;
+    if (isHtml)
+        text = htmlToText(text);
+
+    if ((int)text.size() > maxChars)
+        text = text.substr(0, (size_t)maxChars);
+
+    if (text.empty())
+    {
+        finish(call, true, "页面未解析出可读文本内容（可能是纯脚本页面或需要登录）。");
+        return;
+    }
+
+    string header = "网页正文（来自 " + call.params.get("url", "").asString() +
+                    "，约 " + to_string(text.size()) + " 字符）:\n";
+    finish(call, true, header + text);
 }
 

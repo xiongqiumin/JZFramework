@@ -42,7 +42,7 @@ struct AppConfig
     std::string proxyPassword;
 };
 
-// 多行输入：Ctrl+Enter 发送
+// 多行输入：Ctrl+Enter 发送；发送按钮嵌入输入框内部左下角（忙碌时变"停止"）
 class InputEdit : public JZTextEdit
 {
     JZ_OBJECT_DECLARE(InputEdit)
@@ -50,9 +50,16 @@ public:
     explicit InputEdit(JZWidget* parent = nullptr);
 
     JZSigVoid sigSend;
+    JZPushButton* sendButton() const { return m_sendBtn; }
 
 protected:
     void keyPressEvent(JZKeyEvent* event) override;
+    void resizeEvent(JZResizeEvent* event) override;
+
+private:
+    void onSendClicked();
+
+    JZPushButton* m_sendBtn = nullptr;
 };
 
 // 设置对话框：配置模型地址 / 名称 / Token / 工作区
@@ -77,7 +84,8 @@ protected:
     JZPushButton* m_wsBrowseBtn = nullptr;
 };
 
-// 主窗口：上方输出框 + 下方输入框 + 操作按钮，复用 JZCodeAgent 的本地代码助手能力
+// 主窗口：菜单栏 + 状态/工具条(清空、设置) + ChatView + 底部输入框(内嵌发送按钮)，
+// 复用 JZCodeAgent 的本地代码助手能力
 class MainWindow : public JZWindow
 {
     JZ_OBJECT_DECLARE(MainWindow)
@@ -93,6 +101,7 @@ private:
     void updateStatus();
 
     void onSend();
+    void onSendButton();      // 发送按钮点击：空闲=发送，忙碌=停止
     void onStop();
     void onClear();
     void onSettings();
@@ -104,8 +113,6 @@ private:
     JZCodeAgent*  m_agent = nullptr;
     ChatView*     m_chatView = nullptr;
     InputEdit*    m_inputEdit = nullptr;
-    JZPushButton* m_sendBtn = nullptr;
-    JZPushButton* m_stopBtn = nullptr;
     JZPushButton* m_clearBtn = nullptr;
     JZPushButton* m_settingsBtn = nullptr;
     JZMenuBar*    m_menuBar = nullptr;

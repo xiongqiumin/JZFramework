@@ -234,6 +234,12 @@ protected:
 
     bool m_visible;
     bool m_passThrough = false;
+
+    // ---- 布局内部登记 (由 JZLayout 统一管理, 业务代码勿直接调用) ----
+    friend class JZLayout;
+    void _layoutAttach(JZLayout* layout);
+    void _layoutDetach(JZLayout* layout);
+    std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
 };
 
 #endif

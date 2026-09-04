@@ -79,8 +79,8 @@ static std::string makeImageDataUrl(const JZByteArray &image_base64)
 }
 
 // JZAgent
-JZAgent::JZAgent(JZObject* parent) : JZObject(parent), 
-    sigReply(this), sigFinished(this), sigError(this)
+JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
+    sigReply(this), sigThinking(this), sigFinished(this), sigError(this)
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
@@ -877,16 +877,18 @@ void JZAgent::processResponseDelta(const std::string &content,
     }
     LLMHistory& reply = *m_replyHistory;
 
-    if (!content.empty())
-    {
-        reply.content += content;
-        sigReply.emit(content);   // 实时增量回调（流式与非流式一致）
-    }
-
+    // 思考增量先于正式回复上抛：流式按到达顺序自然如此，
+    // 非流式单包也借此保证 thinking 排在 content 之前（首个 sigReply 即代表思考结束）。
     if (!thinking.empty())
     {
         reply.thinking += thinking;
         sigThinking.emit(thinking);   // 思考过程实时增量上抛（与 sigReply 并行）
+    }
+
+    if (!content.empty())
+    {
+        reply.content += content;
+        sigReply.emit(content);   // 首次 sigReply 即代表思考阶段结束，进入正式回复
     }
 
     // 累积 tool_calls：流式按 index 合并增量片段，非流式无 index 时直接追加

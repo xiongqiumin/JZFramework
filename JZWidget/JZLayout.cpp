@@ -6,7 +6,8 @@
 namespace {
 
 // 在单条轴上, 依据 min/max/weight 把可用空间分配给各单元。
-// hint/min/max/weight 长度均为 n; weight>0 表示该项参与增长(也会参与收缩)。
+// hint/min/max/weight 长度均为 n; weight>0 表示该项参与增长(也会参与收缩),
+// weight==0 的项严格保持 sizeHint (不会被压, 也不会被拉伸)。
 std::vector<int> distributeAxis(int avail,
                                 const std::vector<int>& hint,
                                 const std::vector<int>& mn,
@@ -16,57 +17,59 @@ std::vector<int> distributeAxis(int avail,
     std::vector<int> size(hint.size(), 0);
     int usedFixed = 0;   // weight==0 项占用
     int usedFlex = 0;    // weight>0 项的初始 hint 占用 (增长时以此为基准)
-    int totalW = 0;
     for (size_t i = 0; i < hint.size(); ++i) {
         size[i] = std::max(mn[i], std::min(hint[i], mx[i]));
-        if (weight[i] > 0) { totalW += weight[i]; usedFlex += size[i]; }
+        if (weight[i] > 0) usedFlex += size[i];
         else               usedFixed += size[i];
     }
 
-    int remaining = avail - usedFixed - usedFlex;
-    if (remaining > 0 && totalW > 0) {
-        int guard = 0;
-        while (remaining > 0 && guard < 4096) {
+    int delta = avail - usedFixed - usedFlex;   // >0 待增长, <0 待收缩
+    const int n = (int)size.size();
+
+    auto floor = [](long long num, long long den) -> int {  // 保证非负
+        return (num <= 0) ? 0 : (int)(num / den);
+    };
+
+    // 把 delta 个像素按 weight 比例补/扣到各弹性项。逐轮逼近直到分完:
+    // 每轮内先按比例整分, 余下的零星像素逐个消化, 因此不会超分配。
+    auto distribute = [&](long long need, bool grow) -> void {
+        if (need <= 0) return;
+        for (int guard = 0; need > 0 && guard < 65536; ++guard) {
             int wsum = 0;
-            for (size_t i = 0; i < size.size(); ++i)
-                if (weight[i] > 0 && size[i] < mx[i]) wsum += weight[i];
+            for (int i = 0; i < n; ++i) {
+                bool ok = grow ? (size[i] < mx[i]) : (size[i] > mn[i]);
+                if (weight[i] > 0 && ok) wsum += weight[i];
+            }
             if (wsum == 0) break;
             int gave = 0;
-            for (size_t i = 0; i < size.size(); ++i) {
-                if (!(weight[i] > 0 && size[i] < mx[i])) continue;
-                int give = remaining * weight[i] / wsum;
-                if (give <= 0) give = 1;
-                int room = mx[i] - size[i];
-                int d = std::min(give, room);
-                if (d > 0) { size[i] += d; gave += d; }
+            for (int i = 0; i < n; ++i) {
+                bool ok = grow ? (size[i] < mx[i]) : (size[i] > mn[i]);
+                if (!(weight[i] > 0 && ok)) continue;
+                long long g = floor(need * (long long)weight[i], wsum);
+                long long room = grow ? (long long)mx[i] - size[i]
+                                      : (long long)size[i] - mn[i];
+                if (g > room) g = room;
+                if (g > 0) {
+                    size[i] += grow ? (int)g : -(int)g;
+                    gave += (int)g;
+                }
             }
-            if (gave == 0) break;
-            remaining -= gave;
-            ++guard;
-        }
-    } else if (remaining < 0) {
-        remaining = -remaining;
-        int guard = 0;
-        while (remaining > 0 && guard < 4096) {
-            int wsum = 0;
-            for (size_t i = 0; i < size.size(); ++i)
-                if (size[i] > mn[i]) wsum += std::max(weight[i], 1);
-            if (wsum == 0) break;
-            int took = 0;
-            for (size_t i = 0; i < size.size(); ++i) {
-                if (!(size[i] > mn[i])) continue;
-                int w = std::max(weight[i], 1);
-                int take = remaining * w / wsum;
-                if (take <= 0) take = 1;
-                int room = size[i] - mn[i];
-                int d = std::min(take, room);
-                if (d > 0) { size[i] -= d; took += d; }
+            need -= gave;
+            // 取整/上限截断后的零星余额: 逐像素在仍可变化的弹性项间消化
+            for (int i = 0; need > 0 && i < n; ++i) {
+                if (weight[i] <= 0) continue;
+                if (grow ? (size[i] < mx[i]) : (size[i] > mn[i])) {
+                    size[i] += grow ? 1 : -1;
+                    --need;
+                }
             }
-            if (took == 0) break;
-            remaining -= took;
-            ++guard;
         }
-    }
+    };
+
+    if (delta > 0)
+        distribute((long long)delta, true);
+    else if (delta < 0)
+        distribute(-(long long)delta, false);
     return size;
 }
 
@@ -81,6 +84,42 @@ inline bool policyExpands(JZWidget::SizePolicy p)
 } // namespace
 
 // ==================== JZLayout ====================
+
+JZLayout::~JZLayout()
+{
+    // 布局销毁时解除与所有受管控件的关联。若控件先于布局销毁,
+    // JZWidget 析构会经 removeWidget 把它们从 m_managed 移除,
+    // 因此这里不会访问到已销毁的控件。
+    for (JZWidget* w : m_managed)
+        w->_layoutDetach(this);
+    m_managed.clear();
+}
+
+void JZLayout::addManaged(JZWidget* widget)
+{
+    if (!widget)
+        return;
+    for (JZWidget* w : m_managed)
+        if (w == widget)
+            return;   // 已登记
+    m_managed.push_back(widget);
+    widget->_layoutAttach(this);
+}
+
+void JZLayout::removeManaged(JZWidget* widget)
+{
+    if (!widget)
+        return;
+    for (auto it = m_managed.begin(); it != m_managed.end(); ++it)
+    {
+        if (*it == widget)
+        {
+            m_managed.erase(it);
+            break;
+        }
+    }
+    widget->_layoutDetach(this);
+}
 
 void JZLayout::apply(JZWidget* container)
 {
@@ -107,7 +146,7 @@ JZBoxLayout::JZBoxLayout(int pad, int spacing)
 
 JZBoxLayout::~JZBoxLayout()
 {
-    clearSpacers();
+    // 受管登记的解除由基类 ~JZLayout 统一完成
 }
 
 void JZBoxLayout::addWidget(JZWidget* widget, int stretch)
@@ -117,6 +156,8 @@ void JZBoxLayout::addWidget(JZWidget* widget, int stretch)
     it.widget = widget;
     it.stretch = stretch < 0 ? 0 : stretch;
     m_items.push_back(it);
+    if (widget)
+        addManaged(widget);
     relayout();
 }
 
@@ -148,6 +189,8 @@ void JZBoxLayout::insertWidget(int index, JZWidget* widget, int stretch)
         m_items.push_back(it);
     else
         m_items.insert(m_items.begin() + index, it);
+    if (widget)
+        addManaged(widget);
     relayout();
 }
 
@@ -176,17 +219,41 @@ void JZBoxLayout::insertStretch(int index, int stretch)
 }
 
 void JZBoxLayout::removeAt(int index)
-{}
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return;
+    if (m_items[index].type == WidgetItem && m_items[index].widget)
+        removeManaged(m_items[index].widget);
+    m_items.erase(m_items.begin() + index);
+    relayout();
+}
 
 void JZBoxLayout::clear()
 {
-    clearSpacers();
+    if (m_items.empty())
+        return;
+    for (const auto& it : m_items)
+    {
+        if (it.type == WidgetItem && it.widget)
+            removeManaged(it.widget);
+    }
     m_items.clear();
     relayout();
 }
 
-void JZBoxLayout::clearSpacers()
-{}
+void JZBoxLayout::removeWidget(JZWidget* widget)
+{
+    if (!widget)
+        return;
+    for (int i = 0; i < (int)m_items.size(); ++i)
+    {
+        if (m_items[i].type == WidgetItem && m_items[i].widget == widget)
+        {
+            removeAt(i);
+            return;
+        }
+    }
+}
 
 void JZBoxLayout::updateLayout()
 {
@@ -309,6 +376,37 @@ void JZGridLayout::addWidget(JZWidget* widget, int fromRow, int fromCol, int row
     it.rowSpan = rowSpan > 0 ? rowSpan : 1;
     it.colSpan = colSpan > 0 ? colSpan : 1;
     m_items.push_back(it);
+    if (widget)
+        addManaged(widget);
+    relayout();
+}
+
+void JZGridLayout::removeWidget(JZWidget* widget)
+{
+    if (!widget)
+        return;
+    for (size_t i = 0; i < m_items.size(); ++i)
+    {
+        if (m_items[i].widget == widget)
+        {
+            m_items.erase(m_items.begin() + i);
+            removeManaged(widget);
+            relayout();
+            return;
+        }
+    }
+}
+
+void JZGridLayout::clear()
+{
+    if (m_items.empty())
+        return;
+    for (const auto& it : m_items)
+    {
+        if (it.widget)
+            removeManaged(it.widget);
+    }
+    m_items.clear();
     relayout();
 }
 
@@ -376,40 +474,6 @@ int JZGridLayout::columnCount() const
     return maxC;
 }
 
-void JZGridLayout::buildColDesc(std::vector<int>& out) const
-{
-    int n = columnCount();
-    out.clear();
-    out.reserve(n + 1);
-    for (int i = 0; i < n; ++i) {
-        int v = 0;
-        if (i < (int)m_colSpecs.size()) {
-            const auto& s = m_colSpecs[i];
-            if (s.stretch > 0) v = (int)s.stretch;
-            else if (s.minSize >= 0) v = s.minSize;
-        }
-        out.push_back(v);
-    }
-    out.push_back(0);
-}
-
-void JZGridLayout::buildRowDesc(std::vector<int>& out) const
-{
-    int n = rowCount();
-    out.clear();
-    out.reserve(n + 1);
-    for (int i = 0; i < n; ++i) {
-        int v = 0;
-        if (i < (int)m_rowSpecs.size()) {
-            const auto& s = m_rowSpecs[i];
-            if (s.stretch > 0) v = (int)s.stretch;
-            else if (s.minSize >= 0) v = s.minSize;
-        }
-        out.push_back(v);
-    }
-    out.push_back(0);
-}
-
 void JZGridLayout::updateLayout()
 {
     if (!m_container)
@@ -431,25 +495,41 @@ void JZGridLayout::updateLayout()
     std::vector<int> rowHint(rows, 0), rowMin(rows, 0), rowMax(rows, INT_MAX), rowW(rows, 0);
     std::vector<int> colWeight(cols, 0), rowWeight(rows, 0);
 
-    // 每个单元格的 hint/min/max, 以及来自控件扩展策略的权重
+    // 每个单元格的 hint/min/max, 以及来自控件扩展策略的权重。
+    // span>1 的控件把需求均摊到覆盖的各行列 (余数给首行/列), 避免独占某
+    // 行/列的跨格控件被忽略导致该行列宽/高为 0 而被压扁。
+    auto spreadMax = [](int value, int from, int span, std::vector<int>& arr) {
+        if (span <= 1) { arr[from] = std::min(arr[from], value); return; }
+        int base = value / span;
+        int rem  = value % span;
+        for (int c = from; c < from + span; ++c)
+            arr[c] = std::min(arr[c], base + (c == from ? rem : 0));
+    };
+    auto spreadMin = [](int value, int from, int span, std::vector<int>& arr) {
+        if (span <= 1) { arr[from] = std::max(arr[from], value); return; }
+        int base = value / span;
+        int rem  = value % span;
+        for (int c = from; c < from + span; ++c)
+            arr[c] = std::max(arr[c], base + (c == from ? rem : 0));
+    };
     for (const auto& it : m_items) {
         if (!it.widget) continue;
         JZSize hs = it.widget->sizeHint();
-        if (it.colSpan == 1) {
-            colHint[it.col] = std::max(colHint[it.col], hs.width());
-            colMin[it.col]  = std::max(colMin[it.col], it.widget->minimumWidth());
-            if (it.widget->maximumWidth() < INT_MAX)
-                colMax[it.col] = std::min(colMax[it.col], it.widget->maximumWidth());
-            if (policyExpands(it.widget->horizontalPolicy()))
-                colWeight[it.col] = std::max(colWeight[it.col], 1);
+        spreadMin(hs.width(),  it.col, it.colSpan, colHint);
+        spreadMin(hs.height(), it.row, it.rowSpan, rowHint);
+        spreadMin(it.widget->minimumWidth(),  it.col, it.colSpan, colMin);
+        spreadMin(it.widget->minimumHeight(), it.row, it.rowSpan, rowMin);
+        if (it.widget->maximumWidth() < INT_MAX)
+            spreadMax(it.widget->maximumWidth(), it.col, it.colSpan, colMax);
+        if (it.widget->maximumHeight() < INT_MAX)
+            spreadMax(it.widget->maximumHeight(), it.row, it.rowSpan, rowMax);
+        if (policyExpands(it.widget->horizontalPolicy())) {
+            for (int c = it.col; c < it.col + it.colSpan; ++c)
+                colWeight[c] = std::max(colWeight[c], 1);
         }
-        if (it.rowSpan == 1) {
-            rowHint[it.row] = std::max(rowHint[it.row], hs.height());
-            rowMin[it.row]  = std::max(rowMin[it.row], it.widget->minimumHeight());
-            if (it.widget->maximumHeight() < INT_MAX)
-                rowMax[it.row] = std::min(rowMax[it.row], it.widget->maximumHeight());
-            if (policyExpands(it.widget->verticalPolicy()))
-                rowWeight[it.row] = std::max(rowWeight[it.row], 1);
+        if (policyExpands(it.widget->verticalPolicy())) {
+            for (int r = it.row; r < it.row + it.rowSpan; ++r)
+                rowWeight[r] = std::max(rowWeight[r], 1);
         }
     }
 
@@ -514,8 +594,23 @@ JZSize JZGridLayout::sizeHint() const
     for (const auto& it : m_items) {
         if (!it.widget) continue;
         JZSize hs = it.widget->sizeHint();
-        if (it.colSpan == 1) colHint[it.col] = std::max(colHint[it.col], hs.width());
-        if (it.rowSpan == 1) rowHint[it.row] = std::max(rowHint[it.row], hs.height());
+        // 与 updateLayout 一致: 跨格控件按覆盖列数均摊, 余数给首列
+        if (it.colSpan <= 1) {
+            colHint[it.col] = std::max(colHint[it.col], hs.width());
+        } else {
+            int base = hs.width() / it.colSpan;
+            int rem  = hs.width() % it.colSpan;
+            for (int c = it.col; c < it.col + it.colSpan; ++c)
+                colHint[c] = std::max(colHint[c], base + (c == it.col ? rem : 0));
+        }
+        if (it.rowSpan <= 1) {
+            rowHint[it.row] = std::max(rowHint[it.row], hs.height());
+        } else {
+            int base = hs.height() / it.rowSpan;
+            int rem  = hs.height() % it.rowSpan;
+            for (int r = it.row; r < it.row + it.rowSpan; ++r)
+                rowHint[r] = std::max(rowHint[r], base + (r == it.row ? rem : 0));
+        }
     }
     int w = m_marginLeft + m_marginRight;
     int h = m_marginTop + m_marginBottom;
@@ -526,4 +621,139 @@ JZSize JZGridLayout::sizeHint() const
     w += hGap * (cols - 1);
     h += vGap * (rows - 1);
     return JZSize(w, h);
+}
+
+// ==================== JZSelfLayout ====================
+
+JZSelfLayout::JZSelfLayout(int pad)
+{
+    if (pad > 0)
+        setContentsMargins(pad, pad, pad, pad);
+}
+
+void JZSelfLayout::addWidget(JZWidget* widget, Anchor anchor, int dx, int dy)
+{
+    if (!widget)
+        return;
+    for (auto& it : m_items)
+    {
+        if (it.widget == widget)   // 已登记: 仅更新锚点参数
+        {
+            it.anchor = anchor;
+            it.dx = dx;
+            it.dy = dy;
+            relayout();
+            return;
+        }
+    }
+    Item it;
+    it.widget = widget;
+    it.anchor = anchor;
+    it.dx = dx;
+    it.dy = dy;
+    m_items.push_back(it);
+    addManaged(widget);
+    relayout();
+}
+
+void JZSelfLayout::setAnchor(JZWidget* widget, Anchor anchor, int dx, int dy)
+{
+    if (!widget)
+        return;
+    for (auto& it : m_items)
+    {
+        if (it.widget == widget)
+        {
+            it.anchor = anchor;
+            it.dx = dx;
+            it.dy = dy;
+            relayout();
+            return;
+        }
+    }
+}
+
+void JZSelfLayout::removeAt(int index)
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return;
+    if (m_items[index].widget)
+        removeManaged(m_items[index].widget);
+    m_items.erase(m_items.begin() + index);
+    relayout();
+}
+
+void JZSelfLayout::removeWidget(JZWidget* widget)
+{
+    if (!widget)
+        return;
+    for (int i = 0; i < (int)m_items.size(); ++i)
+    {
+        if (m_items[i].widget == widget)
+        {
+            removeAt(i);
+            return;
+        }
+    }
+}
+
+void JZSelfLayout::clear()
+{
+    if (m_items.empty())
+        return;
+    for (const auto& it : m_items)
+    {
+        if (it.widget)
+            removeManaged(it.widget);
+    }
+    m_items.clear();
+    relayout();
+}
+
+void JZSelfLayout::updateLayout()
+{
+    if (!m_container)
+        return;
+
+    int cw = m_container->width();
+    int ch = m_container->height();
+    int x0 = m_marginLeft;
+    int y0 = m_marginTop;
+    int innerW = std::max(0, cw - m_marginLeft - m_marginRight);
+    int innerH = std::max(0, ch - m_marginTop - m_marginBottom);
+
+    for (const auto& it : m_items)
+    {
+        JZWidget* w = it.widget;
+        if (!w)
+            continue;
+
+        // 布局不改尺寸: 取 sizeHint 夹 [min,max] (默认 sizeHint = 当前尺寸,
+        // 未 resize/setFixed 的子控件会被排成 0x0, 参与前需先定好尺寸)
+        JZSize hs = w->sizeHint();
+        int ww = std::max(w->minimumWidth(),  std::min(hs.width(),  w->maximumWidth()));
+        int wh = std::max(w->minimumHeight(), std::min(hs.height(), w->maximumHeight()));
+
+        int col = (int)it.anchor % 3;
+        int row = (int)it.anchor / 3;
+
+        // 锚点在子控件自身矩形内的参考点 (九宫格同位置点)
+        int refX = col == 0 ? 0 : (col == 1 ? ww / 2 : ww);
+        int refY = row == 0 ? 0 : (row == 1 ? wh / 2 : wh);
+
+        // 靠右/下边: 正偏移取反才指向内容中心 (内边距); 顶/左/中线原样平移
+        int dx = it.dx * (col == 2 ? -1 : 1);
+        int dy = it.dy * (row == 2 ? -1 : 1);
+
+        int x = x0 + col * innerW / 2 + dx - refX;
+        int y = y0 + row * innerH / 2 + dy - refY;
+        w->setGeometry(x, y, ww, wh);
+    }
+}
+
+JZSize JZSelfLayout::sizeHint() const
+{
+    // 锚定摆放依赖容器最终尺寸 (由父布局/业务给定), 自身不表达内容期望,
+    // 只上报 margins。放进 Box 等布局时请显式 setFixedSize 或让它 stretch。
+    return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
 }

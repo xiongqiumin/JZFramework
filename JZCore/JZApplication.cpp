@@ -144,8 +144,8 @@ void JZApplication::timerEvent(JZTimerEvent *event)
 
 void JZApplication::sendEvent(JZObject *object, JZEvent *event)
 {
-    if (object->thread() == currentThread())
-        object->event(event);
+    if (object->thread()->id() == JZThread::currentThreadId())
+        object->thread()->notify(object, event);
     else
     {
         postEventAndWait(object, event);        

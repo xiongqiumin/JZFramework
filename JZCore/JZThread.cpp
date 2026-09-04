@@ -499,6 +499,11 @@ void JZThread::threadMoveWarning(JZObject *object)
         << "object thread:" << object->thread();
 }
 
+void JZThread::notify(JZObject *object, JZEvent *event)
+{
+    object->event(event);
+}
+
 void JZThread::processEvents()
 {    
     JZTX_FUNC_TRACE
@@ -579,15 +584,16 @@ void JZThread::processEvents()
             {
                 if (object->thread() != this)
                     threadMoveWarning(object);
-                
-                object->event(event.event);
+
+                notify(object, event.event);                
             }
         }
-
-        delete event.event;
+        
         if (event.sem)
             event.sem->release();
-
+        else
+            delete event.event;
+        
         event_processed++;
     }
 }

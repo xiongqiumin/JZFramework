@@ -704,17 +704,14 @@ void JZWindow::resize(int w, int h)
     }
 }
 
-// 原生窗口尺寸变化 (WM_SIZE): 更新根控件几何 + 整体重绘
+// 原生窗口尺寸变化 (WM_SIZE): 更新根控件几何 + 整体重绘。
+// resizeEvent 已由 JZWidget::resize 统一派发 (窗口与普通控件一视同仁), 此处不再手动补发。
 void JZWindow::windowResized(int logicalW, int logicalH)
 {
     if (logicalW == width() && logicalH == height())
         return;
 
-    JZSize old = size();
     JZWidget::resize(logicalW, logicalH);
-
-    JZResizeEvent ev(size(), old);
-    resizeEvent(&ev);
 
     update();
 }

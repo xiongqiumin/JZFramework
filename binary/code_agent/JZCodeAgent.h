@@ -50,12 +50,14 @@ struct GuardState
 // 一条会话日志，网页端按 id 增量拉取
 struct CodeAgentLog
 {
-    // user       用户提问
-    // delta      大模型回复的文本片段(流式增量)
-    // tool_call  工具被调用
-    // tool_result 工具返回
-    // error      出错
-    // info       提示信息
+    // user         用户提问
+    // thinking     思考过程片段(流式增量, 实时上抛, 不入历史文件)
+    // delta        大模型回复的文本片段(流式增量)
+    // assistant    整条助手回复(历史重建用)
+    // tool_call    工具被调用
+    // tool_result  工具返回
+    // error        出错
+    // info         提示信息
     std::string type;
     std::string name;   // 工具名
     std::string text;
@@ -124,6 +126,7 @@ protected:
     void triggerGuard(const std::string &reason, const std::string &suggestion);
 
     void onReply(const std::string &text);
+    void onThinking(const std::string &text);
     void onError(const std::string &text);
     void onFinished();
     void onToolLog(const std::string &type, const std::string &name, const std::string &text, int deny);
@@ -134,6 +137,9 @@ protected:
 
     std::vector<JZCodeTool *> m_tools;
     std::vector<std::string> m_toolNames;
+
+    // 所有网络工具（web_search / web_fetch）共享的访问管理器，代理只在此统一设置一次
+    JZNetworkAccessManager *m_netMan = nullptr;
 
     std::vector<CodeAgentLog> m_logs;
     int m_logId = 0;

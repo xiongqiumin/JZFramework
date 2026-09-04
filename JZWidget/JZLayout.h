@@ -9,12 +9,18 @@ class JZWidget;
 class JZLayout
 {
 public:
-    virtual ~JZLayout() = default;
+    virtual ~JZLayout();
 
     // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存容器供后续 updateLayout 使用
     void apply(JZWidget* container);
     virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
     virtual JZSize sizeHint() const { return JZSize(0, 0); }  // 容器期望尺寸: 内容 hints 之和
+
+    // 从布局中摘除控件 / 清空。布局不拥有控件: 不 delete widget, 只解除管理关系
+    // (控件仍以容器为父时保留当前位置继续显示)。JZWidget 析构时自动调用
+    // removeWidget, 防止布局 items 持有悬垂指针。
+    virtual void removeWidget(JZWidget* widget) { (void)widget; }
+    virtual void clear() {}
 
     int spacing() const { return m_gap; }
     void setSpacing(int gap) { m_gap = gap; updateLayout(); }
@@ -32,11 +38,17 @@ public:
 
 protected:
 
+    // 子类在 add 控件后登记、remove 时注销; 布局析构时自动解除全部登记,
+    // 保证布局先于控件销毁时, 控件不会反向引用到已销毁的布局。
+    void addManaged(JZWidget* widget);
+    void removeManaged(JZWidget* widget);
+
     // 重排容器自身子控件, 并向上级联(容器 sizeHint 因增删 item/改约束而变,
     // 父布局需按新 sizeHint 重排)。等价于 JZWidget::updateGeometry() 的容器侧入口。
     void relayout();
 
     JZWidget* m_container = nullptr;  // 已被 apply 过的容器
+    std::vector<JZWidget*> m_managed; // 被本布局管理的控件 (销毁时自动解绑)
     int m_gap = 0;
     int m_marginLeft = 0;
     int m_marginTop = 0;
@@ -56,7 +68,6 @@ public:
     struct Item {
         ItemType type;
         JZWidget* widget = nullptr;
-        void* spacer = nullptr;
         int stretch = 0;
         int spaceSize = 0;
     };
@@ -76,16 +87,14 @@ public:
 
     int count() const { return (int)m_items.size(); }
     void removeAt(int index);
-    void clear();
+    void clear() override;
+    void removeWidget(JZWidget* widget) override;
 
 protected:
     void updateLayout() override;
     virtual int flexFlow() const = 0;
 
     std::vector<Item> m_items;
-
-private:
-    void clearSpacers();
 };
 
 class JZHBoxLayout : public JZBoxLayout
@@ -142,22 +151,75 @@ public:
     int columnCount() const;
     int count() const { return (int)m_items.size(); }
 
+    void clear() override;
+    void removeWidget(JZWidget* widget) override;
+
     JZSize sizeHint() const override;
 
 protected:
     void updateLayout() override;
 
 private:
-    void buildColDesc(std::vector<int>& out) const;
-    void buildRowDesc(std::vector<int>& out) const;
-
     std::vector<Item> m_items;
     std::vector<LineSpec> m_colSpecs;
     std::vector<LineSpec> m_rowSpecs;
     int m_hGap = -1;
     int m_vGap = -1;
-    mutable std::vector<int> m_colDescCache;
-    mutable std::vector<int> m_rowDescCache;
+};
+
+// 锚定布局 (Self 布局): 子控件按九宫格锚点 + 偏移钉在容器内容区上,
+// 容器每次几何变动 (父布局 setGeometry / 手动 resize) 都会经 updateLayout
+// 链自动把各子控件摆回相对锚点的位置 —— 无需在容器 resizeEvent 里逐个
+// move。适合"悬浮右上角、贴右下角留边距、水平/垂直居中"这类需要相对
+// 容器保持稳定的手工定位场景。
+//
+// 偏移语义 (dx/dy):
+//   位于四条边上的锚点 (Top*/Middle*/Bottom*): 正偏移把控件推向内容区
+//   中心, 等价"向内边距"; 负值向容器外。
+//   正好在中线上的锚点 (TopCenter / MiddleLeft / Center / MiddleRight /
+//   BottomCenter): 该轴上没有"内外"之分, 偏移按屏幕轴直接平移
+//   (x 正向右、y 正向下)。
+//
+// 尺寸语义: 布局不改变子控件尺寸 (取 sizeHint 夹 [min,max]), 也不根据
+// 内容计算容器期望尺寸 (摆放依赖容器最终尺寸, 见 sizeHint)。若本布局所在
+// 容器还要放进父 Box 等布局, 请显式 setFixedSize / 让它 stretch。
+class JZSelfLayout : public JZLayout
+{
+public:
+    // 九宫格锚点: 子控件自身同位置点 对齐 容器内容区对应点, 再偏移。
+    // 如 TopLeft = 子控件左上角对齐内容区左上角。
+    enum Anchor {
+        TopLeft = 0, TopCenter, TopRight,
+        MiddleLeft, Center, MiddleRight,
+        BottomLeft, BottomCenter, BottomRight
+    };
+
+    struct Item {
+        JZWidget* widget = nullptr;
+        Anchor anchor = TopLeft;
+        int dx = 0;   // 水平偏移 (靠边锚点: 向内容中心为正; 中线锚点: 按屏幕轴)
+        int dy = 0;   // 垂直偏移 (同上)
+    };
+
+    JZSelfLayout(int pad = 0);
+    ~JZSelfLayout() override = default;
+
+    // 登记/更新子控件锚点 (子控件父必须就是容器; 重复 addWidget 仅改锚点参数)
+    void addWidget(JZWidget* widget, Anchor anchor = TopLeft, int dx = 0, int dy = 0);
+    void setAnchor(JZWidget* widget, Anchor anchor, int dx = 0, int dy = 0);
+
+    int count() const { return (int)m_items.size(); }
+    void removeAt(int index);
+    void removeWidget(JZWidget* widget) override;
+    void clear() override;
+
+    JZSize sizeHint() const override;
+
+protected:
+    void updateLayout() override;
+
+private:
+    std::vector<Item> m_items;
 };
 
 #endif // JZ_WIDGET_LAYOUT_H_

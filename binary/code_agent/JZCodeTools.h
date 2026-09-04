@@ -239,6 +239,8 @@ enum class Access { None, Read, Write };
 
 struct ArgSpec
 {
+    ArgSpec() = default;
+    ArgSpec(ArgKind k, Access a) : kind(k), access(a) {}
     ArgKind kind = ArgKind::Literal;
     Access access = Access::None;
 };
@@ -370,7 +372,8 @@ protected:
 //   解析出若干条结果（标题 / 链接 / 摘要）返回给模型。
 //   搜索接口通过 setSearchUrlTemplate 配置，模板含 {q} 占位符（会被 URL 编码后的查询词替换）。
 //   未配置时使用内置默认（DuckDuckGo 即时答案 JSON 接口，无需 API Key）。
-//   支持 HTTP 代理：调用 setProxy 后，http 目标的搜索请求会经代理转发。
+//   网络访问管理器由调用方通过 setNetworkAccessManager 注入（所有网络工具共享同一个，
+//   代理也由调用方在该管理器上统一设置一次），工具本身不持有所有权、不单独配置代理。
 // ------------------------------------------------------------------
 class JZWebSearchTool : public JZCodeTool
 {
@@ -378,9 +381,8 @@ public:
     JZWebSearchTool();
 
     void setSearchUrlTemplate(const std::string &urlTemplate);
-    void setProxy(const std::string &host, int port,
-                  const std::string &user = std::string(),
-                  const std::string &password = std::string());
+    // 注入共享的网络访问管理器（非拥有）；代理由调用方在管理器上统一设置
+    void setNetworkAccessManager(JZNetworkAccessManager *net);
 
     virtual void call(const ToolCall &params) override;
 
@@ -388,13 +390,33 @@ private:
     void handleReply(JZNetworkReply *reply, const ToolCall &call, int num);
     void parseSearch(const std::string &body, const ToolCall &call, int num);
 
-    JZNetworkAccessManager *m_net = nullptr;
+    JZNetworkAccessManager *m_net = nullptr;   // 非拥有，来自外部注入
     JZNetworkReply *m_reply = nullptr;
     std::string m_searchUrlTemplate;
-    std::string m_proxyHost;
-    int m_proxyPort = 0;
-    std::string m_proxyUser;
-    std::string m_proxyPassword;
+};
+
+// ------------------------------------------------------------------
+// web_fetch: 抓取网页正文
+//   给定 URL，GET 后把 HTML 转成纯文本返回（截断到 max_chars），
+//   与 web_search 配合：search 给摘要 + 链接，fetch 取某条链接的正文。
+//   仅允许 http/https；网络访问管理器由调用方注入（与 web_search 共享同一个，
+//   代理统一在管理器上设置一次），工具本身不持有所有权、不单独配置代理。
+// ------------------------------------------------------------------
+class JZWebFetchTool : public JZCodeTool
+{
+public:
+    JZWebFetchTool();
+
+    // 注入共享的网络访问管理器（非拥有）；代理由调用方在管理器上统一设置
+    void setNetworkAccessManager(JZNetworkAccessManager *net);
+
+    virtual void call(const ToolCall &params) override;
+
+private:
+    void handleReply(JZNetworkReply *reply, const ToolCall &call, int maxChars);
+
+    JZNetworkAccessManager *m_net = nullptr;   // 非拥有，来自外部注入
+    JZNetworkReply *m_reply = nullptr;
 };
 
 #endif // !JZ_CODE_TOOLS_H_

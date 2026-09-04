@@ -121,6 +121,14 @@ InputEdit::InputEdit(JZWidget* parent)
     : JZTextEdit(parent)
     , sigSend(this)
 {
+    // 发送按钮嵌入输入框内部: 浮动在底部文本区下方的"按钮带"里。
+    // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
+    const int btnW = 70, btnH = 30;
+    m_sendBtn = new JZPushButton(this, btnW, btnH, "发送");
+    m_sendBtn->move(width() - m_sendBtn->width() - 8, height() - btnH - 6);
+    connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
+
+    setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
 }
 
 void InputEdit::keyPressEvent(JZKeyEvent* event)
@@ -134,6 +142,18 @@ void InputEdit::keyPressEvent(JZKeyEvent* event)
     // 组字期间 Ctrl+Enter 也要发送 (composing 判定在基类内部)
     // 已上屏内容之外: 转交抽象基类处理 (含多行回车换行)
     JZAbstractTextEdit::keyPressEvent(event);
+}
+
+void InputEdit::resizeEvent(JZResizeEvent* event)
+{
+    JZAbstractTextEdit::resizeEvent(event);
+    // 随输入框尺寸变化把按钮钉在左下角
+    m_sendBtn->move(width() - m_sendBtn->width() - 8, height() - m_sendBtn->height() - 6);
+}
+
+void InputEdit::onSendClicked()
+{
+    sigSend.emit();
 }
 
 // ==================== SettingsDialog ====================
@@ -241,9 +261,6 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    m_statusLabel = new JZLabel(this);
-    m_statusLabel->setText("未配置");
-
     // 菜单栏: 顶部 File 菜单, 目前只提供"打开目录"(切换工作区)
     m_menuBar = new JZMenuBar(this);
     JZMenu* fileMenu = m_menuBar->addMenu("文件");
@@ -251,42 +268,35 @@ void MainWindow::setupUi()
 
     m_chatView = new ChatView(this);
 
-    // 输入区容器: 左侧多行输入框 + 右侧按钮列。
-    // 注意: 放进某个容器 layout 的控件, 其父必须就是该容器,
-    // 否则布局用容器坐标系定位, 而控件按父(MainWindow)坐标摆放, 会错位重叠。
-    JZWidget* inputArea = new JZWidget(this);
-    JZHBoxLayout* inputLayout = new JZHBoxLayout(6, 6);
+    // ChatView 上方的工具条: 左侧状态信息, 右侧 [清空][设置]
+    // 注意: JZLayout::addWidget 不会自动 reparent, 放进容器布局的子控件父必须就是该容器。
+    JZWidget* topBar = new JZWidget(this);
+    topBar->setFixedHeight(32);
+    JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
+    m_statusLabel = new JZLabel(topBar);
+    m_statusLabel->setText("未配置");
+    topLayout->addWidget(m_statusLabel, 1);
+    m_clearBtn = new JZPushButton(topBar, 84, 28, "清空");
+    m_settingsBtn = new JZPushButton(topBar, 84, 28, "设置");
+    topLayout->addWidget(m_clearBtn, 0);
+    topLayout->addWidget(m_settingsBtn, 0);
+    topBar->setLayout(topLayout);
 
-    m_inputEdit = new InputEdit(inputArea);
+    // 底部输入区: 只有多行输入框(固定高度), 发送按钮由 InputEdit 内嵌在左下角,
+    // InputEdit::resizeEvent 里随宽度/高度变化自动调整按钮位置。
+    m_inputEdit = new InputEdit(this);
     m_inputEdit->setLineWrap(true);
-    m_inputEdit->setMinimumHeight(80);
-    m_inputEdit->setPlaceholderText("输入任务，回车换行；Ctrl+Enter 或点[发送]执行");
-    inputLayout->addWidget(m_inputEdit, 1);
-
-    JZWidget* btnCol = new JZWidget(inputArea);
-    JZVBoxLayout* btnColLayout = new JZVBoxLayout(6, 6);
-    m_sendBtn = new JZPushButton(btnCol, 90, 30, "发送");
-    m_stopBtn = new JZPushButton(btnCol, 90, 30, "停止");
-    m_clearBtn = new JZPushButton(btnCol, 90, 30, "清空");
-    m_settingsBtn = new JZPushButton(btnCol, 90, 30, "设置");
-    btnColLayout->addWidget(m_sendBtn, 0);
-    btnColLayout->addWidget(m_stopBtn, 0);
-    btnColLayout->addWidget(m_clearBtn, 0);
-    btnColLayout->addWidget(m_settingsBtn, 0);
-    btnCol->setLayout(btnColLayout);
-
-    inputLayout->addWidget(btnCol, 0);
-    inputArea->setLayout(inputLayout);
+    m_inputEdit->setFixedHeight(104);
+    m_inputEdit->setPlaceholderText("输入任务，回车换行；Ctrl+Enter 或点[发送]");
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(m_menuBar, 0);
-    mainLayout->addWidget(m_statusLabel, 0);
+    mainLayout->addWidget(topBar, 0);
     mainLayout->addWidget(m_chatView, 1);
-    mainLayout->addWidget(inputArea, 0);
+    mainLayout->addWidget(m_inputEdit, 0);
     setLayout(mainLayout);
 
-    connect(&m_sendBtn->sigClicked, this, &MainWindow::onSend);
-    connect(&m_stopBtn->sigClicked, this, &MainWindow::onStop);
+    connect(&m_inputEdit->sendButton()->sigClicked, this, &MainWindow::onSendButton);
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
     connect(&m_settingsBtn->sigClicked, this, &MainWindow::onSettings);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
@@ -449,6 +459,8 @@ void MainWindow::appendLog(const CodeAgentLog& log)
 {
     if (log.type == "user")
         m_chatView->appendUser(log.text);
+    else if (log.type == "thinking")
+        m_chatView->appendThinkingDelta(log.text);
     else if (log.type == "delta")
         m_chatView->appendAssistantDelta(log.text);
     else if (log.type == "assistant")
@@ -475,6 +487,15 @@ void MainWindow::onSend()
     m_agent->request(text);
     m_inputEdit->setText("");
     m_busy = m_agent->isBusy();
+    m_inputEdit->sendButton()->setText(m_busy ? "停止" : "发送");
+}
+
+void MainWindow::onSendButton()
+{
+    if (m_busy)
+        onStop();
+    else
+        onSend();
 }
 
 void MainWindow::onStop()
@@ -556,6 +577,7 @@ void MainWindow::onPoll()
     if (busy != m_busy)
     {
         m_busy = busy;
+        m_inputEdit->sendButton()->setText(busy ? "停止" : "发送");
         if (!busy)
             m_chatView->endStream();
     }

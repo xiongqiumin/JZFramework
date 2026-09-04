@@ -41,6 +41,23 @@ JZWidget::JZWidget(JZWidget* parent)
 
 JZWidget::~JZWidget()
 {
+    // 1) 摘除"本控件被外部布局持有"的关系: 防止布局 items 继续持有悬垂指针。
+    //    逐个复制遍历: removeWidget 会修改 m_layoutOwners。
+    std::vector<JZLayout*> owners = m_layoutOwners;
+    for (JZLayout* l : owners)
+    {
+        if (l)
+            l->removeWidget(this);
+    }
+    m_layoutOwners.clear();
+
+    // 2) 释放本控件自有的布局。布局不拥有子控件 (只持有引用), 子控件仍由
+    //    对象树在随后的 ~JZObject 中统一析构; 此处先解绑可避免双重释放。
+    if (m_layout)
+    {
+        delete m_layout;
+        m_layout = nullptr;
+    }
 }
 
 void JZWidget::setParentWidget(JZWidget* parent)
@@ -119,8 +136,16 @@ void JZWidget::resize(int w, int h)
         return;
     // 旧尺寸先并入脏区: 缩小时腾出的区域需重绘, 否则后台缓冲残影
     invalidate(rect());
+    const JZSize oldSize(m_width, m_height);
     m_width = w;
     m_height = h;
+
+    // 尺寸已生效后先通知自身 (子类在此按新宽高重排内容/裁剪滚动范围),
+    // 再向下传播: 自身有布局则重排子控件; 子控件经 setGeometry->resize
+    // 尺寸变化时会各自再收到 resizeEvent, 形成完整的级联通知链。
+    JZResizeEvent ev(size(), oldSize);
+    resizeEvent(&ev);
+
     if (m_layout)
         m_layout->updateLayout();
     update();   // 新尺寸并入脏区
@@ -361,6 +386,34 @@ void JZWidget::updateLayout()
 {
     if (m_layout)
         m_layout->updateLayout();
+}
+
+// ==================== 布局内部登记 (仅 JZLayout 调用) ====================
+
+void JZWidget::_layoutAttach(JZLayout* layout)
+{
+    if (!layout)
+        return;
+    for (auto* l : m_layoutOwners)
+    {
+        if (l == layout)
+            return;   // 已登记, 防重复
+    }
+    m_layoutOwners.push_back(layout);
+}
+
+void JZWidget::_layoutDetach(JZLayout* layout)
+{
+    if (!layout)
+        return;
+    for (auto it = m_layoutOwners.begin(); it != m_layoutOwners.end(); ++it)
+    {
+        if (*it == layout)
+        {
+            m_layoutOwners.erase(it);
+            return;
+        }
+    }
 }
 
 void JZWidget::updateGeometry()

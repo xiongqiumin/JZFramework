@@ -27,7 +27,7 @@ public:
 
     JZObjectPointer object;
     JZEvent *event;
-    JZSemaphore *sem;
+    JZSemaphore *sem;  //同步的flag, 有这个flag 不会删除event 
 };
 
 class JZThreadConfig
@@ -67,8 +67,6 @@ public:
     bool isRequestInterruption() const;
     virtual void requestInterruption();
 
-
-
 jz_signals:
     JZSigVoid sigStarted;
     JZSigVoid sigFinished;
@@ -106,6 +104,7 @@ protected:
     virtual void wakeUp();
     void exec();
 
+    void notify(JZObject *object, JZEvent *event);
     void postEvent(const JZEventInfo &event);
     void processTimers();
     void processEvents();

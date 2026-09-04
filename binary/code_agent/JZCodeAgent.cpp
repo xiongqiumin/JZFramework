@@ -297,6 +297,7 @@ void JZCodeAgent::buildAgent()
     m_agent->init(m_llmConfig);
 
     connect(&m_agent->sigReply, this, &JZCodeAgent::onReply);
+    connect(&m_agent->sigThinking, this, &JZCodeAgent::onThinking);
     connect(&m_agent->sigError, this, &JZCodeAgent::onError);
     connect(&m_agent->sigFinished, this, &JZCodeAgent::onFinished);
 
@@ -315,14 +316,30 @@ void JZCodeAgent::buildAgent()
     addTool(new JZModifyCodeTool());
     addTool(new JZVirtualTerminal());
 
-    // 网络搜索工具：可配置搜索接口与 HTTP 代理
+    // 所有网络工具共享同一个访问管理器，代理只在此统一设置一次
+    if (!m_netMan)
+        m_netMan = new JZNetworkAccessManager(this);
+    if (!m_codeConfig.proxyHost.empty())
+    {
+        JZProxyConfig pc;
+        pc.host = m_codeConfig.proxyHost;
+        pc.port = m_codeConfig.proxyPort;
+        pc.user = m_codeConfig.proxyUser;
+        pc.password = m_codeConfig.proxyPassword;
+        m_netMan->setProxy(pc);
+    }
+
+    // 网络搜索工具：可配置搜索接口，共享 m_netMan（代理已统一设置）
     auto *searchTool = new JZWebSearchTool();
     if (!m_codeConfig.webSearchUrl.empty())
         searchTool->setSearchUrlTemplate(m_codeConfig.webSearchUrl);
-    if (!m_codeConfig.proxyHost.empty())
-        searchTool->setProxy(m_codeConfig.proxyHost, m_codeConfig.proxyPort,
-                             m_codeConfig.proxyUser, m_codeConfig.proxyPassword);
+    searchTool->setNetworkAccessManager(m_netMan);
     addTool(searchTool);
+
+    // 网页抓取工具：与 web_search 共享同一个访问管理器与代理
+    auto *fetchTool = new JZWebFetchTool();
+    fetchTool->setNetworkAccessManager(m_netMan);
+    addTool(fetchTool);
 
     applyZoneConfig();
 
@@ -381,6 +398,7 @@ string JZCodeAgent::buildSystemPrompt() const
     text += "- terminal    虚拟终端：cd / ls / cat / pwd / mkdir / rm / cp / mv，也可执行外部程序\n";
     text += "              输入 \"help\" 查看完整用法与当前可用程序\n";
     text += "- web_search 联网搜索：查文档、API 用法、报错原因、第三方库等实时信息时使用\n";
+    text += "- web_fetch  抓取网页正文：拿到 web_search 返回的链接后，取其详细内容/官方文档时使用\n";
     text += "\n";
     text += "terminal 不是通用 shell：不支持管道(|)、重定向(>)与命令串联(&&)，" \
             "换其它写法也会被拒绝，不要反复重试。\n";
@@ -436,6 +454,15 @@ void JZCodeAgent::onReply(const string &text)
     addLog("delta", text);
 
     // 收到任何文本: 当前这条已开始回复; 若队列已空则不再等待
+    if (m_pendingQueue.empty())
+        m_waiting = false;
+}
+
+void JZCodeAgent::onThinking(const string &text)
+{
+    addLog("thinking", text);
+
+    // 思考也是本轮输出的开始, 与 onReply 同样解除"等待回复中"
     if (m_pendingQueue.empty())
         m_waiting = false;
 }

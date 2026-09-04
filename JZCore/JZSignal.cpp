@@ -78,5 +78,6 @@ void JZBaseSignal::postEvent(JZObject *recvier, JZAsyncSignalEvent*event)
 
 void JZBaseSignal::postEventAndWait(JZObject *recvier, JZAsyncSignalEvent *event)
 {
-    jzApp->postEventAndWait(recvier, event);
+    jzApp->sendEvent(recvier, event);
+    delete event;
 }

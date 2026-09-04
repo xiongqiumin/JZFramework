@@ -89,8 +89,9 @@ struct JZSocketInfo
         UdpSocket,
         UdpListen,
         HttpClient,
-        HttpClientChunked,
-        HttpClientServer, //服务端的连接
+        HttpClientHttpsProxy,
+        HttpClientChunked, //连接后如果是chunked, net thread接线头改变 
+        HttpClientServer,  //服务端的连接
         HttpServer,
         WebSocket,
         WebSocketServer,  //服务端的websocket
@@ -129,9 +130,10 @@ public:
         Net_Write,
         Net_Draining,
         Net_HttpClientReopen,
+        Net_HttpClientProxyTlsInit,
         Net_HttpReplyFinish,
         Net_Close,
-        Net_SetReadLimit,        
+        Net_SetReadLimit,
     };
 
     JZNetReqEvent();
@@ -148,6 +150,9 @@ public:
 
     //ext
     std::shared_ptr<JZNetReqEventData> extData;
+
+    // Net_tlsInit 参数: 在代理隧道上做 TLS 握手时使用的真实目标主机(SNI)
+    std::string tlsHost;
 
     // setReadLimit 参数: 下行接收限速(字节/秒)
     int64_t readLimitBytesPerSec = 0;

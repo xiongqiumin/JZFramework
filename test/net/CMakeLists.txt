@@ -26,3 +26,8 @@ target_include_directories(test_mg_event PRIVATE ${CMAKE_SOURCE_DIR}/JZNet)
 
 add_executable(test_mg_postevent test_mg_postevent.cpp)
 target_link_libraries(test_mg_postevent JZFramework)
+
+# HTTP/HTTPS 代理测试: 验证 http 目标经代理转发、https 目标经代理 CONNECT 隧道
+# 运行前通过环境变量注入代理: http_proxy / https_proxy (同 libcurl)
+add_executable(test_proxy test_proxy.cpp)
+target_link_libraries(test_proxy JZFramework)

@@ -2240,7 +2240,6 @@ void JZWebSearchTool::call(const ToolCall &params)
     if (!m_proxyHost.empty())
     {
         JZProxyConfig pc;
-        pc.enabled = true;
         pc.host = m_proxyHost;
         pc.port = m_proxyPort;
         pc.user = m_proxyUser;

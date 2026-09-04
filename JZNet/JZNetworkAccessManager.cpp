@@ -69,11 +69,32 @@ std::string JZNetworkConnect::url()
     return m_url;
 }
 
+// 构造发给 HTTP 代理的 CONNECT 请求：明文建立到真实目标的 TCP 隧道（代理只搬字节，不解密）
+std::string JZNetworkConnect::buildConnectRequest()
+{
+    std::string hostport = m_targetHost + ":" + std::to_string(m_targetPort);
+    std::string req = "CONNECT " + hostport + " HTTP/1.1\r\n";
+    req += "Host: " + hostport + "\r\n";
+    if (!m_proxyAuth.empty())
+        req += "Proxy-Authorization: " + m_proxyAuth + "\r\n";
+    req += "\r\n";
+    return req;
+}
+
 void JZNetworkConnect::open(const std::string& url)
 {
     JZSocketInfo info;
-    info.type = JZSocketInfo::HttpClient;
-    info.url = url;
+    if (m_isHttpsProxy)
+    {
+        JZUrl url_info(url);
+        info.type = JZSocketInfo::HttpClientHttpsProxy;
+        info.url = url_info.host() + ":" + std::to_string(url_info.port());
+    }
+    else
+    {
+        info.type = JZSocketInfo::HttpClient;
+        info.url = url;
+    }
 
     m_url = url;
     openConn(info);
@@ -88,7 +109,14 @@ void JZNetworkConnect::reopen()
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_HttpClientReopen;
     req->conn = m_conn;
-    req->buffer = m_reply->m_send;
+    if (m_isHttpsProxy && m_proxyPhase == ProxyPhaseConnectSent)
+    {
+        JZ_ASSERT(0);
+    }
+    else
+    {
+        req->buffer = m_reply->m_send;
+    }
     postReqEvent(req);
 
     if(m_timeId != INVALID_TIMER_ID)
@@ -256,6 +284,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 
     if (ev == JZ_NET_EV_HTTP_MSG)
     {
+        // HTTPS 经 HTTP 代理：第一次收到的 HTTP 响应是代理对 CONNECT 的回复，需先升级 TLS
         JZHttpResData *http = (JZHttpResData*)(event->extData.get());
         m_reply->m_statusCode = http->httpCode;
         m_reply->m_statusText = http->httpCodeText;
@@ -322,10 +351,25 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     }
     else if (ev == JZ_NET_EV_CONNECT)
     {
-        writeConn(WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+        if (m_isHttpsProxy && m_proxyPhase == ProxyPhaseConnectSent)
+        {
+            // 连上代理后，先发送 CONNECT 建立隧道，暂不发真实 https 请求
+            std::string connectReq = buildConnectRequest();
+            writeConn(WriteBin, connectReq.data(), (int)connectReq.size());
+        }
+        else
+        {
+            writeConn(WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+        }
     }
     else if (ev == JZ_NET_EV_TLS_HS)
     {
+        // 隧道 TLS 握手完成：此时才在加密隧道上发送真正的 https 请求
+        if (m_isHttpsProxy)
+        {
+            m_proxyPhase = ProxyPhaseTunnelUp;
+            writeConn(WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
+        }
     }
     else if (ev == JZ_NET_EV_ERROR)
     {
@@ -334,8 +378,36 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
     else if (ev == JZ_NET_EV_READ)
     {
         m_recvTime = JZPlatform::getTickCountMs();
+        if (m_isHttpsProxy && m_proxyPhase == ProxyPhaseConnectSent)
+        {
+            m_httpsProxyBuffer.append(event->binData);
 
-        if (m_chunkMode && event->binData.size() > 0)
+            mg_http_message msg;
+            int n = mg_http_parse(m_httpsProxyBuffer.data(), m_httpsProxyBuffer.size(), &msg);
+            if (n < 0)
+            {
+                emitFinish(JZNetworkReply::ConnectError);
+                closeConn(true);
+            }
+            else if(n > 0)
+            {
+                int httpCode = mg_http_status(&msg);
+                if (httpCode == 200)
+                {
+                    JZNetReqEvent* tls_event = new JZNetReqEvent();
+                    tls_event->netCmd = JZNetReqEvent::Net_HttpClientProxyTlsInit;
+                    tls_event->tlsHost = m_targetHost;
+                    tls_event->conn = m_conn;
+                    postReqEvent(tls_event);
+                }
+                else
+                {
+                    emitFinish(JZNetworkReply::ConnectError);
+                    closeConn(true);
+                }
+            }
+        }
+        else if (m_chunkMode && event->binData.size() > 0)
             appendChunk(event->binData);
     }
     else if (ev == JZ_NET_EV_WRITE)
@@ -382,17 +454,6 @@ int64_t JZNetworkAccessManager::connectionIdleTimeout() const
     return m_connectionIdleTimeoutMs;
 }
 
-void JZNetworkAccessManager::setSsl(const std::string &caPem,
-                                     const std::string &clientCertPem,
-                                     const std::string &clientKeyPem,
-                                     bool skipVerify)
-{
-    m_ssl.sslCa = caPem;
-    m_ssl.sslCert = clientCertPem;
-    m_ssl.sslKey = clientKeyPem;
-    m_ssl.sslSkipVerify = skipVerify;
-}
-
 void JZNetworkAccessManager::setSsl(const JZSSLConfig &ssl)
 {
     m_ssl = ssl;
@@ -400,12 +461,64 @@ void JZNetworkAccessManager::setSsl(const JZSSLConfig &ssl)
 
 void JZNetworkAccessManager::setProxy(const JZProxyConfig &proxy)
 {
-    m_proxy = proxy;
+    m_proxyConfig = proxy;
 }
 
-const JZProxyConfig &JZNetworkAccessManager::proxy() const
+const JZOptional<JZProxyConfig> &JZNetworkAccessManager::proxy() const
 {
-    return m_proxy;
+    return m_proxyConfig;
+}
+
+// 从代理 URL 解析: http://[user:pass@]host:port（scheme 与 userinfo 均可选）
+JZProxyConfig JZProxyConfig::fromUrl(std::string url)
+{
+    JZProxyConfig cfg;
+    std::string rest = url;
+    size_t p = rest.find("://");
+    if (p != std::string::npos)
+        rest = rest.substr(p + 3);
+
+    std::string auth, hostport;
+    size_t at = rest.find('@');
+    if (at != std::string::npos)
+    {
+        auth = rest.substr(0, at);
+        hostport = rest.substr(at + 1);
+    }
+    else
+    {
+        hostport = rest;
+    }
+
+    size_t colon = hostport.rfind(':');
+    if (colon != std::string::npos && colon + 1 < hostport.size())
+    {
+        cfg.host = hostport.substr(0, colon);
+        try
+        {
+            cfg.port = std::stoi(hostport.substr(colon + 1));
+        }
+        catch (...)
+        {
+            cfg.host.clear();
+            cfg.port = 0;
+        }
+    }
+
+    if (!auth.empty())
+    {
+        size_t ac = auth.find(':');
+        if (ac != std::string::npos)
+        {
+            cfg.user = auth.substr(0, ac);
+            cfg.password = auth.substr(ac + 1);
+        }
+        else
+        {
+            cfg.user = auth;
+        }
+    }
+    return cfg;
 }
 
 // 生成代理认证头值: "Basic <base64(user:password)>"，无用户名则返回空
@@ -418,9 +531,15 @@ static std::string makeProxyAuthHeader(const JZProxyConfig &p)
 }
 
 // 是否经由 HTTP 代理转发：仅 http 目标且已配置代理时生效
-static bool useHttpProxy(const JZProxyConfig &p, const JZNetworkRequest &request)
+static bool useHttpProxy(const JZOptional<JZProxyConfig> &p, const JZNetworkRequest &request)
 {
-    return p.enabled && !p.host.empty() && request.url().scheme() == "http";
+    return p.isSome() && !p->host.empty() && request.url().scheme() == "http";
+}
+
+// 是否经由 HTTP 代理转发 https：配置代理且目标为 https 时，使用 CONNECT 隧道
+static bool useHttpsProxy(const JZOptional<JZProxyConfig> &p, const JZNetworkRequest &request)
+{
+    return p.isSome() && !p->host.empty() && request.url().scheme() == "https";
 }
 
 void JZNetworkAccessManager::onDisconnected()
@@ -493,10 +612,12 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 {
     std::string hostKey = this->hostKey(request);
 
-    // HTTP 代理：连接到代理地址（请求行已用绝对 URL 携带真实主机），响应原样返回。
+    // HTTP 代理：http 目标用绝对 URI 转发；https 目标经 CONNECT 隧道。
+    // 两者都连接到代理地址，真实响应经隧道/转发返回。
+    bool httpsProxy = useHttpsProxy(m_proxyConfig, request);
     std::string connectUrl = request.url().url();
-    if (useHttpProxy(m_proxy, request))
-        connectUrl = "http://" + m_proxy.host + ":" + std::to_string(m_proxy.port);
+    if (useHttpProxy(m_proxyConfig, request) || httpsProxy)
+        connectUrl = "http://" + m_proxyConfig->host + ":" + std::to_string(m_proxyConfig->port);
 
     // 1) 复用同一主机的空闲连接（按主机复用，而非完整 URL）
     JZNetworkConnect* conn = findIdleConnection(hostKey);
@@ -518,6 +639,15 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;
+    if (httpsProxy)
+    {
+        // 标记为 https 经代理隧道，并记录真实目标（SNI/CONNECT 用）与代理认证
+        conn->m_isHttpsProxy = true;
+        conn->m_proxyPhase = JZNetworkConnect::ProxyPhaseConnectSent;
+        conn->m_targetHost = request.url().host();
+        conn->m_targetPort = request.url().port();
+        conn->m_proxyAuth = makeProxyAuthHeader(m_proxyConfig.value());
+    }
     conn->open(connectUrl);
     connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);
@@ -525,14 +655,16 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 
 JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 {
-    bool proxy = useHttpProxy(m_proxy, request);
+    bool proxy = useHttpProxy(m_proxyConfig, request);
     JZNetworkRequest req = request;
     if (proxy)
     {
-        std::string auth = makeProxyAuthHeader(m_proxy);
+        // http 代理：认证头放内层请求（代理据此转发），请求行用绝对 URI
+        std::string auth = makeProxyAuthHeader(m_proxyConfig.value());
         if (!auth.empty())
             req.setRawHeader("Proxy-Authorization", auth);
     }
+    // https 代理：认证头放 CONNECT 请求上（见 buildConnectRequest），内层请求保持加密
 
     JZNetworkReply* reply = new JZNetworkReply(this);
     reply->m_request = req;
@@ -547,16 +679,18 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
 {
     JZTX_FUNC_TRACE
 
-    bool proxy = useHttpProxy(m_proxy, request);
+    bool proxy = useHttpProxy(m_proxyConfig, request);
     JZNetworkRequest mutableRequest = request;
     int actualBodyLen = body.size();
     mutableRequest.setHeader(JZNetworkRequest::ContentLengthHeader, std::to_string(actualBodyLen));
     if (proxy)
     {
-        std::string auth = makeProxyAuthHeader(m_proxy);
+        // http 代理：认证头放内层请求，请求行用绝对 URI
+        std::string auth = makeProxyAuthHeader(m_proxyConfig.value());
         if (!auth.empty())
             mutableRequest.setRawHeader("Proxy-Authorization", auth);
     }
+    // https 代理：认证头放 CONNECT 请求上，内层请求保持加密
 
     JZNetworkReply *reply = new JZNetworkReply(this);
     reply->m_request = mutableRequest;
@@ -648,15 +782,16 @@ bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::st
     reply->m_head.clear();
     reply->m_headers.clear();
 
-    // 重建发送缓冲
+    // 重建发送缓冲（重定向目标若仍走 http 代理，则请求行继续用绝对 URI）
+    bool proxy = useHttpProxy(m_proxyConfig, reply->m_request);
     if (method == JZNetworkRequest::Post) {
         int len = body.size();
         reply->m_request.setHeader(JZNetworkRequest::ContentLengthHeader, std::to_string(len));
-        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Post));
+        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Post, proxy));
         reply->m_send.append(body);
     }
     else {
-        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Get));
+        reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Get, proxy));
     }
 
     // 从当前连接摘除 reply，交给 open 重新分配连接（同主机可复用 keep-alive 连接）

@@ -93,7 +93,9 @@ public:
         LOG("[test] HTTPS server listening on %s", m_url.c_str());
 
         m_net = new JZNetworkAccessManager(this);
-        m_net->setSsl(kServerCertPem, "", "");   // 用服务端自签证书作为 CA 校验
+        JZSSLConfig server_config;
+        server_config.sslCert = kServerCertPem;
+        m_net->setSsl(server_config);   // 用服务端自签证书作为 CA 校验
 
         m_exitTimer = new JZTimer(this);
         m_exitTimer->setSingleShot(true);

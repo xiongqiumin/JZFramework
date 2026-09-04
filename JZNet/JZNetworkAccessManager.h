@@ -6,6 +6,7 @@
 #include "JZNetClient.h"
 #include "JZNetworkRequest.h"
 #include "JZNetworkReply.h"
+#include "JZOptional.h"
 
 class JZNetworkConnect : public JZNetObject
 {
@@ -35,6 +36,8 @@ protected:
     void resetConnection();   // keep-alive：重置状态以便复用连接
     void closeConnection();   // 真正关闭底层连接
 
+    std::string buildConnectRequest(); // 构造发给代理的 CONNECT 请求
+
     std::string m_url;
     std::string m_hostKey;    // 连接池 key：scheme://host:port（按主机复用）
 
@@ -46,19 +49,33 @@ protected:
     int64_t m_recvTime;
     bool m_chunkMode;
     bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
+
+    // HTTPS 经 HTTP 代理的 CONNECT 隧道状态
+    enum ProxyPhase { ProxyPhaseNone = 0, ProxyPhaseConnectSent, ProxyPhaseTunnelUp };
+    
+    std::string m_targetHost;          // 真实目标主机（SNI / CONNECT 用）
+    int m_targetPort = 443;            // 真实目标端口
+    std::string m_proxyAuth;           // 代理认证头值 "Basic ..."（用于 CONNECT）
+    ProxyPhase m_proxyPhase = ProxyPhaseNone;
+    bool m_isHttpsProxy = false;   // 本连接为 https 经 http 代理的隧道
+    JZByteArray m_httpsProxyBuffer;
 };
 
-// HTTP 代理配置：仅对 http 目标生效。
-// 工作方式 = 连接到代理地址，并在请求行使用绝对 URL（由 JZNetworkRequest 生成），
-// 代理据此把请求转发到真实主机；响应原样返回。
-// 注意：https 目标需要 CONNECT 隧道，这里未实现，https 请求会忽略代理直接连接。
+// HTTP 代理配置：对 http 与 https 目标均生效。
+//  - http  目标：连接到代理地址，并在请求行使用绝对 URL（由 JZNetworkRequest 生成），
+//    代理据此把请求转发到真实主机；响应原样返回。
+//  - https 目标：连接到代理地址后，先发送 CONNECT host:port 建立隧道，再在隧道上做 TLS 握手，
+//    之后发送正常的 https 请求；代理仅盲转发加密流量。
 struct JZProxyConfig
 {
-    bool enabled = false;     // 是否启用代理
     std::string host;         // 代理主机（如 "127.0.0.1"）
     int port = 0;             // 代理端口
     std::string user;         // 代理认证用户名（可选）
     std::string password;     // 代理认证密码（可选）
+
+    // 从代理 URL 解析: http://[user:pass@]host:port（scheme 与 userinfo 均可选）
+    // 解析失败返回 host 为空的对象（此时视为未配置代理）
+    static JZProxyConfig fromUrl(std::string url);
 };
 
 class JZNetworkAccessManager : public JZObject
@@ -70,9 +87,9 @@ public:
     JZNetworkReply *get(const JZNetworkRequest &request);
     JZNetworkReply *post(const JZNetworkRequest &request, const JZByteArray &buffer);
 
-    // 设置 HTTP 代理（仅对 http 目标生效；传空 host / enabled=false 即关闭）
+    // 设置 HTTP 代理（对 http / https 目标均生效；传空 host 的配置即视为关闭）
     void setProxy(const JZProxyConfig &proxy);
-    const JZProxyConfig &proxy() const;
+    const JZOptional<JZProxyConfig> &proxy() const;
 
     // 连接池管理
     void setMaxConnectionsPerHost(int n);
@@ -81,14 +98,6 @@ public:
     int64_t connectionIdleTimeout() const;
 
     // 统一设置 HTTPS 客户端 TLS 配置(需在发起请求前设置)
-    //  - caPem:        CA 证书(PEM), 用于校验服务端证书; 为空则跳过校验。
-    //  - clientCertPem: 客户端证书(PEM), 用于双向认证(可选); 空则无。
-    //  - clientKeyPem:  客户端私钥(PEM)。
-    //  - skipVerify:    是否跳过服务端证书校验(默认 false)。
-    void setSsl(const std::string &caPem,
-                const std::string &clientCertPem,
-                const std::string &clientKeyPem,
-                bool skipVerify = false);
     void setSsl(const JZSSLConfig &ssl);
 
 protected:    
@@ -112,7 +121,7 @@ protected:
 
     // HTTPS 客户端 TLS 配置
     JZSSLConfig m_ssl;              // 客户端 TLS 配置
-    JZProxyConfig m_proxy;          // HTTP 代理（仅对 http 目标生效）
+    JZOptional<JZProxyConfig> m_proxyConfig;   // HTTP 代理（http / https 目标均生效；空 = 不启用）
 };
 
 

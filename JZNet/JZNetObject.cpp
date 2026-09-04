@@ -294,13 +294,24 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             ptr->peerPort = mg_ntohs(c->rem.port);
             event->extData = ptr;
         }
+        else if (it->second.type == JZSocketInfo::HttpClientHttpsProxy)
+        {
+            event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
+            mg_iobuf_del(&c->recv, 0, c->recv.len);
+        }
         else if (it->second.type == JZSocketInfo::HttpClientChunked)
         {
-            if (c->recv.len > 0)
-            {
-                event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
-                mg_iobuf_del(&c->recv, 0, c->recv.len);
-            }
+            event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
+            mg_iobuf_del(&c->recv, 0, c->recv.len);
+        }
+    }
+    else if (ev == MG_EV_TLS_HS)
+    {
+        auto it = inst->m_connMap.find(c->id);
+        if (it->second.type == JZSocketInfo::HttpClientHttpsProxy)
+        {
+            it->second.type = JZSocketInfo::HttpClient;
+            c->pfn = g_mg_http_cb;
         }
     }
     else if (ev == MG_EV_HTTP_HDRS)
@@ -781,6 +792,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 initTls(conn, ssl, sslHost);
             }
         }
+        else if (info.type == JZSocketInfo::HttpClientHttpsProxy)
+        {
+            conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+        }
         else if (info.type == JZSocketInfo::HttpServer)
         {
             conn = mg_http_listen(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
@@ -848,6 +863,13 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if(event->netCmd == JZNetReqEvent::Net_Close)
         {
             c->is_closing = 1;
+        }
+        else if (event->netCmd == JZNetReqEvent::Net_HttpClientProxyTlsInit)
+        {
+            // HTTPS 经 HTTP 代理：在已连到代理的同一连接上，对真实目标做 TLS 握手。
+            // SSL 配置取自连接建立时存入的 ConnInfo.ssl（由 setSsl 设置），SNI 主机为真实目标。
+            initTls(c, conn_it->second.ssl, event->tlsHost);
+            mg_tls_handshake(c);
         }
         else if (event->netCmd == JZNetReqEvent::Net_SetReadLimit)
         {

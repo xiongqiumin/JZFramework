@@ -9,8 +9,112 @@
 #include "JZLabel.h"
 #include "JZTimer.h"
 #include "JZPlatform.h"
+#include "JZString.h"
+#include "JZStd.h"
+#include "JZFileInfo.h"
 
 using namespace std;
+
+// 授信目录输入：多个用分号分隔；每个目录可用 "|rw" 标记为可写（默认只读）。
+// 例如: "C:\Python312; C:\MyProj |rw"
+static string joinDirList(const vector<TrustedDir>& dirs)
+{
+    string text;
+    for (const auto& d : dirs)
+        text += (text.empty() ? string() : string("; ")) + d.path + (d.writable ? " |rw" : "");
+    return text;
+}
+
+static vector<TrustedDir> parseDirList(const string& text)
+{
+    vector<TrustedDir> out;
+    for (const auto& p : str_split(text, ";", JZ::SkipEmptyParts))
+    {
+        string s = str_trimmed(p);
+        if (s.empty())
+            continue;
+        TrustedDir td;
+        // 末尾 "|rw" / "|ro" 标记读写权限（Windows 路径不含 '|'）
+        size_t bar = s.find('|');
+        if (bar != string::npos)
+        {
+            string flag = str_toLower(str_trimmed(s.substr(bar + 1)));
+            td.writable = (flag == "rw");
+            s = str_trimmed(s.substr(0, bar));
+        }
+        if (!s.empty())
+        {
+            td.path = s;
+            out.push_back(td);
+        }
+    }
+    return out;
+}
+
+// 在 PATH 环境变量里找一个可执行文件，命中返回全路径（已规范化），否则返回空。
+// 用于启动时按本机默认补全可信程序（cmake / python 等）。
+static string findExeInPath(const string& exeName)
+{
+    char* env = nullptr;
+#ifdef _WIN32
+    _dupenv_s(&env, nullptr, "PATH");
+    string pathEnv = env ? env : string();
+    if (env) free(env);
+#else
+    const char* e = getenv("PATH");
+    string pathEnv = e ? e : string();
+#endif
+    if (pathEnv.empty())
+        return string();
+
+    vector<string> dirs = str_split(pathEnv, ";");
+    if (dirs.size() <= 1)
+        dirs = str_split(pathEnv, ":");
+
+    for (const auto& d : dirs)
+    {
+        string dir = str_trimmed(d);
+        if (dir.empty())
+            continue;
+        string full = codeNormalizePath(dir) + "/" + exeName;
+        if (JZFileInfo::exists(full))
+            return full;
+    }
+    return string();
+}
+
+// 按本机默认探测常用构建/脚本工具；名字需与虚拟终端的程序白名单对应。
+static vector<TrustedProgram> detectDefaultPrograms()
+{
+    struct Cand { string name; vector<string> exes; };
+    static const Cand cands[] = {
+        {"cmake",  {"cmake.exe", "cmake"}},
+        {"python", {"python.exe", "python3.exe", "python"}},
+        {"git",    {"git.exe", "git"}},
+        {"ninja",  {"ninja.exe", "ninja"}},
+        {"node",   {"node.exe", "node"}},
+        {"dotnet", {"dotnet.exe", "dotnet"}},
+        {"go",     {"go.exe", "go"}},
+        {"make",   {"make.exe", "make", "mingw32-make.exe"}},
+    };
+    vector<TrustedProgram> out;
+    for (const auto& c : cands)
+    {
+        for (const auto& exe : c.exes)
+        {
+            string p = findExeInPath(exe);
+            if (!p.empty())
+            {
+                TrustedProgram tp;
+                tp.name = c.name;
+                tp.path = p;
+                out.push_back(tp);
+                break;
+            }
+        }
+    }
+    return out;
+}
 
 // ==================== InputEdit ====================
 InputEdit::InputEdit(JZWidget* parent)
@@ -37,10 +141,11 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     : JZDialog(parent)
 {
     setTitle("设置");
-    resize(460, 250);
+    resize(460, 285);
     setLayout(new JZVBoxLayout(8, 8));
 
-    auto addRow = [this](const string& label, JZLineEdit*& edit)
+    // withBrowse: 该行末尾额外放一个"浏览..."按钮（用于选择工作区目录）
+    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse)
     {
         JZWidget* row = new JZWidget(this);
         JZHBoxLayout* h = new JZHBoxLayout(6, 6);
@@ -49,13 +154,22 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
         edit = new JZLineEdit(row);
         h->addWidget(l, 0);
         h->addWidget(edit, 1);
+        if (withBrowse)
+        {
+            m_wsBrowseBtn = new JZPushButton(row, 70, 28, "浏览...");
+            h->addWidget(m_wsBrowseBtn, 0);
+        }
         row->setLayout(h);
         static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
     };
-    addRow("模型地址", m_urlEdit);
-    addRow("模型名称", m_nameEdit);
-    addRow("API Token", m_tokenEdit);
-    addRow("工作区", m_wsEdit);
+    addRow("模型地址", m_urlEdit, false);
+    addRow("模型名称", m_nameEdit, false);
+    addRow("API Token", m_tokenEdit, false);
+    addRow("工作区", m_wsEdit, true);
+    addRow("授信目录", m_trustedEdit, false);
+    m_trustedEdit->setPlaceholderText("多个用分号分隔，如 C:\\Python312; C:\\MyProj |rw（默认只读，|rw 标记可写）");
+
+    connect(&m_wsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseWorkspace);
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
@@ -77,6 +191,7 @@ void SettingsDialog::setValues(const AppConfig& cfg)
     m_nameEdit->setText(cfg.modelName);
     m_tokenEdit->setText(cfg.modelToken);
     m_wsEdit->setText(cfg.workspace);
+    m_trustedEdit->setText(joinDirList(cfg.trustedDirs));
 }
 
 void SettingsDialog::getValues(AppConfig& cfg)
@@ -85,6 +200,14 @@ void SettingsDialog::getValues(AppConfig& cfg)
     cfg.modelName = m_nameEdit->text();
     cfg.modelToken = m_tokenEdit->text();
     cfg.workspace = m_wsEdit->text();
+    cfg.trustedDirs = parseDirList(m_trustedEdit->text());
+}
+
+void SettingsDialog::onBrowseWorkspace()
+{
+    string dir = JZFileDialog::getExistingDirectory(this, "选择工作区目录", m_wsEdit->text());
+    if (!dir.empty())
+        m_wsEdit->setText(dir);
 }
 
 void SettingsDialog::onAccept()
@@ -111,6 +234,9 @@ MainWindow::MainWindow(JZWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    // 退出前给当前工作区存档（agent 是子对象，此时仍然有效）
+    if (m_agent)
+        m_agent->saveWorkspaceHistory();
 }
 
 void MainWindow::setupUi()
@@ -187,6 +313,52 @@ void MainWindow::loadConfig()
     if (root.isMember("modelName"))    m_cfg.modelName = root["modelName"].asString();
     if (root.isMember("modelToken"))   m_cfg.modelToken = root["modelToken"].asString();
     if (root.isMember("workspace"))    m_cfg.workspace = root["workspace"].asString();
+    if (root.isMember("trustedDirs"))
+    {
+        const Json::Value& arr = root["trustedDirs"];
+        for (int i = 0; i < (int)arr.size(); i++)
+        {
+            TrustedDir td;
+            if (arr[i].isString())
+                td.path = arr[i].asString();           // 兼容旧格式：纯字符串，默认只读
+            else
+            {
+                td.path = arr[i].get("path", "").asString();
+                td.writable = arr[i].get("writable", false).asBool();
+            }
+            if (!td.path.empty())
+                m_cfg.trustedDirs.push_back(td);
+        }
+    }
+    if (root.isMember("trustedPrograms"))
+    {
+        const Json::Value& arr = root["trustedPrograms"];
+        for (int i = 0; i < (int)arr.size(); i++)
+        {
+            TrustedProgram tp;
+            tp.name = arr[i].get("name", "").asString();
+            tp.path = arr[i].get("path", "").asString();
+            if (!tp.name.empty() && !tp.path.empty())
+                m_cfg.trustedPrograms.push_back(tp);
+        }
+    }
+    if (root.isMember("webSearchUrl")) m_cfg.webSearchUrl = root["webSearchUrl"].asString();
+    if (root.isMember("proxyHost"))    m_cfg.proxyHost = root["proxyHost"].asString();
+    if (root.isMember("proxyPort"))    m_cfg.proxyPort = root["proxyPort"].asInt();
+    if (root.isMember("proxyUser"))    m_cfg.proxyUser = root["proxyUser"].asString();
+    if (root.isMember("proxyPassword")) m_cfg.proxyPassword = root["proxyPassword"].asString();
+
+    // 按本机默认补全缺失的可信程序（在 PATH 中探测 cmake/python/git 等并写入全路径），
+    // 已显式配置的同名程序不覆盖。
+    vector<TrustedProgram> defaults = detectDefaultPrograms();
+    for (const auto& d : defaults)
+    {
+        bool found = false;
+        for (const auto& p : m_cfg.trustedPrograms)
+            if (str_toLower(p.name) == str_toLower(d.name)) { found = true; break; }
+        if (!found)
+            m_cfg.trustedPrograms.push_back(d);
+    }
 
     if (m_cfg.workspace.empty())
         m_cfg.workspace = JZPlatform::applicationDirPath();
@@ -199,6 +371,32 @@ void MainWindow::saveConfig()
     root["modelName"] = m_cfg.modelName;
     root["modelToken"] = m_cfg.modelToken;
     root["workspace"] = m_cfg.workspace;
+
+    Json::Value trusted(Json::arrayValue);
+    for (const auto& d : m_cfg.trustedDirs)
+    {
+        Json::Value o;
+        o["path"] = d.path;
+        o["writable"] = d.writable;
+        trusted.append(o);
+    }
+    root["trustedDirs"] = trusted;
+
+    Json::Value progs(Json::arrayValue);
+    for (const auto& p : m_cfg.trustedPrograms)
+    {
+        Json::Value o;
+        o["name"] = p.name;
+        o["path"] = p.path;
+        progs.append(o);
+    }
+    root["trustedPrograms"] = progs;
+
+    root["webSearchUrl"] = m_cfg.webSearchUrl;
+    root["proxyHost"] = m_cfg.proxyHost;
+    root["proxyPort"] = m_cfg.proxyPort;
+    root["proxyUser"] = m_cfg.proxyUser;
+    root["proxyPassword"] = m_cfg.proxyPassword;
 
     Json::StyledWriter writer;
     string path = JZPlatform::applicationDirPath() + "/code_agent.json";
@@ -217,6 +415,13 @@ void MainWindow::applyConfig()
 
     CodeAgentConfig code;
     code.workspace = m_cfg.workspace;
+    code.trustedDirs = m_cfg.trustedDirs;
+    code.trustedPrograms = m_cfg.trustedPrograms;
+    code.webSearchUrl = m_cfg.webSearchUrl;
+    code.proxyHost = m_cfg.proxyHost;
+    code.proxyPort = m_cfg.proxyPort;
+    code.proxyUser = m_cfg.proxyUser;
+    code.proxyPassword = m_cfg.proxyPassword;
 
     m_agent->init(llm, code);
 
@@ -246,6 +451,8 @@ void MainWindow::appendLog(const CodeAgentLog& log)
         m_chatView->appendUser(log.text);
     else if (log.type == "delta")
         m_chatView->appendAssistantDelta(log.text);
+    else if (log.type == "assistant")
+        m_chatView->appendAssistant(log.text);   // 整条（导入历史时重建用）
     else if (log.type == "tool_call")
         m_chatView->appendTool(log.name, log.text);
     else if (log.type == "tool_result")
@@ -322,7 +529,15 @@ void MainWindow::onOpenDirectory()
     m_cfg.workspace = dir;
     saveConfig();
     updateStatus();
-    m_chatView->appendInfo("已切换到工作区: " + dir);
+
+    // 换了工作区 = 换一段对话: setWorkspace() 已存好旧对话、导入新对话并生成日志，
+    // 这里整屏重建（agent 的日志 id 已归零，m_renderedId 必须同步归零，否则增量拉取会漏）
+    m_chatView->clear();
+    m_renderedId = 0;
+    const auto& logs = m_agent->logs();
+    for (size_t i = 0; i < logs.size(); i++)
+        appendLog(logs[i]);
+    m_renderedId = m_agent->logSeq();
     m_chatView->scrollToBottom();
 }
 

@@ -49,6 +49,10 @@ private:
     unsigned m_physW = 0;
     unsigned m_physH = 0;
 
+    // init() 是否成功过。destroy() 必须与 init() 对称: 未成功 init 就 destroy 时
+    // 不能减 GDI+ 的引用计数，否则会把别的窗口还在用的 GDI+ 提前 Shutdown。
+    bool m_initialized = false;
+
     std::map<const JZImageData*, void*> m_bitmaps;   // JZImageData -> Gdiplus::Bitmap*
     JZDisplayDevice* m_widgetDevice = nullptr;
 };

@@ -230,8 +230,8 @@ void JZMenuView::openSubMenu(int index)
     sub->setParentMenu(m_menu);
     JZRect ir = m_menu->itemRect(index);
     JZPoint gp = this->mapToGlobal(ir.topLeft());
-    int rightEdge = gp.x() + ir.width();
-    JZRect anchor(rightEdge, gp.y(), rightEdge, gp.y() + ir.height());
+    // 锚点 = 该菜单项在屏幕上的矩形 (x, y, w, h); 子菜单由 popup 自行向右侧展开
+    JZRect anchor(gp.x(), gp.y(), ir.width(), ir.height());
     sub->popup(m_owner, anchor, true);   // 嵌套模态: 阻塞直到子菜单关闭
     m_submenu = sub;
 }
@@ -443,20 +443,27 @@ void JZMenu::popup(JZWindow* owner, const JZRect& anchor, bool asSubmenu)
     int screenW = (int)(GetSystemMetrics(SM_CXSCREEN) / s);
     int screenH = (int)(GetSystemMetrics(SM_CYSCREEN) / s);
 
+    // 由锚点矩形推导落点 (一律用 left/top + width/height, 不用 right()/bottom():
+    // JZRect 是 (x,y,w,h) 且 right/bottom 含 -1 的闭区间语义, 直接拿来做外边缘会偏)
+    int anchorL = anchor.left();
+    int anchorT = anchor.top();
+    int anchorR = anchor.left() + anchor.width();
+    int anchorB = anchor.top() + anchor.height();
+
     JZPoint pos = asSubmenu
-        ? JZPoint(anchor.right(), anchor.top())
-        : JZPoint(anchor.left(), anchor.bottom());
+        ? JZPoint(anchorR, anchorT)      // 子菜单: 贴锚点右侧
+        : JZPoint(anchorL, anchorB);     // 下拉: 贴锚点下沿
 
     if (asSubmenu) {
         if (pos.x() + cw > screenW)
-            pos.setX(anchor.left() - cw);                 // 向左翻
+            pos.setX(std::max(0, anchorL - cw));          // 向左翻 (贴父菜单左沿)
         if (pos.y() + ch > screenH)
-            pos.setY(std::max(0, screenH - ch));
+            pos.setY(std::max(0, screenH - ch));          // 上移贴屏幕底
     } else {
         if (pos.x() + cw > screenW)
             pos.setX(std::max(0, screenW - cw));
         if (pos.y() + ch > screenH)
-            pos.setY(anchor.top() - ch);                  // 向上翻
+            pos.setY(std::max(0, anchorT - ch));          // 向上翻 (贴锚点上沿)
     }
 
     m_popup->moveScreen(pos.x(), pos.y());

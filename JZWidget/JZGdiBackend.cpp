@@ -76,6 +76,9 @@ struct GdiplusLifetime
         return true;
     }
 
+    // GDI+ 是否还活着。绘制前用它兜底：一旦已 Shutdown，再绘制会进 GdiPlus.dll 崩。
+    bool isReady() const { return token != 0; }
+
     void release()
     {
         if (refCount > 0 && --refCount == 0) {
@@ -142,9 +145,10 @@ static void addRoundRectPath(GraphicsPath& path, const RectF& r, float radius)
 // (位图缓存、字体度量引擎同理, 都在 JZGdiBackend::destroy() 里提前释放。)
 namespace {
 
-FontFamily* g_fontFamily = nullptr;
+FontFamily* g_fontFamily = nullptr;      // 主字体: 微软雅黑
+FontFamily* g_fallbackFamily = nullptr;  // 回退字体: 由本文件管理生命周期
 
-// 文本字体族 (优先微软雅黑, 失败回退到 GenericSansSerif)
+// 文本字体族 (优先微软雅黑)
 const FontFamily& jzFontFamily()
 {
     if (!g_fontFamily)
@@ -152,10 +156,32 @@ const FontFamily& jzFontFamily()
     return *g_fontFamily;
 }
 
+// 回退字体族。
+// 不能用 FontFamily::GenericSansSerif(): 它是 GDI+ 内部的**函数内 static**,
+// 要等到 main() 返回后的静态析构阶段才销毁, 而 GDI+ 随最后一个窗口的销毁就
+// GdiplusShutdown() 了 —— 在已关闭的 GDI+ 上析构对象, 会在 GdiPlus.dll 里直接崩。
+// (这正是上面注释里要避开的坑, 之前 probeFamily/replayTasks 里却仍在用它。)
+// 这里改成自己 new、由 jzReleaseFontFamily() 在 Shutdown 之前释放。
+const FontFamily& jzFallbackFamily()
+{
+    if (!g_fallbackFamily)
+    {
+        g_fallbackFamily = new FontFamily(L"Microsoft Sans Serif");
+        if (g_fallbackFamily->GetLastStatus() != Ok)
+        {
+            delete g_fallbackFamily;
+            g_fallbackFamily = new FontFamily(L"Arial");
+        }
+    }
+    return *g_fallbackFamily;
+}
+
 void jzReleaseFontFamily()
 {
     delete g_fontFamily;
     g_fontFamily = nullptr;
+    delete g_fallbackFamily;
+    g_fallbackFamily = nullptr;
 }
 
 } // namespace
@@ -241,7 +267,7 @@ private:
     {
         Font probe(&jzFontFamily(), (REAL)pixelSize, FontStyleRegular, UnitPixel);
         return (probe.GetLastStatus() == Ok) ? &jzFontFamily()
-                                             : FontFamily::GenericSansSerif();
+                                             : &jzFallbackFamily();
     }
 
     HDC m_hdc = nullptr;
@@ -273,6 +299,7 @@ bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW,
     m_widgetDevice = device;
     if (!hwnd || !gdiplusLifetime().acquire())
         return false;
+    m_initialized = true;      // 之后 destroy() 才允许减引用计数
 
     // 字体度量引擎 (进程级, 引用计数与 GDI+ 生命周期一致)
     if (fontEngineRefCount()++ == 0) {
@@ -297,14 +324,22 @@ void JZGdiBackend::destroy()
     releaseMemBitmap();
     m_hwnd = nullptr;
 
-    // 字体度量引擎先于 GdiplusShutdown 注销
-    if (fontEngineRefCount() > 0 && --fontEngineRefCount() == 0) {
-        JZFontMetrics::setEngine(nullptr);
-        delete s_fontEngine;
-        s_fontEngine = nullptr;
-    }
+    // 引用计数的递减必须与 init() 里的递增严格对称。
+    // 之前这里是无条件的，于是"构造了 backend 但 init 失败/从未 init"的对象在析构时
+    // 也会减一次，把别的窗口仍在使用的 GDI+ 提前 Shutdown —— 表现就是关掉一个对话框后
+    // 主窗口下一次重绘在 GdiPlus.dll 里崩。
+    if (m_initialized) {
+        m_initialized = false;
 
-    gdiplusLifetime().release();
+        // 字体度量引擎先于 GdiplusShutdown 注销
+        if (fontEngineRefCount() > 0 && --fontEngineRefCount() == 0) {
+            JZFontMetrics::setEngine(nullptr);
+            delete s_fontEngine;
+            s_fontEngine = nullptr;
+        }
+
+        gdiplusLifetime().release();
+    }
 }
 
 // ==================== 双缓冲位图 ====================
@@ -366,6 +401,9 @@ void JZGdiBackend::render(JZLayer* layer)
     if (!m_hwnd || !m_memDC || !layer)
         return;
     if (m_physW == 0 || m_physH == 0)
+        return;
+    // 兜底: GDI+ 已 Shutdown 时不再绘制，否则一进 GdiPlus.dll 就崩
+    if (!gdiplusLifetime().isReady())
         return;
 
     {
@@ -509,7 +547,7 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
                 {
                     Font probe(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
                     if (probe.GetLastStatus() != Ok)
-                        family = FontFamily::GenericSansSerif();
+                        family = &jzFallbackFamily();
                 }
                 Font font(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
                 SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));

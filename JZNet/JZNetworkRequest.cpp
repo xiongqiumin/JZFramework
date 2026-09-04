@@ -68,12 +68,12 @@ void JZNetworkRequest::setHeader(KnownHeaders header, const std::string &headerV
     }
 }
     
-std::string JZNetworkRequest::buildHttpHeader(HttpMethod method) const
+std::string JZNetworkRequest::buildHttpHeader(HttpMethod method, bool absoluteUri) const
 {
     std::string result;
 
     std::string scheme = m_url.scheme();
-    std::string target = m_url.path() + m_url.query().toString();
+    std::string target = absoluteUri ? m_url.url() : (m_url.path() + m_url.query().toString());
 
     if (method == Get) {
         result += "GET " + target + " HTTP/1.1\r\n";

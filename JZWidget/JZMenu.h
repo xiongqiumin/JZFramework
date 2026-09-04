@@ -47,7 +47,8 @@ public:
 
     // ---- 作为弹层显示 ----
     // owner:   所属顶层窗口 (用于屏幕坐标换算 / 模态循环归属)
-    // anchor:  触发区 (屏幕逻辑坐标); 菜单在其下方展开; 子菜单在其右侧展开
+    // anchor:  触发区 (屏幕逻辑坐标, JZRect 语义为 x/y/w/h); 菜单在其下沿展开; 子菜单在其右侧展开
+    //          (注意: 不要按 left/top/right/bottom 传, right()/bottom() 是含 -1 的闭区间边)
     // asSubmenu: true 时向右展开 (供子菜单使用)
     void popup(JZWindow* owner, const JZRect& anchor, bool asSubmenu = false);
     void hidePopup();

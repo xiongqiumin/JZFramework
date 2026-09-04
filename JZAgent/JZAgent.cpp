@@ -124,6 +124,74 @@ std::string JZAgent::readFile(std::string filepath)
     return ret;
 }
 
+// 裁掉首尾不完整的对话段。
+// 大模型的硬性要求: 一条 assistant 若带 tool_calls, 后面必须紧跟对应的 tool 返回消息。
+// 中途停止/保存很容易停在"assistant 有 tool_calls 但没有 tool 返回"的状态,
+// 直接恢复会把不一致的历史发出去而被拒绝, 所以这里裁到自洽为止。
+static void trimIncompleteHistory(LLMContext &ctx)
+{
+    while (!ctx.history.empty())
+    {
+        const auto &last = ctx.history.back();
+        // 末尾的 tool 返回、system 都不应作为结尾
+        if (last->role == LLMHistory::Tool || last->role == LLMHistory::System)
+        {
+            ctx.history.pop_back();
+            continue;
+        }
+        // 末尾 assistant 还挂着未执行的工具调用
+        if (last->role == LLMHistory::Assistant && !last->toolRequest.empty())
+        {
+            ctx.history.pop_back();
+            continue;
+        }
+        break;
+    }
+
+    // 开头若残留 tool 返回(其对应的 assistant 已被丢弃)也一并裁掉
+    while (!ctx.history.empty() && ctx.history.front()->role == LLMHistory::Tool)
+        ctx.history.erase(ctx.history.begin());
+}
+
+bool JZAgent::saveHistory(const std::string &filepath) const
+{
+    LLMContext ctx;
+    ctx.history = m_context.history;
+    trimIncompleteHistory(ctx);
+    if (ctx.history.empty())
+        return false;      // 没有可存的对话, 不留下空存档文件
+    ctx.recalcUsage();
+
+    Json::Value root = ctx.toJson();
+
+    JZFile file;
+    if (!file.open(filepath, "wb"))
+        return false;
+
+    std::string text = root.toStyledString();
+    int written = file.write(str_toUtf8(text));
+    file.close();
+    return written == (int)text.size();
+}
+
+bool JZAgent::loadHistory(const std::string &filepath)
+{
+    std::string text = readFile(filepath);
+    if (text.empty())
+        return false;
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(text, root))
+        return false;
+    if (!m_context.fromJson(root))
+        return false;
+
+    trimIncompleteHistory(m_context);
+    m_context.recalcUsage();
+    return true;
+}
+
 void JZAgent::init(JZAgentConfig config)
 {
     m_config = config;

@@ -73,6 +73,40 @@ void ChatView::wrapText(const std::string& text, const JZFont& font,
         out.push_back("");
 }
 
+// ==================== 工具输出截断 ====================
+// 工具结果可能很长, 显示时只保留前后各 keepHead/keepTail 行原始文本,
+// 中间以省略标记代替; 原始 m.text 不变(历史/导出仍保留完整内容)。
+static std::string truncateToolText(const std::string& text, int keepHead, int keepTail)
+{
+    std::vector<std::string> raw;
+    size_t start = 0;
+    for (size_t i = 0; i <= text.size(); ++i)
+    {
+        if (i == text.size() || text[i] == '\n')
+        {
+            raw.push_back(text.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    int total = (int)raw.size();
+    if (total <= keepHead + keepTail)          // 中间无可省略行, 原样返回
+        return text;
+
+    std::string out;
+    for (int i = 0; i < keepHead; ++i)
+    {
+        out += raw[i];
+        out += '\n';
+    }
+    out += "... (省略 " + std::to_string(total - keepHead - keepTail) + " 行) ...\n";
+    for (int i = total - keepTail; i < total; ++i)
+    {
+        out += raw[i];
+        out += '\n';
+    }
+    return out;
+}
+
 // ==================== 单条消息布局 ====================
 void ChatView::layoutMsg(Msg& m)
 {
@@ -80,7 +114,10 @@ void ChatView::layoutMsg(Msg& m)
     int cardW = width() - 2 * kOuter - (kScrollBarW + 4) - 2 * kCardPad;
     if (cardW < 20)
         cardW = 20;
-    wrapText(m.text, font, cardW, m.lines);
+
+    const std::string& renderText =
+        (m.role == ToolResult) ? truncateToolText(m.text, 3, 3) : m.text;
+    wrapText(renderText, font, cardW, m.lines);
 
     int lh = JZFontMetrics::textHeight(font) + kLineGap;
     m.cardH = kHeaderH + (int)m.lines.size() * lh + 2 * kCardPad;
@@ -158,6 +195,12 @@ void ChatView::appendUser(const std::string& text)
     Msg m; m.role = User; m.text = text;
     m_msgs.push_back(std::move(m));
     afterChange();
+}
+
+void ChatView::appendAssistant(const std::string& text)
+{
+    appendAssistantDelta(text);
+    endStream();
 }
 
 void ChatView::appendAssistantDelta(const std::string& text)

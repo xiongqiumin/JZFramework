@@ -48,6 +48,19 @@ protected:
     bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
 };
 
+// HTTP 代理配置：仅对 http 目标生效。
+// 工作方式 = 连接到代理地址，并在请求行使用绝对 URL（由 JZNetworkRequest 生成），
+// 代理据此把请求转发到真实主机；响应原样返回。
+// 注意：https 目标需要 CONNECT 隧道，这里未实现，https 请求会忽略代理直接连接。
+struct JZProxyConfig
+{
+    bool enabled = false;     // 是否启用代理
+    std::string host;         // 代理主机（如 "127.0.0.1"）
+    int port = 0;             // 代理端口
+    std::string user;         // 代理认证用户名（可选）
+    std::string password;     // 代理认证密码（可选）
+};
+
 class JZNetworkAccessManager : public JZObject
 {
 public:
@@ -56,6 +69,10 @@ public:
 
     JZNetworkReply *get(const JZNetworkRequest &request);
     JZNetworkReply *post(const JZNetworkRequest &request, const JZByteArray &buffer);
+
+    // 设置 HTTP 代理（仅对 http 目标生效；传空 host / enabled=false 即关闭）
+    void setProxy(const JZProxyConfig &proxy);
+    const JZProxyConfig &proxy() const;
 
     // 连接池管理
     void setMaxConnectionsPerHost(int n);
@@ -95,6 +112,7 @@ protected:
 
     // HTTPS 客户端 TLS 配置
     JZSSLConfig m_ssl;              // 客户端 TLS 配置
+    JZProxyConfig m_proxy;          // HTTP 代理（仅对 http 目标生效）
 };
 
 

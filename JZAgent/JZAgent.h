@@ -150,7 +150,13 @@ public:
     void init(JZAgentConfig config);
     
     const LLMContext* context() const;
-    
+
+    // 只持久化对话历史: systemPrompt / 工具 / 技能都不写进文件, 由调用方重新设置。
+    // 保存前会裁掉末尾不完整的一段(assistant 带 tool_calls 却没有对应的 tool 返回),
+    // 否则恢复后把不一致的历史发给大模型会被拒绝。
+    bool saveHistory(const std::string &filepath) const;
+    bool loadHistory(const std::string &filepath);
+
     void setSystemPrompt(std::string prompt);
     std::string systemPrompt();
     std::string toolsPrompt();

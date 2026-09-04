@@ -134,7 +134,9 @@ void JZMenuBar::openMenu(int index)
     auto rects = titleRects();
     JZRect tr = rects[index];
     JZPoint tl = mapToGlobal(tr.topLeft());
-    JZRect anchor(tl.x(), tl.y(), tl.x() + tr.width(), tl.y() + tr.height());
+    // JZRect 是 (x, y, w, h): 传触发区自身的宽高, 不要传 right/bottom
+    // (否则 JZMenu::popup 里取 bottom() 会变成 y + (y+h) - 1, 纵向整体偏掉一个屏幕 y)
+    JZRect anchor(tl.x(), tl.y(), tr.width(), tr.height());
 
     m_openIndex = index;
     update();

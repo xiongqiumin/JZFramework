@@ -21,6 +21,9 @@ public:
     // 各类消息追加接口 (流式 delta 会续接到同一助手气泡)
     void appendUser(const std::string& text);
     void appendAssistantDelta(const std::string& text);
+    // 整条助手消息: 等价于 appendAssistantDelta + endStream,
+    // 用于一次性重建(如导入工作区历史), 保证每条各占一个气泡。
+    void appendAssistant(const std::string& text);
     void appendTool(const std::string& name, const std::string& text);
     void appendToolResult(const std::string& text);
     void appendError(const std::string& text);

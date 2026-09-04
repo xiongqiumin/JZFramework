@@ -2,6 +2,7 @@
 #define JZ_CODE_AGENT_H_
 
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,37 @@
 class CodeAgentConfig
 {
 public:
-    std::string workspace;      // 工作区根目录，所有文件操作都限制在此目录内
+    std::string workspace;                    // 工作区根目录，可读写
+    std::vector<TrustedDir> trustedDirs;     // 授信目录（编译器/SDK 等），默认只读，可单独标记可写
+    std::vector<TrustedProgram> trustedPrograms;  // 显式指定的可信程序（全路径），优先于目录搜索
+
+    std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认
+    // HTTP 代理（仅对 http 目标生效；https 目标直连，不走代理）
+    std::string proxyHost;
+    int proxyPort = 0;
+    std::string proxyUser;
+    std::string proxyPassword;
+};
+
+// 单任务熔断配置
+//   定位: 这类保护是 code_agent 这个应用的策略，不进入 JZAgent 通用框架。
+//   tool 层只负责把"被拒绝"的原因结构化上报，统计与熔断由 JZCodeAgent 完成。
+struct GuardConfig
+{
+    int maxToolCalls = 50;      // 单条指令内工具调用总次数上限
+    int maxDurationSec = 900;   // 单条指令墙钟时长上限(秒)
+    int maxSameDeny = 3;        // 同一类拒绝原因的累计次数上限
+    int maxRepeatCall = 3;      // 完全相同的调用连续出现次数上限(判定陷入重复)
+};
+
+// 单任务熔断统计，每次用户下发新指令时重置
+struct GuardState
+{
+    int toolCalls = 0;
+    int totalDeny = 0;
+    int64_t startTimeMs = 0;
+    std::map<int, int> denyCount;            // DenyReason -> 次数
+    std::deque<std::string> recentCalls;     // 最近的调用指纹(工具名 + 参数)
 };
 
 // 一条会话日志，网页端按 id 增量拉取
@@ -59,8 +90,19 @@ public:
     const JZAgentConfig &llmConfig() const;
     bool setWorkspace(const std::string &path);
 
+    // 熔断配置（长时间跑/反复被拦时的保护）
+    void setGuardConfig(const GuardConfig &cfg);
+    const GuardConfig &guardConfig() const;
+
     // 更新大模型配置（保留会话日志，重建底层 agent）
     void applyLlmConfig(const JZAgentConfig &llm);
+
+    // 工作区对话存档（<工作区>/.jzcode）：切换工作区时自动保存旧对话、导入新对话。
+    // 只存对话历史，systemPrompt / 工具定义每次重建时重新生成，不进文件。
+    std::string historyFilePath() const;
+    void saveWorkspaceHistory();
+    void loadWorkspaceHistory();
+    void rebuildLogsFromHistory();
 
     // 文件浏览（网页端复用与工具一致的路径校验）
     bool listFiles(const std::string &rel, std::vector<std::string> &out, std::string &error) const;
@@ -71,13 +113,20 @@ public:
 protected:
     void buildAgent();
     void abortTools();
+    // 把当前配置转成虚拟终端的区域配置（工作区 + 授信目录）
+    void applyZoneConfig();
     void addLog(const std::string &type, const std::string &text, const std::string &name = std::string());
     std::string buildSystemPrompt() const;
+
+    // 熔断: 每次下发新指令时重置，工具调用/拒绝时累计，超阈值则停止当前任务
+    void resetGuard();
+    void checkGuard();
+    void triggerGuard(const std::string &reason, const std::string &suggestion);
 
     void onReply(const std::string &text);
     void onError(const std::string &text);
     void onFinished();
-    void onToolLog(const std::string &type, const std::string &name, const std::string &text);
+    void onToolLog(const std::string &type, const std::string &name, const std::string &text, int deny);
 
     JZAgent *m_agent = nullptr;
     JZAgentConfig m_llmConfig;
@@ -90,6 +139,9 @@ protected:
     int m_logId = 0;
     bool m_busy = false;
     bool m_stopping = false;
+
+    GuardConfig m_guardConfig;
+    GuardState m_guard;
 
     // 运行期间新到的指令缓存(自管队列, 不依赖 JZAgent 的 m_requests)，
     // 等上一步(当前任务)发完后由 onFinished 取出继续发送。

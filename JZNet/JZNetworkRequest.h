@@ -36,7 +36,9 @@ public:
     void setRawHeader(const std::string &headerName, const std::string &headerValue);
     const std::map<std::string, std::string> &rawHeaders() const;
 
-    std::string buildHttpHeader(HttpMethod method) const;
+    // absoluteUri=true 时请求行使用完整 URL（含 scheme://host:port），用于经由 HTTP 代理转发；
+    // 默认 false 时只使用 path+query（直连或 https 直连场景）。
+    std::string buildHttpHeader(HttpMethod method, bool absoluteUri = false) const;
     std::string buildWebSocketHeader() const;
 
 protected:

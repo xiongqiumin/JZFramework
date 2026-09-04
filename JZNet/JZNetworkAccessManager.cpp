@@ -3,6 +3,7 @@
 #include "JZStd.h"
 #include "JZTx.h"
 #include "JZDebug.h"
+#include "JZByteArray.h"
 
 #include <cctype>
 
@@ -397,6 +398,31 @@ void JZNetworkAccessManager::setSsl(const JZSSLConfig &ssl)
     m_ssl = ssl;
 }
 
+void JZNetworkAccessManager::setProxy(const JZProxyConfig &proxy)
+{
+    m_proxy = proxy;
+}
+
+const JZProxyConfig &JZNetworkAccessManager::proxy() const
+{
+    return m_proxy;
+}
+
+// 生成代理认证头值: "Basic <base64(user:password)>"，无用户名则返回空
+static std::string makeProxyAuthHeader(const JZProxyConfig &p)
+{
+    if (p.user.empty())
+        return std::string();
+    JZByteArray cred = str_toUtf8(p.user + ":" + p.password);
+    return "Basic " + str_fromUtf8(cred.toBase64());
+}
+
+// 是否经由 HTTP 代理转发：仅 http 目标且已配置代理时生效
+static bool useHttpProxy(const JZProxyConfig &p, const JZNetworkRequest &request)
+{
+    return p.enabled && !p.host.empty() && request.url().scheme() == "http";
+}
+
 void JZNetworkAccessManager::onDisconnected()
 {
     auto conn = jzobject_cast<JZNetworkConnect*>(sender());
@@ -467,6 +493,11 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
 {
     std::string hostKey = this->hostKey(request);
 
+    // HTTP 代理：连接到代理地址（请求行已用绝对 URL 携带真实主机），响应原样返回。
+    std::string connectUrl = request.url().url();
+    if (useHttpProxy(m_proxy, request))
+        connectUrl = "http://" + m_proxy.host + ":" + std::to_string(m_proxy.port);
+
     // 1) 复用同一主机的空闲连接（按主机复用，而非完整 URL）
     JZNetworkConnect* conn = findIdleConnection(hostKey);
     if (conn)
@@ -487,19 +518,28 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;
-    conn->open(request.url().url());
+    conn->open(connectUrl);
     connect(&conn->sigDisconnected, this, &JZNetworkAccessManager::onDisconnected);
     m_netConnects.push_back(conn);
 }
 
 JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
 {
+    bool proxy = useHttpProxy(m_proxy, request);
+    JZNetworkRequest req = request;
+    if (proxy)
+    {
+        std::string auth = makeProxyAuthHeader(m_proxy);
+        if (!auth.empty())
+            req.setRawHeader("Proxy-Authorization", auth);
+    }
+
     JZNetworkReply* reply = new JZNetworkReply(this);
-    reply->m_request = request;
+    reply->m_request = req;
     reply->m_method = JZNetworkRequest::Get;
 
-    reply->m_send = str_toUtf8(request.buildHttpHeader(JZNetworkRequest::Get));        
-    open(reply, request);
+    reply->m_send = str_toUtf8(req.buildHttpHeader(JZNetworkRequest::Get, proxy));        
+    open(reply, req);
     return reply;
 }
 
@@ -507,15 +547,22 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
 {
     JZTX_FUNC_TRACE
 
+    bool proxy = useHttpProxy(m_proxy, request);
     JZNetworkRequest mutableRequest = request;
     int actualBodyLen = body.size();
     mutableRequest.setHeader(JZNetworkRequest::ContentLengthHeader, std::to_string(actualBodyLen));
+    if (proxy)
+    {
+        std::string auth = makeProxyAuthHeader(m_proxy);
+        if (!auth.empty())
+            mutableRequest.setRawHeader("Proxy-Authorization", auth);
+    }
 
     JZNetworkReply *reply = new JZNetworkReply(this);
     reply->m_request = mutableRequest;
     reply->m_method = JZNetworkRequest::Post;
     reply->m_postBody = body;
-    reply->m_send = str_toUtf8(mutableRequest.buildHttpHeader(JZNetworkRequest::Post));        
+    reply->m_send = str_toUtf8(mutableRequest.buildHttpHeader(JZNetworkRequest::Post, proxy));        
     reply->m_send.append(body);
     open(reply, mutableRequest);
 

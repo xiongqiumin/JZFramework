@@ -232,20 +232,37 @@ void MainWindow::buildPages()
     // ---- Table ----
     {
         JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
         JZTableWidget* tbl = new JZTableWidget(page);
         tbl->setColumnCount(3);
-        tbl->setRowCount(3);
         tbl->setHorizontalHeaderLabels({ "Id", "Name", "Val" });
-        tbl->setCellValue(0, 0, "1");
-        tbl->setCellValue(0, 1, "Alpha");
-        tbl->setCellValue(0, 2, "99");
-        tbl->setCellValue(1, 0, "2");
-        tbl->setCellValue(1, 1, "Beta");
-        tbl->setCellValue(1, 2, "88");
-        tbl->setCellValue(2, 0, "3");
-        tbl->setCellValue(2, 1, "Gamma");
-        tbl->setCellValue(2, 2, "77");
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(tbl);
+        vlay->addWidget(tbl, 1);
+        m_table = tbl;
+
+        // 按钮行: 增加数据 / 清空数据
+        JZWidget* bar = new JZWidget(page);
+        JZHBoxLayout* hlay = new JZHBoxLayout(6, 6);
+        bar->setLayout(hlay);
+
+        JZPushButton* bAdd = new JZPushButton(bar, 90, 28, "Add Row");
+        JZPushButton* bAdd10 = new JZPushButton(bar, 110, 28, "Add 10 Rows");
+        JZPushButton* bClear = new JZPushButton(bar, 90, 28, "Clear");
+        bAdd->setObjectName("btnTableAdd");
+        bAdd10->setObjectName("btnTableAdd10");
+        bClear->setObjectName("btnTableClear");
+        connect(&bAdd->sigClicked, this, &MainWindow::onTableAdd);
+        connect(&bAdd10->sigClicked, this, &MainWindow::onTableAdd10);
+        connect(&bClear->sigClicked, this, &MainWindow::onTableClear);
+        hlay->addWidget(bAdd);
+        hlay->addWidget(bAdd10);
+        hlay->addWidget(bClear);
+        hlay->addStretch(1);
+
+        vlay->addWidget(bar, 0);
+
+        // 初始演示数据
+        appendTableRows(3);
         m_preview->addWidget(page);
     }
 
@@ -402,4 +419,36 @@ void MainWindow::onSpinValueChanged(int v)
 void MainWindow::onScrollValueChanged(int v)
 {
     log("scroll value: " + std::to_string(v));
+}
+
+void MainWindow::appendTableRows(int n)
+{
+    if (!m_table || n <= 0) return;
+    int r0 = m_table->rowCount();
+    m_table->setRowCount(r0 + n);
+    for (int i = 0; i < n; i++) {
+        m_tableSeq++;
+        int r = r0 + i;
+        m_table->setCellValue(r, 0, std::to_string(m_tableSeq));
+        m_table->setCellValue(r, 1, "item " + std::to_string(m_tableSeq));
+        m_table->setCellValue(r, 2, std::to_string(m_tableSeq * 37 % 1000));
+    }
+    log("table rows: " + std::to_string(m_table->rowCount()));
+}
+
+void MainWindow::onTableAdd()
+{
+    appendTableRows(1);
+}
+
+void MainWindow::onTableAdd10()
+{
+    appendTableRows(10);
+}
+
+void MainWindow::onTableClear()
+{
+    if (!m_table) return;
+    m_table->setRowCount(0);
+    log("table cleared, rows: 0");
 }

@@ -35,6 +35,8 @@ public:
     // ---- 后端传输 ----
     // HTTP: Streamable HTTP, 在 port 监听, 端点路径 path(默认 "/mcp")
     bool listenHttp(int port, const std::string& path = "/mcp");
+    bool listenHttp(std::string ip, int port, const std::string& path = "/mcp");
+
     // WebSocket: 在 port 监听, 文本帧即 JSON-RPC 请求
     bool listenWebSocket(int port);
     bool listenWebSocket(std::string ip,int port);

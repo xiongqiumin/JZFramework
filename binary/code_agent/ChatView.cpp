@@ -409,6 +409,7 @@ void ChatView::wheelEvent(JZMouseEvent* event)
     m_scrollY = std::max(0, std::min(m_scrollY, maxScroll));
     m_autoFollow = (m_scrollY >= maxScroll - 1);
     update();
+    event->accept();   // 已消费, 不向父链冒泡
 }
 
 void ChatView::mousePressEvent(JZMouseEvent* event)
@@ -443,7 +444,7 @@ void ChatView::paintEvent(JZPainterEvent* event)
     JZPainter p(this);
     int w = width(), h = height();
 
-    p.setClipLocal(JZRect(0, 0, w, h));
+    p.setClip(JZRect(0, 0, w, h));
 
     // 背景
     p.fillRect(0, 0, w, h, JZColor(0xF7, 0xF7, 0xF9));

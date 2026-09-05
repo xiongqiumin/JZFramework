@@ -839,6 +839,12 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
     // 内容控件/嵌套子控件上方的滚轮。鼠标抓取期间不冒泡 (拖拽目标独占)。
     if (!m_mouseGrabber && ev->mouseType() == JZMouseEvent::Wheel) {
         for (JZWidget* w = hitTest(ev->globalPos()); w; w = w->parentWidget()) {
+            // 顶层内容控件的 parent 就是 JZWindow 自身: 若继续冒泡回 window,
+            // JZWindow::event() 会把 mouse 当新消息再进 dispatchMouse, 从 hitTest
+            // 重新分发同一滚轮 -> window <-> 控件无限递归 (栈溢出)。
+            // Qt 语义: 滚轮冒泡止于内容控件, 不进入 QWindow 做二次分发。
+            if (jzobject_cast<JZWindow*>(w))
+                break;
             ev->ignore();   // 每一级重新给处理机会
             JZPoint gTop = w->mapToGlobal(w->rect().topLeft());
             ev->setLocalPos(JZPoint(ev->globalPos().x() - gTop.x(),

@@ -73,6 +73,12 @@ private:
     void onSpinValueChanged(int v);
     void onScrollValueChanged(int v);
 
+    // Table 演示: 增加/清空数据
+    void appendTableRows(int n);
+    void onTableAdd();
+    void onTableAdd10();
+    void onTableClear();
+
     JZListWidget    *m_list = nullptr;
     JZWidget        *m_top = nullptr;
     JZStackedWidget *m_preview = nullptr;
@@ -85,4 +91,8 @@ private:
     int  m_pbVal = 0;
     JZTextEdit *m_te = nullptr;
     JZLabel    *m_labelDemo = nullptr;
+
+    // Table 演示
+    JZTableWidget* m_table = nullptr;
+    int m_tableSeq = 0;
 };

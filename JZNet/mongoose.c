@@ -2194,11 +2194,6 @@ static void restore_http_cb(struct mg_connection *c) {
   c->is_resp = 0;
 }
 
-mg_event_handler_t mg_get_http_cb()
-{
-    return http_cb;
-}
-
 char *mg_http_etag(char *buf, size_t len, size_t size, time_t mtime);
 char *mg_http_etag(char *buf, size_t len, size_t size, time_t mtime) {
   mg_snprintf(buf, len, "\"%lld.%lld\"", (int64_t) mtime, (int64_t) size);

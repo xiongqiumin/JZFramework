@@ -88,9 +88,8 @@ struct JZSocketInfo
         TcpServer,
         UdpSocket,
         UdpListen,
-        HttpClient,
+        HttpClient,        
         HttpClientHttpsProxy,
-        HttpClientChunked, //连接后如果是chunked, net thread接线头改变 
         HttpClientServer,  //服务端的连接
         HttpServer,
         WebSocket,
@@ -128,8 +127,7 @@ public:
     enum {
         Net_Open,
         Net_Write,
-        Net_Draining,
-        Net_HttpClientReopen,
+        Net_Draining,        
         Net_HttpClientProxyTlsInit,
         Net_HttpReplyFinish,
         Net_Close,

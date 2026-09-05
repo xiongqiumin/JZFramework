@@ -38,6 +38,7 @@ set(MODULE_DEPENDS_JZCamera "JZCore")
 set(MODULE_DEPENDS_JZCrashReport "JZCore;JZNet")
 set(MODULE_DEPENDS_JZModbus "JZSerialPort;JZNet")
 set(MODULE_DEPENDS_JZOTA "JZCore;JZNet;JZJson")
+set(MODULE_DEPENDS_JZCompress "JZCore")
 
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
 message(STATUS "JZFramework root directory: ${JZFRAMEWORK_ROOT_DIR}")

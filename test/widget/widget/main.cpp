@@ -22,7 +22,7 @@ int app_main(int argc, char* argv[])
         "JZWidget 控件演示窗口的自动化工具。先 get_ui_state 看语义树 "
         "(className/viewId/text/boundsInScreen/能力位), 再 ui_invoke 驱动交互, "
         "ui_screenshot 截图核对结果。");
-    if (!mcp.listenWebSocket("127.0.0.1",9602))
+    if (!mcp.listenHttp("127.0.0.1",9602))
         return 1;
 #endif
 

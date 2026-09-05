@@ -20,8 +20,6 @@ int JZNET_MAX_RECV = 3 * 1024 * 1024;
 int JZNET_MAX_SEND = 3 * 1024 * 1024;
 static JZNetConfig g_netConfig;
 
-static mg_event_handler_t g_mg_http_cb = nullptr;
-
 JZNetEvent mgEventToNetEvent(int ev)
 {
     switch (ev)
@@ -296,25 +294,15 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             ptr->peerPort = mg_ntohs(c->rem.port);
             event->extData = ptr;
         }
-        else if (it->second.type == JZSocketInfo::HttpClientHttpsProxy)
-        {
-            event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
-            mg_iobuf_del(&c->recv, 0, c->recv.len);
-        }
-        else if (it->second.type == JZSocketInfo::HttpClientChunked)
+        else if (it->second.type == JZSocketInfo::HttpClient
+            || it->second.type == JZSocketInfo::HttpClientHttpsProxy)
         {
             event->binData = JZByteArray((char*)c->recv.buf, (int)c->recv.len);
             mg_iobuf_del(&c->recv, 0, c->recv.len);
         }
     }
     else if (ev == MG_EV_TLS_HS)
-    {
-        auto it = inst->m_connMap.find(c->id);
-        if (it->second.type == JZSocketInfo::HttpClientHttpsProxy)
-        {
-            it->second.type = JZSocketInfo::HttpClient;
-            c->pfn = g_mg_http_cb;
-        }
+    {        
     }
     else if (ev == MG_EV_HTTP_HDRS)
     {
@@ -546,8 +534,7 @@ JZNetThread::JZNetThread(JZObject *parent)
     mg_mgr_init(m_mgr);
     m_mgr->dns4.url = g_netConfig.dns4.empty() ? "udp://223.5.5.5:53" : g_netConfig.dns4.c_str();   // IPv4 DNS, 为空用阿里云
     m_mgr->dns6.url = g_netConfig.dns6.empty() ? "udp://[2400:3200::1]:53" : g_netConfig.dns6.c_str();  // IPv6 DNS, 为空用阿里云
-
-    g_mg_http_cb = mg_get_http_cb();
+    
     mg_wakeup_init(m_mgr);
 }
 
@@ -788,7 +775,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         }
         else if (info.type == JZSocketInfo::HttpClient)
         {
-            conn = mg_http_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
+            conn = mg_connect(m_mgr, info.url.c_str(), mg_thread_fn, nullptr);
             if (str_startsWith(info.url, "https://")) {
                 initTls(conn, ssl, sslHost);
             }
@@ -988,27 +975,7 @@ send_end:
                 jzWarning() << "send faild, net close buf len" << c->send.len << ", try len" << len;
                 c->is_closing = 1;
             }
-        }
-        else if (event->netCmd == JZNetReqEvent::Net_HttpClientReopen)
-        {
-            const char* buf = event->buffer.data();
-            int len = event->buffer.size();
-
-            //重置http
-            c->pfn = g_mg_http_cb;
-            conn_it->second.type = JZSocketInfo::HttpClient;
-            // 防止 send buffer 无限膨胀导致 OOM
-            bool send_finished = false;
-            if (c->send.len + len <= JZNET_MAX_SEND)
-            {
-                send_finished = mg_send(c, buf, len);
-            }
-            if (!send_finished) 
-            {
-                jzWarning() << "send faild, net close buf len" << c->send.len << ", try len" << len;
-                c->is_closing = 1;
-            }
-        }
+        }        
         else if (event->netCmd == JZNetReqEvent::Net_HttpReplyFinish)
         {
             c->is_resp = 0;

@@ -93,6 +93,11 @@ JZMcpServer::~JZMcpServer()
 
 bool JZMcpServer::listenHttp(int port, const std::string& path)
 {
+    return listenHttp("0.0.0.0", port, path);
+}
+
+bool JZMcpServer::listenHttp(std::string ip, int port, const std::string& path)
+{
     m_path = path.empty() ? std::string("/mcp") : path;
 
     if (!m_http)
@@ -103,13 +108,13 @@ bool JZMcpServer::listenHttp(int port, const std::string& path)
 
     m_http->addRoute(m_path, m_httpHandler);
 
-    if (!m_http->listen(port))
+    if (!m_http->listen(ip, port))
     {
         jzError() << "JZMcpServer(HTTP) failed to listen on port" << port;
         return false;
     }
 
-    jzInfo() << "JZMcpServer(HTTP) listening on http://0.0.0.0:" << port << m_path;
+    jzInfo().nospace() << "JZMcpServer(HTTP) listening on http://" + ip + ":" + std::to_string(port);
     return true;
 }
 

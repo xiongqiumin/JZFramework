@@ -87,6 +87,8 @@ set(JZ_SOURCES
     JZAiDriver.cpp
     JZScrollArea.h
     JZScrollArea.cpp
+    JZAbstractViewWidget.h
+    JZAbstractViewWidget.cpp
     JZListWidget.h
     JZListWidget.cpp
     JZSlider.h

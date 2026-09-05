@@ -16,13 +16,13 @@
 #endif
 #include <windows.h>
 
-JZ_OBJECT_IMPL(JZListWidget, JZScrollArea)
+JZ_OBJECT_IMPL(JZListWidget, JZAbstractViewWidget)
 
 // ============================================================================
-// JZListWidget (owner-draw 虚拟列表, 继承 JZScrollArea)
+// JZListWidget (owner-draw 虚拟列表, 继承 JZAbstractViewWidget)
 // ============================================================================
 JZListWidget::JZListWidget(JZWidget* parent)
-    : JZScrollArea(parent)
+    : JZAbstractViewWidget(parent)
     , currentIndexChanged(this)
     , sigActivated(this)
 {}
@@ -228,8 +228,8 @@ void JZListWidget::paintEvent(JZPainterEvent* event)
     int viewH = viewportHeight();
     int sy = scrollY();
 
-    // 视口白底, 防止项与项之间残留旧帧内容
-    p.fillRect(0, 0, viewW, viewH, JZColor::White);
+    // 整控件白底 (含滚动条带宽下的底色), 防止项与项之间/滚动条后残留旧帧内容
+    p.fillRect(0, 0, width(), height(), JZColor::White);
 
     int perRow = itemsPerRow();
     int rh = rowHeight();
@@ -296,14 +296,8 @@ void JZListWidget::keyPressEvent(JZKeyEvent* event)
         idx = std::max(0, std::min(idx, (int)m_items.size() - 1));
         if (idx != m_current) {
             setCurrentIndex(idx);
-
             // 选择行滚入视口
-            int top = idx * rowHeight();
-            int bottom = top + rowHeight();
-            if (top < scrollY())
-                scrollToY(top);
-            else if (bottom > scrollY() + viewportHeight())
-                scrollToY(bottom - viewportHeight());
+            ensureVisible(idx * rowHeight(), idx * rowHeight() + rowHeight());
         }
         event->accept();
         return;
@@ -328,12 +322,6 @@ void JZListWidget::keyPressEvent(JZKeyEvent* event)
 void JZListWidget::showEvent(JZShowEvent* e)
 {
     JZScrollArea::showEvent(e);
-    update();
-}
-
-void JZListWidget::resizeEvent(JZResizeEvent* e)
-{
-    JZScrollArea::resizeEvent(e);
     updateContentSize();
     update();
 }

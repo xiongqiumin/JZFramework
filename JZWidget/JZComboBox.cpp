@@ -194,7 +194,12 @@ void JZComboBox::mousePressEvent(JZMouseEvent* event)
 
 void JZComboBox::wheelEvent(JZMouseEvent* event)
 {
-    selectNext(event->wheelDelta() > 0 ? -1 : 1);
+    if ((int)m_items.size() > 0) {
+        selectNext(event->wheelDelta() > 0 ? -1 : 1);
+        event->accept();   // 已消费, 不向父链冒泡
+    } else {
+        JZWidget::wheelEvent(event);
+    }
 }
 
 void JZComboBox::selectNext(int dir)

@@ -133,6 +133,10 @@ void JZScrollBar::paintEvent(JZPainterEvent*)
     int mainLen = horiz ? w : h;
     int crossLen = horiz ? h : w;
 
+    // 整条背景: 不透明底色 —— 滚动条作为 JZScrollArea 子控件叠加在虚拟绘制内容上,
+    // 若留透明会让轨道/箭头之间的缝透出下面内容 (行背景、文字等)。
+    p.fillRect(0, 0, w, h, JZColor(0xf0, 0xf0, 0xf0));
+
     // 凹槽背景
     int trackTh = 6;
     int tStart = grooveStart();
@@ -209,6 +213,7 @@ void JZScrollBar::wheelEvent(JZMouseEvent* event)
 {
     if (event->wheelDelta() != 0) {
         setValue(m_value + (event->wheelDelta() > 0 ? m_singleStep : -m_singleStep));
+        event->accept();   // 已消费, 不向父链冒泡 (避免滚动区再滚一次)
         return;
     }
     JZWidget::wheelEvent(event);

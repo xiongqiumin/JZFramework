@@ -834,6 +834,22 @@ bool JZWindow::onWindowProcess(JZEvent* event)
 // 鼠标: 命中测试定位最深可见控件, 回填 localPos 后投递; 左键按下同时切换焦点。
 bool JZWindow::dispatchMouse(JZMouseEvent* ev)
 {
+    // 滚轮冒泡 (Qt 语义): 从最深的可见控件沿父链逐级投递, 未消费的
+    // (handler 未调用 accept) 继续向上, 让外层滚动容器 (JZScrollArea) 处理
+    // 内容控件/嵌套子控件上方的滚轮。鼠标抓取期间不冒泡 (拖拽目标独占)。
+    if (!m_mouseGrabber && ev->mouseType() == JZMouseEvent::Wheel) {
+        for (JZWidget* w = hitTest(ev->globalPos()); w; w = w->parentWidget()) {
+            ev->ignore();   // 每一级重新给处理机会
+            JZPoint gTop = w->mapToGlobal(w->rect().topLeft());
+            ev->setLocalPos(JZPoint(ev->globalPos().x() - gTop.x(),
+                                    ev->globalPos().y() - gTop.y()));
+            jzApp->sendEvent(w, ev);
+            if (ev->isAccepted())
+                return true;
+        }
+        return true;   // 无人消费也吞掉, 不外泄到 DefWindowProc
+    }
+
     // 鼠标抓取: 所有鼠标事件 (含窗口客户区外) 直发 grabber, 跳过命中测试。
     // 用于拖拽, 光标冲出控件命中带也不丢 move/up。
     JZWidget* hit = m_mouseGrabber ? m_mouseGrabber : hitTest(ev->globalPos());

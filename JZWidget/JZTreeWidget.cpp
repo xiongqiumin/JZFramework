@@ -16,7 +16,7 @@
 #endif
 #include <windows.h>
 
-JZ_OBJECT_IMPL(JZTreeWidget, JZScrollArea)
+JZ_OBJECT_IMPL(JZTreeWidget, JZAbstractViewWidget)
 
 // ============================================================================
 // JZTreeWidgetItem
@@ -139,10 +139,10 @@ void JZTreeWidgetItem::setExpanded(bool exp)
 }
 
 // ============================================================================
-// JZTreeWidget (owner-draw 虚拟树, 继承 JZScrollArea)
+// JZTreeWidget (owner-draw 虚拟树, 继承 JZAbstractViewWidget)
 // ============================================================================
 JZTreeWidget::JZTreeWidget(JZWidget* parent)
-    : JZScrollArea(parent)
+    : JZAbstractViewWidget(parent)
     , currentItemChanged(this)
     , itemActivated(this)
     , itemExpanded(this)
@@ -403,12 +403,7 @@ void JZTreeWidget::ensureRowVisible(int row)
     if (row < 0 || row >= (int)m_visible.size())
         return;
     int hh = m_header.empty() ? 0 : m_rowHeight;
-    int top = hh + row * m_rowHeight;
-    int bottom = top + m_rowHeight;
-    if (top < scrollY())
-        scrollToY(top);
-    else if (bottom > scrollY() + viewportHeight())
-        scrollToY(bottom - viewportHeight());
+    ensureVisible(hh + row * m_rowHeight, hh + row * m_rowHeight + m_rowHeight);
 }
 
 // ----------------------------------------------------------------------------
@@ -460,7 +455,7 @@ void JZTreeWidget::paintHeader(JZPainter& p)
 {
     int viewW = viewportWidth();
     int hh = m_rowHeight;
-    p.fillRect(0, 0, viewW, hh, JZColor(0xe8, 0xe8, 0xe8));
+    p.fillRect(0, 0, width(), hh, JZColor(0xe8, 0xe8, 0xe8));
     JZBrush brush; brush.setColor(JZColor::Black); p.setBrush(brush);
     JZFont font(13); p.setFont(font);
     p.drawText(6, JZFontMetrics::centerY(font, hh), m_header.c_str());
@@ -478,8 +473,8 @@ void JZTreeWidget::paintEvent(JZPainterEvent* event)
     int viewH = viewportHeight();
     int hh = m_header.empty() ? 0 : m_rowHeight;
 
-    // 视口白底, 防止项与项之间残留旧帧内容
-    p.fillRect(0, hh, viewW, std::max(0, viewH - hh), JZColor::White);
+    // 白底铺满整控件(含滚动条带宽), 防止项与项之间/滚动条后残留旧帧内容
+    p.fillRect(0, hh, width(), std::max(0, height() - hh), JZColor::White);
 
     int firstRow = (int)(sy - hh) / m_rowHeight;
     if (firstRow < 0) firstRow = 0;
@@ -602,12 +597,6 @@ void JZTreeWidget::keyPressEvent(JZKeyEvent* event)
 void JZTreeWidget::showEvent(JZShowEvent* e)
 {
     JZScrollArea::showEvent(e);
-    update();
-}
-
-void JZTreeWidget::resizeEvent(JZResizeEvent* e)
-{
-    JZScrollArea::resizeEvent(e);
     updateContentSize();
     update();
 }

@@ -3,13 +3,14 @@
 
 #include "JZWidget.h"
 #include "JZSignal.h"
-#include "JZStackedWidget.h"
 #include <vector>
 #include <string>
 
-// 类似 Qt QTabWidget: 顶部标签条 (owner-draw) + 下方页面区 (内嵌 JZStackedWidget)。
-//   - addTab 把页面挂到内部 stacked, 页面随本控件尺寸铺满标签条以下区域;
-//   - 点击标签切换页面并发 currentChanged;
+// 类似 Qt QTabWidget: 顶部标签条 (owner-draw) + 下方页面区。
+//
+// 内部不再派生 JZStackedWidget, 而是持有一个普通 JZWidget 子控件作为页面容器
+// (m_pageArea): 所有页面都是 m_pageArea 的直接子控件, 由本控件切换显隐; 页面区
+// 背景通过 installEventFilter + eventFilter 拦截 m_pageArea 的 paint 事件来绘制。
 //
 //     JZTabWidget* tabs = new JZTabWidget(parent);
 //     tabs->addTab(new JZWidget(), "General");
@@ -22,7 +23,7 @@ class JZTabWidget : public JZWidget
 public:
     explicit JZTabWidget(JZWidget* parent = nullptr);
 
-    // 页面所有权: 加入后由本控件 (经内部 stacked) 持有
+    // 页面所有权: 加入后由本控件持有
     int addTab(JZWidget* page, const std::string& label);
     void removeTab(int index);            // 同时删除页面
 
@@ -50,14 +51,17 @@ public:
 protected:
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
+    bool eventFilter(JZObject* watched, JZEvent* event) override;
 
 private:
     int tabWidth(int index) const;        // 标签宽度 = 文本宽 + padding
     int tabAt(int x) const;               // 本控件坐标 x -> 标签索引, 未命中 -1
-    void relayout();                      // 页面区铺满标签条以下
+    void relayout();                      // 页面容器铺满标签条以下并重排页面
+    void showCurrentPage();               // 仅当前页可见 (其余隐藏)
 
-    JZStackedWidget* m_stack = nullptr;
-    std::vector<std::string> m_labels;    // 与 stacked 页面一一对应
+    JZWidget* m_pageArea = nullptr;       // 内部页面容器 (普通 JZWidget)
+    std::vector<JZWidget*> m_pages;       // 与 m_labels 一一对应
+    std::vector<std::string> m_labels;
     int m_current = -1;
 
     static const int kTabBarH = 28;       // 标签条高度

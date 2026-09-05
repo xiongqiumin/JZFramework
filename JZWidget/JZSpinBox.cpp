@@ -171,6 +171,7 @@ void JZSpinBox::wheelEvent(JZMouseEvent* event)
     if (m_readOnly) { JZWidget::wheelEvent(event); return; }
     if (event->wheelDelta() != 0) {
         setValue(m_value + (event->wheelDelta() > 0 ? m_step : -m_step));
+        event->accept();   // 已消费, 不向父链冒泡
         return;
     }
     JZWidget::wheelEvent(event);

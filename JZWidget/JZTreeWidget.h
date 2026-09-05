@@ -1,7 +1,7 @@
 #ifndef JZ_TREE_WIDGET_H_
 #define JZ_TREE_WIDGET_H_
 
-#include "JZScrollArea.h"
+#include "JZAbstractViewWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
 #include "JZVariant.h"
@@ -66,7 +66,7 @@ private:
 
 // 虚拟树(owner-draw): 仅绘制可见行, 通过 JZPainter 直接画到画布,
 // 不创建/复用任何行控件。支持多级缩进、展开/折叠、单选。
-class JZTreeWidget : public JZScrollArea
+class JZTreeWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZTreeWidget)
 
@@ -125,13 +125,12 @@ jz_signals:
 
 protected:
     void showEvent(JZShowEvent* e) override;
-    void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
     void keyPressEvent(JZKeyEvent* event) override;
 
     void rebuildVisible();                                 // 重算可见行(并回填 depth)
-    void updateContentSize();
+    void updateContentSize() override;
     void defaultPaint(JZPainter& p, const JZRect& rect, JZTreeWidgetItem* item, int depth, bool expanded, bool selected);
     void paintHeader(JZPainter& p);
 

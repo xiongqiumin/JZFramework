@@ -33,17 +33,11 @@ public:
     void save();
     void restore();
 
-    // 绘制原点: 构造时按 widget 全局坐标自动设置, 提供 setOrigin 供手动偏移。
-    void setOrigin(int ox, int oy) { m_ox = ox; m_oy = oy; }
-
     // 裁剪属于绘制流状态, 变更时发 Push。
-    //   setClip(rc)      rc 为**显示(窗口)坐标** (与构造函数里的 m_clip 同一空间);
-    //                    供 JZDisplayDevice 这类按整屏脏区设裁剪的调用方使用。
-    //   setClipLocal(rc) rc 为**控件本地坐标**, 与 drawXxx 各接口一致;
-    //                    paintEvent 内部一律用这个。
-    // 两者不可混用: 把本地坐标当全局传, 裁剪区会落到窗口左上角, 内容被整片裁掉。
+    // setClip(rc): rc 为**控件本地坐标**, 与 drawXxx/fillRect 等各接口一致,
+    // paintEvent 内部一律用这个; 内部自动平移到显示(窗口)坐标再写入绘制流。
+    // 初始裁剪 (脏区 ∩ 控件全局 rect) 在构造时已设定, 一般无需再调。
     void setClip(const JZRect& clip);
-    void setClipLocal(const JZRect& local);
 
     void drawLine(int x1, int y1, int x2, int y2);
     // 描边矩形/圆角矩形 (用当前 pen), 语义对齐 Qt QPainter::drawRect:
@@ -70,6 +64,10 @@ private:
     // 把当前完整状态 (pen/brush/font/clip) 以 Push 任务写入绘制流。
     void pushState();
 
+    // 祖先裁剪: 向上找到开启 setClipChildren() 的祖先控件 (如滚动区 viewport),
+    // 把显示坐标裁剪区收缩到其显示范围内; widget 为该 painter 所属控件。
+    JZRect applyAncestorClips(JZWidget* widget, const JZRect& globalClip) const;
+
     struct State {
         JZPen pen;
         JZBrush brush;
@@ -77,7 +75,10 @@ private:
     };
 
     JZLayer* m_layer = nullptr;
+    JZWidget* m_widget = nullptr;
 
+    // 绘制原点: 构造时按 widget 全局坐标自动设置, 内部用于把本地坐标平移到
+    // 显示坐标 (drawXxx/setClip 通用)。不对外开放, 外部不可调整。
     int m_ox = 0;
     int m_oy = 0;
     JZRect m_clip;

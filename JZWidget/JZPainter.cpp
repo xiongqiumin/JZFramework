@@ -19,6 +19,7 @@ JZPainter::JZPainter(JZWidget* widget)
     m_ox = g.left();
     m_oy = g.top();
     m_screen = widget->window()->rect();
+    m_widget = widget;
 
     // 裁剪 = 本轮脏区 ∩ 控件全局 rect (border-box 外框)。
     // 控件在 paintEvent 里自建 JZPainter, clip 的权威设定点在构造函数:
@@ -26,6 +27,11 @@ JZPainter::JZPainter(JZWidget* widget)
     //   - 部分失效时, 根窗口的整窗白填也被限制在脏区内。
     JZRect dirty = device->dirtyRect();
     m_clip = dirty.isEmpty() ? g : dirty.intersect(g);
+
+    // 祖先裁剪 (Qt WA_ClipChildren 语义): 向上找到开启 setClipChildren 的祖先控件
+    // (如滚动区 viewport), 把裁剪区收缩到其显示范围, 越界内容 (被移出视口的内容
+    // 子控件) 因此不会画到视口外。
+    m_clip = applyAncestorClips(widget, m_clip);
 
     // 进入 JZPainter 时发 Push, 把起始状态 (pen/brush/font/clip) 写入绘制流。
     pushState();
@@ -94,19 +100,16 @@ JZFont JZPainter::font() const
 
 void JZPainter::setClip(const JZRect& clip)
 {
-    m_clip = clip;
-    auto t = std::make_shared<JZDrawChangeTask>();
-    t->clip = JZOptional<JZRect>::Some(clip);
-    m_layer->addTask(t);
-}
-
-void JZPainter::setClipLocal(const JZRect& local)
-{
     // 裁剪在绘制流里一律以显示(窗口)坐标表示: isCulled 拿它减去图元的显示包围盒,
-    // 后端 replayTasks 直接 g.SetClip(它 * scale)。所以本地坐标必须先平移,
-    // 否则裁剪区会被放到窗口左上角, 控件内容整片消失。
-    setClip(JZRect(m_ox + local.x(), m_oy + local.y(),
-                   local.width(), local.height()));
+    // 后端 replayTasks 直接 g.SetClip(它 * scale)。setClip 传的是控件本地坐标
+    // (与 drawXxx 各接口一致), 必须先平移到显示坐标, 否则裁剪区会被放到窗口
+    // 左上角, 控件内容整片消失。
+    JZRect global(m_ox + clip.x(), m_oy + clip.y(),
+                  clip.width(), clip.height());
+    m_clip = applyAncestorClips(m_widget, global);
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->clip = JZOptional<JZRect>::Some(m_clip);
+    m_layer->addTask(t);
 }
 
 void JZPainter::save()
@@ -128,6 +131,18 @@ void JZPainter::restore()
     auto t = std::make_shared<JZDrawPopTask>();
     m_layer->addTask(t);
     --m_streamDepth;
+}
+
+JZRect JZPainter::applyAncestorClips(JZWidget* widget, const JZRect& globalClip) const
+{
+    JZRect c = globalClip;
+    JZWidget* root = widget->window();
+    for (JZWidget* p = widget->parentWidget(); p && p != root; p = p->parentWidget()) {
+        if (!p->clipChildren())
+            continue;
+        c = c.intersect(p->mapTo(root, p->rect()));
+    }
+    return c;
 }
 
 bool JZPainter::isCulled(const JZRect& displayBounds) const

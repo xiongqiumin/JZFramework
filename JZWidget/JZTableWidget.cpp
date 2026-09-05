@@ -6,15 +6,15 @@
 #include "JZFont.h"
 #include "JZFontMetrics.h"
 
-JZ_OBJECT_IMPL(JZTableWidget, JZScrollArea)
+JZ_OBJECT_IMPL(JZTableWidget, JZAbstractViewWidget)
 
 // ============================================================================
-// JZTableWidget (owner-draw 虚拟表格, 继承 JZScrollArea)
-//   - 自身即滚动区: 双向滚动, 内容由 m_content 撑开
+// JZTableWidget (owner-draw 虚拟表格, 继承 JZAbstractViewWidget)
+//   - 滚动条: 集成 JZScrollArea 的真实 JZScrollBar (内容双向滚动)
 //   - paintEvent 先画可见表体, 再在顶部叠加冻结表头(水平随滚动同步, 垂直固定)
 // ============================================================================
 JZTableWidget::JZTableWidget(JZWidget* parent)
-    : JZScrollArea(parent)
+    : JZAbstractViewWidget(parent)
     , currentRowChanged(this)
     , currentColumnChanged(this)
 {}
@@ -233,7 +233,7 @@ void JZTableWidget::paintHeader(JZPainter& p)
     int viewW = viewportWidth();
     int hh = headerHeight();
 
-    p.fillRect(0, 0, viewW, hh, JZColor(0xe8, 0xe8, 0xe8));
+    p.fillRect(0, 0, width(), hh, JZColor(0xe8, 0xe8, 0xe8));
 
     JZBrush brush; brush.setColor(JZColor::Black); p.setBrush(brush);
     JZFont font(13); p.setFont(font);
@@ -272,9 +272,9 @@ void JZTableWidget::paintEvent(JZPainterEvent* event)
     int hh = headerHeight();
 
     // ---- 可见表体 ----
-    // 表体白底 (表头以下区域), 未选中单元格透出白底
+    // 表体白底 (表头以下区域, 铺满整宽含滚动条带宽), 未选中单元格透出白底
     if (cols > 0)
-        p.fillRect(0, hh, viewW, std::max(0, viewH - hh), JZColor::White);
+        p.fillRect(0, hh, width(), std::max(0, height() - hh), JZColor::White);
 
     if (cols > 0 && rows > 0) {
         int firstCol = 0;
@@ -321,8 +321,4 @@ void JZTableWidget::showEvent(JZShowEvent* e)
     invalidateAll();
 }
 
-void JZTableWidget::resizeEvent(JZResizeEvent* e)
-{
-    JZScrollArea::resizeEvent(e);
-    invalidateAll();
-}
+

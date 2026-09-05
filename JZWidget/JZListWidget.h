@@ -1,7 +1,7 @@
 #ifndef JZ_LIST_WIDGET_H_
 #define JZ_LIST_WIDGET_H_
 
-#include "JZScrollArea.h"
+#include "JZAbstractViewWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
 #include "JZVariant.h"
@@ -25,7 +25,7 @@ public:
 
 // 虚拟列表(owner-draw): 仅绘制当前可见区域, 通过 JZPainter 直接画到画布上,
 // 不创建/复用任何行控件。同时支持列表模式(单列: 图标 + 文本)与图片模式(网格)。
-class JZListWidget : public JZScrollArea
+class JZListWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZListWidget)
 
@@ -82,12 +82,11 @@ public:
 
 protected:
     void showEvent(JZShowEvent* e) override;
-    void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
     void keyPressEvent(JZKeyEvent* event) override;
 
-    void updateContentSize();
+    void updateContentSize() override;
     void defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetItem* item, int index);
     int itemsPerRow() const;
     int rowHeight() const;

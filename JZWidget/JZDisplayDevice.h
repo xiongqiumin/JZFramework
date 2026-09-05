@@ -44,8 +44,11 @@ public:
     void resize(int width, int height);
 
 private:
+    // ancClip: 祖先 setClipChildren 控件收窄后的可绘制区 (窗口坐标), 参与剔除判定
+    // (否则视口内被剪裁的超大子控件会错误覆盖掉它身后的兄弟控件, 如滚动条)
     void collectFrontToBack(JZWidget* w, const JZRect& area,
-                            std::vector<JZRect>& coverage, std::vector<JZWidget*>& out);
+                            std::vector<JZRect>& coverage, std::vector<JZWidget*>& out,
+                            const JZRect& ancClip);
 
     JZGdiBackend* m_backend = nullptr;
     JZLayer m_layer;

@@ -822,7 +822,7 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
     const int clipH = clipBottom - clipTop;
     if (clipW <= 0 || clipH <= 0)
         return;
-    p.setClipLocal(JZRect(m_marginLeft, clipTop, clipW, clipH));
+    p.setClip(JZRect(m_marginLeft, clipTop, clipW, clipH));
 
     // 行内垂直居中: 先按"可视高度"居中得到字形顶 bTop, 再减 internalLeading 得文字 cell 顶
     const int pad   = (lh - visH) / 2;

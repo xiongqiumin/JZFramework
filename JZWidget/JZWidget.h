@@ -127,6 +127,18 @@ public:
     void setPassThrough(bool on) { m_passThrough = on; }
     bool isPassThrough() const { return m_passThrough; }
 
+    // 子控件裁剪 (Qt WA_ClipChildren 语义): 开启后本控件所有子孙的绘制被裁剪到
+    // 本控件的显示区域 (用于滚动区 viewport 把越界的内容控件裁掉)。
+    // 绘制裁剪实现见 JZPainter::clippedToAncestors。
+    void setClipChildren(bool on)
+    {
+        if (m_clipChildren == on)
+            return;
+        m_clipChildren = on;
+        update();
+    }
+    bool clipChildren() const { return m_clipChildren; }
+
     // 布局
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
@@ -234,6 +246,7 @@ protected:
 
     bool m_visible;
     bool m_passThrough = false;
+    bool m_clipChildren = false;
 
     // ---- 布局内部登记 (由 JZLayout 统一管理, 业务代码勿直接调用) ----
     friend class JZLayout;

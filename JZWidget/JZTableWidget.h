@@ -1,7 +1,7 @@
 #ifndef JZ_WIDGET_TABLE_H_
 #define JZ_WIDGET_TABLE_H_
 
-#include "JZScrollArea.h"
+#include "JZAbstractViewWidget.h"
 #include "JZImage.h"
 #include "JZVariant.h"
 #include "JZPainter.h"
@@ -24,7 +24,7 @@ public:
 
 // 虚拟表格(owner-draw): 仅绘制当前可见区域的单元格, 通过 JZPainter 直接画到画布上,
 // 不创建/复用任何单元格控件。表头冻结在顶部, 主体可双向滚动。
-class JZTableWidget : public JZScrollArea
+class JZTableWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZTableWidget)
 
@@ -68,7 +68,6 @@ jz_signals:
 
 protected:
     void showEvent(JZShowEvent* e) override;
-    void resizeEvent(JZResizeEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;   // 绘制冻结表头
 
     void updateContentSize();

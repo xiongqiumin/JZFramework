@@ -31,3 +31,7 @@ target_link_libraries(test_mg_postevent JZFramework)
 # 运行前通过环境变量注入代理: http_proxy / https_proxy (同 libcurl)
 add_executable(test_proxy test_proxy.cpp)
 target_link_libraries(test_proxy JZFramework)
+
+# 压缩响应测试: 本地 server 返回 gzip / deflate / 明文 响应，client 校验解压结果（端到端验证 HTTP Content-Encoding 支持）
+add_executable(test_net_compress test_net_compress.cpp)
+target_link_libraries(test_net_compress JZFramework)

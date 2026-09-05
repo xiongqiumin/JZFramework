@@ -26,6 +26,7 @@ public:
         HttpError,
         TimeOutError,
         UserCancelError,
+        ContentEncodingError,   // 收到无法解码的 Content-Encoding（br/zstd/compress 等）
     };
 
     enum RedirectPolicy {

@@ -4,6 +4,9 @@
 #include "JZTx.h"
 #include "JZDebug.h"
 #include "JZByteArray.h"
+#ifdef HAS_JZCompress
+#include "JZCompress.h"
+#endif
 
 #include <cctype>
 
@@ -46,6 +49,78 @@ static int skip_chunk(const char* buf, int len, int* pl, int* dl) {
     return i + 2 + n + 2;
 }
 
+// 在缓冲中查找头结束符 \r\n\r\n，返回其后的偏移（即 body 起点）；未找到返回 0
+static size_t jzFindHeaderEnd(const char *buf, int len)
+{
+    for (int i = 0; i + 3 < len; i++)
+    {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n')
+            return (size_t)(i + 4);
+    }
+    return 0;
+}
+
+// 安全解析十进制整数（Content-Length 等）
+static long long jzParseInt(const std::string &s)
+{
+    try { return std::stoll(s); } catch (...) { return 0; }
+}
+
+// 从响应首行提取状态码文本（如 "OK"），mg_http_message 未单独保存该字段
+static std::string jzHttpStatusText(const struct mg_http_message& hm)
+{
+    std::string head(hm.head.buf, hm.head.len);
+    size_t eol = head.find("\r\n");
+    std::string line = (eol == std::string::npos) ? head : head.substr(0, eol);
+    size_t sp = line.find(' ');
+    if (sp == std::string::npos) return "";
+    size_t sp2 = line.find(' ', sp + 1);
+    return (sp2 == std::string::npos) ? "" : line.substr(sp2 + 1);
+}
+
+// 解析响应头到 reply（m_head / m_headers / Location）
+static void jzParseHeaders(JZNetworkReply *reply, struct mg_http_message& hm, std::string& location)
+{
+    reply->m_head.assign(hm.head.buf, hm.head.len);
+    reply->m_headers.clear();
+    for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
+    {
+        struct mg_str *name = &hm.headers[i].name;
+        if (name->len == 0) break;   // 头数组以空 name 结尾
+        std::string key = toLowerStr(std::string(name->buf, name->len));
+        std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
+        reply->m_headers[key] = val;
+    }
+    struct mg_str *loc = mg_http_get_header(&hm, "Location");
+    if (loc) location.assign(loc->buf, loc->len);
+}
+
+#ifdef HAS_JZCompress
+// 按 Content-Encoding 解压 body（原地替换）。
+// 返回 false 表示遇到无法解码的 Content-Encoding（br/zstd/compress 等）：调用方应报错终止，
+// 不能把压缩字节当明文投递；其余情况（无编码 / identity / 已成功解压）返回 true。
+static bool jzApplyContentEncoding(JZNetworkReply *reply, JZByteArray& body)
+{
+    auto it = reply->m_headers.find("content-encoding");
+    if (it == reply->m_headers.end())
+        return true;
+    std::string ce = toLowerStr(trimStr(it->second));
+    JZCompressAlgorithm algo = JZCompressAlgorithm::GZip;
+    if (ce == "gzip" || ce == "x-gzip")
+        algo = JZCompressAlgorithm::GZip;
+    else if (ce == "deflate")
+        algo = JZCompressAlgorithm::Zlib;   // HTTP deflate 实为 zlib 封装(rfc1950)
+    else if (ce == "identity")
+        return true;                        // identity = 无编码
+    else
+        return false;                       // br/zstd/compress 等不支持，调用方报错
+    auto r = jzDecompressBlock(body, algo);
+    if (r.isOk())
+        body = r.value();
+    return true;
+}
+#endif
+
 //JZNetworkConnect
 JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     :JZNetObject(manager), sigDisconnected(this)
@@ -55,6 +130,7 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     m_recvTime = 0;
     m_timeId = INVALID_TIMER_ID;
     m_chunkMode = false;
+    m_compressed = false;
     m_closing = false;
     m_manager = manager;
 }
@@ -105,31 +181,22 @@ void JZNetworkConnect::open(const std::string& url)
 void JZNetworkConnect::reopen()
 {
     resetConnection();
-
-    JZNetReqEvent* req = new JZNetReqEvent();
-    req->netCmd = JZNetReqEvent::Net_HttpClientReopen;
-    req->conn = m_conn;
-    if (m_isHttpsProxy && m_proxyPhase == ProxyPhaseConnectSent)
-    {
-        JZ_ASSERT(0);
-    }
-    else
-    {
-        req->buffer = m_reply->m_send;
-    }
-    postReqEvent(req);
-
+    
     if(m_timeId != INVALID_TIMER_ID)
         m_timeId = startTimer(200);
 
     m_recvTime = JZPlatform::getTickCountMs();
+    writeConn(WriteBin, m_reply->m_send.data(), m_reply->m_send.size());
 }
 
 void JZNetworkConnect::resetConnection()
 {
     // keep-alive：清空上一次请求/响应遗留的状态，使连接可复用
     m_chunkMode = false;
+    m_compressed = false;
     m_chunkBuffer.clear();
+    m_buffer.clear();
+    m_responseActive = false;
     m_closing = false;
     // 断开/复用前重置下行限速, 避免限速残留到连接复用
     setReadLimit(0);
@@ -177,6 +244,11 @@ JZByteArray JZNetworkConnect::getHttpBody(const JZByteArray& data)
 
 void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
 {
+    // 响应结束（成功/失败/中止）统一在此释放流式解压器，避免各路径重复清理
+#ifdef HAS_JZCompress
+    if (m_decompress) { delete m_decompress; m_decompress = nullptr; }
+#endif
+
     if (m_reply)
     {
         m_reply->m_conn = nullptr;
@@ -223,42 +295,75 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
     const char* s = m_chunkBuffer.data();
     int buf_len = m_chunkBuffer.size();
 
+    // chunked + Content-Encoding：用 JZDecompressStream 逐块增量解压。
+    // 每收到一块就把去帧后的压缩字节喂入 write()，立即产出明文追加到 m_reply->m_body，
+    // 不再等全部 chunk 收齐再一次性解压（原 jzApplyContentEncoding 收尾逻辑）。
+    bool compressed = m_compressed;
+
     int ofs = 0;
     int cl = 0;
     do
     {
-        int o = 0, pl, dl, len = buf_len;
-        bool has_data = false;
+        int o = 0, pl, dl;
+        bool body_grew = false;
 
-        // Find zero-length chunk (the end of the body)
-        while ((cl = skip_chunk(s + o, len - o, &pl, &dl)) > 0 && dl)
+        // 逐块取出纯数据
+        // 注：skip_chunk 以 s+o 为基准，pl 为块头长度，故数据起点为 s+o+pl；
+        //     ofs 在内循环期间恒为 0（循环后才更新），无需叠加。
+        while ((cl = skip_chunk(s + o, buf_len - o, &pl, &dl)) > 0 && dl)
         {
-            // 取出当前chunk纯数据，追加到m_body
-            const char* data_ptr = s + ofs + o + pl;
-            m_reply->m_body.append(data_ptr, dl);
-            has_data = true;
-
+            const char* data_ptr = s + o + pl;
+#ifdef HAS_JZCompress
+            if (compressed)
+            {
+                // 惰性创建流式解压器（算法在解析响应头时确定）
+                if (!m_decompress)
+                    m_decompress = new JZDecompressStream(m_compressAlgo);
+                JZByteArray plain = m_decompress->write(JZByteArray(data_ptr, dl));
+                if (!plain.empty())
+                {
+                    m_reply->m_body.append(plain);
+                    body_grew = true;
+                }
+            }
+            else
+#endif
+            {
+                m_reply->m_body.append(data_ptr, dl);
+                body_grew = true;
+            }
             o += cl;
         }
         ofs += o;
-        if (has_data)
+        if (body_grew)
             m_reply->sigReadyRead.emit();
 
         if (cl == 0)
+            break;                       // 数据尚未完整，等待更多数据
+        if (cl < 0)
         {
-            break;  // 数据尚未完整，等待更多数据
-        }
-        if (cl < 0) {
             m_chunkBuffer.remove(0, ofs);
             emitFinish(JZNetworkReply::ConnectError);
             closeConn(true);
             return;
         }
 
-        // 命中0长度结束块 dl=0，把结束块字节也计入ofs
+        // 命中 0 长度结束块：裁剪已消费字节，结束响应
         ofs += cl;
-        // 先裁剪已消费数据，再结束（keep-alive 时 emitFinish 会清空缓冲）
         m_chunkBuffer.remove(0, ofs);
+
+#ifdef HAS_JZCompress
+        if (compressed)
+        {
+            // 收尾：触发 gzip/zlib 帧尾 CRC/Adler 校验并取出尾部明文
+            JZByteArray plain;
+            if (m_decompress)
+                plain = m_decompress->finish();   // 收尾取尾部明文 + 帧尾校验；释放交给 emitFinish
+            if (!plain.empty())
+                m_reply->m_body.append(plain);
+            m_reply->sigReadyRead.emit();
+        }
+#endif
         emitFinish(JZNetworkReply::NoError);
         return;
     } while (0);
@@ -277,6 +382,34 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         if (m_conn != INVALID_NET_HANDLE)
         {
             m_conn = INVALID_NET_HANDLE;
+            // 无 Content-Length 且非 chunk 的分段响应：连接关闭即响应结束，用已缓冲 body 收尾
+            if (m_responseActive && m_reply)
+            {
+                size_t headerEnd = jzFindHeaderEnd(m_buffer.data(), (int)m_buffer.size());
+                if (headerEnd > 0)
+                {
+                    JZByteArray body = m_buffer.mid((int)headerEnd);
+#ifdef HAS_JZCompress
+                    if (m_compressed && !jzApplyContentEncoding(m_reply, body))   // 仅在有压缩编码时才解压
+                    {
+                        emitFinish(JZNetworkReply::ContentEncodingError);
+                    }
+                    else
+#endif
+                    {
+                        m_reply->m_body = body;
+                        m_reply->sigReadyRead.emit();
+                        emitFinish(JZNetworkReply::NoError);
+                    }
+                }
+                else
+                {
+                    emitFinish(JZNetworkReply::ConnectError);
+                }
+                sigDisconnected.emit();
+                deleteLater();
+                return;
+            }
             emitFinish(JZNetworkReply::ConnectError);
             sigDisconnected.emit();
         }
@@ -288,69 +421,9 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 
     if (ev == JZ_NET_EV_HTTP_MSG)
     {
-        JZHttpResData *http = (JZHttpResData*)(event->extData.get());
-        m_reply->m_statusCode = http->httpCode;
-        m_reply->m_statusText = http->httpCodeText;
-        m_reply->m_body = getHttpBody(event->binData);
-
-        // event->binData 为完整 HTTP 报文，仅解析一次：提取 head / Location / 所有头
-        std::string location;
-        struct mg_http_message hm;
-        if (mg_http_parse(event->binData.data(), (size_t)event->binData.size(), &hm) <= 0)
-        {
-            // 报文解析失败：连接异常，关闭并上报错误
-            emitFinish(JZNetworkReply::ConnectError);
-            closeConn(true);
-            return;
-        }
-
-        m_reply->m_head.assign(hm.head.buf, hm.head.len);
-
-        m_reply->m_headers.clear();
-        for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
-        {
-            struct mg_str *name = &hm.headers[i].name;
-            if (name->len == 0)
-                break;   // 头数组以空 name 结尾
-            std::string key = toLowerStr(std::string(name->buf, name->len));
-            std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
-            m_reply->m_headers[key] = val;
-        }
-
-        struct mg_str *loc = mg_http_get_header(&hm, "Location");
-        if (loc)
-            location.assign(loc->buf, loc->len);
-
-        // 3xx 重定向
-        bool isRedirect = (http->httpCode == 301 || http->httpCode == 302 ||
-                           http->httpCode == 303 || http->httpCode == 307 ||
-                           http->httpCode == 308);
-        if (isRedirect && !location.empty())
-        {
-            if (m_manager->followRedirect(m_reply, location))
-                return;   // 已发起重定向请求，不结束 reply
-        }
-
-        if (http->httpCode >= 200 && http->httpCode < 300)
-        {
-            m_reply->sigReadyRead.emit();
-            emitFinish(JZNetworkReply::NoError);
-        }
-        else
-        {
-            emitFinish(JZNetworkReply::HttpError);
-        }
-    }
-    else if (ev == JZ_NET_EV_HTTP_CHUNK_MODE)
-    {
-        m_chunkMode = true;
-
-        JZHttpResData* http = (JZHttpResData*)(event->extData.get());
-        m_reply->m_statusCode = http->httpCode;
-        m_reply->m_statusText = http->httpCodeText;
-
-        if(event->binData.size() > 0)
-            appendChunk(event->binData);
+        // 不再使用：HTTP 响应解析已统一到 JZ_NET_EV_READ 中自行完成（复用 mg 解析 + 自行解压）。
+        // 注：HttpClient 为 mg_connect 原始连接，mg 不会发出 MG_EV_HTTP_MSG / MG_EV_HTTP_HDRS。
+        return;
     }
     else if (ev == JZ_NET_EV_CONNECT)
     {
@@ -383,10 +456,10 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         m_recvTime = JZPlatform::getTickCountMs();
         if (m_isHttpsProxy && m_proxyPhase == ProxyPhaseConnectSent)
         {
-            m_httpsProxyBuffer.append(event->binData);
+            m_buffer.append(event->binData);
 
             mg_http_message msg;
-            int n = mg_http_parse(m_httpsProxyBuffer.data(), m_httpsProxyBuffer.size(), &msg);
+            int n = mg_http_parse(m_buffer.data(), m_buffer.size(), &msg);
             if (n < 0)
             {
                 emitFinish(JZNetworkReply::ConnectError);
@@ -397,6 +470,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                 int httpCode = mg_http_status(&msg);
                 if (httpCode == 200)
                 {
+                    m_buffer.remove(0, n);   // 丢弃代理 200 响应头，避免污染隧道内后续真实响应
                     JZNetReqEvent* tls_event = new JZNetReqEvent();
                     tls_event->netCmd = JZNetReqEvent::Net_HttpClientProxyTlsInit;
                     tls_event->tlsHost = m_targetHost;
@@ -412,6 +486,161 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         }
         else if (m_chunkMode && event->binData.size() > 0)
             appendChunk(event->binData);
+        else
+        {
+            // 普通 HTTP 响应：累积到 m_buffer，用 mg 解析头，按 Content-Length / chunked 自行收齐 body，
+            // 再按 Content-Encoding 解压。HTTP_MSG / HTTP_HDRS 事件不再使用（HttpClient 为 mg_connect 原始连接）。
+            // 注：mg_http_parse 只识别到 \r\n\r\n 即返回（头长度），不会等 body，故需自行判断 body 完整性。
+            m_buffer.append(event->binData);
+
+            // 1) 等请求头完整（\r\n\r\n）
+            size_t headerEnd = jzFindHeaderEnd(m_buffer.data(), (int)m_buffer.size());
+            if (headerEnd == 0)
+                return;                     // 头未完整，继续等
+
+            // 2) 仅解析头部分（限定长度，body 可能尚未到齐）
+            struct mg_http_message hm;
+            if (mg_http_parse(m_buffer.data(), headerEnd, &hm) <= 0)
+            {
+                emitFinish(JZNetworkReply::ConnectError);
+                closeConn(true);
+                return;
+            }
+
+            int code = mg_http_status(&hm);
+            // 参考 mongoose http_cb：
+            // 1) HTTP/1.0 不使用 Transfer-Encoding: chunked，故仅 HTTP/1.1+ 才按 chunked 处理；
+            // 2) 非 chunked 的 Transfer-Encoding（如 gzip/deflate 等）无法可靠解码，按错误终止。
+            bool isChunked = false;
+            bool is_http_1_0 = (hm.proto.len == 8 &&
+                                mg_strcasecmp(hm.proto, mg_str("HTTP/1.0")) == 0);
+            struct mg_str *te = mg_http_get_header(&hm, "Transfer-Encoding");
+            if (te != nullptr)
+            {
+                if (!is_http_1_0 && mg_strcasecmp(*te, mg_str("chunked")) == 0)
+                    isChunked = true;
+                else
+                {
+                    // 不支持的 Transfer-Encoding：客户端无法可靠解码，报错终止
+                    emitFinish(JZNetworkReply::ContentEncodingError);
+                    closeConn(true);
+                    return;
+                }
+            }
+
+            // 通用：解析响应头（status / 头表 / Location），三种收尾方式（chunked / Content-Length / 关闭收尾）共用，只做一次
+            m_reply->m_statusCode = code;
+            m_reply->m_statusText = jzHttpStatusText(hm);
+            std::string location;
+            jzParseHeaders(m_reply, hm, location);   // 含 content-encoding / Location
+
+#ifdef HAS_JZCompress
+            // 通用 Content-Encoding 判定（只在解析头时做一次，chunked / 非 chunked 复用）：
+            // gzip/x-gzip→GZip，deflate→Zlib(zlib 封装)；不支持（br/zstd/compress 等）且非 identity → 报错终止，
+            // 不能把压缩字节当明文投递（identity 表示无编码，正常放行）
+            m_compressed = false;
+            m_compressAlgo = JZCompressAlgorithm::GZip;
+            {
+                auto ce_it = m_reply->m_headers.find("content-encoding");
+                if (ce_it != m_reply->m_headers.end())
+                {
+                    std::string ce = toLowerStr(trimStr(ce_it->second));
+                    if (ce == "gzip" || ce == "x-gzip")
+                    {
+                        m_compressed = true;
+                        m_compressAlgo = JZCompressAlgorithm::GZip;
+                    }
+                    else if (ce == "deflate")
+                    {
+                        // HTTP deflate 实为 zlib 封装(rfc1950)
+                        m_compressed = true;
+                        m_compressAlgo = JZCompressAlgorithm::Zlib;
+                    }
+                    else if (ce != "identity")
+                    {
+                        emitFinish(JZNetworkReply::ContentEncodingError);
+                        closeConn(true);
+                        return;
+                    }
+                }
+            }
+#endif
+
+            if (isChunked)
+            {
+                // chunked：转入增量分块解析（appendChunk 自行 dechunk + 解压），避免整段缓冲在内存
+                m_chunkMode = true;
+                JZByteArray initBody = m_buffer.mid((int)headerEnd);
+                m_buffer.clear();
+                if (initBody.size() > 0)
+                    appendChunk(initBody);
+                return;
+            }
+
+            // 非 chunked：按 Content-Length 等待 body 完整
+            struct mg_str *clh = mg_http_get_header(&hm, "Content-Length");
+            long long bodyLen = 0;
+            if (clh != nullptr)
+                bodyLen = jzParseInt(std::string(clh->buf, clh->len));
+            if (bodyLen < 0) bodyLen = 0;
+
+            if (clh == nullptr)
+            {
+                // 无 Content-Length 且非 chunk：按响应状态决定收尾方式（参考 mongoose http_cb）
+                if (code >= 100 && code < 200)
+                {
+                    // 1xx interim：消费头部后继续等待真实响应，不结束 reply
+                    m_buffer.remove(0, (int)headerEnd);
+                    return;
+                }
+                if (code == 204 || code == 304)
+                {
+                    // 204/304 不应带 body；keep-alive 下服务器不会关闭连接，
+                    // 若等关闭会挂死，故直接以空 body 结束（对齐 http_cb 对 require_content_len 的处理）
+                    m_reply->m_body.clear();
+                    m_buffer.remove(0, (int)headerEnd);
+                    emitFinish(JZNetworkReply::NoError);
+                    return;
+                }
+                // 其余（HTTP/1.0 或依赖连接关闭收尾的响应）：连接关闭即结束，等 JZ_NET_EV_CLOSE
+                m_responseActive = true;
+                return;
+            }
+
+            if ((long long)m_buffer.size() < (long long)headerEnd + bodyLen)
+                return;                     // body 未完整，继续等
+
+            JZByteArray body(m_buffer.data() + headerEnd, (int)bodyLen);
+#ifdef HAS_JZCompress
+            if (m_compressed && !jzApplyContentEncoding(m_reply, body))   // 仅在有压缩编码时才解压
+            {
+                emitFinish(JZNetworkReply::ContentEncodingError);
+                closeConn(true);
+                return;
+            }
+#endif
+            m_reply->m_body = body;
+
+            m_buffer.remove(0, (int)(headerEnd + bodyLen));
+
+            bool isRedirect = (code == 301 || code == 302 || code == 303 ||
+                               code == 307 || code == 308);
+            if (isRedirect && !location.empty())
+            {
+                if (m_manager->followRedirect(m_reply, location))
+                    return;             // 已发起重定向请求，不结束 reply
+            }
+
+            if (code >= 200 && code < 300)
+            {
+                m_reply->sigReadyRead.emit();
+                emitFinish(JZNetworkReply::NoError);
+            }
+            else
+            {
+                emitFinish(JZNetworkReply::HttpError);
+            }
+        }
     }
     else if (ev == JZ_NET_EV_WRITE)
     {

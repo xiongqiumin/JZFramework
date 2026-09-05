@@ -56,6 +56,8 @@ std::string JZNetworkReply::errorString() const
             return "TimeOutError";
         case UserCancelError:
             return "UserCancelError";
+        case ContentEncodingError:
+            return "ContentEncodingError";
         default:
             return "UnknownError";
     }

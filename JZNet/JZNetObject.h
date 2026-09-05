@@ -32,8 +32,6 @@ enum JZNetEvent
     JZ_NET_EV_MQTT_MSG,   // MQTT PUBLISH received        struct mg_mqtt_message *
     JZ_NET_EV_MQTT_OPEN,  // MQTT CONNACK received        int *connack_status_code
     JZ_NET_EV_SNTP_TIME,  // SNTP time received           uint64_t *epoch_millis
-
-    JZ_NET_EV_HTTP_CHUNK_MODE = 256,
 };
 const char *netEventString(int event);
 

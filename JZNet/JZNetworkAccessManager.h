@@ -7,6 +7,9 @@
 #include "JZNetworkRequest.h"
 #include "JZNetworkReply.h"
 #include "JZOptional.h"
+#ifdef HAS_JZCompress
+#include "JZCompress.h"
+#endif
 
 class JZNetworkConnect : public JZNetObject
 {
@@ -44,21 +47,29 @@ protected:
     JZByteArray m_chunkBuffer;
     JZNetworkReply *m_reply;
     JZNetworkAccessManager* m_manager;
-    
+    JZByteArray m_buffer;             // 统一缓冲：代理 CONNECT 响应 / 普通响应头+body / chunked 解压后的压缩体（按阶段复用）
+    bool m_responseActive = false;     // 无 Content-Length 且非 chunk 的分段响应：等连接关闭收尾
+
     int m_timeId;
     int64_t m_recvTime;
     bool m_chunkMode;
+    // Content-Encoding 为 gzip/x-gzip/deflate：解析响应头时确定算法；appendChunk 据此惰性创建
+    // JZDecompressStream，每收到一块就增量 write() 解压，避免整段缓冲 + 收尾一次性解压。
+    bool m_compressed = false;                              // 本响应是否为受支持的压缩编码
+#ifdef HAS_JZCompress
+    JZCompressAlgorithm m_compressAlgo = JZCompressAlgorithm::GZip;  // 配合 m_compressed
+    JZDecompressStream *m_decompress = nullptr;             // 流式解压器（惰性创建，响应结束/复用/出错时释放）
+#endif
     bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
 
     // HTTPS 经 HTTP 代理的 CONNECT 隧道状态
-    enum ProxyPhase { ProxyPhaseNone = 0, ProxyPhaseConnectSent, ProxyPhaseTunnelUp };
-    
+    enum ProxyPhase { ProxyPhaseNone = 0, ProxyPhaseConnectSent, ProxyPhaseTunnelUp };    
+
     std::string m_targetHost;          // 真实目标主机（SNI / CONNECT 用）
     int m_targetPort = 443;            // 真实目标端口
     std::string m_proxyAuth;           // 代理认证头值 "Basic ..."（用于 CONNECT）
     ProxyPhase m_proxyPhase = ProxyPhaseNone;
-    bool m_isHttpsProxy = false;   // 本连接为 https 经 http 代理的隧道
-    JZByteArray m_httpsProxyBuffer;
+    bool m_isHttpsProxy = false;   // 本连接为 https 经 http 代理的隧道    
 };
 
 // HTTP 代理配置：对 http 与 https 目标均生效。

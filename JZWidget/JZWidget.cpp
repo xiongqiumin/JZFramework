@@ -1,7 +1,9 @@
 #include <cassert>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -11,6 +13,7 @@
 #include "JZWidget.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
+#include "JZScreen.h"
 #include "JZWindow.h"
 
 JZ_OBJECT_IMPL(JZWidget,JZObject)
@@ -37,6 +40,16 @@ JZWidget::JZWidget(JZWidget* parent)
     }
     else
         m_visible = false;
+}
+
+void JZWidget::setOpaque(int opaque)
+{
+    m_opaque = opaque;
+}
+
+int JZWidget::opaque() const
+{
+    return m_opaque;
 }
 
 JZWidget::~JZWidget()
@@ -276,6 +289,51 @@ JZRect JZWidget::mapToGlobal(const JZRect& rc) const
 {
     JZPoint tl = mapToGlobal(rc.topLeft());
     return JZRect(tl.x(), tl.y(), rc.width(), rc.height());
+}
+
+// ==================== 抓图 ====================
+
+JZImage JZWidget::grab()
+{
+    JZWindow* win = window();
+    if (!win || !win->nativeHandle() || !win->device())
+        return JZImage();
+    if (width() <= 0 || height() <= 0)
+        return JZImage();
+
+    // 抓整幅客户区 (物理像素), 再按控件矩形裁剪
+    const JZImage full = JZScreen::grabWindow(win->nativeHandle());
+    if (full.isNull())
+        return JZImage();
+
+    const std::shared_ptr<JZImageData> fullData = full.data();
+    const uint8_t* client = fullData->pixels();
+    const int cw = full.width();
+    const int ch = full.height();
+
+    // 逻辑 -> 物理: 控件相对窗口客户区的偏移与尺寸均按 DPI 缩放
+    const float s = win->device()->scale();
+    const JZPoint off = mapTo(win, JZPoint(0, 0));
+    const int x = (int)std::lround(off.x() * s);
+    const int y = (int)std::lround(off.y() * s);
+    const int w = (int)std::lround(width() * s);
+    const int h = (int)std::lround(height() * s);
+
+    // 与客户区求交 (控件可能部分在窗口外, 或缩放取整差 1px)
+    const int x0 = std::max(0, x), y0 = std::max(0, y);
+    const int x1 = std::min(cw, x + w), y1 = std::min(ch, y + h);
+    if (x1 <= x0 || y1 <= y0)
+        return JZImage();
+
+    const int rw = x1 - x0, rh = y1 - y0;
+    std::vector<uint8_t> rgba((size_t)rw * rh * 4);
+    for (int row = y0; row < y1; row++)
+    {
+        memcpy(&rgba[(size_t)(row - y0) * rw * 4],
+               &client[(size_t)(row * cw + x0) * 4],
+               (size_t)rw * 4);
+    }
+    return JZImage::fromRGBA(rgba.data(), rw, rh);
 }
 
 // ==================== 尺寸策略 / baseSize ====================
@@ -542,6 +600,37 @@ void JZWidget::mouseMoveEvent(JZMouseEvent*)
 
 void JZWidget::wheelEvent(JZMouseEvent*)
 {
+}
+
+void JZWidget::setCursor(const JZCursor& cursor)
+{
+    if (m_hasCursor && m_cursor == cursor)
+        return;
+    m_hasCursor = true;
+    m_cursor = cursor;
+    // 指针正悬停在本控件 (或其子控件) 上时立即刷新系统光标。
+    // 无窗口 / 原生窗口未创建时是 no-op (后续 WM_SETCURSOR / 鼠标移动会补上)。
+    if (JZWindow* win = window())
+        win->applyMouseCursor();
+}
+
+void JZWidget::unsetCursor()
+{
+    if (!m_hasCursor)
+        return;
+    m_hasCursor = false;
+    m_cursor = JZCursor();
+    if (JZWindow* win = window())
+        win->applyMouseCursor();
+}
+
+JZCursor JZWidget::cursor() const
+{
+    // 自身未显式设置时沿父链继承 (Qt QWidget::cursor 语义), 全无则默认箭头
+    for (const JZWidget* w = this; w; w = w->parentWidget())
+        if (w->m_hasCursor)
+            return w->m_cursor;
+    return JZCursor();
 }
 
 void JZWidget::grabMouse()

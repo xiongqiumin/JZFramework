@@ -9,8 +9,11 @@
 class JZPushButton;
 
 // ==================== AI 鼠标覆盖层 ====================
-// 全窗覆盖 + 命中透传 (setPassThrough): 绘制 AI 光标箭头/点击涟漪/左下角状态条,
-// 唯一可命中的子控件是"取消"按钮 (透传层的子控件正常参与命中)。
+// 全窗蒙版: 半透明遮罩 + 命中透传 (setPassThrough) 让 AI 合成点击可穿到目标,
+// 由 JZWindow::setInputGate 配套屏蔽真实用户输入 (见 JZWindow::dispatchMouse)。
+// 绘制 AI 光标箭头/点击涟漪/左下角状态条; 唯一可命中的子控件是"取消"按钮。
+// 注意: 覆盖层 setOpaque(0) —— 不向身后的内容贡献"不透明覆盖", 否则重绘剔除
+// 会冻结蒙版下的内容, 移动中的 AI 光标在帧缓冲里留下旧帧残影。
 // 由 JZAiDriver 驱动; 坐标为根窗口逻辑像素, 覆盖层位于根 (0,0) 处两者一致。
 class JZAiOverlay : public JZWidget
 {
@@ -26,10 +29,11 @@ public:
     void syncToParent();                        // 尺寸对齐父窗口 (含新旧区域失效)
 
 jz_signals:
-    JZSigVoid sigCancelRequested;               // 用户点击"取消"
+    JZSigVoid sigCancelRequested;               // 用户点击"取消"或按 Esc
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
+    void keyPressEvent(JZKeyEvent* event) override;   // 蒙版期间 Esc=取消, 其余吞掉
     void drawArrow(JZPainter& p, const JZPoint& pos) const;   // 扫描线填充箭头
     void layoutBanner();                        // 状态条布局 (确定性的, 布局与绘制分离)
 
@@ -61,6 +65,8 @@ public:
                      std::function<void()> onArrive = nullptr);
 
     void cancel();                    // 用户中断当前序列 (下个 tick 生效)
+    // 全屏蒙版是否在岗 (真实用户输入被丢弃; 仅取消按钮/Esc 可操作)
+    bool maskActive() const { return m_phase != PhaseIdle; }
     bool busy() const { return m_phase != PhaseIdle; }
 
 jz_signals:

@@ -32,6 +32,8 @@ protected:
 
 private:
     int valueFromPos(int x) const;   // 命中位置 -> 值 (与 paintEvent 的 6px 边距对齐)
+    int knobCenterX() const;         // 滑块圆钮中心 x (与 paintEvent 的 6px 边距对齐)
+    void updateHoverCursor(const JZPoint& localPos);   // 悬停/松手后按位置刷新光标
 
     int32_t m_min = 0;
     int32_t m_max = 100;

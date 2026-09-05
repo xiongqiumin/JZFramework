@@ -54,13 +54,26 @@ private:
  * 协议版本与客户端身份放在每个请求的 _meta 中, 服务器信息通过 server/discover 获取。
  * 需要握手的旧版服务器(2025-06-18 及更早, 带 Mcp-Session-Id 会话)不在支持范围内。
  *
- * 使用方式(MCP 客户端依赖事件循环, 需要先创建 JZApplication):
+ * 使用方式一(信号驱动, 推荐):
  *   JZMcpClient *client = new JZMcpClient();
- *   if (client->startProcess("python", {"server.py"}))
- *       agent->addMcp(client);       // 之后 client 归 agent 所有
+ *   connect(&client->sigFinished, [client]() {
+ *       if (client->isReady())
+ *           agent->addMcp(client);   // 连接成功, 之后 client 归 agent 所有
+ *       else
+ *           ...;                     // 失败, errorString() 有原因
+ *   });
+ *   client->startProcess("python", {"server.py"});
  *
- * startProcess / startHttp / startWebSocket 都是阻塞的: 内部会跑事件循环,
- * 直到握手与工具列表拉取完成或超时。
+ * 使用方式二(同步式等待, 不想接信号时):
+ *   JZMcpClient client;
+ *   client.startHttp("http://127.0.0.1:3900/mcp");
+ *   client.waitForFinished();        // 阻塞直到本次连接流程结束
+ *   if (client.isReady()) { ... }    // 成功, tools() 可用
+ *
+ * startProcess / startHttp / startWebSocket 都是异步的: 只负责发起并立即返回
+ * (返回值表示"是否成功发起"); 连接、server/discover 与 tools/list 全部结束(无论
+ * 成功或失败)后发一次 sigFinished。结束后用 isReady() 判断结果, 失败原因见
+ * errorString()。请先 connect 好 sigFinished 再调用 startXxx。
  */
 class JZMcpClient : public JZObject
 {
@@ -75,7 +88,12 @@ public:
     explicit JZMcpClient(JZObject *parent = nullptr);
     ~JZMcpClient();
 
-    // ---- 建立连接(阻塞到握手与工具列表拉取完成) ----
+    // ---- 建立连接(异步) ----
+    // 三个 startXxx 都只负责发起并立即返回(true=成功发起, 例如子进程已启动 /
+    // HTTP 客户端已就绪 / WS 连接请求已发出)。连接流程(server/discover + tools/list)
+    // 结束时会发 sigFinished: 成功则 isReady()==true、tools() 可用; 失败原因在
+    // errorString()。调用前请先 connect 好 sigFinished, 或用 waitForFinished()
+    // 同步等待结果。
     // stdio: 启动子进程, 通过 stdin/stdout 收发 JSON-RPC(一行一条)
     bool startProcess(const std::string &program, const std::vector<std::string> &arguments,
                       int timeoutMs = 10000);
@@ -84,8 +102,18 @@ public:
     bool startWebSocket(const std::string &url, int timeoutMs = 10000);
 
     void close();
+    // 阻塞直到本次连接流程结束(等同 sigFinished 已发出)。
+    // 供"发起后同步等结果"的场景使用; 结束后用 isReady() / errorString() 判断结果。
+    // 依赖事件循环驱动(JZApplication), 应在主线程调用;
+    // 不要在 sigFinished 回调或其它事件派发栈内调用(会死锁)。
+    void waitForFinished();
     bool isReady() const;
     Transport transport() const;
+
+jz_signals:
+    // 一次连接流程结束: server/discover + tools/list 成功(isReady()==true)或
+    // 任一步失败/超时/进程退出/中途断开。结果用 isReady() / errorString() 判断。
+    JZSigVoid sigFinished;
 
     // 最近一次错误(连接失败、超时、传输中断等)
     const std::string &errorString() const;
@@ -130,23 +158,22 @@ protected:
     void onRecvText(const std::string &text);
     void handleMessage(const Json::Value &msg);
 
-    void finishPending(int id, bool ok, const Json::Value &value);
-    void clearPending(bool notify);
-    void setFailed(const std::string &error);
-
-    // 发起一次请求并同步等待结果(内部跑事件循环)
-    bool runSync(const std::string &method, const Json::Value &params, Json::Value &result,
-                 int timeoutMs);
-    // 连接前的准备: 关闭旧连接并清空上一次的错误
-    bool prepareConnect();
-    bool handshake(int timeoutMs);
-    bool fetchTools(int timeoutMs);
-    void pump(int ms);
-
     // 传输层事件
     void onProcessOutput();
     void onHttpReply(JZNetworkReply *reply);
     void onWsMessage(const std::string &text);
+
+    void finishPending(int id, bool ok, const Json::Value &value);
+    void clearPending(bool notify);
+    void setFailed(const std::string &error);
+
+    // 连接前的准备: 关闭旧连接并清空上一次的错误
+    bool prepareConnect();
+    // 异步建立连接: server/discover -> tools/list, 结束(成功或失败)发 sigFinished
+    void beginNegotiate();
+    void onDiscoverDone(bool ok, const Json::Value &value);
+    void onToolsDone(bool ok, const Json::Value &value);
+    void abortConnect(const std::string &error);   // 连接阶段失败统一收口
 
     Transport m_transport = None;
     JZProcess *m_process = nullptr;
@@ -157,13 +184,15 @@ protected:
     int m_nextId = 1;
     std::map<int, Pending> m_pending;
     std::string m_readBuffer;   // stdio 的行缓冲
-    bool m_ready = false;
+    bool m_ready = false;       // 当前是否可用(连接 + 工具列表已就绪)
+    bool m_finished = false;    // 本次连接流程是否已结束(成功或失败), waitForFinished 用
     std::string m_error;
 
     std::vector<JZAgentTool*> m_tools;
     std::map<std::string, std::string> m_remoteNames;   // 本地工具名 -> 远端工具名
     std::string m_toolPrefix;
     int m_callTimeoutMs = 120000;
+    int m_timeoutMs = 10000;    // 本次连接各步请求(server/discover、tools/list)的超时
 
     std::string m_serverName;
     std::string m_serverVersion;

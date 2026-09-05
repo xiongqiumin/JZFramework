@@ -26,6 +26,9 @@ struct AppConfig
     std::string modelName;
     std::string modelToken;
     std::string workspace;
+    // TS 环境目录（JS/TS 编译器所在，默认 E:/libs/ts_compiler）：
+    // 应用时自动把该目录作为只读授信目录挂载，并按真实布局注入 node / tsc 可信程序。
+    std::string tsEnvDir;
     // 授信目录：编译器/SDK 等安装目录，虚拟终端可只读访问、可在这里找可执行程序。
     // 不填则只能访问工作区，且没有可用的外部程序。每个目录可单独配置是否可写（默认只读）。
     std::vector<TrustedDir> trustedDirs;
@@ -73,14 +76,17 @@ public:
 
 protected:
     void onBrowseWorkspace();
+    void onBrowseTsEnv();
     void onAccept();
 
     JZLineEdit* m_urlEdit = nullptr;
     JZLineEdit* m_nameEdit = nullptr;
     JZLineEdit* m_tokenEdit = nullptr;
     JZLineEdit* m_wsEdit = nullptr;
+    JZLineEdit* m_tsEdit = nullptr;
     JZLineEdit* m_trustedEdit = nullptr;
     JZPushButton* m_wsBrowseBtn = nullptr;
+    JZPushButton* m_tsBrowseBtn = nullptr;
 };
 
 // 主窗口：直接继承 JZMainWindow 骨架。菜单栏经 addMenuBar 置顶，

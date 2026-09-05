@@ -79,10 +79,10 @@ void appendToByteArray(void* context, void* data, int size)
     out->append(static_cast<const char*>(data), size);
 }
 
-// stb medium API 缩放 -> 新 JZImageData (RGBA8888); 参数非法或失败返回空
+// stb medium API 缩放 -> 新 JZImageData (RGBA8888); 参数非法或失败返回空。
+// 边缘处理固定 Clamp (JZImage 不再对外暴露 stb 的 Filter/Edge 枚举)。
 std::shared_ptr<JZImageData> stbirScale(const std::shared_ptr<JZImageData>& src,
-                                        int w, int h,
-                                        JZImage::Filter filter, JZImage::Edge edge)
+                                        int w, int h, stbir_filter filter)
 {
     if (w <= 0 || h <= 0)
         return nullptr;
@@ -90,14 +90,14 @@ std::shared_ptr<JZImageData> stbirScale(const std::shared_ptr<JZImageData>& src,
         return nullptr;
 
     std::vector<uint8_t> out((size_t)w * h * 4);
-    // medium API: 统一走 stbir_resize, 默认 Filter/Edge 等价于 easy API
-    // (缩小 Mitchell / 放大三次插值 / clamp 边缘, 见 stb 头 847/851 行)。
+    // medium API: 统一走 stbir_resize; filter 由调用方按 TransformationMode 给出,
+    // 边缘恒 clamp (见 stb 头 847/851 行)。
     // 色彩空间 UINT8_SRGB, 布局 STBIR_RGBA, 直通非预乘 (与本框架像素语义一致)。
     void* ret = stbir_resize(
         src->pixels(), src->width(), src->height(), src->width() * 4,
         out.data(), w, h, w * 4,
         STBIR_RGBA, STBIR_TYPE_UINT8_SRGB,
-        (stbir_edge)edge, (stbir_filter)filter);
+        STBIR_EDGE_CLAMP, filter);
     if (!ret)
         return nullptr;
 
@@ -172,6 +172,18 @@ JZImage JZImage::decode(const JZByteArray& data)
     return img;
 }
 
+JZImage JZImage::fromRGBA(const uint8_t* rgba, int w, int h)
+{
+    JZImage img;
+    if (!rgba || w <= 0 || h <= 0)
+        return img;
+
+    auto data = std::make_shared<JZImageData>();
+    data->setPixels(w, h, rgba);
+    img.m_data = data;
+    return img;
+}
+
 JZByteArray JZImage::encode(Format format) const
 {
     JZByteArray out;
@@ -233,46 +245,22 @@ bool JZImage::save(const std::string& file) const
 JZImage JZImage::scaled(int w, int h, AspectRatioMode aspectRatioMode,
                         TransformationMode transformMode) const
 {
-    // 照 Qt::TransformationMode 语义映射到 stb 滤波器:
-    //   Fast   = 点采样 (最近邻), 快且锐利
-    //   Smooth = 双线性 (stb Triangle 放大时等价 bilinear)
-    const Filter filter = (transformMode == TransformationMode::SmoothTransformation)
-                              ? Filter::Triangle
-                              : Filter::PointSample;
-    return scaled(w, h, aspectRatioMode, filter, Edge::Clamp);
-}
-
-JZImage JZImage::scaled(int w, int h, AspectRatioMode aspectRatioMode,
-                        Filter filter, Edge edge) const
-{
     if (w <= 0 || h <= 0)
         return JZImage();
     if (!m_data || !m_data->pixels() || m_data->width() <= 0 || m_data->height() <= 0)
         return JZImage();
+
+    // 照 Qt::TransformationMode 语义映射到 stb 滤波器:
+    //   Fast   = 点采样 (最近邻), 快且锐利
+    //   Smooth = 双线性 (stb Triangle 放大时等价 bilinear)
+    const stbir_filter filter = (transformMode == TransformationMode::SmoothTransformation)
+                                    ? STBIR_FILTER_TRIANGLE
+                                    : STBIR_FILTER_POINT_SAMPLE;
 
     int nw = w, nh = h;
     computeScaledSize(m_data->width(), m_data->height(), w, h, aspectRatioMode, nw, nh);
 
     JZImage out;
-    out.m_data = stbirScale(m_data, nw, nh, filter, edge);
+    out.m_data = stbirScale(m_data, nw, nh, filter);
     return out;   // 失败时为空图 (isNull()==true)
-}
-
-void JZImage::resize(int w, int h)
-{
-    resize(w, h, Filter::Default, Edge::Clamp);
-}
-
-void JZImage::resize(int w, int h, Filter filter, Edge edge)
-{
-    if (w <= 0 || h <= 0)
-        return;
-    if (!m_data || !m_data->pixels() || m_data->width() <= 0 || m_data->height() <= 0)
-        return;
-
-    auto nd = stbirScale(m_data, w, h, filter, edge);
-    if (!nd)
-        return;   // 失败保持原状
-
-    m_data = nd;   // 换新缓冲, 不触碰可能被共享的原数据
 }

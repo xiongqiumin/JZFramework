@@ -1367,22 +1367,16 @@ JZVirtualTerminal::JZVirtualTerminal()
 #endif
 
     // ---- 外部程序白名单 ----
+    // code_agent 只服务 TypeScript / JavaScript：仅放行 git / node / tsc，
+    // 其它语言(C++/Go/Python...)与 dotnet 的构建工具一律不放行。
+    // tsc 指向 TS 环境目录里的原生编译器(TSGO 单文件版)，由设置注入全路径。
     // exeNames 同时给出带 .exe 与不带的写法，Windows / Linux 都能命中。
     // 只把"工具"登记进来；副作用大的单独归类，由策略开关控制。
     addProgram("git", {"git.exe", "git"}, CmdCategory::Tool,
                {"-C", "--exec", "-c", "--upload-pack", "--upload-archive"});
-    addProgram("cmake", {"cmake.exe", "cmake"}, CmdCategory::Tool, {"-P"});
-    addProgram("ctest", {"ctest.exe", "ctest"}, CmdCategory::Tool);
-    addProgram("make", {"make.exe", "make"}, CmdCategory::Tool);
-    addProgram("ninja", {"ninja.exe", "ninja"}, CmdCategory::Tool);
-    addProgram("msbuild", {"MSBuild.exe", "msbuild"}, CmdCategory::Tool);
-    addProgram("dotnet", {"dotnet.exe", "dotnet"}, CmdCategory::Tool);
-    addProgram("cl", {"cl.exe", "cl"}, CmdCategory::Tool);
-    addProgram("go", {"go.exe", "go"}, CmdCategory::Tool);
-    addProgram("python", {"python.exe", "python"}, CmdCategory::Tool,
-               {"-c"}, {"pip", "venv", "ensurepip", "conda"});
     addProgram("node", {"node.exe", "node"}, CmdCategory::Tool,
                {"-e", "--eval", "-p", "--print"});
+    addProgram("tsc", {"tsc.exe", "tsc"}, CmdCategory::Tool);
 
     addProgram("pip", {"pip.exe", "pip"}, CmdCategory::PackageManager);
     addProgram("npm", {"npm.exe", "npm"}, CmdCategory::PackageManager);

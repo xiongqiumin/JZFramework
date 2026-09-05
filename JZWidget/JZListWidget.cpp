@@ -202,7 +202,8 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
             p.drawImage(item->icon, ix, iy, iconSize, iconSize);
             textX = ix + iconSize + 6;
         }
-        JZBrush brush; brush.setColor(sel ? JZColor::White: JZColor::Black); p.setBrush(brush);
+        // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
+        p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
         JZFont font(14); p.setFont(font);
         int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
         p.drawText(textX, ty, item->text.c_str());
@@ -213,7 +214,8 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
             int cy = rect.y() + 2;
             p.drawImage(item->icon, cx, cy, iconSize, iconSize);
         }
-        JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
+        // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
+        p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
         JZFont font(12); p.setFont(font);
         int th = JZFontMetrics::textHeight(font);
         p.drawText(rect.x() + 2, rect.y() + rect.height() - th - 4, item->text.c_str());

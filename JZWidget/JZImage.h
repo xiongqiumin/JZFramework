@@ -71,6 +71,10 @@ public:
     // 数据损坏/格式不支持时返回 isNull()==true 的空对象。
     static JZImage decode(const JZByteArray& data);
 
+    // 用已有的 RGBA8888 像素构造 ("非解码"路径: 截屏/运行时生成图像)。
+    // 内部拷贝一份像素; w/h <= 0 或 rgba 为空时返回 isNull()==true 的空对象。
+    static JZImage fromRGBA(const uint8_t* rgba, int w, int h);
+
     // 编码当前像素为压缩图像字节流; 仅 Png/Bmp/Tga/Jpeg 可写,
     // 其它格式或图像无像素时返回空 JZByteArray。JPEG 质量固定 90。
     JZByteArray encode(Format format) const;
@@ -81,12 +85,6 @@ public:
 
     // ---- 像素缩放 (RGBA8888, stb_image_resize2) ----
 
-    // stb 采样选项 (枚举值与其一一对应, 见 stb_image_resize2.h):
-    //   Filter: 采样滤波器 (Default = 缩小 Mitchell / 放大三次插值)
-    //   Edge:   采样越界边缘处理 (Default = Clamp)
-    enum class Filter { Default, Box, Triangle, CubicBSpline, CatmullRom, Mitchell, PointSample };
-    enum class Edge   { Clamp, Reflect, Wrap, Zero };
-
     // 目标尺寸模式 (名称/语义镜像 Qt::AspectRatioMode):
     //   IgnoreAspectRatio          直接拉伸到 w×h (默认)
     //   KeepAspectRatio            保持宽高比缩放到 w×h 内 (一边可能 < 目标)
@@ -96,7 +94,6 @@ public:
     // 平滑档位 (镜像 Qt::TransformationMode):
     //   FastTransformation   点采样 (等价最近邻), Qt 默认档
     //   SmoothTransformation 双线性
-    // 需要三次卷积等更高质量滤波时, 用下方带 Filter 的重载。
     enum class TransformationMode { FastTransformation, SmoothTransformation };
 
     // 返回新图的缩放 (参数序/语义同 Qt QImage::scaled, 不改本对象)。
@@ -104,16 +101,6 @@ public:
     JZImage scaled(int w, int h,
                    AspectRatioMode aspectRatioMode = AspectRatioMode::IgnoreAspectRatio,
                    TransformationMode transformMode = TransformationMode::FastTransformation) const;
-
-    // 带精细 stb 滤波器版本的 scaled (Edge 默认 Clamp)。
-    JZImage scaled(int w, int h, AspectRatioMode aspectRatioMode,
-                   Filter filter, Edge edge = Edge::Clamp) const;
-
-    // ---- 就地缩放 (便捷, 等价于 *this = scaled(...)) ----
-    // 生成新缓冲替换本对象, **不修改可能被共享的原数据**。
-    // 失败 (w/h <= 0 或当前无像素) 时无操作保持原状。
-    void resize(int w, int h);
-    void resize(int w, int h, Filter filter, Edge edge = Edge::Clamp);
 
 private:
     std::shared_ptr<JZImageData> m_data;

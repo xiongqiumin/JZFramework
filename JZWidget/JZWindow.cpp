@@ -5,6 +5,7 @@
 #include "JZImeEvent.h"
 #include "JZApplication.h"
 #include "JZWin32Thread.h"
+#include "JZScreen.h"
 
 #include <algorithm>
 #include <climits>
@@ -22,23 +23,13 @@
 #include <imm.h>
 #include <cmath>
 
-// Per-Monitor V2 DPI 感知 (逻辑像素 * scale = 物理像素 的基础):
-// 进程级声明已由 JZWin32Thread 构造完成 (SetProcessDpiAwarenessContext)。
+// DPI 查询的唯一入口: 屏幕级实现统一在 JZScreen (GetDpiForMonitor 优先,
+// 逐级回落 GetDpiForWindow / 主屏 GDI)。hwnd 为 nullptr 时取主屏 DPI。
+// 进程级 Per-Monitor V2 感知声明已由 JZWin32Thread 构造完成
+// (SetProcessDpiAwarenessContext) —— 逻辑像素 * scale = 物理像素 的基础。
 static UINT jzQueryDpi(HWND hwnd)
 {
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    if (user32 && hwnd) {
-        auto fn = (UINT(WINAPI*)(HWND))GetProcAddress(user32, "GetDpiForWindow");
-        if (fn) {
-            UINT dpi = fn(hwnd);
-            if (dpi > 0)
-                return dpi;
-        }
-    }
-    HDC dc = GetDC(hwnd);
-    UINT dpi = (UINT)GetDeviceCaps(dc, LOGPIXELSX);
-    ReleaseDC(hwnd, dc);
-    return dpi > 0 ? dpi : 96;
+    return (UINT)std::lround(JZScreen::logicalDpiFor(hwnd));
 }
 
 static std::wstring jzUtf8ToUtf16(const std::string& text)
@@ -57,6 +48,27 @@ static JZPoint jzPhysicalToLogical(LPARAM lParam, float scale)
     int px = (int16_t)LOWORD(lParam);
     int py = (int16_t)HIWORD(lParam);
     return JZPoint((int)std::lround(px / scale), (int)std::lround(py / scale));
+}
+
+// 光标形状 -> Windows 标准光标句柄 (系统内建, LoadCursorW 幂等可复用)
+// 注: 非 UNICODE 构建下 IDC_* 是 MAKEINTRESOURCE(LPSTR), 不能赋给 LPCWSTR,
+// 这里直接用系统标准光标的资源 ID (与 winuser.h 的 IDC_* 常量一致) 配宽版宏。
+static HCURSOR jzCursorHandle(JZCursorShape shape)
+{
+    int id = 32512;   // IDC_ARROW
+    switch (shape) {
+    case JZCursorShape::IBeam:        id = 32513; break;   // IDC_IBEAM
+    case JZCursorShape::PointingHand: id = 32649; break;   // IDC_HAND
+    case JZCursorShape::SizeHor:      id = 32644; break;   // IDC_SIZEWE
+    case JZCursorShape::SizeVer:      id = 32645; break;   // IDC_SIZENS
+    case JZCursorShape::SizeAll:      id = 32646; break;   // IDC_SIZEALL
+    case JZCursorShape::Cross:        id = 32515; break;   // IDC_CROSS
+    case JZCursorShape::Forbidden:    id = 32648; break;   // IDC_NO
+    case JZCursorShape::Wait:         id = 32514; break;   // IDC_WAIT
+    case JZCursorShape::Arrow:
+    default:                          id = 32512; break;   // IDC_ARROW
+    }
+    return LoadCursorW(nullptr, MAKEINTRESOURCEW(id));
 }
 
 // 按窗口样式把逻辑客户区尺寸换算为窗口外框尺寸
@@ -281,6 +293,15 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             return 0;
         break;
     }
+
+    // 光标形状: 客户区内按悬停控件的生效光标 (setCursor/父链继承) 决定;
+    // 非客户区 (边框/标题的缩放箭头、resize 手柄等) 交 DefWindowProc。
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT) {
+            self->applyMouseCursor();
+            return TRUE;   // 已显式 SetCursor, 不再走类光标
+        }
+        break;
 
     // ---- 键盘: 翻译成 JZKeyEvent, 从焦点控件起逐级向上传播 ----
     case WM_KEYDOWN:
@@ -566,7 +587,7 @@ void JZWindow::createWindow()
             if (JZWindow* pw = p->window())
                 owner = (HWND)pw->nativeHandle();
         }
-        m_device->setScale(jzQueryDpi(owner) / 96.0f);
+        m_device->setScale(JZScreen::logicalDpiFor(owner) / 96.0f);
     }
 
     registerWindowClass();
@@ -686,6 +707,63 @@ void JZWindow::releaseMouse(JZWidget* w)
         ReleaseCapture();
 }
 
+// ==================== 输入屏蔽 (全屏蒙版) ====================
+void JZWindow::setInputGate(JZWidget* gate)
+{
+    m_inputGate = gate;
+    // 屏蔽上闸期间正在组字的输入法应整体取消, 否则组字窗口/上屏状态悬空
+    if (gate && m_hwnd && m_focusWidget && m_focusWidget->imeEnabled())
+        cancelImeComposition();
+}
+
+// hit 是否等于 gate 自身或位于其子树内 (全屏蒙版只放行自身子树, 如"取消"按钮)
+static bool jzWindowHitInGate(JZWidget* hit, JZWidget* gate)
+{
+    for (JZWidget* w = hit; w; w = w->parentWidget()) {
+        if (w == gate)
+            return true;
+    }
+    return false;
+}
+
+// 按当前光标位置 SetCursor: 取目标控件的生效光标 JZWidget::cursor()
+// (自身 setCursor 或沿父链继承, 全无则箭头)。目标 = 拖拽抓取中的 grabber,
+// 否则为光标下的最深控件 (命中为空以窗口自身兜底)。
+// 被 WM_SETCURSOR (客户区内) 调用; setCursor / 鼠标派发后需要即时刷新时也会调。
+void JZWindow::applyMouseCursor()
+{
+    if (!m_hwnd || !m_device)
+        return;
+
+    // 光标物理屏幕坐标 -> 逻辑坐标 (与 WndProc 鼠标消息同一换算)
+    POINT pt;
+    if (!GetCursorPos(&pt))
+        return;
+    // 只在光标位于本窗口客户区内才接管 (拖拽出窗后交给系统/其它窗口)
+    POINT cl = pt;
+    ScreenToClient((HWND)m_hwnd, &cl);
+    RECT rc;
+    GetClientRect((HWND)m_hwnd, &rc);
+    if (cl.x < 0 || cl.y < 0 || cl.x >= rc.right || cl.y >= rc.bottom)
+        return;
+
+    float s = m_device->scale();
+    JZPoint g((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
+
+    // 拖拽抓取中: 光标以 grabber 为准 (拖动过程不因光标移出控件命中带变回箭头)
+    JZWidget* target = m_mouseGrabber ? m_mouseGrabber : hitTest(g);
+    if (!target)
+        target = this;
+
+    // 全屏蒙版期间: 蒙版下方一律用窗口默认箭头, 不露出下层控件的光标
+    // (如滑块的大小光标); 蒙版自身子控件 (取消按钮) 仍按其生效光标显示。
+    if (m_inputGate && m_inputGate->isVisible() && target != m_inputGate
+        && !jzWindowHitInGate(target, m_inputGate))
+        target = this;
+
+    SetCursor(jzCursorHandle(target->cursor().shape()));
+}
+
 void JZWindow::paintEvent(JZPainterEvent* event)
 {
     // 窗口底色 (内容控件可覆盖)
@@ -723,7 +801,7 @@ void JZWindow::windowResized(int logicalW, int logicalH)
 // 显示器 DPI 变化 (WM_DPICHANGED): 更新设备缩放 (重建字体)
 void JZWindow::dpiChanged()
 {
-    m_device->setScale(jzQueryDpi((HWND)m_hwnd) / 96.0f);
+    m_device->setScale(JZScreen::logicalDpiFor(m_hwnd) / 96.0f);
 }
 
 // ==================== 焦点管理 ====================
@@ -834,6 +912,16 @@ bool JZWindow::onWindowProcess(JZEvent* event)
 // 鼠标: 命中测试定位最深可见控件, 回填 localPos 后投递; 左键按下同时切换焦点。
 bool JZWindow::dispatchMouse(JZMouseEvent* ev)
 {
+    // ---- 全屏蒙版输入屏蔽 (AI 操作期间) ----
+    // 丢弃真实用户的鼠标 (按/放/移/滚轮), 只放行蒙版自身子控件 (取消按钮);
+    // AI 合成的程序化点击 (isProgrammatic) 不受限制, 可穿透蒙版落到目标控件;
+    // 鼠标抓取 (拖拽) 进行中不屏蔽: 抓取中的 move/up 必须完整送达, 否则拖死。
+    if (m_inputGate && m_inputGate->isVisible() && !ev->isProgrammatic() && !m_mouseGrabber) {
+        JZWidget* hit = hitTest(ev->globalPos());
+        if (!hit || !jzWindowHitInGate(hit, m_inputGate))
+            return true;   // 事件丢弃, 不外泄到蒙版下的控件
+    }
+
     // 滚轮冒泡 (Qt 语义): 从最深的可见控件沿父链逐级投递, 未消费的
     // (handler 未调用 accept) 继续向上, 让外层滚动容器 (JZScrollArea) 处理
     // 内容控件/嵌套子控件上方的滚轮。鼠标抓取期间不冒泡 (拖拽目标独占)。
@@ -871,6 +959,9 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
     } else if (ev->mouseType() == JZMouseEvent::Press && ev->button() == JZMouseEvent::LeftButton) {
         setFocusWidget(nullptr);   // 点空白: 清空焦点
     }
+    // 派发后即时按事件改动的状态 (hover/拖动) 刷新光标:
+    // 抓取期间系统不发 WM_SETCURSOR, 只靠它会在拖动全程不更新。
+    applyMouseCursor();
     return true;
 }
 
@@ -879,6 +970,17 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
 // (Tab / Alt 菜单等系统默认行为)。
 bool JZWindow::dispatchKey(JZKeyEvent* ev)
 {
+    // ---- 全屏蒙版输入屏蔽 (AI 操作期间) ----
+    // 键盘整体丢弃 (焦点控件收不到), 仅 Esc = 取消: 交给蒙版自己处理。
+    if (m_inputGate && m_inputGate->isVisible()) {
+        if (ev->isPress() && ev->key() == VK_ESCAPE) {
+            ev->ignore();
+            jzApp->sendEvent(m_inputGate, ev);
+            return ev->isAccepted();
+        }
+        return true;   // 其余按键全部丢弃
+    }
+
     for (JZWidget* w = m_focusWidget; w; w = w->parentWidget()) {
         ev->ignore();   // 每一级重新给处理机会
         jzApp->sendEvent(w, ev);   // 同步派发; 每级先过该控件的事件过滤器链
@@ -891,6 +993,10 @@ bool JZWindow::dispatchKey(JZKeyEvent* ev)
 // IME: 组字/上屏/候选事件只投递给焦点控件; 无焦点控件返回 false (交回系统)。
 bool JZWindow::dispatchIme(JZImeEvent* ev)
 {
+    // ---- 全屏蒙版输入屏蔽 (AI 操作期间) ----
+    if (m_inputGate && m_inputGate->isVisible())
+        return true;   // 丢弃 IME 组字/上屏 (蒙版期间焦点控件不允许进字)
+
     if (!m_focusWidget)
         return false;
     jzApp->sendEvent(m_focusWidget, ev);   // 同步派发, 过焦点控件的过滤器链

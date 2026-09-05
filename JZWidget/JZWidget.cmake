@@ -67,7 +67,9 @@ set(JZ_SOURCES
     JZImage.h
     JZImage.cpp
     JZImageReader.h
+    JZImageReader.cpp
     JZImageWriter.h
+    JZImageWriter.cpp
     JZStbImage.cpp
     JZMainWindow.h
     JZMainWindow.cpp
@@ -79,6 +81,8 @@ set(JZ_SOURCES
     JZMessageBox.cpp
     JZDisplayDevice.h
     JZDisplayDevice.cpp
+    JZScreen.h
+    JZScreen.cpp
     JZStackedWidget.h
     JZStackedWidget.cpp
     JZTabWidget.h

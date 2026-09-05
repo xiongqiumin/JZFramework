@@ -20,12 +20,45 @@
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
 #include "JZHideEvent.h"
+#include "JZImage.h"
 
 // AI 语义动作 (ai-native-design L1): invoke 工具按 name 分发
 struct JZAiAction
 {
     std::string name;     // "click" / "setValue" / "toggle" / "select" / "setText"
     std::string params;   // 参数说明 (v1 简化为人类可读描述)
+};
+
+// 控件光标形状 (等价 Qt Qt::CursorShape): 与 Windows 标准光标一一对应 (IDC_*)。
+enum class JZCursorShape {
+    Arrow,          // 默认箭头 (IDC_ARROW)
+    IBeam,          // 文本输入 (IDC_IBEAM)
+    PointingHand,   // 可点击 (IDC_HAND)
+    SizeHor,        // 左右拖拽 (IDC_SIZEWE)
+    SizeVer,        // 上下拖拽 (IDC_SIZENS)
+    SizeAll,        // 四向拖拽 (IDC_SIZEALL)
+    Cross,          // 十字 (IDC_CROSS)
+    Forbidden,      // 禁止 (IDC_NO)
+    Wait,           // 忙碌 (IDC_WAIT)
+};
+
+// 光标对象 (等价 Qt QCursor; v1 仅封装标准形状, 后续可扩展自定义位图)。
+// 可隐式由 JZCursorShape 构造, 便于 setCursor(JZCursorShape::SizeHor) 直写。
+class JZCursor
+{
+public:
+    JZCursor(JZCursorShape shape = JZCursorShape::Arrow)
+        : m_shape(shape)
+    {
+    }
+
+    JZCursorShape shape() const { return m_shape; }
+
+    bool operator==(const JZCursor& o) const { return m_shape == o.m_shape; }
+    bool operator!=(const JZCursor& o) const { return !(*this == o); }
+
+private:
+    JZCursorShape m_shape;
 };
 
 class JZWidget : public JZObject
@@ -68,6 +101,13 @@ public:
 
     JZRect mapTo(JZWidget *parent, const JZRect& rect) const;
     JZRect mapToGlobal(const JZRect &rect) const;
+
+    // 抓图 (等价 Qt::QWidget::grab): 抓取本控件当前显示内容为图像。
+    // 对 JZWindow 即整个客户区, 对子控件为其在客户区内的那块矩形。
+    // 返回 RGBA 图像, 尺寸为**物理像素** (逻辑尺寸 × DPI 缩放), 与 Qt 一致;
+    // 窗口未创建 / 尺寸为空 / 抓图失败时返回 isNull()==true 的空图。
+    // 实现走 PrintWindow (窗口被遮挡或最小化也能抓到自绘内容), 失败退化 BitBlt。
+    JZImage grab();
 
     // 尺寸约束
     void setFixedSize(int w, int h);
@@ -138,6 +178,15 @@ public:
         update();
     }
     bool clipChildren() const { return m_clipChildren; }
+
+    // ---- 鼠标光标 (等价 Qt QWidget::cursor) ----
+    // setCursor: 悬停本控件 (含未自行设置光标的子控件) 时显示该光标, 调用后
+    //   立即生效 (窗口按当前悬停位置刷新); unsetCursor 撤销自身设置恢复继承;
+    // cursor(): 生效光标 —— 自身已设置返回自身, 否则沿父链取最近设置者的,
+    //   全部未设置则为默认箭头。
+    void setCursor(const JZCursor& cursor);
+    void unsetCursor();
+    JZCursor cursor() const;
 
     // 布局
     void setLayout(JZLayout* layout);
@@ -247,6 +296,10 @@ protected:
     bool m_visible;
     bool m_passThrough = false;
     bool m_clipChildren = false;
+    int m_opaque = 255;    // 是否向身后的兄弟控件贡献"不透明覆盖"(重绘剔除; 0=透明覆盖层)
+
+    bool m_hasCursor = false;      // 是否经 setCursor 显式设置过光标
+    JZCursor m_cursor;             // 显式设置的光标 (m_hasCursor 为 true 时生效)
 
     // ---- 布局内部登记 (由 JZLayout 统一管理, 业务代码勿直接调用) ----
     friend class JZLayout;

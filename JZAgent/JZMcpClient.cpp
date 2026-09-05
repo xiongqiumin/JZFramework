@@ -6,7 +6,7 @@
 #include "JZApplication.h"
 #include "JZByteArray.h"
 #include "JZDebug.h"
-#include "JZElapsedTimer.h"
+#include "JZEventLoop.h"
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkReply.h"
 #include "JZNetworkRequest.h"
@@ -175,7 +175,7 @@ void JZMcpClientTool::onCallDone(const ToolCall &call, bool ok, const Json::Valu
 JZ_OBJECT_IMPL(JZMcpClient, JZObject)
 
 JZMcpClient::JZMcpClient(JZObject *parent)
-    : JZObject(parent)
+    : JZObject(parent), sigFinished(this)
 {
 }
 
@@ -191,6 +191,7 @@ bool JZMcpClient::startProcess(const std::string &program, const std::vector<std
         return false;
 
     m_transport = Process;
+    m_timeoutMs = timeoutMs;
 
     std::string prog = program;
 #ifdef _WIN32
@@ -213,11 +214,8 @@ bool JZMcpClient::startProcess(const std::string &program, const std::vector<std
         return false;
     }
 
-    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
-    {
-        close();
-        return false;
-    }
+    // 异步: 发起后立即返回, 连接流程结束由 sigFinished 通知(结果看 isReady())
+    beginNegotiate();
     return true;
 }
 
@@ -228,13 +226,10 @@ bool JZMcpClient::startHttp(const std::string &url, int timeoutMs)
 
     m_transport = Http;
     m_url = url;
+    m_timeoutMs = timeoutMs;
     m_net = new JZNetworkAccessManager(this);
 
-    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
-    {
-        close();
-        return false;
-    }
+    beginNegotiate();
     return true;
 }
 
@@ -245,9 +240,15 @@ bool JZMcpClient::startWebSocket(const std::string &url, int timeoutMs)
 
     m_transport = WebSocket;
     m_url = url;
+    m_timeoutMs = timeoutMs;
 
     m_ws = new JZWebSocket(this);
     connect(&m_ws->sigTextMessageReceived, this, &JZMcpClient::onWsMessage);
+    // WebSocket 连上后才开始 server/discover + tools/list
+    connect(&m_ws->sigConnected, this, [this]()
+    {
+        beginNegotiate();
+    });
     connect(&m_ws->sigDisconnected, this, [this]()
     {
         setFailed("MCP WebSocket 连接已断开");
@@ -257,19 +258,8 @@ bool JZMcpClient::startWebSocket(const std::string &url, int timeoutMs)
         setFailed("MCP WebSocket 连接错误");
     });
 
+    // 异步: 连接结果由 sigConnected/sigError/sigDisconnected 通知
     m_ws->connectToHost(url);
-    if (!m_ws->waitForConnected(timeoutMs))
-    {
-        m_error = "连接 MCP WebSocket 失败: " + url;
-        close();
-        return false;
-    }
-
-    if (!handshake(timeoutMs) || !fetchTools(timeoutMs))
-    {
-        close();
-        return false;
-    }
     return true;
 }
 
@@ -282,21 +272,38 @@ void JZMcpClient::close()
 
     if (m_process)
     {
+        // 主动关闭也会触发进程退出/WS 断开等信号, 屏蔽以免误发 sigError
+        m_process->blockSignals(true);
         m_process->killProcess();
         m_process->deleteLater();
         m_process = nullptr;
     }
     if (m_ws)
     {
+        m_ws->blockSignals(true);
         m_ws->disconnectFromHost();
         m_ws->deleteLater();
         m_ws = nullptr;
     }
     if (m_net)
     {
+        m_net->blockSignals(true);
         m_net->deleteLater();
         m_net = nullptr;
     }
+}
+
+void JZMcpClient::waitForFinished()
+{
+    if (m_finished)
+        return;
+
+    // 嵌套跑一个局部事件循环驱动连接流程, sigFinished 一到就退出。
+    // loop 作为连接接收者: 析构时 guardPointer 自动失效, 之后不会再回调它。
+    JZEventLoop loop;
+    connect(&sigFinished, &loop, &JZEventLoop::quit);
+    if (!m_finished)
+        loop.exec();
 }
 
 bool JZMcpClient::isReady() const
@@ -566,74 +573,20 @@ void JZMcpClient::clearPending(bool notify)
 
 void JZMcpClient::setFailed(const std::string &error)
 {
-    if (m_error.empty())
-        m_error = error;
+    if (!m_error.empty())
+        return;    // 已处于失败态(首个错误为准), 不重复通知
+    m_error = error;
     m_ready = false;
+    m_finished = true;
     clearPending(true);
-}
-
-void JZMcpClient::pump(int ms)
-{
-    if (jzApp)
-        jzApp->processEvents();
-    JZThread::msleep(ms);
-}
-
-bool JZMcpClient::runSync(const std::string &method, const Json::Value &params, Json::Value &result,
-                          int timeoutMs)
-{
-    bool done = false;
-    bool ok = false;
-    Json::Value value;
-
-    int id = sendRequest(method, params, [&](bool o, const Json::Value &v)
-    {
-        done = true;
-        ok = o;
-        value = v;
-    }, timeoutMs);
-    if (id < 0)
-    {
-        m_error = "发送请求失败: " + method;
-        return false;
-    }
-
-    JZElapsedTimer timer;
-    timer.start();
-    while (!done && !timer.hasExpired(timeoutMs))
-        pump(5);
-
-    if (!done)
-    {
-        // 只撤销本次请求, 不影响其它在途调用
-        auto it = m_pending.find(id);
-        if (it != m_pending.end())
-        {
-            if (it->second.timer)
-            {
-                it->second.timer->stop();
-                it->second.timer->deleteLater();
-            }
-            m_pending.erase(it);
-        }
-        m_error = "等待响应超时: " + method;
-        return false;
-    }
-    if (!ok)
-    {
-        m_error = method + " 失败: " + value.get("message", "").asString() +
-                  " (code " + std::to_string(value.get("code", 0).asInt()) + ")";
-        return false;
-    }
-
-    result = value;
-    return true;
+    sigFinished.emit();     // 连接流程结束(失败), 原因见 errorString()
 }
 
 bool JZMcpClient::prepareConnect()
 {
     close();
     m_error.clear();
+    m_finished = false;
 
     // 三种传输都靠 JZApplication 的事件循环驱动(进程读管道 / HTTP / WebSocket)
     if (!jzApp)
@@ -644,34 +597,51 @@ bool JZMcpClient::prepareConnect()
     return true;
 }
 
+// ==================== 异步建立连接 ====================
 // 2026-07-28 无状态协议: 不做 initialize 握手, 只用 server/discover 探测服务器身份,
 // 协议版本随每个请求的 _meta 携带。不支持需要握手的旧版服务器。
-bool JZMcpClient::handshake(int timeoutMs)
+// 流程: beginNegotiate(server/discover) -> onDiscoverDone -> tools/list -> onToolsDone
+//       -> 结束发 sigFinished(成功 isReady()==true; 任一步失败走 abortConnect)。
+void JZMcpClient::beginNegotiate()
 {
-    Json::Value result;
-    if (!runSync("server/discover", Json::Value(Json::objectValue), result, timeoutMs))
-        return false;
-
-    m_protocolVersion = result.get("protocolVersion", kProtocolVersion).asString();
-    if (result.isMember("serverInfo"))
-    {
-        m_serverName = result["serverInfo"].get("name", "").asString();
-        m_serverVersion = result["serverInfo"].get("version", "").asString();
-    }
-    return true;
+    sendRequest("server/discover", Json::Value(Json::objectValue),
+                [this](bool ok, const Json::Value &value) { onDiscoverDone(ok, value); },
+                m_timeoutMs);
 }
 
-bool JZMcpClient::fetchTools(int timeoutMs)
+void JZMcpClient::onDiscoverDone(bool ok, const Json::Value &value)
 {
-    Json::Value result;
-    if (!runSync("tools/list", Json::Value(Json::objectValue), result, timeoutMs))
-        return false;
+    if (!ok)
+    {
+        abortConnect("server/discover 失败: " + value.get("message", "").asString());
+        return;
+    }
 
-    const Json::Value &tools = result["tools"];
+    m_protocolVersion = value.get("protocolVersion", kProtocolVersion).asString();
+    if (value.isMember("serverInfo"))
+    {
+        m_serverName = value["serverInfo"].get("name", "").asString();
+        m_serverVersion = value["serverInfo"].get("version", "").asString();
+    }
+
+    sendRequest("tools/list", Json::Value(Json::objectValue),
+                [this](bool o, const Json::Value &v) { onToolsDone(o, v); },
+                m_timeoutMs);
+}
+
+void JZMcpClient::onToolsDone(bool ok, const Json::Value &value)
+{
+    if (!ok)
+    {
+        abortConnect("tools/list 失败: " + value.get("message", "").asString());
+        return;
+    }
+
+    const Json::Value &tools = value["tools"];
     if (!tools.isArray())
     {
-        m_error = "tools/list 返回格式错误";
-        return false;
+        abortConnect("tools/list 返回格式错误");
+        return;
     }
 
     // 重连: 清掉上一批代理工具与名字映射(此时不应有在途调用)
@@ -705,7 +675,16 @@ bool JZMcpClient::fetchTools(int timeoutMs)
     }
 
     m_ready = true;
-    return true;
+    m_finished = true;
+    sigFinished.emit();
+}
+
+// 连接阶段失败统一收口: 首个错误经 setFailed 记录并发 sigFinished(重复失败不重复通知),
+// 随后释放传输资源, 调用方可在 sigFinished 后安全重连。
+void JZMcpClient::abortConnect(const std::string &error)
+{
+    setFailed(error);
+    close();
 }
 
 // ==================== 传输层事件 ====================

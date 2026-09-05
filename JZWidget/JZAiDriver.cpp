@@ -6,6 +6,12 @@
 #include "JZMouseEvent.h"
 #include "JZThread.h"
 #include "JZApplication.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   // VK_ESCAPE (Esc = 取消)
+
 #include <algorithm>
 #include <cmath>
 
@@ -19,13 +25,28 @@ JZAiOverlay::JZAiOverlay(JZWidget* parent)
     , sigCancelRequested(this)
     , m_cursorPos(30, 30)   // AI 光标初始位置: 左上角
 {
-    setPassThrough(true);   // 自身不拦鼠标, 只放行"取消"按钮
+    // 全窗蒙版 (见 paintEvent 的半透明遮罩) + 命中透传: 自身不参与 hitTest,
+    // AI 合成点击可穿到目标控件; 子控件 (取消按钮) 正常参与命中。
+    // 真实用户输入由 JZWindow::setInputGate 在蒙版可见期间整体屏蔽。
+    setPassThrough(true);
+    // 不向身后内容贡献"不透明覆盖": 否则重绘剔除把蒙版下的内容冻结成上帧,
+    // 既让移动的 AI 光标留残影, 又让半透明遮罩逐帧叠加变黑。
+    setOpaque(0);
 
     m_cancelBtn = new JZPushButton(this, 54, 26, "取消");
     m_cancelBtn->hide();
     connect(&m_cancelBtn->sigClicked, [this]() {
         sigCancelRequested.emit();
     });
+}
+
+void JZAiOverlay::keyPressEvent(JZKeyEvent* event)
+{
+    // 全屏蒙版期间窗口把键盘统一交给蒙版 (JZWindow::dispatchKey): Esc = 取消,
+    // 其余按键一律吞掉, 不传给蒙版下的控件。
+    if (event->isPress() && event->key() == VK_ESCAPE)
+        sigCancelRequested.emit();
+    event->accept();
 }
 
 void JZAiOverlay::setCursorPos(const JZPoint& pos)
@@ -100,6 +121,10 @@ void JZAiOverlay::paintEvent(JZPainterEvent*)
 {
     JZPainter p(this);
 
+    // ---- 全屏蒙版: 半透明遮罩铺满全窗 (蒙版下内容每帧重绘, 见 setOpaque(0)),
+    // 既传达"操作中"的状态, 也压暗下方控件让 AI 光标/涟漪更醒目 ----
+    p.fillRect(rect(), JZColor(0x10, 0x13, 0x1a, 96));
+
     // ---- 状态条 (左下角, 半透明深色圆角条) ----
     if (!m_bannerRect.isEmpty()) {
         JZFont font(14);
@@ -166,6 +191,7 @@ JZAiDriver::JZAiDriver(JZWindow* root, JZObject* parent)
 {
     m_overlay = new JZAiOverlay(root);
     m_overlay->hide();
+    connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
 
     m_timer = new JZTimer(this);
     connect(&m_timer->sigTimeout, this, &JZAiDriver::onTick);
@@ -187,6 +213,11 @@ int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
     m_overlay->syncToParent();
     m_overlay->setStatusText(statusText);
     m_overlay->setCursorPos(m_cursorPos);
+
+    // 全屏蒙版上闸: 窗口丢弃真实鼠标/键盘/IME (仅"取消"按钮与 Esc 有效),
+    // AI 的合成点击标记 programmatic, 不受屏蔽, 可穿透蒙版落到目标。
+    m_root->cancelImeComposition();   // 丢弃在途的组字
+    m_root->setInputGate(m_overlay);
     m_overlay->show();
 
     // 移动时长随距离走 (慢速, 有"过程感"): 300~1200ms
@@ -259,9 +290,11 @@ void JZAiDriver::doArrive()
         JZPoint gTo = m_root->mapToGlobal(m_to);
         JZMouseEvent* press = new JZMouseEvent(JZMouseEvent::Press, JZMouseEvent::LeftButton,
                                                gTo, JZPoint(), 0);
+        press->setProgrammatic(true);   // AI 合成输入: 穿透全屏蒙版 (不丢给屏蔽)
         jzApp->postEvent(m_root, press);
         JZMouseEvent* release = new JZMouseEvent(JZMouseEvent::Release, JZMouseEvent::LeftButton,
                                                  gTo, JZPoint(), 0);
+        release->setProgrammatic(true);
         jzApp->postEvent(m_root, release);
     }
     if (m_onArrive) {
@@ -277,6 +310,7 @@ void JZAiDriver::finish(bool ok, const std::string& msg)
     m_timer->stop();
     m_phase = PhaseIdle;
     m_onArrive = nullptr;
+    m_root->setInputGate(nullptr);   // 解除输入屏蔽, 恢复真实输入
     m_overlay->hide();
     sigDone.emit(m_seq, ok, msg);
 }

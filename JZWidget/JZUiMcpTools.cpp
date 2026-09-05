@@ -11,9 +11,11 @@
 #include "JZListWidget.h"
 #include "JZLineEdit.h"
 #include "JZTextEdit.h"
+#include "JZScrollBar.h"
 #include "JZMouseEvent.h"
 #include "JZApplication.h"
 #include "JZThread.h"
+#include "JZImage.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -24,12 +26,6 @@
 #endif
 
 #include <windows.h>
-#include <objidl.h>
-#include <gdiplus.h>
-
-#ifndef PW_RENDERFULLCONTENT
-#define PW_RENDERFULLCONTENT 0x00000002   // Win8.1+: 含 DWM 合成内容
-#endif
 
 JZ_OBJECT_IMPL(JZUiGetStateTool, JZMcpTool)
 JZ_OBJECT_IMPL(JZUiScreenshotTool, JZMcpTool)
@@ -113,26 +109,6 @@ static std::string wideToUtf8(const std::wstring& ws)
     return out;
 }
 
-static int getPngEncoderClsid(CLSID* clsid)
-{
-    UINT num = 0, size = 0;
-    Gdiplus::GetImageEncodersSize(&num, &size);
-    if (size == 0)
-        return -1;
-    Gdiplus::ImageCodecInfo* info = (Gdiplus::ImageCodecInfo*)malloc(size);
-    Gdiplus::GetImageEncoders(num, size, info);
-    int found = -1;
-    for (UINT i = 0; i < num; ++i) {
-        if (wcscmp(info[i].MimeType, L"image/png") == 0) {
-            *clsid = info[i].Clsid;
-            found = (int)i;
-            break;
-        }
-    }
-    free(info);
-    return found;
-}
-
 // ==================== get_ui_state ====================
 
 JZUiGetStateTool::JZUiGetStateTool(JZWindow* root, JZObject* parent)
@@ -178,40 +154,12 @@ void JZUiScreenshotTool::run(const Json::Value& id, const Json::Value& args)
 
 void JZUiScreenshotTool::screenshot(const Json::Value& id)
 {
-    if (!m_root->nativeHandle()) {
-        sigFinished.emit(id, makeTextResult("窗口尚未创建 (未 show)", true));
+    // 抓图统一走 JZWidget::grab (PrintWindow + DPI 缩放 -> RGBA), 编码保存交给 JZImage
+    JZImage img = m_root->grab();
+    if (img.isNull()) {
+        sigFinished.emit(id, makeTextResult("截屏失败 (窗口未创建或客户区为空)", true));
         return;
     }
-    HWND hwnd = (HWND)m_root->nativeHandle();
-
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) {
-        sigFinished.emit(id, makeTextResult("客户区为空", true));
-        return;
-    }
-
-    HDC wdc = GetDC(hwnd);
-    HDC mem = CreateCompatibleDC(wdc);
-    HBITMAP bmp = CreateCompatibleBitmap(wdc, w, h);
-    HGDIOBJ old = SelectObject(mem, bmp);
-
-    // PrintWindow 抓自绘内容 (窗口被遮挡/离屏也正确); 失败退化为 BitBlt 屏幕拷贝
-    if (!PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT))
-        BitBlt(mem, 0, 0, w, h, wdc, 0, 0, SRCCOPY);
-
-    CLSID clsid;
-    if (getPngEncoderClsid(&clsid) < 0) {
-        SelectObject(mem, old);
-        DeleteObject(bmp);
-        DeleteDC(mem);
-        ReleaseDC(hwnd, wdc);
-        sigFinished.emit(id, makeTextResult("PNG 编码器不可用", true));
-        return;
-    }
-
-    Gdiplus::Bitmap bitmap(bmp, NULL);   // 需要 GDI+ 已初始化 (渲染后端持有)
 
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -223,19 +171,13 @@ void JZUiScreenshotTool::screenshot(const Json::Value& id)
     swprintf(name, 64, L"ui_shot_%03d.png", ++seq);
     std::wstring full = dir + name;
 
-    bool ok = (bitmap.Save(full.c_str(), &clsid, nullptr) == Gdiplus::Ok);
-
-    SelectObject(mem, old);
-    DeleteObject(bmp);
-    DeleteDC(mem);
-    ReleaseDC(hwnd, wdc);
-
-    if (!ok) {
+    if (!img.save(wideToUtf8(full))) {
         sigFinished.emit(id, makeTextResult("PNG 保存失败", true));
         return;
     }
     sigFinished.emit(id, makeTextResult("screenshot saved: " + wideToUtf8(full) +
-                                        " (" + std::to_string(w) + "x" + std::to_string(h) + " px)"));
+                                        " (" + std::to_string(img.width()) + "x" +
+                                        std::to_string(img.height()) + " px)"));
 }
 
 // ==================== ui_invoke ====================
@@ -320,6 +262,13 @@ void JZUiInvokeTool::invokeOnUi(const Json::Value& id, const Json::Value& args)
                 s->setValue(v);
                 s->sigValueChanged.emit(s->value());
             };
+        } else if (auto* sb = jzobject_cast<JZScrollBar*>(w)) {
+            if (!value.isNumeric()) {
+                sigFinished.emit(id, makeTextResult("setValue 需要 number 参数", true));
+                return;
+            }
+            int v = value.asInt();
+            onArrive = [sb, v]() { sb->setValue(v); };   // setValue 内部已 emit sigValueChanged
         } else if (auto* le = jzobject_cast<JZLineEdit*>(w)) {
             std::string v = value.asString();
             onArrive = [le, v]() { le->setText(v); };

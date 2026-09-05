@@ -1,0 +1,24 @@
+[http-target]  http://127.0.0.1:8080
+ * Serving Flask app 'target_http'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:8080
+Press CTRL+C to quit
+[https-target] https://127.0.0.1:8443 (自签名证书)
+
+本地测试服务已就绪。另开终端运行 test_proxy.exe 即可。Ctrl+C 退出。
+
+[proxy] 监听 http://127.0.0.1:7001 (支持 CONNECT 隧道)
+ * Serving Flask app 'target_https'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on https://127.0.0.1:8443
+Press CTRL+C to quit
+127.0.0.1 - - [05/Sep/2026 15:07:56] "GET /plain HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:07:56] "GET /gzip HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:07:56] "GET /deflate HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:07:57] "GET /auto HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:12:36] "GET /plain HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:12:37] "GET /gzip HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:12:37] "GET /deflate HTTP/1.1" 200 -
+127.0.0.1 - - [05/Sep/2026 15:12:37] "GET /auto HTTP/1.1" 200 -

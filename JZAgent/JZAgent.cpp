@@ -764,6 +764,13 @@ void JZAgent::addTool(JZAgentTool *tool)
 void JZAgent::addMcp(JZMcpClient *client)
 {
     JZ_ASSERT(client->parent() == nullptr);
+    // MCP 客户端是异步连接: 未就绪时 tools() 为空, 登记不到任何远端工具。
+    // 使用方应在 sigReady 之后再 addMcp。
+    if (!client->isReady())
+    {
+        jzWarning() << "JZMcpClient 尚未就绪(连接与工具列表未完成), 没有远端工具可登记:"
+                    << " 请先 startXxx() 并等待 sigReady 后再 addMcp";
+    }
     // 客户端及其代理工具都归本 agent 所有
     client->setParent(this);
     connect(&client->sigDestroyed, this, &JZAgent::onMcpDestroyed);

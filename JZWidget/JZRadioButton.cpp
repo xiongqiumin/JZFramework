@@ -53,20 +53,25 @@ void JZRadioButton::setChecked(bool on)
 void JZRadioButton::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);
-    int d = 18;
-    int y = (height() - d) / 2;
-    int cx = d / 2;
-    int cy = y + d / 2;
+    const int d = 18;                       // 指示器外接框 (含 1px 留白)
+    const int top = (height() - d) / 2;
+    const int cx = 1 + (d - 2) / 2;         // 外圈圆心 x (外圈矩形: x=1, 尺寸 d-2)
+    const int cy = top + 1 + (d - 2) / 2;   // 外圈圆心 y
 
-    // 外环(圆)
-    JZPen ringPen(JZColor(0x33, 0x66, 0xcc), 2);
-    p.setPen(ringPen);
-    p.drawRoundRect(1, y + 1, d - 2, d - 2, (d - 2) / 2);
+    // 外圈只描边不填内部: drawRoundRect 会用当前 brush 填满整个圆,
+    // 默认 brush 是不透明黑, 不显式置透明会把整个指示器涂成实心黑饼。
+    p.setBrush(JZBrush(JZColor::Transparent));
+    JZColor ring = m_checked ? JZColor(0x33, 0x66, 0xcc)   // 选中: 主题蓝
+                 : m_pressed  ? JZColor(0x66, 0x66, 0x66)  // 按住未选中: 加深灰
+                              : JZColor(0x99, 0x99, 0x99); // 常态: 灰
+    p.setPen(JZPen(ring, 1));
+    p.drawRoundRect(1, top + 1, d - 2, d - 2, (d - 2) / 2);
 
-    // 选中: 内圆点
+    // 选中: 内圆点 (半径=边长一半的圆角填充 = 真圆, 不再用方点)
     if (m_checked) {
-        int dd = 8;
-        p.fillRect(cx - dd / 2, cy - dd / 2, dd, dd, JZColor(0x33, 0x66, 0xcc));
+        const int dd = 8;
+        p.fillRoundRect(cx - dd / 2, cy - dd / 2, dd, dd, dd / 2,
+                        JZColor(0x33, 0x66, 0xcc));
     }
 
     // 文本

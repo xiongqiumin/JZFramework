@@ -19,6 +19,7 @@ public:
     };
 
     explicit JZSplitter(Orientation o = Horizontal, JZWidget* parent = nullptr);
+    ~JZSplitter() override;
 
     // 方向
     void setOrientation(Orientation o);
@@ -59,12 +60,17 @@ protected:
     void mousePressEvent(JZMouseEvent* event) override;
     void mouseMoveEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
+    bool eventFilter(JZObject* watched, JZEvent* event) override;
 
     // 按当前几何 + m_sizes 摆放所有子控件; m_sizes 未初始化时按拉伸因子分配
     void relayout();
     int totalStretch() const;
     int minOf(int index) const;                      // 子控件沿排布方向的最小尺寸
     int handleIndexAt(const JZPoint& p) const;       // 点 p 落在哪条分隔条上 (-1 表示无)
+
+    // 悬停/拖动光标: 指针在分隔条 (或拖动中) 上显示双向调整箭头, 否则清除。
+    // 参数为屏幕逻辑坐标 (子面板上移动时由 eventFilter 转发过来)。
+    void updateHoverCursor(const JZPoint& global);
 
     struct Item {
         JZWidget* widget = nullptr;

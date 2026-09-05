@@ -145,6 +145,7 @@ void JZScrollArea::setWidget(JZWidget* content)
     m_viewport->setVisible(true);
     m_widgetContent = content;
     m_widgetContent->setParentWidget(m_viewport);
+    m_widgetContent->setVisible(true);   // Qt 语义: 无父构造的内容默认不可见, setWidget 后须显式显示
     m_widgetContent->move(0, 0);
 
     // 未显式定尺寸时按 sizeHint 初始化 (之后外部可自行 resize, 滚动范围随之更新)

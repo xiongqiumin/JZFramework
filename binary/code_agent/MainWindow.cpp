@@ -83,19 +83,14 @@ static string findExeInPath(const string& exeName)
     return string();
 }
 
-// 按本机默认探测常用构建/脚本工具；名字需与虚拟终端的程序白名单对应。
+// 按本机默认探测常用工具；名字需与虚拟终端的程序白名单对应。
+// code_agent 只服务 TypeScript/JavaScript：只需 git（tsc / node 由 TS 环境目录提供）。
 static vector<TrustedProgram> detectDefaultPrograms()
 {
     struct Cand { string name; vector<string> exes; };
     static const Cand cands[] = {
-        {"cmake",  {"cmake.exe", "cmake"}},
-        {"python", {"python.exe", "python3.exe", "python"}},
         {"git",    {"git.exe", "git"}},
-        {"ninja",  {"ninja.exe", "ninja"}},
         {"node",   {"node.exe", "node"}},
-        {"dotnet", {"dotnet.exe", "dotnet"}},
-        {"go",     {"go.exe", "go"}},
-        {"make",   {"make.exe", "make", "mingw32-make.exe"}},
     };
     vector<TrustedProgram> out;
     for (const auto& c : cands)
@@ -114,6 +109,67 @@ static vector<TrustedProgram> detectDefaultPrograms()
         }
     }
     return out;
+}
+
+// 按 name 覆盖或追加可信程序（同名单条覆盖，保证后注入的 TS 环境优先于 PATH 探测结果）
+static void addOrReplaceProgram(vector<TrustedProgram>& list, const TrustedProgram& tp)
+{
+    for (auto& x : list)
+    {
+        if (str_toLower(x.name) == str_toLower(tp.name))
+        {
+            x = tp;
+            return;
+        }
+    }
+    list.push_back(tp);
+}
+
+// 目录去重追加（不比较大小写差异，目录字符串一般来自同一配置）
+static void addDirIfMissing(vector<TrustedDir>& dirs, const TrustedDir& dir)
+{
+    for (const auto& x : dirs)
+    {
+        if (str_toLower(x.path) == str_toLower(dir.path))
+            return;
+    }
+    dirs.push_back(dir);
+}
+
+// 本机默认的 TS 环境目录（JS/TS 编译器所在，与 ts_compiler 仓库布局一致）
+static const char* kDefaultTsEnv = "E:/libs/ts_compiler";
+
+// TS 环境目录的已知布局（与 ts_compiler 仓库一致，已实测原生 tsc.exe 可独立运行）：
+//   <env>/runtime/node/node.exe
+//   <env>/app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe
+// 目录存在时才注入：目录本身作为只读授信目录，node / tsc 按真实位置作为可信程序。
+static void appendTsEnv(const string& envDir, vector<TrustedDir>& dirs, vector<TrustedProgram>& progs)
+{
+    string root = codeNormalizePath(envDir);
+    if (root.empty() || !JZFileInfo::exists(root))
+        return;
+
+    TrustedDir td;
+    td.path = root;
+    td.writable = false;   // TS 环境只读挂载
+    addDirIfMissing(dirs, td);
+
+    struct Cand { string name; string rel; };
+    static const Cand cands[] = {
+        {"node", "runtime/node/node.exe"},
+        {"tsc",  "app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe"},
+    };
+    for (const auto& c : cands)
+    {
+        string p = codeNormalizePath(root + "/" + c.rel);
+        if (JZFileInfo::exists(p))
+        {
+            TrustedProgram tp;
+            tp.name = c.name;
+            tp.path = p;
+            addOrReplaceProgram(progs, tp);
+        }
+    }
 }
 
 // ==================== InputEdit ====================
@@ -160,11 +216,13 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     : JZDialog(parent)
 {
     setTitle("设置");
-    resize(460, 285);
+    resize(460, 325);
     setLayout(new JZVBoxLayout(8, 8));
 
-    // withBrowse: 该行末尾额外放一个"浏览..."按钮（用于选择工作区目录）
-    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse)
+    // withBrowse: 该行末尾额外放一个"浏览..."按钮（browseBtn 是接收按钮的成员引用，
+    // 由调用方传入对应行的 JZPushButton* 成员，返回后可直接 connect）
+    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse,
+                         JZPushButton*& browseBtn)
     {
         JZWidget* row = new JZWidget(this);
         JZHBoxLayout* h = new JZHBoxLayout(6, 6);
@@ -175,20 +233,23 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
         h->addWidget(edit, 1);
         if (withBrowse)
         {
-            m_wsBrowseBtn = new JZPushButton(row, 70, 28, "浏览...");
-            h->addWidget(m_wsBrowseBtn, 0);
+            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
+            h->addWidget(browseBtn, 0);
         }
         row->setLayout(h);
         static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
     };
-    addRow("模型地址", m_urlEdit, false);
-    addRow("模型名称", m_nameEdit, false);
-    addRow("API Token", m_tokenEdit, false);
-    addRow("工作区", m_wsEdit, true);
-    addRow("授信目录", m_trustedEdit, false);
+    addRow("模型地址", m_urlEdit, false, m_wsBrowseBtn);
+    addRow("模型名称", m_nameEdit, false, m_wsBrowseBtn);
+    addRow("API Token", m_tokenEdit, false, m_wsBrowseBtn);
+    addRow("工作区", m_wsEdit, true, m_wsBrowseBtn);
+    addRow("TS 环境", m_tsEdit, true, m_tsBrowseBtn);
+    m_tsEdit->setPlaceholderText("JS/TS 编译器目录（含 runtime/node 与 tsc），默认 E:/libs/ts_compiler");
+    addRow("授信目录", m_trustedEdit, false, m_wsBrowseBtn);
     m_trustedEdit->setPlaceholderText("多个用分号分隔，如 C:\\Python312; C:\\MyProj |rw（默认只读，|rw 标记可写）");
 
     connect(&m_wsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseWorkspace);
+    connect(&m_tsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseTsEnv);
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
@@ -210,6 +271,7 @@ void SettingsDialog::setValues(const AppConfig& cfg)
     m_nameEdit->setText(cfg.modelName);
     m_tokenEdit->setText(cfg.modelToken);
     m_wsEdit->setText(cfg.workspace);
+    m_tsEdit->setText(cfg.tsEnvDir);
     m_trustedEdit->setText(joinDirList(cfg.trustedDirs));
 }
 
@@ -219,6 +281,7 @@ void SettingsDialog::getValues(AppConfig& cfg)
     cfg.modelName = m_nameEdit->text();
     cfg.modelToken = m_tokenEdit->text();
     cfg.workspace = m_wsEdit->text();
+    cfg.tsEnvDir = str_trimmed(m_tsEdit->text());
     cfg.trustedDirs = parseDirList(m_trustedEdit->text());
 }
 
@@ -227,6 +290,13 @@ void SettingsDialog::onBrowseWorkspace()
     string dir = JZFileDialog::getExistingDirectory(this, "选择工作区目录", m_wsEdit->text());
     if (!dir.empty())
         m_wsEdit->setText(dir);
+}
+
+void SettingsDialog::onBrowseTsEnv()
+{
+    string dir = JZFileDialog::getExistingDirectory(this, "选择 TS 环境目录", m_tsEdit->text());
+    if (!dir.empty())
+        m_tsEdit->setText(dir);
 }
 
 void SettingsDialog::onAccept()
@@ -312,6 +382,7 @@ void MainWindow::loadConfig()
     m_cfg.modelUrl.clear();
     m_cfg.modelName.clear();
     m_cfg.modelToken.clear();
+    m_cfg.tsEnvDir.clear();
     m_cfg.workspace = JZPlatform::applicationDirPath();
 
     string path = JZPlatform::applicationDirPath() + "/code_agent.json";
@@ -328,6 +399,12 @@ void MainWindow::loadConfig()
     if (root.isMember("modelName"))    m_cfg.modelName = root["modelName"].asString();
     if (root.isMember("modelToken"))   m_cfg.modelToken = root["modelToken"].asString();
     if (root.isMember("workspace"))    m_cfg.workspace = root["workspace"].asString();
+    // TS 环境目录：JSON 里显式出现过则原样采用（可为空=禁用）；
+    // 首次启动没有该字段时用本机默认编译目录（存在才启用），保证开箱即用。
+    if (root.isMember("tsEnvDir"))
+        m_cfg.tsEnvDir = root["tsEnvDir"].asString();
+    else if (JZFileInfo::exists(kDefaultTsEnv))
+        m_cfg.tsEnvDir = kDefaultTsEnv;
     if (root.isMember("trustedDirs"))
     {
         const Json::Value& arr = root["trustedDirs"];
@@ -386,6 +463,7 @@ void MainWindow::saveConfig()
     root["modelName"] = m_cfg.modelName;
     root["modelToken"] = m_cfg.modelToken;
     root["workspace"] = m_cfg.workspace;
+    root["tsEnvDir"] = m_cfg.tsEnvDir;
 
     Json::Value trusted(Json::arrayValue);
     for (const auto& d : m_cfg.trustedDirs)
@@ -430,8 +508,14 @@ void MainWindow::applyConfig()
 
     CodeAgentConfig code;
     code.workspace = m_cfg.workspace;
-    code.trustedDirs = m_cfg.trustedDirs;
-    code.trustedPrograms = m_cfg.trustedPrograms;
+
+    // 运行时环境 = 配置的授信目录/可信程序 + TS 环境目录的动态注入。
+    // 动态部分只作用于本次组装、不写回 m_cfg，避免改/清 tsEnvDir 后旧路径残留在持久化配置里。
+    vector<TrustedDir> dirs = m_cfg.trustedDirs;
+    vector<TrustedProgram> progs = m_cfg.trustedPrograms;
+    appendTsEnv(m_cfg.tsEnvDir, dirs, progs);
+    code.trustedDirs = dirs;
+    code.trustedPrograms = progs;
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;
     code.proxyPort = m_cfg.proxyPort;
@@ -455,6 +539,7 @@ void MainWindow::updateStatus()
 {
     string s = "模型: " + (m_cfg.modelName.empty() ? "(未配置)" : m_cfg.modelName);
     s += "   工作区: " + m_cfg.workspace;
+    s += "   TS环境: " + (m_cfg.tsEnvDir.empty() ? "(未配置)" : m_cfg.tsEnvDir);
     if (m_cfg.modelUrl.empty())
         s += "   [请在设置中填写模型地址]";
     m_statusLabel->setText(s);

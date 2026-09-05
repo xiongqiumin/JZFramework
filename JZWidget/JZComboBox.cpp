@@ -159,8 +159,11 @@ void JZComboBox::showPopup()
     m_popupList->setCurrentIndex(std::max(0, m_current));
 
     // 尺寸: 宽同 combo, 高 = 可见项数 * 行高 + 边距 (超出 8 项滚屏)
+    // 内部列表必须显式铺满弹窗 (JZMenu::popup 同款范式): 子控件无"自动铺满"
+    // 机制, 不设几何列表保持默认 0×0, 下拉会开出空白矩形。
     const int maxVisible = 8;
     int h = std::min((int)m_items.size(), maxVisible) * m_popupList->itemHeight() + 4;
+    m_popupList->setGeometry(0, 0, width(), h);
     m_popup->resize(width(), h);
 
     // 位置: combo 左下角; 屏幕下方放不下则向上翻

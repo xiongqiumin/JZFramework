@@ -8,6 +8,7 @@
 //
 // 其它参数: --port(默认 3900) --modelUrl --modelA --modelB
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -60,7 +61,8 @@ public:
 
     GameRunner(JZApplication *app, FiveChessHall *hall, const Options &opt);
 
-    bool setup();
+    // 异步连接黑白双方的 MCP 客户端, 全部就绪后回调 ok=true; 任一连接失败回调 ok=false
+    void setup(const std::function<void(bool)> &done);
     void start();
 
     int roomId() const { return m_roomId; }
@@ -68,6 +70,8 @@ public:
 
 private:
     JZAgentConfig makeLlmConfig(const string &model) const;
+
+    void onBlackReady(const std::function<void(bool)> &done);
 
     void requestTurn();
     void botListAndJoin();
@@ -126,7 +130,7 @@ JZAgentConfig GameRunner::makeLlmConfig(const string &model) const
     return cfg;
 }
 
-bool GameRunner::setup()
+void GameRunner::setup(const std::function<void(bool)> &done)
 {
     // ---- 玩家: 黑 ----
     Player &black = m_players[FC_COLOR_BLACK];
@@ -134,11 +138,32 @@ bool GameRunner::setup()
     black.name = "大模型[" + m_opt.modelA + "](黑)";
     // 交给 agent 的 client 必须没有父对象(addMcp 会接管所有权)
     black.client = new JZMcpClient();
+    connect(&black.client->sigFinished, [this, done]()
+    {
+        if (!m_players[FC_COLOR_BLACK].client->isReady())
+        {
+            jzError() << "黑方连接 MCP 失败:"
+                      << m_players[FC_COLOR_BLACK].client->errorString();
+            m_players[FC_COLOR_BLACK].client->deleteLater();
+            m_players[FC_COLOR_BLACK].client = nullptr;
+            done(false);
+            return;
+        }
+        onBlackReady(done);
+    });
     if (!black.client->startHttp(m_mcpUrl))
     {
-        jzError() << "黑方连接 MCP 失败:" << black.client->errorString();
-        return false;
+        jzError() << "黑方发起 MCP 连接失败:" << black.client->errorString();
+        delete black.client;
+        black.client = nullptr;
+        done(false);
     }
+}
+
+void GameRunner::onBlackReady(const std::function<void(bool)> &done)
+{
+    // ---- 玩家: 黑(已连接, 建 agent 并登记) ----
+    Player &black = m_players[FC_COLOR_BLACK];
     black.agent = new JZAgent(this);
     black.agent->init(makeLlmConfig(m_opt.modelA));
     black.agent->addMcp(black.client);
@@ -153,32 +178,49 @@ bool GameRunner::setup()
     Player &white = m_players[FC_COLOR_WHITE];
     // 机器人自己持有 client(不经过 agent); 双 agent 模式下同样要交给 agent, 不能有父对象
     white.client = (m_opt.mode == "single") ? new JZMcpClient(this) : new JZMcpClient();
+
+    connect(&white.client->sigFinished, [this, done]()
+    {
+        Player &w = m_players[FC_COLOR_WHITE];
+        if (!w.client->isReady())
+        {
+            jzError() << "白方连接 MCP 失败:" << w.client->errorString();
+            // 白方尚未 addMcp(还没就绪), 手动回收; 单机机器人其父对象是本 runner
+            w.client->deleteLater();
+            w.client = nullptr;
+            done(false);
+            return;
+        }
+
+        if (m_opt.mode == "single")
+        {
+            w.isBot = true;
+            w.name = "本地机器人(白)";
+        }
+        else
+        {
+            w.isBot = false;
+            w.name = "大模型[" + m_opt.modelB + "](白)";
+            w.agent = new JZAgent(this);
+            w.agent->init(makeLlmConfig(m_opt.modelB));
+            w.agent->addMcp(w.client);
+            connect(&w.agent->sigFinished, [this]() { onTurnDone(FC_COLOR_WHITE); });
+            connect(&w.agent->sigError, [this](const string &err)
+            {
+                jzError() << "白方出错:" << err;
+                finish("白方出错: " + err);
+            });
+        }
+        jzInfo() << "黑白双方 MCP 均已就绪";
+        done(true);
+    });
     if (!white.client->startHttp(m_mcpUrl))
     {
-        jzError() << "白方连接 MCP 失败:" << white.client->errorString();
-        return false;
+        jzError() << "白方发起 MCP 连接失败:" << white.client->errorString();
+        delete white.client;
+        white.client = nullptr;
+        done(false);
     }
-
-    if (m_opt.mode == "single")
-    {
-        white.isBot = true;
-        white.name = "本地机器人(白)";
-    }
-    else
-    {
-        white.isBot = false;
-        white.name = "大模型[" + m_opt.modelB + "](白)";
-        white.agent = new JZAgent(this);
-        white.agent->init(makeLlmConfig(m_opt.modelB));
-        white.agent->addMcp(white.client);
-        connect(&white.agent->sigFinished, [this]() { onTurnDone(FC_COLOR_WHITE); });
-        connect(&white.agent->sigError, [this](const string &err)
-        {
-            jzError() << "白方出错:" << err;
-            finish("白方出错: " + err);
-        });
-    }
-    return true;
 }
 
 void GameRunner::start()
@@ -465,13 +507,19 @@ int main(int argc, char *argv[])
     }
     jzInfo() << "五子棋 MCP 服务已启动: http://127.0.0.1:" << opt.port << "/mcp";
 
-    // ---- 对局驱动 ----
+    // ---- 对局驱动(连接 MCP 是异步的, 就绪后由 setup 回调启动) ----
     GameRunner runner(&app, &hall, opt);
-    if (!runner.setup())
-        return 1;
-    runner.start();
+    bool setup_ok = false;
+    runner.setup([&](bool ok)
+    {
+        setup_ok = ok;
+        if (ok)
+            runner.start();
+        else
+            app.quit();
+    });
 
-    // 兜底超时: 一整盘棋 + 大模型思考, 给足时间
+    // 兜底超时: 连接 + 一整盘棋 + 大模型思考, 给足时间
     JZTimer::singleShot(900000, [&app]()
     {
         jzError() << "整局超时";
@@ -479,6 +527,12 @@ int main(int argc, char *argv[])
     });
 
     app.exec();
+
+    if (!setup_ok)
+    {
+        jzInfo() << "MCP 连接失败, 测试终止";
+        return 1;
+    }
 
     const FiveChessRoom *r = hall.room(runner.roomId());
     if (!r || r->result == FR_PLAYING)

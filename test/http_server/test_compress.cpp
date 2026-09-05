@@ -17,6 +17,7 @@
 #include "JZNetworkRequest.h"
 #include "JZApplication.h"
 #include "JZCompress.h"
+#include "JZStd.h"
 
 using namespace std;
 
@@ -107,7 +108,7 @@ public:
     JZByteArray payload;
     void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
     {
-        string accept = toLowerStr(req.header("Accept-Encoding"));
+        string accept = str_toLower(req.header("Accept-Encoding"));
         if (accept.find("gzip") != string::npos)
             client->response(buildCompressedResponse(payload, JZCompressAlgorithm::GZip, "gzip"));
         else

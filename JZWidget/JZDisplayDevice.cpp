@@ -141,6 +141,10 @@ void JZDisplayDevice::collectFrontToBack(JZWidget* w, const JZRect& area, std::v
     }
     if (!covered) {
         out.push_back(w);
-        coverage.push_back(wa);
+        // 只有"不透明"控件才向身后的兄弟贡献覆盖 (全屏蒙版/涟漪等透明覆盖层必须
+        // 放行身后内容重绘 —— 否则冻结在帧缓冲里的旧像素不会被擦除, 移动中的
+        // AI 光标/涟漪会在身后内容上留下残影)。
+        if (w->opaque() > 0)
+            coverage.push_back(wa);
     }
 }

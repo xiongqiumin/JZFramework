@@ -182,6 +182,7 @@ void JZScrollBar::mousePressEvent(JZMouseEvent* event)
     }
     int code = hitTest(event->localPos());
     m_pressCode = code;
+    m_dragging = false;   // 每次新按下先复位拖动, 防上次松手丢失后 m_dragging 残留
     m_dragGrab = 0;
     if (code == -1)      setValue(m_value - m_singleStep);
     else if (code == 3)  setValue(m_value + m_singleStep);
@@ -189,6 +190,8 @@ void JZScrollBar::mousePressEvent(JZMouseEvent* event)
         m_dragging = true;
         m_dragGrab = (m_orient == Horizontal ? event->localPos().x() : event->localPos().y())
                      - valueToPos(m_value);
+        grabMouse();   // 抓取: 拖出滚动条(甚至窗口)松开也能收到 Release, 防拖动状态残留
+        // 光标保持默认(继承父链), 不设拖拽箭头
     }
     else if (code == 0)  setValue(m_value - m_pageStep);
     else if (code == 2)  setValue(m_value + m_pageStep);
@@ -197,15 +200,21 @@ void JZScrollBar::mousePressEvent(JZMouseEvent* event)
 
 void JZScrollBar::mouseMoveEvent(JZMouseEvent* event)
 {
-    if (!m_dragging) return;
+    if (!m_dragging)
+        return;   // 悬停不设光标, 保持默认(继承父链)
     int mp = (m_orient == Horizontal ? event->localPos().x() : event->localPos().y());
     setValue(posToValue(mp - m_dragGrab));
 }
 
 void JZScrollBar::mouseReleaseEvent(JZMouseEvent* event)
 {
+    if (event->button() != JZMouseEvent::LeftButton) {
+        JZWidget::mouseReleaseEvent(event);
+        return;
+    }
     m_dragging = false;
     m_pressCode = -2;
+    releaseMouse();   // 与 press 里 grabMouse 配对
     update();
 }
 
@@ -218,3 +227,4 @@ void JZScrollBar::wheelEvent(JZMouseEvent* event)
     }
     JZWidget::wheelEvent(event);
 }
+

@@ -87,6 +87,19 @@ public:
     void releaseMouse(JZWidget* w = nullptr); // w==nullptr(或当前 grabber) 时解除抓取
     JZWidget* mouseGrabber() const { return m_mouseGrabber; }
 
+    // 按当前光标位置取悬停控件 (grabber 优先) 的生效光标 JZWidget::cursor()
+    // 并 SetCursor。WM_SETCURSOR (客户区内) 自动调用; setCursor 与鼠标派发后
+    // 也会调用以立即刷新。
+    void applyMouseCursor();
+
+    // ---- 输入屏蔽 (全屏蒙版, AI 操作期间) ----
+    // 设置 gate 后, gate 可见期间本窗口丢弃真实用户的鼠标/键盘/IME 输入, 只放行
+    // gate 自身子树 (如蒙版上的"取消"按钮); Esc 会交给 gate 处理 (= 取消)。
+    // gate==nullptr 解除屏蔽。AI 合成的程序化鼠标事件 (JZMouseEvent::setProgrammatic)
+    // 不受屏蔽, 保证 AI 点击能穿过蒙版落到目标控件。
+    void setInputGate(JZWidget* gate);
+    JZWidget* inputGate() const { return m_inputGate; }
+
     // 是否活动窗口: 原生窗口持有键盘焦点 (由 WM_SETFOCUS / WM_KILLFOCUS 维护)。
     // JZApplication::activeWindow() 依据它判定当前活动窗口。
     bool isActiveWindow() const { return m_hasWindowFocus; }
@@ -184,6 +197,7 @@ protected:
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
+    JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
     bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏

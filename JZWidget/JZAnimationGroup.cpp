@@ -30,10 +30,14 @@ void JZAnimationGroup::addProperty(JZWidget* target, const std::string& name,
     auto* anim = new JZPropertyAnimation();
     anim->setTarget(target);
     anim->setDuration(m_duration);
-    anim->setDelay(m_delay);
+    anim->setDelay(m_delay + startTime);     // startTime = 与组起点错开的附加延迟
     anim->setEasingEaseInOut();
-    //anim->setProperty(name, from, to);
-    addAnimation(anim, (int)startTime);
+    if (!anim->setProperty(name, from, to))
+    {
+        delete anim;                         // 属性名不支持/目标非法: 不参与组
+        return;
+    }
+    addAnimation(anim, 0);
 }
 
 void JZAnimationGroup::addAnimation(JZAbstractAnimation* anim, uint32_t /*startTime*/)

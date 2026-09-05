@@ -51,6 +51,10 @@ public:
     void fillRect(const JZRect &rc, const JZColor& color);
     void fillRect(int x, int y, int w, int h, const JZColor& color);
 
+    // 填充圆角矩形 (只填充不描边, 同参数下 drawRoundRect 还会按当前 brush 填内部)。
+    // 真圆 = 正方形且 radius == 边长/2 (如单选钮内点)。
+    void fillRoundRect(int x, int y, int w, int h, int radius, const JZColor& color);
+
     // 角度单位: 1/10 度 (与 LVGL 一致: 0=3点方向, 90=6点方向, 顺时针递增)
     void drawArc(int x, int y, int radius, int startAngle, int endAngle);
     void drawText(int x, int y, const char* text);

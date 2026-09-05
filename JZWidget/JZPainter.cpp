@@ -217,6 +217,19 @@ void JZPainter::fillRect(int x, int y, int w, int h, const JZColor& color)
     m_layer->addTask(t);
 }
 
+void JZPainter::fillRoundRect(int x, int y, int w, int h, int radius, const JZColor& color)
+{
+    JZRect area(m_ox + x, m_oy + y, w, h);
+    if (isCulled(area))
+        return;
+
+    auto t = std::make_shared<JZFillRectTask>();
+    t->area = area;
+    t->color = color;
+    t->radius = radius;
+    m_layer->addTask(t);
+}
+
 void JZPainter::drawArc(int x, int y, int radius, int startAngle, int endAngle)
 {
     // 粗略剔除: 以圆心+半径为外接方框。

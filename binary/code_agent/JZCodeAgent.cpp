@@ -384,7 +384,7 @@ void JZCodeAgent::addLog(const string &type, const string &text, const string &n
 string JZCodeAgent::buildSystemPrompt() const
 {
     string text;
-    text += "你是一个运行在本地的代码助手 JZCodeAgent，可以查看、搜索、修改、编译和运行工作区中的代码。编译统一使用cmake\n";
+    text += "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript/JavaScript 项目：可查看、搜索、修改、编译(tsc)与运行(node)工作区中的代码。\n";
     text += "\n## 工作区\n";
     text += "根目录: " + m_codeConfig.workspace + "\n";
     text += "所有路径参数都使用相对于该目录的相对路径（根目录用 \".\" 表示）。" \
@@ -424,11 +424,25 @@ string JZCodeAgent::buildSystemPrompt() const
     else
         text += "可执行的外部程序: " + str_join(progs, ", ") + "\n";
     text += "缺失程序时不要换其它写法重试，直接告诉用户需要安装什么、装好后要加为授信目录。\n";
+    text += "\n## JS/TS 编译与运行\n";
+    bool hasTsc = false;
+    for (size_t i = 0; i < progs.size(); i++)
+        if (progs[i] == "tsc") { hasTsc = true; break; }
+    if (!hasTsc)
+        text += "注意: 当前可用的外部程序里没有 tsc（TS 环境目录未配置或缺失）。先停下手头工作，" \
+                "告诉用户去设置里填写正确的 TS 环境目录，不要尝试用其它方式编译。\n";
+    text += "编译统一用 tsc（TypeScript 原生编译器）。\n";
+    text += "- 动手前先读 tsconfig.json；没有就新建一份（建议：target es2022、module commonjs、strict true、outDir \"dist\"）。\n";
+    text += "- 全量编译:  tsc -p tsconfig.json\n";
+    text += "- 快速检查:  tsc --noEmit -p tsconfig.json   （只做类型/语法检查，不产出，适合每次改动后自检）\n";
+    text += "- 编译产物落在 outDir(dist)；运行: node dist/<入口>.js\n";
+    text += "- node 也可以直接运行不含类型的 .js（含 JSDoc 注释时会有提示，不影响运行）。\n";
+    text += "- 项目依赖预装在 node_modules 里（须已存在）；终端禁止装包(npm/npx/pip 均被禁)，缺依赖直接告诉用户。\n";
     text += "\n## 工作原则\n";
     text += "1. 修改代码之前必须先用 read_file 或 search_code 确认原文，严禁凭记忆猜测文件内容。\n";
     text += "2. modify_code 的 old_str 必须与文件中的内容逐字符一致（含缩进与换行），且默认要求唯一匹配；\n";
     text += "   若匹配到多处，请补充更多上下文使其唯一，或显式设置 replace_all=true。\n";
-    text += "3. 每次修改之后用 terminal 编译验证（cmake --build build），必要时再运行程序验证，直到没有错误为止。\n";
+    text += "3. 每次修改之后先 tsc --noEmit 做类型自检，再全量编译产出，必要时 node 运行验证，直到没有错误为止。\n";
     text += "4. 编译或运行报错时，先从输出里定位到具体文件与行号再动手改，不要盲目试错。\n";
     text += "5. 一次只做最小必要的改动，不要顺手重构无关代码。\n";
     text += "6. 任务完成后用简洁的中文总结：改了哪些文件、编译与运行的结果如何。\n";

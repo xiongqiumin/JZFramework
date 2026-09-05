@@ -12,6 +12,16 @@ JZSplitter::JZSplitter(Orientation o, JZWidget* parent)
     // 不使用 m_layout: 本控件自行管理子控件几何
 }
 
+JZSplitter::~JZSplitter()
+{
+    // 本控件是各子面板的事件过滤器: 析构前先摘除, 防止子面板被外部 reparent 后
+    // 仍存活、事件分发到已析构的过滤器上 (正常析构树时子面板先亡, 无此风险)。
+    for (auto& it : m_items) {
+        if (it.widget)
+            it.widget->removeEventFilter(this);
+    }
+}
+
 // ==================== 方向与基本属性 ====================
 void JZSplitter::setOrientation(Orientation o)
 {
@@ -51,6 +61,9 @@ void JZSplitter::insertWidget(int index, JZWidget* widget)
         return;
     index = std::max(0, std::min(index, (int)m_items.size()));
     widget->setParentWidget(this);   // 挂为渲染子节点
+    // 事件过滤: 指针在子面板上移动时也要刷新本控件的悬停光标 (分隔条是绘制在
+    // 本控件内部的热区, 鼠标一移到面板上就收不到本控件的 mouseMove 了)。
+    widget->installEventFilter(this);
 
     Item it;
     it.widget = widget;
@@ -68,6 +81,7 @@ void JZSplitter::removeWidget(JZWidget* widget)
     int i = indexOf(widget);
     if (i < 0)
         return;
+    widget->removeEventFilter(this);   // 与 insertWidget 里 install 配对
     widget->setParentWidget(nullptr);   // 脱离渲染树 (调用方仍持有所有权)
     m_items.erase(m_items.begin() + i);
     m_sizes.erase(m_sizes.begin() + i);
@@ -331,6 +345,7 @@ void JZSplitter::mousePressEvent(JZMouseEvent* event)
             ? event->localPos().x() : event->localPos().y();
         m_dragSizes = m_sizes;
         grabMouse();   // 抓取: 拖出分隔条命中带也不丢 move/up
+        updateHoverCursor(event->globalPos());   // 拖动中全程拖拽箭头
         update();
     } else {
         JZWidget::mousePressEvent(event);
@@ -363,6 +378,7 @@ void JZSplitter::mouseMoveEvent(JZMouseEvent* event)
             m_hoverHandle = h;
             update();
         }
+        updateHoverCursor(event->globalPos());
     }
 }
 
@@ -372,7 +388,38 @@ void JZSplitter::mouseReleaseEvent(JZMouseEvent* event)
         m_dragHandle = -1;
         releaseMouse();   // 释放抓取
         update();
+        updateHoverCursor(event->globalPos());   // 松手: 恢复悬停规则
     } else {
         JZWidget::mouseReleaseEvent(event);
     }
+}
+
+// 子面板事件过滤: 指针移到面板上时, 按其在分隔条内的位置刷新悬停光标
+// (分隔条是绘制在本控件内部的热区, 面板收走鼠标事件后本控件收不到 move)。
+// 不拦截任何事件。
+bool JZSplitter::eventFilter(JZObject* watched, JZEvent* event)
+{
+    if (event->type() == JZEvent_mouse) {
+        JZMouseEvent* me = static_cast<JZMouseEvent*>(event);
+        if (me->mouseType() == JZMouseEvent::Move)
+            updateHoverCursor(me->globalPos());
+    }
+    return JZWidget::eventFilter(watched, event);
+}
+
+// 悬停/拖动光标: 分隔条热区与绘制/命中一致 (含 handleIndexAt 的 ±3px 抓取容差);
+// 拖动中 (无论指针在哪) 也显示拖拽箭头; 其余位置不显式设置 (继承/箭头)。
+void JZSplitter::updateHoverCursor(const JZPoint& global)
+{
+    JZCursor cur(m_orientation == Horizontal
+        ? JZCursorShape::SizeHor : JZCursorShape::SizeVer);
+    if (m_dragHandle >= 0) {
+        setCursor(cur);
+        return;
+    }
+    JZPoint o = mapToGlobal(rect().topLeft());
+    if (handleIndexAt(JZPoint(global.x() - o.x(), global.y() - o.y())) >= 0)
+        setCursor(cur);
+    else
+        unsetCursor();
 }

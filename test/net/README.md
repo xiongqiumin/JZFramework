@@ -163,20 +163,21 @@ iperf3 -s -p 18312
 
 ---
 
-## 三、HTTP 代理本地联调（`test_proxy` + `test_proxy_server.py`）
+## 三、HTTP 代理 / 压缩本地联调（`test_proxy` + `test_net_compress` + `net_test_server.py`）
 
-离线验证 `JZNetworkAccessManager` 的代理能力：
+离线验证 `JZNetworkAccessManager` 的代理与 HTTP 压缩能力：
 
 - **http 目标经代理转发**（请求行用绝对 URI）
 - **https 目标经代理 CONNECT 隧道** + 隧道上 TLS 握手（核心验证点）
+- **HTTP Content-Encoding 解压**（gzip / deflate），由 `test_net_compress` 连本服务校验
 
 ### 准备（本地一体化服务）
 
-`test_proxy_server.py` 用 Python 一次性起三个服务，**无需任何外网**：
+`net_test_server.py` 用 Python 一次性起三个服务，**无需任何外网**：
 
 | 服务 | 地址 | 说明 |
 |---|---|---|
-| 目标 HTTP 站点 | `http://127.0.0.1:8080` | Flask，返回 `PROXY_TEST_OK` 可识别响应 |
+| 目标 HTTP 站点 | `http://127.0.0.1:8080` | Flask，返回 `PROXY_TEST_OK`；并提供 `/gzip` `/deflate` `/plain` 压缩端点 |
 | 目标 HTTPS 站点 | `https://127.0.0.1:8443` | Flask + 运行时生成的自签名证书（CN=127.0.0.1） |
 | HTTP 代理 | `http://127.0.0.1:7001` | 原生 socket 实现，支持 CONNECT 隧道 |
 
@@ -185,7 +186,7 @@ iperf3 -s -p 18312
 
 ```bash
 # 终端1: 启动本地代理 + 目标站点（Ctrl+C 退出）
-python test/net/test_proxy_server.py
+python test/net/net_test_server.py
 
 # 终端2: 构建并运行 C++ 代理测试
 cmake --build build --target test_proxy --config Debug
@@ -202,6 +203,20 @@ cmake --build build --target test_proxy --config Debug
 
 C++ 侧 `setSsl` 设了 `sslSkipVerify=true`，故自签名证书可被接受（仅验证隧道连通性）。
 可用 `--http-target` / `--https-target` / `--proxy` / `--timeout` 覆盖。
+
+### `test_net_compress` 压缩验证（复用同一服务）
+
+`test_net_compress` 已不再自起本地服务，改为连接本服务的 HTTP 目标站（127.0.0.1:8080）做端到端解压校验：
+
+- `GET /plain` 取基准明文；
+- `GET /gzip`、`GET /deflate` 取压缩响应，由客户端按 `Content-Encoding` 自动解压，结果与基准比对。
+
+```bash
+# 终端1: 已启动 net_test_server.py（见上）
+# 终端2: 构建并运行压缩测试
+cmake --build build --target test_net_compress --config Debug
+./build/test/net/test_net_compress
+```
 退出码：`0`=全通过，`1`=有失败，`2`=参数/环境错误。
 
 > 直连段与代理段使用**两个不同的** `JZNetworkAccessManager`，可顺带验证连接池

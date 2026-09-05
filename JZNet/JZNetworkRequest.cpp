@@ -62,6 +62,9 @@ void JZNetworkRequest::setHeader(KnownHeaders header, const std::string &headerV
         case AcceptHeader:
             setRawHeader("Accept", headerValue);
             break;
+        case AcceptEncodingHeader:
+            setRawHeader("Accept-Encoding", headerValue);
+            break;
         default: {
             JZ_ASSERT(false);
         }

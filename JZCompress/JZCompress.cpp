@@ -291,7 +291,7 @@ JZDecompressStream::JZDecompressStream(JZCompressAlgorithm algo, int64_t expectS
     m_impl->finished = false;
     m_impl->done = false;
     m_impl->m_dictOfs = 0;
-    m_impl->m_last_status = TINFL_STATUS_OKAY;
+    m_impl->m_last_status = TINFL_STATUS_NEEDS_MORE_INPUT;
     m_impl->m_crc = static_cast<uint32_t>(MZ_CRC32_INIT);
     m_impl->m_totalOut = 0;
     m_impl->m_gzipHdrState = 0;
@@ -415,7 +415,7 @@ void JZDecompressStream::reset()
     m_impl->finished = false;
     m_impl->done = false;
     m_impl->m_dictOfs = 0;
-    m_impl->m_last_status = TINFL_STATUS_OKAY;
+    m_impl->m_last_status = TINFL_STATUS_NEEDS_MORE_INPUT;
     m_impl->m_crc = static_cast<uint32_t>(MZ_CRC32_INIT);
     m_impl->m_totalOut = 0;
     m_impl->m_gzipHdrState = 0;

@@ -79,27 +79,11 @@ static std::string jzHttpStatusText(const struct mg_http_message& hm)
 }
 
 // 解析响应头到 reply（m_head / m_headers / Location）
-static void jzParseHeaders(JZNetworkReply *reply, struct mg_http_message& hm, std::string& location)
-{
-    reply->m_head.assign(hm.head.buf, hm.head.len);
-    reply->m_headers.clear();
-    for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
-    {
-        struct mg_str *name = &hm.headers[i].name;
-        if (name->len == 0) break;   // 头数组以空 name 结尾
-        std::string key = toLowerStr(std::string(name->buf, name->len));
-        std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
-        reply->m_headers[key] = val;
-    }
-    struct mg_str *loc = mg_http_get_header(&hm, "Location");
-    if (loc) location.assign(loc->buf, loc->len);
-}
-
 #ifdef HAS_JZCompress
 // 按 Content-Encoding 解压 body（原地替换）。
 // 返回 false 表示遇到无法解码的 Content-Encoding（br/zstd/compress 等）：调用方应报错终止，
 // 不能把压缩字节当明文投递；其余情况（无编码 / identity / 已成功解压）返回 true。
-static bool jzApplyContentEncoding(JZNetworkReply *reply, JZByteArray& body)
+bool JZNetworkConnect::jzApplyContentEncoding(JZNetworkReply *reply, JZByteArray& body)
 {
     auto it = reply->m_headers.find("content-encoding");
     if (it == reply->m_headers.end())
@@ -320,7 +304,7 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
                 if (!m_decompress)
                     m_decompress = new JZDecompressStream(m_compressAlgo);
                 JZByteArray plain = m_decompress->write(JZByteArray(data_ptr, dl));
-                if (!plain.empty())
+                if (!plain.isEmpty())
                 {
                     m_reply->m_body.append(plain);
                     body_grew = true;
@@ -359,7 +343,7 @@ void JZNetworkConnect::appendChunk(const JZByteArray& data)
             JZByteArray plain;
             if (m_decompress)
                 plain = m_decompress->finish();   // 收尾取尾部明文 + 帧尾校验；释放交给 emitFinish
-            if (!plain.empty())
+            if (!plain.isEmpty())
                 m_reply->m_body.append(plain);
             m_reply->sigReadyRead.emit();
         }
@@ -532,7 +516,19 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
             m_reply->m_statusCode = code;
             m_reply->m_statusText = jzHttpStatusText(hm);
             std::string location;
-            jzParseHeaders(m_reply, hm, location);   // 含 content-encoding / Location
+            // 解析响应头：status / 头表 / Location（三种收尾方式共用，只做一次）
+            m_reply->m_head.assign(hm.head.buf, hm.head.len);
+            m_reply->m_headers.clear();
+            for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
+            {
+                struct mg_str *name = &hm.headers[i].name;
+                if (name->len == 0) break;   // 头数组以空 name 结尾
+                std::string key = toLowerStr(std::string(name->buf, name->len));
+                std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
+                m_reply->m_headers[key] = val;
+            }
+            struct mg_str *loc = mg_http_get_header(&hm, "Location");
+            if (loc) location.assign(loc->buf, loc->len);
 
 #ifdef HAS_JZCompress
             // 通用 Content-Encoding 判定（只在解析头时做一次，chunked / 非 chunked 复用）：
@@ -918,6 +914,14 @@ JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
     }
     // https 代理：认证头放 CONNECT 请求上（见 buildConnectRequest），内层请求保持加密
 
+    // 默认声明可接受压缩响应：内容协商由服务器决定，客户端仅按 Content-Encoding 自动解压；
+    // 不主动压缩请求体（只加 Accept-Encoding 头，不改动 body）。用户已显式设置则保留其取值。
+    // 仅在编译期启用压缩（HAS_JZCompress）时才声明，否则客户端无法解压，不应撒谎声称支持。
+#ifdef HAS_JZCompress
+    if (req.rawHeaders().find("Accept-Encoding") == req.rawHeaders().end())
+        req.setHeader(JZNetworkRequest::AcceptEncodingHeader, "gzip, deflate");
+#endif
+
     JZNetworkReply* reply = new JZNetworkReply(this);
     reply->m_request = req;
     reply->m_method = JZNetworkRequest::Get;
@@ -943,6 +947,14 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
             mutableRequest.setRawHeader("Proxy-Authorization", auth);
     }
     // https 代理：认证头放 CONNECT 请求上，内层请求保持加密
+
+    // 默认声明可接受压缩响应（同 get）：服务器按需压缩响应，客户端按 Content-Encoding 解压；
+    // 不主动压缩请求体。用户已显式设置则保留其取值。
+    // 仅在编译期启用压缩（HAS_JZCompress）时才声明，否则客户端无法解压，不应撒谎声称支持。
+#ifdef HAS_JZCompress
+    if (mutableRequest.rawHeaders().find("Accept-Encoding") == mutableRequest.rawHeaders().end())
+        mutableRequest.setHeader(JZNetworkRequest::AcceptEncodingHeader, "gzip, deflate");
+#endif
 
     JZNetworkReply *reply = new JZNetworkReply(this);
     reply->m_request = mutableRequest;

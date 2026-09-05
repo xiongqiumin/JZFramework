@@ -36,6 +36,11 @@ protected:
     JZByteArray getHttpBody(const JZByteArray& data);
     void appendChunk(const JZByteArray& data);
 
+    // 内部辅助：按 Content-Encoding 解压（作为成员以便访问 JZNetworkReply 的 protected 头字段）
+#ifdef HAS_JZCompress
+    static bool jzApplyContentEncoding(JZNetworkReply *reply, JZByteArray& body);
+#endif
+
     void resetConnection();   // keep-alive：重置状态以便复用连接
     void closeConnection();   // 真正关闭底层连接
 

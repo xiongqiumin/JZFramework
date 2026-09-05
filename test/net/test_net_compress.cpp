@@ -1,184 +1,203 @@
-#include <cstdlib>
+#include <cstring>
 #include <string>
-#include <vector>
 
 #include "JZDebug.h"
+#include "JZApplication.h"
 #include "JZEventLoop.h"
 #include "JZTimer.h"
 #include "JZByteArray.h"
-#include "JZStd.h"
-
-#include "JZHttpServer.h"
-#include "JZHttpRequest.h"
-#include "JZHttpRespone.h"
-#include "JZHttpHandler.h"
 
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkReply.h"
 #include "JZNetworkRequest.h"
 
-#include "JZCompress.h"
-
 using namespace std;
 
-// 原始载荷：放大到数十 KB，确保压缩真正生效（不只是帧头）
-static string makePayload()
-{
-    string base = "JZNet 压缩测试 / compression test payload 0123456789 "
-                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ 中文压缩数据 変換テスト ";
-    string out;
-    out.reserve(base.size() * 300);
-    for (int i = 0; i < 300; i++)
-        out += base;
-    return out;
-}
-
-// ---- gzip 响应（HTTP Content-Encoding: gzip）----
-class GzipHandler : public JZHttpHandler
+// 阻塞式 GET: 在内部事件循环上等待 sigFinished / 超时, 返回解压后的 body 字节
+class CompressGet : public JZObject
 {
 public:
-    string payload;
-    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    explicit CompressGet(JZNetworkAccessManager *mgr) : m_mgr(mgr) {}
+
+    bool run(const string &url, int timeoutMs, JZByteArray &body, string &err)
     {
-        (void)req;
-        JZByteArray raw(payload.data(), (int)payload.size());
-        auto r = jzCompressBlock(raw, JZCompressAlgorithm::GZip);
-        if (!r.isOk())
-        {
-            client->response(JZByteArray());
-            return;
-        }
-        JZHttpRespone resp;
-        resp.setStatusCode(200);
-        resp.setContentType("text/plain");
-        resp.setHeader("Content-Encoding", "gzip");
-        resp.setBody(r.value());
-        client->response(resp.toByteArray());
-    }
-};
+        JZEventLoop loop;
+        m_loop = &loop;
+        m_done = false;
+        m_ok = false;
+        m_err.clear();
+        m_body.clear();
+        m_encoding.clear();
 
-// ---- deflate 响应（HTTP "deflate" 实为 zlib 封装的 raw deflate）----
-class DeflateHandler : public JZHttpHandler
-{
-public:
-    string payload;
-    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
-    {
-        (void)req;
-        JZByteArray raw(payload.data(), (int)payload.size());
-        auto r = jzCompressBlock(raw, JZCompressAlgorithm::Zlib);
-        if (!r.isOk())
-        {
-            client->response(JZByteArray());
-            return;
-        }
-        JZHttpRespone resp;
-        resp.setStatusCode(200);
-        resp.setContentType("text/plain");
-        resp.setHeader("Content-Encoding", "deflate");
-        resp.setBody(r.value());
-        client->response(resp.toByteArray());
-    }
-};
+        JZNetworkRequest req(url);
+        JZNetworkReply *reply = m_mgr->get(req);
+        connect(&reply->sigFinished, this, &CompressGet::onReply);
 
-// ---- 未压缩（对照）----
-class PlainHandler : public JZHttpHandler
-{
-public:
-    string payload;
-    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
-    {
-        (void)req;
-        JZHttpRespone resp;
-        resp.setStatusCode(200);
-        resp.setContentType("text/plain");
-        resp.setBody(JZByteArray(payload.data(), (int)payload.size()));
-        client->response(resp.toByteArray());
-    }
-};
+        JZTimer timer(this);
+        timer.setSingleShot(true);
+        connect(&timer.sigTimeout, this, &CompressGet::onTimeout);
+        timer.start(timeoutMs);
 
-// 顺序发起 gzip / deflate / plain 三个请求，逐一校验解压后的 body 与原始载荷一致
-class CompressTest : public JZObject
-{
-public:
-    CompressTest(JZEventLoop *loop, int port)
-        : m_loop(loop), m_port(port)
-    {
-        m_payload = makePayload();
+        loop.exec();
 
-        auto *gzip = new GzipHandler();  gzip->payload = m_payload;
-        auto *defl = new DeflateHandler(); defl->payload = m_payload;
-        auto *plain = new PlainHandler(); plain->payload = m_payload;
-
-        m_server = new JZHttpServer(this);
-        m_server->listen(port);
-        m_server->addRoute("/gzip", gzip);
-        m_server->addRoute("/deflate", defl);
-        m_server->addRoute("/plain", plain);
-
-        m_net = new JZNetworkAccessManager(this);
-
-        string base = "http://127.0.0.1:" + to_string(port);
-        m_urls = { base + "/gzip", base + "/deflate", base + "/plain" };
-        m_kinds = { "gzip", "deflate", "plain" };
-
-        // 看门狗：10s 内未全部完成则判失败退出
-        JZTimer::singleShot(10000, this, [this]() {
-            jzDebug() << "【FAIL】压缩测试超时，未在规定时间内完成";
-            exit(1);
-        });
-
-        sendNext();
+        body = m_body;
+        err = m_err;
+        return m_ok;
     }
 
-    void sendNext()
-    {
-        if (m_step >= (int)m_urls.size())
-        {
-            jzDebug() << "【OK】压缩测试全部通过 (gzip / deflate / plain)";
-            m_loop->quit();
-            return;
-        }
-        JZNetworkRequest req(m_urls[m_step]);
-        JZNetworkReply *reply = m_net->get(req);
-        connect(&reply->sigFinished, this, &CompressTest::onReply);
-    }
-
+protected:
     void onReply()
     {
         JZNetworkReply *reply = (JZNetworkReply *)sender();
-        string kind = m_kinds[m_step];
-        bool ok = (reply->error() == JZNetworkReply::NoError);
-        string got = ok ? str_fromUtf8(reply->readAll()) : string();
-        if (!ok || got != m_payload)
+        m_done = true;
+        if (reply->error() != JZNetworkReply::NoError)
         {
-            jzDebug() << "【FAIL】" << kind << " 解压校验失败 error=" << (int)reply->error()
-                      << " 期望长度=" << m_payload.size() << " 收到长度=" << got.size();
-            reply->deleteLater();
-            exit(1);
+            m_ok = false;
+            m_err = reply->errorString();
         }
-        jzDebug() << "【OK】" << kind << " 解压正确 (原始 " << m_payload.size()
-                  << " 字节 -> 解压后 " << got.size() << " 字节)";
+        else
+        {
+            m_ok = true;
+            m_body = reply->readAll();   // 客户端已按 Content-Encoding 自动解压
+            m_encoding = reply->header("content-encoding");
+        }
         reply->deleteLater();
-        m_step++;
-        sendNext();
+        if (m_loop)
+            m_loop->quit();
     }
 
-    JZEventLoop *m_loop;
-    int m_port;
-    string m_payload;
-    JZHttpServer *m_server;
-    JZNetworkAccessManager *m_net;
-    vector<string> m_urls;
-    vector<string> m_kinds;
-    int m_step = 0;
+    void onTimeout()
+    {
+        if (!m_done)
+        {
+            m_ok = false;
+            m_err = "timeout";
+            if (m_loop)
+                m_loop->quit();
+        }
+    }
+
+    JZNetworkAccessManager *m_mgr;
+    JZEventLoop *m_loop = nullptr;
+    bool m_done = false;
+    bool m_ok = false;
+    JZByteArray m_body;
+    string m_err;
+    string m_encoding;   // 捕获响应 Content-Encoding，用于验证内容协商
+
+public:
+    const string& encoding() const { return m_encoding; }
 };
+
+static bool bytesEqual(const JZByteArray &a, const JZByteArray &b)
+{
+    if (a.size() != b.size())
+        return false;
+    if (a.size() == 0)
+        return true;
+    return memcmp(a.data(), b.data(), (size_t)a.size()) == 0;
+}
 
 int main()
 {
+    JZApplication a;   // 必须先创建，否则 JZObject 构造时 jzApp->currentThread() 空指针崩溃
     jzDebug() << "########## JZNet 压缩响应测试 (gzip / deflate / plain) ##########";
-    JZEventLoop loop;
-    CompressTest test(&loop, 18299);
-    loop.exec();
-    return 0;
+
+    // 连本地 net_test_server.py 的 HTTP 目标站（与 test_proxy 共用 8080）
+    const int timeoutMs = 30000;
+    const string base = "http://127.0.0.1:8080";
+    JZNetworkAccessManager mgr;
+
+    JZByteArray expected;
+    string err;
+    bool allOk = true;
+
+    // 1) 未压缩基准载荷
+    {
+        CompressGet g(&mgr);
+        if (!g.run(base + "/plain", timeoutMs, expected, err))
+        {
+            jzDebug() << "【FAIL】plain: " << err;
+            allOk = false;
+        }
+        else
+        {
+            jzDebug() << "【OK】plain 基准载荷长度=" << expected.size();
+        }
+    }
+
+    // 2) gzip 响应：客户端按 Content-Encoding 自动解压，应与基准一致
+    {
+        CompressGet g(&mgr);
+        JZByteArray body;
+        if (!g.run(base + "/gzip", timeoutMs, body, err))
+        {
+            jzDebug() << "【FAIL】gzip: " << err;
+            allOk = false;
+        }
+        else if (!bytesEqual(body, expected))
+        {
+            jzDebug() << "【FAIL】gzip 解压后与基准不一致 基准=" << expected.size()
+                      << " 解压=" << body.size();
+            allOk = false;
+        }
+        else
+        {
+            jzDebug() << "【OK】gzip 解压正确 (解压后 " << body.size() << " 字节)";
+        }
+    }
+
+    // 3) deflate 响应（zlib 封装）：客户端按 Content-Encoding: deflate 自动解压
+    {
+        CompressGet g(&mgr);
+        JZByteArray body;
+        if (!g.run(base + "/deflate", timeoutMs, body, err))
+        {
+            jzDebug() << "【FAIL】deflate: " << err;
+            allOk = false;
+        }
+        else if (!bytesEqual(body, expected))
+        {
+            jzDebug() << "【FAIL】deflate 解压后与基准不一致 基准=" << expected.size()
+                      << " 解压=" << body.size();
+            allOk = false;
+        }
+        else
+        {
+            jzDebug() << "【OK】deflate 解压正确 (解压后 " << body.size() << " 字节)";
+        }
+    }
+
+    // 4) /auto 内容协商：客户端现默认发送 Accept-Encoding: gzip, deflate，
+    //    服务端应据该头返回 gzip 压缩响应（Content-Encoding: gzip），解压后与基准一致
+    {
+        CompressGet g(&mgr);
+        JZByteArray body;
+        if (!g.run(base + "/auto", timeoutMs, body, err))
+        {
+            jzDebug() << "【FAIL】auto: " << err;
+            allOk = false;
+        }
+        else if (g.encoding() != "gzip")
+        {
+            jzDebug() << "【FAIL】auto: 期望服务端按 Accept-Encoding 协商返回 gzip，"
+                         "实际 Content-Encoding=" << g.encoding();
+            allOk = false;
+        }
+        else if (!bytesEqual(body, expected))
+        {
+            jzDebug() << "【FAIL】auto: 解压后与基准不一致 基准=" << expected.size()
+                      << " 解压=" << body.size();
+            allOk = false;
+        }
+        else
+        {
+            jzDebug() << "【OK】auto 内容协商生效: 客户端 Accept-Encoding -> 服务端返回 gzip, 解压正确 ("
+                      << body.size() << " 字节)";
+        }
+    }
+
+    jzDebug() << (allOk ? "【结果】PASS: gzip / deflate / plain / auto 解压均正确"
+                        : "【结果】FAIL: 存在失败项");
+    return allOk ? 0 : 1;
 }

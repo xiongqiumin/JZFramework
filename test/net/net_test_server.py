@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-# test_proxy_server.py
+# net_test_server.py
 #
-# 本地一体化测试服务, 配合 test/net/test_proxy.cpp (把目标 URL 改成下面本地地址) 在离线环境验证:
-#   - http  目标经代理转发 (请求行用绝对 URI)
-#   - https 目标经代理 CONNECT 隧道 + 隧道上 TLS 握手
+# 本地一体化网络测试服务, 配合 test/net 下的 C++ 测试在离线环境验证:
+#   - test_proxy.cpp   : http 目标经代理转发 + https 目标经代理 CONNECT 隧道
+#   - test_net_compress: HTTP Content-Encoding 解压 (gzip / deflate / plain)
 #
 # 本脚本同时启动三个服务:
-#   1) 目标 HTTP  站点  http://127.0.0.1:8080   (Flask)
+#   1) 目标 HTTP  站点  http://127.0.0.1:8080   (Flask; 另提供 /gzip /deflate /plain 压缩端点)
 #   2) 目标 HTTPS 站点  https://127.0.0.1:8443  (Flask + 运行时生成的自签名证书)
 #   3) HTTP 代理         http://127.0.0.1:7001   (原生 socket, 支持 CONNECT 隧道)
 #
 # 说明: Flask (WSGI) 无法处理 CONNECT 隧道, 所以代理本体用标准库 socket 实现;
-#       Flask 仅用于提供"被访问的目标站点"。证书每次运行自动生成, 无需预置文件。
+#       Flask 仅用于提供"被访问的目标站点"与压缩端点。证书每次运行自动生成, 无需预置文件。
 #       对应 C++ 侧已 setSsl(sslSkipVerify=true), 故自签名证书可被接受。
 #
 # 依赖: flask, cryptography
-# 用法: python test_proxy_server.py        (Ctrl+C 退出)
+# 用法: python net_test_server.py        (Ctrl+C 退出)
 
 import socket
 import threading
 import datetime
 import sys
+import gzip
+import zlib
 
 from flask import Flask, request, Response
 
@@ -50,6 +52,54 @@ def make_target_app(label):
         return Response(body, mimetype="text/plain")
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# 1b. 压缩测试端点（供 test_net_compress 验证客户端 HTTP Content-Encoding 解压）
+#   /plain   返回原始明文基准
+#   /gzip    返回 gzip 压缩体 (Content-Encoding: gzip)
+#   /deflate 返回 zlib 封装压缩体 (Content-Encoding: deflate, 即 RFC1950)
+# ---------------------------------------------------------------------------
+COMPRESS_PAYLOAD = (b"JZNet http compression end-to-end test payload line.\n" * 1500)
+
+
+def make_compress_routes(app):
+    @app.route("/gzip")
+    def _gzip():
+        return Response(
+            gzip.compress(COMPRESS_PAYLOAD),
+            headers={"Content-Encoding": "gzip", "Content-Type": "text/plain"},
+        )
+
+    @app.route("/deflate")
+    def _deflate():
+        return Response(
+            zlib.compress(COMPRESS_PAYLOAD),
+            headers={"Content-Encoding": "deflate", "Content-Type": "text/plain"},
+        )
+
+    @app.route("/plain")
+    def _plain():
+        return Response(COMPRESS_PAYLOAD, mimetype="text/plain")
+
+    @app.route("/auto")
+    def _auto():
+        # 内容协商：仅当客户端显式声明 Accept-Encoding 时才压缩响应，否则回退明文。
+        # C++ 客户端 (JZNetworkAccessManager) 现已默认发送 "Accept-Encoding: gzip, deflate"，
+        # 故经它访问本路由会得到 gzip 压缩体 (Content-Encoding: gzip)；
+        # 不带该头（如 curl 直连）则回退明文。用于端到端验证客户端头是否真的发出。
+        ae = (request.headers.get("Accept-Encoding") or "").lower()
+        if "gzip" in ae:
+            return Response(
+                gzip.compress(COMPRESS_PAYLOAD),
+                headers={"Content-Encoding": "gzip", "Content-Type": "text/plain"},
+            )
+        if "deflate" in ae:
+            return Response(
+                zlib.compress(COMPRESS_PAYLOAD),
+                headers={"Content-Encoding": "deflate", "Content-Type": "text/plain"},
+            )
+        return Response(COMPRESS_PAYLOAD, mimetype="text/plain")
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +304,7 @@ def start_proxy():
 def main():
     # 目标 HTTP 站点
     http_app = make_target_app("http")
+    make_compress_routes(http_app)  # /gzip /deflate /plain 压缩端点
     threading.Thread(
         target=lambda: http_app.run(
             host=HTTP_TARGET_HOST, port=HTTP_TARGET_PORT, threaded=True

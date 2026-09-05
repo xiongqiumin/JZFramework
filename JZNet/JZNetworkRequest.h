@@ -23,6 +23,7 @@ public:
         CookieHeader,
         HostHeader,
         AcceptHeader,
+        AcceptEncodingHeader,
     };    
 
     JZNetworkRequest();

@@ -12,7 +12,7 @@
 //                --https-target https://example.com
 //                --timeout 30000
 //
-// 本地联调: 用 test_proxy_server.py 起本地代理与目标站点后, 把目标改成:
+// 本地联调: 用 net_test_server.py 起本地代理与目标站点后, 把目标改成:
 //   --http-target  http://127.0.0.1:8080
 //   --https-target https://127.0.0.1:8443
 //   (代理默认 http://127.0.0.1:7001)

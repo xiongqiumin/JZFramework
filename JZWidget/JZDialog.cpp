@@ -56,9 +56,9 @@ void JZDialog::closeEvent(JZCloseEvent* event)
 
 void JZDialog::paintEvent(JZPainterEvent* event)
 {
+    // 对话框底色: 整个矩形客户区直接铺白 (系统标题栏/边框由 DWM 绘制)。
+    // 不要画圆角矩形/描边 —— 圆角几何覆盖不到四角与边缘取整行, 会与
+    // 四周系统边框之间露出白边/虚边 (曾表现为"窗口边上透明边框")。
     JZPainter p(this);
-    int w = width(), h = height();
-    p.setBrush(JZBrush(JZColor(0xff, 0xff, 0xff)));
-    p.setPen(JZPen(JZColor(0x40, 0x40, 0x40), 1));
-    p.drawRoundRect(0, 0, w, h, 6);
+    p.fillRect(rect(), JZColor::White);
 }

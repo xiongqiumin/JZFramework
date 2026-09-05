@@ -26,6 +26,7 @@ namespace Gdiplus {
 
 #include <gdiplus.h>
 
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -458,7 +459,16 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             g.ResetClip();
         if (!clip.isEmpty()) {
             RectF c = toGdiRect(clip, s);
-            g.SetClip(Rect((INT)c.X, (INT)c.Y, (INT)(c.Width + 0.5f), (INT)(c.Height + 0.5f)));
+            // 逻辑裁剪区 * scale 后是小数边界。直接 (INT) 截断会把落在 [截断边界,
+            // 实际外缘] 的最后一条 AA 像素行整行裁掉 —— 非整数 DPI (125%/150%)
+            // 下表现为控件底/右边框消失 (见描边分支注释, 笔宽*s 后外圈 AA 摊薄,
+            // 又被 clip 切边则完全不显示)。
+            // floor/ceil 外扩到覆盖实际几何外缘: 描边几何已内缩半笔宽, 不会越出
+            // 控件物理外缘, 多放行的只可能是控件自身 AA 像素; 整数 scale 下
+            // floor==trunc、ceil==(int)(x+0.5) 对整数值, 结果与原截断完全一致, 无回归。
+            INT x0 = (INT)std::floor(c.X),        y0 = (INT)std::floor(c.Y);
+            INT x1 = (INT)std::ceil(c.X + c.Width), y1 = (INT)std::ceil(c.Y + c.Height);
+            g.SetClip(Rect(x0, y0, x1 - x0, y1 - y0));
         }
         appliedClip = clip;
         clipApplied = true;

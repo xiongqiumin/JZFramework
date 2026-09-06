@@ -10,8 +10,8 @@
 	JZJSBind.cpp
 	JZJSEngine.h
 	JZJSEngine.cpp
-	JZJSHttpModule.h
-	JZJSHttpModule.cpp
+	JZJSNetModule.h
+	JZJSNetModule.cpp
 )
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)

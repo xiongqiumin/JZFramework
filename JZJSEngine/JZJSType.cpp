@@ -20,6 +20,7 @@ CFunction::~CFunction()
 }
 
 // from js
+template <>
 JSValue fromJSValue(JSContext* ctx, JSValueConst value)
 {
     return value;

@@ -52,6 +52,10 @@ public:
     void init();
     void deinit();
 
+    // 把任务投递到引擎线程执行(线程安全): C++ 异步回调(网络/IO)在其它线程完成,
+    // 但 quickjs 上下文只能在引擎线程访问, 故通过本接口 marshal, 避免从工作线程直接碰 JS。
+    void runOnEngineThread(std::function<void()> task);
+
     void setWorkDir(const std::string& dir);
 
     void start();
@@ -77,7 +81,8 @@ public:
     // - 函数不存在/调用抛异常返回 -1；
     // - 返回值不是 PromiseLike(同步普通值)时立即发一次 sigAsyncResult。
     // 注意: async 函数体只同步执行到首个 await，后续靠引擎 job 泵推进 ——
-    // 引擎须 start()(自带 10ms 定时器 pumpPendingJobs)或跑在事件循环里，否则结果不会回来。
+    // 引擎须 start() 并跑在宿主事件循环里(promise 结算会通过 JZEngine_WakeUp 唤醒泵一轮)，
+    // 否则结果不会回来。
     int callAsyncFunction(const std::string& func, const std::vector<JZJSValuePtr>& params);
 
     // 以 ESM 模块方式加载并执行文件(真正支持顶层 import/export)：
@@ -86,12 +91,18 @@ public:
     // - bindExports=true 时把入口模块的命名导出绑定到全局变量(供后续全局 eval 访问)；
     // - 出错时与 eval() 一致：记录到 runtimeError(通过 sigError/sigLog 上报)。
     bool runModuleFile(const std::string& filepath, bool bindExports = false);
-    void execOnce();
+    void execOnce();    
 
     // 引擎是否还有待执行的异步工作(接下来再调 execOnce/跑事件循环会有事做)：
     // - quickjs promise 微任务队列非空(JS_IsJobPending)；
     // - 还挂着 JS 侧 setTimeout/setInterval 定时器(含尚未到期与周期定时器)。
     bool hasPendingJob();
+
+    // 外部(C++ 模块)挂起的异步工作计数：网络一类的原生异步任务在途时 +1, 结束时 -1。
+    // hasPendingJob() 会把计数也算进去, 这样宿主在等原生结果时不会提前退出。
+    void addPendingWork();
+    void releasePendingWork();
+    int pendingWork() const;
 
     bool isException(JSValue exc);
     std::string runtimeError();
@@ -284,8 +295,15 @@ protected:
     int m_objectId;
     std::string m_workDir;
 
-    void startEngineTimer();
-    void stopEngineTimer();
+    // ---- 事件驱动调度 ----
+    // 引擎不再常驻 10ms 周期定时器, 而是:
+    //  - 有 JS 定时任务时, 按最近到期时刻挂一次性 timer(scheduleNextTimer);
+    //  - 没有任务完全停表(空闲零唤醒); C++ 结算 promise / 外部注入任务时,
+    //    wakeUp() 投递 JZEngine_WakeUp 自定义事件唤醒引擎线程泵一轮(execOnce)。
+    void scheduleNextTimer();
+    void wakeUp();
+    void startEngineTimer();   // 恢复/继续驱动(= scheduleNextTimer)
+    void stopEngineTimer();    // 停表(暂停/停止/出错/析构)
 
     std::vector<std::shared_ptr<CFunction>> m_funcList;
 
@@ -302,8 +320,10 @@ protected:
     std::string m_runtimeError;
     std::string m_promiseError;
     int m_timer;
+    int64_t m_timerExpire;   // 已挂一次性 timer 记录的到期时刻(scheduleNextTimer 维护)
+    int m_pendingWork;       // 外部模块挂起的原生异步任务数量(见 addPendingWork)
     JZJSEngineStatus m_status;
-    bool m_interrupt;
+    bool m_interrupt;    
 };
 
 #endif  // !JS_ENGINE_H_

@@ -21,6 +21,20 @@
 using namespace jsbind;
 using namespace std;
 
+// 事件驱动唤醒事件: C++ 侧结算 promise / 外部注入任务后投递本事件到引擎线程,
+// 引擎收到后 execOnce 泵一轮。JZObject 事件分发: type >= JZEvent_user 的自定义
+// 事件统一进 customEvent(见 JZObject::event)。
+static const int JZEngine_WakeUp = JZEvent_user + 1;
+static const int JZEngine_Task = JZEvent_user + 2;
+
+// 携带 std::function 的引擎线程任务事件(用于把网络/IO 线程的回调 marshal 到引擎线程)
+class JZEngineTaskEvent : public JZEvent
+{
+public:
+    JZEngineTaskEvent(std::function<void()> f) : JZEvent(JZEngine_Task), task(std::move(f)) {}
+    std::function<void()> task;
+};
+
 class JZJSEngineInternalFunction
 {
 public:
@@ -289,8 +303,10 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_objectId = JSType_objectUser;
 
     m_timer = INVALID_TIMER_ID;
+    m_timerExpire = 0;
+    m_pendingWork = 0;
     m_interrupt = false;
-    m_status = Engine_none;
+    m_status = Engine_none;    
 }
 
 JZJSEngine::~JZJSEngine()
@@ -608,11 +624,9 @@ void JZJSEngine::resume()
 
 void JZJSEngine::startEngineTimer()
 {
-    if (m_timer == INVALID_TIMER_ID)
-    {
-        m_timer = startTimer(10);
-        LOG_I("startEngineTimer");
-    }
+    // 事件驱动下"恢复/继续驱动": 按最近到期任务挂一次性 timer;
+    // 没有任务就不挂(空闲停表), 任务到来时由 setInterval / wakeUp 等入口负责重新唤醒。
+    scheduleNextTimer();
 }
 
 void JZJSEngine::stopEngineTimer()
@@ -621,9 +635,61 @@ void JZJSEngine::stopEngineTimer()
     {
         killTimer(m_timer);
         m_timer = INVALID_TIMER_ID;
-
-        LOG_I("stopEngineTimer");
+        m_timerExpire = 0;
     }
+}
+
+// 按"最近的 JS 定时任务到期时刻"挂一次性 timer。引擎线程内调用(startTimer 断言当前线程)。
+// 已在跑的 timer 只要不晚于最近到期时刻就不动(避免反复 kill/start), 到点后 execOnce
+// 会处理全部到期任务并再来这里续期; 新任务比已挂 timer 更早到期时才重挂到更早时刻。
+void JZJSEngine::scheduleNextTimer()
+{
+    if (!m_ctx)
+        return;
+
+    int64_t min_next = 0;
+    bool has_task = false;
+    for (int i = 0; i < (int)m_timeTasks.size(); i++)
+    {
+        if (!has_task || m_timeTasks[i].next_run_time < min_next)
+        {
+            has_task = true;
+            min_next = m_timeTasks[i].next_run_time;
+        }
+    }
+    if (!has_task)
+        return;     // 没有 JS 定时任务: 保持停表(空闲零唤醒)
+
+    if (m_timer != INVALID_TIMER_ID && m_timerExpire <= min_next)
+        return;     // 已挂 timer 会先(或同时)到期, 沿用即可
+
+    if (m_timer != INVALID_TIMER_ID)
+    {
+        killTimer(m_timer);     // 新任务更早到期, 重挂到更早时刻
+        m_timer = INVALID_TIMER_ID;
+    }
+
+    int64_t delta = min_next - currentMs();
+    if (delta < 1)
+        delta = 1;              // 已到期/立即触发(setTimeout 0): 尽快触发, 宿主 timer 最小间隔兜底
+    m_timer = startTimer((int)delta);
+    m_timerExpire = min_next;
+}
+
+// 线程安全唤醒: 任意线程(C++ promise 结算 / 协程 / 工作线程)都能调用。
+// 投递自定义事件到引擎线程, customEvent -> execOnce 泵一轮(promise job / 到期任务)。
+void JZJSEngine::wakeUp()
+{
+    if (!m_ctx)
+        return;
+    jzApp->postEvent(this, new JZEvent(JZEngine_WakeUp));
+}
+
+void JZJSEngine::runOnEngineThread(std::function<void()> task)
+{
+    if (!m_ctx)
+        return;
+    jzApp->postEvent(this, new JZEngineTaskEvent(std::move(task)));
 }
 
 bool JZJSEngine::load(const std::string& filepath)
@@ -656,16 +722,38 @@ bool JZJSEngine::loadScript(const std::string& js_code)
         return false;
     }
     JS_FreeValue(m_ctx, result);
+    wakeUp();
     return true;
 }
 
 void JZJSEngine::timerEvent(JZTimerEvent* event)
 {
+    if (event->id() == m_timer)
+    {
+        // 一次性到期: 宿主 JZThread 定时器到点会周期续约, 先 kill 停掉续约;
+        // 是否再挂、挂到几时由 execOnce 尾部的 scheduleNextTimer 按剩余任务决定。
+        killTimer(m_timer);
+        m_timer = INVALID_TIMER_ID;
+        m_timerExpire = 0;
+    }
+
     execOnce();
 }
 
 void JZJSEngine::customEvent(JZEvent* event)
 {
+    // 暂停/停止/错误态不处理残留唤醒(与旧"停表"语义一致); 任务在 resume/start 时恢复调度
+    if (m_status != Engine_running)
+        return;
+
+    if (event->type() == JZEngine_WakeUp)
+        execOnce();
+    else if (event->type() == JZEngine_Task)
+    {
+        auto* e = (JZEngineTaskEvent*)event;
+        if (e->task)
+            e->task();
+    }
 }
 
 int64_t JZJSEngine::currentMs()
@@ -768,6 +856,9 @@ JZJSEngine::PromiseTask* JZJSEngine::getPromiseTask(int handle)
 
 void JZJSEngine::updateFunction(shared_ptr<CFunction> func)
 {
+    if (!func)   // 只读属性的 write 为空
+        return;
+
     for (int i = 0; i < (int)func->params.size(); i++)
     {
         int type = ctypeidToType(func->params[i].ctypeid);
@@ -920,6 +1011,12 @@ int JZJSEngine::setInterval(JSValue callback, int64_t interval, bool once)
     task.id = m_timeTaskId++;
 
     m_timeTasks.push_back(task);
+
+    // 新任务可能比已挂 timer 更早到期, 让调度器更新到最近到期时刻;
+    // 暂停/停止态不驱动(任务冻结, 由 resume/start 恢复调度)
+    if (m_status == Engine_running)
+        scheduleNextTimer();
+
     return task.id;
 }
 
@@ -1228,6 +1325,10 @@ void JZJSEngine::setPromiseResolve(int handle, const std::vector<JZJSValuePtr>& 
     JSValue ret = JS_Call(m_ctx, task->resolve, JS_UNDEFINED, value_list.size(), value_list.data());
     JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     map_remove(m_promiseTask, handle);
+
+    // promise 已结算, then/await 链的微任务入队 -> 唤醒引擎泵一轮
+    // (本函数可能被其它线程/协程调用, wakeUp 走线程安全的事件投递)
+    wakeUp();
 }
 
 void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
@@ -1242,10 +1343,14 @@ void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
 
     JSValue args[] = {error};
     JSValue ret = JS_Call(m_ctx, task->reject, JS_UNDEFINED, 1, args);
+    fprintf(stderr, "[promise] reject handle=%d isExc=%d\n", handle, (int)JS_IsException(ret));
+    fflush(stderr);
     JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     JS_FreeValue(m_ctx, error);
 
     map_remove(m_promiseTask, handle);
+
+    wakeUp();   // reject 触发未处理拒绝 / await 继续等微任务 -> 唤醒泵一轮
 }
 
 void* JZJSEngine::constructor(int type)
@@ -1276,6 +1381,10 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < (int)func->params.size(); i++)
     {
         int arg_type = func->params[i].type;
+        // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
+        if (arg_type == JSType_oriValue)
+            continue;
+
         int js_type = jsValueType(argv[i]);
         if (js_type != arg_type && !canConvert(js_type, arg_type))
         {
@@ -1308,6 +1417,10 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < argc; i++)
     {
         int arg_type = func->params[i + 1].type;
+        // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
+        if (arg_type == JSType_oriValue)
+            continue;
+
         int js_type = jsValueType(argv[i]);
         if (js_type != arg_type && !canConvert(js_type, arg_type))
         {
@@ -1385,6 +1498,8 @@ JZJSValuePtr JZJSEngine::eval(const std::string& code)
     JSValue result = JS_Eval(m_ctx, code.c_str(), code.size(), "eval", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(result))
         unHandleException();
+    else
+        wakeUp();   // eval 内可能产生 promise 微任务或注册 JS timer, 下一轮事件循环泵/调度
 
     return JZJSValuePtr(m_ctx, result);
 }
@@ -1425,6 +1540,7 @@ std::vector<JZJSValuePtr> JZJSEngine::callFunction(const std::string& func, cons
 
     // 返回值所有权直接交给 JZJSValuePtr(与 eval 一致)
     result_list.push_back(JZJSValuePtr(m_ctx, ret));
+    wakeUp();   // 被调函数可能注册 timer / 产生微任务
     return result_list;
 }
 
@@ -1480,6 +1596,7 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
         ar.result = handle;
         ar.params.push_back(JZJSValuePtr(m_ctx, ret));   // 转移所有权
         sigAsyncResult.emit(ar);
+        wakeUp();   // 同步函数体内也可能产生微任务(setTimeout/Promise.resolve().then 等)
         return handle;
     }
 
@@ -1500,6 +1617,7 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
         return -1;
     }
     JS_FreeValue(m_ctx, then_ret);
+    wakeUp();   // async 函数可能已同步推进到首个 await / promise 已 settle, 微任务待泵
     return handle;
 }
 
@@ -1520,6 +1638,8 @@ JZJSValuePtr JZJSEngine::loadModule(const std::string& filepath)
     JSValue result = JS_Eval(m_ctx, code.c_str(), code.size(), "eval", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(result))
         unHandleException();
+    else
+        wakeUp();
 
     return JZJSValuePtr(m_ctx, result);
 }
@@ -1634,6 +1754,10 @@ bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
     // 模块顶层代码的错误会转为 promise 拒绝, 泵完 job 队列才反映到 runtimeError
     pumpPendingJobs();
 
+    // 模块顶层可能注册了 JS 定时任务, 挂上一次性 timer(事件驱动; 无任务则保持空闲)
+    if (m_status == Engine_running)
+        scheduleNextTimer();
+
     if (bindExports && m_runtimeError == err_before)
         bindModuleNamespace(m);
 
@@ -1667,8 +1791,8 @@ bool JZJSEngine::bindModuleNamespace(JSModuleDef* m)
 
 void JZJSEngine::execOnce()
 {
-    if (isInterruption())
-        return;
+    if (!m_ctx || isInterruption())
+        return;    
 
     // 执行 set timer
     while (true)
@@ -1746,6 +1870,11 @@ void JZJSEngine::execOnce()
 
     // 执行 promise
     pumpPendingJobs();
+
+    // 跑完一轮后按最近到期任务续期一次性 timer(出错时引擎已停表进入 error, 不再续期,
+    // 由 resetUncaughtError/resume 恢复)
+    if (m_status == Engine_running)
+        scheduleNextTimer();
 }
 
 void JZJSEngine::pumpPendingJobs()
@@ -1791,6 +1920,10 @@ bool JZJSEngine::hasPendingJob()
     if (!m_ctx)
         return false;
 
+    // 外部模块挂起的原生异步任务(网络等): 结果还没回来就算有活
+    if (m_pendingWork > 0)
+        return true;
+
     // quickjs 微任务队列(setTimeout 0 触发的 promise 回调也先落在这里)
     if (JS_IsJobPending(m_rt))
         return true;
@@ -1798,4 +1931,21 @@ bool JZJSEngine::hasPendingJob()
     // JS 侧 setTimeout/setInterval: 只要没 clear/没被触发移除就算 pending
     // (未到期的一次性任务要等 execOnce 到点才跑, 周期任务常驻会一直为 true)
     return !m_timeTasks.empty();
+}
+
+void JZJSEngine::addPendingWork()
+{
+    m_pendingWork++;
+}
+
+void JZJSEngine::releasePendingWork()
+{
+    m_pendingWork--;
+    if (m_pendingWork < 0)
+        m_pendingWork = 0;
+}
+
+int JZJSEngine::pendingWork() const
+{
+    return m_pendingWork;
 }

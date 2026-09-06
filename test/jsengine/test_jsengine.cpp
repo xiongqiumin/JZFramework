@@ -1,3 +1,4 @@
+#include <chrono>
 #include <string>
 
 #include "JZDebug.h"
@@ -104,7 +105,7 @@ int main()
 
     // ==================== 定时器 + 异步函数测试 (统一事件循环) ====================
 
-    engine.start();      // 启动引擎定时器, 周期性执行 timer 与 promise 任务
+    engine.start();      // 启动引擎调度(running 态; 事件驱动下无任务时不上定时器)
 
     // 定时器结果
     int g_timer_timeout = -1;   // setTimeout 是否触发 (1/0)
@@ -219,6 +220,9 @@ int main()
     check("async delayAdd + compute", g_async_done && g_async_result == 5057);
     check("async reject caught", g_async_err_done && g_async_err == "async error test");
 
+    // 宿主定时器存在较大固定延迟, watchdog 不再需要跨用例存活, 及时停掉避免干扰后续 exec
+    watchdog.stop();
+
     // ==================== 补充用例: 定时器取消 / 自然多次 / 异常态 ====================
 
     // 引擎一旦进入 Engine_error, 主动退出事件循环, 使异常态用例可以确定性结束
@@ -314,6 +318,188 @@ int main()
         loop.exec();
 
         check("unhandled promise rejection -> Engine_error", engine.status() == Engine_error);
+    }
+
+    // ==================== 事件驱动专项 ====================
+    // 引擎驱动已从"常驻 10ms 周期定时器"改为:
+    //  - JS 定时任务: 按最近到期挂一次性 timer(scheduleNextTimer);
+    //  - C++ promise 结算 / 外部入口: wakeUp() 投递 JZEngine_WakeUp 唤醒 execOnce;
+    //  - 完全无任务时空闲停表。
+    // 上一组用例结束时引擎停在 Engine_error, 先恢复干净会话。
+
+    engine.stop();          // error -> none
+    engine.deinit();
+    engine.init();
+    engine.start();
+
+    // 18. setTimeout(f, 0) 允许且尽快触发(一次性任务挂最近到期)
+    {
+        bool zero_fired = false;
+        engine.registFunction(engine.globalObject(), "onZeroFired",
+            jsbind::createFunction([&](int v) -> void {
+                zero_fired = (v == 1);
+                loop.quit();
+            }));
+        engine.eval("setTimeout(function() { onZeroFired(1); }, 0);");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(1000);
+        loop.exec();
+        check("setTimeout(0) fires next round", zero_fired);
+    }
+
+    // 19. eval 里产生的 promise 微任务(没有任何 JS timer)也要被 wakeUp 泵掉
+    {
+        int got = -1;
+        engine.registFunction(engine.globalObject(), "onMicroValue",
+            jsbind::createFunction([&](int v) -> void {
+                got = v;
+                loop.quit();
+            }));
+        engine.eval("Promise.resolve(42).then(function(v) { onMicroValue(v); });");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(1000);
+        loop.exec();
+        check("promise microtask pumped by wakeUp", got == 42);
+    }
+
+    // 20. 最近到期优先: 后注册的更短任务应先触发(验证调度器会重挂到更早到期时刻)
+    {
+        string order;
+        engine.registFunction(engine.globalObject(), "onFired",
+            jsbind::createFunction([&](const string &name) -> void {
+                if (!order.empty())
+                    order += ",";
+                order += name;
+                if (name == "far")
+                    loop.quit();
+            }));
+        engine.eval(
+            "(function() {"
+            "  setTimeout(function() { onFired('far'); }, 150);"
+            "  setTimeout(function() { onFired('near'); }, 40);"
+            "})();");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(1500);
+        loop.exec();
+        check("nearest timer fires first", order == "near,far");
+    }
+
+    // 21. 空闲停表后再次注入任务仍被驱动(不再依赖常驻周期 tick)
+    {
+        int got = -1;
+        engine.registFunction(engine.globalObject(), "onStage",
+            jsbind::createFunction([&](int stage) -> void {
+                if (stage == 1)
+                {
+                    // 第一个一次性任务(30ms)已完成、引擎空闲; 这里重新注入一个任务,
+                    // 应由 setInterval -> scheduleNextTimer 挂起新的一次性 timer
+                    engine.eval("setTimeout(function() { onStage(2); }, 60);");
+                }
+                else if (stage == 2)
+                {
+                    got = stage;
+                    loop.quit();
+                }
+            }));
+        engine.eval("setTimeout(function() { onStage(1); }, 30);");
+
+        JZTimer wd;
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(1500);
+        loop.exec();
+        check("new task after idle is still driven", got == 2);
+    }
+
+    // 22. 异步 loopback 驱动频率: C++ callAsyncFunction(jsTick) -> jsTick await cppTick(C++ 异步)
+    //     -> C++ resolve -> jsTick 完成触发 sigAsyncResult -> C++ 立即再发起下一圈, 持续 5s,
+    //     统计每秒引擎被驱动(execOnce 实际泵一轮)次数 与 每秒 loopback 圈数(cppTick 被回调次数)。
+    //     注意: 宿主短 timer 有 ~1s 固定延迟, 本链不依赖任何 timer(纯 wakeUp 事件驱动)。
+    {
+        long long cpp_calls = 0;              // C++ 异步函数被 JS 回调次数 = loopback 圈数
+        bool chain_done = false;
+        auto t0 = std::chrono::steady_clock::now();
+
+        engine.registAsyncFunction(engine.globalObject(), "cppTick",
+            jsbind::createFunction([&](int handle) -> void {
+                ++cpp_calls;
+                engine.setPromiseResolve(handle, { engine.toValuePtr(1) });
+            }));
+
+        // JS 侧异步: await C++ 异步函数 cppTick 后返回 -> promise resolve -> sigAsyncResult
+        engine.eval("async function jsTick() { await cppTick(); }");
+
+        connect(&engine.sigAsyncResult, [&](const JZAsyncResult&) {
+            if (chain_done)
+                return;
+            using namespace std::chrono;
+            if (duration_cast<milliseconds>(steady_clock::now() - t0).count() >= 5000)
+            {
+                chain_done = true;   // 不再续跑, 链自然停止
+                loop.quit();
+            }
+            else
+            {
+                engine.callAsyncFunction("jsTick", {});   // 立即发起下一圈
+            }
+        });
+
+        engine.resetExecOnceCount();
+        engine.callAsyncFunction("jsTick", {});   // 起跑第一圈
+
+        JZTimer wd;    // 兜底(正常由 5s 到点退出)
+        wd.setSingleShot(true);
+        connect(&wd.sigTimeout, [&loop]() { loop.quit(); });
+        wd.start(8000);
+        loop.exec();
+
+        auto t1 = std::chrono::steady_clock::now();
+        double secs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() / 1000.0;
+        if (secs < 0.001)
+            secs = 0.001;
+        unsigned long long exec_delta = engine.execOnceCount();
+        jzDebug() << "[loopback] 持续 " << secs << "s:"
+                  << " loopback 圈数=" << cpp_calls
+                  << " (" << (long long)(cpp_calls / secs) << " 圈/s, 每圈=C++ 异步被回调一次)"
+                  << " 引擎宏任务泵(execOnce)=" << exec_delta << " 次"
+                  << " (微任务在单轮 pump 内自再生, 空闲不唤醒)";
+        check("async loopback keeps driving", cpp_calls >= 100 && exec_delta >= 1);
+    }
+
+    // 23. 吞吐拆解(参照): 纯 JS 循环 / JS->C++ 同步调用 的原始量级,
+    //     用于对比 async loopback(用例22, ~8400 圈/s)的每圈常数开销构成
+    {
+        engine.registFunction(engine.globalObject(), "jzNop",
+            jsbind::createFunction([]() -> void {}));
+        engine.registFunction(engine.globalObject(), "jzAdd",
+            jsbind::createFunction([](int a, int b) -> int { return a + b; }));
+
+        auto t0 = std::chrono::steady_clock::now();
+        engine.eval(
+            "function bench(tag, n, f) {"
+            "  var s = Date.now();"
+            "  if (!f) { for (var i = 0; i < n; i++) {} }"
+            "  else { for (var i = 0; i < n; i++) f(); }"
+            "  var e = Date.now();"
+            "  console.log('[bench] ' + tag + ': ' + n + ' 次 / ' + (e - s) + 'ms = ' +"
+            "    Math.round(n * 1000 / (e - s || 1)) + ' 次/s');"
+            "}"
+            "bench('JS 空循环', 3000000, null);"
+            "bench('JS 空函数调用', 1000000, function(){});"
+            "bench('JS->C++ 空函数 jzNop', 500000, function(){ jzNop(); });"
+            "bench('JS->C++ 加法 jzAdd(1,2)', 300000, function(){ jzAdd(1, 2); });");
+        auto t1 = std::chrono::steady_clock::now();
+        jzDebug() << "[bench] eval 总耗时 "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms";
     }
 
     engine.stop();

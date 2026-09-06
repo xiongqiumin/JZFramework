@@ -127,6 +127,7 @@ void JZHttpServer::close()
 
 void JZHttpServer::addRoute(const std::string& path, JZHttpHandler* handler)
 {
+    JZ_ASSERT(!handler->parent());
     handler->setParent(this);
     m_route.addRoute(path, handler);
 }

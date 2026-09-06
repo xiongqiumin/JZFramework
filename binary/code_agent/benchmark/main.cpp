@@ -8,7 +8,7 @@
 //   4) 按用例的 check() 判定输出是否符合预期，不符则把实际输出反馈给模型重试，
 //      最多 maxAttempts 次；任一尝试通过即记 1 分。
 //
-// 第一个用例：hello world
+// 评测集从 data/ 下的 JSON 加载（见 loadCases）。第一个移植过去的用例 hello_world：
 //   要求模型"写一个函数，输出 hello world"，编译运行后检查 stdout 是否包含
 //   "hello world"（大小写不敏感）。
 //
@@ -26,17 +26,21 @@
 #include <cstdio>
 #include <cctype>
 #include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <fstream>
 
 #include "JZApplication.h"
+#include "json/json.h"
 #include "JZByteArray.h"
 #include "JZCommandLineParser.h"
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZEventLoop.h"
 #include "JZFileInfo.h"
+#include "JZHttpServer.h"
 #include "JZPlatform.h"
 #include "JZProcess.h"
 #include "JZTimer.h"
@@ -53,12 +57,30 @@ struct BenchmarkCase
     std::string name;            // 用例名（同时用作临时工程目录名）
     std::string prompt;          // 初始任务描述
     int maxAttempts = 3;         // 最多尝试次数（含首次）
+    int timeoutMs = 30000;       // 单轮运行超时（毫秒，缺省 30s）
 
     // 判定：运行得到的全部输出（合并 console.* / 运行时日志）是否满足预期
     std::function<bool(const std::string &output)> check;
 
     // 重试时给模型的反馈（基于上一次实际输出 / 编译错误构造）
     std::function<std::string(const std::string &output, const std::string &buildError)> retry;
+
+    // 注入给本用例的输入（空串表示无需输入）；运行时由全局 HTTP 服务以 /input 暴露给 JS
+    std::string input;
+};
+
+// 全局输入 HTTP 服务用的 handler：模型生成的 JS 通过 fetch('http://127.0.0.1:<port>/input')
+// 读取当前用例注入的输入。getInput 在独立的网络线程上被调用，返回 Benchmark::currentInput()。
+class InputHttpHandler : public JZHttpHandler
+{
+public:
+    std::function<std::string()> getInput;
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        JZHttpRespone resp;
+        resp.setText(getInput());
+        client->response(resp.toByteArray());
+    }
 };
 
 // ---- 单用例结果 ----
@@ -79,6 +101,18 @@ enum class BenchState
     Done
 };
 
+class HttpThread : public JZThread
+{
+public:
+    JZHttpServer *server;
+
+    virtual void run() override
+    {
+        exec();
+        server->moveToThread(jzApp->mainThread());
+    }
+};
+
 class Benchmark : public JZObject
 {
 public:
@@ -96,7 +130,47 @@ public:
         connect(&m_poll->sigTimeout, this, &Benchmark::onPoll);
     }
 
+    ~Benchmark()
+    {
+        m_httpThread.quit();
+        m_httpThread.wait();
+    }
+
     void setCases(const std::vector<BenchmarkCase> &cases) { m_cases = cases; }
+    
+    bool startHttpServer(int p)
+    {
+        m_http = new JZHttpServer(this);
+        m_httpHandler = new InputHttpHandler();
+        m_httpHandler->getInput = [this]() { return currentInput(); };
+        m_http->addRoute("/input", m_httpHandler);
+        if (!m_http->listen(m_httpPort))
+        {
+            jzError().nospace() << "无法在端口 " << m_httpPort << " 启动输入 HTTP 服务";
+            return false;
+        }
+        jzDebug().nospace() << "[benchmark] 输入 HTTP 服务已启动: http://127.0.0.1:"
+            << m_httpPort << "/input";
+
+        // 告知模型从本服务读取输入（端口此时已确定）；只影响 benchmark 的 agent 实例
+        std::string extra =
+            "\n\n## 读取输入\n"
+            "如果任务需要从输入读取数据，用以下方式（异步 fetch，顶层 await）：\n"
+            "  const res = await fetch('http://127.0.0.1:" + std::to_string(m_httpPort) + "/input');\n"
+            "  const input = await res.text();\n"
+            "input 即评测注入的用例输入；无需输入的题目不要读取。";
+        
+        // setWorkspace 会重建 agent 并把 system prompt 重置为 buildSystemPrompt()，
+        // 这里立即追加会在首个用例开始前被覆盖，所以只在成员里保存，稍后于 startCase 重建后注入。
+        m_httpPromptExtra = extra;
+        auto jz_agent = m_agent->agent();
+        jz_agent->setSystemPrompt(jz_agent->systemPrompt() + extra);
+
+        m_http->moveToThread(&m_httpThread);
+        m_httpThread.server = m_http;
+        m_httpThread.start();
+        return true;
+    }
 
     void run()
     {
@@ -114,6 +188,7 @@ protected:
     void startCase(size_t i)
     {
         m_case = m_cases[i];
+        setInput(m_case.input);   // 注入本用例输入，供全局 HTTP 服务的 /input 暴露给 JS
         m_result = CaseResult{};
         m_result.name = m_case.name;
         m_attempt = 0;
@@ -139,6 +214,12 @@ protected:
         }
         m_root = root;
 
+        // setWorkspace 内部会 buildAgent 重建 agent，把 startHttpServer 追加的"读取输入"约定冲掉，
+        // 因此重建之后再注入一次，确保模型知道从 http://127.0.0.1:<port>/input 读取输入。
+        auto jz_agent = m_agent->agent();
+        if (!m_httpPromptExtra.empty())
+            jz_agent->setSystemPrompt(jz_agent->systemPrompt() + m_httpPromptExtra);
+
         jzDebug().nospace() << "==== 用例[" << m_case.name << "] 开始 (maxAttempts="
                             << m_case.maxAttempts << ", root=" << root << ") ====";
         doAttempt(m_case.prompt);
@@ -146,6 +227,7 @@ protected:
 
     void doAttempt(const std::string &text)
     {
+        m_attemptLogBase = m_agent->logSeq();   // 本轮起点，用于识别本轮内 agent 是否报错
         m_state = BenchState::WaitingAgent;
         m_agent->request(text);
         m_poll->start(200);
@@ -157,13 +239,20 @@ protected:
         if (seq > m_renderedId)
         {
             const auto& logs = m_agent->logs();
-            for (int i = m_renderedId; i < seq; i++)
+            // 注意：m_agent 会把超出上限(m_logs>3000)的旧日志从头部裁掉，
+            // 而 logSeq() 返回的是全局单调递增的 id，二者下标并不一致。
+            // 必须按 log.id 迭代，绝不能拿全局序号当 vector 下标访问 logs[]。
+            for (const auto& log : logs)
             {
-                std::string text = str_utf8_to_local(logs[i].text);
-                if (m_renderedType != logs[i].type)
+                if (log.id <= m_renderedId)
+                    continue;   // 已渲染过
+                if (log.id > seq)
+                    break;      // logs 按 id 递增，后面都是更新的，直接停
+                std::string text = str_utf8_to_local(log.text);
+                if (m_renderedType != log.type)
                 {
-                    printf("\n%s:", logs[i].type.c_str());
-                    m_renderedType = logs[i].type;
+                    printf("\n%s:", log.type.c_str());
+                    m_renderedType = log.type;
                 }
                 printf("%s", text.c_str());
             }
@@ -185,6 +274,27 @@ protected:
     {
         m_attempt++;
         m_result.attempts = m_attempt;
+
+        // agent 自身报错（LLM/网络等基础设施错误，与模型能力无关，重试无意义）-> 直接判定失败，不重试
+        {
+            const auto& logs = m_agent->logs();
+            for (const auto& l : logs)
+            {
+                if (l.id > m_attemptLogBase && l.type == "error")
+                {
+                    m_result.lastAgentError = l.text;
+                    break;
+                }
+            }
+        }
+        if (!m_result.lastAgentError.empty())
+        {
+            m_result.passed = false;
+            jzDebug().nospace() << "  [尝试 " << m_attempt << "] agent 报错，直接判定失败(不重试): "
+                                << m_result.lastAgentError;
+            finishCase();
+            return;
+        }
 
         // 1) 宿主真实编译打包
         std::string buildErr;
@@ -239,10 +349,10 @@ protected:
             output = "[benchmark] 启动 code_runtime 失败: " + m_codeRuntime;
             return false;
         }
-        if (!proc.waitForFinished(120000))
+        if (!proc.waitForFinished(m_case.timeoutMs))
         {
             proc.killProcess();
-            output = "[benchmark] code_runtime 超时(120s)";
+            output = "[benchmark] code_runtime 超时(" + std::to_string(m_case.timeoutMs / 1000) + "s)";
             return false;
         }
         output = str_fromLocal(proc.readAllStandardOutput());
@@ -281,6 +391,8 @@ protected:
                                 << r.name << "  (attempts=" << r.attempts << ")";
             if (!r.passed)
             {
+                if (!r.lastAgentError.empty())
+                    jzDebug().nospace() << "    agentError: " << r.lastAgentError.substr(0, 400);
                 if (!r.lastBuildError.empty())
                     jzDebug().nospace() << "    buildError: " << r.lastBuildError.substr(0, 300);
                 jzDebug().nospace() << "    output: " << r.lastOutput.substr(0, 300);
@@ -290,6 +402,19 @@ protected:
         jzDebug() << "==========================================";
 
         m_loop->quit();
+    }
+
+
+    // 当前用例输入（网络线程读，加锁）
+    std::string currentInput()
+    {
+        std::lock_guard<std::mutex> lk(m_inputMutex);
+        return m_input;
+    }
+    void setInput(const std::string &s)
+    {
+        std::lock_guard<std::mutex> lk(m_inputMutex);
+        m_input = s;
     }
 
     JZEventLoop *m_loop;
@@ -305,12 +430,22 @@ protected:
     BenchmarkCase m_case;
     CaseResult m_result;
     int m_attempt = 0;
+    int m_attemptLogBase = 0;   // 本轮尝试开始时的 logSeq，用于识别本轮内 agent 是否报错
     std::string m_root;
     BenchState m_state = BenchState::Idle;
 
     std::vector<CaseResult> m_results;
     int m_renderedId = 0;
     std::string m_renderedType;
+
+    // ---- 全局输入 HTTP 服务：JS 用 fetch 读取当前用例注入的输入 ----
+    JZHttpServer *m_http = nullptr;
+    InputHttpHandler *m_httpHandler = nullptr;
+    int m_httpPort = 18080;
+    std::string m_input;          // 当前用例注入的输入（由 startCase 写入）
+    std::mutex m_inputMutex;
+    std::string m_httpPromptExtra; // startHttpServer 构造的"读取输入"约定，重建 agent 后需重新注入   
+    HttpThread m_httpThread;
 };
 
 // 大小写不敏感地判断 output 是否包含子串
@@ -322,28 +457,113 @@ bool containsIC(const std::string &hay, const std::string &needle)
     return h.find(n) != std::string::npos;
 }
 
-// 第一个用例：hello world
-BenchmarkCase makeHelloWorldCase()
+// 从 data/ 目录加载评测集（每个 .json 一个用例）。JSON 约定：
+//   name            : 用例名（缺省取文件名去扩展名）
+//   prompt          : 初始任务描述（必填，缺失则跳过该文件）
+//   maxAttempts     : 最大尝试次数（缺省 3）
+//   timeout         : 单轮运行超时（秒，缺省 30）；超过则判本次运行失败
+//   input           : 注入给本用例的输入文本（缺省空）；运行时经全局 HTTP 服务
+//                      http://127.0.0.1:<port>/input 暴露给 JS（模型用 fetch 读取）
+//   expect.contains        : 判定输出需包含的子串
+//   expect.caseInsensitive : contains 比较是否忽略大小写（缺省 false）
+//   retryHint       : 重试时给模型的提示（实际输出/编译错误会自动追加在后）
+static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &out, std::string &err)
 {
-    BenchmarkCase c;
-    c.name = "hello_world";
-    c.prompt = "请用 TypeScript 写一个函数，调用后向控制台输出 hello world。";
-    c.maxAttempts = 3;
-    c.check = [](const std::string &output) {
-        return containsIC(output, "hello world");
-    };
-    c.retry = [](const std::string &output, const std::string &buildError) {
-        std::ostringstream ss;
-        ss << "上一次运行的结果不对。请检查并修正你的代码后重新完成要求。"
-              "要求是：写一个函数，调用后向控制台输出 hello world（严格为小写 "
-              "\"hello world\"）。\n";
-        if (!buildError.empty())
-            ss << "编译错误：\n" << buildError << "\n";
-        else
-            ss << "上次实际输出：\n" << output << "\n";
-        return ss.str();
-    };
-    return c;
+    if (!JZFileInfo::exists(dataDir))
+    {
+        err = "评测集目录不存在: " + dataDir;
+        return false;
+    }
+
+    JZDir dir(dataDir);
+    auto files = dir.entryInfoList({ "*.json" }, JZDir::Files);
+    if (files.empty())
+    {
+        err = "目录下无 *.json 用例文件";
+        return false;
+    }
+
+    for (const auto &fi : files)
+    {
+        std::string path = dataDir + "/" + fi.fileName();
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+        {
+            jzWarning().nospace() << "[评测集] 无法打开: " << path;
+            continue;
+        }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string text = ss.str();
+        // 去掉 UTF-8 BOM（Json::Reader 不认）
+        if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+            (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+            text.erase(0, 3);
+
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(text, root) || !root.isObject())
+        {
+            jzWarning().nospace() << "[评测集] 解析失败: " << path;
+            continue;
+        }
+
+        BenchmarkCase c;
+        std::string base = fi.fileName();
+        size_t dot = base.rfind('.');
+        if (dot != std::string::npos)
+            base = base.substr(0, dot);
+        c.name = root.isMember("name") && root["name"].isString()
+                     ? root["name"].asString() : base;
+        c.prompt = root.isMember("prompt") && root["prompt"].isString()
+                       ? root["prompt"].asString() : "";
+        c.maxAttempts = root.isMember("maxAttempts") ? root["maxAttempts"].asInt() : 3;
+        c.timeoutMs = (root.isMember("timeout") ? root["timeout"].asInt() : 30) * 1000;
+        c.input = (root.isMember("input") && root["input"].isString())
+                      ? root["input"].asString() : "";
+
+        std::string contains;
+        bool ci = false;
+        if (root.isMember("expect") && root["expect"].isObject())
+        {
+            const Json::Value &exp = root["expect"];
+            if (exp.isMember("contains") && exp["contains"].isString())
+                contains = exp["contains"].asString();
+            if (exp.isMember("caseInsensitive"))
+                ci = exp["caseInsensitive"].asBool();
+        }
+        c.check = [contains, ci](const std::string &output) {
+            if (contains.empty())
+                return true;
+            return ci ? containsIC(output, contains)
+                      : output.find(contains) != std::string::npos;
+        };
+
+        std::string hint = root.isMember("retryHint") && root["retryHint"].isString()
+                               ? root["retryHint"].asString()
+                               : "上一次运行未通过，请根据反馈修正后重试。";
+        c.retry = [hint](const std::string &output, const std::string &buildError) {
+            std::ostringstream ss;
+            ss << hint;
+            if (!buildError.empty())
+                ss << "\n编译错误：\n" << buildError;
+            else
+                ss << "\n上次实际输出：\n" << output;
+            return ss.str();
+        };
+
+        if (c.prompt.empty())
+        {
+            jzWarning().nospace() << "[评测集] 用例缺少 prompt，跳过: " << path;
+            continue;
+        }
+
+        out.push_back(std::move(c));
+    }
+
+    if (out.empty())
+        err = "没有可用用例（全部解析失败或缺少 prompt）";
+    return !out.empty();
 }
 
 static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
@@ -351,7 +571,7 @@ static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
     JZAgentConfig cfg;
     // 缺省沿用仓库 test/agent/test_agent.cpp 的接入；可用命令行 / 环境变量覆盖
     cfg.modelUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-    cfg.modelName = "qwen3.7-max-2026-06-08";
+    cfg.modelName = "qwen3.7-flash-2026-07-15";
     cfg.modelToken = "sk-c7cbd6d56e5049c69a640f9596c978d3";
     cfg.maxRounds = 100;
 
@@ -378,12 +598,21 @@ int main(int argc, char *argv[])
     // 缺省：环境变量 JZ_TS_LSP -> 否则同目录下的 tsc_shim.exe（本机 node 版 tsc 的包装）。
     std::string tscPath = "E:/libs/ts_compiler/app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe";
     std::string tsgoPath = tscPath;   // 原生 tsc 也经同一 shim（支持 --lsp --stdio）
+    std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
+    std::string casesFilter;   // --cases：逗号分隔的用例名，仅跑这些（可多个）
+    int httpPort = 18080;      // --http-port：输入 HTTP 服务监听端口（JS 用 fetch 读输入）
+    for (size_t i = 0; i < dataDir.size(); i++)
+        if (dataDir[i] == '\\')
+            dataDir[i] = '/';
 
     JZCommandLineParser parser;
     parser.setDescription("code_agent 用例评测");
     JZAgentConfig llm = loadLlmConfig(parser);   // 注册 --model* 选项
     parser.addOption("--tsc", &tscPath);
     parser.addOption("--tsgo", &tsgoPath);
+    parser.addOption("--data", &dataDir);
+    parser.addOption("--cases", &casesFilter);
+    parser.addOption("--http-port", &httpPort);
     if (!parser.parse(argc, argv))
     {
         jzError() << parser.errorString().c_str();
@@ -414,8 +643,52 @@ int main(int argc, char *argv[])
     JZEventLoop loop;
     Benchmark bench(&loop, llm, code, codeRuntime);
 
-    // 注册用例（目前只第一个：hello world）
-    bench.setCases({ makeHelloWorldCase() });
+    // 从评测集（data/ 下的 *.json）加载用例，先把 hello_world 移植过去
+    std::vector<BenchmarkCase> cases;
+    std::string loadErr;
+    if (!loadCases(dataDir, cases, loadErr))
+    {
+        jzError().nospace() << "加载评测集失败: " << loadErr;
+        return 2;
+    }
+
+    // 按 --cases 过滤（逗号分隔，可多个；忽略前后空白；名字不匹配的跳过）
+    if (!casesFilter.empty())
+    {
+        std::vector<std::string> want;
+        std::stringstream cs(casesFilter);
+        std::string item;
+        while (std::getline(cs, item, ','))
+        {
+            size_t a = item.find_first_not_of(" \t\r\n");
+            if (a == std::string::npos)
+                continue;
+            size_t b = item.find_last_not_of(" \t\r\n");
+            want.push_back(item.substr(a, b - a + 1));
+        }
+        std::vector<BenchmarkCase> filtered;
+        for (auto &c : cases)
+        {
+            bool hit = false;
+            for (const auto &w : want)
+                if (w == c.name) { hit = true; break; }
+            if (hit)
+                filtered.push_back(std::move(c));
+        }
+        cases = std::move(filtered);
+        if (cases.empty())
+        {
+            jzError().nospace() << "指定的用例都不存在: " << casesFilter;
+            return 2;
+        }
+    }
+
+    bench.setCases(cases);
+
+    // 启动全局输入 HTTP 服务（JS 用 fetch 读取当前用例注入的输入）    
+    if (!bench.startHttpServer(httpPort))
+        return 2;
+
     bench.run();
 
     int ret = loop.exec();

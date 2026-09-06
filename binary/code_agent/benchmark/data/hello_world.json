@@ -1,0 +1,11 @@
+{
+  "name": "hello_world",
+  "prompt": "请用 TypeScript 写一个函数，调用后向控制台输出 hello world。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "expect": {
+    "contains": "hello world",
+    "caseInsensitive": true
+  },
+  "retryHint": "上一次运行的结果不对。请检查并修正你的代码后重新完成要求。要求是：写一个函数，调用后向控制台输出 hello world（严格为小写 \"hello world\"）。"
+}

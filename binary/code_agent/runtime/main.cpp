@@ -44,6 +44,7 @@
 #include "JZLabel.h"
 #include "JZPushButton.h"
 #include "JZMessageBox.h"
+#include "JZDebug.h"
 
 using namespace std;
 
@@ -192,9 +193,18 @@ int main(int argc, char *argv[])
         else
         {
             // 非调试版：弹窗提示后退出
-            JZMessageBox::information(nullptr, "运行时错误", shown)->exec();
-            crashExit = true;
-            app.exit(1);
+            if(jzApp->activeWindow())
+            {
+                JZMessageBox::information(jzApp->activeWindow(), "运行时错误", shown)->exec();
+                crashExit = true;
+                app.exit(1);
+            }
+            else
+            {
+                jzError() << "运行时错误" << shown;
+                crashExit = true;
+                app.exit(1);
+            }                
         }
     };
     rt.setUnhandledExceptionHandler(onUnhandledException);

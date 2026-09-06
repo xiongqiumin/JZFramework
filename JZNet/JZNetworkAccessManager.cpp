@@ -380,9 +380,9 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                     }
                     else
 #endif
-                    {
+                    {                        
                         m_reply->m_body = body;
-                        m_reply->sigReadyRead.emit();
+                        m_reply->sigReadyRead.emit();                        
                         emitFinish(JZNetworkReply::NoError);
                     }
                 }
@@ -492,6 +492,10 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
             }
 
             int code = mg_http_status(&hm);
+            // 通用：解析响应头（status / 头表 / Location），三种收尾方式（chunked / Content-Length / 关闭收尾）共用，只做一次
+            m_reply->m_statusCode = code;
+            m_reply->m_statusText = jzHttpStatusText(hm);
+
             // 参考 mongoose http_cb：
             // 1) HTTP/1.0 不使用 Transfer-Encoding: chunked，故仅 HTTP/1.1+ 才按 chunked 处理；
             // 2) 非 chunked 的 Transfer-Encoding（如 gzip/deflate 等）无法可靠解码，按错误终止。
@@ -502,7 +506,17 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
             if (te != nullptr)
             {
                 if (!is_http_1_0 && mg_strcasecmp(*te, mg_str("chunked")) == 0)
-                    isChunked = true;
+                {
+                    if (code >= 200 && code < 300)
+                    {
+                        isChunked = true;
+                    }
+                    else
+                    {
+                        emitFinish(JZNetworkReply::HttpError);
+                        return;
+                    }                    
+                }
                 else
                 {
                     // 不支持的 Transfer-Encoding：客户端无法可靠解码，报错终止
@@ -511,10 +525,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                     return;
                 }
             }
-
-            // 通用：解析响应头（status / 头表 / Location），三种收尾方式（chunked / Content-Length / 关闭收尾）共用，只做一次
-            m_reply->m_statusCode = code;
-            m_reply->m_statusText = jzHttpStatusText(hm);
+            
             std::string location;
             // 解析响应头：status / 头表 / Location（三种收尾方式共用，只做一次）
             m_reply->m_head.assign(hm.head.buf, hm.head.len);

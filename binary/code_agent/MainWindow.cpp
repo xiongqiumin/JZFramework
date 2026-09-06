@@ -723,6 +723,7 @@ void MainWindow::applyConfig()
 
     CodeAgentConfig code;
     code.workspace = m_cfg.workspace;
+    code.llmConfig = llm;
 
     // 运行时环境 = 配置的授信目录/可信程序 + TS 环境目录的动态注入。
     // 动态部分只作用于本次组装、不写回 m_cfg，避免改/清 tsEnvDir 后旧路径残留在持久化配置里。
@@ -741,20 +742,14 @@ void MainWindow::applyConfig()
             break;
         }
     }
-
-    // 直连 TSGO 语言服务：复用上面从 TS 环境解析出的 tsc 全路径。
-    // 原生 tsc.exe 即 TSGO LSP 服务器（tsc.exe --lsp --stdio），无需 node / 桥接脚本。
-    // tsc 存在即启用 TS 工具（JZCodeAgent 内再做一次 isAvailable 校验）。
-    if (!code.tscPath.empty())
-        code.tsgoLspPath = code.tscPath;
-
+    
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;
     code.proxyPort = m_cfg.proxyPort;
     code.proxyUser = m_cfg.proxyUser;
     code.proxyPassword = m_cfg.proxyPassword;
 
-    m_agent->init(llm, code);
+    m_agent->init(code);
 
     m_chatView->clear();
     m_renderedId = 0;
@@ -1015,8 +1010,16 @@ void MainWindow::onPoll()
     if (seq > m_renderedId)
     {
         const auto& logs = m_agent->logs();
-        for (int i = m_renderedId; i < seq; i++)
-            appendLog(logs[i]);
+        // 不能拿全局序号当 vector 下标：m_agent 会裁剪旧日志(m_logs>3000 从头部删)，
+        // logSeq() 返回的是全局单调递增 id，下标与 id 不一致，按 log.id 迭代才安全。
+        for (const auto& log : logs)
+        {
+            if (log.id <= m_renderedId)
+                continue;
+            if (log.id > seq)
+                break;
+            appendLog(log);
+        }
         m_renderedId = seq;
     }
 

@@ -456,7 +456,7 @@ void JZAgent::llmRequest()
     }
 
     // 每次请求重新累积（流式与非流式统一）
-    m_replyHistory = std::shared_ptr<LLMHistory>();
+    m_replyHistory = std::shared_ptr<LLMHistory>();    
 
     // 设置 model 字段
     Json::Value request_body;
@@ -1090,7 +1090,7 @@ void JZAgent::onLLMStreamReadyRead()
         return;
 
     // readAll 已返回完整数据（可能包含一个或多个 SSE 事件），直接按事件边界切分处理
-    std::string buffer = str_fromUtf8(data);
+    std::string buffer = str_fromUtf8(data);    
     size_t pos = 0;
     while (true)
     {
@@ -1132,7 +1132,28 @@ void JZAgent::processSSEData(const std::string& payload)
     Json::Reader reader;
     if (!reader.parse(payload, result))
     {
-        llmError(NoError, "SSE数据解析错误: " + reader.getFormattedErrorMessages());
+        std::string body = payload;
+        if (body.size() > 500)
+            body = body.substr(0, 500) + "...(truncated)";
+        llmError(NoError, "SSE数据解析错误: " + reader.getFormattedErrorMessages()
+                            + " payload=[" + body + "]");
+        return;
+    }
+
+    // provider 在流式下也可能直接返回错误体（如欠费 Arrearage），
+    // 必须识别并终止，否则会当作空 SSE 静默空转挂死。
+    if (result.isMember("error"))
+    {
+        Json::Value err = result["error"];
+        std::string code = err.isMember("code") ? err["code"].asString() : "";
+        std::string type = err.isMember("type") ? err["type"].asString() : "";
+        std::string msg  = err.isMember("message") ? err["message"].asString() : "";
+        if (msg.empty())
+            msg = payload;
+        std::string detail = msg;
+        if (!code.empty() || !type.empty())
+            detail += " (code=" + code + ", type=" + type + ")";
+        llmError(HttpError, "LLM错误: " + detail);
         return;
     }
 
@@ -1174,27 +1195,71 @@ void JZAgent::onLLMRequest()
             case JZNetworkReply::UserCancelError: errCode = UserCancelError; break;
             default:                              errCode = ConnectError; break;
         }
-        llmError(errCode, "网络错误" + net_reply->errorString());
+        // HTTP 层错误(4xx/5xx 等)：body 里常藏着真正的错误原因（如阿里云欠费 Arrearage）。        
+        std::string body = str_fromUtf8(net_reply->readAll());        
+        Json::Value result;
+        Json::Reader reader;
+        if (reader.parse(body, result) && result.isMember("error"))
+        {
+            Json::Value err = result["error"];
+            std::string ecode = err.isMember("code")   ? err["code"].asString()   : "";
+            std::string etype = err.isMember("type")   ? err["type"].asString()   : "";
+            std::string emsg  = err.isMember("message") ? err["message"].asString() : "";
+            if (emsg.empty())
+                emsg = body;
+            std::string detail = emsg;
+            if (!ecode.empty() || !etype.empty())
+                detail += " (code=" + ecode + ", type=" + etype + ")";
+            llmError(errCode, "HTTP " + std::to_string(net_reply->httpStatusCode()) + " 错误: " + detail);
+            return;
+        }
+        llmError(errCode, "网络错误(HTTP " + std::to_string(net_reply->httpStatusCode()) + "): " + net_reply->errorString());
         return;
     }
 
     // 流式模式：增量已通过 sigReadyRead -> processResponseDelta 累积进
     // m_replyHistory；仅在累积为空时（provider 忽略 stream 返回整包）降级按非流式整包解析。
     if (!m_streamEnabled || !m_replyHistory)
-    {
-        std::string json_message = str_fromUtf8(net_reply->readAll());
+    {        
+        std::string json_message = str_fromUtf8(net_reply->readAll());        
 
         Json::Value result;
         Json::Reader reader;
         if (!reader.parse(json_message, result))
         {
-            llmError(NoError, "json解析错误:" + reader.getFormattedErrorMessages());
+            // 把原始 body 片段一并带出，便于排查到底是空响应、HTML 错误页还是其他乱码
+            std::string body = json_message;
+            if (body.size() > 500)
+                body = body.substr(0, 500) + "...(truncated)";
+            llmError(NoError, "json解析错误:" + reader.getFormattedErrorMessages()
+                                + " body=[" + body + "]");
+            return;
+        }
+
+        // provider 可能返回错误体（如阿里云欠费 code=Arrearage）：HTTP 仍是 200，
+        // 但 body 是 {"error":{...}} 没有 choices。优先识别错误体，
+        // 把真实原因（欠费/限流/鉴权等）暴露出来，而不是笼统的"返回格式错误"。
+        if (result.isMember("error"))
+        {
+            Json::Value err = result["error"];
+            std::string code = err.isMember("code") ? err["code"].asString() : "";
+            std::string type = err.isMember("type") ? err["type"].asString() : "";
+            std::string msg  = err.isMember("message") ? err["message"].asString() : "";
+            if (msg.empty())
+                msg = json_message;
+            std::string detail = msg;
+            if (!code.empty() || !type.empty())
+                detail += " (code=" + code + ", type=" + type + ")";
+            llmError(HttpError, "LLM错误: " + detail);
             return;
         }
 
         Json::Value choices = result["choices"];
         if (!choices.isArray() || choices.size() == 0)
-            throw std::runtime_error("LLM返回格式错误");
+        {
+            llmError(HttpError, "LLM返回格式错误(无 choices): " + json_message);
+            return;
+        }
 
         Json::Value message = result["choices"][0]["message"];
         std::string content = message["content"].asString();

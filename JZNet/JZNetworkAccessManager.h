@@ -58,6 +58,7 @@ protected:
     int m_timeId;
     int64_t m_recvTime;
     bool m_chunkMode;
+        
     // Content-Encoding 为 gzip/x-gzip/deflate：解析响应头时确定算法；appendChunk 据此惰性创建
     // JZDecompressStream，每收到一块就增量 write() 解压，避免整段缓冲 + 收尾一次性解压。
     bool m_compressed = false;                              // 本响应是否为受支持的压缩编码

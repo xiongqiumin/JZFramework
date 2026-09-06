@@ -8,6 +8,8 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZJSEngine.h"
+#include "JZJSNetModule.h"
+#include "JZJSCoreModule.h"
 #include "JZObject.h"
 #include "JZString.h"
 #include "JZThread.h"
@@ -406,6 +408,14 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     engine->setWorkDir(wd);
     engine->start();
 
+    // 挂载内置模块：net（fetch/http/net/ws...）必须先于 core，core 会复用 net 建好的
+    // __jz 命名空间（见 JZJSCoreModule::initEngine），顺序反了会丢失 fetch 等网络全局。
+    // 二者共同提供 jz_types 声明的运行期全局（fs/path/process/os/fetch/http/...）。
+    m_netModule = std::make_unique<JZJSNetModule>();
+    m_netModule->initEngine(engine);
+    m_coreModule = std::make_unique<JZJSCoreModule>();
+    m_coreModule->initEngine(engine);
+
     LogBridge *bridge = new LogBridge();
     bridge->rt = this;
     connect(&engine->sigLog, bridge, &LogBridge::onLog);
@@ -424,6 +434,17 @@ bool JZEngineRuntime::initEngine(const string &workDir)
 
 void JZEngineRuntime::shutdownEngine()
 {
+    // 先卸载内置模块（释放其持有的引擎引用 / 回调根），再销毁引擎本身
+    if (m_netModule)
+    {
+        m_netModule->deinitEngine();
+        m_netModule.reset();
+    }
+    if (m_coreModule)
+    {
+        m_coreModule->deinitEngine();
+        m_coreModule.reset();
+    }
     if (m_bridge)
     {
         delete m_bridge;

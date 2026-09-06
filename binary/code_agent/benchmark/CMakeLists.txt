@@ -19,3 +19,15 @@ target_link_libraries(code_agent_benchmark PRIVATE code_agent_core)
 
 # 评测要"调用运行时"（code_runtime 子进程），保证其先构建
 add_dependencies(code_agent_benchmark code_runtime)
+
+# 评测集（data/*.json）随构建拷贝到 exe 同目录（bin/data），运行期由
+# applicationDirPath()+"/data" 读取。
+# 用 $<TARGET_FILE_DIR:...> 而非硬编码 bin 路径：它解析为该目标真实的输出目录
+# （父 CMake 现已按配置分目录 bin/<CONFIG>，Debug/Release 各自独立），
+# 自动对配置正确——data 始终落到当前配置 exe 所在目录下的 data/benchmark
+# （如 bin/Debug/data/benchmark）。
+add_custom_command(TARGET code_agent_benchmark POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/data"
+            "$<TARGET_FILE_DIR:code_agent_benchmark>/data/benchmark"
+    COMMENT "Copy benchmark evaluation set (data/*.json) into bin/<CONFIG>/data/benchmark")

@@ -3,10 +3,13 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 class JZJSEngine;
+class JZJSNetModule;
+class JZJSCoreModule;
 
 // ------------------------------------------------------------------
 // 运行期层：内嵌 JS 引擎 + "JS 运行栈 -> TS 源码栈" 的位置翻译
@@ -176,6 +179,8 @@ private:
     class ErrorBridge;
     ErrorBridge *m_errorBridge = nullptr;      // 与 m_engine 同生共死（桥先删）
     JZJSEngine *m_engine = nullptr;            // 当前会话（initEngine 创建）
+    std::unique_ptr<JZJSNetModule> m_netModule;   // 内置网络模块（fetch/http/net/ws...）
+    std::unique_ptr<JZJSCoreModule> m_coreModule; // 内置核心模块（fs/path/process/os...）
     std::string m_engineWorkDir;               // 当前会话的工作目录（引擎落点）
     bool m_engineRunning = false;
     std::string m_lastError;                   // 最近一次运行错误（已 mapStack）

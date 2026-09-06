@@ -163,6 +163,7 @@ public:
 
     // 更新大模型配置（保留会话日志，重建底层 agent）
     void applyLlmConfig(const JZAgentConfig &llm);
+    JZAgent *agent();
 
     // 工作区对话存档（<工作区>/.jzcode）：切换工作区时自动保存旧对话、导入新对话。
     // 只存对话历史，systemPrompt / 工具定义每次重建时重新生成，不进文件。

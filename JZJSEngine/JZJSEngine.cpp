@@ -575,8 +575,6 @@ void JZJSEngine::setStatus(JZJSEngineStatus status)
                (m_status == Engine_pause && (status == Engine_running || status == Engine_error || status == Engine_none)) ||
                (m_status == Engine_error && status == Engine_none));
 
-        LOG_FMT_I("engine status changed %d -> %d", m_status, status);
-
         m_status = status;
         sigStatus.emit(status);
     }

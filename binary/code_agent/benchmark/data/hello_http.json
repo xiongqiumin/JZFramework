@@ -1,0 +1,12 @@
+{
+  "name": "hello_http",
+  "prompt": "请用 TypeScript 通过 fetch 向评测的输入 HTTP 服务发起 GET 请求，把返回的文本内容原样打印到控制台（console.log）。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "hello http",
+  "expect": {
+    "contains": "hello http",
+    "caseInsensitive": true
+  },
+  "retryHint": "上一次运行的结果不对。请检查并修正你的代码后重新完成要求。要求是：用 fetch 向输入 HTTP 服务 GET，把返回内容原样打印到控制台（stdout 应出现 \"hello http\"）。"
+}

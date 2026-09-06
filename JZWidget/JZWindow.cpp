@@ -506,15 +506,6 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-
-        RECT rect;
-        GetClientRect(hwnd, &rect);
-
-        // 创建红色画刷并填充
-        HBRUSH hBrush = CreateSolidBrush(RGB(255, 0, 0));
-        FillRect(hdc, &rect, hBrush);
-        DeleteObject(hBrush);  // 及时释放资源
-
         EndPaint(hwnd, &ps);
         return 0;
     }

@@ -245,6 +245,11 @@ void JZCodeAgent::applyLlmConfig(const JZAgentConfig &llm)
     addLog("info", "大模型配置已更新: " + llm.modelName + " (" + llm.modelUrl + ")");
 }
 
+JZAgent *JZCodeAgent::agent()
+{
+    return m_agent;
+}
+
 string JZCodeAgent::historyFilePath() const
 {
     if (m_codeConfig.workspace.empty())

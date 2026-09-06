@@ -4,11 +4,13 @@
 #include "JZPainter.h"
 #include "JZKeyEvent.h"
 #include "JZTimer.h"
+#include "JZFixedTimer.h"
 #include "JZShowEvent.h"
 
 #include <vector>
 #include <set>
 #include <chrono>
+#include <string>
 
 // 飞行射击游戏控件 (V2): 验证 GDI 绘制 + 性能。
 //   - 敌人也会向玩家发射子弹 (enemy bullet)
@@ -31,6 +33,7 @@ protected:
 private:
     struct Enemy;           // 前向声明 (enemyFire 用引用参数)
     void onLogic();         // 逻辑 timer: 固定步长推进仿真
+    void onLogicError(int missed); // 逻辑 timer 落后过多(补不过来)时回调
     void onRender();        // 渲染 timer: 触发重绘 + 测 FPS
     void updateStars();     // 背景星星滚动(放入逻辑, 避免随渲染帧率变化)
     void reset();           // 重新开始
@@ -51,6 +54,7 @@ private:
     void drawExplosions(JZPainter* p);
     void drawHud(JZPainter* p);
     void drawOverlay(JZPainter* p);
+    void drawErrorOverlay(JZPainter* p);   // 逻辑落后过多: 停止游戏的错误遮罩
 
     struct Star    { int x, y, spd, sz; };
     struct Bullet  { int x, y, vx, vy; };          // 玩家子弹 (环射带 vx/vy)
@@ -59,8 +63,8 @@ private:
     struct PowerUp { int x, y, vy, type; };         // 0=多发 1=环射 2=回血
     struct Boom    { int x, y, life, max; };
 
-    JZTimer* m_logicTimer  = nullptr;   // 逻辑定时器 (固定步长)
-    JZTimer* m_renderTimer = nullptr;   // 渲染定时器 (压测 FPS)
+    JZFixedTimer* m_logicTimer = nullptr;   // 逻辑定时器 (固定步长 + 自动补帧)
+    JZTimer*      m_renderTimer = nullptr;   // 渲染定时器 (压测 FPS)
 
     int m_playerX = 0, m_playerY = 0;
     int m_playerCd = 0;      // 开火冷却 (tick)
@@ -71,6 +75,7 @@ private:
     int m_multi = 1;         // 并行弹数量 (1..5)
     int m_ring  = 0;         // 环射等级 (0 关闭, 每级 +4 弹)
     bool m_over = false;
+    std::string m_errMsg;   // 非空时表示逻辑落后过多, 游戏已停止
 
     float m_fps = 0;
     float m_peakFps = 0;

@@ -52,10 +52,6 @@ public:
     void init();
     void deinit();
 
-    // 把任务投递到引擎线程执行(线程安全): C++ 异步回调(网络/IO)在其它线程完成,
-    // 但 quickjs 上下文只能在引擎线程访问, 故通过本接口 marshal, 避免从工作线程直接碰 JS。
-    void runOnEngineThread(std::function<void()> task);
-
     void setWorkDir(const std::string& dir);
 
     void start();

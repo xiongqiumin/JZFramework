@@ -25,15 +25,6 @@ using namespace std;
 // 引擎收到后 execOnce 泵一轮。JZObject 事件分发: type >= JZEvent_user 的自定义
 // 事件统一进 customEvent(见 JZObject::event)。
 static const int JZEngine_WakeUp = JZEvent_user + 1;
-static const int JZEngine_Task = JZEvent_user + 2;
-
-// 携带 std::function 的引擎线程任务事件(用于把网络/IO 线程的回调 marshal 到引擎线程)
-class JZEngineTaskEvent : public JZEvent
-{
-public:
-    JZEngineTaskEvent(std::function<void()> f) : JZEvent(JZEngine_Task), task(std::move(f)) {}
-    std::function<void()> task;
-};
 
 class JZJSEngineInternalFunction
 {
@@ -685,13 +676,6 @@ void JZJSEngine::wakeUp()
     jzApp->postEvent(this, new JZEvent(JZEngine_WakeUp));
 }
 
-void JZJSEngine::runOnEngineThread(std::function<void()> task)
-{
-    if (!m_ctx)
-        return;
-    jzApp->postEvent(this, new JZEngineTaskEvent(std::move(task)));
-}
-
 bool JZJSEngine::load(const std::string& filepath)
 {
     JZFile file;
@@ -748,12 +732,6 @@ void JZJSEngine::customEvent(JZEvent* event)
 
     if (event->type() == JZEngine_WakeUp)
         execOnce();
-    else if (event->type() == JZEngine_Task)
-    {
-        auto* e = (JZEngineTaskEvent*)event;
-        if (e->task)
-            e->task();
-    }
 }
 
 int64_t JZJSEngine::currentMs()

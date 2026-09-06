@@ -12,6 +12,8 @@
 	JZJSEngine.cpp
 	JZJSNetModule.h
 	JZJSNetModule.cpp
+	JZJSCoreModule.h
+	JZJSCoreModule.cpp
 )
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)

@@ -62,6 +62,8 @@ set(JZCORE_SOURCES
     JZConditionVariable.cpp
     JZTimer.h
     JZTimer.cpp
+    JZFixedTimer.h
+    JZFixedTimer.cpp
     JZDebug.h
     JZDebug.cpp
     detail/JZDebugDetail.h

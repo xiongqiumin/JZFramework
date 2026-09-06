@@ -1,8 +1,10 @@
 /// <reference path="common.d.ts" />
 
 /**
- * os - only networkInterfaces() is provided (aligned with the Node.js
- * built-in "os" module). Everything else of Node's os module is out of scope.
+ * os - aligned with the Node.js built-in "os" module. Only the functions that
+ * JZCore can back are provided; everything else of Node's os module is out of scope.
+ * networkInterfaces() is contributed by the net module (the engine augments this
+ * same global object), platform()/tmpdir()/EOL come from the core module.
  */
 declare module 'os' {
     export interface NetworkInterfaceInfo {
@@ -10,7 +12,6 @@ declare module 'os' {
         family: 'IPv4';
         /** true for 127.* */
         internal: boolean;
-        /** netmask / mac / cidr are not available in JZNet */
     }
 
     export interface NetworkInterfaces {
@@ -18,6 +19,11 @@ declare module 'os' {
     }
 
     export function networkInterfaces(): NetworkInterfaces;
+    /** mapped from JZPlatform::platform(): "windows" -> "win32" */
+    export function platform(): string;
+    export function tmpdir(): string;
+    /** "\r\n" on win32, "\n" otherwise */
+    export const EOL: string;
 }
 
 /** the engine injects the same object into the global scope */

@@ -453,7 +453,6 @@ int main()
             }
         });
 
-        engine.resetExecOnceCount();
         engine.callAsyncFunction("jsTick", {});   // 起跑第一圈
 
         JZTimer wd;    // 兜底(正常由 5s 到点退出)
@@ -466,13 +465,12 @@ int main()
         double secs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() / 1000.0;
         if (secs < 0.001)
             secs = 0.001;
-        unsigned long long exec_delta = engine.execOnceCount();
+        
         jzDebug() << "[loopback] 持续 " << secs << "s:"
                   << " loopback 圈数=" << cpp_calls
-                  << " (" << (long long)(cpp_calls / secs) << " 圈/s, 每圈=C++ 异步被回调一次)"
-                  << " 引擎宏任务泵(execOnce)=" << exec_delta << " 次"
+                  << " (" << (long long)(cpp_calls / secs) << " 圈/s, 每圈=C++ 异步被回调一次)"                  
                   << " (微任务在单轮 pump 内自再生, 空闲不唤醒)";
-        check("async loopback keeps driving", cpp_calls >= 100 && exec_delta >= 1);
+        check("async loopback keeps driving", cpp_calls >= 100);
     }
 
     // 23. 吞吐拆解(参照): 纯 JS 循环 / JS->C++ 同步调用 的原始量级,

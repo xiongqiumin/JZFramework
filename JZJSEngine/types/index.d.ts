@@ -8,13 +8,16 @@
 /// <reference path="mqtt.d.ts" />
 /// <reference path="url.d.ts" />
 /// <reference path="os.d.ts" />
+/// <reference path="fs.d.ts" />
+/// <reference path="path.d.ts" />
+/// <reference path="process.d.ts" />
 
 /**
- * JZJSNetModule type definitions.
+ * JZJSNetModule / JZJSCoreModule type definitions.
  *
  * The modules are injected into the global scope by the engine, so every module
- * is also available as a global value (net, dgram, http, mqtt, url, os, ws) and
- * require() returns the very same object.
+ * is also available as a global value (net, dgram, http, mqtt, url, os, ws,
+ * fs, path, process) and require() returns the very same object.
  *
  * Types are declared as ambient modules, so use a type only import to get them
  * (it is erased at runtime and never triggers a module load):
@@ -38,4 +41,7 @@ declare function require(name: 'mqtt'): typeof import('mqtt');
 declare function require(name: 'url'): typeof import('url');
 declare function require(name: 'os'): typeof import('os');
 declare function require(name: 'ws'): typeof import('ws');
+declare function require(name: 'fs'): typeof import('fs');
+declare function require(name: 'path'): typeof import('path');
+declare function require(name: 'process'): typeof import('process');
 declare function require(name: string): any;

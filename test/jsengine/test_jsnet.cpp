@@ -8,6 +8,7 @@
 #include "JZEventLoop.h"
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
+#include "JZJSCoreModule.h"
 #include "JZTimer.h"
 
 using namespace std;
@@ -44,6 +45,10 @@ int main()
     JZJSNetModule netModule;
     netModule.initEngine(&engine);
     STEP("net module init");
+
+    JZJSCoreModule coreModule;
+    coreModule.initEngine(&engine);
+    STEP("core module init");
 
     // 轮询等待某个 JS 表达式为真(同时泵事件循环, 让网络回调落地)
     auto waitFor = [&](const string& expr, int timeoutMs) {
@@ -204,7 +209,55 @@ int main()
         check("mqtt client created", !engine.isException(v.get()) && engine.fromJSValue<bool>(v.get()));
     }
 
+    // 11. core module: fs/path/os/process 同步 API(对齐 Node)
+    {
+        auto v = engine.eval(
+            "(function(){"
+            "  var fs = require('fs');"
+            "  var path = require('path');"
+            "  var os = require('os');"
+            "  var bad = [];"
+            "  var f = 'jzcore_test_tmp.txt';"
+            "  try { fs.unlinkSync(f); } catch(e){}"
+            "  fs.writeFileSync(f, 'hello', 'utf8');"
+            "  if (fs.readFileSync(f, 'utf8') !== 'hello') bad.push('ok1');"
+            "  var st = fs.statSync(f);"
+            "  if (!(st.isFile() && st.size === 5)) bad.push('ok2');"
+            "  fs.appendFileSync(f, '-world');"
+            "  if (fs.readFileSync(f, 'utf8') !== 'hello-world') bad.push('ok3');"
+            "  var u8 = fs.readFileSync(f);"
+            "  if (!(u8 instanceof Uint8Array) || u8.length !== 11) bad.push('ok4');"
+            "  var dir = 'jzcore_test_dir';"
+            "  try { fs.rmSync(dir, {recursive:true}); } catch(e){}"
+            "  fs.mkdirSync(dir, {recursive:true});"
+            "  fs.writeFileSync(dir + '/a.txt', 'x');"
+            "  var names = fs.readdirSync(dir);"
+            "  if (names.indexOf('a.txt') < 0) bad.push('ok5');"
+            "  var dt = fs.readdirSync(dir, {withFileTypes:true});"
+            "  if (!(dt.length === 1 && dt[0].isFile() && dt[0].name === 'a.txt')) bad.push('ok6');"
+            "  fs.rmSync(dir, {recursive:true});"
+            "  if (fs.existsSync(dir)) bad.push('ok7');"
+            "  if (path.basename('/a/b/c.txt') !== 'c.txt') bad.push('ok8');"
+            "  if (path.extname('/a/b/c.txt') !== '.txt') bad.push('ok9');"
+            "  if (path.dirname('/a/b/c.txt') !== '/a/b') bad.push('ok10');"
+            "  if (path.join('/a','b','c') !== '/a/b/c') bad.push('ok11');"
+            "  if (!(path.isAbsolute('/a/b') === true && path.isAbsolute('a/b') === false)) bad.push('ok12');"
+            "  if (typeof os.platform() !== 'string' || os.platform().length === 0) bad.push('ok13');"
+            "  if (typeof os.tmpdir() !== 'string') bad.push('ok14');"
+            "  if (typeof process.cwd() !== 'string' || process.cwd().length === 0) bad.push('ok15');"
+            "  fs.unlinkSync(f);"
+            "  return bad.join(',');"
+            "})()");
+        bool ok = !engine.isException(v.get()) && engine.fromJSValue<string>(v.get()).empty();
+        if (!ok && !engine.isException(v.get()))
+            jzDebug() << "[core-err] failed checks: " << engine.fromJSValue<string>(v.get());
+        if (engine.isException(v.get()))
+            jzDebug() << "[core-err] exception";
+        check("core fs/path/os/process sync API", ok);
+    }
+
     STEP("deinit module");
+    coreModule.deinitEngine();
     netModule.deinitEngine();
     STEP("engine stop");
     engine.stop();

@@ -1,6 +1,7 @@
 #include "game_widget.h"
 #include "JZColor.h"
 #include "JZRect.h"
+#include "JZDebug.h"
 
 #include <cstdlib>
 #include <ctime>
@@ -25,9 +26,10 @@ static constexpr float kPi = 3.14159265f;
 GameWidget::GameWidget(JZWidget* parent)
     : JZWidget(parent)
 {
-    m_logicTimer  = new JZTimer(this);
+    m_logicTimer  = new JZFixedTimer(this);
     m_renderTimer = new JZTimer(this);
-    connect(&m_logicTimer->sigTimeout,  this, &GameWidget::onLogic);
+    connect(&m_logicTimer->sigTimeout, this, &GameWidget::onLogic);
+    connect(&m_logicTimer->sigError,   this, &GameWidget::onLogicError);
     connect(&m_renderTimer->sigTimeout, this, &GameWidget::onRender);
     std::srand((unsigned)::time(nullptr));
 }
@@ -61,6 +63,7 @@ void GameWidget::reset()
     m_multi = 1;
     m_ring  = 0;
     m_over = false;
+    m_errMsg.clear();
     m_bullets.clear();
     m_ebullets.clear();
     m_enemies.clear();
@@ -78,6 +81,8 @@ void GameWidget::reset()
 
 // ---------------- 游戏循环 ----------------
 // 逻辑定时器: 固定步长推进仿真 (与渲染解耦, 仿真速度不随 FPS 变化)
+// JZFixedTimer 以墙钟为基准, 唤醒时若落后会连续补帧; 落后过多(补不过来)则
+// 触发 sigError -> onLogicError, 这里停止游戏并报错(不再追帧).
 void GameWidget::onLogic()
 {
     updateStars();                 // 背景滚动(放逻辑里, 帧率无关)
@@ -88,6 +93,17 @@ void GameWidget::onLogic()
     for (auto& b : m_booms) b.life--;
     m_booms.erase(std::remove_if(m_booms.begin(), m_booms.end(),
         [](const Boom& b) { return b.life <= 0; }), m_booms.end());
+}
+
+// 逻辑落后过多(补不过来): 停止游戏并上报错误, 不再尝试追帧.
+void GameWidget::onLogicError(int missed)
+{
+    jzWarning() << "GameWidget logic fell too far behind (" << missed
+                << " frames missed), stopping game";
+    if (m_logicTimer)
+        m_logicTimer->stop();   // JZFixedTimer 在 emit sigError 前已 stop, 这里确保
+    m_errMsg = "逻辑帧落后过多, 游戏停止 (落后 " + std::to_string(missed) + " 帧)";
+    update();   // 立即重绘以显示错误遮罩
 }
 
 // 渲染定时器: 只负责重绘 + 测 FPS (尽可能快, 用于压测)
@@ -295,8 +311,14 @@ void GameWidget::keyPressEvent(JZKeyEvent* event)
 {
     uint32_t k = event->key();
     m_keys.insert(k);
-    if (m_over && (k == VK_R || k == VK_RETURN))
-        reset();
+    if (k == VK_R || k == VK_RETURN) {
+        bool needRecover = m_over || (m_logicTimer && !m_logicTimer->isActive());
+        if (needRecover) {
+            reset();
+            if (m_logicTimer && !m_logicTimer->isActive())
+                m_logicTimer->start(kLogicMs);   // 从落后停止状态恢复
+        }
+    }
     event->accept();
 }
 
@@ -335,6 +357,7 @@ void GameWidget::paintEvent(JZPainterEvent* event)
 
     drawHud(p);
     if (m_over) drawOverlay(p);
+    else if (!m_errMsg.empty()) drawErrorOverlay(p);
 
     if (m_frameDraws > m_peakDraws) m_peakDraws = m_frameDraws;
 }
@@ -476,4 +499,19 @@ void GameWidget::drawOverlay(JZPainter* p)
     p->drawText(w / 2 - 110, h / 2 + 20,
         ("分数: " + std::to_string(m_score)).c_str());
     p->drawText(w / 2 - 110, h / 2 + 50, "按 R / 回车 重新开始");
+}
+
+void GameWidget::drawErrorOverlay(JZPainter* p)
+{
+    int w = width(), h = height();
+    p->fillRect(0, 0, w, h, JZColor(0, 0, 0, 170));
+    p->setPen(JZPen(JZColor::Red, 3));
+    p->setFont(JZFont(40));
+    p->drawText(w / 2 - 150, h / 2 - 40, "GAME STOPPED");
+    p->setPen(JZPen(JZColor(255, 180, 180)));
+    p->setFont(JZFont(18));
+    p->drawText(w / 2 - 180, h / 2 + 10, m_errMsg.c_str());
+    p->setPen(JZPen(JZColor::White));
+    p->setFont(JZFont(18));
+    p->drawText(w / 2 - 130, h / 2 + 50, "按 R / 回车 重新运行");
 }

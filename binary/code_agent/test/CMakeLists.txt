@@ -26,3 +26,18 @@ target_link_libraries(code_agent_test PRIVATE JZFramework)
 
 # 测试要"调用运行时"（code_runtime 子进程），保证其先构建
 add_dependencies(code_agent_test code_runtime)
+
+# ---------------------------------------------------------------------------
+# code_agent_lsp_test - 直连 TSGO(tsc --lsp --stdio) LSP 接口冒烟测试。
+# 在 tmp 下新建一个最小 TS 工程（tsconfig.json + sample.ts），逐个验证 10 个
+# tool（definition/references/quickinfo/rename/completion/document_highlights/
+# diagnostics/source/outline/members）的返回结构与定位是否正确。
+# 仅依赖 JZTsLangServer + JZFramework，不引入 GUI / 大模型 / code_runtime。
+# ---------------------------------------------------------------------------
+set(CODE_AGENT_LSP_TEST_SOURCES
+    lsp_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZTsLangServer.cpp
+)
+add_executable(code_agent_lsp_test ${CODE_AGENT_LSP_TEST_SOURCES})
+target_include_directories(code_agent_lsp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(code_agent_lsp_test PRIVATE JZFramework)

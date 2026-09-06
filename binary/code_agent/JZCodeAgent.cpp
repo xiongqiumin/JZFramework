@@ -1,5 +1,7 @@
 #include "JZCodeAgent.h"
 
+#include "JZTsLangTools.h"
+
 #include "JZDir.h"
 #include "JZFile.h"
 #include "JZFileInfo.h"
@@ -55,11 +57,14 @@ Json::Value CodeAgentLog::toJson() const
 JZCodeAgent::JZCodeAgent(JZObject *parent)
     : JZObject(parent)
 {
+    m_tsServer = new JZTsLangServer(this);
 }
 
 JZCodeAgent::~JZCodeAgent()
 {
     abortTools();
+    if (m_tsServer)
+        m_tsServer->shutdown();
 }
 
 void JZCodeAgent::init(const JZAgentConfig &llm, const CodeAgentConfig &code)
@@ -936,6 +941,10 @@ void JZCodeAgent::buildAgent()
     m_tools.clear();
     m_toolNames.clear();
 
+    // 重建前丢弃上一轮的 TSGO 语言服务进程与未决请求（配置可能已变化）
+    if (m_tsServer)
+        m_tsServer->shutdown();
+
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
     m_agent->init(m_llmConfig);
@@ -985,10 +994,81 @@ void JZCodeAgent::buildAgent()
     fetchTool->setNetworkAccessManager(m_netMan);
     addTool(fetchTool);
 
+    // ---- 直连 TSGO 语言服务的工具（原生 LSP，不经过 MCP / HTTP / node）----
+    // 仅在 tsgo(tsc) 二进制可用时注册，与 mcp-server.js 注册的 10 个工具一一对应。
+    if (m_tsServer)
+    {
+        m_tsServer->setTsgoPath(m_codeConfig.tsgoLspPath);
+        m_tsServer->setRoot(m_codeConfig.workspace);
+        if (m_tsServer->isAvailable())
+        {
+            static const TsMethod kTsMethods[] = {
+                TsMethod::Definition, TsMethod::References, TsMethod::QuickInfo,
+                TsMethod::Rename, TsMethod::Completion, TsMethod::DocumentHighlights,
+                TsMethod::Diagnostics, TsMethod::Source, TsMethod::Outline,
+                TsMethod::Members,
+            };
+            for (TsMethod m : kTsMethods)
+            {
+                auto *t = new JZTsTool(m_tsServer, m);
+                t->setWorkspace(m_codeConfig.workspace);
+                connect(&t->sigToolLog, this, &JZCodeAgent::onToolLog);
+                m_agent->addTool(t);
+                m_tools.push_back(t);
+                m_toolNames.push_back(t->toolName());
+            }
+        }
+    }
+
     applyZoneConfig();
 
+    // ---- 注册自定义技能：用户要求用本工程 JZJSEngine/JZWidget 创建 JS/TS 界面时启用 ----
+    std::string skillSection;
+    auto registerSkill = [&](const SkillDefine &s)
+    {
+        m_agent->addSkill(s);
+        skillSection += "### " + s.name + "\n";
+        skillSection += s.tips + "\n\n";
+        skillSection += s.usage + "\n\n";
+    };
+
+    {
+        SkillDefine jsui;
+        jsui.name = "create_js_ui";
+        jsui.tips = "当用户要求用本工程的 JZJSEngine/JZWidget 创建 JS/TS 界面（页面/窗口/控件/组件/可视化）时使用："
+                    "以 JSON 描述结构，由代码生成器产出继承自控件基类的实体类，构造内 setupUi 建树，事件用 on 绑定。";
+        jsui.usage = R"JS(本工程创建 JS/TS UI 的固定规范（JZJSEngine + JZWidget）：
+
+1. 结构用 JSON 描述：节点含 type / props / children / id 四字段。
+   - type: 控件类，如 Window / Label / PushButton / Edit / Layout。
+   - props: 属性键值（geometry:[x,y,w,h]、text、title、visible 等），保留原始类型，不要全转字符串。
+   - children: 递归子节点；id: 节点标识，供后续按 id 取句柄（可选，缺省不进句柄）。
+   - 不要把事件代码写进 JSON（不内联 onClick 字符串），结构与行为分离。
+
+2. 由代码生成器直接把 UI 定义写成实体类 .ts 文件（控件基类见 JZJSEngine/types/jzwidget.ts，当前为 TS 占位）：
+   class XxxPanel extends WindowWidget {
+     tip!: LabelWidget; btn!: PushButtonWidget;
+     constructor() { super(); this.setupUi(); }
+     protected setupUi(): void { /* new 子控件、设 props、建父子 */ }
+   }
+   用法：const w = new XxxPanel(); 构造即建好整棵树，成员 w.tip/w.btn 即为控件（编译期精确类型）。
+   不要写 createUi 工厂函数，也不要把 id 平铺到 ui 上。
+
+3. 控件基类在 JZJSEngine/types/jzwidget.ts（当前为 TS 占位，真实控件由 C++ 注册进 JS 引擎后再替换实现，生成产物不变）。
+   常用控件类：WindowWidget / LabelWidget / PushButtonWidget / EditWidget，方法 setGeometry/setText/setTitle/setVisible/show 等。
+
+4. 事件绑定（行为）在 TS 里用 widget.on(event, cb) 完成；事件名 = C++ 信号去 "sig" 前缀且首字母小写，如 sigClicked -> "clicked"。
+   PushButtonWidget 额外提供 onClick(cb) 便捷方法。例：w.btn.onClick(() => w.tip.setText("clicked!"))。
+
+5. 不要使用 window_template_id（已废弃）。当前阶段先不碰 C++ 真实控件注册，控件基类用 TS 占位即可。
+
+6. 完成后用 tsc --noEmit 做类型自检；产物为原生 ESM，由内置引擎以模块方式加载运行。
+)JS";
+        registerSkill(jsui);
+    }
+
     // 在 applyZoneConfig 之后生成提示词：availablePrograms() 依赖已下发的区域配置与可信程序
-    m_agent->setSystemPrompt(buildSystemPrompt());
+    m_agent->setSystemPrompt(buildSystemPrompt() + "\n## 自定义技能\n" + skillSection);
 
     // 注意: 这里不再注册 JZCommandTool(run_command)。
     // 它把整条命令原样交给 cmd /c，等于给模型开了一个绕过 terminal 全部审查的后门

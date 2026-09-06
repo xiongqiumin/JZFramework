@@ -7,6 +7,10 @@ set(CODE_AGENT_SOURCES
     ChatView.cpp
     JZCodeTools.h
     JZCodeTools.cpp
+    JZTsLangServer.h
+    JZTsLangServer.cpp
+    JZTsLangTools.h
+    JZTsLangTools.cpp
     JZCodeAgent.h
     JZCodeAgent.cpp
     JZExeResource.h
@@ -29,11 +33,11 @@ add_subdirectory(test)
 # <CONFIG> 子目录（Debug/Release 都进同一个 bin，避免分散）。
 # ---------------------------------------------------------------------------
 set(CODE_AGENT_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin")
-foreach(t code_agent code_runtime code_agent_test)
+foreach(t code_agent code_runtime code_agent_test code_agent_lsp_test)
     set_target_properties(${t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CODE_AGENT_BIN_DIR}")
 endforeach()
 foreach(cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
-    foreach(t code_agent code_runtime code_agent_test)
+    foreach(t code_agent code_runtime code_agent_test code_agent_lsp_test)
         set_target_properties(${t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${cfg} "${CODE_AGENT_BIN_DIR}")
     endforeach()
 endforeach()

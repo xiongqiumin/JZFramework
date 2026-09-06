@@ -742,6 +742,12 @@ void MainWindow::applyConfig()
         }
     }
 
+    // 直连 TSGO 语言服务：复用上面从 TS 环境解析出的 tsc 全路径。
+    // 原生 tsc.exe 即 TSGO LSP 服务器（tsc.exe --lsp --stdio），无需 node / 桥接脚本。
+    // tsc 存在即启用 TS 工具（JZCodeAgent 内再做一次 isAvailable 校验）。
+    if (!code.tscPath.empty())
+        code.tsgoLspPath = code.tscPath;
+
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;
     code.proxyPort = m_cfg.proxyPort;

@@ -9,6 +9,7 @@
 #include "JZAgent.h"
 #include "JZAgentTool.h"
 #include "JZCodeTools.h"
+#include "JZTsLangServer.h"
 
 // 代码助手自身的配置（与大模型配置 JZAgentConfig 分开）
 class CodeAgentConfig
@@ -23,6 +24,14 @@ public:
     // 未通过则自动再发一轮修复指令，直到通过或达到 maxAutoFixRounds（超出则把剩余错误上报用户）。
     std::string tscPath;            // 宿主侧 tsc 编译器全路径；空 = 关闭宿主把关
     int maxAutoFixRounds = 2;       // 自动续修轮数上限；<=0 = 即使编译失败也只上报不续修
+
+    // TSGO 语言服务（直连，不经过 MCP / HTTP 包装层）。
+    // 由 JZTsLangServer 直接 spawn 原生 tsgo(tsc) 二进制，以
+    //   tsc.exe --lsp --stdio
+    // 对外提供 LSP 服务（不再依赖 node / 桥接脚本）。路径即原生 tsc.exe 全路径，
+    // 一般为 <env>/app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe。
+    // 非空才会启用 TS 工具。
+    std::string tsgoLspPath;        // 原生 tsgo(tsc) 二进制全路径；空=关闭 TS 工具
 
     std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认
     // HTTP 代理（仅对 http 目标生效；https 目标直连，不走代理）
@@ -206,6 +215,8 @@ protected:
 
     std::vector<JZCodeTool *> m_tools;
     std::vector<std::string> m_toolNames;
+
+    JZTsLangServer *m_tsServer = nullptr;   // 直连 TSGO 语言服务；随 agent 生命周期常驻
 
     // 所有网络工具（web_search / web_fetch）共享的访问管理器，代理只在此统一设置一次
     JZNetworkAccessManager *m_netMan = nullptr;

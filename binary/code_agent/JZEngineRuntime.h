@@ -43,6 +43,9 @@ public:
     // 引擎 console.* 等日志的转发回调
     typedef std::function<void(const std::string &text)> LogHandler;
 
+    // 未处理 JS 异常（引擎 sigError，含异步未捕获拒绝）回调；参数为已翻译回 TS 的错误文本
+    typedef std::function<void(const std::string &tsError)> UnhandledHandler;
+
 
     // 翻译后的源码位置
     struct Location
@@ -130,6 +133,10 @@ public:
     // 它以翻译回 TS 的版本出现在 lastError() 里。
     void setLogHandler(const LogHandler &handler);
 
+    // 设置未处理 JS 异常回调（引擎 sigError 上报时触发，参数为翻译回 TS 的错误文本）。
+    // 默认空：不处理。运行时外壳可借此弹窗/退出。
+    void setUnhandledExceptionHandler(const UnhandledHandler &handler);
+
 protected:
     // source map 中一个"段"（同一生成行内按生成列递增）
     struct Segment
@@ -165,11 +172,15 @@ private:
     // 引擎 sigLog 桥（实现见 .cpp）：把 console.* 转给 logHandler，滤掉异常原文
     class LogBridge;
     LogBridge *m_bridge = nullptr;             // 与 m_engine 同生共死（桥先删）
+    // 引擎 sigError 桥（实现见 .cpp）：把未处理 JS 异常翻译回 TS 后转给 m_unhandledHandler
+    class ErrorBridge;
+    ErrorBridge *m_errorBridge = nullptr;      // 与 m_engine 同生共死（桥先删）
     JZJSEngine *m_engine = nullptr;            // 当前会话（initEngine 创建）
     std::string m_engineWorkDir;               // 当前会话的工作目录（引擎落点）
     bool m_engineRunning = false;
     std::string m_lastError;                   // 最近一次运行错误（已 mapStack）
     LogHandler m_logHandler;                   // 模块 console 转发
+    UnhandledHandler m_unhandledHandler;       // 未处理 JS 异常回调（默认空）
 
     std::string m_root;
     bool m_keepOriginal = false;

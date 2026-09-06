@@ -7,6 +7,10 @@
 # 把 JS 栈翻译回 TS 源码位置（JZEngineRuntime）。
 set(CODE_RUNTIME_SOURCES
     main.cpp
+    JZRuntimeDebugger.h
+    JZRuntimeDebugger.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.h
 )

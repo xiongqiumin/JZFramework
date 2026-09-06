@@ -15,6 +15,7 @@
 #include "JZMenuBar.h"
 #include "JZMenu.h"
 #include "JZFileDialog.h"
+#include "JZCheckbox.h"
 
 #include <string>
 #include <vector>
@@ -109,6 +110,31 @@ protected:
     JZPushButton* m_tsBrowseBtn = nullptr;
 };
 
+// 导出对话框：导出工程为可独立运行的发行包时，指定运行时 exe 名称、图标与是否 debug。
+//   - 程序名：导出后运行时 exe 的文件名（不含 .exe，留空=code_runtime）。
+//   - 图标(.ico)：可选项，指定则把该图标写入导出的运行时 exe（JZExeResource 替换资源图标）。
+//   - 调试：勾选则写入"调试开关"资源（缺省勾选），运行时自身读取后开启 JZRuntimeDebugger。
+class ExportDialog : public JZDialog
+{
+    JZ_OBJECT_DECLARE(ExportDialog)
+public:
+    explicit ExportDialog(JZWidget* parent = nullptr);
+
+    void setDefaults(const std::string& name, const std::string& icon, bool debug);
+    std::string exeName() const;     // 接受后返回运行时 exe 名（不含扩展名，可能为空）
+    std::string iconPath() const;    // 接受后返回图标路径（可能为空）
+    bool debug() const;              // 接受后返回是否导出 debug 版本
+
+protected:
+    void onBrowseIcon();
+    void onOk();
+
+    JZLineEdit* m_nameEdit = nullptr;
+    JZLineEdit* m_iconEdit = nullptr;
+    JZPushButton* m_iconBrowseBtn = nullptr;
+    JZCheckbox* m_debugCheck = nullptr;
+};
+
 // 主窗口：直接继承 JZMainWindow 骨架。菜单栏经 addMenuBar 置顶，
 // 内容区(状态/工具条 + ChatView + 底部输入框)整体作为中央控件 setCentralWidget 挂载。
 // 复用 JZCodeAgent 的本地代码助手能力
@@ -133,6 +159,7 @@ private:
     void onSettings();
     void onNewProject();
     void onOpenProject();
+    void onExport();
     void onExit();
     void onPoll();
 
@@ -146,7 +173,12 @@ private:
     InputEdit*    m_inputEdit = nullptr;
     JZPushButton* m_clearBtn = nullptr;
     JZPushButton* m_settingsBtn = nullptr;
+    JZPushButton* m_exportBtn = nullptr;
     JZMenuBar*    m_menuBar = nullptr;
+
+    std::string m_exportName;   // 上次导出指定的运行时 exe 名（记住，方便连续导出）
+    std::string m_exportIcon;   // 上次导出指定的图标路径
+    bool m_exportDebug = true;  // 上次导出是否勾选 debug（记住，方便连续导出）
     JZLabel*      m_statusLabel = nullptr;
     JZTimer*      m_pollTimer = nullptr;
 

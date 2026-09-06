@@ -401,6 +401,118 @@ void SettingsDialog::onAccept()
     accept();
 }
 
+// ==================== ExportDialog ====================
+ExportDialog::ExportDialog(JZWidget* parent)
+    : JZDialog(parent)
+{
+    setTitle("导出工程");
+    resize(520, 180);
+    setLayout(new JZVBoxLayout(8, 8));
+
+    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse,
+                         JZPushButton*& browseBtn)
+    {
+        JZWidget* row = new JZWidget(this);
+        JZHBoxLayout* h = new JZHBoxLayout(6, 6);
+        JZLabel* l = new JZLabel(row, label);
+        l->setFixedWidth(80);
+        edit = new JZLineEdit(row);
+        h->addWidget(l, 0);
+        h->addWidget(edit, 1);
+        if (withBrowse)
+        {
+            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
+            h->addWidget(browseBtn, 0);
+        }
+        row->setLayout(h);
+        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
+    };
+    addRow("程序名", m_nameEdit, false, m_iconBrowseBtn);
+    m_nameEdit->setPlaceholderText("运行时 exe 名（不含 .exe），留空=code_runtime");
+    addRow("图标(.ico)", m_iconEdit, true, m_iconBrowseBtn);
+    m_iconEdit->setPlaceholderText("可选，指定则替换导出 exe 的图标");
+    connect(&m_iconBrowseBtn->sigClicked, this, &ExportDialog::onBrowseIcon);
+
+    // 调试勾选行
+    {
+        JZWidget* dbgRow = new JZWidget(this);
+        JZHBoxLayout* dh = new JZHBoxLayout(6, 6);
+        JZLabel* dl = new JZLabel(dbgRow, "调试");
+        dl->setFixedWidth(80);
+        m_debugCheck = new JZCheckbox(dbgRow);
+        m_debugCheck->setText("导出 debug 版本（运行时默认开启调试器 JZRuntimeDebugger）");
+        m_debugCheck->setChecked(true);
+        dh->addWidget(dl, 0);
+        dh->addWidget(m_debugCheck, 1);
+        dbgRow->setLayout(dh);
+        static_cast<JZVBoxLayout*>(this->layout())->addWidget(dbgRow, 0);
+    }
+
+    JZWidget* btnRow = new JZWidget(this);
+    JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
+    bh->addStretch(1);
+    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "导出");
+    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
+    bh->addWidget(ok, 0);
+    bh->addWidget(cancel, 0);
+    btnRow->setLayout(bh);
+    static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
+
+    connect(&ok->sigClicked, this, &ExportDialog::onOk);
+    connect(&cancel->sigClicked, this, &ExportDialog::reject);
+}
+
+void ExportDialog::setDefaults(const string& name, const string& icon, bool debug)
+{
+    m_nameEdit->setText(name);
+    m_iconEdit->setText(icon);
+    m_debugCheck->setChecked(debug);
+}
+
+string ExportDialog::exeName() const
+{
+    return str_trimmed(m_nameEdit->text());
+}
+
+string ExportDialog::iconPath() const
+{
+    return str_trimmed(m_iconEdit->text());
+}
+
+bool ExportDialog::debug() const
+{
+    return m_debugCheck->isChecked();
+}
+
+void ExportDialog::onBrowseIcon()
+{
+    string path = JZFileDialog::getOpenFileName(this, "选择图标", m_iconEdit->text(),
+                                                "图标 (*.ico)");
+    if (!path.empty())
+        m_iconEdit->setText(path);
+}
+
+void ExportDialog::onOk()
+{
+    string name = str_trimmed(m_nameEdit->text());
+    // 程序名只允许常规文件名字符（去掉可能手误带上的 .exe 由 exportProject 兜底）
+    static const char* kBadChars = "/\\:*?\"<>|";
+    if (!name.empty() && name.find_first_of(kBadChars) != string::npos)
+    {
+        JZMessageBox::warning(this, "导出工程", string("程序名不能包含以下字符: ") + kBadChars)
+            ->exec();
+        return;
+    }
+    // 图标路径非空时必须是存在的 .ico
+    string icon = str_trimmed(m_iconEdit->text());
+    if (!icon.empty() && !JZFileInfo::exists(icon))
+    {
+        JZMessageBox::warning(this, "导出工程", "图标文件不存在: " + icon)->exec();
+        return;
+    }
+    accept();
+}
+
 // ==================== MainWindow ====================
 MainWindow::MainWindow(JZWidget* parent)
     : JZMainWindow(parent)
@@ -450,8 +562,10 @@ void MainWindow::setupUi()
     topLayout->addWidget(m_statusLabel, 1);
     m_clearBtn = new JZPushButton(topBar, 84, 28, "清空");
     m_settingsBtn = new JZPushButton(topBar, 84, 28, "设置");
+    m_exportBtn = new JZPushButton(topBar, 84, 28, "导出");
     topLayout->addWidget(m_clearBtn, 0);
     topLayout->addWidget(m_settingsBtn, 0);
+    topLayout->addWidget(m_exportBtn, 0);
     topBar->setLayout(topLayout);
 
     m_chatView = new ChatView(central);
@@ -474,6 +588,7 @@ void MainWindow::setupUi()
     connect(&m_inputEdit->sendButton()->sigClicked, this, &MainWindow::onSendButton);
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
     connect(&m_settingsBtn->sigClicked, this, &MainWindow::onSettings);
+    connect(&m_exportBtn->sigClicked, this, &MainWindow::onExport);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
 }
 
@@ -833,6 +948,45 @@ void MainWindow::onExit()
     requestClose();
 }
 
+void MainWindow::onExport()
+{
+    // 先弹出导出对话框，收集运行时 exe 名称、图标与是否 debug（可留空）。
+    ExportDialog dlg(this);
+    dlg.setDefaults(m_exportName, m_exportIcon, m_exportDebug);
+    if (dlg.exec() != JZDialog::Accepted)
+        return;
+
+    std::string name = dlg.exeName();
+    std::string icon = dlg.iconPath();
+    bool dbg = dlg.debug();
+
+    // 导出当前打开的工程（工作区即工程根）为可独立运行的发行包：
+    // exportProject 会重新打包/发布，并把 build/ + project.json + code_runtime.exe（改名/换图标/
+    // 写调试开关资源）拷到 <工程>/export。
+    std::string root = codeNormalizePath(m_cfg.workspace);
+    std::string outDir, error;
+    if (m_agent->exportProject(root, outDir, error, name, icon, dbg))
+    {
+        // 记住本次选择，方便连续导出
+        m_exportName = name;
+        m_exportIcon = icon;
+        m_exportDebug = dbg;
+
+        std::string shown = name.empty() ? "code_runtime" : name;
+        std::string msg = "已导出可独立运行包到：\n" + outDir +
+                          "\n\n包含 " + shown + ".exe（内嵌 JZEngineRuntime" +
+                          (icon.empty() ? "" : "，已替换为自定义图标") +
+                          (dbg ? "，已写入调试开关资源（运行时可开启 JZRuntimeDebugger）" : "") +
+                          "）+ 编译产物 build/ + project.json，"
+                          "双击 run.bat 即可在本机运行。";
+        JZMessageBox::information(this, "导出工程", msg)->exec();
+    }
+    else
+    {
+        JZMessageBox::warning(this, "导出失败", error.empty() ? "未知错误" : error)->exec();
+    }
+}
+
 void MainWindow::finishOpenWorkspace()
 {
     saveConfig();
@@ -876,4 +1030,5 @@ void MainWindow::onPoll()
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
 JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
 JZ_OBJECT_IMPL(SettingsDialog, JZDialog)
+JZ_OBJECT_IMPL(ExportDialog, JZDialog)
 JZ_OBJECT_IMPL(MainWindow, JZMainWindow)

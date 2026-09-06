@@ -37,6 +37,22 @@ public:
     }
 };
 
+// 引擎 sigError -> 未处理异常回调桥：把原始 JS 错误翻译回 TS 后转给 m_unhandledHandler。
+class JZEngineRuntime::ErrorBridge : public JZObject
+{
+public:
+    JZEngineRuntime *rt = nullptr;
+
+    void onError(const string &raw)
+    {
+        if (rt && rt->m_unhandledHandler && !raw.empty())
+        {
+            string ts = rt->mapStack(raw);
+            rt->m_unhandledHandler(ts);
+        }
+    }
+};
+
 // 让可能挂起的 promise job / console / timer 落定（模块本体是同步求值的）
 static void rtPumpEngine()
 {
@@ -394,6 +410,10 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     bridge->rt = this;
     connect(&engine->sigLog, bridge, &LogBridge::onLog);
 
+    m_errorBridge = new ErrorBridge();
+    m_errorBridge->rt = this;
+    connect(&engine->sigError, m_errorBridge, &ErrorBridge::onError);
+
     m_engine = engine;
     m_bridge = bridge;
     m_engineWorkDir = wd;
@@ -408,6 +428,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         delete m_bridge;
         m_bridge = nullptr;
+    }
+    if (m_errorBridge)
+    {
+        delete m_errorBridge;
+        m_errorBridge = nullptr;
     }
     if (m_engine)
     {
@@ -476,6 +501,11 @@ const string &JZEngineRuntime::lastError() const
 void JZEngineRuntime::setLogHandler(const LogHandler &handler)
 {
     m_logHandler = handler;
+}
+
+void JZEngineRuntime::setUnhandledExceptionHandler(const UnhandledHandler &handler)
+{
+    m_unhandledHandler = handler;
 }
 
 bool JZEngineRuntime::init(const string &projectDir)

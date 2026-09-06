@@ -17,6 +17,7 @@ set(CODE_AGENT_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZCodeAgent.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZCodeTools.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.cpp
 )
 
 add_executable(code_agent_test ${CODE_AGENT_TEST_SOURCES})

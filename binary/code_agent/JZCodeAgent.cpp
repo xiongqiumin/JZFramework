@@ -4,6 +4,7 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZPlatform.h"
+#include "JZExeResource.h"
 #include "JZProcess.h"
 #include "JZStd.h"
 #include "JZString.h"
@@ -401,6 +402,20 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // build/*.js.map 翻译回 TS 源码位置（JZEngineRuntime）。
     // project.json（运行主入口声明）不是骨架文件：它由打包/发布(buildProject)在
     // tsc 编译通过后随 build/ 产物一起生成，不属于工程配置。
+    // 把 JZ 内置类型（fs/path/os/process 等 core 子集）随 exe 安装的路径暴露给工程：
+    // 该目录由 cmake 拷贝到 <exeDir>/jz_types/core，与默认 DOM lib 无冲突，
+    // 自动加入 tsconfig 的 include，使 tsc 能解析这些 ambient 模块（import 'fs' 等）。
+    string jzTypesInclude = "\"src/**/*.ts\"";
+    {
+        string jzTypesCore = JZPlatform::applicationDirPath();
+        for (size_t i = 0; i < jzTypesCore.size(); i++)
+            if (jzTypesCore[i] == '\\')
+                jzTypesCore[i] = '/';
+        jzTypesCore += "/jz_types/core";
+        if (JZFileInfo::exists(jzTypesCore))
+            jzTypesInclude += ", \"" + jzTypesCore + "\"";
+    }
+
     string tsconfig =
         "{\n"
         "  \"compilerOptions\": {\n"
@@ -414,7 +429,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"outDir\": \"build\",\n"
         "    \"rootDir\": \"src\"\n"
         "  },\n"
-        "  \"include\": [\"src/**/*.ts\"]\n"
+        "  \"include\": [" + jzTypesInclude + "]\n"
         "}\n";
     string gitignore =
         "build/\n"
@@ -701,6 +716,186 @@ bool JZCodeAgent::buildProject(const string &path, string &error, string *output
 
     addLog("info", "已打包/发布工程: " + root + "\n编译通过（tsc -p tsconfig.json）"
                    "\n入口产物: " + entry + "（tsconfig outDir 缺省=工程根/build）");
+    return true;
+}
+
+// ------------------------------------------------------------------
+// 导出辅助：把工程打包成可独立运行的发行目录
+// ------------------------------------------------------------------
+// 单文件复制（二进制安全）：用 JZFile 读全量 + 写全量。
+static bool copyOneFile(const string &src, const string &dst, string &error)
+{
+    JZFile in;
+    if (!in.open(src, "rb"))
+    {
+        error = "打开源文件失败: " + src;
+        return false;
+    }
+    JZByteArray data = in.readAll();
+    in.close();
+    JZFile out;
+    if (!out.open(dst, "wb"))
+    {
+        error = "创建目标文件失败: " + dst;
+        return false;
+    }
+    out.write(data);
+    out.close();
+    return true;
+}
+
+// 递归复制目录：把 src 下的全部内容（含子目录）复制到 dst（dst 会被整体创建）。
+static bool copyDirRecursive(const string &src, const string &dst, string &error)
+{
+    if (!JZFileInfo(src).isDir())
+    {
+        error = "源不是目录: " + src;
+        return false;
+    }
+    if (!JZDir(dst).mkpath(dst))
+    {
+        error = "无法创建目录: " + dst;
+        return false;
+    }
+    JZDir srcDir(src);
+    vector<JZFileInfo> infos =
+        srcDir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
+    for (const auto &fi : infos)
+    {
+        string s = fi.filePath();
+        string d = dst + "/" + fi.fileName();
+        if (fi.isDir())
+        {
+            if (!copyDirRecursive(s, d, error))
+                return false;
+        }
+        else
+        {
+            if (!copyOneFile(s, d, error))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool JZCodeAgent::exportProject(const string &path, string &outDir, string &error,
+                                  const string &exeName, const string &iconPath, bool debug)
+{
+    error.clear();
+    outDir.clear();
+
+    string root = path;
+    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
+        root.pop_back();
+    if (!JZFileInfo::exists(root + "/tsconfig.json"))
+    {
+        error = "不是 TS 工程目录（缺少 tsconfig.json）: " + root;
+        return false;
+    }
+
+    // 1) 确保已打包/发布：优先重新编译（保证 build/ 与 project.json 最新）。
+    //    未配置宿主侧 tsc 时退化为"已有 project.json 即可"（依赖先前产物）。
+    if (!m_codeConfig.tscPath.empty())
+    {
+        if (!buildProject(root, error))
+            return false;
+    }
+    else if (!JZFileInfo::exists(root + "/project.json"))
+    {
+        error = "未配置宿主侧 tsc 且工程尚未打包/发布（缺少 project.json），无法导出。";
+        return false;
+    }
+
+    // 2) 导出目录 = <工程根>/export，先清空再写入，保证一次性干净产物
+    outDir = root + "/export";
+    if (JZFileInfo::exists(outDir))
+    {
+        JZDir old(outDir);
+        if (!old.removeRecursively())
+        {
+            error = "无法清空旧导出目录: " + outDir;
+            return false;
+        }
+    }
+    if (!JZDir(outDir).mkpath(outDir))
+    {
+        error = "无法创建导出目录: " + outDir;
+        return false;
+    }
+
+    // 3) 复制编译产物（build/*.js + *.js.map）到 <export>/build
+    string outDirTs = tsOutDirOf(root, "build");
+    bool abs = !outDirTs.empty() && (outDirTs[0] == '/' || outDirTs[0] == '\\' ||
+                                     (outDirTs.size() > 1 && outDirTs[1] == ':'));
+    string buildAbs = codeNormalizePath(abs ? outDirTs : (root + "/" + outDirTs));
+    if (!JZFileInfo::exists(buildAbs) || !JZFileInfo(buildAbs).isDir())
+    {
+        error = "找不到编译产物目录: " + buildAbs;
+        return false;
+    }
+    if (!copyDirRecursive(buildAbs, outDir + "/build", error))
+        return false;
+
+    // 4) 复制运行主入口声明 project.json
+    if (!copyOneFile(root + "/project.json", outDir + "/project.json", error))
+        return false;
+
+    // 5) 复制内嵌 JZEngineRuntime 的 code_runtime.exe（与 code_agent 同目录安装），
+    //    并按需改名 / 替换图标，让连接后的 code_runtime 看起来是独立程序。
+    string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
+    if (!JZFileInfo::exists(runtimeExe))
+    {
+        error = "找不到 code_runtime.exe（应随 code_agent 一起安装到 exe 目录）: " + runtimeExe;
+        return false;
+    }
+    // 目标运行时文件名：去扩展名后拼接 .exe（缺省 = code_runtime）
+    string targetName = "code_runtime";
+    string nameTrim = exeName;
+    while (!nameTrim.empty() && (nameTrim.back() == '.' || nameTrim.back() == ' ' ||
+                                 nameTrim.back() == '\t'))
+        nameTrim.pop_back();
+    if (!nameTrim.empty())
+        targetName = nameTrim;
+    string dstExe = outDir + "/" + targetName + ".exe";
+    if (!copyOneFile(runtimeExe, dstExe, error))
+        return false;
+    if (!iconPath.empty() && JZFileInfo::exists(iconPath))
+    {
+        string resErr;
+        if (!JZExeResource::replaceIcon(dstExe, iconPath, resErr))
+        {
+            error = "替换 exe 图标失败: " + resErr;
+            return false;
+        }
+    }
+
+    // 5.1) 写入"调试开关"资源（约定 type="JZRT_CFG" name="DEBUG"，JSON {"debug":bool}）。
+    //      缺省 true：导出的运行时默认以 debug 版本发布，运行时自身可读此资源决定是否开启 JZRuntimeDebugger。
+    {
+        string resErr;
+        if (!JZExeResource::setDebugFlag(dstExe, debug, resErr))
+        {
+            error = "写入调试开关资源失败: " + resErr;
+            return false;
+        }
+    }
+
+    // 6) 一键启动脚本：用（已改名/已替换图标的）运行时 exe 运行本目录工程
+    {
+        string bat = "@echo off\r\n"
+                     "rem Run the exported JZ project (the exe embeds JZEngineRuntime)\r\n"
+                     "\"%~dp0" + targetName + ".exe\" \"%~dp0\"\r\n";
+        ofstream f(outDir + "/run.bat", ios::binary | ios::trunc);
+        if (f)
+        {
+            f.write(bat.data(), (streamsize)bat.size());
+            f.close();
+        }
+    }
+
+    addLog("info", "已导出可独立运行包: " + outDir + "\n"
+                   "（含 " + targetName + ".exe 内嵌 JZEngineRuntime（可改名/换图标）"
+                   "+ 编译产物 build/ + project.json；双击 run.bat 即可在本机运行）");
     return true;
 }
 

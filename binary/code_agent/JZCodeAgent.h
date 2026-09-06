@@ -136,6 +136,20 @@ public:
     // 阻塞至 tsc 结束；失败返回 false，error 说明原因，output 可接收 tsc 原始输出。
     bool buildProject(const std::string &path, std::string &error,
                       std::string *output = nullptr);
+
+    // 把工程"导出"为可独立运行的发行包：重新打包/发布后，复制编译产物(build/ 下的
+    // *.js + *.js.map) + 运行主入口声明 project.json + 内嵌 JZEngineRuntime 的
+    // code_runtime.exe 到 <工程根>/export，并生成一键启动的 run.bat。
+    //   - exeName：导出运行时 exe 的文件名（不含扩展名，缺省/空=code_runtime）。
+    //   - iconPath：可选的 .ico 路径，非空且存在则把该图标写入导出的运行时 exe
+    //               （用 JZExeResource 替换资源图标，使连接后的 code_runtime 包含自定义 exe 图标）。
+    //   - debug：是否写入"调试开关"资源（缺省 true）。运行时自身读取该资源决定是否开启
+    //            JZRuntimeDebugger（基于 JZMcpServer 的 HTTP 调试器）。
+    // outDir 返回导出目录（绝对路径）；失败返回 false，error 说明原因。
+    bool exportProject(const std::string &path, std::string &outDir, std::string &error,
+                       const std::string &exeName = "", const std::string &iconPath = "",
+                       bool debug = true);
+
     // 最近一次 openProject 的探测结果（未 open 过则为默认值）
     const CodeProjectStatus &projectStatus() const;
 

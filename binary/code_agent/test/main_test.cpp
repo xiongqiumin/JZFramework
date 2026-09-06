@@ -46,6 +46,7 @@
 #include "JZCodeAgent.h"
 #include "JZDir.h"
 #include "JZEngineRuntime.h"
+#include "JZExeResource.h"
 #include "JZFileInfo.h"
 #include "JZPlatform.h"
 #include "JZProcess.h"
@@ -111,6 +112,91 @@ static bool readText(const string &path, string &text)
     if (!in)
         return false;
     text.assign(istreambuf_iterator<char>(in), istreambuf_iterator<char>());
+    return true;
+}
+
+static bool copyFileBin(const string &src, const string &dst)
+{
+    ifstream in(normalize(src), ios::binary);
+    if (!in)
+        return false;
+    ofstream out(normalize(dst), ios::binary | ios::trunc);
+    if (!out)
+        return false;
+    out << in.rdbuf();
+    return true;
+}
+
+// 生成一个最小可用 .ico（32x32, 32bpp, 纯色 r/g/b）：ICONDIR + 1 个 ICONDIRENTRY
+// + BITMAPINFOHEADER + 像素(BGRA, 自下而上) + AND 掩码(全 0)。供 JZExeResource 测试。
+static bool writeMinIco(const string &path, uint8_t r, uint8_t g, uint8_t b)
+{
+    vector<uint8_t> buf;
+    const int W = 32, H = 32;
+    const int imgSize = 40 + W * H * 4 + (W * H / 8); // 4264
+    const int imgOffset = 6 + 16;                     // 22
+
+    // ICONDIR
+    buf.insert(buf.end(), {0, 0});                 // reserved
+    buf.insert(buf.end(), {1, 0});                 // type = icon
+    buf.insert(buf.end(), {1, 0});                 // count = 1
+    // ICONDIRENTRY
+    buf.push_back((uint8_t)W);
+    buf.push_back((uint8_t)H);
+    buf.insert(buf.end(), {0, 0});                // colorCount, reserved
+    buf.insert(buf.end(), {1, 0});                // planes
+    buf.insert(buf.end(), {32, 0});               // bitCount
+    buf.push_back((uint8_t)(imgSize & 0xFF));
+    buf.push_back((uint8_t)((imgSize >> 8) & 0xFF));
+    buf.push_back((uint8_t)((imgSize >> 16) & 0xFF));
+    buf.push_back((uint8_t)((imgSize >> 24) & 0xFF));
+    buf.push_back((uint8_t)(imgOffset & 0xFF));
+    buf.push_back((uint8_t)((imgOffset >> 8) & 0xFF));
+    buf.push_back((uint8_t)((imgOffset >> 16) & 0xFF));
+    buf.push_back((uint8_t)((imgOffset >> 24) & 0xFF));
+
+    auto put32 = [&](uint32_t v)
+    {
+        buf.push_back((uint8_t)(v & 0xFF));
+        buf.push_back((uint8_t)((v >> 8) & 0xFF));
+        buf.push_back((uint8_t)((v >> 16) & 0xFF));
+        buf.push_back((uint8_t)((v >> 24) & 0xFF));
+    };
+    auto put16 = [&](uint16_t v)
+    {
+        buf.push_back((uint8_t)(v & 0xFF));
+        buf.push_back((uint8_t)((v >> 8) & 0xFF));
+    };
+
+    // BITMAPINFOHEADER
+    put32(40);            // biSize
+    put32(W);             // biWidth
+    put32(H * 2);         // biHeight (XOR + AND 两半)
+    put16(1);             // biPlanes
+    put16(32);            // biBitCount
+    put32(0);             // biCompression
+    put32(0);             // biSizeImage
+    put32(0);             // biXPelsPerMeter
+    put32(0);             // biYPelsPerMeter
+    put32(0);             // biClrUsed
+    put32(0);             // biClrImportant
+    // XOR 像素（BGRA，自下而上；A=0 不透明）
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+        {
+            buf.push_back(b);
+            buf.push_back(g);
+            buf.push_back(r);
+            buf.push_back(0);
+        }
+    // AND 掩码（全 0）
+    buf.insert(buf.end(), (size_t)(W * H / 8), 0);
+
+    ofstream out(normalize(path), ios::binary | ios::trunc);
+    if (!out)
+        return false;
+    out.write((const char *)buf.data(), (streamsize)buf.size());
+    out.close();
     return true;
 }
 
@@ -234,15 +320,20 @@ static string findRuntimeExe()
 {
     string appDir = normalize(JZPlatform::applicationDirPath());
 
-    // 常规布局：<...>/code_agent/test/<cfg>/ 与
-    // <...>/code_agent/runtime/<cfg>/code_runtime.exe（MSVC 多配置）
+    // 新布局：code_agent 下所有 exe 统一输出到同一 bin 目录，
+    // code_runtime 与测试 exe 同级，直接取同目录即可。
+    string cand = appDir + "/code_runtime.exe";
+    if (fileExists(cand))
+        return cand;
+
+    // 兼容旧布局 / 兜底
     const string tag = "/code_agent/test/";
     size_t pos = appDir.find(tag);
     if (pos != string::npos)
     {
         string head = appDir.substr(0, pos);
         string cfg = appDir.substr(pos + tag.size());
-        string cand = head + "/code_agent/runtime/" + cfg + "/code_runtime.exe";
+        cand = head + "/code_agent/runtime/" + cfg + "/code_runtime.exe";
         if (fileExists(cand))
             return cand;
         cand = head + "/code_agent/runtime/code_runtime.exe"; // 单配置
@@ -651,6 +742,167 @@ int main()
             check(entryText.find("build/main.js") != string::npos &&
                       entryText.find(extOut) == string::npos,
                   "project.json 复原为 entry build/main.js", entryText);
+        }
+    }
+
+    // ================================================================
+    // Stage 7: JZ 内置类型(fs/path/os/process)随 exe 安装并由 initProject 暴露，
+    //          生成的工程能解析这些 ambient 模块并通过类型检查（编译期验证）
+    // ================================================================
+    {
+        string typesRoot = base + "/types_use";
+        rmRecursive(typesRoot);
+        ensureDir(typesRoot);
+
+        JZCodeAgent agent2;
+        JZAgentConfig llm2;
+        CodeAgentConfig code2;
+        if (ts.prefix.empty())
+            code2.tscPath = ts.exe;
+        agent2.init(llm2, code2);
+
+        string err2;
+        bool ok7 = agent2.initProject(typesRoot, err2);
+        check(ok7, "initProject 创建引用 JZ 类型的工程", err2);
+        if (ok7)
+        {
+            // 生成的 tsconfig 应已把随 exe 安装的 jz_types/core 加入 include
+            string tsText2;
+            readText(typesRoot + "/tsconfig.json", tsText2);
+            check(tsText2.find("jz_types/core") != string::npos,
+                  "initProject 在 tsconfig include 暴露 JZ core 类型路径", tsText2);
+
+            // 该 TS 直接引用 fs/path/os/process（全局 ambient 模块 + import type），
+            // 只要类型被正确安装并暴露，tsc 即可解析且类型检查通过。
+            string mainTs =
+                "// types_use/main.ts - 引用 JZ 内置类型(fs/path/os/process)\n"
+                "import type { Stats } from 'fs';\n"
+                "const sep: string = path.sep;\n"
+                "const p: string = path.join('a', 'b', 'c');\n"
+                "const base: string = path.basename(p);\n"
+                "const ext: string = path.extname('main.ts');\n"
+                "const isAbs: boolean = path.isAbsolute(p);\n"
+                "const plat: string = os.platform();\n"
+                "const eol: string = os.EOL;\n"
+                "const tmp: string = os.tmpdir();\n"
+                "const cwd: string = process.cwd();\n"
+                "const argv: string[] = process.argv;\n"
+                "const exists: boolean = fs.existsSync(cwd);\n"
+                "const stat: Stats = fs.statSync(cwd);\n"
+                "const names: string[] = fs.readdirSync(cwd);\n"
+                "export function main(): string\n"
+                "{\n"
+                "    return 'types-ok ' + sep + ' ' + p + ' ' + base + ' ' + ext + ' '\n"
+                "        + isAbs + ' ' + plat + ' ' + eol + ' ' + tmp + ' ' + cwd + ' '\n"
+                "        + exists + ' ' + stat.size + ' ' + names.length + ' ' + argv.length;\n"
+                "}\n"
+                "console.log(main());\n";
+            writeText(typesRoot + "/src/main.ts", mainTs);
+
+            string out2;
+            bool built = false;
+            if (!code2.tscPath.empty())
+            {
+                built = agent2.buildProject(typesRoot, err2, &out2);
+            }
+            else
+            {
+                check(true, "跳过 JZ 类型引用编译验证(node 前缀方案无宿主 tsc)",
+                      "(node 前缀方案无宿主 tsc，跳过)");
+                built = true;
+            }
+            check(built, "引用 JZ 类型的工程编译通过(类型可解析且类型正确)",
+                  out2.empty() ? "(无输出)" : out2);
+        }
+    }
+
+    // ================================================================
+    // Stage 8: exportProject 导出可独立运行包（支持改名 + 替换图标）
+    // ================================================================
+    {
+        string expRoot = base + "/export_src";
+        rmRecursive(expRoot);
+        ensureDir(expRoot);
+
+        JZCodeAgent agent3;
+        JZAgentConfig llm3;
+        CodeAgentConfig code3;
+        if (ts.prefix.empty())
+            code3.tscPath = ts.exe;
+        agent3.init(llm3, code3);
+
+        string e3;
+        check(agent3.initProject(expRoot, e3), "initProject 创建导出测试工程", e3);
+        writeText(expRoot + "/src/main.ts",
+                  "export function main(): void {\n    console.log('export-ok');\n}\n"
+                  "console.log('export-ok');\n");
+
+        // 生成一个测试图标，导出时把运行时重命名为 myapp 并替换图标
+        string ico8 = base + "/stage8.ico";
+        check(writeMinIco(ico8, 200, 30, 30), "生成导出用测试 .ico", "");
+
+        string expDir, expErr;
+        bool ok8 = agent3.exportProject(expRoot, expDir, expErr, "myapp", ico8, true);
+        check(ok8, "exportProject 导出可独立运行包（改名 myapp + 替换图标 + debug）", expErr);
+        if (ok8)
+        {
+            check(JZFileInfo::exists(expDir + "/build/main.js"),
+                  "导出含编译产物 build/main.js（运行主入口）", "");
+            check(JZFileInfo::exists(expDir + "/project.json"),
+                  "导出含运行主入口声明 project.json", "");
+            check(JZFileInfo::exists(expDir + "/myapp.exe"),
+                  "导出含重命名后的运行时 myapp.exe（内嵌 JZEngineRuntime）", "");
+            check(!JZFileInfo::exists(expDir + "/code_runtime.exe"),
+                  "导出目录不再含默认 code_runtime.exe（已改名）", "");
+            check(JZExeResource::hasIcon(expDir + "/myapp.exe"),
+                  "重命名后的 myapp.exe 已含自定义 exe 图标（JZExeResource 替换）", "");
+            // 调试开关资源：导出时默认写入（debug=true），运行时自身读取以决定是否开调试器
+            {
+                bool dbg = false;
+                string derr;
+                check(JZExeResource::getDebugFlag(expDir + "/myapp.exe", dbg, derr),
+                      "myapp.exe 可读到调试开关资源", derr);
+                if (ok8)
+                    check(dbg, "导出默认 debug=true（写入调试开关资源）", "");
+            }
+            check(JZFileInfo::exists(expDir + "/run.bat"),
+                  "导出含一键启动 run.bat", "");
+        }
+    }
+
+    // ================================================================
+    // Stage 9: JZExeResource 通用资源读写 + 图标替换（隔离验证）
+    // ================================================================
+    {
+        string runtimeExe = normalize(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
+        check(fileExists(runtimeExe), "code_runtime.exe 存在于 exe 目录（图标替换前置）", "");
+        if (fileExists(runtimeExe))
+        {
+            string tmpExe = base + "/icon_stage9_runtime.exe";
+            rmRecursive(tmpExe);
+            check(copyFileBin(runtimeExe, tmpExe), "复制 code_runtime.exe 到临时文件", "");
+
+            // 9a) 通用任意资源读写往返（type/name 自定义字符串）
+            {
+                string resErr;
+                string payload = "hello-jz-runtime-config";
+                check(JZExeResource::setRawResource(tmpExe, "JZTEST", "CFG", payload, resErr),
+                      "setRawResource 写入自定义资源", resErr);
+                string got;
+                check(JZExeResource::getRawResource(tmpExe, "JZTEST", "CFG", got, resErr),
+                      "getRawResource 读回自定义资源", resErr);
+                check(got == payload, "自定义资源读写往返一致", "");
+            }
+
+            // 9b) 图标替换
+            string ico9 = base + "/stage9.ico";
+            check(writeMinIco(ico9, 30, 200, 30), "生成测试 .ico", "");
+
+            string icErr;
+            bool ok9 = JZExeResource::replaceIcon(tmpExe, ico9, icErr);
+            check(ok9, "JZExeResource::replaceIcon 替换临时 exe 图标", icErr);
+            if (ok9)
+                check(JZExeResource::hasIcon(tmpExe), "替换后临时 exe 含 RT_GROUP_ICON", "");
         }
     }
 

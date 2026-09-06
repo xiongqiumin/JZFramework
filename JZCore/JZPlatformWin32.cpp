@@ -28,5 +28,5 @@ std::string win32_applicationDirPath()
 
 std::string win32_applicationTmpPath()
 {
-    return win32_applicationDirPath() + "/tmp";
+    return "C:/tmp";
 }

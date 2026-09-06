@@ -12,6 +12,7 @@
 #include "JZString.h"
 #include "JZStd.h"
 #include "JZFileInfo.h"
+#include "JZMessageBox.h"
 
 using namespace std;
 
@@ -211,6 +212,102 @@ void InputEdit::onSendClicked()
     sigSend.emit();
 }
 
+// ==================== NewProjectDialog ====================
+NewProjectDialog::NewProjectDialog(JZWidget* parent)
+    : JZDialog(parent)
+{
+    setTitle("新建工程");
+    resize(520, 200);
+    setLayout(new JZVBoxLayout(8, 8));
+
+    // 与 SettingsDialog 相同的行式布局：label + lineEdit（可带"浏览..."按钮）
+    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse,
+                         JZPushButton*& browseBtn)
+    {
+        JZWidget* row = new JZWidget(this);
+        JZHBoxLayout* h = new JZHBoxLayout(6, 6);
+        JZLabel* l = new JZLabel(row, label);
+        l->setFixedWidth(80);
+        edit = new JZLineEdit(row);
+        h->addWidget(l, 0);
+        h->addWidget(edit, 1);
+        if (withBrowse)
+        {
+            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
+            h->addWidget(browseBtn, 0);
+        }
+        row->setLayout(h);
+        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
+    };
+    addRow("位置", m_baseEdit, true, m_baseBrowseBtn);
+    m_baseEdit->setPlaceholderText("工程所在目录（将在这里创建工程子目录）");
+    addRow("工程名", m_nameEdit, false, m_baseBrowseBtn);
+    m_nameEdit->setPlaceholderText("新工程名，将作为子目录并初始化为 TS 工程");
+    connect(&m_baseBrowseBtn->sigClicked, this, &NewProjectDialog::onBrowseBase);
+
+    JZWidget* btnRow = new JZWidget(this);
+    JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
+    bh->addStretch(1);
+    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "创建");
+    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
+    bh->addWidget(ok, 0);
+    bh->addWidget(cancel, 0);
+    btnRow->setLayout(bh);
+    static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
+
+    connect(&ok->sigClicked, this, &NewProjectDialog::onOk);
+    connect(&cancel->sigClicked, this, &NewProjectDialog::reject);
+}
+
+void NewProjectDialog::setDefaults(const string& baseDir, const string& name)
+{
+    m_baseEdit->setText(baseDir);
+    m_nameEdit->setText(name);
+}
+
+string NewProjectDialog::projectPath() const
+{
+    string base = str_trimmed(m_baseEdit->text());
+    string name = str_trimmed(m_nameEdit->text());
+    if (base.empty() || name.empty())
+        return string();
+    if (base.back() != '/' && base.back() != '\\')
+        base += "/";
+    return base + name;
+}
+
+void NewProjectDialog::onBrowseBase()
+{
+    string dir = JZFileDialog::getExistingDirectory(this, "选择工程位置", m_baseEdit->text());
+    if (!dir.empty())
+        m_baseEdit->setText(dir);
+}
+
+void NewProjectDialog::onOk()
+{
+    string base = str_trimmed(m_baseEdit->text());
+    string name = str_trimmed(m_nameEdit->text());
+    if (base.empty())
+    {
+        JZMessageBox::warning(this, "新建工程", "请先选择工程所在目录")->exec();
+        return;
+    }
+    if (name.empty())
+    {
+        JZMessageBox::warning(this, "新建工程", "请输入工程名")->exec();
+        return;
+    }
+    // Windows 目录名不允许的字符
+    static const char* kBadChars = "/\\:*?\"<>|";
+    if (name.find_first_of(kBadChars) != string::npos || name == "." || name == "..")
+    {
+        JZMessageBox::warning(this, "新建工程",
+                              string("工程名不能包含以下字符: ") + kBadChars)->exec();
+        return;
+    }
+    accept();
+}
+
 // ==================== SettingsDialog ====================
 SettingsDialog::SettingsDialog(JZWidget* parent)
     : JZDialog(parent)
@@ -330,11 +427,14 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    // 菜单栏: 顶部 File 菜单, 目前只提供"打开目录"(切换工作区)。
+    // 菜单栏: 顶部"文件"菜单提供 新建工程 / 打开工程 / 退出。
     // addMenuBar 会把它插到主窗口第 0 项并自动 reparent。
     m_menuBar = new JZMenuBar(this);
     JZMenu* fileMenu = m_menuBar->addMenu("文件");
-    fileMenu->addAction("打开目录", [this]() { onOpenDirectory(); });
+    fileMenu->addAction("新建工程", [this]() { onNewProject(); });
+    fileMenu->addAction("打开工程", [this]() { onOpenProject(); });
+    fileMenu->addSeparator();
+    fileMenu->addAction("退出", [this]() { onExit(); });
     addMenuBar(m_menuBar);
 
     // 中央区: 工具条 + 聊天视图 + 底部输入框, 整体作为中央控件挂载。
@@ -516,6 +616,17 @@ void MainWindow::applyConfig()
     appendTsEnv(m_cfg.tsEnvDir, dirs, progs);
     code.trustedDirs = dirs;
     code.trustedPrograms = progs;
+
+    // 轮末宿主编译把关: 复用上面从 TS 环境解析出的 tsc 全路径（未配置 TS 环境则自动关闭）
+    for (const auto &p : progs)
+    {
+        if (str_toLower(p.name) == "tsc" && !p.path.empty())
+        {
+            code.tscPath = p.path;
+            break;
+        }
+    }
+
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;
     code.proxyPort = m_cfg.proxyPort;
@@ -625,23 +736,109 @@ void MainWindow::onSettings()
     }
 }
 
-void MainWindow::onOpenDirectory()
+void MainWindow::onOpenProject()
 {
     if (m_busy)
         return;
 
-    std::string dir = JZFileDialog::getExistingDirectory(this, "选择工作区目录", m_cfg.workspace);
+    std::string dir = JZFileDialog::getExistingDirectory(this, "打开工程", m_cfg.workspace);
     if (dir.empty())
         return;
 
-    if (!m_agent->setWorkspace(dir))
+    // 先探测工程属性：不是 TS 工程目录时，询问是否初始化成标准工程（不打扰已识别工程）
+    CodeProjectStatus st = m_agent->probeProject(dir);
+    if (st.pathOk && !st.isProject)
+    {
+        std::string text = st.summary + "\n\n";
+        text += "要把它初始化成标准 TS 工程吗？\n";
+        text += "（生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，产物统一输出到 build/）";
+        if (JZMessageBox::question(this, "打开非工程目录", text)->exec() == JZDialog::Accepted)
+        {
+            std::string error;
+            if (!m_agent->initProject(dir, error))
+            {
+                JZMessageBox::warning(this, "初始化工程失败",
+                                      error.empty() ? "未知错误" : error)->exec();
+                return;   // 初始化失败就不切换工作区
+            }
+        }
+    }
+
+    std::string error;
+    if (!m_agent->openProject(dir, &st, error))
+    {
+        JZMessageBox::warning(this, "无法打开工程", error.empty() ? "打开工程失败" : error)->exec();
         return;
+    }
 
     m_cfg.workspace = dir;
+    finishOpenWorkspace();
+}
+
+void MainWindow::onNewProject()
+{
+    if (m_busy)
+        return;
+
+    NewProjectDialog dlg(this);
+    dlg.setDefaults(m_cfg.workspace, "");
+    if (dlg.exec() != JZDialog::Accepted)
+        return;
+
+    std::string path = dlg.projectPath();
+    if (path.empty())
+        return;
+
+    // 目标位置策略：已是工程 → 直接打开不重复初始化；空目录 → 直接初始化；
+    // 有内容但非工程 → 询问后再初始化（initProject 幂等，不覆盖已有文件）。
+    CodeProjectStatus st = m_agent->probeProject(path);
+    bool doInit = true;
+    if (st.pathOk && st.isProject)
+    {
+        doInit = false;
+    }
+    else if (st.pathOk && !st.isEmpty)
+    {
+        std::string text = "目录已存在且有内容：\n" + path + "\n\n";
+        text += "仍要把它初始化成标准 TS 工程吗？\n";
+        text += "（生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，不覆盖已有文件）";
+        if (JZMessageBox::question(this, "新建工程", text)->exec() != JZDialog::Accepted)
+            return;
+    }
+
+    if (doInit)
+    {
+        std::string error;
+        if (!m_agent->initProject(path, error))
+        {
+            JZMessageBox::warning(this, "初始化工程失败",
+                                  error.empty() ? "未知错误" : error)->exec();
+            return;
+        }
+    }
+
+    std::string error;
+    if (!m_agent->openProject(path, &st, error))
+    {
+        JZMessageBox::warning(this, "无法打开工程", error.empty() ? "打开工程失败" : error)->exec();
+        return;
+    }
+
+    m_cfg.workspace = path;
+    finishOpenWorkspace();
+}
+
+void MainWindow::onExit()
+{
+    requestClose();
+}
+
+void MainWindow::finishOpenWorkspace()
+{
     saveConfig();
     updateStatus();
 
-    // 换了工作区 = 换一段对话: setWorkspace() 已存好旧对话、导入新对话并生成日志，
+    // 换了工作区 = 换一段对话: openProject() 已存好旧对话、导入新对话并生成日志，
     // 这里整屏重建（agent 的日志 id 已归零，m_renderedId 必须同步归零，否则增量拉取会漏）
     m_chatView->clear();
     m_renderedId = 0;
@@ -677,5 +874,6 @@ void MainWindow::onPoll()
 }
 
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
+JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
 JZ_OBJECT_IMPL(SettingsDialog, JZDialog)
 JZ_OBJECT_IMPL(MainWindow, JZMainWindow)

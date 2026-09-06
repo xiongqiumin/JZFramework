@@ -64,6 +64,26 @@ private:
     JZPushButton* m_sendBtn = nullptr;
 };
 
+// 新建工程对话框：选工程所在目录（已存在）+ 输入工程名；
+// 确认后把 <位置>/<工程名> 作为工程目录，初始化标准 TS 工程骨架并打开。
+class NewProjectDialog : public JZDialog
+{
+    JZ_OBJECT_DECLARE(NewProjectDialog)
+public:
+    explicit NewProjectDialog(JZWidget* parent = nullptr);
+
+    void setDefaults(const std::string& baseDir, const std::string& name);
+    std::string projectPath() const;   // 接受后返回 <位置>/<工程名>
+
+protected:
+    void onBrowseBase();
+    void onOk();                       // 校验工程名合法后 accept()
+
+    JZLineEdit* m_baseEdit = nullptr;
+    JZLineEdit* m_nameEdit = nullptr;
+    JZPushButton* m_baseBrowseBtn = nullptr;
+};
+
 // 设置对话框：配置模型地址 / 名称 / Token / 工作区
 class SettingsDialog : public JZDialog
 {
@@ -111,8 +131,13 @@ private:
     void onStop();
     void onClear();
     void onSettings();
-    void onOpenDirectory();
+    void onNewProject();
+    void onOpenProject();
+    void onExit();
     void onPoll();
+
+    // openProject 成功后的收尾：持久化工作区 + 刷新状态栏 + 整屏重建对话视图
+    void finishOpenWorkspace();
 
     void appendLog(const CodeAgentLog& log);
 

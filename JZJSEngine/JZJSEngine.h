@@ -34,6 +34,13 @@ protected:
     JSValue m_value;
 };
 
+// C++ 调用 JS 异步函数(callAsyncFunction)的结果
+struct JZAsyncResult
+{
+    int result;                       // callAsyncFunction 返回的句柄
+    std::vector<JZJSValuePtr> params; // promise resolve 的参数列表(一般 1 个元素)
+};
+
 // JZJSEngine
 class JZJSEngineInternalFunction;
 class JZJSEngine : public JZObject
@@ -58,7 +65,33 @@ public:
 
     JZJSValuePtr eval(const std::string& code);
     JZJSValuePtr loadModule(const std::string& path);  // 这个实际是在全局空间
+
+    // 同步调用全局 JS 函数。func = 全局函数名，params 原样透传给 JS。
+    // 返回值的 1 元素 vector(返回 undefined 也有 1 个元素)；失败(函数不存在/调用抛异常)
+    // 与 eval() 一致走 runtimeError/sigError 错误链，返回空 vector。
+    std::vector<JZJSValuePtr> callFunction(const std::string& func, const std::vector<JZJSValuePtr>& params);
+
+    // 调用全局 JS 异步函数(async function / 返回 PromiseLike)。发起后立即返回句柄(>=0)：
+    // - promise resolve 后发 sigAsyncResult{ result=句柄, params=resolve 参数 }；
+    // - promise reject 走引擎"未处理拒绝"上报(Engine_error/sigError/runtimeError)；
+    // - 函数不存在/调用抛异常返回 -1；
+    // - 返回值不是 PromiseLike(同步普通值)时立即发一次 sigAsyncResult。
+    // 注意: async 函数体只同步执行到首个 await，后续靠引擎 job 泵推进 ——
+    // 引擎须 start()(自带 10ms 定时器 pumpPendingJobs)或跑在事件循环里，否则结果不会回来。
+    int callAsyncFunction(const std::string& func, const std::vector<JZJSValuePtr>& params);
+
+    // 以 ESM 模块方式加载并执行文件(真正支持顶层 import/export)：
+    // - filepath 用相对 workDir 的 '/' 路径或绝对路径；
+    // - import 依赖由内置模块 loader 自动解析(扩展名可省略，自动补 .js / index.js)；
+    // - bindExports=true 时把入口模块的命名导出绑定到全局变量(供后续全局 eval 访问)；
+    // - 出错时与 eval() 一致：记录到 runtimeError(通过 sigError/sigLog 上报)。
+    bool runModuleFile(const std::string& filepath, bool bindExports = false);
     void execOnce();
+
+    // 引擎是否还有待执行的异步工作(接下来再调 execOnce/跑事件循环会有事做)：
+    // - quickjs promise 微任务队列非空(JS_IsJobPending)；
+    // - 还挂着 JS 侧 setTimeout/setInterval 定时器(含尚未到期与周期定时器)。
+    bool hasPendingJob();
 
     bool isException(JSValue exc);
     std::string runtimeError();
@@ -138,6 +171,10 @@ jz_signals:
     JZSigInt sigStatus;
     JZSigString sigLog;
     JZSigString sigError;
+    // C++ 调用 JS 异步函数(callAsyncFunction)的结算回调。
+    // 参数含自定义类型 JZAsyncResult，连接类型限 Auto/Direct(同线程)；
+    // Queued/BlockingQueued 需要 JZVariant 注册，会断言。
+    JZSignal<const JZAsyncResult&> sigAsyncResult;
 
 protected:
     friend JZJSEngineInternalFunction;
@@ -205,6 +242,10 @@ protected:
     void unHandlePromiseReject(JSValueConst promise, JSValueConst reason);
     PromiseTask* getPromiseTask(int handle);
 
+    // callAsyncFunction 挂载的 promise resolve/reject 回调(由 JSInter 静态方法转发)
+    void asyncResultResolve(int handle, int argc, JSValueConst* argv);
+    void asyncResultReject(int handle, int argc, JSValueConst* argv);
+
     virtual void customEvent(JZEvent* event) override;
     virtual void timerEvent(JZTimerEvent* event) override;
 
@@ -219,6 +260,16 @@ protected:
     bool load(const std::string& file);
     bool loadScript(const std::string& script);
     std::string getPropertyStr(JSValue var, std::string prop);
+
+    // ---- ESM 模块支持(供 quickjs 模块 loader / runModuleFile 内部使用) ----
+    // 编译 module_name 指定的文件为模块定义(找不到文件/编译失败时置 exception 返回 NULL)
+    JSModuleDef* loadModuleDef(const std::string& module_name);
+    // 读模块源码：相对 workDir(或绝对)路径，带 .js / index.js 扩展名兜底与 BOM 剥离
+    bool readModuleCode(const std::string& module_name, std::string& code);
+    // 把模块的命名空间导出绑定到全局变量(通过 __moduleBindGlobal__ 助手)
+    bool bindModuleNamespace(JSModuleDef* m);
+    // 泵 promise 任务队列(含未处理拒绝上报 Engine_error)
+    void pumpPendingJobs();
 
     void updateFunction(std::shared_ptr<CFunction> func);
     void registType(TypeInfo type_info);

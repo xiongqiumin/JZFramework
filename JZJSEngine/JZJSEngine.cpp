@@ -49,7 +49,18 @@ public:
         }
 
         int interval_ms;
-        if (JS_ToInt32(ctx, &interval_ms, argv[1]) != 0 || interval_ms <= 0)
+        if (JS_ToInt32(ctx, &interval_ms, argv[1]) != 0)
+        {
+            return JS_ThrowTypeError(ctx, "参数错误: 时间间隔必须是整数");
+        }
+        if (interval_ms < 0)
+        {
+            return JS_ThrowTypeError(ctx, "时间间隔不能为负数");
+        }
+        // setInterval 周期任务若为 0, 重排时 next_run_time += 0 永不前进,
+        // 会让 execOnce 的 while(true) 死循环, 故仍要求正整数;
+        // setTimeout(magic==1) 允许 0 = 尽快在下一轮 execOnce 触发
+        if (magic == 0 && interval_ms == 0)
         {
             return JS_ThrowTypeError(ctx, "时间间隔必须是正整数");
         }
@@ -181,6 +192,32 @@ public:
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
         engine->unHandlePromiseReject(promise, reason);
     }
+
+    // C++ 调用 JS 异步函数(callAsyncFunction)挂到 promise.then 的结算回调:
+    // promise 在引擎 job 泵中结算时被 quickjs 调用, magic = callAsyncFunction 句柄
+    static JSValue js_call_async_resolve(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
+                                         int magic)
+    {
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        engine->asyncResultResolve(magic, argc, argv);
+        return JS_UNDEFINED;
+    }
+
+    static JSValue js_call_async_reject(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
+                                        int magic)
+    {
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        engine->asyncResultReject(magic, argc, argv);
+        return JS_UNDEFINED;
+    }
+
+    // ESM 模块 loader: 编译指定的模块文件为模块定义。
+    // module_name 已被 quickjs 默认 normalizer 归一化(如 "build/sort.js")。
+    static JSModuleDef* js_module_loader(JSContext* ctx, const char* module_name, void* opaque)
+    {
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        return engine->loadModuleDef(module_name);
+    }
 };
 using JSInter = JZJSEngineInternalFunction;
 
@@ -241,7 +278,7 @@ JZJSEngine::PromiseTask::~PromiseTask()
 }
 
 JZJSEngine::JZJSEngine(JZObject* parent)
-    : JZObject(parent), sigStatus(this), sigLog(this), sigError(this)
+    : JZObject(parent), sigStatus(this), sigLog(this), sigError(this), sigAsyncResult(this)
 {
     m_ctx = nullptr;
     m_rt = nullptr;
@@ -290,6 +327,7 @@ void JZJSEngine::initJSEnv()
     m_global = JS_GetGlobalObject(m_ctx);
 
     JS_SetHostPromiseRejectionTracker(m_rt, &JSInter::js_promise_reject, nullptr);
+    JS_SetModuleLoaderFunc(m_rt, NULL, &JSInter::js_module_loader, this);
 
     registInternal();
     registVector<int>();
@@ -428,6 +466,18 @@ function __printObject__(obj, seen = new WeakSet()) {
     }
 
     return result;
+}
+
+// 把模块命名空间的具名导出绑定到全局变量(模块顶层的作用域不共享全局,
+// 评测侧 hiddenTests 仍是全局脚本, 靠这个桥拿到导出符号)
+function __moduleBindGlobal__(ns) {
+    if (!ns || typeof ns !== "object")
+        return 0;
+    const keys = Object.keys(ns);
+    for (let i = 0; i < keys.length; i++) {
+        try { globalThis[keys[i]] = ns[keys[i]]; } catch (e) { }
+    }
+    return keys.length;
 }
 )";
 
@@ -682,6 +732,29 @@ void JZJSEngine::unHandlePromiseReject(JSValueConst promise, JSValueConst reason
     if (!m_promiseError.empty())
         m_promiseError += "\n";
     m_promiseError += err;
+}
+
+void JZJSEngine::asyncResultResolve(int handle, int argc, JSValueConst* argv)
+{
+    if (!m_ctx)
+        return;
+
+    JZAsyncResult ar;
+    ar.result = handle;
+    for (int i = 0; i < argc; i++)
+    {
+        // argv 属于 promise 结算帧, 回调返回后由 quickjs 释放, 这里必须 dup 持有
+        ar.params.push_back(JZJSValuePtr(m_ctx, JS_DupValue(m_ctx, argv[i])));
+    }
+    sigAsyncResult.emit(ar);
+}
+
+void JZJSEngine::asyncResultReject(int handle, int argc, JSValueConst* argv)
+{
+    // 复用"未处理拒绝"上报通道: 错误文本累积进 m_promiseError,
+    // 由 pumpPendingJobs 在 job 泵结束统一转 Engine_error/sigError(与 JS 侧未 catch 的 reject 一致)
+    if (argc > 0)
+        unHandlePromiseReject(JS_UNDEFINED, argv[0]);
 }
 
 JZJSEngine::PromiseTask* JZJSEngine::getPromiseTask(int handle)
@@ -1316,6 +1389,120 @@ JZJSValuePtr JZJSEngine::eval(const std::string& code)
     return JZJSValuePtr(m_ctx, result);
 }
 
+std::vector<JZJSValuePtr> JZJSEngine::callFunction(const std::string& func, const std::vector<JZJSValuePtr>& params)
+{
+    std::vector<JZJSValuePtr> result_list;
+    if (!m_ctx)
+        return result_list;
+
+    JSValue fn = JS_GetPropertyStr(m_ctx, m_global, func.c_str());
+    if (JS_IsException(fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        unHandleException();
+        return result_list;
+    }
+    if (!JS_IsFunction(m_ctx, fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        JS_ThrowReferenceError(m_ctx, "'%s' is not a function", func.c_str());
+        unHandleException();
+        return result_list;
+    }
+
+    vector<JSValue> args;
+    args.reserve(params.size());
+    for (size_t i = 0; i < params.size(); i++)
+        args.push_back(params[i].get());
+
+    JSValue ret = JS_Call(m_ctx, fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
+    JS_FreeValue(m_ctx, fn);
+    if (JS_IsException(ret))
+    {
+        unHandleException();
+        return result_list;
+    }
+
+    // 返回值所有权直接交给 JZJSValuePtr(与 eval 一致)
+    result_list.push_back(JZJSValuePtr(m_ctx, ret));
+    return result_list;
+}
+
+int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJSValuePtr>& params)
+{
+    if (!m_ctx)
+        return -1;
+
+    JSValue fn = JS_GetPropertyStr(m_ctx, m_global, func.c_str());
+    if (JS_IsException(fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        unHandleException();
+        return -1;
+    }
+    if (!JS_IsFunction(m_ctx, fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        JS_ThrowReferenceError(m_ctx, "'%s' is not a function", func.c_str());
+        unHandleException();
+        return -1;
+    }
+
+    vector<JSValue> args;
+    args.reserve(params.size());
+    for (size_t i = 0; i < params.size(); i++)
+        args.push_back(params[i].get());
+
+    JSValue ret = JS_Call(m_ctx, fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
+    JS_FreeValue(m_ctx, fn);
+    if (JS_IsException(ret))
+    {
+        unHandleException();
+        return -1;
+    }
+
+    int handle = m_promiseTaskId++;
+
+    // PromiseLike(对象且有函数 then) => 挂 resolve/reject 回调, 等引擎 job 泵结算
+    JSValue then_fn = JS_GetPropertyStr(m_ctx, ret, "then");
+    if (JS_IsException(then_fn))
+    {
+        JS_FreeValue(m_ctx, then_fn);
+        JS_FreeValue(m_ctx, ret);
+        unHandleException();
+        return -1;
+    }
+    if (!JS_IsFunction(m_ctx, then_fn))
+    {
+        // 返回值不是 PromiseLike: 同步普通值, 立即结算
+        JS_FreeValue(m_ctx, then_fn);
+        JZAsyncResult ar;
+        ar.result = handle;
+        ar.params.push_back(JZJSValuePtr(m_ctx, ret));   // 转移所有权
+        sigAsyncResult.emit(ar);
+        return handle;
+    }
+
+    JSValue resolve_fn = JS_NewCFunctionMagic(m_ctx, JSInter::js_call_async_resolve, "resolve", 1,
+                                              JS_CFUNC_generic_magic, handle);
+    JSValue reject_fn = JS_NewCFunctionMagic(m_ctx, JSInter::js_call_async_reject, "reject", 1,
+                                             JS_CFUNC_generic_magic, handle);
+
+    JSValue then_args[2] = { resolve_fn, reject_fn };
+    JSValue then_ret = JS_Call(m_ctx, then_fn, ret, 2, then_args);
+    JS_FreeValue(m_ctx, then_fn);
+    JS_FreeValue(m_ctx, resolve_fn);
+    JS_FreeValue(m_ctx, reject_fn);
+    JS_FreeValue(m_ctx, ret);
+    if (JS_IsException(then_ret))
+    {
+        unHandleException();
+        return -1;
+    }
+    JS_FreeValue(m_ctx, then_ret);
+    return handle;
+}
+
 JZJSValuePtr JZJSEngine::loadModule(const std::string& filepath)
 {
     JZFile file;
@@ -1335,6 +1522,147 @@ JZJSValuePtr JZJSEngine::loadModule(const std::string& filepath)
         unHandleException();
 
     return JZJSValuePtr(m_ctx, result);
+}
+
+bool JZJSEngine::readModuleCode(const std::string& module_name, std::string& code)
+{
+    // 候选路径: 原名 -> 补 .js -> 目录式 index.js
+    std::vector<std::string> cands;
+    cands.push_back(module_name);
+    bool has_js_ext = (module_name.size() > 3 &&
+                       module_name.compare(module_name.size() - 3, 3, ".js") == 0);
+    if (!has_js_ext)
+        cands.push_back(module_name + ".js");
+    cands.push_back(module_name + "/index.js");
+
+    for (size_t i = 0; i < cands.size(); i++)
+    {
+        std::string full = cands[i];
+        bool is_abs = (!full.empty() && (full[0] == '/' || full[0] == '\\')) ||
+                      (full.size() > 2 && full[1] == ':');
+        if (!is_abs && !m_workDir.empty())
+        {
+            JZDir dir(m_workDir);
+            full = dir.absoluteFilePath(full);
+        }
+
+        JZFile file;
+        if (!file.open(full.c_str(), "rb"))
+            continue;
+        JZByteArray bytes = file.readAll();
+        file.close();
+
+        code.assign(bytes.data(), (size_t)bytes.size());
+        // 剥离 UTF-8 BOM
+        if (code.size() >= 3 && (unsigned char)code[0] == 0xEF &&
+            (unsigned char)code[1] == 0xBB && (unsigned char)code[2] == 0xBF)
+            code.erase(0, 3);
+        return true;
+    }
+    return false;
+}
+
+JSModuleDef* JZJSEngine::loadModuleDef(const std::string& module_name)
+{
+    if (!m_ctx)
+        return NULL;
+
+    std::string code;
+    if (!readModuleCode(module_name, code))
+    {
+        JS_ThrowReferenceError(m_ctx, "could not load module '%s'", module_name.c_str());
+        return NULL;
+    }
+
+    JSValue module_val = JS_Eval(m_ctx, code.data(), code.size(), module_name.c_str(),
+                                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(module_val))
+    {
+        // 编译失败: 保留内部错误文本, 再包一层便于定位是哪个模块文件
+        JSValue exc = JS_GetException(m_ctx);
+        std::string inner = getExceptionDescript(exc);
+        JS_FreeValue(m_ctx, exc);
+        JS_ThrowReferenceError(m_ctx, "could not compile module '%s': %s",
+                               module_name.c_str(), inner.c_str());
+        return NULL;
+    }
+
+    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(module_val);
+    JS_FreeValue(m_ctx, module_val);  // 模块定义由 ctx 的 loaded_modules 列表持有
+    return m;
+}
+
+bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
+{
+    if (!m_ctx)
+        return false;
+
+    // quickjs 默认模块 normalizer 按 '/' 切分基名, 统一转成 '/' 分隔
+    std::string module_name = filepath;
+    std::replace(module_name.begin(), module_name.end(), '\\', '/');
+
+    std::string err_before = m_runtimeError;
+    std::string code;
+    if (!readModuleCode(module_name, code))
+    {
+        JS_ThrowReferenceError(m_ctx, "could not load module '%s'", module_name.c_str());
+        unHandleException();
+        return false;
+    }
+
+    // COMPILE_ONLY: 只编译, 拿到模块定义(JS_TAG_MODULE -> JSModuleDef*)
+    JSValue module_val = JS_Eval(m_ctx, code.data(), code.size(), module_name.c_str(),
+                                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(module_val))
+    {
+        unHandleException();
+        return false;
+    }
+
+    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(module_val);
+
+    // 实例化(经 loader 拉取 import 依赖)并求值。module_val 的引用在此被消费,
+    // 模块定义继续由 ctx 的 loaded_modules 列表持有。
+    JSValue result = JS_EvalFunction(m_ctx, module_val);
+    if (JS_IsException(result))
+    {
+        unHandleException();
+        return false;
+    }
+    JS_FreeValue(m_ctx, result);
+
+    // 模块顶层代码的错误会转为 promise 拒绝, 泵完 job 队列才反映到 runtimeError
+    pumpPendingJobs();
+
+    if (bindExports && m_runtimeError == err_before)
+        bindModuleNamespace(m);
+
+    return true;
+}
+
+bool JZJSEngine::bindModuleNamespace(JSModuleDef* m)
+{
+    if (!m_ctx || !m)
+        return false;
+
+    JSValue ns = JS_GetModuleNamespace(m_ctx, m);
+    if (JS_IsException(ns))
+    {
+        unHandleException();
+        return false;
+    }
+
+    JSValue bind_func = JS_GetPropertyStr(m_ctx, m_global, "__moduleBindGlobal__");
+    JSValue args[] = {ns};
+    JSValue ret = JS_Call(m_ctx, bind_func, JS_UNDEFINED, 1, args);
+    bool ok = !JS_IsException(ret);
+    if (!ok)
+        unHandleException();
+
+    JS_FreeValue(m_ctx, ret);
+    JS_FreeValue(m_ctx, bind_func);
+    JS_FreeValue(m_ctx, ns);
+    return ok;
 }
 
 void JZJSEngine::execOnce()
@@ -1417,6 +1745,14 @@ void JZJSEngine::execOnce()
     }
 
     // 执行 promise
+    pumpPendingJobs();
+}
+
+void JZJSEngine::pumpPendingJobs()
+{
+    if (!m_ctx)
+        return;
+
     JSContext* pend_ctx = nullptr;
     while (true)
     {
@@ -1447,6 +1783,19 @@ void JZJSEngine::execOnce()
         std::string err = m_promiseError;
         m_promiseError.clear();
         onExceptionOccurred(err);
-        return;
     }
+}
+
+bool JZJSEngine::hasPendingJob()
+{
+    if (!m_ctx)
+        return false;
+
+    // quickjs 微任务队列(setTimeout 0 触发的 promise 回调也先落在这里)
+    if (JS_IsJobPending(m_rt))
+        return true;
+
+    // JS 侧 setTimeout/setInterval: 只要没 clear/没被触发移除就算 pending
+    // (未到期的一次性任务要等 execOnce 到点才跑, 周期任务常驻会一直为 true)
+    return !m_timeTasks.empty();
 }

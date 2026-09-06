@@ -1063,6 +1063,10 @@ void JZProcess::finished(int exitCode, JZProcess::ExitStatus exitStatus)
 
     d_ptr->state = NotRunning;
     d_ptr->closeHandles();
+    // Windows 平台的 tryWaitForExit 只把退出码传给了 sigFinished 信号，
+    // 没回写 d_ptr->exitCode，导致 waitForFinished() 后 exitCode() 恒为 0。
+    d_ptr->exitCode = exitCode;
+    d_ptr->exitStatus = exitStatus;
 
     sigFinished.emit(exitCode, exitStatus);
 }

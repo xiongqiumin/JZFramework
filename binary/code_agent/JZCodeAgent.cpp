@@ -4,11 +4,40 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZPlatform.h"
+#include "JZProcess.h"
 #include "JZStd.h"
 #include "JZString.h"
 #include "JZTextStream.h"
+#include "JZTimer.h"
+
+#include <fstream>
+#include <iterator>
 
 using namespace std;
+
+// ==================== 工程骨架辅助 ====================
+// 写入文本文件；已存在则不覆盖（初始化工程骨架的幂等语义）
+static bool writeIfAbsent(const string &path, const string &text)
+{
+    if (JZFileInfo::exists(path))
+        return true;
+    ofstream out(path, ios::binary | ios::trunc);
+    if (!out)
+        return false;
+    out.write(text.data(), (streamsize)text.size());
+    out.close();
+    return true;
+}
+
+// 取路径的目录名（去掉末尾分隔符后最后一个分量）
+static string codeBaseName(const string &path)
+{
+    string p = path;
+    while (p.size() > 1 && (p.back() == '/' || p.back() == '\\'))
+        p.pop_back();
+    size_t slash = p.find_last_of("/\\");
+    return (slash == string::npos) ? p : p.substr(slash + 1);
+}
 
 // ==================== CodeAgentLog ====================
 Json::Value CodeAgentLog::toJson() const
@@ -80,8 +109,17 @@ void JZCodeAgent::request(const string &text)
         return;
     }
 
-    m_busy = true;
+    sendRequestDirect(text);
+}
+
+void JZCodeAgent::sendRequestDirect(const string &text)
+{
+    // 直接发给底层 agent（request 的队列分支与宿主续修都走这里）。
+    // 每条新指令 = 一轮新的熔断额度 + 一轮完整的自动续修额度 + 重新统计代码改动。
     resetGuard();
+    m_fixRoundsLeft = m_codeConfig.maxAutoFixRounds;
+    m_roundTouchedTs = false;
+    m_busy = true;
     m_agent->request(text);
 }
 
@@ -255,6 +293,417 @@ bool JZCodeAgent::setWorkspace(const string &path)
     return true;
 }
 
+// ==================== TS 工程支持 ====================
+CodeProjectStatus JZCodeAgent::probeProject(const string &path) const
+{
+    CodeProjectStatus st;
+    string root = path;
+    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
+        root.pop_back();
+    if (root.empty())
+    {
+        st.error = "路径为空";
+        return st;
+    }
+
+    st.name = codeBaseName(root);
+    if (st.name.empty())
+        st.name = ".";
+    st.pathOk = true;
+
+    JZDir dir(root);
+    if (!dir.exists() || !JZFileInfo(root).isDir())
+    {
+        st.pathOk = false;
+        st.error = "目录不存在: " + root;
+        return st;
+    }
+
+    st.hasTsconfig = JZFileInfo::exists(root + "/tsconfig.json");
+    st.isProject = st.hasTsconfig;
+
+    vector<string> entries =
+        dir.entryList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
+    st.isEmpty = entries.empty();
+
+    if (!st.isProject)
+    {
+        if (st.isEmpty)
+            st.summary = "「" + st.name + "」是空目录，还不是 TS 工程目录。可调用 initProject 初始化为标准 TS 工程。";
+        else
+            st.summary = "「" + st.name + "」不是 TS 工程目录（缺少 tsconfig.json，无法用 tsc 编译）。可调用 initProject 初始化为标准 TS 工程。";
+    }
+    else
+        st.summary = "「" + st.name + "」是 TS 工程（tsconfig.json）。";
+    return st;
+}
+
+bool JZCodeAgent::openProject(const string &path, CodeProjectStatus *status, string &error)
+{
+    error.clear();
+    CodeProjectStatus st = probeProject(path);
+    if (status)
+        *status = st;
+    if (!st.pathOk)
+    {
+        error = st.error;
+        return false;
+    }
+
+    if (!setWorkspace(path))
+    {
+        error = "无法把目录切换为工作区: " + path;
+        return false;
+    }
+    m_project = st;
+    addLog("info", "已打开工程: " + st.summary);
+    return true;
+}
+
+const CodeProjectStatus &JZCodeAgent::projectStatus() const
+{
+    return m_project;
+}
+
+bool JZCodeAgent::initProject(const string &path, string &error)
+{
+    error.clear();
+    string root = path;
+    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
+        root.pop_back();
+    if (root.empty())
+    {
+        error = "目录不能为空";
+        return false;
+    }
+
+    JZDir dir(root);
+    if (!dir.exists())
+    {
+        JZDir mk;
+        if (!mk.mkpath(root))
+        {
+            error = "创建目录失败: " + root;
+            return false;
+        }
+    }
+    if (!JZFileInfo(root).isDir())
+    {
+        error = "路径不是目录: " + root;
+        return false;
+    }
+
+    string name = codeBaseName(root);
+    if (name.empty())
+        name = "project";
+    // 标准 TS 工程骨架（产物统一输出到 build/）。所有写入都不覆盖已有文件。
+    // sourceMap: true 为"调用运行时"必备 —— 运行期 JS 栈要靠 tsc 生成的
+    // build/*.js.map 翻译回 TS 源码位置（JZEngineRuntime）。
+    // project.json（运行主入口声明）不是骨架文件：它由打包/发布(buildProject)在
+    // tsc 编译通过后随 build/ 产物一起生成，不属于工程配置。
+    string tsconfig =
+        "{\n"
+        "  \"compilerOptions\": {\n"
+        "    \"target\": \"ES2022\",\n"
+        "    \"module\": \"esnext\",\n"
+        "    \"moduleResolution\": \"bundler\",\n"
+        "    \"strict\": true,\n"
+        "    \"noImplicitAny\": true,\n"
+        "    \"noEmitOnError\": true,\n"
+        "    \"sourceMap\": true,\n"
+        "    \"outDir\": \"build\",\n"
+        "    \"rootDir\": \"src\"\n"
+        "  },\n"
+        "  \"include\": [\"src/**/*.ts\"]\n"
+        "}\n";
+    string gitignore =
+        "build/\n"
+        "node_modules/\n"
+        ".jzcode/\n";
+
+    bool ok = writeIfAbsent(root + "/tsconfig.json", tsconfig);
+    if (!ok)
+    {
+        error = "写入 tsconfig.json 失败: " + root;
+        return false;
+    }
+    ok = writeIfAbsent(root + "/.gitignore", gitignore);
+    if (!ok)
+    {
+        error = "写入 .gitignore 失败: " + root;
+        return false;
+    }
+
+    // src 目录不存在或为空时补一个可编译的占位入口
+    JZDir srcDir(root + "/src");
+    bool srcExists = srcDir.exists();
+    bool srcEmpty = true;
+    if (srcExists)
+    {
+        vector<string> items =
+            srcDir.entryList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
+        srcEmpty = items.empty();
+    }
+    if (srcEmpty)
+    {
+        if (!srcExists)
+        {
+            JZDir mk;
+            mk.mkpath(root + "/src");
+        }
+        string mainTs =
+            "// " + name + " 工程入口示例（可自行删改，跨文件用 import/export）\n"
+            "// 打包/发布: tsc -p tsconfig.json（产物为原生 ESM 输出到 build/，并生成入口声明 project.json）\n"
+            "// 运行: 内置引擎/code_runtime 读 project.json 的 entry（build/main.js）加载入口\n"
+            "export function main(): void\n"
+            "{\n"
+            "    console.log(\"Hello from " + name + "!\");\n"
+            "}\n"
+            "main();\n";
+        if (!writeIfAbsent(root + "/src/main.ts", mainTs))
+        {
+            error = "写入 src/main.ts 失败: " + root;
+            return false;
+        }
+    }
+
+    addLog("info", "已初始化 TS 工程: " + root + "\n"
+                  "生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，已有文件未覆盖。\n"
+                  "（project.json 不是骨架文件：它由打包/发布 buildProject 在 tsc 编译通过后生成）");
+    return true;
+}
+
+// ==================== 打包/发布：tsconfig outDir 解析 ====================
+// tsconfig.json 是 JSONC（tsc 容忍注释与尾逗号）：剥掉 // 与 /* */ 注释、
+// 清掉结构末项的尾逗号后转成可交给 Json::Reader 的纯 JSON。
+static string jsJsoncToJson(const string &text)
+{
+    string out;
+    out.reserve(text.size());
+    bool inString = false, inLine = false, inBlock = false;
+    for (size_t i = 0; i < text.size(); i++)
+    {
+        char c = text[i];
+        char n = (i + 1 < text.size()) ? text[i + 1] : '\0';
+        if (inLine)
+        {
+            if (c == '\n' || c == '\r')
+                inLine = false;
+            continue;
+        }
+        if (inBlock)
+        {
+            if (c == '*' && n == '/')
+            {
+                inBlock = false;
+                i++;
+            }
+            continue;
+        }
+        if (inString)
+        {
+            out += c;
+            if (c == '\\' && n)
+            {
+                out += n;
+                i++;
+            }
+            else if (c == '"')
+                inString = false;
+            continue;
+        }
+        if (c == '"')
+        {
+            inString = true;
+            out += c;
+            continue;
+        }
+        if (c == '/' && n == '/')
+        {
+            inLine = true;
+            i++;
+            continue;
+        }
+        if (c == '/' && n == '*')
+        {
+            inBlock = true;
+            i++;
+            continue;
+        }
+        if (c == '}' || c == ']')
+        {
+            // JSONC 尾逗号：清掉本结构最后一项后的 ','
+            size_t j = out.size();
+            while (j > 0 && (out[j - 1] == ' ' || out[j - 1] == '\t' ||
+                             out[j - 1] == '\n' || out[j - 1] == '\r'))
+                j--;
+            if (j > 0 && out[j - 1] == ',')
+                out.erase(j - 1);
+        }
+        out += c;
+    }
+    return out;
+}
+
+// 读 tsconfig.json 的 compilerOptions.outDir；未配置/解析失败回退默认值。
+static string tsOutDirOf(const string &root, const string &fallback)
+{
+    ifstream in(root + "/tsconfig.json", ios::binary);
+    if (!in)
+        return fallback;
+    string text((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+    in.close();
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);
+
+    Json::Value cfg;
+    Json::Reader reader;
+    if (!reader.parse(jsJsoncToJson(text), cfg) || !cfg.isObject())
+        return fallback;
+    const Json::Value &co = cfg["compilerOptions"];
+    if (!co.isObject())
+        return fallback;
+    const Json::Value &od = co["outDir"];
+    if (!od.isString())
+        return fallback;
+    string dir = od.asString();
+    for (size_t i = 0; i < dir.size(); i++)
+    {
+        if (dir[i] == '\\')
+            dir[i] = '/';
+    }
+    while (dir.size() > 1 && dir.back() == '/')
+        dir.pop_back();
+    if (dir.empty())
+        return fallback;
+    return dir;
+}
+
+// outDir -> project.json entry 的前缀目录：
+//   相对路径按"tsconfig 所在目录(工程根)"展开归一；产物目录落在工程根内的统一
+//   写成相对路径（如 build、out），工程根之外（如用户把 outDir 指到别的盘/目录）
+//   保留绝对路径 —— 运行端(入口解析/模块加载/栈翻译)两种形态都支持。
+static string tsEntryDirFor(const string &root, const string &outDir)
+{
+    if (outDir.empty())
+        return "build";
+    bool absPath = outDir[0] == '/' || outDir[0] == '\\' ||
+                   (outDir.size() > 1 && outDir[1] == ':');
+    JZDir d(root);
+    string dir = absPath ? outDir : (root + "/" + outDir);
+    dir = d.absoluteFilePath(dir);      // 归一：分隔符统一、消掉 . 与 ..
+    for (size_t i = 0; i < dir.size(); i++)
+    {
+        if (dir[i] == '\\')
+            dir[i] = '/';
+    }
+    while (dir.size() > 1 && dir.back() == '/')
+        dir.pop_back();
+    if (dir.size() > root.size() && dir.compare(0, root.size(), root) == 0 &&
+        dir[root.size()] == '/')
+        return dir.substr(root.size() + 1);   // 工程根内 -> 相对路径
+    if (dir == root)
+        return ".";                            // 产物目录即工程根
+    return dir;                                // 工程根外 -> 绝对路径
+}
+
+bool JZCodeAgent::buildProject(const string &path, string &error, string *output)
+{
+    error.clear();
+    string root = path;
+    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
+        root.pop_back();
+    if (root.empty())
+    {
+        error = "目录不能为空";
+        return false;
+    }
+    if (!JZFileInfo::exists(root) || !JZFileInfo(root).isDir())
+    {
+        error = "路径不是目录: " + root;
+        return false;
+    }
+    if (!JZFileInfo::exists(root + "/tsconfig.json"))
+    {
+        error = "不是 TS 工程目录（缺少 tsconfig.json）: " + root;
+        return false;
+    }
+    if (m_codeConfig.tscPath.empty())
+    {
+        error = "未配置宿主侧 tsc（CodeAgentConfig.tscPath），无法打包/发布工程。";
+        return false;
+    }
+    if (!JZFileInfo::exists(m_codeConfig.tscPath))
+    {
+        error = "配置的宿主侧 tsc 不存在: " + m_codeConfig.tscPath;
+        return false;
+    }
+
+    // 1) 真实全量编译（tsc -p tsconfig.json -> build/*.js + *.js.map）。阻塞至结束。
+    JZProcess proc;
+    proc.setProcessChannelMode(JZProcess::MergedChannels);
+    proc.setWorkingDirectory(root);
+    if (!proc.start(m_codeConfig.tscPath, {"-p", "tsconfig.json", "--pretty", "false"}))
+    {
+        error = "启动 tsc 失败: " + m_codeConfig.tscPath;
+        return false;
+    }
+    if (!proc.waitForFinished(180000))
+    {
+        proc.killProcess();
+        error = "tsc 编译超时（180s）被终止。";
+        return false;
+    }
+    string out = str_fromLocal(proc.readAllStandardOutput());
+    if (output)
+        *output = out;
+    if (proc.exitCode() != 0)
+    {
+        const int kMaxErrChars = 8000;
+        if ((int)out.size() > kMaxErrChars)
+            out = out.substr(0, kMaxErrChars) + "\n...(编译输出过长已截断)";
+        error = "编译失败:\n" + str_trimmed(out);
+        return false;
+    }
+
+    // 2) 编译通过 = 打包/发布完成。产物写向哪由 tsconfig.json 的 outDir 决定：
+    //    缺省/未配置按标准工程约定落在"工程根/build"，也可被改成任意目录
+    //    （含工程根外的绝对路径）；入口 = outDir 下 main.js（src/main.ts 的产物），
+    //    校验存在后刷新运行主入口声明 project.json（构建产物元数据）。
+    string outDir = tsOutDirOf(root, "build");
+    string entryDir = tsEntryDirFor(root, outDir);   // 根内->相对；根外->绝对
+    string entry = (entryDir == ".") ? "main.js" : entryDir + "/main.js";
+
+    string entryAbs = JZDir(root).absoluteFilePath(entry);
+    for (size_t i = 0; i < entryAbs.size(); i++)
+    {
+        if (entryAbs[i] == '\\')
+            entryAbs[i] = '/';
+    }
+    if (!JZFileInfo::exists(entryAbs) || !JZFileInfo(entryAbs).isFile())
+    {
+        error = "编译通过但未找到入口产物: " + entryAbs + "\n"
+                "tsconfig 的 outDir 为 \"" + outDir +
+                "\"，入口按 src/main.ts 的产物（main.js）定位。\n"
+                "若主入口文件名/位置不同，请调整 tsconfig 的 rootDir/include 后再打包/发布。";
+        return false;
+    }
+
+    ofstream f(root + "/project.json", ios::binary | ios::trunc);
+    if (!f)
+    {
+        error = "写入 project.json 失败: " + root;
+        return false;
+    }
+    f << "{\n  \"entry\": \"" << entry << "\"\n}\n";
+    f.close();
+
+    addLog("info", "已打包/发布工程: " + root + "\n编译通过（tsc -p tsconfig.json）"
+                   "\n入口产物: " + entry + "（tsconfig outDir 缺省=工程根/build）");
+    return true;
+}
+
 bool JZCodeAgent::listFiles(const string &rel, vector<string> &out, string &error) const
 {
     return codeListDir(m_codeConfig.workspace, rel, out, error);
@@ -357,6 +806,9 @@ void JZCodeAgent::buildAgent()
 
 void JZCodeAgent::abortTools()
 {
+    // 宿主侧的编译把关进程也要一并终止, 防止其回调在 agent 重建后误发续修
+    abortHostTsc();
+
     for (auto *tool : m_tools)
     {
         // 阻断工具回传，避免"停止"之后再把结果交给已经废弃的 agent
@@ -432,12 +884,22 @@ string JZCodeAgent::buildSystemPrompt() const
         text += "注意: 当前可用的外部程序里没有 tsc（TS 环境目录未配置或缺失）。先停下手头工作，" \
                 "告诉用户去设置里填写正确的 TS 环境目录，不要尝试用其它方式编译。\n";
     text += "编译统一用 tsc（TypeScript 原生编译器）。\n";
-    text += "- 动手前先读 tsconfig.json；没有就新建一份（建议：target es2022、module commonjs、strict true、outDir \"dist\"）。\n";
-    text += "- 全量编译:  tsc -p tsconfig.json\n";
+    text += "- 工程目录只看根目录的 tsconfig.json（编译规则入口），动手前先读它。没有工程文件时，先初始化成标准 TS 工程（产物统一输出到 build/）。\n";
+    text += "- 标准 tsconfig 建议：target es2022、module esnext、moduleResolution bundler、strict true、outDir \"build\"。\n";
+    text += "- 跨文件请用标准 import/export 组织代码（引用可省略 .js 扩展名），支持在 src 下拆多个 .ts 互相 import。\n";
+    text += "- 全量编译:  tsc -p tsconfig.json   （产物为原生 ESM，统一落在 outDir，标准工程为 build/）\n";
     text += "- 快速检查:  tsc --noEmit -p tsconfig.json   （只做类型/语法检查，不产出，适合每次改动后自检）\n";
-    text += "- 编译产物落在 outDir(dist)；运行: node dist/<入口>.js\n";
-    text += "- node 也可以直接运行不含类型的 .js（含 JSDoc 注释时会有提示，不影响运行）。\n";
+    text += "- 含 import/export 的产物由内置引擎(quickjs)以模块方式加载运行（import 依赖自动解析）；\n";
+    text += "  不要用 node 运行含 import/export 的产物（node 默认按 CommonJS 处理会报语法错，且未装 npm 依赖）。\n";
+    text += "- node 只能用于运行不含 import/export 的纯脚本产物（build/ 下无 import/export 的 .js 或独立小脚本）。\n";
     text += "- 项目依赖预装在 node_modules 里（须已存在）；终端禁止装包(npm/npx/pip 均被禁)，缺依赖直接告诉用户。\n";
+    if (!m_codeConfig.tscPath.empty())
+    {
+        text += "\n### 轮末自动把关\n";
+        text += "宿主会在你每次回复结束（把控制权交回用户）后用 tsc --noEmit 检查一次编译状态。\n";
+        text += "若未通过，你会收到一条以“宿主自动检查”开头的指令，要求修复后重新编译，直到通过为止。\n";
+        text += "这条指令相当于用户的新要求，按同样标准执行即可。请尽量在回复前自行编译确认通过，减少这类往返。\n";
+    }
     text += "\n## 工作原则\n";
     text += "1. 修改代码之前必须先用 read_file 或 search_code 确认原文，严禁凭记忆猜测文件内容。\n";
     text += "2. modify_code 的 old_str 必须与文件中的内容逐字符一致（含缩进与换行），且默认要求唯一匹配；\n";
@@ -498,19 +960,171 @@ void JZCodeAgent::onFinished()
 
     if (!m_pendingQueue.empty())
     {
-        // 上一步已发完: 取出缓存的第一条继续发送, 期间 busy 保持占用
+        // 上一步已发完: 取出缓存的第一条继续发送, 期间 busy 保持占用。
+        // 用户又给了新任务, 不做轮末把关, 避免把"修编译错"插到新任务前面。
         string next = m_pendingQueue.front();
         m_pendingQueue.pop_front();
-        m_busy = true;
         m_waiting = true;
-        resetGuard();
-        m_agent->request(next);
+        sendRequestDirect(next);
+        return;
     }
-    else
+
+    // 无排队指令: 本轮回复真正结束。若该轮改过 TS 代码, 宿主先做一次编译把关
+    // (可能自动续修一轮); 只有确认不需要检查时才在此收尾。
+    if (startHostTscCheck())
+        return;
+
+    nextOrIdle();
+}
+
+void JZCodeAgent::nextOrIdle()
+{
+    // 收尾统一入口: 某个执行单元(模型一轮回复 / 宿主把关完成)结束后调用。
+    // 期间若用户又发过指令, 继续发送下一条; 否则整个空闲下来。
+    if (!m_pendingQueue.empty())
+    {
+        string next = m_pendingQueue.front();
+        m_pendingQueue.pop_front();
+        m_waiting = true;
+        sendRequestDirect(next);
+        return;
+    }
+    m_waiting = false;
+    m_busy = false;
+}
+
+// ---- 轮末宿主编译把关 ----
+bool JZCodeAgent::startHostTscCheck()
+{
+    if (m_stopping || m_hostRunning || m_codeConfig.tscPath.empty())
+        return false;
+    if (!m_roundTouchedTs)
+        return false;   // 纯问答轮/没动过代码: 不检查
+    // 续修额度为 0 也要再跑一次: 那是最后一轮修复结束, 用于终检上报
+    // (失败时 onHostTscDone 因额度为 0 只上报不续修)
+    if (!JZFileInfo::exists(m_codeConfig.tscPath))
+    {
+        addLog("info", "宿主编译把关已启用但找不到 tsc: " + m_codeConfig.tscPath);
+        return false;
+    }
+    if (!JZFileInfo::exists(m_codeConfig.workspace + "/tsconfig.json"))
+        return false;   // 没有 tsconfig 无从编译, 跳过
+
+    m_roundTouchedTs = false;   // 本轮改动已进入检查, 避免重复触发
+
+    JZProcess *proc = new JZProcess(this);
+    proc->setWorkingDirectory(m_codeConfig.workspace);
+    proc->setProcessChannelMode(JZProcess::MergedChannels);
+    connect(&proc->sigFinished, this,
+            [this, proc](int code, JZProcess::ExitStatus status)
+            {
+                if (proc != m_hostProc || !m_hostRunning)
+                    return;   // 已被 abort 的旧进程, 忽略
+                bool timeout = m_hostTimeout;
+                string output = str_fromLocal(proc->readAllStandardOutput());
+                proc->deleteLater();
+                m_hostProc = nullptr;
+                m_hostRunning = false;
+                m_hostTimeout = false;
+                if (m_hostTimer)
+                {
+                    m_hostTimer->stop();
+                    m_hostTimer->deleteLater();
+                    m_hostTimer = nullptr;
+                }
+                onHostTscDone(status == JZProcess::NormalExit && code == 0, output, timeout);
+            });
+    m_hostProc = proc;
+    m_hostRunning = true;
+    m_hostTimeout = false;
+
+    // 兜底超时: 120s 后强制结束(走上面的 sigFinished 回调)
+    m_hostTimer = new JZTimer(this);
+    connect(&m_hostTimer->sigTimeout, this, [this]()
+            {
+                m_hostTimeout = true;
+                if (m_hostProc)
+                    m_hostProc->killProcess();
+            });
+    m_hostTimer->start(120000);
+
+    if (!proc->start(m_codeConfig.tscPath, {"--noEmit", "-p", "tsconfig.json"}))
+    {
+        addLog("info", "宿主编译把关启动 tsc 失败: " + m_codeConfig.tscPath);
+        proc->deleteLater();
+        m_hostProc = nullptr;
+        m_hostRunning = false;
+        if (m_hostTimer)
+        {
+            m_hostTimer->stop();
+            m_hostTimer->deleteLater();
+            m_hostTimer = nullptr;
+        }
+        return false;
+    }
+    return true;
+}
+
+void JZCodeAgent::onHostTscDone(bool ok, const string &output, bool timeout)
+{
+    if (m_stopping)
     {
         m_waiting = false;
         m_busy = false;
+        return;
     }
+
+    if (ok)
+    {
+        addLog("info", "宿主编译检查通过 (tsc --noEmit)。");
+        nextOrIdle();
+        return;
+    }
+
+    string errText = str_trimmed(output);
+    if (timeout)
+        errText = (errText.empty() ? string("编译超时被终止。")
+                                   : string("编译超时被终止。\n") + errText);
+    const int kMaxErrChars = 12000;
+    if ((int)errText.size() > kMaxErrChars)
+        errText = errText.substr(0, kMaxErrChars) + "\n...(编译输出过长已截断)";
+
+    if (m_fixRoundsLeft > 0 && m_pendingQueue.empty())
+    {
+        // 自动续修: 额度减一, 把编译错误作为一条指令直接发给模型。
+        // 期间用户若发过新指令则不再续修(旧任务收尾, 让用户指令先走)。
+        m_fixRoundsLeft--;
+        addLog("info", "宿主编译未通过，已自动请求模型修复（本任务剩余自动修复轮数: " +
+                           to_string(m_fixRoundsLeft) + "）。");
+        string fix = "宿主自动检查：tsc --noEmit 编译未通过，请修复下面的错误后再编译，直到通过为止。\n" + errText;
+        addLog("user", fix);
+        sendRequestDirect(fix);
+        return;
+    }
+
+    // 额度用尽(或用户已插队): 收尾并把剩余错误上报给用户
+    if (m_fixRoundsLeft <= 0)
+        addLog("info", "宿主编译未通过，且自动修复轮数已用完，剩余错误如下（可继续向助手下达修复指令）:\n" + errText);
+    nextOrIdle();
+}
+
+void JZCodeAgent::abortHostTsc()
+{
+    if (m_hostTimer)
+    {
+        m_hostTimer->stop();
+        m_hostTimer->deleteLater();
+        m_hostTimer = nullptr;
+    }
+    if (m_hostProc)
+    {
+        JZProcess *p = m_hostProc;
+        m_hostProc = nullptr;
+        p->killProcess();
+        p->deleteLater();
+    }
+    m_hostRunning = false;
+    m_hostTimeout = false;
 }
 
 void JZCodeAgent::setGuardConfig(const GuardConfig &cfg)
@@ -609,6 +1223,12 @@ void JZCodeAgent::onToolLog(const string &type, const string &name, const string
     if (type == "call")
     {
         m_guard.toolCalls++;
+
+        // 本轮是否动过 TS 相关文件（modify_code 的 call 日志文本 = 相对路径），
+        // 作为轮末宿主编译把关的触发判据
+        if (name == "modify_code" &&
+            (str_indexOf(text, ".ts") >= 0 || str_indexOf(text, "tsconfig") >= 0))
+            m_roundTouchedTs = true;
 
         // 指纹 = 工具名 + 参数文本，用于识别"换汤不换药"的重复尝试
         m_guard.recentCalls.push_back(name + "|" + str_trimmed(text));

@@ -9,7 +9,12 @@ set(CODE_AGENT_SOURCES
     JZCodeTools.cpp
     JZCodeAgent.h
     JZCodeAgent.cpp
+    JZEngineRuntime.h
+    JZEngineRuntime.cpp
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})
 target_link_libraries(code_agent PRIVATE JZFramework)
+
+add_subdirectory(runtime)
+add_subdirectory(test)

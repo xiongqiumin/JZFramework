@@ -18,12 +18,32 @@ public:
     std::vector<TrustedDir> trustedDirs;     // 授信目录（编译器/SDK 等），默认只读，可单独标记可写
     std::vector<TrustedProgram> trustedPrograms;  // 显式指定的可信程序（全路径），优先于目录搜索
 
+    // 轮末宿主编译把关（默认关闭，tscPath 非空才会启用）。
+    // 模型每轮回复结束、且该轮改过 TS 相关文件时，宿主用 "tsc --noEmit -p tsconfig.json" 快检；
+    // 未通过则自动再发一轮修复指令，直到通过或达到 maxAutoFixRounds（超出则把剩余错误上报用户）。
+    std::string tscPath;            // 宿主侧 tsc 编译器全路径；空 = 关闭宿主把关
+    int maxAutoFixRounds = 2;       // 自动续修轮数上限；<=0 = 即使编译失败也只上报不续修
+
     std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认
     // HTTP 代理（仅对 http 目标生效；https 目标直连，不走代理）
     std::string proxyHost;
     int proxyPort = 0;
     std::string proxyUser;
     std::string proxyPassword;
+};
+
+// 目录作为“TS 工程”的探测结果。
+// 工程判定只看根目录的 tsconfig.json（编译规则入口），不引入 npm/package.json 概念。
+// 产物约定：编译/构建产物统一放在 <工程>/build/（initProject 生成的标准 tsconfig 的 outDir = "build"）。
+struct CodeProjectStatus
+{
+    bool pathOk = false;         // 目录存在
+    bool isProject = false;      // 是 TS 工程目录（根目录有 tsconfig.json）
+    bool hasTsconfig = false;    // 根目录有 tsconfig.json（可被 tsc 编译/把关）
+    bool isEmpty = false;        // 目录没有任何内容
+    std::string name;            // 目录名（可作工程名）
+    std::string error;           // pathOk=false 时的原因
+    std::string summary;         // 中文一行摘要（供日志 / 界面展示）
 };
 
 // 单任务熔断配置
@@ -92,6 +112,33 @@ public:
     const JZAgentConfig &llmConfig() const;
     bool setWorkspace(const std::string &path);
 
+    // ---- TS 工程支持 ----
+    // 工程目录 = 根目录有 tsconfig.json（编译规则入口）；不引入 npm/package.json 概念。
+    // 标准 TS 工程编译产物统一输出到 <工程>/build/。
+    // 只读探测 path 是不是工程目录（不改工作区、不写文件）
+    CodeProjectStatus probeProject(const std::string &path) const;
+    // 打开 path 作为新工作区（切换对话/存档语义同 setWorkspace），
+    // 探测结果经 status 返回；目录不存在时返回 false
+    bool openProject(const std::string &path, CodeProjectStatus *status, std::string &error);
+    // 把 path 初始化为最小可编译的标准 TS 工程骨架
+    // （生成 tsconfig.json(outDir=build)/.gitignore，src 为空时补 src/main.ts；
+    //   已有文件一律不覆盖，可幂等重复调用补齐缺项。
+    //   注意: 不生成 project.json —— 它是"打包/发布"时构建产物的元数据，见 buildProject）
+    bool initProject(const std::string &path, std::string &error);
+
+    // 把 path 工程"打包/发布"：用宿主侧 tsc（CodeAgentConfig.tscPath）真实全量编译
+    // （tsc -p tsconfig.json）。产物写向 tsconfig.json 的 outDir —— 缺省/未配置按
+    // 标准工程约定是"工程根/build"，也可以被改成任意目录（含工程根外的绝对路径）。
+    // 编译通过后校验 outDir 下的 main.js（src/main.ts 的产物），刷新运行主入口声明
+    // project.json：entry = 产物路径 —— 产物目录在工程根内写相对路径（build/main.js），
+    // 在工程根之外写绝对路径（JZEngineRuntime/code_runtime 两种都支持）。
+    // project.json = 构建产物的元数据，不属于工程骨架配置；运行前必须先打包/发布。
+    // 阻塞至 tsc 结束；失败返回 false，error 说明原因，output 可接收 tsc 原始输出。
+    bool buildProject(const std::string &path, std::string &error,
+                      std::string *output = nullptr);
+    // 最近一次 openProject 的探测结果（未 open 过则为默认值）
+    const CodeProjectStatus &projectStatus() const;
+
     // 熔断配置（长时间跑/反复被拦时的保护）
     void setGuardConfig(const GuardConfig &cfg);
     const GuardConfig &guardConfig() const;
@@ -131,9 +178,17 @@ protected:
     void onFinished();
     void onToolLog(const std::string &type, const std::string &name, const std::string &text, int deny);
 
+    // ---- 轮末宿主编译把关 ----
+    bool startHostTscCheck();                                  // 符合条件则异步起 tsc --noEmit; true=已进入检查
+    void onHostTscDone(bool ok, const std::string &output, bool timeout);  // 检查结果: 通过收尾 / 失败续修
+    void abortHostTsc();                                       // 终止进行中的宿主检查(停止/清空/析构时)
+    void sendRequestDirect(const std::string &text);           // 绕过排队把一条指令直接发给 agent(宿主续修用)
+    void nextOrIdle();                                         // 收尾统一入口: 队列有排队指令就继续发, 否则置空闲
+
     JZAgent *m_agent = nullptr;
     JZAgentConfig m_llmConfig;
     CodeAgentConfig m_codeConfig;
+    CodeProjectStatus m_project;   // 最近一次 openProject 的探测结果
 
     std::vector<JZCodeTool *> m_tools;
     std::vector<std::string> m_toolNames;
@@ -148,6 +203,14 @@ protected:
 
     GuardConfig m_guardConfig;
     GuardState m_guard;
+
+    // 轮末宿主把关状态
+    bool m_roundTouchedTs = false;   // 当前指令轮是否写过 .ts / tsconfig（onToolLog 累计）
+    int m_fixRoundsLeft = 0;         // 当前任务剩余可自动修复轮数（每条用户指令开始时重置）
+    JZProcess *m_hostProc = nullptr; // 正在运行的宿主 tsc 进程
+    JZTimer *m_hostTimer = nullptr;
+    bool m_hostRunning = false;
+    bool m_hostTimeout = false;
 
     // 运行期间新到的指令缓存(自管队列, 不依赖 JZAgent 的 m_requests)，
     // 等上一步(当前任务)发完后由 onFinished 取出继续发送。

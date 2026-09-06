@@ -320,6 +320,11 @@ void JZJSEngine::setWorkDir(const std::string& dir)
     m_workDir = dir;
 }
 
+void JZJSEngine::setLibraryDir(const std::vector<std::string>& dirs)
+{
+    m_libraryDirs = dirs;
+}
+
 void JZJSEngine::initJSEnv()
 {
     initTypeMap();
@@ -1638,24 +1643,44 @@ bool JZJSEngine::readModuleCode(const std::string& module_name, std::string& cod
         std::string full = cands[i];
         bool is_abs = (!full.empty() && (full[0] == '/' || full[0] == '\\')) ||
                       (full.size() > 2 && full[1] == ':');
-        if (!is_abs && !m_workDir.empty())
+
+        // 解析基目录: 先 workDir, 再 library dirs; 绝对路径或都空时直接用原名
+        std::vector<std::string> tryPaths;
+        if (is_abs)
         {
-            JZDir dir(m_workDir);
-            full = dir.absoluteFilePath(full);
+            tryPaths.push_back(full);
+        }
+        else if (!m_workDir.empty() || !m_libraryDirs.empty())
+        {
+            if (!m_workDir.empty())
+                tryPaths.push_back(JZDir(m_workDir).absoluteFilePath(full));
+            for (const auto& d : m_libraryDirs)
+                tryPaths.push_back(JZDir(d).absoluteFilePath(full));
+        }
+        else
+        {
+            tryPaths.push_back(full);   // 无基目录: 按相对路径直接尝试(原行为)
         }
 
-        JZFile file;
-        if (!file.open(full.c_str(), "rb"))
-            continue;
-        JZByteArray bytes = file.readAll();
-        file.close();
+        bool found = false;
+        for (const auto& p : tryPaths)
+        {
+            JZFile file;
+            if (!file.open(p.c_str(), "rb"))
+                continue;
+            JZByteArray bytes = file.readAll();
+            file.close();
 
-        code.assign(bytes.data(), (size_t)bytes.size());
-        // 剥离 UTF-8 BOM
-        if (code.size() >= 3 && (unsigned char)code[0] == 0xEF &&
-            (unsigned char)code[1] == 0xBB && (unsigned char)code[2] == 0xBF)
-            code.erase(0, 3);
-        return true;
+            code.assign(bytes.data(), (size_t)bytes.size());
+            // 剥离 UTF-8 BOM
+            if (code.size() >= 3 && (unsigned char)code[0] == 0xEF &&
+                (unsigned char)code[1] == 0xBB && (unsigned char)code[2] == 0xBF)
+                code.erase(0, 3);
+            found = true;
+            break;
+        }
+        if (found)
+            return true;
     }
     return false;
 }

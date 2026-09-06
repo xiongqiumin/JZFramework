@@ -1,4 +1,4 @@
-// code_agent_test - "JZCodeAgent 创建工程 -> 打包/发布 -> 调用运行时" 端到端流程测试。
+﻿// code_agent_test - "JZCodeAgent 创建工程 -> 打包/发布 -> 调用运行时" 端到端流程测试。
 //
 // 全流程（不用大模型，代码直接写入文件）：
 //   1. 创建工程   JZCodeAgent::initProject / probeProject / openProject，
@@ -461,7 +461,7 @@ int main()
     // node 前缀方案下 buildProject 无宿主 tsc 可用，后面走裸编译兜底。
     if (ts.prefix.empty())
         code.tscPath = ts.exe;
-    agent.init(llm, code);
+    agent.init(code);
 
     {
         string err;
@@ -759,23 +759,26 @@ int main()
         CodeAgentConfig code2;
         if (ts.prefix.empty())
             code2.tscPath = ts.exe;
-        agent2.init(llm2, code2);
+        agent2.init(code2);
 
         string err2;
         bool ok7 = agent2.initProject(typesRoot, err2);
-        check(ok7, "initProject 创建引用 JZ 类型的工程", err2);
+        check(ok7, "initProject 创建挂 jz_types 的纯 ES2022 工程", err2);
         if (ok7)
         {
-            // 生成的 tsconfig 应已把随 exe 安装的 jz_types/core 加入 include
+            // 生成的 tsconfig 应为「纯 ES2022(lib 不含 DOM) + 挂 jz_types 完整类型」：
+            // 含 "lib": ["ES2022"]，且 include 应包含随 exe 安装的 jz_types 目录。
             string tsText2;
             readText(typesRoot + "/tsconfig.json", tsText2);
-            check(tsText2.find("jz_types/core") != string::npos,
-                  "initProject 在 tsconfig include 暴露 JZ core 类型路径", tsText2);
+            check(tsText2.find("\"lib\": [\"ES2022\"]") != string::npos,
+                  "initProject 生成的 tsconfig 设为纯 ES2022(无 DOM)", tsText2);
+            check(tsText2.find("jz_types") != string::npos,
+                  "initProject 生成的 tsconfig 包含 jz_types 类型", tsText2);
 
-            // 该 TS 直接引用 fs/path/os/process（全局 ambient 模块 + import type），
-            // 只要类型被正确安装并暴露，tsc 即可解析且类型检查通过。
+            // 该 TS 直接引用 jz_types 的 fs/path/os/process（框架自定义模块），
+            // 只要类型被安装并挂进 include，tsc 即可解析且类型检查通过。
             string mainTs =
-                "// types_use/main.ts - 引用 JZ 内置类型(fs/path/os/process)\n"
+                "// types_use/main.ts - 引用 jz_types(fs/path/os/process)\n"
                 "import type { Stats } from 'fs';\n"
                 "const sep: string = path.sep;\n"
                 "const p: string = path.join('a', 'b', 'c');\n"
@@ -796,7 +799,7 @@ int main()
                 "        + isAbs + ' ' + plat + ' ' + eol + ' ' + tmp + ' ' + cwd + ' '\n"
                 "        + exists + ' ' + stat.size + ' ' + names.length + ' ' + argv.length;\n"
                 "}\n"
-                "console.log(main());\n";
+                "export default main;\n";
             writeText(typesRoot + "/src/main.ts", mainTs);
 
             string out2;
@@ -807,11 +810,11 @@ int main()
             }
             else
             {
-                check(true, "跳过 JZ 类型引用编译验证(node 前缀方案无宿主 tsc)",
+                check(true, "跳过 jz_types 编译验证(node 前缀方案无宿主 tsc)",
                       "(node 前缀方案无宿主 tsc，跳过)");
                 built = true;
             }
-            check(built, "引用 JZ 类型的工程编译通过(类型可解析且类型正确)",
+            check(built, "挂 jz_types 的纯 ES2022 工程编译通过(类型可解析且类型正确)",
                   out2.empty() ? "(无输出)" : out2);
         }
     }
@@ -829,7 +832,7 @@ int main()
         CodeAgentConfig code3;
         if (ts.prefix.empty())
             code3.tscPath = ts.exe;
-        agent3.init(llm3, code3);
+        agent3.init(code3);
 
         string e3;
         check(agent3.initProject(expRoot, e3), "initProject 创建导出测试工程", e3);

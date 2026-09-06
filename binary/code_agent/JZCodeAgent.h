@@ -15,6 +15,8 @@
 class CodeAgentConfig
 {
 public:
+    JZAgentConfig llmConfig;
+
     std::string workspace;                    // 工作区根目录，可读写
     std::vector<TrustedDir> trustedDirs;     // 授信目录（编译器/SDK 等），默认只读，可单独标记可写
     std::vector<TrustedProgram> trustedPrograms;  // 显式指定的可信程序（全路径），优先于目录搜索
@@ -25,15 +27,8 @@ public:
     std::string tscPath;            // 宿主侧 tsc 编译器全路径；空 = 关闭宿主把关
     int maxAutoFixRounds = 2;       // 自动续修轮数上限；<=0 = 即使编译失败也只上报不续修
 
-    // TSGO 语言服务（直连，不经过 MCP / HTTP 包装层）。
-    // 由 JZTsLangServer 直接 spawn 原生 tsgo(tsc) 二进制，以
-    //   tsc.exe --lsp --stdio
-    // 对外提供 LSP 服务（不再依赖 node / 桥接脚本）。路径即原生 tsc.exe 全路径，
-    // 一般为 <env>/app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe。
-    // 非空才会启用 TS 工具。
-    std::string tsgoLspPath;        // 原生 tsgo(tsc) 二进制全路径；空=关闭 TS 工具
-
     std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认
+
     // HTTP 代理（仅对 http 目标生效；https 目标直连，不走代理）
     std::string proxyHost;
     int proxyPort = 0;
@@ -103,7 +98,7 @@ public:
     JZCodeAgent(JZObject *parent = nullptr);
     ~JZCodeAgent();
 
-    void init(const JZAgentConfig &llm, const CodeAgentConfig &code);
+    void init(const CodeAgentConfig &code);
     void request(const std::string &text);
     void stop();
     void clearHistory();
@@ -181,6 +176,8 @@ public:
     bool readFileText(const std::string &rel, std::string &text, std::string &error) const;
 
     const std::vector<std::string> &toolNames() const;
+    bool isTrustedDir(std::string dir) const;
+    bool isTrustedProgram(std::string prog) const;
 
 protected:
     void buildAgent();

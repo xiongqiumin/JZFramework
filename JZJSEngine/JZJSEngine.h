@@ -53,6 +53,7 @@ public:
     void deinit();
 
     void setWorkDir(const std::string& dir);
+    void setLibraryDir(const std::vector<std::string>& dirs);  // 模块加载额外查找目录(优先级低于 workDir)
 
     void start();
     void stop();
@@ -290,6 +291,7 @@ protected:
     JSValue m_global;
     int m_objectId;
     std::string m_workDir;
+    std::vector<std::string> m_libraryDirs;   // 模块加载时额外查找的根目录列表
 
     // ---- 事件驱动调度 ----
     // 引擎不再常驻 10ms 周期定时器, 而是:

@@ -14,8 +14,6 @@
 # 进程调用用框架 JZProcess，本文件不 include <windows.h>。
 set(CODE_AGENT_TEST_SOURCES
     main_test.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../JZCodeAgent.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../JZCodeTools.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.cpp
 )
@@ -26,6 +24,7 @@ target_link_libraries(code_agent_test PRIVATE JZFramework)
 
 # 测试要"调用运行时"（code_runtime 子进程），保证其先构建
 add_dependencies(code_agent_test code_runtime)
+target_link_libraries(code_agent_test PRIVATE code_agent_core)
 
 # ---------------------------------------------------------------------------
 # code_agent_lsp_test - 直连 TSGO(tsc --lsp --stdio) LSP 接口冒烟测试。
@@ -36,8 +35,8 @@ add_dependencies(code_agent_test code_runtime)
 # ---------------------------------------------------------------------------
 set(CODE_AGENT_LSP_TEST_SOURCES
     lsp_test.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../JZTsLangServer.cpp
 )
 add_executable(code_agent_lsp_test ${CODE_AGENT_LSP_TEST_SOURCES})
 target_include_directories(code_agent_lsp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_agent_lsp_test PRIVATE JZFramework)
+target_link_libraries(code_agent_lsp_test PRIVATE code_agent_core)

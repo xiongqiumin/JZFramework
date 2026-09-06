@@ -12,6 +12,7 @@
 #include "JZString.h"
 #include "JZTextStream.h"
 #include "JZTimer.h"
+#include "JZApplication.h"
 
 #include <fstream>
 #include <iterator>
@@ -67,21 +68,30 @@ JZCodeAgent::~JZCodeAgent()
         m_tsServer->shutdown();
 }
 
-void JZCodeAgent::init(const JZAgentConfig &llm, const CodeAgentConfig &code)
+void JZCodeAgent::init(const CodeAgentConfig &code)
 {
-    m_llmConfig = llm;
+    m_llmConfig = code.llmConfig;
     // 系统提示词由本类自己生成，不走 rootPath/system.md 那套
     m_llmConfig.rootPath.clear();
     m_llmConfig.tokenStrategy = JZAgentConfig::TokenTruncate;
     if (m_llmConfig.maxToken <= 0)
         m_llmConfig.maxToken = 200000;
 
-    m_codeConfig = code;
+    m_codeConfig = code;        
     if (!m_codeConfig.workspace.empty())
     {
         JZDir dir(m_codeConfig.workspace);
         m_codeConfig.workspace = dir.absolutePath();
     }
+
+    TrustedDir jz_types;
+    jz_types.path = jzApp->applicationDirPath() + "/jz_types";
+    m_codeConfig.trustedDirs.push_back(jz_types);
+    
+    TrustedProgram tsc_program;
+    tsc_program.name = "tsc";
+    tsc_program.path = m_codeConfig.tscPath;
+    m_codeConfig.trustedPrograms.push_back(tsc_program);
 
     m_logs.clear();
     m_logId = 0;
@@ -198,6 +208,27 @@ const JZAgentConfig &JZCodeAgent::llmConfig() const
 const vector<string> &JZCodeAgent::toolNames() const
 {
     return m_toolNames;
+}
+
+bool JZCodeAgent::isTrustedDir(std::string dir) const
+{
+    auto dir_path = JZFileInfo::weaklyCanonicalPath(dir);
+    for (auto &trusted : m_codeConfig.trustedDirs)
+    {
+        if (JZFileInfo::weaklyCanonicalPath(trusted.path) == dir_path)
+            return true;
+    }
+    return false;
+}
+
+bool JZCodeAgent::isTrustedProgram(std::string prog_name) const
+{
+    for(auto &prog : m_codeConfig.trustedPrograms)
+    { 
+        if(prog.name == prog_name)
+            return true;
+    }
+    return false;
 }
 
 void JZCodeAgent::applyLlmConfig(const JZAgentConfig &llm)
@@ -393,11 +424,19 @@ bool JZCodeAgent::initProject(const string &path, string &error)
             return false;
         }
     }
-    if (!JZFileInfo(root).isDir())
+    else
     {
-        error = "路径不是目录: " + root;
-        return false;
-    }
+        if (!JZFileInfo(root).isDir())
+        {
+            error = "路径不是目录: " + root;
+            return false;
+        }
+        if (dir.entryInfoList().size() != 0)
+        {
+            error = "目录不是空目录";
+            return false;
+        }
+    }    
 
     string name = codeBaseName(root);
     if (name.empty())
@@ -406,19 +445,16 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // sourceMap: true 为"调用运行时"必备 —— 运行期 JS 栈要靠 tsc 生成的
     // build/*.js.map 翻译回 TS 源码位置（JZEngineRuntime）。
     // project.json（运行主入口声明）不是骨架文件：它由打包/发布(buildProject)在
-    // tsc 编译通过后随 build/ 产物一起生成，不属于工程配置。
-    // 把 JZ 内置类型（fs/path/os/process 等 core 子集）随 exe 安装的路径暴露给工程：
-    // 该目录由 cmake 拷贝到 <exeDir>/jz_types/core，与默认 DOM lib 无冲突，
-    // 自动加入 tsconfig 的 include，使 tsc 能解析这些 ambient 模块（import 'fs' 等）。
+    // 生成的工程用纯 ES2022（显式关掉默认带进来的 DOM），并挂上随 exe 安装的
+    // jz_types 完整类型（框架自定义模块：fs/path/os/process/net/http/fetch/...）。
+    // 因为 lib 已不含 DOM，jz_types 里声明的全局 fetch/WebSocket/URL 等不会与
+    // lib.dom.d.ts 冲突。include 收 src + jz_types 下的 .d.ts（只挂声明、不挂实现型
+    // .ts 如 jzwidget.ts）；jz_types 不存在时仅收 src。
     string jzTypesInclude = "\"src/**/*.ts\"";
     {
-        string jzTypesCore = JZPlatform::applicationDirPath();
-        for (size_t i = 0; i < jzTypesCore.size(); i++)
-            if (jzTypesCore[i] == '\\')
-                jzTypesCore[i] = '/';
-        jzTypesCore += "/jz_types/core";
-        if (JZFileInfo::exists(jzTypesCore))
-            jzTypesInclude += ", \"" + jzTypesCore + "\"";
+        string jzTypes = JZPlatform::applicationDirPath() + "/jz_types";
+        if (JZFileInfo::exists(jzTypes))
+            jzTypesInclude += ", \"" + jzTypes + "/**/*.d.ts\"";
     }
 
     string tsconfig =
@@ -427,7 +463,9 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"target\": \"ES2022\",\n"
         "    \"module\": \"esnext\",\n"
         "    \"moduleResolution\": \"bundler\",\n"
+        "    \"lib\": [\"ES2022\"],\n"
         "    \"strict\": true,\n"
+        "    \"skipLibCheck\": true,\n"
         "    \"noImplicitAny\": true,\n"
         "    \"noEmitOnError\": true,\n"
         "    \"sourceMap\": true,\n"
@@ -998,7 +1036,7 @@ void JZCodeAgent::buildAgent()
     // 仅在 tsgo(tsc) 二进制可用时注册，与 mcp-server.js 注册的 10 个工具一一对应。
     if (m_tsServer)
     {
-        m_tsServer->setTsgoPath(m_codeConfig.tsgoLspPath);
+        m_tsServer->setTsgoPath(m_codeConfig.tscPath);
         m_tsServer->setRoot(m_codeConfig.workspace);
         if (m_tsServer->isAvailable())
         {

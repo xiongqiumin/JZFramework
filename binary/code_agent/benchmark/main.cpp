@@ -35,6 +35,7 @@
 #include "JZApplication.h"
 #include "json/json.h"
 #include "JZByteArray.h"
+#include "JZElapsedTimer.h"
 #include "JZCommandLineParser.h"
 #include "JZDebug.h"
 #include "JZDir.h"
@@ -89,6 +90,12 @@ struct CaseResult
     std::string name;
     bool passed = false;
     int attempts = 0;
+    int promptTokens = 0;       // 本用例消耗的 prompt token
+    int completionTokens = 0;   // 本用例消耗的 completion token
+    int totalTokens = 0;        // 本用例消耗的总 token
+    int llmMs = 0;              // 本用例 LLM 生成耗时（含工具自驱循环，跨重试累计）
+    int buildMs = 0;            // 本用例宿主编译耗时
+    int runMs = 0;              // 本用例 code_runtime 运行耗时
     std::string lastOutput;
     std::string lastBuildError;
     std::string lastAgentError;
@@ -180,6 +187,7 @@ public:
             m_loop->quit();
             return;
         }
+        m_benchTimer.start();   // 总耗时计时起点（覆盖全部用例）
         m_idx = 0;
         startCase(0);
     }
@@ -228,6 +236,7 @@ protected:
     void doAttempt(const std::string &text)
     {
         m_attemptLogBase = m_agent->logSeq();   // 本轮起点，用于识别本轮内 agent 是否报错
+        m_llmStartMs = JZPlatform::getTickCountMs();  // LLM 耗时计时起点
         m_state = BenchState::WaitingAgent;
         m_agent->request(text);
         m_poll->start(200);
@@ -275,6 +284,9 @@ protected:
         m_attempt++;
         m_result.attempts = m_attempt;
 
+        // 本轮 LLM（含工具自驱循环）耗时：从 doAttempt 发请求到此刻 agent 落闲
+        m_result.llmMs += (int)(JZPlatform::getTickCountMs() - m_llmStartMs);
+
         // agent 自身报错（LLM/网络等基础设施错误，与模型能力无关，重试无意义）-> 直接判定失败，不重试
         {
             const auto& logs = m_agent->logs();
@@ -299,14 +311,18 @@ protected:
         // 1) 宿主真实编译打包
         std::string buildErr;
         std::string buildOut;
+        int64_t b0 = JZPlatform::getTickCountMs();
         bool buildOk = m_agent->buildProject(m_root, buildErr, &buildOut);
+        m_result.buildMs += (int)(JZPlatform::getTickCountMs() - b0);
         m_result.lastBuildError = buildErr;
 
         // 2) 隔离运行产物（code_runtime 子进程），捕获 stdout
         std::string output;
         bool runOk = false;
+        int64_t r0 = JZPlatform::getTickCountMs();
         if (buildOk)
             runOk = runCodeRuntime(output);
+        m_result.runMs += (int)(JZPlatform::getTickCountMs() - r0);
         m_result.lastOutput = output;
 
         jzDebug().nospace() << "  [尝试 " << m_attempt << "] build="
@@ -361,10 +377,24 @@ protected:
 
     void finishCase()
     {
+        // 及时抓取本用例累计 token：下一用例 setWorkspace 会重建底层 agent、context 清零，
+        // 故必须在此处（当前用例 agent 尚在）抓取并累加到全局总量。
+        const auto &u = m_agent->agent()->context()->usage;
+        m_result.promptTokens = u.prompt_tokens;
+        m_result.completionTokens = u.completion_tokens;
+        m_result.totalTokens = u.total_tokens;
+        m_totalPrompt     += u.prompt_tokens;
+        m_totalCompletion += u.completion_tokens;
+        m_totalTokens     += u.total_tokens;
+        m_totalLlmMs      += m_result.llmMs;
+        m_totalBuildMs    += m_result.buildMs;
+        m_totalRunMs      += m_result.runMs;
+
         const CaseResult &r = m_result;
         jzDebug().nospace() << "---- 用例[" << r.name << "] 结束: "
                             << (r.passed ? "PASS" : "FAIL")
-                            << " (attempts=" << r.attempts << ")";
+                            << " (attempts=" << r.attempts
+                            << ", token=" << r.totalTokens << ")";
         m_results.push_back(r);
 
         size_t next = m_idx + 1;
@@ -388,7 +418,11 @@ protected:
             if (r.passed)
                 passed++;
             jzDebug().nospace() << (r.passed ? "[PASS] " : "[FAIL] ")
-                                << r.name << "  (attempts=" << r.attempts << ")";
+                                << r.name << "  (attempts=" << r.attempts
+                                << ", token=" << r.totalTokens
+                                << ", LLM=" << (r.llmMs/1000.0) << "s"
+                                << ", 编译=" << (r.buildMs/1000.0) << "s"
+                                << ", 运行=" << (r.runMs/1000.0) << "s" << ")";
             if (!r.passed)
             {
                 if (!r.lastAgentError.empty())
@@ -399,6 +433,18 @@ protected:
             }
         }
         jzDebug().nospace() << "总分: " << passed << " / " << m_results.size();
+        jzDebug().nospace() << "总耗时: " << (m_benchTimer.elapsed() / 1000.0) << " s";
+        jzDebug().nospace() << "总消耗 token: prompt=" << m_totalPrompt
+                            << " completion=" << m_totalCompletion
+                            << " total=" << m_totalTokens;
+        int64_t totalMs = m_benchTimer.elapsed();
+        int64_t accounted = m_totalLlmMs + m_totalBuildMs + m_totalRunMs;
+        int64_t otherMs = totalMs > accounted ? totalMs - accounted : 0;
+        jzDebug().nospace() << "耗时分解: 总=" << (totalMs/1000.0) << "s"
+                            << "  LLM=" << (m_totalLlmMs/1000.0) << "s"
+                            << "  编译=" << (m_totalBuildMs/1000.0) << "s"
+                            << "  运行=" << (m_totalRunMs/1000.0) << "s"
+                            << "  其他=" << (otherMs/1000.0) << "s";
         jzDebug() << "==========================================";
 
         m_loop->quit();
@@ -435,6 +481,14 @@ protected:
     BenchState m_state = BenchState::Idle;
 
     std::vector<CaseResult> m_results;
+    JZElapsedTimer m_benchTimer;   // 全流程耗时计时（run 启动，reportAndQuit 读取）
+    int m_totalPrompt = 0;         // 全部用例累计 token
+    int m_totalCompletion = 0;
+    int m_totalTokens = 0;
+    int64_t m_llmStartMs = 0;       // 本轮 LLM 请求发出时刻（doAttempt）
+    int64_t m_totalLlmMs = 0;       // 全部用例累计 LLM 耗时
+    int64_t m_totalBuildMs = 0;     // 全部用例累计编译耗时
+    int64_t m_totalRunMs = 0;       // 全部用例累计运行耗时
     int m_renderedId = 0;
     std::string m_renderedType;
 

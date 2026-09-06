@@ -462,7 +462,11 @@ void JZAgent::llmRequest()
     Json::Value request_body;
     request_body["model"] = m_config.modelName;
     if (m_streamEnabled)
-        request_body["stream"] = true;  // <-- 添加这一行，开启流式输出
+    {
+        request_body["stream"] = true;  // <-- 开启流式输出
+        // 流式下默认不返回 usage，需显式要求，否则 token 统计恒为 0
+        request_body["stream_options"]["include_usage"] = true;
+    }
 
     // 构建消息上下文
     Json::Value messages = buildContext();
@@ -1157,9 +1161,18 @@ void JZAgent::processSSEData(const std::string& payload)
         return;
     }
 
+    // 流式收尾常带一个 choices=[] 但含 usage 的结尾包（需 stream_options.include_usage=true）。
+    // 必须先提取 usage，避免被下面的空 choices 提前 return 吞掉，否则 token 统计恒为 0。
+    Json::Value usage = result["usage"];
+
     Json::Value choices = result["choices"];
     if (!choices.isArray() || choices.size() == 0)
+    {
+        // 仅 usage 的结尾包：把本轮 token 用量并入累积（reply 已因前面的内容包存在）
+        if (usage.isObject())
+            processResponseDelta("", "", Json::Value(Json::arrayValue), usage);
         return;
+    }
 
     Json::Value delta = choices[0]["delta"];
     std::string content = delta["content"].asString();
@@ -1169,7 +1182,6 @@ void JZAgent::processSSEData(const std::string& payload)
     if (delta.isMember("tool_calls") && delta["tool_calls"].isArray())
         tool_calls = delta["tool_calls"];
 
-    Json::Value usage = result["usage"];
     processResponseDelta(content, thinking, tool_calls, usage);
 }
 

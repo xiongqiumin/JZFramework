@@ -19,21 +19,6 @@
 #include <windows.h>
 #include <imm.h>
 
-// 虚拟键码: 非 Windows 平台补齐 (取值与 Win32 VK_* 一致)
-#ifndef VK_BACK
-#define VK_BACK   0x08
-#define VK_TAB    0x09
-#define VK_RETURN 0x0D
-#define VK_ESCAPE 0x1B
-#define VK_HOME   0x24
-#define VK_LEFT   0x25
-#define VK_UP     0x26
-#define VK_RIGHT  0x27
-#define VK_DOWN   0x28
-#define VK_END    0x23
-#define VK_DELETE 0x2E
-#endif
-
 namespace {
 
 const int kFontPixelSize = 14;      // 默认字号 (逻辑像素)
@@ -1049,7 +1034,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
     const bool ctrl  = event->ctrl();
 
     // 组字期间按键全部交给 IME: 方向键/退格作用于组字串内部, 本控件不处理
-    if (m_composing && key != VK_TAB) {
+    if (m_composing && key != JZKey::Key_Tab) {
         event->ignore();
         return;
     }
@@ -1071,7 +1056,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
     }
 
     switch (key) {
-    case VK_LEFT:
+    case JZKey::Key_Left:
         if (shift)                 moveCursor(m_cursor - 1, true);
         else if (hasSelection())   moveCursor(selStart(), false);   // 先折叠到选区起点
         else                       moveCursor(m_cursor - 1, false);
@@ -1080,7 +1065,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_RIGHT:
+    case JZKey::Key_Right:
         if (shift)                 moveCursor(m_cursor + 1, true);
         else if (hasSelection())   moveCursor(selEnd(), false);     // 先折叠到选区终点
         else                       moveCursor(m_cursor + 1, false);
@@ -1088,7 +1073,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_UP:
+    case JZKey::Key_Up:
         if (m_singleLine) {
             event->ignore();        // 单行: 交回父级 (如 ScrollArea 滚动)
             return;
@@ -1097,7 +1082,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_DOWN:
+    case JZKey::Key_Down:
         if (m_singleLine) {
             event->ignore();
             return;
@@ -1106,7 +1091,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_HOME: {
+    case JZKey::Key_Home: {
         int line = 0, col = 0;
         locateIndex(m_cursor, line, col);
         // 单行只有一行 -> 行首 == 文本首, 与 LineEdit 的 Home 语义一致
@@ -1117,7 +1102,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         return;
     }
 
-    case VK_END: {
+    case JZKey::Key_End: {
         int line = 0, col = 0;
         locateIndex(m_cursor, line, col);
         const LineLayout& L = m_lines[static_cast<size_t>(line)];
@@ -1128,7 +1113,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         return;
     }
 
-    case VK_BACK:
+    case JZKey::Key_Backspace:
         if (m_readOnly) break;
         if (hasSelection()) {
             deleteSelection();
@@ -1138,7 +1123,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();        // 收尾 (重排/光标/信号) 由撤销命令完成
         return;
 
-    case VK_DELETE:
+    case JZKey::Key_Delete:
         if (m_readOnly) break;
         if (hasSelection()) {
             deleteSelection();
@@ -1148,7 +1133,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_RETURN:
+    case JZKey::Key_Return:
         if (m_singleLine) {
             // 单行: 回车是"完成编辑" (即便只读也照发信号)
             sigReturnPressed.emit();
@@ -1162,7 +1147,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         event->accept();
         return;
 
-    case VK_ESCAPE:
+    case JZKey::Key_Escape:
         if (hasSelection()) {
             clearSelection();
             event->accept();
@@ -1170,7 +1155,7 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         }
         break;      // 无选区时交回系统 / IME 处理
 
-    case VK_TAB:
+    case JZKey::Key_Tab:
         break;      // 交回焦点系统做控件切换
 
     default:

@@ -80,7 +80,8 @@ static std::string makeImageDataUrl(const JZByteArray &image_base64)
 
 // JZAgent
 JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
-    sigReply(this), sigThinking(this), sigFinished(this), sigError(this)
+    sigReply(this), sigThinking(this), sigToolCall(this), sigToolResult(this)
+    , sigFinished(this), sigError(this)
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
@@ -109,9 +110,11 @@ void JZAgent::clear()
     m_streamEnabled = false;
     m_toolError = 0;
 
-    m_replyHistory = std::shared_ptr<LLMHistory>();
+    m_error.clear();
+    m_errorCode = AgentError::None;  // 未设置错误时为 None
 
     m_state = State::Inactive;   // 重置：未运行/已停止
+    m_replyHistory = std::shared_ptr<LLMHistory>();
 }
 
 const LLMContext* JZAgent::context() const
@@ -522,6 +525,8 @@ JZAgentTool* JZAgent::getTool(const std::string &name)
 
 void JZAgent::processToolCall(ToolCall& tool_call)
 {
+    sigToolCall.emit(tool_call);
+
     JZAgentTool *tool = getTool(tool_call.function_name);
     if (!tool)
     {
@@ -837,6 +842,7 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::ToolCallResultPrompt);
     req->toolCallResult = response;
     m_requests.push_back(req);
+    sigToolResult.emit(response);
     JZTimer::singleShot(0,[this]{
         llmLoop();
     });
@@ -864,13 +870,28 @@ void JZAgent::llmError(AgentError error, std::string error_string)
         m_errorCode = error;
         m_error = error_string;
         sigError.emit(error_string);
+
+        trimIncompleteHistory(m_context);
         llmEnd();
     }
 }
 
 void JZAgent::llmEnd()
 {
-    clear();
+    if (m_llmReply)
+    {
+        auto reply = m_llmReply;
+        m_llmReply = nullptr;
+        reply->close();
+        reply->deleteLater();
+    }
+
+    m_currentRound = 0;
+    m_isActive = false;
+    m_inTransaction = false;
+    m_toolError = 0;
+
+    m_state = State::Idle;
     sigFinished.emit();
 }
 
@@ -962,18 +983,9 @@ void JZAgent::finalizeResponse()
         if (!reply->content.empty())
             m_context.history.push_back(reply);
 
-        m_state = Idle;   // 已产出最终回复且无需工具：本轮任务结束，进入空闲
-
-        // 本轮任务结束：复位轮次/活跃标记，使下一次 request() 是一轮全新的任务。
-        // 否则常驻型应用（如代码助手服务）里 m_currentRound 会跨任务一直累加，
-        // 累计到 maxRounds 后直接报"执行任务超时"。
-        m_currentRound = 0;
-        m_isActive = false;
-        m_toolError = 0;
-
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
         if(m_requests.empty())
-            sigFinished.emit();
+            llmEnd();
         else
             llmLoop();
     }

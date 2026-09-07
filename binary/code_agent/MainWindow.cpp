@@ -14,6 +14,7 @@
 #include "JZFileInfo.h"
 #include "JZMessageBox.h"
 #include "JZAction.h"
+#include "JZApplication.h"
 
 using namespace std;
 
@@ -92,7 +93,6 @@ static vector<TrustedProgram> detectDefaultPrograms()
     struct Cand { string name; vector<string> exes; };
     static const Cand cands[] = {
         {"git",    {"git.exe", "git"}},
-        {"node",   {"node.exe", "node"}},
     };
     vector<TrustedProgram> out;
     for (const auto& c : cands)
@@ -193,12 +193,13 @@ InputEdit::InputEdit(JZWidget* parent)
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
 
     setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
+    setPlaceholderText("输入任务，Ctrl+Enter换行, 回车或点[发送]");
 }
 
 void InputEdit::keyPressEvent(JZKeyEvent* event)
 {
     // VK_RETURN(13) + Ctrl -> 发送
-    if (event->key() == 13 && event->ctrl())
+    if (event->key() == 13 && !event->ctrl())
     {
         sigSend.emit();
         return;
@@ -314,42 +315,107 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     : JZDialog(parent)
 {
     setTitle("设置");
-    setLayout(new JZVBoxLayout(8, 8));
+    setLayout(new JZVBoxLayout(0, 0));
 
-    // withBrowse: 该行末尾额外放一个"浏览..."按钮（browseBtn 是接收按钮的成员引用，
-    // 由调用方传入对应行的 JZPushButton* 成员，返回后可直接 connect）
-    auto addRow = [this](const string& label, JZLineEdit*& edit, bool withBrowse,
-                         JZPushButton*& browseBtn)
+    // ---- 主区域: 左导航 + 右内容 ----
+    JZWidget* mainArea = new JZWidget(this);
+    JZHBoxLayout* mainLayout = new JZHBoxLayout(0, 0);
+
+    // 左侧导航列表
+    m_navList = new JZListWidget(mainArea);
+    m_navList->addItem("模型配置");
+    m_navList->addItem("路径配置");
+    m_navList->addItem("安全配置");
+    m_navList->setFixedWidth(120);
+    m_navList->setCurrentIndex(0);
+    mainLayout->addWidget(m_navList, 0);
+
+    // 右侧内容区
+    m_stack = new JZStackedWidget(mainArea);
+
+    // --- 模型配置页 ---
     {
-        JZWidget* row = new JZWidget(this);
-        JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-        JZLabel* l = new JZLabel(label, row);
-        l->setFixedWidth(80);
-        edit = new JZLineEdit(row);
-        h->addWidget(l, 0);
-        h->addWidget(edit, 1);
-        if (withBrowse)
+        JZWidget* page = new JZWidget(m_stack);
+        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
+
+        auto addRow = [page, &v](const string& label, JZLineEdit*& edit) {
+            JZWidget* row = new JZWidget(page);
+            JZHBoxLayout* h = new JZHBoxLayout(6, 6);
+            JZLabel* l = new JZLabel(label, row);
+            l->setFixedWidth(80);
+            edit = new JZLineEdit(row);
+            h->addWidget(l, 0);
+            h->addWidget(edit, 1);
+            row->setLayout(h);
+            v->addWidget(row, 0);
+        };
+        addRow("模型地址", m_urlEdit);
+        addRow("模型名称", m_nameEdit);
+        addRow("API Token", m_tokenEdit);
+        v->addStretch(1);
+        page->setLayout(v);
+        m_stack->addWidget(page);
+    }
+
+    // --- 路径配置页 ---
+    {
+        JZWidget* page = new JZWidget(m_stack);
+        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
+
+        auto addRow = [page, &v](const string& label, JZLineEdit*& edit, bool withBrowse,
+                                 JZPushButton*& browseBtn)
         {
-            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
-            h->addWidget(browseBtn, 0);
-        }
-        row->setLayout(h);
-        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
-    };
-    addRow("模型地址", m_urlEdit, false, m_wsBrowseBtn);
-    addRow("模型名称", m_nameEdit, false, m_wsBrowseBtn);
-    addRow("API Token", m_tokenEdit, false, m_wsBrowseBtn);
-    addRow("工作区", m_wsEdit, true, m_wsBrowseBtn);
-    addRow("TS 环境", m_tsEdit, true, m_tsBrowseBtn);
-    m_tsEdit->setPlaceholderText("JS/TS 编译器目录（含 runtime/node 与 tsc），默认 E:/libs/ts_compiler");
-    addRow("授信目录", m_trustedEdit, false, m_wsBrowseBtn);
-    m_trustedEdit->setPlaceholderText("多个用分号分隔，如 C:\\Python312; C:\\MyProj |rw（默认只读，|rw 标记可写）");
+            JZWidget* row = new JZWidget(page);
+            JZHBoxLayout* h = new JZHBoxLayout(6, 6);
+            JZLabel* l = new JZLabel(label, row);
+            l->setFixedWidth(80);
+            edit = new JZLineEdit(row);
+            h->addWidget(l, 0);
+            h->addWidget(edit, 1);
+            if (withBrowse)
+            {
+                browseBtn = new JZPushButton(row, 70, 28, "浏览...");
+                h->addWidget(browseBtn, 0);
+            }
+            row->setLayout(h);
+            v->addWidget(row, 0);
+        };
+        addRow("工作区", m_wsEdit, true, m_wsBrowseBtn);
+        addRow("TS 环境", m_tsEdit, true, m_tsBrowseBtn);
+        m_tsEdit->setPlaceholderText("JS/TS 编译器目录（含 runtime/node 与 tsc），默认 E:/libs/ts_compiler");
+        v->addStretch(1);
+        page->setLayout(v);
+        m_stack->addWidget(page);
+    }
 
-    connect(&m_wsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseWorkspace);
-    connect(&m_tsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseTsEnv);
+    // --- 安全配置页 ---
+    {
+        JZWidget* page = new JZWidget(m_stack);
+        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
 
+        JZLabel* desc = new JZLabel("授信目录中的可执行文件将被允许运行。", page);
+        v->addWidget(desc, 0);
+
+        JZWidget* row = new JZWidget(page);
+        JZVBoxLayout* rowLayout = new JZVBoxLayout(0, 0);
+        m_trustedEdit = new JZLineEdit(row);
+        m_trustedEdit->setPlaceholderText("多个用分号分隔，如 C:\\Python312; C:\\MyProj |rw（默认只读，|rw 标记可写）");
+        rowLayout->addWidget(m_trustedEdit, 0);
+        rowLayout->addStretch(1);
+        row->setLayout(rowLayout);
+        v->addWidget(row, 1);
+        page->setLayout(v);
+        m_stack->addWidget(page);
+    }
+
+    m_stack->setCurrentIndex(0);
+    mainLayout->addWidget(m_stack, 1);
+    mainArea->setLayout(mainLayout);
+    static_cast<JZVBoxLayout*>(this->layout())->addWidget(mainArea, 1);
+
+    // ---- 底部按钮行 ----
     JZWidget* btnRow = new JZWidget(this);
-    JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
+    JZHBoxLayout* bh = new JZHBoxLayout(12, 8);
     bh->addStretch(1);
     JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "保存");
     JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
@@ -358,8 +424,19 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     btnRow->setLayout(bh);
     static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
 
+    // ---- 信号 ----
+    connect(&m_navList->currentIndexChanged, this, &SettingsDialog::onNavChanged);
+    connect(&m_wsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseWorkspace);
+    connect(&m_tsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseTsEnv);
     connect(&ok->sigClicked, this, &SettingsDialog::onAccept);
     connect(&cancel->sigClicked, this, &SettingsDialog::reject);
+
+    resize(480, 320);
+}
+
+void SettingsDialog::onNavChanged(int index)
+{
+    m_stack->setCurrentIndex(index);
 }
 
 void SettingsDialog::setValues(const AppConfig& cfg)
@@ -589,6 +666,7 @@ MainWindow::MainWindow(JZWidget* parent)
     loadConfig();
     m_agent = new JZCodeAgent(this);
     setupUi();
+
     applyConfig();
     openLastProject();   // 默认打开上次的工程（失败则保持默认工作区）
     updateStack();       // 没打开则停在欢迎页
@@ -651,7 +729,6 @@ void MainWindow::setupUi()
     m_inputEdit = new InputEdit(central);
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setFixedHeight(104);
-    m_inputEdit->setPlaceholderText("输入任务，回车换行；Ctrl+Enter 或点[发送]");
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(topBar, 0);
@@ -821,19 +898,14 @@ void MainWindow::applyConfig()
     // 动态部分只作用于本次组装、不写回 m_cfg，避免改/清 tsEnvDir 后旧路径残留在持久化配置里。
     vector<TrustedDir> dirs = m_cfg.trustedDirs;
     vector<TrustedProgram> progs = m_cfg.trustedPrograms;
-    appendTsEnv(m_cfg.tsEnvDir, dirs, progs);
+    
+    code.tscPath = jzApp->applicationDirPath() + "/compiler/tsc.exe";
     code.trustedDirs = dirs;
     code.trustedPrograms = progs;
 
-    // 轮末宿主编译把关: 复用上面从 TS 环境解析出的 tsc 全路径（未配置 TS 环境则自动关闭）
-    for (const auto &p : progs)
-    {
-        if (str_toLower(p.name) == "tsc" && !p.path.empty())
-        {
-            code.tscPath = p.path;
-            break;
-        }
-    }
+    TrustedDir jz_types_dir;
+    jz_types_dir.path = jzApp->applicationDirPath() + "/jz_types";
+    code.trustedDirs.push_back(jz_types_dir);
     
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;
@@ -870,9 +942,14 @@ void MainWindow::appendLog(const CodeAgentLog& log)
     else if (log.type == "assistant")
         m_chatView->appendAssistant(log.text);   // 整条（导入历史时重建用）
     else if (log.type == "tool_call")
-        m_chatView->appendTool(log.name, log.text);
+    {
+        std::vector<std::string> tool_info = str_split(log.name, "$$tool_gap$$");
+        m_chatView->appendTool(tool_info[0], tool_info[1], log.text);
+    }
     else if (log.type == "tool_result")
-        m_chatView->appendToolResult(log.text);
+    {
+        m_chatView->appendToolResult(log.name, log.text);
+    }
     else if (log.type == "error")
         m_chatView->appendError(log.text);
     else if (log.type == "info")
@@ -881,39 +958,44 @@ void MainWindow::appendLog(const CodeAgentLog& log)
 
 void MainWindow::onSend()
 {
-    string text = m_inputEdit->text();
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
-        text.pop_back();
+    string text = str_simplified(m_inputEdit->text());
     if (text.empty())
         return;
 
     // busy 时也照常提交: JZCodeAgent 会缓存到队列, 等上一步发完自动继续
-    m_agent->request(text);
-    m_inputEdit->setText("");
-    m_busy = m_agent->isBusy();
-    m_inputEdit->sendButton()->setText(m_busy ? "停止" : "发送");
+    if (!m_agent->isBusy())
+    {
+        m_agent->request(text);
+        m_inputEdit->setText("");
+    }
+    else
+    {
+        m_pendingQueue.push_back(text);
+    }
 }
 
 void MainWindow::onSendButton()
 {
-    if (m_busy)
-        onStop();
-    else
-        onSend();
+    onSend();
 }
 
 void MainWindow::onStop()
 {
-    if (!m_busy)
+    if (!m_agent->isBusy())
         return;
+
     m_agent->stop();
+    if (m_pendingQueue.size() > 0)
+    {
+        string req = m_pendingQueue.front();
+        m_pendingQueue.pop_front();
+        m_agent->request(req);
+    }
 }
 
 void MainWindow::onClear()
 {
-    if (m_busy)
-        return;
-
+    m_agent->stop();
     m_agent->clearHistory();
     m_renderedId = 0;
     m_chatView->clear();
@@ -926,8 +1008,7 @@ void MainWindow::onClear()
 
 void MainWindow::onSettings()
 {
-    if (m_busy)
-        return;
+    m_agent->stop();
 
     SettingsDialog dlg(this);
     dlg.setValues(m_cfg);
@@ -941,8 +1022,7 @@ void MainWindow::onSettings()
 
 void MainWindow::onOpenProject()
 {
-    if (m_busy)
-        return;
+    m_agent->stop();
 
     std::string dir = JZFileDialog::getExistingDirectory(this, "打开工程", m_cfg.workspace);
     if (dir.empty())
@@ -965,27 +1045,6 @@ bool MainWindow::openProjectDir(const std::string& dir, bool interactive)
         return false;
     }
 
-    if (!st.isProject)
-    {
-        if (!interactive)
-            return false;   // 启动恢复: 目录已不是工程（或被删），不擅自初始化，保持默认工作区
-
-        std::string text = st.summary + "\n\n";
-        text += "要把它初始化成标准 TS 工程吗？\n";
-        text += "（生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，产物统一输出到 build/）";
-        if (JZMessageBox::question(this, "打开非工程目录", text)->exec() == JZDialog::Accepted)
-        {
-            std::string error;
-            if (!m_agent->initProject(dir, error))
-            {
-                JZMessageBox::warning(this, "初始化工程失败",
-                                      error.empty() ? "未知错误" : error)->exec();
-                return false;   // 初始化失败就不切换工作区
-            }
-            st = m_agent->probeProject(dir);
-        }
-    }
-
     std::string error;
     if (!m_agent->openProject(dir, &st, error))
     {
@@ -1003,14 +1062,12 @@ bool MainWindow::openProjectDir(const std::string& dir, bool interactive)
 
 void MainWindow::onOpenRecentProject(const std::string& path)
 {
-    if (m_busy)
-        return;
     openProjectDir(path, true);
 }
 
 void MainWindow::onCloseProject()
 {
-    if (m_busy || !m_projectOpened)
+    if (!m_projectOpened)
         return;
 
     // 归档当前工作区对话（下次打开/启动恢复会自动接上），然后回到欢迎页。
@@ -1046,6 +1103,7 @@ void MainWindow::openLastProject()
 
     if (last.empty())
         return;
+
     openProjectDir(last, false);   // 失败静默：仍然是 init 时的默认工作区
 }
 
@@ -1102,7 +1160,7 @@ void MainWindow::onClearRecent()
 
 void MainWindow::onNewProject()
 {
-    if (m_busy)
+    if (!checkAgentRun())
         return;
 
     NewProjectDialog dlg(this);
@@ -1150,6 +1208,17 @@ void MainWindow::onExit()
     close();   // Qt 习惯: close() -> sendEvent(closeEvent) -> accept 则隐藏并销毁窗口
 }
 
+bool MainWindow::checkAgentRun()
+{
+    std::string text = "任务正在进行中，退出会中断当前任务。\n\n确定要退出吗？";
+    if (JZMessageBox::question(this, "退出 JZCodeAgent", text)->exec() != JZDialog::Accepted)
+    {
+        return false;
+    }
+    m_agent->stop();       // 确认退出: 中断当前任务再走关闭流程
+    return true;
+}
+
 // 关闭确认: LLM 任务进行中时先询问要不要中断退出。
 // X 关闭 (WM_CLOSE) 与 文件→退出 都汇聚到 close() 的 sendEvent(closeEvent) 这一步,
 // 所以两种入口都会走到这里。取消 -> ignore(), close() 不再往下执行, 窗口留在原地。
@@ -1157,13 +1226,11 @@ void MainWindow::closeEvent(JZCloseEvent* event)
 {
     if (m_agent && m_agent->isBusy())
     {
-        std::string text = "任务正在进行中，退出会中断当前任务。\n\n确定要退出吗？";
-        if (JZMessageBox::question(this, "退出 JZCodeAgent", text)->exec() != JZDialog::Accepted)
+        if (!checkAgentRun())
         {
             event->ignore();   // 留在应用里继续跑
             return;
         }
-        m_agent->stop();       // 确认退出: 中断当前任务再走关闭流程
     }
     event->accept();
 }
@@ -1251,16 +1318,13 @@ void MainWindow::onPoll()
     }
 
     bool busy = m_agent->isBusy();
-    if (busy != m_busy)
+    if (busy && m_pendingQueue.size() > 0)
     {
-        m_busy = busy;
-        m_inputEdit->sendButton()->setText(busy ? "停止" : "发送");
-        if (!busy)
-            m_chatView->endStream();
+        std::string message = m_pendingQueue.front();
+        m_pendingQueue.pop_front();
+        m_agent->request(message);
+        //m_chatView->endStream();
     }
-
-    // 有指令在排队/续发等待回复时, 在回复后面显示"等待回复中..."
-    m_chatView->setWait(m_agent->waitingReply());
 }
 
 JZ_OBJECT_IMPL(WelcomePage, JZWidget)

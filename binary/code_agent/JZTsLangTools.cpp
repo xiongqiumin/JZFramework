@@ -110,8 +110,6 @@ void JZTsTool::call(const ToolCall &params)
         return;
     }
 
-    emitLog("call", file + (line > 0 ? " :" + to_string(line) + ":" + to_string(offset) : ""));
-
     Json::Value req;
     req["file"] = file;
     if (line > 0)

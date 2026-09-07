@@ -27,7 +27,7 @@ void str_append(std::string& str, const std::string& other);
 std::string str_toLower(const std::string &str);
 std::string str_toUpper(const std::string &str);
 std::string str_trimmed(const std::string &str);
-std::string str_normalized(const std::string &str);
+std::string str_simplified(const std::string &str);
 int str_indexOf(const std::string &str, const std::string &substr, int pos = 0, bool caseSensitive = true);
 int str_lastIndexOf(const std::string &str, const std::string &substr, int pos = -1, bool caseSensitive = true);
 std::vector<std::string> str_split(const std::string &str, const std::string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);

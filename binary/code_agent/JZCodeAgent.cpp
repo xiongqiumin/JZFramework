@@ -84,31 +84,16 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
         m_codeConfig.workspace = dir.absolutePath();
     }
 
-    TrustedDir jz_types;
-    jz_types.path = jzApp->applicationDirPath() + "/jz_types";
-    m_codeConfig.trustedDirs.push_back(jz_types);
-    
-    TrustedProgram tsc_program;
-    tsc_program.name = "tsc";
-    tsc_program.path = m_codeConfig.tscPath;
-    m_codeConfig.trustedPrograms.push_back(tsc_program);
-
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
     buildAgent();
-    addLog("info", "代码助手已就绪，工作区: " + m_codeConfig.workspace);
     loadWorkspaceHistory();     // 自动接着上次的对话
 }
 
 bool JZCodeAgent::isBusy() const
 {
     return m_busy;
-}
-
-bool JZCodeAgent::waitingReply() const
-{
-    return m_waiting;
 }
 
 void JZCodeAgent::request(const string &text)
@@ -119,9 +104,7 @@ void JZCodeAgent::request(const string &text)
     addLog("user", text);
     if (m_busy)
     {
-        // 正在运行: 指令缓存到自己队列, 等上一步发完后由 onFinished 继续发送
-        m_pendingQueue.push_back(text);
-        m_waiting = true;
+        JZ_ASSERT(0);
         return;
     }
 
@@ -150,8 +133,6 @@ void JZCodeAgent::stop()
     m_stopping = false;
 
     // 丢弃缓存的指令, 与"停止当前任务"语义一致
-    m_pendingQueue.clear();
-    m_waiting = false;
     m_busy = false;
 
     addLog("info", "已停止当前任务");
@@ -163,8 +144,7 @@ void JZCodeAgent::stop()
 void JZCodeAgent::clearHistory()
 {
     abortTools();
-    m_pendingQueue.clear();
-    m_waiting = false;
+
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
@@ -279,7 +259,6 @@ void JZCodeAgent::loadWorkspaceHistory()
     rebuildLogsFromHistory();
 
     size_t count = m_agent->context() ? m_agent->context()->history.size() : 0;
-    addLog("info", "已导入该工作区的对话历史（" + to_string(count) + " 条消息）。");
 }
 
 void JZCodeAgent::rebuildLogsFromHistory()
@@ -323,8 +302,8 @@ bool JZCodeAgent::setWorkspace(const string &path)
     saveWorkspaceHistory();
 
     m_codeConfig.workspace = newPath;
-    for (auto *tool : m_tools)
-        tool->setWorkspace(m_codeConfig.workspace);
+    for (auto* tool : m_tools)
+        tool->setAgent(this);
     applyZoneConfig();
     if (m_agent)
         m_agent->setSystemPrompt(buildSystemPrompt());
@@ -398,7 +377,6 @@ bool JZCodeAgent::openProject(const string &path, CodeProjectStatus *status, str
         return false;
     }
     m_project = st;
-    addLog("info", "已打开工程: " + st.summary);
     return true;
 }
 
@@ -413,7 +391,6 @@ void JZCodeAgent::closeProject()
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
-    m_waiting = false;
 }
 
 const CodeProjectStatus &JZCodeAgent::projectStatus() const
@@ -1010,11 +987,12 @@ void JZCodeAgent::buildAgent()
     connect(&m_agent->sigThinking, this, &JZCodeAgent::onThinking);
     connect(&m_agent->sigError, this, &JZCodeAgent::onError);
     connect(&m_agent->sigFinished, this, &JZCodeAgent::onFinished);
+    connect(&m_agent->sigToolCall, this, &JZCodeAgent::onToolCall);
+    connect(&m_agent->sigToolResult, this, &JZCodeAgent::onToolResult);
 
     auto addTool = [this](JZCodeTool *tool)
     {
-        tool->setWorkspace(m_codeConfig.workspace);
-        connect(&tool->sigToolLog, this, &JZCodeAgent::onToolLog);
+        tool->setAgent(this);
         m_agent->addTool(tool);
         m_tools.push_back(tool);
         m_toolNames.push_back(tool->toolName());
@@ -1068,8 +1046,7 @@ void JZCodeAgent::buildAgent()
             for (TsMethod m : kTsMethods)
             {
                 auto *t = new JZTsTool(m_tsServer, m);
-                t->setWorkspace(m_codeConfig.workspace);
-                connect(&t->sigToolLog, this, &JZCodeAgent::onToolLog);
+                t->setAgent(this);
                 m_agent->addTool(t);
                 m_tools.push_back(t);
                 m_toolNames.push_back(t->toolName());
@@ -1260,19 +1237,11 @@ string JZCodeAgent::buildSystemPrompt() const
 void JZCodeAgent::onReply(const string &text)
 {
     addLog("delta", text);
-
-    // 收到任何文本: 当前这条已开始回复; 若队列已空则不再等待
-    if (m_pendingQueue.empty())
-        m_waiting = false;
 }
 
 void JZCodeAgent::onThinking(const string &text)
 {
     addLog("thinking", text);
-
-    // 思考也是本轮输出的开始, 与 onReply 同样解除"等待回复中"
-    if (m_pendingQueue.empty())
-        m_waiting = false;
 }
 
 void JZCodeAgent::onError(const string &text)
@@ -1290,17 +1259,6 @@ void JZCodeAgent::onFinished()
     if (m_stopping)
         return;
 
-    if (!m_pendingQueue.empty())
-    {
-        // 上一步已发完: 取出缓存的第一条继续发送, 期间 busy 保持占用。
-        // 用户又给了新任务, 不做轮末把关, 避免把"修编译错"插到新任务前面。
-        string next = m_pendingQueue.front();
-        m_pendingQueue.pop_front();
-        m_waiting = true;
-        sendRequestDirect(next);
-        return;
-    }
-
     // 无排队指令: 本轮回复真正结束。若该轮改过 TS 代码, 宿主先做一次编译把关
     // (可能自动续修一轮); 只有确认不需要检查时才在此收尾。
     if (startHostTscCheck())
@@ -1313,15 +1271,6 @@ void JZCodeAgent::nextOrIdle()
 {
     // 收尾统一入口: 某个执行单元(模型一轮回复 / 宿主把关完成)结束后调用。
     // 期间若用户又发过指令, 继续发送下一条; 否则整个空闲下来。
-    if (!m_pendingQueue.empty())
-    {
-        string next = m_pendingQueue.front();
-        m_pendingQueue.pop_front();
-        m_waiting = true;
-        sendRequestDirect(next);
-        return;
-    }
-    m_waiting = false;
     m_busy = false;
 }
 
@@ -1401,7 +1350,6 @@ void JZCodeAgent::onHostTscDone(bool ok, const string &output, bool timeout)
 {
     if (m_stopping)
     {
-        m_waiting = false;
         m_busy = false;
         return;
     }
@@ -1421,7 +1369,7 @@ void JZCodeAgent::onHostTscDone(bool ok, const string &output, bool timeout)
     if ((int)errText.size() > kMaxErrChars)
         errText = errText.substr(0, kMaxErrChars) + "\n...(编译输出过长已截断)";
 
-    if (m_fixRoundsLeft > 0 && m_pendingQueue.empty())
+    if (m_fixRoundsLeft > 0)
     {
         // 自动续修: 额度减一, 把编译错误作为一条指令直接发给模型。
         // 期间用户若发过新指令则不再续修(旧任务收尾, 让用户指令先走)。
@@ -1540,41 +1488,12 @@ void JZCodeAgent::triggerGuard(const string &reason, const string &suggestion)
     stop();
 }
 
-void JZCodeAgent::onToolLog(const string &type, const string &name, const string &text, int deny)
+void JZCodeAgent::onToolCall(const ToolCall& call)
 {
-    // notice: 工具主动给用户的提示（如缺少某个程序）。模型不一定转述，
-    // 所以单独走 info 让用户能直接看到；它不是一次工具调用，不参与熔断计数。
-    if (type == "notice")
-    {
-        addLog("info", text, name);
-        return;
-    }
+    addLog("tool_call", "", call.function_name + "$$tool_gap$$" + call.id);
+}
 
-    addLog(type == "call" ? "tool_call" : "tool_result", text, name);
-
-    if (type == "call")
-    {
-        m_guard.toolCalls++;
-
-        // 本轮是否动过 TS 相关文件（modify_code 的 call 日志文本 = 相对路径），
-        // 作为轮末宿主编译把关的触发判据
-        if (name == "modify_code" &&
-            (str_indexOf(text, ".ts") >= 0 || str_indexOf(text, "tsconfig") >= 0))
-            m_roundTouchedTs = true;
-
-        // 指纹 = 工具名 + 参数文本，用于识别"换汤不换药"的重复尝试
-        m_guard.recentCalls.push_back(name + "|" + str_trimmed(text));
-        while ((int)m_guard.recentCalls.size() > m_guardConfig.maxRepeatCall)
-            m_guard.recentCalls.pop_front();
-    }
-    if (deny != (int)DenyReason::None)
-    {
-        m_guard.denyCount[deny]++;
-        m_guard.totalDeny++;
-    }
-    checkGuard();
-
-    // 工具已开始执行也算"有输出", 若队列已空则结束等待提示
-    if (m_pendingQueue.empty())
-        m_waiting = false;
+void JZCodeAgent::onToolResult(const ToolCallResult& result)
+{
+    addLog("tool_result", result.result, result.id);
 }

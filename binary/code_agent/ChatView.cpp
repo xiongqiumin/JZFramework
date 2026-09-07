@@ -1,10 +1,10 @@
+#include <algorithm>
 #include "ChatView.h"
 
 #include "JZPainter.h"
 #include "JZFontMetrics.h"
 #include "JZUtf8Iterator.h"
-
-#include <algorithm>
+#include "JZDebug.h"
 
 // 布局常量
 static constexpr int kOuter      = 12;   // 控件四边外边距
@@ -276,6 +276,11 @@ int ChatView::hitTestMsg(int contentY) const
 // ==================== 消息追加 ====================
 void ChatView::appendUser(const std::string& text)
 {
+    if (text.empty())
+    {
+        jzDebug() << "empty";
+    }
+
     closeStream();
     Msg m; m.role = User; m.text = text;
     m_msgs.push_back(std::move(m));
@@ -290,6 +295,23 @@ void ChatView::appendAssistant(const std::string& text)
 
 void ChatView::appendAssistantDelta(const std::string& text)
 {
+    if (m_msgs.size() > 0 && m_msgs.back().role != Assistant)
+    {
+        bool all_space = true;
+        JZUtf8Iterator it(text);
+        for (; it; ++it)
+        {
+            char32_t cp = it.codepoint();
+            if (cp > 127 || !std::isspace(static_cast<int>(cp)))
+            {
+                all_space = false;
+                break;
+            }
+        }
+        if (all_space)
+            return;
+    }
+
     int idx = openStream(Assistant);
     m_msgs[idx].text += text;
     afterChange();
@@ -316,31 +338,33 @@ void ChatView::appendThinkingDelta(const std::string& text)
     afterChange();
 }
 
-void ChatView::appendTool(const std::string& name, const std::string& text)
+void ChatView::appendTool(const std::string& name, const std::string& tool_id, const std::string& text)
 {
     closeStream();                    // 思考卡若还开着, 到这里说明思考已结束
-    Msg m; m.role = Tool; m.name = name; m.text = text;
-    m_msgs.push_back(std::move(m));
-    m_pendingToolIdx.push_back((int)m_msgs.size() - 1);
+    
+    Msg m; 
+    m.role = Tool; 
+    m.name = name;
+    m.id = tool_id;
+    m.text = text;
+    
+    m_msgs.push_back(m);
+    m_pendingToolIdx[m.id] = ((int)m_msgs.size() - 1);
     afterChange();
 }
 
-void ChatView::appendToolResult(const std::string& text)
+void ChatView::appendToolResult(const std::string& tool_id, const std::string& text)
 {
     closeStream();
-    if (!m_pendingToolIdx.empty())
+
+    auto it = m_pendingToolIdx.find(tool_id);
+    if (it != m_pendingToolIdx.end())
     {
         // 把输出回填给最近一条还没配对的工具调用卡(合并显示)
-        int idx = m_pendingToolIdx.front();
-        m_pendingToolIdx.erase(m_pendingToolIdx.begin());
+        int idx = it->second;
+        m_pendingToolIdx.erase(it);
         m_msgs[idx].resultText = text;
         m_msgs[idx].hasResult = true;
-    }
-    else
-    {
-        // 没有待配对的调用(历史导入等场景), 退化成独立的工具结果卡
-        Msg m; m.role = ToolResult; m.text = text;
-        m_msgs.push_back(std::move(m));
     }
     afterChange();
 }

@@ -54,6 +54,13 @@ void JZDialog::closeEvent(JZCloseEvent* event)
     reject();
 }
 
+// ESC 关闭对话框 (与 Qt QDialog 一致: ESC -> reject)。
+void JZDialog::keyPressEvent(JZKeyEvent* event)
+{
+    if (event->key() == JZKey::Key_Escape)
+        reject();
+}
+
 
 void JZDialog::paintEvent(JZPainterEvent* event)
 {

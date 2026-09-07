@@ -6,19 +6,6 @@
 #include <cctype>
 #include <string>
 
-#ifndef VK_BACK
-#define VK_BACK   0x08
-#define VK_RETURN 0x0D
-#define VK_ESCAPE 0x1B
-#define VK_HOME   0x24
-#define VK_LEFT   0x25
-#define VK_UP     0x26
-#define VK_RIGHT  0x27
-#define VK_DOWN   0x28
-#define VK_END    0x23
-#define VK_DELETE 0x2E
-#endif
-
 JZ_OBJECT_IMPL(JZSpinBox, JZWidget)
 
 namespace {
@@ -207,31 +194,31 @@ void JZSpinBox::keyPressEvent(JZKeyEvent* event)
     }
 
     switch (event->key()) {
-    case VK_BACK:
-    case VK_DELETE:
+    case JZKey::Key_Backspace:
+    case JZKey::Key_Delete:
         if (m_editing && !m_editBuffer.empty()) {
             m_editBuffer.pop_back();
             update();
         }
         return;
-    case VK_RETURN:
+    case JZKey::Key_Return:
         commitEdit();
         return;
-    case VK_ESCAPE:
+    case JZKey::Key_Escape:
         cancelEdit();
         return;
-    case VK_UP:
+    case JZKey::Key_Up:
         if (m_editing) commitEdit();
         setValue(m_value + m_step);
         return;
-    case VK_DOWN:
+    case JZKey::Key_Down:
         if (m_editing) commitEdit();
         setValue(m_value - m_step);
         return;
-    case VK_HOME:
+    case JZKey::Key_Home:
         setValue(m_min);
         return;
-    case VK_END:
+    case JZKey::Key_End:
         setValue(m_max);
         return;
     default:

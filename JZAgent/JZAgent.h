@@ -198,6 +198,8 @@ public:
 jz_signals: 
     JZSigString sigReply;
     JZSigString sigThinking;   // 推理/思考增量(实时), 与 sigReply 并行
+    JZSignal<const ToolCall&> sigToolCall;
+    JZSignal<const ToolCallResult&> sigToolResult;
     JZSigString sigError;
     JZSigVoid   sigFinished;
 
@@ -256,6 +258,10 @@ protected:
     std::vector<JZAgentTool*> m_tools;
     std::vector<McpEntry> m_mcpEntries;
     std::vector<SkillDefine> m_skills;
+    std::atomic<int> m_paramIdGen{ 0 };
+
+    bool m_streamEnabled;  //是否流式传输
+
     LLMContext m_context;
     int m_toolError;
 
@@ -263,10 +269,8 @@ protected:
 
     std::vector<JZAgentRequestPtr> m_requests;
     bool m_isActive;
-    int m_currentRound;
+    int m_currentRound;  //单词llm 请求的round
     State m_state;
-
-    std::atomic<int> m_paramIdGen{0};
     
     JZNetworkReply* m_llmReply;
     LLMRequstInfo m_llmReqInfo;
@@ -275,7 +279,6 @@ protected:
     JZAgentConfig m_config;
     std::string m_error;
     AgentError m_errorCode = AgentError::None;  // 未设置错误时为 None
-    bool m_streamEnabled;
 
     // 单次请求内累积的回复（流式与非流式统一使用）。
     // 单次 LLM 回复对应一条 assistant 历史，流式过程中工具调用可能被分片，

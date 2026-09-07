@@ -9,6 +9,8 @@
 #include "JZProcess.h"
 #include "JZTimer.h"
 
+class JZCodeAgent;
+
 // ------------------------------------------------------------------
 // 工作区路径工具（网页端文件浏览复用同一套越界校验，避免两处规则不一致）
 // ------------------------------------------------------------------
@@ -35,6 +37,14 @@ bool codeListDir(const std::string &workspace, const std::string &rel,
 bool codeReadFile(const std::string &workspace, const std::string &rel,
                   std::string &text, std::string &error);
 
+
+enum class ToolOperator
+{
+    Read,
+    Write,
+    Execute,
+};
+
 // ------------------------------------------------------------------
 // 工具拒绝原因（结构化）
 //   只用来让上层(CJZCodeAgent)区分"真的失败了"与"被策略拦了"，
@@ -46,6 +56,7 @@ enum class DenyReason
     None = 0,           // 非拒绝类失败
     PathOutside,        // 路径越界，不在工作区/授信区内
     NotFound,           // 文件/目录/程序不存在
+    WriteDenied,        // 不允许写   
     CommandDenied,      // 命令被策略禁止
     ProgramDenied,      // 程序不在允许执行的区域
     EnvChange,          // 会修改环境 / 下载安装
@@ -67,24 +78,18 @@ public:
     JZCodeTool();
     virtual ~JZCodeTool();
 
-    void setWorkspace(const std::string &path);
-    const std::string &workspace() const;
-
-    bool resolvePath(const std::string &input, std::string &absPath, std::string &error) const;
+    void setAgent(JZCodeAgent* agenet);
+    DenyReason checkPathPermission(ToolOperator op, std::string path);
 
     static ParamSchema makeParam(const std::string &name, ParamType type, const std::string &desc);
-
-jz_signals:
-    // (类别: "call" / "result", 工具名, 文本, 拒绝原因)
-    JZSignal<const std::string &, const std::string &, const std::string &, int> sigToolLog;
 
 protected:
     void finish(const ToolCall &call, bool ok, const std::string &text,
                 DenyReason deny = DenyReason::None);
-    void emitLog(const std::string &type, const std::string &text,
-                 DenyReason deny = DenyReason::None);
 
-    std::string m_workspace;
+    std::string fullPath(std::string path);
+
+    JZCodeAgent *m_agent;
 };
 
 // ------------------------------------------------------------------

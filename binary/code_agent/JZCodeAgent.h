@@ -104,9 +104,6 @@ public:
     void clearHistory();
     bool isBusy() const;
 
-    // 是否有指令在排队/刚续发仍等待回复(供界面显示"等待回复中...")
-    bool waitingReply() const;
-
     // 会话日志（id 单调递增，网页端用 since 做增量拉取）
     int logSeq() const;
     const std::vector<CodeAgentLog> &logs() const;
@@ -201,7 +198,9 @@ protected:
     void onThinking(const std::string &text);
     void onError(const std::string &text);
     void onFinished();
-    void onToolLog(const std::string &type, const std::string &name, const std::string &text, int deny);
+
+    void onToolCall(const ToolCall &call);
+    void onToolResult(const ToolCallResult& result);
 
     // ---- 轮末宿主编译把关 ----
     bool startHostTscCheck();                                  // 符合条件则异步起 tsc --noEmit; true=已进入检查
@@ -238,11 +237,6 @@ protected:
     JZTimer *m_hostTimer = nullptr;
     bool m_hostRunning = false;
     bool m_hostTimeout = false;
-
-    // 运行期间新到的指令缓存(自管队列, 不依赖 JZAgent 的 m_requests)，
-    // 等上一步(当前任务)发完后由 onFinished 取出继续发送。
-    std::deque<std::string> m_pendingQueue;
-    bool m_waiting = false;      // 队列有缓存 或 刚把缓存发出还在等回复
 };
 
 #endif // !JZ_CODE_AGENT_H_

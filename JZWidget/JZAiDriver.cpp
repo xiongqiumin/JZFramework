@@ -7,11 +7,6 @@
 #include "JZThread.h"
 #include "JZApplication.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>   // VK_ESCAPE (Esc = 取消)
-
 #include <algorithm>
 #include <cmath>
 
@@ -44,7 +39,7 @@ void JZAiOverlay::keyPressEvent(JZKeyEvent* event)
 {
     // 全屏蒙版期间窗口把键盘统一交给蒙版 (JZWindow::dispatchKey): Esc = 取消,
     // 其余按键一律吞掉, 不传给蒙版下的控件。
-    if (event->isPress() && event->key() == VK_ESCAPE)
+    if (event->isPress() && event->key() == JZKey::Key_Escape)
         sigCancelRequested.emit();
     event->accept();
 }

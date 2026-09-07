@@ -31,8 +31,8 @@ public:
     // 工具调用与它的输出合并显示在同一张卡片里:
     // appendToolResult 会把结果回填给最近一条还没配对的工具调用卡;
     // 没有待配对调用时才退化成独立的"工具结果"卡片(历史数据兼容)。
-    void appendTool(const std::string& name, const std::string& text);
-    void appendToolResult(const std::string& text);
+    void appendTool(const std::string& name, const std::string& tool_id, const std::string& text);
+    void appendToolResult(const std::string& tool_id, const std::string& text);
     void appendError(const std::string& text);
     void appendInfo(const std::string& text);
 
@@ -56,6 +56,7 @@ private:
     struct Msg {
         Role role = User;
         std::string name;                  // tool 名称
+        std::string id;
         std::string text;                  // 正文 / 工具调用参数 / 思考文本
         std::vector<std::string> lines;    // 缓存的换行结果
         std::string resultText;            // 工具结果(回填到工具调用卡时用)
@@ -84,7 +85,7 @@ private:
 
     std::vector<Msg> m_msgs;
     int  m_streamIdx = -1;                 // 当前正在流式追加的卡(思考/助手), -1 无
-    std::vector<int> m_pendingToolIdx;     // 已发出、等待输出回填的工具卡(FIFO)
+    std::map<std::string,int> m_pendingToolIdx;     // 已发出、等待输出回填的工具卡(FIFO)
     int  m_scrollY = 0;
     bool m_autoFollow = true;              // 是否自动跟随到底部
     int  m_totalH = 0;                     // 内容总高 (含上下外边距)

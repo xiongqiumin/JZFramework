@@ -175,11 +175,11 @@ void JZMenuView::mouseReleaseEvent(JZMouseEvent* event)
 
 void JZMenuView::keyPressEvent(JZKeyEvent* event)
 {
-    if (event->key() == VK_DOWN) {
+    if (event->key() == JZKey::Key_Down) {
         stepHover(1); event->accept();
-    } else if (event->key() == VK_UP) {
+    } else if (event->key() == JZKey::Key_Up) {
         stepHover(-1); event->accept();
-    } else if (event->key() == VK_RIGHT) {
+    } else if (event->key() == JZKey::Key_Right) {
         int cur = m_menu->hoverIndex();
         if (cur >= 0) {
             JZAction* a = m_menu->actionAt(cur);
@@ -187,11 +187,11 @@ void JZMenuView::keyPressEvent(JZKeyEvent* event)
                 openSubMenu(cur);
         }
         event->accept();
-    } else if (event->key() == VK_LEFT) {
+    } else if (event->key() == JZKey::Key_Left) {
         if (m_menu->parentMenu())
             m_menu->hidePopup();
         event->accept();
-    } else if (event->key() == VK_RETURN || event->key() == VK_SPACE) {
+    } else if (event->key() == JZKey::Key_Return || event->key() == JZKey::Key_Space) {
         int cur = m_menu->hoverIndex();
         if (cur >= 0) {
             JZAction* a = m_menu->actionAt(cur);

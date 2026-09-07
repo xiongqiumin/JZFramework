@@ -16,6 +16,7 @@
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkRequest.h"
 #include "json/json.h"
+#include "JZCodeAgent.h"
 
 using namespace std;
 
@@ -345,6 +346,7 @@ const char *denyReasonText(DenyReason reason)
     {
     case DenyReason::PathOutside:   return "路径越界";
     case DenyReason::NotFound:      return "目标不存在";
+    case DenyReason::WriteDenied:   return "只读区域";
     case DenyReason::CommandDenied: return "命令被禁止";
     case DenyReason::ProgramDenied: return "程序不在允许区域";
     case DenyReason::EnvChange:     return "会修改环境或下载安装";
@@ -355,27 +357,38 @@ const char *denyReasonText(DenyReason reason)
 
 // ==================== JZCodeTool ====================
 JZCodeTool::JZCodeTool()
-    : sigToolLog(this)
 {
+    m_agent = nullptr;
 }
 
 JZCodeTool::~JZCodeTool()
 {
 }
 
-void JZCodeTool::setWorkspace(const string &path)
+DenyReason JZCodeTool::checkPathPermission(ToolOperator op, std::string rel_path)
 {
-    m_workspace = path;
+    auto &cfg = m_agent->codeConfig();
+    auto path = fullPath(rel_path);
+    if (str_startsWith(path, cfg.workspace))
+        return DenyReason::None;
+
+    for (size_t i = 0; i < cfg.trustedDirs.size(); i++)
+    {
+        if (str_startsWith(path, cfg.trustedDirs[i].path))
+        {
+            if (op == ToolOperator::Read)
+                return DenyReason::None;
+            else if (op == ToolOperator::Write && !cfg.trustedDirs[i].writable)
+                return DenyReason::WriteDenied;
+        }
+    }
+
+    return DenyReason::CommandDenied;
 }
 
-const string &JZCodeTool::workspace() const
+void JZCodeTool::setAgent(JZCodeAgent* agent)
 {
-    return m_workspace;
-}
-
-bool JZCodeTool::resolvePath(const string &input, string &absPath, string &error) const
-{
-    return codeResolvePath(m_workspace, input, absPath, error);
+    m_agent = agent;
 }
 
 ParamSchema JZCodeTool::makeParam(const string &name, ParamType type, const string &desc)
@@ -387,20 +400,23 @@ ParamSchema JZCodeTool::makeParam(const string &name, ParamType type, const stri
     return p;
 }
 
-void JZCodeTool::emitLog(const string &type, const string &text, DenyReason deny)
-{
-    sigToolLog.emit(type, m_toolDefine.name, text, (int)deny);
-}
-
 void JZCodeTool::finish(const ToolCall &call, bool ok, const string &text, DenyReason deny)
 {
-    emitLog("result", text, deny);
-
     ToolCallResult result;
     result.id = call.id;
     result.isOk = ok;
     result.result = text;
     sigResult.emit(result);
+}
+
+std::string JZCodeTool::fullPath(std::string path)
+{
+    if (JZDir::isAbsolutePath(path))
+        return JZFileInfo::weaklyCanonicalPath(path);
+    else
+    {
+        return JZFileInfo::weaklyCanonicalPath(m_agent->codeConfig().workspace + "/" + path);
+    }
 }
 
 // ==================== JZListDirTool ====================
@@ -449,10 +465,11 @@ void JZListDirTool::call(const ToolCall &params)
     if (maxEntries < 1)
         maxEntries = 300;
 
-    string abs, error;
-    if (!resolvePath(rel, abs, error))
+    string abs = fullPath(rel);
+    auto ret = checkPathPermission(ToolOperator::Read, rel);
+    if (ret != DenyReason::None)
     {
-        finish(params, false, error, DenyReason::PathOutside);
+        finish(params, false, denyReasonText(ret), ret);
         return;
     }
 
@@ -462,8 +479,6 @@ void JZListDirTool::call(const ToolCall &params)
         finish(params, false, "路径不存在: " + rel, DenyReason::NotFound);
         return;
     }
-
-    emitLog("call", rel);
 
     vector<string> entries;
     if (info.isDir())
@@ -510,14 +525,13 @@ void JZReadFileTool::call(const ToolCall &params)
     if (startLine < 1)
         startLine = 1;
 
-    string abs, error;
-    if (!resolvePath(rel, abs, error))
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
+    if (ret != DenyReason::None)
     {
-        finish(params, false, error, DenyReason::PathOutside);
+        finish(params, false, denyReasonText(ret), DenyReason::PathOutside);
         return;
     }
-
-    emitLog("call", rel);
 
     JZFileInfo info(abs);
     if (!info.exists() || !info.isFile())
@@ -531,6 +545,7 @@ void JZReadFileTool::call(const ToolCall &params)
         return;
     }
 
+    string error;
     string content = fileToString(abs, error);
     if (!error.empty())
     {
@@ -668,21 +683,20 @@ void JZSearchCodeTool::call(const ToolCall &params)
     if (maxResults < 1)
         maxResults = 50;
 
-    string abs, error;
-    if (!resolvePath(rel, abs, error))
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
+    if (ret != DenyReason::None)
     {
-        finish(params, false, error, DenyReason::PathOutside);
+        finish(params, false, denyReasonText(ret), DenyReason::PathOutside);
         return;
     }
 
     JZFileInfo info(abs);
     if (!info.exists())
     {
-        finish(params, false, "路径不存在: " + rel, DenyReason::NotFound);
+        finish(params, false, "路径不存在: " + rel, ret);
         return;
     }
-
-    emitLog("call", pattern + "  (范围: " + rel + ")");
 
     vector<string> results;
     int totalFiles = 0;
@@ -692,6 +706,7 @@ void JZSearchCodeTool::call(const ToolCall &params)
     }
     else
     {
+        string error;
         string content = fileToString(abs, error);
         if (!error.empty())
         {
@@ -764,20 +779,20 @@ void JZModifyCodeTool::call(const ToolCall &params)
     string newStr = params.params.get("new_str", "").asString();
     bool replaceAll = params.params.get("replace_all", false).asBool();
 
-    string abs, error;
-    if (!resolvePath(rel, abs, error))
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
+    if (ret != DenyReason::None)
     {
-        finish(params, false, error, DenyReason::PathOutside);
+        finish(params, false, denyReasonText(ret), ret);
         return;
     }
-
-    emitLog("call", rel);
 
     bool isNew = oldStr.empty();
     string oldContent;
     bool existed = JZFileInfo::exists(abs);
     if (existed)
     {
+        std::string error;
         if (!isTextFile(abs))
         {
             finish(params, false, "不能修改二进制文件: " + rel);
@@ -905,9 +920,6 @@ bool JZProcessRunner::runProcess(const ToolCall &call, const string &program,
                                  const vector<string> &args, const string &workDir,
                                  int timeoutMs, const string &logText, bool emitCallLog)
 {
-    if (emitCallLog)
-        emitLog("call", logText);
-
     JZProcess *proc = new JZProcess(this);
     proc->setWorkingDirectory(workDir);
 
@@ -986,8 +998,6 @@ void JZProcessRunner::onProcFinished(JZProcess *proc, const string &id,
         text += "[stderr]\n" + truncateMiddle(str_trimmed(err), kMaxChars) + "\n";
     if (out.empty() && err.empty())
         text += "(无输出)\n";
-
-    emitLog("result", text);
 
     ToolCallResult result;
     result.id = id;
@@ -1070,10 +1080,11 @@ void JZCommandTool::call(const ToolCall &params)
     }
 
     string relDir = params.params.get("work_dir", "").asString();
-    string workDir, error;
-    if (!resolvePath(relDir.empty() ? "." : relDir, workDir, error))
+    string workDir = fullPath(relDir);
+    DenyReason ret = checkPathPermission(ToolOperator::Read, workDir);
+    if (ret != DenyReason::None)
     {
-        finish(params, false, error, DenyReason::PathOutside);
+        finish(params, false, denyReasonText(ret), ret);
         return;
     }
 
@@ -1374,8 +1385,6 @@ JZVirtualTerminal::JZVirtualTerminal()
     // 只把"工具"登记进来；副作用大的单独归类，由策略开关控制。
     addProgram("git", {"git.exe", "git"}, CmdCategory::Tool,
                {"-C", "--exec", "-c", "--upload-pack", "--upload-archive"});
-    addProgram("node", {"node.exe", "node"}, CmdCategory::Tool,
-               {"-e", "--eval", "-p", "--print"});
     addProgram("tsc", {"tsc.exe", "tsc"}, CmdCategory::Tool);
 
     addProgram("pip", {"pip.exe", "pip"}, CmdCategory::PackageManager);
@@ -1509,8 +1518,6 @@ void JZVirtualTerminal::call(const ToolCall &params)
     string termName = params.params.get("terminal", "default").asString();
     if (termName.empty())
         termName = "default";
-
-    emitLog("call", command);
 
     string name = str_toLower(argv[0]);
     // 常见别名统一到主命令，这样 help 里只列一套
@@ -2101,7 +2108,6 @@ void JZVirtualTerminal::runExternalProgram(const ToolCall &call, const vector<st
                 dirs = "(未配置授信目录)";
 
             // 单独发一条 notice：模型不一定转述，用户要能在界面上直接看到缺什么
-            emitLog("notice", "缺少程序 " + ps.name + "：请在安装后把它的安装目录加为授信目录。");
             finish(call, false,
                    "未找到程序 " + ps.name + "。已在授信目录中查找: " + dirs + "。" \
                    "不要换其它写法重试；请直接告诉用户需要安装该程序，并说明装好后" \
@@ -2218,8 +2224,6 @@ void JZWebSearchTool::call(const ToolCall &params)
             break;
         url.replace(pos, 3, enc);
     }
-
-    emitLog("call", query);
 
     // 取消上一次仍在进行中的请求
     if (m_reply)
@@ -2568,8 +2572,6 @@ void JZWebFetchTool::call(const ToolCall &params)
     int maxChars = params.params.get("max_chars", 20000).asInt();
     if (maxChars < 500) maxChars = 500;
     if (maxChars > 200000) maxChars = 200000;
-
-    emitLog("call", url);
 
     // 取消上一次仍在进行中的请求
     if (m_reply)

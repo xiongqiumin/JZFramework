@@ -148,10 +148,10 @@ bool jzstd_str_prepend_append()
     return true;
 }
 
-bool jzstd_str_normalized()
+bool jzstd_str_simplified()
 {
     std::string s = "  hello   world  ";
-    JZ_TEST_EQ(str_normalized(s), "hello world");
+    JZ_TEST_EQ(str_simplified(s), "hello world");
     return true;
 }
 
@@ -734,7 +734,7 @@ void test_JZCore(JZTest *test)
     stdSuite->addTestCase("str_mid_left_right", jzstd_str_mid_left_right);
     stdSuite->addTestCase("str_replace_remove", jzstd_str_replace_remove);
     stdSuite->addTestCase("str_prepend_append", jzstd_str_prepend_append);
-    stdSuite->addTestCase("str_normalized", jzstd_str_normalized);
+    stdSuite->addTestCase("str_simplified", jzstd_str_simplified);
     stdSuite->addTestCase("str_asprintf", jzstd_str_asprintf);
     stdSuite->addTestCase("str_index_case_insensitive", jzstd_str_index_case_insensitive);
     stdSuite->addTestCase("str_convert_numeric_base", jzstd_str_convert_numeric_base);

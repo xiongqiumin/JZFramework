@@ -11,18 +11,6 @@
 #include "JZSignal.h"
 #include "JZColor.h"
 
-// Win32 虚拟键码: 工程未全局包含 windows.h, 各控件 cpp 自行定义所需值 (同文本控件)
-#ifndef VK_PRIOR
-#define VK_PRIOR  0x21   // PageUp
-#define VK_NEXT   0x22   // PageDown
-#define VK_END    0x23
-#define VK_HOME   0x24
-#define VK_LEFT   0x25
-#define VK_UP     0x26
-#define VK_RIGHT  0x27
-#define VK_DOWN   0x28
-#endif
-
 JZ_OBJECT_IMPL(JZScrollArea, JZWidget)
 
 namespace {
@@ -432,32 +420,32 @@ void JZScrollArea::keyPressEvent(JZKeyEvent* event)
     bool handled = false;
 
     switch (event->key()) {
-    case VK_HOME:
+    case JZKey::Key_Home:
         if (canV) { m_scrollY = 0;         handled = true; }
         else if (canH) { m_scrollX = 0;    handled = true; }
         break;
-    case VK_END:
+    case JZKey::Key_End:
         if (canV) { m_scrollY = 0x7fffffff; handled = true; }   // layoutScrollBars 内收窄
         else if (canH) { m_scrollX = 0x7fffffff; handled = true; }
         break;
-    case VK_PRIOR:                                            // PageUp
+    case JZKey::Key_PageUp:                                            // PageUp
         if (canV) { m_scrollY -= viewportHeight(); handled = true; }
         else if (canH) { m_scrollX -= viewportWidth(); handled = true; }
         break;
-    case VK_NEXT:                                             // PageDown
+    case JZKey::Key_PageDown:                                             // PageDown
         if (canV) { m_scrollY += viewportHeight(); handled = true; }
         else if (canH) { m_scrollX += viewportWidth(); handled = true; }
         break;
-    case VK_UP:
+    case JZKey::Key_Up:
         if (canV) { m_scrollY -= kScrollStep; handled = true; }
         break;
-    case VK_DOWN:
+    case JZKey::Key_Down:
         if (canV) { m_scrollY += kScrollStep; handled = true; }
         break;
-    case VK_LEFT:
+    case JZKey::Key_Left:
         if (canH) { m_scrollX -= kScrollStep; handled = true; }
         break;
-    case VK_RIGHT:
+    case JZKey::Key_Right:
         if (canH) { m_scrollX += kScrollStep; handled = true; }
         break;
     default:

@@ -288,13 +288,13 @@ void JZListWidget::mousePressEvent(JZMouseEvent* event)
 void JZListWidget::keyPressEvent(JZKeyEvent* event)
 {
     switch (event->key()) {
-    case VK_UP:
-    case VK_DOWN: {
+    case JZKey::Key_Up:
+    case JZKey::Key_Down: {
         if (m_items.empty()) {
             event->accept();
             return;
         }
-        int idx = m_current + (event->key() == VK_UP ? -1 : 1);
+        int idx = m_current + (event->key() == JZKey::Key_Up ? -1 : 1);
         idx = std::max(0, std::min(idx, (int)m_items.size() - 1));
         if (idx != m_current) {
             setCurrentIndex(idx);
@@ -305,13 +305,13 @@ void JZListWidget::keyPressEvent(JZKeyEvent* event)
         return;
     }
 
-    case VK_RETURN:
+    case JZKey::Key_Return:
         if (m_current >= 0)
             sigActivated.emit(m_current);
         event->accept();
         return;
 
-    case VK_ESCAPE:
+    case JZKey::Key_Escape:
         event->ignore();   // 冒泡: Popup 型窗口按 Esc 隐藏
         return;
 

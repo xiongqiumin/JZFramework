@@ -178,24 +178,31 @@ string str_trimmed(const string &str) {
     return str.substr(start, end - start);
 }
 
-string str_normalized(const string &str) {
-    string trimmed = str_trimmed(str);
-    string result;
-    result.reserve(trimmed.length());
-    bool in_space = false;
-    for (char c : trimmed) {
-        if (isspace((unsigned char)c)) {
-            if (!in_space) {
-                result += ' ';
+string str_simplified(const string &str) {
+    std::string res;
+    bool in_space = true;
+
+    for (char ch : str)
+    {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isspace(c))
+        {
+            if (!in_space)
+            {
+                res += ' ';
                 in_space = true;
             }
         }
-        else {
-            result += c;
+        else
+        {
+            res += ch;
             in_space = false;
         }
     }
-    return result;
+    // 去掉末尾可能多余的一个空格
+    if (!res.empty() && res.back() == ' ')
+        res.pop_back();
+    return res;
 }
 
 vector<string> str_split(const string &str, const string &sep, JZ::SplitBehavior behavior)

@@ -105,18 +105,28 @@ public:
     void getValues(AppConfig& cfg);
 
 protected:
+    void onNavChanged(int index);
     void onBrowseWorkspace();
     void onBrowseTsEnv();
     void onAccept();
 
+    // 左侧导航 + 右侧内容
+    JZListWidget* m_navList = nullptr;
+    JZStackedWidget* m_stack = nullptr;
+
+    // 模型配置页
     JZLineEdit* m_urlEdit = nullptr;
     JZLineEdit* m_nameEdit = nullptr;
     JZLineEdit* m_tokenEdit = nullptr;
+
+    // 路径配置页
     JZLineEdit* m_wsEdit = nullptr;
     JZLineEdit* m_tsEdit = nullptr;
-    JZLineEdit* m_trustedEdit = nullptr;
     JZPushButton* m_wsBrowseBtn = nullptr;
     JZPushButton* m_tsBrowseBtn = nullptr;
+
+    // 安全配置页
+    JZLineEdit* m_trustedEdit = nullptr;
 };
 
 // 导出对话框：导出工程为可独立运行的发行包时，指定运行时 exe 名称、图标与是否 debug。
@@ -212,6 +222,7 @@ private:
     void addRecentProject(const std::string& path);
     // 重建“最近的项目”子菜单（挂在 aboutToShow 上，展开时才刷新）
     void updateRecentMenu();
+    bool checkAgentRun();
 
     // openProject 成功后的收尾：持久化工作区 + 刷新状态栏 + 整屏重建对话视图
     void finishOpenWorkspace();
@@ -235,9 +246,9 @@ private:
     bool m_exportDebug = true;  // 上次导出是否勾选 debug（记住，方便连续导出）
     JZTimer*      m_pollTimer = nullptr;
 
-    int  m_renderedId = 0;
-    bool m_busy = false;
+    std::deque<std::string> m_pendingQueue;
 
+    int  m_renderedId = 0;
     AppConfig m_cfg;
 };
 

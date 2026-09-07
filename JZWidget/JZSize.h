@@ -1,6 +1,7 @@
 #ifndef JZ_SIZE_H_
 #define JZ_SIZE_H_
 
+class JZDebug;
 class JZSize
 {
 public:
@@ -19,5 +20,6 @@ private:
     int m_w = 0;
     int m_h = 0;
 };
+JZDebug operator<<(JZDebug d, const JZSize& rc);
 
 #endif // JZ_SIZE_H_

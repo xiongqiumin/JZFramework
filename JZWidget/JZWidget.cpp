@@ -33,13 +33,7 @@ JZWidget::JZWidget(JZWidget* parent)
     m_y = 0;
     m_width = 0;
     m_height = 0;
-
-    if (parent)
-    {
-        m_visible = true;
-    }
-    else
-        m_visible = false;
+    m_visible = true;
 }
 
 void JZWidget::setOpaque(int opaque)
@@ -399,6 +393,9 @@ void JZWidget::setVisible(bool visible)
 
     m_visible = visible;
     update();
+    // 可见性改变会直接影响布局对空间的占用 (隐藏项被布局剔除), 需向上级联重排:
+    // updateGeometry 经父控件布局对本控件所在 item 重新排布, 并继续向上传播。
+    updateGeometry();
 }
 
 void JZWidget::show()

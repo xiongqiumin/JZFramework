@@ -13,6 +13,7 @@
 #include "JZStd.h"
 #include "JZFileInfo.h"
 #include "JZMessageBox.h"
+#include "JZAction.h"
 
 using namespace std;
 
@@ -226,7 +227,7 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
     {
         JZWidget* row = new JZWidget(this);
         JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-        JZLabel* l = new JZLabel(row, label);
+        JZLabel* l = new JZLabel(label, row);
         l->setFixedWidth(80);
         edit = new JZLineEdit(row);
         h->addWidget(l, 0);
@@ -323,7 +324,7 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     {
         JZWidget* row = new JZWidget(this);
         JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-        JZLabel* l = new JZLabel(row, label);
+        JZLabel* l = new JZLabel(label, row);
         l->setFixedWidth(80);
         edit = new JZLineEdit(row);
         h->addWidget(l, 0);
@@ -414,7 +415,7 @@ ExportDialog::ExportDialog(JZWidget* parent)
     {
         JZWidget* row = new JZWidget(this);
         JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-        JZLabel* l = new JZLabel(row, label);
+        JZLabel* l = new JZLabel(label, row);
         l->setFixedWidth(80);
         edit = new JZLineEdit(row);
         h->addWidget(l, 0);
@@ -437,7 +438,7 @@ ExportDialog::ExportDialog(JZWidget* parent)
     {
         JZWidget* dbgRow = new JZWidget(this);
         JZHBoxLayout* dh = new JZHBoxLayout(6, 6);
-        JZLabel* dl = new JZLabel(dbgRow, "调试");
+        JZLabel* dl = new JZLabel("调试", dbgRow);
         dl->setFixedWidth(80);
         m_debugCheck = new JZCheckbox(dbgRow);
         m_debugCheck->setText("导出 debug 版本（运行时默认开启调试器 JZRuntimeDebugger）");
@@ -513,6 +514,72 @@ void ExportDialog::onOk()
     accept();
 }
 
+// ==================== WelcomePage ====================
+WelcomePage::WelcomePage(JZWidget* parent)
+    : JZWidget(parent)
+    , sigNewProject(this)
+    , sigOpenProject(this)
+    , sigOpenRecent(this)
+{
+    JZVBoxLayout* v = new JZVBoxLayout(12, 8);
+    setLayout(v);
+
+    v->addStretch(1);
+
+    JZLabel* title = new JZLabel("JZCodeAgent", this);
+    title->setAlign(1);
+    title->setFixedHeight(30);
+    v->addWidget(title, 0);
+
+    JZLabel* hint = new JZLabel("还没有打开工程。新建或打开一个工程后即可开始。", this);
+    hint->setAlign(1);
+    hint->setFixedHeight(24);
+    v->addWidget(hint, 0);
+
+    JZWidget* btnRow = new JZWidget(this);
+    JZHBoxLayout* bh = new JZHBoxLayout(10, 6);
+    JZPushButton* newBtn = new JZPushButton(btnRow, 120, 34, "新建工程");
+    JZPushButton* openBtn = new JZPushButton(btnRow, 120, 34, "打开工程");
+    bh->addStretch(1);
+    bh->addWidget(newBtn, 0);
+    bh->addWidget(openBtn, 0);
+    bh->addStretch(1);
+    btnRow->setLayout(bh);
+    v->addWidget(btnRow, 0);
+
+    m_recentLabel = new JZLabel("最近的工程", this);
+    m_recentLabel->setFixedHeight(24);
+    v->addWidget(m_recentLabel, 0);
+
+    m_recentList = new JZListWidget(this);
+    m_recentList->setItemHeight(28);
+    v->addWidget(m_recentList, 1);
+
+    v->addStretch(1);
+
+    connect(&newBtn->sigClicked, [this]() { sigNewProject.emit(); });
+    connect(&openBtn->sigClicked, [this]() { sigOpenProject.emit(); });
+    connect(&m_recentList->sigActivated, this, &WelcomePage::onRecentActivated);
+}
+
+void WelcomePage::setRecentProjects(const std::vector<std::string>& paths)
+{
+    m_paths = paths;
+    m_recentList->clear();
+    for (const auto& p : paths)
+        m_recentList->addItem(p);
+
+    m_recentLabel->setVisible(!paths.empty());
+    m_recentList->setVisible(!paths.empty());
+}
+
+void WelcomePage::onRecentActivated(int index)
+{
+    if (index < 0 || index >= (int)m_paths.size())
+        return;
+    sigOpenRecent.emit(m_paths[index]);
+}
+
 // ==================== MainWindow ====================
 MainWindow::MainWindow(JZWidget* parent)
     : JZMainWindow(parent)
@@ -524,6 +591,8 @@ MainWindow::MainWindow(JZWidget* parent)
     m_agent = new JZCodeAgent(this);
     setupUi();
     applyConfig();
+    openLastProject();   // 默认打开上次的工程（失败则保持默认工作区）
+    updateStack();       // 没打开则停在欢迎页
 
     m_pollTimer = new JZTimer(this);
     connect(&m_pollTimer->sigTimeout, this, &MainWindow::onPoll);
@@ -539,12 +608,19 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupUi()
 {
-    // 菜单栏: 顶部"文件"菜单提供 新建工程 / 打开工程 / 退出。
+    // 菜单栏: 顶部"文件"菜单提供 新建工程 / 打开工程 / 关闭工程 / 最近的项目 / 导出工程 / 设置 / 退出。
     // addMenuBar 会把它插到主窗口第 0 项并自动 reparent。
     m_menuBar = new JZMenuBar(this);
     JZMenu* fileMenu = m_menuBar->addMenu("文件");
     fileMenu->addAction("新建工程", [this]() { onNewProject(); });
     fileMenu->addAction("打开工程", [this]() { onOpenProject(); });
+    fileMenu->addAction("关闭工程", [this]() { onCloseProject(); });
+    // 最近的项目: 内容在每次展开时按 m_cfg.recentProjects 重建（挂 aboutToShow）。
+    m_recentMenu = fileMenu->addMenu("最近的项目");
+    connect(&m_recentMenu->aboutToShow, this, &MainWindow::updateRecentMenu);
+    updateRecentMenu();
+    fileMenu->addAction("导出工程", [this]() { onExport(); });
+    fileMenu->addAction("设置", [this]() { onSettings(); });
     fileMenu->addSeparator();
     fileMenu->addAction("退出", [this]() { onExit(); });
     addMenuBar(m_menuBar);
@@ -553,22 +629,23 @@ void MainWindow::setupUi()
     // 注意: JZLayout::addWidget 不会自动 reparent, 放进容器布局的子控件父必须就是该容器。
     JZWidget* central = new JZWidget(this);
 
-    // ChatView 上方的工具条: 左侧状态信息, 右侧 [清空][设置]
+    // ChatView 上方的工具条: 左侧状态信息, 右侧 [清空]（未打开工程时隐藏）
     JZWidget* topBar = new JZWidget(central);
     topBar->setFixedHeight(32);
     JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
-    m_statusLabel = new JZLabel(topBar);
-    m_statusLabel->setText("未配置");
-    topLayout->addWidget(m_statusLabel, 1);
+    topLayout->addWidget(new JZLabel("CODEBUDDY"));
+    topLayout->addStretch();
     m_clearBtn = new JZPushButton(topBar, 84, 28, "清空");
-    m_settingsBtn = new JZPushButton(topBar, 84, 28, "设置");
-    m_exportBtn = new JZPushButton(topBar, 84, 28, "导出");
     topLayout->addWidget(m_clearBtn, 0);
-    topLayout->addWidget(m_settingsBtn, 0);
-    topLayout->addWidget(m_exportBtn, 0);
     topBar->setLayout(topLayout);
 
-    m_chatView = new ChatView(central);
+    // 中央区用 stacked widget: 0=欢迎页(未打开工程) 1=对话页。
+    // 未打开工程时输入框与"清空"也会隐藏（无工作区时发指令没有意义）。
+    m_stack = new JZStackedWidget(central);
+    m_welcome = new WelcomePage(m_stack);
+    m_chatView = new ChatView(m_stack);
+    m_stack->addWidget(m_welcome);
+    m_stack->addWidget(m_chatView);
 
     // 底部输入区: 只有多行输入框(固定高度), 发送按钮由 InputEdit 用 selfLayout
     // 锚定在右下角, 输入框尺寸变化时自动重排。
@@ -579,7 +656,7 @@ void MainWindow::setupUi()
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(topBar, 0);
-    mainLayout->addWidget(m_chatView, 1);
+    mainLayout->addWidget(m_stack, 1);
     mainLayout->addWidget(m_inputEdit, 0);
     central->setLayout(mainLayout);
 
@@ -587,9 +664,10 @@ void MainWindow::setupUi()
 
     connect(&m_inputEdit->sendButton()->sigClicked, this, &MainWindow::onSendButton);
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
-    connect(&m_settingsBtn->sigClicked, this, &MainWindow::onSettings);
-    connect(&m_exportBtn->sigClicked, this, &MainWindow::onExport);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
+    connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
+    connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
+    connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
 }
 
 void MainWindow::loadConfig()
@@ -649,6 +727,16 @@ void MainWindow::loadConfig()
                 m_cfg.trustedPrograms.push_back(tp);
         }
     }
+    if (root.isMember("recentProjects"))
+    {
+        const Json::Value& arr = root["recentProjects"];
+        for (int i = 0; i < (int)arr.size(); i++)
+        {
+            string p = arr[i].asString();
+            if (!p.empty())
+                m_cfg.recentProjects.push_back(p);
+        }
+    }
     if (root.isMember("webSearchUrl")) m_cfg.webSearchUrl = root["webSearchUrl"].asString();
     if (root.isMember("proxyHost"))    m_cfg.proxyHost = root["proxyHost"].asString();
     if (root.isMember("proxyPort"))    m_cfg.proxyPort = root["proxyPort"].asInt();
@@ -699,6 +787,11 @@ void MainWindow::saveConfig()
         progs.append(o);
     }
     root["trustedPrograms"] = progs;
+
+    Json::Value recent(Json::arrayValue);
+    for (const auto& p : m_cfg.recentProjects)
+        recent.append(p);
+    root["recentProjects"] = recent;
 
     root["webSearchUrl"] = m_cfg.webSearchUrl;
     root["proxyHost"] = m_cfg.proxyHost;
@@ -764,12 +857,7 @@ void MainWindow::applyConfig()
 
 void MainWindow::updateStatus()
 {
-    string s = "模型: " + (m_cfg.modelName.empty() ? "(未配置)" : m_cfg.modelName);
-    s += "   工作区: " + m_cfg.workspace;
-    s += "   TS环境: " + (m_cfg.tsEnvDir.empty() ? "(未配置)" : m_cfg.tsEnvDir);
-    if (m_cfg.modelUrl.empty())
-        s += "   [请在设置中填写模型地址]";
-    m_statusLabel->setText(s);
+    
 }
 
 void MainWindow::appendLog(const CodeAgentLog& log)
@@ -861,10 +949,28 @@ void MainWindow::onOpenProject()
     if (dir.empty())
         return;
 
+    openProjectDir(dir, true);
+}
+
+bool MainWindow::openProjectDir(const std::string& dir, bool interactive)
+{
     // 先探测工程属性：不是 TS 工程目录时，询问是否初始化成标准工程（不打扰已识别工程）
     CodeProjectStatus st = m_agent->probeProject(dir);
-    if (st.pathOk && !st.isProject)
+    if (!st.pathOk)
     {
+        if (interactive)
+        {
+            JZMessageBox::warning(this, "无法打开工程",
+                                  st.error.empty() ? "打开工程失败" : st.error)->exec();
+        }
+        return false;
+    }
+
+    if (!st.isProject)
+    {
+        if (!interactive)
+            return false;   // 启动恢复: 目录已不是工程（或被删），不擅自初始化，保持默认工作区
+
         std::string text = st.summary + "\n\n";
         text += "要把它初始化成标准 TS 工程吗？\n";
         text += "（生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，产物统一输出到 build/）";
@@ -875,20 +981,124 @@ void MainWindow::onOpenProject()
             {
                 JZMessageBox::warning(this, "初始化工程失败",
                                       error.empty() ? "未知错误" : error)->exec();
-                return;   // 初始化失败就不切换工作区
+                return false;   // 初始化失败就不切换工作区
             }
+            st = m_agent->probeProject(dir);
         }
     }
 
     std::string error;
     if (!m_agent->openProject(dir, &st, error))
     {
-        JZMessageBox::warning(this, "无法打开工程", error.empty() ? "打开工程失败" : error)->exec();
+        if (interactive)
+            JZMessageBox::warning(this, "无法打开工程", error.empty() ? "打开工程失败" : error)->exec();
+        return false;
+    }
+
+    m_cfg.workspace = codeNormalizePath(dir);
+    addRecentProject(m_cfg.workspace);
+    m_projectOpened = true;
+    finishOpenWorkspace();
+    return true;
+}
+
+void MainWindow::onOpenRecentProject(const std::string& path)
+{
+    if (m_busy)
+        return;
+    openProjectDir(path, true);
+}
+
+void MainWindow::onCloseProject()
+{
+    if (m_busy || !m_projectOpened)
+        return;
+
+    // 归档当前工作区对话（下次打开/启动恢复会自动接上），然后回到欢迎页。
+    // 工作区路径本身保留在 m_cfg，退出与下次启动的恢复逻辑不变。
+    m_agent->closeProject();
+    m_projectOpened = false;
+    m_chatView->clear();
+    m_chatView->setWait(false);
+    m_renderedId = 0;
+    saveConfig();
+    updateStack();
+}
+
+void MainWindow::updateStack()
+{
+    if (!m_stack)
+        return;
+
+    m_stack->setCurrentIndex(m_projectOpened ? 1 : 0);
+    m_inputEdit->setVisible(m_projectOpened);
+    m_clearBtn->setVisible(m_projectOpened);
+    if (!m_projectOpened)
+        m_welcome->setRecentProjects(m_cfg.recentProjects);
+}
+
+void MainWindow::openLastProject()
+{
+    std::string last;
+    if (!m_cfg.recentProjects.empty())
+        last = m_cfg.recentProjects.front();
+    else if (!m_cfg.workspace.empty())
+        last = m_cfg.workspace;
+
+    if (last.empty())
+        return;
+    openProjectDir(last, false);   // 失败静默：仍然是 init 时的默认工作区
+}
+
+void MainWindow::addRecentProject(const std::string& path)
+{
+    if (path.empty())
+        return;
+
+    std::string p = codeNormalizePath(path);
+    // 已存在则先移除（大小写不敏感），再插到最前
+    for (auto it = m_cfg.recentProjects.begin(); it != m_cfg.recentProjects.end(); )
+    {
+        if (str_toLower(*it) == str_toLower(p))
+            it = m_cfg.recentProjects.erase(it);
+        else
+            ++it;
+    }
+    m_cfg.recentProjects.insert(m_cfg.recentProjects.begin(), p);
+    if ((int)m_cfg.recentProjects.size() > kMaxRecentProjects)
+        m_cfg.recentProjects.resize(kMaxRecentProjects);
+}
+
+void MainWindow::updateRecentMenu()
+{
+    if (!m_recentMenu)
+        return;
+    m_recentMenu->clear();
+
+    if (m_cfg.recentProjects.empty())
+    {
+        // popup() 对空菜单直接返回（点了没反应），放一条禁用项占位
+        JZAction* none = m_recentMenu->addAction("（无）");
+        none->setEnabled(false);
         return;
     }
 
-    m_cfg.workspace = dir;
-    finishOpenWorkspace();
+    for (int i = 0; i < (int)m_cfg.recentProjects.size(); i++)
+    {
+        std::string path = m_cfg.recentProjects[i];
+        std::string text = std::to_string(i + 1) + ". " + path;
+        m_recentMenu->addAction(text, [this, path]() { openProjectDir(path, true); });
+    }
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction("清除列表", [this]() { onClearRecent(); });
+}
+
+void MainWindow::onClearRecent()
+{
+    // 注意：本函数在菜单项触发回调中执行，此刻弹层还没关（activateAction 先 emit 后 closeAll），
+    // 这里不能重建菜单内容，交给下一次 aboutToShow 刷新。
+    m_cfg.recentProjects.clear();
+    saveConfig();
 }
 
 void MainWindow::onNewProject()
@@ -933,15 +1143,7 @@ void MainWindow::onNewProject()
         }
     }
 
-    std::string error;
-    if (!m_agent->openProject(path, &st, error))
-    {
-        JZMessageBox::warning(this, "无法打开工程", error.empty() ? "打开工程失败" : error)->exec();
-        return;
-    }
-
-    m_cfg.workspace = path;
-    finishOpenWorkspace();
+    openProjectDir(path, true);
 }
 
 void MainWindow::onExit()
@@ -951,6 +1153,12 @@ void MainWindow::onExit()
 
 void MainWindow::onExport()
 {
+    if (!m_projectOpened)
+    {
+        JZMessageBox::warning(this, "导出工程", "请先新建或打开一个工程")->exec();
+        return;
+    }
+
     // 先弹出导出对话框，收集运行时 exe 名称、图标与是否 debug（可留空）。
     ExportDialog dlg(this);
     dlg.setDefaults(m_exportName, m_exportIcon, m_exportDebug);
@@ -1002,6 +1210,8 @@ void MainWindow::finishOpenWorkspace()
         appendLog(logs[i]);
     m_renderedId = m_agent->logSeq();
     m_chatView->scrollToBottom();
+
+    updateStack();
 }
 
 void MainWindow::onPoll()
@@ -1036,6 +1246,7 @@ void MainWindow::onPoll()
     m_chatView->setWait(m_agent->waitingReply());
 }
 
+JZ_OBJECT_IMPL(WelcomePage, JZWidget)
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
 JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
 JZ_OBJECT_IMPL(SettingsDialog, JZDialog)

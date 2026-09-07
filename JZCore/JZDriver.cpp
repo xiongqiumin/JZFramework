@@ -97,6 +97,11 @@
 #include "JZNet/JZNetPacket.h"
 #endif
 
+#ifdef HAS_JZWidget
+#include "JZGdiBackend.h"
+#endif
+
+
 
 // ==================== 模块初始化 / 反初始化 ====================
 // 平台相关的宏判断收敛在各模块内部，JZDriver::init/deinit 不再包含任何宏。
@@ -249,6 +254,26 @@ static void jzDriverDeinitAudio()
 #endif
 }
 
+static void jzDriverInitWidget()
+{
+#ifdef HAS_JZWidget
+    // 字体度量引擎必须早于任何 UI 构造/布局注册到 JZFontMetrics。
+    // 窗口是惰性创建的 (首次 show() 才建 HWND -> JZGdiBackend::init -> setEngine),
+    // 若等到那时才注册, 期间跑过的首次布局只能用 estimateWidth 估算
+    // (ASCII 仅 0.55em, 比真实测量窄约 25%), 控件被定得偏窄、文字被裁; 而
+    // setEngine 本身不触发重排, 事后无法自动纠正。这里提前申请即消除该误差。
+    JZGdiBackend::acquireFontEngine();
+#endif
+}
+
+static void jzDriverDeinitWidget()
+{
+#ifdef HAS_JZWidget
+    // 与 jzDriverInitWidget 对称 (引用计数, 窗口仍存活时不会提前注销)。
+    JZGdiBackend::releaseFontEngine();
+#endif
+}
+
 
 // ==================== init / deinit ====================
 
@@ -265,6 +290,7 @@ void JZDriver::init()
 
     jzDriverInitNet();
     jzDriverInitAudio();
+    jzDriverInitWidget();
 }
 
 void JZDriver::deinit()
@@ -277,6 +303,7 @@ void JZDriver::deinit()
     jzDriverDeinitOta();
 
     jzDriverDeinitAudio();
+    jzDriverDeinitWidget();
 
     jzDriverDeinitPlatform();
 }

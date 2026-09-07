@@ -96,7 +96,8 @@ JZWindow::JZWindow(JZWidget* parent)
 {
     // 默认尺寸
     m_device = new JZDisplayDevice();
-
+    m_visible = false;
+    
     JZWidget::resize(800, 600);   // non-virtual: avoid ctor-time virtual dispatch
 
     // 登记到顶层窗口列表 (JZApplication::topLevelWindows / activeWindow,

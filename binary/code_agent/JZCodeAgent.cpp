@@ -402,6 +402,20 @@ bool JZCodeAgent::openProject(const string &path, CodeProjectStatus *status, str
     return true;
 }
 
+void JZCodeAgent::closeProject()
+{
+    saveWorkspaceHistory();
+
+    // workspace 一并清空：否则再打开"同一个"目录时 setWorkspace 会因为路径相同直接返回，
+    // 不重建 agent、也不导入存档，界面上是空的而 agent 里还留着上一段对话。
+    m_codeConfig.workspace.clear();
+    m_project = CodeProjectStatus();
+    m_logs.clear();
+    m_logId = 0;
+    m_busy = false;
+    m_waiting = false;
+}
+
 const CodeProjectStatus &JZCodeAgent::projectStatus() const
 {
     return m_project;

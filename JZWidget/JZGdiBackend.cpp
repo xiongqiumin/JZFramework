@@ -296,18 +296,36 @@ JZGdiBackend::~JZGdiBackend()
     destroy();
 }
 
-bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH)
+bool JZGdiBackend::acquireFontEngine()
 {
-    m_widgetDevice = device;
-    if (!hwnd || !gdiplusLifetime().acquire())
+    // GDI+ 先起来: GdiFontEngine 的测量全程依赖它 (Font/Graphics/MeasureString)。
+    if (!gdiplusLifetime().acquire())
         return false;
-    m_initialized = true;      // 之后 destroy() 才允许减引用计数
-
     // 字体度量引擎 (进程级, 引用计数与 GDI+ 生命周期一致)
     if (fontEngineRefCount()++ == 0) {
         s_fontEngine = new GdiFontEngine();
         JZFontMetrics::setEngine(s_fontEngine);
     }
+    return true;
+}
+
+void JZGdiBackend::releaseFontEngine()
+{
+    // 必须先于 GdiplusShutdown 注销: 引擎持有 GDI+ 对象 (Graphics/HDC)。
+    if (fontEngineRefCount() > 0 && --fontEngineRefCount() == 0) {
+        JZFontMetrics::setEngine(nullptr);
+        delete s_fontEngine;
+        s_fontEngine = nullptr;
+    }
+    gdiplusLifetime().release();   // 内部会先释放字体族缓存再 Shutdown
+}
+
+bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH)
+{
+    m_widgetDevice = device;
+    if (!hwnd || !acquireFontEngine())
+        return false;
+    m_initialized = true;      // 之后 destroy() 才允许减引用计数
 
     m_hwnd = hwnd;
     m_physW = physicalW;
@@ -332,15 +350,7 @@ void JZGdiBackend::destroy()
     // 主窗口下一次重绘在 GdiPlus.dll 里崩。
     if (m_initialized) {
         m_initialized = false;
-
-        // 字体度量引擎先于 GdiplusShutdown 注销
-        if (fontEngineRefCount() > 0 && --fontEngineRefCount() == 0) {
-            JZFontMetrics::setEngine(nullptr);
-            delete s_fontEngine;
-            s_fontEngine = nullptr;
-        }
-
-        gdiplusLifetime().release();
+        releaseFontEngine();   // 字体度量引擎 + GDI+ 引用计数 (与 init 严格对称)
     }
 }
 

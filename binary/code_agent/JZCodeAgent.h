@@ -124,6 +124,10 @@ public:
     // 打开 path 作为新工作区（切换对话/存档语义同 setWorkspace），
     // 探测结果经 status 返回；目录不存在时返回 false
     bool openProject(const std::string &path, CodeProjectStatus *status, std::string &error);
+    // 关闭当前工程：给当前工作区存档（下次打开/启动恢复时自动接上对话），清掉运行态，
+    // 并把 workspace 置空（下次 openProject 才会真正重建 agent 并导入存档）。
+    // 注意： MainWindow 侧的 m_cfg.workspace 不变，它同时承担"下次启动恢复哪条"的职责。
+    void closeProject();
     // 把 path 初始化为最小可编译的标准 TS 工程骨架
     // （生成 tsconfig.json(outDir=build)/.gitignore，src 为空时补 src/main.ts；
     //   已有文件一律不覆盖，可幂等重复调用补齐缺项。

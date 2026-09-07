@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstddef>
 #include "JZSize.h"
+#include "JZObjectPointer.h"
 
 class JZWidget;
 
@@ -11,7 +12,9 @@ class JZLayout
 public:
     virtual ~JZLayout();
 
-    // 应用到目标容器 (由 JZWidget::setLayout 调用), 同时保存容器供后续 updateLayout 使用
+    // 应用到目标容器 (由 JZWidget::setLayout 调用): 保存容器供后续 updateLayout
+    // 使用, 并把已登记的管理控件自动挂到容器下 (支持"先 addWidget 再 setLayout"
+    // 的写法, 无需加控件前逐个 setParent), 最后重排。
     void apply(JZWidget* container);
     virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
     virtual JZSize sizeHint() const { return JZSize(0, 0); }  // 容器期望尺寸: 内容 hints 之和
@@ -48,7 +51,17 @@ protected:
     void relayout();
 
     JZWidget* m_container = nullptr;  // 已被 apply 过的容器
-    std::vector<JZWidget*> m_managed; // 被本布局管理的控件 (销毁时自动解绑)
+    std::vector<JZObjectPointer> m_managed; // 被本布局管理的控件 (用 JZObjectPointer
+                                            // 跟踪存活; 控件销毁后指针自动失效, 布局时
+                                            // 由 purgeInvalid 剔除, 避免悬垂登记)
+
+protected:
+    // 剔除 m_managed 中已销毁的控件 (兜底: 正常情况下 removeWidget 已自清,
+    // 这里防止任何漏注销导致的悬垂登记)。在每次 relayout 入口调用。
+    void purgeInvalid();
+    // m_items 中的原始指针是否仍由本布局有效持有 (控件存活且已登记)。
+    // 用于在 updateLayout/sizeHint 中跳过已销毁但未及时 remove 的 item。
+    bool isManagedLive(JZWidget* w) const;
     int m_gap = 0;
     int m_marginLeft = 0;
     int m_marginTop = 0;

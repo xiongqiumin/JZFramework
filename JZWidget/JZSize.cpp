@@ -1,4 +1,5 @@
 #include "JZSize.h"
+#include "JZDebug.h"
 
 JZSize::JZSize()
     : m_w(0), m_h(0)
@@ -17,3 +18,9 @@ void JZSize::setHeight(int h) { m_h = h; }
 
 bool JZSize::isEmpty() const  { return m_w <= 0 || m_h <= 0; }
 bool JZSize::isValid() const  { return m_w >= 0 && m_h >= 0; }
+
+JZDebug operator<<(JZDebug d, const JZSize& sz)
+{
+    d.append(str_asprintf("{%d,%d}", sz.width(), sz.height()).c_str());
+    return d;
+}

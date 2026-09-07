@@ -1,5 +1,6 @@
 #include "JZLayout.h"
 #include "JZWidget.h"
+#include "JZLog.h"
 #include <algorithm>
 #include <climits>
 
@@ -87,11 +88,11 @@ inline bool policyExpands(JZWidget::SizePolicy p)
 
 JZLayout::~JZLayout()
 {
-    // 布局销毁时解除与所有受管控件的关联。若控件先于布局销毁,
-    // JZWidget 析构会经 removeWidget 把它们从 m_managed 移除,
-    // 因此这里不会访问到已销毁的控件。
-    for (JZWidget* w : m_managed)
-        w->_layoutDetach(this);
+    // 布局销毁时解除与所有受管控件的关联。m_managed 用 JZObjectPointer 跟踪,
+    // 控件已销毁的项 object() 返回 nullptr, 这里跳过避免访问悬垂指针。
+    for (auto& ptr : m_managed)
+        if (JZWidget* w = static_cast<JZWidget*>(ptr.object()))
+            w->_layoutDetach(this);
     m_managed.clear();
 }
 
@@ -99,10 +100,24 @@ void JZLayout::addManaged(JZWidget* widget)
 {
     if (!widget)
         return;
-    for (JZWidget* w : m_managed)
-        if (w == widget)
+    for (auto& ptr : m_managed)
+        if (ptr.object() == widget)
             return;   // 已登记
-    m_managed.push_back(widget);
+    // addWidget 的控件若已被其它父控件持有 (且不是本布局容器), 属于误用:
+    // 布局会在 apply / relayout 时强制 reparent 到本容器, 此处给出告警便于定位。
+    // 仅当布局已 apply (m_container 非空) 时才能比较; 先 addWidget 再 setLayout
+    // 的情况由 apply 里统一告警。
+    if (m_container)
+    {
+        JZWidget* p = widget->parentWidget();
+        if (p && p != m_container)
+        {
+            LOG_W("JZLayout::addWidget: 控件\"" + widget->objectName() + "\"已被父控件\"" +
+                  p->objectName() + "\"持有, 但被加入布局容器\"" +
+                  m_container->objectName() + "\", 将被强制 reparent 到本容器");
+        }
+    }
+    m_managed.push_back(widget->guardPointer());
     widget->_layoutAttach(this);
 }
 
@@ -112,7 +127,7 @@ void JZLayout::removeManaged(JZWidget* widget)
         return;
     for (auto it = m_managed.begin(); it != m_managed.end(); ++it)
     {
-        if (*it == widget)
+        if (it->object() == widget)
         {
             m_managed.erase(it);
             break;
@@ -124,15 +139,60 @@ void JZLayout::removeManaged(JZWidget* widget)
 void JZLayout::apply(JZWidget* container)
 {
     m_container = container;
+    // 支持"先 addWidget 再 setLayout"的写法: apply 时把已登记的管理控件
+    // 挂到容器下 (等价 Qt QLayout::addWidget 的自动 reparent), 这样无需在
+    // 加控件前逐个 setParent。容器即布局的父是唯一合法归属, 与框架约束一致。
+    for (auto& ptr : m_managed)
+    {
+        JZWidget* w = static_cast<JZWidget*>(ptr.object());
+        if (!w)
+            continue;
+        JZWidget* p = w->parentWidget();
+        // addWidget 的控件若已被其它父控件持有 (且不是本容器), 属于误用:
+        // 布局会强制 reparent 到本容器, 此处给出告警便于定位。
+        if (p && p != container)
+        {
+            LOG_W("JZLayout::apply: 控件\"" + w->objectName() + "\"已被父控件\"" +
+                  p->objectName() + "\"持有, 但被加入布局容器\"" +
+                  container->objectName() + "\", 将被强制 reparent 到本容器");
+        }
+        if (p != container)
+            w->setParentWidget(container);
+    }
     relayout();
 }
 
 void JZLayout::relayout()
 {
+    purgeInvalid();   // 先剔除已销毁却未 remove 的受管控件, 防止后续访问悬垂
     if (m_container) {
         m_container->updateLayout();   // 重排自身子控件(含本次变更)
         m_container->updateGeometry(); // 向上级联: 父布局按新 sizeHint 重排
     }
+}
+
+void JZLayout::purgeInvalid()
+{
+    // 兜底: 控件销毁(直接 delete 或经 removeWidget)后, JZObjectPointer 失效,
+    // 这里静默剔除已销毁的受管控件, 避免 m_managed 持有悬垂指针。直接 delete
+    // 控件是合法写法, 无需告警。
+    for (auto it = m_managed.begin(); it != m_managed.end(); )
+    {
+        if (!*it)   // JZObjectPointer 失效 == 控件已销毁
+            it = m_managed.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool JZLayout::isManagedLive(JZWidget* w) const
+{
+    if (!w)
+        return false;
+    for (const auto& ptr : m_managed)
+        if (ptr.object() == w)
+            return true;
+    return false;
 }
 
 // ==================== JZBoxLayout ====================
@@ -234,7 +294,7 @@ void JZBoxLayout::clear()
         return;
     for (const auto& it : m_items)
     {
-        if (it.type == WidgetItem && it.widget)
+        if (it.type == WidgetItem && it.widget && isManagedLive(it.widget))
             removeManaged(it.widget);
     }
     m_items.clear();
@@ -270,16 +330,31 @@ void JZBoxLayout::updateLayout()
     if (n == 0)
         return;
 
-    int gapTotal = m_gap * (n - 1);
+    // 隐藏控件不参与布局 (等价 Qt: 隐藏项被布局剔除) —— 不占主轴/交叉轴空间、
+    // 不定位、也不贡献 item 间间隔。先统计"参与"的 item 数, 用于计算间隔总数。
+    int participating = 0;
+    for (int i = 0; i < n; ++i) {
+        const auto& it = m_items[i];
+        if (it.type == WidgetItem) {
+            if (it.widget && it.widget->isVisible())
+                ++participating;
+        } else {
+            ++participating;   // Spacer / Stretch 始终参与
+        }
+    }
+
+    int gapTotal = participating > 0 ? m_gap * (participating - 1) : 0;
     int mainAvail = std::max(0, (horiz ? innerW : innerH) - gapTotal);
     int crossAvail = (horiz ? innerH : innerW);
     int crossOrigin = (horiz ? m_marginTop : m_marginLeft);
 
-    // 主轴上每个 item 的 hint/min/max/weight
+    // 主轴上每个 item 的 hint/min/max/weight; 隐藏控件全置 0 (不占空间、无权重)。
     std::vector<int> mainHint(n, 0), mainMin(n, 0), mainMax(n, INT_MAX), mainWeight(n, 0);
     for (int i = 0; i < n; ++i) {
         const auto& it = m_items[i];
-        if (it.type == WidgetItem && it.widget) {
+        if (it.type == WidgetItem && it.widget && isManagedLive(it.widget)) {
+            if (!it.widget->isVisible())
+                continue;   // 隐藏: 不占空间、无权重
             JZSize hs = it.widget->sizeHint();
             JZWidget::SizePolicy mp = horiz ? it.widget->horizontalPolicy() : it.widget->verticalPolicy();
             mainHint[i] = horiz ? hs.width() : hs.height();
@@ -299,11 +374,13 @@ void JZBoxLayout::updateLayout()
 
     std::vector<int> mainSize = distributeAxis(mainAvail, mainHint, mainMin, mainMax, mainWeight);
 
-    // 沿主轴依次摆放, 交叉轴按策略居中/填满
+    // 沿主轴依次摆放, 交叉轴按策略居中/填满; 隐藏控件直接跳过(不定位、不前进)。
     int cursor = horiz ? m_marginLeft : m_marginTop;
     for (int i = 0; i < n; ++i) {
         const auto& it = m_items[i];
-        if (it.type == WidgetItem && it.widget) {
+        if (it.type == WidgetItem && it.widget && isManagedLive(it.widget)) {
+            if (!it.widget->isVisible())
+                continue;   // 隐藏: 不参与摆放
             JZSize hs = it.widget->sizeHint();
             JZWidget::SizePolicy cp = horiz ? it.widget->verticalPolicy() : it.widget->horizontalPolicy();
             int hintCross = horiz ? hs.height() : hs.width();
@@ -334,18 +411,26 @@ JZSize JZBoxLayout::sizeHint() const
     bool horiz = (flexFlow() == 0);
     int main = 0;
     int cross = 0;
+    int participating = 0;   // 隐藏控件不计入 hint 与间隔 (与 updateLayout 一致)
     for (int i = 0; i < n; ++i) {
         const auto& it = m_items[i];
-        if (it.type == WidgetItem && it.widget) {
+        if (it.type == WidgetItem && it.widget && isManagedLive(it.widget)) {
+            if (!it.widget->isVisible())
+                continue;   // 隐藏: 不计 hint
             JZSize hs = it.widget->sizeHint();
             if (horiz) { main += hs.width();  cross = std::max(cross, hs.height()); }
             else       { main += hs.height(); cross = std::max(cross, hs.width()); }
+            ++participating;
         } else if (it.type == SpacerItem) {
             main += std::max(0, it.spaceSize);
+            ++participating;
         }
-        // StretchItem 无固有尺寸, 不计入 hint
+        // StretchItem 无固有尺寸, 不计入 hint, 但参与 item 间间隔
+        else {
+            ++participating;
+        }
     }
-    main += m_gap * (n - 1);
+    main += m_gap * (participating > 0 ? participating - 1 : 0);
     int w = horiz ? (m_marginLeft + m_marginRight + main)
                   : (m_marginLeft + m_marginRight + cross);
     int h = horiz ? (m_marginTop + m_marginBottom + cross)
@@ -513,7 +598,7 @@ void JZGridLayout::updateLayout()
             arr[c] = std::max(arr[c], base + (c == from ? rem : 0));
     };
     for (const auto& it : m_items) {
-        if (!it.widget) continue;
+        if (!it.widget || !it.widget->isVisible() || !isManagedLive(it.widget)) continue;   // 隐藏/已销毁控件不参与网格布局
         JZSize hs = it.widget->sizeHint();
         spreadMin(hs.width(),  it.col, it.colSpan, colHint);
         spreadMin(hs.height(), it.row, it.rowSpan, rowHint);
@@ -557,9 +642,9 @@ void JZGridLayout::updateLayout()
     int ry = m_marginTop;
     for (int r = 0; r < rows; ++r) { rowY[r] = ry; ry += rowW[r] + vGap; }
 
-    // 放置每个控件 (处理合并单元格), 单元格内居中
+    // 放置每个控件 (处理合并单元格), 单元格内居中; 隐藏控件跳过不定位
     for (const auto& it : m_items) {
-        if (!it.widget) continue;
+        if (!it.widget || !it.widget->isVisible() || !isManagedLive(it.widget)) continue;
         int cellX = colX[it.col];
         int cellY = rowY[it.row];
         int cellW = 0, cellH = 0;
@@ -592,7 +677,7 @@ JZSize JZGridLayout::sizeHint() const
 
     std::vector<int> colHint(cols, 0), rowHint(rows, 0);
     for (const auto& it : m_items) {
-        if (!it.widget) continue;
+        if (!it.widget || !it.widget->isVisible() || !isManagedLive(it.widget)) continue;   // 隐藏/已销毁控件不参与网格布局
         JZSize hs = it.widget->sizeHint();
         // 与 updateLayout 一致: 跨格控件按覆盖列数均摊, 余数给首列
         if (it.colSpan <= 1) {
@@ -725,8 +810,9 @@ void JZSelfLayout::updateLayout()
     for (const auto& it : m_items)
     {
         JZWidget* w = it.widget;
-        if (!w)
-            continue;
+        if (!w || !w->isVisible() || !isManagedLive(w))
+            continue;   // 隐藏/已销毁控件不参与锚定摆放
+
 
         // 布局不改尺寸: 取 sizeHint 夹 [min,max] (默认 sizeHint = 当前尺寸,
         // 未 resize/setFixed 的子控件会被排成 0x0, 参与前需先定好尺寸)

@@ -16,6 +16,8 @@
 #include "JZMenu.h"
 #include "JZFileDialog.h"
 #include "JZCheckbox.h"
+#include "JZStackedWidget.h"
+#include "JZListWidget.h"
 
 #include <string>
 #include <vector>
@@ -44,7 +46,14 @@ struct AppConfig
     int proxyPort = 0;
     std::string proxyUser;
     std::string proxyPassword;
+
+    // 最近打开的工程（绝对路径，最近使用的排在最前，最多 kMaxRecentProjects 条）。
+    // 启动时自动恢复第 0 条，即“默认打开上次的项目”。
+    std::vector<std::string> recentProjects;
 };
+
+// 最近工程列表最大长度
+enum { kMaxRecentProjects = 10 };
 
 // 多行输入：Ctrl+Enter 发送；发送按钮用 selfLayout 锚在输入框内部右下角（忙碌时变"停止"）
 class InputEdit : public JZTextEdit
@@ -135,6 +144,29 @@ protected:
     JZCheckbox* m_debugCheck = nullptr;
 };
 
+// 未打开工程时中央区显示的欢迎页：提示先新建/打开工程，并列出最近工程（点击直接打开）。
+// 有工程时中央区切到 ChatView，同时隐藏底部输入框与"清空"按钮（无工作区时发指令没有意义）。
+class WelcomePage : public JZWidget
+{
+    JZ_OBJECT_DECLARE(WelcomePage)
+public:
+    explicit WelcomePage(JZWidget* parent = nullptr);
+
+    // 刷新最近工程列表；列表为空时整块（标题 + 列表）隐藏，只留提示与两个按钮。
+    void setRecentProjects(const std::vector<std::string>& paths);
+
+    JZSigVoid   sigNewProject;
+    JZSigVoid   sigOpenProject;
+    JZSigString sigOpenRecent;      // 参数为工程绝对路径
+
+private:
+    void onRecentActivated(int index);
+
+    JZLabel*      m_recentLabel = nullptr;
+    JZListWidget* m_recentList = nullptr;
+    std::vector<std::string> m_paths;
+};
+
 // 主窗口：直接继承 JZMainWindow 骨架。菜单栏经 addMenuBar 置顶，
 // 内容区(状态/工具条 + ChatView + 底部输入框)整体作为中央控件 setCentralWidget 挂载。
 // 复用 JZCodeAgent 的本地代码助手能力
@@ -159,27 +191,44 @@ private:
     void onSettings();
     void onNewProject();
     void onOpenProject();
+    void onOpenRecentProject(const std::string& path);   // 欢迎页/最近列表里点开
+    void onCloseProject();
     void onExport();
     void onExit();
     void onPoll();
+    void onClearRecent();     // 清空“最近的项目”列表
+
+    // 打开 dir 作为工程：探测 → （必要时询问并初始化）→ openProject → 记入最近列表。
+    // interactive=false 用于启动自动恢复：不弹任何对话框，非工程目录/失败直接放弃。
+    bool openProjectDir(const std::string& dir, bool interactive);
+    // 启动时恢复上次的工程（最近列表第 0 条，没有则用配置的工作区）
+    void openLastProject();
+
+    // 记入最近工程（同路径上移，去重，截断到 kMaxRecentProjects）
+    void addRecentProject(const std::string& path);
+    // 重建“最近的项目”子菜单（挂在 aboutToShow 上，展开时才刷新）
+    void updateRecentMenu();
 
     // openProject 成功后的收尾：持久化工作区 + 刷新状态栏 + 整屏重建对话视图
     void finishOpenWorkspace();
+    // 按 m_projectOpened 切换中央区（欢迎页 / 对话页），并同步输入框与"清空"的可见性
+    void updateStack();
 
     void appendLog(const CodeAgentLog& log);
 
-    JZCodeAgent*  m_agent = nullptr;
-    ChatView*     m_chatView = nullptr;
-    InputEdit*    m_inputEdit = nullptr;
-    JZPushButton* m_clearBtn = nullptr;
-    JZPushButton* m_settingsBtn = nullptr;
-    JZPushButton* m_exportBtn = nullptr;
-    JZMenuBar*    m_menuBar = nullptr;
+    JZCodeAgent*     m_agent = nullptr;
+    ChatView*        m_chatView = nullptr;
+    InputEdit*       m_inputEdit = nullptr;
+    JZPushButton*    m_clearBtn = nullptr;
+    JZMenuBar*       m_menuBar = nullptr;
+    JZMenu*          m_recentMenu = nullptr;   // 文件 → 最近的项目（子菜单）
+    JZStackedWidget* m_stack = nullptr;        // 0=欢迎页 1=对话页
+    WelcomePage*     m_welcome = nullptr;
+    bool             m_projectOpened = false;  // 是否已打开工程（决定显示哪一页）
 
     std::string m_exportName;   // 上次导出指定的运行时 exe 名（记住，方便连续导出）
     std::string m_exportIcon;   // 上次导出指定的图标路径
     bool m_exportDebug = true;  // 上次导出是否勾选 debug（记住，方便连续导出）
-    JZLabel*      m_statusLabel = nullptr;
     JZTimer*      m_pollTimer = nullptr;
 
     int  m_renderedId = 0;

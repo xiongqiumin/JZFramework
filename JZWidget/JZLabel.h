@@ -9,7 +9,7 @@ class JZLabel : public JZWidget
 
 public:
     explicit JZLabel(JZWidget* parent = nullptr);
-    JZLabel(JZWidget* parent, const std::string& text);
+    JZLabel(const std::string& text, JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
     void setText(const std::string& text);

@@ -425,8 +425,10 @@ void JZMenu::popup(JZWindow* owner, const JZRect& anchor, bool asSubmenu)
         return;
 
     ensurePopup();
-    updateLayout();
+    // aboutToShow 必须早于 updateLayout: 接收方通常在回调里增删菜单项（如"最近的项目"），
+    // 若先算布局，回调改完内容后 m_itemRects / m_contentSize 仍是旧的，弹层尺寸与命中都会错位。
     aboutToShow.emit();
+    updateLayout();
 
     // 浮层跟随 owner 的 DPI 缩放: 否则 createWindow 会用主屏 DPI, 与 mapToGlobal
     // (owner 缩放) 算出的 anchor 不在同一坐标系, 多屏/HiDPI 下弹层错位、尺寸不对。

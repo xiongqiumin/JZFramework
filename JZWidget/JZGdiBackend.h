@@ -27,6 +27,14 @@ public:
     bool init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH);
     void destroy();
 
+    // 字体度量引擎 (GDI+) 的进程级申请/释放, 与窗口无关、可独立调用:
+    //   - 引用计数, 与 GDI+ 生命周期严格对称 (init()/destroy() 内部也走这两个函数);
+    //   - 供 JZDriver 在**任何 UI 构造之前**预先注册到 JZFontMetrics。
+    //     否则首次布局只能走 JZFontMetrics::estimateWidth 估算 (ASCII 仅 0.55em),
+    //     控件会系统性偏窄、文字被裁; 而引擎注册本身不触发重排, 事后无法自动纠正。
+    static bool acquireFontEngine();
+    static void releaseFontEngine();
+
     // 渲染一帧: 回放 layer 中的绘制任务并 BitBlt 到窗口, 结束后清空任务列表。
     void render(JZLayer* layer);
 

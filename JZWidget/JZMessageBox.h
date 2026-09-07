@@ -14,8 +14,6 @@ public:
 
 private:
     JZMessageBox(JZWidget* parent, const std::string& title, const std::string& text, bool hasCancel);
-
-    void buildLayout(const std::string& title, const std::string& text, bool hasCancel);
 };
 
 #endif

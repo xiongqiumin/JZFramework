@@ -13,6 +13,7 @@ public:
     JZRadioButton(JZWidget* parent, const std::string& text);
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
     void setText(const std::string& text);
     std::string text() const;
 

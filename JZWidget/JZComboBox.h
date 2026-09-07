@@ -17,6 +17,7 @@ public:
     explicit JZComboBox(JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
 
     // 添加项
     void addItem(const std::string& text);

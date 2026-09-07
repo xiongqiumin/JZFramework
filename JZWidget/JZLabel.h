@@ -12,6 +12,7 @@ public:
     JZLabel(const std::string& text, JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
     void setText(const std::string& text);
     std::string text() const;
 

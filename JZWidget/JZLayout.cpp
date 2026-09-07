@@ -438,6 +438,43 @@ JZSize JZBoxLayout::sizeHint() const
     return JZSize(w, h);
 }
 
+JZSize JZBoxLayout::minimumSizeHint() const
+{
+    // 与 sizeHint 同结构, 但取子控件 minimumWidth/Height (而非 sizeHint),
+    // 作为容器可缩放的下限, 防止窗口/父布局把内容压到不可用。
+    int n = (int)m_items.size();
+    if (n == 0 || !m_container)
+        return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
+
+    bool horiz = (flexFlow() == 0);
+    int main = 0;
+    int cross = 0;
+    int participating = 0;
+    for (int i = 0; i < n; ++i) {
+        const auto& it = m_items[i];
+        if (it.type == WidgetItem && it.widget && isManagedLive(it.widget)) {
+            if (!it.widget->isVisible())
+                continue;
+            int mw = it.widget->minimumWidth();
+            int mh = it.widget->minimumHeight();
+            if (horiz) { main += mw;  cross = std::max(cross, mh); }
+            else       { main += mh;  cross = std::max(cross, mw); }
+            ++participating;
+        } else if (it.type == SpacerItem) {
+            main += std::max(0, it.spaceSize);
+            ++participating;
+        } else {
+            ++participating;
+        }
+    }
+    main += m_gap * (participating > 0 ? participating - 1 : 0);
+    int w = horiz ? (m_marginLeft + m_marginRight + main)
+                  : (m_marginLeft + m_marginRight + cross);
+    int h = horiz ? (m_marginTop + m_marginBottom + cross)
+                  : (m_marginTop + m_marginBottom + main);
+    return JZSize(w, h);
+}
+
 // ==================== JZGridLayout ====================
 
 JZGridLayout::JZGridLayout(int pad, int gap)
@@ -708,6 +745,47 @@ JZSize JZGridLayout::sizeHint() const
     return JZSize(w, h);
 }
 
+JZSize JZGridLayout::minimumSizeHint() const
+{
+    // 同 sizeHint 结构, 但取子控件 minimumWidth/Height 作为列/行最小尺寸。
+    int cols = columnCount();
+    int rows = rowCount();
+    if (cols <= 0 || rows <= 0)
+        return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
+
+    std::vector<int> colMin(cols, 0), rowMin(rows, 0);
+    for (const auto& it : m_items) {
+        if (!it.widget || !it.widget->isVisible() || !isManagedLive(it.widget)) continue;
+        int mw = it.widget->minimumWidth();
+        int mh = it.widget->minimumHeight();
+        if (it.colSpan <= 1) {
+            colMin[it.col] = std::max(colMin[it.col], mw);
+        } else {
+            int base = mw / it.colSpan;
+            int rem  = mw % it.colSpan;
+            for (int c = it.col; c < it.col + it.colSpan; ++c)
+                colMin[c] = std::max(colMin[c], base + (c == it.col ? rem : 0));
+        }
+        if (it.rowSpan <= 1) {
+            rowMin[it.row] = std::max(rowMin[it.row], mh);
+        } else {
+            int base = mh / it.rowSpan;
+            int rem  = mh % it.rowSpan;
+            for (int r = it.row; r < it.row + it.rowSpan; ++r)
+                rowMin[r] = std::max(rowMin[r], base + (r == it.row ? rem : 0));
+        }
+    }
+    int w = m_marginLeft + m_marginRight;
+    int h = m_marginTop + m_marginBottom;
+    for (int c = 0; c < cols; ++c) w += colMin[c];
+    for (int r = 0; r < rows; ++r) h += rowMin[r];
+    int hGap = horizontalSpacing();
+    int vGap = verticalSpacing();
+    w += hGap * (cols - 1);
+    h += vGap * (rows - 1);
+    return JZSize(w, h);
+}
+
 // ==================== JZSelfLayout ====================
 
 JZSelfLayout::JZSelfLayout(int pad)
@@ -841,5 +919,11 @@ JZSize JZSelfLayout::sizeHint() const
 {
     // 锚定摆放依赖容器最终尺寸 (由父布局/业务给定), 自身不表达内容期望,
     // 只上报 margins。放进 Box 等布局时请显式 setFixedSize 或让它 stretch。
+    return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
+}
+
+JZSize JZSelfLayout::minimumSizeHint() const
+{
+    // 同 sizeHint: 锚定布局不根据内容推导最小尺寸, 仅上报 margins。
     return JZSize(m_marginLeft + m_marginRight, m_marginTop + m_marginBottom);
 }

@@ -11,7 +11,8 @@ JZDialog::JZDialog(JZWidget* parent)
     , m_result(Rejected)
 {
     setWindowType(Modal);   // 对话框框形 + execModal 禁用 owner
-    resize(320, 240);
+    // 不预置尺寸: 留 0×0, 首次 showEvent 按 sizeHint 自适应 (见 JZWindow::showEvent)。
+    // 使用布局的对话框会自动贴合内容; 绝对定位的对话框 (如 JZMessageBox) 需自行 resize。
 }
 
 JZDialog::Result JZDialog::result() const

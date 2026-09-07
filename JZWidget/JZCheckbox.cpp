@@ -7,8 +7,7 @@ JZ_OBJECT_IMPL(JZCheckbox, JZWidget)
 JZCheckbox::JZCheckbox(JZWidget* parent)
     : JZWidget(parent)
     , sigToggled(this)
-{
-}
+{}
 
 void JZCheckbox::setText(const std::string& text)
 {
@@ -33,6 +32,11 @@ void JZCheckbox::setChecked(bool on)
 JZSize JZCheckbox::sizeHint() const
 {
     return JZSize(96, 24);
+}
+
+JZSize JZCheckbox::minimumSizeHint() const
+{
+    return JZSize(0, 22);
 }
 
 void JZCheckbox::paintEvent(JZPainterEvent* event)

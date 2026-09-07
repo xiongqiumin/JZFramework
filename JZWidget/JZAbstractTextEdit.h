@@ -77,6 +77,9 @@ public:
     // 可编辑 (非只读; 单行且非密码) 时需要输入法; 窗口据此关联/断开 IMC
     bool imeEnabled() const override;
 
+    // 最小期望尺寸: 单行/多行文本框的下限, 供布局推导窗口最小尺寸
+    JZSize minimumSizeHint() const override;
+
     // ---- AI 语义 ----
     std::string aiRole() const override { return "textbox"; }
     std::string aiText() const override { return m_text.toStdString(); }

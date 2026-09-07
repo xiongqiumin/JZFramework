@@ -9,29 +9,31 @@ JZMessageBox::JZMessageBox(JZWidget* parent, const std::string& title,
                            const std::string& text, bool hasCancel)
     : JZDialog(parent)
 {
+    setTitle(title);
+
+    // 整体纵向布局: 文本 + 按钮行
+    auto* vbox = new JZVBoxLayout(16, 12);
+    setLayout(vbox);
+
     // 文本
     auto* textLabel = new JZLabel(this);
     textLabel->setText(text);
-    textLabel->move(20, 30);
-    textLabel->resize(260, 40);
+    vbox->addWidget(textLabel, 0);
 
-    // 按钮区
-    auto* btnRow = new JZWidget(this);
-    btnRow->resize(160, 35);
-    btnRow->move(70, 90);
-    btnRow->setLayout(new JZHBoxLayout(4, 8));
-
+    // 按钮行: 右侧对齐 (stretch 占位)
+    JZWidget* btnRow = new JZWidget(this);
+    JZHBoxLayout* bh = new JZHBoxLayout(8, 8);
+    bh->addStretch(1);
     if (hasCancel) {
-        auto* cancelBtn = new JZPushButton(btnRow);
-        cancelBtn->resize(75, 30);
-        cancelBtn->setText("Cancel");
+        auto* cancelBtn = new JZPushButton(btnRow, 75, 30, "Cancel");
+        bh->addWidget(cancelBtn, 0);
         connect(&cancelBtn->sigClicked, this, &JZDialog::reject);
     }
-
-    auto* okBtn = new JZPushButton(btnRow);
-    okBtn->resize(75, 30);
-    okBtn->setText("OK");
+    auto* okBtn = new JZPushButton(btnRow, 75, 30, "OK");
+    bh->addWidget(okBtn, 0);
     connect(&okBtn->sigClicked, this, &JZDialog::accept);
+    btnRow->setLayout(bh);
+    vbox->addWidget(btnRow, 0);
 }
 
 JZMessageBox* JZMessageBox::information(JZWidget* parent,

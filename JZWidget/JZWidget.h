@@ -145,7 +145,10 @@ public:
 
     // 期望尺寸 (参考 Qt QWidget::sizeHint); 默认回退到当前尺寸, 容器/控件可重写
     virtual JZSize sizeHint() const;
-
+    // 最小期望尺寸 (参考 Qt QWidget::minimumSizeHint): 默认取布局的 minimumSizeHint
+    // (无布局返回 0×0)。minimumWidth/Height 会取 max(显式设置, minimumSizeHint),
+    // 使带布局的窗口/容器自动拥有贴合内容的缩放下限, 无需显式 setMinimumSize。
+    virtual JZSize minimumSizeHint() const;
     // 几何
     JZRect geometry() const;
     void setGeometry(const JZRect& r);

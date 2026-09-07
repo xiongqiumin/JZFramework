@@ -6,8 +6,7 @@ JZ_OBJECT_IMPL(JZSwitch, JZWidget)
 JZSwitch::JZSwitch(JZWidget* parent)
     : JZWidget(parent)
     , sigToggled(this)
-{
-}
+{}
 
 void JZSwitch::setState(bool on)
 {
@@ -20,6 +19,12 @@ bool JZSwitch::isOn() const
 JZSize JZSwitch::sizeHint() const
 {
     return JZSize(52, 26);
+}
+
+JZSize JZSwitch::minimumSizeHint() const
+{
+    // 开关有固定结构, 给一个最小宽高避免被压扁变形。
+    return JZSize(40, 24);
 }
 
 void JZSwitch::paintEvent(JZPainterEvent* event)

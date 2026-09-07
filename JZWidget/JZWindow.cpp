@@ -104,6 +104,8 @@ JZWindow::JZWindow(JZWidget* parent)
     m_visible = false;
 
     // 不预置尺寸: 留 0×0, 首次 showEvent 里按 sizeHint 自适应 (见 showEvent)。
+    // 最小尺寸由布局 minimumSizeHint 自动推导 (见 JZWidget::minimumWidth/Height),
+    // 窗口拖动缩放时不会小于内容所需。
 
     // 登记到顶层窗口列表 (JZApplication::topLevelWindows / activeWindow,
     // 以及"最后一个窗口关闭则退出"的判定都基于它)

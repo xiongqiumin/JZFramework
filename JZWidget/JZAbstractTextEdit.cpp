@@ -320,6 +320,13 @@ bool JZAbstractTextEdit::imeEnabled() const
     return !m_readOnly && !m_password;
 }
 
+JZSize JZAbstractTextEdit::minimumSizeHint() const
+{
+    // 文本框最小尺寸: 宽度允许收缩到 0 (内容裁切), 高度给出行高下限。
+    // 单行: 一行文本高; 多行: 至少两行可见。
+    return JZSize(0, m_singleLine ? 24 : 48);
+}
+
 void JZAbstractTextEdit::setPasswordMode(bool password)
 {
     m_password = password;

@@ -7,8 +7,7 @@ JZ_OBJECT_IMPL(JZLabel, JZWidget)
 
 JZLabel::JZLabel(JZWidget* parent)
     : JZWidget(parent)
-{
-}
+{}
 
 JZLabel::JZLabel(const std::string& text, JZWidget* parent)
     : JZLabel(parent)
@@ -44,10 +43,17 @@ JZSize JZLabel::sizeHint() const
     // 预留左右/上下内边距, 吸收度量误差或字体微调, 防止文字被裁切。
     if (m_text.empty())
         return JZSize(80, 20);
+    
     JZFont font(14);
     int tw = JZFontMetrics::textWidth(m_text, font);
     int th = JZFontMetrics::textHeight(font);
-    return JZSize(tw + 12, th + 8);
+    return JZSize(std::max(80,tw + 12), std::max(20,th + 8));
+}
+
+JZSize JZLabel::minimumSizeHint() const
+{
+    // 标签最小尺寸: 宽度可收缩到 0 (文本裁切/省略), 高度保留一行文本下限。
+    return JZSize(0, 16);
 }
 
 void JZLabel::paintEvent(JZPainterEvent* event)

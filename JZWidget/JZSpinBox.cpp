@@ -43,6 +43,12 @@ JZSize JZSpinBox::sizeHint() const
     return JZSize(w, h);
 }
 
+JZSize JZSpinBox::minimumSizeHint() const
+{
+    // 数字框: 宽度保留数字 + 按钮最小占位, 高度保留一行下限。
+    return JZSize(60, 26);
+}
+
 void JZSpinBox::setRange(int min, int max)
 {
     m_min = min; m_max = max;

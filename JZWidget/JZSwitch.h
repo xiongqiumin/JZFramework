@@ -12,6 +12,7 @@ public:
     explicit JZSwitch(JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
     void setState(bool on);
     bool isOn() const;
 

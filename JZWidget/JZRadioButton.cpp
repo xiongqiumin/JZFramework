@@ -87,6 +87,11 @@ JZSize JZRadioButton::sizeHint() const
     return JZSize(96, 20);
 }
 
+JZSize JZRadioButton::minimumSizeHint() const
+{
+    return JZSize(0, 22);
+}
+
 // ==================== 鼠标交互 ====================
 // 左键按下 + 本控件内释放 -> 选中 (已是选中态则不重复发信号)
 void JZRadioButton::mousePressEvent(JZMouseEvent* event)

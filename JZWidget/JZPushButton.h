@@ -13,6 +13,7 @@ public:
     JZPushButton(JZWidget* parent, int w, int h, const std::string& text);
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
     void* labelHandle() const;
 
     void setText(const std::string& text);

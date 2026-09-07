@@ -223,10 +223,16 @@ void JZWidget::setMaximumHeight(int h)
 }
 
 int JZWidget::minimumWidth() const
-{ return m_minW; }
+{
+    // 有效最小宽度 = max(显式设置的 m_minW, 布局推导的 minimumSizeHint 宽度)。
+    // 与 Qt 一致: 带布局的容器无需 setMinimumWidth 也有贴合内容的下限。
+    return std::max(m_minW, minimumSizeHint().width());
+}
 
 int JZWidget::minimumHeight() const
-{ return m_minH; }
+{
+    return std::max(m_minH, minimumSizeHint().height());
+}
 
 int JZWidget::maximumWidth() const
 { return m_maxW; }
@@ -363,7 +369,17 @@ JZSize JZWidget::sizeHint() const
     // 叶子控件: 无显式 hint 时以当前尺寸为期望 (手动 resize 的尺寸在布局中生效)。
     if (m_layout)
         return m_layout->sizeHint();
-    return JZSize(m_width, m_height);
+
+    return JZSize(0, 0);
+}
+
+JZSize JZWidget::minimumSizeHint() const
+{
+    // 参考 Qt QWidget::minimumSizeHint: 有布局时取布局的 minimumSizeHint
+    // (子控件 minimum 尺寸之和); 无布局返回 0×0, 即不主动施加下限。
+    if (m_layout)
+        return m_layout->minimumSizeHint();
+    return JZSize(0, 0);
 }
 
 // ==================== 几何 ====================

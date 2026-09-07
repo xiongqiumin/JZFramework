@@ -14,6 +14,7 @@ class JZSpinBox : public JZWidget
 public:
     explicit JZSpinBox(JZWidget* parent = nullptr);
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
 
     void setRange(int min, int max);
     void setMinimum(int min);

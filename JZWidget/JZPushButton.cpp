@@ -46,6 +46,12 @@ JZSize JZPushButton::sizeHint() const
     return JZSize(w, h);
 }
 
+JZSize JZPushButton::minimumSizeHint() const
+{
+    // 按钮最小尺寸: 宽度可收缩到 0 (文本裁切), 高度保留一行按钮下限。
+    return JZSize(0, 24);
+}
+
 void JZPushButton::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);

@@ -18,6 +18,9 @@ public:
     void apply(JZWidget* container);
     virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
     virtual JZSize sizeHint() const { return JZSize(0, 0); }  // 容器期望尺寸: 内容 hints 之和
+    // 容器最小尺寸: 子控件 minimum 尺寸之和。供 JZWidget::minimumSizeHint 使用,
+    // 使窗口拖动缩放时下限自动贴合内容, 无需显式 setMinimumSize。
+    virtual JZSize minimumSizeHint() const { return JZSize(0, 0); }
 
     // 从布局中摘除控件 / 清空。布局不拥有控件: 不 delete widget, 只解除管理关系
     // (控件仍以容器为父时保留当前位置继续显示)。JZWidget 析构时自动调用
@@ -89,6 +92,7 @@ public:
     ~JZBoxLayout() override;
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
 
     void addWidget(JZWidget* widget, int stretch = 0);
     void addSpacing(int size);
@@ -168,6 +172,7 @@ public:
     void removeWidget(JZWidget* widget) override;
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
 
 protected:
     void updateLayout() override;
@@ -227,6 +232,7 @@ public:
     void clear() override;
 
     JZSize sizeHint() const override;
+    JZSize minimumSizeHint() const override;
 
 protected:
     void updateLayout() override;

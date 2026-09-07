@@ -19,8 +19,7 @@ JZComboBox::JZComboBox(JZWidget* parent)
     : JZWidget(parent)
     , currentIndexChanged(this)
     , currentTextChanged(this)
-{
-}
+{}
 
 void JZComboBox::addItem(const std::string& text)
 {
@@ -91,6 +90,12 @@ JZSize JZComboBox::sizeHint() const
 {
     int w = m_width > 0 ? m_width : 120;
     return JZSize(w, 28);
+}
+
+JZSize JZComboBox::minimumSizeHint() const
+{
+    // 下拉框: 宽度保留文本 + 下拉按钮最小占位, 高度保留一行下限。
+    return JZSize(60, 26);
 }
 
 void JZComboBox::paintEvent(JZPainterEvent* event)

@@ -108,6 +108,7 @@ void JZAgent::clear()
     m_isActive = false;
     m_inTransaction = false;
     m_streamEnabled = false;
+    m_thinkEnabled = true;
     m_toolError = 0;
 
     m_error.clear();
@@ -131,6 +132,11 @@ void JZAgent::setStreamEnabled(bool enabled)
 {
     JZ_ASSERT(!m_isActive);
     m_streamEnabled = enabled;
+}
+
+void JZAgent::setThinkEnabled(bool enabled)
+{
+    m_thinkEnabled = enabled;
 }
 
 std::string JZAgent::readFile(std::string filepath)
@@ -483,6 +489,14 @@ void JZAgent::llmRequest()
         request_body["tool_choice"] = "auto";
     }
 
+    if(!m_thinkEnabled)
+    {
+        Json::Value chat_template_kwargs(Json::objectValue);
+        chat_template_kwargs["enable_thinking"] = m_thinkEnabled;
+
+        Json::Value local_extra_body(Json::objectValue);
+        request_body["chat_template_kwargs"] = chat_template_kwargs;
+    }
     // 调用方自定义字段(各家私有参数)最后合并, 允许覆盖上面的默认值
     if (m_config.extraBody.isObject())
     {

@@ -288,6 +288,156 @@ void JZCodeAgent::rebuildLogsFromHistory()
     }
 }
 
+// ==================== 会话历史管理 ====================
+string JZCodeAgent::generateTitle(const string &firstMessage)
+{
+    if (firstMessage.empty())
+        return "空任务";
+    
+    // 截取第一条消息的前 50 个字符作为标题
+    size_t maxLen = 50;
+    if (firstMessage.size() > maxLen)
+    {
+        string sub = firstMessage.substr(0, maxLen);
+        // 在最后一个空格处截断，避免截断单词
+        size_t lastSpace = sub.find_last_of(" \t\n");
+        if (lastSpace != string::npos && lastSpace > 10)
+            sub = sub.substr(0, lastSpace);
+        sub += "...";
+        return sub;
+    }
+    return firstMessage;
+}
+
+void JZCodeAgent::beginSession(const string &firstMessage, bool isJzAgent)
+{
+    if (firstMessage.empty())
+        return;
+
+    HistoryEntry entry;
+    entry.id = m_nextSessionId++;
+    entry.title = generateTitle(firstMessage);
+    entry.firstMessage = firstMessage;
+    entry.createdAt = JZPlatform::getTickCountMs();
+    entry.messageCount = 0;
+    entry.isJzAgent = isJzAgent;
+    
+    m_currentSessionId = entry.id;
+    m_sessionMessageCount = 0;
+    m_sessionIsJzAgent = isJzAgent;
+    m_sessionHistory.push_back(entry);
+}
+
+void JZCodeAgent::updateSession()
+{
+    if (m_currentSessionId <= 0 || m_sessionHistory.empty())
+        return;
+    
+    for (auto &entry : m_sessionHistory)
+    {
+        if (entry.id == m_currentSessionId)
+        {
+            entry.messageCount = m_sessionMessageCount;
+            break;
+        }
+    }
+}
+
+void JZCodeAgent::saveSessionHistory()
+{
+    if (m_sessionHistory.empty())
+        return;
+    
+    // 保存到工作区目录下的 .jzcode_history 文件
+    string path = m_codeConfig.workspace + "/.jzcode_history";
+    if (path.empty())
+        return;
+    
+    Json::Value root;
+    Json::Value history(Json::arrayValue);
+    
+    for (const auto &entry : m_sessionHistory)
+    {
+        Json::Value item;
+        item["id"] = entry.id;
+        item["title"] = entry.title;
+        item["firstMessage"] = entry.firstMessage;
+        item["createdAt"] = entry.createdAt;
+        item["messageCount"] = entry.messageCount;
+        item["isJzAgent"] = entry.isJzAgent;
+        history.append(item);
+    }
+    
+    root["history"] = history;
+    root["nextSessionId"] = m_nextSessionId;
+    
+    Json::StyledWriter writer;
+    ofstream f(path);
+    if (f.is_open())
+        f << writer.write(root);
+}
+
+void JZCodeAgent::loadSessionHistory()
+{
+    string path = m_codeConfig.workspace + "/.jzcode_history";
+    if (!JZFileInfo::exists(path))
+        return;
+    
+    ifstream f(path);
+    if (!f.is_open())
+        return;
+    
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(f, root))
+        return;
+    
+    m_sessionHistory.clear();
+    
+    if (root.isMember("history"))
+    {
+        const Json::Value &arr = root["history"];
+        for (int i = 0; i < (int)arr.size(); i++)
+        {
+            HistoryEntry entry;
+            entry.id = arr[i].get("id", 0).asInt();
+            entry.title = arr[i].get("title", "").asString();
+            entry.firstMessage = arr[i].get("firstMessage", "").asString();
+            entry.createdAt = arr[i].get("createdAt", 0).asInt64();
+            entry.messageCount = arr[i].get("messageCount", 0).asInt();
+            entry.isJzAgent = arr[i].get("isJzAgent", false).asBool();
+            m_sessionHistory.push_back(entry);
+        }
+    }
+    
+    m_nextSessionId = root.isMember("nextSessionId") ? root["nextSessionId"].asInt() : (int)m_sessionHistory.size() + 1;
+}
+
+const HistoryEntry *JZCodeAgent::findHistoryEntry(int id) const
+{
+    for (const auto &entry : m_sessionHistory)
+    {
+        if (entry.id == id)
+            return &entry;
+    }
+    return nullptr;
+}
+
+bool JZCodeAgent::removeHistoryEntry(int id)
+{
+    for (auto it = m_sessionHistory.begin(); it != m_sessionHistory.end(); ++it)
+    {
+        if (it->id == id)
+        {
+            m_sessionHistory.erase(it);
+            // 同时保存更新后的文件
+            saveSessionHistory();
+            return true;
+        }
+    }
+    return false;
+}
+
 bool JZCodeAgent::setWorkspace(const string &path)
 {
     JZDir dir(path);
@@ -981,6 +1131,7 @@ void JZCodeAgent::buildAgent()
 
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
+    m_agent->setThinkEnabled(false);
     m_agent->init(m_llmConfig);
 
     connect(&m_agent->sigReply, this, &JZCodeAgent::onReply);

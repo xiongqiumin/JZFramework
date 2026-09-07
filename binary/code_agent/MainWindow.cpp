@@ -1318,12 +1318,13 @@ void MainWindow::onPoll()
     }
 
     bool busy = m_agent->isBusy();
-    if (busy && m_pendingQueue.size() > 0)
+    if (!busy && m_pendingQueue.size() > 0)
     {
+        m_chatView->endStream();
+
         std::string message = m_pendingQueue.front();
         m_pendingQueue.pop_front();
         m_agent->request(message);
-        //m_chatView->endStream();
     }
 }
 

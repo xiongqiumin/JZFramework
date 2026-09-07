@@ -172,6 +172,7 @@ public:
 
     bool streamEnabled() const;
     void setStreamEnabled(bool enabled);
+    void setThinkEnabled(bool enabled);
 
     void transaction();  //暂时不提交
     void commit();       //提交  
@@ -261,6 +262,7 @@ protected:
     std::atomic<int> m_paramIdGen{ 0 };
 
     bool m_streamEnabled;  //是否流式传输
+    bool m_thinkEnabled;   //是否思考
 
     LLMContext m_context;
     int m_toolError;

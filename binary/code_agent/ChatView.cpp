@@ -302,7 +302,7 @@ void ChatView::appendAssistantDelta(const std::string& text)
         for (; it; ++it)
         {
             char32_t cp = it.codepoint();
-            if (cp > 127 || !std::isspace(static_cast<int>(cp)))
+            if (cp > 127 || !isspace(static_cast<int>(cp)))
             {
                 all_space = false;
                 break;

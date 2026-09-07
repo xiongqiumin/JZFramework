@@ -193,6 +193,7 @@ void JZNetworkConnect::closeConnection()
     {
         closeConn(false);
         m_conn = INVALID_NET_HANDLE;
+        sigDisconnected.emit();
     }
 }
 
@@ -200,8 +201,8 @@ void JZNetworkConnect::close()
 {
     if (m_reply)
         emitFinish(JZNetworkReply::ConnectError);
-    else
-        closeConnection();
+    
+    closeConnection();
 }
 
 JZByteArray JZNetworkConnect::getHttpBody(const JZByteArray& data)
@@ -376,7 +377,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
 #ifdef HAS_JZCompress
                     if (m_compressed && !jzApplyContentEncoding(m_reply, body))   // 仅在有压缩编码时才解压
                     {
-                        emitFinish(JZNetworkReply::ContentEncodingError);
+                        emitFinish(JZNetworkReply::ContentEncodingError);                        
                     }
                     else
 #endif
@@ -390,14 +391,9 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                 {
                     emitFinish(JZNetworkReply::ConnectError);
                 }
-                sigDisconnected.emit();
-                deleteLater();
-                return;
-            }
-            emitFinish(JZNetworkReply::ConnectError);
+            }            
             sigDisconnected.emit();
         }
-        deleteLater();
         return;
     }
     if (!m_reply)
@@ -788,6 +784,7 @@ void JZNetworkAccessManager::onDisconnected()
     {
         if (m_netConnects[i] == conn)
         {
+            m_netConnects[i]->deleteLater();
             vec_removeAt(m_netConnects, i);
             break;
         }

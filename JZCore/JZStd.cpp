@@ -185,7 +185,7 @@ string str_simplified(const string &str) {
     for (char ch : str)
     {
         unsigned char c = static_cast<unsigned char>(ch);
-        if (std::isspace(c))
+        if (isspace(c))
         {
             if (!in_space)
             {

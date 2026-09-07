@@ -676,10 +676,6 @@ void JZWidget::hideEvent(JZHideEvent*)
 {
 }
 
-void JZWidget::closeEvent(JZCloseEvent*)
-{
-}
-
 void JZWidget::resizeEvent(JZResizeEvent*)
 {
 }

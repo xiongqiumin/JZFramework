@@ -69,6 +69,15 @@ public:
     // 循环体在 JZWin32Thread (与主循环共享 processAndPaint 轮体), 此处仅转发。
     int execModal(bool disableOwner = true);
 
+    // 弹层(Popup)的"外部按下关闭"过滤, 由消息泵 JZWin32Thread::pumpOnce 在派发
+    // 按下消息前调用。作用是替代 Popup 窗口各自的 SetCapture —— Win32 鼠标抓取
+    // 是全局唯一的, 嵌套弹层(如菜单的子菜单)会互相抢走, 持有抓取的窗口之外
+    // 再也收不到任何鼠标消息(悬停/选择全失效)。
+    // 语义: 关闭所有"不含该屏幕点"的弹层(如点父菜单时只关子菜单);
+    // 若该点不在任何弹层内, 返回 true 表示调用方应吞掉这条消息 —— 等价 Qt 菜单:
+    // 外部点击只用于关闭弹层, 不再落到弹层下面的控件上。
+    static bool filterPopupPress(int screenX, int screenY);
+
     // 原生窗口句柄: Win32 下即 HWND, 窗口未创建 (惰性) 时返回 nullptr。
     // 文本控件要用它调用 IMM 接口把光标位置回写给输入法。
     void* nativeHandle() const { return m_hwnd; }
@@ -160,9 +169,12 @@ public:
     void windowResized(int logicalW, int logicalH);   // 原生窗口尺寸变化 (WM_SIZE)
     void dpiChanged();                                 // 显示器 DPI 变化 (WM_DPICHANGED)
 
-    // WM_CLOSE 入口: 触发框架关闭流程 closeEvent, 重写方 accept/ignore 表态,
-    // 这里统一执行关闭动作。返回是否真的关闭。
-    bool requestClose();
+    // 关闭窗口 (Qt 习惯, WM_CLOSE 与业务代码都调它):
+    // 同步 sendEvent(JZCloseEvent) -> closeEvent() 让重写方 accept/ignore 表态,
+    // 接受则隐藏 + 销毁原生窗口。返回是否真的关闭。
+    // 两条路径都会同步 jzApp 的顶层窗口状态 (notifyWindowClosed), 由它判定
+    // "最后一个可见顶层窗口已关"并退出事件循环 —— 否则进程残留。
+    bool close();
     // 原生窗口已销毁 (WM_DESTROY): 清宿主状态避免句柄悬空, 之后 show() 可重建。
     void nativeDestroyed();
 
@@ -171,6 +183,10 @@ protected:
     // hide() 触发 hideEvent -> 隐藏原生窗口 (未创建则为 no-op)。
     virtual void showEvent(JZShowEvent* event) override;
     virtual void hideEvent(JZHideEvent* event) override;
+    // 关闭事件 (WM_CLOSE / close()): 重写方以 accept/ignore 表态。
+    // 默认实现 = accept + close() —— 真正的关闭动作在这里执行。
+    // (JZDialog 重写为 ignore + reject: 只隐藏不销毁, 可复用。)
+    virtual void closeEvent(JZCloseEvent* event);
     virtual void paintEvent(JZPainterEvent* event) override;
     virtual void keyPressEvent(JZKeyEvent* event) override;
 

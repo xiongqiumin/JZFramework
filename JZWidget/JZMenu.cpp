@@ -141,14 +141,20 @@ void JZMenuView::mouseMoveEvent(JZMouseEvent* event)
         m_menu->setHoverIndex(idx);
         update();
     }
-    if (idx >= 0) {
-        JZAction* a = m_menu->actionAt(idx);
-        if (a->isEnabled() && a->subMenu()) {
-            if (m_submenu != a->subMenu())
-                openSubMenu(idx);
-        } else {
-            closeSubMenu();
+    if (idx < 0) {
+        closeSubMenu();
+        return;
+    }
+    JZAction* a = m_menu->actionAt(idx);
+    if (a->isEnabled() && a->subMenu()) {
+        if (m_submenu != a->subMenu()) {
+            openSubMenu(idx);
+            // popup() 是阻塞的: 返回时状态可能已被更新一帧的 move 事件改写,
+            // 本帧(事件已过期)到此为止, 下一帧 move 会按当前状态重新判定。
+            return;
         }
+    } else {
+        closeSubMenu();
     }
 }
 
@@ -226,14 +232,19 @@ void JZMenuView::openSubMenu(int index)
     JZMenu* sub = a ? a->subMenu() : nullptr;
     if (!sub)
         return;
+    if (sub->isPopupOpen())
+        return;   // 重入保护: 上一次 popup() 的模态循环还没返回, 此时再 ensurePopup
+                  // 会 delete 掉正在跑模态循环的弹层窗口 (悬空指针)
 
     sub->setParentMenu(m_menu);
     JZRect ir = m_menu->itemRect(index);
     JZPoint gp = this->mapToGlobal(ir.topLeft());
     // 锚点 = 该菜单项在屏幕上的矩形 (x, y, w, h); 子菜单由 popup 自行向右侧展开
     JZRect anchor(gp.x(), gp.y(), ir.width(), ir.height());
-    sub->popup(m_owner, anchor, true);   // 嵌套模态: 阻塞直到子菜单关闭
+    // 先登记再进入模态: popup() 阻塞期间父菜单仍会收到鼠标事件(已不再抓取),
+    // 后续 move 靠 m_submenu 判断"当前该关谁"。
     m_submenu = sub;
+    sub->popup(m_owner, anchor, true);   // 嵌套模态: 阻塞直到子菜单关闭
 }
 
 void JZMenuView::closeSubMenu()
@@ -394,8 +405,12 @@ void JZMenu::activateAction(int index)
         return;
     if (a->isCheckable())
         a->setChecked(!a->isChecked());
-    a->triggered.emit();
+
+    // 先收起整条弹层链, 再执行动作 (Qt 语义: 菜单关闭后动作才生效)。
+    // 反过来 (先 emit 后收起) 时, 动作处理器里再开的模态对话框出现时弹层还开着,
+    // 用户点对话框的关闭按钮会被弹层的"外部按下关闭"吞掉, 表现为要点两次才关。
     closeAll();
+    a->triggered.emit();
 }
 
 void JZMenu::closeAll()

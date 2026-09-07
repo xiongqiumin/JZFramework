@@ -245,7 +245,7 @@ public:
 protected:
     virtual void showEvent(JZShowEvent* event);
     virtual void hideEvent(JZHideEvent* event);
-    virtual void closeEvent(JZCloseEvent* event);
+    // 注意: 没有 closeEvent —— 关闭是"窗口"的概念 (普通控件不可关闭), 在 JZWindow。
     virtual void resizeEvent(JZResizeEvent* event);
     virtual void paintEvent(JZPainterEvent* event);
 

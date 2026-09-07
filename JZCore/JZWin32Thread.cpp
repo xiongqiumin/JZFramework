@@ -170,6 +170,19 @@ int JZWin32Thread::execModal(JZWindow* window, bool disableOwner)
     return 0;
 }
 
+// 弹层(Popup)的"外部按下关闭": 在派发鼠标按下消息前调用。
+// 以前靠 Popup 窗口各自 SetCapture 抓到客户区外的按下再关窗 —— 但抓取是全局唯一的,
+// 嵌套弹层(菜单的子菜单)会互相抢走, 抓取窗口之外再也收不到鼠标消息(悬停/选择失效)。
+// 现改为按屏幕坐标统一判定: 见 JZWindow::filterPopupPress。返回 true 表示已消费(吞掉)。
+static bool jzPopupPressFilter(const MSG& msg)
+{
+    const UINT m = msg.message;
+    if (m != WM_LBUTTONDOWN && m != WM_RBUTTONDOWN && m != WM_MBUTTONDOWN &&
+        m != WM_NCLBUTTONDOWN && m != WM_NCRBUTTONDOWN && m != WM_NCMBUTTONDOWN)
+        return false;
+    return JZWindow::filterPopupPress(msg.pt.x, msg.pt.y);
+}
+
 // 共享一轮: 处理框架事件+绘制 -> 算 gap 并 SetTimer 唤醒 -> GetMessageW 阻塞等一条
 // -> PeekMessageW 排空剩余。返回 false 表示 WM_QUIT 或线程停止(m_running=false)。
 bool JZWin32Thread::pumpOnce()
@@ -206,13 +219,18 @@ bool JZWin32Thread::pumpOnce()
         m_running = false;          // WM_QUIT(0) 或错误(-1)
         return false;
     }
-    TranslateMessage(&msg);
-    DispatchMessageW(&msg);
+    if (!jzPopupPressFilter(msg))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
 
     // 4. 本轮队列里剩余消息一次性排空(输入/定时器/重绘), 输入延迟更低
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
     {
         if (msg.message == WM_QUIT) { m_running = false; return false; }
+        if (jzPopupPressFilter(msg))
+            continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

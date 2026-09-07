@@ -177,6 +177,10 @@ public:
     explicit MainWindow(JZWidget* parent = nullptr);
     ~MainWindow();
 
+protected:
+    // LLM 任务进行中时先弹确认（X 关闭与 文件→退出 都汇聚到 close() 的这一步）。
+    void closeEvent(JZCloseEvent* event) override;
+
 private:
     void setupUi();
     void loadConfig();

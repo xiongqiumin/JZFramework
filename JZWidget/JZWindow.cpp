@@ -91,14 +91,19 @@ static RECT jzWindowRectForClient(HWND hwnd, DWORD style, int logicalW, int logi
 
 JZ_OBJECT_IMPL(JZWindow, JZWidget)
 
+// 未显式设定尺寸的窗口 (构造不再预置 800×600): 首次显示时先按 sizeHint 自适应;
+// sizeHint 也给不出 (无布局无子控件, 叶子 sizeHint = 当前尺寸 = 0×0) 再退回该默认,
+// 避免开出 0×0 的不可见窗口。
+static const int kDefaultWindowW = 800;
+static const int kDefaultWindowH = 600;
+
 JZWindow::JZWindow(JZWidget* parent)
     : JZWidget(parent)
 {
-    // 默认尺寸
     m_device = new JZDisplayDevice();
     m_visible = false;
-    
-    JZWidget::resize(800, 600);   // non-virtual: avoid ctor-time virtual dispatch
+
+    // 不预置尺寸: 留 0×0, 首次 showEvent 里按 sizeHint 自适应 (见 showEvent)。
 
     // 登记到顶层窗口列表 (JZApplication::topLevelWindows / activeWindow,
     // 以及"最后一个窗口关闭则退出"的判定都基于它)
@@ -175,24 +180,10 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     if (!self)
         return DefWindowProcW(hwnd, msg, wParam, lParam);
 
-    // ---- popup 型窗口: 鼠标抓取期间, 客户区外的"按下" -> 关闭并吞掉 ----
-    // (仅按下关闭, 吞掉该点击, 避免点 combo 自身出现"关闭又立刻重开"的 toggle;
-    //  注意: 不能对 WM_MOUSEMOVE 关窗 —— 菜单弹出后光标从标题移到下拉项途中
-    //  必然经过客户区外的间隙, 一旦按 move 关窗菜单立刻消失)
-    if (self->windowType() == JZWindow::Popup &&
-        (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)) {
-        float s = self->device() ? self->device()->scale() : 1.0f;
-        int px = (int16_t)LOWORD(lParam);
-        int py = (int16_t)HIWORD(lParam);
-        bool outside = (px < 0 || py < 0 ||
-                        px >= (int)std::lround(self->width() * s) ||
-                        py >= (int)std::lround(self->height() * s));
-        if (outside) {
-            if (msg != WM_MOUSEMOVE)
-                self->hide();
-            return 0;   // 吞掉
-        }
-    }
+    // ---- popup 型窗口的"外部按下关闭"不再在 WndProc 里做 ----
+    // 以前依赖 SetCapture 抓到客户区外的按下再关窗; 但抓取是全局唯一的, 嵌套弹层
+    // (菜单的子菜单)会互相抢走, 抓取窗口之外收不到任何鼠标消息 —— 父菜单的悬停/选择
+    // 全部失效。现改为消息泵派发前统一判定, 见 JZWindow::filterPopupPress / pumpOnce。
 
     switch (msg) {
 
@@ -497,7 +488,7 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
 
     case WM_CLOSE:
-        self->requestClose();   // 走框架关闭流程 (closeEvent 可拦截, 不直接销毁)
+        self->close();          // Qt 语义: WM_CLOSE -> close() -> sendEvent(closeEvent)
         return 0;
 
     case WM_DESTROY:
@@ -666,11 +657,23 @@ void JZWindow::showEvent(JZShowEvent* event)
 {
     JZWidget::showEvent(event);
 
+    // 首次显示且未显式设定尺寸 (0×0): 按 sizeHint 自适应, 再不行退默认尺寸。
+    // 必须发生在 createWindow 之前, 原生窗口一次就按最终尺寸创建, 无跳变。
+    // 之后 size 已非 0, 重复 show 不会重算; close() 后再 show 沿用上次尺寸 (Qt 语义)。
+    if (width() <= 0 && height() <= 0)
+    {
+        JZSize hint = sizeHint();
+        if (hint.width() <= 0 || hint.height() <= 0)
+            hint = JZSize(kDefaultWindowW, kDefaultWindowH);
+        resize(hint.width(), hint.height());
+    }
+
     createWindow();
     if (m_hwnd) {
         ShowWindow((HWND)m_hwnd, SW_SHOW);
-        if (m_windowType == Popup)
-            SetCapture((HWND)m_hwnd);   // 弹层: 抓取鼠标, 实现点外部关闭 (见 WndProc)
+        // Popup 不再 SetCapture: 抓取是全局唯一的, 嵌套弹层(子菜单)会抢走抓取,
+        // 父弹层从此收不到鼠标消息(悬停/选择失效)。"外部按下关闭"由消息泵在
+        // 派发按下消息前统一判定, 见 JZWindow::filterPopupPress。
     }
 }
 
@@ -682,10 +685,18 @@ void JZWindow::hideEvent(JZHideEvent* event)
         // 窗口隐藏: 任何进行中的鼠标抓取都失效 (控件可能已被移除/不可见)
         if (m_mouseGrabber)
             releaseMouse(nullptr);
-        if (m_windowType == Popup)
+        // 只有抓取确实在本窗口手里时才释放, 避免误放别的窗口(或子弹层)的抓取
+        if (GetCapture() == (HWND)m_hwnd)
             ReleaseCapture();
         ShowWindow((HWND)m_hwnd, SW_HIDE);
     }
+
+    // 可见性变化同步到 jzApp 顶层窗口状态: notifyWindowClosed 以
+    // "isVisible() && nativeHandle()" 判定是否还有活着的顶层窗口。
+    // 只在销毁时通知会漏掉"先隐藏后销毁/只隐藏"的路径 —— 典型如文件→退出时
+    // 菜单弹层还开着, 主窗口销毁后弹层才隐藏, 便再没人通知, 进程残留。
+    if (jzApp)
+        jzApp->notifyWindowClosed(this);
 }
 
 // ==================== 鼠标抓取 ====================
@@ -706,6 +717,59 @@ void JZWindow::releaseMouse(JZWidget* w)
     m_mouseGrabber = nullptr;
     if (m_hwnd && (GetCapture() == (HWND)m_hwnd))
         ReleaseCapture();
+}
+
+// ==================== 弹层外部按下 (替代 SetCapture) ====================
+bool JZWindow::filterPopupPress(int screenX, int screenY)
+{
+    if (!jzApp)
+        return false;
+
+    // 收集当前所有可见的 Popup 弹层 (顶层窗口表里就有, 无需自建登记表)
+    std::vector<JZWindow*> popups;
+    for (JZWindow* w : jzApp->topLevelWindows())
+    {
+        if (w->windowType() == Popup && w->isVisible() && w->nativeHandle())
+            popups.push_back(w);
+    }
+    if (popups.empty())
+        return false;
+
+    POINT pt = { (LONG)screenX, (LONG)screenY };
+    auto contains = [pt](JZWindow* w) {
+        RECT rc;
+        return GetWindowRect((HWND)w->nativeHandle(), &rc) && PtInRect(&rc, pt) ? true : false;
+    };
+
+    bool insideAny = false;
+    for (JZWindow* w : popups)
+    {
+        if (contains(w))
+        {
+            insideAny = true;
+            break;
+        }
+    }
+
+    // 关闭所有不含按下点的弹层: 子菜单开着时点父菜单 -> 只关子菜单, 父菜单照常响应
+    bool closed = false;
+    for (JZWindow* w : popups)
+    {
+        if (!contains(w))
+        {
+            w->hide();
+            closed = true;
+        }
+    }
+    // 弹层隐藏即退出 execModal, 但它正阻塞在 GetMessage 上; 立刻唤醒避免迟滞
+    if (closed)
+    {
+        if (auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread()))
+            mt->wakeUp();
+    }
+
+    // 按下点在所有弹层之外: 吞掉这次按下 (Qt 菜单语义: 外部点击只用于关闭)
+    return !insideAny;
 }
 
 // ==================== 输入屏蔽 (全屏蒙版) ====================
@@ -873,6 +937,15 @@ bool JZWindow::event(JZEvent* e)
             mt->invalidate(this, ev->rect);
         return true;
     }
+
+    // 关闭事件 (Qt: QWidget::event(QEvent::Close) -> closeEvent()):
+    // 经 sendEvent / postEvent 到达时路由给 closeEvent, 返回值即"是否接受关闭"。
+    if (e->type() == JZEvent_close)
+    {
+        closeEvent((JZCloseEvent*)e);
+        return e->isAccepted();
+    }
+
 
     // 队列派发的合成鼠标 (postEvent, 如 AI 驱动的点击): 走与 WndProc 实时
     // 路径同构的命中测试分发。点击引发的槽函数在此派发栈内执行 —— 其中的
@@ -1147,16 +1220,31 @@ void JZWindow::prepareIme(int fontPixelSize)
 }
 
 // ==================== 关闭流程 ====================
-// WM_CLOSE -> 框架关闭流程: 触发 closeEvent, 重写方以 accept/ignore 表态,
-// 真正的关闭动作 (销毁原生窗口) 统一在这里执行。返回是否真的关闭。
+// Qt 语义的关闭: close() 同步派发 closeEvent (QApplication::sendEvent 习惯),
+// 重写方以 accept/ignore 表态; 接受才真正关闭 (隐藏 + 销毁原生窗口)。
+// WM_CLOSE -> close(), 业务代码也直接调 close() —— 没有单独的 requestClose。
 // (JZDialog::closeEvent 会 ignore() 并转为 reject: 只隐藏、不销毁, 可复用。)
-bool JZWindow::requestClose()
+bool JZWindow::close()
 {
     JZCloseEvent ev;
-    closeEvent(&ev);
-    if (ev.isAccepted() && m_hwnd)
-        DestroyWindow((HWND)m_hwnd);   // -> WM_DESTROY -> nativeDestroyed
-    return ev.isAccepted();
+    jzApp->sendEvent(this, &ev);   // -> event(JZEvent_close) -> closeEvent(&ev)
+    if (!ev.isAccepted())
+        return false;                  // 重写方 ignore(): 拒绝关闭 (如对话框转 reject)
+
+    // 接受关闭: 先 hide() 同步可见性, 再销毁原生窗口。两条路径都会走到
+    // jzApp->notifyWindowClosed, 由它判定"最后一个可见顶层窗口已关"并退出
+    // 事件循环。(只靠 WM_DESTROY 通知一次会漏: 主窗口在菜单弹层还开着时被
+    // 关闭 —— 如文件→退出 —— 弹层随后才 hide, 便再没人通知, 进程残留。)
+    hide();
+    if (m_hwnd)
+        DestroyWindow((HWND)m_hwnd);   // -> WM_DESTROY -> nativeDestroyed -> 再通知一次
+    return true;
+}
+
+// 默认实现为空: JZCloseEvent 构造即 accepted, close() 据此执行关闭。
+// 需要拦截关闭的窗口 (如 JZDialog) 重写后 ignore() 并自行处理。
+void JZWindow::closeEvent(JZCloseEvent*)
+{
 }
 
 // 原生窗口已销毁 (WM_DESTROY): 清宿主状态避免句柄悬空;

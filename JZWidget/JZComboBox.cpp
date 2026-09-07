@@ -176,9 +176,9 @@ void JZComboBox::showPopup()
     // 先定位再显示: moveScreen 惰性记录, createWindow 时作为初始位置
     // (ShowWindow 前就位, 无闪烁)
     m_popup->moveScreen(pos.x(), pos.y());
-    m_popup->show();            // 惰性创建 + SetCapture
+    m_popup->show();            // 惰性创建 (外部按下由消息泵统一判定, 见 filterPopupPress)
     m_popupList->setFocus();    // 键盘导航交给列表
-    m_popup->execModal(false);  // 不禁用 owner; 外点由弹层抓取吞掉
+    m_popup->execModal(false);  // 不禁用 owner; 外点由消息泵关闭弹层并吞掉
 }
 
 void JZComboBox::hidePopup()
@@ -192,7 +192,7 @@ void JZComboBox::hidePopup()
 void JZComboBox::mousePressEvent(JZMouseEvent* event)
 {
     if (event->button() == JZMouseEvent::LeftButton)
-        showPopup();   // 弹层开着时点击会被其抓取吞掉并关闭, 不会进到这里
+        showPopup();   // 弹层开着时外部点击会被消息泵吞掉并关闭, 不会进到这里
 }
 
 void JZComboBox::wheelEvent(JZMouseEvent* event)

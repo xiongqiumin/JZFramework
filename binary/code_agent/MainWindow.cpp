@@ -314,7 +314,6 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     : JZDialog(parent)
 {
     setTitle("设置");
-    resize(460, 325);
     setLayout(new JZVBoxLayout(8, 8));
 
     // withBrowse: 该行末尾额外放一个"浏览..."按钮（browseBtn 是接收按钮的成员引用，
@@ -1095,8 +1094,8 @@ void MainWindow::updateRecentMenu()
 
 void MainWindow::onClearRecent()
 {
-    // 注意：本函数在菜单项触发回调中执行，此刻弹层还没关（activateAction 先 emit 后 closeAll），
-    // 这里不能重建菜单内容，交给下一次 aboutToShow 刷新。
+    // activateAction 已先收起弹层再执行本回调, 这里重建菜单也是安全的;
+    // 仍交给下一次 aboutToShow 刷新, 保持单一刷新路径。
     m_cfg.recentProjects.clear();
     saveConfig();
 }
@@ -1148,7 +1147,25 @@ void MainWindow::onNewProject()
 
 void MainWindow::onExit()
 {
-    requestClose();
+    close();   // Qt 习惯: close() -> sendEvent(closeEvent) -> accept 则隐藏并销毁窗口
+}
+
+// 关闭确认: LLM 任务进行中时先询问要不要中断退出。
+// X 关闭 (WM_CLOSE) 与 文件→退出 都汇聚到 close() 的 sendEvent(closeEvent) 这一步,
+// 所以两种入口都会走到这里。取消 -> ignore(), close() 不再往下执行, 窗口留在原地。
+void MainWindow::closeEvent(JZCloseEvent* event)
+{
+    if (m_agent && m_agent->isBusy())
+    {
+        std::string text = "任务正在进行中，退出会中断当前任务。\n\n确定要退出吗？";
+        if (JZMessageBox::question(this, "退出 JZCodeAgent", text)->exec() != JZDialog::Accepted)
+        {
+            event->ignore();   // 留在应用里继续跑
+            return;
+        }
+        m_agent->stop();       // 确认退出: 中断当前任务再走关闭流程
+    }
+    event->accept();
 }
 
 void MainWindow::onExport()

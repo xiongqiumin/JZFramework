@@ -190,83 +190,100 @@ bool parseLength(const std::string& raw, int& px)
 
 } // namespace
 
+const std::vector<JZStylePropInfo>& JZStyleSet::propertyTable()
+{
+    using K = JZStyleValueKind;
+    static const std::vector<JZStylePropInfo> table = {
+        // ---- 已生效 ----
+        { "background-color", K::Color,           true },
+        { "background",       K::Color,           true },
+        { "color",            K::Color,           true },
+        { "border",           K::BorderShorthand, true },
+        { "border-color",     K::Color,           true },
+        { "border-width",     K::Length,          true },
+        { "border-radius",    K::Length,          true },
+        { "padding",          K::LengthBox,       true },
+        { "padding-left",     K::Length,          true },
+        { "padding-top",      K::Length,          true },
+        { "padding-right",    K::Length,          true },
+        { "padding-bottom",   K::Length,          true },
+
+        // ---- 规划中: 能被解析但当前不生效 ----
+        // 登记出来是为了让"能力查询 / 校验"能明确告诉使用者"先别写",
+        // 而不是让使用者靠试错发现。
+        { "border-left",   K::BorderShorthand, false },
+        { "border-right",  K::BorderShorthand, false },
+        { "border-top",    K::BorderShorthand, false },
+        { "border-bottom", K::BorderShorthand, false },
+        { "margin",        K::LengthBox,        false },
+        { "margin-left",   K::Length,           false },
+        { "margin-top",    K::Length,           false },
+        { "margin-right",  K::Length,           false },
+        { "margin-bottom", K::Length,           false },
+        { "font-size",     K::Length,           false },
+        { "font-weight",   K::Keyword,          false },
+        { "font-family",   K::String,           false },
+        { "text-align",    K::Keyword,          false },
+        { "opacity",       K::Number,           false },
+        { "line-height",   K::Length,           false },
+    };
+    return table;
+}
+
+const JZStylePropInfo* JZStyleSet::findProperty(const std::string& name)
+{
+    const std::vector<JZStylePropInfo>& t = propertyTable();
+    for (size_t i = 0; i < t.size(); i++)
+    {
+        if (t[i].name == name)
+            return &t[i];
+    }
+    return nullptr;
+}
+
 bool JZStyleSet::applyDecl(const std::string& property, const std::string& value)
 {
+    const JZStylePropInfo* info = findProperty(property);
+    if (!info)            return false;   // 未知属性
+    if (!info->implemented) return false;  // 已知但未实现
+
     std::string v = trimStr(value);
 
-    if (property == "background-color" || property == "background")
+    switch (info->kind)
+    {
+    case JZStyleValueKind::Color:
     {
         JZColor c;
         if (!parseColorValue(v, c))
             return false;
-        background = JZOptional<JZColor>::Some(c);
-        return true;
-    }
-    if (property == "color")
-    {
-        JZColor c;
-        if (!parseColorValue(v, c))
-            return false;
-        color = JZOptional<JZColor>::Some(c);
-        return true;
-    }
-    if (property == "border-color")
-    {
-        JZColor c;
-        if (!parseColorValue(v, c))
-            return false;
-        borderColor = JZOptional<JZColor>::Some(c);
-        return true;
-    }
-    if (property == "border-width")
-    {
-        int w;
-        if (!parseLength(v, w))
-            return false;
-        borderWidth = w;
-        return true;
-    }
-    if (property == "border-radius")
-    {
-        int r;
-        if (!parseLength(v, r))
-            return false;
-        radius = r;
-        return true;
-    }
-    if (property == "border")
-    {
-        // 简写: "<w>px [solid|none] <color>" —— 只取宽度与颜色, style 仅支持 solid/none
-        if (lowerStr(v) == "none")
-        {
-            borderColor = JZOptional<JZColor>::None();
-            borderWidth = 0;
-            return true;
-        }
-        std::vector<std::string> tk = splitTokens(v);
-        bool gotW = false, gotC = false;
-        int w = borderWidth;
-        JZColor c;
-        for (size_t i = 0; i < tk.size(); i++)
-        {
-            if (!gotW && parseLength(tk[i], w))
-            {
-                gotW = true;
-                continue;
-            }
-            if (!gotC && parseColorValue(tk[i], c))
-                gotC = true;
-        }
-        if (!gotW && !gotC)
-            return false;
-        if (gotW)
-            borderWidth = w;
-        if (gotC)
+        if (property == "color")
+            color = JZOptional<JZColor>::Some(c);
+        else if (property == "border-color")
             borderColor = JZOptional<JZColor>::Some(c);
+        else
+            background = JZOptional<JZColor>::Some(c);   // background / background-color
         return true;
     }
-    if (property == "padding")
+    case JZStyleValueKind::Length:
     {
+        int n;
+        if (!parseLength(v, n))
+            return false;
+        if (property == "border-width")        borderWidth = n;
+        else if (property == "border-radius")  radius = n;
+        else if (property == "padding-left")   paddingLeft = n;
+        else if (property == "padding-top")    paddingTop = n;
+        else if (property == "padding-right")  paddingRight = n;
+        else if (property == "padding-bottom") paddingBottom = n;
+        else
+            return false;
+        return true;
+    }
+    case JZStyleValueKind::LengthBox:
+    {
+        // 当前只有 padding 属于这一类
+        if (property != "padding")
+            return false;
         std::vector<std::string> tk = splitTokens(v);
         int n[4] = { 0, 0, 0, 0 };
         if (tk.size() < 1 || tk.size() > 4)
@@ -298,10 +315,43 @@ bool JZStyleSet::applyDecl(const std::string& property, const std::string& value
         paddingLeft = left;
         return true;
     }
-    if (property == "padding-left")   { int x; if (!parseLength(v, x)) return false; paddingLeft = x; return true; }
-    if (property == "padding-top")    { int x; if (!parseLength(v, x)) return false; paddingTop = x; return true; }
-    if (property == "padding-right")  { int x; if (!parseLength(v, x)) return false; paddingRight = x; return true; }
-    if (property == "padding-bottom") { int x; if (!parseLength(v, x)) return false; paddingBottom = x; return true; }
+    case JZStyleValueKind::BorderShorthand:
+    {
+        // 当前只有 border 属于这一类 (每边 border 尚未实现)
+        if (property != "border")
+            return false;
+        // 简写: "<w>px [solid|none] <color>" —— 只取宽度与颜色, style 仅支持 solid/none
+        if (lowerStr(v) == "none")
+        {
+            borderColor = JZOptional<JZColor>::None();
+            borderWidth = 0;
+            return true;
+        }
+        std::vector<std::string> tk = splitTokens(v);
+        bool gotW = false, gotC = false;
+        int w = borderWidth;
+        JZColor c;
+        for (size_t i = 0; i < tk.size(); i++)
+        {
+            if (!gotW && parseLength(tk[i], w))
+            {
+                gotW = true;
+                continue;
+            }
+            if (!gotC && parseColorValue(tk[i], c))
+                gotC = true;
+        }
+        if (!gotW && !gotC)
+            return false;
+        if (gotW)
+            borderWidth = w;
+        if (gotC)
+            borderColor = JZOptional<JZColor>::Some(c);
+        return true;
+    }
+    default:
+        return false;   // Keyword / Number / String 当前都未实现
+    }
 
-    return false;   // 未识别: 调用方忽略
+    return false;
 }

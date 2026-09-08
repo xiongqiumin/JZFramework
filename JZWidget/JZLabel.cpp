@@ -57,6 +57,13 @@ JZSize JZLabel::minimumSizeHint() const
     return JZSize(0, 16);
 }
 
+std::vector<std::string> JZLabel::styleProps() const
+{
+    std::vector<std::string> v = JZWidget::styleProps();
+    v.push_back("color");   // 文本颜色
+    return v;
+}
+
 void JZLabel::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);

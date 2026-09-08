@@ -21,6 +21,9 @@ public:
     // ---- AI 语义 ----
     std::string aiText() const override { return m_text; }
 
+    // 消费的样式属性: 基类盒子 + 文字色 (能力查询, 故为 public)
+    std::vector<std::string> styleProps() const override;
+
 protected:
     void paintEvent(JZPainterEvent* event) override;
 

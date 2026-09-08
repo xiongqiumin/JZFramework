@@ -346,9 +346,10 @@ static bool resolve_important()
 {
     JZ_TEST_TRUE(jzApp->setStyleSheet(".a { color: #111111; } .b { color: #222222 !important; }"));
 
-    JZWidget w;
-    w.setStyleClass("a b");
-    JZ_TEST_EQ(0x22, (int)w.resolvedStyle().color.value().red());    // !important 最后应用
+    // 用 PushButton: 它声明消费 color (基类 JZWidget 不声明, 写了也不生效)
+    JZPushButton b;
+    b.setStyleClass("a b");
+    JZ_TEST_EQ(0x22, (int)b.resolvedStyle().color.value().red());    // !important 最后应用
     return true;
 }
 
@@ -466,6 +467,89 @@ static bool resolve_button_box()
     return true;
 }
 
+// ==================== 属性词汇表 ====================
+
+static bool prop_table_lookup()
+{
+    const std::vector<JZStylePropInfo>& t = JZStyleSet::propertyTable();
+    JZ_TEST_TRUE(t.size() > 10);
+
+    const JZStylePropInfo* bg = JZStyleSet::findProperty("background-color");
+    JZ_TEST_TRUE(bg != nullptr);
+    JZ_TEST_TRUE(bg->implemented);
+
+    // 未知属性
+    JZ_TEST_TRUE(JZStyleSet::findProperty("box-shadow") == nullptr);
+
+    // 规划中的属性登记在表里, 但 implemented = false
+    const JZStylePropInfo* fs = JZStyleSet::findProperty("font-size");
+    JZ_TEST_TRUE(fs != nullptr);
+    JZ_TEST_FALSE(fs->implemented);
+    return true;
+}
+
+// 未实现 / 未知属性: 解析得出来, 但不写入 (不报错)
+static bool prop_table_not_implemented_ignored()
+{
+    JZStyleSet s;
+    JZ_TEST_FALSE(s.applyDecl("font-size", "16px"));          // 登记但未实现
+    JZ_TEST_FALSE(s.applyDecl("border-left", "1px solid #f00"));
+    JZ_TEST_FALSE(s.applyDecl("box-shadow", "0 0 4px #000"));  // 未知
+    JZ_TEST_TRUE(s.background.isNone());
+    JZ_TEST_TRUE(s.color.isNone());
+
+    JZ_TEST_TRUE(s.applyDecl("background-color", "#123456"));  // 已实现
+    JZ_TEST_EQ(0x12, (int)s.background.value().red());
+    return true;
+}
+
+// ==================== 声明驱动 resolve ====================
+
+static bool props_declared_by_widget()
+{
+    JZWidget w;
+    JZPushButton b;
+    JZLabel l;
+
+    auto has = [](const std::vector<std::string>& v, const char* n) {
+        return std::find(v.begin(), v.end(), std::string(n)) != v.end();
+    };
+
+    // 基类只声明盒子
+    JZ_TEST_TRUE(has(w.styleProps(), "background-color"));
+    JZ_TEST_TRUE(has(w.styleProps(), "border-radius"));
+    JZ_TEST_FALSE(has(w.styleProps(), "color"));
+
+    // 按钮 / 标签追加 color
+    JZ_TEST_TRUE(has(b.styleProps(), "color"));
+    JZ_TEST_TRUE(has(l.styleProps(), "color"));
+    JZ_TEST_TRUE(has(b.styleProps(), "background-color"));   // 基类部分仍在
+
+    // 所有声明都必须在词汇表内 (否则永远不可能生效)
+    std::vector<std::string> all = b.styleProps();
+    for (size_t i = 0; i < all.size(); i++)
+        JZ_TEST_TRUE(JZStyleSet::findProperty(all[i]) != nullptr);
+    return true;
+}
+
+// 关键行为: 未声明的属性写了也不生效
+static bool props_undeclared_not_applied()
+{
+    JZ_TEST_TRUE(jzApp->setStyleSheet("JZWidget { color: #ff0000; background-color: #00ff00; }"));
+
+    // JZWidget 未声明 color → 不生效; 声明了 background-color → 生效
+    JZWidget w;
+    JZ_TEST_TRUE(w.resolvedStyle().color.isNone());
+    JZ_TEST_TRUE(w.resolvedStyle().background.isSome());
+    JZ_TEST_EQ(0x00, (int)w.resolvedStyle().background.value().red());
+
+    // 用类型选择器命中 PushButton 时, 它声明了 color → 生效
+    JZ_TEST_TRUE(jzApp->setStyleSheet("JZPushButton { color: #ff0000; }"));
+    JZPushButton b;
+    JZ_TEST_EQ(0xff, (int)b.resolvedStyle().color.value().red());
+    return true;
+}
+
 static void test_stylesheet(JZTest* test)
 {
     auto parserSuite = std::make_shared<JZTestSuite>("JZStyleSheetParser");
@@ -502,6 +586,13 @@ static void test_stylesheet(JZTest* test)
     resolveSuite->addTestCase("base_widget_ua", resolve_base_widget_ua);
     resolveSuite->addTestCase("label_padding", resolve_label_padding);
     resolveSuite->addTestCase("button_box", resolve_button_box);
+
+    auto propSuite = std::make_shared<JZTestSuite>("JZStylePropertyTable");
+    test->addSuite(propSuite);
+    propSuite->addTestCase("lookup", prop_table_lookup);
+    propSuite->addTestCase("not_implemented_ignored", prop_table_not_implemented_ignored);
+    propSuite->addTestCase("declared_by_widget", props_declared_by_widget);
+    propSuite->addTestCase("undeclared_not_applied", props_undeclared_not_applied);
 
     auto appSuite = std::make_shared<JZTestSuite>("JZApplicationStyleApi");
     test->addSuite(appSuite);

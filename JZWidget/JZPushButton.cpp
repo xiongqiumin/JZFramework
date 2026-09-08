@@ -64,6 +64,13 @@ JZStyleSet JZPushButton::uaStyle() const
     return s;
 }
 
+std::vector<std::string> JZPushButton::styleProps() const
+{
+    std::vector<std::string> v = JZWidget::styleProps();
+    v.push_back("color");   // 文本颜色
+    return v;
+}
+
 void JZPushButton::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);

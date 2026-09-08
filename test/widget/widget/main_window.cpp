@@ -415,7 +415,8 @@ void MainWindow::setupUi()
 
     m_list = new JZListWidget(m_top);
     m_list->addItems(m_names);
-    m_list->resize(150, kH);
+    // 宽度由 sizeHint 决定 (贴合最宽项), 这里只给下限: 内容更宽时自动加宽
+    m_list->setMinimumWidth(150);
 
     m_preview = new JZStackedWidget(m_top);
     m_preview->resize(kW, kH);

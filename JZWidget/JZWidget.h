@@ -226,6 +226,17 @@ public:
     const JZStyleSheetParser* styleSheetParser() const;
 
     // ---- 样式解析 (resolve) ----
+    // 本控件**消费**哪些样式属性。声明驱动解析: 未声明的属性不会被写入本控件的
+    // JZStyleSet (写了也不生效)。基类 = 盒子层 (背景/边框/圆角/padding);
+    // 需要消费更多属性的控件重写并把基类的结果带上。
+    //
+    // 之所以由控件自己声明: 属性最终由绘制代码消费, 只有绘制方知道自己读什么
+    // (将来的自定义列表子项 / 自定义绘制更是如此)。漏声明会立刻表现为"样式没效果",
+    // 比"元数据与实现漂移"更容易发现。
+    //
+    // 声明的名字必须在 JZStyleSet::propertyTable() 内 (未知名等于永不生效)。
+    virtual std::vector<std::string> styleProps() const;
+
     // UA 默认外观: 各控件重写返回自己的硬编码默认值 (换肤色之前的外观基线)。
     // 每次重算样式时以此为起点, 再叠加样式表规则, 保证"未写样式的属性"回落到默认外观。
     virtual JZStyleSet uaStyle() const;

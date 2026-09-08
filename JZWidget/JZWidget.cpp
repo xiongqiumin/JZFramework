@@ -250,6 +250,14 @@ JZStyleSet JZWidget::uaStyle() const
     return JZStyleSet();   // 基类: 无默认外观
 }
 
+std::vector<std::string> JZWidget::styleProps() const
+{
+    // 基类绘制样式盒子 (drawBox): 背景 / 边框 / 圆角 / padding
+    return { "background-color", "background", "border", "border-color",
+             "border-width", "border-radius", "padding",
+             "padding-left", "padding-top", "padding-right", "padding-bottom" };
+}
+
 const JZStyleSet& JZWidget::resolvedStyle()
 {
     if (m_styleResolved)
@@ -290,9 +298,17 @@ const JZStyleSet& JZWidget::resolvedStyle()
         }
     }
 
+    // 只应用本控件声明消费的属性 (见 styleProps): 未声明的直接跳过,
+    // 既不写入也无副作用 —— 声明与绘制因此强绑定。
+    std::vector<std::string> props = styleProps();
     std::sort(hits.begin(), hits.end(), hitLess);
     for (size_t i = 0; i < hits.size(); i++)
-        m_style.applyDecl(hits[i].decl->property, hits[i].decl->value);
+    {
+        const std::string& p = hits[i].decl->property;
+        if (std::find(props.begin(), props.end(), p) == props.end())
+            continue;
+        m_style.applyDecl(p, hits[i].decl->value);
+    }
 
     m_styleResolved = true;
     return m_style;

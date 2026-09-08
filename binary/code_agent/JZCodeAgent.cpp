@@ -88,7 +88,7 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_logId = 0;
     m_busy = false;
     buildAgent();
-    loadWorkspaceHistory();     // 自动接着上次的对话
+    // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversation()
 }
 
 bool JZCodeAgent::isBusy() const
@@ -109,6 +109,47 @@ void JZCodeAgent::request(const string &text)
     }
 
     sendRequestDirect(text);
+}
+
+// 把当前这段对话存到 path（由上层按任务存档路径调用）
+bool JZCodeAgent::saveConversation(const string &path) const
+{
+    if (!m_agent || path.empty())
+        return false;
+    return m_agent->saveHistory(path);
+}
+
+// 从 path 载入一段对话（替换当前对话），并把界面日志按它重建
+bool JZCodeAgent::loadConversation(const string &path)
+{
+    if (!m_agent || path.empty())
+        return false;
+    if (!JZFileInfo::exists(path))
+        return false;
+    if (!m_agent->loadHistory(path))
+        return false;
+
+    m_logs.clear();
+    m_logId = 0;
+    rebuildLogsFromHistory();
+    return true;
+}
+
+// 中断当前任务并重置为一段干净的新对话（切换/新建任务时用）。
+// 只动 agent 与日志，任务元数据与存档文件由 TaskHistoryManager 负责。
+void JZCodeAgent::resetConversation()
+{
+    abortTools();
+    if (m_busy)
+    {
+        m_stopping = true;
+        m_agent->stop();
+        m_stopping = false;
+        m_busy = false;
+    }
+    m_logs.clear();
+    m_logId = 0;
+    buildAgent();
 }
 
 void JZCodeAgent::sendRequestDirect(const string &text)
@@ -149,11 +190,7 @@ void JZCodeAgent::clearHistory()
     m_logId = 0;
     m_busy = false;
 
-    // 清空会话 = 连存档一起删掉，否则下次启动/切回来旧对话又会自己出现
-    string path = historyFilePath();
-    if (!path.empty() && JZFileInfo::exists(path))
-        JZFile::remove(path);
-
+    // 只清内存里的这段对话；对应的存档文件由上层用 TaskHistoryManager::removeArchive() 删
     buildAgent();
     addLog("info", "会话已清空，工作区: " + m_codeConfig.workspace);
 }
@@ -230,37 +267,6 @@ JZAgent *JZCodeAgent::agent()
     return m_agent;
 }
 
-string JZCodeAgent::historyFilePath() const
-{
-    if (m_codeConfig.workspace.empty())
-        return string();
-    return m_codeConfig.workspace + "/.jzcode";
-}
-
-void JZCodeAgent::saveWorkspaceHistory()
-{
-    if (!m_agent || m_codeConfig.workspace.empty())
-        return;
-    m_agent->saveHistory(historyFilePath());
-}
-
-void JZCodeAgent::loadWorkspaceHistory()
-{
-    if (!m_agent)
-        return;
-    if (!m_agent->loadHistory(historyFilePath()))
-        return;
-
-    // 界面上同步重建出来，否则历史已经在了但对话区是空的。
-    // 注意 m_logId 归零后，调用方(MainWindow)需把 m_renderedId 一并归零并全量重绘，
-    // 否则增量拉取会因为 id 倒退而漏掉新日志。
-    m_logs.clear();
-    m_logId = 0;
-    rebuildLogsFromHistory();
-
-    size_t count = m_agent->context() ? m_agent->context()->history.size() : 0;
-}
-
 void JZCodeAgent::rebuildLogsFromHistory()
 {
     const LLMContext *ctx = m_agent ? m_agent->context() : nullptr;
@@ -288,156 +294,6 @@ void JZCodeAgent::rebuildLogsFromHistory()
     }
 }
 
-// ==================== 会话历史管理 ====================
-string JZCodeAgent::generateTitle(const string &firstMessage)
-{
-    if (firstMessage.empty())
-        return "空任务";
-    
-    // 截取第一条消息的前 50 个字符作为标题
-    size_t maxLen = 50;
-    if (firstMessage.size() > maxLen)
-    {
-        string sub = firstMessage.substr(0, maxLen);
-        // 在最后一个空格处截断，避免截断单词
-        size_t lastSpace = sub.find_last_of(" \t\n");
-        if (lastSpace != string::npos && lastSpace > 10)
-            sub = sub.substr(0, lastSpace);
-        sub += "...";
-        return sub;
-    }
-    return firstMessage;
-}
-
-void JZCodeAgent::beginSession(const string &firstMessage, bool isJzAgent)
-{
-    if (firstMessage.empty())
-        return;
-
-    HistoryEntry entry;
-    entry.id = m_nextSessionId++;
-    entry.title = generateTitle(firstMessage);
-    entry.firstMessage = firstMessage;
-    entry.createdAt = JZPlatform::getTickCountMs();
-    entry.messageCount = 0;
-    entry.isJzAgent = isJzAgent;
-    
-    m_currentSessionId = entry.id;
-    m_sessionMessageCount = 0;
-    m_sessionIsJzAgent = isJzAgent;
-    m_sessionHistory.push_back(entry);
-}
-
-void JZCodeAgent::updateSession()
-{
-    if (m_currentSessionId <= 0 || m_sessionHistory.empty())
-        return;
-    
-    for (auto &entry : m_sessionHistory)
-    {
-        if (entry.id == m_currentSessionId)
-        {
-            entry.messageCount = m_sessionMessageCount;
-            break;
-        }
-    }
-}
-
-void JZCodeAgent::saveSessionHistory()
-{
-    if (m_sessionHistory.empty())
-        return;
-    
-    // 保存到工作区目录下的 .jzcode_history 文件
-    string path = m_codeConfig.workspace + "/.jzcode_history";
-    if (path.empty())
-        return;
-    
-    Json::Value root;
-    Json::Value history(Json::arrayValue);
-    
-    for (const auto &entry : m_sessionHistory)
-    {
-        Json::Value item;
-        item["id"] = entry.id;
-        item["title"] = entry.title;
-        item["firstMessage"] = entry.firstMessage;
-        item["createdAt"] = entry.createdAt;
-        item["messageCount"] = entry.messageCount;
-        item["isJzAgent"] = entry.isJzAgent;
-        history.append(item);
-    }
-    
-    root["history"] = history;
-    root["nextSessionId"] = m_nextSessionId;
-    
-    Json::StyledWriter writer;
-    ofstream f(path);
-    if (f.is_open())
-        f << writer.write(root);
-}
-
-void JZCodeAgent::loadSessionHistory()
-{
-    string path = m_codeConfig.workspace + "/.jzcode_history";
-    if (!JZFileInfo::exists(path))
-        return;
-    
-    ifstream f(path);
-    if (!f.is_open())
-        return;
-    
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(f, root))
-        return;
-    
-    m_sessionHistory.clear();
-    
-    if (root.isMember("history"))
-    {
-        const Json::Value &arr = root["history"];
-        for (int i = 0; i < (int)arr.size(); i++)
-        {
-            HistoryEntry entry;
-            entry.id = arr[i].get("id", 0).asInt();
-            entry.title = arr[i].get("title", "").asString();
-            entry.firstMessage = arr[i].get("firstMessage", "").asString();
-            entry.createdAt = arr[i].get("createdAt", 0).asInt64();
-            entry.messageCount = arr[i].get("messageCount", 0).asInt();
-            entry.isJzAgent = arr[i].get("isJzAgent", false).asBool();
-            m_sessionHistory.push_back(entry);
-        }
-    }
-    
-    m_nextSessionId = root.isMember("nextSessionId") ? root["nextSessionId"].asInt() : (int)m_sessionHistory.size() + 1;
-}
-
-const HistoryEntry *JZCodeAgent::findHistoryEntry(int id) const
-{
-    for (const auto &entry : m_sessionHistory)
-    {
-        if (entry.id == id)
-            return &entry;
-    }
-    return nullptr;
-}
-
-bool JZCodeAgent::removeHistoryEntry(int id)
-{
-    for (auto it = m_sessionHistory.begin(); it != m_sessionHistory.end(); ++it)
-    {
-        if (it->id == id)
-        {
-            m_sessionHistory.erase(it);
-            // 同时保存更新后的文件
-            saveSessionHistory();
-            return true;
-        }
-    }
-    return false;
-}
-
 bool JZCodeAgent::setWorkspace(const string &path)
 {
     JZDir dir(path);
@@ -448,9 +304,8 @@ bool JZCodeAgent::setWorkspace(const string &path)
     if (newPath == m_codeConfig.workspace)
         return true;
 
-    // 切换工作区 = 换一段对话: 先给旧工作区存档
-    saveWorkspaceHistory();
-
+    // 切换工作区 = 换一段对话。旧工作区的存档由上层（TaskHistoryManager 的持有者）
+    // 在切换前保存，这里只负责把 agent 与工作区配置换掉。
     m_codeConfig.workspace = newPath;
     for (auto* tool : m_tools)
         tool->setAgent(this);
@@ -458,9 +313,8 @@ bool JZCodeAgent::setWorkspace(const string &path)
     if (m_agent)
         m_agent->setSystemPrompt(buildSystemPrompt());
 
-    // 重建 agent（工具与 systemPrompt 重新登记），再导入新工作区的存档
+    // 重建 agent（工具与 systemPrompt 重新登记）；载入哪段对话由上层决定
     buildAgent();
-    loadWorkspaceHistory();
     return true;
 }
 
@@ -532,8 +386,6 @@ bool JZCodeAgent::openProject(const string &path, CodeProjectStatus *status, str
 
 void JZCodeAgent::closeProject()
 {
-    saveWorkspaceHistory();
-
     // workspace 一并清空：否则再打开"同一个"目录时 setWorkspace 会因为路径相同直接返回，
     // 不重建 agent、也不导入存档，界面上是空的而 agent 里还留着上一段对话。
     m_codeConfig.workspace.clear();
@@ -622,8 +474,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "}\n";
     string gitignore =
         "build/\n"
-        "node_modules/\n"
-        ".jzcode/\n";
+        "node_modules/\n";
 
     bool ok = writeIfAbsent(root + "/tsconfig.json", tsconfig);
     if (!ok)
@@ -1422,6 +1273,7 @@ void JZCodeAgent::nextOrIdle()
 {
     // 收尾统一入口: 某个执行单元(模型一轮回复 / 宿主把关完成)结束后调用。
     // 期间若用户又发过指令, 继续发送下一条; 否则整个空闲下来。
+    // 落盘 / 计数由上层在检测到空闲时通过 TaskHistoryManager 完成。
     m_busy = false;
 }
 

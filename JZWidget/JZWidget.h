@@ -5,6 +5,7 @@
 #include "JZPoint.h"
 #include "JZSize.h"
 #include "JZRect.h"
+#include "JZString.h"
 #include "JZStyleSet.h"
 
 #include <climits>
@@ -60,6 +61,8 @@ public:
 private:
     JZCursorShape m_shape;
 };
+
+class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
 
 class JZWidget : public JZObject
 {
@@ -191,6 +194,12 @@ public:
     void unsetCursor();
     JZCursor cursor() const;
 
+    // ---- 悬浮提示 (等价 Qt QWidget::setToolTip) ----
+    // 鼠标悬停本控件时, 自动在控件上方弹出多行小面板 (文本用 '\n' 换行)。
+    // 逻辑集中在 JZWidget, 各控件只需 setTooltip 即可, 不必各自维护弹层。
+    void setTooltip(const JZString& tip);
+    const JZString& tooltip() const;
+
     // 布局
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
@@ -259,6 +268,11 @@ protected:
     virtual void mouseMoveEvent(JZMouseEvent* event);
     virtual void wheelEvent(JZMouseEvent* event);
 
+    // 悬停态 (JZWindow 命中控件变化时分发, 同 Qt 的 enterEvent/leaveEvent):
+    // 进入/离开本控件 (含其子树) 时触发。默认空; 悬浮提示等据此显示/收起。
+    virtual void enterEvent(JZEvent* event);
+    virtual void leaveEvent(JZEvent* event);
+
     // 鼠标抓取: 抓取后所有鼠标事件 (含窗口客户区外) 直发本控件,
     // 直到 releaseMouse 或窗口隐藏。用于拖拽 (滑块/分隔条) 避免光标
     // 冲出控件命中带时丢失 mouseMove/mouseRelease。等价于 Qt::grabMouse。
@@ -309,6 +323,14 @@ protected:
     void _layoutAttach(JZLayout* layout);
     void _layoutDetach(JZLayout* layout);
     std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
+
+    // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 显示 / leaveEvent 收起) ----
+    void showTooltip();
+    void hideTooltip();
+    void updateTooltip();
+
+    JZString   m_tooltipText;     // 空 = 不显示悬浮提示
+    JZWidget*  m_tooltipPopup = nullptr;   // 懒创建: 悬停时弹出在控件上方的自绘面板
 };
 
 #endif

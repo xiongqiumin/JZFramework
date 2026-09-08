@@ -16,6 +16,70 @@
 #include "JZScreen.h"
 #include "JZWindow.h"
 
+#include "JZTimer.h"
+#include "JZPainter.h"
+#include "JZPen.h"
+#include "JZColor.h"
+#include "JZFont.h"
+#include "JZFontMetrics.h"
+
+// 内部: 自绘多行悬浮小面板 (仿 Qt 的 tooltip 窗口)。文件级, 不对外暴露。
+class JZToolTipWidget : public JZWidget
+{
+    JZ_OBJECT_DECLARE(JZToolTipWidget)
+public:
+    explicit JZToolTipWidget(JZWidget* parent = nullptr)
+        : JZWidget(parent) {}
+
+    // tip 用 '\n' 分行; 按文字尺寸自适应面板
+    void setTip(const JZString& tip)
+    {
+        std::vector<std::string> lines;
+        std::string utf8 = tip.toStdString();
+        std::string cur;
+        for (char c : utf8) {
+            if (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else cur.push_back(c);
+        }
+        lines.push_back(cur);
+
+        JZFont f(kFontSize);
+        int lineH = JZFontMetrics::textHeight(f);
+        int w = 0;
+        for (const auto& s : lines)
+            w = std::max(w, JZFontMetrics::textWidth(s, f));
+
+        setFixedSize(w + kPadX * 2, (int)lines.size() * lineH + kPadY * 2);
+        m_lines = lines;
+        update();
+    }
+
+protected:
+    void paintEvent(JZPainterEvent*) override
+    {
+        JZPainter p(this);
+        p.fillRect(0, 0, width(), height(), JZColor(0x2b, 0x2b, 0x30));
+        p.setPen(JZPen(JZColor(0x60, 0x60, 0x68), 1));
+        p.drawRect(0, 0, width(), height());
+
+        JZFont f(kFontSize);
+        int lineH = JZFontMetrics::textHeight(f);
+        p.setFont(f);
+        p.setPen(JZPen(JZColor(0xf0, 0xf0, 0xf0), 1));
+
+        int y = kPadY;
+        for (const auto& s : m_lines) {
+            p.drawText(kPadX, y + JZFontMetrics::centeredTextTop(f, lineH), s.c_str());
+            y += lineH;
+        }
+    }
+
+private:
+    enum { kFontSize = 12, kPadX = 8, kPadY = 6 };
+    std::vector<std::string> m_lines;
+};
+JZ_OBJECT_IMPL(JZToolTipWidget, JZWidget)
+
 JZ_OBJECT_IMPL(JZWidget,JZObject)
 
 JZWidget::JZWidget(JZWidget* parent)
@@ -562,6 +626,18 @@ bool JZWidget::event(JZEvent* e)
         return true;
     }
 
+    // 悬停态: 进入/离开控件 (含子树) 由 JZWindow 命中变化派发
+    if (e->type() == JZEvent_enter)
+    {
+        enterEvent(e);
+        return true;
+    }
+    if (e->type() == JZEvent_leave)
+    {
+        leaveEvent(e);
+        return true;
+    }
+
     // 键盘: 由消息层构造 (WM_KEYDOWN -> isPress()==true, WM_KEYUP -> false)
     if (e->type() == JZEvent_key)
     {
@@ -609,6 +685,20 @@ void JZWidget::mouseReleaseEvent(JZMouseEvent*)
 
 void JZWidget::mouseMoveEvent(JZMouseEvent*)
 {
+}
+
+void JZWidget::enterEvent(JZEvent*)
+{
+    // 悬浮提示: 设置了 tooltip 文本的控件, 鼠标进入其区域即弹出, 停留期间常显,
+    // 移出 (leaveEvent) 立即收起。各业务控件无需各自维护弹层 (框架统一处理)。
+    if (!m_tooltipText.isEmpty())
+        showTooltip();
+}
+
+void JZWidget::leaveEvent(JZEvent*)
+{
+    // 鼠标离开本控件 (含子树): 立即收起悬浮提示
+    hideTooltip();
 }
 
 void JZWidget::wheelEvent(JZMouseEvent*)
@@ -690,6 +780,50 @@ void JZWidget::showEvent(JZShowEvent*)
 
 void JZWidget::hideEvent(JZHideEvent*)
 {
+    // 控件隐藏 (含所在窗口关闭) 时, 收起其悬浮提示, 避免残留
+    hideTooltip();
+}
+
+// ==================== 悬浮提示 ====================
+void JZWidget::setTooltip(const JZString& tip)
+{
+    m_tooltipText = tip;
+    // 悬停中内容变化 (如 token 用量刷新) 立即刷新弹层; 未悬停则仅记录, 等鼠标移入再弹
+    if (m_tooltipPopup && m_tooltipPopup->isVisible())
+        updateTooltip();
+}
+
+const JZString& JZWidget::tooltip() const
+{
+    return m_tooltipText;
+}
+
+void JZWidget::showTooltip()
+{
+    if (!m_tooltipPopup) {
+        m_tooltipPopup = new JZToolTipWidget(this);
+        m_tooltipPopup->setPassThrough(true);   // 纯展示, 不吃鼠标事件
+        m_tooltipPopup->setVisible(false);
+    }
+    updateTooltip();
+    m_tooltipPopup->setVisible(true);
+}
+
+void JZWidget::hideTooltip()
+{
+    if (m_tooltipPopup)
+        m_tooltipPopup->setVisible(false);
+}
+
+void JZWidget::updateTooltip()
+{
+    JZToolTipWidget* tip = static_cast<JZToolTipWidget*>(m_tooltipPopup);
+    tip->setTip(m_tooltipText);
+
+    // 弹层放在控件上方, 右边缘与控件对齐 (窄窗口下左侧不被裁)
+    const int w = m_tooltipPopup->width();
+    const int h = m_tooltipPopup->height();
+    m_tooltipPopup->setGeometry(width() - w, -h - 6, w, h);
 }
 
 void JZWidget::resizeEvent(JZResizeEvent*)

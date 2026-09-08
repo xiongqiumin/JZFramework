@@ -194,6 +194,10 @@ protected:
     JZWidget* hitTest(const JZPoint& global);
     JZWidget* hitTestRec(JZWidget* w, const JZPoint& global);
 
+    // 悬停控件跟踪: 命中控件变化 (mouseMove / 光标离开客户区) 时, 给旧控件链派发
+    // leaveEvent、给新控件链派发 enterEvent (含各自祖先, 止于最近公共祖先)。
+    void updateHover(JZWidget* newHover);
+
     // 输入分发 (onWindowProcess 按事件类型调用)
     bool dispatchMouse(JZMouseEvent* ev);   // 命中测试定位控件, 回填 localPos 后投递
     bool dispatchKey(JZKeyEvent* ev);       // 键盘: 从焦点控件起, 未处理的键逐级向上传播
@@ -214,6 +218,7 @@ protected:
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
+    JZWidget* m_hoverWidget = nullptr;  // 当前悬停的最深控件 (updateHover 派发 enter/leave)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
     bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏

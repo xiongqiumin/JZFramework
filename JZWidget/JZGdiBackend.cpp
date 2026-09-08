@@ -28,6 +28,7 @@ namespace Gdiplus {
 
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -149,6 +150,7 @@ namespace {
 
 FontFamily* g_fontFamily = nullptr;      // 主字体: 微软雅黑
 FontFamily* g_fallbackFamily = nullptr;  // 回退字体: 由本文件管理生命周期
+std::map<std::string, FontFamily*> g_namedFamilies;  // 用户指定字体族 (按名字缓存, 值为 nullptr = 该名不可用)
 
 // 文本字体族 (优先微软雅黑)
 const FontFamily& jzFontFamily()
@@ -178,12 +180,46 @@ const FontFamily& jzFallbackFamily()
     return *g_fallbackFamily;
 }
 
+// 按名字解析字体族: 空名 = 默认 (微软雅黑); 命名族先查缓存, 创建失败 (系统中
+// 无此字体) 则记一笔 nullptr 并回退到回退族。所有缓存对象由 jzReleaseFontFamily
+// 在 GdiplusShutdown 之前统一释放 (绝不用函数内 static, 否则会在已关闭的 GDI+ 上崩)。
+const FontFamily* jzResolveFamily(const std::string& name)
+{
+    if (name.empty())
+        return &jzFontFamily();
+    auto it = g_namedFamilies.find(name);
+    if (it != g_namedFamilies.end())
+        return it->second ? it->second : &jzFallbackFamily();
+    FontFamily* fam = new FontFamily(utf8ToUtf16(name).c_str());
+    if (fam->GetLastStatus() != Ok) {
+        delete fam;
+        g_namedFamilies[name] = nullptr;   // 记住此名不可用, 之后直接走回退
+        return &jzFallbackFamily();
+    }
+    g_namedFamilies[name] = fam;
+    return fam;
+}
+
+// JZFont::Style 位或 -> GDI+ FontStyle (粗体/斜体/下划线/删除线)
+int jzGdiFontStyle(int jzStyle)
+{
+    int st = FontStyleRegular;
+    if (jzStyle & JZFont::Bold)      st |= FontStyleBold;
+    if (jzStyle & JZFont::Italic)    st |= FontStyleItalic;
+    if (jzStyle & JZFont::Underline) st |= FontStyleUnderline;
+    if (jzStyle & JZFont::StrikeOut) st |= FontStyleStrikeout;
+    return st;
+}
+
 void jzReleaseFontFamily()
 {
     delete g_fontFamily;
     g_fontFamily = nullptr;
     delete g_fallbackFamily;
     g_fallbackFamily = nullptr;
+    for (auto& kv : g_namedFamilies)
+        delete kv.second;
+    g_namedFamilies.clear();
 }
 
 } // namespace
@@ -211,65 +247,67 @@ public:
         }
     }
 
-    int textWidth(const std::string& text, int pixelSize) override
+    int textWidth(const std::string& text, const JZFont& font) override
     {
         std::wstring wtext = utf8ToUtf16(text);
         if (wtext.empty())
             return 0;
 
-        Font font(probeFamily(pixelSize), (REAL)pixelSize, FontStyleRegular, UnitPixel);
-        RectF layout(0.0f, 0.0f, 1000000.0f, (REAL)(pixelSize * 4));
+        const FontFamily* fam = jzResolveFamily(font.family());
+        Font primary(fam, (REAL)font.size(), (FontStyle)jzGdiFontStyle(font.style()), UnitPixel);
+        Font fallback(&jzFontFamily(), (REAL)font.size(), FontStyleRegular, UnitPixel);
+        const Font* use = (primary.GetLastStatus() == Ok) ? &primary : &fallback;
+        RectF layout(0.0f, 0.0f, 1000000.0f, (REAL)(font.size() * 4));
         RectF bounds;
         // 统一 Qt 语义的文本格式 (见 jzTextFormat): 空格照常计宽,
         // 与绘制侧 (JZTextTask) 严格一致, 保证光标/滚动/点击定位不偏。
         std::unique_ptr<StringFormat> fmt = jzTextFormat();
-        m_graphics->MeasureString(wtext.c_str(), (INT)wtext.size(), &font, layout, fmt.get(), &bounds);
+        m_graphics->MeasureString(wtext.c_str(), (INT)wtext.size(), use, layout, fmt.get(), &bounds);
         return (int)(bounds.Width + 0.5f);
     }
 
-    int textHeight(int pixelSize) override
+    int textHeight(const JZFont& font) override
     {
-        Font font(probeFamily(pixelSize), (REAL)pixelSize, FontStyleRegular, UnitPixel);
-        return (int)(font.GetHeight(m_graphics) + 0.5f);
+        const FontFamily* fam = jzResolveFamily(font.family());
+        Font primary(fam, (REAL)font.size(), FontStyleRegular, UnitPixel);
+        Font fallback(&jzFontFamily(), (REAL)font.size(), FontStyleRegular, UnitPixel);
+        const Font* use = (primary.GetLastStatus() == Ok) ? &primary : &fallback;
+        return (int)(use->GetHeight(m_graphics) + 0.5f);
     }
 
     // 以下三个供文本控件做光标定位与垂直居中:
     // GDI+ 的 CellAscent/CellDescent/LineSpacing 是"设计单位"(以 em 为单位),
     // 需按 emHeight 换算到像素; LineSpacing - Ascent - Descent 即 internalLeading
     // (位于字符 cell 顶部、字形之上的空白), 不扣掉它文字会视觉偏低。
-    int ascent(int pixelSize) override
+    // 字形 cell 度量只取决于字体族 + 字号 (与风格无关), 故用 FontStyleRegular。
+    int ascent(const JZFont& font) override
     {
-        return designToPixel(probeFamily(pixelSize)->GetCellAscent(FontStyleRegular), pixelSize);
+        const FontFamily* fam = jzResolveFamily(font.family());
+        return designToPixel(fam->GetCellAscent(FontStyleRegular), fam, font.size());
     }
 
-    int descent(int pixelSize) override
+    int descent(const JZFont& font) override
     {
-        return designToPixel(probeFamily(pixelSize)->GetCellDescent(FontStyleRegular), pixelSize);
+        const FontFamily* fam = jzResolveFamily(font.family());
+        return designToPixel(fam->GetCellDescent(FontStyleRegular), fam, font.size());
     }
 
-    int internalLeading(int pixelSize) override
+    int internalLeading(const JZFont& font) override
     {
-        const FontFamily* fam = probeFamily(pixelSize);
-        int spacing = designToPixel(fam->GetLineSpacing(FontStyleRegular), pixelSize);
-        int rest = spacing - ascent(pixelSize) - descent(pixelSize);
+        const FontFamily* fam = jzResolveFamily(font.family());
+        int spacing = designToPixel(fam->GetLineSpacing(FontStyleRegular), fam, font.size());
+        int rest = spacing - ascent(font) - descent(font);
         return (rest > 0) ? rest : 0;
     }
 
 private:
-    // 设计单位 -> 像素
-    int designToPixel(UINT16 design, int pixelSize)
+    // 设计单位 -> 像素 (em 高度来自指定字体族)
+    int designToPixel(UINT16 design, const FontFamily* fam, int pixelSize)
     {
-        UINT16 em = probeFamily(pixelSize)->GetEmHeight(FontStyleRegular);
+        UINT16 em = fam->GetEmHeight(FontStyleRegular);
         if (em == 0)
             return 0;
         return (int)((float)design * pixelSize / (float)em + 0.5f);
-    }
-
-    const FontFamily* probeFamily(int pixelSize)
-    {
-        Font probe(&jzFontFamily(), (REAL)pixelSize, FontStyleRegular, UnitPixel);
-        return (probe.GetLastStatus() == Ok) ? &jzFontFamily()
-                                             : &jzFallbackFamily();
     }
 
     HDC m_hdc = nullptr;
@@ -587,19 +625,17 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             auto* t = static_cast<JZTextTask*>(task.get());
             if (!t->text.empty()) {
                 std::wstring wtext = utf8ToUtf16(t->text);
-                // Font 禁止赋值, 先探测可用字体族, 再一次性构造
-                const FontFamily* family = &jzFontFamily();
-                {
-                    Font probe(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
-                    if (probe.GetLastStatus() != Ok)
-                        family = &jzFallbackFamily();
-                }
-                Font font(family, cur.font.size() * s, FontStyleRegular, UnitPixel);
+                // Font 禁止赋值, 先按字体描述解析可用字体族与风格, 再一次性构造
+                const FontFamily* family = jzResolveFamily(cur.font.family());
+                int style = jzGdiFontStyle(cur.font.style());
+                Font primary(family, cur.font.size() * s, (FontStyle)style, UnitPixel);
+                Font fallback(&jzFontFamily(), cur.font.size() * s, FontStyleRegular, UnitPixel);
+                const Font* font = (primary.GetLastStatus() == Ok) ? &primary : &fallback;
                 SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));
                 // 统一 Qt 语义的文本格式 (见 jzTextFormat): 与测量侧
                 // (GdiFontEngine::textWidth) 严格一致, 空格照常绘制。
                 std::unique_ptr<StringFormat> fmt = jzTextFormat();
-                g.DrawString(wtext.c_str(), (int)wtext.size(), &font,
+                g.DrawString(wtext.c_str(), (int)wtext.size(), font,
                              PointF(t->area.x() * s, t->area.y() * s), fmt.get(), &br);
             }
             break;

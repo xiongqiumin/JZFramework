@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "JZApplication.h"
 #include "JZDialog.h"
 #include "JZMessageBox.h"
 #include "JZFileDialog.h"
@@ -387,6 +388,28 @@ void VirtualCanvas::paintEvent(JZPainterEvent* event)
 
 void MainWindow::setupUi()
 {
+    setObjectName("main");   // 样式表用 #main 命中本窗口
+
+    // 顶部工具条: 换肤 (整表替换)
+    JZWidget* bar = new JZWidget(this);
+    bar->setStyleClass("panel");   // 通用容器也吃样式 (JZWidget 基类画样式盒子)
+    JZHBoxLayout* barLayout = new JZHBoxLayout(6, 4);
+
+    m_themeBtn = new JZPushButton(bar);
+    m_themeBtn->setText("主题: 浅色");
+    m_themeBtn->resize(120, 30);
+
+    JZLabel* tip = new JZLabel(bar);
+    tip->setText("切换=整表替换: 只换 :root 令牌, 组件规则零改动");
+    tip->resize(340, 24);
+    tip->setStyleClass("title");
+
+    barLayout->addWidget(m_themeBtn, 0);
+    barLayout->addWidget(tip, 0);
+    barLayout->addStretch(1);
+    bar->setLayout(barLayout);
+    connect(&m_themeBtn->sigClicked, this, &MainWindow::onToggleTheme);
+
     // 中间容器: 左列表 + 右预览
     m_top = new JZWidget(this);
 
@@ -406,8 +429,9 @@ void MainWindow::setupUi()
     m_log = new JZTextEdit(this);
     m_log->resize(kW, 120);
 
-    // 主布局: 上(列表+预览) + 下(日志)
+    // 主布局: 上(工具条 + 列表/预览) + 下(日志)
     JZVBoxLayout* mainLayout = new JZVBoxLayout(4, 4);
+    mainLayout->addWidget(bar, 0);      // 工具条
     mainLayout->addWidget(m_top, 1);    // 占主要空间
     mainLayout->addWidget(m_log, 0);    // 固定高
     setLayout(mainLayout);
@@ -416,7 +440,66 @@ void MainWindow::setupUi()
     m_list->setCurrentIndex(0);
     connect(&m_list->currentIndexChanged, this, &MainWindow::onSelectChanged);
 
+    applyTheme(false);   // 初始: 浅色主题
     log("ready. select a widget on the left.");
+}
+
+// ==================== 换肤 (整表替换) ====================
+//
+// 变量仅 :root 作用域, 且是 parse 期文本替换 (无继承 / 无作用域覆盖),
+// 所以换主题只能"重设整份样式表"。下面两份 CSS 只有 :root 块不同,
+// 组件规则 (kThemeRules) 一字不改 —— 即"仅覆盖令牌, 组件规则零改动"。
+static const char* kThemeRootLight =
+":root {\n"
+"    --bg: #ffffff;\n"
+"    --panel: #f5f7fa;\n"
+"    --text: #202020;\n"
+"    --border: #d4dbe6;\n"
+"    --btn: #e0e0e0;\n"
+"    --btn-border: #808080;\n"
+"    --btn-text: #202020;\n"
+"    --accent: #3498db;\n"
+"}\n";
+
+static const char* kThemeRootDark =
+":root {\n"
+"    --bg: #161a21;\n"
+"    --panel: #10141a;\n"
+"    --text: #e6e9ef;\n"
+"    --border: #3a414d;\n"
+"    --btn: #2a3140;\n"
+"    --btn-border: #4a5364;\n"
+"    --btn-text: #e6e9ef;\n"
+"    --accent: #4f8cff;\n"
+"}\n";
+
+// 组件规则: 两个主题完全一致, 只吃令牌
+static const char* kThemeRules =
+"#main { background-color: var(--bg); }\n"
+"JZLabel { color: var(--text); }\n"
+"JZPushButton {\n"
+"    background-color: var(--btn);\n"
+"    border: 1px solid var(--btn-border);\n"
+"    color: var(--btn-text);\n"
+"    border-radius: 4px;\n"
+"}\n"
+".title { color: var(--accent); }\n"
+".panel { background-color: var(--panel); border-radius: 6px; }\n";
+
+void MainWindow::applyTheme(bool dark)
+{
+    m_dark = dark;
+    std::string css = std::string(dark ? kThemeRootDark : kThemeRootLight) + kThemeRules;
+    if (!jzApp->setStyleSheet(css))
+        log("theme error: " + jzApp->styleSheetError());
+}
+
+void MainWindow::onToggleTheme()
+{
+    applyTheme(!m_dark);
+    if (m_themeBtn)
+        m_themeBtn->setText(m_dark ? "主题: 深色" : "主题: 浅色");
+    log(std::string("theme -> ") + (m_dark ? "dark" : "light") + " (整表替换)");
 }
 
 JZWidget* MainWindow::makePage()

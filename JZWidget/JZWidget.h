@@ -63,6 +63,7 @@ private:
 };
 
 class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
+class JZStyleSheetParser;   // 样式表解析器 (控件级 setStyleSheet 持有, 见 JZStyleSheetParser.h)
 
 class JZWidget : public JZObject
 {
@@ -209,6 +210,33 @@ public:
     JZStyleSet& style() { return m_style; }
     const JZStyleSet& style() const { return m_style; }
 
+    // ---- 样式表 (CSS 子集, 见 docs/jzstylesheet-design.md) ----
+    // 本阶段只落"选择器素材 + 文本 -> 规则"的解析链路, 暂不做规则匹配 (resolve) 与生效:
+    //   setStyleClass: 空格分隔的类名串 (同 HTML class 属性), 供将来的类选择器匹配;
+    //   setStyleSheet: 控件级样式表 (Qt 语义: 作用于本控件), 解析结果由本控件持有;
+    //                  返回 false 表示 CSS 有语法错误, 原因见 styleSheetError();
+    //   全局样式表见 JZApplication::setStyleSheet。
+    void setStyleClass(const std::string& cls);
+    const std::string& styleClass() const;
+
+    bool setStyleSheet(const std::string& css);
+    std::string styleSheet() const;
+    std::string styleSheetError() const;
+    // 解析结果 (未设置过样式表则返回 nullptr)
+    const JZStyleSheetParser* styleSheetParser() const;
+
+    // ---- 样式解析 (resolve) ----
+    // UA 默认外观: 各控件重写返回自己的硬编码默认值 (换肤色之前的外观基线)。
+    // 每次重算样式时以此为起点, 再叠加样式表规则, 保证"未写样式的属性"回落到默认外观。
+    virtual JZStyleSet uaStyle() const;
+
+    // 样式失效: 清掉本控件与其子树 (控件级样式表才影响子孙) 的解析缓存并重绘。
+    // 类变化 / 换表 / 控件级 setStyleSheet 后调用。
+    void styleChanged();
+
+    // 已解析样式 (内部结构, 绘制用): 首次访问时按当前样式表解析并缓存
+    const JZStyleSet& resolvedStyle();
+
     // 重排:
     //   updateLayout()   只重排自身子控件(布局应用 / resize 内部使用, 不向上传播);
     //   updateGeometry() 在本控件尺寸特征(策略/约束/布局内容)变化后, 向上级联重排
@@ -297,6 +325,14 @@ protected:
 
     JZStyleSet m_style;
 
+    // ---- 样式表素材 (见上方 setStyleClass/setStyleSheet) ----
+    std::string m_styleClass;
+    std::string m_styleSheetText;             // 原始 CSS 文本 (styleSheet() 原样返回)
+    JZStyleSheetParser* m_styleSheet = nullptr;   // 懒创建: 首次 setStyleSheet 时 new
+
+    // 解析缓存: m_style 是否已按当前 (表版本 + 类 + 自身表) 解析过
+    bool m_styleResolved = false;
+
     int m_minW;
     int m_minH;
     int m_maxW;
@@ -324,13 +360,16 @@ protected:
     void _layoutDetach(JZLayout* layout);
     std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
 
-    // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 显示 / leaveEvent 收起) ----
+    // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 起延时, 到时显示; leaveEvent 收起) ----
     void showTooltip();
     void hideTooltip();
+    void onTooltipShow();     // 悬停延时到: 弹出 (区别于立即响应)
     void updateTooltip();
+    enum { kTooltipShowDelay = 500 };   // 悬停多久才弹出 (ms)
 
     JZString   m_tooltipText;     // 空 = 不显示悬浮提示
     JZWidget*  m_tooltipPopup = nullptr;   // 懒创建: 悬停时弹出在控件上方的自绘面板
+    JZTimer*   m_tooltipTimer = nullptr;   // 进入后的一次性"显示延时"定时器 (leave 取消)
 };
 
 #endif

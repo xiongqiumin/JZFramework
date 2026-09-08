@@ -30,6 +30,9 @@ set(JZ_SOURCES
     JZFontMetrics.h
     JZFontMetrics.cpp
     JZStyleSet.h
+    JZStyleSet.cpp
+    JZStyleSheetParser.h
+    JZStyleSheetParser.cpp
     JZStylePainter.h
     JZStylePainter.cpp
     JZPainter.h

@@ -19,14 +19,14 @@ int JZFontMetrics::textWidth(const std::string& text, const JZFont& font)
     if (text.empty())
         return 0;
     if (s_engine)
-        return s_engine->textWidth(text, font.size());
+        return s_engine->textWidth(text, font);
     return estimateWidth(text, font.size());
 }
 
 int JZFontMetrics::textHeight(const JZFont& font)
 {
     if (s_engine)
-        return s_engine->textHeight(font.size());
+        return s_engine->textHeight(font);
     return font.size() + 4;   // 估算行高 (字高 + 余量)
 }
 
@@ -61,28 +61,28 @@ int JZFontMetrics::textWidth(const std::string& text, const JZFont& font, int ch
         return 0;
 
     if (s_engine)
-        return s_engine->textWidth(prefix, font.size());
+        return s_engine->textWidth(prefix, font);
     return estimateWidth(prefix, font.size());
 }
 
 int JZFontMetrics::ascent(const JZFont& font)
 {
     if (s_engine)
-        return s_engine->ascent(font.size());
+        return s_engine->ascent(font);
     return textHeight(font) * 4 / 5;
 }
 
 int JZFontMetrics::descent(const JZFont& font)
 {
     if (s_engine)
-        return s_engine->descent(font.size());
+        return s_engine->descent(font);
     return textHeight(font) - ascent(font);
 }
 
 int JZFontMetrics::internalLeading(const JZFont& font)
 {
     if (s_engine)
-        return s_engine->internalLeading(font.size());
+        return s_engine->internalLeading(font);
     return 0;
 }
 

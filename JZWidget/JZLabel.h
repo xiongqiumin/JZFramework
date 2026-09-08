@@ -24,6 +24,9 @@ public:
 protected:
     void paintEvent(JZPainterEvent* event) override;
 
+    // UA 默认外观: 文字 #333333
+    JZStyleSet uaStyle() const override;
+
 private:
     std::string m_text;
     int m_align = 0;   // 0=左, 1=中, 2=右

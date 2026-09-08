@@ -32,6 +32,9 @@ jz_signals:
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
+
+    // UA 默认外观 (等价原来的硬编码): 浅灰底 + 灰边框 + 4px 圆角 + 深灰字
+    JZStyleSet uaStyle() const override;
     void mousePressEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
 

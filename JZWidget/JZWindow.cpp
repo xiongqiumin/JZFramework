@@ -847,7 +847,14 @@ void JZWindow::paintEvent(JZPainterEvent* event)
 {
     // 窗口底色 (内容控件可覆盖)
     JZPainter p(this);
-    p.fillRect(rect(), JZColor::White);
+    p.fillRect(rect(), style().background.valueOr(JZColor::White));
+}
+
+JZStyleSet JZWindow::uaStyle() const
+{
+    JZStyleSet s;
+    s.background = JZOptional<JZColor>::Some(JZColor::White);
+    return s;
 }
 
 void JZWindow::resize(int w, int h)

@@ -240,6 +240,12 @@ void JZAgent::init(JZAgentConfig config)
             for (const auto& file_info : file_list)
             {
                 auto ret = loadSkill(file_info.fileName(), file_info.filePath() + "/skill.md");
+                if (!ret.isOk())
+                {
+                    jzWarning() << "JZAgent: skip skill \"" << file_info.fileName()
+                                << "\" : " << ret.errorMessage();
+                    continue;
+                }
                 m_skills.push_back(ret.value());
             }
         }
@@ -356,46 +362,73 @@ JZResult<SkillDefine> JZAgent::loadSkill(std::string skill_name, const std::stri
     SkillDefine def;
     def.name = std::move(skill_name);
 
-    // 3. 抽取公共解析逻辑（减少重复代码）
-    auto extractSection = [&](std::string section_name, int start_pos) -> std::string
+    // 去掉 YAML 值两侧的成对引号（"" 或 ''）
+    auto stripQuotes = [](const std::string &s) -> std::string
     {
-        // 查找章节标题：# Description / # Usage
-        int idx = str_indexOf(context, std::string(section_name), start_pos);
-        if (idx == -1)
-            return {};
-
-        // 跳到下一行
-        idx = str_indexOf(context, "\n", idx);
-        if (idx == -1)
-            return {};
-
-        int content_start = idx + 1;
-        int content_end = str_indexOf(context, "# ", content_start);
-        if (content_end == -1)
+        if (s.size() >= 2 &&
+            ((s.front() == '"' && s.back() == '"') ||
+             (s.front() == '\'' && s.back() == '\'')))
         {
-            content_end = (int)context.size();
+            return str_trimmed(s.substr(1, s.size() - 2));
         }
-
-        if (content_start >= content_end)
-            return {};
-        return str_trimmed(context.substr(content_start, content_end - content_start));
+        return s;
     };
 
-    // 4. 解析 Description
-    std::string tips = extractSection("# Description", 0);
-    if (tips.empty())
+    // 3. 技能文件统一采用标准格式：YAML front matter 包裹的 Markdown
+    //    （如 skill/*.skill.md）。首行与闭合行均为 "---"，
+    //    name / description 取自头部，闭合 "---" 之后的正文整体作为 usage。
+    int first_line_end = str_indexOf(context, "\n", 0);
+    std::string first_line = str_trimmed(first_line_end == -1 ? context : context.substr(0, first_line_end));
+    if (first_line != "---")
     {
-        return JZResult<SkillDefine>::Error("Skill format error: missing or invalid # Description section");
+        return JZResult<SkillDefine>::Error(
+            "Skill format error: file must start with '---' front matter: " + skill_path);
     }
-    def.tips = std::move(tips);
 
-    // 5. 解析 Usage
-    std::string usage = extractSection("# Usage", 0);
-    if (usage.empty())
+    // 4. 逐行扫描 front matter，收集 name / description 并定位闭合行
+    std::string fm_name, fm_desc;
+    int body_start = -1;
+    int line_start = (first_line_end == -1) ? (int)context.size() : first_line_end + 1;
+    while (line_start < (int)context.size())
     {
-        return JZResult<SkillDefine>::Error("Skill format error: missing or invalid # Usage section");
+        int line_end = str_indexOf(context, "\n", line_start);
+        if (line_end == -1)
+            line_end = (int)context.size();
+
+        std::string line = str_trimmed(context.substr(line_start, line_end - line_start));
+        if (line == "---")
+        {
+            body_start = line_end + 1;  // 闭合行之后的正文起点
+            break;
+        }
+
+        if (str_startsWith(line, "name:"))
+            fm_name = str_trimmed(line.substr(5));
+        else if (str_startsWith(line, "description:"))
+            fm_desc = str_trimmed(line.substr(12));
+
+        line_start = line_end + 1;
     }
-    def.usage = std::move(usage);
+
+    if (body_start == -1)
+    {
+        return JZResult<SkillDefine>::Error("Skill format error: unclosed '---' front matter: " + skill_path);
+    }
+
+    // 5. name 优先取 front matter（缺省用入参）；description -> tips；正文 -> usage
+    if (!fm_name.empty())
+        def.name = stripQuotes(fm_name);
+    def.tips = stripQuotes(fm_desc);
+    def.usage = str_trimmed(context.substr(body_start));
+
+    if (def.tips.empty())
+    {
+        return JZResult<SkillDefine>::Error("Skill format error: missing or invalid 'description' in front matter");
+    }
+    if (def.usage.empty())
+    {
+        return JZResult<SkillDefine>::Error("Skill format error: missing or invalid skill body");
+    }
 
     // 6. 返回成功结果
     return JZResult<SkillDefine>::Ok(std::move(def));

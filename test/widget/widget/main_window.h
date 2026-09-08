@@ -115,6 +115,10 @@ private:
     // 日志
     void log(const std::string& line);
 
+    // 换肤: 整表替换 (两份 CSS 只差 :root 令牌块)
+    void applyTheme(bool dark);
+    void onToggleTheme();
+
     // 选择
     void onSelectChanged(int idx);
 
@@ -175,4 +179,8 @@ private:
     JZAnimationGroup* m_animGroup = nullptr;   // 组并行驱动 x/y/w/h 四条动画
     JZWidget*         m_animStage = nullptr;   // 演示舞台 (网格背景, 无布局)
     JZPushButton*     m_animBox = nullptr;     // 被动画的方块 (objectName=animBox)
+
+    // 换肤
+    JZPushButton* m_themeBtn = nullptr;
+    bool          m_dark = false;
 };

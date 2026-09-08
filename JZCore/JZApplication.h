@@ -8,6 +8,7 @@
 #include "JZMutex.h"
 
 class JZWindow;     // 前视声明: 定义在 JZWidget, 这里只用指针, 不引入模块依赖
+class JZStyleSheetParser;   // 前视声明: 定义在 JZWidget (全局样式表, 仅 HAS_JZWidget 时持有)
 
 class JZApplication : public JZObject
 {
@@ -55,6 +56,16 @@ public:
     void addTopLevelWindow(JZWindow* w);
     void removeTopLevelWindow(JZWindow* w);
     void notifyWindowClosed(JZWindow* w);
+
+    // ---- 全局样式表 (author 层, CSS 子集, 见 docs/jzstylesheet-design.md) ----
+    // 作用于所有控件; 控件级 setStyleSheet 优先级更高 (等价 HTML 的 <style> vs style="")。
+    // 返回 false 表示 CSS 有语法错误, 原因见 styleSheetError()。
+    // 本阶段只做解析留档 (规则匹配/生效在后续里程碑接入)。
+    bool setStyleSheet(const std::string& css);
+    std::string styleSheet() const;
+    std::string styleSheetError() const;
+    // 解析结果 (未设置过则返回 nullptr); 供 JZWidget 侧做规则匹配
+    const JZStyleSheetParser* styleSheetParser() const;
 #endif
 
     // 同步派发: 同线程经目标线程 notify (先过对象事件过滤器链, 拦截则不派发);
@@ -78,6 +89,10 @@ protected:
     std::vector<JZWindow*> m_topLevelWindows;
     JZWindow* m_activeWindow = nullptr;     // 最近激活过的窗口 (activeWindow 的回退值)
     bool m_quitOnLastWindowClosed = true;
+
+    // 全局样式表 (懒创建: 首次 setStyleSheet 时 new)
+    std::string m_styleSheetText;
+    JZStyleSheetParser* m_styleSheet = nullptr;
 #endif
 };
 extern JZApplication *jzApp;

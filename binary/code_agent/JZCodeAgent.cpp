@@ -455,8 +455,6 @@ bool JZCodeAgent::setWorkspace(const string &path)
     for (auto* tool : m_tools)
         tool->setAgent(this);
     applyZoneConfig();
-    if (m_agent)
-        m_agent->setSystemPrompt(buildSystemPrompt());
 
     // 重建 agent（工具与 systemPrompt 重新登记），再导入新工作区的存档
     buildAgent();
@@ -583,7 +581,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
             return false;
         }
     }    
-
+#if 0
     string name = codeBaseName(root);
     if (name.empty())
         name = "project";
@@ -674,6 +672,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     addLog("info", "已初始化 TS 工程: " + root + "\n"
                   "生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，已有文件未覆盖。\n"
                   "（project.json 不是骨架文件：它由打包/发布 buildProject 在 tsc 编译通过后生成）");
+#endif
     return true;
 }
 
@@ -1150,10 +1149,13 @@ void JZCodeAgent::buildAgent()
     };
 
     addTool(new JZListDirTool());
+    addTool(new JZWriteFileTool());
+    addTool(new JZAppendFileTool());
     addTool(new JZReadFileTool());
-    addTool(new JZSearchCodeTool());
-    addTool(new JZModifyCodeTool());
-    addTool(new JZVirtualTerminal());
+    addTool(new JZSearchFileTool());
+    addTool(new JZModifyFileTool());
+    //addTool(new JZVirtualTerminal());
+    addTool(new JZShellTool());
 
     // 所有网络工具共享同一个访问管理器，代理只在此统一设置一次
     if (!m_netMan)
@@ -1168,6 +1170,8 @@ void JZCodeAgent::buildAgent()
         m_netMan->setProxy(pc);
     }
 
+    applyZoneConfig();
+
     // 网络搜索工具：可配置搜索接口，共享 m_netMan（代理已统一设置）
     auto *searchTool = new JZWebSearchTool();
     if (!m_codeConfig.webSearchUrl.empty())
@@ -1180,103 +1184,13 @@ void JZCodeAgent::buildAgent()
     fetchTool->setNetworkAccessManager(m_netMan);
     addTool(fetchTool);
 
-    // ---- 直连 TSGO 语言服务的工具（原生 LSP，不经过 MCP / HTTP / node）----
-    // 仅在 tsgo(tsc) 二进制可用时注册，与 mcp-server.js 注册的 10 个工具一一对应。
-    if (m_tsServer)
-    {
-        m_tsServer->setTsgoPath(m_codeConfig.tscPath);
-        m_tsServer->setRoot(m_codeConfig.workspace);
-        if (m_tsServer->isAvailable())
-        {
-            static const TsMethod kTsMethods[] = {
-                TsMethod::Definition, TsMethod::References, TsMethod::QuickInfo,
-                TsMethod::Rename, TsMethod::Completion, TsMethod::DocumentHighlights,
-                TsMethod::Diagnostics, TsMethod::Source, TsMethod::Outline,
-                TsMethod::Members,
-            };
-            for (TsMethod m : kTsMethods)
-            {
-                auto *t = new JZTsTool(m_tsServer, m);
-                t->setAgent(this);
-                m_agent->addTool(t);
-                m_tools.push_back(t);
-                m_toolNames.push_back(t->toolName());
-            }
-        }
-    }
-
-    applyZoneConfig();
-
-    // ---- 注册自定义技能：用户要求用本工程 JZJSEngine/JZWidget 创建 JS/TS 界面时启用 ----
-    std::string skillSection;
-    auto registerSkill = [&](const SkillDefine &s)
-    {
-        m_agent->addSkill(s);
-        skillSection += "### " + s.name + "\n";
-        skillSection += s.tips + "\n\n";
-        skillSection += s.usage + "\n\n";
-    };
-
-    {
-        SkillDefine jsui;
-        jsui.name = "create_js_ui";
-        jsui.tips = "当用户要求用本工程的 JZJSEngine/JZWidget 创建 JS/TS 界面（页面/窗口/控件/组件/可视化）时使用："
-                    "以 JSON 描述结构，由代码生成器产出继承自控件基类的实体类，构造内 setupUi 建树，事件用 on 绑定。";
-        jsui.usage = R"JS(本工程创建 JS/TS UI 的固定规范（JZJSEngine + JZWidget）：
-
-1. 结构用 JSON 描述：节点含 type / props / children / id 四字段。
-   - type: 控件类，如 Window / Label / PushButton / Edit / Layout。
-   - props: 属性键值（geometry:[x,y,w,h]、text、title、visible 等），保留原始类型，不要全转字符串。
-   - children: 递归子节点；id: 节点标识，供后续按 id 取句柄（可选，缺省不进句柄）。
-   - 不要把事件代码写进 JSON（不内联 onClick 字符串），结构与行为分离。
-
-2. 由代码生成器直接把 UI 定义写成实体类 .ts 文件（控件基类见 JZJSEngine/types/jzwidget.ts，当前为 TS 占位）：
-   class XxxPanel extends WindowWidget {
-     tip!: LabelWidget; btn!: PushButtonWidget;
-     constructor() { super(); this.setupUi(); }
-     protected setupUi(): void { /* new 子控件、设 props、建父子 */ }
-   }
-   用法：const w = new XxxPanel(); 构造即建好整棵树，成员 w.tip/w.btn 即为控件（编译期精确类型）。
-   不要写 createUi 工厂函数，也不要把 id 平铺到 ui 上。
-
-3. 控件基类在 JZJSEngine/types/jzwidget.ts（当前为 TS 占位，真实控件由 C++ 注册进 JS 引擎后再替换实现，生成产物不变）。
-   常用控件类：WindowWidget / LabelWidget / PushButtonWidget / EditWidget，方法 setGeometry/setText/setTitle/setVisible/show 等。
-
-4. 事件绑定（行为）在 TS 里用 widget.on(event, cb) 完成；事件名 = C++ 信号去 "sig" 前缀且首字母小写，如 sigClicked -> "clicked"。
-   PushButtonWidget 额外提供 onClick(cb) 便捷方法。例：w.btn.onClick(() => w.tip.setText("clicked!"))。
-
-5. 不要使用 window_template_id（已废弃）。当前阶段先不碰 C++ 真实控件注册，控件基类用 TS 占位即可。
-
-6. 完成后用 tsc --noEmit 做类型自检；产物为原生 ESM，由内置引擎以模块方式加载运行。
-)JS";
-        registerSkill(jsui);
-    }
-
-    // 在 applyZoneConfig 之后生成提示词：availablePrograms() 依赖已下发的区域配置与可信程序
-    m_agent->setSystemPrompt(buildSystemPrompt() + "\n## 自定义技能\n" + skillSection);
-
-    // 注意: 这里不再注册 JZCommandTool(run_command)。
-    // 它把整条命令原样交给 cmd /c，等于给模型开了一个绕过 terminal 全部审查的后门
-    // （pip install / curl / 任意路径执行都能走通），因此一律走虚拟终端。
-    // 若确需恢复，在下面加:
-    //   auto *cmd_tool = new JZCommandTool();
-    //   cmd_tool->setup("run_command", "...", string(), 300000);
-    //   addTool(cmd_tool);
+    m_agent->setSystemPrompt(buildSystemPrompt());
 }
 
 void JZCodeAgent::abortTools()
 {
     // 宿主侧的编译把关进程也要一并终止, 防止其回调在 agent 重建后误发续修
     abortHostTsc();
-
-    for (auto *tool : m_tools)
-    {
-        // 阻断工具回传，避免"停止"之后再把结果交给已经废弃的 agent
-        tool->blockSignals(true);
-        auto *runner = dynamic_cast<JZProcessRunner *>(tool);
-        if (runner)
-            runner->stopAllProcesses();
-    }
 }
 
 void JZCodeAgent::addLog(const string &type, const string &text, const string &name)
@@ -1293,96 +1207,25 @@ void JZCodeAgent::addLog(const string &type, const string &text, const string &n
         m_logs.erase(m_logs.begin(), m_logs.begin() + (m_logs.size() - kMaxLogs));
 }
 
-string JZCodeAgent::buildSystemPrompt() const
+std::string JZCodeAgent::buildSystemPrompt() const
 {
-    string text;
-    text += "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript/JavaScript 项目：可查看、搜索、修改、编译(tsc)与运行(node)工作区中的代码。\n";
-    text += "\n## 工作区\n";
-    text += "根目录: " + m_codeConfig.workspace + "\n";
-    text += "所有路径参数都使用相对于该目录的相对路径（根目录用 \".\" 表示）。" \
-            "绝对路径必须位于工作区之内，越界会被拒绝。\n";
+    std::ostringstream text;
+    text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 C++ 项目：可查看、搜索、修改、CMake编译与运行工作区中的代码。\n";
+    text << "工作区:" + m_codeConfig.workspace + "\n"; 
+    text << "统一在项目目录创建build, 在build 里面使用 cmake 编译\n";
 
-    text += "\n## 可用工具\n";
-    text += "- list_dir    列出目录内容，目录名以 \"/\" 结尾\n";
-    text += "- read_file   读取文本文件，可按行号范围读取，返回内容带行号\n";
-    text += "- search_code 在代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\"\n";
-    text += "- modify_code 修改或新建文件（old_str 留空表示用 new_str 覆盖整个文件）\n";
-    text += "- terminal    虚拟终端：cd / ls / cat / pwd / mkdir / rm / cp / mv，也可执行外部程序\n";
-    text += "              输入 \"help\" 查看完整用法与当前可用程序\n";
-    text += "- web_search 联网搜索：查文档、API 用法、报错原因、第三方库等实时信息时使用\n";
-    text += "- web_fetch  抓取网页正文：拿到 web_search 返回的链接后，取其详细内容/官方文档时使用\n";
-    text += "\n";
-    text += "terminal 不是通用 shell：不支持管道(|)、重定向(>)与命令串联(&&)，" \
-            "换其它写法也会被拒绝，不要反复重试。\n";
-    if (m_codeConfig.trustedDirs.empty())
-        text += "除工作区外没有授信目录，因此只能访问工作区内的路径。\n";
-    else
-    {
-        text += "授信目录:\n";
-        for (const auto &d : m_codeConfig.trustedDirs)
-            text += "  " + d.path + (d.writable ? "（可读写）" : "（只读）") + "\n";
-    }
-
-    // 可用程序动态探测：只列真实存在的，避免模型去反复尝试没装的程序
     vector<string> progs;
-    for (auto *tool : m_tools)
+    for (auto* tool : m_tools)
     {
-        auto *term = dynamic_cast<JZVirtualTerminal *>(tool);
+        auto* term = dynamic_cast<JZVirtualTerminal*>(tool);
         if (term)
-            progs = term->availablePrograms();
-    }
-    if (progs.empty())
-        text += "可执行的外部程序: (无，未配置授信目录)\n";
-    else
-        text += "可执行的外部程序: " + str_join(progs, ", ") + "\n";
-    text += "缺失程序时不要换其它写法重试，直接告诉用户需要安装什么、装好后要加为授信目录。\n";
-    text += "\n## JS/TS 编译与运行\n";
-    bool hasTsc = false;
-    for (size_t i = 0; i < progs.size(); i++)
-        if (progs[i] == "tsc") { hasTsc = true; break; }
-    if (!hasTsc)
-        text += "注意: 当前可用的外部程序里没有 tsc（TS 环境目录未配置或缺失）。先停下手头工作，" \
-                "告诉用户去设置里填写正确的 TS 环境目录，不要尝试用其它方式编译。\n";
-    text += "编译统一用 tsc（TypeScript 原生编译器）。\n";
-    text += "- 工程目录只看根目录的 tsconfig.json（编译规则入口），动手前先读它。没有工程文件时，先初始化成标准 TS 工程（产物统一输出到 build/）。\n";
-    text += "- 标准 tsconfig 建议：target es2022、module esnext、moduleResolution bundler、strict true、outDir \"build\"。\n";
-    text += "- 跨文件请用标准 import/export 组织代码（引用可省略 .js 扩展名），支持在 src 下拆多个 .ts 互相 import。\n";
-    text += "- 全量编译:  tsc -p tsconfig.json   （产物为原生 ESM，统一落在 outDir，标准工程为 build/）\n";
-    text += "- 快速检查:  tsc --noEmit -p tsconfig.json   （只做类型/语法检查，不产出，适合每次改动后自检）\n";
-    text += "- 含 import/export 的产物由内置引擎(quickjs)以模块方式加载运行（import 依赖自动解析）；\n";
-    text += "  不要用 node 运行含 import/export 的产物（node 默认按 CommonJS 处理会报语法错，且未装 npm 依赖）。\n";
-    text += "- node 只能用于运行不含 import/export 的纯脚本产物（build/ 下无 import/export 的 .js 或独立小脚本）。\n";
-    text += "- 项目依赖预装在 node_modules 里（须已存在）；终端禁止装包(npm/npx/pip 均被禁)，缺依赖直接告诉用户。\n";
-    if (!m_codeConfig.tscPath.empty())
-    {
-        text += "\n### 轮末自动把关\n";
-        text += "宿主会在你每次回复结束（把控制权交回用户）后用 tsc --noEmit 检查一次编译状态。\n";
-        text += "若未通过，你会收到一条以“宿主自动检查”开头的指令，要求修复后重新编译，直到通过为止。\n";
-        text += "这条指令相当于用户的新要求，按同样标准执行即可。请尽量在回复前自行编译确认通过，减少这类往返。\n";
-    }
-    text += "\n## 工作原则\n";
-    text += "1. 修改代码之前必须先用 read_file 或 search_code 确认原文，严禁凭记忆猜测文件内容。\n";
-    text += "2. modify_code 的 old_str 必须与文件中的内容逐字符一致（含缩进与换行），且默认要求唯一匹配；\n";
-    text += "   若匹配到多处，请补充更多上下文使其唯一，或显式设置 replace_all=true。\n";
-    text += "3. 每次修改之后先 tsc --noEmit 做类型自检，再全量编译产出，必要时 node 运行验证，直到没有错误为止。\n";
-    text += "4. 编译或运行报错时，先从输出里定位到具体文件与行号再动手改，不要盲目试错。\n";
-    text += "5. 一次只做最小必要的改动，不要顺手重构无关代码。\n";
-    text += "6. 任务完成后用简洁的中文总结：改了哪些文件、编译与运行的结果如何。\n";
-
-    // 项目自带的补充说明（可选）
-    if (!m_codeConfig.workspace.empty())
-    {
-        JZFile file;
-        if (file.open(m_codeConfig.workspace + "/system.md", "rt"))
         {
-            JZTextStream stream(&file);
-            string extra = stream.readAll();
-            file.close();
-            if (!str_trimmed(extra).empty())
-                text += "\n## 项目补充说明（system.md）\n" + extra + "\n";
+            progs = term->availablePrograms();
+            break;
         }
     }
-    return text;
+
+    return text.str();
 }
 
 void JZCodeAgent::onReply(const string &text)

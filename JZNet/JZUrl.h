@@ -28,6 +28,8 @@ class JZUrl
 public:
     JZUrl();
     explicit JZUrl(std::string url);
+
+    bool isValid() const;
     
     std::string url() const;
     void setUrl(const std::string &url);
@@ -42,7 +44,7 @@ public:
     void setQuery(const JZUrlQuery& query);
 
 private:
-    void parse_url(std::string original_url);
+    bool parse_url(std::string original_url);
     void set_default_port();
     bool isDefaultPort() const;
 

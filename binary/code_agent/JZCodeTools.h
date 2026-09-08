@@ -113,13 +113,23 @@ public:
 };
 
 // ------------------------------------------------------------------
-// search_code: 在工作区内搜索文本 / 正则
+// write_file
 // ------------------------------------------------------------------
-class JZSearchCodeTool : public JZCodeTool
+class JZWriteFileTool : public JZCodeTool
 {
 public:
-    JZSearchCodeTool();
-    virtual void call(const ToolCall &params) override;
+    JZWriteFileTool();
+    virtual void call(const ToolCall& params) override;
+};
+
+// ------------------------------------------------------------------
+// append_file: 读取文件（可按行号范围）
+// ------------------------------------------------------------------
+class JZAppendFileTool : public JZCodeTool
+{
+public:
+    JZAppendFileTool();
+    virtual void call(const ToolCall& params) override;
 };
 
 // ------------------------------------------------------------------
@@ -127,11 +137,22 @@ public:
 //   old_str 为空  -> 用 new_str 覆盖整个文件（新建/重写）
 //   old_str 非空  -> 精确替换，默认要求唯一匹配
 // ------------------------------------------------------------------
-class JZModifyCodeTool : public JZCodeTool
+class JZModifyFileTool : public JZCodeTool
 {
 public:
-    JZModifyCodeTool();
+    JZModifyFileTool();
     virtual void call(const ToolCall &params) override;
+};
+
+
+// ------------------------------------------------------------------
+// search_code: 在工作区内搜索文本 / 正则
+// ------------------------------------------------------------------
+class JZSearchFileTool : public JZCodeTool
+{
+public:
+    JZSearchFileTool();
+    virtual void call(const ToolCall& params) override;
 };
 
 // ------------------------------------------------------------------
@@ -145,7 +166,7 @@ public:
     virtual ~JZProcessRunner();
 
     // 停止所有仍在运行的子进程（用户点"停止"或熔断时调用）
-    void stopAllProcesses();
+    virtual void cancel(const std::string &id) override;
 
 protected:
     struct Task
@@ -166,7 +187,7 @@ protected:
     void onProcFinished(JZProcess *proc, const std::string &id,
                         int exitCode, JZProcess::ExitStatus status);
     void removeTask(JZProcess *proc);
-
+    
     std::vector<Task> m_tasks;
 };
 
@@ -177,20 +198,32 @@ protected:
 //     以及管道(|)、重定向(>)、&& 串联、.bat/.cmd 等写法
 //   - 支持 work_dir(限制在工作区内) 与 timeout，超时会被强制终止
 // ------------------------------------------------------------------
+class JZShellTool : public JZProcessRunner
+{
+public:
+    JZShellTool();
+
+    void setTimeOut(int timeout);
+
+    virtual void call(const ToolCall &params) override;
+
+private:
+    int m_timeoutMs = 120000;
+};
+
 class JZCommandTool : public JZProcessRunner
 {
 public:
     JZCommandTool();
 
-    void setup(const std::string &name, const std::string &desc,
-               const std::string &defaultCommand, int timeoutMs);
-    void setDefaultCommand(const std::string &cmd);
-    const std::string &defaultCommand() const;
+    void setup(const std::string& name, const std::string& desc,
+        const std::string& command, const std::string& work_dir = std::string());
 
-    virtual void call(const ToolCall &params) override;
+    virtual void call(const ToolCall& params) override;
 
 private:
-    std::string m_defaultCommand;
+    std::string m_command;
+    std::string m_defaultWorkDir;
     int m_timeoutMs = 120000;
 };
 

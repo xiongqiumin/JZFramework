@@ -579,11 +579,11 @@ void JZReadFileTool::call(const ToolCall &params)
     finish(params, true, text);
 }
 
-// ==================== JZSearchCodeTool ====================
-JZSearchCodeTool::JZSearchCodeTool()
+// ==================== JZSearchFileTool ====================
+JZSearchFileTool::JZSearchFileTool()
 {
     ToolDefine def;
-    def.name = "search_code";
+    def.name = "search_file";
     def.description = "在工作区的代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\" 形式的匹配列表。" \
                       "默认跳过隐藏目录和 build/out 等生成目录。";
     def.parameters.push_back(makeParam("pattern", STRING, "要搜索的文本或正则表达式"));
@@ -667,7 +667,7 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
     }
 }
 
-void JZSearchCodeTool::call(const ToolCall &params)
+void JZSearchFileTool::call(const ToolCall &params)
 {
     string pattern = params.params.get("pattern", "").asString();
     if (pattern.empty())
@@ -739,25 +739,155 @@ void JZSearchCodeTool::call(const ToolCall &params)
     finish(params, true, text);
 }
 
-// ==================== JZModifyCodeTool ====================
-JZModifyCodeTool::JZModifyCodeTool()
+// ------------------------------------------------------------------
+// write_file: 新建或完整覆写文件
+// ------------------------------------------------------------------
+JZWriteFileTool::JZWriteFileTool()
 {
     ToolDefine def;
-    def.name = "modify_code";
-    def.description = "修改或创建工作区中的文件。"
-                      "old_str 为空字符串时，用 new_str 覆盖整个文件（用于新建文件）；"
-                      "old_str 非空时，把文件中的 old_str 精确替换为 new_str，默认要求 old_str 在文件中唯一匹配。"
-                      "修改前请务必先用 read_file 或 search_code 确认原文。";
+    def.name = "write_file";
+    def.description = "新建文件或者完整覆写已有文件，传入完整文件内容。"
+        "原有文件全部内容会丢失；局部修改请使用 modify_file。";
     def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("old_str", STRING, "要被替换的原文；留空表示覆盖写整个文件"));
-    def.parameters.push_back(makeParam("new_str", STRING, "替换后的新内容；old_str 为空时它就是整个文件的内容"));
+    def.parameters.push_back(makeParam("content", STRING, "完整文件文本内容"));
+    def.required_parameters.push_back("path");
+    def.required_parameters.push_back("content");
+    setToolDefine(def);
+}
+
+void JZWriteFileTool::call(const ToolCall& params)
+{
+    string rel = params.params.get("path", "").asString();
+    string content = params.params.get("content", "").asString();
+    if (rel.empty())
+    {
+        finish(params, false, "参数 path 不能为空");
+        return;
+    }
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), ret);
+        return;
+    }
+
+    bool existed = JZFileInfo::exists(abs);
+    if (existed && !isTextFile(abs))
+    {
+        finish(params, false, "不能覆写二进制文件: " + rel);
+        return;
+    }
+
+    JZFile file;
+    if (!file.open(abs, "wb"))
+    {
+        finish(params, false, "写入文件失败（无法打开）: " + rel);
+        return;
+    }
+    int written = file.write(str_toUtf8(content));
+    file.close();
+    if (written != (int)content.size())
+    {
+        finish(params, false, "写入文件失败（写入长度不符）: " + rel);
+        return;
+    }
+
+    vector<string> lines = readLines(content);
+    string msg;
+    if (existed)
+        msg = "已完整覆写文件 " + rel + "，共 " + to_string(lines.size()) + " 行。";
+    else
+        msg = "已新建文件 " + rel + "，共 " + to_string(lines.size()) + " 行。";
+
+    finish(params, true, msg);
+}
+
+// ------------------------------------------------------------------
+// append_file: 在已有文件末尾追加文本，不会覆盖原有内容
+// ------------------------------------------------------------------
+JZAppendFileTool::JZAppendFileTool()
+{
+    ToolDefine def;
+    def.name = "append_file";
+    def.description = "在已有文件末尾追加文本。文件必须已存在，不会自动创建新文件；新建文件使用 write_file。";
+    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("content", STRING, "要追加的文本内容"));
+    def.required_parameters.push_back("path");
+    def.required_parameters.push_back("content");
+    setToolDefine(def);
+}
+
+void JZAppendFileTool::call(const ToolCall& params)
+{
+    string rel = params.params.get("path", "").asString();
+    string appendContent = params.params.get("content", "").asString();
+    if (rel.empty())
+    {
+        finish(params, false, "参数 path 不能为空");
+        return;
+    }
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), ret);
+        return;
+    }
+
+    bool existed = JZFileInfo::exists(abs);
+    if (!existed)
+    {
+        finish(params, false, "append_file：目标文件不存在，不能自动创建，请改用 write_file: " + rel, DenyReason::NotFound);
+        return;
+    }
+    if (!isTextFile(abs))
+    {
+        finish(params, false, "不能向二进制文件追加内容: " + rel);
+        return;
+    }
+
+    JZFile file;
+    if (!file.open(abs, "ab"))
+    {
+        finish(params, false, "追加文件失败（无法打开）: " + rel);
+        return;
+    }
+    int written = file.write(str_toUtf8(appendContent));
+    file.close();
+    if (written != (int)appendContent.size())
+    {
+        finish(params, false, "追加文件失败（写入长度不符）: " + rel);
+        return;
+    }
+
+    string msg = "已向 " + rel + " 末尾追加 " + to_string(appendContent.size()) + " 字节。";
+    finish(params, true, msg);
+}
+
+
+// ==================== JZModifyFileTool ====================
+JZModifyFileTool::JZModifyFileTool()
+{
+    ToolDefine def;
+    def.name = "modify_file";
+    def.description = "对已有文件做局部片段修复替换。"
+        "old_str 必须填写，精确匹配文件内原文并替换为 new_str；默认要求 old_str 在文件中唯一匹配。"
+        "**不能用于新建或完整覆写文件**，新建/覆写请使用 write_file。"
+        "修改前请务必先用 read_file 或 search_file 确认原文。";
+    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("old_str", STRING, "要被替换的原文，必须提供，不能为空"));
+    def.parameters.push_back(makeParam("new_str", STRING, "替换后的新片段内容"));
     def.parameters.push_back(makeParam("replace_all", BOOLEAN, "old_str 有多处匹配时是否全部替换，默认 false"));
     def.required_parameters.push_back("path");
+    def.required_parameters.push_back("old_str");
     def.required_parameters.push_back("new_str");
     setToolDefine(def);
 }
 
-static string makeContextSnippet(const vector<string> &lines, int lineIndex, int radius)
+static string makeContextSnippet(const vector<string>& lines, int lineIndex, int radius)
 {
     int begin = max(0, lineIndex - radius);
     int end = min((int)lines.size(), lineIndex + radius + 1);
@@ -767,7 +897,7 @@ static string makeContextSnippet(const vector<string> &lines, int lineIndex, int
     return text;
 }
 
-void JZModifyCodeTool::call(const ToolCall &params)
+void JZModifyFileTool::call(const ToolCall& params)
 {
     string rel = params.params.get("path", "").asString();
     if (rel.empty())
@@ -779,6 +909,13 @@ void JZModifyCodeTool::call(const ToolCall &params)
     string newStr = params.params.get("new_str", "").asString();
     bool replaceAll = params.params.get("replace_all", false).asBool();
 
+    // old_str禁止为空，移除全量覆盖逻辑
+    if (oldStr.empty())
+    {
+        finish(params, false, "old_str 不能为空。modify_file 仅用于局部片段替换；新建/完整覆写文件请使用 write_file。");
+        return;
+    }
+
     string abs = fullPath(rel);
     DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
     if (ret != DenyReason::None)
@@ -787,82 +924,68 @@ void JZModifyCodeTool::call(const ToolCall &params)
         return;
     }
 
-    bool isNew = oldStr.empty();
-    string oldContent;
     bool existed = JZFileInfo::exists(abs);
-    if (existed)
+    if (!existed)
     {
-        std::string error;
-        if (!isTextFile(abs))
-        {
-            finish(params, false, "不能修改二进制文件: " + rel);
-            return;
-        }
-        oldContent = fileToString(abs, error);
-        if (!error.empty())
-        {
-            finish(params, false, error);
-            return;
-        }
+        finish(params, false, "文件不存在，modify_file 不能新建文件，请使用 write_file: " + rel, DenyReason::NotFound);
+        return;
     }
 
-    string newContent;
-    int replaced = 0;
-    if (isNew)
+    if (!isTextFile(abs))
     {
-        newContent = newStr;
+        finish(params, false, "不能修改二进制文件: " + rel);
+        return;
+    }
+
+    std::string error;
+    string oldContent = fileToString(abs, error);
+    if (!error.empty())
+    {
+        finish(params, false, error);
+        return;
+    }
+
+    size_t pos = 0;
+    int count = 0;
+    while ((pos = oldContent.find(oldStr, pos)) != string::npos)
+    {
+        count++;
+        pos += oldStr.size();
+    }
+    if (count == 0)
+    {
+        finish(params, false, "在 " + rel + " 中找不到 old_str，请先用 read_file 确认原文（注意空格、换行与缩进必须完全一致）。",
+            DenyReason::EditFailed);
+        return;
+    }
+    if (count > 1 && !replaceAll)
+    {
+        finish(params, false, "old_str 在 " + rel + " 中匹配了 " + to_string(count) +
+            " 处，请补充更多上下文使其唯一，或设置 replace_all=true。",
+            DenyReason::EditFailed);
+        return;
+    }
+
+    string newContent = oldContent;
+    int replaced = 0;
+    if (replaceAll)
+    {
+        pos = 0;
+        while ((pos = newContent.find(oldStr, pos)) != string::npos)
+        {
+            newContent.replace(pos, oldStr.size(), newStr);
+            pos += newStr.size();
+            replaced++;
+        }
     }
     else
     {
-        if (!existed)
-        {
-            finish(params, false, "文件不存在，无法做替换: " + rel + "（如需新建请把 old_str 留空）",
-                   DenyReason::NotFound);
-            return;
-        }
-
-        size_t pos = 0;
-        int count = 0;
-        while ((pos = oldContent.find(oldStr, pos)) != string::npos)
-        {
-            count++;
-            pos += oldStr.size();
-        }
-
-        if (count == 0)
-        {
-            finish(params, false, "在 " + rel + " 中找不到 old_str，请先用 read_file 确认原文（注意空格、换行与缩进必须完全一致）。",
-                   DenyReason::EditFailed);
-            return;
-        }
-        if (count > 1 && !replaceAll)
-        {
-            finish(params, false, "old_str 在 " + rel + " 中匹配了 " + to_string(count) +
-                                      " 处，请补充更多上下文使其唯一，或设置 replace_all=true。",
-                   DenyReason::EditFailed);
-            return;
-        }
-
-        newContent = oldContent;
-        if (replaceAll)
-        {
-            pos = 0;
-            while ((pos = newContent.find(oldStr, pos)) != string::npos)
-            {
-                newContent.replace(pos, oldStr.size(), newStr);
-                pos += newStr.size();
-                replaced++;
-            }
-        }
-        else
-        {
-            pos = newContent.find(oldStr);
-            newContent.replace(pos, oldStr.size(), newStr);
-            replaced = 1;
-        }
+        pos = newContent.find(oldStr);
+        newContent.replace(pos, oldStr.size(), newStr);
+        replaced = 1;
     }
 
-    // 保留原文件的换行风格
+    // 保留原文件换行风格
     if (!newContent.empty() && oldContent.find("\r\n") != string::npos &&
         newContent.find("\r\n") == string::npos)
     {
@@ -884,28 +1007,20 @@ void JZModifyCodeTool::call(const ToolCall &params)
     }
 
     string text;
-    if (isNew)
+    text = "已修改 " + rel + "，替换 " + to_string(replaced) + " 处。改动位置上下文:\n";
+    vector<string> lines = readLines(newContent);
+    int hitLine = -1;
+    string firstLine = str_mid(newStr, 0, (int)newStr.find('\n'));
+    for (int i = 0; i < (int)lines.size(); i++)
     {
-        text = (existed ? "已覆盖文件 " : "已新建文件 ") + rel + "，共 " +
-               to_string(readLines(newContent).size()) + " 行。";
-    }
-    else
-    {
-        text = "已修改 " + rel + "，替换 " + to_string(replaced) + " 处。改动位置上下文:\n";
-        vector<string> lines = readLines(newContent);
-        int hitLine = -1;
-        string firstLine = str_mid(newStr, 0, (int)newStr.find('\n'));
-        for (int i = 0; i < (int)lines.size(); i++)
+        if (!firstLine.empty() && str_indexOf(lines[i], firstLine) != -1)
         {
-            if (!firstLine.empty() && str_indexOf(lines[i], firstLine) != -1)
-            {
-                hitLine = i;
-                break;
-            }
+            hitLine = i;
+            break;
         }
-        if (hitLine >= 0)
-            text += makeContextSnippet(lines, hitLine, 4);
     }
+    if (hitLine >= 0)
+        text += makeContextSnippet(lines, hitLine, 4);
 
     finish(params, true, text);
 }
@@ -913,7 +1028,9 @@ void JZModifyCodeTool::call(const ToolCall &params)
 // ==================== JZProcessRunner ====================
 JZProcessRunner::~JZProcessRunner()
 {
-    stopAllProcesses();
+    auto tmp_tasks = m_tasks;
+    for (auto& task : tmp_tasks)
+        cancel(task.id);
 }
 
 bool JZProcessRunner::runProcess(const ToolCall &call, const string &program,
@@ -961,6 +1078,18 @@ bool JZProcessRunner::runProcess(const ToolCall &call, const string &program,
     task.startTime = JZPlatform::getTickCountMs();
     m_tasks.push_back(task);
     return true;
+}
+
+void JZProcessRunner::cancel(const std::string& id)
+{
+    for (size_t i = 0; i < m_tasks.size(); i++)
+    {
+        if (m_tasks[i].id == id)
+        {
+            m_tasks[i].proc->killProcess();
+            return;
+        }
+    }
 }
 
 void JZProcessRunner::onProcFinished(JZProcess *proc, const string &id,
@@ -1023,64 +1152,37 @@ void JZProcessRunner::removeTask(JZProcess *proc)
     }
 }
 
-void JZProcessRunner::stopAllProcesses()
-{
-    vector<JZProcess *> procs;
-    for (const auto &t : m_tasks)
-        procs.push_back(t.proc);
-
-    for (auto *proc : procs)
-        proc->killProcess();
-}
-
-// ==================== JZCommandTool ====================
-JZCommandTool::JZCommandTool()
-{
-}
-
-void JZCommandTool::setup(const string &name, const string &desc, const string &defaultCommand, int timeoutMs)
+//JZShellTool
+JZShellTool::JZShellTool()
 {
     ToolDefine def;
-    def.name = name;
-    def.description = desc;
-    def.parameters.push_back(makeParam("command", STRING,
-                                       defaultCommand.empty()
-                                           ? string("要执行的完整命令（必填），如 cmake --build build 或 build/Debug/demo.exe；"
-                                                    "Windows 下由 cmd /c 执行，支持管道、重定向与 && 串联")
-                                           : ("要执行的完整命令；留空则使用默认命令(" + defaultCommand + ")；"
-                                              "Windows 下由 cmd /c 执行")));
-    def.parameters.push_back(makeParam("work_dir", STRING, "工作目录，相对工作区根目录，默认工作区根目录"));
-    def.parameters.push_back(makeParam("timeout", NUMBER, "超时时间(毫秒)，默认 " + to_string(timeoutMs / 1000) + " 秒"));
+    def.name = "command";
+    def.description = "执行外部命令。传入完整命令字符串cmd；指定工作目录work_dir, 使用 cmd /c \"command\" 执行";
+    def.parameters.push_back(makeParam("cmd", STRING, "要执行的命令字符串"));
+    def.parameters.push_back(makeParam("work_dir", STRING, "执行的工作目录，相对工作区路径"));
+    def.required_parameters.push_back("cmd");
     setToolDefine(def);
-
-    m_defaultCommand = defaultCommand;
-    m_timeoutMs = timeoutMs;
 }
 
-void JZCommandTool::setDefaultCommand(const string &cmd)
+void JZShellTool::setTimeOut(int timeout)
 {
-    m_defaultCommand = cmd;
+    m_timeoutMs = timeout;
 }
 
-const string &JZCommandTool::defaultCommand() const
+void JZShellTool::call(const ToolCall& params)
 {
-    return m_defaultCommand;
-}
+    std::string cmdRaw = params.params.get("cmd", "").asString();
+    std::string relDir = params.params.get("work_dir", "").asString();
 
-void JZCommandTool::call(const ToolCall &params)
-{
-    string command = str_trimmed(params.params.get("command", "").asString());
-    if (command.empty())
-        command = m_defaultCommand;
-    command = str_trimmed(command);
-    if (command.empty())
+    if (cmdRaw.empty())
     {
-        finish(params, false, toolName() + " 没有可执行的命令：请在 command 参数中给出完整命令，或在网页设置里配置默认命令。");
+        finish(params, false, "参数 cmd 不能为空");
         return;
     }
 
-    string relDir = params.params.get("work_dir", "").asString();
-    string workDir = fullPath(relDir);
+    std::string workDir = fullPath(relDir);
+
+    // 工作目录读权限校验（同JZCommandTool）
     DenyReason ret = checkPathPermission(ToolOperator::Read, workDir);
     if (ret != DenyReason::None)
     {
@@ -1088,19 +1190,71 @@ void JZCommandTool::call(const ToolCall &params)
         return;
     }
 
-    int timeout = params.params.get("timeout", m_timeoutMs).asInt();
-    if (timeout < 1000)
-        timeout = 1000;
-
-    string program;
-    vector<string> args;
-    if (!buildProcessArgs(command, program, args))
+    std::string program;
+    std::vector<std::string> args;
+    if (!buildProcessArgs(cmdRaw, program, args))
     {
-        finish(params, false, "命令解析结果为空: " + command);
+        finish(params, false, "命令解析失败: " + cmdRaw);
         return;
     }
 
-    runProcess(params, program, args, workDir, timeout, command);
+    int timeout = m_timeoutMs;
+    // runProcess 签名：(params, program, args, workDir, timeout, displayText)
+    runProcess(params, program, args, workDir, timeout, cmdRaw);
+}
+
+// ==================== JZCommandTool ====================
+JZCommandTool::JZCommandTool()
+{
+}
+
+void JZCommandTool::setup(const std::string& name, const std::string& desc,
+    const std::string& command, const std::string& work_dir)
+{
+    m_command = command;
+
+    ToolDefine def;
+    def.name = name;
+    def.description = desc;
+    if(work_dir.empty())
+        def.parameters.push_back(makeParam("work_dir", STRING, "工作目录"));
+    else
+        m_defaultWorkDir = work_dir;
+
+    setToolDefine(def);
+}
+
+void JZCommandTool::call(const ToolCall &params)
+{
+    string workDir;
+    if (!m_defaultWorkDir.empty())
+    {
+        workDir = m_defaultWorkDir;
+    }
+    else
+    {
+        string relDir = params.params.get("work_dir", "").asString();
+        workDir = fullPath(relDir);
+    }
+    
+    DenyReason ret = checkPathPermission(ToolOperator::Read, workDir);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), ret);
+        return;
+    }
+
+    int timeout = m_timeoutMs;
+
+    string program;
+    vector<string> args;
+    if (!buildProcessArgs(m_command, program, args))
+    {
+        finish(params, false, "命令解析结果为空: " + m_command);
+        return;
+    }
+
+    runProcess(params, program, args, workDir, timeout, m_command);
 }
 
 // ==================== 虚拟终端：区域模型 ====================
@@ -1386,6 +1540,7 @@ JZVirtualTerminal::JZVirtualTerminal()
     addProgram("git", {"git.exe", "git"}, CmdCategory::Tool,
                {"-C", "--exec", "-c", "--upload-pack", "--upload-archive"});
     addProgram("tsc", {"tsc.exe", "tsc"}, CmdCategory::Tool);
+    addProgram("cmake", {"cmake.exe", "cmake"}, CmdCategory::Tool);
 
     addProgram("pip", {"pip.exe", "pip"}, CmdCategory::PackageManager);
     addProgram("npm", {"npm.exe", "npm"}, CmdCategory::PackageManager);
@@ -2561,6 +2716,12 @@ void JZWebFetchTool::call(const ToolCall &params)
     }
 
     JZUrl u(url);
+    if (!u.isValid())
+    {
+        finish(params, false, "url:\"" + url + "\" 无效");
+        return;
+    }
+
     string scheme = u.scheme();
     for (char &c : scheme) c = (char)::tolower((unsigned char)c);
     if (scheme != "http" && scheme != "https")

@@ -113,7 +113,13 @@ JZUrl::JZUrl()
 JZUrl::JZUrl(std::string original_url) 
 {
     m_port = 0;
-    parse_url(original_url);
+    if (!parse_url(original_url))
+        clear();
+}
+
+bool JZUrl::isValid() const
+{
+    return !m_host.empty();
 }
 
 void JZUrl::clear() { 
@@ -156,7 +162,8 @@ std::string JZUrl::url() const
 void JZUrl::setUrl(const std::string &url)
 {
     m_port = 0;
-    parse_url(url);
+    if (!parse_url(url))
+        clear();
 }
 
 const std::string& JZUrl::scheme() const { return m_scheme; }
@@ -167,7 +174,7 @@ uint16_t JZUrl::port() const { return m_port; }
 
 const std::string& JZUrl::path() const { return m_path; }
 
-void JZUrl::parse_url(std::string url) 
+bool JZUrl::parse_url(std::string url) 
 {
     // 清空所有成员
     m_scheme.clear();
@@ -212,7 +219,11 @@ void JZUrl::parse_url(std::string url)
     if (colon != std::string::npos) {
         // 提取端口
         std::string port_str = host_port.substr(colon + 1);
-        m_port = (uint16_t)std::stoi(port_str);
+
+        bool ok;
+        m_port = str_toInt(port_str, &ok);
+        if (!ok)
+            return false;
 
         // 提取主机
         m_host = host_port.substr(0, colon);
@@ -225,6 +236,7 @@ void JZUrl::parse_url(std::string url)
 
     // 解析参数
     m_query.fromString(query_str);
+    return true;
 }
 
 bool JZUrl::isDefaultPort() const {

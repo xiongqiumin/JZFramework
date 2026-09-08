@@ -95,6 +95,7 @@ public:
 
     // 统一调用接口：agent 在需要执行工具时传入自身与已解析的参数
     virtual void call(const ToolCall &params) = 0;
+    virtual void cancel(const std::string &id);
 
 jz_signals:
     JZSignal<ToolCallResult> sigResult;

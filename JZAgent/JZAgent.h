@@ -286,6 +286,7 @@ protected:
     // 单次 LLM 回复对应一条 assistant 历史，流式过程中工具调用可能被分片，
     // 故只在响应完整后（[DONE]/整包）才执行。
     std::shared_ptr<LLMHistory> m_replyHistory;
+    std::map<std::string,JZAgentTool*> m_pendingTools;
 };
 
 #endif

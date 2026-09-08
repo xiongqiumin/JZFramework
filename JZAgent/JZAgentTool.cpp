@@ -311,3 +311,8 @@ void JZAgentTool::setToolDefine(const ToolDefine &def)
 {
     m_toolDefine = def;
 }
+
+void JZAgentTool::cancel(const std::string &id)
+{
+
+}

@@ -567,6 +567,7 @@ void JZAgent::processToolCall(ToolCall& tool_call)
     tool_call.params = param;
     // 统一接口：把已解析的参数交给工具，工具通过 sigResult 回传结果
     tool->call(tool_call);
+    m_pendingTools[tool_call.id] = tool;
 }
 
 // LLMHistory
@@ -853,6 +854,12 @@ const JZAgentTool* JZAgent::tool(const std::string &name) const
 
 void JZAgent::onToolCallResult(const ToolCallResult &response)
 {
+    auto it = m_pendingTools.find(response.id);
+    if(it != m_pendingTools.end())
+    {
+        m_pendingTools.erase(it);
+    }
+
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::ToolCallResultPrompt);
     req->toolCallResult = response;
     m_requests.push_back(req);
@@ -892,6 +899,14 @@ void JZAgent::llmError(AgentError error, std::string error_string)
 
 void JZAgent::llmEnd()
 {
+    auto tool_it = m_pendingTools.begin();
+    while(tool_it != m_pendingTools.end())
+    {
+        tool_it->second->cancel(tool_it->first);
+        tool_it++;
+    }
+    m_pendingTools.clear();
+
     if (m_llmReply)
     {
         auto reply = m_llmReply;
@@ -1022,9 +1037,19 @@ void JZAgent::llmLoop()
         {
             // 统计非 system 历史条目，砍掉最旧的一半（system 不砍）
             int nonSys = 0;
-            for (const auto& h : m_context.history)
+            int lastUser = -1;
+            for (size_t i = 0; i < m_context.history.size(); i++)
+            {
+                auto& h = m_context.history[i];
+                if (h->role == LLMHistory::User)
+                    lastUser = i;
                 if (h->role != LLMHistory::System)
                     nonSys++;
+            }
+            if (lastUser == -1)
+                goto historyCutEnd;
+
+            std::shared_ptr<LLMHistory> last_user_record = m_context.history[lastUser];
             int toRemove = nonSys / 2;
             if (toRemove > 0)
             {
@@ -1039,11 +1064,27 @@ void JZAgent::llmLoop()
                     else
                         ++it;
                 }
+
+                bool has_user = false;
+                for (auto &h : m_context.history)
+                {
+                    if (h->role == LLMHistory::User)
+                    {
+                        has_user = true;
+                        break;
+                    }
+                }
+                if (!has_user)
+                {
+                    m_context.history.insert(m_context.history.begin(), last_user_record);
+                }
+
                 m_context.recalcUsage();  // 历史已裁剪，重算累计 usage 使其回落
                 llmRequest();
                 return;
             }
         }
+historyCutEnd:
         // 无法继续裁剪（非 system 历史不足）则报错终止
         llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
         return;

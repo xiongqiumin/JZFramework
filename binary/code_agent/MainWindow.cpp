@@ -3,6 +3,7 @@
 #include <fstream>
 #include "json/json.h"
 
+#include "JZSplitter.h"
 #include "JZLayout.h"
 #include "JZLineEdit.h"
 #include "JZPushButton.h"

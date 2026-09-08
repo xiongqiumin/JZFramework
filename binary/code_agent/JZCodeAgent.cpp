@@ -234,7 +234,8 @@ string JZCodeAgent::historyFilePath() const
 {
     if (m_codeConfig.workspace.empty())
         return string();
-    return m_codeConfig.workspace + "/.jzcode";
+
+    return m_codeConfig.workspace + "/.jzcode/history.json";
 }
 
 void JZCodeAgent::saveWorkspaceHistory()
@@ -347,9 +348,15 @@ void JZCodeAgent::saveSessionHistory()
 {
     if (m_sessionHistory.empty())
         return;
+
+    JZDir dir(m_codeConfig.workspace);
+    if(!dir.exists(".jzcode"))
+    {
+        if(!dir.mkdir(".jzcode"))
+            return;
+    }
     
-    // 保存到工作区目录下的 .jzcode_history 文件
-    string path = m_codeConfig.workspace + "/.jzcode_history";
+    string path = m_codeConfig.workspace + "/.jzcode/history.json";
     if (path.empty())
         return;
     
@@ -379,7 +386,7 @@ void JZCodeAgent::saveSessionHistory()
 
 void JZCodeAgent::loadSessionHistory()
 {
-    string path = m_codeConfig.workspace + "/.jzcode_history";
+    string path = m_codeConfig.workspace + "/.jzcode/history.json";
     if (!JZFileInfo::exists(path))
         return;
     

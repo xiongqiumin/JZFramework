@@ -458,7 +458,7 @@ void JZAgent::llmRequest()
     m_errorCode = AgentError::None;
     m_error.clear();
     m_currentRound++;
-    if (m_currentRound >= m_config.maxRounds)
+    if (m_config.maxRounds != -1 && m_currentRound >= m_config.maxRounds)
     {
         llmError(MaxRoundError, "执行任务超时");
         return;
@@ -1117,17 +1117,6 @@ historyCutEnd:
                 chat->role = LLMHistory::Tool;
                 chat->content = req->toolCallResult.result;
                 chat->toolResponseId = req->toolCallResult.id;
-
-                if (!req->toolCallResult.isOk)
-                    m_toolError++;
-                else
-                    m_toolError = 0;
-
-                if (m_toolError >= m_config.maxToolError)
-                {
-                    llmError(ToolCallError, "当前服务不可用,请稍后重试");
-                    return;
-                }
             }
             else if (req->type == JZAgentRequest::Stop)
             {

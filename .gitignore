@@ -16,6 +16,7 @@ build*
 /captures
 .externalNativeBuild
 .cxx
+.jzcode
 local.properties
 __pycache__
 

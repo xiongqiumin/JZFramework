@@ -113,8 +113,7 @@ public:
     
     int netTimeout = 120 * 1000; // 网络请求超时（毫秒），默认 30s
 
-    int maxRounds = 100;
-    int maxToolError = 3;   // 工具连续失败上限，超过则终止任务
+    int maxRounds = 100;    // -1代表不限制
     int maxToken = 100000;  // 单次任务 token 预算上限，超出触发 maxTokenError
 
     TokenStrategy tokenStrategy = TokenError;

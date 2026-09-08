@@ -48,7 +48,7 @@ struct AppConfig
     std::string proxyPassword;
 
     // 最近打开的工程（绝对路径，最近使用的排在最前，最多 kMaxRecentProjects 条）。
-    // 启动时自动恢复第 0 条，即“默认打开上次的项目”。
+    // 启动时自动恢复第 0 条，即"默认打开上次的项目"。
     std::vector<std::string> recentProjects;
 };
 
@@ -210,7 +210,7 @@ private:
     void onExport();
     void onExit();
     void onPoll();
-    void onClearRecent();     // 清空“最近的项目”列表
+    void onClearRecent();     // 清空"最近的项目"列表
 
     // 打开 dir 作为工程：探测 → （必要时询问并初始化）→ openProject → 记入最近列表。
     // interactive=false 用于启动自动恢复：不弹任何对话框，非工程目录/失败直接放弃。
@@ -220,7 +220,7 @@ private:
 
     // 记入最近工程（同路径上移，去重，截断到 kMaxRecentProjects）
     void addRecentProject(const std::string& path);
-    // 重建“最近的项目”子菜单（挂在 aboutToShow 上，展开时才刷新）
+    // 重建"最近的项目"子菜单（挂在 aboutToShow 上，展开时才刷新）
     void updateRecentMenu();
     bool checkAgentRun();
 
@@ -231,6 +231,13 @@ private:
 
     void appendLog(const CodeAgentLog& log);
 
+    // 右侧对话索引: 刷新列表（每个对话标题为 user 第一条消息的前 30 字符）
+    void updateConvList();
+    // 切换对话索引: index 为 m_convList 中的条目
+    void onSelectConversation(int index);
+
+    // ---- 成员变量 ----
+
     JZCodeAgent*     m_agent = nullptr;
     ChatView*        m_chatView = nullptr;
     InputEdit*       m_inputEdit = nullptr;
@@ -240,6 +247,13 @@ private:
     JZStackedWidget* m_stack = nullptr;        // 0=欢迎页 1=对话页
     WelcomePage*     m_welcome = nullptr;
     bool             m_projectOpened = false;  // 是否已打开工程（决定显示哪一页）
+
+    // ---- 右侧历史面板 ----
+    JZWidget*        m_histPanel = nullptr;      // 历史列表面板
+    JZListWidget*    m_histList = nullptr;       // 会话历史列表
+
+    // 右键菜单
+    JZMenu*          m_histMenu = nullptr;
 
     std::string m_exportName;   // 上次导出指定的运行时 exe 名（记住，方便连续导出）
     std::string m_exportIcon;   // 上次导出指定的图标路径

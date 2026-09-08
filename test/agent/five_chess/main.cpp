@@ -113,7 +113,6 @@ JZAgentConfig GameRunner::makeLlmConfig(const string &model) const
     cfg.modelName = model;
     cfg.modelToken = "EMPTY";           // vLLM 默认不鉴权
     cfg.maxRounds = 6;                  // 一回合内允许的工具调用轮次
-    cfg.maxToolError = 5;
     cfg.netTimeout = 180000;
     // 模型支持 160k 上下文, 预算给到 150k, 留 10k 给生成与余量;
     // 真超了仍由 TokenTruncate 裁掉最旧的一半历史兜底。

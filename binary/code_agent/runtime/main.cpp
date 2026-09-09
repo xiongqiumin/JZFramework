@@ -55,15 +55,10 @@ int main(int argc, char *argv[])
     JZCommandLineParser parser;
     parser.setDescription(
         "code_runtime - 运行已打包/发布好的 TS 工程产物（隔离进程，无 GUI）\n"
-        "主入口读取工程根 project.json 的 entry；缺失或产物不存在时报错退出");
+        "主入口读取工程根 main.js 的 entry；缺失或产物不存在时报错退出");
 
     string projectRoot;
     JZCommandLineArgument arg;
-    arg.name = "projectRoot";
-    arg.description =
-        "工程根目录（tsconfig.json / project.json 所在目录，同时作为引擎工作目录）";
-    arg.required = true;
-    parser.addArgument(arg, &projectRoot);
 
     // 调试：--debug / -d 强制开启调试器；否则读自身"调试开关"资源（导出时写入，缺省 true）。
     // --debug-port 指定 HTTP 监听端口（默认 9222）。

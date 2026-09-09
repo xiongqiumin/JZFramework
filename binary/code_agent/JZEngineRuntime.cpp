@@ -85,28 +85,6 @@ static bool rtReadFile(const string &path, string &text)
     return true;
 }
 
-// 工程根下的主入口声明文件（由"打包/发布"步骤 JZCodeAgent::buildProject 生成）：
-//     { "entry": "build/main.js" }   // 相对 projectDir 的 ESM 产物路径
-// 缺失 / 解析失败返回空串；init() 视作"尚未打包/发布"，直接报错，不猜测入口。
-static string rtReadProjectEntry(const string &projectDir)
-{
-    string text;
-    if (!rtReadFile(projectDir + "/project.json", text))
-        return "";
-    // 去掉 UTF-8 BOM（Json::Reader 不认）
-    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
-        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
-        text.erase(0, 3);
-
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(text, root) || !root.isObject() || !root.isMember("entry"))
-        return "";
-    if (root["entry"].isString())
-        return root["entry"].asString();
-    return "";
-}
-
 static string rtDirOf(const string &path)
 {
     size_t p = path.find_last_of("/\\");
@@ -471,7 +449,7 @@ bool JZEngineRuntime::engineRunning() const
     return m_engineRunning && m_engine != nullptr;
 }
 
-bool JZEngineRuntime::runModule(const string &moduleRel)
+bool JZEngineRuntime::runModule(const string& moduleRel)
 {
     if (!m_engine)
     {
@@ -494,7 +472,7 @@ bool JZEngineRuntime::runModule(const string &moduleRel)
     return false;
 }
 
-bool JZEngineRuntime::evalScript(const string &script)
+bool JZEngineRuntime::evalScript(const string& script)
 {
     if (!m_engine)
     {
@@ -514,22 +492,22 @@ bool JZEngineRuntime::evalScript(const string &script)
     return false;
 }
 
-const string &JZEngineRuntime::lastError() const
+const string& JZEngineRuntime::lastError() const
 {
     return m_lastError;
 }
 
-void JZEngineRuntime::setLogHandler(const LogHandler &handler)
+void JZEngineRuntime::setLogHandler(const LogHandler& handler)
 {
     m_logHandler = handler;
 }
 
-void JZEngineRuntime::setUnhandledExceptionHandler(const UnhandledHandler &handler)
+void JZEngineRuntime::setUnhandledExceptionHandler(const UnhandledHandler& handler)
 {
     m_unhandledHandler = handler;
 }
 
-bool JZEngineRuntime::init(const string &projectDir)
+bool JZEngineRuntime::init(const string& projectDir)
 {
     m_root = rtNormalizePath(projectDir);
     while (m_root.size() > 2 && str_endsWith(m_root, "/"))
@@ -540,22 +518,10 @@ bool JZEngineRuntime::init(const string &projectDir)
         return false;
     }
 
-    // 运行前必须先"打包/发布"（tsc 编译 -> build/ 产物，并生成入口声明 project.json）。
-    // 主入口由工程根下的 project.json 声明：读不到 = 还没打包，直接报错不猜测入口；
-    // 声明指向的产物文件不存在同样报错，避免把"没构建"误报成源码运行错。
-    string moduleRel = rtReadProjectEntry(m_root);
-    if (moduleRel.empty())
+    std::string main_js = m_root + "/main.js";
+    if(!JZFileInfo::exists(main_js))
     {
-        m_lastError =
-            "init: 工程尚未打包/发布，读不到运行主入口声明 project.json。\n"
-            "请先构建工程（tsc -p tsconfig.json，产物在 tsconfig 的 outDir 下）"
-            "并生成 project.json 后重试。";
-        return false;
-    }
-    if (rtResolveModuleFile(m_root, moduleRel).empty())
-    {
-        m_lastError = "init: 入口产物不存在: " + moduleRel +
-                      "（工程尚未打包/发布，或 project.json 的 entry 已过时）。";
+        m_lastError = "main.js 不存在";
         return false;
     }
 
@@ -568,12 +534,8 @@ bool JZEngineRuntime::init(const string &projectDir)
     }
 
     // 2) 以 ESM 方式加载并执行入口模块（入口具名导出绑定到全局）
-    if (!runModule(moduleRel))
-        return false;                       // lastError 已 mapStack 回 TS
-
-    // 3) 自动调用入口主函数 main()（入口没导出 main 则只执行模块顶层）
-    if (!evalScript("if (typeof main === 'function') { main(); }"))
-        return false;                       // lastError 已 mapStack 回 TS
+    if (!runModule("main.js"))
+        return false;
 
     return true;
 }

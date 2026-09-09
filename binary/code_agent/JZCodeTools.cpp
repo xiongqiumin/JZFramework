@@ -1269,13 +1269,20 @@ JZCommandTool::JZCommandTool()
 }
 
 void JZCommandTool::setup(const std::string& name, const std::string& desc,
-    const std::string& command, const std::string& work_dir)
+    const std::string& command, bool has_args, const std::string& work_dir)
 {
     m_command = command;
 
     ToolDefine def;
     def.name = name;
     def.description = desc;
+    // has_args 才开放 args 参数：未开放的固定命令工具不接受模型追加参数
+    if (has_args)
+    {
+        def.parameters.push_back(makeParam("args", STRING, "命令参数"));
+        m_hasArgs = true;
+    }
+
     if(work_dir.empty())
         def.parameters.push_back(makeParam("work_dir", STRING, "工作目录"));
     else
@@ -1304,17 +1311,80 @@ void JZCommandTool::call(const ToolCall &params)
         return;
     }
 
+    // 拼接参数：args=true 时把模型传的 args 追加到命令之后
+    string cmd = m_command;
+    if (m_hasArgs)
+    {
+        string extra = str_trimmed(params.params.get("args", "").asString());
+        if (!extra.empty())
+            cmd = cmd + " " + extra;
+    }
     int timeout = m_timeoutMs;
 
     string program;
     vector<string> args;
-    if (!buildProcessArgs(m_command, program, args))
+    if (!buildProcessArgs(cmd, program, args))
     {
-        finish(params, false, "命令解析结果为空: " + m_command);
+        finish(params, false, "命令解析结果为空: " + cmd);
         return;
     }
 
-    runProcess(params, program, args, workDir, timeout, m_command);
+    runProcess(params, program, args, workDir, timeout, cmd);
+}
+
+// ==================== JZBuildProjectTool ====================
+JZBuildProjectTool::JZBuildProjectTool()
+{
+    ToolDefine def;
+    def.name = "build_project";
+    def.description = "编译当前工作区的 TS 工程, 等于在工作区执行 tsc";
+    setToolDefine(def);
+}
+
+void JZBuildProjectTool::call(const ToolCall &params)
+{
+    if (m_agent->isBuildRunning())
+    {
+        finish(params, false, "已有打包/发布任务进行中，请等待其完成后再试");
+        return;
+    }
+
+    if (!m_connected)
+    {
+        m_connected = true;
+        connect(&m_agent->sigBuildFinished, this,
+                [this](bool ok, const std::string &error)
+                {
+                    onBuildDone(ok, error);
+                });
+    }
+
+    string error;
+    if (!m_agent->buildProject(error))
+    {
+        finish(params, false, error);
+        return;
+    }
+    m_pending = params;   // 编译结束（sigBuildFinished）后回填结果
+}
+
+void JZBuildProjectTool::cancel(const std::string &id)
+{
+    if (id == m_pending.id)
+        m_pending = ToolCall();   // 丢弃待回填结果；编译进程由 agent 的 abortBuild 负责
+}
+
+void JZBuildProjectTool::onBuildDone(bool ok, const std::string &error)
+{
+    if (m_pending.id.empty())
+        return;
+
+    ToolCall call = m_pending;
+    m_pending = ToolCall();
+    if (ok)
+        finish(call, true, "编译通过，现在可以用 run_js 运行程序。");
+    else
+        finish(call, false, error);
 }
 
 // ==================== 虚拟终端：区域模型 ====================

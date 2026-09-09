@@ -78,7 +78,7 @@ public:
     // 翻译回 TS 位置，统一从 lastError() 取。
     //
     // 换一个工程根就再 init() 一次（每次都是全新会话，模块缓存/全局互不串）。
-    bool init(const std::string &projectDir);
+    bool init(const std::string &work_dir);
 
     // 运行根（上次 init() 设置的工程根）。栈里的相对路径按它解析；
     // 源路径尽量显示成它的相对路径。为空时 js 路径按原样解析。

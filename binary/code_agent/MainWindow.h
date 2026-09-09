@@ -55,6 +55,32 @@ private:
     bool          m_busy = false;
 };
 
+// 工具条上工程名左侧的"运行中"指示：start() 后显示并持续旋转的圆弧，stop() 隐藏。
+// 旋转由内部定时器自驱动（约 60ms 一帧），外部只需按忙碌状态调 start/stop。
+class BusySpinner : public JZWidget
+{
+    JZ_OBJECT_DECLARE(BusySpinner)
+public:
+    explicit BusySpinner(JZWidget* parent = nullptr);
+
+    JZSize sizeHint() const override;
+
+    // 开始旋转（重复调用无副作用）：显示控件并启动内部定时器
+    void start();
+    // 停止旋转并隐藏
+    void stop();
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+
+private:
+    void onTick();      // 定时器帧：推进角度 + 重绘
+
+    JZTimer* m_timer = nullptr;
+    bool     m_spinning = false;
+    int      m_angle = 0;   // 弧线起始角（度，顺时针，0=3 点方向）
+};
+
 // 新建工程对话框：选工程所在目录（已存在）+ 输入工程名；
 // 确认后把 <位置>/<工程名> 作为工程目录，初始化标准 TS 工程骨架并打开。
 class NewProjectDialog : public JZDialog
@@ -210,6 +236,7 @@ private:
     InputEdit*       m_inputEdit = nullptr;
     JZPushButton*    m_clearBtn = nullptr;
     JZLabel*         m_topLabel = nullptr;     // 工具条上的工程名
+    BusySpinner*     m_busySpinner = nullptr;  // 工程名左侧的运行指示（busy 转圈，空闲隐藏）
     JZMenuBar*       m_menuBar = nullptr;
     JZMenu*          m_recentMenu = nullptr;   // 文件 → 最近的项目（子菜单）
     JZStackedWidget* m_stack = nullptr;        // 0=欢迎页 1=对话页

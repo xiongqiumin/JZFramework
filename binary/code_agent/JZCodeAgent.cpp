@@ -58,12 +58,14 @@ Json::Value CodeAgentLog::toJson() const
 JZCodeAgent::JZCodeAgent(JZObject *parent)
     : JZObject(parent)
     , sigRecoveryFinished(this)
+    , sigBuildFinished(this)
 {
     m_tsServer = new JZTsLangServer(this);
 }
 
 JZCodeAgent::~JZCodeAgent()
 {
+    abortBuild();
     abortTools();
     if (m_tsServer)
         m_tsServer->shutdown();
@@ -563,7 +565,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         string mainTs =
             "// " + name + " 工程入口示例（可自行删改，跨文件用 import/export）\n"
             "// 打包/发布: tsc -p tsconfig.json（产物为原生 ESM 输出到 build/，并生成入口声明 project.json）\n"
-            "// 运行: 内置引擎/code_runtime 读 project.json 的 entry（build/main.js）加载入口\n"
+            "// 运行: run_js 加载 main.js 并执行\n"
             "export function main(): void\n"
             "{\n"
             "    console.log(\"Hello from " + name + "!\");\n"
@@ -715,20 +717,22 @@ static string tsEntryDirFor(const string &root, const string &outDir)
     return dir;                                // 工程根外 -> 绝对路径
 }
 
-bool JZCodeAgent::buildProject(const string &path, string &error, string *output)
+// 打包/发布当前工作区工程（异步）：前置校验通过后启动 tsc 子进程立即返回 true；
+// 编译结束由 onBuildFinished 校验入口产物并写 project.json，结果经 sigBuildFinished
+// 通知（waitBuildFinished 同步等待时，收尾在该调用返回前完成）。
+bool JZCodeAgent::buildProject(std::string &error)
 {
     error.clear();
-    string root = path;
-    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
-        root.pop_back();
-    if (root.empty())
+    if (m_buildRunning)
     {
-        error = "目录不能为空";
+        error = "已有打包/发布任务进行中，请等待其完成";
         return false;
     }
-    if (!JZFileInfo::exists(root) || !JZFileInfo(root).isDir())
+
+    string root = codeNormalizePath(m_codeConfig.workspace);
+    if (root.empty())
     {
-        error = "路径不是目录: " + root;
+        error = "未设置工作区，无法打包/发布";
         return false;
     }
     if (!JZFileInfo::exists(root + "/tsconfig.json"))
@@ -747,68 +751,148 @@ bool JZCodeAgent::buildProject(const string &path, string &error, string *output
         return false;
     }
 
-    // 1) 真实全量编译（tsc -p tsconfig.json -> build/*.js + *.js.map）。阻塞至结束。
-    JZProcess proc;
-    proc.setProcessChannelMode(JZProcess::MergedChannels);
-    proc.setWorkingDirectory(root);
-    if (!proc.start(m_codeConfig.tscPath, {"-p", "tsconfig.json", "--pretty", "false"}))
+    // 异步启动 tsc 全量编译（tsc -p tsconfig.json -> outDir/*.js + *.js.map）
+    JZProcess *proc = new JZProcess(this);
+    proc->setProcessChannelMode(JZProcess::MergedChannels);
+    proc->setWorkingDirectory(root);
+    connect(&proc->sigFinished, this,
+            [this, proc](int code, JZProcess::ExitStatus status)
+            {
+                onBuildFinished(proc, code, status);
+            });
+    if (!proc->start(m_codeConfig.tscPath, {"-p", "tsconfig.json", "--pretty", "false"}))
     {
+        proc->deleteLater();
         error = "启动 tsc 失败: " + m_codeConfig.tscPath;
         return false;
     }
-    if (!proc.waitForFinished(180000))
+
+    m_buildProc = proc;
+    m_buildRoot = root;
+    m_buildOk = false;
+    m_buildError.clear();
+    m_buildRunning = true;
+
+    // 墙钟超时保护（异步路径没有 waitBuildFinished 的兜底轮询）
+    m_buildTimer = new JZTimer(this);
+    connect(&m_buildTimer->sigTimeout, this, [this]()
+            {
+                if (!m_buildRunning || !m_buildProc)
+                    return;
+                JZProcess *proc = m_buildProc;
+                proc->killProcess();
+                onBuildFinished(proc, -1, JZProcess::CrashExit, true);
+            });
+    m_buildTimer->start(180000);
+
+    addLog("info", "开始打包/发布工程: " + root + "\n(tsc -p tsconfig.json)");
+    return true;
+}
+
+void JZCodeAgent::waitBuildFinished()
+{
+    if (!m_buildRunning || !m_buildProc)
+        return;
+
+    // 阻塞轮询；进程退出时 sigFinished 直连会同步触发 onBuildFinished（收尾在返回前完成）
+    m_buildProc->waitForFinished(180000 + 10000);
+
+    // 兜底：超时仍未结束则强杀并走超时收尾
+    if (m_buildRunning && m_buildProc)
     {
-        proc.killProcess();
-        error = "tsc 编译超时（180s）被终止。";
-        return false;
+        JZProcess *proc = m_buildProc;
+        proc->killProcess();
+        onBuildFinished(proc, -1, JZProcess::CrashExit, true);
     }
-    string out = str_fromLocal(proc.readAllStandardOutput());
-    if (output)
-        *output = out;
-    if (proc.exitCode() != 0)
+}
+
+void JZCodeAgent::abortBuild()
+{
+    if (!m_buildRunning || !m_buildProc)
+        return;
+
+    if (m_buildTimer)
+    {
+        m_buildTimer->stop();
+        m_buildTimer = nullptr;   // 父子关系随 agent 释放（可能处于析构路径，不 deleteLater）
+    }
+    JZProcess *proc = m_buildProc;
+    m_buildProc = nullptr;
+    m_buildRunning = false;
+    m_buildOk = false;
+    m_buildError = "打包/发布被终止";
+    proc->killProcess();
+    addLog("info", "已终止打包/发布进程: " + m_buildRoot);
+    // 不发 sigBuildFinished：主动中止，等待方（工具 cancel / 停止任务）不依赖该通知
+}
+
+void JZCodeAgent::onBuildFinished(JZProcess *proc, int code, JZProcess::ExitStatus status, bool timeout)
+{
+    if (proc != m_buildProc)
+        return;   // 过期回调（已被 abort/新任务顶替）
+
+    if (m_buildTimer)
+    {
+        m_buildTimer->stop();
+        m_buildTimer = nullptr;
+    }
+
+    string out = str_fromLocal(proc->readAllStandardOutput());
+    m_buildProc = nullptr;
+    m_buildRunning = false;
+    proc->deleteLater();
+
+    string root = m_buildRoot;
+    bool ok = !timeout && status == JZProcess::NormalExit && code == 0;
+    string err;
+    if (timeout)
+        err = "tsc 编译超时（180s）被终止。";
+    else if (!ok)
     {
         const int kMaxErrChars = 8000;
         if ((int)out.size() > kMaxErrChars)
             out = out.substr(0, kMaxErrChars) + "\n...(编译输出过长已截断)";
-        error = "编译失败:\n" + str_trimmed(out);
-        return false;
+        err = "编译失败:\n" + str_trimmed(out);
     }
 
-    // 2) 编译通过 = 打包/发布完成。产物写向哪由 tsconfig.json 的 outDir 决定：
-    //    缺省/未配置按标准工程约定落在"工程根/build"，也可被改成任意目录
-    //    （含工程根外的绝对路径）；入口 = outDir 下 main.js（src/main.ts 的产物），
-    //    校验存在后刷新运行主入口声明 project.json（构建产物元数据）。
-    string outDir = tsOutDirOf(root, "build");
-    string entryDir = tsEntryDirFor(root, outDir);   // 根内->相对；根外->绝对
-    string entry = (entryDir == ".") ? "main.js" : entryDir + "/main.js";
-
-    string entryAbs = JZDir(root).absoluteFilePath(entry);
-    for (size_t i = 0; i < entryAbs.size(); i++)
+    // 编译通过 -> 校验入口产物：tsconfig outDir 下的 main.js（src/main.ts 的产物），
+    // 存在才刷新运行主入口声明 project.json；缺失则整体判失败。
+    string entry;
+    if (ok)
     {
-        if (entryAbs[i] == '\\')
-            entryAbs[i] = '/';
-    }
-    if (!JZFileInfo::exists(entryAbs) || !JZFileInfo(entryAbs).isFile())
-    {
-        error = "编译通过但未找到入口产物: " + entryAbs + "\n"
-                "tsconfig 的 outDir 为 \"" + outDir +
-                "\"，入口按 src/main.ts 的产物（main.js）定位。\n"
-                "若主入口文件名/位置不同，请调整 tsconfig 的 rootDir/include 后再打包/发布。";
-        return false;
+        string outDir = tsOutDirOf(root, "build");
+        string entryAbs = tsEntryDirFor(root, outDir) + "/main.js";
+
+        if (!JZFileInfo::exists(entryAbs) || !JZFileInfo(entryAbs).isFile())
+        {
+            ok = false;
+            err = "编译通过但未找到入口产物(main.js), 请保证main.js存在";
+        }
+        else
+        {
+            ofstream f(outDir + "/project.json", ios::binary | ios::trunc);
+            if (!f)
+            {
+                ok = false;
+                err = "写入 project.json 失败: " + root;
+            }
+            else
+            {
+                f << "{\n  \"entry\": \"" << entry << "\"\n}\n";
+                f.close();
+            }
+        }
     }
 
-    ofstream f(root + "/project.json", ios::binary | ios::trunc);
-    if (!f)
-    {
-        error = "写入 project.json 失败: " + root;
-        return false;
-    }
-    f << "{\n  \"entry\": \"" << entry << "\"\n}\n";
-    f.close();
+    m_buildOk = ok;
+    m_buildError = ok ? string() : err;
+    if (ok)
+        addLog("info", "已打包/发布工程: " + root + "\n编译通过（tsc -p tsconfig.json）"
+                       "\n入口产物: " + entry + "（tsconfig outDir 缺省=工程根/build）");
+    else
+        addLog("info", "打包/发布失败: " + root + "\n" + err);
 
-    addLog("info", "已打包/发布工程: " + root + "\n编译通过（tsc -p tsconfig.json）"
-                   "\n入口产物: " + entry + "（tsconfig outDir 缺省=工程根/build）");
-    return true;
+    sigBuildFinished.emit(ok, ok ? string() : err);
 }
 
 // ------------------------------------------------------------------
@@ -870,27 +954,39 @@ static bool copyDirRecursive(const string &src, const string &dst, string &error
     return true;
 }
 
-bool JZCodeAgent::exportProject(const string &path, string &outDir, string &error,
-                                  const string &exeName, const string &iconPath, bool debug)
+bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig config)
 {
     error.clear();
     outDir.clear();
 
-    string root = path;
-    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
-        root.pop_back();
+    string root = codeNormalizePath(m_codeConfig.workspace);
+    if (root.empty())
+    {
+        error = "未设置工作区，无法导出工程";
+        return false;
+    }
     if (!JZFileInfo::exists(root + "/tsconfig.json"))
     {
         error = "不是 TS 工程目录（缺少 tsconfig.json）: " + root;
         return false;
     }
 
+    // 0) 已有打包在进行中则先等它收尾，避免并发打包
+    if (m_buildRunning)
+        waitBuildFinished();
+
     // 1) 确保已打包/发布：优先重新编译（保证 build/ 与 project.json 最新）。
     //    未配置宿主侧 tsc 时退化为"已有 project.json 即可"（依赖先前产物）。
     if (!m_codeConfig.tscPath.empty())
     {
-        if (!buildProject(root, error))
+        if (!buildProject(error))
             return false;
+        waitBuildFinished();               // 打包是异步的，导出前等收尾（含入口校验）
+        if (!m_buildOk)
+        {
+            error = m_buildError.empty() ? "打包/发布失败" : m_buildError;
+            return false;
+        }
     }
     else if (!JZFileInfo::exists(root + "/project.json"))
     {
@@ -942,7 +1038,7 @@ bool JZCodeAgent::exportProject(const string &path, string &outDir, string &erro
     }
     // 目标运行时文件名：去扩展名后拼接 .exe（缺省 = code_runtime）
     string targetName = "code_runtime";
-    string nameTrim = exeName;
+    string nameTrim = config.exeName;
     while (!nameTrim.empty() && (nameTrim.back() == '.' || nameTrim.back() == ' ' ||
                                  nameTrim.back() == '\t'))
         nameTrim.pop_back();
@@ -951,10 +1047,10 @@ bool JZCodeAgent::exportProject(const string &path, string &outDir, string &erro
     string dstExe = outDir + "/" + targetName + ".exe";
     if (!copyOneFile(runtimeExe, dstExe, error))
         return false;
-    if (!iconPath.empty() && JZFileInfo::exists(iconPath))
+    if (!config.iconPath.empty() && JZFileInfo::exists(config.iconPath))
     {
         string resErr;
-        if (!JZExeResource::replaceIcon(dstExe, iconPath, resErr))
+        if (!JZExeResource::replaceIcon(dstExe, config.iconPath, resErr))
         {
             error = "替换 exe 图标失败: " + resErr;
             return false;
@@ -965,7 +1061,7 @@ bool JZCodeAgent::exportProject(const string &path, string &outDir, string &erro
     //      缺省 true：导出的运行时默认以 debug 版本发布，运行时自身可读此资源决定是否开启 JZRuntimeDebugger。
     {
         string resErr;
-        if (!JZExeResource::setDebugFlag(dstExe, debug, resErr))
+        if (!JZExeResource::setDebugFlag(dstExe, config.debug, resErr))
         {
             error = "写入调试开关资源失败: " + resErr;
             return false;
@@ -1086,6 +1182,9 @@ void JZCodeAgent::buildAgent()
     m_recoveryAttempt = 0;
     m_lastUserRequest.clear();
 
+    // 重建前终止进行中的打包/发布（tsc 子进程随旧任务作废）
+    abortBuild();
+
     // 重建前丢弃上一轮的 TSGO 语言服务进程与未决请求（配置可能已变化）
     if (m_tsServer)
         m_tsServer->shutdown();
@@ -1121,6 +1220,19 @@ void JZCodeAgent::buildAgent()
     shell_tool->setExeSearchPaths({ jzApp->applicationDirPath() + "/ts_compiler/tsc" });
     addTool(shell_tool);
     //addTool(new JZVirtualTerminal());
+
+    // build_project：打包/发布当前工作区（异步 tsc + main.js 入口校验 + project.json），
+    // 是 run_tool 的前置步骤；编译错误直接回给模型自修。
+    addTool(new JZBuildProjectTool());
+
+    // run_js：用随包安装的 code_runtime 运行编译产物（exe 与 code_agent 同目录，
+    // 见 exportProject 的同款定位）；args 透传给运行时（如工程根目录、--debug）。
+    // 未编译的工程应先用 build_project 打包。
+    string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
+    string run_work_dir = m_codeConfig.workspace + "/build";
+    auto run_tool = new JZCommandTool();
+    run_tool->setup("run_js", "run_js 加载 main.js 并执行, --debug 开启调试模式", runtimeExe, true, run_work_dir);
+    addTool(run_tool);
 
     // 所有网络工具共享同一个访问管理器，代理只在此统一设置一次
     if (!m_netMan)

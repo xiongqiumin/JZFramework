@@ -516,10 +516,16 @@ int main()
         bool ok;
         if (!code.tscPath.empty())
         {
+            agent.setWorkspace(goodRoot);   // 新接口：buildProject 面向当前工作区
             string err;
-            ok = agent.buildProject(goodRoot, err, &out);
-            if (!ok)
-                out = err;
+            ok = agent.buildProject(err);
+            if (ok)
+            {
+                agent.waitBuildFinished();
+                ok = agent.lastBuildOk();
+                err = agent.lastBuildError();
+            }
+            out = err;
         }
         else
         {
@@ -595,10 +601,16 @@ int main()
         bool ok;
         if (!code.tscPath.empty())
         {
+            agent.setWorkspace(failRoot);   // 新接口：buildProject 面向当前工作区
             string err;
-            ok = agent.buildProject(failRoot, err, &out);
-            if (!ok)
-                out = err;
+            ok = agent.buildProject(err);
+            if (ok)
+            {
+                agent.waitBuildFinished();
+                ok = agent.lastBuildOk();
+                err = agent.lastBuildError();
+            }
+            out = err;
         }
         else
         {
@@ -689,10 +701,16 @@ int main()
                 writeText(goodRoot + "/tsconfig.json", ts2);
             }
 
+            agent.setWorkspace(goodRoot);   // 新接口：buildProject 面向当前工作区
             string out, err;
-            bool ok = agent.buildProject(goodRoot, err, &out);
-            if (!ok)
-                out = err;
+            bool ok = agent.buildProject(err);
+            if (ok)
+            {
+                agent.waitBuildFinished();
+                ok = agent.lastBuildOk();
+                err = agent.lastBuildError();
+            }
+            out = err;
             check(patched && ok,
                   "打包/发布按 tsconfig 的绝对 outDir 写产物（工程根外）",
                   out.empty() ? "(无输出)" : out);
@@ -732,9 +750,14 @@ int main()
             rmRecursive(extOut);
             writeText(goodRoot + "/tsconfig.json", tsText);
             out.clear();
-            bool ok2 = agent.buildProject(goodRoot, err, &out);
-            if (!ok2)
-                out = err;
+            bool ok2 = agent.buildProject(err);
+            if (ok2)
+            {
+                agent.waitBuildFinished();
+                ok2 = agent.lastBuildOk();
+                err = agent.lastBuildError();
+            }
+            out = err;
             check(ok2, "恢复默认 outDir=build 后重新打包/发布(工程复原)",
                   out.empty() ? "(无输出)" : out);
             string entryText;
@@ -806,7 +829,15 @@ int main()
             bool built = false;
             if (!code2.tscPath.empty())
             {
-                built = agent2.buildProject(typesRoot, err2, &out2);
+                agent2.setWorkspace(typesRoot);   // 新接口：buildProject 面向当前工作区
+                built = agent2.buildProject(err2);
+                if (built)
+                {
+                    agent2.waitBuildFinished();
+                    built = agent2.lastBuildOk();
+                    err2 = agent2.lastBuildError();
+                }
+                out2 = err2;
             }
             else
             {
@@ -844,8 +875,13 @@ int main()
         string ico8 = base + "/stage8.ico";
         check(writeMinIco(ico8, 200, 30, 30), "生成导出用测试 .ico", "");
 
+        agent3.setWorkspace(expRoot);   // 新接口：exportProject 面向当前工作区
+        ExportConfig cfg8;
+        cfg8.exeName = "myapp";
+        cfg8.iconPath = ico8;
+        cfg8.debug = true;
         string expDir, expErr;
-        bool ok8 = agent3.exportProject(expRoot, expDir, expErr, "myapp", ico8, true);
+        bool ok8 = agent3.exportProject(expDir, expErr, cfg8);
         check(ok8, "exportProject 导出可独立运行包（改名 myapp + 替换图标 + debug）", expErr);
         if (ok8)
         {

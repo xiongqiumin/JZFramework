@@ -93,6 +93,13 @@ struct CodeAgentLog
     Json::Value toJson() const;
 };
 
+struct ExportConfig
+{
+    std::string exeName = "";
+    std::string iconPath = "";
+    bool debug = true;
+};
+
 // 代码助手：把 JZAgent 与一组代码工具(编译/运行/改代码/找代码)组装起来，
 // 并维护一份可供网页端增量拉取的会话日志。
 class JZCodeAgent : public JZObject
@@ -134,29 +141,33 @@ public:
     //   注意: 不生成 project.json —— 它是"打包/发布"时构建产物的元数据，见 buildProject）
     bool initProject(const std::string &path, std::string &error);
 
-    // 把 path 工程"打包/发布"：用宿主侧 tsc（CodeAgentConfig.tscPath）真实全量编译
-    // （tsc -p tsconfig.json）。产物写向 tsconfig.json 的 outDir —— 缺省/未配置按
-    // 标准工程约定是"工程根/build"，也可以被改成任意目录（含工程根外的绝对路径）。
-    // 编译通过后校验 outDir 下的 main.js（src/main.ts 的产物），刷新运行主入口声明
-    // project.json：entry = 产物路径 —— 产物目录在工程根内写相对路径（build/main.js），
-    // 在工程根之外写绝对路径（JZEngineRuntime/code_runtime 两种都支持）。
-    // project.json = 构建产物的元数据，不属于工程骨架配置；运行前必须先打包/发布。
-    // 阻塞至 tsc 结束；失败返回 false，error 说明原因，output 可接收 tsc 原始输出。
-    bool buildProject(const std::string &path, std::string &error,
-                      std::string *output = nullptr);
+    // 打包/发布当前工作区工程：异步启动宿主 tsc 全量编译（tsc -p tsconfig.json），
+    // 编译结束后自动校验入口产物（tsconfig outDir 下的 main.js，缺省 build/main.js），
+    // 存在才生成/刷新运行主入口声明 project.json，否则整体判失败。
+    // 启动成功返回 true（前置校验失败返回 false 并填 error）；结果经 sigBuildFinished
+    // 通知，或 waitBuildFinished() 同步等待后用 lastBuildOk/lastBuildError 查询。
+    bool buildProject(std::string& error);
+    // 阻塞等待进行中的打包/发布结束（无进行中任务时立即返回）；
+    // 收尾（入口校验 + project.json 写入）在本调用返回前完成
+    void waitBuildFinished();
+    // 打包/发布是否进行中（工具并发保护/界面状态）
+    bool isBuildRunning() const { return m_buildRunning; }
+    // 最近一次打包/发布结果（waitBuildFinished 或 sigBuildFinished 之后读取）
+    bool lastBuildOk() const { return m_buildOk; }
+    const std::string &lastBuildError() const { return m_buildError; }
+    // 终止进行中的打包/发布（重建 agent / 析构时调用）
+    void abortBuild();
 
-    // 把工程"导出"为可独立运行的发行包：重新打包/发布后，复制编译产物(build/ 下的
+    // 把当前工作区工程"导出"为可独立运行的发行包：重新打包/发布后，复制编译产物(build/ 下的
     // *.js + *.js.map) + 运行主入口声明 project.json + 内嵌 JZEngineRuntime 的
     // code_runtime.exe 到 <工程根>/export，并生成一键启动的 run.bat。
-    //   - exeName：导出运行时 exe 的文件名（不含扩展名，缺省/空=code_runtime）。
-    //   - iconPath：可选的 .ico 路径，非空且存在则把该图标写入导出的运行时 exe
+    //   - config.exeName：导出运行时 exe 的文件名（不含扩展名，缺省/空=code_runtime）。
+    //   - config.iconPath：可选的 .ico 路径，非空且存在则把该图标写入导出的运行时 exe
     //               （用 JZExeResource 替换资源图标，使连接后的 code_runtime 包含自定义 exe 图标）。
-    //   - debug：是否写入"调试开关"资源（缺省 true）。运行时自身读取该资源决定是否开启
+    //   - config.debug：是否写入"调试开关"资源（缺省 true）。运行时自身读取该资源决定是否开启
     //            JZRuntimeDebugger（基于 JZMcpServer 的 HTTP 调试器）。
     // outDir 返回导出目录（绝对路径）；失败返回 false，error 说明原因。
-    bool exportProject(const std::string &path, std::string &outDir, std::string &error,
-                       const std::string &exeName = "", const std::string &iconPath = "",
-                       bool debug = true);
+    bool exportProject(std::string &outDir, std::string &error, ExportConfig config);
 
     // 最近一次 openProject 的探测结果（未 open 过则为默认值）
     const CodeProjectStatus &projectStatus() const;
@@ -197,8 +208,10 @@ public:
     JZFileWatch* fileCache() { return &m_fileCache; }
 
     // 任务级自动恢复序列结束通知：(passed, attempts)
+    // 打包/发布结束通知：(ok, error)；ok=false 时 error 为失败原因/编译输出
 jz_signals:
     JZSignal<bool, int> sigRecoveryFinished;
+    JZSignal<bool, const std::string &> sigBuildFinished;
 
     // [keep-index]
 protected:
@@ -216,6 +229,9 @@ protected:
 
     void onToolCall(const ToolCall &call);
     void onToolResult(const ToolCallResult& result);
+
+    // ---- 打包/发布（异步）----
+    void onBuildFinished(JZProcess *proc, int code, JZProcess::ExitStatus status, bool timeout = false);
 
     // ---- 轮末宿主编译把关 ----
     bool startHostTscCheck();                                  // 符合条件则异步起 tsc --noEmit; true=已进入检查
@@ -256,6 +272,14 @@ protected:
     JZTimer *m_hostTimer = nullptr;
     bool m_hostRunning = false;
     bool m_hostTimeout = false;
+
+    // 打包/发布（异步）状态
+    JZProcess *m_buildProc = nullptr;   // 正在运行的打包/发布 tsc 进程
+    JZTimer *m_buildTimer = nullptr;    // 墙钟超时保护
+    bool m_buildRunning = false;
+    bool m_buildOk = false;             // 最近一次打包/发布结果
+    std::string m_buildRoot;            // 本次打包的工程根（workspace 快照）
+    std::string m_buildError;           // 最近一次失败原因（成功为空）
 
     // 任务级自动恢复状态（m_recovery 为注入的策略，buildAgent 不清空）
     JZCodeAgentRecovery m_recovery;

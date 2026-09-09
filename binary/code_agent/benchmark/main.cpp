@@ -133,10 +133,6 @@ public:
         m_code.llmConfig = m_llm;
         m_agent->init(m_code);
 
-        connect(&(m_agent->agent()->sigToolCall), [this](const ToolCall &call) {
-            jzDebug() << "tool call" << call.function_name;
-        });
-
         m_poll = new JZTimer(this);
         connect(&m_poll->sigTimeout, this, &Benchmark::onPoll);
     }
@@ -230,7 +226,12 @@ protected:
         // 因此重建之后再注入一次，确保模型知道从 http://127.0.0.1:<port>/input 读取输入。
         auto jz_agent = m_agent->agent();
         if (!m_httpPromptExtra.empty())
+        {
             jz_agent->setSystemPrompt(jz_agent->systemPrompt() + m_httpPromptExtra);
+        }
+        connect(&jz_agent->sigToolCall, [](const ToolCall& t) {
+            jzDebug() << "tool call:" << t.function_name;
+        });
 
         jzDebug().nospace() << "==== 用例[" << m_case.name << "] 开始 (maxAttempts="
                             << m_case.maxAttempts << ", root=" << root << ") ====";
@@ -261,13 +262,19 @@ protected:
                     continue;   // 已渲染过
                 if (log.id > seq)
                     break;      // logs 按 id 递增，后面都是更新的，直接停
+                
                 std::string text = str_utf8_to_local(log.text);
                 if (m_renderedType != log.type)
                 {
-                    printf("\n%s:", log.type.c_str());
+                    if (log.type == "user" || log.type == "thinking" || log.type == "delta")
+                    {
+                        if(!m_renderedType.empty())
+                            printf("%s: ", str_utf8_to_local(log.type).c_str());
+                    }
                     m_renderedType = log.type;
                 }
-                printf("%s", text.c_str());
+                if (log.type == "user" || log.type == "thinking" || log.type == "delta")
+                    printf("%s", str_utf8_to_local(log.text).c_str());
             }
             m_renderedId = seq;
         }
@@ -312,11 +319,16 @@ protected:
             return;
         }
 
-        // 1) 宿主真实编译打包
+        // 1) 宿主真实编译打包（异步启动 + 阻塞等待收尾）
         std::string buildErr;
-        std::string buildOut;
         int64_t b0 = JZPlatform::getTickCountMs();
-        bool buildOk = m_agent->buildProject(m_root, buildErr, &buildOut);
+        bool buildOk = m_agent->buildProject(buildErr);
+        if (buildOk)
+        {
+            m_agent->waitBuildFinished();
+            buildOk = m_agent->lastBuildOk();
+            buildErr = m_agent->lastBuildError();
+        }
         m_result.buildMs += (int)(JZPlatform::getTickCountMs() - b0);
         m_result.lastBuildError = buildErr;
 

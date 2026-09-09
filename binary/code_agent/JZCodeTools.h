@@ -8,6 +8,7 @@
 #include "JZAgentTool.h"
 #include "JZProcess.h"
 #include "JZTimer.h"
+#include "JZCommandLineParser.h"
 
 class JZCodeAgent;
 
@@ -215,20 +216,49 @@ private:
     std::vector<std::string> m_exeSearchPaths;   // 额外 exe 搜索目录
 };
 
+// ------------------------------------------------------------------
+// 固定命令工具: 执行 setup 时给定的命令（模型不能改命令本身）
+//   args 为 true 时，工具带一个可选 args 参数，其内容会追加到命令之后
+//   （"程序 + 参数"形态，如 run_js 运行 code_runtime）；args 为空则原样执行命令。
+//   args 为 false 的工具不接受任何追加，行为与原版完全一致。
+// ------------------------------------------------------------------
 class JZCommandTool : public JZProcessRunner
 {
 public:
     JZCommandTool();
 
+    // args 为 true 时：为工具定义可选 args 参数，调用时追加到 command 后
     void setup(const std::string& name, const std::string& desc,
-        const std::string& command, const std::string& work_dir = std::string());
+        const std::string& command, bool args, const std::string& defalut_work_dir = std::string());
 
     virtual void call(const ToolCall& params) override;
 
 private:
     std::string m_command;
     std::string m_defaultWorkDir;
+    bool m_hasArgs = false;
     int m_timeoutMs = 120000;
+};
+
+// ------------------------------------------------------------------
+// build_project: 打包/发布当前工作区的 TS 工程
+//   走 JZCodeAgent::buildProject（异步 tsc 全量编译），编译结束后自动校验
+//   入口产物 main.js 并生成/刷新 project.json；编译错误回传给模型自修。
+//   打包完成后才能用 run_js（code_runtime）运行。
+// ------------------------------------------------------------------
+class JZBuildProjectTool : public JZCodeTool
+{
+public:
+    JZBuildProjectTool();
+
+    virtual void call(const ToolCall &params) override;
+    virtual void cancel(const std::string &id) override;
+
+private:
+    void onBuildDone(bool ok, const std::string &error);
+
+    ToolCall m_pending;      // 等待打包结束回填的调用
+    bool m_connected = false;
 };
 
 // ------------------------------------------------------------------

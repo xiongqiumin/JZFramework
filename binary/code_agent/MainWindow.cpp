@@ -17,6 +17,7 @@
 #include "JZMessageBox.h"
 #include "JZAction.h"
 #include "JZApplication.h"
+#include "JZPainter.h"
 
 using namespace std;
 
@@ -545,6 +546,8 @@ void MainWindow::setupUi()
     JZWidget* topBar = new JZWidget(leftArea);
     topBar->setFixedHeight(32);
     JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
+    m_busySpinner = new BusySpinner(topBar);    // 工程名左侧的运行指示：busy 转圈，空闲隐藏
+    topLayout->addWidget(m_busySpinner, 0);
     m_topLabel = new JZLabel("", topBar);       // 打开工程后显示工程名（任务列表归属）
     topLayout->addWidget(m_topLabel, 0);
     topLayout->addStretch();
@@ -762,7 +765,9 @@ void MainWindow::applyConfig()
     vector<TrustedDir> dirs = m_cfg.trustedDirs;
     vector<TrustedProgram> progs = m_cfg.trustedPrograms;
     
-    code.tscPath = jzApp->applicationDirPath() + "/compiler/tsc.exe";
+    // 宿主侧 tsc：与 benchmark / shell 工具的 exeSearchPaths 同源（bin 下只有 ts_compiler/tsc/，
+    // 旧路径 compiler/tsc.exe 不存在，会让 buildProject 在前置校验就失败）
+    code.tscPath = jzApp->applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
     code.trustedDirs = dirs;
     code.trustedPrograms = progs;
 
@@ -1301,9 +1306,12 @@ void MainWindow::onExport()
     // 导出当前打开的工程（工作区即工程根）为可独立运行的发行包：
     // exportProject 会重新打包/发布，并把 build/ + project.json + code_runtime.exe（改名/换图标/
     // 写调试开关资源）拷到 <工程>/export。
-    std::string root = codeNormalizePath(m_cfg.workspace);
+    ExportConfig cfg;
+    cfg.exeName = name;
+    cfg.iconPath = icon;
+    cfg.debug = dbg;
     std::string outDir, error;
-    if (m_agent->exportProject(root, outDir, error, name, icon, dbg))
+    if (m_agent->exportProject(outDir, error, cfg))
     {
         // 记住本次选择，方便连续导出
         m_exportName = name;
@@ -1364,6 +1372,12 @@ void MainWindow::onPoll()
     bool busy = m_agent->isBusy();
     m_inputEdit->setBusy(busy);   // 驱动输入框按钮在"发送"/"停止"间切换
 
+    // 工程名左侧的运行指示：运行中转圈，空闲隐藏（控件内部定时器自驱动）
+    if (busy)
+        m_busySpinner->start();
+    else
+        m_busySpinner->stop();
+
     // 一轮刚结束：助手回了话，计一条消息并把对话落盘
     if (m_agentWasBusy && !busy)
     {
@@ -1388,6 +1402,69 @@ void MainWindow::onPoll()
 
 JZ_OBJECT_IMPL(WelcomePage, JZWidget)
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
+JZ_OBJECT_IMPL(BusySpinner, JZWidget)
 JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
 JZ_OBJECT_IMPL(ExportDialog, JZDialog)
 JZ_OBJECT_IMPL(MainWindow, JZMainWindow)
+
+// ==================== BusySpinner ====================
+BusySpinner::BusySpinner(JZWidget* parent)
+    : JZWidget(parent)
+{
+    setFixedSize(16, 16);
+    setVisible(false);   // 初始隐藏，start() 时才显示
+
+    m_timer = new JZTimer(this);
+    connect(&m_timer->sigTimeout, this, &BusySpinner::onTick);
+}
+
+JZSize BusySpinner::sizeHint() const
+{
+    return JZSize(16, 16);
+}
+
+void BusySpinner::start()
+{
+    if (m_spinning)
+        return;
+    m_spinning = true;
+    m_angle = 0;
+    setVisible(true);
+    m_timer->start(60);
+}
+
+void BusySpinner::stop()
+{
+    if (!m_spinning)
+        return;
+    m_spinning = false;
+    m_timer->stop();
+    setVisible(false);
+}
+
+void BusySpinner::onTick()
+{
+    m_angle = (m_angle + 30) % 360;   // 30°/帧(60ms) ≈ 0.72s 一圈
+    update();
+}
+
+void BusySpinner::paintEvent(JZPainterEvent* event)
+{
+    JZPainter p(this);
+    JZRect rc = rect();
+    int cx = rc.x() + rc.width() / 2;
+    int cy = rc.y() + rc.height() / 2;
+    int r = (rc.width() < rc.height() ? rc.width() : rc.height()) / 2 - 3;
+
+    p.setPen(JZPen(JZColor(0x2b, 0x90, 0xe0), 2));   // 与 TokenRing 一致的主题蓝
+    // 270° 圆弧 = 带缺口的转圈；跨越 0° 时拆成两段画，不依赖渲染层的角度环绕处理
+    int start = m_angle % 360;
+    const int sweep = 270;
+    if (start + sweep <= 360)
+        p.drawArc(cx, cy, r, start, start + sweep);
+    else
+    {
+        p.drawArc(cx, cy, r, start, 360);
+        p.drawArc(cx, cy, r, 0, start + sweep - 360);
+    }
+}

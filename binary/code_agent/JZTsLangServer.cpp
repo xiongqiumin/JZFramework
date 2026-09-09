@@ -642,37 +642,40 @@ Json::Value JZTsLangServer::firstLocation(const Json::Value &def)
     return def;
 }
 
+vector<string> JZTsLangServer::splitLines(const string &text)
+{
+    vector<string> lines;
+    string cur;
+    for (char c : text)
+    {
+        if (c == '\n')
+        {
+            if (!cur.empty() && cur.back() == '\r')
+                cur.pop_back();
+            lines.push_back(cur);
+            cur.clear();
+        }
+        else
+        {
+            cur += c;
+        }
+    }
+    if (!cur.empty())
+    {
+        if (cur.back() == '\r')
+            cur.pop_back();
+        lines.push_back(cur);
+    }
+    return lines;
+}
+
 Json::Value JZTsLangServer::readFileRange(const string &file, const Json::Value &range)
 {
     string text = readFileUtf8(file);
     if (text.empty())
         return Json::Value(string());
 
-    // 按行切分（保留每行内容，去掉 \r）
-    vector<string> lines;
-    {
-        string cur;
-        for (char c : text)
-        {
-            if (c == '\n')
-            {
-                if (!cur.empty() && cur.back() == '\r')
-                    cur.pop_back();
-                lines.push_back(cur);
-                cur.clear();
-            }
-            else
-            {
-                cur += c;
-            }
-        }
-        if (!cur.empty())
-        {
-            if (cur.back() == '\r')
-                cur.pop_back();
-            lines.push_back(cur);
-        }
-    }
+    vector<string> lines = splitLines(text);
 
     int sl = range.isObject() ? jInt(range["start"], "line", 0) : 0;
     int el = range.isObject() ? jInt(range["end"], "line", 0) : 0;
@@ -693,6 +696,73 @@ Json::Value JZTsLangServer::readFileRange(const string &file, const Json::Value 
         result += lines[i];
     }
     return Json::Value(result);
+}
+
+// LSP SymbolKind(1~26) -> 可读文本
+string JZTsLangServer::symbolKindName(int kind)
+{
+    switch (kind)
+    {
+        case 1: return "file";
+        case 2: return "module";
+        case 3: return "namespace";
+        case 4: return "package";
+        case 5: return "class";
+        case 6: return "method";
+        case 7: return "property";
+        case 8: return "field";
+        case 9: return "constructor";
+        case 10: return "enum";
+        case 11: return "interface";
+        case 12: return "function";
+        case 13: return "variable";
+        case 14: return "constant";
+        case 15: return "string";
+        case 16: return "number";
+        case 17: return "boolean";
+        case 18: return "array";
+        case 19: return "object";
+        case 20: return "key";
+        case 21: return "null";
+        case 22: return "enumMember";
+        case 23: return "struct";
+        case 24: return "event";
+        case 25: return "operator";
+        case 26: return "typeParameter";
+        default: return "unknown";
+    }
+}
+
+// documentSymbol 节点 -> 摘要：只留大模型需要的字段，行号归一化为 1-based
+Json::Value JZTsLangServer::symbolToJson(const Json::Value &sym)
+{
+    Json::Value o;
+    o["name"] = sym.get("name", "").asString();
+    o["kind"] = symbolKindName(sym.get("kind", 0).asInt());
+    string detail = sym.get("detail", "").asString();
+    if (!detail.empty())
+        o["detail"] = detail;
+    Json::Value range = sym.get("range", Json::Value());
+    if (range.isObject())
+    {
+        o["line"] = jInt(range["start"], "line", 0) + 1;
+        o["endLine"] = jInt(range["end"], "line", 0) + 1;
+    }
+    Json::Value children = sym.get("children", Json::Value(Json::arrayValue));
+    if (children.isArray() && children.size() > 0)
+        o["children"] = symbolsToJson(children);
+    return o;
+}
+
+Json::Value JZTsLangServer::symbolsToJson(const Json::Value &syms)
+{
+    Json::Value out(Json::arrayValue);
+    if (syms.isArray())
+    {
+        for (const auto &s : syms)
+            out.append(symbolToJson(s));
+    }
+    return out;
 }
 
 static bool rangeContains(const Json::Value &r, const Json::Value &pos)
@@ -744,7 +814,11 @@ Json::Value JZTsLangServer::symbolAt(const Json::Value &syms, const Json::Value 
 Json::Value JZTsLangServer::findSymbolByNameImpl(const Json::Value &syms,
                                                  const string &name, bool preferClass)
 {
-    Json::Value found;
+    // 先序遍历，返回第一个满足条件的同名符号：
+    //   preferClass=true  只认 class/interface；
+    //   preferClass=false 任意种类。
+    // 注意不能"本层暂存 found、深层命中再覆盖"——那会让嵌套的同名成员
+    // （如类方法与顶层函数同名）反过来压住先出现的浅层符号。
     for (const auto &sym : syms)
     {
         if (!sym.isObject())
@@ -755,15 +829,13 @@ Json::Value JZTsLangServer::findSymbolByNameImpl(const Json::Value &syms,
             bool isType = (kind == 5 || kind == 11); // Class / Interface
             if (preferClass ? isType : true)
                 return sym;
-            if (found.isNull())
-                found = sym;
         }
         Json::Value deeper = findSymbolByNameImpl(
             sym.get("children", Json::Value(Json::arrayValue)), name, preferClass);
         if (!deeper.isNull())
             return deeper;
     }
-    return found;
+    return Json::Value();
 }
 
 Json::Value JZTsLangServer::findSymbolByName(const Json::Value &syms, const string &name)
@@ -782,12 +854,12 @@ void JZTsLangServer::resolveByName(const string &file, const string &name,
     Json::Value pp;
     pp["textDocument"]["uri"] = uri;
     callLsp("textDocument/documentSymbol", pp,
-            [this, name, onPos, onErr](const Json::Value &syms)
+            [this, file, name, onPos, onErr](const Json::Value &syms)
             {
                 Json::Value sym = findSymbolByName(syms, name);
                 if (sym.isNull())
                 {
-                    onErr("未找到名为 " + name + " 的符号");
+                    onErr("在 " + file + " 中未找到符号 \"" + name + "\"");
                     return;
                 }
                 Json::Value rp = sym.isMember("selectionRange") ? sym["selectionRange"] : sym["range"];
@@ -841,19 +913,86 @@ void JZTsLangServer::request(TsMethod method, const Json::Value &params, TsCallb
         m_queue.push_back({method, params, cb});
 }
 
+// ==================== 结构化编辑支持 ====================
+void JZTsLangServer::renameSymbol(const string &file, const string &name,
+                                  const string &newName, TsCallback cb)
+{
+    if (!isAvailable())
+    {
+        cb(false, "TSGO 语言服务不可用：未配置 tsgo(tsc) 二进制路径");
+        return;
+    }
+    ensureStarted();
+
+    auto run = [this, file, newName, cb](int ll, int cc)
+    {
+        string uri = ensureOpen(file);
+        Json::Value p;
+        p["textDocument"]["uri"] = uri;
+        p["position"]["line"] = ll;
+        p["position"]["character"] = cc;
+        p["newName"] = newName;
+        callLsp("textDocument/rename", p,
+                [cb](const Json::Value &r)
+                {
+                    // 把 WorkspaceEdit（changes / documentChanges 两种形态）归一化为
+                    // [{file, edits: [{line, offset, endLine, endOffset, text}]}]，行 1-based。
+                    Json::Value out(Json::arrayValue);
+                    auto appendOne = [&out](const string &u, const Json::Value &edits)
+                    {
+                        Json::Value fe;
+                        fe["file"] = uriToFile(u);
+                        fe["edits"] = Json::Value(Json::arrayValue);
+                        for (const auto &e : edits)
+                        {
+                            Json::Value te;
+                            te["line"] = jInt(e["range"]["start"], "line", 0) + 1;
+                            te["offset"] = jInt(e["range"]["start"], "character", 0) + 1; // 1-based 列
+                            te["endLine"] = jInt(e["range"]["end"], "line", 0) + 1;
+                            te["endOffset"] = jInt(e["range"]["end"], "character", 0) + 1;
+                            te["text"] = e.get("newText", "").asString();
+                            fe["edits"].append(te);
+                        }
+                        out.append(fe);
+                    };
+                    Json::Value changes = r.get("changes", Json::Value());
+                    if (changes.isObject())
+                    {
+                        for (const string &u : changes.getMemberNames())
+                            appendOne(u, changes[u]);
+                    }
+                    if (r.isMember("documentChanges") && r["documentChanges"].isArray())
+                    {
+                        for (const auto &d : r["documentChanges"])
+                            appendOne(d["textDocument"].get("uri", "").asString(),
+                                      d.get("edits", Json::Value(Json::arrayValue)));
+                    }
+                    if (out.empty())
+                        cb(false, "语言服务未返回可重命名位置");
+                    else
+                        writeJsonResult(cb, out);
+                },
+                [cb](const string &e) { cb(false, e); });
+    };
+    resolveByName(file, name, run,
+                  [file, name, cb](const string &e)
+                  {
+                      cb(false, e + "。可先用 ts_symbols(\"" + name + "\") 搜索其所在文件");
+                  });
+}
+
 // ==================== 查询分发 ====================
 void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCallback cb)
 {
-    string file = params.get("file", "").asString();
-    if (file.empty())
-    {
-        cb(false, "参数 file 不能为空");
-        return;
-    }
-
-    // 仅依赖 file 的工具（无位置）
+    // ---- 仅依赖 file 的查询 ----
     if (method == TsMethod::Diagnostics || method == TsMethod::Outline)
     {
+        string file = params.get("file", "").asString();
+        if (file.empty())
+        {
+            cb(false, "参数 file 不能为空");
+            return;
+        }
         string uri = ensureOpen(file);
         Json::Value pp;
         pp["textDocument"]["uri"] = uri;
@@ -885,33 +1024,103 @@ void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCall
                     },
                     [cb](const string &e) { cb(false, e); });
         }
-        else // Outline
+        else // Outline：归一化符号树（1-based 行号、kind 转文本）
         {
             callLsp("textDocument/documentSymbol", pp,
-                    [cb](const Json::Value &syms) { cb(true, Json::FastWriter().write(syms)); },
+                    [cb](const Json::Value &syms) { writeJsonResult(cb, symbolsToJson(syms)); },
                     [cb](const string &e) { cb(false, e); });
         }
         return;
     }
 
-    // 依赖 file + line + offset 的工具
-    int line = params.get("line", 0).asInt();
-    int offset = params.get("offset", 0).asInt();
-    // 可选：按符号名定位（大模型友好，免去精确行列）。优先级高于 line/offset。
-    string symName = params.get("name", "").asString();
-    if (line <= 0 && symName.empty())
+    // ---- 项目内符号模糊搜索（跨文件定位入口） ----
+    if (method == TsMethod::WorkspaceSymbols)
     {
-        cb(false, "需要有效的 line / offset（从 1 开始），或传 name 按名字定位");
+        string query = params.get("query", "").asString();
+        if (query.empty())
+        {
+            cb(false, "参数 query 不能为空");
+            return;
+        }
+        int limit = params.get("limit", 30).asInt();
+        if (limit <= 0)
+            limit = 30;
+        Json::Value pp;
+        pp["query"] = query;
+        callLsp("workspace/symbol", pp,
+                [cb, limit](const Json::Value &r)
+                {
+                    Json::Value out(Json::arrayValue);
+                    if (r.isArray())
+                    {
+                        int n = 0;
+                        for (const auto &s : r)
+                        {
+                            if (n >= limit)
+                                break;
+                            Json::Value o;
+                            o["name"] = s.get("name", "").asString();
+                            o["kind"] = symbolKindName(s.get("kind", 0).asInt());
+                            string container = s.get("containerName", "").asString();
+                            if (!container.empty())
+                                o["container"] = container;
+                            Json::Value loc = s.get("location", Json::Value());
+                            o["file"] = uriToFile(loc.get("uri", "").asString());
+                            Json::Value range = loc.get("range", Json::Value());
+                            if (range.isObject())
+                            {
+                                o["line"] = jInt(range["start"], "line", 0) + 1;
+                                o["offset"] = jInt(range["start"], "character", 0) + 1;
+                            }
+                            out.append(o);
+                            n++;
+                        }
+                    }
+                    writeJsonResult(cb, out);
+                },
+                [cb](const string &e) { cb(false, e); });
         return;
     }
-    int lspLine = line - 1;
-    int lspChar = offset > 0 ? offset - 1 : 0;
 
+    // ---- 位置类查询：统一 file + name 定位（不再接受行列参数） ----
+    string file = params.get("file", "").asString();
+    string symName = params.get("name", "").asString();
+    if (file.empty())
+    {
+        cb(false, "参数 file 不能为空");
+        return;
+    }
+    if (symName.empty())
+    {
+        cb(false, "参数 name（符号名）不能为空。可先用 ts_symbols(query) 在项目内搜索符号"
+                  "所在的文件，再用 ts_outline(file) 查看该文件内的符号");
+        return;
+    }
+
+    resolveByName(file, symName,
+                  [this, method, params, file, symName, cb](int ll, int cc)
+                  {
+                      runPositionQuery(method, params, file, symName, ll, cc, cb);
+                  },
+                  [file, symName, cb](const string &e)
+                  {
+                      cb(false, e + "。可先用 ts_symbols(\"" + symName +
+                                     "\") 搜索其所在文件，再用 ts_outline 查看该文件符号");
+                  });
+}
+
+// 位置类查询的实际执行。(line, character) 是符号名经 documentSymbol 反查出的
+// LSP 0-based 坐标，此后各查询与编辑器光标行为完全一致。
+void JZTsLangServer::runPositionQuery(TsMethod method, const Json::Value &params,
+                                      const string &file, const string &symName,
+                                      int line, int character, TsCallback cb)
+{
+    (void)file;
     string uri = ensureOpen(file);
     Json::Value pp;
     pp["textDocument"]["uri"] = uri;
-    pp["position"]["line"] = lspLine;
-    pp["position"]["character"] = lspChar;
+    pp["position"]["line"] = line;
+    pp["position"]["character"] = character;
 
     switch (method)
     {
@@ -922,79 +1131,49 @@ void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCall
             break;
 
         case TsMethod::References:
-        case TsMethod::Rename:
         {
-            // 按 name 或 line/offset 解析出位置后，统一发起 references 查询
-            auto run = [this, uri, cb](int ll, int cc)
-            {
-                Json::Value p;
-                p["textDocument"]["uri"] = uri;
-                p["position"]["line"] = ll;
-                p["position"]["character"] = cc;
-                p["context"]["includeDeclaration"] = true;
-                callLsp("textDocument/references", p,
-                        [cb](const Json::Value &r) { writeJsonResult(cb, normalizeLocations(r)); },
-                        [cb](const string &e) { cb(false, e); });
-            };
-            if (!symName.empty())
-                resolveByName(file, symName, run, [cb](const string &e) { cb(false, e); });
-            else
-                run(lspLine, lspChar);
+            Json::Value p;
+            p["textDocument"]["uri"] = uri;
+            p["position"]["line"] = line;
+            p["position"]["character"] = character;
+            p["context"]["includeDeclaration"] = true; // 定义本身也计入，方便模型判断
+            callLsp("textDocument/references", p,
+                    [this, cb](const Json::Value &r)
+                    {
+                        Json::Value locs = normalizeLocations(r);
+                        // 每条引用补上所在行源码片段，模型无需再按行号翻文件。
+                        // 按文件缓存行数组，避免逐条重复读盘。
+                        map<string, vector<string>> lineCache;
+                        for (Json::Value::ArrayIndex i = 0; i < locs.size(); i++)
+                        {
+                            string f = locs[i].get("file", "").asString();
+                            int ln = locs[i].get("line", 0).asInt();
+                            auto it = lineCache.find(f);
+                            if (it == lineCache.end())
+                                it = lineCache.emplace(f, splitLines(readFileUtf8(f))).first;
+                            const vector<string> &lines = it->second;
+                            string snippet;
+                            if (ln >= 1 && ln <= (int)lines.size())
+                            {
+                                snippet = str_trimmed(lines[ln - 1]);
+                                if ((int)snippet.size() > 300)
+                                    snippet = snippet.substr(0, 300) + "...";
+                            }
+                            locs[i]["text"] = snippet;
+                        }
+                        writeJsonResult(cb, locs);
+                    },
+                    [cb](const string &e) { cb(false, e); });
             break;
         }
 
         case TsMethod::QuickInfo:
             callLsp("textDocument/hover", pp,
-                    [cb](const Json::Value &r)
+                    [cb, symName](const Json::Value &r)
                     {
                         Json::Value out;
+                        out["name"] = symName;
                         out["contents"] = markupToString(r.get("contents", Json::Value()));
-                        writeJsonResult(cb, out);
-                    },
-                    [cb](const string &e) { cb(false, e); });
-            break;
-
-        case TsMethod::Completion:
-            callLsp("textDocument/completion", pp,
-                    [cb](const Json::Value &r)
-                    {
-                        Json::Value items = r.isArray() ? r : r.get("items", Json::Value(Json::arrayValue));
-                        Json::Value out(Json::arrayValue);
-                        if (items.isArray())
-                        {
-                            for (const auto &it : items)
-                            {
-                                Json::Value o;
-                                o["label"] = it.get("label", "").asString();
-                                o["kind"] = it.get("kind", 0).asInt();
-                                o["detail"] = it.get("detail", "").asString();
-                                o["documentation"] = markupToString(it.get("documentation", Json::Value()));
-                                out.append(o);
-                            }
-                        }
-                        writeJsonResult(cb, out);
-                    },
-                    [cb](const string &e) { cb(false, e); });
-            break;
-
-        case TsMethod::DocumentHighlights:
-            callLsp("textDocument/documentHighlight", pp,
-                    [this, uri, cb](const Json::Value &r)
-                    {
-                        Json::Value out(Json::arrayValue);
-                        if (r.isArray())
-                        {
-                            for (const auto &h : r)
-                            {
-                                if (h.isMember("range"))
-                                {
-                                    Json::Value loc;
-                                    loc["uri"] = uri;
-                                    loc["range"] = h["range"];
-                                    out.append(locToObj(loc));
-                                }
-                            }
-                        }
                         writeJsonResult(cb, out);
                     },
                     [cb](const string &e) { cb(false, e); });
@@ -1003,7 +1182,7 @@ void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCall
         case TsMethod::Source:
         {
             int maxc = params.isMember("max_chars") ? params["max_chars"].asInt() : 8000;
-            // 1) definition 定位声明位置
+            // 1) definition 定位声明位置（import/export 别名自动解析到真正的定义文件）
             callLsp("textDocument/definition", pp,
                     [this, maxc, cb](const Json::Value &def)
                     {
@@ -1027,11 +1206,17 @@ void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCall
                                     Json::Value pos = range.isObject() ? range["start"] : Json::Value();
                                     Json::Value sym = symbolAt(syms, pos);
                                     Json::Value useRange = sym.isNull() ? range : sym.get("range", range);
-                                    Json::Value text = readFileRange(uriToFile(defUri), useRange);
+                                    string defFile = uriToFile(defUri);
+                                    Json::Value text = readFileRange(defFile, useRange);
                                     string s = text.isString() ? text.asString() : string();
                                     if ((int)s.size() > maxc)
                                         s = s.substr(0, maxc) + "\n...(源码过长已截断)";
-                                    cb(true, Json::FastWriter().write(Json::Value(s)));
+                                    Json::Value out;
+                                    out["file"] = defFile;
+                                    out["line"] = jInt(useRange["start"], "line", 0) + 1;
+                                    out["endLine"] = jInt(useRange["end"], "line", 0) + 1;
+                                    out["source"] = s;
+                                    writeJsonResult(cb, out);
                                 },
                                 [cb](const string &e) { cb(false, e); });
                     },
@@ -1042,41 +1227,33 @@ void JZTsLangServer::dispatch(TsMethod method, const Json::Value &params, TsCall
         case TsMethod::Members:
         {
             int maxm = params.isMember("max_members") ? params["max_members"].asInt() : 100;
-            // 按 name 或 line/offset 解析出位置后，返回该符号的 children（成员）
-            auto run = [this, uri, maxm, cb](int ll, int cc)
-            {
-                Json::Value pos;
-                pos["line"] = ll;
-                pos["character"] = cc;
-                Json::Value sp;
-                sp["textDocument"]["uri"] = uri;
-                callLsp("textDocument/documentSymbol", sp,
-                        [this, uri, pos, maxm, cb](const Json::Value &syms)
+            Json::Value pos;
+            pos["line"] = line;
+            pos["character"] = character;
+            Json::Value sp;
+            sp["textDocument"]["uri"] = uri;
+            callLsp("textDocument/documentSymbol", sp,
+                    [this, pos, maxm, cb](const Json::Value &syms)
+                    {
+                        Json::Value sym = symbolAt(syms, pos);
+                        Json::Value members = sym.isNull() ? syms
+                                                          : sym.get("children", Json::Value(Json::arrayValue));
+                        Json::Value all = symbolsToJson(members);
+                        if (maxm > 0 && all.isArray() && (int)all.size() > maxm)
                         {
-                            Json::Value sym = symbolAt(syms, pos);
-                            Json::Value members = sym.isNull() ? syms
-                                                              : sym.get("children", Json::Value(Json::arrayValue));
-                            Json::Value out(Json::arrayValue);
-                            if (members.isArray())
-                            {
-                                int n = 0;
-                                for (const auto &m : members)
-                                {
-                                    if (maxm > 0 && n >= maxm)
-                                        break;
-                                    out.append(m);
-                                    n++;
-                                }
-                            }
-                            writeJsonResult(cb, out);
-                        },
-                        [cb](const string &e) { cb(false, e); });
-            };
-            if (!symName.empty())
-                resolveByName(file, symName, run, [cb](const string &e) { cb(false, e); });
-            else
-                run(lspLine, lspChar);
+                            Json::Value trimmed(Json::arrayValue);
+                            for (Json::Value::ArrayIndex i = 0; i < (Json::Value::ArrayIndex)maxm; i++)
+                                trimmed.append(all[i]);
+                            all = trimmed;
+                        }
+                        writeJsonResult(cb, all);
+                    },
+                    [cb](const string &e) { cb(false, e); });
             break;
         }
+
+        default:
+            cb(false, "不支持的查询类型");
+            break;
     }
 }

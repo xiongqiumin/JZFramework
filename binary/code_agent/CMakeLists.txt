@@ -8,6 +8,8 @@ set(CODE_AGENT_CORE_SOURCES
     JZTsLangServer.cpp
     JZTsLangTools.h
     JZTsLangTools.cpp
+    JZTsEditTools.h
+    JZTsEditTools.cpp
     JZCodeAgent.h
     JZCodeAgent.cpp    
     JZExeResource.h

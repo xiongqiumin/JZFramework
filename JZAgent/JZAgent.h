@@ -102,8 +102,7 @@ class JZAgentConfig
 public:
     enum TokenStrategy {
         TokenError,    // 超出预算直接报错终止
-        TokenTruncate, // 超出则裁剪最旧历史后重试
-        TokenCompress, // 超出则压缩历史（暂未实现）
+        TokenCompress, // 超出则压缩历史（把最旧一段历史发给大模型做摘要替换）
     };
 
     std::string rootPath;
@@ -159,8 +158,10 @@ public:
     bool loadHistory(const std::string &filepath);
 
     void setSystemPrompt(std::string prompt);
-    std::string systemPrompt();
-    std::string toolsPrompt();
+    std::string systemPrompt();  
+    
+    std::string dumpSystemPrompt(); // system prompt + skills
+    std::string dumpToolsPrompt();
 
     void addTool(JZAgentTool *tool);
     const JZAgentTool* tool(const std::string &name) const;
@@ -221,6 +222,12 @@ protected:
 
     void onMcpDestroyed(JZObject *obj);
 
+    // agent 不处于 Inactive 时拒绝修改会改变请求前缀的配置(system/tools/skills):
+    // 运行期改动会让当前会话后续请求的前缀(system+tools)漂移,
+    // 服务端 KV 前缀缓存整段失效, 已开始的历史全部作废。
+    // 返回 true 表示已拒绝并打了 jzWarning, 调用方应直接 return。
+    bool rejectWhileActive(const char *what) const;
+
     std::string readFile(std::string filepath);
 
     // 生成一条请求（带递增 id）
@@ -255,10 +262,6 @@ protected:
 
     void llmLoop();
 
-    // 超出 token 预算时裁剪最旧历史: 砍掉最旧的一半非 system 条目(保留 system 与最近一条 user)。
-    // 成功裁剪返回 true; 无可裁剪项(策略不支持/已无可删)返回 false。
-    bool trimHistoryForBudget();
-
     // 超出预算时把最旧一段历史发给大模型做摘要压缩，用一条摘要消息替换原消息。
     // 成功发起异步压缩返回 true；无可压缩项(策略不支持/已无可压)返回 false。
     bool startCompressHistory();
@@ -276,6 +279,7 @@ protected:
     bool m_streamEnabled;  //是否流式传输
     bool m_thinkEnabled;   //是否思考
 
+    JZAgentTool *m_readSkill;
     LLMContext m_context;
     int m_toolError;
 

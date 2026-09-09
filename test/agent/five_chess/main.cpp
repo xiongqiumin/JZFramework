@@ -115,9 +115,9 @@ JZAgentConfig GameRunner::makeLlmConfig(const string &model) const
     cfg.maxRounds = 6;                  // 一回合内允许的工具调用轮次
     cfg.netTimeout = 180000;
     // 模型支持 160k 上下文, 预算给到 150k, 留 10k 给生成与余量;
-    // 真超了仍由 TokenTruncate 裁掉最旧的一半历史兜底。
+    // 真超了仍由 TokenCompress 压缩最旧一段历史兜底。
     cfg.maxToken = 150000;
-    cfg.tokenStrategy = JZAgentConfig::TokenTruncate;
+    cfg.tokenStrategy = JZAgentConfig::TokenCompress;
 
     // 服务端只给 512 生成额度, 且默认思考会挤占正文
     Json::Value extra(Json::objectValue);

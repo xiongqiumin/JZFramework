@@ -1,6 +1,7 @@
 #include "JZCodeAgent.h"
 
 #include "JZTsLangTools.h"
+#include "JZTsEditTools.h"
 
 #include "JZDir.h"
 #include "JZFile.h"
@@ -76,7 +77,7 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_llmConfig = code.llmConfig;
     // 系统提示词由本类自己生成，不走 rootPath/system.md 那套
     m_llmConfig.rootPath.clear();
-    m_llmConfig.tokenStrategy = JZAgentConfig::TokenTruncate;
+    m_llmConfig.tokenStrategy = JZAgentConfig::TokenCompress;
     if (m_llmConfig.maxToken <= 0)
         m_llmConfig.maxToken = 200000;
 
@@ -320,7 +321,7 @@ void JZCodeAgent::applyLlmConfig(const JZAgentConfig &llm)
     abortTools();
     m_llmConfig = llm;
     m_llmConfig.rootPath.clear();
-    m_llmConfig.tokenStrategy = JZAgentConfig::TokenTruncate;
+    m_llmConfig.tokenStrategy = JZAgentConfig::TokenCompress;
     if (m_llmConfig.maxToken <= 0)
         m_llmConfig.maxToken = 200000;
 
@@ -1262,16 +1263,25 @@ void JZCodeAgent::buildAgent()
     addTool(fetchTool);
 
     // 直连 tsc 语言服务（TSGO）的 TS 工具：首次调用时惰性拉起 "tsc --lsp --stdio" 进程，
-    // 对外暴露 ts_definition / ts_references / ts_quickinfo 等 10 个查询。
+    // 对外暴露 7 个「查找信息」型查询（ts_source / ts_references / ts_quickinfo /
+    // ts_diagnostics / ts_outline / ts_members / ts_symbols）与 8 个结构化编辑工具
+    // （ts_summary / ts_add_class / ts_rename_class / ts_delete_class /
+    //   ts_add_function / ts_rename_function / ts_replace_function / ts_delete_function），
+    // 全部按符号名定位，不要求模型提供行列。
     // 配置随工作区/编译器的变化在 buildAgent 里刷新（进程在 shutdown 后下次请求自动重启）。
     if (m_tsServer)
     {
         m_tsServer->setTsgoPath(m_codeConfig.tscPath);
         m_tsServer->setRoot(m_codeConfig.workspace);
-        for (TsMethod m : {TsMethod::Definition, TsMethod::References, TsMethod::QuickInfo,
-                           TsMethod::Rename, TsMethod::Completion, TsMethod::DocumentHighlights,
-                           TsMethod::Diagnostics, TsMethod::Source, TsMethod::Outline, TsMethod::Members})
+        for (TsMethod m : {TsMethod::Source, TsMethod::References, TsMethod::QuickInfo,
+                           TsMethod::Diagnostics, TsMethod::Outline, TsMethod::Members,
+                           TsMethod::WorkspaceSymbols})
             addTool(new JZTsTool(m_tsServer, m));
+
+        using K = JZTsEditTool::Kind;
+        for (K k : {K::Summary, K::AddClass, K::RenameClass, K::DeleteClass,
+                    K::AddFunction, K::RenameFunction, K::ReplaceFunction, K::DeleteFunction})
+            addTool(new JZTsEditTool(m_tsServer, k, this));
     }
 
     m_agent->setSystemPrompt(buildSystemPrompt());
@@ -1300,12 +1310,18 @@ void JZCodeAgent::addLog(const string &type, const string &text, const string &n
 std::string JZCodeAgent::buildSystemPrompt() const
 {
     std::ostringstream text;
-    text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript/JavaScript 项目："
+    text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript 项目："
             "可查看、搜索、修改、用 tsc 编译并运行工作区中的代码。\n";
     text << "工作区:" + m_codeConfig.workspace + "\n";
     text << "这是标准 TypeScript 工程：根目录有 tsconfig.json，编译产物统一输出到 build/。\n";
-    text << "查定义/引用/类型/补全/诊断等语言信息时，优先调用 ts_* 系列工具（直连 tsc 语言服务）；"
-            "改代码前用 ts_source / ts_outline 了解结构，而不是盲目翻文件。\n";
+    text << "编辑/查定义/引用/类型/诊断等语言信息时，优先调用 ts_* 系列工具（直连 tsc 语言服务）；"
+            "改代码前用 ts_summary / ts_source / ts_outline 了解结构，而不是盲目翻文件。\n";
+    text << "修改 TS 代码优先使用结构化编辑工具：新增用 ts_add_class / ts_add_function，"
+            "改函数体用 ts_replace_function，重命名用 ts_rename_class / ts_rename_function"
+            "（同步全项目引用），删除用 ts_delete_class / ts_delete_function；"
+            "结构摘要用 ts_summary。只有无法按符号定位的局部小改动（注释、单行字面量）"
+            "才退回 modify_file。\n";
+    text << "代码风格class优先, 使用面向对象的风格进行编码\n";
 
     vector<string> progs;
     for (auto* tool : m_tools)

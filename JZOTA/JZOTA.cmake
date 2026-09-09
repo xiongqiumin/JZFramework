@@ -18,6 +18,13 @@ if(ESP_PLATFORM)
         idf::esp_partition     # esp_partition_t 分区信息
     )
     # 实现下载/写分区时再加: esp_https_ota esp_http_client esp-tls nvs_flash spi_flash
+else()
+    # OS_NORMAL(桌面 / 常规 OS)驱动: 下载 JZCompress 升级包到本地,
+    # 调用 binary/updater(jzupdater) 解压应用, 并上传差异信息
+    list(APPEND JZOTA_SOURCES
+        JZOTADriverNormal.h
+        JZOTADriverNormal.cpp
+    )
 endif()
 
 convert_to_abs_paths(JZOTA_SOURCES)

@@ -350,7 +350,7 @@ int main(int argc, char* argv[])
         cfg.maxRounds = 8;
         cfg.netTimeout = 180000;
         cfg.maxToken = 150000;      // 模型支持 160k 上下文
-        cfg.tokenStrategy = JZAgentConfig::TokenTruncate;
+        cfg.tokenStrategy = JZAgentConfig::TokenCompress;
 
         // 该服务端只给 512 生成额度, 且默认开启思考会挤占正文, 显式关掉
         Json::Value extra(Json::objectValue);

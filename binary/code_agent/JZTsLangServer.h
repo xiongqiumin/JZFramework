@@ -11,19 +11,18 @@
 #include "JZProcess.h"
 #include "json/json.h"
 
-// 10 个 TS 工具对应的查询类型，与 JZTsTool 一一对应
+// TS 工具对应的查询类型，与 JZTsTool 一一对应（Definition 仅供 ts_source 内部定位用，
+// 不注册为独立工具）。所有位置类查询均以 file + 符号名(name) 定位，不需要行列。
 enum class TsMethod
 {
-    Definition,         // ts_definition
-    References,         // ts_references
-    QuickInfo,          // ts_quickinfo
-    Rename,             // ts_rename
-    Completion,         // ts_completion
-    DocumentHighlights, // ts_document_highlights
-    Diagnostics,        // ts_diagnostics
-    Source,             // ts_source
-    Outline,            // ts_outline
-    Members             // ts_members
+    Definition,      // (内部) definition 定位，ts_source 的第一步 / 自愈测试用
+    References,      // ts_references：符号的全部引用位置（带所在行源码）
+    QuickInfo,       // ts_quickinfo：符号类型签名与文档
+    Diagnostics,     // ts_diagnostics：文件诊断
+    Source,          // ts_source：符号声明源码正文
+    Outline,         // ts_outline：文件符号树
+    Members,         // ts_members：符号成员列表
+    WorkspaceSymbols // ts_symbols：项目内符号模糊搜索（workspace/symbol）
 };
 
 // 直连 TSGO 语言服务的 C++ LSP 客户端。
@@ -58,13 +57,24 @@ public:
     bool isReady() const { return m_ready; }
     void killProcessForTest();
 
-    // 统一查询入口：method 为查询类型；params = {file, line(1-based), offset(1-based), ...}
+    // 统一查询入口。params 按查询类型：
+    //   Diagnostics/Outline: {file}
+    //   WorkspaceSymbols:    {query, limit?}
+    //   其余(位置类):        {file, name, ...} —— 以符号名经 documentSymbol 反查定位，
+    //                        不再接受 line/offset（大模型给出精确行列不可靠）。
     // 回调 (ok, payload)：ok 时 payload 为结果 JSON 字符串，否则为错误文本。
     using TsCallback = std::function<void(bool ok, const std::string &payload)>;
     void request(TsMethod method, const Json::Value &params, TsCallback cb);
 
     // 终止底层进程并丢弃所有未决回调（停止 / 重建 agent 时调用，避免悬垂回调）
     void shutdown();
+
+    // 结构化编辑支持：按「file + 符号名」解析符号后发起 LSP textDocument/rename，
+    // 把 WorkspaceEdit 归一化为跨文件编辑列表：
+    //   [{file, edits: [{line, offset, endLine, endOffset, text}]}]
+    // 行/列为 1-based；offset 是该行内的 UTF-16 码元偏移（LSP 语义，调用方换算字节）。
+    void renameSymbol(const std::string &file, const std::string &name,
+                      const std::string &newName, TsCallback cb);
 
 jz_signals:
     JZSignal<const std::string &> sigLog;
@@ -104,8 +114,13 @@ protected:
     static std::string uriToFile(const std::string &uri);
     static std::string langIdOf(const std::string &file);
 
-    // 工具分发
+    // 工具分发：按 method 分三类——file-only（Diagnostics/Outline）、
+    // query-only（WorkspaceSymbols）、file+name（其余，先 resolveByName 再查询）
     void dispatch(TsMethod method, const Json::Value &params, TsCallback cb);
+    // 位置类查询的实际执行：已由符号名解析出 (line, character)（LSP 0-based 坐标）
+    void runPositionQuery(TsMethod method, const Json::Value &params,
+                          const std::string &file, const std::string &symName,
+                          int line, int character, TsCallback cb);
 
     // 结果归一化辅助
     static Json::Value locToObj(const Json::Value &loc);
@@ -113,7 +128,13 @@ protected:
     static Json::Value firstLocation(const Json::Value &def);
     Json::Value readFileRange(const std::string &file, const Json::Value &range);
     static Json::Value symbolAt(const Json::Value &syms, const Json::Value &pos);
+    static std::vector<std::string> splitLines(const std::string &text);
     static std::string markupToString(const Json::Value &c);
+    // documentSymbol 节点 -> 大模型友好的摘要 {name, kind(文本), detail, line, endLine, children}
+    // （LSP 原始 range 为 0-based 坐标，不直接透传）
+    static std::string symbolKindName(int kind);
+    static Json::Value symbolToJson(const Json::Value &sym);
+    static Json::Value symbolsToJson(const Json::Value &syms);
 
     // 按名字在 documentSymbol 树中解析符号（供大模型以 name 代替精确行列）。
     // findSymbolByName 优先返回 class/interface，找不到再退回同名首个匹配。
@@ -121,7 +142,7 @@ protected:
     static Json::Value findSymbolByNameImpl(const Json::Value &syms,
                                             const std::string &name, bool preferClass);
     // file + name -> 解析出符号的 (line, character)（LSP 坐标），失败走 onErr。
-    // 用于 Members / References 在不传 line/offset 时按名字定位。
+    // 所有位置类查询（Definition/Source/QuickInfo/References/Members）统一经它按名字定位。
     void resolveByName(const std::string &file, const std::string &name,
                        std::function<void(int line, int character)> onPos,
                        std::function<void(const std::string &)> onErr);

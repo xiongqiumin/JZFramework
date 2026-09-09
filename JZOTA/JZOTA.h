@@ -63,9 +63,9 @@ struct JZOTAMeta {
 class JZOTA : public JZObject
 {
 public:
-    // 读取当前固件自描述元数据(资源 ":/JZOTA/meta")。
+    // 读取当前固件自描述元数据(资源 ":/JZOTA/meta"; 桌面平台回退 <appDir>/ota/meta.json)。
     // Ok(meta)=读取并解析成功; Error=资源缺失或解析失败。
-    JZResult<JZOTAMeta> readCurrentMeta();
+    static JZResult<JZOTAMeta> readCurrentMeta();
 
     // 确认当前运行固件有效(防回滚)。应在业务初始化自检成功后才调用。
     void markValid();

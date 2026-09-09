@@ -127,12 +127,10 @@ public:
               const JZAgentConfig &llm,
               const CodeAgentConfig &code,
               const std::string &codeRuntime)
-        : m_loop(loop), m_llm(llm), m_code(code), m_codeRuntime(codeRuntime)
-    {
-        m_agent = new JZCodeAgent(this);
-        m_code.llmConfig = m_llm;
-        m_agent->init(m_code);
-
+        : m_loop(loop), m_llm(llm), m_codeConfig(code), m_codeRuntime(codeRuntime)
+    {   
+        m_agent = nullptr;
+        m_codeConfig.llmConfig = m_llm;
         m_poll = new JZTimer(this);
         connect(&m_poll->sigTimeout, this, &Benchmark::onPoll);
     }
@@ -170,8 +168,6 @@ public:
         // setWorkspace 会重建 agent 并把 system prompt 重置为 buildSystemPrompt()，
         // 这里立即追加会在首个用例开始前被覆盖，所以只在成员里保存，稍后于 startCase 重建后注入。
         m_httpPromptExtra = extra;
-        auto jz_agent = m_agent->agent();
-        jz_agent->setSystemPrompt(jz_agent->systemPrompt() + extra);
 
         m_http->moveToThread(&m_httpThread);
         m_httpThread.server = m_http;
@@ -205,6 +201,9 @@ protected:
         // 每个用例一个独立临时工程，避免互相污染
         std::string root = JZPlatform::applicationTmpPath() + "/" + JZUuid::createUuid().toString() +"/bench_" + m_case.name;
 
+        m_agent = new JZCodeAgent();
+        m_agent->init(m_codeConfig);
+
         std::string err;
         if (!m_agent->initProject(root, err))
         {
@@ -221,6 +220,12 @@ protected:
             return;
         }
         m_root = root;
+
+        if (i == 0)
+        {
+            jzDebug().noquote().nospace() << "系统提示词:\n" << m_agent->agent()->dumpSystemPrompt() << "\n";
+            jzDebug().noquote().nospace() << "工具:\n" << m_agent->agent()->dumpToolsPrompt() << "\n";
+        }
 
         // setWorkspace 内部会 buildAgent 重建 agent，把 startHttpServer 追加的"读取输入"约定冲掉，
         // 因此重建之后再注入一次，确保模型知道从 http://127.0.0.1:<port>/input 读取输入。
@@ -481,7 +486,7 @@ protected:
 
     JZEventLoop *m_loop;
     JZAgentConfig m_llm;
-    CodeAgentConfig m_code;
+    CodeAgentConfig m_codeConfig;
     std::string m_codeRuntime;
 
     JZCodeAgent *m_agent = nullptr;

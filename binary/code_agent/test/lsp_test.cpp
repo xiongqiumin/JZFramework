@@ -4,10 +4,13 @@
 //   1. 在 JZPlatform::applicationTmpPath() 下新建一个最小 TS 工程（tsconfig.json +
 //      sample.ts：含函数 / 类 / 调用，便于验证定义、引用、成员等各类查询）；
 //   2. 创建 JZTsLangServer，指定原生 tsc.exe 路径（即 tsgo 语言服务），setRoot 到该工程；
-//   3. 用事件循环(JZApplication::processEvents)驱动异步回调，逐个调用 10 个 tool：
-//        definition / references / quickinfo / rename / completion /
-//        document_highlights / diagnostics / source / outline / members
-//      并断言返回结构正确、定位/内容符合预期。
+//   3. 用事件循环(JZApplication::processEvents)驱动异步回调，逐个调用 7 个查找型 tool：
+//        source / references / quickinfo / diagnostics / outline / members / symbols
+//      一律以「file + 符号名」定位（name / query 参数），不使用行列参数；
+//      并断言返回结构正确、定位/内容符合预期。另验证崩溃自愈（kill -> 自动重启）。
+//   4. 结构化编辑闭环（JZTsEditTool，8 步）：add_class / summary / add_function /
+//      replace_function / rename_function / delete_function / delete_class，
+//      验证文件内容真实变化后再复原。
 //
 // 用法：code_agent_lsp_test.exe
 // 环境变量：JZ_TS_LSP 可换原生 tsc.exe 路径（默认 E:/libs/ts_compiler/.../tsc.exe）。
@@ -23,7 +26,9 @@
 #include <cctype>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +39,7 @@
 #include "JZPlatform.h"
 #include "JZSignal.h"
 #include "JZTimer.h"
+#include "JZTsEditTools.h"
 #include "JZTsLangServer.h"
 #include "json/json.h"
 
@@ -183,26 +189,16 @@ static const char *SAMPLE_TS =
     "    return add(1, 2) + greet(\"x\").length;\n"
     "}\n";
 
-// 行号(1-based)对照：
-//   1  export function add(...)
-//   2      return a + b;
-//   3  }
-//   4  (空)
-//   5  export function greet(...)
-//   6      return "hello " + name;
-//   7  }
-//   8  (空)
-//   9  export class Calculator
-//  10      value: number = 0;
-//  11      add(n: number): number
-//  12          this.value += n;
-//  13          return this.value;
-//  14      }
-//  15  }
-//  16  (空)
-//  17  export function main()
-//  18      return add(1, 2) + greet("x").length;
-//  19  }
+// 行号(1-based，含首行注释)对照：
+//   1  // sample.ts ...
+//   2  export function add(...)
+//   3      return a + b;
+//   6  export function greet(...)
+//  10  export class Calculator
+//  11      value: number = 0;
+//  12      add(n: number): number
+//  18  export function main()
+//  19      return add(1, 2) + greet("x").length;
 
 static const char *TS_CONFIG =
     "{\n"
@@ -223,7 +219,7 @@ int main()
     JZApplication app;
     g_app = &app;
 
-    printf("==== code_agent LSP test: 新建 tmp TS 工程 -> 验证 10 个 TSGO 接口 ====\n");
+    printf("==== code_agent LSP test: 新建 tmp TS 工程 -> 验证 7 个 TSGO 查找型接口 ====\n");
 
     // ---- 前置：tmp 根 / 编译器 ----
     string tmpRoot = normalize(JZPlatform::applicationTmpPath());
@@ -269,20 +265,14 @@ int main()
     if (!server.isAvailable())
         return 2;
 
-    // 入参构造小工具
-    auto at = [](int line, int offset)
+    // 入参构造小工具：file + 符号名（不再使用行列定位）
+    auto byName = [](const string &name)
     {
         Json::Value p;
         p["file"] = g_sampleFile;
-        p["line"] = line;
-        p["offset"] = offset;
+        p["name"] = name;
         return p;
     };
-    // 实际样本行号(1-based，含首行注释)：
-    //   1  // sample.ts ...
-    //   2  export function add(...)
-    //  24      return add(1, 2) + greet("x").length;   <- add 调用在 (24,12)
-    //  12  export class Calculator                    <- 光标在类声明行 (12,1) 取成员
     auto fileOnly = []
     {
         Json::Value p;
@@ -291,7 +281,7 @@ int main()
     };
 
     // ================================================================
-    // 3~12) 顺序驱动 10 个 LSP 查询；全程只跑一个 exec()
+    // 3~11) 顺序驱动 7 个查找型查询 + 2 个自愈步骤；全程只跑一个 exec()
     // （app.exit/quit 会永久置 m_running=false，不能多次 exec/exit）
     // ================================================================
     struct Step
@@ -308,105 +298,64 @@ int main()
     size_t stepIdx = 0;
     auto state = std::make_shared<ReqState>();
     std::function<void()> issueNext;
+    std::function<void()> eNext; // 编辑闭环段的驱动器（11 步完成后由 issueNext 启动）
 
-    // 3) definition：main 里的 add 调用 -> 定位到 add 定义(第 2 行)
-    steps.push_back({"definition: add 调用 -> add 定义(第2行)", TsMethod::Definition,
-        [&]() { return at(24, 12); },
+    // 3) source：按符号名查 add 的声明源码（add 在第 2 行）
+    steps.push_back({"source: add 声明源码(含 'return a + b', line=2)", TsMethod::Source,
+        [&]() {
+            Json::Value p = byName("add");
+            p["max_chars"] = 4000;
+            return p;
+        },
         [&](bool ok, const Json::Value &out, const string &) {
-            bool good = ok && out.isArray() && out.size() >= 1 &&
-                        fileMatches(out[0].get("file", "").asString()) &&
-                        out[0].get("line", 0).asInt() == 2;
+            bool good = ok && out.isObject() &&
+                        out.get("line", 0).asInt() == 2 &&
+                        out.get("source", "").asString().find("return a + b") != string::npos &&
+                        fileMatches(out.get("file", "").asString());
             if (good)
-                printf("   -> %s:%d:%d\n", out[0].get("file", "").asString().c_str(),
-                       out[0].get("line", 0).asInt(), out[0].get("offset", 0).asInt());
+                printf("   -> %s:%d~%d\n", out.get("file", "").asString().c_str(),
+                       out.get("line", 0).asInt(), out.get("endLine", 0).asInt());
             return good;
         }});
 
-    // 4) references：add 应出现 2 处（定义 + 调用）
-    steps.push_back({"references: add 出现 >=2 处(定义+调用)", TsMethod::References,
-        [&]() { return at(24, 12); },
+    // 4) references：按符号名查 add 应出现 2 处（定义 + 调用），且带所在行文本
+    steps.push_back({"references: add 出现 >=2 处(定义+调用, 带行文本)", TsMethod::References,
+        [&]() { return byName("add"); },
         [&](bool ok, const Json::Value &out, const string &) {
             bool good = ok && out.isArray() && out.size() >= 2;
-            int selfCnt = 0;
+            int selfCnt = 0, withText = 0;
             if (good)
                 for (const auto &l : out)
+                {
                     if (fileMatches(l.get("file", "").asString()))
                         selfCnt++;
-            if (good && selfCnt < 2)
+                    if (!l.get("text", "").asString().empty())
+                        withText++;
+                }
+            if (good && (selfCnt < 2 || withText < 1))
                 good = false;
             if (ok)
-                printf("   (共 %d 处, 本文件 %d)\n", out.size(), selfCnt);
+                printf("   (共 %d 处, 本文件 %d, 带文本 %d)\n",
+                       (int)out.size(), selfCnt, withText);
             return good;
         }});
 
-    // 5) quickinfo：悬停 add 应返回类型/签名信息
-    steps.push_back({"quickinfo: add 悬停返回内容", TsMethod::QuickInfo,
-        [&]() { return at(24, 12); },
+    // 5) quickinfo：按符号名查 add 应返回类型/签名信息
+    steps.push_back({"quickinfo: add 返回类型签名", TsMethod::QuickInfo,
+        [&]() { return byName("add"); },
         [&](bool ok, const Json::Value &out, const string &) {
-            bool good = ok && out.isObject() && out.isMember("contents");
-            if (good)
-            {
-                Json::Value c = out["contents"];
-                string txt = c.isString() ? c.asString()
-                                : (c.isObject() ? c.get("value", "").asString() : string());
-                good = !txt.empty();
-            }
-            return good;
+            return ok && out.isObject() &&
+                   !out.get("contents", "").asString().empty();
         }});
 
-    // 6) rename：等同 references（含声明）应 >=2
-    steps.push_back({"rename: 重命名定位(含声明) >=2 处", TsMethod::Rename,
-        [&]() { return at(24, 12); },
-        [&](bool ok, const Json::Value &out, const string &) {
-            bool good = ok && out.isArray() && out.size() >= 2;
-            if (ok)
-                printf("   (共 %d 处)\n", out.size());
-            return good;
-        }});
-
-    // 7) completion：在 add 调用后补全会返回候选项
-    steps.push_back({"completion: 返回补全候选项(>0)", TsMethod::Completion,
-        [&]() { return at(24, 12); },
-        [&](bool ok, const Json::Value &out, const string &) {
-            bool good = ok && out.isArray() && out.size() > 0;
-            if (ok)
-                printf("   (共 %d 项)\n", out.size());
-            return good;
-        }});
-
-    // 8) document_highlights：返回高亮数组（TSGO 对部分符号可能返回空数组，
-    //    此处只验证接口可用、返回结构合法）
-    steps.push_back({"document_highlights: 返回高亮数组(接口可用)", TsMethod::DocumentHighlights,
-        [&]() { return at(24, 12); },
-        [&](bool ok, const Json::Value &out, const string &) {
-            bool good = ok && out.isArray();
-            if (ok)
-                printf("   (共 %d 处)\n", out.size());
-            return good;
-        }});
-
-    // 9) diagnostics：合法文件应返回 items 数组（可空）
-    steps.push_back({"diagnostics: 返回 items 数组(合法文件可空)", TsMethod::Diagnostics,
+    // 6) diagnostics：合法文件应返回数组（可空）
+    steps.push_back({"diagnostics: 返回数组(合法文件可空)", TsMethod::Diagnostics,
         [&]() { return fileOnly(); },
         [&](bool ok, const Json::Value &out, const string &) {
             return ok && out.isArray();
         }});
 
-    // 10) source：取 add 定义处的源码文本
-    steps.push_back({"source: 返回 add 定义源码(含 'return a + b')", TsMethod::Source,
-        [&]() { Json::Value p = at(24, 12); p["max_chars"] = 4000; return p; },
-        [&](bool ok, const Json::Value &out, const string &raw) {
-            bool hasText = false;
-            if (ok)
-            {
-                Json::Value parsed;
-                if (parsePayload(raw, parsed) && parsed.isString())
-                    hasText = parsed.asString().find("return a + b") != string::npos;
-            }
-            return ok && hasText;
-        }});
-
-    // 11) outline：文档符号树应包含 add/greet/Calculator/main
+    // 7) outline：归一化符号树应包含 add/greet/Calculator/main
     steps.push_back({"outline: 符号树含 add/greet/Calculator/main", TsMethod::Outline,
         [&]() { return fileOnly(); },
         [&](bool ok, const Json::Value &out, const string &) {
@@ -415,22 +364,42 @@ int main()
                    symArrHasName(out, "Calculator") && symArrHasName(out, "main");
         }});
 
-    // 12) members：光标在 class 声明行 -> 返回类的成员(value/add)
+    // 8) members：按符号名取 Calculator 的成员（value/add）
     steps.push_back({"members: Calculator 成员含 value/add", TsMethod::Members,
-        [&]() { return at(12, 1); },
+        [&]() { return byName("Calculator"); },
         [&](bool ok, const Json::Value &out, const string &) {
             bool good = ok && out.isArray() && out.size() >= 2 &&
                         symArrHasName(out, "value") && symArrHasName(out, "add");
             if (ok)
-                printf("   (共 %d 个成员)\n", out.size());
+                printf("   (共 %d 个成员)\n", (int)out.size());
             return good;
         }});
 
-    // 13) 异常自愈：模拟底层进程崩溃(killProcessForTest)，验证服务能自动重启。
+    // 9) symbols：项目内模糊搜索 "Calc" 应命中 Calculator 并给出所在文件
+    steps.push_back({"symbols: 模糊搜索 'Calc' 命中 Calculator", TsMethod::WorkspaceSymbols,
+        [&]() {
+            Json::Value p;
+            p["query"] = "Calc";
+            return p;
+        },
+        [&](bool ok, const Json::Value &out, const string &) {
+            bool good = ok && out.isArray();
+            bool hit = false;
+            if (good)
+                for (const auto &s : out)
+                    if (s.get("name", "").asString() == "Calculator" &&
+                        fileMatches(s.get("file", "").asString()))
+                        hit = true;
+            if (ok)
+                printf("   (命中 %d 个符号)\n", (int)out.size());
+            return good && hit;
+        }});
+
+    // 10) 异常自愈：模拟底层进程崩溃(killProcessForTest)，验证服务能自动重启。
     //     该步拿到一次正常响应后杀掉进程，并延迟再发下一步（等重启握手完成），
     //     避免把请求派发到已死的进程上。
     steps.push_back({"recovery: kill 进程后自动重启", TsMethod::Definition,
-        [&]() { return at(24, 12); },
+        [&]() { return byName("add"); },
         [&](bool ok, const Json::Value &out, const string &) {
             bool good = ok && out.isArray() && out.size() >= 1 &&
                         fileMatches(out[0].get("file", "").asString()) &&
@@ -445,25 +414,147 @@ int main()
             return good;
         }});
 
-    // 14) 重启后再次查询，应当恢复正常（definition 仍能定位 add 定义）
+    // 11) 重启后再次查询，应当恢复正常（definition 仍能定位 add 定义）
     steps.push_back({"recovery: 重启后定义查询恢复正常", TsMethod::Definition,
-        [&]() { return at(24, 12); },
+        [&]() { return byName("add"); },
         [&](bool ok, const Json::Value &out, const string &) {
             bool good = ok && out.isArray() && out.size() >= 1 &&
                         fileMatches(out[0].get("file", "").asString()) &&
                         out[0].get("line", 0).asInt() == 2;
             if (good)
-                printf("   -> 重启后定位 %s:%d:%d\n", out[0].get("file","").asString().c_str(),
-                       out[0].get("line",0).asInt(), out[0].get("offset",0).asInt());
+                printf("   -> 重启后定位 %s:%d\n", out[0].get("file","").asString().c_str(),
+                       out[0].get("line",0).asInt());
             return good;
         }});
+
+    // ================================================================
+    // 12~19) 结构化编辑闭环（JZTsEditTool，不设 agent -> 跳过路径权限）：
+    //   add_class -> summary(file) -> add_function -> replace_function ->
+    //   rename_function -> delete_function -> delete_class ->
+    //   summary(project, 无 agent 应拒绝)
+    // ================================================================
+    using K = JZTsEditTool::Kind;
+    string scope2 = g_sampleFile + "#Vector2";
+    auto readFileAll = [](const string &path)
+    {
+        ifstream in(normalize(path), ios::binary);
+        stringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    };
+
+    struct EditStep
+    {
+        const char *tag;
+        K kind;
+        std::function<Json::Value()> buildParams;
+        std::function<bool(const string &)> verify; // result 文本
+        bool expectOk;                              // 负向用例 false（VS14 无默认成员初始化器的聚合初始化）
+    };
+    vector<EditStep> esteps;
+    size_t eIdx = 0;
+
+    map<K, std::unique_ptr<JZTsEditTool>> etools;
+    std::function<JZTsEditTool &(K)> etool = [&](K k) -> JZTsEditTool &
+    {
+        auto it = etools.find(k);
+        if (it == etools.end())
+        {
+            auto p = std::make_unique<JZTsEditTool>(&server, k);
+            it = etools.emplace(k, std::move(p)).first;
+            connect(&it->second->sigResult,
+                    [&](const ToolCallResult &r) {
+                        bool good = (r.isOk == esteps[eIdx].expectOk) &&
+                                    esteps[eIdx].verify(r.result);
+                        check(good, esteps[eIdx].tag, r.result);
+                        eIdx++;
+                        eNext();
+                    });
+        }
+        return *it->second;
+    };
+
+    esteps.push_back({"edit: add_class Vector2", K::AddClass,
+        [&]() {
+            Json::Value p;
+            p["file"] = g_sampleFile;
+            p["name"] = "Vector2";
+            p["code"] = "export class Vector2 {\n    x: number = 0;\n}";
+            return p;
+        },
+        [&](const string &r) { return r.find("添加类 Vector2") != string::npos; }, true});
+
+    // （summary 的 file/class 级已删除——与 ts_outline / ts_members 重复）
+
+    esteps.push_back({"edit: add_function Vector2.len", K::AddFunction,
+        [&]() {
+            Json::Value p;
+            p["scope"] = scope2;
+            p["name"] = "len";
+            p["code"] = "len(): number {\n        return this.x;\n    }";
+            return p;
+        },
+        [&](const string &r) { return r.find("添加方法 len") != string::npos; }, true});
+
+    esteps.push_back({"edit: replace_function len", K::ReplaceFunction,
+        [&]() {
+            Json::Value p;
+            p["scope"] = scope2;
+            p["name"] = "len";
+            p["code"] = "len(): number {\n        return this.x * 2;\n    }";
+            return p;
+        },
+        [&](const string &r) {
+            return r.find("已替换") != string::npos &&
+                   readFileAll(g_sampleFile).find("this.x * 2") != string::npos; }, true});
+
+    esteps.push_back({"edit: rename_function len -> len2", K::RenameFunction,
+        [&]() {
+            Json::Value p;
+            p["scope"] = scope2;
+            p["name"] = "len";
+            p["new_name"] = "len2";
+            return p;
+        },
+        [&](const string &r) {
+            return r.find("len2") != string::npos &&
+                   readFileAll(g_sampleFile).find("len2(): number") != string::npos; }, true});
+
+    esteps.push_back({"edit: delete_function len2", K::DeleteFunction,
+        [&]() {
+            Json::Value p;
+            p["scope"] = scope2;
+            p["name"] = "len2";
+            return p;
+        },
+        [&](const string &r) {
+            return r.find("已删除") != string::npos &&
+                   readFileAll(g_sampleFile).find("len2") == string::npos; }, true});
+
+    esteps.push_back({"edit: delete_class Vector2", K::DeleteClass,
+        [&]() {
+            Json::Value p;
+            p["file"] = g_sampleFile;
+            p["name"] = "Vector2";
+            return p;
+        },
+        [&](const string &r) {
+            return r.find("已删除") != string::npos &&
+                   readFileAll(g_sampleFile).find("Vector2") == string::npos; }, true});
+
+    esteps.push_back({"edit: ts_summary 无 agent 应拒绝", K::Summary,
+        [&]() {
+            Json::Value p;
+            return p;
+        },
+        [&](const string &r) { return r.find("需要 agent 工作区") != string::npos; },
+        false});
 
     // ---- 顺序驱动：每个请求回调里做完断言再发下一个；全程单 exec() ----
     issueNext = [&]() {
         if (stepIdx >= steps.size())
         {
-            if (g_app)
-                g_app->exit(0);
+            eNext(); // 查询步全部完成后进入编辑闭环段
             return;
         }
         const Step &s = steps[stepIdx];
@@ -490,13 +581,29 @@ int main()
                        });
     };
 
+    // 编辑闭环段驱动器：每步经 sigResult 回调后做断言再发下一步
+    eNext = [&]() {
+        if (eIdx >= esteps.size())
+        {
+            if (g_app)
+                g_app->exit(0);
+            return;
+        }
+        auto &s = esteps[eIdx];
+        ToolCall tc;
+        tc.id = "edit-step";
+        tc.params = s.buildParams();
+        etool(s.kind).call(tc);
+    };
+
     // 整体看门狗：防止任一请求卡死导致测试无限挂起
     thread watchdog([&]() {
         this_thread::sleep_for(chrono::seconds(120));
-        if (stepIdx < steps.size())
+        if (stepIdx < steps.size() || eIdx < esteps.size())
         {
-            printf("[FAIL] 整体超时: 仍有 %d/%d 个请求未完成\n",
-                   (int)(steps.size() - stepIdx), (int)steps.size());
+            printf("[FAIL] 整体超时: 查询 %d/%d, 编辑 %d/%d 未完成\n",
+                   (int)(steps.size() - stepIdx), (int)steps.size(),
+                   (int)(esteps.size() - eIdx), (int)esteps.size());
             if (g_app)
                 g_app->exit(1);
         }

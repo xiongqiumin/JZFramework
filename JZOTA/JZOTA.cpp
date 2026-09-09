@@ -5,6 +5,9 @@
 #include "JZFile.h"
 #include "json/json.h"
 #include "JZDebug.h"
+#ifdef JZ_OS_NORMAL
+#include "JZPlatform.h"
+#endif
 
 JZOTA::JZOTA(JZObject *parent)
     :JZObject(parent)
@@ -108,14 +111,31 @@ JZResult<JZOTAMeta> JZOTA::readCurrentMeta()
 {
     static const char *kResource = ":/JZOTA/meta";
 
+    std::string text;
     JZFile file;
-    if (!file.open(kResource, "rb"))
+    if (file.open(kResource, "rb"))
+    {
+        JZByteArray data = file.readAll();
+        file.close();
+        text.assign((const char *)data.data(), (size_t)data.size());
+    }
+#ifdef JZ_OS_NORMAL
+    else
+    {
+        // 桌面平台回退: 资源未编入时读取 <appDir>/ota/meta.json
+        // (内置版本信息, 由 jzupdater 安装升级包时写入)
+        JZFile metaFile;
+        if (metaFile.open(JZPlatform::applicationDirPath() + "/ota/meta.json", "rb"))
+        {
+            JZByteArray data = metaFile.readAll();
+            metaFile.close();
+            text.assign((const char *)data.data(), (size_t)data.size());
+        }
+    }
+#endif
+
+    if (text.empty())
         return JZResult<JZOTAMeta>::Error(std::string("resource not found: ") + kResource);
-
-    JZByteArray data = file.readAll();
-    file.close();
-
-    std::string text((const char *)data.data(), (size_t)data.size());
 
     Json::Value root;
     Json::CharReaderBuilder builder;

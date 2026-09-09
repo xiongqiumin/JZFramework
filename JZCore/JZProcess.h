@@ -39,6 +39,12 @@ public:
         UnknownError
     };
 
+    // 启动一个分离进程: 不创建管道、不跟踪状态、不回收, 父进程退出后子进程独立存活。
+    // 成功返回 true (仅表示创建成功, 不等待子进程结束)。
+    static bool startDetached(const std::string &program,
+                              const std::vector<std::string> &arguments = {},
+                              const std::string &workingDirectory = {});
+
     explicit JZProcess(JZObject *parent = nullptr);
     ~JZProcess();
 

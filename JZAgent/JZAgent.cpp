@@ -16,6 +16,52 @@
 #include "JZStd.h"
 #include "JZPlatform.h"
 
+
+class ReadSkillTool : public JZAgentTool
+{
+public:    
+    // 统一调用接口：agent 在需要执行工具时传入自身与已解析的参数
+    ReadSkillTool()
+    {
+        ParamSchema p;
+        p.name = "name";
+        p.type = STRING;
+        p.description = "技能名称";
+
+        ToolDefine def;
+        def.name = "read_skill";
+        def.description = "读取技能详情";
+        def.parameters.push_back(p);
+        def.required_parameters.push_back("name");
+        setToolDefine(def);
+    }
+
+    virtual void call(const ToolCall &tool_call)
+    {
+        std::string name = tool_call.params.get("name", "").asString();
+        
+        auto skill_def = agent->skill(name);
+
+        ToolCallResult result;
+        result.id = tool_call.id;
+        if (skill_def)
+        {
+            result.isOk = true;
+            result.result = skill_def->usage;
+        }
+        else
+        {
+            result.isOk = false;
+            result.result = "没有对应的skill";
+        }
+        
+        sigResult.emit(result);
+    }
+
+    JZAgent *agent;
+};
+
+
 // ==================== 多模态: 图片 data URL ====================
 // 只解前 16 个 base64 字符(对应 12 字节)判断图片类型, 避免为了认类型把整图解一遍
 static std::string detectImageMime(const std::string &base64)
@@ -87,12 +133,14 @@ JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
     m_state = State::Inactive;
+    m_readSkill = new ReadSkillTool();    
+    m_readSkill->setParent(this);
 
     clear();
 }
 
 JZAgent::~JZAgent()
-{
+{    
 }
 
 void JZAgent::clear()
@@ -259,9 +307,6 @@ void JZAgent::init(JZAgentConfig config)
                 m_skills.push_back(ret.value());
             }
         }
-
-        m_systemPrompt += "\n";
-        m_systemPrompt += buildSkillSummary();
     }
     else
     {
@@ -274,15 +319,41 @@ std::string JZAgent::systemPrompt()
     return m_systemPrompt;
 }
 
+bool JZAgent::rejectWhileActive(const char *what) const
+{
+    if (m_state != State::Inactive)
+    {
+        jzWarning() << "JZAgent: 修改" << what
+                    << "被拒绝: agent 当前不处于 Inactive(已开始或结束过对话),"
+                    << " 运行期改动会破坏当前会话的 KV 前缀缓存;"
+                    << " 如需修改请先 init()/clear() 重置状态。";
+        return true;
+    }
+    return false;
+}
+
+// 非 Inactive 时修改 system prompt 会改变请求前缀, 拒绝以保证前缀缓存稳定
 void JZAgent::setSystemPrompt(std::string prompt)
 {
+    if (rejectWhileActive("system prompt"))
+        return;
+
     m_systemPrompt = prompt;
 }
 
-std::string JZAgent::toolsPrompt()
+std::string JZAgent::dumpToolsPrompt()
 {
-    Json::FastWriter writer;
-    return writer.write(buildTools());
+    std::string tools_propmpt;
+    for (const auto& tool : m_tools)
+    {
+        tools_propmpt += tool->toolDefine().name + ": " + tool->toolDefine().description + "\n";
+    }
+    return tools_propmpt;
+}
+
+std::string JZAgent::dumpSystemPrompt()
+{
+    return m_systemPrompt + buildSkillSummary();
 }
 
 void JZAgent::transaction()
@@ -456,19 +527,16 @@ JZResult<SkillDefine> JZAgent::loadSkill(std::string skill_name, const std::stri
 
 std::string JZAgent::buildSkillSummary()
 {
-    std::string summary = "## 自定义技能列表\n";
     if (m_skills.size() == 0)
+        return std::string();
+
+    std::string summary = "\n## 技能列表\n";
+    for (const auto& skill : m_skills)
     {
-        summary += "当前无自定义技能\n";
+        // 拼接技能摘要（C++ string 拼接，无缓冲区溢出风险）
+        summary += skill.name + ": " + skill.tips + "\n";
     }
-    else
-    {
-        for (const auto& skill : m_skills)
-        {
-            // 拼接技能摘要（C++ string 拼接，无缓冲区溢出风险）
-            summary += skill.name + ": " + skill.tips + "\n";
-        }   
-    }
+    summary += "使用skill前先用read_skill读取技能详情";
     return summary;
 }
 
@@ -479,12 +547,14 @@ Json::Value JZAgent::buildContext()
     // 添加 system 角色的消息
     Json::Value system_message;
     system_message["role"] = "system";
-    system_message["content"] = m_systemPrompt;  // 引用系统提示词变量
+    system_message["content"] = m_systemPrompt + buildSkillSummary();
     messages.append(system_message);
 
     for (const auto& item : m_context.history)
     {
         Json::Value history_msg = item->toJson();
+        // auto_added 是内部标记（持久化/界面判断用），不发给大模型
+        history_msg.removeMember("auto_added");
         messages.append(history_msg);
     }
 
@@ -495,6 +565,14 @@ Json::Value JZAgent::buildContext()
 Json::Value JZAgent::buildTools()
 {
     Json::Value tools(Json::arrayValue);
+    if (m_skills.size() > 0)
+    {
+        Json::Value tool_def;
+        tool_def["type"] = "function";
+        tool_def["function"] = m_readSkill->toolDefine().toJson();
+        tools.append(tool_def);
+    }
+    
     for (const auto& tool : m_tools)
     {
         Json::Value tool_def;
@@ -834,6 +912,9 @@ JZAgentRequestPtr JZAgent::makeAgentParam(JZAgentRequest::Type param_type)
 
 void JZAgent::addTool(JZAgentTool *tool)
 {
+    if (rejectWhileActive("tool"))
+        return;
+
     JZ_ASSERT(tool->parent() == nullptr);
     tool->setParent(this);
     connect(&tool->sigResult, this, &JZAgent::onToolCallResult);
@@ -842,6 +923,9 @@ void JZAgent::addTool(JZAgentTool *tool)
 
 void JZAgent::addMcp(JZMcpClient *client)
 {
+    if (rejectWhileActive("mcp tool"))
+        return;
+
     JZ_ASSERT(client->parent() == nullptr);
     // MCP 客户端是异步连接: 未就绪时 tools() 为空, 登记不到任何远端工具。
     // 使用方应在 sigReady 之后再 addMcp。
@@ -926,6 +1010,9 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
 
 void JZAgent::addSkill(const SkillDefine& tool)
 {
+    if (rejectWhileActive("skill"))
+        return;
+
     m_skills.push_back(tool);
 }
 
@@ -1084,61 +1171,6 @@ void JZAgent::finalizeResponse()
     }
 }
 
-bool JZAgent::trimHistoryForBudget()
-{
-    if (m_config.tokenStrategy != JZAgentConfig::TokenTruncate)
-        return false;   // 非裁剪策略(如 TokenError/TokenCompress)不在此处理
-
-    // 统计非 system 历史条目，并记录最近一条 user 的位置
-    int nonSys = 0;
-    int lastUser = -1;
-    for (size_t i = 0; i < m_context.history.size(); i++)
-    {
-        auto& h = m_context.history[i];
-        if (h->role == LLMHistory::User)
-            lastUser = (int)i;
-        if (h->role != LLMHistory::System)
-            nonSys++;
-    }
-    if (lastUser == -1)
-        return false;   // 没有任何 user 记录，无可裁剪项
-
-    int toRemove = nonSys / 2;
-    if (toRemove <= 0)
-        return false;   // 非 system 条目已不足，无法继续裁剪
-
-    std::shared_ptr<LLMHistory> last_user_record = m_context.history[lastUser];
-
-    // 从最旧端开始，删除非 system 条目，直至删够 toRemove 条
-    for (auto it = m_context.history.begin();
-         it != m_context.history.end() && toRemove > 0; )
-    {
-        if ((*it)->role != LLMHistory::System)
-        {
-            it = m_context.history.erase(it);
-            toRemove--;
-        }
-        else
-            ++it;
-    }
-
-    // 兜底保证：理论上最近一条 user 不会被裁掉，这里确保历史中始终至少有一句 user
-    bool has_user = false;
-    for (auto &h : m_context.history)
-    {
-        if (h->role == LLMHistory::User)
-        {
-            has_user = true;
-            break;
-        }
-    }
-    if (!has_user)
-        m_context.history.insert(m_context.history.begin(), last_user_record);
-
-    m_context.recalcUsage();  // 历史已裁剪，重算累计 usage 使其回落
-    return true;
-}
-
 static std::string roleName(LLMHistory::Role r)
 {
     switch (r)
@@ -1278,20 +1310,7 @@ void JZAgent::llmLoop()
     if (m_context.usage.total_tokens > m_config.maxToken)
     {
         // 超出预算：按配置的策略处理历史
-        if (m_config.tokenStrategy == JZAgentConfig::TokenTruncate)
-        {
-            // 裁剪：砍掉最旧一半非 system 历史后重试
-            if (!trimHistoryForBudget())
-            {
-                llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
-                return;
-            }
-            // 裁剪成功：重新进入循环，若仍超预算会继续裁剪，否则走正常请求流程
-            // （注意不能在此直接 llmRequest，否则会漏掉尚在 m_requests 中的最新用户输入）
-            llmLoop();
-            return;
-        }
-        else if (m_config.tokenStrategy == JZAgentConfig::TokenCompress)
+        if (m_config.tokenStrategy == JZAgentConfig::TokenCompress)
         {
             // 压缩：把最旧一段历史发给大模型做摘要，异步进行，期间阻塞重入
             if (!startCompressHistory())
@@ -1301,7 +1320,7 @@ void JZAgent::llmLoop()
             }
             return;  // 等待 onCompressFinished 重新驱动 llmLoop
         }
-        // 其他策略(如 TokenError)直接报错终止
+        // TokenError 直接报错终止
         llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
         return;
     }

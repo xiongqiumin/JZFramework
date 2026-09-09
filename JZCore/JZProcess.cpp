@@ -12,6 +12,55 @@ using namespace std;
 
 #include <Windows.h>
 
+static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+{
+    // 与 createProcess 相同的引号规则: 含空格的 token 必须加引号
+    string programToken = program;
+    if (str_contains(programToken, " "))
+        programToken = "\"" + programToken + "\"";
+    string cmdLine = programToken;
+    for (const auto &arg : arguments)
+    {
+        if (str_contains(arg, " "))
+            cmdLine += " \"" + arg + "\"";
+        else
+            cmdLine += " " + arg;
+    }
+
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(STARTUPINFO));
+    si.cb = sizeof(STARTUPINFO);
+
+    // 分离进程: 不创建管道, bInheritHandles = FALSE
+    const char *appName = JZDir::isAbsolutePath(program) ? program.c_str() : nullptr;
+    BOOL success;
+    if (!workingDirectory.empty())
+    {
+        string work_dir = workingDirectory;
+        str_replace(work_dir, "/", "\\");
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, FALSE, 0, nullptr,
+                                 work_dir.c_str(), &si, &pi);
+    }
+    else
+    {
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, FALSE, 0, nullptr,
+                                 nullptr, &si, &pi);
+    }
+
+    if (!success)
+    {
+        jzError() << "startDetached: CreateProcess failed. program:" << program
+                  << " wd:" << workingDirectory << " err:" << (int)GetLastError();
+        return false;
+    }
+
+    // 不保留句柄, 进程句柄随父子进程解绑
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return true;
+}
+
 class JZProcessPrivate
 {
 public:
@@ -415,6 +464,43 @@ void JZProcessPrivate::closeWriteChannel()
 #include <sys/wait.h>
 #include <errno.h>
 #include <poll.h>
+
+static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+{
+    pid_t pid = ::fork();
+    if (pid == -1)
+        return false;
+
+    if (pid == 0)
+    {
+        // 子进程1: 再次 fork 后由孙进程 exec, 子进程1立即退出。
+        // 孙进程被 init 收养, 不会成为当前进程的僵尸, 无需 wait 回收。
+        pid_t child = ::fork();
+        if (child == 0)
+        {
+            if (!workingDirectory.empty())
+            {
+                if (::chdir(workingDirectory.c_str()) == -1)
+                    _exit(127);
+            }
+
+            vector<char *> argv;
+            argv.push_back(const_cast<char *>(program.c_str()));
+            for (const auto &arg : arguments)
+                argv.push_back(const_cast<char *>(arg.c_str()));
+            argv.push_back(nullptr);
+
+            ::execvp(program.c_str(), argv.data());
+            _exit(127);
+        }
+        _exit(0);
+    }
+
+    // 父进程: 回收子进程1, 孙进程由 init 接管
+    int status;
+    ::waitpid(pid, &status, 0);
+    return true;
+}
 
 class JZProcessPrivate
 {
@@ -918,6 +1004,11 @@ void JZProcessPrivate::closeWriteChannel()
 
 #else
 
+static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+{
+    return false;
+}
+
 class JZProcessPrivate
 {
 public:
@@ -1016,6 +1107,11 @@ JZProcess::~JZProcess()
 {
     killTimer(m_timerId);
     delete d_ptr;
+}
+
+bool JZProcess::startDetached(const string &program, const vector<string> &arguments, const string &workingDirectory)
+{
+    return startDetachedProcess(program, arguments, workingDirectory);
 }
 
 bool JZProcess::start(const string &program, const vector<string> &arguments)

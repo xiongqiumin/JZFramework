@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
     cfg.maxRounds = 4;
     cfg.netTimeout = 180000;
     cfg.maxToken = 150000;
-    cfg.tokenStrategy = JZAgentConfig::TokenTruncate;
+    cfg.tokenStrategy = JZAgentConfig::TokenCompress;
 
     Json::Value extra(Json::objectValue);
     extra["max_tokens"] = 512;

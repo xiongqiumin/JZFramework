@@ -77,6 +77,10 @@
 
 #endif
 
+#if defined(HAS_JZOTA) && !defined(ESP_PLATFORM) && !defined(HAS_JZSimulator)
+#include "JZOTADriverNormal.h"
+#endif
+
 #ifdef HAS_JZSerialPort
 #if defined(_WIN32)
 #include "JZSerialDriverWindows.h"
@@ -218,6 +222,9 @@ static void jzDriverInitOta()
     JZOTADriver::setInstance(new JZOTADriverEsp32());
 #elif defined(HAS_JZSimulator)
     JZOTADriver::setInstance(new JZOTADriverSimulator());
+#else
+    // OS_NORMAL(桌面 / 常规 OS): 下载升级包后调用 jzupdater 应用
+    JZOTADriver::setInstance(new JZOTADriverNormal());
 #endif
 #endif
 }

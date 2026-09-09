@@ -749,7 +749,7 @@ void JZCommandLineParser::printHelp() const
 
     if(!m_description.empty())
     {
-        std::cout << m_programName << " - " << m_description << "\n\n";
+        std::cout << m_programName << " - " << str_utf8_to_local(m_description) << "\n\n";
     }
 
     std::cout << usage() << "\n\n";

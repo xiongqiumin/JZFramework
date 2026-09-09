@@ -133,6 +133,10 @@ public:
         m_code.llmConfig = m_llm;
         m_agent->init(m_code);
 
+        connect(&(m_agent->agent()->sigToolCall), [this](const ToolCall &call) {
+            jzDebug() << "tool call" << call.function_name;
+        });
+
         m_poll = new JZTimer(this);
         connect(&m_poll->sigTimeout, this, &Benchmark::onPoll);
     }
@@ -624,9 +628,8 @@ static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
 {
     JZAgentConfig cfg;
     // 缺省沿用仓库 test/agent/test_agent.cpp 的接入；可用命令行 / 环境变量覆盖
-    cfg.modelUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-    cfg.modelName = "qwen3.7-flash-2026-07-15";
-    cfg.modelToken = "sk-c7cbd6d56e5049c69a640f9596c978d3";
+    cfg.modelUrl = "http://172.17.160.147:8080/v1/chat/completions";
+    cfg.modelName = "my_model";
     cfg.maxRounds = 100;
 
     const char *eUrl = std::getenv("JZ_BENCH_MODEL_URL");
@@ -650,7 +653,7 @@ int main(int argc, char *argv[])
 
     // 编译器 / LSP 路径
     // 缺省：环境变量 JZ_TS_LSP -> 否则同目录下的 tsc_shim.exe（本机 node 版 tsc 的包装）。
-    std::string tscPath = "E:/libs/ts_compiler/app/node_modules/@typescript/typescript-win32-x64/lib/tsc.exe";
+    std::string tscPath = jzApp->applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
     std::string tsgoPath = tscPath;   // 原生 tsc 也经同一 shim（支持 --lsp --stdio）
     std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
     std::string casesFilter;   // --cases：逗号分隔的用例名，仅跑这些（可多个）

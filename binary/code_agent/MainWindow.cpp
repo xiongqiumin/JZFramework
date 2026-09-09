@@ -545,7 +545,6 @@ void MainWindow::setupUi()
     JZWidget* topBar = new JZWidget(leftArea);
     topBar->setFixedHeight(32);
     JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
-    topLayout->addWidget(new JZLabel("CODEBUDDY", topBar), 0);
     m_topLabel = new JZLabel("", topBar);       // 打开工程后显示工程名（任务列表归属）
     topLayout->addWidget(m_topLabel, 0);
     topLayout->addStretch();
@@ -752,7 +751,7 @@ void MainWindow::applyConfig()
     llm.modelUrl = m_cfg.modelUrl;
     llm.modelName = m_cfg.modelName;
     llm.modelToken = m_cfg.modelToken;
-    llm.maxToken = 200000;
+    llm.maxToken = 160 * 1000;
 
     CodeAgentConfig code;
     code.workspace = m_cfg.workspace;
@@ -1358,7 +1357,7 @@ void MainWindow::onPoll()
         m_renderedId = seq;
     }
 
-    // token 用量圆环：当前上下文累计用量 / 上限
+    // token 用量圆环：当前上下文累计用量 / 上限（悬停提示按 K 折算）
     m_inputEdit->tokenRing()->setUsage(m_agent->usage().total_tokens,
                                        m_agent->llmConfig().maxToken);
 

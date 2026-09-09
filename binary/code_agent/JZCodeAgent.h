@@ -2,6 +2,7 @@
 #define JZ_CODE_AGENT_H_
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -10,6 +11,9 @@
 #include "JZAgentTool.h"
 #include "JZCodeTools.h"
 #include "JZTsLangServer.h"
+#include "JZFileWatch.h"
+#include "JZFileSystemWatcher.h"
+#include "JZResult.h"
 
 // 代码助手自身的配置（与大模型配置 JZAgentConfig 分开）
 class CodeAgentConfig
@@ -50,25 +54,24 @@ struct CodeProjectStatus
     std::string summary;         // 中文一行摘要（供日志 / 界面展示）
 };
 
-// 单任务熔断配置
-//   定位: 这类保护是 code_agent 这个应用的策略，不进入 JZAgent 通用框架。
-//   tool 层只负责把"被拒绝"的原因结构化上报，统计与熔断由 JZCodeAgent 完成。
-struct GuardConfig
-{
-    int maxToolCalls = 50;      // 单条指令内工具调用总次数上限
-    int maxDurationSec = 900;   // 单条指令墙钟时长上限(秒)
-    int maxSameDeny = 3;        // 同一类拒绝原因的累计次数上限
-    int maxRepeatCall = 3;      // 完全相同的调用连续出现次数上限(判定陷入重复)
-};
 
-// 单任务熔断统计，每次用户下发新指令时重置
-struct GuardState
+
+// 任务级自动恢复（可注入）：把「编译/运行/判定 → 反馈重试」的闭环下沉到 agent 自身。
+// 任务收尾（宿主编译把关之后）调用 verify；失败则按策略自动重发指令
+// （重发原始 user request 或自定义内容），直到通过或达到 maxAttempts。
+// 典型用途：评测用例自动重试、关键任务自愈。
+struct JZCodeAgentRecovery
 {
-    int toolCalls = 0;
-    int totalDeny = 0;
-    int64_t startTimeMs = 0;
-    std::map<int, int> denyCount;            // DenyReason -> 次数
-    std::deque<std::string> recentCalls;     // 最近的调用指纹(工具名 + 参数)
+    int maxAttempts = 1;   // 含首次的总轮数；<=1 表示不启用自动恢复
+
+    // 任务结束时的验证回调：返回 true=通过（无需恢复）；false=失败（需触发恢复）。
+    // 由上层注入（例如 benchmark 在此做 build+run+check）；为空视为永远通过。
+    std::function<bool()> verify;
+
+    // 恢复时下发的内容构造器：attempt 为即将进行的轮次（从 2 起）。
+    // 返回空串表示「重发最近一次原始 user request」；否则下发返回内容
+    // （例如把编译错误/实际输出拼进去作为修复指引）。
+    std::function<std::string(int attempt)> buildRecoveryRequest;
 };
 
 // 一条会话日志，网页端按 id 增量拉取
@@ -158,9 +161,9 @@ public:
     // 最近一次 openProject 的探测结果（未 open 过则为默认值）
     const CodeProjectStatus &projectStatus() const;
 
-    // 熔断配置（长时间跑/反复被拦时的保护）
-    void setGuardConfig(const GuardConfig &cfg);
-    const GuardConfig &guardConfig() const;
+    // 任务级自动恢复（可注入 verify + 恢复重发策略）；maxAttempts<=1 视为不启用
+    void setRecovery(const JZCodeAgentRecovery &r);
+    void clearRecovery();
 
     // 更新大模型配置（保留会话日志，重建底层 agent）
     void applyLlmConfig(const JZAgentConfig &llm);
@@ -179,12 +182,25 @@ public:
 
     // 文件浏览（网页端复用与工具一致的路径校验）
     bool listFiles(const std::string &rel, std::vector<std::string> &out, std::string &error) const;
-    bool readFileText(const std::string &rel, std::string &text, std::string &error) const;
+    // 统一的文件读取入口：解析路径（相对工作区则拼接，绝对路径做越界校验）、走 LRU 缓存、
+    // 文件变更由 m_fileWatcher 自动失效。读取失败（越界 / 打开失败）返回 Error，否则返回内容。
+    JZResult<std::string> readFile(const std::string &path);
+
+    // 网页端只读预览：在 readFile 之上做 2MB / 二进制 限制，行为保持与改造前一致
+    bool readFileText(const std::string &rel, std::string &text, std::string &error);
 
     const std::vector<std::string> &toolNames() const;
     bool isTrustedDir(std::string dir) const;
     bool isTrustedProgram(std::string prog) const;
 
+    // 文件内容缓存（默认 20MB LRU）。工具读文件时优先命中，文件变更由 m_fileWatcher 自动失效。
+    JZFileWatch* fileCache() { return &m_fileCache; }
+
+    // 任务级自动恢复序列结束通知：(passed, attempts)
+jz_signals:
+    JZSignal<bool, int> sigRecoveryFinished;
+
+    // [keep-index]
 protected:
     void buildAgent();
     void abortTools();
@@ -192,11 +208,6 @@ protected:
     void applyZoneConfig();
     void addLog(const std::string &type, const std::string &text, const std::string &name = std::string());
     std::string buildSystemPrompt() const;
-
-    // 熔断: 每次下发新指令时重置，工具调用/拒绝时累计，超阈值则停止当前任务
-    void resetGuard();
-    void checkGuard();
-    void triggerGuard(const std::string &reason, const std::string &suggestion);
 
     void onReply(const std::string &text);
     void onThinking(const std::string &text);
@@ -223,6 +234,13 @@ protected:
 
     JZTsLangServer *m_tsServer = nullptr;   // 直连 TSGO 语言服务；随 agent 生命周期常驻
 
+    // 文件内容缓存（20MB LRU）与文件系统监视器：工具读文件优先命中缓存，
+    // 监视工作区变更并自动失效对应缓存条目（见 setupFileWatch）。
+    JZFileWatch m_fileCache;
+    JZFileSystemWatcher m_fileWatcher;
+
+    void setupFileWatch();
+
     // 所有网络工具（web_search / web_fetch）共享的访问管理器，代理只在此统一设置一次
     JZNetworkAccessManager *m_netMan = nullptr;
 
@@ -231,9 +249,6 @@ protected:
     bool m_busy = false;
     bool m_stopping = false;
 
-    GuardConfig m_guardConfig;
-    GuardState m_guard;
-
     // 轮末宿主把关状态
     bool m_roundTouchedTs = false;   // 当前指令轮是否写过 .ts / tsconfig（onToolLog 累计）
     int m_fixRoundsLeft = 0;         // 当前任务剩余可自动修复轮数（每条用户指令开始时重置）
@@ -241,6 +256,13 @@ protected:
     JZTimer *m_hostTimer = nullptr;
     bool m_hostRunning = false;
     bool m_hostTimeout = false;
+
+    // 任务级自动恢复状态（m_recovery 为注入的策略，buildAgent 不清空）
+    JZCodeAgentRecovery m_recovery;
+    bool m_recoveryEnabled = false;   // m_recovery.maxAttempts > 1 时启用
+    bool m_recoveryActive = false;    // 一次外层任务进行中（含其恢复轮次）
+    int m_recoveryAttempt = 0;        // 已尝试轮次（首次 = 1）
+    std::string m_lastUserRequest;    // 最近一次外层 user request（重发原始请求用）
 };
 
 #endif // !JZ_CODE_AGENT_H_

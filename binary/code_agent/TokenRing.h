@@ -5,8 +5,8 @@
 #include "JZString.h"
 
 // 输入框内的 token 用量圆环：环上按比例绘制进度弧，鼠标移到环上走 JZWidget 通用
-// setTooltip 弹出悬浮窗, 给出"已用 / 上限 / 剩余"的具体数字。只负责展示,
-// 数据由主窗口定时刷新。
+// setTooltip 弹出悬浮窗, 给出"已用 / 上限 / 剩余"的具体数字（按 K 折算、单行）。
+// 只负责展示, 数据由主窗口定时刷新。
 class TokenRing : public JZWidget
 {
     JZ_OBJECT_DECLARE(TokenRing)

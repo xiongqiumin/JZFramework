@@ -367,31 +367,57 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
         if (m_conn != INVALID_NET_HANDLE)
         {
             m_conn = INVALID_NET_HANDLE;
-            // 无 Content-Length 且非 chunk 的分段响应：连接关闭即响应结束，用已缓冲 body 收尾
-            if (m_responseActive && m_reply)
+            if (m_reply)
             {
-                size_t headerEnd = jzFindHeaderEnd(m_buffer.data(), (int)m_buffer.size());
-                if (headerEnd > 0)
+                if (m_chunkMode)
                 {
-                    JZByteArray body = m_buffer.mid((int)headerEnd);
-#ifdef HAS_JZCompress
-                    if (m_compressed && !jzApplyContentEncoding(m_reply, body))   // 仅在有压缩编码时才解压
+                    // chunked 未收到结束块(0\r\n\r\n)连接就断了：响应被截断。
+                    // 不能把不完整的 body 当正常完成，也不能静默挂死直到超时，按错误收尾。
+                    emitFinish(JZNetworkReply::ConnectError);
+                }
+                else if (m_responseActive)
+                {
+                    // 无 Content-Length 且非 chunk 的分段响应：依赖连接关闭收尾
+                    //（HTTP/1.0 / Connection: close 风格，如 llama.cpp 的流式应答）。
+                    size_t headerEnd = jzFindHeaderEnd(m_buffer.data(), (int)m_buffer.size());
+                    if (headerEnd > 0)
                     {
-                        emitFinish(JZNetworkReply::ContentEncodingError);                        
+                        JZByteArray body = m_buffer.mid((int)headerEnd);
+#ifdef HAS_JZCompress
+                        if (m_compressed && !jzApplyContentEncoding(m_reply, body))   // 仅在有压缩编码时才解压
+                        {
+                            emitFinish(JZNetworkReply::ContentEncodingError);
+                        }
+                        else
+#endif
+                        {
+                            if (body.isEmpty())
+                            {
+                                // 头收全但 body 一个字节都没收到就关了：连接异常中断，
+                                // 不当成成功收尾（否则上游会把“半路断开”误判为正常完成）。
+                                emitFinish(JZNetworkReply::ConnectError);
+                            }
+                            else
+                            {
+                                m_reply->m_body = body;
+                                m_reply->sigReadyRead.emit();
+                                emitFinish(JZNetworkReply::NoError);
+                            }
+                        }
                     }
                     else
-#endif
-                    {                        
-                        m_reply->m_body = body;
-                        m_reply->sigReadyRead.emit();                        
-                        emitFinish(JZNetworkReply::NoError);
+                    {
+                        // 连响应头都没收全就断了：连接异常中断
+                        emitFinish(JZNetworkReply::ConnectError);
                     }
                 }
                 else
                 {
+                    // 其余（Content-Length 等定长场景）：在未收齐时连接提前关闭，属异常中断，按错误收尾
+                    // （正常收齐时 emitFinish 已调用、m_reply 已置空，不会走到这里）。
                     emitFinish(JZNetworkReply::ConnectError);
                 }
-            }            
+            }
             sigDisconnected.emit();
         }
         return;

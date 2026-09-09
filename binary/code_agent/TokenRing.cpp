@@ -7,23 +7,23 @@
 
 #include <algorithm>
 #include <string>
+#include <cstdio>
 
 using namespace std;
 
-// 千分位：12345 -> "12,345"
-static string formatCount(int v)
+// 按 K(1000) 折算: 12345 -> "12.3K", 500 -> "0.5K", 0 -> "0K"
+// token 是十进制计数, 用 1000 而非 1024(二进制 KiB)。
+static string formatK(int v)
 {
-    string s = to_string(v);
-    string out;
-    int n = 0;
-    for (auto it = s.rbegin(); it != s.rend(); ++it)
-    {
-        if (n > 0 && n % 3 == 0)
-            out.insert(out.begin(), ',');
-        out.insert(out.begin(), *it);
-        n++;
-    }
-    return out;
+    if (v <= 0)
+        return "0K";
+    double k = v / 1000.0;
+    char buf[32];
+    if (k < 10.0)
+        snprintf(buf, sizeof(buf), "%.1fK", k);
+    else
+        snprintf(buf, sizeof(buf), "%.0fK", k);
+    return string(buf);
 }
 
 // ==================== TokenRing ====================
@@ -41,14 +41,20 @@ int TokenRing::percent() const
     return std::min(100, std::max(0, pct));
 }
 
-// 悬浮提示文本 (多行, '\n' 分隔), 交给 JZWidget::setTooltip 弹出
+// 悬浮提示文本（单行），交给 JZWidget::setTooltip 弹出：按 K 折算显示
+// "已用 X / 上限 Y（剩余 Z%）"，未设上限时只显示已用。
 JZString TokenRing::buildTooltip() const
 {
-    string tip = "已用 " + formatCount(m_used) + " tokens\n";
-    tip += (m_total > 0 ? ("上限 " + formatCount(m_total) + " tokens")
-                        : string("上限 未设置"));
-    tip += "\n";
-    tip += "剩余 " + to_string(100 - percent()) + "%";
+    string tip = "已用 " + formatK(m_used);
+    if (m_total > 0)
+    {
+        tip += " / 上限 " + formatK(m_total);
+        tip += "（剩余 " + to_string(100 - percent()) + "%）";
+    }
+    else
+    {
+        tip += " / 上限 未设置";
+    }
     return JZString::fromStdString(tip);
 }
 
@@ -87,7 +93,7 @@ void TokenRing::paintEvent(JZPainterEvent* event)
         p.drawArc(cx, cy, r, 270, 270 + 360 * pct / 100);
     }
 
-    // 仅画环, 中心百分比数字交给悬浮提示 (setTooltip) 显示
+    // 仅画环, 具体数字交给悬浮提示 (setTooltip) 显示
 }
 
 JZ_OBJECT_IMPL(TokenRing, JZWidget)

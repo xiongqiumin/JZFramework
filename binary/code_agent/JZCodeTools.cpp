@@ -194,22 +194,60 @@ static vector<string> readLines(const string &text)
     return lines;
 }
 
-// 文本文件判断: 前 4K 内出现 '\0' 视为二进制
-static bool isTextFile(const string &path)
+// 判定字节序列是否为合法 UTF-8（用于区分文本/二进制文件）
+static bool isValidUtf8(const char *data, int size)
+{
+    int i = 0;
+    while (i < size)
+    {
+        unsigned char c = (unsigned char)data[i];
+        int extra;
+        int lo, hi;
+        if (c <= 0x7F)                   { i += 1; continue; }
+        else if (c >= 0xC2 && c <= 0xDF) { extra = 1; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xE0)              { extra = 2; lo = 0xA0; hi = 0xBF; }
+        else if (c >= 0xE1 && c <= 0xEC) { extra = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xED)              { extra = 2; lo = 0x80; hi = 0x9F; }
+        else if (c >= 0xEE && c <= 0xEF) { extra = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF0)              { extra = 3; lo = 0x90; hi = 0xBF; }
+        else if (c >= 0xF1 && c <= 0xF3) { extra = 3; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF4)              { extra = 3; lo = 0x80; hi = 0x8F; }
+        else return false;               // 非法首字节
+
+        if (i + extra >= size)
+            return false;                // 多字节序列被截断
+        for (int j = 1; j <= extra; j++)
+        {
+            unsigned char n = (unsigned char)data[i + j];
+            if (n < lo || n > hi)
+                return false;
+            lo = 0x80; hi = 0xBF;        // 续字节统一范围
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+// 文本文件判断：采样前若干字节，必须是合法 UTF-8（含纯 ASCII），否则视为二进制；
+// 合法 UTF-8 不会出现单独 0x00，故含 '\0' 也直接判二进制。
+bool isTextFile(const string &path)
 {
     JZFile file;
     if (!file.open(path, "rb"))
         return false;
 
-    JZByteArray head = file.read(4096);
+    JZByteArray head = file.read(16 * 1024);   // 采样足够大的前缀做 UTF-8 合法性判定
     file.close();
+    if (head.size() == 0)
+        return true;                           // 空文件当作文本
+
     const char *data = head.data();
     for (int i = 0; i < head.size(); i++)
     {
         if (data[i] == '\0')
             return false;
     }
-    return true;
+    return isValidUtf8(data, head.size());
 }
 
 static string truncateMiddle(const string &text, int maxChars)
@@ -257,19 +295,6 @@ static bool buildProcessArgs(const string &command, string &program, vector<stri
     return true;
 }
 
-static string fileToString(const string &path, string &error)
-{
-    JZFile file;
-    if (!file.open(path, "rb"))
-    {
-        error = "打开文件失败: " + path;
-        return string();
-    }
-    JZByteArray data = file.readAll();
-    file.close();
-    return str_fromUtf8(data);
-}
-
 // 遍历时跳过的目录: 隐藏目录与常见的生成物/依赖目录
 static bool isSkipDir(const string &name)
 {
@@ -311,33 +336,6 @@ bool codeListDir(const string &workspace, const string &rel, vector<string> &out
             out.push_back(info.fileName());
     }
     return true;
-}
-
-bool codeReadFile(const string &workspace, const string &rel, string &text, string &error)
-{
-    string abs;
-    if (!codeResolvePath(workspace, rel, abs, error))
-        return false;
-
-    JZFileInfo info(abs);
-    if (!info.exists() || !info.isFile())
-    {
-        error = "文件不存在: " + rel;
-        return false;
-    }
-    if (info.size() > 2 * 1024 * 1024)
-    {
-        error = "文件过大(>2MB): " + rel;
-        return false;
-    }
-    if (!isTextFile(abs))
-    {
-        error = "二进制文件无法预览: " + rel;
-        return false;
-    }
-
-    text = fileToString(abs, error);
-    return !text.empty() || error.empty();
 }
 
 const char *denyReasonText(DenyReason reason)
@@ -545,14 +543,14 @@ void JZReadFileTool::call(const ToolCall &params)
         return;
     }
 
-    string error;
-    string content = fileToString(abs, error);
-    if (!error.empty())
+    JZResult<string> r = m_agent->readFile(abs);
+    if (r.isError())
     {
-        finish(params, false, error);
+        finish(params, false, r.errorMessage());
         return;
     }
 
+    string content = r.value();
     vector<string> lines = readLines(content);
     int begin = startLine - 1;
     if (begin >= (int)lines.size())
@@ -592,29 +590,33 @@ JZSearchFileTool::JZSearchFileTool()
     def.parameters.push_back(makeParam("case_sensitive", BOOLEAN, "是否区分大小写，默认 false"));
     def.parameters.push_back(makeParam("regex", BOOLEAN, "pattern 是否按正则表达式解析，默认 false（纯文本搜索）"));
     def.parameters.push_back(makeParam("max_results", NUMBER, "最多返回多少条匹配，默认 50"));
+    def.parameters.push_back(makeParam("max_files", NUMBER, "最多扫描多少个文件，默认 1000，避免大仓库一次扫太多"));
     def.required_parameters.push_back("pattern");
     setToolDefine(def);
 }
 
 static void searchInDir(const string &absDir, const string &relBase, const string &pattern,
                         const string &fileFilter, bool caseSensitive, bool useRegex,
-                        int maxResults, vector<string> &out, int &totalFiles)
+                        int maxResults, int maxFiles,                         long long maxBytes,
+                        vector<string> &out, int &totalFiles, long long &totalBytes, bool &stopped,
+                        JZCodeAgent *agent)
 {
-    if ((int)out.size() >= maxResults)
+    if (stopped || (int)out.size() >= maxResults || totalFiles >= maxFiles || totalBytes >= maxBytes)
         return;
 
     JZDir dir(absDir);
     vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
     for (const auto &info : list)
     {
-        if ((int)out.size() >= maxResults)
+        if (stopped || (int)out.size() >= maxResults || totalFiles >= maxFiles || totalBytes >= maxBytes)
             return;
 
         string rel = relBase.empty() ? info.fileName() : relBase + "/" + info.fileName();
         if (info.isDir())
         {
             if (!isSkipDir(info.fileName()))
-                searchInDir(info.filePath(), rel, pattern, fileFilter, caseSensitive, useRegex, maxResults, out, totalFiles);
+                searchInDir(info.filePath(), rel, pattern, fileFilter, caseSensitive, useRegex,
+                            maxResults, maxFiles, maxBytes, out, totalFiles, totalBytes, stopped, agent);
             continue;
         }
 
@@ -626,11 +628,12 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
             continue;
 
         totalFiles++;
-        string error;
-        string content = fileToString(info.filePath(), error);
-        if (!error.empty())
+        JZResult<string> r = agent->readFile(info.filePath());
+        if (r.isError())
             continue;
 
+        string content = r.value();
+        totalBytes += (long long)content.size();
         vector<string> lines = readLines(content);
         JZRegExp reg;
         bool regOk = false;
@@ -665,6 +668,10 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
             }
         }
     }
+
+    // 因文件数 / 字节数触顶而提前结束
+    if (totalFiles >= maxFiles || totalBytes >= maxBytes)
+        stopped = true;
 }
 
 void JZSearchFileTool::call(const ToolCall &params)
@@ -682,6 +689,10 @@ void JZSearchFileTool::call(const ToolCall &params)
     int maxResults = params.params.get("max_results", 50).asInt();
     if (maxResults < 1)
         maxResults = 50;
+    int maxFiles = params.params.get("max_files", 1000).asInt();
+    if (maxFiles < 1)
+        maxFiles = 1000;
+    long long maxBytes = 64LL * 1024 * 1024;   // 单次搜索最多扫描约 64MB 文件内容，避免大仓库卡死
 
     string abs = fullPath(rel);
     DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
@@ -700,19 +711,28 @@ void JZSearchFileTool::call(const ToolCall &params)
 
     vector<string> results;
     int totalFiles = 0;
+    long long totalBytes = 0;
+    bool stopped = false;
     if (info.isDir())
     {
-        searchInDir(abs, string(), pattern, fileFilter, caseSensitive, useRegex, maxResults, results, totalFiles);
+        searchInDir(abs, string(), pattern, fileFilter, caseSensitive, useRegex,
+                    maxResults, maxFiles, maxBytes, results, totalFiles, totalBytes, stopped,
+                    m_agent);
     }
     else
     {
-        string error;
-        string content = fileToString(abs, error);
-        if (!error.empty())
+        if (!isTextFile(abs))
         {
-            finish(params, false, error);
+            finish(params, false, "二进制文件无法搜索: " + rel);
             return;
         }
+        JZResult<string> r = m_agent->readFile(abs);
+        if (r.isError())
+        {
+            finish(params, false, r.errorMessage());
+            return;
+        }
+        string content = r.value();
         totalFiles = 1;
         string needle = caseSensitive ? pattern : str_toLower(pattern);
         vector<string> lines = readLines(content);
@@ -732,9 +752,13 @@ void JZSearchFileTool::call(const ToolCall &params)
     else
     {
         text = "匹配 \"" + pattern + "\" 共 " + to_string(results.size()) + " 处" +
-               (results.size() == (size_t)maxResults ? "（已达上限）" : "") + ":\n";
+               (results.size() == (size_t)maxResults ? "（已达结果上限）" : "") + ":\n";
         for (const auto &r : results)
             text += r + "\n";
+        if (stopped)
+            text += "\n（已扫描 " + to_string(totalFiles) + " 个文件 / 约 " +
+                    to_string(totalBytes / (1024 * 1024)) + "MB，达到单次搜索上限，提前停止；"
+                    "可缩小 path / file_filter 范围后重试）";
     }
     finish(params, true, text);
 }
@@ -937,14 +961,14 @@ void JZModifyFileTool::call(const ToolCall& params)
         return;
     }
 
-    std::string error;
-    string oldContent = fileToString(abs, error);
-    if (!error.empty())
+    JZResult<string> r = m_agent->readFile(abs);
+    if (r.isError())
     {
-        finish(params, false, error);
+        finish(params, false, r.errorMessage());
         return;
     }
 
+    string oldContent = r.value();
     size_t pos = 0;
     int count = 0;
     while ((pos = oldContent.find(oldStr, pos)) != string::npos)
@@ -1169,6 +1193,11 @@ void JZShellTool::setTimeOut(int timeout)
     m_timeoutMs = timeout;
 }
 
+void JZShellTool::setExeSearchPaths(const std::vector<std::string> &paths)
+{
+    m_exeSearchPaths = paths;
+}
+
 void JZShellTool::call(const ToolCall& params)
 {
     std::string cmdRaw = params.params.get("cmd", "").asString();
@@ -1190,9 +1219,40 @@ void JZShellTool::call(const ToolCall& params)
         return;
     }
 
+    // 额外 exe 搜索路径：注入到 shell 的 PATH 最前面，使按名调用的程序可被找到。
+    // 用 shell 自身的 set/export 实现，无需改动 JZProcess 的环境块构造，
+    // 且对内部命令(echo/dir)、管道、重定向、&& 串联等全部透明。
+    // 仅修改真正下发的命令；展示给用户的 logText 仍用原始 cmdRaw。
+    std::string cmd = cmdRaw;
+    if (!m_exeSearchPaths.empty())
+    {
+        std::string joined;
+        for (const auto &p : m_exeSearchPaths)
+        {
+            std::string np = codeNormalizePath(p);
+#ifdef _WIN32
+            str_replace(np, "/", "\\");
+#endif
+            if (!np.empty())
+#ifdef _WIN32
+                joined += (joined.empty() ? std::string() : std::string(";")) + np;
+#else
+                joined += (joined.empty() ? std::string() : std::string(":")) + np;
+#endif
+        }
+        if (!joined.empty())
+        {
+#ifdef _WIN32
+            cmd = "set \"PATH=" + joined + ";%PATH%\" && " + cmdRaw;
+#else
+            cmd = "export PATH=\"" + joined + ":$PATH\"; " + cmdRaw;
+#endif
+        }
+    }
+
     std::string program;
     std::vector<std::string> args;
-    if (!buildProcessArgs(cmdRaw, program, args))
+    if (!buildProcessArgs(cmd, program, args))
     {
         finish(params, false, "命令解析失败: " + cmdRaw);
         return;
@@ -1869,14 +1929,14 @@ void JZVirtualTerminal::runCat(const ToolCall &call, const vector<string> &argv,
         return;
     }
 
-    string err;
-    string content = fileToString(abs, err);
-    if (!err.empty())
+    JZResult<string> r = m_agent->readFile(abs);
+    if (r.isError())
     {
-        finish(call, false, err);
+        finish(call, false, r.errorMessage());
         return;
     }
 
+    string content = r.value();
     vector<string> lines = readLines(content);
     const int kMaxLines = 2000;
     bool truncated = (int)lines.size() > kMaxLines;

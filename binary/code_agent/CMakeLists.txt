@@ -1,5 +1,7 @@
 
 set(CODE_AGENT_CORE_SOURCES
+    JZFileWatch.h
+    JZFileWatch.cpp
     JZCodeTools.h
     JZCodeTools.cpp
     JZTsLangServer.h

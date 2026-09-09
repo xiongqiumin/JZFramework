@@ -1479,25 +1479,40 @@ void JZAgent::onLLMRequest()
             case JZNetworkReply::UserCancelError: errCode = UserCancelError; break;
             default:                              errCode = ConnectError; break;
         }
-        // HTTP 层错误(4xx/5xx 等)：body 里常藏着真正的错误原因（如阿里云欠费 Arrearage）。        
-        std::string body = str_fromUtf8(net_reply->readAll());        
-        Json::Value result;
-        Json::Reader reader;
-        if (reader.parse(body, result) && result.isMember("error"))
+        // HTTP 层错误(4xx/5xx 等) 才有有效状态码，body 里常藏着真正原因（如阿里云欠费 Arrearage）；
+        // 连接失败/超时/取消等“非 HTTP 错误”没有有效 HTTP 状态码，不应再打印 "(HTTP x)" 造成混淆。
+        bool is_http_error = (net_reply->error() == JZNetworkReply::HttpError);
+        int http_code = net_reply->httpStatusCode();
+        std::string body = str_fromUtf8(net_reply->readAll());
+
+        if (is_http_error)
         {
-            Json::Value err = result["error"];
-            std::string ecode = err.isMember("code")   ? err["code"].asString()   : "";
-            std::string etype = err.isMember("type")   ? err["type"].asString()   : "";
-            std::string emsg  = err.isMember("message") ? err["message"].asString() : "";
-            if (emsg.empty())
-                emsg = body;
-            std::string detail = emsg;
-            if (!ecode.empty() || !etype.empty())
-                detail += " (code=" + ecode + ", type=" + etype + ")";
-            llmError(errCode, "HTTP " + std::to_string(net_reply->httpStatusCode()) + " 错误: " + detail);
-            return;
+            // 优先解析 body 中的 error 结构，给出更详细的错误原因。
+            Json::Value result;
+            Json::Reader reader;
+            if (!body.empty() && reader.parse(body, result) && result.isMember("error"))
+            {
+                Json::Value err = result["error"];
+                std::string ecode = err.isMember("code")    ? err["code"].asString()    : "";
+                std::string etype = err.isMember("type")    ? err["type"].asString()    : "";
+                std::string emsg  = err.isMember("message") ? err["message"].asString() : "";
+                if (emsg.empty())
+                    emsg = body;
+                std::string detail = emsg;
+                if (!ecode.empty() || !etype.empty())
+                    detail += " (code=" + ecode + ", type=" + etype + ")";
+                llmError(errCode, "HTTP " + std::to_string(http_code) + " 错误: " + detail);
+                return;
+            }
+            // 有状态码但 body 无法解析：退化用状态码 + 原文/错误字符串。
+            std::string extra = body.empty() ? net_reply->errorString() : body;
+            llmError(errCode, "HTTP " + std::to_string(http_code) + " 错误: " + extra);
         }
-        llmError(errCode, "网络错误(HTTP " + std::to_string(net_reply->httpStatusCode()) + "): " + net_reply->errorString());
+        else
+        {
+            // 非 HTTP 错误（连接失败 / 超时 / 用户取消等）：无有效 HTTP 状态码，只显示错误原因。
+            llmError(errCode, net_reply->errorString());
+        }
         return;
     }
 

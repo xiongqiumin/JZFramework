@@ -29,14 +29,12 @@ class JZNetworkReply;
 // 不能单独用作沙箱依据。
 std::string codeNormalizePath(const std::string &path, bool *escaped = nullptr);
 
+// 判断路径是否指向文本文件（采样前缀做 UTF-8 合法性判定，空文件当作文本）
+bool isTextFile(const std::string &path);
+
 // 列出工作区某目录的直接子项（目录名以 '/' 结尾），rel 为空表示根目录
 bool codeListDir(const std::string &workspace, const std::string &rel,
                  std::vector<std::string> &out, std::string &error);
-
-// 读取工作区内文本文件（utf8 输出）
-bool codeReadFile(const std::string &workspace, const std::string &rel,
-                  std::string &text, std::string &error);
-
 
 enum class ToolOperator
 {
@@ -205,10 +203,16 @@ public:
 
     void setTimeOut(int timeout);
 
+    // 额外的 exe 搜索路径：会在执行命令前注入到 shell 的 PATH 最前面，
+    // 使得工作区内编译产物(如 build/Debug/demo.exe)或额外 SDK 目录下的程序
+    // 可被直接按名调用，而不必写全路径。
+    void setExeSearchPaths(const std::vector<std::string> &paths);
+
     virtual void call(const ToolCall &params) override;
 
 private:
     int m_timeoutMs = 120000;
+    std::vector<std::string> m_exeSearchPaths;   // 额外 exe 搜索目录
 };
 
 class JZCommandTool : public JZProcessRunner

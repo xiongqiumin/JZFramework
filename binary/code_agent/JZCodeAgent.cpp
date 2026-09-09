@@ -57,6 +57,7 @@ Json::Value CodeAgentLog::toJson() const
 // ==================== JZCodeAgent ====================
 JZCodeAgent::JZCodeAgent(JZObject *parent)
     : JZObject(parent)
+    , sigRecoveryFinished(this)
 {
     m_tsServer = new JZTsLangServer(this);
 }
@@ -87,6 +88,7 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
+    setupFileWatch();
     buildAgent();
     // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversation()
 }
@@ -106,6 +108,14 @@ void JZCodeAgent::request(const string &text)
     {
         JZ_ASSERT(0);
         return;
+    }
+
+    // 自动恢复：首次(外层)请求记为 attempt #1；恢复重发时 m_recoveryActive 已为 true，不重复计数
+    if (m_recoveryEnabled && !m_recoveryActive)
+    {
+        m_recoveryActive = true;
+        m_recoveryAttempt = 1;
+        m_lastUserRequest = text;
     }
 
     sendRequestDirect(text);
@@ -211,8 +221,7 @@ void JZCodeAgent::resetConversation()
 void JZCodeAgent::sendRequestDirect(const string &text)
 {
     // 直接发给底层 agent（request 的队列分支与宿主续修都走这里）。
-    // 每条新指令 = 一轮新的熔断额度 + 一轮完整的自动续修额度 + 重新统计代码改动。
-    resetGuard();
+    // 每条新指令 = 一轮完整的自动续修额度 + 重新统计代码改动。
     m_fixRoundsLeft = m_codeConfig.maxAutoFixRounds;
     m_roundTouchedTs = false;
     m_busy = true;
@@ -339,10 +348,28 @@ bool JZCodeAgent::setWorkspace(const string &path)
     for (auto* tool : m_tools)
         tool->setAgent(this);
     applyZoneConfig();
+    setupFileWatch();
 
     // 重建 agent（工具与 systemPrompt 重新登记）；载入哪段对话由上层决定
     buildAgent();
     return true;
+}
+
+void JZCodeAgent::setupFileWatch()
+{
+    // 每次切换工作区都重建监视与缓存，避免跨工作区串味
+    m_fileWatcher.clear();
+    m_fileCache.clear();
+    if (m_codeConfig.workspace.empty())
+        return;
+
+    m_fileWatcher.addPath(m_codeConfig.workspace);
+    // 任意文件变更 -> 失效对应缓存条目；键格式与 readFile 写入缓存时完全一致（均小写 + 统一分隔符）
+    connect(&m_fileWatcher.sigFileChanged, this,
+        [this](const std::string& path)
+        {
+            m_fileCache.remove(str_toLower(codeNormalizePath(path)));
+        });
 }
 
 // ==================== TS 工程支持 ====================
@@ -462,7 +489,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
             return false;
         }
     }    
-#if 0
+
     string name = codeBaseName(root);
     if (name.empty())
         name = "project";
@@ -549,10 +576,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         }
     }
 
-    addLog("info", "已初始化 TS 工程: " + root + "\n"
-                  "生成 tsconfig.json(outDir=build) / src/main.ts / .gitignore，已有文件未覆盖。\n"
-                  "（project.json 不是骨架文件：它由打包/发布 buildProject 在 tsc 编译通过后生成）");
-#endif
+    addLog("info", "已初始化 TS 工程");
     return true;
 }
 
@@ -972,9 +996,62 @@ bool JZCodeAgent::listFiles(const string &rel, vector<string> &out, string &erro
     return codeListDir(m_codeConfig.workspace, rel, out, error);
 }
 
-bool JZCodeAgent::readFileText(const string &rel, string &text, string &error) const
+JZResult<string> JZCodeAgent::readFile(const string &path)
 {
-    return codeReadFile(m_codeConfig.workspace, rel, text, error);
+    string abs;
+    string err;
+    if (!codeResolvePath(m_codeConfig.workspace, path, abs, err))
+        return JZResult<string>::Error(err);
+
+    // 缓存键统一为"小写 + 统一分隔符"，与 setupFileWatch 中失效 remove 的键完全一致，
+    // 保证编辑器改动（含 rename 类原子替换）触发的 sigFileChanged 能精确命中。
+    string key = str_toLower(codeNormalizePath(abs));
+    JZByteArray data = m_fileCache.get(key);
+    if (!data.isEmpty())
+        return JZResult<string>::Ok(str_fromUtf8(data));
+
+    JZFile file;
+    if (!file.open(abs, "rb"))
+        return JZResult<string>::Error("打开文件失败: " + abs);
+    JZByteArray read = file.readAll();
+    file.close();
+
+    string text = str_fromUtf8(read);
+    m_fileCache.insert(key, text);
+    return JZResult<string>::Ok(std::move(text));
+}
+
+bool JZCodeAgent::readFileText(const string &rel, string &text, string &error)
+{
+    // 网页端只读预览：越界 / 2MB / 二进制 限制与改造前一致；实际读取走 readFile（带缓存 + 失效）。
+    string abs;
+    if (!codeResolvePath(m_codeConfig.workspace, rel, abs, error))
+        return false;
+    JZFileInfo info(abs);
+    if (!info.exists() || !info.isFile())
+    {
+        error = "文件不存在: " + rel;
+        return false;
+    }
+    if (info.size() > 2 * 1024 * 1024)
+    {
+        error = "文件过大(>2MB): " + rel;
+        return false;
+    }
+    if (!isTextFile(abs))
+    {
+        error = "二进制文件无法预览: " + rel;
+        return false;
+    }
+
+    JZResult<string> r = readFile(abs);
+    if (r.isError())
+    {
+        error = r.errorMessage();
+        return false;
+    }
+    text = r.value();
+    return true;
 }
 
 void JZCodeAgent::applyZoneConfig()
@@ -1003,6 +1080,11 @@ void JZCodeAgent::buildAgent()
     }
     m_tools.clear();
     m_toolNames.clear();
+
+    // agent 重建 = 一次新任务起点：清空恢复闭环的瞬时状态（注入的 verify/策略保留）
+    m_recoveryActive = false;
+    m_recoveryAttempt = 0;
+    m_lastUserRequest.clear();
 
     // 重建前丢弃上一轮的 TSGO 语言服务进程与未决请求（配置可能已变化）
     if (m_tsServer)
@@ -1034,8 +1116,11 @@ void JZCodeAgent::buildAgent()
     addTool(new JZReadFileTool());
     addTool(new JZSearchFileTool());
     addTool(new JZModifyFileTool());
+
+    auto shell_tool = new JZShellTool();
+    shell_tool->setExeSearchPaths({ jzApp->applicationDirPath() + "/ts_compiler/tsc" });
+    addTool(shell_tool);
     //addTool(new JZVirtualTerminal());
-    addTool(new JZShellTool());
 
     // 所有网络工具共享同一个访问管理器，代理只在此统一设置一次
     if (!m_netMan)
@@ -1064,6 +1149,19 @@ void JZCodeAgent::buildAgent()
     fetchTool->setNetworkAccessManager(m_netMan);
     addTool(fetchTool);
 
+    // 直连 tsc 语言服务（TSGO）的 TS 工具：首次调用时惰性拉起 "tsc --lsp --stdio" 进程，
+    // 对外暴露 ts_definition / ts_references / ts_quickinfo 等 10 个查询。
+    // 配置随工作区/编译器的变化在 buildAgent 里刷新（进程在 shutdown 后下次请求自动重启）。
+    if (m_tsServer)
+    {
+        m_tsServer->setTsgoPath(m_codeConfig.tscPath);
+        m_tsServer->setRoot(m_codeConfig.workspace);
+        for (TsMethod m : {TsMethod::Definition, TsMethod::References, TsMethod::QuickInfo,
+                           TsMethod::Rename, TsMethod::Completion, TsMethod::DocumentHighlights,
+                           TsMethod::Diagnostics, TsMethod::Source, TsMethod::Outline, TsMethod::Members})
+            addTool(new JZTsTool(m_tsServer, m));
+    }
+
     m_agent->setSystemPrompt(buildSystemPrompt());
 }
 
@@ -1090,9 +1188,12 @@ void JZCodeAgent::addLog(const string &type, const string &text, const string &n
 std::string JZCodeAgent::buildSystemPrompt() const
 {
     std::ostringstream text;
-    text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 C++ 项目：可查看、搜索、修改、CMake编译与运行工作区中的代码。\n";
-    text << "工作区:" + m_codeConfig.workspace + "\n"; 
-    text << "统一在项目目录创建build, 在build 里面使用 cmake 编译\n";
+    text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript/JavaScript 项目："
+            "可查看、搜索、修改、用 tsc 编译并运行工作区中的代码。\n";
+    text << "工作区:" + m_codeConfig.workspace + "\n";
+    text << "这是标准 TypeScript 工程：根目录有 tsconfig.json，编译产物统一输出到 build/。\n";
+    text << "查定义/引用/类型/补全/诊断等语言信息时，优先调用 ts_* 系列工具（直连 tsc 语言服务）；"
+            "改代码前用 ts_source / ts_outline 了解结构，而不是盲目翻文件。\n";
 
     vector<string> progs;
     for (auto* tool : m_tools)
@@ -1147,6 +1248,34 @@ void JZCodeAgent::nextOrIdle()
     // 期间若用户又发过指令, 继续发送下一条; 否则整个空闲下来。
     // 落盘 / 计数由上层在检测到空闲时通过 TaskHistoryManager 完成。
     m_busy = false;
+
+    // 任务级自动恢复：仅在外层任务进行中、且仍有恢复额度时介入
+    if (m_recoveryEnabled && m_recoveryActive)
+    {
+        bool pass = !m_recovery.verify || m_recovery.verify();
+        if (pass)
+        {
+            m_recoveryActive = false;
+            sigRecoveryFinished.emit(true, m_recoveryAttempt);
+            return;
+        }
+        if (m_recoveryAttempt >= m_recovery.maxAttempts)
+        {
+            m_recoveryActive = false;
+            sigRecoveryFinished.emit(false, m_recoveryAttempt);
+            return;
+        }
+        // 构造恢复请求：buildRecoveryRequest 返回空串表示"重发最近一次原始 user request"
+        string recoveryText;
+        if (m_recovery.buildRecoveryRequest)
+            recoveryText = m_recovery.buildRecoveryRequest(m_recoveryAttempt + 1);
+        if (recoveryText.empty())
+            recoveryText = m_lastUserRequest;
+        m_recoveryAttempt++;
+        // 复用 request：仍会走工具调用 / 宿主编译把关；m_recoveryActive 已 true 故不重置计数
+        request(recoveryText);
+        return;
+    }
 }
 
 // ---- 轮末宿主编译把关 ----
@@ -1282,85 +1411,21 @@ void JZCodeAgent::abortHostTsc()
     m_hostTimeout = false;
 }
 
-void JZCodeAgent::setGuardConfig(const GuardConfig &cfg)
+void JZCodeAgent::setRecovery(const JZCodeAgentRecovery &r)
 {
-    m_guardConfig = cfg;
+    m_recovery = r;
+    // maxAttempts<=1 视为不启用（单次尝试即终局，无需恢复闭环）
+    m_recoveryEnabled = r.maxAttempts > 1;
+    // 不在此重置 m_recoveryActive：新任务由首次 request() 重新计数
 }
 
-const GuardConfig &JZCodeAgent::guardConfig() const
+void JZCodeAgent::clearRecovery()
 {
-    return m_guardConfig;
-}
-
-void JZCodeAgent::resetGuard()
-{
-    m_guard = GuardState();
-    m_guard.startTimeMs = JZPlatform::getTickCountMs();
-}
-
-void JZCodeAgent::checkGuard()
-{
-    // 1. 工具调用总次数（最直接的一道闸）
-    if (m_guard.toolCalls > m_guardConfig.maxToolCalls)
-    {
-        triggerGuard("工具调用次数超过上限（" + to_string(m_guardConfig.maxToolCalls) + " 次）",
-                     "任务可能被拆得过细，或已陷入反复试探。建议缩小范围后重试。");
-        return;
-    }
-
-    // 2. 墙钟时长
-    int64_t costMs = JZPlatform::getTickCountMs() - m_guard.startTimeMs;
-    if (m_guard.startTimeMs > 0 && costMs > (int64_t)m_guardConfig.maxDurationSec * 1000)
-    {
-        triggerGuard("任务运行超过时长上限（已用 " + to_string(costMs / 1000) + " 秒）",
-                     "建议把任务拆成更小的步骤分步执行。");
-        return;
-    }
-
-    // 3. 同一类拒绝反复出现：说明模型在绕同一堵墙
-    for (const auto &it : m_guard.denyCount)
-    {
-        if (it.second >= m_guardConfig.maxSameDeny)
-        {
-            triggerGuard(string("同一类错误反复出现：") + denyReasonText((DenyReason)it.first) +
-                             "（累计 " + to_string(it.second) + " 次）",
-                         "不要换其它写法继续尝试同一件事；先确认原因，或直接告诉用户缺少什么。");
-            return;
-        }
-    }
-
-    // 4. 完全相同的调用连续重复：判定已卡住
-    if ((int)m_guard.recentCalls.size() >= m_guardConfig.maxRepeatCall)
-    {
-        bool allSame = true;
-        const string &first = m_guard.recentCalls.front();
-        for (const auto &c : m_guard.recentCalls)
-        {
-            if (c != first)
-            {
-                allSame = false;
-                break;
-            }
-        }
-        if (allSame)
-        {
-            triggerGuard("完全相同的调用连续执行了 " + to_string(m_guard.recentCalls.size()) + " 次",
-                         "已陷入重复尝试。请换一种思路，或明确告诉用户当前卡在哪一步。");
-            return;
-        }
-    }
-}
-
-void JZCodeAgent::triggerGuard(const string &reason, const string &suggestion)
-{
-    string text = "已触发保护，停止当前任务。\n";
-    text += "原因: " + reason + "\n";
-    text += "统计: 工具调用 " + to_string(m_guard.toolCalls) +
-            " 次，其中失败/被拒 " + to_string(m_guard.totalDeny) + " 次。\n";
-    text += "建议: " + suggestion;
-
-    addLog("info", text);
-    stop();
+    m_recovery = JZCodeAgentRecovery();
+    m_recoveryEnabled = false;
+    m_recoveryActive = false;
+    m_recoveryAttempt = 0;
+    m_lastUserRequest.clear();
 }
 
 void JZCodeAgent::onToolCall(const ToolCall& call)

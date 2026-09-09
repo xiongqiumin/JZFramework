@@ -96,7 +96,9 @@ set(JZCORE_SOURCES
 if(WIN32)
     list(APPEND JZCORE_SOURCES JZPlatformWin32.cpp)
     list(APPEND JZCORE_SOURCES JZProcess.cpp)
-    list(APPEND JZCORE_SOURCES JZWin32Thread.cpp)   
+    list(APPEND JZCORE_SOURCES JZWin32Thread.cpp)
+    list(APPEND JZCORE_SOURCES JZFileSystemWatcher.h)
+    list(APPEND JZCORE_SOURCES JZFileSystemWatcher.cpp)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

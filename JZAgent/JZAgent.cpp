@@ -176,6 +176,22 @@ void JZAgent::clear()
     m_replyHistory = std::shared_ptr<LLMHistory>();
 }
 
+// 一轮对话结束(Idle)后重开新任务: 仅 Idle 允许, 复位到 Inactive 并清空对话历史。
+void JZAgent::reset()
+{
+    if (m_state != State::Idle)
+    {
+        const char *state = (m_state == State::Inactive)
+            ? "Inactive(无需重置)" : "WaitingReply(请求在途, 请先 stop 或等 sigFinished)";
+        jzWarning() << "JZAgent: reset() 被拒绝: 仅一轮对话结束后(Idle)可重置, 当前状态" << state;
+        return;
+    }
+
+    clear();            // 复位运行态/错误/回复缓存, 内部置 Inactive
+    m_context.clear();  // 清空对话历史与累计 usage
+    m_requests.clear();
+}
+
 const LLMContext* JZAgent::context() const
 {
     return &m_context;

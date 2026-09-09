@@ -23,9 +23,9 @@ struct AppConfig
     // 启动时会按本机默认补全缺失项（在 PATH 中探测 cmake/python/git 等并写入全路径）。
     std::vector<TrustedProgram> trustedPrograms;
 
-    // 网络搜索：搜索接口模板(含 {q} 占位符)，空则用内置默认(DuckDuckGo 即时答案)。
+    // 网络搜索：搜索接口模板(含 {q} 占位符)。空则用内置默认源（Bing RSS，format=rss）。
     std::string webSearchUrl;
-    // HTTP 代理（仅对 http 目标生效；https 目标直连）。host 为空表示不启用。
+    // HTTP 代理：对 http 与 https 目标均生效（https 走 CONNECT 隧道）。host 为空表示不启用。
     std::string proxyHost;
     int proxyPort = 0;
     std::string proxyUser;

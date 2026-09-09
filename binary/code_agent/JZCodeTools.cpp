@@ -2461,6 +2461,192 @@ static string searchField(const Json::Value &obj, const std::vector<string> &key
     return string();
 }
 
+// 默认搜索源：必应网页搜索的 RSS 输出（常规网页结果、无需 API Key、中英文通用）。
+// 默认仅此一个内置源；如需多源自动回退，在 call() 里追加更多候选 URL 即可。
+static const char *kBingRssSearchUrl = "https://www.bing.com/search?q={q}&format=rss&count=15";
+// 接近浏览器的 UA，提高无 key 网页搜索接口（必应 RSS）的放行率
+static const char *kSearchUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0 Safari/537.36";
+
+// 全量替换子串（from 为空时原样返回）
+static void replaceAllStr(string &s, const string &from, const string &to)
+{
+    if (from.empty())
+        return;
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != string::npos)
+    {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+// HTML 实体反转义（注意 &amp; 最后替换，避免二次转义）
+static string htmlUnescapeStr(const string &s)
+{
+    string out = s;
+    replaceAllStr(out, "&lt;", "<");
+    replaceAllStr(out, "&gt;", ">");
+    replaceAllStr(out, "&quot;", "\"");
+    replaceAllStr(out, "&apos;", "'");
+    replaceAllStr(out, "&#39;", "'");
+    replaceAllStr(out, "&#x27;", "'");
+    replaceAllStr(out, "&nbsp;", " ");
+    replaceAllStr(out, "&amp;", "&");
+    return out;
+}
+
+// 去掉 HTML 标签并按空白折叠（description 片段用）
+static string stripHtmlTags(const string &s)
+{
+    string out;
+    out.reserve(s.size());
+    bool inTag = false;
+    for (unsigned char c : s)
+    {
+        if (c == '<')
+            inTag = true;
+        else if (c == '>')
+            inTag = false;
+        else if (!inTag)
+            out.push_back((char)c);
+    }
+    string folded;
+    folded.reserve(out.size());
+    bool prevSpace = false;
+    for (unsigned char c : out)
+    {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
+            if (!prevSpace)
+                folded.push_back(' ');
+            prevSpace = true;
+        }
+        else
+        {
+            folded.push_back((char)c);
+            prevSpace = false;
+        }
+    }
+    return str_trimmed(folded);
+}
+
+// 取 <tag>..</tag> 的内容（无属性元素；支持 <![CDATA[ .. ]]>）
+static string rssTagContent(const string &xml, const string &tag)
+{
+    string open = "<" + tag + ">";
+    string close = "</" + tag + ">";
+    size_t b = xml.find(open);
+    if (b == string::npos)
+        return string();
+    b += open.size();
+    size_t e = xml.find(close, b);
+    if (e == string::npos)
+        return string();
+    string v = xml.substr(b, e - b);
+    const string CD = "<![CDATA[";
+    if (v.find(CD) == 0 && v.size() >= CD.size() + 3 && v.rfind("]]>") == v.size() - 3)
+        v = v.substr(CD.size(), v.size() - CD.size() - 3);
+    return v;
+}
+
+// 是否 RSS/Atom 类 XML（含 <rss> 或 <feed>）
+static bool looksRssFeed(const string &body)
+{
+    return body.find("<rss") != string::npos || body.find("<feed") != string::npos;
+}
+
+// 从 RSS/Atom body 里收集 <item>/<entry> 结果（与 JSON 源共用输出格式）
+static void collectRssResults(const string &body, vector<string> &out)
+{
+    size_t pos = 0;
+    while (pos < body.size())
+    {
+        size_t itemBeg = body.find("<item", pos);
+        if (itemBeg == string::npos)
+            break;
+        size_t itemEnd = body.find("</item>", itemBeg);
+        if (itemEnd == string::npos)
+            break;
+        string block = body.substr(itemBeg, itemEnd - itemBeg);
+        pos = itemEnd + 7;
+
+        string title = htmlUnescapeStr(rssTagContent(block, "title"));
+        string link  = htmlUnescapeStr(rssTagContent(block, "link"));
+        string desc  = stripHtmlTags(htmlUnescapeStr(rssTagContent(block, "description")));
+        if (title.empty() && link.empty() && desc.empty())
+            continue;
+
+        string line;
+        if (!title.empty())
+            line += title + "\n";
+        if (!link.empty())
+            line += "  " + link + "\n";
+        if (!desc.empty())
+            line += "  " + desc + "\n";
+        if (!line.empty())
+            out.push_back(line);
+    }
+}
+
+// 把收集到的条目拼成最终返回文本（0 条时给出友好提示）
+static string formatSearchResults(const vector<string> &results, int num)
+{
+    if (results.empty())
+        return "未从搜索服务获取到结果（可能无匹配，或服务返回了空列表）。";
+
+    int n = min(num, (int)results.size());
+    string text = "网络搜索结果（共 " + to_string(results.size()) + " 条，以下展示前 " +
+                  to_string(n) + " 条）:\n";
+    for (int i = 0; i < n; i++)
+        text += to_string(i + 1) + ". " + results[i] + "\n";
+    return text;
+}
+
+// 从 JSON 数组里收集条目（兼容数组 / results / RelatedTopics 结构，DuckDuckGo 特判 Topics 嵌套）
+static void collectJsonResults(const Json::Value &arr, vector<string> &out)
+{
+    for (int i = 0; i < (int)arr.size(); i++)
+    {
+        const Json::Value &it = arr[i];
+        if (!it.isObject())
+            continue;
+
+        // DuckDuckGo 的 RelatedTopics 里还嵌套了 Topics，跳过只有子列表的项
+        if (it.isMember("Topics") && it["Topics"].isArray() && !it.isMember("FirstURL") && !it.isMember("Text"))
+            continue;
+
+        string title   = searchField(it, {"title", "Title", "heading", "result"});
+        string url     = searchField(it, {"url", "URL", "href", "link", "FirstURL"});
+        string snippet = searchField(it, {"content", "snippet", "description", "body", "Text"});
+        if (title.empty() && !snippet.empty())
+        {
+            // DuckDuckGo RelatedTopics.Text 形如 "标题 - 摘要"
+            size_t dash = snippet.find(" - ");
+            if (dash != string::npos)
+            {
+                title = snippet.substr(0, dash);
+                snippet = snippet.substr(dash + 3);
+            }
+            else
+                title = "(无标题)";
+        }
+        if (url.empty() && title.empty())
+            continue;
+
+        string line;
+        if (!title.empty())
+            line += title + "\n";
+        if (!url.empty())
+            line += "  " + url + "\n";
+        if (!snippet.empty())
+            line += "  " + snippet + "\n";
+        if (!line.empty())
+            out.push_back(line);
+    }
+}
+
 JZWebSearchTool::JZWebSearchTool()
 {
     ToolDefine def;
@@ -2471,6 +2657,9 @@ JZWebSearchTool::JZWebSearchTool()
     def.parameters.push_back(makeParam("num_results", NUMBER, "返回几条结果，默认 5，最多 20"));
     def.required_parameters.push_back("query");
     setToolDefine(def);
+
+    // 模板默认指向内置 Bing RSS；调用方可 setSearchUrlTemplate 覆盖
+    m_searchUrlTemplate = kBingRssSearchUrl;
 }
 
 void JZWebSearchTool::setSearchUrlTemplate(const string &urlTemplate)
@@ -2497,11 +2686,41 @@ void JZWebSearchTool::call(const ToolCall &params)
     if (num > 20)
         num = 20;
 
-    string url = m_searchUrlTemplate;
-    if (url.empty())
-        url = "https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1";
+    // 组装候选源：配置了自定义模板就只用自定义源；否则用内置默认源（Bing RSS 优先）
+    m_searchQuery = query;
+    m_searchNum = num;
+    m_searchErrors.clear();
+    m_searchQueue.clear();
+    // 模板默认即内置 Bing RSS（构造时初始化），可被 setSearchUrlTemplate 覆盖
+    m_searchQueue.push_back(m_searchUrlTemplate);
 
-    string enc = urlEncodeQuery(query);
+    runNextSearch(params);
+}
+
+void JZWebSearchTool::runNextSearch(const ToolCall &call)
+{
+    if (m_searchQueue.empty())
+    {
+        string detail = m_searchErrors.empty() ? string() : ("\n各源失败详情:\n" + m_searchErrors);
+        finish(call, false, "网络搜索失败: 候选搜索源均不可用。"
+               "若当前网络无法直连这些源，请在设置里配置可用的 webSearchUrl 模板（返回 JSON 或 RSS）。" + detail);
+        return;
+    }
+
+    string url = m_searchQueue.front();
+    m_searchQueue.erase(m_searchQueue.begin());
+    m_lastSearchUrl = url;
+
+    // 取消上一次仍在进行中的请求（其回调稍后到达时，会因 m_reply 已被替换而被忽略）
+    if (m_reply)
+    {
+        auto old = m_reply;
+        m_reply = nullptr;
+        old->close();
+    }
+
+    // 展开 {q} 占位符
+    string enc = urlEncodeQuery(m_searchQuery);
     for (;;)
     {
         size_t pos = url.find("{q}");
@@ -2510,132 +2729,100 @@ void JZWebSearchTool::call(const ToolCall &params)
         url.replace(pos, 3, enc);
     }
 
-    // 取消上一次仍在进行中的请求
-    if (m_reply)
-    {
-        m_reply->close();
-        m_reply = nullptr;
-    }
-
     // 共享管理器必须由调用方注入（setNetworkAccessManager），未注入属于非法使用
     JZ_ASSERT(m_net);
 
     JZNetworkRequest req(url);
-    req.setHeader(JZNetworkRequest::UserAgentHeader, "JZCodeAgent/1.0");
+    req.setHeader(JZNetworkRequest::UserAgentHeader, kSearchUserAgent);
     m_reply = m_net->get(req);
     if (!m_reply)
     {
-        finish(params, false, "创建网络请求失败");
+        failOverSearch(call, m_lastSearchUrl + ": 创建网络请求失败");
         return;
     }
 
+    // 单源 15s 超时：超时按失败处理，自动切到下一个候选源
     JZNetworkReply *reply = m_reply;
-    connect(&reply->sigFinished, this, [this, reply, params, num]()
+    reply->setTimeOut(15000);
+    connect(&reply->sigFinished, this, [this, reply, call]()
     {
-        if (m_reply == reply)
-            m_reply = nullptr;
-        handleReply(reply, params, num);
+        if (m_reply != reply)   // 已被新一轮 call 或取消请求取代，忽略旧回调
+            return;
+        m_reply = nullptr;
+        handleReply(reply, call);
     });
 }
 
-void JZWebSearchTool::handleReply(JZNetworkReply *reply, const ToolCall &call, int num)
+void JZWebSearchTool::failOverSearch(const ToolCall &call, const string &reason)
+{
+    if (!m_searchErrors.empty())
+        m_searchErrors += "\n";
+    m_searchErrors += reason;
+    runNextSearch(call);
+}
+
+void JZWebSearchTool::handleReply(JZNetworkReply *reply, const ToolCall &call)
 {
     JZNetworkReply::NetworkError err = reply->error();
     if (err != JZNetworkReply::NoError && err != JZNetworkReply::None)
     {
-        finish(call, false, "网络搜索失败: " + reply->errorString());
+        failOverSearch(call, m_lastSearchUrl + ": " + reply->errorString());
         return;
     }
     int code = reply->httpStatusCode();
     if (code < 200 || code >= 300)
     {
-        finish(call, false, "搜索服务返回 HTTP " + to_string(code) +
-               (code == 0 ? "（无法连接，请检查网络/代理设置）" : string()));
+        string extra = (code == 0) ? "（无法连接，请检查网络/代理设置）" : string();
+        failOverSearch(call, m_lastSearchUrl + ": HTTP " + to_string(code) + extra);
         return;
     }
 
     string body = str_fromUtf8(reply->readAll());
-    parseSearch(body, call, num);
+    parseSearch(body, call);
 }
 
-void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call, int num)
+void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call)
 {
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(body, root))
-    {
-        // 非 JSON：多半是登录页/错误页，原样回吐前若干字符便于排查
-        string snippet = body.size() > 2000 ? body.substr(0, 2000) : body;
-        finish(call, true, "搜索服务返回内容非 JSON（可能是登录页或错误页），原文前 2000 字符:\n" + snippet);
-        return;
-    }
-
-    const Json::Value *arr = nullptr;
-    if (root.isArray())
-        arr = &root;
-    else if (root.isObject())
-    {
-        if (root.isMember("results") && root["results"].isArray())
-            arr = &root["results"];
-        else if (root.isMember("RelatedTopics") && root["RelatedTopics"].isArray())
-            arr = &root["RelatedTopics"];
-    }
-
     vector<string> results;
-    if (arr)
+
+    // ---------- JSON 源（数组 / results / RelatedTopics） ----------
+    string trimmed = str_trimmed(body);
+    if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '['))
     {
-        for (int i = 0; i < (int)arr->size(); i++)
+        Json::Value root;
+        Json::Reader reader;
+        if (reader.parse(body, root))
         {
-            const Json::Value &it = (*arr)[i];
-            if (!it.isObject())
-                continue;
-
-            // DuckDuckGo 的 RelatedTopics 里还嵌套了 Topics，跳过只有子列表的项
-            if (it.isMember("Topics") && it["Topics"].isArray() && !it.isMember("FirstURL") && !it.isMember("Text"))
-                continue;
-
-            string title = searchField(it, {"title", "Title", "heading", "result"});
-            string url   = searchField(it, {"url", "URL", "href", "link", "FirstURL"});
-            string snippet = searchField(it, {"content", "snippet", "description", "body", "Text"});
-            if (title.empty() && !snippet.empty())
+            const Json::Value *arr = nullptr;
+            if (root.isArray())
+                arr = &root;
+            else if (root.isObject())
             {
-                // DuckDuckGo RelatedTopics.Text 形如 "标题 - 摘要"
-                size_t dash = snippet.find(" - ");
-                if (dash != string::npos)
-                {
-                    title = snippet.substr(0, dash);
-                    snippet = snippet.substr(dash + 3);
-                }
-                else
-                    title = "(无标题)";
+                if (root.isMember("results") && root["results"].isArray())
+                    arr = &root["results"];
+                else if (root.isMember("RelatedTopics") && root["RelatedTopics"].isArray())
+                    arr = &root["RelatedTopics"];
             }
-            if (url.empty() && title.empty())
-                continue;
-
-            string line;
-            if (!title.empty())
-                line += title + "\n";
-            if (!url.empty())
-                line += "  " + url + "\n";
-            if (!snippet.empty())
-                line += "  " + snippet + "\n";
-            if (!line.empty())
-                results.push_back(line);
+            if (arr)
+            {
+                collectJsonResults(*arr, results);
+                finish(call, true, formatSearchResults(results, m_searchNum));
+                return;
+            }
         }
     }
 
-    if (results.empty())
+    // ---------- RSS/Atom 源（必应 format=rss 等） ----------
+    if (looksRssFeed(body))
     {
-        finish(call, true, "未从搜索服务获取到结果（可能无匹配，或服务返回了空列表）。");
+        collectRssResults(body, results);
+        finish(call, true, formatSearchResults(results, m_searchNum));
         return;
     }
 
-    int n = min(num, (int)results.size());
-    string text = "网络搜索结果（共 " + to_string(results.size()) + " 条，以下展示前 " +
-                  to_string(n) + " 条）:\n";
-    for (int i = 0; i < n; i++)
-        text += to_string(i + 1) + ". " + results[i] + "\n";
-    finish(call, true, text);
+    // ---------- 无法识别（可能是登录页 / 验证码页 / 错误页）：回退下一个候选源 ----------
+    string snippet = body.size() > 300 ? body.substr(0, 300) : body;
+    failOverSearch(call, m_lastSearchUrl + ": 返回内容无法识别（非 JSON/RSS，前 300 字符: " + snippet + "）");
 }
 
 // ==================== JZWebFetchTool ====================

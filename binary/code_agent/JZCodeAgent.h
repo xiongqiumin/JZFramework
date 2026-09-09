@@ -31,9 +31,9 @@ public:
     std::string tscPath;            // 宿主侧 tsc 编译器全路径；空 = 关闭宿主把关
     int maxAutoFixRounds = 2;       // 自动续修轮数上限；<=0 = 即使编译失败也只上报不续修
 
-    std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认
+    std::string webSearchUrl;                // 网络搜索接口模板(含 {q} 占位符)；空则用内置默认(Bing RSS, format=rss)
 
-    // HTTP 代理（仅对 http 目标生效；https 目标直连，不走代理）
+    // HTTP 代理（http/https 目标均生效，https 走 CONNECT 隧道）
     std::string proxyHost;
     int proxyPort = 0;
     std::string proxyUser;

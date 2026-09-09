@@ -193,6 +193,11 @@ public:
 
     void stop();
 
+    // 一轮对话结束(Idle)后重开新任务: 把 agent 重置回 Inactive, 清空对话历史/用量/待发请求。
+    // 保留已注册的 system prompt / tools / skills 配置, 重置后即可 setSystemPrompt/addTool 或直接 request。
+    // 仅 Idle 状态允许; WaitingReply(请求在途)与 Inactive(无需重置)会被 jzWarning 拒绝。
+    void reset();
+
     void addSkill(const SkillDefine& tool);
     const SkillDefine* skill(const std::string& name);
     JZResult<SkillDefine> loadSkill(std::string skill_name, const std::string& skill_path);

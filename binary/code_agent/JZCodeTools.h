@@ -440,12 +440,15 @@ protected:
 
 // ------------------------------------------------------------------
 // web_search: 联网搜索
-//   用 JZNetworkAccessManager 发起 HTTP GET 到一个返回 JSON 的搜索接口，
-//   解析出若干条结果（标题 / 链接 / 摘要）返回给模型。
-//   搜索接口通过 setSearchUrlTemplate 配置，模板含 {q} 占位符（会被 URL 编码后的查询词替换）。
-//   未配置时使用内置默认（DuckDuckGo 即时答案 JSON 接口，无需 API Key）。
+//   用 JZNetworkAccessManager 发起 HTTP GET 到搜索接口，解析结果（标题/链接/摘要）返回模型。
+//   支持多源自动回退: 候选源按序尝试，单个源出现网络错误 / 非 2xx / 返回内容无法识别时，
+//   自动切换下一个候选源，全部失败才报错。
+//   未配置模板时内置默认源（无需 API Key）: Bing RSS（format=rss，常规网页结果）。
+//   响应 JSON / RSS 均可解析；如需多源自动回退，在 call() 里追加候选 URL 即可。
+//   自定义模板: setSearchUrlTemplate 配置，模板含 {q} 占位符（URL 编码后的查询词），
+//   配置后只使用该自定义源（也应返回 JSON 或 RSS）。
 //   网络访问管理器由调用方通过 setNetworkAccessManager 注入（所有网络工具共享同一个，
-//   代理也由调用方在该管理器上统一设置一次），工具本身不持有所有权、不单独配置代理。
+//   代理由调用方在该管理器上统一设置一次，http/https 均生效），工具本身不持有所有权。
 // ------------------------------------------------------------------
 class JZWebSearchTool : public JZCodeTool
 {
@@ -459,12 +462,21 @@ public:
     virtual void call(const ToolCall &params) override;
 
 private:
-    void handleReply(JZNetworkReply *reply, const ToolCall &call, int num);
-    void parseSearch(const std::string &body, const ToolCall &call, int num);
+    void runNextSearch(const ToolCall &call);       // 从候选队列取下一个源并请求
+    void failOverSearch(const ToolCall &call, const std::string &reason); // 切下一个候选源
+    void handleReply(JZNetworkReply *reply, const ToolCall &call);
+    void parseSearch(const std::string &body, const ToolCall &call);
 
     JZNetworkAccessManager *m_net = nullptr;   // 非拥有，来自外部注入
     JZNetworkReply *m_reply = nullptr;
-    std::string m_searchUrlTemplate;
+    std::string m_searchUrlTemplate;   // 搜索接口模板；构造函数默认内置 kBingRssSearchUrl，可 setSearchUrlTemplate 覆盖
+
+    // 多源自动回退状态
+    std::vector<std::string> m_searchQueue;    // 待尝试的候选源 URL（{q} 尚未展开）
+    std::string m_searchQuery;                 // 本轮查询词（回退链多次请求共用）
+    int m_searchNum = 5;                       // 本轮结果条数上限
+    std::string m_lastSearchUrl;               // 当前在请求的源（错误定位用）
+    std::string m_searchErrors;                // 各候选源失败原因累积
 };
 
 // ------------------------------------------------------------------

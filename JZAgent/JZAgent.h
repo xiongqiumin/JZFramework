@@ -45,6 +45,7 @@ public:
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
     JZAgentTokenUsage usage;            // 本轮 token 增量（仅 Assistant 回复由响应 usage 填充）
+    bool autoAdded = false;             // 是否由系统自动添加（如历史压缩摘要），而非真实用户输入；为 true 时不进界面日志
 
     Json::Value toJson() const;
     bool fromJson(const Json::Value& root);
@@ -186,6 +187,8 @@ public:
     // 注意: 历史里保存的就是拼好的 data URL, 每轮重发的字节完全一致, 利于服务端前缀缓存。
     void request(const std::string &text, const std::string &image_url);
     void request(const std::string &text, const JZByteArray &image_base64);
+    const std::vector<JZAgentRequestPtr> &requestList() const;
+    void clearRequestList();
 
     void stop();
 
@@ -251,6 +254,16 @@ protected:
     void processToolCall(ToolCall &call);
 
     void llmLoop();
+
+    // 超出 token 预算时裁剪最旧历史: 砍掉最旧的一半非 system 条目(保留 system 与最近一条 user)。
+    // 成功裁剪返回 true; 无可裁剪项(策略不支持/已无可删)返回 false。
+    bool trimHistoryForBudget();
+
+    // 超出预算时把最旧一段历史发给大模型做摘要压缩，用一条摘要消息替换原消息。
+    // 成功发起异步压缩返回 true；无可压缩项(策略不支持/已无可压)返回 false。
+    bool startCompressHistory();
+    void onCompressFinished();
+
     void llmError(AgentError error, std::string error_string = std::string());
     void llmEnd();
 
@@ -275,6 +288,10 @@ protected:
     
     JZNetworkReply* m_llmReply;
     LLMRequstInfo m_llmReqInfo;
+
+    // 历史压缩(TokenCompress)相关的在途请求与临时状态
+    JZNetworkReply* m_compressReply = nullptr;
+    std::vector<std::shared_ptr<LLMHistory>> m_compressChunk;  // 本次被压缩的历史块
 
     JZNetworkAccessManager* m_net;
     JZAgentConfig m_config;

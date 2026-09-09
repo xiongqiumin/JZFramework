@@ -28,42 +28,6 @@
 #include <string>
 #include <vector>
 
-<<<<<<< HEAD
-// 应用配置（持久化到 exe 目录下的 code_agent.json）
-struct AppConfig
-{
-    std::string modelUrl;
-    std::string modelName;
-    std::string modelToken;
-    std::string workspace;
-    // TS 环境目录（JS/TS 编译器所在，默认 E:/libs/ts_compiler）：
-    // 应用时自动把该目录作为只读授信目录挂载，并按真实布局注入 node / tsc 可信程序。
-    std::string tsEnvDir;
-    // 授信目录：编译器/SDK 等安装目录，虚拟终端可只读访问、可在这里找可执行程序。
-    // 不填则只能访问工作区，且没有可用的外部程序。每个目录可单独配置是否可写（默认只读）。
-    std::vector<TrustedDir> trustedDirs;
-    // 显式指定的可信程序（全路径），如 [{cmake, C:/.../cmake.exe}, {python, C:/.../python.exe}]。
-    // 启动时会按本机默认补全缺失项（在 PATH 中探测 cmake/python/git 等并写入全路径）。
-    std::vector<TrustedProgram> trustedPrograms;
-
-    // 网络搜索：搜索接口模板(含 {q} 占位符)，空则用内置默认(DuckDuckGo 即时答案)。
-    std::string webSearchUrl;
-    // HTTP 代理（仅对 http 目标生效；https 目标直连）。host 为空表示不启用。
-    std::string proxyHost;
-    int proxyPort = 0;
-    std::string proxyUser;
-    std::string proxyPassword;
-
-    // 最近打开的工程（绝对路径，最近使用的排在最前，最多 kMaxRecentProjects 条）。
-    // 启动时自动恢复第 0 条，即"默认打开上次的项目"。
-    std::vector<std::string> recentProjects;
-};
-
-// 最近工程列表最大长度
-enum { kMaxRecentProjects = 10 };
-
-=======
->>>>>>> 079716745e8dd7008af2ec584b495f51f9c8539a
 // 多行输入：Ctrl+Enter 发送；发送按钮用 selfLayout 锚在输入框内部右下角（忙碌时变"停止"）
 class InputEdit : public JZTextEdit
 {
@@ -72,17 +36,23 @@ public:
     explicit InputEdit(JZWidget* parent = nullptr);
 
     JZSigVoid sigSend;
+    JZSigVoid sigStop;     // 忙碌(且输入框为空)时点击按钮 -> 停止
     JZPushButton* sendButton() const { return m_sendBtn; }
     TokenRing* tokenRing() const { return m_tokenRing; }
+
+    // 由外部(MainWindow::onPoll)告知是否正在请求；busy 且输入框为空时按钮显示"停止"，否则"发送"
+    void setBusy(bool busy);
 
 protected:
     void keyPressEvent(JZKeyEvent* event) override;
 
 private:
     void onSendClicked();
+    void updateButton();   // 依据 m_busy 与当前文本刷新按钮文案
 
     JZPushButton* m_sendBtn = nullptr;
     TokenRing*    m_tokenRing = nullptr;   // 发送按钮左侧的 token 用量圆环
+    bool          m_busy = false;
 };
 
 // 新建工程对话框：选工程所在目录（已存在）+ 输入工程名；
@@ -175,7 +145,6 @@ private:
     void updateStatus();
 
     void onSend();
-    void onSendButton();      // 发送按钮点击：空闲=发送，忙碌=停止
     void onStop();
     void onClear();
     void onNewTask();                  // 任务面板 [新建任务]

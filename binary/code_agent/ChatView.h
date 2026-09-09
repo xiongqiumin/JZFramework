@@ -3,6 +3,8 @@
 
 #include "JZWidget.h"
 #include "JZFont.h"
+#include "JZScrollBar.h"
+#include "JZAgentTool.h"
 
 #include <string>
 #include <vector>
@@ -31,8 +33,8 @@ public:
     // 工具调用与它的输出合并显示在同一张卡片里:
     // appendToolResult 会把结果回填给最近一条还没配对的工具调用卡;
     // 没有待配对调用时才退化成独立的"工具结果"卡片(历史数据兼容)。
-    void appendTool(const std::string& name, const std::string& tool_id, const std::string& text);
-    void appendToolResult(const std::string& tool_id, const std::string& text);
+    void appendTool(const ToolCall& call);
+    void appendToolResult(const ToolCallResult& result);
     void appendError(const std::string& text);
     void appendInfo(const std::string& text);
 
@@ -65,13 +67,19 @@ private:
         bool collapsible = false;          // 思考卡: 结束后折叠、可点击展开
         bool collapsed = false;            // 是否处于折叠状态
         int cardH = 0;
+        bool precise = false;              // cardH 是否来自精确换行(否则为估算)
     };
 
-    void layoutMsg(Msg& m);
-    void relayout();
+    void layoutMsg(Msg& m, bool precise);  // precise=true 精确换行; false 仅估算高度
+    void relayoutVirtual();                // 全量重排: 视口内精确, 视口外估算
+    void ensurePreciseWindow();            // 把进入视口的(估算)消息精确化
+    void recomputeTotal();                 // 基于各卡 cardH 重算内容总高(O(N) 整数加法)
+    void layoutWait();                     // 计算"等待回复中..."卡高度(若显示)
     void afterChange();                    // 内容变化后更新滚动并触发重绘
     void updateScroll(bool follow);
+    void updateScrollBar();                // 把当前滚动状态同步到真实 JZScrollBar
     int  contentHeight() const;
+    int  contentRight() const;             // 去掉滚动条带宽后的内容右边界
 
     // 结束当前打开的流式卡: 若它是思考卡则自动折叠(思考完毕)。
     // 返回 true 表示确实折叠了一个打开的思考卡。
@@ -82,6 +90,7 @@ private:
 
     static void wrapText(const std::string& text, const JZFont& font,
                          int maxW, std::vector<std::string>& out);
+    static int  estimateLines(const std::string& text, int cardW); // 估算行数(不调字体度量)
 
     std::vector<Msg> m_msgs;
     int  m_streamIdx = -1;                 // 当前正在流式追加的卡(思考/助手), -1 无
@@ -89,6 +98,9 @@ private:
     int  m_scrollY = 0;
     bool m_autoFollow = true;              // 是否自动跟随到底部
     int  m_totalH = 0;                     // 内容总高 (含上下外边距)
+
+    JZScrollBar* m_vScroll = nullptr;      // 真正的垂直滚动条(替代自绘滚动条)
+    bool m_sbVisible = false;              // 当前滚动条是否可见(内容高于视口时)
 
     bool m_waitShow = false;               // 是否显示"等待回复中..."状态卡
     std::vector<std::string> m_waitLines;  // 等待卡换行结果

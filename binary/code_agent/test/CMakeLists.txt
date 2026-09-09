@@ -40,3 +40,14 @@ add_executable(code_agent_lsp_test ${CODE_AGENT_LSP_TEST_SOURCES})
 target_include_directories(code_agent_lsp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_agent_lsp_test PRIVATE JZFramework)
 target_link_libraries(code_agent_lsp_test PRIVATE code_agent_core)
+
+# ---------------------------------------------------------------------------
+# appcontainer_demo - 验证 AppContainer「目录白名单」隔离（Windows 8+）。
+#   裸 Win32 演示：建容器 SID -> 给受保护目录加允许 ACE -> 在容器内分别 del
+#   受保护/外部目录的哨兵文件，断言「外不可删、内可删」。需要 userenv/aclapi/advapi32。
+# ---------------------------------------------------------------------------
+if(WIN32)
+    add_executable(appcontainer_demo appcontainer_demo.cpp)
+    target_link_libraries(appcontainer_demo PRIVATE userenv advapi32 JZFramework)
+    target_link_libraries(appcontainer_demo PRIVATE JZFramework)
+endif()

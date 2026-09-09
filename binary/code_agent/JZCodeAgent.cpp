@@ -135,6 +135,62 @@ bool JZCodeAgent::loadConversation(const string &path)
     return true;
 }
 
+void JZCodeAgent::rebuildLogsFromHistory()
+{
+    // 把底层 agent 的对话历史重建成界面会话日志（导入存档后用）。
+    // 日志类型与实时流程保持一致：user / assistant / think / tool_call / tool_result，
+    // tool_call / tool_result 的名字格式与 onToolCall / onToolResult 严格对齐，
+    // 这样界面渲染（工具调用与结果配对）和落盘后再重建的结果一致。
+    if (!m_agent)
+        return;
+
+    const LLMContext *ctx = m_agent->context();
+    if (!ctx)
+        return;
+
+    m_logs.clear();
+    m_logId = 0;
+
+    for (const auto &h : ctx->history)
+    {
+        if (!h)
+            continue;
+
+        switch (h->role)
+        {
+        case LLMHistory::User:
+            // 系统自动添加的消息（如历史压缩摘要）不在界面显示，也不计入用户输入
+            if (h->autoAdded)
+                break;
+            if (!h->content.empty())
+                addLog("user", h->content);
+            break;
+
+        case LLMHistory::Assistant:
+            // 思考过程：实时上抛不落历史，这里仅在历史里带了 thinking 时还原（保险）。
+            if (!h->thinking.empty())
+                addLog("thinking", h->thinking);
+            // 整条助手回复（历史重建用 assistant 类型，与流式 delta 区分）。
+            if (!h->content.empty())
+                addLog("assistant", h->content);
+            // 工具调用：名字沿用 onToolCall 的 "function_name$$tool_gap$$id" 格式。
+            for (const auto &tc : h->toolRequest)
+                addLog("tool_call", "", tc.function_name + "$$tool_gap$$" + tc.id);
+            break;
+
+        case LLMHistory::Tool:
+            // 工具返回：名字沿用 onToolResult 的 id（对应 tool_response_id / toolResponseId）。
+            addLog("tool_result", h->content, h->toolResponseId);
+            break;
+
+        case LLMHistory::System:
+        default:
+            // 系统提示词不进入界面日志。
+            break;
+        }
+    }
+}
+
 // 中断当前任务并重置为一段干净的新对话（切换/新建任务时用）。
 // 只动 agent 与日志，任务元数据与存档文件由 TaskHistoryManager 负责。
 void JZCodeAgent::resetConversation()
@@ -267,227 +323,6 @@ JZAgent *JZCodeAgent::agent()
     return m_agent;
 }
 
-<<<<<<< HEAD
-string JZCodeAgent::historyFilePath() const
-{
-    if (m_codeConfig.workspace.empty())
-        return string();
-
-    return m_codeConfig.workspace + "/.jzcode/history.json";
-}
-
-void JZCodeAgent::saveWorkspaceHistory()
-{
-    if (!m_agent || m_codeConfig.workspace.empty())
-        return;
-    m_agent->saveHistory(historyFilePath());
-}
-
-void JZCodeAgent::loadWorkspaceHistory()
-{
-    if (!m_agent)
-        return;
-    if (!m_agent->loadHistory(historyFilePath()))
-        return;
-
-    // 界面上同步重建出来，否则历史已经在了但对话区是空的。
-    // 注意 m_logId 归零后，调用方(MainWindow)需把 m_renderedId 一并归零并全量重绘，
-    // 否则增量拉取会因为 id 倒退而漏掉新日志。
-    m_logs.clear();
-    m_logId = 0;
-    rebuildLogsFromHistory();
-
-    size_t count = m_agent->context() ? m_agent->context()->history.size() : 0;
-}
-
-=======
->>>>>>> 079716745e8dd7008af2ec584b495f51f9c8539a
-void JZCodeAgent::rebuildLogsFromHistory()
-{
-    const LLMContext *ctx = m_agent ? m_agent->context() : nullptr;
-    if (!ctx)
-        return;
-
-    for (const auto &h : ctx->history)
-    {
-        if (h->role == LLMHistory::User)
-        {
-            addLog("user", h->content);
-        }
-        else if (h->role == LLMHistory::Assistant)
-        {
-            // 整条助手消息用 "assistant"（各占一个气泡），区别于流式的 "delta"
-            if (!h->content.empty())
-                addLog("assistant", h->content);
-            for (const auto &c : h->toolRequest)
-                addLog("tool_call", c.function_args, c.function_name);
-        }
-        else if (h->role == LLMHistory::Tool)
-        {
-            addLog("tool_result", h->content);
-        }
-    }
-}
-
-<<<<<<< HEAD
-// ==================== 会话历史管理 ====================
-string JZCodeAgent::generateTitle(const string &firstMessage)
-{
-    if (firstMessage.empty())
-        return "空任务";
-    
-    // 截取第一条消息的前 50 个字符作为标题
-    size_t maxLen = 50;
-    if (firstMessage.size() > maxLen)
-    {
-        string sub = firstMessage.substr(0, maxLen);
-        // 在最后一个空格处截断，避免截断单词
-        size_t lastSpace = sub.find_last_of(" \t\n");
-        if (lastSpace != string::npos && lastSpace > 10)
-            sub = sub.substr(0, lastSpace);
-        sub += "...";
-        return sub;
-    }
-    return firstMessage;
-}
-
-void JZCodeAgent::beginSession(const string &firstMessage, bool isJzAgent)
-{
-    if (firstMessage.empty())
-        return;
-
-    HistoryEntry entry;
-    entry.id = m_nextSessionId++;
-    entry.title = generateTitle(firstMessage);
-    entry.firstMessage = firstMessage;
-    entry.createdAt = JZPlatform::getTickCountMs();
-    entry.messageCount = 0;
-    entry.isJzAgent = isJzAgent;
-    
-    m_currentSessionId = entry.id;
-    m_sessionMessageCount = 0;
-    m_sessionIsJzAgent = isJzAgent;
-    m_sessionHistory.push_back(entry);
-}
-
-void JZCodeAgent::updateSession()
-{
-    if (m_currentSessionId <= 0 || m_sessionHistory.empty())
-        return;
-    
-    for (auto &entry : m_sessionHistory)
-    {
-        if (entry.id == m_currentSessionId)
-        {
-            entry.messageCount = m_sessionMessageCount;
-            break;
-        }
-    }
-}
-
-void JZCodeAgent::saveSessionHistory()
-{
-    if (m_sessionHistory.empty())
-        return;
-
-    JZDir dir(m_codeConfig.workspace);
-    if(!dir.exists(".jzcode"))
-    {
-        if(!dir.mkdir(".jzcode"))
-            return;
-    }
-    
-    string path = m_codeConfig.workspace + "/.jzcode/history.json";
-    if (path.empty())
-        return;
-    
-    Json::Value root;
-    Json::Value history(Json::arrayValue);
-    
-    for (const auto &entry : m_sessionHistory)
-    {
-        Json::Value item;
-        item["id"] = entry.id;
-        item["title"] = entry.title;
-        item["firstMessage"] = entry.firstMessage;
-        item["createdAt"] = entry.createdAt;
-        item["messageCount"] = entry.messageCount;
-        item["isJzAgent"] = entry.isJzAgent;
-        history.append(item);
-    }
-    
-    root["history"] = history;
-    root["nextSessionId"] = m_nextSessionId;
-    
-    Json::StyledWriter writer;
-    ofstream f(path);
-    if (f.is_open())
-        f << writer.write(root);
-}
-
-void JZCodeAgent::loadSessionHistory()
-{
-    string path = m_codeConfig.workspace + "/.jzcode/history.json";
-    if (!JZFileInfo::exists(path))
-        return;
-    
-    ifstream f(path);
-    if (!f.is_open())
-        return;
-    
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(f, root))
-        return;
-    
-    m_sessionHistory.clear();
-    
-    if (root.isMember("history"))
-    {
-        const Json::Value &arr = root["history"];
-        for (int i = 0; i < (int)arr.size(); i++)
-        {
-            HistoryEntry entry;
-            entry.id = arr[i].get("id", 0).asInt();
-            entry.title = arr[i].get("title", "").asString();
-            entry.firstMessage = arr[i].get("firstMessage", "").asString();
-            entry.createdAt = arr[i].get("createdAt", 0).asInt64();
-            entry.messageCount = arr[i].get("messageCount", 0).asInt();
-            entry.isJzAgent = arr[i].get("isJzAgent", false).asBool();
-            m_sessionHistory.push_back(entry);
-        }
-    }
-    
-    m_nextSessionId = root.isMember("nextSessionId") ? root["nextSessionId"].asInt() : (int)m_sessionHistory.size() + 1;
-}
-
-const HistoryEntry *JZCodeAgent::findHistoryEntry(int id) const
-{
-    for (const auto &entry : m_sessionHistory)
-    {
-        if (entry.id == id)
-            return &entry;
-    }
-    return nullptr;
-}
-
-bool JZCodeAgent::removeHistoryEntry(int id)
-{
-    for (auto it = m_sessionHistory.begin(); it != m_sessionHistory.end(); ++it)
-    {
-        if (it->id == id)
-        {
-            m_sessionHistory.erase(it);
-            // 同时保存更新后的文件
-            saveSessionHistory();
-            return true;
-        }
-    }
-    return false;
-}
-
-=======
->>>>>>> 079716745e8dd7008af2ec584b495f51f9c8539a
 bool JZCodeAgent::setWorkspace(const string &path)
 {
     JZDir dir(path);

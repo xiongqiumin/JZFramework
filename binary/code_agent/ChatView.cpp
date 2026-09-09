@@ -20,6 +20,8 @@ static constexpr int kFoldH    = 26;   // 折叠条高度
 // 工具合并卡: 调用参数与"输出"两段之间的间距与标签行高
 static constexpr int kSecPad    = 10;
 static constexpr int kResLabelH = 18;
+// 思考卡: 显示时只保留末尾这么多个字符(其余省略), 控制超长思考的内存与布局成本
+static constexpr int kThinkTailChars = 500;
 
 // 画小三角(用当前画笔颜色)。down=true 朝下(展开态, 提示可收起), 否则朝右(折叠态, 提示可展开)。
 static void drawTriangle(JZPainter& p, int cx, int cy, int r, bool down)
@@ -43,6 +45,20 @@ JZ_OBJECT_IMPL(ChatView, JZWidget)
 ChatView::ChatView(JZWidget* parent)
     : JZWidget(parent)
 {
+    // 真正的垂直滚动条: 替代原先自绘的滚动条, 由它负责滑块/箭头/拖拽/滚轮交互,
+    // 值变化经 sigValueChanged 同步回 m_scrollY 并触发重绘。
+    m_vScroll = new JZScrollBar(JZScrollBar::Vertical, this);
+    m_vScroll->setVisible(false);
+    m_vScroll->setSingleStep(kWheelStep);
+    connect(&m_vScroll->sigValueChanged, [this](int v) {
+        m_scrollY = v;
+        int maxScroll = std::max(0, contentHeight() - height());
+        // 跟随状态由"是否贴底"推导: 拖到底部恢复跟随, 上滚取消跟随
+        m_autoFollow = (m_scrollY >= maxScroll - 1);
+        ensurePreciseWindow();   // 新进入视口的消息需精确化(否则估算态会画成空白)
+        recomputeTotal();
+        update();
+    });
 }
 
 // ==================== 文本换行 ====================
@@ -130,24 +146,64 @@ static std::string truncateToolText(const std::string& text, int keepHead, int k
     return out;
 }
 
+// ==================== 思考文本截断(显示用) ====================
+// 思考过程可能很长, 显示时只保留末尾 keepChars 个字符, 前面加 "......" 标记,
+// 不按完整换行对齐(思考是过程日志, 截断处不必对齐行)。
+// 原始 m.text 不变(历史/导出仍保留完整内容)。
+static std::string tailText(const std::string& text, int keepChars)
+{
+    if ((int)text.size() <= keepChars)
+        return text;
+    std::string out = "......";
+    out += text.substr(text.size() - keepChars);
+    return out;
+}
+
 // ==================== 单条消息布局 ====================
-void ChatView::layoutMsg(Msg& m)
+// precise=true: 精确换行(调用字体度量), 用于视口内/流式消息;
+// precise=false: 仅按字符数估算高度(不调字体度量), 用于视口外消息, 节省布局成本。
+void ChatView::layoutMsg(Msg& m, bool precise)
 {
     JZFont font(14);
-    int cardW = width() - 2 * kOuter - (kScrollBarW + 4) - 2 * kCardPad;
+    int cardW = contentRight() - kOuter - 2 * kCardPad;
     if (cardW < 20)
         cardW = 20;
 
-    m.lines.clear();
-    m.resultLines.clear();
-    int lh = JZFontMetrics::textHeight(font) + kLineGap;
-
-    // 思考卡折叠后只剩一条标题条
+    // 思考卡折叠后只剩一条标题条(高度固定, 视为精确)
     if (m.role == Thinking && m.collapsed)
     {
         m.cardH = kFoldH;
+        m.precise = true;
         return;
     }
+
+    if (!precise)
+    {
+        // 估算: 不调用 wrapText, 也不生成 m.lines(反正不在视口内不绘制)。
+        int lh = JZFontMetrics::textHeight(font) + kLineGap;
+        int lines = 0;
+        if (m.role == Tool && m.hasResult)
+        {
+            // 合并卡: 调用参数 + 分隔 + 结果, 各段近似 3~4 行(与精确态 3+1+3 接近)
+            int tl = std::min(estimateLines(m.text, cardW), 4);
+            int rl = std::min(estimateLines(m.resultText, cardW), 4);
+            lines = tl + 1 + rl;
+        }
+        else if (m.role == Thinking)
+            lines = estimateLines(tailText(m.text, kThinkTailChars), cardW);
+        else if (m.role == ToolResult)
+            lines = std::min(estimateLines(m.text, cardW), 8); // 精确态截断到 3+3 行
+        else
+            lines = estimateLines(m.text, cardW);
+        m.cardH = kHeaderH + lines * lh + 2 * kCardPad;
+        m.precise = false;
+        return;
+    }
+
+    // ---- 精确布局 ----
+    m.lines.clear();
+    m.resultLines.clear();
+    int lh = JZFontMetrics::textHeight(font) + kLineGap;
 
     // 工具调用 + 输出合并卡: 上段是调用参数, 下段(标签"输出")是工具结果
     if (m.role == Tool && m.hasResult)
@@ -156,6 +212,17 @@ void ChatView::layoutMsg(Msg& m)
         wrapText(truncateToolText(m.resultText, 3, 3), font, cardW, m.resultLines);
         m.cardH = kHeaderH + (int)m.lines.size() * lh + kSecPad + kResLabelH
                 + (int)m.resultLines.size() * lh + 2 * kCardPad;
+        m.precise = true;
+        return;
+    }
+
+    // 思考卡: 显示时只保留末尾 kThinkTailChars 个字符(按完整换行), 控制超长思考的布局成本。
+    // 原始 m.text 不变(历史/导出仍保留完整内容), 折叠态由上方分支已处理。
+    if (m.role == Thinking)
+    {
+        wrapText(tailText(m.text, kThinkTailChars), font, cardW, m.lines);
+        m.cardH = kHeaderH + (int)m.lines.size() * lh + 2 * kCardPad;
+        m.precise = true;
         return;
     }
 
@@ -163,34 +230,138 @@ void ChatView::layoutMsg(Msg& m)
         (m.role == ToolResult) ? truncateToolText(m.text, 3, 3) : m.text;
     wrapText(renderText, font, cardW, m.lines);
     m.cardH = kHeaderH + (int)m.lines.size() * lh + 2 * kCardPad;
+    m.precise = true;
 }
 
-void ChatView::relayout()
+// 估算行数: 逐个码点累计"显示宽度单位"(宽字符算 2), 按每行可容纳单位数折行。
+// 不调用字体度量, 仅做近似, 用于视口外消息的高度估算。
+int ChatView::estimateLines(const std::string& text, int cardW)
 {
-    int total = kOuter;                   // 顶部外边距
+    if (text.empty())
+        return 1;
+    int perLine = std::max(1, cardW / 8);   // 窄字符平均宽约 8px
+    int units = 0, lines = 1;
+    JZUtf8Iterator it(text);
+    for (; it; ++it)
+    {
+        char32_t cp = it.codepoint();
+        if (cp == '\n')
+        {
+            lines++;
+            units = 0;
+            continue;
+        }
+        int w = (cp > 0x2E80) ? 2 : 1;       // 中日韩等宽字符算 2 单位
+        units += w;
+        if (units > perLine)
+        {
+            lines++;
+            units = w;
+        }
+        if (lines > 100000)                  // 安全上限, 防止极端长文本膨胀
+            break;
+    }
+    return lines;
+}
+
+// 计算"等待回复中..."卡的高度(若显示)
+void ChatView::layoutWait()
+{
+    m_waitLines.clear();
+    m_waitH = 0;
+    if (!m_waitShow)
+        return;
+    JZFont font(14);
+    int cardW = contentRight() - kOuter - 2 * kCardPad;
+    if (cardW < 20)
+        cardW = 20;
+    wrapText("等待回复中...", font, cardW, m_waitLines);
+    int lh = JZFontMetrics::textHeight(font) + kLineGap;
+    m_waitH = kHeaderH + (int)m_waitLines.size() * lh + 2 * kCardPad;
+}
+
+// ==================== 全量重排(视口虚拟化) ====================
+// 先对全部消息做廉价估算得到大致累计高度, 再把当前视口(含上下缓冲)内的消息
+// 转成精确换行。这样超长历史下, 视口外消息不调用昂贵的字体度量。
+void ChatView::relayoutVirtual()
+{
+    for (auto& m : m_msgs)
+        layoutMsg(m, false);                 // 估算全部(便宜)
+
+    int viewTop = m_scrollY;
+    int viewBot = m_scrollY + height();
+    int buf = height();                      // 视口上下各保留一个视口高度的缓冲
+    int y = kOuter;
+    int i0 = -1, i1 = -1;
     for (size_t i = 0; i < m_msgs.size(); i++)
     {
-        layoutMsg(m_msgs[i]);
+        int top = y, bot = y + m_msgs[i].cardH;
+        if (bot >= viewTop - buf && top <= viewBot + buf)
+        {
+            if (i0 < 0) i0 = (int)i;
+            i1 = (int)i;
+        }
+        y = bot + kGap;
+    }
+    if (i0 >= 0)
+        for (int i = i0; i <= i1; i++)
+            layoutMsg(m_msgs[i], true);      // 视口内精确化
+
+    recomputeTotal();
+}
+
+// 把当前视口(含缓冲)内、尚为估算状态的消息转成精确布局(滚动/变更后调用)。
+void ChatView::ensurePreciseWindow()
+{
+    // 跟随到底部时, 视口必在末尾; 只检查末尾若干条, 避免每次 delta 全量扫描 O(N)。
+    if (m_autoFollow)
+    {
+        const int kTail = 40;
+        int i0 = (m_msgs.size() > (size_t)kTail) ? (int)m_msgs.size() - kTail : 0;
+        for (int i = i0; i < (int)m_msgs.size(); i++)
+            if (!m_msgs[i].precise)
+                layoutMsg(m_msgs[i], true);
+        return;
+    }
+
+    // 非跟随(用户已上滚/正在滚动): 全量扫描定位视口区间并精确化。
+    // 由用户滚动驱动, 频率可控, O(N) 扫描可接受。
+    int viewTop = m_scrollY;
+    int viewBot = m_scrollY + height();
+    int buf = height();
+    int y = kOuter;
+    int i0 = -1, i1 = -1;
+    for (size_t i = 0; i < m_msgs.size(); i++)
+    {
+        int top = y, bot = y + m_msgs[i].cardH;
+        if (bot >= viewTop - buf && top <= viewBot + buf)
+        {
+            if (i0 < 0) i0 = (int)i;
+            i1 = (int)i;
+        }
+        y = bot + kGap;
+    }
+    if (i0 < 0)
+        return;
+    for (int i = i0; i <= i1; i++)
+        if (!m_msgs[i].precise)
+            layoutMsg(m_msgs[i], true);      // 进入视口 -> 精确化
+}
+
+// 基于各卡片已缓存的 cardH 重算内容总高(O(N) 整数加法, 远快于逐条 wrapText)。
+void ChatView::recomputeTotal()
+{
+    layoutWait();
+    int total = kOuter;
+    for (size_t i = 0; i < m_msgs.size(); i++)
+    {
         total += m_msgs[i].cardH;
         if (i + 1 < m_msgs.size())
             total += kGap;
     }
-
-    // 等待状态卡：紧随最后一条消息之后，同样参与滚动总高
-    m_waitH = 0;
-    if (m_waitShow)
-    {
-        JZFont font(14);
-        int cardW = width() - 2 * kOuter - (kScrollBarW + 4) - 2 * kCardPad;
-        if (cardW < 20)
-            cardW = 20;
-        wrapText("等待回复中...", font, cardW, m_waitLines);
-        int lh = JZFontMetrics::textHeight(font) + kLineGap;
-        m_waitH = kHeaderH + (int)m_waitLines.size() * lh + 2 * kCardPad;
+    if (m_waitShow && m_waitH > 0)
         total += kGap + m_waitH;
-    }
-
-    total += kOuter;                      // 底部外边距
+    total += kOuter;
     m_totalH = total;
 }
 
@@ -200,27 +371,53 @@ int ChatView::contentHeight() const
 }
 
 // ==================== 滚动管理 ====================
+int ChatView::contentRight() const
+{
+    // 留出滚动条带宽(含与内容之间的小间隙), 没有滚动条时不让位。
+    int reserve = m_sbVisible ? (kScrollBarW + 4) : 0;
+    return width() - kOuter - reserve;
+}
+
+void ChatView::updateScrollBar()
+{
+    int maxScroll = std::max(0, contentHeight() - height());
+    bool vis = maxScroll > 0;
+    m_sbVisible = vis;
+    m_vScroll->setVisible(vis);
+    if (vis)
+    {
+        m_vScroll->setRange(0, maxScroll);
+        m_vScroll->setPageStep(std::max(1, height()));   // 页步=视口高 -> 滑块长度正比可见比例
+        m_vScroll->setSingleStep(kWheelStep);
+        m_vScroll->setValue(m_scrollY);
+    }
+}
+
 void ChatView::updateScroll(bool follow)
 {
-    int maxScroll = contentHeight() - height();
-    if (maxScroll < 0)
-        maxScroll = 0;
+    int maxScroll = std::max(0, contentHeight() - height());
 
     if (follow)
         m_scrollY = maxScroll;
-    if (m_scrollY < 0)
-        m_scrollY = 0;
-    if (m_scrollY > maxScroll)
-        m_scrollY = maxScroll;
+    m_scrollY = std::max(0, std::min(m_scrollY, maxScroll));
 
     // 跟随状态由"是否贴底"推导: 用户上滚即取消跟随, 回到底部恢复
     m_autoFollow = (m_scrollY >= maxScroll - 1);
+
+    updateScrollBar();
 }
 
 void ChatView::afterChange()
 {
-    relayout();
+    // 增量布局核心:
+    // 1) 对当前视口(按当前滚动位置)做精确化;
+    // 2) 重算总高(整数求和, 不调字体度量);
+    // 3) 视口可能已贴底(跟随), 用新总高修正滚动位置后再精确化一次。
+    ensurePreciseWindow();
+    recomputeTotal();
     updateScroll(m_autoFollow);
+    ensurePreciseWindow();
+    recomputeTotal();
     update();
 }
 
@@ -236,9 +433,11 @@ bool ChatView::closeStream()
 {
     if (m_streamIdx < 0 || m_streamIdx >= (int)m_msgs.size())
         return false;
-    if (m_msgs[m_streamIdx].role == Thinking)
+    int idx = m_streamIdx;
+    if (m_msgs[idx].role == Thinking)
     {
-        m_msgs[m_streamIdx].collapsed = true;   // 思考完毕 -> 折叠
+        m_msgs[idx].collapsed = true;           // 思考完毕 -> 折叠
+        layoutMsg(m_msgs[idx], true);           // 重算折叠态精确高度
         m_streamIdx = -1;
         return true;
     }
@@ -284,6 +483,7 @@ void ChatView::appendUser(const std::string& text)
     closeStream();
     Msg m; m.role = User; m.text = text;
     m_msgs.push_back(std::move(m));
+    layoutMsg(m_msgs.back(), true);             // 仅对新增的这一条做精确布局
     afterChange();
 }
 
@@ -314,6 +514,7 @@ void ChatView::appendAssistantDelta(const std::string& text)
 
     int idx = openStream(Assistant);
     m_msgs[idx].text += text;
+    layoutMsg(m_msgs[idx], true);                // 只重排当前流式卡(增量)
     afterChange();
 }
 
@@ -324,6 +525,7 @@ void ChatView::appendThinking(const std::string& text)
     m.collapsible = true;
     m.collapsed = true;               // 整条导入的思考已完毕 -> 默认折叠
     m_msgs.push_back(std::move(m));
+    layoutMsg(m_msgs.back(), true);   // 仅对新增的这一条做精确布局
     afterChange();
 }
 
@@ -335,36 +537,39 @@ void ChatView::appendThinkingDelta(const std::string& text)
         return;
     int idx = openStream(Thinking);
     m_msgs[idx].text += text;
+    layoutMsg(m_msgs[idx], true);                // 只重排当前流式思考卡(增量)
     afterChange();
 }
 
-void ChatView::appendTool(const std::string& name, const std::string& tool_id, const std::string& text)
+void ChatView::appendTool(const ToolCall& call)
 {
     closeStream();                    // 思考卡若还开着, 到这里说明思考已结束
-    
-    Msg m; 
-    m.role = Tool; 
-    m.name = name;
-    m.id = tool_id;
-    m.text = text;
-    
+
+    Msg m;
+    m.role = Tool;
+    m.name = call.function_name;
+    m.id = call.id;
+    m.text = call.function_args;       // 工具调用参数(原始参数字符串)
+
     m_msgs.push_back(m);
     m_pendingToolIdx[m.id] = ((int)m_msgs.size() - 1);
+    layoutMsg(m_msgs.back(), true);             // 仅对新增的这一条做精确布局
     afterChange();
 }
 
-void ChatView::appendToolResult(const std::string& tool_id, const std::string& text)
+void ChatView::appendToolResult(const ToolCallResult& result)
 {
     closeStream();
 
-    auto it = m_pendingToolIdx.find(tool_id);
+    auto it = m_pendingToolIdx.find(result.id);
     if (it != m_pendingToolIdx.end())
     {
         // 把输出回填给最近一条还没配对的工具调用卡(合并显示)
         int idx = it->second;
         m_pendingToolIdx.erase(it);
-        m_msgs[idx].resultText = text;
+        m_msgs[idx].resultText = result.result;
         m_msgs[idx].hasResult = true;
+        layoutMsg(m_msgs[idx], true);           // 只重排这一张工具卡(增量)
     }
     afterChange();
 }
@@ -374,6 +579,7 @@ void ChatView::appendError(const std::string& text)
     closeStream();
     Msg m; m.role = Error; m.text = text;
     m_msgs.push_back(std::move(m));
+    layoutMsg(m_msgs.back(), true);             // 仅对新增的这一条做精确布局
     afterChange();
 }
 
@@ -382,6 +588,7 @@ void ChatView::appendInfo(const std::string& text)
     closeStream();
     Msg m; m.role = Info; m.text = text;
     m_msgs.push_back(std::move(m));
+    layoutMsg(m_msgs.back(), true);             // 仅对新增的这一条做精确布局
     afterChange();
 }
 
@@ -401,7 +608,7 @@ void ChatView::clear()
     m_scrollY = 0;
     m_autoFollow = true;
     m_totalH = 2 * kOuter;
-    update();
+    afterChange();   // relayout + 同步滚动条(隐藏) + 重绘
 }
 
 void ChatView::setWait(bool show)
@@ -418,7 +625,10 @@ void ChatView::setWait(bool show)
 void ChatView::resizeEvent(JZResizeEvent* event)
 {
     JZWidget::resizeEvent(event);
-    relayout();
+    // 摆放真实滚动条几何(右侧竖条); 范围/值由 updateScroll 同步
+    m_vScroll->setGeometry(width() - kOuter - kScrollBarW, kOuter,
+                           kScrollBarW, std::max(0, height() - 2 * kOuter));
+    relayoutVirtual();                          // 视口内精确, 视口外估算(宽度变化必全量)
     updateScroll(m_autoFollow);
     update();
 }
@@ -426,13 +636,8 @@ void ChatView::resizeEvent(JZResizeEvent* event)
 void ChatView::wheelEvent(JZMouseEvent* event)
 {
     int d = event->wheelDelta();          // 上滚为正
-    m_scrollY -= d * kWheelStep;          // 上滚 -> 看更早内容 -> 减小 scrollY
-    int maxScroll = contentHeight() - height();
-    if (maxScroll < 0)
-        maxScroll = 0;
-    m_scrollY = std::max(0, std::min(m_scrollY, maxScroll));
-    m_autoFollow = (m_scrollY >= maxScroll - 1);
-    update();
+    // 交给真实滚动条处理: 它在 range 内裁剪, 并触发 sigValueChanged 同步 m_scrollY
+    m_vScroll->setValue(m_vScroll->value() - d * kWheelStep);
     event->accept();   // 已消费, 不向父链冒泡
 }
 
@@ -445,6 +650,7 @@ void ChatView::mousePressEvent(JZMouseEvent* event)
         if (idx >= 0 && idx < (int)m_msgs.size() && m_msgs[idx].collapsible)
         {
             m_msgs[idx].collapsed = !m_msgs[idx].collapsed;
+            layoutMsg(m_msgs[idx], true);       // 折叠/展开只重排这一张
             afterChange();
             return;
         }
@@ -486,7 +692,7 @@ void ChatView::paintEvent(JZPainterEvent* event)
     }
 
     int contentLeft = kOuter;
-    int contentRight = w - kOuter - (kScrollBarW + 4);
+    int contentRight = this->contentRight();
     int cardW = contentRight - contentLeft;
 
     JZFont headerFont(12);
@@ -621,20 +827,5 @@ void ChatView::paintEvent(JZPainterEvent* event)
             p.drawText(contentLeft + kCardPad, ty + li * lh, m_waitLines[li].c_str());
     }
 
-    // 滚动条 (内容高于视口时)
-    int ch = contentHeight();
-    if (ch > h)
-    {
-        int maxScroll = ch - h;
-        int trackTop = kOuter;
-        int trackH = h - 2 * kOuter;
-        int thumbH = std::max(20, trackH * h / ch);
-        int thumbY = trackTop + (trackH - thumbH) * m_scrollY / maxScroll;
-        int sbX = w - kOuter - kScrollBarW;
-
-        JZColor sb(0xC4, 0xC4, 0xCC);
-        p.setBrush(JZBrush(sb));
-        p.setPen(JZPen(sb, 1));
-        p.drawRoundRect(sbX, thumbY, kScrollBarW, thumbH, kScrollBarW / 2);
-    }
+    // 滚动条已由真正的 JZScrollBar 子控件绘制, 这里无需自绘
 }

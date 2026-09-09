@@ -1,6 +1,7 @@
 ﻿#include "JZAgent.h"
 
 #include <atomic>
+#include <algorithm>
 #include <sstream>
 
 #include "JZApplication.h"
@@ -103,6 +104,15 @@ void JZAgent::clear()
         reply->close();
         reply->deleteLater();
     }
+
+    if (m_compressReply)
+    {
+        auto creply = m_compressReply;
+        m_compressReply = nullptr;
+        creply->close();
+        creply->deleteLater();
+    }
+    m_compressChunk.clear();
 
     m_currentRound = -1;
     m_isActive = false;
@@ -333,6 +343,16 @@ void JZAgent::requestWithImages(const std::string &text, const std::vector<std::
     req->images = images;
     m_requests.push_back(req);
     llmLoop();
+}
+
+const std::vector<JZAgentRequestPtr> &JZAgent::requestList() const
+{
+    return m_requests;
+}
+
+void JZAgent::clearRequestList()
+{
+    m_requests.clear();
 }
 
 void JZAgent::stop()
@@ -677,6 +697,7 @@ Json::Value LLMHistory::toJson() const
     if (role == LLMHistory::Tool && !toolResponseId.empty())
         history_msg["tool_call_id"] = toolResponseId;
 
+    history_msg["auto_added"] = autoAdded;
     return history_msg;
 }
 
@@ -728,6 +749,7 @@ bool LLMHistory::fromJson(const Json::Value& root)
         }
     }
 
+    autoAdded = root.get("auto_added", false).asBool();
     return true;
 }
 
@@ -948,6 +970,15 @@ void JZAgent::llmEnd()
         reply->deleteLater();
     }
 
+    if (m_compressReply)
+    {
+        auto creply = m_compressReply;
+        m_compressReply = nullptr;
+        creply->close();
+        creply->deleteLater();
+    }
+    m_compressChunk.clear();
+
     m_currentRound = 0;
     m_isActive = false;
     m_inTransaction = false;
@@ -1053,6 +1084,184 @@ void JZAgent::finalizeResponse()
     }
 }
 
+bool JZAgent::trimHistoryForBudget()
+{
+    if (m_config.tokenStrategy != JZAgentConfig::TokenTruncate)
+        return false;   // 非裁剪策略(如 TokenError/TokenCompress)不在此处理
+
+    // 统计非 system 历史条目，并记录最近一条 user 的位置
+    int nonSys = 0;
+    int lastUser = -1;
+    for (size_t i = 0; i < m_context.history.size(); i++)
+    {
+        auto& h = m_context.history[i];
+        if (h->role == LLMHistory::User)
+            lastUser = (int)i;
+        if (h->role != LLMHistory::System)
+            nonSys++;
+    }
+    if (lastUser == -1)
+        return false;   // 没有任何 user 记录，无可裁剪项
+
+    int toRemove = nonSys / 2;
+    if (toRemove <= 0)
+        return false;   // 非 system 条目已不足，无法继续裁剪
+
+    std::shared_ptr<LLMHistory> last_user_record = m_context.history[lastUser];
+
+    // 从最旧端开始，删除非 system 条目，直至删够 toRemove 条
+    for (auto it = m_context.history.begin();
+         it != m_context.history.end() && toRemove > 0; )
+    {
+        if ((*it)->role != LLMHistory::System)
+        {
+            it = m_context.history.erase(it);
+            toRemove--;
+        }
+        else
+            ++it;
+    }
+
+    // 兜底保证：理论上最近一条 user 不会被裁掉，这里确保历史中始终至少有一句 user
+    bool has_user = false;
+    for (auto &h : m_context.history)
+    {
+        if (h->role == LLMHistory::User)
+        {
+            has_user = true;
+            break;
+        }
+    }
+    if (!has_user)
+        m_context.history.insert(m_context.history.begin(), last_user_record);
+
+    m_context.recalcUsage();  // 历史已裁剪，重算累计 usage 使其回落
+    return true;
+}
+
+static std::string roleName(LLMHistory::Role r)
+{
+    switch (r)
+    {
+    case LLMHistory::User:       return "user";
+    case LLMHistory::Assistant:  return "assistant";
+    case LLMHistory::System:     return "system";
+    case LLMHistory::Tool:       return "tool";
+    }
+    return "";
+}
+
+bool JZAgent::startCompressHistory()
+{
+    if (m_config.tokenStrategy != JZAgentConfig::TokenCompress)
+        return false;
+    if (m_compressReply)
+        return false;   // 已有压缩请求在途，避免重入
+
+    // 统计非 system 历史条目
+    int nonSys = 0;
+    for (auto& h : m_context.history)
+        if (h->role != LLMHistory::System)
+            nonSys++;
+    if (nonSys <= 1)
+        return false;   // 历史太短，没有可压缩的余量
+
+    // 一次性把整段历史全部纳入压缩块（含其中的 system 消息），由其整体生成一条摘要，
+    // 不做"只压最旧一半"的渐进式处理。最近一次用户输入尚在 m_requests 中、尚未入历史，
+    // 因此不会被压缩掉，压缩结束后仍会按正常路径追加。
+    m_compressChunk = m_context.history;
+    if (m_compressChunk.empty())
+        return false;
+
+    // 序列化为可读对话文本交给大模型总结
+    std::string conv;
+    for (auto& h : m_compressChunk)
+    {
+        conv += "[" + roleName(h->role) + "]\n" + h->content + "\n\n";
+    }
+
+    // 构造压缩请求（非流式）：以"总结作为下一轮输入"的标准方式请求模型压缩
+    Json::Value body(Json::objectValue);
+    body["model"] = m_config.modelName;
+    body["stream"] = false;
+
+    Json::Value sysMsg(Json::objectValue);
+    sysMsg["role"] = "system";
+    sysMsg["content"] = "请协助用户总结之前的所有任务、完成情况，以及最近的请求，"
+                        "整理成一段可作为下一轮输入的摘要。"
+                        "不要编造信息，只输出摘要本身，不要输出任何解释或多余文字。";
+    Json::Value userMsg(Json::objectValue);
+    userMsg["role"] = "user";
+    userMsg["content"] = conv + "\n\n开始总结";
+
+    Json::Value msgs(Json::arrayValue);
+    msgs.append(sysMsg);
+    msgs.append(userMsg);
+    body["messages"] = msgs;
+
+    Json::FastWriter writer;
+    JZNetworkRequest req;
+    req.setUrl(JZUrl(m_config.modelUrl));
+    req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
+    req.setRawHeader("Authorization", "Bearer " + m_config.modelToken);
+
+    m_compressReply = m_net->post(req, str_toUtf8(writer.write(body)));
+    connect(&m_compressReply->sigFinished, this, &JZAgent::onCompressFinished);
+    m_compressReply->setTimeOut(m_config.netTimeout);
+    return true;
+}
+
+void JZAgent::onCompressFinished()
+{
+    auto reply = m_compressReply;
+    m_compressReply = nullptr;
+    if (!reply)
+        return;
+    reply->deleteLater();
+
+    if (reply->error() != JZNetworkReply::NoError)
+    {
+        llmError(HttpError, "历史压缩请求失败: " + reply->errorString());
+        m_compressChunk.clear();
+        return;
+    }
+
+    std::string json_str = str_fromUtf8(reply->readAll());
+    Json::Value result;
+    Json::Reader reader;
+    if (!reader.parse(json_str, result)
+        || !result.isMember("choices")
+        || !result["choices"].isArray()
+        || result["choices"].size() == 0)
+    {
+        llmError(NoError, "历史压缩返回格式错误: " + json_str.substr(0, 500));
+        m_compressChunk.clear();
+        return;
+    }
+    std::string summary = result["choices"][0]["message"]["content"].asString();
+    if (summary.empty())
+    {
+        llmError(NoError, "历史压缩返回为空");
+        m_compressChunk.clear();
+        return;
+    }
+
+    // 压缩块即整段历史，直接整体清空，再追加单条摘要。
+    auto& hist = m_context.history;
+    hist.clear();
+
+    // 把整段返回作为下一轮的用户输入（user 消息）追加到历史末尾
+    auto sum = std::make_shared<LLMHistory>();
+    sum->role = LLMHistory::User;
+    sum->content = summary;
+    sum->autoAdded = true;   // 标记为系统自动添加，界面不显示、重建历史时跳过
+    hist.push_back(sum);     // 摘要追加到历史末尾，其余消息位置保持不变
+    m_compressChunk.clear();
+
+    m_context.recalcUsage();  // 历史已压缩，重算累计 usage 使其回落
+    llmLoop();                // 重新进入循环：若仍超预算会继续压缩，否则走正常请求流程
+}
+
 void JZAgent::llmLoop()
 {
     if (m_inTransaction)
@@ -1062,63 +1271,37 @@ void JZAgent::llmLoop()
     //正在请求 
     if (m_llmReply)
         return;
+    // 压缩请求在途，等 onCompressFinished 重新驱动 llmLoop，期间不重入
+    if (m_compressReply)
+        return;
 
     if (m_context.usage.total_tokens > m_config.maxToken)
     {
-        // 超出预算：按策略处理
+        // 超出预算：按配置的策略处理历史
         if (m_config.tokenStrategy == JZAgentConfig::TokenTruncate)
         {
-            // 统计非 system 历史条目，砍掉最旧的一半（system 不砍）
-            int nonSys = 0;
-            int lastUser = -1;
-            for (size_t i = 0; i < m_context.history.size(); i++)
+            // 裁剪：砍掉最旧一半非 system 历史后重试
+            if (!trimHistoryForBudget())
             {
-                auto& h = m_context.history[i];
-                if (h->role == LLMHistory::User)
-                    lastUser = i;
-                if (h->role != LLMHistory::System)
-                    nonSys++;
-            }
-            if (lastUser == -1)
-                goto historyCutEnd;
-
-            std::shared_ptr<LLMHistory> last_user_record = m_context.history[lastUser];
-            int toRemove = nonSys / 2;
-            if (toRemove > 0)
-            {
-                for (auto it = m_context.history.begin();
-                     it != m_context.history.end() && toRemove > 0; )
-                {
-                    if ((*it)->role != LLMHistory::System)
-                    {
-                        it = m_context.history.erase(it);
-                        toRemove--;
-                    }
-                    else
-                        ++it;
-                }
-
-                bool has_user = false;
-                for (auto &h : m_context.history)
-                {
-                    if (h->role == LLMHistory::User)
-                    {
-                        has_user = true;
-                        break;
-                    }
-                }
-                if (!has_user)
-                {
-                    m_context.history.insert(m_context.history.begin(), last_user_record);
-                }
-
-                m_context.recalcUsage();  // 历史已裁剪，重算累计 usage 使其回落
-                llmRequest();
+                llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
                 return;
             }
+            // 裁剪成功：重新进入循环，若仍超预算会继续裁剪，否则走正常请求流程
+            // （注意不能在此直接 llmRequest，否则会漏掉尚在 m_requests 中的最新用户输入）
+            llmLoop();
+            return;
         }
-historyCutEnd:
-        // 无法继续裁剪（非 system 历史不足）则报错终止
+        else if (m_config.tokenStrategy == JZAgentConfig::TokenCompress)
+        {
+            // 压缩：把最旧一段历史发给大模型做摘要，异步进行，期间阻塞重入
+            if (!startCompressHistory())
+            {
+                llmError(MaxTokenError, "token out of limit (无法继续压缩): " + std::to_string(m_context.usage.total_tokens));
+                return;
+            }
+            return;  // 等待 onCompressFinished 重新驱动 llmLoop
+        }
+        // 其他策略(如 TokenError)直接报错终止
         llmError(MaxTokenError, "token out of limit: " + std::to_string(m_context.usage.total_tokens));
         return;
     }

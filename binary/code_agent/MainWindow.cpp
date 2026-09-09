@@ -144,6 +144,7 @@ static void appendTsEnv(const string& envDir, vector<TrustedDir>& dirs, vector<T
 InputEdit::InputEdit(JZWidget* parent)
     : JZTextEdit(parent)
     , sigSend(this)
+    , sigStop(this)
 {
     // 发送按钮嵌入输入框内部: 浮动在底部文本区下方的"按钮带"里。
     // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
@@ -162,6 +163,7 @@ InputEdit::InputEdit(JZWidget* parent)
     setLayout(layout);
 
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
+    connect(&sigTextChanged, this, [this](const std::string&) { updateButton(); });
 
     setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
     setPlaceholderText("输入任务，Ctrl+Enter换行, 回车或点[发送]");
@@ -180,9 +182,27 @@ void InputEdit::keyPressEvent(JZKeyEvent* event)
     JZAbstractTextEdit::keyPressEvent(event);
 }
 
+void InputEdit::setBusy(bool busy)
+{
+    if (m_busy == busy)
+        return;
+    m_busy = busy;
+    updateButton();
+}
+
+void InputEdit::updateButton()
+{
+    // 正在请求且输入框为空 -> "停止"；其它情况(空闲 / 忙碌但有草稿) -> "发送"
+    m_sendBtn->setText(m_busy && text().empty() ? "停止" : "发送");
+}
+
 void InputEdit::onSendClicked()
 {
-    sigSend.emit();
+    // 忙碌且输入框为空时按"停止"处理，否则视为"发送"
+    if (m_busy && text().empty())
+        sigStop.emit();
+    else
+        sigSend.emit();
 }
 
 // ==================== NewProjectDialog ====================
@@ -575,9 +595,11 @@ void MainWindow::setupUi()
 
     setCentralWidget(central);
 
-    connect(&m_inputEdit->sendButton()->sigClicked, this, &MainWindow::onSendButton);
+    // 按钮点击已由 InputEdit::onSendClicked 分流为 sigSend / sigStop，这里只接两条语义信号。
+    // （不再直连 sendButton()->sigClicked -> onSendButton，避免与 sigSend 重复触发 onSend）
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
+    connect(&m_inputEdit->sigStop, this, &MainWindow::onStop);
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
@@ -786,11 +808,19 @@ void MainWindow::appendLog(const CodeAgentLog& log)
     else if (log.type == "tool_call")
     {
         std::vector<std::string> tool_info = str_split(log.name, "$$tool_gap$$");
-        m_chatView->appendTool(tool_info[0], tool_info[1], log.text);
+        ToolCall call;
+        call.function_name = tool_info[0];
+        call.id = tool_info.size() > 1 ? tool_info[1] : "";
+        call.function_args = log.text;
+        m_chatView->appendTool(call);
     }
     else if (log.type == "tool_result")
     {
-        m_chatView->appendToolResult(log.name, log.text);
+        ToolCallResult result;
+        result.id = log.name;
+        result.result = log.text;
+        result.isOk = true;                 // 历史重建时无成败信息, 默认成功
+        m_chatView->appendToolResult(result);
     }
     else if (log.type == "error")
         m_chatView->appendError(log.text);
@@ -816,11 +846,6 @@ void MainWindow::onSend()
     {
         m_pendingQueue.push_back(text);
     }
-}
-
-void MainWindow::onSendButton()
-{
-    onSend();
 }
 
 void MainWindow::onStop()
@@ -1338,6 +1363,7 @@ void MainWindow::onPoll()
                                        m_agent->llmConfig().maxToken);
 
     bool busy = m_agent->isBusy();
+    m_inputEdit->setBusy(busy);   // 驱动输入框按钮在"发送"/"停止"间切换
 
     // 一轮刚结束：助手回了话，计一条消息并把对话落盘
     if (m_agentWasBusy && !busy)

@@ -46,6 +46,7 @@ public:
     bool isCollapsible(int index) const;
 
     // 直接设定/读取各子控件沿排布方向的像素尺寸 (等价 QSplitter::setSizes / sizes)
+    // 隐藏的控件尺寸恒为 0；重新显示后它的尺寸需要由调用方重新设定（本控件只保证有最小尺寸）。
     void setSizes(const std::vector<int>& sizes);
     std::vector<int> sizes() const;
 
@@ -62,11 +63,20 @@ protected:
     void mouseReleaseEvent(JZMouseEvent* event) override;
     bool eventFilter(JZObject* watched, JZEvent* event) override;
 
-    // 按当前几何 + m_sizes 摆放所有子控件; m_sizes 未初始化时按拉伸因子分配
+    // 按当前几何 + m_sizes 摆放子控件; m_sizes 未初始化时按拉伸因子分配。
+    // 隐藏(setVisible(false))的子控件不参与: 尺寸为 0、不占空间、也不产生分隔条，
+    // 剩下的可见控件平分整个区域（等价 Qt 里"隐藏项被布局剔除"的语义）。
     void relayout();
     int totalStretch() const;
     int minOf(int index) const;                      // 子控件沿排布方向的最小尺寸
     int handleIndexAt(const JZPoint& p) const;       // 点 p 落在哪条分隔条上 (-1 表示无)
+
+    // ---- 可见性 ----
+    bool isItemVisible(int index) const;             // 子控件存在且 isVisible()
+    int  visibleCount() const;                       // 可见子控件个数
+    // 重算分隔条与子控件的对应关系: 第 h 条分隔条夹在 m_handleLeft[h] 与 m_handleRight[h] 之间。
+    // 隐藏项被跳过，所以两者不一定是相邻下标。
+    void rebuildHandles(const std::vector<int>& visible);
 
     // 悬停/拖动光标: 指针在分隔条 (或拖动中) 上显示双向调整箭头, 否则清除。
     // 参数为屏幕逻辑坐标 (子面板上移动时由 eventFilter 转发过来)。
@@ -82,6 +92,9 @@ protected:
     int m_handleWidth = 6;
     std::vector<Item> m_items;       // 每个被管理的子控件一项
     std::vector<int> m_sizes;        // 各子控件沿排布方向像素尺寸, 长度 == m_items.size()
+    // 分隔条 -> 左右子控件下标（按当前可见性在 relayout 里重建; 隐藏项不产生分隔条）
+    std::vector<int> m_handleLeft;
+    std::vector<int> m_handleRight;
 
     int m_dragHandle = -1;           // 正在拖动的分隔条序号 (-1 无)
     int m_dragStart = 0;             // 拖动起点 (沿排布方向坐标)

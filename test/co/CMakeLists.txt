@@ -13,3 +13,7 @@ if(HAS_JZBLE)
 endif()
 
 target_link_libraries(test_co JZFramework)
+
+# ---- ctest 注册 (仅自包含用例; BLE/串口等无硬件时跳过) ----
+add_test(NAME co.test_co COMMAND test_co)
+set_tests_properties(co.test_co PROPERTIES TIMEOUT 180)

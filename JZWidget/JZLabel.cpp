@@ -1,5 +1,6 @@
 #include "JZLabel.h"
 #include "JZPainter.h"
+#include "JZStylePainter.h"
 #include "JZFontMetrics.h"
 #include "JZDebug.h"
 
@@ -56,24 +57,49 @@ JZSize JZLabel::minimumSizeHint() const
     return JZSize(0, 16);
 }
 
+std::vector<std::string> JZLabel::styleProps() const
+{
+    std::vector<std::string> v = JZWidget::styleProps();
+    v.push_back("color");   // 文本颜色
+    return v;
+}
+
 void JZLabel::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);
-    int w = width(), h = height();
+    const JZStyleSet& s = style();
 
-    p.setPen(JZPen(JZColor(0x33, 0x33, 0x33), 1));
-    JZFont font(14);
-    p.setFont(font);
+    // 盒子层: 背景 / 边框 / 圆角 (UA 默认无背景无边框, 空转)
+    JZStylePainter::drawBox(p, s, rect());
 
     if (m_text.empty())
         return;
 
+    // 内容层: 文本基于 contentRect (border + padding 内缩)
+    JZRect cr = JZStylePainter::contentRect(s, rect());
+    JZFont font(14);
+    p.setPen(JZPen(s.color.valueOr(JZColor(0x33, 0x33, 0x33)), 1));
+    p.setFont(font);
+
     int tw = JZFontMetrics::textWidth(m_text, font);
-    
-    // 左右各留 6px, 与 sizeHint 的 +12 一致; 控件被压扁时垂直顶对齐而非负偏移
-    int tx = (m_align == 1) ? (w - tw) / 2 : (m_align == 2) ? (w - tw - 6) : 6;
-    int ty = JZFontMetrics::centerY(font, h);
-    if (ty < 0)
-        ty = 0;
+
+    // 对齐: 0=左 1=中 2=右; 控件被压扁时垂直顶对齐而非负偏移
+    int tx = (m_align == 1) ? cr.x() + (cr.width() - tw) / 2
+           : (m_align == 2) ? cr.x() + cr.width() - tw
+                            : cr.x();
+    int ty = cr.y() + JZFontMetrics::centerY(font, cr.height());
+    if (ty < cr.y())
+        ty = cr.y();
     p.drawText(tx, ty, m_text.c_str());
+}
+
+JZStyleSet JZLabel::uaStyle() const
+{
+    JZStyleSet s;
+    s.color = JZOptional<JZColor>::Some(JZColor(0x33, 0x33, 0x33));
+    // 原来硬编码的"左右各留 6px" (与 sizeHint 的 +12 一致) 显式化为 padding,
+    // 使无样式表时的排版与改造前逐像素一致, 同时 padding 可被样式表覆盖。
+    s.paddingLeft = 6;
+    s.paddingRight = 6;
+    return s;
 }

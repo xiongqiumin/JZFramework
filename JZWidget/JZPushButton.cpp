@@ -1,5 +1,6 @@
 #include "JZPushButton.h"
 #include "JZPainter.h"
+#include "JZStylePainter.h"
 #include "JZFontMetrics.h"
 
 JZ_OBJECT_IMPL(JZPushButton, JZWidget)
@@ -52,23 +53,50 @@ JZSize JZPushButton::minimumSizeHint() const
     return JZSize(0, 24);
 }
 
+JZStyleSet JZPushButton::uaStyle() const
+{
+    // 与改造前硬编码完全一致的默认外观: #e0e0e0 底 / #808080 1px 边框 / 4px 圆角 / #202020 字
+    JZStyleSet s;
+    s.background = JZOptional<JZColor>::Some(JZColor(0xe0, 0xe0, 0xe0));
+    s.setBorder(JZColor(0x80, 0x80, 0x80), 1);
+    s.radius = 4;
+    s.color = JZOptional<JZColor>::Some(JZColor(0x20, 0x20, 0x20));
+    return s;
+}
+
+std::vector<std::string> JZPushButton::styleProps() const
+{
+    std::vector<std::string> v = JZWidget::styleProps();
+    v.push_back("color");   // 文本颜色
+    return v;
+}
+
 void JZPushButton::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);
-    int w = width(), h = height();
 
-    // 按下时底色加深, 给出按压反馈
-    JZColor bg = m_pressed ? JZColor(0xc0, 0xc0, 0xc0) : JZColor(0xe0, 0xe0, 0xe0);
-    p.setBrush(JZBrush(bg));
-    p.setPen(JZPen(JZColor(0x80, 0x80, 0x80), 1));
-    p.drawRoundRect(0, 0, w, h, 4);
+    JZStyleSet s = style();
+    // 按下反馈: 底色压暗 (不写死颜色 —— 任意主题下都成立;
+    // 默认主题下 #e0e0e0 * 0.84 ≈ #bcbcbc, 与原硬编码 #c0c0c0 基本一致)
+    if (m_pressed && s.background.isSome())
+    {
+        JZColor c = s.background.value();
+        s.background = JZOptional<JZColor>::Some(JZColor(
+            (uint8_t)(c.red() * 0.84), (uint8_t)(c.green() * 0.84),
+            (uint8_t)(c.blue() * 0.84), c.alpha()));
+    }
 
+    // 盒子层 (背景/边框/圆角) 由样式驱动
+    JZStylePainter::drawBox(p, s, rect());
+
+    // 内容层: 文本, 基于 contentRect (border + padding 内缩)
+    JZRect cr = JZStylePainter::contentRect(s, rect());
     JZFont font(14);
-    p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+    p.setPen(JZPen(s.color.valueOr(JZColor(0x20, 0x20, 0x20)), 1));
     p.setFont(font);
     if (!m_text.empty())
-        p.drawText(JZFontMetrics::centerX(m_text, font, w),
-                   JZFontMetrics::centerY(font, h), m_text.c_str());
+        p.drawText(cr.x() + JZFontMetrics::centerX(m_text, font, cr.width()),
+                   cr.y() + JZFontMetrics::centerY(font, cr.height()), m_text.c_str());
 }
 
 void JZPushButton::mousePressEvent(JZMouseEvent* event)

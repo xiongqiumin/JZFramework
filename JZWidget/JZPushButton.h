@@ -27,11 +27,17 @@ public:
     std::string aiText() const override { return m_text; }
     std::vector<JZAiAction> aiActions() const override { return {{"click", ""}}; }
 
+    // 消费的样式属性: 基类盒子 + 文字色 (能力查询, 故为 public)
+    std::vector<std::string> styleProps() const override;
+
 jz_signals:
     JZSigVoid sigClicked;
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
+
+    // UA 默认外观 (等价原来的硬编码): 浅灰底 + 灰边框 + 4px 圆角 + 深灰字
+    JZStyleSet uaStyle() const override;
     void mousePressEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
 

@@ -18,6 +18,15 @@ set(CODE_AGENT_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    AppConfig.h
+    SettingsDialog.h
+    SettingsDialog.cpp
+    TaskPanel.h
+    TaskPanel.cpp
+    TaskHistoryManager.h
+    TaskHistoryManager.cpp
+    TokenRing.h
+    TokenRing.cpp
     ChatView.h
     ChatView.cpp    
     JZEngineRuntime.h

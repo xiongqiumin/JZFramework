@@ -10,6 +10,11 @@ add_executable(test_net net_test_common.cpp
 	test_webSocket.cpp)
 target_link_libraries(test_net JZFramework)
 
+# ---- ctest 注册: 仅自包含的 test_net(local 模式, 单/多线程各15s) ----
+# test_tcp_bench/test_mg* 为基准程序、test_proxy/test_net_compress 依赖本地 python 服务, 不注册
+add_test(NAME net.test_net COMMAND test_net)
+set_tests_properties(net.test_net PROPERTIES TIMEOUT 600 LABELS "slow")
+
 # TCP client 上下行压测 (独立程序, 配合 iperf3/nc 等 Linux 压测工具)
 add_executable(test_tcp_bench test_tcp_bench.cpp)
 target_link_libraries(test_tcp_bench JZFramework)

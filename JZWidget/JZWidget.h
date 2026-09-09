@@ -5,6 +5,7 @@
 #include "JZPoint.h"
 #include "JZSize.h"
 #include "JZRect.h"
+#include "JZString.h"
 #include "JZStyleSet.h"
 
 #include <climits>
@@ -60,6 +61,9 @@ public:
 private:
     JZCursorShape m_shape;
 };
+
+class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
+class JZStyleSheetParser;   // 样式表解析器 (控件级 setStyleSheet 持有, 见 JZStyleSheetParser.h)
 
 class JZWidget : public JZObject
 {
@@ -191,6 +195,12 @@ public:
     void unsetCursor();
     JZCursor cursor() const;
 
+    // ---- 悬浮提示 (等价 Qt QWidget::setToolTip) ----
+    // 鼠标悬停本控件时, 自动在控件上方弹出多行小面板 (文本用 '\n' 换行)。
+    // 逻辑集中在 JZWidget, 各控件只需 setTooltip 即可, 不必各自维护弹层。
+    void setTooltip(const JZString& tip);
+    const JZString& tooltip() const;
+
     // 布局
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
@@ -199,6 +209,44 @@ public:
     // 后续由样式表 (JZStyleSheet) 解析填充。
     JZStyleSet& style() { return m_style; }
     const JZStyleSet& style() const { return m_style; }
+
+    // ---- 样式表 (CSS 子集, 见 docs/jzstylesheet-design.md) ----
+    // 本阶段只落"选择器素材 + 文本 -> 规则"的解析链路, 暂不做规则匹配 (resolve) 与生效:
+    //   setStyleClass: 空格分隔的类名串 (同 HTML class 属性), 供将来的类选择器匹配;
+    //   setStyleSheet: 控件级样式表 (Qt 语义: 作用于本控件), 解析结果由本控件持有;
+    //                  返回 false 表示 CSS 有语法错误, 原因见 styleSheetError();
+    //   全局样式表见 JZApplication::setStyleSheet。
+    void setStyleClass(const std::string& cls);
+    const std::string& styleClass() const;
+
+    bool setStyleSheet(const std::string& css);
+    std::string styleSheet() const;
+    std::string styleSheetError() const;
+    // 解析结果 (未设置过样式表则返回 nullptr)
+    const JZStyleSheetParser* styleSheetParser() const;
+
+    // ---- 样式解析 (resolve) ----
+    // 本控件**消费**哪些样式属性。声明驱动解析: 未声明的属性不会被写入本控件的
+    // JZStyleSet (写了也不生效)。基类 = 盒子层 (背景/边框/圆角/padding);
+    // 需要消费更多属性的控件重写并把基类的结果带上。
+    //
+    // 之所以由控件自己声明: 属性最终由绘制代码消费, 只有绘制方知道自己读什么
+    // (将来的自定义列表子项 / 自定义绘制更是如此)。漏声明会立刻表现为"样式没效果",
+    // 比"元数据与实现漂移"更容易发现。
+    //
+    // 声明的名字必须在 JZStyleSet::propertyTable() 内 (未知名等于永不生效)。
+    virtual std::vector<std::string> styleProps() const;
+
+    // UA 默认外观: 各控件重写返回自己的硬编码默认值 (换肤色之前的外观基线)。
+    // 每次重算样式时以此为起点, 再叠加样式表规则, 保证"未写样式的属性"回落到默认外观。
+    virtual JZStyleSet uaStyle() const;
+
+    // 样式失效: 清掉本控件与其子树 (控件级样式表才影响子孙) 的解析缓存并重绘。
+    // 类变化 / 换表 / 控件级 setStyleSheet 后调用。
+    void styleChanged();
+
+    // 已解析样式 (内部结构, 绘制用): 首次访问时按当前样式表解析并缓存
+    const JZStyleSet& resolvedStyle();
 
     // 重排:
     //   updateLayout()   只重排自身子控件(布局应用 / resize 内部使用, 不向上传播);
@@ -259,6 +307,11 @@ protected:
     virtual void mouseMoveEvent(JZMouseEvent* event);
     virtual void wheelEvent(JZMouseEvent* event);
 
+    // 悬停态 (JZWindow 命中控件变化时分发, 同 Qt 的 enterEvent/leaveEvent):
+    // 进入/离开本控件 (含其子树) 时触发。默认空; 悬浮提示等据此显示/收起。
+    virtual void enterEvent(JZEvent* event);
+    virtual void leaveEvent(JZEvent* event);
+
     // 鼠标抓取: 抓取后所有鼠标事件 (含窗口客户区外) 直发本控件,
     // 直到 releaseMouse 或窗口隐藏。用于拖拽 (滑块/分隔条) 避免光标
     // 冲出控件命中带时丢失 mouseMove/mouseRelease。等价于 Qt::grabMouse。
@@ -282,6 +335,14 @@ protected:
     JZLayout* m_layout = nullptr;
 
     JZStyleSet m_style;
+
+    // ---- 样式表素材 (见上方 setStyleClass/setStyleSheet) ----
+    std::string m_styleClass;
+    std::string m_styleSheetText;             // 原始 CSS 文本 (styleSheet() 原样返回)
+    JZStyleSheetParser* m_styleSheet = nullptr;   // 懒创建: 首次 setStyleSheet 时 new
+
+    // 解析缓存: m_style 是否已按当前 (表版本 + 类 + 自身表) 解析过
+    bool m_styleResolved = false;
 
     int m_minW;
     int m_minH;
@@ -309,6 +370,17 @@ protected:
     void _layoutAttach(JZLayout* layout);
     void _layoutDetach(JZLayout* layout);
     std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
+
+    // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 起延时, 到时显示; leaveEvent 收起) ----
+    void showTooltip();
+    void hideTooltip();
+    void onTooltipShow();     // 悬停延时到: 弹出 (区别于立即响应)
+    void updateTooltip();
+    enum { kTooltipShowDelay = 500 };   // 悬停多久才弹出 (ms)
+
+    JZString   m_tooltipText;     // 空 = 不显示悬浮提示
+    JZWidget*  m_tooltipPopup = nullptr;   // 懒创建: 悬停时弹出在控件上方的自绘面板
+    JZTimer*   m_tooltipTimer = nullptr;   // 进入后的一次性"显示延时"定时器 (leave 取消)
 };
 
 #endif

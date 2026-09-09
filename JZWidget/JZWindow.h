@@ -101,6 +101,11 @@ public:
     // 也会调用以立即刷新。
     void applyMouseCursor();
 
+    // 悬停控件跟踪: 命中控件变化 (mouseMove / 光标离开客户区) 时, 给旧控件链派发
+    // leaveEvent、给新控件链派发 enterEvent (含各自祖先, 止于最近公共祖先)。
+    // 由 WndProc 的 WM_MOUSELEAVE 与 dispatchMouse 调用, 故为 public。
+    void updateHover(JZWidget* newHover);
+
     // ---- 输入屏蔽 (全屏蒙版, AI 操作期间) ----
     // 设置 gate 后, gate 可见期间本窗口丢弃真实用户的鼠标/键盘/IME 输入, 只放行
     // gate 自身子树 (如蒙版上的"取消"按钮); Esc 会交给 gate 处理 (= 取消)。
@@ -188,6 +193,9 @@ protected:
     // (JZDialog 重写为 ignore + reject: 只隐藏不销毁, 可复用。)
     virtual void closeEvent(JZCloseEvent* event);
     virtual void paintEvent(JZPainterEvent* event) override;
+
+    // UA 默认外观: 窗口白底 (换肤前的外观基线, 样式表未覆盖时回落到这里)
+    JZStyleSet uaStyle() const override;
     virtual void keyPressEvent(JZKeyEvent* event) override;
 
     // 命中测试: 返回包含全局逻辑坐标的最深层可见控件 (不含子窗口/根自身)
@@ -214,6 +222,7 @@ protected:
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
+    JZWidget* m_hoverWidget = nullptr;  // 当前悬停的最深控件 (updateHover 派发 enter/leave)
     void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
     bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏

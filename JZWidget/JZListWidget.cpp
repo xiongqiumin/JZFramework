@@ -125,6 +125,43 @@ int JZListWidget::itemHeight() const
     return m_itemHeight;
 }
 
+JZSize JZListWidget::sizeHint() const
+{
+    // 虚拟列表自己知道该多大:
+    //   宽度 = 最宽项 (文本 + 图标) + 左右留白
+    //   高度 = 行数 * 行高, 至多 8 行 (再多交给滚动 —— 与下拉弹层的可见行数一致)
+    const int maxVisible = 8;
+
+    JZFont font(m_mode == ListMode ? 14 : 12);
+    int w = 0;
+    for (size_t i = 0; i < m_items.size(); i++)
+    {
+        const JZListWidgetItem& it = m_items[i];
+        int iw = JZFontMetrics::textWidth(it.text, font);
+        if (!it.icon.isNull())
+            iw += 20 + 6;              // 图标 + 间距 (与 defaultPaint 一致)
+        if (iw > w)
+            w = iw;
+    }
+
+    int h;
+    if (m_mode == ListMode)
+    {
+        w += 6 + 6;                    // defaultPaint 左右各留 6
+        int rows = std::min(std::max(1, (int)m_items.size()), maxVisible);
+        h = rows * m_itemHeight + 4;
+    }
+    else
+    {
+        w = std::max(w, m_cellW);
+        int rows = std::min(std::max(1, (int)m_items.size()), maxVisible);
+        h = rows * m_cellH + 4;        // 图片模式按"每项一行"给下限, 实际由视口宽度决定列数
+    }
+
+    JZSize min = minimumSizeHint();
+    return JZSize(std::max(w, min.width()), std::max(h, min.height()));
+}
+
 void JZListWidget::setCellSize(int w, int h)
 {
     if (w > 0) m_cellW = w;

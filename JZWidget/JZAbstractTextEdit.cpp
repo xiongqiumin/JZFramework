@@ -1299,8 +1299,11 @@ void JZAbstractTextEdit::updateIMEWindowPos()
     cf.ptCurrentPos.y = pt.y + toPhysical(kImeCompOffsetY, scale);
     ImmSetCompositionWindow(hIMC, &cf);
 
-    // 候选窗左上角: 组字起点往下移一行
-    // (CFS_CANDIDATEPOS 比 CFS_EXCLUDE 兼容性好, 后者部分 IME 支持不佳)
+    // 候选窗左上角: 锚在当前输入行(组字起点所在行)的正下方一行。
+    // 用 CFS_CANDIDATEPOS (比 CFS_EXCLUDE 兼容性好): 微软拼音/搜狗会把候选窗左上角
+    // 直接放到 ptCurrentPos, 即"正在输入的那一行"底下 —— 这正是"输入框应在输入文字下面"。
+    // 注意: 多行输入框若当前行在框底(文本已填满), 候选窗会自然落在框底那一行下方,
+    // 这是预期行为, 不是偏到框外。
     CANDIDATEFORM cdf;
     ZeroMemory(&cdf, sizeof(cdf));
     cdf.dwIndex = 0;

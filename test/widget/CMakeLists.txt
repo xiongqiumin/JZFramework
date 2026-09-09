@@ -1,3 +1,5 @@
 add_subdirectory(widget)
 add_subdirectory(shooter)
 add_subdirectory(image)
+add_subdirectory(stylesheet)
+add_subdirectory(layout)

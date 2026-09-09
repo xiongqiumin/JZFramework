@@ -6,3 +6,7 @@ jz_add_proto_json(test_tools_proto sample.proto)
 
 add_executable(test_tools test_tools.cpp)
 target_link_libraries(test_tools JZFramework test_tools_resources test_tools_proto)
+
+# ---- ctest 注册 ----
+add_test(NAME tools.test_tools COMMAND test_tools)
+set_tests_properties(tools.test_tools PROPERTIES TIMEOUT 60)

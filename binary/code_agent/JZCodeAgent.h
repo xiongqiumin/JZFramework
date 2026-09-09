@@ -71,20 +71,6 @@ struct GuardState
     std::deque<std::string> recentCalls;     // 最近的调用指纹(工具名 + 参数)
 };
 
-// ==================== 对话历史条目 ====================
-struct HistoryEntry
-{
-    int    id = 0;                    // 唯一递增 ID
-    std::string title;                // 自动生成的标题（第一条用户消息摘要）
-    std::string firstMessage;         // 第一条用户消息原文
-    int64_t createdAt = 0;            // 创建时间戳
-    int    messageCount = 0;          // 对话消息数（用户+助手）
-    bool   isJzAgent = false;         // 是否是 JZAgent 临时任务
-
-    Json::Value toJson() const;
-    void fromJson(const Json::Value &root);
-};
-
 // 一条会话日志，网页端按 id 增量拉取
 struct CodeAgentLog
 {
@@ -180,32 +166,16 @@ public:
     void applyLlmConfig(const JZAgentConfig &llm);
     JZAgent *agent();
 
-    // 工作区对话存档（<工作区>/.jzcode）：切换工作区时自动保存旧对话、导入新对话。
-    // 只存对话历史，systemPrompt / 工具定义每次重建时重新生成，不进文件。
-    std::string historyFilePath() const;
-    void saveWorkspaceHistory();
-    void loadWorkspaceHistory();
+    // 把 agent 里的对话历史重建到会话日志（导入存档后界面要用）
     void rebuildLogsFromHistory();
 
-    // ---- 会话历史管理（侧边栏） ----
-    // 记录一条新会话（用户第一条消息 + 消息计数）
-    void beginSession(const std::string &firstMessage, bool isJzAgent = false);
-    // 更新当前会话状态（在 request/onFinished 中调用）
-    void updateSession();
-    // 保存会话历史条目到文件列表（每次会话结束写入）
-    void saveSessionHistory();
-    // 从文件加载所有历史条目
-    void loadSessionHistory();
-    // 获取所有历史条目
-    const std::vector<HistoryEntry> &sessionHistory() const { return m_sessionHistory; }
-    // 当前正在编辑的会话 ID（正在进行的任务）
-    int currentSessionId() const { return m_currentSessionId; }
-    // 按 ID 查找历史条目
-    const HistoryEntry *findHistoryEntry(int id) const;
-    // 删除指定 ID 的历史条目
-    bool removeHistoryEntry(int id);
-    // 自动生成标题（截取第一条消息前 N 个字符）
-    static std::string generateTitle(const std::string &firstMessage);
+    // ---- 对话存取（"任务"这层由 TaskHistoryManager 管，这里只负责读写一段对话） ----
+    // 把当前对话存到 path（任务存档路径由 TaskHistoryManager::archivePath() 给出）
+    bool saveConversation(const std::string &path) const;
+    // 从 path 载入一段对话（替换当前对话）并按它重建会话日志
+    bool loadConversation(const std::string &path);
+    // 中断进行中的任务并重置为一段干净的新对话（切换/新建任务时用）
+    void resetConversation();
 
     // 文件浏览（网页端复用与工具一致的路径校验）
     bool listFiles(const std::string &rel, std::vector<std::string> &out, std::string &error) const;
@@ -271,13 +241,6 @@ protected:
     JZTimer *m_hostTimer = nullptr;
     bool m_hostRunning = false;
     bool m_hostTimeout = false;
-
-    // ---- 会话历史管理 ----
-    std::vector<HistoryEntry> m_sessionHistory;   // 所有会话历史条目（按时间升序）
-    int m_currentSessionId = 0;                   // 当前会话 ID（0 = 无活跃会话）
-    int m_sessionMessageCount = 0;                // 当前会话的消息计数
-    bool m_sessionIsJzAgent = false;              // 当前会话是否是 JZAgent 临时任务
-    int m_nextSessionId = 1;                      // 下一个会话 ID
 };
 
 #endif // !JZ_CODE_AGENT_H_

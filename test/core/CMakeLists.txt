@@ -20,3 +20,10 @@ target_link_libraries(test_benchmark_io JZFramework)
 add_executable(test_process
     test_process.cpp)
 target_link_libraries(test_process JZFramework)
+
+# ---- ctest 注册: 仅含通过判定的功能用例 (test_benchmark* 为无断言基准程序, 不注册) ----
+add_test(NAME core.test_core COMMAND test_core)
+set_tests_properties(core.test_core PROPERTIES TIMEOUT 600)
+
+add_test(NAME core.test_process COMMAND test_process)
+set_tests_properties(core.test_process PROPERTIES TIMEOUT 120)

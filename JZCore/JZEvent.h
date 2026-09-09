@@ -17,6 +17,8 @@ enum {
     JZEvent_resize,
     JZEvent_key,
     JZEvent_mouse,
+    JZEvent_enter,      // 鼠标进入控件 (Qt 的 QEvent::Enter)
+    JZEvent_leave,      // 鼠标离开控件 (Qt 的 QEvent::Leave)
     JZEvent_close,
     JZEvent_user = 1000,
 };
@@ -53,6 +55,21 @@ public:
 
 protected:
     int m_id;
+};
+
+// 鼠标进入/离开控件 (同 Qt 的 QEvent::Enter / QEvent::Leave)。
+// 由 JZWindow 在命中控件变化 (hitTest) 时派发: 离开旧控件链、进入新控件链
+// (含各自祖先, 止于两者最近公共祖先)。无坐标, 仅作"悬停态"通知。
+class JZEnterEvent : public JZEvent
+{
+public:
+    JZEnterEvent() : JZEvent(JZEvent_enter) {}
+};
+
+class JZLeaveEvent : public JZEvent
+{
+public:
+    JZLeaveEvent() : JZEvent(JZEvent_leave) {}
 };
 
 #endif // !JZ_EVENT_H_

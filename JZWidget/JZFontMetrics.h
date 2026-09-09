@@ -6,22 +6,24 @@
 
 // 字体度量后端接口: 由渲染后端实现并在 init 时注册 (如 JZGdiBackend),
 // 保证控件测量与最终绘制使用同一套字体。后端销毁前须置空注册。
+// 度量方法携带完整 JZFont (字体族 + 字号 + 风格), 由后端决定如何建 GDI+ 字体。
 class JZFontEngine
 {
 public:
     virtual ~JZFontEngine() = default;
-    virtual int textWidth(const std::string& text, int pixelSize) = 0;
-    virtual int textHeight(int pixelSize) = 0;
+    virtual int textWidth(const std::string& text, const JZFont& font) = 0;
+    virtual int textHeight(const JZFont& font) = 0;
 
     // ---- 文本控件 (光标定位 / 垂直居中) 所需 ----
     // 带默认实现: 后端不实现也能工作, 只是垂直居中会有 1~2px 偏差。
     // 精确实现参考 JZGdiBackend::GdiFontEngine (GDI+ FontFamily::GetCellAscent 等)。
+    // 字形 cell 度量只依赖字体族 + 字号, 与风格 (粗体/斜体等) 无关。
     //   ascent:          基线以上高度
     //   descent:         基线以下高度
     //   internalLeading: 字体内部行距 (位于字符 cell 顶部, 字形之上的空白)
-    virtual int ascent(int pixelSize)          { return textHeight(pixelSize) * 4 / 5; }
-    virtual int descent(int pixelSize)         { return textHeight(pixelSize) - ascent(pixelSize); }
-    virtual int internalLeading(int pixelSize) { return 0; }
+    virtual int ascent(const JZFont& font)          { return textHeight(font) * 4 / 5; }
+    virtual int descent(const JZFont& font)         { return textHeight(font) - ascent(font); }
+    virtual int internalLeading(const JZFont& font) { return 0; }
 };
 
 // 字体度量门面 (静态): 控件在 paintEvent / sizeHint 中测量文本,

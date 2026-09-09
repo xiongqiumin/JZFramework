@@ -241,9 +241,19 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     // ---- 鼠标: 物理像素 / scale -> 逻辑像素, 翻译成 JZMouseEvent 走 onWindowProcess ----
     case WM_MOUSEMOVE:
+        // 请求一次"光标离开客户区"通知, 以便 updateHover(nullptr) 给当前悬停控件派发 leave
+        {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+        }
         if (jzSendMouseEvent(self, JZMouseEvent::Move, JZMouseEvent::NoButton, lParam))
             return 0;
         break;
+
+    case WM_MOUSELEAVE:
+        // 光标离开客户区: 当前悬停控件收 leave (移入其它窗口后下一次 MOVE 会重新 enter)
+        self->updateHover(nullptr);
+        return 0;
 
     case WM_LBUTTONDOWN:
         if (jzSendMouseEvent(self, JZMouseEvent::Press, JZMouseEvent::LeftButton, lParam))
@@ -687,6 +697,8 @@ void JZWindow::hideEvent(JZHideEvent* event)
         // 窗口隐藏: 任何进行中的鼠标抓取都失效 (控件可能已被移除/不可见)
         if (m_mouseGrabber)
             releaseMouse(nullptr);
+        // 悬停态随窗口一起失效, 下次显示后由 mouseMove 重新建立
+        m_hoverWidget = nullptr;
         // 只有抓取确实在本窗口手里时才释放, 避免误放别的窗口(或子弹层)的抓取
         if (GetCapture() == (HWND)m_hwnd)
             ReleaseCapture();
@@ -835,7 +847,14 @@ void JZWindow::paintEvent(JZPainterEvent* event)
 {
     // 窗口底色 (内容控件可覆盖)
     JZPainter p(this);
-    p.fillRect(rect(), JZColor::White);
+    p.fillRect(rect(), style().background.valueOr(JZColor::White));
+}
+
+JZStyleSet JZWindow::uaStyle() const
+{
+    JZStyleSet s;
+    s.background = JZOptional<JZColor>::Some(JZColor::White);
+    return s;
 }
 
 void JZWindow::resize(int w, int h)
@@ -924,6 +943,42 @@ JZWidget* JZWindow::hitTestRec(JZWidget* w, const JZPoint& global)
     return nullptr;
 }
 
+// 收集 from 到 root(不含) 的祖先链 (from 在链头, root 之前结束)。
+static void collectHoverChain(JZWidget* from, JZWidget* root, std::vector<JZWidget*>& chain)
+{
+    for (JZWidget* w = from; w && w != root; w = w->parentWidget())
+        chain.push_back(w);
+}
+
+void JZWindow::updateHover(JZWidget* newHover)
+{
+    if (newHover == m_hoverWidget)
+        return;
+
+    std::vector<JZWidget*> oldChain, newChain;
+    collectHoverChain(m_hoverWidget, this, oldChain);
+    collectHoverChain(newHover, this, newChain);
+
+    // 找最近公共祖先: 从链尾 (最接近 root) 向上比对, 公共前缀不触发事件
+    int i = (int)oldChain.size() - 1;
+    int j = (int)newChain.size() - 1;
+    while (i >= 0 && j >= 0 && oldChain[i] == newChain[j]) {
+        --i; --j;
+    }
+
+    // leave: 旧链中不再悬停的控件, 由深到浅 (oldChain[i] .. oldChain[0])
+    JZLeaveEvent leaveEv;
+    for (int k = i; k >= 0; --k)
+        jzApp->sendEvent(oldChain[k], &leaveEv);
+
+    // enter: 新链中开始悬停的控件, 由浅到深 (newChain[0] .. newChain[j])
+    JZEnterEvent enterEv;
+    for (int k = 0; k <= j; ++k)
+        jzApp->sendEvent(newChain[k], &enterEv);
+
+    m_hoverWidget = newHover;
+}
+
 // ==================== 事件统一入口 ====================
 
 // 事件队列派发入口: invalidate 在此合成到主线程 paint task (本轮 dealPaint 绘制)。
@@ -996,6 +1051,13 @@ bool JZWindow::dispatchMouse(JZMouseEvent* ev)
         JZWidget* hit = hitTest(ev->globalPos());
         if (!hit || !jzWindowHitInGate(hit, m_inputGate))
             return true;   // 事件丢弃, 不外泄到蒙版下的控件
+    }
+
+    // 悬停跟踪: mouseMove 命中控件变化时派发 enter/leave (拖拽抓取 / AI 蒙版期间不跟踪,
+    // 避免弹层/提示在错误时机弹出)。press/release/wheel 不改悬停态。
+    if (!m_mouseGrabber && !(m_inputGate && m_inputGate->isVisible()) &&
+        ev->mouseType() == JZMouseEvent::Move) {
+        updateHover(hitTest(ev->globalPos()));
     }
 
     // 滚轮冒泡 (Qt 语义): 从最深的可见控件沿父链逐级投递, 未消费的

@@ -56,6 +56,11 @@ public:
     int itemHeight() const;
     void setCellSize(int w, int h);     // 图片模式单元格大小
 
+    // 期望尺寸: 宽度贴合最宽项 (文本 + 图标), 高度按项数 * 行高 (至多 8 行,
+    // 再多交给滚动)。虚拟列表只有自己知道该多大 —— 基类默认 0×0 会让它在
+    // 固定项 (stretch=0) 的布局里被压成 0。
+    JZSize sizeHint() const override;
+
     // 设置自定义绘图函数; 不设置则使用内置默认绘图(图标 + 文本)
     void setItemPaint(PaintFn fn);
 

@@ -8,6 +8,9 @@
 #include "JZTx.h"
 #include "JZDriver.h"
 #include "JZWindow.h"
+#ifdef HAS_JZWidget
+#include "JZStyleSheetParser.h"
+#endif
 
 #ifdef _WIN32
 #include "JZWin32Thread.h"
@@ -60,6 +63,14 @@ JZApplication::~JZApplication()
 
     delete m_mainThread;
     jzApp = nullptr;
+
+#ifdef HAS_JZWidget
+    if (m_styleSheet)
+    {
+        delete m_styleSheet;
+        m_styleSheet = nullptr;
+    }
+#endif
 }
 
 std::string JZApplication::applicationFilePath()
@@ -234,5 +245,42 @@ void JZApplication::notifyWindowClosed(JZWindow*)
     // Win32 主循环阻塞在 GetMessage: quit() 只置标志 + notify 条件变量, 唤醒不了
     // 消息泵 (最长要等一个心跳周期)。补一次 wakeUp 让退出立即生效。
     m_mainThread->wakeUp();
+}
+
+// ==================== 全局样式表 ====================
+
+bool JZApplication::setStyleSheet(const std::string& css)
+{
+    if (!m_styleSheet)
+        m_styleSheet = new JZStyleSheetParser();
+
+    if (!m_styleSheet->parse(css))
+        return false;   // 解析失败: 保持上一次成功的内容, 原因见 styleSheetError()
+
+    m_styleSheetText = css;
+
+    // 整表替换: 所有顶层窗口整树重新解析样式并重绘
+    // (变量在 parse 期已替换成字面量, 故换主题只能靠换表 —— 无变量继承/作用域覆盖)
+    for (size_t i = 0; i < m_topLevelWindows.size(); i++)
+    {
+        if (m_topLevelWindows[i])
+            m_topLevelWindows[i]->styleChanged();
+    }
+    return true;
+}
+
+std::string JZApplication::styleSheet() const
+{
+    return m_styleSheetText;
+}
+
+std::string JZApplication::styleSheetError() const
+{
+    return m_styleSheet ? m_styleSheet->errorString() : std::string();
+}
+
+const JZStyleSheetParser* JZApplication::styleSheetParser() const
+{
+    return m_styleSheet;
 }
 #endif

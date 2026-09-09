@@ -823,6 +823,5 @@ int main(int argc,char *argv[])
     test_JZThread(&test);
     test_JZMutexPointer(&test);
     test_JZReadWriteLock(&test);
-    test.run(argc, argv);
-    return 0;
+    return test.run(argc, argv);
 }

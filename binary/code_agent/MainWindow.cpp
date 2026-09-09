@@ -13,47 +13,12 @@
 #include "JZString.h"
 #include "JZStd.h"
 #include "JZFileInfo.h"
+#include "JZDir.h"
 #include "JZMessageBox.h"
 #include "JZAction.h"
 #include "JZApplication.h"
 
 using namespace std;
-
-// 授信目录输入：多个用分号分隔；每个目录可用 "|rw" 标记为可写（默认只读）。
-// 例如: "C:\Python312; C:\MyProj |rw"
-static string joinDirList(const vector<TrustedDir>& dirs)
-{
-    string text;
-    for (const auto& d : dirs)
-        text += (text.empty() ? string() : string("; ")) + d.path + (d.writable ? " |rw" : "");
-    return text;
-}
-
-static vector<TrustedDir> parseDirList(const string& text)
-{
-    vector<TrustedDir> out;
-    for (const auto& p : str_split(text, ";", JZ::SkipEmptyParts))
-    {
-        string s = str_trimmed(p);
-        if (s.empty())
-            continue;
-        TrustedDir td;
-        // 末尾 "|rw" / "|ro" 标记读写权限（Windows 路径不含 '|'）
-        size_t bar = s.find('|');
-        if (bar != string::npos)
-        {
-            string flag = str_toLower(str_trimmed(s.substr(bar + 1)));
-            td.writable = (flag == "rw");
-            s = str_trimmed(s.substr(0, bar));
-        }
-        if (!s.empty())
-        {
-            td.path = s;
-            out.push_back(td);
-        }
-    }
-    return out;
-}
 
 // 在 PATH 环境变量里找一个可执行文件，命中返回全路径（已规范化），否则返回空。
 // 用于启动时按本机默认补全可信程序（cmake / python 等）。
@@ -185,10 +150,15 @@ InputEdit::InputEdit(JZWidget* parent)
     const int btnW = 70, btnH = 30;
     m_sendBtn = new JZPushButton(this, btnW, btnH, "发送");
 
+    // 发送按钮左侧的 token 用量圆环（26x26，与按钮垂直居中对齐）
+    m_tokenRing = new TokenRing(this);
+
     // selfLayout 锚定右下角: 右/下锚点下正 dx/dy 向内取反 = 距右/底边距 8/6,
     // 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
     auto* layout = new JZSelfLayout();
     layout->addWidget(m_sendBtn, JZSelfLayout::BottomRight, 8, 6);
+    layout->addWidget(m_tokenRing, JZSelfLayout::BottomRight,
+                      8 + btnW + 8, 6 + (btnH - 26) / 2);
     setLayout(layout);
 
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
@@ -308,174 +278,6 @@ void NewProjectDialog::onOk()
                               string("工程名不能包含以下字符: ") + kBadChars)->exec();
         return;
     }
-    accept();
-}
-
-// ==================== SettingsDialog ====================
-SettingsDialog::SettingsDialog(JZWidget* parent)
-    : JZDialog(parent)
-{
-    setTitle("设置");
-    setLayout(new JZVBoxLayout(0, 0));
-
-    // ---- 主区域: 左导航 + 右内容 ----
-    JZWidget* mainArea = new JZWidget(this);
-    JZHBoxLayout* mainLayout = new JZHBoxLayout(0, 0);
-
-    // 左侧导航列表
-    m_navList = new JZListWidget(mainArea);
-    m_navList->addItem("模型配置");
-    m_navList->addItem("路径配置");
-    m_navList->addItem("安全配置");
-    m_navList->setFixedWidth(120);
-    m_navList->setCurrentIndex(0);
-    mainLayout->addWidget(m_navList, 0);
-
-    // 右侧内容区
-    m_stack = new JZStackedWidget(mainArea);
-
-    // --- 模型配置页 ---
-    {
-        JZWidget* page = new JZWidget(m_stack);
-        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
-
-        auto addRow = [page, &v](const string& label, JZLineEdit*& edit) {
-            JZWidget* row = new JZWidget(page);
-            JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-            JZLabel* l = new JZLabel(label, row);
-            l->setFixedWidth(80);
-            edit = new JZLineEdit(row);
-            h->addWidget(l, 0);
-            h->addWidget(edit, 1);
-            row->setLayout(h);
-            v->addWidget(row, 0);
-        };
-        addRow("模型地址", m_urlEdit);
-        addRow("模型名称", m_nameEdit);
-        addRow("API Token", m_tokenEdit);
-        v->addStretch(1);
-        page->setLayout(v);
-        m_stack->addWidget(page);
-    }
-
-    // --- 路径配置页 ---
-    {
-        JZWidget* page = new JZWidget(m_stack);
-        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
-
-        auto addRow = [page, &v](const string& label, JZLineEdit*& edit, bool withBrowse,
-                                 JZPushButton*& browseBtn)
-        {
-            JZWidget* row = new JZWidget(page);
-            JZHBoxLayout* h = new JZHBoxLayout(6, 6);
-            JZLabel* l = new JZLabel(label, row);
-            l->setFixedWidth(80);
-            edit = new JZLineEdit(row);
-            h->addWidget(l, 0);
-            h->addWidget(edit, 1);
-            if (withBrowse)
-            {
-                browseBtn = new JZPushButton(row, 70, 28, "浏览...");
-                h->addWidget(browseBtn, 0);
-            }
-            row->setLayout(h);
-            v->addWidget(row, 0);
-        };
-        addRow("工作区", m_wsEdit, true, m_wsBrowseBtn);
-        addRow("TS 环境", m_tsEdit, true, m_tsBrowseBtn);
-        m_tsEdit->setPlaceholderText("JS/TS 编译器目录（含 runtime/node 与 tsc），默认 E:/libs/ts_compiler");
-        v->addStretch(1);
-        page->setLayout(v);
-        m_stack->addWidget(page);
-    }
-
-    // --- 安全配置页 ---
-    {
-        JZWidget* page = new JZWidget(m_stack);
-        JZVBoxLayout* v = new JZVBoxLayout(12, 10);
-
-        JZLabel* desc = new JZLabel("授信目录中的可执行文件将被允许运行。", page);
-        v->addWidget(desc, 0);
-
-        JZWidget* row = new JZWidget(page);
-        JZVBoxLayout* rowLayout = new JZVBoxLayout(0, 0);
-        m_trustedEdit = new JZLineEdit(row);
-        m_trustedEdit->setPlaceholderText("多个用分号分隔，如 C:\\Python312; C:\\MyProj |rw（默认只读，|rw 标记可写）");
-        rowLayout->addWidget(m_trustedEdit, 0);
-        rowLayout->addStretch(1);
-        row->setLayout(rowLayout);
-        v->addWidget(row, 1);
-        page->setLayout(v);
-        m_stack->addWidget(page);
-    }
-
-    m_stack->setCurrentIndex(0);
-    mainLayout->addWidget(m_stack, 1);
-    mainArea->setLayout(mainLayout);
-    static_cast<JZVBoxLayout*>(this->layout())->addWidget(mainArea, 1);
-
-    // ---- 底部按钮行 ----
-    JZWidget* btnRow = new JZWidget(this);
-    JZHBoxLayout* bh = new JZHBoxLayout(12, 8);
-    bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "保存");
-    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
-    bh->addWidget(ok, 0);
-    bh->addWidget(cancel, 0);
-    btnRow->setLayout(bh);
-    static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
-
-    // ---- 信号 ----
-    connect(&m_navList->currentIndexChanged, this, &SettingsDialog::onNavChanged);
-    connect(&m_wsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseWorkspace);
-    connect(&m_tsBrowseBtn->sigClicked, this, &SettingsDialog::onBrowseTsEnv);
-    connect(&ok->sigClicked, this, &SettingsDialog::onAccept);
-    connect(&cancel->sigClicked, this, &SettingsDialog::reject);
-
-    resize(480, 320);
-}
-
-void SettingsDialog::onNavChanged(int index)
-{
-    m_stack->setCurrentIndex(index);
-}
-
-void SettingsDialog::setValues(const AppConfig& cfg)
-{
-    m_urlEdit->setText(cfg.modelUrl);
-    m_nameEdit->setText(cfg.modelName);
-    m_tokenEdit->setText(cfg.modelToken);
-    m_wsEdit->setText(cfg.workspace);
-    m_tsEdit->setText(cfg.tsEnvDir);
-    m_trustedEdit->setText(joinDirList(cfg.trustedDirs));
-}
-
-void SettingsDialog::getValues(AppConfig& cfg)
-{
-    cfg.modelUrl = m_urlEdit->text();
-    cfg.modelName = m_nameEdit->text();
-    cfg.modelToken = m_tokenEdit->text();
-    cfg.workspace = m_wsEdit->text();
-    cfg.tsEnvDir = str_trimmed(m_tsEdit->text());
-    cfg.trustedDirs = parseDirList(m_trustedEdit->text());
-}
-
-void SettingsDialog::onBrowseWorkspace()
-{
-    string dir = JZFileDialog::getExistingDirectory(this, "选择工作区目录", m_wsEdit->text());
-    if (!dir.empty())
-        m_wsEdit->setText(dir);
-}
-
-void SettingsDialog::onBrowseTsEnv()
-{
-    string dir = JZFileDialog::getExistingDirectory(this, "选择 TS 环境目录", m_tsEdit->text());
-    if (!dir.empty())
-        m_tsEdit->setText(dir);
-}
-
-void SettingsDialog::onAccept()
-{
     accept();
 }
 
@@ -661,11 +463,16 @@ void WelcomePage::onRecentActivated(int index)
 MainWindow::MainWindow(JZWidget* parent)
     : JZMainWindow(parent)
 {
-    resize(900, 640);
+    resize(1120, 680);
     setTitle("JZCodeAgent");
 
     loadConfig();
     m_agent = new JZCodeAgent(this);
+
+    // 任务数据放应用目录（与 code_agent.json 同级），不写进用户的工程目录。
+    // 索引是全局的（跨工程），任务条目自己记 workspace，界面按当前工程过滤。
+    m_historyManager.setStorageDir(JZPlatform::applicationDirPath() + "/tasks");
+
     setupUi();
 
     applyConfig();
@@ -679,9 +486,8 @@ MainWindow::MainWindow(JZWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    // 退出前给当前工作区存档（agent 是子对象，此时仍然有效）
-    if (m_agent)
-        m_agent->saveWorkspaceHistory();
+    // 退出前给当前任务存档（agent 是子对象，此时仍然有效）
+    saveCurrentTask();
 }
 
 void MainWindow::setupUi()
@@ -703,15 +509,25 @@ void MainWindow::setupUi()
     fileMenu->addAction("退出", [this]() { onExit(); });
     addMenuBar(m_menuBar);
 
-    // 中央区: 工具条 + 聊天视图 + 底部输入框, 整体作为中央控件挂载。
-    // 注意: JZLayout::addWidget 不会自动 reparent, 放进容器布局的子控件父必须就是该容器。
+    // 中央区: JZSplitter 分成左右两块 —— 左(任务列表) | 右(工具条 + 聊天视图 + 底部输入框)。
+    // splitter 自行管理子控件几何（不走 m_layout），子控件的父必须就是 splitter。
     JZWidget* central = new JZWidget(this);
+    m_splitter = new JZSplitter(JZSplitter::Horizontal, central);
+    m_splitter->setHandleWidth(4);
+
+    JZWidget* leftArea = new JZWidget(m_splitter);
+
+    // 对话区 | 输入区 用竖向 JZSplitter 分割（可拖动调整输入框高度）
+    m_editorSplitter = new JZSplitter(JZSplitter::Vertical, leftArea);
+    m_editorSplitter->setHandleWidth(4);
 
     // ChatView 上方的工具条: 左侧状态信息, 右侧 [清空]（未打开工程时隐藏）
-    JZWidget* topBar = new JZWidget(central);
+    JZWidget* topBar = new JZWidget(leftArea);
     topBar->setFixedHeight(32);
     JZHBoxLayout* topLayout = new JZHBoxLayout(6, 0);
-    topLayout->addWidget(new JZLabel("CODEBUDDY"));
+    topLayout->addWidget(new JZLabel("CODEBUDDY", topBar), 0);
+    m_topLabel = new JZLabel("", topBar);       // 打开工程后显示工程名（任务列表归属）
+    topLayout->addWidget(m_topLabel, 0);
     topLayout->addStretch();
     m_clearBtn = new JZPushButton(topBar, 84, 28, "清空");
     topLayout->addWidget(m_clearBtn, 0);
@@ -719,23 +535,43 @@ void MainWindow::setupUi()
 
     // 中央区用 stacked widget: 0=欢迎页(未打开工程) 1=对话页。
     // 未打开工程时输入框与"清空"也会隐藏（无工作区时发指令没有意义）。
-    m_stack = new JZStackedWidget(central);
+    m_stack = new JZStackedWidget(m_editorSplitter);
     m_welcome = new WelcomePage(m_stack);
     m_chatView = new ChatView(m_stack);
     m_stack->addWidget(m_welcome);
     m_stack->addWidget(m_chatView);
 
-    // 底部输入区: 只有多行输入框(固定高度), 发送按钮由 InputEdit 用 selfLayout
+    // 底部输入区: 多行输入框, 发送按钮与 token 圆环由 InputEdit 用 selfLayout
     // 锚定在右下角, 输入框尺寸变化时自动重排。
-    m_inputEdit = new InputEdit(central);
+    // 不能 setFixedHeight：splitter 靠 setGeometry 摆放，固定高会被夹住而拖不动；
+    // 初始高度由 resizeEvent 里的 setSizes 按 m_inputHeight 分配。
+    m_inputEdit = new InputEdit(m_editorSplitter);
     m_inputEdit->setLineWrap(true);
-    m_inputEdit->setFixedHeight(104);
+    m_inputEdit->setMinimumHeight(64);
+
+    m_editorSplitter->addWidget(m_stack);
+    m_editorSplitter->addWidget(m_inputEdit);
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(topBar, 0);
-    mainLayout->addWidget(m_stack, 1);
-    mainLayout->addWidget(m_inputEdit, 0);
-    central->setLayout(mainLayout);
+    mainLayout->addWidget(m_editorSplitter, 1);
+    leftArea->setLayout(mainLayout);
+
+    // 左侧任务面板：新建任务 + 历史任务列表（未打开工程时从 splitter 摘掉）
+    // 不能 setFixedWidth：splitter 靠 setGeometry 摆放子控件，固定宽会被夹住而拖不动。
+    m_taskPanel = new TaskPanel(m_splitter);
+    m_taskPanel->setMinimumWidth(140);
+
+    m_splitter->addWidget(m_taskPanel);
+    m_splitter->addWidget(leftArea);
+    // 初始比例用拉伸因子（1:4 ≈ 面板 1/5 宽）。注意别在这里 setSizes：
+    // 此刻 splitter 宽度还是 0，relayout 会把 sizes 全算成 0，启动后变成左右各一半。
+    m_splitter->setStretchFactor(0, 1);
+    m_splitter->setStretchFactor(1, 4);
+
+    JZHBoxLayout* rootLayout = new JZHBoxLayout(0, 0);
+    rootLayout->addWidget(m_splitter, 1);
+    central->setLayout(rootLayout);
 
     setCentralWidget(central);
 
@@ -745,6 +581,11 @@ void MainWindow::setupUi()
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
+    connect(&m_taskPanel->sigNewTask, this, &MainWindow::onNewTask);
+    connect(&m_taskPanel->sigTaskActivated, this, &MainWindow::onSwitchTask);
+    connect(&m_taskPanel->sigDeleteTask, this, &MainWindow::onDeleteTask);
+    connect(&m_splitter->sigSplitterMoved, this, &MainWindow::onSplitterMoved);
+    connect(&m_editorSplitter->sigSplitterMoved, this, &MainWindow::onEditorSplitterMoved);
 }
 
 void MainWindow::loadConfig()
@@ -916,20 +757,20 @@ void MainWindow::applyConfig()
 
     m_agent->init(code);
 
-    m_chatView->clear();
-    m_renderedId = 0;
-    const auto& logs = m_agent->logs();
-    for (size_t i = 0; i < logs.size(); i++)
-        appendLog(logs[i]);
-    m_renderedId = m_agent->logSeq();
-    m_chatView->scrollToBottom();
-
+    // 任务列表跟着工作区走；init() 重建了 agent（对话被清空），把当前任务再载回来
+    m_historyManager.setWorkspace(m_agent->codeConfig().workspace);
+    m_historyManager.load();
+    loadCurrentTask();
+    refreshTaskPanel();
     updateStatus();
 }
 
 void MainWindow::updateStatus()
 {
-    
+    if (!m_topLabel)
+        return;
+    m_topLabel->setText(m_projectOpened && !m_cfg.workspace.empty()
+                        ? JZDir(m_cfg.workspace).name() : string());
 }
 
 void MainWindow::appendLog(const CodeAgentLog& log)
@@ -966,8 +807,10 @@ void MainWindow::onSend()
     // busy 时也照常提交: JZCodeAgent 会缓存到队列, 等上一步发完自动继续
     if (!m_agent->isBusy())
     {
+        m_historyManager.touchTask(text);   // 首条消息定标题 / 计一条
         m_agent->request(text);
         m_inputEdit->setText("");
+        refreshTaskPanel();
     }
     else
     {
@@ -985,6 +828,7 @@ void MainWindow::onStop()
     if (!m_agent->isBusy())
         return;
 
+    saveCurrentTask();   // 先归档：stop() 会重建 agent 丢掉内存里的对话
     m_agent->stop();
     if (m_pendingQueue.size() > 0)
     {
@@ -998,8 +842,41 @@ void MainWindow::onClear()
 {
     m_agent->stop();
     m_agent->clearHistory();
-    m_renderedId = 0;
+
+    // 当前任务的存档一起删掉，否则下次启动/切回来旧对话又会自己出现
+    m_historyManager.removeArchive(m_historyManager.currentTaskId());
+    m_historyManager.resetMessageCount();
+    reloadChat();
+    refreshTaskPanel();
+}
+
+void MainWindow::saveCurrentTask()
+{
+    if (!m_agent || !m_projectOpened)
+        return;
+    int id = m_historyManager.currentTaskId();
+    if (id > 0)
+        m_agent->saveConversation(m_historyManager.archivePath(id));
+}
+
+void MainWindow::loadCurrentTask()
+{
+    if (!m_agent)
+        return;
+    // 调用方需先 resetConversation()；这里只负责把该任务的存档读进来并重建界面
+    int id = m_historyManager.currentTaskId();
+    if (id > 0)
+        m_agent->loadConversation(m_historyManager.archivePath(id));
+    reloadChat();
+}
+
+void MainWindow::reloadChat()
+{
+    // 整屏重建：切任务 / 打开工程后 agent 的日志 id 已归零，m_renderedId 必须同步归零，
+    // 否则增量拉取会因为 id 倒退而漏掉新日志。
     m_chatView->clear();
+    m_chatView->setWait(false);
+    m_renderedId = 0;
     const auto& logs = m_agent->logs();
     for (size_t i = 0; i < logs.size(); i++)
         appendLog(logs[i]);
@@ -1007,8 +884,67 @@ void MainWindow::onClear()
     m_chatView->scrollToBottom();
 }
 
+void MainWindow::refreshTaskPanel()
+{
+    if (!m_taskPanel)
+        return;
+    m_taskVersion = m_historyManager.taskVersion();
+    m_taskPanel->setTasks(m_historyManager.tasks(), m_historyManager.currentTaskId());
+}
+
+void MainWindow::onNewTask()
+{
+    if (!m_projectOpened)
+        return;
+    if (m_agent->isBusy() && !confirmInterrupt("新建任务"))
+        return;
+
+    saveCurrentTask();
+    m_agent->resetConversation();       // 新任务 = 一段干净的新对话
+    m_historyManager.newTask();
+    reloadChat();
+    refreshTaskPanel();
+}
+
+void MainWindow::onSwitchTask(int id)
+{
+    if (!m_projectOpened || id <= 0)
+        return;
+    if (id == m_historyManager.currentTaskId())
+        return;
+    if (m_agent->isBusy() && !confirmInterrupt("切换任务"))
+        return;
+
+    saveCurrentTask();
+    m_agent->resetConversation();
+    if (m_historyManager.switchTask(id))
+        loadCurrentTask();
+    refreshTaskPanel();
+}
+
+void MainWindow::onDeleteTask(int id)
+{
+    if (!m_projectOpened || id <= 0)
+        return;
+
+    string text = "删除后该任务的对话记录也会一并删除，无法恢复。\n\n确定要删除这个任务吗？";
+    if (JZMessageBox::question(this, "删除任务", text)->exec() != JZDialog::Accepted)
+        return;
+
+    bool wasCurrent = (id == m_historyManager.currentTaskId());
+    m_historyManager.deleteTask(id);
+    if (wasCurrent)
+    {
+        // 删掉的是当前任务：manager 已经落到另一条，把它的对话载进来
+        m_agent->resetConversation();
+        loadCurrentTask();
+    }
+    refreshTaskPanel();
+}
+
 void MainWindow::onSettings()
 {
+    saveCurrentTask();      // stop() 会重建 agent 丢掉内存里的对话
     m_agent->stop();
 
     SettingsDialog dlg(this);
@@ -1023,6 +959,7 @@ void MainWindow::onSettings()
 
 void MainWindow::onOpenProject()
 {
+    saveCurrentTask();      // stop() 会重建 agent 丢掉内存里的对话
     m_agent->stop();
 
     std::string dir = JZFileDialog::getExistingDirectory(this, "打开工程", m_cfg.workspace);
@@ -1045,6 +982,9 @@ bool MainWindow::openProjectDir(const std::string& dir, bool interactive)
         }
         return false;
     }
+
+    // openProject 会切工作区并重建 agent，先把旧任务的对话归档
+    saveCurrentTask();
 
     std::string error;
     if (!m_agent->openProject(dir, &st, error))
@@ -1071,14 +1011,17 @@ void MainWindow::onCloseProject()
     if (!m_projectOpened)
         return;
 
-    // 归档当前工作区对话（下次打开/启动恢复会自动接上），然后回到欢迎页。
+    // 归档当前任务对话（下次打开/启动恢复会自动接上），然后回到欢迎页。
     // 工作区路径本身保留在 m_cfg，退出与下次启动的恢复逻辑不变。
+    saveCurrentTask();
     m_agent->closeProject();
     m_projectOpened = false;
     m_chatView->clear();
     m_chatView->setWait(false);
     m_renderedId = 0;
     saveConfig();
+    m_historyManager.setWorkspace(std::string());   // 任务属于工作区：一并清空
+    refreshTaskPanel();
     updateStack();
 }
 
@@ -1088,10 +1031,80 @@ void MainWindow::updateStack()
         return;
 
     m_stack->setCurrentIndex(m_projectOpened ? 1 : 0);
-    m_inputEdit->setVisible(m_projectOpened);
     m_clearBtn->setVisible(m_projectOpened);
+    updateSplitter();
+    updateEditorSplitter();
     if (!m_projectOpened)
         m_welcome->setRecentProjects(m_cfg.recentProjects);
+}
+
+// JZSplitter 认 setVisible: 隐藏的一项不占空间、也不产生分隔条，剩下的占满整个区域。
+void MainWindow::updateSplitter()
+{
+    if (!m_splitter || !m_taskPanel)
+        return;
+
+    m_taskPanel->setVisible(m_projectOpened);
+
+    // 重新显示时它被 relayout 归零过，按记住的宽度恢复（默认 220）
+    if (m_projectOpened)
+    {
+        int total = m_splitter->width() - m_splitter->handleWidth();
+        if (total > 0)
+        {
+            int w = std::min(m_taskPanelWidth, std::max(0, total - 200));
+            m_splitter->setSizes({w, total - w});
+        }
+    }
+}
+
+void MainWindow::onSplitterMoved(int pos, int handleIndex)
+{
+    std::vector<int> sizes = m_splitter->sizes();
+    if (!sizes.empty() && sizes[0] >= 140)
+        m_taskPanelWidth = sizes[0];
+}
+
+// 竖分割：没打开工程时输入框隐藏，欢迎页占满整个高度
+void MainWindow::updateEditorSplitter()
+{
+    if (!m_inputEdit)
+        return;
+
+    m_inputEdit->setVisible(m_projectOpened);
+    if (m_projectOpened)
+        applyEditorSizes();
+}
+
+// 输入区保持固定高度，剩余全给对话区（JZSplitter 默认是按比例缩放，这里手动纠正）
+void MainWindow::applyEditorSizes()
+{
+    if (!m_editorSplitter || !m_inputEdit || !m_inputEdit->isVisible())
+        return;
+
+    int total = m_editorSplitter->height() - m_editorSplitter->handleWidth();
+    if (total <= 0)
+        return;
+
+    int h = m_inputHeight;
+    int maxH = std::max(0, total - 80);        // 对话区至少留 80
+    h = std::min(h, maxH);
+    h = std::max(h, std::min(64, total));      // 输入区至少 64（空间不足时按可用高度）
+    m_editorSplitter->setSizes({total - h, h});
+}
+
+void MainWindow::onEditorSplitterMoved(int pos, int handleIndex)
+{
+    std::vector<int> sizes = m_editorSplitter->sizes();
+    if (sizes.size() >= 2 && sizes[1] >= 64)
+        m_inputHeight = sizes[1];
+}
+
+void MainWindow::resizeEvent(JZResizeEvent* event)
+{
+    JZMainWindow::resizeEvent(event);
+    // 窗口尺寸变化后重算：输入区高度跟着 m_inputHeight 走，不被按比例拉伸
+    applyEditorSizes();
 }
 
 void MainWindow::openLastProject()
@@ -1209,6 +1222,12 @@ void MainWindow::onExit()
     close();   // Qt 习惯: close() -> sendEvent(closeEvent) -> accept 则隐藏并销毁窗口
 }
 
+bool MainWindow::confirmInterrupt(const std::string& what)
+{
+    std::string text = "任务正在进行中，" + what + "会中断当前任务。\n\n确定要继续吗？";
+    return JZMessageBox::question(this, "JZCodeAgent", text)->exec() == JZDialog::Accepted;
+}
+
 bool MainWindow::checkAgentRun()
 {
     std::string text = "任务正在进行中，退出会中断当前任务。\n\n确定要退出吗？";
@@ -1216,6 +1235,7 @@ bool MainWindow::checkAgentRun()
     {
         return false;
     }
+    saveCurrentTask();     // 先归档：stop() 会重建 agent 丢掉内存里的对话
     m_agent->stop();       // 确认退出: 中断当前任务再走关闭流程
     return true;
 }
@@ -1286,16 +1306,11 @@ void MainWindow::finishOpenWorkspace()
     saveConfig();
     updateStatus();
 
-    // 换了工作区 = 换一段对话: openProject() 已存好旧对话、导入新对话并生成日志，
-    // 这里整屏重建（agent 的日志 id 已归零，m_renderedId 必须同步归零，否则增量拉取会漏）
-    m_chatView->clear();
-    m_renderedId = 0;
-    const auto& logs = m_agent->logs();
-    for (size_t i = 0; i < logs.size(); i++)
-        appendLog(logs[i]);
-    m_renderedId = m_agent->logSeq();
-    m_chatView->scrollToBottom();
-
+    // 换了工作区 = 换一批任务：按新工作区重载任务索引，再把当前任务的对话载进来
+    m_historyManager.setWorkspace(m_agent->codeConfig().workspace);
+    m_historyManager.load();
+    loadCurrentTask();
+    refreshTaskPanel();
     updateStack();
 }
 
@@ -1318,7 +1333,24 @@ void MainWindow::onPoll()
         m_renderedId = seq;
     }
 
+    // token 用量圆环：当前上下文累计用量 / 上限
+    m_inputEdit->tokenRing()->setUsage(m_agent->usage().total_tokens,
+                                       m_agent->llmConfig().maxToken);
+
     bool busy = m_agent->isBusy();
+
+    // 一轮刚结束：助手回了话，计一条消息并把对话落盘
+    if (m_agentWasBusy && !busy)
+    {
+        m_historyManager.addMessage();
+        saveCurrentTask();
+    }
+    m_agentWasBusy = busy;
+
+    // 任务列表变了（新任务 / 标题定下来 / 一轮结束）才重建，避免每帧刷新
+    if (m_historyManager.taskVersion() != m_taskVersion)
+        refreshTaskPanel();
+
     if (!busy && m_pendingQueue.size() > 0)
     {
         m_chatView->endStream();
@@ -1332,6 +1364,5 @@ void MainWindow::onPoll()
 JZ_OBJECT_IMPL(WelcomePage, JZWidget)
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
 JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
-JZ_OBJECT_IMPL(SettingsDialog, JZDialog)
 JZ_OBJECT_IMPL(ExportDialog, JZDialog)
 JZ_OBJECT_IMPL(MainWindow, JZMainWindow)

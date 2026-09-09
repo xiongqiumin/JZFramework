@@ -88,7 +88,7 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_logId = 0;
     m_busy = false;
     buildAgent();
-    loadWorkspaceHistory();     // 自动接着上次的对话
+    // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversation()
 }
 
 bool JZCodeAgent::isBusy() const
@@ -109,6 +109,47 @@ void JZCodeAgent::request(const string &text)
     }
 
     sendRequestDirect(text);
+}
+
+// 把当前这段对话存到 path（由上层按任务存档路径调用）
+bool JZCodeAgent::saveConversation(const string &path) const
+{
+    if (!m_agent || path.empty())
+        return false;
+    return m_agent->saveHistory(path);
+}
+
+// 从 path 载入一段对话（替换当前对话），并把界面日志按它重建
+bool JZCodeAgent::loadConversation(const string &path)
+{
+    if (!m_agent || path.empty())
+        return false;
+    if (!JZFileInfo::exists(path))
+        return false;
+    if (!m_agent->loadHistory(path))
+        return false;
+
+    m_logs.clear();
+    m_logId = 0;
+    rebuildLogsFromHistory();
+    return true;
+}
+
+// 中断当前任务并重置为一段干净的新对话（切换/新建任务时用）。
+// 只动 agent 与日志，任务元数据与存档文件由 TaskHistoryManager 负责。
+void JZCodeAgent::resetConversation()
+{
+    abortTools();
+    if (m_busy)
+    {
+        m_stopping = true;
+        m_agent->stop();
+        m_stopping = false;
+        m_busy = false;
+    }
+    m_logs.clear();
+    m_logId = 0;
+    buildAgent();
 }
 
 void JZCodeAgent::sendRequestDirect(const string &text)
@@ -149,11 +190,7 @@ void JZCodeAgent::clearHistory()
     m_logId = 0;
     m_busy = false;
 
-    // 清空会话 = 连存档一起删掉，否则下次启动/切回来旧对话又会自己出现
-    string path = historyFilePath();
-    if (!path.empty() && JZFileInfo::exists(path))
-        JZFile::remove(path);
-
+    // 只清内存里的这段对话；对应的存档文件由上层用 TaskHistoryManager::removeArchive() 删
     buildAgent();
     addLog("info", "会话已清空，工作区: " + m_codeConfig.workspace);
 }
@@ -230,6 +267,7 @@ JZAgent *JZCodeAgent::agent()
     return m_agent;
 }
 
+<<<<<<< HEAD
 string JZCodeAgent::historyFilePath() const
 {
     if (m_codeConfig.workspace.empty())
@@ -262,6 +300,8 @@ void JZCodeAgent::loadWorkspaceHistory()
     size_t count = m_agent->context() ? m_agent->context()->history.size() : 0;
 }
 
+=======
+>>>>>>> 079716745e8dd7008af2ec584b495f51f9c8539a
 void JZCodeAgent::rebuildLogsFromHistory()
 {
     const LLMContext *ctx = m_agent ? m_agent->context() : nullptr;
@@ -289,6 +329,7 @@ void JZCodeAgent::rebuildLogsFromHistory()
     }
 }
 
+<<<<<<< HEAD
 // ==================== 会话历史管理 ====================
 string JZCodeAgent::generateTitle(const string &firstMessage)
 {
@@ -445,6 +486,8 @@ bool JZCodeAgent::removeHistoryEntry(int id)
     return false;
 }
 
+=======
+>>>>>>> 079716745e8dd7008af2ec584b495f51f9c8539a
 bool JZCodeAgent::setWorkspace(const string &path)
 {
     JZDir dir(path);
@@ -455,17 +498,15 @@ bool JZCodeAgent::setWorkspace(const string &path)
     if (newPath == m_codeConfig.workspace)
         return true;
 
-    // 切换工作区 = 换一段对话: 先给旧工作区存档
-    saveWorkspaceHistory();
-
+    // 切换工作区 = 换一段对话。旧工作区的存档由上层（TaskHistoryManager 的持有者）
+    // 在切换前保存，这里只负责把 agent 与工作区配置换掉。
     m_codeConfig.workspace = newPath;
     for (auto* tool : m_tools)
         tool->setAgent(this);
     applyZoneConfig();
 
-    // 重建 agent（工具与 systemPrompt 重新登记），再导入新工作区的存档
+    // 重建 agent（工具与 systemPrompt 重新登记）；载入哪段对话由上层决定
     buildAgent();
-    loadWorkspaceHistory();
     return true;
 }
 
@@ -537,8 +578,6 @@ bool JZCodeAgent::openProject(const string &path, CodeProjectStatus *status, str
 
 void JZCodeAgent::closeProject()
 {
-    saveWorkspaceHistory();
-
     // workspace 一并清空：否则再打开"同一个"目录时 setWorkspace 会因为路径相同直接返回，
     // 不重建 agent、也不导入存档，界面上是空的而 agent 里还留着上一段对话。
     m_codeConfig.workspace.clear();
@@ -627,8 +666,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "}\n";
     string gitignore =
         "build/\n"
-        "node_modules/\n"
-        ".jzcode/\n";
+        "node_modules/\n";
 
     bool ok = writeIfAbsent(root + "/tsconfig.json", tsconfig);
     if (!ok)
@@ -1272,6 +1310,7 @@ void JZCodeAgent::nextOrIdle()
 {
     // 收尾统一入口: 某个执行单元(模型一轮回复 / 宿主把关完成)结束后调用。
     // 期间若用户又发过指令, 继续发送下一条; 否则整个空闲下来。
+    // 落盘 / 计数由上层在检测到空闲时通过 TaskHistoryManager 完成。
     m_busy = false;
 }
 

@@ -16,6 +16,72 @@
 #include "JZScreen.h"
 #include "JZWindow.h"
 
+#include "JZTimer.h"
+#include "JZPainter.h"
+#include "JZPen.h"
+#include "JZColor.h"
+#include "JZFont.h"
+#include "JZFontMetrics.h"
+#include "JZStylePainter.h"
+#include "JZStyleSheetParser.h"
+
+// 内部: 自绘多行悬浮小面板 (仿 Qt 的 tooltip 窗口)。文件级, 不对外暴露。
+class JZToolTipWidget : public JZWidget
+{
+    JZ_OBJECT_DECLARE(JZToolTipWidget)
+public:
+    explicit JZToolTipWidget(JZWidget* parent = nullptr)
+        : JZWidget(parent) {}
+
+    // tip 用 '\n' 分行; 按文字尺寸自适应面板
+    void setTip(const JZString& tip)
+    {
+        std::vector<std::string> lines;
+        std::string utf8 = tip.toStdString();
+        std::string cur;
+        for (char c : utf8) {
+            if (c == '\n') { lines.push_back(cur); cur.clear(); }
+            else cur.push_back(c);
+        }
+        lines.push_back(cur);
+
+        JZFont f(kFontSize);
+        int lineH = JZFontMetrics::textHeight(f);
+        int w = 0;
+        for (const auto& s : lines)
+            w = std::max(w, JZFontMetrics::textWidth(s, f));
+
+        setFixedSize(w + kPadX * 2, (int)lines.size() * lineH + kPadY * 2);
+        m_lines = lines;
+        update();
+    }
+
+protected:
+    void paintEvent(JZPainterEvent*) override
+    {
+        JZPainter p(this);
+        p.fillRect(0, 0, width(), height(), JZColor(0x2b, 0x2b, 0x30));
+        p.setPen(JZPen(JZColor(0x60, 0x60, 0x68), 1));
+        p.drawRect(0, 0, width(), height());
+
+        JZFont f(kFontSize);
+        int lineH = JZFontMetrics::textHeight(f);
+        p.setFont(f);
+        p.setPen(JZPen(JZColor(0xf0, 0xf0, 0xf0), 1));
+
+        int y = kPadY;
+        for (const auto& s : m_lines) {
+            p.drawText(kPadX, y + JZFontMetrics::centeredTextTop(f, lineH), s.c_str());
+            y += lineH;
+        }
+    }
+
+private:
+    enum { kFontSize = 12, kPadX = 8, kPadY = 6 };
+    std::vector<std::string> m_lines;
+};
+JZ_OBJECT_IMPL(JZToolTipWidget, JZWidget)
+
 JZ_OBJECT_IMPL(JZWidget,JZObject)
 
 JZWidget::JZWidget(JZWidget* parent)
@@ -64,6 +130,201 @@ JZWidget::~JZWidget()
     {
         delete m_layout;
         m_layout = nullptr;
+    }
+
+    // 3) 释放控件级样式表解析结果
+    if (m_styleSheet)
+    {
+        delete m_styleSheet;
+        m_styleSheet = nullptr;
+    }
+}
+
+// ==================== 样式表 (CSS 子集) ====================
+
+void JZWidget::setStyleClass(const std::string& cls)
+{
+    if (m_styleClass == cls)
+        return;
+    m_styleClass = cls;
+    styleChanged();
+}
+
+const std::string& JZWidget::styleClass() const
+{
+    return m_styleClass;
+}
+
+bool JZWidget::setStyleSheet(const std::string& css)
+{
+    if (!m_styleSheet)
+        m_styleSheet = new JZStyleSheetParser();
+
+    if (!m_styleSheet->parse(css))
+        return false;   // 解析失败: 保持上一次成功的内容, 原因见 styleSheetError()
+
+    m_styleSheetText = css;
+    styleChanged();   // 控件级表影响自身与子孙
+    return true;
+}
+
+std::string JZWidget::styleSheet() const
+{
+    return m_styleSheetText;
+}
+
+std::string JZWidget::styleSheetError() const
+{
+    return m_styleSheet ? m_styleSheet->errorString() : std::string();
+}
+
+const JZStyleSheetParser* JZWidget::styleSheetParser() const
+{
+    return m_styleSheet;
+}
+
+// ==================== 样式解析 (resolve) ====================
+//
+// 顺序 (对齐设计 §3): UA 默认 (uaStyle) < 全局 author 表 < 控件级表;
+// 同层内按特异性升序, 同特异性按书写顺序后者胜; !important 提到最后。
+// 暂不参与匹配: 伪类 (状态) 与 ::part (部件) —— 待 StyleState / partName 接入。
+
+namespace
+{
+
+bool styleClassContains(const std::string& cls, const std::string& name)
+{
+    if (cls.empty() || name.empty())
+        return false;
+    size_t i = 0;
+    while (i < cls.size())
+    {
+        while (i < cls.size() && (unsigned char)cls[i] <= ' ')
+            i++;
+        size_t st = i;
+        while (i < cls.size() && (unsigned char)cls[i] > ' ')
+            i++;
+        if (i > st && cls.compare(st, i - st, name) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool selectorMatches(const JZWidget* w, const JZStyleSelector& s)
+{
+    if (!s.part.empty())      return false;   // ::part 待接入
+    if (!s.pseudos.empty())   return false;   // 状态伪类待接入
+    if (!s.type.empty() && s.type != "*" && s.type != w->className())
+        return false;
+    if (!s.id.empty() && s.id != w->objectName())
+        return false;
+    for (size_t i = 0; i < s.classes.size(); i++)
+    {
+        if (!styleClassContains(w->styleClass(), s.classes[i]))
+            return false;
+    }
+    return true;
+}
+
+struct StyleHit
+{
+    int spec;
+    int order;
+    bool important;
+    const JZStyleDecl* decl;
+};
+
+bool hitLess(const StyleHit& a, const StyleHit& b)
+{
+    if (a.important != b.important)
+        return !a.important && b.important;   // 非 important 排前
+    if (a.spec != b.spec)
+        return a.spec < b.spec;
+    return a.order < b.order;
+}
+
+} // namespace
+
+JZStyleSet JZWidget::uaStyle() const
+{
+    return JZStyleSet();   // 基类: 无默认外观
+}
+
+std::vector<std::string> JZWidget::styleProps() const
+{
+    // 基类绘制样式盒子 (drawBox): 背景 / 边框 / 圆角 / padding
+    return { "background-color", "background", "border", "border-color",
+             "border-width", "border-radius", "padding",
+             "padding-left", "padding-top", "padding-right", "padding-bottom" };
+}
+
+const JZStyleSet& JZWidget::resolvedStyle()
+{
+    if (m_styleResolved)
+        return m_style;
+
+    m_style = uaStyle();
+
+    std::vector<StyleHit> hits;
+    int order = 0;
+    const JZStyleSheetParser* sheets[2] = {
+        jzApp ? jzApp->styleSheetParser() : nullptr,   // 全局 author 表
+        m_styleSheet                                   // 控件级表 (优先级更高)
+    };
+    for (int k = 0; k < 2; k++)
+    {
+        if (!sheets[k])
+            continue;
+        const std::vector<JZStyleRule>& rules = sheets[k]->rules();
+        for (size_t i = 0; i < rules.size(); i++)
+        {
+            int best = -1;
+            for (size_t j = 0; j < rules[i].selectors.size(); j++)
+            {
+                if (selectorMatches(this, rules[i].selectors[j]))
+                    best = std::max(best, rules[i].selectors[j].specificity());
+            }
+            if (best < 0)
+                continue;
+            for (size_t j = 0; j < rules[i].decls.size(); j++)
+            {
+                StyleHit h;
+                h.spec = best;
+                h.order = order++;
+                h.important = rules[i].decls[j].important;
+                h.decl = &rules[i].decls[j];
+                hits.push_back(h);
+            }
+        }
+    }
+
+    // 只应用本控件声明消费的属性 (见 styleProps): 未声明的直接跳过,
+    // 既不写入也无副作用 —— 声明与绘制因此强绑定。
+    std::vector<std::string> props = styleProps();
+    std::sort(hits.begin(), hits.end(), hitLess);
+    for (size_t i = 0; i < hits.size(); i++)
+    {
+        const std::string& p = hits[i].decl->property;
+        if (std::find(props.begin(), props.end(), p) == props.end())
+            continue;
+        m_style.applyDecl(p, hits[i].decl->value);
+    }
+
+    m_styleResolved = true;
+    return m_style;
+}
+
+void JZWidget::styleChanged()
+{
+    m_styleResolved = false;
+    update();
+
+    // 控件级样式表作用于子孙, 故整棵子树都要失效
+    for (size_t i = 0; i < m_childs.size(); i++)
+    {
+        JZWidget* w = dynamic_cast<JZWidget*>(m_childs[i]);
+        if (w)
+            w->styleChanged();
     }
 }
 
@@ -546,6 +807,7 @@ bool JZWidget::event(JZEvent* e)
 {
     if (e->type() == JZEvent_paint)
     {
+        resolvedStyle();   // 绘制前确保样式已按当前样式表解析 (内部缓存)
         paintEvent((JZPainterEvent*)e);
         return true;
     }
@@ -559,6 +821,18 @@ bool JZWidget::event(JZEvent* e)
         case JZMouseEvent::Move:    mouseMoveEvent(me);    return true;
         case JZMouseEvent::Wheel:   wheelEvent(me);        return true;
         }
+        return true;
+    }
+
+    // 悬停态: 进入/离开控件 (含子树) 由 JZWindow 命中变化派发
+    if (e->type() == JZEvent_enter)
+    {
+        enterEvent(e);
+        return true;
+    }
+    if (e->type() == JZEvent_leave)
+    {
+        leaveEvent(e);
         return true;
     }
 
@@ -597,6 +871,12 @@ bool JZWidget::event(JZEvent* e)
 
 void JZWidget::paintEvent(JZPainterEvent*)
 {
+    // 默认绘制: 只画样式盒子 (背景 / 边框 / 圆角)。
+    // UA 默认下 background 与 borderColor 都是 None, drawBox 直接空转 ——
+    // 未写样式的控件与改造前完全一致 (仍是"露出父控件背景")。
+    // 子类若自己画内容, 同样先调 drawBox 再基于 contentRect() 定位。
+    JZPainter p(this);
+    JZStylePainter::drawBox(p, style(), rect());
 }
 
 void JZWidget::mousePressEvent(JZMouseEvent*)
@@ -609,6 +889,28 @@ void JZWidget::mouseReleaseEvent(JZMouseEvent*)
 
 void JZWidget::mouseMoveEvent(JZMouseEvent*)
 {
+}
+
+void JZWidget::enterEvent(JZEvent*)
+{
+    // 悬浮提示: 设置 tooltip 文本的控件, 鼠标进入后不立即弹出, 而是起一个一次性
+    // 延时定时器; 悬停够久才显示 (onTooltipShow), 移出 (leaveEvent) 立即取消并收起。
+    if (m_tooltipText.isEmpty())
+        return;
+    if (!m_tooltipTimer) {
+        m_tooltipTimer = new JZTimer(this);
+        m_tooltipTimer->setSingleShot(true);
+        connect(&m_tooltipTimer->sigTimeout, this, &JZWidget::onTooltipShow);
+    }
+    m_tooltipTimer->start(kTooltipShowDelay);
+}
+
+void JZWidget::leaveEvent(JZEvent*)
+{
+    // 鼠标离开本控件 (含子树): 取消未触发的显示延时, 并立即收起已显示的提示
+    if (m_tooltipTimer)
+        m_tooltipTimer->stop();
+    hideTooltip();
 }
 
 void JZWidget::wheelEvent(JZMouseEvent*)
@@ -690,6 +992,57 @@ void JZWidget::showEvent(JZShowEvent*)
 
 void JZWidget::hideEvent(JZHideEvent*)
 {
+    // 控件隐藏 (含所在窗口关闭) 时, 收起其悬浮提示, 避免残留
+    hideTooltip();
+}
+
+// ==================== 悬浮提示 ====================
+void JZWidget::setTooltip(const JZString& tip)
+{
+    m_tooltipText = tip;
+    // 悬停中内容变化 (如 token 用量刷新) 立即刷新弹层; 未悬停则仅记录, 等鼠标移入再弹
+    if (m_tooltipPopup && m_tooltipPopup->isVisible())
+        updateTooltip();
+}
+
+const JZString& JZWidget::tooltip() const
+{
+    return m_tooltipText;
+}
+
+void JZWidget::showTooltip()
+{
+    if (!m_tooltipPopup) {
+        m_tooltipPopup = new JZToolTipWidget(this);
+        m_tooltipPopup->setPassThrough(true);   // 纯展示, 不吃鼠标事件
+        m_tooltipPopup->setVisible(false);
+    }
+    updateTooltip();
+    m_tooltipPopup->setVisible(true);
+}
+
+void JZWidget::onTooltipShow()
+{
+    showTooltip();
+}
+
+void JZWidget::hideTooltip()
+{
+    if (m_tooltipTimer)
+        m_tooltipTimer->stop();
+    if (m_tooltipPopup)
+        m_tooltipPopup->setVisible(false);
+}
+
+void JZWidget::updateTooltip()
+{
+    JZToolTipWidget* tip = static_cast<JZToolTipWidget*>(m_tooltipPopup);
+    tip->setTip(m_tooltipText);
+
+    // 弹层放在控件上方, 右边缘与控件对齐 (窄窗口下左侧不被裁)
+    const int w = m_tooltipPopup->width();
+    const int h = m_tooltipPopup->height();
+    m_tooltipPopup->setGeometry(width() - w, -h - 6, w, h);
 }
 
 void JZWidget::resizeEvent(JZResizeEvent*)

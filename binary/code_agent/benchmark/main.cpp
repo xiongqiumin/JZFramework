@@ -8,9 +8,12 @@
 //   4) 按用例的 check() 判定输出是否符合预期，不符则把实际输出反馈给模型重试，
 //      最多 maxAttempts 次；任一尝试通过即记 1 分。
 //
-// 评测集从 data/ 下的 JSON 加载（见 loadCases）。第一个移植过去的用例 hello_world：
-//   要求模型"写一个函数，输出 hello world"，编译运行后检查 stdout 是否包含
-//   "hello world"（大小写不敏感）。
+// 评测集从 data/ 加载（见 loadCases）：cases.jsonl 是一个"用例索引"文件，每行指向一个用例 JSON 文件的位置
+//   （路径相对索引所在目录；支持 {"file":"x.json"} 对象写法，也支持纯字符串 "x.json"，并可带 "enabled":false 跳过）。
+//   main 读取索引后，逐个加载被引用的用例 JSON 并执行；索引里缺失/解析失败的引用会被跳过并告警。
+//   目录模式（--data 指向目录且无 cases.jsonl）则直接扫描目录内 *.json 当作用例。
+// 第一个移植过去的用例 hello_world：要求模型"写一个函数，输出 hello world"，编译运行后检查 stdout 是否包含
+//   "hello world"（大小写不敏感）。外部验证用例用 verify 命令（详见 BenchmarkCase）。
 //
 // 配置（命令行 / 环境变量）：
 //   --modelUrl / --modelName / --modelToken   大模型接入（缺省沿用仓库测试默认值）
@@ -49,6 +52,7 @@
 #include "JZProcess.h"
 #include "JZTimer.h"
 #include "JZUuid.h"
+#include "JZStd.h"
 
 #include "JZCodeAgent.h"
 
@@ -128,6 +132,16 @@ struct BenchmarkCase
 
     // 注入给本用例的输入（空串表示无需输入）；运行时由全局 HTTP 服务以 /input 暴露给 JS
     std::string input;
+
+    // 外部程序验证（非空时启用）：由本命令启动一个验证程序对模型产物做判定。
+    // 命令模板支持占位符：${root}=用例临时根目录 ${build}=构建目录 ${runtime}=code_runtime 路径 ${port}=verifyPort ${data}=评测集目录(随用例发布校验脚本处)
+    // 约定（验证程序退出码，只需区分两种）：
+    //   0 = 通过；1 = 未通过（验证程序 stdout 将作为重试反馈输入）。
+    //   验证程序只用 0/1：不自行区分"崩溃"。"模型生成的产物(JS 进程)本身异常退出/无法启动"
+    //   由 code_runtime 子进程直接判定（见 runCodeRuntime）：其输出原样作为反馈，并在报告里标 [CRASH]。
+    // 注：验证程序自行负责启动模型生成的 server 并测试（如 python verify.py --runtime ${runtime} --build ${build} --port ${port}）。
+    std::string verifyCmd;
+    int verifyPort = 3900;
 };
 
 // 全局输入 HTTP 服务用的 handler：模型生成的 JS 通过 fetch('http://127.0.0.1:<port>/input')
@@ -211,6 +225,7 @@ struct CaseResult
 {
     std::string name;
     bool passed = false;
+    bool crashed = false;       // 模型生成的产物本身异常退出/无法启动（优先在报告中标出）
     int attempts = 0;
     int promptTokens = 0;       // 本用例消耗的 prompt token
     int completionTokens = 0;   // 本用例消耗的 completion token
@@ -270,6 +285,7 @@ public:
     }
 
     void setCases(const std::vector<BenchmarkCase> &cases) { m_cases = cases; }
+    void setDataDir(const std::string &dir) { m_dataDir = dir; }
     
     bool startHttpServer(int p)
     {
@@ -490,24 +506,65 @@ protected:
         m_result.buildMs += (int)(JZPlatform::getTickCountMs() - b0);
         m_result.lastBuildError = buildErr;
 
-        // 2) 隔离运行产物（code_runtime 子进程），捕获 stdout
+        // 2) 判定：普通用例跑 code_runtime + stdout 校验；外部验证用例跑 verify 命令
         std::string output;
         bool runOk = false;
+        std::string verifyOut;
+        int verifyExit = -1;
+        bool crashed = false;     // 模型产物本身异常退出/无法启动（优先标 [CRASH]）
+        bool ok = false;
+
         int64_t r0 = JZPlatform::getTickCountMs();
-        if (buildOk)
-            runOk = runCodeRuntime(output);
-        m_result.runMs += (int)(JZPlatform::getTickCountMs() - r0);
-        m_result.lastOutput = output;
+        if (!m_case.verifyCmd.empty())
+        {
+            // ---- 外部程序验证：由验证程序自行启动模型 server 并测试 ----
+            if (buildOk)
+            {
+                std::string cmd = expandVerifyCmd(m_case.verifyCmd);
+                bool ran = runVerify(cmd, verifyExit, verifyOut);
+                m_result.runMs += (int)(JZPlatform::getTickCountMs() - r0);
+                m_result.lastOutput = verifyOut;
+                if (!ran)
+                {
+                    ok = false;     // 验证程序都没跑起来（基础设施问题）
+                }
+                else if (verifyExit == 0)
+                {
+                    ok = true;
+                }
+                else
+                {
+                    ok = false;      // exit 1：未通过，验证程序 stdout 留作反馈（崩溃判定在 code_runtime JS 进程层）
+                }
+            }
+            else
+            {
+                m_result.runMs += (int)(JZPlatform::getTickCountMs() - r0);
+                m_result.lastOutput = "";
+            }
+        }
+        else
+        {
+            // ---- 普通用例：隔离运行产物（code_runtime 子进程），捕获 stdout ----
+            if (buildOk)
+                runOk = runCodeRuntime(output);
+            m_result.runMs += (int)(JZPlatform::getTickCountMs() - r0);
+            m_result.lastOutput = output;
+            if (buildOk && !runOk)
+                crashed = true;   // 产物运行期崩溃（exit != 0）
+            ok = buildOk && runOk && m_case.check(output);
+        }
 
         jzDebug().nospace() << "  [尝试 " << m_attempt << "] build="
                             << clr(buildOk ? CLR_GREEN : CLR_RED) << (buildOk ? "OK" : "FAIL") << clr(CLR_RESET)
                             << " run=" << clr(runOk ? CLR_GREEN : CLR_RED) << (runOk ? "OK" : "FAIL") << clr(CLR_RESET)
-                            << " output=\"" << output.substr(0, 200) << "\"";
+                            << (m_case.verifyCmd.empty() ? "" : " verifyExit=" + std::to_string(verifyExit))
+                            << (crashed ? " [CRASH]" : "")
+                            << " output=\"" << m_result.lastOutput.substr(0, 200) << "\"";
         if (!buildOk)
             jzDebug().nospace() << "  [尝试 " << m_attempt << "] buildError: "
                                 << buildErr.substr(0, 400);
 
-        bool ok = buildOk && runOk && m_case.check(output);
         if (ok)
         {
             m_result.passed = true;
@@ -518,15 +575,67 @@ protected:
         // 3) 还有次数就反馈重试，否则判定失败
         if (m_attempt < m_case.maxAttempts)
         {
-            std::string fb = m_case.retry(output, buildErr);
+            std::string fb;
+            if (crashed)
+            {
+                // JS 进程自身异常退出/无法启动：只返回 JS 进程自身的输出作为反馈（不附加额外说明）
+                fb = m_result.lastOutput;
+            }
+            else if (!m_case.verifyCmd.empty())
+            {
+                // 约定：验证程序返回 1 -> 其 stdout 作为重试输入反馈
+                fb = verifyOut;
+            }
+            else
+            {
+                fb = m_case.retry(output, buildErr);
+            }
             jzDebug().nospace() << "  [尝试 " << m_attempt << "] 未通过，反馈重试: " << fb;
             doAttempt(fb);
         }
         else
         {
             m_result.passed = false;
+            m_result.crashed = crashed;
             finishCase();
         }
+    }
+
+    // 把 verify 命令模板里的占位符替换为实际路径/端口
+    std::string expandVerifyCmd(const std::string &tpl)
+    {
+        std::string s = tpl;
+        str_replace(s, "${root}", m_root);
+        str_replace(s, "${build}", m_root + "/build");
+        str_replace(s, "${runtime}", m_codeRuntime);
+        str_replace(s, "${port}", std::to_string(m_case.verifyPort));
+        str_replace(s, "${bench}", JZPlatform::applicationDirPath());
+        str_replace(s, "${data}", m_dataDir);   // 评测集（cases.jsonl 所在）目录，用于定位随用例发布的验证脚本
+        return s;
+    }
+
+    // 运行外部验证程序（Windows 下经 cmd /c 启动，命令可含空格与重定向）。
+    // 返回 true 表示成功启动并收尾；exitCode/errOut 带出验证程序退出码与合并输出。
+    bool runVerify(const std::string &cmd, int &exitCode, std::string &errOut)
+    {
+        JZProcess proc;
+        proc.setProcessChannelMode(JZProcess::MergedChannels);
+        if (!proc.start("cmd.exe", { "/c", cmd }))
+        {
+            errOut = "[benchmark] 无法启动验证命令: " + cmd;
+            exitCode = -1;
+            return false;
+        }
+        if (!proc.waitForFinished(m_case.timeoutMs))
+        {
+            proc.killProcess();
+            errOut = "[benchmark] 验证程序超时(" + std::to_string(m_case.timeoutMs / 1000) + "s)";
+            exitCode = -1;
+            return false;
+        }
+        errOut = str_fromLocal(proc.readAllStandardOutput());
+        exitCode = proc.exitCode();
+        return true;
     }
 
     bool runCodeRuntime(std::string &output)
@@ -606,8 +715,12 @@ protected:
                 loopNote = std::string(" [疑似循环: ") + ts.topRepeat + "]";
             else if (!ts.topRepeat.empty())
                 loopNote = std::string(" [重复: ") + ts.topRepeat + "]";
+            std::string crashTag = r.crashed
+                ? (std::string(clr(CLR_RED)) + "[CRASH] " + clr(CLR_RESET))
+                : std::string();
             jzDebug().nospace() << clr(r.passed ? CLR_GREEN : CLR_RED)
                                 << (r.passed ? "[PASS] " : "[FAIL] ") << clr(CLR_RESET)
+                                << crashTag
                                 << r.name << "  (attempts=" << r.attempts
                                 << ", token=" << r.totalTokens
                                 << ", pt=" << r.promptTokens
@@ -634,6 +747,23 @@ protected:
         }
         jzDebug().nospace() << "总分: " << passed << " / " << m_results.size();
         jzDebug().nospace() << "总耗时: " << (m_benchTimer.elapsed() / 1000.0) << " s";
+
+        // ---- 崩溃用例优先汇总（模型生成的产物本身异常退出/无法启动）----
+        {
+            int nCrash = 0;
+            for (const auto &r : m_results)
+                if (!r.passed && r.crashed) nCrash++;
+            if (nCrash > 0)
+            {
+                jzDebug().nospace() << clr(CLR_RED) << "崩溃用例(产物异常退出): " << nCrash << " 个" << clr(CLR_RESET);
+                for (const auto &r : m_results)
+                {
+                    if (!r.passed && r.crashed)
+                        jzDebug().nospace() << "  [CRASH] " << r.name << "  output: "
+                                            << r.lastOutput.substr(0, 300);
+                }
+            }
+        }
         jzDebug().nospace() << "总消耗 token: prompt=" << m_totalPrompt
                             << " completion=" << m_totalCompletion
                             << " total=" << m_totalTokens
@@ -713,6 +843,7 @@ protected:
     JZTimer *m_poll = nullptr;
 
     std::vector<BenchmarkCase> m_cases;
+    std::string m_dataDir;        // 评测集（cases.jsonl 所在）目录，供 ${data} 占位符定位随用例发布的验证脚本
     size_t m_idx = 0;
     BenchmarkCase m_case;
     CaseResult m_result;
@@ -750,6 +881,19 @@ protected:
     HttpThread m_httpThread;
 };
 
+// 把 src 中所有 from 替换为 to（std::string 无内置 replace-all）
+static void replaceAll(std::string &s, const std::string &from, const std::string &to)
+{
+    if (from.empty())
+        return;
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos)
+    {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
 // 大小写不敏感地判断 output 是否包含子串
 bool containsIC(const std::string &hay, const std::string &needle)
 {
@@ -759,32 +903,197 @@ bool containsIC(const std::string &hay, const std::string &needle)
     return h.find(n) != std::string::npos;
 }
 
-// 从 data/ 目录加载评测集（每个 .json 一个用例）。JSON 约定：
-//   name            : 用例名（缺省取文件名去扩展名）
-//   prompt          : 初始任务描述（必填，缺失则跳过该文件）
+// 从评测集加载用例，支持两种形态：
+//   - 单个 .jsonl 文件：每行一个 JSON 对象（用例），空行忽略；
+//   - 目录：扫描 *.json（每文件一用例），若存在 cases.jsonl 也一并解析。
+// 用例 JSON 约定：
+//   name            : 用例名（缺省取文件名/行号）
+//   prompt          : 初始任务描述（必填，缺失则跳过）
 //   maxAttempts     : 最大尝试次数（缺省 3）
 //   timeout         : 单轮运行超时（秒，缺省 30）；超过则判本次运行失败
 //   input           : 注入给本用例的输入文本（缺省空）；运行时经全局 HTTP 服务
 //                      http://127.0.0.1:<port>/input 暴露给 JS（模型用 fetch 读取）
-//   expect.contains        : 判定输出需包含的子串
+//   expect.contains        : 判定输出需包含的子串（普通用例用）
 //   expect.caseInsensitive : contains 比较是否忽略大小写（缺省 false）
-//   retryHint       : 重试时给模型的提示（实际输出/编译错误会自动追加在后）
-static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &out, std::string &err)
+//   verify          : 外部验证命令模板（非空则启用外部验证，详见 BenchmarkCase 注释）
+//   verifyPort      : 外部验证用端口（缺省 3900，注入 ${port}）
+//   retryHint       : 重试时给模型的提示（实际输出/编译错误/验证输出会自动追加在后）
+static bool parseCaseObject(const Json::Value &root, const std::string &src, BenchmarkCase &c)
 {
-    if (!JZFileInfo::exists(dataDir))
+    if (!root.isObject())
     {
-        err = "评测集目录不存在: " + dataDir;
+        jzWarning().nospace() << "[评测集] 不是 JSON 对象，跳过: " << src;
         return false;
     }
+    c.name = root.isMember("name") && root["name"].isString()
+                 ? root["name"].asString() : src;
+    c.prompt = root.isMember("prompt") && root["prompt"].isString()
+                   ? root["prompt"].asString() : "";
+    c.maxAttempts = root.isMember("maxAttempts") ? root["maxAttempts"].asInt() : 3;
+    c.timeoutMs = (root.isMember("timeout") ? root["timeout"].asInt() : 30) * 1000;
+    c.input = (root.isMember("input") && root["input"].isString())
+                  ? root["input"].asString() : "";
+    c.verifyCmd = (root.isMember("verify") && root["verify"].isString())
+                      ? root["verify"].asString() : "";
+    c.verifyPort = root.isMember("verifyPort") ? root["verifyPort"].asInt() : 3900;
 
+    std::string contains;
+    bool ci = false;
+    if (root.isMember("expect") && root["expect"].isObject())
+    {
+        const Json::Value &exp = root["expect"];
+        if (exp.isMember("contains") && exp["contains"].isString())
+            contains = exp["contains"].asString();
+        if (exp.isMember("caseInsensitive"))
+            ci = exp["caseInsensitive"].asBool();
+    }
+    c.check = [contains, ci](const std::string &output) {
+        if (contains.empty())
+            return true;
+        return ci ? containsIC(output, contains)
+                  : output.find(contains) != std::string::npos;
+    };
+
+    std::string hint = root.isMember("retryHint") && root["retryHint"].isString()
+                           ? root["retryHint"].asString()
+                           : "上一次运行未通过，请根据反馈修正后重试。";
+    c.retry = [hint](const std::string &output, const std::string &buildError) {
+        std::ostringstream ss;
+        ss << hint;
+        if (!buildError.empty())
+            ss << "\n编译错误：\n" << buildError;
+        else
+            ss << "\n上次实际输出：\n" << output;
+        return ss.str();
+    };
+
+    if (c.prompt.empty())
+    {
+        jzWarning().nospace() << "[评测集] 用例缺少 prompt，跳过: " << src;
+        return false;
+    }
+    return true;
+}
+
+// 解析一段 JSON 文本（去 BOM）为一个用例；失败/缺 prompt 返回 false
+static bool parseCaseText(const std::string &rawText, const std::string &src, BenchmarkCase &c)
+{
+    std::string text = rawText;
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(text, root))
+    {
+        jzWarning().nospace() << "[评测集] 解析失败: " << src;
+        return false;
+    }
+    return parseCaseObject(root, src, c);
+}
+
+// 取文件路径的父目录（用于让索引里的相对 file 基于索引所在目录解析）
+static std::string parentDirOf(const std::string &path)
+{
+    size_t p = path.find_last_of("/\\");
+    return p == std::string::npos ? "." : path.substr(0, p);
+}
+
+// 加载"用例索引"文件：每行一个索引项，指向一个用例 JSON 文件的位置。
+// 索引项支持两种写法：
+//   纯字符串： "hello_world.json"
+//   对象：     {"file":"hello_world.json","enabled":true}
+// 相对路径基于索引所在目录（baseDir）解析；缺失/解析失败/被禁用/无 prompt 的项会被跳过并告警。
+static bool loadIndex(const std::string &indexPath, const std::string &baseDir,
+                      std::vector<BenchmarkCase> &out, std::string &err)
+{
+    std::ifstream in(indexPath, std::ios::binary);
+    if (!in)
+    {
+        err = "无法打开评测集索引: " + indexPath;
+        return false;
+    }
+    int lineNo = 0;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        lineNo++;
+        size_t a = line.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos)
+            continue;   // 空行忽略
+        size_t b = line.find_last_not_of(" \t\r\n");
+        std::string trimmed = line.substr(a, b - a + 1);
+
+        // 解析索引项
+        Json::Value idx;
+        Json::Reader reader;
+        if (!reader.parse(trimmed, idx))
+        {
+            jzWarning().nospace() << "[评测集] 索引行解析失败，跳过: " << indexPath
+                                  << ":" << lineNo;
+            continue;
+        }
+        std::string rel;
+        bool enabled = true;
+        if (idx.isString())
+        {
+            rel = idx.asString();
+        }
+        else if (idx.isObject())
+        {
+            if (idx.isMember("file") && idx["file"].isString())
+                rel = idx["file"].asString();
+            if (idx.isMember("enabled"))
+                enabled = idx["enabled"].asBool();
+        }
+        if (rel.empty())
+        {
+            jzWarning().nospace() << "[评测集] 索引项缺少 file 字段，跳过: " << indexPath
+                                  << ":" << lineNo;
+            continue;
+        }
+        if (!enabled)
+        {
+            jzDebug().nospace() << "[评测集] 索引项被禁用，跳过: " << rel;
+            continue;
+        }
+
+        // 解析被引用的用例 JSON：相对路径基于索引所在目录
+        std::string casePath = rel;
+        if (!JZDir::isAbsolutePath(rel))
+            casePath = baseDir + "/" + rel;
+        if (!JZFileInfo::exists(casePath))
+        {
+            jzWarning().nospace() << "[评测集] 用例文件不存在，跳过: " << casePath
+                                  << " (索引 " << indexPath << ":" << lineNo << ")";
+            continue;
+        }
+        std::ifstream fin(casePath, std::ios::binary);
+        if (!fin)
+        {
+            jzWarning().nospace() << "[评测集] 无法打开用例文件，跳过: " << casePath;
+            continue;
+        }
+        std::stringstream ss;
+        ss << fin.rdbuf();
+        BenchmarkCase c;
+        if (parseCaseText(ss.str(), casePath, c))
+            out.push_back(std::move(c));
+    }
+
+    if (out.empty())
+    {
+        err = "索引中无可用用例（文件缺失/解析失败/缺少 prompt/全部禁用）";
+        return false;
+    }
+    return true;
+}
+
+// 目录模式（无索引）：直接扫描目录内所有 *.json，每文件一用例
+static bool loadJsonDir(const std::string &dataDir, std::vector<BenchmarkCase> &out, std::string &err)
+{
     JZDir dir(dataDir);
     auto files = dir.entryInfoList({ "*.json" }, JZDir::Files);
-    if (files.empty())
-    {
-        err = "目录下无 *.json 用例文件";
-        return false;
-    }
-
     for (const auto &fi : files)
     {
         std::string path = dataDir + "/" + fi.fileName();
@@ -796,76 +1105,44 @@ static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &ou
         }
         std::stringstream ss;
         ss << in.rdbuf();
-        std::string text = ss.str();
-        // 去掉 UTF-8 BOM（Json::Reader 不认）
-        if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
-            (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
-            text.erase(0, 3);
-
-        Json::Value root;
-        Json::Reader reader;
-        if (!reader.parse(text, root) || !root.isObject())
-        {
-            jzWarning().nospace() << "[评测集] 解析失败: " << path;
-            continue;
-        }
-
         BenchmarkCase c;
-        std::string base = fi.fileName();
-        size_t dot = base.rfind('.');
-        if (dot != std::string::npos)
-            base = base.substr(0, dot);
-        c.name = root.isMember("name") && root["name"].isString()
-                     ? root["name"].asString() : base;
-        c.prompt = root.isMember("prompt") && root["prompt"].isString()
-                       ? root["prompt"].asString() : "";
-        c.maxAttempts = root.isMember("maxAttempts") ? root["maxAttempts"].asInt() : 3;
-        c.timeoutMs = (root.isMember("timeout") ? root["timeout"].asInt() : 30) * 1000;
-        c.input = (root.isMember("input") && root["input"].isString())
-                      ? root["input"].asString() : "";
+        if (parseCaseText(ss.str(), path, c))
+            out.push_back(std::move(c));
+    }
+    if (out.empty())
+    {
+        err = "目录下无可用用例（*.json 均为空/解析失败/缺少 prompt）";
+        return false;
+    }
+    return true;
+}
 
-        std::string contains;
-        bool ci = false;
-        if (root.isMember("expect") && root["expect"].isObject())
-        {
-            const Json::Value &exp = root["expect"];
-            if (exp.isMember("contains") && exp["contains"].isString())
-                contains = exp["contains"].asString();
-            if (exp.isMember("caseInsensitive"))
-                ci = exp["caseInsensitive"].asBool();
-        }
-        c.check = [contains, ci](const std::string &output) {
-            if (contains.empty())
-                return true;
-            return ci ? containsIC(output, contains)
-                      : output.find(contains) != std::string::npos;
-        };
-
-        std::string hint = root.isMember("retryHint") && root["retryHint"].isString()
-                               ? root["retryHint"].asString()
-                               : "上一次运行未通过，请根据反馈修正后重试。";
-        c.retry = [hint](const std::string &output, const std::string &buildError) {
-            std::ostringstream ss;
-            ss << hint;
-            if (!buildError.empty())
-                ss << "\n编译错误：\n" << buildError;
-            else
-                ss << "\n上次实际输出：\n" << output;
-            return ss.str();
-        };
-
-        if (c.prompt.empty())
-        {
-            jzWarning().nospace() << "[评测集] 用例缺少 prompt，跳过: " << path;
-            continue;
-        }
-
-        out.push_back(std::move(c));
+static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &out, std::string &err)
+{
+    if (!JZFileInfo::exists(dataDir))
+    {
+        err = "评测集路径不存在: " + dataDir;
+        return false;
     }
 
-    if (out.empty())
-        err = "没有可用用例（全部解析失败或缺少 prompt）";
-    return !out.empty();
+    JZFileInfo dirInfo(dataDir);
+    if (dirInfo.isDir())
+    {
+        // 目录模式：优先用 cases.jsonl 作为索引；没有则直接扫描 *.json
+        std::string index = dataDir + "/cases.jsonl";
+        if (JZFileInfo::exists(index))
+            return loadIndex(index, dataDir, out, err);
+        return loadJsonDir(dataDir, out, err);
+    }
+
+    // 单文件模式：必须是 .jsonl 索引文件（每行指向一个用例 JSON）
+    if (dataDir.size() >= 6 && dataDir.compare(dataDir.size() - 6, 6, ".jsonl") == 0)
+    {
+        return loadIndex(dataDir, parentDirOf(dataDir), out, err);
+    }
+
+    err = "评测集路径必须是目录或 .jsonl 索引文件: " + dataDir;
+    return false;
 }
 
 static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
@@ -951,7 +1228,7 @@ int main(int argc, char *argv[])
     JZEventLoop loop;
     Benchmark bench(&loop, llm, code, codeRuntime);
 
-    // 从评测集（data/ 下的 *.json）加载用例，先把 hello_world 移植过去
+    // 从评测集（--data 指向目录或 cases.jsonl 索引文件）加载用例；索引里的每个 file 引用一个用例 JSON
     std::vector<BenchmarkCase> cases;
     std::string loadErr;
     if (!loadCases(dataDir, cases, loadErr))
@@ -992,6 +1269,17 @@ int main(int argc, char *argv[])
     }
 
     bench.setCases(cases);
+
+    // 评测集目录：--data 指向目录时即其本身；指向 cases.jsonl 索引文件时取所在目录。
+    // 供 verify 命令里的 ${data} 占位符定位随用例发布的校验脚本（如 data/five_chess_server/...）。
+    {
+        std::string dataBase = dataDir;
+        JZFileInfo fi(dataDir);
+        if (!fi.isDir())
+            dataBase = parentDirOf(dataDir);
+        bench.setDataDir(dataBase);
+    }
+
 
     // 启动全局输入 HTTP 服务（JS 用 fetch 读取当前用例注入的输入）    
     if (!bench.startHttpServer(httpPort))

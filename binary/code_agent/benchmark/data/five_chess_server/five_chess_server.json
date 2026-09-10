@@ -1,0 +1,9 @@
+{
+  "name": "five_chess_server",
+  "prompt": "请用 TypeScript 实现一个 15x15 五子棋对战服务器（单进程、内存态即可），使用内置的 http 模块（const http = require('http')），监听端口 3900。\n\n规则：黑方先手；双方通过 token 标识身份；服务器负责仲裁（轮次、落子合法性、胜负）。提供以下 HTTP JSON 接口（路径 + method）：\n- POST /create_room  body {\"name\":\"x\"}  -> {\"room_id\":<int>,\"token\":\"<黑方token>\"，创建者执黑}\n- GET  /list_rooms  -> {\"rooms\":[{\"room_id\":<int>,\"name\":\"x\",\"has_white\":<bool>}]}\n- POST /join_room  body {\"room_id\":<int>}  -> {\"token\":\"<白方token>\"，加入者执白}\n- GET  /get_match?room_id=<int>&token=<str>  -> {\"board\":<15x15 数组 board[y][x]，y=行0~14，x=列0~14，0空/1黑/2白>,\"turn\":<0黑/1白>,\"last_move\":{\"x\":<int|null>,\"y\":<int|null>,\"color\":<0/1/2>},\"result\":<0进行中/1黑胜/2白胜/3和>,\"move_count\":<int>}\n- POST /play  body {\"room_id\":<int>,\"token\":\"<str>\",\"x\":<0~14>,\"y\":<0~14>}  -> {\"ok\":<bool>,\"error\":\"<str>\",\"result\":<0/1/2/3>}\n\n胜负：任意方向（横/竖/斜）连成 5 子者胜；棋盘下满无胜者为和棋。非法落子（越界、格子已占、非己方回合、token 错误）必须返回 ok=false 并带 error 说明，且不得改变棋盘。服务器不主动推送棋盘，玩家需自己调 get_match。请保证多房间互相隔离、状态在内存中持久。",
+  "maxAttempts": 3,
+  "timeout": 120,
+  "verify": "python ${data}/five_chess_server/five_chess_server_verify.py --runtime ${runtime} --build ${build} --port 3900",
+  "verifyPort": 3900,
+  "retryHint": "你的五子棋服务器未能通过自动化校验。请检查：1) 是否真的在端口 3900 上起了 http 服务并能持续监听；2) 五个接口的路径、method、返回 JSON 字段名是否与约定完全一致；3) 落子合法性（越界/已占/抢手/错误 token）是否返回 ok=false；4) 五连珠胜负判定与和棋是否正确。修正后重试。"
+}

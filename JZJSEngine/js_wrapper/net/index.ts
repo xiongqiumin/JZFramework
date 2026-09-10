@@ -4,11 +4,14 @@
  * 把引擎注入的 __jz.net / __jz.dgram / __jz.http / __jz.ws / __jz.mqtt /
  * __jz.url / __jz.os 原子 API 包装成 Node 风格模块:
  *   net / dgram / http / mqtt / ws / url / os
- * 同时注册全局变量(net/dgram/...)与 require(), 并把 fetch/WebSocket/URL/
- * URLSearchParams/Headers/Response 等 WHATWG 全局也挂到 globalThis。
+ * net/dgram/http/mqtt/url/ws 是 Node 的"内置模块", 只 export, 必须 import 才能用
+ * (对齐 Node: 这些不是全局); fetch/WebSocket/URL/URLSearchParams/Headers/Response/
+ * EventEmitter 是 Web 标准全局, 挂到 globalThis, 引擎启动即零 import 可用。
  *
- * 本文件由 tsc 编译为 dist/index.js, 在 JZJSNetModule::initEngine 时
- * 通过 JZJSEngine::runModuleFile 以分离式(不内嵌进 C++)加载。
+ * 本文件由 tsc 编译为 dist/index.js。运行时由 JZEngineRuntime::initEngine 作为 host
+ * bootstrap(等价 Node 启动装载 undici)主动 runModuleFile 一次, 把 Web 全局挂上
+ * globalThis; 用户入口 `import '../jz_js/net/dist/index.js'` 与之命中同一模块缓存,
+ * 不会重复执行。
  */
 'use strict';
 
@@ -775,13 +778,10 @@ const os: any = {
     networkInterfaces: function () { return __jz.os.networkInterfaces(); }
 };
 
-// ------------------------------------------------------------ 全局(供全局脚本直接访问; import 用法由 export 提供)
-(globalThis as any).net = net;
-(globalThis as any).dgram = dgram;
-(globalThis as any).http = http;
-(globalThis as any).mqtt = mqtt;
-(globalThis as any).url = url;
-(globalThis as any).os = os;
-(globalThis as any).ws = ws;
+// ------------------------------------------------------------ 全局(供全局脚本直接访问)
+// 只挂 Web 标准全局(对齐 Node: 启动即有的全局, 无需 import):
+// fetch/Headers/Response/WebSocket/EventEmitter/URL/URLSearchParams。
+// net/dgram/http/mqtt/url/ws/os 是 Node 的"内置模块", 必须 import(对齐 Node: 这些不是全局),
+// 只走下面的 export。
 
 export { net, dgram, http, mqtt, ws, url, os };

@@ -479,22 +479,12 @@ function __printObject__(obj, seen = new WeakSet()) {
 
     return result;
 }
-
-// 把模块命名空间的具名导出绑定到全局变量(模块顶层的作用域不共享全局,
-// 评测侧 hiddenTests 仍是全局脚本, 靠这个桥拿到导出符号)
-function __moduleBindGlobal__(ns) {
-    if (!ns || typeof ns !== "object")
-        return 0;
-    const keys = Object.keys(ns);
-    for (let i = 0; i < keys.length; i++) {
-        try { globalThis[keys[i]] = ns[keys[i]]; } catch (e) { }
-    }
-    return keys.length;
-}
 )";
 
-    bool ret_init = loadScript(init_code);
-    assert(ret_init);
+    // 注册内部助手(全局空间执行, 与旧 loadScript 语义一致)。
+    // loadScript 已废弃(无 import 支持的旧式全局 eval); 这类全局脚本片段用 eval() 即可。
+    JZJSValuePtr ret_init = eval(init_code);
+    assert(!JS_IsException(ret_init.get()));
 
     JS_SetRuntimeOpaque(m_rt, this);
     JS_SetContextOpaque(m_ctx, this);
@@ -677,40 +667,6 @@ void JZJSEngine::wakeUp()
     if (!m_ctx)
         return;
     jzApp->postEvent(this, new JZEvent(JZEngine_WakeUp));
-}
-
-bool JZJSEngine::load(const std::string& filepath)
-{
-    JZFile file;
-    if (!file.open(filepath, "rt"))
-    {
-        LOG_E("open path " + filepath + " failed");
-        sigLog.emit("open path " + filepath + " failed");
-        return false;
-    }
-
-    JZByteArray js_bytecode = file.readAll();
-    file.close();
-
-    string js_code = str_fromUtf8(js_bytecode);
-    return loadScript(js_code);
-}
-
-bool JZJSEngine::loadScript(const std::string& js_code)
-{
-    JSValue result = JS_Eval(m_ctx, js_code.data(), js_code.size(), "script", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(result))
-    {
-        JSValue exc = JS_GetException(m_ctx);
-        std::string runtimeError = getExceptionDescript(exc);
-        JS_FreeValue(m_ctx, exc);
-
-        JS_FreeValue(m_ctx, result);
-        return false;
-    }
-    JS_FreeValue(m_ctx, result);
-    wakeUp();
-    return true;
 }
 
 void JZJSEngine::timerEvent(JZTimerEvent* event)
@@ -1602,29 +1558,6 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
     return handle;
 }
 
-JZJSValuePtr JZJSEngine::loadModule(const std::string& filepath)
-{
-    JZFile file;
-    if (!file.open(filepath, "rt"))
-    {
-        JSValue error = JS_ThrowPlainError(m_ctx, "open path '%s; failed", filepath.c_str());
-        return JZJSValuePtr(m_ctx, error);
-    }
-
-    JZByteArray js_bytecode = file.readAll();
-    file.close();
-
-    string code = str_fromUtf8(js_bytecode);
-
-    JSValue result = JS_Eval(m_ctx, code.c_str(), code.size(), "eval", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(result))
-        unHandleException();
-    else
-        wakeUp();
-
-    return JZJSValuePtr(m_ctx, result);
-}
-
 bool JZJSEngine::readModuleCode(const std::string& module_name, std::string& code)
 {
     // 候选路径: 原名 -> 补 .js -> 目录式 index.js
@@ -1713,7 +1646,7 @@ JSModuleDef* JZJSEngine::loadModuleDef(const std::string& module_name)
     return m;
 }
 
-bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
+bool JZJSEngine::runModuleFile(const std::string& filepath)
 {
     if (!m_ctx)
         return false;
@@ -1722,7 +1655,6 @@ bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
     std::string module_name = filepath;
     std::replace(module_name.begin(), module_name.end(), '\\', '/');
 
-    std::string err_before = m_runtimeError;
     std::string code;
     if (!readModuleCode(module_name, code))
     {
@@ -1739,8 +1671,6 @@ bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
         unHandleException();
         return false;
     }
-
-    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(module_val);
 
     // 实例化(经 loader 拉取 import 依赖)并求值。module_val 的引用在此被消费,
     // 模块定义继续由 ctx 的 loaded_modules 列表持有。
@@ -1759,35 +1689,7 @@ bool JZJSEngine::runModuleFile(const std::string& filepath, bool bindExports)
     if (m_status == Engine_running)
         scheduleNextTimer();
 
-    if (bindExports && m_runtimeError == err_before)
-        bindModuleNamespace(m);
-
     return true;
-}
-
-bool JZJSEngine::bindModuleNamespace(JSModuleDef* m)
-{
-    if (!m_ctx || !m)
-        return false;
-
-    JSValue ns = JS_GetModuleNamespace(m_ctx, m);
-    if (JS_IsException(ns))
-    {
-        unHandleException();
-        return false;
-    }
-
-    JSValue bind_func = JS_GetPropertyStr(m_ctx, m_global, "__moduleBindGlobal__");
-    JSValue args[] = {ns};
-    JSValue ret = JS_Call(m_ctx, bind_func, JS_UNDEFINED, 1, args);
-    bool ok = !JS_IsException(ret);
-    if (!ok)
-        unHandleException();
-
-    JS_FreeValue(m_ctx, ret);
-    JS_FreeValue(m_ctx, bind_func);
-    JS_FreeValue(m_ctx, ns);
-    return ok;
 }
 
 void JZJSEngine::execOnce()

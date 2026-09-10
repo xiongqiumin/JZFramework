@@ -1,9 +1,16 @@
 // @jz/core —— fs/path/os/process/crypto 运行时实现(分离式加载)
 //
 // 对应原 JZJSCoreModule.cpp 内嵌的 g_coreAdapter: 把 __jz.core 原子 API 包装成 Node 风格的
-// fs/path/os/process/crypto, 挂到 globalThis, 并扩展 require() 以识别这些模块。
+// fs/path/os/process/crypto, 只 export(对齐 Node: 内置模块须 import, 不再挂 globalThis)。
 //
-// 注意: os 会与 net 模块注入的全局 os(含 networkInterfaces) 合并, 故本模块须在 net 之后加载。
+// 注意: os 会与 net 模块导出的 os(含 networkInterfaces) 合并。本模块通过下方
+// `import { os as netOs }` 显式依赖 net, 由 QuickJS 模块加载器被动解析执行,
+// 从而保证 net 先于本模块执行(不依赖入口模块的 import 顺序)。require() 已不再支持。
+// 对齐 Node: fs/path/os/process/crypto 都是"内置模块", 只 export, 必须 import 才能用
+// (不再挂 globalThis; 入口用 `import { fs, path } from '../jz_js/core/dist/index.js'`)。
+
+// 显式依赖 net: 拿到 net 导出的 os(含 networkInterfaces), 本模块增强它(补 platform/tmpdir)。
+import { os as netOs } from '../net/dist/index.js';
 
 declare const __jz: any;
 
@@ -187,12 +194,11 @@ const path: any = {
   },
 };
 
-// ---- os (增强 net 模块已注入的全局, 保留其 networkInterfaces) ----
-const os: any = (globalThis as any).os || {};
+// ---- os (增强 net 导出的 os, 保留其 networkInterfaces) ----
+const os: any = netOs;
 os.platform = function () { return __jz.core.platform(); };
 os.tmpdir = function () { return __jz.core.tmpdir(); };
 os.EOL = (__jz.core.platform() === 'win32') ? '\r\n' : '\n';
-(globalThis as any).os = os;
 
 // ---- process ----
 const process: any = {
@@ -201,7 +207,6 @@ const process: any = {
   platform: __jz.core.platform(),
   argv: [],
 };
-(globalThis as any).process = process;
 
 // ---- crypto (Node crypto 子集: randomUUID / randomBytes / randomInt / createHash) ----
 const crypto: any = {
@@ -236,10 +241,6 @@ const crypto: any = {
     };
   },
 };
-(globalThis as any).crypto = crypto;
 
-// ---- 全局(供全局脚本直接访问; import 用法由 export 提供) ----
-(globalThis as any).fs = fs;
-(globalThis as any).path = path;
-
+// ---- export(对齐 Node: 内置模块须 import) ----
 export { fs, path, os, process, crypto };

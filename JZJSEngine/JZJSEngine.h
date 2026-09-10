@@ -64,8 +64,8 @@ public:
 
     JSContext* context();
 
-    JZJSValuePtr eval(const std::string& code);
-    JZJSValuePtr loadModule(const std::string& path);  // 这个实际是在全局空间
+    JZJSValuePtr eval(const std::string& code);  // 全局空间执行(JS_EVAL_TYPE_GLOBAL)
+
 
     // 同步调用全局 JS 函数。func = 全局函数名，params 原样透传给 JS。
     // 返回值的 1 元素 vector(返回 undefined 也有 1 个元素)；失败(函数不存在/调用抛异常)
@@ -85,9 +85,8 @@ public:
     // 以 ESM 模块方式加载并执行文件(真正支持顶层 import/export)：
     // - filepath 用相对 workDir 的 '/' 路径或绝对路径；
     // - import 依赖由内置模块 loader 自动解析(扩展名可省略，自动补 .js / index.js)；
-    // - bindExports=true 时把入口模块的命名导出绑定到全局变量(供后续全局 eval 访问)；
     // - 出错时与 eval() 一致：记录到 runtimeError(通过 sigError/sigLog 上报)。
-    bool runModuleFile(const std::string& filepath, bool bindExports = false);
+    bool runModuleFile(const std::string& filepath);
     void execOnce();    
 
     // 引擎是否还有待执行的异步工作(接下来再调 execOnce/跑事件循环会有事做)：
@@ -265,17 +264,14 @@ protected:
     void registInternal();
     void registConsole();
 
-    bool load(const std::string& file);
-    bool loadScript(const std::string& script);
     std::string getPropertyStr(JSValue var, std::string prop);
+
 
     // ---- ESM 模块支持(供 quickjs 模块 loader / runModuleFile 内部使用) ----
     // 编译 module_name 指定的文件为模块定义(找不到文件/编译失败时置 exception 返回 NULL)
     JSModuleDef* loadModuleDef(const std::string& module_name);
     // 读模块源码：相对 workDir(或绝对)路径，带 .js / index.js 扩展名兜底与 BOM 剥离
     bool readModuleCode(const std::string& module_name, std::string& code);
-    // 把模块的命名空间导出绑定到全局变量(通过 __moduleBindGlobal__ 助手)
-    bool bindModuleNamespace(JSModuleDef* m);
     // 泵 promise 任务队列(含未处理拒绝上报 Engine_error)
     void pumpPendingJobs();
 

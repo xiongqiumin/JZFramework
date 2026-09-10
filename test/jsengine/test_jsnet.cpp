@@ -66,6 +66,24 @@ int main()
     serialModule.initEngine(&engine);
     STEP("serial port module init");
 
+    // 测试侧引导: 加载 net/core 适配层并把"导入式模块"重新暴露为全局, 供下面以裸名
+    // 运行的 eval 断言复用(生产侧已改为 import-only, 对齐 Node; 这里是测试便利, 不影响生产代码)。
+    {
+        std::string wrapper = JZ_JS_WRAPPER_DIR;
+        std::string tmp = std::string(wrapper) + "/_test_globals.mjs";
+        std::string mjs =
+            "import { net, dgram, http, mqtt, ws, url } from './net/dist/index.js';\n"
+            "import { fs, path, process, crypto, os } from './core/dist/index.js';\n"
+            "globalThis.net = net; globalThis.dgram = dgram; globalThis.http = http;\n"
+            "globalThis.mqtt = mqtt; globalThis.ws = ws; globalThis.url = url;\n"
+            "globalThis.os = os; globalThis.fs = fs; globalThis.path = path;\n"
+            "globalThis.process = process; globalThis.crypto = crypto;\n";
+        FILE* f = fopen(tmp.c_str(), "wb");
+        if (f) { fwrite(mjs.data(), 1, mjs.size(), f); fclose(f); }
+        engine.runModuleFile(tmp);
+        remove(tmp.c_str());
+    }
+
     // 轮询等待某个 JS 表达式为真(同时泵事件循环, 让网络回调落地)
     auto waitFor = [&](const string& expr, int timeoutMs) {
         bool done = false;
@@ -281,7 +299,7 @@ int main()
         FILE* f = fopen(tmpPath.c_str(), "wb");
         if (f) { fwrite(mjs.data(), 1, mjs.size(), f); fclose(f); }
 
-        bool loaded = engine.runModuleFile(tmpPath, false);
+        bool loaded = engine.runModuleFile(tmpPath);
         auto v = engine.eval("typeof __impNet === 'object' && typeof __impNet.createServer === 'function'");
         bool ok = loaded && !engine.isException(v.get()) && engine.fromJSValue<bool>(v.get());
         if (ok)
@@ -309,7 +327,7 @@ int main()
         FILE* fptr = fopen(tmpPath.c_str(), "wb");
         if (fptr) { fwrite(mjs.data(), 1, mjs.size(), fptr); fclose(fptr); }
 
-        bool loaded = engine.runModuleFile(tmpPath, false);
+        bool loaded = engine.runModuleFile(tmpPath);
         auto v = engine.eval(
             "globalThis.__impHasApi === true && globalThis.__impSameFs === true");
         bool ok = loaded && !engine.isException(v.get()) && engine.fromJSValue<bool>(v.get());

@@ -62,23 +62,39 @@ foreach(t code_agent code_runtime code_agent_test code_agent_lsp_test code_agent
 endforeach()
 
 # ---------------------------------------------------------------------------
-# 把 JZJSEngine 的完整类型定义安装到 exe 目录（bin/<CONFIG>/jz_types/，含
-# net/http/fetch/websocket 等）。这些声明会与 lib.dom.d.ts 冲突的全局
-# fetch/WebSocket，需 tsconfig 设 "lib": ["ES2022"]（不带 DOM）才不会冲突。
-# initProject 会把这份 jz_types 拷进新建工程（<工程根>/jz_types），生成的 tsconfig
-# 用相对路径 include 它，工程因此自包含。（只保留根目录这份完整集，不再复制
-# core/ 子集，避免重复。）
-# 注意：必须装到 bin/<CONFIG>/jz_types，与 exe 同一配置子目录——initProject 用
-# applicationDirPath()+"/jz_types" 当拷贝源，装错目录会找不到类型。
+# 打包 JZ JS 引擎产物到 exe 同配置目录(bin/<CONFIG>/), 统一放进一个大的部署目录 jz_engine/:
+#   - jz_engine/jz_types/ : 完整类型定义(供 initProject 拷进用户工程, 使工程自包含)
+#   - jz_engine/jz_js/    : 运行时 JS(dist 编译产物: core/net/serialport), 供用户工程 import
+# 用 js_wrapper/package.py 打包。脚本只清理它自己要写入的目标子目录(jz_types/jz_js),
+# 不删其它任何东西(删除策略有路径守卫, 误删会直接报错), 避免旧 CMake 残留文件
+# (如历史 core/ 副本) 与根目录声明撞出 TS2300 Duplicate identifier。
+# 文件依赖参考 jz_add_resources: 显式 DEPENDS 实际的 dist/types 文件(存在才加),
+# 改动 .ts 重新 tsc 后打包会自动重跑; 用 stamp 文件做增量标记。
+# 注意: dist 由 `tsc -b js_wrapper` 生成(非 CMake target), 缺失时脚本跳过并告警。
 # ---------------------------------------------------------------------------
-add_custom_target(copy_jz_types ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CODE_AGENT_BIN_DIR}/$<CONFIG>/jz_types"
-    # 清掉旧 CMake 残留的 core/ 子目录（copy_directory 不会自动删除目标里多余文件，
-    # 否则历史 core/ 副本会与根目录同名声明撞出 TS2300 Duplicate identifier）。
-    COMMAND ${CMAKE_COMMAND} -E remove_directory "${CODE_AGENT_BIN_DIR}/$<CONFIG>/jz_types/core"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/types" "${CODE_AGENT_BIN_DIR}/$<CONFIG>/jz_types"
-    COMMENT "Install JZ JS engine type definitions next to code_agent binaries (per-config)")
-add_dependencies(code_agent copy_jz_types)
-add_dependencies(code_runtime copy_jz_types)
-add_dependencies(code_agent_test copy_jz_types)
+set(JZ_WRAP_PY "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/package.py")
+set(JZ_JS_OUT "${CODE_AGENT_BIN_DIR}/$<CONFIG>")
+set(JZ_TYPES_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/types")
+set(JZ_WRAP_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper")
+set(JZ_JS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/jz_js_packaged.stamp")
+
+# 仅把已存在的 dist 加入依赖, 避免未跑 tsc 时 configure 报找不到文件
+set(JZ_JS_DEPS "${JZ_WRAP_PY}" "${JZ_TYPES_SRC}")
+foreach(pkg core net serialport)
+    set(_d "${JZ_WRAP_SRC}/${pkg}/dist/index.js")
+    if(EXISTS "${_d}")
+        list(APPEND JZ_JS_DEPS "${_d}")
+    endif()
+endforeach()
+
+add_custom_command(
+    OUTPUT "${JZ_JS_STAMP}"
+    COMMAND ${JZ_PYTHON_EXECUTABLE} "${JZ_WRAP_PY}"
+            --out "${JZ_JS_OUT}" --types "${JZ_TYPES_SRC}" --js-wrapper "${JZ_WRAP_SRC}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${JZ_JS_STAMP}"
+    DEPENDS ${JZ_JS_DEPS}
+    COMMENT "Package JZ JS engine (types + runtime dist) next to code_agent binaries (per-config)")
+add_custom_target(copy_jz_js ALL DEPENDS "${JZ_JS_STAMP}")
+add_dependencies(code_agent copy_jz_js)
+add_dependencies(code_runtime copy_jz_js)
+add_dependencies(code_agent_test copy_jz_js)

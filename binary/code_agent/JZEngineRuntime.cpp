@@ -6,6 +6,7 @@
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
 #include "JZJSCoreModule.h"
+#include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
 #include "JZThread.h"
@@ -150,6 +151,13 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_coreModule = std::make_unique<JZJSCoreModule>();
     m_coreModule->initEngine(engine);
 
+    // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
+    // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
+    // 用(等价 Node 启动装载 undici/whatwg)。net 模块按绝对路径加载, 与用户入口
+    // `import '../jz_js/net/dist/index.js'` 命中同一模块缓存, 不会重复执行; 找不到
+    // shim 时静默跳过(纯算法/无网络工程仍可用)。
+    bootstrapWebGlobals(wd);
+
     LogBridge *bridge = new LogBridge();
     bridge->rt = this;
     connect(&engine->sigLog, bridge, &LogBridge::onLog);
@@ -164,6 +172,32 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_engineRunning = true;
     m_lastError.clear();
     return true;
+}
+
+void JZEngineRuntime::bootstrapWebGlobals(const string &wd)
+{
+    // 候选路径: 优先工程自带的 jz_js(与用户 import 解析到的绝对路径一致, 避免重复执行),
+    // 回退到 exe 同目录部署的 jz_engine/jz_js(或旧平铺 jz_js)。路径先规范化(消解 ..),
+    // 保证与入口 `import '../jz_js/net/dist/index.js'` 解析到同一文件、命中同一模块缓存。
+    vector<string> candidates;
+    candidates.push_back(rtAbsPath(wd + "/jz_js/net/dist/index.js"));        // 运行根带 jz_js
+    candidates.push_back(rtAbsPath(wd + "/../jz_js/net/dist/index.js"));     // 运行根在 build/ 子目录
+    string appDir = JZPlatform::applicationDirPath();
+    if (!appDir.empty())
+    {
+        candidates.push_back(rtAbsPath(appDir + "/jz_engine/jz_js/net/dist/index.js"));  // 新部署
+        candidates.push_back(rtAbsPath(appDir + "/jz_js/net/dist/index.js"));           // 旧平铺
+    }
+    for (const string &cand : candidates)
+    {
+        if (JZFileInfo(cand).isFile())
+        {
+            // 副作用执行: 把 Web 标准全局挂上 globalThis。按绝对路径加载, 与用户入口
+            // 的 import 命中同一 QuickJS 模块缓存, 不会重复执行。失败不致命(静默)。
+            m_engine->runModuleFile(cand);
+            break;                                  // 命中即止
+        }
+    }
 }
 
 void JZEngineRuntime::shutdownEngine()
@@ -215,7 +249,7 @@ bool JZEngineRuntime::runModule(const string& moduleRel)
 
     m_lastError.clear();
     string errBefore = m_engine->runtimeError();
-    bool loaded = m_engine->runModuleFile(moduleRel, true);
+    bool loaded = m_engine->runModuleFile(moduleRel);
     rtPumpEngine();     // 让可能挂起的 job / console 输出落定
 
     string raw = m_engine->runtimeError();

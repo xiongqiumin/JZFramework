@@ -117,6 +117,12 @@ public:
     void shutdownEngine();
     bool engineRunning() const;
 
+    // host bootstrap: 引擎启动即把 net 适配层(net/dist/index.js)的 Web 标准全局
+    // (fetch/Headers/Response/WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis,
+    // 等价于 Node 启动时装载 undici——用户无需 import 即可用这些全局(对齐 Node)。
+    // 找不到 shim 时静默跳过(纯算法/无网络工程仍可用)。wd 为当前引擎工作目录。
+    void bootstrapWebGlobals(const std::string &wd);
+
     // 以 ESM 模块方式加载并执行 moduleRel（相对 root()，'/' 分隔，扩展名可省略）。
     // 需要先 initEngine()；入口模块的命名导出会绑定到全局（供后续 evalScript 用）。
     // 成功返回 true；失败返回 false，错误已经过 source map 翻译回 TS，见 lastError()。

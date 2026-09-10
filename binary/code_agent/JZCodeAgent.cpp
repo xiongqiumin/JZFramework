@@ -505,25 +505,35 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // 类型（fs/path/os/process/net/http/fetch/...）。因为 lib 已不含 DOM，jz_types
     // 里声明的全局 fetch/WebSocket/URL 等不会与 lib.dom.d.ts 冲突。
     //
-    // jz_types 从 exe 目录**拷一份到工程里**（<工程根>/jz_types）：工程因此自包含，
-    // tsconfig 只写相对路径，换机器 / 换 exe 目录 / 拷给别人都不会丢类型。
-    // include 收 src + jz_types 下的 .d.ts（只挂声明、不挂实现型 .ts 如 jzwidget.ts）；
-    // 源目录不存在时仅收 src，不报错。
+    // jz_types / jz_js 各从 exe 目录**拷一份到工程里**（<工程根>/jz_types、<工程根>/jz_js）：
+    // 工程因此自包含，tsconfig 只写相对路径，换机器 / 换 exe 目录 / 拷给别人都不会丢。
+    // 新部署把两者统一放在 exe 同目录的 jz_engine/ 下（jz_engine/jz_types、jz_engine/jz_js），
+    // 旧部署仍可能直接平铺在 exe 目录（jz_types/、jz_js/），这里两种布局都兼容。
+    // - jz_types：类型声明，include 收 jz_types 下的 .d.ts；编译期类型检查用。
+    // - jz_js：运行时 JS（core/net/serialport 的 dist），用户入口可
+    //   import '../jz_js/<pkg>/dist/index.js' 被动加载运行期全局（纯 import 模型）。
+    // 源目录不存在时仅收 src，不报错（jz_js 缺失仅代表工程不引用运行时，仍可编译运行）。
+    auto copyIfPresent = [&](const string &srcRel, const string &dstRel,
+                             const string &label, bool &flag) {
+        string appDir = JZPlatform::applicationDirPath();
+        string src = appDir + "/jz_engine/" + srcRel;
+        if (!JZFileInfo(src).isDir())
+            src = appDir + "/" + srcRel;          // 兼容旧部署（平铺在 exe 目录）
+        if (!JZFileInfo(src).isDir())
+            return;                                // 源不存在：保持 flag=false，不报错
+        string copyErr;
+        if (!JZDir::copyRecursively(src, root + "/" + dstRel, false, &copyErr))
+            error = "复制 " + label + " 失败: " + copyErr;    // 真实失败：记 error
+        else
+            flag = true;
+    };
+
     bool hasJzTypes = false;
-    {
-        string jzTypesSrc = JZPlatform::applicationDirPath() + "/jz_types";
-        if (JZFileInfo(jzTypesSrc).isDir())
-        {
-            string copyErr;
-            // 工程目录刚建（要求为空），不会有同名文件 -> force=false 即可
-            if (!JZDir::copyRecursively(jzTypesSrc, root + "/jz_types", false, &copyErr))
-            {
-                error = "复制 jz_types 失败: " + copyErr;
-                return false;
-            }
-            hasJzTypes = true;
-        }
-    }
+    copyIfPresent("jz_types", "jz_types", "jz_types", hasJzTypes);
+    bool hasJzJs = false;
+    copyIfPresent("jz_js", "jz_js", "jz_js", hasJzJs);
+    if (!error.empty())
+        return false;
     string jzTypesInclude = "\"src/**/*.ts\"";
     if (hasJzTypes)
         jzTypesInclude += ", \"jz_types/**/*.d.ts\"";

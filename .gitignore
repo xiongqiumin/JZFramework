@@ -20,3 +20,8 @@ build*
 local.properties
 __pycache__
 
+# 生成产物: JS 包装层(tsc 编译输出, 含 index.js / index.d.ts / tsconfig.tsbuildinfo)
+**/dist/
+*.tsbuildinfo
+
+

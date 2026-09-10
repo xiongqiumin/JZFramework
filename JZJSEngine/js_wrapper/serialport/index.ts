@@ -2,8 +2,9 @@
  * @jz/serialport —— 内部实现 (internal definition)
  *
  * 把引擎注入的 __jz.serialport 原子 API 包装成 Node "serialport" 包风格。
- * 本文件由 tsc 编译为 dist/index.js, 在 JZJSSerialPortModule::initEngine 时
- * 通过 JZJSEngine::runModuleFile 以分离式(不内嵌进 C++)加载。
+ * 本文件由 tsc 编译为 dist/index.js, 由用户入口模块
+ * `import { SerialPort } from './serialport/dist/index.js'` 被动加载(QuickJS 模块加载器
+ * 解析到该 specifier 时回调 readModuleCode), 以分离式(不内嵌进 C++)方式运行。
  *
  * 运行时契约: 依赖全局 __jz.serialport (由 C++ 注册)。
  * 同时以标准 Node 形态导出 SerialPort / list, 便于将来切换 JS 运行时。

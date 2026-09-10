@@ -592,7 +592,9 @@ int main()
         string abs = goodDir.absolutePath();
 
         JZEngineRuntime rt;
-        rt.setLogHandler([](const string &t) {
+        string engineOut;          // 捕获入口顶层自执行的 console 输出
+        rt.setLogHandler([&](const string &t) {
+            engineOut += t + "\n";
             jzDebug("  [engine] %s", t.c_str());
         });
 
@@ -606,19 +608,36 @@ int main()
                   "project.json 给出原路径地址 projectRoot", rt.projectInfo().projectRoot);
         }
 
-        if (ok)
-        {
-            bool okEval = rt.evalScript(
-                "(function(){\n"
-                "  if (typeof main !== 'function') throw new Error('main 未绑定到全局');\n"
-                "  if (typeof buildMessage !== 'function') "
-                "throw new Error('buildMessage 未绑定到全局');\n"
-                "  var got = main();\n"
-                "  var expect = 'lib k=42 [add+1=1] 20+22=42';\n"
-                "  if (got !== expect) throw new Error('unexpected result: ' + got);\n"
-                "})();\n");
-            check(okEval, "跨文件导入的函数结果正确(含子目录与共享模块)", rt.lastError());
-        }
+        // 新结构(纯 import 模型): 入口具名导出不再自动绑到全局, 验证改为读取入口
+        // 顶层自执行产生的 console 输出(MULTIFILE-OK + 跨文件结果)
+        check(engineOut.find("MULTIFILE-OK") != string::npos,
+              "good 工程入口顶层自执行并输出结果", engineOut);
+        const string expect4a = "lib k=42 [add+1=1] 20+22=42";
+        check(engineOut.find(expect4a) != string::npos,
+              "跨文件导入结果正确(含子目录与共享模块)", engineOut);
+
+        // Node 兼容: fetch 等 Web 标准全局应在引擎启动即存在, 无需 import
+        // (引擎 init 时已由 bootstrapWebGlobals 主动装载 net 适配层)。good 工程入口并未
+        // import net, 因此这条断言验证的就是"零 import 可用"。
+        check(rt.evalScript(
+                  "if (typeof fetch !== 'function') "
+                  "throw new Error('fetch 应作为全局零 import 可用');\n"
+                  "if (typeof WebSocket !== 'function') "
+                  "throw new Error('WebSocket 应作为全局零 import 可用');\n"
+                  "if (typeof URL !== 'function') "
+                  "throw new Error('URL 应作为全局零 import 可用');\n"),
+              "fetch/WebSocket/URL 全局可用(无需 import, 对齐 Node)", rt.lastError());
+
+        // 反向验证: net/http/dgram/mqtt/ws/url/fs/path/os/process/crypto 是对齐 Node 的
+        // "内置模块", 必须 import 才能用, 不应作为全局泄露(防止与 Node 模块语义混淆)。
+        check(rt.evalScript(
+                  "['net','http','dgram','mqtt','ws','url',"
+                  "'fs','path','os','process','crypto'].forEach(function (k) {\n"
+                  "  if (typeof globalThis[k] !== 'undefined') "
+                  "throw new Error(k + ' 不应作为全局(须 import)');\n"
+                  "});\n"),
+              "net/http/dgram/mqtt/ws/url/fs/path/os/process/crypto 不泄露为全局(须 import, 对齐 Node)",
+              rt.lastError());
     }
 
     // ================================================================
@@ -765,20 +784,18 @@ int main()
 
                 jzDebug("[stage 6] 绝对 outDir 产物运行 (运行根=绝对 outDir):");
                 JZEngineRuntime rt;
-                rt.setLogHandler([](const string &t) {
+                string engineOut6;
+                rt.setLogHandler([&](const string &t) {
+                    engineOut6 += t + "\n";
                     jzDebug("  [engine] %s", t.c_str());
                 });
                 bool ran = rt.init(extOut);
                 check(ran, "绝对 outDir 产物 init 成功(运行根=outDir)", rt.lastError());
-                if (ran)
-                {
-                    bool okEval = rt.evalScript(
-                        "(function(){ if (typeof main !== 'function') "
-                        "throw new Error('main 未绑定');"
-                        " if (main() !== 'lib k=42 [add+1=1] 20+22=42') "
-                        "throw new Error('结果不一致'); })();\n");
-                    check(okEval, "绝对 outDir 产物执行结果正确", rt.lastError());
-                }
+                // 新结构: 入口顶层自执行 console 输出即结果(纯 import 模型, 无全局绑定)
+                const string expect6 = "lib k=42 [add+1=1] 20+22=42";
+                check(engineOut6.find("MULTIFILE-OK") != string::npos &&
+                      engineOut6.find(expect6) != string::npos,
+                      "绝对 outDir 产物执行结果正确(顶层自执行 console 输出)", engineOut6);
             }
 
             // 清理并复原：删外部产物目录、tsconfig 恢复 outDir=build，
@@ -833,6 +850,11 @@ int main()
                   "initProject 生成的 tsconfig 设为纯 ES2022(无 DOM)", tsText2);
             check(tsText2.find("jz_types") != string::npos,
                   "initProject 生成的 tsconfig 包含 jz_types 类型", tsText2);
+            // 新结构: initProject 同时把运行时 jz_js 拷进工程(供入口被动 import)
+            check(fileExists(typesRoot + "/jz_js/net/dist/index.js") &&
+                  fileExists(typesRoot + "/jz_js/core/dist/index.js"),
+                  "initProject 把运行时 jz_js 一同拷进工程(jz_js/<pkg>/dist)",
+                  typesRoot + "/jz_js");
 
             // 该 TS 直接引用 jz_types 的 fs/path/os/process（框架自定义模块），
             // 只要类型被安装并挂进 include，tsc 即可解析且类型检查通过。
@@ -978,6 +1000,87 @@ int main()
             check(ok9, "JZExeResource::replaceIcon 替换临时 exe 图标", icErr);
             if (ok9)
                 check(JZExeResource::hasIcon(tmpExe), "替换后临时 exe 含 RT_GROUP_ICON", "");
+        }
+    }
+
+    // ================================================================
+    // Stage 10: 新结构 - 用户工程被动 import 随附的 jz_js 运行时(dist),
+    //   运行期由入口 ESM 触发(纯 import 模型, 无 require / 全局绑定桥)
+    // ================================================================
+    {
+        string jsRoot = base + "/jz_js_use";
+        rmRecursive(jsRoot);
+        ensureDir(jsRoot + "/src");
+
+        JZCodeAgent agentJs;
+        JZAgentConfig llmJs;
+        CodeAgentConfig codeJs;
+        if (ts.prefix.empty())
+            codeJs.tscPath = ts.exe;
+        agentJs.init(codeJs);
+
+        string eJs;
+        check(agentJs.initProject(jsRoot, eJs), "initProject 创建挂 jz_js 运行时的工程", eJs);
+        check(fileExists(jsRoot + "/jz_js/net/dist/index.js") &&
+              fileExists(jsRoot + "/jz_js/core/dist/index.js"),
+              "initProject 把运行时 jz_js 拷进工程(jz_js/<pkg>/dist)", jsRoot + "/jz_js");
+
+        // 入口被动 import 运行期全局(net/fs/path), 顶层自执行并 console.log 结果。
+        // 相对路径 '../jz_js/...' 由引擎按运行根(build/)的 '../' 解析回工程根的 jz_js,
+        // 包间兄弟式相对 import(net<-core)同理落在 <root>/jz_js 下。
+        string mainJs =
+            "// jz_js_use/main.ts - 被动 import 随附 jz_js 运行时(纯 import 模型)\n"
+            "import { net } from '../jz_js/net/dist/index.js';\n"
+            "import { fs, path } from '../jz_js/core/dist/index.js';\n"
+            "export function main(): string\n"
+            "{\n"
+            "    const sep: string = path.sep;\n"
+            "    const hasFetch: boolean = typeof (globalThis as any).fetch === 'function';\n"
+            "    const hasFs: boolean = typeof (fs as any).existsSync === 'function';\n"
+            "    const joined: string = path.join('x', 'y');\n"
+            "    const isObj: boolean = typeof net === 'object';\n"
+            "    return 'jzjs-ok ' + sep + ' ' + hasFetch + ' ' + hasFs + ' ' + joined +\n"
+            "           ' ' + isObj;\n"
+            "}\n"
+            "console.log('JZJS-OK', main());\n";
+        writeText(jsRoot + "/src/main.ts", mainJs);
+
+        string outJs;
+        bool built = false;
+        if (!codeJs.tscPath.empty())
+        {
+            agentJs.setWorkspace(jsRoot);
+            built = agentJs.buildProject(eJs);
+            if (built)
+            {
+                agentJs.waitBuildFinished();
+                built = agentJs.lastBuildOk();
+                eJs = agentJs.lastBuildError();
+            }
+            outJs = eJs;
+            check(built, "挂 jz_js 被动 import 的工程编译通过(运行时模块可解析且类型正确)",
+                  outJs.empty() ? "(无输出)" : outJs);
+
+            if (built)
+            {
+                JZDir jsDir(jsRoot);
+                string absJs = jsDir.absolutePath();
+                JZEngineRuntime rt;
+                string engineOut;
+                rt.setLogHandler([&](const string &t) {
+                    engineOut += t + "\n";
+                    jzDebug("  [engine] %s", t.c_str());
+                });
+                bool ran = rt.init(absJs + "/build");
+                check(ran, "jz_js 运行时经被动 import 启动成功(init)", rt.lastError());
+                check(engineOut.find("JZJS-OK") != string::npos &&
+                      engineOut.find("jzjs-ok") != string::npos,
+                      "被动 import 的 net/fs/path 运行期全局可用(顶层自执行)", engineOut);
+            }
+        }
+        else
+        {
+            check(true, "跳过 jz_js 运行时验证(node 前缀方案无宿主 tsc)", "(skipped)");
         }
     }
 

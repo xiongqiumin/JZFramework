@@ -360,15 +360,11 @@ void JZJSSerialPortModule::initEngine(JZJSEngine* engine)
     if (jzFromGet)
         JS_FreeValue(m_engine->context(), jz);   // 释放 getProperty 多 dup 的引用
 
-    // ---- JS 适配层(分离式: 从 js_wrapper 加载编译后的 dist/index.js, 不内嵌进 C++) ----
-    // JZ_JS_WRAPPER_DIR 由 JZJSEngine.cmake 定义为源码树 js_wrapper 目录;
-    // 若未定义则回退到相对路径(由引擎 workDir/libraryDir 解析)。
-#ifndef JZ_JS_WRAPPER_DIR
-#define JZ_JS_WRAPPER_DIR "js_wrapper"
-#endif
-    std::string jsWrapperPath = std::string(JZ_JS_WRAPPER_DIR) + "/serialport/dist/index.js";
-    if (!m_engine->runModuleFile(jsWrapperPath, true))
-        jzDebug() << "JZJSSerialPortModule: failed to load wrapper from" << jsWrapperPath;
+    // ---- JS 适配层不再在 initEngine 主动加载 ----
+    // 与 net/core 一致: serialport 适配层(dist/index.js)由用户入口模块
+    // `import { SerialPort } from './serialport/dist/index.js'` 被动触发,
+    // QuickJS 模块加载器解析到该 specifier 时会回调 readModuleCode 加载并执行它。
+    // 本函数只负责注册 C++ 原子 API(__jz.serialport), 适配层包装后挂到 globalThis。
 }
 
 void JZJSSerialPortModule::deinitEngine()

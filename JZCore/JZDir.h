@@ -28,6 +28,19 @@ public:
     static bool isAbsolutePath(std::string path);
     static std::string currentPath();
 
+    // 递归拷贝目录（含子目录）。Qt 没有对应的 API，取名与已有的 removeRecursively()
+    // 对称。src 必须是目录；dst 不存在会 mkpath 出来，已存在则合并进去（cp -r 语义）。
+    // force: 目标下已存在同名**文件**时是否覆盖
+    //   false(默认行为，与 QFile::copy 一致) -> 撞见同名文件直接失败，不覆盖；
+    //   true -> 覆盖同名文件（目录仍合并，不删除目标）。
+    // 中途失败不回滚（保留已拷部分），错误信息写入 *error（可为 nullptr）。
+    static bool copyRecursively(const std::string &srcPath, const std::string &dstPath,
+                                bool force, std::string *error = nullptr);
+
+    // 重命名 / 移动目录（对应 QDir::rename），内部走 JZFile::rename。
+    static bool rename(const std::string &oldPath, const std::string &newPath,
+                       std::string *error = nullptr);
+
     JZDir();
     JZDir(const std::string &path);
 

@@ -1,17 +1,18 @@
 // code_runtime - 运行"已编译好的 TS 工程产物"的隔离进程（无 GUI）。
 //
 // 用法:
-//   code_runtime <projectRoot>
-//      projectRoot  工程根目录（tsconfig.json / project.json 所在目录，
-//                   同时作为引擎工作目录）
+//   code_runtime                    （不带参数）
+//     运行根 = 当前工作目录（jzApp->workingDirPath()，等价 Qt 的 QDir::currentPath()），
+//     即 main.js 所在的产物目录（如 <工程根>/build）。双击 exe / run.bat 时 cwd 就是
+//     包所在目录；要以别的目录为运行根，由调用方设置子进程工作目录。
 //
 // 行为:
-//   1) rt.init(projectRoot) 一步完成：设运行根 -> 读取 project.json 的 entry
-//      拿到主入口（工程必须先"打包/发布"——已 tsc 编译并生成 project.json；
-//      读不到或产物不存在直接报错退出，不回退默认入口）
-//      -> 新建干净引擎会话 -> 以 ESM 模块方式加载并执行主入口（引擎自动解析
-//      import 依赖，扩展名可省略，自动补 .js / index.js；入口具名导出绑定到全局）
-//      -> 自动调用入口主函数 main()。
+//   1) rt.init(root) 一步完成：设运行根 -> 以主入口 main.js 跑起来
+//      （主入口固定为运行根下的 main.js；运行根下可读到 project.json 时，
+//      里面的"原路径地址/编译时间"等补充信息会用于解析与展示）
+//      -> 新建干净引擎会话 -> 以 ESM 模块方式加载并执行 main.js（引擎自动解析
+//      import 依赖，扩展名可省略，自动补 .js / index.js；入口具名导出绑定到全局）。
+//      找不到 main.js（工程尚未打包/发布）直接报错退出，不回退默认入口。
 //   2) 模块 console.* 输出转发到本进程 stdout。
 //   3) 出错时，JZEngineRuntime 内部把 JS 栈按 source map 翻译回 TS 源码位置，
 //      打印后退出码返回 1；成功返回 0。
@@ -57,7 +58,6 @@ int main(int argc, char *argv[])
         "code_runtime - 运行已打包/发布好的 TS 工程产物（隔离进程，无 GUI）\n"
         "主入口读取工程根 main.js 的 entry；缺失或产物不存在时报错退出");
 
-    string projectRoot;
     JZCommandLineArgument arg;
 
     // 调试：--debug / -d 强制开启调试器；否则读自身"调试开关"资源（导出时写入，缺省 true）。
@@ -67,23 +67,13 @@ int main(int argc, char *argv[])
     int debugPort = 9222;
     parser.addOption("--debug-port", &debugPort);
 
-    // 解析失败：parser 内部已打印 usage + 错误并 std::exit(1)
-    //（JZCommandLineParser::reportError 的实现约定，控制不到 main）；
-    // "-h/--help" 由 parser 打印完整帮助后 std::exit(0)。
     if (!parser.parse(argc, argv))
         return 1;   // 防御：真走到这里说明用法不合法
 
-    string root = projectRoot;
-    while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
-        root.pop_back();
-
-    JZDir dir(root);
-    if (!dir.exists() || !JZFileInfo(root).isDir())
-    {
-        printf("[code_runtime] project root not found: %s\n", root.c_str());
-        return 2;
-    }
-    string absRoot = dir.absolutePath();
+    // 运行根 = 当前工作目录（jzApp->workingDirPath()，等价 Qt 的 QDir::currentPath()）。
+    // 不再收位置参数：双击 exe / run.bat 时 cwd 就是包所在目录；要以别的目录为运行根，
+    // 由调用方设置子进程工作目录（code_agent 的 run_js 工具、测试与 benchmark 都这么做）。
+    string absRoot = jzApp->workingDirPath();
 
     // 是否开启调试器：命令行 --debug 优先；否则读自身资源（导出时由 JZExeResource 写入）。
     bool debugMode = cmdDebug;
@@ -116,7 +106,7 @@ int main(int argc, char *argv[])
 
     JZEngineRuntime rt;
     rt.setLogHandler([](const string &text) {
-        printf("%s\n", text.c_str());
+        jzDebug("%s\n", text.c_str());
         fflush(stdout);
     });
 
@@ -132,7 +122,7 @@ int main(int argc, char *argv[])
         r.msg = tsError;
         r.stack = tsError;
         string text = JZCrashReportManager::instance()->makeReport(r);
-        printf("%s\n", text.c_str());
+        jzDebug("%s\n", text.c_str());
         fflush(stdout);
         return text;
     };
@@ -205,42 +195,20 @@ int main(int argc, char *argv[])
     rt.setUnhandledExceptionHandler(onUnhandledException);
 
     bool ok = rt.init(absRoot);
-    if (ok)
+    if (!ok)
     {
-        printf("[code_runtime] module run OK\n");
-        fflush(stdout);
-    }
-    else
-    {
-        printf("[code_runtime] error while running project '%s':\n%s\n",
-               absRoot.c_str(), rt.lastError().c_str());
-        fflush(stdout);
-        // 若引擎未在 sigError 阶段上报（如同步 eval 错误），这里手动触发一次
-        if (!crashReported)
-            onUnhandledException(rt.lastError());
-    }
-
-    if (crashExit)
+        jzDebug() << rt.lastError().c_str();
         return 1;
+    }
 
-    // 入口模块(以及自动调用的 main()) 的同步部分已经跑完。若引擎里还挂着未
-    // 执行的异步任务（async main / 顶层 await 遗留的 promise、JS 的
-    // setTimeout/setInterval 等），进程此刻退出会把它们丢掉 —— 这类任务只能靠
-    // 事件循环驱动引擎的 10ms 定时器逐批泵完，所以有任务时要留在事件循环里等：
-    //   - 没有待执行任务且未因异常保持存活：不必进事件循环，直接按 init 成败退出；
-    //   - 还有任务，或因异常需保持存活（调试器已/将启动）：进 app.exec()，由守卫
-    //     定时器在任务排空（hasPendingJob 变 false）后调 app.exit() 退出。
-    //     （setInterval 之类常驻任务永不排空，进程会一直运行，由外部终止。）
-    //   keepAlive（调试器已启动或因异常选择"开始调试"）时即使没有待执行任务也要
-    //   留在事件循环里，让 HTTP 调试服务持续监听（由外部终止进程）。
     if (!keepAlive && !rt.hasPendingJob())
-        return ok ? 0 : 1;
+        return 0;
 
     JZTimer check_timer;
     connect(&check_timer.sigTimeout, [&]() {
         // keepAlive 被异常流程置 true 时（调试器已/将启动）不自动退出
         if (!keepAlive && !rt.hasPendingJob())
-            app.exit(ok ? 0 : 1);
+            app.quit();
     });
     check_timer.start(100);
 

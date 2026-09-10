@@ -34,6 +34,96 @@ bool JZFile::exists(std::string filepath)
     return JZFileInfo(filepath).exists();
 }
 
+bool JZFile::copy(const std::string &from, const std::string &to,
+                  bool force, std::string *error)
+{
+    if (error)
+        error->clear();
+
+    if (!JZFile::exists(from))
+    {
+        if (error) *error = "源文件不存在: " + from;
+        return false;
+    }
+    if (JZFileInfo(from).isDir())
+    {
+        if (error) *error = "源是目录(拷贝目录请用 JZDir::copyRecursively): " + from;
+        return false;
+    }
+    if (JZFile::exists(to))
+    {
+        if (JZFileInfo(to).isDir())
+        {
+            if (error) *error = "目标是目录: " + to;
+            return false;
+        }
+        if (!force)
+        {
+            if (error) *error = "目标文件已存在(force=false): " + to;
+            return false;
+        }
+    }
+
+    JZFile in, out;
+    if (!in.open(from, "rb"))
+    {
+        if (error) *error = "打开源文件失败: " + from;
+        return false;
+    }
+    if (!out.open(to, "wb"))
+    {
+        if (error) *error = "创建目标文件失败: " + to;
+        return false;
+    }
+
+    const int kChunkSize = 64 * 1024;
+    bool ok = true;
+    while (true)
+    {
+        JZByteArray buf = in.read(kChunkSize);
+        if (buf.isEmpty())
+            break;
+        if (out.write(buf) != buf.size())
+        {
+            if (error) *error = "写入目标文件失败: " + to;
+            ok = false;
+            break;
+        }
+    }
+    in.close();
+    out.close();
+    return ok;
+}
+
+bool JZFile::rename(const std::string &from, const std::string &to, std::string *error)
+{
+    if (error)
+        error->clear();
+
+    if (!JZFile::exists(from))
+    {
+        if (error) *error = "源不存在: " + from;
+        return false;
+    }
+
+    bool ok = false;
+#if JZ_OS == JZ_OS_WINDOWS
+    // MOVEFILE_REPLACE_EXISTING: 目标已存在时覆盖；MOVEFILE_COPY_ALLOWED: 跨盘也能移动
+    ok = MoveFileExA(str_utf8_to_local(from).c_str(), str_utf8_to_local(to).c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) == TRUE;
+#elif JZ_OS == JZ_OS_LINUX
+    ok = ::rename(from.c_str(), to.c_str()) == 0;
+#else
+    ok = false;
+    if (error) *error = "当前平台不支持重命名: " + from;
+    return false;
+#endif
+
+    if (!ok && error)
+        *error = "重命名失败: " + from + " -> " + to;
+    return ok;
+}
+
 JZFile::JZFile() {}
 
 JZFile::~JZFile()

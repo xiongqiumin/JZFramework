@@ -21,6 +21,14 @@ public:
     std::string applicationFilePath();
     std::string applicationDirPath();
 
+    // 进程当前工作目录（getcwd）。命名对齐 applicationDirPath()/applicationFilePath()。
+    // 语义等同 Qt 的 QDir::currentPath()——注意 Qt 把它放在 QDir 上
+    // （QCoreApplication 只有 applicationDirPath()，即 exe 所在目录）；
+    // 这里只是 jzApp 上的便捷入口，实现转调 JZDir::currentPath()。
+    // 别与 applicationDirPath() 混淆：双击 exe 时两者常常相同，但从别的目录敲命令行
+    // 启动就不同了。设置工作目录的 QDir::setCurrent() 目前未提供。
+    std::string workingDirPath() const;
+
     JZThread *mainThread();
     JZThread *currentThread();
 

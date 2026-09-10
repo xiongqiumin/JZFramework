@@ -12,6 +12,18 @@ public:
     static bool exists(std::string filepath);
     static bool remove(std::string filepath);
 
+    // 拷贝文件（对应 QFile::copy）。分块读写，不把整个文件读进内存。
+    // force: 目标文件已存在时是否覆盖。
+    //   false(与 Qt 一致) -> 目标已存在直接失败，不覆盖；
+    //   true             -> 覆盖。
+    // 失败时错误信息写入 *error（可为 nullptr）。
+    static bool copy(const std::string &from, const std::string &to,
+                     bool force, std::string *error = nullptr);
+
+    // 重命名 / 移动文件或目录（对应 QFile::rename）。目标已存在时覆盖。
+    static bool rename(const std::string &from, const std::string &to,
+                       std::string *error = nullptr);
+
     JZFile();
     ~JZFile();
 

@@ -3,6 +3,7 @@
 #include <assert.h>
 #include "JZApplication.h"
 #include "JZStd.h"
+#include "JZDir.h"
 #include "JZPlatform.h"
 #include "JZDebug.h"
 #include "JZTx.h"
@@ -81,6 +82,11 @@ std::string JZApplication::applicationFilePath()
 std::string JZApplication::applicationDirPath()
 {
     return JZPlatform::applicationDirPath();
+}
+
+std::string JZApplication::workingDirPath() const
+{
+    return JZDir::currentPath();
 }
 
 JZThread *JZApplication::mainThread()

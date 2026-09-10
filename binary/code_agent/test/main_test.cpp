@@ -1,28 +1,29 @@
-﻿// code_agent_test - "JZCodeAgent 创建工程 -> 打包/发布 -> 调用运行时" 端到端流程测试。
+// code_agent_test - "JZCodeAgent 创建工程 -> 打包/发布 -> 调用运行时" 端到端流程测试。
 //
 // 全流程（不用大模型，代码直接写入文件）：
 //   1. 创建工程   JZCodeAgent::initProject / probeProject / openProject，
-//                新建到 JZPlatform::applicationTmpPath() 下的临时目录；
-//                （project.json 是"打包/发布"的产物元数据、不是工程骨架，
-//                此处专门断言 initProject 之后它不存在）
+//                新建到 exe 目录下的 code_agent_flow_test（跑完可就地查看产物）；
+//                （project.json 是"打包/发布"写在产物目录里的补充信息、
+//                不是工程骨架，此处专门断言工程根下它没有）
 //   2. 写多文件   直接写入 src/main.ts + src/lib.ts + src/util/strings.ts
 //                （main 跨目录 import，lib 由 util 经 "../lib" 再拉一次，
 //                验证引擎模块 loader 的多文件 / 子目录 / 相对路径 / 共享模块）；
-//                尚未打包时先试运行 -> JZEngineRuntime.init 因读不到 project.json
-//                直接报错（不回退默认入口）；
+//                尚未打包时先试运行 -> 产物目录里没有 main.js，
+//                JZEngineRuntime.init 直接报错（不回退默认入口）；
 //   3. 打包/发布  JZCodeAgent::buildProject（宿主 tsc -p tsconfig.json）。产物写向
 //                tsconfig 的 outDir：缺省=工程根/build（*.js+*.js.map）；outDir 改成
 //                工程根外绝对目录也一样生效（Stage 6）。编译通过后按 outDir 定位并
-//                校验入口产物（main.js），生成/刷新入口声明 project.json；
+//                校验主入口产物 main.js，并在它旁边写补充信息 project.json
+//                （entry 固定 main.js，另有 buildTime / projectRoot / srcRoot）；
 //   4. 调用运行时（JZEngineRuntime 内嵌 JZJSEngine，引擎创建/模块运行/错误栈
 //      source map 翻译全部封装在类里，外面不直接碰 JZJSEngine）
-//        a. 进程内：rt.init(root) 读打包生成的 project.json 的 entry（build/main.js）
-//           完成"设运行根 + 加载主入口 + 自动调用 main()"，
+//        a. 进程内：rt.init(<工程根>/build) 完成"设运行根 + 加载主入口 main.js"，
 //           再 rt.evalScript 断言入口导出可复用、结果正确；
 //        b. 进程内：打包后故意抛错的工程 -> rt.init 返回 false，
-//           rt.lastError() 已把 JS 栈翻译回 TS 源码位置；
-//        c. 子进程：调用 code_runtime <工程根> 跑同一产物（good 用 project.json
-//           入口成功；fail 打包后运行抛错退出），校验退出码与输出。
+//           rt.lastError() 已把 JS 栈翻译回 TS 源码位置（靠 project.json 的
+//           projectRoot 还原成 "src/faultlib.ts" 这样的相对路径）；
+//        c. 子进程：调用 code_runtime <运行根> 跑同一产物（good 成功；
+//           fail 打包后运行抛错退出），校验退出码与输出。
 //
 // 用法：code_agent_test.exe
 // 环境变量：JZ_TS_NODE + JZ_TS_TSC 可换编译器（默认 E:/libs/ts_compiler 的 tsc.exe）。
@@ -44,6 +45,7 @@
 #include "JZApplication.h"
 #include "JZByteArray.h"
 #include "JZCodeAgent.h"
+#include "JZDebug.h"
 #include "JZDir.h"
 #include "JZEngineRuntime.h"
 #include "JZExeResource.h"
@@ -214,11 +216,15 @@ static void rmRecursive(const string &path)
 }
 
 // 同步跑一个子进程，捕获合并输出；返回退出码（-1=启动失败，-2=超时）。
+// workDir 非空时作为子进程工作目录（code_runtime 以工作目录为运行根）。
 static int runProcessCapture(const string &exe, const vector<string> &args,
-                             string &output, int timeoutMs)
+                             string &output, int timeoutMs,
+                             const string &workDir = string())
 {
     JZProcess proc;
     proc.setProcessChannelMode(JZProcess::MergedChannels);
+    if (!workDir.empty())
+        proc.setWorkingDirectory(workDir);
     if (!proc.start(exe, args))
         return -1;
     if (!proc.waitForFinished(timeoutMs))
@@ -234,10 +240,10 @@ static int runProcessCapture(const string &exe, const vector<string> &args,
 static void check(bool ok, const char *tag, const string &detail)
 {
     if (ok)
-        printf("[PASS] %s\n", tag);
+        jzDebug("[PASS] %s", tag);
     else
     {
-        printf("[FAIL] %s\n       %s\n", tag, detail.c_str());
+        jzDebug("[FAIL] %s\n       %s", tag, detail.c_str());
         g_failed++;
     }
 }
@@ -263,8 +269,19 @@ static TsRunner resolveTsCompiler()
         r.ok = true;
         return r;
     }
-    string cand = "E:/libs/ts_compiler/app/node_modules/@typescript/"
-                  "typescript-win32-x64/lib/tsc.exe";
+    // 随包编译器：<exe 目录>/ts_compiler/tsc/tsc.exe（与 code_agent / benchmark 的
+    // 默认 --tsc 同一约定）。开发机上可能没有 E:/libs 那份，优先用随包的。
+    string appDir = normalize(JZPlatform::applicationDirPath());
+    string cand = appDir + "/ts_compiler/tsc/tsc.exe";
+    if (fileExists(cand))
+    {
+        r.exe = cand;
+        r.ok = true;
+        return r;
+    }
+
+    cand = "E:/libs/ts_compiler/app/node_modules/@typescript/"
+           "typescript-win32-x64/lib/tsc.exe";
     if (fileExists(cand))
     {
         r.exe = cand;
@@ -297,9 +314,13 @@ static string standardTsconfig()
 // 正常路径的打包/发布走 agent.buildProject，由它自己写这份声明。
 static bool writeProjectEntry(const string &root)
 {
-    return writeText(root + "/project.json",
+    // project.json 只是补充信息（主入口固定为 main.js），写在 main.js 同目录；
+    // 解析要用的"原路径地址"至少要有 projectRoot。
+    return writeText(root + "/build/project.json",
                      "{\n"
-                     "  \"entry\": \"build/main.js\"\n"
+                     "  \"entry\": \"main.js\",\n"
+                     "  \"projectRoot\": \"" + root + "\",\n"
+                     "  \"srcRoot\": \"" + root + "/src\"\n"
                      "}\n");
 }
 
@@ -423,31 +444,33 @@ int main()
 {
     JZApplication app;
 
-    printf("==== code_agent flow test: 创建工程 -> 打包/发布 -> 调用运行时 ====\n");
+    jzDebug("==== code_agent flow test: 创建工程 -> 打包/发布 -> 调用运行时 ====");
 
-    // ---- 前置：tmp 根 / 编译器 / 运行时 ----
-    string tmpRoot = normalize(JZPlatform::applicationTmpPath());
-    if (tmpRoot.empty())
+    // ---- 前置：工程根 / 编译器 / 运行时 ----
+    // 测试工程直接建在 exe 目录下的 code_agent_flow_test（不进系统临时目录），
+    // 方便就地查看 tsc 产物：build/*.js + *.js.map + project.json + 导出包 export/。
+    string workRoot = normalize(JZPlatform::applicationDirPath());
+    if (workRoot.empty())
     {
-        printf("[fatal] JZPlatform::applicationTmpPath() 为空\n");
+        jzDebug("[fatal] JZPlatform::applicationDirPath() 为空");
         return 2;
     }
-    string base = tmpRoot + "/code_agent_flow_test";
-    printf("tmp base: %s\n", base.c_str());
+    string base = workRoot + "/code_agent_flow_test";
+    jzDebug("base: %s", base.c_str());
     rmRecursive(base);
     ensureDir(base);
 
     TsRunner ts = resolveTsCompiler();
     if (!ts.ok)
     {
-        printf("[fatal] 未找到 tsc（默认 E:/libs/ts_compiler/.../tsc.exe，"
+        jzDebug("[fatal] 未找到 tsc（默认 E:/libs/ts_compiler/.../tsc.exe，"
                "或用 JZ_TS_NODE/JZ_TS_TSC 指定）\n");
         return 2;
     }
-    printf("tsc: %s\n", ts.exe.c_str());
+    jzDebug("tsc: %s", ts.exe.c_str());
 
     string runtimeExe = findRuntimeExe();
-    printf("code_runtime: %s\n",
+    jzDebug("code_runtime: %s",
            runtimeExe.empty() ? "(未找到 - 跳过子进程运行时检查)" : runtimeExe.c_str());
 
     // ================================================================
@@ -496,22 +519,22 @@ int main()
                   writeText(goodRoot + "/src/util/strings.ts", GOOD_STRINGS_TS);
         check(ok, "直接写入 src/main.ts + lib.ts + util/strings.ts", goodRoot);
 
-        printf("[stage 2b] 尚未打包/发布时 init -> 读不到 project.json 直接报错:\n");
+        jzDebug("[stage 2b] 尚未打包/发布时 init -> 产物目录里没有 main.js，直接报错:");
         JZDir d(goodRoot);
         string abs = d.absolutePath();
         JZEngineRuntime rt;
-        bool ran = rt.init(abs);
+        bool ran = rt.init(abs + "/build");
         string errText = rt.lastError();
-        check(!ran && errText.find("project.json") != string::npos,
-              "init 拒绝运行并提示缺少入口声明 project.json（不回退默认入口）", errText);
-        printf("  提示:\n%s\n", errText.c_str());
+        check(!ran && errText.find("main.js") != string::npos,
+              "init 拒绝运行并提示缺少主入口 main.js（不回退默认入口）", errText);
+        jzDebug("  提示:\n%s", errText.c_str());
     }
 
     // ================================================================
     // Stage 3: 打包/发布（JZCodeAgent::buildProject）
     // ================================================================
     {
-        printf("[stage 3] buildProject (打包/发布: 真实 tsc + 生成入口声明):\n");
+        jzDebug("[stage 3] buildProject (打包/发布: 真实 tsc + 生成入口声明):");
         string out;
         bool ok;
         if (!code.tscPath.empty())
@@ -538,7 +561,7 @@ int main()
               out.empty() ? "(无输出)" : out);
         if (!ok)
         {
-            printf("%s\n", out.c_str());
+            jzDebug("%s", out.c_str());
             return 1;
         }
         bool artifacts = fileExists(goodRoot + "/build/main.js") &&
@@ -549,10 +572,16 @@ int main()
                          fileExists(goodRoot + "/build/util/strings.js.map");
         check(artifacts, "产物齐全: 3 个 .js + 3 个 .js.map(build/)", goodRoot + "/build");
 
-        string entryText;
-        readText(goodRoot + "/project.json", entryText);
-        check(entryText.find("build/main.js") != string::npos,
-              "打包后生成入口声明 project.json -> entry build/main.js", entryText);
+        // project.json 与 main.js 同目录，是"补充信息"而不是入口声明：
+        // entry 固定 main.js，另有编译时间与原路径地址（projectRoot / srcRoot）
+        string metaText;
+        readText(goodRoot + "/build/project.json", metaText);
+        check(metaText.find("main.js") != string::npos,
+              "打包后生成 project.json(与 main.js 同目录) -> entry main.js", metaText);
+        check(metaText.find("buildTime") != string::npos,
+              "project.json 含编译时间 buildTime", metaText);
+        check(metaText.find("projectRoot") != string::npos,
+              "project.json 含原路径地址 projectRoot", metaText);
     }
 
     // ================================================================
@@ -564,12 +593,18 @@ int main()
 
         JZEngineRuntime rt;
         rt.setLogHandler([](const string &t) {
-            printf("  [engine] %s\n", t.c_str());
+            jzDebug("  [engine] %s", t.c_str());
         });
 
-        printf("[stage 4a] JZEngineRuntime.init (读打包生成的 project.json 入口 + 自动调用 main):\n");
-        bool ok = rt.init(abs);
-        check(ok, "good 工程 init 成功(配置入口+会话+自动调用 main)", rt.lastError());
+        jzDebug("[stage 4a] JZEngineRuntime.init (运行根=产物目录, 主入口 main.js):");
+        bool ok = rt.init(abs + "/build");
+        check(ok, "good 工程 init 成功(运行根+主入口 main.js+会话)", rt.lastError());
+        if (ok)
+        {
+            check(rt.projectInfo().valid, "读到 project.json 补充信息", rt.root());
+            check(!rt.projectInfo().projectRoot.empty(),
+                  "project.json 给出原路径地址 projectRoot", rt.projectInfo().projectRoot);
+        }
 
         if (ok)
         {
@@ -621,7 +656,7 @@ int main()
         check(ok, "fail 工程打包/发布成功", out.empty() ? "(无输出)" : out);
         if (!ok)
         {
-            printf("%s\n", out.c_str());
+            jzDebug("%s", out.c_str());
             return 1;
         }
 
@@ -630,14 +665,14 @@ int main()
 
         JZEngineRuntime rt;
         rt.setLogHandler([](const string &t) {
-            printf("  [engine] %s\n", t.c_str());
+            jzDebug("  [engine] %s", t.c_str());
         });
 
-        printf("[stage 4b] JZEngineRuntime.init on failing module (打包后运行抛错):\n");
-        bool ran = rt.init(abs);
+        jzDebug("[stage 4b] JZEngineRuntime.init on failing module (打包后运行抛错):");
+        bool ran = rt.init(abs + "/build");
         string errText = rt.lastError();   // 已翻译回 TS
         check(!ran && !errText.empty(), "fail 工程 init 失败并捕获运行时异常(跨文件)", errText);
-        printf("  翻译栈:\n%s\n", errText.c_str());
+        jzDebug("  翻译栈:\n%s", errText.c_str());
         check(errText.find("src/faultlib.ts") != string::npos,
               "错误已翻译回 TS 源码位置(src/faultlib.ts)", errText);
     }
@@ -654,8 +689,9 @@ int main()
         JZDir goodDir(goodRoot);
         string goodAbs = goodDir.absolutePath();
         string out;
-        int rc = runProcessCapture(runtimeExe, {goodAbs}, out, 60 * 1000);
-        printf("[stage 5] code_runtime good 输出(project.json 入口):\n%s\n", out.c_str());
+        // 运行根靠"子进程工作目录"给（code_runtime 不再收位置参数）
+        int rc = runProcessCapture(runtimeExe, {}, out, 60 * 1000, goodAbs + "/build");
+        jzDebug("[stage 5] code_runtime good 输出(运行根=产物目录, main.js):\n%s", out.c_str());
         check(rc == 0, "code_runtime 运行 good 工程退出码=0",
               "rc=" + to_string(rc));
         check(out.find("MULTIFILE-OK") != string::npos,
@@ -664,8 +700,8 @@ int main()
         JZDir failDir(failRoot);
         string failAbs = failDir.absolutePath();
         out.clear();
-        rc = runProcessCapture(runtimeExe, {failAbs}, out, 60 * 1000);
-        printf("[stage 5] code_runtime fail 输出:\n%s\n", out.c_str());
+        rc = runProcessCapture(runtimeExe, {}, out, 60 * 1000, failAbs + "/build");
+        jzDebug("[stage 5] code_runtime fail 输出:\n%s", out.c_str());
         check(rc == 1, "code_runtime 运行 fail 工程退出码=1",
               "rc=" + to_string(rc));
         check(out.find("src/faultlib.ts") != string::npos,
@@ -722,18 +758,18 @@ int main()
                                  fileExists(extOut + "/main.js.map");
                 check(artifacts, "产物写入了绝对 outDir 目录(.js+.js.map)", extOut);
 
-                string entryText;
-                readText(goodRoot + "/project.json", entryText);
-                check(entryText.find(extOut + "/main.js") != string::npos,
-                      "project.json entry 指向工程根外的绝对产物路径", entryText);
+                string metaText;
+                readText(extOut + "/project.json", metaText);
+                check(metaText.find(extOut) != string::npos,
+                      "project.json 写在工程根外的绝对产物目录(outDir)", metaText);
 
-                printf("[stage 6] 绝对 outDir 产物运行 (entry=绝对路径):\n");
+                jzDebug("[stage 6] 绝对 outDir 产物运行 (运行根=绝对 outDir):");
                 JZEngineRuntime rt;
                 rt.setLogHandler([](const string &t) {
-                    printf("  [engine] %s\n", t.c_str());
+                    jzDebug("  [engine] %s", t.c_str());
                 });
-                bool ran = rt.init(abs);
-                check(ran, "绝对 outDir 产物 init 成功(绝对 entry 加载)", rt.lastError());
+                bool ran = rt.init(extOut);
+                check(ran, "绝对 outDir 产物 init 成功(运行根=outDir)", rt.lastError());
                 if (ran)
                 {
                     bool okEval = rt.evalScript(
@@ -746,7 +782,7 @@ int main()
             }
 
             // 清理并复原：删外部产物目录、tsconfig 恢复 outDir=build，
-            // 重新打包/发布（产物回 build/，project.json entry 复原为 build/main.js）
+            // 重新打包/发布（产物回 build/，project.json 也回到 build/ 下）
             rmRecursive(extOut);
             writeText(goodRoot + "/tsconfig.json", tsText);
             out.clear();
@@ -760,11 +796,11 @@ int main()
             out = err;
             check(ok2, "恢复默认 outDir=build 后重新打包/发布(工程复原)",
                   out.empty() ? "(无输出)" : out);
-            string entryText;
-            readText(goodRoot + "/project.json", entryText);
-            check(entryText.find("build/main.js") != string::npos &&
-                      entryText.find(extOut) == string::npos,
-                  "project.json 复原为 entry build/main.js", entryText);
+            string metaText;
+            readText(goodRoot + "/build/project.json", metaText);
+            check(metaText.find("main.js") != string::npos &&
+                      metaText.find(extOut) == string::npos,
+                  "project.json 复原到 build/ 下(entry main.js)", metaText);
         }
     }
 
@@ -885,10 +921,10 @@ int main()
         check(ok8, "exportProject 导出可独立运行包（改名 myapp + 替换图标 + debug）", expErr);
         if (ok8)
         {
-            check(JZFileInfo::exists(expDir + "/build/main.js"),
-                  "导出含编译产物 build/main.js（运行主入口）", "");
+            check(JZFileInfo::exists(expDir + "/main.js"),
+                  "导出含主入口 main.js（铺在导出根，运行根=exe 目录）", "");
             check(JZFileInfo::exists(expDir + "/project.json"),
-                  "导出含运行主入口声明 project.json", "");
+                  "导出含补充信息 project.json", "");
             check(JZFileInfo::exists(expDir + "/myapp.exe"),
                   "导出含重命名后的运行时 myapp.exe（内嵌 JZEngineRuntime）", "");
             check(!JZFileInfo::exists(expDir + "/code_runtime.exe"),
@@ -948,6 +984,6 @@ int main()
     // ================================================================
     // 汇总
     // ================================================================
-    printf("\n==== 结果: %s (%d 失败) ====\n", g_failed ? "FAIL" : "ALL PASS", g_failed);
+    jzDebug("\n==== 结果: %s (%d 失败) ====", g_failed ? "FAIL" : "ALL PASS", g_failed);
     return g_failed ? 1 : 0;
 }

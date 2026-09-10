@@ -35,6 +35,8 @@ set(CODE_AGENT_SOURCES
     ChatView.cpp    
     JZEngineRuntime.h
     JZEngineRuntime.cpp
+    JZSourceMap.h
+    JZSourceMap.cpp
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})
@@ -62,11 +64,12 @@ endforeach()
 # ---------------------------------------------------------------------------
 # 把 JZJSEngine 的完整类型定义安装到 exe 目录（bin/<CONFIG>/jz_types/，含
 # net/http/fetch/websocket 等）。这些声明会与 lib.dom.d.ts 冲突的全局
-# fetch/WebSocket，需 tsconfig 设 "lib": ["ES2022"]（不带 DOM）才不会冲突，供需要
-# 它们的用户手动 include。生成的工程默认不引用它——默认 tsconfig 只用纯
-# ES2022 + 自身 src 模块。（只保留根目录这份完整集，不再复制 core/ 子集，避免重复。）
-# 注意：必须装到 bin/<CONFIG>/jz_types，与 exe 同一配置子目录——code_runtime 用
-# applicationDirPath()+"/jz_types" 找它，分开后若装错目录会找不到类型。
+# fetch/WebSocket，需 tsconfig 设 "lib": ["ES2022"]（不带 DOM）才不会冲突。
+# initProject 会把这份 jz_types 拷进新建工程（<工程根>/jz_types），生成的 tsconfig
+# 用相对路径 include 它，工程因此自包含。（只保留根目录这份完整集，不再复制
+# core/ 子集，避免重复。）
+# 注意：必须装到 bin/<CONFIG>/jz_types，与 exe 同一配置子目录——initProject 用
+# applicationDirPath()+"/jz_types" 当拷贝源，装错目录会找不到类型。
 # ---------------------------------------------------------------------------
 add_custom_target(copy_jz_types ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CODE_AGENT_BIN_DIR}/$<CONFIG>/jz_types"

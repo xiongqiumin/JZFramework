@@ -15,6 +15,8 @@
 set(CODE_AGENT_TEST_SOURCES
     main_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.cpp
 )
 

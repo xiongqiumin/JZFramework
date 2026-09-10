@@ -1,5 +1,6 @@
 ﻿#include "JZDir.h"
 #include "JZLog.h"
+#include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZResources.h"
 #include "JZDebug.h"
@@ -35,6 +36,61 @@ bool JZDir::isAbsolutePath(string path)
 #endif
 }
 
+
+// copyRecursively 的递归体：不清空 *error，保证最内层的原因能传到调用方
+static bool copyDirRecursiveImpl(const string &src, const string &dst, bool force, string *error)
+{
+    JZFileInfo srcInfo(src);
+    if (!srcInfo.isDir())
+    {
+        if (error) *error = "源不是目录: " + src;
+        return false;
+    }
+
+    JZDir dstDir(dst);
+    if (!dstDir.mkpath(dst))
+    {
+        if (error) *error = "无法创建目录: " + dst;
+        return false;
+    }
+
+    string dstPath = dst;
+    while (dstPath.size() > 1 && (dstPath.back() == '/' || dstPath.back() == '\\'))
+        dstPath.pop_back();
+
+    JZDir srcDir(src);
+    vector<JZFileInfo> infos =
+        srcDir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
+    for (const auto &fi : infos)
+    {
+        string s = fi.filePath();
+        string d = dstPath + "/" + fi.fileName();
+        if (fi.isDir())
+        {
+            if (!copyDirRecursiveImpl(s, d, force, error))
+                return false;
+        }
+        else
+        {
+            if (!JZFile::copy(s, d, force, error))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool JZDir::copyRecursively(const string &srcPath, const string &dstPath,
+                            bool force, string *error)
+{
+    if (error)
+        error->clear();
+    return copyDirRecursiveImpl(srcPath, dstPath, force, error);
+}
+
+bool JZDir::rename(const string &oldPath, const string &newPath, string *error)
+{
+    return JZFile::rename(oldPath, newPath, error);
+}
 
 string JZDir::currentPath()
 {

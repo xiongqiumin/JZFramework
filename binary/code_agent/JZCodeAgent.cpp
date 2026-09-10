@@ -499,18 +499,34 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // 标准 TS 工程骨架（产物统一输出到 build/）。所有写入都不覆盖已有文件。
     // sourceMap: true 为"调用运行时"必备 —— 运行期 JS 栈要靠 tsc 生成的
     // build/*.js.map 翻译回 TS 源码位置（JZEngineRuntime）。
-    // project.json（运行主入口声明）不是骨架文件：它由打包/发布(buildProject)在
-    // 生成的工程用纯 ES2022（显式关掉默认带进来的 DOM），并挂上随 exe 安装的
-    // jz_types 完整类型（框架自定义模块：fs/path/os/process/net/http/fetch/...）。
-    // 因为 lib 已不含 DOM，jz_types 里声明的全局 fetch/WebSocket/URL 等不会与
-    // lib.dom.d.ts 冲突。include 收 src + jz_types 下的 .d.ts（只挂声明、不挂实现型
-    // .ts 如 jzwidget.ts）；jz_types 不存在时仅收 src。
-    string jzTypesInclude = "\"src/**/*.ts\"";
+    // project.json 不是骨架文件：它由打包/发布(buildProject)写在产物目录（main.js
+    // 所在目录）里，作为补充信息（编译时间 / 原路径地址 ...）。
+    // 生成的工程用纯 ES2022（显式关掉默认带进来的 DOM），并挂上框架自定义模块的
+    // 类型（fs/path/os/process/net/http/fetch/...）。因为 lib 已不含 DOM，jz_types
+    // 里声明的全局 fetch/WebSocket/URL 等不会与 lib.dom.d.ts 冲突。
+    //
+    // jz_types 从 exe 目录**拷一份到工程里**（<工程根>/jz_types）：工程因此自包含，
+    // tsconfig 只写相对路径，换机器 / 换 exe 目录 / 拷给别人都不会丢类型。
+    // include 收 src + jz_types 下的 .d.ts（只挂声明、不挂实现型 .ts 如 jzwidget.ts）；
+    // 源目录不存在时仅收 src，不报错。
+    bool hasJzTypes = false;
     {
-        string jzTypes = JZPlatform::applicationDirPath() + "/jz_types";
-        if (JZFileInfo::exists(jzTypes))
-            jzTypesInclude += ", \"" + jzTypes + "/**/*.d.ts\"";
+        string jzTypesSrc = JZPlatform::applicationDirPath() + "/jz_types";
+        if (JZFileInfo(jzTypesSrc).isDir())
+        {
+            string copyErr;
+            // 工程目录刚建（要求为空），不会有同名文件 -> force=false 即可
+            if (!JZDir::copyRecursively(jzTypesSrc, root + "/jz_types", false, &copyErr))
+            {
+                error = "复制 jz_types 失败: " + copyErr;
+                return false;
+            }
+            hasJzTypes = true;
+        }
     }
+    string jzTypesInclude = "\"src/**/*.ts\"";
+    if (hasJzTypes)
+        jzTypesInclude += ", \"jz_types/**/*.d.ts\"";
 
     string tsconfig =
         "{\n"
@@ -565,7 +581,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         }
         string mainTs =
             "// " + name + " 工程入口示例（可自行删改，跨文件用 import/export）\n"
-            "// 打包/发布: tsc -p tsconfig.json（产物为原生 ESM 输出到 build/，并生成入口声明 project.json）\n"
+            "// 打包/发布: tsc -p tsconfig.json（产物为原生 ESM 输出到 build/，主入口 main.js）\n"
             "// 运行: run_js 加载 main.js 并执行\n"
             "export function main(): void\n"
             "{\n"
@@ -655,8 +671,8 @@ static string jsJsoncToJson(const string &text)
     return out;
 }
 
-// 读 tsconfig.json 的 compilerOptions.outDir；未配置/解析失败回退默认值。
-static string tsOutDirOf(const string &root, const string &fallback)
+// 读 tsconfig.json 的 compilerOptions.<key>；未配置/解析失败回退默认值。
+static string tsConfigOptionOf(const string &root, const char *key, const string &fallback)
 {
     ifstream in(root + "/tsconfig.json", ios::binary);
     if (!in)
@@ -674,7 +690,7 @@ static string tsOutDirOf(const string &root, const string &fallback)
     const Json::Value &co = cfg["compilerOptions"];
     if (!co.isObject())
         return fallback;
-    const Json::Value &od = co["outDir"];
+    const Json::Value &od = co[key];
     if (!od.isString())
         return fallback;
     string dir = od.asString();
@@ -690,32 +706,41 @@ static string tsOutDirOf(const string &root, const string &fallback)
     return dir;
 }
 
-// outDir -> project.json entry 的前缀目录：
-//   相对路径按"tsconfig 所在目录(工程根)"展开归一；产物目录落在工程根内的统一
-//   写成相对路径（如 build、out），工程根之外（如用户把 outDir 指到别的盘/目录）
-//   保留绝对路径 —— 运行端(入口解析/模块加载/栈翻译)两种形态都支持。
-static string tsEntryDirFor(const string &root, const string &outDir)
+// 读 tsconfig.json 的 compilerOptions.outDir；未配置/解析失败回退默认值。
+static string tsOutDirOf(const string &root, const string &fallback)
 {
-    if (outDir.empty())
-        return "build";
-    bool absPath = outDir[0] == '/' || outDir[0] == '\\' ||
-                   (outDir.size() > 1 && outDir[1] == ':');
-    JZDir d(root);
-    string dir = absPath ? outDir : (root + "/" + outDir);
-    dir = d.absoluteFilePath(dir);      // 归一：分隔符统一、消掉 . 与 ..
-    for (size_t i = 0; i < dir.size(); i++)
-    {
-        if (dir[i] == '\\')
-            dir[i] = '/';
-    }
-    while (dir.size() > 1 && dir.back() == '/')
-        dir.pop_back();
-    if (dir.size() > root.size() && dir.compare(0, root.size(), root) == 0 &&
-        dir[root.size()] == '/')
-        return dir.substr(root.size() + 1);   // 工程根内 -> 相对路径
-    if (dir == root)
-        return ".";                            // 产物目录即工程根
-    return dir;                                // 工程根外 -> 绝对路径
+    return tsConfigOptionOf(root, "outDir", fallback);
+}
+
+// 读 tsconfig.json 的 compilerOptions.rootDir（源码根）；未配置回退 "src"。
+static string tsRootDirOf(const string &root)
+{
+    return tsConfigOptionOf(root, "rootDir", "src");
+}
+
+// 产物目录（= 运行根，main.js 所在目录）的绝对路径：tsconfig 的 outDir（缺省
+// build，可能相对工程根、也可能指向工程根之外）按工程根展开归一。
+static string tsBuildAbsOf(const string &root)
+{
+    string outDir = tsOutDirOf(root, "build");
+    bool abs = !outDir.empty() && (outDir[0] == '/' || outDir[0] == '\\' ||
+               (outDir.size() > 1 && outDir[1] == ':'));
+    return codeNormalizePath(abs ? outDir : (root + "/" + outDir));
+}
+
+// 本地时间串（YYYY-MM-DD HH:MM:SS），写进 project.json 的 buildTime
+static string tsNowString()
+{
+    time_t t = time(nullptr);
+    struct tm tm_buf;
+#if defined(_WIN32)
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    char buf[32] = {0};
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf);
+    return string(buf);
 }
 
 // 打包/发布当前工作区工程（异步）：前置校验通过后启动 tsc 子进程立即返回 true；
@@ -856,30 +881,47 @@ void JZCodeAgent::onBuildFinished(JZProcess *proc, int code, JZProcess::ExitStat
         err = "编译失败:\n" + str_trimmed(out);
     }
 
-    // 编译通过 -> 校验入口产物：tsconfig outDir 下的 main.js（src/main.ts 的产物），
-    // 存在才刷新运行主入口声明 project.json；缺失则整体判失败。
-    string entry;
+    // 编译通过 -> 校验主入口产物：产物目录下必须有 main.js（src/main.ts 的产物；
+    // 主入口统一为 main.js），存在才写 project.json（补充信息：编译时间、原路径
+    // 地址...）；缺失则整体判失败。
+    string entry = "main.js";
     if (ok)
     {
+        // outDir 是 tsconfig 里的原值（可能相对工程根），产物目录要按它展开成绝对路径
         string outDir = tsOutDirOf(root, "build");
-        string entryAbs = tsEntryDirFor(root, outDir) + "/main.js";
+        bool absOut = !outDir.empty() && (outDir[0] == '/' || outDir[0] == '\\' ||
+                      (outDir.size() > 1 && outDir[1] == ':'));
+        string buildAbs = codeNormalizePath(absOut ? outDir : (root + "/" + outDir));
+        string entryAbs = buildAbs + "/main.js";
 
         if (!JZFileInfo::exists(entryAbs) || !JZFileInfo(entryAbs).isFile())
         {
             ok = false;
-            err = "编译通过但未找到入口产物(main.js), 请保证main.js存在";
+            err = "编译通过但未找到主入口产物(main.js), 请保证 main.ts 编译产物为 main.js: " + entryAbs;
         }
         else
         {
-            ofstream f(outDir + "/project.json", ios::binary | ios::trunc);
+            // project.json 与 main.js 同目录（= 运行根）：补充信息，不是入口声明。
+            // 运行端用它做解析（projectRoot 让源路径能还原成 "src/x.ts"）。
+            Json::Value meta;
+            meta["entry"] = "main.js";                 // 主入口（固定）
+            meta["name"] = codeBaseName(root);         // 工程名
+            meta["projectRoot"] = root;                // 原路径地址：工程根
+            meta["srcRoot"] = codeNormalizePath(root + "/" + tsRootDirOf(root));
+            meta["outDir"] = outDir;                   // 产物输出目录（工程根外为绝对路径）
+            meta["buildTime"] = tsNowString();         // 编译时间
+            meta["tsc"] = m_codeConfig.tscPath;        // 编译时用的宿主 tsc
+
+            Json::FastWriter writer;
+            ofstream f(buildAbs + "/project.json", ios::binary | ios::trunc);
             if (!f)
             {
                 ok = false;
-                err = "写入 project.json 失败: " + root;
+                err = "写入 project.json 失败: " + buildAbs;
             }
             else
             {
-                f << "{\n  \"entry\": \"" << entry << "\"\n}\n";
+                f << writer.write(meta);
                 f.close();
             }
         }
@@ -899,61 +941,7 @@ void JZCodeAgent::onBuildFinished(JZProcess *proc, int code, JZProcess::ExitStat
 // ------------------------------------------------------------------
 // 导出辅助：把工程打包成可独立运行的发行目录
 // ------------------------------------------------------------------
-// 单文件复制（二进制安全）：用 JZFile 读全量 + 写全量。
-static bool copyOneFile(const string &src, const string &dst, string &error)
-{
-    JZFile in;
-    if (!in.open(src, "rb"))
-    {
-        error = "打开源文件失败: " + src;
-        return false;
-    }
-    JZByteArray data = in.readAll();
-    in.close();
-    JZFile out;
-    if (!out.open(dst, "wb"))
-    {
-        error = "创建目标文件失败: " + dst;
-        return false;
-    }
-    out.write(data);
-    out.close();
-    return true;
-}
-
-// 递归复制目录：把 src 下的全部内容（含子目录）复制到 dst（dst 会被整体创建）。
-static bool copyDirRecursive(const string &src, const string &dst, string &error)
-{
-    if (!JZFileInfo(src).isDir())
-    {
-        error = "源不是目录: " + src;
-        return false;
-    }
-    if (!JZDir(dst).mkpath(dst))
-    {
-        error = "无法创建目录: " + dst;
-        return false;
-    }
-    JZDir srcDir(src);
-    vector<JZFileInfo> infos =
-        srcDir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
-    for (const auto &fi : infos)
-    {
-        string s = fi.filePath();
-        string d = dst + "/" + fi.fileName();
-        if (fi.isDir())
-        {
-            if (!copyDirRecursive(s, d, error))
-                return false;
-        }
-        else
-        {
-            if (!copyOneFile(s, d, error))
-                return false;
-        }
-    }
-    return true;
-}
+// 拷贝一律走框架 JZFile::copy / JZDir::copyRecursively（见 JZCore），本文件不再自己实现。
 
 bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig config)
 {
@@ -989,9 +977,9 @@ bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig conf
             return false;
         }
     }
-    else if (!JZFileInfo::exists(root + "/project.json"))
+    else if (!JZFileInfo::exists(tsBuildAbsOf(root) + "/main.js"))
     {
-        error = "未配置宿主侧 tsc 且工程尚未打包/发布（缺少 project.json），无法导出。";
+        error = "未配置宿主侧 tsc 且工程尚未打包/发布（产物目录缺少 main.js），无法导出。";
         return false;
     }
 
@@ -1012,24 +1000,25 @@ bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig conf
         return false;
     }
 
-    // 3) 复制编译产物（build/*.js + *.js.map）到 <export>/build
-    string outDirTs = tsOutDirOf(root, "build");
-    bool abs = !outDirTs.empty() && (outDirTs[0] == '/' || outDirTs[0] == '\\' ||
-                                     (outDirTs.size() > 1 && outDirTs[1] == ':'));
-    string buildAbs = codeNormalizePath(abs ? outDirTs : (root + "/" + outDirTs));
+    // 3) 复制编译产物到导出根：主入口统一为 main.js，而运行根 = exe 所在目录，
+    //    所以产物（main.js + *.js + *.js.map + project.json）直接铺在导出根，
+    //    不再套一层 build/ —— 否则运行时在导出根下找不到 main.js。
+    string buildAbs = tsBuildAbsOf(root);
     if (!JZFileInfo::exists(buildAbs) || !JZFileInfo(buildAbs).isDir())
     {
         error = "找不到编译产物目录: " + buildAbs;
         return false;
     }
-    if (!copyDirRecursive(buildAbs, outDir + "/build", error))
+    if (!JZFileInfo::exists(buildAbs + "/main.js"))
+    {
+        error = "产物目录缺少主入口 main.js: " + buildAbs;
+        return false;
+    }
+    // 导出目录刚清空重建，不会有同名文件 -> force=false
+    if (!JZDir::copyRecursively(buildAbs, outDir, false, &error))
         return false;
 
-    // 4) 复制运行主入口声明 project.json
-    if (!copyOneFile(root + "/project.json", outDir + "/project.json", error))
-        return false;
-
-    // 5) 复制内嵌 JZEngineRuntime 的 code_runtime.exe（与 code_agent 同目录安装），
+    // 4) 复制内嵌 JZEngineRuntime 的 code_runtime.exe（与 code_agent 同目录安装），
     //    并按需改名 / 替换图标，让连接后的 code_runtime 看起来是独立程序。
     string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
     if (!JZFileInfo::exists(runtimeExe))
@@ -1046,7 +1035,7 @@ bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig conf
     if (!nameTrim.empty())
         targetName = nameTrim;
     string dstExe = outDir + "/" + targetName + ".exe";
-    if (!copyOneFile(runtimeExe, dstExe, error))
+    if (!JZFile::copy(runtimeExe, dstExe, false, &error))
         return false;
     if (!config.iconPath.empty() && JZFileInfo::exists(config.iconPath))
     {
@@ -1084,7 +1073,7 @@ bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig conf
 
     addLog("info", "已导出可独立运行包: " + outDir + "\n"
                    "（含 " + targetName + ".exe 内嵌 JZEngineRuntime（可改名/换图标）"
-                   "+ 编译产物 build/ + project.json；双击 run.bat 即可在本机运行）");
+                   "+ 编译产物 main.js 等 + project.json；双击 run.bat 即可在本机运行）");
     return true;
 }
 
@@ -1230,7 +1219,8 @@ void JZCodeAgent::buildAgent()
     // 见 exportProject 的同款定位）；args 透传给运行时（如工程根目录、--debug）。
     // 未编译的工程应先用 build_project 打包。
     string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
-    string run_work_dir = m_codeConfig.workspace + "/build";
+    // 运行根 = 产物目录（main.js 所在目录），按 tsconfig 的 outDir 定位
+    string run_work_dir = tsBuildAbsOf(codeNormalizePath(m_codeConfig.workspace));
     auto run_tool = new JZCommandTool();
     run_tool->setup("run_js", "run_js 加载 main.js 并执行, --debug 开启调试模式", runtimeExe, true, run_work_dir);
     addTool(run_tool);

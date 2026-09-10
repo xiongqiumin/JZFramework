@@ -1336,7 +1336,7 @@ void JZCommandTool::call(const ToolCall &params)
 JZBuildProjectTool::JZBuildProjectTool()
 {
     ToolDefine def;
-    def.name = "build_project";
+    def.name = "build";
     def.description = "编译当前工作区的 TS 工程, 等于在工作区执行 tsc";
     setToolDefine(def);
 }
@@ -1345,7 +1345,7 @@ void JZBuildProjectTool::call(const ToolCall &params)
 {
     if (m_agent->isBuildRunning())
     {
-        finish(params, false, "已有打包/发布任务进行中，请等待其完成后再试");
+        finish(params, false, "已有任务进行中，请等待其完成后再试");
         return;
     }
 

@@ -16,6 +16,7 @@
 //   --modelUrl / --modelName / --modelToken   大模型接入（缺省沿用仓库测试默认值）
 //   --tsc   宿主侧 tsc 全路径（也可走环境变量 JZ_TS_LSP；缺失则无法编译，退出 2）
 //   --tsgo  原生 tsgo(tsc) LSP 全路径（缺省同 --tsc，用于 TS 工具；可空）
+//   --no-color   关闭彩色输出（默认在支持 ANSI 的终端上自动开启）
 //
 // 退出码：0=全部用例通过；1=有失败；2=前置条件缺失（编译器 / 工程初始化失败）。
 //
@@ -49,8 +50,81 @@
 
 #include "JZCodeAgent.h"
 
+// ---------------------------------------------------------------------------
+// 控制台 ANSI 颜色
+//   Windows 10+ 的 cmd / PowerShell / Windows Terminal 本身支持 ANSI 转义序列，
+//   但默认是关闭的，必须对 stdout 打开 ENABLE_VIRTUAL_TERMINAL_PROCESSING 才会
+//   解析 "\033[..m"（否则会原样打印出乱码）。本文件不能 include <windows.h>
+//   （JZAgentTool.h 的枚举成员 BOOLEAN 与 winnt.h 的 typedef 冲突 C2365），
+//   所以这里只按需声明要用的几个 kernel32 API，不引入整个 windows.h。
+// ---------------------------------------------------------------------------
+#ifdef _WIN32
+extern "C" {
+__declspec(dllimport) void *__stdcall GetStdHandle(unsigned long nStdHandle);
+__declspec(dllimport) int  __stdcall GetConsoleMode(void *hConsoleHandle, unsigned long *lpMode);
+__declspec(dllimport) int  __stdcall SetConsoleMode(void *hConsoleHandle, unsigned long dwMode);
+}
+#endif
+
 namespace
 {
+
+const unsigned long kStdOutputHandle = (unsigned long)-11;
+const unsigned long kStdErrorHandle  = (unsigned long)-12;
+const unsigned long kVirtualTerminal = 0x0004;   // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+
+bool g_colorEnabled = false;   // 是否真的可以写 ANSI 颜色
+
+// 打开 stdout（顺带 stderr）的虚拟终端模式；输出被重定向到文件/管道时返回 false
+// （此时 GetConsoleMode 会失败，说明不是控制台，不该写颜色）
+bool enableConsoleColor()
+{
+#ifdef _WIN32
+    void *out = GetStdHandle(kStdOutputHandle);
+    if (!out)
+        return false;
+    unsigned long mode = 0;
+    if (!GetConsoleMode(out, &mode))
+        return false;
+    if (!SetConsoleMode(out, mode | kVirtualTerminal))
+        return false;
+
+    void *err = GetStdHandle(kStdErrorHandle);
+    unsigned long emode = 0;
+    if (err && GetConsoleMode(err, &emode))
+        SetConsoleMode(err, emode | kVirtualTerminal);
+    return true;
+#else
+    return true;   // 类 Unix 终端默认支持 ANSI
+#endif
+}
+
+// ANSI 颜色常量；未开启颜色时 clr() 返回空串，输出保持纯文本
+const char *clr(const char *ansi) { return g_colorEnabled ? ansi : ""; }
+
+const char *CLR_RESET  = "\033[0m";
+const char *CLR_BOLD   = "\033[1m";
+const char *CLR_GRAY   = "\033[90m";   // 工具参数
+const char *CLR_CYAN   = "\033[36m";   // 工具名
+const char *CLR_GREEN  = "\033[32m";   // 成功
+const char *CLR_RED    = "\033[31m";   // 失败
+const char *CLR_YELLOW = "\033[33m";   // 用例标题
+
+// 只保留前 n 个字符（换行/制表压成空格，避免多行 JSON 打乱输出），超长补 "..."
+std::string brief(const std::string &s, size_t n = 100)
+{
+    std::string t;
+    t.reserve(s.size() < n ? s.size() : n + 3);
+    for (char c : s)
+    {
+        if (c == '\r')
+            continue;
+        t.push_back((c == '\n' || c == '\t') ? ' ' : c);
+    }
+    if (t.size() > n)
+        t = t.substr(0, n) + "...";
+    return t;
+}
 
 // ---- 用例定义 ----
 struct BenchmarkCase
@@ -234,12 +308,30 @@ protected:
         {
             jz_agent->setSystemPrompt(jz_agent->systemPrompt() + m_httpPromptExtra);
         }
+        // 工具调用：打印工具名 + 参数（参数只留前 100 字符）
         connect(&jz_agent->sigToolCall, [](const ToolCall& t) {
-            jzDebug() << "tool call:" << t.function_name;
+            std::string args = t.function_args;
+            if (args.empty() && !t.params.isNull())
+                args = t.params.toStyledString();   // 少数模型只填了解析后的 params
+            printf("\n%s[tool]%s %s%s%s(%s%s%s)\n",
+                   clr(CLR_CYAN), clr(CLR_RESET),
+                   clr(CLR_BOLD), str_utf8_to_local(t.function_name).c_str(), clr(CLR_RESET),
+                   clr(CLR_GRAY), str_utf8_to_local(brief(args)).c_str(), clr(CLR_RESET));
+            fflush(stdout);
         });
 
-        jzDebug().nospace() << "==== 用例[" << m_case.name << "] 开始 (maxAttempts="
-                            << m_case.maxAttempts << ", root=" << root << ") ====";
+        // 工具结果：打印成败 + 结果（同样只留前 100 字符）
+        connect(&jz_agent->sigToolResult, [](const ToolCallResult& r) {
+            const char *tag = r.isOk ? CLR_GREEN : CLR_RED;
+            printf("%s[result]%s %s%s%s: %s%s%s\n",
+                   clr(CLR_CYAN), clr(CLR_RESET),
+                   clr(tag), r.isOk ? "ok" : "fail", clr(CLR_RESET),
+                   clr(CLR_GRAY), str_utf8_to_local(brief(r.result)).c_str(), clr(CLR_RESET));
+            fflush(stdout);
+        });
+
+        jzDebug().nospace() << clr(CLR_YELLOW) << "==== 用例[" << m_case.name << "] 开始 (maxAttempts="
+                            << m_case.maxAttempts << ", root=" << root << ") ====" << clr(CLR_RESET);
         doAttempt(m_case.prompt);
     }
 
@@ -347,8 +439,8 @@ protected:
         m_result.lastOutput = output;
 
         jzDebug().nospace() << "  [尝试 " << m_attempt << "] build="
-                            << (buildOk ? "OK" : "FAIL")
-                            << " run=" << (runOk ? "OK" : "FAIL")
+                            << clr(buildOk ? CLR_GREEN : CLR_RED) << (buildOk ? "OK" : "FAIL") << clr(CLR_RESET)
+                            << " run=" << clr(runOk ? CLR_GREEN : CLR_RED) << (runOk ? "OK" : "FAIL") << clr(CLR_RESET)
                             << " output=\"" << output.substr(0, 200) << "\"";
         if (!buildOk)
             jzDebug().nospace() << "  [尝试 " << m_attempt << "] buildError: "
@@ -380,8 +472,9 @@ protected:
     {
         JZProcess proc;
         proc.setProcessChannelMode(JZProcess::MergedChannels);
+        // 运行根 = 子进程工作目录（code_runtime 不再收位置参数）
         proc.setWorkingDirectory(m_root);
-        if (!proc.start(m_codeRuntime, {m_root}))
+        if (!proc.start(m_codeRuntime, {}))
         {
             output = "[benchmark] 启动 code_runtime 失败: " + m_codeRuntime;
             return false;
@@ -413,7 +506,7 @@ protected:
 
         const CaseResult &r = m_result;
         jzDebug().nospace() << "---- 用例[" << r.name << "] 结束: "
-                            << (r.passed ? "PASS" : "FAIL")
+                            << clr(r.passed ? CLR_GREEN : CLR_RED) << (r.passed ? "PASS" : "FAIL") << clr(CLR_RESET)
                             << " (attempts=" << r.attempts
                             << ", token=" << r.totalTokens << ")";
         m_results.push_back(r);
@@ -438,7 +531,8 @@ protected:
         {
             if (r.passed)
                 passed++;
-            jzDebug().nospace() << (r.passed ? "[PASS] " : "[FAIL] ")
+            jzDebug().nospace() << clr(r.passed ? CLR_GREEN : CLR_RED)
+                                << (r.passed ? "[PASS] " : "[FAIL] ") << clr(CLR_RESET)
                                 << r.name << "  (attempts=" << r.attempts
                                 << ", token=" << r.totalTokens
                                 << ", LLM=" << (r.llmMs/1000.0) << "s"
@@ -675,6 +769,7 @@ int main(int argc, char *argv[])
     std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
     std::string casesFilter;   // --cases：逗号分隔的用例名，仅跑这些（可多个）
     int httpPort = 18080;      // --http-port：输入 HTTP 服务监听端口（JS 用 fetch 读输入）
+    bool noColor = false;      // --no-color：关闭 ANSI 彩色输出（重定向时本就自动关闭）
     for (size_t i = 0; i < dataDir.size(); i++)
         if (dataDir[i] == '\\')
             dataDir[i] = '/';
@@ -687,11 +782,17 @@ int main(int argc, char *argv[])
     parser.addOption("--data", &dataDir);
     parser.addOption("--cases", &casesFilter);
     parser.addOption("--http-port", &httpPort);
+    parser.addOption("--no-color", &noColor);
     if (!parser.parse(argc, argv))
     {
         jzError() << parser.errorString().c_str();
         return 2;
     }
+
+    // 打开 cmd 的虚拟终端模式（Win10+ 支持），之后 printf 的 ANSI 转义才会被当颜色解析；
+    // 输出重定向到文件/管道时自动降级为纯文本。
+    g_colorEnabled = !noColor && enableConsoleColor();
+
 
     if (tscPath.empty() || !JZFileInfo::exists(tscPath))
     {

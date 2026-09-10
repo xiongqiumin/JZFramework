@@ -2,27 +2,30 @@
 #define JZ_ENGINE_RUNTIME_H_
 
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
-#include <vector>
+
+#include "JZSourceMap.h"
 
 class JZJSEngine;
 class JZJSNetModule;
 class JZJSCoreModule;
 
 // ------------------------------------------------------------------
-// 运行期层：内嵌 JS 引擎 + "JS 运行栈 -> TS 源码栈" 的位置翻译
+// 运行期层：内嵌 JS 引擎会话的"运行"封装
 //
-//   一件事的两个面：
-//   1) 运行：init(projectDir) 一步到位——把 projectDir 设为运行根、开一个干净
-//      的 JZJSEngine 会话、按工程配置声明的入口加载主模块（import 依赖自动
-//      解析，入口具名导出绑定全局），最后自动调用入口主函数 main()。
-//      之后仍可 evalScript() 复用同一会话。
-//   2) 翻译：引擎(quickjs)报错给的是运行目录里 xx.js 的行列，而人与模型关心
-//      的是 xx.ts 的行列。中间只隔一份 tsc 生成的 source map
-//      （xx.js.map，tsconfig 需开 "sourceMap": true）。本类按 source map v3
-//      规范做"生成位置 -> 原始位置"反查。
+//   只负责运行：init(root) 一步到位——把 root 设为运行根（主入口统一为它下面的
+//   main.js，即"产物目录"；TS 工程通常是 tsconfig 的 outDir，如 <工程根>/build）、
+//   开一个干净的 JZJSEngine 会话、以 ESM 模块方式加载并执行 main.js（import 依赖
+//   自动解析，入口具名导出绑定全局）。之后仍可 evalScript() 复用同一会话。
+//
+//   project.json（可选，与 main.js 同目录）不是入口声明，只是补充信息：编译时间、
+//   原路径地址（工程根 / 源码目录）等。init 会读它，解析（栈翻译时把源路径还原成
+//   "src/x.ts"）会用到里面的 projectRoot；读不到不影响运行。
+//
+//   出错时对外给的一律是"翻译回 TS 的位置"（原始 JS 栈经 JZSourceMap 翻译，
+//   统一从 lastError() 取）。source map 的解析 / 位置反查不在这里，见
+//   JZSourceMap——本类只是持有一份翻译器用于把错误栈翻成人能看的位置。
 //
 //   设计要点：
 //     - 不在类外接触 JZJSEngine：init / evalScript 出错时自动把原始 JS 栈
@@ -49,14 +52,19 @@ public:
     // 未处理 JS 异常（引擎 sigError，含异步未捕获拒绝）回调；参数为已翻译回 TS 的错误文本
     typedef std::function<void(const std::string &tsError)> UnhandledHandler;
 
-
-    // 翻译后的源码位置
-    struct Location
+    // 主入口固定为运行根下的 main.js；运行根下还可以有一份 project.json，
+    // 它不是入口声明，只是"补充信息"（打包/发布时生成）：编译时间、原路径地址
+    // （工程根 / 源码目录）、产物输出目录等。栈翻译出的源路径是绝对路径，靠里面的
+    // projectRoot 才能显示成 "src/x.ts"（见 toDisplayPath）。读不到不影响运行。
+    struct ProjectInfo
     {
-        std::string file;   // 源文件（能表示成运行根的相对路径就给相对路径，否则给原样路径）
-        int line = 0;       // 1-based
-        int column = 0;     // 1-based
-        std::string name;   // map 里带的原始标识符（可能为空）
+        std::string name;          // 工程名
+        std::string projectRoot;   // 原路径地址：工程根
+        std::string srcRoot;       // 原路径地址：源码目录
+        std::string outDir;        // 产物输出目录（相对工程根；工程根外为绝对路径）
+        std::string buildTime;     // 编译时间（YYYY-MM-DD HH:MM:SS）
+        std::string tsc;           // 编译时用的 tsc
+        bool valid = false;        // 是否读到了 project.json
     };
 
     JZEngineRuntime();
@@ -80,27 +88,22 @@ public:
     // 换一个工程根就再 init() 一次（每次都是全新会话，模块缓存/全局互不串）。
     bool init(const std::string &work_dir);
 
-    // 运行根（上次 init() 设置的工程根）。栈里的相对路径按它解析；
-    // 源路径尽量显示成它的相对路径。为空时 js 路径按原样解析。
+    // 运行根（上次 init() 设置的目录，即 main.js 所在目录）。栈里的相对模块名按它解析。
     const std::string &root() const;
 
-    // 映射成功时是否附带原始 js 位置
-    //   false(默认): "src/sort.ts:12:7"
-    //   true       : "src/sort.ts:12:7 (js: build/sort.js:8:5)"
-    // 映射失败时无论该开关如何，都保持原文不动。
-    void setKeepOriginal(bool keep);
-    bool keepOriginal() const;
+    // 运行根下 project.json 里的补充信息（见 ProjectInfo）。
+    // 没有 project.json 时 valid=false、字段全空。
+    const ProjectInfo &projectInfo() const;
 
-    // 清空已加载的 map 缓存（产物重新编译后调用，否则会读到旧映射）
-    void clearCache();
+    // 把解析出的"源文件绝对路径"转成显示用的相对路径（解析本身只给绝对路径，
+    // 相对谁是显示策略，所以放在这里）：
+    //   1) 落在运行根下 -> 相对运行根
+    //   2) 落在工程根下 -> 相对工程根（"src/x.ts"，project.json 的 projectRoot）
+    //   3) 都不在其下   -> 原样绝对路径（不谎报位置）
+    std::string toDisplayPath(const std::string &abs) const;
 
-    // 整段文本：把其中所有 "<xxx.js>:行:列" 的帧逐个尝试翻译；
-    // 找不到 map 或该位置无映射的帧保持原样，不影响其它帧。
-    std::string mapStack(const std::string &text) const;
-
-    // 单帧翻译：jsFile 为 js 产物路径（绝对，或相对运行根）；
-    // line / column 与 V8 / QuickJS 栈一致，均为 1-based。
-    bool mapLocation(const std::string &jsFile, int line, int column, Location &out) const;
+    // 原始 JS 错误栈 -> 翻译后的 TS 栈（位置已按 toDisplayPath 相对化）
+    std::string mapErrorStack(const std::string &raw) const;
 
     // ------------------------------------------------------------------
     // 内嵌 JZJSEngine 低层接口（init() 内部按序调用它们；只做栈翻译 / 复用
@@ -109,7 +112,7 @@ public:
 
     // 启动（或重启）一个干净的引擎会话。workDir 为空时用 root() 作引擎工作目录。
     // 会先关掉已有会话。
-    bool initEngine(const std::string &workDir = std::string());
+    bool initEngine(const std::string &workDir);
     // 关闭当前会话（析构时自动调用）
     void shutdownEngine();
     bool engineRunning() const;
@@ -140,37 +143,6 @@ public:
     // 默认空：不处理。运行时外壳可借此弹窗/退出。
     void setUnhandledExceptionHandler(const UnhandledHandler &handler);
 
-protected:
-    // source map 中一个"段"（同一生成行内按生成列递增）
-    struct Segment
-    {
-        int genColumn = 0;      // 生成文件列（0-based）
-        int srcIndex = 0;       // sources 下标
-        int srcLine = 0;        // 源文件行（0-based）
-        int srcColumn = 0;      // 源文件列（0-based）
-        int nameIndex = -1;     // names 下标，-1 表示无
-    };
-
-    struct SourceMap
-    {
-        bool valid = false;     // 解析成功（false 也会被缓存，避免反复读盘）
-        std::string mapDir;     // map 所在目录，用于解析 sources / sourceRoot
-        std::string sourceRoot;
-        std::vector<std::string> sources;
-        std::vector<std::string> names;
-        std::vector<std::vector<Segment> > lines;   // 下标 = 生成文件行号(0-based)
-    };
-
-    // 取 js 产物对应的 map（带缓存）；没有可用 map 返回 nullptr
-    const SourceMap *findMap(const std::string &jsFile) const;
-
-    static bool parseMapFile(const std::string &mapPath, SourceMap &out);
-    static bool parseMappings(const std::string &mappings, SourceMap &out);
-    static bool decodeVLQ(const std::string &s, size_t &pos, int &value);
-
-    std::string resolveSource(const SourceMap &map, int srcIndex) const;
-    std::string relativeToRoot(const std::string &path) const;
-
 private:
     // 引擎 sigLog 桥（实现见 .cpp）：把 console.* 转给 logHandler，滤掉异常原文
     class LogBridge;
@@ -188,8 +160,10 @@ private:
     UnhandledHandler m_unhandledHandler;       // 未处理 JS 异常回调（默认空）
 
     std::string m_root;
-    bool m_keepOriginal = false;
-    mutable std::map<std::string, SourceMap> m_maps;   // 规范化后的 js 路径 -> map
+    ProjectInfo m_projectInfo;     // 运行根下 project.json 的补充信息（可缺省）
+    // 位置翻译器（JS 产物位置 -> TS 源码位置）：只在出错时把原始栈翻成人能看的
+    // 位置，解析 / 反查的实现全在 JZSourceMap 里，不在本类。
+    JZSourceMap m_sourceMap;
 };
 
 #endif // !JZ_ENGINE_RUNTIME_H_

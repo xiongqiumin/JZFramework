@@ -3,6 +3,7 @@
   "references": [
     { "path": "./serialport" },
     { "path": "./net" },
-    { "path": "./core" }
+    { "path": "./core" },
+    { "path": "./sqlite" }
   ]
 }

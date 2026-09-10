@@ -6,6 +6,7 @@
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
 #include "JZJSCoreModule.h"
+#include "JZJSqliteModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
@@ -150,6 +151,10 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_netModule->initEngine(engine);
     m_coreModule = std::make_unique<JZJSCoreModule>();
     m_coreModule->initEngine(engine);
+    // SQLite（node:sqlite 风格）：只注册 __jz.sqlite 原子 API + 原生连接类，
+    // JS 适配层(DatabaseSync/StatementSync)由用户入口 import './sqlite/dist/index.js' 被动加载。
+    m_sqliteModule = std::make_unique<JZJSqliteModule>();
+    m_sqliteModule->initEngine(engine);
 
     // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
     // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
@@ -212,6 +217,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_coreModule->deinitEngine();
         m_coreModule.reset();
+    }
+    if (m_sqliteModule)
+    {
+        m_sqliteModule->deinitEngine();
+        m_sqliteModule.reset();
     }
     if (m_bridge)
     {

@@ -44,6 +44,24 @@ target_link_libraries(code_agent_lsp_test PRIVATE JZFramework)
 target_link_libraries(code_agent_lsp_test PRIVATE code_agent_core)
 
 # ---------------------------------------------------------------------------
+# taskstore_test - TaskHistoryManager（SQLite 任务库）独立测试。
+# 自包含（无 GUI / 大模型 / 网络），库建在 applicationTmpPath() 下的临时目录，
+# 覆盖建库、持久化、对话往返、删任务级联、工程过滤、旧 index.json 自动导入。
+# ---------------------------------------------------------------------------
+# TaskHistoryManager 属于 code_agent(exe) 侧源文件、不在 code_agent_core 库里，
+# 这里与 main_test.cpp 列 JZEngineRuntime.cpp 的做法一致，直接把它编进测试。
+add_executable(taskstore_test
+    taskstore_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../TaskHistoryManager.cpp
+)
+target_include_directories(taskstore_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(taskstore_test PRIVATE JZFramework)
+target_link_libraries(taskstore_test PRIVATE code_agent_core)
+
+add_test(NAME code_agent.taskstore COMMAND taskstore_test)
+set_tests_properties(code_agent.taskstore PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # appcontainer_demo - 验证 AppContainer「目录白名单」隔离（Windows 8+）。
 #   裸 Win32 演示：建容器 SID -> 给受保护目录加允许 ACE -> 在容器内分别 del
 #   受保护/外部目录的哨兵文件，断言「外不可删、内可删」。需要 userenv/aclapi/advapi32。

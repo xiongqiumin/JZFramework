@@ -52,6 +52,13 @@ Json::Value CodeAgentLog::toJson() const
     root["type"] = type;
     root["name"] = name;
     root["text"] = text;
+    if (!images.empty())
+    {
+        Json::Value arr(Json::arrayValue);
+        for (const auto &url : images)
+            arr.append(url);
+        root["images"] = arr;
+    }
     return root;
 }
 
@@ -93,7 +100,7 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_busy = false;
     setupFileWatch();
     buildAgent();
-    // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversation()
+    // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversationJson()
 }
 
 bool JZCodeAgent::isBusy() const
@@ -103,10 +110,16 @@ bool JZCodeAgent::isBusy() const
 
 void JZCodeAgent::request(const string &text)
 {
-    if (text.empty())
+    request(text, std::vector<string>());
+}
+
+void JZCodeAgent::request(const string &text, const vector<string> &images)
+{
+    // 只有文字与图片都为空才算空请求(允许"只发截图")
+    if (text.empty() && images.empty())
         return;
 
-    addLog("user", text);
+    addLog("user", text, string(), images);
     if (m_busy)
     {
         JZ_ASSERT(0);
@@ -119,64 +132,90 @@ void JZCodeAgent::request(const string &text)
         m_recoveryActive = true;
         m_recoveryAttempt = 1;
         m_lastUserRequest = text;
+        m_lastUserImages = images;
     }
 
-    sendRequestDirect(text);
+    sendRequestDirect(text, images);
 }
 
-// 把当前这段对话存到 path（由上层按任务存档路径调用）
-bool JZCodeAgent::saveConversation(const string &path) const
+// 导出当前对话（交给调用方存进自己的介质，如 SQLite 任务库）；无有效对话返回 null
+Json::Value JZCodeAgent::conversationJson() const
 {
-    if (!m_agent || path.empty())
-        return false;
-    return m_agent->saveHistory(path);
+    if (!m_agent)
+        return Json::Value();
+
+    // 存储层要的是文本，所以在 code_agent 这一层把强类型的上下文序列化
+    LLMContext ctx = m_agent->saveContext();
+    if (ctx.history.empty())
+        return Json::Value();
+    return ctx.toJson();
 }
 
-// 从 path 载入一段对话（替换当前对话），并把界面日志按它重建
-bool JZCodeAgent::loadConversation(const string &path)
+// 取"上下文起点"及其之后的历史；没有起点标记时返回整段。
+// 存档里存的是完整对话记录(界面回看用)，而发给模型的上下文只从最后一次压缩的起点开始。
+static std::vector<std::shared_ptr<LLMHistory>> contextFromLastStart(
+    const std::vector<std::shared_ptr<LLMHistory>> &history)
 {
-    if (!m_agent || path.empty())
-        return false;
-    if (!JZFileInfo::exists(path))
-        return false;
-    if (!m_agent->loadHistory(path))
+    for (size_t i = history.size(); i > 0; --i)
+    {
+        const auto &h = history[i - 1];
+        // ContextStart(用户第一句话) 与 Summary(压缩摘要) 都是上下文起点
+        if (h && h->kind != LLMHistory::Message)
+            return std::vector<std::shared_ptr<LLMHistory>>(history.begin() + (i - 1), history.end());
+    }
+    return history;
+}
+
+// 载入一段对话（替换当前对话），并把界面日志按它重建
+bool JZCodeAgent::loadConversationJson(const Json::Value &root)
+{
+    if (!m_agent || root.isNull())
         return false;
 
+    // 从存储里读回来的是文本，先还原成完整上下文
+    LLMContext saved;
+    if (!saved.fromJson(root))
+        return false;
+
+    // 给 agent 的上下文只从最后一条"上下文起点"算起：它之前的消息在压缩时已被摘要替换、
+    // 不再是模型上下文的一部分(只保留在存档里供界面回看)。
+    LLMContext ctx;
+    ctx.history = contextFromLastStart(saved.history);
+    m_agent->loadContext(ctx);   // 内部会重算 usage 并裁到自洽
+
+    // 界面按**完整**记录重建，这样压缩前的历史照样看得到
     m_logs.clear();
     m_logId = 0;
-    rebuildLogsFromHistory();
+    rebuildLogsFromHistory(saved.history);
     return true;
 }
 
-void JZCodeAgent::rebuildLogsFromHistory()
+void JZCodeAgent::rebuildLogsFromHistory(const std::vector<std::shared_ptr<LLMHistory>> &history)
 {
-    // 把底层 agent 的对话历史重建成界面会话日志（导入存档后用）。
+    // 把一段对话历史重建成界面会话日志（导入存档后用）。
+    // 传进来的是**完整**记录：压缩掉的那部分也要显示，用户能看到对话被压缩过。
     // 日志类型与实时流程保持一致：user / assistant / think / tool_call / tool_result，
     // tool_call / tool_result 的名字格式与 onToolCall / onToolResult 严格对齐，
     // 这样界面渲染（工具调用与结果配对）和落盘后再重建的结果一致。
-    if (!m_agent)
-        return;
-
-    const LLMContext *ctx = m_agent->context();
-    if (!ctx)
-        return;
-
     m_logs.clear();
     m_logId = 0;
 
-    for (const auto &h : ctx->history)
+    for (const auto &h : history)
     {
         if (!h)
+            continue;
+
+        // 压缩摘要(Summary)是纯内部消息，不进界面；
+        // "上下文起点"(用户输入的第一句话)则照常显示，用户看到的是完整对话记录。
+        if (h->kind == LLMHistory::Summary)
             continue;
 
         switch (h->role)
         {
         case LLMHistory::User:
-            // 系统自动添加的消息（如历史压缩摘要）不在界面显示，也不计入用户输入
-            if (h->autoAdded)
-                break;
-            if (!h->content.empty())
-                addLog("user", h->content);
+            // 带图消息即使正文为空也要还原(仅截图的消息)
+            if (!h->content.empty() || !h->images.empty())
+                addLog("user", h->content, string(), h->images);
             break;
 
         case LLMHistory::Assistant:
@@ -221,14 +260,17 @@ void JZCodeAgent::resetConversation()
     buildAgent();
 }
 
-void JZCodeAgent::sendRequestDirect(const string &text)
+void JZCodeAgent::sendRequestDirect(const string &text, const vector<string> &images)
 {
     // 直接发给底层 agent（request 的队列分支与宿主续修都走这里）。
     // 每条新指令 = 一轮完整的自动续修额度 + 重新统计代码改动。
     m_fixRoundsLeft = m_codeConfig.maxAutoFixRounds;
     m_roundTouchedTs = false;
     m_busy = true;
-    m_agent->request(text);
+    if (images.empty())
+        m_agent->request(text);
+    else
+        m_agent->request(text, images);   // 多模态: 文字 + 图片同属一条 user 消息
 }
 
 void JZCodeAgent::stop()
@@ -1181,6 +1223,7 @@ void JZCodeAgent::buildAgent()
     m_recoveryActive = false;
     m_recoveryAttempt = 0;
     m_lastUserRequest.clear();
+    m_lastUserImages.clear();
 
     // 重建前终止进行中的打包/发布（tsc 子进程随旧任务作废）
     abortBuild();
@@ -1295,13 +1338,15 @@ void JZCodeAgent::abortTools()
     abortHostTsc();
 }
 
-void JZCodeAgent::addLog(const string &type, const string &text, const string &name)
+void JZCodeAgent::addLog(const string &type, const string &text, const string &name,
+                         const vector<string> &images)
 {
     CodeAgentLog log;
     log.id = ++m_logId;
     log.type = type;
     log.name = name;
     log.text = text;
+    log.images = images;
     m_logs.push_back(log);
 
     const int kMaxLogs = 3000;
@@ -1388,11 +1433,13 @@ void JZCodeAgent::nextOrIdle()
         string recoveryText;
         if (m_recovery.buildRecoveryRequest)
             recoveryText = m_recovery.buildRecoveryRequest(m_recoveryAttempt + 1);
-        if (recoveryText.empty())
+        // 空串 = 重发最近一次原始 user request(连同它附带的图片一起重发)
+        const bool resendOriginal = recoveryText.empty();
+        if (resendOriginal)
             recoveryText = m_lastUserRequest;
         m_recoveryAttempt++;
         // 复用 request：仍会走工具调用 / 宿主编译把关；m_recoveryActive 已 true 故不重置计数
-        request(recoveryText);
+        request(recoveryText, resendOriginal ? m_lastUserImages : std::vector<string>());
         return;
     }
 }
@@ -1545,6 +1592,7 @@ void JZCodeAgent::clearRecovery()
     m_recoveryActive = false;
     m_recoveryAttempt = 0;
     m_lastUserRequest.clear();
+    m_lastUserImages.clear();
 }
 
 void JZCodeAgent::onToolCall(const ToolCall& call)

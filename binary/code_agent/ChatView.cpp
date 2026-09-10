@@ -5,6 +5,7 @@
 #include "JZFontMetrics.h"
 #include "JZUtf8Iterator.h"
 #include "JZDebug.h"
+#include "JZScreenShot.h"
 
 // 布局常量
 static constexpr int kOuter      = 12;   // 控件四边外边距
@@ -22,6 +23,10 @@ static constexpr int kSecPad    = 10;
 static constexpr int kResLabelH = 18;
 // 思考卡: 显示时只保留末尾这么多个字符(其余省略), 控制超长思考的内存与布局成本
 static constexpr int kThinkTailChars = 500;
+// 用户消息附图缩略图: 单张最大尺寸与间距(超出可用宽度自动折行)
+static constexpr int kThumbMaxW = 220;
+static constexpr int kThumbMaxH = 150;
+static constexpr int kThumbGap  = 6;
 
 // 画小三角(用当前画笔颜色)。down=true 朝下(展开态, 提示可收起), 否则朝右(折叠态, 提示可展开)。
 static void drawTriangle(JZPainter& p, int cx, int cy, int r, bool down)
@@ -159,6 +164,53 @@ static std::string tailText(const std::string& text, int keepChars)
     return out;
 }
 
+// ==================== 附图缩略图 ====================
+// 追加消息时一次性把 data URL 解码并等比缩放到缩略图尺寸, 之后布局/绘制都复用。
+void ChatView::buildThumbs(Msg& m, const std::vector<std::string>& images)
+{
+    m.thumbs.clear();
+    for (size_t i = 0; i < images.size(); i++)
+    {
+        JZImage img = JZScreenShot::decodeDataUrl(images[i]);
+        if (img.isNull())
+            continue;
+        m.thumbs.push_back(JZScreenShot::fitTo(img, kThumbMaxW, kThumbMaxH));
+    }
+}
+
+// 按卡片可用宽度摆放缩略图(行内从左到右, 放不下折行), 返回图片区总高(0=无附图)。
+int ChatView::layoutThumbs(Msg& m, int cardW)
+{
+    m.thumbRects.clear();
+    if (m.thumbs.empty() || cardW <= 0)
+        return 0;
+
+    int x = 0, y = 0, rowH = 0;
+    for (size_t i = 0; i < m.thumbs.size(); i++)
+    {
+        const int tw = m.thumbs[i].width();
+        const int th = m.thumbs[i].height();
+        if (tw <= 0 || th <= 0)
+        {
+            m.thumbRects.push_back(JZRect());   // 占位保持与 m.thumbs 一一对应
+            continue;
+        }
+        if (x > 0 && x + tw > cardW)          // 本行放不下 -> 折到下一行
+        {
+            y += rowH + kThumbGap;
+            x = 0;
+            rowH = 0;
+        }
+        m.thumbRects.push_back(JZRect(x, y, tw, th));
+        x += tw + kThumbGap;
+        if (th > rowH)
+            rowH = th;
+    }
+
+    const int total = y + rowH;
+    return total > 0 ? total + kThumbGap : 0; // 与正文之间留一段间距
+}
+
 // ==================== 单条消息布局 ====================
 // precise=true: 精确换行(调用字体度量), 用于视口内/流式消息;
 // precise=false: 仅按字符数估算高度(不调字体度量), 用于视口外消息, 节省布局成本。
@@ -194,8 +246,8 @@ void ChatView::layoutMsg(Msg& m, bool precise)
         else if (m.role == ToolResult)
             lines = std::min(estimateLines(m.text, cardW), 8); // 精确态截断到 3+3 行
         else
-            lines = estimateLines(m.text, cardW);
-        m.cardH = kHeaderH + lines * lh + 2 * kCardPad;
+            lines = m.text.empty() ? 0 : estimateLines(m.text, cardW);
+        m.cardH = kHeaderH + lines * lh + layoutThumbs(m, cardW) + 2 * kCardPad;
         m.precise = false;
         return;
     }
@@ -228,8 +280,11 @@ void ChatView::layoutMsg(Msg& m, bool precise)
 
     const std::string& renderText =
         (m.role == ToolResult) ? truncateToolText(m.text, 3, 3) : m.text;
-    wrapText(renderText, font, cardW, m.lines);
-    m.cardH = kHeaderH + (int)m.lines.size() * lh + 2 * kCardPad;
+    if (renderText.empty())
+        m.lines.clear();                       // 只发图/空正文: 不占正文行高
+    else
+        wrapText(renderText, font, cardW, m.lines);
+    m.cardH = kHeaderH + (int)m.lines.size() * lh + layoutThumbs(m, cardW) + 2 * kCardPad;
     m.precise = true;
 }
 
@@ -473,15 +528,11 @@ int ChatView::hitTestMsg(int contentY) const
 }
 
 // ==================== 消息追加 ====================
-void ChatView::appendUser(const std::string& text)
+void ChatView::appendUser(const std::string& text, const std::vector<std::string>& images)
 {
-    if (text.empty())
-    {
-        jzDebug() << "empty";
-    }
-
     closeStream();
     Msg m; m.role = User; m.text = text;
+    buildThumbs(m, images);                     // 附图先解码+缩放, 布局时只做排布
     m_msgs.push_back(std::move(m));
     layoutMsg(m_msgs.back(), true);             // 仅对新增的这一条做精确布局
     afterChange();
@@ -801,6 +852,15 @@ void ChatView::paintEvent(JZPainterEvent* event)
         int ty = y + kHeaderH;
         for (size_t li = 0; li < m.lines.size(); li++)
             p.drawText(contentLeft + kCardPad, ty + li * lh, m.lines[li].c_str());
+        ty += (int)m.lines.size() * lh;
+
+        // 附图缩略图(用户消息): 位置来自 layoutThumbs, 尺寸即缩略图真实尺寸
+        for (size_t ii = 0; ii < m.thumbs.size() && ii < m.thumbRects.size(); ii++)
+        {
+            const JZRect& tr = m.thumbRects[ii];
+            p.drawImage(m.thumbs[ii], contentLeft + kCardPad + tr.x(), ty + tr.y(),
+                        tr.width(), tr.height());
+        }
 
         y += m.cardH + kGap;
     }

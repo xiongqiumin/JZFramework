@@ -33,6 +33,8 @@ set(CODE_AGENT_SOURCES
     TokenRing.cpp
     ChatView.h
     ChatView.cpp    
+    JZScreenShot.h
+    JZScreenShot.cpp
     JZEngineRuntime.h
     JZEngineRuntime.cpp
     JZSourceMap.h
@@ -80,7 +82,7 @@ set(JZ_JS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/jz_js_packaged.stamp")
 
 # 仅把已存在的 dist 加入依赖, 避免未跑 tsc 时 configure 报找不到文件
 set(JZ_JS_DEPS "${JZ_WRAP_PY}" "${JZ_TYPES_SRC}")
-foreach(pkg core net serialport)
+foreach(pkg core net serialport sqlite)
     set(_d "${JZ_WRAP_SRC}/${pkg}/dist/index.js")
     if(EXISTS "${_d}")
         list(APPEND JZ_JS_DEPS "${_d}")

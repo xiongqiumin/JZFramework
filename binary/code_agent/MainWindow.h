@@ -37,22 +37,38 @@ public:
 
     JZSigVoid sigSend;
     JZSigVoid sigStop;     // 忙碌(且输入框为空)时点击按钮 -> 停止
+    JZSigVoid sigShot;     // 点击[截图]: 由上层抓屏后把图片回填到输入框(addImage)
     JZPushButton* sendButton() const { return m_sendBtn; }
     TokenRing* tokenRing() const { return m_tokenRing; }
 
     // 由外部(MainWindow::onPoll)告知是否正在请求；busy 且输入框为空时按钮显示"停止"，否则"发送"
     void setBusy(bool busy);
 
+    // ---- 随消息发送的图片(截图) ----
+    // dataUrl 为实际发给模型的图片(data URL); thumb 为输入框内的预览缩略图(等比缩放)。
+    void addImage(const std::string& dataUrl, const JZImage& thumb);
+    // 取走全部待发送图片并清空预览(发送后调用)
+    std::vector<std::string> takeImages();
+    void clearImages();
+
 protected:
     void keyPressEvent(JZKeyEvent* event) override;
+    void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
 
 private:
     void onSendClicked();
     void updateButton();   // 依据 m_busy 与当前文本刷新按钮文案
+    JZRect imageSlot(int index) const;        // 第 index 张缩略图在输入框内的槽位
+    int    imageAt(const JZPoint& pos) const; // 命中的缩略图下标(-1 未命中)
 
     JZPushButton* m_sendBtn = nullptr;
+    JZPushButton* m_shotBtn = nullptr;      // [截图] 按钮
     TokenRing*    m_tokenRing = nullptr;   // 发送按钮左侧的 token 用量圆环
     bool          m_busy = false;
+
+    std::vector<std::string> m_images;     // 待发送图片(data URL)
+    std::vector<JZImage>     m_thumbs;     // 预览缩略图(与 m_images 一一对应)
 };
 
 // 工具条上工程名左侧的"运行中"指示：start() 后显示并持续旋转的圆弧，stop() 隐藏。
@@ -173,6 +189,7 @@ private:
     void onSend();
     void onStop();
     void onClear();
+    void onScreenshot();               // [截图]: 抓主屏并附加到输入框(随下一条消息发送)
     void onNewTask();                  // 任务面板 [新建任务]
     void onSwitchTask(int id);         // 任务面板 点击历史任务
     void onDeleteTask(int id);         // 任务面板 [删除任务]
@@ -261,7 +278,13 @@ private:
     bool m_exportDebug = true;  // 上次导出是否勾选 debug（记住，方便连续导出）
     JZTimer*      m_pollTimer = nullptr;
 
-    std::deque<std::string> m_pendingQueue;
+    // 忙碌时排队的下一条指令(文本 + 附图), 上一轮结束后自动发出
+    struct PendingRequest
+    {
+        std::string text;
+        std::vector<std::string> images;
+    };
+    std::deque<PendingRequest> m_pendingQueue;
 
     int  m_renderedId = 0;
     AppConfig m_cfg;

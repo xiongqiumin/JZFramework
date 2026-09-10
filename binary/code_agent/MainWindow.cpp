@@ -18,8 +18,16 @@
 #include "JZAction.h"
 #include "JZApplication.h"
 #include "JZPainter.h"
+#include "JZScreenShot.h"
 
 using namespace std;
+
+// 输入框内的附图缩略图布局: 一行槽位从左往右排, 与底部按钮带同高
+static constexpr int kThumbBox    = 30;   // 槽位边长
+static constexpr int kThumbStep   = 36;   // 槽位间距(含间隔)
+static constexpr int kThumbLeft   = 14;   // 与输入框左右内边距对齐
+static constexpr int kThumbBottom = 6;    // 与底部间距(与按钮一致)
+static constexpr int kMaxImages   = 8;    // 单条消息最多附加的截图数
 
 // 在 PATH 环境变量里找一个可执行文件，命中返回全路径（已规范化），否则返回空。
 // 用于启动时按本机默认补全可信程序（cmake / python 等）。
@@ -146,6 +154,7 @@ InputEdit::InputEdit(JZWidget* parent)
     : JZTextEdit(parent)
     , sigSend(this)
     , sigStop(this)
+    , sigShot(this)
 {
     // 发送按钮嵌入输入框内部: 浮动在底部文本区下方的"按钮带"里。
     // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
@@ -155,15 +164,24 @@ InputEdit::InputEdit(JZWidget* parent)
     // 发送按钮左侧的 token 用量圆环（26x26，与按钮垂直居中对齐）
     m_tokenRing = new TokenRing(this);
 
+    // 圆环左侧的 [截图] 按钮：抓主屏并附加到下一条消息
+    const int shotW = 60;
+    m_shotBtn = new JZPushButton(this, shotW, btnH, "截图");
+    m_shotBtn->setTooltip("截取屏幕并附加到下一条消息");
+
     // selfLayout 锚定右下角: 右/下锚点下正 dx/dy 向内取反 = 距右/底边距 8/6,
     // 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
+    // 由右向左依次摆放: 发送(8) | 圆环(8+btnW+8) | 截图(圆环左侧再留 8)
     auto* layout = new JZSelfLayout();
     layout->addWidget(m_sendBtn, JZSelfLayout::BottomRight, 8, 6);
     layout->addWidget(m_tokenRing, JZSelfLayout::BottomRight,
                       8 + btnW + 8, 6 + (btnH - 26) / 2);
+    layout->addWidget(m_shotBtn, JZSelfLayout::BottomRight,
+                      8 + btnW + 8 + 26 + 8, 6);
     setLayout(layout);
 
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
+    connect(&m_shotBtn->sigClicked, this, [this]() { sigShot.emit(); });
     connect(&sigTextChanged, this, [this](const std::string&) { updateButton(); });
 
     setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
@@ -193,17 +211,112 @@ void InputEdit::setBusy(bool busy)
 
 void InputEdit::updateButton()
 {
-    // 正在请求且输入框为空 -> "停止"；其它情况(空闲 / 忙碌但有草稿) -> "发送"
-    m_sendBtn->setText(m_busy && text().empty() ? "停止" : "发送");
+    // 正在请求且没有待发内容(文字与附图都为空) -> "停止"；其它情况 -> "发送"
+    bool empty = text().empty() && m_images.empty();
+    m_sendBtn->setText(m_busy && empty ? "停止" : "发送");
 }
 
 void InputEdit::onSendClicked()
 {
-    // 忙碌且输入框为空时按"停止"处理，否则视为"发送"
-    if (m_busy && text().empty())
+    // 忙碌且没有待发内容时按"停止"处理，否则视为"发送"
+    if (m_busy && text().empty() && m_images.empty())
         sigStop.emit();
     else
         sigSend.emit();
+}
+
+// ==================== InputEdit: 附图(截图) ====================
+JZRect InputEdit::imageSlot(int index) const
+{
+    return JZRect(kThumbLeft + index * kThumbStep,
+                  height() - kThumbBottom - kThumbBox,
+                  kThumbBox, kThumbBox);
+}
+
+int InputEdit::imageAt(const JZPoint& pos) const
+{
+    for (int i = 0; i < (int)m_thumbs.size(); i++)
+    {
+        if (imageSlot(i).contains(pos))
+            return i;
+    }
+    return -1;
+}
+
+void InputEdit::addImage(const std::string& dataUrl, const JZImage& thumb)
+{
+    if (dataUrl.empty() || (int)m_images.size() >= kMaxImages)
+        return;
+    m_images.push_back(dataUrl);
+    m_thumbs.push_back(thumb);
+    updateButton();          // 有图时按钮保持"发送"
+    update();                // 立即刷新缩略图预览
+}
+
+std::vector<std::string> InputEdit::takeImages()
+{
+    std::vector<std::string> out;
+    out.swap(m_images);
+    m_thumbs.clear();
+    update();
+    return out;
+}
+
+void InputEdit::clearImages()
+{
+    m_images.clear();
+    m_thumbs.clear();
+    update();
+}
+
+void InputEdit::paintEvent(JZPainterEvent* event)
+{
+    JZTextEdit::paintEvent(event);   // 基类: 外框 + 文本 + 光标
+
+    if (m_thumbs.empty())
+        return;
+
+    JZPainter p(this);
+    JZFont tagFont(10);
+    for (int i = 0; i < (int)m_thumbs.size(); i++)
+    {
+        JZRect slot = imageSlot(i);
+
+        // 槽位底色/边框
+        p.setBrush(JZBrush(JZColor(0xFF, 0xFF, 0xFF)));
+        p.setPen(JZPen(JZColor(0xC0, 0xC4, 0xCC), 1));
+        p.drawRect(slot.x(), slot.y(), slot.width(), slot.height());
+
+        // 缩略图按真实比例居中摆放(已在 addImage 时缩到槽内)
+        const JZImage& t = m_thumbs[i];
+        if (!t.isNull())
+            p.drawImage(t, slot.x() + (slot.width() - t.width()) / 2,
+                        slot.y() + (slot.height() - t.height()) / 2,
+                        t.width(), t.height());
+
+        // 右上角小叉: 点击缩略图即移除该图
+        p.setFont(tagFont);
+        p.setPen(JZPen(JZColor(0xC0, 0x2A, 0x2A), 1));
+        p.drawText(slot.right() - 8, slot.y() + 1, "x");
+    }
+}
+
+void InputEdit::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() == JZMouseEvent::LeftButton)
+    {
+        int idx = imageAt(event->localPos());
+        if (idx >= 0)
+        {
+            // 点在缩略图上 = 移除该附图(不交给文本编辑, 避免误移光标)
+            m_images.erase(m_images.begin() + idx);
+            m_thumbs.erase(m_thumbs.begin() + idx);
+            updateButton();
+            update();
+            return;
+        }
+    }
+    JZTextEdit::mousePressEvent(event);
 }
 
 // ==================== NewProjectDialog ====================
@@ -602,6 +715,7 @@ void MainWindow::setupUi()
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
     connect(&m_inputEdit->sigStop, this, &MainWindow::onStop);
+    connect(&m_inputEdit->sigShot, this, &MainWindow::onScreenshot);
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
@@ -802,7 +916,7 @@ void MainWindow::updateStatus()
 void MainWindow::appendLog(const CodeAgentLog& log)
 {
     if (log.type == "user")
-        m_chatView->appendUser(log.text);
+        m_chatView->appendUser(log.text, log.images);
     else if (log.type == "thinking")
         m_chatView->appendThinkingDelta(log.text);
     else if (log.type == "delta")
@@ -835,21 +949,48 @@ void MainWindow::appendLog(const CodeAgentLog& log)
 void MainWindow::onSend()
 {
     string text = str_simplified(m_inputEdit->text());
-    if (text.empty())
+    vector<string> images = m_inputEdit->takeImages();   // 附图随本条消息一起发出
+    if (text.empty() && images.empty())
         return;
 
     // busy 时也照常提交: JZCodeAgent 会缓存到队列, 等上一步发完自动继续
     if (!m_agent->isBusy())
     {
-        m_historyManager.touchTask(text);   // 首条消息定标题 / 计一条
-        m_agent->request(text);
+        // 首条消息定标题 / 计一条(仅截图时用占位标题)
+        m_historyManager.touchTask(text.empty() ? string("(截图)") : text);
+        m_agent->request(text, images);
         m_inputEdit->setText("");
         refreshTaskPanel();
     }
     else
     {
-        m_pendingQueue.push_back(text);
+        PendingRequest req;
+        req.text = text;
+        req.images = images;
+        m_pendingQueue.push_back(req);
     }
+}
+
+void MainWindow::onScreenshot()
+{
+    if (!m_projectOpened || !m_inputEdit)
+        return;
+
+    // 全屏截图窗口: 抓整个虚拟桌面 -> 覆盖全屏的标注窗口(矩形/椭圆/画笔)
+    // -> 确认后把"截图 + 标注"附加到输入框。取消返回空图, 静默返回。
+    JZImage shot = JZScreenShot::captureInteractive(this);
+    if (shot.isNull())
+        return;
+
+    string dataUrl = JZScreenShot::toDataUrl(shot);
+    if (dataUrl.empty())
+    {
+        JZMessageBox::warning(this, "截图", "截图编码失败")->exec();
+        return;
+    }
+
+    m_inputEdit->addImage(dataUrl, JZScreenShot::fitTo(shot, kThumbBox - 4, kThumbBox - 4));
+    m_inputEdit->setFocus();   // 截完直接回到输入框继续打字
 }
 
 void MainWindow::onStop()
@@ -861,9 +1002,9 @@ void MainWindow::onStop()
     m_agent->stop();
     if (m_pendingQueue.size() > 0)
     {
-        string req = m_pendingQueue.front();
+        PendingRequest req = m_pendingQueue.front();
         m_pendingQueue.pop_front();
-        m_agent->request(req);
+        m_agent->request(req.text, req.images);
     }
 }
 
@@ -872,8 +1013,8 @@ void MainWindow::onClear()
     m_agent->stop();
     m_agent->clearHistory();
 
-    // 当前任务的存档一起删掉，否则下次启动/切回来旧对话又会自己出现
-    m_historyManager.removeArchive(m_historyManager.currentTaskId());
+    // 当前任务的对话一起清掉，否则下次启动/切回来旧对话又会自己出现
+    m_historyManager.clearConversation(m_historyManager.currentTaskId());
     m_historyManager.resetMessageCount();
     reloadChat();
     refreshTaskPanel();
@@ -885,17 +1026,17 @@ void MainWindow::saveCurrentTask()
         return;
     int id = m_historyManager.currentTaskId();
     if (id > 0)
-        m_agent->saveConversation(m_historyManager.archivePath(id));
+        m_historyManager.saveConversation(id, m_agent->conversationJson());
 }
 
 void MainWindow::loadCurrentTask()
 {
     if (!m_agent)
         return;
-    // 调用方需先 resetConversation()；这里只负责把该任务的存档读进来并重建界面
+    // 调用方需先 resetConversation()；这里只负责把该任务的对话读进来并重建界面
     int id = m_historyManager.currentTaskId();
     if (id > 0)
-        m_agent->loadConversation(m_historyManager.archivePath(id));
+        m_agent->loadConversationJson(m_historyManager.conversationJson(id));
     reloadChat();
 }
 
@@ -1394,9 +1535,9 @@ void MainWindow::onPoll()
     {
         m_chatView->endStream();
 
-        std::string message = m_pendingQueue.front();
+        PendingRequest req = m_pendingQueue.front();
         m_pendingQueue.pop_front();
-        m_agent->request(message);
+        m_agent->request(req.text, req.images);
     }
 }
 

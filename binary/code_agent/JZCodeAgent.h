@@ -88,6 +88,7 @@ struct CodeAgentLog
     std::string type;
     std::string name;   // 工具名
     std::string text;
+    std::vector<std::string> images;   // user 消息附带的图片(data URL), 界面重建用
     int id = 0;
 
     Json::Value toJson() const;
@@ -110,6 +111,9 @@ public:
 
     void init(const CodeAgentConfig &code);
     void request(const std::string &text);
+    // 携带图片的用户消息(多模态): images 为图片地址(http(s) 或 data URL), 与文字同属
+    // 一条 user 消息(而不是拆成两条)。text 为空时可只发图片。
+    void request(const std::string &text, const std::vector<std::string> &images);
     void stop();
     void clearHistory();
     bool isBusy() const;
@@ -180,14 +184,15 @@ public:
     void applyLlmConfig(const JZAgentConfig &llm);
     JZAgent *agent();
 
-    // 把 agent 里的对话历史重建到会话日志（导入存档后界面要用）
-    void rebuildLogsFromHistory();
+    // 把一段对话历史重建到界面会话日志（导入存档后要用）。
+    // 传**完整**记录：界面要能看到压缩掉的历史，而 agent 的上下文只取"上下文起点"之后的部分。
+    void rebuildLogsFromHistory(const std::vector<std::shared_ptr<LLMHistory>> &history);
 
     // ---- 对话存取（"任务"这层由 TaskHistoryManager 管，这里只负责读写一段对话） ----
-    // 把当前对话存到 path（任务存档路径由 TaskHistoryManager::archivePath() 给出）
-    bool saveConversation(const std::string &path) const;
-    // 从 path 载入一段对话（替换当前对话）并按它重建会话日志
-    bool loadConversation(const std::string &path);
+    // 对话正文的 JSON 形式（存储介质由调用方决定，例如写进 SQLite 的任务库）。
+    // 无有效对话返回 null；载入成功会按它重建会话日志。
+    Json::Value conversationJson() const;
+    bool loadConversationJson(const Json::Value &root);
     // 中断进行中的任务并重置为一段干净的新对话（切换/新建任务时用）
     void resetConversation();
 
@@ -219,7 +224,8 @@ protected:
     void abortTools();
     // 把当前配置转成虚拟终端的区域配置（工作区 + 授信目录）
     void applyZoneConfig();
-    void addLog(const std::string &type, const std::string &text, const std::string &name = std::string());
+    void addLog(const std::string &type, const std::string &text, const std::string &name = std::string(),
+                const std::vector<std::string> &images = std::vector<std::string>());
     std::string buildSystemPrompt() const;
 
     void onReply(const std::string &text);
@@ -237,7 +243,8 @@ protected:
     bool startHostTscCheck();                                  // 符合条件则异步起 tsc --noEmit; true=已进入检查
     void onHostTscDone(bool ok, const std::string &output, bool timeout);  // 检查结果: 通过收尾 / 失败续修
     void abortHostTsc();                                       // 终止进行中的宿主检查(停止/清空/析构时)
-    void sendRequestDirect(const std::string &text);           // 绕过排队把一条指令直接发给 agent(宿主续修用)
+    void sendRequestDirect(const std::string &text,
+                           const std::vector<std::string> &images = std::vector<std::string>());  // 绕过排队直接发给 agent(宿主续修用)
     void nextOrIdle();                                         // 收尾统一入口: 队列有排队指令就继续发, 否则置空闲
 
     JZAgent *m_agent = nullptr;
@@ -287,6 +294,7 @@ protected:
     bool m_recoveryActive = false;    // 一次外层任务进行中（含其恢复轮次）
     int m_recoveryAttempt = 0;        // 已尝试轮次（首次 = 1）
     std::string m_lastUserRequest;    // 最近一次外层 user request（重发原始请求用）
+    std::vector<std::string> m_lastUserImages;   // 最近一次外层 user request 附带的图片
 };
 
 #endif // !JZ_CODE_AGENT_H_

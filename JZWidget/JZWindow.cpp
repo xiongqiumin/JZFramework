@@ -161,12 +161,13 @@ static uint32_t jzCurrentKeyModifiers()
 }
 
 // 鼠标消息 -> JZMouseEvent (物理像素 -> 逻辑像素; localPos 由 dispatchMouse 命中后回填)
+// 修饰键随事件一起快照 (与键盘事件同源), 供 Ctrl+点击 / Shift 约束等场景直接读取。
 static bool jzSendMouseEvent(JZWindow* self, JZMouseEvent::MouseType t, JZMouseEvent::Button b,
                              LPARAM lParam, int wheelDelta = 0)
 {
     // globalPos 换算为屏幕逻辑坐标 (Qt globalPos 语义), localPos 由 dispatchMouse 命中后回填
     JZMouseEvent ev(t, b, self->mapToGlobal(jzPhysicalToLogical(lParam, self->device()->scale())),
-                    JZPoint(), wheelDelta);
+                    JZPoint(), wheelDelta, jzCurrentKeyModifiers());
     return self->onWindowProcess(&ev);
 }
 
@@ -292,7 +293,8 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         float s = self->device()->scale();
         JZMouseEvent ev(JZMouseEvent::Wheel, JZMouseEvent::NoButton,
                         JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s)),
-                        JZPoint(), GET_WHEEL_DELTA_WPARAM(wParam) / 120);
+                        JZPoint(), GET_WHEEL_DELTA_WPARAM(wParam) / 120,
+                        jzCurrentKeyModifiers());
         if (self->onWindowProcess(&ev))
             return 0;
         break;

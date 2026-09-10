@@ -39,22 +39,37 @@ public:
         Tool        // 工具返回
     };
 
+    // 消息性质：普通对话消息 / 上下文起点 / 压缩摘要。
+    // - ContextStart: 当前上下文的**第一条 user 消息**(新对话的第一句话)。
+    // - Summary:      历史超 token 预算被压缩时，旧对话整段被替换成的那条摘要。
+    // 两者都是"上下文起点"(恢复时按最后一条非 Message 切片)，区别只在界面：
+    // 用户第一句话要照常显示，而压缩摘要是内部消息、不进界面日志。
+    // 转换见 kindToString / parseKind。
+    enum Kind
+    {
+        Message,      // 普通对话消息
+        ContextStart, // 上下文起点: 用户输入的第一条消息(界面照常显示)
+        Summary,      // 压缩摘要(内部: 不进界面, 但同样是新的上下文起点)
+    };
+
     Role role;
+    Kind kind = Kind::Message;
     std::string content;
     std::string thinking;               // 推理/思考过程(reasoning_content/thinking), 仅实时上抛, 不回写模型上下文
     std::vector<std::string> images;    // 附带的图片(data URL), 多模态消息用
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
     JZAgentTokenUsage usage;            // 本轮 token 增量（仅 Assistant 回复由响应 usage 填充）
-    bool autoAdded = false;             // 是否由系统自动添加（如历史压缩摘要），而非真实用户输入；为 true 时不进界面日志
 
     Json::Value toJson() const;
     bool fromJson(const Json::Value& root);
 
 private:
-    // 角色字符串 <-> 枚举 的通用转换，供序列化/反序列化复用
+    // 角色 / 消息性质 字符串 <-> 枚举 的通用转换，供序列化/反序列化复用
     static std::string roleToString(Role r);
     bool parseRole(const Json::Value& root);
+    static std::string kindToString(Kind k);
+    void parseKind(const Json::Value& root);
 };
 
 struct LLMContext
@@ -157,11 +172,17 @@ public:
     
     const LLMContext* context() const;
 
-    // 只持久化对话历史: systemPrompt / 工具 / 技能都不写进文件, 由调用方重新设置。
-    // 保存前会裁掉末尾不完整的一段(assistant 带 tool_calls 却没有对应的 tool 返回),
-    // 否则恢复后把不一致的历史发给大模型会被拒绝。
-    bool saveHistory(const std::string &filepath) const;
-    bool loadHistory(const std::string &filepath);
+    // ---- 上下文存取（存储介质由调用方决定：文件 / SQLite / ...） ----
+    // 导出当前上下文。systemPrompt / 工具 / 技能都不在里面, 由调用方重新设置。
+    // 导出前会裁掉末尾不完整的一段(assistant 带 tool_calls 却没有对应的 tool 返回),
+    // 否则恢复后把不一致的历史发给大模型会被拒绝; usage 按裁剪后的历史重算。
+    // 无有效对话时返回的 ctx.history 为空。
+    // 注意: 是**浅拷贝** —— history 里的消息对象与 agent 当前历史共享, 按只读使用。
+    LLMContext saveContext() const;
+    // 载入上下文(整体替换当前对话, 含 usage)。同样是**浅拷贝**(消息对象共享),
+    // 传入的 ctx 之后不要再改动。
+    // 与 saveContext 对称: 载入后同样裁到自洽, 防止脏存档发出不一致的历史。
+    void loadContext(const LLMContext &ctx);
 
     void setSystemPrompt(std::string prompt);
     std::string systemPrompt();  
@@ -194,6 +215,9 @@ public:
     // 注意: 历史里保存的就是拼好的 data URL, 每轮重发的字节完全一致, 利于服务端前缀缓存。
     void request(const std::string &text, const std::string &image_url);
     void request(const std::string &text, const JZByteArray &image_base64);
+    // 一条 user 消息附带多张图片(多模态): 每个元素为 http(s) 地址或 data URL, 原样作为
+    // image_url.url 发送(顺序即发送顺序)。
+    void request(const std::string &text, const std::vector<std::string> &image_urls);
     const std::vector<JZAgentRequestPtr> &requestList() const;
     void clearRequestList();
 
@@ -217,6 +241,15 @@ jz_signals:
     JZSignal<const ToolCallResult&> sigToolResult;
     JZSigString sigError;
     JZSigVoid   sigFinished;
+    // 历史新增了一条消息(增量, 追加到末尾)。用于增量持久化: 接收方按序追加一条即可,
+    // 不必等一轮结束再整段保存 —— 这样存档里能留下**完整**对话记录(含被压缩掉的旧消息),
+    // 恢复时界面显示全部, 而给模型的上下文只取最后一条 ContextStart 之后的部分。
+    // 压缩时发出的就是那条摘要本身(它既是新消息, 也是新的上下文起点)。
+    // 参数是共享指针, 接收方可以长期持有。
+    // 注: 只覆盖"追加"; 出错裁剪 / reset 清空导致的缩减不通知(接收方按需自行全量对齐)。
+    // 跨线程(Queued/BlockingQueued)连接会把参数打包成 JZVariant, 自定义类型请用
+    // 默认的 Auto(同线程即直连)/Direct 连接。
+    JZSignal<std::shared_ptr<LLMHistory>> sigLLMHistory;
 
 protected:
     struct LLMRequstInfo

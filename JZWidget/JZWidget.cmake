@@ -120,6 +120,12 @@ set(JZ_SOURCES
     JZComboBox.cpp    
     JZUndoStack.h
     JZUndoStack.cpp
+    JZTextImageMap.h
+    JZTextImageMap.cpp
+    JZEmoji.h
+    JZEmoji.cpp
+    JZEmojiImageMap.h
+    JZEmojiImageMap.cpp
     JZAbstractTextEdit.h
     JZAbstractTextEdit.cpp
     JZLineEdit.h
@@ -148,6 +154,14 @@ convert_to_abs_paths(JZ_SOURCES)
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_SOURCES})
 
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# 内置 emoji 位图资源 (Twemoji 72x72 PNG, ~230KB): assets/emoji/emoji.qrc
+# -> 静态库 JZWidget_emoji_resources (暴露 jzres_emoji_init())。
+# JZEmojiImageMap 首次查图时会懒调用该 init, 使用方无需手动初始化。
+# 注意: 必须用 PUBLIC 传递, 否则链接 JZFramework 的可执行文件不会把该静态库
+#       拉进来, jzres_emoji_init() 会变成未定义(运行期查不到资源)。
+jz_add_resources(JZWidget_emoji_resources ${CMAKE_CURRENT_LIST_DIR}/assets/emoji/emoji.qrc)
+target_link_libraries(${JZ_MODULE_TARGET} PUBLIC JZWidget_emoji_resources)
 
 # ---- AI/MCP 工具桥 (可选): JZMcpServer 模块参与构建时, 把语义树/截图/驱动
 #      暴露为 MCP 工具 (get_ui_state / ui_screenshot / ui_invoke)。

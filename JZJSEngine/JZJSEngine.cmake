@@ -16,6 +16,8 @@
 	JZJSSerialPortModule.cpp
 	JZJSCoreModule.h
 	JZJSCoreModule.cpp
+	JZJSqliteModule.h
+	JZJSqliteModule.cpp
 	JZJSUiLoader.h
 	JZJSUiLoader.cpp
 )

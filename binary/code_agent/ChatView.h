@@ -3,6 +3,7 @@
 
 #include "JZWidget.h"
 #include "JZFont.h"
+#include "JZImage.h"
 #include "JZScrollBar.h"
 #include "JZAgentTool.h"
 
@@ -21,7 +22,9 @@ public:
     explicit ChatView(JZWidget* parent = nullptr);
 
     // 各类消息追加接口 (流式 delta 会续接到同一气泡)
-    void appendUser(const std::string& text);
+    // images: 用户消息附带的图片(data URL), 在气泡内以缩略图显示。
+    void appendUser(const std::string& text,
+                    const std::vector<std::string>& images = std::vector<std::string>());
     // 整条助手消息: 等价于 appendAssistantDelta + endStream,
     // 用于一次性重建(如导入工作区历史), 保证每条各占一个气泡。
     void appendAssistant(const std::string& text);
@@ -63,6 +66,8 @@ private:
         std::vector<std::string> lines;    // 缓存的换行结果
         std::string resultText;            // 工具结果(回填到工具调用卡时用)
         std::vector<std::string> resultLines; // 结果换行结果
+        std::vector<JZImage> thumbs;       // 附图缩略图(追加时解码+等比缩放)
+        std::vector<JZRect> thumbRects;    // 缩略图在卡片内容区内的相对位置(布局结果)
         bool hasResult = false;            // 工具卡已收到输出
         bool collapsible = false;          // 思考卡: 结束后折叠、可点击展开
         bool collapsed = false;            // 是否处于折叠状态
@@ -90,6 +95,10 @@ private:
 
     static void wrapText(const std::string& text, const JZFont& font,
                          int maxW, std::vector<std::string>& out);
+    // 解码附图并生成缩略图(追加消息时一次性完成, 布局时不再解码)
+    static void buildThumbs(Msg& m, const std::vector<std::string>& images);
+    // 按卡片可用宽度排布缩略图(自动折行), 填 m.thumbRects 并返回图片区高度
+    static int  layoutThumbs(Msg& m, int cardW);
     static int  estimateLines(const std::string& text, int cardW); // 估算行数(不调字体度量)
 
     std::vector<Msg> m_msgs;

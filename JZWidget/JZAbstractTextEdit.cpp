@@ -1,6 +1,9 @@
 #include "JZAbstractTextEdit.h"
 
 #include "JZUndoStack.h"
+#include "JZTextImageMap.h"
+#include "JZEmojiImageMap.h"
+#include "JZUtf8Iterator.h"
 
 #include "JZPainter.h"
 #include "JZFontMetrics.h"
@@ -13,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 
 // windows.h 会定义 min/max 宏, 不加这个 std::min/std::max 会被破坏
 #define NOMINMAX
@@ -23,6 +27,9 @@ namespace {
 
 const int kFontPixelSize = 14;      // 默认字号 (逻辑像素)
 const int kLineGap       = 2;       // 行间距 (多行)
+
+// 内联图片行高下限: 太小的图不压缩行高
+const int kInlineImageMinH = 20;
 
 // IME 窗口相对光标行的微调: 不同 IME / 字体若仍有偏差, 改这四个值
 const int kImeCompOffsetX = 0;      // 组字窗锚点: 相对组字起点的水平偏移
@@ -90,7 +97,107 @@ LONG toPhysical(int v, float scale)
     return static_cast<LONG>(v * scale + 0.5f);
 }
 
+// 求"像素宽度不超过 maxW 的最大码点数"。用于组字期间把与组字区重叠的文本
+// 按像素宽度切成"可绘制前缀"。
+int cpCountForWidth(const std::string& u8, const JZFont& font, int maxW)
+{
+    if (maxW <= 0 || u8.empty())
+        return 0;
+
+    int count = 0;
+    while (true) {
+        const int next = count + 1;
+        const int w = JZFontMetrics::textWidth(u8, font, next);
+        if (w <= 0 || w > maxW)
+            break;
+        count = next;
+    }
+    return count;
+}
+
 } // namespace
+
+// ==================== 图文混排定位 (单码点占位) ====================
+//
+// 图片在 m_text 里就是一个**私有域码点** (JZTextImageMap::isImageCode),
+// 于是"码点下标"同时就是光标/选区坐标: 不再需要视觉下标或 run 模型。
+// 唯一特判是**测宽**: 普通码点走字体度量, 图片码点查注册表的显示宽。
+// 所有 "部件序号 -> x 坐标" 的计算统一走 xOfIndex(), 不允许别处再做前缀测宽。
+
+// 行首/行尾码点下标
+void JZAbstractTextEdit::lineRange(int line, int& flatStart, int& flatEnd) const
+{
+    if (m_lines.empty()) {
+        flatStart = flatEnd = 0;
+        return;
+    }
+    line = std::max(0, std::min(line, static_cast<int>(m_lines.size()) - 1));
+    const LineLayout& L = m_lines[static_cast<size_t>(line)];
+    flatStart = L.start;
+    flatEnd = L.start + L.length;
+}
+
+// 单行内前 partCount 个部件的累计宽度 (相对行首, 不含 margin/scroll)。
+// **唯一**允许计算光标/命中点 x 坐标的函数: 以下四处必须全部走它 ——
+//   columnFromX / ensureCursorVisible / paintEvent 光标绘制 / updateIMEWindowPos
+//
+// 算法: 把行按**段落**切成 "Text 游程 + Image/Emoji 图", 文本游程整段前缀测宽
+// (与 drawText 的排版一致), 图段宽度走 segmentImage (与绘制同一来源)。
+int JZAbstractTextEdit::xOfIndex(int line, int partCount) const
+{
+    if (m_lines.empty())
+        return 0;
+
+    line = std::max(0, std::min(line, static_cast<int>(m_lines.size()) - 1));
+    int flatStart = 0, flatEnd = 0;
+    lineRange(line, flatStart, flatEnd);
+
+    partCount = std::max(0, std::min(partCount, flatEnd - flatStart));
+    if (partCount == 0)
+        return 0;
+
+    JZFont font(kFontPixelSize);
+    const int stop = flatStart + partCount;   // 只累计到这个码点之前
+
+    // 本行的段落序列 (字节区间), 一次取出反复用
+    const int byteStart = codepointToUtf8Byte(flatStart);
+    const int byteStop  = codepointToUtf8Byte(stop);
+    const std::vector<Segment> segs =
+        enumerateSegments(byteStart, flatEnd == m_text.size()
+                          ? -1 : codepointToUtf8Byte(flatEnd) - byteStart);
+
+    int x = 0;
+    for (size_t k = 0; k < segs.size(); ++k) {
+        const Segment& s = segs[k];
+
+        // 只统计 [flatStart, stop) 范围内的段落
+        const int sCpBegin = utf8ByteToCodepoint(s.start);
+        if (sCpBegin >= stop)
+            break;
+        const int sCpEnd = utf8ByteToCodepoint(s.start + s.size);
+
+        if (s.type == SegmentType::Text) {
+            // 文本段: 取与本区间相交的部分做前缀测宽
+            const int a = std::max(sCpBegin, flatStart);
+            const int b = std::min(sCpEnd, stop);
+            if (b > a) {
+                const JZString sub = displayString(m_text.mid(a, b - a));
+                x += JZFontMetrics::textWidth(sub.toStdString(), font);
+            }
+            continue;
+        }
+
+        // Image / Emoji 段: 整格宽度 (与绘制同一来源)。
+        // 只有该段**完整落在**统计范围内才计入 (光标按段停靠, 不会落在段中间)。
+        if (sCpEnd <= stop) {
+            const JZImage* img = nullptr;
+            int w = 0, h = 0;
+            if (segmentImage(s, img, w, h))
+                x += w;
+        }
+    }
+    return x;
+}
 
 // ==================== 文本编辑撤销命令 ====================
 // 一步命令 = 一串"补丁", 每个补丁是 [pos, pos+len) 的文本替换:
@@ -258,6 +365,353 @@ bool JZAbstractTextEdit::isReadOnly() const
     return m_readOnly;
 }
 
+// ==================== 图文混排: 图片插入 ====================
+//
+// 图片不占多字符标记, 而是在 m_text 里放**一个私有域码点**。像素/尺寸登记到
+// 进程级单例 JZTextImageMap (按 key 幂等分配码点)。因为码点本身就是普通字符,
+// 插入就是一次普通的文本插入 —— 撤销/光标/选区/信号全部复用既有链路。
+
+// key 缺省时生成唯一的 "img_<n>" (需与注册表里已有 key 不冲突)
+std::string JZAbstractTextEdit::makeImageKey(const std::string& key) const
+{
+    if (!key.empty())
+        return key;
+
+    JZTextImageMap& map = JZTextImageMap::instance();
+    int n = m_nextImageKey;
+    while (true) {
+        const std::string cand = "img_" + std::to_string(n++);
+        // 注册表按 key 幂等; 只要该 key 还没分配过码点即可用
+        bool taken = false;
+        // 遍历已有条目判断 key 是否占用 (条目数量级很小)
+        for (char32_t cp = JZTextImageMap::kPuaBase;
+             cp <= JZTextImageMap::kPuaEnd; ++cp) {
+            const JZTextImageMap::Entry* e = map.find(cp);
+            if (!e)
+                break;                  // 码点已连续到空位, 后面不可能再有
+            if (e->key == cand) { taken = true; break; }
+        }
+        if (!taken)
+            return cand;
+    }
+}
+
+void JZAbstractTextEdit::appendImage(const JZImage& image, const std::string& key,
+                                     int width, int height)
+{
+    // 末尾 = 文本长度 (每个字符/图片都占 1 个下标)
+    insertImageAt(m_text.size(), image, key, width, height);
+}
+
+void JZAbstractTextEdit::insertImage(const JZImage& image, const std::string& key,
+                                     int width, int height)
+{
+    // 与 insertText 语义一致: 有选区先替换选区
+    const bool sel = hasSelection();
+    const int pos = sel ? selStart() : m_cursor;
+    const int removeLen = sel ? (selEnd() - selStart()) : 0;
+
+    if (removeLen > 0)
+        replaceRangeWithUndo(pos, removeLen, JZString(), false);
+    insertImageAt(pos, image, key, width, height);
+}
+
+// pos = 码点下标 (0..m_text.size()) 定位插入点
+void JZAbstractTextEdit::insertImageAt(int pos, const JZImage& image,
+                                       const std::string& key,
+                                       int width, int height)
+{
+    if (m_readOnly)
+        return;
+
+    const std::string useKey = makeImageKey(key);
+    const int w = width  > 0 ? width  : image.width();
+    const int h = height > 0 ? height : image.height();
+    if (useKey.empty() || (image.isNull() && (w <= 0 || h <= 0)))
+        return;                         // 既无像素又无尺寸: 无法布局
+
+    // 登记 (幂等): 取回私有域码点。同一 key 重复插入复用同一码点。
+    const char32_t cp = JZTextImageMap::instance().add(useKey, image, w, h);
+    if (cp == 0)
+        return;
+
+    // 单个码点作为普通文本插入 (isolated: 撤销时与相邻输入分开)。
+    // 引用计数**不在这里**增减 —— 统一由 relayout() -> syncImageRefs()
+    // 按"文本里实际出现了几次"对账, 避免与撤销/重做路径重复计数。
+    JZString ins;
+    ins.push_back(JZChar(cp));
+    replaceRangeWithUndo(pos, 0, ins, true);
+}
+
+// 统计当前文本里出现的图片码点个数 (调试/测试用)
+int JZAbstractTextEdit::inlineImageCount() const
+{
+    int n = 0;
+    for (int i = 0; i < m_text.size(); ++i) {
+        if (JZTextImageMap::isImageCode(m_text[i].toUnicode()))
+            ++n;
+    }
+    return n;
+}
+
+// ==================== 段落 -> 可绘制图像 ====================
+//
+// 内联图片与 emoji 在渲染层面是**同一件事**: 都是"一张图 + 显示尺寸"。
+// 因此测宽 (xOfIndex) 与绘制 (paintEvent) 都只调本函数, 不存在两套口径。
+
+// emoji 与图片的显示高度: 跟随字号 (略高于字形, 视觉上更平衡)
+int JZAbstractTextEdit::inlineBoxHeight() const
+{
+    JZFont font(kFontPixelSize);
+    return std::max(JZFontMetrics::textHeight(font) + 2, kInlineImageMinH);
+}
+
+bool JZAbstractTextEdit::segmentImage(const Segment& seg, const JZImage*& out,
+                                      int& w, int& h) const
+{
+    out = nullptr;
+    w = h = 0;
+
+    if (seg.isImage()) {
+        // 图片段: 码点在 Segment 里没有直接保留, 从段首字节回查
+        const int cpIndex = utf8ByteToCodepoint(seg.start);
+        if (cpIndex < 0 || cpIndex >= m_text.size())
+            return false;
+
+        const char32_t cp = m_text[cpIndex].toUnicode();
+        if (!JZTextImageMap::isImageCode(cp))
+            return false;
+
+        JZTextImageMap::instance().sizeOf(cp, w, h);
+        const JZTextImageMap::Entry* e = JZTextImageMap::instance().find(cp);
+        if (e && !e->image.isNull())
+            out = &e->image;
+        return true;                     // 即使无像素也返回 true: 有确定尺寸
+    }
+
+    if (seg.isEmoji()) {
+        // emoji 段: 查内置图集。找不到 -> 返回 false, 由调用方降级。
+        const JZImage* img = JZEmojiImageMap::instance().find(seg.emoji);
+        if (!img || img->isNull())
+            return false;
+
+        out = img;
+        const int box = inlineBoxHeight();
+        w = box;
+        h = box;
+        return true;
+    }
+
+    return false;                        // Text 段不产生图像
+}
+
+// ==================== 段落语义 ====================
+//
+// 段落 = 光标移动 / 渲染 / 测宽 的共同口径。切分规则:
+//   - 图片码点            -> 独立 Image 段 (不可分割);
+//   - emoji 码点 (+修饰符) -> 独立 Emoji 段 (含 VS16/ZWJ/肤色/标签字符, 整体不可分割);
+//   - 其余连续普通码点     -> 合并成一个 Text 段。
+// 因此段落序列一定完整覆盖 [from, from+len) 的**字节区间**: 无空洞、无空段、无重叠。
+//
+// 坐标: Segment::start/size 用 **UTF-8 字节** (与 text()/setText() 同坐标系),
+// 而控件内部光标/索引用**码点**。两者换算统一走 utf8ByteToCodepoint() 等辅助。
+
+// UTF-8 字节下标 -> 码点下标 (相对整个 m_text)。不是码点起点时向下取到该码点。
+int JZAbstractTextEdit::utf8ByteToCodepoint(int byteOffset) const
+{
+    const std::string u8 = m_text.toStdString();
+    if (byteOffset <= 0)
+        return 0;
+
+    JZUtf8Iterator it(u8);
+    int cpIndex = 0;
+    while (it.isValid()) {
+        if (it.byteIndex() >= byteOffset)
+            return cpIndex;
+        ++cpIndex;
+        ++it;
+    }
+    return cpIndex;                       // 到末尾
+}
+
+// 码点下标 -> UTF-8 字节下标 (相对整个 m_text)
+int JZAbstractTextEdit::codepointToUtf8Byte(int cpIndex) const
+{
+    const std::string u8 = m_text.toStdString();
+    if (cpIndex <= 0)
+        return 0;
+
+    JZUtf8Iterator it(u8);
+    int n = 0;
+    while (it.isValid()) {
+        if (n == cpIndex)
+            return it.byteIndex();
+        ++n;
+        ++it;
+    }
+    return static_cast<int>(u8.size());   // 到末尾
+}
+
+// 把 [from, from+len) 的字节区间切成段落序列 (见头文件注释)。
+std::vector<JZAbstractTextEdit::Segment>
+JZAbstractTextEdit::enumerateSegments(int from, int len) const
+{
+    std::vector<Segment> segs;
+
+    const std::string u8 = m_text.toStdString();
+    const int n = static_cast<int>(u8.size());
+
+    from = std::max(0, std::min(from, n));
+    const int end = (len < 0) ? n : std::max(from, std::min(from + len, n));
+
+    int i = from;
+    while (i < end) {
+        char32_t cp = 0;
+        int cpLen = 0;
+        if (!JZUtf8Iterator::decode(u8.data(), u8.size(), static_cast<size_t>(i),
+                                    cp, cpLen) || cpLen <= 0)
+            cpLen = 1;                     // 非法字节: 按 1 字节推进, 不丢内容
+        if (i + cpLen > end)
+            cpLen = end - i;               // 不越过区间右界
+
+        // ---- 图片 ----
+        if (JZTextImageMap::isImageCode(cp)) {
+            Segment s;
+            s.type = SegmentType::Image;
+            s.start = i;
+            s.size = cpLen;
+            const JZTextImageMap::Entry* e = JZTextImageMap::instance().find(cp);
+            if (e)
+                s.image = e->image;        // 可能为空 (只有尺寸的占位)
+            segs.push_back(s);
+            i += cpLen;
+            continue;
+        }
+
+        // ---- emoji (含其后的修饰符, 组合成一个不可分割的段) ----
+        if (JZEmoji::isEmoji(cp)) {
+            const int segStart = i;
+            int j = i + cpLen;
+            // 吸收后续的 VS16/ZWJ/肤色/标签字符 (ZWJ 后面还要再吸一个 emoji)
+            while (j < end) {
+                char32_t nc = 0;
+                int nl = 0;
+                if (!JZUtf8Iterator::decode(u8.data(), u8.size(),
+                                            static_cast<size_t>(j), nc, nl) || nl <= 0)
+                    break;
+                if (j + nl > end)
+                    break;
+                if (JZEmoji::isEmojiModifier(nc)) {
+                    j += nl;
+                    continue;              // 修饰符并入本段
+                }
+                // ZWJ 之后的 emoji 已由上面吸收, 这里再容忍一个 emoji
+                if (JZEmoji::isEmoji(nc)) {
+                    j += nl;
+                    continue;
+                }
+                break;
+            }
+
+            Segment s;
+            s.type = SegmentType::Emoji;
+            s.start = segStart;
+            s.size = j - segStart;
+            s.emoji = u8.substr(static_cast<size_t>(segStart),
+                                static_cast<size_t>(s.size));
+            segs.push_back(s);
+            i = j;
+            continue;
+        }
+
+        // ---- 普通文字: 一路吃到下一个图片/emoji (或区间末尾) ----
+        const int segStart = i;
+        int j = i + cpLen;
+        while (j < end) {
+            char32_t nc = 0;
+            int nl = 0;
+            if (!JZUtf8Iterator::decode(u8.data(), u8.size(),
+                                        static_cast<size_t>(j), nc, nl) || nl <= 0)
+                break;
+            if (j + nl > end)
+                break;
+            if (JZTextImageMap::isImageCode(nc) || JZEmoji::isEmoji(nc))
+                break;
+            j += nl;
+        }
+
+        Segment s;
+        s.type = SegmentType::Text;
+        s.start = segStart;
+        s.size = j - segStart;
+        s.text = u8.substr(static_cast<size_t>(segStart), static_cast<size_t>(s.size));
+        segs.push_back(s);
+        i = j;
+    }
+    return segs;
+}
+
+// 段落起点的**码点下标**列表, 末尾额外追加哨兵 (== 末尾码点下标),
+// 代表"最后一段之后的插入点"。可停靠位置数 = 段数 + 1。
+std::vector<int> JZAbstractTextEdit::segmentStarts(int from, int len) const
+{
+    std::vector<int> starts;
+    const int cpEnd = m_text.size();
+
+    const std::vector<Segment> segs = enumerateSegments(from, len);
+    for (size_t k = 0; k < segs.size(); ++k)
+        starts.push_back(utf8ByteToCodepoint(segs[k].start));
+    starts.push_back(cpEnd);             // 末尾插入点哨兵
+    return starts;
+}
+
+int JZAbstractTextEdit::segmentIndexOfCursor(int pos) const
+{
+    if (pos < 0)
+        pos = m_cursor;
+
+    const std::vector<int> starts = segmentStarts();
+    for (int k = 0; k < static_cast<int>(starts.size()); ++k) {
+        if (pos < starts[k])
+            return std::max(0, k - 1);
+        if (pos == starts[k])
+            return k;
+    }
+    return static_cast<int>(starts.size()) - 1;
+}
+
+bool JZAbstractTextEdit::moveCursorBySegment(int dir, bool select)
+{
+    if (dir == 0)
+        return false;
+
+    const std::vector<int> starts = segmentStarts();
+
+    // 当前所在的停靠位置: 取"不大于光标的最后一个起点"
+    int cur = 0;
+    for (int k = 0; k < static_cast<int>(starts.size()); ++k) {
+        if (starts[k] <= m_cursor)
+            cur = k;
+        else
+            break;
+    }
+
+    const int next = cur + dir;
+    if (next < 0 || next >= static_cast<int>(starts.size()))
+        return false;                    // 已在首/末段落, 不再移动
+
+    moveCursor(starts[next], select);
+    return true;
+}
+
+void JZAbstractTextEdit::moveCursorToSegment(int idx, bool select)
+{
+    const std::vector<int> starts = segmentStarts();
+    idx = std::max(0, std::min(idx, static_cast<int>(starts.size()) - 1));
+    moveCursor(starts[static_cast<size_t>(idx)], select);
+}
+
+
 // ==================== 撤销 / 重做 ====================
 
 void JZAbstractTextEdit::undo()
@@ -385,18 +839,32 @@ JZString JZAbstractTextEdit::displayString(const JZString& s) const
     return out;
 }
 
+// 该行实际行高: 无图片时 == lineHeight(); 有图片取"行高 与 图片高+2"的较大者。
+int JZAbstractTextEdit::lineHeightOf(int line) const
+{
+    if (m_lines.empty())
+        return lineHeight();
+    line = std::max(0, std::min(line, static_cast<int>(m_lines.size()) - 1));
+    return m_lines[static_cast<size_t>(line)].height;
+}
+
 // 重建行布局。单行恒为一行 (文本入口已清洗换行); 多行按 '\n' 切分。
+// 行高 = 该行所有 run 的高度峰值 (图片可撑高整行), 但以 lineHeight() 为下限,
+// 保证纯文本时 y 累加结果与历史实现逐像素一致。
 void JZAbstractTextEdit::relayout()
 {
     m_lines.clear();
+    syncImageRefs();        // 文本变了 -> 同步图片引用计数 (先于布局)
 
     const int n = m_text.size();
+    const int baseH = lineHeight();
 
     if (m_singleLine) {
         LineLayout L;
         L.start = 0;
         L.length = n;
         L.y = 0;
+        L.height = lineHeightOfParts(0, n, baseH);
         m_lines.push_back(L);
         return;
     }
@@ -412,15 +880,71 @@ void JZAbstractTextEdit::relayout()
         L.start = idx;
         L.length = eol - idx;
         L.y = y;
+        L.height = lineHeightOfParts(L.start, L.start + L.length, baseH);
         m_lines.push_back(L);
 
-        y += lineHeight();
+        y += L.height;
         if (eol >= n)
             break;
         idx = eol + 1;      // 跳过 '\n'
     }
 }
 
+// 扫描 m_text, 把出现/消失的图片码点在 JZTextImageMap 里做引用计数增减。
+// 图片码点是"文本的一部分", 因此文本一改就要同步记账 —— 挂在 relayout() 里,
+// 保证 setText / 编辑 / 撤销 / 粘贴 全部覆盖 (它们最终都会重建行布局)。
+void JZAbstractTextEdit::syncImageRefs()
+{
+    // 统计本次文本里各图片码点出现次数
+    std::map<char32_t, int> seen;
+    for (int i = 0; i < m_text.size(); ++i) {
+        const char32_t cp = m_text[i].toUnicode();
+        if (JZTextImageMap::isImageCode(cp))
+            ++seen[cp];
+    }
+
+    // 与上次快照 diff: 多了 retain, 少了 release
+    for (std::map<char32_t, int>::const_iterator it = seen.begin();
+         it != seen.end(); ++it) {
+        std::map<char32_t, int>::const_iterator old = m_imageRefs.find(it->first);
+        const int prev = (old == m_imageRefs.end()) ? 0 : old->second;
+        for (int k = prev; k < it->second; ++k)
+            JZTextImageMap::instance().retain(it->first);
+        for (int k = it->second; k < prev; ++k)
+            JZTextImageMap::instance().release(it->first);
+    }
+    for (std::map<char32_t, int>::const_iterator it = m_imageRefs.begin();
+         it != m_imageRefs.end(); ++it) {
+        if (seen.find(it->first) != seen.end())
+            continue;
+        for (int k = 0; k < it->second; ++k)
+            JZTextImageMap::instance().release(it->first);
+    }
+    m_imageRefs.swap(seen);
+}
+
+// 行高 = max(基准行高, 本行最大"图段"高 + 2)。图片/emoji 都可撑高整行。
+int JZAbstractTextEdit::lineHeightOfParts(int flatStart, int flatEnd, int baseH) const
+{
+    int h = baseH;
+    flatEnd = std::min(flatEnd, m_text.size());
+
+    const int byteStart = codepointToUtf8Byte(std::max(0, flatStart));
+    const int byteLen = codepointToUtf8Byte(flatEnd) - byteStart;
+    const std::vector<Segment> segs = enumerateSegments(byteStart, byteLen);
+
+    for (size_t k = 0; k < segs.size(); ++k) {
+        if (segs[k].type == SegmentType::Text)
+            continue;
+        const JZImage* img = nullptr;
+        int w = 0, ih = 0;
+        if (segmentImage(segs[k], img, w, ih))
+            h = std::max(h, ih + 2);
+    }
+    return h;
+}
+
+// 参数为**码点下标** (与 m_cursor 同一坐标系)
 int JZAbstractTextEdit::lineOfIndex(int idx) const
 {
     if (m_lines.empty())
@@ -435,6 +959,7 @@ int JZAbstractTextEdit::lineOfIndex(int idx) const
     return static_cast<int>(m_lines.size()) - 1;
 }
 
+// 入参 idx 为码点下标; 输出 column 为**行内下标** (行内第几个部件)
 void JZAbstractTextEdit::locateIndex(int idx, int& line, int& column) const
 {
     line = lineOfIndex(idx);
@@ -442,6 +967,7 @@ void JZAbstractTextEdit::locateIndex(int idx, int& line, int& column) const
     column = idx - L.start;
 }
 
+// 入参 (line, column): column 为行内下标; 返回码点下标
 int JZAbstractTextEdit::indexFromLineColumn(int line, int column) const
 {
     if (m_lines.empty())
@@ -461,24 +987,32 @@ int JZAbstractTextEdit::contentTop() const
     return m_marginTop - m_scrollY;
 }
 
-// 行内 x -> 列号 (取最近的字符边界; 密码模式按掩码行文本测宽)
+// 行内 x -> 视觉列号 (取最近的下标边界)。图文混排下必须按 run 走:
+//   纯文本 run -> 原有"最近字符边界"逻辑 (逐像素一致);
+//   图片部件 -> 命中左半返回其左边界, 右半返回右边界 (占 1 个下标)。
 int JZAbstractTextEdit::columnFromX(int line, int x) const
 {
     if (m_lines.empty())
         return 0;
 
     line = std::max(0, std::min(line, static_cast<int>(m_lines.size()) - 1));
-    const LineLayout& L = m_lines[static_cast<size_t>(line)];
+    int flatStart = 0, flatEnd = 0;
+    lineRange(line, flatStart, flatEnd);
+
+    const int lineLen = flatEnd - flatStart;
+    if (lineLen <= 0)
+        return 0;
 
     JZFont font(kFontPixelSize);
-    const JZString lineText = displayString(m_text.mid(L.start, L.length));
-    const std::string u8 = lineText.toStdString();
     const int rel = x - (m_marginLeft - m_scrollX);
 
+    // 逐部件取"该部件右边的累计宽度"与点击点比较, 取最近边界作为命中下标。
+    // 单行部件数很小, 直接调 xOfIndex 即可 (图片/文本的宽度差异已封装在它内部)。
     int best = 0;
     int bestDist = INT_MAX;
-    for (int i = 0; i <= L.length; ++i) {
-        const int w = JZFontMetrics::textWidth(u8, font, i);
+
+    for (int i = 0; i <= lineLen; ++i) {
+        const int w = xOfIndex(line, i);
         const int d = (w > rel) ? (w - rel) : (rel - w);
         if (d < bestDist) {
             bestDist = d;
@@ -488,26 +1022,30 @@ int JZAbstractTextEdit::columnFromX(int line, int x) const
     return best;
 }
 
-// 客户区坐标 -> 文本下标。单行模式下任何 y 都命中唯一的行, 与旧的
-// LineEdit::indexFromX 等价; 多行按行 y 区间命中。
+// 客户区坐标 -> 文本下标 (视觉)。单行模式下任何 y 都命中唯一的行, 与旧的
+// LineEdit::indexFromX 等价; 多行按各行实际高度 (图片可撑高) 命中。
 int JZAbstractTextEdit::indexFromXY(int x, int y) const
 {
     if (m_lines.empty())
         return 0;
 
     const int top = contentTop();
-    const int lh = lineHeight();
 
     int line = 0;
     for (int i = 0; i < static_cast<int>(m_lines.size()); ++i) {
         line = i;
-        if (y < top + m_lines[static_cast<size_t>(i)].y + lh)
+        const LineLayout& L = m_lines[static_cast<size_t>(i)];
+        if (y < top + L.y + L.height)
             break;
     }
     return indexFromLineColumn(line, columnFromX(line, x));
 }
 
 // ==================== 光标与选区 ====================
+//
+// 坐标约定 (单码点占位, 2026-09-10): 图片就是一个码点, 所以 **码点下标**
+// 就是唯一的坐标 —— 光标/选区/布局/命中/撤销补丁全部用它, 无需任何换算。
+// (历史遗留的 flat/visual 双坐标已随 run 模型一起删除。)
 
 int JZAbstractTextEdit::cursorPosition() const
 {
@@ -543,13 +1081,13 @@ std::string JZAbstractTextEdit::selectedText() const
 {
     if (!hasSelection())
         return std::string();
-    return m_text.mid(selStart(), selectionLength()).toStdString();
+    // 取子串按码点 (图片码点原样带出, 复制后仍指向同一张图)
+    return m_text.mid(selStart(), selEnd() - selStart()).toStdString();
 }
 
 void JZAbstractTextEdit::setCursorPosition(int pos)
 {
-    const int n = m_text.size();
-    pos = std::max(0, std::min(pos, n));
+    pos = std::max(0, std::min(pos, m_text.size()));
     if (m_cursor == pos && m_anchor == pos)
         return;
 
@@ -575,11 +1113,13 @@ void JZAbstractTextEdit::clearSelection()
     update();
 }
 
+// 入参为码点下标与长度 (图片码点同样算 1)
 void JZAbstractTextEdit::setSelection(int start, int length)
 {
     const int n = m_text.size();
     const int s = std::max(0, std::min(start, n));
     const int e = std::max(s, std::min(start + length, n));
+
     m_anchor = s;
     m_cursor = e;
     ensureCursorVisible();
@@ -639,9 +1179,12 @@ void JZAbstractTextEdit::insertText(const JZString& s, bool isolated)
     if (s.isEmpty())
         return;
 
+    // 注意: 这里必须用 selEnd()-selStart() (flat 长度), **不能**用
+    // selectionLength() —— 后者返回视觉长度, 含图片标记时会短于实际码点数,
+    // 导致替换选区时残留半截标记。
     const bool sel = hasSelection();
     const int start = sel ? selStart() : m_cursor;
-    const int removeLen = sel ? selectionLength() : 0;
+    const int removeLen = sel ? (selEnd() - selStart()) : 0;
 
     JZString ins = s;
     if (m_singleLine)
@@ -661,6 +1204,7 @@ void JZAbstractTextEdit::insertText(const JZString& s, bool isolated)
 
 // 注意: 这里不更新 m_desiredColumn —— 上下移动时要沿用记忆列,
 // 由水平移动的调用方负责刷新它。
+// pos 为**码点下标 (flat)** (由 indexFromLineColumn / visualToFlat 给出)
 void JZAbstractTextEdit::moveCursor(int pos, bool select)
 {
     pos = std::max(0, std::min(pos, m_text.size()));
@@ -672,6 +1216,13 @@ void JZAbstractTextEdit::moveCursor(int pos, bool select)
     ensureCursorVisible();
     resetCursorBlink();
     update();
+}
+
+// 左右键的"一步": 图片就是一个码点, 因此 ±1 即天然跨过整张图。
+// (旧的视觉单元步进已随 run 模型删除。)
+int JZAbstractTextEdit::stepVisual(int dir) const
+{
+    return m_cursor + dir;
 }
 
 // 上下移动: 用记忆列 m_desiredColumn 定位, 短行自动靠到行尾 (仅多行)
@@ -702,11 +1253,15 @@ void JZAbstractTextEdit::selectWordAt(int pos)
     update();
 }
 
+// m_desiredColumn 是**视觉**列 (上下移动时按视觉列对齐, 图片算 1 格)
 void JZAbstractTextEdit::refreshDesiredColumn()
 {
     if (m_lines.empty())
         return;
-    m_desiredColumn = m_cursor - m_lines[static_cast<size_t>(lineOfIndex(m_cursor))].start;
+
+    int line = 0, column = 0;
+    locateIndex(m_cursor, line, column);
+    m_desiredColumn = column;
 }
 
 void JZAbstractTextEdit::ensureCursorVisible()
@@ -718,23 +1273,23 @@ void JZAbstractTextEdit::ensureCursorVisible()
     locateIndex(m_cursor, line, column);
     const LineLayout& L = m_lines[static_cast<size_t>(line)];
 
-    // 垂直滚动 (仅多行; 单行不滚动)
+    // 垂直滚动 (仅多行; 单行不滚动)。用该行实际行高 (图片可撑高)。
     if (!m_singleLine) {
         const int viewH = height() - m_marginTop - m_marginBottom;
         if (viewH > 0) {
             if (L.y - m_scrollY < 0)
                 m_scrollY = L.y;
-            else if (L.y + lineHeight() - m_scrollY > viewH)
-                m_scrollY = L.y + lineHeight() - viewH;
+            else if (L.y + L.height - m_scrollY > viewH)
+                m_scrollY = L.y + L.height - viewH;
         }
     }
 
-    // 水平滚动 (组字时光标落在组字串内, 要算上组字前缀宽度; 密码模式按掩码测宽)
+    // 水平滚动。**必须走 xOfIndex** (含图片宽度);
+    // 组字时光标落在组字串内, 还要算上组字前缀宽度。
     const int viewW = width() - m_marginLeft - m_marginRight;
     if (viewW > 0) {
         JZFont font(kFontPixelSize);
-        const JZString lineText = displayString(m_text.mid(L.start, L.length));
-        int cx = JZFontMetrics::textWidth(lineText.toStdString(), font, column);
+        int cx = xOfIndex(line, column);
         if (m_composing && !m_comp.isEmpty()) {
             const int n = std::max(0, std::min(m_compCursor, m_comp.size()));
             cx += JZFontMetrics::textWidth(
@@ -833,12 +1388,23 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
     }
 
     const bool selecting = hasSelection();
+    // 选区绘制按**视觉**下标与 run 比较 (ssV/seV 用行内视觉坐标, 见循环内换算)
     const int ss = selStart();
     const int se = selEnd();
 
     int compLine = -1, compCol = 0;
-    if (m_composing && !m_comp.isEmpty())
+    JZString dispComp;
+    int compW = 0;                 // 组字串总宽 (覆盖区宽度)
+    if (m_composing && !m_comp.isEmpty()) {
         locateIndex(m_cursor, compLine, compCol);
+        dispComp = displayString(m_comp);
+        compW = JZFontMetrics::textWidth(dispComp.toStdString(), font);
+    }
+    // 组字串在行内的覆盖区间 [compX, compX + compW): 该区间内的既有文本不再绘制,
+    // 避免组字文字与原文重叠重影; 图片则先铺底色再让组字文字叠上去。
+    const int compX = (compLine >= 0)
+        ? (m_marginLeft - m_scrollX + xOfIndex(compLine, compCol))
+        : 0;
 
     for (int i = 0; i < static_cast<int>(m_lines.size()); ++i) {
         const LineLayout& L = m_lines[static_cast<size_t>(i)];
@@ -848,63 +1414,128 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
 
         // 行不在可视区则跳过 (单行不参与行裁剪)
         if (!m_singleLine &&
-            (yLine + lh < m_marginTop || yLine > h - m_marginBottom))
+            (yLine + L.height < m_marginTop || yLine > h - m_marginBottom))
             continue;
 
-        const JZString lineText = displayString(m_text.mid(L.start, L.length));
-        const std::string u8    = lineText.toStdString();
         const int x0 = m_marginLeft - m_scrollX;
         const int lineEnd = L.start + L.length;
 
-        if (!selecting) {
-            p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-            if (L.length > 0)
-                p.drawText(x0, yText, u8.c_str());
-        } else {
-            // 本行与选区的交集
-            const int ssIn = std::max(ss, L.start);
-            const int seIn = std::min(se, lineEnd);
+        // 选区在本行内的范围 (行内下标)
+        const int ssIn = std::max(ss, L.start) - L.start;
+        const int seIn = std::min(se, lineEnd) - L.start;
 
-            if (seIn > ssIn) {
-                const int xss = x0 + JZFontMetrics::textWidth(u8, font, ssIn - L.start);
-                const int xse = x0 + JZFontMetrics::textWidth(u8, font, seIn - L.start);
-                p.fillRect(JZRect(xss, bTop, xse - xss, visH), JZColor(0x33, 0x90, 0xFF));
+        // 组字覆盖区间 (仅组字所在行有效)
+        const bool onCompLine = (i == compLine && compW > 0);
+        const int compX0 = compX;
+        const int compX1 = compX + compW;
+
+        // 选区块底色: 连续区间的底色直接一次 fillRect (图片也算 1 格, 无需分段)
+        if (selecting && seIn > ssIn) {
+            const int xa = x0 + xOfIndex(i, ssIn);
+            const int xb = x0 + xOfIndex(i, seIn);
+            p.fillRect(JZRect(xa, bTop, xb - xa, visH), JZColor(0x33, 0x90, 0xFF));
+        }
+
+        // ---- 按段落绘制: Text 段落成批 drawText, Image/Emoji 段落 drawImage ----
+        // 与 xOfIndex 用的是**同一个** enumerateSegments, 因此测宽与绘制同口径。
+        const int lineByteStart = codepointToUtf8Byte(L.start);
+        const int lineByteLen = codepointToUtf8Byte(L.start + L.length) - lineByteStart;
+        const std::vector<Segment> segs = enumerateSegments(lineByteStart, lineByteLen);
+
+        for (size_t k = 0; k < segs.size(); ++k) {
+            const Segment& s = segs[k];
+            const int sCpBegin = utf8ByteToCodepoint(s.start);          // 行内码点序号
+            const int sCpLen   = utf8ByteToCodepoint(s.start + s.size) - sCpBegin;
+            const int xs = x0 + xOfIndex(i, sCpBegin - L.start);
+
+            // ---- 图段 (图片 / emoji): 同一路径 ----
+            if (s.type != SegmentType::Text) {
+                const JZImage* img = nullptr;
+                int iw = 0, ih = 0;
+                if (segmentImage(s, img, iw, ih)) {
+                    const int iy = yLine + std::max(0, (L.height - ih) / 2);
+                    if (img && !img->isNull()) {
+                        p.drawImage(*img, xs, iy, iw, ih);
+                    } else {
+                        // 无像素 (只有尺寸): 浅灰占位框
+                        p.fillRect(JZRect(xs, iy, iw, ih), JZColor(0xE4, 0xE7, 0xEC));
+                        p.setPen(JZPen(JZColor(0xB0, 0xB6, 0xC0), 1));
+                        p.drawRect(xs, iy, iw, ih);
+                    }
+                    // 与组字重叠时: 铺白底, 让随后的组字文字清晰叠上去
+                    if (onCompLine && (xs + iw > compX0 && xs < compX1))
+                        p.fillRect(JZRect(xs, yText - lead, iw, visH + lead),
+                                   JZColor(0xFF, 0xFF, 0xFF));
+                } else if (s.isEmoji()) {
+                    // emoji 图集里没有这张图: 退回主字体绘制该 emoji 文本
+                    p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+                    p.drawText(xs, yText, s.emoji.c_str());
+                }
+                continue;
             }
 
-            // 三段: 选区前(黑) / 选区内(白) / 选区后(黑)
-            p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
-            if (ssIn > L.start)
-                p.drawText(x0, yText, lineText.left(ssIn - L.start).toStdString().c_str());
+            // ---- 文本段 ----
+            const JZString segText = displayString(m_text.mid(sCpBegin, sCpLen));
+            const std::string u8 = segText.toStdString();
+            if (u8.empty())
+                continue;
 
-            if (seIn > ssIn) {
+            if (!selecting) {
+                // 组字期间: 整段落在覆盖区内则不画; 部分相交则只画左半前缀
+                const int xsEnd = xs + JZFontMetrics::textWidth(u8, font);
+                const bool hitComp = onCompLine && (xsEnd > compX0 && xs < compX1);
+                if (hitComp) {
+                    if (compX0 > xs) {
+                        const int cpCount = cpCountForWidth(u8, font, compX0 - xs);
+                        if (cpCount > 0) {
+                            p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+                            p.drawText(xs, yText,
+                                       segText.left(cpCount).toStdString().c_str());
+                        }
+                    }
+                } else {
+                    p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+                    p.drawText(xs, yText, u8.c_str());
+                }
+                continue;
+            }
+
+            // 选区: 本段拆成 前(黑) / 内(白) / 后(黑) 三段
+            const int segA = sCpBegin - L.start;
+            const int segB = segA + sCpLen;
+            const int a = std::max(ssIn, segA);
+            const int b = std::min(seIn, segB);
+
+            p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
+            if (a > segA)
+                p.drawText(xs, yText, segText.left(a - segA).toStdString().c_str());
+
+            if (b > a) {
                 p.setPen(JZPen(JZColor(0xFF, 0xFF, 0xFF), 1));
-                p.drawText(x0 + JZFontMetrics::textWidth(u8, font, ssIn - L.start), yText,
-                           lineText.mid(ssIn - L.start, seIn - ssIn).toStdString().c_str());
+                p.drawText(xs + JZFontMetrics::textWidth(u8, font, a - segA), yText,
+                           segText.mid(a - segA, b - a).toStdString().c_str());
                 p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
             }
 
-            if (seIn < lineEnd)
-                p.drawText(x0 + JZFontMetrics::textWidth(u8, font, seIn - L.start), yText,
-                           lineText.mid(seIn - L.start).toStdString().c_str());
+            if (b < segB)
+                p.drawText(xs + JZFontMetrics::textWidth(u8, font, b - segA), yText,
+                           segText.mid(b - segA).toStdString().c_str());
         }
 
-        // 组字串画在光标所在行 (密码模式按掩码显示)
-        if (i == compLine) {
-            const int xComp = x0 + JZFontMetrics::textWidth(u8, font, compCol);
-            drawComposition(p, xComp, yText, bTop, visH, displayString(m_comp));
+        // 组字串画在光标所在行 (密码模式按掩码显示); 起点走 xOfIndex 以兼容图片
+        if (i == compLine && compW > 0) {
+            drawComposition(p, compX, yText, bTop, visH, dispComp);
             p.setPen(JZPen(JZColor(0x20, 0x20, 0x20), 1));
         }
     }
 
-    // 光标
+    // 光标: 位置**必须**由 xOfIndex 给出 (含图片宽度), 否则图片后会偏移
     if (focused && m_cursorOn && !m_readOnly) {
         int curLine = 0, curCol = 0;
         locateIndex(m_cursor, curLine, curCol);
         const LineLayout& L = m_lines[static_cast<size_t>(curLine)];
 
-        const JZString lineText = displayString(m_text.mid(L.start, L.length));
-        int cx = m_marginLeft - m_scrollX
-               + JZFontMetrics::textWidth(lineText.toStdString(), font, curCol);
+        int cx = m_marginLeft - m_scrollX + xOfIndex(curLine, curCol);
         if (m_composing && !m_comp.isEmpty()) {
             const int n = std::max(0, std::min(m_compCursor, m_comp.size()));
             cx += JZFontMetrics::textWidth(displayString(m_comp).toStdString(), font, n);
@@ -1057,18 +1688,19 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
 
     switch (key) {
     case JZKey::Key_Left:
-        if (shift)                 moveCursor(m_cursor - 1, true);
+        // 按**视觉单元**走一步: 图片标记整体跨过, 不会停进标记中间
+        if (shift)                 moveCursor(stepVisual(-1), true);
         else if (hasSelection())   moveCursor(selStart(), false);   // 先折叠到选区起点
-        else                       moveCursor(m_cursor - 1, false);
+        else                       moveCursor(stepVisual(-1), false);
         // 水平移动: 刷新记忆列
         refreshDesiredColumn();
         event->accept();
         return;
 
     case JZKey::Key_Right:
-        if (shift)                 moveCursor(m_cursor + 1, true);
+        if (shift)                 moveCursor(stepVisual(1), true);
         else if (hasSelection())   moveCursor(selEnd(), false);     // 先折叠到选区终点
-        else                       moveCursor(m_cursor + 1, false);
+        else                       moveCursor(stepVisual(1), false);
         refreshDesiredColumn();
         event->accept();
         return;
@@ -1118,7 +1750,11 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         if (hasSelection()) {
             deleteSelection();
         } else if (m_cursor > 0) {
-            replaceRangeWithUndo(m_cursor - 1, 1, JZString(), false);
+            // 退格删"前一个视觉单元": 图片标记必须整段删掉, 否则会留下半截标记
+            const int to   = m_cursor;
+            const int from = stepVisual(-1);
+            if (to > from)
+                replaceRangeWithUndo(from, to - from, JZString(), false);
         }
         event->accept();        // 收尾 (重排/光标/信号) 由撤销命令完成
         return;
@@ -1128,7 +1764,11 @@ void JZAbstractTextEdit::keyPressEvent(JZKeyEvent* event)
         if (hasSelection()) {
             deleteSelection();
         } else if (m_cursor < m_text.size()) {
-            replaceRangeWithUndo(m_cursor, 1, JZString(), false);
+            // Delete 删"后一个视觉单元" (同理, 图片整段删)
+            const int from = m_cursor;
+            const int to   = stepVisual(1);
+            if (to > from)
+                replaceRangeWithUndo(from, to - from, JZString(), false);
         }
         event->accept();
         return;
@@ -1275,9 +1915,8 @@ void JZAbstractTextEdit::updateIMEWindowPos()
     locateIndex(selStart(), line, col);
     const LineLayout& L = m_lines[static_cast<size_t>(line)];
 
-    const JZString lineText = displayString(m_text.mid(L.start, L.length));
-    const int startX = m_marginLeft - m_scrollX
-        + JZFontMetrics::textWidth(lineText.toStdString(), font, col);
+    // 必须走 xOfIndex: 否则图片之后开始组字时, 候选条会偏到图片左侧
+    const int startX = m_marginLeft - m_scrollX + xOfIndex(line, col);
     const int startY = contentTop() + L.y + pad;
 
     // mapToGlobal: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /

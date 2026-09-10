@@ -129,6 +129,7 @@ static std::string makeImageDataUrl(const JZByteArray &image_base64)
 JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
     sigReply(this), sigThinking(this), sigToolCall(this), sigToolResult(this)
     , sigFinished(this), sigError(this)
+    , sigLLMHistory(this)
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
@@ -253,43 +254,23 @@ static void trimIncompleteHistory(LLMContext &ctx)
         ctx.history.erase(ctx.history.begin());
 }
 
-bool JZAgent::saveHistory(const std::string &filepath) const
+LLMContext JZAgent::saveContext() const
 {
     LLMContext ctx;
-    ctx.history = m_context.history;
+    ctx.history = m_context.history;   // 浅拷贝: 消息对象与原历史共享, 调用方只读使用
     trimIncompleteHistory(ctx);
-    if (ctx.history.empty())
-        return false;      // 没有可存的对话, 不留下空存档文件
     ctx.recalcUsage();
-
-    Json::Value root = ctx.toJson();
-
-    JZFile file;
-    if (!file.open(filepath, "wb"))
-        return false;
-
-    std::string text = root.toStyledString();
-    int written = file.write(str_toUtf8(text));
-    file.close();
-    return written == (int)text.size();
+    return ctx;
 }
 
-bool JZAgent::loadHistory(const std::string &filepath)
+void JZAgent::loadContext(const LLMContext &ctx)
 {
-    std::string text = readFile(filepath);
-    if (text.empty())
-        return false;
+    // 浅拷贝: 消息对象与传入的 ctx 共享, 双方都按只读使用
+    m_context.history = ctx.history;
 
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(text, root))
-        return false;
-    if (!m_context.fromJson(root))
-        return false;
-
+    // 与 saveContext 对称: 载入后同样裁到自洽, 防止脏存档把不一致的历史发给大模型
     trimIncompleteHistory(m_context);
     m_context.recalcUsage();
-    return true;
 }
 
 void JZAgent::init(JZAgentConfig config)
@@ -414,6 +395,11 @@ void JZAgent::request(const std::string &text, const std::string &image_url)
 void JZAgent::request(const std::string &text, const JZByteArray &image_base64)
 {
     requestWithImages(text, { makeImageDataUrl(image_base64) });
+}
+
+void JZAgent::request(const std::string &text, const std::vector<std::string> &image_urls)
+{
+    requestWithImages(text, image_urls);
 }
 
 void JZAgent::requestWithImages(const std::string &text, const std::vector<std::string> &images)
@@ -569,8 +555,8 @@ Json::Value JZAgent::buildContext()
     for (const auto& item : m_context.history)
     {
         Json::Value history_msg = item->toJson();
-        // auto_added 是内部标记（持久化/界面判断用），不发给大模型
-        history_msg.removeMember("auto_added");
+        // kind 是内部标记（持久化/界面判断用），不发给大模型
+        history_msg.removeMember("kind");
         messages.append(history_msg);
     }
 
@@ -750,6 +736,38 @@ bool LLMHistory::parseRole(const Json::Value& root)
     return true;
 }
 
+std::string LLMHistory::kindToString(Kind k)
+{
+    switch (k)
+    {
+    case Message:      return "message";
+    case ContextStart: return "context_start";
+    case Summary:      return "summary";
+    }
+    JZ_UNREACHABLE();
+    return "";
+}
+
+// 容错解析：取值不认识一律按"普通消息"处理，不让坏数据把整段存档废掉。
+// 兼容旧写法：这个枚举改过几次名(conversation_start / 更早的布尔键 auto_added)，
+// 都认，免得中途改名的存档读不出来。
+void LLMHistory::parseKind(const Json::Value& root)
+{
+    if (root.isMember("kind"))
+    {
+        std::string s = root["kind"].asString();
+        if (s == "context_start" || s == "conversation_start")
+            kind = ContextStart;
+        else if (s == "summary")
+            kind = Summary;
+        else
+            kind = Message;
+        return;
+    }
+    // 旧的 auto_added=true 语义就是"压缩摘要"
+    kind = root.get("auto_added", false).asBool() ? Summary : Message;
+}
+
 Json::Value LLMHistory::toJson() const
 {
     Json::Value history_msg;
@@ -794,7 +812,8 @@ Json::Value LLMHistory::toJson() const
     if (role == LLMHistory::Tool && !toolResponseId.empty())
         history_msg["tool_call_id"] = toolResponseId;
 
-    history_msg["auto_added"] = autoAdded;
+    // 内部标记(消息性质), 发请求前会被移除, 见 buildContext()
+    history_msg["kind"] = kindToString(kind);
     return history_msg;
 }
 
@@ -846,7 +865,7 @@ bool LLMHistory::fromJson(const Json::Value& root)
         }
     }
 
-    autoAdded = root.get("auto_added", false).asBool();
+    parseKind(root);
     return true;
 }
 
@@ -1056,7 +1075,7 @@ void JZAgent::llmError(AgentError error, std::string error_string)
         m_error = error_string;
         sigError.emit(error_string);
 
-        trimIncompleteHistory(m_context);
+        trimIncompleteHistory(m_context);   // 出错后裁掉不自洽的末尾, 避免下次把坏历史发出去
         llmEnd();
     }
 }
@@ -1182,13 +1201,17 @@ void JZAgent::finalizeResponse()
         // assistant 消息只入历史一次，所有 tool_calls 复用同一条
         m_context.history.push_back(reply);
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
+        sigLLMHistory.emit(reply);   // 增量通知(先于 processToolCall, 与历史顺序一致)
         for (auto& call : reply->toolRequest)
             processToolCall(call);
     }
     else
     {
         if (!reply->content.empty())
+        {
             m_context.history.push_back(reply);
+            sigLLMHistory.emit(reply);   // 增量通知
+        }
 
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
         if(m_requests.empty())
@@ -1316,11 +1339,12 @@ void JZAgent::onCompressFinished()
     auto sum = std::make_shared<LLMHistory>();
     sum->role = LLMHistory::User;
     sum->content = summary;
-    sum->autoAdded = true;   // 标记为系统自动添加，界面不显示、重建历史时跳过
+    sum->kind = LLMHistory::Summary;   // 内部摘要: 不进界面, 但同样是新的上下文起点
     hist.push_back(sum);     // 摘要追加到历史末尾，其余消息位置保持不变
     m_compressChunk.clear();
 
     m_context.recalcUsage();  // 历史已压缩，重算累计 usage 使其回落
+    sigLLMHistory.emit(sum);  // 这条摘要也是一条新入历史的消息(同时是新上下文起点)
     llmLoop();                // 重新进入循环：若仍超预算会继续压缩，否则走正常请求流程
 }
 
@@ -1360,6 +1384,18 @@ void JZAgent::llmLoop()
         std::vector<JZAgentRequestPtr> request_list = m_requests;
         m_requests.clear();
 
+        // 历史里是否已有 user 消息：没有的话，本轮这条就是"上下文的第一条"。
+        // (压缩后历史里留着那条摘要，所以不会重复标。)
+        bool hasUser = false;
+        for (const auto &h : m_context.history)
+        {
+            if (h && h->role == LLMHistory::User)
+            {
+                hasUser = true;
+                break;
+            }
+        }
+
         // 处理响应
         for (int i = 0; i < request_list.size(); i++)
         {
@@ -1371,6 +1407,11 @@ void JZAgent::llmLoop()
                 chat->role = LLMHistory::User;
                 chat->content = req->userPrompt;
                 chat->images = req->images;
+                if (!hasUser)
+                {
+                    chat->kind = LLMHistory::ContextStart;   // 上下文的第一条 user 消息
+                    hasUser = true;
+                }
             }
             else if (req->type == JZAgentRequest::SystemPrompt)
             {
@@ -1394,6 +1435,7 @@ void JZAgent::llmLoop()
             }
 
             m_context.history.push_back(chat);
+            sigLLMHistory.emit(chat);   // 增量通知(用户 / 系统 / 工具返回消息)
         }
 
         llmRequest();

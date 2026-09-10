@@ -22,7 +22,7 @@ import shutil
 import sys
 
 # js_wrapper 下各运行时包(其编译产物位于 <pkg>/dist/index.js)
-PACKAGES = ["core", "net", "serialport"]
+PACKAGES = ["core", "net", "serialport", "sqlite"]
 # 统一部署目录名(放在 --out 之下)
 BUNDLE = "jz_engine"
 # 仅允许清理的脚本自有输出子目录(相对 BUNDLE)

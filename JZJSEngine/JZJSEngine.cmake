@@ -18,6 +18,8 @@
 	JZJSCoreModule.cpp
 	JZJSqliteModule.h
 	JZJSqliteModule.cpp
+	JZJSModbusModule.h
+	JZJSModbusModule.cpp
 	JZJSUiLoader.h
 	JZJSUiLoader.cpp
 )

@@ -7,6 +7,7 @@
 #include "JZJSNetModule.h"
 #include "JZJSCoreModule.h"
 #include "JZJSqliteModule.h"
+#include "JZJSModbusModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
@@ -155,6 +156,10 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     // JS 适配层(DatabaseSync/StatementSync)由用户入口 import './sqlite/dist/index.js' 被动加载。
     m_sqliteModule = std::make_unique<JZJSqliteModule>();
     m_sqliteModule->initEngine(engine);
+    // Modbus（modbus-serial 风格）：注册 __jz.modbus 原子 API + 原生连接类，
+    // JS 适配层(ModbusRTU/ModbusTCP)由用户入口 import './modbus/dist/index.js' 被动加载。
+    m_modbusModule = std::make_unique<JZJSModbusModule>();
+    m_modbusModule->initEngine(engine);
 
     // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
     // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
@@ -222,6 +227,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_sqliteModule->deinitEngine();
         m_sqliteModule.reset();
+    }
+    if (m_modbusModule)
+    {
+        m_modbusModule->deinitEngine();
+        m_modbusModule.reset();
     }
     if (m_bridge)
     {

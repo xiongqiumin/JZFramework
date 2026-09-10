@@ -15,12 +15,20 @@ target_link_libraries(test_jssqlite JZFramework)
 # 同 test_jsnet: 让测试能按固定路径 import 编译产物(sqlite/dist/index.js)
 target_compile_definitions(test_jssqlite PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
+add_executable(test_jsmodbus test_jsmodbus.cpp)
+target_link_libraries(test_jsmodbus JZFramework)
+# 同 test_jsnet: 让测试能按固定路径 import 编译产物(modbus/dist/index.js)
+target_compile_definitions(test_jsmodbus PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
+
 # ---- ctest 注册 ----
 add_test(NAME jsengine.test_jsengine COMMAND test_jsengine)
 set_tests_properties(jsengine.test_jsengine PROPERTIES TIMEOUT 300)
 
 add_test(NAME jsengine.test_jssqlite COMMAND test_jssqlite)
 set_tests_properties(jsengine.test_jssqlite PROPERTIES TIMEOUT 120)
+
+add_test(NAME jsengine.test_jsmodbus COMMAND test_jsmodbus)
+set_tests_properties(jsengine.test_jsmodbus PROPERTIES TIMEOUT 120)
 
 add_test(NAME jsengine.test_jsui COMMAND test_jsui)
 set_tests_properties(jsengine.test_jsui PROPERTIES TIMEOUT 60)

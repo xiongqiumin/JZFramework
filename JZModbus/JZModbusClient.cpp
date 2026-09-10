@@ -617,11 +617,14 @@ int JZModbusClient::dealBuffer(JZModebusReply &info)
 
 void JZModbusClient::onTcpConnected()
 {    
+    m_error.clear();
     sigModbusOpen.emit(true);
 }
 
 void JZModbusClient::onTcpErrorOccurred(const std::string &error)
 {
+    // 记下具体原因, 供 error() 查询(以前这里把 error 丢掉了, 调用方只知道失败)
+    m_error = error;
     sigModbusOpen.emit(false);
 }
 

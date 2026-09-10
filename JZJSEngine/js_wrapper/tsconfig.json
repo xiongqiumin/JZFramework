@@ -4,6 +4,7 @@
     { "path": "./serialport" },
     { "path": "./net" },
     { "path": "./core" },
-    { "path": "./sqlite" }
+    { "path": "./sqlite" },
+    { "path": "./modbus" }
   ]
 }

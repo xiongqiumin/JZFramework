@@ -11,6 +11,7 @@ class JZJSEngine;
 class JZJSNetModule;
 class JZJSCoreModule;
 class JZJSqliteModule;
+class JZJSModbusModule;
 
 // ------------------------------------------------------------------
 // 运行期层：内嵌 JS 引擎会话的"运行"封装
@@ -161,6 +162,7 @@ private:
     std::unique_ptr<JZJSNetModule> m_netModule;   // 内置网络模块（fetch/http/net/ws...）
     std::unique_ptr<JZJSCoreModule> m_coreModule; // 内置核心模块（fs/path/process/os...）
     std::unique_ptr<JZJSqliteModule> m_sqliteModule; // 内置 SQLite 模块（node:sqlite 风格）
+    std::unique_ptr<JZJSModbusModule> m_modbusModule; // 内置 Modbus 模块（modbus-serial 风格）
     std::string m_engineWorkDir;               // 当前会话的工作目录（引擎落点）
     bool m_engineRunning = false;
     std::string m_lastError;                   // 最近一次运行错误（已 mapStack）

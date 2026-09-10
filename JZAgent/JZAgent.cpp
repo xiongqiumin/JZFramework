@@ -866,6 +866,7 @@ void LLMContext::recalcUsage()
         usage.prompt_tokens     += h->usage.prompt_tokens;
         usage.completion_tokens += h->usage.completion_tokens;
         usage.total_tokens      += h->usage.total_tokens;
+        usage.cached_tokens     += h->usage.cached_tokens;
     }
 }
 
@@ -882,6 +883,7 @@ Json::Value LLMContext::toJson() const
     u["prompt_tokens"] = usage.prompt_tokens;
     u["completion_tokens"] = usage.completion_tokens;
     u["total_tokens"] = usage.total_tokens;
+    u["cached_tokens"] = usage.cached_tokens;
     root["usage"] = u;
 
     return root;
@@ -899,6 +901,7 @@ bool LLMContext::fromJson(const Json::Value& root)
     usage.prompt_tokens = u.get("prompt_tokens", 0).asInt();
     usage.completion_tokens = u.get("completion_tokens", 0).asInt();
     usage.total_tokens = u.get("total_tokens", 0).asInt();
+    usage.cached_tokens = u.get("cached_tokens", 0).asInt();
 
     // history → 直接复用 fromJson
     auto& hist = root["history"];
@@ -1151,12 +1154,17 @@ void JZAgent::processResponseDelta(const std::string &content,
         int prompt = usage.get("prompt_tokens", 0).asInt();
         int completion = usage.get("completion_tokens", 0).asInt();
         int total = usage.get("total_tokens", 0).asInt();
+        int cached = 0;
+        // SSE 开启 include_usage 时，usage 可能携带 prompt_tokens_details.cached_tokens（前缀缓存命中）
+        if (usage.isMember("prompt_tokens_details") && usage["prompt_tokens_details"].isObject())
+            cached = usage["prompt_tokens_details"].get("cached_tokens", 0).asInt();
 
         // 记录本轮（Assistant 回复）token 增量：reply 恒为 Assistant，usage 仅来自回复。
         // context.usage 不再在此累加，而是由 history 重算得到，避免裁剪历史后无法回落。
         reply.usage.prompt_tokens     = prompt;
         reply.usage.completion_tokens = completion;
         reply.usage.total_tokens      = total;
+        reply.usage.cached_tokens     = cached;
     }
 }
 

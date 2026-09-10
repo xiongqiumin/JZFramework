@@ -32,6 +32,8 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <map>
+#include <algorithm>
 
 #include "JZApplication.h"
 #include "json/json.h"
@@ -110,22 +112,6 @@ const char *CLR_GREEN  = "\033[32m";   // 成功
 const char *CLR_RED    = "\033[31m";   // 失败
 const char *CLR_YELLOW = "\033[33m";   // 用例标题
 
-// 只保留前 n 个字符（换行/制表压成空格，避免多行 JSON 打乱输出），超长补 "..."
-std::string brief(const std::string &s, size_t n = 100)
-{
-    std::string t;
-    t.reserve(s.size() < n ? s.size() : n + 3);
-    for (char c : s)
-    {
-        if (c == '\r')
-            continue;
-        t.push_back((c == '\n' || c == '\t') ? ' ' : c);
-    }
-    if (t.size() > n)
-        t = t.substr(0, n) + "...";
-    return t;
-}
-
 // ---- 用例定义 ----
 struct BenchmarkCase
 {
@@ -158,6 +144,68 @@ public:
     }
 };
 
+// 工具调用轨迹（仅本地循环/重复分析用，不实时打印）：按时间顺序记录每次调用的名称、参数、成败
+struct ToolCallRecord
+{
+    std::string name;     // 工具名
+    std::string args;     // 原始参数（function_args），含路径等，用于识别重复调用
+    bool ok = false;      // 工具结果到达后回填
+    int64_t t = 0;        // 调用时刻(ms)
+};
+
+// 分析工具调用轨迹：识别"反复重读文件 / 重复调用 / 陷入循环"
+//   - distinct : 去重后的 (name+args) 签名数
+//   - maxRepeat: 单个签名最多出现次数（>=3 视为疑似循环）
+//   - topRepeat: 重复>=2 的签名摘要（name(args简写)xN，最多取若干）
+struct ToolTraceStat
+{
+    int distinct = 0;
+    int maxRepeat = 0;
+    std::string topRepeat;
+};
+
+ToolTraceStat analyzeToolTrace(const std::vector<ToolCallRecord> &trace)
+{
+    ToolTraceStat st;
+    std::map<std::string, int> cnt;
+    for (const auto &rec : trace)
+    {
+        std::string sig = rec.name + "|" + rec.args;
+        cnt[sig]++;
+    }
+    st.distinct = (int)cnt.size();
+    std::vector<std::pair<std::string, int>> v(cnt.begin(), cnt.end());
+    std::sort(v.begin(), v.end(), [](const std::pair<std::string, int> &a,
+                                     const std::pair<std::string, int> &b) {
+        return a.second > b.second;
+    });
+    for (const auto &kv : v)
+        if (kv.second > st.maxRepeat) st.maxRepeat = kv.second;
+
+    std::string parts;
+    int shown = 0;
+    for (const auto &kv : v)
+    {
+        if (kv.second < 2 || shown >= 5)
+            break;
+        size_t sep = kv.first.find('|');
+        std::string name = kv.first.substr(0, sep);
+        std::string args = kv.first.substr(sep + 1);
+        std::string a;
+        for (char c : args)
+        {
+            if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+            a.push_back(c);
+        }
+        if (a.size() > 40) a = a.substr(0, 40) + "...";
+        if (!parts.empty()) parts += ", ";
+        parts += name + "(" + a + ")x" + std::to_string(kv.second);
+        shown++;
+    }
+    st.topRepeat = parts;
+    return st;
+}
+
 // ---- 单用例结果 ----
 struct CaseResult
 {
@@ -167,7 +215,13 @@ struct CaseResult
     int promptTokens = 0;       // 本用例消耗的 prompt token
     int completionTokens = 0;   // 本用例消耗的 completion token
     int totalTokens = 0;        // 本用例消耗的总 token
+    int cachedTokens = 0;       // 本用例从 KV 缓存命中的输入 token（前缀缓存命中）
     int llmMs = 0;              // 本用例 LLM 生成耗时（含工具自驱循环，跨重试累计）
+    int toolCalls = 0;         // 本用例工具调用总次数（含成功/失败）
+    int toolFails = 0;         // 本用例工具调用失败次数
+    std::map<std::string, int> toolCount;      // 本用例各工具调用次数（按 function_name）
+    std::map<std::string, int> toolFailCount;  // 本用例各工具失败次数（按 function_name）
+    std::vector<ToolCallRecord> toolTrace;      // 本用例工具调用轨迹（按时间序，仅做循环/重复分析，不打印）
     int buildMs = 0;            // 本用例宿主编译耗时
     int runMs = 0;              // 本用例 code_runtime 运行耗时
     std::string lastOutput;
@@ -308,26 +362,33 @@ protected:
         {
             jz_agent->setSystemPrompt(jz_agent->systemPrompt() + m_httpPromptExtra);
         }
-        // 工具调用：打印工具名 + 参数（参数只留前 100 字符）
-        connect(&jz_agent->sigToolCall, [](const ToolCall& t) {
+        // 工具调用统计：不实时打印（避免刷屏），按用例累计次数 / 失败次数 / 各工具分布；
+        // 同时记录调用轨迹（名称+参数+成败+时刻），供末尾分析"反复重读/重复调用/循环"。
+        m_toolNameById.clear();
+        m_toolCallIdxById.clear();
+        connect(&jz_agent->sigToolCall, this, [this](const ToolCall& t) {
+            m_result.toolCalls++;
+            m_result.toolCount[t.function_name]++;
             std::string args = t.function_args;
             if (args.empty() && !t.params.isNull())
                 args = t.params.toStyledString();   // 少数模型只填了解析后的 params
-            printf("\n%s[tool]%s %s%s%s(%s%s%s)\n",
-                   clr(CLR_CYAN), clr(CLR_RESET),
-                   clr(CLR_BOLD), str_utf8_to_local(t.function_name).c_str(), clr(CLR_RESET),
-                   clr(CLR_GRAY), str_utf8_to_local(brief(args)).c_str(), clr(CLR_RESET));
-            fflush(stdout);
+            int idx = (int)m_result.toolTrace.size();
+            m_result.toolTrace.push_back({t.function_name, args, false,
+                                          JZPlatform::getTickCountMs()});
+            m_toolNameById[t.id] = t.function_name;     // 记录 id->名称，供结果失败归因
+            m_toolCallIdxById[t.id] = idx;              // 记录 id->轨迹下标，供结果回填 ok
         });
-
-        // 工具结果：打印成败 + 结果（同样只留前 100 字符）
-        connect(&jz_agent->sigToolResult, [](const ToolCallResult& r) {
-            const char *tag = r.isOk ? CLR_GREEN : CLR_RED;
-            printf("%s[result]%s %s%s%s: %s%s%s\n",
-                   clr(CLR_CYAN), clr(CLR_RESET),
-                   clr(tag), r.isOk ? "ok" : "fail", clr(CLR_RESET),
-                   clr(CLR_GRAY), str_utf8_to_local(brief(r.result)).c_str(), clr(CLR_RESET));
-            fflush(stdout);
+        connect(&jz_agent->sigToolResult, this, [this](const ToolCallResult& r) {
+            if (!r.isOk)
+            {
+                m_result.toolFails++;
+                auto it = m_toolNameById.find(r.id);
+                if (it != m_toolNameById.end())
+                    m_result.toolFailCount[it->second]++;
+            }
+            auto it2 = m_toolCallIdxById.find(r.id);
+            if (it2 != m_toolCallIdxById.end())
+                m_result.toolTrace[it2->second].ok = r.isOk;
         });
 
         jzDebug().nospace() << clr(CLR_YELLOW) << "==== 用例[" << m_case.name << "] 开始 (maxAttempts="
@@ -473,7 +534,7 @@ protected:
         JZProcess proc;
         proc.setProcessChannelMode(JZProcess::MergedChannels);
         // 运行根 = 子进程工作目录（code_runtime 不再收位置参数）
-        proc.setWorkingDirectory(m_root);
+        proc.setWorkingDirectory(m_root + "/build");
         if (!proc.start(m_codeRuntime, {}))
         {
             output = "[benchmark] 启动 code_runtime 失败: " + m_codeRuntime;
@@ -497,12 +558,20 @@ protected:
         m_result.promptTokens = u.prompt_tokens;
         m_result.completionTokens = u.completion_tokens;
         m_result.totalTokens = u.total_tokens;
+        m_result.cachedTokens = u.cached_tokens;
         m_totalPrompt     += u.prompt_tokens;
         m_totalCompletion += u.completion_tokens;
         m_totalTokens     += u.total_tokens;
+        m_totalCached     += u.cached_tokens;
         m_totalLlmMs      += m_result.llmMs;
         m_totalBuildMs    += m_result.buildMs;
         m_totalRunMs      += m_result.runMs;
+        m_totalToolCalls  += m_result.toolCalls;
+        m_totalToolFails  += m_result.toolFails;
+        for (const auto& kv : m_result.toolCount)
+            m_toolTotalCount[kv.first] += kv.second;
+        for (const auto& kv : m_result.toolFailCount)
+            m_toolTotalFail[kv.first] += kv.second;
 
         const CaseResult &r = m_result;
         jzDebug().nospace() << "---- 用例[" << r.name << "] 结束: "
@@ -531,13 +600,29 @@ protected:
         {
             if (r.passed)
                 passed++;
+            ToolTraceStat ts = analyzeToolTrace(r.toolTrace);
+            std::string loopNote;
+            if (ts.maxRepeat >= 3)
+                loopNote = std::string(" [疑似循环: ") + ts.topRepeat + "]";
+            else if (!ts.topRepeat.empty())
+                loopNote = std::string(" [重复: ") + ts.topRepeat + "]";
             jzDebug().nospace() << clr(r.passed ? CLR_GREEN : CLR_RED)
                                 << (r.passed ? "[PASS] " : "[FAIL] ") << clr(CLR_RESET)
                                 << r.name << "  (attempts=" << r.attempts
                                 << ", token=" << r.totalTokens
+                                << ", pt=" << r.promptTokens
+                                << ", ct=" << r.completionTokens
+                                << ", cached=" << r.cachedTokens
+                                << (r.promptTokens > 0
+                                    ? (" (" + std::to_string(r.cachedTokens * 100 / r.promptTokens) + "%)")
+                                    : std::string())
+                                << ", tool=" << r.toolCalls
+                                << ", distinct=" << ts.distinct
+                                << ", toolFail=" << r.toolFails
                                 << ", LLM=" << (r.llmMs/1000.0) << "s"
                                 << ", 编译=" << (r.buildMs/1000.0) << "s"
-                                << ", 运行=" << (r.runMs/1000.0) << "s" << ")";
+                                << ", 运行=" << (r.runMs/1000.0) << "s" << ")"
+                                << loopNote;
             if (!r.passed)
             {
                 if (!r.lastAgentError.empty())
@@ -551,7 +636,12 @@ protected:
         jzDebug().nospace() << "总耗时: " << (m_benchTimer.elapsed() / 1000.0) << " s";
         jzDebug().nospace() << "总消耗 token: prompt=" << m_totalPrompt
                             << " completion=" << m_totalCompletion
-                            << " total=" << m_totalTokens;
+                            << " total=" << m_totalTokens
+                            << " cached=" << m_totalCached;
+        if (m_totalPrompt > 0)
+            jzDebug().nospace() << "缓存利用率(prompt): " << m_totalCached << "/"
+                                << m_totalPrompt << " = "
+                                << (m_totalCached * 100 / m_totalPrompt) << "%";
         int64_t totalMs = m_benchTimer.elapsed();
         int64_t accounted = m_totalLlmMs + m_totalBuildMs + m_totalRunMs;
         int64_t otherMs = totalMs > accounted ? totalMs - accounted : 0;
@@ -560,6 +650,42 @@ protected:
                             << "  编译=" << (m_totalBuildMs/1000.0) << "s"
                             << "  运行=" << (m_totalRunMs/1000.0) << "s"
                             << "  其他=" << (otherMs/1000.0) << "s";
+
+        // ---- 工具调用汇总（静默统计后的结果）----
+        jzDebug().nospace() << "工具调用: 总计=" << m_totalToolCalls
+                            << " (fail=" << m_totalToolFails << ")";
+        if (!m_toolTotalCount.empty())
+        {
+            jzDebug() << "  工具分布(全局):";
+            for (const auto& kv : m_toolTotalCount)
+            {
+                int fail = m_toolTotalFail.count(kv.first) ? m_toolTotalFail[kv.first] : 0;
+                jzDebug().nospace() << "    " << kv.first << ": " << kv.second
+                                    << " 次 (fail=" << fail << ")";
+            }
+        }
+
+        // ---- 循环 / 重复调用检测（基于工具调用轨迹）----
+        jzDebug() << "循环/重复检测:";
+        {
+            bool anyLoop = false;
+            for (const auto &r : m_results)
+            {
+                ToolTraceStat ts = analyzeToolTrace(r.toolTrace);
+                if (ts.maxRepeat >= 2)
+                {
+                    anyLoop = true;
+                    jzDebug().nospace() << "  " << r.name
+                        << (ts.maxRepeat >= 3 ? " [疑似循环]" : " [重复]")
+                        << " distinct=" << ts.distinct
+                        << " maxRepeat=" << ts.maxRepeat
+                        << " : " << ts.topRepeat;
+                }
+            }
+            if (!anyLoop)
+                jzDebug() << "  无显著重复调用";
+        }
+
         jzDebug() << "==========================================";
 
         m_loop->quit();
@@ -600,10 +726,17 @@ protected:
     int m_totalPrompt = 0;         // 全部用例累计 token
     int m_totalCompletion = 0;
     int m_totalTokens = 0;
+    int m_totalCached = 0;       // 全部用例累计从 KV 缓存命中的输入 token
     int64_t m_llmStartMs = 0;       // 本轮 LLM 请求发出时刻（doAttempt）
     int64_t m_totalLlmMs = 0;       // 全部用例累计 LLM 耗时
     int64_t m_totalBuildMs = 0;     // 全部用例累计编译耗时
     int64_t m_totalRunMs = 0;       // 全部用例累计运行耗时
+    int m_totalToolCalls = 0;       // 全部用例累计工具调用次数
+    int m_totalToolFails = 0;       // 全部用例累计工具调用失败次数
+    std::map<std::string, int> m_toolTotalCount;   // 全局各工具调用次数（按 function_name）
+    std::map<std::string, int> m_toolTotalFail;    // 全局各工具失败次数（按 function_name）
+    std::map<std::string, std::string> m_toolNameById; // 本轮工具 id->名称，供结果失败归因
+    std::map<std::string, int> m_toolCallIdxById;       // 本轮工具 id->轨迹下标，供结果回填 ok
     int m_renderedId = 0;
     std::string m_renderedType;
 

@@ -5,8 +5,6 @@
 #include "JZByteArray.h"
 #include "JZJSBind.h"
 
-#define NETSTEP(x) do { fprintf(stderr, "[net] %s\n", x); fflush(stderr); } while (0)
-
 static bool jsSameValue(JSValue a, JSValue b)
 {
     return a.u.ptr == b.u.ptr && JS_VALUE_GET_TAG(a) == JS_VALUE_GET_TAG(b);
@@ -733,6 +731,202 @@ void JZJSMqttClient::end()
 }
 
 // ======================================================================
+// JZJSHttpResponse
+// ======================================================================
+JZJSHttpResponse::JZJSHttpResponse(JZJSEngine* engine, JZJSNetModule* module)
+{
+    this->engine = engine;
+    this->module = module;
+    client = nullptr;
+    statusCode = 200;
+    headWritten = false;
+    finished = false;
+}
+
+JZJSHttpResponse::~JZJSHttpResponse()
+{
+    // 兜底：JS 侧忘了 end() 也别把连接一直挂着，按已缓冲内容(或空 200)收尾
+    if (!finished && client)
+        end(JS_UNDEFINED);
+}
+
+void JZJSHttpResponse::setHeader(const std::string& name, const std::string& value)
+{
+    headers[name] = value;
+}
+
+void JZJSHttpResponse::writeHead(int status, const Json::Value& hs)
+{
+    statusCode = status;
+    if (!hs.isObject())
+        return;
+    for (auto it = hs.begin(); it != hs.end(); ++it)
+        headers[it.key().asString()] = it->asString();
+}
+
+void JZJSHttpResponse::write(JSValue data)
+{
+    JSContext* ctx = engine ? engine->context() : nullptr;
+    if (!ctx)
+        return;
+
+    if (!finished)
+    {
+        JZByteArray buf;
+        if (JZJSNetModule::jsValueToBytes(ctx, data, buf))
+            body.append(buf);
+    }
+    JS_FreeValue(ctx, data);
+}
+
+void JZJSHttpResponse::end(JSValue data)
+{
+    JSContext* ctx = engine ? engine->context() : nullptr;
+    if (!ctx)
+        return;
+
+    if (!finished && !JS_IsUndefined(data))
+    {
+        JZByteArray buf;
+        if (JZJSNetModule::jsValueToBytes(ctx, data, buf))
+            body.append(buf);
+    }
+    JS_FreeValue(ctx, data);
+
+    if (finished || !client)
+    {
+        finished = true;
+        return;
+    }
+    finished = true;
+
+    JZHttpRespone resp;
+    resp.setStatusCode(statusCode);
+    for (auto it = headers.begin(); it != headers.end(); ++it)
+        resp.setHeader(it.key().asString(), it->asString());
+    resp.setBody(body);
+
+    JZHttpServerClient* c = client;
+    client = nullptr;
+    c->response(resp.toByteArray());
+}
+
+// ======================================================================
+// JZJSHttpServer / JZJSHttpHandler
+// ======================================================================
+JZJSHttpServer::JZJSHttpServer(JZJSEngine* engine, JZJSNetModule* module)
+    : sink(engine)
+{
+    this->engine = engine;
+    this->module = module;
+    sink.setModule(module);
+    server = nullptr;
+    handler = nullptr;
+    listenPort = 0;
+    closed = false;
+}
+
+JZJSHttpServer::~JZJSHttpServer()
+{
+    close();
+    if (module)
+        module->removeSink(&sink);
+}
+
+bool JZJSHttpServer::listen(int port, const std::string& host)
+{
+    if (!server)
+        return false;
+
+    bool ok = host.empty() ? server->listen(port) : server->listen(host, port);
+    if (ok)
+    {
+        listenPort = port;
+        listenHost = host;
+        sink.emit("listening");
+    }
+    else
+    {
+        sink.emit("error", JS_NewString(engine->context(), "listen failed"));
+    }
+    return ok;
+}
+
+void JZJSHttpServer::close()
+{
+    if (sink.isDisposed())
+        return;
+
+    if (!closed)
+    {
+        closed = true;
+        sink.emit("close");
+    }
+
+    sink.dispose();
+    if (handler)
+    {
+        JZJSHttpHandler* h = handler;
+        handler = nullptr;
+        delete h;
+    }
+    if (server)
+    {
+        JZHttpServer* s = server;
+        server = nullptr;
+        s->close();
+        delete s;
+    }
+}
+
+Json::Value JZJSHttpServer::address() const
+{
+    if (!server || listenPort == 0)
+        return Json::Value(Json::nullValue);
+
+    Json::Value res;
+    res["port"] = listenPort;
+    res["address"] = listenHost.empty() ? std::string("0.0.0.0") : listenHost;
+    res["family"] = "IPv4";
+    return res;
+}
+
+void JZJSHttpHandler::handle(JZHttpServerClient* client, const JZHttpRequest& req)
+{
+    if (!server || !server->module || !server->engine)
+        return;
+    if (server->closed || server->sink.isDisposed())
+        return;
+
+    JSContext* ctx = server->engine->context();
+
+    JSValue reqObj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, reqObj, "method",
+                      JS_NewString(ctx, req.methodString().c_str()));
+    std::string url = req.path();
+    std::string query = req.query();
+    if (!query.empty())
+        url += "?" + query;
+    JS_SetPropertyStr(ctx, reqObj, "url", JS_NewString(ctx, url.c_str()));
+    JS_SetPropertyStr(ctx, reqObj, "httpVersion", JS_NewString(ctx, "1.1"));
+    JS_SetPropertyStr(ctx, reqObj, "remoteAddress",
+                      JS_NewString(ctx, req.remoteAddr().c_str()));
+
+    JSValue headers = JS_NewObject(ctx);
+    const auto& hs = req.headers();
+    for (auto it = hs.begin(); it != hs.end(); ++it)
+        JS_SetPropertyStr(ctx, headers, it->first.c_str(),
+                          JS_NewString(ctx, it->second.c_str()));
+    JS_SetPropertyStr(ctx, reqObj, "headers", headers);
+    JS_SetPropertyStr(ctx, reqObj, "body", jsMakeUint8Array(ctx, req.body()));
+
+    JZJSHttpResponse* res = new JZJSHttpResponse(server->engine, server->module);
+    res->client = client;
+
+    server->sink.emit("request", reqObj, server->module->makeHttpResponseValue(res));
+}
+
+// ======================================================================
 // JS 适配层: 把 __jz.* 原子 API 包装成 Node 风格
 // ======================================================================
 // MSVC 单个字符串字面量上限 16380 字节, 适配层拆成两段拼接
@@ -1146,6 +1340,111 @@ globalThis.fetch = function (url, init) {
 )JSRAW";
 
 static const char* js_net_adapter_b = R"JSRAW(
+// ------------------------------------------------- http server
+// （放在第二段：第一段已接近 MSVC 单字符串 16380 字节上限；http 对象在上面定义，
+//  这里只是往上挂 createServer / Server / ServerResponse）
+class ServerRequest extends EventEmitter {
+    constructor(info) {
+        super();
+        this.method = info.method;
+        this.url = info.url;
+        this.headers = new Headers(info.headers);
+        this.httpVersion = '1.1';
+        this.remoteAddress = info.remoteAddress || '';
+        this._body = info.body;
+        this._enc = null;
+    }
+    setEncoding(enc) { this._enc = enc || null; return this; }
+    /** 一次性拿到完整 body（本实现不流式读，body 已在请求里） */
+    get text() { return fromBytes(this._body, this._enc); }
+    get body() { return this._body; }
+    _start() {
+        this.emit('data', this._enc ? fromBytes(this._body, this._enc) : this._body);
+        this.emit('end');
+    }
+}
+
+class ServerResponse extends EventEmitter {
+    constructor(h) {
+        super();
+        this._h = h;
+        this._ended = false;
+    }
+    get statusCode() { return this._h.statusCode; }
+    set statusCode(v) { this._h.statusCode = v | 0; }
+    get finished() { return this._ended; }
+    setHeader(k, v) { this._h.setHeader(String(k), String(v)); return this; }
+    writeHead(status, headers) {
+        this._h.writeHead(status | 0, headers || {});
+        return this;
+    }
+    write(chunk, enc, cb) {
+        if (this._ended) return false;
+        this._h.write(toBytes(chunk, isEnc(enc) ? enc : null));
+        if (typeof enc === 'function') enc(); else if (cb) cb();
+        return true;
+    }
+    end(data, enc, cb) {
+        if (this._ended) return this;
+        const hasData = data !== undefined && data !== null && typeof data !== 'function';
+        this._h.end(hasData ? toBytes(data, isEnc(enc) ? enc : null) : new Uint8Array(0));
+        this._ended = true;
+        if (typeof data === 'function') data();
+        else if (typeof enc === 'function') enc();
+        else if (cb) cb();
+        this.emit('finish');
+        return this;
+    }
+}
+
+class HttpServer extends EventEmitter {
+    constructor(h) {
+        super();
+        this._h = h;
+        h.on('request', (rq, rs) => {
+            const req = new ServerRequest(rq);
+            const res = new ServerResponse(rs);
+            this.emit('request', req, res);
+            req._start();
+        });
+        h.on('listening', () => this.emit('listening'));
+        h.on('close', () => this.emit('close'));
+        h.on('error', (m) => this.emit('error', new Error(m)));
+    }
+    get listening() { return this._h.listening; }
+    address() { return this._h.address; }
+    listen(a, b, c) {
+        let port = 0, host = '', cb = null;
+        if (typeof a === 'number') {
+            port = a;
+            if (typeof b === 'string') host = b; else cb = b;
+            if (typeof c === 'function') cb = c;
+        } else if (a && typeof a === 'object') {
+            port = a.port | 0;
+            host = a.host || '';
+            cb = b;
+        }
+        if (cb) this.on('listening', cb);
+        this._h.listen(port, host);
+        return this;
+    }
+    close(cb) {
+        if (cb) this.on('close', cb);
+        this._h.close();
+        return this;
+    }
+}
+
+http.createServer = function (opts, listener) {
+    const s = new HttpServer(__jz.http.createServer());
+    let cb = listener;
+    if (typeof opts === 'function') cb = opts;
+    if (cb) s.on('request', cb);
+    return s;
+};
+http.Server = HttpServer;
+http.ServerResponse = ServerResponse;
+
 // ---------------------------------------------------------- websocket
 class WebSocketExt extends EventEmitter {
     constructor(arg, protocols, opts) {
@@ -1459,11 +1758,10 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_socket.defProperty<int>("bytesWritten", [](JZJSNetSocket* o) { return (int)o->bytesWritten; }, nullptr);
     bind_socket.defProperty<bool>("destroyed", [](JZJSNetSocket* o) { return o->destroyed; }, nullptr);
     bind_socket.defProperty<int>("state", [](JZJSNetSocket* o) { return o->state(); }, nullptr);
-    NETSTEP("regist socket class");
+    
     m_engine->registClass(bind_socket.classDefine());
     m_typeSocket = m_engine->ctypeidToType(typeid(JZJSNetSocket).name());
-    NETSTEP("socket class done");
-
+    
     // ---- TCP server ----
     jsbind::ClassBind<JZJSNetServer> bind_server("JZJSNetServer");
     bind_server.def("listen", [](JZJSNetServer* o, int port, const std::string& host) { o->listen(port, host); });
@@ -1522,12 +1820,41 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_mqtt.def("on", [](JZJSMqttClient* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
     bind_mqtt.def("off", [](JZJSMqttClient* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
     bind_mqtt.defProperty<bool>("connected", [](JZJSMqttClient* o) { return o->connected; }, nullptr);
-    NETSTEP("regist mqtt class");
+    
     m_engine->registClass(bind_mqtt.classDefine());
     m_typeMqtt = m_engine->ctypeidToType(typeid(JZJSMqttClient).name());
 
+    // ---- HTTP server ----
+    jsbind::ClassBind<JZJSHttpServer> bind_http_server("JZJSHttpServer");
+    bind_http_server.def("listen", [](JZJSHttpServer* o, int port, const std::string& host) {
+        o->listen(port, host);
+    });
+    bind_http_server.def("close", [](JZJSHttpServer* o) { o->close(); });
+    bind_http_server.def("on", [](JZJSHttpServer* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
+    bind_http_server.def("off", [](JZJSHttpServer* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
+    bind_http_server.defProperty<Json::Value>("address", [](JZJSHttpServer* o) { return o->address(); }, nullptr);
+    bind_http_server.defProperty<bool>("listening",
+        [](JZJSHttpServer* o) { return o->server && o->server->isListening(); }, nullptr);
+    m_engine->registClass(bind_http_server.classDefine());
+    m_typeHttpServer = m_engine->ctypeidToType(typeid(JZJSHttpServer).name());
+
+    // ---- HTTP 服务端响应 ----
+    jsbind::ClassBind<JZJSHttpResponse> bind_http_res("JZJSHttpResponse");
+    bind_http_res.def("writeHead", [](JZJSHttpResponse* o, int status, const Json::Value& hs) {
+        o->writeHead(status, hs);
+    });
+    bind_http_res.def("setHeader", [](JZJSHttpResponse* o, const std::string& n, const std::string& v) {
+        o->setHeader(n, v);
+    });
+    bind_http_res.def("write", [](JZJSHttpResponse* o, JSValue data) { o->write(data); });
+    bind_http_res.def("end", [](JZJSHttpResponse* o, JSValue data) { o->end(data); });
+    bind_http_res.defProperty<int>("statusCode", [](JZJSHttpResponse* o) { return o->statusCode; },
+                                   [](JZJSHttpResponse* o, int v) { o->statusCode = v; });
+    bind_http_res.defProperty<bool>("finished", [](JZJSHttpResponse* o) { return o->finished; }, nullptr);
+    m_engine->registClass(bind_http_res.classDefine());
+    m_typeHttpResponse = m_engine->ctypeidToType(typeid(JZJSHttpResponse).name());
+
     // ---- __jz 命名空间 ----
-    NETSTEP("namespaces");
     JSValue jz = m_engine->createObject();
 
     JSValue ns_net = m_engine->createObject();
@@ -1545,6 +1872,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     JSValue ns_http = m_engine->createObject();
     m_engine->registAsyncFunction(ns_http, "request",
                                   jsbind::createSelfFunction(this, &JZJSNetModule::httpRequest));
+    m_engine->registFunction(ns_http, "createServer",
+                             jsbind::createSelfFunction(this, &JZJSNetModule::httpCreateServer));
     m_engine->setProperty(jz, "http", ns_http);
 
     JSValue ns_ws = m_engine->createObject();
@@ -1574,8 +1903,7 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     m_engine->setProperty(jz, "bytes", ns_bytes);
 
     m_engine->setProperty(global, "__jz", jz);
-    NETSTEP("js adapter eval");
-
+    
     // ---- JS 适配层 ----
     std::string adapter = std::string("(function(){ ") + js_net_adapter_a + js_net_adapter_b + " })();";
     m_engine->eval(adapter);
@@ -1583,7 +1911,6 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
 
 void JZJSNetModule::deinitEngine()
 {
-    NETSTEP("deinit: clear sinks");
     // 1) 先主动销毁底层网络对象(在非 GC 上下文里做, finalizer 里 delete 网络对象很危险)
     std::vector<std::function<void()>> disposers;
     for (size_t i = 0; i < m_sinks.size(); i++)
@@ -1626,7 +1953,6 @@ void JZJSNetModule::deinitEngine()
     if (ctx)
         JS_RunGC(JS_GetRuntime(ctx));
 
-    NETSTEP("deinit: clear replies");
     auto reply_map = m_replyMap;
     for (auto& pair : reply_map)
     {
@@ -1647,7 +1973,6 @@ void JZJSNetModule::deinitEngine()
         m_cbRoot = JS_UNDEFINED;
     }
     m_engine = nullptr;
-    NETSTEP("deinit: done");
 }
 
 JSValue JZJSNetModule::makeSocketValue(JZJSNetSocket* obj)
@@ -2033,6 +2358,24 @@ Json::Value JZJSNetModule::osNetworkInterfaces()
         res[list[i].name].append(item);
     }
     return res;
+}
+
+JSValue JZJSNetModule::makeHttpResponseValue(JZJSHttpResponse* obj)
+{
+    return m_engine->createValue(m_typeHttpResponse, obj);
+}
+
+JSValue JZJSNetModule::httpCreateServer()
+{
+    JZJSHttpServer* obj = new JZJSHttpServer(m_engine, this);
+    obj->server = new JZHttpServer();
+    obj->handler = new JZJSHttpHandler();
+    obj->handler->server = obj;
+    // catch-all: 全部请求都交给 JS 的 'request' 事件，不在 C++ 侧做路由
+    obj->server->addRoute("/<path:path>", obj->handler);
+    addSink(&obj->sink, [obj]() { obj->close(); });
+
+    return m_engine->createValue(m_typeHttpServer, obj);
 }
 
 JSValue JZJSNetModule::bytesFromString(const std::string& text)

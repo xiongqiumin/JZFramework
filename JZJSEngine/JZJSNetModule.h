@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "JZJSEngine.h"
+#include "JZHttpServer.h"
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkInterface.h"
 #include "JZMqttClient.h"
@@ -183,6 +184,59 @@ struct JZJSMqttClient
     bool connected;
 };
 
+struct JZJSHttpServer;
+
+// HTTP 请求转发: JZHttpServer 收到请求后交给 JS 侧的 'request' 事件。
+// 挂在 catch-all 路由上（"/<path:path>"），全部请求都走这一个 handler。
+class JZJSHttpHandler : public JZHttpHandler
+{
+public:
+    JZJSHttpServer* server = nullptr;
+    void handle(JZHttpServerClient* client, const JZHttpRequest& req) override;
+};
+
+// HTTP 服务端响应包装（每个请求一个）。
+// 与 Node 的差别：不是流式写，write() 只缓冲，end() 时一次性发出（见 types/http.d.ts）。
+struct JZJSHttpResponse
+{
+    JZJSHttpResponse(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
+    ~JZJSHttpResponse();
+
+    void writeHead(int status, const Json::Value& headers);
+    void setHeader(const std::string& name, const std::string& value);
+    void write(JSValue data);
+    void end(JSValue data);
+
+    JZJSEngine* engine;
+    JZJSNetModule* module;
+    JZHttpServerClient* client;   // 不拥有（由 JZHttpServer/JZHttpServerClient 管理）
+    JZByteArray body;             // write() 先缓冲，end() 时才发
+    Json::Value headers;
+    int statusCode;
+    bool headWritten;
+    bool finished;
+};
+
+// HTTP server 包装
+struct JZJSHttpServer
+{
+    JZJSHttpServer(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
+    ~JZJSHttpServer();
+
+    bool listen(int port, const std::string& host);
+    void close();
+    Json::Value address() const;
+
+    JZJSEngine* engine;
+    JZJSNetModule* module;
+    JZHttpServer* server;
+    JZJSHttpHandler* handler;
+    JZJSEventSink sink;
+    int listenPort;
+    std::string listenHost;
+    bool closed;
+};
+
 // JS 网络模块: 注册 __jz.* 原子 API + 内嵌 JS 适配层(提供 Node 风格 API)
 class JZJSNetModule : public JZObject
 {
@@ -201,6 +255,7 @@ public:
     JSValue wsCreateServer();
     JSValue mqttConnect(const std::string& url, const Json::Value& options);
     void httpRequest(int promiseHandle, const Json::Value& options, JSValue body);
+    JSValue httpCreateServer();
     Json::Value urlParse(const std::string& url);
     Json::Value osNetworkInterfaces();
     JSValue bytesFromString(const std::string& text);
@@ -219,10 +274,14 @@ public:
     int retainCallback(JSValue cb);
     void releaseCallback(int id, JSValue value);
 
+    // 由 JZJSHttpHandler 调用：把响应句柄包成 JS 值
+    JSValue makeHttpResponseValue(JZJSHttpResponse* obj);
+
 protected:
     friend struct JZJSNetServer;
     friend struct JZJSWebSocketServer;
     friend struct JZJSWebSocket;
+    friend class JZJSHttpHandler;
 
     JSValue makeSocketValue(JZJSNetSocket* obj);
     JSValue makeWsValue(JZJSWebSocket* obj);
@@ -236,6 +295,8 @@ protected:
     int m_typeWs;
     int m_typeWsServer;
     int m_typeMqtt;
+    int m_typeHttpServer;
+    int m_typeHttpResponse;
     std::map<JZNetworkReply*, int> m_replyMap;
     std::map<JZNetworkReply*, std::string> m_replyUrl;
     std::vector<JZJSEventSink*> m_sinks;

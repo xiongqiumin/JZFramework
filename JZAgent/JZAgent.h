@@ -24,6 +24,7 @@ public:
     int prompt_tokens = 0;      // 本次输入token
     int completion_tokens = 0;  // 本次输出token
     int total_tokens = 0;       // 本次总计
+    int cached_tokens = 0;      // 本次从 KV 缓存命中的输入token（前缀缓存命中，计费通常折扣）
 };
 
 // 历史消息：承载角色、内容、工具请求/返回等全部负载

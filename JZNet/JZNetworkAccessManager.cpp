@@ -3,29 +3,13 @@
 #include "JZStd.h"
 #include "JZTx.h"
 #include "JZDebug.h"
+#include "JZStd.h"
 #include "JZByteArray.h"
 #ifdef HAS_JZCompress
 #include "JZCompress.h"
 #endif
 
 #include <cctype>
-
-static std::string toLowerStr(const std::string &s)
-{
-    std::string r = s;
-    for (char &c : r)
-        c = (char)std::tolower((unsigned char)c);
-    return r;
-}
-
-static std::string trimStr(const std::string &s)
-{
-    size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return "";
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
 
 //from mongoose
 static bool is_hex_digit(int c) {
@@ -88,7 +72,7 @@ bool JZNetworkConnect::jzApplyContentEncoding(JZNetworkReply *reply, JZByteArray
     auto it = reply->m_headers.find("content-encoding");
     if (it == reply->m_headers.end())
         return true;
-    std::string ce = toLowerStr(trimStr(it->second));
+    std::string ce = str_toLower(str_trimmed(it->second));
     JZCompressAlgorithm algo = JZCompressAlgorithm::GZip;
     if (ce == "gzip" || ce == "x-gzip")
         algo = JZCompressAlgorithm::GZip;
@@ -116,7 +100,8 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     m_chunkMode = false;
     m_compressed = false;
     m_closing = false;
-    m_keepAlive = true;
+    m_keepAlive = KeepAliveAuto;
+    m_respClose = false;
     m_manager = manager;
 
     jzDebug() << "new connect";
@@ -132,6 +117,28 @@ JZNetworkConnect::~JZNetworkConnect()
 std::string JZNetworkConnect::url()
 {
     return m_url;
+}
+
+
+// 解析请求 Connection 头(大小写不敏感), 得到连接复用意图:
+//   Connection: close  -> KeepAliveOff  (强制关闭不复用)
+//   无 / keep-alive / 其它 -> KeepAliveAuto (跟随服务器: 由响应 Connection 头决定)
+void JZNetworkConnect::updateRequestKeepAlive(const JZNetworkRequest &request)
+{
+    for (const auto &h : request.rawHeaders())
+    {
+        if (str_toLower(h.first) == "connection")
+        {
+            std::string v = str_toLower(str_trimmed(h.second));
+            if (v == "close")
+            {
+                m_keepAlive = KeepAliveOff;
+                return;
+            }
+            break;   // keep-alive 或未知值: 视为 Auto, 跟随服务器响应
+        }
+    }
+    m_keepAlive = KeepAliveAuto;
 }
 
 // 构造发给 HTTP 代理的 CONNECT 请求：明文建立到真实目标的 TCP 隧道（代理只搬字节，不解密）
@@ -187,7 +194,8 @@ void JZNetworkConnect::resetConnection()
     m_buffer.clear();
     m_responseActive = false;
     m_closing = false;
-    m_keepAlive = true;       // 断开/复用前重置为默认(保持), 下一次响应头解析会覆盖
+    m_keepAlive = KeepAliveAuto;   // 断开/复用前重置为默认(由响应决定), 下一次 open 会按请求意图覆盖
+    m_respClose = false;           // 断开/复用前重置, 下一次响应头解析会覆盖
     // 断开/复用前重置下行限速, 避免限速残留到连接复用
     setReadLimit(0);
 }
@@ -209,6 +217,16 @@ void JZNetworkConnect::close()
         emitFinish(JZNetworkReply::ConnectError);
     
     closeConnection();
+}
+
+// 综合请求意图与响应头, 判定响应结束后是否应关闭连接(不入库复用):
+//   - 请求显式 Connection: close(KeepAliveOff) -> 强制关闭不复用
+//   - 其它(KeepAliveAuto, 含请求显式 keep-alive) -> 跟随服务器: 由响应 Connection 头决定(m_respClose)
+bool JZNetworkConnect::shouldCloseConnection() const
+{
+    if (m_keepAlive == KeepAliveOff)
+        return true;
+    return m_respClose;
 }
 
 JZByteArray JZNetworkConnect::getHttpBody(const JZByteArray& data)
@@ -240,7 +258,7 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
     if (m_decompress) { delete m_decompress; m_decompress = nullptr; }
 #endif
 
-    if (!m_keepAlive)
+    if (shouldCloseConnection())
         m_closing = true;
 
     if (m_reply)
@@ -258,9 +276,9 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
         m_timeId = INVALID_TIMER_ID;
     }
 
-    if (!m_keepAlive)
+    if (shouldCloseConnection())
     {
-        closeConnection();   // 服务器 Connection: close, 主动关闭, 不入池复用
+        closeConnection();   // 请求/响应要求关闭连接(如 Connection: close), 主动关闭, 不入池复用
         return;
     }
 
@@ -569,19 +587,20 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
             {
                 struct mg_str *name = &hm.headers[i].name;
                 if (name->len == 0) break;   // 头数组以空 name 结尾
-                std::string key = toLowerStr(std::string(name->buf, name->len));
-                std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
+                std::string key = str_toLower(std::string(name->buf, name->len));
+                std::string val = str_trimmed(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
                 m_reply->m_headers[key] = val;
             }
 
-            // 解析服务器 Connection 头: 决定本次响应后本连接是否保持复用
+            // 解析服务器响应 Connection 头: 得到响应侧是否要求关闭(m_respClose)。
+            // 最终是否复用由 shouldCloseConnection() 综合请求意图(m_keepAlive)与响应头决定。
             // HTTP/1.1 默认持久, 仅 Connection: close 才关闭;
             // HTTP/1.0 默认关闭, 仅 Connection: keep-alive 才保持。
             std::string connHdr = m_reply->m_headers["connection"];
             if (is_http_1_0)
-                m_keepAlive = (connHdr == "keep-alive");
+                m_respClose = (connHdr != "keep-alive");
             else
-                m_keepAlive = (connHdr != "close");
+                m_respClose = (connHdr == "close");
 
             struct mg_str *loc = mg_http_get_header(&hm, "Location");
             if (loc) location.assign(loc->buf, loc->len);
@@ -596,7 +615,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                 auto ce_it = m_reply->m_headers.find("content-encoding");
                 if (ce_it != m_reply->m_headers.end())
                 {
-                    std::string ce = toLowerStr(trimStr(ce_it->second));
+                    std::string ce = str_toLower(str_trimmed(ce_it->second));
                     if (ce == "gzip" || ce == "x-gzip")
                     {
                         m_compressed = true;
@@ -932,6 +951,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
         conn->m_reply = reply;
         reply->m_conn = conn;
         conn->reopen();
+        conn->updateRequestKeepAlive(request);   // 复用连接也按本次请求意图覆盖(reopen 会重置为默认)
         return;
     }
 
@@ -945,6 +965,7 @@ void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest 
     conn->m_reply = reply;
     reply->m_conn = conn;
     conn->m_hostKey = hostKey;
+    conn->updateRequestKeepAlive(request);   // 按本次请求意图设置连接复用策略
     if (httpsProxy)
     {
         // 标记为 https 经代理隧道，并记录真实目标（SNI/CONNECT 用）与代理认证

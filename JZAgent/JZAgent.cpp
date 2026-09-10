@@ -655,6 +655,9 @@ void JZAgent::llmRequest()
     req.setUrl(JZUrl(m_config.modelUrl));
     req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Authorization", "Bearer " + m_config.modelToken);
+    // 不复用连接: 每条请求带 Connection: close, 服务器收完即关, 客户端也不入池复用
+    if (!m_config.reuseConnection)
+        req.setHeader(JZNetworkRequest::ConnectionHeader, "close");
 
     Json::FastWriter write;
     std::string json_str = write.write(request_body);
@@ -1260,6 +1263,9 @@ bool JZAgent::startCompressHistory()
     req.setUrl(JZUrl(m_config.modelUrl));
     req.setHeader(JZNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Authorization", "Bearer " + m_config.modelToken);
+    // 不复用连接: 同 llmRequest, 带 Connection: close 强制用完即关
+    if (!m_config.reuseConnection)
+        req.setHeader(JZNetworkRequest::ConnectionHeader, "close");
 
     m_compressReply = m_net->post(req, str_toUtf8(writer.write(body)));
     connect(&m_compressReply->sigFinished, this, &JZAgent::onCompressFinished);

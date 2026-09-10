@@ -24,6 +24,12 @@ protected:
     friend JZNetworkAccessManager;
     friend JZNetworkReply;
 
+    enum JZKeepAlive
+    {
+        KeepAliveAuto,
+        KeepAliveOff,
+    };
+
     virtual void onNetEvent(JZNetResEvent* event) override;
     virtual void timerEvent(JZTimerEvent *event) override;
     void emitFinish(JZNetworkReply::NetworkError error);
@@ -44,6 +50,7 @@ protected:
     void resetConnection();   // keep-alive：重置状态以便复用连接
     void closeConnection();   // 真正关闭底层连接
 
+    void updateRequestKeepAlive(const JZNetworkRequest &request);
     std::string buildConnectRequest(); // 构造发给代理的 CONNECT 请求
 
     std::string m_url;
@@ -67,7 +74,13 @@ protected:
     JZDecompressStream *m_decompress = nullptr;             // 流式解压器（惰性创建，响应结束/复用/出错时释放）
 #endif
     bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
-    bool m_keepAlive = true;   // 解析服务器响应 Connection 头得到: 本连接是否保持复用(默认 true)
+    // 本连接是否保持复用: 由请求意图(m_keepAlive, 来自请求 Connection 头)与响应
+    // Connection 头(m_respClose)共同决定(见 shouldCloseConnection)。
+    JZKeepAlive m_keepAlive = KeepAliveAuto;   // 请求声明的复用意图(KeepAliveAuto=由响应决定)
+    bool m_respClose = false;                  // 解析服务器响应 Connection 头得到: 响应要求关闭
+
+    // 综合请求意图与响应头, 判定响应结束后是否应关闭连接(不入库复用)
+    bool shouldCloseConnection() const;
 
     // HTTPS 经 HTTP 代理的 CONNECT 隧道状态
     enum ProxyPhase { ProxyPhaseNone = 0, ProxyPhaseConnectSent, ProxyPhaseTunnelUp };    

@@ -114,6 +114,11 @@ public:
     
     int netTimeout = 120 * 1000; // 网络请求超时（毫秒），默认 30s
 
+    // 是否复用 TCP 连接(keep-alive)。true(默认): 复用, 多个请求共用同一条连接;
+    // false: 每条请求带 `Connection: close`, 服务器收完即关, 客户端也不入池复用(用完即弃)。
+    // 某些服务端(或代理)对 keep-alive 处理有异常、或需要每次新建连接时, 设为 false。
+    bool reuseConnection = true;
+
     int maxRounds = 100;    // -1代表不限制
     int maxToken = 100000;  // 单次任务 token 预算上限，超出触发 maxTokenError
 

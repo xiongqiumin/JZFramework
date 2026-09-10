@@ -298,6 +298,8 @@ public:
             jzError().nospace() << "无法在端口 " << m_httpPort << " 启动输入 HTTP 服务";
             return false;
         }
+        printf("??\n");
+        jzDebug() << "??";
         jzDebug().nospace() << "[benchmark] 输入 HTTP 服务已启动: http://127.0.0.1:"
             << m_httpPort << "/input";
 
@@ -383,6 +385,8 @@ protected:
         m_toolNameById.clear();
         m_toolCallIdxById.clear();
         connect(&jz_agent->sigToolCall, this, [this](const ToolCall& t) {
+            jzDebug() << "tool call:" << t.function_name.c_str();
+
             m_result.toolCalls++;
             m_result.toolCount[t.function_name]++;
             std::string args = t.function_args;
@@ -395,6 +399,8 @@ protected:
             m_toolCallIdxById[t.id] = idx;              // 记录 id->轨迹下标，供结果回填 ok
         });
         connect(&jz_agent->sigToolResult, this, [this](const ToolCallResult& r) {
+            jzDebug() << "tool result:" << r.isOk << "," << str_left(r.result,200);
+
             if (!r.isOk)
             {
                 m_result.toolFails++;
@@ -1172,6 +1178,11 @@ int main(int argc, char *argv[])
 {
     JZApplication app;
 
+    fprintf(stderr, "[bench] JZApplication constructed\n");
+    fflush(stderr);
+
+    printf("hello world\n");
+
     // 编译器 / LSP 路径
     // 缺省：环境变量 JZ_TS_LSP -> 否则同目录下的 tsc_shim.exe（本机 node 版 tsc 的包装）。
     std::string tscPath = jzApp->applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
@@ -1202,8 +1213,6 @@ int main(int argc, char *argv[])
     // 打开 cmd 的虚拟终端模式（Win10+ 支持），之后 printf 的 ANSI 转义才会被当颜色解析；
     // 输出重定向到文件/管道时自动降级为纯文本。
     g_colorEnabled = !noColor && enableConsoleColor();
-
-
     if (tscPath.empty() || !JZFileInfo::exists(tscPath))
     {
         jzError().nospace() << "未配置可用的宿主 tsc（--tsc 或环境变量 JZ_TS_LSP），无法编译工程。";

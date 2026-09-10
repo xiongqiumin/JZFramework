@@ -116,11 +116,16 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     m_chunkMode = false;
     m_compressed = false;
     m_closing = false;
+    m_keepAlive = true;
     m_manager = manager;
+
+    jzDebug() << "new connect";
 }
 
 JZNetworkConnect::~JZNetworkConnect()
 {
+    jzDebug() << "remove connect";
+
     close();
 }
 
@@ -182,6 +187,7 @@ void JZNetworkConnect::resetConnection()
     m_buffer.clear();
     m_responseActive = false;
     m_closing = false;
+    m_keepAlive = true;       // 断开/复用前重置为默认(保持), 下一次响应头解析会覆盖
     // 断开/复用前重置下行限速, 避免限速残留到连接复用
     setReadLimit(0);
 }
@@ -234,8 +240,12 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
     if (m_decompress) { delete m_decompress; m_decompress = nullptr; }
 #endif
 
+    if (!m_keepAlive)
+        m_closing = true;
+
     if (m_reply)
     {
+        m_recvTime = JZPlatform::getTickCountMs();
         m_reply->m_conn = nullptr;
         auto reply = m_reply;
         m_reply = nullptr;
@@ -248,11 +258,14 @@ void JZNetworkConnect::emitFinish(JZNetworkReply::NetworkError error)
         m_timeId = INVALID_TIMER_ID;
     }
 
+    if (!m_keepAlive)
+    {
+        closeConnection();   // 服务器 Connection: close, 主动关闭, 不入池复用
+        return;
+    }
+
     resetConnection();
 
-    // 复用前重置空闲回收定时器
-    if (m_timeId != INVALID_TIMER_ID)
-        killTimer(m_timeId);
     m_timeId = startTimer((int)m_manager->m_connectionIdleTimeoutMs);
     m_recvTime = JZPlatform::getTickCountMs();
 }
@@ -560,6 +573,16 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                 std::string val = trimStr(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
                 m_reply->m_headers[key] = val;
             }
+
+            // 解析服务器 Connection 头: 决定本次响应后本连接是否保持复用
+            // HTTP/1.1 默认持久, 仅 Connection: close 才关闭;
+            // HTTP/1.0 默认关闭, 仅 Connection: keep-alive 才保持。
+            std::string connHdr = m_reply->m_headers["connection"];
+            if (is_http_1_0)
+                m_keepAlive = (connHdr == "keep-alive");
+            else
+                m_keepAlive = (connHdr != "close");
+
             struct mg_str *loc = mg_http_get_header(&hm, "Location");
             if (loc) location.assign(loc->buf, loc->len);
 
@@ -810,6 +833,7 @@ void JZNetworkAccessManager::onDisconnected()
     {
         if (m_netConnects[i] == conn)
         {
+            jzDebug() << "remove conn";
             m_netConnects[i]->deleteLater();
             vec_removeAt(m_netConnects, i);
             break;

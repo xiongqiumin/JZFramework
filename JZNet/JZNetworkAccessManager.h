@@ -67,6 +67,7 @@ protected:
     JZDecompressStream *m_decompress = nullptr;             // 流式解压器（惰性创建，响应结束/复用/出错时释放）
 #endif
     bool m_closing;           // 正在关闭/已标记回收，禁止再被复用
+    bool m_keepAlive = true;   // 解析服务器响应 Connection 头得到: 本连接是否保持复用(默认 true)
 
     // HTTPS 经 HTTP 代理的 CONNECT 隧道状态
     enum ProxyPhase { ProxyPhaseNone = 0, ProxyPhaseConnectSent, ProxyPhaseTunnelUp };    

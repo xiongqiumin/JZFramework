@@ -21,6 +21,7 @@ import socket
 import threading
 import datetime
 import sys
+import time
 import gzip
 import zlib
 
@@ -31,6 +32,8 @@ HTTP_TARGET_PORT = 8080
 HTTPS_TARGET_PORT = 8443
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 7001
+SSE_HOST = "127.0.0.1"
+SSE_PORT = 8081
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +302,92 @@ def start_proxy():
 
 
 # ---------------------------------------------------------------------------
+# 3b. SSE 测试服务 (原生 socket): 精确控制 chunked 帧与连接关闭行为
+#   用于验证 C++ 客户端 (JZNetworkAccessManager) 对以下三种 SSE 结束方式的处理:
+#     /sse-normal      (情况1) 正常发送 `0\r\n\r\n` 终止块, 连接保持 (keep-alive, 不中断)
+#     /sse-term-close  (情况2) 发送 `0\r\n\r\n` 终止块后正常关闭连接 (干净关闭)
+#     /sse-abrupt      (情况3) 直接关闭连接, 不发送 `0\r\n\r\n` (截断/中断)
+#   说明: `0\r\n\r\n` 是 HTTP chunked transfer-encoding 的最后一块标记, 并非 SSE 专有结束符;
+#         SSE 事件流本身靠连接关闭结束。情况1/2 符合 RFC7230 分块规范, 情况3 规范上不完整
+#         但实际客户端普遍容忍(连接关闭即视为 body 结束)。
+# ---------------------------------------------------------------------------
+SSE_EVENTS = [
+    "data: sse-event-1\r\n\r\n",
+    "data: sse-event-2\r\n\r\n",
+]
+
+
+def sse_send_chunk(sock, text):
+    """以 HTTP chunked 编码发送一段数据(一个 SSE 事件块)。"""
+    payload = text.encode("utf-8")
+    sock.sendall((hex(len(payload))[2:] + "\r\n").encode("latin1"))
+    sock.sendall(payload)
+    sock.sendall(b"\r\n")
+
+
+def handle_sse_client(client):
+    keep_alive = True
+    try:
+        client.settimeout(10)  # 情况1 的 keep-alive 空闲超时
+        while keep_alive:
+            data = recv_until_headers(client)
+            if not data:
+                break
+            head, _, _ = data.partition(b"\r\n\r\n")
+            line0 = head.split(b"\r\n")[0].decode("latin1")
+            parts = line0.split(" ")
+            path = parts[1] if len(parts) >= 2 else "/"
+
+            client.sendall(
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Transfer-Encoding: chunked\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+            )
+            for ev in SSE_EVENTS:
+                sse_send_chunk(client, ev)
+            time.sleep(0.1)  # 确保客户端先收到事件再进入结束分支
+
+            if path == "/sse-normal":
+                # 情况1: 发送标准 chunked 终止块 `0\r\n\r\n`, 不断开连接 (keep-alive)
+                client.sendall(b"0\r\n\r\n")
+                continue  # 继续读取下一个请求(连接保持)
+            elif path == "/sse-term-close":
+                # 情况2: 发送终止块后正常关闭连接 (干净结束)
+                client.sendall(b"0\r\n\r\n")
+                keep_alive = False
+            elif path == "/sse-abrupt":
+                # 情况3: 直接关闭连接, 不发送 `0\r\n\r\n` (截断)
+                keep_alive = False
+            else:
+                client.sendall(b"0\r\n\r\n")
+                keep_alive = False
+    except Exception:
+        pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def start_sse():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((SSE_HOST, SSE_PORT))
+    srv.listen(128)
+    print(
+        f"[sse] 监听 http://{SSE_HOST}:{SSE_PORT} "
+        f"(/sse-normal /sse-term-close /sse-abrupt)"
+    )
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=handle_sse_client, args=(conn,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # 启动
 # ---------------------------------------------------------------------------
 def main():
@@ -344,6 +433,9 @@ def main():
 
     # HTTP 代理
     threading.Thread(target=start_proxy, daemon=True).start()
+
+    # SSE 测试服务 (原生 socket, 精确控制 chunked 帧与连接关闭)
+    threading.Thread(target=start_sse, daemon=True).start()
 
     print("\n本地测试服务已就绪。另开终端运行 test_proxy.exe 即可。Ctrl+C 退出。\n")
     try:

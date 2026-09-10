@@ -1,8 +1,11 @@
 #include "JZJSCoreModule.h"
 
 #include <cstdio>
+#include <random>
 
 #include "JZJSBind.h"
+#include "JZUuid.h"
+#include "JZCrypto.h"
 
 JZJSCoreModule::JZJSCoreModule()
 {
@@ -205,8 +208,51 @@ std::string JZJSCoreModule::execPath()
     return JZPlatform::applicationFilePath();
 }
 
+// ---- crypto / 随机 / UUID ----
+std::string JZJSCoreModule::uuid()
+{
+    return JZUuid::createUuid().toString(JZUuid::WithoutBraces);
+}
+
+JSValue JZJSCoreModule::randomBytes(int size)
+{
+    if (size < 0)
+        return throwError("ERR_OUT_OF_RANGE: size must be >= 0");
+    JZByteArray out;
+    if (size > 0)
+    {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> dist(0, 255);
+        out.resize(size);
+        for (int i = 0; i < size; i++)
+            out[i] = static_cast<char>(dist(gen));
+    }
+    return makeUint8Array(out);
+}
+
+JSValue JZJSCoreModule::randomInt(int min, int max)
+{
+    if (max <= min)
+        return JS_ThrowRangeError(m_engine->context(),
+            "ERR_OUT_OF_RANGE: max must be greater than min");
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dist(min, max - 1);
+    return JS_NewInt32(m_engine->context(), dist(gen));
+}
+
+JSValue JZJSCoreModule::md5(JSValue data)
+{
+    JZByteArray buf;
+    if (!jsValueToBytes(m_engine->context(), data, buf))
+        return throwError("ERR_INVALID_ARG_TYPE: data must be string, Uint8Array or ArrayBuffer");
+    JZByteArray digest = JZCrypto::md5(buf);
+    return makeUint8Array(digest);
+}
+
 // ======================================================================
-// JS 适配层: 把原子封装成 Node 风格 fs/path/os/process
+// JS 适配层: 把原子封装成 Node 风格 fs/path/os/process/crypto
 // ======================================================================
 static const char* g_coreAdapter = R"(
 (function () {
@@ -408,6 +454,41 @@ static const char* g_coreAdapter = R"(
   };
   globalThis.process = process;
 
+  // ---- crypto (Node crypto 子集: randomUUID / randomBytes / randomInt / createHash) ----
+  const crypto = {
+    randomUUID: function () { return core.uuid(); },
+    randomBytes: function (size, cb) {
+      const u8 = core.randomBytes(size);
+      if (typeof cb === 'function') { cb(null, u8); return undefined; }
+      return u8;
+    },
+    randomInt: function (min, max) {
+      if (max === undefined) { max = min; min = 0; }
+      return core.randomInt(min, max);
+    },
+    createHash: function (algorithm) {
+      algorithm = String(algorithm).toLowerCase();
+      if (algorithm !== 'md5')
+        throw new Error("ERR_OSSL_EVP_UNSUPPORTED: Unsupported algorithm: " + algorithm);
+      let acc = new Uint8Array(0);
+      return {
+        update: function (data, enc) {
+          const b = toBytes(data, enc);
+          const merged = new Uint8Array(acc.length + b.length);
+          merged.set(acc, 0);
+          merged.set(b, acc.length);
+          acc = merged;
+          return this;
+        },
+        digest: function (enc) {
+          const d = core.md5(acc);
+          return enc ? fromBytes(d, enc) : d;
+        },
+      };
+    },
+  };
+  globalThis.crypto = crypto;
+
   // ---- 全局 + require ----
   globalThis.fs = fs;
   globalThis.path = path;
@@ -418,6 +499,7 @@ static const char* g_coreAdapter = R"(
     if (name === 'path') return path;
     if (name === 'process') return process;
     if (name === 'os') return os;
+    if (name === 'crypto') return crypto;
     return origRequire ? origRequire(name) : undefined;
   };
 })();
@@ -460,6 +542,10 @@ void JZJSCoreModule::initEngine(JZJSEngine* engine)
     m_engine->registFunction(ns, "tmpdir", jsbind::createSelfFunction(this, &JZJSCoreModule::tmpdir));
     m_engine->registFunction(ns, "cwd", jsbind::createSelfFunction(this, &JZJSCoreModule::cwd));
     m_engine->registFunction(ns, "execPath", jsbind::createSelfFunction(this, &JZJSCoreModule::execPath));
+    m_engine->registFunction(ns, "uuid", jsbind::createSelfFunction(this, &JZJSCoreModule::uuid));
+    m_engine->registFunction(ns, "randomBytes", jsbind::createSelfFunction(this, &JZJSCoreModule::randomBytes));
+    m_engine->registFunction(ns, "randomInt", jsbind::createSelfFunction(this, &JZJSCoreModule::randomInt));
+    m_engine->registFunction(ns, "md5", jsbind::createSelfFunction(this, &JZJSCoreModule::md5));
     m_engine->setProperty(jz, "core", ns);
 
     if (jzFromGet)

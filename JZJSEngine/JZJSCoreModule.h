@@ -43,6 +43,12 @@ public:
     std::string cwd();
     std::string execPath();
 
+    // ---- crypto / 随机 / UUID 原子 API(由内嵌 JS 适配层调用, 挂在 __jz.core 下) ----
+    std::string uuid();                              // 返回 RFC4122 v4 uuid 字符串(无大括号)
+    JSValue randomBytes(int size);                   // 返回 Uint8Array, size<0 抛异常
+    JSValue randomInt(int min, int max);             // 返回 [min, max) 内整数, 越界抛 RangeError
+    JSValue md5(JSValue data);                        // 接受 string/Uint8Array/ArrayBuffer, 返回 16 字节 Uint8Array
+
     static bool jsValueToBytes(JSContext* ctx, JSValue v, JZByteArray& out);
 
 protected:

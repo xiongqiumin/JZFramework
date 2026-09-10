@@ -40,3 +40,8 @@ target_link_libraries(test_proxy JZFramework)
 # 压缩响应测试: 本地 server 返回 gzip / deflate / 明文 响应，client 校验解压结果（端到端验证 HTTP Content-Encoding 支持）
 add_executable(test_net_compress test_net_compress.cpp)
 target_link_libraries(test_net_compress JZFramework)
+
+# SSE 三端点测试: 验证客户端对三种 chunked 流结束方式 (正常终止块不中断 / 终止块后关闭 / 直接断连) 的处理
+# 运行前需先启动 net_test_server.py (监听 8081 的 SSE 服务)
+add_executable(test_sse test_sse.cpp)
+target_link_libraries(test_sse JZFramework)

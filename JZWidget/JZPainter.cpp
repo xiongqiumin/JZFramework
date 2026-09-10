@@ -278,3 +278,15 @@ void JZPainter::drawImage(const JZImage& img, int x, int y, int w, int h)
     t->area = area;
     m_layer->addTask(t);
 }
+
+void JZPainter::drawPixmap(const JZPixmap& pixmap, int x, int y, int w, int h)
+{
+    JZRect area(m_ox + x, m_oy + y, w, h);
+    if (isCulled(area) || pixmap.isNull())
+        return;
+
+    auto t = std::make_shared<JZPixmapTask>();
+    t->pixmap = pixmap.data();
+    t->area = area;
+    m_layer->addTask(t);
+}

@@ -184,6 +184,13 @@ JZImage JZImage::fromRGBA(const uint8_t* rgba, int w, int h)
     return img;
 }
 
+JZImage JZImage::fromData(const std::shared_ptr<JZImageData>& data)
+{
+    JZImage img;
+    img.m_data = data;   // 共享同一份像素, 不拷贝
+    return img;
+}
+
 JZByteArray JZImage::encode(Format format) const
 {
     JZByteArray out;

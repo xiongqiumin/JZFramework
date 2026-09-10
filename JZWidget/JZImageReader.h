@@ -10,7 +10,8 @@
 // ==================== JZImageReader: 图像解码(读)门面 ====================
 // 把压缩图像数据 (PNG/JPEG/GIF/WebP/BMP/TGA/PSD/PNM 等, stb_image 支持集) 从
 // 文件或内存解成 RGBA8888 像素缓冲 (JZImageData), 供 JZImage / JZPainter 渲染
-// 链路消费 —— 渲染后端只认 RGBA8888 原始像素 (见 JZGdiBackend::imageBitmap)。
+// 链路消费 —— 像素只在 JZImage(JZImageData) 里以 RGBA8888 形式流转, 由
+// JZPixmap::fromImage 转成后端原生布局后才交给渲染后端贴图。
 //
 // 实现基于第三方单头库 stb_image (JZWidget/stb/stb_image.h; 实现宏统一在
 // JZStbImage.cpp, 本文件及使用方只 include 头文件拿声明)。

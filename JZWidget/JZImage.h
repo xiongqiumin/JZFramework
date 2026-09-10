@@ -75,6 +75,11 @@ public:
     // 内部拷贝一份像素; w/h <= 0 或 rgba 为空时返回 isNull()==true 的空对象。
     static JZImage fromRGBA(const uint8_t* rgba, int w, int h);
 
+    // 用已有的 JZImageData 构造: **不拷贝像素**, 与原图共享同一份数据
+    // (用于把后端/画布手里的像素数据重新包成 JZImage 去调 encode/scale/pixmap 等
+    //  以 JZImage 为入口的接口)。空指针得到空图。
+    static JZImage fromData(const std::shared_ptr<JZImageData>& data);
+
     // 编码当前像素为压缩图像字节流; 仅 Png/Bmp/Tga/Jpeg 可写,
     // 其它格式或图像无像素时返回空 JZByteArray。JPEG 质量固定 90。
     JZByteArray encode(Format format) const;

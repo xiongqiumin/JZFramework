@@ -3,6 +3,7 @@
 #include "JZLayer.h"
 #include "JZDrawTask.h"
 #include "JZImage.h"
+#include "JZPixmap.h"
 #include "JZFontMetrics.h"
 #include "JZDisplayDevice.h"
 
@@ -121,6 +122,32 @@ static std::wstring utf8ToUtf16(const std::string& text)
     std::wstring out(len, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), &out[0], len);
     return out;
+}
+
+// 贴一张 JZPixmap: 零拷贝把它持有的像素缓冲包成 GDI+ 位图后 DrawImage。
+//   - JZPixmap 的像素已经是 32bppPARGB (后端原生布局), 所以这里只做"包一层";
+//   - GDI+ 的 Bitmap(w,h,stride,fmt,scan0) 构造函数**只记指针不复制像素**, 而
+//     缓冲由 JZPixmap/shared_ptr 持有, 会活过整个绘制, 不存在悬垂; 位图本身是
+//     本作用的局部对象, 绝不跨帧缓存 (旧实现缓存了"指向临时缓冲的位图"才崩的);
+//   - 每帧的代价就是一次普通位图拷贝 (4K 实测 ~10ms)。
+static void jzDrawPixmap(Graphics& g, const std::shared_ptr<JZPixmapData>& pm, const RectF& dest)
+{
+    if (!pm || !pm->pixels() || pm->width() <= 0 || pm->height() <= 0)
+        return;
+
+    const int w = pm->width();
+    const int h = pm->height();
+    Bitmap bmp(w, h, w * 4, PixelFormat32bppPARGB, (BYTE*)pm->pixels());
+    if (bmp.GetLastStatus() != Ok)
+        return;
+
+    // 目标尺寸与源尺寸只差取整误差 (逻辑坐标 * scale 的小数) 时, 吸附成整数矩形:
+    // GDI+ 只有源/目标完全对齐才走直拷路径, 差零点几像素就会整图重采样 —— 表现为
+    // "整屏截图发糊"。这里把取整误差吃掉, 真正的缩放 (差异更大) 仍走插值。
+    if (std::fabs(dest.Width - w) <= 0.5f && std::fabs(dest.Height - h) <= 0.5f)
+        g.DrawImage(&bmp, Rect((INT)std::lround(dest.X), (INT)std::lround(dest.Y), w, h));
+    else
+        g.DrawImage(&bmp, dest);
 }
 
 // 圆角矩形路径 (radius 已含缩放)
@@ -374,10 +401,9 @@ bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW,
 
 void JZGdiBackend::destroy()
 {
-    // 缓存位图必须在 GdiplusShutdown 之前释放
-    for (auto& kv : m_bitmaps)
-        delete (Bitmap*)kv.second;
-    m_bitmaps.clear();
+    // 缓存的 pixmap 是 CPU 侧像素缓冲 (不含 GDI+ 对象), 直接放掉即可;
+    // 这里显式清空只是为了尽快释放那几十 MB。
+    m_images.clear();
 
     releaseMemBitmap();
     m_hwnd = nullptr;
@@ -464,6 +490,10 @@ void JZGdiBackend::render(JZLayer* layer)
     // 兜底: GDI+ 已 Shutdown 时不再绘制，否则一进 GdiPlus.dll 就崩
     if (!gdiplusLifetime().isReady())
         return;
+
+    // 淘汰源图已销毁的位图缓存 (放在回放前: 本帧要画的图由 draw task 持着
+    // shared_ptr, 不会被误回收)
+    purgeImageCache();
 
     {
         // 任务回放到内存位图 (保留上帧内容, 脏区由各任务的 clip 覆盖)
@@ -642,11 +672,16 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
         }
         case JZDrawTask::Image: {
             auto* t = static_cast<JZImageTask*>(task.get());
-            if (t->image && t->image->pixels()) {
-                Bitmap* bmp = (Bitmap*)imageBitmap(t->image.get());
-                if (bmp)
-                    g.DrawImage(bmp, toGdiRect(t->area, s));
-            }
+            if (t->image && t->image->pixels())
+                // JZImage 没有预转好的 pixmap: 走懒转换缓存 (转一次, 之后等价于
+                // Pixmap 任务)。逐帧在这里现转 (颜色矩阵) 是不行的 —— 4K 图实测
+                // 425ms/帧, 拖拽直接卡死。
+                jzDrawPixmap(g, imagePixmap(t->image), toGdiRect(t->area, s));
+            break;
+        }
+        case JZDrawTask::Pixmap: {
+            auto* t = static_cast<JZPixmapTask*>(task.get());
+            jzDrawPixmap(g, t->pixmap, toGdiRect(t->area, s));
             break;
         }
         case JZDrawTask::None:
@@ -656,32 +691,40 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
     }
 }
 
-// RGBA8888 -> GDI+ 32bppARGB (内存字节序 BGRA), 懒缓存
-void* JZGdiBackend::imageBitmap(const JZImageData* img)
+// JZImageTask 的懒转换: JZImageData -> JZPixmap, 每张图只转一次并缓存。
+// 转换与像素布局全部由 JZPixmap::fromImage 负责 (那里是一次性 O(像素) 的开销,
+// 4K 约 40ms); 这里只做"按源图地址查缓存"。缓存不持有源图 (weak_ptr), 源图一
+// 销毁条目就成过期状态, 下一帧 purgeImageCache() 回收那几十 MB 的 pixmap。
+std::shared_ptr<JZPixmapData> JZGdiBackend::imagePixmap(const std::shared_ptr<JZImageData>& img)
 {
-    auto it = m_bitmaps.find(img);
-    if (it != m_bitmaps.end())
-        return it->second;
-
-    if (!img->pixels() || img->width() <= 0 || img->height() <= 0)
-        return nullptr;
-
-    int w = img->width();
-    int h = img->height();
-    std::vector<uint8_t> bgra((size_t)w * h * 4);
-    const uint8_t* src = img->pixels();
-    for (size_t i = 0; i < (size_t)w * h; ++i) {
-        bgra[i * 4 + 0] = src[i * 4 + 2];
-        bgra[i * 4 + 1] = src[i * 4 + 1];
-        bgra[i * 4 + 2] = src[i * 4 + 0];
-        bgra[i * 4 + 3] = src[i * 4 + 3];
+    for (auto& e : m_images) {
+        if (std::shared_ptr<JZImageData> alive = e.image.lock())
+            if (alive.get() == img.get())
+                return e.pixmap;
     }
 
-    Bitmap* bmp = new Bitmap(w, h, w * 4, PixelFormat32bppARGB, bgra.data());
-    if (bmp->GetLastStatus() != Ok) {
-        delete bmp;
+    const JZPixmap pm = JZPixmap::fromImage(JZImage::fromData(img));
+    if (pm.isNull())
         return nullptr;
+
+    ImageEntry e;
+    e.image = img;
+    e.pixmap = pm.data();
+    m_images.push_back(e);
+    return e.pixmap;
+}
+
+// 源图已无人持有 (标注窗关闭后那张全屏截图就是几十 MB) 的 pixmap 回收。
+// 每帧只留当前真正被绘制的图, 缓存不会随截图次数无限涨。
+void JZGdiBackend::purgeImageCache()
+{
+    if (m_images.empty())
+        return;
+    std::vector<ImageEntry> keep;
+    keep.reserve(m_images.size());
+    for (auto& e : m_images) {
+        if (!e.image.expired())
+            keep.push_back(e);
     }
-    m_bitmaps[img] = bmp;
-    return bmp;
+    m_images.swap(keep);
 }

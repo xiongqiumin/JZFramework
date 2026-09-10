@@ -4,6 +4,7 @@
 #include "JZRect.h"
 #include "JZColor.h"
 #include "JZImage.h"
+#include "JZPixmap.h"
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZFont.h"
@@ -30,7 +31,8 @@ struct JZDrawTask
         Border,  // 描边矩形 (用当前 pen 画四条边)
         Arc,     // 圆弧 (center + radius + start/end angle), 用当前 pen
         Text,    // 文本, 用当前 font + pen 颜色
-        Image,   // 图像混合
+        Image,   // JZImage 贴图 (像素布局由后端自行转换/缓存)
+        Pixmap,  // JZPixmap 贴图 (已是后端原生布局, 直接贴)
         Push,    // 状态压栈: 保存当前状态并应用携带的新状态 (pen/brush/font/clip)
         Change,  // 状态修改 (非栈): 设置当前状态中 Some 的字段
         Pop      // 状态出栈: 回退到匹配 Push 之前的状态
@@ -86,6 +88,13 @@ struct JZImageTask : JZDrawTask {
     JZImageTask() : JZDrawTask(Image) {}
     JZRect area;
     std::shared_ptr<JZImageData> image;
+};
+
+// ---- Pixmap (已转成后端原生布局的显示用位图) ----
+struct JZPixmapTask : JZDrawTask {
+    JZPixmapTask() : JZDrawTask(Pixmap) {}
+    JZRect area;
+    std::shared_ptr<JZPixmapData> pixmap;
 };
 
 // ---- Push/Pop 状态机 ----

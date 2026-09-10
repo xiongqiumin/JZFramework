@@ -1,4 +1,4 @@
-// code_agent_lsp_test - 直连 TSGO(tsc --lsp --stdio) LSP 接口的冒烟测试。
+﻿// code_agent_lsp_test - 直连 TSGO(tsc --lsp --stdio) LSP 接口的冒烟测试。
 //
 // 流程（headless、无 GUI、不用大模型）：
 //   1. 在 JZPlatform::applicationTmpPath() 下新建一个最小 TS 工程（tsconfig.json +

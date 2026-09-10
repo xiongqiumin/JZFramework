@@ -1,11 +1,13 @@
 #ifndef JZ_GDI_BACKEND_H_
 #define JZ_GDI_BACKEND_H_
 
-#include <map>
+#include <memory>
+#include <vector>
 
 class JZDisplayDevice;
 class JZLayer;
 class JZImageData;
+class JZPixmapData;
 
 // ==================== GDI+ 渲染后端 (纯绘图, 临时方案) ====================
 // 只负责一件事: 把 JZLayer 的 JZDrawTask 列表画出来并提交到屏幕。
@@ -48,7 +50,13 @@ private:
     bool createMemBitmap(unsigned physicalW, unsigned physicalH);
     void releaseMemBitmap();
     void replayTasks(void* graphics, JZLayer* layer);
-    void* imageBitmap(const JZImageData* img);   // 懒缓存 (RGBA8888 -> GDI+ 32bppARGB)
+
+    // JZImageTask 的懒转换缓存: JZImageData -> JZPixmap (见 JZPixmap::fromImage)。
+    // 只想画一两次的图走这条路径就够了; 要反复画/自己掌握转换时机与生命周期的,
+    // 用 JZPixmap::fromImage + JZPainter::drawPixmap (Pixmap 任务不查缓存)。
+    // 缓存按 weak_ptr 判活, 源图销毁即回收 (一张全屏图几十 MB)。
+    std::shared_ptr<JZPixmapData> imagePixmap(const std::shared_ptr<JZImageData>& img);
+    void purgeImageCache();
 
     void* m_hwnd = nullptr;
     void* m_memDC = nullptr;     // HDC (内存, 双缓冲)
@@ -61,7 +69,12 @@ private:
     // 不能减 GDI+ 的引用计数，否则会把别的窗口还在用的 GDI+ 提前 Shutdown。
     bool m_initialized = false;
 
-    std::map<const JZImageData*, void*> m_bitmaps;   // JZImageData -> Gdiplus::Bitmap*
+    struct ImageEntry {
+        std::weak_ptr<JZImageData> image;      // 判活 + 淘汰 (不持所有权, 不拖住源图)
+        std::shared_ptr<JZPixmapData> pixmap;  // 转换好的显示用位图
+    };
+    std::vector<ImageEntry> m_images;          // 被绘制过的 JZImage 的 pixmap 缓存
+
     JZDisplayDevice* m_widgetDevice = nullptr;
 };
 

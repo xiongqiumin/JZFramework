@@ -24,16 +24,21 @@ public:
     static JZImage captureScreen(int index);     // 指定显示器整屏(越界返回空图)
     static JZImage captureWidget(JZWidget* w);   // 控件/窗口当前显示内容(被遮挡也能抓)
 
-    // 抓整个虚拟桌面 = 所有显示器拼成一张(混合 DPI 时每屏各自缩到自己的逻辑尺寸)。
-    // logicalRect 非空时回填该虚拟桌面的**逻辑矩形**, 与窗口屏幕坐标一致 ——
-    // 全屏窗口靠它摆到与桌面完全重合的位置。
-    static JZImage captureVirtualDesktop(JZRect* logicalRect = nullptr);
+    // 抓整个虚拟桌面 = 所有显示器拼成一张(**物理像素**)图。
+    //   - deviceScale: 目标缩放 (= 显示这张图的窗口的 device scale)。拼图统一到
+    //     该缩放: 画布 = 逻辑桌面尺寸 * deviceScale, 单屏/各屏同缩放时每屏 1:1
+    //     不重采样; 传 <=0 视为 1 (按逻辑像素拼, 会损失高 DPI 细节)。
+    //   - logicalRect 非空时回填该虚拟桌面的**逻辑矩形** (图像尺寸 / deviceScale),
+    //     与窗口屏幕坐标一致 —— 全屏窗口靠它摆到与桌面完全重合的位置。
+    static JZImage captureVirtualDesktop(JZRect* logicalRect = nullptr,
+                                         float deviceScale = 1.0f);
 
     // ---- 交互式截图(全屏顶层标注窗口) ----
     // 先抓整个虚拟桌面, 再弹出覆盖所有显示器的无边框全屏窗口把它铺满, 用户可用
     //   矩形 / 椭圆 / 自由画笔 标注(1/2/3 切换工具, Ctrl+Z 撤销),
     //   Enter 或 [确定] 接受, Esc 或 [取消] 放弃。
-    // 确认返回"截图 + 标注"的合成图(尺寸同虚拟桌面逻辑矩形); 取消/抓屏失败返回空图。
+    // 确认返回"截图 + 标注"的合成图 (**物理像素** = 虚拟桌面逻辑尺寸 * 设备缩放,
+    // 即与屏幕原始像素 1:1, 不损失清晰度); 取消/抓屏失败返回空图。
     // owner 仅作模态归属(可空), 期间 owner 被禁用。抓屏发生在窗口显示之前,
     // 所以本窗口自身不会出现在截图里。
     static JZImage captureInteractive(JZWidget* owner = nullptr);

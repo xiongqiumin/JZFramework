@@ -69,6 +69,8 @@ set(JZ_SOURCES
 	JZImageLabel.cpp
     JZImage.h
     JZImage.cpp
+    JZPixmap.h
+    JZPixmap.cpp
     JZImageReader.h
     JZImageReader.cpp
     JZImageWriter.h

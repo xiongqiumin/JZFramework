@@ -17,6 +17,7 @@
 #include "JZKeyEvent.h"
 #include "JZPainter.h"
 #include "JZPen.h"
+#include "JZPixmap.h"
 #include "JZPushButton.h"
 #include "JZScreen.h"
 #include "JZWidget.h"
@@ -42,10 +43,19 @@ JZImage JZScreenShot::captureWidget(JZWidget* w)
     return w ? w->grab() : JZImage();
 }
 
-JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect)
+JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect, float deviceScale)
 {
-    // 各显示器单独抓取(物理像素)后按各自的逻辑矩形拼到一张图上:
-    // 混合 DPI 时每屏自己缩放, 拼出来的坐标体系就是窗口用的逻辑坐标系。
+    // 各显示器单独抓取(**物理像素**)后拼成一张图, 并统一到 deviceScale
+    // (= 标注窗口所在显示器的缩放, 即窗口把逻辑坐标放大成设备像素的那个倍数):
+    //   画布尺寸 = 逻辑桌面尺寸 * deviceScale
+    //   每屏抓图 = 该屏逻辑尺寸 * deviceScale
+    // 单屏 (或各屏缩放一致) 时每屏都恰好 1:1, 完全不重采样; 标注窗口按逻辑坐标
+    // 铺满桌面、绘制时乘 deviceScale -> 贴图同样是 1:1, 文字边缘锐利。
+    // 旧实现统一缩到**逻辑**尺寸, 显示时再被放大 deviceScale 倍 —— 先缩后放,
+    // 在 125%/150% 缩放的屏上整屏发糊。
+    if (deviceScale <= 0.0f)
+        deviceScale = 1.0f;
+
     const int n = JZScreen::count();
     if (n <= 0)
         return JZImage();
@@ -89,9 +99,11 @@ JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect)
     if (geos.empty())
         return JZImage();
 
-    const int W = right - left;
-    const int H = bottom - top;
-    if (W <= 0 || H <= 0)
+    const int lw = right - left;               // 逻辑桌面尺寸 (窗口定位用)
+    const int lh = bottom - top;
+    const int W = (int)lround(lw * deviceScale);   // 画布 = 物理像素
+    const int H = (int)lround(lh * deviceScale);
+    if (lw <= 0 || lh <= 0 || W <= 0 || H <= 0)
         return JZImage();
 
     vector<uint8_t> buf((size_t)W * H * 4, 0);
@@ -99,9 +111,15 @@ JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect)
     {
         const JZRect& g = geos[i];
         JZImage img = imgs[i];
-        // 物理像素 -> 该屏逻辑像素(图像与窗口坐标 1:1)
-        if (img.width() != g.width() || img.height() != g.height())
-            img = img.scaled(g.width(), g.height());
+        // 物理抓图 -> "该屏逻辑尺寸 * deviceScale"; 与目标一致时 (单屏/同缩放)
+        // 不做任何缩放, 直接原样拷贝
+        const int tw = (int)lround(g.width() * deviceScale);
+        const int th = (int)lround(g.height() * deviceScale);
+        if (tw <= 0 || th <= 0)
+            continue;
+        if (img.width() != tw || img.height() != th)
+            img = img.scaled(tw, th, JZImage::AspectRatioMode::IgnoreAspectRatio,
+                             JZImage::TransformationMode::SmoothTransformation);
 
         shared_ptr<JZImageData> d = img.data();
         if (!d || !d->pixels())
@@ -110,8 +128,8 @@ JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect)
         const uint8_t* src = d->pixels();
         const int sw = d->width();
         const int sh = d->height();
-        const int dx = g.x() - left;
-        const int dy = g.y() - top;
+        const int dx = (int)lround((g.x() - left) * deviceScale);
+        const int dy = (int)lround((g.y() - top) * deviceScale);
 
         for (int row = 0; row < sh; row++)
         {
@@ -135,8 +153,8 @@ JZImage JZScreenShot::captureVirtualDesktop(JZRect* logicalRect)
     }
 
     if (logicalRect)
-        *logicalRect = JZRect(left, top, W, H);
-    return JZImage::fromRGBA(buf.data(), W, H);
+        *logicalRect = JZRect(left, top, lw, lh);   // 逻辑矩形 (窗口按它定位)
+    return JZImage::fromRGBA(buf.data(), W, H);     // 图像本身是物理像素
 }
 
 JZImage JZScreenShot::fitTo(const JZImage& img, int maxW, int maxH)
@@ -255,7 +273,7 @@ enum ShotTool { ShotRect = 0, ShotEllipse = 1, ShotPen = 2 };
 
 const char* const kToolNames[3] = { "矩形", "椭圆", "画笔" };
 const JZColor kMarkColor(0xE8, 0x3B, 0x3B, 255);   // 标注红
-const int kMarkWidth = 4;                          // 标注线宽(图像像素 = 窗口逻辑像素)
+const int kMarkWidth = 4;                          // 标注线宽(画布逻辑像素; 烧进物理像素图时按缩放放大)
 const int kBtnW = 76;
 const int kBtnH = 30;
 const int kBtnGap = 8;
@@ -377,7 +395,10 @@ void shotBurnPolyline(vector<uint8_t>& buf, int w, int h, const vector<JZPoint>&
 }
 
 // 原图 + 全部标注 -> 合成图(无标注时原样返回)
-JZImage shotBurnMarks(const JZImage& src, const vector<ShotMark>& marks)
+// 把标注烧进截图。scale = 图像像素 / 画布逻辑像素 (即窗口设备缩放): 标注坐标是
+// 画布逻辑坐标, 而图像是物理像素, 烧制前必须按这个比例放大 (线宽同理), 否则标注
+// 会偏到左上角一小块。
+JZImage shotBurnMarks(const JZImage& src, const vector<ShotMark>& marks, float scale)
 {
     if (src.isNull() || marks.empty())
         return src;
@@ -390,11 +411,18 @@ JZImage shotBurnMarks(const JZImage& src, const vector<ShotMark>& marks)
     vector<uint8_t> buf((size_t)w * h * 4);
     memcpy(buf.data(), d->pixels(), buf.size());
 
+    if (scale <= 0.0f)
+        scale = 1.0f;
+
     vector<JZPoint> poly;
     for (size_t i = 0; i < marks.size(); i++)
     {
         shotMarkPolyline(marks[i], poly);
-        shotBurnPolyline(buf, w, h, poly, kMarkWidth / 2.0f, kMarkColor);
+        if (scale != 1.0f)
+            for (size_t k = 0; k < poly.size(); k++)
+                poly[k] = JZPoint((int)lround(poly[k].x() * scale),
+                                  (int)lround(poly[k].y() * scale));
+        shotBurnPolyline(buf, w, h, poly, (kMarkWidth * scale) / 2.0f, kMarkColor);
     }
     return JZImage::fromRGBA(buf.data(), w, h);
 }
@@ -410,7 +438,14 @@ class JZShotCanvas : public JZWidget
 public:
     explicit JZShotCanvas(JZWidget* parent = nullptr);
 
-    void setShot(const JZImage& img) { m_shot = img; update(); }
+    // 背景截图: 转成 JZPixmap 后每帧贴图只是一次位图拷贝 (转换只在 setShot 时
+    // 做一次 —— 标注窗每帧重绘整窗, 4K 图逐帧现转会卡死)
+    void setShot(const JZImage& img)
+    {
+        m_shot = img;
+        m_shotPixmap = JZPixmap::fromImage(img);
+        update();
+    }
     void setTool(int tool);
     int  tool() const { return m_tool; }
     void undo();
@@ -436,7 +471,8 @@ private:
     void drawMark(JZPainter& p, const ShotMark& mk, vector<JZPoint>& poly);
 
     vector<ShotMark> m_marks;             // 已确认的标注
-    JZImage m_shot;                       // 背景截图(尺寸 == 画布尺寸)
+    JZImage m_shot;                       // 背景截图(尺寸 == 画布尺寸), 确认时烧标注用
+    JZPixmap m_shotPixmap;                // m_shot 的显示用位图 (每帧贴图用这个)
 
     int  m_tool = ShotRect;
     bool m_drawing = false;
@@ -532,9 +568,12 @@ void JZShotCanvas::paintEvent(JZPainterEvent*)
     JZPainter p(this);
     const int w = width(), h = height();
 
-    p.fillRect(0, 0, w, h, JZColor(0x1E, 0x1E, 0x1E));   // 图像盖不到时的兜底底色
-    if (!m_shot.isNull())
-        p.drawImage(m_shot, 0, 0, w, h);
+    // 兜底底色只在截图盖不满画布时才需要: 截图与画布等大时这层 ~10ms 的
+    // 全画布填充会被立刻完全覆盖 (4K 全屏标注每帧重绘整窗, 别白画)
+    if (m_shot.isNull() || m_shot.width() < w || m_shot.height() < h)
+        p.fillRect(0, 0, w, h, JZColor(0x1E, 0x1E, 0x1E));
+    if (!m_shotPixmap.isNull())
+        p.drawPixmap(m_shotPixmap, 0, 0, w, h);
 
     // 标注: 已确认的 + 正在拖的这一笔(同色同宽, 所见即所得)
     p.setPen(JZPen(kMarkColor, kMarkWidth));
@@ -657,7 +696,6 @@ public:
     {
         setWindowType(Popup);          // 无边框 + 不进任务栏
         setTitle("JZScreenShot");
-        setTop(true);                  // 浮在所有窗口之上
         moveScreen(rc.x(), rc.y());    // 与虚拟桌面完全重合
         resize(rc.width(), rc.height());
 
@@ -683,7 +721,14 @@ public:
     // 截图 + 标注 的合成结果
     JZImage resultImage() const
     {
-        return shotBurnMarks(m_canvas->shotImage(), m_canvas->marks());
+        // 画布坐标是逻辑像素, 截图是物理像素: 烧标注时按两者实际比例放大
+        // (用尺寸比值而不是 device()->scale(), 免依赖设备状态, 且与拼图口径一致)
+        const JZImage& shot = m_canvas->shotImage();
+        const int cw = m_canvas->width();
+        const float s = (cw > 0 && shot.width() > 0)
+                            ? (float)shot.width() / (float)cw
+                            : 1.0f;
+        return shotBurnMarks(shot, m_canvas->marks(), s);
     }
 
 protected:
@@ -720,8 +765,23 @@ JZ_OBJECT_IMPL(JZShotWindow, JZWindow)
 
 JZImage JZScreenShot::captureInteractive(JZWidget* owner)
 {
+    // 标注窗口的设备缩放取自 owner 所在显示器 (JZWindow::createWindow 就是这么定的),
+    // 抓屏按同一缩放拼图 -> 窗口铺满桌面时贴图恰好 1:1, 不发糊。
+    float scale = 1.0f;
+    if (owner)
+    {
+        if (JZWindow* w = owner->window())
+            scale = JZScreen::logicalDpiFor(w->nativeHandle()) / 96.0f;
+    }
+    else
+    {
+        scale = JZScreen::primaryScreen().devicePixelRatio();
+    }
+    if (scale <= 0.0f)
+        scale = 1.0f;
+
     JZRect rc;
-    JZImage shot = captureVirtualDesktop(&rc);
+    JZImage shot = captureVirtualDesktop(&rc, scale);
     if (shot.isNull() || rc.width() <= 0 || rc.height() <= 0)
         return JZImage();
 

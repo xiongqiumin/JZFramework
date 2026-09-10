@@ -60,6 +60,9 @@ public:
     void drawText(int x, int y, const char* text);
 
     void drawImage(const JZImage& img, int x, int y, int w, int h);
+    // 贴显示用位图 (JZPixmap): 同一张图反复绘制时用它 —— 转换已在 JZPixmap::fromImage
+    // 时做完, 每次绘制不再有任何逐像素开销 (drawImage 路径会做同样的转换并缓存)。
+    void drawPixmap(const JZPixmap& pixmap, int x, int y, int w, int h);
 
 private:
     // 粗略裁剪: 图元显示坐标包围盒与裁剪区(优先用 m_clip, 否则用屏幕)不相交则丢弃。

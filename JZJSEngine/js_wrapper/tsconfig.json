@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./serialport" },
+    { "path": "./net" },
+    { "path": "./core" }
+  ]
+}

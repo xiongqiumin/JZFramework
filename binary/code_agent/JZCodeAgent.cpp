@@ -1182,6 +1182,8 @@ void JZCodeAgent::buildAgent()
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
     m_agent->setThinkEnabled(false);
+
+    m_llmConfig.reuseConnection = false;
     m_agent->init(m_llmConfig);
 
     connect(&m_agent->sigReply, this, &JZCodeAgent::onReply);
@@ -1312,17 +1314,6 @@ std::string JZCodeAgent::buildSystemPrompt() const
             "结构摘要用 ts_summary。只有无法按符号定位的局部小改动（注释、单行字面量）"
             "才退回 modify_file。\n";
     text << "代码风格class优先, 使用面向对象的风格进行编码\n";
-
-    vector<string> progs;
-    for (auto* tool : m_tools)
-    {
-        auto* term = dynamic_cast<JZVirtualTerminal*>(tool);
-        if (term)
-        {
-            progs = term->availablePrograms();
-            break;
-        }
-    }
 
     return text.str();
 }

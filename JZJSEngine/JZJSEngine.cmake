@@ -12,6 +12,8 @@
 	JZJSEngine.cpp
 	JZJSNetModule.h
 	JZJSNetModule.cpp
+	JZJSSerialPortModule.h
+	JZJSSerialPortModule.cpp
 	JZJSCoreModule.h
 	JZJSCoreModule.cpp
 	JZJSUiLoader.h

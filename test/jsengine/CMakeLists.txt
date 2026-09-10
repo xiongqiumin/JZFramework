@@ -6,6 +6,9 @@ target_link_libraries(test_jsui JZFramework)
 
 add_executable(test_jsnet test_jsnet.cpp)
 target_link_libraries(test_jsnet JZFramework)
+# 让测试能引用 JS 适配层编译产物目录(演示分离式加载 + 固定路径 import)
+set(JZ_JS_WRAPPER_DIR "${CMAKE_SOURCE_DIR}/JZJSEngine/js_wrapper")
+target_compile_definitions(test_jsnet PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
 # ---- ctest 注册 ----
 add_test(NAME jsengine.test_jsengine COMMAND test_jsengine)

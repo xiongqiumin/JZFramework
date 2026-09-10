@@ -1,4 +1,15 @@
 // JZJSNetModule 端到端测试: 全部走本机 loopback, 不依赖外网
+//
+// 新架构(分离式加载):
+//   JS 适配层不再以原始字符串内嵌进 C++, 而是由 js_wrapper/net/index.ts 与
+//   js_wrapper/core/index.ts 经 tsc 分别编译为 js_wrapper/net/dist/index.js 与
+//   js_wrapper/core/dist/index.js。JZJSNetModule::initEngine / JZJSCoreModule::initEngine
+//   通过 JZJSEngine::runModuleFile 以 ES module 形式从磁盘加载并求值这些文件:
+//   net 把 __jz.* 包装成 net/dgram/http/mqtt/ws/url/os, 挂到 globalThis; core 把
+//   __jz.core 包装成 fs/path/os/process/crypto, 同时把 os 与 net 注入的全局 os
+//   (含 networkInterfaces) 合并。require() 不再支持, 模块通过固定路径 import 使用
+//   (见 check 12/13), 全局脚本也可直接访问已装入的全局对象(net/fs/os/...)。
+
 #include <cstdio>
 #include <string>
 
@@ -9,6 +20,7 @@
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
 #include "JZJSCoreModule.h"
+#include "JZJSSerialPortModule.h"
 #include "JZTimer.h"
 
 using namespace std;
@@ -50,6 +62,10 @@ int main()
     coreModule.initEngine(&engine);
     STEP("core module init");
 
+    JZJSSerialPortModule serialModule;
+    serialModule.initEngine(&engine);
+    STEP("serial port module init");
+
     // 轮询等待某个 JS 表达式为真(同时泵事件循环, 让网络回调落地)
     auto waitFor = [&](const string& expr, int timeoutMs) {
         bool done = false;
@@ -75,14 +91,14 @@ int main()
         return done;
     };
 
-    // 1. 模块注入: 全局 + require 都可用
+    // 1. 模块注入: 全局对象可用(net/dgram/http/ws/mqtt/os 由 initEngine 装入)
     {
         auto v = engine.eval(
             "typeof net === 'object' && typeof dgram === 'object' && typeof http === 'object'"
             " && typeof ws === 'object' && typeof mqtt === 'object' && typeof os === 'object'"
-            " && require('net') === net && typeof fetch === 'function'"
+            " && typeof fetch === 'function'"
             " && typeof WebSocket === 'function' && typeof URL === 'function'");
-        check("modules injected (global + require)", !engine.isException(v.get()) &&
+        check("modules injected (global)", !engine.isException(v.get()) &&
                                                         engine.fromJSValue<bool>(v.get()));
     }
 
@@ -182,7 +198,6 @@ int main()
         engine.eval(
             "globalThis.__httpErr = '';"
             "(function(){"
-            "  var net = require('net');"
             "  var s = net.createServer();"
             "  s.listen(19879, '127.0.0.1', function(){"
             "    var p = s.address().port;"
@@ -213,9 +228,6 @@ int main()
     {
         auto v = engine.eval(
             "(function(){"
-            "  var fs = require('fs');"
-            "  var path = require('path');"
-            "  var os = require('os');"
             "  var bad = [];"
             "  var f = 'jzcore_test_tmp.txt';"
             "  try { fs.unlinkSync(f); } catch(e){}"
@@ -256,7 +268,58 @@ int main()
         check("core fs/path/os/process sync API", ok);
     }
 
+    // 12. 新机制演示: 分离式加载 + ES module import(固定相对路径)
+    //     在 wrapper 目录写一个临时 .mjs, 用相对固定路径 import 已编译的 net 包,
+    //     验证: (a) 模块能从磁盘加载; (b) import 返回的对象与 initEngine 注入的全局 net 同一实例。
+    {
+        std::string wrapper = JZ_JS_WRAPPER_DIR;
+        std::string tmpPath = std::string(wrapper) + "/_import_check.mjs";
+        std::string mjs =
+            "import { net as n } from './net/dist/index.js';\n"
+            "globalThis.__impNet = n;\n"
+            "globalThis.__impSame = (n === net);\n";
+        FILE* f = fopen(tmpPath.c_str(), "wb");
+        if (f) { fwrite(mjs.data(), 1, mjs.size(), f); fclose(f); }
+
+        bool loaded = engine.runModuleFile(tmpPath, false);
+        auto v = engine.eval("typeof __impNet === 'object' && typeof __impNet.createServer === 'function'");
+        bool ok = loaded && !engine.isException(v.get()) && engine.fromJSValue<bool>(v.get());
+        if (ok)
+        {
+            auto s = engine.eval("globalThis.__impSame");
+            jzDebug() << "[import] net === global net:" << (engine.isException(s.get()) ? string("<err>")
+                                                                                     : (engine.fromJSValue<bool>(s.get()) ? "true" : "false"));
+        }
+        check("separated loading + import fixed path", ok);
+
+        remove(tmpPath.c_str());
+    }
+
+    // 13. core 包同样支持分离式加载 + ES module import(固定相对路径)
+    {
+        std::string wrapper = JZ_JS_WRAPPER_DIR;
+        std::string tmpPath = std::string(wrapper) + "/_import_check_core.mjs";
+        std::string mjs =
+            "import { fs as f, path as p, process as pr, crypto as c } from './core/dist/index.js';\n"
+            "globalThis.__impFs = f;\n"
+            "globalThis.__impSameFs = (f === fs);\n"
+            "globalThis.__impHasApi = (typeof f.writeFileSync === 'function'"
+            " && typeof p.join === 'function' && typeof pr.cwd === 'function'"
+            " && typeof c.randomUUID === 'function');\n";
+        FILE* fptr = fopen(tmpPath.c_str(), "wb");
+        if (fptr) { fwrite(mjs.data(), 1, mjs.size(), fptr); fclose(fptr); }
+
+        bool loaded = engine.runModuleFile(tmpPath, false);
+        auto v = engine.eval(
+            "globalThis.__impHasApi === true && globalThis.__impSameFs === true");
+        bool ok = loaded && !engine.isException(v.get()) && engine.fromJSValue<bool>(v.get());
+        check("core separated loading + import fixed path", ok);
+
+        remove(tmpPath.c_str());
+    }
+
     STEP("deinit module");
+    serialModule.deinitEngine();
     coreModule.deinitEngine();
     netModule.deinitEngine();
     STEP("engine stop");

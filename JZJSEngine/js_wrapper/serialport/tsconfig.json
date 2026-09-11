@@ -14,7 +14,6 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "noEmitOnError": false,
     "types": []
   },
   "include": ["index.ts", "types/**/*.d.ts"]

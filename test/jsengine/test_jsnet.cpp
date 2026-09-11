@@ -52,6 +52,8 @@ int main()
     connect(&engine.sigLog, [](const string& s) { jzDebug() << "[js:log] " << s; });
     connect(&engine.sigError, [](const string& s) { jzDebug() << "[js:error] " << s; });
     engine.start();
+    // 供 core 等包以裸模块名(net/dist/index.js)被动 import 兄弟包 net 时定位
+    engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });
     STEP("engine start");
 
     JZJSNetModule netModule;

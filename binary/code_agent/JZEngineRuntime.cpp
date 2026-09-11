@@ -147,6 +147,22 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     engine->setWorkDir(wd);
     engine->start();
 
+    // 供 core 等包以裸模块名(如 'net/dist/index.js')被动 import 兄弟包时, 按运行根与 exe 部署
+    // 两处 jz_js 目录定位(与 bootstrapWebGlobals 的 net 候选路径一致)。相对 import 由 QuickJS
+    // 归一化为绝对路径, 不经 libraryDirs; 仅裸模块名经此解析。
+    {
+        std::vector<std::string> libDirs;
+        libDirs.push_back(rtAbsPath(wd + "/jz_js"));
+        libDirs.push_back(rtAbsPath(wd + "/../jz_js"));
+        std::string appDir = JZPlatform::applicationDirPath();
+        if (!appDir.empty())
+        {
+            libDirs.push_back(rtAbsPath(appDir + "/jz_engine/jz_js"));
+            libDirs.push_back(rtAbsPath(appDir + "/jz_js"));
+        }
+        engine->setLibraryDir(libDirs);
+    }
+
     // 挂载内置模块：net（fetch/http/net/ws...）必须先于 core，core 会复用 net 建好的
     // __jz 命名空间（见 JZJSCoreModule::initEngine），顺序反了会丢失 fetch 等网络全局。
     // 二者共同提供 jz_types 声明的运行期全局（fs/path/process/os/fetch/http/...）。

@@ -10,7 +10,7 @@
 // (不再挂 globalThis; 入口用 `import { fs, path } from '../jz_js/core/dist/index.js'`)。
 
 // 显式依赖 net: 拿到 net 导出的 os(含 networkInterfaces), 本模块增强它(补 platform/tmpdir)。
-import { os as netOs } from '../net/dist/index.js';
+import { os as netOs } from 'net/dist';
 
 declare const __jz: any;
 

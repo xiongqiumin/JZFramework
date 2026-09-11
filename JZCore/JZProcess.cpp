@@ -88,6 +88,7 @@ public:
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
+    bool m_terminateRequested;
 
     HANDLE hProcess;
     HANDLE hThread;
@@ -107,6 +108,7 @@ JZProcessPrivate::JZProcessPrivate(JZProcess *q)
       state(JZProcess::NotRunning),
       exitCode(0),
       exitStatus(JZProcess::NormalExit),
+      m_terminateRequested(false),
       hProcess(INVALID_HANDLE_VALUE),
       hThread(INVALID_HANDLE_VALUE),
       hStdinWrite(INVALID_HANDLE_VALUE),
@@ -385,7 +387,8 @@ bool JZProcessPrivate::tryWaitForExit()
 
         state = JZProcess::NotRunning;
         closeHandles();
-        q_ptr->finished(exitCode, JZProcess::NormalExit);
+        JZProcess::ExitStatus status = m_terminateRequested ? JZProcess::CrashExit : JZProcess::NormalExit;
+        q_ptr->finished(exitCode, status);
         return true;
     }
     else if (result == WAIT_TIMEOUT) {
@@ -434,12 +437,20 @@ int64_t JZProcessPrivate::write(const JZByteArray &data)
 
 void JZProcessPrivate::terminate()
 {
-    if (state != JZProcess::Running || hProcess == nullptr)
+    if (state != JZProcess::Running || hProcess == INVALID_HANDLE_VALUE)
     {
         return;
     }
+    m_terminateRequested = true;
     TerminateProcess(hProcess, 1);
+    // 同步等待进程真正退出再上报结束: 异步定时器路径在长时进程下有竞态,
+    // 会让 state 长期卡在 Running。最多等 3s, TerminateProcess 必然使进程退出。
+    WaitForSingleObject(hProcess, 3000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(hProcess, &exitCode);
+    state = JZProcess::NotRunning;
     closeHandles();
+    q_ptr->finished(exitCode, JZProcess::CrashExit);
 }
 
 void JZProcessPrivate::killProcess()
@@ -1127,6 +1138,7 @@ bool JZProcess::start(const string &program, const vector<string> &arguments)
     d_ptr->state = Starting;
     d_ptr->exitCode = 0;
     d_ptr->exitStatus = NormalExit;
+    d_ptr->m_terminateRequested = false;
     d_ptr->stdoutBuffer.clear();
     d_ptr->stderrBuffer.clear();
 

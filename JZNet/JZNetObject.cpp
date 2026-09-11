@@ -490,7 +490,7 @@ JZNetThread::JZNetThread(JZObject *parent)
 
     connect(&sigFinished, this, &JZNetThread::onFinished);
     moveToThread(this);
-    setObjectName("JZNetThread");
+    setObjectName("net_thread");
     setConfig(cfg);
 
     mg_log_set(MG_LL_ERROR);

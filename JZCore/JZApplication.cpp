@@ -39,6 +39,7 @@ JZApplication::JZApplication()
 #endif
     m_mainThread->attachStdThread(JZThread::currentThreadId());
     m_mainThread->moveToThread(m_mainThread);
+    m_mainThread->setObjectName("main_thread");
     m_mainThread->m_running = true;
 
     m_thread = m_mainThread;

@@ -96,7 +96,8 @@ JZThread::~JZThread()
         JZEventInfo &event = m_eventList.front();        
         if (event.sem)
             event.sem->release();
-        delete event.event;
+        else
+            delete event.event;
         m_eventList.pop();
     }    
 
@@ -634,7 +635,7 @@ void runOnObject(JZObject* recv, const std::function<void()> &func)
     auto callback = new JZSlotCallback<void>();
     callback->lambdaFunc = func;
     event->callback = callback;
-    jzApp->postEvent(recv->thread(), event);
+    jzApp->postEvent(recv, event);
 }
 
 void runOnObject(JZObjectPointer recv, const std::function<void()> &func)

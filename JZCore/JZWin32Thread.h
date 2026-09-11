@@ -53,6 +53,8 @@ public:
     // 不主动 wakeUp: 调用发生在 processEvents 派发中, 本轮 dealPaint 紧随其后。
     void invalidate(JZWindow* window, const JZRect& rc);
 
+    int execLoop(JZEventLoop *loop);
+    
     // 通用模态循环 (DialogBoxParam 语义): 可见期间泵 Win32 消息 + 处理框架
     // 事件 + 绘制脏区; 禁用/恢复 owner (disableOwner=false 供下拉弹层用,
     // 主窗口保持可用, 外点由弹层鼠标抓取吞掉)。hide() 即退出。

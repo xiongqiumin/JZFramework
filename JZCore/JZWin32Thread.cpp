@@ -141,6 +141,16 @@ void JZWin32Thread::processAndPaint()
     dealPaint();
 }
 
+int JZWin32Thread::execLoop(JZEventLoop *loop)
+{
+    while (loop->isRunning())
+    {
+        if (!pumpOnce())
+            break;
+    }
+    return loop->code();
+}
+
 // 通用模态循环 (DialogBoxParam 语义): 可见期间泵 Win32 消息 + 处理框架事件 +
 // 绘制脏区; 禁用/恢复 owner (disableOwner=false 供下拉弹层 — 主窗口保持可用,
 // 外点由弹层鼠标抓取吞掉)。hide() 即退出。与 run() 共用 pumpOnce() 轮体(同样按框架

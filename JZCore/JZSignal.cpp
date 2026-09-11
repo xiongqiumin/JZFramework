@@ -6,6 +6,7 @@
 JZAsyncSignalEvent::JZAsyncSignalEvent()
     :JZEvent(JZEvent_asyncSignal)
 {
+    sender = nullptr;
     hasRecv = false;
     callback = nullptr;
 }

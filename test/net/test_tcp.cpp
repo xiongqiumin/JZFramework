@@ -72,7 +72,9 @@ public:
             m_tps.hit();
     }
 
-    void onClientConnect() { sendNext(); }
+    void onClientConnect() { 
+        sendNext(); 
+    }
 
     void onClientRead()
     {

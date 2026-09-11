@@ -17,6 +17,9 @@ public:
     void quit();
     void processEvents();
 
+    bool isRunning() const;
+    int code();
+
 protected:    
     bool m_running;
     int m_code;

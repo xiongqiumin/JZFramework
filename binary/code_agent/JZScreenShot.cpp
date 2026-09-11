@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 
+#include "JZApplication.h"
 #include "JZBrush.h"
 #include "JZDir.h"
 #include "JZFile.h"
@@ -274,6 +275,13 @@ enum ShotTool { ShotRect = 0, ShotEllipse = 1, ShotPen = 2 };
 const char* const kToolNames[3] = { "矩形", "椭圆", "画笔" };
 const JZColor kMarkColor(0xE8, 0x3B, 0x3B, 255);   // 标注红
 const int kMarkWidth = 4;                          // 标注线宽(画布逻辑像素; 烧进物理像素图时按缩放放大)
+
+// ---- 选区: 外部蒙版 / 边框 / 八向控制点 ----
+const JZColor kMaskColor(0, 0, 0, 120);            // 选区外的暗色蒙版(半透明黑; 后端 SolidBrush 会做 alpha 混合)
+const JZColor kSelBorder(0x2A, 0xA3, 0xFF, 255);   // 选区边框 + 控制点描边(亮蓝)
+const int kHandle = 8;                             // 控制点边长(画布逻辑像素)
+const int kMinSel = 8;                             // 选区最小边长(拖拽缩放时夹住, 防止选区被拖成 0)
+
 const int kBtnW = 76;
 const int kBtnH = 30;
 const int kBtnGap = 8;
@@ -1066,7 +1074,7 @@ JZImage JZScreenShot::captureInteractive(JZWidget* owner)
     // 给系统一点时间把桌面重绘出来(隐藏窗口后帧缓冲不会立即更新)
     if (jzApp)
         jzApp->processEvents();
-    Sleep(120);
+    JZThread::msleep(120);
 
     JZRect rc;
     JZImage shot = captureVirtualDesktop(&rc, scale);

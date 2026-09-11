@@ -1,5 +1,6 @@
 #include "JZFontMetrics.h"
 #include "JZUtf8Iterator.h"
+#include "JZTextEmoji.h"
 
 #include <cstdint>
 
@@ -18,6 +19,16 @@ int JZFontMetrics::textWidth(const std::string& text, const JZFont& font)
 {
     if (text.empty())
         return 0;
+    // emoji 感知: 含 emoji 时按段测量 (文本段走字形, emoji 段走图集位图宽),
+    // 与 JZPainter::drawText / JZAbstractTextEdit 的绘制同口径, 保证 "测量宽度 == 显示宽度"
+    // (否则 emoji 按回退字体字形量会偏窄, 引发换行/光标错位)。
+    if (jzContainsEmoji(text))
+        return jzSegmentTextEmojiWidth(text, font);
+    return measureRaw(text, font);
+}
+
+int JZFontMetrics::measureRaw(const std::string& text, const JZFont& font)
+{
     if (s_engine)
         return s_engine->textWidth(text, font);
     return estimateWidth(text, font.size());
@@ -60,9 +71,8 @@ int JZFontMetrics::textWidth(const std::string& text, const JZFont& font, int ch
     if (prefix.empty())
         return 0;
 
-    if (s_engine)
-        return s_engine->textWidth(prefix, font);
-    return estimateWidth(prefix, font.size());
+    // 复用 emoji 感知测宽 (前缀若在纯文本段内则走 measureRaw, 不会重复分段)
+    return textWidth(prefix, font);
 }
 
 int JZFontMetrics::ascent(const JZFont& font)

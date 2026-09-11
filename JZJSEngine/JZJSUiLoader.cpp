@@ -11,7 +11,7 @@ JZJSUiLoader::JZJSUiLoader() {}
 static const std::vector<std::string>& builtinKnownTypes()
 {
     static const std::vector<std::string> types = {
-        "Window", "MainWindow", "Dialog",
+        "Window", "MainWindow", "Dialog", "Canvas",
         "PushButton", "Label", "ImageLabel",
         "LineEdit", "TextEdit", "AbstractTextEdit",
         "CheckBox", "RadioButton", "Switch", "ComboBox",

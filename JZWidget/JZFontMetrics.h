@@ -36,6 +36,10 @@ public:
     static void setEngine(JZFontEngine* engine);
 
     static int textWidth(const std::string& text, const JZFont& font);
+
+    // 原始字形测宽 (引擎或估算), 不做 emoji 分段。供 emoji 分段内部测量纯文本段使用,
+    // 避免 JZFontMetrics::textWidth 与 emoji 分段互相递归; 其余调用方请用 textWidth。
+    static int measureRaw(const std::string& text, const JZFont& font);
     static int textHeight(const JZFont& font);
 
     // 便捷: 在 width/height 区域内水平/垂直居中的起点坐标

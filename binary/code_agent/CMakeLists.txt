@@ -27,6 +27,8 @@ set(CODE_AGENT_SOURCES
     SettingsDialog.cpp
     TaskPanel.h
     TaskPanel.cpp
+    NavPanel.h
+    NavPanel.cpp
     TaskHistoryManager.h
     TaskHistoryManager.cpp
     TokenRing.h

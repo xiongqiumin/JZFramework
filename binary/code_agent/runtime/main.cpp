@@ -55,8 +55,9 @@ int main(int argc, char *argv[])
 
     JZCommandLineParser parser;
     parser.setDescription(
-        "code_runtime - 运行已打包/发布好的 TS 工程产物（隔离进程，无 GUI）\n"
-        "主入口读取工程根 main.js 的 entry；缺失或产物不存在时报错退出");
+        "code_runtime - 运行已打包/发布好的 TS 工程产物（隔离进程）\n"
+        "主入口读取工程根 main.js 的 entry；缺失或产物不存在时报错退出\n"
+        "支持 JS 创建 GUI（窗口/画布）；存在可见顶层窗口时不自动退出");
 
     JZCommandLineArgument arg;
 
@@ -67,13 +68,18 @@ int main(int argc, char *argv[])
     int debugPort = 9222;
     parser.addOption("--debug-port", &debugPort);
 
+    // 运行根：--root <dir> 显式指定；缺省为当前工作目录。
+    string cmdRoot;
+    parser.addOption("--root", &cmdRoot);
+
     if (!parser.parse(argc, argv))
         return 1;   // 防御：真走到这里说明用法不合法
 
-    // 运行根 = 当前工作目录（jzApp->workingDirPath()，等价 Qt 的 QDir::currentPath()）。
-    // 不再收位置参数：双击 exe / run.bat 时 cwd 就是包所在目录；要以别的目录为运行根，
-    // 由调用方设置子进程工作目录（code_agent 的 run_js 工具、测试与 benchmark 都这么做）。
-    string absRoot = jzApp->workingDirPath();
+    // 运行根：显式 --root 优先，否则用当前工作目录（双击 exe / run.bat 时 cwd 即包所在目录）。
+    // 要以别的目录为运行根，也可由调用方设置子进程工作目录。
+    string absRoot = cmdRoot.empty()
+        ? jzApp->workingDirPath()
+        : JZDir(cmdRoot).absolutePath();
 
     // 是否开启调试器：命令行 --debug 优先；否则读自身资源（导出时由 JZExeResource 写入）。
     bool debugMode = cmdDebug;
@@ -201,13 +207,26 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!keepAlive && !rt.hasPendingJob())
+    // 存在可见顶层窗口（如 JS 建的五子棋画布窗口）时也要留在事件循环里，等用户关窗。
+    auto hasVisibleTopWindow = []() -> bool {
+        for (auto* w : jzApp->topLevelWindows())
+            if (w->isVisible() && w->nativeHandle())
+                return true;
+        return false;
+    };
+
+    if (!keepAlive && !rt.hasPendingJob() && !hasVisibleTopWindow())
         return 0;
 
     JZTimer check_timer;
     connect(&check_timer.sigTimeout, [&]() {
         // keepAlive 被异常流程置 true 时（调试器已/将启动）不自动退出
-        if (!keepAlive && !rt.hasPendingJob())
+        if (keepAlive)
+            return;
+        // 有可见顶层窗口（如 JS 建的五子棋画布窗口）时保持运行，等用户关窗再退出
+        if (hasVisibleTopWindow())
+            return;
+        if (!rt.hasPendingJob())
             app.quit();
     });
     check_timer.start(100);

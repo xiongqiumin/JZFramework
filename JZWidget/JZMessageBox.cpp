@@ -25,12 +25,12 @@ JZMessageBox::JZMessageBox(JZWidget* parent, const std::string& title,
     JZHBoxLayout* bh = new JZHBoxLayout(8, 8);
     bh->addStretch(1);
     auto* okBtn = new JZPushButton(btnRow, 75, 30, "OK");
+    bh->addWidget(okBtn, 0);
     if (hasCancel) {
         auto* cancelBtn = new JZPushButton(btnRow, 75, 30, "Cancel");
         bh->addWidget(cancelBtn, 0);
         connect(&cancelBtn->sigClicked, this, &JZDialog::reject);
     }
-    bh->addWidget(okBtn, 0);
     connect(&okBtn->sigClicked, this, &JZDialog::accept);
     btnRow->setLayout(bh);
     vbox->addWidget(btnRow, 0);

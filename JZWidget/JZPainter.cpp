@@ -7,6 +7,9 @@
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
 #include "JZGdiBackend.h"
+#include "JZTextEmoji.h"
+#include "JZEmojiImageMap.h"
+#include "JZFontMetrics.h"
 
 JZPainter::JZPainter(JZWidget* widget)
 {
@@ -349,19 +352,43 @@ void JZPainter::drawText(int x, int y, const char* text)
     if (!text || text[0] == '\0')
         return;
 
-    // 粗略包围盒: 用字号估高、字符数估宽 (仅作出屏剔除用, 仅单位阵时)。
+    // emoji 感知分段: 文本段走文字任务, emoji 段命中图集则走位图任务,
+    // 二者叠加即为完整一行(与 JZAbstractTextEdit / ChatView 同一口径)。
+    const std::vector<JZTextEmojiRun> runs = jzSegmentTextEmoji(std::string(text), m_font);
+
+    // 出屏剔除(仅单位阵时, 用分段累计宽度估计包围盒)
     if (m_matrix.isIdentity()) {
-        int th = m_font.size();
-        int tw = (int)std::strlen(text) * m_font.size() / 2;
+        int th = JZFontMetrics::textHeight(m_font);
+        int tw = 0;
+        for (const auto& r : runs)
+            tw += r.width;
         if (isCulled(JZRect(m_ox + x, m_oy + y, tw, th)))
             return;
     }
 
-    auto t = std::make_shared<JZTextTask>();
-    t->text = text;
-    // area 作为文本绘制原点区域 (top-left 对齐); 本地坐标, 变换由后端施加。
-    t->area = JZRect(x, y, 1, 1);
-    m_layer->addTask(t);
+    int cx = x;
+    for (const auto& r : runs) {
+        if (r.text.empty()) {
+            cx += r.width;
+            continue;
+        }
+        if (r.emoji) {
+            // emoji 段: 命中内置图集则画位图(与文本段顶对齐), 否则降级为字体绘制。
+            const int box = JZFontMetrics::textHeight(m_font);
+            const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(r.text, box);
+            if (pm && !pm->isNull()) {
+                drawPixmap(*pm, cx, y, box, box);
+                cx += r.width;
+                continue;
+            }
+        }
+        // 文本段 / 降级 emoji: 各自生成独立文字任务(变换由后端施加)。
+        auto t = std::make_shared<JZTextTask>();
+        t->text = r.text;
+        t->area = JZRect(cx, y, 1, 1);   // 本地坐标, top-left 对齐
+        m_layer->addTask(t);
+        cx += r.width;
+    }
 }
 
 void JZPainter::drawImage(const JZImage& img, int x, int y, int w, int h)

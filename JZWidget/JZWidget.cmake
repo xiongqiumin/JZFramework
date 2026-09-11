@@ -80,6 +80,8 @@ set(JZ_SOURCES
     JZMainWindow.cpp
     JZWindow.h
     JZWindow.cpp
+    JZCanvas.h
+    JZCanvas.cpp
     JZDialog.h
     JZDialog.cpp
     JZMessageBox.h
@@ -128,6 +130,8 @@ set(JZ_SOURCES
     JZEmoji.cpp
     JZEmojiImageMap.h
     JZEmojiImageMap.cpp
+    JZTextEmoji.h
+    JZTextEmoji.cpp
     JZAbstractTextEdit.h
     JZAbstractTextEdit.cpp
     JZLineEdit.h

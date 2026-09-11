@@ -8,11 +8,13 @@
 #include "JZJSCoreModule.h"
 #include "JZJSqliteModule.h"
 #include "JZJSModbusModule.h"
+#include "JZJSWidgetModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
 #include "JZThread.h"
 #include "json/json.h"
+#include <excpt.h>
 
 using namespace std;
 
@@ -161,11 +163,15 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_modbusModule = std::make_unique<JZJSModbusModule>();
     m_modbusModule->initEngine(engine);
 
+    // widget：把 JZWidget 的窗口/画布暴露为 JS 原生对象 (JZWindow / JZCanvas),
+    // 供 JS 直接建 GUI（如五子棋画布）。窗口存在时 runtime 不退出（见 runtime/main.cpp）。
+    m_widgetModule = std::make_unique<JZJSWidgetModule>();
+    m_widgetModule->initEngine(engine);
+
     // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
     // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
     // 用(等价 Node 启动装载 undici/whatwg)。net 模块按绝对路径加载, 与用户入口
     // `import '../jz_js/net/dist/index.js'` 命中同一模块缓存, 不会重复执行; 找不到
-    // shim 时静默跳过(纯算法/无网络工程仍可用)。
     bootstrapWebGlobals(wd);
 
     LogBridge *bridge = new LogBridge();
@@ -232,6 +238,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_modbusModule->deinitEngine();
         m_modbusModule.reset();
+    }
+    if (m_widgetModule)
+    {
+        m_widgetModule->deinitEngine();
+        m_widgetModule.reset();
     }
     if (m_bridge)
     {

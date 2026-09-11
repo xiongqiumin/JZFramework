@@ -6,6 +6,7 @@
 #include "JZPainter.h"
 #include "JZFontMetrics.h"
 #include "JZUtf8Iterator.h"
+#include "JZTextEmoji.h"
 #include "JZDebug.h"
 #include "JZScreenShot.h"
 
@@ -62,98 +63,9 @@ static void drawTriangle(JZPainter& p, int cx, int cy, int r, bool down)
 
 namespace {
 
-// 一行里的"可绘制单元": 文本段或 emoji 段。byteStart/字节长度相对本行串。
-struct EmojiRun {
-    bool     emoji = false;
-    std::string text;        // 本段 UTF-8 (文本段或 emoji 序列)
-    int      byteStart = 0;  // 段首在本行串中的字节下标
-    int      width = 0;      // 显示宽度 (逻辑像素)
-};
-
-// emoji 段的显示宽度: 命中内置图集取位图宽(=box), 否则退回字体测宽(降级)。
-int emojiRunWidth(const std::string& seq, const JZFont& font)
-{
-    const int box = JZFontMetrics::textHeight(font);
-    const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(seq, box);
-    if (pm && !pm->isNull())
-        return pm->width();
-    return JZFontMetrics::textWidth(seq, font);
-}
-
-// 从字节位置 pos 起, 若起始码点是 emoji, 吸收后续修饰符 (VS16/ZWJ/肤色/标签),
-// 返回完整 emoji 序列 (UTF-8) 与字节长度; 否则返回 false。
-bool nextEmojiSeq(const std::string& u8, size_t pos, size_t end,
-                  std::string& outSeq, int& outLen)
-{
-    char32_t cp; int len;
-    if (!JZUtf8Iterator::decode(u8.data(), u8.size(), pos, cp, len) || len <= 0)
-        return false;
-    if (!JZEmoji::isEmoji(cp))
-        return false;
-
-    std::string seq = u8.substr(pos, len);
-    size_t j = pos + len;
-    while (j < end) {
-        char32_t nc; int nl;
-        if (!JZUtf8Iterator::decode(u8.data(), u8.size(), j, nc, nl) || nl <= 0)
-            break;
-        if (JZEmoji::isEmojiModifier(nc) || JZEmoji::isEmoji(nc)) {
-            seq += u8.substr(j, nl);
-            j += nl;
-            continue;
-        }
-        break;
-    }
-    outSeq = seq;
-    outLen = static_cast<int>(j - pos);
-    return true;
-}
-
-// 把一行文本切成文本段 / emoji 段, 并计算每段宽度。
-std::vector<EmojiRun> segmentLine(const std::string& line, const JZFont& font)
-{
-    std::vector<EmojiRun> runs;
-    const size_t n = line.size();
-    size_t i = 0;
-    int x = 0;
-    while (i < n) {
-        std::string seq; int seqLen;
-        if (nextEmojiSeq(line, i, n, seq, seqLen)) {
-            const int w = emojiRunWidth(seq, font);
-            EmojiRun r; r.emoji = true;  r.text = seq;
-            r.byteStart = static_cast<int>(i); r.width = w;
-            runs.push_back(r);
-            x += w; i += seqLen;
-            continue;
-        }
-        // 普通文本: 一路吃到下一个 emoji (或行尾)
-        size_t j = i;
-        char32_t c0; int l0;
-        if (!JZUtf8Iterator::decode(line.data(), n, j, c0, l0) || l0 <= 0)
-            j += 1;
-        else
-            j += l0;
-        while (j < n) {
-            char32_t nc; int nl;
-            if (!JZUtf8Iterator::decode(line.data(), n, j, nc, nl) || nl <= 0)
-                break;
-            if (JZEmoji::isEmoji(nc))
-                break;
-            j += nl;
-        }
-        std::string txt = line.substr(i, j - i);
-        const int w = JZFontMetrics::textWidth(txt, font);
-        EmojiRun r; r.emoji = false; r.text = txt;
-        r.byteStart = static_cast<int>(i); r.width = w;
-        runs.push_back(r);
-        x += w; i = j;
-    }
-    return runs;
-}
-
 // 行内某字节偏移对应的 x (相对行首, 不含 x0)。emoji 段整体不可分割, 落在段内
 // 时吸附到最近的段边界。
-int xAtByte(const std::vector<EmojiRun>& runs, int byteOff, const JZFont& font)
+int xAtByte(const std::vector<JZTextEmojiRun>& runs, int byteOff, const JZFont& font)
 {
     int x = 0;
     for (const auto& r : runs) {
@@ -181,7 +93,7 @@ int xAtByte(const std::vector<EmojiRun>& runs, int byteOff, const JZFont& font)
 }
 
 // 行内点 x (相对行首) -> 最近的字节偏移。文本段逐码点候选, emoji 段取两端。
-int offsetForX(const std::vector<EmojiRun>& runs, int x, const JZFont& font)
+int offsetForX(const std::vector<JZTextEmojiRun>& runs, int x, const JZFont& font)
 {
     int best = 0, bestDist = INT_MAX, cur = 0;
     for (const auto& r : runs) {
@@ -291,7 +203,7 @@ void ChatView::wrapText(const std::string& text, const JZFont& font,
                 break;
             }
             i = j;
-            cpW = emojiRunWidth(piece, font);
+            cpW = jzEmojiRunWidth(piece, font);
         }
         else
         {
@@ -823,7 +735,7 @@ void ChatView::drawMsgText(JZPainter& p, const Msg& m, int msgIdx, int part,
     for (size_t li = 0; li < lines.size(); li++)
     {
         const int yLine = topY + (int)li * lh;
-        const std::vector<EmojiRun> runs = segmentLine(lines[li], font);
+        const std::vector<JZTextEmojiRun> runs = jzSegmentTextEmoji(lines[li], font);
 
         // 选区高亮(浅蓝底, 文字保持黑色, 读得清)
         if (sel && (int)li >= la && (int)li <= lb)
@@ -1073,7 +985,7 @@ void ChatView::mousePressEvent(JZMouseEvent* event)
                 const std::vector<std::string>& lines =
                     (part == 0) ? m.lines : m.resultLines;
                 const int x0 = kOuter + kCardPad;
-                const std::vector<EmojiRun> runs = segmentLine(lines[li], bodyFont);
+                const std::vector<JZTextEmojiRun> runs = jzSegmentTextEmoji(lines[li], bodyFont);
                 const int off = offsetForX(runs, contentX - x0, bodyFont);
 
                 m_selMsg = idx;
@@ -1116,7 +1028,7 @@ void ChatView::mouseMoveEvent(JZMouseEvent* event)
 
     const std::vector<std::string>& lines = (part == 0) ? m.lines : m.resultLines;
     const int x0 = kOuter + kCardPad;
-    const std::vector<EmojiRun> runs = segmentLine(lines[li], bodyFont);
+    const std::vector<JZTextEmojiRun> runs = jzSegmentTextEmoji(lines[li], bodyFont);
     const int off = offsetForX(runs, contentX - x0, bodyFont);
 
     m_selLineB = li;
@@ -1316,7 +1228,7 @@ void ChatView::paintEvent(JZPainterEvent* event)
         int ty = y + kHeaderH;
         for (size_t li = 0; li < m_waitLines.size(); li++)
         {
-            const std::vector<EmojiRun> runs = segmentLine(m_waitLines[li], bodyFont);
+            const std::vector<JZTextEmojiRun> runs = jzSegmentTextEmoji(m_waitLines[li], bodyFont);
             int x = contentLeft + kCardPad;
             for (const auto& r : runs)
             {

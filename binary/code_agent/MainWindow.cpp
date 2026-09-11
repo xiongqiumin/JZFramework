@@ -692,17 +692,17 @@ void MainWindow::setupUi()
     mainLayout->addWidget(m_editorSplitter, 1);
     leftArea->setLayout(mainLayout);
 
-    // 左侧任务面板：新建任务 + 历史任务列表（未打开工程时从 splitter 摘掉）
-    // 不能 setFixedWidth：splitter 靠 setGeometry 摆放子控件，固定宽会被夹住而拖不动。
-    m_taskPanel = new TaskPanel(m_splitter);
-    m_taskPanel->setMinimumWidth(140);
+    // 右侧常驻导航栏: 搜索 + 固定功能入口 + 任务列表(关闭工程也常驻, 任务区切到空态)
+    // 不能 setFixedWidth: splitter 靠 setGeometry 摆放子控件, 固定宽会被夹住而拖不动。
+    m_navPanel = new NavPanel(m_splitter);
 
-    m_splitter->addWidget(m_taskPanel);
     m_splitter->addWidget(leftArea);
-    // 初始比例用拉伸因子（1:4 ≈ 面板 1/5 宽）。注意别在这里 setSizes：
-    // 此刻 splitter 宽度还是 0，relayout 会把 sizes 全算成 0，启动后变成左右各一半。
-    m_splitter->setStretchFactor(0, 1);
-    m_splitter->setStretchFactor(1, 4);
+    m_splitter->addWidget(m_navPanel);
+    // 初始比例用拉伸因子(4:1 ≈ 导航栏 1/5 宽)。注意别在这里 setSizes:
+    // 此刻 splitter 宽度还是 0, relayout 会把 sizes 全算成 0, 启动后变成左右各一半;
+    // 首次 resizeEvent 时再按 m_navWidth 设一次。
+    m_splitter->setStretchFactor(0, 4);
+    m_splitter->setStretchFactor(1, 1);
 
     JZHBoxLayout* rootLayout = new JZHBoxLayout(0, 0);
     rootLayout->addWidget(m_splitter, 1);
@@ -719,9 +719,13 @@ void MainWindow::setupUi()
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
-    connect(&m_taskPanel->sigNewTask, this, &MainWindow::onNewTask);
-    connect(&m_taskPanel->sigTaskActivated, this, &MainWindow::onSwitchTask);
-    connect(&m_taskPanel->sigDeleteTask, this, &MainWindow::onDeleteTask);
+    connect(&m_navPanel->sigNewProject, this, &MainWindow::onNewProject);
+    connect(&m_navPanel->sigOpenProject, this, &MainWindow::onOpenProject);
+    connect(&m_navPanel->sigNewTask, this, &MainWindow::onNewTask);
+    connect(&m_navPanel->sigExport, this, &MainWindow::onExport);
+    connect(&m_navPanel->sigSettings, this, &MainWindow::onSettings);
+    connect(&m_navPanel->sigTaskActivated, this, &MainWindow::onSwitchTask);
+    connect(&m_navPanel->sigDeleteTask, this, &MainWindow::onDeleteTask);
     connect(&m_splitter->sigSplitterMoved, this, &MainWindow::onSplitterMoved);
     connect(&m_editorSplitter->sigSplitterMoved, this, &MainWindow::onEditorSplitterMoved);
 }
@@ -1059,10 +1063,10 @@ void MainWindow::reloadChat()
 
 void MainWindow::refreshTaskPanel()
 {
-    if (!m_taskPanel)
+    if (!m_navPanel)
         return;
     m_taskVersion = m_historyManager.taskVersion();
-    m_taskPanel->setTasks(m_historyManager.tasks(), m_historyManager.currentTaskId());
+    m_navPanel->setTasks(m_historyManager.tasks(), m_historyManager.currentTaskId());
 }
 
 void MainWindow::onNewTask()
@@ -1211,31 +1215,19 @@ void MainWindow::updateStack()
         m_welcome->setRecentProjects(m_cfg.recentProjects);
 }
 
-// JZSplitter 认 setVisible: 隐藏的一项不占空间、也不产生分隔条，剩下的占满整个区域。
+// 导航栏始终常驻; updateSplitter 只把"工程是否打开"传给 NavPanel,
+// 由它内部在 TaskPanel / 空态提示 之间切换。
 void MainWindow::updateSplitter()
 {
-    if (!m_splitter || !m_taskPanel)
-        return;
-
-    m_taskPanel->setVisible(m_projectOpened);
-
-    // 重新显示时它被 relayout 归零过，按记住的宽度恢复（默认 220）
-    if (m_projectOpened)
-    {
-        int total = m_splitter->width() - m_splitter->handleWidth();
-        if (total > 0)
-        {
-            int w = std::min(m_taskPanelWidth, std::max(0, total - 200));
-            m_splitter->setSizes({w, total - w});
-        }
-    }
+    if (m_navPanel)
+        m_navPanel->setProjectOpened(m_projectOpened);
 }
 
 void MainWindow::onSplitterMoved(int pos, int handleIndex)
 {
     std::vector<int> sizes = m_splitter->sizes();
-    if (!sizes.empty() && sizes[0] >= 140)
-        m_taskPanelWidth = sizes[0];
+    if (sizes.size() >= 2 && sizes[1] >= 200)
+        m_navWidth = sizes[1];
 }
 
 // 竖分割：没打开工程时输入框隐藏，欢迎页占满整个高度
@@ -1266,6 +1258,18 @@ void MainWindow::applyEditorSizes()
     m_editorSplitter->setSizes({total - h, h});
 }
 
+// 首次 resizeEvent 时按 m_navWidth 设置右侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
+void MainWindow::applyNavWidth()
+{
+    if (!m_splitter || !m_navPanel)
+        return;
+    int total = m_splitter->width() - m_splitter->handleWidth();
+    if (total <= 0)
+        return;
+    int w = std::min(m_navWidth, std::max(200, total - 400));
+    m_splitter->setSizes({total - w, w});
+}
+
 void MainWindow::onEditorSplitterMoved(int pos, int handleIndex)
 {
     std::vector<int> sizes = m_editorSplitter->sizes();
@@ -1276,8 +1280,15 @@ void MainWindow::onEditorSplitterMoved(int pos, int handleIndex)
 void MainWindow::resizeEvent(JZResizeEvent* event)
 {
     JZMainWindow::resizeEvent(event);
-    // 窗口尺寸变化后重算：输入区高度跟着 m_inputHeight 走，不被按比例拉伸
+    // 窗口尺寸变化后重算: 输入区高度跟着 m_inputHeight 走, 不被按比例拉伸
     applyEditorSizes();
+    // 首次有尺寸时按 m_navWidth 给右侧导航栏一个稳定的初始宽度,
+    // 之后由用户拖动 + onSplitterMoved 决定, 不再覆盖。
+    if (!m_navInitialSized && m_splitter && m_splitter->width() > 0)
+    {
+        applyNavWidth();
+        m_navInitialSized = true;
+    }
 }
 
 void MainWindow::openLastProject()

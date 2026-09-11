@@ -9,7 +9,7 @@
 #include "ChatView.h"
 #include "AppConfig.h"
 #include "SettingsDialog.h"
-#include "TaskPanel.h"
+#include "NavPanel.h"
 #include "TaskHistoryManager.h"
 #include "TokenRing.h"
 
@@ -237,6 +237,8 @@ private:
 
     // 竖向 splitter 的高度分配：输入区保持 m_inputHeight，剩余全给对话区
     void applyEditorSizes();
+    // 首次 resizeEvent 时按 m_navWidth 设置右侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
+    void applyNavWidth();
     void resizeEvent(JZResizeEvent* event) override;
 
     void appendLog(const CodeAgentLog& log);
@@ -258,12 +260,13 @@ private:
     JZMenu*          m_recentMenu = nullptr;   // 文件 → 最近的项目（子菜单）
     JZStackedWidget* m_stack = nullptr;        // 0=欢迎页 1=对话页
     WelcomePage*     m_welcome = nullptr;
-    JZSplitter*      m_splitter = nullptr;     // 任务面板 | 对话区，可拖动调整
+    JZSplitter*      m_splitter = nullptr;     // 对话区 | 右侧导航栏，可拖动调整
     JZSplitter*      m_editorSplitter = nullptr;// 对话区 / 输入区，竖向可拖动
     int              m_inputHeight = 104;      // 输入区高度（拖动后记住）
-    TaskPanel*       m_taskPanel = nullptr;    // 左侧任务列表（新建任务 / 历史任务）
-    int              m_taskPanelWidth = 220;   // 记住用户拖出来的面板宽度
-    int              m_taskVersion = -1;       // 已渲染的任务列表版本（变化才重建）
+    NavPanel*        m_navPanel = nullptr;     // 右侧常驻导航栏(搜索+固定入口+任务列表)
+    int              m_navWidth = 260;         // 导航栏宽度(用户拖动后记住)
+    bool             m_navInitialSized = false;// 导航栏宽度是否已初始化
+    int              m_taskVersion = -1;       // 已渲染的任务列表版本(变化才重建)
     bool             m_projectOpened = false;  // 是否已打开工程（决定显示哪一页）
 
     // ---- 右侧历史面板 ----

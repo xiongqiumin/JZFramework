@@ -5,7 +5,7 @@
  * 各模块的具名导出分散在同目录的 <module>.d.ts, 这里统一再导出,
  * 便于按包路径引用(如 `import type { Socket } from '@jz/net'`)。
  *
- * 全局类 URL / URLSearchParams / WebSocket 见 JZJSEngine/types/globals.d.ts。
+ * 全局类 URL / URLSearchParams / WebSocket 见 js_wrapper/types/globals.d.ts。
  */
 export * from './net';
 export * from './dgram';

@@ -1,5 +1,5 @@
-/// <reference path="../../../types/common.d.ts" />
-/// <reference path="../../../types/events.d.ts" />
+/// <reference path="../../types/common.d.ts" />
+/// <reference path="../../types/events.d.ts" />
 
 export interface TcpNetConnectOpts {
     port: number;

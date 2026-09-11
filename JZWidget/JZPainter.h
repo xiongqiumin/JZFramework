@@ -8,6 +8,10 @@
 #include "JZImage.h"
 #include "JZLayer.h"
 #include "JZRect.h"
+#include "JZMatrix2D.h"
+#include "JZPainterPath.h"
+
+#include <vector>
 
 class JZWidget;
 
@@ -17,6 +21,10 @@ class JZPainter
 {
 public:
     explicit JZPainter(JZWidget* widget);
+    // 离屏绘制: 把绘制命令合成到 image 自身的像素缓冲 (坐标即 image 像素, 原点 0,0)。
+    // 常用于生成图标/缩略图/离屏画布。image 必须已非 null 且尺寸有效 (见 JZImage::create)。
+    // painter 析构时自动把本帧绘制回写入 image (保留原图内容, SourceOver 叠加)。
+    explicit JZPainter(JZImage& image);
     ~JZPainter();   // 发 Pop 平衡构造时的 Push (未配对的 save 一并自动闭合)
 
     void setPen(const JZPen& pen);
@@ -28,10 +36,23 @@ public:
     void setFont(const JZFont& font);
     JZFont font() const;
 
-    // 保存/恢复绘制状态 (pen/brush/font)。save 向绘制流追加 Push, restore 追加 Pop,
+    // 保存/恢复绘制状态 (pen/brush/font/变换矩阵)。save 向绘制流追加 Push, restore 追加 Pop,
     // 与构造/析构的 Push/Pop 共同保证绘制流状态机严格配对。
     void save();
     void restore();
+
+    // ---- 变换矩阵 (控件本地坐标系内, 等价 Qt QPainter 的 worldTransform) ----
+    // 组合语义: 每次 translate/rotate/scale 在"当前已变换的坐标系"内继续变换
+    // (先 translate 到中心再 rotate => 绕中心旋转)。所有 drawXxx 几何都会先过本矩阵。
+    // 实现: 矩阵**不烘焙进坐标**, 而是随 Push/Change 任务下发, 由后端用 GDI+ SetTransform
+    // 统一施加 (几何以本地坐标提交)。这样笔宽/文本/图片/圆角都会随变换正确缩放与旋转,
+    // 不再有"矩阵缩放不缩放描边宽度"等限定。
+    void setTransform(const JZMatrix2D& m);
+    JZMatrix2D transform() const;
+    void resetTransform();
+    void translate(double dx, double dy);
+    void rotate(double deg);          // 屏幕顺时针为正, 角度制
+    void scale(double sx, double sy);
 
     // 裁剪属于绘制流状态, 变更时发 Push。
     // setClip(rc): rc 为**控件本地坐标**, 与 drawXxx/fillRect 等各接口一致,
@@ -64,11 +85,34 @@ public:
     // 时做完, 每次绘制不再有任何逐像素开销 (drawImage 路径会做同样的转换并缓存)。
     void drawPixmap(const JZPixmap& pixmap, int x, int y, int w, int h);
 
+    // ---- 矢量路径 / 曲线 (坐标均为控件本地坐标, 会经过当前变换矩阵) ----
+    // 描边 (用当前 pen) / 填充 (用当前 brush; 若 fillColor 指定则用它)。
+    void drawPath(const JZPainterPath& path);   // 描边
+    void fillPath(const JZPainterPath& path);   // 填充
+
+    // 椭圆 (圆为 w==h): 描边用当前 pen。
+    void drawEllipse(int x, int y, int w, int h);
+    void fillEllipse(int x, int y, int w, int h, const JZColor& color);
+
+    // 经过 points 的平滑曲线 (Catmull-Rom 展开为三次贝塞尔, 等价 Qt 的 drawPolyline
+    // 平滑版)。至少需要 2 个点。
+    void drawCurve(const std::vector<JZPoint>& points);
+
 private:
     // 粗略裁剪: 图元显示坐标包围盒与裁剪区(优先用 m_clip, 否则用屏幕)不相交则丢弃。
     bool isCulled(const JZRect& displayBounds) const;
 
-    // 把当前完整状态 (pen/brush/font/clip) 以 Push 任务写入绘制流。
+    // 当前应下发到后端的本地变换: 仅控件自身经 setTransform/translate/rotate/scale 累积的
+    // 矩阵 (以控件局部坐标为基准, 不含框架放置偏移 m_ox/m_oy)。后端据其与放置偏移、DPI 缩放
+    // 合成世界变换: Scale(s) * Translate(ox,oy) * matrix。几何以本地坐标提交。
+    JZMatrix2D currentTaskMatrix() const;
+
+    // 把本地坐标路径写入绘制流 (不再在 painter 端烘焙矩阵); stroke/fill 决定描边/填充,
+    // fillColor 有值取其色, 否则取当前 brush 色。变换由后端经世界变换统一施加。
+    void addPathTask(const JZPainterPath& path, bool stroke, bool fill,
+                     const JZOptional<JZColor>& fillColor = JZOptional<JZColor>());
+
+    // 把当前完整状态 (pen/brush/font/clip/matrix) 以 Push 任务写入绘制流。
     void pushState();
 
     // 祖先裁剪: 向上找到开启 setClipChildren() 的祖先控件 (如滚动区 viewport),
@@ -79,10 +123,16 @@ private:
         JZPen pen;
         JZBrush brush;
         JZFont font;
+        JZMatrix2D matrix;
     };
 
     JZLayer* m_layer = nullptr;
     JZWidget* m_widget = nullptr;
+
+    // 离屏绘制 (JZPainter 作用于 JZImage) 时, 本 painter 自持一个图层, 析构时回写入 image。
+    JZLayer m_ownLayer;
+    JZImage* m_imageTarget = nullptr;   // 非 null = 离屏模式
+    float m_scale = 1.0f;               // 离屏绘制缩放 (逻辑单位 == 像素, 恒为 1)
 
     // 绘制原点: 构造时按 widget 全局坐标自动设置, 内部用于把本地坐标平移到
     // 显示坐标 (drawXxx/setClip 通用)。不对外开放, 外部不可调整。
@@ -91,6 +141,8 @@ private:
     JZRect m_clip;
     JZRect m_screen;            // 屏幕可见区域, 用于完全出屏的粗略剔除
     std::vector<State> m_stack; // save/restore 状态栈
+
+    JZMatrix2D m_matrix;          // 当前变换矩阵: 控件本地坐标的累积变换 (每个控件绘制前为单位矩阵)
 
     int m_streamDepth = 0;      // 已写入绘制流、待析构 Pop 平衡的 Push 数
 

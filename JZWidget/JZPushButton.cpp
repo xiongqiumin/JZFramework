@@ -1,5 +1,6 @@
 #include "JZPushButton.h"
 #include "JZPainter.h"
+#include <algorithm>
 #include "JZStylePainter.h"
 #include "JZFontMetrics.h"
 
@@ -30,6 +31,15 @@ void JZPushButton::setText(const std::string& text)
 std::string JZPushButton::text() const
 { return m_text; }
 
+void JZPushButton::setIcon(const JZImage& icon)
+{
+    m_icon = icon;
+    update();
+}
+
+const JZImage& JZPushButton::icon() const
+{ return m_icon; }
+
 void JZPushButton::setWidth(int w)
 {
     resize(w, height());
@@ -44,6 +54,14 @@ JZSize JZPushButton::sizeHint() const
 {
     int w = m_width > 0 ? m_width : 90;
     int h = m_height > 0 ? m_height : 30;
+    if (!m_icon.isNull())
+    {
+        const int iconPad = 4;
+        if (m_width <= 0)
+            w += m_icon.width() + (m_text.empty() ? 0 : iconPad);
+        if (m_height <= 0)
+            h = std::max(h, m_icon.height() + 8);
+    }
     return JZSize(w, h);
 }
 
@@ -89,14 +107,42 @@ void JZPushButton::paintEvent(JZPainterEvent* event)
     // 盒子层 (背景/边框/圆角) 由样式驱动
     JZStylePainter::drawBox(p, s, rect());
 
-    // 内容层: 文本, 基于 contentRect (border + padding 内缩)
+    // 内容层: 图标 + 文本, 基于 contentRect (border + padding 内缩)
     JZRect cr = JZStylePainter::contentRect(s, rect());
     JZFont font(14);
     p.setPen(JZPen(s.color.valueOr(JZColor(0x20, 0x20, 0x20)), 1));
     p.setFont(font);
-    if (!m_text.empty())
+
+    const int iconPad = 4;
+    int iconW = m_icon.isNull() ? 0 : m_icon.width();
+    int iconH = m_icon.isNull() ? 0 : m_icon.height();
+
+    if (!m_icon.isNull())
+    {
+        if (m_text.empty())
+        {
+            // 纯图标按钮: 图标在整个内容区居中
+            int ix = cr.x() + (cr.width() - iconW) / 2;
+            int iy = cr.y() + (cr.height() - iconH) / 2;
+            p.drawImage(m_icon, ix, iy, iconW, iconH);
+        }
+        else
+        {
+            // 图文并排: 图标靠左, 文本紧随其后
+            int iy = cr.y() + (cr.height() - iconH) / 2;
+            p.drawImage(m_icon, cr.x(), iy, iconW, iconH);
+            std::string t = m_text;
+            int tx = cr.x() + iconW + iconPad;
+            int ty = cr.y() + JZFontMetrics::centerY(font, cr.height());
+            p.drawText(tx + JZFontMetrics::centerX(t, font, cr.width() - iconW - iconPad),
+                       ty, t.c_str());
+        }
+    }
+    else if (!m_text.empty())
+    {
         p.drawText(cr.x() + JZFontMetrics::centerX(m_text, font, cr.width()),
                    cr.y() + JZFontMetrics::centerY(font, cr.height()), m_text.c_str());
+    }
 }
 
 void JZPushButton::mousePressEvent(JZMouseEvent* event)

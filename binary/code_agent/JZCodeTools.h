@@ -143,6 +143,19 @@ public:
     virtual void call(const ToolCall &params) override;
 };
 
+// ------------------------------------------------------------------
+// get_datetime: 获取当前日期时间
+//   模型在需要"今天 / 现在 / 星期几"这类信息时，应优先调用本工具，而不是依赖
+//   训练数据里的时间。默认返回结构化 JSON（date/time/weekday/timestamp/datetime），
+//   也可传 format 用 strftime 风格字符串自定义输出；utc=true 时返回 UTC 而非本地时间。
+// ------------------------------------------------------------------
+class JZGetDateTimeTool : public JZCodeTool
+{
+public:
+    JZGetDateTimeTool();
+    virtual void call(const ToolCall &params) override;
+};
+
 
 // ------------------------------------------------------------------
 // search_code: 在工作区内搜索文本 / 正则

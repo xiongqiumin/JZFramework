@@ -1,6 +1,6 @@
 #include "JZExeResource.h"
 
-// 注意：本文件只含 Win32 资源 API，绝不 include JZAgentTool.h（BOOLEAN 宏冲突）。
+// 注意：本文件只含 Win32 资源 API，不 include JZAgentTool.h（避免把 JZAgent 依赖带进来）。
 #include <Windows.h>
 
 #include <fstream>

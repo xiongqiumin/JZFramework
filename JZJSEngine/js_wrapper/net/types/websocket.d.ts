@@ -1,6 +1,6 @@
-/// <reference path="../../../types/common.d.ts" />
-/// <reference path="../../../types/events.d.ts" />
-/// <reference path="../../../types/globals.d.ts" />
+/// <reference path="../../types/common.d.ts" />
+/// <reference path="../../types/events.d.ts" />
+/// <reference path="../../types/globals.d.ts" />
 
 /**
  * ws - WebSocket server, aligned with the "ws" npm package
@@ -10,7 +10,7 @@
  * http.IncomingMessage as second argument because JZNet has no HTTP layer.
  *
  * NOTE: the global `WebSocket` client class is declared in
- * JZJSEngine/types/globals.d.ts (it is a WHATWG global, not part of 'ws').
+ * js_wrapper/types/globals.d.ts (it is a WHATWG global, not part of 'ws').
  */
 export interface ServerOptions {
     port?: number;

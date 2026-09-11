@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "JZByteArray.h"
+#include "JZColor.h"
 
 // 图像数据: RGBA8888 像素缓冲, 渲染后端 (JZGdiBackend) 懒缓存为位图。
 class JZImageData
@@ -15,6 +16,7 @@ public:
     int width() const { return m_w; }
     int height() const { return m_h; }
     const uint8_t* pixels() const { return m_pixels.empty() ? nullptr : m_pixels.data(); }
+    uint8_t* pixels() { return m_pixels.empty() ? nullptr : m_pixels.data(); }
 
     void setPixels(int w, int h, const uint8_t* rgba)
     {
@@ -64,6 +66,11 @@ public:
 
     int width() const;
     int height() const;
+
+    // 新建 w×h 纯色画布 (默认透明), 供 JZPainter 离屏绘制:
+    //   JZImage img = JZImage::create(200, 100);
+    //   { JZPainter p(img); p.fillRect(...); }  // 析构时绘入 img
+    static JZImage create(int w, int h, const JZColor& color = JZColor(0, 0, 0, 0));
 
     // ---- 编解码 ----
 

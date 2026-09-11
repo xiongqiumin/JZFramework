@@ -25,7 +25,7 @@ public:
     {
         ParamSchema p;
         p.name = "name";
-        p.type = STRING;
+        p.type = ParamType::String;
         p.description = "技能名称";
 
         ToolDefine def;

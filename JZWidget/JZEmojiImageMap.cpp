@@ -3,6 +3,7 @@
 #include "JZResources.h"
 #include "JZUtf8Iterator.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <vector>
 
@@ -115,6 +116,42 @@ const JZImage* JZEmojiImageMap::findByCodepoints(const std::vector<char32_t>& cp
     return load(cps);
 }
 
+const JZPixmap* JZEmojiImageMap::findPixmap(const std::string& emoji, int boxSize)
+{
+    return findPixmap(toCodepoints(emoji), boxSize);
+}
+
+const JZPixmap* JZEmojiImageMap::findPixmap(const std::vector<char32_t>& cps, int boxSize)
+{
+    // 原图先走一级缓存 (解码 + 完整的"完整序列 -> 首码点"退化逻辑都在那儿)
+    const JZImage* src = findByCodepoints(cps);
+    if (!src || src->isNull())
+        return nullptr;
+
+    int box = boxSize;
+    if (box <= 0)
+        box = std::max(src->width(), src->height());
+
+    // 两级缓存键: 同一个 emoji 在不同显示尺寸下各存一份 (字号变化时各自可用)
+    const std::string key = joinKey(cps) + "@" + std::to_string(box);
+    std::map<std::string, JZPixmap>::iterator it = m_pixmaps.find(key);
+    if (it != m_pixmaps.end())
+        return it->second.isNull() ? nullptr : &it->second;
+
+    // 按显示尺寸缩放 + 预转 (只做一次); 正方形显示尺寸与图集一致, 不拉伸
+    const JZImage scaled =
+        (src->width() == box && src->height() == box)
+            ? *src
+            : src->scaled(box, box,
+                          JZImage::AspectRatioMode::IgnoreAspectRatio,
+                          JZImage::TransformationMode::SmoothTransformation);
+
+    m_pixmaps[key] = JZPixmap::fromImage(scaled);
+
+    const JZPixmap& pm = m_pixmaps[key];
+    return pm.isNull() ? nullptr : &pm;
+}
+
 const JZImage* JZEmojiImageMap::load(const std::vector<char32_t>& cps)
 {
     // 1) 先按**完整码点序列**找 (正确处理 ZWJ 组合 / 肤色 / 旗帜)
@@ -170,4 +207,5 @@ const JZImage* JZEmojiImageMap::load(const std::vector<char32_t>& cps)
 void JZEmojiImageMap::clear()
 {
     m_cache.clear();
+    m_pixmaps.clear();
 }

@@ -23,7 +23,7 @@
 //
 // 退出码：0=全部用例通过；1=有失败；2=前置条件缺失（编译器 / 工程初始化失败）。
 //
-// 注意：本文件不要 include <windows.h>（JZAgentTool.h 的 BOOLEAN 与 winnt.h 冲突）。
+// 注意：本文件按需声明 kernel32 API，不 include <windows.h>（避免拉进整套 win32 头）。
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -60,9 +60,8 @@
 // 控制台 ANSI 颜色
 //   Windows 10+ 的 cmd / PowerShell / Windows Terminal 本身支持 ANSI 转义序列，
 //   但默认是关闭的，必须对 stdout 打开 ENABLE_VIRTUAL_TERMINAL_PROCESSING 才会
-//   解析 "\033[..m"（否则会原样打印出乱码）。本文件不能 include <windows.h>
-//   （JZAgentTool.h 的枚举成员 BOOLEAN 与 winnt.h 的 typedef 冲突 C2365），
-//   所以这里只按需声明要用的几个 kernel32 API，不引入整个 windows.h。
+//   解析 "\033[..m"（否则会原样打印出乱码）。本文件不 include <windows.h>，
+//   只按需声明要用的几个 kernel32 API，不引入整套 win32 头。
 // ---------------------------------------------------------------------------
 #ifdef _WIN32
 extern "C" {

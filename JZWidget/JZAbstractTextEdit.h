@@ -7,6 +7,7 @@
 #include "JZWidget.h"
 #include "JZFont.h"
 #include "JZImage.h"
+#include "JZPixmap.h"
 #include "JZEmoji.h"
 #include "JZString.h"
 #include "JZSignal.h"
@@ -76,6 +77,9 @@ public:
     // appendImage: 在文本末尾追加一张图。
     // insertImage: 在光标处 (有选区则替换选区) 插入。
     // key 用于标识图片 (如文件路径 / 截图 id), 为空时自动生成唯一 key。
+    // width/height <= 0 时取图片原始尺寸; 无论是否显式给尺寸, 都会被
+    // JZTextImageMap 的**显示尺寸上限**约束 (默认 320x240, 超限等比缩小),
+    // 因此一张巨图不会撑爆行高, 也不会以原始分辨率长期驻留内存。
     // 插入失败 (图片为空且未给尺寸 / 只读) 时静默无操作。
     void appendImage(const JZImage& image, const std::string& key = std::string(),
                      int width = 0, int height = 0);
@@ -144,11 +148,15 @@ public:
     void moveCursorToSegment(int idx, bool select);
 
     // ---- 段落 -> 可绘制图像 (测宽与绘制共用的**唯一**入口) ----
-    // Image 段取 JZTextImageMap 的图, Emoji 段取 JZEmojiImageMap 的图。
-    // 返回 true 时 w/h 有效 (out 可能为空 = 只有尺寸的占位);
+    // Image 段取 JZTextImageMap 的图, Emoji 段取 JZEmojiImageMap 的图;
+    // 两者给出的都是**显示用位图** (JZPixmap: 已按显示尺寸缩放 + 已预转成后端
+    // 原生布局), 绘制时直接 drawPixmap, 不做任何缩放/转换 —— 内联图与 emoji
+    // 每帧都要画, "每帧现缩现转"是这条链路唯一的性能雷区。
+    // 显示尺寸受 JZTextImageMap 上限约束 (默认 320x240, 超限等比缩小)。
+    // 返回 true 时 w/h 有效 (out 可能为空 = 只有尺寸的占位, 由调用方画占位框);
     // 返回 false 表示该段没有可用图像 (如图集未收录该 emoji), 调用方应降级。
     // 关键: xOfIndex 的宽度累加与 paintEvent 的绘制必须都走它, 否则光标会偏。
-    bool segmentImage(const Segment& seg, const JZImage*& out,
+    bool segmentImage(const Segment& seg, const JZPixmap*& out,
                       int& w, int& h) const;
     // 图片/emoji 段的显示高度 (用于行高), 按字号推导
     int  inlineBoxHeight() const;

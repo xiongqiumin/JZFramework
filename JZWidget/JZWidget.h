@@ -38,6 +38,8 @@ enum class JZCursorShape {
     SizeHor,        // 左右拖拽 (IDC_SIZEWE)
     SizeVer,        // 上下拖拽 (IDC_SIZENS)
     SizeAll,        // 四向拖拽 (IDC_SIZEALL)
+    SizeFDiag,      // 主对角线拖拽 (IDC_SIZENWSE, ↘↖)
+    SizeBDiag,      // 副对角线拖拽 (IDC_SIZENESW, ↗↙)
     Cross,          // 十字 (IDC_CROSS)
     Forbidden,      // 禁止 (IDC_NO)
     Wait,           // 忙碌 (IDC_WAIT)

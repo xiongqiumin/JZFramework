@@ -6,6 +6,9 @@
 #include "JZImage.h"
 #include "JZScrollBar.h"
 #include "JZAgentTool.h"
+#include "JZKeyEvent.h"
+#include "JZEmoji.h"
+#include "JZEmojiImageMap.h"
 
 #include <string>
 #include <vector>
@@ -51,11 +54,17 @@ public:
     // 立即滚到底 (清空/初始化时用)
     void scrollToBottom();
 
+    // 当前选区文本(无选区返回空串); 供上层 Ctrl+C 复制
+    std::string selectedText() const;
+
 protected:
     void paintEvent(JZPainterEvent* event) override;
     void resizeEvent(JZResizeEvent* event) override;
     void wheelEvent(JZMouseEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
+    void mouseMoveEvent(JZMouseEvent* event) override;
+    void mouseReleaseEvent(JZMouseEvent* event) override;
+    void keyPressEvent(JZKeyEvent* event) override;
 
 private:
     struct Msg {
@@ -92,6 +101,15 @@ private:
     // 新开一张卡作为当前流式目标, 返回其索引 (先关掉旧的流式卡)。
     int  openStream(Role role);
     int  hitTestMsg(int contentY) const;   // 内容坐标 -> 消息索引 (-1 无)
+    int  msgTopContent(int idx) const;     // 消息索引 -> 卡片内容坐标顶部
+
+    // ---- 文本选取 (鼠标拖动) ----
+    void clearSelection();                  // 复位选区(内容变化/尺寸变化时调用)
+    void toggleCollapse(int idx);           // 折叠/展开思考卡
+    // 把一行文本切成 "文本段 / emoji 段" 用于绘制与命中(与 emoji 测量同口径)
+    void drawMsgText(JZPainter& p, const Msg& m, int msgIdx, int part,
+                     int x0, int topY, int lh, const JZFont& font) const;
+    void copySelection();                   // 选区写到系统剪贴板
 
     static void wrapText(const std::string& text, const JZFont& font,
                          int maxW, std::vector<std::string>& out);
@@ -114,6 +132,16 @@ private:
     bool m_waitShow = false;               // 是否显示"等待回复中..."状态卡
     std::vector<std::string> m_waitLines;  // 等待卡换行结果
     int  m_waitH = 0;                      // 等待卡高度 (含上方间距)
+
+    // ---- 文本选区状态 ----
+    // 选区限定在单条消息的某一段正文内: part=0 为主正文(m.lines),
+    // part=1 为工具合并卡的"输出"段(m.resultLines)。坐标用 (行号, 行内字节偏移),
+    // 因为换行后每行是独立子串, 直接记字节偏移最稳。
+    bool m_selecting = false;
+    int  m_selMsg   = -1;                  // 选区所属消息索引 (-1 无)
+    int  m_selPart  = 0;                   // 0 = 主正文, 1 = 工具输出段
+    int  m_selLineA = 0,  m_selLineB = -1; // 选区锚点行 / 光标行
+    int  m_selOffA  = 0,  m_selOffB  = 0;  // 对应行内字节偏移
 };
 
 #endif // !JZ_CODE_AGENT_CHATVIEW_H_

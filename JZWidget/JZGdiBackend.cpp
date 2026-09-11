@@ -29,6 +29,7 @@ namespace Gdiplus {
 
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -108,10 +109,11 @@ static Color toGdiColor(const JZColor& c, uint8_t opacity)
     return Color(a, c.red(), c.green(), c.blue());
 }
 
-// JZRect (宽 = right - left + 1) -> GDI+ 物理像素 [x, x + w*s)
-static RectF toGdiRect(const JZRect& rc, float scale)
+// JZRect -> GDI+ RectF (世界坐标, 1:1 映射)。几何以本地坐标提交,
+// 缩放/DPI/偏移由 Graphics 的世界变换 (SetTransform) 统一施加, 这里不再乘 scale。
+static RectF toGdiRect(const JZRect& rc)
 {
-    return RectF(rc.x() * scale, rc.y() * scale, rc.width() * scale, rc.height() * scale);
+    return RectF((REAL)rc.x(), (REAL)rc.y(), (REAL)rc.width(), (REAL)rc.height());
 }
 
 static std::wstring utf8ToUtf16(const std::string& text)
@@ -511,45 +513,60 @@ void JZGdiBackend::render(JZLayer* layer)
     layer->clearTasks();
 }
 
-void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
+// 把绘制任务回放到任意 Graphics (窗口 DIB / 离屏位图共用同一份回放逻辑)。
+//   s        逻辑 -> 物理像素的缩放 (窗口=设备 DPI; 离屏图=1, 逻辑单位即像素)
+//   getPixmap 把 JZImageTask 的源图转成后端原生位图 (窗口走帧缓存懒转换; 离屏走本地缓存)
+static void jzReplayLayer(Graphics& g, JZLayer* layer, float s,
+                          std::function<std::shared_ptr<JZPixmapData>(const std::shared_ptr<JZImageData>&)> getPixmap)
 {
-    Graphics& g = *(Graphics*)graphics;
-    const float s = m_widgetDevice ? m_widgetDevice->scale() : 1.0f;
-
-    // 绘制流状态机: 几何任务只携带 geometry, 样式 (pen/brush/font) 与裁剪 (clip)
-    // 由 Push (保存当前状态并应用新状态) / Pop (回退) 维护。
+    // 绘制流状态机: 几何任务只携带本地几何 + 不透明度, 样式 (pen/brush/font) 与裁剪/本地矩阵
+    // 由 Push (保存并应用新状态) / Pop (回退) / Change (非栈式改当前) 维护。
+    // 每个控件绘制前为单位矩阵 (本地坐标), 放置偏移 (ox,oy) 与 DPI 缩放由框架/后端补充, 而非
+    // 控件作者的矩阵 —— 即不存在跨控件的"世界坐标", 矩阵只在控件内部生效。
+    // 后端世界变换 = Scale(s) * Translate(ox,oy) * matrix, 几何以本地坐标提交, 由 GDI+ SetTransform
+    // 统一施加; 因此笔宽/文本/图片/圆角都随变换正确缩放与旋转, 无需 painter 端烘焙矩阵。
     struct StreamState {
         JZPen pen;
         JZBrush brush;
         JZFont font;
         JZRect clip;
+        JZMatrix2D transform;   // 控件本地变换 (单位阵为初值, 不含放置偏移)
+        int ox = 0;             // 放置偏移: 控件在图层坐标中的位置 (框架设定, 控件作者无感)
+        int oy = 0;
     };
     std::vector<StreamState> stack;
-    StreamState cur;   // 默认: 空 clip (无裁剪) + 默认 pen/brush/font
+    StreamState cur;   // 默认: 空 clip (无裁剪) + 默认 pen/brush/font + 单位阵 + 偏移 0
 
-    JZRect appliedClip;   // 当前已应用到 Graphics 的裁剪 (全局坐标)
-    bool clipApplied = false;
-    auto applyClip = [&](const JZRect& clip) {
-        if (clipApplied && clip.x() == appliedClip.x() && clip.y() == appliedClip.y() &&
-            clip.width() == appliedClip.width() && clip.height() == appliedClip.height())
-            return;
-        if (clipApplied && !appliedClip.isEmpty())
+    // 把当前状态应用到 Graphics: 设置世界变换与裁剪。
+    // 裁剪以显示坐标表示, 经 (Translate(ox,oy)*matrix)^{-1} 折算回世界坐标后交给 GDI+, 由其用当前
+    // 世界变换映射到设备坐标 (等价于旧 toGdiRect(clip, s); 单位阵时 worldClip=本地 rect, 完全一致)。
+    auto applyState = [&]() {
+        JZMatrix2D w = JZMatrix2D::scaling(s, s)
+                           .multiplied(JZMatrix2D::translation(cur.ox, cur.oy))
+                           .multiplied(cur.transform);
+        Gdiplus::Matrix gm((REAL)w.at(0, 0), (REAL)w.at(1, 0), (REAL)w.at(0, 1),
+                           (REAL)w.at(1, 1), (REAL)w.at(0, 2), (REAL)w.at(1, 2));
+        g.SetTransform(&gm);
+
+        if (cur.clip.isEmpty()) {
             g.ResetClip();
-        if (!clip.isEmpty()) {
-            RectF c = toGdiRect(clip, s);
-            // 逻辑裁剪区 * scale 后是小数边界。直接 (INT) 截断会把落在 [截断边界,
-            // 实际外缘] 的最后一条 AA 像素行整行裁掉 —— 非整数 DPI (125%/150%)
-            // 下表现为控件底/右边框消失 (见描边分支注释, 笔宽*s 后外圈 AA 摊薄,
-            // 又被 clip 切边则完全不显示)。
-            // floor/ceil 外扩到覆盖实际几何外缘: 描边几何已内缩半笔宽, 不会越出
-            // 控件物理外缘, 多放行的只可能是控件自身 AA 像素; 整数 scale 下
-            // floor==trunc、ceil==(int)(x+0.5) 对整数值, 结果与原截断完全一致, 无回归。
-            INT x0 = (INT)std::floor(c.X),        y0 = (INT)std::floor(c.Y);
-            INT x1 = (INT)std::ceil(c.X + c.Width), y1 = (INT)std::ceil(c.Y + c.Height);
-            g.SetClip(Rect(x0, y0, x1 - x0, y1 - y0));
+        } else {
+            JZMatrix2D inv = JZMatrix2D::translation(cur.ox, cur.oy)
+                                 .multiplied(cur.transform).inverse();
+            double x0 = cur.clip.x(), y0 = cur.clip.y();
+            double x1 = x0 + cur.clip.width(), y1 = y0 + cur.clip.height();
+            double pts[4][2] = { {x0, y0}, {x1, y0}, {x1, y1}, {x0, y1} };
+            double minx = 1e300, miny = 1e300, maxx = -1e300, maxy = -1e300;
+            for (int i = 0; i < 4; ++i) {
+                double wx, wy; inv.map(pts[i][0], pts[i][1], wx, wy);
+                minx = std::min(minx, wx); maxx = std::max(maxx, wx);
+                miny = std::min(miny, wy); maxy = std::max(maxy, wy);
+            }
+            // floor/ceil 外扩到覆盖 AA 像素外缘, 避免边框被裁 (对齐旧逻辑)。
+            INT rx = (INT)std::floor(minx), ry = (INT)std::floor(miny);
+            INT rw = (INT)std::ceil(maxx) - rx, rh = (INT)std::ceil(maxy) - ry;
+            g.SetClip(Rect(rx, ry, rw, rh));
         }
-        appliedClip = clip;
-        clipApplied = true;
     };
 
     for (auto& task : layer->tasks())
@@ -562,7 +579,10 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             cur.brush = t->brush;
             cur.font = t->font;
             cur.clip = t->clip;
-            applyClip(cur.clip);
+            cur.transform = t->matrix;
+            cur.ox = t->ox;
+            cur.oy = t->oy;
+            applyState();
             break;
         }
         case JZDrawTask::Pop: {
@@ -572,34 +592,34 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             } else {
                 cur = StreamState();
             }
-            applyClip(cur.clip);
+            applyState();
             break;
         }
         case JZDrawTask::Change: {
             auto* t = static_cast<JZDrawChangeTask*>(task.get());
-            if (t->pen.isSome())   cur.pen = t->pen.value();
-            if (t->brush.isSome()) cur.brush = t->brush.value();
-            if (t->font.isSome())  cur.font = t->font.value();
-            if (t->clip.isSome()) {
-                cur.clip = t->clip.value();
-                applyClip(cur.clip);
-            }
+            if (t->pen.isSome())    cur.pen = t->pen.value();
+            if (t->brush.isSome())  cur.brush = t->brush.value();
+            if (t->font.isSome())   cur.font = t->font.value();
+            if (t->clip.isSome())   cur.clip = t->clip.value();
+            if (t->matrix.isSome()) cur.transform = t->matrix.value();
+            applyState();
             break;
         }
         case JZDrawTask::Line: {
             auto* t = static_cast<JZLineTask*>(task.get());
-            float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+            // 笔宽为世界坐标单位; 世界变换 (含 DPI scale 与用户矩阵) 自动缩放之。
+            float w = (cur.pen.width() > 0 ? cur.pen.width() : 1);
             Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
-            g.DrawLine(&pen, t->x1 * s, t->y1 * s, t->x2 * s, t->y2 * s);
+            g.DrawLine(&pen, (REAL)t->x1, (REAL)t->y1, (REAL)t->x2, (REAL)t->y2);
             break;
         }
         case JZDrawTask::Rect: {
             auto* t = static_cast<JZFillRectTask*>(task.get());
-            RectF r = toGdiRect(t->area, s);
+            RectF r = toGdiRect(t->area);
             SolidBrush br(toGdiColor(t->color, t->opacity));
             if (t->radius > 0) {
                 GraphicsPath p;
-                addRoundRectPath(p, r, t->radius * s);
+                addRoundRectPath(p, r, (REAL)t->radius);
                 g.FillPath(&br, &p);
             } else {
                 g.FillRectangle(&br, r);
@@ -608,27 +628,22 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
         }
         case JZDrawTask::Border: {
             auto* t = static_cast<JZBorderTask*>(task.get());
-            float pw = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+            float pw = (cur.pen.width() > 0 ? cur.pen.width() : 1);
             if (pw <= 0.0f)
                 break;
-            RectF r = toGdiRect(t->area, s);
+            RectF r = toGdiRect(t->area);
             Pen pen(toGdiColor(cur.pen.color(), t->opacity), pw);
 
-            // 描边几何须向内缩半笔宽, 与 Qt drawRect 语义对齐:
-            //   fillRect(x,y,w,h) 填充像素 [x..x+w-1]×[y..y+h-1] (RectF 外缘 = 像素右/下开口);
-            //   drawRect/drawRoundRect 描这条像素矩形的外圈边框, 线条中心应落在像素格线上。
-            // 若不内缩而把笔心放在控件外缘 (矩形几何边界), 则右/下侧有半笔宽越出控件,
-            // 被绘制流 clip (脏区∩控件 rect) 整段裁掉 —— 表现为边框右/下缺边、四边半透明淡边。
-            // 内缩半笔宽后: 1px 笔 → 中心恰在像素格线, 抗锯齿整像素满覆盖; 2px 笔 (如
-            // lineEdit 焦点高亮) → 恰好铺满最外两圈像素, 四边完整且与填充外缘贴合。
+            // 描边几何须向内缩半笔宽, 与 Qt drawRect 语义对齐 (见旧注释)。此内缩在世界坐标进行,
+            // 经世界变换后视觉内缩与旧实现一致 (整数 scale 下完全等价; 非整数/缩放时随变换正确缩放)。
             float half = pw * 0.5f;
             half = std::min(half, std::min(r.Width, r.Height) * 0.5f); // 过窄时防几何翻负
             RectF ir(r.X + half, r.Y + half,
                      r.Width - 2.0f * half, r.Height - 2.0f * half);
             if (t->radius > 0) {
-                // 半径同步减 half: 内缩后圆弧圆心与 fillRect 圆角填充完全重合, 描边紧贴外缘
+                // 半径同步减 half: 内缩后圆弧圆心与 fillRect 圆角填充完全重合, 描边紧贴外缘。
                 GraphicsPath p;
-                addRoundRectPath(p, ir, std::max(0.0f, t->radius * s - half));
+                addRoundRectPath(p, ir, std::max(0.0f, (REAL)t->radius - half));
                 g.DrawPath(&pen, &p);
             } else {
                 g.DrawRectangle(&pen, ir);
@@ -637,16 +652,16 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
         }
         case JZDrawTask::Arc: {
             auto* t = static_cast<JZArcTask*>(task.get());
-            // 角度: 1/10 度, 0 = 3 点方向, 顺时针; GDI+ 屏幕坐标系 (y 向下)
-            // 正角度同为顺时针, 直接换算即可。
-            float radius = s * (t->arcRadius > 0 ? t->arcRadius : 1);
+            // 角度: 1/10 度, 0 = 3 点方向, 顺时针; GDI+ 屏幕坐标系 (y 向下) 正角度同为顺时针。
+            float radius = (t->arcRadius > 0 ? (REAL)t->arcRadius : 1.0f);
             float sweep = (t->arcEndAngle - t->arcStartAngle) / 10.0f;
             if (sweep < 0.0f)
                 sweep += 360.0f;
             if (sweep > 0.0f && radius > 0.0f) {
-                float w = s * (cur.pen.width() > 0 ? cur.pen.width() : 1);
+                float w = (cur.pen.width() > 0 ? cur.pen.width() : 1);
                 Pen pen(toGdiColor(cur.pen.color(), t->opacity), w);
-                RectF rc(t->arcCx * s - radius, t->arcCy * s - radius, radius * 2.0f, radius * 2.0f);
+                RectF rc((REAL)t->arcCx - radius, (REAL)t->arcCy - radius,
+                         radius * 2.0f, radius * 2.0f);
                 g.DrawArc(&pen, rc, t->arcStartAngle / 10.0f, sweep);
             }
             break;
@@ -658,30 +673,87 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
                 // Font 禁止赋值, 先按字体描述解析可用字体族与风格, 再一次性构造
                 const FontFamily* family = jzResolveFamily(cur.font.family());
                 int style = jzGdiFontStyle(cur.font.style());
-                Font primary(family, cur.font.size() * s, (FontStyle)style, UnitPixel);
-                Font fallback(&jzFontFamily(), cur.font.size() * s, FontStyleRegular, UnitPixel);
+                Font primary(family, (REAL)cur.font.size(), (FontStyle)style, UnitPixel);
+                Font fallback(&jzFontFamily(), (REAL)cur.font.size(), FontStyleRegular, UnitPixel);
                 const Font* font = (primary.GetLastStatus() == Ok) ? &primary : &fallback;
                 SolidBrush br(toGdiColor(cur.pen.color(), t->opacity));
-                // 统一 Qt 语义的文本格式 (见 jzTextFormat): 与测量侧
-                // (GdiFontEngine::textWidth) 严格一致, 空格照常绘制。
+                // 统一 Qt 语义的文本格式 (见 jzTextFormat): 与测量侧严格一致, 空格照常绘制。
                 std::unique_ptr<StringFormat> fmt = jzTextFormat();
                 g.DrawString(wtext.c_str(), (int)wtext.size(), font,
-                             PointF(t->area.x() * s, t->area.y() * s), fmt.get(), &br);
+                             PointF((REAL)t->area.x(), (REAL)t->area.y()), fmt.get(), &br);
             }
             break;
         }
         case JZDrawTask::Image: {
             auto* t = static_cast<JZImageTask*>(task.get());
             if (t->image && t->image->pixels())
-                // JZImage 没有预转好的 pixmap: 走懒转换缓存 (转一次, 之后等价于
-                // Pixmap 任务)。逐帧在这里现转 (颜色矩阵) 是不行的 —— 4K 图实测
-                // 425ms/帧, 拖拽直接卡死。
-                jzDrawPixmap(g, imagePixmap(t->image), toGdiRect(t->area, s));
+                // JZImage 走 getPixmap 转换 (窗口帧缓存; 离屏本地缓存); 几何以本地坐标提交。
+                jzDrawPixmap(g, getPixmap(t->image), toGdiRect(t->area));
             break;
         }
         case JZDrawTask::Pixmap: {
             auto* t = static_cast<JZPixmapTask*>(task.get());
-            jzDrawPixmap(g, t->pixmap, toGdiRect(t->area, s));
+            jzDrawPixmap(g, t->pixmap, toGdiRect(t->area));
+            break;
+        }
+        case JZDrawTask::Path: {
+            auto* t = static_cast<JZPathTask*>(task.get());
+            GraphicsPath path;
+            double curX = 0, curY = 0;
+            for (const auto& e : t->path.elements()) {
+                switch (e.type) {
+                case JZPainterPath::Move:
+                    curX = e.d[0]; curY = e.d[1];
+                    path.StartFigure();
+                    break;
+                case JZPainterPath::Line: {
+                    float x1 = (float)curX, y1 = (float)curY;
+                    float x2 = (float)e.d[0], y2 = (float)e.d[1];
+                    path.AddLine(PointF(x1, y1), PointF(x2, y2));
+                    curX = e.d[0]; curY = e.d[1];
+                    break;
+                }
+                case JZPainterPath::Cubic: {
+                    float x0 = (float)curX, y0 = (float)curY;
+                    float c1x = (float)e.d[0], c1y = (float)e.d[1];
+                    float c2x = (float)e.d[2], c2y = (float)e.d[3];
+                    float x2 = (float)e.d[4], y2 = (float)e.d[5];
+                    path.AddBezier(PointF(x0, y0), PointF(c1x, c1y),
+                                   PointF(c2x, c2y), PointF(x2, y2));
+                    curX = e.d[4]; curY = e.d[5];
+                    break;
+                }
+                case JZPainterPath::Quad: {
+                    // 二次贝塞尔 -> 三次贝塞尔: 控制点 c1=cur+2/3*(ctrl-cur), c2=end+2/3*(ctrl-end)
+                    float x0 = (float)curX, y0 = (float)curY;
+                    float cxs = (float)e.d[0], cys = (float)e.d[1];
+                    float x2 = (float)e.d[2], y2 = (float)e.d[3];
+                    float c1x = x0 + 2.0f / 3 * (cxs - x0);
+                    float c1y = y0 + 2.0f / 3 * (cys - y0);
+                    float c2x = x2 + 2.0f / 3 * (cxs - x2);
+                    float c2y = y2 + 2.0f / 3 * (cys - y2);
+                    path.AddBezier(PointF(x0, y0), PointF(c1x, c1y),
+                                   PointF(c2x, c2y), PointF(x2, y2));
+                    curX = e.d[2]; curY = e.d[3];
+                    break;
+                }
+                case JZPainterPath::Close:
+                    path.CloseFigure();
+                    break;
+                }
+            }
+            if (t->fill) {
+                Color fc = t->fillColor.isSome()
+                    ? toGdiColor(t->fillColor.value(), t->opacity)
+                    : toGdiColor(cur.brush.color(), t->opacity);
+                SolidBrush br(fc);
+                g.FillPath(&br, &path);
+            }
+            if (t->stroke) {
+                float pw = (cur.pen.width() > 0 ? cur.pen.width() : 1);
+                Pen pen(toGdiColor(cur.pen.color(), t->opacity), pw);
+                g.DrawPath(&pen, &path);
+            }
             break;
         }
         case JZDrawTask::None:
@@ -689,6 +761,108 @@ void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
             break;
         }
     }
+}
+
+void JZGdiBackend::replayTasks(void* graphics, JZLayer* layer)
+{
+    Graphics& g = *(Graphics*)graphics;
+    const float s = m_widgetDevice ? m_widgetDevice->scale() : 1.0f;
+    auto getPixmap = [this](const std::shared_ptr<JZImageData>& img) {
+        return imagePixmap(img);
+    };
+    jzReplayLayer(g, layer, s, getPixmap);
+}
+
+bool JZGdiBackend::ensureGdiplus()
+{
+    return gdiplusLifetime().acquire();
+}
+
+void JZGdiBackend::releaseGdiplus()
+{
+    gdiplusLifetime().release();
+}
+
+bool JZGdiBackend::renderLayerToImage(JZImage& image, JZLayer* layer, float scale)
+{
+    if (!layer || image.isNull() || !gdiplusLifetime().isReady())
+        return false;
+
+    const int w = image.width();
+    const int h = image.height();
+    if (w <= 0 || h <= 0)
+        return false;
+
+    // 在 GDI+ 位图上合成: 先把现有像素 (RGBA8888 直 alpha) 拷入 32bppARGB,
+    // 后续绘制以 SourceOver 叠加到原图之上 (与 QPainter 作用于 QImage 语义一致)。
+    Bitmap bmp(w, h, PixelFormat32bppARGB);
+    {
+        Rect rc(0, 0, w, h);
+        BitmapData bd;
+        if (bmp.LockBits(&rc, ImageLockModeWrite, PixelFormat32bppARGB, &bd) != Ok)
+            return false;
+        const uint8_t* src = image.data()->pixels();
+        uint8_t* dst = (uint8_t*)bd.Scan0;
+        const int stride = bd.Stride;
+        for (int y = 0; y < h; ++y) {
+            const uint8_t* s = src + (size_t)y * w * 4;
+            uint8_t* d = dst + (size_t)y * stride;
+            for (int x = 0; x < w; ++x) {
+                d[0] = s[2];   // B
+                d[1] = s[1];   // G
+                d[2] = s[0];   // R
+                d[3] = s[3];   // A
+                s += 4; d += 4;
+            }
+        }
+        bmp.UnlockBits(&bd);
+    }
+
+    // 离屏绘制不共享帧缓存: 同一次 paint 内反复贴同一张图时, 本地缓存其 pixmap。
+    std::map<const JZImageData*, std::shared_ptr<JZPixmapData>> localCache;
+    auto getPixmap = [&](const std::shared_ptr<JZImageData>& img) -> std::shared_ptr<JZPixmapData> {
+        if (!img)
+            return nullptr;
+        auto it = localCache.find(img.get());
+        if (it != localCache.end())
+            return it->second;
+        JZPixmap pm = JZPixmap::fromImage(JZImage::fromData(img));
+        std::shared_ptr<JZPixmapData> d = pm.isNull() ? nullptr : pm.data();
+        localCache[img.get()] = d;
+        return d;
+    };
+
+    {
+        Graphics g(&bmp);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        g.SetCompositingQuality(CompositingQualityHighSpeed);
+        jzReplayLayer(g, layer, scale, getPixmap);
+    }
+
+    // 读回: 32bppARGB (B,G,R,A) -> RGBA8888 直 alpha, 写回 JZImage 像素缓冲。
+    {
+        Rect rc(0, 0, w, h);
+        BitmapData bd;
+        if (bmp.LockBits(&rc, ImageLockModeRead, PixelFormat32bppARGB, &bd) != Ok)
+            return false;
+        uint8_t* dst = image.data()->pixels();
+        const uint8_t* src = (const uint8_t*)bd.Scan0;
+        const int stride = bd.Stride;
+        for (int y = 0; y < h; ++y) {
+            const uint8_t* s = src + (size_t)y * stride;
+            uint8_t* d = dst + (size_t)y * w * 4;
+            for (int x = 0; x < w; ++x) {
+                d[0] = s[2];   // R
+                d[1] = s[1];   // G
+                d[2] = s[0];   // B
+                d[3] = s[3];   // A
+                s += 4; d += 4;
+            }
+        }
+        bmp.UnlockBits(&bd);
+    }
+    return true;
 }
 
 // JZImageTask 的懒转换: JZImageData -> JZPixmap, 每张图只转一次并缓存。

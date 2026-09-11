@@ -46,6 +46,7 @@ void GameWidget::showEvent(JZShowEvent* event)
     reset();                 // 此时 width()/height() 已就绪
     setFocus();              // 抢占焦点以接收键盘事件
     m_lastTick = std::chrono::steady_clock::now();
+    m_animTick = m_lastTick;
     m_logicTimer->start(kLogicMs);    // 逻辑: 固定步长
     m_renderTimer->start(kRenderMs);  // 渲染: 尽可能快(压测 FPS)
 }
@@ -109,6 +110,10 @@ void GameWidget::onLogicError(int missed)
 // 渲染定时器: 只负责重绘 + 测 FPS (尽可能快, 用于压测)
 void GameWidget::onRender()
 {
+    auto now = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(now - m_animTick).count();
+    m_animTick = now;
+    m_animT += dt;   // 推进动画时钟 (驱动旋转/缩放变换演示)
     updateFps();
     update();   // 触发重绘
 }
@@ -348,10 +353,10 @@ void GameWidget::paintEvent(JZPainterEvent* event)
     drawEnemyBullets(p);
     drawPowerUps(p);
 
-    // 玩家 (受击无敌时闪烁)
-    bool flash = m_invuln > 0 && ((m_invuln / 5) % 2 == 0);
-    if (!m_over && !flash)
-        drawShip(p, m_playerX, m_playerY, JZColor(120, 220, 255), flash);
+    // 玩家 (受击无敌时: 隐藏式闪烁 —— 整帧隐藏; 可见帧额外叠加缩放脉冲, 验证矩阵变换)
+    bool blink = m_invuln > 0 && ((m_invuln / 5) % 2 == 0);
+    if (!m_over && !blink)
+        drawShip(p, m_playerX, m_playerY, JZColor(120, 220, 255), m_invuln > 0);
 
     if (m_frameDraws > m_peakDraws) m_peakDraws = m_frameDraws;
 
@@ -379,54 +384,81 @@ void GameWidget::drawBackground(JZPainter* p)
     m_frameDraws += 2 + (int)m_stars.size();   // 背景 + 星星 + 地面线
 }
 
-void GameWidget::drawShip(JZPainter* p, int cx, int cy, const JZColor& c, bool flash)
+void GameWidget::drawShip(JZPainter* p, int cx, int cy, const JZColor& c, bool scalePulse)
 {
-    m_frameDraws += 8;   // 7 条线 + 1 座舱
+    m_frameDraws += 8;   // 7 条线 + 1 座舱 (save/restore 不计入)
+    p->save();
+    p->translate(cx, cy);              // 把局部原点移到飞船中心
+    p->rotate(m_animT * 50.0);         // 持续旋转: 验证矩阵 rotate (屏幕顺时针为正)
+    if (scalePulse) {                  // 受击期间可见帧: 额外缩放脉冲 (变换大小)
+        double s = 1.0f + 0.6f * std::sin(m_animT * 28.0f);
+        p->scale(s, s);
+    }
+    // 以下几何以 (0,0) 为中心绘制
     p->setPen(JZPen(c, 2));
-    // 机身 (三角)
-    p->drawLine(cx - 15, cy + 14, cx,      cy - 18);
-    p->drawLine(cx,      cy - 18, cx + 15, cy + 14);
-    p->drawLine(cx + 15, cy + 14, cx - 15, cy + 14);
-    // 机翼
-    p->drawLine(cx - 15, cy + 14, cx - 24, cy + 4);
-    p->drawLine(cx + 15, cy + 14, cx + 24, cy + 4);
-    // 尾焰
+    p->drawLine(-15, 14, 0, -18);      // 机身 (三角)
+    p->drawLine(0, -18, 15, 14);
+    p->drawLine(15, 14, -15, 14);
+    p->drawLine(-15, 14, -24, 4);     // 机翼
+    p->drawLine(15, 14, 24, 4);
+    int flame = std::rand() % 8 + 4;
     p->setPen(JZPen(JZColor::Orange, 2));
-    p->drawLine(cx - 5, cy + 14, cx - 5, cy + 14 + (std::rand() % 8 + 4));
-    p->drawLine(cx + 5, cy + 14, cx + 5, cy + 14 + (std::rand() % 8 + 4));
-    // 座舱
+    p->drawLine(-5, 14, -5, 14 + flame);   // 尾焰
+    p->drawLine(5, 14, 5, 14 + flame);
     p->setBrush(JZBrush(JZColor::Cyan));
-    p->fillRect(cx - 3, cy - 8, 6, 9, JZColor::Cyan);
+    p->fillRect(-3, -8, 6, 9, JZColor::Cyan);  // 座舱
+    p->restore();
 }
 
 void GameWidget::drawEnemy(JZPainter* p, int cx, int cy, int w, int h, int type)
 {
-    m_frameDraws += 4;   // 机身填充 + 描边 + 两只眼
+    m_frameDraws += 4;   // 机身填充 + 描边 + 两只眼 (save/restore 不计入)
+    // 每敌相位略错开: 旋转 + 轻微缩放脉冲, 验证多实体下的矩阵变换
+    double ang = m_animT * 25.0f + cx * 0.05f;
+    double sc  = 1.0f + 0.12f * std::sin(m_animT * 4.0f + cy * 0.03f);
+    p->save();
+    p->translate(cx, cy);
+    p->rotate(ang);
+    p->scale(sc, sc);
     JZColor body = type ? JZColor(230, 90, 90) : JZColor(220, 70, 160);
     p->setBrush(JZBrush(body));
-    p->fillRect(cx - w / 2, cy - h / 2, w, h, body);
+    p->fillRect(-w / 2, -h / 2, w, h, body);
     p->setPen(JZPen(JZColor(255, 220, 220), 1));
-    p->drawRect(cx - w / 2, cy - h / 2, w, h);
-    // 眼
+    p->drawRect(-w / 2, -h / 2, w, h);
+    // 眼 (以中心为基准)
     p->setBrush(JZBrush(JZColor::White));
-    p->fillRect(cx - w / 4 - 3, cy - 4, 6, 6, JZColor::White);
-    p->fillRect(cx + w / 4 - 3, cy - 4, 6, 6, JZColor::White);
+    p->fillRect(-w / 4 - 3, -4, 6, 6, JZColor::White);
+    p->fillRect(w / 4 - 3, -4, 6, 6, JZColor::White);
+    p->restore();
 }
 
 void GameWidget::drawBullets(JZPainter* p)
 {
     m_frameDraws += (int)m_bullets.size();
     p->setBrush(JZBrush(JZColor::Yellow));
-    for (auto& b : m_bullets)
-        p->fillRect(b.x - 2, b.y - 6, 4, 11, JZColor::Yellow);
+    for (auto& b : m_bullets) {
+        // 子弹朝向运动方向旋转 (环射时呈放射状), 验证大量实体的矩阵变换
+        double ang = std::atan2((double)b.vy, (double)b.vx) * 180.0 / kPi + 90.0;
+        p->save();
+        p->translate(b.x, b.y);
+        p->rotate(ang);
+        p->fillRect(-2, -6, 4, 11, JZColor::Yellow);
+        p->restore();
+    }
 }
 
 void GameWidget::drawEnemyBullets(JZPainter* p)
 {
     m_frameDraws += (int)m_ebullets.size();
     p->setBrush(JZBrush(JZColor(255, 120, 60)));
-    for (auto& b : m_ebullets)
-        p->fillRect(b.x - 3, b.y - 3, 6, 6, JZColor(255, 120, 60));
+    for (auto& b : m_ebullets) {
+        double ang = std::atan2((double)b.vy, (double)b.vx) * 180.0 / kPi + 90.0;
+        p->save();
+        p->translate(b.x, b.y);
+        p->rotate(ang);
+        p->fillRect(-3, -3, 6, 6, JZColor(255, 120, 60));
+        p->restore();
+    }
 }
 
 void GameWidget::drawPowerUps(JZPainter* p)

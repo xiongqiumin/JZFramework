@@ -46,7 +46,7 @@ private:
 
     // 绘制
     void drawBackground(JZPainter* p);
-    void drawShip(JZPainter* p, int cx, int cy, const JZColor& c, bool flash);
+    void drawShip(JZPainter* p, int cx, int cy, const JZColor& c, bool scalePulse);
     void drawEnemy(JZPainter* p, int cx, int cy, int w, int h, int type);
     void drawBullets(JZPainter* p);
     void drawEnemyBullets(JZPainter* p);
@@ -82,6 +82,9 @@ private:
     int   m_frameDraws = 0;   // 本帧绘制的图元(绘制请求)数
     int   m_peakDraws = 0;
     std::chrono::steady_clock::time_point m_lastTick;
+    // 动画时钟: 用于驱动旋转/缩放等矩阵变换的演示 (与逻辑步长解耦, 渲染期推进)
+    double m_animT = 0;
+    std::chrono::steady_clock::time_point m_animTick;
 
     std::vector<Star>    m_stars;
     std::vector<Bullet>  m_bullets;

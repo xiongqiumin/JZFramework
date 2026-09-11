@@ -3,6 +3,7 @@
 
 #include "JZWidget.h"
 #include "JZSignal.h"
+#include "JZImage.h"
 
 class JZPushButton : public JZWidget
 {
@@ -18,6 +19,9 @@ public:
 
     void setText(const std::string& text);
     std::string text() const;
+
+    void setIcon(const JZImage& icon);
+    const JZImage& icon() const;
 
     void setWidth(int w);
     void setHeight(int h);
@@ -44,6 +48,7 @@ protected:
 private:
     void* m_label = nullptr;
     std::string m_text;
+    JZImage m_icon;
     bool m_pressed = false;
 };
 

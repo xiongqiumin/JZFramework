@@ -190,9 +190,9 @@ int JZAbstractTextEdit::xOfIndex(int line, int partCount) const
         // Image / Emoji 段: 整格宽度 (与绘制同一来源)。
         // 只有该段**完整落在**统计范围内才计入 (光标按段停靠, 不会落在段中间)。
         if (sCpEnd <= stop) {
-            const JZImage* img = nullptr;
+            const JZPixmap* pm = nullptr;
             int w = 0, h = 0;
-            if (segmentImage(s, img, w, h))
+            if (segmentImage(s, pm, w, h))
                 x += w;
         }
     }
@@ -456,8 +456,10 @@ int JZAbstractTextEdit::inlineImageCount() const
 
 // ==================== 段落 -> 可绘制图像 ====================
 //
-// 内联图片与 emoji 在渲染层面是**同一件事**: 都是"一张图 + 显示尺寸"。
+// 内联图片与 emoji 在渲染层面是**同一件事**: 都是"一张显示用位图 + 显示尺寸"。
 // 因此测宽 (xOfIndex) 与绘制 (paintEvent) 都只调本函数, 不存在两套口径。
+// 位图由两张注册表在入库/首次请求时**按显示尺寸**缩好并预转 (JZPixmap),
+// 这里只是取指针, 无缩放、无格式转换。
 
 // emoji 与图片的显示高度: 跟随字号 (略高于字形, 视觉上更平衡)
 int JZAbstractTextEdit::inlineBoxHeight() const
@@ -466,7 +468,7 @@ int JZAbstractTextEdit::inlineBoxHeight() const
     return std::max(JZFontMetrics::textHeight(font) + 2, kInlineImageMinH);
 }
 
-bool JZAbstractTextEdit::segmentImage(const Segment& seg, const JZImage*& out,
+bool JZAbstractTextEdit::segmentImage(const Segment& seg, const JZPixmap*& out,
                                       int& w, int& h) const
 {
     out = nullptr;
@@ -482,23 +484,24 @@ bool JZAbstractTextEdit::segmentImage(const Segment& seg, const JZImage*& out,
         if (!JZTextImageMap::isImageCode(cp))
             return false;
 
+        // 显示尺寸在上限处 (JZTextImageMap::add) 就已定好, 这里只取结果
         JZTextImageMap::instance().sizeOf(cp, w, h);
         const JZTextImageMap::Entry* e = JZTextImageMap::instance().find(cp);
-        if (e && !e->image.isNull())
-            out = &e->image;
+        if (e && !e->pixmap.isNull())
+            out = &e->pixmap;
         return true;                     // 即使无像素也返回 true: 有确定尺寸
     }
 
     if (seg.isEmoji()) {
-        // emoji 段: 查内置图集。找不到 -> 返回 false, 由调用方降级。
-        const JZImage* img = JZEmojiImageMap::instance().find(seg.emoji);
-        if (!img || img->isNull())
+        // emoji 段: 查内置图集 (按显示框边长取已缩好的位图)。找不到 -> 降级。
+        const int box = inlineBoxHeight();
+        const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(seg.emoji, box);
+        if (!pm || pm->isNull())
             return false;
 
-        out = img;
-        const int box = inlineBoxHeight();
-        w = box;
-        h = box;
+        out = pm;
+        w = pm->width();                 // == box (正方形)
+        h = pm->height();
         return true;
     }
 
@@ -936,9 +939,9 @@ int JZAbstractTextEdit::lineHeightOfParts(int flatStart, int flatEnd, int baseH)
     for (size_t k = 0; k < segs.size(); ++k) {
         if (segs[k].type == SegmentType::Text)
             continue;
-        const JZImage* img = nullptr;
+        const JZPixmap* pm = nullptr;
         int w = 0, ih = 0;
-        if (segmentImage(segs[k], img, w, ih))
+        if (segmentImage(segs[k], pm, w, ih))
             h = std::max(h, ih + 2);
     }
     return h;
@@ -1436,7 +1439,7 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
             p.fillRect(JZRect(xa, bTop, xb - xa, visH), JZColor(0x33, 0x90, 0xFF));
         }
 
-        // ---- 按段落绘制: Text 段落成批 drawText, Image/Emoji 段落 drawImage ----
+        // ---- 按段落绘制: Text 段落成批 drawText, Image/Emoji 段落 drawPixmap ----
         // 与 xOfIndex 用的是**同一个** enumerateSegments, 因此测宽与绘制同口径。
         const int lineByteStart = codepointToUtf8Byte(L.start);
         const int lineByteLen = codepointToUtf8Byte(L.start + L.length) - lineByteStart;
@@ -1450,12 +1453,13 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
 
             // ---- 图段 (图片 / emoji): 同一路径 ----
             if (s.type != SegmentType::Text) {
-                const JZImage* img = nullptr;
+                const JZPixmap* pm = nullptr;
                 int iw = 0, ih = 0;
-                if (segmentImage(s, img, iw, ih)) {
+                if (segmentImage(s, pm, iw, ih)) {
                     const int iy = yLine + std::max(0, (L.height - ih) / 2);
-                    if (img && !img->isNull()) {
-                        p.drawImage(*img, xs, iy, iw, ih);
+                    if (pm && !pm->isNull()) {
+                        // 位图已是显示尺寸且已转好: 这里是纯贴图 (唯一的 1:1 路径)
+                        p.drawPixmap(*pm, xs, iy, iw, ih);
                     } else {
                         // 无像素 (只有尺寸): 浅灰占位框
                         p.fillRect(JZRect(xs, iy, iw, ih), JZColor(0xE4, 0xE7, 0xEC));

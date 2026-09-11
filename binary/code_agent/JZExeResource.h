@@ -7,7 +7,7 @@
 // 把"替换 exe 图标" generalization 为对任意资源(type/name)的读写，并额外提供
 // 图标与"调试开关"两个具体能力的便捷封装。全部基于 Win32 资源 API
 // （BeginUpdateResource / UpdateResource / EndUpdateResource），因此本文件只 include
-// <windows.h>，绝不 include JZAgentTool.h（避免 BOOLEAN 宏冲突）。
+// <windows.h>，不 include JZAgentTool.h（避免把 JZAgent 依赖带进这个纯 Win32 工具）。
 //
 // 用途：导出工程时把内嵌 JZEngineRuntime 的 code_runtime.exe 改名、换图标，并写入一个
 //       "调试开关"资源（约定 type="JZRT_CFG" name="DEBUG"，内容为 JSON {"debug":bool}），

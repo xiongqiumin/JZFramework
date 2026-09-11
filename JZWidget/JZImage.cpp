@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // 只拿声明; stb 各库实现体在 JZStbImage.cpp (统一实现宏)。
 #include "stb/stb_image.h"
@@ -162,6 +163,27 @@ int JZImage::width() const
 int JZImage::height() const
 {
     return m_data ? m_data->height() : 0;
+}
+
+JZImage JZImage::create(int w, int h, const JZColor& color)
+{
+    JZImage img;
+    if (w <= 0 || h <= 0)
+        return img;
+
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    const uint8_t r = color.red(), g = color.green(), b = color.blue(), a = color.alpha();
+    for (size_t i = 0; i < (size_t)w * h; ++i) {
+        px[i * 4 + 0] = r;
+        px[i * 4 + 1] = g;
+        px[i * 4 + 2] = b;
+        px[i * 4 + 3] = a;
+    }
+
+    auto data = std::make_shared<JZImageData>();
+    data->setPixels(w, h, px.data());
+    img.m_data = data;
+    return img;
 }
 
 JZImage JZImage::decode(const JZByteArray& data)

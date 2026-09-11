@@ -1,5 +1,5 @@
-/// <reference path="../../../types/common.d.ts" />
-/// <reference path="../../../types/events.d.ts" />
+/// <reference path="../../types/common.d.ts" />
+/// <reference path="../../types/events.d.ts" />
 
 export type QoS = 0 | 1 | 2;
 

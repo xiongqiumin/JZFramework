@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include "ChatView.h"
 
 #include "JZPainter.h"
@@ -6,6 +8,14 @@
 #include "JZUtf8Iterator.h"
 #include "JZDebug.h"
 #include "JZScreenShot.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 // 布局常量
 static constexpr int kOuter      = 12;   // 控件四边外边距
@@ -45,6 +55,166 @@ static void drawTriangle(JZPainter& p, int cx, int cy, int r, bool down)
     }
 }
 
+// ==================== emoji 感知的文本分段 ====================
+// 与 JZTextEdit 同一口径: 文本里遇到 emoji 码点(含其后的 VS16/ZWJ/肤色等修饰符)
+// 整体切成一个不可分割的 emoji 段, 走 JZEmojiImageMap 取显示用位图; 其余连续普通
+// 文字合并成文本段。测量 (wrapText) 与绘制 (paintEvent) 都走这里, 二者宽度一致。
+
+namespace {
+
+// 一行里的"可绘制单元": 文本段或 emoji 段。byteStart/字节长度相对本行串。
+struct EmojiRun {
+    bool     emoji = false;
+    std::string text;        // 本段 UTF-8 (文本段或 emoji 序列)
+    int      byteStart = 0;  // 段首在本行串中的字节下标
+    int      width = 0;      // 显示宽度 (逻辑像素)
+};
+
+// emoji 段的显示宽度: 命中内置图集取位图宽(=box), 否则退回字体测宽(降级)。
+int emojiRunWidth(const std::string& seq, const JZFont& font)
+{
+    const int box = JZFontMetrics::textHeight(font);
+    const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(seq, box);
+    if (pm && !pm->isNull())
+        return pm->width();
+    return JZFontMetrics::textWidth(seq, font);
+}
+
+// 从字节位置 pos 起, 若起始码点是 emoji, 吸收后续修饰符 (VS16/ZWJ/肤色/标签),
+// 返回完整 emoji 序列 (UTF-8) 与字节长度; 否则返回 false。
+bool nextEmojiSeq(const std::string& u8, size_t pos, size_t end,
+                  std::string& outSeq, int& outLen)
+{
+    char32_t cp; int len;
+    if (!JZUtf8Iterator::decode(u8.data(), u8.size(), pos, cp, len) || len <= 0)
+        return false;
+    if (!JZEmoji::isEmoji(cp))
+        return false;
+
+    std::string seq = u8.substr(pos, len);
+    size_t j = pos + len;
+    while (j < end) {
+        char32_t nc; int nl;
+        if (!JZUtf8Iterator::decode(u8.data(), u8.size(), j, nc, nl) || nl <= 0)
+            break;
+        if (JZEmoji::isEmojiModifier(nc) || JZEmoji::isEmoji(nc)) {
+            seq += u8.substr(j, nl);
+            j += nl;
+            continue;
+        }
+        break;
+    }
+    outSeq = seq;
+    outLen = static_cast<int>(j - pos);
+    return true;
+}
+
+// 把一行文本切成文本段 / emoji 段, 并计算每段宽度。
+std::vector<EmojiRun> segmentLine(const std::string& line, const JZFont& font)
+{
+    std::vector<EmojiRun> runs;
+    const size_t n = line.size();
+    size_t i = 0;
+    int x = 0;
+    while (i < n) {
+        std::string seq; int seqLen;
+        if (nextEmojiSeq(line, i, n, seq, seqLen)) {
+            const int w = emojiRunWidth(seq, font);
+            EmojiRun r; r.emoji = true;  r.text = seq;
+            r.byteStart = static_cast<int>(i); r.width = w;
+            runs.push_back(r);
+            x += w; i += seqLen;
+            continue;
+        }
+        // 普通文本: 一路吃到下一个 emoji (或行尾)
+        size_t j = i;
+        char32_t c0; int l0;
+        if (!JZUtf8Iterator::decode(line.data(), n, j, c0, l0) || l0 <= 0)
+            j += 1;
+        else
+            j += l0;
+        while (j < n) {
+            char32_t nc; int nl;
+            if (!JZUtf8Iterator::decode(line.data(), n, j, nc, nl) || nl <= 0)
+                break;
+            if (JZEmoji::isEmoji(nc))
+                break;
+            j += nl;
+        }
+        std::string txt = line.substr(i, j - i);
+        const int w = JZFontMetrics::textWidth(txt, font);
+        EmojiRun r; r.emoji = false; r.text = txt;
+        r.byteStart = static_cast<int>(i); r.width = w;
+        runs.push_back(r);
+        x += w; i = j;
+    }
+    return runs;
+}
+
+// 行内某字节偏移对应的 x (相对行首, 不含 x0)。emoji 段整体不可分割, 落在段内
+// 时吸附到最近的段边界。
+int xAtByte(const std::vector<EmojiRun>& runs, int byteOff, const JZFont& font)
+{
+    int x = 0;
+    for (const auto& r : runs) {
+        const int bs = r.byteStart;
+        const int be = r.byteStart + static_cast<int>(r.text.size());
+        if (byteOff <= bs)
+            return x;
+        if (byteOff >= be) {
+            x += r.width;
+            continue;
+        }
+        if (r.emoji)
+            return x;   // 段内: 吸附到段起点
+        // 文本段: 把字节前缀换算成码点前缀再测宽
+        int prefix = byteOff - bs;
+        int cpCount = 0;
+        JZUtf8Iterator it(r.text);
+        while (it.isValid() && it.byteIndex() < prefix) {
+            ++cpCount;
+            ++it;
+        }
+        return x + JZFontMetrics::textWidth(r.text, font, cpCount);
+    }
+    return x;
+}
+
+// 行内点 x (相对行首) -> 最近的字节偏移。文本段逐码点候选, emoji 段取两端。
+int offsetForX(const std::vector<EmojiRun>& runs, int x, const JZFont& font)
+{
+    int best = 0, bestDist = INT_MAX, cur = 0;
+    for (const auto& r : runs) {
+        std::vector<int> cands;
+        if (r.emoji) {
+            cands.push_back(r.byteStart);
+            cands.push_back(r.byteStart + static_cast<int>(r.text.size()));
+        } else {
+            int cp = JZUtf8Iterator::countCodepoints(r.text);
+            int b = 0;
+            cands.push_back(r.byteStart);
+            JZUtf8Iterator it(r.text);
+            while (it.isValid() && b < cp) {
+                ++it;
+                b = it.byteIndex();
+                cands.push_back(r.byteStart + b);
+            }
+        }
+        for (int off : cands) {
+            const int xx = xAtByte(runs, off, font);
+            const int d = std::abs(xx - x);
+            if (d < bestDist) {
+                bestDist = d;
+                best = off;
+            }
+        }
+        cur += r.width;
+    }
+    return best;
+}
+
+} // namespace
+
 JZ_OBJECT_IMPL(ChatView, JZWidget)
 
 ChatView::ChatView(JZWidget* parent)
@@ -69,6 +239,7 @@ ChatView::ChatView(JZWidget* parent)
 // ==================== 文本换行 ====================
 // 贪婪按码点换行: 遇到 '\n' 硬换行; 行宽超过 maxW 且已有内容则断行,
 // 并丢弃新行开头的空白; 单个超宽码点绝不死循环 (已消费则允许越界)。
+// emoji 与其修饰符 (VS16/ZWJ/肤色) 作为不可分割的整体参与测量, 与绘制同口径。
 void ChatView::wrapText(const std::string& text, const JZFont& font,
                         int maxW, std::vector<std::string>& out)
 {
@@ -93,23 +264,49 @@ void ChatView::wrapText(const std::string& text, const JZFont& font,
             continue;
         }
         std::string cpStr = text.substr(i, len);
-        i += len;
 
         if (cp == '\n')
         {
             pushLine();
+            i += len;
             continue;
         }
 
-        int cpW = JZFontMetrics::textWidth(cpStr, font);
+        // emoji 整段 (含修饰符) 当作一个不可分割单元测量
+        std::string piece = cpStr;
+        int cpW;
+        if (JZEmoji::isEmoji(cp))
+        {
+            size_t j = i + len;          // 注意: cpStr 已含 base, 这里从 base 之后继续吞修饰符
+            while (j < n)
+            {
+                char32_t nc; int nl;
+                if (!JZUtf8Iterator::decode(text.data(), n, j, nc, nl) || nl <= 0)
+                    break;
+                if (JZEmoji::isEmojiModifier(nc) || JZEmoji::isEmoji(nc)) {
+                    piece += text.substr(j, nl);
+                    j += nl;
+                    continue;
+                }
+                break;
+            }
+            i = j;
+            cpW = emojiRunWidth(piece, font);
+        }
+        else
+        {
+            i += len;
+            cpW = JZFontMetrics::textWidth(cpStr, font);
+        }
+
         if (!line.empty() && lineW + cpW > maxW)
             pushLine();
 
-        // 新行开头的空白直接丢弃 (避免顶部留白)
+        // 新行开头的空白直接丢弃 (避免顶部留白); emoji/普通字都保留
         if (line.empty() && (cp == ' ' || cp == '\t'))
             continue;
 
-        line += cpStr;
+        line += piece;
         lineW += cpW;
     }
     pushLine();
@@ -468,6 +665,7 @@ void ChatView::afterChange()
     // 1) 对当前视口(按当前滚动位置)做精确化;
     // 2) 重算总高(整数求和, 不调字体度量);
     // 3) 视口可能已贴底(跟随), 用新总高修正滚动位置后再精确化一次。
+    clearSelection();          // 内容变化后旧选区(行号/偏移)已失效
     ensurePreciseWindow();
     recomputeTotal();
     updateScroll(m_autoFollow);
@@ -525,6 +723,141 @@ int ChatView::hitTestMsg(int contentY) const
         top += m_msgs[i].cardH + kGap;
     }
     return -1;
+}
+
+int ChatView::msgTopContent(int idx) const
+{
+    int top = kOuter;
+    for (int i = 0; i < idx && i < (int)m_msgs.size(); i++)
+        top += m_msgs[i].cardH + kGap;
+    return top;
+}
+
+void ChatView::clearSelection()
+{
+    m_selMsg = -1;
+    m_selLineB = -1;
+    m_selecting = false;
+}
+
+void ChatView::toggleCollapse(int idx)
+{
+    if (idx < 0 || idx >= (int)m_msgs.size())
+        return;
+    m_msgs[idx].collapsed = !m_msgs[idx].collapsed;
+    layoutMsg(m_msgs[idx], true);
+    afterChange();
+}
+
+std::string ChatView::selectedText() const
+{
+    if (m_selMsg < 0 || m_selMsg >= (int)m_msgs.size() || m_selLineB < 0)
+        return std::string();
+    const Msg& m = m_msgs[m_selMsg];
+    const std::vector<std::string>& lines =
+        (m_selPart == 0) ? m.lines : m.resultLines;
+    if (lines.empty())
+        return std::string();
+
+    const int la = std::min(m_selLineA, m_selLineB);
+    const int lb = std::max(m_selLineA, m_selLineB);
+    if (la < 0 || lb >= (int)lines.size())
+        return std::string();
+    const int oa = (m_selLineA <= m_selLineB) ? m_selOffA : m_selOffB;
+    const int ob = (m_selLineA <= m_selLineB) ? m_selOffB : m_selOffA;
+
+    std::string out;
+    for (int li = la; li <= lb; li++)
+    {
+        const std::string& ln = lines[li];
+        int s = (li == la) ? oa : 0;
+        int e = (li == lb) ? ob : (int)ln.size();
+        s = std::max(0, std::min(s, (int)ln.size()));
+        e = std::max(s, std::min(e, (int)ln.size()));
+        if (li > la)
+            out += '\n';
+        out += ln.substr(s, e - s);
+    }
+    return out;
+}
+
+void ChatView::copySelection()
+{
+    const std::string s = selectedText();
+    if (s.empty())
+        return;
+    if (!OpenClipboard(nullptr))
+        return;
+    EmptyClipboard();
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (size_t)(wlen + 1) * sizeof(wchar_t));
+    if (hMem) {
+        wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem));
+        if (p) {
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), p, wlen);
+            p[wlen] = 0;
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+    }
+    CloseClipboard();
+}
+
+// 绘制一条消息的正文(主正文或工具输出段): 先画选区高亮, 再按段绘制文本/emoji。
+// 选区只在 (m_selMsg==msgIdx && m_selPart==part) 时生效。
+void ChatView::drawMsgText(JZPainter& p, const Msg& m, int msgIdx, int part,
+                           int x0, int topY, int lh, const JZFont& font) const
+{
+    const std::vector<std::string>& lines =
+        (part == 0) ? m.lines : m.resultLines;
+    if (lines.empty())
+        return;
+
+    const int box = JZFontMetrics::textHeight(font);   // emoji 显示边长(与测量同口径)
+    const bool sel = (m_selMsg == msgIdx && m_selPart == part && m_selLineB >= 0);
+    const int la = std::min(m_selLineA, m_selLineB);
+    const int lb = std::max(m_selLineA, m_selLineB);
+    const int oa = (m_selLineA <= m_selLineB) ? m_selOffA : m_selOffB;
+    const int ob = (m_selLineA <= m_selLineB) ? m_selOffB : m_selOffA;
+
+    for (size_t li = 0; li < lines.size(); li++)
+    {
+        const int yLine = topY + (int)li * lh;
+        const std::vector<EmojiRun> runs = segmentLine(lines[li], font);
+
+        // 选区高亮(浅蓝底, 文字保持黑色, 读得清)
+        if (sel && (int)li >= la && (int)li <= lb)
+        {
+            int sOff = ((int)li == la) ? oa : 0;
+            int eOff = ((int)li == lb) ? ob : (int)lines[li].size();
+            if (eOff > sOff)
+            {
+                const int xs = xAtByte(runs, sOff, font);
+                const int xe = xAtByte(runs, eOff, font);
+                p.fillRect(JZRect(x0 + xs, yLine, xe - xs, lh),
+                           JZColor(0xCF, 0xE4, 0xFF));
+            }
+        }
+
+        // 文本段 drawText, emoji 段 drawPixmap(命中图集), 均未命中则降级字体绘制
+        int x = x0;
+        for (const auto& r : runs)
+        {
+            if (r.emoji)
+            {
+                const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(r.text, box);
+                if (pm && !pm->isNull())
+                    p.drawPixmap(*pm, x, yLine, box, box);
+                else
+                    p.drawText(x, yLine, r.text.c_str());
+            }
+            else
+            {
+                p.drawText(x, yLine, r.text.c_str());
+            }
+            x += r.width;
+        }
+    }
 }
 
 // ==================== 消息追加 ====================
@@ -679,6 +1012,7 @@ void ChatView::resizeEvent(JZResizeEvent* event)
     // 摆放真实滚动条几何(右侧竖条); 范围/值由 updateScroll 同步
     m_vScroll->setGeometry(width() - kOuter - kScrollBarW, kOuter,
                            kScrollBarW, std::max(0, height() - 2 * kOuter));
+    clearSelection();          // 宽度变化会重排, 旧选区偏移失效
     relayoutVirtual();                          // 视口内精确, 视口外估算(宽度变化必全量)
     updateScroll(m_autoFollow);
     update();
@@ -696,17 +1030,116 @@ void ChatView::mousePressEvent(JZMouseEvent* event)
 {
     if (event->button() == JZMouseEvent::LeftButton)
     {
-        // 思考卡整卡可点: 折叠 <-> 展开
-        int idx = hitTestMsg(event->localPos().y() + m_scrollY);
-        if (idx >= 0 && idx < (int)m_msgs.size() && m_msgs[idx].collapsible)
+        const int contentY = event->localPos().y() + m_scrollY;
+        const int contentX = event->localPos().x();
+        const int idx = hitTestMsg(contentY);
+        if (idx >= 0 && idx < (int)m_msgs.size())
         {
-            m_msgs[idx].collapsed = !m_msgs[idx].collapsed;
-            layoutMsg(m_msgs[idx], true);       // 折叠/展开只重排这一张
-            afterChange();
-            return;
+            const Msg& m = m_msgs[idx];
+            const int top = msgTopContent(idx);
+            const int localY = contentY - top;
+
+            // 思考卡: 折叠态整卡点击展开; 展开态头部点击折叠。其余区域留给选取。
+            if (m.collapsible && m.collapsed)
+            {
+                toggleCollapse(idx);
+                return;
+            }
+            if (m.collapsible && localY < kHeaderH)
+            {
+                toggleCollapse(idx);
+                return;
+            }
+
+            // 命中正文 -> 起手选取
+            JZFont bodyFont(14);
+            const int lh = JZFontMetrics::textHeight(bodyFont) + kLineGap;
+            int part = 0;
+            int firstLocal = kHeaderH;
+            if (m.role == Tool && m.hasResult)
+            {
+                const int paramsH = (int)m.lines.size() * lh;
+                const int resultLocal = kHeaderH + paramsH + kSecPad + kResLabelH;
+                if (localY >= resultLocal)
+                {
+                    part = 1;
+                    firstLocal = resultLocal;
+                }
+            }
+            const int nlines = (part == 0) ? (int)m.lines.size() : (int)m.resultLines.size();
+            const int li = (localY - firstLocal) / lh;
+            if (li >= 0 && li < nlines)
+            {
+                const std::vector<std::string>& lines =
+                    (part == 0) ? m.lines : m.resultLines;
+                const int x0 = kOuter + kCardPad;
+                const std::vector<EmojiRun> runs = segmentLine(lines[li], bodyFont);
+                const int off = offsetForX(runs, contentX - x0, bodyFont);
+
+                m_selMsg = idx;
+                m_selPart = part;
+                m_selLineA = m_selLineB = li;
+                m_selOffA = m_selOffB = off;
+                m_selecting = true;
+                update();
+                event->accept();
+                return;
+            }
         }
     }
     JZWidget::mousePressEvent(event);
+}
+
+void ChatView::mouseMoveEvent(JZMouseEvent* event)
+{
+    if (!m_selecting || m_selMsg < 0)
+        return;
+
+    const int contentY = event->localPos().y() + m_scrollY;
+    const int contentX = event->localPos().x();
+    const Msg& m = m_msgs[m_selMsg];
+
+    JZFont bodyFont(14);
+    const int lh = JZFontMetrics::textHeight(bodyFont) + kLineGap;
+    int part = m_selPart;
+    int firstLocal = kHeaderH;
+    if (m.role == Tool && m.hasResult && m_selPart == 1)
+    {
+        const int paramsH = (int)m.lines.size() * lh;
+        firstLocal = kHeaderH + paramsH + kSecPad + kResLabelH;
+    }
+    const int localY = contentY - msgTopContent(m_selMsg);
+    int li = (localY - firstLocal) / lh;
+    const int nlines = (part == 0) ? (int)m.lines.size() : (int)m.resultLines.size();
+    if (li < 0)  li = 0;
+    if (li >= nlines) li = nlines - 1;
+
+    const std::vector<std::string>& lines = (part == 0) ? m.lines : m.resultLines;
+    const int x0 = kOuter + kCardPad;
+    const std::vector<EmojiRun> runs = segmentLine(lines[li], bodyFont);
+    const int off = offsetForX(runs, contentX - x0, bodyFont);
+
+    m_selLineB = li;
+    m_selOffB = off;
+    update();
+    event->accept();
+}
+
+void ChatView::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (event->button() == JZMouseEvent::LeftButton)
+        m_selecting = false;
+}
+
+void ChatView::keyPressEvent(JZKeyEvent* event)
+{
+    if (event->ctrl() && (event->key() == 'C' || event->key() == 'c'))
+    {
+        copySelection();
+        event->accept();
+        return;
+    }
+    JZWidget::keyPressEvent(event);
 }
 
 // ==================== 绘制 ====================
@@ -772,6 +1205,8 @@ void ChatView::paintEvent(JZPainterEvent* event)
         case Info:        bg = JZColor(0xF2,0xF2,0xF2); border = JZColor(0xE4,0xE4,0xE4); head = JZColor(0x77,0x77,0x77); body = JZColor(0x55,0x55,0x55); headText = "信息"; break;
         }
 
+        const int msgIdx = (int)(&m - &m_msgs[0]);   // 当前消息索引(选区定位用)
+
         // 思考卡折叠态: 一条可点击的标题条
         if (m.role == Thinking && m.collapsed)
         {
@@ -821,8 +1256,7 @@ void ChatView::paintEvent(JZPainterEvent* event)
 
             p.setFont(bodyFont);
             p.setPen(JZPen(body, 1));
-            for (size_t li = 0; li < m.lines.size(); li++)
-                p.drawText(x0, ty + li * lh, m.lines[li].c_str());
+            drawMsgText(p, m, msgIdx, 0, x0, y + kHeaderH, lh, bodyFont);
             ty += (int)m.lines.size() * lh;
 
             // 分隔线
@@ -839,8 +1273,7 @@ void ChatView::paintEvent(JZPainterEvent* event)
             // 结果正文
             p.setFont(bodyFont);
             p.setPen(JZPen(JZColor(0x33, 0x66, 0x3B), 1));
-            for (size_t li = 0; li < m.resultLines.size(); li++)
-                p.drawText(x0, ty + li * lh, m.resultLines[li].c_str());
+            drawMsgText(p, m, msgIdx, 1, x0, ty, lh, bodyFont);
 
             y += m.cardH + kGap;
             continue;
@@ -849,10 +1282,8 @@ void ChatView::paintEvent(JZPainterEvent* event)
         // 普通正文
         p.setFont(bodyFont);
         p.setPen(JZPen(body, 1));
-        int ty = y + kHeaderH;
-        for (size_t li = 0; li < m.lines.size(); li++)
-            p.drawText(contentLeft + kCardPad, ty + li * lh, m.lines[li].c_str());
-        ty += (int)m.lines.size() * lh;
+        drawMsgText(p, m, msgIdx, 0, contentLeft + kCardPad, y + kHeaderH, lh, bodyFont);
+        int ty = y + kHeaderH + (int)m.lines.size() * lh;
 
         // 附图缩略图(用户消息): 位置来自 layoutThumbs, 尺寸即缩略图真实尺寸
         for (size_t ii = 0; ii < m.thumbs.size() && ii < m.thumbRects.size(); ii++)
@@ -884,7 +1315,28 @@ void ChatView::paintEvent(JZPainterEvent* event)
         p.setPen(JZPen(body, 1));
         int ty = y + kHeaderH;
         for (size_t li = 0; li < m_waitLines.size(); li++)
-            p.drawText(contentLeft + kCardPad, ty + li * lh, m_waitLines[li].c_str());
+        {
+            const std::vector<EmojiRun> runs = segmentLine(m_waitLines[li], bodyFont);
+            int x = contentLeft + kCardPad;
+            for (const auto& r : runs)
+            {
+                if (r.emoji)
+                {
+                    const int box = JZFontMetrics::textHeight(bodyFont);
+                    const JZPixmap* pm = JZEmojiImageMap::instance().findPixmap(r.text, box);
+                    if (pm && !pm->isNull())
+                        p.drawPixmap(*pm, x, ty, box, box);
+                    else
+                        p.drawText(x, ty, r.text.c_str());
+                }
+                else
+                {
+                    p.drawText(x, ty, r.text.c_str());
+                }
+                x += r.width;
+            }
+            ty += lh;
+        }
     }
 
     // 滚动条已由真正的 JZScrollBar 子控件绘制, 这里无需自绘

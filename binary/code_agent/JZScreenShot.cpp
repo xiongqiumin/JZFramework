@@ -429,8 +429,8 @@ JZImage shotBurnMarks(const JZImage& src, const vector<ShotMark>& marks, float s
 
 } // namespace
 
-// ==================== 标注画布 ====================
-// 全屏窗口里的内容控件: 铺满整屏的截图 + 标注绘制 + 鼠标/键盘交互。
+// ==================== QQ 风格截图画布 ====================
+// 全屏内容控件: 暗色蒙版 + 拖拽选区(可移动 / 八向缩放) + 选区内标注 + 工具条。
 class JZShotCanvas : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZShotCanvas)
@@ -438,8 +438,6 @@ class JZShotCanvas : public JZWidget
 public:
     explicit JZShotCanvas(JZWidget* parent = nullptr);
 
-    // 背景截图: 转成 JZPixmap 后每帧贴图只是一次位图拷贝 (转换只在 setShot 时
-    // 做一次 —— 标注窗每帧重绘整窗, 4K 图逐帧现转会卡死)
     void setShot(const JZImage& img)
     {
         m_shot = img;
@@ -449,9 +447,11 @@ public:
     void setTool(int tool);
     int  tool() const { return m_tool; }
     void undo();
-    void layoutButtons();                 // 底部工具条(居中)排布
+    void layoutToolbar();                // 工具条贴着选区排布
 
     const JZImage& shotImage() const { return m_shot; }
+    JZRect selection() const { return m_sel; }
+    bool hasSelection() const { return m_hasSel; }
     const vector<ShotMark>& marks() const { return m_marks; }
 
 jz_signals:
@@ -467,21 +467,99 @@ protected:
     void keyPressEvent(JZKeyEvent* event) override;
 
 private:
-    void refreshTools();                  // 当前工具按钮加"●"标记
+    enum Drag { None, Create, Move, Resize };
+
+    void refreshTools();                 // 当前工具按钮加"●"标记
     void drawMark(JZPainter& p, const ShotMark& mk, vector<JZPoint>& poly);
+    void drawHandle(JZPainter& p, const JZPoint& c);
+    void drawSizeLabel(JZPainter& p);
+    int  hitHandle(const JZPoint& pt);
+    void updateHoverCursor(const JZPoint& pt);
 
-    vector<ShotMark> m_marks;             // 已确认的标注
-    JZImage m_shot;                       // 背景截图(尺寸 == 画布尺寸), 确认时烧标注用
-    JZPixmap m_shotPixmap;                // m_shot 的显示用位图 (每帧贴图用这个)
+    vector<ShotMark> m_marks;            // 已确认的标注
+    JZImage m_shot;                     // 背景截图(尺寸 == 画布)
+    JZPixmap m_shotPixmap;              // 显示用位图(每帧贴图)
 
-    int  m_tool = ShotRect;
+    int  m_tool = -1;                   // -1 = 选择模式, 0/1/2 = 矩形/椭圆/画笔
+    bool m_hasSel = false;
+    JZRect m_sel;
+
+    Drag m_drag = None;
+    int  m_dragHandle = -1;
+    JZPoint m_dragStart;
+    JZRect  m_dragOrig;
+
     bool m_drawing = false;
-    ShotMark m_current;                   // 正在拖的一笔
+    ShotMark m_current;                 // 正在拖的一笔标注
 
-    vector<JZPushButton*> m_tools;        // 矩形 / 椭圆 / 画笔
-    vector<JZPushButton*> m_actions;      // 撤销 / 取消 / 确定
+    vector<JZPushButton*> m_tools;      // 矩形 / 椭圆 / 画笔
+    vector<JZPushButton*> m_actions;    // 撤销 / 取消 / 完成
 };
 JZ_OBJECT_IMPL(JZShotCanvas, JZWidget)
+
+// 8 个控制点中心(顺时针: 左上/上/右上/右/右下/下/左下/左)
+static void shotHandleCenters(const JZRect& sel, JZPoint c[8])
+{
+    const int l = sel.x(), t = sel.y(), r = sel.x() + sel.width(), b = sel.y() + sel.height();
+    const int cx = l + sel.width() / 2, cy = t + sel.height() / 2;
+    c[0] = JZPoint(l, t); c[1] = JZPoint(cx, t); c[2] = JZPoint(r, t);
+    c[3] = JZPoint(r, cy); c[4] = JZPoint(r, b); c[5] = JZPoint(cx, b);
+    c[6] = JZPoint(l, b); c[7] = JZPoint(l, cy);
+}
+
+static JZCursorShape shotHandleCursor(int h)
+{
+    if (h == 0 || h == 4) return JZCursorShape::SizeFDiag;
+    if (h == 2 || h == 6) return JZCursorShape::SizeBDiag;
+    if (h == 1 || h == 5) return JZCursorShape::SizeVer;
+    return JZCursorShape::SizeHor;
+}
+
+static JZRect shotRectFromPoints(const JZPoint& a, const JZPoint& b)
+{
+    const int x = min(a.x(), b.x()), y = min(a.y(), b.y());
+    return JZRect(x, y, abs(a.x() - b.x()), abs(a.y() - b.y()));
+}
+
+// 拖拽 h 号控制点, 由 orig 基准 + 位移 得到新选区(夹到画布、保最小尺寸)
+static JZRect shotApplyResize(int h, const JZRect& orig, const JZPoint& start,
+                              const JZPoint& pt, int W, int H)
+{
+    int L = orig.x(), T = orig.y(), R = orig.x() + orig.width(), B = orig.y() + orig.height();
+    const int dx = pt.x() - start.x(), dy = pt.y() - start.y();
+    const bool west  = (h == 0 || h == 6 || h == 7);
+    const bool east  = (h == 2 || h == 3 || h == 4);
+    const bool north = (h == 0 || h == 1 || h == 2);
+    const bool south = (h == 4 || h == 5 || h == 6);
+    if (west)  L = orig.x() + dx;
+    if (east)  R = orig.x() + orig.width() + dx;
+    if (north) T = orig.y() + dy;
+    if (south) B = orig.y() + orig.height() + dy;
+    if (R - L < kMinSel) { if (west) L = R - kMinSel; else R = L + kMinSel; }
+    if (B - T < kMinSel) { if (north) T = B - kMinSel; else B = T + kMinSel; }
+    L = max(0, L); T = max(0, T); R = min(W, R); B = min(H, B);
+    return JZRect(L, T, R - L, B - T);
+}
+
+// 裁剪 src(物理像素) 的 [x,y,w,h] 子图
+static JZImage shotCropImage(const JZImage& src, int x, int y, int w, int h)
+{
+    shared_ptr<JZImageData> d = src.data();
+    if (!d || !d->pixels() || w <= 0 || h <= 0)
+        return JZImage();
+    const int sw = d->width(), sh = d->height();
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x + w > sw) w = sw - x;
+    if (y + h > sh) h = sh - y;
+    if (w <= 0 || h <= 0 || x >= sw || y >= sh)
+        return JZImage();
+    vector<uint8_t> buf((size_t)w * h * 4);
+    const uint8_t* s = d->pixels();
+    for (int row = 0; row < h; row++)
+        memcpy(&buf[(size_t)row * w * 4], s + ((size_t)(y + row) * sw + x) * 4, (size_t)w * 4);
+    return JZImage::fromRGBA(buf.data(), w, h);
+}
 
 JZShotCanvas::JZShotCanvas(JZWidget* parent)
     : JZWidget(parent)
@@ -499,7 +577,7 @@ JZShotCanvas::JZShotCanvas(JZWidget* parent)
 
     JZPushButton* undoBtn = new JZPushButton(this, kBtnW, kBtnH, "撤销");
     JZPushButton* cancelBtn = new JZPushButton(this, kBtnW, kBtnH, "取消");
-    JZPushButton* okBtn = new JZPushButton(this, kBtnW, kBtnH, "确定");
+    JZPushButton* okBtn = new JZPushButton(this, kBtnW, kBtnH, "完成");
     connect(&undoBtn->sigClicked, this, [this]() { undo(); });
     connect(&cancelBtn->sigClicked, this, [this]() { sigReject.emit(); });
     connect(&okBtn->sigClicked, this, [this]() { sigAccept.emit(); });
@@ -508,6 +586,7 @@ JZShotCanvas::JZShotCanvas(JZWidget* parent)
     m_actions.push_back(okBtn);
 
     refreshTools();
+    layoutToolbar();
 }
 
 void JZShotCanvas::refreshTools()
@@ -520,7 +599,7 @@ void JZShotCanvas::setTool(int tool)
 {
     if (tool < ShotRect || tool > ShotPen)
         return;
-    m_tool = tool;
+    m_tool = (m_tool == tool) ? -1 : tool;   // 再点一次收回选择模式
     refreshTools();
 }
 
@@ -532,7 +611,7 @@ void JZShotCanvas::undo()
     update();
 }
 
-void JZShotCanvas::layoutButtons()
+void JZShotCanvas::layoutToolbar()
 {
     vector<JZPushButton*> all = m_tools;
     all.insert(all.end(), m_actions.begin(), m_actions.end());
@@ -541,11 +620,21 @@ void JZShotCanvas::layoutButtons()
 
     const int total = (int)all.size() * kBtnW + ((int)all.size() - 1) * kBtnGap;
     int x = (width() - total) / 2;
-    int y = height() - kBtnH - 14;
-    if (x < 8)
-        x = 8;
-    if (y < 8)
-        y = 8;
+    int y = height() - kBtnH - 8;
+    if (m_hasSel)
+    {
+        // 贴着选区: 优先下方, 放不下就放上方, 水平居中于选区
+        int below = m_sel.y() + m_sel.height() + 8;
+        int above = m_sel.y() - kBtnH - 8;
+        if (below + kBtnH <= height() - 2)
+            y = below;
+        else if (above >= 2)
+            y = above;
+        int sx = m_sel.x() + m_sel.width() / 2 - total / 2;
+        x = max(4, min(sx, width() - total - 4));
+    }
+    x = max(4, min(x, width() - total - 4));
+    if (y < 2) y = 2;
 
     for (size_t i = 0; i < all.size(); i++)
     {
@@ -559,8 +648,57 @@ void JZShotCanvas::drawMark(JZPainter& p, const ShotMark& mk, vector<JZPoint>& p
     shotMarkPolyline(mk, poly);
     for (size_t i = 1; i < poly.size(); i++)
         p.drawLine(poly[i - 1].x(), poly[i - 1].y(), poly[i].x(), poly[i].y());
-    if (poly.size() == 1)                 // 单点(点一下没拖动): 画一小段示意
+    if (poly.size() == 1)
         p.drawLine(poly[0].x(), poly[0].y(), poly[0].x() + 1, poly[0].y());
+}
+
+void JZShotCanvas::drawHandle(JZPainter& p, const JZPoint& c)
+{
+    const int s = kHandle;
+    JZRect r(c.x() - s / 2, c.y() - s / 2, s, s);
+    p.fillRect(r.x(), r.y(), r.width(), r.height(), JZColor(255, 255, 255, 255));
+    p.setPen(JZPen(kSelBorder, 1));
+    p.drawRect(r.x(), r.y(), r.width(), r.height());
+}
+
+void JZShotCanvas::drawSizeLabel(JZPainter& p)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%dx%d", m_sel.width(), m_sel.height());
+    JZFont hf(11);
+    const int tw = JZFontMetrics::textWidth(buf, hf);
+    int lx = m_sel.x(), ly = m_sel.y() - 18;
+    if (ly < 2)
+        ly = m_sel.y() + m_sel.height() + 4;
+    p.fillRect(lx, ly, tw + 10, 16, JZColor(0x26, 0x26, 0x26, 220));
+    p.setFont(hf);
+    p.setPen(JZPen(JZColor(0xF2, 0xF2, 0xF2), 1));
+    p.drawText(lx + 5, ly + JZFontMetrics::centeredTextTop(hf, 16), buf);
+}
+
+int JZShotCanvas::hitHandle(const JZPoint& pt)
+{
+    if (!m_hasSel)
+        return -1;
+    JZPoint c[8];
+    shotHandleCenters(m_sel, c);
+    const int r = kHandle / 2 + 3;
+    for (int i = 0; i < 8; i++)
+        if (abs(pt.x() - c[i].x()) <= r && abs(pt.y() - c[i].y()) <= r)
+            return i;
+    return -1;
+}
+
+void JZShotCanvas::updateHoverCursor(const JZPoint& pt)
+{
+    if (m_tool >= 0) { setCursor(JZCursorShape::Cross); return; }
+    if (m_hasSel)
+    {
+        const int h = hitHandle(pt);
+        if (h >= 0) { setCursor(shotHandleCursor(h)); return; }
+        if (m_sel.contains(pt.x(), pt.y())) { setCursor(JZCursorShape::SizeAll); return; }
+    }
+    setCursor(JZCursorShape::Cross);
 }
 
 void JZShotCanvas::paintEvent(JZPainterEvent*)
@@ -568,84 +706,191 @@ void JZShotCanvas::paintEvent(JZPainterEvent*)
     JZPainter p(this);
     const int w = width(), h = height();
 
-    // 兜底底色只在截图盖不满画布时才需要: 截图与画布等大时这层 ~10ms 的
-    // 全画布填充会被立刻完全覆盖 (4K 全屏标注每帧重绘整窗, 别白画)
-    if (m_shot.isNull() || m_shot.width() < w || m_shot.height() < h)
-        p.fillRect(0, 0, w, h, JZColor(0x1E, 0x1E, 0x1E));
     if (!m_shotPixmap.isNull())
         p.drawPixmap(m_shotPixmap, 0, 0, w, h);
+    else
+        p.fillRect(0, 0, w, h, JZColor(0x1E, 0x1E, 0x1E));
 
-    // 标注: 已确认的 + 正在拖的这一笔(同色同宽, 所见即所得)
-    p.setPen(JZPen(kMarkColor, kMarkWidth));
-    vector<JZPoint> poly;
-    for (size_t i = 0; i < m_marks.size(); i++)
-        drawMark(p, m_marks[i], poly);
-    if (m_drawing)
-        drawMark(p, m_current, poly);
+    // 暗色蒙版盖住整屏
+    p.fillRect(0, 0, w, h, kMaskColor);
 
-    // 顶部操作提示
-    const char* hint = "拖动绘制 · 1矩形 2椭圆 3画笔 · Shift正方形/正圆 · Ctrl+Z 撤销 · Enter/确定 完成 · Esc/取消 放弃";
-    JZFont hf(12);
-    const int tw = JZFontMetrics::textWidth(hint, hf);
-    p.fillRect(12, 12, tw + 20, 26, JZColor(0x26, 0x26, 0x26));
-    p.setFont(hf);
-    p.setPen(JZPen(JZColor(0xF2, 0xF2, 0xF2), 1));
-    p.drawText(22, 12 + JZFontMetrics::centeredTextTop(hf, 26), hint);
+    if (m_hasSel)
+    {
+        // 选区"挖空": 重新贴清晰截图(蒙版只在选区外生效)
+        p.save();
+        p.setClip(m_sel);
+        p.drawPixmap(m_shotPixmap, 0, 0, w, h);
+        p.restore();
+
+        // 选区边框
+        p.setPen(JZPen(kSelBorder, 1));
+        p.drawRect(m_sel.x(), m_sel.y(), m_sel.width(), m_sel.height());
+
+        // 八向控制点
+        JZPoint c[8];
+        shotHandleCenters(m_sel, c);
+        for (int i = 0; i < 8; i++)
+            drawHandle(p, c[i]);
+
+        // 尺寸标签
+        drawSizeLabel(p);
+    }
+
+    // 标注(只在选区内可见, 与 QQ 一致)
+    if (!m_marks.empty() || m_drawing)
+    {
+        p.save();
+        if (m_hasSel)
+            p.setClip(m_sel);
+        p.setPen(JZPen(kMarkColor, kMarkWidth));
+        vector<JZPoint> poly;
+        for (size_t i = 0; i < m_marks.size(); i++)
+            drawMark(p, m_marks[i], poly);
+        if (m_drawing)
+            drawMark(p, m_current, poly);
+        p.restore();
+    }
+
+    // 未框选时居中提示
+    if (!m_hasSel)
+    {
+        const char* hint = "拖动鼠标选择截图区域";
+        JZFont hf(14);
+        const int tw = JZFontMetrics::textWidth(hint, hf);
+        const int bx = (w - tw) / 2 - 12, by = (h - 24) / 2;
+        p.fillRect(bx, by, tw + 24, 28, JZColor(0x26, 0x26, 0x26, 220));
+        p.setFont(hf);
+        p.setPen(JZPen(JZColor(0xF2, 0xF2, 0xF2), 1));
+        p.drawText(bx + 12, by + JZFontMetrics::centeredTextTop(hf, 28), hint);
+    }
 }
 
 void JZShotCanvas::resizeEvent(JZResizeEvent* event)
 {
     JZWidget::resizeEvent(event);
-    layoutButtons();
+    layoutToolbar();
 }
 
 void JZShotCanvas::mousePressEvent(JZMouseEvent* event)
 {
-    if (event->button() == JZMouseEvent::LeftButton)
+    if (event->button() != JZMouseEvent::LeftButton)
     {
-        grabMouse();                      // 拖动期间独占鼠标(经过工具按钮也不中断)
-        m_drawing = true;
-        m_current.tool = m_tool;
-        m_current.pts.clear();
-        m_current.pts.push_back(event->localPos());
-        update();
-    }
-    JZWidget::mousePressEvent(event);
-}
-
-void JZShotCanvas::mouseMoveEvent(JZMouseEvent* event)
-{
-    if (!m_drawing)
-    {
-        JZWidget::mouseMoveEvent(event);
+        JZWidget::mousePressEvent(event);
         return;
     }
 
     const JZPoint pt = event->localPos();
-    if (m_current.tool == ShotPen)
+
+    // 标注模式: 在选区内拖拽绘制
+    if (m_tool >= 0)
     {
-        // 画笔: 逐点追加(重合点不重复记), 并给轨迹长度设上限防止极端长按爆内存
-        const JZPoint& last = m_current.pts.back();
-        if ((last.x() != pt.x() || last.y() != pt.y()) && m_current.pts.size() < 20000)
-            m_current.pts.push_back(pt);
+        if (!m_hasSel) { JZWidget::mousePressEvent(event); return; }
+        grabMouse();
+        m_drawing = true;
+        m_current.tool = m_tool;
+        m_current.pts.clear();
+        m_current.pts.push_back(pt);
+        update();
+        event->accept();
+        return;
     }
-    else
+
+    // 选择模式
+    const int h = hitHandle(pt);
+    if (h >= 0)
     {
-        JZPoint end = pt;
-        // Shift: 约束成正方形 / 正圆
-        if ((event->modifiers() & JZKeyEvent::ShiftModifier) != 0)
-        {
-            const JZPoint a = m_current.pts.front();
-            const int dx = end.x() - a.x();
-            const int dy = end.y() - a.y();
-            const int d = max(abs(dx), abs(dy));
-            end = JZPoint(a.x() + (dx < 0 ? -d : d), a.y() + (dy < 0 ? -d : d));
-        }
-        if (m_current.pts.size() < 2)
-            m_current.pts.resize(2);
-        m_current.pts[1] = end;
+        m_drag = Resize;
+        m_dragHandle = h;
+        m_dragOrig = m_sel;
+        m_dragStart = pt;
+        grabMouse();
+        update();
+        event->accept();
+        return;
     }
+    if (m_hasSel && m_sel.contains(pt.x(), pt.y()))
+    {
+        m_drag = Move;
+        m_dragOrig = m_sel;
+        m_dragStart = pt;
+        grabMouse();
+        setCursor(JZCursorShape::SizeAll);
+        update();
+        event->accept();
+        return;
+    }
+    // 空白处: 新建选区
+    m_drag = Create;
+    m_dragStart = pt;
+    m_sel = JZRect(pt.x(), pt.y(), 0, 0);
+    m_hasSel = true;
+    grabMouse();
+    layoutToolbar();
     update();
+    event->accept();
+}
+
+void JZShotCanvas::mouseMoveEvent(JZMouseEvent* event)
+{
+    const JZPoint pt = event->localPos();
+
+    if (m_drawing)
+    {
+        if (m_current.tool == ShotPen)
+        {
+            const JZPoint& last = m_current.pts.back();
+            if ((last.x() != pt.x() || last.y() != pt.y()) && m_current.pts.size() < 20000)
+                m_current.pts.push_back(pt);
+        }
+        else
+        {
+            JZPoint end = pt;
+            if ((event->modifiers() & JZKeyEvent::ShiftModifier) != 0)
+            {
+                const JZPoint a = m_current.pts.front();
+                const int dx = end.x() - a.x();
+                const int dy = end.y() - a.y();
+                const int d = max(abs(dx), abs(dy));
+                end = JZPoint(a.x() + (dx < 0 ? -d : d), a.y() + (dy < 0 ? -d : d));
+            }
+            if (m_current.pts.size() < 2)
+                m_current.pts.resize(2);
+            m_current.pts[1] = end;
+        }
+        update();
+        return;
+    }
+
+    if (m_drag == None)
+    {
+        updateHoverCursor(pt);
+        JZWidget::mouseMoveEvent(event);
+        return;
+    }
+
+    if (m_drag == Create)
+    {
+        m_sel = shotRectFromPoints(m_dragStart, pt);
+        update();
+    }
+    else if (m_drag == Move)
+    {
+        int L = m_dragOrig.x() + (pt.x() - m_dragStart.x());
+        int T = m_dragOrig.y() + (pt.y() - m_dragStart.y());
+        L = max(0, L);
+        T = max(0, T);
+        if (L + m_sel.width() > width())  L = width() - m_sel.width();
+        if (T + m_sel.height() > height()) T = height() - m_sel.height();
+        m_sel = JZRect(L, T, m_sel.width(), m_sel.height());
+        layoutToolbar();
+        update();
+    }
+    else // Resize
+    {
+        m_sel = shotApplyResize(m_dragHandle, m_dragOrig, m_dragStart, pt, width(), height());
+        layoutToolbar();
+        update();
+    }
 }
 
 void JZShotCanvas::mouseReleaseEvent(JZMouseEvent* event)
@@ -655,7 +900,6 @@ void JZShotCanvas::mouseReleaseEvent(JZMouseEvent* event)
         m_drawing = false;
         releaseMouse();
 
-        // 矩形/椭圆"点一下没拖动"不算一笔(误点), 画笔单击留下一个点是有意的
         bool valid = !m_current.pts.empty();
         if (valid && m_current.tool != ShotPen)
         {
@@ -665,10 +909,23 @@ void JZShotCanvas::mouseReleaseEvent(JZMouseEvent* event)
         }
         if (valid)
             m_marks.push_back(m_current);
-
         m_current.pts.clear();
         update();
+        event->accept();
+        return;
     }
+
+    if (m_drag != None && event->button() == JZMouseEvent::LeftButton)
+    {
+        m_drag = None;
+        releaseMouse();
+        updateHoverCursor(event->localPos());
+        layoutToolbar();
+        update();
+        event->accept();
+        return;
+    }
+
     JZWidget::mouseReleaseEvent(event);
 }
 
@@ -680,12 +937,12 @@ void JZShotCanvas::keyPressEvent(JZKeyEvent* event)
     if (k == '3') { setTool(ShotPen); event->accept(); return; }
     if ((k == 'z' || k == 'Z') && event->ctrl()) { undo(); event->accept(); return; }
     if (k == JZKey::Key_Return) { sigAccept.emit(); event->accept(); return; }
-    // Esc 不在这里吞掉: 冒泡到窗口 -> 取消(见 JZShotWindow::keyPressEvent)
+    // Esc 冒泡到窗口 -> 取消
     JZWidget::keyPressEvent(event);
 }
 
 // ==================== 全屏截图窗口 ====================
-// 无边框(Popup)顶层窗口, 覆盖整个虚拟桌面; 内容只有一块铺满全屏的标注画布。
+// 无边框(Popup)顶层窗口, 覆盖整个虚拟桌面; 内容只有一块铺满全屏的选区画布。
 class JZShotWindow : public JZWindow
 {
     JZ_OBJECT_DECLARE(JZShotWindow)
@@ -702,7 +959,7 @@ public:
         m_canvas = new JZShotCanvas(this);
         m_canvas->setShot(shot);
         m_canvas->setGeometry(0, 0, rc.width(), rc.height());
-        m_canvas->layoutButtons();
+        m_canvas->layoutToolbar();
 
         connect(&m_canvas->sigAccept, this, [this]() { finish(true); });
         connect(&m_canvas->sigReject, this, [this]() { finish(false); });
@@ -718,17 +975,38 @@ public:
         return m_accepted;
     }
 
-    // 截图 + 标注 的合成结果
+    // 裁剪后的选区图像(标注一并烧入); 未框选返回整屏
     JZImage resultImage() const
     {
-        // 画布坐标是逻辑像素, 截图是物理像素: 烧标注时按两者实际比例放大
-        // (用尺寸比值而不是 device()->scale(), 免依赖设备状态, 且与拼图口径一致)
         const JZImage& shot = m_canvas->shotImage();
         const int cw = m_canvas->width();
         const float s = (cw > 0 && shot.width() > 0)
                             ? (float)shot.width() / (float)cw
                             : 1.0f;
-        return shotBurnMarks(shot, m_canvas->marks(), s);
+
+        JZRect sel = m_canvas->hasSelection()
+                         ? m_canvas->selection()
+                         : JZRect(0, 0, cw, m_canvas->height());
+
+        const int x = (int)lround(sel.x() * s);
+        const int y = (int)lround(sel.y() * s);
+        const int w = (int)lround(sel.width() * s);
+        const int h = (int)lround(sel.height() * s);
+        JZImage crop = shotCropImage(shot, x, y, w, h);
+        if (crop.isNull())
+            return JZImage();
+
+        const vector<ShotMark>& marks = m_canvas->marks();
+        if (!marks.empty())
+        {
+            // 标注坐标是画布逻辑坐标, 烧进裁剪图要先减去选区原点 (缩放交给 shotBurnMarks)
+            vector<ShotMark> adj = marks;
+            for (auto& mk : adj)
+                for (auto& pt : mk.pts)
+                    pt = JZPoint(pt.x() - sel.x(), pt.y() - sel.y());
+            crop = shotBurnMarks(crop, adj, s);
+        }
+        return crop;
     }
 
 protected:
@@ -765,13 +1043,14 @@ JZ_OBJECT_IMPL(JZShotWindow, JZWindow)
 
 JZImage JZScreenShot::captureInteractive(JZWidget* owner)
 {
-    // 标注窗口的设备缩放取自 owner 所在显示器 (JZWindow::createWindow 就是这么定的),
-    // 抓屏按同一缩放拼图 -> 窗口铺满桌面时贴图恰好 1:1, 不发糊。
+    // 缩放取自 owner 所在显示器, 抓屏按同一缩放拼图 -> 窗口贴图恰好 1:1, 不发糊。
     float scale = 1.0f;
+    JZWindow* ownerWin = nullptr;
     if (owner)
     {
-        if (JZWindow* w = owner->window())
-            scale = JZScreen::logicalDpiFor(w->nativeHandle()) / 96.0f;
+        ownerWin = owner->window();
+        if (ownerWin)
+            scale = JZScreen::logicalDpiFor(ownerWin->nativeHandle()) / 96.0f;
     }
     else
     {
@@ -780,8 +1059,22 @@ JZImage JZScreenShot::captureInteractive(JZWidget* owner)
     if (scale <= 0.0f)
         scale = 1.0f;
 
+    // 弹窗前先隐藏 owner: 让 owner 不出现在截图里; 截完再恢复。
+    const bool ownerVisible = ownerWin && ownerWin->isVisible();
+    if (ownerVisible)
+        ownerWin->hide();
+    // 给系统一点时间把桌面重绘出来(隐藏窗口后帧缓冲不会立即更新)
+    if (jzApp)
+        jzApp->processEvents();
+    Sleep(120);
+
     JZRect rc;
     JZImage shot = captureVirtualDesktop(&rc, scale);
+
+    // 恢复 owner
+    if (ownerVisible)
+        ownerWin->show();
+
     if (shot.isNull() || rc.width() <= 0 || rc.height() <= 0)
         return JZImage();
 

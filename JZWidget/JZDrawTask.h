@@ -9,6 +9,8 @@
 #include "JZBrush.h"
 #include "JZFont.h"
 #include "JZOptional.h"
+#include "JZPainterPath.h"
+#include "JZMatrix2D.h"
 
 #include <cstdint>
 #include <string>
@@ -33,6 +35,7 @@ struct JZDrawTask
         Text,    // 文本, 用当前 font + pen 颜色
         Image,   // JZImage 贴图 (像素布局由后端自行转换/缓存)
         Pixmap,  // JZPixmap 贴图 (已是后端原生布局, 直接贴)
+        Path,    // 矢量路径 (JZPainterPath), 可描边/填充
         Push,    // 状态压栈: 保存当前状态并应用携带的新状态 (pen/brush/font/clip)
         Change,  // 状态修改 (非栈): 设置当前状态中 Some 的字段
         Pop      // 状态出栈: 回退到匹配 Push 之前的状态
@@ -107,10 +110,26 @@ struct JZDrawPushTask : JZDrawTask {
     JZBrush brush;
     JZFont font;
     JZRect clip;
+    // 控件本地变换: 以控件局部坐标系为基准 (原点=控件左上角, 每个控件绘制前为单位矩阵),
+    // 由控件作者经 setTransform/translate/rotate/scale 设置, 不含框架的放置偏移。
+    JZMatrix2D matrix;
+    // 框架放置偏移 (控件在图层/窗口坐标中的位置, 由 JZPainter 构造时设定, 控件作者无感)。
+    // 后端世界变换 = Scale(s) * Translate(ox,oy) * matrix。
+    int ox = 0;
+    int oy = 0;
 };
 
 struct JZDrawPopTask : JZDrawTask {
     JZDrawPopTask() : JZDrawTask(Pop) {}
+};
+
+// ---- Path (矢量路径: 描边 +/或 填充) ----
+struct JZPathTask : JZDrawTask {
+    JZPathTask() : JZDrawTask(Path) {}
+    JZPainterPath path;
+    bool stroke = false;   // 用当前 pen 描边
+    bool fill = false;     // 填充 (fillColor 有值取其色, 否则取当前 brush 色)
+    JZOptional<JZColor> fillColor;  // 显式填充色 (如 fillRect 带色重载); 空=用 brush
 };
 
 // ---- Change 状态修改 (非栈) ----
@@ -122,6 +141,7 @@ struct JZDrawChangeTask : JZDrawTask {
     JZOptional<JZBrush> brush;
     JZOptional<JZFont> font;
     JZOptional<JZRect> clip;
+    JZOptional<JZMatrix2D> matrix;   // 非栈式修改当前本地变换 (setTransform/translate/rotate/scale)
 };
 
 #endif // JZ_DRAW_TASK_H_

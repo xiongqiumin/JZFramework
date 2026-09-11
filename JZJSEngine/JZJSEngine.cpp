@@ -520,11 +520,13 @@ void JZJSEngine::registConsole()
 {
     JSValue console = JS_NewObject(m_ctx);
 
-    // console
+    // console (log / error / warn 走同一 sink, print 不区分级别)
     JSValue log_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "log", 1);
     JSValue error_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "error", 1);
+    JSValue warn_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "warn", 1);
     JS_SetPropertyStr(m_ctx, console, "log", log_func);
     JS_SetPropertyStr(m_ctx, console, "error", error_func);
+    JS_SetPropertyStr(m_ctx, console, "warn", warn_func);
     JS_SetPropertyStr(m_ctx, m_global, "console", console);
 
     // process

@@ -3,6 +3,8 @@ set(JZ_SQLITE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(JZDATABASE_SOURCES
     "sqlite3.c"
     "sqlite3.h"
+    "JZKvDatabase.cpp"
+    "JZKvDatabase.h"
 )
 convert_to_abs_paths(JZDATABASE_SOURCES)
 

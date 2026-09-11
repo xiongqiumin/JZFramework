@@ -8,6 +8,7 @@ class JZDisplayDevice;
 class JZLayer;
 class JZImageData;
 class JZPixmapData;
+class JZImage;
 
 // ==================== GDI+ 渲染后端 (纯绘图, 临时方案) ====================
 // 只负责一件事: 把 JZLayer 的 JZDrawTask 列表画出来并提交到屏幕。
@@ -45,6 +46,18 @@ public:
 
     // 接口占位: GDI+ 字体按任务即时创建, DPI 变化无需重建。
     void rebuildFonts();
+
+    // GDI+ 进程级生命周期 (与窗口无关, 仅管理 GDI+ 不碰字体度量引擎):
+    // 供离屏绘制 (JZPainter 作用于 JZImage) 在没有任何窗口存活时也能起 GDI+。
+    // 与窗口侧的 acquireFontEngine/releaseFontEngine 引用计数相互独立、互不干扰。
+    static bool ensureGdiplus();
+    static void releaseGdiplus();
+
+    // 离屏渲染: 把绘制任务回放到 image 自身的像素缓冲 (在其上做 SourceOver 合成,
+    // 保留原图内容, 与 QPainter 作用于 QImage 语义一致)。坐标系为 image 像素
+    // (scale = 1, 逻辑单位 == 像素)。返回 false 表示 image 无效或 GDI+ 不可用。
+    // 典型用法见 JZPainter(JZImage&): 构造/绘制/析构自动完成合成。
+    static bool renderLayerToImage(JZImage& image, JZLayer* layer, float scale = 1.0f);
 
 private:
     bool createMemBitmap(unsigned physicalW, unsigned physicalH);

@@ -133,7 +133,7 @@ protected:
         def.description = "提交一个猜测的数字。返回结果会告诉你太大了、太小了还是猜对了。";
         ParamSchema p;
         p.name = "number";
-        p.type = NUMBER;
+        p.type = ParamType::Number;
         p.description = "你猜测的整数（范围 1~10000）";
         def.parameters.push_back(p);
         def.required_parameters.push_back("number");
@@ -169,11 +169,11 @@ protected:
             def.description = desc;
             ParamSchema a;
             a.name = "a";
-            a.type = NUMBER;
+            a.type = ParamType::Number;
             a.description = "操作数 a";
             ParamSchema b;
             b.name = "b";
-            b.type = NUMBER;
+            b.type = ParamType::Number;
             b.description = "操作数 b";
             def.parameters.push_back(a);
             def.parameters.push_back(b);
@@ -236,11 +236,11 @@ protected:
         def.description = "异步加法工具：将两个数相加后返回，内部模拟一次异步后端调用（延迟后回传结果）。";
         ParamSchema a;
         a.name = "a";
-        a.type = NUMBER;
+        a.type = ParamType::Number;
         a.description = "操作数 a";
         ParamSchema b;
         b.name = "b";
-        b.type = NUMBER;
+        b.type = ParamType::Number;
         b.description = "操作数 b";
         def.parameters.push_back(a);
         def.parameters.push_back(b);

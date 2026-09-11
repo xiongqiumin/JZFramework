@@ -1,6 +1,6 @@
-/// <reference path="../../../types/common.d.ts" />
-/// <reference path="../../../types/events.d.ts" />
-/// <reference path="../../../types/fetch.d.ts" />
+/// <reference path="../../types/common.d.ts" />
+/// <reference path="../../types/events.d.ts" />
+/// <reference path="../../types/fetch.d.ts" />
 
 export interface RequestOptions {
     /** full url; alternative to protocol/host/port/path */

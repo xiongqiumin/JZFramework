@@ -1,4 +1,4 @@
-/// <reference path="../../../types/common.d.ts" />
+/// <reference path="../../types/common.d.ts" />
 
 type FsEncoding = 'utf8' | 'utf-8' | 'hex' | 'base64' | 'latin1';
 

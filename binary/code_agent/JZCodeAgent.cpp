@@ -1260,6 +1260,7 @@ void JZCodeAgent::buildAgent()
     addTool(new JZReadFileTool());
     addTool(new JZSearchFileTool());
     addTool(new JZModifyFileTool());
+    addTool(new JZGetDateTimeTool());
 
     auto shell_tool = new JZShellTool();
     shell_tool->setExeSearchPaths({ jzApp->applicationDirPath() + "/ts_compiler/tsc" });

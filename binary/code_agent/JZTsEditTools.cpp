@@ -312,12 +312,12 @@ JZTsEditTool::JZTsEditTool(JZTsLangServer *server, Kind kind, JZCodeAgent *agent
 {
     setAgent(agent); // 空指针也安全：checkWrite 判空跳过
     ToolDefine def;
-    ParamSchema file = makeParam("file", STRING, "TypeScript/JavaScript 文件路径（相对工作区或绝对）");
-    ParamSchema scope = makeParam("scope", STRING,
+    ParamSchema file = makeParam("file", ParamType::String, "TypeScript/JavaScript 文件路径（相对工作区或绝对）");
+    ParamSchema scope = makeParam("scope", ParamType::String,
                                   "编辑范围：\"文件路径\"（顶层符号）或 \"文件路径#类名\"（类成员）");
-    ParamSchema name = makeParam("name", STRING, "符号名（类名 / 函数名 / 方法名）");
-    ParamSchema newName = makeParam("new_name", STRING, "新名字（合法标识符）");
-    ParamSchema code = makeParam("code", STRING,
+    ParamSchema name = makeParam("name", ParamType::String, "符号名（类名 / 函数名 / 方法名）");
+    ParamSchema newName = makeParam("new_name", ParamType::String, "新名字（合法标识符）");
+    ParamSchema code = makeParam("code", ParamType::String,
                                  "完整的声明文本（可带任意缩进，工具会按落点自动重排）");
 
     switch (kind)

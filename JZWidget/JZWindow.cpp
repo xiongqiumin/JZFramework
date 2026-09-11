@@ -62,6 +62,8 @@ static HCURSOR jzCursorHandle(JZCursorShape shape)
     case JZCursorShape::SizeHor:      id = 32644; break;   // IDC_SIZEWE
     case JZCursorShape::SizeVer:      id = 32645; break;   // IDC_SIZENS
     case JZCursorShape::SizeAll:      id = 32646; break;   // IDC_SIZEALL
+    case JZCursorShape::SizeFDiag:    id = 32642; break;   // IDC_SIZENWSE
+    case JZCursorShape::SizeBDiag:    id = 32643; break;   // IDC_SIZENESW
     case JZCursorShape::Cross:        id = 32515; break;   // IDC_CROSS
     case JZCursorShape::Forbidden:    id = 32648; break;   // IDC_NO
     case JZCursorShape::Wait:         id = 32514; break;   // IDC_WAIT
@@ -535,7 +537,13 @@ static void registerWindowClass()
     WNDCLASSEXW wc;
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;   // popup/modal 类窗口带投影
+    // 不加 CS_DROPSHADOW: 该样式会让系统为每个窗口额外创建一个 "SysShadow"
+    // 影子窗口, 它比窗口矩形**向右、向下各多出几像素**(100% DPI 2px, 200% DPI 5px),
+    // 且锚点是窗口的左上角 —— 表现为所有窗口的右边与下边多出一条硬边灰带, 看上去
+    // 像凭空多了一圈"边框"(窗口本体正常, 灰带在窗口矩形之外)。现代 Windows 里
+    // DWM 本就会给带框窗口(WS_CAPTION/WS_THICKFRAME)绘制投影, 类上再挂旧式投影
+    // 只会在 DWM 投影之外叠一条硬边, 故这里去掉。
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = jzWindowWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));   // IDC_ARROW

@@ -29,8 +29,7 @@
 // 环境变量：JZ_TS_NODE + JZ_TS_TSC 可换编译器（默认 E:/libs/ts_compiler 的 tsc.exe）。
 // 退出码：0=全部通过；1=有失败；2=前置条件缺失（编译器/工程根不可用）。
 //
-// 注意：本文件不要 include <windows.h>（JZAgentTool.h 无作用域枚举成员
-// BOOLEAN 与 winnt.h 冲突 C2365）；进程调用走框架 JZProcess。
+// 注意：本文件不 include <windows.h>；进程调用走框架 JZProcess。
 
 #define _CRT_SECURE_NO_WARNINGS
 

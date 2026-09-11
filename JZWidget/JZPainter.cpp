@@ -6,6 +6,7 @@
 #include "JZWidget.h"
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
+#include "JZGdiBackend.h"
 
 JZPainter::JZPainter(JZWidget* widget)
 {
@@ -37,6 +38,26 @@ JZPainter::JZPainter(JZWidget* widget)
     pushState();
 }
 
+JZPainter::JZPainter(JZImage& image)
+{
+    // 离屏模式: painter 不再向窗口图层追加任务, 而是自持一个图层, 坐标系对齐到
+    // image 像素 (原点 0,0, 无父链/祖先裁剪)。析构时把图层合成回 image 像素缓冲。
+    m_layer = &m_ownLayer;
+    m_imageTarget = &image;
+    m_widget = nullptr;
+    m_scale = 1.0f;
+
+    int w = image.width();
+    int h = image.height();
+    m_ox = 0;
+    m_oy = 0;
+    m_screen = JZRect(0, 0, w, h);
+    m_clip = m_screen;
+
+    // 进入 JZPainter 时发 Push, 把起始状态 (pen/brush/font/clip) 写入绘制流。
+    pushState();
+}
+
 JZPainter::~JZPainter()
 {
     // 平衡本 painter 发出的全部 Push (构造/状态 setter/save), 保证绘制流严格配对。
@@ -45,16 +66,26 @@ JZPainter::~JZPainter()
         m_layer->addTask(t);
         --m_streamDepth;
     }
+
+    // 离屏模式: 把本 painter 的图层合成回目标 image 的像素缓冲。
+    if (m_imageTarget) {
+        JZGdiBackend::ensureGdiplus();
+        JZGdiBackend::renderLayerToImage(*m_imageTarget, m_layer, m_scale);
+        JZGdiBackend::releaseGdiplus();
+    }
 }
 
 void JZPainter::pushState()
 {
-    // Push 语义: 保存绘制流当前状态, 并应用携带的新状态 (pen/brush/font/clip)。
+    // Push 语义: 保存绘制流当前状态, 并应用携带的新状态 (pen/brush/font/clip/matrix)。
     auto t = std::make_shared<JZDrawPushTask>();
     t->pen = m_pen;
     t->brush = m_brush;
     t->font = m_font;
     t->clip = m_clip;
+    t->matrix = currentTaskMatrix();
+    t->ox = m_ox;
+    t->oy = m_oy;
     m_layer->addTask(t);
     ++m_streamDepth;
 }
@@ -115,7 +146,7 @@ void JZPainter::setClip(const JZRect& clip)
 void JZPainter::save()
 {
     // save 语义: 绘制流栈 +1 (Push 携带当前状态, 状态内容不变)。
-    m_stack.push_back({m_pen, m_brush, m_font});
+    m_stack.push_back({m_pen, m_brush, m_font, m_matrix});
     pushState();
 }
 
@@ -128,13 +159,69 @@ void JZPainter::restore()
     m_pen = s.pen;
     m_brush = s.brush;
     m_font = s.font;
+    m_matrix = s.matrix;
     auto t = std::make_shared<JZDrawPopTask>();
     m_layer->addTask(t);
     --m_streamDepth;
 }
 
+void JZPainter::setTransform(const JZMatrix2D& m)
+{
+    m_matrix = m;
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->matrix = JZOptional<JZMatrix2D>::Some(currentTaskMatrix());
+    m_layer->addTask(t);
+}
+
+JZMatrix2D JZPainter::transform() const
+{
+    return m_matrix;
+}
+
+void JZPainter::resetTransform()
+{
+    m_matrix.reset();
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->matrix = JZOptional<JZMatrix2D>::Some(currentTaskMatrix());
+    m_layer->addTask(t);
+}
+
+void JZPainter::translate(double dx, double dy)
+{
+    m_matrix.translate(dx, dy);
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->matrix = JZOptional<JZMatrix2D>::Some(currentTaskMatrix());
+    m_layer->addTask(t);
+}
+
+void JZPainter::rotate(double deg)
+{
+    m_matrix.rotate(deg);
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->matrix = JZOptional<JZMatrix2D>::Some(currentTaskMatrix());
+    m_layer->addTask(t);
+}
+
+void JZPainter::scale(double sx, double sy)
+{
+    m_matrix.scale(sx, sy);
+    auto t = std::make_shared<JZDrawChangeTask>();
+    t->matrix = JZOptional<JZMatrix2D>::Some(currentTaskMatrix());
+    m_layer->addTask(t);
+}
+
+JZMatrix2D JZPainter::currentTaskMatrix() const
+{
+    // 仅控件自身的本地变换; 放置偏移 (m_ox/m_oy) 由 Push 单独携带, 不计入矩阵。
+    return m_matrix;
+}
+
 JZRect JZPainter::applyAncestorClips(JZWidget* widget, const JZRect& globalClip) const
 {
+    // 离屏模式 (作用于 JZImage) 没有父链/祖先控件, 不做任何收窄。
+    if (!widget)
+        return globalClip;
+
     JZRect c = globalClip;
     JZWidget* root = widget->window();
     for (JZWidget* p = widget->parentWidget(); p && p != root; p = p->parentWidget()) {
@@ -156,46 +243,50 @@ bool JZPainter::isCulled(const JZRect& displayBounds) const
 
 void JZPainter::drawLine(int x1, int y1, int x2, int y2)
 {
-    // 粗略剔除: 线段显示坐标包围盒完全出裁剪区则不提交。
-    int lx = std::min(x1, x2), ly = std::min(y1, y2);
-    int lw = std::abs(x2 - x1) + 1, lh = std::abs(y2 - y1) + 1;
-    if (isCulled(JZRect(m_ox + lx, m_oy + ly, lw, lh)))
-        return;
+    // 粗略剔除: 线段显示坐标包围盒完全出裁剪区则不提交 (仅单位阵时做, 旋转后包围盒不准)。
+    // 任务以本地坐标提交, 变换/偏移由后端经世界变换统一施加。
+    if (m_matrix.isIdentity()) {
+        int lx = std::min(x1, x2) + m_ox, ly = std::min(y1, y2) + m_oy;
+        int lw = std::abs(x2 - x1) + 1, lh = std::abs(y2 - y1) + 1;
+        if (isCulled(JZRect(lx, ly, lw, lh)))
+            return;
+    }
 
     auto t = std::make_shared<JZLineTask>();
-    t->x1 = m_ox + x1;
-    t->y1 = m_oy + y1;
-    t->x2 = m_ox + x2;
-    t->y2 = m_oy + y2;
+    t->x1 = x1; t->y1 = y1;
+    t->x2 = x2; t->y2 = y2;
     m_layer->addTask(t);
 }
 
 void JZPainter::drawRect(int x, int y, int w, int h)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area))
-        return;
-
+    if (m_matrix.isIdentity()) {
+        JZRect area(m_ox + x, m_oy + y, w, h);
+        if (isCulled(area))
+            return;
+    }
+    // 本地坐标提交; 旋转/缩放由后端世界变换统一施加 (描边内缩半笔宽在后端处理)。
     auto t = std::make_shared<JZBorderTask>();
-    t->area = area;
+    t->area = JZRect(x, y, w, h);
     m_layer->addTask(t);
 }
 
 void JZPainter::drawRoundRect(int x, int y, int w, int h, int radius)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area))
-        return;
-
-    // 圆角矩形 = 圆角填充 + 圆角描边 (填充色为 brush 的调用参数化快照)
+    if (m_matrix.isIdentity()) {
+        JZRect area(m_ox + x, m_oy + y, w, h);
+        if (isCulled(area))
+            return;
+    }
+    // 圆角矩形 = 圆角填充 + 圆角描边 (填充色为 brush 的调用参数化快照)。
+    // 本地坐标提交; 非单位阵时圆角随世界变换缩放/旋转 (由后端处理)。
     auto fill = std::make_shared<JZFillRectTask>();
-    fill->area = area;
+    fill->area = JZRect(x, y, w, h);
     fill->color = m_brush.color();
     fill->radius = radius;
     m_layer->addTask(fill);
-
     auto border = std::make_shared<JZBorderTask>();
-    border->area = area;
+    border->area = JZRect(x, y, w, h);
     border->radius = radius;
     m_layer->addTask(border);
 }
@@ -207,24 +298,26 @@ void JZPainter::fillRect(const JZRect &rc, const JZColor& color)
 
 void JZPainter::fillRect(int x, int y, int w, int h, const JZColor& color)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area))
-        return;
-
+    if (m_matrix.isIdentity()) {
+        JZRect area(m_ox + x, m_oy + y, w, h);
+        if (isCulled(area))
+            return;
+    }
     auto t = std::make_shared<JZFillRectTask>();
-    t->area = area;
+    t->area = JZRect(x, y, w, h);
     t->color = color;
     m_layer->addTask(t);
 }
 
 void JZPainter::fillRoundRect(int x, int y, int w, int h, int radius, const JZColor& color)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area))
-        return;
-
+    if (m_matrix.isIdentity()) {
+        JZRect area(m_ox + x, m_oy + y, w, h);
+        if (isCulled(area))
+            return;
+    }
     auto t = std::make_shared<JZFillRectTask>();
-    t->area = area;
+    t->area = JZRect(x, y, w, h);
     t->color = color;
     t->radius = radius;
     m_layer->addTask(t);
@@ -232,16 +325,18 @@ void JZPainter::fillRoundRect(int x, int y, int w, int h, int radius, const JZCo
 
 void JZPainter::drawArc(int x, int y, int radius, int startAngle, int endAngle)
 {
-    // 粗略剔除: 以圆心+半径为外接方框。
-    JZRect bound(m_ox + x - radius, m_oy + y - radius, 2 * radius + 1, 2 * radius + 1);
-    if (isCulled(bound))
-        return;
+    // 粗略剔除: 以圆心+半径为外接方框 (仅单位阵时)。
+    if (m_matrix.isIdentity()) {
+        JZRect bound(m_ox + x - radius, m_oy + y - radius, 2 * radius + 1, 2 * radius + 1);
+        if (isCulled(bound))
+            return;
+    }
 
     // 角度内部换算为 1/10 度 (LVGL 单位): 传入的 startAngle/endAngle 为度, *10 得 1/10 度。
-    // 例如 endAngle=360 -> 3600 (整圆), 与 JZArcTask 默认值一致。
+    // 半径/圆心均为本地坐标, 缩放与旋转由后端世界变换统一施加。
     auto t = std::make_shared<JZArcTask>();
-    t->arcCx = m_ox + x;
-    t->arcCy = m_oy + y;
+    t->arcCx = x;
+    t->arcCy = y;
     t->arcRadius = radius;
     t->arcStartAngle = startAngle * 10;
     t->arcEndAngle = endAngle * 10;
@@ -254,39 +349,105 @@ void JZPainter::drawText(int x, int y, const char* text)
     if (!text || text[0] == '\0')
         return;
 
-    // 粗略包围盒: 用字号估高、字符数估宽 (仅作出屏剔除用)。
-    int th = m_font.size();
-    int tw = (int)std::strlen(text) * m_font.size() / 2;
-    if (isCulled(JZRect(m_ox + x, m_oy + y, tw, th)))
-        return;
+    // 粗略包围盒: 用字号估高、字符数估宽 (仅作出屏剔除用, 仅单位阵时)。
+    if (m_matrix.isIdentity()) {
+        int th = m_font.size();
+        int tw = (int)std::strlen(text) * m_font.size() / 2;
+        if (isCulled(JZRect(m_ox + x, m_oy + y, tw, th)))
+            return;
+    }
 
     auto t = std::make_shared<JZTextTask>();
     t->text = text;
-    // area 作为文本绘制原点区域 (top-left 对齐)
-    t->area = JZRect(m_ox + x, m_oy + y, 1, 1);
+    // area 作为文本绘制原点区域 (top-left 对齐); 本地坐标, 变换由后端施加。
+    t->area = JZRect(x, y, 1, 1);
     m_layer->addTask(t);
 }
 
 void JZPainter::drawImage(const JZImage& img, int x, int y, int w, int h)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area))
+    if (m_matrix.isIdentity() && isCulled(JZRect(m_ox + x, m_oy + y, w, h)))
         return;
 
     auto t = std::make_shared<JZImageTask>();
     t->image = img.data();
-    t->area = area;
+    t->area = JZRect(x, y, w, h);   // 本地坐标, 缩放/旋转由后端世界变换施加
     m_layer->addTask(t);
 }
 
 void JZPainter::drawPixmap(const JZPixmap& pixmap, int x, int y, int w, int h)
 {
-    JZRect area(m_ox + x, m_oy + y, w, h);
-    if (isCulled(area) || pixmap.isNull())
+    if (pixmap.isNull())
+        return;
+    if (m_matrix.isIdentity() && isCulled(JZRect(m_ox + x, m_oy + y, w, h)))
         return;
 
     auto t = std::make_shared<JZPixmapTask>();
     t->pixmap = pixmap.data();
-    t->area = area;
+    t->area = JZRect(x, y, w, h);   // 本地坐标, 缩放/旋转由后端世界变换施加
     m_layer->addTask(t);
+}
+
+// ==================== 矢量路径 / 曲线 / 椭圆 ====================
+
+// 把路径 (本地坐标) 直接写入绘制流; stroke/fill 决定描边/填充。
+// 变换/偏移由后端经世界变换统一施加, 不再在 painter 端烘焙进坐标。
+void JZPainter::addPathTask(const JZPainterPath& path, bool stroke, bool fill,
+                            const JZOptional<JZColor>& fillColor)
+{
+    auto t = std::make_shared<JZPathTask>();
+    t->path = path;
+    t->stroke = stroke;
+    t->fill = fill;
+    t->fillColor = fillColor;
+    m_layer->addTask(t);
+}
+
+void JZPainter::drawPath(const JZPainterPath& path)
+{
+    addPathTask(path, true, false);
+}
+
+void JZPainter::fillPath(const JZPainterPath& path)
+{
+    addPathTask(path, false, true);
+}
+
+void JZPainter::drawEllipse(int x, int y, int w, int h)
+{
+    JZPainterPath p;
+    p.addEllipse(x, y, w, h);
+    drawPath(p);
+}
+
+void JZPainter::fillEllipse(int x, int y, int w, int h, const JZColor& color)
+{
+    JZPainterPath p;
+    p.addEllipse(x, y, w, h);
+    addPathTask(p, false, true, JZOptional<JZColor>::Some(color));
+}
+
+void JZPainter::drawCurve(const std::vector<JZPoint>& points)
+{
+    if (points.size() < 2)
+        return;
+
+    JZPainterPath p;
+    p.moveTo(points[0]);
+    int n = (int)points.size();
+    // Catmull-Rom -> 三次贝塞尔: 经过每个控制点, 端点用邻近点做切线外推。
+    for (int i = 0; i < n - 1; ++i) {
+        double x0 = (i > 0 ? points[i - 1].x() : points[i].x());
+        double y0 = (i > 0 ? points[i - 1].y() : points[i].y());
+        double x1 = points[i].x(),     y1 = points[i].y();
+        double x2 = points[i + 1].x(), y2 = points[i + 1].y();
+        double x3 = (i + 2 < n ? points[i + 2].x() : points[i + 1].x());
+        double y3 = (i + 2 < n ? points[i + 2].y() : points[i + 1].y());
+        double c1x = x1 + (x2 - x0) / 6.0;
+        double c1y = y1 + (y2 - y0) / 6.0;
+        double c2x = x2 - (x3 - x1) / 6.0;
+        double c2y = y2 - (y3 - y1) / 6.0;
+        p.cubicTo(c1x, c1y, c2x, c2y, x2, y2);
+    }
+    drawPath(p);
 }

@@ -11,8 +11,8 @@ JZTsTool::JZTsTool(JZTsLangServer *server, TsMethod method)
 
     // 公共参数：所有查询只收「文件 + 符号名」，不接受行列 —— 大模型给出精确
     // 光标位置不可靠，统一按符号名经语言服务反查定位。
-    ParamSchema file = makeParam("file", STRING, "TypeScript/JavaScript 文件绝对路径");
-    ParamSchema name = makeParam("name", STRING, "符号名（类 / 函数 / 接口 / 变量 / 方法等）");
+    ParamSchema file = makeParam("file", ParamType::String, "TypeScript/JavaScript 文件绝对路径");
+    ParamSchema name = makeParam("name", ParamType::String, "符号名（类 / 函数 / 接口 / 变量 / 方法等）");
 
     switch (method)
     {
@@ -22,7 +22,7 @@ JZTsTool::JZTsTool(JZTsLangServer *server, TsMethod method)
                              "import/export 别名自动解析到真正的定义文件。改代码前先用它看函数体 / "
                              "类定义，避免整读大文件。";
             def.parameters = {file, name,
-                              makeParam("max_chars", NUMBER, "源码截断上限（默认 8000 字符）")};
+                              makeParam("max_chars", ParamType::Number, "源码截断上限（默认 8000 字符）")};
             def.required_parameters = {"file", "name"};
             break;
         case TsMethod::References:
@@ -61,7 +61,7 @@ JZTsTool::JZTsTool(JZTsLangServer *server, TsMethod method)
                              "属性与方法签名，模块 / 命名空间返回导出清单，函数返回调用签名。"
                              "了解一个类型有哪些成员时用它。";
             def.parameters = {file, name,
-                              makeParam("max_members", NUMBER, "成员数量上限（默认 100）")};
+                              makeParam("max_members", ParamType::Number, "成员数量上限（默认 100）")};
             def.required_parameters = {"file", "name"};
             break;
         case TsMethod::WorkspaceSymbols:
@@ -69,8 +69,8 @@ JZTsTool::JZTsTool(JZTsLangServer *server, TsMethod method)
             def.description = "在整个项目内按名称模糊搜索符号 [{name, kind, container, file, line}]。"
                              "不知道某个符号定义在哪个文件时先用它定位文件，"
                              "再用 ts_source / ts_members 深入查看。";
-            def.parameters = {makeParam("query", STRING, "符号名或其一部分（模糊匹配）"),
-                              makeParam("limit", NUMBER, "返回数量上限（默认 30）")};
+            def.parameters = {makeParam("query", ParamType::String, "符号名或其一部分（模糊匹配）"),
+                              makeParam("limit", ParamType::Number, "返回数量上限（默认 30）")};
             def.required_parameters = {"query"};
             break;
         default:

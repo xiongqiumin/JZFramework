@@ -12,6 +12,7 @@
 #include "JZTextImageMap.h"
 #include "JZEmojiImageMap.h"
 #include "JZImage.h"
+#include "JZPixmap.h"
 #include "JZKeyEvent.h"
 #include "JZString.h"
 #include "JZUtf8Iterator.h"
@@ -71,7 +72,7 @@ public:
         return xOfIndex(line, partCount);
     }
     bool segmentImageForTest(const JZAbstractTextEdit::Segment& seg,
-                             const JZImage*& out, int& w, int& h) const
+                             const JZPixmap*& out, int& w, int& h) const
     {
         return segmentImage(seg, out, w, h);
     }
@@ -514,11 +515,11 @@ bool emoji_segment_has_image()
     JZ_TEST_EQ(3, static_cast<int>(segs.size()));
     JZ_TEST_EQ(true, segs[1].isEmoji());
 
-    const JZImage* img = nullptr;
+    const JZPixmap* pm = nullptr;
     int w = 0, h = 0;
-    const bool ok = e.segmentImageForTest(segs[1], img, w, h);
+    const bool ok = e.segmentImageForTest(segs[1], pm, w, h);
     JZ_TEST_TRUE(ok);
-    JZ_TEST_TRUE(img != nullptr && !img->isNull());
+    JZ_TEST_TRUE(pm != nullptr && !pm->isNull());
     JZ_TEST_GT(w, 0);
     JZ_TEST_GT(h, 0);
     return true;
@@ -554,14 +555,82 @@ bool unknown_emoji_is_safe()
     JZ_TEST_EQ(true, segs[1].isEmoji());
 
     // 图集里没有 -> segmentImage 返回 false, 但布局与光标必须仍然可用
-    const JZImage* img = nullptr;
+    const JZPixmap* pm = nullptr;
     int w = 0, h = 0;
-    const bool ok = e.segmentImageForTest(segs[1], img, w, h);
+    const bool ok = e.segmentImageForTest(segs[1], pm, w, h);
     JZ_TEST_FALSE(ok);
 
     e.setCursorPosition(3);
     JZ_TEST_TRUE(e.moveCursorBySegment(-1, false));   // 一步跨过未知 emoji
     JZ_TEST_EQ(2, e.cursorPosition());
+    return true;
+}
+
+// ---- 23. 超大图片按上限等比缩小: 显示尺寸与位图都有界 ----
+bool oversized_image_is_clamped()
+{
+    JZTextImageMap& map = JZTextImageMap::instance();
+    const int mw = map.maxDisplayWidth();
+    const int mh = map.maxDisplayHeight();
+    JZ_TEST_GT(mw, 0);
+    JZ_TEST_GT(mh, 0);
+
+    TestTextEdit e;
+    e.setText("a");
+    e.appendImage(solidImage(8, 8, 9, 9, 9), "max_key", 1000, 500);   // 2:1
+
+    const char32_t cp = JZString::fromStdString(e.text())[1].toUnicode();
+    const JZTextImageMap::Entry* entry = map.find(cp);
+    JZ_TEST_TRUE(entry != nullptr);
+    if (!entry)
+        return true;                       // 断言已失败, 不继续解引用
+
+    // 显示尺寸被上限截住, 且保持原始 1000:500 = 2:1 的比例
+    JZ_TEST_TRUE(entry->width  <= mw);
+    JZ_TEST_TRUE(entry->height <= mh);
+    JZ_TEST_EQ(2 * entry->height, entry->width);
+
+    // 入库的位图 = 显示尺寸 (绘制是 1:1 贴图, 不再靠后端缩放)
+    JZ_TEST_TRUE(!entry->pixmap.isNull());
+    JZ_TEST_EQ(entry->width,  entry->pixmap.width());
+    JZ_TEST_EQ(entry->height, entry->pixmap.height());
+
+    // 测宽口径与入库尺寸一致
+    const std::vector<JZAbstractTextEdit::Segment> segs = e.enumerateSegments();
+    JZ_TEST_EQ(2, static_cast<int>(segs.size()));
+    const JZPixmap* pm = nullptr;
+    int w = 0, h = 0;
+    JZ_TEST_TRUE(e.segmentImageForTest(segs[1], pm, w, h));
+    JZ_TEST_TRUE(pm != nullptr && !pm->isNull());
+    JZ_TEST_EQ(entry->width, w);
+    JZ_TEST_EQ(entry->height, h);
+    return true;
+}
+
+// ---- 24. emoji 显示位图: 按显示框边长预缩 + 按尺寸缓存 ----
+bool emoji_pixmap_is_scaled_and_cached()
+{
+    JZEmojiImageMap& emoji = JZEmojiImageMap::instance();
+
+    const JZPixmap* pm = emoji.findPixmap(kThumb, 18);
+    JZ_TEST_TRUE(pm != nullptr && !pm->isNull());
+    if (!pm)
+        return true;
+    JZ_TEST_EQ(18, pm->width());
+    JZ_TEST_EQ(18, pm->height());
+
+    // 同尺寸二次请求命中同一条; 换尺寸另存一条
+    JZ_TEST_TRUE(emoji.findPixmap(kThumb, 18) == pm);
+    const JZPixmap* pm24 = emoji.findPixmap(kThumb, 24);
+    JZ_TEST_TRUE(pm24 != nullptr && !pm24->isNull());
+    if (pm24) {
+        JZ_TEST_EQ(24, pm24->width());
+        JZ_TEST_TRUE(pm24 != pm);
+    }
+    JZ_TEST_GT(emoji.pixmapCount(), 1);
+
+    // 未收录的 emoji 没有位图 (调用方降级)
+    JZ_TEST_TRUE(emoji.findPixmap(utf8Emoji(0x1FAE8), 18) == nullptr);
     return true;
 }
 
@@ -591,6 +660,8 @@ static void test_textedit(JZTest* test)
     suite->addTestCase("emoji_segment_has_image",      emoji_segment_has_image);
     suite->addTestCase("emoji_contributes_to_width",   emoji_contributes_to_width);
     suite->addTestCase("unknown_emoji_is_safe",        unknown_emoji_is_safe);
+    suite->addTestCase("oversized_image_is_clamped",   oversized_image_is_clamped);
+    suite->addTestCase("emoji_pixmap_is_scaled_and_cached", emoji_pixmap_is_scaled_and_cached);
 }
 
 } // namespace

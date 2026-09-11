@@ -424,9 +424,9 @@ JZListDirTool::JZListDirTool()
     def.name = "list_dir";
     def.description = "列出工作区中某个目录的文件和子目录。路径使用相对于工作区根目录的相对路径，" \
                       "根目录用 \".\" 表示。返回值中目录名以 \"/\" 结尾。";
-    def.parameters.push_back(makeParam("path", STRING, "相对工作区的目录路径，默认 \".\""));
-    def.parameters.push_back(makeParam("recursive", BOOLEAN, "是否递归列出子目录，默认 false"));
-    def.parameters.push_back(makeParam("max_entries", NUMBER, "最多返回多少条，默认 300"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的目录路径，默认 \".\""));
+    def.parameters.push_back(makeParam("recursive", ParamType::Boolean, "是否递归列出子目录，默认 false"));
+    def.parameters.push_back(makeParam("max_entries", ParamType::Number, "最多返回多少条，默认 300"));
     def.required_parameters.push_back("path");
     setToolDefine(def);
 }
@@ -503,9 +503,9 @@ JZReadFileTool::JZReadFileTool()
     def.name = "read_file";
     def.description = "读取工作区中某个文本文件的内容，带行号返回。可以用 start_line / line_count " \
                       "只读取感兴趣的行范围（行号从 1 开始）。";
-    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("start_line", NUMBER, "起始行号（从 1 开始），默认 1"));
-    def.parameters.push_back(makeParam("line_count", NUMBER, "读取多少行，0 或省略表示读到文件末尾"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("start_line", ParamType::Number, "起始行号（从 1 开始），默认 1"));
+    def.parameters.push_back(makeParam("line_count", ParamType::Number, "读取多少行，0 或省略表示读到文件末尾"));
     def.required_parameters.push_back("path");
     setToolDefine(def);
 }
@@ -584,13 +584,13 @@ JZSearchFileTool::JZSearchFileTool()
     def.name = "search_file";
     def.description = "在工作区的代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\" 形式的匹配列表。" \
                       "默认跳过隐藏目录和 build/out 等生成目录。";
-    def.parameters.push_back(makeParam("pattern", STRING, "要搜索的文本或正则表达式"));
-    def.parameters.push_back(makeParam("path", STRING, "在哪个目录下搜索，默认 \".\" 表示整个工作区"));
-    def.parameters.push_back(makeParam("file_filter", STRING, "文件名过滤，支持 * ? 与逗号分隔多个模式，如 \"*.cpp,*.h\"，默认 \"*\""));
-    def.parameters.push_back(makeParam("case_sensitive", BOOLEAN, "是否区分大小写，默认 false"));
-    def.parameters.push_back(makeParam("regex", BOOLEAN, "pattern 是否按正则表达式解析，默认 false（纯文本搜索）"));
-    def.parameters.push_back(makeParam("max_results", NUMBER, "最多返回多少条匹配，默认 50"));
-    def.parameters.push_back(makeParam("max_files", NUMBER, "最多扫描多少个文件，默认 1000，避免大仓库一次扫太多"));
+    def.parameters.push_back(makeParam("pattern", ParamType::String, "要搜索的文本或正则表达式"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "在哪个目录下搜索，默认 \".\" 表示整个工作区"));
+    def.parameters.push_back(makeParam("file_filter", ParamType::String, "文件名过滤，支持 * ? 与逗号分隔多个模式，如 \"*.cpp,*.h\"，默认 \"*\""));
+    def.parameters.push_back(makeParam("case_sensitive", ParamType::Boolean, "是否区分大小写，默认 false"));
+    def.parameters.push_back(makeParam("regex", ParamType::Boolean, "pattern 是否按正则表达式解析，默认 false（纯文本搜索）"));
+    def.parameters.push_back(makeParam("max_results", ParamType::Number, "最多返回多少条匹配，默认 50"));
+    def.parameters.push_back(makeParam("max_files", ParamType::Number, "最多扫描多少个文件，默认 1000，避免大仓库一次扫太多"));
     def.required_parameters.push_back("pattern");
     setToolDefine(def);
 }
@@ -772,8 +772,8 @@ JZWriteFileTool::JZWriteFileTool()
     def.name = "write_file";
     def.description = "新建文件或者完整覆写已有文件，传入完整文件内容。"
         "原有文件全部内容会丢失；局部修改请使用 modify_file。";
-    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("content", STRING, "完整文件文本内容"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("content", ParamType::String, "完整文件文本内容"));
     def.required_parameters.push_back("path");
     def.required_parameters.push_back("content");
     setToolDefine(def);
@@ -836,8 +836,8 @@ JZAppendFileTool::JZAppendFileTool()
     ToolDefine def;
     def.name = "append_file";
     def.description = "在已有文件末尾追加文本。文件必须已存在，不会自动创建新文件；新建文件使用 write_file。";
-    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("content", STRING, "要追加的文本内容"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("content", ParamType::String, "要追加的文本内容"));
     def.required_parameters.push_back("path");
     def.required_parameters.push_back("content");
     setToolDefine(def);
@@ -901,10 +901,10 @@ JZModifyFileTool::JZModifyFileTool()
         "old_str 必须填写，精确匹配文件内原文并替换为 new_str；默认要求 old_str 在文件中唯一匹配。"
         "**不能用于新建或完整覆写文件**，新建/覆写请使用 write_file。"
         "修改前请务必先用 read_file 或 search_file 确认原文。";
-    def.parameters.push_back(makeParam("path", STRING, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("old_str", STRING, "要被替换的原文，必须提供，不能为空"));
-    def.parameters.push_back(makeParam("new_str", STRING, "替换后的新片段内容"));
-    def.parameters.push_back(makeParam("replace_all", BOOLEAN, "old_str 有多处匹配时是否全部替换，默认 false"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
+    def.parameters.push_back(makeParam("old_str", ParamType::String, "要被替换的原文，必须提供，不能为空"));
+    def.parameters.push_back(makeParam("new_str", ParamType::String, "替换后的新片段内容"));
+    def.parameters.push_back(makeParam("replace_all", ParamType::Boolean, "old_str 有多处匹配时是否全部替换，默认 false"));
     def.required_parameters.push_back("path");
     def.required_parameters.push_back("old_str");
     def.required_parameters.push_back("new_str");
@@ -1049,6 +1049,76 @@ void JZModifyFileTool::call(const ToolCall& params)
     finish(params, true, text);
 }
 
+// ==================== JZGetDateTimeTool ====================
+JZGetDateTimeTool::JZGetDateTimeTool()
+{
+    ToolDefine def;
+    def.name = "get_datetime";
+    def.description = "获取当前的日期和时间。模型在需要“今天 / 现在 / 星期几”这类信息时，"
+                      "应优先调用本工具而不是依赖自身训练数据中的时间。"
+                      "默认返回结构化 JSON（含 date/time/weekday/timestamp/datetime 字段）；"
+                      "也可传 format 用 strftime 风格字符串（如 \"%Y-%m-%d %H:%M:%S\"）自定义输出。"
+                      "utc=true 时返回 UTC 时间而非本地时间。";
+    def.parameters.push_back(makeParam("format", ParamType::String,
+        "自定义输出格式（strftime 风格，如 \"%Y-%m-%d %H:%M:%S\"）。"
+        "留空则返回包含 date/time/weekday/timestamp/datetime 的结构化 JSON。"));
+    def.parameters.push_back(makeParam("utc", ParamType::Boolean,
+        "是否返回 UTC 时间而非本地时间，默认 false（本地时间）。"));
+    setToolDefine(def);
+}
+
+void JZGetDateTimeTool::call(const ToolCall &params)
+{
+    bool utc = params.params.get("utc", false).asBool();
+    string fmt = str_trimmed(params.params.get("format", "").asString());
+
+    time_t t = time(nullptr);
+    struct tm tm_buf;
+    if (utc)
+    {
+#ifdef _WIN32
+        gmtime_s(&tm_buf, &t);
+#else
+        gmtime_r(&t, &tm_buf);
+#endif
+    }
+    else
+    {
+#ifdef _WIN32
+        localtime_s(&tm_buf, &t);
+#else
+        localtime_r(&t, &tm_buf);
+#endif
+    }
+
+    // 自定义格式：直接返回 strftime 结果（单行）
+    if (!fmt.empty())
+    {
+        char buf[256] = {0};
+        strftime(buf, sizeof(buf), fmt.c_str(), &tm_buf);
+        finish(params, true, string(buf));
+        return;
+    }
+
+    // 默认：结构化 JSON
+    char dateBuf[32] = {0}, timeBuf[32] = {0}, isoBuf[64] = {0};
+    strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_buf);
+    strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &tm_buf);
+    strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%S", &tm_buf);
+    // 星期：本地化中文（tm_wday 0=周日）
+    static const char *kWeekday[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
+    int wd = tm_buf.tm_wday % 7;
+
+    Json::Value root;
+    root["date"] = dateBuf;
+    root["time"] = timeBuf;
+    root["weekday"] = kWeekday[wd];
+    root["timestamp"] = (Json::Int64)t;
+    root["datetime"] = isoBuf;
+    Json::FastWriter writer;
+    finish(params, true, writer.write(root));
+}
+
 // ==================== JZProcessRunner ====================
 JZProcessRunner::~JZProcessRunner()
 {
@@ -1182,8 +1252,8 @@ JZShellTool::JZShellTool()
     ToolDefine def;
     def.name = "command";
     def.description = "执行外部命令。传入完整命令字符串cmd；指定工作目录work_dir, 使用 cmd /c \"command\" 执行";
-    def.parameters.push_back(makeParam("cmd", STRING, "要执行的命令字符串"));
-    def.parameters.push_back(makeParam("work_dir", STRING, "执行的工作目录，相对工作区路径"));
+    def.parameters.push_back(makeParam("cmd", ParamType::String, "要执行的命令字符串"));
+    def.parameters.push_back(makeParam("work_dir", ParamType::String, "执行的工作目录，相对工作区路径"));
     def.required_parameters.push_back("cmd");
     setToolDefine(def);
 }
@@ -1279,12 +1349,12 @@ void JZCommandTool::setup(const std::string& name, const std::string& desc,
     // has_args 才开放 args 参数：未开放的固定命令工具不接受模型追加参数
     if (has_args)
     {
-        def.parameters.push_back(makeParam("args", STRING, "命令参数"));
+        def.parameters.push_back(makeParam("args", ParamType::String, "命令参数"));
         m_hasArgs = true;
     }
 
     if(work_dir.empty())
-        def.parameters.push_back(makeParam("work_dir", STRING, "工作目录"));
+        def.parameters.push_back(makeParam("work_dir", ParamType::String, "工作目录"));
     else
         m_defaultWorkDir = work_dir;
 
@@ -1693,8 +1763,8 @@ JZVirtualTerminal::JZVirtualTerminal()
         "注意它不是通用 shell，不支持管道(|)、重定向(>)与命令串联(&&)。" \
         "路径只能指向工作区与授信目录，越界会被拒绝；写操作只允许发生在工作区内。" \
         "同一个 terminal 名字会保留 cd 之后的目录，换个名字即可开一个独立终端。";
-    def.parameters.push_back(makeParam("command", STRING, "要执行的命令，如 \"cd build\"、\"ls src\"、\"pwd\""));
-    def.parameters.push_back(makeParam("terminal", STRING, "终端名，默认 default；不同名字各自维护当前目录"));
+    def.parameters.push_back(makeParam("command", ParamType::String, "要执行的命令，如 \"cd build\"、\"ls src\"、\"pwd\""));
+    def.parameters.push_back(makeParam("terminal", ParamType::String, "终端名，默认 default；不同名字各自维护当前目录"));
     def.required_parameters.push_back("command");
     setToolDefine(def);
 }
@@ -2653,8 +2723,8 @@ JZWebSearchTool::JZWebSearchTool()
     def.name = "web_search";
     def.description = "联网搜索：给定查询词，返回若干条网页搜索结果（标题、链接、摘要）。" \
                       "适合查找官方文档、API 用法、报错原因、第三方库等需要实时信息的问题。";
-    def.parameters.push_back(makeParam("query", STRING, "搜索关键词"));
-    def.parameters.push_back(makeParam("num_results", NUMBER, "返回几条结果，默认 5，最多 20"));
+    def.parameters.push_back(makeParam("query", ParamType::String, "搜索关键词"));
+    def.parameters.push_back(makeParam("num_results", ParamType::Number, "返回几条结果，默认 5，最多 20"));
     def.required_parameters.push_back("query");
     setToolDefine(def);
 
@@ -2830,8 +2900,8 @@ void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call)
 //   - utf-8 / 未声明：直接按 UTF-8 解码
 //   - 其它（gbk / gb2312 / big5 等）：经 str_local_to_utf8 按系统本地代码页转 UTF-8
 //     （中文系统本地代码页为 936，可正确解 gbk；非中文系统为尽力而为）
-// 注：本文件已包含 JZAgentTool.h，其枚举含 BOOLEAN，不能再 include <windows.h>，
-//     故复用 JZStd 里的 str_local_to_utf8（其 windows 调用在独立 TU，不冲突）。
+// 注：本文件包含 JZAgentTool.h（其枚举已改为 enum class ParamType::Boolean，原先与 <winnt.h>
+//     的 BOOLEAN 冲突已消除）；这里仍复用 JZStd 的 str_local_to_utf8（windows 调用在独立 TU）。
 static string fetchDecode(const JZByteArray &body, const string &charset)
 {
     int n = body.size();
@@ -3012,8 +3082,8 @@ JZWebFetchTool::JZWebFetchTool()
     def.description = "抓取指定网页的正文并以纯文本返回，用于获取搜索结果中某条链接的详细内容、" \
                       "官方文档、API 说明等。返回的是网页转换后的纯文本（已按 max_chars 截断），" \
                       "不是原始 HTML。仅支持 http/https。";
-    def.parameters.push_back(makeParam("url", STRING, "要抓取的网页 URL（http/https）"));
-    def.parameters.push_back(makeParam("max_chars", NUMBER, "返回正文的最大字符数，默认 20000，最多 200000"));
+    def.parameters.push_back(makeParam("url", ParamType::String, "要抓取的网页 URL（http/https）"));
+    def.parameters.push_back(makeParam("max_chars", ParamType::Number, "返回正文的最大字符数，默认 20000，最多 200000"));
     def.required_parameters.push_back("url");
     setToolDefine(def);
 }

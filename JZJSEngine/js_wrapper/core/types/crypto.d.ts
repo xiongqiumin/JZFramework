@@ -1,4 +1,4 @@
-/// <reference path="../../../types/common.d.ts" />
+/// <reference path="../../types/common.d.ts" />
 
 /** digest output encodings (note: not the full Node BinaryToTextEncoding set) */
 export type BinaryToTextEncoding = 'hex' | 'base64' | 'latin1' | 'binary';

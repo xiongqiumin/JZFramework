@@ -67,6 +67,11 @@ endforeach()
 # 打包 JZ JS 引擎产物到 exe 同配置目录(bin/<CONFIG>/), 统一放进一个大的部署目录 jz_engine/:
 #   - jz_engine/jz_types/ : 完整类型定义(供 initProject 拷进用户工程, 使工程自包含)
 #   - jz_engine/jz_js/    : 运行时 JS(dist 编译产物: core/net/serialport), 供用户工程 import
+# 类型不再有独立的 JZJSEngine/types 源目录, 单一来源就是 js_wrapper 自身:
+#   - js_wrapper/types/       只有跨模块的真全局声明(console/fetch/URL/WebSocket/EventEmitter)
+#   - js_wrapper/<pkg>/types/ 各包类型 + 该包裸露模块名的 ambient 声明(ambient.d.ts)
+# 打包时按同构布局汇总到 jz_types/(types/ + <pkg>/types/), 使源码里的相对引用(../../types/、
+# ambient.d.ts 的 ./<module>)在部署产物里原样可解析。
 # 用 js_wrapper/package.py 打包。脚本只清理它自己要写入的目标子目录(jz_types/jz_js),
 # 不删其它任何东西(删除策略有路径守卫, 误删会直接报错), 避免旧 CMake 残留文件
 # (如历史 core/ 副本) 与根目录声明撞出 TS2300 Duplicate identifier。
@@ -76,12 +81,16 @@ endforeach()
 # ---------------------------------------------------------------------------
 set(JZ_WRAP_PY "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/package.py")
 set(JZ_JS_OUT "${CODE_AGENT_BIN_DIR}/$<CONFIG>")
-set(JZ_TYPES_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/types")
 set(JZ_WRAP_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper")
 set(JZ_JS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/jz_js_packaged.stamp")
 
+# 依赖: 脚本本身 + 共享声明 + 各包类型(存在才加, 避免文件缺失时 configure 报错)
+set(JZ_JS_DEPS "${JZ_WRAP_PY}")
+file(GLOB JZ_TYPE_FILES CONFIGURE_DEPENDS
+     "${JZ_WRAP_SRC}/types/*.d.ts" "${JZ_WRAP_SRC}/types/*.ts"
+     "${JZ_WRAP_SRC}/*/types/*.d.ts")
+list(APPEND JZ_JS_DEPS ${JZ_TYPE_FILES})
 # 仅把已存在的 dist 加入依赖, 避免未跑 tsc 时 configure 报找不到文件
-set(JZ_JS_DEPS "${JZ_WRAP_PY}" "${JZ_TYPES_SRC}")
 foreach(pkg core net serialport sqlite modbus)
     set(_d "${JZ_WRAP_SRC}/${pkg}/dist/index.js")
     if(EXISTS "${_d}")
@@ -92,7 +101,7 @@ endforeach()
 add_custom_command(
     OUTPUT "${JZ_JS_STAMP}"
     COMMAND ${JZ_PYTHON_EXECUTABLE} "${JZ_WRAP_PY}"
-            --out "${JZ_JS_OUT}" --types "${JZ_TYPES_SRC}" --js-wrapper "${JZ_WRAP_SRC}"
+            --out "${JZ_JS_OUT}" --js-wrapper "${JZ_WRAP_SRC}"
     COMMAND ${CMAKE_COMMAND} -E touch "${JZ_JS_STAMP}"
     DEPENDS ${JZ_JS_DEPS}
     COMMENT "Package JZ JS engine (types + runtime dist) next to code_agent binaries (per-config)")

@@ -9,17 +9,17 @@ std::string paramTypeToString(ParamType type)
 {
     switch (type)
     {
-        case STRING:
+        case ParamType::String:
             return "string";
-        case NUMBER:
+        case ParamType::Number:
             return "number";
-        case BOOLEAN:
+        case ParamType::Boolean:
             return "boolean";
-        case ARRAY:
+        case ParamType::Array:
             return "array";
-        case OBJECT:
+        case ParamType::Object:
             return "object";
-        case NULL_TYPE:
+        case ParamType::Null:
             return "null";
         default:
             return "string";
@@ -29,18 +29,18 @@ std::string paramTypeToString(ParamType type)
 ParamType stringToParamType(const std::string& typeStr)
 {
     if (typeStr == "string")
-        return STRING;
+        return ParamType::String;
     if (typeStr == "number")
-        return NUMBER;
+        return ParamType::Number;
     if (typeStr == "boolean")
-        return BOOLEAN;
+        return ParamType::Boolean;
     if (typeStr == "array")
-        return ARRAY;
+        return ParamType::Array;
     if (typeStr == "object")
-        return OBJECT;
+        return ParamType::Object;
     if (typeStr == "null")
-        return NULL_TYPE;
-    return STRING;
+        return ParamType::Null;
+    return ParamType::String;
 }
 
 // ------------------------------

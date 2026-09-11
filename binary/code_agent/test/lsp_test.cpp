@@ -16,8 +16,7 @@
 // 环境变量：JZ_TS_LSP 可换原生 tsc.exe 路径（默认 E:/libs/ts_compiler/.../tsc.exe）。
 // 退出码：0=全部通过；1=有失败；2=前置条件缺失（编译器不可用）。
 //
-// 注意：本文件不要 include <windows.h>（JZAgentTool.h 无作用域枚举成员
-// BOOLEAN 与 winnt.h 冲突 C2365）；事件循环等待用 std::this_thread::sleep_for。
+// 注意：本文件不 include <windows.h>；事件循环等待用 std::this_thread::sleep_for。
 
 #define _CRT_SECURE_NO_WARNINGS
 

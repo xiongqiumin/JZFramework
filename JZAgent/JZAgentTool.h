@@ -9,14 +9,17 @@
 #include "JZSignal.h"
 
 // 1. 参数类型枚举
-enum ParamType
+//    用 enum class + 限定名, 不让 STRING/NUMBER/BOOLEAN/ARRAY/OBJECT 这些通用名
+//    作为枚举数泄漏到全局命名空间 —— BOOLEAN 会与 <winnt.h> 的
+//    `typedef unsigned char BOOLEAN` 冲突 (C2365), 且包含顺序无关, 无法靠调整 include 规避。
+enum class ParamType
 {
-    STRING,    // 字符串
-    NUMBER,    // 数字（整数/浮点数）
-    BOOLEAN,   // 布尔值
-    ARRAY,     // 数组
-    OBJECT,    // 对象
-    NULL_TYPE  // null类型
+    String,   // 字符串
+    Number,   // 数字（整数/浮点数）
+    Boolean,  // 布尔值
+    Array,    // 数组
+    Object,   // 对象
+    Null      // null类型
 };
 
 // 2. 参数 Schema 定义（符合 JSON Schema）

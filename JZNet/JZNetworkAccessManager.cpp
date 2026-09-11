@@ -103,8 +103,6 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
     m_keepAlive = KeepAliveAuto;
     m_respClose = false;
     m_manager = manager;
-
-    jzDebug() << "new connect";
 }
 
 JZNetworkConnect::~JZNetworkConnect()

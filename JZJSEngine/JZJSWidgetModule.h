@@ -208,6 +208,13 @@ private:
     int m_typeWindow = -1;
     int m_typeCanvas = -1;
 
+    // 分类注册 (initEngine 中统一调用)
+    void registGeometry();   // JZPoint / JZSize / JZRect
+    void registColor();      // JZColor
+    void registImage();      // JZImage
+    void registEvents();     // JZEvent 及其子类
+    void registWidgets();    // JZWidget 及常用控件 / 布局
+
     JSValue createWindow(int w, int h, const std::string& title);
     JSValue winCreateCanvas(JZJSWindow* win, int w, int h);
     void winSetTitle(JZJSWindow* win, const std::string& t);

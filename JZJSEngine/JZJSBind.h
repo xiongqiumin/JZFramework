@@ -272,6 +272,19 @@ std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noex
 }
 #endif
 
+// 默认构造工厂: 抽象类无法 new, 该类用 setCreate 提供具体构造; 否则运行期抛异常。
+// 用 is_abstract 分派, 避免对抽象类实例化 `new Class()` 导致编译失败。
+template <class Class, std::enable_if_t<!std::is_abstract<Class>::value, int> = 0>
+std::function<void*()> makeDefaultCreate()
+{
+    return []() { return new ClassPointer<Class>(new Class(), false); };
+}
+template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
+std::function<void*()> makeDefaultCreate()
+{
+    return []() { throw std::runtime_error("ClassBind: 抽象类不能用默认构造, 需用 setCreate"); return (void*)nullptr; };
+}
+
 template <class Class>
 class ClassBind
 {
@@ -283,9 +296,12 @@ public:
         // 统一包装模型: 值/引用类对象 opaque 同样存放 ClassPointer<Class>*, 由 JS 管理 wrapper;
         // 底层对象所有权按 cppOwner 决定(默认 false = JS 拥有并随 GC 释放), 与 ClassPointer 一致。
         m_define.isPointer = true;
-        m_define.create = []() { return new jsbind::ClassPointer<Class>(new Class(), false); };
+        m_define.create = makeDefaultCreate<Class>();
         m_define.destory = [](void* p) { delete (jsbind::ClassPointer<Class>*)p; };
     }
+
+    // 自定义构造(用于无默认构造函数的类, 如事件/抽象基类): 改用指定工厂创建 JS 实例。
+    void setCreate(std::function<void*()> create) { m_define.create = create; }
 
     template <typename Return, typename... Args, typename... Extra>
     void def(std::string name, Return (Class::*f)(Args...), Extra... extra)

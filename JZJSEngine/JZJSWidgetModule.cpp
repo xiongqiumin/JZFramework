@@ -39,8 +39,26 @@
 
 #include <string>
 
+// ---------- JS 包裹对象 (底层原生对象 + JS 回调) ----------
+
+struct JZJSWindow
+{
+    JZWindow* m_win = nullptr;
+    JZVBoxLayout* m_box = nullptr;
+    ~JZJSWindow();
+};
+
+struct JZJSCanvas
+{
+    JZJSEngine* m_engine = nullptr;
+    JZCanvas* m_canvas = nullptr;
+    JSValue m_paintCb = JS_UNDEFINED;
+    JSValue m_mouseCb = JS_UNDEFINED;
+    ~JZJSCanvas();
+};
+
 // 颜色名/十六进制解析 (供绘制上下文构造器与测试复用)
-static JZColor parseColor(const std::string& s);
+static JZColor jzParseColor(const std::string& s);
 
 // ---------- 包裹对象析构 ----------
 
@@ -71,29 +89,76 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     auto global = m_engine->globalObject();
     auto self = this;
 
-    // 原生类 JZWindow
+    // 原生类 JZWindow (包裹层 JZJSWindow: 持有底层 JZWindow + 垂直布局)
     jsbind::ClassBind<JZJSWindow> bind_win("JZWindow");
     bind_win.def("createCanvas", [self](JZJSWindow* w, int w_, int h_) -> JSValue {
-        return self->winCreateCanvas(w, w_, h_);
+        JZCanvas* cv = new JZCanvas(w->m_win);
+        cv->setFixedSize(w_, h_);
+        w->m_box->addWidget(cv, 1);
+        JZJSCanvas* obj = new JZJSCanvas();
+        obj->m_engine = self->m_engine;
+        obj->m_canvas = cv;
+        return self->m_engine->createValue(self->m_typeCanvas, obj);
     });
-    bind_win.def("setTitle", [self](JZJSWindow* w, const std::string& t) { self->winSetTitle(w, t); });
-    bind_win.def("show", [self](JZJSWindow* w) { self->winShow(w); });
-    bind_win.def("close", [self](JZJSWindow* w) { self->winClose(w); });
+    bind_win.def("addWidget", [](JZJSWindow* w, JZWidget* child) { w->m_box->addWidget(child, 0); });
+    bind_win.def("setTitle", [](JZJSWindow* w, const std::string& t) { w->m_win->setTitle(t); });
+    bind_win.def("show", [](JZJSWindow* w) { w->m_win->show(); });
+    bind_win.def("close", [](JZJSWindow* w) { w->m_win->close(); });
     m_engine->registClass(bind_win.classDefine());
     m_typeWindow = m_engine->ctypeidToType(typeid(JZJSWindow).name());
 
-    // 原生类 JZCanvas
+    // 原生类 JZCanvas (包裹层 JZJSCanvas: 持有底层 JZCanvas + JS 回调)
     jsbind::ClassBind<JZJSCanvas> bind_cv("JZCanvas");
-    bind_cv.def("setOnPaint", [self](JZJSCanvas* c, JSValue cb) { self->cvSetOnPaint(c, cb); });
-    bind_cv.def("setOnMouse", [self](JZJSCanvas* c, JSValue cb) { self->cvSetOnMouse(c, cb); });
-    bind_cv.def("update", [self](JZJSCanvas* c) { self->cvUpdate(c); });
-    bind_cv.def("getSize", [self](JZJSCanvas* c) -> JSValue { return self->cvGetSize(c); });
+    bind_cv.def("setOnPaint", [self](JZJSCanvas* c, JSValue cb) {
+        JSContext* ctx = self->m_engine->context();
+        if (!JS_IsUndefined(c->m_paintCb)) JS_FreeValue(ctx, c->m_paintCb);
+        c->m_paintCb = JS_DupValue(ctx, cb);
+        c->m_canvas->setPaintCallback([self, c](JZPainter& p) {
+            JSContext* ctx = self->m_engine->context();
+            if (JS_IsUndefined(c->m_paintCb)) return;
+            JSValue backend = jzBuildPaintContext(self->m_engine, &p);
+            JSValue args[1] = { backend };
+            JSValue ret = JS_Call(ctx, c->m_paintCb, JS_UNDEFINED, 1, args);
+            JS_FreeValue(ctx, ret);
+            JS_FreeValue(ctx, backend);
+        });
+    });
+    bind_cv.def("setOnMouse", [self](JZJSCanvas* c, JSValue cb) {
+        JSContext* ctx = self->m_engine->context();
+        if (!JS_IsUndefined(c->m_mouseCb)) JS_FreeValue(ctx, c->m_mouseCb);
+        c->m_mouseCb = JS_DupValue(ctx, cb);
+        c->m_canvas->setMouseCallback([self, c](int x, int y, int btn) {
+            JSContext* ctx = self->m_engine->context();
+            if (JS_IsUndefined(c->m_mouseCb)) return;
+            JSValue args[3] = { JS_NewInt32(ctx, x), JS_NewInt32(ctx, y), JS_NewInt32(ctx, btn) };
+            JSValue ret = JS_Call(ctx, c->m_mouseCb, JS_UNDEFINED, 3, args);
+            JS_FreeValue(ctx, ret);
+            JS_FreeValue(ctx, args[0]);
+            JS_FreeValue(ctx, args[1]);
+            JS_FreeValue(ctx, args[2]);
+        });
+    });
+    bind_cv.def("update", [](JZJSCanvas* c) { c->m_canvas->update(); });
+    bind_cv.def("getSize", [self](JZJSCanvas* c) -> JSValue {
+        JSContext* ctx = self->m_engine->context();
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "w", JS_NewInt32(ctx, c->m_canvas->width()));
+        JS_SetPropertyStr(ctx, o, "h", JS_NewInt32(ctx, c->m_canvas->height()));
+        return o;
+    });
     m_engine->registClass(bind_cv.classDefine());
     m_typeCanvas = m_engine->ctypeidToType(typeid(JZJSCanvas).name());
 
     // 工厂函数 JZWindow(w, h, title)
     m_engine->registFunction(global, "JZWindow",
-        jsbind::createSelfFunction(this, &JZJSWidgetModule::createWindow));
+        [self](int w, int h, const std::string& title) -> JSValue {
+            JZJSWindow* obj = new JZJSWindow();
+            obj->m_win = new JZWindow(w, h, title);
+            obj->m_box = new JZVBoxLayout(0, 0);
+            obj->m_box->setContentsMargins(0, 0, 0, 0);
+            obj->m_win->setLayout(obj->m_box);
+            return self->m_engine->createValue(self->m_typeWindow, obj);
+        });
 
     registGeometry();
     registColor();
@@ -329,6 +394,16 @@ void JZJSWidgetModule::registWidgets()
     bind_btn.def("icon", [](JZPushButton* w) { return w->icon(); });
     bind_btn.def("setWidth", [](JZPushButton* w, int v) { w->setWidth(v); });
     bind_btn.def("setHeight", [](JZPushButton* w, int v) { w->setHeight(v); });
+    // 点击信号: 把 sigClicked 转接到 JS 回调 (回调在引擎上下文内同步调用)
+    bind_btn.def("onClicked", [this](JZPushButton* w, JSValue cb) {
+        JSContext* ctx = m_engine->context();
+        JSValue held = JS_DupValue(ctx, cb);
+        connect(&w->sigClicked, [this, held]() {
+            JSContext* ctx = m_engine->context();
+            JSValue ret = JS_Call(ctx, held, JS_UNDEFINED, 0, nullptr);
+            JS_FreeValue(ctx, ret);
+        });
+    });
     m_engine->registClass(bind_btn.classDefine());
 
     // JZLineEdit (文本编辑接口在 JZAbstractTextEdit)
@@ -472,74 +547,6 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_self.classDefine());
 }
 
-// ---------- 工厂 / 方法 ----------
-
-JSValue JZJSWidgetModule::createWindow(int w, int h, const std::string& title)
-{
-    JZJSWindow* obj = new JZJSWindow();
-    obj->m_win = new JZWindow(w, h, title);
-    obj->m_box = new JZVBoxLayout(0, 0);
-    obj->m_box->setContentsMargins(0, 0, 0, 0);
-    obj->m_win->setLayout(obj->m_box);
-    return m_engine->createValue(m_typeWindow, obj);
-}
-
-JSValue JZJSWidgetModule::winCreateCanvas(JZJSWindow* win, int w, int h)
-{
-    JZCanvas* cv = new JZCanvas(win->m_win);
-    cv->setFixedSize(w, h);
-    win->m_box->addWidget(cv, 1);
-    JZJSCanvas* obj = new JZJSCanvas();
-    obj->m_engine = m_engine;
-    obj->m_canvas = cv;
-    return m_engine->createValue(m_typeCanvas, obj);
-}
-
-void JZJSWidgetModule::winSetTitle(JZJSWindow* win, const std::string& t)
-{
-    win->m_win->setTitle(t);
-}
-
-void JZJSWidgetModule::winShow(JZJSWindow* win)
-{
-    win->m_win->show();
-}
-
-void JZJSWidgetModule::winClose(JZJSWindow* win)
-{
-    win->m_win->close();
-}
-
-void JZJSWidgetModule::cvSetOnPaint(JZJSCanvas* c, JSValue cb)
-{
-    JSContext* ctx = m_engine->context();
-    if (!JS_IsUndefined(c->m_paintCb)) JS_FreeValue(ctx, c->m_paintCb);
-    c->m_paintCb = JS_DupValue(ctx, cb);
-    c->m_canvas->setPaintCallback([this, c](JZPainter& p) { invokePaint(c, &p); });
-}
-
-void JZJSWidgetModule::cvSetOnMouse(JZJSCanvas* c, JSValue cb)
-{
-    JSContext* ctx = m_engine->context();
-    if (!JS_IsUndefined(c->m_mouseCb)) JS_FreeValue(ctx, c->m_mouseCb);
-    c->m_mouseCb = JS_DupValue(ctx, cb);
-    c->m_canvas->setMouseCallback([this, c](int x, int y, int btn) { invokeMouse(c, x, y, btn); });
-}
-
-void JZJSWidgetModule::cvUpdate(JZJSCanvas* c)
-{
-    c->m_canvas->update();
-}
-
-JSValue JZJSWidgetModule::cvGetSize(JZJSCanvas* c)
-{
-    JSContext* ctx = m_engine->context();
-    JSValue o = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, o, "w", JS_NewInt32(ctx, c->m_canvas->width()));
-    JS_SetPropertyStr(ctx, o, "h", JS_NewInt32(ctx, c->m_canvas->height()));
-    return o;
-}
-
 // ---------- 回调派发 ----------
 
 // 构造 JS 侧 onPaint 收到的 ctx 对象: 把 JZPainter 的一族绘制方法挂到普通 JS 对象上。
@@ -560,16 +567,16 @@ JSValue jzBuildPaintContext(JZJSEngine* engine, JZPainter* p)
     reg("scale",          jsbind::createFunction([p](double sx, double sy) { p->scale(sx, sy); }));
     reg("resetTransform", jsbind::createFunction([p]() { p->resetTransform(); }));
     reg("setClip",        jsbind::createFunction([p](int x, int y, int w, int h) { p->setClip(JZRect(x, y, w, h)); }));
-    reg("setPen",         jsbind::createFunction([p](const std::string& color, int width) { p->setPen(JZPen(parseColor(color), width)); }));
-    reg("setBrush",       jsbind::createFunction([p](const std::string& color) { p->setBrush(JZBrush(parseColor(color))); }));
+    reg("setPen",         jsbind::createFunction([p](const std::string& color, int width) { p->setPen(JZPen(jzParseColor(color), width)); }));
+    reg("setBrush",       jsbind::createFunction([p](const std::string& color) { p->setBrush(JZBrush(jzParseColor(color))); }));
     reg("setFont",        jsbind::createFunction([p](const std::string& family, int size) { p->setFont(JZFont(family, size)); }));
     reg("drawLine",       jsbind::createFunction([p](int x1, int y1, int x2, int y2) { p->drawLine(x1, y1, x2, y2); }));
     reg("drawRect",       jsbind::createFunction([p](int x, int y, int w, int h) { p->drawRect(x, y, w, h); }));
     reg("drawRoundRect",  jsbind::createFunction([p](int x, int y, int w, int h, int r) { p->drawRoundRect(x, y, w, h, r); }));
-    reg("fillRect",       jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillRect(x, y, w, h, parseColor(color)); }));
-    reg("fillRoundRect",  jsbind::createFunction([p](int x, int y, int w, int h, int r, const std::string& color) { p->fillRoundRect(x, y, w, h, r, parseColor(color)); }));
+    reg("fillRect",       jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillRect(x, y, w, h, jzParseColor(color)); }));
+    reg("fillRoundRect",  jsbind::createFunction([p](int x, int y, int w, int h, int r, const std::string& color) { p->fillRoundRect(x, y, w, h, r, jzParseColor(color)); }));
     reg("drawEllipse",    jsbind::createFunction([p](int x, int y, int w, int h) { p->drawEllipse(x, y, w, h); }));
-    reg("fillEllipse",    jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillEllipse(x, y, w, h, parseColor(color)); }));
+    reg("fillEllipse",    jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillEllipse(x, y, w, h, jzParseColor(color)); }));
     reg("drawText",       jsbind::createFunction([p](int x, int y, const std::string& text) { p->drawText(x, y, text.c_str()); }));
     // 兼容占位 (五子棋用不到, 调用不报错)
     reg("drawImage",      jsbind::createFunction([](JSValue, int, int, int, int) {}));
@@ -584,38 +591,9 @@ JSValue jzBuildPaintContext(JZJSEngine* engine, JZPainter* p)
     return backend;
 }
 
-void JZJSWidgetModule::invokePaint(JZJSCanvas* c, JZPainter* p)
-{
-    if (JS_IsUndefined(c->m_paintCb))
-        return;
-    JSContext* ctx = m_engine->context();
-    JSValue backend = jzBuildPaintContext(m_engine, p);
-    JSValue args[1] = { backend };
-    JSValue ret = JS_Call(ctx, c->m_paintCb, JS_UNDEFINED, 1, args);
-    JS_FreeValue(ctx, ret);
-    JS_FreeValue(ctx, backend);
-}
-
-void JZJSWidgetModule::invokeMouse(JZJSCanvas* c, int x, int y, int button)
-{
-    if (JS_IsUndefined(c->m_mouseCb))
-        return;
-    JSContext* ctx = m_engine->context();
-    JSValue args[3] = {
-        JS_NewInt32(ctx, x),
-        JS_NewInt32(ctx, y),
-        JS_NewInt32(ctx, button)
-    };
-    JSValue ret = JS_Call(ctx, c->m_mouseCb, JS_UNDEFINED, 3, args);
-    JS_FreeValue(ctx, ret);
-    JS_FreeValue(ctx, args[0]);
-    JS_FreeValue(ctx, args[1]);
-    JS_FreeValue(ctx, args[2]);
-}
-
 // ---------- 颜色解析 ----------
 
-static JZColor parseColor(const std::string& s)
+static JZColor jzParseColor(const std::string& s)
 {
     if (!s.empty() && s[0] == '#')
     {

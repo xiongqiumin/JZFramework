@@ -184,6 +184,7 @@ public:
     std::string name;
     CFunctionParam result;
     std::vector<CFunctionParam> params;
+    bool returnCppOwner = false;   // 返回值所有权: 注册返回裸指针的函数时记录; false=JS 拥有(GC 时 delete), true=C++ 持有(JS 不释放)
 };
 
 class CProperty
@@ -210,7 +211,7 @@ public:
 };
 
 // from js
-template <class T>
+template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int> = 0>
 T fromJSValue(JSContext* ctx, JSValueConst value);
 
 // T 为裸指针(Class*): 把 JS 对象转成 T*。JS 对象可能是两种表示(与 JZNodeEditor 的统一语义一致):
@@ -330,7 +331,7 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::false_type)
     return fromJSValueVector<T>(ctx, value, jstype::is_vector<T>());
 }
 
-template <class T>
+template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int>>
 T fromJSValue(JSContext* ctx, JSValueConst value)
 {
     return fromJSValuePointer<T>(ctx, value, std::is_pointer<T>());
@@ -340,9 +341,8 @@ T fromJSValue(JSContext* ctx, JSValueConst value)
 // 使 cppOwner/cleared 等状态修改能传播回同一个 wrapper(clear 传播语义)。
 // 调用方若需独立副本用 auto cp = fromJSValue<ClassPointer<Class>>(...) (拷贝),
 // 若需修改同一 wrapper 用 auto& cp = ... 。
-template <class T>
-std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T&>
-fromJSValue(JSContext* ctx, JSValueConst value)
+template <class T, std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int> = 0>
+T& fromJSValue(JSContext* ctx, JSValueConst value)
 {
     using CP = std::remove_cv_t<std::remove_reference_t<T>>;
     using Class = typename jsbind::detail::class_pointer_inner<CP>::type;
@@ -392,14 +392,37 @@ JSValue toJSValue(JSContext* ctx, jsbind::ClassPointer<Class> t)
     return createJSValue(ctx, ctypeid, new jsbind::ClassPointer<Class>(std::move(t)));
 }
 
+// 裸指针 -> JS 对象(经 ClassPointer 包装): 这是 toJSValue 不支持裸指针时的显式替代。
+// cppOwner=true: C++ 持有底层对象, JS 仅持句柄, GC 时不释放;
+// cppOwner=false: JS 持有, JS 对象 GC 时 delete 底层对象(须由 new 分配, 勿传栈/外部托管指针)。
+template <class T>
+JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool cppOwner = false)
+{
+    return toJSValue(ctx, jsbind::ClassPointer<T>(ptr, cppOwner));
+}
+
+// 返回值转换统一入口: 裸指针走 toJsValueFromPtr(ctx, ptr, cppOwner), 其余走 toJSValue。
+// cppOwner 来自注册时记录的返回值所有权(CFunction::returnCppOwner), 不再由这里私自默认。
+template <class T>
+JSValue toJSValueReturn(JSContext* ctx, T&& t, bool cppOwner)
+{
+    return toJSValue(ctx, std::forward<T>(t));
+}
+template <class T>
+JSValue toJSValueReturn(JSContext* ctx, T* t, bool cppOwner)
+{
+    return toJsValueFromPtr(ctx, t, cppOwner);
+}
+
+// toJSValue 不支持裸指针: 裸指针须显式经 toJsValueFromPtr 或 jsbind::ClassPointer<T>(ptr, cppOwner)。
+// 此处对指针实参直接 static_assert, 避免误把外部/C++ 持有指针交给 GC 释放。
 template <class T>
 JSValue toJSValuePointer(JSContext* ctx, const T& t, std::true_type)
 {
-    // C 函数返回裸指针: 包装成 ClassPointer, 默认由 JS 拥有(JS 对象 GC 时释放底层对象)。
-    // 若底层对象由 C++ 持有, 请直接返回 jsbind::ClassPointer<Class>(ptr, true)。
-    static_assert(std::is_pointer<T>::value, "toJSValuePointer: 仅支持指针类型");
-    using Class = std::remove_pointer_t<T>;
-    return toJSValue(ctx, jsbind::ClassPointer<Class>(t, false));
+    static_assert(!std::is_pointer<T>::value,
+        "toJSValue 不支持裸指针; 请改用 toJsValueFromPtr(ctx, ptr, cppOwner) 或返回 jsbind::ClassPointer<T>(ptr, cppOwner)");
+    (void)ctx; (void)t;
+    return JS_UNDEFINED;
 }
 
 template <class T>

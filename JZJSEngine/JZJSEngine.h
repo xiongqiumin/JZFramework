@@ -132,15 +132,11 @@ public:
     void setProperty(JSValue obj, std::string name, JSValue value);  // 不会拷贝, set后不能释放
     JSValue getProperty(JSValue obj, std::string name);
 
+    // 对外只暴露 值/const 值/引用/const 引用/指针 四种类对象提取形式:
+    //   engine.fromJSValue<Class*> / <Class> / <Class&> / <const Class&>
+    // ClassPointer<Class> 的提取不对外提供(内部由 call() 经自由 ::fromJSValue<ClassPointer<Class>> 转发)。
     template <class T>
-    T fromJSValue(JSValue v)
-    {
-        return ::fromJSValue<T>(m_ctx, v);
-    }
-
-    // ClassPointer<Class> 形参: 转发为引用(见 jsbind::fromJSValue 重载), 使 clear() 能传播回 JS 对象内同一 wrapper
-    template <class T>
-    std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T&>
+    std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T>
     fromJSValue(JSValue v)
     {
         return ::fromJSValue<T>(m_ctx, v);
@@ -165,7 +161,7 @@ public:
     template <class T>
     JZJSValuePtr toValuePtr(T* ptr, bool cppOwner = true)
     {
-        return makeValuePtr(toJSValue(jsbind::ClassPointer<T>(ptr, cppOwner)));
+        return makeValuePtr(toJsValueFromPtr(m_ctx, ptr, cppOwner));
     }
 
     JZJSValuePtr makeValuePtr(JSValue value);

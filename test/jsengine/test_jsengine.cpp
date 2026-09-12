@@ -209,7 +209,7 @@ int main()
 
             // 返回裸指针: 包装成 ClassPointer(JS 拥有)
             engine.registFunction(engine.globalObject(), "makePRaw",
-                jsbind::createFunction([]() -> PP* { return new PP(); }));
+                jsbind::createFunction([]() -> PP* { return new PP(); }, jsbind::returnOwnedByJs));
             // 返回 ClassPointer(C++ 拥有): JS 仅持句柄, 可 clear()
             engine.registFunction(engine.globalObject(), "makePOwned",
                 jsbind::createFunction([]() -> jsbind::ClassPointer<PP> {
@@ -271,6 +271,11 @@ int main()
         engine.registClass(bindPP.classDefine());
         jsbind::ClassBind<AAA> bindAAA("AAA");
         engine.registClass(bindAAA.classDefine());
+
+        // 用于"已 clear"用例: 按 ClassPointer<PP>& 形参接收并 clear(经 call() 转发),
+        // 避开 engine.fromJSValue<jsbind::ClassPointer<PP>> 这种不被支持的提取写法。
+        engine.registFunction(engine.globalObject(), "clearOwnedP",
+            jsbind::createFunction([](jsbind::ClassPointer<PP>& p) -> void { p.clear(); }));
 
         auto toV = [&](auto&& t) { return engine.makeValuePtr(engine.toJSValue(t)); };
 
@@ -364,8 +369,8 @@ int main()
 
             PP obj2; obj2.v = 5;
             JZJSValuePtr jsOwned = engine.toValuePtr(&obj2, true);
-            auto& cp = engine.fromJSValue<jsbind::ClassPointer<PP>>(jsOwned.get());
-            cp.clear();
+            // clear 走 ClassPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::ClassPointer<PP>>(不支持)
+            engine.callFunction("clearOwnedP", { jsOwned });
             bool threwCleared = false;
             try { (void)engine.fromJSValue<PP*>(jsOwned.get()); }
             catch (...) { threwCleared = true; }

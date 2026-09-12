@@ -214,22 +214,6 @@ private:
     void registImage();      // JZImage
     void registEvents();     // JZEvent 及其子类
     void registWidgets();    // JZWidget 及常用控件 / 布局
-
-    JSValue createWindow(int w, int h, const std::string& title);
-    JSValue winCreateCanvas(JZJSWindow* win, int w, int h);
-    void winSetTitle(JZJSWindow* win, const std::string& t);
-    void winShow(JZJSWindow* win);
-    void winClose(JZJSWindow* win);
-
-    void cvSetOnPaint(JZJSCanvas* c, JSValue cb);
-    void cvSetOnMouse(JZJSCanvas* c, JSValue cb);
-    void cvUpdate(JZJSCanvas* c);
-    JSValue cvGetSize(JZJSCanvas* c);
-
-    void invokePaint(JZJSCanvas* c, JZPainter* p);
-    void invokeMouse(JZJSCanvas* c, int x, int y, int button);
-
-    static JZColor parseColor(const std::string& s);
 };
 
 #endif // !JZ_JS_WIDGET_MODULE_H_

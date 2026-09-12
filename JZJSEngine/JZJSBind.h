@@ -98,6 +98,15 @@ using function_signature_t =
                   typename conditional_t<std::is_pointer<F>::value || std::is_member_pointer<F>::value,
                                          std::remove_pointer<F>, strip_function_object<F>>::type>;
 
+// 从函数签名中提取返回类型 (配合 function_signature_t 使用)
+template <typename Sig>
+struct function_return;
+template <typename R, typename... A>
+struct function_return<R(A...)>
+{
+    using type = R;
+};
+
 // class function
 template <class T>
 void* createClass()
@@ -137,6 +146,48 @@ struct ctypeid_of<T, enable_if_t<is_class_pointer<remove_cvr_t<T>>::value>>
     }
 };
 
+// 返回值所有权策略: 注册返回裸指针的函数/方法时, 必须显式用标签声明 JS GC 时是否 delete 底层对象
+// (见 createFunctionImpl 中的 static_assert, 漏传会编译失败)。
+//   returnOwnedByJs  : 底层对象由 new 分配, JS 拥有, GC 时释放
+//   returnOwnedByCpp : 底层对象由 C++ 持有(栈/成员/静态/外部托管), JS 仅持句柄, 不释放
+enum class ReturnOwnership { Js, Cpp };
+struct ReturnOwnershipTag { ReturnOwnership value; };
+const ReturnOwnershipTag returnOwnedByJs{ReturnOwnership::Js};
+const ReturnOwnershipTag returnOwnedByCpp{ReturnOwnership::Cpp};
+
+// 编译期检查: extra 列表中是否包含返回值所有权标签
+template <class... Extra>
+struct hasReturnOwnershipTag : std::false_type
+{
+};
+template <class... Rest>
+struct hasReturnOwnershipTag<ReturnOwnershipTag, Rest...> : std::true_type
+{
+};
+template <class First, class... Rest>
+struct hasReturnOwnershipTag<First, Rest...> : hasReturnOwnershipTag<Rest...>
+{
+};
+
+// 从注册 extra 中提取返回值所有权标签(忽略其它 extra 类型, C++14 兼容: 重载区分 + 初始化列表展开)。
+inline bool applyReturnOwnership(bool cppOwner, const ReturnOwnershipTag& e)
+{
+    return e.value == ReturnOwnership::Cpp ? true : cppOwner;
+}
+template <class E>
+bool applyReturnOwnership(bool cppOwner, const E&)
+{
+    return cppOwner;
+}
+template <class... Extra>
+bool extractReturnOwnership(const Extra&... extra)
+{
+    bool cppOwner = false;
+    using swallow = bool[];
+    (void)swallow{ false, (cppOwner = applyReturnOwnership(cppOwner, extra), false)... };
+    return cppOwner;
+}
+
 // CFunctionImpl
 template <class T>
 std::string getCTypeid()
@@ -164,8 +215,9 @@ template <typename Func, typename Return, typename... Args>
 class CFunctionImpl : public CFunction
 {
 public:
-    CFunctionImpl(Func f) : func(f)
+    CFunctionImpl(Func f, bool returnCppOwner = false) : func(f)
     {
+        CFunction::returnCppOwner = returnCppOwner;
         result.ctypeid = getCTypeid<Return>();
         if (result.ctypeid == typeid(void).name())
             result.ctypeid.clear();
@@ -191,7 +243,7 @@ public:
     JSValue dealCall(JSContext* ctx, JSValueConst* argv, std::false_type)
     {
         Return ret = callFunction(ctx, argv, make_index_sequence<sizeof...(Args)>());
-        return toJSValue(ctx, std::move(ret));
+        return toJSValueReturn(ctx, std::move(ret), returnCppOwner);
     }
 
     template <size_t... idx>
@@ -203,16 +255,25 @@ public:
     Func func;
 };
 
-template <typename Func, typename Return, typename... Args>
-CFunctionImpl<Func, Return, Args...>* dealCreateFunctionImpl(Func func, Return (*)(Args...))
+template <typename Func, typename Return, typename... Args, typename... Extra>
+CFunctionImpl<Func, Return, Args...>* dealCreateFunctionImpl(Func func, Return (*)(Args...), Extra... extra)
 {
-    return new CFunctionImpl<Func, Return, Args...>(func);
+    return new CFunctionImpl<Func, Return, Args...>(func, extractReturnOwnership(extra...));
 }
 
 template <typename Func, typename... Extra>
 std::shared_ptr<CFunction> createFunctionImpl(Func f, Extra... extra)
 {
-    auto cfunc = dealCreateFunctionImpl(f, (function_signature_t<Func>*)nullptr);
+    using ReturnT = typename function_return<function_signature_t<Func>>::type;
+    // 返回值是指针时, 必须显式声明所有权(returnOwnedByJs / returnOwnedByCpp),
+    // 否则 JS GC 无法判断该不该 delete 底层对象(可能误删 C++ 托管的对象)。
+    static_assert(!std::is_pointer<ReturnT>::value || hasReturnOwnershipTag<Extra...>::value,
+        "返回值是指针时, 必须声明所有权: createFunction(f, jsbind::returnOwnedByJs) 或 jsbind::returnOwnedByCpp");
+    // 非指针返回值不应传所有权标签(无意义, 且会被静默忽略)
+    static_assert(std::is_pointer<ReturnT>::value || sizeof...(Extra) == 0,
+        "返回值非指针时, 不应传 returnOwnedByJs / returnOwnedByCpp 等所有权标签");
+
+    auto cfunc = dealCreateFunctionImpl(f, (function_signature_t<Func>*)nullptr, extra...);
     return std::shared_ptr<CFunction>(cfunc);
 }
 

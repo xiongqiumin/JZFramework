@@ -1,25 +1,18 @@
-// 五子棋 (Gomoku) — 纯 JS + Canvas demo，由 code_runtime 运行。
-// 用法: code_runtime --root <本目录>
+// 五子棋 (Gomoku) — 使用 JZJSWidgetModule 新注册的 widget 类
+//   JZWindow (工厂) / JZLabel / JZCanvas / JZPushButton / JZRect / JZPoint
+// 运行: code_runtime --root <本目录>
 //
-// 依赖运行期原生桥 (JZJSWidgetModule) 提供的全局:
-//   JZWindow(w, h, title) -> 窗口句柄
-//   win.createCanvas(w, h) -> 画布句柄 (已加入窗口布局)
-//   canvas.setOnPaint((ctx) => ...)    ctx 方法映射到 JZPainter
-//   canvas.setOnMouse((x, y, button) => ...)
-//   canvas.update()                    触发重绘
-//   win.show()
-//
-// 注意: win / canvas 必须处于模块顶层作用域 (ESM 模块对象会被引擎保留),
+// 注意: win / canvas / status / restart 必须处于模块顶层作用域 (ESM 模块对象会被引擎保留),
 // 不能被 GC 回收, 否则会销毁底层窗口。
 
 const GRID = 15;            // 15x15
 const CELL = 40;            // 格距(逻辑像素)
-const MARGIN_X = 20;        // 左右留白
-const MARGIN_Y = 50;        // 顶部状态行高度
-const STONE_R = 17;         // 棋子半径
-
-const W = MARGIN_X * 2 + (GRID - 1) * CELL;
-const H = MARGIN_Y + (GRID - 1) * CELL + MARGIN_X;
+const MARGIN = 20;          // 棋盘四周留白
+const STATUS_H = 36;        // 顶部状态栏高度
+const BTN_H = 40;           // 底部按钮高度
+const BOARD = MARGIN * 2 + (GRID - 1) * CELL;
+const WIN_W = BOARD;
+const WIN_H = STATUS_H + BOARD + BTN_H;
 
 const EMPTY = 0, BLACK = 1, WHITE = 2;
 
@@ -29,10 +22,26 @@ let turn = BLACK;           // 黑先
 let winner = EMPTY;
 let over = false;
 
-const win = JZWindow(W, H, "五子棋");
-const canvas = win.createCanvas(W, H);
+const win = JZWindow(WIN_W, WIN_H, "五子棋");
 
-function status()
+// 顶部状态栏 (JZLabel)
+const status = new JZLabel();
+status.setText("轮到: 黑棋 (点击落子)");
+status.setAlign(1);         // 1 = 居中
+win.addWidget(status);
+
+// 棋盘画布 (JZCanvas)
+const canvas = win.createCanvas(BOARD, BOARD);
+
+// 底部重新开局按钮 (JZPushButton)
+const restart = new JZPushButton();
+restart.setText("重新开始");
+win.addWidget(restart);
+
+// 用新注册的几何类做命中测试
+const boardRect = new JZRect(MARGIN, MARGIN, (GRID - 1) * CELL, (GRID - 1) * CELL);
+
+function statusText()
 {
     if (over)  return winner === BLACK ? "黑棋胜利!" : (winner === WHITE ? "白棋胜利!" : "平局");
     return turn === BLACK ? "轮到: 黑棋 (点击落子)" : "轮到: 白棋 (点击落子)";
@@ -41,37 +50,31 @@ function status()
 function draw(ctx)
 {
     // 背景
-    ctx.fillRect(0, 0, W, H, "#e3b572");
-
-    // 状态行
-    ctx.setPen("#1d1207", 1);
-    ctx.setFont("Microsoft YaHei", 18);
-    ctx.drawText(MARGIN_X, 30, status());
-
-    const x0 = MARGIN_X, y0 = MARGIN_Y;
+    ctx.fillRect(0, 0, BOARD, BOARD, "#e3b572");
 
     // 棋盘网格
     ctx.setPen("#3a2a12", 1);
     for (let i = 0; i < GRID; i++)
     {
-        const gx = x0 + i * CELL, gy = y0 + i * CELL;
-        ctx.drawLine(x0, gy, x0 + (GRID - 1) * CELL, gy);
-        ctx.drawLine(gx, y0, gx, y0 + (GRID - 1) * CELL);
+        const g = MARGIN + i * CELL;
+        ctx.drawLine(MARGIN, g, MARGIN + (GRID - 1) * CELL, g);
+        ctx.drawLine(g, MARGIN, g, MARGIN + (GRID - 1) * CELL);
     }
 
     // 星位
     const stars = [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]];
     for (const [sr, sc] of stars)
-        ctx.fillEllipse(x0 + sc * CELL - 3, y0 + sr * CELL - 3, 6, 6, "#3a2a12");
+        ctx.fillEllipse(MARGIN + sc * CELL - 3, MARGIN + sr * CELL - 3, 6, 6, "#3a2a12");
 
     // 棋子
+    const STONE_R = 17;
     for (let r = 0; r < GRID; r++)
     {
         for (let c = 0; c < GRID; c++)
         {
             const v = board[r][c];
             if (v === EMPTY) continue;
-            const cx = x0 + c * CELL, cy = y0 + r * CELL;
+            const cx = MARGIN + c * CELL, cy = MARGIN + r * CELL;
             ctx.fillEllipse(cx - STONE_R, cy - STONE_R, STONE_R * 2, STONE_R * 2,
                             v === BLACK ? "#111111" : "#f6f6f6");
             ctx.setPen("#3a3a3a", 1);
@@ -93,13 +96,26 @@ function checkWin(r, c, who)
     return false;
 }
 
+function reset()
+{
+    for (let i = 0; i < GRID; i++)
+        for (let j = 0; j < GRID; j++)
+            board[i][j] = EMPTY;
+    turn = BLACK;
+    winner = EMPTY;
+    over = false;
+    status.setText(statusText());
+    canvas.update();
+}
+
 canvas.setOnPaint((ctx) => draw(ctx));
 
 canvas.setOnMouse((x, y, button) => {
-    if (over) return;
-    if (button !== 0) return;   // 仅左键
-    const c = Math.round((x - MARGIN_X) / CELL);
-    const r = Math.round((y - MARGIN_Y) / CELL);
+    if (over || button !== 0) return;            // 仅左键
+    if (!boardRect.contains(x, y)) return;       // 用 JZRect 做边界判定
+    const pt = new JZPoint(x, y);                // 用 JZPoint 取坐标
+    const c = Math.round((pt.x() - MARGIN) / CELL);
+    const r = Math.round((pt.y() - MARGIN) / CELL);
     if (c < 0 || c >= GRID || r < 0 || r >= GRID) return;
     if (board[r][c] !== EMPTY) return;
 
@@ -118,7 +134,10 @@ canvas.setOnMouse((x, y, button) => {
         else
             turn = (turn === BLACK) ? WHITE : BLACK;
     }
+    status.setText(statusText());
     canvas.update();
 });
+
+restart.onClicked(() => reset());
 
 win.show();

@@ -164,6 +164,10 @@ struct ToolCallRecord
     std::string args;     // 原始参数（function_args），含路径等，用于识别重复调用
     bool ok = false;      // 工具结果到达后回填
     int64_t t = 0;        // 调用时刻(ms)
+
+    ToolCallRecord() = default;
+    ToolCallRecord(std::string n, std::string a, bool o, int64_t ti)
+        : name(std::move(n)), args(std::move(a)), ok(o), t(ti) {}
 };
 
 // 分析工具调用轨迹：识别"反复重读文件 / 重复调用 / 陷入循环"

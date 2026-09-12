@@ -14,6 +14,7 @@
 #include "JZTextStream.h"
 #include "JZTimer.h"
 #include "JZApplication.h"
+#include "JZJSEngine/JZJSUiLoader.h"
 
 #include <fstream>
 #include <iterator>
@@ -499,6 +500,57 @@ const CodeProjectStatus &JZCodeAgent::projectStatus() const
     return m_project;
 }
 
+// ==================== .ui -> TypeScript 生成 ====================
+// 工程内 .ui 文件（Qt 风格 UI 描述 XML）经 JZJSUiLoader 生成可被 tsc 编译的
+// TypeScript 类，产物统一写入 src/GenerateFiles/（位于 rootDir=src 之下，被 tsconfig
+// 的 src/**/*.ts 自动纳入编译）。按"工程相对路径扁平化"命名避免同名冲突，且每次都重跑
+// （uic 风格），因此用户新增/修改/删除 .ui 都会即时反映到编译产物。
+//
+// 自定义文件同样支持：
+//   - 任意新增的 .ui 会被自动转换（扫描整个工程，排除 build/、node_modules/、GenerateFiles）；
+//   - 手写 .ts（src 下、非 GenerateFiles 目录）照常编译；
+//   - GenerateFiles 内与 .ui 同名的 .ts 由本步骤托管（请勿手改，会被覆盖）。
+// 调用入口：打包/发布前自动触发；也可单独调用 generateUi()。
+
+static bool codeIEndsWith(const string &s, const string &suffix)
+{
+    if (suffix.size() > s.size())
+        return false;
+    size_t off = s.size() - suffix.size();
+    for (size_t i = 0; i < suffix.size(); i++)
+    {
+        char a = s[off + i], b = suffix[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b)
+            return false;
+    }
+    return true;
+}
+
+// 递归收集工程内所有 .ui 文件；跳过 build/、node_modules/、GenerateFiles（产物目录）。
+static void collectUiFiles(const string &dir, vector<string> &out)
+{
+    JZDir d(dir);
+    if (!d.exists())
+        return;
+    vector<string> items = d.entryList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
+    for (const string &name : items)
+    {
+        string full = codeNormalizePath(dir + "/" + name);
+        if (JZFileInfo(full).isDir())
+        {
+            if (name == "build" || name == "node_modules" || name == "GenerateFiles")
+                continue;
+            collectUiFiles(full, out);
+        }
+        else if (codeIEndsWith(name, ".ui"))
+        {
+            out.push_back(full);
+        }
+    }
+}
+
 bool JZCodeAgent::initProject(const string &path, string &error)
 {
     error.clear();
@@ -595,7 +647,8 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"outDir\": \"build\",\n"
         "    \"rootDir\": \"src\"\n"
         "  },\n"
-        "  \"include\": [" + jzTypesInclude + "]\n"
+        "  \"include\": [" + jzTypesInclude + "],\n"
+        "  \"jzCompilerOptions\": {}\n"
         "}\n";
     string gitignore =
         "build/\n"
@@ -647,7 +700,91 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         }
     }
 
+    // 生成目录（.ui -> .ts 的产物目录，置于 src 下以满足 tsconfig 的 rootDir=src）
+    {
+        JZDir mk;
+        if (!mk.mkpath(root + "/src/GenerateFiles"))
+        {
+            error = "创建 GenerateFiles 目录失败: " + root;
+            return false;
+        }
+    }
+
     addLog("info", "已初始化 TS 工程");
+    return true;
+}
+
+// 依据工程内 .ui 文件生成 TypeScript（JZJSUiLoader），产物写入 src/GenerateFiles/。
+// rootArg 为空时用当前工作区（m_codeConfig.workspace）；打包/发布前自动调用，亦可单独触发。
+bool JZCodeAgent::generateUi(const string &rootArg, string &error)
+{
+    error.clear();
+    string root = codeNormalizePath(rootArg.empty() ? m_codeConfig.workspace : rootArg);
+    if (root.empty())
+    {
+        error = "未设置工作区，无法生成 UI";
+        return false;
+    }
+    if (!JZFileInfo(root + "/tsconfig.json").isFile())
+    {
+        error = "不是 TS 工程目录（缺少 tsconfig.json）: " + root;
+        return false;
+    }
+
+    // 确保生成目录存在（位于 src 下，满足 tsconfig 的 rootDir=src 约束）
+    string genDir = root + "/src/GenerateFiles";
+    {
+        JZDir mk;
+        if (!mk.mkpath(genDir))
+        {
+            error = "创建 GenerateFiles 目录失败: " + genDir;
+            return false;
+        }
+    }
+
+    vector<string> uiFiles;
+    collectUiFiles(root, uiFiles);
+
+    JZJSUiLoader loader;
+    for (const string &uiPath : uiFiles)
+    {
+        if (!loader.loadFromFile(uiPath))
+        {
+            error = "解析 UI 失败: " + uiPath + " -> " + loader.error();
+            return false;
+        }
+        string ts;
+        if (!loader.generateTsClass(ts, loader.className(), "widget"))
+        {
+            error = "生成 TS 失败: " + uiPath + " -> " + loader.error();
+            return false;
+        }
+
+        // 输出文件名 = 工程相对路径扁平化（去扩展名、分隔符转 '_'），避免同名冲突
+        string rel = uiPath.substr(root.size());
+        while (!rel.empty() && (rel[0] == '/' || rel[0] == '\\'))
+            rel = rel.substr(1);
+        string base = rel;
+        size_t dot = base.rfind('.');
+        if (dot != string::npos)
+            base = base.substr(0, dot);
+        for (char &c : base)
+            if (c == '/' || c == '\\')
+                c = '_';
+
+        string outPath = genDir + "/" + base + ".ts";
+        ofstream f(outPath, ios::binary | ios::trunc);
+        if (!f)
+        {
+            error = "写入生成文件失败: " + outPath;
+            return false;
+        }
+        f.write(ts.data(), (streamsize)ts.size());
+        f.close();
+    }
+
+    if (!uiFiles.empty())
+        addLog("info", "已依据 " + to_string(uiFiles.size()) + " 个 .ui 文件生成 TypeScript 到 src/GenerateFiles");
     return true;
 }
 
@@ -828,6 +965,11 @@ bool JZCodeAgent::buildProject(std::string &error)
         error = "配置的宿主侧 tsc 不存在: " + m_codeConfig.tscPath;
         return false;
     }
+
+    // 打包/发布前先依据工程内 .ui 文件重新生成 src/GenerateFiles/*.ts（每次重跑，
+    // .ui 改动即时反映到编译产物）；生成失败则整体判失败，不启动 tsc。
+    if (!generateUi(root, error))
+        return false;
 
     // 异步启动 tsc 全量编译（tsc -p tsconfig.json -> outDir/*.js + *.js.map）
     JZProcess *proc = new JZProcess(this);

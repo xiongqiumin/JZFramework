@@ -1,7 +1,13 @@
 #include "JZJSUiLoader.h"
+#include "JZXml/JZXml.h"
 
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
-#include <memory>
+#include <iomanip>
+#include <set>
 #include <sstream>
 
 JZJSUiLoader::JZJSUiLoader() {}
@@ -29,35 +35,179 @@ const std::vector<std::string>& JZJSUiLoader::knownTypes()
     return builtinKnownTypes();
 }
 
-bool JZJSUiLoader::load(const std::string& jsonText)
+// ---------------------------------------------------------------------------
+// 文本工具
+// ---------------------------------------------------------------------------
+
+static std::string trim(const std::string& s)
 {
-    Json::Value root;
-    Json::CharReaderBuilder builder;
-    JSONCPP_STRING errs;
-    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    bool ok = reader->parse(jsonText.data(), jsonText.data() + jsonText.size(), &root, &errs);
-    if (!ok) {
-        m_ok = false;
-        m_error = "JSON 解析失败: " + errs;
-        return false;
-    }
-    return load(root);
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos)
+        return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
 }
 
-bool JZJSUiLoader::load(const Json::Value& root)
+// 尝试把整串解析为数值(整数优先, 否则 double)。成功返回 true。
+static bool parseNumber(const std::string& s, Json::Value& out)
+{
+    if (s.empty())
+        return false;
+    const char* c = s.c_str();
+    char* end = nullptr;
+    errno = 0;
+    double d = std::strtod(c, &end);
+    if (end == c || *end != '\0')
+        return false;                 // 非纯数值
+    if (!std::isfinite(d))
+        return false;
+    if (s.find_first_of(".eE") == std::string::npos) {
+        out = Json::Value((Json::Int64)std::strtoll(c, nullptr, 10));
+    } else {
+        out = Json::Value(d);
+    }
+    return true;
+}
+
+// XML 属性文本 -> Json::Value: 布尔 / 数字 / 数字数组 / 字符串。
+static Json::Value xmlPropToJson(const std::string& raw)
+{
+    std::string s = trim(raw);
+    if (s.empty())
+        return Json::Value("");
+    if (s == "true" || s == "false")
+        return Json::Value(s == "true");
+
+    Json::Value num;
+    if (parseNumber(s, num))
+        return num;
+
+    // 逗号分隔的数字列表 -> 数组(>=2 个元素才视为数组)
+    if (s.find(',') != std::string::npos) {
+        Json::Value arr(Json::arrayValue);
+        size_t start = 0;
+        bool allNum = true;
+        while (true) {
+            size_t comma = s.find(',', start);
+            std::string part = trim(s.substr(start, comma - start));
+            Json::Value v;
+            if (parseNumber(part, v))
+                arr.append(v);
+            else {
+                allNum = false;
+                break;
+            }
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+        if (allNum && arr.size() >= 2)
+            return arr;
+    }
+    return Json::Value(s);
+}
+
+// ---------------------------------------------------------------------------
+// XML 解析
+// ---------------------------------------------------------------------------
+
+bool JZJSUiLoader::load(const std::string& xmlText)
 {
     m_error.clear();
     m_ok = false;
     m_root = JZUiNode();
+    m_className = "Ui";
 
-    if (!root.isObject()) {
-        m_error = "根节点必须是 JSON 对象";
+    JZDomDocument doc;
+    std::string err;
+    if (!doc.setContent(xmlText, &err)) {
+        m_error = "XML 解析失败: " + err;
         return false;
     }
-    if (!parseNode(root, m_root, "root")) {
+
+    JZDomElement ui = doc.documentElement();
+    if (ui.isNull() || ui.tagName() != "ui") {
+        m_error = "根元素必须是 <ui>";
         return false;
     }
+
+    // 生成类名: <class> 元素文本
+    JZDomNode classNode = ui.namedItem("class");
+    if (!classNode.isNull() && classNode.isElement()) {
+        std::string cn = trim(classNode.toElement().text());
+        if (!cn.empty())
+            m_className = cn;
+    }
+
+    // 根 widget: <ui> 下第一个直接 <widget> 子元素
+    JZDomNodeList children = ui.childNodes();
+    JZDomElement rootWidget;
+    for (int i = 0; i < children.count(); ++i) {
+        JZDomNode n = children.item(i);
+        if (n.isElement() && n.toElement().tagName() == "widget") {
+            rootWidget = n.toElement();
+            break;
+        }
+    }
+    if (rootWidget.isNull()) {
+        m_error = "<ui> 缺少根 <widget>";
+        return false;
+    }
+
+    if (!parseWidget(rootWidget, m_root, "ui/widget"))
+        return false;
+
     m_ok = true;
+    return true;
+}
+
+bool JZJSUiLoader::parseWidget(const JZDomElement& el, JZUiNode& out, const std::string& path)
+{
+    std::string type = el.attribute("class");
+    if (type.empty())
+        type = el.attribute("type");
+    if (type.empty()) {
+        m_error = path + ": <widget> 缺少 class 属性";
+        return false;
+    }
+    out.type = type;
+
+    // id: 优先 name(Qt 习惯), 兼容 id
+    std::string id = el.attribute("name");
+    if (id.empty())
+        id = el.attribute("id");
+    out.id = id;
+
+    out.props = Json::Value(Json::objectValue);
+
+    JZDomNodeList kids = el.childNodes();
+    for (int i = 0; i < kids.count(); ++i) {
+        JZDomNode n = kids.item(i);
+        if (!n.isElement())
+            continue;
+        JZDomElement e = n.toElement();
+        std::string tag = e.tagName();
+
+        if (tag == "property") {
+            std::string pname = e.attribute("name");
+            if (pname.empty()) {
+                m_error = path + ": <property> 缺少 name 属性";
+                return false;
+            }
+            std::string val;
+            if (e.hasAttribute("value"))
+                val = e.attribute("value");
+            else
+                val = e.text();
+            out.props[pname] = xmlPropToJson(val);
+        } else if (tag == "widget") {
+            JZUiNode child;
+            if (!parseWidget(e, child, path + "/" + type))
+                return false;
+            out.children.push_back(std::move(child));
+        }
+        // 其它子元素(layout/等等)目前忽略
+    }
     return true;
 }
 
@@ -74,61 +224,9 @@ bool JZJSUiLoader::loadFromFile(const std::string& path)
     return load(ss.str());
 }
 
-bool JZJSUiLoader::parseNode(const Json::Value& v, JZUiNode& out, const std::string& path)
-{
-    if (!v.isObject()) {
-        m_error = path + ": 节点必须是对象";
-        return false;
-    }
-
-    // type 必填
-    const Json::Value& type = v["type"];
-    if (!type.isString() || type.asString().empty()) {
-        m_error = path + ": 缺少字符串 type 字段";
-        return false;
-    }
-    out.type = type.asString();
-
-    // id 可选
-    const Json::Value& id = v["id"];
-    if (!id.isNull()) {
-        if (!id.isString()) {
-            m_error = path + ": id 必须是字符串";
-            return false;
-        }
-        out.id = id.asString();
-    }
-
-    // props 可选
-    const Json::Value& props = v["props"];
-    if (!props.isNull()) {
-        if (!props.isObject()) {
-            m_error = path + ": props 必须是对象";
-            return false;
-        }
-        out.props = props;
-    } else {
-        out.props = Json::Value(Json::objectValue);
-    }
-
-    // children 可选
-    const Json::Value& children = v["children"];
-    if (!children.isNull()) {
-        if (!children.isArray()) {
-            m_error = path + ": children 必须是数组";
-            return false;
-        }
-        out.children.reserve(children.size());
-        for (Json::ArrayIndex i = 0; i < children.size(); ++i) {
-            JZUiNode child;
-            std::string cpath = path + ".children[" + std::to_string(i) + "]";
-            if (!parseNode(children[i], child, cpath))
-                return false;
-            out.children.push_back(std::move(child));
-        }
-    }
-    return true;
-}
+// ---------------------------------------------------------------------------
+// 遍历 / 查询 / 序列化
+// ---------------------------------------------------------------------------
 
 void JZJSUiLoader::traverse(const VisitFn& fn) const
 {
@@ -175,4 +273,197 @@ void JZJSUiLoader::writeNode(const JZUiNode& node, Json::Value& out) const
         }
         out["children"] = arr;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 生成 @jz/widget 风格的 TypeScript 类(Qt uic 风格)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 把 JSON 值序列化成 TS 字面量。
+std::string tsLiteral(const Json::Value& v)
+{
+    if (v.isNull())
+        return "null";
+    if (v.isBool())
+        return v.asBool() ? "true" : "false";
+    if (v.isInt())
+        return std::to_string(v.asInt());
+    if (v.isUInt())
+        return std::to_string(v.asUInt());
+    if (v.isInt64())
+        return std::to_string(v.asInt64());
+    if (v.isUInt64())
+        return std::to_string(v.asUInt64());
+    if (v.isDouble()) {
+        double d = v.asDouble();
+        if (d == std::floor(d) && !std::isinf(d) && !std::isnan(d)) {
+            std::ostringstream oss;
+            oss << (long long)d;
+            return oss.str();
+        }
+        std::ostringstream oss;
+        oss << std::setprecision(15) << d;
+        return oss.str();
+    }
+    if (v.isString()) {
+        std::string out = "\"";
+        const std::string& s = v.asString();
+        for (char c : s) {
+            switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if ((unsigned char)c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\x%02x", (unsigned char)c);
+                    out += buf;
+                } else {
+                    out += c;
+                }
+            }
+        }
+        out += "\"";
+        return out;
+    }
+    if (v.isArray()) {
+        std::string out = "[";
+        for (Json::ArrayIndex i = 0; i < v.size(); ++i) {
+            if (i) out += ", ";
+            out += tsLiteral(v[i]);
+        }
+        out += "]";
+        return out;
+    }
+    if (v.isObject()) {
+        std::string out = "{";
+        bool first = true;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!first) out += ", ";
+            first = false;
+            out += tsLiteral(it.name()) + ": " + tsLiteral(*it);
+        }
+        out += "}";
+        return out;
+    }
+    return "null";
+}
+
+// 把任意 id 规整成合法 TS 标识符。
+std::string sanitizeId(const std::string& id)
+{
+    std::string s;
+    for (char c : id) {
+        if (std::isalnum((unsigned char)c) || c == '_')
+            s += c;
+        else
+            s += '_';
+    }
+    if (!s.empty() && std::isdigit((unsigned char)s[0]))
+        s = "_" + s;
+    return s;
+}
+
+// 递归生成 setupUi() 方法体(平坦语句), 同时收集带 id 的字段名。
+struct TsGen {
+    std::string out;
+    int counter = 0;
+    std::set<std::string> idFields;
+
+    // 生成该节点的创建 + 属性设置, 返回引用该节点的表达式(供父节点 append)。
+    std::string genNode(const JZUiNode& node, int depth)
+    {
+        std::string indent(depth * 2, ' ');
+        std::string lhs;
+        if (!node.id.empty()) {
+            lhs = "this." + sanitizeId(node.id);
+            idFields.insert(sanitizeId(node.id));
+            out += indent + lhs + " = new Widget(" + tsLiteral(node.type) + ");\n";
+        } else {
+            std::string var = "_w" + std::to_string(counter++);
+            lhs = var;
+            out += indent + "const " + var + " = new Widget(" + tsLiteral(node.type) + ");\n";
+        }
+
+        if (!node.id.empty())
+            out += indent + lhs + ".setId(" + tsLiteral(node.id) + ");\n";
+
+        const Json::Value& props = node.props;
+        if (props.isObject()) {
+            for (auto it = props.begin(); it != props.end(); ++it) {
+                const std::string key = it.name();
+                const Json::Value& val = *it;
+                if (key == "geometry" && val.isArray() && val.size() == 4) {
+                    out += indent + lhs + ".setGeometry("
+                        + tsLiteral(val[0]) + ", " + tsLiteral(val[1]) + ", "
+                        + tsLiteral(val[2]) + ", " + tsLiteral(val[3]) + ");\n";
+                } else if (key == "visible" && val.isBool()) {
+                    out += indent + lhs + ".setVisible(" + tsLiteral(val) + ");\n";
+                } else if (key == "style" && val.isObject()) {
+                    out += indent + lhs + ".setStyle(" + tsLiteral(val) + ");\n";
+                } else {
+                    out += indent + lhs + ".setProperty("
+                        + tsLiteral(key) + ", " + tsLiteral(val) + ");\n";
+                }
+            }
+        }
+
+        for (const auto& c : node.children) {
+            std::string childExpr = genNode(c, depth);
+            out += indent + lhs + ".append(" + childExpr + ");\n";
+        }
+        return lhs;
+    }
+};
+
+} // namespace
+
+bool JZJSUiLoader::generateTsClass(std::string& outTs,
+                                   const std::string& className,
+                                   const std::string& importPath) const
+{
+    if (!m_ok) {
+        m_error = "未加载 UI 定义(请先 load)";
+        return false;
+    }
+
+    TsGen g;
+    std::string rootExpr = g.genNode(m_root, 2);   // depth 2 = setupUi 方法体内
+    g.out += "    this.root = " + rootExpr + ";\n";
+
+    std::string cls = className.empty() ? m_className : className;
+
+    std::string code;
+    code += "import { Widget } from '" + importPath + "';\n\n";
+    code += "export class " + cls + " {\n";
+    code += "  root: Widget;\n";
+    for (const auto& f : g.idFields) {
+        if (f == "root")
+            continue;   // 避免重复声明
+        code += "  " + f + ": Widget;\n";
+    }
+    code += "\n";
+    code += "  constructor() {\n";
+    code += "    this.setupUi();\n";
+    code += "  }\n\n";
+    code += "  setupUi(): void {\n";
+    code += g.out;
+    code += "  }\n";
+    code += "}\n";
+
+    outTs = code;
+    return true;
+}
+
+std::string JZJSUiLoader::toTsClass(const std::string& className,
+                                    const std::string& importPath) const
+{
+    std::string out;
+    if (generateTsClass(out, className, importPath))
+        return out;
+    return std::string();
 }

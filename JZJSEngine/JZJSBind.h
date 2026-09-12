@@ -110,15 +110,38 @@ void destoryClass(void* ptr)
     delete (T*)ptr;
 }
 
+// 统一包装模型下, ClassPointer<Class> 与 Class 共用同一个 JS 类(typeid(Class)),
+// 因此形参/返回值类型推导时, 把 ClassPointer<Class> 映射成 typeid(Class)(指针/引用再加 "*")。
+template <class T, class Enable = void>
+struct ctypeid_of
+{
+    static std::string get()
+    {
+        std::string base_type = typeid(typename std::remove_pointer<T>::type).name();
+        if (std::is_pointer<T>::value || std::is_reference<T>::value)
+            base_type += "*";
+        return base_type;
+    }
+};
+
+template <class T>
+struct ctypeid_of<T, enable_if_t<is_class_pointer<remove_cvr_t<T>>::value>>
+{
+    static std::string get()
+    {
+        using Class = typename detail::class_pointer_inner<remove_cvr_t<T>>::type;
+        std::string base_type = typeid(Class).name();
+        if (std::is_pointer<T>::value || std::is_reference<T>::value)
+            base_type += "*";
+        return base_type;
+    }
+};
+
 // CFunctionImpl
 template <class T>
 std::string getCTypeid()
 {
-    std::string base_type = typeid(typename std::remove_pointer<T>::type).name();
-    if (std::is_pointer<T>() || std::is_reference<T>())
-        base_type += "*";
-
-    return base_type;
+    return ctypeid_of<T>::get();
 }
 
 template <class type>
@@ -168,7 +191,7 @@ public:
     JSValue dealCall(JSContext* ctx, JSValueConst* argv, std::false_type)
     {
         Return ret = callFunction(ctx, argv, make_index_sequence<sizeof...(Args)>());
-        return toJSValue(ctx, ret);
+        return toJSValue(ctx, std::move(ret));
     }
 
     template <size_t... idx>
@@ -257,8 +280,11 @@ public:
     {
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
-        m_define.create = createClass<Class>;
-        m_define.destory = destoryClass<Class>;
+        // 统一包装模型: 值/引用类对象 opaque 同样存放 ClassPointer<Class>*, 由 JS 管理 wrapper;
+        // 底层对象所有权按 cppOwner 决定(默认 false = JS 拥有并随 GC 释放), 与 ClassPointer 一致。
+        m_define.isPointer = true;
+        m_define.create = []() { return new jsbind::ClassPointer<Class>(new Class(), false); };
+        m_define.destory = [](void* p) { delete (jsbind::ClassPointer<Class>*)p; };
     }
 
     template <typename Return, typename... Args, typename... Extra>

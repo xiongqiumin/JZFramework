@@ -1,10 +1,10 @@
 #ifndef JZ_WIN32_THREAD_H_
 #define JZ_WIN32_THREAD_H_
 
-#include "JZThread.h"
-#include "JZRect.h"
 #include <vector>
 #include <atomic>
+#include "JZThread.h"
+#include "JZRect.h"
 #include "JZWindow.h"
 
 #ifndef WIN32_LEAN_AND_MEAN

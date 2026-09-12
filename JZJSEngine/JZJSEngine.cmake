@@ -22,8 +22,8 @@
 	JZJSModbusModule.cpp
 	JZJSUiLoader.h
 	JZJSUiLoader.cpp
-	JZJSWidgetModule.h
-	JZJSWidgetModule.cpp
+    #JZJSWidgetModule.h
+	#JZJSWidgetModule.cpp
 )
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)

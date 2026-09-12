@@ -6,3 +6,8 @@ target_link_libraries(test_imageio JZFramework)
 add_executable(test_pixmap test_pixmap.cpp)
 target_link_libraries(test_pixmap JZFramework)
 add_test(NAME widget.test_pixmap COMMAND test_pixmap)
+
+# JZPrinter: 离屏 JZPainter 绘制 -> 多页 PDF 导出
+add_executable(test_jzprinter test_jzprinter.cpp)
+target_link_libraries(test_jzprinter JZFramework)
+add_test(NAME widget.test_jzprinter COMMAND test_jzprinter)

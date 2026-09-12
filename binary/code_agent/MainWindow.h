@@ -237,7 +237,7 @@ private:
 
     // 竖向 splitter 的高度分配：输入区保持 m_inputHeight，剩余全给对话区
     void applyEditorSizes();
-    // 首次 resizeEvent 时按 m_navWidth 设置右侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
+    // 首次 resizeEvent 时按 m_navWidth 设置左侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
     void applyNavWidth();
     void resizeEvent(JZResizeEvent* event) override;
 
@@ -260,10 +260,10 @@ private:
     JZMenu*          m_recentMenu = nullptr;   // 文件 → 最近的项目（子菜单）
     JZStackedWidget* m_stack = nullptr;        // 0=欢迎页 1=对话页
     WelcomePage*     m_welcome = nullptr;
-    JZSplitter*      m_splitter = nullptr;     // 对话区 | 右侧导航栏，可拖动调整
+    JZSplitter*      m_splitter = nullptr;     // 左侧导航栏 | 对话区，可拖动调整
     JZSplitter*      m_editorSplitter = nullptr;// 对话区 / 输入区，竖向可拖动
     int              m_inputHeight = 104;      // 输入区高度（拖动后记住）
-    NavPanel*        m_navPanel = nullptr;     // 右侧常驻导航栏(搜索+固定入口+任务列表)
+    NavPanel*        m_navPanel = nullptr;     // 左侧常驻导航栏(搜索+任务列表)
     int              m_navWidth = 260;         // 导航栏宽度(用户拖动后记住)
     bool             m_navInitialSized = false;// 导航栏宽度是否已初始化
     int              m_taskVersion = -1;       // 已渲染的任务列表版本(变化才重建)

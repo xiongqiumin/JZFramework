@@ -643,7 +643,7 @@ void MainWindow::setupUi()
     fileMenu->addAction("退出", [this]() { onExit(); });
     addMenuBar(m_menuBar);
 
-    // 中央区: JZSplitter 分成左右两块 —— 左(任务列表) | 右(工具条 + 聊天视图 + 底部输入框)。
+    // 中央区: JZSplitter 分成左右两块 —— 左(导航栏: 搜索 + 任务列表) | 右(工具条 + 聊天视图 + 底部输入框)。
     // splitter 自行管理子控件几何（不走 m_layout），子控件的父必须就是 splitter。
     JZWidget* central = new JZWidget(this);
     m_splitter = new JZSplitter(JZSplitter::Horizontal, central);
@@ -692,17 +692,18 @@ void MainWindow::setupUi()
     mainLayout->addWidget(m_editorSplitter, 1);
     leftArea->setLayout(mainLayout);
 
-    // 右侧常驻导航栏: 搜索 + 固定功能入口 + 任务列表(关闭工程也常驻, 任务区切到空态)
+    // 左侧常驻导航栏: 搜索 + 任务列表(关闭工程也常驻, 任务区切到空态)。
+    // 工程相关入口(新建/打开/导出/设置)统一放在顶部"文件"菜单里, 面板内不再重复。
     // 不能 setFixedWidth: splitter 靠 setGeometry 摆放子控件, 固定宽会被夹住而拖不动。
     m_navPanel = new NavPanel(m_splitter);
 
-    m_splitter->addWidget(leftArea);
-    m_splitter->addWidget(m_navPanel);
-    // 初始比例用拉伸因子(4:1 ≈ 导航栏 1/5 宽)。注意别在这里 setSizes:
+    m_splitter->addWidget(m_navPanel);   // 左: 导航栏
+    m_splitter->addWidget(leftArea);     // 右: 对话区
+    // 初始比例用拉伸因子(1:4 ≈ 导航栏 1/5 宽)。注意别在这里 setSizes:
     // 此刻 splitter 宽度还是 0, relayout 会把 sizes 全算成 0, 启动后变成左右各一半;
     // 首次 resizeEvent 时再按 m_navWidth 设一次。
-    m_splitter->setStretchFactor(0, 4);
-    m_splitter->setStretchFactor(1, 1);
+    m_splitter->setStretchFactor(0, 1);
+    m_splitter->setStretchFactor(1, 4);
 
     JZHBoxLayout* rootLayout = new JZHBoxLayout(0, 0);
     rootLayout->addWidget(m_splitter, 1);
@@ -719,11 +720,7 @@ void MainWindow::setupUi()
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
-    connect(&m_navPanel->sigNewProject, this, &MainWindow::onNewProject);
-    connect(&m_navPanel->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_navPanel->sigNewTask, this, &MainWindow::onNewTask);
-    connect(&m_navPanel->sigExport, this, &MainWindow::onExport);
-    connect(&m_navPanel->sigSettings, this, &MainWindow::onSettings);
     connect(&m_navPanel->sigTaskActivated, this, &MainWindow::onSwitchTask);
     connect(&m_navPanel->sigDeleteTask, this, &MainWindow::onDeleteTask);
     connect(&m_splitter->sigSplitterMoved, this, &MainWindow::onSplitterMoved);
@@ -1226,8 +1223,8 @@ void MainWindow::updateSplitter()
 void MainWindow::onSplitterMoved(int pos, int handleIndex)
 {
     std::vector<int> sizes = m_splitter->sizes();
-    if (sizes.size() >= 2 && sizes[1] >= 200)
-        m_navWidth = sizes[1];
+    if (!sizes.empty() && sizes[0] >= 200)
+        m_navWidth = sizes[0];
 }
 
 // 竖分割：没打开工程时输入框隐藏，欢迎页占满整个高度
@@ -1258,7 +1255,7 @@ void MainWindow::applyEditorSizes()
     m_editorSplitter->setSizes({total - h, h});
 }
 
-// 首次 resizeEvent 时按 m_navWidth 设置右侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
+// 首次 resizeEvent 时按 m_navWidth 设置左侧导航栏初始宽度(之后由用户拖动决定, 不再覆盖)
 void MainWindow::applyNavWidth()
 {
     if (!m_splitter || !m_navPanel)
@@ -1267,7 +1264,7 @@ void MainWindow::applyNavWidth()
     if (total <= 0)
         return;
     int w = std::min(m_navWidth, std::max(200, total - 400));
-    m_splitter->setSizes({total - w, w});
+    m_splitter->setSizes({w, total - w});
 }
 
 void MainWindow::onEditorSplitterMoved(int pos, int handleIndex)
@@ -1282,7 +1279,7 @@ void MainWindow::resizeEvent(JZResizeEvent* event)
     JZMainWindow::resizeEvent(event);
     // 窗口尺寸变化后重算: 输入区高度跟着 m_inputHeight 走, 不被按比例拉伸
     applyEditorSizes();
-    // 首次有尺寸时按 m_navWidth 给右侧导航栏一个稳定的初始宽度,
+    // 首次有尺寸时按 m_navWidth 给左侧导航栏一个稳定的初始宽度,
     // 之后由用户拖动 + onSplitterMoved 决定, 不再覆盖。
     if (!m_navInitialSized && m_splitter && m_splitter->width() > 0)
     {

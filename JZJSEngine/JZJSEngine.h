@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,7 @@ public:
     // 返回值的 1 元素 vector(返回 undefined 也有 1 个元素)；失败(函数不存在/调用抛异常)
     // 与 eval() 一致走 runtimeError/sigError 错误链，返回空 vector。
     std::vector<JZJSValuePtr> callFunction(const std::string& func, const std::vector<JZJSValuePtr>& params);
+    std::vector<JZJSValuePtr> callMemberFunction(const std::string& func, const JZJSValuePtr &this_val,const std::vector<JZJSValuePtr>& params);
 
     // 调用全局 JS 异步函数(async function / 返回 PromiseLike)。发起后立即返回句柄(>=0)：
     // - promise resolve 后发 sigAsyncResult{ result=句柄, params=resolve 参数 }；
@@ -115,6 +117,9 @@ public:
     bool checkType(JSValue value, int type);
     bool canConvert(int from_type, int to_type);
 
+    // 判断某 JSClassID 是否属于 ClassPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
+    bool isClassPointerClassId(JSClassID id) const;
+
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type);
@@ -133,16 +138,34 @@ public:
         return ::fromJSValue<T>(m_ctx, v);
     }
 
+    // ClassPointer<Class> 形参: 转发为引用(见 jsbind::fromJSValue 重载), 使 clear() 能传播回 JS 对象内同一 wrapper
+    template <class T>
+    std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T&>
+    fromJSValue(JSValue v)
+    {
+        return ::fromJSValue<T>(m_ctx, v);
+    }
+
     template <class T>
     JSValue toJSValue(const T& t)
     {
         return ::toJSValue(m_ctx, t);
     }
 
-    template <class T>
+    // 非指针(对象/值/引用): 按原类型转换为 JS 对象
+    template <class T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
     JZJSValuePtr toValuePtr(const T& t)
     {
         return makeValuePtr(toJSValue(t));
+    }
+
+    // 裸指针: 包装为 ClassPointer。
+    // cppOwner=true (默认): C++ 拥有底层对象, JS 仅持句柄, 不会 delete 外部指针;
+    // cppOwner=false: JS 拥有, JS 对象 GC 时释放底层对象(须由 new 分配, 勿传栈/外部托管指针)。
+    template <class T>
+    JZJSValuePtr toValuePtr(T* ptr, bool cppOwner = true)
+    {
+        return makeValuePtr(toJSValue(jsbind::ClassPointer<T>(ptr, cppOwner)));
     }
 
     JZJSValuePtr makeValuePtr(JSValue value);
@@ -304,6 +327,7 @@ protected:
     std::map<int, TypeInfo> m_typeMap;
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
+    std::set<int> m_classPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 ClassPointer<Class>
 
     int m_timeTaskId;
     std::vector<TimerTask> m_timeTasks;

@@ -2,6 +2,9 @@
 #define JS_TYPE_H_
 
 #include <assert.h>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #include <functional>
 #include <memory>
@@ -10,6 +13,89 @@
 
 #include "json/json.h"
 #include "quickjs/quickjs.h"
+
+class JZJSEngine;   // 前向声明: fromJSValuePointer 统一处理原始类/ClassPointer 时需查询类型集合
+
+// 指针包装类: C++ 侧持有对象的裸指针 + 所有权标记。
+// - cppOwner = false: JS 拥有, JS 对象 GC 时由 ClassPointer 析构释放 m_ptr;
+// - cppOwner = true : C++ 拥有, JS 仅持句柄, 可通过 clear() 释放句柄(底层对象仍由 C++ 管理)。
+// 注意:
+// - 仅允许移动, 禁止拷贝(否则两个 cppOwner=false 的实例会重复 delete 同一对象)。
+// - 从 JS 取回的 ClassPointer 返回的是对 JS 对象内部 wrapper 的引用(见 fromJSValue 重载),
+//   因此 C++ 侧调用 clear() 会直接作用于 JS 持有的那个对象; 之后 JS 再引用即抛异常。
+namespace jsbind
+{
+// 非模板基类: 让检测阶段(不依赖具体 Class)即可判断 ClassPointer 是否已 clear。
+class ClassPointerBase
+{
+public:
+    virtual ~ClassPointerBase() = default;
+    virtual bool isCleared() const = 0;
+    virtual bool cppOwner() const = 0;
+};
+
+template <class Class>
+class ClassPointer : public ClassPointerBase
+{
+public:
+    ClassPointer(Class* ptr, bool cppOwner)
+        : m_ptr(ptr, cppOwner ? &noopDeleter : &defaultDeleter)
+        , m_cppOwner(cppOwner)
+    {
+    }
+
+    Class* get() const { return m_ptr.get(); }
+    bool cppOwner() const override { return m_cppOwner; }
+
+    // clear 把共享句柄置空: 所有副本(含 JS 持有的那个)同步看到 nullptr,
+    // 因此之后 JS 再引用该对象即触发异常(checkType 阶段)。
+    // 仅 C++ 拥有时允许 clear(释放 JS 侧句柄, 底层对象仍由 C++ 管理)。
+    void clear()
+    {
+        assert(m_cppOwner);
+        m_ptr = nullptr;
+    }
+
+    bool isCleared() const override { return m_ptr == nullptr; }
+
+    // 拷贝/移动共享底层对象(shared_ptr), 不会重复释放, 且 clear 通过共享状态传播。
+    ClassPointer(const ClassPointer&) = default;
+    ClassPointer& operator=(const ClassPointer&) = default;
+    ClassPointer(ClassPointer&&) = default;
+    ClassPointer& operator=(ClassPointer&&) = default;
+    ~ClassPointer() = default;
+
+private:
+    static void defaultDeleter(Class* p) { delete p; }
+    static void noopDeleter(Class*) {}
+
+    std::shared_ptr<Class> m_ptr;
+    bool m_cppOwner;
+};
+
+// ClassPointer 萃取: 仅当 T 为 jsbind::ClassPointer<X> 时 type 存在。
+namespace detail
+{
+template <class T>
+struct class_pointer_inner
+{
+};
+template <class Class>
+struct class_pointer_inner<ClassPointer<Class>>
+{
+    using type = Class;
+};
+}  // namespace detail
+
+template <class T>
+struct is_class_pointer : std::false_type
+{
+};
+template <class Class>
+struct is_class_pointer<ClassPointer<Class>> : std::true_type
+{
+};
+}  // namespace jsbind
 
 namespace jstype
 {
@@ -47,12 +133,12 @@ template <typename T, typename U>
 void check_forbid_reference()
 {
     // 1. 判断 T 是否为引用类型
-    constexpr bool is_ref = std::is_reference<T>::Value;
+    constexpr bool is_ref = std::is_reference<T>::value;
     // 2. 剥离引用后，获取原始类型（去 const 可选）
     using raw_type = std::remove_reference_t<T>;
     using unqualified_type = std::remove_const_t<raw_type>;  // 忽略 const 修饰
                                                              // 3. 判断原始类型是否为 U
-    constexpr bool is_target_type = std::is_same<unqualified_type, U>::Value;
+    constexpr bool is_target_type = std::is_same<unqualified_type, U>::value;
 
     // 静态断言：若 T 是引用且原始类型为 U，则编译失败
     static_assert(!(is_ref && is_target_type), "禁止使用的引用类型");
@@ -117,6 +203,7 @@ public:
 
     std::string name;
     std::string ctypeid;
+    bool isPointer = false;   // true: 该类型对应 ClassPointer<Class>, 检测阶段需判断是否已 clear
 
     std::vector<CProperty> propertys;
     std::vector<std::shared_ptr<CFunction>> functions;
@@ -126,13 +213,43 @@ public:
 template <class T>
 T fromJSValue(JSContext* ctx, JSValueConst value);
 
+// T 为裸指针(Class*): 把 JS 对象转成 T*。JS 对象可能是两种表示(与 JZNodeEditor 的统一语义一致):
+//   - 原始类(值/引用)对象: 其 opaque 本身就是真实对象指针, 直接转型返回即可;
+//   - ClassPointer<Class> 包装类: 其 opaque 是 ClassPointer<Class>*, 取 get() (并判断是否已 clear)。
+// null/undefined 映射为空指针, 非对象类型抛 JS TypeError(不静默误转)。
 template <class T>
 T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
 {
-    static_assert(std::is_class<std::remove_pointer_t<T>>(), "only support class pointer");
+    static_assert(std::is_pointer<T>::value, "fromJSValuePointer<std::true_type>: 仅支持指针类型");
+    using Class = std::remove_pointer_t<T>;
 
+    // null / undefined 直接映射为空指针
+    if (JS_IsNull(value) || JS_IsUndefined(value))
+        return nullptr;
+
+    // 必须是对象(原始类或 ClassPointer 包装类); 主动判断 value 是否为对象
     JSClassID class_id;
-    auto ptr = JS_GetAnyOpaque(value, &class_id);
+    void* ptr = JS_GetAnyOpaque(value, &class_id);
+    if (!ptr)
+    {
+        JS_ThrowTypeError(ctx, "参数不是对象(Class)");
+        throw std::runtime_error("fromJSValue: JSValue 不是 Class 对象");
+    }
+
+    // 区分原始类与 ClassPointer 包装类: 后者登记在 m_classPointerTypes 中
+    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (engine && engine->isClassPointerClassId(class_id))
+    {
+        auto cp = (jsbind::ClassPointer<Class>*)ptr;
+        if (cp->isCleared())
+        {
+            JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
+            throw std::runtime_error("ClassPointer 已被 clear");
+        }
+        return cp->get();
+    }
+
+    // 原始类对象: opaque 即真实对象, 直接转型
     return (T)ptr;
 }
 
@@ -155,6 +272,24 @@ T fromJSValueVector(JSContext* ctx, JSValueConst array, std::true_type)
     return vec;
 }
 
+// ClassPointer 在 check type 阶段的 clear 检查(仅对 ClassPointer 类型生效)。
+// 用 tag 派发(C++14 兼容, 不使用 if constexpr): true_type 分支做检查并可能抛 JS 异常。
+template <class T>
+void checkClassPointerCleared(JSContext* ctx, void* ptr, std::true_type)
+{
+    using Inner = typename jsbind::detail::class_pointer_inner<T>::type;
+    auto cp = (jsbind::ClassPointer<Inner>*)ptr;
+    if (cp->get() == nullptr)
+    {
+        JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
+        throw std::runtime_error("ClassPointer 已被 clear");
+    }
+}
+template <class T>
+void checkClassPointerCleared(JSContext*, void*, std::false_type)
+{
+}
+
 template <class T>
 T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
 {
@@ -164,7 +299,29 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
 
     JSClassID class_id;
     auto ptr = JS_GetAnyOpaque(value, &class_id);
-    return *((jstype::remove_cvr_t<T>*)ptr);
+
+    using Base = jstype::remove_cvr_t<T>;
+    checkClassPointerCleared<Base>(ctx, ptr,
+        std::integral_constant<bool, jsbind::is_class_pointer<Base>::value>());
+
+    // ClassPointer<Class> 形参已在上面的 is_class_pointer 分支处理(返回 wrapper 本身)。
+    // 普通 Class 值/引用形参: 统一模型下其 opaque 始终是 ClassPointer<Base>*, 取底层对象;
+    // 值形参返回拷贝, 引用形参返回底层对象的左值引用(生命周期由 JS 对象担保)。
+    if (!jsbind::is_class_pointer<Base>::value)
+    {
+        auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        if (engine && engine->isClassPointerClassId(class_id))
+        {
+            auto cp = (jsbind::ClassPointer<Base>*)ptr;
+            if (cp->get() == nullptr)
+            {
+                JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
+                throw std::runtime_error("Class 已被 clear");
+            }
+            return *cp->get();
+        }
+    }
+    return *((Base*)ptr);
 }
 
 template <class T>
@@ -177,6 +334,27 @@ template <class T>
 T fromJSValue(JSContext* ctx, JSValueConst value)
 {
     return fromJSValuePointer<T>(ctx, value, std::is_pointer<T>());
+}
+
+// ClassPointer<Class> 形参提取: 返回 JS 对象内部存储的 wrapper 引用(而非副本),
+// 使 cppOwner/cleared 等状态修改能传播回同一个 wrapper(clear 传播语义)。
+// 调用方若需独立副本用 auto cp = fromJSValue<ClassPointer<Class>>(...) (拷贝),
+// 若需修改同一 wrapper 用 auto& cp = ... 。
+template <class T>
+std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T&>
+fromJSValue(JSContext* ctx, JSValueConst value)
+{
+    using CP = std::remove_cv_t<std::remove_reference_t<T>>;
+    using Class = typename jsbind::detail::class_pointer_inner<CP>::type;
+
+    JSClassID class_id;
+    void* ptr = JS_GetAnyOpaque(value, &class_id);
+    if (!ptr)
+    {
+        JS_ThrowTypeError(ctx, "参数不是对象(ClassPointer)");
+        throw std::runtime_error("fromJSValue: JSValue 不是 ClassPointer 对象");
+    }
+    return *((jsbind::ClassPointer<Class>*)ptr);
 }
 
 template <>
@@ -199,15 +377,29 @@ Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
 
 // to js
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);
+JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, void* opaque);
 
 template <class T>
 JSValue toJSValue(JSContext* ctx, const T& t);
 
+// ClassPointer: 按值接收并转移所有权到 JS 对象(底层对象随 JS 对象 GC 释放或保留取决于 cppOwner)。
+// 通过移动构造, 调用方的 ClassPointer 被置空, 不存在重复释放。
+template <class Class>
+JSValue toJSValue(JSContext* ctx, jsbind::ClassPointer<Class> t)
+{
+    // 统一包装: ClassPointer<Class> 与 Class 共用同一 JS 类(typeid(Class)), opaque 始终是 ClassPointer<Class>*
+    std::string ctypeid = typeid(Class).name();
+    return createJSValue(ctx, ctypeid, new jsbind::ClassPointer<Class>(std::move(t)));
+}
+
 template <class T>
 JSValue toJSValuePointer(JSContext* ctx, const T& t, std::true_type)
 {
-    assert(0);
-    return JS_UNDEFINED;
+    // C 函数返回裸指针: 包装成 ClassPointer, 默认由 JS 拥有(JS 对象 GC 时释放底层对象)。
+    // 若底层对象由 C++ 持有, 请直接返回 jsbind::ClassPointer<Class>(ptr, true)。
+    static_assert(std::is_pointer<T>::value, "toJSValuePointer: 仅支持指针类型");
+    using Class = std::remove_pointer_t<T>;
+    return toJSValue(ctx, jsbind::ClassPointer<Class>(t, false));
 }
 
 template <class T>
@@ -232,11 +424,12 @@ JSValue toJSValueVector(JSContext* ctx, const T& t, std::false_type)
 
     std::string ctypeid = typeid(base_type).name();
 
+    // 统一包装: 经 create 构造 ClassPointer<base_type> 包装(默认构造底层对象),
+    // 再以赋值写入 t, 与统一前"原位存储"语义一致(仅成员赋值, 不触发拷贝构造)。
     JSValue value = createJSValue(ctx, ctypeid);
     JSClassID class_id;
-    base_type* ptr = (base_type*)JS_GetAnyOpaque(value, &class_id);
-    *ptr = t;
-
+    auto cp = (jsbind::ClassPointer<base_type>*)JS_GetAnyOpaque(value, &class_id);
+    *cp->get() = t;
     return value;
 }
 

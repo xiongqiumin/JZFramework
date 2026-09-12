@@ -8,8 +8,9 @@
 #include "JZDebug.h"
 #include "JZTx.h"
 #include "JZDriver.h"
-#include "JZWindow.h"
+
 #ifdef HAS_JZWidget
+#include "JZWindow.h"
 #include "JZStyleSheetParser.h"
 #endif
 

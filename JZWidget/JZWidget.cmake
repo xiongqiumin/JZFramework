@@ -37,6 +37,8 @@ set(JZ_SOURCES
     JZStylePainter.cpp
     JZPainter.h
     JZPainter.cpp
+    JZPrinter.h
+    JZPrinter.cpp
     JZPainterEvent.h
     JZPainterEvent.cpp
     JZResizeEvent.h

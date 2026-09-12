@@ -151,6 +151,11 @@ public:
     // 启动成功返回 true（前置校验失败返回 false 并填 error）；结果经 sigBuildFinished
     // 通知，或 waitBuildFinished() 同步等待后用 lastBuildOk/lastBuildError 查询。
     bool buildProject(std::string& error);
+
+    // 依据工程内 .ui 文件生成 TypeScript（JZJSUiLoader），产物写入 src/GenerateFiles/，
+    // 由 tsconfig 的 src/**/*.ts 自动纳入编译。打包/发布前自动调用；亦可单独触发。
+    // root 为空时使用当前工作区（m_codeConfig.workspace）。
+    bool generateUi(const std::string& root, std::string& error);
     // 阻塞等待进行中的打包/发布结束（无进行中任务时立即返回）；
     // 收尾（入口校验 + project.json 写入）在本调用返回前完成
     void waitBuildFinished();

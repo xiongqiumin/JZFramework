@@ -428,8 +428,11 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
         auto* cpb = (jsbind::JSPointerBase*)ptr;
         if (cpb->isCleared())
         {
+            // 运行期状态(不是类型不匹配): JS 侧调用已由 JZJSEngine::call()/callAsync 的预检拦下,
+            // 走到这里说明有路径漏校验。断言(fatal) + 返回空指针(与 null/undefined 同语义)。
+            JZ_ASSERT_X(0, "fromJSValue<Class*>: 传入已失效(clear)的包装, 上层应已拦截");
             JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-            throw std::runtime_error("JSRawPointer 已被 clear");
+            return nullptr;
         }
 
         // 统一包装模型: 派生类 JS 对象的 opaque 是 JSRawPointer<Derived>*, 形参可能要 Base*。
@@ -493,8 +496,10 @@ void checkJSRawPointerCleared(JSContext* ctx, void* ptr, std::true_type)
     auto* cpb = (jsbind::JSPointerBase*)ptr;
     if (cpb->isCleared())
     {
+        // 同 fromJSValuePointer: 上层(call/callAsync)已预检, 这里只兜底(断言 fatal, 不再继续取对象)。
+        JZ_ASSERT_X(0, "fromJSValue: 传入已失效(clear)的 JSRawPointer, 上层应已拦截");
         JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-        throw std::runtime_error("JSRawPointer 已被 clear");
+        JZ_UNREACHABLE();
     }
 }
 template <class T>
@@ -527,8 +532,12 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
             auto* cpb = (jsbind::JSPointerBase*)ptr;
             if (cpb->isCleared())
             {
+                // 运行期状态: 上层(call/callAsync)已预检。值/引用返回没有安全的兜底值,
+                // 故断言后直接 JZ_UNREACHABLE(致命), 绝不拿已失效包装取对象。
+                JZ_ASSERT_X(0, "fromJSValue<Class&>: 传入已失效(clear)的包装, 上层应已拦截");
                 JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-                throw std::runtime_error("Class 已被 clear");
+                JZ_UNREACHABLE();
+                return *((Base*)cpb->getRaw());   // 仅为满足签名: 上面已致命, 正常不会执行
             }
 
             // 真实类就是 Base 直接取; 派生类对象走 JS 原型链判断 is-a 后, 单继承下直接把派生指针当基类指针用
@@ -552,8 +561,11 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
                     return *((Base*)obj);
                 }
             }
+            // 类型不匹配属于上层漏校验(call/callAsync 已按参数类型表拦下): 断言 + 兜底(值/引用无安全默认值)。
+            JZ_ASSERT_X(0, "fromJSValue<Class&>: 参数类型不匹配(上层应已校验)");
             JS_ThrowTypeError(ctx, "参数类型不匹配: 期望 %s, 实际 %s", want_cid.c_str(), actual_cid.c_str());
-            throw std::runtime_error("fromJSValue: 类型不兼容(非基类)");
+            JZ_UNREACHABLE();
+            return *((Base*)ptr);   // 仅为满足签名: 上面已致命, 正常不会执行
         }
     }
     return *((Base*)ptr);

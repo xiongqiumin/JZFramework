@@ -10,6 +10,7 @@ JZ_OBJECT_IMPL(JZTableWidget, JZAbstractViewWidget)
 
 // ============================================================================
 // JZTableWidget (owner-draw 虚拟表格, 继承 JZAbstractViewWidget)
+//   - 单元格数据用 unique_ptr 持有(指针语义, 地址稳定; 接口形态对齐 Qt QTableWidget)
 //   - 滚动条: 集成 JZScrollArea 的真实 JZScrollBar (内容双向滚动)
 //   - paintEvent 先画可见表体, 再在顶部叠加冻结表头(水平随滚动同步, 垂直固定)
 // ============================================================================
@@ -28,14 +29,165 @@ void JZTableWidget::invalidateAll()
     update();
 }
 
+// ---- JZTableWidgetItem: 改值并通知所属表格重绘 (在 JZTableWidget 之后定义, 此处类型已完整) ----
+
+void JZTableWidgetItem::setText(const std::string& t)
+{
+    m_text = t;
+    if (m_table)
+        m_table->update();
+}
+
+void JZTableWidgetItem::setIcon(const JZImage& i)
+{
+    m_icon = i;
+    if (m_table)
+        m_table->update();
+}
+
+void JZTableWidgetItem::setData(const JZVariant& d)
+{
+    m_data = d;
+}
+
+// ----------------------------------------------------------------------------
+// 内部: 落位 / 摘除
+// ----------------------------------------------------------------------------
+
+// 摘除(转移所有权, 不删除); 越界或空格返回 nullptr
+std::unique_ptr<JZTableWidgetItem> JZTableWidget::detachAt(int row, int col)
+{
+    if (row < 0 || row >= (int)m_grid.size()) return nullptr;
+    if (col < 0 || col >= (int)m_grid[row].size()) return nullptr;
+
+    std::unique_ptr<JZTableWidgetItem> item = std::move(m_grid[row][col]);
+    if (item)
+    {
+        item->m_table = nullptr;
+        item->m_row = -1;
+        item->m_col = -1;
+    }
+    return item;
+}
+
+// 落位: 顶掉该格原有 item(自动 delete); item 为 nullptr 表示清空该格
+void JZTableWidget::placeItem(int row, int col, std::unique_ptr<JZTableWidgetItem> item)
+{
+    if (row < 0 || row >= (int)m_grid.size()) return;
+    if (col < 0 || col >= (int)m_grid[row].size()) return;
+
+    // 同一个 item 之前挂在别处: 先把旧格子的持有权放开(所有权已在 item 手里, 不能重复释放)
+    if (item && item->m_table == this && (item->m_row != row || item->m_col != col))
+    {
+        int oldRow = item->m_row;
+        int oldCol = item->m_col;
+        if (oldRow >= 0 && oldRow < (int)m_grid.size() &&
+            oldCol >= 0 && oldCol < (int)m_grid[oldRow].size() &&
+            m_grid[oldRow][oldCol].get() == item.get())
+            m_grid[oldRow][oldCol].release();
+    }
+
+    m_grid[row][col] = std::move(item);
+
+    if (m_grid[row][col])
+    {
+        m_grid[row][col]->m_table = this;
+        m_grid[row][col]->m_row = row;
+        m_grid[row][col]->m_col = col;
+    }
+}
+
+// 行列变动后刷新各 item 记录的行列号
+void JZTableWidget::reindexItems()
+{
+    for (int r = 0; r < (int)m_grid.size(); r++)
+    {
+        for (int c = 0; c < (int)m_grid[r].size(); c++)
+        {
+            if (!m_grid[r][c])
+                continue;
+            m_grid[r][c]->m_row = r;
+            m_grid[r][c]->m_col = c;
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 数据模型
+// ----------------------------------------------------------------------------
+
+void JZTableWidget::setItem(int row, int col, JZTableWidgetItem* item)
+{
+    if (row < 0 || row >= (int)m_grid.size()) return;
+    if (col < 0 || col >= m_cols) return;
+
+    placeItem(row, col, std::unique_ptr<JZTableWidgetItem>(item));
+    invalidateAll();
+}
+
+JZTableWidgetItem* JZTableWidget::item(int row, int col) const
+{
+    if (row < 0 || row >= (int)m_grid.size()) return nullptr;
+    if (col < 0 || col >= (int)m_grid[row].size()) return nullptr;
+    return m_grid[row][col].get();
+}
+
+JZTableWidgetItem* JZTableWidget::takeItem(int row, int col)
+{
+    std::unique_ptr<JZTableWidgetItem> item = detachAt(row, col);
+    if (!item)
+        return nullptr;
+
+    invalidateAll();
+    return item.release();      // 所有权交回调用方
+}
+
+int JZTableWidget::row(const JZTableWidgetItem* item) const
+{
+    if (!item) return -1;
+    for (int r = 0; r < (int)m_grid.size(); r++)
+    {
+        for (int c = 0; c < (int)m_grid[r].size(); c++)
+        {
+            if (m_grid[r][c].get() == item)
+                return r;
+        }
+    }
+    return -1;
+}
+
+int JZTableWidget::column(const JZTableWidgetItem* item) const
+{
+    if (!item) return -1;
+    for (int r = 0; r < (int)m_grid.size(); r++)
+    {
+        for (int c = 0; c < (int)m_grid[r].size(); c++)
+        {
+            if (m_grid[r][c].get() == item)
+                return c;
+        }
+    }
+    return -1;
+}
+
 void JZTableWidget::setColumnCount(int cols)
 {
     if (cols < 0) cols = 0;
+
     m_cols = cols;
     for (auto& row : m_grid)
-        row.resize(cols);
-    m_colWidths.assign(cols, 80);
-    m_colOffsets.assign(cols, 0);
+        row.resize(cols);           // 收缩时被裁掉的 item 随 unique_ptr 一起释放
+
+    // 已有列的宽度保留, 新增列给默认宽度
+    m_colWidths.resize(cols, 80);
+    m_colOffsets.resize(cols, 0);
+
+    if (m_curCol >= cols)
+    {
+        m_curRow = -1;
+        m_curCol = -1;
+    }
+
     updateContentSize();
     invalidateAll();
 }
@@ -48,9 +200,18 @@ int JZTableWidget::columnCount() const
 void JZTableWidget::setRowCount(int rows)
 {
     if (rows < 0) rows = 0;
-    m_grid.resize(rows, std::vector<JZTableWidgetItem>(m_cols));
-    m_curRow = -1;
-    m_curCol = -1;
+
+    int old = (int)m_grid.size();
+    m_grid.resize(rows);                        // 收缩时被删的行连同 item 一起释放
+    for (int r = old; r < rows; r++)
+        m_grid[r].resize(m_cols);               // 新增行: m_cols 个空单元格(unique_ptr 默认 nullptr)
+
+    if (m_curRow >= rows)
+    {
+        m_curRow = -1;
+        m_curCol = -1;
+    }
+
     updateContentSize();
     invalidateAll();
 }
@@ -60,38 +221,147 @@ int JZTableWidget::rowCount() const
     return (int)m_grid.size();
 }
 
-void JZTableWidget::setItem(int row, int col, const JZTableWidgetItem& item)
+void JZTableWidget::insertRow(int row)
 {
-    if (row < 0 || row >= (int)m_grid.size()) return;
-    if (col < 0 || col >= m_cols) return;
-    JZTableWidgetItem it = item;
-    it.widget = this;
-    m_grid[row][col] = std::move(it);
+    if (row < 0 || row > (int)m_grid.size()) return;
+
+    m_grid.insert(m_grid.begin() + row,
+                  std::vector<std::unique_ptr<JZTableWidgetItem>>(m_cols));
+
+    if (m_curRow >= row)
+        m_curRow++;                             // 选中行顺延, 仍指向同一行数据
+
+    reindexItems();
+    updateContentSize();
     invalidateAll();
 }
 
-const JZTableWidgetItem& JZTableWidget::item(int row, int col) const
+void JZTableWidget::removeRow(int row)
 {
-    static JZTableWidgetItem s_empty;
-    if (row < 0 || row >= (int)m_grid.size()) return s_empty;
-    if (col < 0 || col >= m_cols) return s_empty;
-    return m_grid[row][col];
+    if (row < 0 || row >= (int)m_grid.size()) return;
+
+    m_grid.erase(m_grid.begin() + row);         // 该行 item 随之释放
+
+    if (m_curRow == row)
+    {
+        m_curRow = -1;
+        m_curCol = -1;
+    }
+    else if (m_curRow > row)
+    {
+        m_curRow--;
+    }
+
+    reindexItems();
+    updateContentSize();
+    invalidateAll();
+}
+
+void JZTableWidget::insertColumn(int col)
+{
+    if (col < 0 || col > m_cols) return;
+
+    for (auto& row : m_grid)
+        row.insert(row.begin() + col, std::unique_ptr<JZTableWidgetItem>());
+
+    m_cols++;
+    m_colWidths.insert(m_colWidths.begin() + col, 80);
+    m_colOffsets.insert(m_colOffsets.begin() + col, 0);
+
+    if (m_curCol >= col)
+        m_curCol++;
+
+    reindexItems();
+    updateContentSize();
+    invalidateAll();
+}
+
+void JZTableWidget::removeColumn(int col)
+{
+    if (col < 0 || col >= m_cols) return;
+
+    for (auto& row : m_grid)
+    {
+        if (col < (int)row.size())
+            row.erase(row.begin() + col);       // 该列 item 随之释放
+    }
+
+    m_cols--;
+    if (col < (int)m_colWidths.size())
+        m_colWidths.erase(m_colWidths.begin() + col);
+    if (col < (int)m_colOffsets.size())
+        m_colOffsets.erase(m_colOffsets.begin() + col);
+
+    if (m_curCol == col)
+    {
+        m_curRow = -1;
+        m_curCol = -1;
+    }
+    else if (m_curCol > col)
+    {
+        m_curCol--;
+    }
+
+    reindexItems();
+    updateContentSize();
+    invalidateAll();
+}
+
+void JZTableWidget::clearContents()
+{
+    for (auto& row : m_grid)
+    {
+        for (auto& cell : row)
+            cell.reset();
+    }
+
+    m_curRow = -1;
+    m_curCol = -1;
+    invalidateAll();
+}
+
+void JZTableWidget::clear()
+{
+    clearContents();
+    m_headerLabels.clear();
+    invalidateAll();
+}
+
+void JZTableWidget::setItemText(int row, int col, const std::string& text)
+{
+    if (row < 0 || row >= (int)m_grid.size()) return;
+    if (col < 0 || col >= m_cols) return;
+
+    JZTableWidgetItem* it = m_grid[row][col].get();
+    if (it)
+    {
+        it->setText(text);      // item 自己通知重绘
+        return;
+    }
+
+    placeItem(row, col, std::unique_ptr<JZTableWidgetItem>(new JZTableWidgetItem(text)));
+    invalidateAll();
+}
+
+std::string JZTableWidget::itemText(int row, int col) const
+{
+    JZTableWidgetItem* it = item(row, col);
+    return it ? it->text() : std::string();
 }
 
 void JZTableWidget::setCellValue(int row, int col, const std::string& text)
 {
-    JZTableWidgetItem it;
-    it.widget = this;
-    it.text = text;
-    setItem(row, col, it);
+    setItemText(row, col, text);
 }
 
 std::string JZTableWidget::cellValue(int row, int col) const
 {
-    if (row < 0 || row >= (int)m_grid.size() || col < 0 || col >= m_cols)
-        return {};
-    return m_grid[row][col].text;
+    return itemText(row, col);
 }
+
+// ----------------------------------------------------------------------------
+// 视图
+// ----------------------------------------------------------------------------
 
 void JZTableWidget::setColumnWidth(int col, int w)
 {
@@ -131,6 +401,10 @@ void JZTableWidget::setItemPaint(PaintFn fn)
     invalidateAll();
 }
 
+// ----------------------------------------------------------------------------
+// 选择
+// ----------------------------------------------------------------------------
+
 void JZTableWidget::setCurrentCell(int row, int col)
 {
     if (row < 0 || row >= (int)m_grid.size() || col < 0 || col >= m_cols)
@@ -153,6 +427,39 @@ int JZTableWidget::currentRow() const
 int JZTableWidget::currentColumn() const
 {
     return m_curCol;
+}
+
+JZTableWidgetItem* JZTableWidget::currentItem() const
+{
+    return item(m_curRow, m_curCol);
+}
+
+void JZTableWidget::setCurrentItem(JZTableWidgetItem* item, bool emitSignal)
+{
+    if (!item)
+    {
+        m_curRow = -1;      // 传 nullptr = 清空选择(与 Qt 一致)
+        m_curCol = -1;
+        invalidateAll();
+        return;
+    }
+
+    int r = row(item);
+    int c = column(item);
+    if (r < 0 || c < 0)
+        return;             // 该 item 不在本表
+
+    if (emitSignal)
+    {
+        setCurrentCell(r, c);
+        return;
+    }
+
+    if (r == m_curRow && c == m_curCol)
+        return;
+    m_curRow = r;
+    m_curCol = c;
+    invalidateAll();
 }
 
 // ----------------------------------------------------------------------------
@@ -182,9 +489,9 @@ int JZTableWidget::totalWidth() const
 void JZTableWidget::updateContentSize()
 {
     if (m_cols != (int)m_colWidths.size())
-        m_colWidths.assign(m_cols, 80);
+        m_colWidths.resize(m_cols, 80);
     if (m_cols != (int)m_colOffsets.size())
-        m_colOffsets.assign(m_cols, 0);
+        m_colOffsets.resize(m_cols, 0);
 
     int x = 0;
     for (int i = 0; i < m_cols; i++) {
@@ -205,19 +512,22 @@ void JZTableWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidget
         p.fillRect(rect.x(), rect.y(), rect.width(), rect.height(), JZColor(0x33, 0x66, 0xcc));
     // 未选中: 不填充, 透出白底, 黑字
 
-    int iconSize = 16;
-    int textX = rect.x() + 4;
-    if (!item->icon.isNull()) {
-        int ix = rect.x() + 4;
-        int iy = rect.y() + (rect.height() - iconSize) / 2;
-        p.drawImage(item->icon, ix, iy, iconSize, iconSize);
-        textX = ix + iconSize + 4;
-    }
+    if (item)
+    {
+        int iconSize = 16;
+        int textX = rect.x() + 4;
+        if (!item->icon().isNull()) {
+            int ix = rect.x() + 4;
+            int iy = rect.y() + (rect.height() - iconSize) / 2;
+            p.drawImage(item->icon(), ix, iy, iconSize, iconSize);
+            textX = ix + iconSize + 4;
+        }
 
-    JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
-    JZFont font(13); p.setFont(font);
-    int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
-    p.drawText(textX, ty, item->text.c_str());
+        JZBrush brush; brush.setColor(sel ? JZColor::White : JZColor::Black); p.setBrush(brush);
+        JZFont font(13); p.setFont(font);
+        int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
+        p.drawText(textX, ty, item->text().c_str());
+    }
 
     // 列/行分隔线
     JZPen pen(JZColor(0x44, 0x44, 0x44), 1); p.setPen(pen);
@@ -299,10 +609,12 @@ void JZTableWidget::paintEvent(JZPainterEvent* event)
                 if (cx + m_colWidths[c] < 0 || cx > viewW) continue;
                 if (cy + rh < 0 || cy > viewH) continue;
                 JZRect rect(cx, cy, m_colWidths[c], rh);
+
+                JZTableWidgetItem* cell = m_grid[r][c].get();     // 空单元格为 nullptr
                 if (m_paintFn)
-                    m_paintFn(p, rect, &m_grid[r][c]);
+                    m_paintFn(p, rect, cell);
                 else
-                    defaultPaint(p, rect, &m_grid[r][c], r, c);
+                    defaultPaint(p, rect, cell, r, c);
             }
         }
     }
@@ -320,5 +632,3 @@ void JZTableWidget::showEvent(JZShowEvent* e)
     JZScrollArea::showEvent(e);
     invalidateAll();
 }
-
-

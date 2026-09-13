@@ -35,6 +35,7 @@
 #include "JZComboBox.h"
 #include "JZSpinBox.h"
 #include "JZGroupBox.h"
+#include "JZChart.h"
 #include "JZJSUiLoader.h"
 
 #include <string>
@@ -74,6 +75,72 @@ static JZColor jzParseColor(const std::string& s)
     if (s == "magenta") return JZColor(JZColor::Magenta);
     if (s == "transparent") return JZColor(JZColor::Transparent);
     return JZColor(0, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// JS 数组形参 -> std::vector(供 JZChart 这类"数据用数组传入"的接口)
+//
+// 为什么这些接口用 JSValue 形参而不是直接写 vector 形参:
+//   形参类型校验走 JZJSEngine::checkFunctionArg, 它按 jsValueType + canConvert 判断;
+//   而 JS 数组的 class id(JS_CLASS_ARRAY)不在引擎类型表里 -> jsValueType 得到 JSType_none,
+//   会被判成"类型不匹配"。故这些形参用 JSValue(JSType_oriValue, 不做类型检查),
+//   再用模块持有的 engine 取 ctx 自行转换 —— 顺带能给出明确的错误信息。
+// 约定: 出错抛异常(由 JZJSEngine::call 的 try/catch 转成 JS 异常)。
+// ---------------------------------------------------------------------------
+
+static std::vector<double> jzJsToDoubleArray(JSContext* ctx, JSValueConst value, const char* what)
+{
+    if (!JS_IsArray(value))
+        throw std::runtime_error(std::string(what) + ": 需要数字数组");
+
+    return fromJSValue<std::vector<double>>(ctx, value);
+}
+
+static std::vector<std::vector<double>> jzJsToDoubleMatrix(JSContext* ctx, JSValueConst value, const char* what)
+{
+    if (!JS_IsArray(value))
+        throw std::runtime_error(std::string(what) + ": 需要二维数组 [[1,2],[3,4]]");
+
+    std::vector<std::vector<double>> list;
+    int64_t rows = 0;
+    JS_GetLength(ctx, value, &rows);
+    for (int64_t i = 0; i < rows; i++)
+    {
+        JSValue row = JS_GetPropertyInt64(ctx, value, i);
+        if (!JS_IsArray(row))
+        {
+            JS_FreeValue(ctx, row);
+            throw std::runtime_error(std::string(what) + ": 每个序列应是数字数组");
+        }
+        list.push_back(fromJSValue<std::vector<double>>(ctx, row));
+        JS_FreeValue(ctx, row);
+    }
+    return list;
+}
+
+static std::vector<std::string> jzJsToStringArray(JSContext* ctx, JSValueConst value, const char* what)
+{
+    if (!JS_IsArray(value))
+        throw std::runtime_error(std::string(what) + ": 需要字符串数组");
+
+    std::vector<std::string> list;
+    int64_t n = 0;
+    JS_GetLength(ctx, value, &n);
+    for (int64_t i = 0; i < n; i++)
+    {
+        JSValue item = JS_GetPropertyInt64(ctx, value, i);
+        if (!JS_IsString(item))
+        {
+            JS_FreeValue(ctx, item);
+            throw std::runtime_error(std::string(what) + ": 元素必须是字符串");
+        }
+        const char* s = JS_ToCString(ctx, item);
+        list.push_back(s ? s : "");
+        if (s)
+            JS_FreeCString(ctx, s);
+        JS_FreeValue(ctx, item);
+    }
+    return list;
 }
 
 // 新建 JS 对象回写到 JSWidgetClass<W> 包裹对象(m_jsvalue / m_engine),
@@ -329,8 +396,12 @@ void JZJSWidgetModule::registWidgets()
         if (argc >= 4)
         {
             // 构造参数没有参数类型表(call() 的形参校验帮不上), 所以在转换前先校验。
+            // createArgs 约定: 出错"设 JS 异常 + 返回 nullptr"(不抛 C++ 异常)。
             if (!js_check_class_arg<JZWidget>(ctx, argv[3]))
-                throw std::runtime_error("new JZWindow(w, h, title, parent): parent 需要 JZWidget");
+            {
+                JS_ThrowTypeError(ctx, "new JZWindow(w, h, title, parent): parent 需要 JZWidget");
+                return nullptr;
+            }
             parent = fromJSValue<JZWidget*>(ctx, argv[3]);
         }
         return new jsbind::JSRawPointer<JZWindow>(makeWindow(w, h, title, parent), false);
@@ -458,6 +529,83 @@ void JZJSWidgetModule::registWidgets()
     bind_group.def("contentWidget", [](JZGroupBox* w) { return w->contentWidget(); }, jsbind::returnOwnedByCpp);
     bind_group.def("setLayout", [](JZGroupBox* w, JZLayout* l) { w->setLayout(l); });
     m_engine->registClass(bind_group.classDefine());
+
+    // JZChart (图表: 折线 / 柱状 / 饼图)
+    // 与 JZLabel 等自绘控件同样用默认构造: JZChart 的数据模型是值语义的(序列由控件内部的
+    // vector 持有, 没有需要 JS 侧持有/失效的指针), 故不需要 JZJS<Native> 镜像类的那套所有权处理。
+    // 唯一要额外做的是序列读取的**越界校验** —— 基类 series(i) 是 vector[i] 不做检查, JS 传错下标
+    // 不能把进程带走(抛异常, 由 call() 转成 JS 异常)。
+    jsbind::ClassBind<JZChart> bind_chart("JZChart", bind_w);
+    bind_chart.def("setChartType", [](JZChart* c, int type) {
+        if (type < (int)JZChart::LineChart || type > (int)JZChart::PieChart)
+            throw std::runtime_error("JZChart.setChartType: 需要 JZChart.LineChart/BarChart/PieChart");
+        c->setChartType((JZChart::ChartType)type);
+    });
+    bind_chart.def("chartType", [](JZChart* c) { return (int)c->chartType(); });
+    // 颜色参数用 CSS 风格字符串('#rrggbb' / 'red'), 与 JZPainter.setPen/setBrush 一致;
+    // 传空串取默认调色板(与 setData 的自动配色一致)。
+    bind_chart.def("addSeries", [](JZChart* c, const std::string& name, const std::string& color) {
+        JZColor col = color.empty() ? JZChart::paletteColor(c->seriesCount()) : jzParseColor(color);
+        return c->addSeries(name, col);
+    });
+    bind_chart.def("setSeriesData", [this](JZChart* c, int index, JSValue data) {
+        c->setSeriesData(index, jzJsToDoubleArray(m_engine->context(), data, "JZChart.setSeriesData"));
+    });
+    bind_chart.def("setSeriesName", [](JZChart* c, int index, const std::string& name) {
+        c->setSeriesName(index, name);
+    });
+    bind_chart.def("setSeriesColor", [](JZChart* c, int index, const std::string& color) {
+        c->setSeriesColor(index, jzParseColor(color));
+    });
+    bind_chart.def("clearSeries", [](JZChart* c) { c->clearSeries(); });
+    bind_chart.def("seriesCount", [](JZChart* c) { return c->seriesCount(); });
+    bind_chart.def("seriesName", [](JZChart* c, int index) -> std::string {
+        if (index < 0 || index >= c->seriesCount())
+            throw std::runtime_error("JZChart.seriesName: 序列下标越界");
+        return c->series(index).name;
+    });
+    bind_chart.def("seriesColor", [](JZChart* c, int index) -> JZColor {
+        if (index < 0 || index >= c->seriesCount())
+            throw std::runtime_error("JZChart.seriesColor: 序列下标越界");
+        return c->series(index).color;
+    });
+    bind_chart.def("seriesData", [](JZChart* c, int index) -> std::vector<double> {
+        if (index < 0 || index >= c->seriesCount())
+            throw std::runtime_error("JZChart.seriesData: 序列下标越界");
+        return c->series(index).data;
+    });
+    // 一次性设置多条序列: setData([[1,2],[3,4]]) —— 颜色/名称用默认值(独立配色, 名称 "Series N")
+    bind_chart.def("setData", [this](JZChart* c, JSValue data) {
+        c->setData(jzJsToDoubleMatrix(m_engine->context(), data, "JZChart.setData"));
+    });
+    // 分类标签: 折线/柱状的 X 轴标签, 饼图的扇区名称
+    bind_chart.def("setCategories", [this](JZChart* c, JSValue categories) {
+        c->setCategories(jzJsToStringArray(m_engine->context(), categories, "JZChart.setCategories"));
+    });
+    bind_chart.def("categories", [](JZChart* c) { return c->categories(); });   // 值语义: 返回拷贝
+    bind_chart.def("setTitle", [](JZChart* c, const std::string& title) { c->setTitle(title); });
+    bind_chart.def("title", [](JZChart* c) { return c->title(); });
+    bind_chart.def("setShowGrid", [](JZChart* c, bool on) { c->setShowGrid(on); });
+    bind_chart.def("setShowLegend", [](JZChart* c, bool on) { c->setShowLegend(on); });
+    bind_chart.def("setShowAxis", [](JZChart* c, bool on) { c->setShowAxis(on); });
+    bind_chart.def("setShowPoint", [](JZChart* c, bool on) { c->setShowPoint(on); });
+    bind_chart.def("setShowValue", [](JZChart* c, bool on) { c->setShowValue(on); });
+    m_engine->registClass(bind_chart.classDefine());
+
+    // 类型常量挂到构造器上, JS 侧写 JZChart.BarChart(与 C++ 枚举同值)。
+    // 注: classConstructor 返回新引用; JS_SetPropertyStr 会**消费** value(不能再 free)。
+    {
+        int chart_type_id = m_engine->ctypeidToType(typeid(JZChart).name());
+        if (chart_type_id != JSType_none)
+        {
+            JSContext* ctx = m_engine->context();
+            JSValue js_class = m_engine->classConstructor(chart_type_id);
+            JS_SetPropertyStr(ctx, js_class, "LineChart", JS_NewInt32(ctx, (int)JZChart::LineChart));
+            JS_SetPropertyStr(ctx, js_class, "BarChart", JS_NewInt32(ctx, (int)JZChart::BarChart));
+            JS_SetPropertyStr(ctx, js_class, "PieChart", JS_NewInt32(ctx, (int)JZChart::PieChart));
+            JS_FreeValue(ctx, js_class);
+        }
+    }
 
     // 布局基类 (抽象, 用默认构造返回 VBoxLayout 实例)
     jsbind::ClassBind<JZLayout> bind_layout("JZLayout");

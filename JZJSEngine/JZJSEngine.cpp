@@ -113,6 +113,25 @@ public:
         return JS_UNDEFINED;
     }
 
+    // console.assert(cond, ...msg) —— 对齐 Node: 断言失败只打印, **不抛异常**。
+    // (Qt->JS 的移植代码把 Q_ASSERT(...) 一律译成 console.assert(...), 若在这里抛异常
+    //  会把"夹带断言检查的正常流程"整体炸掉, 与 Node/浏览器的语义也不一致。)
+    static JSValue js_console_assert(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+    {
+        if (argc >= 1)
+        {
+            int ok = JS_ToBool(ctx, argv[0]);
+            if (ok > 0)
+                return JS_UNDEFINED;
+            if (ok < 0)
+                JS_FreeValue(ctx, JS_GetException(ctx));   // 取值本身出错: 视为断言失败并继续
+        }
+
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        engine->print(this_val, argc, argv);
+        return JS_UNDEFINED;
+    }
+
     static JSValue js_fs_readString(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
@@ -533,9 +552,11 @@ void JZJSEngine::registConsole()
     JSValue log_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "log", 1);
     JSValue error_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "error", 1);
     JSValue warn_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "warn", 1);
+    JSValue assert_func = JS_NewCFunction(m_ctx, JSInter::js_console_assert, "assert", 1);
     JS_SetPropertyStr(m_ctx, console, "log", log_func);
     JS_SetPropertyStr(m_ctx, console, "error", error_func);
     JS_SetPropertyStr(m_ctx, console, "warn", warn_func);
+    JS_SetPropertyStr(m_ctx, console, "assert", assert_func);
     JS_SetPropertyStr(m_ctx, m_global, "console", console);
 
     // process
@@ -1252,6 +1273,15 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
 
 JSValue JZJSEngine::createValue(int type, void* ptr)
 {
+    // createArgs 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
+    // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
+    // 没挂异常却返回空 = createArgs 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
+    if (!ptr)
+    {
+        JZ_ASSERT_X(JS_HasException(m_ctx), "createValue: createArgs 返回空指针但没有设置 JS 异常");
+        return JS_EXCEPTION;
+    }
+
     JSClassID js_class_id = typeToJSType(type);
 
     JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
@@ -1390,6 +1420,51 @@ static bool isJSRawPointerCleared(JSContext* ctx, JSValueConst value)
     return ((jsbind::JSPointerBase*)ptr)->isCleared();
 }
 
+// 单个形参的转换前校验(同步 / 异步共用): 类型 + JSRawPointer 精确类 + 是否已 clear。
+// 校验通过后 fromJSValue 内部的类型/失效分支就只剩 JZ_ASSERT 兜底(属于上层漏校验)。
+bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValueConst value)
+{
+    int arg_type = param.type;
+    if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
+        arg_type = ctypeidToType(param.ctypeid);
+    // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
+    if (arg_type == JSType_oriValue)
+        return true;
+
+    int js_type = jsValueType(value);
+    if (param.exactClass)
+    {
+        // JSRawPointer<Class> 形参要的是"JS 对象内部那个包装的引用"(setCppOwner / clear 要靠它传播),
+        // 派生类对象的包装是 JSRawPointer<Derived>, 共享不到 -> 只接受精确类。
+        if (js_type != arg_type)
+        {
+            string need_type = typeName(arg_type);
+            string input_type = typeName(js_type);
+            std::string error = "参数错误:参数" + to_string(index) + "需要精确类型" + need_type +
+                                "(共享包装引用形参不支持派生类), 输入是" + input_type;
+            JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+            return false;
+        }
+    }
+    else if (js_type != arg_type && !canConvert(js_type, arg_type))
+    {
+        string input_type = typeName(js_type);
+        string need_type = typeName(arg_type);
+        std::string error = "参数错误:参数" + to_string(index) + "需要类型" + need_type + "，输入是" + input_type;
+        JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+        return false;
+    }
+
+    // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常(不落到 fromJSValue)
+    if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, value))
+    {
+        std::string error = "参数错误:参数" + to_string(index) + "的指针已被释放(clear)，无法访问";
+        JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+        return false;
+    }
+    return true;
+}
+
 JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
 {
     CFunction* func = m_funcList[magic].get();
@@ -1401,47 +1476,10 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
 
     for (int i = 0; i < (int)func->params.size(); i++)
     {
-        const CFunctionParam& param = func->params[i];
-        int arg_type = param.type;
-        if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
-            arg_type = ctypeidToType(param.ctypeid);
-        // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
-        if (arg_type == JSType_oriValue)
-            continue;
-
-        int js_type = jsValueType(argv[i]);
-        if (param.exactClass)
-        {
-            // JSRawPointer<Class> 形参要的是"JS 对象内部那个包装的引用"(setCppOwner / clear 要靠它传播),
-            // 派生类对象的包装是 JSRawPointer<Derived>, 共享不到 -> 只接受精确类。
-            // 这里拦下并给出明确错误, 免得底层 fromJSValue 只剩断言兜底。
-            if (js_type != arg_type)
-            {
-                string need_type = typeName(arg_type);
-                string input_type = typeName(js_type);
-                std::string error = "参数错误:参数" + to_string(i) + "需要精确类型" + need_type +
-                                    "(共享包装引用形参不支持派生类), 输入是" + input_type;
-                return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-            }
-        }
-        else if (js_type != arg_type && !canConvert(js_type, arg_type))
-        {
-            string input_type = typeName(js_type);
-            string need_type = typeName(arg_type);
-            std::string error = "参数错误:参数" + to_string(i) + "需要类型" + need_type + "，输入是" + input_type;
-            return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-        }
-
-        // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
-        if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, argv[i]))
-        {
-            std::string error = "参数错误:参数" + to_string(i) + "的指针已被释放(clear)，无法访问";
-            return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-        }
+        if (!checkFunctionArg(func->params[i], i, argv[i]))
+            return JS_EXCEPTION;
     }
 
-    // fromJSValue 在转换 JSRawPointer 时发现已被 clear 会先 JS_ThrowTypeError 再抛 C++ 异常,
-    // 这里捕获后: 若已设置 pending 异常(类型错误)直接返回 JS_EXCEPTION, 否则包成 InternalError。
     try
     {
         return func->call(m_ctx, argv);
@@ -1461,30 +1499,12 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
         return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
     }
 
+    // 与同步 call 用同一套校验(含 JSRawPointer 形参的精确类检查) —— 之前这里漏了精确类那条,
+    // 会让派生类对象落到 fromJSValue 的断言上。
     for (int i = 0; i < argc; i++)
     {
-        int arg_type = func->params[i + 1].type;
-        if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
-            arg_type = ctypeidToType(func->params[i + 1].ctypeid);
-        // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
-        if (arg_type == JSType_oriValue)
-            continue;
-
-        int js_type = jsValueType(argv[i]);
-        if (js_type != arg_type && !canConvert(js_type, arg_type))
-        {
-            string input_type = typeName(js_type);
-            string need_type = typeName(arg_type);
-            std::string error = "参数错误:参数" + to_string(i) + "需要类型" + need_type + "，输入是" + input_type;
-            return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-        }
-
-        // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
-        if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, argv[i]))
-        {
-            std::string error = "参数错误:参数" + to_string(i) + "的指针已被释放(clear)，无法访问";
-            return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-        }
+        if (!checkFunctionArg(func->params[i + 1], i, argv[i]))
+            return JS_EXCEPTION;
     }
 
     int promise_handle = m_promiseTaskId++;

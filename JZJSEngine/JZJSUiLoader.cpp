@@ -21,7 +21,7 @@ static const std::vector<std::string>& builtinKnownTypes()
 {
     static const std::vector<std::string> types = {
         "Window", "MainWindow", "Dialog", "Canvas",
-        "PushButton", "Label", "ImageLabel",
+        "PushButton", "Label", "ImageLabel", "Chart",
         "LineEdit", "TextEdit", "AbstractTextEdit",
         "CheckBox", "RadioButton", "Switch", "ComboBox",
         "ListWidget", "TreeWidget", "TableWidget",
@@ -497,6 +497,7 @@ const std::map<std::string, std::string>& uiClassMap()
         { "ProgressBar",  "JZProgressBar" },
         { "SpinBox",      "JZSpinBox" },
         { "GroupBox",     "JZGroupBox" },
+        { "Chart",        "JZChart" },
         { "Layout",       "JZLayout" },
         { "VBoxLayout",   "JZVBoxLayout" },
         { "HBoxLayout",   "JZHBoxLayout" },
@@ -516,7 +517,7 @@ bool uiHasText(const std::string& t) {
            t == "LineEdit" || t == "CheckBox" || t == "RadioButton";
 }
 bool uiHasTitle(const std::string& t) {
-    return uiIsWindow(t) || t == "GroupBox";
+    return uiIsWindow(t) || t == "GroupBox" || t == "Chart";
 }
 
 // 生成脚本片段: 创建节点 + 属性 + 挂载子节点, 返回该节点的局部变量名。

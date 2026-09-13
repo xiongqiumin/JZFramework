@@ -33,6 +33,9 @@
 
 	JSWidget/JZJSListWidget.h
 	JSWidget/JZJSListWidget.cpp
+
+	JSWidget/JZJSTableWidget.h
+	JSWidget/JZJSTableWidget.cpp
 )
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)

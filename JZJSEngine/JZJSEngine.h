@@ -118,6 +118,11 @@ public:
     bool checkType(JSValue value, int type);
     bool canConvert(int from_type, int to_type);
 
+    // 单个形参的转换前校验(同步 call / 异步 callAsync 共用, 避免两条路校验不一致):
+    // 类型(含 JSRawPointer 形参的精确类) + 包装是否已 clear。
+    // 返回 false 表示校验失败, 且已 JS_Throw*(调用方直接返回 JS_EXCEPTION)。
+    bool checkFunctionArg(const CFunctionParam& param, int index, JSValueConst value);
+
     // 判断某 JSClassID 是否属于 JSRawPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
     bool isJSRawPointerClassId(JSClassID id) const;
 

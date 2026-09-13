@@ -2,24 +2,51 @@
 #define JZ_WIDGET_TABLE_H_
 
 #include "JZAbstractViewWidget.h"
+#include "JZSignal.h"
 #include "JZImage.h"
 #include "JZVariant.h"
 #include "JZPainter.h"
 #include "JZRect.h"
 #include <vector>
 #include <string>
+#include <memory>
 #include <functional>
 
 class JZTableWidget;
 
-// 单元格数据(与 LVGL 控件解耦, 虚拟表格只持有数据, 不持有任何 LVGL 对象)
+// 单元格数据(与 LVGL 控件解耦, 虚拟表格只持有数据, 不持有任何 LVGL 对象)。
+// 所有权: 由 JZTableWidget 持有(unique_ptr 存于 m_grid), 外部拿到的是**借用指针** ——
+// 只要不被 takeItem/removeRow/removeColumn/clearContents/表格析构清掉, 地址就稳定
+// (改别的格子不会搬移本格, 这点与 JZListWidgetItem 一致)。
+// 改值用 setText/setIcon/setData: 会通知所属表格重绘。
 class JZTableWidgetItem
 {
 public:
-    JZTableWidget* widget = nullptr;   // 所属表格(由 setItem 自动设置)
-    JZImage icon;                      // 图标(可为空)
-    std::string text;                  // 文本
-    JZVariant data;                    // 用户自定义数据
+    JZTableWidgetItem() {}
+    explicit JZTableWidgetItem(const std::string& text) : m_text(text) {}
+
+    // 所属表格与所在位置(由 setItem 自动设置; 被摘除后 table() 为 nullptr、行列号为 -1)
+    JZTableWidget* table() const { return m_table; }
+    int row() const { return m_row; }
+    int column() const { return m_col; }
+
+    const std::string& text() const { return m_text; }
+    const JZImage& icon() const { return m_icon; }
+    const JZVariant& data() const { return m_data; }
+
+    void setText(const std::string& t);
+    void setIcon(const JZImage& i);
+    void setData(const JZVariant& d);
+
+private:
+    friend class JZTableWidget;   // 表格负责设置归属/位置, 并直接读写内部状态
+
+    JZTableWidget* m_table = nullptr;
+    int m_row = -1;
+    int m_col = -1;
+    JZImage m_icon;
+    std::string m_text;
+    JZVariant m_data;
 };
 
 // 虚拟表格(owner-draw): 仅绘制当前可见区域的单元格, 通过 JZPainter 直接画到画布上,
@@ -29,23 +56,41 @@ class JZTableWidget : public JZAbstractViewWidget
     JZ_OBJECT_DECLARE(JZTableWidget)
 
 public:
-    // 自定义绘图函数: painter 为画布, rect 为单元格在视口中的矩形, item 为数据
+    // 自定义绘图函数: painter 为画布, rect 为单元格在视口中的矩形, item 为数据(空单元格为 nullptr)
     using PaintFn = std::function<void(JZPainter& painter, const JZRect& rect, JZTableWidgetItem* item)>;
 
     explicit JZTableWidget(JZWidget* parent = nullptr);
     ~JZTableWidget();
 
-    // ---- 数据模型 ----
+    // ---- 数据模型 (接口形态与 Qt QTableWidget 对齐) ----
+    // 单元格对象由调用方 new 并交给表格**接管所有权**(/Transfer/); 表格不返回句柄,
+    // 需要时用 item(row,col) 取回(借用)。空单元格 = nullptr(Qt 语义)。
+    void setItem(int row, int col, JZTableWidgetItem* item);   // 接管; 传 nullptr 清空该格  (Qt: setItem)
+    JZTableWidgetItem* item(int row, int col) const;           // 越界或空单元格返回 nullptr   (Qt: item)
+    JZTableWidgetItem* takeItem(int row, int col);             // 摘除并交回所有权            (Qt: takeItem)
+
+    void setRowCount(int rows);                                // 收缩时多余的行连同 item 一起删
+    int rowCount() const;
     void setColumnCount(int cols);
     int columnCount() const;
-    void setRowCount(int rows);
-    int rowCount() const;
 
-    void setItem(int row, int col, const JZTableWidgetItem& item);
-    const JZTableWidgetItem& item(int row, int col) const;
+    void insertRow(int row);                                   // 插入空行(item 行号顺延)
+    void removeRow(int row);                                   // 删除整行(含其 item)
+    void insertColumn(int col);
+    void removeColumn(int col);
 
-    void setCellValue(int row, int col, const std::string& text);
-    std::string cellValue(int row, int col) const;
+    void clearContents();                                      // 删除全部 item       (Qt: clearContents)
+    void clear();                                              // 清 item + 表头标签  (Qt: clear)
+
+    // 查询
+    int row(const JZTableWidgetItem* item) const;              // 不在本表返回 -1   (Qt: row(item))
+    int column(const JZTableWidgetItem* item) const;           //                  (Qt: column(item))
+
+    // 便捷值访问(等价 item(row,col)->text(): 写时自动建 item, 读时无单元格返回空串)
+    void setItemText(int row, int col, const std::string& text);
+    std::string itemText(int row, int col) const;
+    void setCellValue(int row, int col, const std::string& text);   // 兼容保留, 同 setItemText
+    std::string cellValue(int row, int col) const;                  // 兼容保留, 同 itemText
 
     // ---- 视图 ----
     void setColumnWidth(int col, int w);
@@ -61,6 +106,8 @@ public:
     void setCurrentCell(int row, int col);
     int currentRow() const;
     int currentColumn() const;
+    JZTableWidgetItem* currentItem() const;                              // 无选中/空单元格返回 nullptr
+    void setCurrentItem(JZTableWidgetItem* item, bool emitSignal = true);   // (Qt: setCurrentItem)
 
 jz_signals:
     JZSigInt currentRowChanged;
@@ -78,7 +125,15 @@ protected:
     int totalWidth() const;
     void invalidateAll();
 
-    std::vector<std::vector<JZTableWidgetItem>> m_grid;  // [row][col]
+    // 内部: 摘除(转移所有权, 不删除) / 落位 / 删除区间 / 行列号重排
+    std::unique_ptr<JZTableWidgetItem> detachAt(int row, int col);
+    void placeItem(int row, int col, std::unique_ptr<JZTableWidgetItem> item);
+    void reindexItems();
+
+    // [row][col], 空单元格为 nullptr。
+    // 用 unique_ptr 存放: item 地址稳定(值存 vector 一旦扩容搬移, 外部拿到的借用指针会静默悬垂),
+    // 同时所有权/删除点唯一。
+    std::vector<std::vector<std::unique_ptr<JZTableWidgetItem>>> m_grid;
     int m_cols = 0;
     int m_rowHeight = 24;
 

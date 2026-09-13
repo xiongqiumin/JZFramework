@@ -390,11 +390,14 @@ int main()
             JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
             // clear 走 JSRawPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::JSRawPointer<PP>>(不支持)
             engine.callFunction("clearOwnedP", { jsOwned });
-            // 已 clear 是运行期状态(不是类型不匹配), 仍在转换里报错
-            bool threwCleared = false;
-            try { (void)engine.fromJSValue<PP*>(jsOwned.get()); }
-            catch (...) { threwCleared = true; }
-            check("conv fromJSValue<PP*> cleared throws", threwCleared);
+            // 已 clear 是运行期状态: JS 侧调用由 call() 预检拦下(直接转换只留断言, 不再抛异常)
+            engine.setProperty(engine.globalObject(), "clearedP",
+                               JS_DupValue(engine.context(), jsOwned.get()));
+            auto v2 = engine.eval(
+                "var r = 'no-throw';"
+                "try { takeRawP(clearedP); } catch (e) { r = 'throw'; }"
+                "r;");
+            check("PP* 形参传已 clear 的包装: 上层拦下 -> JS 异常", engine.fromJSValue<string>(v2.get()) == "throw");
         }
 
         engine.deinit();

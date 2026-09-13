@@ -355,12 +355,20 @@ std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
 std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
-    return [](JSContext*, int, JSValueConst*) { throw std::runtime_error("ClassBind: 抽象类不能用默认构造, 需用 setCreate"); return (void*)nullptr; };
+    // createArgs 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
+    return [](JSContext* ctx, int, JSValueConst*) -> void* {
+        JS_ThrowInternalError(ctx, "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
+        return nullptr;
+    };
 }
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && !std::is_default_constructible<Class>::value, int> = 0>
 std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
-    return [](JSContext*, int, JSValueConst*) { throw std::runtime_error("ClassBind: 类无默认构造, 需用 setCreate"); return (void*)nullptr; };
+    // 同上: 无默认构造的类必须自己 setCreate。
+    return [](JSContext* ctx, int, JSValueConst*) -> void* {
+        JS_ThrowInternalError(ctx, "ClassBind: 类无默认构造, 需用 setCreate");
+        return nullptr;
+    };
 }
 
 template <class Class>

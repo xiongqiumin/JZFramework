@@ -9,6 +9,7 @@
 #include "JZWidget.h"
 #include "JZImage.h"
 #include "JZJSType.h"
+#include "JZJSTableWidget.h"
 #include "quickjs/quickjs.h"
 
 using namespace std;
@@ -19,6 +20,16 @@ static void check(const string &name, bool ok)
     jzDebug() << (ok ? "[PASS]" : "[FAIL]") << name;
     if (!ok)
         g_fail++;
+}
+
+// 求值并取字符串, 供"把实际值拼成字符串再比较"的断言使用。
+// 注意: 脚本抛错时 eval 返回的是 JS 异常值, 直接 fromJSValue<std::string> 会崩 —— 这里先挡掉。
+static string evalStr(JZJSEngine& engine, const string& code)
+{
+    auto v = engine.eval(code);
+    if (JS_IsException(v.get()) || JS_IsUndefined(v.get()))
+        return "<js-exception>";
+    return engine.fromJSValue<string>(v.get());
 }
 
 // 递归打印定义树, 便于人眼查看每个节点的 type / id / props / children
@@ -35,6 +46,8 @@ static void dumpNode(const JZUiNode& node, int depth)
 
 int main()
 {
+    setbuf(stdout, NULL);   // 测试输出不缓冲: 崩溃/断言时也能看到已跑过的用例
+
     JZApplication a;
 
     // 样例 Qt 风格 ui 文件(XML):
@@ -248,6 +261,148 @@ int main()
             "'ok'");
         check("离屏画笔被回收后由作用域结清(未 end 也不崩)",
               engine.fromJSValue<std::string>(reap.get()) == "ok");
+    }
+
+    // 8) JZTableWidget(指针版数据模型) + JS 镜像类 JZJSTableWidget 的所有权/失效自检。
+    //    镜像类还没在 registWidgets 里注册(与 JZJSListWidget 一样待接线), 故直接 C++ 侧调 ****Js 方法。
+    jzDebug() << "===== JZTableWidget 指针版数据模型 + JS 镜像自检 =====";
+    {
+        JZJSTableWidget* tbl = new JZJSTableWidget();
+        tbl->setRowCount(2);
+        tbl->setColumnCount(2);
+
+        // 接管(/Transfer/): JS 创建的单元格交给表格, JS 侧那份翻转为"非拥有"
+        jsbind::JSRawPointer<JZTableWidgetItem> a1(new JZTableWidgetItem("A1"), false);
+        jsbind::JSRawPointer<JZTableWidgetItem> swA1 = tbl->setItemJs(0, 0, a1);
+        check("setItemJs 接管: 表格持有 + JS 侧翻转为非拥有",
+              tbl->item(0, 0) == a1.get() && a1.cppOwner() && swA1.get() == a1.get());
+        check("item 记录行列号", a1.get()->row() == 0 && a1.get()->column() == 0);
+        check("表格反查行列", tbl->row(a1.get()) == 0 && tbl->column(a1.get()) == 0);
+
+        // 表格自建单元格(便捷重载) + 借用包装(cppOwner=true = 表格拥有, JS 只持句柄)
+        jsbind::JSRawPointer<JZTableWidgetItem> swB2 = tbl->setItemJs(1, 1, std::string("B2"));
+        check("setItemJs(文本) 新建单元格, 借用包装可用",
+              swB2.get() != nullptr && swB2.get()->text() == "B2" && swB2.cppOwner());
+
+        // 顶掉同格旧单元格: 旧 item 被删除, 其 JS 包装必须先失效(否则悬垂)
+        JZTableWidgetItem* oldB2 = tbl->item(1, 1);
+        tbl->setItemJs(1, 1, std::string("B2-x"));
+        check("顶掉旧单元格后旧包装失效",
+              swB2.isCleared() && tbl->item(1, 1) != oldB2 && tbl->itemText(1, 1) == "B2-x");
+
+        // 摘除并删除: JS 侧包装失效
+        tbl->removeItemJs(0, 0);
+        check("removeItemJs 后 JS 侧包装失效", swA1.isCleared() && a1.isCleared() && tbl->item(0, 0) == nullptr);
+
+        // 摘除并交回所有权(/TransferBack/): cppOwner=false, 包装析构时释放(等价 JS GC)
+        JZTableWidgetItem* rawB = tbl->item(1, 1);
+        jsbind::JSRawPointer<JZTableWidgetItem> taken = tbl->takeItemJs(1, 1);
+        check("takeItemJs 交回所有权", taken.get() == rawB && !taken.cppOwner() && tbl->item(1, 1) == nullptr);
+        taken = jsbind::JSRawPointer<JZTableWidgetItem>();   // 放掉 -> 该 item 被释放(等价 JS GC)
+
+        // 插删行列: item 自身记录的行列号跟随
+        tbl->setRowCount(3);
+        tbl->setItemText(2, 0, "C1");
+        JZTableWidgetItem* c1 = tbl->item(2, 0);
+        tbl->insertRow(0);
+        check("insertRow 后行号顺延", c1->row() == 3 && tbl->item(3, 0) == c1);
+        tbl->removeRow(0);
+        check("removeRow 后行号还原", c1->row() == 2 && tbl->item(2, 0) == c1);
+        tbl->insertColumn(0);
+        check("insertColumn 后列号顺延", c1->column() == 1 && tbl->item(2, 1) == c1);
+        tbl->removeColumn(0);
+        check("removeColumn 后列号还原", c1->column() == 0 && tbl->item(2, 0) == c1);
+
+        // 整行删除: 该行 JS 包装失效
+        jsbind::JSRawPointer<JZTableWidgetItem> swC1 = tbl->itemJs(2, 0);
+        tbl->removeRowJs(2);
+        check("removeRowJs 使该行 JS 包装失效", swC1.isCleared() && tbl->rowCount() == 2);
+
+        // 整表清空: 全部包装失效
+        tbl->setItemJs(1, 0, std::string("D1"));
+        jsbind::JSRawPointer<JZTableWidgetItem> swD = tbl->itemJs(1, 0);
+        tbl->clearContentsJs();
+        check("clearContentsJs 后全部失效且清空",
+              swD.isCleared() && tbl->item(1, 0) == nullptr && tbl->rowCount() == 2);
+
+        delete tbl;
+    }
+
+    // 9) JZChart: JS 层暴露(JZJSWidgetModule::registWidgets 里 ClassBind 注册)。
+    //    断言用字符串比较而不是 bool: eval 抛异常时 fromJSValue<bool> 仍可能为真(对象真值), 会假通过。
+    jzDebug() << "===== JZChart JS 绑定演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        widgetModule.initEngine(&engine);
+
+        check("JZChart 类与类型常量已注册",
+              evalStr(engine,
+                      "(typeof JZChart === 'function'"
+                      " && JZChart.LineChart === 0 && JZChart.BarChart === 1 && JZChart.PieChart === 2)"
+                      " ? 'ok' : 'bad'") == "ok");
+
+        check("JS 创建的 JZChart 是 JZWidget 派生",
+              evalStr(engine, "(new JZChart() instanceof JZWidget) ? 'ok' : 'bad'") == "ok");
+
+        // 类型/标题/分类/序列 往返: 读回的值来自真实 C++ 对象(chartType/title/categories/series*)
+        check("JZChart 类型/标题/分类/序列往返",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "c.setChartType(JZChart.BarChart);"
+                      "c.setTitle('Sales');"
+                      "c.setCategories(['A', 'B', 'C']);"
+                      "var s0 = c.addSeries('S1', '#339933');"
+                      "c.setSeriesData(s0, [12, 18, 15]);"
+                      "c.setShowValue(true);"
+                      "var col = c.seriesColor(0);"
+                      "(c.chartType() === 1 && s0 === 0 && c.seriesCount() === 1"
+                      " && c.title() === 'Sales' && c.categories().join(',') === 'A,B,C'"
+                      " && c.seriesName(0) === 'S1' && c.seriesData(0).join(',') === '12,18,15'"
+                      " && col.red() === 51 && col.green() === 153 && col.blue() === 51)"
+                      " ? 'ok' : 'bad'") == "ok");
+
+        // 空颜色字符串 -> 默认调色板: 第 0 条 Blue(0,0,255), 第 1 条 Red(255,0,0)
+        check("JZChart addSeries 空颜色取默认调色板",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "c.addSeries('A', '');"
+                      "c.addSeries('B', '');"
+                      "(c.seriesColor(0).blue() === 255 && c.seriesColor(1).red() === 255) ? 'ok' : 'bad'") == "ok");
+
+        // setData 二维数组 -> 多条序列(名称/配色自动生成)
+        check("JZChart setData(二维数组) 建多条序列",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "c.setData([[1, 2], [3, 4], [5, 6]]);"
+                      "(c.seriesCount() === 3 && c.seriesName(1) === 'Series 2'"
+                      " && c.seriesData(2).join(',') === '5,6') ? 'ok' : 'bad'") == "ok");
+
+        // 越界: 读取抛异常(基类 series(i) 不做边界检查, JS 层必须拦), 写入按 C++ 语义静默忽略
+        check("JZChart 越界: 读抛异常, 写静默忽略",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "var read = 'no-throw';"
+                      "try { c.seriesName(0); } catch (e) { read = 'throw'; }"
+                      "var write = 'no-throw';"
+                      "try { c.setSeriesData(5, [1, 2]); } catch (e) { write = 'throw'; }"
+                      "read + '/' + write") == "throw/no-throw");
+
+        // 数组形参的类型校验(不再是"传啥都当空数组")
+        check("JZChart setSeriesData 非数组抛异常",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "var r = 'no-throw';"
+                      "try { c.setSeriesData(0, 'not-array'); } catch (e) { r = 'throw'; }"
+                      "r") == "throw");
+
+        // uiLoader 支持 Chart 类型(class + 属性 title)
+        std::string chartXml = R"(<?xml version="1.0" encoding="UTF-8"?><ui><widget class="Window" name="root"><property name="geometry">0,0,240,160</property><widget class="Chart" name="chart"><property name="title">Trend</property><property name="geometry">0,0,240,160</property></widget></widget></ui>)";
+        check("uiLoader 支持 Chart 类型",
+              evalStr(engine,
+                      "var uiC = uiLoader.load('" + chartXml + "');"
+                      "(uiC.chart instanceof JZChart && uiC.chart.title() === 'Trend') ? 'ok' : 'bad'") == "ok");
     }
 
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");

@@ -169,12 +169,6 @@ void JZTreeWidget::addTopLevelItem(JZTreeWidgetItem* item)
     rebuildVisible();
 }
 
-void JZTreeWidget::addTopLevelItems(const std::vector<JZTreeWidgetItem*>& items)
-{
-    for (auto* it : items)
-        addTopLevelItem(it);
-}
-
 void JZTreeWidget::insertTopLevelItem(int index, JZTreeWidgetItem* item)
 {
     if (!item || item->m_parent || item->m_widget)

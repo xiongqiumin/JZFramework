@@ -77,8 +77,7 @@ public:
     ~JZTreeWidget();
 
     // ---- 数据模型 ----
-    void addTopLevelItem(JZTreeWidgetItem* item);
-    void addTopLevelItems(const std::vector<JZTreeWidgetItem*>& items);
+    void addTopLevelItem(JZTreeWidgetItem* item);    
     void insertTopLevelItem(int index, JZTreeWidgetItem* item);
     JZTreeWidgetItem* takeTopLevelItem(int index);          // 取出顶层项, 调用方获得所有权
     int topLevelItemCount() const { return (int)m_topItems.size(); }

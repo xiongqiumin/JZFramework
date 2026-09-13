@@ -98,15 +98,23 @@ void JZJSPaintScope::end()
 
 jsbind::JSRawPointer<JZPainter>* JZJSPaintScope::createPainter(JSContext* ctx, int argc, JSValueConst* argv)
 {
+    // createArgs 约定: 参数不合法时"设 JS 异常 + 返回 nullptr"(不抛 C++ 异常),
+    // JZJSEngine::createValue 见到空指针就把该异常交给 JS。
     if (argc < 1)
-        throw std::runtime_error("new JZPainter(target): 需要 JZWidget 或 JZImage 参数");
+    {
+        JS_ThrowTypeError(ctx, "new JZPainter(target): 需要 JZWidget 或 JZImage 参数");
+        return nullptr;
+    }
 
     // 离屏绘制: 目标是图像 —— JZPainter 自持图层, 析构时合成回 image, 不受绘制派发约束。
     if (jsArgIsImage(ctx, argv[0]))   // 校验在前(构造参数没有类型表, 得自己先校验)
     {
         JZImage* img = fromJSValue<JZImage*>(ctx, argv[0]);
         if (img->width() <= 0 || img->height() <= 0)
-            throw std::runtime_error("new JZPainter(image): image 尺寸无效(请先用 JZImage::create 建立缓冲区)");
+        {
+            JS_ThrowTypeError(ctx, "new JZPainter(image): image 尺寸无效(请先用 JZImage::create 建立缓冲区)");
+            return nullptr;
+        }
 
         auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(*img), false);   // JS 拥有
         // 登记: 目标 image 持一份强引用, 保证画笔析构回写时它还没被 GC。
@@ -123,10 +131,16 @@ jsbind::JSRawPointer<JZPainter>* JZJSPaintScope::createPainter(JSContext* ctx, i
     // 并让句柄失效; JS 侧提前 GC 只是丢句柄(状态独立存活), 不会误删也不会悬垂。
     // 约束① 只能在绘制派发内创建。
     if (m_frames.empty())
-        throw std::runtime_error("new JZPainter(widget): 只能在 onPaint 回调内创建(画笔仅本次绘制有效)");
+    {
+        JS_ThrowTypeError(ctx, "new JZPainter(widget): 只能在 onPaint 回调内创建(画笔仅本次绘制有效)");
+        return nullptr;
+    }
 
     if (!js_check_class_arg<JZWidget>(ctx, argv[0]))
-        throw std::runtime_error("new JZPainter(target): 需要控件(JZWidget)或图像(JZImage)参数");
+    {
+        JS_ThrowTypeError(ctx, "new JZPainter(target): 需要控件(JZWidget)或图像(JZImage)参数");
+        return nullptr;
+    }
     JZWidget* w = fromJSValue<JZWidget*>(ctx, argv[0]);
 
     // 约束② 同一次绘制内每个控件只能有一份画笔(画笔携带 Push/Pop 与裁剪状态, 多份会重复叠加)。
@@ -134,7 +148,10 @@ jsbind::JSRawPointer<JZPainter>* JZJSPaintScope::createPainter(JSContext* ctx, i
     for (size_t i = 0; i < frame.size(); i++)
     {
         if (frame[i].widget == w)
-            throw std::runtime_error("new JZPainter(widget): 该控件本次绘制已创建过画笔(每帧每控件只能一份)");
+        {
+            JS_ThrowTypeError(ctx, "new JZPainter(widget): 该控件本次绘制已创建过画笔(每帧每控件只能一份)");
+            return nullptr;
+        }
     }
 
     auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(w), true);

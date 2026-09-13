@@ -11,6 +11,8 @@
 
 #include "json/json.h"
 #include "quickjs/quickjs.h"
+#include "JZByteArray.h"
+#include "JZMutex.h"
 #include "JZJSType.h"
 #include "JZObject.h"
 
@@ -45,6 +47,8 @@ struct JZAsyncResult
 
 // JZJSEngine
 class JZJSEngineInternalFunction;
+class JZJSWorkerModule;
+class JZJSWorkerThread;
 class JZJSEngine : public JZObject
 {
 public:
@@ -56,6 +60,45 @@ public:
 
     void setWorkDir(const std::string& dir);
     void setLibraryDir(const std::vector<std::string>& dirs);  // 模块加载额外查找目录(优先级低于 workDir)
+
+    // ---- worker 支持 ----
+    // 运行根 / 模块查找目录(只读)。worker 引擎继承同一套"运行环境",
+    // 但**不继承任何 JS 状态**(全局变量/模块缓存各自一份)。
+    std::string workDirPath() const { return m_workDir; }
+    std::vector<std::string> libraryDirs() const { return m_libraryDirs; }
+    // C++ 侧派发的回调抛了未处理异常: 并入引擎错误链(sigLog/sigError + Engine_error)
+    void reportUncaughtError(const std::string& text) { onExceptionOccurred(text); }
+
+    // ---- worker 线程表(进程级, 挂在主引擎上) ----
+    // 主引擎 = 进程里第一个 init() 的引擎。worker 线程由主引擎创建与回收,
+    // 表也只有主引擎在用(worker 线程通过 JZJSEngine::mainEngine() 拿到它)。
+    //
+    // 投递落点 = "目标 worker 的引擎": 引擎是 JZObject, 在它自己的线程上,
+    // 所以 jzApp->postEvent(目标引擎, 消息事件) 就能把消息送到那个线程,
+    // 再由该引擎的 customEvent 转给它自己的 worker 模块(见 JZJSWorkerModule)。
+    static JZJSEngine* mainEngine();
+
+    // 本引擎装配的 worker 模块(由 JZJSWorkerModule::initEngine 登记):
+    // 它是消息事件与"worker 退出"事件的 JS 落点。
+    void setWorkerModule(JZJSWorkerModule* module);
+    JZJSWorkerModule* workerModule() const;
+
+    // 创建 worker(任意线程可调: 内部保证在主线程建线程对象并等它就绪)。失败返回 -1。
+    int spawnWorker(const std::string& entry, const JZByteArray& workerData,
+                    int ownerId, int parentId,
+                    const std::string& workDir, const std::vector<std::string>& libraryDirs);
+
+    // 任意线程: 按 id 投一条消息; false = 不存在/未就绪/已退出
+    bool postToWorker(int targetId, int fromId, const JZByteArray& data);
+
+    // worker 线程: 引擎就绪后登记为投递落点 / 引擎销毁前摘除(此后不再被投递)
+    void attachWorkerEngine(int id, JZJSEngine* engine);
+    void detachWorkerEngine(int id);
+
+    bool terminateWorker(int id);           // 请求某个 worker 退出(协作式)
+    std::vector<int> workerIds();           // 当前所有 id(含主线程的 0)
+    std::vector<int> workerChildIds(int parentId);
+    void reapAllWorkers();                  // 停掉并回收全部 worker(主线程)
 
     void start();
     void stop();
@@ -352,6 +395,30 @@ protected:
     int m_pendingWork;       // 外部模块挂起的原生异步任务数量(见 addPendingWork)
     JZJSEngineStatus m_status;
     bool m_interrupt;    
+
+    // ---- worker 线程表(仅主引擎会填; 见 worker 相关接口) ----
+    struct WorkerEntry
+    {
+        WorkerEntry();
+
+        int parentId;                  // 父 worker id(级联终止用)
+        int ownerId;                   // 创建者 id(退出事件回投给它)
+        bool exited;
+        JZJSWorkerThread* thread;      // 线程对象(归主线程, 由主引擎回收)
+        JZJSEngine* engine;            // 该 worker 的引擎 = 投递落点; 未就绪为空
+    };
+
+    int doSpawnWorker(const std::string& entry, const JZByteArray& workerData,
+                      int ownerId, int parentId,
+                      const std::string& workDir, const std::vector<std::string>& libraryDirs);
+    void reapWorker(int id);            // 仅主线程: join + delete + 摘表
+    void onWorkerFinished(int id);      // 收到 worker 的 sigFinished(已排队到主线程): 回收 + 级联 + 转告 owner
+    int workerOwnerId(int id);
+
+    JZMutex m_workerMutex;
+    int m_nextWorkerId;                 // 0 保留给主线程
+    std::map<int, WorkerEntry> m_workers;
+    JZJSWorkerModule* m_workerModule;   // 本引擎的 worker 模块(未装为空)
 };
 
 #endif  // !JS_ENGINE_H_

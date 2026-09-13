@@ -23,6 +23,9 @@ target_link_libraries(test_jsmodbus JZFramework)
 # 同 test_jsnet: 让测试能按固定路径 import 编译产物(modbus/dist/index.js)
 target_compile_definitions(test_jsmodbus PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
+add_executable(test_jsworker test_jsworker.cpp)
+target_link_libraries(test_jsworker JZFramework)
+
 # BTE 上位机(Qt/C++ -> JS 移植)的 协议层 + 传输层 端到端测试。
 # 源码目录 = binary/code_agent/runtime/bteserver(纯 JS, 不进编译, 由引擎以 ESM 加载)
 add_executable(test_bteserver test_bteserver.cpp)
@@ -49,3 +52,6 @@ set_tests_properties(jsengine.test_jsnet PROPERTIES TIMEOUT 300)
 
 add_test(NAME jsengine.test_bteserver COMMAND test_bteserver)
 set_tests_properties(jsengine.test_bteserver PROPERTIES TIMEOUT 180)
+
+add_test(NAME jsengine.test_jsworker COMMAND test_jsworker)
+set_tests_properties(jsengine.test_jsworker PROPERTIES TIMEOUT 180)

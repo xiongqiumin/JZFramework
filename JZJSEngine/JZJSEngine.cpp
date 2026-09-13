@@ -8,6 +8,8 @@
 #include <thread>
 
 #include "JZJSBind.h"
+#include "JZJSWorkerThread.h"
+#include "JZJSWorkerModule.h"
 #include "JZApplication.h"
 #include "JZDateTime.h"
 #include "JZDir.h"
@@ -20,6 +22,10 @@
 
 using namespace jsbind;
 using namespace std;
+
+// 主引擎(Process 级的"第一个 init 的引擎"): 进程级 worker 线程表挂在它上面。
+// 读取方主要是 worker 线程(取 hub 投消息/发退出通知), 写入只发生在主线程。
+static JZJSEngine* s_mainEngine = nullptr;
 
 // 事件驱动唤醒事件: C++ 侧结算 promise / 外部注入任务后投递本事件到引擎线程,
 // 引擎收到后 execOnce 泵一轮。JZObject 事件分发: type >= JZEvent_user 的自定义
@@ -326,20 +332,56 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_pendingWork = 0;
     m_interrupt = false;
     m_status = Engine_none;    
+    m_nextWorkerId = 1;         // 0 保留给主线程
+    m_workerModule = nullptr;
 }
 
 JZJSEngine::~JZJSEngine()
 {
+    // 兜底: 宿主不一定显式调 deinit()(测试/临时引擎很常见)。worker 线程表就在引擎里,
+    // 必须在这里收掉, 否则:
+    //   1) 线程对象泄漏;
+    //   2) s_mainEngine 悬挂 —— 还在跑的 worker 线程去 mainEngine() 会解引用已销毁的
+    //      引擎, 直接崩(0xC0000005)。
+    // 注意: 这里只清"进程级资源", 不碰 JS 侧的 rt/ctx —— 那仍由 deinit() 负责,
+    // 以免破坏"借给 JS 的 C++ 对象"的既有生命周期约定。
+    reapAllWorkers();
+    if (s_mainEngine == this)
+        s_mainEngine = nullptr;
+}
+
+JZJSEngine* JZJSEngine::mainEngine()
+{
+    return s_mainEngine;
 }
 
 void JZJSEngine::init()
 {
     assert(!m_ctx);
     initJSEnv();
+
+    // 第一个 init 的引擎成为主引擎: worker 线程表与 id 分配都归它。
+    // 主线程自己也是一个可投递的 id(0), 所以表里先放它自己。
+    if (!s_mainEngine)
+    {
+        s_mainEngine = this;
+
+        WorkerEntry& e = m_workers[0];
+        e.parentId = -1;
+        e.ownerId = 0;
+        e.exited = false;
+        e.thread = nullptr;
+        e.engine = this;
+    }
 }
 
 void JZJSEngine::deinit()
 {
+    // 主引擎: 先收掉所有 worker 线程(请求退出 + join + delete, 必须在主线程做)
+    reapAllWorkers();
+    if (s_mainEngine == this)
+        s_mainEngine = nullptr;
+
     deinitJSEnv();
 }
 
@@ -717,6 +759,24 @@ void JZJSEngine::timerEvent(JZTimerEvent* event)
 
 void JZJSEngine::customEvent(JZEvent* event)
 {
+    // ---- worker 事件(与引擎运行状态无关: 引擎可能已 error/pause, 但消息与线程回收不能停) ----
+    // 消息: 投给"目标 worker 的引擎"(本对象), 转交给本引擎的 worker 模块
+    if (event->type() == JZJSWorkerEvent_Message)
+    {
+        JZJSWorkerMessageEvent* e = (JZJSWorkerMessageEvent*)event;
+        if (m_workerModule)
+            m_workerModule->onMessageEvent(e->fromId, e->data);
+        return;
+    }
+    // 我名下的某个 worker 退出了: 交给模块跑 JS 侧 'exit' 回调
+    if (event->type() == JZJSWorkerEvent_Exit)
+    {
+        JZJSWorkerExitEvent* e = (JZJSWorkerExitEvent*)event;
+        if (m_workerModule)
+            m_workerModule->onWorkerExit(e->workerId, e->code);
+        return;
+    }
+
     // 暂停/停止/错误态不处理残留唤醒(与旧"停表"语义一致); 任务在 resume/start 时恢复调度
     if (m_status != Engine_running)
         return;
@@ -960,8 +1020,39 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
 
         funcList->push_back(entry);
     }
+    // 直接用 C 函数注册的方法(ClassBind::def(name, JSCFunction*)): 不进 magic 表, 交给 quickjs
+    // 以 JS_CFUNC_generic **原样**调用 —— 参数校验 / this_val 由该 C 函数自己处理。
+    for (int i = 0; i < (int)define.rawFunctions.size(); i++)
+    {
+        const CRawFunction& raw = define.rawFunctions[i];
+
+        JSCFunctionListEntry entry = {};
+        entry.name = raw.name.c_str();
+        entry.def_type = JS_DEF_CFUNC;
+        entry.prop_flags = JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE;
+        entry.u.func.length = (uint8_t)raw.length;
+        entry.u.func.cproto = JS_CFUNC_generic;
+        entry.u.func.cfunc.generic = raw.function;
+
+        funcList->push_back(entry);
+    }
     js_proto = JS_NewObject(m_ctx);
     JS_SetPropertyFunctionList(m_ctx, js_proto, funcList->data(), (int)funcList->size());
+
+    // 带 func_data 的 C 函数(ClassBind::defData): 属性表里没有数据槽, 只能自己造函数对象再挂上去 ——
+    // JS_NewCFunctionData2 会把 data 各 dup 一份存进函数对象(GC 负责 mark/free), 调用时原样交给
+    // 回调的第 6 个参数。属性形状与其它方法一致: 可写 / 可配 / 不可枚举。
+    for (int i = 0; i < (int)define.dataFunctions.size(); i++)
+    {
+        const CDataFunction& dfn = define.dataFunctions[i];
+        // quickjs 只会把这些值各 dup 一份(s->data[i] = js_dup(data[i])), 故 const_cast 安全
+        JSValue* data = dfn.data.empty() ? nullptr : const_cast<JSValue*>(dfn.data.data());
+        JSValue fn = JS_NewCFunctionData2(m_ctx, dfn.function, dfn.name.c_str(), dfn.length, dfn.magic,
+                                          (int)dfn.data.size(), data);
+        if (JS_IsException(fn))
+            continue;
+        JS_DefinePropertyValueStr(m_ctx, js_proto, dfn.name.c_str(), fn, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+    }
 
     js_class = JS_NewCFunctionMagic(m_ctx, JSInter::js_constructor, define.name.c_str(), 0, JS_CFUNC_constructor_magic,
                                     object_id);
@@ -2032,4 +2123,276 @@ void JZJSEngine::releasePendingWork()
 int JZJSEngine::pendingWork() const
 {
     return m_pendingWork;
+}
+
+// =========================================================================
+// worker 线程表(进程级; 表与 id 分配都在主引擎上)
+//
+//   投递落点 = "目标 worker 的引擎"(JZObject, 活在那个 worker 的线程上):
+//     jzApp->postEvent(目标引擎, 消息事件) -> 该引擎 customEvent
+//       -> 它自己的 worker 模块 -> JS 的 onMessage
+//   创建/回收只在主线程做: 线程对象必须建在将来 delete 它的那个线程上
+//   (JZObject 析构会断言线程归属), 所以 spawnWorker 会把活转到主线程执行。
+//
+//   回收不用自定义事件: JZThread 自带 sigFinished(run() 返回后由框架 emit),
+//   在这里 connect 到 onWorkerFinished 即可。
+// =========================================================================
+JZJSEngine::WorkerEntry::WorkerEntry()
+{
+    parentId = -1;
+    ownerId = 0;
+    exited = false;
+    thread = nullptr;
+    engine = nullptr;
+}
+
+void JZJSEngine::setWorkerModule(JZJSWorkerModule* module)
+{
+    m_workerModule = module;
+}
+
+JZJSWorkerModule* JZJSEngine::workerModule() const
+{
+    return m_workerModule;
+}
+
+int JZJSEngine::spawnWorker(const std::string& entry, const JZByteArray& workerData,
+                            int ownerId, int parentId,
+                            const std::string& workDir, const std::vector<std::string>& libraryDirs)
+{
+    // 表在主引擎上: 从哪个引擎调都统一落到它
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return -1;
+
+    // 已在主线程: 直接建(线程对象归主线程, 将来才能由主线程 delete)
+    if (owner->thread() == jzApp->currentThread())
+        return owner->doSpawnWorker(entry, workerData, ownerId, parentId, workDir, libraryDirs);
+
+    // 子 worker 里 new Worker 走这条: 投到主线程执行, 同步等结果
+    int result = -1;
+    JZSemaphore sem;
+    runOnThread(owner->thread(), [&]() {
+        result = owner->doSpawnWorker(entry, workerData, ownerId, parentId, workDir, libraryDirs);
+        sem.release();
+    });
+    if (!sem.tryAcquire(1, 30000))
+        return -1;      // 主线程忙过头(是延迟, 不是死锁)
+    return result;
+}
+
+int JZJSEngine::doSpawnWorker(const std::string& entry, const JZByteArray& workerData,
+                              int ownerId, int parentId,
+                              const std::string& workDir, const std::vector<std::string>& libraryDirs)
+{
+    int id = m_nextWorkerId++;
+
+    JZJSWorkerThread* t = new JZJSWorkerThread();
+    t->setup(id, parentId, entry, workerData, workDir, libraryDirs);
+
+    {
+        JZMutexLocker lock(&m_workerMutex);
+        WorkerEntry& e = m_workers[id];
+        e.parentId = parentId;
+        e.ownerId = ownerId;
+        e.exited = false;
+        e.thread = t;
+        e.engine = nullptr;     // 等 worker 线程起来后 attachWorkerEngine
+    }
+
+    // 线程结束 -> 本引擎(主线程)回收。
+    // JZThread::start 的线程体在 run() 返回后 emit sigFinished; 这里用"对象 + lambda"
+    // 重载登记 recv = this, Auto 连接在 emit 时按 recv 所在线程判定 => 跨线程, 会排队到
+    // 主线程执行(若改用只收 lambda 的重载则 hasRecv=false, 会在 worker 线程里同步跑,
+    // 那就变成"在错误的线程 delete 线程对象"了)。
+    connect(&t->sigFinished, this, [this, id]() { onWorkerFinished(id); });
+
+    t->start();
+
+    // 等"引擎 + 模块 + __jz 就绪"再返回, 之后 postToWorker 一定能命中。
+    // (只等初始化, 不等入口脚本跑完 —— 脚本里顶层挂 onMessage 肯定早于收消息。)
+    if (!t->waitReady(15000))
+    {
+        t->quit();              // 回收走正常的 Done 事件路径
+        return -1;
+    }
+    return id;
+}
+
+bool JZJSEngine::postToWorker(int targetId, int fromId, const JZByteArray& data)
+{
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return false;
+
+    // 锁内投递: 与 detachWorkerEngine / reapWorker 互斥, 绝不会投给正在销毁的引擎。
+    // 锁顺序 = 引擎表锁 -> 目标线程事件锁; 反向无人持线程锁来拿表锁, 不会死锁。
+    JZMutexLocker lock(&owner->m_workerMutex);
+    std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(targetId);
+    if (it == owner->m_workers.end() || it->second.exited || !it->second.engine)
+        return false;
+
+    jzApp->postEvent(it->second.engine, new JZJSWorkerMessageEvent(fromId, data));
+    return true;
+}
+
+void JZJSEngine::attachWorkerEngine(int id, JZJSEngine* engine)
+{
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return;
+    JZMutexLocker lock(&owner->m_workerMutex);
+    std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(id);
+    if (it != owner->m_workers.end())
+        it->second.engine = engine;
+}
+
+void JZJSEngine::detachWorkerEngine(int id)
+{
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return;
+    JZMutexLocker lock(&owner->m_workerMutex);
+    std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(id);
+    if (it != owner->m_workers.end())
+    {
+        it->second.engine = nullptr;    // 引擎即将销毁: 之后投递一律失败
+        it->second.exited = true;
+    }
+}
+
+bool JZJSEngine::terminateWorker(int id)
+{
+    JZJSWorkerThread* t = nullptr;
+    {
+        JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+        if (!owner)
+            return false;
+        JZMutexLocker lock(&owner->m_workerMutex);
+        std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(id);
+        if (it == owner->m_workers.end())
+            return false;
+        t = it->second.thread;
+    }
+
+    if (!t)
+        return false;
+    t->quit();      // 协作式: 事件循环退出后线程自己投 Done 事件走回收
+    return true;
+}
+
+std::vector<int> JZJSEngine::workerIds()
+{
+    std::vector<int> out;
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return out;
+
+    JZMutexLocker lock(&owner->m_workerMutex);
+    for (std::map<int, WorkerEntry>::iterator it = owner->m_workers.begin(); it != owner->m_workers.end(); ++it)
+        out.push_back(it->first);
+    return out;
+}
+
+std::vector<int> JZJSEngine::workerChildIds(int parentId)
+{
+    std::vector<int> out;
+    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    if (!owner)
+        return out;
+
+    JZMutexLocker lock(&owner->m_workerMutex);
+    for (std::map<int, WorkerEntry>::iterator it = owner->m_workers.begin(); it != owner->m_workers.end(); ++it)
+    {
+        if (it->second.parentId == parentId)
+            out.push_back(it->first);
+    }
+    return out;
+}
+
+int JZJSEngine::workerOwnerId(int id)
+{
+    JZMutexLocker lock(&m_workerMutex);
+    std::map<int, WorkerEntry>::iterator it = m_workers.find(id);
+    if (it == m_workers.end())
+        return 0;
+    return it->second.ownerId;
+}
+
+void JZJSEngine::reapWorker(int id)
+{
+    JZJSWorkerThread* t = nullptr;
+    {
+        JZMutexLocker lock(&m_workerMutex);
+        std::map<int, WorkerEntry>::iterator it = m_workers.find(id);
+        if (it == m_workers.end())
+            return;                     // 已回收(幂等)
+        t = it->second.thread;
+        m_workers.erase(it);
+    }
+
+    if (t)
+    {
+        t->quit();                      // 正常已退出; 兜底请求一次
+        t->wait();                      // join: 等线程真正结束
+        delete t;                       // 必须在创建它的线程删(主线程)
+    }
+}
+
+void JZJSEngine::onWorkerFinished(int id)
+{
+    // 已在主线程(sigFinished 跨线程排队到这里), 所以 join + delete 都是安全的线程归属
+    int ownerId = workerOwnerId(id);
+
+    // 退出码从线程对象上取(sigFinished 是无参信号): 0=正常 1=引擎初始化失败 2=入口脚本失败
+    int code = 0;
+    {
+        JZMutexLocker lock(&m_workerMutex);
+        std::map<int, WorkerEntry>::iterator it = m_workers.find(id);
+        if (it != m_workers.end() && it->second.thread)
+            code = it->second.thread->exitCode();
+    }
+
+    // 1. 级联: 先终止它名下的子 worker(子各自会再 emit 一次 sigFinished -> 各自回收)
+    std::vector<int> kids = workerChildIds(id);
+    for (size_t i = 0; i < kids.size(); i++)
+        terminateWorker(kids[i]);
+
+    // 2. 回收线程对象(join + delete + 摘表)
+    reapWorker(id);
+
+    // 3. 通知 owner 引擎跑 JS 侧 'exit' 回调(锁内投递, 不投给正在销毁的引擎)
+    JZMutexLocker lock(&m_workerMutex);
+    std::map<int, WorkerEntry>::iterator it = m_workers.find(ownerId);
+    if (it != m_workers.end() && !it->second.exited && it->second.engine)
+        jzApp->postEvent(it->second.engine, new JZJSWorkerExitEvent(id, code));
+}
+
+void JZJSEngine::reapAllWorkers()
+{
+    std::vector<int> ids;
+    {
+        JZMutexLocker lock(&m_workerMutex);
+        for (std::map<int, WorkerEntry>::iterator it = m_workers.begin(); it != m_workers.end(); ++it)
+        {
+            if (it->first != 0)
+                ids.push_back(it->first);
+        }
+    }
+
+    // 先全部请求退出(避免"父等子"的顺序依赖), 再逐个 wait + delete
+    for (size_t i = 0; i < ids.size(); i++)
+    {
+        JZJSWorkerThread* t = nullptr;
+        {
+            JZMutexLocker lock(&m_workerMutex);
+            std::map<int, WorkerEntry>::iterator it = m_workers.find(ids[i]);
+            if (it != m_workers.end())
+                t = it->second.thread;
+        }
+        if (t)
+            t->quit();
+    }
+    for (size_t i = 0; i < ids.size(); i++)
+        reapWorker(ids[i]);
 }

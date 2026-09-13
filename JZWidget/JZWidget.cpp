@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include "JZWidget.h"
+#include "JZDebug.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
 #include "JZScreen.h"
@@ -703,15 +704,38 @@ bool JZWidget::isVisible() const
 
 void JZWidget::setLayout(JZLayout* layout)
 {
-    if(m_layout)
-        delete m_layout;
-    
-    m_layout = layout;
-    if(m_layout)
+    // Qt 语义(QWidget::setLayout): 一个控件只能有一个布局, 且只能"一次性"设上。
+    //   * 已有布局时: 警告 + 忽略本次调用, **不接管**新布局(Qt 也是只警告; 新布局的
+    //     释放责任在调用方 —— 比如 JS 侧那份仍归 JS 拥有, GC 会收);
+    //   * nullptr: 警告 + 忽略(Qt 文案 "Cannot set layout to 0")。
+    // 要清空/替换: 先 clearLayout(), 再设新布局。
+    if (!layout)
     {
-        m_layout->apply(this);  // 内部 updateLayout(): 重排自身子控件
-        updateGeometry();       // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
+        LOG_W("JZWidget::setLayout: 不能把布局设为空(null 不是清空手段, 请用 clearLayout())");
+        return;
     }
+    if (m_layout)
+    {
+        LOG_W("JZWidget::setLayout: 该控件已有布局(一个控件只能有一个), 本次设置被忽略; 要替换请先 clearLayout()");
+        return;
+    }
+
+    m_layout = layout;
+    m_layout->apply(this);  // 内部 updateLayout(): 重排自身子控件
+    updateGeometry();       // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
+}
+
+void JZWidget::clearLayout()
+{
+    if (!m_layout)
+        return;
+
+    // 先清指针再删: 旧布局析构时的 _clearLayoutPointer 回调就是空操作了(不必依赖它)
+    JZLayout* old = m_layout;
+    m_layout = nullptr;
+    delete old;
+
+    updateGeometry();   // 没有布局了: sizeHint 改变, 向上级联(父布局需重排)
 }
 
 void JZWidget::updateLayout()
@@ -746,6 +770,14 @@ void JZWidget::_layoutDetach(JZLayout* layout)
             return;
         }
     }
+}
+
+void JZWidget::_clearLayoutPointer(JZLayout* layout)
+{
+    // 布局被销毁(delete w->layout() / clearLayout)或换了宿主: 本控件不该再指向它,
+    // 否则这里就是悬垂指针(`~JZWidget` 还会再 delete 一次)。
+    if (m_layout == layout)
+        m_layout = nullptr;
 }
 
 void JZWidget::updateGeometry()

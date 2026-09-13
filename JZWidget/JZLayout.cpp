@@ -94,6 +94,11 @@ JZLayout::~JZLayout()
         if (JZWidget* w = static_cast<JZWidget*>(ptr.object()))
             w->_layoutDetach(this);
     m_managed.clear();
+
+    // 布局没了: 通知宿主控件清掉它的布局指针 —— Qt 的 `delete w->layout()` 正是靠这个行为
+    // 让 widget->layout() 立刻变空, 之后才能再 setLayout 新布局(见 JZWidget::setLayout 的 Qt 语义)。
+    if (m_container)
+        m_container->_clearLayoutPointer(this);
 }
 
 void JZLayout::addManaged(JZWidget* widget)
@@ -138,6 +143,11 @@ void JZLayout::removeManaged(JZWidget* widget)
 
 void JZLayout::apply(JZWidget* container)
 {
+    // 布局换宿主(Qt 里 setLayout 会把属于别的控件的布局 reparent 过来): 旧宿主不能继续指向本布局,
+    // 否则两边析构都会 delete 它(双重释放)。
+    if (m_container && m_container != container)
+        m_container->_clearLayoutPointer(this);
+
     m_container = container;
     // 支持"先 addWidget 再 setLayout"的写法: apply 时把已登记的管理控件
     // 挂到容器下 (等价 Qt QLayout::addWidget 的自动 reparent), 这样无需在

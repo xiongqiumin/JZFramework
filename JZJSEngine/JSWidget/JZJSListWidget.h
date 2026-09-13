@@ -11,7 +11,8 @@
 // 这里要解决的是**数据项的所有权/失效**问题:
 //   JZListWidgetItem 不是 JZObject(没有守卫指针), 所以只能用 JSRawPointer<T>,
 //   而它对 delete 无感知 —— 失效必须有人显式 clear()。
-// 做法与 JZJSWidget::layoutJs 一致, 只是"每项一份"开关, 且**按项指针索引而不是下标**:
+// 做法与 JZWidget.layout() 的"布局包装缓存"同一思路(见 JZJSWidget.cpp), 只是"每项一份"开关,
+// 且**按项指针索引而不是下标**:
 //   插入/删除会让下标整体错位, 若按下标存开关, 一次 insert 就会把还活着的项的包装误失效。
 //   项指针在本列表内是稳定的(见 JZListWidget 的 unique_ptr 存储), 所以用它做键。
 class JZJSListWidget : public JSWidgetClass<JZListWidget>

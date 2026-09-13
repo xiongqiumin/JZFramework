@@ -1,4 +1,4 @@
-// BTE 协议层/传输层在 JS 引擎里的端到端测试
+﻿// BTE 协议层/传输层在 JS 引擎里的端到端测试
 //
 // 背景: binary/code_agent/runtime/bteserver 是把 JZBTEServer(Qt/C++ 上位机)逐行翻译成
 //       JS 的产物。整体分三层:
@@ -38,10 +38,16 @@
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZEventLoop.h"
+#include "JZFile.h"
 #include "JZJSCoreModule.h"
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
+#include "JZJSWorkerModule.h"
 #include "JZJSWidgetModule.h"
+#include "JZImage.h"
+#include "JZJSType.h"
+#include "JZPainterEvent.h"
+#include "JZWidget.h"
 #include "JZTimer.h"
 
 using namespace std;
@@ -75,17 +81,27 @@ int main()
     engine.setLibraryDir({ string(JZ_JS_WRAPPER_DIR) });
     STEP("engine start");
 
+    // 模块安装顺序与 JZEngineRuntime 保持一致: net -> core -> widget -> worker
+    //   worker **必须最后装**: net 会无条件重建 __jz, 而 worker 模块往 __jz 里塞子命名空间。
+    JZJSNetModule netModule;
+    netModule.initEngine(&engine);
+    JZJSCoreModule coreModule;
+    coreModule.initEngine(&engine);
+    STEP("net/core module init");
+
     // 控件模块: 向 JS 注册框架真控件类(JZWindow/JZLabel/JZPushButton/JZGridLayout/...)。
     // qtcompat.js 会据此把 Qt 名字(QLabel/...)桥到框架实现; 没初始化时退回 JS 替身。
     JZJSWidgetModule widgetModule;
     widgetModule.initEngine(&engine);
     STEP("widget module init");
 
-    JZJSNetModule netModule;
-    netModule.initEngine(&engine);
-    JZJSCoreModule coreModule;
-    coreModule.initEngine(&engine);
-    STEP("net/core module init");
+    // worker 模块: __jz.worker.* + 全局 Worker 类(独立 JSRuntime + 线程 + 消息)。
+    JZJSWorkerModule workerModule;
+    workerModule.initEngine(&engine, 0, -1, JZByteArray());
+    STEP("worker module init");
+
+    // 离屏绘制测试用的 image(借用给 JS, 生命周期 = main)
+    JZImage paintImage;
 
     // 引导脚本: 以 ESM 加载 bteserver 的模块, 并把导出挂成全局供 eval 断言使用。
     // 注意 main.js 在**载入时**就跑 protocolSelfTest(), 任何用例失败都会抛异常 ->
@@ -113,12 +129,14 @@ int main()
             "import { DataTrans } from './DataTrans.js';\n"
             "import { BTEProject, DeviceData, SplitInfo } from './BTEProject.js';\n"
             "import { BTERecordInfo, BTEStepInfo, BTERecord } from './BTERecordDataBase.js';\n"
+            "import { BTEItemWidget } from './BTEItemWidget.js';\n"
             "import { net } from 'net/dist/index.js';\n"
             "import qtCompat from './qtcompat.js';\n"
             "globalThis.__bte = {\n"
             "  main: mainMod, B: B, P: P, DT: DT, ST: ST, DataTrans: DataTrans, net: net, qtCompat: qtCompat,\n"
             "  BTEProject: BTEProject, DeviceData: DeviceData, SplitInfo: SplitInfo,\n"
             "  BTERecordInfo: BTERecordInfo, BTEStepInfo: BTEStepInfo, BTERecord: BTERecord,\n"
+            "  BTEItemWidget: BTEItemWidget,\n"
             "  NetServer: NetServer, NetClient: NetClient, NetPackManager: NetPackManager,\n"
             "  NetDataManager: NetDataManager, blockingIoReport: blockingIoReport,\n"
             "  NetPackVariant: NetPackVariant, NETPACK_VARIANT: NETPACK_VARIANT,\n"
@@ -353,6 +371,429 @@ int main()
     return bad.length ? bad.join('; ') : 'OK';
 })()
 )JS", "'OK'");
+
+    // -----------------------------------------------------------------------
+    // 2.7 真 worker: QThread -> 框架 Worker(独立 JSRuntime + 线程 + 消息)
+    //
+    //   移植代码里原来的 ServerThread(QThread 包装 NetServer)是因为"JS 没有线程"被删掉的。
+    //   引擎现在有 worker 模块了, 这里验证 qtcompat 的 QThread 桥确实落在真线程上:
+    //     setEntry(入口脚本) + start() + 双向 postMessage + worker 自己 exit -> sigFinished
+    // -----------------------------------------------------------------------
+    {
+        // worker 入口脚本必须全 ASCII(见 test_jsworker.cpp 的说明)
+        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
+        if (!tmp.exists())
+            tmp.mkpath(tmp.path());
+        const string entry = tmp.path() + "/_bte_worker.js";
+        const string code =
+            "__jz.worker.onMessage(function (from, v) {\n"
+            "  if (v && v.__qt_quit) { __jz.worker.postTo(from, { bye: true }); __jz.worker.exit(); return; }\n"
+            "  __jz.worker.postTo(from, { echo: v, id: __jz.worker.selfId(),"
+            " main: __jz.worker.isMainThread(), parent: __jz.worker.parentId(),"
+            " data: __jz.worker.workerData });\n"
+            "});\n";
+        FILE* f = fopen(entry.c_str(), "wb");
+        if (f)
+        {
+            fwrite(code.data(), 1, code.size(), f);
+            fclose(f);
+        }
+        string slash = entry;
+        std::replace(slash.begin(), slash.end(), '\\', '/');
+        engine.eval("globalThis.__wEntry = '" + slash + "';");
+    }
+
+    runCheck("worker: 引擎装了 worker 模块(Worker 类 + __jz.worker 原子 API)", R"JS(
+(function () {
+    var api = globalThis.__jz && globalThis.__jz.worker;
+    return typeof Worker === 'function' && !!api
+        && typeof api.postTo === 'function' && typeof api.onMessage === 'function'
+        && api.isMainThread() === true && api.selfId() === 0 && api.parentId() === -1;
+})()
+)JS");
+
+    runCheck("worker: QThread 没给入口脚本时只记账 + 在当前线程跑 run(不假装子线程)", R"JS(
+(function () {
+    var ran = 0, started = 0, fin = 0;
+    var t = new QThread();
+    t.run = function () { ran++; };
+    t.sigStarted.push(function () { started++; });
+    t.sigFinished.push(function () { fin++; });
+    var ok = t.start();          // 没有 entry -> false, 且 run 在当前线程跑一次
+    return ok === false && ran === 1 && started === 1 && fin === 1 && t.isRunning() === false;
+})()
+)JS");
+
+    engine.eval(R"JS(
+(function () {
+    globalThis.__wRecv = [];
+    globalThis.__wFin = null;
+    globalThis.__th = new QThread();
+    __th.setEntry(__wEntry);
+    __th.setWorkerData({ tag: 'bteserver' });
+    __th.sigMessage.push(function (from, v) { __wRecv.push({ from: from, v: v }); });
+    __th.sigFinished.push(function (code) { __wFin = { code: code }; });
+    globalThis.__wStarted = __th.start();
+})()
+)JS");
+    check("worker: QThread.start 起了真 worker(id>0, isRunning)",
+          waitFor("__wStarted === true && __th.workerId() > 0 && __th.isRunning() === true", 8000));
+    engine.eval("__th.postMessage({ op: 'ping', n: 7 });");
+    check("worker: 主线程 -> worker -> 主线程 消息往返", waitFor("__wRecv.length === 1", 8000));
+    checkEqJs("worker: 往返内容 + 线程身份(selfId/isMainThread/parent/workerData)", R"JS(
+(function () {
+    if (__wRecv.length !== 1) return 'recv=' + __wRecv.length;
+    var r = __wRecv[0].v;
+    var bad = [];
+    if (__wRecv[0].from !== __th.workerId()) bad.push('from=' + __wRecv[0].from);
+    if (!r || !r.echo || r.echo.op !== 'ping' || r.echo.n !== 7) bad.push('echo');
+    if (r.id !== __th.workerId()) bad.push('workerId=' + r.id);
+    if (r.main !== false) bad.push('isMainThread=' + r.main);
+    if (r.parent !== 0) bad.push('parent=' + r.parent);
+    if (!r.data || r.data.tag !== 'bteserver') bad.push('workerData=' + JSON.stringify(r.data));
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+    engine.eval("__th.quit();");
+    check("worker: worker 自己 exit -> sigFinished(code)", waitFor("!!__wFin", 8000));
+    runCheck("worker: 退出后 isRunning=false / isFinished=true",
+             "(function () { return __th.isRunning() === false && __th.isFinished() === true; })()");
+
+    // -----------------------------------------------------------------------
+    // 2.8 画笔: QPainter -> JZPainter(离屏画笔真的画出 PNG)+ JS 对象控件配真控件
+    // -----------------------------------------------------------------------
+    {
+        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
+        string png = tmp.path() + "/_paint.png";
+        std::replace(png.begin(), png.end(), '\\', '/');
+        engine.eval("globalThis.__png = '" + png + "';");
+        if (JZFile::exists(png))
+            JZFile::remove(png);
+
+        // 离屏图画笔要有一个 image 设备。JZImage::create 是 C++ 静态工厂, 没有"静态"绑定到 JS
+        // (见报告), 所以这里按 test_jsui 的做法从 C++ 注入一张图(借用, 生命周期 = main)。
+        paintImage = JZImage::create(24, 16, JZColor(255, 255, 255, 255));
+        engine.setProperty(engine.globalObject(), "__img",
+                           toJsValueFromPtr(engine.context(), &paintImage, true));
+    }
+
+    checkEqJs("paint: QPainter 落在框架 JZPainter 上(Qt 重载 + 真出图)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    function step(n, fn) {
+        try { return fn(); }
+        catch (e) { bad.push(n + ' EXC: ' + e); return null; }
+    }
+
+    var img = __img;                              // C++ 注入的 JZImage(借用)
+    if (!img) { bad.push('__img 缺'); return bad.join('; '); }
+    eq('img is JZImage', (img instanceof JZImage), true);
+    eq('img.w', img.width(), 24);
+    eq('img.h', img.height(), 16);
+
+    var p = step('new QPainter(img)', function () { return new QPainter(img); });
+    if (!p) return bad.join('; ');
+    eq('painter is JZPainter', (p instanceof JZPainter), true);
+    if (typeof p.setPen !== 'function') { bad.push('setPen 缺'); return bad.join('; '); }
+
+    step('setPen(QPen)', function () { p.setPen(new QPen(new QColor(255, 0, 0), 2)); });
+    step('drawLine(x1,y1,x2,y2)', function () { p.drawLine(0, 0, 23, 0); });
+    step('drawLine(QPoint,QPoint)', function () { p.drawLine(new QPoint(0, 1), new QPoint(23, 1)); });
+    step('setBrush(QBrush)', function () { p.setBrush(new QBrush(new QColor(0, 0, 255))); });
+    step('fillRect(QRect,QColor)', function () { p.fillRect(new QRect(0, 2, 10, 4), new QColor(0, 255, 0)); });
+    step('drawRect(QRect)', function () { p.drawRect(new QRect(11, 2, 6, 4)); });
+    step('setFont(QFont)', function () { p.setFont(new QFont('sans-serif', 9)); });
+    step('drawText(x,y,s)', function () { p.drawText(1, 14, 'x'); });
+    step('setClipRect(QRect)', function () { p.setClipRect(new QRect(0, 0, 24, 16)); });
+    step('setRenderHint(no-op)', function () { p.setRenderHint(1); });
+    step('end', function () { p.end(); });
+    step('img.save(png)', function () { eq('save png', img.save(__png), true); });
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    {
+        const string png = JZDir::currentPath() + "/bte_worker_tmp/_paint.png";
+        int size = 0;
+        if (JZFile::exists(png))
+        {
+            JZFile f;
+            if (f.open(png, "rb"))
+                size = f.size();
+        }
+        bool ok = (size > 0);
+        check("paint: 离屏画笔真的写出了一个非空 PNG 文件", ok);
+        if (ok)
+            jzDebug() << "[diag] paint png:" << size << "bytes ->" << png;
+    }
+
+    checkEqJs("paint: JS 对象控件(BTEItemWidget 式) 配真控件 + 绘制/鼠标钩子接回", R"JS(
+
+(function () {
+    var bad = [];
+    // 模拟 BTEItemWidget: 用 C++ 的 QWidget.call(this) 基类初始化写法, 自己实现 paintEvent
+    function Item() { QWidget.call(this, null); this.painted = 0; }
+    Item.prototype.paintEvent = function (e) { this.painted++; };
+    Item.prototype.mousePressEvent = function (e) { this.pressed = true; };
+    var it = new Item();
+
+    var layout = new QGridLayout();
+    layout.addWidget(it, 0, 0, 1, 2);                  // 布局里放"JS 对象控件"
+    var real = it.__jzWidget;
+    if (!real) { bad.push('没配对真控件'); return bad.join('; '); }
+    if (!(real instanceof JZWidget)) bad.push('配对对象不是 JZWidget');
+
+    // 钩子接回 JS 对象
+    if (typeof real.onPaint !== 'function') bad.push('onPaint 未接');
+    else real.onPaint({});
+    if (it.painted !== 1) bad.push('paintEvent 未回调: ' + it.painted);
+    if (typeof real.onMousePress === 'function') real.onMousePress({});
+    if (it.pressed !== true) bad.push('mousePressEvent 未回调');
+
+    // 控件方法转发到真控件
+    it.setVisible(false);
+    if (real.isVisible() !== false) bad.push('setVisible 未转发');
+    it.setGeometry(3, 4, 30, 20);
+    if (real.geometry().width() !== 30) bad.push('setGeometry 未转发: ' + real.geometry().width());
+    it.show();
+    if (real.isVisible() !== true) bad.push('show 未转发');
+
+    // 同一个对象只配一个真控件(幂等)
+    layout.addWidget(it, 1, 0);
+    if (it.__jzWidget !== real) bad.push('重复配对');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // -----------------------------------------------------------------------
+    // 2.9 BTEItemWidget 真控件化: 实例就是真 JZWidget, 类方法挂实例, 钩子接回 Qt 方法
+    // -----------------------------------------------------------------------
+    // 2.9 BTEItemWidget 真控件化 —— 分步断言(每步一个 eval, 崩溃/异常好定位)
+    // -----------------------------------------------------------------------
+    STEP("2.9a: construct + instanceof");
+    runCheck("widget 2.9a: 实例就是真控件(instanceof JZWidget/QWidget)", R"JS(
+(function () {
+    globalThis.__it = new __bte.BTEItemWidget();
+    return (__it instanceof JZWidget) && (__it instanceof QWidget);
+})()
+)JS");
+
+    STEP("2.9b: class methods on instance");
+    runCheck("widget 2.9b: 类方法都挂到了实例上", R"JS(
+(function () {
+    var need = ['initWidget', 'setChannelText', 'setItemIndex', 'itemIndex', 'setStatus', 'status',
+        'clear', 'data', 'setData', 'getDispInfo', 'bgColor', 'getTitle', 'setScale', 'scale', 'setSize',
+        'isChecked', 'setCheck', 'setAlarmCleared', 'isAlarmCleared', 'updateToolTip', 'dispose',
+        'paintEvent', 'mousePressEvent', 'mouseReleaseEvent'];
+    var bad = [];
+    for (var i = 0; i < need.length; i++)
+        if (typeof __it[need[i]] !== 'function') bad.push(need[i]);
+    return bad.length ? bad.join(',') : true;
+})()
+)JS");
+
+    STEP("2.9c: 卡片数据链路");
+    checkEqJs("widget 2.9c: 卡片数据链路(getDispInfo/getTitle/clear)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    var it = __it, B = __bte.B;
+
+    it.setChannelText('1 - 1');
+    it.setItemIndex(5);
+    eq('itemIndex', it.itemIndex(), 5);
+    var pack = new B.stru_BTS_CMD_SEND_RTDATA76();
+    pack.StepID = 3; pack.CycleStatus = 2; pack.Voltage = 40000; pack.Current = 10000;
+    pack.Tempature = 255; pack.TestTime = 65000n; pack.StepType = 1;
+    it.setData(pack);
+    var info = it.getDispInfo();
+    eq('getDispInfo.len', info.length, 9);
+    eq('disp[1]=StepID', info[1], '3');
+    eq('disp[3]=时间', info[3], '00:01:05');
+    eq('disp[4]=电压', info[4], '4.0000');
+    eq('disp[6]=温度', info[6], '25.5');
+    eq('getTitle 非空', it.getTitle().title.length > 0, true);
+    it.clear();
+    eq('clear 后 StepID', it.getDispInfo()[1], '0');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    STEP("2.9d1: 绘制钩子 spy + 真窗口");
+    runCheck("widget 2.9d1: 绘制钩子 spy 就位 + 真窗口可建", R"JS(
+(function () {
+    var it = __it;
+    globalThis.__itPaint = { count: 0, err: null };
+    var inner = it.onPaint;
+    it.onPaint = function (e) {
+        __itPaint.count++;
+        try { inner.call(it, e); } catch (err) { __itPaint.err = String(err); }
+    };
+    globalThis.__win = new JZWindow(240, 180, 'item');
+    return (typeof it.onPaint === 'function') && (typeof it.onMousePress === 'function');
+})()
+)JS");
+
+    STEP("2.9d2: 裸控件的几何 + rect()");
+    runCheck("widget 2.9d2: 裸控件几何探针(诊断)", R"JS(
+(function () {
+    var a = new JZWidget();
+    var s = 'new=' + a.width() + 'x' + a.height();
+    a.resize(100, 60);
+    s += ' resize=' + a.width() + 'x' + a.height();
+    a.setGeometry(0, 0, 120, 70);
+    s += ' setGeometry=' + a.width() + 'x' + a.height();
+    __it.setGeometry(0, 0, 100, 60);
+    s += ' | it=' + __it.width() + 'x' + __it.height()
+        + ' rect=' + __it.rect().width() + 'x' + __it.rect().height();
+    globalThis.__geoInfo = s;
+    return true;
+})()
+)JS");
+
+    {
+        auto v = engine.eval("__geoInfo");
+        jzDebug() << "[diag] 几何:" << (engine.isException(v.get()) ? string("<exception>")
+            : engine.fromJSValue<string>(v.get()));
+    }
+
+    STEP("2.9d3: update()(裸控件)");
+    runCheck("widget 2.9d3: update() 不崩(裸控件, 未进窗口)", R"JS(
+(function () {
+    __it.update();
+    if (globalThis.__host)
+        __host.update();
+    return true;
+})()
+)JS");
+
+    STEP("2.9e: 鼠标链");
+    checkEqJs("widget 2.9e: 鼠标链(框架钩子->Qt 事件->mouseReleaseEvent->sigToggled)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    var it = __it;
+    function fakeMouse(btn) {
+        return {
+            localX: function () { return 5; }, localY: function () { return 5; },
+            globalX: function () { return 105; }, globalY: function () { return 105; },
+            button: function () { return btn; }, modifiers: function () { return 0; },
+            accept: function () { }, ignore: function () { }, isAccepted: function () { return true; },
+        };
+    }
+    var toggled = null;
+    it.sigToggled.push(function (v) { toggled = v; });
+    it.onMousePress(fakeMouse(Qt.LeftButton));
+    var down = it.m_mouseDown;
+    var rc = it.rect();
+    var c1 = 'n/a', c2 = 'n/a';
+    try { c1 = String(rc.contains(new QPoint(5, 5))); } catch (e) { c1 = 'EXC ' + e; }
+    try { c2 = String(rc.contains(5, 5)); } catch (e) { c2 = 'EXC ' + e; }
+    globalThis.__mouseInfo = 'rect=' + rc.width() + 'x' + rc.height()
+        + ' m_down=' + down + ' contains(pt)=' + c1 + ' contains(x,y)=' + c2;
+    // 直接按 Qt 事件形状调移植的槽(绕过钩子包装), 看它本身是否工作
+    var directErr = 'none';
+    try {
+        it.mouseReleaseEvent({
+            pos: function () { return new QPoint(5, 5); },
+            globalPos: function () { return new QPoint(5, 5); },
+            button: function () { return Qt.LeftButton; },
+            accept: function () { }, ignore: function () { },
+        });
+    } catch (e) { directErr = String(e); }
+    globalThis.__mouseInfo += ' | 直接调槽 err=' + directErr + ' checked=' + it.isChecked();
+    it.setCheck(false);
+    it.onMousePress(fakeMouse(Qt.LeftButton));   // 重新按下(上面的直接调用会清掉 m_mouseDown)
+    it.onMouseRelease(fakeMouse(Qt.LeftButton));
+    eq('按下后 m_mouseDown(卡片 ' + it.width() + 'x' + it.height() + ')', down, true);
+    eq('点击后 isChecked', it.isChecked(), true);
+    eq('sigToggled(true)', toggled, true);
+    eq('tooltip 非空', String(it.tooltip()).length > 0, true);
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+    {
+        auto v = engine.eval("__mouseInfo");
+        jzDebug() << "[diag] 鼠标链:" << (engine.isException(v.get()) ? string("<exception>")
+            : engine.fromJSValue<string>(v.get()));
+    }
+
+    STEP("2.9e2: 进网格布局 + host + 窗口(子布局基类已注册)");
+    runCheck("widget 2.9e2: 网格布局收真控件 + setLayout 类型检查通过", R"JS(
+(function () {
+    globalThis.__layout = new QGridLayout();
+    __layout.addWidget(__it, 0, 0);
+    globalThis.__host = new JZWidget();
+    __host.setLayout(__layout);
+    __win.addWidget(__host);
+    return (__layout instanceof JZLayout);
+})()
+)JS");
+
+    STEP("2.9f: 信号数组(真控件实例上)");
+    runCheck("widget 2.9f: 信号数组在真控件实例上可用(sigCustomContextMenuRequested.push)", R"JS(
+(function () {
+    __it.sigCustomContextMenuRequested.push(function () { });
+    return __it.sigCustomContextMenuRequested.length === 1;
+})()
+)JS");
+    // 注: mapTo/mapFrom 暂不在测试里断言 —— 框架的 parentWidget() 在"没有父级/顶层"的
+    //     控件上会崩(见本次报告), 桥里已加 instanceof 保护, 等引擎侧确认后再补测试。
+    // 窗口**必须真显示**(show + 泵事件)之后才有绘制后端 —— 否则给里面的控件派发 paint
+    // 时 `new QPainter(widget)` 会崩(见本次报告: 未 show 的窗口内子控件绘制)。
+    STEP("2.9g-pre: 显示窗口 + 泵事件");
+    engine.eval("__win.show();");
+    waitFor("1 === 1", 300);          // 泵一轮事件, 让窗口后端就绪
+
+    // ---- 2.9g 真绘制: 走"窗口真显示 -> 框架自己派发绘制到各控件"这条路 ----
+    //
+    //   为什么要这么绕: **手动**给"子控件"投一个 JZPainterEvent、再在 onPaint 里
+    //   `new QPainter(该子控件)`, 在引擎里会 0xC0000005(test_jsui 对**顶层 JZWindow** 是好的;
+    //   本次已复现: 同一个控件只 new QPainter 不崩, 换成子控件就崩)。
+    //   → 所以验证点改成"真显示窗口 + 泵事件, 看框架有没有把卡片画一遍"。
+    STEP("2.9g: 显示窗口 + 泵事件(诊断: 测试环境里窗口未必真渲染)");
+    engine.eval("__win.show();");
+    waitFor("1 === 1", 1200);          // 泵事件, 给框架一个自动绘制的机会
+    {
+        auto v = engine.eval("String(__itPaint.count)");
+        jzDebug() << "[diag] 2.9g: show 之后框架自动绘制次数 ="
+            << (engine.isException(v.get()) ? string("<exception>") : engine.fromJSValue<string>(v.get()));
+        auto e = engine.eval("String(__itPaint.err)");
+        jzDebug() << "[diag] 2.9g: paintEvent 异常 ="
+            << (engine.isException(e.get()) ? string("<exception>") : engine.fromJSValue<string>(e.get()));
+    }
+    // 注: **手动**给子控件投 JZPainterEvent 再 new QPainter(子控件) 会 0xC0000005(本次已复现,
+    //     顶层 JZWindow 正常), 而测试环境里窗口 show 后不会真渲染 -> 控件绘制的端到端验证
+    //     等引擎侧修好/能在真 GUI 会话里跑之后再补断言。这里只做诊断, 不计入断言。
+
+    // ---- 2.9h 抓图: 把卡片当前内容抓成 PNG(证明绘制真的落到了控件图层上) ----
+    STEP("2.9h: grab -> png");
+    {
+        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
+        string shot = tmp.path() + "/_item_paint.png";
+        std::replace(shot.begin(), shot.end(), '\\', '/');
+        if (JZFile::exists(shot))
+            JZFile::remove(shot);
+
+        auto v = engine.eval("__it");
+        JZWidget* w = engine.isException(v.get()) ? nullptr : engine.fromJSValue<JZWidget*>(v.get());
+        int shotSize = 0;
+        if (w)
+        {
+            JZImage img = w->grab();
+            if (!img.isNull())
+                img.save(shot);
+            if (JZFile::exists(shot))
+            {
+                JZFile f;
+                if (f.open(shot, "rb"))
+                    shotSize = f.size();
+            }
+        }
+        jzDebug() << "[diag] item paint(2.9h): grabbed png bytes =" << shotSize
+                  << "(测试环境窗口未真渲染时为 0, 见 2.9g 说明)";
+    }
 
     checkEqJs("qtcompat: globals injected (Qt/QFile/QByteArray/QSettings/QColor/Ui_*)", R"JS(
 (function () {
@@ -1128,6 +1569,7 @@ int main()
     widgetModule.deinitEngine();
     netModule.deinitEngine();
     coreModule.deinitEngine();
+    workerModule.deinitEngine();
 
     if (g_fail == 0)
         jzDebug() << "[test_bteserver] ALL PASS";

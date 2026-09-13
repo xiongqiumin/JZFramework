@@ -9,6 +9,7 @@
 #include "JZJSqliteModule.h"
 #include "JZJSModbusModule.h"
 #include "JZJSWidgetModule.h"
+#include "JZJSWorkerModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
@@ -186,12 +187,19 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_widgetModule = std::make_unique<JZJSWidgetModule>();
     m_widgetModule->initEngine(engine);
 
+    // worker：__jz.worker.* + 全局 Worker 类（每个 worker 一个独立引擎 + 消息通信）。
+    // 【必须最后装】JZJSNetModule::initEngine 会无条件新建并覆盖全局 __jz，而本模块
+    // 往 __jz 里塞 worker 子命名空间 —— 排在 net 之前会被覆盖掉。
+    // 主线程侧 id 固定 0；parentId = -1 表示没有父 worker。
+    m_workerModule = std::make_unique<JZJSWorkerModule>();
+    m_workerModule->initEngine(engine, 0, -1, JZByteArray());
+
     // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
     // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
     // 用(等价 Node 启动装载 undici/whatwg)。net 模块按绝对路径加载, 与用户入口
     // `import '../jz_js/net/dist/index.js'` 命中同一模块缓存, 不会重复执行; 找不到
-    bootstrapWebGlobals(wd);
-
+    // 【注意】必须放在下面 `m_engine = engine` 之后: bootstrapWebGlobals 用的是成员
+    // m_engine(不是局部 engine), 放在赋值之前 = 空指针解引用(runModuleFile 里 AV)。
     LogBridge *bridge = new LogBridge();
     bridge->rt = this;
     connect(&engine->sigLog, bridge, &LogBridge::onLog);
@@ -204,6 +212,9 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_bridge = bridge;
     m_engineWorkDir = wd;
     m_engineRunning = true;
+
+    bootstrapWebGlobals(wd);
+
     m_lastError.clear();
     return true;
 }
@@ -236,7 +247,13 @@ void JZEngineRuntime::bootstrapWebGlobals(const string &wd)
 
 void JZEngineRuntime::shutdownEngine()
 {
-    // 先卸载内置模块（释放其持有的引擎引用 / 回调根），再销毁引擎本身
+    // 先卸载内置模块（释放其持有的引擎引用 / 回调根），再销毁引擎本身。
+    // worker 模块最先卸载：它会停掉并回收所有在跑的 worker 线程。
+    if (m_workerModule)
+    {
+        m_workerModule->deinitEngine();
+        m_workerModule.reset();
+    }
     if (m_netModule)
     {
         m_netModule->deinitEngine();

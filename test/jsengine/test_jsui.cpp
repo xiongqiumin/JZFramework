@@ -405,6 +405,131 @@ int main()
                       "(uiC.chart instanceof JZChart && uiC.chart.title() === 'Trend') ? 'ok' : 'bad'") == "ok");
     }
 
+    // 10) 控件状态管理: addWidget 的所有权转移 / 父链切换 / 脱离父树 / 布局替换 / JS 包装保活。
+    //     —— 覆盖 JZJSWidgetModule 的控件登记(保活)与 JZJSWidget.cpp 的 setParentWidget / setLayout。
+    //     注意: 每次从 JS 取对象都要先把包装留在 C++ 变量里, 免得"取指针"用的是临时的返回值。
+    jzDebug() << "===== 控件状态管理(所有权/父链/布局/保活)演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        widgetModule.initEngine(&engine);
+
+        // 包装的所有权在谁手上: 1 = C++ 拥有(JS 不删, /Transfer/), 0 = JS 拥有, -1 = 不是 jsbind 包装。
+        // /Transfer/ /TransferBack/ 翻转的就是它; PointInfo 是共享的 ⇒ 从 JS 那份包装上读到的就是真实状态。
+        auto cppOwnerOf = [](JSValueConst v) {
+            JSClassID id = 0;
+            auto* p = (jsbind::JSPointerBase*)JS_GetAnyOpaque(v, &id);
+            return p ? (p->cppOwner() ? 1 : 0) : -1;
+        };
+        auto hasChild = [](JZObject* parent, JZObject* child) {
+            for (JZObject* o : parent->children())
+                if (o == child)
+                    return true;
+            return false;
+        };
+
+        JZJSValuePtr p1Val = engine.eval("var p1 = new JZWindow(200, 100, 'p1'); p1.setObjectName('p1'); p1");
+        JZJSValuePtr p2Val = engine.eval("var p2 = new JZWindow(200, 100, 'p2'); p2.setObjectName('p2'); p2");
+        JZJSValuePtr cVal  = engine.eval("var c = new JZPushButton(); c.setObjectName('c'); c");
+        JZWidget* p1 = engine.fromJSValue<JZWidget*>(p1Val.get());
+        JZWidget* p2 = engine.fromJSValue<JZWidget*>(p2Val.get());
+        JZWidget* c  = engine.fromJSValue<JZWidget*>(cVal.get());
+
+        // (a) addWidget: 所有权转移(/Transfer/) + 真的挂成子控件(父链 / 对象树 / 布局项三处一致)
+        check("addWidget 前包装由 JS 拥有", cppOwnerOf(cVal.get()) == 0);
+        evalStr(engine, "p1.addWidget(c); 'ok'");
+        check("addWidget 后翻成 C++ 拥有(/Transfer/)", cppOwnerOf(cVal.get()) == 1);
+        check("addWidget 后成为父控件的子控件(树+布局项)",
+              c->parentWidget() == p1 && hasChild(p1, c) && !hasChild(p2, c)
+              && p1->layout() != nullptr && static_cast<JZBoxLayout*>(p1->layout())->count() == 1);
+
+        // (b) setParentWidget 换父: 同一个控件只属于一个父(旧父不再持有)
+        check("setParentWidget 换父后父链指向新父",
+              evalStr(engine, "c.setParentWidget(p2); c.parentWidget().objectName()") == "p2");
+        check("换父后 C++ 对象树同步(旧父不再持有)",
+              c->parentWidget() == p2 && !hasChild(p1, c) && hasChild(p2, c) && cppOwnerOf(cVal.get()) == 1);
+
+        // (c) 脱离父树: 交回 JS 拥有; 之后再挂回又能进树
+        check("setParentWidget(null) 脱离父树",
+              evalStr(engine, "c.setParentWidget(null); (c.parentWidget() === null) ? 'null' : 'obj'") == "null");
+        check("脱离后包装翻回 JS 拥有(/TransferBack/)",
+              cppOwnerOf(cVal.get()) == 0 && c->parentWidget() == nullptr && !hasChild(p2, c));
+        check("重新挂回父树后所有权与父链恢复",
+              evalStr(engine, "p2.addWidget(c); (c.parentWidget().objectName() === 'p2') ? 'ok' : 'bad'") == "ok"
+              && cppOwnerOf(cVal.get()) == 1 && hasChild(p2, c));
+
+        // (d) setLayout 的 Qt 语义: 一个控件只能有一个布局, 且只能设一次;
+        //     清空只能 clearLayout()(等价 Qt 的 `delete w->layout()`), 之后才能设新的。
+        check("setLayout: 重复设置被拒绝、null 被拒绝(原布局不受影响)",
+              evalStr(engine,
+                      "var w = new JZWindow(240, 160, 'lw');"
+                      "w.setLayout(new JZVBoxLayout());"
+                      "var rep = 'accepted';"
+                      "try { w.setLayout(new JZHBoxLayout()); } catch (e) { rep = 'rejected'; }"
+                      "var nul = 'accepted';"
+                      "try { w.setLayout(null); } catch (e) { nul = 'rejected'; }"
+                      "var kept = (w.layout() instanceof JZVBoxLayout) ? 'vbox' : 'bad';"   // 原布局没被换也没被删
+                      "rep + '/' + nul + '/' + kept") == "rejected/rejected/vbox");
+
+        check("clearLayout 后 layout() 为 null、旧视图失效、可再设新布局",
+              evalStr(engine,
+                      "var view = w.layout();"       // 视图(缓存那份): clearLayout 后会被置失效
+                      "w.clearLayout();"
+                      "var cleared = (w.layout() === null) ? 'null' : 'obj';"
+                      "var dead = 'usable';"
+                      "try { view.addSpacing(1); } catch (e) { dead = 'released'; }"
+                      "w.setLayout(new JZHBoxLayout());"
+                      "cleared + '/' + dead + '/' + ((w.layout() instanceof JZHBoxLayout) ? 'hbox' : 'bad')")
+              == "null/released/hbox");
+
+        check("layout() 返回同一个包装(缓存, 引用相等)",
+              evalStr(engine, "(w.layout() === w.layout()) ? 'same' : 'diff'") == "same");
+        {
+            JZJSValuePtr wVal = engine.eval("w");
+            JZWidget* w = engine.fromJSValue<JZWidget*>(wVal.get());
+            check("C++ 侧布局已是 HBox", dynamic_cast<JZHBoxLayout*>(w->layout()) != nullptr);
+
+            JZJSValuePtr view = engine.eval("w.layout()");
+            check("布局包装是借用视图(JS 不拥有)", cppOwnerOf(view.get()) == 1);
+        }
+
+        // 窗口默认不带布局(否则 JS 里 `new JZWindow(...); win.setLayout(v)` 就成了重复设置):
+        // 想要默认纵向布局直接 addWidget —— JZWindow.addWidget 会按需补一个 VBox。
+        check("窗口无布局时 addWidget 自动补一个 VBox",
+              evalStr(engine,
+                      "var nw = new JZWindow(120, 80, 'nw');"
+                      "var none = (nw.layout() === null) ? 'null' : 'obj';"
+                      "nw.addWidget(new JZPushButton());"
+                      "none + '/' + ((nw.layout() instanceof JZVBoxLayout) ? 'vbox' : 'bad')") == "null/vbox");
+
+        // (e) 保活: JS 丢掉子控件引用 + 强制 GC 后包装仍必须活着(否则 m_jsvalue 悬垂),
+        //     事件照旧能派发到 JS。没有保活时这一段会失效/崩 —— 正是本轮修的问题。
+        evalStr(engine,
+                "var kw = new JZWindow(200, 120, 'keep');"
+                "var kc = new JZWidget();"
+                "kc.setFixedSize(40, 20);"
+                "globalThis.__hits = 0;"
+                "kc.onMousePress = function (e) { globalThis.__hits++; };"
+                "kw.addWidget(kc);"
+                "globalThis.__win = kw;"     // 顶层窗口留给 JS 拥有; 子控件之后只由 C++ 对象树持有
+                "'ok'");
+        // 只取裸 C++ 指针(取完就把 JS 包装放掉): 之后 kc 的包装上就没有任何 JS 侧引用了,
+        // 只剩"模块保活"那一份 —— 保活失效则包装被回收, 下面的 m_jsvalue 就是悬垂的。
+        JZWidget* kc = engine.fromJSValue<JZWidget*>(engine.eval("kc").get());
+        evalStr(engine, "kc = null; 'ok'");                    // JS 全局也放手
+        JS_RunGC(JS_GetRuntime(engine.context()));             // 强制回收一轮: 没保活的话包装就没了
+        check("保活: GC 后包装未失效且仍能派发",
+              kc != nullptr && kc->parentWidget() != nullptr);
+        {
+            JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton,
+                               JZPoint(5, 5), JZPoint(5, 5));
+            jzApp->sendEvent(kc, &press);
+        }
+        check("保活: GC 后子控件事件仍派发到 JS",
+              evalStr(engine, "String(globalThis.__hits)") == "1");
+    }
+
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");
     return g_fail == 0 ? 0 : 1;
 }

@@ -34,6 +34,10 @@ public:
     // 好处是**不需要知道具体的包装类型** —— 例如 JZJSWidget 拿到自己的包装只要一个
     // JSPointerBase*, 就能把"自己"的所有权交给父控件。
     virtual void setCppOwner(bool owner) = 0;
+    // 让句柄失效(底层对象仍由 C++ 管理; 仅 cppOwner == true 时允许, 各实现内部有断言)。
+    // 提到基类的原因: JS 侧接口要在**只知道包装基类**的前提下, 让"已经发给 JS 的旧包装"立刻失效
+    // (典型: JZJSWidget.cpp 的布局缓存 —— 布局包装的具体类型随类层次不同, 是 JSRawPointer<具体类>)。
+    virtual void clear() = 0;
 };
 
 // ==================== JS 侧指针包装 ====================
@@ -339,6 +343,38 @@ public:
     std::shared_ptr<CFunction> write;
 };
 
+// 直接用 quickjs C 函数注册的方法(见 ClassBind::def(name, JSCFunction*))。
+// 与 CFunction 的分工:
+//   CFunction  —— 走引擎的 magic 分发(JS_CFUNC_generic_magic → js_member_function),
+//                 形参由注册时生成的类型表校验后转成 C++ 实参再调 lambda; **拿不到 this_val**;
+//   CRawFunction —— 不生成类型表、不进 magic 表: quickjs 以 JS_CFUNC_generic **原样**调用
+//                 JSValue fn(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)。
+//                 所以它拿得到 this_val 和原始 argv(需要翻接收者所有权、要返回真 null、
+//                 要自定义重载分派的接口只能这么注册), 校验与错误提示全部自理。
+struct CRawFunction
+{
+    std::string name;
+    JSCFunction* function = nullptr;
+    int length = 0;   // JS 侧 Function.length 的展示值(0 = 不定长); 不参与任何形参校验
+};
+
+// 带 func_data 的 C 函数(见 ClassBind::defData)。
+// JS_CFUNC_generic 系列**没有数据槽**, 只有 JS_NewCFunctionData2 造出来的函数对象才有:
+// 注册时给的 data 数组存在函数对象的记录里(GC 会 mark/free), 调用时原样交给第 6 个参数 ——
+//   JSValue fn(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic,
+//              JSValueConst* func_data)
+// 用途: C 函数要拿到"注册它的人/上下文"(如 JZJSWidgetModule 指针)。this_val 是 JS 对象、
+//      ctx opaque 只有引擎、magic 只能放一个 int, 都不够, 这类数据就只能随函数对象带。
+// 注意: JSCFunctionListEntry 里没有数据字段, 所以这类函数注册时必须单独造函数对象再挂属性。
+struct CDataFunction
+{
+    std::string name;
+    JSCFunctionData* function = nullptr;
+    int length = 0;               // JS 侧 Function.length(仅展示)
+    int magic = 0;                // 原样透传给 C 函数
+    std::vector<JSValue> data;    // 原样透传给 C 函数(注册时 quickjs 会对每个元素 dup 一份)
+};
+
 class CClassDefine
 {
 public:
@@ -363,6 +399,12 @@ public:
 
     std::vector<CProperty> propertys;
     std::vector<std::shared_ptr<CFunction>> functions;
+
+    // 带 func_data 的 C 函数(不进属性表: 注册时单独造函数对象再挂, 见 CDataFunction)
+    std::vector<CDataFunction> dataFunctions;
+
+    // 直接用 quickjs C 函数挂的方法(不进 magic 表; 见 CRawFunction)
+    std::vector<CRawFunction> rawFunctions;
 };
 
 // from js

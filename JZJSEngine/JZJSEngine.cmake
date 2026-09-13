@@ -12,6 +12,10 @@
 	JZJSEngine.cpp
 	JZJSNetModule.h
 	JZJSNetModule.cpp
+	JZJSWorkerThread.h
+	JZJSWorkerThread.cpp
+	JZJSWorkerModule.h
+	JZJSWorkerModule.cpp
 	JZJSSerialPortModule.h
 	JZJSSerialPortModule.cpp
 	JZJSCoreModule.h

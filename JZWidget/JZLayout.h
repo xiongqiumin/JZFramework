@@ -16,6 +16,10 @@ public:
     // 使用, 并把已登记的管理控件自动挂到容器下 (支持"先 addWidget 再 setLayout"
     // 的写法, 无需加控件前逐个 setParent), 最后重排。
     void apply(JZWidget* container);
+    // 已被 apply 的容器控件(尚未 setLayout 时为 nullptr)。
+    // 供"往布局里加控件"时定位父控件: 控件进布局后由**容器对象树**持有, 父控件就是它
+    // (JS 绑定要用它做"子控件 JS 包装保活"的登记, 见 JZJSWidgetModule::takeWidget)。
+    JZWidget* container() const { return m_container; }
     virtual void updateLayout() = 0;   // 子类实现: 把当前 items 排到 m_target
     virtual JZSize sizeHint() const { return JZSize(0, 0); }  // 容器期望尺寸: 内容 hints 之和
     // 容器最小尺寸: 子控件 minimum 尺寸之和。供 JZWidget::minimumSizeHint 使用,

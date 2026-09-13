@@ -203,9 +203,19 @@ public:
     void setTooltip(const JZString& tip);
     const JZString& tooltip() const;
 
-    // 布局
+    // 布局 (Qt 语义, 对齐 QWidget::setLayout):
+    //   一个控件最多一个布局, 只在**还没有布局**时能设:
+    //     * 已有布局时再 setLayout → 警告并忽略(Qt 同款行为: 新布局不被接管, 由调用方自行释放);
+    //     * setLayout(nullptr) → 警告并忽略(Qt 是 "Cannot set layout to 0", null 不是清空手段)。
+    //   清空/替换的正确姿势: 先 clearLayout()(等价 Qt 的 `delete w->layout()`, 布局析构会
+    //   同步清掉本控件的布局指针), 再 setLayout(新布局)。
     void setLayout(JZLayout* layout);
     JZLayout* layout() const;
+
+    // 清空当前布局: 删除布局对象并把指针置空。Qt 没有这个 API(那边直接 `delete w->layout()`),
+    // 给显式入口是为了 JS 侧 —— JS 删不掉 C++ 对象。
+    // 布局不拥有子控件: 子控件留在对象树上、保持最后一次几何, 只是不再被布局管理。
+    void clearLayout();
 
     // 控件样式 (背景/边框/圆角/padding)。paintEvent 内经 JZStylePainter 主动绘制;
     // 后续由样式表 (JZStyleSheet) 解析填充。
@@ -371,6 +381,9 @@ protected:
     friend class JZLayout;
     void _layoutAttach(JZLayout* layout);
     void _layoutDetach(JZLayout* layout);
+    // 布局被销毁 / 换了宿主时由 JZLayout 回调: 本控件持有的正是它就把指针清空
+    // (对应 Qt "布局析构时同步把所属控件的布局指针置空", 保证 delete layout / clearLayout 不留悬垂)。
+    void _clearLayoutPointer(JZLayout* layout);
     std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
 
     // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 起延时, 到时显示; leaveEvent 收起) ----

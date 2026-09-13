@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // BTEItemWidget.js —— 对应 C++ BTEServer/BTEItemWidget.h + BTEItemWidget.cpp
 //
 // 单个通道卡片: 自绘背景色/边框/标题/9 项数值, 支持勾选(左键切换)、右键菜单。
@@ -25,10 +25,19 @@ const FaultClearedBgColor = new QColor(255, 140, 0);
 export class BTEItemWidget
 {
     // BTEItemWidget(QWidget *parent = Q_NULLPTR);
+    //
+    // 真控件化(2026-09-13): 不再用 `QWidget.call(this, parent)` 那种"JS 对象冒充控件"的写法,
+    // 而是返回一个**真 JZWidget**: makeRealWidget 建真控件 + 把本类原型上的方法挂到实例 +
+    // 把 onPaint/onMouseXxx 钩子接回 paintEvent/mousePressEvent/...(事件按 Qt 形状包好)。
+    // 构造逻辑挪到 initWidget(this = 真控件)。
     constructor(parent)
     {
-        QWidget.call(this, parent);   // : QWidget(parent)
+        return makeRealWidget(this, JZWidget, parent);
+    }
 
+    // void initWidget(QWidget *parent);   —— 构造后的初始化(this = 真控件)
+    initWidget(parent)
+    {
         this.m_mouseDown = false;
         this.m_checked = false;
         this.m_status = DeviceInfo.Status_Complete;
@@ -146,7 +155,6 @@ export class BTEItemWidget
         painter.drawLine(new QPoint(border_top_x2, border_top), new QPoint(border_top_x2, border_top2));
         painter.drawLine(new QPoint(border_right, border_top2), new QPoint(border_right, border_bottom));
         painter.drawLine(new QPoint(border_left, border_bottom), new QPoint(border_right, border_bottom));
-
         if (this.m_checked)
         {
             const border = new QRect(new QPoint(border_left, border_top), new QPoint(border_right, border_bottom));
@@ -154,7 +162,6 @@ export class BTEItemWidget
             painter.setPen(new QPen(Qt.yellow, 2));
             painter.drawRect(border);
         }
-
         // getTitle(QString &title, QColor &color) -> JS 返回 { title, color }
         const titleRet = this.getTitle();
         const title = titleRet.title;

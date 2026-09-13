@@ -752,6 +752,20 @@ class QApplication extends QObject
     static setOverrideCursor() { noteMissing("QApplication::setOverrideCursor"); }
     static restoreOverrideCursor() { }
     static closeAllWindows() { }
+    // Qt 里这些也是 static, 业务代码常按 `QApplication::xxx()` 调(如 mouseReleaseEvent
+    // 里判断 Ctrl 修饰键) —— 实例上有了, 静态入口也得有, 不然 "not a function"。
+    static keyboardModifiers() { return Qt.NoModifier; }
+    static queryKeyboardModifiers() { return Qt.NoModifier; }
+    static mouseButtons() { return Qt.NoButton; }
+    static activeWindow() { return null; }
+    static activeModalWidget() { return null; }
+    static focusWidget() { return null; }
+    static topLevelWidgets() { return []; }
+    static allWidgets() { return []; }
+    static sendEvent() { }
+    static postEvent() { }
+    static desktop() { return makeLenient("QDesktopWidget"); }
+    static clipboard() { return makeLenient("QClipboard"); }
     static get KeypadModifier() { return Qt.KeypadModifier; }
     static get ControlModifier() { return Qt.ControlModifier; }
     static get ShiftModifier() { return Qt.ShiftModifier; }
@@ -777,15 +791,214 @@ class QSharedMemory extends QObject
     data() { return null; }
 }
 
-class QThread extends QObject
+// ---------------------------------------------------------------------------
+// 线程: QThread -> 框架真 worker(引擎的 JZJSWorkerModule)
+//
+//   引擎现在有**真 worker**(Node worker_threads 风格): 每个 worker 一个独立 JSRuntime +
+//   独立线程 + 全新空 global, 只有一条通信路 = 消息(结构化克隆的字节)。
+//     JS 侧: 全局 Worker 类: new Worker("入口脚本"[, {workerData}])
+//                              w.postMessage(v) / w.on('exit', cb) / w.terminate()
+//                              w.id / w.exited / w.exitCode
+//            worker 内(全局): __jz.worker.onMessage((from, value) => ...)
+//                            __jz.worker.postTo(id, value) / selfId() / parentId() /
+//                            isMainThread() / ids() / childIds() / workerData / exit()
+//
+//   与 Qt 的差别(所以不能照抄):
+//     - Qt 的 QThread 是"子类覆写 run()"的**同进程共享内存**模型; worker 是独立 runtime,
+//       **闭包不能跨引擎传**, 所以 run() 搬不到子线程里执行 —— 必须给**入口脚本**。
+//     - 主线程只有**一个** `__jz.worker.onMessage` 槽位, 多个线程/业务同时收消息会互相顶掉,
+//       所以本文件统一接管该槽位, 再按 from(worker id) 派发(见 installWorkerDispatch)。
+//
+//   用法(与 Qt 的差异就一条: 用 setEntry 代替覆写 run):
+//     const t = new QThread();
+//     t.setEntry("worker/recorder.js");            // 相对 workDir, 或绝对路径
+//     t.sigMessage.push((from, v) => { ... });     // worker 里 postTo(t.workerId(), v)
+//     t.sigFinished.push((code) => { ... });
+//     t.start();
+//     t.postMessage({ op: "open", path: "..." });
+// ---------------------------------------------------------------------------
+const g_workerThreads = new Map();   // worker id -> QThread
+const g_workerMessageCbs = [];       // 通用回调(不属于某个 QThread 的消息)
+let g_workerDispatchInstalled = false;
+
+function workerApi()
 {
-    constructor(parent) { super(parent); this.sigStarted = []; this.sigFinished = []; this.sigResult = []; }
-    start() { noteMissing("QThread::start(JS 引擎无线程, 见 ServerThread 的删除)"); for (const f of this.sigStarted) f(); }
-    quit() { }
-    wait() { return true; }
-    isRunning() { return false; }
+    const jz = globalThis.__jz;
+    return (jz && jz.worker) ? jz.worker : null;
 }
 
+// 接管唯一的 onMessage 槽位, 按 from 派发; 幂等
+function installWorkerDispatch()
+{
+    const api = workerApi();
+    if (!api || typeof api.onMessage !== "function")
+        return false;
+    if (g_workerDispatchInstalled)
+        return true;
+
+    api.onMessage((from, value) =>
+    {
+        const t = g_workerThreads.get(from);
+        if (t)
+        {
+            emitSignal(t.sigMessage, from, value);
+            emitSignal(t.sigResult, value);
+        }
+        for (let i = 0; i < g_workerMessageCbs.length; i++)
+        {
+            try { g_workerMessageCbs[i](from, value); }
+            catch (e) { console.error("[qtcompat] worker 消息回调异常: " + e); }
+        }
+        return value;
+    });
+    g_workerDispatchInstalled = true;
+    return true;
+}
+
+// 收"任意 worker"的消息(不属于某个 QThread 的场景)
+export function onWorkerMessage(cb)
+{
+    g_workerMessageCbs.push(cb);
+    installWorkerDispatch();
+    return cb;
+}
+
+class QThread extends QObject
+{
+    constructor(parent)
+    {
+        super(parent);
+        this.sigStarted = [];
+        this.sigFinished = [];
+        this.sigMessage = [];
+        this.sigResult = [];
+        this.m_entry = "";
+        this.m_workerData = undefined;
+        this.m_worker = null;
+        this.m_running = false;
+        this.m_exitCode = 0;
+    }
+
+    // Qt 里是覆写 run(); 这里必须给**入口脚本**(worker 是独立 runtime)
+    setEntry(path) { this.m_entry = String(path); return this; }
+    entry() { return this.m_entry; }
+    setWorkerData(v) { this.m_workerData = v; return this; }
+
+    start()
+    {
+        installWorkerDispatch();
+        const hasWorker = (typeof globalThis.Worker === "function");
+
+        if (!hasWorker || !this.m_entry)
+        {
+            // 没有 worker 模块 / 没给入口脚本: 不做"假线程" —— 记账, 并在当前线程跑一次 run()
+            // (与 Qt 的"start 后 run 会被调用"保持可预期, 但绝不能假装是子线程)
+            noteMissing(hasWorker
+                ? "QThread::start 需要入口脚本(worker 是独立 runtime, run() 搬不过去): 先 setEntry('xxx.js')"
+                : "QThread::start(引擎没有 worker 模块)");
+            emitSignal(this.sigStarted);
+            if (typeof this.run === "function")
+                this.run();
+            emitSignal(this.sigFinished, 0);
+            return false;
+        }
+
+        const w = (this.m_workerData === undefined)
+            ? new globalThis.Worker(this.m_entry)
+            : new globalThis.Worker(this.m_entry, { workerData: this.m_workerData });
+        this.m_worker = w;
+        this.m_running = true;
+        if (w.id !== undefined && w.id !== null)
+            g_workerThreads.set(w.id, this);
+
+        w.on("exit", (code) =>
+        {
+            this.m_running = false;
+            this.m_exitCode = code | 0;
+            if (w.id !== undefined && w.id !== null)
+                g_workerThreads.delete(w.id);
+            emitSignal(this.sigFinished, code | 0);
+        });
+
+        emitSignal(this.sigStarted);
+        return true;
+    }
+
+    workerId() { return this.m_worker ? this.m_worker.id : -1; }
+    postMessage(v)
+    {
+        if (!this.m_worker || typeof this.m_worker.postMessage !== "function")
+            return false;
+        this.m_worker.postMessage(v);
+        return true;
+    }
+    // 软退出: 约定消息 __qt_quit, 由 worker 脚本自己收尾(框架没有"请求退出"原语)
+    quit() { return this.postMessage({ __qt_quit: true }); }
+    // 硬终止(框架 terminate)
+    terminate()
+    {
+        if (!this.m_worker || typeof this.m_worker.terminate !== "function")
+            return false;
+        this.m_worker.terminate();
+        return true;
+    }
+    wait() { noteMissing("QThread::wait(JS 无阻塞等待: 用 sigFinished 或 waitFinishedAsync)"); return !this.m_running; }
+    isRunning() { return this.m_running; }
+    exitCode() { return this.m_exitCode; }
+    isFinished() { return !this.m_running; }
+
+    // await 版等待(JS 侧替代 Qt 的阻塞 wait())
+    waitFinishedAsync(timeoutMs)
+    {
+        const self = this;
+        return new Promise((resolve) =>
+        {
+            if (!self.m_running)
+            {
+                resolve(true);
+                return;
+            }
+            const t0 = Date.now();
+            const tick = () =>
+            {
+                self.__waitTick = Date.now() - t0;
+                if (!self.m_running)
+                {
+                    resolve(true);
+                    return;
+                }
+                if (timeoutMs !== undefined && self.__waitTick > timeoutMs)
+                {
+                    resolve(false);
+                    return;
+                }
+                setTimeout(tick, 10);
+            };
+            tick();
+        });
+    }
+
+    static currentThreadId()
+    {
+        const api = workerApi();
+        return (api && typeof api.selfId === "function") ? api.selfId() : 0;
+    }
+    static isMainThread()
+    {
+        const api = workerApi();
+        return (api && typeof api.isMainThread === "function") ? !!api.isMainThread() : true;
+    }
+    static msleep(ms)
+    {
+        if (typeof globalThis.sleep === "function")
+            globalThis.sleep((ms | 0) / 1000);
+        else
+            noteMissing("QThread::msleep(JS 侧请用 setTimeout/await)");
+    }
+}
+
+// worker 之间没有共享内存(框架未启用 SAB/Atomics), 所以 QAtomicInteger 只是主线程内的计数器;
+// 跨线程计数要走消息(postTo)或让 worker 自己维护。
 class QAtomicInteger
 {
     constructor(v) { this._v = v | 0; }
@@ -888,6 +1101,13 @@ function makeLenient(name, quiet)
                 store[prop] = [];                 // 业务代码大量 `sigXxx.push(cb)`
                 return store[prop];
             }
+            // 配对过真控件的空壳对象(见 asRealWidget): 控件方法转发到真控件
+            const real = store.__jzWidget;
+            if (real && FORWARD_METHODS.indexOf(prop) >= 0 && typeof real[prop] === "function")
+            {
+                store[prop] = function (...a) { return real[prop].apply(real, a); };
+                return store[prop];
+            }
             // 其余属性一律再给一个"宽容对象"(本身可调用、可继续取属性), 并按需缓存
             store[prop] = makeLenient(name + "." + String(prop), true);
             return store[prop];
@@ -921,6 +1141,10 @@ function attachQtFallback(obj, name)
             const v = t[prop];                     // ① 业务类自己的成员优先
             if (v !== undefined)
                 return v;
+            // ② 配过真控件的(见 asRealWidget): 控件方法转发到真控件
+            const fwd = forwardToRealWidget(obj, prop);
+            if (fwd)
+                return fwd;
             if (prop === Symbol.toPrimitive || prop === "valueOf") return () => 0;
             if (prop === "toString") return () => "[" + name + "]";
             if (prop === "constructor") return t.constructor;
@@ -1269,19 +1493,196 @@ function bridgeJz(qtName, jzName, ctor, proto)
 }
 
 // 布局里可能出现"还不是真控件"的 JS 对象(BTEItemWidget 这类仍用 QWidget.call(this) 的写法),
-// 框架的 addWidget 有类型校验, 会直接抛"参数1需要类型JZWidget"。这里换成真控件占位并记账:
-// GUI 不崩, 但那个控件什么时候"变真"取决于它自己改成 extends QWidget(见框架桥报告)。
+// 框架的 addWidget 有类型校验, 会直接抛"参数1需要类型JZWidget"。
+// 处理办法 = **配对**: 给这个 JS 对象配一个真 JZWidget, 并把
+//   - 控件的常用方法(显示/几何/刷新/样式)转发到真控件;
+//   - 绘制/鼠标/尺寸钩子接回 JS 对象的 Qt 方法(paintEvent/mousePressEvent/...)。
+// 于是"JS 对象当控件用"的代码也能驱动真控件 —— 这是 BTEItemWidget 这类
+// "C++ 基类初始化写法" 的类不必整体重写就能变真的关键一步。
+const g_jzWidgetOf = new WeakMap();   // JS 对象 -> 它对应的真 JZWidget
+const FORWARD_METHODS = ["setVisible", "show", "hide", "setGeometry", "move", "resize",
+    "setFixedSize", "setFixedWidth", "setFixedHeight", "setMinimumSize", "setMaximumSize",
+    "update", "setStyleSheet", "setTooltip", "setParentWidget", "setFocus",
+    "setContextMenuPolicy", "setEnabled", "rect", "size", "pos", "mapTo", "mapFrom", "repaint"];
+
+// ---------------------------------------------------------------------------
+// Qt 事件 -> 框架事件对象的包装
+//   框架给的是 JZMouseEvent(localX/localY/globalX/globalY/button/wheelDelta/modifiers),
+//   而移植代码是 Qt 写法(event.pos()/event.globalPos()/event.button()/event.accept())。
+//   这里按需包一层, 不改业务代码。绘制事件不用包: JZPainterEvent.rect() 与 Qt 同名。
+// ---------------------------------------------------------------------------
+function qtMouseEvent(e)
+{
+    if (!e || typeof e !== "object")
+        return e;
+    return {
+        _raw: e,
+        pos: () => new g_globals.QPoint(e.localX ? e.localX() : 0, e.localY ? e.localY() : 0),
+        globalPos: () => new g_globals.QPoint(e.globalX ? e.globalX() : 0, e.globalY ? e.globalY() : 0),
+        localPos: () => new g_globals.QPoint(e.localX ? e.localX() : 0, e.localY ? e.localY() : 0),
+        x: () => (e.localX ? e.localX() : 0),
+        y: () => (e.localY ? e.localY() : 0),
+        button: () => (e.button ? e.button() : 0),
+        buttons: () => (e.button ? e.button() : 0),
+        modifiers: () => (e.modifiers ? e.modifiers() : 0),
+        accept: () => { if (e.accept) e.accept(); },
+        ignore: () => { if (e.ignore) e.ignore(); },
+        isAccepted: () => (e.isAccepted ? e.isAccepted() : true),
+    };
+}
+
+function qtWheelEvent(e)
+{
+    if (!e || typeof e !== "object")
+        return e;
+    const m = qtMouseEvent(e);
+    m.angleDelta = () => new g_globals.QPoint(0, (e.wheelDelta ? e.wheelDelta() : 0));
+    m.delta = () => (e.wheelDelta ? e.wheelDelta() : 0);
+    return m;
+}
+
+function qtKeyEvent(e)
+{
+    if (!e || typeof e !== "object")
+        return e;
+    return {
+        _raw: e,
+        key: () => (e.key ? e.key() : 0),
+        text: () => (e.text ? e.text() : ""),
+        modifiers: () => (e.modifiers ? e.modifiers() : 0),
+        isAutoRepeat: () => (e.isRepeat ? !!e.isRepeat() : false),
+        accept: () => { if (e.accept) e.accept(); },
+        ignore: () => { if (e.ignore) e.ignore(); },
+    };
+}
+
+// 真控件的"绘制/交互"钩子 -> target 上的 Qt 风格方法(paintEvent/mousePressEvent/...)
+//   target 省略 = 真控件自己(真控件化的类); 给了 target = 配对的 JS 对象(asRealWidget)。
+function installWidgetHooks(real, target)
+{
+    const T = target || real;
+    const hook = (jzName, qtName, wrap) =>
+    {
+        real[jzName] = (e) =>
+        {
+            const fn = T[qtName];
+            if (typeof fn !== "function")
+                return;
+            try { fn.call(T, wrap ? wrap(e) : e); }
+            catch (ex) { console.error("[qtcompat] " + qtName + " 异常: " + ex); }
+        };
+    };
+    hook("onPaint", "paintEvent", null);
+    hook("onMousePress", "mousePressEvent", qtMouseEvent);
+    hook("onMouseRelease", "mouseReleaseEvent", qtMouseEvent);
+    hook("onMouseMove", "mouseMoveEvent", qtMouseEvent);
+    hook("onWheel", "wheelEvent", qtWheelEvent);
+    hook("onResize", "resizeEvent", null);
+    hook("onKeyPress", "keyPressEvent", qtKeyEvent);
+    hook("onKeyRelease", "keyReleaseEvent", qtKeyEvent);
+    hook("onEnter", "enterEvent", null);
+    hook("onLeave", "leaveEvent", null);
+    hook("onShow", "showEvent", null);
+    hook("onHide", "hideEvent", null);
+    hook("onClose", "closeEvent", null);
+}
+
+// ---------------------------------------------------------------------------
+// 真控件化: `new BTEItemWidget()` 直接得到一个**真 JZWidget**
+//
+//   不能用 `class BTEItemWidget extends JZWidget`: jsbind 的构造返回原生包装对象,
+//   派生原型会被丢掉(类方法全丢)。所以约定写成:
+//
+//       class BTEItemWidget
+//       {
+//           constructor(parent) { return makeRealWidget(this, JZWidget, parent); }
+//           initWidget(parent) { ...原来的构造逻辑, this = 真控件... }
+//           ...业务方法...
+//       }
+//
+//   makeRealWidget 做四件事: 建真控件 -> 把类原型上的方法/访问器挂到实例 ->
+//   接上绘制/交互钩子 -> 调 initWidget(如果有)。
+// ---------------------------------------------------------------------------
+const g_realWidgetClasses = [];      // 已"真控件化"的类名(进框架桥报告)
+
+function installClassMembers(Cls, real)
+{
+    const names = Object.getOwnPropertyNames(Cls.prototype);
+    for (let i = 0; i < names.length; i++)
+    {
+        const k = names[i];
+        if (k === "constructor")
+            continue;
+        const d = Object.getOwnPropertyDescriptor(Cls.prototype, k);
+        if (!d)
+            continue;
+        try
+        {
+            if (d.get || d.set)
+                Object.defineProperty(real, k, d);
+            else if (typeof d.value === "function")
+                real[k] = d.value;
+            else
+                real[k] = d.value;
+        }
+        catch (e)
+        {
+            console.error("[qtcompat] 真控件化: 无法把 " + Cls.name + "." + k + " 挂到实例: " + e);
+        }
+    }
+}
+
+// 真控件化入口挂成全局: 业务文件里写 `makeRealWidget(this, JZWidget, parent)` 即可
+g_globals.makeRealWidget = makeRealWidget;
+
+export function makeRealWidget(self, Jz, ...args)
+{
+    const Cls = (self && self.constructor && self.constructor !== Object) ? self.constructor : null;
+    const real = new Jz();
+    if (Cls)
+    {
+        installClassMembers(Cls, real);
+        if (g_realWidgetClasses.indexOf(Cls.name) < 0)
+            g_realWidgetClasses.push(Cls.name);
+    }
+    installWidgetHooks(real, real);
+    if (typeof real.initWidget === "function")
+        real.initWidget.apply(real, args);
+    return real;
+}
+
 function asRealWidget(w)
 {
     if (w === undefined || w === null)
         return null;
     if (typeof JZWidget === "function" && (w instanceof JZWidget))
         return w;
+
+    let real = g_jzWidgetOf.get(w);
+    if (real)
+        return real;
+
     let nm = "object";
     try { nm = (w && w.constructor && w.constructor.name) ? String(w.constructor.name) : String(w); }
     catch (e) { nm = "<unknown>"; }
-    noteMissing("布局里的非框架控件(仍是 JS 对象): " + nm);
-    return new JZWidget();
+    noteMissing("布局里的非框架控件(仍是 JS 对象, 已配对真控件占位): " + nm);
+
+    real = new JZWidget();
+    g_jzWidgetOf.set(w, real);
+    try { w.__jzWidget = real; } catch (e) { /* 有的对象不让挂属性 */ }
+    installWidgetHooks(real, w);   // 钩子接回那个 JS 对象的 Qt 方法
+    return real;
+}
+
+// 给"JS 对象上的控件方法"转发到它配对的真控件(由 attachQtFallback / makeLenient 的 get 调用)
+function forwardToRealWidget(obj, prop)
+{
+    if (FORWARD_METHODS.indexOf(prop) < 0)
+        return undefined;
+    const real = (obj && obj.__jzWidget) ? obj.__jzWidget : g_jzWidgetOf.get(obj);
+    if (!real || typeof real[prop] !== "function")
+        return undefined;
+    return function (...args) { return real[prop].apply(real, args); };
 }
 
 function noop() { }
@@ -1369,6 +1770,16 @@ bridgeJz("QRect", "JZRect",
             return new g_globals.QRect(this.left() + dx1, this.top() + dy1,
                 this.width() + dx2 - dx1, this.height() + dy2 - dy1);
         },
+        // Qt 有 contains(QPoint) 重载; 框架的 JZRect::contains 只吃 (x,y)
+        contains: function (a, b)
+        {
+            const f = origJz("JZRect", "contains");
+            if (!f)
+                return false;
+            if (a !== null && typeof a === "object" && typeof a.x === "function")
+                return f.call(this, a.x(), a.y());
+            return f.call(this, a, b);
+        },
         setCoords: function (x1, y1, x2, y2) { this.setRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1); },
         getRect: function () { return [this.x(), this.y(), this.width(), this.height()]; },
         isValid: function () { return !this.isEmpty(); },   // 框架的 JZRect 没有 isValid
@@ -1451,10 +1862,6 @@ const WINDOW_PROTO = {
     isMaximized: function () { return false; },
     isVisible: function () { return true; },
 };
-bridgeJz("QWidget", "JZWidget", function () { this._flags = 0; }, {
-    setWindowTitle: noop, setWindowFlags: function (f) { this._flags = f >>> 0; },
-    windowFlags: function () { return this._flags; }, setModal: noop, setObjectName: function (n) { this._name = n; },
-});
 bridgeJz("QMainWindow", "JZWindow", windowProtoCtor, WINDOW_PROTO);
 bridgeJz("QDialog", "JZWindow", windowProtoCtor, WINDOW_PROTO);
 
@@ -1475,14 +1882,81 @@ const WIDGET_PROTO = {
         return fn.call(this, a, b);
     },
     setToolTip: function (t) { this.setTooltip(t); },
-    setEnabled: function () { },
-    isEnabled: function () { return true; },
+    setEnabled: function (b) { this._enabled = !!b; },     // 框架没有 setEnabled -> JS 侧状态
+    isEnabled: function () { return this._enabled !== false; },
     setObjectName: function (n) { this._name = n; },
     objectName: function () { return this._name || ""; },
     // Qt 的 setFont/setPalette: 框架控件没有字体 API(UI 上的字体走 .ui/QSS)
     setFont: function (f) { this._font = f; },
     font: function () { return this._font || new g_globals.QFont(); },
+
+    // ---- Qt 里由 QWidget 提供、框架没有的成员 ----
+    rect: function () { return new g_globals.QRect(0, 0, this.width(), this.height()); },
+    size: function () { return new g_globals.QSize(this.width(), this.height()); },
+    pos: function () { return new g_globals.QPoint(this.x(), this.y()); },
+    // 控件坐标 -> 祖先坐标: 沿 parentWidget 累加(框架没有 mapTo)
+    //   注意: 顶层控件的 parentWidget() 不能拿来做"再取 x()"这类操作(会崩), 所以这里
+    //   只用 instanceof 判断父级是不是控件(纯 JS 原型链判断, 不碰 C++ 指针), 拿不准就停。
+    mapTo: function (ancestor, p)
+    {
+        let x = p ? p.x() : 0, y = p ? p.y() : 0;
+        let w = this;
+        for (let guard = 0; guard < 64; guard++)
+        {
+            if (!w || w === ancestor)
+                break;
+            if (typeof w.x === "function") { x += w.x(); y += w.y(); }
+            let up = null;
+            try { up = (typeof w.parentWidget === "function") ? w.parentWidget() : null; }
+            catch (e) { break; }
+            if (!up || up === w)
+                break;
+            if (typeof JZWidget === "function" && !(up instanceof JZWidget))
+                break;
+            w = up;
+        }
+        return new g_globals.QPoint(x, y);
+    },
+    mapFrom: function (from, p)
+    {
+        if (from && typeof from.mapTo === "function")
+            return from.mapTo(this, p);
+        return new g_globals.QPoint(p ? p.x() : 0, p ? p.y() : 0);
+    },
+    setContextMenuPolicy: function (p) { this._ctxPolicy = p | 0; },
+    contextMenuPolicy: function () { return this._ctxPolicy || 0; },
+    setMouseTracking: function (b) { this._mouseTracking = !!b; },
+    hasMouseTracking: function () { return !!this._mouseTracking; },
+    setCursor: function (c) { this._cursor = c; },
+    cursor: function () { return this._cursor; },
+    setSizePolicy: noop, setMinimumWidth: noop, setMinimumHeight: noop,
+    setMaximumWidth: noop, setMaximumHeight: noop, setAutoFillBackground: noop,
+    setBackgroundRole: noop, setWindowOpacity: noop, setWindowState: noop,
+    setAttribute: noop, setAcceptDrops: noop,
+    setProperty: function (n, v) { this["__qtprop_" + n] = v; },
+    property: function (n) { return this["__qtprop_" + n]; },
+    grab: function () { return null; },
+    repaint: function () { if (typeof this.update === "function") this.update(); },
+
+    // ---- 虚函数形状: 框架没有这些方法, 但移植代码会写
+    //      `QWidget.prototype.mousePressEvent.call(this, event)`(调基类实现) → 给 no-op;
+    //      真控件化的类会把实例上的同名方法盖在上面(installClassMembers)。
+    paintEvent: noop, mousePressEvent: noop, mouseReleaseEvent: noop, mouseMoveEvent: noop,
+    mouseDoubleClickEvent: noop, wheelEvent: noop, resizeEvent: noop, keyPressEvent: noop,
+    keyReleaseEvent: noop, showEvent: noop, hideEvent: noop, closeEvent: noop,
+    enterEvent: noop, leaveEvent: noop, contextMenuEvent: noop, changeEvent: noop,
 };
+
+// QWidget: 所有控件的基类。Qt 的方法名统一补到 JZWidget.prototype 上(子类继承),
+// 这样"真控件化"出来的实例(直接 new JZWidget)也带着完整 Qt 成员。
+bridgeJz("QWidget", "JZWidget",
+    function (parent) { this._flags = 0; },
+    Object.assign({}, WIDGET_PROTO, {
+        setWindowTitle: noop,
+        setWindowFlags: function (f) { this._flags = f >>> 0; },
+        windowFlags: function () { return this._flags; },
+        setModal: noop,
+    }));
 
 bridgeJz("QLabel", "JZLabel",
     function (textOrParent, parent)
@@ -1714,12 +2188,155 @@ for (const n of ["white", "black", "red", "darkRed", "green", "darkGreen", "blue
     "lightGray", "orange"])
     Qt[n] = new g_globals.QColor(n);
 
+// ---- 画笔: QPainter -> 框架 JZPainter ----
+//   框架的 JZPainter 构造必须带设备(widget = 屏幕画笔, 只能 onPaint 内用; image = 离屏),
+//   所以这里不用 bridgeJz 的"无参 new + 补参数", 而是**转发构造参数**的工厂函数。
+//   Qt 的重载(QRect/QPoint 版本、setPen(QPen)/setBrush(QBrush)/setFont(QFont))在原型上补齐。
+function cssOf(colorLike)
+{
+    if (colorLike === undefined || colorLike === null)
+        return "#000000";
+    if (typeof colorLike === "string")
+        return colorLike;
+    if (typeof colorLike.css === "function")
+        return colorLike.css();
+    if (typeof colorLike.name === "function")
+        return colorLike.name();
+    return String(colorLike);
+}
+
+if (typeof JZPainter === "function")
+{
+    const P = JZPainter.prototype;
+    const orig = {};
+    const pn = Object.getOwnPropertyNames(P);
+    for (let i = 0; i < pn.length; i++)
+        orig[pn[i]] = P[pn[i]];
+
+    function callOrig(name, self, args)
+    {
+        if (typeof orig[name] !== "function")
+        {
+            noteMissing("JZPainter." + name);
+            return undefined;
+        }
+        return orig[name].apply(self, args);
+    }
+
+    P.setPen = function (a, b)
+    {
+        if (a !== null && typeof a === "object" && typeof a.color === "function")
+            return callOrig("setPen", this, [cssOf(a.color()), (typeof a.width === "function") ? a.width() : 1]);
+        if (typeof a === "number")
+            return noteMissing("QPainter::setPen(风格枚举, 框架只支持颜色+线宽)");
+        return callOrig("setPen", this, [cssOf(a), (b === undefined) ? 1 : b]);
+    };
+    P.setBrush = function (a)
+    {
+        if (a !== null && typeof a === "object" && typeof a.color === "function")
+            return callOrig("setBrush", this, [cssOf(a.color())]);
+        return callOrig("setBrush", this, [cssOf(a)]);
+    };
+    P.setFont = function (a, b)
+    {
+        if (a !== null && typeof a === "object" && typeof a.family === "function")
+            return callOrig("setFont", this, [a.family(), (typeof a.pointSize === "function") ? a.pointSize() : 12]);
+        return callOrig("setFont", this, [String(a), (b === undefined) ? 12 : b]);
+    };
+    P.drawRect = function (a, b, c, d)
+    {
+        if (a !== null && typeof a === "object" && typeof a.width === "function")
+            return callOrig("drawRect", this, [a.x(), a.y(), a.width(), a.height()]);
+        return callOrig("drawRect", this, [a, b, c, d]);
+    };
+    P.fillRect = function (a, b, c, d, e)
+    {
+        if (a !== null && typeof a === "object" && typeof a.width === "function")
+        {   // fillRect(QRect, QColor|QBrush)
+            const col = (b !== null && typeof b === "object" && typeof b.color === "function") ? b.color() : b;
+            return callOrig("fillRect", this, [a.x(), a.y(), a.width(), a.height(), cssOf(col)]);
+        }
+        return callOrig("fillRect", this, [a, b, c, d, cssOf(e)]);
+    };
+    P.drawLine = function (a, b, c, d)
+    {
+        if (a !== null && typeof a === "object" && typeof a.x === "function")
+        {   // drawLine(QPoint, QPoint)
+            const p2 = b || a;
+            return callOrig("drawLine", this, [a.x(), a.y(), p2.x(), p2.y()]);
+        }
+        return callOrig("drawLine", this, [a, b, c, d]);
+    };
+    P.drawText = function (a, b, c, d)
+    {
+        let x = a, y = b, text = c;
+        if (a !== null && typeof a === "object" && typeof a.x === "function")
+        {   // drawText(QPoint, text)
+            x = a.x(); y = a.y(); text = b;
+        }
+        else if (a !== null && typeof a === "object" && typeof a.width === "function")
+        {   // drawText(QRect, flags, text)
+            x = a.x(); y = a.y() + ((d === undefined) ? 0 : 0); text = (typeof c === "string") ? c : d;
+            y = a.y();
+        }
+        else if (typeof text !== "string" && typeof c !== "string")
+        {
+            text = (c === undefined) ? b : c;      // drawText(x, y, text)
+        }
+        return callOrig("drawText", this, [x, y, String(text === undefined ? "" : text)]);
+    };
+    P.setClipRect = function (a, b, c, d)
+    {
+        if (a !== null && typeof a === "object" && typeof a.width === "function")
+            return callOrig("setClip", this, [a.x(), a.y(), a.width(), a.height()]);
+        return callOrig("setClip", this, [a, b, c, d]);
+    };
+    P.setRenderHint = noop;
+    P.setRenderHints = noop;
+    P.setOpacity = noop;
+    P.setCompositionMode = noop;
+    P.setWindow = noop;
+    P.setViewport = noop;
+    P.setWorldMatrixEnabled = noop;
+    P.setMatrix = noop;
+    P.resetMatrix = noop;
+    P.pen = function () { return null; };
+    P.brush = function () { return null; };
+
+    function QPainter(device) { return new JZPainter(device); }
+    QPainter.prototype = JZPainter.prototype;
+    Object.setPrototypeOf(QPainter, JZPainter);
+    QPainter.jzBase = "JZPainter";
+    g_globals.QPainter = new Proxy(QPainter, {
+        apply(target, thisArg, args)
+        {
+            if (thisArg !== undefined && thisArg !== null && typeof thisArg === "object")
+            {
+                attachQtFallback(thisArg, "JZPainter");    // QPainter::xxx(this) 之类
+                return undefined;
+            }
+            return target(...args);
+        },
+    });
+    frameworkBridge.real.push("QPainter <- JZPainter(真绘制: 屏幕/离屏画笔)");
+}
+
+// QThread 走框架真 worker(独立 runtime + 线程 + 消息, 见上面 QThread 的说明)
+if (typeof globalThis.Worker === "function")
+    frameworkBridge.real.push("QThread <- Worker(worker 模块: 独立 runtime + 消息通信)");
+
 // 没走桥的 Qt 名(仍用本文件的 JS 实现)
 for (const n of ["QFile", "QDir", "QTextStream", "QSettings", "QPen", "QBrush", "QFont", "QFontMetrics",
-    "QObject", "QApplication", "QThread", "QMessageBox", "QTableWidget", "QTableWidgetItem",
+    "QObject", "QApplication", "QMessageBox", "QTableWidget", "QTableWidgetItem",
     "QListWidget", "QListWidgetItem", "QTreeWidget", "QTreeWidgetItem", "QMenu", "QAction",
-    "QPainter", "QLinearGradient", "QTextOption"])
+    "QLinearGradient", "QTextOption"])
     frameworkBridge.js.push(n);
+
+if (typeof globalThis.JZPainter !== "function")
+    frameworkBridge.js.push("QPainter(引擎没注册 JZPainter)");
+
+if (typeof globalThis.Worker !== "function")
+    frameworkBridge.js.push("QThread(引擎没装 worker 模块)");
 
 // 挂到兼容层本体上(业务/测试都通过 __bte.qtCompat 访问)
 QtCompat.bridge = frameworkBridge;          // Qt 名 -> 框架真实现 的映射清单
@@ -1732,6 +2349,8 @@ export function frameworkBridgeReport()
     for (const r of frameworkBridge.real)
         console.log("  [JZ] " + r);
     console.log("  [JS] " + frameworkBridge.js.join(", "));
+    if (g_realWidgetClasses.length)
+        console.log("  [真控件化] " + g_realWidgetClasses.join(", "));
     return frameworkBridge;
 }
 

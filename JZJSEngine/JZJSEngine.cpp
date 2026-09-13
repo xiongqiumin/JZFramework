@@ -150,7 +150,7 @@ public:
     static JSValue js_constructor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        return engine->createValue(magic);
+        return engine->createValue(magic, argc, argv);
     }
 
     static void js_deconstructor(JSRuntime* rt, JSValue val)
@@ -800,16 +800,14 @@ void JZJSEngine::updateFunction(shared_ptr<CFunction> func)
 
     for (int i = 0; i < (int)func->params.size(); i++)
     {
-        int type = ctypeidToType(func->params[i].ctypeid);
-        assert(type != JSType_none);
-        func->params[i].type = type;
+        // 前向引用(如 JZWidget<->JZLayout 互相引用)时对应类尚未注册, 此处 ctypeidToType 为
+        // JSType_none; 实际调用时所有类均已注册, 改由 call()/callAsync() 按 ctypeid 惰性解析。
+        func->params[i].type = ctypeidToType(func->params[i].ctypeid);
     }
 
     if (!func->result.ctypeid.empty())
     {
-        int ret_type = ctypeidToType(func->result.ctypeid);
-        assert(ret_type != JSType_none);
-        func->result.type = ret_type;
+        func->result.type = ctypeidToType(func->result.ctypeid);
     }
 }
 
@@ -880,6 +878,7 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     info.ctypeId = define.ctypeid;
     info.jsType = js_class_id;
     info.classDefine = define;
+    info.superCTypeId = define.superCTypeid;
     info.funcList = funcList;
     if (define.isPointer)
         m_classPointerTypes.insert(object_id);
@@ -937,6 +936,24 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     js_class = JS_NewCFunctionMagic(m_ctx, JSInter::js_constructor, define.name.c_str(), 0, JS_CFUNC_constructor_magic,
                                     object_id);
     JS_SetConstructor(m_ctx, js_class, js_proto);
+
+    // 继承: 把派生类原型挂到基类原型上, 直接复用 JS 原生原型链。
+    // 这样 JS 侧 instanceof(基类)、基类方法在派生对象上查找、属性覆盖都按 JS 语义生效。
+    // 单继承下基类子对象偏移为 0, 派生对象指针即基类指针, 无需 C++ 侧做指针向上转型。
+    // 注意: JS_SetConstructor 会把 js_proto 的 [[Prototype]] 设为 js_class 本身, 故这里必须在它之后覆盖。
+    if (!define.superCTypeid.empty())
+    {
+        int base_type = ctypeidToType(define.superCTypeid);
+        assert(base_type != JSType_none && "registClass: 基类须先于派生类注册");
+        if (base_type != JSType_none)
+        {
+            JSClassID base_js_class_id = typeToJSType(base_type);
+            JSValue base_proto = JS_GetClassProto(m_ctx, base_js_class_id);
+            JS_SetPrototype(m_ctx, js_proto, base_proto);
+            JS_FreeValue(m_ctx, base_proto);
+        }
+    }
+
     JS_SetClassProto(m_ctx, js_class_id, js_proto);
 
     JS_SetPropertyStr(m_ctx, m_global, define.name.c_str(), js_class);
@@ -1077,6 +1094,43 @@ bool JZJSEngine::isClassPointerClassId(JSClassID id) const
     return m_classPointerTypes.count((int)id) > 0;
 }
 
+std::string JZJSEngine::classCTypeId(JSClassID id) const
+{
+    auto it = m_jsTypeMap.find((int)id);
+    if (it == m_jsTypeMap.end())
+        return "";
+    auto tit = m_typeMap.find(it->second);
+    if (tit == m_typeMap.end())
+        return "";
+    return tit->second.ctypeId;
+}
+
+bool JZJSEngine::isInstanceOf(const std::string& derivedCTypeId, const std::string& baseCTypeId) const
+{
+    std::string cur = derivedCTypeId;
+    while (!cur.empty())
+    {
+        if (cur == baseCTypeId)
+            return true;
+        auto it = m_cTypeMap.find(cur);
+        if (it == m_cTypeMap.end())
+            return false;
+        auto tit = m_typeMap.find(it->second);
+        if (tit == m_typeMap.end())
+            return false;
+        cur = tit->second.superCTypeId;
+    }
+    return false;
+}
+
+JSValue JZJSEngine::classConstructor(int type) const
+{
+    auto it = m_typeMap.find(type);
+    if (it == m_typeMap.end())
+        return JS_UNDEFINED;
+    return JS_GetPropertyStr(m_ctx, m_global, it->second.name.c_str());
+}
+
 bool JZJSEngine::canConvert(int from_type, int to_type)
 {
     if (from_type == to_type)
@@ -1084,6 +1138,15 @@ bool JZJSEngine::canConvert(int from_type, int to_type)
 
     if (from_type >= JSType_bool && from_type <= JSType_double && to_type >= JSType_bool && to_type <= JSType_double)
         return true;
+
+    // 继承: 派生类对象可传给基类形参
+    if (from_type >= JSType_object && to_type >= JSType_object)
+    {
+        auto fit = m_typeMap.find(from_type);
+        auto tit = m_typeMap.find(to_type);
+        if (fit != m_typeMap.end() && tit != m_typeMap.end())
+            return isInstanceOf(fit->second.ctypeId, tit->second.ctypeId);
+    }
 
     return false;
 }
@@ -1152,7 +1215,7 @@ JSValue JZJSEngine::createObject()
     return obj;
 }
 
-JSValue JZJSEngine::createValue(int type)
+JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
 {
     if (type == JSType_bool)
     {
@@ -1172,18 +1235,9 @@ JSValue JZJSEngine::createValue(int type)
     }
     else
     {
-        JSClassID js_class_id = typeToJSType(type);
-
-        JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
-
-        void* ptr = constructor(type);
-        JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-        JS_SetOpaque(obj, ptr);
-        assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
-
-        JS_FreeValue(m_ctx, proto);
-
-        return obj;
+        const CClassDefine& define = m_typeMap[type].classDefine;
+        void* ptr = define.createArgs(m_ctx, argc, argv);
+        return createValue(type, ptr);
     }
 }
 
@@ -1198,6 +1252,12 @@ JSValue JZJSEngine::createValue(int type, void* ptr)
     assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
 
     JS_FreeValue(m_ctx, proto);
+
+    // 实例创建后钩子: 覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径
+    // (toJsValueFromPtr → createJSValue → createValue(type, ptr)), 回写 JSValue 句柄 / engine 到 C++ 包裹对象。
+    const CClassDefine& define = m_typeMap[type].classDefine;
+    if (define.onCreated)
+        define.onCreated(m_ctx, obj, ptr);
 
     return obj;
 }
@@ -1299,11 +1359,6 @@ void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
     wakeUp();   // reject 触发未处理拒绝 / await 继续等微任务 -> 唤醒泵一轮
 }
 
-void* JZJSEngine::constructor(int type)
-{
-    return m_typeMap[type].classDefine.create();
-}
-
 void JZJSEngine::deconstructor(JSValue value)
 {
     int type = jsValueType(value);
@@ -1338,6 +1393,8 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < (int)func->params.size(); i++)
     {
         int arg_type = func->params[i].type;
+        if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
+            arg_type = ctypeidToType(func->params[i].ctypeid);
         // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
         if (arg_type == JSType_oriValue)
             continue;
@@ -1383,6 +1440,8 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < argc; i++)
     {
         int arg_type = func->params[i + 1].type;
+        if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
+            arg_type = ctypeidToType(func->params[i + 1].ctypeid);
         // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
         if (arg_type == JSType_oriValue)
             continue;
@@ -1505,6 +1564,47 @@ std::vector<JZJSValuePtr> JZJSEngine::callFunction(const std::string& func, cons
         args.push_back(params[i].get());
 
     JSValue ret = JS_Call(m_ctx, fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
+    JS_FreeValue(m_ctx, fn);
+    if (JS_IsException(ret))
+    {
+        unHandleException();
+        return result_list;
+    }
+
+    // 返回值所有权直接交给 JZJSValuePtr(与 eval 一致)
+    result_list.push_back(JZJSValuePtr(m_ctx, ret));
+    wakeUp();   // 被调函数可能注册 timer / 产生微任务
+    return result_list;
+}
+
+std::vector<JZJSValuePtr> JZJSEngine::callMemberFunction(const std::string& func, const JZJSValuePtr &this_val, const std::vector<JZJSValuePtr>& params)
+{
+    std::vector<JZJSValuePtr> result_list;
+    if (!m_ctx)
+        return result_list;
+
+    JSValue obj = this_val.get();
+    JSValue fn = JS_GetPropertyStr(m_ctx, obj, func.c_str());
+    if (JS_IsException(fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        unHandleException();
+        return result_list;
+    }
+    if (!JS_IsFunction(m_ctx, fn))
+    {
+        JS_FreeValue(m_ctx, fn);
+        JS_ThrowReferenceError(m_ctx, "'%s' is not a function", func.c_str());
+        unHandleException();
+        return result_list;
+    }
+
+    vector<JSValue> args;
+    args.reserve(params.size());
+    for (size_t i = 0; i < params.size(); i++)
+        args.push_back(params[i].get());
+
+    JSValue ret = JS_Call(m_ctx, fn, obj, (int)args.size(), args.empty() ? nullptr : args.data());
     JS_FreeValue(m_ctx, fn);
     if (JS_IsException(ret))
     {

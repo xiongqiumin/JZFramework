@@ -11,6 +11,7 @@
 #include "json/json.h"
 
 class JZNetworkAccessManager;
+class JZTimer;
 class JZNetworkReply;
 class JZProcess;
 class JZTimer;
@@ -78,6 +79,7 @@ private:
 class JZMcpClient : public JZObject
 {
     JZ_OBJECT_DECLARE(JZMcpClient)
+    friend class JZMcpClientTool;
 
 public:
     // 一次 JSON-RPC 调用的回调: (是否成功, result 或 error 对象)
@@ -96,10 +98,10 @@ public:
     // 同步等待结果。
     // stdio: 启动子进程, 通过 stdin/stdout 收发 JSON-RPC(一行一条)
     bool startProcess(const std::string &program, const std::vector<std::string> &arguments,
-                      int timeoutMs = 10000);
+                      int timeoutMs = 10000, bool reconnect = false);
     // Streamable HTTP: 每个请求一次 POST, 响应支持 JSON 与 SSE 两种格式
-    bool startHttp(const std::string &url, int timeoutMs = 10000);
-    bool startWebSocket(const std::string &url, int timeoutMs = 10000);
+    bool startHttp(const std::string &url, int timeoutMs = 10000, bool reconnect = false);
+    bool startWebSocket(const std::string &url, int timeoutMs = 10000, bool reconnect = false);
 
     void close();
     // 阻塞直到本次连接流程结束(等同 sigFinished 已发出)。
@@ -113,7 +115,16 @@ public:
 jz_signals:
     // 一次连接流程结束: server/discover + tools/list 成功(isReady()==true)或
     // 任一步失败/超时/进程退出/中途断开。结果用 isReady() / errorString() 判断。
+    // 注意: 开启自动重连且为"中途断开后重连"时, 不发 sigFinished(改发 sigDisconnected /
+    // sigReconnected), 以免调用方把一次瞬断当成永久失败。
     JZSigVoid sigFinished;
+
+    // 自动重连: 连接中途断开(将尝试重连)时发出。非自动重连的中途断开不发此信号,
+    // 而是走 sigFinished(永久失败)。
+    JZSigVoid sigDisconnected;
+
+    // 自动重连成功: 传输已恢复, 工具集合沿用旧身份(服务器返回什么就用什么)。
+    JZSigVoid sigReconnected;
 
     // 最近一次错误(连接失败、超时、传输中断等)
     const std::string &errorString() const;
@@ -126,6 +137,14 @@ jz_signals:
     // 显式设置时以设置为准; 服务器名为空时退化为 "mcp__"。
     void setToolPrefix(const std::string &prefix);
     const std::string &toolPrefix() const;
+
+    // ---- 自动重连 ----
+    /** 是否开启自动重连(默认 false: 断开即永久失败, 发 sigFinished) */
+    void setAutoReconnect(bool on);
+    bool autoReconnect() const;
+    /** 自动重连间隔(毫秒, 默认 3000) */
+    void setReconnectInterval(int ms);
+    int reconnectInterval() const;
 
     // 本地工具名 <-> 远端工具名 的映射(映射表由本客户端统一维护)
     std::string makeLocalName(const std::string &remoteName) const;
@@ -175,6 +194,17 @@ protected:
     void onToolsDone(bool ok, const Json::Value &value);
     void abortConnect(const std::string &error);   // 连接阶段失败统一收口
 
+    // ---- 自动重连 ----
+    /** 传输层断开(进程退出 / WS 断开或错误 / HTTP 传输错误)。
+     *  自动重连开启则计划重连并发 sigDisconnected; 否则走永久失败(发 sigFinished)。 */
+    void onTransportLost(const std::string &reason);
+    /** 安排一次延迟重连(去重, 同时只挂一个定时器) */
+    void scheduleReconnect();
+    /** 用已保存的连接参数重新发起连接(重连用, 不更新已登记工具) */
+    void reconnect();
+    /** 重连完成: 不握手、不拉工具, 直接恢复可用(工具集合沿用旧身份) */
+    void onReconnectReady();
+
     Transport m_transport = None;
     JZProcess *m_process = nullptr;
     JZNetworkAccessManager *m_net = nullptr;
@@ -197,6 +227,15 @@ protected:
     std::string m_serverName;
     std::string m_serverVersion;
     std::string m_protocolVersion;
+
+    // ---- 自动重连 ----
+    bool m_autoReconnect = false;     // 是否开启自动重连
+    int m_reconnectIntervalMs = 3000; // 重连间隔(毫秒)
+    bool m_reconnecting = false;      // 本次连接是否由自动重连发起(区别于首次连接)
+    bool m_reconnectPending = false;  // 已挂重连定时器(去重, 避免重复调度)
+    JZTimer *m_reconnectTimer = nullptr;
+    std::string m_program;            // Process 重连参数(原样保留)
+    std::vector<std::string> m_arguments;
 };
 
 #endif // !JZ_MCP_CLIENT_H_

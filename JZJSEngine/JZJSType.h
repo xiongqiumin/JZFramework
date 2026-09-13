@@ -32,6 +32,8 @@ public:
     virtual ~ClassPointerBase() = default;
     virtual bool isCleared() const = 0;
     virtual bool cppOwner() const = 0;
+    // 返回底层对象裸指针(继承向上转型时, 无需知道具体 Class 模板参数即可取对象指针)
+    virtual void* getRaw() const = 0;
 };
 
 template <class Class>
@@ -57,6 +59,7 @@ public:
     }
 
     bool isCleared() const override { return m_ptr == nullptr; }
+    void* getRaw() const override { return m_ptr.get(); }
 
     // 拷贝/移动共享底层对象(shared_ptr), 不会重复释放, 且 clear 通过共享状态传播。
     ClassPointer(const ClassPointer&) = default;
@@ -199,12 +202,24 @@ public:
 class CClassDefine
 {
 public:
-    std::function<void*()> create;
+    // 唯一构造入口: JS `new Cls(...)` 透传 (ctx, argc, argv) 生成底层对象并包成 ClassPointer<Class>*。
+    // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
+    std::function<void*(JSContext*, int, JSValueConst*)> createArgs;
+
     std::function<void(void*)> destory;
+
+    // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次
+    // (覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径, 因 toJsValueFromPtr → createJSValue → createValue(type, ptr))。
+    // opaque 即 ClassPointer<Class>*; 用于把 JSValue 句柄 / engine 回写到 C++ 包裹对象(如 JSWidgetClass 的 m_jsvalue / m_engine),
+    // 供事件转发 callJs 以该对象为 this 调用 JS 方法。由 setInstanceBind 注册。
+    std::function<void(JSContext*, JSValue, void* opaque)> onCreated;
 
     std::string name;
     std::string ctypeid;
     bool isPointer = false;   // true: 该类型对应 ClassPointer<Class>, 检测阶段需判断是否已 clear
+
+    // 继承: 单继承下记录直接基类 ctypeid(供 canConvert 做类型兼容判定)
+    std::string superCTypeid;
 
     std::vector<CProperty> propertys;
     std::vector<std::shared_ptr<CFunction>> functions;
@@ -241,13 +256,38 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
     auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
     if (engine && engine->isClassPointerClassId(class_id))
     {
-        auto cp = (jsbind::ClassPointer<Class>*)ptr;
-        if (cp->isCleared())
+        auto* cpb = (jsbind::ClassPointerBase*)ptr;
+        if (cpb->isCleared())
         {
             JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
             throw std::runtime_error("ClassPointer 已被 clear");
         }
-        return cp->get();
+
+        // 统一包装模型: 派生类 JS 对象的 opaque 是 ClassPointer<Derived>*, 形参可能要 Base*。
+        // 真实类就是 Class 时直接取; 否则复用 JS 原型链判断 is-a(instanceof),
+        // 单继承下直接把派生指针当基类指针用(偏移为 0), 无需 C++ upcast。
+        std::string actual_cid = engine->classCTypeId(class_id);
+        std::string want_cid = typeid(Class).name();
+        if (actual_cid == want_cid)
+        {
+            auto cp = (jsbind::ClassPointer<Class>*)ptr;
+            return cp->get();
+        }
+        // is-a 判定: 走 JS 原型链(原型已在 registClass 时挂好), 不另维护平行类型表
+        int base_type = engine->ctypeidToType(want_cid);
+        if (base_type != JSType_none)
+        {
+            JSValue base_ctor = engine->classConstructor(base_type);
+            bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
+            JS_FreeValue(ctx, base_ctor);
+            if (is_base)
+            {
+                void* obj = cpb->getRaw();
+                return (Class*)obj;
+            }
+        }
+        JS_ThrowTypeError(ctx, "参数类型不匹配: 期望 %s, 实际 %s", want_cid.c_str(), actual_cid.c_str());
+        throw std::runtime_error("fromJSValue: 类型不兼容(非基类)");
     }
 
     // 原始类对象: opaque 即真实对象, 直接转型
@@ -278,9 +318,10 @@ T fromJSValueVector(JSContext* ctx, JSValueConst array, std::true_type)
 template <class T>
 void checkClassPointerCleared(JSContext* ctx, void* ptr, std::true_type)
 {
-    using Inner = typename jsbind::detail::class_pointer_inner<T>::type;
-    auto cp = (jsbind::ClassPointer<Inner>*)ptr;
-    if (cp->get() == nullptr)
+    (void)sizeof(T);  // 保留 T 依赖, 避免未使用模板参数告警
+    // 用 ClassPointerBase 安全转型(派生类 JS 对象的 opaque 是 ClassPointer<Derived>*, 无法按 Inner 强转)
+    auto* cpb = (jsbind::ClassPointerBase*)ptr;
+    if (cpb->isCleared())
     {
         JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
         throw std::runtime_error("ClassPointer 已被 clear");
@@ -313,13 +354,36 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
         auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
         if (engine && engine->isClassPointerClassId(class_id))
         {
-            auto cp = (jsbind::ClassPointer<Base>*)ptr;
-            if (cp->get() == nullptr)
+            auto* cpb = (jsbind::ClassPointerBase*)ptr;
+            if (cpb->isCleared())
             {
                 JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
                 throw std::runtime_error("Class 已被 clear");
             }
-            return *cp->get();
+
+            // 真实类就是 Base 直接取; 派生类对象走 JS 原型链判断 is-a 后, 单继承下直接把派生指针当基类指针用
+            std::string actual_cid = engine->classCTypeId(class_id);
+            std::string want_cid = typeid(Base).name();
+            if (actual_cid == want_cid)
+            {
+                auto cp = (jsbind::ClassPointer<Base>*)ptr;
+                return *cp->get();
+            }
+            // is-a 判定: 复用 JS 原型链
+            int base_type = engine->ctypeidToType(want_cid);
+            if (base_type != JSType_none)
+            {
+                JSValue base_ctor = engine->classConstructor(base_type);
+                bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
+                JS_FreeValue(ctx, base_ctor);
+                if (is_base)
+                {
+                    void* obj = cpb->getRaw();
+                    return *((Base*)obj);
+                }
+            }
+            JS_ThrowTypeError(ctx, "参数类型不匹配: 期望 %s, 实际 %s", want_cid.c_str(), actual_cid.c_str());
+            throw std::runtime_error("fromJSValue: 类型不兼容(非基类)");
         }
     }
     return *((Base*)ptr);
@@ -353,6 +417,20 @@ T& fromJSValue(JSContext* ctx, JSValueConst value)
     {
         JS_ThrowTypeError(ctx, "参数不是对象(ClassPointer)");
         throw std::runtime_error("fromJSValue: JSValue 不是 ClassPointer 对象");
+    }
+
+    // ClassPointer<Class> 形参仅支持精确类: 派生类对象传入基类 ClassPointer 形参时,
+    // 无法安全共享底层 ClassPointer(会造成重复 delete / clear 不传播), 故要求改用 Base* / Base& / Base。
+    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (engine)
+    {
+        std::string actual_cid = engine->classCTypeId(class_id);
+        std::string want_cid = typeid(Class).name();
+        if (actual_cid != want_cid)
+        {
+            JS_ThrowTypeError(ctx, "ClassPointer<%s> 形参不支持派生类对象(请用基类指针/引用/值)", want_cid.c_str());
+            throw std::runtime_error("fromJSValue: ClassPointer 形参类型不匹配");
+        }
     }
     return *((jsbind::ClassPointer<Class>*)ptr);
 }

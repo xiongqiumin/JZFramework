@@ -1,6 +1,7 @@
 ﻿#ifndef JS_ENGINE_H_
 #define JS_ENGINE_H_
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -120,9 +121,17 @@ public:
     // 判断某 JSClassID 是否属于 ClassPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
     bool isClassPointerClassId(JSClassID id) const;
 
+    // ---- 继承支持 ----
+    // class_id -> 该类的 ctypeid(供 fromJSValue 向上转型时取真实类)
+    std::string classCTypeId(JSClassID id) const;
+    // 沿 super 链判断 derivedCTypeId 是否 is-a baseCTypeId(含自身)
+    bool isInstanceOf(const std::string& derivedCTypeId, const std::string& baseCTypeId) const;
+    // 返回某类型对应的 JS 构造器函数(供 fromJSValue 走 JS 原型链做 JS_IsInstanceOf 判定 is-a)
+    JSValue classConstructor(int type) const;
+
     JSValue globalObject();
     JSValue createObject();
-    JSValue createValue(int type);
+    JSValue createValue(int type, int argc = 0, JSValueConst* argv = nullptr);
     JSValue createValue(int type, void* ptr);
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
@@ -147,9 +156,8 @@ public:
     {
         return ::toJSValue(m_ctx, t);
     }
-
-    // 非指针(对象/值/引用): 按原类型转换为 JS 对象
-    template <class T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
+    
+    template <class T>
     JZJSValuePtr toValuePtr(const T& t)
     {
         return makeValuePtr(toJSValue(t));
@@ -159,7 +167,7 @@ public:
     // cppOwner=true (默认): C++ 拥有底层对象, JS 仅持句柄, 不会 delete 外部指针;
     // cppOwner=false: JS 拥有, JS 对象 GC 时释放底层对象(须由 new 分配, 勿传栈/外部托管指针)。
     template <class T>
-    JZJSValuePtr toValuePtr(T* ptr, bool cppOwner = true)
+    JZJSValuePtr toValuePtrFromPtr(T* ptr, bool cppOwner)
     {
         return makeValuePtr(toJsValueFromPtr(m_ctx, ptr, cppOwner));
     }
@@ -214,6 +222,8 @@ protected:
         int jsType;  // 这里的jsType 是 tag 和 class_id 组合，有潜在问题，先这样
         std::string ctypeId;
         int valueType;
+        // 继承: 单继承下记录直接基类 ctypeid(供 canConvert 做类型兼容判定)
+        std::string superCTypeId;
         CClassDefine classDefine;
         std::shared_ptr<std::vector<JSCFunctionListEntry>> funcList;
     };
@@ -255,7 +265,6 @@ protected:
     JSValue makeTypeError(int i, int type);
     JSValue makeOpenFileError(std::string file);
 
-    void* constructor(int type);
     void deconstructor(JSValue value);
     std::string getExceptionDescript(JSValue exc);
 

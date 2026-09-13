@@ -19,5 +19,5 @@
     },
     "types": []
   },
-  "include": ["index.ts", "types/**/*.d.ts"]
+  "include": ["index.ts", "bytes.ts", "types/**/*.d.ts"]
 }

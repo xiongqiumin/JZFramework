@@ -6,6 +6,9 @@
 #include <vector>
 
 #include "json/json.h"
+#include "quickjs/quickjs.h"
+
+class JZJSEngine;
 
 // UI 定义节点：纯数据结构，描述一个控件(不含任何真实 JZWidget 实例)。
 // - type    控件类名(对应后续 JZWidget 子类 / @jz/widget 的 type), 如 "Window"/"PushButton"/"Label"
@@ -85,6 +88,13 @@ public:
     // generateTsClass 的便捷版: 成功返回生成源码, 失败返回空串(原因见 error())。
     std::string toTsClass(const std::string& className = "",
                           const std::string& importPath = "widget") const;
+
+    // 基于已加载的 UI 定义, 在给定引擎中构造真实控件树并直接返回构造好的 JSValue。
+    // 等价于 generateTsClass 的运行时版: 生成可执行的 JS(直接 new 各 JZWidget 子类、设置属性、
+    // 挂载父子关系), 经 engine->eval 执行, 返回形如 { root, <id>: widget } 的 JS 对象。
+    // 失败(未 load / 含未知控件类型 / eval 抛异常)返回 JS_UNDEFINED, 原因见 error()。
+    // 注意: 调用前引擎须已由 JZJSWidgetModule::initEngine 注册全部控件类(new JZWindow 之类可用)。
+    JSValue createUi(JZJSEngine* engine) const;
 
 private:
     bool parseWidget(const class JZDomElement& el, JZUiNode& out, const std::string& path);

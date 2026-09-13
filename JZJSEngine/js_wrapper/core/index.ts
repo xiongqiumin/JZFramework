@@ -244,3 +244,10 @@ const crypto: any = {
 
 // ---- export(对齐 Node: 内置模块须 import) ----
 export { fs, path, os, process, crypto };
+
+// bytes: 二进制读写工具(ByteReader/ByteWriter/...), **不是** Node 内置模块, 是本框架
+// 补的那层"游标自增"糖。也允许按子路径直接 import:
+//     import { ByteReader } from '<...>/jz_js/core/dist/bytes.js';
+// 走子路径不会执行本文件, 也就不需要 __jz.core 存在(协议解析器可以只依赖它)。
+export { ByteReader, ByteWriter, concatBytes, hexOf } from './bytes';
+export type { Bytes } from './bytes';

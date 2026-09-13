@@ -8,3 +8,5 @@ export * from './fs';
 export * from './path';
 export * from './process';
 export * from './crypto';
+// bytes: 本框架特有的二进制读写工具(非 Node 模块), 见同目录 ./bytes.d.ts
+export * from './bytes';

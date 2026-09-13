@@ -1,8 +1,11 @@
 #include "JZJSUiLoader.h"
+#include "JZJSEngine.h"
 #include "JZXml/JZXml.h"
 
 #include <cctype>
 #include <cmath>
+#include <map>
+#include <set>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -466,4 +469,172 @@ std::string JZJSUiLoader::toTsClass(const std::string& className,
     if (generateTsClass(out, className, importPath))
         return out;
     return std::string();
+}
+
+// ---------------------------------------------------------------------------
+// 运行时构造: 生成可执行 JS 脚本并经 engine->eval 构造真实控件树
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// UI 短类型名 -> 引擎已注册的 JS 构造器名(JZJSWidgetModule 注册的 C++ 类)。
+// 仅覆盖已注册控件; 含未注册类型时 createUi 直接失败(见下方校验)。
+const std::map<std::string, std::string>& uiClassMap()
+{
+    static const std::map<std::string, std::string> m = {
+        { "Window",       "JZWindow" },
+        { "MainWindow",   "JZWindow" },
+        { "Dialog",       "JZWindow" },
+        { "Canvas",       "JZCanvas" },
+        { "Label",        "JZLabel" },
+        { "ImageLabel",   "JZLabel" },
+        { "PushButton",   "JZPushButton" },
+        { "LineEdit",     "JZLineEdit" },
+        { "CheckBox",     "JZCheckbox" },
+        { "RadioButton",  "JZRadioButton" },
+        { "ComboBox",     "JZComboBox" },
+        { "Slider",       "JZSlider" },
+        { "ProgressBar",  "JZProgressBar" },
+        { "SpinBox",      "JZSpinBox" },
+        { "GroupBox",     "JZGroupBox" },
+        { "Layout",       "JZLayout" },
+        { "VBoxLayout",   "JZVBoxLayout" },
+        { "HBoxLayout",   "JZHBoxLayout" },
+        { "GridLayout",   "JZGridLayout" },
+    };
+    return m;
+}
+
+bool uiIsWindow(const std::string& t) {
+    return t == "Window" || t == "MainWindow" || t == "Dialog";
+}
+bool uiIsLayout(const std::string& t) {
+    return t == "Layout" || t == "VBoxLayout" || t == "HBoxLayout" || t == "GridLayout";
+}
+bool uiHasText(const std::string& t) {
+    return t == "Label" || t == "ImageLabel" || t == "PushButton" ||
+           t == "LineEdit" || t == "CheckBox" || t == "RadioButton";
+}
+bool uiHasTitle(const std::string& t) {
+    return uiIsWindow(t) || t == "GroupBox";
+}
+
+// 生成脚本片段: 创建节点 + 属性 + 挂载子节点, 返回该节点的局部变量名。
+struct UiScriptGen {
+    std::string out;
+    int counter = 0;
+
+    std::string genNode(const JZUiNode& node, int depth)
+    {
+        std::string indent(depth * 2, ' ');
+        std::string var = "__w" + std::to_string(counter++);
+        out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
+        // 保持引用, 避免无 id 的子控件被 JS GC 回收后底层 C++ 对象悬空
+        out += indent + "__keep.push(" + var + ");\n";
+
+        const Json::Value& props = node.props;
+        if (props.isObject()) {
+            for (auto it = props.begin(); it != props.end(); ++it) {
+                std::string key = it.name();
+                const Json::Value& val = *it;
+                if (key == "geometry" && val.isArray() && val.size() == 4) {
+                    out += indent + var + ".setGeometry("
+                        + tsLiteral(val[0]) + ", " + tsLiteral(val[1]) + ", "
+                        + tsLiteral(val[2]) + ", " + tsLiteral(val[3]) + ");\n";
+                } else if (key == "visible" && val.isBool()) {
+                    out += indent + var + ".setVisible(" + tsLiteral(val) + ");\n";
+                } else if (key == "text" && uiHasText(node.type)) {
+                    out += indent + var + ".setText(" + tsLiteral(val) + ");\n";
+                } else if (key == "title" && uiHasTitle(node.type)) {
+                    out += indent + var + ".setTitle(" + tsLiteral(val) + ");\n";
+                } else if (key == "style" && val.isObject()) {
+                    out += indent + var + ".setStyleSheet(__css(" + tsLiteral(val) + "));\n";
+                }
+                // 其它属性暂不处理(避免调用不存在的 setter 抛异常)
+            }
+        }
+
+        for (const auto& c : node.children) {
+            std::string childExpr = genNode(c, depth + 1);
+            if (uiIsWindow(node.type) && !uiIsLayout(c.type))
+                out += indent + var + ".addWidget(" + childExpr + ");\n";
+            else if (uiIsLayout(c.type))
+                out += indent + var + ".setLayout(" + childExpr + ");\n";
+            else
+                out += indent + childExpr + ".setParentWidget(" + var + ");\n";
+        }
+
+        if (!node.id.empty())
+            out += indent + "__ui." + sanitizeId(node.id) + " = " + var + ";\n";
+        return var;
+    }
+};
+
+} // namespace
+
+JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
+{
+    if (!m_ok) {
+        m_error = "未加载 UI 定义(请先 load)";
+        return JS_UNDEFINED;
+    }
+    if (!engine) {
+        m_error = "engine 为空";
+        return JS_UNDEFINED;
+    }
+
+    // 校验所有控件类型均已注册(未知类型直接失败, 避免 eval 时抛异常);
+    // 同时收集实际用到的类型, 仅把这些写进 __types, 避免引用到引擎中未注册的控件类
+    // (如树里没有 Canvas, 就不该在脚本里出现 "Canvas": JZCanvas, 否则未定义会抛异常)。
+    const auto& clsMap = uiClassMap();
+    bool unknown = false;
+    std::string badType;
+    std::set<std::string> usedTypes;
+    traverse([&](const JZUiNode& n, const JZUiNode*) {
+        if (unknown) return;
+        auto it = clsMap.find(n.type);
+        if (it == clsMap.end()) {
+            unknown = true;
+            badType = n.type;
+        } else {
+            usedTypes.insert(n.type);
+        }
+    });
+    if (unknown) {
+        m_error = "未知控件类型: " + badType + "(引擎未注册该类)";
+        return JS_UNDEFINED;
+    }
+
+    // __types 字面量: 仅含实际用到的类型 { "Window": JZWindow, ... }
+    std::string typesObj = "{";
+    bool first = true;
+    for (const auto& t : usedTypes) {
+        if (!first) typesObj += ", ";
+        first = false;
+        typesObj += tsLiteral(t) + ": " + clsMap.at(t);
+    }
+    typesObj += "}";
+
+    UiScriptGen g;
+    std::string rootExpr = g.genNode(m_root, 2);
+    std::string body = g.out + "  __ui.root = " + rootExpr + ";\n";
+
+    // 脚本: IIFE 构造控件树并返回 { root, <id>: widget, __keep: [...] }
+    std::string script = R"(
+(function(){
+  function __mk(t){ var C = __types[t]; if(!C) throw new Error("unknown widget type: " + t); return new C(); }
+  function __css(s){ var o=""; for(var k in s){ if(!Object.prototype.hasOwnProperty.call(s,k)) continue; var v=s[k]; var css=k.replace(/[A-Z]/g, function(m){ return "-" + m.toLowerCase(); }); o += css + ":" + v + ";"; } return o; }
+  var __ui = {};
+  var __keep = [];
+)";
+    script += "  var __types = " + typesObj + ";\n";
+    script += body;
+    script += "  __ui.__keep = __keep;\n  return __ui;\n})()\n";
+
+    JZJSValuePtr res = engine->eval(script);
+    if (!engine->runtimeError().empty()) {
+        m_error = engine->runtimeError();
+        return JS_UNDEFINED;
+    }
+    return JS_DupValue(engine->context(), res.get());
 }

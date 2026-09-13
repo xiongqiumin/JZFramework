@@ -3,6 +3,9 @@ target_link_libraries(test_jsengine JZFramework)
 
 add_executable(test_jsui test_jsui.cpp)
 target_link_libraries(test_jsui JZFramework)
+# 把 UI 描述资源拷到构建目录, 供 uiLoader.loadFile 测试
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/timer_ui.xml
+               ${CMAKE_CURRENT_BINARY_DIR}/timer_ui.xml COPYONLY)
 
 add_executable(test_jsnet test_jsnet.cpp)
 target_link_libraries(test_jsnet JZFramework)

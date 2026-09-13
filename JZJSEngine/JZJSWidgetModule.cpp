@@ -36,46 +36,23 @@
 #include "JZComboBox.h"
 #include "JZSpinBox.h"
 #include "JZGroupBox.h"
+#include "JZJSUiLoader.h"
 
 #include <string>
 
-// ---------- JS 包裹对象 (底层原生对象 + JS 回调) ----------
-
-struct JZJSWindow
-{
-    JZWindow* m_win = nullptr;
-    JZVBoxLayout* m_box = nullptr;
-    ~JZJSWindow();
-};
-
-struct JZJSCanvas
-{
-    JZJSEngine* m_engine = nullptr;
-    JZCanvas* m_canvas = nullptr;
-    JSValue m_paintCb = JS_UNDEFINED;
-    JSValue m_mouseCb = JS_UNDEFINED;
-    ~JZJSCanvas();
-};
-
-// 颜色名/十六进制解析 (供绘制上下文构造器与测试复用)
+// 颜色名/十六进制解析 (供 JZPainter 的 setPen/setBrush 与测试复用)
 static JZColor jzParseColor(const std::string& s);
 
-// ---------- 包裹对象析构 ----------
-
-JZJSWindow::~JZJSWindow()
+// 新建 JS 对象回写到 JSWidgetClass<W> 包裹对象(m_jsvalue / m_engine),
+// 供事件转发 callJs 以该对象为 this 调用 JS 方法(onPaint / onMousePress ...)。
+// 作为 onCreated 钩子, 在 createValue(type, ptr) 内触发 —— 覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径。
+template <class W>
+static void jzBindWidgetInstance(JSContext* ctx, JSValue obj, void* opaque, JZJSEngine* engine)
 {
-    delete m_win;   // 画布是窗口树的子控件, 由窗口析构统一回收
-}
-
-JZJSCanvas::~JZJSCanvas()
-{
-    if (m_engine)
-    {
-        JSContext* ctx = m_engine->context();
-        if (!JS_IsUndefined(m_paintCb)) JS_FreeValue(ctx, m_paintCb);
-        if (!JS_IsUndefined(m_mouseCb)) JS_FreeValue(ctx, m_mouseCb);
-    }
-    // m_canvas 由窗口树拥有, 这里不 delete
+    auto* cp = (jsbind::ClassPointer<W>*)opaque;
+    auto* js = static_cast<JSWidgetClass<W>*>(cp->get());
+    js->m_engine = engine;
+    js->m_jsvalue = obj;   // 原始句柄(不 dup): 随 JS 自身 GC, 析构不释放, 避免自引用环
 }
 
 // ---------- 模块生命周期 ----------
@@ -86,85 +63,17 @@ JZJSWidgetModule::~JZJSWidgetModule() { deinitEngine(); }
 void JZJSWidgetModule::initEngine(JZJSEngine* engine)
 {
     m_engine = engine;
-    auto global = m_engine->globalObject();
-    auto self = this;
-
-    // 原生类 JZWindow (包裹层 JZJSWindow: 持有底层 JZWindow + 垂直布局)
-    jsbind::ClassBind<JZJSWindow> bind_win("JZWindow");
-    bind_win.def("createCanvas", [self](JZJSWindow* w, int w_, int h_) -> JSValue {
-        JZCanvas* cv = new JZCanvas(w->m_win);
-        cv->setFixedSize(w_, h_);
-        w->m_box->addWidget(cv, 1);
-        JZJSCanvas* obj = new JZJSCanvas();
-        obj->m_engine = self->m_engine;
-        obj->m_canvas = cv;
-        return self->m_engine->createValue(self->m_typeCanvas, obj);
-    });
-    bind_win.def("addWidget", [](JZJSWindow* w, JZWidget* child) { w->m_box->addWidget(child, 0); });
-    bind_win.def("setTitle", [](JZJSWindow* w, const std::string& t) { w->m_win->setTitle(t); });
-    bind_win.def("show", [](JZJSWindow* w) { w->m_win->show(); });
-    bind_win.def("close", [](JZJSWindow* w) { w->m_win->close(); });
-    m_engine->registClass(bind_win.classDefine());
-    m_typeWindow = m_engine->ctypeidToType(typeid(JZJSWindow).name());
-
-    // 原生类 JZCanvas (包裹层 JZJSCanvas: 持有底层 JZCanvas + JS 回调)
-    jsbind::ClassBind<JZJSCanvas> bind_cv("JZCanvas");
-    bind_cv.def("setOnPaint", [self](JZJSCanvas* c, JSValue cb) {
-        JSContext* ctx = self->m_engine->context();
-        if (!JS_IsUndefined(c->m_paintCb)) JS_FreeValue(ctx, c->m_paintCb);
-        c->m_paintCb = JS_DupValue(ctx, cb);
-        c->m_canvas->setPaintCallback([self, c](JZPainter& p) {
-            JSContext* ctx = self->m_engine->context();
-            if (JS_IsUndefined(c->m_paintCb)) return;
-            JSValue backend = jzBuildPaintContext(self->m_engine, &p);
-            JSValue args[1] = { backend };
-            JSValue ret = JS_Call(ctx, c->m_paintCb, JS_UNDEFINED, 1, args);
-            JS_FreeValue(ctx, ret);
-            JS_FreeValue(ctx, backend);
-        });
-    });
-    bind_cv.def("setOnMouse", [self](JZJSCanvas* c, JSValue cb) {
-        JSContext* ctx = self->m_engine->context();
-        if (!JS_IsUndefined(c->m_mouseCb)) JS_FreeValue(ctx, c->m_mouseCb);
-        c->m_mouseCb = JS_DupValue(ctx, cb);
-        c->m_canvas->setMouseCallback([self, c](int x, int y, int btn) {
-            JSContext* ctx = self->m_engine->context();
-            if (JS_IsUndefined(c->m_mouseCb)) return;
-            JSValue args[3] = { JS_NewInt32(ctx, x), JS_NewInt32(ctx, y), JS_NewInt32(ctx, btn) };
-            JSValue ret = JS_Call(ctx, c->m_mouseCb, JS_UNDEFINED, 3, args);
-            JS_FreeValue(ctx, ret);
-            JS_FreeValue(ctx, args[0]);
-            JS_FreeValue(ctx, args[1]);
-            JS_FreeValue(ctx, args[2]);
-        });
-    });
-    bind_cv.def("update", [](JZJSCanvas* c) { c->m_canvas->update(); });
-    bind_cv.def("getSize", [self](JZJSCanvas* c) -> JSValue {
-        JSContext* ctx = self->m_engine->context();
-        JSValue o = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, o, "w", JS_NewInt32(ctx, c->m_canvas->width()));
-        JS_SetPropertyStr(ctx, o, "h", JS_NewInt32(ctx, c->m_canvas->height()));
-        return o;
-    });
-    m_engine->registClass(bind_cv.classDefine());
-    m_typeCanvas = m_engine->ctypeidToType(typeid(JZJSCanvas).name());
-
-    // 工厂函数 JZWindow(w, h, title)
-    m_engine->registFunction(global, "JZWindow",
-        [self](int w, int h, const std::string& title) -> JSValue {
-            JZJSWindow* obj = new JZJSWindow();
-            obj->m_win = new JZWindow(w, h, title);
-            obj->m_box = new JZVBoxLayout(0, 0);
-            obj->m_box->setContentsMargins(0, 0, 0, 0);
-            obj->m_win->setLayout(obj->m_box);
-            return self->m_engine->createValue(self->m_typeWindow, obj);
-        });
 
     registGeometry();
     registColor();
     registImage();
     registEvents();
     registWidgets();
+    registPainter();
+    registUiLoader();
+
+    m_typeWindow = m_engine->ctypeidToType(typeid(JZWindow).name());
+    m_typeCanvas = m_engine->ctypeidToType(typeid(JZCanvas).name());
 }
 
 void JZJSWidgetModule::deinitEngine()
@@ -253,27 +162,31 @@ void JZJSWidgetModule::registImage()
 
 // ---------- 事件 (按类注册) ----------
 
+// 基类公共方法(type/accept/ignore/isAccepted)按子类分别注册; 用模板而非泛型 lambda,
+// 否则把含模板化 operator() 的 lambda 传给 ClassBind::def 时, 绑定 trait strip_function_object
+// 无法对 decltype(&F::operator()) 分解, 会编译失败。
+template <class E>
+static void defEventCommon(jsbind::ClassBind<E>& b)
+{
+    b.def("type", [](E* e) { return e->type(); });
+    b.def("accept", [](E* e) { e->accept(); });
+    b.def("ignore", [](E* e) { e->ignore(); });
+    b.def("isAccepted", [](E* e) { return e->isAccepted(); });
+}
+
 void JZJSWidgetModule::registEvents()
 {
-    // 所有事件子类共享的基类方法 (jsbind 无 JS 原型继承, 故逐个补上)
-    auto defEventCommon = [](auto& b) {
-        b.def("type", [](auto* e) { return e->type(); });
-        b.def("accept", [](auto* e) { e->accept(); });
-        b.def("ignore", [](auto* e) { e->ignore(); });
-        b.def("isAccepted", [](auto* e) { return e->isAccepted(); });
-    };
-
+    // 基类方法只在 JZEvent 上注册一次, 子类经 JS 原型链继承 (ClassBind<Sub>(name, bind_event))。
     jsbind::ClassBind<JZEvent> bind_event("JZEvent");
     bind_event.setCreate([]() { return new jsbind::ClassPointer<JZEvent>(new JZEvent(JZEvent_none), false); });
     defEventCommon(bind_event);
     m_engine->registClass(bind_event.classDefine());
 
-    jsbind::ClassBind<JZMouseEvent> bind_mouse("JZMouseEvent");
+    jsbind::ClassBind<JZMouseEvent> bind_mouse("JZMouseEvent", bind_event);
     bind_mouse.setCreate([]() {
         return new jsbind::ClassPointer<JZMouseEvent>(
             new JZMouseEvent(JZMouseEvent::Move, JZMouseEvent::NoButton, JZPoint(), JZPoint()), false);
     });
-    defEventCommon(bind_mouse);
     bind_mouse.def("localX", [](JZMouseEvent* e) { return e->localPos().x(); });
     bind_mouse.def("localY", [](JZMouseEvent* e) { return e->localPos().y(); });
     bind_mouse.def("globalX", [](JZMouseEvent* e) { return e->globalPos().x(); });
@@ -285,8 +198,7 @@ void JZJSWidgetModule::registEvents()
     bind_mouse.def("modifiers", [](JZMouseEvent* e) { return (int)e->modifiers(); });
     m_engine->registClass(bind_mouse.classDefine());
 
-    jsbind::ClassBind<JZKeyEvent> bind_key("JZKeyEvent");
-    defEventCommon(bind_key);
+    jsbind::ClassBind<JZKeyEvent> bind_key("JZKeyEvent", bind_event);
     bind_key.def("key", [](JZKeyEvent* e) { return (int)e->key(); });
     bind_key.def("modifiers", [](JZKeyEvent* e) { return (int)e->modifiers(); });
     bind_key.def("text", [](JZKeyEvent* e) { return e->text(); });
@@ -299,7 +211,6 @@ void JZJSWidgetModule::registEvents()
 
     jsbind::ClassBind<JZResizeEvent> bind_resize("JZResizeEvent");
     bind_resize.setCreate([]() { return new jsbind::ClassPointer<JZResizeEvent>(new JZResizeEvent(JZSize(), JZSize()), false); });
-    defEventCommon(bind_resize);
     bind_resize.def("width", [](JZResizeEvent* e) { return e->size().width(); });
     bind_resize.def("height", [](JZResizeEvent* e) { return e->size().height(); });
     bind_resize.def("oldWidth", [](JZResizeEvent* e) { return e->oldSize().width(); });
@@ -308,8 +219,7 @@ void JZJSWidgetModule::registEvents()
     bind_resize.def("oldSize", [](JZResizeEvent* e) { return e->oldSize(); });
     m_engine->registClass(bind_resize.classDefine());
 
-    jsbind::ClassBind<JZImeEvent> bind_ime("JZImeEvent");
-    defEventCommon(bind_ime);
+    jsbind::ClassBind<JZImeEvent> bind_ime("JZImeEvent", bind_event);
     bind_ime.def("flags", [](JZImeEvent* e) { return e->flags(); });
     bind_ime.def("hasFlag", [](JZImeEvent* e, int f) { return e->hasFlag((JZImeEvent::Flag)f); });
     bind_ime.def("compString", [](JZImeEvent* e) { return e->compString(); });
@@ -317,28 +227,23 @@ void JZJSWidgetModule::registEvents()
     bind_ime.def("compCursor", [](JZImeEvent* e) { return e->compCursor(); });
     m_engine->registClass(bind_ime.classDefine());
 
-    jsbind::ClassBind<JZPainterEvent> bind_paint("JZPainterEvent");
-    defEventCommon(bind_paint);
+    jsbind::ClassBind<JZPainterEvent> bind_paint("JZPainterEvent", bind_event);
     bind_paint.def("rect", [](JZPainterEvent* e) { return e->rect(); });
+    bind_paint.def("painter", [this](JZPainterEvent* e) { return toJsValueFromPtr(m_engine->context(), e->painter(), true); });
     m_engine->registClass(bind_paint.classDefine());
 
     jsbind::ClassBind<JZShowEvent> bind_show("JZShowEvent");
-    defEventCommon(bind_show);
     m_engine->registClass(bind_show.classDefine());
     jsbind::ClassBind<JZHideEvent> bind_hide("JZHideEvent");
-    defEventCommon(bind_hide);
     m_engine->registClass(bind_hide.classDefine());
-    jsbind::ClassBind<JZCloseEvent> bind_close("JZCloseEvent");
-    defEventCommon(bind_close);
+    jsbind::ClassBind<JZCloseEvent> bind_close("JZCloseEvent", bind_event);
     m_engine->registClass(bind_close.classDefine());
-    jsbind::ClassBind<JZInvalidateEvent> bind_inval("JZInvalidateEvent");
-    defEventCommon(bind_inval);
+    jsbind::ClassBind<JZInvalidateEvent> bind_inval("JZInvalidateEvent", bind_event);
     bind_inval.def("rect", [](JZInvalidateEvent* e) { return e->rect; });
     m_engine->registClass(bind_inval.classDefine());
 
-    jsbind::ClassBind<JZTimerEvent> bind_timer("JZTimerEvent");
+    jsbind::ClassBind<JZTimerEvent> bind_timer("JZTimerEvent", bind_event);
     bind_timer.setCreate([]() { return new jsbind::ClassPointer<JZTimerEvent>(new JZTimerEvent(0), false); });
-    defEventCommon(bind_timer);
     bind_timer.def("id", [](JZTimerEvent* e) { return e->id(); });
     m_engine->registClass(bind_timer.classDefine());
 }
@@ -347,8 +252,14 @@ void JZJSWidgetModule::registEvents()
 
 void JZJSWidgetModule::registWidgets()
 {
-    // 基类 JZWidget
+    // 基类 JZWidget —— 实际实例为 JSWidgetClass<JZWidget>, 用于 onPaint 等事件转发
     jsbind::ClassBind<JZWidget> bind_w("JZWidget");
+    bind_w.setCreate([this](JSContext* ctx, int, JSValueConst*) -> void* {
+        return new jsbind::ClassPointer<JZWidget>(new JSWidgetClass<JZWidget>(), false);
+    });
+    bind_w.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
+        jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, m_engine);
+    });
     bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
     bind_w.def("x", [](JZWidget* w) { return w->x(); });
     bind_w.def("y", [](JZWidget* w) { return w->y(); });
@@ -367,9 +278,9 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("show", [](JZWidget* w) { w->show(); });
     bind_w.def("hide", [](JZWidget* w) { w->hide(); });
     bind_w.def("setParentWidget", [](JZWidget* w, JZWidget* p) { w->setParentWidget(p); });
-    bind_w.def("parentWidget", [](JZWidget* w) { return w->parentWidget(); });
+    bind_w.def("parentWidget", [](JZWidget* w) { return w->parentWidget(); }, jsbind::returnOwnedByCpp);
     bind_w.def("setLayout", [](JZWidget* w, JZLayout* l) { w->setLayout(l); });
-    bind_w.def("layout", [](JZWidget* w) { return w->layout(); });
+    bind_w.def("layout", [](JZWidget* w) { return w->layout(); }, jsbind::returnOwnedByCpp);
     bind_w.def("setFocus", [](JZWidget* w) { w->setFocus(); });
     bind_w.def("hasFocus", [](JZWidget* w) { return w->hasFocus(); });
     bind_w.def("update", [](JZWidget* w) { w->update(); });
@@ -379,15 +290,75 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("styleSheet", [](JZWidget* w) { return w->styleSheet(); });
     m_engine->registClass(bind_w.classDefine());
 
+    // JZWindow (继承 JZWidget) —— 实际实例为 JSWidgetClass<JZWindow>
+    auto makeWindow = [](int w, int h, const std::string& title, JZWidget* parent) {
+        auto* win = new JSWidgetClass<JZWindow>(w, h, title, parent);
+        win->setLayout(new JZVBoxLayout());
+        return win;
+    };
+    jsbind::ClassBind<JZWindow> bind_win("JZWindow", bind_w);
+    bind_win.setCreate([this, makeWindow](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+        int w = 800, h = 600;
+        std::string title = "JZWindow";
+        JZWidget* parent = nullptr;
+        if (argc >= 1) w = fromJSValue<int>(ctx, argv[0]);
+        if (argc >= 2) h = fromJSValue<int>(ctx, argv[1]);
+        if (argc >= 3) title = fromJSValue<std::string>(ctx, argv[2]);
+        if (argc >= 4) parent = fromJSValue<JZWidget*>(ctx, argv[3]);
+        return new jsbind::ClassPointer<JZWindow>(makeWindow(w, h, title, parent), false);
+    });
+    bind_win.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
+        jzBindWidgetInstance<JZWindow>(ctx, obj, opaque, m_engine);
+    });
+    bind_win.def("setTitle", [](JZWindow* w, const std::string& t) { w->setTitle(t); });
+    bind_win.def("title", [](JZWindow* w) { return w->title(); });
+    bind_win.def("show", [](JZWindow* w) { w->show(); });
+    bind_win.def("close", [](JZWindow* w) { w->close(); });
+    bind_win.def("addWidget", [](JZWindow* w, JZWidget* c) {
+        JZLayout* lay = w->layout();
+        if (!lay) { lay = new JZVBoxLayout(); w->setLayout(lay); }
+        static_cast<JZBoxLayout*>(lay)->addWidget(c, 0);
+    });
+    bind_win.def("createCanvas", [this](JZWindow* w, int cw, int ch) -> JSValue {
+        auto* cv = new JSWidgetClass<JZCanvas>(w);
+        cv->setFixedSize(cw, ch);
+        JZLayout* lay = w->layout();
+        if (!lay) { lay = new JZVBoxLayout(); w->setLayout(lay); }
+        static_cast<JZBoxLayout*>(lay)->addWidget(cv, 1);
+        auto* cp = new jsbind::ClassPointer<JZCanvas>(cv, false);
+        // 经 createValue(type, ptr) 统一路径, onCreated 会自动回写 m_jsvalue / m_engine
+        return m_engine->createValue(m_typeCanvas, cp);
+    });
+    m_engine->registClass(bind_win.classDefine());
+
+    // JZCanvas (继承 JZWidget) —— 实际实例为 JSWidgetClass<JZCanvas>; 去掉 HTML 语义(setOnPaint/setOnMouse)
+    jsbind::ClassBind<JZCanvas> bind_cv("JZCanvas", bind_w);
+    bind_cv.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+        JZWidget* parent = (argc >= 1) ? fromJSValue<JZWidget*>(ctx, argv[0]) : nullptr;
+        return new jsbind::ClassPointer<JZCanvas>(new JSWidgetClass<JZCanvas>(parent), false);
+    });
+    bind_cv.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
+        jzBindWidgetInstance<JZCanvas>(ctx, obj, opaque, m_engine);
+    });
+    bind_cv.def("update", [](JZCanvas* c) { c->update(); });
+    bind_cv.def("getSize", [this](JZCanvas* c) -> JSValue {
+        JSContext* ctx = m_engine->context();
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "w", JS_NewInt32(ctx, c->width()));
+        JS_SetPropertyStr(ctx, o, "h", JS_NewInt32(ctx, c->height()));
+        return o;
+    });
+    m_engine->registClass(bind_cv.classDefine());
+
     // JZLabel
-    jsbind::ClassBind<JZLabel> bind_label("JZLabel");
+    jsbind::ClassBind<JZLabel> bind_label("JZLabel", bind_w);
     bind_label.def("setText", &JZLabel::setText);
     bind_label.def("text", &JZLabel::text);
     bind_label.def("setAlign", [](JZLabel* w, int a) { w->setAlign(a); });
     m_engine->registClass(bind_label.classDefine());
 
     // JZPushButton
-    jsbind::ClassBind<JZPushButton> bind_btn("JZPushButton");
+    jsbind::ClassBind<JZPushButton> bind_btn("JZPushButton", bind_w);
     bind_btn.def("setText", &JZPushButton::setText);
     bind_btn.def("text", &JZPushButton::text);
     bind_btn.def("setIcon", [](JZPushButton* w, JZImage* img) { w->setIcon(*img); });
@@ -407,7 +378,7 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_btn.classDefine());
 
     // JZLineEdit (文本编辑接口在 JZAbstractTextEdit)
-    jsbind::ClassBind<JZLineEdit> bind_edit("JZLineEdit");
+    jsbind::ClassBind<JZLineEdit> bind_edit("JZLineEdit", bind_w);
     bind_edit.def("setText", &JZLineEdit::setText);
     bind_edit.def("text", &JZLineEdit::text);
     bind_edit.def("setPassword", [](JZLineEdit* w, bool on) { w->setPassword(on); });
@@ -416,12 +387,12 @@ void JZJSWidgetModule::registWidgets()
     bind_edit.def("maxLength", [](JZLineEdit* w) { return w->maxLength(); });
     bind_edit.def("setReadOnly", [](JZLineEdit* w, bool on) { w->setReadOnly(on); });
     bind_edit.def("isReadOnly", [](JZLineEdit* w) { return w->isReadOnly(); });
-    bind_edit.def("setPlaceholderText", [](JZLineEdit* w, const std::string& s) { w->setPlaceholderText(JZString(s.c_str())); });
+    bind_edit.def("setPlaceholderText", [](JZLineEdit* w, const std::string& s) { w->setPlaceholderText(s); });
     bind_edit.def("placeholderText", [](JZLineEdit* w) { return w->placeholderText(); });
     m_engine->registClass(bind_edit.classDefine());
 
     // JZCheckBox
-    jsbind::ClassBind<JZCheckbox> bind_check("JZCheckbox");
+    jsbind::ClassBind<JZCheckbox> bind_check("JZCheckbox", bind_w);
     bind_check.def("setText", &JZCheckbox::setText);
     bind_check.def("text", &JZCheckbox::text);
     bind_check.def("setChecked", [](JZCheckbox* w, bool on) { w->setChecked(on); });
@@ -429,7 +400,7 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_check.classDefine());
 
     // JZRadioButton
-    jsbind::ClassBind<JZRadioButton> bind_radio("JZRadioButton");
+    jsbind::ClassBind<JZRadioButton> bind_radio("JZRadioButton", bind_w);
     bind_radio.def("setText", &JZRadioButton::setText);
     bind_radio.def("text", &JZRadioButton::text);
     bind_radio.def("setChecked", [](JZRadioButton* w, bool on) { w->setChecked(on); });
@@ -437,21 +408,21 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_radio.classDefine());
 
     // JZSlider
-    jsbind::ClassBind<JZSlider> bind_slider("JZSlider");
+    jsbind::ClassBind<JZSlider> bind_slider("JZSlider", bind_w);
     bind_slider.def("setRange", [](JZSlider* w, int min, int max) { w->setRange(min, max); });
     bind_slider.def("setValue", [](JZSlider* w, int v) { w->setValue(v); });
     bind_slider.def("value", [](JZSlider* w) { return w->value(); });
     m_engine->registClass(bind_slider.classDefine());
 
     // JZProgressBar
-    jsbind::ClassBind<JZProgressBar> bind_bar("JZProgressBar");
+    jsbind::ClassBind<JZProgressBar> bind_bar("JZProgressBar", bind_w);
     bind_bar.def("setRange", [](JZProgressBar* w, int min, int max) { w->setRange(min, max); });
     bind_bar.def("setValue", [](JZProgressBar* w, int v) { w->setValue(v); });
     bind_bar.def("value", [](JZProgressBar* w) { return w->value(); });
     m_engine->registClass(bind_bar.classDefine());
 
     // JZComboBox
-    jsbind::ClassBind<JZComboBox> bind_combo("JZComboBox");
+    jsbind::ClassBind<JZComboBox> bind_combo("JZComboBox", bind_w);
     bind_combo.def("addItem", [](JZComboBox* w, const std::string& s) { w->addItem(s); });
     bind_combo.def("addItems", [](JZComboBox* w, const std::vector<std::string>& items) { w->addItems(items); });
     bind_combo.def("removeItem", [](JZComboBox* w, int i) { w->removeItem(i); });
@@ -465,7 +436,7 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_combo.classDefine());
 
     // JZSpinBox
-    jsbind::ClassBind<JZSpinBox> bind_spin("JZSpinBox");
+    jsbind::ClassBind<JZSpinBox> bind_spin("JZSpinBox", bind_w);
     bind_spin.def("setRange", [](JZSpinBox* w, int min, int max) { w->setRange(min, max); });
     bind_spin.def("setMinimum", [](JZSpinBox* w, int v) { w->setMinimum(v); });
     bind_spin.def("minimum", [](JZSpinBox* w) { return w->minimum(); });
@@ -482,10 +453,10 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_spin.classDefine());
 
     // JZGroupBox
-    jsbind::ClassBind<JZGroupBox> bind_group("JZGroupBox");
+    jsbind::ClassBind<JZGroupBox> bind_group("JZGroupBox", bind_w);
     bind_group.def("setTitle", [](JZGroupBox* w, const std::string& s) { w->setTitle(s); });
     bind_group.def("title", [](JZGroupBox* w) { return w->title(); });
-    bind_group.def("contentWidget", [](JZGroupBox* w) { return w->contentWidget(); });
+    bind_group.def("contentWidget", [](JZGroupBox* w) { return w->contentWidget(); }, jsbind::returnOwnedByCpp);
     bind_group.def("setLayout", [](JZGroupBox* w, JZLayout* l) { w->setLayout(l); });
     m_engine->registClass(bind_group.classDefine());
 
@@ -547,48 +518,141 @@ void JZJSWidgetModule::registWidgets()
     m_engine->registClass(bind_self.classDefine());
 }
 
-// ---------- 回调派发 ----------
+// ---------- JZPainter (绘制类, 非事件转发) ----------
 
-// 构造 JS 侧 onPaint 收到的 ctx 对象: 把 JZPainter 的一族绘制方法挂到普通 JS 对象上。
-// JSWidgetClass (类继承 onPaint 写法) 与 invokePaint (回调写法) 共用同一套上下文。
-JSValue jzBuildPaintContext(JZJSEngine* engine, JZPainter* p)
+void JZJSWidgetModule::registPainter()
 {
-    JSContext* ctx = engine->context();
-    JSValue backend = JS_NewObject(ctx);
-
-    auto reg = [&](const char* name, std::shared_ptr<CFunction> f) {
-        engine->registFunction(backend, name, f);
-    };
-
-    reg("save",           jsbind::createFunction([p]() { p->save(); }));
-    reg("restore",        jsbind::createFunction([p]() { p->restore(); }));
-    reg("translate",      jsbind::createFunction([p](double dx, double dy) { p->translate(dx, dy); }));
-    reg("rotate",         jsbind::createFunction([p](double deg) { p->rotate(deg); }));
-    reg("scale",          jsbind::createFunction([p](double sx, double sy) { p->scale(sx, sy); }));
-    reg("resetTransform", jsbind::createFunction([p]() { p->resetTransform(); }));
-    reg("setClip",        jsbind::createFunction([p](int x, int y, int w, int h) { p->setClip(JZRect(x, y, w, h)); }));
-    reg("setPen",         jsbind::createFunction([p](const std::string& color, int width) { p->setPen(JZPen(jzParseColor(color), width)); }));
-    reg("setBrush",       jsbind::createFunction([p](const std::string& color) { p->setBrush(JZBrush(jzParseColor(color))); }));
-    reg("setFont",        jsbind::createFunction([p](const std::string& family, int size) { p->setFont(JZFont(family, size)); }));
-    reg("drawLine",       jsbind::createFunction([p](int x1, int y1, int x2, int y2) { p->drawLine(x1, y1, x2, y2); }));
-    reg("drawRect",       jsbind::createFunction([p](int x, int y, int w, int h) { p->drawRect(x, y, w, h); }));
-    reg("drawRoundRect",  jsbind::createFunction([p](int x, int y, int w, int h, int r) { p->drawRoundRect(x, y, w, h, r); }));
-    reg("fillRect",       jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillRect(x, y, w, h, jzParseColor(color)); }));
-    reg("fillRoundRect",  jsbind::createFunction([p](int x, int y, int w, int h, int r, const std::string& color) { p->fillRoundRect(x, y, w, h, r, jzParseColor(color)); }));
-    reg("drawEllipse",    jsbind::createFunction([p](int x, int y, int w, int h) { p->drawEllipse(x, y, w, h); }));
-    reg("fillEllipse",    jsbind::createFunction([p](int x, int y, int w, int h, const std::string& color) { p->fillEllipse(x, y, w, h, jzParseColor(color)); }));
-    reg("drawText",       jsbind::createFunction([p](int x, int y, const std::string& text) { p->drawText(x, y, text.c_str()); }));
-    // 兼容占位 (五子棋用不到, 调用不报错)
-    reg("drawImage",      jsbind::createFunction([](JSValue, int, int, int, int) {}));
-    reg("strokePath",     jsbind::createFunction([](JSValue) {}));
-    reg("fillPath",       jsbind::createFunction([](JSValue) {}));
-    reg("setTransform",   jsbind::createFunction([p](double a, double b, double c_, double d, double e, double f) {
+    jsbind::ClassBind<JZPainter> bind_p("JZPainter");
+    // 必须传 widget 构造(explicit JZPainter(JZWidget*)), 故用有参构造(统一签名)。
+    bind_p.setCreate([](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+        JZWidget* w = (argc >= 1) ? fromJSValue<JZWidget*>(ctx, argv[0]) : nullptr;
+        return new JZPainter(w);
+    });
+    bind_p.def("save", [](JZPainter* p) { p->save(); });
+    bind_p.def("restore", [](JZPainter* p) { p->restore(); });
+    bind_p.def("translate", [](JZPainter* p, double dx, double dy) { p->translate(dx, dy); });
+    bind_p.def("rotate", [](JZPainter* p, double deg) { p->rotate(deg); });
+    bind_p.def("scale", [](JZPainter* p, double sx, double sy) { p->scale(sx, sy); });
+    bind_p.def("resetTransform", [](JZPainter* p) { p->resetTransform(); });
+    bind_p.def("setClip", [](JZPainter* p, int x, int y, int w, int h) { p->setClip(JZRect(x, y, w, h)); });
+    bind_p.def("setPen", [](JZPainter* p, const std::string& color, int width) { p->setPen(JZPen(jzParseColor(color), width)); });
+    bind_p.def("setBrush", [](JZPainter* p, const std::string& color) { p->setBrush(JZBrush(jzParseColor(color))); });
+    bind_p.def("setFont", [](JZPainter* p, const std::string& family, int size) { p->setFont(JZFont(family, size)); });
+    bind_p.def("drawLine", [](JZPainter* p, int x1, int y1, int x2, int y2) { p->drawLine(x1, y1, x2, y2); });
+    bind_p.def("drawRect", [](JZPainter* p, int x, int y, int w, int h) { p->drawRect(x, y, w, h); });
+    bind_p.def("drawRoundRect", [](JZPainter* p, int x, int y, int w, int h, int r) { p->drawRoundRect(x, y, w, h, r); });
+    bind_p.def("fillRect", [](JZPainter* p, int x, int y, int w, int h, const std::string& color) { p->fillRect(x, y, w, h, jzParseColor(color)); });
+    bind_p.def("fillRoundRect", [](JZPainter* p, int x, int y, int w, int h, int r, const std::string& color) { p->fillRoundRect(x, y, w, h, r, jzParseColor(color)); });
+    bind_p.def("drawEllipse", [](JZPainter* p, int x, int y, int w, int h) { p->drawEllipse(x, y, w, h); });
+    bind_p.def("fillEllipse", [](JZPainter* p, int x, int y, int w, int h, const std::string& color) { p->fillEllipse(x, y, w, h, jzParseColor(color)); });
+    bind_p.def("drawText", [](JZPainter* p, int x, int y, const std::string& text) { p->drawText(x, y, text.c_str()); });
+    bind_p.def("drawImage", [](JZPainter* p, JZImage* img, int x, int y, int w, int h) { p->drawImage(*img, x, y, w, h); });
+    bind_p.def("setTransform", [](JZPainter* p, double a, double b, double c_, double d, double e, double f) {
         JZMatrix2D m;
         m.setMatrix(a, b, c_, d, e, f);
         p->setTransform(m);
-    }));
+    });
+    m_engine->registClass(bind_p.classDefine());
+}
 
-    return backend;
+// ---------- JZJSUiLoader (UI 描述加载器) ----------
+
+// 工厂方法需要访问引擎来构造真实控件树(createUi)。registUiLoader 在 initEngine 期间调用,
+// 此处用文件静态指针持有当前引擎; 框架通常为单引擎单线程初始化, 足够安全。
+static JZJSEngine* s_uiLoaderEngine = nullptr;
+
+// 从 createUi 返回的 { root, <id>: widget, __keep } 取出 root 窗口, 并把 root 之外的全部属性
+// (含 id 子控件与 __keep 保活数组)挂到 root 上, 使 ui 既是 JZWindow, 又能通过 ui.<id> 访问子控件。
+static JSValue uiLoaderResultToWindow(JSContext* ctx, JSValue uiObj)
+{
+    JSValue root = JS_GetPropertyStr(ctx, uiObj, "root");
+    if (JS_IsUndefined(root) || JS_IsException(root))
+    {
+        JS_FreeValue(ctx, uiObj);
+        return JS_UNDEFINED;
+    }
+    JSPropertyEnum* props = nullptr;
+    uint32_t len = 0;
+    JS_GetOwnPropertyNames(ctx, &props, &len, uiObj, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY);
+    for (uint32_t i = 0; i < len; i++)
+    {
+        const char* name = JS_AtomToCString(ctx, props[i].atom);
+        if (name && std::strcmp(name, "root") == 0)
+        {
+            JS_FreeCString(ctx, name);
+            continue;
+        }
+        JSValue v = JS_GetProperty(ctx, uiObj, props[i].atom);
+        JS_SetPropertyStr(ctx, root, name, v);   // SetPropertyStr 内部 dup, 调用方需释放 v
+        JS_FreeValue(ctx, v);
+        if (name) JS_FreeCString(ctx, name);
+    }
+    if (props) JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, uiObj);
+    return root;
+}
+
+// uiLoader.loadFile(path): 解析 UI 文件并直接构造真实控件树, 返回根 JZWindow 窗口。
+static JSValue js_uiLoader_loadFile(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "uiLoader.loadFile(file) 需要一个文件路径参数");
+    const char* f = JS_ToCString(ctx, argv[0]);
+    if (!f) return JS_EXCEPTION;
+    std::string path(f);
+    JS_FreeCString(ctx, f);
+
+    JZJSUiLoader loader;
+    if (!loader.loadFromFile(path))
+    {
+        std::string msg = "uiLoader.loadFile 失败: " + loader.error();
+        return JS_ThrowTypeError(ctx, "%s", msg.c_str());
+    }
+    JSValue uiObj = loader.createUi(s_uiLoaderEngine);
+    if (JS_IsUndefined(uiObj))
+    {
+        std::string msg = "uiLoader.loadFile 构造 UI 失败: " + loader.error();
+        return JS_ThrowTypeError(ctx, "%s", msg.c_str());
+    }
+    return uiLoaderResultToWindow(ctx, uiObj);
+}
+
+// uiLoader.load(xmlText): 解析 UI 文本并直接构造真实控件树, 返回根 JZWindow 窗口。
+static JSValue js_uiLoader_load(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "uiLoader.load(text) 需要一个 XML 文本参数");
+    const char* s = JS_ToCString(ctx, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    std::string xml(s);
+    JS_FreeCString(ctx, s);
+
+    JZJSUiLoader loader;
+    if (!loader.load(xml))
+    {
+        std::string msg = "uiLoader.load 失败: " + loader.error();
+        return JS_ThrowTypeError(ctx, "%s", msg.c_str());
+    }
+    JSValue uiObj = loader.createUi(s_uiLoaderEngine);
+    if (JS_IsUndefined(uiObj))
+    {
+        std::string msg = "uiLoader.load 构造 UI 失败: " + loader.error();
+        return JS_ThrowTypeError(ctx, "%s", msg.c_str());
+    }
+    return uiLoaderResultToWindow(ctx, uiObj);
+}
+
+void JZJSWidgetModule::registUiLoader()
+{
+    s_uiLoaderEngine = m_engine;
+
+    // 全局命名空间 uiLoader: 只暴露 loadFile / load 两个工厂方法, 各自解析 UI 描述并在当前引擎中
+    // 直接构造真实控件树, 返回根 JZWindow 窗口(同时把 id 子控件挂为窗口属性, 如 ui.btn)。
+    JSContext* ctx = m_engine->context();
+    JSValue uiLoader = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, uiLoader, "loadFile", JS_NewCFunction(ctx, js_uiLoader_loadFile, "loadFile", 1));
+    JS_SetPropertyStr(ctx, uiLoader, "load", JS_NewCFunction(ctx, js_uiLoader_load, "load", 1));
+    m_engine->setProperty(m_engine->globalObject(), "uiLoader", uiLoader);
 }
 
 // ---------- 颜色解析 ----------
@@ -627,3 +691,9 @@ static JZColor jzParseColor(const std::string& s)
     if (s == "transparent") return JZColor(JZColor::Transparent);
     return JZColor(0, 0, 0);
 }
+
+// 强制实例化: 让 JSWidgetClass 的虚函数转发模板体(含事件包装)真正参与编译,
+// 也避免 JS 侧 new 这些类时缺少 vtable 链接。
+template class JSWidgetClass<JZWidget>;
+template class JSWidgetClass<JZWindow>;
+template class JSWidgetClass<JZCanvas>;

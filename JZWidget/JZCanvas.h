@@ -10,8 +10,8 @@ class JZPainter;
 // 并重发鼠标按下事件。自身不绘制任何内容(背景由 paint 回调负责铺),
 // 故默认设为不透明以参与窗口覆盖剔除。
 //
-// 典型用法(配合 JS 桥 JZJSWidgetModule): canvas.setOnPaint(cb) / setOnMouse(cb),
-// cb 内部用传入的 painter / 局部坐标自由作画。
+// 典型用法(配合 JS 桥 JZJSWidgetModule): 普通 JZWidget 子类, 事件走 onPaint / onMousePress
+// 属性(由 JSWidgetClass 转发), 回调里用 e.painter() 取到的 JZPainter 自由作画。
 class JZCanvas : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZCanvas)

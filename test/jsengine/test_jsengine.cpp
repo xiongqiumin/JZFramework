@@ -67,6 +67,21 @@ struct PP
 };
 int PP::s_dtor = 0;
 
+// 继承测试对象: Creature -> Animal -> Dog 三层单继承链
+struct Creature
+{
+    virtual ~Creature() {}
+};
+struct Animal : public Creature
+{
+    int leg = 4;
+    virtual int getLeg() const { return leg; }
+};
+struct Dog : public Animal
+{
+    int bark() const { return 1; }
+};
+
 int main()
 {
     JZApplication a;
@@ -174,7 +189,7 @@ int main()
         auto checkCall = [&](const string& name, const string& js_func, bool isPtr, int expCopy, int expDtor) {
             AAA a;
             JZJSValuePtr js_a = engine.toValuePtr(a);
-            JZJSValuePtr js_a_ptr = engine.toValuePtr(&a);
+            JZJSValuePtr js_a_ptr = engine.toValuePtrFromPtr(&a, true);
 
             AAA::resetStats();
             if (isPtr)
@@ -340,7 +355,7 @@ int main()
         //    null/undefined 映射为空指针, 非指针类型报错, 已 clear 报错。
         {
             PP obj; obj.v = 5;
-            JZJSValuePtr jsPtr = engine.toValuePtr(&obj);   // ClassPointer<PP>(cppOwner=true)
+            JZJSValuePtr jsPtr = engine.toValuePtrFromPtr(&obj, true);   // ClassPointer<PP>(cppOwner=true)
             PP* raw = engine.fromJSValue<PP*>(jsPtr.get());
             check("conv fromJSValue<PP*>", raw == &obj && raw->v == 5);
 
@@ -368,7 +383,7 @@ int main()
             check("conv fromJSValue<PP*> non-pointer throws", threwNonPtr);
 
             PP obj2; obj2.v = 5;
-            JZJSValuePtr jsOwned = engine.toValuePtr(&obj2, true);
+            JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
             // clear 走 ClassPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::ClassPointer<PP>>(不支持)
             engine.callFunction("clearOwnedP", { jsOwned });
             bool threwCleared = false;
@@ -776,6 +791,92 @@ int main()
         auto t1 = std::chrono::steady_clock::now();
         jzDebug() << "[bench] eval 总耗时 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms";
+    }
+
+    // ==================== 继承: 派生类对象可传给基类形参(向上转型) ====================
+    {
+        engine.deinit();
+        engine.init();
+
+        // 三层单继承链: Creature -> Animal -> Dog
+        jsbind::ClassBind<Creature> bindCreature("Creature");
+        engine.registClass(bindCreature.classDefine());
+        jsbind::ClassBind<Animal> bindAnimal("Animal", bindCreature);
+        bindAnimal.def("getLeg", &Animal::getLeg);
+        engine.registClass(bindAnimal.classDefine());
+        jsbind::ClassBind<Dog> bindDog("Dog", bindAnimal);
+        bindDog.def("bark", &Dog::bark);
+        engine.registClass(bindDog.classDefine());
+
+        // 接收基类指针/引用/值 的 C++ 函数: 都应能接收 Dog 对象(向上转型)
+        engine.registFunction(engine.globalObject(), "creatureTag",
+            jsbind::createFunction([](Creature*) -> int { return 100; }));
+        engine.registFunction(engine.globalObject(), "animalLeg",
+            jsbind::createFunction([](Animal* a) -> int { return a->getLeg(); }));
+        engine.registFunction(engine.globalObject(), "animalLegRef",
+            jsbind::createFunction([](Animal& a) -> int { return a.getLeg(); }));
+        engine.registFunction(engine.globalObject(), "animalLegVal",
+            jsbind::createFunction([](Animal a) -> int { return a.getLeg(); }));
+        // 精确类: Dog* 直接接收 Dog
+        engine.registFunction(engine.globalObject(), "dogBark",
+            jsbind::createFunction([](Dog* d) -> int { return d->bark(); }));
+
+        // (a) Dog 传给 Animal* (单级向上转型) -> 4
+        {
+            auto v = engine.eval("var d = new Dog(); animalLeg(d);");
+            check("inherit Dog -> Animal* (ptr)", engine.fromJSValue<int>(v.get()) == 4);
+        }
+        // (b) Dog 传给 Animal& (引用) -> 4
+        {
+            auto v = engine.eval("var d = new Dog(); animalLegRef(d);");
+            check("inherit Dog -> Animal& (ref)", engine.fromJSValue<int>(v.get()) == 4);
+        }
+        // (c) Dog 传给 Animal (值, 拷贝基类子对象) -> 4
+        {
+            auto v = engine.eval("var d = new Dog(); animalLegVal(d);");
+            check("inherit Dog -> Animal (value)", engine.fromJSValue<int>(v.get()) == 4);
+        }
+        // (d) Dog 传给 Creature* (多级向上转型链 Dog->Animal->Creature) -> 100
+        {
+            auto v = engine.eval("var d = new Dog(); creatureTag(d);");
+            check("inherit Dog -> Creature* (chain)", engine.fromJSValue<int>(v.get()) == 100);
+        }
+        // (e) 精确类: Dog 传给 Dog* -> 1
+        {
+            auto v = engine.eval("var d = new Dog(); dogBark(d);");
+            check("inherit exact Dog -> Dog*", engine.fromJSValue<int>(v.get()) == 1);
+        }
+        // (f) Animal 传给 Animal* (同类型) -> 4
+        {
+            auto v = engine.eval("var a = new Animal(); animalLeg(a);");
+            check("inherit Animal -> Animal*", engine.fromJSValue<int>(v.get()) == 4);
+        }
+        // (g) 基类对象传给需要派生类的函数应报错(类型不兼容)
+        {
+            auto v = engine.eval("var a = new Animal(); dogBark(a);");
+            check("inherit Animal -> Dog* rejected", engine.isException(v.get()));
+        }
+
+        // (h) 原生 JS 原型链: instanceof 沿原型链生效
+        check("inherit Dog instanceof Dog", engine.fromJSValue<bool>(engine.eval("var d = new Dog(); d instanceof Dog;").get()));
+        check("inherit Dog instanceof Animal", engine.fromJSValue<bool>(engine.eval("var d = new Dog(); d instanceof Animal;").get()));
+        check("inherit Dog instanceof Creature", engine.fromJSValue<bool>(engine.eval("var d = new Dog(); d instanceof Creature;").get()));
+        check("inherit Dog instanceof Object", engine.fromJSValue<bool>(engine.eval("var d = new Dog(); d instanceof Object;").get()));
+        check("inherit Animal not instanceof Dog", !engine.fromJSValue<bool>(engine.eval("var a = new Animal(); a instanceof Dog;").get()));
+
+        // (i) 基类方法可在派生对象上经原型链查找到
+        {
+            auto v = engine.eval("var d = new Dog(); d.getLeg();");
+            check("inherit base method via proto chain", engine.fromJSValue<int>(v.get()) == 4);
+        }
+        // (j) 派生对象覆盖: 基类与派生同名属性/方法查找优先派生原型
+        {
+            auto v = engine.eval("var d = new Dog(); d.bark();");
+            check("inherit derived method", engine.fromJSValue<int>(v.get()) == 1);
+        }
+
+        engine.deinit();
+        engine.init();
     }
 
     engine.stop();

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+    <class>TimerUi</class>
+    <widget class="Window" name="root">
+        <property name="title">Timer</property>
+        <property name="geometry">100,100,400,300</property>
+        <widget class="Label" name="tip">
+            <property name="text">Count: 0</property>
+            <property name="geometry">20,20,300,30</property>
+        </widget>
+        <widget class="PushButton" name="btn">
+            <property name="text">Start</property>
+            <property name="geometry">20,70,120,40</property>
+        </widget>
+    </widget>
+</ui>

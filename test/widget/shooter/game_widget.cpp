@@ -336,7 +336,10 @@ void GameWidget::keyReleaseEvent(JZKeyEvent* event)
 // ---------------- 绘制 ----------------
 void GameWidget::paintEvent(JZPainterEvent* event)
 {
-    JZPainter* p = event->painter();
+    (void)event;
+    // 框架约定: paintEvent 内自建画笔(裁剪由 painter 构造设定), 事件只提供重绘区域
+    JZPainter painter(this);
+    JZPainter* p = &painter;
     JZFont font(16);
     p->setFont(font);
 

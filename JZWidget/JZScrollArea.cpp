@@ -370,9 +370,10 @@ bool JZScrollArea::eventFilter(JZObject* watched, JZEvent* event)
 {
     // 视口背景: 内容未覆盖的区域露出白底 (模型 A), 与独立滚动区灰底区分开
     if (watched == m_viewport && event->type() == JZEvent_paint && m_widgetContent) {
-        JZPainterEvent* pe = (JZPainterEvent*)event;
-        if (JZPainter* p = pe->painter())
-            p->fillRect(0, 0, m_viewport->width(), m_viewport->height(), JZColor::White);
+        // 自建 painter: 与控件 paintEvent 同一约定(裁剪由 painter 构造设定),
+        // 这里按被拦截的视口构造, 裁剪/坐标原点都对齐视口。
+        JZPainter p(m_viewport);
+        p.fillRect(0, 0, m_viewport->width(), m_viewport->height(), JZColor::White);
         return false;   // 默认 (空) paintEvent 继续派发, 无副作用
     }
     return JZWidget::eventFilter(watched, event);

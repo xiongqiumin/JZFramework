@@ -81,9 +81,7 @@ set(JZ_SOURCES
     JZMainWindow.h
     JZMainWindow.cpp
     JZWindow.h
-    JZWindow.cpp
-    JZCanvas.h
-    JZCanvas.cpp
+    JZWindow.cpp    
     JZChart.h
     JZChart.cpp
     JZDialog.h

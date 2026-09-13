@@ -1,10 +1,12 @@
 #ifndef JZ_SHOW_EVENT_H_
 #define JZ_SHOW_EVENT_H_
 
-class JZShowEvent
+#include "JZEvent.h"
+
+class JZShowEvent : public JZEvent
 {
 public:
-    JZShowEvent() = default;
+    JZShowEvent();
 };
 
 #endif

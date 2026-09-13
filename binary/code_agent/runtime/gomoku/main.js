@@ -22,7 +22,7 @@ let turn = BLACK;           // 黑先
 let winner = EMPTY;
 let over = false;
 
-const win = JZWindow(WIN_W, WIN_H, "五子棋");
+const win = new JZWindow(WIN_W, WIN_H, "五子棋");
 
 // 顶部状态栏 (JZLabel)
 const status = new JZLabel();
@@ -108,9 +108,15 @@ function reset()
     canvas.update();
 }
 
-canvas.setOnPaint((ctx) => draw(ctx));
+canvas.onPaint = (e) => {
+    const ctx = new JZPainter(canvas);   // 与 C++ 一样: 在绘制回调里自建画笔(本次绘制内有效)
+    draw(ctx);
+};
 
-canvas.setOnMouse((x, y, button) => {
+canvas.onMousePress = (e) => {
+    const x = e.localX();
+    const y = e.localY();
+    const button = e.button();
     if (over || button !== 0) return;            // 仅左键
     if (!boardRect.contains(x, y)) return;       // 用 JZRect 做边界判定
     const pt = new JZPoint(x, y);                // 用 JZPoint 取坐标

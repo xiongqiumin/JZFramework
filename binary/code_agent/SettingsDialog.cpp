@@ -56,9 +56,9 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
 
     // 左侧导航列表
     m_navList = new JZListWidget(mainArea);
-    m_navList->addItem("模型配置");
-    m_navList->addItem("路径配置");
-    m_navList->addItem("安全配置");
+    m_navList->appendItem("模型配置");
+    m_navList->appendItem("路径配置");
+    m_navList->appendItem("安全配置");
     m_navList->setFixedWidth(120);
     m_navList->setCurrentIndex(0);
     mainLayout->addWidget(m_navList, 0);

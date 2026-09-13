@@ -9,18 +9,39 @@
 #include "JZRect.h"
 #include <vector>
 #include <string>
+#include <memory>
 #include <functional>
 
 class JZListWidget;
 
-// 列表项数据(与 LVGL 控件解耦, 虚拟列表只持有数据, 不持有任何 LVGL 对象)
+// 列表项数据(与 LVGL 控件解耦, 虚拟列表只持有数据, 不持有任何 LVGL 对象)。
+// 所有权: 由 JZListWidget 持有(unique_ptr 存于 m_items), 外部拿到的是**借用指针** ——
+// 地址只要不被 remove/take/clear 就一直稳定(增删其它项不会搬移本项), 列表析构后失效。
+// 改值用 setText/setIcon/setData: 会通知所属列表重绘。
 class JZListWidgetItem
 {
 public:
-    JZListWidget* widget = nullptr;   // 所属列表(由 addItem 自动设置)
-    JZImage icon;                     // 图标(可为空)
-    std::string text;                 // 文本
-    JZVariant data;                   // 用户自定义数据
+    JZListWidgetItem() {}
+    explicit JZListWidgetItem(const std::string& text) : m_text(text) {}
+
+    // 所属列表(由 append/insert 自动设置; 未加入列表或被 takeItem 摘除后为 nullptr)
+    JZListWidget* widget() const { return m_widget; }
+
+    const std::string& text() const { return m_text; }
+    const JZImage& icon() const { return m_icon; }
+    const JZVariant& data() const { return m_data; }
+
+    void setText(const std::string& t);
+    void setIcon(const JZImage& i);
+    void setData(const JZVariant& d);
+
+private:
+    friend class JZListWidget;      // 列表负责设置 m_widget 并直接读写内部状态
+
+    JZListWidget* m_widget = nullptr;
+    JZImage m_icon;
+    std::string m_text;
+    JZVariant m_data;
 };
 
 // 虚拟列表(owner-draw): 仅绘制当前可见区域, 通过 JZPainter 直接画到画布上,
@@ -38,15 +59,27 @@ public:
     explicit JZListWidget(JZWidget* parent = nullptr);
     ~JZListWidget();
 
-    // ---- 数据模型 ----
-    void addItem(const std::string& text);
-    void addItem(const JZListWidgetItem& item);
-    void addItems(const std::vector<std::string>& texts);
+    // ---- 数据模型 (接口形态与 Qt QListWidget 对齐) ----
+    // 项对象由调用方创建并交给列表**接管所有权**(/Transfer/); 列表不返回句柄,
+    // 需要时用 item(row) 取回。新增接口一律返回 void —— 与 Qt 的 addItem/insertItem 一致。
+    // item()/currentItem() 是 const 方法却返回非 const 指针: 与 Qt 的 QListWidget::item(row) const
+    // 一致 —— "写项属性"是列表数据的正常用法, 改值由 item 自己通知列表重绘。
+    void appendItem(const std::string& text);                   // 列表新建一项  (Qt: addItem(QString))
+    void appendItem(JZListWidgetItem* item);                    // 接管, 须 new 分配 (Qt: addItem(item))
+    void appendItems(const std::vector<std::string>& texts);    //              (Qt: addItems)
+    void insertItem(int index, const std::string& text);        //              (Qt: insertItem(row, QString))
+    void insertItem(int index, JZListWidgetItem* item);         // 接管          (Qt: insertItem(row, item))
+
+    // 摘除: 交出所有权, 由调用方释放。Qt 没有 removeItem —— 要删除就是 `delete takeItem(row)`。
+    JZListWidgetItem* takeItem(int index);                      // 越界返回 nullptr
+
     void clear();
 
+    // 查询
     int count() const;
-    const JZListWidgetItem& item(int index) const;
-    std::string itemText(int index) const;
+    JZListWidgetItem* item(int index) const;                    // 越界返回 nullptr
+    int row(const JZListWidgetItem* item) const;                // 未找到返回 -1 (Qt: row(item))
+    std::string itemText(int index) const;                      // 便捷值访问(等价 item(i)->text())
     JZVariant itemData(int index) const;
 
     // ---- 视图 ----
@@ -67,6 +100,8 @@ public:
     // ---- 选择 ----
     int currentIndex() const;
     void setCurrentIndex(int index);
+    JZListWidgetItem* currentItem() const;                     // 无选中返回 nullptr
+    void setCurrentItem(JZListWidgetItem* item, bool emitSignal = true);
 
 jz_signals:
     JZSigInt currentIndexChanged;
@@ -80,7 +115,7 @@ public:
     {
         std::vector<std::string> v;
         for (const auto& it : m_items)
-            v.push_back(it.text);
+            v.push_back(it->text());
         return v;
     }
     std::vector<JZAiAction> aiActions() const override { return {{"select", "number 项索引"}}; }
@@ -92,13 +127,17 @@ protected:
     void keyPressEvent(JZKeyEvent* event) override;
 
     void updateContentSize() override;
+    // 追加/插入的统一实现: 建立反向引用 -> 落位 -> 刷新尺寸与重绘。
+    JZListWidgetItem* insertItemAt(int index, std::unique_ptr<JZListWidgetItem> item);
     void defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetItem* item, int index);
     int itemsPerRow() const;
     int rowHeight() const;
     int cellWidth() const;
 
     ViewMode m_mode = ListMode;
-    std::vector<JZListWidgetItem> m_items;
+    // 用 unique_ptr 存放: 保证 item 地址稳定(值存 vector 一旦扩容搬移, 外部拿到的借用指针
+    // 会静默悬垂), 同时所有权/删除点唯一。
+    std::vector<std::unique_ptr<JZListWidgetItem>> m_items;
 
     int m_itemHeight = 28;     // 列表模式行高
     int m_cellW = 72;          // 图片模式单元格宽

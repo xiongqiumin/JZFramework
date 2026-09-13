@@ -31,36 +31,109 @@ JZListWidget::~JZListWidget()
 {
 }
 
-void JZListWidget::addItem(const std::string& text)
+// ---- JZListWidgetItem: 改值并通知所属列表重绘 (在 JZListWidget 之后定义, 此处类型已完整) ----
+
+void JZListWidgetItem::setText(const std::string& t)
 {
-    JZListWidgetItem it;
-    it.widget = this;
-    it.text = text;
-    m_items.push_back(std::move(it));
-    updateContentSize();
-    update();
+    m_text = t;
+    if (m_widget)
+        m_widget->update();
 }
 
-void JZListWidget::addItem(const JZListWidgetItem& item)
+void JZListWidgetItem::setIcon(const JZImage& i)
 {
-    JZListWidgetItem it = item;
-    it.widget = this;
-    m_items.push_back(std::move(it));
-    updateContentSize();
-    update();
+    m_icon = i;
+    if (m_widget)
+        m_widget->update();
 }
 
-void JZListWidget::addItems(const std::vector<std::string>& texts)
+void JZListWidgetItem::setData(const JZVariant& d)
 {
-    for (const auto& t : texts) {
-        JZListWidgetItem it;
-        it.widget = this;
-        it.text = t;
+    m_data = d;
+    if (m_widget)
+        m_widget->update();   // 自定义 itemPaint 可能依据 data 绘制, 故同样重绘
+}
+
+// ---- JZListWidget: 数据模型 ----
+
+JZListWidgetItem* JZListWidget::insertItemAt(int index, std::unique_ptr<JZListWidgetItem> item)
+{
+    if (!item)
+        return nullptr;
+
+    if (index < 0 || index > (int)m_items.size())
+        index = (int)m_items.size();             // 越界按追加处理
+
+    item->m_widget = this;                       // 建立反向引用(改值 -> 通知重绘)
+    JZListWidgetItem* raw = item.get();
+    m_items.insert(m_items.begin() + index, std::move(item));
+
+    if (m_current >= index)
+        m_current++;                             // 选中项被挤到后一位
+
+    updateContentSize();
+    update();
+    return raw;
+}
+
+void JZListWidget::appendItem(const std::string& text)
+{
+    insertItemAt((int)m_items.size(), std::unique_ptr<JZListWidgetItem>(new JZListWidgetItem(text)));
+}
+
+void JZListWidget::appendItem(JZListWidgetItem* item)
+{
+    // 接管语义(/Transfer/): item 须由 new 分配, 加入后由本列表负责 delete
+    if (!item)
+        return;
+    insertItemAt((int)m_items.size(), std::unique_ptr<JZListWidgetItem>(item));
+}
+
+void JZListWidget::insertItem(int index, const std::string& text)
+{
+    insertItemAt(index, std::unique_ptr<JZListWidgetItem>(new JZListWidgetItem(text)));
+}
+
+void JZListWidget::insertItem(int index, JZListWidgetItem* item)
+{
+    if (!item)
+        return;
+    insertItemAt(index, std::unique_ptr<JZListWidgetItem>(item));
+}
+
+void JZListWidget::appendItems(const std::vector<std::string>& texts)
+{
+    // 批量追加: 逐个落位但不逐次重绘, 最后统一刷新
+    for (const auto& t : texts)
+    {
+        std::unique_ptr<JZListWidgetItem> it(new JZListWidgetItem(t));
+        it->m_widget = this;
         m_items.push_back(std::move(it));
     }
     updateContentSize();
     update();
 }
+
+JZListWidgetItem* JZListWidget::takeItem(int index)
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return nullptr;
+
+    JZListWidgetItem* raw = m_items[index].release();   // 交出所有权
+    raw->m_widget = nullptr;                            // 不再属于本列表
+    m_items.erase(m_items.begin() + index);
+
+    if (m_current == index)
+        m_current = -1;                                 // 选中项被摘除 -> 清空选择
+    else if (m_current > index)
+        m_current--;
+
+    updateContentSize();
+    update();
+    return raw;
+}
+
+// removeItem 已按 Qt 的做法删除: 要删除某项就 `delete list->takeItem(row)`。
 
 void JZListWidget::clear()
 {
@@ -75,26 +148,33 @@ int JZListWidget::count() const
     return (int)m_items.size();
 }
 
-const JZListWidgetItem& JZListWidget::item(int index) const
+JZListWidgetItem* JZListWidget::item(int index) const
 {
-    static JZListWidgetItem s_empty;
     if (index < 0 || index >= (int)m_items.size())
-        return s_empty;
-    return m_items[index];
+        return nullptr;
+    return m_items[index].get();
+}
+
+int JZListWidget::row(const JZListWidgetItem* item) const
+{
+    if (!item)
+        return -1;
+    for (size_t i = 0; i < m_items.size(); i++)
+        if (m_items[i].get() == item)
+            return (int)i;
+    return -1;
 }
 
 std::string JZListWidget::itemText(int index) const
 {
-    if (index < 0 || index >= (int)m_items.size())
-        return {};
-    return m_items[index].text;
+    JZListWidgetItem* it = item(index);
+    return it ? it->text() : std::string();
 }
 
 JZVariant JZListWidget::itemData(int index) const
 {
-    if (index < 0 || index >= (int)m_items.size())
-        return JZVariant();
-    return m_items[index].data;
+    JZListWidgetItem* it = item(index);
+    return it ? it->data() : JZVariant();
 }
 
 void JZListWidget::setViewMode(ViewMode mode)
@@ -136,9 +216,9 @@ JZSize JZListWidget::sizeHint() const
     int w = 0;
     for (size_t i = 0; i < m_items.size(); i++)
     {
-        const JZListWidgetItem& it = m_items[i];
-        int iw = JZFontMetrics::textWidth(it.text, font);
-        if (!it.icon.isNull())
+        const JZListWidgetItem& it = *m_items[i];
+        int iw = JZFontMetrics::textWidth(it.text(), font);
+        if (!it.icon().isNull())
             iw += 20 + 6;              // 图标 + 间距 (与 defaultPaint 一致)
         if (iw > w)
             w = iw;
@@ -194,6 +274,24 @@ void JZListWidget::setCurrentIndex(int index)
     currentIndexChanged.emit(index);
 }
 
+JZListWidgetItem* JZListWidget::currentItem() const
+{
+    return item(m_current);   // m_current 为 -1 时自然返回 nullptr
+}
+
+void JZListWidget::setCurrentItem(JZListWidgetItem* item, bool emitSignal)
+{
+    if (!item)
+        return;
+    int index = row(item);
+    if (index < 0 || index == m_current)
+        return;
+    m_current = index;
+    update();
+    if (emitSignal)
+        currentIndexChanged.emit(index);
+}
+
 // ----------------------------------------------------------------------------
 // 虚拟列表核心
 // ----------------------------------------------------------------------------
@@ -233,29 +331,29 @@ void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetIt
     if (m_mode == ListMode) {
         int iconSize = 20;
         int textX = rect.x() + 6;
-        if (!item->icon.isNull()) {
+        if (!item->icon().isNull()) {
             int ix = rect.x() + 6;
             int iy = rect.y() + (rect.height() - iconSize) / 2;
-            p.drawImage(item->icon, ix, iy, iconSize, iconSize);
+            p.drawImage(item->icon(), ix, iy, iconSize, iconSize);
             textX = ix + iconSize + 6;
         }
         // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
         p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
         JZFont font(14); p.setFont(font);
         int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
-        p.drawText(textX, ty, item->text.c_str());
+        p.drawText(textX, ty, item->text().c_str());
     } else {
         int iconSize = rect.height() - 22;
-        if (iconSize > 0 && !item->icon.isNull()) {
+        if (iconSize > 0 && !item->icon().isNull()) {
             int cx = rect.x() + (rect.width() - iconSize) / 2;
             int cy = rect.y() + 2;
-            p.drawImage(item->icon, cx, cy, iconSize, iconSize);
+            p.drawImage(item->icon(), cx, cy, iconSize, iconSize);
         }
         // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
         p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
         JZFont font(12); p.setFont(font);
         int th = JZFontMetrics::textHeight(font);
-        p.drawText(rect.x() + 2, rect.y() + rect.height() - th - 4, item->text.c_str());
+        p.drawText(rect.x() + 2, rect.y() + rect.height() - th - 4, item->text().c_str());
     }
 }
 
@@ -288,9 +386,9 @@ void JZListWidget::paintEvent(JZPainterEvent* event)
             if (cy + rh < 0 || cy > viewH) continue;
             JZRect rect(cx, cy, (m_mode == ListMode) ? viewW : cw, rh);
             if (m_paintFn)
-                m_paintFn(p, rect, &m_items[index]);
+                m_paintFn(p, rect, m_items[index].get());
             else
-                defaultPaint(p, rect, &m_items[index], index);
+                defaultPaint(p, rect, m_items[index].get(), index);
         }
     }
 }

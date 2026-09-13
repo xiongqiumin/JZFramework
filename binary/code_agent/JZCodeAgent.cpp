@@ -595,9 +595,13 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // build/*.js.map 翻译回 TS 源码位置（JZEngineRuntime）。
     // project.json 不是骨架文件：它由打包/发布(buildProject)写在产物目录（main.js
     // 所在目录）里，作为补充信息（编译时间 / 原路径地址 ...）。
-    // 生成的工程用纯 ES2022（显式关掉默认带进来的 DOM），并挂上框架自定义模块的
-    // 类型（fs/path/os/process/net/http/fetch/...）。因为 lib 已不含 DOM，jz_types
-    // 里声明的全局 fetch/WebSocket/URL 等不会与 lib.dom.d.ts 冲突。
+    // 生成的工程 lib 用 ES2025：对齐 quickjs 实际支持的范围（ES2022~ES2025 全部，
+    // 另加部分 esnext 提案）；显式写 lib 同时关掉默认带进来的 DOM，jz_types 里声明的
+    // 全局 fetch/WebSocket/URL 等才不会被 lib.dom.d.ts 撞成 duplicate identifier。
+    // 不写 "ESNext"：那会放行 quickjs 根本没有的 Temporal 等 API（编译通过、运行时
+    // undefined）。已知唯一假阳性：Atomics.waitAsync（lib.es2024.sharedmemory 有声明，
+    // quickjs 未实现）。target 保持 ES2022：quickjs 对 ES2022 语法完整支持，且
+    // ES2023~ES2025 没有新增语法，不会发生降级。
     //
     // jz_types / jz_js 各从 exe 目录**拷一份到工程里**（<工程根>/jz_types、<工程根>/jz_js）：
     // 工程因此自包含，tsconfig 只写相对路径，换机器 / 换 exe 目录 / 拷给别人都不会丢。
@@ -638,7 +642,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"target\": \"ES2022\",\n"
         "    \"module\": \"esnext\",\n"
         "    \"moduleResolution\": \"bundler\",\n"
-        "    \"lib\": [\"ES2022\"],\n"
+        "    \"lib\": [\"ES2025\"],\n"
         "    \"strict\": true,\n"
         "    \"skipLibCheck\": true,\n"
         "    \"noImplicitAny\": true,\n"

@@ -16,7 +16,7 @@
 static bool list_sizehint_sane()
 {
     JZListWidget list;
-    list.addItems({ "Label", "PushButton", "Slider" });
+    list.appendItems({ "Label", "PushButton", "Slider" });
 
     JZSize sh = list.sizeHint();
     JZ_TEST_GT(sh.width(), 0);
@@ -28,24 +28,24 @@ static bool list_sizehint_sane()
 static bool list_sizehint_follows_content()
 {
     JZListWidget a;
-    a.addItem("x");
+    a.appendItem("x");
     JZListWidget b;
-    b.addItems({ "x", "y", "z" });
+    b.appendItems({ "x", "y", "z" });
     JZ_TEST_GT(b.sizeHint().height(), a.sizeHint().height());
 
     JZListWidget wide;
-    wide.addItem("a-short-one");
+    wide.appendItem("a-short-one");
     JZListWidget wider;
-    wider.addItem("a-much-much-longer-item-text");
+    wider.appendItem("a-much-much-longer-item-text");
     JZ_TEST_GT(wider.sizeHint().width(), wide.sizeHint().width());
 
     // 8 行封顶: 50 项不应比 8 项更高
     JZListWidget c8;
     for (int i = 0; i < 8; i++)
-        c8.addItem("item");
+        c8.appendItem("item");
     JZListWidget c50;
     for (int i = 0; i < 50; i++)
-        c50.addItem("item");
+        c50.appendItem("item");
     JZ_TEST_LE(c50.sizeHint().height(), c8.sizeHint().height());
     return true;
 }
@@ -58,7 +58,7 @@ static bool hbox_fixed_uses_sizehint()
 
     JZWidget* box = new JZWidget(&win);
     JZListWidget* list = new JZListWidget(box);
-    list->addItems({ "Label", "PushButton", "Slider" });
+    list->appendItems({ "Label", "PushButton", "Slider" });
     JZWidget* right = new JZWidget(box);
 
     JZHBoxLayout* lay = new JZHBoxLayout(4, 4);
@@ -82,7 +82,7 @@ static bool vbox_fixed_uses_sizehint()
 
     JZWidget* box = new JZWidget(&win);
     JZListWidget* list = new JZListWidget(box);
-    list->addItems({ "a", "b", "c" });
+    list->appendItems({ "a", "b", "c" });
     JZWidget* body = new JZWidget(box);
 
     JZVBoxLayout* lay = new JZVBoxLayout(4, 4);

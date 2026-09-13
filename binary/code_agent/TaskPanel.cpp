@@ -123,9 +123,9 @@ TaskPanel::TaskPanel(JZWidget* parent)
     m_list->setItemHeight(44);
     m_list->setItemPaint([this](JZPainter& p, const JZRect& rect, JZListWidgetItem* item)
     {
-        bool sel = (m_currentId > 0 && item->data.toInt() == m_currentId);
+        bool sel = (m_currentId > 0 && item->data().toInt() == m_currentId);
 
-        string text = item->text;
+        string text = item->text();
         string title = text, sub;
         size_t nl = text.find('\n');
         if (nl != string::npos)
@@ -176,11 +176,11 @@ void TaskPanel::setTasks(const vector<HistoryEntry>& tasks, int currentId)
     int curRow = -1;
     for (auto it = tasks.rbegin(); it != tasks.rend(); ++it)   // 最新的任务排最上面
     {
-        JZListWidgetItem item;
-        item.text = it->title.empty() ? string("新任务") : it->title;
-        item.text += "\n" + taskSubText(*it);
-        item.data = JZVariant(it->id);
-        m_list->addItem(item);
+        string title = it->title.empty() ? string("新任务") : it->title;
+        JZListWidgetItem* item = new JZListWidgetItem();      // 交由列表接管(appendItem 负责释放)
+        item->setText(title + "\n" + taskSubText(*it));
+        item->setData(JZVariant(it->id));
+        m_list->appendItem(item);
         m_ids.push_back(it->id);
         if (it->id == currentId)
             curRow = (int)m_ids.size() - 1;

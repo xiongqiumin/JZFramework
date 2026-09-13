@@ -13,6 +13,7 @@
 #include "JZImeEvent.h"
 #include "JZShowEvent.h"
 #include "JZHideEvent.h"
+#include "JZJSPaintScope.h"
 
 class JZJSEngine;
 class JZWindow;
@@ -34,16 +35,32 @@ public:
 
     // 所有虚函数转发统一: 框架派发的事件对象直接包成 JS 已注册的事件类实例转给 JS,
     // 不再为每种事件拼自定义参数对象(原 mouseArgs/keyArgs 已删除)。
-    // 事件在 event() 调用期间有效(栈对象), 故 toJsValueFromPtr 用 cppOwner=true (C++ 持有),
-    // JS 仅持句柄、不 delete, 避免 GC 误删栈/框架托管对象。is-a 与基类方法由 JS 原型链(JZEvent)负责。
-    // 各事件类在 registEvents 中按 ClassBind<Sub>(name, bind_event) 挂到 JZEvent 原型上。
+    // is-a 与基类方法由 JS 原型链(JZEvent)负责, 各事件类在 registEvents 中按
+    // ClassBind<Sub>(name, bind_event) 挂到 JZEvent 原型上。
+    //
+    // 事件对象的包装: 事件是**栈对象**, 只在本次派发期间有效。所以这里手动建
+    // JSRawPointer(借用, cppOwner=true —— JS 不负责释放, 避免 GC 误删栈对象),
+    // 派发结束后立刻 **clear()**: 包装的 PointInfo 与该 JS 对象共享, clear 会让 JS 侧
+    // 持有的那份一起失效 —— 之后 JS 若还留着事件对象, 访问它抛异常而不是读悬垂内存。
+    // (不能用 toJsValueFromPtr: 它内部的临时包装在调用返回后就没了, 之后无从清空。)
+    template <class E>
+    void callEventJs(const char* name, E* event)
+    {
+        jsbind::JSRawPointer<E> ref(event, true);
+        callJs(name, { toJSValue(m_engine->context(), ref) });
+        ref.clear();
+    }
 
     // ---------- 绘制 ----------
     virtual void paintEvent(JZPainterEvent* event) override
     {
         if (!hasJsMethod("onPaint"))
             return Class::paintEvent(event);
-        callJs("onPaint", { toJsValueFromPtr(m_engine->context(), event, true) });
+        // JS 侧画笔(new JZPainter(this))的生命周期 = 本次 onPaint 派发(对应 C++ 的栈对象
+        // `JZPainter p(this)`): 作用域结束立即回收画笔, 让绘制流的 Push/Pop 同帧配平。
+        // 见 JZJSPaintScope.h。
+        JZJSPaintScope scope(m_engine);
+        callEventJs("onPaint", event);
     }
 
     // ---------- 鼠标 ----------
@@ -51,25 +68,25 @@ public:
     {
         if (!hasJsMethod("onMousePress"))
             return Class::mousePressEvent(event);
-        callJs("onMousePress", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onMousePress", event);
     }
     virtual void mouseReleaseEvent(JZMouseEvent* event) override
     {
         if (!hasJsMethod("onMouseRelease"))
             return Class::mouseReleaseEvent(event);
-        callJs("onMouseRelease", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onMouseRelease", event);
     }
     virtual void mouseMoveEvent(JZMouseEvent* event) override
     {
         if (!hasJsMethod("onMouseMove"))
             return Class::mouseMoveEvent(event);
-        callJs("onMouseMove", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onMouseMove", event);
     }
     virtual void wheelEvent(JZMouseEvent* event) override
     {
         if (!hasJsMethod("onWheel"))
             return Class::wheelEvent(event);
-        callJs("onWheel", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onWheel", event);
     }
 
     // ---------- 悬停 / 焦点 ----------
@@ -77,25 +94,25 @@ public:
     {
         if (!hasJsMethod("onEnter"))
             return Class::enterEvent(event);
-        callJs("onEnter", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onEnter", event);
     }
     virtual void leaveEvent(JZEvent* event) override
     {
         if (!hasJsMethod("onLeave"))
             return Class::leaveEvent(event);
-        callJs("onLeave", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onLeave", event);
     }
     virtual void focusInEvent(JZEvent* event) override
     {
         if (!hasJsMethod("onFocusIn"))
             return Class::focusInEvent(event);
-        callJs("onFocusIn", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onFocusIn", event);
     }
     virtual void focusOutEvent(JZEvent* event) override
     {
         if (!hasJsMethod("onFocusOut"))
             return Class::focusOutEvent(event);
-        callJs("onFocusOut", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onFocusOut", event);
     }
 
     // ---------- 显示 / 隐藏 / 尺寸 ----------
@@ -103,19 +120,19 @@ public:
     {
         if (!hasJsMethod("onShow"))
             return Class::showEvent(event);
-        callJs("onShow", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onShow", event);
     }
     virtual void hideEvent(JZHideEvent* event) override
     {
         if (!hasJsMethod("onHide"))
             return Class::hideEvent(event);
-        callJs("onHide", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onHide", event);
     }
     virtual void resizeEvent(JZResizeEvent* event) override
     {
         if (!hasJsMethod("onResize"))
             return Class::resizeEvent(event);
-        callJs("onResize", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onResize", event);
     }
 
     // ---------- 键盘 / 输入法 ----------
@@ -123,13 +140,13 @@ public:
     {
         if (!hasJsMethod("onKeyPress"))
             return Class::keyPressEvent(event);
-        callJs("onKeyPress", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onKeyPress", event);
     }
     virtual void keyReleaseEvent(JZKeyEvent* event) override
     {
         if (!hasJsMethod("onKeyRelease"))
             return Class::keyReleaseEvent(event);
-        callJs("onKeyRelease", { toJsValueFromPtr(m_engine->context(), event, true) });
+        callEventJs("onKeyRelease", event);
     }
 
     // JS 侧 (m_jsvalue) 是否实现名为 name 的方法
@@ -164,8 +181,9 @@ public:
 // 把 JZWidget 的窗口 / 画布 / 绘制暴露给 JS (事件走类继承 + onXxx 属性写法):
 //   const win = new JZWindow(w, h, title);       // 注册类, new 构造
 //   const cv  = win.createCanvas(w, h);          // 在窗口布局中创建画布
-//   win.onPaint = (e) => { const pt = e.painter(); pt.drawLine(0,0,10,10); };  // 事件转发
-//   cv.onMousePress = (e) => { const x = e.localX(), y = e.localY(); };        // 局部逻辑坐标
+//   cv.onPaint = (e) => { const p = new JZPainter(cv); p.fillRect(...); };  // e.rect() 给出绘制区
+//        画笔与 C++ 一致: 在 onPaint 内自建, 只在本次派发期间有效(派发结束即失效)。
+//   cv.onMousePress = (e) => { const x = e.localX(), y = e.localY(); };   // 局部逻辑坐标
 //   cv.update();                                  // 触发重绘
 //   win.show();
 // 测宽与绘制都复用框架现有链路, 窗口存在时 runtime 不退出。

@@ -186,10 +186,10 @@ bool JZTabWidget::eventFilter(JZObject* watched, JZEvent* event)
 {
     // 页面容器是普通 JZWidget, 没有自绘代码 —— 背景在这里画 (拦截其 paint 事件)
     if (watched == m_pageArea && event->type() == JZEvent_paint) {
-        JZPainterEvent* pe = (JZPainterEvent*)event;
-        if (JZPainter* p = pe->painter())
-            p->fillRect(0, 0, m_pageArea->width(), m_pageArea->height(),
-                        JZColor(0xe8, 0xe8, 0xe8));
+        // 自建 painter: 与控件 paintEvent 同一约定(裁剪由 painter 构造设定)
+        JZPainter p(m_pageArea);
+        p.fillRect(0, 0, m_pageArea->width(), m_pageArea->height(),
+                   JZColor(0xe8, 0xe8, 0xe8));
         return false;   // 继续默认派发 (默认 paintEvent 为空, 无副作用)
     }
     return JZWidget::eventFilter(watched, event);

@@ -58,7 +58,7 @@ int AAA::s_copyAssign = 0;
 int AAA::s_moveAssign = 0;
 int AAA::s_dtor = 0;
 
-// ClassPointer 指针包装测试对象(记录析构次数, 验证 JS 拥有时 GC 释放底层对象)
+// JSRawPointer 指针包装测试对象(记录析构次数, 验证 JS 拥有时 GC 释放底层对象)
 struct PP
 {
     static int s_dtor;
@@ -178,11 +178,11 @@ int main()
             jsbind::createFunction([](AAA&) -> void {}));
         engine.registFunction(engine.globalObject(), "takeConstRef",
             jsbind::createFunction([](const AAA&) -> void {}));
-        // 指针形参按规范统一用 ClassPointer<Class> 包装(不支持直接传入裸指针)
+        // 指针形参按规范统一用 JSRawPointer<Class> 包装(不支持直接传入裸指针)
         engine.registFunction(engine.globalObject(), "takePtr",
-            jsbind::createFunction([](jsbind::ClassPointer<AAA> p) -> void { (void)p.get(); }));
+            jsbind::createFunction([](jsbind::JSRawPointer<AAA> p) -> void { (void)p.get(); }));
         engine.registFunction(engine.globalObject(), "takeConstPtr",
-            jsbind::createFunction([](const jsbind::ClassPointer<AAA> p) -> void { (void)p.get(); }));
+            jsbind::createFunction([](const jsbind::JSRawPointer<AAA> p) -> void { (void)p.get(); }));
         
         // 单次调用统计: 重置 -> 调用 -> 读出拷贝/析构次数;
         // 持久实例 gInst 在本次调用中不会被析构, 故 dtor 只反映本次形参的拷贝析构
@@ -208,36 +208,36 @@ int main()
         checkCall("takePtr", "takePtr", true, 0, 0);
         checkCall("takeConstPtr", "takeConstPtr", true, 0, 0);
 
-        // ==================== ClassPointer: 指针包装 / clear 触发 JS 异常 ====================
-        // 验证: C 函数返回裸指针与 ClassPointer 都能包装成 JS 对象; 以 ClassPointer& 形参接收;
+        // ==================== JSRawPointer: 指针包装 / clear 触发 JS 异常 ====================
+        // 验证: C 函数返回裸指针与 JSRawPointer 都能包装成 JS 对象; 以 JSRawPointer& 形参接收;
         //       C++ 侧 clear() 后, JS 再引用该对象即在 check type 阶段抛出 JS 异常。
         {
             engine.deinit();
             engine.init();
 
-            // 注册 PP 类(值类与 ClassPointer<PP> 统一为同一个 JS 类), 并注册字段 v 以便 JS 侧读写转发到底层对象
+            // 注册 PP 类(值类与 JSRawPointer<PP> 统一为同一个 JS 类), 并注册字段 v 以便 JS 侧读写转发到底层对象
             jsbind::ClassBind<PP> bindPP("PP");
             bindPP.defProperty("v", &PP::v);
             engine.registClass(bindPP.classDefine());
 
             static PP s_ppOwned;   // C++ 持有, 用于验证 cppOwner 语义
 
-            // 返回裸指针: 包装成 ClassPointer(JS 拥有)
+            // 返回裸指针: 包装成 JSRawPointer(JS 拥有)
             engine.registFunction(engine.globalObject(), "makePRaw",
                 jsbind::createFunction([]() -> PP* { return new PP(); }, jsbind::returnOwnedByJs));
-            // 返回 ClassPointer(C++ 拥有): JS 仅持句柄, 可 clear()
+            // 返回 JSRawPointer(C++ 拥有): JS 仅持句柄, 可 clear()
             engine.registFunction(engine.globalObject(), "makePOwned",
-                jsbind::createFunction([]() -> jsbind::ClassPointer<PP> {
-                    return jsbind::ClassPointer<PP>(&s_ppOwned, true);
+                jsbind::createFunction([]() -> jsbind::JSRawPointer<PP> {
+                    return jsbind::JSRawPointer<PP>(&s_ppOwned, true);
                 }));
-            // 接收 ClassPointer(按引用: fromJSValue 返回的是 JS 对象内部 wrapper 的引用,
+            // 接收 JSRawPointer(按引用: fromJSValue 返回的是 JS 对象内部 wrapper 的引用,
             // 因此 clear() 直接作用于 JS 持有的对象; 已 clear 时再次引用即在 check type 阶段抛 JS 异常)
             engine.registFunction(engine.globalObject(), "useP",
-                jsbind::createFunction([](jsbind::ClassPointer<PP>& p) -> int {
+                jsbind::createFunction([](jsbind::JSRawPointer<PP>& p) -> int {
                     return p.get() ? p.get()->v : -1;
                 }));
             engine.registFunction(engine.globalObject(), "clearP",
-                jsbind::createFunction([](jsbind::ClassPointer<PP>& p) -> void {
+                jsbind::createFunction([](jsbind::JSRawPointer<PP>& p) -> void {
                     p.clear();
                 }));
 
@@ -246,15 +246,15 @@ int main()
                 auto v = engine.eval(
                     "var p = makePRaw();"
                     "useP(p);");
-                check("ClassPointer raw ptr return + read field", engine.fromJSValue<int>(v.get()) == 0);
+                check("JSRawPointer raw ptr return + read field", engine.fromJSValue<int>(v.get()) == 0);
             }
 
-            // (b) ClassPointer(C++ 拥有) 返回 -> 可读
+            // (b) JSRawPointer(C++ 拥有) 返回 -> 可读
             {
                 auto v = engine.eval(
                     "var p = makePOwned();"
                     "useP(p);");
-                check("ClassPointer cpp-owned return + read field", engine.fromJSValue<int>(v.get()) == 0);
+                check("JSRawPointer cpp-owned return + read field", engine.fromJSValue<int>(v.get()) == 0);
             }
 
             // (c) clear 后再次引用 -> JS 异常
@@ -263,7 +263,7 @@ int main()
                     "var p = makePOwned();"
                     "clearP(p);"
                     "useP(p);");
-                check("ClassPointer clear then use -> JS exception", engine.isException(v.get()));
+                check("JSRawPointer clear then use -> JS exception", engine.isException(v.get()));
             }
 
             engine.deinit();
@@ -275,7 +275,7 @@ int main()
     }
 
     // ==================== 各类 fromJSValue / toJSValue 转换全验证 ====================
-    // 覆盖: 标量/字符串/Json/vector/类对象(值)/ClassPointer/裸指针(Class*)/原始JSValue 双向,
+    // 覆盖: 标量/字符串/Json/vector/类对象(值)/JSRawPointer/裸指针(Class*)/原始JSValue 双向,
     // 以及 fromJSValue<Class*> 对 null/undefined/非指针/已clear 的处理。
     {
         engine.deinit();
@@ -287,10 +287,10 @@ int main()
         jsbind::ClassBind<AAA> bindAAA("AAA");
         engine.registClass(bindAAA.classDefine());
 
-        // 用于"已 clear"用例: 按 ClassPointer<PP>& 形参接收并 clear(经 call() 转发),
-        // 避开 engine.fromJSValue<jsbind::ClassPointer<PP>> 这种不被支持的提取写法。
+        // 用于"已 clear"用例: 按 JSRawPointer<PP>& 形参接收并 clear(经 call() 转发),
+        // 避开 engine.fromJSValue<jsbind::JSRawPointer<PP>> 这种不被支持的提取写法。
         engine.registFunction(engine.globalObject(), "clearOwnedP",
-            jsbind::createFunction([](jsbind::ClassPointer<PP>& p) -> void { p.clear(); }));
+            jsbind::createFunction([](jsbind::JSRawPointer<PP>& p) -> void { p.clear(); }));
 
         auto toV = [&](auto&& t) { return engine.makeValuePtr(engine.toJSValue(t)); };
 
@@ -331,31 +331,31 @@ int main()
             check("conv class value", engine.fromJSValue<int>(v.get()) == 42);
         }
 
-        // 4) ClassPointer 双向(cpp 拥有, JS 仅句柄): 构造/读取/回传
+        // 4) JSRawPointer 双向(cpp 拥有, JS 仅句柄): 构造/读取/回传
         engine.registFunction(engine.globalObject(), "makeCppP",
-            jsbind::createFunction([]() -> jsbind::ClassPointer<PP> {
-                return jsbind::ClassPointer<PP>(new PP(), true);
+            jsbind::createFunction([]() -> jsbind::JSRawPointer<PP> {
+                return jsbind::JSRawPointer<PP>(new PP(), true);
             }));
         engine.registFunction(engine.globalObject(), "readCppP",
-            jsbind::createFunction([](jsbind::ClassPointer<PP> p) -> int { return p.get() ? p.get()->v : -1; }));
+            jsbind::createFunction([](jsbind::JSRawPointer<PP> p) -> int { return p.get() ? p.get()->v : -1; }));
         engine.registFunction(engine.globalObject(), "echoCppP",
-            jsbind::createFunction([](jsbind::ClassPointer<PP> p) -> jsbind::ClassPointer<PP> { return p; }));
+            jsbind::createFunction([](jsbind::JSRawPointer<PP> p) -> jsbind::JSRawPointer<PP> { return p; }));
         {
             auto v = engine.eval("var p = makeCppP(); p.v = 9; readCppP(p);");
-            check("conv ClassPointer read", engine.fromJSValue<int>(v.get()) == 9);
+            check("conv JSRawPointer read", engine.fromJSValue<int>(v.get()) == 9);
         }
         {
-            // 按值返回的 ClassPointer 会复制 shared_ptr(指向同一底层对象), 不再是同一 JS 身份;
+            // 按值返回的 JSRawPointer 会复制 shared_ptr(指向同一底层对象), 不再是同一 JS 身份;
             // 验证回传后仍可读写底层对象即可(身份比较 === 在按值返回语义下不成立)。
             auto v = engine.eval("var p = makeCppP(); p.v = 9; readCppP(echoCppP(p));");
-            check("conv ClassPointer echo", engine.fromJSValue<int>(v.get()) == 9);
+            check("conv JSRawPointer echo", engine.fromJSValue<int>(v.get()) == 9);
         }
 
-        // 5) 裸指针(Class*) 提取: fromJSValue<Class*> 直接取 ClassPointer 内裸指针;
+        // 5) 裸指针(Class*) 提取: fromJSValue<Class*> 直接取 JSRawPointer 内裸指针;
         //    null/undefined 映射为空指针, 非指针类型报错, 已 clear 报错。
         {
             PP obj; obj.v = 5;
-            JZJSValuePtr jsPtr = engine.toValuePtrFromPtr(&obj, true);   // ClassPointer<PP>(cppOwner=true)
+            JZJSValuePtr jsPtr = engine.toValuePtrFromPtr(&obj, true);   // JSRawPointer<PP>(cppOwner=true)
             PP* raw = engine.fromJSValue<PP*>(jsPtr.get());
             check("conv fromJSValue<PP*>", raw == &obj && raw->v == 5);
 
@@ -375,7 +375,7 @@ int main()
         }
 
         // 7) 异常路径(会在 ctx 留下 pending 异常, 放在最后, 块尾 reinit 重置):
-        //    非指针 JSValue -> 抛异常; 已 clear 的 ClassPointer -> 抛异常。
+        //    非指针 JSValue -> 抛异常; 已 clear 的 JSRawPointer -> 抛异常。
         {
             bool threwNonPtr = false;
             try { (void)engine.fromJSValue<PP*>(engine.toJSValue(123)); }
@@ -384,7 +384,7 @@ int main()
 
             PP obj2; obj2.v = 5;
             JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
-            // clear 走 ClassPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::ClassPointer<PP>>(不支持)
+            // clear 走 JSRawPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::JSRawPointer<PP>>(不支持)
             engine.callFunction("clearOwnedP", { jsOwned });
             bool threwCleared = false;
             try { (void)engine.fromJSValue<PP*>(jsOwned.get()); }

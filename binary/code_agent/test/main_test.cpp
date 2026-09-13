@@ -838,15 +838,16 @@ int main()
 
         string err2;
         bool ok7 = agent2.initProject(typesRoot, err2);
-        check(ok7, "initProject 创建挂 jz_types 的纯 ES2022 工程", err2);
+        check(ok7, "initProject 创建挂 jz_types 的 ES2025 工程", err2);
         if (ok7)
         {
-            // 生成的 tsconfig 应为「纯 ES2022(lib 不含 DOM) + 挂 jz_types 完整类型」：
-            // 含 "lib": ["ES2022"]，且 include 应包含随 exe 安装的 jz_types 目录。
+            // 生成的 tsconfig 应为「ES2025(lib 不含 DOM) + 挂 jz_types 完整类型」：
+            // 含 "lib": ["ES2025"]（对齐 quickjs 实际支持范围），且 include 应包含随
+            // exe 安装的 jz_types 目录。
             string tsText2;
             readText(typesRoot + "/tsconfig.json", tsText2);
-            check(tsText2.find("\"lib\": [\"ES2022\"]") != string::npos,
-                  "initProject 生成的 tsconfig 设为纯 ES2022(无 DOM)", tsText2);
+            check(tsText2.find("\"lib\": [\"ES2025\"]") != string::npos,
+                  "initProject 生成的 tsconfig 设为 ES2025(无 DOM)", tsText2);
             check(tsText2.find("jz_types") != string::npos,
                   "initProject 生成的 tsconfig 包含 jz_types 类型", tsText2);
             // 新结构: initProject 同时把运行时 jz_js 拷进工程(供入口被动 import)
@@ -902,7 +903,7 @@ int main()
                       "(node 前缀方案无宿主 tsc，跳过)");
                 built = true;
             }
-            check(built, "挂 jz_types 的纯 ES2022 工程编译通过(类型可解析且类型正确)",
+            check(built, "挂 jz_types 的 ES2025 工程编译通过(类型可解析且类型正确)",
                   out2.empty() ? "(无输出)" : out2);
         }
     }

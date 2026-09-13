@@ -22,8 +22,17 @@
 	JZJSModbusModule.cpp
 	JZJSUiLoader.h
 	JZJSUiLoader.cpp
-    JZJSWidgetModule.h
-	JZJSWidgetModule.cpp
+    JSWidget/JZJSWidgetModule.h
+	JSWidget/JZJSWidgetModule.cpp
+
+	JSWidget/JZJSPaintScope.h
+	JSWidget/JZJSPaintScope.cpp
+
+	JSWidget/JZJSWidget.h
+	JSWidget/JZJSWidget.cpp
+
+	JSWidget/JZJSListWidget.h
+	JSWidget/JZJSListWidget.cpp
 )
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)
@@ -32,3 +41,4 @@ convert_to_abs_paths(JZJSENGINE_SOURCES)
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZJSENGINE_SOURCES})
 target_compile_definitions(${JZ_MODULE_TARGET} PRIVATE __STDC_NO_ATOMICS__)
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}/JSWidget")

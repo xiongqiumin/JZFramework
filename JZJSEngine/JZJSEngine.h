@@ -118,8 +118,8 @@ public:
     bool checkType(JSValue value, int type);
     bool canConvert(int from_type, int to_type);
 
-    // 判断某 JSClassID 是否属于 ClassPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
-    bool isClassPointerClassId(JSClassID id) const;
+    // 判断某 JSClassID 是否属于 JSRawPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
+    bool isJSRawPointerClassId(JSClassID id) const;
 
     // ---- 继承支持 ----
     // class_id -> 该类的 ctypeid(供 fromJSValue 向上转型时取真实类)
@@ -143,7 +143,7 @@ public:
 
     // 对外只暴露 值/const 值/引用/const 引用/指针 四种类对象提取形式:
     //   engine.fromJSValue<Class*> / <Class> / <Class&> / <const Class&>
-    // ClassPointer<Class> 的提取不对外提供(内部由 call() 经自由 ::fromJSValue<ClassPointer<Class>> 转发)。
+    // JSRawPointer<Class> 的提取不对外提供(内部由 call() 经自由 ::fromJSValue<JSRawPointer<Class>> 转发)。
     template <class T>
     std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T>
     fromJSValue(JSValue v)
@@ -163,7 +163,7 @@ public:
         return makeValuePtr(toJSValue(t));
     }
 
-    // 裸指针: 包装为 ClassPointer。
+    // 裸指针: 包装为 JSRawPointer。
     // cppOwner=true (默认): C++ 拥有底层对象, JS 仅持句柄, 不会 delete 外部指针;
     // cppOwner=false: JS 拥有, JS 对象 GC 时释放底层对象(须由 new 分配, 勿传栈/外部托管指针)。
     template <class T>
@@ -332,7 +332,7 @@ protected:
     std::map<int, TypeInfo> m_typeMap;
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
-    std::set<int> m_classPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 ClassPointer<Class>
+    std::set<int> m_JSRawPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 JSRawPointer<Class>
 
     int m_timeTaskId;
     std::vector<TimerTask> m_timeTasks;

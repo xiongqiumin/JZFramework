@@ -159,8 +159,7 @@ void JZComboBox::showPopup()
 
     // 同步条目与当前选中 (允许 open 后 combo 条目有变化)
     m_popupList->clear();
-    for (const auto& t : m_items)
-        m_popupList->addItem(t);
+    m_popupList->appendItems(m_items);
     m_popupList->setCurrentIndex(std::max(0, m_current));
 
     // 尺寸: 宽同 combo, 高 = 可见项数 * 行高 + 边距 (超出 8 项滚屏)

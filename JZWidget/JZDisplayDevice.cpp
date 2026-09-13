@@ -81,16 +81,13 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
     collectFrontToBack(root, clip, coverage, widget_list, clip);
 
     std::reverse(widget_list.begin(), widget_list.end());
-    // 统一创建 painter 并注入: 每个 widget 一次 paintEvent 对应一个 painter,
+    // 逐个派发 paintEvent: 每个控件在自己的 paintEvent 里自建 JZPainter
+    // (构造时按"脏区 ∩ 控件全局 rect"设好权威裁剪, Qt 语义; 见 JZPainter.cpp),
     // 产生的 JZDrawTask 追加到 m_layer, 最后由渲染后端一次性回放。
-    // painter 构造时已按"脏区 ∩ 控件全局 rect"设好权威裁剪 (绘制限制在本控件
-    // rect 内, Qt 语义), 无需再设 clip。
+    // 事件只带重绘区域, 不携带画笔。
     for (auto w : widget_list)
     {
-        JZPainter painter(w);
-
         JZPainterEvent event;
-        event.setPainter(&painter);
         event.setRect(clip);
         jzApp->sendEvent(w, &event);   // 同步派发, paint 同样过控件过滤器链 (同 Qt)
     }

@@ -150,7 +150,16 @@ public:
     static JSValue js_constructor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        return engine->createValue(magic, argc, argv);
+        // createArgs 里的参数校验 / 类型转换(fromJSValue)会抛 C++ 异常, 与 call() 一致地
+        // 转成 JS 异常 —— 否则异常会跨 quickjs 的 C 调用栈展开。
+        try
+        {
+            return engine->createValue(magic, argc, argv);
+        }
+        catch (std::exception& e)
+        {
+            return JS_ThrowInternalError(ctx, "%s", e.what());
+        }
     }
 
     static void js_deconstructor(JSRuntime* rt, JSValue val)
@@ -881,7 +890,7 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     info.superCTypeId = define.superCTypeid;
     info.funcList = funcList;
     if (define.isPointer)
-        m_classPointerTypes.insert(object_id);
+        m_JSRawPointerTypes.insert(object_id);
     registType(info);
 
     for (int i = 0; i < (int)define.propertys.size(); i++)
@@ -1089,9 +1098,9 @@ int JZJSEngine::jsValueType(JSValue v)
     return jsTypeToType(js_type);
 }
 
-bool JZJSEngine::isClassPointerClassId(JSClassID id) const
+bool JZJSEngine::isJSRawPointerClassId(JSClassID id) const
 {
-    return m_classPointerTypes.count((int)id) > 0;
+    return m_JSRawPointerTypes.count((int)id) > 0;
 }
 
 std::string JZJSEngine::classCTypeId(JSClassID id) const
@@ -1370,15 +1379,15 @@ void JZJSEngine::deconstructor(JSValue value)
     m_typeMap[type].classDefine.destory(ptr);
 }
 
-// 检测阶段主动判断 argv 是否为已 clear 的 ClassPointer(不进入 fromJSValue, 不抛 C++ 异常)。
-// 仅对已知 ClassPointer 类型(arg_type ∈ m_classPointerTypes)的 JS 对象调用, 安全。
-static bool isClassPointerCleared(JSContext* ctx, JSValueConst value)
+// 检测阶段主动判断 argv 是否为已 clear 的 JSRawPointer(不进入 fromJSValue, 不抛 C++ 异常)。
+// 仅对已知 JSRawPointer 类型(arg_type ∈ m_JSRawPointerTypes)的 JS 对象调用, 安全。
+static bool isJSRawPointerCleared(JSContext* ctx, JSValueConst value)
 {
     JSClassID class_id;
     void* ptr = JS_GetAnyOpaque(value, &class_id);
     if (!ptr)
         return false;
-    return ((jsbind::ClassPointerBase*)ptr)->isCleared();
+    return ((jsbind::JSPointerBase*)ptr)->isCleared();
 }
 
 JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
@@ -1408,15 +1417,15 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
             return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
         }
 
-        // 检测阶段主动判断 ClassPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
-        if (m_classPointerTypes.count(arg_type) && isClassPointerCleared(m_ctx, argv[i]))
+        // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
+        if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, argv[i]))
         {
             std::string error = "参数错误:参数" + to_string(i) + "的指针已被释放(clear)，无法访问";
             return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
         }
     }
 
-    // fromJSValue 在转换 ClassPointer 时发现已被 clear 会先 JS_ThrowTypeError 再抛 C++ 异常,
+    // fromJSValue 在转换 JSRawPointer 时发现已被 clear 会先 JS_ThrowTypeError 再抛 C++ 异常,
     // 这里捕获后: 若已设置 pending 异常(类型错误)直接返回 JS_EXCEPTION, 否则包成 InternalError。
     try
     {
@@ -1455,8 +1464,8 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
             return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
         }
 
-        // 检测阶段主动判断 ClassPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
-        if (m_classPointerTypes.count(arg_type) && isClassPointerCleared(m_ctx, argv[i]))
+        // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常, 不丢 C++ 异常
+        if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, argv[i]))
         {
             std::string error = "参数错误:参数" + to_string(i) + "的指针已被释放(clear)，无法访问";
             return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
@@ -1500,7 +1509,7 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
         JS_FreeValue(m_ctx, promise);
         JS_FreeValue(m_ctx, handle_value);
 
-        // fromJSValue 触发已 clear 的 ClassPointer 时已先 JS_ThrowTypeError, 优先复用该异常
+        // fromJSValue 触发已 clear 的 JSRawPointer 时已先 JS_ThrowTypeError, 优先复用该异常
         return JS_ThrowInternalError(m_ctx, "%s", e.what());
     }
 }

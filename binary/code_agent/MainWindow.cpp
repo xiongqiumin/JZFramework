@@ -580,7 +580,7 @@ void WelcomePage::setRecentProjects(const std::vector<std::string>& paths)
     m_paths = paths;
     m_recentList->clear();
     for (const auto& p : paths)
-        m_recentList->addItem(p);
+        m_recentList->appendItem(p);
 
     m_recentLabel->setVisible(!paths.empty());
     m_recentList->setVisible(!paths.empty());

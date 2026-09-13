@@ -3,10 +3,10 @@
 
 #include "JZEvent.h"
 
-class JZHideEvent
+class JZHideEvent : public JZEvent
 {
 public:
-    JZHideEvent() = default;
+    JZHideEvent();
 };
 
 #endif

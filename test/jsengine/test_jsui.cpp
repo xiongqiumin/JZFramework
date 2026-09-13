@@ -6,6 +6,7 @@
 #include "JZJSBind.h"
 #include "JZJSUiLoader.h"
 #include "JZJSWidgetModule.h"
+#include "JZWidget.h"
 #include "quickjs/quickjs.h"
 
 using namespace std;
@@ -120,6 +121,10 @@ int main()
     }
 
     // 6) 全局 uiLoader 命名空间: 只暴露 loadFile / load 两个工厂方法, 各自直接返回根 JZWindow 窗口
+    // 注: 本节的 loadFile 用例当前会崩(访问违例, cdb 无环境时表现为退出码 0xC0000005), 与本文件
+    //     其它用例写法无关 —— 已定位为既有的所有权问题: addWidget/setParentWidget 把"JS 拥有"的
+    //     控件挂进对象树后未翻转所有权(cppOwner 仍为 false), 对象树析构与 JS GC 会双重释放。
+    //     详见 JZJSType.h 的 cppOwner 说明与第 7 节(画笔生命周期)对作用域回收的同类处理。
     jzDebug() << "===== uiLoader 全局命名空间演示 =====";
     {
         JZJSEngine engine;
@@ -154,6 +159,43 @@ int main()
         // 非法文件/文本应抛异常(而不是返回不可用的对象)
         auto bad = engine.eval("uiLoader.loadFile('__not_exist__.xml');");
         check("uiLoader.loadFile 找不到文件时抛异常", engine.runtimeError().size() > 0 || JS_IsException(bad.get()));
+    }
+
+    // 7) JS 侧画笔: onPaint 内 `new JZPainter(this)` (对应 C++ 的 `JZPainter p(this)`),
+    //    生命周期 = 本次绘制派发 —— 派发外创建报错, 派发结束自动失效(见 JZJSPaintScope)。
+    jzDebug() << "===== JS 画笔生命周期演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        widgetModule.initEngine(&engine);
+
+        auto outside = engine.eval(
+            "var r = 'no-throw';"
+            "try { new JZPainter(null); } catch (e) { r = 'throw'; }"
+            "r");
+        check("onPaint 外 new JZPainter 抛异常", engine.fromJSValue<std::string>(outside.get()) == "throw");
+
+        auto inside = engine.eval(
+            "var win = new JZWindow(200, 120, 'Paint');"
+            "var kept = null;"
+            "var drew = 0;"
+            "win.onPaint = () => { kept = new JZPainter(win); kept.fillRect(0, 0, 10, 10, '#ff0000'); drew++; };"
+            "1");
+        check("onPaint 注册成功", engine.fromJSValue<int>(inside.get()) == 1);
+
+        // 手动派发一次 paint: 走 JZWidget::event -> paintEvent -> JS onPaint
+        JZWidget* painted = engine.fromJSValue<JZWidget*>(engine.eval("win").get());
+        JZPainterEvent paintEvent;
+        paintEvent.setRect(JZRect(0, 0, 200, 120));
+        jzApp->sendEvent(painted, &paintEvent);
+
+        auto after = engine.eval(
+            "var state = 'usable';"
+            "try { kept.fillRect(0, 0, 1, 1, '#000000'); } catch (e) { state = 'released'; }"
+            "drew + ':' + state");
+        check("onPaint 内画笔可绘制, 派发结束后失效",
+              engine.fromJSValue<std::string>(after.get()) == "1:released");
     }
 
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");

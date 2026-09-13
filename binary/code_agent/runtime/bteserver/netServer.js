@@ -95,7 +95,11 @@ export class NetServer
         return !!(this.tcpServer && this.tcpServer.listening);
     }
 
-    // int NetServer::boundPort()  —— JS 侧新增: 传 0 让系统分配端口时, 需要知道真实端口
+    // int NetServer::boundPort()  —— JS 侧新增
+    //
+    // 注意: 引擎的 `server.address().port` 回的是**请求端口**(JZJSNetServer::address 里
+    // 填的是 listenPort), 不是系统实际分配的端口 —— 所以 `listen(0)` 时这里拿到的是 0,
+    // 想做 loopback 测试请用固定端口。要支持"端口 0"得让引擎在建连后回查真实端口。
     boundPort()
     {
         if (!this.tcpServer)

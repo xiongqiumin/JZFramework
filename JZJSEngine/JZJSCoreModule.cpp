@@ -83,6 +83,30 @@ bool JZJSCoreModule::fileRemove(const std::string& path)
     return JZFile::remove(path);
 }
 
+JSValue JZJSCoreModule::fileCopy(const std::string& from, const std::string& to, bool force)
+{
+    std::string error;
+    if (!JZFile::copy(from, to, force, &error))
+        return throwError(error);
+    return JS_UNDEFINED;
+}
+
+JSValue JZJSCoreModule::fileRename(const std::string& from, const std::string& to)
+{
+    std::string error;
+    if (!JZFile::rename(from, to, &error))
+        return throwError(error);
+    return JS_UNDEFINED;
+}
+
+JSValue JZJSCoreModule::dirCopy(const std::string& src, const std::string& dst, bool force)
+{
+    std::string error;
+    if (!JZDir::copyRecursively(src, dst, force, &error))
+        return throwError(error);
+    return JS_UNDEFINED;
+}
+
 JSValue JZJSCoreModule::readFile(const std::string& path)
 {
     JZFile f;
@@ -162,6 +186,90 @@ bool JZJSCoreModule::dirRemove(const std::string& path, bool recursive)
         return d.rmdir(path);
     }
     return JZFile::remove(path);
+}
+
+// ======================================================================
+// 句柄(fd)级 IO: JZFile 句柄接口的直接映射
+// ======================================================================
+JZFile* JZJSCoreModule::fileByFd(int fd)
+{
+    auto it = m_files.find(fd);
+    return (it == m_files.end()) ? nullptr : it->second.get();
+}
+
+int JZJSCoreModule::fdOpen(const std::string& path, const std::string& mode)
+{
+    std::unique_ptr<JZFile> f(new JZFile());
+    if (!f->open(path, mode))
+        return -1;
+
+    int fd = m_nextFd++;
+    m_files[fd] = std::move(f);
+    return fd;
+}
+
+bool JZJSCoreModule::fdClose(int fd)
+{
+    auto it = m_files.find(fd);
+    if (it == m_files.end())
+        return false;
+
+    it->second->close();   // 显式关闭(unique_ptr 析构也会关, 不依赖析构顺序)
+    m_files.erase(it);
+    return true;
+}
+
+JSValue JZJSCoreModule::fdRead(int fd, int maxSize)
+{
+    JZFile* f = fileByFd(fd);
+    if (!f)
+        return throwError("EBADF: bad file descriptor, read");
+    if (maxSize <= 0)
+        return makeUint8Array(JZByteArray());
+
+    JZByteArray data = f->read(maxSize);
+    return makeUint8Array(data);
+}
+
+JSValue JZJSCoreModule::fdWrite(int fd, JSValue data)
+{
+    JZByteArray buf;
+    if (!jsValueToBytes(m_engine->context(), data, buf))
+        return throwError("ERR_INVALID_ARG_TYPE: data must be string, Uint8Array or ArrayBuffer");
+
+    JZFile* f = fileByFd(fd);
+    if (!f)
+        return throwError("EBADF: bad file descriptor, write");
+
+    return JS_NewInt32(m_engine->context(), f->write(buf));
+}
+
+bool JZJSCoreModule::fdSeek(int fd, int pos, int whence)
+{
+    JZFile* f = fileByFd(fd);
+    if (!f)
+        return false;
+
+    f->seek(pos, whence);
+    return true;
+}
+
+int JZJSCoreModule::fdTell(int fd)
+{
+    JZFile* f = fileByFd(fd);
+    return f ? f->tell() : -1;
+}
+
+int JZJSCoreModule::fdSize(int fd)
+{
+    JZFile* f = fileByFd(fd);
+    return f ? f->size() : -1;
+}
+
+bool JZJSCoreModule::fdAtEnd(int fd)
+{
+    JZFile* f = fileByFd(fd);
+    return f ? f->atEnd() : true;
 }
 
 std::string JZJSCoreModule::fileName(const std::string& path)
@@ -277,6 +385,9 @@ void JZJSCoreModule::initEngine(JZJSEngine* engine)
     JSValue ns = m_engine->createObject();
     m_engine->registFunction(ns, "fileExists", jsbind::createSelfFunction(this, &JZJSCoreModule::fileExists));
     m_engine->registFunction(ns, "fileRemove", jsbind::createSelfFunction(this, &JZJSCoreModule::fileRemove));
+    m_engine->registFunction(ns, "fileCopy", jsbind::createSelfFunction(this, &JZJSCoreModule::fileCopy));
+    m_engine->registFunction(ns, "fileRename", jsbind::createSelfFunction(this, &JZJSCoreModule::fileRename));
+    m_engine->registFunction(ns, "dirCopy", jsbind::createSelfFunction(this, &JZJSCoreModule::dirCopy));
     m_engine->registFunction(ns, "readFile", jsbind::createSelfFunction(this, &JZJSCoreModule::readFile));
     m_engine->registFunction(ns, "writeFile", jsbind::createSelfFunction(this, &JZJSCoreModule::writeFile));
     m_engine->registFunction(ns, "stat", jsbind::createSelfFunction(this, &JZJSCoreModule::stat));
@@ -284,6 +395,14 @@ void JZJSCoreModule::initEngine(JZJSEngine* engine)
     m_engine->registFunction(ns, "dirMkdir", jsbind::createSelfFunction(this, &JZJSCoreModule::dirMkdir));
     m_engine->registFunction(ns, "dirRmdir", jsbind::createSelfFunction(this, &JZJSCoreModule::dirRmdir));
     m_engine->registFunction(ns, "dirRemove", jsbind::createSelfFunction(this, &JZJSCoreModule::dirRemove));
+    m_engine->registFunction(ns, "fdOpen", jsbind::createSelfFunction(this, &JZJSCoreModule::fdOpen));
+    m_engine->registFunction(ns, "fdClose", jsbind::createSelfFunction(this, &JZJSCoreModule::fdClose));
+    m_engine->registFunction(ns, "fdRead", jsbind::createSelfFunction(this, &JZJSCoreModule::fdRead));
+    m_engine->registFunction(ns, "fdWrite", jsbind::createSelfFunction(this, &JZJSCoreModule::fdWrite));
+    m_engine->registFunction(ns, "fdSeek", jsbind::createSelfFunction(this, &JZJSCoreModule::fdSeek));
+    m_engine->registFunction(ns, "fdTell", jsbind::createSelfFunction(this, &JZJSCoreModule::fdTell));
+    m_engine->registFunction(ns, "fdSize", jsbind::createSelfFunction(this, &JZJSCoreModule::fdSize));
+    m_engine->registFunction(ns, "fdAtEnd", jsbind::createSelfFunction(this, &JZJSCoreModule::fdAtEnd));
     m_engine->registFunction(ns, "fileName", jsbind::createSelfFunction(this, &JZJSCoreModule::fileName));
     m_engine->registFunction(ns, "dirName", jsbind::createSelfFunction(this, &JZJSCoreModule::dirName));
     m_engine->registFunction(ns, "extName", jsbind::createSelfFunction(this, &JZJSCoreModule::extName));
@@ -304,5 +423,11 @@ void JZJSCoreModule::initEngine(JZJSEngine* engine)
 
 void JZJSCoreModule::deinitEngine()
 {
+    // 关闭所有仍打开的 fd 级文件句柄(JS 侧忘了 closeSync 也不泄漏)
+    for (auto& kv : m_files)
+        kv.second->close();
+    m_files.clear();
+    m_nextFd = 3;
+
     m_engine = nullptr;
 }

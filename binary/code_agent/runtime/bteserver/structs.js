@@ -8,6 +8,16 @@
 // 未移植(见文件末 TODO): 0x0200 SET_STEP76_Ex 工步下发(StepInfo 的参数位图/参数表)。
 
 import { ByteReader, ByteWriter, CMD, channelMask, maskChannels, hexOf } from './protocol.js';
+// 工步参数下标(权威定义在 PackDefine.js): 工步包的参数位图/参数值表按它们索引
+import {
+    PARAM_Current, PARAM_Voltage, PARAM_Time, PARAM_Capacity, PARAM_Tempature,
+    PARAM_StopCurrent, PARAM_StopVoltage, PARAM_BeginStepID, PARAM_CountLoop,
+    PARAM_ProtectVoltageUpper, PARAM_ProtectVoltageLower,
+    PARAM_ProtectCurrentUpper, PARAM_ProtectCurrentLower,
+    PARAM_ProtectTempatureUpper, PARAM_ProtectTempatureLower,
+    PARAM_ProtectDelayTime, PARAM_ProtectDetalVol, PARAM_ProtectDetalVolTime,
+    PARAM_RecordTimeInterval, PARAM_RecordVoltageChange, PARAM_RecordCurrentChange,
+} from './PackDefine.js';
 
 // C++ 侧 PackDefine.h 把"命令字/参数枚举/错误码/PackDefine 类"和"各 stru_* 命令包"
 // 放在同一个头文件里, 所以 `#include "PackDefine.h"` 能同时拿到两者; JS 拆成了
@@ -896,49 +906,103 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
 {
     constructor()
     {
-        this.StepLine = new Uint8Array(8);      // 参数位图(低 32 位/高 32 位)
-        this.paramList = [];                    // 参数值表(未收口的 pack/unpack 用)
+        this.StepLine = new Uint8Array(8);      // 参数位图: 两个 32 位(低 4 字节 + 高 4 字节)
+        this.paramList = [];                    // 参数值表, 下标 = PARAM_*(见 PackDefine.js)
+        this.paramOp = [];                      // 各参数的比较运算符(OP_*), undefined = 未设置
         this.StepType = 0;
         this.StepID = 1;
     }
-    // 参数有效性判据(C++ 里由位图 getBitmap(PARAM_xxx) 决定)
+
+    // ---- 参数位图(PARAM_* 索引 -> bit) ----
     _hasBit(i) { return (this.StepLine[(i / 8) | 0] & (1 << (i % 8))) !== 0; }
-    isCurrentVaild() { return this._hasBit(0); }
-    isVoltageVaild() { return this._hasBit(1); }
-    isStopCurrentVaild() { return this._hasBit(2); }
-    isStopVoltageVaild() { return this._hasBit(3); }
-    isTimeVaild() { return this._hasBit(4); }
-    isCapacityVaild() { return this._hasBit(6); }
-    isTempatureVaild() { return this._hasBit(7); }
-    isRecordTimeIntervalVaild() { return false; }
-    // 参数值(未收口阶段: 直接读写 paramList, 便于界面先跑通结构)
-    _get(i) { return this.paramList[i] || 0; }
-    _set(i, v) { this.paramList[i] = v; }
-    Current() { return this._get(0); }
-    Voltage() { return this._get(1); }
-    StopCurrent() { return this._get(2); }
-    StopVoltage() { return this._get(3); }
-    Time() { return this._get(4); }
-    Capacity() { return this._get(6); }
-    Tempature() { return this._get(7); }
-    BeginStepID() { return this._get(8); }
-    CountLoop() { return this._get(9); }
-    CycleStatus() { return 0; }
-    setProtectVoltageUpper(v) { this._set(20, v); }
-    setProtectVoltageLower(v) { this._set(21, v); }
-    setProtectCurrentUpper(v) { this._set(22, v); }
-    setProtectCurrentLower(v) { this._set(23, v); }
-    setProtectTempatureUpper(v) { this._set(24, v); }
-    setProtectTempatureLower(v) { this._set(25, v); }
-    setProtectDelayTime(v) { this._set(26, v); }
-    setProtectDetalVol(v) { this._set(27, v); }
-    setProtectDetalVolTime(v) { this._set(28, v); }
-    setRecordTimeInterval(v) { this._set(29, v); }
-    setRecordVoltageChange(v) { this._set(30, v); }
-    setRecordCurrentChange(v) { this._set(31, v); }
+    _setBit(i) { this.StepLine[(i / 8) | 0] |= (1 << (i % 8)); }
+    _clearBit(i) { this.StepLine[(i / 8) | 0] &= (~(1 << (i % 8))) & 0xff; }
+
+    // ---- 参数的统一读写 ----
+    //   C++ 里"设置一个工步参数"同时做三件事: 记值 / 记比较符 / 置位图。这里同形收口。
+    _get(i) { const v = this.paramList[i]; return (v === undefined) ? 0 : v; }
+    _set(i, v, op)
+    {
+        this.paramList[i] = v;
+        if (op !== undefined && op !== null)
+            this.paramOp[i] = op;
+        this._setBit(i);
+        return this;
+    }
+
+    // ---- 参数是否被设置(界面据此决定输入框是否可用) ----
+    isCurrentVaild() { return this._hasBit(PARAM_Current); }
+    isVoltageVaild() { return this._hasBit(PARAM_Voltage); }
+    isTimeVaild() { return this._hasBit(PARAM_Time); }
+    isCapacityVaild() { return this._hasBit(PARAM_Capacity); }
+    isTempatureVaild() { return this._hasBit(PARAM_Tempature); }
+    isStopCurrentVaild() { return this._hasBit(PARAM_StopCurrent); }
+    isStopVoltageVaild() { return this._hasBit(PARAM_StopVoltage); }
+    isBeginStepIDVaild() { return this._hasBit(PARAM_BeginStepID); }
+    isCountLoopVaild() { return this._hasBit(PARAM_CountLoop); }
+    isRecordTimeIntervalVaild() { return this._hasBit(PARAM_RecordTimeInterval); }
+
+    // ---- 取值 ----
+    Current() { return this._get(PARAM_Current); }
+    Voltage() { return this._get(PARAM_Voltage); }
+    Time() { return this._get(PARAM_Time); }
+    Capacity() { return this._get(PARAM_Capacity); }
+    Tempature() { return this._get(PARAM_Tempature); }
+    StopCurrent() { return this._get(PARAM_StopCurrent); }
+    StopVoltage() { return this._get(PARAM_StopVoltage); }
+    BeginStepID() { return this._get(PARAM_BeginStepID); }
+    CountLoop() { return this._get(PARAM_CountLoop); }
+    CycleStatus() { return 0; }             // 循环状态由下位机上报, 工步本身不带
+
+    // ---- 设值(与 C++ 的 setXxx(OP_xxx, value) 同形) ----
+    setCurrent(op, v) { return this._set(PARAM_Current, v, op); }
+    setVoltage(op, v) { return this._set(PARAM_Voltage, v, op); }
+    setTime(op, v) { return this._set(PARAM_Time, v, op); }
+    setCapacity(op, v) { return this._set(PARAM_Capacity, v, op); }
+    setTempature(op, v) { return this._set(PARAM_Tempature, v, op); }
+    setStopCurrent(op, v) { return this._set(PARAM_StopCurrent, v, op); }
+    setStopVoltage(op, v) { return this._set(PARAM_StopVoltage, v, op); }
+    setBeginStepID(op, v) { return this._set(PARAM_BeginStepID, v, op); }
+    setCountLoop(op, v) { return this._set(PARAM_CountLoop, v, op); }
+
+    // 保护 / 记录类参数(界面只给值; 比较符由下位机的语义决定, 不在这里挑)
+    setProtectVoltageUpper(v) { return this._set(PARAM_ProtectVoltageUpper, v); }
+    setProtectVoltageLower(v) { return this._set(PARAM_ProtectVoltageLower, v); }
+    setProtectCurrentUpper(v) { return this._set(PARAM_ProtectCurrentUpper, v); }
+    setProtectCurrentLower(v) { return this._set(PARAM_ProtectCurrentLower, v); }
+    setProtectTempatureUpper(v) { return this._set(PARAM_ProtectTempatureUpper, v); }
+    setProtectTempatureLower(v) { return this._set(PARAM_ProtectTempatureLower, v); }
+    setProtectDelayTime(v) { return this._set(PARAM_ProtectDelayTime, v); }
+    setProtectDetalVol(v) { return this._set(PARAM_ProtectDetalVol, v); }
+    setProtectDetalVolTime(v) { return this._set(PARAM_ProtectDetalVolTime, v); }
+    setRecordTimeInterval(v) { return this._set(PARAM_RecordTimeInterval, v); }
+    setRecordVoltageChange(v) { return this._set(PARAM_RecordVoltageChange, v); }
+    setRecordCurrentChange(v) { return this._set(PARAM_RecordCurrentChange, v); }
+
+    // 清空全部参数(C++ clearParams): 值表/运算符表/位图一起清
+    clearParams()
+    {
+        this.paramList = [];
+        this.paramOp = [];
+        this.StepLine = new Uint8Array(8);
+        return this;
+    }
+
+    // 由参数表重算位图(界面改过参数后调一次; _set 已经置位, 这里是兜底的"以值表为准")
+    updateStepLine()
+    {
+        this.StepLine = new Uint8Array(8);
+        for (let i = 0; i < this.paramList.length; i++)
+            if (this.paramList[i] !== undefined && this.paramList[i] !== null)
+                this._setBit(i);
+        return this;
+    }
+
     unpack(body)
     {
-        // TODO(未收口): PackDefine.cpp:435-830 的位图/参数表解析
+        // TODO(未收口): PackDefine.cpp:435-830 的"位图 + 参数表"解析。
+        // 这段是**网络报文**格式, 必须与 C++ 逐字节一致, 不能凭猜 —— 等拿到 JZBTEServer
+        // 的 PackDefine.cpp 再补(见文件末 TODO)。
         console.error("[structs] SET_STEP76_Ex.StepInfo::unpack 尚未移植(0x0200 工步包)");
         return false;
     }
@@ -948,7 +1012,12 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
         console.error("[structs] SET_STEP76_Ex.StepInfo::pack 尚未移植(0x0200 工步包)");
         return new Uint8Array(0);
     }
-    genDefaultStep(type) { this.StepType = type; return this; }
+    genDefaultStep(type)
+    {
+        if (type !== undefined && type !== null)
+            this.StepType = type;
+        return this;
+    }
 }
 
 // enum ParamType { TYPE_NONE, TYPE_BITMAP, TYPE_PARAM, TYPE_RANGE, TYPE_ENUM };
@@ -980,6 +1049,36 @@ export class stru_BTS_CMD_SET_STEP76_Ex
     setChannel(channels) { this.ChannelID = channelMask(channels); return this; }
     clearChannel() { this.ChannelID = new Uint8Array(8); }
     channels() { return maskChannels(this.ChannelID); }
+
+    // 复位成"默认工步包": 清空通道位图与工步表。
+    // 传了 stepType -> 生成一条该类型的默认工步(C++ 侧 genDefaultStep(stepType) 的用法);
+    // 不传 -> 只得到一个空包(新建工程时每个通道一份, 等用户去编辑)。
+    genDefaultStep(stepType)
+    {
+        this.ChannelID = new Uint8Array(8);
+        this.DataEndFlag = 0;
+        this.DataIndex = 0;
+        this.stepList = [];
+        this.StepCount = 0;
+
+        if (stepType !== undefined && stepType !== null && stepType > 0)
+        {
+            const s = new stru_BTS_CMD_SET_STEP76_Ex_StepInfo();
+            s.StepID = 1;
+            s.genDefaultStep(stepType);
+            this.stepList.push(s);
+            this.StepCount = 1;
+        }
+        return this.updateStepLine();
+    }
+
+    // 重算所有工步的参数位图(界面改完参数后调一次)
+    updateStepLine()
+    {
+        for (let i = 0; i < this.stepList.length; i++)
+            this.stepList[i].updateStepLine();
+        return this;
+    }
 }
 
 // ---------------------------------------------------------------------------

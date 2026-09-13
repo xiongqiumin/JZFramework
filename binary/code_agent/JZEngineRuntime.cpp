@@ -8,7 +8,7 @@
 #include "JZJSCoreModule.h"
 #include "JZJSqliteModule.h"
 #include "JZJSModbusModule.h"
-//#include "JZJSWidgetModule.h"
+#include "JZJSWidgetModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
 #include "JZString.h"
@@ -181,8 +181,10 @@ bool JZEngineRuntime::initEngine(const string &workDir)
 
     // widget：把 JZWidget 的窗口/画布暴露为 JS 原生对象 (JZWindow / JZCanvas),
     // 供 JS 直接建 GUI（如五子棋画布）。窗口存在时 runtime 不退出（见 runtime/main.cpp）。
-    //m_widgetModule = std::make_unique<JZJSWidgetModule>();
-    //m_widgetModule->initEngine(engine);
+    // 2026-09-13 打开: bteserver 移植(Qt/C++ -> JS)要靠它把 QLabel/QPushButton/... 桥到
+    // 框架真控件(见 binary/code_agent/runtime/bteserver/qtcompat.js 的"框架桥")。
+    m_widgetModule = std::make_unique<JZJSWidgetModule>();
+    m_widgetModule->initEngine(engine);
 
     // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
     // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
@@ -255,11 +257,11 @@ void JZEngineRuntime::shutdownEngine()
         m_modbusModule->deinitEngine();
         m_modbusModule.reset();
     }
-//    if (m_widgetModule)
-    {
-//        m_widgetModule->deinitEngine();
- //       m_widgetModule.reset();
-    }
+if (m_widgetModule)
+{
+    m_widgetModule->deinitEngine();
+    m_widgetModule.reset();
+}
     if (m_bridge)
     {
         delete m_bridge;

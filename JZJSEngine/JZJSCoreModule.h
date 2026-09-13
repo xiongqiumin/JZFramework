@@ -3,6 +3,8 @@
 
 #include <string>
 #include <vector>
+#include <map>
+#include <memory>
 
 #include "JZJSEngine.h"
 #include "JZByteArray.h"
@@ -29,11 +31,27 @@ public:
     bool fileRemove(const std::string& path);
     JSValue readFile(const std::string& path);                 // 返回 Uint8Array, 失败抛 JS 异常
     JSValue writeFile(const std::string& path, JSValue data, bool append); // 失败抛 JS 异常
+    JSValue fileCopy(const std::string& from, const std::string& to, bool force);   // 失败抛 JS 异常
+    JSValue fileRename(const std::string& from, const std::string& to);            // 失败抛 JS 异常
+    JSValue dirCopy(const std::string& src, const std::string& dst, bool force);   // 递归复制目录, 失败抛 JS 异常
     Json::Value stat(const std::string& path);                 // 不存在返回 Json null
     Json::Value dirEntryList(const std::string& path);         // 不存在返回 Json null
     bool dirMkdir(const std::string& path, bool recursive);
     bool dirRmdir(const std::string& path);
     bool dirRemove(const std::string& path, bool recursive);
+    // ---- 句柄(fd)级 IO(node 风格: 对应 fs.openSync/readSync/writeSync/closeSync/fstatSync) ----
+    // fd 由本模块分配, 从 3 起(与 Node 保留 0/1/2 一致); 打开失败返回 -1。
+    // 这一组是 JZFile 句柄接口(open/close/read/write/seek/tell/size/atEnd)的直接映射,
+    // 底层 FILE* 的缓冲/游标语义原样暴露 —— 与 JZCore 同步实现一一对应。
+    int fdOpen(const std::string& path, const std::string& mode);   // mode 为 C stdio 模式串("rb"/"wb"/"a+b"...)
+    bool fdClose(int fd);
+    JSValue fdRead(int fd, int maxSize);                           // Uint8Array(最多 maxSize 字节, 空 = EOF)
+    JSValue fdWrite(int fd, JSValue data);                         // 返回写入字节数; 数据类型不合法/fd 无效抛异常
+    bool fdSeek(int fd, int pos, int whence);                      // whence: 0=SET 1=CUR 2=END
+    int fdTell(int fd);                                            // 无效 fd 返回 -1
+    int fdSize(int fd);                                            // 无效 fd 返回 -1
+    bool fdAtEnd(int fd);
+
     std::string fileName(const std::string& path);
     std::string dirName(const std::string& path);
     std::string extName(const std::string& path);
@@ -55,7 +73,11 @@ protected:
     JSValue makeUint8Array(const JZByteArray& data);
     JSValue throwError(const std::string& msg);
 
+    JZFile* fileByFd(int fd);   // 无效 fd 返回 nullptr
+
     JZJSEngine* m_engine = nullptr;
+    std::map<int, std::unique_ptr<JZFile>> m_files;   // fd -> 打开的文件(deinitEngine 时全部关闭)
+    int m_nextFd = 3;
 };
 
 #endif  // !JS_ENGINE_CORE_MODULE_H_

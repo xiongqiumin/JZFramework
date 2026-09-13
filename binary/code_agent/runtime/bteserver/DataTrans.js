@@ -38,33 +38,35 @@ import { MS_PER_DAY } from './PackDefine.js';
 export const DataTrans = {
     // 电流
     // uint32_t ElectricUnit(double var);
-    ElectricUnit: function (var_) { return (var_ * 10000.0) >>> 0; },
+    ElectricUnit: function (var_) { return (toNum(var_) * 10000.0) >>> 0; },
     // double fromElectricUnit(int var);
-    fromElectricUnit: function (var_) { return var_ / 10000.0; },
+    fromElectricUnit: function (var_) { return toNum(var_) / 10000.0; },
 
     // 温度
     // uint32_t toTempUnit(double var);
-    toTempUnit: function (var_) { return (var_ * 10) >>> 0; },
+    toTempUnit: function (var_) { return (toNum(var_) * 10) >>> 0; },
     // double fromTempUnit(int var);
     fromTempUnit: function (var_)
     {
         // 注意:必须是10.0,整数除法会丢掉0.1℃精度(如55.5会变成55.0)
-        return var_ / 10.0;
+        return toNum(var_) / 10.0;
     },
 
     // 电压 mV
     // uint32_t toVoltageUnit(double var);
-    toVoltageUnit: function (var_) { return (var_ * 10000) >>> 0; },
+    toVoltageUnit: function (var_) { return (toNum(var_) * 10000) >>> 0; },
     // double fromVoltageUnit(int var);
-    fromVoltageUnit: function (var_) { return var_ / 10000.0; },
+    fromVoltageUnit: function (var_) { return toNum(var_) / 10000.0; },
 
     // 时间
     //   C++ 用 QTime 当时长容器(从 0 点起加毫秒); JS 侧直接按毫秒换算, 不需要时间类型。
+    //   注意: 上报帧里的时间字段是 **int64 -> BigInt**(如 RTDATA76.TestTime), 所以入口先 toNum。
     // QString fromTimeUnit(uint32_t var);   -> "总小时:分:秒:毫秒" (小时是按天累加的)
     fromTimeUnit: function (var_)
     {
-        const day = Math.floor(var_ / MS_PER_DAY);
-        const t = var_ % MS_PER_DAY;                    // 当天内的毫秒
+        const v = toNum(var_);
+        const day = Math.floor(v / MS_PER_DAY);
+        const t = v % MS_PER_DAY;                       // 当天内的毫秒
         const hh = day * 24 + Math.floor(t / 3600000);
         return pad2(hh) + ":" + pad2(Math.floor(t / 60000) % 60) + ":"
             + pad2(Math.floor(t / 1000) % 60) + ":" + pad3(t % 1000);   // 原 QTime::toString("mm:ss:zzz")
@@ -73,8 +75,9 @@ export const DataTrans = {
     // QString fromTimeUnitSec(uint32_t var);
     fromTimeUnitSec: function (var_)
     {
-        const day = Math.floor(var_ / MS_PER_DAY);
-        const t = var_ % MS_PER_DAY;
+        const v = toNum(var_);
+        const day = Math.floor(v / MS_PER_DAY);
+        const t = v % MS_PER_DAY;
         const hh = day * 24 + Math.floor(t / 3600000);
         return pad2(hh) + ":" + pad2(Math.floor(t / 60000) % 60) + ":"
             + pad2(Math.floor(t / 1000) % 60);                          // 原 QTime::toString("mm:ss")
@@ -82,15 +85,15 @@ export const DataTrans = {
 
     // 能量
     // int64_t toEngUnit(double var);
-    toEngUnit: function (var_) { return BigInt(Math.trunc(var_ * 3600.0 * 10000.0)); },
+    toEngUnit: function (var_) { return BigInt(Math.trunc(toNum(var_) * 3600.0 * 10000.0)); },
     // double fromEngUnit(int64_t var);
-    fromEngUnit: function (var_) { return Number(var_) / 3600.0 / 10000.0; },
+    fromEngUnit: function (var_) { return toNum(var_) / 3600.0 / 10000.0; },
 
     // 容量
     // int64_t toCapUnit(double var);
-    toCapUnit: function (var_) { return BigInt(Math.trunc(var_ * 3600.0 * 10000.0)); },
+    toCapUnit: function (var_) { return BigInt(Math.trunc(toNum(var_) * 3600.0 * 10000.0)); },
     // double fromCapUnit(int64_t var);
-    fromCapUnit: function (var_) { return Number(var_) / 3600.0 / 10000.0; },
+    fromCapUnit: function (var_) { return toNum(var_) / 3600.0 / 10000.0; },
 
     // uint32_t toTimeUnit(QString text);   text = fromTimeUnit 的产物 "小时:分:秒:毫秒"
     toTimeUnit: function (text)
@@ -115,4 +118,11 @@ function pad2(v)
 function pad3(v)
 {
     return String(v).padStart(3, '0');
+}
+
+// 协议层的 int64 字段在 JS 侧是 BigInt, 而这里全是浮点换算 —— 统一先转 Number。
+// (值域是 ms / mAh / mWh 量级, 远小于 2^53, 转换无损)
+function toNum(v)
+{
+    return (typeof v === 'bigint') ? Number(v) : (v || 0);
 }

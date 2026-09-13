@@ -38,6 +38,10 @@
 // ---------------------------------------------------------------------------
 const g_missing = new Map();   // 名字 -> 次数
 
+// 诊断: 本模块被求值了几次(>1 说明引擎把"绝对路径 import"和"相对路径 import"
+// 当成两个模块了 —— 那么 qtCompat.report() 读到的就不是业务代码用的那一份)。
+try { globalThis.__qtcompatLoads = (globalThis.__qtcompatLoads || 0) + 1; } catch (e) { }
+
 function noteMissing(name)
 {
     g_missing.set(name, (g_missing.get(name) || 0) + 1);
@@ -721,6 +725,24 @@ class QApplication extends QObject
     arguments() { return this._argv; }
     keyboardModifiers() { return Qt.NoModifier; }
     setStyleSheet() { noteMissing("QApplication::setStyleSheet"); }
+    // Qt 里下面这些是 static 成员, 但 C++ 允许 `qApp->xxx()` 这样经实例调用,
+    // 业务代码(如 BTEServer 构造里的 option.ini 路径)正是这么写的 —— 实例上也得有。
+    applicationDirPath() { return QApplication.applicationDirPath(); }
+    setApplicationDirPath(p) { QApplication.setApplicationDirPath(p); }
+    applicationFilePath() { return QApplication.applicationFilePath(); }
+    applicationName() { return this._appName || ""; }
+    setApplicationName(n) { this._appName = String(n); }
+    applicationVersion() { return this._appVersion || ""; }
+    setApplicationVersion(v) { this._appVersion = String(v); }
+    organizationName() { return this._orgName || ""; }
+    setOrganizationName(n) { this._orgName = String(n); }
+    instance() { return QApplication._inst; }
+    primaryScreen() { return QApplication.primaryScreen(); }
+    closeAllWindows() { if (QApplication.closeAllWindows) QApplication.closeAllWindows(); }
+    setOverrideCursor() { noteMissing("QApplication::setOverrideCursor"); }
+    restoreOverrideCursor() { }
+    setQuitOnLastWindowClosed() { }
+    static get ApplicationFlags() { return 0; }
     static applicationDirPath() { return appDirPath(); }
     static setApplicationDirPath(p) { g_appDir = String(p); }
     static applicationFilePath() { const c = jzCore(); return c ? c.execPath() : ""; }
@@ -835,12 +857,22 @@ class QInputDialog extends QObject
 //   任何以 sig 开头的属性 -> 回调数组(业务代码大量 push 信号)
 //   任何构造/调用 -> 记账到 QtCompat.report()
 // ---------------------------------------------------------------------------
-function makeLenient(name)
+// name: 记账用的路径(如 "QTableWidget.setColumnCount")
+// quiet: 派生节点不再单独记账(只记顶层那一个, 避免 report 被深层路径刷屏)
+function makeLenient(name, quiet)
 {
-    noteMissing(name + " (空壳实例)");
+    if (!quiet)
+        noteMissing(name + " (空壳实例)");
+
     const store = Object.create(null);
-    const target = { __qtstub: name };
+
+    // 关键: target 必须是**函数**, 这样空壳对象既能被调用(万能方法), 又能继续取属性
+    // (链式如 table.horizontalHeader().setStretchLastSection(true) 才不会断)。
+    const target = function () { };
+
     const handler = {
+        apply() { return makeLenient(name + "()", true); },
+        construct() { return makeLenient(name + " (new)", true); },
         get(t, prop)
         {
             if (prop === "__qtstub") return name;
@@ -848,15 +880,17 @@ function makeLenient(name)
             if (prop === "toString") return () => "[" + name + "]";
             if (prop === "valueOf") return () => 0;
             if (prop === "toJSON") return () => null;
+            if (prop === "length") return 0;
+            if (prop === "name") return name;
             if (prop in store) return store[prop];
             if (typeof prop === "string" && prop.slice(0, 3) === "sig")
             {
-                store[prop] = [];
+                store[prop] = [];                 // 业务代码大量 `sigXxx.push(cb)`
                 return store[prop];
             }
-            const fn = function () { return makeLenient(name + "." + String(prop)); };
-            store[prop] = fn;
-            return fn;
+            // 其余属性一律再给一个"宽容对象"(本身可调用、可继续取属性), 并按需缓存
+            store[prop] = makeLenient(name + "." + String(prop), true);
+            return store[prop];
         },
         set(t, prop, v) { store[prop] = v; return true; },
         has() { return true; },
@@ -865,6 +899,48 @@ function makeLenient(name)
         getOwnPropertyDescriptor(t, prop) { return { configurable: true, enumerable: true, value: store[prop] }; },
     };
     return new Proxy(target, handler);
+}
+
+// 给"以 C++ 写法初始化基类的实例"挂一层兜底:
+//
+//   移植代码保留了 C++ 的 `QDialog.call(this, parent)` / `QWidget.call(this, parent)`,
+//   而 `this` 是业务类(如 StepDataDialog)的普通实例 —— 它自己定义的方法都在, 但
+//   Qt 基类那一大堆成员(windowFlags/setWindowFlags/setWindowTitle/...)不存在。
+//   这里在实例的原型链上**插入一层代理**: 真实方法优先, 缺的成员给宽容空壳。
+//   (不能直接给实例装代理 —— 那会把业务类自己的方法也吞掉。)
+function attachQtFallback(obj, name)
+{
+    const proto = Object.getPrototypeOf(obj);
+    if (!proto)
+        return;
+
+    const store = Object.create(null);
+    const shim = new Proxy(proto, {
+        get(t, prop)
+        {
+            const v = t[prop];                     // ① 业务类自己的成员优先
+            if (v !== undefined)
+                return v;
+            if (prop === Symbol.toPrimitive || prop === "valueOf") return () => 0;
+            if (prop === "toString") return () => "[" + name + "]";
+            if (prop === "constructor") return t.constructor;
+            if (typeof prop === "string" && prop.slice(0, 3) === "sig")
+            {
+                if (!(prop in store)) store[prop] = [];
+                return store[prop];
+            }
+            if (!(prop in store))
+                store[prop] = makeLenient(name + "." + String(prop), true);
+            return store[prop];
+        },
+        has() { return true; },
+        set(t, prop, v) { t[prop] = v; return true; },
+        // 让 instanceof 仍然成立: 查询"原型"时把插入的这层透过去
+        getPrototypeOf(t) { return t; },
+    });
+
+    Object.setPrototypeOf(obj, shim);
+    return shim;
 }
 
 // GUI 类: 构造/静态访问都宽容; 支持 `QWidget.call(this, parent)` 这种"以函数形式初始化"
@@ -877,9 +953,16 @@ function makeQtStubClass(name, statics)
     function ctor()
     {
         // 只有 QWidget.call(this, parent) 这类显式调用会走到这里
-        noteMissing(name + " (空壳基类初始化)");
         if (this && typeof this === "object")
-            this.__qt = name;
+        {
+            if (!this.__qt)
+            {
+                this.__qt = name;
+                attachQtFallback(this, name);
+            }
+            return undefined;
+        }
+        noteMissing(name + " (空壳基类初始化)");
         return undefined;
     }
 
@@ -1025,9 +1108,632 @@ for (const name of GUI_STUB_CLASSES)
     g_globals[name] = makeQtStubClass(name, {});
 
 // 控件基类需要接受 `QWidget.call(this, parent)` 语义, 上面的工厂已支持。
-// Ui_BTEServerClass: uic 生成的界面类(由 BTEServer.ui 生成), 仓库里还没有对应 JS 文件,
-// 这里提供一个全局空壳, 使"非界面代码"仍然可以构造 BTEServer 并跑起来。
-g_globals.Ui_BTEServerClass = makeQtStubClass("Ui_BTEServerClass", {});
+//
+// Ui_*Class: uic 从 .ui 生成的界面类。仓库里**没有** .ui 文件, 也就没有对应的 JS,
+// 但每个窗口/对话框的构造函数第一句都是 `this.ui = new Ui_XxxClass()`, 缺一个就
+// 整个界面层都构造不起来。这里按代码里实际引用的名字统一给空壳, 让整机装配可以跑通
+// (真正的控件树仍然等 .ui → Ui_*Class 的移植)。
+const UI_STUB_CLASSES = [
+    "Ui_BTEServerClass",
+    "Ui_DeviceMacDialogClass",
+    "Ui_HelpDialogClass",
+    "Ui_SplitDialogClass",
+    "Ui_SplitSettingWidgetClass",
+    "Ui_StepDataDialogClass",
+    "Ui_StepEditDialogClass",
+    "Ui_StepInfoDialogClass",
+    "Ui_StepJumpDialogClass",
+    "Ui_StepSettingDialogClass",
+];
+for (const name of UI_STUB_CLASSES)
+    g_globals[name] = makeQtStubClass(name, {});
+
+// ---------------------------------------------------------------------------
+// 12. 框架桥: Qt 名字 -> 框架(JZ*)的**真实现**
+//
+//   引擎的 JZJSWidgetModule 把框架的控件/值类型注册成 JS 全局类(可直接 new):
+//     JZWidget JZWindow JZLabel JZPushButton JZLineEdit JZCheckbox JZRadioButton JZSlider
+//     JZProgressBar JZComboBox JZSpinBox JZGroupBox JZChart
+//     JZLayout JZVBoxLayout JZHBoxLayout JZGridLayout JZSelfLayout
+//     JZPoint JZSize JZRect JZColor JZImage JZPainter (+ 事件类)
+//   本节把同名的 Qt 类型换成它们(子类 + 补 Qt 的构造签名/方法名), 业务代码不用改。
+//   框架**没有注册到 JS** 的那几个(JZTableWidget/JZListWidget/JZMenu/JZMessageBox/
+//   JZFont/JZPen/JZBrush/JZSettings/JZThread —— C++ 侧都有类, 只是没绑定)继续用
+//   本文件的 JS 实现, 见 frameworkBridgeReport() 的清单。
+//
+//   为什么用子类而不是直接 alias:
+//     (a) Qt 的构造签名与框架不同: new QLabel("text", parent) / new QPoint(x, y)
+//         (jsbind 的默认构造**不转发参数**, 得靠 setXxx 补);
+//     (b) Qt 的方法名不同: setAlignment / setWindowTitle / setFixedSize(QRect) ...;
+//     (c) 本移植的信号约定是"回调数组"(sigClicked.push(cb)), 而框架是 onClicked(cb)。
+// ---------------------------------------------------------------------------
+export const frameworkBridge = { real: [], js: [] };
+
+function jzType(name)
+{
+    const v = globalThis[name];
+    return (typeof v === "function") ? v : null;
+}
+
+function emitSignal(list, ...args)
+{
+    if (!Array.isArray(list))
+        return;
+    for (let i = 0; i < list.length; i++)
+    {
+        try { list[i].apply(null, args); }
+        catch (e) { console.error("[qtcompat] 信号回调异常: " + e); }
+    }
+}
+
+// 每个控件实例一份"信号数组"。jsbind 的原生实例上不一定能挂普通 JS 属性, 所以放 WeakMap,
+// 再用原型 getter 暴露成 `obj.sigClicked`(业务代码是 `sigClicked.push(cb)`, 兼容)。
+const g_sigStore = new WeakMap();
+const SIGNAL_NAMES = ["sigClicked", "sigTextChanged", "sigCurrentIndexChanged", "sigValueChanged",
+    "sigStateChanged", "sigEditingFinished", "sigClose", "sigLinkActivated"];
+
+function sigsOf(obj)
+{
+    let m = g_sigStore.get(obj);
+    if (!m)
+    {
+        m = {};
+        for (let i = 0; i < SIGNAL_NAMES.length; i++)
+            m[SIGNAL_NAMES[i]] = [];
+        g_sigStore.set(obj, m);
+    }
+    return m;
+}
+
+function installSignals(Base)
+{
+    for (let i = 0; i < SIGNAL_NAMES.length; i++)
+    {
+        const n = SIGNAL_NAMES[i];
+        if (Object.getOwnPropertyDescriptor(Base.prototype, n))
+            continue;                      // 已装过(同一原型被多个 Qt 名字共用)
+        Object.defineProperty(Base.prototype, n, {
+            get() { return sigsOf(this)[n]; },
+            set(v) { sigsOf(this)[n] = v; },
+            configurable: true,
+        });
+    }
+}
+
+// 框架原型上的**原始**方法表(被 Qt 同名方法覆盖前先存下来, 供适配层回调)
+const g_orig = new WeakMap();
+
+function origJz(jzName, name)
+{
+    const Base = jzType(jzName);
+    const m = Base ? g_orig.get(Base) : null;
+    return (m && m[name]) ? m[name] : null;
+}
+
+// Qt 名字 -> 框架真类。三个关键决定:
+//   1) **不能**用 `class QLabel extends JZLabel`: jsbind 的构造返回的是原生包装对象,
+//      派生类的 prototype 会被丢掉(Qt 方法全丢, `.normalized 不是函数`就是这么来的)。
+//      所以 Qt 的方法名直接补到**框架原型**上 —— 实例就是框架对象, 方法一定在。
+//   2) Qt 的构造签名("new QLabel('文本')"/"new QPoint(3,4)")用"工厂函数 + 共享原型"
+//      实现: 调用者拿到的仍是真框架对象, 且 `instanceof` 两边都成立。
+//   3) 兼容 C++ 的 `QDialog.call(this, parent)` 基类初始化写法(Proxy apply -> 兜底层)。
+function bridgeJz(qtName, jzName, ctor, proto)
+{
+    const Base = jzType(jzName);
+    if (!Base)
+        return false;
+
+    if (!g_orig.has(Base))
+    {
+        // 必须用 getOwnPropertyNames: jsbind 注册的方法**不可枚举**(for-in 拿不到),
+        // 用 for-in 建出来的快照是空的, 适配层回调原实现时会变成静默 no-op。
+        const snap = {};
+        const names = Object.getOwnPropertyNames(Base.prototype);
+        for (let i = 0; i < names.length; i++)
+            snap[names[i]] = Object.getOwnPropertyDescriptor(Base.prototype, names[i]).value;
+        g_orig.set(Base, snap);
+    }
+
+    if (proto)
+    {
+        for (const k in proto)
+            Base.prototype[k] = proto[k];  // 补/覆盖 Qt 方法名
+    }
+    installSignals(Base);
+
+    function QtCtor(...args)
+    {
+        const obj = new Base();
+        ctor.apply(obj, args);
+        return obj;
+    }
+    QtCtor.prototype = Base.prototype;
+    Object.setPrototypeOf(QtCtor, Base);   // 继承静态成员(如 JZChart.LineChart)
+
+    const P = new Proxy(QtCtor, {
+        apply(target, thisArg, args)
+        {
+            if (thisArg !== undefined && thisArg !== null && typeof thisArg === "object")
+            {
+                // `QDialog.call(this, parent)`: 退化成"缺啥补啥"的原型层(与空壳路径一致)
+                attachQtFallback(thisArg, jzName);
+                return undefined;
+            }
+            return target(...args);        // 普通调用: 当工厂用
+        },
+    });
+    P.jzBase = jzName;                     // 便于自检/调试: 这个 Qt 名字背后是哪个框架类
+    g_globals[qtName] = P;
+    frameworkBridge.real.push(qtName + " <- " + jzName);
+    return true;
+}
+
+// 布局里可能出现"还不是真控件"的 JS 对象(BTEItemWidget 这类仍用 QWidget.call(this) 的写法),
+// 框架的 addWidget 有类型校验, 会直接抛"参数1需要类型JZWidget"。这里换成真控件占位并记账:
+// GUI 不崩, 但那个控件什么时候"变真"取决于它自己改成 extends QWidget(见框架桥报告)。
+function asRealWidget(w)
+{
+    if (w === undefined || w === null)
+        return null;
+    if (typeof JZWidget === "function" && (w instanceof JZWidget))
+        return w;
+    let nm = "object";
+    try { nm = (w && w.constructor && w.constructor.name) ? String(w.constructor.name) : String(w); }
+    catch (e) { nm = "<unknown>"; }
+    noteMissing("布局里的非框架控件(仍是 JS 对象): " + nm);
+    return new JZWidget();
+}
+
+function noop() { }
+
+// Qt 的颜色字符串: "#RGB" / "#RRGGBB" / "#AARRGGBB" / 具名色
+function parseColorSpec(s)
+{
+    const t = String(s).trim();
+    if (t.length > 1 && t[0] === "#")
+    {
+        const h = t.slice(1);
+        const hx = (x) => parseInt(x, 16) || 0;
+        if (h.length === 3)
+            return [hx(h[0] + h[0]), hx(h[1] + h[1]), hx(h[2] + h[2]), 255];
+        if (h.length === 6)
+            return [hx(h.slice(0, 2)), hx(h.slice(2, 4)), hx(h.slice(4, 6)), 255];
+        if (h.length === 8)
+            return [hx(h.slice(2, 4)), hx(h.slice(4, 6)), hx(h.slice(6, 8)), hx(h.slice(0, 2))];
+    }
+    const c = parseColorName(t);
+    return [c[0], c[1], c[2], 255];
+}
+
+// ---- 值类型(框架的 JZPoint/JZSize/JZRect/JZColor 就是真实现) ----
+bridgeJz("QPoint", "JZPoint",
+    function (x, y)
+    {
+        if (x !== undefined)
+            this.setPoint(x | 0, (y === undefined ? x : y) | 0);
+    },
+    {
+        isNull: function () { return this.x() === 0 && this.y() === 0; },
+        rx: function () { return this.x(); },
+        ry: function () { return this.y(); },
+        equals: function (o) { return !!o && this.x() === o.x() && this.y() === o.y(); },
+        toString: function () { return this.x() + "," + this.y(); },
+    });
+
+bridgeJz("QSize", "JZSize",
+    function (w, h)
+    {
+        if (w !== undefined)
+        {
+            this.setWidth(w | 0);
+            this.setHeight((h === undefined ? w : h) | 0);
+        }
+    },
+    {
+        setSize: function (w, h) { this.setWidth(w | 0); this.setHeight(h | 0); },
+        toString: function () { return this.width() + "x" + this.height(); },
+    });
+
+bridgeJz("QRect", "JZRect",
+    function (a, b, c, d)
+    {
+        if (a === undefined)
+            return;
+        if (a !== null && typeof a === "object" && typeof a.x === "function")
+        {
+            if (b !== null && typeof b === "object" && typeof b.x === "function")
+            {   // QRect(QPoint, QPoint)
+                const x1 = a.x(), y1 = a.y(), x2 = b.x(), y2 = b.y();
+                this.setRect(Math.min(x1, x2), Math.min(y1, y2),
+                    Math.abs(x2 - x1) + 1, Math.abs(y2 - y1) + 1);
+            }
+            else
+            {   // QRect(QPoint, QSize)
+                this.setRect(a.x() | 0, a.y() | 0,
+                    (typeof b === "number" ? b : 0) | 0, (typeof c === "number" ? c : 0) | 0);
+            }
+            return;
+        }
+        this.setRect(a | 0, b | 0, (c === undefined ? 0 : c) | 0, (d === undefined ? 0 : d) | 0);
+    },
+    {
+        // Qt 语义: 保证 left<=right / top<=bottom
+        normalized: function ()
+        {
+            const l = this.left(), t = this.top(), r = this.right(), b = this.bottom();
+            return new g_globals.QRect(Math.min(l, r), Math.min(t, b),
+                Math.abs(r - l) + 1, Math.abs(b - t) + 1);
+        },
+        adjusted: function (dx1, dy1, dx2, dy2)
+        {
+            return new g_globals.QRect(this.left() + dx1, this.top() + dy1,
+                this.width() + dx2 - dx1, this.height() + dy2 - dy1);
+        },
+        setCoords: function (x1, y1, x2, y2) { this.setRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1); },
+        getRect: function () { return [this.x(), this.y(), this.width(), this.height()]; },
+        isValid: function () { return !this.isEmpty(); },   // 框架的 JZRect 没有 isValid
+        moveLeft: function (x) { this.setRect(x, this.top(), this.width(), this.height()); },
+        moveTop: function (y) { this.setRect(this.left(), y, this.width(), this.height()); },
+    });
+
+bridgeJz("QColor", "JZColor",
+    function (r, g, b, a)
+    {
+        if (r === undefined)
+        {   // Qt 默认构造是"无效颜色", 这里给黑色(业务只在临时占位时用到)
+            this.setRgb(0, 0, 0);
+            return;
+        }
+        if (typeof r === "object" && r !== null && typeof r.red === "function")
+        {   // QColor(QColor): 拷贝
+            this.setRgba(r.red() | 0, r.green() | 0, r.blue() | 0, r.alpha() | 0);
+            return;
+        }
+        if (typeof r === "string")
+        {
+            const c = parseColorSpec(r);
+            this.setRgba(c[0], c[1], c[2], c[3]);
+            return;
+        }
+        if (g === undefined)
+        {   // QColor(QRgb)
+            const v = r >>> 0;
+            this.setRgba((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff, ((v >>> 24) & 0xff) || 255);
+            return;
+        }
+        this.setRgba(r | 0, g | 0, b | 0, (a === undefined ? 255 : a | 0));
+    },
+    {
+        setRgb: function (r, g, b) { this.setRgba(r | 0, g | 0, b | 0, 255); },
+        rgb: function ()
+        {
+            return ((255 << 24) | (this.red() << 16) | (this.green() << 8) | this.blue()) >>> 0;
+        },
+        rgba: function ()
+        {
+            return ((this.alpha() << 24) | (this.red() << 16) | (this.green() << 8) | this.blue()) >>> 0;
+        },
+        name: function ()
+        {
+            return "#" + [this.red(), this.green(), this.blue()]
+                .map((v) => (((v | 0) & 0xff).toString(16).padStart(2, "0"))).join("");
+        },
+        isValid: function () { return true; },
+        equals: function (o)
+        {
+            return !!o && this.red() === o.red() && this.green() === o.green()
+                && this.blue() === o.blue() && this.alpha() === o.alpha();
+        },
+        toString: function () { return this.name(); },
+        // 与 CSS 互通(框架画笔吃 CSS 颜色串)
+        css: function () { return this.name(); },
+    });
+
+// ---- 控件 ----
+// Qt 里窗口类: JZWindow 是真窗口, 补 Qt 的窗口 API
+function windowProtoCtor(titleOrParent, parent)
+{
+    this._flags = 0;
+    this.sigClose = [];
+    if (typeof titleOrParent === "string")
+        this.setTitle(titleOrParent);
+}
+const WINDOW_PROTO = {
+    setWindowTitle: function (t) { this.setTitle(t); },
+    setWindowFlags: function (f) { this._flags = f >>> 0; },
+    windowFlags: function () { return this._flags; },
+    setModal: function () { },
+    setAttribute: function () { },
+    setContentsMargins: function () { },
+    adjustSize: noop,
+    setCentralWidget: function (w) { if (w) this.addWidget(w); },
+    centralWidget: function () { return null; },
+    isMaximized: function () { return false; },
+    isVisible: function () { return true; },
+};
+bridgeJz("QWidget", "JZWidget", function () { this._flags = 0; }, {
+    setWindowTitle: noop, setWindowFlags: function (f) { this._flags = f >>> 0; },
+    windowFlags: function () { return this._flags; }, setModal: noop, setObjectName: function (n) { this._name = n; },
+});
+bridgeJz("QMainWindow", "JZWindow", windowProtoCtor, WINDOW_PROTO);
+bridgeJz("QDialog", "JZWindow", windowProtoCtor, WINDOW_PROTO);
+
+// 每个控件都要补: Qt 的 setFixedSize(QRect) 形式 + 本移植的"信号数组"约定
+function widgetProtoCtor()
+{
+    sigsOf(this);          // 就地建好各信号数组(之后由原型 getter 取)
+    this._flags = 0;
+}
+const WIDGET_PROTO = {
+    setFixedSize: function (a, b)   // Qt 有 setFixedSize(w,h) 与 setFixedSize(QSize) 两种
+    {
+        const fn = origJz("JZWidget", "setFixedSize");
+        if (!fn)
+            return;
+        if (a !== null && typeof a === "object" && typeof a.width === "function")
+            return fn.call(this, a.width(), a.height());
+        return fn.call(this, a, b);
+    },
+    setToolTip: function (t) { this.setTooltip(t); },
+    setEnabled: function () { },
+    isEnabled: function () { return true; },
+    setObjectName: function (n) { this._name = n; },
+    objectName: function () { return this._name || ""; },
+    // Qt 的 setFont/setPalette: 框架控件没有字体 API(UI 上的字体走 .ui/QSS)
+    setFont: function (f) { this._font = f; },
+    font: function () { return this._font || new g_globals.QFont(); },
+};
+
+bridgeJz("QLabel", "JZLabel",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setAlignment: function (a) { this.setAlign(a); },
+        alignment: function () { return Qt.AlignLeft; },
+        clear: function () { this.setText(""); },
+        setTextFormat: noop,
+        setWordWrap: noop,
+        setScaledContents: noop,
+        setPixmap: function () { noteMissing("QLabel::setPixmap(框架 JZLabel 只支持文本)"); },
+        pixmap: function () { return null; },
+        setNum: function (n) { this.setText(String(n)); },
+    }));
+
+bridgeJz("QPushButton", "JZPushButton",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+        // 框架的 onClicked(cb) -> 本移植的 sigClicked 数组
+        this.onClicked(() => emitSignal(this.sigClicked));
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        // setCheckable/setChecked/isCheckable/isChecked/setIcon/icon 框架已有, 不再覆盖
+        click: function () { emitSignal(this.sigClicked); },
+        setDefault: noop, setFlat: noop,
+    }));
+
+bridgeJz("QLineEdit", "JZLineEdit",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setEchoMode: function (m) { this.setPassword(m === 2); },   // Qt::Password = 2
+        echoMode: function () { return this.isPassword() ? 2 : 0; },
+        setValidator: function (v) { this._validator = v; },
+        validator: function () { return this._validator; },
+        setAlignment: noop,
+        clear: function () { this.setText(""); },
+        selectAll: noop,
+        textChanged: function () { },
+    }));
+
+bridgeJz("QCheckBox", "JZCheckbox",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+        // 框架 JZCheckbox 没有"点击"回调: 用基类的鼠标钩子自己合成, 保持信号可用
+        this.onMouseRelease = (e) => { emitSignal(this.sigClicked, e); emitSignal(this.sigStateChanged, e); };
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setTristate: noop,
+        checkState: function () { return this.isChecked() ? 2 : 0; },
+        setCheckState: function (s) { this.setChecked(s === 2); },
+        setEnabled: function (b) { },
+    }));
+
+bridgeJz("QRadioButton", "JZRadioButton",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+        this.onMouseRelease = (e) => { emitSignal(this.sigClicked, e); emitSignal(this.sigStateChanged, e); };
+    },
+    Object.assign({}, WIDGET_PROTO, {}));
+
+bridgeJz("QComboBox", "JZComboBox",
+    function (parent)
+    {
+        widgetProtoCtor.call(this);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setCurrentIndex: function (i) { origJz("JZComboBox", "setCurrentIndex").call(this, i | 0); },
+        currentIndexChanged: function () { },
+        setEditable: function () { },
+        setMaxVisibleItems: noop,
+    }));
+
+bridgeJz("QSpinBox", "JZSpinBox",
+    function (parent)
+    {
+        widgetProtoCtor.call(this);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setSingleStep: function (s) { this.setStep(s); },
+        singleStep: function () { return this.step(); },
+        setButtonSymbols: noop,
+        setAlignment: noop,
+    }));
+
+bridgeJz("QSlider", "JZSlider",
+    function (orient, parent)
+    {
+        widgetProtoCtor.call(this);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setOrientation: function () { },
+        orientation: function () { return Qt.Horizontal; },
+        setSingleStep: noop,
+    }));
+
+bridgeJz("QProgressBar", "JZProgressBar",
+    function (parent)
+    {
+        widgetProtoCtor.call(this);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setFormat: noop,
+        setTextVisible: noop,
+        setAlignment: noop,
+        reset: function () { this.setValue(0); },
+    }));
+
+bridgeJz("QGroupBox", "JZGroupBox",
+    function (titleOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof titleOrParent === "string")
+            this.setTitle(titleOrParent);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setAlignment: noop,
+        setCheckable: noop,
+        setFlat: noop,
+    }));
+
+// ---- 布局: Qt 的 addWidget(多参数形式) / addLayout 框架没有 ----
+const LAYOUT_PROTO = {
+    // Qt 的 QLayout::setMargin(已废弃但业务在用) = 四边同样的 margin
+    setMargin: function (m)
+    {
+        const f = origJz("JZLayout", "setContentsMargins");
+        if (f)
+            f.call(this, m | 0, m | 0, m | 0, m | 0);
+    },
+    setContentsMargins: function (l, t, r, b)
+    {
+        const f = origJz("JZLayout", "setContentsMargins");
+        if (f)
+            f.call(this, l | 0, t | 0, r | 0, b | 0);
+    },
+};
+bridgeJz("QGridLayout", "JZGridLayout",
+    function (parent) { },
+    Object.assign({}, LAYOUT_PROTO, {
+        addWidget: function (w, r, c, rs, cs)
+        {
+            const span = origJz("JZGridLayout", "addWidgetSpan");
+            const add = origJz("JZGridLayout", "addWidget");
+            const rw = asRealWidget(w);
+            if (!rw)
+                return;
+            if (rs !== undefined && cs !== undefined && span)
+                span.call(this, rw, r | 0, c | 0, rs | 0, cs | 0);
+            else if (r !== undefined && add)
+                add.call(this, rw, r | 0, c | 0);
+            else
+                noteMissing("QGridLayout::addWidget(widget) 缺行列参数");
+        },
+        addLayout: function (layout, r, c)
+        {
+            // 框架布局只接控件: 用一个容器控件带布局来承载
+            const holder = new JZWidget();
+            if (holder.setLayout)
+                holder.setLayout(layout);
+            if (r !== undefined)
+            {
+                const add = origJz("JZGridLayout", "addWidget");
+                if (add)
+                    add.call(this, holder, r | 0, c | 0);
+            }
+            else
+                noteMissing("QGridLayout::addLayout(无行列参数)");
+        },
+        // 框架的 JZGridLayout 没有 setSpacing(只有 setHorizontalSpacing/setVerticalSpacing)
+        setSpacing: function (s)
+        {
+            const h = origJz("JZGridLayout", "setHorizontalSpacing");
+            const v = origJz("JZGridLayout", "setVerticalSpacing");
+            if (h) h.call(this, s | 0);
+            if (v) v.call(this, s | 0);
+        },
+    }));
+
+function boxAddWidget(jzName, w, stretch)
+{
+    const add = origJz(jzName, "addWidget");
+    const rw = asRealWidget(w);
+    if (!add || !rw)
+        return;
+    add.call(this, rw, stretch === undefined ? 0 : stretch);
+}
+const BOX_LAYOUT_PROTO = {
+    addWidget: function (w, stretch)
+    {
+        return boxAddWidget.call(this, this.__jzName, w, stretch);
+    },
+    addLayout: function (layout, stretch)
+    {
+        const holder = new JZWidget();
+        if (holder.setLayout)
+            holder.setLayout(layout);
+        return boxAddWidget.call(this, this.__jzName, holder, stretch);
+    },
+};
+bridgeJz("QVBoxLayout", "JZVBoxLayout",
+    function (parent) { this.__jzName = "JZVBoxLayout"; },
+    BOX_LAYOUT_PROTO);
+bridgeJz("QHBoxLayout", "JZHBoxLayout",
+    function (parent) { this.__jzName = "JZHBoxLayout"; },
+    BOX_LAYOUT_PROTO);
+
+// Qt 具名颜色要在桥之后重建, 让 Qt.red 之类也是框架色
+for (const n of ["white", "black", "red", "darkRed", "green", "darkGreen", "blue", "darkBlue",
+    "cyan", "darkCyan", "magenta", "darkMagenta", "yellow", "darkYellow", "gray", "darkGray",
+    "lightGray", "orange"])
+    Qt[n] = new g_globals.QColor(n);
+
+// 没走桥的 Qt 名(仍用本文件的 JS 实现)
+for (const n of ["QFile", "QDir", "QTextStream", "QSettings", "QPen", "QBrush", "QFont", "QFontMetrics",
+    "QObject", "QApplication", "QThread", "QMessageBox", "QTableWidget", "QTableWidgetItem",
+    "QListWidget", "QListWidgetItem", "QTreeWidget", "QTreeWidgetItem", "QMenu", "QAction",
+    "QPainter", "QLinearGradient", "QTextOption"])
+    frameworkBridge.js.push(n);
+
+// 挂到兼容层本体上(业务/测试都通过 __bte.qtCompat 访问)
+QtCompat.bridge = frameworkBridge;          // Qt 名 -> 框架真实现 的映射清单
+QtCompat.bridgeReport = frameworkBridgeReport;
+
+export function frameworkBridgeReport()
+{
+    console.log("[qtcompat] 框架桥: " + frameworkBridge.real.length + " 项用框架真实现, "
+        + frameworkBridge.js.length + " 项仍是 JS 定义");
+    for (const r of frameworkBridge.real)
+        console.log("  [JZ] " + r);
+    console.log("  [JS] " + frameworkBridge.js.join(", "));
+    return frameworkBridge;
+}
 
 // 安装到 globalThis(业务文件里都是裸名字引用)
 for (const k in g_globals)

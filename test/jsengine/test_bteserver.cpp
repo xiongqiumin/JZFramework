@@ -8,18 +8,22 @@
 //         (3) 界面层  BTEServer.js 等             —— 依赖 Ui_BTEServerClass/QTableWidget/... 尚未收口
 //       本测试只覆盖 (1)(2): 它们是"能在 JS 引擎里跑起来"的部分。
 //
-// 断言分四组:
+// 断言分组:
 //   1) 模块可加载  —— 含 main.js 载入即跑的 protocolSelfTest(失败会抛异常, 故"能加载"即"自测通过")
-//   2) Qt 兼容层   —— qtcompat.js 的 Qt/QByteArray/QDataStream/QTimer/QSettings 等就位
-//   3) stru_* 包类 —— 上报帧(0x7C/0x7D)与工步包骨架的 C++ 字段名往返
-//   4) 传输层      —— NetServer/NetDataManager/NetPack 的组帧-解帧往返(纯内存, 不走 socket)
+//   2) Qt 兼容层 + JS 原生替代 —— qtcompat 就位; QTimer/QDateTime/QByteArray/QDataStream 已换成
+//                      setInterval/Date/JSON(datetime.js / storage.js)
+//   3) stru_* 包类 —— 上报帧(0x7C/0x7D)与控制帧的 C++ 字段名往返 + 逐字节一致
+//   4) 传输层      —— NetDataManager/NetPack 的组帧-解帧往返(纯内存: packData 与 protocol.js
+//                      的 encodeFrame 必须逐字节一致; 粘包/半包/坏校验)
+//   5) 真实 socket —— NetServer.listen + 原始 socket / NetClient 双向收发(2026-09-13 恢复)
+//   6) 模块加载诊断(逐个 .js 全量) / 7) 整机装配: 真构造 BTEServer / 8) 缺口账单
 //
-// 已知阻塞(2026-09-13, 非本模块引入): **引擎当前的真实 socket 路径会崩** ——
-//   本测试曾用 NetServer.startServer(0) + 原始 socket 做 loopback 端到端,
-//   每次都在第一次 listen() 处 0xC0000005; 同一时刻 test_jsnet.exe 也在它的
-//   第 5 项(TCP echo, 第一次 listen/connect)同样崩, 属仓库级现象。
-//   故第 4 组改为"不经 socket"的内存收发路径(它才是 bteserver 传输层真正的逻辑);
-//   等 socket 栈修好后, 把 loopback 那几条断言加回来即可(见 git 历史/本条注释)。
+// 另有两条"引擎行为"的守门断言:
+//   - 同一文件用绝对路径/相对路径 import 必须归为同一模块(只求值一次)
+//   - Qt 兼容层是**单实例**(否则缺口账单会分裂成两份)
+//
+// 注: 第 5 组曾在引擎 socket 栈崩溃期间(第一次 listen() 就 0xC0000005, 且 test_jsnet
+//     同样崩)被降级为"纯内存路径"; socket 栈修好后已恢复, 并与内存路径共存。
 //
 // 需要: JZ_JS_WRAPPER_DIR(libraryDirs, 解析 'net/dist/index.js'/'core/dist/bytes.js')
 //       JZ_BTESERVER_DIR(bteserver JS 源码目录)
@@ -37,6 +41,7 @@
 #include "JZJSCoreModule.h"
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
+#include "JZJSWidgetModule.h"
 #include "JZTimer.h"
 
 using namespace std;
@@ -70,6 +75,12 @@ int main()
     engine.setLibraryDir({ string(JZ_JS_WRAPPER_DIR) });
     STEP("engine start");
 
+    // 控件模块: 向 JS 注册框架真控件类(JZWindow/JZLabel/JZPushButton/JZGridLayout/...)。
+    // qtcompat.js 会据此把 Qt 名字(QLabel/...)桥到框架实现; 没初始化时退回 JS 替身。
+    JZJSWidgetModule widgetModule;
+    widgetModule.initEngine(&engine);
+    STEP("widget module init");
+
     JZJSNetModule netModule;
     netModule.initEngine(&engine);
     JZJSCoreModule coreModule;
@@ -81,23 +92,29 @@ int main()
     // 这里 runModuleFile 直接失败 -> 第 1 条断言即为"协议自测通过"。
     {
         const string dir = JZ_BTESERVER_DIR;   // 形如 F:/mcu/JZFramework/binary/code_agent/runtime/bteserver
-        const string tmp = string(JZ_JS_WRAPPER_DIR) + "/_test_bteserver_globals.mjs";
+        // 引导脚本**放在 bteserver 目录里**并用相对路径 import —— 这样业务模块看到的
+        // 模块名与它们互相 import 时一致, 整个图只实例化一次。
+        // (测试曾把引导脚本放在 wrapper 目录、用绝对路径 import, 结果引擎把
+        //  "F:/.../qtcompat.js" 和 "./qtcompat.js" 当成两个模块 —— qtcompat.js 被求值两次,
+        //  出现两套全局与两份缺口账单。见下面的 loads 断言。)
+        const string tmp = dir + "/_test_bteserver_globals.mjs";
         string mjs =
-            "import * as mainMod from '" + dir + "/main.js';\n"
-            "import { NetServer } from '" + dir + "/netServer.js';\n"
-            "import { NetClient } from '" + dir + "/netClient.js';\n"
-            "import { NetPackRegist, NetPackVariant, NETPACK_VARIANT } from '" + dir + "/netPackDefine.js';\n"
-            "import { NetPackManager, PackInfo } from '" + dir + "/netPack.js';\n"
-            "import { NetDataManager, blockingIoReport } from '" + dir + "/netDataManager.js';\n"
-            "import * as B from '" + dir + "/structs.js';\n"
-            "import * as P from '" + dir + "/protocol.js';\n"
-            "import * as DT from '" + dir + "/datetime.js';\n"
-            "import * as ST from '" + dir + "/storage.js';\n"
-            "import { DataTrans } from '" + dir + "/DataTrans.js';\n"
-            "import { BTEProject, DeviceData, SplitInfo } from '" + dir + "/BTEProject.js';\n"
-            "import { BTERecordInfo, BTEStepInfo, BTERecord } from '" + dir + "/BTERecordDataBase.js';\n"
+            "import * as mainMod from './main.js';\n"
+            "import { BTEServer } from './BTEServer.js';\n"
+            "import { NetServer } from './netServer.js';\n"
+            "import { NetClient } from './netClient.js';\n"
+            "import { NetPackRegist, NetPackVariant, NETPACK_VARIANT } from './netPackDefine.js';\n"
+            "import { NetPackManager, PackInfo } from './netPack.js';\n"
+            "import { NetDataManager, blockingIoReport } from './netDataManager.js';\n"
+            "import * as B from './structs.js';\n"
+            "import * as P from './protocol.js';\n"
+            "import * as DT from './datetime.js';\n"
+            "import * as ST from './storage.js';\n"
+            "import { DataTrans } from './DataTrans.js';\n"
+            "import { BTEProject, DeviceData, SplitInfo } from './BTEProject.js';\n"
+            "import { BTERecordInfo, BTEStepInfo, BTERecord } from './BTERecordDataBase.js';\n"
             "import { net } from 'net/dist/index.js';\n"
-            "import qtCompat from '" + dir + "/qtcompat.js';\n"
+            "import qtCompat from './qtcompat.js';\n"
             "globalThis.__bte = {\n"
             "  main: mainMod, B: B, P: P, DT: DT, ST: ST, DataTrans: DataTrans, net: net, qtCompat: qtCompat,\n"
             "  BTEProject: BTEProject, DeviceData: DeviceData, SplitInfo: SplitInfo,\n"
@@ -107,6 +124,7 @@ int main()
             "  NetPackVariant: NetPackVariant, NETPACK_VARIANT: NETPACK_VARIANT,\n"
             "  CMD: P.CMD, encodeFrame: P.encodeFrame, hexOf: P.hexOf,\n"
             "};\n"
+            "globalThis.__BTEServer = BTEServer;\n"
             // 放到最后: 注册失败也不影响上面的导出(便于定位真实原因)
             "NetPackRegist();\n";
         FILE* f = fopen(tmp.c_str(), "wb");
@@ -185,6 +203,157 @@ int main()
              "typeof console.log === 'function' && typeof console.error === 'function'"
              " && typeof console.warn === 'function' && typeof console.assert === 'function'");
 
+    // 同一份模块只能被求值一次: 引擎按"模块名"缓存, 而模块名是 import 说明符归一化后的
+    // 字符串 —— 绝对路径 import 与相对路径 import 若归不到同一个名字, 就会各求值一次,
+    // 于是出现两套模块级状态(单例/账单/全局注入)。这里把它钉住。
+    checkEqJs("engine: 同一文件绝对路径/相对路径 import 归为同一模块(只求值一次)",
+              "String(globalThis.__qtcompatLoads)", "'1'");
+
+    // -----------------------------------------------------------------------
+    // 2.5 框架桥探针: 引擎里能拿到哪些框架(JZ*)类; 这些类能否被 JS 继承/构造
+    //     —— qtcompat 要把 Qt 名字桥到框架实现, 前提就是这些。
+    // -----------------------------------------------------------------------
+    engine.eval(R"JS(
+(function () {
+    var names = ['JZWidget', 'JZWindow', 'JZLabel', 'JZPushButton', 'JZLineEdit', 'JZCheckbox',
+        'JZRadioButton', 'JZSlider', 'JZProgressBar', 'JZComboBox', 'JZSpinBox', 'JZGroupBox',
+        'JZChart', 'JZLayout', 'JZVBoxLayout', 'JZHBoxLayout', 'JZGridLayout', 'JZSelfLayout',
+        'JZPoint', 'JZSize', 'JZRect', 'JZColor', 'JZImage', 'JZPainter', 'uiLoader',
+        'JZTableWidget', 'JZTableWidgetItem', 'JZListWidget', 'JZMenu', 'JZMessageBox',
+        'JZFont', 'JZPen', 'JZBrush', 'JZSettings', 'JZThread'];
+    var have = [], miss = [];
+    for (var i = 0; i < names.length; i++)
+        (typeof globalThis[names[i]] === 'function' || typeof globalThis[names[i]] === 'object')
+            ? have.push(names[i]) : miss.push(names[i]);
+    globalThis.__jzHave = have.join(',');
+    globalThis.__jzMiss = miss.join(',');
+
+    try {
+        class L extends JZLabel { constructor(t) { super(); if (t !== undefined) this.setText(t); } }
+        var l = new L('hi');
+        globalThis.__jzSub = 'sub=' + (l instanceof JZLabel) + ' text=' + l.text();
+    } catch (e) { globalThis.__jzSub = 'sub EXC: ' + String(e); }
+    try { globalThis.__jzGrid = 'grid=' + (new JZGridLayout() instanceof JZGridLayout); }
+    catch (e) { globalThis.__jzGrid = 'grid EXC: ' + String(e); }
+    try {
+        var p = new JZPoint(); p.setPoint(3, 4);
+        globalThis.__jzPoint = 'point=' + p.x() + ',' + p.y();
+    } catch (e) { globalThis.__jzPoint = 'point EXC: ' + String(e); }
+    // 原型方法名清单(用于对齐 Qt 方法名 -> 框架方法名)
+    try {
+        function keysOf(C) {
+            return Object.getOwnPropertyNames(C.prototype).sort().join(',');
+        }
+        globalThis.__jzKeys =
+            'JZWidget: ' + keysOf(JZWidget) + '\n' +
+            'JZGridLayout: ' + keysOf(JZGridLayout) + '\n' +
+            'JZVBoxLayout: ' + keysOf(JZVBoxLayout) + '\n' +
+            'JZLabel: ' + keysOf(JZLabel) + '\n' +
+            'JZPushButton: ' + keysOf(JZPushButton) + '\n' +
+            'JZWindow: ' + keysOf(JZWindow) + '\n' +
+            'JZPoint: ' + keysOf(JZPoint) + '\n' +
+            'JZRect: ' + keysOf(JZRect) + '\n' +
+            'JZColor: ' + keysOf(JZColor);
+    } catch (e) { globalThis.__jzKeys = 'keys EXC: ' + String(e); }
+})()
+)JS");
+    {
+        auto hv = engine.eval("__jzHave");
+        auto ms = engine.eval("__jzMiss");
+        auto sb = engine.eval("__jzSub");
+        auto gd = engine.eval("__jzGrid");
+        auto pt = engine.eval("__jzPoint");
+        jzDebug() << "[diag] framework classes HAVE:" << engine.fromJSValue<string>(hv.get());
+        jzDebug() << "[diag] framework classes MISS:" << engine.fromJSValue<string>(ms.get());
+        jzDebug() << "[diag] probe:" << engine.fromJSValue<string>(sb.get())
+                  << "|" << engine.fromJSValue<string>(gd.get())
+                  << "|" << engine.fromJSValue<string>(pt.get());
+        auto kk = engine.eval("__jzKeys");
+        jzDebug() << "[diag] framework proto keys:\n"
+                  << (engine.isException(kk.get()) ? string("<exception>") : engine.fromJSValue<string>(kk.get()));
+    }
+
+    // -----------------------------------------------------------------------
+    // 2.6 框架桥: Qt 名字是否已指向框架真实现(JZ*)
+    // -----------------------------------------------------------------------
+    checkEqJs("bridge: Qt 名 = 框架真类 (QLabel/QPushButton/... instanceof JZ*)", R"JS(
+(function () {
+    var bad = [];
+    function chk(qtName, jzName) {
+        var Q = globalThis[qtName], J = globalThis[jzName];
+        if (typeof Q !== 'function' || typeof J !== 'function') { bad.push(qtName + '/' + jzName + ' 缺'); return; }
+        try { var o = new Q(); if (!(o instanceof J)) bad.push(qtName + ' !instanceof ' + jzName); }
+        catch (e) { bad.push(qtName + ' new EXC: ' + e); }
+    }
+    chk('QLabel', 'JZLabel'); chk('QPushButton', 'JZPushButton');
+    chk('QLineEdit', 'JZLineEdit'); chk('QCheckBox', 'JZCheckbox'); chk('QRadioButton', 'JZRadioButton');
+    chk('QComboBox', 'JZComboBox'); chk('QSpinBox', 'JZSpinBox'); chk('QSlider', 'JZSlider');
+    chk('QProgressBar', 'JZProgressBar'); chk('QGroupBox', 'JZGroupBox');
+    chk('QGridLayout', 'JZGridLayout'); chk('QVBoxLayout', 'JZVBoxLayout'); chk('QHBoxLayout', 'JZHBoxLayout');
+    chk('QWidget', 'JZWidget'); chk('QDialog', 'JZWindow'); chk('QMainWindow', 'JZWindow');
+    chk('QPoint', 'JZPoint'); chk('QSize', 'JZSize'); chk('QRect', 'JZRect'); chk('QColor', 'JZColor');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    checkEqJs("bridge: Qt 语义/方法名补在框架类型上 (含信号数组与 Qt 重载)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+
+    // ---- 值类型: Qt 的构造参数与查询方法 ----
+    var p = new QPoint(3, 4);
+    eq('QPoint.x', p.x(), 3); eq('QPoint.y', p.y(), 4);
+    var sz = new QSize(5, 6); eq('QSize.h', sz.height(), 6);
+    var r = new QRect(10, 20, 30, 40);
+    eq('QRect.w', r.width(), 30); eq('QRect.right', r.right(), 39);
+    var nr = new QRect(new QPoint(30, 40), new QPoint(10, 20)).normalized();
+    eq('QRect(2点).normalized.x', nr.x(), 10); eq('QRect(2点).normalized.w', nr.width(), 21);
+    eq('QRect.adjusted.w', r.adjusted(0, 0, 10, 0).width(), 40);
+    var c = new QColor(1, 2, 3);
+    eq('QColor.blue', c.blue(), 3); eq('QColor.name', c.name(), '#010203');
+    eq('QColor("#ff0000").red', new QColor('#ff0000').red(), 255);
+    eq('Qt.blue is JZColor', (Qt.blue instanceof JZColor), true);
+    eq('Qt.blue.name', Qt.blue.name(), '#0000ff');
+
+    // ---- 控件: Qt 方法名 ----
+    var l = new QLabel('hi');
+    eq('QLabel.text', l.text(), 'hi');
+    l.setAlignment(Qt.AlignCenter);
+    l.setText('x'); eq('QLabel.setText', l.text(), 'x');
+    try { l.setFixedSize(new QRect(0, 0, 100, 20)); }   // Qt 的 QRect 重载: 不能抛
+    catch (eFix) { bad.push('setFixedSize(QRect) EXC: ' + eFix); }
+    eq('QLabel.isVisible', typeof l.isVisible, 'function');
+
+    var b = new QPushButton('go');
+    eq('QPushButton.text', b.text(), 'go');
+    var n = 0;
+    b.sigClicked.push(function () { n++; });        // 移植的"信号数组"约定
+    b.click();
+    eq('QPushButton.sigClicked(框架回调)', n, 1);
+
+    var cb = new QCheckBox('c');
+    eq('QCheckBox.text', cb.text(), 'c');
+
+    var g = new QGridLayout();
+    g.addWidget(b, 0, 0);
+    g.addWidget(l, 1, 0, 1, 2);                     // 带 rowSpan/colSpan 的重载
+
+    // ---- 原生实例上挂普通属性(适配器要用) ----
+    try { l._probe = 7; eq('native prop set', l._probe, 7); }
+    catch (e) { bad.push('native prop set EXC: ' + e); }
+
+    // ---- C++ 的基类初始化写法 QDialog.call(this, parent) 仍要能用 ----
+    try {
+        function MyDlg() { QDialog.call(this, null); this.init_ = 1; }
+        var d = new MyDlg();
+        eq('QDialog.call(this) 兜底', typeof d.setWindowFlags, 'function');
+    } catch (e3) { bad.push('QDialog.call EXC: ' + e3); }
+
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
     checkEqJs("qtcompat: globals injected (Qt/QFile/QByteArray/QSettings/QColor/Ui_*)", R"JS(
 (function () {
     var bad = [];
@@ -215,15 +384,21 @@ int main()
 })()
 )JS", "'OK'");
 
-    runCheck("qtcompat: Qt enum + named colors + qApp", R"JS(
+    checkEqJs("qtcompat: Qt enum + named colors + qApp", R"JS(
 (function () {
-    return Qt.UserRole === 0x0100 && Qt.CustomContextMenu === 2
-        && Qt.WindowMaximizeButtonHint === 0x02000000
-        && (Qt.red instanceof QColor) && Qt.red.red() === 255
-        && typeof qApp === 'object' && qApp instanceof QApplication
-        && QApplication.applicationDirPath().length > 0;
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    eq('UserRole', Qt.UserRole, 0x0100);
+    eq('CustomContextMenu', Qt.CustomContextMenu, 2);
+    eq('WindowMaximizeButtonHint', Qt.WindowMaximizeButtonHint, 0x02000000);
+    eq('Qt.red instanceof QColor', (Qt.red instanceof QColor), true);
+    eq('Qt.red.red()', Qt.red.red(), 255);
+    eq('typeof qApp', typeof qApp, 'object');
+    eq('qApp instanceof QApplication', (qApp instanceof QApplication), true);
+    eq('applicationDirPath 非空', QApplication.applicationDirPath().length > 0, true);
+    return bad.length ? bad.join('; ') : 'OK';
 })()
-)JS");
+)JS", "'OK'");
 
     // 存档: 不再是 QByteArray+QDataStream 的二进制流, 改成 JSON(./storage.js)。
     // 约束是"存储格式自由、网络字节必须一致" —— 所以这里测 JSON 往返, 网络那部分由
@@ -689,14 +864,140 @@ int main()
 )JS");
 
     // -----------------------------------------------------------------------
-    // 5. 诊断(不计入断言): bteserver 目录下**每个 .js 模块**能否被加载?
+    // 5. 真实 socket 端到端 loopback(2026-09-13 恢复; 引擎 socket 栈修好后不再崩)
+    //
+    // 这是"bteserver 传输层真的能跑"的证据链:
+    //   NetServer.listen(0) -> 系统分配端口 -> 原始 socket 连上发一帧
+    //   -> NetServer.newConnect/newDataRecv -> NetClient 连上 -> 双向收发
+    //   -> 断开传播 -> stopServer。
+    // 帧的字节由 protocol.js 生成、解包走 structs.js, 所以这条路径一旦成立,
+    // "上位机与下位机的报文互通"就同时被验证了。
+    // -----------------------------------------------------------------------
+    runCheck("e2e: NetServer.startServer(18091) returns true", R"JS(
+(function () {
+    // 用固定端口: 引擎的 server.address().port 回的是**请求端口**而不是系统分配端口,
+    // 所以 listen(0) 拿不到真实端口(见 netServer.boundPort 的注释)。
+    globalThis.__port = 18091;
+    return __srv.startServer(__port) === true;
+})()
+)JS");
+    check("e2e: listener is open", waitFor("__srv.isOpen() === true", 3000));
+
+    engine.eval(R"JS(
+(function () {
+    globalThis.__sockOpen = false;
+    globalThis.__sock = __bte.net.createConnection({ host: '127.0.0.1', port: __port });
+    __sock.on('connect', function () { __sockOpen = true; __sock.write(__frame); });
+    __sock.on('error', function (e) { console.error('[e2e] raw socket error: ' + e); });
+})()
+)JS");
+    check("e2e: raw socket connected -> NetServer.newConnect(netId)",
+          waitFor("__sockOpen === true && __conns.length === 1", 3000));
+    check("e2e: NetServer decoded 0x6E frame from raw socket", waitFor("__recv.length === 1", 3000));
+    checkEqJs("e2e: decoded cmd / SubDevID / body match sender", R"JS(
+(function () {
+    if (__recv.length !== 1) return 'recv=' + __recv.length;
+    var r = __recv[0];
+    var bad = [];
+    if (r.cmd !== __bte.CMD.START70) bad.push('cmd=' + r.cmd);
+    if (r.sub !== 1) bad.push('sub=' + r.sub);
+    if (__bte.hexOf(r.data) !== __bte.hexOf(__body)) bad.push('body');
+    if (r.netId !== __conns[0]) bad.push('netId');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // ---- NetClient: 走 NetDataManager.packData / parsePack 的完整收发路径 ----
+    engine.eval(R"JS(
+(function () {
+    globalThis.__cliUp = false;
+    globalThis.__cliRecv = [];
+    globalThis.__cli = new __bte.NetClient(null);
+    __cli.sigConnect.push(function () { __cliUp = true; });
+    __cli.sigError.push(function () { console.error('[e2e] client sigError'); });
+    __cli.newDataRecv.push(function (pack) {
+        __cliRecv.push({ cmd: pack.info.CmdID, sub: pack.info.SubDevID, data: pack.data });
+    });
+    __cli.connectToHost('127.0.0.1', __port);
+})()
+)JS");
+    check("e2e: NetClient connected (sigConnect driven by engine 'connect')",
+          waitFor("__cliUp === true", 3000));
+    check("e2e: server saw the client as a second session", waitFor("__conns.length === 2", 3000));
+
+    // 客户端 -> 服务端
+    engine.eval(R"JS(
+(function () {
+    var v = new __bte.NetPackVariant();
+    v.info.DeviceID = 7;
+    v.info.SubDevID = 2;
+    v.info.CmdID = __bte.CMD.START70;
+    v.info.Length = 8 + 6 + __body.length + 2;
+    v.data = __body;
+    __cli.sendPack(v);
+})()
+)JS");
+    check("e2e: NetClient.sendPack -> NetServer decoded (SubDevID 2)", waitFor("__recv.length === 2", 3000));
+    checkEqJs("e2e: client->server frame body match", R"JS(
+(function () {
+    if (__recv.length !== 2) return 'recv=' + __recv.length;
+    var r = __recv[1];
+    var bad = [];
+    if (r.cmd !== __bte.CMD.START70) bad.push('cmd=' + r.cmd);
+    if (r.sub !== 2) bad.push('sub=' + r.sub);
+    if (__bte.hexOf(r.data) !== __bte.hexOf(__body)) bad.push('body');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // 服务端 -> 客户端(用刚才那条连接的 netId 发回)
+    engine.eval(R"JS(
+(function () {
+    var v = new __bte.NetPackVariant();
+    v.info.DeviceID = 7;
+    v.info.SubDevID = 3;
+    v.info.CmdID = __bte.CMD.START70;
+    v.info.Length = 8 + 6 + __body.length + 2;
+    v.data = __body;
+    return __srv.sendPack(__recv[1].netId, v);
+})()
+)JS");
+    check("e2e: NetServer.sendPack -> NetClient.newDataRecv", waitFor("__cliRecv.length === 1", 3000));
+    checkEqJs("e2e: server->client frame body match", R"JS(
+(function () {
+    if (__cliRecv.length !== 1) return 'recv=' + __cliRecv.length;
+    var r = __cliRecv[0];
+    var bad = [];
+    if (r.cmd !== __bte.CMD.START70) bad.push('cmd=' + r.cmd);
+    if (r.sub !== 3) bad.push('sub=' + r.sub);
+    if (__bte.hexOf(r.data) !== __bte.hexOf(__body)) bad.push('body');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // ---- 断开 + 收尾 ----
+    engine.eval(R"JS(
+(function () {
+    globalThis.__srvDis = [];
+    __srv.disConnect.push(function (netId) { __srvDis.push(netId); });
+    __cli.disconnectFromHost();
+    __sock.destroy();
+})()
+)JS");
+    check("e2e: disconnect propagated to NetServer.disConnect", waitFor("__srvDis.length >= 1", 3000));
+    runCheck("e2e: NetServer.stopServer() closes listener + drops sessions", R"JS(
+(function () {
+    __srv.stopServer();
+    var info = __srv.netInfo(__conns[0]);
+    return __srv.isOpen() === false && info.port === 0;
+})()
+)JS");
+
+    // -----------------------------------------------------------------------
+    // 6. 诊断(不计入断言): bteserver 目录下**每个 .js 模块**能否被加载?
     //    依赖的 Qt 类由 qtcompat 空壳兜住, 所以"能否加载"能精确指出移植还差在哪一层:
     //      全部可加载 -> 剩下的是"空壳 API 的真实现"(界面渲染/数据落库)
     //      有失败     -> 还有 import 层就断掉的依赖(如 0x0200 工步包 / sqlite)
-    //
-    //    这里**只加载、不构造**: BTEServer 的构造函数里会 m_server.startServer(8001)
-    //    -> 真实 socket listen, 而引擎当前的 socket 栈会 0xC0000005(见文件头), 一构造
-    //    就把测试进程带走。等 socket 栈修好后再在这里加"构造 + 走一遍定时器"。
     // -----------------------------------------------------------------------
     {
         JZDir dir(JZ_BTESERVER_DIR);
@@ -705,8 +1006,9 @@ int main()
         for (size_t i = 0; i < files.size(); i++)
         {
             const std::string& name = files[i];
-            if (name == "main.js")
-                continue;                        // 已在引导脚本里加载过
+            if (name == "main.js" || name == "qtcompat.js")
+                continue;   // 已在引导脚本里(相对路径)加载过 —— 再用绝对路径加载会得到
+                            // **第二份模块实例**(引擎按模块名缓存), qtcompat 的缺口账单会分裂
             if (name.size() > 0 && name[0] == '_')
                 continue;
             if (engine.runModuleFile(dir.absoluteFilePath(name)))
@@ -721,21 +1023,8 @@ int main()
     }
 
     // BTEServer 的定时器改造(2026-09-13): QTimer + sigTimeout -> JS 原生 setInterval。
-    // 这里只检查"改造后的接口在"(不构造 BTEServer: 其 ctor 会 startServer(8001) -> 触发
-    // 引擎 socket 栈的 0xC0000005, 见文件头)。
+    // (__BTEServer 由引导脚本导出)
     {
-        const string tmp = string(JZ_JS_WRAPPER_DIR) + "/_test_bte_ui.mjs";
-        string mjs = "import { BTEServer } from '" + string(JZ_BTESERVER_DIR) + "/BTEServer.js';\n"
-            "globalThis.__BTEServer = BTEServer;\n";
-        FILE* f = fopen(tmp.c_str(), "wb");
-        if (f)
-        {
-            fwrite(mjs.data(), 1, mjs.size(), f);
-            fclose(f);
-        }
-        engine.runModuleFile(tmp);
-        remove(tmp.c_str());
-
         runCheck("BTEServer: timers are JS-native (startTimers/stopTimers, no QTimer)", R"JS(
 (function () {
     if (typeof __BTEServer !== 'function') return false;
@@ -766,11 +1055,77 @@ int main()
     }
 
     // -----------------------------------------------------------------------
-    // 6. 缺口账单(不参与断言, 只打印便于人工核对移植进度)
+    // 7. 整机装配: 把 BTEServer **真的构造出来**
+    //
+    //    这是"bteserver 在 JS 引擎里跑起来"的核心证据: 构造函数会一路走到
+    //      Ui_* 空壳建界面 -> 建 TcpServer(8001) -> loadProject(存档 JSON)
+    //      -> initDeviceList/initTable(建 32 个通道卡片 + 表格) -> startTimers
+    //    引擎 socket 栈修好后(2026-09-13)这条路才通。
     // -----------------------------------------------------------------------
+    engine.eval(R"JS(
+(function () {
+    globalThis.__uiOk = false;
+    globalThis.__uiErr = '';
+    if (typeof __BTEServer !== 'function') { __uiErr = 'BTEServer 未加载'; return; }
+    try {
+        globalThis.__ui = new __BTEServer();   // ctor: m_server.startServer(8001) + loadProject + startTimers
+        __uiOk = true;
+    } catch (e) {
+        __uiErr = String(e) + ' || ' + ((e && e.stack) ? String(e.stack) : '');
+    }
+    try {
+        var n0 = __bte.qtCompat.missing.size;
+        var ui0 = new Ui_BTEServerClass();
+        globalThis.__uiProbe = [typeof ui0, typeof ui0.tableQuery,
+            typeof ui0.tableQuery.setColumnCount, typeof ui0.tableQuery.setColumnCount(9)].join('|')
+            + ' missing ' + n0 + '->' + __bte.qtCompat.missing.size
+            + ' loads=' + (globalThis.__qtcompatLoads || 0);
+    } catch (e2) { globalThis.__uiProbe = 'probe EXC: ' + e2; }
+})()
+)JS");
+    {
+        auto fu = engine.eval("__uiErr");
+        string uerr = engine.isException(fu.get()) ? string("<exception>") : engine.fromJSValue<string>(fu.get());
+        if (!uerr.empty())
+            jzDebug() << "[diag] construct BTEServer error:" << uerr;
+        auto fp = engine.eval("__uiProbe");
+        string uprobe = engine.isException(fp.get()) ? string("<exception>") : engine.fromJSValue<string>(fp.get());
+        jzDebug() << "[diag] ui stub probe:" << uprobe;
+    }
+    checkEqJs("BTEServer: constructs (Ui_* stubs + project + startServer(8001) + timers)", R"JS(
+(function () {
+    var bad = [];
+    if (typeof __BTEServer !== 'function') return 'BTEServer 未加载';
+    if (!__ui) return 'constructor failed: ' + __uiErr;
+    if (typeof __ui.ui !== 'object' && typeof __ui.ui !== 'function') bad.push('ui');
+    // 注意: BTEServer.m_devices 是"连上来的设备"(运行时), 此刻应为空;
+    //       工程里的设备列表在 m_project.m_devices(debug 下至少有一台 127.0.0.1)。
+    if (!__ui.m_project || __ui.m_project.m_devices.size < 1)
+        bad.push('project.devices=' + (__ui.m_project ? __ui.m_project.m_devices.size : 'null'));
+    if (__ui.m_stepDataDialog === null) bad.push('stepDataDialog');
+    if (!__ui.m_itemList || __ui.m_itemList.length === 0) bad.push('itemList');
+    if (__ui.m_heartTimer === 0 || __ui.m_stepTimer === 0) bad.push('timers 未启动');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+    check("BTEServer: m_server 在构造函数里就起来了(8001)", waitFor("__ui.m_server.isOpen() === true", 2000));
+    engine.eval(R"JS(
+(function () {
+    if (!globalThis.__ui) return false;
+    try { __ui.stopTimers(); } catch (e) { }
+    try { __ui.m_server.stopServer(); } catch (e) { }
+    return true;
+})()
+)JS");
+
+    // -----------------------------------------------------------------------
+    // 8. 缺口账单(不参与断言, 只打印便于人工核对移植进度)
+    // -----------------------------------------------------------------------
+    engine.eval("__bte.qtCompat.bridgeReport();");   // Qt 名: 哪些走了框架真实现 / 哪些仍是 JS
     engine.eval("__bte.qtCompat.report();");         // Qt 侧: 被调到但还只是空壳的 API
     engine.eval("__bte.blockingIoReport();");        // 传输侧: 被调用到的"同步阻塞 IO"缺口
 
+    widgetModule.deinitEngine();
     netModule.deinitEngine();
     coreModule.deinitEngine();
 

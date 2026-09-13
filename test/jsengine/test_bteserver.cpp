@@ -373,6 +373,255 @@ int main()
 )JS", "'OK'");
 
     // -----------------------------------------------------------------------
+    // 2.6b 视图类: 表/列表/页/分隔/文本/滚动/图片(引擎已注册 JZ*)
+    // -----------------------------------------------------------------------
+    checkEqJs("bridge: 视图类走框架真类(表/列表/页/分隔/文本/滚动/图片)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+
+    // ---- QTableWidget <- JZTableWidget(值级接口 + JS 侧单元格对象写穿) ----
+    var tbl = new QTableWidget(3, 2);
+    eq('table is JZTableWidget', (tbl instanceof JZTableWidget), true);
+    eq('table instanceof QWidget', (tbl instanceof QWidget), true);
+    tbl.setHorizontalHeaderLabels(['A', 'B']);
+    eq('rowCount', tbl.rowCount(), 3);
+    eq('columnCount', tbl.columnCount(), 2);
+    var it = new QTableWidgetItem('hello');
+    tbl.setItem(0, 0, it);
+    eq('setItem -> 真单元格', tbl.itemText(0, 0), 'hello');
+    it.setText('world');                       // 写穿到真单元格
+    eq('item.setText 写穿', tbl.itemText(0, 0), 'world');
+    eq('item() 回同一对象', String(tbl.item(0, 0) === it), 'true');
+    eq('item().text()', tbl.item(0, 0).text(), 'world');
+    it.setData(Qt.UserRole, 42);
+    eq('item.data(UserRole)', tbl.item(0, 0).data(Qt.UserRole), 42);
+    tbl.item(1, 1).setText('auto');            // 没 setItem 也能写(自动建单元格)
+    eq('item() 自动建单元格', tbl.itemText(1, 1), 'auto');
+    tbl.clearContents();
+    eq('clearContents', tbl.itemText(0, 0), '');
+    tbl.setRowCount(0);
+    eq('setRowCount(0)', tbl.rowCount(), 0);
+
+    // ---- QListWidget <- JZListWidget(带 data 的项对象) ----
+    var lst = new QListWidget();
+    eq('list is JZListWidget', (lst instanceof JZListWidget), true);
+    var li = new QListWidgetItem('dev-1');
+    li.setData(Qt.UserRole + 1, '10.0.0.1');   // 移植代码用 UserRole 挂业务数据
+    lst.addItem(li);
+    lst.addItem('text-only');
+    eq('list count', lst.count(), 2);
+    eq('item(0).text', lst.item(0).text(), 'dev-1');
+    eq('item(0).data', lst.item(0).data(Qt.UserRole + 1), '10.0.0.1');
+    eq('item(1).text', lst.item(1).text(), 'text-only');
+    lst.setCurrentRow(1);
+    eq('currentRow', lst.currentRow(), 1);
+    eq('currentItem.text', lst.currentItem().text(), 'text-only');
+
+    // ---- 页 / 分隔 / 文本 / 滚动 / 图片 ----
+    var tabs = new QTabWidget();
+    eq('tabs is JZTabWidget', (tabs instanceof JZTabWidget), true);
+    var page = new QWidget();
+    tabs.addTab(page, 'T1');
+    eq('tab count', tabs.count(), 1);
+    eq('tabText', tabs.tabText(0), 'T1');
+
+    var sp = new QSplitter();
+    eq('splitter is JZSplitter', (sp instanceof JZSplitter), true);
+    sp.addWidget(new QWidget());
+    eq('splitter count', sp.count(), 1);
+
+    var te = new QTextEdit();
+    eq('textedit is JZTextEdit', (te instanceof JZTextEdit), true);
+    te.setText('abc');
+    te.append('def');
+    eq('QTextEdit 文本', te.text(), 'abc\ndef');
+    te.setReadOnly(true);
+    eq('readOnly', te.isReadOnly(), true);
+
+    var area = new QScrollArea();
+    eq('scrollarea is JZScrollArea', (area instanceof JZScrollArea), true);
+    var sb = new QScrollBar();
+    sb.setRange(0, 100);
+    sb.setValue(30);
+    eq('scrollbar is JZScrollBar', (sb instanceof JZScrollBar), true);
+    eq('scrollbar value', sb.value(), 30);
+
+    var img = new QImage(8, 6);
+    eq('QImage -> JZImage', (img instanceof JZImage), true);
+    eq('QImage w/h', img.width() + 'x' + img.height(), '8x6');
+    var pm = new QPixmap(4, 3);
+    eq('QPixmap -> JZImage', (pm instanceof JZImage), true);
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // -----------------------------------------------------------------------
+    // 2.6c 菜单/动作/快捷键: 框架没有这层绑定 -> JS 侧真对象(结构 + 状态 + 信号数组)
+    // -----------------------------------------------------------------------
+    checkEqJs("bridge: 菜单/动作/快捷键是 JS 侧真对象(不再是空壳)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+
+    // QKeySequence / QShortcut(sigActivated.push 是移植的写法)
+    var ks = new QKeySequence('Ctrl+A');
+    eq('QKeySequence.toString', ks.toString(), 'Ctrl+A');
+    var fired = 0;
+    var sc = new QShortcut(ks, null);
+    sc.sigActivated.push(function () { fired++; });
+    sc.activated();
+    eq('QShortcut.sigActivated', fired, 1);
+    eq('QShortcut.key', sc.key(), 'Ctrl+A');
+
+    // QAction: text/enabled/checked + 信号数组
+    var trig = 0, toggled = null;
+    var act = new QAction('导出excel');
+    act.setCheckable(true);
+    act.sigTriggered.push(function (c) { trig++; });
+    act.sigToggled.push(function (c) { toggled = c; });
+    act.trigger();
+    eq('QAction.trigger -> sigTriggered', trig, 1);
+    eq('QAction.checked', act.isChecked(), true);
+    eq('QAction.sigToggled', toggled, true);
+    act.setEnabled(false);
+    eq('QAction.setEnabled', act.isEnabled(), false);
+    act.setText('导出');
+    eq('QAction.text', act.text(), '导出');
+
+    // QActionGroup: 收集动作 + checkedAction
+    var g = new QActionGroup(null);
+    var a1 = new QAction('Chn');
+    var a2 = new QAction('Eng');
+    a2.setCheckable(true);
+    g.addAction(a1);
+    g.addAction(a2);
+    eq('QActionGroup.actions', g.actions().length, 2);
+    a2.setChecked(true);
+    eq('QActionGroup.checkedAction', g.checkedAction() === a2, true);
+
+    // QMenu: 结构(addAction/addMenu/addSeparator)+ 无 GUI 的 exec 返回 null
+    var menu = new QMenu();
+    var m1 = menu.addAction('单点启动');
+    menu.addSeparator();
+    var sub = menu.addMenu('显示比例');
+    sub.addAction('小');
+    eq('QMenu.actions', menu.actions().length, 2);
+    eq('QMenu.addMenu', sub.title(), '显示比例');
+    eq('QMenu.exec 无 GUI -> null', menu.exec(null) === null, true);
+    eq('menu 里挂的 action 就是返回的那个', menu.actions()[0] === m1, true);
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // -----------------------------------------------------------------------
+    // 2.6d Ui_*Class: 成员按名字约定造真控件(移植代码里 this.ui.xxx 直接是真控件)
+    // -----------------------------------------------------------------------
+    checkEqJs("ui: Ui_*Class 成员按名字约定造真控件(ui.tableQuery 就是真表格)", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    var ui = new Ui_BTEServerClass();
+    eq('ui.tableQuery is JZTableWidget', (ui.tableQuery instanceof JZTableWidget), true);
+    eq('ui.tableList is JZTableWidget', (ui.tableList instanceof JZTableWidget), true);
+    eq('ui.listWidget is JZListWidget', (ui.listWidget instanceof JZListWidget), true);
+    eq('ui.lineTime is JZLineEdit', (ui.lineTime instanceof JZLineEdit), true);
+    eq('ui.boxType is JZCheckbox', (ui.boxType instanceof JZCheckbox), true);
+    eq('ui.btnSet is JZPushButton', (ui.btnSet instanceof JZPushButton), true);
+    eq('ui.label1L is JZLabel', (ui.label1L instanceof JZLabel), true);
+    eq('ui.spinTempature is JZSpinBox', (ui.spinTempature instanceof JZSpinBox), true);
+    eq('ui.textLog is JZTextEdit', (ui.textLog instanceof JZTextEdit), true);
+    eq('ui.tabWidgetSplit is JZTabWidget', (ui.tabWidgetSplit instanceof JZTabWidget), true);
+    eq('ui.stackedWidget is JZStackedWidget', (ui.stackedWidget instanceof JZStackedWidget), true);
+    eq('ui.pageNormal is JZWidget(普通容器)', (ui.pageNormal instanceof JZWidget), true);
+    eq('ui.actionChn 是 QAction', (ui.actionChn instanceof QAction), true);
+    eq('ui.plot1 无绑定 -> 仍是宽容空壳', typeof ui.plot1, 'function');
+    eq('同名成员只造一次(缓存)', String(ui.tableQuery === ui.tableQuery), 'true');
+    // 移植代码的写法: 直接当真表格用
+    ui.tableQuery.setColumnCount(3);
+    ui.tableQuery.setRowCount(2);
+    ui.tableQuery.setItem(0, 0, new QTableWidgetItem('x'));
+    eq('ui 表格单元格可写', ui.tableQuery.itemText(0, 0), 'x');
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // -----------------------------------------------------------------------
+    // 2.6e 名字像 A、实际是 B 的控件(兄弟协议) + 日期控件 + 按控件切页
+    // -----------------------------------------------------------------------
+    checkEqJs("ui: 兄弟协议(box* 当下拉框 / line* 当数值框) + 日期控件 + setCurrentWidget", R"JS(
+(function () {
+    var bad = [];
+    function eq(n, got, want) { if (String(got) !== String(want)) bad.push(n + ': ' + got + ' != ' + want); }
+    var ui = new Ui_BTEServerClass();
+
+    // box*: ui.boxDevice/boxType/boxSplitType 其实是下拉框(兄弟协议兜住)
+    ui.boxDevice.clear();
+    ui.boxDevice.addItems(['127.0.0.1', '10.0.0.1']);
+    eq('box 当下拉框 count', ui.boxDevice.count(), 2);
+    eq('box 当下拉框 currentText', ui.boxDevice.currentText(), '127.0.0.1');
+    ui.boxDevice.setCurrentIndex(1);
+    eq('box 当下拉框 切项', ui.boxDevice.currentText(), '10.0.0.1');
+    // 同一个桥也能当复选框用(boxShowRT.isChecked)
+    eq('box 当复选框 isChecked', ui.boxShowRT.isChecked(), false);
+    ui.boxShowRT.setChecked(true);
+    eq('box 当复选框 setChecked', ui.boxShowRT.isChecked(), true);
+
+    // line*: 少数是数值框(ui.lineLoopTime.setValue/value)
+    ui.lineLoopTime.setValue(7);
+    eq('line 当数值框 value', ui.lineLoopTime.value(), 7);
+    // line*: 多数仍是真 JZLineEdit
+    eq('lineCapacity 是 JZLineEdit', (ui.lineCapacity instanceof JZLineEdit), true);
+    ui.lineCapacity.setText('abc');
+    eq('line.setText/text', ui.lineCapacity.text(), 'abc');
+
+    // spin*: 框架没有的接口记账但不崩
+    ui.spinTempature.setDecimals(1);
+    ui.spinTempature.setSpecialValueText('--');
+    ui.spinTempature.setRange(0, 100);
+    ui.spinTempature.setValue(25);
+    eq('spin.setValue/value', ui.spinTempature.value(), 25);
+
+    // 按控件切页(移植里 ui.stackedWidget.setCurrentWidget 用了 6 次)
+    var st = new QStackedWidget();
+    var p1 = new QWidget(), p2 = new QWidget();
+    st.addWidget(p1); st.addWidget(p2);
+    st.setCurrentWidget(p2);
+    eq('stacked.setCurrentWidget', st.currentIndex(), 1);
+    eq('stacked.widget(0)', st.widget(0) === p1, true);
+    var tw = new QTabWidget();
+    var t1 = new QWidget(), t2 = new QWidget();
+    tw.addTab(t1, 'A'); tw.addTab(t2, 'B');
+    tw.setCurrentWidget(t2);
+    eq('tab.setCurrentWidget', tw.currentIndex(), 1);
+
+    // 日期控件: JS 侧真实现(内部 Date)
+    var d = ui.dateFrom;
+    d.setDate(new Date(2026, 8, 13));
+    eq('dateFrom.date() 是 Date', (d.date() instanceof Date), true);
+    eq('dateFrom 日期值', d.date().getFullYear() + '-' + (d.date().getMonth() + 1) + '-' + d.date().getDate(), '2026-9-13');
+    eq('dateFrom.dateTime 可读', (d.dateTime() instanceof Date), true);
+    d.setDisplayFormat('yyyy/MM/dd');
+    eq('displayFormat', d.displayFormat(), 'yyyy/MM/dd');
+
+    // 控件级 Qt 成员: mapToGlobal / blockSignals
+    var gp = ui.listWidget.mapToGlobal(new QPoint(3, 4));
+    eq('mapToGlobal 返回 QPoint', (gp instanceof QPoint), true);
+    ui.listWidget.blockSignals(true);
+    eq('blockSignals', ui.listWidget.signalsBlocked(), true);
+
+    // QTableWidget: setCurrentItem(按 item 反查行列)
+    ui.tableQuery.setColumnCount(2);
+    ui.tableQuery.setRowCount(2);
+    var it2 = new QTableWidgetItem('r1c0');
+    ui.tableQuery.setItem(1, 0, it2);
+    ui.tableQuery.setCurrentItem(it2);
+    eq('setCurrentItem -> currentRow', ui.tableQuery.currentRow(), 1);
+    return bad.length ? bad.join('; ') : 'OK';
+})()
+)JS", "'OK'");
+
+    // -----------------------------------------------------------------------
     // 2.7 真 worker: QThread -> 框架 Worker(独立 JSRuntime + 线程 + 消息)
     //
     //   移植代码里原来的 ServerThread(QThread 包装 NetServer)是因为"JS 没有线程"被删掉的。

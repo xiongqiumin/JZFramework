@@ -184,9 +184,13 @@ JZAiDriver::JZAiDriver(JZWindow* root, JZObject* parent)
     , sigDone(this)
     , m_root(root)
 {
-    m_overlay = new JZAiOverlay(root);
-    m_overlay->hide();
-    connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
+    // 有根窗口才建覆盖层; 无根(等 setRoot)时先空着 —— moveToWidget 会因 m_root 为空而拒绝
+    if (root)
+    {
+        m_overlay = new JZAiOverlay(root);
+        m_overlay->hide();
+        connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
+    }
 
     m_timer = new JZTimer(this);
     connect(&m_timer->sigTimeout, this, &JZAiDriver::onTick);
@@ -229,6 +233,55 @@ void JZAiDriver::cancel()
 {
     if (m_phase != PhaseIdle)
         m_cancelRequested = true;   // 下个 tick 生效
+}
+
+// 旧根窗口可能已被 JS 关窗销毁: 只比指针判断是否还在顶层窗口表里, 绝不访问对象
+static bool isTopLevelAlive(JZWindow* w)
+{
+    if (!w || !jzApp)
+        return false;
+    for (JZWindow* x : jzApp->topLevelWindows())
+    {
+        if (x == w)
+            return true;
+    }
+    return false;
+}
+
+void JZAiDriver::setRoot(JZWindow* root)
+{
+    if (root == m_root)
+        return;
+
+    if (m_phase != PhaseIdle)
+    {
+        // 作废当前序列: 停表 + 解除旧窗口的输入屏蔽 + 回报取消
+        m_timer->stop();
+        if (isTopLevelAlive(m_root))
+            m_root->setInputGate(nullptr);
+        m_phase = PhaseIdle;
+        m_onArrive = nullptr;
+        sigDone.emit(m_seq, false, "目标窗口已切换, 操作取消");
+    }
+
+    if (m_overlay)
+        m_overlay->hide();
+
+    m_root = root;
+    if (!m_root)
+        return;
+
+    if (m_overlay)
+    {
+        m_overlay->setParentWidget(m_root);   // 覆盖层随目标窗口走 (由新的根窗口拥有)
+        m_overlay->syncToParent();
+    }
+    else
+    {
+        m_overlay = new JZAiOverlay(m_root);
+        m_overlay->hide();
+        connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
+    }
 }
 
 void JZAiDriver::onTick()

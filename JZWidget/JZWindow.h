@@ -118,6 +118,14 @@ public:
     // JZApplication::activeWindow() 依据它判定当前活动窗口。
     bool isActiveWindow() const { return m_hasWindowFocus; }
 
+    // 前置并激活窗口 (Qt 同名 activateWindow()): 未显示过则先 show (惰性创建原生窗口),
+    // 最小化则还原, 然后交给系统做前台激活 (SetForegroundWindow + SetFocus)。焦点消息
+    // 回流后 isActiveWindow() / JZApplication::activeWindow() 即为本窗口。
+    // 供 AI 驱动 (ui_activate_window) 与业务代码切换活跃窗口用。
+    // 注意: 系统允许"前台窗口切换"有条件限制, 可能只闪烁任务栏而不真的抢到焦点
+    // (这是 Win32 规则, 不是本函数能决定的) —— 故调用后仍应看 isActiveWindow()。
+    void activateWindow();
+
     // ---- 输入法 (IME) 输入上下文 ----
     // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联必须在窗口级
     // 统一做: 窗口创建后**始终关联**, 焦点是否接受输入法只影响 IME 的 UI 与组字

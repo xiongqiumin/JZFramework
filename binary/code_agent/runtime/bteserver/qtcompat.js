@@ -724,7 +724,18 @@ class QApplication extends QObject
     removeTranslator(t) { if (this._translator === t) this._translator = null; }
     arguments() { return this._argv; }
     keyboardModifiers() { return Qt.NoModifier; }
-    setStyleSheet() { noteMissing("QApplication::setStyleSheet"); }
+    // Qt 的 setStyleSheet 是"整表替换": 框架侧对应全局 jzWidget.setStyleSheet(css)
+    // (绑定层提供; 变量/组件规则见 test_jswidget/main.js 的换肤演示)
+    setStyleSheet(css)
+    {
+        const jw = globalThis.jzWidget;
+        if (jw && typeof jw.setStyleSheet === "function")
+        {
+            jw.setStyleSheet(String(css));
+            return;
+        }
+        noteMissing("QApplication::setStyleSheet(引擎没注册 jzWidget.setStyleSheet)");
+    }
     // Qt 里下面这些是 static 成员, 但 C++ 允许 `qApp->xxx()` 这样经实例调用,
     // 业务代码(如 BTEServer 构造里的 option.ini 路径)正是这么写的 —— 实例上也得有。
     applicationDirPath() { return QApplication.applicationDirPath(); }
@@ -1072,7 +1083,8 @@ class QInputDialog extends QObject
 // ---------------------------------------------------------------------------
 // name: 记账用的路径(如 "QTableWidget.setColumnCount")
 // quiet: 派生节点不再单独记账(只记顶层那一个, 避免 report 被深层路径刷屏)
-function makeLenient(name, quiet)
+// memberFactory: 可选 —— 给"按名字造真成员"用(见 Ui_*Class 的 uiMemberFactory)
+function makeLenient(name, quiet, memberFactory)
 {
     if (!quiet)
         noteMissing(name + " (空壳实例)");
@@ -1107,6 +1119,16 @@ function makeLenient(name, quiet)
             {
                 store[prop] = function (...a) { return real[prop].apply(real, a); };
                 return store[prop];
+            }
+            // 成员工厂(见 Ui_*Class): 按"名字约定"造真控件 —— ui.tableQuery 直接是 QTableWidget
+            if (memberFactory && typeof prop === "string")
+            {
+                const made = memberFactory(prop);
+                if (made !== undefined)
+                {
+                    store[prop] = made;
+                    return made;
+                }
             }
             // 其余属性一律再给一个"宽容对象"(本身可调用、可继续取属性), 并按需缓存
             store[prop] = makeLenient(name + "." + String(prop), true);
@@ -1169,7 +1191,7 @@ function attachQtFallback(obj, name)
 
 // GUI 类: 构造/静态访问都宽容; 支持 `QWidget.call(this, parent)` 这种"以函数形式初始化"
 //   成员当作选项传入
-function makeQtStubClass(name, statics)
+function makeQtStubClass(name, statics, memberFactory)
 {
     const S = Object.assign({}, statics || {});
     const tokCache = Object.create(null);
@@ -1191,7 +1213,8 @@ function makeQtStubClass(name, statics)
     }
 
     const proxy = new Proxy(ctor, {
-        construct() { return makeLenient(name); },
+        // memberFactory 存在(Ui_*Class): 实例本身不是"缺口"(成员会按名字造成真控件) → 不记账
+        construct() { return makeLenient(name, !!memberFactory, memberFactory); },
         get(t, prop)
         {
             // 函数自身成员(call/apply/bind/prototype/name/length/toString)优先
@@ -1297,24 +1320,21 @@ Object.defineProperty(g_globals, "qApp", {
     get() { return QApplication._inst || (QApplication._inst = new QApplication(0, [])); },
 });
 
-// GUI 空壳类清单: 引擎里没有的 Qt 控件/绘图/布局, 一律宽容空壳
+// GUI 空壳类清单: 引擎里没有的 Qt 控件/绘图/布局, 一律宽容空壳。
+// 注意: 下面 12 节"框架桥"会把**引擎已注册**的那批名字换成真实现(见 frameworkBridgeReport),
+// 这里就不列了; QTableWidgetItem/QListWidgetItem/QMenu/QAction/... 在下面有 JS 侧真定义。
 const GUI_STUB_CLASSES = [
     // 窗口 / 控件
-    "QWidget", "QMainWindow", "QDialog", "QLabel", "QPushButton", "QLineEdit", "QTextEdit",
-    "QCheckBox", "QRadioButton", "QComboBox", "QSpinBox", "QSlider", "QProgressBar", "QGroupBox",
-    "QListWidget", "QListWidgetItem", "QTableWidget", "QTableWidgetItem", "QTableWidgetSelectionRange",
-    "QTreeWidget", "QTreeWidgetItem", "QTabWidget", "QScrollArea", "QSplitter", "QStackedWidget",
-    "QToolButton", "QStatusBar", "QToolBar", "QMenuBar", "QMenu", "QAction", "QActionGroup",
-    "QShortcut", "QKeySequence", "QHeaderView", "QAbstractItemView", "QStyledItemDelegate",
+    "QTreeWidget", "QTreeWidgetItem", "QTableWidgetSelectionRange",
+    "QToolButton", "QStatusBar", "QToolBar", "QMenuBar", "QStyledItemDelegate",
     "QTableWidgetHeader", "QFrame", "QAbstractButton", "QButtonGroup", "QDateTimeEdit", "QDateEdit",
-    "QTimeEdit", "QCalendarWidget", "QTextBrowser", "QPlainTextEdit", "QListView", "QAbstractSpinBox",
+    "QTimeEdit", "QCalendarWidget", "QTextBrowser", "QListView", "QAbstractSpinBox",
     "QDialogButtonBox", "QWizard", "QMdiArea", "QDockWidget", "QSplashScreen", "QSystemTrayIcon",
     "QDesktopWidget", "QApplicationWindow",
     // 布局
-    "QLayout", "QBoxLayout", "QVBoxLayout", "QHBoxLayout", "QGridLayout", "QFormLayout",
-    "QStackedLayout", "QSpacerItem",
+    "QLayout", "QBoxLayout", "QFormLayout", "QStackedLayout", "QSpacerItem",
     // 绘图
-    "QPainter", "QPixmap", "QImage", "QIcon", "QGraphicsScene", "QGraphicsView", "QGraphicsItem",
+    "QIcon", "QGraphicsScene", "QGraphicsView", "QGraphicsItem",
     "QPainterPath", "QTransform", "QPolygon", "QRegion", "QCursor", "QMovie", "QSvgRenderer",
     // 事件
     "QEvent", "QMouseEvent", "QWheelEvent", "QKeyEvent", "QResizeEvent", "QPaintEvent",
@@ -1330,6 +1350,267 @@ const GUI_STUB_CLASSES = [
 
 for (const name of GUI_STUB_CLASSES)
     g_globals[name] = makeQtStubClass(name, {});
+
+// 视图枚举(Qt 里是 static 常量; 引擎没绑定 → 在 JS 侧补上, 值按 Qt 的原值)
+g_globals.QAbstractItemView = makeQtStubClass("QAbstractItemView", {
+    NoSelection: 0, SingleSelection: 1, MultiSelection: 2, ExtendedSelection: 3, ContiguousSelection: 4,
+    SelectItems: 0, SelectRows: 1, SelectColumns: 2,
+    NoEditTriggers: 0, CurrentChanged: 0, DoubleClicked: 2, SelectedClicked: 4, EditKeyPressed: 8,
+    NoFocus: 0, TabFocus: 1, ClickFocus: 2, StrongFocus: 11, WheelFocus: 15,
+});
+g_globals.QHeaderView = makeQtStubClass("QHeaderView", {
+    Interactive: 0, Stretch: 1, Fixed: 2, ResizeToContents: 3, Custom: 4,
+    ResizeMode: 0, NoSection: 0, Horizontal: 1, Vertical: 2,
+});
+g_globals.QListView = makeQtStubClass("QListView", {
+    ListMode: 0, IconMode: 1, SinglePass: 0, Batch: 1, Static: 0, Adjust: 2,
+});
+
+// ---------------------------------------------------------------------------
+// 菜单 / 动作 / 快捷键: 框架**没有**这层绑定(无菜单栏/快捷键), 所以这里是 JS 侧真对象:
+//   QActionGroup/QAction/QMenu 保存结构 + 状态(checked/enabled/text), 菜单 exec 在无 GUI 时
+//   返回 null 并记账; QShortcut/QKeySequence 保存键位 + sigActivated 数组。
+//   这样"动作/快捷键驱动的业务逻辑"可以照原样写, 只是菜单不弹、快捷键不注册(要触发就
+//   调 action.trigger() / shortcut.activated())。
+// ---------------------------------------------------------------------------
+class QKeySequenceJS
+{
+    constructor(key) { this._key = (key === undefined || key === null) ? "" : String(key); }
+    key() { return this._key; }
+    toString() { return this._key; }
+    isEmpty() { return this._key.length === 0; }
+    static fromString(s) { return new QKeySequenceJS(s); }
+}
+class QShortcutJS
+{
+    constructor(keySeq, parent)
+    {
+        this._key = (keySeq && typeof keySeq.toString === "function") ? keySeq.toString() : String(keySeq === undefined ? "" : keySeq);
+        this._parent = parent || null;
+        this._enabled = true;
+        this.sigActivated = [];
+        this.sigActivatedAmbiguously = [];
+    }
+    key() { return this._key; }
+    setKey(k) { this._key = (k && typeof k.toString === "function") ? k.toString() : String(k); }
+    setEnabled(b) { this._enabled = !!b; }
+    isEnabled() { return this._enabled; }
+    setContext() { }
+    setAutoRepeat() { return true; }
+    // 手工触发(框架没有全局快捷键; 界面上的按钮/脚本可以借这个走同一条业务回调)
+    activated() { emitSignal(this.sigActivated); }
+    triggered() { this.activated(); }
+}
+class QActionJS
+{
+    constructor(textOrParent, parent)
+    {
+        this._text = (typeof textOrParent === "string") ? textOrParent : "";
+        this._enabled = true;
+        this._checkable = false;
+        this._checked = false;
+        this.sigTriggered = [];
+        this.sigToggled = [];
+    }
+    text() { return this._text; }
+    setText(t) { this._text = String(t); return this; }
+    setEnabled(b) { this._enabled = !!b; return this; }
+    isEnabled() { return this._enabled; }
+    setDisabled(b) { return this.setEnabled(!b); }
+    setCheckable(b) { this._checkable = !!b; return this; }
+    isCheckable() { return this._checkable; }
+    setChecked(b)
+    {
+        this._checked = !!b;
+        if (this.sigToggled) emitSignal(this.sigToggled, this._checked);
+        return this;
+    }
+    isChecked() { return this._checked; }
+    toggle()
+    {
+        if (this._checkable) this.setChecked(!this._checked);
+        emitSignal(this.sigTriggered, this._checked);
+        return this;
+    }
+    trigger() { return this.toggle(); }
+    setShortcut(s) { this._shortcut = s; noteMissing("QAction::setShortcut(框架没有快捷键绑定: 只记录键位)"); return this; }
+    shortcut() { return this._shortcut || null; }
+    setToolTip(t) { this._tip = t; return this; }
+    toolTip() { return this._tip || this._text; }
+    setStatusTip(t) { this._statusTip = t; return this; }
+    setIcon(i) { this._icon = i; return this; }
+    icon() { return this._icon || null; }
+    setData(d) { this._data = d; return this; }
+    data() { return this._data; }
+    setVisible() { return this; }
+    isVisible() { return true; }
+    setSeparator() { this._separator = true; }
+    isSeparator() { return !!this._separator; }
+    setMenu(m) { this._menu = m; }
+    menu() { return this._menu || null; }
+    setObjectName(n) { this._name = n; }
+    objectName() { return this._name || ""; }
+}
+class QActionGroupJS
+{
+    constructor(parent)
+    {
+        this._parent = parent || null;
+        this._actions = [];
+        this._exclusive = true;
+    }
+    addAction(a) { if (a) this._actions.push(a); return a; }
+    removeAction(a)
+    {
+        const i = this._actions.indexOf(a);
+        if (i >= 0) this._actions.splice(i, 1);
+    }
+    actions() { return this._actions.slice(); }
+    setExclusive(b) { this._exclusive = !!b; }
+    isExclusive() { return this._exclusive; }
+    setEnabled(b) { for (let i = 0; i < this._actions.length; i++) this._actions[i].setEnabled(!!b); }
+    checkedAction()
+    {
+        for (let i = 0; i < this._actions.length; i++)
+            if (typeof this._actions[i].isChecked === "function" && this._actions[i].isChecked())
+                return this._actions[i];
+        return null;
+    }
+}
+class QMenuJS
+{
+    constructor(titleOrParent, parent)
+    {
+        this._title = (typeof titleOrParent === "string") ? titleOrParent : "";
+        this._entries = [];          // QAction 或 子 QMenu
+        this._enabled = true;
+    }
+    title() { return this._title; }
+    setTitle(t) { this._title = String(t); return this; }
+    // Qt 的两个重载: addAction(text) 建新动作; addAction(action) 挂已有动作
+    addAction(textOrAction)
+    {
+        if (textOrAction !== null && typeof textOrAction === "object")
+        {
+            this._entries.push(textOrAction);
+            return textOrAction;
+        }
+        const a = new QActionJS(String(textOrAction === undefined ? "" : textOrAction));
+        this._entries.push(a);
+        return a;
+    }
+    addMenu(titleOrMenu)
+    {
+        const m = (titleOrMenu !== null && typeof titleOrMenu === "object") ? titleOrMenu : new QMenuJS(String(titleOrMenu === undefined ? "" : titleOrMenu));
+        this._entries.push(m);
+        return m;
+    }
+    addSeparator()
+    {
+        const a = new QActionJS("");
+        a.setSeparator();
+        this._entries.push(a);
+        return a;
+    }
+    actions()
+    {
+        const out = [];
+        for (let i = 0; i < this._entries.length; i++)
+            if (!(this._entries[i] instanceof QMenuJS))
+                out.push(this._entries[i]);
+        return out;
+    }
+    isEmpty() { return this._entries.length === 0; }
+    clear() { this._entries = []; }
+    setEnabled(b) { this._enabled = !!b; }
+    isEnabled() { return this._enabled; }
+    setIcon() { }
+    setTearOffEnabled() { }
+    setSeparatorsCollapsible() { }
+    // 无 GUI: 菜单弹不出来 —— 返回 null 并记账(业务里 `const act = menu.exec(pos)` 会走 null 分支)
+    exec() { noteMissing("QMenu::exec(框架没有菜单弹出: 无 GUI 返回 null)"); return null; }
+    popup() { return this.exec(); }
+    showMenu() { return this.exec(); }
+}
+// QDateTimeEdit/QDateEdit/QTimeEdit: 框架没有日期控件绑定 → JS 侧真实现(内部就是 Date,
+// 移植代码用的是 setDate(new Date()) / dateTime() / setDisplayFormat(...))。
+function qtDateTimeFormat(d, fmt)
+{
+    const p = (v, n) => String(v).padStart(n, "0");
+    return String(fmt === undefined || fmt === null ? "yyyy-MM-dd HH:mm:ss" : fmt)
+        .replace(/yyyy/g, String(d.getFullYear()))
+        .replace(/yy/g, p(d.getFullYear() % 100, 2))
+        .replace(/MM/g, p(d.getMonth() + 1, 2))
+        .replace(/dd/g, p(d.getDate(), 2))
+        .replace(/HH/g, p(d.getHours(), 2))
+        .replace(/hh/g, p((d.getHours() % 12) || 12, 2))
+        .replace(/mm/g, p(d.getMinutes(), 2))
+        .replace(/ss/g, p(d.getSeconds(), 2))
+        .replace(/zzz/g, p(d.getMilliseconds(), 3));
+}
+class QDateTimeEditJS
+{
+    constructor(parentOrDate)
+    {
+        this._dt = (parentOrDate instanceof Date) ? new Date(parentOrDate.getTime()) : new Date();
+        this._min = null;
+        this._max = null;
+    }
+    setDate(d)
+    {
+        if (d instanceof Date)
+        {
+            const t = this._dt;
+            this._dt = new Date(d.getFullYear(), d.getMonth(), d.getDate(),
+                t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds());
+        }
+        else if (typeof d === "string")
+        {
+            const p = d.split("-");
+            if (p.length === 3) this.setDate(new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+        }
+        return this;
+    }
+    date() { return new Date(this._dt.getFullYear(), this._dt.getMonth(), this._dt.getDate()); }
+    setTime(d)
+    {
+        if (d instanceof Date)
+        {
+            const t = this._dt;
+            this._dt = new Date(t.getFullYear(), t.getMonth(), t.getDate(),
+                d.getHours(), d.getMinutes(), d.getSeconds());
+        }
+        return this;
+    }
+    time() { return new Date(1970, 0, 1, this._dt.getHours(), this._dt.getMinutes(), this._dt.getSeconds()); }
+    setDateTime(d) { if (d instanceof Date) this._dt = new Date(d.getTime()); return this; }
+    dateTime() { return new Date(this._dt.getTime()); }
+    setMinimumDate(d) { this._min = (d instanceof Date) ? new Date(d.getTime()) : null; }
+    minimumDate() { return this._min ? new Date(this._min.getTime()) : null; }
+    setMaximumDate(d) { this._max = (d instanceof Date) ? new Date(d.getTime()) : null; }
+    maximumDate() { return this._max ? new Date(this._max.getTime()) : null; }
+    setDisplayFormat(f) { this._fmt = String(f); return this; }
+    displayFormat() { return this._fmt || "yyyy-MM-dd HH:mm:ss"; }
+    setCalendarPopup() { }
+    setTimeSpec() { }
+    setReadOnly() { }
+    setEnabled(b) { this._enabled = !!b; }
+    isEnabled() { return this._enabled !== false; }
+    setVisible() { }
+    setObjectName(n) { this._name = n; }
+    objectName() { return this._name || ""; }
+    toString(f) { return qtDateTimeFormat(this._dt, f === undefined ? this._format : f); }
+    setStyleSheet() { }
+    clear() { this._dt = new Date(); }
+}
+g_globals.QDateTimeEdit = QDateTimeEditJS;
+g_globals.QDateEdit = QDateTimeEditJS;
+g_globals.QTimeEdit = QDateTimeEditJS;
+g_globals.QKeySequence = QKeySequenceJS;
+g_globals.QShortcut = QShortcutJS;
+g_globals.QAction = QActionJS;
+g_globals.QActionGroup = QActionGroupJS;
+g_globals.QMenu = QMenuJS;
 
 // 控件基类需要接受 `QWidget.call(this, parent)` 语义, 上面的工厂已支持。
 //
@@ -1394,7 +1675,12 @@ function emitSignal(list, ...args)
 // 再用原型 getter 暴露成 `obj.sigClicked`(业务代码是 `sigClicked.push(cb)`, 兼容)。
 const g_sigStore = new WeakMap();
 const SIGNAL_NAMES = ["sigClicked", "sigTextChanged", "sigCurrentIndexChanged", "sigValueChanged",
-    "sigStateChanged", "sigEditingFinished", "sigClose", "sigLinkActivated"];
+    "sigStateChanged", "sigEditingFinished", "sigClose", "sigLinkActivated",
+    // 移植代码实际 push 过的信号名(业务是 sigXxx.push(cb), 见 grep 统计)
+    "sigCustomContextMenuRequested", "sigToggled", "sigActivated", "sigCurrentTextChanged",
+    "sigCurrentChanged", "sigSplitterMoved", "sigItemSelectionChanged", "sigCellClicked",
+    "sigDoubleClicked", "sigReturnPressed", "sigPrepareData", "sigSplitFinish",
+    "sigMessage", "sigFinished", "sigChannelChanged", "sigProgress", "sigStateChangedEx"];
 
 function sigsOf(obj)
 {
@@ -1937,6 +2223,24 @@ const WIDGET_PROTO = {
     property: function (n) { return this["__qtprop_" + n]; },
     grab: function () { return null; },
     repaint: function () { if (typeof this.update === "function") this.update(); },
+    // 坐标转换: 框架没有全局屏幕坐标, 只能"原样返回"(记账一次, 菜单/工具提示定位不受影响)
+    mapToGlobal: function (p)
+    {
+        noteMissing("QWidget::mapToGlobal(框架无屏幕坐标, 原样返回)");
+        return (p && typeof p.x === "function") ? p : new g_globals.QPoint(0, 0);
+    },
+    mapFromGlobal: function (p) { return (p && typeof p.x === "function") ? p : new g_globals.QPoint(0, 0); },
+    mapToParent: function (p) { return this.mapTo(this.parentWidget ? this.parentWidget() : null, p); },
+    blockSignals: function (b) { this._blockSignals = !!b; },
+    signalsBlocked: function () { return !!this._blockSignals; },
+    setUpdatesEnabled: noop, setFocusPolicy: noop, setTabOrder: noop,
+    setContentsMargins: noop, setSizeIncrement: noop, setBaseSize: noop,
+    setAutoFillBackground: noop, setUpdatesEnabledFlag: noop,
+    window: function () { return null; },
+    isActiveWindow: function () { return false; },
+    grabKeyboard: noop, releaseKeyboard: noop,
+    fontMetrics: function () { return (typeof g_globals.QFontMetrics === "function") ? new g_globals.QFontMetrics(this._font) : null; },
+    palette: function () { return makeLenient("QWidget::palette", true); },
 
     // ---- 虚函数形状: 框架没有这些方法, 但移植代码会写
     //      `QWidget.prototype.mousePressEvent.call(this, event)`(调基类实现) → 给 no-op;
@@ -1957,6 +2261,56 @@ bridgeJz("QWidget", "JZWidget",
         windowFlags: function () { return this._flags; },
         setModal: noop,
     }));
+
+// 名字像 A、用起来是 B 的控件: 业务里 box*/line* 既有复选框/编辑框又有下拉框/数值框
+// (如 ui.boxDevice 是 ComboBox, ui.lineLoopTime 是 SpinBox)。桥给它们**兄弟协议**:
+// 缺失的那半边用 JS 侧状态顶住(记账一次), 于是两种用法都不崩、逻辑也走得通。
+const SIBLING_COMBO_METHODS = {
+    addItem: function (t)
+    {
+        this._comboItems = this._comboItems || [];
+        this._comboItems.push(String(t));
+        if (this._comboIndex === undefined || this._comboIndex < 0) this._comboIndex = 0;
+        noteMissing("控件当 ComboBox 用(addItem)");
+    },
+    addItems: function (arr)
+    {
+        this._comboItems = this._comboItems || [];
+        for (let i = 0; arr && i < arr.length; i++) this._comboItems.push(String(arr[i]));
+        if (this._comboIndex === undefined || this._comboIndex < 0) this._comboIndex = 0;
+        noteMissing("控件当 ComboBox 用(addItems)");
+    },
+    clear: function () { this._comboItems = []; this._comboIndex = -1; },
+    count: function () { return (this._comboItems || []).length; },
+    itemText: function (i) { return (this._comboItems || [])[i | 0] || ""; },
+    currentIndex: function () { return (this._comboIndex === undefined) ? -1 : this._comboIndex; },
+    setCurrentIndex: function (i) { this._comboIndex = i | 0; noteMissing("控件当 ComboBox 用(setCurrentIndex)"); },
+    currentText: function ()
+    {
+        const a = this._comboItems || [];
+        const i = (this._comboIndex === undefined) ? -1 : this._comboIndex;
+        return (i >= 0 && i < a.length) ? a[i] : "";
+    },
+    setCurrentText: function (t)
+    {
+        const a = this._comboItems || [];
+        const i = a.indexOf(String(t));
+        if (i >= 0) this._comboIndex = i;
+        noteMissing("控件当 ComboBox 用(setCurrentText)");
+    },
+    onCurrentIndexChanged: function (cb) { (this.sigCurrentIndexChanged || (this.sigCurrentIndexChanged = [])).push(cb); },
+    onCurrentTextChanged: function (cb) { (this.sigCurrentTextChanged || (this.sigCurrentTextChanged = [])).push(cb); },
+};
+const SIBLING_CHECK_METHODS = {
+    isChecked: function () { if (typeof this.__nativeIsChecked === "function") return this.__nativeIsChecked(); return !!this._checked; },
+    setChecked: function (b)
+    {
+        this._checked = !!b;
+        noteMissing("控件当 CheckBox 用(setChecked)");
+    },
+    isCheckable: function () { return true; },
+    setCheckable: noop,
+};
 
 bridgeJz("QLabel", "JZLabel",
     function (textOrParent, parent)
@@ -2008,6 +2362,14 @@ bridgeJz("QLineEdit", "JZLineEdit",
         clear: function () { this.setText(""); },
         selectAll: noop,
         textChanged: function () { },
+        // 兄弟协议: 少数 line* 其实是数值框(如 ui.lineLoopTime: setValue/value)
+        setValue: function (v) { this._num = v | 0; this.setText(String(v | 0)); noteMissing("控件当 SpinBox 用(setValue)"); },
+        value: function () { return (this._num === undefined) ? (Number(this.text()) || 0) : this._num; },
+        intValue: function () { return this.value(); },
+        setIntValue: function (v) { return this.setValue(v); },
+        setRange: function (a, b) { this._min = a | 0; this._max = b | 0; },
+        setDecimals: noop, setSingleStep: noop, setSpecialValueText: noop, setPrefix: noop,
+        setSuffix: noop, setMaximum: noop, setMinimum: noop, setStep: noop,
     }));
 
 bridgeJz("QCheckBox", "JZCheckbox",
@@ -2019,11 +2381,13 @@ bridgeJz("QCheckBox", "JZCheckbox",
         // 框架 JZCheckbox 没有"点击"回调: 用基类的鼠标钩子自己合成, 保持信号可用
         this.onMouseRelease = (e) => { emitSignal(this.sigClicked, e); emitSignal(this.sigStateChanged, e); };
     },
-    Object.assign({}, WIDGET_PROTO, {
+    // 兄弟协议: ui.boxDevice / ui.boxType 这些其实当下拉框用(见 SIBLING_COMBO_METHODS)
+    Object.assign({}, WIDGET_PROTO, SIBLING_COMBO_METHODS, {
         setTristate: noop,
         checkState: function () { return this.isChecked() ? 2 : 0; },
         setCheckState: function (s) { this.setChecked(s === 2); },
-        setEnabled: function (b) { },
+        setEnabled: function (b) { this._enabled = !!b; },
+        isEnabled: function () { return this._enabled !== false; },
     }));
 
 bridgeJz("QRadioButton", "JZRadioButton",
@@ -2041,7 +2405,7 @@ bridgeJz("QComboBox", "JZComboBox",
     {
         widgetProtoCtor.call(this);
     },
-    Object.assign({}, WIDGET_PROTO, {
+    Object.assign({}, WIDGET_PROTO, SIBLING_CHECK_METHODS, {
         setCurrentIndex: function (i) { origJz("JZComboBox", "setCurrentIndex").call(this, i | 0); },
         currentIndexChanged: function () { },
         setEditable: function () { },
@@ -2058,6 +2422,14 @@ bridgeJz("QSpinBox", "JZSpinBox",
         singleStep: function () { return this.step(); },
         setButtonSymbols: noop,
         setAlignment: noop,
+        // 框架 JZSpinBox 没有的: 小数位/特殊值文本/前后缀以外的文本接口
+        setDecimals: function (d) { this._decimals = d | 0; noteMissing("QSpinBox::setDecimals(框架 JZSpinBox 只有整数)"); },
+        decimals: function () { return this._decimals || 0; },
+        setSpecialValueText: function (t) { this._specialText = String(t); noteMissing("QSpinBox::setSpecialValueText"); },
+        specialValueText: function () { return this._specialText || ""; },
+        setPrefix: noop, setWrapping: noop, setAccelerated: noop, setKeyboardTracking: noop,
+        text: function () { return String(this.value()); },
+        setText: function (t) { const n = parseInt(String(t), 10); if (!isNaN(n)) this.setValue(n); },
     }));
 
 bridgeJz("QSlider", "JZSlider",
@@ -2325,10 +2697,425 @@ if (typeof JZPainter === "function")
 if (typeof globalThis.Worker === "function")
     frameworkBridge.real.push("QThread <- Worker(worker 模块: 独立 runtime + 消息通信)");
 
+// ---------------------------------------------------------------------------
+// 视图类(引擎已注册: JZTableWidget / JZListWidget / JZTabWidget / JZStackedWidget /
+//   JZSplitter / JZScrollArea / JZScrollBar / JZTextEdit / JZImageLabel)
+//
+//   框架的表/列表是**值级**接口(setItemText/itemText/appendItem/...): 没有 Qt 那种
+//   "单元格对象"。所以 QTableWidgetItem/QListWidgetItem 在 JS 侧补, 并且:
+//     * 表格项**写穿** —— item.setText() 直接落到真单元格(table.setItemText);
+//     * item 上带 data(role) —— 移植代码用 Qt.UserRole 在列表项上挂业务数据;
+//     * item 的样式(setForeground/setBackground/setIcon/对齐)框架没有 → 记账 + 存 JS 侧。
+//   这样界面上的表/列表就是**真控件 + 真数据**, 只有"单元格装饰"这层是 JS。
+// ---------------------------------------------------------------------------
+class QTableWidgetItemJS
+{
+    constructor(text)
+    {
+        this._text = (text === undefined || text === null) ? "" : String(text);
+        this._data = new Map();
+    }
+    text() { return this._text; }
+    setText(t) { this._text = (t === undefined || t === null) ? "" : String(t); return this._sync(); }
+    _attach(table, row, col) { this._table = table; this._row = row | 0; this._col = col | 0; return this._sync(); }
+    _sync()
+    {
+        if (this._table && typeof this._table.setItemText === "function")
+            this._table.setItemText(this._row, this._col, this._text);
+        return this;
+    }
+    // Qt 的 setData/data(role): 业务数据挂这里(框架的单元格只存文本)
+    data(role) { return this._data.get(role | 0); }
+    setData(role, v) { this._data.set(role | 0, v); return this; }
+    // 单元格装饰: 框架表格没有 → 记账一次, 值留在 JS 侧(不影响文本/布局)
+    setForeground(c) { this._fg = c; noteMissing("QTableWidgetItem::setForeground"); return this; }
+    setBackground(c) { this._bg = c; noteMissing("QTableWidgetItem::setBackground"); return this; }
+    foreground() { return this._fg || null; }
+    background() { return this._bg || null; }
+    setIcon(i) { this._icon = i; noteMissing("QTableWidgetItem::setIcon"); return this; }
+    icon() { return this._icon || null; }
+    setTextAlignment(a) { this._align = a | 0; return this; }
+    textAlignment() { return this._align || 0; }
+    setToolTip(t) { this._tip = t; return this; }
+    toolTip() { return this._tip || ""; }
+    setFlags(f) { this._flags = f; return this; }
+    flags() { return (this._flags === undefined) ? 0 : this._flags; }
+    setCheckState(s) { this._check = s; return this; }
+    checkState() { return this._check || 0; }
+}
+
+class QListWidgetItemJS
+{
+    constructor(text)
+    {
+        this._text = (text === undefined || text === null) ? "" : String(text);
+        this._data = new Map();
+    }
+    text() { return this._text; }
+    setText(t)
+    {
+        this._text = (t === undefined || t === null) ? "" : String(t);
+        return this;
+    }
+    data(role) { return this._data.get(role | 0); }
+    setData(role, v) { this._data.set(role | 0, v); return this; }
+    setIcon(i) { this._icon = i; noteMissing("QListWidgetItem::setIcon"); return this; }
+    icon() { return this._icon || null; }
+}
+
+// 表头(QHeaderView)的链式调用: 框架表格没有表头对象 → 宽容对象接住, 统一记一笔账
+function headerStub(what)
+{
+    noteMissing(what);
+    return makeLenient(what, true);
+}
+
+// 单元格/列表项对象: 框架没有对应绑定, 用上面两个 JS 类(覆盖 GUI_STUB_CLASSES 里的空壳)
+g_globals.QTableWidgetItem = QTableWidgetItemJS;
+g_globals.QListWidgetItem = QListWidgetItemJS;
+
+bridgeJz("QTableWidget", "JZTableWidget",
+    function (rows, cols, parent)
+    {
+        widgetProtoCtor.call(this);
+        this._items = new Map();
+        if (rows)
+            this.setRowCount(rows | 0);
+        if (cols)
+            this.setColumnCount(cols | 0);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        // Qt 的 item(r,c) —— 框架没有单元格对象, 这里给 JS 侧对象(首次从真单元格取文本)
+        item: function (r, c)
+        {
+            const key = (r | 0) + "," + (c | 0);
+            let it = this._items.get(key);
+            if (!it)
+            {
+                const f = origJz("JZTableWidget", "itemText");
+                it = new QTableWidgetItemJS(f ? f.call(this, r | 0, c | 0) : "");
+                it._attach(this, r, c);
+                this._items.set(key, it);
+            }
+            return it;
+        },
+        // Qt 的 setItem(r,c,item) —— 写穿到真单元格
+        setItem: function (r, c, item)
+        {
+            const key = (r | 0) + "," + (c | 0);
+            if (!item)
+            {
+                this._items.delete(key);
+                return;
+            }
+            item._attach(this, r, c);
+            this._items.set(key, item);
+        },
+        clearContents: function ()
+        {
+            this._items.clear();
+            const f = origJz("JZTableWidget", "clearContents");
+            if (f) f.call(this);
+        },
+        setRowCount: function (n)
+        {
+            const f = origJz("JZTableWidget", "setRowCount");
+            if (f) f.call(this, n | 0);
+            if (this._items) this._prune();
+        },
+        setColumnCount: function (n)
+        {
+            const f = origJz("JZTableWidget", "setColumnCount");
+            if (f) f.call(this, n | 0);
+            if (this._items) this._prune();
+        },
+        // 行列数变小后清掉越界的单元格缓存(否则 item() 会回旧值)
+        _prune: function ()
+        {
+            const rc = (typeof this.rowCount === "function") ? this.rowCount() : 0;
+            const cc = (typeof this.columnCount === "function") ? this.columnCount() : 0;
+            const keys = Array.from(this._items.keys());
+            for (let i = 0; i < keys.length; i++)
+            {
+                const p = keys[i].split(",");
+                if ((p[0] | 0) >= rc || (p[1] | 0) >= cc)
+                    this._items.delete(keys[i]);
+            }
+        },
+        // 框架表格没有的能力: 统一 no-op/记账(界面仍可用, 只是少了这层特性)
+        setCellWidget: function () { noteMissing("QTableWidget::setCellWidget(框架表格无单元格控件)"); },
+        cellWidget: function () { noteMissing("QTableWidget::cellWidget(框架表格无单元格控件)"); return null; },
+        setCurrentItem: function (item)
+        {
+            // Qt 按 item 设当前单元格: 从缓存里反查行列
+            const keys = Array.from(this._items.keys());
+            for (let i = 0; i < keys.length; i++)
+            {
+                if (this._items.get(keys[i]) === item)
+                {
+                    const p = keys[i].split(",");
+                    const f = origJz("JZTableWidget", "setCurrentCell");
+                    if (f) f.call(this, p[0] | 0, p[1] | 0);
+                    return;
+                }
+            }
+        },
+        itemAt: function () { noteMissing("QTableWidget::itemAt(框架表格无命中测试)"); return null; },
+        horizontalHeader: function () { return headerStub("QTableWidget::horizontalHeader"); },
+        verticalHeader: function () { return headerStub("QTableWidget::verticalHeader"); },
+        setSelectionMode: noop, setSelectionBehavior: noop, setEditTriggers: noop,
+        setSortingEnabled: noop, setAlternatingRowColors: noop, setShowGrid: noop,
+        setWordWrap: noop, setCornerButtonEnabled: noop, resizeColumnsToContents: noop,
+        resizeRowsToContents: noop, scrollToItem: noop, setColumnHidden: noop,
+    }));
+// Qt 的静态枚举(QTableWidget::NoEditTriggers 之类; 值与 QAbstractItemView 对齐)
+{
+    const T = g_globals.QTableWidget;
+    T.NoEditTriggers = 0; T.DoubleClicked = 2; T.SelectedClicked = 4; T.CurrentChanged = 0;
+    T.NoSelection = 0; T.SingleSelection = 1; T.MultiSelection = 2; T.ExtendedSelection = 3;
+    T.SelectItems = 0; T.SelectRows = 1; T.SelectColumns = 2;
+}
+
+bridgeJz("QListWidget", "JZListWidget",
+    function (parent)
+    {
+        widgetProtoCtor.call(this);
+        this._items = [];         // 按加入顺序存 JS 侧项对象(带 data(role))
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        addItem: function (item)
+        {
+            const text = (item && typeof item.text === "function") ? item.text() : String(item === undefined ? "" : item);
+            const f = origJz("JZListWidget", "appendItem");
+            if (f) f.call(this, text);
+            if (item && typeof item === "object")
+                this._items.push(item);
+        },
+        addItems: function (arr)
+        {
+            const f = origJz("JZListWidget", "appendItems");
+            if (f && arr) f.call(this, arr);
+        },
+        item: function (i)
+        {
+            const idx = i | 0;
+            if (this._items && this._items[idx])
+                return this._items[idx];
+            const f = origJz("JZListWidget", "itemText");
+            const it = new QListWidgetItemJS(f ? f.call(this, idx) : "");
+            if (this._items) this._items[idx] = it;
+            return it;
+        },
+        itemText: function (i) { const f = origJz("JZListWidget", "itemText"); return f ? f.call(this, i | 0) : ""; },
+        count: function () { const f = origJz("JZListWidget", "count"); return f ? f.call(this) : 0; },
+        clear: function () { this._items = []; const f = origJz("JZListWidget", "clear"); if (f) f.call(this); },
+        currentRow: function () { const f = origJz("JZListWidget", "currentIndex"); return f ? f.call(this) : -1; },
+        setCurrentRow: function (i) { const f = origJz("JZListWidget", "setCurrentIndex"); if (f) f.call(this, i | 0); },
+        currentItem: function () { const i = this.currentRow(); return (i < 0) ? null : this.item(i); },
+        setSelectionMode: noop, setSelectionBehavior: noop, setEditTriggers: noop,
+        setSortingEnabled: noop, setWordWrap: noop, setIconSize: noop, setSpacing: noop,
+    }));
+
+bridgeJz("QTabWidget", "JZTabWidget",
+    function (parent) { widgetProtoCtor.call(this); this._pages = []; },
+    Object.assign({}, WIDGET_PROTO, {
+        addTab: function (page, label)
+        {
+            const f = origJz("JZTabWidget", "addTab");
+            const idx = f ? f.call(this, page, String(label === undefined ? "" : label)) : -1;
+            if (this._pages) this._pages.push(page);
+            return idx;
+        },
+        count: function () { const f = origJz("JZTabWidget", "count"); return f ? f.call(this) : 0; },
+        tabText: function (i) { const f = origJz("JZTabWidget", "tabText"); return f ? f.call(this, i | 0) : ""; },
+        currentIndex: function () { const f = origJz("JZTabWidget", "currentIndex"); return f ? f.call(this) : -1; },
+        setCurrentIndex: function (i) { const f = origJz("JZTabWidget", "setCurrentIndex"); if (f) f.call(this, i | 0); },
+        // Qt 的按控件切页(框架只有按序号): 用 addTab 顺序反查
+        widget: function (i) { return (this._pages || [])[i | 0] || null; },
+        indexOf: function (w) { return (this._pages || []).indexOf(w); },
+        setCurrentWidget: function (w)
+        {
+            const i = (this._pages || []).indexOf(w);
+            if (i >= 0) this.setCurrentIndex(i);
+            else noteMissing("QTabWidget::setCurrentWidget(该控件不是本标签页的子页)");
+        },
+        setTabText: noop, removeTab: noop, setTabsClosable: noop, setMovable: noop, setDocumentMode: noop,
+    }));
+
+bridgeJz("QStackedWidget", "JZStackedWidget",
+    function (parent) { widgetProtoCtor.call(this); this._pages = []; },
+    Object.assign({}, WIDGET_PROTO, {
+        addWidget: function (w)
+        {
+            const f = origJz("JZStackedWidget", "addWidget");
+            if (f) f.call(this, w);
+            if (this._pages) this._pages.push(w);
+        },
+        count: function () { const f = origJz("JZStackedWidget", "count"); return f ? f.call(this) : 0; },
+        currentIndex: function () { const f = origJz("JZStackedWidget", "currentIndex"); return f ? f.call(this) : -1; },
+        setCurrentIndex: function (i) { const f = origJz("JZStackedWidget", "setCurrentIndex"); if (f) f.call(this, i | 0); },
+        currentWidget: function () { const f = origJz("JZStackedWidget", "currentWidget"); return f ? f.call(this) : null; },
+        // Qt 的按控件切页: ui.stackedWidget.setCurrentWidget(ui.pageNormal) —— 移植里很常用
+        widget: function (i) { return (this._pages || [])[i | 0] || null; },
+        indexOf: function (w) { return (this._pages || []).indexOf(w); },
+        setCurrentWidget: function (w)
+        {
+            const i = (this._pages || []).indexOf(w);
+            if (i >= 0) this.setCurrentIndex(i);
+            else noteMissing("QStackedWidget::setCurrentWidget(该控件不是本堆叠页的子页)");
+        },
+        insertWidget: function (i, w) { this.addWidget(w); },   // 框架只有 addWidget(追加)
+    }));
+
+bridgeJz("QSplitter", "JZSplitter",
+    function (orientOrParent, parent) { widgetProtoCtor.call(this); },
+    Object.assign({}, WIDGET_PROTO, {
+        addWidget: function (w)
+        {
+            const f = origJz("JZSplitter", "addWidget");
+            if (f) f.call(this, w);
+        },
+        insertWidget: function (i, w)
+        {
+            const f = origJz("JZSplitter", "insertWidget");
+            if (f) f.call(this, i | 0, w);
+        },
+        setOrientation: function (o) { const f = origJz("JZSplitter", "setOrientation"); if (f) f.call(this, o | 0); },
+        orientation: function () { const f = origJz("JZSplitter", "orientation"); return f ? f.call(this) : 0; },
+        setHandleWidth: function (w) { const f = origJz("JZSplitter", "setHandleWidth"); if (f) f.call(this, w | 0); },
+        setStretchFactor: function (i, v) { const f = origJz("JZSplitter", "setStretchFactor"); if (f) f.call(this, i | 0, v | 0); },
+        setCollapsible: function (i, c) { const f = origJz("JZSplitter", "setCollapsible"); if (f) f.call(this, i | 0, !!c); },
+        count: function () { const f = origJz("JZSplitter", "count"); return f ? f.call(this) : 0; },
+        removeWidget: function (w) { const f = origJz("JZSplitter", "removeWidget"); if (f) f.call(this, w); },
+        setSizes: noop, sizes: function () { return []; }, saveState: function () { return null; },
+        restoreState: function () { return false; },
+        // Qt 的 setStretchFactor 与 addWidget(w, stretch) 在框架里分别对应
+        // setStretchFactor(i, v) / 只 addWidget —— addWidget 的第二参忽略
+    }));
+
+bridgeJz("QTextEdit", "JZTextEdit",
+    function (textOrParent, parent)
+    {
+        widgetProtoCtor.call(this);
+        if (typeof textOrParent === "string")
+            this.setText(textOrParent);
+    },
+    Object.assign({}, WIDGET_PROTO, {
+        setPlainText: function (s) { this.setText(String(s)); },
+        toPlainText: function () { return this.text(); },
+        append: function (s)
+        {
+            const cur = this.text();
+            this.setText(cur + (cur.length ? "\n" : "") + String(s));
+            if (typeof this.setCursorPosition === "function")
+                this.setCursorPosition(this.text().length);
+        },
+        insertPlainText: function (s) { this.append(s); },
+        setReadOnly: function (b) { const f = origJz("JZTextEdit", "setReadOnly"); if (f) f.call(this, !!b); },
+        isReadOnly: function () { const f = origJz("JZTextEdit", "isReadOnly"); return f ? !!f.call(this) : false; },
+        setPlaceholderText: function (s) { const f = origJz("JZTextEdit", "setPlaceholderText"); if (f) f.call(this, String(s)); },
+        setCursorPosition: function (p) { const f = origJz("JZTextEdit", "setCursorPosition"); if (f) f.call(this, p | 0); },
+        setLineWrapMode: noop, setWordWrapMode: noop, setAcceptRichText: noop,
+        setVerticalScrollBarPolicy: noop, setHorizontalScrollBarPolicy: noop, setFrameShape: noop,
+        setUndoRedoEnabled: noop, setTabStopDistance: noop, setFontPointSize: noop, setHtml: noop,
+        toHtml: function () { return this.text(); },
+        clear: function () { this.setText(""); },
+        // QTextBrowser 专有(移植里 ui.textHelp 用): 记账即可
+        setOpenExternalLinks: function () { noteMissing("QTextBrowser::setOpenExternalLinks"); },
+        setOpenLinks: function () { noteMissing("QTextBrowser::setOpenLinks"); },
+        setTextInteractionFlags: noop, setAnchorClicked: noop,
+    }));
+
+bridgeJz("QScrollArea", "JZScrollArea",
+    function (parent) { widgetProtoCtor.call(this); },
+    Object.assign({}, WIDGET_PROTO, {
+        setWidget: function (w)
+        {
+            const f = origJz("JZScrollArea", "setWidget");
+            if (f) f.call(this, w);
+        },
+        setWidgetResizable: noop, setAlignment: noop, setFrameShape: noop,
+        setVerticalScrollBarPolicy: noop, setHorizontalScrollBarPolicy: noop,
+    }));
+
+bridgeJz("QScrollBar", "JZScrollBar",
+    function (orientOrParent, parent) { widgetProtoCtor.call(this); },
+    Object.assign({}, WIDGET_PROTO, {}));
+
+// QImage / QPixmap -> 框架 JZImage(注意: 框架没有"从文件加载"的绑定, 只有 create(w,h))
+{
+    function imageFactory(what)
+    {
+        function QImage(a, b)
+        {
+            if (typeof a === "string")
+            {
+                noteMissing(what + "(文件路径)(框架 JZImage 没有文件构造)");
+                return new JZImage();
+            }
+            return JZImage.create(a | 0, b | 0);
+        }
+        QImage.prototype = JZImage.prototype;
+        Object.setPrototypeOf(QImage, JZImage);
+        QImage.jzBase = "JZImage";
+        return QImage;
+    }
+    g_globals.QImage = imageFactory("QImage");
+    g_globals.QPixmap = imageFactory("QPixmap");
+    frameworkBridge.real.push("QImage/QPixmap <- JZImage(内存图; 文件加载未绑定)");
+}
+
+// ---- Ui_*Class: 成员按"名字约定"造**真控件** ----
+//
+// 仓库里没有 .ui 文件 → 没有 uic 生成的界面代码。但移植代码里的 `this.ui.tableQuery`
+// 这些名字就是 .ui 的对象名, 命名很规律(table*/line*/box*/btn*/label*/spin*/text*/...):
+// 这里按约定造真控件(QTableWidget/QLineEdit/QCheckBox/...), 认不出的继续用宽容空壳。
+// 于是 `this.ui.tableQuery.setItem(...)` 落到的是**真表格** —— 界面布局仍等 .ui, 但控件
+// 与数据链路已经是真的(首个访问时创建并缓存, 不会白造一堆)。
+// setupUi 只记账: 没有 .ui 的布局信息, 不做摆放。
+function uiMemberFactory(name)
+{
+    const make = (n) =>
+    {
+        const C = g_globals[n];
+        if (typeof C !== "function")
+            return undefined;
+        try { return new C(); } catch (e) { return undefined; }
+    };
+    // 无绑定的(树/第三方图表) -> 保持宽容空壳
+    if (/^(tree|plot|calendar)/i.test(name))
+        return undefined;
+    // 日期控件: JS 侧真实现(内部是 Date), 如 ui.dateFrom / ui.dateTo
+    if (/^(date|timeEdit|datetime)/i.test(name)) return make("QDateTimeEdit");
+    if (/^table/i.test(name)) return make("QTableWidget");
+    if (/^(listWidget|list)$/i.test(name)) return make("QListWidget");
+    if (/^(tabWidget|tabs)/i.test(name)) return make("QTabWidget");
+    if (/^stacked/i.test(name)) return make("QStackedWidget");
+    if (/^(spin|sb[A-Z])/.test(name)) return make("QSpinBox");
+    if (/^(box|check)/i.test(name)) return make("QCheckBox");
+    if (/^line/i.test(name)) return make("QLineEdit");
+    if (/^(text|log|memo)/i.test(name)) return make("QTextEdit");
+    if (/^(label|lab[A-Z0-9])/.test(name)) return make("QLabel");
+    if (/^(btn|button|push)/i.test(name)) return make("QPushButton");
+    if (/^combo/i.test(name)) return make("QComboBox");
+    if (/^slider/i.test(name)) return make("QSlider");
+    if (/^progress/i.test(name)) return make("QProgressBar");
+    if (/^group/i.test(name)) return make("QGroupBox");
+    if (/^scrollArea/i.test(name)) return make("QScrollArea");
+    if (/^splitter/i.test(name)) return make("QSplitter");
+    if (/^action/i.test(name)) return make("QAction");
+    if (/^(page|widget|container|itemWidgets|central|content|panel|frame)/i.test(name))
+        return make("QWidget");
+    return undefined;      // 认不出 -> 宽容空壳(记账)
+}
+for (const name of UI_STUB_CLASSES)
+    g_globals[name] = makeQtStubClass(name, {}, uiMemberFactory);
+frameworkBridge.real.push("Ui_*Class 成员按名字约定造真控件(无 .ui 布局信息)");
+
 // 没走桥的 Qt 名(仍用本文件的 JS 实现)
 for (const n of ["QFile", "QDir", "QTextStream", "QSettings", "QPen", "QBrush", "QFont", "QFontMetrics",
-    "QObject", "QApplication", "QMessageBox", "QTableWidget", "QTableWidgetItem",
-    "QListWidget", "QListWidgetItem", "QTreeWidget", "QTreeWidgetItem", "QMenu", "QAction",
+    "QObject", "QApplication", "QMessageBox", "QTableWidgetItem", "QListWidgetItem",
+    "QTreeWidget", "QTreeWidgetItem", "QMenu", "QAction", "QActionGroup", "QShortcut", "QKeySequence",
     "QLinearGradient", "QTextOption"])
     frameworkBridge.js.push(n);
 

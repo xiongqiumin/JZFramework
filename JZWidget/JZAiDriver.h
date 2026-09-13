@@ -65,6 +65,11 @@ public:
                      std::function<void()> onArrive = nullptr);
 
     void cancel();                    // 用户中断当前序列 (下个 tick 生效)
+
+    // 切换驱动作用的根窗口 (UI MCP 的 ui_activate_window 换目标窗口时调用):
+    // 覆盖层跟着迁到新窗口; 进行中的序列作废(回报取消)。传 nullptr 只解绑。
+    // 覆盖层挂在根窗口上(受它拥有), 故切换后旧窗口不再有蒙版。
+    void setRoot(JZWindow* root);
     // 全屏蒙版是否在岗 (真实用户输入被丢弃; 仅取消按钮/Esc 可操作)
     bool maskActive() const { return m_phase != PhaseIdle; }
     bool busy() const { return m_phase != PhaseIdle; }

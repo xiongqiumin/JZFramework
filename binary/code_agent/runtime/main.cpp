@@ -17,6 +17,12 @@
 //   3) 出错时，JZEngineRuntime 内部把 JS 栈按 source map 翻译回 TS 源码位置，
 //      打印后退出码返回 1；成功返回 0。
 //
+// 调试模式（--debug / 自身调试开关资源）下额外开两个 HTTP/MCP 服务：
+//   --debug-port   （默认 9222）JZRuntimeDebugger：控制 JS 的调试原语（js_eval/断点…，目前 reserved）
+//   --ui-mcp-port  （默认 调试端口+1）JZUiMcpBridge：控件树语义工具
+//                  get_ui_state / ui_screenshot / ui_invoke（AI 鼠标移动 + 合成交互，
+//                  真实驱动 JS 侧控件回调），根窗口取第一个可见顶层窗口（懒启动）。
+//
 // JZJSEngine 的初始化/调用/栈翻译都封装在 JZEngineRuntime 里，这里只是命令行
 // 外壳 + 输出。供 code_agent 及其测试以子进程方式"调用运行时"。
 //
@@ -47,6 +53,14 @@
 #include "JZMessageBox.h"
 #include "JZDebug.h"
 
+// 调试模式下的 UI MCP 服务（控件语义树 / 截图 / 驱动交互）。
+// 仅当 JZMcpServer 模块参与构建时可用（JZWidget.cmake 里同一开关编译 JZUiMcpTools.cpp）。
+#ifdef HAS_JZMcpServer
+#include "JZMcpCore.h"
+#include "JZUiMcpTools.h"
+#include "JZWindow.h"
+#endif
+
 using namespace std;
 
 int main(int argc, char *argv[])
@@ -67,6 +81,11 @@ int main(int argc, char *argv[])
     parser.addOption("--debug,-d", &cmdDebug);
     int debugPort = 9222;
     parser.addOption("--debug-port", &debugPort);
+
+    // UI MCP 服务（JZUiMcpBridge: get_ui_state / ui_screenshot / ui_invoke）的监听端口。
+    // 只随调试模式启动；缺省 0 = 用"调试端口 + 1"（9222 -> 9223）。
+    int uiMcpPort = 0;
+    parser.addOption("--ui-mcp-port", &uiMcpPort);
 
     // 运行根：--root <dir> 显式指定；缺省为当前工作目录。
     string cmdRoot;
@@ -109,6 +128,67 @@ int main(int argc, char *argv[])
             debugger = nullptr;
         }
     }
+
+#ifdef HAS_JZMcpServer
+    // ---- UI MCP 服务（JZUiMcpBridge）----
+    // 与上面 JZRuntimeDebugger 的分工：那个是"控制 JS 的原语"（js_eval / 断点…，目前 reserved）；
+    // 这个是"操作控件树"的语义工具：
+    //   get_ui_state   —— 导出无障碍语义树（className/viewId/text/boundsInScreen/能力位/children）
+    //   ui_screenshot  —— PrintWindow 抓当前帧存 PNG
+    //   ui_invoke      —— AI 鼠标可见移动到目标后合成交互（click/toggle/setValue/setText/select），
+    //                     于是**真实驱动 JS 侧的控件回调**（button.onClicked / slider.onValueChanged…）
+    // 工具集都以"根窗口"为操作对象，而根窗口是 JS 建出来的 ⇒ 懒启动：窗口一出现就起（见 startUiMcp）。
+    JZUiMcpBridge* uiMcp = nullptr;
+    // 仅记录"启动时绑定的那个窗口"; 当前目标以 bridge->root() 为准（可被 ui_activate_window 换掉）
+    JZWindow* uiMcpRoot = nullptr;
+    const int uiPort = (uiMcpPort > 0) ? uiMcpPort : (debugPort + 1);
+
+    auto startUiMcp = [&]() {
+        if (!debugMode || uiMcp)
+            return;
+
+        // 根控件 = 活跃窗口优先（JS 建的；通常就是工程的 MainWindow），
+        // 没有活跃窗口时退化为第一个可见顶层窗口。之后可用 ui_activate_window 切换。
+        JZWindow* root = jzApp->activeWindow();
+        if (!root)
+        {
+            for (auto* w : jzApp->topLevelWindows())
+            {
+                if (w->isVisible() && w->nativeHandle())
+                {
+                    root = w;
+                    break;
+                }
+            }
+        }
+        if (!root)
+            return;   // JS 还没建窗：下一轮 check_timer 再试
+
+        uiMcp = new JZUiMcpBridge(root);
+        uiMcp->core()->setInstructions(
+            "运行中的 JS 工程的控件树自动化工具。多窗口工程按这个顺序用: "
+            "① ui_windows 看有哪些顶层窗口（active=系统活跃窗口, current=本服务当前目标窗口）; "
+            "② ui_activate_window 切换目标窗口（target: '#viewId' / 标题子串 / 序号）; "
+            "③ get_ui_state 看当前目标窗口的语义树"
+            "（className/viewId/text/contentDesc/boundsInScreen/能力位/children）; "
+            "④ ui_invoke 驱动交互（target: '#viewId' 按对象名, 或 className 如 'button'/'slider'）; "
+            "⑤ ui_screenshot 截图核对。");
+
+        if (uiMcp->listenHttp("127.0.0.1", uiPort))
+        {
+            uiMcpRoot = root;
+            printf("[code_runtime] ui MCP listening: http://127.0.0.1:%d/mcp (root=\"%s\", %dx%d)\n",
+                   uiPort, root->title().c_str(), root->width(), root->height());
+        }
+        else
+        {
+            printf("[code_runtime] failed to start ui MCP server (port %d)\n", uiPort);
+            delete uiMcp;
+            uiMcp = nullptr;
+        }
+        fflush(stdout);
+    };
+#endif
 
     JZEngineRuntime rt;
     rt.setLogHandler([](const string &text) {
@@ -207,6 +287,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+#ifdef HAS_JZMcpServer
+    startUiMcp();   // 建窗在前（main.js 里同步建窗）时这里就起来了；否则由 check_timer 补
+#endif
+
     // 存在可见顶层窗口（如 JS 建的五子棋画布窗口）时也要留在事件循环里，等用户关窗。
     auto hasVisibleTopWindow = []() -> bool {
         for (auto* w : jzApp->topLevelWindows())
@@ -220,6 +304,31 @@ int main(int argc, char *argv[])
 
     JZTimer check_timer;
     connect(&check_timer.sigTimeout, [&]() {
+#ifdef HAS_JZMcpServer
+        // UI MCP：JS 延迟建窗时，窗口一出现就起服务；根窗口被销毁则关掉（三个工具都指向它）
+        startUiMcp();
+        if (uiMcp)
+        {
+            bool alive = false;
+            for (auto* w : jzApp->topLevelWindows())
+            {
+                if (w == uiMcp->root())   // 以 bridge 为准(可能已被 ui_activate_window 换过); 只比指针, 不碰对象
+                {
+                    alive = true;
+                    break;
+                }
+            }
+            if (!alive)
+            {
+                printf("[code_runtime] ui MCP: root window destroyed -> stop ui MCP\n");
+                fflush(stdout);
+                uiMcp->close();
+                delete uiMcp;
+                uiMcp = nullptr;
+                uiMcpRoot = nullptr;
+            }
+        }
+#endif
         // keepAlive 被异常流程置 true 时（调试器已/将启动）不自动退出
         if (keepAlive)
             return;

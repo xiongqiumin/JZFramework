@@ -1151,6 +1151,48 @@ bool JZWindow::dispatchIme(JZImeEvent* ev)
     return true;
 }
 
+// 前置并激活: 未显示先 show (原生窗口惰性创建), 最小化则还原, 再交给系统做前台激活。
+void JZWindow::activateWindow()
+{
+    if (!isVisible())
+        show();            // 未创建的窗口不可能成为前台窗口
+    if (!m_hwnd)
+        return;
+
+    HWND hwnd = (HWND)m_hwnd;
+    if (IsIconic(hwnd))
+        ShowWindow(hwnd, SW_RESTORE);
+
+    // 常规四连: Z 序提到最前(同线程) -> 争取前台 -> 同线程内强制激活(会发 WM_ACTIVATE)
+    // -> 设键盘焦点(发 WM_SETFOCUS, 之后 isActiveWindow() 为 true)。多数情况到这里就够。
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+
+    // 兜底: 系统"前台锁定"规则下(例如前台窗口刚被别的窗口抢走/焦点切换正在排队),
+    // 上面的调用会被静默忽略。把自己的线程输入队列临时附到当前前台线程, 借它的
+    // 前台权限完成激活, 随后立刻解开 —— Qt/Chromium 的同款做法(成对调用, 中途不返回)。
+    if (GetForegroundWindow() != hwnd)
+    {
+        HWND fg = GetForegroundWindow();
+        DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+        DWORD myThread = GetCurrentThreadId();
+        if (fgThread != 0 && fgThread != myThread && AttachThreadInput(fgThread, myThread, TRUE))
+        {
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            SetFocus(hwnd);
+            AttachThreadInput(fgThread, myThread, FALSE);
+        }
+    }
+
+    // 立刻刷新应用级"最近激活窗口"(也是 activeWindow() 在整体失焦时的回退值);
+    // 真正的活跃状态仍由 WM_SETFOCUS 回流后写入 m_hasWindowFocus。
+    if (jzApp)
+        jzApp->setActiveWindow(this);
+}
+
 // WM_SETFOCUS / WM_KILLFOCUS: 派发焦点进/出事件, 并重算 IMC 关联。
 // 同 HWND 内多控件共享一个 IMC, 关联/断开一律走 updateImeContext(),
 // 控件自身不再各自操作 (否则一个控件断开会影响同窗口其它控件)。

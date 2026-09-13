@@ -150,14 +150,17 @@ const builders = {};
 builders.Label = function () {
     const { page, lay } = makePage();
     const l = label("Hello");
+    l.setObjectName("demoLabel");        // viewId: MCP 的 ui_invoke 可用 '#demoLabel' 精确定位
     l.setAlign(1);
     lay.addWidget(l, 0);
     let n = 0;
-    lay.addWidget(button("Update", () => {
+    const upd = button("Update", () => {
         n++;
         l.setText("updated " + n);
         log("label updated: " + n);
-    }, 100, 32), 0);
+    }, 100, 32);
+    upd.setObjectName("demoUpdate");
+    lay.addWidget(upd, 0);
     return page;
 };
 
@@ -172,6 +175,7 @@ builders.PushButton = function () {
 builders.Slider = function () {
     const { page, lay } = makePage();
     const s = K(new JZSlider());
+    s.setObjectName("demoSlider");
     s.setRange(0, 100);
     s.setValue(50);
     s.onValueChanged((v) => log("value: " + v));
@@ -343,7 +347,9 @@ builders.Dialog = function () {
     }
 
     const { row, lay: hlay } = makeRow();
-    hlay.addWidget(button("Information", () => openDialog("This is an informational message."), 110, 30), 0);
+    const infoBtn = button("Information", () => openDialog("This is an informational message."), 110, 30);
+    infoBtn.setObjectName("dlgInfo");      // viewId: MCP 可用 '#dlgInfo' 开一个独立窗口(测多窗口切换)
+    hlay.addWidget(infoBtn, 0);
     hlay.addWidget(button("Warning", () => openDialog("Something might be wrong here."), 100, 30), 0);
     hlay.addWidget(button("Question", () => openDialog("Do you want to continue?"), 100, 30), 0);
     hlay.addStretch(1);
@@ -739,6 +745,7 @@ const themeBtn = button("主题: 浅色", () => {
         log("theme -> " + (dark ? "dark" : "light") + " (整表替换)");
     }
 }, 120, 30);
+themeBtn.setObjectName("themeBtn");      // viewId: MCP 可用 '#themeBtn' 精确点击
 barLay.addWidget(themeBtn, 0);
 
 const tip = label("JS 版控件演示: 左侧选页, 右下角是日志");
@@ -752,6 +759,7 @@ const midLay = new JZHBoxLayout(0, 4);
 mid.setLayout(midLay);
 
 const list = new JZListWidget();
+list.setObjectName("navList");           // viewId: MCP 可用 select 驱动切页
 list.setMinimumWidth(160);
 list.onCurrentIndexChanged((i) => {
     stack.setCurrentIndex(i);
@@ -764,6 +772,7 @@ midLay.addWidget(stack, 1);
 
 // 底部日志
 logEdit = new JZTextEdit();
+logEdit.setObjectName("log");            // viewId: MCP 可读日志文本核对行为
 logEdit.setReadOnly(true);
 rootLay.addWidget(logEdit, 0);
 

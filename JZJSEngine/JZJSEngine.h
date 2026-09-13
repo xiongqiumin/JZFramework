@@ -49,6 +49,7 @@ struct JZAsyncResult
 class JZJSEngineInternalFunction;
 class JZJSWorkerModule;
 class JZJSWorkerThread;
+class JZJSWidgetModule;
 class JZJSEngine : public JZObject
 {
 public:
@@ -82,6 +83,12 @@ public:
     // 它是消息事件与"worker 退出"事件的 JS 落点。
     void setWorkerModule(JZJSWorkerModule* module);
     JZJSWorkerModule* workerModule() const;
+
+    // 本引擎装配的 widget 模块(由 JZJSWidgetModule::initEngine 登记):
+    // 各个 JS 构造函数(js_JZWidget_ctor 系列)要拿它把新建的控件登记进控件表
+    // (addWidget/setParentWidget 之外的另一条登记入口, 见 JZJSWidgetModule::registerCreatedWidget)。
+    void setWidgetModule(JZJSWidgetModule* module);
+    JZJSWidgetModule* widgetModule() const;
 
     // 创建 worker(任意线程可调: 内部保证在主线程建线程对象并等它就绪)。失败返回 -1。
     int spawnWorker(const std::string& entry, const JZByteArray& workerData,
@@ -419,6 +426,7 @@ protected:
     int m_nextWorkerId;                 // 0 保留给主线程
     std::map<int, WorkerEntry> m_workers;
     JZJSWorkerModule* m_workerModule;   // 本引擎的 worker 模块(未装为空)
+    JZJSWidgetModule* m_widgetModule;   // 本引擎的 widget 模块(未装为空; 见 setWidgetModule)
 };
 
 #endif  // !JS_ENGINE_H_

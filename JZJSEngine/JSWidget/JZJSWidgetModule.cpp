@@ -196,7 +196,10 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     // 注册时注入(func_data 只在 C 侧可见, JS 侧读不到)。用整数而不是包装对象:
     // 不必为它注册 JS 类/造对象, 也没有所有权与 GC 问题(见 JZJSWidgetModule.h 的 m_widgetData)。
     if (engine)
+    {
         m_widgetData = JS_NewInt64(engine->context(), (int64_t)(intptr_t)this);
+        engine->setWidgetModule(this);   // 各个 JS 构造函数要拿它登记控件表(见 widgetModule())
+    }
 
     registGeometry();
     registColor();
@@ -207,6 +210,11 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     registLayouts();
     registPainter();
     registUiLoader();
+
+    // 最后一步: 把各类在全局上的构造函数换成 C 版本(js_JZWidget_ctor 系列) ——
+    // 引擎那个只会调 createArgs(收不到实参), 换成 C 版本才能按 JS 实参形态分派,
+    // 并在构造后登记控件表(有父就保活)。必须在所有类注册完之后调用。
+    jzRegistWidgetJsConstructors(m_engine->context());
 
     m_typeWindow = m_engine->ctypeidToType(typeid(JZWindow).name());    
 }
@@ -236,6 +244,9 @@ void JZJSWidgetModule::deinitEngine()
     m_jsCallbacks.clear();
 
     m_widgetData = JS_UNDEFINED;   // 整数句柄, 无引用计数, 直接丢
+
+    if (m_engine)
+        m_engine->setWidgetModule(nullptr);   // 先摘模块, 再断开
 
     m_engine = nullptr;
     m_typeWindow = -1;    
@@ -438,6 +449,20 @@ void JZJSWidgetModule::unbindWidget(JZWidget* child)
             JS_FreeValue(m_engine->context(), held);
         }
     }
+}
+
+void JZJSWidgetModule::registerCreatedWidget(JZWidget* widget, JSValueConst value)
+{
+    if (!m_engine || !widget)
+        return;
+
+    // 构造时就带父控件的(如 new JZLabel(text, win)): 底层对象已经在父的对象树里, 立刻登记保活;
+    // 没有父的(顶层控件): 建一个顶层节点, jsvalue 保持空(不保活 —— 生死由 JS 那份包装决定)。
+    JZWidget* parent = widget->parentWidget();
+    if (parent)
+        bindWidgetToParent(parent, widget, value);
+    else
+        ensureWidgetInfo(widget);
 }
 
 // ---------- 信号 -> JS 回调 ----------
@@ -1164,7 +1189,8 @@ void JZJSWidgetModule::registViews()
         return new jsbind::JSObjectPointer(new JZStackedWidget(nullptr), false);
     });
     bind_stack.def("addWidget", [this](JZStackedWidget* s, JSValue w) {
-        return s->addWidget(jsTakeWidgetArg(m_engine->context(), w, "JZStackedWidget.addWidget"));
+        // 父控件 = 本容器: 走 takeWidget(所有权转移 + 登记保活), 与 JZWindow.addWidget 同一套
+        return s->addWidget(takeWidget(s, w, "JZStackedWidget.addWidget"));
     });
     bind_stack.def("count", [](JZStackedWidget* s) { return s->count(); });
     bind_stack.def("currentIndex", [](JZStackedWidget* s) { return s->currentIndex(); });
@@ -1175,8 +1201,9 @@ void JZJSWidgetModule::registViews()
     // JZTabWidget —— 标签页(页面所有权: 加入后由控件持有)
     jsbind::ClassBind<JZTabWidget> bind_tab("JZTabWidget", bind_w);
     // 页面所有权: 加入后由标签控件持有 ⇒ 形参收 JSValue 把 JS 侧包装翻成 C++ 拥有(/Transfer/)
+    // 并登记保活(父控件 = 本标签控件)
     bind_tab.def("addTab", [this](JZTabWidget* t, JSValue page, const std::string& label) {
-        return t->addTab(jsTakeWidgetArg(m_engine->context(), page, "JZTabWidget.addTab"), label);
+        return t->addTab(takeWidget(t, page, "JZTabWidget.addTab"), label);
     });
     bind_tab.def("count", [](JZTabWidget* t) { return t->count(); });
     bind_tab.def("tabText", [](JZTabWidget* t, int i) { return t->tabText(i); });
@@ -1191,10 +1218,10 @@ void JZJSWidgetModule::registViews()
     bind_split.def("setOrientation", [](JZSplitter* s, int o) { s->setOrientation((JZSplitter::Orientation)o); });
     bind_split.def("orientation", [](JZSplitter* s) { return (int)s->orientation(); });
     bind_split.def("addWidget", [this](JZSplitter* s, JSValue w) {
-        s->addWidget(jsTakeWidgetArg(m_engine->context(), w, "JZSplitter.addWidget"));
+        s->addWidget(takeWidget(s, w, "JZSplitter.addWidget"));
     });
     bind_split.def("insertWidget", [this](JZSplitter* s, int i, JSValue w) {
-        s->insertWidget(i, jsTakeWidgetArg(m_engine->context(), w, "JZSplitter.insertWidget"));
+        s->insertWidget(i, takeWidget(s, w, "JZSplitter.insertWidget"));
     });
     bind_split.def("removeWidget", [](JZSplitter* s, JZWidget* w) { s->removeWidget(w); });
     bind_split.def("count", [](JZSplitter* s) { return s->count(); });
@@ -1225,8 +1252,9 @@ void JZJSWidgetModule::registViews()
     // JZScrollArea —— 滚动区(setWidget 的内容控件由滚动区接管生命周期)
     jsbind::ClassBind<JZScrollArea> bind_area("JZScrollArea", bind_w);
     // 内容控件由滚动区接管生命周期 ⇒ 形参收 JSValue 把 JS 侧包装翻成 C++ 拥有(/Transfer/)
+    // 并登记保活(父控件 = 本滚动区; setWidget 内部会把它挂到内部 viewport 下, 属本控件的对象树)
     bind_area.def("setWidget", [this](JZScrollArea* a, JSValue c) {
-        a->setWidget(jsTakeWidgetArg(m_engine->context(), c, "JZScrollArea.setWidget"));
+        a->setWidget(takeWidget(a, c, "JZScrollArea.setWidget"));
     });
     bind_area.def("widget", [](JZScrollArea* a) { return a->widget(); }, jsbind::returnOwnedByCpp);
     bind_area.def("setContentSize", [](JZScrollArea* a, int w, int h) { a->setContentSize(w, h); });
@@ -1313,11 +1341,18 @@ void JZJSWidgetModule::registLayouts()
 
     // JZGridLayout
     jsbind::ClassBind<JZGridLayout> bind_grid("JZGridLayout", bind_layout);
+    // 父控件 = 布局的容器(尚未 setLayout 时为空, 那种写法只能转所有权); 与盒子布局同一套
     bind_grid.def("addWidget", [this](JZGridLayout* l, JSValue w, int row, int col) {
-        l->addWidget(jsTakeWidgetArg(m_engine->context(), w, "JZGridLayout.addWidget"), row, col);
+        JZWidget* parent = l->container();
+        JZWidget* child = parent ? takeWidget(parent, w, "JZGridLayout.addWidget")
+                                 : jsTakeWidgetArg(m_engine->context(), w, "JZGridLayout.addWidget");
+        l->addWidget(child, row, col);
     });
     bind_grid.def("addWidgetSpan", [this](JZGridLayout* l, JSValue w, int r, int c, int rs, int cs) {
-        l->addWidget(jsTakeWidgetArg(m_engine->context(), w, "JZGridLayout.addWidgetSpan"), r, c, rs, cs);
+        JZWidget* parent = l->container();
+        JZWidget* child = parent ? takeWidget(parent, w, "JZGridLayout.addWidgetSpan")
+                                 : jsTakeWidgetArg(m_engine->context(), w, "JZGridLayout.addWidgetSpan");
+        l->addWidget(child, r, c, rs, cs);
     });
     bind_grid.def("setRowStretch", [](JZGridLayout* l, int row, int s) { l->setRowStretch(row, s); });
     bind_grid.def("setColumnStretch", [](JZGridLayout* l, int col, int s) { l->setColumnStretch(col, s); });
@@ -1335,7 +1370,10 @@ void JZJSWidgetModule::registLayouts()
     // JZSelfLayout
     jsbind::ClassBind<JZSelfLayout> bind_self("JZSelfLayout", bind_layout);
     bind_self.def("addWidget", [this](JZSelfLayout* l, JSValue w, int anchor, int dx, int dy) {
-        l->addWidget(jsTakeWidgetArg(m_engine->context(), w, "JZSelfLayout.addWidget"), (JZSelfLayout::Anchor)anchor, dx, dy);
+        JZWidget* parent = l->container();
+        JZWidget* child = parent ? takeWidget(parent, w, "JZSelfLayout.addWidget")
+                                 : jsTakeWidgetArg(m_engine->context(), w, "JZSelfLayout.addWidget");
+        l->addWidget(child, (JZSelfLayout::Anchor)anchor, dx, dy);
     });
     bind_self.def("setAnchor", [](JZSelfLayout* l, JZWidget* w, int anchor, int dx, int dy) { l->setAnchor(w, (JZSelfLayout::Anchor)anchor, dx, dy); });
     bind_self.def("removeWidget", [](JZSelfLayout* l, JZWidget* w) { l->removeWidget(w); });

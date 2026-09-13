@@ -229,6 +229,11 @@ public:
     // 注意: 撤销保活可能让包装立刻析构, 从而 delete 该控件 —— 调用方必须把本调用放在最后。
     void unbindWidget(JZWidget* child);
 
+    // 控件构造完成后登记(js_JZWidget_ctor 系列用, 是 addWidget/setParentWidget 之外的第三条入口):
+    //   有父控件(构造时就带 parent) → 挂到父节点下并保活它的 JS 包装;
+    //   没有父控件 → 建一个顶层节点(jsvalue 恒空 = 不保活, 生死由 JS 决定)。
+    void registerCreatedWidget(JZWidget* widget, JSValueConst value);
+
     // quickjs C 函数的 func_data -> 模块指针(见 jsbind::ClassBind::defData)。
     // 约定: func_data[0] 是"模块指针句柄"(以 JS_NewInt64 存的整数, JS 侧看不到也拿不到)。
     // 取不到时返回 nullptr **并已设 JS 异常**, 调用方直接 `return JS_EXCEPTION`。

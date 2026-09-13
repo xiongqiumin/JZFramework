@@ -530,6 +530,183 @@ int main()
               evalStr(engine, "String(globalThis.__hits)") == "1");
     }
 
+    // 11) JS 构造器(C 版本): 实参形态分派 + 构造后登记控件表(有父控件就同步保活)。
+    //     —— 覆盖 js_JZWidget_ctor 系列 / jzRegistWidgetJsConstructors(JZJSWidget.cpp)。
+    jzDebug() << "===== JS 构造器(实参形态/登记/保活)演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        widgetModule.initEngine(&engine);
+
+        auto hasChild = [](JZObject* parent, JZObject* child) {
+            for (JZObject* o : parent->children())
+                if (o == child)
+                    return true;
+            return false;
+        };
+
+        // 值类型: 实参真的写进底层对象(以前 createArgs 一律忽略实参)
+        check("构造器实参: JZWindow(w,h,title) / JZPoint / JZRect / JZSize / JZColor",
+              evalStr(engine,
+                      "var cw = new JZWindow(320, 200, 'CTor');"
+                      "var cp = new JZPoint(3, 4);"
+                      "var cs = new JZSize(5, 6);"
+                      "var cr = new JZRect(1, 2, 30, 40);"
+                      "var cc = new JZColor(255, 0, 0);"
+                      "((cw.title() === 'CTor' && cw.width() === 320 && cw.height() === 200)"
+                      " && cp.x() === 3 && cp.y() === 4"
+                      " && cs.width() === 5 && cs.height() === 6"
+                      " && cr.x() === 1 && cr.y() === 2 && cr.width() === 30 && cr.height() === 40"
+                      " && cc.red() === 255 && cc.green() === 0 && cc.blue() === 0) ? 'ok' : 'bad'") == "ok");
+
+        // 控件: 带文本/带尺寸/带方向的形态
+        check("构造器实参: 控件 (text,parent) / (parent,w,h,text) / (title,parent) / (orientation,parent)",
+              evalStr(engine,
+                      "var hw = new JZWindow(300, 180, 'host');"
+                      "var lb = new JZLabel('hello', hw);"
+                      "var bt = new JZPushButton(hw, 90, 28, 'OK');"
+                      "var rb = new JZRadioButton('r1', hw);"
+                      "var gb = new JZGroupBox('grp', hw);"
+                      "var sp = new JZSplitter(1, hw);"
+                      "var vl = new JZVBoxLayout(3, 7);"
+                      "((lb.text() === 'hello' && bt.text() === 'OK' && bt.width() === 90 && bt.height() === 28)"
+                      " && rb.text() === 'r1' && gb.title() === 'grp' && vl.spacing() === 7) ? 'ok' : 'bad'") == "ok");
+
+        // 构造时就带 parent: 父链/对象树立刻成立(C++ 侧核对), 且登记进模块的控件表
+        {
+            JZWidget* hw = engine.fromJSValue<JZWidget*>(engine.eval("hw").get());
+            JZWidget* lb = engine.fromJSValue<JZWidget*>(engine.eval("lb").get());
+            check("构造时带 parent: 父链即时生效且进了对象树",
+                  lb->parentWidget() == hw && hasChild(hw, lb));
+        }
+
+        // 实参不合法要报错(以前是"静默忽略")
+        check("构造器实参不合法时抛错",
+              evalStr(engine,
+                      "var e1 = 'no-throw';"
+                      "try { new JZWindow(100); } catch (e) { e1 = 'throw'; }"
+                      "var e2 = 'no-throw';"
+                      "try { new JZRect(1, 2, 3); } catch (e) { e2 = 'throw'; }"
+                      "e1 + '/' + e2") == "throw/throw");
+
+        // 构造带父的控件也保活(走 registerCreatedWidget 这条登记入口):
+        // JS 丢掉引用 + GC 之后, 事件仍要能派发到 JS。
+        evalStr(engine,
+                "var kw2 = new JZWindow(200, 120, 'keep2');"
+                "var kc2 = new JZWidget(kw2);"            // ← 构造直接带父
+                "kc2.setFixedSize(30, 20);"
+                "globalThis.__hits2 = 0;"
+                "kc2.onMousePress = function (e) { globalThis.__hits2++; };"
+                "globalThis.__win2 = kw2;"
+                "'ok'");
+        JZWidget* kc2 = engine.fromJSValue<JZWidget*>(engine.eval("kc2").get());
+        evalStr(engine, "kc2 = null; 'ok'");
+        JS_RunGC(JS_GetRuntime(engine.context()));
+        {
+            JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton, JZPoint(5, 5), JZPoint(5, 5));
+            jzApp->sendEvent(kc2, &press);
+        }
+        check("构造带父的控件同样保活(GC 后事件仍派发到 JS)",
+              evalStr(engine, "String(globalThis.__hits2)") == "1");
+    }
+
+    // 12) 容器专用挂载路径: StackedWidget.addWidget / TabWidget.addTab / ScrollArea.setWidget /
+    //     Splitter.addWidget —— 与 addWidget 同一套(所有权转移 + 登记保活)。
+    //     验证: 挂进去 → JS 丢掉引用 → 强制 GC → 事件仍能派发到 JS(包装还活着 = 保活生效)。
+    jzDebug() << "===== 容器挂载路径(所有权/保活)演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        widgetModule.initEngine(&engine);
+
+        auto cppOwnerOf = [](JSValueConst v) {
+            JSClassID id = 0;
+            auto* p = (jsbind::JSPointerBase*)JS_GetAnyOpaque(v, &id);
+            return p ? (p->cppOwner() ? 1 : 0) : -1;
+        };
+
+        // 丢掉 JS 引用 + 强制 GC, 然后往控件上派发一次鼠标按下, 返回 JS 侧计数器
+        auto revive = [&engine, &cppOwnerOf](JSValueConst childVal, const char* childName, const char* hitsName) {
+            JZWidget* child = engine.fromJSValue<JZWidget*>(childVal);
+            bool transferred = (cppOwnerOf(childVal) == 1);
+            evalStr(engine, std::string(childName) + " = null; 'ok'");
+            JS_RunGC(JS_GetRuntime(engine.context()));
+
+            JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton, JZPoint(3, 3), JZPoint(3, 3));
+            jzApp->sendEvent(child, &press);
+
+            std::string hits = evalStr(engine, std::string("String(globalThis.") + hitsName + ")");
+            return transferred && hits == "1";
+        };
+
+        // ① JZStackedWidget.addWidget(test_jswidget 的"页"就是这条路径)
+        evalStr(engine,
+                "var w1 = new JZWindow(200, 120, 'w1');"
+                "var st = new JZStackedWidget();"
+                "var pg = new JZWidget();"
+                "pg.setFixedSize(20, 10);"
+                "globalThis.__h1 = 0;"
+                "pg.onMousePress = function () { globalThis.__h1++; };"
+                "st.addWidget(pg);"
+                "w1.addWidget(st);"
+                "globalThis.__w1 = w1;"
+                "'ok'");
+        {
+            JZJSValuePtr pgVal = engine.eval("pg");
+            check("JZStackedWidget.addWidget: 转移所有权 + GC 后保活", revive(pgVal.get(), "pg", "__h1"));
+        }
+
+        // ② JZTabWidget.addTab(页面会被挂到内部页面容器上, 但所有权归标签控件)
+        evalStr(engine,
+                "var w2 = new JZWindow(240, 140, 'w2');"
+                "var tw = new JZTabWidget();"
+                "var tp = new JZWidget();"
+                "globalThis.__h2 = 0;"
+                "tp.onMousePress = function () { globalThis.__h2++; };"
+                "tw.addTab(tp, 'A');"
+                "w2.addWidget(tw);"
+                "globalThis.__w2 = w2;"
+                "'ok'");
+        {
+            JZJSValuePtr tpVal = engine.eval("tp");
+            check("JZTabWidget.addTab: 转移所有权 + GC 后保活", revive(tpVal.get(), "tp", "__h2"));
+        }
+
+        // ③ JZScrollArea.setWidget(内容控件由滚动区持有, 内部再挂到 viewport 下)
+        evalStr(engine,
+                "var w3 = new JZWindow(240, 160, 'w3');"
+                "var sa = new JZScrollArea();"
+                "var ct = new JZWidget();"
+                "globalThis.__h3 = 0;"
+                "ct.onMousePress = function () { globalThis.__h3++; };"
+                "sa.setWidget(ct);"
+                "w3.addWidget(sa);"
+                "globalThis.__w3 = w3;"
+                "'ok'");
+        {
+            JZJSValuePtr ctVal = engine.eval("ct");
+            check("JZScrollArea.setWidget: 转移所有权 + GC 后保活", revive(ctVal.get(), "ct", "__h3"));
+        }
+
+        // ④ JZSplitter.addWidget / insertWidget
+        evalStr(engine,
+                "var w4 = new JZWindow(260, 160, 'w4');"
+                "var sp = new JZSplitter(1);"
+                "var pn = new JZWidget();"
+                "globalThis.__h4 = 0;"
+                "pn.onMousePress = function () { globalThis.__h4++; };"
+                "sp.addWidget(pn);"
+                "w4.addWidget(sp);"
+                "globalThis.__w4 = w4;"
+                "'ok'");
+        {
+            JZJSValuePtr pnVal = engine.eval("pn");
+            check("JZSplitter.addWidget: 转移所有权 + GC 后保活", revive(pnVal.get(), "pn", "__h4"));
+        }
+    }
+
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");
     return g_fail == 0 ? 0 : 1;
 }

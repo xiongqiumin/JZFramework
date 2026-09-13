@@ -13,12 +13,18 @@
 //   * Animation: 没有 JZPropertyAnimation 绑定, 用 setInterval 逐帧 setGeometry 演示同样的效果。
 //   * ImageLabel: 图片用 JZImage.create(w,h) 新建 + JZPainter 离屏画上去(替代加载文件)。
 //
-// ⚠ 保活: JS 侧 new 出来的控件/布局归 **JS 所有**, 而挂进对象树/setLayout **不会**转移所有权
-// (裸指针形参翻转不了 cppOwner)。所以所有对象都要留在 keep 数组里 —— 一旦被 GC 回收, 底层
-// C++ 对象会被 delete, 父容器里就剩下悬垂指针。C++ 侧没有这个问题(父对象天然持有子对象)。
+// ⚠ 所有权与保活(现行规则):
+//   * **挂进对象树 = 所有权转移**: addWidget / insertWidget / addTab / setWidget / setParentWidget
+//     都会把包装翻成"C++ 拥有"(/Transfer/, cppOwner=true), 之后由父对象树(顶层就是窗口)负责 delete;
+//     同时按控件登记到 JZJSWidgetModule —— **父节点持一份"子控件 JS 包装"的引用防 GC**。
+//     所以: 挂进树的控件/布局(setLayout 也一样)**不需要**自己 keep, 放手也不会被回收。
+//   * **顶层对象归 JS 所有**: JS 放手 -> 包装析构 -> 窗口 delete -> 没窗口了 runtime 退出。
+//     故顶层窗口必须留一份引用(下面 win / 对话框)。
+//   * 反过来 setParentWidget(null) 会把控件交回 JS 拥有(脱离树)。
 
-const keep = [];
+const keep = [];   // 只留给"JS 拥有且必须活着"的对象(顶层窗口); 挂进树的控件不需要
 function K(obj) { keep.push(obj); return obj; }
+// (下面各页里还留着的 K(...) 是旧写法: 那些控件随后都 addWidget 挂进了树, 其实已经不必 keep —— 留着无害)
 
 // ---------------------------------------------------------------------------
 // 日志(底部 JZTextEdit, 只读)
@@ -95,39 +101,34 @@ function applyTheme(dark)
 // ---------------------------------------------------------------------------
 
 // 新建一页(普通容器 + VBoxLayout), 页面本身由 JZStackedWidget/JZTabWidget 接管显示
+// 构造器直接吃实参: JZVBoxLayout(pad, spacing) / JZLabel(text) / JZWindow(w, h, title) ...
 function makePage()
 {
-    const p = K(new JZWidget());
-    const v = K(new JZVBoxLayout());
-    v.setSpacing(10);
-    v.setContentsMargins(12, 12, 12, 12);
-    p.setLayout(v);
+    const p = new JZWidget();
+    const v = new JZVBoxLayout(12, 10);          // 边距 12, 间距 10
+    p.setLayout(v);                               // setLayout 后布局归控件所有
     return { page: p, lay: v };
 }
 
 // 一行控件(水平布局的容器)
 function makeRow()
 {
-    const r = K(new JZWidget());
-    const h = K(new JZHBoxLayout());
-    h.setSpacing(6);
+    const r = new JZWidget();
+    const h = new JZHBoxLayout(0, 6);             // 无边距, 间距 6
     r.setLayout(h);
     return { row: r, lay: h };
 }
 
 function label(text)
 {
-    const l = K(new JZLabel());
-    l.setText(text);
-    return l;
+    return new JZLabel(text);
 }
 
 function button(text, onClick, w, h)
 {
-    const b = K(new JZPushButton());
-    b.setText(text);
-    if (w !== undefined) b.setWidth(w);
-    if (h !== undefined) b.setHeight(h);
+    const b = (w !== undefined && h !== undefined) ? new JZPushButton(null, w, h, text)
+                                                   : new JZPushButton();
+    if (w === undefined || h === undefined) b.setText(text);
     if (onClick) b.onClicked(onClick);
     return b;
 }
@@ -325,12 +326,12 @@ builders.Dialog = function () {
     const { page, lay } = makePage();
     lay.addWidget(label("JS 侧不用模态 exec: 点按钮开一个独立小窗口当对话框"), 0);
 
+    // 顶层窗口(对话框)归 JS 所有: 留一份引用即可 —— 这里只留最近一个, 上一个随 GC 销毁(演示别攒窗口)
+    let lastDialog = null;
     function openDialog(text)
     {
-        const dlg = K(new JZWindow(320, 140, "Dialog"));
-        const v = K(new JZVBoxLayout());
-        v.setSpacing(8);
-        v.setContentsMargins(12, 12, 12, 12);
+        const dlg = new JZWindow(320, 140, "Dialog");
+        const v = new JZVBoxLayout(12, 8);          // 边距 12, 间距 8
         dlg.setLayout(v);
         v.addWidget(label(text), 0);
         v.addWidget(button("OK", () => {
@@ -338,6 +339,7 @@ builders.Dialog = function () {
             log("dialog accepted: " + text);
         }, 80, 26), 0);
         dlg.show();
+        lastDialog = dlg;
     }
 
     const { row, lay: hlay } = makeRow();
@@ -713,20 +715,19 @@ builders.Animation = function () {
 // 主窗口装配(对照 C++ MainWindow::setupUi)
 // ---------------------------------------------------------------------------
 
+// 顶层窗口: 归 JS 所有 —— 放手就销毁(窗口没了 runtime 退出), 必须留一份引用
 const win = K(new JZWindow(900, 660, "JZWidget Widgets (JS)"));
 win.setObjectName("main");
 
-const rootLay = K(new JZVBoxLayout());
-rootLay.setSpacing(4);
-rootLay.setContentsMargins(6, 6, 6, 6);
+// 布局与控件: 挂进树之后由 C++ 对象树持有(+ 模块保活其 JS 包装), 所以不必再 keep
+const rootLay = new JZVBoxLayout(6, 4);      // 边距 6, 间距 4
 win.setLayout(rootLay);
 
 // 顶部工具条: 换肤 + 说明
-const bar = K(new JZWidget());
+const bar = new JZWidget();
 bar.setStyleClass("panel");
 rootLay.addWidget(bar, 0);
-const barLay = K(new JZHBoxLayout());
-barLay.setSpacing(6);
+const barLay = new JZHBoxLayout(0, 6);
 bar.setLayout(barLay);
 
 let dark = false;
@@ -745,13 +746,12 @@ tip.setStyleClass("title");
 barLay.addWidget(tip, 1);
 
 // 中部: 左列表 + 右 StackedWidget
-const mid = K(new JZWidget());
+const mid = new JZWidget();
 rootLay.addWidget(mid, 1);
-const midLay = K(new JZHBoxLayout());
-midLay.setSpacing(4);
+const midLay = new JZHBoxLayout(0, 4);
 mid.setLayout(midLay);
 
-const list = K(new JZListWidget());
+const list = new JZListWidget();
 list.setMinimumWidth(160);
 list.onCurrentIndexChanged((i) => {
     stack.setCurrentIndex(i);
@@ -759,11 +759,11 @@ list.onCurrentIndexChanged((i) => {
 });
 midLay.addWidget(list, 0);
 
-const stack = K(new JZStackedWidget());
+const stack = new JZStackedWidget();
 midLay.addWidget(stack, 1);
 
 // 底部日志
-logEdit = K(new JZTextEdit());
+logEdit = new JZTextEdit();
 logEdit.setReadOnly(true);
 rootLay.addWidget(logEdit, 0);
 

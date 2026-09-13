@@ -1,8 +1,10 @@
 #include "JZJSWidget.h"
 
+#include "JZDebug.h"            // LOG_W(构造器替换失败时的告警)
 #include "JZJSEngine.h"
 #include "JZJSType.h"
 #include "JZJSWidgetModule.h"   // JSWidgetClass<W> / jzBindWidgetInstance 的约定
+#include "JZColor.h"
 #include "JZLayout.h"
 #include "JZWidget.h"
 #include "JZWindow.h"
@@ -353,3 +355,671 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
 
 // 注册: 上面这些 C 函数由 JZJSWidgetModule::registWidgets() 里的
 // jsbind::ClassBind<JZWidget>::def(name, JSCFunction*) 直接挂到 JZWidget 原型上。
+
+// ============================================================================
+// JS 构造器(C 版本) —— 每个类一个, 覆盖 C++ 侧的构造重载
+// ============================================================================
+// 与"引擎按 createArgs 生成的构造器"的区别(那个只管 new 一个默认对象, 收不到实参):
+//   * 按 JS 实参形态分派到不同的 C++ 构造; 报错能用 JS_ThrowTypeError 写准;
+//   * 构造完统一走 jzNewWidget / jzNewValue / jzNewLayout —— jzNewWidget 会过 createValue
+//     (触发 onCreated 回写 m_jsvalue/m_engine), 并把控件登记进 JZJSWidgetModule 的控件表:
+//     **有父控件就同步保活它的 JS 包装, 没有父的建顶层节点(不保活, 生死由 JS 决定)**;
+//   * 注册见 jzRegistWidgetJsConstructors(在 JZJSWidgetModule::initEngine 末尾调用)。
+
+namespace
+{
+
+// ---- 构造参数工具箱(口径统一: 类型不符就抛 TypeError, 返回 false) ----
+
+bool jzIsNullish(JSValueConst v)
+{
+    return JS_IsNull(v) || JS_IsUndefined(v);
+}
+
+// 这个类注册到 JS 了吗(type id); 没注册返回 JSType_none
+int jzRegisteredType(JSContext* ctx, const char* ctypeid)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    return engine ? engine->ctypeidToType(ctypeid) : JSType_none;
+}
+
+bool jzIsWidgetArg(JSContext* ctx, JSValueConst v)
+{
+    return !jzIsNullish(v) && js_check_class_arg<JZWidget>(ctx, v);
+}
+
+bool jzIsNumberArg(JSContext* ctx, JSValueConst v)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    return engine && engine->checkType(v, JSType_int);
+}
+
+// 父控件参数: null / undefined / 缺省 = 没有父; 否则必须是控件(或其子类)
+bool jzParseParent(JSContext* ctx, JSValueConst v, JZWidget*& parent, const char* what)
+{
+    if (jzIsNullish(v))
+    {
+        parent = nullptr;
+        return true;
+    }
+    if (!js_check_class_arg<JZWidget>(ctx, v))
+    {
+        JS_ThrowTypeError(ctx, "%s: parent 需要 JZWidget(或其子类) 或 null", what);
+        return false;
+    }
+    parent = fromJSValue<JZWidget*>(ctx, v);
+    return true;
+}
+
+bool jzParseInt(JSContext* ctx, JSValueConst v, int& out, const char* what, int index)
+{
+    if (!jzIsNumberArg(ctx, v))
+    {
+        JS_ThrowTypeError(ctx, "%s: 第 %d 个参数需要数字", what, index + 1);
+        return false;
+    }
+    out = fromJSValue<int>(ctx, v);
+    return true;
+}
+
+bool jzParseString(JSContext* ctx, JSValueConst v, std::string& out, const char* what, int index)
+{
+    if (!JS_IsString(v))
+    {
+        JS_ThrowTypeError(ctx, "%s: 第 %d 个参数需要字符串", what, index + 1);
+        return false;
+    }
+    out = fromJSValue<std::string>(ctx, v);
+    return true;
+}
+
+// 至多一个参数: 父控件
+bool jzParseParentOnly(JSContext* ctx, int argc, JSValueConst* argv, const char* what, JZWidget*& parent)
+{
+    if (argc > 1)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多 1 个参数(parent)", what);
+        return false;
+    }
+    return argc == 0 ? true : jzParseParent(ctx, argv[0], parent, what);
+}
+
+// (text) / (parent) / (text, parent) / (parent, text) —— 文本与父控件顺序无关
+bool jzParseTextAndParent(JSContext* ctx, int argc, JSValueConst* argv, const char* what,
+                          std::string& text, JZWidget*& parent)
+{
+    bool hasText = false;
+    for (int i = 0; i < argc; i++)
+    {
+        if (jzIsNullish(argv[i]))
+            continue;
+
+        if (jzIsWidgetArg(ctx, argv[i]))
+        {
+            if (parent)
+            {
+                JS_ThrowTypeError(ctx, "%s: 父控件只能给一个", what);
+                return false;
+            }
+            parent = fromJSValue<JZWidget*>(ctx, argv[i]);
+        }
+        else if (JS_IsString(argv[i]))
+        {
+            if (hasText)
+            {
+                JS_ThrowTypeError(ctx, "%s: 文本只能给一个", what);
+                return false;
+            }
+            text = fromJSValue<std::string>(ctx, argv[i]);
+            hasText = true;
+        }
+        else
+        {
+            JS_ThrowTypeError(ctx, "%s: 第 %d 个参数既不是字符串也不是控件", what, i + 1);
+            return false;
+        }
+    }
+    return true;
+}
+
+// (pad) / (pad, spacing) 这类"最多两个数字"
+bool jzParseTwoInts(JSContext* ctx, int argc, JSValueConst* argv, const char* what, int& a, int& b)
+{
+    if (argc > 2)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多两个数字参数", what);
+        return false;
+    }
+    if (argc >= 1 && !jzParseInt(ctx, argv[0], a, what, 0))
+        return false;
+    if (argc >= 2 && !jzParseInt(ctx, argv[1], b, what, 1))
+        return false;
+    return true;
+}
+
+// ---- 构造收尾 ----
+
+// 控件: 一律 JSObjectPointer(守卫指针) + cppOwner=false(JS 拥有; 挂进对象树时由
+// takeWidget/setParentWidget 翻成 C++ 拥有), 包成 JS 对象后登记控件表。
+template <class Class>
+JSValue jzNewWidget(JSContext* ctx, Class* obj)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    int type = jzRegisteredType(ctx, typeid(Class).name());
+    if (!engine || type == JSType_none)
+    {
+        delete obj;
+        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
+    }
+
+    JSValue value = engine->createValue(type, new jsbind::JSObjectPointer(obj, false));
+    if (JS_IsException(value))
+        return value;
+
+    if (JZJSWidgetModule* module = engine->widgetModule())
+        module->registerCreatedWidget(obj, value);   // 有父 → 保活; 无父 → 顶层节点
+
+    return value;
+}
+
+// 值类型(点/尺寸/矩形/颜色/图片): 一样是指针包装, 但**存一份拷贝** ——
+// JS 侧每次拿到独立对象(值语义), 改它不影响别人(与返回值转换的 toJSValue 一致)。
+template <class Class>
+JSValue jzNewValue(JSContext* ctx, const Class& v)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    int type = jzRegisteredType(ctx, typeid(Class).name());
+    if (!engine || type == JSType_none)
+        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
+
+    return engine->createValue(type, new jsbind::JSRawPointer<Class>(new Class(v), false));
+}
+
+// 布局: 不是 JZObject, 不进控件表; 包装 = JSRawPointer<Class> + cppOwner=false(JS 拥有,
+// setLayout 时翻成 C++ 拥有)。JS 类仍是具体布局类(instanceof / 原型链照旧)。
+template <class Class>
+JSValue jzNewLayout(JSContext* ctx, Class* obj)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    int type = jzRegisteredType(ctx, typeid(Class).name());
+    if (!engine || type == JSType_none)
+    {
+        delete obj;
+        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
+    }
+    return engine->createValue(type, new jsbind::JSRawPointer<Class>(obj, false));
+}
+
+// 通用控件的 () / (parent)
+template <class Class>
+JSValue jzCtorParentOnly(JSContext* ctx, int argc, JSValueConst* argv, const char* what)
+{
+    JZWidget* parent = nullptr;
+    if (!jzParseParentOnly(ctx, argc, argv, what, parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<Class>(ctx, new Class(parent));
+}
+
+}   // namespace
+
+// ---------- 控件 ----------
+
+// JZWidget: () / (parent)
+JSValue js_JZWidget_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    JZWidget* parent = nullptr;
+    if (!jzParseParentOnly(ctx, argc, argv, "new JZWidget(parent?)", parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<JZWidget>(ctx, new JSWidgetClass<JZWidget>(parent));
+}
+
+// JZWindow: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)
+JSValue js_JZWindow_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZWindow(w?, h?, title?, parent?)";
+
+    if (argc == 0)
+        return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>());   // 尺寸留 0: 首次 show 时按 sizeHint 自适应
+
+    if (jzIsWidgetArg(ctx, argv[0]) || jzIsNullish(argv[0]))
+    {
+        // (parent) —— parent 允许 null/undefined(Qt 同款: 没有父窗口)
+        if (argc > 1)
+        {
+            JS_ThrowTypeError(ctx, "%s: 给了 parent 之后不该再有别的参数", what);
+            return JS_EXCEPTION;
+        }
+        JZWidget* parent = nullptr;
+        if (!jzParseParent(ctx, argv[0], parent, what))
+            return JS_EXCEPTION;
+        return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>(parent));
+    }
+
+    if (argc == 1)
+    {
+        JS_ThrowTypeError(ctx, "%s: 只给一个数字不够(需要宽高两个)", what);
+        return JS_EXCEPTION;
+    }
+    if (argc > 4)
+    {
+        JS_ThrowTypeError(ctx, "%s: 参数太多", what);
+        return JS_EXCEPTION;
+    }
+
+    int w = 0, h = 0;
+    std::string title = "JZWindow";
+    JZWidget* parent = nullptr;
+    if (!jzParseInt(ctx, argv[0], w, what, 0) || !jzParseInt(ctx, argv[1], h, what, 1))
+        return JS_EXCEPTION;
+    if (argc >= 3 && !jzParseString(ctx, argv[2], title, what, 2))
+        return JS_EXCEPTION;
+    if (argc >= 4 && !jzParseParent(ctx, argv[3], parent, what))
+        return JS_EXCEPTION;
+
+    return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>(w, h, title, parent));
+}
+
+// JZLabel: () / (parent) / (text) / (text, parent)
+JSValue js_JZLabel_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string text;
+    JZWidget* parent = nullptr;
+    if (!jzParseTextAndParent(ctx, argc, argv, "new JZLabel(text?, parent?)", text, parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<JZLabel>(ctx, new JZLabel(text, parent));
+}
+
+// JZPushButton: () / (parent) / (parent, w, h, text)   —— parent 位置允许 null/undefined(Qt 同款)
+JSValue js_JZPushButton_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZPushButton(parent?) / new JZPushButton(parent, w, h, text)";
+
+    if (argc == 0)
+        return jzNewWidget<JZPushButton>(ctx, new JZPushButton(nullptr));
+
+    if (!jzIsWidgetArg(ctx, argv[0]) && !jzIsNullish(argv[0]))
+    {
+        JS_ThrowTypeError(ctx, "%s: 第 1 个参数需要 JZWidget(或其子类) 或 null", what);
+        return JS_EXCEPTION;
+    }
+
+    JZWidget* parent = nullptr;
+    if (!jzParseParent(ctx, argv[0], parent, what))
+        return JS_EXCEPTION;
+    if (argc == 1)
+        return jzNewWidget<JZPushButton>(ctx, new JZPushButton(parent));
+    if (argc != 4)
+    {
+        JS_ThrowTypeError(ctx, "%s: 给成 (parent, w, h, text) 需要 4 个参数", what);
+        return JS_EXCEPTION;
+    }
+
+    int w = 0, h = 0;
+    std::string text;
+    if (!jzParseInt(ctx, argv[1], w, what, 1) || !jzParseInt(ctx, argv[2], h, what, 2)
+        || !jzParseString(ctx, argv[3], text, what, 3))
+        return JS_EXCEPTION;
+
+    return jzNewWidget<JZPushButton>(ctx, new JZPushButton(parent, w, h, text));
+}
+
+// () / (parent) 的控件们(构造只有一个 parent 参数)
+#define JZ_WIDGET_CTOR_PARENT_ONLY(Fn, Class, Name)                                        \
+    JSValue Fn(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)                 \
+    {                                                                                      \
+        return jzCtorParentOnly<Class>(ctx, argc, argv, "new " Name "(parent?)");           \
+    }
+
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZLineEdit_ctor,    JZLineEdit,    "JZLineEdit")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZTextEdit_ctor,    JZTextEdit,    "JZTextEdit")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZCheckbox_ctor,    JZCheckbox,    "JZCheckbox")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZSwitch_ctor,      JZSwitch,      "JZSwitch")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZSlider_ctor,      JZSlider,      "JZSlider")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZProgressBar_ctor, JZProgressBar, "JZProgressBar")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZComboBox_ctor,    JZComboBox,    "JZComboBox")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZSpinBox_ctor,     JZSpinBox,     "JZSpinBox")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZChart_ctor,       JZChart,       "JZChart")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZImageLabel_ctor,  JZImageLabel,  "JZImageLabel")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZListWidget_ctor,  JZListWidget,  "JZListWidget")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZTableWidget_ctor, JZTableWidget, "JZTableWidget")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZTabWidget_ctor,   JZTabWidget,   "JZTabWidget")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZScrollArea_ctor,  JZScrollArea,  "JZScrollArea")
+
+#undef JZ_WIDGET_CTOR_PARENT_ONLY
+
+// JZStackedWidget: 构造函数没有默认实参, 所以只能 () / (parent)(这里不套上面的宏, 语义更明确)
+JSValue js_JZStackedWidget_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    JZWidget* parent = nullptr;
+    if (!jzParseParentOnly(ctx, argc, argv, "new JZStackedWidget(parent?)", parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<JZStackedWidget>(ctx, new JZStackedWidget(parent));
+}
+
+// JZRadioButton: () / (parent) / (parent, text) / (text, parent)
+JSValue js_JZRadioButton_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string text;
+    JZWidget* parent = nullptr;
+    if (!jzParseTextAndParent(ctx, argc, argv, "new JZRadioButton(parentOrText?, textOrParent?)", text, parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<JZRadioButton>(ctx, new JZRadioButton(parent, text));
+}
+
+// JZGroupBox: () / (parent) / (title) / (title, parent)
+JSValue js_JZGroupBox_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    std::string title;
+    JZWidget* parent = nullptr;
+    if (!jzParseTextAndParent(ctx, argc, argv, "new JZGroupBox(title?, parent?)", title, parent))
+        return JS_EXCEPTION;
+    return jzNewWidget<JZGroupBox>(ctx, new JZGroupBox(title, parent));
+}
+
+// JZSplitter / JZScrollBar: () / (parent) / (orientation) / (orientation, parent)   0=横 1=纵
+template <class Class>
+static JSValue jzCtorOrientation(JSContext* ctx, int argc, JSValueConst* argv, const char* what)
+{
+    JZWidget* parent = nullptr;
+    int orientation = (int)Class::Horizontal;
+
+    if (argc >= 1)
+    {
+        if (jzIsWidgetArg(ctx, argv[0]))
+        {
+            // (parent)
+            if (argc > 1)
+            {
+                JS_ThrowTypeError(ctx, "%s: 给了 parent 之后不该再有别的参数", what);
+                return JS_EXCEPTION;
+            }
+            if (!jzParseParent(ctx, argv[0], parent, what))
+                return JS_EXCEPTION;
+            return jzNewWidget<Class>(ctx, new Class(Class::Horizontal, parent));
+        }
+
+        if (!jzParseInt(ctx, argv[0], orientation, what, 0))
+            return JS_EXCEPTION;
+        if (argc >= 2 && !jzParseParent(ctx, argv[1], parent, what))
+            return JS_EXCEPTION;
+        if (argc > 2)
+        {
+            JS_ThrowTypeError(ctx, "%s: 至多 (orientation, parent) 两个参数", what);
+            return JS_EXCEPTION;
+        }
+    }
+
+    if (orientation != (int)Class::Horizontal && orientation != (int)Class::Vertical)
+    {
+        JS_ThrowTypeError(ctx, "%s: orientation 只能是 0(横) 或 1(纵)", what);
+        return JS_EXCEPTION;
+    }
+    return jzNewWidget<Class>(ctx, new Class((typename Class::Orientation)orientation, parent));
+}
+
+JSValue js_JZSplitter_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    return jzCtorOrientation<JZSplitter>(ctx, argc, argv, "new JZSplitter(orientation?, parent?)");
+}
+
+JSValue js_JZScrollBar_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    return jzCtorOrientation<JZScrollBar>(ctx, argc, argv, "new JZScrollBar(orientation?, parent?)");
+}
+
+// ---------- 布局 ----------
+
+// JZLayout(抽象基类): () / (pad) / (pad, spacing) —— 与文档一致地造一个 JZVBoxLayout,
+// JS 类仍是 JZLayout(instanceof JZVBoxLayout 为假)。
+JSValue js_JZLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int pad = 0, spacing = 0;
+    if (!jzParseTwoInts(ctx, argc, argv, "new JZLayout(pad?, spacing?)", pad, spacing))
+        return JS_EXCEPTION;
+    return jzNewLayout<JZLayout>(ctx, (JZLayout*)new JZVBoxLayout(pad, spacing));
+}
+
+// JZVBoxLayout / JZHBoxLayout: () / (pad) / (pad, spacing)
+template <class Class>
+static JSValue jzCtorBoxLayout(JSContext* ctx, int argc, JSValueConst* argv, const char* what)
+{
+    int pad = 0, spacing = 0;
+    if (!jzParseTwoInts(ctx, argc, argv, what, pad, spacing))
+        return JS_EXCEPTION;
+    return jzNewLayout<Class>(ctx, new Class(pad, spacing));
+}
+
+JSValue js_JZVBoxLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    return jzCtorBoxLayout<JZVBoxLayout>(ctx, argc, argv, "new JZVBoxLayout(pad?, spacing?)");
+}
+
+JSValue js_JZHBoxLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    return jzCtorBoxLayout<JZHBoxLayout>(ctx, argc, argv, "new JZHBoxLayout(pad?, spacing?)");
+}
+
+// JZGridLayout: () / (pad) / (pad, gap)
+JSValue js_JZGridLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int pad = 0, gap = 0;
+    if (!jzParseTwoInts(ctx, argc, argv, "new JZGridLayout(pad?, gap?)", pad, gap))
+        return JS_EXCEPTION;
+    return jzNewLayout<JZGridLayout>(ctx, new JZGridLayout(pad, gap));
+}
+
+// JZSelfLayout: () / (pad)
+JSValue js_JZSelfLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZSelfLayout(pad?)";
+    if (argc > 1)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多 1 个参数", what);
+        return JS_EXCEPTION;
+    }
+    int pad = 0;
+    if (argc == 1 && !jzParseInt(ctx, argv[0], pad, what, 0))
+        return JS_EXCEPTION;
+    return jzNewLayout<JZSelfLayout>(ctx, new JZSelfLayout(pad));
+}
+
+// ---------- 值类型 ----------
+
+// JZPoint: () / (x, y)
+JSValue js_JZPoint_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int x = 0, y = 0;
+    if (!jzParseTwoInts(ctx, argc, argv, "new JZPoint(x?, y?)", x, y))
+        return JS_EXCEPTION;
+    return jzNewValue<JZPoint>(ctx, JZPoint(x, y));
+}
+
+// JZSize: () / (w, h)
+JSValue js_JZSize_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int w = 0, h = 0;
+    if (!jzParseTwoInts(ctx, argc, argv, "new JZSize(w?, h?)", w, h))
+        return JS_EXCEPTION;
+    return jzNewValue<JZSize>(ctx, JZSize(w, h));
+}
+
+// JZRect: () / (x, y) / (x, y, w, h)
+JSValue js_JZRect_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZRect() / (x, y) / (x, y, w, h)";
+    if (argc != 0 && argc != 2 && argc != 4)
+    {
+        JS_ThrowTypeError(ctx, "%s: 参数个数只能是 0 / 2 / 4", what);
+        return JS_EXCEPTION;
+    }
+
+    int x = 0, y = 0, w = 0, h = 0;
+    if (argc >= 1 && !jzParseInt(ctx, argv[0], x, what, 0))
+        return JS_EXCEPTION;
+    if (argc >= 2 && !jzParseInt(ctx, argv[1], y, what, 1))
+        return JS_EXCEPTION;
+    if (argc >= 3 && !jzParseInt(ctx, argv[2], w, what, 2))
+        return JS_EXCEPTION;
+    if (argc >= 4 && !jzParseInt(ctx, argv[3], h, what, 3))
+        return JS_EXCEPTION;
+
+    return jzNewValue<JZRect>(ctx, JZRect(x, y, w, h));
+}
+
+// JZColor: () / (colorEnum) / (r, g, b) / (r, g, b, a)
+JSValue js_JZColor_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZColor() / (colorEnum) / (r, g, b) / (r, g, b, a)";
+
+    if (argc == 0)
+        return jzNewValue<JZColor>(ctx, JZColor());
+
+    if (argc == 1)
+    {
+        int e = 0;
+        if (!jzParseInt(ctx, argv[0], e, what, 0))
+            return JS_EXCEPTION;
+        return jzNewValue<JZColor>(ctx, JZColor((JZColor::ColorEnum)e));
+    }
+
+    if (argc != 3 && argc != 4)
+    {
+        JS_ThrowTypeError(ctx, "%s: 参数个数只能是 0 / 1 / 3 / 4", what);
+        return JS_EXCEPTION;
+    }
+
+    int r = 0, g = 0, b = 0, a = 255;
+    if (!jzParseInt(ctx, argv[0], r, what, 0) || !jzParseInt(ctx, argv[1], g, what, 1)
+        || !jzParseInt(ctx, argv[2], b, what, 2))
+        return JS_EXCEPTION;
+    if (argc == 4 && !jzParseInt(ctx, argv[3], a, what, 3))
+        return JS_EXCEPTION;
+
+    return jzNewValue<JZColor>(ctx, JZColor((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)a));
+}
+
+// JZImage: () / (filePath) / (bytes: Uint8Array)
+JSValue js_JZImage_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZImage() / (filePath) / (bytes: Uint8Array)";
+
+    if (argc == 0)
+        return jzNewValue<JZImage>(ctx, JZImage());
+
+    if (argc == 1)
+    {
+        if (JS_IsString(argv[0]))
+        {
+            std::string file = fromJSValue<std::string>(ctx, argv[0]);
+            return jzNewValue<JZImage>(ctx, JZImage(file));
+        }
+
+        size_t len = 0;
+        uint8_t* buf = JS_GetUint8Array(ctx, &len, argv[0]);
+        if (!buf || len == 0)
+        {
+            JS_ThrowTypeError(ctx, "%s: 需要文件路径字符串或非空 Uint8Array", what);
+            return JS_EXCEPTION;
+        }
+        return jzNewValue<JZImage>(ctx, JZImage((const char*)buf, (int)len));
+    }
+
+    JS_ThrowTypeError(ctx, "%s: 至多 1 个参数", what);
+    return JS_EXCEPTION;
+}
+
+// ---------- 注册: 把全局构造器换成上面这些 C 版本 ----------
+
+namespace
+{
+
+// 换掉一个类在全局上的构造函数:
+//   * 新构造器 = JS_NewCFunction2(JS_CFUNC_constructor) —— new X(...) 时直接调我们的 C 函数
+//     (quickjs 语义: 构造函数返回对象就用它当结果, 所以不需要 new_target);
+//   * 原型沿用引擎注册时建的那个(instanceof / 继承链不变), 只补 prototype/constructor 双向指针;
+//   * 旧构造器上的自有可枚举属性(JZChart.LineChart 这类静态常量)搬过来。
+void jzReplaceConstructor(JSContext* ctx, const char* name, const char* ctypeid, JSCFunction* fn)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine)
+        return;
+
+    int type = engine->ctypeidToType(ctypeid);
+    if (type == JSType_none)
+    {
+        LOG_W(std::string("JZJSWidgetModule: 构造器替换跳过, 类未注册: ") + name);
+        return;
+    }
+
+    JSValue global = engine->globalObject();
+    JSValue oldCtor = JS_GetPropertyStr(ctx, global, name);
+
+    JSValue ctor = JS_NewCFunction2(ctx, fn, name, 0, JS_CFUNC_constructor, 0);
+    JSValue proto = JS_GetClassProto(ctx, engine->typeToJSType(type));
+    JS_DefinePropertyValueStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto), JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+    JS_DefinePropertyValueStr(ctx, proto, "constructor", JS_DupValue(ctx, ctor),
+                              JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+    JS_FreeValue(ctx, proto);
+
+    // 搬旧构造器上的自有可枚举属性(静态常量等)
+    JSPropertyEnum* props = nullptr;
+    uint32_t count = 0;
+    if (!JS_IsUndefined(oldCtor) &&
+        JS_GetOwnPropertyNames(ctx, &props, &count, oldCtor, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0)
+    {
+        for (uint32_t i = 0; i < count; i++)
+        {
+            JSValue v = JS_GetProperty(ctx, oldCtor, props[i].atom);
+            if (!JS_IsException(v))
+                JS_SetProperty(ctx, ctor, props[i].atom, v);   // 消费 v
+        }
+        JS_FreePropertyEnum(ctx, props, count);
+    }
+
+    engine->setProperty(global, name, ctor);   // 全局名指向新构造器(setProperty 不拷贝, 不能释放 ctor)
+    JS_FreeValue(ctx, oldCtor);
+}
+
+}   // namespace
+
+void jzRegistWidgetJsConstructors(JSContext* ctx)
+{
+    // 控件
+    jzReplaceConstructor(ctx, "JZWidget",        typeid(JZWidget).name(),        js_JZWidget_ctor);
+    jzReplaceConstructor(ctx, "JZWindow",        typeid(JZWindow).name(),        js_JZWindow_ctor);
+    jzReplaceConstructor(ctx, "JZLabel",         typeid(JZLabel).name(),         js_JZLabel_ctor);
+    jzReplaceConstructor(ctx, "JZPushButton",    typeid(JZPushButton).name(),    js_JZPushButton_ctor);
+    jzReplaceConstructor(ctx, "JZLineEdit",      typeid(JZLineEdit).name(),      js_JZLineEdit_ctor);
+    jzReplaceConstructor(ctx, "JZTextEdit",      typeid(JZTextEdit).name(),      js_JZTextEdit_ctor);
+    jzReplaceConstructor(ctx, "JZCheckbox",      typeid(JZCheckbox).name(),      js_JZCheckbox_ctor);
+    jzReplaceConstructor(ctx, "JZRadioButton",   typeid(JZRadioButton).name(),   js_JZRadioButton_ctor);
+    jzReplaceConstructor(ctx, "JZSwitch",        typeid(JZSwitch).name(),        js_JZSwitch_ctor);
+    jzReplaceConstructor(ctx, "JZSlider",        typeid(JZSlider).name(),        js_JZSlider_ctor);
+    jzReplaceConstructor(ctx, "JZProgressBar",   typeid(JZProgressBar).name(),   js_JZProgressBar_ctor);
+    jzReplaceConstructor(ctx, "JZComboBox",      typeid(JZComboBox).name(),      js_JZComboBox_ctor);
+    jzReplaceConstructor(ctx, "JZSpinBox",       typeid(JZSpinBox).name(),       js_JZSpinBox_ctor);
+    jzReplaceConstructor(ctx, "JZGroupBox",      typeid(JZGroupBox).name(),      js_JZGroupBox_ctor);
+    jzReplaceConstructor(ctx, "JZChart",         typeid(JZChart).name(),         js_JZChart_ctor);
+    jzReplaceConstructor(ctx, "JZImageLabel",    typeid(JZImageLabel).name(),    js_JZImageLabel_ctor);
+    jzReplaceConstructor(ctx, "JZListWidget",    typeid(JZListWidget).name(),    js_JZListWidget_ctor);
+    jzReplaceConstructor(ctx, "JZTableWidget",   typeid(JZTableWidget).name(),   js_JZTableWidget_ctor);
+    jzReplaceConstructor(ctx, "JZStackedWidget", typeid(JZStackedWidget).name(), js_JZStackedWidget_ctor);
+    jzReplaceConstructor(ctx, "JZTabWidget",     typeid(JZTabWidget).name(),     js_JZTabWidget_ctor);
+    jzReplaceConstructor(ctx, "JZSplitter",      typeid(JZSplitter).name(),      js_JZSplitter_ctor);
+    jzReplaceConstructor(ctx, "JZScrollArea",    typeid(JZScrollArea).name(),    js_JZScrollArea_ctor);
+    jzReplaceConstructor(ctx, "JZScrollBar",     typeid(JZScrollBar).name(),     js_JZScrollBar_ctor);
+
+    // 布局
+    jzReplaceConstructor(ctx, "JZLayout",        typeid(JZLayout).name(),        js_JZLayout_ctor);
+    jzReplaceConstructor(ctx, "JZVBoxLayout",    typeid(JZVBoxLayout).name(),    js_JZVBoxLayout_ctor);
+    jzReplaceConstructor(ctx, "JZHBoxLayout",    typeid(JZHBoxLayout).name(),    js_JZHBoxLayout_ctor);
+    jzReplaceConstructor(ctx, "JZGridLayout",    typeid(JZGridLayout).name(),    js_JZGridLayout_ctor);
+    jzReplaceConstructor(ctx, "JZSelfLayout",    typeid(JZSelfLayout).name(),    js_JZSelfLayout_ctor);
+
+    // 值类型
+    jzReplaceConstructor(ctx, "JZPoint",         typeid(JZPoint).name(),         js_JZPoint_ctor);
+    jzReplaceConstructor(ctx, "JZSize",          typeid(JZSize).name(),          js_JZSize_ctor);
+    jzReplaceConstructor(ctx, "JZRect",          typeid(JZRect).name(),          js_JZRect_ctor);
+    jzReplaceConstructor(ctx, "JZColor",         typeid(JZColor).name(),         js_JZColor_ctor);
+    jzReplaceConstructor(ctx, "JZImage",         typeid(JZImage).name(),         js_JZImage_ctor);
+}

@@ -334,6 +334,7 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_status = Engine_none;    
     m_nextWorkerId = 1;         // 0 保留给主线程
     m_workerModule = nullptr;
+    m_widgetModule = nullptr;
 }
 
 JZJSEngine::~JZJSEngine()
@@ -2154,6 +2155,16 @@ void JZJSEngine::setWorkerModule(JZJSWorkerModule* module)
 JZJSWorkerModule* JZJSEngine::workerModule() const
 {
     return m_workerModule;
+}
+
+void JZJSEngine::setWidgetModule(JZJSWidgetModule* module)
+{
+    m_widgetModule = module;
+}
+
+JZJSWidgetModule* JZJSEngine::widgetModule() const
+{
+    return m_widgetModule;
 }
 
 int JZJSEngine::spawnWorker(const std::string& entry, const JZByteArray& workerData,

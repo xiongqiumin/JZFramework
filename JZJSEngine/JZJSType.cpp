@@ -85,7 +85,7 @@ JSValue createJSValue(JSContext* ctx, const std::string& ctypeid)
     return engine->createValue(id);
 }
 
-JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, void* opaque)
+JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, jsbind::JSPointerBase* opaque)
 {
     JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
     int id = engine->ctypeidToType(ctypeid);

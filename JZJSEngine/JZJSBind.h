@@ -107,25 +107,6 @@ struct function_return<R(A...)>
     using type = R;
 };
 
-// class function
-template <class T>
-void* createClass()
-{
-    return new T();
-}
-template <class T>
-void destoryClass(void* ptr)
-{
-    delete (T*)ptr;
-}
-
-// 释放 JS 对象持有的包装(opaque)。包装可能是 JSRawPointer<T>(非 JZObject) 或
-// JSObjectPointer(JZObject 派生), 二者都派生自 JSPointerBase, 故统一走虚析构。
-inline void destoryPointer(void* ptr)
-{
-    delete (jsbind::JSPointerBase*)ptr;
-}
-
 // 统一包装模型下, JSRawPointer<Class> 与 Class 共用同一个 JS 类(typeid(Class)),
 // 因此形参/返回值类型推导时, 把 JSRawPointer<Class> 映射成 typeid(Class)(指针/引用再加 "*")。
 template <class T, class Enable = void>
@@ -348,24 +329,24 @@ std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noex
 //   - 可默认构造: 用 new Class() 生成实例(JSWidgetClass<Class> 还会经 using Class::Class 继承基类构造);
 //   - 抽象类 / 非抽象但无默认构造(如 JZPainter 必须传 widget): 运行期抛异常(需 setCreate 覆盖)。
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && std::is_default_constructible<Class>::value, int> = 0>
-std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
+std::function<JSPointerBase*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
     return [](JSContext*, int, JSValueConst*) { return new JSRawPointer<Class>(new Class(), false); };
 }
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
-std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
+std::function<JSPointerBase*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
     // createArgs 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
-    return [](JSContext* ctx, int, JSValueConst*) -> void* {
+    return [](JSContext* ctx, int, JSValueConst*) -> JSPointerBase* {
         JS_ThrowInternalError(ctx, "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
         return nullptr;
     };
 }
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && !std::is_default_constructible<Class>::value, int> = 0>
-std::function<void*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
+std::function<JSPointerBase*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
     // 同上: 无默认构造的类必须自己 setCreate。
-    return [](JSContext* ctx, int, JSValueConst*) -> void* {
+    return [](JSContext* ctx, int, JSValueConst*) -> JSPointerBase* {
         JS_ThrowInternalError(ctx, "ClassBind: 类无默认构造, 需用 setCreate");
         return nullptr;
     };
@@ -386,7 +367,7 @@ public:
         // 经多态基类释放: opaque 的实际包装类型未必与注册的 Class 对应
         // (JZObject 派生类用 JSObjectPointer, 其余用 JSRawPointer<T>), 按具体类型强转再 delete 是 UB。
         // JSPointerBase 有虚析构, 可安全释放任意包装。
-        m_define.destory = [](void* p) { delete (jsbind::JSPointerBase*)p; };
+        m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };
     }
 
     // 继承: 声明 Class 公开继承 Base(单继承)。
@@ -401,20 +382,20 @@ public:
         m_define.isPointer = true;
         m_define.createArgs = makeDefaultCreate<Class>();
         // 同上一处: 经 JSPointerBase(虚析构)释放, 不按具体包装类型强转。
-        m_define.destory = [](void* p) { delete (jsbind::JSPointerBase*)p; };
+        m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };
         m_define.superCTypeid = super.classDefine().ctypeid;
     }
 
     // 自定义构造(无默认构造/需参数/需回写 JS 句柄的类): 覆盖默认工厂。
     // 签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*, 句柄回写交 setInstanceBind 注册的 onCreated。
-    void setCreate(std::function<void*(JSContext*, int, JSValueConst*)> create) { m_define.createArgs = std::move(create); }
+    void setCreate(std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> create) { m_define.createArgs = std::move(create); }
 
     // 便捷重载: 无参构造(忽略 argc/argv), 用于事件/抽象基类等无状态工厂(如 setCreate([](){ return new JSRawPointer<Class>(new Class(), false); }))。
-    void setCreate(std::function<void*()> create) { m_define.createArgs = [create](JSContext*, int, JSValueConst*) { return create(); }; }
+    void setCreate(std::function<jsbind::JSPointerBase*()> create) { m_define.createArgs = [create](JSContext*, int, JSValueConst*) { return create(); }; }
 
     // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次, 回写 JSValue 句柄 / engine 等到 C++ 包裹对象。
     // 因每条包装路径(含 toJsValueFromPtr → createJSValue → createValue(type, ptr))都经此, 返回值转换 / toValuePtr / createCanvas 同样触发。
-    void setInstanceBind(std::function<void(JSContext*, JSValue, void*)> bind) { m_define.onCreated = std::move(bind); }
+    void setInstanceBind(std::function<void(JSContext*, JSValue, jsbind::JSPointerBase*)> bind) { m_define.onCreated = std::move(bind); }
 
     template <typename Return, typename... Args, typename... Extra>
     void def(std::string name, Return (Class::*f)(Args...), Extra... extra)

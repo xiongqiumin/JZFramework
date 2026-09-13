@@ -343,7 +343,7 @@ void JZJSWidgetModule::registWidgets()
 {
     // 基类 JZWidget —— 实际实例为 JSWidgetClass<JZWidget>, 用于 onPaint 等事件转发
     jsbind::ClassBind<JZWidget> bind_w("JZWidget");
-    bind_w.setCreate([this](JSContext* ctx, int, JSValueConst*) -> void* {
+    bind_w.setCreate([this](JSContext* ctx, int, JSValueConst*) -> jsbind::JSPointerBase* {
         return new jsbind::JSRawPointer<JZWidget>(new JSWidgetClass<JZWidget>(), false);
     });
     bind_w.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
@@ -386,7 +386,7 @@ void JZJSWidgetModule::registWidgets()
         return win;
     };
     jsbind::ClassBind<JZWindow> bind_win("JZWindow", bind_w);
-    bind_win.setCreate([this, makeWindow](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+    bind_win.setCreate([this, makeWindow](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
         int w = 800, h = 600;
         std::string title = "JZWindow";
         JZWidget* parent = nullptr;
@@ -678,7 +678,7 @@ void JZJSWidgetModule::registPainter()
     // 释放点在 paintEvent 末尾(JZJSPaintScope::Guard → end()), 那里用状态就能完成 delete + 失效。
     // 包装模型: opaque 必须是 JSRawPointer<JZPainter>*(createValue 直接塞进 JS 对象),
     // 直接返回底层指针会被后续按 JSPointerBase* 访问 = UB。详见 JZJSPaintScope.h。
-    bind_p.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+    bind_p.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
         return m_paintScope.createPainter(ctx, argc, argv);
     });
     // 显式结束绘制: 离屏模式立即把图层合成回 image(之后 image 才可用), 屏幕模式提前补 Pop。

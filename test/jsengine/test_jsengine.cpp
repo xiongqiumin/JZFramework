@@ -895,5 +895,6 @@ int main()
     else
         jzDebug() << "【FAIL】JSEngine 测试失败数: " << g_fail;
 
+    jzco_waitAllCoroutines();
     return g_fail == 0 ? 0 : 1;
 }

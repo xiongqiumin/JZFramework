@@ -344,15 +344,15 @@ class CClassDefine
 public:
     // 唯一构造入口: JS `new Cls(...)` 透传 (ctx, argc, argv) 生成底层对象并包成 JSRawPointer<Class>*。
     // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
-    std::function<void*(JSContext*, int, JSValueConst*)> createArgs;
+    std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> createArgs;
 
-    std::function<void(void*)> destory;
+    std::function<void(jsbind::JSPointerBase*)> destory;
 
     // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次
     // (覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径, 因 toJsValueFromPtr → createJSValue → createValue(type, ptr))。
     // opaque 即 JSRawPointer<Class>*; 用于把 JSValue 句柄 / engine 回写到 C++ 包裹对象(如 JSWidgetClass 的 m_jsvalue / m_engine),
     // 供事件转发 callJs 以该对象为 this 调用 JS 方法。由 setInstanceBind 注册。
-    std::function<void(JSContext*, JSValue, void* opaque)> onCreated;
+    std::function<void(JSContext*, JSValue, jsbind::JSPointerBase* opaque)> onCreated;
 
     std::string name;
     std::string ctypeid;
@@ -648,7 +648,7 @@ Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
 
 // to js
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);
-JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, void* opaque);
+JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, jsbind::JSPointerBase* opaque);
 
 template <class T>
 JSValue toJSValue(JSContext* ctx, const T& t);

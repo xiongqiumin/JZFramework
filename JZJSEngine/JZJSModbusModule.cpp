@@ -273,7 +273,7 @@ JSValue JZJSModbusModule::create(const Json::Value &config)
             { this->onReply(o, reply); });
 
     m_clients.push_back(o);
-    return m_engine->createValue(m_typeClient, o);
+    return m_engine->createValue(m_typeClient, new jsbind::JSRawPointer<JZJSModbusClient>(o, false));
 }
 
 void JZJSModbusModule::open(int promiseHandle, JZJSModbusClient *o, int timeoutMs)

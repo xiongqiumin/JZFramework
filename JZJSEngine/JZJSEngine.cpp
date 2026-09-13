@@ -1266,12 +1266,12 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     else
     {
         const CClassDefine& define = m_typeMap[type].classDefine;
-        void* ptr = define.createArgs(m_ctx, argc, argv);
+        jsbind::JSPointerBase* ptr = define.createArgs(m_ctx, argc, argv);
         return createValue(type, ptr);
     }
 }
 
-JSValue JZJSEngine::createValue(int type, void* ptr)
+JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
 {
     // createArgs 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
     // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
@@ -1405,7 +1405,7 @@ void JZJSEngine::deconstructor(JSValue value)
 
     JSClassID class_id = JS_GetClassID(value);
 
-    auto ptr = JS_GetOpaque(value, class_id);
+    auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
     m_typeMap[type].classDefine.destory(ptr);
 }
 

@@ -409,7 +409,7 @@ JSValue JZJSSerialPortModule::serialPortCreate(const Json::Value& options)
         self->emit("data", jsMakeUint8Array(c, data));
     });
 
-    return m_engine->createValue(m_typePort, obj);
+    return m_engine->createValue(m_typePort, new jsbind::JSRawPointer<JZJSSerialPort>(obj, false));
 }
 
 Json::Value JZJSSerialPortModule::serialPortList()

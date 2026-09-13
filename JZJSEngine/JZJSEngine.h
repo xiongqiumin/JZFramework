@@ -137,7 +137,7 @@ public:
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type, int argc = 0, JSValueConst* argv = nullptr);
-    JSValue createValue(int type, void* ptr);
+    JSValue createValue(int type, jsbind::JSPointerBase* ptr);
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
     JSValue createResolvedPromise(JSValue jsValue);

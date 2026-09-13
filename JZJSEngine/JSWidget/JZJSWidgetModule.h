@@ -57,9 +57,9 @@ public:
         if (!hasJsMethod("onPaint"))
             return Class::paintEvent(event);
         // JS 侧画笔(new JZPainter(this))的生命周期 = 本次 onPaint 派发(对应 C++ 的栈对象
-        // `JZPainter p(this)`): 作用域结束立即回收画笔, 让绘制流的 Push/Pop 同帧配平。
-        // 见 JZJSPaintScope.h。
-        JZJSPaintScope scope(m_engine);
+        // `JZPainter p(this)`): 出作用域立即回收, 让绘制流的 Push/Pop 同帧配平。
+        // 作用域由模块持有(实例创建时经 setPaintScope 回写), 见 JZJSPaintScope.h。
+        JZJSPaintScope::Guard guard(m_paintScope);
         callEventJs("onPaint", event);
     }
 
@@ -174,7 +174,12 @@ public:
             JZJSValuePtr(ctx, JS_DupValue(ctx, m_jsvalue)), params);
     }
 
+    // 绘制作用域(模块持有, 实例创建时经 setPaintScope 回写): paintEvent 用它界定
+    // "JS 侧 new 出来的画笔"的生命周期。见 JZJSPaintScope.h。
+    void setPaintScope(JZJSPaintScope* scope) { m_paintScope = scope; }
+
     JZJSEngine* m_engine = nullptr;
+    JZJSPaintScope* m_paintScope = nullptr;
     JSValue m_jsvalue = JS_UNDEFINED;
 };
 
@@ -200,6 +205,9 @@ private:
     JZJSEngine* m_engine = nullptr;
     int m_typeWindow = -1;
     int m_typeCanvas = -1;
+
+    // JS 侧画笔的创建分发与生命周期(registPainter 的请求全部转发到这里, paintEvent 的作用域也用它)
+    JZJSPaintScope m_paintScope;
 
     // 分类注册 (initEngine 中统一调用)
     void registGeometry();   // JZPoint / JZSize / JZRect

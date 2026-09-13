@@ -7,6 +7,8 @@
 #include "JZJSUiLoader.h"
 #include "JZJSWidgetModule.h"
 #include "JZWidget.h"
+#include "JZImage.h"
+#include "JZJSType.h"
 #include "quickjs/quickjs.h"
 
 using namespace std;
@@ -121,10 +123,6 @@ int main()
     }
 
     // 6) 全局 uiLoader 命名空间: 只暴露 loadFile / load 两个工厂方法, 各自直接返回根 JZWindow 窗口
-    // 注: 本节的 loadFile 用例当前会崩(访问违例, cdb 无环境时表现为退出码 0xC0000005), 与本文件
-    //     其它用例写法无关 —— 已定位为既有的所有权问题: addWidget/setParentWidget 把"JS 拥有"的
-    //     控件挂进对象树后未翻转所有权(cppOwner 仍为 false), 对象树析构与 JS GC 会双重释放。
-    //     详见 JZJSType.h 的 cppOwner 说明与第 7 节(画笔生命周期)对作用域回收的同类处理。
     jzDebug() << "===== uiLoader 全局命名空间演示 =====";
     {
         JZJSEngine engine;
@@ -161,14 +159,18 @@ int main()
         check("uiLoader.loadFile 找不到文件时抛异常", engine.runtimeError().size() > 0 || JS_IsException(bad.get()));
     }
 
-    // 7) JS 侧画笔: onPaint 内 `new JZPainter(this)` (对应 C++ 的 `JZPainter p(this)`),
-    //    生命周期 = 本次绘制派发 —— 派发外创建报错, 派发结束自动失效(见 JZJSPaintScope)。
+    // 7) JS 侧画笔: 创建请求经 JZJSPaintScope 动态转发(见 JZJSPaintScope.h)
+    //    屏幕: new JZPainter(widget) —— 对应 C++ `JZPainter p(this)`, 生命周期 = 本次绘制派发;
+    //    离屏: new JZPainter(image)  —— 自持图层, end() 时把内容合成回 image。
     jzDebug() << "===== JS 画笔生命周期演示 =====";
     {
+        JZImage image = JZImage::create(20, 10, JZColor(0, 0, 0, 0));   // 栈对象, 借用给 JS(cppOwner=true)
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
         widgetModule.initEngine(&engine);
+        engine.setProperty(engine.globalObject(), "img",
+                           toJsValueFromPtr(engine.context(), &image, true));
 
         auto outside = engine.eval(
             "var r = 'no-throw';"
@@ -196,6 +198,56 @@ int main()
             "drew + ':' + state");
         check("onPaint 内画笔可绘制, 派发结束后失效",
               engine.fromJSValue<std::string>(after.get()) == "1:released");
+
+        // 约束② 同一次绘制内每个控件只能有一份画笔(第二份直接抛错, 不是静默忽略)
+        engine.eval(
+            "var dupState = 'no-throw';"
+            "win.onPaint = () => {"
+            "  var p1 = new JZPainter(win);"
+            "  try { var p2 = new JZPainter(win); } catch (e) { dupState = 'throw'; }"
+            "  p1.fillRect(0, 0, 3, 3, '#00ffff');"
+            "};"
+            "1");
+        jzApp->sendEvent(painted, &paintEvent);
+        check("同一控件一次绘制内不允许第二份画笔",
+              engine.fromJSValue<std::string>(engine.eval("dupState").get()) == "throw");
+
+        // 同一次派发内先 p.end() 提前结束: 既立刻失效, 也不能让派发末尾的回收重复 delete
+        engine.eval(
+            "var earlyState = 'usable';"
+            "win.onPaint = () => {"
+            "  var p = new JZPainter(win);"
+            "  p.fillRect(0, 0, 2, 2, '#0000ff');"
+            "  p.end();"
+            "  try { p.fillRect(0, 0, 1, 1, '#000000'); } catch (e) { earlyState = 'released'; }"
+            "};"
+            "1");
+        jzApp->sendEvent(painted, &paintEvent);
+        check("onPaint 内 p.end() 提前结束且重复回收安全",
+              engine.fromJSValue<std::string>(engine.eval("earlyState").get()) == "released");
+
+        // 离屏: 动态转发到 JZPainter(JZImage&); 不受绘制派发约束, end() 立即结束并让包装失效
+        auto off = engine.eval(
+            "var offState = 'ok';"
+            "var op = new JZPainter(img);"
+            "op.fillRect(0, 0, 20, 10, '#00ff00');"
+            "op.end();"
+            "try { op.fillRect(0, 0, 1, 1, '#000000'); offState = 'usable'; } catch (e) { offState = 'released'; }"
+            "offState");
+        check("离屏 new JZPainter(image) 可绘制, end() 后失效",
+              engine.fromJSValue<std::string>(off.get()) == "released");
+
+        // 离屏画笔不调 end(): 对象被 JS 回收后由作用域结清(不崩、不泄漏), 期间目标 image 由作用域保活
+        auto reap = engine.eval(
+            "var op2 = new JZPainter(img);"
+            "op2.fillRect(0, 0, 5, 5, '#0000ff');"
+            "op2 = null;"
+            "var junk = []; for (var i = 0; i < 5000; i++) junk.push({ a: i, s: 'x' + i });"
+            "junk = null;"
+            "var op3 = new JZPainter(img); op3.fillRect(0, 0, 3, 3, '#ff00ff'); op3.end();"
+            "'ok'");
+        check("离屏画笔被回收后由作用域结清(未 end 也不崩)",
+              engine.fromJSValue<std::string>(reap.get()) == "ok");
     }
 
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");

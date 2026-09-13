@@ -146,7 +146,14 @@ public:
             if (!cppOwner && ptr)
                 delete ptr;
         }
+
+        // 让所有共享该状态的包装(含 JS 侧那份)一起失效。
+        // 与 clear() 的区别: 不检查 cppOwner、不需要拿到包装本身 —— C++ 侧在删除底层对象后
+        // 可直接用持有着的 Info 标记失效(见 JZJSPaintScope 的绘制作用域)。
+        void invalidate() { cleared = true; }
     };
+
+    using Info = std::shared_ptr<PointInfo>;
 
     JSRawPointer() {}
 
@@ -154,6 +161,11 @@ public:
     {
         m_info = std::make_shared<PointInfo>(ptr, cppOwner);
     }
+
+    // 句柄状态(与所有副本 / JS 侧那份包装共享)。
+    // 拿到它就可以在"JS 对象可能已被回收"的情况下安全地失效句柄 —— 不必 dup JS 对象、
+    // 也不必保证包装本身还活着(状态是 shared_ptr 独立存活的)。
+    Info info() const { return m_info; }
 
     // 底层对象裸指针; 已 clear 时返回 nullptr。
     Class* get() const
@@ -210,6 +222,18 @@ struct is_class_pointer<JSRawPointer<Class>> : std::true_type
 {
 };
 }  // namespace jsbind
+
+namespace jstype
+{
+// 兜底空包装: 仅供"上层漏校验"的不可达分支返回 —— 使返回值仍是合法对象(get()==nullptr),
+// 断言之后不至于落进 UB; 调用方按空包装处理(与传 null / 已失效包装同一处理路径)。
+template <class CP>
+CP& emptyWrapper()
+{
+    static CP s_empty;
+    return s_empty;
+}
+}   // namespace jstype
 
 namespace jstype
 {
@@ -285,6 +309,11 @@ struct CFunctionParam
     std::string name;
     std::string ctypeid;
     int type;
+
+    // 形参是 JSRawPointer<Class>(共享包装引用, 改动要能传播回 JS 那份)时置 true:
+    // 这类形参只接受**精确类**, 派生类对象不能传(会共享不到同一个包装 -> 重复 delete / clear 不传播)。
+    // 由 JZJSEngine::call() 在转换前按此标记校验, 免得落到底层断言。
+    bool exactClass = false;
 };
 
 class CFunction
@@ -340,10 +369,39 @@ public:
 template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int> = 0>
 T fromJSValue(JSContext* ctx, JSValueConst value);
 
+// 上层校验入口: 判断 JS 值是否是 Class(或 is-a 派生) 的注册对象。
+// 供"没有参数类型表"的地方(如各类 createArgs / 构造参数)在转换前校验;
+// 函数/方法形参的类型校验由 JZJSEngine::call() 按 CFunctionParam 完成。
+// 校验通过后 fromJSValue 内部的类型不匹配分支就只剩 JZ_ASSERT 兜底(属于上层漏校验=框架 bug)。
+template <class Class>
+bool js_check_class_arg(JSContext* ctx, JSValueConst value, bool exact = false)
+{
+    if (JS_IsNull(value) || JS_IsUndefined(value))
+        return false;
+
+    JSClassID class_id;
+    void* ptr = JS_GetAnyOpaque(value, &class_id);
+    if (!ptr)
+        return false;
+
+    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine)
+        return false;
+
+    std::string actual = engine->classCTypeId(class_id);
+    if (actual.empty())
+        return false;
+
+    std::string want = typeid(Class).name();
+    return exact ? (actual == want) : engine->isInstanceOf(actual, want);
+}
+
 // T 为裸指针(Class*): 把 JS 对象转成 T*。JS 对象可能是两种表示(与 JZNodeEditor 的统一语义一致):
 //   - 原始类(值/引用)对象: 其 opaque 本身就是真实对象指针, 直接转型返回即可;
 //   - JSRawPointer<Class> 包装类: 其 opaque 是 JSRawPointer<Class>*, 取 get() (并判断是否已 clear)。
-// null/undefined 映射为空指针, 非对象类型抛 JS TypeError(不静默误转)。
+// null/undefined 映射为空指针。
+// 类型校验不在这里做(见 js_check_class_arg / JZJSEngine::call): 走到不匹配分支说明上层漏校验,
+// 只 JZ_ASSERT 报错 + 返回空指针(避免异常与 UB)—— 与 null/undefined 同语义。
 template <class T>
 T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
 {
@@ -359,8 +417,8 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
     void* ptr = JS_GetAnyOpaque(value, &class_id);
     if (!ptr)
     {
-        JS_ThrowTypeError(ctx, "参数不是对象(Class)");
-        throw std::runtime_error("fromJSValue: JSValue 不是 Class 对象");
+        JZ_ASSERT_X(0, "fromJSValue<Class*>: 参数不是注册类对象(上层应已校验)");
+        return nullptr;
     }
 
     // 区分原始类与 JSRawPointer 包装类: 后者登记在 m_JSRawPointerTypes 中
@@ -398,8 +456,8 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
                 return (Class*)obj;
             }
         }
-        JS_ThrowTypeError(ctx, "参数类型不匹配: 期望 %s, 实际 %s", want_cid.c_str(), actual_cid.c_str());
-        throw std::runtime_error("fromJSValue: 类型不兼容(非基类)");
+        JZ_ASSERT_X(0, "fromJSValue<Class*>: 参数类型不匹配(上层应已校验)");
+        return nullptr;
     }
 
     // 原始类对象: opaque 即真实对象, 直接转型
@@ -527,8 +585,8 @@ T& fromJSValue(JSContext* ctx, JSValueConst value)
     void* ptr = JS_GetAnyOpaque(value, &class_id);
     if (!ptr)
     {
-        JS_ThrowTypeError(ctx, "参数不是对象(JSRawPointer)");
-        throw std::runtime_error("fromJSValue: JSValue 不是 JSRawPointer 对象");
+        JZ_ASSERT_X(0, "fromJSValue<JSRawPointer<Class>&>: 参数不是注册类对象(上层应已校验)");
+        return jstype::emptyWrapper<CP>();
     }
 
     // JSRawPointer<Class> 形参仅支持精确类: 派生类对象传入基类 JSRawPointer 形参时,
@@ -540,8 +598,10 @@ T& fromJSValue(JSContext* ctx, JSValueConst value)
         std::string want_cid = typeid(Class).name();
         if (actual_cid != want_cid)
         {
-            JS_ThrowTypeError(ctx, "JSRawPointer<%s> 形参不支持派生类对象(请用基类指针/引用/值)", want_cid.c_str());
-            throw std::runtime_error("fromJSValue: JSRawPointer 形参类型不匹配");
+            // 已由上层拦下: JZJSEngine::call() 按 CFunctionParam::exactClass 拒绝派生类对象,
+            // createArgs 那类地方用 js_check_class_arg(..., true) 校验。这里只兜底报错。
+            JZ_ASSERT_X(0, "fromJSValue<JSRawPointer<Class>&>: 形参只接受精确类(上层应已校验)");
+            return jstype::emptyWrapper<CP>();
         }
     }
 
@@ -550,8 +610,8 @@ T& fromJSValue(JSContext* ctx, JSValueConst value)
     auto* raw = dynamic_cast<jsbind::JSRawPointer<Class>*>((jsbind::JSPointerBase*)ptr);
     if (!raw)
     {
-        JS_ThrowTypeError(ctx, "参数包装类型不是 JSRawPointer<%s>", typeid(Class).name());
-        throw std::runtime_error("fromJSValue: 包装类型不匹配");
+        JZ_ASSERT_X(0, "fromJSValue<JSRawPointer<Class>&>: 包装类型不是 JSRawPointer(上层应已校验)");
+        return jstype::emptyWrapper<CP>();
     }
     return *raw;
 }

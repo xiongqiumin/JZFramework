@@ -80,13 +80,15 @@ static JZColor jzParseColor(const std::string& s)
 // 供事件转发 callJs 以该对象为 this 调用 JS 方法(onPaint / onMousePress ...)。
 // 作为 onCreated 钩子, 在 createValue(type, ptr) 内触发 —— 覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径。
 template <class W>
-static void jzBindWidgetInstance(JSContext* ctx, JSValue obj, void* opaque, JZJSEngine* engine)
+static void jzBindWidgetInstance(JSContext* ctx, JSValue obj, void* opaque, JZJSEngine* engine,
+                                 JZJSPaintScope* paintScope)
 {
     // 经多态基类取底层对象: opaque 的包装类型不一定是 JSRawPointer<W>。
     auto* cp = (jsbind::JSPointerBase*)opaque;
     auto* js = static_cast<JSWidgetClass<W>*>((W*)cp->getRaw());
     js->m_engine = engine;
-    js->m_jsvalue = obj;   // 原始句柄(不 dup): 随 JS 自身 GC, 析构不释放, 避免自引用环
+    js->setPaintScope(paintScope);   // paintEvent 里用它界定 JS 侧画笔的生命周期
+    js->m_jsvalue = obj;             // 原始句柄(不 dup): 随 JS 自身 GC, 析构不释放, 避免自引用环
 }
 
 // ---------- 模块生命周期 ----------
@@ -97,6 +99,7 @@ JZJSWidgetModule::~JZJSWidgetModule() { deinitEngine(); }
 void JZJSWidgetModule::initEngine(JZJSEngine* engine)
 {
     m_engine = engine;
+    m_paintScope.setEngine(engine);   // 画笔作用域随模块: 先绑定引擎, 再注册各类
 
     registGeometry();
     registColor();
@@ -111,6 +114,7 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
 
 void JZJSWidgetModule::deinitEngine()
 {
+    m_paintScope.reset();   // 引擎退出: 回收未结束的画笔并断开引擎引用
     m_engine = nullptr;
     m_typeWindow = -1;    
 }
@@ -276,7 +280,7 @@ void JZJSWidgetModule::registWidgets()
         return new jsbind::JSRawPointer<JZWidget>(new JSWidgetClass<JZWidget>(), false);
     });
     bind_w.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
-        jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, m_engine);
+        jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, m_engine, &m_paintScope);
     });
     bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
     bind_w.def("x", [](JZWidget* w) { return w->x(); });
@@ -322,11 +326,17 @@ void JZJSWidgetModule::registWidgets()
         if (argc >= 1) w = fromJSValue<int>(ctx, argv[0]);
         if (argc >= 2) h = fromJSValue<int>(ctx, argv[1]);
         if (argc >= 3) title = fromJSValue<std::string>(ctx, argv[2]);
-        if (argc >= 4) parent = fromJSValue<JZWidget*>(ctx, argv[3]);
+        if (argc >= 4)
+        {
+            // 构造参数没有参数类型表(call() 的形参校验帮不上), 所以在转换前先校验。
+            if (!js_check_class_arg<JZWidget>(ctx, argv[3]))
+                throw std::runtime_error("new JZWindow(w, h, title, parent): parent 需要 JZWidget");
+            parent = fromJSValue<JZWidget*>(ctx, argv[3]);
+        }
         return new jsbind::JSRawPointer<JZWindow>(makeWindow(w, h, title, parent), false);
     });
     bind_win.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
-        jzBindWidgetInstance<JZWindow>(ctx, obj, opaque, m_engine);
+        jzBindWidgetInstance<JZWindow>(ctx, obj, opaque, m_engine, &m_paintScope);
     });
     bind_win.def("setTitle", [](JZWindow* w, const std::string& t) { w->setTitle(t); });
     bind_win.def("title", [](JZWindow* w) { return w->title(); });
@@ -512,27 +522,19 @@ void JZJSWidgetModule::registWidgets()
 void JZJSWidgetModule::registPainter()
 {
     jsbind::ClassBind<JZPainter> bind_p("JZPainter");
-    // 必须传 widget 构造(explicit JZPainter(JZWidget*)), 故用有参构造(统一签名)。
-    // 画笔的生命周期与 C++ 的栈对象 `JZPainter p(this)` 一致 —— 只在本次绘制派发内有效:
-    // 结束由 JZJSPaintScope 立即回收(构造/析构写入绘制流的 Push/Pop 因此同帧配平),
-    // 同时 JS 侧包装失效。故 JS 写法固定为 `const p = new JZPainter(this);`(在 onPaint 内)。
-    bind_p.setCreate([](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
-        if (!JZJSPaintScope::active())
-            throw std::runtime_error("JZPainter 只能在 onPaint 回调内创建(画笔仅本次绘制有效)");
-        if (argc < 1)
-            throw std::runtime_error("new JZPainter(widget): 需要一个控件参数");
-        JZWidget* w = fromJSValue<JZWidget*>(ctx, argv[0]);
-        if (!w)
-            throw std::runtime_error("new JZPainter(widget): widget 不能为空");
-        JZJSPaintScope::markJsCreated();
-        // 统一包装模型: opaque 必须是 JSRawPointer<Class>*(createValue 直接把它塞进 JS 对象),
-        // 不能直接返回底层指针, 否则后续按 JSPointerBase* 访问是 UB。
-        return new jsbind::JSRawPointer<JZPainter>(new JZPainter(w), false);
+    // 创建请求全部转发给模块持有的 JZJSPaintScope(动态转发 + 登记 + 生命周期):
+    //   new JZPainter(widget) -> 屏幕画笔, 等价 C++ 的栈对象 `JZPainter p(this)`, 只在本次 onPaint 内有效
+    //   new JZPainter(image)  -> 离屏画笔, 自持图层, 析构(或 p.end())时把内容合成回 image
+    // 登记/失效只留包装的**共享状态**(JSRawPointer<JZPainter>::Info), 不需要 setInstanceBind 之类的
+    // 创建后钩子: createArgs 阶段本就拿不到 JSValue, 也不必拿到 —— 状态独立于 JS 对象存活,
+    // 释放点在 paintEvent 末尾(JZJSPaintScope::Guard → end()), 那里用状态就能完成 delete + 失效。
+    // 包装模型: opaque 必须是 JSRawPointer<JZPainter>*(createValue 直接塞进 JS 对象),
+    // 直接返回底层指针会被后续按 JSPointerBase* 访问 = UB。详见 JZJSPaintScope.h。
+    bind_p.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> void* {
+        return m_paintScope.createPainter(ctx, argc, argv);
     });
-    // 登记到绘制作用域(只接管 JS new 出来的那把画笔, 回收由作用域负责)。
-    bind_p.setInstanceBind([](JSContext* ctx, JSValue obj, void* opaque) {
-        JZJSPaintScope::track(ctx, (jsbind::JSRawPointer<JZPainter>*)opaque, obj);
-    });
+    // 显式结束绘制: 离屏模式立即把图层合成回 image(之后 image 才可用), 屏幕模式提前补 Pop。
+    bind_p.def("end", [this](jsbind::JSRawPointer<JZPainter>& p) { m_paintScope.endPainter(p); });
     bind_p.def("save", [](JZPainter* p) { p->save(); });
     bind_p.def("restore", [](JZPainter* p) { p->restore(); });
     bind_p.def("translate", [](JZPainter* p, double dx, double dy) { p->translate(dx, dy); });
@@ -586,8 +588,7 @@ static JSValue uiLoaderResultToWindow(JSContext* ctx, JSValue uiObj)
             continue;
         }
         JSValue v = JS_GetProperty(ctx, uiObj, props[i].atom);
-        JS_SetPropertyStr(ctx, root, name, v);   // SetPropertyStr 内部 dup, 调用方需释放 v
-        JS_FreeValue(ctx, v);
+        JS_SetPropertyStr(ctx, root, name, v);   // 该接口**消费** v(quickjs.c: "val is freed by the function"), 不能再 free
         if (name) JS_FreeCString(ctx, name);
     }
     if (props) JS_FreePropertyEnum(ctx, props, len);

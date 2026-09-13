@@ -213,6 +213,9 @@ void getFunctionParam(std::vector<CFunctionParam>& list)
     CFunctionParam param;
     param.type = -1;
     param.ctypeid = getCTypeid<T>();
+    // JSRawPointer<Class> 形参(共享包装引用)必须精确类匹配: 派生类对象共享不到同一个包装。
+    // 记在参数上, 由 JZJSEngine::call() 在转换前校验。
+    param.exactClass = jsbind::is_class_pointer<jstype::remove_cvr_t<T>>::value;
 
     list.push_back(param);
     getFunctionParam<type, Args...>(list);

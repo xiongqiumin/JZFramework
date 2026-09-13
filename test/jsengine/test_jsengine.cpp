@@ -375,17 +375,22 @@ int main()
         }
 
         // 7) 异常路径(会在 ctx 留下 pending 异常, 放在最后, 块尾 reinit 重置):
-        //    非指针 JSValue -> 抛异常; 已 clear 的 JSRawPointer -> 抛异常。
+        //    类型校验已上移到 call(): JS 侧传错类型由上层拦下(JS TypeError),
+        //    不会落到 fromJSValue 的类型不匹配分支(那里只剩 JZ_ASSERT 兜底, 属于框架内部漏校验)。
         {
-            bool threwNonPtr = false;
-            try { (void)engine.fromJSValue<PP*>(engine.toJSValue(123)); }
-            catch (...) { threwNonPtr = true; }
-            check("conv fromJSValue<PP*> non-pointer throws", threwNonPtr);
+            engine.registFunction(engine.globalObject(), "takeRawP",
+                jsbind::createFunction([](PP* p) -> int { return p ? p->v : -1; }));
+            auto v = engine.eval(
+                "var r = 'no-throw';"
+                "try { takeRawP(123); } catch (e) { r = 'throw'; }"
+                "r;");
+            check("PP* 形参传非对象: 上层(call)拦下 -> JS 异常", engine.fromJSValue<string>(v.get()) == "throw");
 
             PP obj2; obj2.v = 5;
             JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
             // clear 走 JSRawPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::JSRawPointer<PP>>(不支持)
             engine.callFunction("clearOwnedP", { jsOwned });
+            // 已 clear 是运行期状态(不是类型不匹配), 仍在转换里报错
             bool threwCleared = false;
             try { (void)engine.fromJSValue<PP*>(jsOwned.get()); }
             catch (...) { threwCleared = true; }

@@ -1401,15 +1401,30 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
 
     for (int i = 0; i < (int)func->params.size(); i++)
     {
-        int arg_type = func->params[i].type;
+        const CFunctionParam& param = func->params[i];
+        int arg_type = param.type;
         if (arg_type == JSType_none)  // 前向引用: 调用时再按 ctypeid 解析(此时类已注册)
-            arg_type = ctypeidToType(func->params[i].ctypeid);
+            arg_type = ctypeidToType(param.ctypeid);
         // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
         if (arg_type == JSType_oriValue)
             continue;
 
         int js_type = jsValueType(argv[i]);
-        if (js_type != arg_type && !canConvert(js_type, arg_type))
+        if (param.exactClass)
+        {
+            // JSRawPointer<Class> 形参要的是"JS 对象内部那个包装的引用"(setCppOwner / clear 要靠它传播),
+            // 派生类对象的包装是 JSRawPointer<Derived>, 共享不到 -> 只接受精确类。
+            // 这里拦下并给出明确错误, 免得底层 fromJSValue 只剩断言兜底。
+            if (js_type != arg_type)
+            {
+                string need_type = typeName(arg_type);
+                string input_type = typeName(js_type);
+                std::string error = "参数错误:参数" + to_string(i) + "需要精确类型" + need_type +
+                                    "(共享包装引用形参不支持派生类), 输入是" + input_type;
+                return JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+            }
+        }
+        else if (js_type != arg_type && !canConvert(js_type, arg_type))
         {
             string input_type = typeName(js_type);
             string need_type = typeName(arg_type);

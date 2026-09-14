@@ -13,7 +13,9 @@ import { UiHelper, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';
 import { BTEProject, SplitInfo, g_project } from './BTEProject.js';
-import { QFileDialog, QInputDialog, QMessageBox, Qt } from './qtcompat.js';
+// 迁移: 弹窗/文件对话框改用引擎的真实现(JZMessageBox / JZFileDialog, 都是全局);
+// 还没绑定的输入对话框(QInputDialog)暂时留着 qtcompat 的替身。
+import { QInputDialog, Qt } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // struct SplitResult
@@ -55,7 +57,8 @@ class SplitResult_RecordInfo
     // QString LevelText();
     LevelText()
     {
-        const name = (this.Level < 15) ? String.fromCharCode('A'.charCodeAt(0) + this.Level) : qApp.translate("main", "落选");
+        // 迁移: 原来走 qApp.translate(); 翻译层未移植, 直接给文本
+        const name = (this.Level < 15) ? String.fromCharCode('A'.charCodeAt(0) + this.Level) : "落选";
         return name;
     }
 
@@ -69,13 +72,18 @@ class SplitResult_RecordInfo
 // ---------------------------------------------------------------------------
 // class SplitSettingWidget : public QWidget
 // ---------------------------------------------------------------------------
+// 迁移: 本类是"持有真控件的复合控件"(组合, **不是**继承) —— 内部 6 个控件都是真 JZ 控件。
+// 为什么不用 `extends JZWidget`: 引擎注册的控件构造器是 C 函数, 它 `return` 自己的对象,
+// 于是 `new SubClass()` 拿到的是**普通 JZWidget**(子类方法全丢, 实测 constructor.name === "JZWidget",
+// instanceof 为 false)。所以自定义控件一律用组合: 本类持一个真控件 this.root 当"本体"。
 export class SplitSettingWidget
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // SplitSettingWidget(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {
-        QWidget.call(this, parent);   // : QWidget(parent)
+        // : QWidget(parent) —— 真控件本体(组合): 子控件都挂在它下面, 布局也设在它上面
+        this.root = new JZWidget(parent);
 
         this.recordList = [];   // QVector<BTERecordPtr> recordList; 分选数据
         this.result = new SplitResult();   // SplitResult result; 分选结果
@@ -91,8 +99,27 @@ export class SplitSettingWidget
         this.sigPrepareData = [];   // signals: void sigPrepareData();
         this.sigSplitFinish = [];   // signals: void sigSplitFinish();
 
-        this.ui = new Ui_SplitSettingWidgetClass();
-        this.ui.setupUi(this);
+        // ---- 真 UI(原 Ui_SplitSettingWidgetClass + setupUi 的替身) ----
+        // 6 个控件直接 new 真 JZ 类, 用真布局排起来, 不再依赖 qtcompat 的 uic 替身。
+        const lay = new JZVBoxLayout();
+
+        this.ui = {};
+        this.ui.tableSplitSelect = new JZTableWidget(this.root);
+        this.ui.tableWidgetSplit = new JZTableWidget(this.root);
+        this.ui.boxSplitType = new JZComboBox(this.root);
+        this.ui.spinSplitMin = new JZSpinBox(this.root);
+        this.ui.spinSplitMax = new JZSpinBox(this.root);
+        this.ui.spinSplitNum = new JZSpinBox(this.root);
+        // 原 uic 生成的 setupUi(): 这里控件都在上面建好了, 留空实现对齐名字
+        this.ui.setupUi = function (_w) { };
+
+        lay.addWidget(this.ui.boxSplitType, 0);
+        lay.addWidget(this.ui.spinSplitMin, 0);
+        lay.addWidget(this.ui.spinSplitMax, 0);
+        lay.addWidget(this.ui.spinSplitNum, 0);
+        lay.addWidget(this.ui.tableSplitSelect, 1);
+        lay.addWidget(this.ui.tableWidgetSplit, 2);
+        this.root.setLayout(lay);
 
         //tableSplit
         const strListSelect = [];
@@ -105,13 +132,15 @@ export class SplitSettingWidget
         this.ui.tableWidgetSplit.setColumnCount(strListSplit.length);
         this.ui.tableWidgetSplit.setHorizontalHeaderLabels(strListSplit);
 
-        this.ui.tableWidgetSplit.setSelectionMode(QAbstractItemView.SingleSelection); //单击选择一行
-        this.ui.tableWidgetSplit.setSelectionBehavior(QAbstractItemView.SelectRows);  //设置只能选择一行，不能多行选
-        this.ui.tableWidgetSplit.verticalHeader().hide();
+        // Qt 的 setSelectionMode/setSelectionBehavior/verticalHeader().hide() 在真 JZTableWidget
+        // 上没有对应接口(非必须的显示行为) —— 保留调用点说明, 不再调假接口。
+        // (原来是: setSelectionMode(SingleSelection) / setSelectionBehavior(SelectRows) / verticalHeader().hide())
 
         this.ui.tableWidgetSplit.setRowCount(15);
         for (let i = 0; i < 15; i++)
         {
+            // 单元格项仍用 qtcompat 的 QTableWidgetItem(它的 role 语义 port 里到处在用);
+            // 表格本体已是真 JZTableWidget, 桥的 setItem 会写穿到真单元格。
             const item = new QTableWidgetItem(String.fromCharCode('A'.charCodeAt(0) + i));
             const item1 = new QTableWidgetItem();
             const item2 = new QTableWidgetItem();
@@ -152,7 +181,7 @@ export class SplitSettingWidget
         const count = this.ui.spinSplitNum.value();
         if (min >= max)
         {
-            QMessageBox.information(this, "", tr("分选条件设置错误"));
+            JZMessageBox.information(this, "", tr("分选条件设置错误"));
             return;
         }
 
@@ -225,6 +254,7 @@ export class SplitSettingWidget
         if (!this.uiToRange())
             return;
 
+        // TODO(界面层): 引擎还没绑定输入对话框(JZInputDialog) —— 暂时仍用 qtcompat 的替身(返回空串=取消)
         const name = QInputDialog.getText(this, "", tr("请输入名称"));
         if (name === "")
             return;
@@ -344,7 +374,7 @@ export class SplitSettingWidget
                 {
                     // .arg(%1,%2) -> sprintf(%d,%d)
                     const tips = sprintf(tr("第行%d,第列%d 数据范围错误,请检查"), i + 1, idx + 2);
-                    QMessageBox.information(this, "", tips);
+                    JZMessageBox.information(this, "", tips);
                     return false;
                 }
             }
@@ -359,7 +389,7 @@ export class SplitSettingWidget
 
         if (vaild_num === 0)
         {
-            QMessageBox.information(this, "", tr("至少要有一组分选数据"));
+            JZMessageBox.information(this, "", tr("至少要有一组分选数据"));
             return false;
         }
 
@@ -435,8 +465,9 @@ export class SplitSettingWidget
 export function ExportSplitResult(w, text)
 {
     const basename = "Split_" + formatDateTime(new Date(), "yyyyMMdd_hhmmss") + ".xlsx";
-    const filename = QFileDialog.getSaveFileName(w, "", basename, "*.xlsx");
-    if (filename === "")
+    // 真文件对话框(引擎的 JZFileDialog): 取消/失败返回 null(比原来的空串更好判)
+    const filename = JZFileDialog.getSaveFileName(w, "", basename, "*.xlsx");
+    if (!filename)
         return;
 
     const workbook = workbook_new(filename);

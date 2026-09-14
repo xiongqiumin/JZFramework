@@ -2883,8 +2883,12 @@ bridgeJz("QTableWidget", "JZTableWidget",
     },
     Object.assign({}, WIDGET_PROTO, {
         // Qt 的 item(r,c) —— 框架没有单元格对象, 这里给 JS 侧对象(首次从真单元格取文本)
+        // 注: _items 是**桥的构造里**建的; 但迁移期表格可能是真 UI(uiLoader)直接 new 的 JZTableWidget
+        //     —— 那种实例没走桥的构造, 所以这里(以及 setItem/clearContents)必须能自愈。
         item: function (r, c)
         {
+            if (!this._items)
+                this._items = new Map();
             const key = (r | 0) + "," + (c | 0);
             let it = this._items.get(key);
             if (!it)
@@ -2899,6 +2903,8 @@ bridgeJz("QTableWidget", "JZTableWidget",
         // Qt 的 setItem(r,c,item) —— 写穿到真单元格
         setItem: function (r, c, item)
         {
+            if (!this._items)
+                this._items = new Map();
             const key = (r | 0) + "," + (c | 0);
             if (!item)
             {
@@ -2910,7 +2916,8 @@ bridgeJz("QTableWidget", "JZTableWidget",
         },
         clearContents: function ()
         {
-            this._items.clear();
+            if (this._items)
+                this._items.clear();
             const f = origJz("JZTableWidget", "clearContents");
             if (f) f.call(this);
         },

@@ -51,6 +51,7 @@ import {
 } from './structs.js';
 import { HelpDialog } from './HelpDialog.js';
 import { QApplication, QFile, QFileDialog, QInputDialog, QMessageBox, QPoint, QRect, QSettings, Qt, qRgb } from './qtcompat.js';
+import { createUi } from './bteserverUi.js';   // 主窗口的真 UI(uic 的 Ui_BTEServerClass 替身)
 import { SplitDialog } from './SplitDialog.js';
 import { StepInfoDialog } from './StepInfoDialog.js';
 import { StepJumpDialog } from './StepJumpDialog.js';
@@ -130,6 +131,16 @@ export class DeviceInfo
 export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本身
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+
+    // ---- 窗口级转发 ----
+    // BTEServer 不再是 QMainWindow 的子类, 而是"持有真窗口(this.ui)的控制器":
+    // uiLoader 造出来的对象本身就是 JZWindow, 窗口操作转给它。这样调用点(main.ts 的
+    // w.show() / w.close())不用改名字。
+    show() { this.ui.show(); }
+    close() { this.ui.close(); }
+    setTitle(t) { this.ui.setTitle(t); }
+    setGeometry(x, y, w, h) { this.ui.setGeometry(x, y, w, h); }
+
     // 注意: C++ 里 QT 的 on_xxx_clicked / on_xxx_triggered 是"自动连接槽",
     //       由 ui_*.h 的 setupUi 按名字自动 connect; JS 侧保留同名方法, 由调用方显式绑。
 
@@ -164,13 +175,17 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         this.m_dispIndex = 0;
         this.m_manager = new NetDataManager();
 
-        this.ui = new Ui_BTEServerClass();
+        // 真 UI(uic 的 Ui_BTEServerClass 替身): uiLoader.load(XML) 直接造真控件树,
+        // 返回对象本身是 JZWindow, 且 ui.<name> 就是那些子控件(见 bteserverUi.ts)。
+        this.ui = createUi();
         this.m_actLang = new QActionGroup(this);
         this.m_actLang.addAction(this.ui.actionChn);
         this.m_actLang.addAction(this.ui.actionEng);
 
-        const set = new QSettings(qApp.applicationDirPath() + "/option.ini", QSettings.IniFormat);
-        const lang = Number(set.value("lang", 0));
+        // 配置: JZSettings 接口对齐 QSettings, 但取值用 getInt(原来 set.value() 返回 QVariant)
+        const set = new JZSettings();
+        set.open(jzApp.applicationDirPath() + "/option.ini");
+        const lang = set.getInt("lang");
         if (lang === 1)
         {
             this.ui.actionEng.setChecked(true);
@@ -198,6 +213,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         this.m_stepDataDialog = new StepDataDialog(this);
 
         // 创建连接
+        this.connectUi();   // 原 connectSlotsByName 的那一层(见 connectUi())
+
         this.m_server.newConnect.push((netId) => this.onNewConnect(netId));        // Qt::QueuedConnection
         this.m_server.disConnect.push((netId) => this.onDisConnect(netId));        // Qt::QueuedConnection
         this.m_server.newDataRecv.push((netId, ptr) => this.onDataRecv(netId, ptr)); // Qt::QueuedConnection
@@ -1969,6 +1986,62 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         this.ui.boxDevice.addItems(this.m_project.deviceList());
 
         this.initDevice();
+    }
+
+    // ---------------------------------------------------------------------------
+    // 原 ui_*.h 的 connectSlotsByName + on_xxx_clicked 自动连接 —— JS 侧要显式写。
+    // 信号约定见 qtcompat.ts 的 installSignals: 真控件的 onClicked/onToggled/onCurrentIndexChanged
+    // 等会转发进对应的 sig* 数组, 所以这里用 `w.sigClicked.push(cb)` 与原移植代码一致。
+    // ---------------------------------------------------------------------------
+    connectUi()
+    {
+        // 缺控件/缺信号的先跳过并报出来: 本移植的 UI XML 还没补齐(见 bteserverUi.ts)
+        const wire = (name, sig, cb) =>
+        {
+            const w = this.ui[name];
+            if (!w)
+            {
+                console.log("[connectUi] UI 里没有控件: " + name);
+                return;
+            }
+            if (!w[sig])
+            {
+                console.log("[connectUi] " + name + " 上没有信号: " + sig);
+                return;
+            }
+            w[sig].push(cb);
+        };
+
+        // 按钮(ui_*.h 靠命名约定自动连的)
+        wire('btnShowNormal', 'sigClicked', () => this.on_btnShowNormal_clicked());
+        wire('btnShowList', 'sigClicked', () => this.on_btnShowList_clicked());
+        wire('btnShowSplitSetting', 'sigClicked', () => this.on_btnShowSplitSetting_clicked());
+        wire('btnShowTest', 'sigClicked', () => this.on_btnShowTest_clicked());
+        wire('btnSplitQuery', 'sigClicked', () => this.on_btnSplitQuery_clicked());
+        wire('btnClearAlarm', 'sigClicked', () => this.on_btnClearAlarm_clicked());
+        wire('btnQuery', 'sigClicked', () => this.on_btnQuery_clicked());
+        wire('btnExportAll', 'sigClicked', () => this.on_btnExportAll_clicked());
+        wire('btnDeleteSelect', 'sigClicked', () => this.on_btnDeleteSelect_clicked());
+        wire('btnDeleteWeek', 'sigClicked', () => this.on_btnDeleteWeek_clicked());
+        wire('btnDeleteMonth', 'sigClicked', () => this.on_btnDeleteMonth_clicked());
+        wire('btnDeleteYear', 'sigClicked', () => this.on_btnDeleteYear_clicked());
+        wire('btnDeleteDevice', 'sigClicked', () => this.on_btnDeleteDevice_clicked());
+        wire('btnSaveSplit', 'sigClicked', () => this.on_btnSaveSplit_clicked());
+        wire('btnCopySplitList', 'sigClicked', () => this.on_btnCopySplitList_clicked());
+        wire('btnResetServer', 'sigClicked', () => this.on_btnResetServer_clicked());
+        wire('btnClearSend', 'sigClicked', () => this.on_btnClearSend_clicked());
+        wire('btnClearRecv', 'sigClicked', () => this.on_btnClearRecv_clicked());
+
+        // 页签 / 列表
+        wire('tabWidget', 'sigCurrentIndexChanged', () => this.on_tabWidget_currentChanged());
+        wire('tabWidgetSplit', 'sigCurrentIndexChanged', () => this.on_tabWidgetSplit_currentChanged());
+        // 列表的行变化: 框架侧信号名是 CurrentIndexChanged(Qt 的 currentRowChanged 在这套绑定里没有),
+        // 槽名沿用移植过来的 on_listWidget_currentRowChanged
+        wire('listWidget', 'sigCurrentIndexChanged', () => this.on_listWidget_currentRowChanged());
+
+        // 菜单动作: 引擎还没把菜单/动作注册到 JS, actionChn/actionEng 只是替身(见 bteserverUi.ts)
+        wire('actionChn', 'sigTriggered', () => this.on_actionChn_triggered());
+        wire('actionEng', 'sigTriggered', () => this.on_actionEng_triggered());
     }
 
     // void initDevice();

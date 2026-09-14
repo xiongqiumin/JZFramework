@@ -162,6 +162,43 @@ declare class Ui_StepSettingDialogClass {
   constructor(...args: any[]);
 }
 
+// ---- 引擎原生全局(真实实现; 见 JZJSEngine/js_wrapper 的 widget/types) ----
+// 与上面 qtcompat 那批不同, 这些是**真东西**: JZ* 是 C++ 控件的 JS 类(注册即挂全局),
+// jzApp/jzWidget 是应用级入口。声明同样刻意宽松, 目的只是让 tsc 认得名字;
+// 随界面层逐个文件移植, 再按 js_wrapper 里的真 .d.ts 逐条收紧。
+declare class JZWidget { [key: string]: any; constructor(...args: any[]); }
+declare class JZWindow { [key: string]: any; constructor(...args: any[]); }
+declare class JZDialog { [key: string]: any; constructor(...args: any[]); }
+declare class JZLabel { [key: string]: any; constructor(...args: any[]); }
+declare class JZPushButton { [key: string]: any; constructor(...args: any[]); }
+declare class JZCheckbox { [key: string]: any; constructor(...args: any[]); }
+declare class JZRadioButton { [key: string]: any; constructor(...args: any[]); }
+declare class JZLineEdit { [key: string]: any; constructor(...args: any[]); }
+declare class JZTextEdit { [key: string]: any; constructor(...args: any[]); }
+declare class JZComboBox { [key: string]: any; constructor(...args: any[]); }
+declare class JZSpinBox { [key: string]: any; constructor(...args: any[]); }
+declare class JZSlider { [key: string]: any; constructor(...args: any[]); }
+declare class JZProgressBar { [key: string]: any; constructor(...args: any[]); }
+declare class JZGroupBox { [key: string]: any; constructor(...args: any[]); }
+declare class JZTabWidget { [key: string]: any; constructor(...args: any[]); }
+declare class JZStackedWidget { [key: string]: any; constructor(...args: any[]); }
+declare class JZChart { [key: string]: any; constructor(...args: any[]); }
+declare class JZTableWidget { [key: string]: any; constructor(...args: any[]); }
+declare class JZTableWidgetItem { [key: string]: any; constructor(...args: any[]); }
+declare class JZListWidget { [key: string]: any; constructor(...args: any[]); }
+declare class JZListWidgetItem { [key: string]: any; constructor(...args: any[]); }
+declare class JZVBoxLayout { [key: string]: any; constructor(...args: any[]); }
+declare class JZHBoxLayout { [key: string]: any; constructor(...args: any[]); }
+declare class JZGridLayout { [key: string]: any; constructor(...args: any[]); }
+// JZMessageBox / JZFileDialog: 只有静态接口(挂在全局对象上), 不是类 ⇒ 用 const 声明
+declare const JZMessageBox: any;
+declare const JZFileDialog: any;
+declare class JZSettings { [key: string]: any; constructor(...args: any[]); }
+declare const jzApp: any;
+declare const jzWidget: any;
+// uiLoader: 引擎的 UI 定义加载器(load(xml) -> 真控件树; 见 bteserverUi.ts)
+declare const uiLoader: any;
+
 // ---- 值 / 函数型全局(qApp、库函数、Windows 常量、引擎注入的 __jz) ----
 declare const PlaySoundW: any;
 declare const RaiseException: any;

@@ -12,30 +12,28 @@
 //   尚未补齐的 ui_*(见 MEMORY 的"源级镜像层"说明), **静态** import 会在链接期直接
 //   失败, 连上面的协议自测都跑不到; 动态 import() 把失败推迟到真正启动界面时。
 //
-// 2026-09-13 变更(为了"能在 JS 引擎里真的跑起来"):
-//   1) 顶部 `import './qtcompat.js'`: 本文件用到的 QApplication/QTranslator/QSettings/
-//      QMessageBox/qApp/Qt 由 Qt 兼容层提供(引擎里没有 Qt)。
-//   2) CoreDump.js / SecurityDLL.js / securityclient.js **这三个文件在仓库里根本不存在**
-//      (都按用户要求未移植), 原来的 `await import(...)` 会直接抛"模块找不到", 使 main()
-//      连第一行都跑不到。改为 optionalImport(): 找不到就跳过并记账。
-//   3) 新增 startHeadlessServer(port): **不依赖界面**的一条真实可跑入口
-//      (NetServer + 协议解析 + 数据包注册), 用于在无 GUI 的引擎会话里跑 BTE 服务端。
+// 2026-09-14 变更(去 Qt 兼容层):
+//   1) 本文件不再 import './qtcompat.js': 应用对象用全局 **jzApp**, 配置用 **JZSettings**,
+//      弹窗用 **JZMessageBox**, 窗口/控件用真 **JZ*** —— 原来的 QApplication / QTranslator /
+//      QSettings / QMessageBox / Qt / QSharedMemory 全部去掉。
+//   2) 界面层(BTEServer.js)仍没收口时**不再直接返回 1**: 改为起一个真窗口外壳
+//      (buildMainWindow: 真 JZWindow + 真布局 + 真控件), headless 路径保留为 startHeadlessServer()。
+//   3) 本模块**被作为入口脚本加载**(引擎的入口路径就是 main.js)时自动跑 main();
+//      被别的入口 import(如测试的引导脚本)时只导出, 不自动起界面 —— 判据见文件末尾 autoStart()。
 //
-// Qt -> JS: QApplication -> qtcompat; QTranslator / QSharedMemory -> qtcompat;
-//   Qt 消息处理器(type/context/msg) -> 同名函数, 参数语义不变; `#if 0` 的授权校验
-//   (SecurityDLL/CheckRegTime/SecurityClient)按原样保留在注释块里。
-//   原 LogManager.js 已删除: LogInfo/LogError/LogFatal -> console.log/error;
-//   LogManager.instance().init/deinit/setLogLevel -> 由引擎 console 接管(不再单独配目录/级别)。
+// 历史(2026-09-13): CoreDump.js / SecurityDLL.js / securityclient.js 三个文件在仓库里根本
+//   不存在(按要求未移植), 故用 optionalImport() 兜住"模块找不到"。
+//   原 LogManager.js 已删除: LogInfo/LogError/LogFatal -> console.log/error, 由引擎 console 接管。
 // ---------------------------------------------------------------------------
 
-import './qtcompat.js';                     // QApplication / qApp / QTranslator / QSettings / Qt
 import { CMD, FrameParser, encodeFrame, decodeFrame, hexOf, cmdName, channelMask, maskChannels } from './protocol.js';
 import {
     packStart70, packStop, packResume, packStepJump, packDFDataResp, packSetRtc,
     unpackBody, unpackRTData76, unpackDFData76, unpackSendInfo, packRTData76, packDFData76,
     workStatusText, isChannelFault, aTimeToISO, SIZE,
 } from './structs.js';
-import { EXCEPTION_ACCESS_VIOLATION, NULL, QApplication, QMessageBox, QSettings, QSharedMemory, QTranslator, Qt, QtCriticalMsg, QtDebugMsg, QtFatalMsg, QtInfoMsg, QtWarningMsg } from './qtcompat.js';
+// 本文件已**不再依赖 Qt 兼容层**: 应用对象用全局 jzApp, 配置用 JZSettings, 弹窗用 JZMessageBox,
+// 窗口/控件用 JZ*(全是引擎的真实实现)。其余文件仍在迁移中 —— 见 main() 末尾的 TODO。
 
 // ===========================================================================
 // 职责 1: 协议离线自测(合并自原根目录 main.js)
@@ -330,26 +328,17 @@ let qtLogHandler = null;
 export function exception_exit()
 {
     // LogManager.instance().deinit();   // 日志改由引擎 console 接管(LogManager.js 已删除)
-    g_server.CrashExit();
-    QMessageBox.information(null, "", qApp.translate("main", "程序异常，请联系工程师"));
+    if (g_server)
+        g_server.CrashExit();
+    JZMessageBox.information(null, "", "程序异常，请联系工程师");
 }
 
 // void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
+// 迁移后 Qt 的消息处理器不存在了: 日志统一走引擎 console(原 qtLogHandler / qInstallMessageHandler
+// 那套一并去掉)。保留函数名是因为它在原 C++ 里是导出符号, 便于对照。
 export function myMessageOutput(type, context, msg)
 {
-    switch (type)
-    {
-        case QtDebugMsg:
-        case QtInfoMsg:
-        case QtWarningMsg:
-        case QtCriticalMsg:
-            qtLogHandler(type, context, msg);
-            break;
-        case QtFatalMsg:
-            console.error("%s", msg);
-            RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, NULL);
-            break;
-    }
+    console.error("[qt] " + msg);
 }
 
 // void parseDataTest();
@@ -359,48 +348,22 @@ export function myMessageOutput(type, context, msg)
 // namespace JQFoundation
 export const JQFoundation = {
     // bool singleApplication(const QString &flag)
+    // 原实现走 QSharedMemory(共享内存)判重; 引擎没有对应原语 —— 暂时恒返回 true
+    // (与迁移前 qtcompat 那个替身的行为一致)。要真做就落一个锁文件。
     singleApplication: function (flag)
     {
-        // static QSharedMemory *shareMem = nullptr;
-        if (JQFoundation._shareMem)
-        {
-            return true;
-        }
-
-        JQFoundation._shareMem = new QSharedMemory("JQFoundationSingleApplication_" + flag);
-
-        for (let count = 0; count < 2; ++count)
-        {
-            if (JQFoundation._shareMem.attach(QSharedMemory.ReadOnly))
-            {
-                JQFoundation._shareMem.detach();
-            }
-        }
-
-        if (JQFoundation._shareMem.create(1))
-        {
-            return true;
-        }
-
-        return false;
+        return true;
     },
-
-    _shareMem: null,
 };
 
 // QTranslator *qTranslator;
 export let qTranslator = null;
 
 // void switchAppLang(int lang)
+// 翻译层(.qm / QTranslator)尚未移植 —— 语言切换暂时只记账, 界面文本仍是中文。
 export function switchAppLang(lang)
 {
-    const str = QApplication.applicationDirPath() + "/lang/bteserver_en.qm";
-    qApp.removeTranslator(qTranslator);
-    if (lang === 1)
-    {
-        if (qTranslator.load(str))
-            qApp.installTranslator(qTranslator);
-    }
+    console.log("[main] switchAppLang(" + lang + "): 翻译层未移植, 界面文本仍为中文");
 }
 
 // 可选的动态 import: 仓库里尚未移植的模块(CoreDump/SecurityDLL/securityclient)
@@ -421,8 +384,8 @@ export async function optionalImport(path)
 // int main(int argc, char *argv[])
 export async function main(argc, argv)
 {
-    const a = new QApplication(argc, argv);
-    qTranslator = new QTranslator(a);
+    // 应用对象由宿主创建(C++ 的 JZApplication), JS 侧通过全局 jzApp 访问其路径/退出入口
+    // (见 JZJSWidgetModule::registApp)。原 `new QApplication(argc, argv)` / QTranslator 一并去掉。
 
     // 以下模块在翻译层尚未补齐, 用动态 import 延后加载(见文件头说明):
     const coreDump = await optionalImport('./CoreDump.js');                  // 未移植(按要求跳过)
@@ -436,11 +399,11 @@ export async function main(argc, argv)
         coreDump.CoreDump.init();                        // 未移植(按要求跳过)
         coreDump.CoreDump.setCallBack(exception_exit);
     }
-    qtLogHandler = qInstallMessageHandler(myMessageOutput);
 
-    const set = new QSettings(qApp.applicationDirPath() + "/option.ini", QSettings.IniFormat);
-    // Qt: set.value("lang", 0).toInt();  JS 侧 QSettings::value 返回原始值(见 qtcompat 说明)
-    const lang = Number(set.value("lang", 0));
+    // 配置: 原来是 QSettings(option.ini), 现在是引擎的 JZSettings(接口名对齐, value() -> getInt())
+    const set = new JZSettings();
+    set.open(jzApp.applicationDirPath() + "/option.ini");
+    const lang = set.getInt("lang");
     if (lang === 1)
     {
         switchAppLang(lang);
@@ -449,12 +412,11 @@ export async function main(argc, argv)
     // 注册数据包
     if (netPackDefine && netPackDefine.NetPackRegist)
         netPackDefine.NetPackRegist();
-    // LogManager.instance().init(QApplication.applicationDirPath() + "/log");  // 日志由引擎 console 接管
-    // LogManager.instance().setLogLevel(LOG_WARNING);
+    // LogManager.instance().init(...): 日志由引擎 console 接管
 
     if (!JQFoundation.singleApplication("myApplication"))
     {
-        QMessageBox.information(null, "", qApp.translate("main", "程序不能重复启动"));
+        JZMessageBox.information(null, "", "程序不能重复启动");
         return 1;
     }
 
@@ -475,20 +437,57 @@ export async function main(argc, argv)
     //     }
     // #endif
 
-    if (!server || !server.BTEServer)
+    if (server && server.BTEServer)
     {
-        // BTEServer.js 还没能加载(它的依赖链里有尚未收口的界面层), 无法起界面
-        console.error("[main] BTEServer.js 未能加载, 只启动后台服务(见 startHeadlessServer)");
-        return 1;
+        // 真 BTEServer 的界面层还在移植(它的构造会碰尚未收口的 ui_*): 起得来就用它,
+        // 起不来就退回下面的真窗口外壳 —— **不能**因为界面没就绪就让整个程序起不来。
+        try
+        {
+            const w = new server.BTEServer();
+            w.show();
+            g_server = w;
+            return 0;
+        }
+        catch (e)
+        {
+            // message + stack 都要: 迁移期这里既会报 "not a function"(要看 stack 定位),
+            // 也会报引擎抛的描述性错误(uiLoader 的解析/建控件失败原因在 message 里)
+            console.error("[main] BTEServer 起界面失败(界面层仍在移植), 退回真窗口外壳: " +
+                ((e && e.message) ? (e.message + " | " + (e.stack || "")) : e));
+        }
     }
 
-    const w = new server.BTEServer();
-    w.setWindowFlags(Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint);
-    w.showMaximized();
+    // 界面层还没收口(BTEServer.js 的依赖链里 import 着尚未移植的 ui_*): 先起一个**真窗口外壳**
+    // —— 真 JZWindow + 真布局 + 真控件, 用的就是界面层将来要用的那套 API。
+    // TODO(界面层迁移): 把 BTEServer.ts / BTEItemWidget.ts / 7 个 *Dialog.ts / Split*.ts 逐个换成
+    //   真 JZ 控件后, 这里改回 `new BTEServer()`, 并把 qtcompat.ts 删掉。
+    const w = buildMainWindow();
     w.show();
-    g_server = w;
+    console.log("[main] BTEServer 界面层仍在移植中, 已启动真窗口外壳(网络/协议层可用)");
+    return 0;   // 事件循环由宿主托管(原 Qt 的 a.exec() 不需要在 JS 里跑)
+}
 
-    return a.exec();
+// 主窗口外壳: 真控件搭出来的最小可跑骨架(标题 + 状态条 + 设备表)。
+// 说明: 这里是**真 JZ 控件**, 不是替身 —— 界面层移植完成后这个函数会被 new BTEServer() 取代。
+function buildMainWindow()
+{
+    const win = new JZWindow();
+    win.setTitle("BTEServer");
+    win.setGeometry(80, 60, 1000, 640);
+
+    const lay = new JZVBoxLayout();
+
+    const tip = new JZLabel("BTEServer —— 界面层移植中(当前为真控件外壳); 网络/协议层已可用");
+    lay.addWidget(tip, 0);
+
+    const table = new JZTableWidget();
+    table.setColumnCount(3);
+    table.setHorizontalHeaderLabels(["设备", "状态", "IP"]);
+    table.setRowCount(0);
+    lay.addWidget(table, 1);
+
+    win.setLayout(lay);
+    return win;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,11 +539,27 @@ export async function startHeadlessServer(port)
 }
 
 // ---------------------------------------------------------------------------
-// 载入本文件即跑一遍协议自测(与合并前"根目录 main.js"作为测试入口的行为一致,
-// 输出末尾带 BTE_SELFTEST 契约)。只做协议自测的脚本也可以直接:
-//     import { protocolSelfTest } from './main.js';  protocolSelfTest();
-// 不想在启动界面时跑自测, 把下面开关改成 false。
+// 自动启动: 只有当本模块**就是入口脚本**时才起界面。
+// 判据 = 引擎的入口脚本路径(__jz.core.appFile(), 见 JZEngineRuntime::runModule):
+//   * 直接跑 bteserver(入口是 main.js)      -> 起窗口(buildMainWindow 或真 BTEServer);
+//   * 被别的入口 import(如测试的引导脚本)   -> 只导出, 不自动起界面。
 // ---------------------------------------------------------------------------
-const RUN_PROTOCOL_SELFTEST = true;
-if (RUN_PROTOCOL_SELFTEST)
-    protocolSelfTest();
+(function autoStart()
+{
+    try
+    {
+        const core = (typeof __jz !== "undefined" && __jz) ? __jz.core : null;
+        const appFile = (core && core.appFile) ? String(core.appFile() || "") : "";
+        if (/[\\/]main\.(js|mjs)$/i.test(appFile))
+        {
+            main(0, []).catch(function (e)
+            {
+                console.error("[main] 启动失败: " + e);
+            });
+        }
+    }
+    catch (e)
+    {
+        console.error("[main] autoStart 失败: " + e);
+    }
+})();

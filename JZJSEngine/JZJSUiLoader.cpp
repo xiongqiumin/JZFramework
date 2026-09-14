@@ -502,6 +502,23 @@ const std::map<std::string, std::string>& uiClassMap()
         { "VBoxLayout",   "JZVBoxLayout" },
         { "HBoxLayout",   "JZHBoxLayout" },
         { "GridLayout",   "JZGridLayout" },
+        // ---- 补齐(2026-09-14): 原表只覆盖了一部分已注册控件, 缺的会让 createUi 直接失败
+        //      ("未知控件类型: xxx(引擎未注册该类)"), 而它们在 JZJSWidgetModule 里其实都注册了。
+        //      注1: 只有**树里实际用到**的类型才会写进生成脚本, 所以给全没有副作用(未用到的映射是惰性的);
+        //      注2: 映射目标必须是真正注册过的类, 否则用到时会 undefined —— 下表均为已注册控件。
+        { "Widget",        "JZWidget" },
+        { "Switch",        "JZSwitch" },
+        { "ListWidget",    "JZListWidget" },
+        { "TableWidget",   "JZTableWidget" },
+        { "StackedWidget", "JZStackedWidget" },
+        { "TabWidget",     "JZTabWidget" },
+        { "TextEdit",      "JZTextEdit" },
+        { "ScrollArea",    "JZScrollArea" },
+        { "ScrollBar",     "JZScrollBar" },
+        { "Splitter",      "JZSplitter" },
+        { "MenuBar",       "JZMenuBar" },
+        { "Menu",          "JZMenu" },
+        // 未注册/暂无对应(用到会 undefined): TreeWidget(JZTreeWidget 尚未绑定到 JS)。
     };
     return m;
 }
@@ -519,13 +536,54 @@ bool uiHasText(const std::string& t) {
 bool uiHasTitle(const std::string& t) {
     return uiIsWindow(t) || t == "GroupBox" || t == "Chart";
 }
+// 下面几个白名单, 逐个对应 JZJSWidgetModule 里**真实绑定了 setter** 的控件类型。
+// 没绑定的一律不放行(否则生成的脚本一跑就抛"方法不存在"), 所以白名单必须与那边保持一致:
+//   setCurrentIndex: ComboBox / TabWidget / StackedWidget / ListWidget
+//   setChecked:      CheckBox / RadioButton
+//   setReadOnly:     LineEdit / TextEdit / SpinBox
+//   setPlaceholderText: LineEdit / TextEdit
+//   setMinimum/setMaximum: 目前只有 SpinBox
+bool uiHasCurrentIndex(const std::string& t) {
+    return t == "ComboBox" || t == "TabWidget" ||
+           t == "StackedWidget" || t == "ListWidget";
+}
+bool uiHasChecked(const std::string& t) {
+    return t == "CheckBox" || t == "RadioButton";
+}
+bool uiHasReadOnly(const std::string& t) {
+    return t == "LineEdit" || t == "TextEdit" || t == "SpinBox";
+}
+bool uiHasPlaceholder(const std::string& t) {
+    return t == "LineEdit" || t == "TextEdit";
+}
+bool uiHasRange(const std::string& t) {
+    return t == "SpinBox";
+}
+
+// 文本类属性(text/title/placeholderText)要**强制按字符串**取值:
+// xmlPropToJson 会把纯数字文本("1000")推断成整数, 若直接字面量化就成了 setText(1000),
+// 而 setText/setTitle 只收 string —— 会抛"参数类型"错误。这里统一转成字符串。
+std::string uiPropText(const Json::Value& v) {
+    if (v.isString())
+        return v.asString();
+    if (v.isInt())
+        return std::to_string(v.asInt());
+    if (v.isDouble())
+        return std::to_string(v.asDouble());
+    if (v.isBool())
+        return v.asBool() ? std::string("true") : std::string("false");
+    return std::string();
+}
 
 // 生成脚本片段: 创建节点 + 属性 + 挂载子节点, 返回该节点的局部变量名。
 struct UiScriptGen {
     std::string out;
     int counter = 0;
 
-    std::string genNode(const JZUiNode& node, int depth)
+    // ownerVar: 本节点所在**布局**的宿主控件(非布局节点传空)。
+    // 为什么需要: 布局的 addWidget **只登记 item、不建立父子关系**, 所以"布局里的控件"要两句 ——
+    // lay.addWidget(child) + child.setParentWidget(ownerWidget)。
+    std::string genNode(const JZUiNode& node, int depth, const std::string& ownerVar = "")
     {
         std::string indent(depth * 2, ' ');
         std::string var = "__w" + std::to_string(counter++);
@@ -545,24 +603,74 @@ struct UiScriptGen {
                 } else if (key == "visible" && val.isBool()) {
                     out += indent + var + ".setVisible(" + tsLiteral(val) + ");\n";
                 } else if (key == "text" && uiHasText(node.type)) {
-                    out += indent + var + ".setText(" + tsLiteral(val) + ");\n";
+                    out += indent + var + ".setText(" + tsLiteral(uiPropText(val)) + ");\n";
                 } else if (key == "title" && uiHasTitle(node.type)) {
-                    out += indent + var + ".setTitle(" + tsLiteral(val) + ");\n";
+                    out += indent + var + ".setTitle(" + tsLiteral(uiPropText(val)) + ");\n";
                 } else if (key == "style" && val.isObject()) {
                     out += indent + var + ".setStyleSheet(__css(" + tsLiteral(val) + "));\n";
                 }
-                // 其它属性暂不处理(避免调用不存在的 setter 抛异常)
+                // 以下这批是后补的常用属性: 一律"属性名 + 控件类型白名单 + 值类型"三重把关。
+                // 值类型按 xmlPropToJson 的推断结果卡(纯文本 "0" 会变成整数、"true" 会变成布尔),
+                // 所以 placeholderText 既要收字符串、也要收纯数字文本("0" 这种)。
+                else if (key == "currentIndex" && uiHasCurrentIndex(node.type) && val.isInt()) {
+                    out += indent + var + ".setCurrentIndex(" + tsLiteral(val) + ");\n";
+                } else if (key == "checked" && uiHasChecked(node.type) && val.isBool()) {
+                    out += indent + var + ".setChecked(" + tsLiteral(val) + ");\n";
+                } else if (key == "readOnly" && uiHasReadOnly(node.type) && val.isBool()) {
+                    out += indent + var + ".setReadOnly(" + tsLiteral(val) + ");\n";
+                } else if (key == "placeholderText" && uiHasPlaceholder(node.type)
+                           && (val.isString() || val.isInt())) {
+                    out += indent + var + ".setPlaceholderText(" + tsLiteral(uiPropText(val)) + ");\n";
+                } else if (key == "minimum" && uiHasRange(node.type) && val.isInt()) {
+                    out += indent + var + ".setMinimum(" + tsLiteral(val) + ");\n";
+                } else if (key == "maximum" && uiHasRange(node.type) && val.isInt()) {
+                    out += indent + var + ".setMaximum(" + tsLiteral(val) + ");\n";
+                }
+                // 其余属性仍然不处理(避免调用不存在的 setter 抛异常) —— 引擎侧没绑的能用清单见
+                // 各 .ui 转换出来的 report.txt("被忽略的属性"一节)。
             }
         }
 
         for (const auto& c : node.children) {
-            std::string childExpr = genNode(c, depth + 1);
-            if (uiIsWindow(node.type) && !uiIsLayout(c.type))
-                out += indent + var + ".addWidget(" + childExpr + ");\n";
-            else if (uiIsLayout(c.type))
+            // 布局: 设到**控件**上(布局的 addWidget 只登记 item, 真正的父子关系由宿主控件立)
+            if (uiIsLayout(c.type)) {
+                if (uiIsLayout(node.type)) {
+                    // 布局套布局: 引擎的布局没有 addLayout, 显式报错比静默生成坏代码好
+                    out += indent + "throw new Error(\"uiLoader: 暂不支持布局嵌套布局(父 "
+                        + node.type + " \"" + node.id + "\" > 子 \"" + c.id
+                        + "\"), 请在转换阶段把内层布局拍平\");\n";
+                    continue;
+                }
+                std::string childExpr = genNode(c, depth + 1, var);   // 布局的宿主 = 本控件
                 out += indent + var + ".setLayout(" + childExpr + ");\n";
-            else
+                continue;
+            }
+
+            std::string childExpr = genNode(c, depth + 1);
+            if (uiIsLayout(node.type)) {
+                // 父是布局: 先登记进布局, 再把父子关系立起来 ——
+                // **不能**用 setParentWidget(布局): 布局不是控件, 那里会抛"需要 JZWidget"。
+                // 布局 addWidget 的真实形参: 箱式 (控件, stretch); 网格 (控件, row, col)。
+                // 这里按箱式给 stretch=0 —— 网格布局请让转换器映射成箱式
+                // (ui2jz.py 的 CLASS_MAP: QGridLayout -> VBoxLayout, 语义损失记在 report),
+                // 否则手写 <widget class="GridLayout"> 会因为形参个数不对而报错。
+                out += indent + var + ".addWidget(" + childExpr + ", 0);\n";
+                if (!ownerVar.empty())
+                    out += indent + childExpr + ".setParentWidget(" + ownerVar + ");\n";
+            } else if (uiIsWindow(node.type)) {
+                out += indent + var + ".addWidget(" + childExpr + ");\n";
+            } else {
                 out += indent + childExpr + ".setParentWidget(" + var + ");\n";
+            }
+        }
+
+        // currentIndex 必须在**子节点挂载之后**再设一次:
+        // 上面按属性顺序先调了 setCurrentIndex(1), 那时容器里还没有页/项, 索引会被夹成 -1,
+        // 之后挂载也不会自动补回来(实测 tabWidget.currentIndex() 回读 -1)。
+        if (props.isObject() && uiHasCurrentIndex(node.type)
+            && props.isMember("currentIndex") && props["currentIndex"].isInt()) {
+            out += indent + var + ".setCurrentIndex("
+                + tsLiteral(props["currentIndex"]) + ");\n";
         }
 
         if (!node.id.empty())

@@ -58,7 +58,9 @@ public:
     bool isAbsolute(const std::string& path);
     std::string platform();     // 映射 windows -> win32
     std::string tmpdir();
-    std::string cwd();
+    std::string cwd();          // 进程当前工作目录(与 Qt 的 QDir::currentPath() 同义)
+    std::string workDir();      // 引擎运行根(setWorkDir 设的; 一个 app 可起多个引擎, 各有各的运行根)
+    std::string appFile();      // 入口脚本(第一个加载的 js, 一般 main.js)绝对路径; appDir 由它推导
     std::string execPath();
 
     // ---- crypto / 随机 / UUID 原子 API(由内嵌 JS 适配层调用, 挂在 __jz.core 下) ----

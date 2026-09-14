@@ -39,6 +39,7 @@
 #include "JZDir.h"
 #include "JZEventLoop.h"
 #include "JZFile.h"
+#include "JZPlatform.h"
 #include "JZJSCoreModule.h"
 #include "JZJSEngine.h"
 #include "JZJSNetModule.h"
@@ -65,9 +66,25 @@ static void check(const string& name, bool ok)
 
 #define STEP(x) do { fprintf(stderr, "[step] %s\n", x); fflush(stderr); } while (0)
 
+// ---------------------------------------------------------------------------
+// 测试临时目录: 统一放在**测试可执行文件所在目录**下, 不再落进程当前目录。
+// (以前用 JZDir::currentPath(): 从仓库根运行就把 bte_worker_tmp/ bte_storage_tmp/
+//  扔在仓库根, 污染工作区。)想改到系统临时目录就换这一处:
+//     JZDir dir(JZPlatform::applicationTmpPath() + "/" + name);
+// 要看产物(_paint.png / _item_paint.png / BET.prj)就按启动时打印的那个路径去找。
+// ---------------------------------------------------------------------------
+static JZDir bteTmpDir(const char* name)
+{
+    JZDir dir(JZPlatform::applicationDirPath() + "/" + name);
+    if (!dir.exists())
+        dir.mkpath(dir.path());
+    return dir;
+}
+
 int main()
 {
     STEP("enter main");
+    jzDebug() << "[bte] 临时目录根(exe 所在目录) =" << JZPlatform::applicationDirPath();
     JZApplication a;
     JZEventLoop loop;
     jzco_init();
@@ -79,6 +96,9 @@ int main()
     engine.start();
     // bteserver 的 protocol.js 用裸模块名 'core/dist/bytes.js', netServer.js 用 'net/dist/index.js'
     engine.setLibraryDir({ string(JZ_JS_WRAPPER_DIR) });
+
+    // 运行根这里**故意不设**: 验证引擎自己的兜底(JZJSEngine::init 用 JZDir::currentPath())。
+    // 真实宿主会显式设成 app 的运行根(JZEngineRuntime::initEngine)。
     STEP("engine start");
 
     // 模块安装顺序与 JZEngineRuntime 保持一致: net -> core -> widget -> worker
@@ -630,9 +650,7 @@ int main()
     // -----------------------------------------------------------------------
     {
         // worker 入口脚本必须全 ASCII(见 test_jsworker.cpp 的说明)
-        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
-        if (!tmp.exists())
-            tmp.mkpath(tmp.path());
+        JZDir tmp = bteTmpDir("bte_worker_tmp");
         const string entry = tmp.path() + "/_bte_worker.js";
         const string code =
             "__jz.worker.onMessage(function (from, v) {\n"
@@ -712,7 +730,7 @@ int main()
     // 2.8 画笔: QPainter -> JZPainter(离屏画笔真的画出 PNG)+ JS 对象控件配真控件
     // -----------------------------------------------------------------------
     {
-        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
+        JZDir tmp = bteTmpDir("bte_worker_tmp");
         string png = tmp.path() + "/_paint.png";
         std::replace(png.begin(), png.end(), '\\', '/');
         engine.eval("globalThis.__png = '" + png + "';");
@@ -763,7 +781,7 @@ int main()
 )JS", "'OK'");
 
     {
-        const string png = JZDir::currentPath() + "/bte_worker_tmp/_paint.png";
+        const string png = bteTmpDir("bte_worker_tmp").path() + "/_paint.png";
         int size = 0;
         if (JZFile::exists(png))
         {
@@ -1019,7 +1037,7 @@ int main()
     // ---- 2.9h 抓图: 把卡片当前内容抓成 PNG(证明绘制真的落到了控件图层上) ----
     STEP("2.9h: grab -> png");
     {
-        JZDir tmp(JZDir::currentPath() + "/bte_worker_tmp");
+        JZDir tmp = bteTmpDir("bte_worker_tmp");
         string shot = tmp.path() + "/_item_paint.png";
         std::replace(shot.begin(), shot.end(), '\\', '/');
         if (JZFile::exists(shot))
@@ -1142,11 +1160,41 @@ int main()
 })()
 )JS", "'OK'");
 
+    // 路径基准: QApplication.applicationFilePath()/applicationDirPath() 取**入口脚本**(第一个加载的
+    // js, 一般是 main.js), 不是可执行文件; workDir 没显式设过时默认 = 进程当前目录(JZJSEngine::init)。
+    // 下面那段 storage 测试会显式覆盖 appDir, 所以这里先断言默认值。
+    checkEqJs("path: jzApp wired + appFile/appDir + workDir defaults to cwd", R"JS(
+(function () {
+    var c = (typeof __jz !== 'undefined' && __jz.core) ? __jz.core : null;
+    if (!c) return 'no __jz.core';
+    var af = QApplication.applicationFilePath();
+    var ad = QApplication.applicationDirPath();
+    var wd = c.workDir ? c.workDir() : '';
+    var i = Math.max(af.lastIndexOf('/'), af.lastIndexOf('\\'));
+    var dir = i > 0 ? af.slice(0, i) : '';
+    var bad = [];
+    if (!af) bad.push('appFile empty');
+    if (af && !/^([A-Za-z]:[\\/]|\/)/.test(af)) bad.push('appFile not absolute: ' + af);
+    if (dir && ad !== dir) bad.push('appDir=' + ad + ' != dir(appFile)=' + dir);
+    if (wd !== c.cwd()) bad.push('workDir=' + wd + ' != cwd=' + c.cwd() + ' (init 的默认兜底没生效)');
+    // 全局 jzApp(JZApplication 的 JS 入口)必须与 QApplication 兼容层给出同样的答案
+    var ja = (typeof jzApp !== 'undefined') ? jzApp : null;
+    if (!ja) bad.push('jzApp missing');
+    else {
+        if (ja.applicationFilePath() !== af)
+            bad.push('jzApp.appFile=' + ja.applicationFilePath() + ' != QApplication=' + af);
+        if (ja.applicationDirPath() !== ad)
+            bad.push('jzApp.appDir=' + ja.applicationDirPath() + ' != QApplication=' + ad);
+        if (typeof ja.exit !== 'function') bad.push('jzApp.exit missing');
+        if (typeof QApplication.exit !== 'function') bad.push('QApplication.exit missing');
+    }
+    return bad.length ? bad.join(' | ') : 'OK';
+})()
+)JS", "'OK'");
+
     // 工程存档: 真正落盘 -> 读回来(.prj 现在是 JSON)
     {
-        JZDir tmpDir(JZDir::currentPath() + "/bte_storage_tmp");
-        if (!tmpDir.exists())
-            tmpDir.mkpath(tmpDir.path());
+        JZDir tmpDir = bteTmpDir("bte_storage_tmp");
         engine.eval("globalThis.__tmpDir = '" + tmpDir.path() + "';");
     }
     checkEqJs("storage: BTEProject save/load 往返(.prj JSON)", R"JS(

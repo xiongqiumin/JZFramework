@@ -3,6 +3,7 @@
 #include "JZJSBind.h"
 #include "JZJSWidget.h"
 #include "JZApplication.h"
+#include "JZDir.h"
 #include "JZWidget.h"
 #include "JZWindow.h"
 #include "JZDialog.h"
@@ -372,6 +373,7 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     registSettings();
     registItems();
     registViews();
+    registApp();
     registLayouts();
     registPens();
     registMatrix();
@@ -2533,6 +2535,92 @@ static JSValue js_jzWidget_styleSheetError(JSContext* ctx, JSValueConst, int, JS
     if (!jzApp)
         return JS_NewString(ctx, "");
     return JS_NewString(ctx, jzApp->styleSheetError().c_str());
+}
+
+// ---------- 全局 jzApp ----------
+// C++ 侧的进程级应用对象(jzApp, JZApplication)在 JS 侧的入口。与 jzWidget 一样属于"应用级"全局。
+//
+// 为什么不是 QApplication: 移植代码里的 QApplication/qApp 是**它自己的兼容层**(见 bteserver/src/
+// qtcompat.ts), 那一层负责把 Qt 名映射过来; 引擎只提供事实来源 —— 路径与退出。
+//   applicationDirPath()  入口脚本所在目录(见 JZJSEngine::appFilePath)
+//   applicationFilePath() 入口脚本绝对路径(同上)
+//   workingDirPath()      进程当前工作目录
+//   quit() / exit(code)   请求事件循环退出(等价 JZApplication::quit/exit)
+// 注1: **没加载过脚本(纯 eval 的引擎)时这两个都返回空串** —— 引擎不臆造 exe 那一份;
+//      需要"总是有个目录"的兼容层(qtcompat)自己按 workDir -> exe 继续退(见 qtcompat.appDirPath)。
+// 注2: 这里**不提供 exec()** —— JS 引擎的事件循环由宿主管(见 qtcompat 的 QApplication::exec)。
+namespace
+{
+// 应用路径的统一算法: 引擎知道入口脚本(多引擎各有各的) -> 没有就是空串。
+std::string jzAppPath(JSContext* ctx, bool wantDir)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine || engine->appFilePath().empty())
+        return std::string();
+
+    std::string f = engine->appFilePath();
+    if (!wantDir)
+        return f;
+
+    size_t pos = f.find_last_of("/\\");
+    return (pos == std::string::npos) ? std::string() : f.substr(0, pos);
+}
+
+JSValue js_jzApp_applicationDirPath(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    return JS_NewString(ctx, jzAppPath(ctx, true).c_str());
+}
+
+JSValue js_jzApp_applicationFilePath(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    return JS_NewString(ctx, jzAppPath(ctx, false).c_str());
+}
+
+JSValue js_jzApp_workingDirPath(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    return JS_NewString(ctx, JZDir::currentPath().c_str());
+}
+
+JSValue js_jzApp_quit(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    if (!jzApp)
+        return JS_ThrowInternalError(ctx, "jzApp.quit: 应用对象不存在(JZApplication 未创建)");
+    jzApp->quit();
+    return JS_UNDEFINED;
+}
+
+JSValue js_jzApp_exit(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (!jzApp)
+        return JS_ThrowInternalError(ctx, "jzApp.exit: 应用对象不存在(JZApplication 未创建)");
+
+    int code = 0;
+    if (argc > 0 && !JS_IsUndefined(argv[0]))
+    {
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        if (!engine || !engine->checkType(argv[0], JSType_int))
+            return JS_ThrowTypeError(ctx, "jzApp.exit(code): code 需要数字");
+        code = fromJSValue<int>(ctx, argv[0]);
+    }
+
+    jzApp->exit(code);
+    return JS_UNDEFINED;
+}
+}   // namespace
+
+void JZJSWidgetModule::registApp()
+{
+    JSContext* ctx = m_engine->context();
+    JSValue app = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, app, "applicationDirPath",
+                      JS_NewCFunction(ctx, js_jzApp_applicationDirPath, "applicationDirPath", 0));
+    JS_SetPropertyStr(ctx, app, "applicationFilePath",
+                      JS_NewCFunction(ctx, js_jzApp_applicationFilePath, "applicationFilePath", 0));
+    JS_SetPropertyStr(ctx, app, "workingDirPath",
+                      JS_NewCFunction(ctx, js_jzApp_workingDirPath, "workingDirPath", 0));
+    JS_SetPropertyStr(ctx, app, "quit", JS_NewCFunction(ctx, js_jzApp_quit, "quit", 0));
+    JS_SetPropertyStr(ctx, app, "exit", JS_NewCFunction(ctx, js_jzApp_exit, "exit", 1));
+    m_engine->setProperty(m_engine->globalObject(), "jzApp", app);
 }
 
 void JZJSWidgetModule::registUiLoader()

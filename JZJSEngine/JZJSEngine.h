@@ -135,6 +135,12 @@ public:
     // 运行根 / 模块查找目录(只读)。worker 引擎继承同一套"运行环境",
     // 但**不继承任何 JS 状态**(全局变量/模块缓存各自一份)。
     std::string workDirPath() const { return m_workDir; }
+
+    // 入口脚本(一般是 main.js)的绝对路径 = **第一个成功加载的模块**。appDir/appFile 以它为准
+    // (QApplication.applicationDirPath()/applicationFilePath(), 见 bteserver/src/qtcompat.ts)。
+    // 宿主可用 setAppFile 显式指定 —— 引擎启动时会预加载内部库(如 net/dist/index.js), 那个不该算入口。
+    std::string appFilePath() const { return m_appFile; }
+    void setAppFile(const std::string& file) { m_appFile = file; }
     std::vector<std::string> libraryDirs() const { return m_libraryDirs; }
     // C++ 侧派发的回调抛了未处理异常: 并入引擎错误链(sigLog/sigError + Engine_error)
     void reportUncaughtError(const std::string& text) { onExceptionOccurred(text); }
@@ -257,6 +263,22 @@ public:
     JSValue createObject();
     JSValue createValue(int type, int argc = 0, JSValueConst* argv = nullptr);
     JSValue createValue(int type, jsbind::JSPointerBase* ptr);
+
+    // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
+    // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
+    //   ① 不同包装共享 cppOwner/cleared -> 所有权翻转/失效同步;
+    //   ② 托管了句柄(state->handle)后再包给 JS, 直接复用**同一个 JS 对象** -> `===` 成立。
+    // 值语义类型(默认, 见 CClassDefine::pointerSemantics)不进这张表, 状态各自一份。
+    // create=false 只查; create=true 时表里没有就用 cppOwnerIfNew 建一份 —— 之所以要这个参数:
+    // 建状态的是**第一次包装**那次调用(toJsValueFromPtr 传进来的 cppOwner 是调用方的意图),
+    // 之后同对象的包装共享同一份状态, 各自传来的 cppOwner 不再生效(这正是"翻转同步"的前提)。
+    std::shared_ptr<jsbind::JSPointerState> pointerStateFor(const void* ptr, bool create,
+                                                           bool cppOwnerIfNew = true);
+    void bindPointerHandle(const void* ptr, JSValueConst jsValue);  // moveToCpp: dup 后登记
+    JSValue takePointerHandle(const void* ptr);                     // moveToJs: 新引用 + 摘登记
+    void forgetPointerState(const void* ptr);                       // clear: 释放托管句柄 + 摘表(不动底层对象)
+    JSValue pointerHandle(const void* ptr) const;                   // 查询(借用引用; 身份复用用)
+    void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
     JSValue createResolvedPromise(JSValue jsValue);
@@ -422,8 +444,10 @@ protected:
     // ---- ESM 模块支持(供 quickjs 模块 loader / runModuleFile 内部使用) ----
     // 编译 module_name 指定的文件为模块定义(找不到文件/编译失败时置 exception 返回 NULL)
     JSModuleDef* loadModuleDef(const std::string& module_name);
-    // 读模块源码：相对 workDir(或绝对)路径，带 .js / index.js 扩展名兜底与 BOM 剥离
-    bool readModuleCode(const std::string& module_name, std::string& code);
+    // 读模块源码：相对 workDir(或绝对)路径，带 .js / index.js 扩展名兜底与 BOM 剥离。
+    // resolved 非空时回填**实际命中的绝对路径**(供 appFile 记录第一个加载的脚本)
+    bool readModuleCode(const std::string& module_name, std::string& code,
+                        std::string* resolved = nullptr);
     // 泵 promise 任务队列(含未处理拒绝上报 Engine_error)
     void pumpPendingJobs();
 
@@ -439,6 +463,7 @@ protected:
     JSValue m_global;
     int m_objectId;
     std::string m_workDir;
+    std::string m_appFile;    // 入口脚本绝对路径(见 appFilePath); 空 = 没加载过脚本
     std::vector<std::string> m_libraryDirs;   // 模块加载时额外查找的根目录列表
 
     // ---- 事件驱动调度 ----
@@ -463,6 +488,10 @@ protected:
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
     std::set<int> m_JSRawPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 JSRawPointer<Class>
+
+    // 指针语义对象的共享状态表(key = 底层裸指针; 见 pointerStateFor)。
+    // state 本身是 shared_ptr, 包装们各持一份引用 ⇒ 摘表不影响已发出的句柄(它们仍能读到 cleared)。
+    std::map<const void*, std::shared_ptr<jsbind::JSPointerState>> m_pointerStates;
 
     int m_timeTaskId;
     std::vector<TimerTask> m_timeTasks;

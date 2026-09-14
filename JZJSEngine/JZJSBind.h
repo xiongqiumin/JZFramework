@@ -397,6 +397,11 @@ public:
     // 因每条包装路径(含 toJsValueFromPtr → createJSValue → createValue(type, ptr))都经此, 返回值转换 / toValuePtr / createCanvas 同样触发。
     void setInstanceBind(std::function<void(JSContext*, JSValue, jsbind::JSPointerBase*)> bind) { m_define.onCreated = std::move(bind); }
 
+    // 声明"指针语义": 该类型的包装登记进引擎的身份表(同底层对象 ⇒ 同 JS 对象, `===` 才有意义),
+    // 并支持 moveToCpp/moveToJs 的句柄托管。**默认是值语义**, 值类型(JZPoint/JZSize/JZRect/
+    // JZColor/JZFont/JZImage)别调这个。加不加都不影响 cppOwner/clear 的既有行为。
+    void setPointerSemantics() { m_define.pointerSemantics = true; }
+
     template <typename Return, typename... Args, typename... Extra>
     void def(std::string name, Return (Class::*f)(Args...), Extra... extra)
     {

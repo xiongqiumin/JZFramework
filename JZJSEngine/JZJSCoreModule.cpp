@@ -311,6 +311,20 @@ std::string JZJSCoreModule::cwd()
     return JZDir::currentPath();
 }
 
+// 引擎运行根: 入口脚本(main.js)所在目录。注意与 cwd() 的区别 —— cwd 是**进程**的当前目录
+// (一个 app 里的多个引擎共享同一个), workDir 是**每个引擎**各自的运行根(见 JZJSEngine::setWorkDir)。
+std::string JZJSCoreModule::workDir()
+{
+    return m_engine ? m_engine->workDirPath() : std::string();
+}
+
+// 入口脚本路径: QApplication.applicationFilePath() 的来源(applicationDirPath() = 它的目录)。
+// JS 侧要目录就自己 dirName(appFile()) —— 不用再提供一份重复的字符串处理。
+std::string JZJSCoreModule::appFile()
+{
+    return m_engine ? m_engine->appFilePath() : std::string();
+}
+
 std::string JZJSCoreModule::execPath()
 {
     return JZPlatform::applicationFilePath();
@@ -410,6 +424,8 @@ void JZJSCoreModule::initEngine(JZJSEngine* engine)
     m_engine->registFunction(ns, "platform", jsbind::createSelfFunction(this, &JZJSCoreModule::platform));
     m_engine->registFunction(ns, "tmpdir", jsbind::createSelfFunction(this, &JZJSCoreModule::tmpdir));
     m_engine->registFunction(ns, "cwd", jsbind::createSelfFunction(this, &JZJSCoreModule::cwd));
+    m_engine->registFunction(ns, "workDir", jsbind::createSelfFunction(this, &JZJSCoreModule::workDir));
+    m_engine->registFunction(ns, "appFile", jsbind::createSelfFunction(this, &JZJSCoreModule::appFile));
     m_engine->registFunction(ns, "execPath", jsbind::createSelfFunction(this, &JZJSCoreModule::execPath));
     m_engine->registFunction(ns, "uuid", jsbind::createSelfFunction(this, &JZJSCoreModule::uuid));
     m_engine->registFunction(ns, "randomBytes", jsbind::createSelfFunction(this, &JZJSCoreModule::randomBytes));

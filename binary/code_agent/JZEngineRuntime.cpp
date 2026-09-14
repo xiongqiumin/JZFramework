@@ -316,6 +316,9 @@ bool JZEngineRuntime::runModule(const string& moduleRel)
 
     m_lastError.clear();
     string errBefore = m_engine->runtimeError();
+    // 这才是**用户入口**(引擎启动时预加载的 net/dist/index.js 不算): appDir/appFile 以它为准,
+    // 供移植代码用 QApplication.applicationDirPath() 定位随脚本走的资源。
+    m_engine->setAppFile(rtAbsPath(moduleRel));
     bool loaded = m_engine->runModuleFile(moduleRel);
     rtPumpEngine();     // 让可能挂起的 job / console 输出落定
 

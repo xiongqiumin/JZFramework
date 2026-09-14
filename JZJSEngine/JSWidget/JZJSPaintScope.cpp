@@ -90,7 +90,7 @@ void JZJSPaintScope::end()
     // (状态里的 cleared 就是"画笔已不在"的判据), 否则会重复 delete。
     for (FrameEntry& e : frame)
     {
-        if (!e.info || e.info->cleared)
+        if (!e.info || e.info->isCleared())
             continue;
         delete e.painter;
         e.info->invalidate();

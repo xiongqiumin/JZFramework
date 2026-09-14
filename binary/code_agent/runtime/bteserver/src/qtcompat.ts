@@ -127,14 +127,79 @@ function dirName(path)
     return i > 0 ? String(path).slice(0, i) : "";
 }
 
-// QApplication::applicationDirPath() 的取值: 默认取可执行文件目录, 可被显式覆盖。
+// 引擎的应用级入口(全局 jzApp, 见 JZJSWidgetModule::registApp —— 包着 C++ 的 JZApplication):
+// 路径与 quit/exit 的事实来源。老引擎没有这个全局时返回 null, 调用方退回 __jz.core / 记账。
+function jzAppObj()
+{
+    try
+    {
+        // 走 globalThis 取(与 jzCore 一样对未声明标识符容错), 老引擎没有该全局时返回 null
+        const g = (typeof globalThis !== "undefined") ? (globalThis as any) : null;
+        const a = g ? g.jzApp : null;
+        if (a)
+            return a;
+    }
+    catch (e) { }
+    return null;
+}
+
+// QApplication::applicationDirPath() / applicationFilePath() 的取值:
+//   Qt 里它们指"可执行文件"; 但本运行时是"一个 app 可以起多个引擎, 每个引擎有自己的**入口脚本**"
+//   (一般是 main.js), 移植过来的界面代码用它们定位**随脚本走**的资源(option.ini / Modules /
+//   lang / wav / Data), 所以默认取入口脚本那一份:
+//     applicationFilePath() = 入口脚本绝对路径
+//     applicationDirPath()  = 入口脚本所在目录
+//   优先问 jzApp(引擎侧统一算好); 注意 jzApp 对**没加载过脚本**的引擎返回**空串**(它不臆造 exe 那份),
+//   这时兼容层自己继续往下退: __jz.core.appFile -> workDir(运行根) -> 可执行文件目录(旧行为)。
+//   setApplicationDirPath() 可随时显式覆盖。
 let g_appDir = null;
+function appFilePath()
+{
+    const a = jzAppObj();
+    if (a && a.applicationFilePath)
+    {
+        const f = a.applicationFilePath();
+        if (f)
+            return String(f);
+    }
+    const c = jzCore();
+    if (!c)
+        return "";
+    if (c.appFile)
+    {
+        const f = c.appFile();
+        if (f)
+            return f;
+    }
+    return c.execPath();
+}
 function appDirPath()
 {
     if (g_appDir !== null)
         return g_appDir;
+    const a = jzAppObj();
+    if (a && a.applicationDirPath)
+    {
+        const d = a.applicationDirPath();
+        if (d)
+            return String(d);
+    }
     const c = jzCore();
-    return c ? dirName(c.execPath()) : ".";
+    if (!c)
+        return ".";
+    if (c.appFile)
+    {
+        const f = c.appFile();
+        if (f)
+            return dirName(f);
+    }
+    if (c.workDir)
+    {
+        const wd = c.workDir();
+        if (wd)
+            return wd;
+    }
+    return dirName(c.execPath());
 }
 
 // ---------------------------------------------------------------------------
@@ -732,8 +797,9 @@ export class QApplication extends QObject
             QApplication._inst = this;
     }
     exec() { noteMissing("QApplication::exec(JS 引擎事件循环由引擎托管, 无需 exec)"); return 0; }
-    quit() { noteMissing("QApplication::quit"); }
-    exit(code) { noteMissing("QApplication::exit"); }
+    // 有全局 jzApp 就转发到真应用对象(等于 JZApplication::quit/exit), 否则退回记账
+    quit() { const a = jzAppObj(); if (a) a.quit(); else noteMissing("QApplication::quit"); }
+    exit(code) { const a = jzAppObj(); if (a) a.exit(code | 0); else noteMissing("QApplication::exit"); }
     processEvents() { }
     translate(context, text) { return text; }
     installTranslator(t) { this._translator = t; }
@@ -772,7 +838,9 @@ export class QApplication extends QObject
     static get ApplicationFlags() { return 0; }
     static applicationDirPath() { return appDirPath(); }
     static setApplicationDirPath(p) { g_appDir = String(p); }
-    static applicationFilePath() { const c = jzCore(); return c ? c.execPath() : ""; }
+    static applicationFilePath() { return appFilePath(); }
+    static quit() { const a = jzAppObj(); if (a) a.quit(); else noteMissing("QApplication::quit"); }
+    static exit(code) { const a = jzAppObj(); if (a) a.exit(code | 0); else noteMissing("QApplication::exit"); }
     static translate(context, text) { return text; }
     static instance() { return QApplication._inst; }
     static primaryScreen() { return makeLenient("QScreen"); }

@@ -544,6 +544,7 @@ function hitPlayer(): void
 function onKeyPress(e: JZKeyEvent): void
 {
     const k = e.key();
+    console.log("[key] press " + k + (e.isRepeat() ? " repeat" : ""));
     keys.add(k);
     if (k === VK_R || k === VK_RETURN)
     {
@@ -560,6 +561,7 @@ function onKeyPress(e: JZKeyEvent): void
 
 function onKeyRelease(e: JZKeyEvent): void
 {
+    console.log("[key] release " + e.key());
     keys.delete(e.key());
     e.accept();
 }

@@ -10,6 +10,7 @@
 //           const p = new JZPainter(img); ...; p.end();     // 见 painter.d.ts
 // 显示:     new JZImageLabel().setImage(img)
 
+/** @final */
 declare class JZImage {
   /** 空图(isNull() === true); 不能设尺寸/像素 */
   constructor();

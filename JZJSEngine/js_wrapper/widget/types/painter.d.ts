@@ -17,6 +17,7 @@
 //
 // 坐标系: 控件本地坐标; 变换/裁剪都作用于此。
 
+/** @final */
 declare class JZPainter {
   /** 屏幕画笔: 只能在 onPaint 回调内创建 */
   constructor(widget: JZWidget);

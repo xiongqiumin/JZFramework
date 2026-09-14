@@ -14,6 +14,7 @@
 // 值语义: 作为返回值时也是**拷贝**(每次调用得到新的 JS 对象), 改它不影响原控件 ——
 // 要改控件几何请调 JZWidget.setGeometry()。
 
+/** @final */
 declare class JZPoint {
   constructor();
   constructor(x: number, y: number);
@@ -28,6 +29,7 @@ declare class JZPoint {
 }
 
 // 未暴露(C++ 有): operator+ / operator- / operator+= / operator-=
+/** @final */
 declare class JZSize {
   constructor();
   constructor(w: number, h: number);
@@ -42,6 +44,7 @@ declare class JZSize {
   isValid(): boolean;
 }
 
+/** @final */
 declare class JZRect {
   constructor();
   constructor(x: number, y: number);

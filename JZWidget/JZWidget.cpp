@@ -1101,11 +1101,17 @@ void JZWidget::resizeEvent(JZResizeEvent*)
 
 // ==================== 属性 ====================
 
+// 预定义属性: 这里只认控件自己的名字(目前为空, 将来按需加分支), 认不出的落到 JZObject 的通用属性表。
+// (以前是 `{ return; }` / `return {}` —— 整个吞掉: 从 C++ 或 JS 调 w.setProperty("x", v) 都静默失效。)
 void JZWidget::setProperty(const std::string& name, const JZVariant& value)
-{ return; }
+{
+    JZObject::setProperty(name, value);
+}
 
 JZVariant JZWidget::property(const std::string& name) const
-{ return {}; }
+{
+    return JZObject::property(name);
+}
 
 // ==================== AI 语义层 (对齐 Android AccessibilityNodeInfo) ====================
 

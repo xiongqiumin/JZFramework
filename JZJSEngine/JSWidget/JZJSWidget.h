@@ -21,10 +21,11 @@
 //   * (顺带)C 函数自己校验 this_val/参数, 不经过 ClassBind 的形参类型表 —— 也就不受
 //     "形参首参必须是已注册类"那条约束。
 //
-// ==== 与 JZJS<Native> 镜像类的关系 ====
-// 镜像类(JZJSListWidget / JZJSTableWidget 等, 见各自头文件)解决的是"JS 侧创建的**数据项**
-// 的所有权/失效", 走的是 def + 包装引用形参那套; 本文件这组接口只服务**控件自身**, 用 C 函数。
-// 两边共同的命名约定仍成立: C++ 侧带包装语义的方法以 Js 结尾(本文件按 quickjs 惯例直接叫
+// ==== 状态放哪 ====
+// 需要"按控件保存状态"的 JS 接口(JZWidget 这组就是: 布局包装缓存 / 失效开关)一律用**全局 C 函数**
+// + 状态放 JZJSWidgetModule 的控件登记节点(WidgetInfo / WidgetInfo::ext), **不往控件类上派生镜像类**:
+// 派生类方案要求把基类指针还原成派生类型(C++ 侧 new 出来的控件是裸类对象 -> 写越界), 而且只有被
+// 显式实例化的类有效。命名约定: C++ 侧带包装语义的方法以 Js 结尾(本文件按 quickjs 惯例直接叫
 // js_JZWidget_xxx), **JS 侧看到的名字一律由注册处决定**(不带后缀)。
 //
 // 注册方式: 在 JZJSWidgetModule::registWidgets() 里由 ClassBind<JZWidget> 直接挂上去

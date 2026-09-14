@@ -14,6 +14,7 @@
 //   new JZGridLayout(pad?, gap?)
 //   new JZSelfLayout(pad?)
 
+/** @final */
 declare class JZLayout {
   constructor(pad?: number, spacing?: number);
 
@@ -23,6 +24,7 @@ declare class JZLayout {
   setContentsMargins(left: number, top: number, right: number, bottom: number): void;
 }
 
+/** @final */
 declare class JZVBoxLayout extends JZLayout {
   constructor(pad?: number, spacing?: number);
 
@@ -39,6 +41,7 @@ declare class JZVBoxLayout extends JZLayout {
   count(): number;
 }
 
+/** @final */
 declare class JZHBoxLayout extends JZLayout {
   constructor(pad?: number, spacing?: number);
 
@@ -54,6 +57,7 @@ declare class JZHBoxLayout extends JZLayout {
   count(): number;
 }
 
+/** @final */
 declare class JZGridLayout extends JZLayout {
   constructor(pad?: number, gap?: number);
 
@@ -74,6 +78,7 @@ declare class JZGridLayout extends JZLayout {
   clear(): void;
 }
 
+/** @final */
 declare class JZSelfLayout extends JZLayout {
   constructor(pad?: number);
 

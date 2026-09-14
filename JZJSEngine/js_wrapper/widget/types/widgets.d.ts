@@ -4,26 +4,32 @@
 // 构造: 与 C++ 构造一致(见本目录 index.d.ts 的"实参形态"清单), 父控件可传 null/undefined;
 // 父子关系也可事后用 setParentWidget() / 布局 addWidget() / JZWindow.addWidget() 建立。
 //
-// 事件走**属性写法**(不是 on()/addListener): 在实例上赋 onPaint / onMousePress / ... ;
-// 框架派发时发现同名的 JS 方法就转给 JS, 否则回退 C++ 默认实现。
+// 事件走**属性写法**(不是 on()/addListener): 在实例上赋 onPaint / onMousePress / ... ; 清空写 null。
+// 框架派发时看该控件"这一项"有没有回调: 有就转给 JS 并把事件**拦下**, 没有则回退 C++ 默认实现。
+// 回调**存在 C++ 侧**(不是包装对象的属性), 所以与"挂在哪一份包装上"无关: 任何被 JS 包装过的控件
+//   (含 C++ 侧 new 好再交给 JS 的控件、groupBox.contentWidget() 这类内部控件)赋 onXxx 都生效;
+//   赋 null 清空、赋非函数抛异常。信号接口(onClicked(cb) 等)照旧, 两者不冲突。
 // 回调里拿"当前控件": 写成箭头函数时没有自己的 this, 用引擎全局 self() —— 等价于这里的 this,
 //   例: pane.onPaint = (e) => { const p = new JZPainter(self()); };  (见 types/globals.d.ts)
-// ⚠ 现状: 事件转发只对 **JZWidget / JZWindow** 生效 —— 只有这两个类在注册时挂了"实例创建后"
-//   钩子(setInstanceBind → 给控件装事件转发); 其它控件: 给它们赋 onXxx 不会报错但**静默无效**
-//   (按钮的点击请用 onClicked 这类信号接口)。声明仍放在基类上, 因为这是设计上的契约
-//   (与 C++ 侧虚函数一一对应)。
 //   转发状态存在 JZJSWidgetModule 的控件登记节点上(不是控件对象的成员): 模块自己就是这些
 //   控件的**事件过滤器**(installEventFilter), 所以 C++ 侧建好再交给 JS 的 JZWidget/JZWindow
 //   (如 groupBox.contentWidget()、parentWidget())同样能收到 onXxx, 改父后也照旧。
 //
 // ⚠ 空指针返回值: parentWidget() / window() / layout() / JZGroupBox.contentWidget() 之类
 //   在 C++ 侧没有对象时返回**真 null**(不再是"空包装对象"那种真值, `if (p)` 判得出空)。
-// ⚠ 引用相等性: layout() 走缓存(同一控件 + 同一布局 ⇒ 同一个 JS 对象); 而 parentWidget() /
-//   window() 每次都会新建一个包装对象 —— 别用 `===` 比较, 要比就比 objectName() 之类的属性。
+// ⚠ 引用相等性: parentWidget() / window() / widget() / contentWidget() / currentWidget() /
+//   verticalScrollBar() ... 这些 getter **按当前调用现造包装** —— 同一个控件的两份包装不是同一个
+//   JS 对象, 所以 `===` 比不得, 也别把 JS 侧状态(自定义字段)挂在包装上指望"下次还是它"。
+//   事件回调不受影响(onPaint 等存在 C++ 侧的槽里, 在哪份包装上赋都生效)。layout() 走缓存, 返回同一份。
+// ⚠ 别把状态挂在包装对象上: 包装是**纯句柄** —— `w.foo = 1` 这类写法 TS 下本来就编译不过(这些类的
+//   声明里没有索引签名, 也不打算加), 而绕过它(声明合并 / `as any`)之后运行期同样靠不住: getter
+//   现造包装, 同一控件的两份包装是两个 JS 对象, 于是"以包装对象为键的 Map/WeakMap"和挂在包装上的
+//   字段一样会丢。要 per 控件状态: 用稳定键(objectName / 你自己持有的那份包装)自建表, 或放 C++ 侧绑定层。
 // ⚠ 布局的生命周期: 布局归控件所有、由控件负责 delete。layout() 返回的视图在 clearLayout()
 //   之后会被置失效(再调用抛异常); 但你交给 setLayout 的那份包装**不会**被标记失效 ——
 //   布局被删之后不要再继续用那个变量。
 
+/** @final */
 declare class JZWidget {
   /** 无父控件; 也可构造时就带父: new JZWidget(parent) */
   constructor(parent?: JZWidget | null);
@@ -103,6 +109,21 @@ declare class JZWidget {
   setStyleSheet(css: string): boolean;
   styleSheet(): string;
 
+  /**
+   * 通用属性(JZObject::setProperty) —— 存进控件的属性表, 用 property(name) 读回。
+   * 子类的"预定义属性"由各自的 override 认名字, 认不出的落到这张通用表。
+   * 值: null/undefined(**表示移除该属性**)、number、string、boolean 按各自类型存;
+   *   其余值(数组 / 对象 / 函数 / 类的实例)按**原样**存(注册的 metatype JZJSValuePtr, 不做有损转换):
+   *   身份保留, 读回来还是同一个对象; 引用计数由引擎管, 存活到该属性被覆盖/移除或引擎关闭。
+   */
+  setProperty(name: string, value: unknown): void;
+
+  /**
+   * 读回 setProperty 存的值。未设置或已移除 -> null。
+   * 标量按原类型还(number/string/boolean); 字节串 -> Uint8Array; 不可转的 C++ 侧自定义类型抛异常。
+   */
+  property(name: string): any;
+
   // ---- JS 事件回调(属性写法; 未实现则回退 C++ 默认实现) ----
   /** 绘制: 在回调里 `new JZPainter(this)` 画; event.rect() 给出本次重绘区 */
   onPaint?: (event: JZPainterEvent) => void;
@@ -123,6 +144,7 @@ declare class JZWidget {
 
 // 顶层窗口。构造实参: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)。
 // 无参构造的尺寸留 0, 首次 show() 时按 sizeHint 自适应。
+/** @final */
 declare class JZWindow extends JZWidget {
   constructor();
   constructor(parent: JZWidget | null);
@@ -138,6 +160,7 @@ declare class JZWindow extends JZWidget {
   addWidget(child: JZWidget): void;
 }
 
+/** @final */
 declare class JZLabel extends JZWidget {
   /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
   constructor(text?: string, parent?: JZWidget | null);
@@ -148,6 +171,7 @@ declare class JZLabel extends JZWidget {
   setAlign(align: number): void;
 }
 
+/** @final */
 declare class JZPushButton extends JZWidget {
   constructor();
   constructor(parent: JZWidget | null);
@@ -164,6 +188,7 @@ declare class JZPushButton extends JZWidget {
   onClicked(cb: () => void): void;
 }
 
+/** @final */
 declare class JZLineEdit extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -186,6 +211,7 @@ declare class JZLineEdit extends JZWidget {
   onEditingFinished(cb: () => void): void;
 }
 
+/** @final */
 declare class JZCheckbox extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -197,6 +223,7 @@ declare class JZCheckbox extends JZWidget {
   onToggled(cb: (on: boolean) => void): void;
 }
 
+/** @final */
 declare class JZRadioButton extends JZWidget {
   /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
   constructor(text?: string, parent?: JZWidget | null);
@@ -209,6 +236,7 @@ declare class JZRadioButton extends JZWidget {
   onToggled(cb: () => void): void;
 }
 
+/** @final */
 declare class JZSlider extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -219,6 +247,7 @@ declare class JZSlider extends JZWidget {
   onValueChanged(cb: (value: number) => void): void;
 }
 
+/** @final */
 declare class JZProgressBar extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -227,6 +256,7 @@ declare class JZProgressBar extends JZWidget {
   value(): number;
 }
 
+/** @final */
 declare class JZComboBox extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -246,6 +276,7 @@ declare class JZComboBox extends JZWidget {
   onCurrentTextChanged(cb: (text: string) => void): void;
 }
 
+/** @final */
 declare class JZSpinBox extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -266,6 +297,7 @@ declare class JZSpinBox extends JZWidget {
   onValueChanged(cb: (value: number) => void): void;
 }
 
+/** @final */
 declare class JZGroupBox extends JZWidget {
   /** 运行期 (parent) / (title) / (title, parent) 都接受(顺序无关) */
   constructor(title?: string, parent?: JZWidget | null);
@@ -279,6 +311,7 @@ declare class JZGroupBox extends JZWidget {
 }
 
 // 开关(on / off)
+/** @final */
 declare class JZSwitch extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -289,6 +322,7 @@ declare class JZSwitch extends JZWidget {
 }
 
 // 多行文本编辑(只读时可直接当滚动日志用)
+/** @final */
 declare class JZTextEdit extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -308,6 +342,7 @@ declare class JZTextEdit extends JZWidget {
 }
 
 // 简易图表: 折线 / 柱状 / 饼图(JZChart)。颜色形参用 CSS 风格字符串; 传 '' 取默认调色板。
+/** @final */
 declare class JZChart extends JZWidget {
   constructor(parent?: JZWidget | null);
 

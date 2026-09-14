@@ -643,11 +643,11 @@ builders.ScrollArea = function (): JZWidget {
     const area = K(new JZScrollArea());
     lay.addWidget(area, 1);
 
-    // 内容"世界": 固定超大尺寸, 滚动区据它算范围(内容控件由滚动区接管生命周期,
-    // 但 JS 这份包装仍要保活 —— 否则 GC 会与滚动区抢着 delete)
+    // 内容"世界": 固定超大尺寸, 滚动区据它算范围。内容控件由滚动区接管生命周期, 且 setWidget
+    // 会把它登记进控件表(**模块保活其 JS 包装**) —— 所以 world 不必自己 keep(见文件头"所有权与保活")。
     const CELL = 80;
     const COUNT = 12;                 // 12×12 = 144 个按钮(等效 C++ 版的 50×50 缩减版)
-    const world = K(new JZWidget());
+    const world = new JZWidget();
     world.setFixedSize(CELL * COUNT, CELL * COUNT);
     let id = 0;
     for (let r = 0; r < COUNT; r++)

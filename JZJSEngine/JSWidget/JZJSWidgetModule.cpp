@@ -158,36 +158,87 @@ static std::vector<std::string> jzJsToStringArray(JSContext* ctx, JSValueConst v
 }
 
 // ---------- JS 事件转发(模块自己当过滤器; 见 JZJSWidgetModule.h) ----------
+// 回调存在 C++ 侧(WidgetInfo::callbacks), 派发时按槽查 —— 与"哪份包装挂了回调"无关。
 
-bool JZJSWidgetModule::hasJsMethod(JSValue obj, const char* name)
+const char* JZJSWidgetModule::eventSlotName(int slot)
 {
-    if (!m_engine || JS_IsUndefined(obj))
-        return false;
-    JSContext* ctx = m_engine->context();
-    JSValue fn = JS_GetPropertyStr(ctx, obj, name);
-    bool ok = JS_IsFunction(ctx, fn);
-    JS_FreeValue(ctx, fn);
-    return ok;
+    switch (slot)
+    {
+    case Slot_paint:        return "onPaint";
+    case Slot_mousePress:   return "onMousePress";
+    case Slot_mouseRelease: return "onMouseRelease";
+    case Slot_mouseMove:    return "onMouseMove";
+    case Slot_wheel:        return "onWheel";
+    case Slot_enter:        return "onEnter";
+    case Slot_leave:        return "onLeave";
+    case Slot_keyPress:     return "onKeyPress";
+    case Slot_keyRelease:   return "onKeyRelease";
+    case Slot_focusIn:      return "onFocusIn";
+    case Slot_focusOut:     return "onFocusOut";
+    case Slot_show:         return "onShow";
+    case Slot_hide:         return "onHide";
+    case Slot_resize:       return "onResize";
+    default:                return "";
+    }
 }
 
-// 以 obj 为 this 调用 JS 方法; 事件对象包成**借用**包装(事件是栈对象, 只在本次派发期间有效)
+void JZJSWidgetModule::setWidgetCallback(JZWidget* widget, int slot, JSValueConst cb)
+{
+    if (!m_engine || !widget || slot < 0 || slot >= EventSlot_count)
+        return;
+
+    JSContext* ctx = m_engine->context();
+
+    // null / undefined = 清空(对应 JS 侧 `w.onPaint = null`); 其它必须是函数
+    bool clear = JS_IsNull(cb) || JS_IsUndefined(cb);
+    if (!clear && !JS_IsFunction(ctx, cb))
+        throw std::runtime_error(std::string(eventSlotName(slot)) + ": 需要一个函数(或 null 清空)");
+
+    WidgetInfo* node = ensureWidgetInfo(widget);
+    if (!node)
+        return;
+
+    JSValue old = node->callbacks.v[slot];
+    node->callbacks.v[slot] = clear ? JS_UNDEFINED : JS_DupValue(ctx, cb);   // 模块持有一份
+    if (!JS_IsUndefined(old))
+        JS_FreeValue(ctx, old);   // 先存新的再放旧的: 赋同一个函数时不会先释后取
+}
+
+JSValue JZJSWidgetModule::widgetCallback(JZWidget* widget, int slot)
+{
+    if (!m_engine || !widget || slot < 0 || slot >= EventSlot_count)
+        return JS_UNDEFINED;
+    WidgetInfo* node = findWidgetInfo(widget);
+    if (!node)
+        return JS_UNDEFINED;
+    return node->callbacks.v[slot];
+}
+
+// 以该控件的包装为 this 调回调; 事件对象包成**借用**包装(事件是栈对象, 只在本次派发期间有效)
 template <class E>
-void JZJSWidgetModule::forwardJs(JSValue obj, const char* name, E* event)
+void JZJSWidgetModule::forwardJs(WidgetInfo& node, int slot, E* event)
 {
     JSContext* ctx = m_engine->context();
     jsbind::JSRawPointer<E> ref(event, true);   // cppOwner=true: JS 不负责释放(栈对象)
     std::vector<JZJSValuePtr> params;
     params.push_back(m_engine->makeValuePtr(toJSValue(ctx, ref)));
-    m_engine->callMemberFunction(name, JZJSValuePtr(ctx, JS_DupValue(ctx, obj)), params);
+
+    // this = 该控件的包装(回调里 this 仍是控件, self() 也靠这层压栈)。
+    // 登记里还没有包装句柄时(如 C++ 侧建好、只是被 JS 拿到过句柄的控件)现造一份:
+    // cppOwner=true —— JS 只持句柄, GC 不会去动底层对象。
+    JSValue thisVal = JS_IsUndefined(node.jsRef)
+                          ? toJsValueFromPtr(ctx, static_cast<JZWidget*>(node.object), true)
+                          : JS_DupValue(ctx, node.jsRef);
+    m_engine->callMemberFunction(eventSlotName(slot), JZJSValuePtr(ctx, thisVal), params);
     ref.clear();   // 派发结束: JS 侧若还留着该事件对象, 访问它会失效而不是读悬垂内存
 }
 
 template <class E>
-bool JZJSWidgetModule::forwardIf(JSValue obj, const char* name, E* event)
+bool JZJSWidgetModule::forwardIf(WidgetInfo& node, int slot, E* event)
 {
-    if (!hasJsMethod(obj, name))
-        return false;
-    forwardJs(obj, name, event);
+    if (JS_IsUndefined(node.callbacks.v[slot]))
+        return false;   // 没设回调 -> 放行走原生实现
+    forwardJs(node, slot, event);
     return true;
 }
 
@@ -196,23 +247,22 @@ bool JZJSWidgetModule::eventFilter(JZObject* watched, JZEvent* event)
     if (!m_engine || !watched || !event)
         return false;
 
-    // 控件 -> JS 包装的关联就在控件登记树上(被 JS 包装过的控件才有 jsRef)
+    // 控件 -> 状态(含事件回调槽)的关联在控件登记表里
     WidgetInfo* node = findWidgetInfo(watched);
-    if (!node || JS_IsUndefined(node->jsRef))
+    if (!node)
         return false;
-    JSValue obj = node->jsRef;   // 借用, 不释放
 
-    // 事件类型 -> JS 方法名。返回 true = 已转给 JS, 事件被拦下(原生实现不再跑)。
+    // 事件类型 -> 回调槽。返回 true = 已转给 JS, 事件被拦下(原生实现不再跑)。
     switch (event->type())
     {
     case JZEvent_paint:
         // JS 侧画笔(new JZPainter(this))的生命周期 = 本次 onPaint 派发(对应 C++ 的栈对象
         // `JZPainter p(this)`): 出作用域立即回收, 让绘制流的 Push/Pop 同帧配平。
-        if (!hasJsMethod(obj, "onPaint"))
+        if (JS_IsUndefined(node->callbacks.v[Slot_paint]))
             return false;
         {
             JZJSPaintScope::Guard guard(&m_paintScope);
-            forwardJs(obj, "onPaint", static_cast<JZPainterEvent*>(event));
+            forwardJs(*node, Slot_paint, static_cast<JZPainterEvent*>(event));
         }
         return true;
     case JZEvent_mouse:
@@ -220,25 +270,25 @@ bool JZJSWidgetModule::eventFilter(JZObject* watched, JZEvent* event)
         JZMouseEvent* me = static_cast<JZMouseEvent*>(event);
         switch (me->mouseType())
         {
-        case JZMouseEvent::Press:   return forwardIf(obj, "onMousePress", me);
-        case JZMouseEvent::Release: return forwardIf(obj, "onMouseRelease", me);
-        case JZMouseEvent::Move:    return forwardIf(obj, "onMouseMove", me);
-        case JZMouseEvent::Wheel:   return forwardIf(obj, "onWheel", me);
+        case JZMouseEvent::Press:   return forwardIf(*node, Slot_mousePress, me);
+        case JZMouseEvent::Release: return forwardIf(*node, Slot_mouseRelease, me);
+        case JZMouseEvent::Move:    return forwardIf(*node, Slot_mouseMove, me);
+        case JZMouseEvent::Wheel:   return forwardIf(*node, Slot_wheel, me);
         }
         return false;
     }
-    case JZEvent_enter:    return forwardIf(obj, "onEnter", event);
-    case JZEvent_leave:    return forwardIf(obj, "onLeave", event);
+    case JZEvent_enter:    return forwardIf(*node, Slot_enter, event);
+    case JZEvent_leave:    return forwardIf(*node, Slot_leave, event);
     case JZEvent_key:
     {
         JZKeyEvent* ke = static_cast<JZKeyEvent*>(event);
-        return ke->isPress() ? forwardIf(obj, "onKeyPress", ke) : forwardIf(obj, "onKeyRelease", ke);
+        return ke->isPress() ? forwardIf(*node, Slot_keyPress, ke) : forwardIf(*node, Slot_keyRelease, ke);
     }
-    case JZEvent_focusIn:  return forwardIf(obj, "onFocusIn", event);
-    case JZEvent_focusOut: return forwardIf(obj, "onFocusOut", event);
-    case JZEvent_show:     return forwardIf(obj, "onShow", static_cast<JZShowEvent*>(event));
-    case JZEvent_hide:     return forwardIf(obj, "onHide", static_cast<JZHideEvent*>(event));
-    case JZEvent_resize:   return forwardIf(obj, "onResize", static_cast<JZResizeEvent*>(event));
+    case JZEvent_focusIn:  return forwardIf(*node, Slot_focusIn, event);
+    case JZEvent_focusOut: return forwardIf(*node, Slot_focusOut, event);
+    case JZEvent_show:     return forwardIf(*node, Slot_show, static_cast<JZShowEvent*>(event));
+    case JZEvent_hide:     return forwardIf(*node, Slot_hide, static_cast<JZHideEvent*>(event));
+    case JZEvent_resize:   return forwardIf(*node, Slot_resize, static_cast<JZResizeEvent*>(event));
     default:
         return false;
     }
@@ -276,13 +326,18 @@ void JZJSWidgetModule::bindJsEventFilter(JZWidget* widget, JSValueConst value)
         return;
 
     // 控件与 JS 包装的关联记在它自己的登记节点上(节点在控件建出来时就存在; 这里兜底补建,
-    // 顺带订阅 sigDestroyed —— 见 ensureWidgetInfo / pushWidgetInfo)
+    // 顺带订阅 sigDestroyed —— 见 ensureWidgetInfo)
     WidgetInfo* node = ensureWidgetInfo(widget);
     if (!node)
         return;
 
-    node->jsRef = value;                 // 借用: 不 dup, 模块不释放(见 WidgetInfo::jsRef)
     widget->installEventFilter(this);    // 模块自己当过滤器(重复安装会被忽略)
+
+    // **不**在这里改转发目标(jsRef): 这个钩子每条造包装的路径都会走, 而 getter
+    // (area.widget() / parentWidget() / window() ...)每次都会**新建一份**包装 —— 那份包装没人保活,
+    // 一旦被 GC, jsRef 就是悬垂指针; 而且回调(onPaint 等)是挂在**旧那份**包装上的, 换目标等于把它丢了。
+    // 转发目标只在"移交/登记"路径设置(bindWidgetToParent / registerCreatedWidget), 与保活那份成对。
+    (void)value;
 }
 
 // ---------- 模块生命周期 ----------
@@ -332,12 +387,13 @@ void JZJSWidgetModule::deinitEngine()
     {
         JSContext* ctx = m_engine->context();
 
-        // 登记树里保活的是 JS 包装, 必须在引擎(rt/ctx)还活着的时候放掉。
-        // 逐个"摘下来再释放": 释放可能级联销毁控件(进而回调进来摘节点), 不能持有 vector 的引用/迭代器。
-        while (!m_widgetList.empty())
+        // 登记表里保活的是 JS 包装, 必须在引擎(rt/ctx)还活着的时候放掉。
+        // 逐个"摘下来再释放": 释放可能级联销毁控件(进而回调进来摘别的节点), 不能持有迭代器。
+        while (!m_widgets.empty())
         {
-            WidgetInfo node = std::move(m_widgetList.back());
-            m_widgetList.pop_back();
+            auto it = m_widgets.begin();
+            WidgetInfo node = std::move(it->second);
+            m_widgets.erase(it);
             freeWidgetInfo(node);
         }
 
@@ -348,79 +404,33 @@ void JZJSWidgetModule::deinitEngine()
 
     // 事件转发: 模块自己就是所有 JS 控件的事件过滤器 —— 模块先于控件销毁会在控件的过滤器表里
     // 留下悬垂指针(JZObject::installEventFilter 的说明: 过滤器必须先于被过滤对象撤销), 故先把
-    // 模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历整棵树。
-    detachWidgetFilters(m_widgetList);
+    // 模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历。
+    detachWidgetFilters();
 
-    m_widgetList.clear();
+    m_widgets.clear();
     m_jsCallbacks.clear();
 
     m_widgetData = JS_UNDEFINED;   // 整数句柄, 无引用计数, 直接丢
 
     if (m_engine)
-        m_engine->setWidgetModule(nullptr);   // 先摘模块, 再断开
+        m_engine->setWidgetModule(nullptr);
 
     m_engine = nullptr;
     m_typeWindow = -1;    
 }
 
 // ---------- 控件登记 (JS 包装保活) ----------
-// 见 JZJSWidgetModule.h 顶部说明: 子控件进对象树后, 由父控件的登记节点持一份它的 JS 包装
-// (保活), 控件销毁时释放; 顶层控件不保活(生死由 JS 决定)。
-
-JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::findWidgetInfoIn(std::vector<WidgetInfo>& list, JZObject* object)
-{
-    for (int i = 0; i < (int)list.size(); i++)
-    {
-        if (list[i].object == object)
-            return &list[i];
-        WidgetInfo* child = findWidgetInfoIn(list[i].children, object);
-        if (child)
-            return child;
-    }
-    return nullptr;
-}
+// 见 JZJSWidgetModule.h 顶部说明: 控件挂进对象树后, 模块持一份它的 JS 包装(保活),
+// 控件销毁(或脱离父树)时释放; 顶层控件不保活(生死由 JS 决定)。
+// 登记表按**控件指针**索引(std::map): 每个控件的状态与它一一对应, 与控件树结构无关 ——
+// 改父 / 脱离父树都只更新这一条记录, 不需要搬节点。
 
 JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::findWidgetInfo(JZObject* object)
 {
     if (!object)
         return nullptr;
-    return findWidgetInfoIn(m_widgetList, object);
-}
-
-bool JZJSWidgetModule::takeWidgetInfoIn(std::vector<WidgetInfo>& list, JZObject* object, WidgetInfo& out)
-{
-    for (int i = 0; i < (int)list.size(); i++)
-    {
-        if (list[i].object == object)
-        {
-            // move 出来再 erase: 子树与保活引用一起搬走, 调用方决定挂到哪/是否释放
-            out = std::move(list[i]);
-            list.erase(list.begin() + i);
-            return true;
-        }
-        if (takeWidgetInfoIn(list[i].children, object, out))
-            return true;
-    }
-    return false;
-}
-
-bool JZJSWidgetModule::takeWidgetInfo(JZObject* object, WidgetInfo& out)
-{
-    if (!object)
-        return false;
-    return takeWidgetInfoIn(m_widgetList, object, out);
-}
-
-JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::pushWidgetInfo(std::vector<WidgetInfo>& list, JZObject* object)
-{
-    if (!object)
-        return nullptr;
-
-    list.push_back(WidgetInfo());
-    WidgetInfo* node = &list.back();
-    node->object = object;
-    connect(&object->sigDestroyed, this, &JZJSWidgetModule::onWidgetDestroyed);
-    return node;
+    auto it = m_widgets.find(object);
+    return (it == m_widgets.end()) ? nullptr : &it->second;
 }
 
 JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::ensureWidgetInfo(JZObject* object)
@@ -432,67 +442,76 @@ JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::ensureWidgetInfo(JZObject* objec
     if (node)
         return node;
 
-    // 有父控件: 挂到父节点下(父节点没有就递归补建 —— 父链上一般只有窗口是"没登记过"的);
-    // 没有父控件: 作为顶层节点, jsvalue 恒为空 = 不保活。
-    JZWidget* widget = jzobject_cast<JZWidget*>(object);
-    JZWidget* parent = widget ? widget->parentWidget() : nullptr;
-    if (parent)
-    {
-        WidgetInfo* pnode = ensureWidgetInfo(parent);
-        if (pnode)
-            return pushWidgetInfo(pnode->children, object);
-    }
-
-    return pushWidgetInfo(m_widgetList, object);
+    // 新建并订阅该控件的 sigDestroyed: 控件销毁时节点自己摘掉(重复订阅无害, 回调按指针查)
+    WidgetInfo& info = m_widgets[object];
+    info.object = object;
+    connect(&object->sigDestroyed, this, &JZJSWidgetModule::onWidgetDestroyed);
+    return &info;
 }
 
 void JZJSWidgetModule::freeWidgetInfo(WidgetInfo& node)
 {
-    // 释放的是**模块自己那份**引用: 控件已被对象树 delete(或交回 JS)时才走到这里,
+    // 释放的是**模块自己那份**引用(dup): 控件已被对象树 delete(或交回 JS)时才走到这里,
     // 包装的守卫指针已置空, 所以不会二次删除。释放可能级联触发 JS 侧的收尾(进而删控件、
-    // 回调进来摘别的节点), 所以: ① node 必须是"摘下来的副本", 不是树里正在遍历的元素;
-    // ② 先把引用清空再释放, 免得级联路径重入到此节点时二次释放。
+    // 回调进来摘别的节点), 所以调用方必须**先把节点从表里摘下来**再调本函数。
     if (m_engine && !JS_IsUndefined(node.jsvalue))
     {
         JSValue held = node.jsvalue;
-        node.jsvalue = JS_UNDEFINED;
+        node.jsvalue = JS_UNDEFINED;   // 先清再放: 级联路径重入不会二次释放
         JS_FreeValue(m_engine->context(), held);
     }
     node.jsvalue = JS_UNDEFINED;
     node.jsRef = JS_UNDEFINED;   // 借用型, 只需丢掉指针(不释放)
 
-    for (int i = 0; i < (int)node.children.size(); i++)
-        freeWidgetInfo(node.children[i]);
-    node.children.clear();
+    // 事件回调槽: 模块自己持有的引用(dup), 在 ctx 还活着时放掉
+    if (m_engine)
+    {
+        for (int i = 0; i < EventSlot_count; i++)
+        {
+            if (!JS_IsUndefined(node.callbacks.v[i]))
+            {
+                JSValue cb = node.callbacks.v[i];
+                node.callbacks.v[i] = JS_UNDEFINED;
+                JS_FreeValue(m_engine->context(), cb);
+            }
+        }
+    }
+
+    node.ext.reset();
     node.object = nullptr;
 }
 
 void JZJSWidgetModule::removeWidgetInfo(JZObject* object)
 {
-    WidgetInfo node;
-    if (!takeWidgetInfo(object, node))
+    if (!object)
         return;
+
+    auto it = m_widgets.find(object);
+    if (it == m_widgets.end())
+        return;
+
+    WidgetInfo node = std::move(it->second);
+    m_widgets.erase(it);     // 先摘再放引用: 释放可能级联删控件(那些控件会回调进来摘别的节点)
     freeWidgetInfo(node);
 }
 
 void JZJSWidgetModule::onWidgetDestroyed(JZObject *object)
 {
-    // 控件正在析构(~JZObject 末尾, 守卫指针已置空, 子控件也已 delete): 摘掉它的节点与子树,
+    // 控件正在析构(~JZObject 末尾, 守卫指针已置空, 子控件也已 delete): 摘掉它的登记节点,
     // 放掉保活引用。这里只按指针比较, 绝不访问对象本身。
     // 事件转发不需要单独清理: 过滤器就是模块自己, 转发对象(WidgetInfo::jsRef)随节点一起消失,
     // 控件的过滤器表也随它一起消亡 —— 都不必(也不该)回头访问正在析构的对象。
     removeWidgetInfo(object);
 }
 
-// 把模块从所有登记控件的过滤器表上摘掉。不碰 JS(不会级联删控件), 故可以安全遍历整棵树。
-void JZJSWidgetModule::detachWidgetFilters(std::vector<WidgetInfo>& list)
+// 把模块从所有登记控件的过滤器表上摘掉。不碰 JS(不会级联删控件), 故可以安全遍历。
+void JZJSWidgetModule::detachWidgetFilters()
 {
-    for (int i = 0; i < (int)list.size(); i++)
+    for (auto& kv : m_widgets)
     {
-        JZWidget* w = jzobject_cast<JZWidget*>(list[i].object);
+        JZWidget* w = jzobject_cast<JZWidget*>(kv.second.object);
         if (w)
             w->removeEventFilter(this);
-        detachWidgetFilters(list[i].children);
     }
 }
 
@@ -521,60 +540,40 @@ void JZJSWidgetModule::bindWidgetToParent(JZWidget* parent, JZWidget* child, JSV
     if (!m_engine || !parent || !child || parent == child)
         return;
 
-    // 已经登记过(改父 / 重复 addWidget): 摘下来(子树与保活引用一起)搬到新父节点下
-    WidgetInfo node;
-    bool hadNode = takeWidgetInfo(child, node);
-
-    WidgetInfo* pnode = ensureWidgetInfo(parent);
-    if (!pnode)
+    // 登记节点与控件一一对应: 改父 / 重复 addWidget 都只是更新这一条(键还是 child), 不搬节点
+    WidgetInfo* node = ensureWidgetInfo(child);
+    if (!node)
         return;
 
-    // 新节点由 pushWidgetInfo 建(顺带订阅 sigDestroyed); 已有节点则把保活引用与子树搬过来
-    WidgetInfo* dst = pushWidgetInfo(pnode->children, child);
-    if (!dst)
-        return;
-    if (hadNode)
-    {
-        dst->jsvalue = node.jsvalue;
-        dst->jsRef = node.jsRef;            // 事件转发那份(借用)跟着搬, 否则改父后收不到 onXxx
-        dst->children = std::move(node.children);
-    }
+    // 顺带保证父控件也有节点(父链上一般只有窗口是"还没登记过"的)
+    ensureWidgetInfo(parent);
 
-    // 保活: 子控件的 JS 包装由模块持有一份。否则 JS 侧放手后包装被 GC, 而底层对象还持有
-    // 包装句柄(JSWidgetClass::m_jsvalue)做事件转发 -> 往死对象上派发。
-    // 持**最新**那份(childValue): m_jsvalue 每次造包装都会被覆盖, 两边指向同一个才不会悬垂。
-    if (m_engine && !JS_IsUndefined(dst->jsvalue))
+    // 保活 + 转发目标: **只认第一次移交时那份包装**(见 WidgetInfo::jsRef 的说明)。
+    // 不能改成"每次换成最新那份": getter(area.widget() / parentWidget() ...)每次都会新建包装,
+    // 而回调(onPaint 等)是挂在**原来那份**包装上的属性 —— 换目标等于把回调丢了; 新那份还可能
+    // 没人保活(GC 后悬垂)。第一次那份由我们 dup 保活, 一直有效到控件销毁或脱离父树。
+    if (JS_IsUndefined(node->jsvalue))
     {
-        JSValue old = dst->jsvalue;
-        dst->jsvalue = JS_UNDEFINED;   // 先清再放: 级联路径重入不会二次释放
-        JS_FreeValue(m_engine->context(), old);
+        node->jsvalue = JS_DupValue(m_engine->context(), childValue);
+        node->jsRef = childValue;
     }
-    dst->jsvalue = JS_DupValue(m_engine->context(), childValue);
 }
 
 void JZJSWidgetModule::unbindWidget(JZWidget* child)
 {
-    WidgetInfo node;
-    if (!takeWidgetInfo(child, node))
+    WidgetInfo* node = findWidgetInfo(child);
+    if (!node)
         return;
 
-    // 先把节点挂回顶层 —— 后面释放引用可能让包装立刻析构(进而 delete child 及其子控件),
-    // 那些控件的 sigDestroyed 回调要靠"节点在树上"才能被正常摘掉/释放。
-    if (node.object)
-        m_widgetList.push_back(std::move(node));
-
-    // 交回 JS 拥有: 撤销**本节点**的保活(子树保持登记 —— 那些控件仍由 child 的对象树持有),
-    // 本节点变成顶层节点(顶层不保活, 生死由 JS 那份包装决定)。
-    // 注意: 释放引用可能 delete child —— 调用方须把本调用放在最后, 之后不得再访问 child。
-    if (!m_widgetList.empty())
+    // 交回 JS 拥有: 撤销本节点的保活(节点留着 —— 它还要服务事件转发 / self(); 子控件的登记
+    // 与保活不受影响, 那些控件仍由 child 的对象树持有)。
+    // 注意: 释放引用可能立刻析构包装 -> 进而 delete child —— 调用方须把本调用放在最后, 之后
+    // 不得再访问 child(它的节点也会在 sigDestroyed 里被摘掉)。
+    if (m_engine && !JS_IsUndefined(node->jsvalue))
     {
-        WidgetInfo& top = m_widgetList.back();
-        if (top.object == child && m_engine && !JS_IsUndefined(top.jsvalue))
-        {
-            JSValue held = top.jsvalue;
-            top.jsvalue = JS_UNDEFINED;   // 先清引用再释放: 级联路径若重入不会二次释放
-            JS_FreeValue(m_engine->context(), held);
-        }
+        JSValue held = node->jsvalue;
+        node->jsvalue = JS_UNDEFINED;   // 先清引用再释放: 级联路径若重入不会二次释放
+        JS_FreeValue(m_engine->context(), held);
     }
 }
 
@@ -589,14 +588,14 @@ void JZJSWidgetModule::registerCreatedWidget(JZWidget* widget, JSValueConst valu
     if (parent)
         bindWidgetToParent(parent, widget, value);
     else
-        ensureWidgetInfo(widget);
-
-    // 事件转发 / self() 用的那份包装(借用): 任何"从 JS 建出来"的控件都要记上 —— 不限于
-    // JZWidget/JZWindow(其它控件没有实例钩子, 但信号回调里的 self() 要用它认出自己是谁)。
-    // 注意放在 bindWidgetToParent 之后: 那里会重建登记节点。
-    WidgetInfo* node = findWidgetInfo(widget);
-    if (node)
-        node->jsRef = value;
+    {
+        // 顶层控件(窗口): 不保活, 但转发目标要记下这份包装(借用 —— 它一死对象也跟着销毁,
+        // 不存在"用到悬垂"的情况)。任何"从 JS 建出来"的控件都要记, 不限于 JZWidget/JZWindow
+        // (其它控件没有实例钩子, 但事件转发与信号回调里的 self() 要用它认出自己是谁)。
+        WidgetInfo* node = ensureWidgetInfo(widget);
+        if (node)
+            node->jsRef = value;
+    }
 }
 
 // ---------- 信号 -> JS 回调 ----------
@@ -917,14 +916,71 @@ JZWidget* JZJSWidgetModule::takeWidget(JZWidget* parent, JSValueConst value, con
 //   "拥有"(cppOwner=false) —— 引擎退出时 GC 终结器与父对象析构会各 delete 一次 = 双重释放。
 //   JSObjectPointer 内部的守卫指针在对象析构后自动置空, 第二次 delete 自然不会发生。
 //   (JSRawPointer 没有守卫, 只适合"不会被别的所有者删掉"的对象; 见 JZJSType.h 的包装模型。)
-// 注: 这只解决"退出/GC 与对象树争着删", 不解决"JS 包装先被 GC, 对象树随后悬垂" ——
-//     后者要求 JS 侧持有引用(uiLoader 的 __keep / 演示脚本的 keep 数组都是这个作用)。
+// 注: 这只解决"退出/GC 与对象树争着删", 不解决"JS 包装先被 GC, 对象树随后悬垂"。
+//     后者分两种情况:
+//       * **控件**: 由 JZSWidgetModule 的控件登记(保活)兜住 —— 挂进树的每条入口都会登记
+//         (addWidget/insertWidget/addTab/setWidget/setParentWidget/构造带父, 见 bindWidgetToParent);
+//       * **布局**(JZLayout 不是 JZObject, 进不了控件登记表): 仍要求 JS 侧持有引用,
+//         uiLoader 生成的脚本里 __keep 主要就是为它准备的。
 template <class W>
 static void setWidgetCreate(jsbind::ClassBind<W>& bind)
 {
     bind.setCreate([]() -> jsbind::JSPointerBase* {
         return new jsbind::JSObjectPointer(new W(), false);
     });
+}
+
+// JZVariant -> JS 值(`w.property(name)` 用)。JZVariant 存取是**精确类型**(toXxx 会断言类型匹配),
+// 所以这里按 typeId 逐个精确取值; 覆盖: 空/标量/字符串/字节串/数组/对象/JS 值(注册的 metatype)。
+// 其它 metatype(C++ 侧自定义类型)没有通用转换, 明确抛异常 —— 不静默返回 null 丢信息。
+static JSValue variantToJSValue(JSContext* ctx, const JZVariant& var)
+{
+    switch (var.typeId())
+    {
+    case JZMetaType::None:   return JS_NULL;
+    case JZMetaType::Bool:   return JS_NewBool(ctx, var.value<bool>());
+    case JZMetaType::Int16:  return JS_NewInt32(ctx, (int)var.value<int16_t>());
+    case JZMetaType::UInt16: return JS_NewInt32(ctx, (int)var.value<uint16_t>());
+    case JZMetaType::Int:    return JS_NewInt32(ctx, var.value<int>());
+    case JZMetaType::UInt:   return JS_NewInt32(ctx, (int32_t)var.value<unsigned int>());
+    case JZMetaType::Int64:  return JS_NewInt64(ctx, var.value<int64_t>());
+    case JZMetaType::UInt64: return JS_NewInt64(ctx, (int64_t)var.value<uint64_t>());
+    case JZMetaType::Float:  return JS_NewFloat64(ctx, (double)var.value<float>());
+    case JZMetaType::Double: return JS_NewFloat64(ctx, var.value<double>());
+    case JZMetaType::String: return JS_NewString(ctx, var.value<std::string>().c_str());
+    case JZMetaType::ByteArray:
+    {
+        JZByteArray bytes = var.value<JZByteArray>();
+        return JS_NewUint8ArrayCopy(ctx, (const uint8_t*)bytes.data(), (size_t)bytes.size());
+    }
+    case JZMetaType::VariantList:
+    {
+        JZVariantList list = var.value<JZVariantList>();
+        JSValue arr = JS_NewArray(ctx);
+        for (size_t i = 0; i < list.size(); i++)
+            JS_SetPropertyUint32(ctx, arr, (uint32_t)i, variantToJSValue(ctx, list[i]));   // 转移所有权
+        return arr;
+    }
+    case JZMetaType::VariantMap:
+    {
+        JZVariantMap map = var.value<JZVariantMap>();
+        JSValue obj = JS_NewObject(ctx);
+        for (JZVariantMap::iterator it = map.begin(); it != map.end(); ++it)
+            JS_SetPropertyStr(ctx, obj, it->first.c_str(), variantToJSValue(ctx, it->second));
+        return obj;
+    }
+    default:
+        break;
+    }
+
+    // setProperty 存进来的 JS 值(数组/对象/函数/实例): 原样还回**同一份**对象(引用计数 +1 交给 JS)
+    if (var.typeId() == jzMetaTypeId<JZJSValuePtr>())
+    {
+        JZJSValuePtr held = var.value<JZJSValuePtr>();
+        return JS_DupValue(ctx, held.get());
+    }
+
+    throw std::runtime_error("property: 该属性值无法转成 JS(只支持标量/字符串/字节串/数组/对象/JS 值)");
 }
 
 void JZJSWidgetModule::registWidgets()
@@ -937,6 +993,66 @@ void JZJSWidgetModule::registWidgets()
     bind_w.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
         jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, this);
     });
+    // 事件回调属性: JS 侧写法与以前完全一样(`w.onPaint = fn` / `w.onPaint = null` 清空), 但回调
+    // **存在模块这边**(见 WidgetInfo::callbacks / setWidgetCallback) —— 与"回调挂在哪份包装上"彻底解耦:
+    // getter 造出来的临时包装、包装被 GC、包装被换掉, 都不再影响事件转发。
+    for (int i = 0; i < EventSlot_count; i++)
+    {
+        const char* name = eventSlotName(i);
+        bind_w.defProperty<JSValue>(std::string(name),
+            std::function<JSValue(JZWidget*)>([this, i](JZWidget* w) -> JSValue {
+                JSValue cb = widgetCallback(w, i);
+                // 交回 JS 的那份要 dup(存的那份是模块的引用); 没设返回 null
+                return JS_IsUndefined(cb) ? JS_NULL : JS_DupValue(m_engine->context(), cb);
+            }),
+            std::function<void(JZWidget*, JSValue)>([this, i](JZWidget* w, JSValue cb) {
+                setWidgetCallback(w, i, cb);
+            }));
+    }
+
+    // 属性系统(JZObject::setProperty): JS 侧 `w.setProperty(name, value)` —— 参数收 **JSValue**。
+    // 标量走 JZVariant 自己的类型(int/double/string/bool; null/undefined = **移除**该属性); 其余
+    // (数组/对象/函数/实例)用注册的 metatype(JZJSValueHolder, 见头文件)**原样**装进 JZVariant ——
+    // 不做有损快照、不改写、也不再报"不支持的类型"。值进控件的通用属性表, C++ 侧 property(name) 读回。
+    bind_w.def("setProperty", [this](JZWidget* w, const std::string& name, JSValue value) {
+        JSContext* ctx = m_engine->context();
+        JZVariant var;
+        if (JS_IsNull(value) || JS_IsUndefined(value))
+            var = JZVariant();   // 空 variant -> JZObject::setProperty 据此**移除**该属性
+        else if (JS_IsBool(value))
+            var = JZVariant(JS_ToBool(ctx, value) != 0);
+        else if (JS_IsNumber(value))
+        {
+            double d = 0;
+            JS_ToFloat64(ctx, &d, value);
+            // 整数值(且在 int32 范围内)按 int 存 —— JZVariant 里 integer 与 double 是两种类型
+            var = (d >= -2147483648.0 && d <= 2147483647.0 && (double)(int)d == d) ? JZVariant((int)d) : JZVariant(d);
+        }
+        else if (JS_IsString(value))
+        {
+            const char* s = JS_ToCString(ctx, value);
+            var = JZVariant(std::string(s ? s : ""));
+            JS_FreeCString(ctx, s);
+        }
+        else
+        {
+            // 非标量: 用 engine 的工厂建持有壳(JZJSValuePtr 是注册的 metatype, 见 JZJSEngine.h),
+            // **原样**装进 JZVariant —— 引用计数由壳内部的 shared_ptr guard 管(拷贝 = 共享同一份,
+            // 最后一个引用析构时才 JS_FreeValue)。
+            // ⚠ dup 不能省: makeValuePtr 是"接管所有权"的工厂(内部不再 dup, 析构时 JS_FreeValue),
+            //   而 def 的 JSValue 形参是**借用**的(与 JSValueConst 语义一致, 见上面 jzJsToDoubleArray
+            //   的用法) —— 不 dup 会多减一次引用计数。
+            var = JZVariant::fromValue(m_engine->makeValuePtr(JS_DupValue(ctx, value)));
+        }
+        w->setProperty(name, var);
+    });
+
+    // 属性读取: `w.property(name)` -> JS 值(没设置 / 已被移除 -> null)。转换见 variantToJSValue;
+    // 存进去的 JS 值(数组/对象/函数/实例)原样还回同一份对象。
+    bind_w.def("property", [this](JZWidget* w, const std::string& name) -> JSValue {
+        return variantToJSValue(m_engine->context(), w->property(name));
+    });
+
     bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
     bind_w.def("x", [](JZWidget* w) { return w->x(); });
     bind_w.def("y", [](JZWidget* w) { return w->y(); });
@@ -1280,8 +1396,9 @@ void JZJSWidgetModule::registWidgets()
 // ---------- 容器 / 视图类控件 ----------
 //
 // 这些控件的数据/子项由 C++ 持有, JS 侧只做"值级"操作(文本、行数、当前项、滚动位置),
-// **不从 JS 创建 item 对象** —— 因此不需要 JZJSListWidget/JZJSTableWidget 那套镜像类
-// (它们解决的是"JS new 出来的 item 交给容器"的所有权/失效, 待后续接线)。
+// **不从 JS 创建 item 对象** —— 所以也不需要"镜像类"那套东西(原 JZJSListWidget/JZJSTableWidget
+// 已删: item 类型根本没注册成 JS 类, 两边的所有权/失效逻辑从未接线)。将来真要开 JS 侧 item 接口,
+// 按 JZWidget 那组 js_JZWidget_xxx 的做法写全局 C 函数, 每项的失效开关表放 WidgetInfo::ext。
 void JZJSWidgetModule::registViews()
 {
     // 基类绑定: 只为拿到 superCTypeid(ctypeid 即 typeid(JZWidget), 与 registWidgets 里那份一致);

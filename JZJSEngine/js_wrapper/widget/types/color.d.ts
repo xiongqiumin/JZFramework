@@ -14,6 +14,7 @@
 //   p.setPen(new JZPen(new JZColor(255, 0, 0), 2));       // JZColor
 // JZColor 本身没有 fromString 之类的解析入口。
 
+/** @final */
 declare class JZColor {
   constructor();
   constructor(color: number);

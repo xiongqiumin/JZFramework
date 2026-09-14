@@ -5,6 +5,7 @@
  * net.Socket / net.Server / dgram.Socket / http.ClientRequest /
  * http.IncomingMessage / WebSocket / ws.WebSocketServer / mqtt.MqttClient 均继承它。
  */
+/** @final */
 declare class EventEmitter {
     on(event: string, listener: (...args: any[]) => void): this;
     once(event: string, listener: (...args: any[]) => void): this;

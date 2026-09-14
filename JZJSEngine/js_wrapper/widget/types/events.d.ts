@@ -11,6 +11,7 @@
 // enter/leave/focus 回调收到的是按 **JZEvent** 包装的对象(派发点形参即 JZEvent*),
 // 拿不到 JZEnterEvent/JZLeaveEvent 这类 C++ 子类型(它们没有注册)。
 
+/** @final */
 declare class JZEvent {
   /** 事件由框架创建并派发, 不要自己 new */
   protected constructor();
@@ -27,6 +28,7 @@ declare class JZEvent {
   isAccepted(): boolean;
 }
 
+/** @final */
 declare class JZMouseEvent extends JZEvent {
   protected constructor();
 
@@ -48,6 +50,7 @@ declare class JZMouseEvent extends JZEvent {
   modifiers(): number;
 }
 
+/** @final */
 declare class JZKeyEvent extends JZEvent {
   protected constructor();
 
@@ -68,6 +71,7 @@ declare class JZKeyEvent extends JZEvent {
 
 // 尺寸变化事件。C++ 侧 JZResizeEvent 是 JZEvent 派生(注册时挂到 JZEvent 原型下),
 // 因此它同样有 type()/accept()/ignore()/isAccepted(); 另外多出尺寸/旧尺寸查询。
+/** @final */
 declare class JZResizeEvent extends JZEvent {
   /** 事件由框架创建并派发, 不要自己 new */
   protected constructor();
@@ -80,6 +84,7 @@ declare class JZResizeEvent extends JZEvent {
   oldSize(): JZSize;
 }
 
+/** @final */
 declare class JZPainterEvent extends JZEvent {
   protected constructor();
 
@@ -90,17 +95,21 @@ declare class JZPainterEvent extends JZEvent {
 // 显示 / 隐藏 / 关闭事件: 无自有成员, 只有 JZEvent 的 type()/accept()/ignore()/isAccepted()。
 // 注: JZCloseEvent 虽然注册了, 但 JS 侧**没有**对应的回调 —— 事件过滤器不转发 closeEvent
 // (它是"窗口"的概念, 见 JZWindow::closeEvent), 窗口关闭无法从 JS 否决。
+/** @final */
 declare class JZShowEvent extends JZEvent {
   protected constructor();
 }
+/** @final */
 declare class JZHideEvent extends JZEvent {
   protected constructor();
 }
+/** @final */
 declare class JZCloseEvent extends JZEvent {
   protected constructor();
 }
 
 // 定时器事件(C++ 直接派发时用; JS 侧定时任务用 setInterval/setTimeout)
+/** @final */
 declare class JZTimerEvent extends JZEvent {
   protected constructor();
   id(): number;

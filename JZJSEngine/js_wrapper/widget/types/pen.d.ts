@@ -13,6 +13,7 @@
 // 颜色形参同时接受 JZColor 对象与 '#rgb' / '#rrggbb' / '#rrggbbaa' / 颜色名 字符串
 // (与 JZPainter.setPen 的便捷形式同一套解析, 见 color.d.ts)。
 
+/** @final */
 declare class JZPen {
   /** 默认画笔(黑色, 线宽 1) */
   constructor();
@@ -26,6 +27,7 @@ declare class JZPen {
   width(): number;
 }
 
+/** @final */
 declare class JZBrush {
   /** 默认画刷(黑色, 不透明) */
   constructor();
@@ -41,6 +43,7 @@ declare class JZBrush {
 }
 
 // 字体描述(仿 Qt QFont): 字体族 + 像素字号 + 风格。空字族 = 默认字体(渲染后端决定, 当前微软雅黑)。
+/** @final */
 declare class JZFont {
   constructor();
   /** 只给字号(等价 C++ JZFont(int size)) */

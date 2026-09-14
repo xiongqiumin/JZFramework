@@ -4,6 +4,7 @@
  * fetch - WHATWG fetch, same as Node 18+ (undici) and browsers.
  */
 
+/** @final */
 declare class Headers {
     constructor(init?: Record<string, string> | Headers);
 
@@ -20,6 +21,7 @@ declare class Headers {
     toJSON(): Record<string, string>;
 }
 
+/** @final */
 declare class Response {
     readonly status: number;
     readonly statusText: string;

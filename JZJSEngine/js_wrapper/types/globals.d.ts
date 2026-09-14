@@ -30,6 +30,7 @@
  */
 declare function self<T = any>(): T | null;
 
+/** @final */
 declare class URLSearchParams {
     constructor(init?: string | Record<string, string> | URLSearchParams);
 
@@ -46,6 +47,7 @@ declare class URLSearchParams {
     toString(): string;
 }
 
+/** @final */
 declare class URL {
     constructor(url: string);
 
@@ -68,6 +70,7 @@ declare class URL {
     toString(): string;
 }
 
+/** @final */
 declare class WebSocket extends EventEmitter {
     constructor(url: string, protocols?: string | string[]);
 

@@ -16,6 +16,7 @@
 //
 // 值语义: 读取接口与 multiplied()/inverse() 都返回**新矩阵**, 改它不影响别人。
 
+/** @final */
 declare class JZMatrix2D {
   /** 单位阵 */
   constructor();

@@ -1,7 +1,7 @@
 // 容器 / 视图类控件 —— 全局类(JZJSWidgetModule::registViews)。
 //
 // 这些控件的数据/子项由 C++ 持有, JS 侧只做"值级"操作(文本、行数、当前项、滚动位置),
-// **不从 JS 创建 item 对象** —— 所以没有 JZJSListWidget/JZJSTableWidget 那套镜像类。
+// **不从 JS 创建 item 对象**(item 类型没有注册成 JS 类, 也没有对应的镜像/包装类)。
 //
 // 所有权(与 JZWindow.addWidget 同一套): addWidget / insertWidget / addTab / setWidget /
 // setParentWidget 都会把 JS 包装翻成"C++ 拥有"(/Transfer/), 之后由对象树负责 delete,
@@ -9,6 +9,7 @@
 
 // 列表(选页 / 选择用)。注意与 Qt 一样**没有** removeItem 的"摘除"语义:
 // 绑定层的 removeItem(i) = takeItem(i) + delete, 确实会释放该项。
+/** @final */
 declare class JZListWidget extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -30,6 +31,7 @@ declare class JZListWidget extends JZWidget {
 }
 
 // 表格 —— 值级单元格接口(setItemText / itemText 会自动建 / 取单元格)
+/** @final */
 declare class JZTableWidget extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -57,6 +59,7 @@ declare class JZTableWidget extends JZWidget {
 }
 
 // 页容器: 多个 page 叠放, 同一时刻只显示当前 page
+/** @final */
 declare class JZStackedWidget extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -69,6 +72,7 @@ declare class JZStackedWidget extends JZWidget {
 }
 
 // 标签页(页面所有权: 加入后由标签控件持有)
+/** @final */
 declare class JZTabWidget extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -83,6 +87,7 @@ declare class JZTabWidget extends JZWidget {
 }
 
 // 可拖分隔容器(方向: 0=Horizontal 横排 1=Vertical 纵排)
+/** @final */
 declare class JZSplitter extends JZWidget {
   constructor();
   constructor(parent: JZWidget | null);
@@ -105,6 +110,7 @@ declare class JZSplitter extends JZWidget {
 }
 
 // 独立滚动条(方向: 0=Horizontal 1=Vertical)
+/** @final */
 declare class JZScrollBar extends JZWidget {
   constructor();
   constructor(parent: JZWidget | null);
@@ -126,6 +132,7 @@ declare class JZScrollBar extends JZWidget {
 }
 
 // 滚动区(setWidget 的内容控件由滚动区接管生命周期)
+/** @final */
 declare class JZScrollArea extends JZWidget {
   constructor(parent?: JZWidget | null);
 
@@ -145,6 +152,7 @@ declare class JZScrollArea extends JZWidget {
 }
 
 // 图片显示(缩放倍率 / 旋转角度)
+/** @final */
 declare class JZImageLabel extends JZWidget {
   constructor(parent?: JZWidget | null);
 

@@ -9,7 +9,7 @@
 #include "JZWidget.h"
 #include "JZImage.h"
 #include "JZJSType.h"
-#include "JZJSTableWidget.h"
+#include "JZTableWidget.h"
 #include "quickjs/quickjs.h"
 
 using namespace std;
@@ -263,44 +263,35 @@ int main()
               engine.fromJSValue<std::string>(reap.get()) == "ok");
     }
 
-    // 8) JZTableWidget(指针版数据模型) + JS 镜像类 JZJSTableWidget 的所有权/失效自检。
-    //    镜像类还没在 registWidgets 里注册(与 JZJSListWidget 一样待接线), 故直接 C++ 侧调 ****Js 方法。
-    jzDebug() << "===== JZTableWidget 指针版数据模型 + JS 镜像自检 =====";
+    // 8) JZTableWidget(指针版数据模型)自检。
+    //    注: 原来这里还测 JZJSTableWidget 镜像类(JS 侧 item 对象的所有权/失效), 那套已删除 ——
+    //    item 对象没有注册成 JS 类, 镜像类从未接线, 属于死代码; 将来真要做 JS 侧 item 接口时,
+    //    按"全局 C 函数 + 状态放 JZJSWidgetModule::WidgetInfo::ext"的路子重做。
+    jzDebug() << "===== JZTableWidget 指针版数据模型自检 =====";
     {
-        JZJSTableWidget* tbl = new JZJSTableWidget();
+        JZTableWidget* tbl = new JZTableWidget();
         tbl->setRowCount(2);
         tbl->setColumnCount(2);
 
-        // 接管(/Transfer/): JS 创建的单元格交给表格, JS 侧那份翻转为"非拥有"
-        jsbind::JSRawPointer<JZTableWidgetItem> a1(new JZTableWidgetItem("A1"), false);
-        jsbind::JSRawPointer<JZTableWidgetItem> swA1 = tbl->setItemJs(0, 0, a1);
-        check("setItemJs 接管: 表格持有 + JS 侧翻转为非拥有",
-              tbl->item(0, 0) == a1.get() && a1.cppOwner() && swA1.get() == a1.get());
-        check("item 记录行列号", a1.get()->row() == 0 && a1.get()->column() == 0);
-        check("表格反查行列", tbl->row(a1.get()) == 0 && tbl->column(a1.get()) == 0);
+        // 单元格落位: 表格持有 + 记录行列号
+        tbl->setItemText(0, 0, "A1");
+        JZTableWidgetItem* a1 = tbl->item(0, 0);
+        check("setItemText 建格并落位", a1 != nullptr && a1->text() == "A1");
+        check("item 记录行列号", a1->row() == 0 && a1->column() == 0);
+        check("表格反查行列", tbl->row(a1) == 0 && tbl->column(a1) == 0);
 
-        // 表格自建单元格(便捷重载) + 借用包装(cppOwner=true = 表格拥有, JS 只持句柄)
-        jsbind::JSRawPointer<JZTableWidgetItem> swB2 = tbl->setItemJs(1, 1, std::string("B2"));
-        check("setItemJs(文本) 新建单元格, 借用包装可用",
-              swB2.get() != nullptr && swB2.get()->text() == "B2" && swB2.cppOwner());
-
-        // 顶掉同格旧单元格: 旧 item 被删除, 其 JS 包装必须先失效(否则悬垂)
+        // 重复 setItemText: 同格已有单元格时**复用**它(只改文本, 不换 item)
+        tbl->setItemText(1, 1, "B2");
         JZTableWidgetItem* oldB2 = tbl->item(1, 1);
-        tbl->setItemJs(1, 1, std::string("B2-x"));
-        check("顶掉旧单元格后旧包装失效",
-              swB2.isCleared() && tbl->item(1, 1) != oldB2 && tbl->itemText(1, 1) == "B2-x");
+        tbl->setItemText(1, 1, "B2-x");
+        check("重复 setItemText 复用同一单元格",
+              tbl->item(1, 1) == oldB2 && tbl->itemText(1, 1) == "B2-x");
 
-        // 摘除并删除: JS 侧包装失效
-        tbl->removeItemJs(0, 0);
-        check("removeItemJs 后 JS 侧包装失效", swA1.isCleared() && a1.isCleared() && tbl->item(0, 0) == nullptr);
+        // 摘除并删除(Qt 惯用法: 摘除 + 自己 delete)
+        delete tbl->takeItem(0, 0);
+        check("takeItem 后该格为空", tbl->item(0, 0) == nullptr);
 
-        // 摘除并交回所有权(/TransferBack/): cppOwner=false, 包装析构时释放(等价 JS GC)
-        JZTableWidgetItem* rawB = tbl->item(1, 1);
-        jsbind::JSRawPointer<JZTableWidgetItem> taken = tbl->takeItemJs(1, 1);
-        check("takeItemJs 交回所有权", taken.get() == rawB && !taken.cppOwner() && tbl->item(1, 1) == nullptr);
-        taken = jsbind::JSRawPointer<JZTableWidgetItem>();   // 放掉 -> 该 item 被释放(等价 JS GC)
-
-        // 插删行列: item 自身记录的行列号跟随
+        // 插删行列: item 自身记录的行列号跟随(基类 reindex 维护)
         tbl->setRowCount(3);
         tbl->setItemText(2, 0, "C1");
         JZTableWidgetItem* c1 = tbl->item(2, 0);
@@ -313,17 +304,12 @@ int main()
         tbl->removeColumn(0);
         check("removeColumn 后列号还原", c1->column() == 0 && tbl->item(2, 0) == c1);
 
-        // 整行删除: 该行 JS 包装失效
-        jsbind::JSRawPointer<JZTableWidgetItem> swC1 = tbl->itemJs(2, 0);
-        tbl->removeRowJs(2);
-        check("removeRowJs 使该行 JS 包装失效", swC1.isCleared() && tbl->rowCount() == 2);
-
-        // 整表清空: 全部包装失效
-        tbl->setItemJs(1, 0, std::string("D1"));
-        jsbind::JSRawPointer<JZTableWidgetItem> swD = tbl->itemJs(1, 0);
-        tbl->clearContentsJs();
-        check("clearContentsJs 后全部失效且清空",
-              swD.isCleared() && tbl->item(1, 0) == nullptr && tbl->rowCount() == 2);
+        // 整行删除 / 整表清空
+        tbl->removeRow(2);
+        check("removeRow 删掉整行单元格", tbl->item(2, 0) == nullptr && tbl->rowCount() == 2);
+        tbl->setItemText(1, 0, "D1");
+        tbl->clearContents();
+        check("clearContents 后清空", tbl->item(1, 0) == nullptr && tbl->rowCount() == 2);
 
         delete tbl;
     }
@@ -704,6 +690,135 @@ int main()
         {
             JZJSValuePtr pnVal = engine.eval("pn");
             check("JZSplitter.addWidget: 转移所有权 + GC 后保活", revive(pnVal.get(), "pn", "__h4"));
+        }
+
+        // ⑤ onPaint / onMousePress 这类回调: JS 侧写法不变(`w.onPaint = fn`), 但回调**存在模块的槽里**
+        //    (见 JZJSWidgetModule::WidgetInfo::callbacks) —— 与包装对象的身份/生命周期解耦:
+        //    丢 JS 变量、包装被 GC、getter 每次拿到哪份包装, 都不影响事件转发。
+        evalStr(engine,
+                "var w5 = new JZWindow(240, 160, 'w5');"
+                "var sa5 = new JZScrollArea();"
+                "var cw = new JZWidget();"
+                "globalThis.__p5 = 0;"
+                "cw.onPaint = function () { globalThis.__p5++; };"
+                "sa5.setWidget(cw);"
+                "w5.addWidget(sa5);"
+                "globalThis.__w5 = w5;"
+                "globalThis.__sameWidget = (sa5.widget() === cw) ? 'same' : 'diff';"
+                "'ok'");
+        {
+            JZWidget* cw = engine.fromJSValue<JZWidget*>(engine.eval("cw").get());
+            evalStr(engine, "cw = null; 'ok'");            // JS 变量放手
+            JS_RunGC(JS_GetRuntime(engine.context()));     // 强制回收: 没保活则包装(onPaint)就没了
+            {
+                JZPainterEvent pe;
+                pe.setRect(JZRect(0, 0, 20, 20));
+                jzApp->sendEvent(cw, &pe);
+            }
+            check("setWidget 内容的 onPaint: 丢引用+GC 后仍派发到 JS",
+                  evalStr(engine, "String(globalThis.__p5)") == "1");
+            // getter 按当前调用**现造包装**: 同一控件的两份包装不是同一个 JS 对象(`===` 比不得,
+            // 见 widgets.d.ts)。事件回调不受影响 —— 回调存在 C 侧槽里, 在哪份包装上赋都生效。
+            check("getter 返回新包装(=== 比不得; 回调仍生效)",
+                  evalStr(engine, "globalThis.__sameWidget") == "diff");
+
+            // ⑥ 回调存在 C++ 侧的槽里(而不是包装的自有属性): 读回同一个函数、类型校验、null 清空。
+            evalStr(engine,
+                    "globalThis.__p6 = 0;"
+                    "globalThis.__readback = 'bad';"
+                    "globalThis.__own = 'bad';"
+                    "globalThis.__typeerr = 'no-throw';"
+                    "var sa6 = new JZScrollArea();"
+                    "var c6 = new JZWidget();"
+                    "sa6.setWidget(c6);"
+                    "var f6 = function () { globalThis.__p6++; };"
+                    "c6.onPaint = f6;"
+                    "globalThis.__readback = (c6.onPaint === f6) ? 'same-fn' : 'diff-fn';"
+                    "globalThis.__own = Object.prototype.hasOwnProperty.call(c6, 'onPaint') ? 'own' : 'proto';"
+                    "try { c6.onPaint = 123; } catch (e) { globalThis.__typeerr = 'throw'; }"
+                    "'ok'");
+            check("onPaint 读回同一个函数(回调存在 C 侧槽里)",
+                  evalStr(engine, "globalThis.__readback") == "same-fn");
+            check("onPaint 是原型上的访问器(不是包装的自有属性)",
+                  evalStr(engine, "globalThis.__own") == "proto");
+            check("onPaint 赋非函数抛异常", evalStr(engine, "globalThis.__typeerr") == "throw");
+
+            // 回调照旧生效(存在 C 侧, 与包装无关)
+            JZWidget* c6w = engine.fromJSValue<JZWidget*>(engine.eval("c6").get());
+            {
+                JZPainterEvent pe6;
+                pe6.setRect(JZRect(0, 0, 20, 20));
+                jzApp->sendEvent(c6w, &pe6);
+            }
+            check("C 侧槽里的 onPaint 正常派发", evalStr(engine, "String(globalThis.__p6)") == "1");
+
+            // null 清空: 之后不再转发(事件走原生实现)。
+            // 这里用 show 而不是 paint 验证 —— 原生 paint 路径会 `JZPainter p(this)`, 需要控件已在
+            // 真实绘制流程里(有 layer); 裸 sendEvent 一个 paint 必然崩, 与"回调存在哪"无关。
+            evalStr(engine,
+                    "globalThis.__s6 = 0;"
+                    "c6.onShow = function () { globalThis.__s6++; };"
+                    "'ok'");
+            {
+                JZShowEvent se6;
+                jzApp->sendEvent(c6w, &se6);
+            }
+            check("onShow 生效(C 侧槽)", evalStr(engine, "String(globalThis.__s6)") == "1");
+            evalStr(engine, "c6.onShow = null; 'ok'");
+            {
+                JZShowEvent se6;
+                jzApp->sendEvent(c6w, &se6);
+            }
+            check("onShow = null 清空回调(不再派发)", evalStr(engine, "String(globalThis.__s6)") == "1");
+            check("清空后 getter 返回 null", evalStr(engine, "String(c6.onShow)") == "null");
+
+            // ⑦ 属性系统: `w.setProperty(name, value)` —— 参数收 JSValue。标量走 JZVariant 原生类型;
+            //    其余(数组/对象/函数/实例)用注册的 metatype(JZJSValueHolder)**原样**存; C++ 侧 property() 读回。
+            evalStr(engine,
+                    "c6.setProperty('answer', 42);"
+                    "c6.setProperty('pi', 3.5);"
+                    "c6.setProperty('label', 'hi');"
+                    "c6.setProperty('on', true);"
+                    "c6.setProperty('list', [1, 'a', false]);"
+                    "c6.setProperty('obj', { n: 7 });"
+                    "c6.setProperty('fn', function () { return 1; });"
+                    "'ok'");
+            {
+                JZVariant vInt = c6w->property("answer");
+                JZVariant vDbl = c6w->property("pi");
+                JZVariant vStr = c6w->property("label");
+                JZVariant vBool = c6w->property("on");
+                check("setProperty: int / double / string / bool",
+                      vInt.toInt() == 42 && vDbl.toDouble() == 3.5 && vStr.toString() == "hi" && vBool.toBool());
+
+                // 非标量: 走注册的 metatype(JZJSValuePtr), 原样存 —— 数组/对象/函数身份都保留
+                JSContext* ctx = engine.context();
+                JZJSValuePtr listPtr = c6w->property("list").value<JZJSValuePtr>();
+                check("setProperty: 数组原样存(仍是 JS 数组)", JS_IsArray(listPtr.get()));
+
+                JZJSValuePtr objPtr = c6w->property("obj").value<JZJSValuePtr>();
+                JSValue nv = JS_GetPropertyStr(ctx, objPtr.get(), "n");
+                int32_t n = 0;
+                JS_ToInt32(ctx, &n, nv);
+                JS_FreeValue(ctx, nv);
+                check("setProperty: 对象原样存(能读回字段)", n == 7);
+
+                JZJSValuePtr fnPtr = c6w->property("fn").value<JZJSValuePtr>();
+                check("setProperty: 函数不再是错误(原样存)", JS_IsFunction(ctx, fnPtr.get()));
+            }
+            check("setProperty: 控件实例也能存(不再抛异常)",
+                  evalStr(engine, "try { c6.setProperty('w', c6); 'ok'; } catch (e) { 'throw'; }") == "ok");
+
+            // property(name): JS 侧读回 —— 标量按类型还, JS 值原样还(同一身份), 未设置/已移除 -> null
+            check("property: 标量读回",
+                  evalStr(engine, "String(c6.property('answer')) + '|' + String(c6.property('pi')) + '|' + String(c6.property('on'))") == "42|3.5|true");
+            check("property: JS 值原样读回(同一身份 + 内容对)",
+                  evalStr(engine, "var l2 = c6.property('list'); String(l2 === c6.property('list')) + '|' + String(l2[1]) + '|' + String(c6.property('obj').n)") == "true|a|7");
+            check("property: 未设置的属性 -> null", evalStr(engine, "String(c6.property('nope'))") == "null");
+            // null/undefined = 移除该属性; 之后读回是 null
+            evalStr(engine, "c6.setProperty('label', null); 'ok'");
+            check("setProperty: 传 null 移除属性", !c6w->property("label").isValid());
+            check("property: 移除后读回 null", evalStr(engine, "String(c6.property('label'))") == "null");
         }
     }
 

@@ -719,6 +719,8 @@ JSValue toJSValue(JSContext* ctx, jsbind::JSRawPointer<Class> t)
 // 裸指针 -> JS 对象(经 JSRawPointer 包装): 这是 toJSValue 不支持裸指针时的显式替代。
 // cppOwner=true: C++ 持有底层对象, JS 仅持句柄, GC 时不释放;
 // cppOwner=false: JS 持有, JS 对象 GC 时 delete 底层对象(须由 new 分配, 勿传栈/外部托管指针)。
+// 注意: **每次调用都新建一份包装** —— 同一个 C++ 对象的两份包装不是同一个 JS 对象(`===` 比不得),
+// 包装上挂的 JS 状态也各挂各的。控件的事件回调不受影响(它们存在 JZJSWidgetModule 的 C 侧槽里)。
 template <class T>
 JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool cppOwner = false)
 {

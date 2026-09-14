@@ -15,6 +15,7 @@
 #include "JZMutex.h"
 #include "JZJSType.h"
 #include "JZObject.h"
+#include "JZMeta.h"   // JZ_DECLARE_METATYPE(见下面的 JZJSValuePtr 注册)
 
 enum JZJSEngineStatus
 {
@@ -37,6 +38,12 @@ protected:
     std::shared_ptr<void> m_guard;
     JSValue m_value;
 };
+
+// 把 JZJSValuePtr 登记成 JZ 值系统的 metatype: 这样 JS 值(数组/对象/函数...)就能直接装进 JZVariant
+// (属性系统等), 不需要给 JZ 值系统写一套 JS 树转换。
+// 引用计数天然正确: 载荷是 shared_ptr guard —— 拷贝 = 共享同一份, 最后一个引用析构时才 JS_FreeValue,
+// 正好对上 JZMeta<T>::clone() 的"data 赋值"语义以及 JZMeta 的析构。
+JZ_DECLARE_METATYPE(JZJSValuePtr)
 
 // C++ 调用 JS 异步函数(callAsyncFunction)的结果
 struct JZAsyncResult

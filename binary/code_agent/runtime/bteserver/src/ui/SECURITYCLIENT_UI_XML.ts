@@ -1,0 +1,42 @@
+// 由 tools/ui2jz.py 从原版 securityclient.ui 生成 —— **不要手改**;
+// 改原 .ui 后重跑: python tools/ui2jz.py ui --out src/ui
+// 保真度报告见 securityclient.ui.report.txt
+export const SECURITYCLIENT_UI_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>SecurityClientClass</class>
+  <widget class="Dialog" name="main">
+    <property name="geometry">0,0,367,246</property>
+    <property name="title">注册</property>
+      <widget class="VBoxLayout" name="verticalLayout">
+        <widget class="Widget" name="widget">
+          <widget class="HBoxLayout" name="horizontalLayout_2">
+            <widget class="Label" name="label">
+              <property name="text">机器码</property>
+            </widget>
+            <widget class="LineEdit" name="lineMac">
+              <property name="readOnly">true</property>
+            </widget>
+          </widget>
+        </widget>
+        <widget class="Label" name="label_2">
+          <property name="text">注册码</property>
+        </widget>
+        <widget class="TextEdit" name="textKey">
+        </widget>
+        <widget class="Label" name="label_3">
+          <property name="text">请将机器码发给工作人员，然后根据返回的注册码进行注册</property>
+        </widget>
+        <widget class="Widget" name="widget_2">
+          <widget class="HBoxLayout" name="horizontalLayout">
+            <widget class="PushButton" name="btnGen">
+              <property name="text">注册</property>
+            </widget>
+            <widget class="PushButton" name="btnExit">
+              <property name="text">退出</property>
+            </widget>
+          </widget>
+        </widget>
+      </widget>
+  </widget>
+</ui>
+`;

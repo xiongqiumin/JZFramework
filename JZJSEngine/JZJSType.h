@@ -45,17 +45,8 @@ struct JSPointerData
 struct JSPointerState
 {
     bool cppOwner = true;           // false = JS 拥有(最后一个包装析构时 delete 底层对象)
-    bool cleared = false;           // 句柄已失效(clear() 只标记, **绝不** delete 底层对象)
     JSValue handle = JS_UNDEFINED;  // C++ 侧托管的那份句柄(dup 过; moveToCpp/moveToJs/clear 管理)
-
-    // 让所有共享该状态的包装(含 JS 侧那份)一起失效。
-    // 与 clear() 的区别: 不检查 cppOwner、不需要拿到包装本身 —— C++ 侧在删除底层对象后
-    // 可直接用持有着的 state 标记失效(见 JZJSPaintScope 的绘制作用域)。
-    // 该状态的扩展数据(按需挂载, 见 JSPointerData): 键 = 底层对象, 所以同一个对象的所有包装
-    // 共用这一份。换(或摘)数据只影响"谁挂着它", 不碰 cppOwner/cleared/handle。
     std::unique_ptr<JSPointerData> data;
-
-    void invalidate() { cleared = true; }
 };
 
 class JSPointerBase
@@ -72,153 +63,69 @@ public:
     // 所有权翻转(运行期可变)。绑定层实现 /Transfer/ /TransferBack/ 时经此翻转, 好处是
     // **不需要知道具体的包装类型** —— 例如 JZJSWidget 拿到自己的包装只要一个 JSPointerBase*,
     // 就能把"自己"的所有权交给父控件。
-    bool cppOwner() const { return !m_state || m_state->cppOwner; }
+    bool cppOwner() const 
+    { 
+        return !m_state || m_state->cppOwner; 
+    }
+    
     void setCppOwner(bool owner)
     {
         if (m_state)
+        {
             m_state->cppOwner = owner;
+        }
     }
 
-    // ---- 失效 ----
-    // 默认看共享状态; JSObjectPointer 另有"底层对象已被 C++ 销毁"(守卫指针置空)这一路, 会覆盖。
-    virtual bool isCleared() const { return !m_state || m_state->cleared; }
-
-    // 让句柄失效: 只做三件事 —— 标记失效、清底层指针(onClear)、解绑托管句柄。
-    // **绝不 delete 底层对象**: 那件事只由 cppOwner + PointInfo 析构决定(见 PointInfo::~PointInfo)。
-    // 提到基类的原因: JS 侧接口要在**只知道包装基类**的前提下, 让"已经发给 JS 的旧包装"立刻失效
-    // (典型: JZJSWidget.cpp 的布局缓存 —— 布局包装的具体类型随类层次不同, 是 JSRawPointer<具体类>)。
+    void moveToCpp(JSValueConst jsValue);
+    JSValue moveToJs();
     void clear();
 
-    // ---- C++ 侧托管一份 JS 句柄 ----
-    // moveToCpp(jsValue): dup 一份登记进引擎的身份表(key = 底层裸指针)。
-    //   效果: 之后同一个底层对象再包给 JS 时**复用同一个 JS 对象**(=== 成立), 且这份 dup 保证
-    //   JS 对象在 C++ 还需要它时不会被回收(退出对象树/交回 JS 由 moveToJs 或 clear 撤掉)。
-    void moveToCpp(JSValueConst jsValue);
-    // moveToJs(): 返回**新引用**(调用方负责 JS_FreeValue)并摘掉登记; 没托管过返回 JS_UNDEFINED。
-    JSValue moveToJs();
-
-    // ---- 共享状态(引擎建表 / 派生类内部使用) ----
-    std::shared_ptr<JSPointerState> state() const { return m_state; }
-    void setState(const std::shared_ptr<JSPointerState>& s) { m_state = s; }
-    void setEngine(JZJSEngine* e) { m_engine = e; }
-    JZJSEngine* engine() const { return m_engine; }
+    void setEngine(JZJSEngine *engine) 
+    {
+        m_engine = nullptr;
+    }
 
 protected:
-    // 派生类把自己的底层指针置空(只做这一件事; 标记失效/解绑句柄由 clear() 统一做)。
     virtual void onClear() = 0;
 
-    std::shared_ptr<JSPointerState> m_state;   // 指针语义: 引擎表里那份(共享); 值语义: 各自一份
-    JZJSEngine* m_engine = nullptr;            // 由 createValue 统一注入(不在各处手填)
+    std::shared_ptr<JSPointerState> m_state;
+    JZJSEngine* m_engine = nullptr;
 };
 
 // ==================== JS 侧指针包装 ====================
-// 两类包装都表示"JS 侧持有的一个 C++ 对象引用", 区别只在**失效方式**:
-//   JSObjectPointer (只服务 JZObject 派生类): 内部复用 JZCore 的 JZObjectPointer 守卫指针,
-//       对象析构时守卫自动置空 -> get() 返回 nullptr, 且对所有副本同时生效。
-//       故 JZObject 派生类**不需要缓存包装**, 每次现造即可(守卫指针本身在共享 m_data 上)。
-//   JSRawPointer<T> (非 JZObject 类型):  内部只有裸指针, 对 delete 无感知 -> 失效必须有人
-//       显式 clear()。典型用法: 拥有方在自己成员里缓存一份作为"失效开关", 在删除目标对象
-//       (或替换它)之前先 clear()。
-//
-// 所有权 (cppOwner) 是**运行期可翻转**的:
-//   false = JS 拥有, 最后一个包装析构时 delete 底层对象;
-//   true  = C++ 拥有, JS 仅持句柄, 不负责释放(clear() 只清句柄)。
-// 删除动作放在 PointInfo 的析构里(而不是每个包装的析构), 于是:
-//   - 只有最后一个引用消失时才删除 -> 临时拷贝 / 按值传参不会误删;
-//   - 析构时才读 cppOwner -> setCppOwner() 的翻转真正生效
-//     (对应 SIP 的 /Transfer/ /TransferBack/、Shiboken 的 setOwnership())。
-// 另: 取回包装的形参请用引用(auto& cp = fromJSValue<...>), 共享的是同一个 PointInfo,
-//     因此 setCppOwner / clear 能传播回 JS 持有的那份包装。
-// clear() 只清指针 + 标失效 + 解绑托管句柄, **绝不** delete 底层对象(那是 PointInfo 的事)。
-//
-// 分两层, 别混:
-//   * **PointInfo**(每包装一份, 只在"同一个包装的拷贝 / 按值传参"之间共享): 存底层指针/守卫指针
-//     和**删除责任** —— 最后一个引用消失时按最终 cppOwner 决定是否 delete 底层对象。
-//   * **JSPointerState**(所有权 + 失效 + 托管句柄): 值语义类型每包装一份; "指针语义"类型由引擎
-//     按底层裸指针建表共享(JZJSEngine::pointerStateFor), 于是同一个对象的不同包装读到的是同一份
-//     cppOwner/cleared —— setCppOwner / clear 会传播到所有包装(含已发给 JS 的那份), 而托管了句柄
-//     之后 `toJsValueFromPtr` 复用**同一个 JS 对象**(`===` 成立)。
-
-// 非模板: 只用于 JZObject 派生类。
-// 守卫指针 + 删除责任留在这份 PointInfo 里; **所有权/失效的标志位改由共享的 JSPointerState 持有**
-// (基类字段), 于是"指针语义"类型的不同包装之间也能同步翻转/失效。
 class JSObjectPointer : public JSPointerBase
 {
 public:
     struct PointInfo
     {
-        std::shared_ptr<JSPointerState> state;
-        JZObjectPointer obj;
-
-        PointInfo(const std::shared_ptr<JSPointerState>& s, JZObject* ptr)
-            : state(s)
-        {
-            if (ptr)
-                obj = ptr->guardPointer();
-        }
-
-        ~PointInfo()
-        {
-            // 最后一个引用消失时按**最终** cppOwner 决定是否释放(翻转能生效)。
-            // 对象若已被 C++ 销毁, 守卫指针为 null, 这里不会重复删除。
-            if (state && !state->cppOwner)
-            {
-                JZObject* p = obj.object();
-                if (p)
-                    delete p;
-            }
-        }
-
-        // 标记共享状态失效(不检查 cppOwner、不需要包装本身; 见 JZJSPaintScope)。
-        void invalidate()
-        {
-            if (state)
-                state->invalidate();
-        }
-
-        // 供持有 Info 的 C++ 侧(如 JZJSPaintScope)直接读状态, 不必再经过包装。
-        bool isCleared() const { return !state || state->cleared; }
-        bool cppOwner() const { return !state || state->cppOwner; }
+        JZObjectPointer ptr;
     };
 
-    JSObjectPointer() {}
+    JSObjectPointer() 
+    {
+    }
 
     JSObjectPointer(JZObject* ptr, bool cppOwner)
     {
         m_state = std::make_shared<JSPointerState>();
         m_state->cppOwner = cppOwner;
-        m_info = std::make_shared<PointInfo>(m_state, ptr);
+        m_ptr = ptr->guardPointer();
     }
 
-    // 复用引擎身份表里的共享状态(指针语义: 同底层对象 ⇒ 同状态 ⇒ 同 JS 对象)
-    JSObjectPointer(const std::shared_ptr<JSPointerState>& state, JZObject* ptr)
-    {
-        m_state = state ? state : std::make_shared<JSPointerState>();
-        m_info = std::make_shared<PointInfo>(m_state, ptr);
-    }
-
-    // 底层对象裸指针; 对象已销毁或已 clear 时返回 nullptr。
-    // ★ 这里**直接读状态**, 不要调 isCleared() —— isCleared() 是以 get()==nullptr 定义的,
-    //   互相调用会无限递归(实测栈溢出 0xC00000FD)。
+    // 底层对象裸指针
     JZObject* get() const
     {
-        if (!m_state || m_state->cleared)
-            return nullptr;
-        return m_info ? m_info->obj.object() : nullptr;
+        return m_ptr ? m_ptr.object() : nullptr;
     }
 
     void* getRaw() const override { return get(); }
 
-    // 守卫指针置空(底层对象被 C++ 销毁)同样算失效 —— 与旧行为一致:
-    // 引擎的实参检查只看 isCleared(), 漏掉这一路会让"已销毁对象"的句柄被放过去。
-    bool isCleared() const override { return get() == nullptr; }
-
 protected:
-    // 没有自己的裸指针可清: cleared 一置, get() 就返回 nullptr(守卫指针照旧由 JZObjectPointer 管)。
-    void onClear() override {}
+    void onClear() override
+    {
+    }
 
-private:
-    std::shared_ptr<PointInfo> m_info;
+    JZObjectPointer m_ptr;
 };
 
 template <class Class>
@@ -227,34 +134,7 @@ class JSRawPointer : public JSPointerBase
 public:
     struct PointInfo
     {
-        std::shared_ptr<JSPointerState> state;
         Class* ptr = nullptr;
-
-        PointInfo(const std::shared_ptr<JSPointerState>& s, Class* p)
-            : state(s)
-            , ptr(p)
-        {
-        }
-
-        ~PointInfo()
-        {
-            // 最后一个引用消失时按**最终** cppOwner 决定是否释放(翻转能生效)。
-            if (state && !state->cppOwner && ptr)
-                delete ptr;
-        }
-
-        // 让所有共享该状态的包装(含 JS 侧那份)一起失效。
-        // 与 clear() 的区别: 不检查 cppOwner、不需要拿到包装本身 —— C++ 侧在删除底层对象后
-        // 可直接用持有着的 Info 标记失效(见 JZJSPaintScope 的绘制作用域)。
-        void invalidate()
-        {
-            if (state)
-                state->invalidate();
-        }
-
-        // 供持有 Info 的 C++ 侧(如 JZJSPaintScope)直接读状态, 不必再经过包装。
-        bool isCleared() const { return !state || state->cleared; }
-        bool cppOwner() const { return !state || state->cppOwner; }
     };
 
     using Info = std::shared_ptr<PointInfo>;
@@ -265,40 +145,28 @@ public:
     {
         m_state = std::make_shared<JSPointerState>();
         m_state->cppOwner = cppOwner;
-        m_info = std::make_shared<PointInfo>(m_state, ptr);
+        m_info = std::make_shared<PointInfo>();
+        m_info->ptr = ptr;
     }
-
-    // 复用引擎身份表里的共享状态(指针语义: 同底层对象 ⇒ 同状态 ⇒ 同 JS 对象)
-    JSRawPointer(const std::shared_ptr<JSPointerState>& state, Class* ptr)
-    {
-        m_state = state ? state : std::make_shared<JSPointerState>();
-        m_info = std::make_shared<PointInfo>(m_state, ptr);
-    }
-
-    // 句柄状态(与所有副本 / JS 侧那份包装共享)。
-    // 拿到它就可以在"JS 对象可能已被回收"的情况下安全地失效句柄 —— 不必 dup JS 对象、
-    // 也不必保证包装本身还活着(状态是 shared_ptr 独立存活的)。
-    Info info() const { return m_info; }
 
     // 底层对象裸指针; 已 clear 时返回 nullptr。
     Class* get() const
     {
-        if (isCleared())
-            return nullptr;
         return m_info ? m_info->ptr : nullptr;
     }
 
     void* getRaw() const override { return get(); }
 
 protected:
-    // clear() 只清**指针**: 绝不 delete —— 底层对象由 PointInfo 析构按 cppOwner 决定(见基类说明)。
     void onClear() override
     {
         if (m_info)
+        {
+            JZ_ASSERT(m_state->cppOwner);
             m_info->ptr = nullptr;
+        }
     }
 
-private:
     std::shared_ptr<PointInfo> m_info;
 };
 
@@ -585,7 +453,7 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
     if (engine && engine->isJSRawPointerClassId(class_id))
     {
         auto* cpb = (jsbind::JSPointerBase*)ptr;
-        if (cpb->isCleared())
+        if (!cpb->getRaw())
         {
             // 运行期状态(不是类型不匹配): JS 侧调用已由 JZJSEngine::call()/callAsync 的预检拦下,
             // 走到这里说明有路径漏校验。断言(fatal) + 返回空指针(与 null/undefined 同语义)。
@@ -689,7 +557,7 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
         if (engine && engine->isJSRawPointerClassId(class_id))
         {
             auto* cpb = (jsbind::JSPointerBase*)ptr;
-            if (cpb->isCleared())
+            if (!cpb->getRaw())
             {
                 // 运行期状态: 上层(call/callAsync)已预检。值/引用返回没有安全的兜底值,
                 // 故断言后直接 JZ_UNREACHABLE(致命), 绝不拿已失效包装取对象。

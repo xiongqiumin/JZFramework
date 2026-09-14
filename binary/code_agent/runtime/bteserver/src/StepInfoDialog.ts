@@ -8,6 +8,7 @@ import { tr, sprintf } from './BTEServer.js';
 import { UiHelper } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { StepTableHelper } from './StepSettingDialog.js';
+import { STEPINFODIALOG_UI_XML } from './ui/STEPINFODIALOG_UI_XML.js';
 
 // ---------------------------------------------------------------------------
 // class StepInfoDialog : public QDialog
@@ -18,12 +19,13 @@ export class StepInfoDialog
     // StepInfoDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {
-        QDialog.call(this, parent);   // : QDialog(parent)
-
         this.record = null;   // BTERecordPtr record;
 
-        this.ui = new Ui_StepInfoDialogClass();
-        this.ui.setupUi(this);
+        // 真 UI: 原版 StepInfoDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
+        // (Qt 的 `QDialog.call(this, parent)` 那套继承不再需要 —— 本类改成"持一个真窗口"。)
+        this.ui = uiLoader.load(STEPINFODIALOG_UI_XML);
+        // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
+        if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
 
         const strListHeader = [];
         strListHeader.push(tr("通道属性"), tr("通道状态"), tr("通道属性"), tr("通道状态"), tr("通道属性"),

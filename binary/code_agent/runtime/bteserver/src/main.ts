@@ -450,10 +450,10 @@ export async function main(argc, argv)
         }
         catch (e)
         {
-            // message + stack 都要: 迁移期这里既会报 "not a function"(要看 stack 定位),
-            // 也会报引擎抛的描述性错误(uiLoader 的解析/建控件失败原因在 message 里)
-            console.error("[main] BTEServer 起界面失败(界面层仍在移植), 退回真窗口外壳: " +
-                ((e && e.message) ? (e.message + " | " + (e.stack || "")) : e));
+            // ⚠ 这里**别去点 e.message / e.stack**: 引擎抛出的异常对象上访问属性有可能再抛一次错,
+            // 那时整个 catch 会往外抛 ⇒ main() 的 Promise 被拒绝, 表现成"**无栈**的 not a function",
+            // 反而把真正的失败原因盖掉。直接把 e 交给 console.error(多参形态)。
+            console.error("[main] BTEServer 起界面失败(界面层仍在移植), 退回真窗口外壳:", e);
         }
     }
 

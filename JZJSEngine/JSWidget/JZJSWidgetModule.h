@@ -19,7 +19,6 @@
 #include "JZImeEvent.h"
 #include "JZShowEvent.h"
 #include "JZHideEvent.h"
-#include "JZJSPaintScope.h"
 
 class JZJSEngine;
 class JZWindow;
@@ -55,6 +54,9 @@ public:
     void deinitEngine();
 
     JZJSEngine* engine() const { return m_engine; }
+    jsbind::JSPointerBase* createPainter(JSContext* ctx, int argc, JSValueConst* argv);
+    void beginPainter(JZWidget* widget);
+    void endPainter();
 
     // ======================================================================
     // 控件 JS 包装的"保活"登记 (C++ 对象树 <-> JS 包装 的循环引用)
@@ -227,9 +229,8 @@ private:
     int m_typeWindow = -1;
     int m_typeCanvas = -1;
 
-    // JS 侧画笔的创建分发与生命周期(registPainter 的请求全部转发到这里, 这个作用域也界定
-    // JS 侧 onPaint 里那些画笔的生命周期)
-    JZJSPaintScope m_paintScope;
+    jsbind::JSRawPointer<JZPainter>* m_painter = nullptr;
+    JZWidget* m_paintWidget = nullptr;
 
     // 注: 回调不再集中登记在模块的数组里 —— 每个回调存在所属对象的槽表(WidgetInfo::slots),
     // 并在**引擎的回调 GC 根**上登记一份(见 JZJSEngine::retainCallback: 防"闭包与包装成环"

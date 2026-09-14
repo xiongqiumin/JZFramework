@@ -1,0 +1,20 @@
+=== securityclient 转换报告 ===
+
+- 类替换(6 类):
+    QDialog -> Dialog                  x1
+    QLabel -> Label                    x3
+    QLineEdit -> LineEdit              x1
+    QPlainTextEdit -> TextEdit         x1
+    QPushButton -> PushButton          x2
+    QWidget -> Widget                  x2
+
+- 被忽略的属性(3 种):
+    windowTitle(->title)           x1
+    layout.leftMargin              x1
+    layout.rightMargin             x1
+
+- 被忽略的元素(1 种):
+    spacer                         x1
+
+- 语义损失 / 需要人工看的点:
+    * QPlainTextEdit -> TextEdit: 富文本/自动换行等细节按 TextEdit 能力简化

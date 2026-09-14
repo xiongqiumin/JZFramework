@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>HelpDialogClass</class>
+  <widget class="Dialog" name="main">
+    <property name="geometry">0,0,330,220</property>
+    <property name="title">Dialog</property>
+      <widget class="VBoxLayout" name="verticalLayout">
+        <widget class="GroupBox" name="groupBox_3">
+          <property name="title">帮助文档</property>
+          <widget class="VBoxLayout" name="verticalLayout_5">
+            <widget class="TextEdit" name="textHelp">
+              <property name="readOnly">true</property>
+            </widget>
+          </widget>
+        </widget>
+      </widget>
+  </widget>
+</ui>

@@ -1,0 +1,40 @@
+// 由 tools/ui2jz.py 从原版 SplitDialog.ui 生成 —— **不要手改**;
+// 改原 .ui 后重跑: python tools/ui2jz.py ui --out src/ui
+// 保真度报告见 SplitDialog.ui.report.txt
+export const SPLITDIALOG_UI_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>SplitDialog</class>
+  <widget class="Dialog" name="main">
+    <property name="geometry">0,0,900,720</property>
+    <property name="title">历史数据分选</property>
+      <widget class="VBoxLayout" name="verticalLayout">
+        <widget class="Widget" name="splitSetting"></widget>
+        <widget class="Widget" name="widget_4">
+          <widget class="HBoxLayout" name="horizontalLayout_3">
+            <widget class="GroupBox" name="groupBox">
+              <property name="title">分选结果</property>
+              <widget class="HBoxLayout" name="horizontalLayout">
+                <widget class="TableWidget" name="tableSplitLevel">
+                </widget>
+                <widget class="TableWidget" name="tableSplitList">
+                </widget>
+                <widget class="Chart" name="splitPie">
+                </widget>
+              </widget>
+            </widget>
+          </widget>
+        </widget>
+        <widget class="Widget" name="widget_2">
+          <widget class="HBoxLayout" name="horizontalLayout_4">
+            <widget class="PushButton" name="btnSaveCopy">
+              <property name="text">导出分选结果</property>
+            </widget>
+            <widget class="PushButton" name="btnExit">
+              <property name="text">退出</property>
+            </widget>
+          </widget>
+        </widget>
+      </widget>
+  </widget>
+</ui>
+`;

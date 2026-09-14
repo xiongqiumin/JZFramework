@@ -62,7 +62,7 @@ JZWidget* widgetFromThis(JSContext* ctx, JSValueConst this_val)
         return nullptr;
 
     auto* cp = (jsbind::JSPointerBase*)opaque;
-    if (cp->isCleared() || !cp->getRaw())
+    if (!cp->getRaw())
         return nullptr;
 
     return fromJSValue<JZWidget*>(ctx, this_val);
@@ -281,7 +281,7 @@ JSValue js_JZWidget_layout(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     if (!JS_IsUndefined(cached))
     {
         auto* cp = wrapperOf(cached);
-        if (cp && !cp->isCleared() && cp->getRaw() == (void*)cur)
+        if (cp && cp->getRaw() == (void*)cur)
             return cached;   // cached 就是新引用, 直接交出去
         JS_FreeValue(ctx, cached);
     }

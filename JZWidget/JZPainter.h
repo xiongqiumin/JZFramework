@@ -27,6 +27,8 @@ public:
     explicit JZPainter(JZImage& image);
     ~JZPainter();   // 发 Pop 平衡构造时的 Push (未配对的 save 一并自动闭合)
 
+    void endDevice();
+
     void setPen(const JZPen& pen);
     JZPen pen() const;
 

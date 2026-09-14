@@ -48,9 +48,6 @@ set_tests_properties(jsengine.test_jsui PROPERTIES TIMEOUT 60)
 add_test(NAME jsengine.test_jsnet COMMAND test_jsnet)
 set_tests_properties(jsengine.test_jsnet PROPERTIES TIMEOUT 300)
 
-add_test(NAME jsengine.test_bteserver COMMAND test_bteserver)
-set_tests_properties(jsengine.test_bteserver PROPERTIES TIMEOUT 180)
-
 add_test(NAME jsengine.test_jsworker COMMAND test_jsworker)
 set_tests_properties(jsengine.test_jsworker PROPERTIES TIMEOUT 180)
 

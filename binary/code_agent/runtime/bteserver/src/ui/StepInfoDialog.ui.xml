@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>StepInfoDialog</class>
+  <widget class="Dialog" name="main">
+    <property name="geometry">0,0,852,662</property>
+    <property name="title">StepEditDialog</property>
+      <widget class="VBoxLayout" name="verticalLayout">
+        <widget class="TableWidget" name="tableInfo">
+        </widget>
+        <widget class="TableWidget" name="tableStep">
+        </widget>
+      </widget>
+  </widget>
+</ui>

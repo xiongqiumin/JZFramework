@@ -70,11 +70,17 @@ JZPainter::~JZPainter()
         --m_streamDepth;
     }
 
+    endDevice();
+}
+
+void JZPainter::endDevice()
+{
     // 离屏模式: 把本 painter 的图层合成回目标 image 的像素缓冲。
     if (m_imageTarget) {
         JZGdiBackend::ensureGdiplus();
         JZGdiBackend::renderLayerToImage(*m_imageTarget, m_layer, m_scale);
         JZGdiBackend::releaseGdiplus();
+        m_imageTarget = nullptr;
     }
 }
 

@@ -1,0 +1,30 @@
+// 由 tools/ui2jz.py 从原版 StepJumpDialog.ui 生成 —— **不要手改**;
+// 改原 .ui 后重跑: python tools/ui2jz.py ui --out src/ui
+// 保真度报告见 StepJumpDialog.ui.report.txt
+export const STEPJUMPDIALOG_UI_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>StepJumpDialog</class>
+  <widget class="Dialog" name="main">
+    <property name="geometry">0,0,794,624</property>
+    <property name="title">StepSettingDialog</property>
+      <widget class="VBoxLayout" name="verticalLayout_2">
+        <widget class="TableWidget" name="tableWidget">
+        </widget>
+        <widget class="Widget" name="widget_5">
+          <widget class="VBoxLayout" name="verticalLayout">
+            <widget class="Widget" name="widget_3">
+              <widget class="HBoxLayout" name="horizontalLayout_2">
+                <widget class="PushButton" name="btnOk">
+                  <property name="text">确定</property>
+                </widget>
+                <widget class="PushButton" name="btnCancel">
+                  <property name="text">取消</property>
+                </widget>
+              </widget>
+            </widget>
+          </widget>
+        </widget>
+      </widget>
+  </widget>
+</ui>
+`;

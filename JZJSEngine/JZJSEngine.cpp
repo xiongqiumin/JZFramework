@@ -477,14 +477,6 @@ void JZJSEngine::deinitJSEnv()
         m_timeTasks.clear();
         m_promiseTask.clear();
 
-        // 回调 GC 根: 先把全局上那份摘掉, 再放自己持有的数组句柄(登记过的回调随数组一起释放)
-        if (!JS_IsUndefined(m_cbRoot))
-        {
-            JS_SetPropertyStr(m_ctx, m_global, "__jzCallbackRoot", JS_UNDEFINED);
-            JS_FreeValue(m_ctx, m_cbRoot);
-            m_cbRoot = JS_UNDEFINED;
-        }
-
         JS_FreeValue(m_ctx, m_global);
         JS_FreeContext(m_ctx);
         JS_FreeRuntime(m_rt);
@@ -1272,6 +1264,22 @@ int JZJSEngine::ctypeidToType(string ctypeid)
     return it->second;
 }
 
+int JZJSEngine::typeNameToType(std::string type_name)
+{
+    if (type_name.size() == 0)
+        return JSType_none;
+
+    auto it = m_typeMap.begin();
+    if (it != m_typeMap.end())
+    {
+        if (it->second.name == type_name)
+            return it->first;
+
+        it++;
+    }
+    return JSType_none;
+}
+
 int JZJSEngine::jsTypeToType(int js_type)
 {
     auto it = m_jsTypeMap.find(js_type);
@@ -1396,6 +1404,12 @@ bool JZJSEngine::checkType(JSValue value, int type)
     return canConvert(js_type, type);
 }
 
+bool JZJSEngine::checkType(JSValue value, std::string type_name)
+{
+    int type_id = typeNameToType(type_name);
+    return checkType(value, type_id);
+}
+
 JSValue JZJSEngine::makeParamNumError(int num)
 {
     return JS_ThrowTypeError(m_ctx, "需要%d个参数", num);
@@ -1481,21 +1495,6 @@ JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
     if (ptrDefine.pointerSemantics)
     {
         const void* key = ptr->getRaw();
-        // 建状态时把**本次包装的所有权意图**带进去(否则 toJsValueFromPtr 传的 cppOwner=false
-        // 会被默认值 true 吃掉 -> "JS 拥有、GC 时释放"变成永远不释放)。
-        auto state = pointerStateFor(key, true, ptr->cppOwner());
-        if (state)
-        {
-            if (!JS_IsUndefined(state->handle))
-            {
-                // 复用已有 JS 对象: 本次传进来的 ptr 用不上了。删之前必须先把所有权翻成
-                // "C++ 拥有", 否则它的 PointInfo 析构会把这个对象 delete 掉(那是调用方的东西)。
-                ptr->setCppOwner(true);
-                delete ptr;
-                return JS_DupValue(m_ctx, state->handle);
-            }
-            ptr->setState(state);
-        }
     }
 
     JSClassID js_class_id = typeToJSType(type);
@@ -1668,7 +1667,6 @@ void jsbind::JSPointerBase::clear()
     // ★ 顺序要点: getRaw() 在标记失效后返回 nullptr, 所以先把裸指针取出来。
     void* raw = getRaw();
 
-    m_state->cleared = true;
     onClear();                                     // 派生类把自己的指针置空(绝不 delete 对象)
 
     if (m_engine && raw)
@@ -1802,7 +1800,7 @@ static bool isJSRawPointerCleared(JSContext* ctx, JSValueConst value)
     void* ptr = JS_GetAnyOpaque(value, &class_id);
     if (!ptr)
         return false;
-    return ((jsbind::JSPointerBase*)ptr)->isCleared();
+    return ((jsbind::JSPointerBase*)ptr)->getRaw() == nullptr;
 }
 
 // 单个形参的转换前校验(同步 / 异步共用): 类型 + JSRawPointer 精确类 + 是否已 clear。

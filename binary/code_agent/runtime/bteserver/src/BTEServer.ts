@@ -2104,16 +2104,18 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         wire('btnClearSend', 'onClicked', () => this.on_btnClearSend_clicked());
         wire('btnClearRecv', 'onClicked', () => this.on_btnClearRecv_clicked());
 
-        // 页签 / 列表
-        wire('tabWidget', 'onCurrentChanged', () => this.on_tabWidget_currentChanged());
-        wire('tabWidgetSplit', 'onCurrentChanged', () => this.on_tabWidgetSplit_currentChanged());
+        // 页签 / 列表 —— ⚠ 回调必须**把信号参数带下去**(onCurrentChanged(int) / onCurrentIndexChanged(int)):
+        // 原来写成 `() => this.on_tabWidget_currentChanged()` 时 index 是 undefined, 槽里 `index === 0`
+        // 恒为 false ⇒ 走 else 分支(去 clear/填充设备列表) ⇒ 在 show() 触发的首次信号上直接炸。
+        wire('tabWidget', 'onCurrentChanged', (index) => this.on_tabWidget_currentChanged(index));
+        wire('tabWidgetSplit', 'onCurrentChanged', (index) => this.on_tabWidgetSplit_currentChanged(index));
         // 列表的行变化: 引擎的信号名是 onCurrentIndexChanged(Qt 的 currentRowChanged 这套绑定里没有),
         // 槽名沿用移植过来的 on_listWidget_currentRowChanged
-        wire('listWidget', 'onCurrentIndexChanged', () =>
+        wire('listWidget', 'onCurrentIndexChanged', (row) =>
         {
             // 原 Qt 的 blockSignals(true/false) 围出来的重建期: 引擎没有那个开关, 用标志位跳过
             if (!this.m_inListRebuild)
-                this.on_listWidget_currentRowChanged();
+                this.on_listWidget_currentRowChanged(row);
         });
 
         // 菜单动作: 引擎已注册 JZAction(onTriggered 是属性); actionChn/actionEng 若是替身会被上面
@@ -2272,7 +2274,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         const isNormal = (index === 0);
         if (isNormal)
         {
-            this.ui.stackedWidget.setCurrentWidget(this.ui.pageNormal);
+            // 原: setCurrentWidget(this.ui.pageNormal) —— 引擎的 StackedWidget 只有 setCurrentIndex,
+            //     pageNormal 是 BTEServer.ui.xml 里 StackedWidget 的第 0 页。
+            this.ui.stackedWidget.setCurrentIndex(0);
         }
         else
         {

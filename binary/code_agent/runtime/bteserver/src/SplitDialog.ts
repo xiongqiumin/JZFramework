@@ -10,6 +10,7 @@
 import { tr, sprintf } from './BTEServer.js';
 import { UiHelper } from './Common.js';
 import { SplitSettingWidget, ExportSplitResult } from './SplitSettingWidget.js';
+import { SPLITDIALOG_UI_XML } from './ui/SPLITDIALOG_UI_XML.js';
 
 // ---------------------------------------------------------------------------
 // class SplitDialog : public QDialog
@@ -20,12 +21,15 @@ export class SplitDialog
     // SplitDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {
-        QDialog.call(this, parent);   // : QDialog(parent)
+        // 原 `QDialog.call(this, parent)`(: QDialog(parent)) 已去掉 —— 本类不再"继承 Qt 对话框",
+        // 而是**持一个真窗口**(this.ui, 见下), 窗口方法都转发到它。
 
         this.recordList = [];   // QVector<BTERecordPtr> recordList;
 
-        this.ui = new Ui_SplitDialogClass();
-        this.ui.setupUi(this);
+        // 真 UI: 原版 SplitDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
+        this.ui = uiLoader.load(SPLITDIALOG_UI_XML);
+        // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
+        if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
 
         this.ui.splitSetting.sigSplitFinish.push(() => this.onSplitFinish());   // connect(ui.splitSetting, SIGNAL(sigSplitFinish()), this, SLOT(onSplitFinish()));
 

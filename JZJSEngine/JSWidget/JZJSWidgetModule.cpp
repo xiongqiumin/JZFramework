@@ -303,8 +303,9 @@ bool JZJSWidgetModule::eventFilter(JZObject* watched, JZEvent* event)
         if (JS_IsUndefined(slotValue(*node, eventSlotName(Slot_paint))))
             return false;
         {
-            JZJSPaintScope::Guard guard(&m_paintScope);
+            beginPainter((JZWidget*)watched);
             forwardJs(*node, eventSlotName(Slot_paint), static_cast<JZPainterEvent*>(event));
+            endPainter();
         }
         return true;
     case JZEvent_mouse:
@@ -391,8 +392,7 @@ JZJSWidgetModule::~JZJSWidgetModule() { deinitEngine(); }
 void JZJSWidgetModule::initEngine(JZJSEngine* engine)
 {
     m_engine = engine;
-    m_paintScope.setEngine(engine);   // 画笔作用域随模块: 先绑定引擎, 再注册各类
-
+    
     // 带 func_data 的 C 函数(setParentWidget)要拿到本模块: 把指针做成一个"整数句柄"备好,
     // 注册时注入(func_data 只在 C 侧可见, JS 侧读不到)。用整数而不是包装对象:
     // 不必为它注册 JS 类/造对象, 也没有所有权与 GC 问题(见 JZJSWidgetModule.h 的 m_widgetData)。
@@ -428,25 +428,11 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
 
 void JZJSWidgetModule::deinitEngine()
 {
-    m_paintScope.reset();   // 引擎退出: 回收未结束的画笔并断开引擎引用
-
     // 事件转发: 模块自己就是所有 JS 控件的事件过滤器 —— 模块先于控件销毁会在控件的过滤器表里
     // 留下悬垂指针(JZObject::installEventFilter 的说明: 过滤器必须先于被过滤对象撤销), 故**先**
     // 把模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历。
     // 必须在摘登记节点之前做 —— 节点一摘, "哪些控件还挂着本过滤器"就查不到了。
     detachWidgetFilters();
-
-    if (m_engine)
-    {
-        JSContext* ctx = m_engine->context();
-
-        // 登记节点里保活的是 JS 包装, 必须在引擎(rt/ctx)还活着的时候放掉。
-        // 取**快照**再逐个摘: 释放可能级联销毁控件(进而回调进来摘别的节点), 边遍历边改表必炸。
-        std::vector<std::pair<const void*, jsbind::JSPointerData*>> nodes = m_engine->pointerDataList();
-        for (auto& kv : nodes)
-            removeWidgetInfo((JZObject*)kv.first);
-
-    }
 
     m_widgetData = JS_UNDEFINED;   // 整数句柄, 无引用计数, 直接丢
 
@@ -455,6 +441,63 @@ void JZJSWidgetModule::deinitEngine()
 
     m_engine = nullptr;
     m_typeWindow = -1;    
+}
+
+jsbind::JSPointerBase* JZJSWidgetModule::createPainter(JSContext* ctx, int argc, JSValueConst* argv)
+{// createArgs 约定: 参数不合法时"设 JS 异常 + 返回 nullptr"(不抛 C++ 异常),
+    // JZJSEngine::createValue 见到空指针就把该异常交给 JS。
+    if (argc < 1)
+    {
+        JS_ThrowTypeError(ctx, "new JZPainter(target): 需要 JZWidget 或 JZImage 参数");
+        return nullptr;
+    }
+
+    // 离屏绘制: 目标是图像 —— JZPainter 自持图层, 析构时合成回 image, 不受绘制派发约束。
+    if (m_engine->checkType(argv[0], "JZImage"))   // 校验在前(构造参数没有类型表, 得自己先校验)
+    {
+        JZImage* img = fromJSValue<JZImage*>(ctx, argv[0]);
+        auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(*img), false);   // JS 拥有
+        return wrapper;
+    }
+    else if(m_engine->checkType(argv[0], "JZWidget"))   // 校验在前(构造参数没有类型表, 得自己先校验)
+    {
+        JZWidget* w = fromJSValue<JZWidget*>(ctx, argv[0]);
+        if(w != m_paintWidget)
+        {
+            JS_ThrowTypeError(ctx, "new JZPainter(target): 需要 JZWidget 或 JZImage 参数");
+            return nullptr;
+        }
+        if (m_painter)
+        {
+            JS_ThrowTypeError(ctx, "不能创建多个JZPainter");
+            return nullptr;
+        }
+
+        auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(w), true);
+        m_painter = wrapper;
+        return wrapper;
+    }
+    else
+    {
+        JS_ThrowTypeError(ctx, "new JZPainter(target): 需要 JZWidget 或 JZImage 参数");
+        return nullptr;
+    }
+}
+
+void JZJSWidgetModule::beginPainter(JZWidget* widget)
+{
+    m_paintWidget = widget;
+}
+
+void JZJSWidgetModule::endPainter()
+{
+    if (m_painter)
+    {
+        delete m_painter->get();
+        m_painter->clear();
+        m_painter = nullptr;
+    }
+    m_paintWidget = nullptr;
 }
 
 // ---------- 控件登记 (JS 包装保活) ----------
@@ -1551,7 +1594,10 @@ void JZJSWidgetModule::registWidgets()
     // 没有 w/h/title; 标题/几何走 setTitle/setGeometry。
     // uiLoader 把 <widget class="MainWindow"> 映射成 JZMainWindow, 子控件用
     // setCentralWidget(至多一个中央控件) / addMenuBar(菜单栏) 挂载, 不走通用 addWidget。
-    jsbind::ClassBind<JZMainWindow> bind_main("JZMainWindow", bind_w);
+    // ⚠ 基类必须传 bind_win(JZWindow), 不是 bind_w —— JZMainWindow 派生自 JZWindow,
+    // 传 bind_w 会让 setTitle/setGeometry/show/close/addWidget 这些**窗口方法在它身上全部缺失**
+    // (uiLoader 生成 `__w0.setTitle(...)` 直接 "not a function")。
+    jsbind::ClassBind<JZMainWindow> bind_main("JZMainWindow", bind_win);
     setWidgetCreate(bind_main);
     bind_main.def("setCentralWidget", [this](JZMainWindow* w, JSValue c) {
         JZWidget* child = takeWidget(w, c, "JZMainWindow.setCentralWidget");
@@ -2279,7 +2325,7 @@ static JZPainter* jzPainterFromThis(JSContext* ctx, JSValueConst this_val)
         return nullptr;
 
     auto* cp = (jsbind::JSPointerBase*)opaque;
-    if (cp->isCleared() || !cp->getRaw())
+    if (!cp->getRaw())
         return nullptr;
 
     return fromJSValue<JZPainter*>(ctx, this_val);
@@ -2621,11 +2667,12 @@ void JZJSWidgetModule::registPainter()
     // 释放点在 paintEvent 末尾(JZJSPaintScope::Guard → end()), 那里用状态就能完成 delete + 失效。
     // 包装模型: opaque 必须是 JSRawPointer<JZPainter>*(createValue 直接塞进 JS 对象),
     // 直接返回底层指针会被后续按 JSPointerBase* 访问 = UB。详见 JZJSPaintScope.h。
-    bind_p.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
-        return m_paintScope.createPainter(ctx, argc, argv);
+    bind_p.setCreate([this](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* 
+    {
+        return this->createPainter(ctx, argc, argv);
     });
     // 显式结束绘制: 离屏模式立即把图层合成回 image(之后 image 才可用), 屏幕模式提前补 Pop。
-    bind_p.def("end", [this](jsbind::JSRawPointer<JZPainter>& p) { m_paintScope.endPainter(p); });
+    bind_p.def("end", [this](jsbind::JSRawPointer<JZPainter>& p) { p.get()->endDevice(); });
     bind_p.def("save", [](JZPainter* p) { p->save(); });
     bind_p.def("restore", [](JZPainter* p) { p->restore(); });
     bind_p.def("translate", [](JZPainter* p, double dx, double dy) { p->translate(dx, dy); });

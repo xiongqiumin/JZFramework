@@ -735,7 +735,9 @@ const std::map<std::string, std::string>& uiClassMap()
     static const std::map<std::string, std::string> m = {
         { "Window",       "JZWindow" },
         { "MainWindow",   "JZMainWindow" },
-        { "Dialog",       "JZWindow" },
+        // Qt 的 QDialog -> JZDialog(有 exec/accept/reject; JZDialog 派生自 JZWindow, 所以
+        // setTitle/setGeometry 这些照样有)。原来映射到 JZWindow, 转换出来的对话框没有模态能力。
+        { "Dialog",       "JZDialog" },
         { "Canvas",       "JZCanvas" },
         { "Label",        "JZLabel" },
         { "ImageLabel",   "JZLabel" },
@@ -1028,8 +1030,12 @@ struct UiScriptGen {
                     out += indent + var + ".addMenuBar(" + childExpr + ");\n";
                 } else {
                     if (centralCount++ > 0) {
-                        out += indent + "throw new Error(\"uiLoader: MainWindow 只能有一个中央控件"
-                            "(setCentralWidget), 多余子控件 \"" + c.id + "\" 被忽略\");\n";
+                        // MainWindow 只接受一个中央控件; 多余的(QToolBar/QStatusBar 这类引擎没有对应能力的)
+                        // **只留注释报告, 不生成语句** —— 与 TsGen 同一口径。
+                        // (以前这里生成 `throw new Error("... "id" ...")`: 引号没转义 -> 生成脚本语法错,
+                        //  整个 UI 都建不出来; 见 ui2jz 的转换报告里 QToolBar -> Widget 那一条。)
+                        out += indent + "// uiLoader: MainWindow 只接受一个中央控件, 多余子控件 \""
+                            + c.id + "\" 已忽略\n";
                     } else {
                         out += indent + var + ".setCentralWidget(" + childExpr + ");\n";
                     }

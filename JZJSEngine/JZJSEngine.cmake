@@ -29,9 +29,6 @@
     JSWidget/JZJSWidgetModule.h
 	JSWidget/JZJSWidgetModule.cpp
 
-	JSWidget/JZJSPaintScope.h
-	JSWidget/JZJSPaintScope.cpp
-
 	JSWidget/JZJSWidget.h
 	JSWidget/JZJSWidget.cpp
 )

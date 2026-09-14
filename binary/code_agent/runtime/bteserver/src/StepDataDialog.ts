@@ -13,6 +13,7 @@ import { tr, emit, sprintf } from './BTEServer.js';
 import { stru_BTS_CMD_SEND_DFDATA76 } from './structs.js';
 import { PackDefine, STEP_CHARGE, STEP_CHARGE_OTHER, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
+import { STEPDATADIALOG_UI_XML } from './ui/STEPDATADIALOG_UI_XML.js';
 
 // Qt 枚举/具名颜色里本文件用到的那几项(值与原 Qt 一致): 原来由 qtcompat 提供。
 // 注: qcustomplot 是第三方 Qt 库(不参与 JS 移植), 这里的画笔/角色值只是喂给它的替身。
@@ -31,7 +32,8 @@ export class StepDataDialog
     // StepDataDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {
-        QDialog.call(this, parent);   // : QDialog(parent)
+        // 原 `QDialog.call(this, parent)`(: QDialog(parent)) 已去掉 —— 本类不再"继承 Qt 对话框",
+        // 而是**持一个真窗口**(this.ui, 见下), 窗口方法都转发到它。
 
         this.m_treeHeaderList1 = [];   // QStringList m_treeHeaderList1, m_treeHeaderList2;
         this.m_treeHeaderList2 = [];
@@ -55,8 +57,10 @@ export class StepDataDialog
         // 信号
         this.sigChannelChanged = [];   // signals: void sigChannelChanged(int idx);
 
-        this.ui = new Ui_StepDataDialogClass();
-        this.ui.setupUi(this);
+        // 真 UI: 原版 StepDataDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
+        this.ui = uiLoader.load(STEPDATADIALOG_UI_XML);
+        // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
+        if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
         this.m_index = 0;
         this.m_isReal = false;
 
@@ -71,11 +75,16 @@ export class StepDataDialog
         console.assert(this.m_treeHeaderList1.length === this.m_treeHeaderList2.length);   // Q_ASSERT(...)
         this.ui.treeWidget.setColumnCount(this.m_treeHeaderList1.length);
 
-        this.ui.treeWidget.setSelectionMode(QAbstractItemView.SingleSelection); //单击选择一行
-        this.ui.treeWidget.setSelectionBehavior(QAbstractItemView.SelectRows);  //设置只能选择一行，不能多行选
-        this.ui.treeWidget.setEditTriggers(QTableWidget.NoEditTriggers);
+        // 原: setSelectionMode(QAbstractItemView.SingleSelection) / setSelectionBehavior(...SelectRows)
+        //     / setEditTriggers(QTableWidget.NoEditTriggers) —— 引擎的表没有这几个开关(也没有 Qt 的
+        //     枚举常量), 差别只在"能否多选 / 双击编辑", 先去掉(见回归报告)。
+        // this.ui.treeWidget.setSelectionMode(QAbstractItemView.SingleSelection); //单击选择一行
+        // this.ui.treeWidget.setSelectionBehavior(QAbstractItemView.SelectRows);  //设置只能选择一行，不能多行选
+        // this.ui.treeWidget.setEditTriggers(QTableWidget.NoEditTriggers);
 
-        this.ui.tabWidget.removeTab(2);
+        // 原: this.ui.tabWidget.removeTab(2) —— 引擎的 TabWidget 没有 removeTab(页在 XML 里就全造出来了);
+        //     原版是构造后删掉第 3 页, 这里先留着(多一个页), 待转换器支持"按 id 去掉某页"再处理。
+        // this.ui.tabWidget.removeTab(2);
 
         this.updateTreeHeader(0);
     }
@@ -106,10 +115,11 @@ export class StepDataDialog
     // void updateTreeHeader(int level);
     updateTreeHeader(level)
     {
-        if (level < 2)
-            this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList1);
-        else
-            this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList2);
+        // 原: this.ui.treeWidget.setHeaderLabels(...) —— 原版的 QTreeWidget 已按转换报告换成 TableWidget,
+        // 而引擎的表没有"设置表头文本"的接口(只有 setColumnCount), 列头先留空(报告里记着)。
+        // if (level < 2) this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList1);
+        // else this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList2);
+        void level;
     }
 
     // void init(bool isReal, QString deviceString, int index, BTERecordPtr recordInfo);
@@ -129,11 +139,12 @@ export class StepDataDialog
         this.m_stepVolt = [];   // m_stepVolt.clear();
         this.m_stepCap = [];
 
+        // setWindowTitle -> this.ui.setTitle(真窗口): 本类不再继承 QDialog, 标题设在 it.ui 上
         if (this.isReal())
-            this.setWindowTitle(tr("实时数据 ") + deviceString + sprintf(" CH:%d-%d", (this.m_index / 8 | 0) + 1, this.m_index % 8 + 1));
+            this.ui.setTitle(tr("实时数据 ") + deviceString + sprintf(" CH:%d-%d", (this.m_index / 8 | 0) + 1, this.m_index % 8 + 1));
         else
         {
-            this.setWindowTitle(tr("离线数据 ") + deviceString + sprintf(" CH:%d-%d", (recordInfo.info.itemIndex / 8 | 0) + 1, recordInfo.info.itemIndex % 8 + 1));
+            this.ui.setTitle(tr("离线数据 ") + deviceString + sprintf(" CH:%d-%d", (recordInfo.info.itemIndex / 8 | 0) + 1, recordInfo.info.itemIndex % 8 + 1));
         }
 
         if (this.m_recordInfo.dataList.length > 0)

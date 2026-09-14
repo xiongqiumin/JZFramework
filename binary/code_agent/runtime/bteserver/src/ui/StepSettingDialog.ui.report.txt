@@ -1,0 +1,34 @@
+=== StepSettingDialog 转换报告 ===
+
+- 类替换(11 类):
+    QCheckBox -> CheckBox              x11
+    QDialog -> Dialog                  x1
+    QGridLayout -> VBoxLayout          x4
+    QGroupBox -> GroupBox              x4
+    QLabel -> Label                    x22
+    QLineEdit -> LineEdit              x13
+    QPushButton -> PushButton          x12
+    QSpinBox -> SpinBox                x2
+    QTableWidget -> TableWidget        x1
+    QTextEdit -> TextEdit              x1
+    QWidget -> Widget                  x5
+
+- 被忽略的属性(11 种):
+    layout.leftMargin              x4
+    layout.topMargin               x4
+    layout.rightMargin             x4
+    layout.bottomMargin            x4
+    sizePolicy                     x2
+    windowTitle(->title)           x1
+    frameShape                     x1
+    layout.horizontalSpacing       x1
+    layout.verticalSpacing         x1
+    minimumSize                    x1
+    maximumSize                    x1
+
+- 被忽略的元素(1 种):
+    spacer                         x3
+
+- 语义损失 / 需要人工看的点:
+    * QGridLayout -> VBoxLayout: 栅格位置 / 标签列丢, 按声明顺序竖排
+    * QTextEdit -> TextEdit: 富文本/自动换行等细节按 TextEdit 能力简化

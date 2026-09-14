@@ -236,11 +236,18 @@ public:
     void wait(int ms);  // 会被打断
 
     int ctypeidToType(std::string ctypeid);
+    std::string typeToCTypeid(int type);
+
+    std::string typeToTypeName(int type_id);
+    int typeNameToType(std::string type_name);
+
     int jsTypeToType(int js_type);
     int typeToJSType(int type);
+    
     int jsValueType(JSValue v);
 
     bool checkType(JSValue value, int type);
+    bool checkType(JSValue value, std::string type_name);
     bool canConvert(int from_type, int to_type);
 
     // 单个形参的转换前校验(同步 call / 异步 callAsync 共用, 避免两条路校验不一致):

@@ -31,6 +31,17 @@ namespace jsbind
 //   * **指针语义**(显式声明): 控件/布局/事件/item/painter ... —— 有身份, 需要
 //     ① 同底层对象 ⇒ 同 JS 对象(`===` 才有意义) ② 所有权翻转/失效在所有包装间同步。
 //     状态由引擎按**底层裸指针**建表共享(JZJSEngine::pointerStateFor)。
+// ==================== 状态的扩展数据槽 ====================
+// 绑定层把自己的每对象状态派生成它的子类, new 出来挂进 JSPointerState::data:
+//   * 一个状态最多挂一份(再挂即替换);
+//   * 析构时机 = 状态的最后一个持有者消失(引擎摘表且所有包装都放掉) —— 所以派生类析构里只能做
+//     "不依赖底层对象还活着"的事(如放掉自己持有的 JS 句柄);
+//   * 引擎全程**不知道**派生类型: 取回数据由绑定层自己 dynamic_cast(基类有虚析构)。
+struct JSPointerData
+{
+    virtual ~JSPointerData() = default;
+};
+
 struct JSPointerState
 {
     bool cppOwner = true;           // false = JS 拥有(最后一个包装析构时 delete 底层对象)
@@ -40,6 +51,10 @@ struct JSPointerState
     // 让所有共享该状态的包装(含 JS 侧那份)一起失效。
     // 与 clear() 的区别: 不检查 cppOwner、不需要拿到包装本身 —— C++ 侧在删除底层对象后
     // 可直接用持有着的 state 标记失效(见 JZJSPaintScope 的绘制作用域)。
+    // 该状态的扩展数据(按需挂载, 见 JSPointerData): 键 = 底层对象, 所以同一个对象的所有包装
+    // 共用这一份。换(或摘)数据只影响"谁挂着它", 不碰 cppOwner/cleared/handle。
+    std::unique_ptr<JSPointerData> data;
+
     void invalidate() { cleared = true; }
 };
 

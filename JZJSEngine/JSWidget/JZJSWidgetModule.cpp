@@ -392,31 +392,27 @@ void JZJSWidgetModule::deinitEngine()
 {
     m_paintScope.reset();   // 引擎退出: 回收未结束的画笔并断开引擎引用
 
+    // 事件转发: 模块自己就是所有 JS 控件的事件过滤器 —— 模块先于控件销毁会在控件的过滤器表里
+    // 留下悬垂指针(JZObject::installEventFilter 的说明: 过滤器必须先于被过滤对象撤销), 故**先**
+    // 把模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历。
+    // 必须在摘登记节点之前做 —— 节点一摘, "哪些控件还挂着本过滤器"就查不到了。
+    detachWidgetFilters();
+
     if (m_engine)
     {
         JSContext* ctx = m_engine->context();
 
-        // 登记表里保活的是 JS 包装, 必须在引擎(rt/ctx)还活着的时候放掉。
-        // 逐个"摘下来再释放": 释放可能级联销毁控件(进而回调进来摘别的节点), 不能持有迭代器。
-        while (!m_widgets.empty())
-        {
-            auto it = m_widgets.begin();
-            WidgetInfo node = std::move(it->second);
-            m_widgets.erase(it);
-            freeWidgetInfo(node);
-        }
+        // 登记节点里保活的是 JS 包装, 必须在引擎(rt/ctx)还活着的时候放掉。
+        // 取**快照**再逐个摘: 释放可能级联销毁控件(进而回调进来摘别的节点), 边遍历边改表必炸。
+        std::vector<std::pair<const void*, jsbind::JSPointerData*>> nodes = m_engine->pointerDataList();
+        for (auto& kv : nodes)
+            removeWidgetInfo((JZObject*)kv.first);
 
         // 信号回调持有的是 JS 函数值, 同样要在引擎还活着时放掉
         for (JSValue v : m_jsCallbacks)
             JS_FreeValue(ctx, v);
     }
 
-    // 事件转发: 模块自己就是所有 JS 控件的事件过滤器 —— 模块先于控件销毁会在控件的过滤器表里
-    // 留下悬垂指针(JZObject::installEventFilter 的说明: 过滤器必须先于被过滤对象撤销), 故先把
-    // 模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历。
-    detachWidgetFilters();
-
-    m_widgets.clear();
     m_jsCallbacks.clear();
 
     m_widgetData = JS_UNDEFINED;   // 整数句柄, 无引用计数, 直接丢
@@ -431,77 +427,99 @@ void JZJSWidgetModule::deinitEngine()
 // ---------- 控件登记 (JS 包装保活) ----------
 // 见 JZJSWidgetModule.h 顶部说明: 控件挂进对象树后, 模块持一份它的 JS 包装(保活),
 // 控件销毁(或脱离父树)时释放; 顶层控件不保活(生死由 JS 决定)。
-// 登记表按**控件指针**索引(std::map): 每个控件的状态与它一一对应, 与控件树结构无关 ——
-// 改父 / 脱离父树都只更新这一条记录, 不需要搬节点。
+// 登记节点按**控件指针**索引, 但它不在模块自己的表里: 挂在引擎身份表那份共享状态(JZJSEngine::
+// pointerStateFor)的 data 槽上(JSPointerState::data)。键同样是控件裸指针, 与控件树结构无关 ——
+// 改父 / 脱离父树都只更新这一条, 不需要搬节点; 控件销毁(sigDestroyed)时"先摘节点再放引用"。
+// 之所以共用引擎那张表: 登记表与"对象身份/所有权"本来就该是一份, 免得两处各存一份状态再互相同步。
+
+// 节点析构 = 释放它持有的 JS 引用(保活包装 + 回调槽)。只在 removeWidgetInfo 里被 delete, 那时
+// ctx 还活着; engine 为空说明引擎已经走了, 不能再碰 JSValue。
+JZJSWidgetModule::WidgetInfo::~WidgetInfo()
+{
+    if (!engine)
+        return;
+
+    JSContext* ctx = engine->context();
+
+    // 保活的那份包装(dup): 控件已被对象树 delete(或交回 JS)时才走到这里, 包装的守卫指针已置空,
+    // 所以不会二次删除。
+    if (!JS_IsUndefined(jsvalue))
+    {
+        JSValue held = jsvalue;
+        jsvalue = JS_UNDEFINED;   // 先清再放: 级联路径重入不会二次释放
+        JS_FreeValue(ctx, held);
+    }
+    jsRef = JS_UNDEFINED;   // 借用型, 只需丢掉指针(不释放)
+
+    // 事件回调槽: 模块自己持有的引用(dup)
+    for (int i = 0; i < EventSlot_count; i++)
+    {
+        if (!JS_IsUndefined(callbacks.v[i]))
+        {
+            JSValue cb = callbacks.v[i];
+            callbacks.v[i] = JS_UNDEFINED;
+            JS_FreeValue(ctx, cb);
+        }
+    }
+
+    ext.reset();
+    object = nullptr;
+}
 
 JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::findWidgetInfo(JZObject* object)
 {
-    if (!object)
+    if (!m_engine || !object)
         return nullptr;
-    auto it = m_widgets.find(object);
-    return (it == m_widgets.end()) ? nullptr : &it->second;
+
+    // 节点挂在引擎身份表那份状态的 data 槽上(键 = 控件裸指针)。该对象没被包装过就没有状态。
+    auto state = m_engine->pointerStateFor(object, false);
+    if (!state || !state->data)
+        return nullptr;
+
+    // 状态上的 data 不一定是我们挂的(引擎那张表是共用的) —— 只有是本模块的节点才认。
+    return dynamic_cast<WidgetInfo*>(state->data.get());
 }
 
 JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::ensureWidgetInfo(JZObject* object)
 {
-    if (!object)
+    if (!m_engine || !object)
         return nullptr;
 
     WidgetInfo* node = findWidgetInfo(object);
     if (node)
         return node;
 
-    // 新建并订阅该控件的 sigDestroyed: 控件销毁时节点自己摘掉(重复订阅无害, 回调按指针查)
-    WidgetInfo& info = m_widgets[object];
-    info.object = object;
+    // 状态不存在就建一份(注册路径上都已存在 —— 包装是先建的; 这里只是给登记节点找个家)。
+    // 所有权默认"C++ 持有": 走到这条说明该对象还没有过 JS 包装, 宁可晚释放也不能让 JS 误删。
+    auto state = m_engine->pointerStateFor(object, true, true);
+    if (!state)
+        return nullptr;
+
+    std::unique_ptr<WidgetInfo> info(new WidgetInfo());
+    info->object = object;
+    info->engine = m_engine;   // 供 ~WidgetInfo 释放 JS 引用
+    node = info.get();
+    state->data = std::move(info);   // 由状态持有(该状态上若已挂着别的数据, 会被替换掉)
+
+    // 订阅该控件的 sigDestroyed: 控件销毁时节点自己摘掉(重复订阅无害, 回调按指针查)
     connect(&object->sigDestroyed, this, &JZJSWidgetModule::onWidgetDestroyed);
-    return &info;
-}
-
-void JZJSWidgetModule::freeWidgetInfo(WidgetInfo& node)
-{
-    // 释放的是**模块自己那份**引用(dup): 控件已被对象树 delete(或交回 JS)时才走到这里,
-    // 包装的守卫指针已置空, 所以不会二次删除。释放可能级联触发 JS 侧的收尾(进而删控件、
-    // 回调进来摘别的节点), 所以调用方必须**先把节点从表里摘下来**再调本函数。
-    if (m_engine && !JS_IsUndefined(node.jsvalue))
-    {
-        JSValue held = node.jsvalue;
-        node.jsvalue = JS_UNDEFINED;   // 先清再放: 级联路径重入不会二次释放
-        JS_FreeValue(m_engine->context(), held);
-    }
-    node.jsvalue = JS_UNDEFINED;
-    node.jsRef = JS_UNDEFINED;   // 借用型, 只需丢掉指针(不释放)
-
-    // 事件回调槽: 模块自己持有的引用(dup), 在 ctx 还活着时放掉
-    if (m_engine)
-    {
-        for (int i = 0; i < EventSlot_count; i++)
-        {
-            if (!JS_IsUndefined(node.callbacks.v[i]))
-            {
-                JSValue cb = node.callbacks.v[i];
-                node.callbacks.v[i] = JS_UNDEFINED;
-                JS_FreeValue(m_engine->context(), cb);
-            }
-        }
-    }
-
-    node.ext.reset();
-    node.object = nullptr;
+    return node;
 }
 
 void JZJSWidgetModule::removeWidgetInfo(JZObject* object)
 {
-    if (!object)
+    if (!m_engine || !object)
         return;
 
-    auto it = m_widgets.find(object);
-    if (it == m_widgets.end())
+    auto state = m_engine->pointerStateFor(object, false);
+    if (!state || !state->data)
         return;
 
-    WidgetInfo node = std::move(it->second);
-    m_widgets.erase(it);     // 先摘再放引用: 释放可能级联删控件(那些控件会回调进来摘别的节点)
-    freeWidgetInfo(node);
+    // 先把节点**从状态上摘下来**(此后重入路径已经找不到它), 再销毁: 销毁会放掉保活的 JS 包装,
+    // 那可能级联销毁控件(那些控件会回调进来摘别的节点), 所以不能持着任何引用做这件事。
+    jsbind::JSPointerData* node = state->data.release();
+    m_engine->forgetPointerState(object);   // 该控件的身份表项一并摘掉(登记到此结束)
+    delete node;                            // ~WidgetInfo: 释放保活引用 + 回调槽
 }
 
 void JZJSWidgetModule::onWidgetDestroyed(JZObject *object)
@@ -516,9 +534,14 @@ void JZJSWidgetModule::onWidgetDestroyed(JZObject *object)
 // 把模块从所有登记控件的过滤器表上摘掉。不碰 JS(不会级联删控件), 故可以安全遍历。
 void JZJSWidgetModule::detachWidgetFilters()
 {
-    for (auto& kv : m_widgets)
+    if (!m_engine)
+        return;
+
+    // 用快照遍历: 身份表是引擎共用的, 摘过滤器期间可能有别的收尾路径在改它(见 pointerDataList)。
+    std::vector<std::pair<const void*, jsbind::JSPointerData*>> nodes = m_engine->pointerDataList();
+    for (auto& kv : nodes)
     {
-        JZWidget* w = jzobject_cast<JZWidget*>(kv.second.object);
+        JZWidget* w = jzobject_cast<JZWidget*>((JZObject*)kv.first);
         if (w)
             w->removeEventFilter(this);
     }

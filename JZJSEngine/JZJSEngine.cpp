@@ -1562,15 +1562,21 @@ void JZJSEngine::forgetPointerState(const void* ptr)
     if (it == m_pointerStates.end() || !it->second)
         return;
 
-    // 释放托管句柄。**摘表**这一步同样重要: 底层对象被 delete 后, 新对象可能落在同一个
-    // 地址上 —— 表里留着旧状态会让"新对象的句柄"命中旧状态(失效/错句柄)。已发出的包装
-    // 各持一份 shared_ptr, 所以摘表不影响它们读到 cleared。
-    if (!JS_IsUndefined(it->second->handle))
-    {
-        JS_FreeValue(m_ctx, it->second->handle);
-        it->second->handle = JS_UNDEFINED;
-    }
+    // **摘表**这一步很重要: 底层对象被 delete 后, 新对象可能落在同一个地址上 —— 表里留着
+    // 旧状态会让"新对象的句柄"命中旧状态(失效/错句柄)。已发出的包装各持一份 shared_ptr,
+    // 所以摘表不影响它们读到 cleared。
+    // 顺序: 先把状态/表项都摘下来(此后它已不在表里), 再放托管句柄, 最后放掉状态自身 ——
+    // 这两步都可能级联(放句柄 = 放掉那个 JS 对象 -> 包装析构 -> 删底层对象 -> 绑定层收尾又回头
+    // 改这张表; 状态析构 = data 析构)。级联里再摘同一个 key 也无害(表里已经没有它了)。
+    auto state = it->second;
     m_pointerStates.erase(it);
+
+    if (!JS_IsUndefined(state->handle))
+    {
+        JS_FreeValue(m_ctx, state->handle);
+        state->handle = JS_UNDEFINED;
+    }
+    state.reset();
 }
 
 JSValue JZJSEngine::pointerHandle(const void* ptr) const
@@ -1585,7 +1591,12 @@ JSValue JZJSEngine::pointerHandle(const void* ptr) const
 void JZJSEngine::clearPointerStates()
 {
     // 引擎关闭: 统一释放托管句柄(必须在 JS_FreeContext 之前调用, 见 deinit)。
-    for (auto& kv : m_pointerStates)
+    // 先把整张表换出来再处理: 放句柄 / 析构状态(其 data 析构会级联回绑定层, 进而又改动身份表)
+    // 都在表外进行, 不会把"正在遍历的表"改坏。
+    std::map<const void*, std::shared_ptr<jsbind::JSPointerState>> states;
+    states.swap(m_pointerStates);
+
+    for (auto& kv : states)
     {
         if (kv.second && !JS_IsUndefined(kv.second->handle))
         {
@@ -1593,7 +1604,18 @@ void JZJSEngine::clearPointerStates()
             kv.second->handle = JS_UNDEFINED;
         }
     }
-    m_pointerStates.clear();
+    // states 出作用域: 最后一批 shared_ptr 析构 -> 状态(含 data)析构
+}
+
+std::vector<std::pair<const void*, jsbind::JSPointerData*>> JZJSEngine::pointerDataList() const
+{
+    std::vector<std::pair<const void*, jsbind::JSPointerData*>> list;
+    for (auto& kv : m_pointerStates)
+    {
+        if (kv.second && kv.second->data)
+            list.push_back(std::make_pair(kv.first, kv.second->data.get()));
+    }
+    return list;
 }
 
 // ---- JSPointerBase 的三个成员(放这里定义: 需要完整的 JZJSEngine) ----

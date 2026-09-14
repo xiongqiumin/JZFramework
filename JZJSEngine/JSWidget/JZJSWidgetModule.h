@@ -60,6 +60,11 @@ public:
     // 做法: 子控件进树时, 模块在**该控件自己的登记记录**(WidgetInfo::jsvalue)里持一份它的
     //   JS 包装引用(保活); 控件销毁(sigDestroyed)或脱离父树时释放。于是"只要 C++ 对象树还
     //   持有控件, 它的 JS 包装就活着"。
+    // 状态放哪: 每个控件一条, 挂在**引擎身份表**那份共享状态上(JZJSEngine::pointerStateFor ->
+    //   JSPointerState::data; 数据本体就是下面的 WidgetInfo)。键 = 控件裸指针 —— 引擎那张身份表
+    //   本身就是登记表, 模块不再自建 std::map<JZObject*, WidgetInfo>。
+    //   生命周期: 控件销毁(sigDestroyed)时"先摘节点再放引用"; 引擎关闭时 deinitEngine 用
+    //   JZJSEngine::pointerDataList() 取**快照**逐个清(边遍历边改表必炸, 见那里的说明)。
     // 顶层控件(没有父控件的, 一般就是窗口)**不保活**: 它的生死由 JS 决定 —— JS 放手 ->
     //   包装析构 -> 窗口销毁 -> 没有窗口了, runtime 退出(见 gomoku/main.js 的"必须留在模块作用域")。
     //
@@ -162,10 +167,16 @@ private:
         }
     };
 
-    // 单个控件的 JS 侧状态(键 = object, 一个控件一条)。
-    struct WidgetInfo
+    // 单个控件的 JS 侧状态(一个控件一条; 挂在引擎身份表那份共享状态的 data 槽上, 键 = object)。
+    // 派生自 jsbind::JSPointerData: 引擎不认识派生类型, 取回由模块自己 dynamic_cast。
+    struct WidgetInfo : public jsbind::JSPointerData
     {
+        // 释放本节点持有的 JS 引用(保活包装 jsvalue + 回调槽): 由 removeWidgetInfo 触发 —— 那时
+        // ctx 还活着(见 deinitEngine 的清理顺序)。engine 为空 = 引擎已经走了, 不能再碰 JSValue。
+        ~WidgetInfo() override;
+
         JZObject* object = nullptr;      // 底层控件裸指针(不拥有; 顶层窗口由它的 JS 包装拥有)
+        JZJSEngine* engine = nullptr;    // 释放引用用的引擎(建节点时记下; 见 ~WidgetInfo)
         JSValue jsvalue = JS_UNDEFINED;  // 模块 dup 的一份 JS 包装引用("保活"); 无父时为空
         // 事件转发 / self() 的目标那份包装(**借用, 模块不释放**): 只在"移交/登记"路径写入
         // (bindWidgetToParent / registerCreatedWidget), 与上面那份保活成对 —— 即"移交给 C++ 时
@@ -211,15 +222,12 @@ private:
     template <class E>
     void forwardJs(WidgetInfo& node, int slot, E* event);
 
-    // ---- 控件登记表操作(键 = 控件指针) ----
-    // 按指针取节点; 没有返回 nullptr。
+    // ---- 控件登记节点的读写(键 = 控件指针; 节点存在引擎身份表那份状态的 data 槽里) ----
+    // 按指针取节点; 没有(或该状态上挂的不是本模块的数据)返回 nullptr。
     WidgetInfo* findWidgetInfo(JZObject* object);
-    // 取节点; 没有就新建(顺带订阅该控件的 sigDestroyed —— 控件销毁时节点自己摘掉)
+    // 取节点; 没有就在该控件对应的状态上挂一个新的(顺带订阅该控件的 sigDestroyed —— 控件销毁时节点自己摘掉)
     WidgetInfo* ensureWidgetInfo(JZObject* object);
-    // 释放节点的保活引用(借用型只丢指针)。调用方必须**先把节点从表里摘下来**:
-    // 释放可能级联销毁控件, 而那些控件会回调进来摘别的节点。
-    void freeWidgetInfo(WidgetInfo& node);
-    // 摘掉并释放(控件销毁时调用)
+    // 摘掉并释放(控件销毁时调用): 先从状态上摘下数据, 再销毁节点(销毁时会放掉保活的 JS 引用)
     void removeWidgetInfo(JZObject* object);
     // 把模块从所有登记控件的过滤器表上摘掉(模块先于控件销毁时用; 不碰 JS, 不会级联删控件)
     void detachWidgetFilters();
@@ -263,9 +271,9 @@ private:
     // (与 JZChart 的类型常量同一处 JS_SetPropertyStr)。
     void defStaticFunction(const CClassDefine& define, const char* name, JSCFunction* fn, int length);
 
-    // 控件登记表: 键 = 控件指针, 值 = 它的 JS 侧状态(保活引用 / 事件转发句柄 / 扩展状态)。
-    // 与控件树结构无关 —— 改父、脱离父树都只更新这一条; 控件销毁(sigDestroyed)时摘掉。
-    std::map<JZObject*, WidgetInfo> m_widgets;
+    // 注: 控件登记表**不在这里** —— 每个控件的 WidgetInfo 挂在引擎身份表那份共享状态的 data 槽上
+    // (键 = 控件裸指针; 见文件顶部的登记说明与 JZJSEngine::pointerDataList)。模块不再自建 map。
+
 
     // 带 func_data 的 C 函数(setParentWidget)要注入的"模块指针句柄": JS_NewInt64(模块指针)。
     // 指针在 x64 上是 48 位, double(53 位尾数)可精确表示; 且 quickjs 的 float64 **不带引用计数**,

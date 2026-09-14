@@ -267,7 +267,9 @@ public:
     // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
     // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
     //   ① 不同包装共享 cppOwner/cleared -> 所有权翻转/失效同步;
-    //   ② 托管了句柄(state->handle)后再包给 JS, 直接复用**同一个 JS 对象** -> `===` 成立。
+    //   ② 托管了句柄(state->handle)后再包给 JS, 直接复用**同一个 JS 对象** -> `===` 成立;
+    //   ③ 绑定层可以把"每对象状态"挂在 state->data 上(见 jsbind::JSPointerData / pointerDataList):
+    //      键同样是底层对象, 于是一份状态就够当"对象 <-> 绑定层状态"的登记表, 不必再自建一张。
     // 值语义类型(默认, 见 CClassDefine::pointerSemantics)不进这张表, 状态各自一份。
     // create=false 只查; create=true 时表里没有就用 cppOwnerIfNew 建一份 —— 之所以要这个参数:
     // 建状态的是**第一次包装**那次调用(toJsValueFromPtr 传进来的 cppOwner 是调用方的意图),
@@ -279,6 +281,11 @@ public:
     void forgetPointerState(const void* ptr);                       // clear: 释放托管句柄 + 摘表(不动底层对象)
     JSValue pointerHandle(const void* ptr) const;                   // 查询(借用引用; 身份复用用)
     void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表
+
+    // 收集所有"挂了扩展数据"的状态项(key = 底层对象裸指针, value = 数据本体, 见 JSPointerState::data)。
+    // **返回快照**而不是迭代器/引用: 调用方(绑定层清理)处理每一项时都会摘掉它并释放数据, 而这些动作
+    // 会改动身份表并可能级联(放掉保活句柄 -> 控件销毁 -> 又摘别的项), 边遍历边改表必炸。
+    std::vector<std::pair<const void*, jsbind::JSPointerData*>> pointerDataList() const;
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
     JSValue createResolvedPromise(JSValue jsValue);

@@ -1,17 +1,25 @@
-// JZImage —— RGBA8888 图像(全局类; JZJSWidgetModule::registImage)。
+// JZImage —— RGBA8888 图像(全局类; registImage + js_JZImage_ctor)。
 //
-// 现状: JS 侧只拿得到**已有的图**(JZPushButton.icon() 之类返回值), 没有可用的"造图"入口 ——
-//   * `def("create", &JZImage::create)`: 把一个**静态**工厂当实例方法注册, 实参位整体错开
-//     (param0 期望 int 却收到对象), 无论怎么写都抛类型错误;
-//   * decode / fromRGBA / fromData / encode / data 都没有暴露。
-// 所以本文件只声明真正可用的成员; `new JZImage()` 只会得到一张空图(isNull() === true,
-// 无像素) —— 它**不能**用于离屏画笔(new JZPainter(image) 要求尺寸有效)。
+// 三个入口:
+//   1) new JZImage()            空图(isNull() === true, 不能设像素/不能当离屏画笔目标)
+//   2) new JZImage(file)        从文件解码(按扩展名: .png/.bmp/.tga/.jpg/.jpeg)
+//   3) new JZImage(bytes)       从内存解码(Uint8Array)
+//   4) JZImage.create(w, h)     **造图**入口(挂在构造器上的静态函数): 新建纯透明(alpha=0)画布
 //
-// (静态工厂是 C++ 侧的本意: JZImage.create(w, h, color) —— 待 C++ 绑定修正后再补进本文件。)
+// 离屏绘制: const img = JZImage.create(200, 100);
+//           const p = new JZPainter(img); ...; p.end();     // 见 painter.d.ts
+// 显示:     new JZImageLabel().setImage(img)
 
 declare class JZImage {
   /** 空图(isNull() === true); 不能设尺寸/像素 */
   constructor();
+  /** 从文件解码; 失败得到空图 */
+  constructor(file: string);
+  /** 从内存字节解码; 失败得到空图 */
+  constructor(bytes: Uint8Array);
+
+  /** 新建纯透明(RGBA 全 0)画布 —— 离屏画笔的目标 */
+  static create(w: number, h: number): JZImage;
 
   width(): number;
   height(): number;
@@ -23,3 +31,5 @@ declare class JZImage {
   /** 缩放为新图(拉伸), 不改本对象; 失败返回空图 */
   scaled(w: number, h: number): JZImage;
 }
+
+// 未暴露(C++ 有): decode / fromRGBA / fromData / encode / data。

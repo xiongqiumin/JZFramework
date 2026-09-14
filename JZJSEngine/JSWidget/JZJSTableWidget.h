@@ -3,7 +3,7 @@
 
 #include "JZTableWidget.h"
 #include "JZJSType.h"
-#include "JZJSWidgetModule.h"   // JSWidgetClass<Class> (逐虚函数事件转发)
+#include "JZJSWidgetModule.h"   // JZSWidgetEventFilter(事件转发)
 
 // JZTableWidget 的 JS 侧包装(镜像)类。命名约定与理由见 JZJSWidget.h 顶部说明
 // (签名中出现 JS 指针类型的方法统一以 Js 结尾; JS 侧看到的名字由绑定层 def() 决定)。
@@ -14,7 +14,7 @@
 //   整体错位, 按行列存开关会把还活着的项误失效; item 指针在本表内稳定(见 JZTableWidget 的
 //   unique_ptr 网格), 所以用它做键。改行列时用 reindex 维护的是 item 自己的 row()/column(),
 //   与本开关表无关。
-class JZJSTableWidget : public JSWidgetClass<JZTableWidget>
+class JZJSTableWidget : public JZTableWidget
 {
     JZ_OBJECT_DECLARE(JZJSTableWidget)
 

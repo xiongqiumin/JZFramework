@@ -54,8 +54,9 @@
 #include <string>
 #include <cstring>
 
-// 颜色名/十六进制解析 (供 JZPainter 的 setPen/setBrush 与测试复用)
-static JZColor jzParseColor(const std::string& s)
+// 颜色名/十六进制解析 (供 JZPainter 的 setPen/setBrush、JZPen/JZBrush 构造器与测试复用;
+// 声明在 JZJSWidget.h —— JZJSWidget.cpp 的构造器要用同一份实现, 别在别处再抄一遍)
+JZColor jzParseColor(const std::string& s)
 {
     if (!s.empty() && s[0] == '#')
     {
@@ -156,30 +157,132 @@ static std::vector<std::string> jzJsToStringArray(JSContext* ctx, JSValueConst v
     return list;
 }
 
-// 新建 JS 对象回写到 JSWidgetClass<W> 包裹对象(m_jsvalue / m_engine),
-// 供事件转发 callJs 以该对象为 this 调用 JS 方法(onPaint / onMousePress ...)。
-// 作为 onCreated 钩子, 在 createValue(type, ptr) 内触发 —— 覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径。
-template <class W>
-static void jzBindWidgetInstance(JSContext* ctx, JSValue obj, void* opaque, JZJSEngine* engine,
-                                 JZJSPaintScope* paintScope, JZJSWidgetModule* module)
+// ---------- JS 事件转发(模块自己当过滤器; 见 JZJSWidgetModule.h) ----------
+
+bool JZJSWidgetModule::hasJsMethod(JSValue obj, const char* name)
 {
-    // 经多态基类取底层对象: opaque 的包装类型不一定是 JSRawPointer<W>。
+    if (!m_engine || JS_IsUndefined(obj))
+        return false;
+    JSContext* ctx = m_engine->context();
+    JSValue fn = JS_GetPropertyStr(ctx, obj, name);
+    bool ok = JS_IsFunction(ctx, fn);
+    JS_FreeValue(ctx, fn);
+    return ok;
+}
+
+// 以 obj 为 this 调用 JS 方法; 事件对象包成**借用**包装(事件是栈对象, 只在本次派发期间有效)
+template <class E>
+void JZJSWidgetModule::forwardJs(JSValue obj, const char* name, E* event)
+{
+    JSContext* ctx = m_engine->context();
+    jsbind::JSRawPointer<E> ref(event, true);   // cppOwner=true: JS 不负责释放(栈对象)
+    std::vector<JZJSValuePtr> params;
+    params.push_back(m_engine->makeValuePtr(toJSValue(ctx, ref)));
+    m_engine->callMemberFunction(name, JZJSValuePtr(ctx, JS_DupValue(ctx, obj)), params);
+    ref.clear();   // 派发结束: JS 侧若还留着该事件对象, 访问它会失效而不是读悬垂内存
+}
+
+template <class E>
+bool JZJSWidgetModule::forwardIf(JSValue obj, const char* name, E* event)
+{
+    if (!hasJsMethod(obj, name))
+        return false;
+    forwardJs(obj, name, event);
+    return true;
+}
+
+bool JZJSWidgetModule::eventFilter(JZObject* watched, JZEvent* event)
+{
+    if (!m_engine || !watched || !event)
+        return false;
+
+    // 控件 -> JS 包装的关联就在控件登记树上(被 JS 包装过的控件才有 jsRef)
+    WidgetInfo* node = findWidgetInfo(watched);
+    if (!node || JS_IsUndefined(node->jsRef))
+        return false;
+    JSValue obj = node->jsRef;   // 借用, 不释放
+
+    // 事件类型 -> JS 方法名。返回 true = 已转给 JS, 事件被拦下(原生实现不再跑)。
+    switch (event->type())
+    {
+    case JZEvent_paint:
+        // JS 侧画笔(new JZPainter(this))的生命周期 = 本次 onPaint 派发(对应 C++ 的栈对象
+        // `JZPainter p(this)`): 出作用域立即回收, 让绘制流的 Push/Pop 同帧配平。
+        if (!hasJsMethod(obj, "onPaint"))
+            return false;
+        {
+            JZJSPaintScope::Guard guard(&m_paintScope);
+            forwardJs(obj, "onPaint", static_cast<JZPainterEvent*>(event));
+        }
+        return true;
+    case JZEvent_mouse:
+    {
+        JZMouseEvent* me = static_cast<JZMouseEvent*>(event);
+        switch (me->mouseType())
+        {
+        case JZMouseEvent::Press:   return forwardIf(obj, "onMousePress", me);
+        case JZMouseEvent::Release: return forwardIf(obj, "onMouseRelease", me);
+        case JZMouseEvent::Move:    return forwardIf(obj, "onMouseMove", me);
+        case JZMouseEvent::Wheel:   return forwardIf(obj, "onWheel", me);
+        }
+        return false;
+    }
+    case JZEvent_enter:    return forwardIf(obj, "onEnter", event);
+    case JZEvent_leave:    return forwardIf(obj, "onLeave", event);
+    case JZEvent_key:
+    {
+        JZKeyEvent* ke = static_cast<JZKeyEvent*>(event);
+        return ke->isPress() ? forwardIf(obj, "onKeyPress", ke) : forwardIf(obj, "onKeyRelease", ke);
+    }
+    case JZEvent_focusIn:  return forwardIf(obj, "onFocusIn", event);
+    case JZEvent_focusOut: return forwardIf(obj, "onFocusOut", event);
+    case JZEvent_show:     return forwardIf(obj, "onShow", static_cast<JZShowEvent*>(event));
+    case JZEvent_hide:     return forwardIf(obj, "onHide", static_cast<JZHideEvent*>(event));
+    case JZEvent_resize:   return forwardIf(obj, "onResize", static_cast<JZResizeEvent*>(event));
+    default:
+        return false;
+    }
+}
+
+// 新建 JS 对象后的钩子(onCreated: 在 createValue(type, ptr) 内触发, 覆盖 new / 返回值转换 /
+// toValuePtr 各条包装路径): 给底层控件装(或更新)事件转发过滤器, 并按需登记控件树。
+// opaque 的包装类型随类层次不同(JSRawPointer<具体类> / JSObjectPointer), 故经多态基类取原始指针,
+// 再**沿继承往上**转成 JZWidget*(不做向下转型 —— 也就不存在"对象其实不是那个类型"的问题)。
+template <class W>
+static void jzBindWidgetInstance(JSContext* ctx, JSValue obj, void* opaque, JZJSWidgetModule* module)
+{
+    (void)ctx;
     auto* cp = (jsbind::JSPointerBase*)opaque;
-    auto* js = static_cast<JSWidgetClass<W>*>((W*)cp->getRaw());
-    js->m_engine = engine;
-    js->setPaintScope(paintScope);   // paintEvent 里用它界定 JS 侧画笔的生命周期
-    js->m_jsvalue = obj;             // 原始句柄(不 dup): 随 JS 自身 GC, 析构不释放, 避免自引用环
+    if (!cp || !module)
+        return;
+
+    JZWidget* self = static_cast<JZWidget*>((W*)cp->getRaw());   // W 恒为 JZWidget 派生类
+    if (!self)
+        return;
+
+    // JS 事件转发(onPaint / onMousePress / ...): 装在过滤器上, 不给控件对象加成员
+    module->bindJsEventFilter(self, obj);
 
     // 构造时就带父控件的(如 new JZWindow(w, h, title, parent)): 底层对象已在父的对象树里,
     // 现在就登记保活 —— 挂进树之后就不该再指望 JS 侧持有包装(见 JZJSWidgetModule.h 的登记说明)。
-    // 注意 m_jsvalue 每次造包装都会被覆盖成"最新那份", 所以登记里也持有最新那份(见 bindWidgetToParent)。
-    if (module)
-    {
-        JZWidget* self = js;
-        JZWidget* parent = self->parentWidget();
-        if (parent)
-            module->bindWidgetToParent(parent, self, obj);
-    }
+    JZWidget* parent = self->parentWidget();
+    if (parent)
+        module->bindWidgetToParent(parent, self, obj);
+}
+
+void JZJSWidgetModule::bindJsEventFilter(JZWidget* widget, JSValueConst value)
+{
+    if (!m_engine || !widget)
+        return;
+
+    // 控件与 JS 包装的关联记在它自己的登记节点上(节点在控件建出来时就存在; 这里兜底补建,
+    // 顺带订阅 sigDestroyed —— 见 ensureWidgetInfo / pushWidgetInfo)
+    WidgetInfo* node = ensureWidgetInfo(widget);
+    if (!node)
+        return;
+
+    node->jsRef = value;                 // 借用: 不 dup, 模块不释放(见 WidgetInfo::jsRef)
+    widget->installEventFilter(this);    // 模块自己当过滤器(重复安装会被忽略)
 }
 
 // ---------- 模块生命周期 ----------
@@ -208,6 +311,8 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     registWidgets();
     registViews();
     registLayouts();
+    registPens();
+    registMatrix();
     registPainter();
     registUiLoader();
 
@@ -240,6 +345,12 @@ void JZJSWidgetModule::deinitEngine()
         for (JSValue v : m_jsCallbacks)
             JS_FreeValue(ctx, v);
     }
+
+    // 事件转发: 模块自己就是所有 JS 控件的事件过滤器 —— 模块先于控件销毁会在控件的过滤器表里
+    // 留下悬垂指针(JZObject::installEventFilter 的说明: 过滤器必须先于被过滤对象撤销), 故先把
+    // 模块从所有存活控件上摘掉。此步不碰 JS, 不会级联删控件, 可以安全遍历整棵树。
+    detachWidgetFilters(m_widgetList);
+
     m_widgetList.clear();
     m_jsCallbacks.clear();
 
@@ -348,6 +459,7 @@ void JZJSWidgetModule::freeWidgetInfo(WidgetInfo& node)
         JS_FreeValue(m_engine->context(), held);
     }
     node.jsvalue = JS_UNDEFINED;
+    node.jsRef = JS_UNDEFINED;   // 借用型, 只需丢掉指针(不释放)
 
     for (int i = 0; i < (int)node.children.size(); i++)
         freeWidgetInfo(node.children[i]);
@@ -367,7 +479,21 @@ void JZJSWidgetModule::onWidgetDestroyed(JZObject *object)
 {
     // 控件正在析构(~JZObject 末尾, 守卫指针已置空, 子控件也已 delete): 摘掉它的节点与子树,
     // 放掉保活引用。这里只按指针比较, 绝不访问对象本身。
+    // 事件转发不需要单独清理: 过滤器就是模块自己, 转发对象(WidgetInfo::jsRef)随节点一起消失,
+    // 控件的过滤器表也随它一起消亡 —— 都不必(也不该)回头访问正在析构的对象。
     removeWidgetInfo(object);
+}
+
+// 把模块从所有登记控件的过滤器表上摘掉。不碰 JS(不会级联删控件), 故可以安全遍历整棵树。
+void JZJSWidgetModule::detachWidgetFilters(std::vector<WidgetInfo>& list)
+{
+    for (int i = 0; i < (int)list.size(); i++)
+    {
+        JZWidget* w = jzobject_cast<JZWidget*>(list[i].object);
+        if (w)
+            w->removeEventFilter(this);
+        detachWidgetFilters(list[i].children);
+    }
 }
 
 JZJSWidgetModule* JZJSWidgetModule::fromFuncData(JSContext* ctx, JSValueConst* func_data)
@@ -410,6 +536,7 @@ void JZJSWidgetModule::bindWidgetToParent(JZWidget* parent, JZWidget* child, JSV
     if (hadNode)
     {
         dst->jsvalue = node.jsvalue;
+        dst->jsRef = node.jsRef;            // 事件转发那份(借用)跟着搬, 否则改父后收不到 onXxx
         dst->children = std::move(node.children);
     }
 
@@ -463,6 +590,13 @@ void JZJSWidgetModule::registerCreatedWidget(JZWidget* widget, JSValueConst valu
         bindWidgetToParent(parent, widget, value);
     else
         ensureWidgetInfo(widget);
+
+    // 事件转发 / self() 用的那份包装(借用): 任何"从 JS 建出来"的控件都要记上 —— 不限于
+    // JZWidget/JZWindow(其它控件没有实例钩子, 但信号回调里的 self() 要用它认出自己是谁)。
+    // 注意放在 bindWidgetToParent 之后: 那里会重建登记节点。
+    WidgetInfo* node = findWidgetInfo(widget);
+    if (node)
+        node->jsRef = value;
 }
 
 // ---------- 信号 -> JS 回调 ----------
@@ -475,9 +609,21 @@ JSValue JZJSWidgetModule::holdJsCallback(JSValue cb)
     return held;
 }
 
-JSValue JZJSWidgetModule::callJsCallback(JSValue fn, int argc, JSValueConst* argv)
+JSValue JZJSWidgetModule::callJsCallback(JSValue fn, JZObject* owner, int argc, JSValueConst* argv)
 {
     JSContext* ctx = m_engine->context();
+
+    // 把"发信号的对象"压成当前 this: 回调写成箭头函数时也能用 self() 认出自己是谁。
+    // 控件/窗口在控件登记树里有包装(jsRef); 没有(非控件对象 / 已摘节点)就压 undefined -> self() 给 null。
+    JSValue self_val = JS_UNDEFINED;
+    if (owner)
+    {
+        WidgetInfo* node = findWidgetInfo(owner);
+        if (node)
+            self_val = node->jsRef;
+    }
+    JZJSEngine::SelfScope self_scope(m_engine, self_val);
+
     // 回调里抛出的异常不能跨 quickjs 的 C 调用栈传回去(信号是 C++ 侧同步 emit 的),
     // 按引擎既有口径: 交给 reportUncaughtError 并入错误链(sigError/sigLog)。
     JSValue ret = JS_Call(ctx, fn, JS_UNDEFINED, argc, argv);
@@ -497,42 +643,47 @@ JSValue JZJSWidgetModule::callJsCallback(JSValue fn, int argc, JSValueConst* arg
 void JZJSWidgetModule::bindSignal(JZSigVoid& sig, JSValue cb)
 {
     JSValue held = holdJsCallback(cb);
-    connect(&sig, [this, held]() { callJsCallback(held, 0, nullptr); });
+    JZObject* owner = sig.object();   // 回调里 self() = 发信号的对象(见 callJsCallback)
+    connect(&sig, [this, held, owner]() { callJsCallback(held, owner, 0, nullptr); });
 }
 
 void JZJSWidgetModule::bindSignal(JZSigBool& sig, JSValue cb)
 {
     JSValue held = holdJsCallback(cb);
-    connect(&sig, [this, held](bool v) {
+    JZObject* owner = sig.object();
+    connect(&sig, [this, held, owner](bool v) {
         JSValue a = toJSValue(m_engine->context(), v);
-        callJsCallback(held, 1, &a);
+        callJsCallback(held, owner, 1, &a);
     });
 }
 
 void JZJSWidgetModule::bindSignal(JZSigInt& sig, JSValue cb)
 {
     JSValue held = holdJsCallback(cb);
-    connect(&sig, [this, held](int v) {
+    JZObject* owner = sig.object();
+    connect(&sig, [this, held, owner](int v) {
         JSValue a = toJSValue(m_engine->context(), v);
-        callJsCallback(held, 1, &a);
+        callJsCallback(held, owner, 1, &a);
     });
 }
 
 void JZJSWidgetModule::bindSignal(JZSigString& sig, JSValue cb)
 {
     JSValue held = holdJsCallback(cb);
-    connect(&sig, [this, held](const std::string& v) {
+    JZObject* owner = sig.object();
+    connect(&sig, [this, held, owner](const std::string& v) {
         JSValue a = toJSValue(m_engine->context(), v);
-        callJsCallback(held, 1, &a);
+        callJsCallback(held, owner, 1, &a);
     });
 }
 
 void JZJSWidgetModule::bindSignal(JZSignal<int, int>& sig, JSValue cb)
 {
     JSValue held = holdJsCallback(cb);
-    connect(&sig, [this, held](int a1, int a2) {
+    JZObject* owner = sig.object();
+    connect(&sig, [this, held, owner](int a1, int a2) {
         JSValue args[2] = { toJSValue(m_engine->context(), a1), toJSValue(m_engine->context(), a2) };
-        callJsCallback(held, 2, args);
+        callJsCallback(held, owner, 2, args);
     });
 }
 
@@ -690,7 +841,8 @@ void JZJSWidgetModule::registEvents()
     bind_key.def("alt", [](JZKeyEvent* e) { return e->alt(); });
     m_engine->registClass(bind_key.classDefine());
 
-    jsbind::ClassBind<JZResizeEvent> bind_resize("JZResizeEvent");
+    // JZResizeEvent 现为 JZEvent 派生(见 JZResizeEvent.h), 故与其它事件一样挂到 JZEvent 原型下
+    jsbind::ClassBind<JZResizeEvent> bind_resize("JZResizeEvent", bind_event);
     bind_resize.def("width", [](JZResizeEvent* e) { return e->size().width(); });
     bind_resize.def("height", [](JZResizeEvent* e) { return e->size().height(); });
     bind_resize.def("oldWidth", [](JZResizeEvent* e) { return e->oldSize().width(); });
@@ -777,13 +929,13 @@ static void setWidgetCreate(jsbind::ClassBind<W>& bind)
 
 void JZJSWidgetModule::registWidgets()
 {
-    // 基类 JZWidget —— 实际实例为 JSWidgetClass<JZWidget>, 用于 onPaint 等事件转发
+    // 基类 JZWidget —— 裸类对象; 事件转发靠 JZSWidgetEventFilter(见 JZJSWidgetModule.h)
     jsbind::ClassBind<JZWidget> bind_w("JZWidget");
     bind_w.setCreate([this](JSContext* ctx, int, JSValueConst*) -> jsbind::JSPointerBase* {
-        return new jsbind::JSObjectPointer(new JSWidgetClass<JZWidget>(), false);   // 守卫指针, 见 setWidgetCreate
+        return new jsbind::JSObjectPointer(new JZWidget(), false);   // 守卫指针, 见 setWidgetCreate
     });
     bind_w.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
-        jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, m_engine, &m_paintScope, this);
+        jzBindWidgetInstance<JZWidget>(ctx, obj, opaque, this);
     });
     bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
     bind_w.def("x", [](JZWidget* w) { return w->x(); });
@@ -840,12 +992,12 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("rect", [](JZWidget* w) { return w->rect(); });
     m_engine->registClass(bind_w.classDefine());
 
-    // JZWindow (继承 JZWidget) —— 实际实例为 JSWidgetClass<JZWindow>
+    // JZWindow (继承 JZWidget) —— 裸类对象(事件转发同 JZWidget, 靠过滤器)
     // 注意: 这里**不再**预装默认 VBox —— 布局是"只能设一次"的(Qt 语义, 见 JZWidget::setLayout),
     // 预装会把 JS 里很常见的 `new JZWindow(...); win.setLayout(v)` 变成"重复设置"而被拒。
     // JS 想要默认纵向布局就直接 win.addWidget(...)(JZWindow.addWidget 会按需补一个 VBox)。
     auto makeWindow = [](int w, int h, const std::string& title, JZWidget* parent) {
-        return new JSWidgetClass<JZWindow>(w, h, title, parent);
+        return new JZWindow(w, h, title, parent);
     };
     jsbind::ClassBind<JZWindow> bind_win("JZWindow", bind_w);
     bind_win.setCreate([this, makeWindow](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
@@ -869,7 +1021,7 @@ void JZJSWidgetModule::registWidgets()
         return new jsbind::JSObjectPointer(makeWindow(w, h, title, parent), false);   // 守卫指针, 见 setWidgetCreate
     });
     bind_win.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
-        jzBindWidgetInstance<JZWindow>(ctx, obj, opaque, m_engine, &m_paintScope, this);
+        jzBindWidgetInstance<JZWindow>(ctx, obj, opaque, this);
     });
     bind_win.def("setTitle", [](JZWindow* w, const std::string& t) { w->setTitle(t); });
     bind_win.def("title", [](JZWindow* w) { return w->title(); });
@@ -1383,6 +1535,361 @@ void JZJSWidgetModule::registLayouts()
     m_engine->registClass(bind_self.classDefine());
 }
 
+// ---------- JZPainter 的画笔 / 画刷 / 字体 ----------
+//
+// 两个形参形态都收(对象优先; 便捷形式是给 Qt 兼容层/老代码留的, 见下):
+//   setPen(pen: JZPen)                       —— 完整描述(颜色 + 线宽), 推荐
+//   setPen(color, width?)                    —— color: '#rrggbb' | 颜色名 | JZColor
+//   setBrush(brush: JZBrush) / setBrush(color, opacity?)
+//   setFont(font: JZFont)    / setFont(family, size)
+//
+// 为什么做成 quickjs C 函数(而不是 def 的 lambda): 引擎的 def 走 JZJSEngine::call,
+// **参数个数必须精确匹配**形参表 —— 一个 lambda 表达不了"可选参数"这种形态;
+// C 函数拿到原始 argc/argv, 可以自己按实参形态分派并给出明确报错(与 js_JZWidget_* 同一套路)。
+
+// this_val -> JZPainter*(非本类对象 / 包装已失效一律 nullptr, 由调用方报错)
+static JZPainter* jzPainterFromThis(JSContext* ctx, JSValueConst this_val)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine)
+        return nullptr;
+
+    JSClassID class_id = 0;
+    void* opaque = JS_GetAnyOpaque(this_val, &class_id);
+    if (!opaque || !engine->isJSRawPointerClassId(class_id))
+        return nullptr;
+    if (!js_check_class_arg<JZPainter>(ctx, this_val))
+        return nullptr;
+
+    auto* cp = (jsbind::JSPointerBase*)opaque;
+    if (cp->isCleared() || !cp->getRaw())
+        return nullptr;
+
+    return fromJSValue<JZPainter*>(ctx, this_val);
+}
+
+// 整数形参(自行校验: C 函数不经过形参类型表)
+static bool jzJsToIntArg(JSContext* ctx, JSValueConst v, int& out, const char* what, const char* arg)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine || !engine->checkType(v, JSType_int))
+    {
+        JS_ThrowTypeError(ctx, "%s: %s 需要整数", what, arg);
+        return false;
+    }
+    out = fromJSValue<int>(ctx, v);
+    return true;
+}
+
+// 数字形参(自行校验: C 函数不经过形参类型表)
+static bool jzJsToDoubleArg(JSContext* ctx, JSValueConst v, double& out, const char* what, const char* arg)
+{
+    if (!JS_IsNumber(v) || JS_ToFloat64(ctx, &out, v) != 0)
+    {
+        JS_ThrowTypeError(ctx, "%s: %s 需要数字", what, arg);
+        return false;
+    }
+    return true;
+}
+
+// 颜色形参: JZColor 对象 或 '#rrggbb'/颜色名 字符串
+static bool jzJsToColorArg(JSContext* ctx, JSValueConst v, JZColor& out, const char* what)
+{
+    if (JS_IsString(v))
+    {
+        out = jzParseColor(fromJSValue<std::string>(ctx, v));
+        return true;
+    }
+    if (js_check_class_arg<JZColor>(ctx, v))
+    {
+        out = *fromJSValue<JZColor*>(ctx, v);
+        return true;
+    }
+    JS_ThrowTypeError(ctx, "%s: 颜色需要 '#rrggbb'/颜色名 字符串或 JZColor 对象", what);
+    return false;
+}
+
+static JSValue js_JZPainter_setPen(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    const char* what = "JZPainter.setPen";
+    JZPainter* p = jzPainterFromThis(ctx, this_val);
+    if (!p)
+        return JS_ThrowTypeError(ctx, "%s: this 不是有效的 JZPainter", what);
+    if (argc < 1 || argc > 2)
+        return JS_ThrowTypeError(ctx, "%s: 需要 setPen(pen) 或 setPen(color, width?)", what);
+
+    if (js_check_class_arg<JZPen>(ctx, argv[0]))
+    {
+        if (argc != 1)
+            return JS_ThrowTypeError(ctx, "%s(pen): 线宽请写进 JZPen, 不要再给第 2 个参数", what);
+        p->setPen(*fromJSValue<JZPen*>(ctx, argv[0]));
+        return JS_UNDEFINED;
+    }
+
+    int width = 1;
+    if (argc == 2 && !jzJsToIntArg(ctx, argv[1], width, what, "width"))
+        return JS_EXCEPTION;
+    JZColor color;
+    if (!jzJsToColorArg(ctx, argv[0], color, what))
+        return JS_EXCEPTION;
+    p->setPen(JZPen(color, width));
+    return JS_UNDEFINED;
+}
+
+static JSValue js_JZPainter_setBrush(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    const char* what = "JZPainter.setBrush";
+    JZPainter* p = jzPainterFromThis(ctx, this_val);
+    if (!p)
+        return JS_ThrowTypeError(ctx, "%s: this 不是有效的 JZPainter", what);
+    if (argc < 1 || argc > 2)
+        return JS_ThrowTypeError(ctx, "%s: 需要 setBrush(brush) 或 setBrush(color, opacity?)", what);
+
+    if (js_check_class_arg<JZBrush>(ctx, argv[0]))
+    {
+        if (argc != 1)
+            return JS_ThrowTypeError(ctx, "%s(brush): 不透明度请写进 JZBrush, 不要再给第 2 个参数", what);
+        p->setBrush(*fromJSValue<JZBrush*>(ctx, argv[0]));
+        return JS_UNDEFINED;
+    }
+
+    uint8_t opacity = JZBrush::kOpaCover;
+    if (argc == 2)
+    {
+        int n = 0;
+        if (!jzJsToIntArg(ctx, argv[1], n, what, "opacity"))
+            return JS_EXCEPTION;
+        if (n < 0 || n > 255)
+            return JS_ThrowTypeError(ctx, "%s: opacity 需要在 0~255 之间", what);
+        opacity = (uint8_t)n;
+    }
+    JZColor color;
+    if (!jzJsToColorArg(ctx, argv[0], color, what))
+        return JS_EXCEPTION;
+    p->setBrush(JZBrush(color, opacity));
+    return JS_UNDEFINED;
+}
+
+static JSValue js_JZPainter_setFont(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    const char* what = "JZPainter.setFont";
+    JZPainter* p = jzPainterFromThis(ctx, this_val);
+    if (!p)
+        return JS_ThrowTypeError(ctx, "%s: this 不是有效的 JZPainter", what);
+    if (argc < 1 || argc > 2)
+        return JS_ThrowTypeError(ctx, "%s: 需要 setFont(font) 或 setFont(family, size)", what);
+
+    if (js_check_class_arg<JZFont>(ctx, argv[0]))
+    {
+        if (argc != 1)
+            return JS_ThrowTypeError(ctx, "%s(font): 不要再给第 2 个参数(字号写进 JZFont)", what);
+        p->setFont(*fromJSValue<JZFont*>(ctx, argv[0]));
+        return JS_UNDEFINED;
+    }
+
+    if (!JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "%s: 需要 JZFont 对象或字体族字符串", what);
+    if (argc != 2)
+        return JS_ThrowTypeError(ctx, "%s(family, size): 用字符串时还需要字号", what);
+
+    std::string family = fromJSValue<std::string>(ctx, argv[0]);
+    int size = 0;
+    if (!jzJsToIntArg(ctx, argv[1], size, what, "size"))
+        return JS_EXCEPTION;
+    p->setFont(JZFont(family, size));
+    return JS_UNDEFINED;
+}
+
+static JSValue js_JZPainter_setTransform(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    const char* what = "JZPainter.setTransform";
+    JZPainter* p = jzPainterFromThis(ctx, this_val);
+    if (!p)
+        return JS_ThrowTypeError(ctx, "%s: this 不是有效的 JZPainter", what);
+
+    // 对象形式(推荐): 直接用 JZMatrix2D
+    if (argc == 1)
+    {
+        if (!js_check_class_arg<JZMatrix2D>(ctx, argv[0]))
+            return JS_ThrowTypeError(ctx, "%s: 需要 JZMatrix2D 对象", what);
+        p->setTransform(*fromJSValue<JZMatrix2D*>(ctx, argv[0]));
+        return JS_UNDEFINED;
+    }
+
+    // 便捷形式: 6 个数 = 2x3 仿射部分(行主序 [a b c d e f], 与 GDI+/Canvas 一致)
+    if (argc == 6)
+    {
+        double v[6];
+        for (int i = 0; i < 6; i++)
+        {
+            if (!jzJsToDoubleArg(ctx, argv[i], v[i], what, "a~f"))
+                return JS_EXCEPTION;
+        }
+        JZMatrix2D m;
+        m.setMatrix(v[0], v[1], v[2], v[3], v[4], v[5]);
+        p->setTransform(m);
+        return JS_UNDEFINED;
+    }
+
+    return JS_ThrowTypeError(ctx, "%s: 需要 setTransform(matrix) 或 setTransform(a, b, c, d, e, f)", what);
+}
+
+// ---------- 2D 变换矩阵 (JZMatrix2D) ----------
+//
+// 值语义的 2x3 仿射矩阵(行主序 [a b c d e f]): 传给 JZPainter.setTransform(m),
+// 也可用静态工厂造: JZMatrix2D.translation(dx, dy) / scaling(sx, sy) / rotation(deg)。
+// 组合语义与 C++ 一致(post-multiply): 每次 translate/rotate/scale 都在"已变换的坐标系内"继续。
+
+// 静态工厂(挂构造器上, 见 registMatrix 的 defStaticFunction): 各造一个新矩阵返回。
+static JSValue js_JZMatrix2D_translation(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZMatrix2D.translation(dx, dy)";
+    if (argc != 2)
+        return JS_ThrowTypeError(ctx, "%s: 需要 2 个参数", what);
+    double dx = 0, dy = 0;
+    if (!jzJsToDoubleArg(ctx, argv[0], dx, what, "dx") || !jzJsToDoubleArg(ctx, argv[1], dy, what, "dy"))
+        return JS_EXCEPTION;
+    return toJSValue(ctx, JZMatrix2D::translation(dx, dy));
+}
+
+static JSValue js_JZMatrix2D_scaling(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZMatrix2D.scaling(sx, sy)";
+    if (argc != 2)
+        return JS_ThrowTypeError(ctx, "%s: 需要 2 个参数", what);
+    double sx = 1, sy = 1;
+    if (!jzJsToDoubleArg(ctx, argv[0], sx, what, "sx") || !jzJsToDoubleArg(ctx, argv[1], sy, what, "sy"))
+        return JS_EXCEPTION;
+    return toJSValue(ctx, JZMatrix2D::scaling(sx, sy));
+}
+
+static JSValue js_JZMatrix2D_rotation(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZMatrix2D.rotation(deg)";
+    if (argc != 1)
+        return JS_ThrowTypeError(ctx, "%s: 需要 1 个参数", what);
+    double deg = 0;
+    if (!jzJsToDoubleArg(ctx, argv[0], deg, what, "deg"))
+        return JS_EXCEPTION;
+    return toJSValue(ctx, JZMatrix2D::rotation(deg));
+}
+
+static JSValue js_JZMatrix2D_rotationRadians(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZMatrix2D.rotationRadians(rad)";
+    if (argc != 1)
+        return JS_ThrowTypeError(ctx, "%s: 需要 1 个参数", what);
+    double rad = 0;
+    if (!jzJsToDoubleArg(ctx, argv[0], rad, what, "rad"))
+        return JS_EXCEPTION;
+    return toJSValue(ctx, JZMatrix2D::rotationRadians(rad));
+}
+
+void JZJSWidgetModule::registMatrix()
+{
+    jsbind::ClassBind<JZMatrix2D> bind_m("JZMatrix2D");
+    bind_m.def("reset", [](JZMatrix2D* m) { m->reset(); });         // 置单位阵
+    bind_m.def("isIdentity", [](JZMatrix2D* m) { return m->isIdentity(); });
+    bind_m.def("at", [](JZMatrix2D* m, int row, int col) {
+        if (row < 0 || row > 2 || col < 0 || col > 2)
+            throw std::runtime_error("JZMatrix2D.at: 行列下标需要在 0~2 之间");
+        return m->at(row, col);
+    });
+    bind_m.def("setAt", [](JZMatrix2D* m, int row, int col, double v) {
+        if (row < 0 || row > 2 || col < 0 || col > 2)
+            throw std::runtime_error("JZMatrix2D.setAt: 行列下标需要在 0~2 之间");
+        m->at(row, col) = v;
+    });
+    bind_m.def("setMatrix", [](JZMatrix2D* m, double a, double b, double c, double d, double e, double f) {
+        m->setMatrix(a, b, c, d, e, f);
+    });
+    bind_m.def("setMatrix3", [](JZMatrix2D* m, double m00, double m01, double m02,
+                                                 double m10, double m11, double m12,
+                                                 double m20, double m21, double m22) {
+        m->setMatrix3(m00, m01, m02, m10, m11, m12, m20, m21, m22);
+    });
+    bind_m.def("translate", [](JZMatrix2D* m, double dx, double dy) { m->translate(dx, dy); });
+    bind_m.def("scale", [](JZMatrix2D* m, double sx, double sy) { m->scale(sx, sy); });
+    /** 角度制, 屏幕顺时针为正 */
+    bind_m.def("rotate", [](JZMatrix2D* m, double deg) { m->rotate(deg); });
+    bind_m.def("rotateRadians", [](JZMatrix2D* m, double rad) { m->rotateRadians(rad); });
+    /** this = this * o (先应用 o, 再应用 this) */
+    bind_m.def("multiply", [](JZMatrix2D* m, const JZMatrix2D& o) { m->multiply(o); });
+    /** 不改本对象, 返回 this * o 的新矩阵 */
+    bind_m.def("multiplied", [](JZMatrix2D* m, const JZMatrix2D& o) { return m->multiplied(o); });
+    /** 仿射逆矩阵; 退化(det≈0)时返回单位阵 */
+    bind_m.def("inverse", [](JZMatrix2D* m) { return m->inverse(); });
+    bind_m.def("scaleX", [](JZMatrix2D* m) { return m->scaleX(); });
+    bind_m.def("scaleY", [](JZMatrix2D* m) { return m->scaleY(); });
+    m_engine->registClass(bind_m.classDefine());
+
+    // 静态工厂(挂构造器上, 与 JZImage.create 同一机制): 造一个**新矩阵**返回。
+    defStaticFunction(bind_m.classDefine(), "translation", js_JZMatrix2D_translation, 2);
+    defStaticFunction(bind_m.classDefine(), "scaling", js_JZMatrix2D_scaling, 2);
+    defStaticFunction(bind_m.classDefine(), "rotation", js_JZMatrix2D_rotation, 1);
+    defStaticFunction(bind_m.classDefine(), "rotationRadians", js_JZMatrix2D_rotationRadians, 1);
+}
+
+// ---------- 画笔样式值类型 (JZPen / JZBrush / JZFont) ----------
+
+// 注册到 JS 供 JZPainter.setPen/setBrush/setFont 传对象(构造器换 C 版本见 JZJSWidget.cpp)。
+// 三个都是**值语义**描述: 读取接口按值返回拷贝(改它不影响画笔里那份)。
+void JZJSWidgetModule::registPens()
+{
+    jsbind::ClassBind<JZPen> bind_pen("JZPen");
+    bind_pen.def("setColor", [](JZPen* p, const JZColor& c) { p->setColor(c); });
+    bind_pen.def("color", [](JZPen* p) { return p->color(); });
+    bind_pen.def("setWidth", [](JZPen* p, int w) { p->setWidth(w); });
+    bind_pen.def("width", [](JZPen* p) { return p->width(); });
+    m_engine->registClass(bind_pen.classDefine());
+
+    jsbind::ClassBind<JZBrush> bind_brush("JZBrush");
+    bind_brush.def("setColor", [](JZBrush* b, const JZColor& c) { b->setColor(c); });
+    bind_brush.def("color", [](JZBrush* b) { return b->color(); });
+    bind_brush.def("setOpacity", [](JZBrush* b, int o) {
+        if (o < 0 || o > 255)
+            throw std::runtime_error("JZBrush.setOpacity: 不透明度需要在 0~255 之间");
+        b->setOpacity((uint8_t)o);
+    });
+    bind_brush.def("opacity", [](JZBrush* b) { return (int)b->opacity(); });
+    m_engine->registClass(bind_brush.classDefine());
+
+    jsbind::ClassBind<JZFont> bind_font("JZFont");
+    bind_font.def("setFamily", [](JZFont* f, const std::string& v) { f->setFamily(v); });
+    bind_font.def("family", [](JZFont* f) { return f->family(); });
+    bind_font.def("setSize", [](JZFont* f, int v) { f->setSize(v); });
+    bind_font.def("size", [](JZFont* f) { return f->size(); });
+    bind_font.def("setStyle", [](JZFont* f, int v) { f->setStyle(v); });
+    bind_font.def("style", [](JZFont* f) { return f->style(); });
+    bind_font.def("setBold", [](JZFont* f, bool on) { f->setBold(on); });
+    bind_font.def("bold", [](JZFont* f) { return f->bold(); });
+    bind_font.def("setItalic", [](JZFont* f, bool on) { f->setItalic(on); });
+    bind_font.def("italic", [](JZFont* f) { return f->italic(); });
+    bind_font.def("setUnderline", [](JZFont* f, bool on) { f->setUnderline(on); });
+    bind_font.def("underline", [](JZFont* f) { return f->underline(); });
+    bind_font.def("setStrikeOut", [](JZFont* f, bool on) { f->setStrikeOut(on); });
+    bind_font.def("strikeOut", [](JZFont* f) { return f->strikeOut(); });
+    m_engine->registClass(bind_font.classDefine());
+
+    // 风格位常量挂到 JZFont 构造器上(JS 侧写 JZFont.Bold / JZFont.Italic ...), 与 C++ 枚举同值。
+    // 注: 构造器下面还会被 jzRegistWidgetJsConstructors 换成 C 版本, 那次替换会把旧构造器上的
+    //     自有可枚举属性一并搬过去(同 JZChart 的类型常量), 所以这里挂的常量不会丢。
+    {
+        int font_type_id = m_engine->ctypeidToType(typeid(JZFont).name());
+        if (font_type_id != JSType_none)
+        {
+            JSContext* ctx = m_engine->context();
+            JSValue js_class = m_engine->classConstructor(font_type_id);
+            JS_SetPropertyStr(ctx, js_class, "Normal", JS_NewInt32(ctx, (int)JZFont::Normal));
+            JS_SetPropertyStr(ctx, js_class, "Bold", JS_NewInt32(ctx, (int)JZFont::Bold));
+            JS_SetPropertyStr(ctx, js_class, "Italic", JS_NewInt32(ctx, (int)JZFont::Italic));
+            JS_SetPropertyStr(ctx, js_class, "Underline", JS_NewInt32(ctx, (int)JZFont::Underline));
+            JS_SetPropertyStr(ctx, js_class, "StrikeOut", JS_NewInt32(ctx, (int)JZFont::StrikeOut));
+            JS_FreeValue(ctx, js_class);
+        }
+    }
+}
+
 // ---------- JZPainter (绘制类, 非事件转发) ----------
 
 void JZJSWidgetModule::registPainter()
@@ -1408,9 +1915,11 @@ void JZJSWidgetModule::registPainter()
     bind_p.def("scale", [](JZPainter* p, double sx, double sy) { p->scale(sx, sy); });
     bind_p.def("resetTransform", [](JZPainter* p) { p->resetTransform(); });
     bind_p.def("setClip", [](JZPainter* p, int x, int y, int w, int h) { p->setClip(JZRect(x, y, w, h)); });
-    bind_p.def("setPen", [](JZPainter* p, const std::string& color, int width) { p->setPen(JZPen(jzParseColor(color), width)); });
-    bind_p.def("setBrush", [](JZPainter* p, const std::string& color) { p->setBrush(JZBrush(jzParseColor(color))); });
-    bind_p.def("setFont", [](JZPainter* p, const std::string& family, int size) { p->setFont(JZFont(family, size)); });
+    // 画笔/画刷/字体: 收 JZPen / JZBrush / JZFont 对象(也可用颜色字符串的便捷形式) ——
+    // 见上面三个 C 函数的说明(参数个数按实参形态分派, 故不用 def 的 lambda)。
+    bind_p.def("setPen", js_JZPainter_setPen, 1);
+    bind_p.def("setBrush", js_JZPainter_setBrush, 1);
+    bind_p.def("setFont", js_JZPainter_setFont, 1);
     bind_p.def("drawLine", [](JZPainter* p, int x1, int y1, int x2, int y2) { p->drawLine(x1, y1, x2, y2); });
     bind_p.def("drawRect", [](JZPainter* p, int x, int y, int w, int h) { p->drawRect(x, y, w, h); });
     bind_p.def("drawRoundRect", [](JZPainter* p, int x, int y, int w, int h, int r) { p->drawRoundRect(x, y, w, h, r); });
@@ -1418,17 +1927,19 @@ void JZJSWidgetModule::registPainter()
     bind_p.def("fillRoundRect", [](JZPainter* p, int x, int y, int w, int h, int r, const std::string& color) { p->fillRoundRect(x, y, w, h, r, jzParseColor(color)); });
     bind_p.def("drawEllipse", [](JZPainter* p, int x, int y, int w, int h) { p->drawEllipse(x, y, w, h); });
     bind_p.def("fillEllipse", [](JZPainter* p, int x, int y, int w, int h, const std::string& color) { p->fillEllipse(x, y, w, h, jzParseColor(color)); });
+    // 画弧: x/y 是**圆心**(不是左上角), 角度单位为 1/10 度(0=3点方向, 顺时针递增),
+    // 整圆写 drawArc(cx, cy, r, 0, 3600) —— 与 C++ JZPainter::drawArc 同一套语义。
+    bind_p.def("drawArc", [](JZPainter* p, int x, int y, int radius, int startAngle, int endAngle) { p->drawArc(x, y, radius, startAngle, endAngle); });
     bind_p.def("drawText", [](JZPainter* p, int x, int y, const std::string& text) { p->drawText(x, y, text.c_str()); });
     bind_p.def("drawImage", [](JZPainter* p, JZImage* img, int x, int y, int w, int h) {
         if (!img)
             throw std::runtime_error("drawImage: image 不能为空");
         p->drawImage(*img, x, y, w, h);
     });
-    bind_p.def("setTransform", [](JZPainter* p, double a, double b, double c_, double d, double e, double f) {
-        JZMatrix2D m;
-        m.setMatrix(a, b, c_, d, e, f);
-        p->setTransform(m);
-    });
+    // setTransform(matrix: JZMatrix2D) / setTransform(a, b, c, d, e, f) —— 同 setPen 等, 走 C 函数
+    bind_p.def("setTransform", js_JZPainter_setTransform, 1);
+    /** 当前变换矩阵(拷贝); 读出来改完再 setTransform 回去 */
+    bind_p.def("transform", [](JZPainter* p) { return p->transform(); });
     m_engine->registClass(bind_p.classDefine());
 }
 

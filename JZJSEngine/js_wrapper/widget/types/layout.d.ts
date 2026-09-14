@@ -1,18 +1,21 @@
-// 布局 —— 全局类(JZJSWidgetModule::registWidgets 里的 ClassBind<JZLayout> 与四个具体布局)。
+// 布局 —— 全局类(JZJSWidgetModule::registLayouts + jzRegistWidgetJsConstructors)。
 //
 // 用法: widget.setLayout(layout); 盒子布局把子控件 addWidget(w, stretch) 加进去。
 // 注意 stretch 参数**必填** —— 绑定层按精确参数个数校验(形参表含 this, 见 JZJSEngine::call),
 // 少写一个就报"参数错误:需要N个参数"; 不拉伸传 0。
 //
-// 具体布局都经 ClassBind<Xxx>(name, bind_layout) 注册了基类, 所以 `layout instanceof JZLayout`
-// 成立 —— JZWidget.setLayout(JZLayout*) 的参数校验要求这一点。
+// 具体布局都经 ClassBind<Layout>(name, bind_layout) 注册了基类, 所以 `layout instanceof JZLayout`
+// 成立 —— JZWidget.setLayout(JZLayout) 的参数校验要求这一点。
 //
-// JZLayout 是抽象基类(纯虚 updateLayout), 注册时没有提供构造函数: `new JZLayout()` 抛异常,
-// 请用 JZVBoxLayout / JZHBoxLayout / JZGridLayout / JZSelfLayout。
+// 构造实参(与 C++ 构造一致):
+//   new JZLayout() / (pad) / (pad, spacing)   —— JZLayout 在 JS 侧**可 new**:
+//        与旧行为一致地造一个 JZVBoxLayout, 但 JS 类仍是 JZLayout(instanceof JZVBoxLayout 为假)
+//   new JZVBoxLayout(pad?, spacing?) / new JZHBoxLayout(pad?, spacing?)
+//   new JZGridLayout(pad?, gap?)
+//   new JZSelfLayout(pad?)
 
 declare class JZLayout {
-  /** 抽象基类, 不能实例化 */
-  protected constructor();
+  constructor(pad?: number, spacing?: number);
 
   setSpacing(px: number): void;
   spacing(): number;
@@ -21,7 +24,7 @@ declare class JZLayout {
 }
 
 declare class JZVBoxLayout extends JZLayout {
-  constructor();
+  constructor(pad?: number, spacing?: number);
 
   /** stretch 必填(不拉伸传 0) */
   addWidget(widget: JZWidget, stretch: number): void;
@@ -37,7 +40,7 @@ declare class JZVBoxLayout extends JZLayout {
 }
 
 declare class JZHBoxLayout extends JZLayout {
-  constructor();
+  constructor(pad?: number, spacing?: number);
 
   /** stretch 必填(不拉伸传 0) */
   addWidget(widget: JZWidget, stretch: number): void;
@@ -52,7 +55,7 @@ declare class JZHBoxLayout extends JZLayout {
 }
 
 declare class JZGridLayout extends JZLayout {
-  constructor();
+  constructor(pad?: number, gap?: number);
 
   /** 放到第 row 行第 col 列 */
   addWidget(widget: JZWidget, row: number, column: number): void;
@@ -72,7 +75,7 @@ declare class JZGridLayout extends JZLayout {
 }
 
 declare class JZSelfLayout extends JZLayout {
-  constructor();
+  constructor(pad?: number);
 
   /** 九宫格锚点定位: anchor 0..8 = TopLeft TopCenter TopRight / MiddleLeft Center MiddleRight /
    *  BottomLeft BottomCenter BottomRight; dx/dy 为偏移(未挂常量, 直接传数字) */
@@ -85,5 +88,5 @@ declare class JZSelfLayout extends JZLayout {
   count(): number;
 }
 
-// 未暴露(C++ 有): JZLayout.apply/minimumSizeHint、盒子布局的 spacing() 读写之外的属性,
-// JZStackedLayout / JZFormLayout 之类的其余布局类型(若 C++ 侧存在)。
+// 未暴露(C++ 有): JZLayout.apply / minimumSizeHint; JZBoxLayout 的 removeAt 之外没有的
+// 盒子布局属性; JZStackedLayout / JZFormLayout 之类的其余布局类型(C++ 侧若存在)。

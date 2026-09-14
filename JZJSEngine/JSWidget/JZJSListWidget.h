@@ -3,7 +3,7 @@
 
 #include "JZListWidget.h"
 #include "JZJSType.h"
-#include "JZJSWidgetModule.h"   // JSWidgetClass<Class> (逐虚函数事件转发)
+#include "JZJSWidgetModule.h"   // JZSWidgetEventFilter(事件转发)
 
 // JZListWidget 的 JS 侧包装(镜像)类。命名约定与理由见 JZJSWidget.h 顶部说明
 // (签名中出现 JS 指针类型的方法统一以 Js 结尾; JS 侧看到的名字由绑定层 def() 决定)。
@@ -15,7 +15,7 @@
 // 且**按项指针索引而不是下标**:
 //   插入/删除会让下标整体错位, 若按下标存开关, 一次 insert 就会把还活着的项的包装误失效。
 //   项指针在本列表内是稳定的(见 JZListWidget 的 unique_ptr 存储), 所以用它做键。
-class JZJSListWidget : public JSWidgetClass<JZListWidget>
+class JZJSListWidget : public JZListWidget
 {
     JZ_OBJECT_DECLARE(JZJSListWidget)
 

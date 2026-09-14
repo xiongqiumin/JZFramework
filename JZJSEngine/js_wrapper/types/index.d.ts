@@ -3,12 +3,14 @@
 /// <reference path="globals.d.ts" />
 /// <reference path="console.d.ts" />
 /// <reference path="fetch.d.ts" />
+/// <reference path="timers.d.ts" />
 
 /**
  * JZ JS 引擎的类型声明入口(只有"跨模块共享的真全局"部分)。
  *
  * 本目录(JZJSEngine/js_wrapper/types/)只放不属于任何单个模块的全局声明:
  *   - console / fetch / Headers / Response / RequestInit (引擎注册到 globalThis 的全局)
+ *   - sleep / setInterval / setTimeout / clearInterval / clearTimeout / engine (同上是引擎装的全局)
  *   - URL / URLSearchParams / WebSocket / EventEmitter (运行期就是全局对象/全局类)
  *   - common.d.ts: 公共类型别名(Data / Chunk / DataEncoding) + Uint8Array 扩展方法
  *
@@ -17,6 +19,7 @@
  *   - core/types/ambient.d.ts        -> fs / path / process / crypto   (模块类型见同目录 <module>.d.ts)
  *   - net/types/ambient.d.ts         -> net / dgram / http / mqtt / url / os / ws
  *   - serialport/types/ambient.d.ts  -> serialport (+ 运行期全局 serialport)
+ * 控件侧(全局类, 无模块)见 widget/types/(json 见 widget 包)。
  * (ambient `declare module '<裸名>'` 只能写在全局脚本文件里, 所以每包多一个 ambient.d.ts;
  *  模块形式的 <module>.d.ts 若混写 declare module 会被当成"模块增强"而找不到目标。)
  *

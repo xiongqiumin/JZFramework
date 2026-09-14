@@ -1,7 +1,7 @@
 {
   "name": "@jz/widget",
   "version": "1.0.0",
-  "description": "JZ framework widget module (Web Components style JS-side UI builder)",
+  "description": "JZ widget types: 引擎注册的全局控件/布局/画笔声明 (types/, 无需 import) + .ui 代码生成用的 UI 树数据节点构建器 (dist/)",
   "main": "dist/index.js",
   "types": "types/index.d.ts",
   "exports": {

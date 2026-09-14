@@ -9,3 +9,7 @@ JZPainterEvent::JZPainterEvent()
     :JZEvent(JZEvent_paint)
 {
 }
+
+JZPainterEvent::~JZPainterEvent()
+{
+}

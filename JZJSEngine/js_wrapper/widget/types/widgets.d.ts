@@ -1,18 +1,23 @@
-// JZWidget 及常用控件 —— 全局类(JZJSWidgetModule::registWidgets)。
+// JZWidget 及基础控件 —— 全局类(JZJSWidgetModule::registWidgets +
+// jzRegistWidgetJsConstructors 换上的 C 构造器)。
 //
-// 构造: 除 JZWindow(可传 w/h/title/parent)外都只有**无参**构造 —— 绑定层用默认工厂
-// `new Class()` 忽略实参(见 geometry.d.ts 顶部说明)。父子关系用 setParentWidget() /
-// JZWindow.addWidget() / 布局 addWidget() 建立, 尺寸用 setGeometry()。
+// 构造: 与 C++ 构造一致(见本目录 index.d.ts 的"实参形态"清单), 父控件可传 null/undefined;
+// 父子关系也可事后用 setParentWidget() / 布局 addWidget() / JZWindow.addWidget() 建立。
 //
 // 事件走**属性写法**(不是 on()/addListener): 在实例上赋 onPaint / onMousePress / ... ;
 // 框架派发时发现同名的 JS 方法就转给 JS, 否则回退 C++ 默认实现。
-// ⚠ 现状: 事件转发只对 **JZWidget / JZWindow** 生效 —— 它们是唯一经 JSWidgetClass 包装创建的
-//   (registWidgets 里 setCreate), 其它控件走默认工厂, 是"裸" C++ 对象: 给它们赋 onXxx 不会
-//   报错但**静默无效**(按钮的点击请用 onClicked 这类信号接口)。声明仍放在基类上, 因为这是
-//   设计上的契约(见本目录 widget.d.ts 的构建器与 qtcompat.js 的用法)。
+// 回调里拿"当前控件": 写成箭头函数时没有自己的 this, 用引擎全局 self() —— 等价于这里的 this,
+//   例: pane.onPaint = (e) => { const p = new JZPainter(self()); };  (见 types/globals.d.ts)
+// ⚠ 现状: 事件转发只对 **JZWidget / JZWindow** 生效 —— 只有这两个类在注册时挂了"实例创建后"
+//   钩子(setInstanceBind → 给控件装事件转发); 其它控件: 给它们赋 onXxx 不会报错但**静默无效**
+//   (按钮的点击请用 onClicked 这类信号接口)。声明仍放在基类上, 因为这是设计上的契约
+//   (与 C++ 侧虚函数一一对应)。
+//   转发状态存在 JZJSWidgetModule 的控件登记节点上(不是控件对象的成员): 模块自己就是这些
+//   控件的**事件过滤器**(installEventFilter), 所以 C++ 侧建好再交给 JS 的 JZWidget/JZWindow
+//   (如 groupBox.contentWidget()、parentWidget())同样能收到 onXxx, 改父后也照旧。
 //
-// ⚠ 空指针返回值: parentWidget() / window() / layout() 在 C++ 侧没有对象时返回**真 null**
-//   (不再是"空包装对象"那种真值, `if (p)` 判得出空)。
+// ⚠ 空指针返回值: parentWidget() / window() / layout() / JZGroupBox.contentWidget() 之类
+//   在 C++ 侧没有对象时返回**真 null**(不再是"空包装对象"那种真值, `if (p)` 判得出空)。
 // ⚠ 引用相等性: layout() 走缓存(同一控件 + 同一布局 ⇒ 同一个 JS 对象); 而 parentWidget() /
 //   window() 每次都会新建一个包装对象 —— 别用 `===` 比较, 要比就比 objectName() 之类的属性。
 // ⚠ 布局的生命周期: 布局归控件所有、由控件负责 delete。layout() 返回的视图在 clearLayout()
@@ -20,7 +25,8 @@
 //   布局被删之后不要再继续用那个变量。
 
 declare class JZWidget {
-  constructor();
+  /** 无父控件; 也可构造时就带父: new JZWidget(parent) */
+  constructor(parent?: JZWidget | null);
 
   // ---- 几何 ----
   move(x: number, y: number): void;
@@ -32,11 +38,18 @@ declare class JZWidget {
   setGeometry(x: number, y: number, w: number, h: number): void;
   /** 当前几何(拷贝) */
   geometry(): JZRect;
+  /** 自身矩形(控件本地坐标: x/y 恒为 0), 绘制回调里填背景用 */
+  rect(): JZRect;
   setFixedSize(w: number, h: number): void;
   setFixedWidth(w: number): void;
   setFixedHeight(h: number): void;
   setMinimumSize(w: number, h: number): void;
   setMaximumSize(w: number, h: number): void;
+  /** 尺寸上下限的单项设置(布局里给"固定/伸缩"留余地, 比 setMinimumSize 好用) */
+  setMinimumWidth(w: number): void;
+  setMinimumHeight(h: number): void;
+  setMaximumWidth(w: number): void;
+  setMaximumHeight(h: number): void;
 
   // ---- 显隐 / 焦点 / 重绘 ----
   setVisible(visible: boolean): void;
@@ -45,11 +58,28 @@ declare class JZWidget {
   hide(): void;
   setFocus(): void;
   hasFocus(): boolean;
+  /** 排一次重绘(合并脏区后走 paintEvent) */
   update(): void;
 
-  // ---- 对象树 / 布局 ----
-  setParentWidget(parent: JZWidget): void;
+  // ---- 对象树 / 坐标 ----
+  /** 传 null 表示脱离父级(所有权交回 JS, 见模块头的所有权说明) */
+  setParentWidget(parent: JZWidget | null): void;
   parentWidget(): JZWidget | null;
+  /** 所属顶层窗口; 不在窗口里返回 null(每个调用都是新包装对象, 别用 === 比) */
+  window(): JZWindow | null;
+  /** parent 为 null 时映射到屏幕坐标 */
+  mapTo(parent: JZWidget | null, point: JZPoint): JZPoint;
+  mapTo(parent: JZWidget | null, x: number, y: number): JZPoint;
+
+  // ---- 对象名 / 样式 ----
+  /** 样式表 #id 选择器、AI 定位、自检都靠它 */
+  setObjectName(name: string): void;
+  objectName(): string;
+  /** 空格分隔的类名串(供 .class 选择器), 如 "btn primary" */
+  setStyleClass(cls: string): void;
+  styleClass(): string;
+
+  // ---- 布局 ----
   /**
    * 设置布局。Qt 语义(QWidget::setLayout): 一个控件只能有一个布局, 且**只能设一次** ——
    * 已有布局或传 null 都抛 TypeError。换布局请 `clearLayout()` 之后再 `setLayout(新布局)`。
@@ -86,27 +116,31 @@ declare class JZWidget {
   onFocusOut?: (event: JZEvent) => void;
   onShow?: (event: JZShowEvent) => void;
   onHide?: (event: JZHideEvent) => void;
-  /** ⚠ 收到的不是 JZEvent 派生对象(见 events.d.ts) */
   onResize?: (event: JZResizeEvent) => void;
   onKeyPress?: (event: JZKeyEvent) => void;
   onKeyRelease?: (event: JZKeyEvent) => void;
 }
 
-// 顶层窗口。构造实参有默认值(w=800, h=600, title='JZWindow'), 这是少数**真的接收实参**的构造
-// (registWidgets 里 setCreate); parent 必须是 JZWidget(null/undefined 视为无父)。
+// 顶层窗口。构造实参: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)。
+// 无参构造的尺寸留 0, 首次 show() 时按 sizeHint 自适应。
 declare class JZWindow extends JZWidget {
-  constructor(w?: number, h?: number, title?: string, parent?: JZWidget);
+  constructor();
+  constructor(parent: JZWidget | null);
+  constructor(w: number, h: number);
+  constructor(w: number, h: number, title: string);
+  constructor(w: number, h: number, title: string, parent: JZWidget | null);
 
   setTitle(title: string): void;
   title(): string;
   show(): void;
   close(): void;
-  /** 加进窗口自带的垂直布局(JZVBoxLayout) */
+  /** 加进窗口自带的垂直布局(JZVBoxLayout, 不存在则按需新建) */
   addWidget(child: JZWidget): void;
 }
 
 declare class JZLabel extends JZWidget {
-  constructor();
+  /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
+  constructor(text?: string, parent?: JZWidget | null);
 
   setText(text: string): void;
   text(): string;
@@ -116,6 +150,8 @@ declare class JZLabel extends JZWidget {
 
 declare class JZPushButton extends JZWidget {
   constructor();
+  constructor(parent: JZWidget | null);
+  constructor(parent: JZWidget | null, w: number, h: number, text: string);
 
   setText(text: string): void;
   text(): string;
@@ -129,7 +165,7 @@ declare class JZPushButton extends JZWidget {
 }
 
 declare class JZLineEdit extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   setText(text: string): void;
   text(): string;
@@ -141,36 +177,50 @@ declare class JZLineEdit extends JZWidget {
   isReadOnly(): boolean;
   setPlaceholderText(text: string): void;
   placeholderText(): string;
+
+  /** 文本变化(sigTextChanged) */
+  onTextChanged(cb: (text: string) => void): void;
+  /** 回车(sigReturnPressed) */
+  onReturnPressed(cb: () => void): void;
+  /** 失焦 / 回车(sigEditingFinished) */
+  onEditingFinished(cb: () => void): void;
 }
 
 declare class JZCheckbox extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   setText(text: string): void;
   text(): string;
   setChecked(on: boolean): void;
   isChecked(): boolean;
+  /** sigToggled(bool) */
+  onToggled(cb: (on: boolean) => void): void;
 }
 
 declare class JZRadioButton extends JZWidget {
-  constructor();
+  /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
+  constructor(text?: string, parent?: JZWidget | null);
 
   setText(text: string): void;
   text(): string;
   setChecked(on: boolean): void;
   isChecked(): boolean;
+  /** ⚠ sigToggled 在这条链上是 **无参** 信号(JZSigVoid), 与 JZCheckbox/JZSwitch 不同 */
+  onToggled(cb: () => void): void;
 }
 
 declare class JZSlider extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   setRange(min: number, max: number): void;
   setValue(v: number): void;
   value(): number;
+  /** sigValueChanged(int) */
+  onValueChanged(cb: (value: number) => void): void;
 }
 
 declare class JZProgressBar extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   setRange(min: number, max: number): void;
   setValue(v: number): void;
@@ -178,11 +228,11 @@ declare class JZProgressBar extends JZWidget {
 }
 
 declare class JZComboBox extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   addItem(text: string): void;
-  /** ⚠ addItems(数组) 未暴露: 绑定写成 std::vector<std::string> 形参, 而 JS 数组过不了引擎的
-   *  形参类型校验(见模块内 JZChart 用 JSValue 形参的原因) —— 目前只能用 addItem 逐个加。 */
+  /** 数组形参: 绑定层用 JSValue 收(JS 数组过不了引擎的形参类型校验) */
+  addItems(items: string[]): void;
   removeItem(index: number): void;
   clear(): void;
   currentIndex(): number;
@@ -191,10 +241,13 @@ declare class JZComboBox extends JZWidget {
   setCurrentText(text: string): void;
   itemText(index: number): string;
   count(): number;
+
+  onCurrentIndexChanged(cb: (index: number) => void): void;
+  onCurrentTextChanged(cb: (text: string) => void): void;
 }
 
 declare class JZSpinBox extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   setRange(min: number, max: number): void;
   setMinimum(v: number): void;
@@ -209,21 +262,54 @@ declare class JZSpinBox extends JZWidget {
   suffix(): string;
   setReadOnly(on: boolean): void;
   isReadOnly(): boolean;
+  /** sigValueChanged(int) */
+  onValueChanged(cb: (value: number) => void): void;
 }
 
 declare class JZGroupBox extends JZWidget {
-  constructor();
+  /** 运行期 (parent) / (title) / (title, parent) 都接受(顺序无关) */
+  constructor(title?: string, parent?: JZWidget | null);
 
   setTitle(title: string): void;
   title(): string;
-  /** 装载子控件的内容区 */
-  contentWidget(): JZWidget | null;
+  /** 装载子控件的内容区(构造时就建好, 恒非空) */
+  contentWidget(): JZWidget;
+  /** 等价 contentWidget().setLayout(layout) —— 布局应用到内部内容区 */
   setLayout(layout: JZLayout): void;
 }
 
-// 简易图表: 折线 / 柱状 / 饼图(JZChart)。
+// 开关(on / off)
+declare class JZSwitch extends JZWidget {
+  constructor(parent?: JZWidget | null);
+
+  setState(on: boolean): void;
+  isOn(): boolean;
+  /** sigToggled(bool) */
+  onToggled(cb: (on: boolean) => void): void;
+}
+
+// 多行文本编辑(只读时可直接当滚动日志用)
+declare class JZTextEdit extends JZWidget {
+  constructor(parent?: JZWidget | null);
+
+  setText(text: string): void;
+  text(): string;
+  setPlaceholderText(text: string): void;
+  placeholderText(): string;
+  setReadOnly(on: boolean): void;
+  isReadOnly(): boolean;
+  setLineWrap(wrap: boolean): void;
+  lineWrap(): boolean;
+  cursorPosition(): number;
+  setCursorPosition(pos: number): void;
+  selectAll(): void;
+  /** sigTextChanged(string) */
+  onTextChanged(cb: (text: string) => void): void;
+}
+
+// 简易图表: 折线 / 柱状 / 饼图(JZChart)。颜色形参用 CSS 风格字符串; 传 '' 取默认调色板。
 declare class JZChart extends JZWidget {
-  constructor();
+  constructor(parent?: JZWidget | null);
 
   /** 与 C++ 枚举同值, 挂在构造器上(唯一挂了类型常量的类) */
   static readonly LineChart: 0;
@@ -263,7 +349,7 @@ declare class JZChart extends JZWidget {
   setShowValue(on: boolean): void;
 }
 
-// 未暴露(C++ 有, 需要时按 JZChart 的做法补): JZWidget.rect / pos / size / window / grab /
-// minimumWidth|Height / maximumWidth|Height / setSizePolicy / style / setCursor / setOpaque /
-// setClipChildren / setStyleClass / styleSheetError; 控件类里 JZListWidget / JZTableWidget /
-// JZMenu(JZMenuBar) / JZSplitter / JZTabWidget / JZScrollArea / JZTreeWidget / JZSwitch 等。
+// 未暴露(C++ 有, 需要时按 JZChart 的做法补): JZWidget.pos / size / grab / sizeHint /
+// setSizePolicy / style / setCursor / setOpaque / setClipChildren / styleSheetError;
+// 也没注册的控件类: JZMainWindow / JZDialog / JZMessageBox / JZFileDialog / JZMenu /
+// JZMenuBar / JZTreeWidget / JZAnimationGroup / JZPropertyAnimation(容器与视图类见 views.d.ts)。

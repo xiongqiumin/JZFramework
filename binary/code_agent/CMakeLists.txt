@@ -65,6 +65,11 @@ foreach(t code_agent code_runtime code_agent_test code_agent_lsp_test code_agent
     set_target_properties(${t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CODE_AGENT_BIN_DIR}/$<CONFIG>")
 endforeach()
 
+# ASan 构建: 把 clang_rt.asan*_dynamic-x86_64.dll 拷到 exe 边上(MSBuild 不会自动拷)。
+# 注意 add_custom_command(TARGET) 必须在"创建该 target 的目录"里调用 —— 各 exe 的调用点
+# 分别在 runtime/ · test/ · benchmark/ 自己的 CMakeLists 里(见根 CMakeLists 的 JZ_ENABLE_ASAN)。
+jz_copy_asan_runtime(code_agent)
+
 # ---------------------------------------------------------------------------
 # 打包 JZ JS 引擎产物到 exe 同配置目录(bin/<CONFIG>/), 统一放进一个大的部署目录 jz_engine/:
 #   - jz_engine/jz_types/ : 完整类型定义(供 initProject 拷进用户工程, 使工程自包含)

@@ -19,17 +19,16 @@ description: 讲解 JZWidget 的 CSS 子集样式表如何在 TS/JS 侧使用，
 > `JZWidget`（基类容器）/ `JZWindow` / `JZPushButton` / `JZLabel`。
 > 其余控件（`JZTextEdit`、`JZListWidget`、`JZComboBox`…）外观仍是硬编码，写了样式也不变。详见 §七。
 
-TS 侧真正能用的高层 API 是：
+TS 侧真正能用的高层 API 是（全局对象，无需 import；类型声明见 `js_wrapper/widget/types/loader.d.ts` / `widgets.d.ts`）：
 
 | 对象 | 方法 | 说明 |
 |------|------|------|
-| `JZApplication` | `setStyleSheet(css: string): boolean` | 全局 author 表，作用于所有控件 |
-| `JZApplication` | `styleSheet(): string` | 原始 CSS 文本 |
-| `JZApplication` | `styleSheetError(): string` | 上一次 `setStyleSheet` 失败原因 |
+| `jzWidget`（全局） | `setStyleSheet(css: string): boolean` | 全局 author 表，作用于所有控件 |
+| `jzWidget`（全局） | `styleSheetError(): string` | 上一次 `setStyleSheet` 失败原因 |
 | `JZWidget` | `setStyleSheet(css: string): boolean` | 控件级表：作用于**本控件及其子孙**，优先级高于全局表 |
 | `JZWidget` | `setStyleClass(cls: string): void` | 空格分隔的类名串，等价 HTML `class`（如 `"btn primary"`） |
 | `JZWidget` | `styleClass(): string` | 当前类名串 |
-| `JZWidget` | `styleSheet() / styleSheetError(): string` | 同上 |
+| `JZWidget` | `setObjectName(name) / objectName(): string` | `#id` 选择器的来源 |
 
 `JZStyleSheetParser` 仅作为 `styleSheetParser()` 返回的内部只读解析结果，**不需要**在 TS 里直接 new 或调用。
 
@@ -46,12 +45,10 @@ TS 侧真正能用的高层 API 是：
 ## 三、TS/JS 使用示例
 
 ```ts
-import { Application, PushButtonWidget, LabelWidget } from "jzwidget";
-
-const app = new Application();
+// 控件/窗口都是引擎注册的**全局类**（JZJSEngine/JSWidget 注册），直接 new，无需 import。
 
 // 1) 全局 author 表（换肤 = 整份替换重设）
-const ok = app.setStyleSheet(`
+const ok = jzWidget.setStyleSheet(`
   :root {
     --accent: #3498db;
     --danger: #e74c3c;
@@ -59,7 +56,7 @@ const ok = app.setStyleSheet(`
   }
 
   /* 多类组合：基类 + 变体类（author 层主要风格） */
-  .btn       { padding: 7px 14px; border-radius: var(--radius); color: #202020; }
+  .btn         { padding: 7px 14px; border-radius: var(--radius); color: #202020; }
   .btn.primary { background-color: var(--accent); color: #fff; }
   .btn.danger  { background-color: var(--danger); color: #fff; }
   .btn.primary:active { background-color: #2c80c0; }   /* ⚠️ 伪类当前不参与匹配, 暂不生效 */
@@ -68,22 +65,23 @@ const ok = app.setStyleSheet(`
   JZPushButton { background-color: #e0e0e0; border: 1px solid #808080; }
   JZLabel      { color: #333333; }
 `);
-if (!ok) throw new Error("样式表语法错误: " + app.styleSheetError());
+if (!ok) throw new Error("样式表语法错误: " + jzWidget.styleSheetError());
 
 // 2) 给控件加类（等价 HTML class="btn primary"）
-const okBtn = new PushButtonWidget(parent);
+const okBtn = new JZPushButton(null, 100, 32, "确定");
 okBtn.setStyleClass("btn primary");
-okBtn.setText("确定");
+win.addWidget(okBtn);                      // 或 new JZPushButton(parent) / 布局 addWidget
 
 // 3) 控件级表：优先级高于全局表，覆盖背景（注意它也作用于本控件的子孙）
-const warnBtn = new PushButtonWidget(parent);
+const warnBtn = new JZPushButton(null, 100, 32, "警告");
 warnBtn.setStyleClass("btn danger");
-warnBtn.setStyleSheet(".btn.danger { background-color: #c0392b; }");
-// 若 setStyleSheet 返回 false，用 warnBtn.styleSheetError() 排查
+if (!warnBtn.setStyleSheet(".btn.danger { background-color: #c0392b; }"))
+  console.error("控件样式表语法错误");
 ```
 
-> 在 jzwidget.ts 占位基类里，这些方法是"待 C++ 注册后"可用的真实控件 API；
-> 生成器产物（`new MainPanel()` 等 codegen 类）调用方式不变。
+> 这些 API 就是真实控件的绑定（`JZJSWidgetModule`）；类型声明见 `js_wrapper/widget/types/`。
+> 生成器产物（`.ui` → `src/GenerateFiles/*.ts`）目前仍走 `@jz/widget` 的**数据节点**构建器
+> （`import { Widget } from 'widget'`，只有类型占位作用），与这里的全局控件类是两回事。
 
 ## 四、选择器支持矩阵
 
@@ -216,19 +214,21 @@ const RULES = `
   .title  { color: var(--accent); }
 `;
 
-function applyTheme(app: Application, dark: boolean) {
+function applyTheme(dark: boolean) {
   const root = dark
     ? `:root { --bg:#161a21; --fg:#e6e9ef; --btn:#2a3140; --btn-border:#4a5364; --btn-text:#e6e9ef; --accent:#4f8cff; --radius:8px; }`
     : `:root { --bg:#ffffff; --fg:#202020; --btn:#e0e0e0; --btn-border:#808080; --btn-text:#202020; --accent:#3498db; --radius:8px; }`;
 
-  if (!app.setStyleSheet(root + RULES))
-    throw new Error("样式表语法错误: " + app.styleSheetError());
+  if (!jzWidget.setStyleSheet(root + RULES))
+    throw new Error("样式表语法错误: " + jzWidget.styleSheetError());
 }
 ```
 
 调用后框架会自动让所有顶层窗口整树重新解析并重绘，无需手动刷新。
 
 > **坑：类型选择器匹配的是「实际类名」**
-> `class MainWindow extends WindowWidget` 的 className 是 `MainWindow`，写 `JZWindow { ... }`
-> **匹配不到**（继承链不参与选择器匹配）。顶层窗口请用 `#id`：`win.setObjectName("main")` +
-> `#main { ... }`，或写自己的类名。参考 `test/widget/widget`。
+> 选择器里的类型名必须是**控件实例自身的类名**，继承链不参与匹配：C++ 里
+> `class MainWindow : public JZWindow` 的对象写 `JZWindow { ... }` **匹配不到**（要写 `MainWindow`）。
+> JS 侧 new 出来的都是绑定注册的那些类（`JZWindow` / `JZPushButton` / …），类名即类型选择器；
+> 顶层窗口仍推荐用 `#id`：`win.setObjectName("main")` + `#main { ... }`。参考 `test/widget/widget`。
+

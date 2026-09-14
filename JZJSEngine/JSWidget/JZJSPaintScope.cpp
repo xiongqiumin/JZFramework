@@ -4,6 +4,9 @@
 
 #include "JZJSEngine.h"
 #include "JZImage.h"
+// js_check_class_arg<JZWidget> / fromJSValue<JZWidget*> 需要 JZWidget **完整类型**
+// (JZPainter.h 只前向声明了它; typeid(Class).name() 用不了不完整类型)。
+#include "JZWidget.h"
 
 namespace
 {

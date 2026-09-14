@@ -3,7 +3,7 @@
 JZ_OBJECT_IMPL(JZJSListWidget, JZListWidget)
 
 JZJSListWidget::JZJSListWidget(JZWidget* parent)
-    : JSWidgetClass<JZListWidget>(parent)
+    : JZListWidget(parent)
 {
 }
 

@@ -5,6 +5,7 @@
 #include "JZTx.h"
 #include "JZDebug.h"
 
+//
 JZSignalDestory::JZSignalDestory(JZObject *object)
     :JZSignal<JZObject*>(object)
 {

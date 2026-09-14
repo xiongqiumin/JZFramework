@@ -160,6 +160,9 @@ public:
         return JS_NewString(ctx, result.data());
     }
 
+    // registFunction / registAsyncFunction 注册的是"挂在某个 JS 对象上的普通函数"(全局 / 命名空间 /
+    // 模块导出, 如 process.cwd / fs.xxx): this 只是"函数挂在谁身上", 不是类实例 -> **不占"当前 this"帧**
+    // (见 JZJSEngine::SelfScope 的判据)。这类函数里 self() 看到的是外层的实例。
     static JSValue js_cfunction(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
@@ -196,6 +199,8 @@ public:
     static JSValue js_member_function(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        // magic 版: 只有类实例方法才占"当前 this"这一帧(见 JZJSEngine::SelfScope 的判据)
+        JZJSEngine::SelfScope self_scope(engine, magic, this_val);
         std::vector<JSValue> args;
         args.push_back(this_val);
         for (int i = 0; i < argc; i++)
@@ -206,6 +211,7 @@ public:
     static JSValue js_property_get(JSContext* ctx, JSValue this_val, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        JZJSEngine::SelfScope self_scope(engine, magic, this_val);
 
         std::vector<JSValue> args;
         args.push_back(this_val);
@@ -215,11 +221,25 @@ public:
     static JSValue js_property_set(JSContext* ctx, JSValue this_val, JSValue val, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        // 属性 setter 的 magic 是 getter 的 magic + 1(见 registClass), 照原样判即可
+        JZJSEngine::SelfScope self_scope(engine, magic, this_val);
 
         std::vector<JSValue> args;
         args.push_back(this_val);
         args.push_back(val);
         return engine->call(magic + 1, (int)args.size(), args.data());
+    }
+
+    // 全局 self(): 返回"当前正在被 JS 调用的那个对象"(即该 C++ 方法被调时的 this)。
+    // quickjs 没有这个 API(见 JZJSEngine::self 的说明), 引擎自己维护调用栈, 这里取栈顶。
+    // 不在 JS -> C++ 的成员调用里(比如模块顶层)返回**真 null**, 便于 JS 侧判空。
+    static JSValue js_self(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+    {
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        JSValue v = engine ? engine->self() : JS_UNDEFINED;
+        if (JS_IsUndefined(v))
+            return JS_NULL;
+        return JS_DupValue(ctx, v);   // 交给 JS 的那份要 dup(栈里那份是借用)
     }
 
     static void js_promise_reject(JSContext* ctx, JSValueConst promise, JSValueConst reason, bool is_handled,
@@ -391,6 +411,14 @@ void JZJSEngine::setWorkDir(const std::string& dir)
     m_workDir = dir;
 }
 
+// "当前 this": 见头文件里的说明。栈里存的是借用值(被调用方 this_val 的形参), 不 dup/不释放。
+JSValue JZJSEngine::self() const
+{
+    if (m_selfStack.empty())
+        return JS_UNDEFINED;
+    return m_selfStack.back();
+}
+
 void JZJSEngine::setLibraryDir(const std::vector<std::string>& dirs)
 {
     m_libraryDirs = dirs;
@@ -425,6 +453,7 @@ void JZJSEngine::initJSEnv()
 void JZJSEngine::deinitJSEnv()
 {
     stopEngineTimer();
+    m_selfStack.clear();   // 借用值, 直接丢(不该还有值: 这里已不在 JS 调用栈里)
     if (m_rt)
     {
         for (int i = 0; i < (int)m_timeTasks.size(); i++)
@@ -562,6 +591,12 @@ function __printObject__(obj, seen = new WeakSet()) {
 
     JSValue sleep_func = JS_NewCFunction(m_ctx, JSInter::js_sleep, "sleep", 1);
     JS_SetPropertyStr(m_ctx, m_global, "sleep", sleep_func);
+
+    // 全局 self(): 取"当前正在被 JS 调用的对象"的包装 —— quickjs 没有取当前 this 的 API,
+    // 由引擎维护调用栈实现(见 JZJSEngine::self 的说明)。典型用途: 箭头函数写的事件回调
+    // (onPaint / onClicked ...) 里没有 this, 用 self() 拿回当前这个控件/对象。
+    JSValue self_func = JS_NewCFunction(m_ctx, JSInter::js_self, "self", 0);
+    JS_SetPropertyStr(m_ctx, m_global, "self", self_func);
 
     JSValue set_interval =
         JS_NewCFunctionMagic(m_ctx, JSInter::js_set_interval, "setInterval", 2, JS_CFUNC_generic_magic, 0);
@@ -927,7 +962,14 @@ void JZJSEngine::registAsyncFunction(JSValue this_val, string name, shared_ptr<C
 
 void JZJSEngine::registType(TypeInfo type_info)
 {
-    assert(m_typeMap.find(type_info.type) == m_typeMap.end());
+    // 同一 type 重复注册会把 m_typeMap 里那份"名字/定义的宿主"整体换掉 —— 而 JS 侧此刻已经
+    // 拿着指向它内部字符串的裸指针(JSCFunctionListEntry::name / JSClassDef::class_name,
+    // 见 registClass 的说明), 换掉就是悬垂。故这里保留首次注册(不止是调试期 assert)。
+    if (m_typeMap.find(type_info.type) != m_typeMap.end())
+    {
+        assert(false && "registType: 同一 type 重复注册(会破坏已注册名字的地址稳定性)");
+        return;
+    }
     m_typeMap[type_info.type] = type_info;
 
     m_jsTypeMap[type_info.jsType] = type_info.type;
@@ -946,10 +988,6 @@ void JZJSEngine::registBase(string name, int type, int js_type, string ctypeid)
 
 void JZJSEngine::registClass(const CClassDefine& define, int define_id)
 {
-    JSClassDef js_define = {};
-    js_define.class_name = define.name.c_str();
-    js_define.finalizer = JSInter::js_deconstructor;
-
     JSValue js_proto, js_class;
 
     int object_id;
@@ -958,8 +996,15 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     else
         object_id = m_objectId++;
 
+    // 同一 type 只能注册一次: 名字/定义都存进 m_typeMap 那份副本, 而 quickjs 已按首次注册时
+    // 发出的裸指针在用它们 —— 重复注册要么换掉宿主(悬垂), 要么让下面 stored 与 define 尺寸对不上。
+    if (m_typeMap.find(object_id) != m_typeMap.end())
+    {
+        assert(false && "registClass: 同一 type 重复注册(名字宿主不能换)");
+        return;
+    }
+
     JSClassID js_class_id = object_id;
-    JS_NewClass(m_rt, js_class_id, &js_define);
 
     auto funcList = std::make_shared<vector<JSCFunctionListEntry>>();
 
@@ -975,16 +1020,36 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         m_JSRawPointerTypes.insert(object_id);
     registType(info);
 
+    // ---- 名字的宿主: m_typeMap 里那份 TypeInfo::classDefine ----
+    // quickjs 只存名字的**裸指针**(JSClassDef::class_name 存进 JSClass; JSCFunctionListEntry::name
+    // 存进属性表, 且首次访问该属性才懒实例化 —— 那时才读 name), 所以这些指针必须长期有效。
+    // 宿主就用 registType 刚存进去的那份**引擎自己的副本**: std::map 节点地址稳定, 而且 registType
+    // 已拒绝同 type 覆盖 -> 永不失效。**别**改成用参数 define 的字段或任何临时字符串: 它往往是调用方
+    // 栈上的局部 ClassBind, registClass 一返回就析构(这里曾因此出过 heap-use-after-free)。
+    // 注: define.functions(def 注册的方法)的名字宿主是 m_funcList 里那份 shared_ptr<CFunction>。
+    const CClassDefine& stored = m_typeMap[object_id].classDefine;
+
+    JSClassDef js_define = {};
+    js_define.class_name = stored.name.c_str();
+    js_define.finalizer = JSInter::js_deconstructor;
+    JS_NewClass(m_rt, js_class_id, &js_define);
+
     for (int i = 0; i < (int)define.propertys.size(); i++)
     {
         auto& prop = define.propertys[i];
         updateFunction(prop.read);
         updateFunction(prop.write);
+        // 原型上的属性访问器 = 类实例方法(this = 实例) -> 进"当前 this"栈, 见 CFunction::bindInstance
+        if (prop.read)
+            prop.read->bindInstance = true;
+        if (prop.write)
+            prop.write->bindInstance = true;
 
         int magic = (int)m_funcList.size();
 
         JSCFunctionListEntry entry = {};
-        entry.name = prop.name.c_str();
+        // 名字宿主 = m_typeMap 里那份副本(见 registClass 顶部说明); 必须长期有效, 懒实例化时才读
+        entry.name = stored.propertys[i].name.c_str();
         entry.def_type = JS_DEF_CGETSET_MAGIC;
         entry.magic = magic;
 
@@ -1006,6 +1071,9 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     {
         auto& func = define.functions[i];
         updateFunction(func);
+        // 原型方法 = 类实例方法(this = 实例) -> 进"当前 this"栈, 见 CFunction::bindInstance
+        if (func)
+            func->bindInstance = true;
 
         int magic = (int)m_funcList.size();
         m_funcList.push_back(func);
@@ -1028,7 +1096,8 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         const CRawFunction& raw = define.rawFunctions[i];
 
         JSCFunctionListEntry entry = {};
-        entry.name = raw.name.c_str();
+        // 名字宿主 = m_typeMap 里那份副本的 rawFunctions(裸函数同样是 CClassDefine 的成员)
+        entry.name = stored.rawFunctions[i].name.c_str();
         entry.def_type = JS_DEF_CFUNC;
         entry.prop_flags = JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE;
         entry.u.func.length = (uint8_t)raw.length;
@@ -1048,11 +1117,14 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         const CDataFunction& dfn = define.dataFunctions[i];
         // quickjs 只会把这些值各 dup 一份(s->data[i] = js_dup(data[i])), 故 const_cast 安全
         JSValue* data = dfn.data.empty() ? nullptr : const_cast<JSValue*>(dfn.data.data());
-        JSValue fn = JS_NewCFunctionData2(m_ctx, dfn.function, dfn.name.c_str(), dfn.length, dfn.magic,
+        // 这里名字是**立即**用掉的(建函数对象 + 挂属性都当场把名字转成 atom), 不存裸指针,
+        // 但仍统一取存储副本的字段, 免得以后有人把它改成懒注册。
+        const std::string& dfn_name = stored.dataFunctions[i].name;
+        JSValue fn = JS_NewCFunctionData2(m_ctx, dfn.function, dfn_name.c_str(), dfn.length, dfn.magic,
                                           (int)dfn.data.size(), data);
         if (JS_IsException(fn))
             continue;
-        JS_DefinePropertyValueStr(m_ctx, js_proto, dfn.name.c_str(), fn, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+        JS_DefinePropertyValueStr(m_ctx, js_proto, dfn_name.c_str(), fn, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
     }
 
     js_class = JS_NewCFunctionMagic(m_ctx, JSInter::js_constructor, define.name.c_str(), 0, JS_CFUNC_constructor_magic,
@@ -1740,7 +1812,13 @@ std::vector<JZJSValuePtr> JZJSEngine::callMemberFunction(const std::string& func
     for (size_t i = 0; i < params.size(); i++)
         args.push_back(params[i].get());
 
-    JSValue ret = JS_Call(m_ctx, fn, obj, (int)args.size(), args.empty() ? nullptr : args.data());
+    // 引擎 -> JS 这个方向也压一份 this: 回调(如 onPaint / onClicked)是箭头函数时拿不到 this,
+    // 在回调里 self() 取的就是这里压的 obj(见 JZJSEngine::self)。
+    JSValue ret;
+    {
+        SelfScope self_scope(this, obj);
+        ret = JS_Call(m_ctx, fn, obj, (int)args.size(), args.empty() ? nullptr : args.data());
+    }
     JS_FreeValue(m_ctx, fn);
     if (JS_IsException(ret))
     {

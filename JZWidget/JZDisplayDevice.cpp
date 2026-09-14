@@ -89,7 +89,7 @@ void JZDisplayDevice::render(JZWidget* root, const JZRect& rc)
     {
         JZPainterEvent event;
         event.setRect(clip);
-        jzApp->sendEvent(w, &event);   // 同步派发, paint 同样过控件过滤器链 (同 Qt)
+        jzApp->sendEvent(w, &event);   // 同步派发, paint 同样过控件过滤器链 (同 Qt);
     }
 
     m_backend->render(&m_layer);

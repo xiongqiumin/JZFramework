@@ -24,6 +24,7 @@ class JZPainterEvent : public JZEvent
 {
 public:
     explicit JZPainterEvent();
+    ~JZPainterEvent();
 
     void setRect(const JZRect& rc) { m_rect = rc; }
     JZRect rect() const { return m_rect; }

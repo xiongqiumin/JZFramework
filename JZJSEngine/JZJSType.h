@@ -332,6 +332,16 @@ public:
     CFunctionParam result;
     std::vector<CFunctionParam> params;
     bool returnCppOwner = false;   // 返回值所有权: 注册返回裸指针的函数时记录; false=JS 拥有(GC 时 delete), true=C++ 持有(JS 不释放)
+
+    // 这个函数是不是"**类实例方法**"(挂在类原型上的: ClassBind::def 的方法 / defProperty 的访问器)。
+    // 判据来自注册路径, 不是运行期猜的:
+    //   * registClass   -> 原型方法/属性访问器: 形参表首参就是"对象自己"(见派生的约定), this = 类实例;
+    //   * registFunction-> 挂任意对象上的普通函数(全局 / 命名空间 / 模块导出): 形参就是普通实参, this 只是"挂在哪",
+    //                     不是实例 -> 不算实例方法(回调里 self() 不该看到它)。
+    // 用途: JS -> C++ 入口据此决定要不要把 this 压进引擎的"当前 this"栈(见 JZJSEngine::self)。
+    // 注: 裸 C 函数(CRawFunction / CDataFunction)不参与 —— 它们的 C 实现本来就拿得到 this_val 形参,
+    //     不需要引擎替它们记(self() 也就不会为它们单独起一帧)。
+    bool bindInstance = false;
 };
 
 class CProperty
@@ -386,8 +396,9 @@ public:
 
     // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次
     // (覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径, 因 toJsValueFromPtr → createJSValue → createValue(type, ptr))。
-    // opaque 即 JSRawPointer<Class>*; 用于把 JSValue 句柄 / engine 回写到 C++ 包裹对象(如 JSWidgetClass 的 m_jsvalue / m_engine),
-    // 供事件转发 callJs 以该对象为 this 调用 JS 方法。由 setInstanceBind 注册。
+    // opaque 即 JSRawPointer<Class>*; 用于把 JSValue 句柄回写到 C++ 侧(控件的做法是给控件装一个
+    // 事件转发过滤器 JZSWidgetEventFilter, 由它持有句柄并以该 JS 对象为 this 调方法, 见 JZJSWidgetModule.h)。
+    // 由 setInstanceBind 注册。
     std::function<void(JSContext*, JSValue, jsbind::JSPointerBase* opaque)> onCreated;
 
     std::string name;

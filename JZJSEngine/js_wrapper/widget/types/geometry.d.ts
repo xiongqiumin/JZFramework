@@ -1,19 +1,22 @@
 // JZPoint / JZSize / JZRect —— 框架的**值语义**几何类型(全局类)。
 //
-// 运行期来源: JZJSWidgetModule::registGeometry()(JZJSEngine/JSWidget/JZJSWidgetModule.cpp)
-// 用 ClassBind 把这三个类注册进引擎, 注册即挂到全局对象上(见 JZJSEngine::registClass),
-// 所以直接用 `new JZRect()` / `const r: JZRect` —— 不需要 import, 也与 './widget' 里那套
-// 纯 JS 构建器(Widget / JZWindow / JZCanvas)不是同一套东西。
+// 运行期来源: JZJSWidgetModule::registGeometry() 注册类 + JZJSWidget.cpp 里
+// jzRegistWidgetJsConstructors() 换上的 C 构造器(js_JZPoint_ctor / js_JZSize_ctor / js_JZRect_ctor)。
+// 注册即挂到全局对象上(见 JZJSEngine::registClass), 所以直接用 `new JZRect(...)`,
+// 不需要 import。
 //
-// 构造: 只有无参形式可用 —— 绑定层用默认工厂 `new Class()` 并**忽略实参**(JZJSBind.h 的
-// makeDefaultCreate), 所以 `new JZRect(1, 2, 3, 4)` 不报错, 但结果仍是空矩形(全 0)!
-// 赋值请用 setRect()/setXxx()。
+// 构造: 与 C++ 构造一致(JS 实参个数决定):
+//   new JZPoint() / new JZPoint(x, y)
+//   new JZSize() / new JZSize(w, h)
+//   new JZRect() / new JZRect(x, y) / new JZRect(x, y, w, h)
+// 参数个数不匹配抛 TypeError; 值类型构造**存一份拷贝** —— JS 侧每次拿到独立对象。
 //
-// 值语义: 作为返回值时是**拷贝**(每次调用得到新的 JS 对象), 改它不影响原控件 ——
+// 值语义: 作为返回值时也是**拷贝**(每次调用得到新的 JS 对象), 改它不影响原控件 ——
 // 要改控件几何请调 JZWidget.setGeometry()。
 
 declare class JZPoint {
   constructor();
+  constructor(x: number, y: number);
 
   x(): number;
   y(): number;
@@ -27,6 +30,7 @@ declare class JZPoint {
 // 未暴露(C++ 有): operator+ / operator- / operator+= / operator-=
 declare class JZSize {
   constructor();
+  constructor(w: number, h: number);
 
   width(): number;
   height(): number;
@@ -40,6 +44,8 @@ declare class JZSize {
 
 declare class JZRect {
   constructor();
+  constructor(x: number, y: number);
+  constructor(x: number, y: number, w: number, h: number);
 
   // ---- 读 ----
   x(): number;

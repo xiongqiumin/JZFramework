@@ -1,15 +1,14 @@
-// JZEvent 及其子类 —— 框架派发给 JS 的事件对象(全局类; JZJSWidgetModule::registEvents)。
+// JZEvent 及其子类 —— 框架派发给 JS 的事件对象(全局类; registEvents)。
 //
-// 用法: 不自己 new(事件由框架创建并派发; 注册时多数类连构造函数都没有, `new JZMouseEvent()`
-// 会抛异常, 故这里统一声明为 protected 构造), 而是在控件的 onXxx 属性回调里**接收**:
+// 用法: 不自己 new。事件由框架创建并派发, 在控件的 onXxx 属性回调里**接收**:
 //   win.onMousePress = (e) => { const x = e.localX(); const y = e.localY(); };
 //
 // 有效期: 事件对象只在**本次派发期间**有效 —— 回调返回后绑定层立刻让它失效, 存到外面再用会抛
 // "指针已被释放"(与 C++ 侧"事件是栈对象"一致)。需要留数据就把值取出来存。
 //
-// 继承: 除 JZResizeEvent 外都是 JZEvent 派生(C++ 侧 JZResizeEvent 本就不继承 JZEvent),
-// 所以 `e instanceof JZEvent` 对 resize 事件为 false。
-// 注: enter/leave/focus 回调收到的是按 **JZEvent** 包装的对象(派发点形参即 JZEvent*),
+// 继承: 全部是 JZEvent 派生(`e instanceof JZEvent` 恒为 true; C++ 侧 JZResizeEvent 也已改为
+// JZEvent 派生 —— 尺寸事件同样经 sendEvent 进对象, 才过得了事件过滤器链);
+// enter/leave/focus 回调收到的是按 **JZEvent** 包装的对象(派发点形参即 JZEvent*),
 // 拿不到 JZEnterEvent/JZLeaveEvent 这类 C++ 子类型(它们没有注册)。
 
 declare class JZEvent {
@@ -67,9 +66,9 @@ declare class JZKeyEvent extends JZEvent {
   alt(): boolean;
 }
 
-// 尺寸变化事件。注意: C++ 侧 JZResizeEvent **不继承** JZEvent,
-// 因此它没有 type()/accept()/ignore()/isAccepted()(注册时也没挂基类原型)。
-declare class JZResizeEvent {
+// 尺寸变化事件。C++ 侧 JZResizeEvent 是 JZEvent 派生(注册时挂到 JZEvent 原型下),
+// 因此它同样有 type()/accept()/ignore()/isAccepted(); 另外多出尺寸/旧尺寸查询。
+declare class JZResizeEvent extends JZEvent {
   /** 事件由框架创建并派发, 不要自己 new */
   protected constructor();
 
@@ -89,8 +88,8 @@ declare class JZPainterEvent extends JZEvent {
 }
 
 // 显示 / 隐藏 / 关闭事件: 无自有成员, 只有 JZEvent 的 type()/accept()/ignore()/isAccepted()。
-// 注: JZCloseEvent 虽然注册了, 但 JS 侧**没有**对应的回调 —— JSWidgetClass 没有转发
-// closeEvent, 窗口关闭无法从 JS 否决。
+// 注: JZCloseEvent 虽然注册了, 但 JS 侧**没有**对应的回调 —— 事件过滤器不转发 closeEvent
+// (它是"窗口"的概念, 见 JZWindow::closeEvent), 窗口关闭无法从 JS 否决。
 declare class JZShowEvent extends JZEvent {
   protected constructor();
 }

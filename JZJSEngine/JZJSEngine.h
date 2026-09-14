@@ -59,6 +59,68 @@ public:
     void init();
     void deinit();
 
+    // ---- "当前 this" (self) ----
+    // quickjs **没有**"取当前 this"的 API: this 只作为形参出现在"被调用的那个 C 函数"上
+    // (JSCFunction / JSClassCall 的 this_val 参数); 从任意嵌套调用里反查调用者的 this 做不到
+    // (JS 语言本身也不给, caller 都没有)。所以引擎自己维护一层调用栈, 两个方向都压:
+    //   * JS -> C++ —— 成员方法 / 属性访问 / 注册函数进入时压 this_val;
+    //   * C++ -> JS —— callMemberFunction 调回调时压被调用对象的句柄(回调是箭头函数时看不到 this)。
+    // 退出时弹(异常安全, 见 SelfScope); 嵌套调用一律取栈顶(最近的那个)。
+    //   * C++ 侧: 在 ClassBind::def 的 lambda 里调 self(), 拿到"我是谁"的那份 JS 包装对象;
+    //   * JS 侧: 同名全局函数 self()(见 init 里注册的全局) —— 事件回调(onPaint / onClicked ...)
+    //     写成箭头函数时拿不到 this, 用 self() 就能取回"这个回调是被哪个对象调起来的"。
+    // 返回**借用**值(调用方不要 free; 只在本次调用期间有效); 不在上面的调用里时返回 undefined。
+    JSValue self() const;
+
+    // ---- "当前 this" 的压栈依据 ----
+    // 判据是**注册路径**(谁把这个函数注册进来), 不是运行期看 this_val 像不像实例:
+    //   * 类实例方法(ClassBind::def 的方法 / defProperty 的属性访问器, 即走引擎 magic 分发的那批)
+    //     -> 占一帧, this = 类实例;
+    //   * 命名空间 / 全局函数(registFunction / registAsyncFunction: fs.xxx / process.xxx / 模块导出)
+    //     -> **不占帧**(this 只是"函数挂在哪个对象上", 不是实例) —— 里面 self() 看到的是外层的实例;
+    //   * 裸 C 函数(ClassBind::def(name, JSCFunction*) / defData): 引擎不经手, 也不占帧 ——
+    //     它们的 C 实现本来就拿得到 this_val 形参, 不需要引擎替它们记住;
+    //   * 引擎 -> JS(callMemberFunction: 事件转发 / 信号回调) -> 占一帧, this = 被调用对象。
+    // RAII: 压/弹这一帧
+    class SelfScope
+    {
+    public:
+        // 无脑占帧: 引擎主动以某对象为 this 调 JS(事件转发 / 信号回调)时用
+        SelfScope(JZJSEngine* engine, JSValueConst self) : m_engine(engine)
+        {
+            push(self);
+        }
+
+        // 只有"类实例方法"才占帧: JS -> C++ 的入口(它们走 magic 分发)用这个版本
+        SelfScope(JZJSEngine* engine, int magic, JSValueConst self)
+        {
+            if (engine && magic >= 0 && magic < (int)engine->m_funcList.size())
+            {
+                const std::shared_ptr<CFunction>& func = engine->m_funcList[magic];
+                if (func && func->bindInstance)   // 见 CFunction::bindInstance
+                    push(self);
+            }
+        }
+
+        ~SelfScope()
+        {
+            if (m_pushed)
+                m_engine->m_selfStack.pop_back();
+        }
+
+    private:
+        void push(JSValueConst self)
+        {
+            if (!m_engine)
+                return;
+            m_engine->m_selfStack.push_back(self);
+            m_pushed = true;
+        }
+
+        JZJSEngine* m_engine = nullptr;
+        bool m_pushed = false;
+    };
+
     void setWorkDir(const std::string& dir);
     void setLibraryDir(const std::vector<std::string>& dirs);  // 模块加载额外查找目录(优先级低于 workDir)
 
@@ -382,7 +444,13 @@ protected:
     void startEngineTimer();   // 恢复/继续驱动(= scheduleNextTimer)
     void stopEngineTimer();    // 停表(暂停/停止/出错/析构)
 
+    // 注册函数(def / defProperty / defData 的实现对象): 引擎持有它们, 所以它们的 name 也是
+    // "可以发给 quickjs 当裸指针"的稳定宿主(见 registClass 里 entry.name = func->name.c_str())。
     std::vector<std::shared_ptr<CFunction>> m_funcList;
+
+    // "当前 this" 调用栈: 值都是**借用**(被调用方形参的 this_val), 不 dup/不释放 —— 只在
+    // 该次 JS -> C++ 调用期间有效(栈只在这段时间里非空)。见 self() / SelfScope。
+    std::vector<JSValue> m_selfStack;
 
     std::map<int, TypeInfo> m_typeMap;
     std::map<std::string, int> m_cTypeMap;

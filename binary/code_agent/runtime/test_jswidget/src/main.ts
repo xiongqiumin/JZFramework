@@ -1,17 +1,26 @@
-// test_jswidget —— test/widget/widget(C++ 控件演示 test_widget) 的 **JS 版**。
+// test_jswidget —— test/widget/widget(C++ 控件演示 test_widget) 的 **TS 版**。
 //
 // 对照关系(左侧列表的 20 项与 C++ 版一一对应):
 //   Label / PushButton / Slider / ProgressBar / Switch / Checkbox / RadioButton / ComboBox /
 //   LineEdit / TextEdit / Table / ImageLabel / Dialog / TabWidget / Splitter / SpinBox /
 //   ScrollBar / GroupBox / ScrollArea / Animation
 //
-// 运行: code_runtime --root <本目录>      (存在可见顶层窗口, 关窗才退出)
+// 编译/运行:
+//   <tsc> -p tsconfig.json          (tsgo: <code_runtime 同目录>/ts_compiler/tsc/tsc.exe)
+//   code_runtime --root <本目录>/build      (存在可见顶层窗口, 关窗才退出)
+//   类型来自仓库里的 js_wrapper 声明(见 tsconfig.json 的 include); 用户工程里则是
+//   由 initProject 拷进工程的 jz_types/**/*.d.ts。
 //
-// JS 侧与 C++ 侧的差异(受当前绑定能力限制, 详见各页注释):
+// 控件都是**引擎注册的全局类**(JZJSWidgetModule), 直接用全局名, 不需要 import。
+//
+// 与 C++ 侧的差异(受当前绑定能力限制, 详见各页注释):
 //   * Dialog: 不能开**模态**对话框(exec 会重入事件循环, JS 栈还压在下面), 改成再开一个
 //     独立小窗口当对话框; 原生文件对话框同样暂不可用。
 //   * Animation: 没有 JZPropertyAnimation 绑定, 用 setInterval 逐帧 setGeometry 演示同样的效果。
-//   * ImageLabel: 图片用 JZImage.create(w,h) 新建 + JZPainter 离屏画上去(替代加载文件)。
+//   * ImageLabel: 用 JZImage.create(w,h) 新建 + JZPainter 离屏画上去(替代加载文件)。
+//
+// 画笔样式两种写法都行(见 ImageLabel 页): 对象形式 p.setPen(new JZPen('#f00', 2)) 与
+// 便捷形式 p.setPen('#f00', 2)(颜色字符串; 字体是 p.setFont(family, size))。
 //
 // ⚠ 所有权与保活(现行规则):
 //   * **挂进对象树 = 所有权转移**: addWidget / insertWidget / addTab / setWidget / setParentWidget
@@ -22,18 +31,18 @@
 //     故顶层窗口必须留一份引用(下面 win / 对话框)。
 //   * 反过来 setParentWidget(null) 会把控件交回 JS 拥有(脱离树)。
 
-const keep = [];   // 只留给"JS 拥有且必须活着"的对象(顶层窗口); 挂进树的控件不需要
-function K(obj) { keep.push(obj); return obj; }
+const keep: unknown[] = [];   // 只留给"JS 拥有且必须活着"的对象(顶层窗口); 挂进树的控件不需要
+function K<T>(obj: T): T { keep.push(obj); return obj; }
 // (下面各页里还留着的 K(...) 是旧写法: 那些控件随后都 addWidget 挂进了树, 其实已经不必 keep —— 留着无害)
 
 // ---------------------------------------------------------------------------
 // 日志(底部 JZTextEdit, 只读)
 // ---------------------------------------------------------------------------
 
-let logEdit = null;
-let logLines = [];
+let logEdit: JZTextEdit | null = null;
+let logLines: string[] = [];
 
-function log(line)
+function log(line: string): void
 {
     logLines.push(line);
     if (logLines.length > 300)
@@ -81,7 +90,7 @@ const THEME_RULES =
     ".title { color: var(--accent); }\n" +
     ".panel { background-color: var(--panel); border-radius: 6px; }\n";
 
-function applyTheme(dark)
+function applyTheme(dark: boolean): boolean
 {
     const css = (dark ? THEME_ROOT_DARK : THEME_ROOT_LIGHT) + THEME_RULES;
     try
@@ -91,7 +100,7 @@ function applyTheme(dark)
     }
     catch (e)
     {
-        log("theme error: " + e.message);
+        log("theme error: " + (e as Error).message);
         return false;
     }
 }
@@ -102,7 +111,7 @@ function applyTheme(dark)
 
 // 新建一页(普通容器 + VBoxLayout), 页面本身由 JZStackedWidget/JZTabWidget 接管显示
 // 构造器直接吃实参: JZVBoxLayout(pad, spacing) / JZLabel(text) / JZWindow(w, h, title) ...
-function makePage()
+function makePage(): { page: JZWidget; lay: JZVBoxLayout }
 {
     const p = new JZWidget();
     const v = new JZVBoxLayout(12, 10);          // 边距 12, 间距 10
@@ -111,7 +120,7 @@ function makePage()
 }
 
 // 一行控件(水平布局的容器)
-function makeRow()
+function makeRow(): { row: JZWidget; lay: JZHBoxLayout }
 {
     const r = new JZWidget();
     const h = new JZHBoxLayout(0, 6);             // 无边距, 间距 6
@@ -119,12 +128,12 @@ function makeRow()
     return { row: r, lay: h };
 }
 
-function label(text)
+function label(text: string): JZLabel
 {
     return new JZLabel(text);
 }
 
-function button(text, onClick, w, h)
+function button(text: string, onClick?: () => void, w?: number, h?: number): JZPushButton
 {
     const b = (w !== undefined && h !== undefined) ? new JZPushButton(null, w, h, text)
                                                    : new JZPushButton();
@@ -137,17 +146,17 @@ function button(text, onClick, w, h)
 // 各页构建
 // ---------------------------------------------------------------------------
 
-const NAMES = [
+const NAMES: string[] = [
     "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
     "RadioButton", "ComboBox", "LineEdit", "TextEdit", "Table", "ImageLabel",
     "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox",
     "ScrollArea", "Animation"
 ];
 
-const builders = {};
+const builders: Record<string, () => JZWidget> = {};
 
 // ---- Label ----
-builders.Label = function () {
+builders.Label = function (): JZWidget {
     const { page, lay } = makePage();
     const l = label("Hello");
     l.setObjectName("demoLabel");        // viewId: MCP 的 ui_invoke 可用 '#demoLabel' 精确定位
@@ -165,14 +174,14 @@ builders.Label = function () {
 };
 
 // ---- PushButton ----
-builders.PushButton = function () {
+builders.PushButton = function (): JZWidget {
     const { page, lay } = makePage();
     lay.addWidget(button("Click Me", () => log("event: clicked"), 120, 44), 0);
     return page;
 };
 
 // ---- Slider ----
-builders.Slider = function () {
+builders.Slider = function (): JZWidget {
     const { page, lay } = makePage();
     const s = K(new JZSlider());
     s.setObjectName("demoSlider");
@@ -184,7 +193,7 @@ builders.Slider = function () {
 };
 
 // ---- ProgressBar ----
-builders.ProgressBar = function () {
+builders.ProgressBar = function (): JZWidget {
     const { page, lay } = makePage();
     const p = K(new JZProgressBar());
     let val = 60;
@@ -200,7 +209,7 @@ builders.ProgressBar = function () {
 };
 
 // ---- Switch ----
-builders.Switch = function () {
+builders.Switch = function (): JZWidget {
     const { page, lay } = makePage();
     const sw = K(new JZSwitch());
     sw.onToggled((on) => log("state: " + (on ? "on" : "off")));
@@ -209,7 +218,7 @@ builders.Switch = function () {
 };
 
 // ---- Checkbox ----
-builders.Checkbox = function () {
+builders.Checkbox = function (): JZWidget {
     const { page, lay } = makePage();
     const c = K(new JZCheckbox());
     c.setText("Enable");
@@ -219,12 +228,13 @@ builders.Checkbox = function () {
 };
 
 // ---- RadioButton ----
-builders.RadioButton = function () {
+builders.RadioButton = function (): JZWidget {
     const { page, lay } = makePage();
     const r1 = K(new JZRadioButton());
     r1.setText("Option A");
     const r2 = K(new JZRadioButton());
     r2.setText("Option B");
+    // ⚠ 单选按钮的 sigToggled 是无参信号(与 Checkbox/Switch 的 bool 不同)
     r1.onToggled(() => log("event: clicked (A)"));
     r2.onToggled(() => log("event: clicked (B)"));
     lay.addWidget(r1, 0);
@@ -233,7 +243,7 @@ builders.RadioButton = function () {
 };
 
 // ---- ComboBox ----
-builders.ComboBox = function () {
+builders.ComboBox = function (): JZWidget {
     const { page, lay } = makePage();
     const cb = K(new JZComboBox());
     cb.addItems(["Red", "Green", "Blue"]);       // 数组形参: 绑定层用 JSValue 收, 见 addItems
@@ -244,7 +254,7 @@ builders.ComboBox = function () {
 };
 
 // ---- LineEdit ----
-builders.LineEdit = function () {
+builders.LineEdit = function (): JZWidget {
     const { page, lay } = makePage();
     const le = K(new JZLineEdit());
     le.setText("edit me");
@@ -257,7 +267,7 @@ builders.LineEdit = function () {
 };
 
 // ---- TextEdit ----
-builders.TextEdit = function () {
+builders.TextEdit = function (): JZWidget {
     const { page, lay } = makePage();
     const te = K(new JZTextEdit());
     te.setText("edit me");
@@ -268,7 +278,7 @@ builders.TextEdit = function () {
 };
 
 // ---- Table ----
-builders.Table = function () {
+builders.Table = function (): JZWidget {
     const { page, lay } = makePage();
     const tbl = K(new JZTableWidget());
     tbl.setColumnCount(3);
@@ -276,7 +286,7 @@ builders.Table = function () {
     lay.addWidget(tbl, 1);
 
     let seq = 0;
-    function appendRows(n)
+    function appendRows(n: number): void
     {
         const r0 = tbl.rowCount();
         tbl.setRowCount(r0 + n);
@@ -304,16 +314,23 @@ builders.Table = function () {
 };
 
 // ---- ImageLabel ----
-// JS 侧造图: JZImage.create(w,h)(静态工厂) + 离屏 JZPainter 画内容。
-builders.ImageLabel = function () {
+// JS/TS 侧造图: JZImage.create(w,h)(静态工厂) + 离屏 JZPainter 画内容。
+// 这一页用**样式对象**形式(JZPen/JZBrush/JZFont); 其它页用的是"颜色字符串 + 线宽"的便捷形式。
+builders.ImageLabel = function (): JZWidget {
     const { page, lay } = makePage();
     const img = JZImage.create(96, 96);
     const p = new JZPainter(img);
     p.fillRect(0, 0, 96, 96, "#2b3a55");
-    p.setPen("#ffffff", 2);
+    p.setPen(new JZPen("#ffffff", 2));              // 画笔 = 颜色 + 线宽
     p.drawRect(4, 4, 88, 88);
+    p.setBrush(new JZBrush("#e2c044", 160));        // 半透明画刷(160/255)
     p.fillEllipse(24, 24, 48, 48, "#e2c044");
+    p.setFont(new JZFont("微软雅黑", 14, JZFont.Bold));
     p.drawText(8, 78, "JS");
+    p.setTransform(JZMatrix2D.rotation(12));    // 变换矩阵(也可 setTransform(a, b, c, d, e, f))
+    p.setPen(new JZPen("#0aff9d", 1));
+    p.drawRect(6, 6, 30, 14);
+    p.resetTransform();
     p.end();
 
     const il = K(new JZImageLabel());
@@ -326,13 +343,13 @@ builders.ImageLabel = function () {
 
 // ---- Dialog ----
 // 模态 exec() 会重入事件循环(JS 栈还压在 C++ 调用下面), 故用"独立小窗口"当对话框。
-builders.Dialog = function () {
+builders.Dialog = function (): JZWidget {
     const { page, lay } = makePage();
     lay.addWidget(label("JS 侧不用模态 exec: 点按钮开一个独立小窗口当对话框"), 0);
 
     // 顶层窗口(对话框)归 JS 所有: 留一份引用即可 —— 这里只留最近一个, 上一个随 GC 销毁(演示别攒窗口)
-    let lastDialog = null;
-    function openDialog(text)
+    let lastDialog: JZWindow | null = null;
+    function openDialog(text: string): void
     {
         const dlg = new JZWindow(320, 140, "Dialog");
         const v = new JZVBoxLayout(12, 8);          // 边距 12, 间距 8
@@ -360,7 +377,7 @@ builders.Dialog = function () {
 };
 
 // ---- TabWidget ----
-builders.TabWidget = function () {
+builders.TabWidget = function (): JZWidget {
     const { page, lay } = makePage();
     const tabs = K(new JZTabWidget());
     tabs.onCurrentChanged((i) => log("tab: " + i));
@@ -385,17 +402,17 @@ builders.TabWidget = function () {
 
 // ---- Splitter ----
 // 分栏里的"色块面板"= 普通 JZWidget + onPaint 填色(对应 C++ 的 ColorPanel)。
-function colorPanel(color)
+function colorPanel(color: string): JZWidget
 {
     const w = K(new JZWidget());
-    w.onPaint = (e) => {
+    w.onPaint = () => {
         const p = new JZPainter(w);
         p.fillRect(0, 0, w.width(), w.height(), color);
     };
     return w;
 }
 
-builders.Splitter = function () {
+builders.Splitter = function (): JZWidget {
     const { page, lay } = makePage();
     const hsp = K(new JZSplitter());
     hsp.setHandleWidth(6);
@@ -422,7 +439,7 @@ builders.Splitter = function () {
 };
 
 // ---- SpinBox ----
-builders.SpinBox = function () {
+builders.SpinBox = function (): JZWidget {
     const { page, lay } = makePage();
     const sb = K(new JZSpinBox());
     sb.setRange(0, 100);
@@ -436,7 +453,7 @@ builders.SpinBox = function () {
 // ---- ScrollBar ----
 // 4000×4000 虚拟世界 + 两条独立 JZScrollBar 驱动平移, 内容由 JS 在 onPaint 里画
 // (对应 C++ 的 VirtualCanvas; 小地图只画不拖, 拖拽逻辑见 C++ 版)。
-builders.ScrollBar = function () {
+builders.ScrollBar = function (): JZWidget {
     const { page, lay } = makePage();
 
     const WORLD = 4000;
@@ -453,7 +470,7 @@ builders.ScrollBar = function () {
 
     let vx = 0, vy = 0;
 
-    function syncBars()
+    function syncBars(): void
     {
         const vw = Math.max(0, canvas.width() - BAR);
         const vh = Math.max(0, canvas.height() - BAR);
@@ -487,7 +504,7 @@ builders.ScrollBar = function () {
         lastX = e.x();
         lastY = e.y();
     };
-    canvas.onMouseRelease = (e) => { dragging = false; };
+    canvas.onMouseRelease = () => { dragging = false; };
     canvas.onMouseMove = (e) => {
         if (!dragging)
             return;
@@ -501,7 +518,7 @@ builders.ScrollBar = function () {
         vbar.setValue(vy);
     };
 
-    canvas.onPaint = (e) => {
+    canvas.onPaint = () => {
         syncBars();
         vx = hbar.value();
         vy = vbar.value();
@@ -544,7 +561,7 @@ builders.ScrollBar = function () {
         }
 
         // 世界里的固定物件
-        const feats = [
+        const feats: Array<[number, number, number, number, string]> = [
             [400, 300, 320, 200, "#81bef0"],
             [2200, 1200, 420, 260, "#94dc9c"],
             [1100, 2600, 360, 260, "#face78"],
@@ -595,7 +612,7 @@ builders.ScrollBar = function () {
 };
 
 // ---- GroupBox ----
-builders.GroupBox = function () {
+builders.GroupBox = function (): JZWidget {
     const { page, lay } = makePage();
     const gb = K(new JZGroupBox());
     gb.setTitle("Settings");
@@ -620,7 +637,7 @@ builders.GroupBox = function () {
 };
 
 // ---- ScrollArea ----
-builders.ScrollArea = function () {
+builders.ScrollArea = function (): JZWidget {
     const { page, lay } = makePage();
 
     const area = K(new JZScrollArea());
@@ -658,12 +675,12 @@ builders.ScrollArea = function () {
 
 // ---- Animation ----
 // C++ 版用 JZAnimationGroup/JZPropertyAnimation(未绑定); JS 侧用 setInterval 逐帧写 x/y/w/h。
-builders.Animation = function () {
+builders.Animation = function (): JZWidget {
     const { page, lay } = makePage();
     lay.addWidget(label("动画方块: JS setInterval 逐帧 setGeometry (x/y/w/h, A<->B)"), 0);
 
     const stage = K(new JZWidget());
-    stage.onPaint = (e) => {
+    stage.onPaint = () => {
         const p = new JZPainter(stage);
         p.fillRect(0, 0, stage.width(), stage.height(), "#fafbfd");
         p.setPen("#e7ebf1", 1);
@@ -678,8 +695,8 @@ builders.Animation = function () {
     box.move(24, 24);
     box.setParentWidget(stage);
 
-    let timer = null;
-    function stopAnim() { if (timer !== null) { clearInterval(timer); timer = null; } }
+    let timer: number | null = null;
+    function stopAnim(): void { if (timer !== null) { clearInterval(timer); timer = null; } }
 
     lay.addWidget(button("动画: 移动+缩放", () => {
         stopAnim();
@@ -722,7 +739,7 @@ builders.Animation = function () {
 // ---------------------------------------------------------------------------
 
 // 顶层窗口: 归 JS 所有 —— 放手就销毁(窗口没了 runtime 退出), 必须留一份引用
-const win = K(new JZWindow(900, 660, "JZWidget Widgets (JS)"));
+const win = new JZWindow(900, 660, "JZWidget Widgets (TS)");
 win.setObjectName("main");
 
 // 布局与控件: 挂进树之后由 C++ 对象树持有(+ 模块保活其 JS 包装), 所以不必再 keep
@@ -748,7 +765,7 @@ const themeBtn = button("主题: 浅色", () => {
 themeBtn.setObjectName("themeBtn");      // viewId: MCP 可用 '#themeBtn' 精确点击
 barLay.addWidget(themeBtn, 0);
 
-const tip = label("JS 版控件演示: 左侧选页, 右下角是日志");
+const tip = label("TS 版控件演示: 左侧选页, 右下角是日志");
 tip.setStyleClass("title");
 barLay.addWidget(tip, 1);
 
@@ -763,7 +780,7 @@ list.setObjectName("navList");           // viewId: MCP 可用 select 驱动切�
 list.setMinimumWidth(160);
 list.onCurrentIndexChanged((i) => {
     stack.setCurrentIndex(i);
-    log("select: " + (NAMES[i] === undefined ? "" : NAMES[i]));
+    log("select: " + NAMES[i]);
 });
 midLay.addWidget(list, 0);
 
@@ -797,9 +814,9 @@ for (let i = 0; i < NAMES.length; i++)
     {
         // 某一页失败不影响其它页(绑不上/参数不匹配都会在这里暴露成日志)
         const { page: ep, lay: el } = makePage();
-        el.addWidget(label("page '" + name + "' failed: " + err.message), 0);
+        el.addWidget(label("page '" + name + "' failed: " + (err as Error).message), 0);
         stack.addWidget(ep);
-        log("page error [" + name + "]: " + err.message);
+        log("page error [" + name + "]: " + (err as Error).message);
         failed++;
     }
 }

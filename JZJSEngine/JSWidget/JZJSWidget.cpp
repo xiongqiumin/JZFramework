@@ -3,8 +3,12 @@
 #include "JZDebug.h"            // LOG_W(构造器替换失败时的告警)
 #include "JZJSEngine.h"
 #include "JZJSType.h"
-#include "JZJSWidgetModule.h"   // JSWidgetClass<W> / jzBindWidgetInstance 的约定
+#include "JZJSWidgetModule.h"   // JZSWidgetEventFilter(事件转发) / jzBindWidgetInstance 的约定
 #include "JZColor.h"
+#include "JZPen.h"
+#include "JZBrush.h"
+#include "JZFont.h"
+#include "JZMatrix2D.h"
 #include "JZLayout.h"
 #include "JZWidget.h"
 #include "JZWindow.h"
@@ -433,6 +437,50 @@ bool jzParseString(JSContext* ctx, JSValueConst v, std::string& out, const char*
     return true;
 }
 
+// 颜色参数: JZColor 对象, 或 '#rrggbb' / '#rgb' / '#rrggbbaa' / 颜色名 字符串
+// (与 JZPainter.setPen/setBrush 的解析同一套: jzParseColor)。
+bool jzParseColorArg(JSContext* ctx, JSValueConst v, JZColor& out, const char* what)
+{
+    if (JS_IsString(v))
+    {
+        out = jzParseColor(fromJSValue<std::string>(ctx, v));
+        return true;
+    }
+    if (js_check_class_arg<JZColor>(ctx, v))
+    {
+        out = *fromJSValue<JZColor*>(ctx, v);
+        return true;
+    }
+    JS_ThrowTypeError(ctx, "%s: 颜色需要 '#rrggbb'/颜色名 字符串或 JZColor 对象", what);
+    return false;
+}
+
+// 数字参数(整数/小数都收)
+bool jzParseDouble(JSContext* ctx, JSValueConst v, double& out, const char* what, int index)
+{
+    if (!JS_IsNumber(v) || JS_ToFloat64(ctx, &out, v) != 0)
+    {
+        JS_ThrowTypeError(ctx, "%s: 第 %d 个参数需要数字", what, index + 1);
+        return false;
+    }
+    return true;
+}
+
+// 0~255 的通道值(opacity 等)
+bool jzParseByte(JSContext* ctx, JSValueConst v, uint8_t& out, const char* what, int index)
+{
+    int n = 0;
+    if (!jzParseInt(ctx, v, n, what, index))
+        return false;
+    if (n < 0 || n > 255)
+    {
+        JS_ThrowTypeError(ctx, "%s: 第 %d 个参数需要在 0~255 之间", what, index + 1);
+        return false;
+    }
+    out = (uint8_t)n;
+    return true;
+}
+
 // 至多一个参数: 父控件
 bool jzParseParentOnly(JSContext* ctx, int argc, JSValueConst* argv, const char* what, JZWidget*& parent)
 {
@@ -570,7 +618,7 @@ JSValue js_JZWidget_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
     JZWidget* parent = nullptr;
     if (!jzParseParentOnly(ctx, argc, argv, "new JZWidget(parent?)", parent))
         return JS_EXCEPTION;
-    return jzNewWidget<JZWidget>(ctx, new JSWidgetClass<JZWidget>(parent));
+    return jzNewWidget<JZWidget>(ctx, new JZWidget(parent));
 }
 
 // JZWindow: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)
@@ -579,7 +627,7 @@ JSValue js_JZWindow_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
     const char* what = "new JZWindow(w?, h?, title?, parent?)";
 
     if (argc == 0)
-        return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>());   // 尺寸留 0: 首次 show 时按 sizeHint 自适应
+        return jzNewWidget<JZWindow>(ctx, new JZWindow());   // 尺寸留 0: 首次 show 时按 sizeHint 自适应
 
     if (jzIsWidgetArg(ctx, argv[0]) || jzIsNullish(argv[0]))
     {
@@ -592,7 +640,7 @@ JSValue js_JZWindow_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
         JZWidget* parent = nullptr;
         if (!jzParseParent(ctx, argv[0], parent, what))
             return JS_EXCEPTION;
-        return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>(parent));
+        return jzNewWidget<JZWindow>(ctx, new JZWindow(parent));
     }
 
     if (argc == 1)
@@ -616,7 +664,7 @@ JSValue js_JZWindow_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
     if (argc >= 4 && !jzParseParent(ctx, argv[3], parent, what))
         return JS_EXCEPTION;
 
-    return jzNewWidget<JZWindow>(ctx, new JSWidgetClass<JZWindow>(w, h, title, parent));
+    return jzNewWidget<JZWindow>(ctx, new JZWindow(w, h, title, parent));
 }
 
 // JZLabel: () / (parent) / (text) / (text, parent)
@@ -928,6 +976,139 @@ JSValue js_JZImage_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* ar
     return JS_EXCEPTION;
 }
 
+// ---------- 画笔样式(JZPen / JZBrush / JZFont) ----------
+//
+// 三者都是**值语义**描述(不含任何设备资源), 由 JZPainter.setPen/setBrush/setFont 消费:
+//   p.setPen(new JZPen(new JZColor(255, 0, 0), 2));      // 或 new JZPen('#ff0000', 2)
+//   p.setBrush(new JZBrush('#339933', 128));             // 128 = 半透明
+//   p.setFont(new JZFont('微软雅黑', 16, JZFont.Bold));
+// 颜色形参同时接受 JZColor 与 '#rrggbb'/颜色名 字符串(解析见 jzParseColorArg)。
+
+// JZPen: () / (color) / (color, width)
+JSValue js_JZPen_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZPen(color?, width?)";
+    if (argc > 2)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多 2 个参数", what);
+        return JS_EXCEPTION;
+    }
+
+    JZPen pen;   // 无参 = 默认画笔(黑色, 线宽 1)
+    if (argc >= 1)
+    {
+        JZColor color;
+        if (!jzParseColorArg(ctx, argv[0], color, what))
+            return JS_EXCEPTION;
+        int width = 1;
+        if (argc >= 2 && !jzParseInt(ctx, argv[1], width, what, 1))
+            return JS_EXCEPTION;
+        pen = JZPen(color, width);
+    }
+
+    return jzNewValue<JZPen>(ctx, pen);
+}
+
+// JZBrush: () / (color) / (color, opacity)
+JSValue js_JZBrush_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZBrush(color?, opacity?)";
+    if (argc > 2)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多 2 个参数", what);
+        return JS_EXCEPTION;
+    }
+
+    JZBrush brush;   // 无参 = 默认画刷(黑色, 不透明)
+    if (argc >= 1)
+    {
+        JZColor color;
+        if (!jzParseColorArg(ctx, argv[0], color, what))
+            return JS_EXCEPTION;
+        uint8_t opa = JZBrush::kOpaCover;
+        if (argc >= 2 && !jzParseByte(ctx, argv[1], opa, what, 1))
+            return JS_EXCEPTION;
+        brush = JZBrush(color, opa);
+    }
+
+    return jzNewValue<JZBrush>(ctx, brush);
+}
+
+// JZFont: () / (size) / (family, size) / (family, size, style)
+JSValue js_JZFont_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZFont(family?, size?, style?)";
+    if (argc > 3)
+    {
+        JS_ThrowTypeError(ctx, "%s: 至多 3 个参数", what);
+        return JS_EXCEPTION;
+    }
+
+    JZFont font;   // 无参 = 默认字体(字号 14, 由渲染后端决定字族)
+    if (argc >= 1)
+    {
+        // 单参数 = 字号(与 C++ JZFont(int size) 一致); 两个以上第一个必须是字体族
+        if (argc == 1)
+        {
+            int size = 0;
+            if (!jzParseInt(ctx, argv[0], size, what, 0))
+                return JS_EXCEPTION;
+            font = JZFont(size);
+        }
+        else
+        {
+            std::string family;
+            int size = 0, style = (int)JZFont::Normal;
+            if (!jzParseString(ctx, argv[0], family, what, 0)
+                || !jzParseInt(ctx, argv[1], size, what, 1))
+                return JS_EXCEPTION;
+            if (argc >= 3 && !jzParseInt(ctx, argv[2], style, what, 2))
+                return JS_EXCEPTION;
+            font = JZFont(family, size, style);
+        }
+    }
+
+    return jzNewValue<JZFont>(ctx, font);
+}
+
+// JZMatrix2D: () / (a, b, c, d, e, f) / (other: JZMatrix2D)
+//   无参 = 单位阵; 6 个数 = 2x3 仿射部分(行主序 [a b c d e f], 与 GDI+/Canvas 一致)。
+JSValue js_JZMatrix2D_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "new JZMatrix2D() / (a, b, c, d, e, f) / (other)";
+
+    if (argc == 0)
+        return jzNewValue<JZMatrix2D>(ctx, JZMatrix2D());   // 单位阵
+
+    if (argc == 1)
+    {
+        // (other): 拷贝构造
+        if (!js_check_class_arg<JZMatrix2D>(ctx, argv[0]))
+        {
+            JS_ThrowTypeError(ctx, "%s: 1 个参数时只接受另一个 JZMatrix2D", what);
+            return JS_EXCEPTION;
+        }
+        return jzNewValue<JZMatrix2D>(ctx, *fromJSValue<JZMatrix2D*>(ctx, argv[0]));
+    }
+
+    if (argc != 6)
+    {
+        JS_ThrowTypeError(ctx, "%s: 参数个数只能是 0 / 1 / 6", what);
+        return JS_EXCEPTION;
+    }
+
+    double v[6];
+    for (int i = 0; i < 6; i++)
+    {
+        if (!jzParseDouble(ctx, argv[i], v[i], what, i))
+            return JS_EXCEPTION;
+    }
+
+    JZMatrix2D m;
+    m.setMatrix(v[0], v[1], v[2], v[3], v[4], v[5]);
+    return jzNewValue<JZMatrix2D>(ctx, m);
+}
+
 // ---------- 注册: 把全局构造器换成上面这些 C 版本 ----------
 
 namespace
@@ -1022,4 +1203,12 @@ void jzRegistWidgetJsConstructors(JSContext* ctx)
     jzReplaceConstructor(ctx, "JZRect",          typeid(JZRect).name(),          js_JZRect_ctor);
     jzReplaceConstructor(ctx, "JZColor",         typeid(JZColor).name(),         js_JZColor_ctor);
     jzReplaceConstructor(ctx, "JZImage",         typeid(JZImage).name(),         js_JZImage_ctor);
+
+    // 画笔样式(值类型)
+    jzReplaceConstructor(ctx, "JZPen",           typeid(JZPen).name(),           js_JZPen_ctor);
+    jzReplaceConstructor(ctx, "JZBrush",         typeid(JZBrush).name(),         js_JZBrush_ctor);
+    jzReplaceConstructor(ctx, "JZFont",          typeid(JZFont).name(),          js_JZFont_ctor);
+
+    // 变换矩阵(值类型)
+    jzReplaceConstructor(ctx, "JZMatrix2D",      typeid(JZMatrix2D).name(),      js_JZMatrix2D_ctor);
 }

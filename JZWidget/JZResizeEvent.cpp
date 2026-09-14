@@ -1,7 +1,9 @@
 #include "JZResizeEvent.h"
 
 JZResizeEvent::JZResizeEvent(const JZSize& size, const JZSize& oldSize)
-    : m_size(size), m_oldSize(oldSize)
+    : JZEvent(JZEvent_resize)
+    , m_size(size)
+    , m_oldSize(oldSize)
 {
 }
 

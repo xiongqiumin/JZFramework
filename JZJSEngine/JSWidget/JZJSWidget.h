@@ -1,6 +1,9 @@
 #ifndef JZ_JS_WIDGET_H_
 #define JZ_JS_WIDGET_H_
 
+#include <string>
+
+#include "JZColor.h"
 #include "quickjs/quickjs.h"
 
 // JZWidget 的"指针类"接口 —— 全部做成 **quickjs C 函数**(QJS 的 C 函数签名:
@@ -34,6 +37,12 @@
 // 经多态基类走: 包装类型随类层次不同(JSRawPointer<具体类> / JSObjectPointer), 不能按一种强转。
 // 非包装对象(如传个数字)时静默忽略。
 void jzSetCppOwner(JSValueConst value, bool cppOwner);
+
+// 颜色字符串解析: '#rgb' / '#rrggbb' / '#rrggbbaa' / 颜色名(black white red green blue yellow
+// cyan magenta gray|grey transparent), 无法识别时返回黑色。
+// 定义在 JZJSWidgetModule.cpp —— 画笔接口(JZPainter.setPen/setBrush)与本文件的
+// JZPen/JZBrush 构造器共用同一套解析(单一来源, 别在别处再抄一份)。
+JZColor jzParseColor(const std::string& s);
 
 // ---- JS 侧接口(名字 = 注册处 def 的第一个参数, 即 JS 方法名) ----
 
@@ -71,8 +80,8 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
 //   * 一个函数一处, 不用在 .cpp 里散着写 lambda。
 //
 // **与绑定层的约定(两边必须一致)**:
-//   * 控件类里只有 JZWidget / JZWindow 的对象必须是 JSWidgetClass<W>(事件转发靠它:
-//     jzBindWidgetInstance<W> 会 static_cast<JSWidgetClass<W>*>); 其余控件是裸类;
+//   * 控件对象一律是**裸类**实例(不做派生包裹); JS 事件转发由控件的事件过滤器
+//     (JZSWidgetEventFilter)负责, 挂在"被 JS 包装过的控件"上, 见 JZJSWidgetModule.h;
 //   * 包装: 控件 = JSObjectPointer(守卫指针) + cppOwner=false(JS 拥有, 挂进对象树时翻);
 //     布局 = JSRawPointer<JZLayout> + cppOwner=false; 值类型 = 值语义(toJSValue)。
 //   * 构造函数**返回对象**即为 new 的结果(quickjs 语义: 构造函数返回对象时用它当结果),
@@ -101,6 +110,10 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
 //   JZRect          () / (x, y) / (x, y, w, h)
 //   JZColor         () / (colorEnum) / (r, g, b) / (r, g, b, a)
 //   JZImage         () / (filePath) / (bytes: Uint8Array)
+//   JZPen           () / (color) / (color, width)
+//   JZBrush         () / (color) / (color, opacity)
+//   JZFont          () / (size) / (family, size) / (family, size, style)
+//   JZMatrix2D      () / (a, b, c, d, e, f) / (other)
 
 JSValue js_JZWidget_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
 JSValue js_JZWindow_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
@@ -137,6 +150,20 @@ JSValue js_JZSize_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValu
 JSValue js_JZRect_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
 JSValue js_JZColor_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
 JSValue js_JZImage_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
+
+// 画笔样式三件套(值类型, 传给 JZPainter.setPen/setBrush/setFont):
+//   JZPen   () / (color) / (color, width)                  color = JZColor 或 '#rrggbb'/颜色名
+//   JZBrush () / (color) / (color, opacity)                opacity 0~255(缺省 255 = 不透明)
+//   JZFont  () / (size) / (family, size) / (family, size, style)
+//          style 为位或: JZFont.Normal 0 / Bold 1 / Italic 2 / Underline 4 / StrikeOut 8
+JSValue js_JZPen_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
+JSValue js_JZBrush_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
+JSValue js_JZFont_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
+
+// JZMatrix2D (2x3 仿射变换矩阵, 传给 JZPainter.setTransform):
+//   () / (a, b, c, d, e, f) / (other: JZMatrix2D)   —— 无参 = 单位阵
+//   静态工厂: JZMatrix2D.translation(dx,dy) / scaling(sx,sy) / rotation(deg) / rotationRadians(rad)
+JSValue js_JZMatrix2D_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
 
 // 把上面这些构造器换成各注册类的 JS 构造函数(替换引擎按 createArgs 生成的那个):
 //   ctor = JS_NewCFunction2(..., JS_CFUNC_constructor) → JS_SetConstructor(ctor, 类原型)

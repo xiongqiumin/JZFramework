@@ -180,8 +180,9 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_modbusModule = std::make_unique<JZJSModbusModule>();
     m_modbusModule->initEngine(engine);
 
-    // widget：把 JZWidget 的窗口/画布暴露为 JS 原生对象 (JZWindow / JZCanvas),
-    // 供 JS 直接建 GUI（如五子棋画布）。窗口存在时 runtime 不退出（见 runtime/main.cpp）。
+    // widget：把整个 JZWidget 家族(窗口/标签/按钮/布局/画笔...)注册成 JS 全局类, 供 JS 直接
+    // 建 GUI; 窗口存在时 runtime 不退出（见 runtime/main.cpp）。类型声明见
+    // JZJSEngine/js_wrapper/widget/types/(按 registXxx 一一对应)。
     // 2026-09-13 打开: bteserver 移植(Qt/C++ -> JS)要靠它把 QLabel/QPushButton/... 桥到
     // 框架真控件(见 binary/code_agent/runtime/bteserver/qtcompat.js 的"框架桥")。
     m_widgetModule = std::make_unique<JZJSWidgetModule>();

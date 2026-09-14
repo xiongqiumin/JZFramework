@@ -400,6 +400,10 @@ public:
     }
     virtual ~JZSignal() = default;
 
+    // 信号所属对象(构造时传入的 sender): 槽被调用时"以谁为 this"/"谁发的信号"。
+    // 用途见 JZJSWidgetModule::callJsCallback(JS 回调里 self() 取它)。
+    JZObject* object() const { return m_object; }
+
     int connectCount()
     {
         return m_connects ? (int)m_connects->size() : 0;

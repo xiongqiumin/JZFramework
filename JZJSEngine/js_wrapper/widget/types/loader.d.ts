@@ -1,7 +1,9 @@
-// 全局 uiLoader 命名空间(JZJSWidgetModule::registUiLoader)。
-//
-// 两个工厂: 解析 Qt 风格的 UI 定义并**直接构造真实控件树**, 返回根 JZWindow 窗口。
-// 根窗口上还挂着按 id 命名子控件(运行期动态附加, 故只能声明成索引签名)以及内部保活数组
+// 两个"应用级"全局对象 —— JZJSWidgetModule::registUiLoader() 注册。
+
+// ---------------------------------------------------------------------------
+// uiLoader: 解析 Qt 风格 UI 定义并**直接构造真实控件树**, 返回根 JZWindow 窗口
+// ---------------------------------------------------------------------------
+// 根窗口上还挂着按 id 命名的子控件(运行期动态附加, 故只能声明成索引签名)以及内部保活数组
 // __keep(无 id 的子树由它保住, 否则会被 JS GC 回收而销毁底层控件)。
 //
 // 已知限制:
@@ -19,4 +21,18 @@ declare const uiLoader: {
   loadFile(file: string): JZUiRoot;
   /** 从 UI 文本(XML)加载并构造控件树 */
   load(text: string): JZUiRoot;
+};
+
+// ---------------------------------------------------------------------------
+// jzWidget: 应用级入口(单控件级样式用 widget.setStyleSheet(css))
+// ---------------------------------------------------------------------------
+declare const jzWidget: {
+  /**
+   * 设置**全局**样式表(等价 C++ 的 jzApp->setStyleSheet), 作用于所有控件。
+   * 换肤 = 整表替换: 变量只有 :root 一处, 且是 parse 期文本替换, 所以切主题要把两份 CSS
+   * 各完整给一次, 而不是"改一个变量"。语法错误抛 SyntaxError(错误串见 styleSheetError())。
+   */
+  setStyleSheet(css: string): boolean;
+  /** 上一次 setStyleSheet 的错误原因; 没有错误返回空串 */
+  styleSheetError(): string;
 };

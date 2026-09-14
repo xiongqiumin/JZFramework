@@ -1,15 +1,24 @@
-// JZColor —— RGBA 颜色值类型(全局类; JZJSWidgetModule::registColor)。
+// JZColor —— RGBA 颜色值类型(全局类; registColor + js_JZColor_ctor)。
 //
-// 位置: 只作为**读取/改色**的值对象使用(如 JZChart.seriesColor() 的返回值)。
-// 颜色常量枚举(JZColor.Black / Red / ...)与 "#rrggbb" 解析入口都没有暴露到 JS ——
-// 字符串形式的颜色只被 **画笔**接口接受(见 painter.d.ts 的 setPen/setBrush 与模块内的
-// jzParseColor: '#rgb' / '#rrggbb' / '#rrggbbaa' / black white red green blue yellow
-// cyan magenta gray(grey) transparent)。
+// 构造: () / (colorEnum) / (r, g, b) / (r, g, b, a)
+//   new JZColor()                 默认黑, alpha = 255
+//   new JZColor(2)                颜色枚举值(见文件末尾的取值表)
+//   new JZColor(255, 128, 0)      不传 a 时 alpha = 255
 //
-// 构造: 无参(默认黑, alpha=255) —— 绑定层忽略实参(见 geometry.d.ts 顶部说明)。
+// 位置: 作为**颜色值对象**使用 —— 作为返回值(如 JZChart.seriesColor()), 也作为实参
+// (JZPen/JZBrush 构造器、JZPainter.setPen/setBrush 的颜色形参、JZWidget 系的颜色接口)。
+// 那些形参同时接受字符串颜色(解析见 JZJSWidgetModule.cpp 的 jzParseColor:
+// '#rgb' / '#rrggbb' / '#rrggbbaa' / black white red green blue yellow cyan magenta
+// gray(grey) transparent), 所以两种写法等价:
+//   p.setPen(new JZPen('#ff0000', 2));                    // 字符串
+//   p.setPen(new JZPen(new JZColor(255, 0, 0), 2));       // JZColor
+// JZColor 本身没有 fromString 之类的解析入口。
 
 declare class JZColor {
   constructor();
+  constructor(color: number);
+  constructor(r: number, g: number, b: number);
+  constructor(r: number, g: number, b: number, a: number);
 
   red(): number;
   green(): number;
@@ -20,4 +29,10 @@ declare class JZColor {
   setRgba(r: number, g: number, b: number, a: number): void;
 }
 
-// 未暴露(C++ 有): JZColor(ColorEnum)、指向颜色名的字符串化、调色板常量。
+// ColorEnum 的**值**(与 C++ JZColor::ColorEnum 同序), 但**没有**挂成 JS 常量
+// (只有 JZChart 挂了类型常量), 所以不能写 JZColor.Red —— 直接传数字:
+//   new JZColor(2)  等价 C++ 的 JZColor(JZColor::Red)
+//   0=Black 1=White 2=Red 3=Green 4=Blue 5=Yellow 6=Cyan 7=Magenta
+//   8=Gray 9=LightGray 10=DarkGray 11=Orange 12=Purple 13=Transparent
+//
+// 未暴露(C++ 有): 指向颜色名的字符串化、调色板常量。

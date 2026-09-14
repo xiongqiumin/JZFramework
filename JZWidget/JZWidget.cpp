@@ -413,7 +413,7 @@ void JZWidget::resize(int w, int h)
     // 再向下传播: 自身有布局则重排子控件; 子控件经 setGeometry->resize
     // 尺寸变化时会各自再收到 resizeEvent, 形成完整的级联通知链。
     JZResizeEvent ev(size(), oldSize);
-    resizeEvent(&ev);
+    jzApp->sendEvent(this, &ev);   // 同步派发(过本控件的事件过滤器链, 同其它事件)
 
     if (m_layout)
         m_layout->updateLayout();
@@ -681,7 +681,7 @@ void JZWidget::show()
     setVisible(true);
     { 
         JZShowEvent se; 
-        showEvent(&se); 
+        jzApp->sendEvent(this, &se);   // 同步派发(过本控件的事件过滤器链, 同其它事件)
     }
 }
 
@@ -690,7 +690,7 @@ void JZWidget::hide()
     setVisible(false);
     {
         JZHideEvent he;
-        hideEvent(&he);
+        jzApp->sendEvent(this, &he);   // 同步派发(过本控件的事件过滤器链, 同其它事件)
     }
 }
 
@@ -895,6 +895,24 @@ bool JZWidget::event(JZEvent* e)
     if (e->type() == JZEvent_focusOut)
     {
         focusOutEvent(e);
+        return true;
+    }
+
+    // 显隐 / 尺寸: 由 show()/hide()/resize() 经 sendEvent 派发(与其它事件同一个入口,
+    // 事件过滤器链能看到 —— 与 JZObject::installEventFilter 的说明一致)
+    if (e->type() == JZEvent_show)
+    {
+        showEvent((JZShowEvent*)e);
+        return true;
+    }
+    if (e->type() == JZEvent_hide)
+    {
+        hideEvent((JZHideEvent*)e);
+        return true;
+    }
+    if (e->type() == JZEvent_resize)
+    {
+        resizeEvent((JZResizeEvent*)e);
         return true;
     }
 

@@ -3,7 +3,7 @@
 JZ_OBJECT_IMPL(JZJSTableWidget, JZTableWidget)
 
 JZJSTableWidget::JZJSTableWidget(JZWidget* parent)
-    : JSWidgetClass<JZTableWidget>(parent)
+    : JZTableWidget(parent)
 {
 }
 

@@ -21,3 +21,6 @@ set(CODE_RUNTIME_SOURCES
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})
 target_include_directories(code_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_runtime PRIVATE JZFramework)
+
+# ASan 构建: 把 ASan 运行库拷到 exe 边上(见根 CMakeLists 的 JZ_ENABLE_ASAN)
+jz_copy_asan_runtime(code_runtime)

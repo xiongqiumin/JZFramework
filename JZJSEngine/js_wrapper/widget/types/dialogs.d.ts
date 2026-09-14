@@ -29,9 +29,11 @@ declare class JZDialog extends JZWindow {
   reject(): void;
   /** 上一次 exec() 的结果(1 / 0; 还没跑过时是 0) */
   result(): number;
-  onAccepted(cb: () => void): void;
-  onRejected(cb: () => void): void;
-  onFinished(cb: (result: number) => void): void;
+  /** 属性形: 赋值设 / 覆盖 / `= null` 清空 */
+  onAccepted: (() => void) | null;
+  onRejected: (() => void) | null;
+  /** 回调带 (result: number) */
+  onFinished: ((result: number) => void) | null;
 }
 
 /** 模态消息框(静态接口; 结果为 1 = 确认 / 0 = 关闭或取消) */

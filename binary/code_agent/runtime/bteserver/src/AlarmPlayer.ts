@@ -1,4 +1,3 @@
-import { FALSE, NULL, SND_ASYNC, SND_FILENAME, SND_LOOP, SND_NODEFAULT } from './qtcompat.js';
 // ---------------------------------------------------------------------------
 // AlarmPlayer.js —— 对应 C++ BTEServer/AlarmPlayer.h + AlarmPlayer.cpp
 //
@@ -6,7 +5,15 @@ import { FALSE, NULL, SND_ASYNC, SND_FILENAME, SND_LOOP, SND_NODEFAULT } from '.
 //
 // Qt -> JS: QString.utf16() -> JS 字符串; Win32 PlaySoundW 保留原样调用
 //           (SND_FILENAME | SND_LOOP | SND_ASYNC | SND_NODEFAULT)。
+//
+// 2026-09-14: 去 Qt 兼容层 —— NULL/FALSE 用 JS 的 null/false, SND_* 是 Win32 原始
+//             常量, 只有本文件用, 直接写在这里(原来是 qtcompat 导出的)。
 // ---------------------------------------------------------------------------
+
+const SND_ASYNC = 0x0001;
+const SND_NODEFAULT = 0x0002;
+const SND_LOOP = 0x0008;
+const SND_FILENAME = 0x00020000;
 
 export class AlarmPlayer
 {
@@ -32,10 +39,12 @@ export class AlarmPlayer
         // SND_ASYNC : return immediately, keep playing in the background
         // SND_LOOP  : repeat until stopped
         // SND_NODEFAULT : stay silent instead of the system default beep if missing
-        const ok = PlaySoundW(wavPath, NULL,
+        const ok = PlaySoundW(wavPath, null,
             SND_FILENAME | SND_LOOP | SND_ASYNC | SND_NODEFAULT);
 
-        this.m_playing = (ok !== FALSE);
+        // 原 C++ 是 `ok != FALSE`(BOOL 非 0 即真); 绑定层给回来的是 JS 布尔,
+        // 所以在这里用 !! 归一(原来那套 `!== 0` 对 false 会判成真)。
+        this.m_playing = !!ok;
         return this.m_playing;
     }
 
@@ -45,7 +54,7 @@ export class AlarmPlayer
         if (!this.m_playing)
             return;
 
-        PlaySoundW(NULL, NULL, 0);
+        PlaySoundW(null, null, 0);
         this.m_playing = false;
     }
 

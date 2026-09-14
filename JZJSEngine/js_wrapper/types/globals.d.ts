@@ -21,7 +21,7 @@
  * 什么时候有值(依据是**注册路径**, 不是运行期猜的):
  *   * 类实例方法 / 属性访问(挂在类原型上的, 如 pane.move() / w.text)     -> 有值(该实例)
  *   * 事件回调(onPaint / onMousePress / onShow ...)                       -> 有值(被派发的控件)
- *   * 信号回调(btn.onClicked(cb) / spin.onValueChanged(cb) ...)           -> 有值(发信号的对象)
+ *   * 信号回调(btn.onClicked = () => ... / spin.onValueChanged = ...)     -> 有值(发信号的对象)
  *   * 命名空间 / 全局函数(process.cwd() / fs.readString())里面            -> 不占帧, 看到的是外层那个实例
  *   * 不在上述调用里(模块顶层 / 光秃秃的 setTimeout 回调)                   -> **null**
  *

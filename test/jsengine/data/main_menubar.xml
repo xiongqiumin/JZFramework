@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+    <class>MainUi</class>
+    <widget class="MainWindow" name="main">
+        <property name="title">Demo</property>
+        <property name="geometry">100,100,600,400</property>
+        <menubar id="mb">
+            <menu title="文件">
+                <action text="打开" shortcut="Ctrl+O"/>
+                <action text="保存" shortcut="Ctrl+S"/>
+                <separator/>
+                <menu title="最近">
+                    <action text="readme.txt"/>
+                </menu>
+                <separator/>
+                <action text="退出" shortcut="Ctrl+Q"/>
+            </menu>
+            <menu title="编辑">
+                <action text="撤销"/>
+                <action text="重做"/>
+                <separator/>
+                <action text="全选" checkable="true"/>
+            </menu>
+        </menubar>
+        <widget class="Label" name="central">
+            <property name="text">Central</property>
+            <property name="geometry">0,0,600,360</property>
+        </widget>
+    </widget>
+</ui>

@@ -164,6 +164,91 @@ bool JZJSUiLoader::load(const std::string& xmlText)
     return true;
 }
 
+// ---- 菜单结构解析: <menubar> -> <menu title> -> <action>/<separator>/<menu> ----
+// 这些不是渲染树控件(JZMenu/JZAction 是 JZObject 数据模型), 用专属标签与 <widget>
+// 同层级挂在窗口下; 构造时由 addMenu/addAction/addSeparator 建立, 不进 __types。
+static bool parseActionNode(const JZDomElement& el, JZUiNode& out, std::string& err)
+{
+    out.type = "Action";
+    out.props = Json::Value(Json::objectValue);
+    std::string text = trim(el.attribute("text"));
+    if (text.empty())
+        text = trim(el.text());
+    if (!text.empty())
+        out.props["text"] = text;
+    if (el.hasAttribute("shortcut"))
+        out.props["shortcut"] = trim(el.attribute("shortcut"));
+    if (el.hasAttribute("checkable"))
+        out.props["checkable"] = (trim(el.attribute("checkable")) == "true");
+    if (el.hasAttribute("checked"))
+        out.props["checked"] = (trim(el.attribute("checked")) == "true");
+    if (el.hasAttribute("enabled"))
+        out.props["enabled"] = (trim(el.attribute("enabled")) == "true");
+    return true;
+}
+
+static bool parseMenuNode(const JZDomElement& el, JZUiNode& out, std::string& err, const std::string& path)
+{
+    out.type = "Menu";
+    out.props = Json::Value(Json::objectValue);
+    if (el.hasAttribute("title"))
+        out.props["title"] = trim(el.attribute("title"));
+    std::string id = el.attribute("name");
+    if (id.empty())
+        id = el.attribute("id");
+    out.id = id;
+
+    JZDomNodeList kids = el.childNodes();
+    for (int i = 0; i < kids.count(); ++i) {
+        JZDomNode n = kids.item(i);
+        if (!n.isElement())
+            continue;
+        JZDomElement e = n.toElement();
+        std::string tag = e.tagName();
+        if (tag == "action") {
+            JZUiNode child;
+            if (!parseActionNode(e, child, err))
+                return false;
+            out.children.push_back(std::move(child));
+        } else if (tag == "separator") {
+            JZUiNode child;
+            child.type = "Separator";
+            out.children.push_back(std::move(child));
+        } else if (tag == "menu") {
+            JZUiNode child;
+            if (!parseMenuNode(e, child, err, path + "/menu"))
+                return false;
+            out.children.push_back(std::move(child));
+        }
+    }
+    return true;
+}
+
+static bool parseMenubarNode(const JZDomElement& el, JZUiNode& out, std::string& err, const std::string& path)
+{
+    out.type = "MenuBar";
+    out.props = Json::Value(Json::objectValue);
+    std::string id = el.attribute("name");
+    if (id.empty())
+        id = el.attribute("id");
+    out.id = id;
+
+    JZDomNodeList kids = el.childNodes();
+    for (int i = 0; i < kids.count(); ++i) {
+        JZDomNode n = kids.item(i);
+        if (!n.isElement())
+            continue;
+        JZDomElement e = n.toElement();
+        if (e.tagName() == "menu") {
+            JZUiNode child;
+            if (!parseMenuNode(e, child, err, path + "/MenuBar"))
+                return false;
+            out.children.push_back(std::move(child));
+        }
+    }
+    return true;
+}
+
 bool JZJSUiLoader::parseWidget(const JZDomElement& el, JZUiNode& out, const std::string& path)
 {
     std::string type = el.attribute("class");
@@ -208,6 +293,34 @@ bool JZJSUiLoader::parseWidget(const JZDomElement& el, JZUiNode& out, const std:
             if (!parseWidget(e, child, path + "/" + type))
                 return false;
             out.children.push_back(std::move(child));
+        } else if (tag == "menubar") {
+            // 菜单栏: 专属标签, 与 <widget> 同层级挂在窗口下; 内部用 <menu>/<action>/<separator>
+            JZUiNode child;
+            if (!parseMenubarNode(e, child, m_error, path + "/MenuBar"))
+                return false;
+            out.children.push_back(std::move(child));
+        } else if (tag == "item") {
+            // 列表型子项(ComboBox / ListWidget 用 addItem 添加):
+            //   <item>foo</item> / <item text="foo"/> / <item><property name="text">foo</property></item>
+            std::string text;
+            if (e.hasAttribute("text")) {
+                text = trim(e.attribute("text"));
+            } else {
+                bool found = false;
+                JZDomNodeList ik = e.childNodes();
+                for (int k = 0; k < ik.count(); ++k) {
+                    JZDomNode nn = ik.item(k);
+                    if (nn.isElement() && nn.toElement().tagName() == "property"
+                        && nn.toElement().attribute("name") == "text") {
+                        text = trim(nn.toElement().text());
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    text = trim(e.text());
+            }
+            out.items.push_back(text);
         }
         // 其它子元素(layout/等等)目前忽略
     }
@@ -275,6 +388,12 @@ void JZJSUiLoader::writeNode(const JZUiNode& node, Json::Value& out) const
             arr.append(item);
         }
         out["children"] = arr;
+    }
+    if (!node.items.empty()) {
+        Json::Value arr(Json::arrayValue);
+        for (const auto& it : node.items)
+            arr.append(it);
+        out["items"] = arr;
     }
 }
 
@@ -371,16 +490,87 @@ std::string sanitizeId(const std::string& id)
     return s;
 }
 
+// 子控件挂载方式 —— **定义必须放在这里**(TsGen 在文件前面, 两个 generator 都要用它的枚举值,
+// 而 switch 的 case 标签要求完整类型, 光前向声明是不够的)。
+// 按父控件类型决定挂载方式:
+//   Window/Dialog -> addWidget(自动补 VBox)      MainWindow -> setCentralWidget
+//   StackedWidget -> addWidget(每页一个)         Splitter   -> addWidget(每子项一个)
+//   TabWidget     -> addTab(每页 + label)         ScrollArea -> setWidget(单一内容控件)
+//   通用容器      -> setParentWidget             非容器(ComboBox/ListWidget/TableWidget) -> 不接受
+enum class UiMount {
+    WindowAdd,   // Window/Dialog: addWidget(自动补 VBox)
+    Central,     // MainWindow: 单 widget -> setCentralWidget
+    Stack,       // StackedWidget: addWidget(page)
+    Splitter,    // Splitter: addWidget
+    Tab,         // TabWidget: addTab(page, label)
+    Scroll,      // ScrollArea: setWidget(单一内容控件)
+    Parent,      // 通用容器(JZWidget / GroupBox / Canvas / ...): setParentWidget
+    None         // 非容器(ComboBox / ListWidget / TableWidget): 不能挂 widget 子控件
+};
+
+bool uiIsLayout(const std::string& t);
+UiMount uiMountMode(const std::string& t);
+bool uiAcceptsLayout(const std::string& t);
+bool uiIsItemHost(const std::string& t);
+std::string uiTabLabel(const JZUiNode& child);
+
 // 递归生成 setupUi() 方法体(平坦语句), 同时收集带 id 的字段名。
 struct TsGen {
     std::string out;
     int counter = 0;
     std::set<std::string> idFields;
 
+    // 生成菜单树(菜单栏 / 子菜单里的 Menu 节点): addMenu + addAction/addSeparator。
+    // 定义放在 genNode **之前**(它要被 genNode 调用; 这里不留"声明 + 类内后置定义"那套)。
+    void genMenuTs(const JZUiNode& menu, int depth, const std::string& parentExpr)
+    {
+        std::string indent(depth * 2, ' ');
+        std::string m = "_m" + std::to_string(counter++);
+        std::string title = menu.props.isMember("title")
+            ? tsLiteral(menu.props["title"].asString()) : "\"\"";
+        out += indent + "const " + m + " = " + parentExpr + ".addMenu(" + title + ");\n";
+        for (const auto& c : menu.children) {
+            if (c.type == "Action") {
+                std::string a = "_a" + std::to_string(counter++);
+                std::string text = c.props.isMember("text")
+                    ? tsLiteral(c.props["text"].asString()) : "\"\"";
+                out += indent + "const " + a + " = " + m + ".addAction(" + text + ");\n";
+                if (c.props.isMember("shortcut"))
+                    out += indent + a + ".setShortcut(" + tsLiteral(c.props["shortcut"].asString()) + ");\n";
+                if (c.props.isMember("checkable"))
+                    out += indent + a + ".setCheckable(" + tsLiteral(c.props["checkable"]) + ");\n";
+                if (c.props.isMember("checked"))
+                    out += indent + a + ".setChecked(" + tsLiteral(c.props["checked"]) + ");\n";
+                if (c.props.isMember("enabled") && !c.props["enabled"].asBool())
+                    out += indent + a + ".setEnabled(false);\n";
+            } else if (c.type == "Separator") {
+                out += indent + m + ".addSeparator();\n";
+            } else if (c.type == "Menu") {
+                genMenuTs(c, depth, m);
+            }
+        }
+    }
+
     // 生成该节点的创建 + 属性设置, 返回引用该节点的表达式(供父节点 append)。
     std::string genNode(const JZUiNode& node, int depth)
     {
         std::string indent(depth * 2, ' ');
+        if (node.type == "MenuBar") {
+            // 菜单栏专属: 用 JZMenuBar, 内部用 addMenu/addAction/addSeparator 构造菜单树
+            std::string lhs;
+            if (!node.id.empty()) {
+                lhs = "this." + sanitizeId(node.id);
+                idFields.insert(sanitizeId(node.id));
+                out += indent + lhs + " = new JZMenuBar();\n";
+            } else {
+                std::string var = "_w" + std::to_string(counter++);
+                lhs = var;
+                out += indent + "const " + var + " = new JZMenuBar();\n";
+            }
+            for (const auto& m : node.children)
+                if (m.type == "Menu") genMenuTs(m, depth, lhs);
+            return lhs;
+        }
         std::string lhs;
         if (!node.id.empty()) {
             lhs = "this." + sanitizeId(node.id);
@@ -415,10 +605,71 @@ struct TsGen {
             }
         }
 
+        // 统计 MainWindow 的中央控件个数(只允许一个非菜单栏 widget)
+        int centralCount = 0;
+
         for (const auto& c : node.children) {
+            // ---- 布局子节点: 只有"通用布局宿主"才接受 setLayout ----
+            if (uiIsLayout(c.type)) {
+                if (!uiAcceptsLayout(node.type)) {
+                    // MainWindow / StackedWidget / Splitter / TabWidget / ScrollArea / 非容器
+                    // 都有固定内部布局, setLayout 不适用
+                    out += indent + "// uiLoader: " + node.type
+                        + " 不支持通用布局(不能用 <layout> 子节点)\n";
+                    continue;
+                }
+                std::string childExpr = genNode(c, depth);
+                out += indent + lhs + ".setLayout(" + childExpr + ");\n";
+                continue;
+            }
+
+            // ---- widget 子节点: 按父控件类型决定挂载方式 ----
             std::string childExpr = genNode(c, depth);
-            out += indent + lhs + ".append(" + childExpr + ");\n";
+            UiMount mode = uiMountMode(node.type);
+            switch (mode) {
+            case UiMount::Central:
+                if (c.type == "MenuBar") {
+                    out += indent + lhs + ".addMenuBar(" + childExpr + ");\n";
+                } else if (centralCount++ > 0) {
+                    out += indent + "// uiLoader: MainWindow 只能有一个中央控件(忽略 \"" + c.id + "\")\n";
+                } else {
+                    out += indent + lhs + ".setCentralWidget(" + childExpr + ");\n";
+                }
+                break;
+            case UiMount::Stack:
+                out += indent + lhs + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::Splitter:
+                out += indent + lhs + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::Tab:
+                out += indent + lhs + ".addTab(" + childExpr + ", "
+                    + tsLiteral(uiTabLabel(c)) + ");\n";
+                break;
+            case UiMount::Scroll:
+                out += indent + lhs + ".setWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::WindowAdd:
+                out += indent + lhs + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::None:
+                // 非容器(ComboBox / ListWidget / TableWidget)不接受 widget 子控件
+                out += indent + "// uiLoader: " + node.type
+                    + " 不是容器控件, 不能挂 widget 子控件(用 <item> 添加列表项)\n";
+                break;
+            case UiMount::Parent:
+            default:
+                out += indent + lhs + ".append(" + childExpr + ");\n";
+                break;
+            }
         }
+
+        // 列表型控件(ComboBox / ListWidget): <item> 子项 -> addItem(text)
+        if (uiIsItemHost(node.type)) {
+            for (const auto& it : node.items)
+                out += indent + lhs + ".addItem(" + tsLiteral(it) + ");\n";
+        }
+
         return lhs;
     }
 };
@@ -483,7 +734,7 @@ const std::map<std::string, std::string>& uiClassMap()
 {
     static const std::map<std::string, std::string> m = {
         { "Window",       "JZWindow" },
-        { "MainWindow",   "JZWindow" },
+        { "MainWindow",   "JZMainWindow" },
         { "Dialog",       "JZWindow" },
         { "Canvas",       "JZCanvas" },
         { "Label",        "JZLabel" },
@@ -518,6 +769,7 @@ const std::map<std::string, std::string>& uiClassMap()
         { "Splitter",      "JZSplitter" },
         { "MenuBar",       "JZMenuBar" },
         { "Menu",          "JZMenu" },
+        { "Action",        "JZAction" },
         // 未注册/暂无对应(用到会 undefined): TreeWidget(JZTreeWidget 尚未绑定到 JS)。
     };
     return m;
@@ -547,6 +799,8 @@ bool uiHasCurrentIndex(const std::string& t) {
     return t == "ComboBox" || t == "TabWidget" ||
            t == "StackedWidget" || t == "ListWidget";
 }
+// 注: ComboBox 也支持 setCurrentIndex(已并入上面的白名单), 这样 <property name="currentIndex">
+//     能在生成脚本里正确落到 addItem 之后(项齐了再选, 否则索引被夹成 -1)。
 bool uiHasChecked(const std::string& t) {
     return t == "CheckBox" || t == "RadioButton";
 }
@@ -558,6 +812,56 @@ bool uiHasPlaceholder(const std::string& t) {
 }
 bool uiHasRange(const std::string& t) {
     return t == "SpinBox";
+}
+
+// 子控件挂载方式: 按**父控件类型**决定一个 <widget> 子节点如何挂上去。
+// 通用容器(JZWidget / GroupBox 等)用 setParentWidget; 窗口用 addWidget;
+// 下面这些控件有**专属**接口, 不能用通用布局/setParentWidget:
+//   MainWindow    -> 单中央控件 setCentralWidget(菜单栏用 addMenuBar)
+// 注: UiMount 的枚举定义已上移到 TsGen 之前(两个 generator 都要在文件前部看到它)。
+
+
+UiMount uiMountMode(const std::string& t)
+{
+    if (t == "MainWindow")    return UiMount::Central;
+    if (t == "StackedWidget") return UiMount::Stack;
+    if (t == "Splitter")      return UiMount::Splitter;
+    if (t == "TabWidget")     return UiMount::Tab;
+    if (t == "ScrollArea")    return UiMount::Scroll;
+    if (t == "ComboBox" || t == "ListWidget" || t == "TableWidget")
+        return UiMount::None;
+    if (uiIsWindow(t))        return UiMount::WindowAdd;   // Window / Dialog(不含 MainWindow)
+    return UiMount::Parent;                           // JZWidget / GroupBox / ...
+}
+
+// 接受 <layout> 子控件的父控件: 只有"通用布局宿主"(Window/Dialog/Widget/GroupBox)。
+// MainWindow/Stacked/Splitter/Tab/Scroll/非容器都不接受 setLayout(各自有固定内部布局)。
+bool uiAcceptsLayout(const std::string& t)
+{
+    UiMount m = uiMountMode(t);
+    return m == UiMount::Parent || m == UiMount::WindowAdd;
+}
+
+// 列表型控件(用 <item> 子元素而非 widget 子控件): ComboBox / ListWidget
+bool uiIsItemHost(const std::string& t)
+{
+    return t == "ComboBox" || t == "ListWidget";
+}
+
+// 菜单结构节点(Menu/Action/Separator)由 addMenu/addAction/addSeparator 构造,
+// 不是经 __mk 创建的控件类, 不进 __types, 也不参与"未知类型"校验。
+bool uiIsMenuStructure(const std::string& t)
+{
+    return t == "Menu" || t == "Action" || t == "Separator";
+}
+
+// TabWidget.addTab 的标签: 取子控件的 title 属性, 否则 id, 否则空串
+std::string uiTabLabel(const JZUiNode& child)
+{
+    if (child.props.isObject() && child.props.isMember("title")
+        && child.props["title"].isString())
+        return child.props["title"].asString();
+    return child.id;
 }
 
 // 文本类属性(text/title/placeholderText)要**强制按字符串**取值:
@@ -580,12 +884,56 @@ struct UiScriptGen {
     std::string out;
     int counter = 0;
 
+    // 生成菜单树(菜单栏 / 子菜单里的 Menu 节点): addMenu + addAction/addSeparator。
+    // 定义前置(同 TsGen::genMenuTs): genNode 会调用它。
+    void genMenuJs(const JZUiNode& menu, int depth, const std::string& parentExpr)
+    {
+        std::string indent(depth * 2, ' ');
+        std::string m = "__w" + std::to_string(counter++);
+        std::string title = menu.props.isMember("title")
+            ? tsLiteral(menu.props["title"].asString()) : "\"\"";
+        out += indent + "var " + m + " = " + parentExpr + ".addMenu(" + title + ");\n";
+        out += indent + "__keep.push(" + m + ");\n";
+        for (const auto& c : menu.children) {
+            if (c.type == "Action") {
+                std::string a = "__w" + std::to_string(counter++);
+                std::string text = c.props.isMember("text")
+                    ? tsLiteral(c.props["text"].asString()) : "\"\"";
+                out += indent + "var " + a + " = " + m + ".addAction(" + text + ");\n";
+                out += indent + "__keep.push(" + a + ");\n";
+                if (c.props.isMember("shortcut"))
+                    out += indent + a + ".setShortcut(" + tsLiteral(c.props["shortcut"].asString()) + ");\n";
+                if (c.props.isMember("checkable"))
+                    out += indent + a + ".setCheckable(" + tsLiteral(c.props["checkable"]) + ");\n";
+                if (c.props.isMember("checked"))
+                    out += indent + a + ".setChecked(" + tsLiteral(c.props["checked"]) + ");\n";
+                if (c.props.isMember("enabled") && !c.props["enabled"].asBool())
+                    out += indent + a + ".setEnabled(false);\n";
+            } else if (c.type == "Separator") {
+                out += indent + m + ".addSeparator();\n";
+            } else if (c.type == "Menu") {
+                genMenuJs(c, depth, m);
+            }
+        }
+    }
+
     // ownerVar: 本节点所在**布局**的宿主控件(非布局节点传空)。
     // 为什么需要: 布局的 addWidget **只登记 item、不建立父子关系**, 所以"布局里的控件"要两句 ——
     // lay.addWidget(child) + child.setParentWidget(ownerWidget)。
     std::string genNode(const JZUiNode& node, int depth, const std::string& ownerVar = "")
     {
         std::string indent(depth * 2, ' ');
+        if (node.type == "MenuBar") {
+            // 菜单栏专属: __mk 出 JZMenuBar, 内部用 addMenu/addAction/addSeparator 构造菜单树
+            std::string var = "__w" + std::to_string(counter++);
+            out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
+            out += indent + "__keep.push(" + var + ");\n";
+            if (!node.id.empty())
+                out += indent + "__ui." + sanitizeId(node.id) + " = " + var + ";\n";
+            for (const auto& m : node.children)
+                if (m.type == "Menu") genMenuJs(m, depth + 1, var);
+            return var;
+        }
         std::string var = "__w" + std::to_string(counter++);
         out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
         // 保持引用, 避免无 id 的子控件被 JS GC 回收后底层 C++ 对象悬空
@@ -631,8 +979,11 @@ struct UiScriptGen {
             }
         }
 
+        // 统计 MainWindow 的中央控件个数(只允许一个非菜单栏 widget)
+        int centralCount = 0;
+
         for (const auto& c : node.children) {
-            // 布局: 设到**控件**上(布局的 addWidget 只登记 item, 真正的父子关系由宿主控件立)
+            // ---- 布局子节点: 只有"通用布局宿主"才接受 setLayout ----
             if (uiIsLayout(c.type)) {
                 if (uiIsLayout(node.type)) {
                     // 布局套布局: 引擎的布局没有 addLayout, 显式报错比静默生成坏代码好
@@ -641,12 +992,21 @@ struct UiScriptGen {
                         + "\"), 请在转换阶段把内层布局拍平\");\n";
                     continue;
                 }
+                if (!uiAcceptsLayout(node.type)) {
+                    // MainWindow / StackedWidget / Splitter / TabWidget / ScrollArea / 非容器
+                    // 都有固定内部布局, setLayout 不适用 —— 直接报错比生成坏代码好。
+                    out += indent + "throw new Error(\"uiLoader: " + node.type
+                        + " 不支持通用布局(不能用 <layout> 子节点)\");\n";
+                    continue;
+                }
                 std::string childExpr = genNode(c, depth + 1, var);   // 布局的宿主 = 本控件
                 out += indent + var + ".setLayout(" + childExpr + ");\n";
                 continue;
             }
 
+            // ---- widget 子节点: 按父控件类型决定挂载方式 ----
             std::string childExpr = genNode(c, depth + 1);
+
             if (uiIsLayout(node.type)) {
                 // 父是布局: 先登记进布局, 再把父子关系立起来 ——
                 // **不能**用 setParentWidget(布局): 布局不是控件, 那里会抛"需要 JZWidget"。
@@ -657,11 +1017,63 @@ struct UiScriptGen {
                 out += indent + var + ".addWidget(" + childExpr + ", 0);\n";
                 if (!ownerVar.empty())
                     out += indent + childExpr + ".setParentWidget(" + ownerVar + ");\n";
-            } else if (uiIsWindow(node.type)) {
-                out += indent + var + ".addWidget(" + childExpr + ");\n";
-            } else {
-                out += indent + childExpr + ".setParentWidget(" + var + ");\n";
+                continue;
             }
+
+            UiMount mode = uiMountMode(node.type);
+            switch (mode) {
+            case UiMount::Central:
+                // MainWindow: 菜单栏走 addMenuBar; 其余(至多一个)widget 作中央控件
+                if (c.type == "MenuBar") {
+                    out += indent + var + ".addMenuBar(" + childExpr + ");\n";
+                } else {
+                    if (centralCount++ > 0) {
+                        out += indent + "throw new Error(\"uiLoader: MainWindow 只能有一个中央控件"
+                            "(setCentralWidget), 多余子控件 \"" + c.id + "\" 被忽略\");\n";
+                    } else {
+                        out += indent + var + ".setCentralWidget(" + childExpr + ");\n";
+                    }
+                }
+                break;
+            case UiMount::Stack:
+                // StackedWidget: 每页一个, 固定内部布局, 走 addWidget
+                out += indent + var + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::Splitter:
+                // Splitter: 每个子控件一个, 走 addWidget
+                out += indent + var + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::Tab:
+                // TabWidget: 每页一个, 标签取子控件 title/id
+                out += indent + var + ".addTab(" + childExpr + ", "
+                    + tsLiteral(uiTabLabel(c)) + ");\n";
+                break;
+            case UiMount::Scroll:
+                // ScrollArea: 单一内容控件, 走 setWidget
+                out += indent + var + ".setWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::WindowAdd:
+                // Window / Dialog: addWidget(自动补 VBox)
+                out += indent + var + ".addWidget(" + childExpr + ");\n";
+                break;
+            case UiMount::None:
+                // 非容器(ComboBox / ListWidget / TableWidget)不接受 widget 子控件,
+                // 列表内容用 <item> 子元素(addItem), 其它数据走属性。
+                out += indent + "throw new Error(\"uiLoader: " + node.type
+                    + " 不是容器控件, 不能挂 widget 子控件(用 <item> 添加列表项)\");\n";
+                break;
+            case UiMount::Parent:
+            default:
+                // 通用容器(JZWidget / GroupBox / ...): setParentWidget
+                out += indent + childExpr + ".setParentWidget(" + var + ");\n";
+                break;
+            }
+        }
+
+        // 列表型控件(ComboBox / ListWidget): <item> 子项 -> addItem(text)
+        if (uiIsItemHost(node.type)) {
+            for (const auto& it : node.items)
+                out += indent + var + ".addItem(" + tsLiteral(it) + ");\n";
         }
 
         // currentIndex 必须在**子节点挂载之后**再设一次:
@@ -700,6 +1112,8 @@ JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
     std::string badType;
     std::set<std::string> usedTypes;
     traverse([&](const JZUiNode& n, const JZUiNode*) {
+        if (uiIsMenuStructure(n.type))
+            return;
         if (unknown) return;
         auto it = clsMap.find(n.type);
         if (it == clsMap.end()) {

@@ -32,6 +32,11 @@
  */
 'use strict';
 
+// 事件发射器: 用 net 包那份(**全框架唯一实现**, 见 net/index.ts 顶部说明)。
+// 本文件曾自带一份私有 Emitter("不想依赖 net"), 现在统一 —— 两份实现容易走偏
+// (net 版是 Node 同名 API + `listeners()/listenerCount()` 等查询方法)。
+import { EventEmitter } from 'net/dist';
+
 declare const __jz: any;
 // setTimeout / clearTimeout 由引擎注入为全局(见 JZJSEngine 的时间任务), 编译期需自行声明
 declare function setTimeout(cb: (...a: any[]) => void, ms?: number): any;
@@ -39,92 +44,8 @@ declare function clearTimeout(id: any): void;
 
 type AnyFn = (...args: any[]) => void;
 
-// ---------------------------------------------------------------------------
-// 最小 EventEmitter（不依赖 net 包的全局 EventEmitter，也不做 Node 那种
-// "没有 error 监听器就抛异常" 的特例，避免纯 Promise 用法被误伤）
-// ---------------------------------------------------------------------------
-class Emitter
-{
-    _events: { [name: string]: AnyFn[] };
-
-    constructor()
-    {
-        this._events = {};
-    }
-
-    on(name: string, fn: AnyFn): Emitter
-    {
-        if (typeof fn !== 'function')
-            return this;
-        (this._events[name] || (this._events[name] = [])).push(fn);
-        return this;
-    }
-
-    once(name: string, fn: AnyFn): Emitter
-    {
-        const self = this;
-        const wrap = function (this: any, ...args: any[])
-        {
-            self.off(name, wrap as AnyFn);
-            fn.apply(this, args);
-        };
-        return this.on(name, wrap as AnyFn);
-    }
-
-    off(name: string, fn?: AnyFn): Emitter
-    {
-        const list = this._events[name];
-        if (!list)
-            return this;
-        if (!fn)
-            delete this._events[name];
-        else
-        {
-            for (let i = list.length - 1; i >= 0; i--)
-            {
-                if (list[i] === fn)
-                    list.splice(i, 1);
-            }
-        }
-        return this;
-    }
-
-    removeListener(name: string, fn?: AnyFn): Emitter
-    {
-        return this.off(name, fn);
-    }
-
-    removeAllListeners(name?: string): Emitter
-    {
-        if (typeof name === 'string')
-            delete this._events[name];
-        else
-            this._events = {};
-        return this;
-    }
-
-    listeners(name: string): AnyFn[]
-    {
-        return (this._events[name] || []).slice();
-    }
-
-    listenerCount(name: string): number
-    {
-        const list = this._events[name];
-        return list ? list.length : 0;
-    }
-
-    emit(name: string, ...args: any[]): boolean
-    {
-        const list = this._events[name];
-        if (!list || list.length === 0)
-            return false;
-        const copy = list.slice();
-        for (let i = 0; i < copy.length; i++)
-            copy[i].apply(this, args);
-        return true;
-    }
-}
+// 注: 这里原本有一份私有 Emitter(约 86 行, 注释写"不想依赖 net") —— 已删,
+// 统一用文件头 import 的 net EventEmitter(全框架唯一实现)。
 
 // ---------------------------------------------------------------------------
 // 工具
@@ -186,7 +107,7 @@ function unwrap(promise: any): Promise<any>
 // ---------------------------------------------------------------------------
 // ModbusRTU —— 同时也是 TCP 客户端（modbus-serial 里两者是同一个类）
 // ---------------------------------------------------------------------------
-export class ModbusRTU extends Emitter
+export class ModbusRTU extends EventEmitter
 {
     /** 底层连接句柄（__jz.modbus.create 的原生对象），未连接时为 null */
     _native: any;

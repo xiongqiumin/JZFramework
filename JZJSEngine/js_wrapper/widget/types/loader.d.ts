@@ -1,4 +1,4 @@
-// 两个"应用级"全局对象 —— JZJSWidgetModule::registUiLoader() 注册。
+// 应用级全局对象: uiLoader(JZJSWidgetModule::registUiLoader 注册) 与 jzApp(registApp 注册)。
 
 // ---------------------------------------------------------------------------
 // uiLoader: 解析 Qt 风格 UI 定义并**直接构造真实控件树**, 返回根 JZWindow 窗口
@@ -24,15 +24,24 @@ declare const uiLoader: {
 };
 
 // ---------------------------------------------------------------------------
-// jzWidget: 应用级入口(单控件级样式用 widget.setStyleSheet(css))
+// jzApp: 进程级应用对象(JZApplication)的 JS 入口。路径/退出/全局样式表都在这里。
+// (单控件级样式用 widget.setStyleSheet(css))
 // ---------------------------------------------------------------------------
-declare const jzWidget: {
+declare const jzApp: {
+  /** 入口脚本所在目录(没加载过脚本时返回空串) */
+  applicationDirPath(): string;
+  /** 入口脚本绝对路径(没加载过脚本时返回空串) */
+  applicationFilePath(): string;
+  /** 进程当前工作目录 */
+  workingDirPath(): string;
+  /** 请求事件循环退出(等价 JZApplication::quit) */
+  quit(): void;
+  /** 以退出码退出(等价 JZApplication::exit) */
+  exit(code?: number): void;
   /**
-   * 设置**全局**样式表(等价 C++ 的 jzApp->setStyleSheet), 作用于所有控件。
+   * 设置**全局**样式表(等价 C++ 的 JZApplication::setStyleSheet), 作用于所有控件。
    * 换肤 = 整表替换: 变量只有 :root 一处, 且是 parse 期文本替换, 所以切主题要把两份 CSS
    * 各完整给一次, 而不是"改一个变量"。语法错误抛 SyntaxError(错误串见 styleSheetError())。
    */
   setStyleSheet(css: string): boolean;
-  /** 上一次 setStyleSheet 的错误原因; 没有错误返回空串 */
-  styleSheetError(): string;
 };

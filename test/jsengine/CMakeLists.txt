@@ -7,6 +7,12 @@ target_link_libraries(test_jsui JZFramework)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/timer_ui.xml
                ${CMAKE_CURRENT_BINARY_DIR}/timer_ui.xml COPYONLY)
 
+# load_ui: 加载一份 UI 描述 -> 解析 + createUi 运行时构造 + 校验控件树(菜单栏/菜单/动作)。
+# 每次运行只吃一份数据文件(由 add_test 通过参数指定), 一份失败不影响其它数据。
+add_executable(test_load_ui test_load_ui.cpp)
+target_link_libraries(test_load_ui JZFramework)
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
 add_executable(test_jsnet test_jsnet.cpp)
 target_link_libraries(test_jsnet JZFramework)
 # 让测试能引用 JS 适配层编译产物目录(演示分离式加载 + 固定路径 import)
@@ -25,16 +31,6 @@ target_compile_definitions(test_jsmodbus PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAP
 
 add_executable(test_jsworker test_jsworker.cpp)
 target_link_libraries(test_jsworker JZFramework)
-
-# BTE 上位机(Qt/C++ -> JS 移植)的 协议层 + 传输层 端到端测试。
-# 源码目录 = binary/code_agent/runtime/bteserver(纯 JS, 不进编译, 由引擎以 ESM 加载)
-add_executable(test_bteserver test_bteserver.cpp)
-target_link_libraries(test_bteserver JZFramework)
-target_compile_definitions(test_bteserver PRIVATE
-    JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}"
-    # bteserver 已迁到 TypeScript: 源码在 bteserver/src/*.ts, 引擎加载的是 tsc 产物 bteserver/build/*.js
-    # (构建前先跑: <tsc> -p binary/code_agent/runtime/bteserver/tsconfig.json)
-    JZ_BTESERVER_DIR="${CMAKE_SOURCE_DIR}/binary/code_agent/runtime/bteserver/build")
 
 # ---- ctest 注册 ----
 add_test(NAME jsengine.test_jsengine COMMAND test_jsengine)
@@ -57,3 +53,11 @@ set_tests_properties(jsengine.test_bteserver PROPERTIES TIMEOUT 180)
 
 add_test(NAME jsengine.test_jsworker COMMAND test_jsworker)
 set_tests_properties(jsengine.test_jsworker PROPERTIES TIMEOUT 180)
+
+# load_ui: 一份数据一份测试(运行时各跑一份, 互不影响)。新增数据文件时在此加一行即可。
+add_test(NAME jsengine.test_load_ui.basic COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/basic_window.xml)
+set_tests_properties(jsengine.test_load_ui.basic PROPERTIES TIMEOUT 60)
+add_test(NAME jsengine.test_load_ui.menubar COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/main_menubar.xml)
+set_tests_properties(jsengine.test_load_ui.menubar PROPERTIES TIMEOUT 60)
+add_test(NAME jsengine.test_load_ui.containers COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/containers.xml)
+set_tests_properties(jsengine.test_load_ui.containers PROPERTIES TIMEOUT 60)

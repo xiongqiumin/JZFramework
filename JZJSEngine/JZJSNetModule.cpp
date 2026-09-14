@@ -5,10 +5,8 @@
 #include "JZByteArray.h"
 #include "JZJSBind.h"
 
-static bool jsSameValue(JSValue a, JSValue b)
-{
-    return a.u.ptr == b.u.ptr && JS_VALUE_GET_TAG(a) == JS_VALUE_GET_TAG(b);
-}
+// 注: 早先这里有个自写的 jsSameValue(直接比 ptr + tag)。现在 off() 里统一用 quickjs 的
+// JS_IsStrictEqual —— 语义等价(同一对象 / 同一原始值), 且不必依赖 JSValue 的内部布局。
 
 // ======================================================================
 // JZJSEventSink
@@ -43,9 +41,6 @@ JZJSEventSink::~JZJSEventSink()
 void JZJSEventSink::clear(bool freeValues)
 {
     JSContext* ctx = m_engine ? m_engine->context() : nullptr;
-    fprintf(stderr, "[sink] clear ptr=%p disposed=%d events=%d ctx=%p\n", (void*)this,
-            (int)m_disposed, (int)m_listeners.size(), (void*)ctx);
-    fflush(stderr);
     if (ctx && freeValues)
     {
         for (auto& kv : m_listeners)
@@ -105,7 +100,7 @@ void JZJSEventSink::off(const std::string& event, JSValue cb)
     auto& list = it->second;
     for (size_t i = 0; i < list.size();)
     {
-        if (jsSameValue(list[i].second, cb))
+        if (JS_IsStrictEqual(ctx, list[i].second, cb))
         {
             if (m_module)
                 m_module->releaseCallback(list[i].first, list[i].second);
@@ -535,10 +530,6 @@ void JZJSWebSocket::send(JSValue data, bool binary)
     if (!JZJSNetModule::jsValueToBytes(engine->context(), data, buf))
         return;
 
-    fprintf(stderr, "[ws] send isConnected=%d size=%d binary=%d\n",
-            socket ? (int)socket->isConnected() : -1, (int)buf.size(), (int)binary);
-    fflush(stderr);
-
     if (binary)
         socket->sendBinaryMessage(buf);
     else
@@ -939,8 +930,6 @@ JZJSNetModule::JZJSNetModule()
     m_typeWs = -1;
     m_typeWsServer = -1;
     m_typeMqtt = -1;
-    m_cbRoot = JS_UNDEFINED;
-    m_cbId = 0;
 }
 
 JZJSNetModule::~JZJSNetModule()
@@ -957,23 +946,17 @@ void JZJSNetModule::addSink(JZJSEventSink* sink, std::function<void()> disposer)
 
 int JZJSNetModule::retainCallback(JSValue cb)
 {
-    JSContext* ctx = m_engine->context();
-    int id = m_cbId++;
-    // 根数组持有引用, 使闭包对 GC 始终可达。
-    // 注意: JS_SetProperty* 会消费传入值的引用, cb 是借来的参数, 必须先 dup 一份。
-    JS_SetPropertyInt64(ctx, m_cbRoot, id, JS_DupValue(ctx, cb));
-    return id;
+    // 回调 GC 根由**引擎**统一维护(见 JZJSEngine::retainCallback) —— 控件回调槽用的是同一份,
+    // 免得每个模块各挂一个全局根数组、各管一套 id。
+    return m_engine ? m_engine->retainCallback(cb) : -1;
 }
 
 void JZJSNetModule::releaseCallback(int id, JSValue value)
 {
-    JSContext* ctx = m_engine->context();
-    fprintf(stderr, "[cb] release id=%d rootTag=%d valTag=%d\n", id,
-            (int)JS_VALUE_GET_TAG(m_cbRoot), (int)JS_VALUE_GET_TAG(value));
-    fflush(stderr);
-    if (id >= 0)
-        JS_SetPropertyInt64(ctx, m_cbRoot, id, JS_UNDEFINED);   // 释放根数组对该回调的引用
-    JS_FreeValue(ctx, value);
+    // 引擎已经走了(ctx 都放掉了): 这份值随 ctx 一起没了, 不能再碰。
+    if (!m_engine)
+        return;
+    m_engine->releaseCallback(id, value);
 }
 
 void JZJSNetModule::removeSink(JZJSEventSink* sink)
@@ -997,10 +980,9 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
 
     auto global = m_engine->globalObject();
 
-    // JS 回调的 GC 根数组(挂在全局, 防止"只被 C++ 持有"的闭包被 GC 回收)。
-    // setProperty 会消费传入值的引用, 这里传 dup 出去的一份, 自己仍持有一份。
-    m_cbRoot = JS_NewArray(m_engine->context());
-    m_engine->setProperty(global, "__jzCallbackRoot", JS_DupValue(m_engine->context(), m_cbRoot));
+    // 注: JS 回调的 GC 根数组(__jzCallbackRoot)现在由**引擎**建(见 JZJSEngine::initJSEnv),
+    // 本模块的 retainCallback/releaseCallback 只是转发过去 —— 控件回调槽与网络回调共用一份。
+    (void)global;
 
     // ---- TCP socket ----
     jsbind::ClassBind<JZJSNetSocket> bind_socket("JZJSNetSocket");
@@ -1181,8 +1163,6 @@ void JZJSNetModule::deinitEngine()
     // 逆序: 先关连接, 再关 server(server 析构会连带释放它 accept 出的连接)
     for (int i = (int)disposers.size() - 1; i >= 0; i--)
     {
-        fprintf(stderr, "[net] dispose %d/%d\n", i, (int)disposers.size());
-        fflush(stderr);
         disposers[i]();
     }
 
@@ -1195,15 +1175,12 @@ void JZJSNetModule::deinitEngine()
     for (size_t i = 0; i < sinks.size(); i++)
         sinks[i]->takeCallbacks(pending);
 
+    // 逐个交回引擎释放(置空回调 GC 根对应项 + free)。引擎已走时 ctx 为空, 这些值随 ctx 一起没了。
     JSContext* ctx = m_engine ? m_engine->context() : nullptr;
     if (ctx)
     {
         for (size_t i = 0; i < pending.size(); i++)
-        {
-            if (pending[i].first >= 0)
-                JS_SetPropertyInt64(ctx, m_cbRoot, pending[i].first, JS_UNDEFINED);
-            JS_FreeValue(ctx, pending[i].second);
-        }
+            m_engine->releaseCallback(pending[i].first, pending[i].second);
     }
 
     // 主动跑一轮 GC: 让已经不可达的 JS 包装对象在 ctx 还有效时析构,
@@ -1220,16 +1197,7 @@ void JZJSNetModule::deinitEngine()
     m_replyMap.clear();
     m_replyUrl.clear();
 
-    if (m_engine)
-    {
-        JSContext* ctx = m_engine->context();
-        if (ctx)
-        {
-            JS_SetPropertyStr(ctx, m_engine->globalObject(), "__jzCallbackRoot", JS_UNDEFINED);
-            JS_FreeValue(ctx, m_cbRoot);
-        }
-        m_cbRoot = JS_UNDEFINED;
-    }
+    // 回调 GC 根数组由引擎自己释放(见 JZJSEngine::deinitJSEnv) —— 本模块不再持有它。
     m_engine = nullptr;
 }
 
@@ -1366,8 +1334,6 @@ JSValue JZJSNetModule::wsCreateServer()
             JZJSWebSocket* ws = new JZJSWebSocket(m_engine, this);
             ws->socket = conn;
             ws->owned = false;   // conn 的 parent 是 server, 不能由我们 delete
-            fprintf(stderr, "[ws] accept conn=%p\n", (void*)conn);
-            fflush(stderr);
             ws->everConnected = true;
 
             JZJSWebSocket* wself = ws;

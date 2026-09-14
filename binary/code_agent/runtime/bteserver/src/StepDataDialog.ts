@@ -13,7 +13,14 @@ import { tr, emit, sprintf } from './BTEServer.js';
 import { stru_BTS_CMD_SEND_DFDATA76 } from './structs.js';
 import { PackDefine, STEP_CHARGE, STEP_CHARGE_OTHER, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
-import { QPen, Qt } from './qtcompat.js';
+
+// Qt 枚举/具名颜色里本文件用到的那几项(值与原 Qt 一致): 原来由 qtcompat 提供。
+// 注: qcustomplot 是第三方 Qt 库(不参与 JS 移植), 这里的画笔/角色值只是喂给它的替身。
+const Qt = {
+    UserRole: 0x0100,
+    blue: '#0000ff',
+    red: '#ff0000',
+};
 
 // ---------------------------------------------------------------------------
 // class StepDataDialog : public QDialog
@@ -53,10 +60,8 @@ export class StepDataDialog
         this.m_index = 0;
         this.m_isReal = false;
 
-        let flags = this.windowFlags();   // Qt::WindowFlags flags = windowFlags();
-        flags |= Qt.WindowMinMaxButtonsHint;
-        flags |= Qt.WindowCloseButtonHint;
-        this.setWindowFlags(flags);
+        // 原: flags |= Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint; setWindowFlags(flags);
+        // 引擎的窗口没有 Qt 的 windowFlags 概念(最小化/最大化/关闭按钮由框架统一给) —— 这几行去掉。
 
         this.m_treeHeaderList1.push(tr("记录序号"), tr("工步时间"), tr("起始电压(V)"), tr("终止电压(V)"), tr("充电中值电压(V)"),
             tr("放电中值电压(V)"), tr("恒流比(%)"), "");
@@ -258,10 +263,10 @@ export class StepDataDialog
         customPlot.xAxis.setTicker(timeTicker);
 
         customPlot.addGraph(customPlot.xAxis, customPlot.yAxis);
-        customPlot.graph(0).setPen(new QPen(Qt.blue)); // line color blue for first graph
+        customPlot.graph(0).setPen(new JZPen(Qt.blue)); // line color blue for first graph
 
         customPlot.addGraph(customPlot.xAxis, customPlot.yAxis2);
-        customPlot.graph(1).setPen(new QPen(Qt.red)); // line color red for second graph
+        customPlot.graph(1).setPen(new JZPen(Qt.red)); // line color red for second graph
 
         // pass data points to graphs:
         customPlot.graph(0).setName(names[0]);
@@ -272,8 +277,8 @@ export class StepDataDialog
             customPlot.yAxis2.setVisible(true);
         }
 
-        customPlot.yAxis.setBasePen(new QPen(Qt.blue, 1));
-        customPlot.yAxis2.setBasePen(new QPen(Qt.red, 1));
+        customPlot.yAxis.setBasePen(new JZPen(Qt.blue, 1));
+        customPlot.yAxis2.setBasePen(new JZPen(Qt.red, 1));
 
         customPlot.setInteractions(QCP.iRangeDrag | QCP.iRangeZoom);
         customPlot.axisRect().setRangeZoomAxes([customPlot.xAxis], [customPlot.yAxis, customPlot.yAxis2]);

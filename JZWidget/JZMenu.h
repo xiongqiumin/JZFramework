@@ -45,6 +45,9 @@ public:
     int actionCount() const;
     JZAction* actionAt(int index) const;
 
+    int menuCount() const;          // 子菜单数量 (action 中 subMenu() 非空的项)
+    JZMenu* menuAt(int index) const;
+
     // ---- 作为弹层显示 ----
     // owner:   所属顶层窗口 (用于屏幕坐标换算 / 模态循环归属)
     // anchor:  触发区 (屏幕逻辑坐标, JZRect 语义为 x/y/w/h); 菜单在其下沿展开; 子菜单在其右侧展开

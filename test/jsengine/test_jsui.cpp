@@ -822,9 +822,11 @@ int main()
 
             // ⑧ 对话框绑定(registDialogs): 类/全局对象与接口在即可。
             //    不在这里调 exec(): 它会真开模态循环, 无桌面会话下没有可交互的窗口(桌面环境里另测)。
-            check("JZDialog: 已注册(可 new + result/accept/reject/onFinished)",
+            // 信号是**属性**(onFinished 等): 未设置时读回 null, 赋值后才是函数 —— 这里先赋一个再查类型
+            check("JZDialog: 已注册(可 new + result/accept/reject; onFinished 是可写属性)",
                   evalStr(engine,
                           "var d8 = new JZDialog();"
+                          "d8.onFinished = function (r) {};"
                           "d8.result() + '|' + (typeof d8.exec) + '|' + (typeof d8.accept) + '|' + (typeof d8.onFinished)")
                       == "0|function|function|function");
             check("JZMessageBox: 静态接口在",
@@ -835,6 +837,22 @@ int main()
                       == "true");
             check("deleteLater: 已绑定(嵌套模态里删控件的正规做法)",
                   evalStr(engine, "typeof d8.deleteLater") == "function");
+
+            // ⑨ 信号属性化(defSignalProperty): 与事件槽同一条规则 —— 赋值设 / 覆盖上一次 /
+            //    赋 null 清空 / 赋非函数抛异常 / 读回当前回调。JZSpinBox::setValue 会 emit, 用它验证
+            //    "信号真的接到了最新那个回调上"(覆盖 + 清空都要在触发路径上体现)。
+            check("信号是属性: 覆盖式 + null 清空 + 非函数抛异常",
+                  evalStr(engine,
+                          "(function(){ var sp = new JZSpinBox(); sp.setRange(0, 100); var log = '';"
+                          " sp.onValueChanged = function (v) { log += 'A' + v; };"
+                          " sp.onValueChanged = function (v) { log += 'B' + v; };"   // 覆盖: 只该跑 B
+                          " sp.setValue(7);"
+                          " sp.onValueChanged = null;"                              // 清空: 之后再 emit 不调
+                          " sp.setValue(8);"
+                          " var thrown = 'none';"
+                          " try { sp.onValueChanged = 1; } catch (e) { thrown = 'throw'; }"
+                          " return log + '|' + thrown + '|' + String(sp.onValueChanged); })()")
+                      == "B7|throw|null");
 
             // 探针: 绑定类能不能被 JS 继承 —— bteserver 的 UI 类写的是 `class XxxDialog extends QDialog`
             // 这种风格, 若将来去掉 Qt 适配层改用真实绑定, 这一步必须先成立。

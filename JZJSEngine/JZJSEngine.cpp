@@ -455,6 +455,12 @@ void JZJSEngine::initJSEnv()
 
     registConsole();
 
+    // JS 回调的 GC 根数组: 挂一份到全局(__jzCallbackRoot), 自己持一份 —— 于是"只被 C++ 侧
+    // 持有的回调闭包"也始终从根可达, 不会被 quickjs 的循环 GC 回收(见 retainCallback 说明)。
+    m_cbRoot = JS_NewArray(m_ctx);
+    m_cbId = 0;
+    JS_SetPropertyStr(m_ctx, m_global, "__jzCallbackRoot", JS_DupValue(m_ctx, m_cbRoot));
+
     setStatus(Engine_pause);
 }
 
@@ -470,6 +476,14 @@ void JZJSEngine::deinitJSEnv()
         }
         m_timeTasks.clear();
         m_promiseTask.clear();
+
+        // 回调 GC 根: 先把全局上那份摘掉, 再放自己持有的数组句柄(登记过的回调随数组一起释放)
+        if (!JS_IsUndefined(m_cbRoot))
+        {
+            JS_SetPropertyStr(m_ctx, m_global, "__jzCallbackRoot", JS_UNDEFINED);
+            JS_FreeValue(m_ctx, m_cbRoot);
+            m_cbRoot = JS_UNDEFINED;
+        }
 
         JS_FreeValue(m_ctx, m_global);
         JS_FreeContext(m_ctx);
@@ -1605,6 +1619,28 @@ void JZJSEngine::clearPointerStates()
         }
     }
     // states 出作用域: 最后一批 shared_ptr 析构 -> 状态(含 data)析构
+}
+
+int JZJSEngine::retainCallback(JSValueConst cb)
+{
+    if (!m_ctx || JS_IsUndefined(m_cbRoot))
+        return -1;
+
+    int id = m_cbId++;
+    // 根数组持有引用, 使闭包对 GC 始终可达。
+    // 注意: JS_SetPropertyInt64 会消费传入值的引用, cb 是借来的参数, 必须先 dup 一份。
+    JS_SetPropertyInt64(m_ctx, m_cbRoot, id, JS_DupValue(m_ctx, cb));
+    return id;
+}
+
+void JZJSEngine::releaseCallback(int id, JSValue value)
+{
+    if (!m_ctx)
+        return;
+
+    if (id >= 0 && !JS_IsUndefined(m_cbRoot))
+        JS_SetPropertyInt64(m_ctx, m_cbRoot, id, JS_UNDEFINED);   // 释放根数组对该回调的引用
+    JS_FreeValue(m_ctx, value);
 }
 
 std::vector<std::pair<const void*, jsbind::JSPointerData*>> JZJSEngine::pointerDataList() const

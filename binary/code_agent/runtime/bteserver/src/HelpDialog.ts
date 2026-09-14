@@ -6,7 +6,6 @@
 
 import { tr } from './BTEServer.js';
 import { formatDateTime, addSeconds } from './datetime.js';
-import { Qt } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // class HelpDialog : public QDialog
@@ -19,7 +18,8 @@ export class HelpDialog
     {
         this.ui = new Ui_HelpDialogClass();
         this.ui.setupUi(this);
-        this.setWindowFlags(this.windowFlags() & ~Qt.WindowContextHelpButtonHint);
+        // 原: setWindowFlags(windowFlags() & ~Qt.WindowContextHelpButtonHint) ——
+        //     引擎的窗口没有 Qt 那套 windowFlags(标题栏按钮由框架统一给), 这行去掉。
         this.setWindowTitle(parent.windowTitle());
 
         this.ui.textHelp.setOpenExternalLinks(true);

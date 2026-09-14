@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+    <class>ContainersUi</class>
+    <widget class="Window" name="root">
+        <property name="title">Containers</property>
+        <property name="geometry">50,50,500,400</property>
+        <widget class="TabWidget" name="tabs">
+            <property name="geometry">10,10,460,180</property>
+            <widget class="Widget" name="page1">
+                <property name="title">Tab1</property>
+                <property name="geometry">0,0,460,150</property>
+            </widget>
+            <widget class="Widget" name="page2">
+                <property name="title">Tab2</property>
+                <property name="geometry">0,0,460,150</property>
+            </widget>
+        </widget>
+        <widget class="StackedWidget" name="stk">
+            <property name="geometry">10,200,200,180</property>
+            <widget class="Widget" name="sp1">
+                <property name="geometry">0,0,200,180</property>
+            </widget>
+            <widget class="Widget" name="sp2">
+                <property name="geometry">0,0,200,180</property>
+            </widget>
+        </widget>
+        <widget class="Splitter" name="sp">
+            <property name="geometry">220,200,260,180</property>
+            <widget class="Widget" name="pa1">
+                <property name="geometry">0,0,120,180</property>
+            </widget>
+            <widget class="Widget" name="pa2">
+                <property name="geometry">0,0,120,180</property>
+            </widget>
+        </widget>
+    </widget>
+</ui>

@@ -457,10 +457,14 @@ export async function main(argc, argv)
         }
     }
 
-    // 界面层还没收口(BTEServer.js 的依赖链里 import 着尚未移植的 ui_*): 先起一个**真窗口外壳**
-    // —— 真 JZWindow + 真布局 + 真控件, 用的就是界面层将来要用的那套 API。
-    // TODO(界面层迁移): 把 BTEServer.ts / BTEItemWidget.ts / 7 个 *Dialog.ts / Split*.ts 逐个换成
-    //   真 JZ 控件后, 这里改回 `new BTEServer()`, 并把 qtcompat.ts 删掉。
+    // 界面层还没收口: 先起一个**真窗口外壳** —— 真 JZWindow + 真布局 + 真控件,
+    // 用的就是界面层将来要用的那套 API。
+    //
+    // 进度(2026-09-14): qtcompat.ts 那个 Qt 运行期替身**已删除**, 业务层全部换成引擎真实现;
+    //   BTEServer 构造走到 `new StepDataDialog(this)` 才停(它还是 `QDialog.call(this)` +
+    //   `new Ui_StepDataDialogClass()` 的老写法, 且依赖未移植的 qcustomplot)。
+    // TODO(界面层迁移): 把 StepDataDialog + 7 个 *Dialog.ts 逐个换成"真 JZDialog + uiLoader 造的 UI"
+    //   (BTEServer.ts 已经改完, 见其构造里 this.ui = createUi()), 之后这里改回 `new BTEServer()`。
     const w = buildMainWindow();
     w.show();
     console.log("[main] BTEServer 界面层仍在移植中, 已启动真窗口外壳(网络/协议层可用)");

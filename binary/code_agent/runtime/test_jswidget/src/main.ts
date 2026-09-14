@@ -95,7 +95,7 @@ function applyTheme(dark: boolean): boolean
     const css = (dark ? THEME_ROOT_DARK : THEME_ROOT_LIGHT) + THEME_RULES;
     try
     {
-        jzWidget.setStyleSheet(css);
+        jzApp.setStyleSheet(css);
         return true;
     }
     catch (e)
@@ -138,7 +138,7 @@ function button(text: string, onClick?: () => void, w?: number, h?: number): JZP
     const b = (w !== undefined && h !== undefined) ? new JZPushButton(null, w, h, text)
                                                    : new JZPushButton();
     if (w === undefined || h === undefined) b.setText(text);
-    if (onClick) b.onClicked(onClick);
+    if (onClick) b.onClicked = onClick;   // 信号是属性(赋值设 / = null 清空)
     return b;
 }
 
@@ -187,7 +187,7 @@ builders.Slider = function (): JZWidget {
     s.setObjectName("demoSlider");
     s.setRange(0, 100);
     s.setValue(50);
-    s.onValueChanged((v) => log("value: " + v));
+    s.onValueChanged = (v) => log("value: " + v);
     lay.addWidget(s, 0);
     return page;
 };
@@ -212,7 +212,7 @@ builders.ProgressBar = function (): JZWidget {
 builders.Switch = function (): JZWidget {
     const { page, lay } = makePage();
     const sw = K(new JZSwitch());
-    sw.onToggled((on) => log("state: " + (on ? "on" : "off")));
+    sw.onToggled = (on) => log("state: " + (on ? "on" : "off"));
     lay.addWidget(sw, 0);
     return page;
 };
@@ -222,7 +222,7 @@ builders.Checkbox = function (): JZWidget {
     const { page, lay } = makePage();
     const c = K(new JZCheckbox());
     c.setText("Enable");
-    c.onToggled((on) => log("state: " + (on ? "on" : "off")));
+    c.onToggled = (on) => log("state: " + (on ? "on" : "off"));
     lay.addWidget(c, 0);
     return page;
 };
@@ -235,8 +235,8 @@ builders.RadioButton = function (): JZWidget {
     const r2 = K(new JZRadioButton());
     r2.setText("Option B");
     // ⚠ 单选按钮的 sigToggled 是无参信号(与 Checkbox/Switch 的 bool 不同)
-    r1.onToggled(() => log("event: clicked (A)"));
-    r2.onToggled(() => log("event: clicked (B)"));
+    r1.onToggled = () => log("event: clicked (A)");
+    r2.onToggled = () => log("event: clicked (B)");
     lay.addWidget(r1, 0);
     lay.addWidget(r2, 0);
     return page;
@@ -247,8 +247,8 @@ builders.ComboBox = function (): JZWidget {
     const { page, lay } = makePage();
     const cb = K(new JZComboBox());
     cb.addItems(["Red", "Green", "Blue"]);       // 数组形参: 绑定层用 JSValue 收, 见 addItems
-    cb.onCurrentIndexChanged((i) => log("value: " + i));
-    cb.onCurrentTextChanged((s) => log("text: " + s));
+    cb.onCurrentIndexChanged = (i) => log("value: " + i);
+    cb.onCurrentTextChanged = (s) => log("text: " + s);
     lay.addWidget(cb, 0);
     return page;
 };
@@ -260,8 +260,8 @@ builders.LineEdit = function (): JZWidget {
     le.setText("edit me");
     le.setPlaceholderText("type here...");
     le.resize(200, 70);
-    le.onTextChanged((s) => log("text: " + s));
-    le.onReturnPressed(() => log("event: return pressed"));
+    le.onTextChanged = (s) => log("text: " + s);
+    le.onReturnPressed = () => log("event: return pressed");
     lay.addWidget(le, 0);
     return page;
 };
@@ -380,7 +380,7 @@ builders.Dialog = function (): JZWidget {
 builders.TabWidget = function (): JZWidget {
     const { page, lay } = makePage();
     const tabs = K(new JZTabWidget());
-    tabs.onCurrentChanged((i) => log("tab: " + i));
+    tabs.onCurrentChanged = (i) => log("tab: " + i);
     lay.addWidget(tabs, 1);
 
     const a = makePage();
@@ -394,7 +394,7 @@ builders.TabWidget = function (): JZWidget {
     const c = makePage();
     const cb = K(new JZCheckbox());
     cb.setText("Checkbox in Tab C");
-    cb.onToggled((on) => log("state: " + (on ? "on" : "off")));
+    cb.onToggled = (on) => log("state: " + (on ? "on" : "off"));
     c.lay.addWidget(cb, 0);
     tabs.addTab(c.page, "C");
     return page;
@@ -418,7 +418,7 @@ builders.Splitter = function (): JZWidget {
     hsp.setHandleWidth(6);
     hsp.setStretchFactor(0, 1);
     hsp.setStretchFactor(1, 2);
-    hsp.onSplitterMoved((pos, handle) => log("splitter moved: handle=" + handle + " pos=" + pos));
+    hsp.onSplitterMoved = (pos, handle) => log("splitter moved: handle=" + handle + " pos=" + pos);
 
     const left = colorPanel("#add8e6");
 
@@ -427,7 +427,7 @@ builders.Splitter = function (): JZWidget {
     right.setHandleWidth(6);
     right.setStretchFactor(0, 2);
     right.setStretchFactor(1, 1);
-    right.onSplitterMoved((pos, handle) => log("splitter moved: handle=" + handle + " pos=" + pos));
+    right.onSplitterMoved = (pos, handle) => log("splitter moved: handle=" + handle + " pos=" + pos);
     right.addWidget(colorPanel("#90ee90"));
     right.addWidget(colorPanel("#fffacd"));
 
@@ -445,7 +445,7 @@ builders.SpinBox = function (): JZWidget {
     sb.setRange(0, 100);
     sb.setValue(42);
     sb.setSuffix(" %");
-    sb.onValueChanged((v) => log("spin value: " + v));
+    sb.onValueChanged = (v) => log("spin value: " + v);
     lay.addWidget(sb, 0);
     return page;
 };
@@ -465,8 +465,8 @@ builders.ScrollBar = function (): JZWidget {
     vbar.setOrientation(1);
     hbar.setRange(0, WORLD);
     vbar.setRange(0, WORLD);
-    hbar.onValueChanged((v) => canvas.update());
-    vbar.onValueChanged((v) => canvas.update());
+    hbar.onValueChanged = (v) => canvas.update();
+    vbar.onValueChanged = (v) => canvas.update();
 
     let vx = 0, vy = 0;
 
@@ -666,8 +666,8 @@ builders.ScrollArea = function (): JZWidget {
 
     const vbar = area.verticalScrollBar();
     const hbar = area.horizontalScrollBar();
-    vbar.onValueChanged((v) => log("scroll y: " + v));
-    hbar.onValueChanged((v) => log("scroll x: " + v));
+    vbar.onValueChanged = (v) => log("scroll y: " + v);
+    hbar.onValueChanged = (v) => log("scroll x: " + v);
 
     lay.addWidget(button("scrollTo(800, 1200)", () => area.scrollTo(800, 1200), 160, 28), 0);
     return page;
@@ -778,10 +778,10 @@ mid.setLayout(midLay);
 const list = new JZListWidget();
 list.setObjectName("navList");           // viewId: MCP 可用 select 驱动切页
 list.setMinimumWidth(160);
-list.onCurrentIndexChanged((i) => {
+list.onCurrentIndexChanged = (i) => {
     stack.setCurrentIndex(i);
     log("select: " + NAMES[i]);
-});
+};
 midLay.addWidget(list, 0);
 
 const stack = new JZStackedWidget();

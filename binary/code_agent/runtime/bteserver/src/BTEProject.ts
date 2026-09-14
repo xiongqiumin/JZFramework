@@ -27,7 +27,6 @@ import {
 } from './storage.js';
 // stru_* 报文包类: 网络报文的字节布局由它们负责(与存档无关)
 import { stru_BTS_CMD_SEND_INFO } from './structs.js';
-import { QApplication, QDir, QFile } from './qtcompat.js';
 
 // ---- BTEProject.h 里的状态码 ----
 export const STATUS_OK = 0;            // 正常
@@ -189,17 +188,18 @@ export class BTEProject
     // void init();
     init()
     {
-        this.m_projectDir = QApplication.applicationDirPath() + "/Data";
-        if (!new QDir(this.m_projectDir).exists())
-            new QDir().mkdir(this.m_projectDir);
+        // 原 QApplication::applicationDirPath() -> jzApp; QDir(exists/mkdir) -> core 的 fs
+        this.m_projectDir = jzApp.applicationDirPath() + "/Data";
+        if (!fs.existsSync(this.m_projectDir))
+            fs.mkdirSync(this.m_projectDir, { recursive: true });
 
         const recordPath = this.recordDBPath();
-        if (!new QDir(recordPath).exists())
-            new QDir().mkdir(recordPath);
+        if (!fs.existsSync(recordPath))
+            fs.mkdirSync(recordPath, { recursive: true });
 
         const backup = this.recordBackupPath();
-        if (!new QDir(backup).exists())
-            new QDir().mkdir(backup);
+        if (!fs.existsSync(backup))
+            fs.mkdirSync(backup, { recursive: true });
     }
 
     // void release();
@@ -342,8 +342,8 @@ export class BTEProject
 
         // 打开数据库
         const dbpath = this.recordDBPath() + "/" + deviceId + ".db";
-        if (QFile.exists(dbpath))   // 删除原有数据库
-            QFile.remove(dbpath);
+        if (fs.existsSync(dbpath))   // 删除原有数据库(原 QFile::exists / QFile::remove)
+            fs.rmSync(dbpath, { force: true });
         setting.recordDataBase.open(dbpath);
 
         this.m_devices.set(deviceId, setting);
@@ -359,7 +359,7 @@ export class BTEProject
         this.m_devices.get(deviceId).recordDataBase.close();
         this.m_devices.get(deviceId).clear();     // m_devices[deviceId].clear();
         this.m_devices.delete(deviceId);
-        QFile.remove(this.recordDBPath() + "/" + deviceId + ".db");
+        fs.rmSync(this.recordDBPath() + "/" + deviceId + ".db", { force: true });   // 原 QFile::remove
     }
 
     // QStringList deviceList();

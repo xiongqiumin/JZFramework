@@ -39,9 +39,10 @@ declare class JZListWidget extends JZWidget {
   currentItem(): JZListWidgetItem | null;
   setCurrentItem(item: JZListWidgetItem | null): void;
 
-  onCurrentIndexChanged(cb: (index: number) => void): void;
-  /** 激活(点击项 / Enter) */
-  onActivated(cb: (index: number) => void): void;
+  /** 当前项索引变化(属性形) */
+  onCurrentIndexChanged: ((index: number) => void) | null;
+  /** 激活(点击项 / Enter)(属性形) */
+  onActivated: ((index: number) => void) | null;
 }
 
 // 表格 —— 值级单元格接口(setItemText / itemText 会自动建 / 取单元格)
@@ -82,7 +83,8 @@ declare class JZTableWidget extends JZWidget {
   currentItem(): JZTableWidgetItem | null;
   setCurrentItem(item: JZTableWidgetItem | null): void;
 
-  onCurrentRowChanged(cb: (row: number) => void): void;
+  /** 当前行变化(属性形) */
+  onCurrentRowChanged: ((row: number) => void) | null;
 }
 
 // 页容器: 多个 page 叠放, 同一时刻只显示当前 page
@@ -110,7 +112,8 @@ declare class JZTabWidget extends JZWidget {
   currentIndex(): number;
   setCurrentIndex(index: number): void;
 
-  onCurrentChanged(cb: (index: number) => void): void;
+  /** 当前页索引变化(属性形) */
+  onCurrentChanged: ((index: number) => void) | null;
 }
 
 // 可拖分隔容器(方向: 0=Horizontal 横排 1=Vertical 纵排)
@@ -132,8 +135,8 @@ declare class JZSplitter extends JZWidget {
   setHandleWidth(w: number): void;
   handleWidth(): number;
   setCollapsible(index: number, collapsible: boolean): void;
-  /** (pos, handleIndex) 拖动中 / 结束都发 */
-  onSplitterMoved(cb: (pos: number, handleIndex: number) => void): void;
+  /** (pos, handleIndex) 拖动中 / 结束都发(属性形) */
+  onSplitterMoved: ((pos: number, handleIndex: number) => void) | null;
 }
 
 // 独立滚动条(方向: 0=Horizontal 1=Vertical)
@@ -155,7 +158,8 @@ declare class JZScrollBar extends JZWidget {
   setPageStep(v: number): void;
   pageStep(): number;
 
-  onValueChanged(cb: (value: number) => void): void;
+  /** 值变化(属性形) */
+  onValueChanged: ((value: number) => void) | null;
 }
 
 // 滚动区(setWidget 的内容控件由滚动区接管生命周期)

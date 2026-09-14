@@ -5,17 +5,19 @@
 // 参数类型/参数限制/错误码表)。
 //
 // Qt -> JS: QDataStream(小端) -> ByteWriter/ByteReader(core/dist/bytes.js);
-//           QFile + QTextStream 读 BTELogCode.txt -> qtcompat 的 QFile/QTextStream
-//           (落在 __jz.core 的文件 API 上);
-//           QSettings(option.ini) -> qtcompat 的 QSettings(真读 ini);
+//           QFile + QTextStream 读 BTELogCode.txt -> fs.readFileSync(path, "utf8");
+//           QSettings(option.ini) -> 引擎的 JZSettings(接口对齐, value() -> getInt());
 //           qRegisterMetaType<NetPackPtr> -> 无对应物, 保留注释。
+//
+// 2026-09-14 去 Qt 兼容层: 原来的 QApplication/QFile/QSettings/QTextStream 全换成
+//   引擎的真实现 —— 应用目录 jzApp.applicationDirPath(), 配置 JZSettings, 文本读 fs。
 //
 // 依赖说明: stru_BTS_CMD_SET_STEP76_Ex 由 ./structs.js 导出(见 structs.js 末尾的
 // 工步包类包装, 0x0200 的 pack/unpack 仍是待收口项 —— 这里只用到它的
 // StepInfo.ParamInfo 参数类型表, 供"设置工步参数类型/限制"使用)。
 // ---------------------------------------------------------------------------
 
-import './qtcompat.js';                     // QSettings / QFile / QTextStream / QApplication
+import { fs } from 'core/dist/index.js';
 import { ByteWriter } from 'core/dist/bytes.js';
 import { NetPack, NetPackManager, PackInfo } from './netPack.js';
 import {
@@ -24,7 +26,6 @@ import {
     STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_IDLE, STEP_TYPE_LOOP, STEP_TYPE_7,
 } from './PackDefine.js';
 import { stru_BTS_CMD_SET_STEP76_Ex } from './structs.js';
-import { QApplication, QFile, QSettings, QTextStream } from './qtcompat.js';
 
 export const NETPACK_INVAILD = 0;
 export const NETPACK_VARIANT = 1;
@@ -82,8 +83,10 @@ export function NetPackRegist()
         "脉冲工步", "模拟工步", "电池组恒流恒压", "恒压放电",
         "恒流恒压放电", "控制工步");
 
-    const set = new QSettings(QApplication.applicationDirPath() + "/option.ini", QSettings.IniFormat);
-    const lang = Number(set.value("lang", 0));
+    // 原 QSettings(path, IniFormat) -> 引擎的 JZSettings: 先 open 再 getInt
+    const set = new JZSettings();
+    set.open(jzApp.applicationDirPath() + "/option.ini");
+    const lang = set.getInt("lang");
     if (lang === 1)
     {
         nameList.length = 0;
@@ -118,17 +121,17 @@ export function NetPackRegist()
     pushList(mastHave, STEP_TYPE_7, [PARAM_Current, PARAM_Voltage, PARAM_StopCurrent]);
 
     /*错误信息*/
-    const fileLog = new QFile(QApplication.applicationDirPath() + "/Modules/BTELogCode.txt");
-    if (fileLog.open(QFile.ReadOnly | QFile.Text))
+    // 原: QFile + QTextStream 逐行读。现在一次性读成文本再按行切(错误码表很小)。
+    const logPath = jzApp.applicationDirPath() + "/Modules/BTELogCode.txt";
+    if (fs.existsSync(logPath))
     {
-        const s = new QTextStream(fileLog);
-        while (!s.atEnd())
+        const lines = fs.readFileSync(logPath, "utf8").split(/\r?\n/);
+        for (const line of lines)
         {
-            const list = s.readLine().split("-");
+            const list = line.split("-");
             if (list.length > 2)
                 PackDefine.ErrorList.set(parseInt(list[0], 16), list[list.length - 1]);   // list.back()
         }
-        fileLog.close();
     }
 }
 

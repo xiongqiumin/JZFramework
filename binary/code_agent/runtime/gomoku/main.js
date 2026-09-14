@@ -144,6 +144,6 @@ canvas.onMousePress = (e) => {
     canvas.update();
 });
 
-restart.onClicked(() => reset());
+restart.onClicked = () => reset();   // 信号是属性
 
 win.show();

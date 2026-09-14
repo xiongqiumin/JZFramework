@@ -13,9 +13,9 @@ import { UiHelper, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';
 import { BTEProject, SplitInfo, g_project } from './BTEProject.js';
-// 迁移: 弹窗/文件对话框改用引擎的真实现(JZMessageBox / JZFileDialog, 都是全局);
-// 还没绑定的输入对话框(QInputDialog)暂时留着 qtcompat 的替身。
-import { QInputDialog, Qt } from './qtcompat.js';
+// 迁移: 弹窗/文件对话框改用引擎的真实现(JZMessageBox / JZFileDialog, 都是全局)。
+// 2026-09-14 去 Qt 兼容层: 原来的 QInputDialog 引擎还没绑定(JZInputDialog) ——
+// 见 on_btnSaveSplit_clicked 里的 TODO, 那一步先停用。
 
 // ---------------------------------------------------------------------------
 // struct SplitResult
@@ -139,12 +139,12 @@ export class SplitSettingWidget
         this.ui.tableWidgetSplit.setRowCount(15);
         for (let i = 0; i < 15; i++)
         {
-            // 单元格项仍用 qtcompat 的 QTableWidgetItem(它的 role 语义 port 里到处在用);
-            // 表格本体已是真 JZTableWidget, 桥的 setItem 会写穿到真单元格。
-            const item = new QTableWidgetItem(String.fromCharCode('A'.charCodeAt(0) + i));
-            const item1 = new QTableWidgetItem();
-            const item2 = new QTableWidgetItem();
-            item.setFlags(item.flags() & (~Qt.ItemIsEditable));
+            // 单元格项用引擎的真 JZTableWidgetItem(表格本体也是真 JZTableWidget)。
+            // 原 item.setFlags(flags & ~Qt.ItemIsEditable) 去掉: JZ 的项没有 flags,
+            // 本来就是"不可编辑"的(只能通过 setText 改)。
+            const item = new JZTableWidgetItem(String.fromCharCode('A'.charCodeAt(0) + i));
+            const item1 = new JZTableWidgetItem();
+            const item2 = new JZTableWidgetItem();
             this.ui.tableWidgetSplit.setItem(i, 0, item);
             this.ui.tableWidgetSplit.setItem(i, 1, item1);
             this.ui.tableWidgetSplit.setItem(i, 2, item2);
@@ -181,7 +181,7 @@ export class SplitSettingWidget
         const count = this.ui.spinSplitNum.value();
         if (min >= max)
         {
-            JZMessageBox.information(this, "", tr("分选条件设置错误"));
+            JZMessageBox.information(this.root, "", tr("分选条件设置错误"));
             return;
         }
 
@@ -254,8 +254,9 @@ export class SplitSettingWidget
         if (!this.uiToRange())
             return;
 
-        // TODO(界面层): 引擎还没绑定输入对话框(JZInputDialog) —— 暂时仍用 qtcompat 的替身(返回空串=取消)
-        const name = QInputDialog.getText(this, "", tr("请输入名称"));
+        // TODO(界面层): 引擎还没绑定输入对话框(JZInputDialog) —— 这一步先停用(当作"取消")。
+        //   原来: QInputDialog::getText(...) / qtcompat 的替身返回空串; 补上绑定后改回取值。
+        const name = "";
         if (name === "")
             return;
 
@@ -374,7 +375,7 @@ export class SplitSettingWidget
                 {
                     // .arg(%1,%2) -> sprintf(%d,%d)
                     const tips = sprintf(tr("第行%d,第列%d 数据范围错误,请检查"), i + 1, idx + 2);
-                    JZMessageBox.information(this, "", tips);
+                    JZMessageBox.information(this.root, "", tips);
                     return false;
                 }
             }
@@ -389,7 +390,7 @@ export class SplitSettingWidget
 
         if (vaild_num === 0)
         {
-            JZMessageBox.information(this, "", tr("至少要有一组分选数据"));
+            JZMessageBox.information(this.root, "", tr("至少要有一组分选数据"));
             return false;
         }
 

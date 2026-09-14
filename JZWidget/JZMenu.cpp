@@ -357,6 +357,30 @@ JZAction* JZMenu::actionAt(int index) const
     return nullptr;
 }
 
+int JZMenu::menuCount() const
+{
+    int n = 0;
+    for (auto* a : m_actions)
+        if (a->subMenu())
+            n++;
+    return n;
+}
+
+JZMenu* JZMenu::menuAt(int index) const
+{
+    if (index < 0)
+        return nullptr;
+    int n = 0;
+    for (auto* a : m_actions) {
+        if (a->subMenu()) {
+            if (n == index)
+                return a->subMenu();
+            n++;
+        }
+    }
+    return nullptr;
+}
+
 void JZMenu::updateLayout()
 {
     JZFont font(kMenuFont);

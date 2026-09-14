@@ -300,8 +300,8 @@ protected:
     std::map<JZNetworkReply*, int> m_replyMap;
     std::map<JZNetworkReply*, std::string> m_replyUrl;
     std::vector<JZJSEventSink*> m_sinks;
-    JSValue m_cbRoot;    // 回调 GC 根数组(挂到全局, 防止闭包被回收)
-    int m_cbId;
+    // 回调 GC 根数组**不由本模块维护**: 统一用 JZJSEngine::retainCallback/releaseCallback
+    // (见那里的说明) —— 控件回调槽与网络回调共用同一份根数组。
     std::map<JZJSEventSink*, std::function<void()>> m_disposers;
 };
 

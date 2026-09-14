@@ -363,6 +363,19 @@ jz_signals:
     // Queued/BlockingQueued 需要 JZVariant 注册，会断言。
     JZSignal<const JZAsyncResult&> sigAsyncResult;
 
+    // ------------------------------------------------------------------
+    // JS 回调的 GC 根 (绑定层把"只被 C++ 持有"的 JS 函数登记进来)
+    // ------------------------------------------------------------------
+    // 为什么需要: quickjs 的循环 GC 会回收"引用计数 > 0 但从根不可达"的对象。回调闭包常常
+    // 与它捕获的 JS 包装成环(包装 -> C++ 对象 -> 回调槽 -> 闭包 -> 包装), 整条环从根不可达 ⇒
+    // 被回收 ⇒ C++ 侧那份 JSValue 成了悬垂(下次调用就是 UAF)。把回调往一个**挂在全局对象上的
+    // 数组**里也放一份之后, 它始终可达, 循环 GC 就不会动它。
+    // 用法: 存回调时 `id = retainCallback(cb)`; 丢弃回调时 `releaseCallback(id, cb)` ——
+    // 第二个参数是绑定层自己 dup 的那份(本函数负责 free, 与一次性释放路径统一)。
+    // 使用者: JZJSNetModule(__jz.net 包装的 on/off 回调) / JZJSWidgetModule(控件回调槽)。
+    int retainCallback(JSValueConst cb);           // 返回登记 id; 引擎已关/失败返回 -1
+    void releaseCallback(int id, JSValue value);   // 取消登记(置空根) + 放掉这份引用
+
 protected:
     friend JZJSEngineInternalFunction;
 
@@ -499,6 +512,10 @@ protected:
     // 指针语义对象的共享状态表(key = 底层裸指针; 见 pointerStateFor)。
     // state 本身是 shared_ptr, 包装们各持一份引用 ⇒ 摘表不影响已发出的句柄(它们仍能读到 cleared)。
     std::map<const void*, std::shared_ptr<jsbind::JSPointerState>> m_pointerStates;
+
+    // 回调 GC 根数组(全局 __jzCallbackRoot 里那份的宿主)与登记计数, 见 retainCallback。
+    JSValue m_cbRoot = JS_UNDEFINED;
+    int m_cbId = 0;
 
     int m_timeTaskId;
     std::vector<TimerTask> m_timeTasks;

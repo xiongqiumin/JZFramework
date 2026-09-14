@@ -50,8 +50,27 @@ import {
     stru_BTS_CMD_SEND_INFO,
 } from './structs.js';
 import { HelpDialog } from './HelpDialog.js';
-import { QApplication, QFile, QFileDialog, QInputDialog, QMessageBox, QPoint, QRect, QSettings, Qt, qRgb } from './qtcompat.js';
 import { createUi } from './bteserverUi.js';   // 主窗口的真 UI(uic 的 Ui_BTEServerClass 替身)
+
+// 去 Qt 兼容层(2026-09-14): 原来这一批名字全从 qtcompat.js 拿。现在:
+//   QMessageBox/QFileDialog -> 引擎的 JZMessageBox / JZFileDialog(全局);
+//   QApplication/QSettings  -> jzApp / JZSettings;
+//   QPoint/QRect            -> JZPoint / JZRect(值语义几何类型, 接口同名);
+//   QFile                   -> core 的 fs(本文件顶部已 import);
+//   Qt.* / qRgb             -> 只剩下面这几个"纯数值/纯计算", 就地实现(不再有兼容层)。
+const Qt = {
+    // 鼠标
+    LeftButton: 1,
+    // 修饰键(JZMouseEvent.modifiers(): 1=Shift 2=Ctrl 4=Alt) —— 原 Qt.ControlModifier 的替代值
+    ControlModifier: 2,
+    // 右键策略(⚠ 引擎的控件没有 setContextMenuPolicy, 这项只留作语义标记, 见调用点的 TODO)
+    CustomContextMenu: 2,
+    // 列表/表格项的 data 角色 —— JZ 的项只有"一个 data 槽", 不再分角色(见本文件各调用点)
+    UserRole: 0x0100,
+};
+
+// 原 qtcompat 的 qRgb(第 4 个分量恒为 FF)
+function qRgb(r, g, b) { return (0xff000000 | (r << 16) | (g << 8) | b) >>> 0; }
 import { SplitDialog } from './SplitDialog.js';
 import { StepInfoDialog } from './StepInfoDialog.js';
 import { StepJumpDialog } from './StepJumpDialog.js';
@@ -160,10 +179,12 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         this.m_heartTimer = 0;
         this.m_stepTimer = 0;
 
-        this.m_downPoint = new QPoint(0, 0);
-        this.m_curPoint = new QPoint(0, 0);
+        this.m_downPoint = new JZPoint(0, 0);
+        this.m_curPoint = new JZPoint(0, 0);
         this.m_selectWidget = null;
         this.m_mouseDown = false;
+        // 原 Qt 的 blockSignals 围栏: 重建设备列表期间跳过 onCurrentIndexChanged(引擎没有 blockSignals)
+        this.m_inListRebuild = false;
         this.m_waitResume = new Set();
         this.m_itemList = [];
         this.m_stepDataDialog = null;
@@ -178,9 +199,10 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         // 真 UI(uic 的 Ui_BTEServerClass 替身): uiLoader.load(XML) 直接造真控件树,
         // 返回对象本身是 JZWindow, 且 ui.<name> 就是那些子控件(见 bteserverUi.ts)。
         this.ui = createUi();
-        this.m_actLang = new QActionGroup(this);
-        this.m_actLang.addAction(this.ui.actionChn);
-        this.m_actLang.addAction(this.ui.actionEng);
+        // 原 QActionGroup(菜单动作的互斥组): 引擎还没把菜单/动作注册到 JS(JZAction/JZMenu),
+        // actionChn/actionEng 是 bteserverUi.ts 里造的最小替身(有 setChecked/triggered)。
+        // TODO(引擎): JZAction 绑定补上后, 这里改回 QActionGroup 的互斥逻辑。
+        this.m_actLang = null;
 
         // 配置: JZSettings 接口对齐 QSettings, 但取值用 getInt(原来 set.value() 返回 QVariant)
         const set = new JZSettings();
@@ -225,18 +247,24 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
 
         this.m_stepDataDialog.sigChannelChanged.push((index) => this.onStepDataChannelChanged(index));
 
-        this.ui.listWidget.setContextMenuPolicy(Qt.CustomContextMenu);
-        this.ui.listWidget.sigCustomContextMenuRequested.push((pt) => this.onListItemMenu(pt));
+        // 右键菜单: 引擎的控件没有 setContextMenuPolicy(Qt.CustomContextMenu) 这个开关 ——
+        // 直接挂 onMousePress, 右键(button()==2)时叫起菜单(原来由兼容层的信号转发)。
+        this.ui.listWidget.onMousePress = (e) =>
+        {
+            if (e.button() === 2)
+                this.onListItemMenu(new JZPoint(e.localX(), e.localY()));
+        };
 
         // 设置item
-        const layout = new QGridLayout();
+        const layout = new JZGridLayout();
         for (let i = 0; i < MAX_SUB_DEVICE * MAX_CHANNEL_NUM; i++)
         {
             const row = (i / 8) | 0;
             const col = i % 8;
 
             const item = new BTEItemWidget();
-            layout.addWidget(item, row, col);
+            // item 运行期就是真 JZWidget(makeRealWidget 建好返回的), 类型上仍是 JS 类实例 ⇒ 断言一次
+            layout.addWidget(item as any, row, col);
             item.setVisible(false);
             item.setChannelText(sprintf("%d - %d", row + 1, col + 1));
             item.setItemIndex(i);
@@ -249,7 +277,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         }
         layout.setColumnStretch(8, 1);
         layout.setRowStretch(8, 1);
-        layout.setMargin(3);
+        layout.setContentsMargins(3, 3, 3, 3);   // 原 Qt: setMargin(3)
         layout.setSpacing(3);
         this.ui.itemWidgets.setLayout(layout);
 
@@ -269,7 +297,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         }
 
         this.on_tabWidget_currentChanged(0);
-        this.m_selectWidget = new QWidget(this);
+        // 原 new QWidget(this): 真控件, 只当"橡皮筋选框"用。父控件给真窗口 this.ui(BTEServer 自身
+        // 不是控件, 真正的主窗口是 uiLoader 造出来的 this.ui)。
+        this.m_selectWidget = new JZWidget(this.ui);
         this.m_selectWidget.setStyleSheet("border: 2px solid rgb(255, 255, 127);");
         this.m_selectWidget.hide();
 
@@ -366,8 +396,12 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             tr("批号/电池型号"), tr("创建者"), tr("备注"));
         UiHelper.SetTable(this.ui.tableQuery, strListHeader);
 
-        this.ui.tableQuery.setContextMenuPolicy(Qt.CustomContextMenu);
-        this.ui.tableQuery.sigCustomContextMenuRequested.push((pos) => this.onTableQueryMenu(pos));
+        // 同上: 表格的右键菜单走 onMousePress(引擎没有 setContextMenuPolicy)
+        this.ui.tableQuery.onMousePress = (e) =>
+        {
+            if (e.button() === 2)
+                this.onTableQueryMenu(new JZPoint(e.localX(), e.localY()));
+        };
 
         // tableList
         const strListList = [];
@@ -378,11 +412,11 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         this.ui.tableList.setRowCount(MAX_DEVICE_ITEM);
         for (let i = 0; i < MAX_DEVICE_ITEM; i++)
         {
-            const itemNo = new QTableWidgetItem();
+            const itemNo = new JZTableWidgetItem();
             itemNo.setText(sprintf("%02d-%02d", ((i / 8) | 0) + 1, i % 8 + 1));
             this.ui.tableList.setItem(i, 0, itemNo);
             for (let j = 1; j < strListList.length; j++)
-                this.ui.tableList.setItem(i, j, new QTableWidgetItem());
+                this.ui.tableList.setItem(i, j, new JZTableWidgetItem());
         }
 
         // tableSplitLevel
@@ -424,7 +458,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         if (!can_close)
         {
             event.ignore();
-            QMessageBox.information(this, "", tr("正在运行，请先停止所有设备通道再退出"));
+            JZMessageBox.information(this.ui, "", tr("正在运行，请先停止所有设备通道再退出"));
             return;
         }
 
@@ -442,23 +476,33 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // virtual void mousePressEvent(QMouseEvent *event) override;
     mousePressEvent(event)
     {
+        // 迁移: Qt 的 event.pos() -> JZMouseEvent.localX()/localY(); QRect::contains(QPoint) -> contains(x, y)
         if (event.button() === Qt.LeftButton && this.ui.stackedWidget.currentIndex() === 0
-            && this.ui.stackedWidget.geometry().contains(event.pos()))
+            && this.ui.stackedWidget.geometry().contains(event.localX(), event.localY()))
         {
             this.m_mouseDown = true;
-            this.m_downPoint = event.pos();
+            this.m_downPoint = new JZPoint(event.localX(), event.localY());
         }
     }
 
     // virtual void mouseMoveEvent(QMouseEvent *event) override;
     mouseMoveEvent(event)
     {
-        this.m_curPoint = event.pos();
-        if (this.m_mouseDown && this.m_curPoint.minus(this.m_downPoint).manhattanLength() > 40)
+        this.m_curPoint = new JZPoint(event.localX(), event.localY());
+
+        // 原: (m_curPoint - m_downPoint).manhattanLength() > 40 —— JZPoint 没有算术运算, 手算曼哈顿距离
+        const moved = Math.abs(this.m_curPoint.x() - this.m_downPoint.x())
+            + Math.abs(this.m_curPoint.y() - this.m_downPoint.y());
+        if (this.m_mouseDown && moved > 40)
         {
-            this.m_selectWidget.setGeometry(new QRect(this.m_downPoint, this.m_curPoint).normalized());
+            // 原 new QRect(p1, p2).normalized(): JZRect 只有 (x, y, w, h) 构造, 这里自己折 min/max
+            const x1 = Math.min(this.m_downPoint.x(), this.m_curPoint.x());
+            const y1 = Math.min(this.m_downPoint.y(), this.m_curPoint.y());
+            this.m_selectWidget.setGeometry(x1, y1,
+                Math.abs(this.m_curPoint.x() - this.m_downPoint.x()),
+                Math.abs(this.m_curPoint.y() - this.m_downPoint.y()));
             this.m_selectWidget.show();
-            this.m_selectWidget.raise();
+            // 原 m_selectWidget.raise(): 引擎控件没有 raise()(层级由对象树决定) —— 去掉
             this.update();
         }
     }
@@ -478,13 +522,18 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 if (!this.m_itemList[i].isVisible())
                     continue;
 
-                const p1 = this.m_itemList[i].mapTo(this, new QPoint(0, 0));
-                const p2 = this.m_itemList[i].mapTo(this, new QPoint(w, h));
+                const p1 = this.m_itemList[i].mapTo(this, new JZPoint(0, 0));
+                const p2 = this.m_itemList[i].mapTo(this, new JZPoint(w, h));
 
-                const rc = new QRect(p1, p2);
+                // 原 new QRect(p1, p2): JZRect 没有"两点"构造 -> 用 min/max 自己折
+                const rc = new JZRect(
+                    Math.min(p1.x(), p2.x()), Math.min(p1.y(), p2.y()),
+                    Math.abs(p2.x() - p1.x()), Math.abs(p2.y() - p1.y()));
                 if (sel.intersects(rc))
                 {
-                    if (first && QApplication.keyboardModifiers() !== Qt.ControlModifier)
+                    // 原 QApplication::keyboardModifiers() != Qt.ControlModifier: 引擎没有"全局修饰键",
+                    // 用本次鼠标事件的 modifiers()(1=Shift 2=Ctrl 4=Alt)代替。
+                    if (first && (event.modifiers() & Qt.ControlModifier) === 0)
                     {
                         for (let j = 0; j < this.m_itemList.length; j++)
                             this.m_itemList[j].setCheck(false);
@@ -503,8 +552,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void initShortCuts();
     initShortCuts()
     {
-        const selectAll = new QShortcut(new QKeySequence(tr("Ctrl+A")), this);
-        selectAll.sigActivated.push(() => this.onBTEItemSelectAll());
+        // TODO(引擎): 引擎还没绑定快捷键(JZShortcut)。原来是:
+        //     new QShortcut(new QKeySequence(tr("Ctrl+A")), this).sigActivated.push(() => this.onBTEItemSelectAll());
+        //   绑定补上后照原样恢复(现在全选只能靠鼠标框选)。
     }
 
     // void dispPack(const NetPack &pack, QTextEdit *textEdit);
@@ -682,10 +732,15 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         for (let i = 0; i < count; i++)
         {
             const item = this.ui.listWidget.item(i);
-            if (Number(item.data(Qt.UserRole)) === netId)
+            if (!item)
+                continue;
+
+            // JZ 的项只有**一个** data 槽(不像 Qt 按角色分) —— 本文件统一存 [netId, DeviceString]
+            const d = item.data() || [];
+            if (Number(d[0]) === netId)
             {
-                const deviceId = String(item.data(Qt.UserRole + 1));
-                item.setData(Qt.UserRole, -1);
+                const deviceId = String(d[1]);
+                item.setData([-1, d[1]]);
                 item.setText(deviceId + tr("(离线)"));
                 break;
             }
@@ -720,15 +775,24 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // int curNetId() const;
     curNetId()
     {
-        const idx = this.ui.listWidget.currentRow();
-        return idx < 0 ? -1 : Number(this.ui.listWidget.item(idx).data(Qt.UserRole));
+        // 引擎的列表是 currentIndex()(原 Qt 的 currentRow); 项的 data 是 [netId, DeviceString]
+        const idx = this.ui.listWidget.currentIndex();
+        if (idx < 0)
+            return -1;
+        const it = this.ui.listWidget.item(idx);
+        const d = it ? (it.data() || []) : [];
+        return Number(d[0]);
     }
 
     // QString curDeviceString();
     curDeviceString()
     {
-        const idx = this.ui.listWidget.currentRow();
-        return idx < 0 ? "" : String(this.ui.listWidget.item(idx).data(Qt.UserRole + 1));
+        const idx = this.ui.listWidget.currentIndex();
+        if (idx < 0)
+            return "";
+        const it = this.ui.listWidget.item(idx);
+        const d = it ? (it.data() || []) : [];
+        return String(d[1]);
     }
 
     // void on_actionExit_triggered();
@@ -756,16 +820,18 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void on_actionChn_triggered();
     on_actionChn_triggered()
     {
-        const set = new QSettings(qApp.applicationDirPath() + "/option.ini", QSettings.IniFormat);
-        set.setValue("lang", 0);
+        const set = new JZSettings();
+        set.open(jzApp.applicationDirPath() + "/option.ini");
+        set.setInt("lang", 0);
         this.switchLang(0);
     }
 
     // void on_actionEng_triggered();
     on_actionEng_triggered()
     {
-        const set = new QSettings(qApp.applicationDirPath() + "/option.ini", QSettings.IniFormat);
-        set.setValue("lang", 1);
+        const set = new JZSettings();
+        set.open(jzApp.applicationDirPath() + "/option.ini");
+        set.setInt("lang", 1);
         this.switchLang(1);
     }
 
@@ -1088,7 +1154,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void onListItemMenu(const QPoint &pt);
     onListItemMenu(pt)
     {
-        const row = this.ui.listWidget.currentRow();
+        const row = this.ui.listWidget.currentIndex();   // 原 Qt: currentRow()
         if (row < 0)
             return;
 
@@ -1108,8 +1174,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             hlayout.addWidget(btnCancel);
             hlayout.addStretch();
             hlayout.setMargin(0);
-            btnOK.sigClicked.push(() => dlg.accept());     // connect(btnOK, &QPushButton::clicked, &dlg, &QDialog::accept);
-            btnCancel.sigClicked.push(() => dlg.reject()); // connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+            btnOK.onClicked = () => dlg.accept();      // connect(btnOK, &QPushButton::clicked, &dlg, &QDialog::accept);
+            btnCancel.onClicked = () => dlg.reject();  // connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
             const layout = new QHBoxLayout();
             layout.setMargin(0);
@@ -1133,8 +1199,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         };
 
         const item = this.ui.listWidget.item(row);
-        const deviceId = String(item.data(Qt.UserRole + 1));
-        const netId = Number(item.data(Qt.UserRole));
+        const d = item ? (item.data() || []) : [];   // [netId, DeviceString]
+        const deviceId = String(d[1]);
+        const netId = Number(d[0]);
         if (netId < 0)
             return;
 
@@ -1162,7 +1229,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 }
                 else
                 {
-                    QMessageBox.information(this, "", tr("IP 不合法，请检查"));
+                    JZMessageBox.information(this.ui, "", tr("IP 不合法，请检查"));
                 }
             }
         }/*
@@ -1181,7 +1248,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 }
                 else
                 {
-                    QMessageBox.information(this, "", tr("IP 不合法，请检查"));
+                    JZMessageBox.information(this.ui, "", tr("IP 不合法，请检查"));
                 }
             }
         }
@@ -1206,7 +1273,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     {
         if (!this.m_devices.has(netId))
         {
-            QMessageBox.information(this, "", tr("设备已离线"));
+            JZMessageBox.information(this.ui, "", tr("设备已离线"));
             return false;
         }
         return true;
@@ -1612,10 +1679,11 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         {
             const device = this.m_project.deviceData(DeviceString);
 
-            // QInputDialog::getInt(..., int *ok) -> JS 用 { value, ok } 返回
-            const r = QInputDialog.getInt(this, tr("设置显示数量"), tr("显示数量"), device.enableItem, 1, 32, 1);
-            const ok = r.ok;
-            const enable_count = r.value;
+            // TODO(界面层): 引擎还没绑定输入对话框(JZInputDialog) —— 这个入口暂时当作"取消"。
+            //   原 C++: QInputDialog::getInt(..., int *ok); 本移植曾返回 { value, ok }。
+            //   补上 JZInputDialog 之后改回: 取回 value/ok 再往下走。
+            const ok = false;
+            const enable_count = device.enableItem;
             if (!ok)
                 return;
 
@@ -1675,7 +1743,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     {
         if (record.info.recordNum === 0)
         {
-            QMessageBox.information(this, "", tr("无有效数据"));
+            JZMessageBox.information(this.ui, "", tr("无有效数据"));
             return;
         }
 
@@ -1695,8 +1763,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             filepath += "_" + cellBatch;
         filepath += ".xlsx";
 
-        const filename = QFileDialog.getSaveFileName(this, "", filepath, "*.xlsx");
-        if (filename === "")
+        const filename = JZFileDialog.getSaveFileName(this.ui, "", filepath, "*.xlsx");
+        if (!filename)   // 引擎的文件对话框取消时返回 null(原来 QFileDialog 返回空串)
             return;
 
         this.recordExportToFile(DeviceId, record, filename);
@@ -1871,8 +1939,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // bool recordDeleteWarning();
     recordDeleteWarning()
     {
-        if (QMessageBox.question(this, "", tr("是否删除数据"), QMessageBox.Yes | QMessageBox.No)
-            === QMessageBox.Yes)
+        // JZMessageBox.question 只有 OK/Cancel 两键(1 = OK), 对齐原来的 Yes/No
+        if (JZMessageBox.question(this.ui, "", tr("是否删除数据")) === 1)
             return true;
 
         return false;
@@ -1936,7 +2004,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     {
         const pre_device = this.curDeviceString();
 
-        this.ui.listWidget.blockSignals(true);
+        // 原 Qt 的 blockSignals(true): 引擎的列表没有这个开关 —— 用本地标志位在
+        // wire 的回调里跳过(见 connectUi 的 onCurrentIndexChanged), 重建期间不触发槽。
+        this.m_inListRebuild = true;
         this.ui.listWidget.clear();
 
         //在线
@@ -1945,10 +2015,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             if (it.DeviceString !== "")
             {
                 //add Item
-                const item = new QListWidgetItem();
+                const item = new JZListWidgetItem();
                 item.setText(it.DeviceString + tr("(在线)"));
-                item.setData(Qt.UserRole, key);
-                item.setData(Qt.UserRole + 1, it.DeviceString);
+                item.setData([key, it.DeviceString]);   // [netId, DeviceString](JZ 的项只有一个 data 槽)
                 this.ui.listWidget.addItem(item);
             }
         }
@@ -1960,10 +2029,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             if (this.deviceToNet(list[i]) < 0)
             {
                 //add Item
-                const item = new QListWidgetItem();
+                const item = new JZListWidgetItem();
                 item.setText(list[i] + tr("(离线)"));
-                item.setData(Qt.UserRole, -1);
-                item.setData(Qt.UserRole + 1, list[i]);
+                item.setData([-1, list[i]]);   // [netId, DeviceString]
                 this.ui.listWidget.addItem(item);
             }
         }
@@ -1974,12 +2042,14 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             const item_num = this.ui.listWidget.count();
             for (let i = 0; i < item_num; i++)
             {
-                const device_id = String(this.ui.listWidget.item(i).data(Qt.UserRole + 1));
+                const it2 = this.ui.listWidget.item(i);
+                const d2 = it2 ? (it2.data() || []) : [];
+                const device_id = String(d2[1]);
                 if (device_id === pre_device)
-                    this.ui.listWidget.setCurrentRow(i);
+                    this.ui.listWidget.setCurrentIndex(i);   // 原 Qt: setCurrentRow
             }
         }
-        this.ui.listWidget.blockSignals(false);
+        this.m_inListRebuild = false;
 
         //查询页
         this.ui.boxDevice.clear();
@@ -1990,13 +2060,14 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
 
     // ---------------------------------------------------------------------------
     // 原 ui_*.h 的 connectSlotsByName + on_xxx_clicked 自动连接 —— JS 侧要显式写。
-    // 信号约定见 qtcompat.ts 的 installSignals: 真控件的 onClicked/onToggled/onCurrentIndexChanged
-    // 等会转发进对应的 sig* 数组, 所以这里用 `w.sigClicked.push(cb)` 与原移植代码一致。
+    // 2026-09-14 去 Qt 兼容层: 这里直接调**引擎的信号接口**(onClicked / onCurrentChanged /
+    // onCurrentIndexChanged); 原来那套 `w.sigXxx.push(cb)` 是 qtcompat 的 installSignals
+    // 提供的(已随该文件删除), 真控件上没有 sig* 数组。
     // ---------------------------------------------------------------------------
     connectUi()
     {
         // 缺控件/缺信号的先跳过并报出来: 本移植的 UI XML 还没补齐(见 bteserverUi.ts)
-        const wire = (name, sig, cb) =>
+        const wire = (name, sigProp, cb) =>
         {
             const w = this.ui[name];
             if (!w)
@@ -2004,44 +2075,51 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 console.log("[connectUi] UI 里没有控件: " + name);
                 return;
             }
-            if (!w[sig])
+            // 信号是**属性**(不是方法): 存在性看原型上有没有这个属性; 赋值即设(见 widgets.d.ts)
+            if (!(sigProp in w))
             {
-                console.log("[connectUi] " + name + " 上没有信号: " + sig);
+                console.log("[connectUi] " + name + " 上没有信号: " + sigProp);
                 return;
             }
-            w[sig].push(cb);
+            w[sigProp] = cb;
         };
 
         // 按钮(ui_*.h 靠命名约定自动连的)
-        wire('btnShowNormal', 'sigClicked', () => this.on_btnShowNormal_clicked());
-        wire('btnShowList', 'sigClicked', () => this.on_btnShowList_clicked());
-        wire('btnShowSplitSetting', 'sigClicked', () => this.on_btnShowSplitSetting_clicked());
-        wire('btnShowTest', 'sigClicked', () => this.on_btnShowTest_clicked());
-        wire('btnSplitQuery', 'sigClicked', () => this.on_btnSplitQuery_clicked());
-        wire('btnClearAlarm', 'sigClicked', () => this.on_btnClearAlarm_clicked());
-        wire('btnQuery', 'sigClicked', () => this.on_btnQuery_clicked());
-        wire('btnExportAll', 'sigClicked', () => this.on_btnExportAll_clicked());
-        wire('btnDeleteSelect', 'sigClicked', () => this.on_btnDeleteSelect_clicked());
-        wire('btnDeleteWeek', 'sigClicked', () => this.on_btnDeleteWeek_clicked());
-        wire('btnDeleteMonth', 'sigClicked', () => this.on_btnDeleteMonth_clicked());
-        wire('btnDeleteYear', 'sigClicked', () => this.on_btnDeleteYear_clicked());
-        wire('btnDeleteDevice', 'sigClicked', () => this.on_btnDeleteDevice_clicked());
-        wire('btnSaveSplit', 'sigClicked', () => this.on_btnSaveSplit_clicked());
-        wire('btnCopySplitList', 'sigClicked', () => this.on_btnCopySplitList_clicked());
-        wire('btnResetServer', 'sigClicked', () => this.on_btnResetServer_clicked());
-        wire('btnClearSend', 'sigClicked', () => this.on_btnClearSend_clicked());
-        wire('btnClearRecv', 'sigClicked', () => this.on_btnClearRecv_clicked());
+        wire('btnShowNormal', 'onClicked', () => this.on_btnShowNormal_clicked());
+        wire('btnShowList', 'onClicked', () => this.on_btnShowList_clicked());
+        wire('btnShowSplitSetting', 'onClicked', () => this.on_btnShowSplitSetting_clicked());
+        wire('btnShowTest', 'onClicked', () => this.on_btnShowTest_clicked());
+        wire('btnSplitQuery', 'onClicked', () => this.on_btnSplitQuery_clicked());
+        wire('btnClearAlarm', 'onClicked', () => this.on_btnClearAlarm_clicked());
+        wire('btnQuery', 'onClicked', () => this.on_btnQuery_clicked());
+        wire('btnExportAll', 'onClicked', () => this.on_btnExportAll_clicked());
+        wire('btnDeleteSelect', 'onClicked', () => this.on_btnDeleteSelect_clicked());
+        wire('btnDeleteWeek', 'onClicked', () => this.on_btnDeleteWeek_clicked());
+        wire('btnDeleteMonth', 'onClicked', () => this.on_btnDeleteMonth_clicked());
+        wire('btnDeleteYear', 'onClicked', () => this.on_btnDeleteYear_clicked());
+        wire('btnDeleteDevice', 'onClicked', () => this.on_btnDeleteDevice_clicked());
+        wire('btnSaveSplit', 'onClicked', () => this.on_btnSaveSplit_clicked());
+        wire('btnCopySplitList', 'onClicked', () => this.on_btnCopySplitList_clicked());
+        wire('btnResetServer', 'onClicked', () => this.on_btnResetServer_clicked());
+        wire('btnClearSend', 'onClicked', () => this.on_btnClearSend_clicked());
+        wire('btnClearRecv', 'onClicked', () => this.on_btnClearRecv_clicked());
 
         // 页签 / 列表
-        wire('tabWidget', 'sigCurrentIndexChanged', () => this.on_tabWidget_currentChanged());
-        wire('tabWidgetSplit', 'sigCurrentIndexChanged', () => this.on_tabWidgetSplit_currentChanged());
-        // 列表的行变化: 框架侧信号名是 CurrentIndexChanged(Qt 的 currentRowChanged 在这套绑定里没有),
+        wire('tabWidget', 'onCurrentChanged', () => this.on_tabWidget_currentChanged());
+        wire('tabWidgetSplit', 'onCurrentChanged', () => this.on_tabWidgetSplit_currentChanged());
+        // 列表的行变化: 引擎的信号名是 onCurrentIndexChanged(Qt 的 currentRowChanged 这套绑定里没有),
         // 槽名沿用移植过来的 on_listWidget_currentRowChanged
-        wire('listWidget', 'sigCurrentIndexChanged', () => this.on_listWidget_currentRowChanged());
+        wire('listWidget', 'onCurrentIndexChanged', () =>
+        {
+            // 原 Qt 的 blockSignals(true/false) 围出来的重建期: 引擎没有那个开关, 用标志位跳过
+            if (!this.m_inListRebuild)
+                this.on_listWidget_currentRowChanged();
+        });
 
-        // 菜单动作: 引擎还没把菜单/动作注册到 JS, actionChn/actionEng 只是替身(见 bteserverUi.ts)
-        wire('actionChn', 'sigTriggered', () => this.on_actionChn_triggered());
-        wire('actionEng', 'sigTriggered', () => this.on_actionEng_triggered());
+        // 菜单动作: 引擎已注册 JZAction(onTriggered 是属性); actionChn/actionEng 若是替身会被上面
+        // 的"没有信号"检查报出来(见 bteserverUi.ts)
+        wire('actionChn', 'onTriggered', () => this.on_actionChn_triggered());
+        wire('actionEng', 'onTriggered', () => this.on_actionEng_triggered());
     }
 
     // void initDevice();
@@ -2286,7 +2364,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         const deviceId = this.ui.boxDevice.currentText();
         if (deviceId === "")
         {
-            QMessageBox.information(this, "", tr("请先选择数据"));
+            JZMessageBox.information(this.ui, "", tr("请先选择数据"));
             return;
         }
 
@@ -2328,7 +2406,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
 
         if (!unit_ok || !chn_ok)
         {
-            QMessageBox.information(this, "", tr("查询条件不正确"));
+            JZMessageBox.information(this.ui, "", tr("查询条件不正确"));
             return;
         }
         query_unit -= 1;
@@ -2399,15 +2477,15 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             this.m_queryRecordList.push({ deviceId: deviceId, item_index: info.itemIndex, record_id: info.recordId });
 
             const row = i;
-            const itemNO = new QTableWidgetItem(String(row + 1));
-            const itemChan = new QTableWidgetItem();
-            const itemTimeStrat = new QTableWidgetItem();
-            const itemTimeEnd = new QTableWidgetItem();
-            const itemRecordNum = new QTableWidgetItem();
-            const itemCreator = new QTableWidgetItem();
-            const itemCellNo = new QTableWidgetItem();
-            const itemCellPatch = new QTableWidgetItem();
-            const itemMemo = new QTableWidgetItem();
+            const itemNO = new JZTableWidgetItem(String(row + 1));
+            const itemChan = new JZTableWidgetItem();
+            const itemTimeStrat = new JZTableWidgetItem();
+            const itemTimeEnd = new JZTableWidgetItem();
+            const itemRecordNum = new JZTableWidgetItem();
+            const itemCreator = new JZTableWidgetItem();
+            const itemCellNo = new JZTableWidgetItem();
+            const itemCellPatch = new JZTableWidgetItem();
+            const itemMemo = new JZTableWidgetItem();
 
             itemChan.setText(sprintf("%d-%d", (item_idx / 8 | 0) + 1, item_idx % 8 + 1));
             itemTimeStrat.setText(formatDateTime(info.recordTime, "yyyy-MM-dd HH:mm:ss"));
@@ -2436,7 +2514,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
 
         if (this.ui.tableQuery.rowCount() === 0)
         {
-            QMessageBox.information(this, "", tr("未找到相关数据"));
+            JZMessageBox.information(this.ui, "", tr("未找到相关数据"));
             return;
         }
     }
@@ -2444,8 +2522,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void on_btnExportAll_clicked();
     on_btnExportAll_clicked()
     {
-        const path = QFileDialog.getExistingDirectory(this);
-        if (path === "")
+        const path = JZFileDialog.getExistingDirectory(this.ui);
+        if (!path)   // 引擎的文件对话框取消时返回 null(原来 QFileDialog 返回空串)
             return;
 
         for (let i = 0; i < this.ui.tableQuery.rowCount(); i++)
@@ -2576,7 +2654,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         const netID = this.deviceToNet(deviceId);
         if (netID >= 0)
         {
-            QMessageBox.information(this, "", tr("设备在线，无法删除"));
+            JZMessageBox.information(this.ui, "", tr("设备在线，无法删除"));
             return;
         }
 
@@ -2643,7 +2721,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         if (split_ret.error)
         {
             const tips = sprintf(tr("分选失败 设备%02d-%02d 无有效放电数据"), (split_ret.erroNum / 8 | 0) + 1, split_ret.erroNum % 8 + 1);
-            QMessageBox.information(this, "", tips);
+            JZMessageBox.information(this.ui, "", tips);
             return;
         }
 
@@ -2662,14 +2740,14 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 const name = (i < 15) ? String.fromCharCode('A'.charCodeAt(0) + i) : tr("落选");
 
                 const itemNo = new QCheckBox(name);
-                const itemNum = new QTableWidgetItem(String(split_ret.indexs[i].length));
+                const itemNum = new JZTableWidgetItem(String(split_ret.indexs[i].length));
                 const itemLed = new QCheckBox(tr("点灯"));
                 itemNo.setProperty("level", i);
                 itemLed.setProperty("level", i);
 
                 // C++ 里槽用 sender() 取控件, JS 侧由回调把控件传进去
-                itemNo.sigClicked.push(() => this.onSplitItemNo(itemNo));
-                itemLed.sigClicked.push(() => this.onSplitItemLed(itemLed));
+                itemNo.onClicked = () => this.onSplitItemNo(itemNo);
+                itemLed.onClicked = () => this.onSplitItemLed(itemLed);
 
                 this.ui.tableSplitLevel.setCellWidget(row, 0, itemNo);
                 this.ui.tableSplitLevel.setItem(row, 1, itemNum);
@@ -2707,14 +2785,14 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             const item_idx = items[i];
             const info = this.m_splitResult.recordList[item_idx];
 
-            const itemNo = new QTableWidgetItem(String(i + 1));
-            const itemPos = new QTableWidgetItem(String((item_idx / 8 | 0) + 1) + "-" + String(item_idx % 8 + 1));
-            const itemCap = new QTableWidgetItem(String(info.DisChargeCap));
-            const itemTime = new QTableWidgetItem(info.TimeText());
-            const itemVolt = new QTableWidgetItem(String(info.MeanVoltage));
-            const itemRatio = new QTableWidgetItem(Number(info.CcRatio).toFixed(2));
-            const itemLevel = new QTableWidgetItem(info.LevelText());
-            const itemCellNo = new QTableWidgetItem(info.CellNo);
+            const itemNo = new JZTableWidgetItem(String(i + 1));
+            const itemPos = new JZTableWidgetItem(String((item_idx / 8 | 0) + 1) + "-" + String(item_idx % 8 + 1));
+            const itemCap = new JZTableWidgetItem(String(info.DisChargeCap));
+            const itemTime = new JZTableWidgetItem(info.TimeText());
+            const itemVolt = new JZTableWidgetItem(String(info.MeanVoltage));
+            const itemRatio = new JZTableWidgetItem(Number(info.CcRatio).toFixed(2));
+            const itemLevel = new JZTableWidgetItem(info.LevelText());
+            const itemCellNo = new JZTableWidgetItem(info.CellNo);
 
             this.ui.tableSplitList.setItem(i, 0, itemNo);
             this.ui.tableSplitList.setItem(i, 1, itemPos);
@@ -2794,7 +2872,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     {
         if (this.curNetId() === -1)
         {
-            QMessageBox.information(this, "", tr("请先连接设备"));
+            JZMessageBox.information(this.ui, "", tr("请先连接设备"));
             return false;
         }
         return true;
@@ -3058,8 +3136,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         if (this.m_alarmOn)
             return;
 
-        const path = qApp.applicationDirPath() + "/wav/alarm.wav";
-        if (!QFile.exists(path))
+        const path = jzApp.applicationDirPath() + "/wav/alarm.wav";
+        if (!fs.existsSync(path))
         {
             console.error("alarm.wav not found: %s", path);
             return;
@@ -3105,7 +3183,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         setTimeout(() =>
         {
             const text = tr("中位机") + deviceString + tr("工步异常中断，是否接续");
-            const ret = QMessageBox.question(this, "", text, QMessageBox.Yes | QMessageBox.No);
+            // JZMessageBox.question 只有 OK/Cancel 两键(1 = OK / 0 = Cancel), 对齐原来的 Yes/No
+            const ret = JZMessageBox.question(this.ui, "", text);
             const netId = this.deviceToNet(deviceString);
             if (netId === -1)	 //可能已经断线
             {
@@ -3113,11 +3192,11 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 return;
             }
 
-            if (ret === QMessageBox.No)
+            if (ret !== 1)
                 g_project.saveRealRecords(deviceString);
 
             const confirm = new stru_BTS_CMD_RESUME_CONFIRM();
-            confirm.result = (ret === QMessageBox.Yes) ? 1 : 2;
+            confirm.result = (ret === 1) ? 1 : 2;
             this.m_devices.get(netId).stepPackList.push(confirm);   // m_devices[netId].stepPackList << StepRequestPtr(confirm);
             this.sendStepPack(netId);
 

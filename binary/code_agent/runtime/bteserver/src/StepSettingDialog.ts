@@ -21,7 +21,12 @@ import { g_project } from './BTEProject.js';
 // 注: BTEStepInfo 在 C++ 里属于 BTERecordDataBase.h, JS 侧同 (BTEProject.js 只导出 g_project/BTEProject/DeviceData/...)
 import { BTEStepInfo } from './BTERecordDataBase.js';
 import { StepEditDialog } from './StepEditDialog.js';
-import { QFile, QFileDialog, QMessageBox, Qt } from './qtcompat.js';
+import { fs } from 'core/dist/index.js';
+
+// Qt 枚举里本文件用到的那一项(值与原 Qt 一致): 原来由 qtcompat 提供。
+const Qt = {
+    ItemIsSelectable: 1,
+};
 
 //工步容量设定上限(Ah),精度百分之一
 const MAX_STEP_CAPACITY = 10000.0;
@@ -57,12 +62,11 @@ export class StepTableHelper
         const strListHeader = [];
         strListHeader.push(tr("工步号"), tr("工步名称"), tr("时间(H:M:S:MS)"), tr("电压(V)"), tr("电流(A)"), tr("截止电流(A)"), tr("截止电压(V)"),
             tr("容量(Ah)"), tr("温度(℃)"));
+        // 引擎的 JZTableWidget 只有列数/表头这些结构接口; 选中模式、"不可编辑"、表头显隐
+        // 都是框架默认行为, Qt 那三个开关没有对应接口(原调用点见下面注释)。
         this.tableWidget.setColumnCount(strListHeader.length);
         this.tableWidget.setHorizontalHeaderLabels(strListHeader);
-
-        this.tableWidget.setSelectionMode(QAbstractItemView.SingleSelection); //单击选择一行
-        this.tableWidget.setSelectionBehavior(QAbstractItemView.SelectRows);  //设置只能选择一行，不能多行选
-        this.tableWidget.setEditTriggers(QTableWidget.NoEditTriggers);
+        // 原来是: setSelectionMode(SingleSelection) / setSelectionBehavior(SelectRows) / setEditTriggers(NoEditTriggers)
     }
 
     // void updateTable(const BTEStepInfo &stepInfo);
@@ -354,7 +358,7 @@ export class StepSettingDialog
     {
         if (this.stepInfo.step.stepList.length >= 13)
         {
-            QMessageBox.information(this, "", tr("工步数量不能超出13个"));
+            JZMessageBox.information(null, "", tr("工步数量不能超出13个"));
             return;
         }
 
@@ -381,7 +385,7 @@ export class StepSettingDialog
             return;
         if (row === this.ui.tableWidget.rowCount() - 1)
         {
-            QMessageBox.information(this, "", tr("结束操作不能删除"));
+            JZMessageBox.information(null, "", tr("结束操作不能删除"));
             return;
         }
 
@@ -400,7 +404,7 @@ export class StepSettingDialog
             return;
         if (row === this.ui.tableWidget.rowCount() - 1)
         {
-            QMessageBox.information(this, "", tr("结束操作不能修改"));
+            JZMessageBox.information(null, "", tr("结束操作不能修改"));
             return;
         }
 
@@ -445,8 +449,8 @@ export class StepSettingDialog
     // void on_btnInit_clicked();
     on_btnInit_clicked()
     {
-        if (QMessageBox.question(this, "", tr("警告，重置将会清除所有数据"), QMessageBox.Yes | QMessageBox.No)
-            !== QMessageBox.Yes)
+        // 原: question(..., Yes|No) != Yes —— JZMessageBox.question 是 OK/Cancel 两键, 1 = OK
+        if (JZMessageBox.question(null, "", tr("警告，重置将会清除所有数据")) !== 1)
             return;
 
         this.stepInfo.step.genDefaultStep();
@@ -462,35 +466,27 @@ export class StepSettingDialog
         if (!this.checkStep())
             return;
 
-        const filename = QFileDialog.getSaveFileName(this, "", "StepInfo.step", "*.step");
-        if (filename === "")
+        // 引擎的文件对话框: 取消返回 null(原来 QFileDialog 返回空串)
+        const filename = JZFileDialog.getSaveFileName(null, "", "StepInfo.step", "*.step");
+        if (!filename)
             return;
 
-        const file = new QFile(filename);
-        if (file.open(QFile.WriteOnly | QFile.Truncate))
-        {
-            // 原: QDataStream s(file); s << stepInfo;  —— 工步文件格式自由, 改用 JSON
-            file.write(JSON.stringify(btStepInfoToJson(this.stepInfo), null, 2));
-            file.close();
-        }
+        // 原: QFile + QDataStream s << stepInfo;  —— 工步文件格式自由, 改用 JSON 落盘
+        fs.writeFileSync(filename, JSON.stringify(btStepInfoToJson(this.stepInfo), null, 2), "utf8");
     }
 
     // void on_btnOpen_clicked();
     on_btnOpen_clicked()
     {
-        const filename = QFileDialog.getOpenFileName(this, "", "", "*.step");
-        if (filename === "")
+        // 引擎的文件对话框: 取消返回 null(原来 QFileDialog 返回空串)
+        const filename = JZFileDialog.getOpenFileName(null, "", "", "*.step");
+        if (!filename)
             return;
 
-        const file = new QFile(filename);
-        if (file.open(QFile.ReadOnly))
-        {
-            // 原: QDataStream s(file); s >> stepInfo;  —— 现在是 JSON
-            const j = JSON.parse(bytesToText(file.readAll()));
-            this.stepInfo = new BTEStepInfo();
-            btStepInfoSetJson(this.stepInfo, j);
-            file.close();
-        }
+        // 原: QFile + QDataStream s >> stepInfo;  —— 现在是 JSON 文本
+        const j = JSON.parse(fs.readFileSync(filename, "utf8"));
+        this.stepInfo = new BTEStepInfo();
+        btStepInfoSetJson(this.stepInfo, j);
 
         this.initStep();
     }
@@ -524,11 +520,11 @@ export class StepSettingDialog
             vars[key] = ok ? var_ : 0;
             if (!ok)
             {
-                QMessageBox.information(this, "", title + tr("格式错误，请检查"));
+                JZMessageBox.information(null, "", title + tr("格式错误，请检查"));
             }
             else if (var_ < low || var_ > upper)
             {
-                QMessageBox.information(this, "", title + sprintf(tr("取值范围错误，应为:%0.2f - %0.2f"), low, upper));
+                JZMessageBox.information(null, "", title + sprintf(tr("取值范围错误，应为:%0.2f - %0.2f"), low, upper));
                 ok = false;
             }
             return ok;
@@ -549,32 +545,32 @@ export class StepSettingDialog
             const pre = tr("工步") + String(i + 1);
             if (step.isVoltageVaild() && step.Voltage() > volt_max)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("电压应小于%0.2fV"), volt_max));
+                JZMessageBox.information(null, "", pre + sprintf(tr("电压应小于%0.2fV"), volt_max));
                 return false;
             }
             if (step.isStopVoltageVaild() && step.StopVoltage() > volt_max)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("截止电压应小于%0.2fV"), volt_max));
+                JZMessageBox.information(null, "", pre + sprintf(tr("截止电压应小于%0.2fV"), volt_max));
                 return false;
             }
             if (step.isCurrentVaild() && step.Current() > current_max)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("电流应小于%0.2fA"), current_max));
+                JZMessageBox.information(null, "", pre + sprintf(tr("电流应小于%0.2fA"), current_max));
                 return false;
             }
             if (step.isStopCurrentVaild() && step.StopCurrent() > current_max)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("截止电流应小于%0.2fA"), current_max));
+                JZMessageBox.information(null, "", pre + sprintf(tr("截止电流应小于%0.2fA"), current_max));
                 return false;
             }
             if (step.isCapacityVaild() && step.Capacity() > MAX_STEP_CAPACITY)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("容量应小于%0.2fAh"), MAX_STEP_CAPACITY));
+                JZMessageBox.information(null, "", pre + sprintf(tr("容量应小于%0.2fAh"), MAX_STEP_CAPACITY));
                 return false;
             }
             if (step.isTempatureVaild() && step.Tempature() > MAX_STEP_TEMPATURE)
             {
-                QMessageBox.information(this, "", pre + sprintf(tr("最大温度应小于%0.1f℃"), MAX_STEP_TEMPATURE));
+                JZMessageBox.information(null, "", pre + sprintf(tr("最大温度应小于%0.1f℃"), MAX_STEP_TEMPATURE));
                 return false;
             }
         }

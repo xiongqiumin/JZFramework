@@ -8,7 +8,7 @@
 //     const root = new JZVBoxLayout(8, 6);
 //     win.setLayout(root);
 //     const btn = new JZPushButton(null, 120, 32, "Click Me");
-//     btn.onClicked(() => console.log("clicked"));
+//     btn.onClicked = () => console.log("clicked");
 //     root.addWidget(btn, 0);
 //     win.show();
 //

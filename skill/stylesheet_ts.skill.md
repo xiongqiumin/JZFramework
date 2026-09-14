@@ -48,7 +48,7 @@ TS 侧真正能用的高层 API 是（全局对象，无需 import；类型声�
 // 控件/窗口都是引擎注册的**全局类**（JZJSEngine/JSWidget 注册），直接 new，无需 import。
 
 // 1) 全局 author 表（换肤 = 整份替换重设）
-const ok = jzWidget.setStyleSheet(`
+const ok = jzApp.setStyleSheet(`
   :root {
     --accent: #3498db;
     --danger: #e74c3c;
@@ -65,7 +65,7 @@ const ok = jzWidget.setStyleSheet(`
   JZPushButton { background-color: #e0e0e0; border: 1px solid #808080; }
   JZLabel      { color: #333333; }
 `);
-if (!ok) throw new Error("样式表语法错误: " + jzWidget.styleSheetError());
+if (!ok) throw new Error("样式表语法错误");
 
 // 2) 给控件加类（等价 HTML class="btn primary"）
 const okBtn = new JZPushButton(null, 100, 32, "确定");
@@ -219,8 +219,8 @@ function applyTheme(dark: boolean) {
     ? `:root { --bg:#161a21; --fg:#e6e9ef; --btn:#2a3140; --btn-border:#4a5364; --btn-text:#e6e9ef; --accent:#4f8cff; --radius:8px; }`
     : `:root { --bg:#ffffff; --fg:#202020; --btn:#e0e0e0; --btn-border:#808080; --btn-text:#202020; --accent:#3498db; --radius:8px; }`;
 
-  if (!jzWidget.setStyleSheet(root + RULES))
-    throw new Error("样式表语法错误: " + jzWidget.styleSheetError());
+  if (!jzApp.setStyleSheet(root + RULES))
+    throw new Error("样式表语法错误");
 }
 ```
 

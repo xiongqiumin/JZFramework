@@ -3,8 +3,11 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include <cstring>
 #include "JZJSEngine.h"
 #include "JZColor.h"
 #include "JZSignal.h"
@@ -24,6 +27,9 @@ class JZWidget;
 class JZVBoxLayout;
 class JZCanvas;
 class JZPainter;
+
+// jsbind::ClassBind<C>(defSignalProperty 的形参类型; 定义在 JZJSBind.h, 这里只要前向声明)
+namespace jsbind { template <class T> class ClassBind; }
 
 // 把 JZWidget 家族(窗口 + 各控件 + 布局 + JZPainter)注册成 JS 全局类 (事件走类继承 + onXxx 属性写法):
 //   const win = new JZWindow(w, h, title);       // 注册类, new 构造(C 构造器按实参形态分派)
@@ -155,17 +161,36 @@ private:
     // 槽位对应的 JS 属性名(= 原来那套 onXxx 名字, 写法不变)
     static const char* eventSlotName(int slot);
 
-    // 一个控件的事件回调槽(模块**持有引用**: setter 注入时 dup, 清除/销毁时 free)
-    struct EventCallbacks
+    // ---- 回调槽(事件与信号共用**一张表**: 键 = JS 侧属性名, 值 = 模块持有的引用) ----
+    // 为什么按"名字"而不是枚举索引: 事件槽是固定 14 项, 但**信号**每个控件类各一套
+    // (onClicked / onToggled / onCurrentIndexChanged / ...), 想共用一张表就只能用名字当键;
+    // 好处是以后新增任何回调(事件或信号)都只改注册处, 不动这里的结构。
+    // 键一律用注册代码里的字符串字面量(静态存储期, 地址永久有效) —— 不要传临时字符串。
+    struct jzCStrHash
     {
-        JSValue v[EventSlot_count];
-
-        EventCallbacks()
+        size_t operator()(const char* s) const
         {
-            for (int i = 0; i < EventSlot_count; i++)
-                v[i] = JS_UNDEFINED;
+            size_t h = 2166136261u;   // FNV-1a
+            for (; *s; ++s)
+                h = (h ^ (size_t)(unsigned char)*s) * 16777619u;
+            return h;
         }
     };
+    struct jzCStrEq
+    {
+        bool operator()(const char* a, const char* b) const { return a == b || ::strcmp(a, b) == 0; }
+    };
+    // 槽里的一个回调: 模块持有的引用 + 它在引擎回调 GC 根里的登记 id(释放时要按下标置空)。
+    // rootId < 0 = 未登记(引擎已关/登记失败), 此时 value 仍有效, 只需 JS_FreeValue。
+    struct SlotValue
+    {
+        int rootId = -1;
+        JSValue value = JS_UNDEFINED;
+
+        SlotValue() {}
+        SlotValue(int id, JSValue v) : rootId(id), value(v) {}
+    };
+    using SlotMap = std::unordered_map<const char*, SlotValue, jzCStrHash, jzCStrEq>;
 
     // 单个控件的 JS 侧状态(一个控件一条; 挂在引擎身份表那份共享状态的 data 槽上, 键 = object)。
     // 派生自 jsbind::JSPointerData: 引擎不认识派生类型, 取回由模块自己 dynamic_cast。
@@ -189,8 +214,13 @@ private:
         JSValue jsRef = JS_UNDEFINED;
         // 该控件的扩展状态(按需创建; 类型由使用方约定, 用 static_cast 取回)
         std::shared_ptr<WidgetExtState> ext;
-        // 事件回调槽(onPaint / onMousePress ...): 见上面的 EventSlot
-        EventCallbacks callbacks;
+        // 回调槽: 事件(onPaint/onMousePress...)与信号(onClicked/onToggled...)共用 ——
+        // **单发/覆盖式**(后一次赋值替换前一次, 赋 null 清空)。模块持有引用: 注入时 dup,
+        // 替换/清空/节点销毁时 free。同时在引擎的回调 GC 根上登记一份(防闭包成环被回收)。
+        SlotMap slots;
+        // 已经建立过 C++ connect 的信号(**惰性连接**: 首次给某个信号属性赋值时连一次;
+        // 之后只替换槽值 —— 空槽在派发时直接跳过, 所以"清空"不必断开连接)。
+        std::set<const JZBaseSignal*> connected;
     };
 
     JZJSEngine* m_engine = nullptr;
@@ -201,26 +231,29 @@ private:
     // JS 侧 onPaint 里那些画笔的生命周期)
     JZJSPaintScope m_paintScope;
 
-    // 转接给 JS 的信号回调(JS 函数值, 全部 dup 持有一份)。
-    // 信号槽本身不持有 JSValue 的生命周期, 而回调可能在很久以后才触发 —— 不 dup 会被 GC 收走;
-    // 又因为只在引擎存活期间有效, 统一登记后由 deinitEngine() 一次性释放。
-    std::vector<JSValue> m_jsCallbacks;
+    // 注: 回调不再集中登记在模块的数组里 —— 每个回调存在所属对象的槽表(WidgetInfo::slots),
+    // 并在**引擎的回调 GC 根**上登记一份(见 JZJSEngine::retainCallback: 防"闭包与包装成环"
+    // 被 quickjs 的循环 GC 回收), 随该对象销毁一起释放。
 
     void onWidgetDestroyed(JZObject *object);
 
-    // ---- 事件回调槽的读写(注册成属性的 getter/setter 用, 见 WidgetInfo::eventCallbacks) ----
-    // setter: 校验是函数(null/undefined = 清空), dup 一份存进槽
-    void setWidgetCallback(JZWidget* widget, int slot, JSValueConst cb);
-    // getter: 借用值; 没设返回 JS_UNDEFINED
-    JSValue widgetCallback(JZWidget* widget, int slot);
+    // ---- 回调槽的读写(注册成属性的 getter/setter 用; 键 = JS 侧属性名) ----
+    // setter: 校验是函数(null/undefined = 清空), dup 一份存进槽(顺序: 先 dup 新的再 free 旧的)
+    void setSlot(JZObject* object, const char* name, JSValueConst cb);
+    // 从一个已取到的节点直接读槽(借用值); 没设返回 JS_UNDEFINED
+    JSValue slotValue(const WidgetInfo& node, const char* name) const;
+    // 按对象读槽(借用值); 没有登记节点 / 没设过返回 JS_UNDEFINED
+    JSValue slot(JZObject* object, const char* name);
+    // 属性 getter 的样板: 没设返回 JS_NULL, 有则 dup 一份交给 JS(返回值由 JS 拥有)
+    JSValue slotToJs(JZObject* object, const char* name);
 
     // ---- JS 事件转发的内部实现 ----
     // 该槽设了回调就转发并返回 true(事件被拦下), 否则返回 false(放行走原生实现)
     template <class E>
-    bool forwardIf(WidgetInfo& node, int slot, E* event);
+    bool forwardIf(WidgetInfo& node, const char* name, E* event);
     // 以该控件那份包装为 this 调回调; 事件对象包成**借用**包装(栈事件, 派发完即失效)
     template <class E>
-    void forwardJs(WidgetInfo& node, int slot, E* event);
+    void forwardJs(WidgetInfo& node, const char* name, E* event);
 
     // ---- 控件登记节点的读写(键 = 控件指针; 节点存在引擎身份表那份状态的 data 槽里) ----
     // 按指针取节点; 没有(或该状态上挂的不是本模块的数据)返回 nullptr。
@@ -250,20 +283,42 @@ private:
     void registUiLoader();   // JZJSUiLoader + 全局 uiLoader / jzWidget 命名空间
 
     // ---------- JS 信号回调 ----------
+    // 语义: 信号也是**属性**(`btn.onClicked = fn`), 与事件槽同一条规则 —— 赋值设、覆盖旧的、
+    // null 清空、可读回。实现: 首次给某个信号属性赋值时才 connect 一次, lambda 每次去查槽
+    // (空槽直接跳过, 所以"清空"不需要断开连接)。
 
-    // 登记一份 JS 回调(dup), 返回值供 connect 的 lambda 捕获; deinitEngine 统一释放。
-    JSValue holdJsCallback(JSValue cb);
     // 调用 JS 回调一次。argv 里的值由本函数负责释放(与 JS_Call 的"借用"语义相配)。
+    // fn 是**借用**值: 调用期间自己 dup 一份 —— 于是回调里把同一个信号属性重设/清空(槽里的
+    // 旧值被 free)也不会让正在执行的函数对象悬垂。
     // owner = 信号所属对象(见 JZSignal::object()): 调用期间把它压成"当前 this", 于是回调里
     // self() 拿到的就是"发信号的那个控件/对象" —— 箭头函数写的 onClicked 也能认出自己是谁。
-    JSValue callJsCallback(JSValue fn, JZObject* owner, int argc, JSValueConst* argv);
+    JSValue callJsCallback(JSValueConst fn, JZObject* owner, int argc, JSValueConst* argv);
 
-    // 把 C++ 信号接到 JS 回调上(按信号形状重载; JS 侧方法名由各 def() 决定)。
-    void bindSignal(JZSigVoid& sig, JSValue cb);
-    void bindSignal(JZSigBool& sig, JSValue cb);
-    void bindSignal(JZSigInt& sig, JSValue cb);
-    void bindSignal(JZSigString& sig, JSValue cb);
-    void bindSignal(JZSignal<int, int>& sig, JSValue cb);
+    // 把 C++ 信号接到槽上(按信号形状重载; JS 侧属性名由注册处给出)。幂等: 同一个(对象, 信号)
+    // 只 connect 一次。
+    void ensureConnected(JZObject* owner, JZSigVoid& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigBool& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigInt& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigString& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSignal<int, int>& sig, const char* name);
+
+    // 注册一个"信号属性"的样板(按信号形状分派到 5 个重载, 与上面的 ensureConnected 对应):
+    //   getter 读槽(slotToJs) / setter 写槽(setSlot) + 首次赋值时 connect。
+    // 各控件注册处因此只需一行, 例如:
+    //   defSignalProperty(bind_btn, "onClicked", &JZPushButton::sigClicked);
+    // 两个模板形参: C = 注册的类(与 ClassBind 一致), S = 信号**声明的**类 —— 二者常常不同
+    // (如 sigTextChanged 声明在 JZAbstractTextEdit 上, 而注册在 JZLineEdit 上; 成员指针的宿主
+    //  类型就是基类), S 必须自己推导, 否则形参匹配不上。
+    template <class C, class S>
+    void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigVoid S::* sig);
+    template <class C, class S>
+    void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigBool S::* sig);
+    template <class C, class S>
+    void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigInt S::* sig);
+    template <class C, class S>
+    void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigString S::* sig);
+    template <class C, class S>
+    void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSignal<int, int> S::* sig);
 
     // 给类的**构造器**挂静态函数(JS 侧 `JZImage.create(...)`)。
     // def() 注册的是原型方法, 而 JS 里 `JZImage.create` 走的是函数对象自身的原型链

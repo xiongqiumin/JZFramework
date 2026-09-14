@@ -5,10 +5,13 @@
 // 父子关系也可事后用 setParentWidget() / 布局 addWidget() / JZWindow.addWidget() 建立。
 //
 // 事件走**属性写法**(不是 on()/addListener): 在实例上赋 onPaint / onMousePress / ... ; 清空写 null。
+// **信号也是属性**(onClicked / onToggled / onValueChanged / onCurrentIndexChanged ...):
+//   `btn.onClicked = () => {...}` 赋值即设、覆盖上一次、`= null` 清空、读回能拿到当前回调 ——
+//   与事件槽**同一条规则**(单发; 见 JZJSWidgetModule 的 defSignalProperty)。不再是方法调用。
 // 框架派发时看该控件"这一项"有没有回调: 有就转给 JS 并把事件**拦下**, 没有则回退 C++ 默认实现。
 // 回调**存在 C++ 侧**(不是包装对象的属性), 所以与"挂在哪一份包装上"无关: 任何被 JS 包装过的控件
 //   (含 C++ 侧 new 好再交给 JS 的控件、groupBox.contentWidget() 这类内部控件)赋 onXxx 都生效;
-//   赋 null 清空、赋非函数抛异常。信号接口(onClicked(cb) 等)照旧, 两者不冲突。
+//   赋 null 清空、赋非函数抛异常。
 // 回调里拿"当前控件": 写成箭头函数时没有自己的 this, 用引擎全局 self() —— 等价于这里的 this,
 //   例: pane.onPaint = (e) => { const p = new JZPainter(self()); };  (见 types/globals.d.ts)
 //   转发状态存在 JZJSWidgetModule 的控件登记节点上(不是控件对象的成员): 模块自己就是这些
@@ -160,6 +163,29 @@ declare class JZWindow extends JZWidget {
   addWidget(child: JZWidget): void;
 }
 
+// 主窗口(菜单栏 + 中央控件)。构造实参只有 (parent?) —— 标题/几何走 setTitle/setGeometry。
+// 中央控件用 setCentralWidget(至多一个, 占满菜单栏外剩余区域); 菜单栏用 addMenuBar。
+/** @final */
+declare class JZMainWindow extends JZWindow {
+  constructor();
+  constructor(parent: JZWidget | null);
+
+  /** 设置中央控件(占用菜单栏外的全部剩余空间); 重复调用替换旧的 */
+  setCentralWidget(widget: JZWidget): void;
+  /** 设置顶部菜单栏(始终排在最顶行); 重复调用替换旧的 */
+  addMenuBar(menuBar: JZMenuBar): void;
+}
+
+// 菜单栏(水平排列若干菜单入口)。uiLoader 把它作为 JZMainWindow 的 <widget> 子节点(addMenuBar)。
+/** @final */
+declare class JZMenuBar extends JZWidget {
+  constructor();
+  constructor(parent: JZWidget | null);
+
+  /** 添加一个菜单, 返回其 JZMenu 指针(继续 addAction / addMenu); 内部菜单项 JZMenu 暂未暴露 */
+  addMenu(title: string): any;
+}
+
 /** @final */
 declare class JZLabel extends JZWidget {
   /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
@@ -184,8 +210,8 @@ declare class JZPushButton extends JZWidget {
   icon(): JZImage;
   setWidth(w: number): void;
   setHeight(h: number): void;
-  /** 点击回调(sigClicked 转接; 只能添加, 没有对应的解除接口) */
-  onClicked(cb: () => void): void;
+  /** 点击回调(属性形: 赋值设, 覆盖旧的, `= null` 清空; 回调里用 self() 取按钮) */
+  onClicked: (() => void) | null;
 }
 
 /** @final */
@@ -203,12 +229,12 @@ declare class JZLineEdit extends JZWidget {
   setPlaceholderText(text: string): void;
   placeholderText(): string;
 
-  /** 文本变化(sigTextChanged) */
-  onTextChanged(cb: (text: string) => void): void;
-  /** 回车(sigReturnPressed) */
-  onReturnPressed(cb: () => void): void;
-  /** 失焦 / 回车(sigEditingFinished) */
-  onEditingFinished(cb: () => void): void;
+  /** 文本变化(属性形: 赋值设 / 覆盖 / `= null` 清空) */
+  onTextChanged: ((text: string) => void) | null;
+  /** 回车(属性形) */
+  onReturnPressed: (() => void) | null;
+  /** 失焦 / 回车(属性形) */
+  onEditingFinished: (() => void) | null;
 }
 
 /** @final */
@@ -219,8 +245,8 @@ declare class JZCheckbox extends JZWidget {
   text(): string;
   setChecked(on: boolean): void;
   isChecked(): boolean;
-  /** sigToggled(bool) */
-  onToggled(cb: (on: boolean) => void): void;
+  /** 选中变化(属性形); 回调带 (on: boolean) */
+  onToggled: ((on: boolean) => void) | null;
 }
 
 /** @final */
@@ -232,8 +258,8 @@ declare class JZRadioButton extends JZWidget {
   text(): string;
   setChecked(on: boolean): void;
   isChecked(): boolean;
-  /** ⚠ sigToggled 在这条链上是 **无参** 信号(JZSigVoid), 与 JZCheckbox/JZSwitch 不同 */
-  onToggled(cb: () => void): void;
+  /** ⚠ 这条链上的 toggled 是 **无参** 信号(JZSigVoid), 与 JZCheckbox/JZSwitch 不同; 属性形 */
+  onToggled: (() => void) | null;
 }
 
 /** @final */
@@ -243,8 +269,8 @@ declare class JZSlider extends JZWidget {
   setRange(min: number, max: number): void;
   setValue(v: number): void;
   value(): number;
-  /** sigValueChanged(int) */
-  onValueChanged(cb: (value: number) => void): void;
+  /** 值变化(属性形); 回调带 (value: number) */
+  onValueChanged: ((value: number) => void) | null;
 }
 
 /** @final */
@@ -272,8 +298,10 @@ declare class JZComboBox extends JZWidget {
   itemText(index: number): string;
   count(): number;
 
-  onCurrentIndexChanged(cb: (index: number) => void): void;
-  onCurrentTextChanged(cb: (text: string) => void): void;
+  /** 当前项索引变化(属性形) */
+  onCurrentIndexChanged: ((index: number) => void) | null;
+  /** 当前项文本变化(属性形) */
+  onCurrentTextChanged: ((text: string) => void) | null;
 }
 
 /** @final */
@@ -293,8 +321,8 @@ declare class JZSpinBox extends JZWidget {
   suffix(): string;
   setReadOnly(on: boolean): void;
   isReadOnly(): boolean;
-  /** sigValueChanged(int) */
-  onValueChanged(cb: (value: number) => void): void;
+  /** 值变化(属性形); 回调带 (value: number) */
+  onValueChanged: ((value: number) => void) | null;
 }
 
 /** @final */
@@ -317,8 +345,8 @@ declare class JZSwitch extends JZWidget {
 
   setState(on: boolean): void;
   isOn(): boolean;
-  /** sigToggled(bool) */
-  onToggled(cb: (on: boolean) => void): void;
+  /** 选中变化(属性形); 回调带 (on: boolean) */
+  onToggled: ((on: boolean) => void) | null;
 }
 
 // 多行文本编辑(只读时可直接当滚动日志用)
@@ -337,8 +365,8 @@ declare class JZTextEdit extends JZWidget {
   cursorPosition(): number;
   setCursorPosition(pos: number): void;
   selectAll(): void;
-  /** sigTextChanged(string) */
-  onTextChanged(cb: (text: string) => void): void;
+  /** 文本变化(属性形); 回调带 (text: string) */
+  onTextChanged: ((text: string) => void) | null;
 }
 
 // 简易图表: 折线 / 柱状 / 饼图(JZChart)。颜色形参用 CSS 风格字符串; 传 '' 取默认调色板。
@@ -386,5 +414,6 @@ declare class JZChart extends JZWidget {
 
 // 未暴露(C++ 有, 需要时按 JZChart 的做法补): JZWidget.pos / size / grab / sizeHint /
 // setSizePolicy / style / setCursor / setOpaque / setClipChildren / styleSheetError;
-// 也没注册的控件类: JZMainWindow / JZDialog / JZMessageBox / JZFileDialog / JZMenu /
-// JZMenuBar / JZTreeWidget / JZAnimationGroup / JZPropertyAnimation(容器与视图类见 views.d.ts)。
+// 也没注册的控件类: JZDialog / JZMessageBox / JZFileDialog / JZMenu /
+// JZTreeWidget / JZAnimationGroup / JZPropertyAnimation(容器与视图类见 views.d.ts)。
+// (JZMainWindow / JZMenuBar 已注册并暴露, 见上方声明)

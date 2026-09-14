@@ -6,6 +6,13 @@
 //
 // Qt -> JS: QTableWidget/QStringList 未在 JS 侧存在, UiHelper::SetTable 只保留
 // 结构与注释, 内部按 Qt 语义直译(QTableWidget -> 传入的表格对象)。
+//
+// 2026-09-14 去 Qt 兼容层: 传进来的 table 现在一定是真 JZTableWidget, 所以只调
+// 引擎真有的接口(列数 / 表头文本); 下面这几项 Qt 特有的"显示开关"引擎没有对应接口,
+// 而且都是非必须的显示行为 —— 保留调用点说明, 不再调不存在的接口:
+//   setSelectionMode(SingleSelection) / setSelectionBehavior(SelectRows) / setEditTriggers(NoEditTriggers)
+//   horizontalHeader().setStretchLastSection(true) / verticalHeader().hide()
+// (引擎的表格默认就是"单行选中、不可编辑、没有行号表头"。)
 // ---------------------------------------------------------------------------
 
 export const MAX_SUB_DEVICE = 4;
@@ -22,13 +29,5 @@ export class UiHelper
     {
         table.setColumnCount(list.length);
         table.setHorizontalHeaderLabels(list);
-
-        table.setSelectionMode(QAbstractItemView.SingleSelection); // 单击选择一行
-        table.setSelectionBehavior(QAbstractItemView.SelectRows);  // 设置只能选择一行，不能多行选
-        table.setEditTriggers(QTableWidget.NoEditTriggers);        // 禁止编辑
-        table.horizontalHeader().setStretchLastSection(true);      // 末尾拉伸
-        // table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); // 自适应
-
-        table.verticalHeader().hide();     // 列标题隐藏
     }
 }

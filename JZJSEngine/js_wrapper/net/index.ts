@@ -5,8 +5,13 @@
  * __jz.url / __jz.os 原子 API 包装成 Node 风格模块:
  *   net / dgram / http / mqtt / ws / url / os
  * net/dgram/http/mqtt/url/ws 是 Node 的"内置模块", 只 export, 必须 import 才能用
- * (对齐 Node: 这些不是全局); fetch/WebSocket/URL/URLSearchParams/Headers/Response/
- * EventEmitter 是 Web 标准全局, 挂到 globalThis, 引擎启动即零 import 可用。
+ * (对齐 Node: 这些不是全局); fetch/WebSocket/URL/URLSearchParams/Headers/Response 是 **Web 平台**的
+ * 全局(fetch/WebSocket/URL 由本包实现), 挂到 globalThis, 引擎启动即零 import 可用。
+ *
+ * ⚠ EventEmitter **不是** Web 标准(Web 的是 EventTarget + addEventListener) —— 它是 **Node** 的
+ *   `events.EventEmitter`, 为 Node 兼容也挂上了 globalThis。本包是它的**唯一实现**:
+ *   其它包(net/serialport/modbus/agent 之外的 JS 包)要继承请 `import { EventEmitter } from 'net/dist'`,
+ *   不要再各自抄一份(框架启动会预加载 net, 所以全局也存在, 但 import 才是明确依赖)。
  *
  * 本文件由 tsc 编译为 dist/index.js。运行时由 JZEngineRuntime::initEngine 作为 host
  * bootstrap(等价 Node 启动装载 undici)主动 runModuleFile 一次, 把 Web 全局挂上
@@ -21,9 +26,10 @@ declare function setTimeout(cb: (...a: any[]) => void, ms?: number): any;
 declare function clearTimeout(id: any): void;
 
 // ---------------------------------------------------------------------------
-// 共享事件发射器(与 Node events.EventEmitter 同名 API)
+// 共享事件发射器(与 Node events.EventEmitter 同名 API) —— **全框架唯一一份**
+// 导出供其它包继承/复用, 同时挂到 globalThis(见下)供脚本零 import 使用。
 // ---------------------------------------------------------------------------
-class EventEmitter {
+export class EventEmitter {
     _ev: any;
     constructor() { this._ev = Object.create(null); }
     on(e: string, l: Function): any {
@@ -53,6 +59,7 @@ class EventEmitter {
         return this;
     }
     listenerCount(e: string): number { return this._ev[e] ? this._ev[e].length : 0; }
+    listeners(e: string): Function[] { return (this._ev[e] || []).slice(); }   // Node 同名 API: 返回副本
     eventNames(): string[] { return Object.keys(this._ev); }
     emit(e: string, ...args: any[]): boolean {
         const list = this._ev[e];

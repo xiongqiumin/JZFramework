@@ -10,7 +10,6 @@
 import { tr, sprintf } from './BTEServer.js';
 import { UiHelper } from './Common.js';
 import { SplitSettingWidget, ExportSplitResult } from './SplitSettingWidget.js';
-import { QMessageBox } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // class SplitDialog : public QDialog
@@ -63,7 +62,8 @@ export class SplitDialog
         if (split_ret.error)
         {
             const tips = sprintf(tr("分选失败 第%d条记录,无有效放电数据"), split_ret.erroNum);
-            QMessageBox.information(this, "", tips);
+            // parent 传 null: 本类还不是真控件(见文件头), 引擎的弹窗只收真 JZWidget 当宿主
+            JZMessageBox.information(null, "", tips);
             return;
         }
         this.ui.splitPie.setResult(split_ret);
@@ -85,7 +85,7 @@ export class SplitDialog
                 itemNo.setProperty("level", i);
                 itemNo.setChecked(true);
                 // C++ 槽里用 sender() 取控件, JS 侧由回调把控件传进去
-                itemNo.sigClicked.push(() => this.onSplitItemNo(itemNo));
+                itemNo.onClicked = () => this.onSplitItemNo(itemNo);
 
                 this.ui.tableSplitLevel.setCellWidget(row, 0, itemNo);
                 this.ui.tableSplitLevel.setItem(row, 1, itemNumber);

@@ -14,13 +14,15 @@ class JZJSEngine;
 // - type    控件类名(对应后续 JZWidget 子类 / @jz/widget 的 type), 如 "Window"/"PushButton"/"Label"
 // - id      可选, 生成 TS 时的成员名, 也对应运行时 widget 的 objectName
 // - props   属性键值(原样保留 Json::Value, 保留类型: 字符串/数字/布尔/数组)
-// - children 递归子节点
+// - children 递归子节点(控件, 即 <widget>)
+// - items   列表型子项(ComboBox / ListWidget 等不支持通用布局的控件, 用 addItem 添加)
 struct JZUiNode
 {
     std::string type;
     std::string id;
     Json::Value props;                    // objectValue(可能为空)
     std::vector<JZUiNode> children;
+    std::vector<std::string> items;       // 文本项(对应 addItem(text))
 
     bool isValid() const { return !type.empty(); }
 };

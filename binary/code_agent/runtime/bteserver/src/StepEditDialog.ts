@@ -12,7 +12,6 @@ import { tr, sprintf } from './BTEServer.js';
 import { PackDefine, STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_7, STEP_TYPE_IDLE, STEP_TYPE_LOOP, STEP_TYPE_STOP, PARAM_Current, PARAM_Voltage, PARAM_StopCurrent, PARAM_StopVoltage, PARAM_Time, PARAM_Capacity, PARAM_Tempature, PARAM_CountLoop, PARAM_BeginStepID, OP_EQU, OP_BIG_EQU, OP_SMALL_EQU } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
 import { g_project } from './BTEProject.js';
-import { QMessageBox } from './qtcompat.js';
 
 //工步容量设定上限(Ah),精度百分之一
 const MAX_STEP_CAPACITY = 10000.0;
@@ -158,20 +157,20 @@ export class StepEditDialog
         const var_ = Number(var_str);
         if (var_str === "")
         {
-            QMessageBox.information(this, "", param_name + tr(" 不能为空"));
+            JZMessageBox.information(null, "", param_name + tr(" 不能为空"));
             return { ok: false, value: 0 };
         }
 
         if (!ok)
         {
-            QMessageBox.information(this, "", param_name + tr("不正确，请检查"));
+            JZMessageBox.information(null, "", param_name + tr("不正确，请检查"));
             return { ok: false, value: 0 };
         }
 
         if (var_ <= 0 || var_ > max)
         {
             const range = sprintf("(0-%0.4f)", max);
-            QMessageBox.information(this, "", param_name + tr("参数超出范围") + range + tr("，请检查"));
+            JZMessageBox.information(null, "", param_name + tr("参数超出范围") + range + tr("，请检查"));
             return { ok: false, value: 0 };
         }
 
@@ -304,13 +303,13 @@ export class StepEditDialog
             //截止电流的值必须小于电流值
             if (Number(lineStopCurrent) > Number(lineCurrent))
             {
-                QMessageBox.information(this, "", tr("截止电流必须小于电流值"));
+                JZMessageBox.information(null, "", tr("截止电流必须小于电流值"));
                 return false;
             }
             //另外截止电流不能小于0.1
             if (Number(lineStopCurrent) < 0.1)
             {
-                QMessageBox.information(this, "", tr("截止电流不能小于0.1"));
+                JZMessageBox.information(null, "", tr("截止电流不能小于0.1"));
                 return false;
             }
         }

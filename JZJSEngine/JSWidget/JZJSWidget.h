@@ -6,39 +6,6 @@
 #include "JZColor.h"
 #include "quickjs/quickjs.h"
 
-// JZWidget 的"指针类"接口 —— 全部做成 **quickjs C 函数**(QJS 的 C 函数签名:
-// `JSValue fn(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)`)。
-//
-// ==== 为什么这几个接口必须是 C 函数, 而不是 ClassBind::def 的 lambda ====
-// def 注册的方法: lambda 只拿得到"已经转好的形参"(如 JZWidget* parent), 拿不到
-//   `this_val` / 原始 JSValue; 而下面这些接口恰恰需要 JS 侧那个**包装对象本身**:
-//   * setParentWidget: 挂进对象树后由父对象负责 delete, 必须翻转"接收者自己"的包装
-//     所有权(/TransferThis/, JS GC 不能再删) —— 接收者的包装只能从 this_val 取;
-//   * parentWidget / window: 没有父/没有窗口时要返回**真正的 null**, 不能造一层
-//     "空包装对象"(那是真值, `if (p)` 判不出来, 之后一调用就断言);
-//   * layout / setLayout: 布局不是 JZObject(没有守卫指针), 必须显式翻转 /Transfer/,
-//     并把"失效开关"存在 JS 对象自己身上 —— 替换布局时让已发出的旧包装立刻失效;
-//   * (顺带)C 函数自己校验 this_val/参数, 不经过 ClassBind 的形参类型表 —— 也就不受
-//     "形参首参必须是已注册类"那条约束。
-//
-// ==== 状态放哪 ====
-// 需要"按控件保存状态"的 JS 接口(JZWidget 这组就是: 布局包装缓存 / 失效开关)一律用**全局 C 函数**
-// + 状态放 JZJSWidgetModule 的控件登记节点(WidgetInfo / WidgetInfo::ext), **不往控件类上派生镜像类**:
-// 派生类方案要求把基类指针还原成派生类型(C++ 侧 new 出来的控件是裸类对象 -> 写越界), 而且只有被
-// 显式实例化的类有效。命名约定: C++ 侧带包装语义的方法以 Js 结尾(本文件按 quickjs 惯例直接叫
-// js_JZWidget_xxx), **JS 侧看到的名字一律由注册处决定**(不带后缀)。
-//
-// 注册方式: 在 JZJSWidgetModule::registWidgets() 里由 ClassBind<JZWidget> 直接挂上去
-// (见 JZJSBind.h 的 def(name, JSCFunction*) —— 第一个参数就是 JS 侧方法名)。挂在 JZWidget
-// 原型上, JZWindow 等派生类经原型链继承。
-// 例外: setParentWidget 还要动模块的控件表(保活 JS 包装), 而 C 函数拿不到模块指针 ——
-// 它走**带 func_data 的注册**(defData), 回调多两个参数(magic / func_data), 模块指针在 func_data 里。
-
-// 所有权的运行期状态机(等价 SIP 的 /Transfer/ 与 /TransferBack/, 即包装的 cppOwner 翻转)。
-// 经多态基类走: 包装类型随类层次不同(JSRawPointer<具体类> / JSObjectPointer), 不能按一种强转。
-// 非包装对象(如传个数字)时静默忽略。
-void jzSetCppOwner(JSValueConst value, bool cppOwner);
-
 // 颜色字符串解析: '#rgb' / '#rrggbb' / '#rrggbbaa' / 颜色名(black white red green blue yellow
 // cyan magenta gray|grey transparent), 无法识别时返回黑色。
 // 定义在 JZJSWidgetModule.cpp —— 画笔接口(JZPainter.setPen/setBrush)与本文件的
@@ -73,7 +40,7 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
 // JS 构造器(C 版本) —— 每个类一个, 覆盖 C++ 侧的**全部构造重载**
 // ============================================================================
 //
-// 为什么要自己写构造器(而不是 ClassBind::createArgs 那套 std::function 工厂):
+// 为什么要自己写构造器(而不是 ClassBind::create 那套 std::function 工厂):
 //   * 直接看 argc/argv 就能按 JS 的实参形态分派到不同 C++ 构造(下面每个类都列了形态),
 //     例如 JZLabel: JZLabel(parent) / JZLabel(text, parent) 两个重载;
 //   * 报错能用 JS_ThrowTypeError 写准("new JZWindow(w, h, title?) 需要宽高两个数字"),
@@ -166,7 +133,7 @@ JSValue js_JZFont_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValu
 //   静态工厂: JZMatrix2D.translation(dx,dy) / scaling(sx,sy) / rotation(deg) / rotationRadians(rad)
 JSValue js_JZMatrix2D_ctor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv);
 
-// 把上面这些构造器换成各注册类的 JS 构造函数(替换引擎按 createArgs 生成的那个):
+// 把上面这些构造器换成各注册类的 JS 构造函数(替换引擎按 create 生成的那个):
 //   ctor = JS_NewCFunction2(..., JS_CFUNC_constructor) → JS_SetConstructor(ctor, 类原型)
 //   → 再把全局上的类名指到新 ctor(引擎的 classConstructor() 就是按全局名取的, 所以必须换)。
 // **必须在 registWidgets / registViews / registLayouts 之后调用**(类要先注册)。

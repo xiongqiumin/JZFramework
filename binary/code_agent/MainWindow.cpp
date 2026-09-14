@@ -168,7 +168,7 @@ InputEdit::InputEdit(JZWidget* parent)
     const int shotW = 60;
     m_shotBtn = new JZPushButton(this, shotW, btnH, "截图");
     m_shotBtn->setTooltip("截取屏幕并附加到下一条消息");
-
+/*
     // selfLayout 锚定右下角: 右/下锚点下正 dx/dy 向内取反 = 距右/底边距 8/6,
     // 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
     // 由右向左依次摆放: 发送(8) | 圆环(8+btnW+8) | 截图(圆环左侧再留 8)
@@ -179,7 +179,7 @@ InputEdit::InputEdit(JZWidget* parent)
     layout->addWidget(m_shotBtn, JZSelfLayout::BottomRight,
                       8 + btnW + 8 + 26 + 8, 6);
     setLayout(layout);
-
+*/
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
     connect(&m_shotBtn->sigClicked, this, [this]() { sigShot.emit(); });
     connect(&sigTextChanged, this, [this](const std::string&) { updateButton(); });

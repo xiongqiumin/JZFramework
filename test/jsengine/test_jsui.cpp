@@ -532,7 +532,7 @@ int main()
             return false;
         };
 
-        // 值类型: 实参真的写进底层对象(以前 createArgs 一律忽略实参)
+        // 值类型: 实参真的写进底层对象(以前 create 一律忽略实参)
         check("构造器实参: JZWindow(w,h,title) / JZPoint / JZRect / JZSize / JZColor",
               evalStr(engine,
                       "var cw = new JZWindow(320, 200, 'CTor');"

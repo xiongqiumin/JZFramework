@@ -178,7 +178,7 @@ public:
     static JSValue js_constructor(JSContext* ctx, JSValueConst new_target, int argc, JSValueConst* argv, int magic)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        // createArgs 里的参数校验 / 类型转换(fromJSValue)会抛 C++ 异常, 与 call() 一致地
+        // create 里的参数校验 / 类型转换(fromJSValue)会抛 C++ 异常, 与 call() 一致地
         // 转成 JS 异常 —— 否则异常会跨 quickjs 的 C 调用栈展开。
         try
         {
@@ -1467,25 +1467,21 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     else
     {
         const CClassDefine& define = m_typeMap[type].classDefine;
-        jsbind::JSPointerBase* ptr = define.createArgs(m_ctx, argc, argv);
+        jsbind::JSPointerBase* ptr = define.create(m_ctx, argc, argv);
         return createValue(type, ptr);
     }
 }
 
 JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
 {
-    // createArgs 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
+    // create 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
     // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
-    // 没挂异常却返回空 = createArgs 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
+    // 没挂异常却返回空 = create 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
     if (!ptr)
     {
-        JZ_ASSERT_X(JS_HasException(m_ctx), "createValue: createArgs 返回空指针但没有设置 JS 异常");
+        JZ_ASSERT_X(JS_HasException(m_ctx), "createValue: create 返回空指针但没有设置 JS 异常");
         return JS_EXCEPTION;
-    }
-
-    // 引擎指针统一在这里注入(不必在 20 多处 new JSRawPointer 的地方手填): moveToCpp/moveToJs/clear
-    // 都要经它访问身份表。
-    ptr->setEngine(this);
+    }        
 
     // 指针语义类型(显式声明, 见 ClassBind::setPointerSemantics): 挂上身份表里那份共享状态。
     //   ① 同底层对象 ⇒ 同状态 ⇒ 所有权翻转/失效在所有包装间同步;
@@ -1494,11 +1490,11 @@ JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
     const CClassDefine& ptrDefine = m_typeMap[type].classDefine;
     if (ptrDefine.pointerSemantics)
     {
-        const void* key = ptr->getRaw();
+        ptr->m_engine = this;
+        m_jsPoints.push_back(ptr);        
     }
 
     JSClassID js_class_id = typeToJSType(type);
-
     JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
 
     JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
@@ -1507,117 +1503,54 @@ JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
 
     JS_FreeValue(m_ctx, proto);
 
-    // 实例创建后钩子: 覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径
-    // (toJsValueFromPtr → createJSValue → createValue(type, ptr)), 回写 JSValue 句柄 / engine 到 C++ 包裹对象。
-    const CClassDefine& define = m_typeMap[type].classDefine;
-    if (define.onCreated)
-        define.onCreated(m_ctx, obj, ptr);
-
     return obj;
 }
 
-// ============================================================================
-// 指针语义对象的身份表 + 包装基类的三个成员函数
-// ============================================================================
-// 关键点: 表里存的是**共享状态**(JSPointerState), 包装们各持一份 shared_ptr 引用 ——
-// 于是"从表里摘掉"不影响已经发给 JS 的句柄(它们仍能读到 cleared), 而"托管句柄"这件事
-// 只有状态里那份 dup 在管(不受包装生死影响, 因为状态独立存活)。
+void JZJSEngine::addPointer(jsbind::JSPointerBase *pointer)
+{
+    m_jsPoints.push_back(pointer);
+}
 
-std::shared_ptr<jsbind::JSPointerState> JZJSEngine::pointerStateFor(const void* ptr, bool create,
-                                                                    bool cppOwnerIfNew)
+void JZJSEngine::removePointer(jsbind::JSPointerBase *pointer)
+{
+    vec_removeOne(m_jsPoints, pointer);
+}
+
+jsbind::JSPointerBase* JZJSEngine::pointerStateFor(const void* ptr)
 {
     if (!ptr)
         return nullptr;
 
-    auto it = m_pointerStates.find(ptr);
-    if (it != m_pointerStates.end())
-        return it->second;
-
-    if (!create)
-        return nullptr;
-
-    auto state = std::make_shared<jsbind::JSPointerState>();
-    state->cppOwner = cppOwnerIfNew;   // 第一次包装的意图入表; 后续包装不再改它(翻转走 setCppOwner)
-    m_pointerStates[ptr] = state;
-    return state;
-}
-
-void JZJSEngine::bindPointerHandle(const void* ptr, JSValueConst jsValue)
-{
-    if (!ptr || JS_IsUndefined(jsValue) || JS_IsNull(jsValue))
-        return;
-
-    auto state = pointerStateFor(ptr, true);
-    if (!state)
-        return;
-
-    if (!JS_IsUndefined(state->handle))
-        JS_FreeValue(m_ctx, state->handle);   // 换绑: 先把上一份托管句柄放掉
-
-    state->handle = JS_DupValue(m_ctx, jsValue);   // C++ 侧托管一份(JS 对象不会被回收)
-}
-
-JSValue JZJSEngine::takePointerHandle(const void* ptr)
-{
-    // 返回**新引用**(调用方负责 JS_FreeValue)并摘掉登记; 没托管过返回 JS_UNDEFINED。
-    auto state = pointerStateFor(ptr, false);
-    if (!state || JS_IsUndefined(state->handle))
-        return JS_UNDEFINED;
-
-    JSValue v = state->handle;
-    state->handle = JS_UNDEFINED;   // 所有权直接转移给调用方(不 Free)
-    return v;
-}
-
-void JZJSEngine::forgetPointerState(const void* ptr)
-{
-    auto it = m_pointerStates.find(ptr);
-    if (it == m_pointerStates.end() || !it->second)
-        return;
-
-    // **摘表**这一步很重要: 底层对象被 delete 后, 新对象可能落在同一个地址上 —— 表里留着
-    // 旧状态会让"新对象的句柄"命中旧状态(失效/错句柄)。已发出的包装各持一份 shared_ptr,
-    // 所以摘表不影响它们读到 cleared。
-    // 顺序: 先把状态/表项都摘下来(此后它已不在表里), 再放托管句柄, 最后放掉状态自身 ——
-    // 这两步都可能级联(放句柄 = 放掉那个 JS 对象 -> 包装析构 -> 删底层对象 -> 绑定层收尾又回头
-    // 改这张表; 状态析构 = data 析构)。级联里再摘同一个 key 也无害(表里已经没有它了)。
-    auto state = it->second;
-    m_pointerStates.erase(it);
-
-    if (!JS_IsUndefined(state->handle))
+    for (size_t i = 0; i < m_jsPoints.size(); i++)
     {
-        JS_FreeValue(m_ctx, state->handle);
-        state->handle = JS_UNDEFINED;
+        if (m_jsPoints[i]->getRaw() == ptr)
+            return m_jsPoints[i];
     }
-    state.reset();
+    return nullptr;
 }
 
 JSValue JZJSEngine::pointerHandle(const void* ptr) const
 {
-    // 借用引用(调用方要留就得自己 dup)。
-    auto it = m_pointerStates.find(ptr);
-    if (it == m_pointerStates.end() || !it->second)
-        return JS_UNDEFINED;
-    return it->second->handle;
+    for (size_t i = 0; i < m_jsPoints.size(); i++)
+    {
+        if (m_jsPoints[i]->getRaw() == ptr)
+            return m_jsPoints[i]->m_state->jsValue;
+    }
+    return JS_UNDEFINED;
 }
 
 void JZJSEngine::clearPointerStates()
 {
-    // 引擎关闭: 统一释放托管句柄(必须在 JS_FreeContext 之前调用, 见 deinit)。
-    // 先把整张表换出来再处理: 放句柄 / 析构状态(其 data 析构会级联回绑定层, 进而又改动身份表)
-    // 都在表外进行, 不会把"正在遍历的表"改坏。
-    std::map<const void*, std::shared_ptr<jsbind::JSPointerState>> states;
-    states.swap(m_pointerStates);
-
-    for (auto& kv : states)
+    auto points = m_jsPoints;
+    for (auto& pt : points)
     {
-        if (kv.second && !JS_IsUndefined(kv.second->handle))
+        if (pt->cppOwner())
         {
-            JS_FreeValue(m_ctx, kv.second->handle);
-            kv.second->handle = JS_UNDEFINED;
+            auto value = pt->moveToJs();
+            JS_FreeValue(m_ctx, value);
         }
     }
-    // states 出作用域: 最后一批 shared_ptr 析构 -> 状态(含 data)析构
+    m_jsPoints.clear();
 }
 
 int JZJSEngine::retainCallback(JSValueConst cb)
@@ -1642,46 +1575,36 @@ void JZJSEngine::releaseCallback(int id, JSValue value)
     JS_FreeValue(m_ctx, value);
 }
 
-std::vector<std::pair<const void*, jsbind::JSPointerData*>> JZJSEngine::pointerDataList() const
-{
-    std::vector<std::pair<const void*, jsbind::JSPointerData*>> list;
-    for (auto& kv : m_pointerStates)
-    {
-        if (kv.second && kv.second->data)
-            list.push_back(std::make_pair(kv.first, kv.second->data.get()));
-    }
-    return list;
-}
-
 // ---- JSPointerBase 的三个成员(放这里定义: 需要完整的 JZJSEngine) ----
+jsbind::JSPointerBase::~JSPointerBase()
+{
+    if(m_engine)
+        m_engine->removePointer(this);
+}
 
 void jsbind::JSPointerBase::clear()
 {
     // 只有 "C++ 拥有"(即不负责 delete 的那一侧)才允许标失效 —— 否则会把"JS 拥有、
     // 还等着析构时 delete"的对象变成永远不释放。各调用点都遵守这条(见 JZJSWidget.cpp)。
     JZ_ASSERT(cppOwner());
-
     if (!m_state)
         return;
 
-    // ★ 顺序要点: getRaw() 在标记失效后返回 nullptr, 所以先把裸指针取出来。
-    void* raw = getRaw();
-
-    onClear();                                     // 派生类把自己的指针置空(绝不 delete 对象)
-
-    if (m_engine && raw)
-        m_engine->forgetPointerState(raw);          // 解绑 C++ 侧托管的那份句柄 + 摘表(防地址复用别名)
+    onClear();
 }
 
 void jsbind::JSPointerBase::moveToCpp(JSValueConst jsValue)
-{
-    if (m_engine)
-        m_engine->bindPointerHandle(getRaw(), jsValue);
+{    
+    JZ_ASSERT(JS_IsUndefined(m_state->jsValue));
+    m_state->jsValue = m_engine->dupValue(jsValue);    
 }
 
 JSValue jsbind::JSPointerBase::moveToJs()
 {
-    return m_engine ? m_engine->takePointerHandle(getRaw()) : JS_UNDEFINED;
+    JZ_ASSERT(m_state->cppOwner);
+    JSValue jsValue = m_state->jsValue;
+    m_state->jsValue = JS_UNDEFINED;
+    return jsValue;
 }
 
 void JZJSEngine::freeValue(JSValue value)

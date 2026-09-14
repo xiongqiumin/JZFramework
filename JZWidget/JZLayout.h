@@ -189,23 +189,8 @@ private:
     int m_vGap = -1;
 };
 
-// 锚定布局 (Self 布局): 子控件按九宫格锚点 + 偏移钉在容器内容区上,
-// 容器每次几何变动 (父布局 setGeometry / 手动 resize) 都会经 updateLayout
-// 链自动把各子控件摆回相对锚点的位置 —— 无需在容器 resizeEvent 里逐个
-// move。适合"悬浮右上角、贴右下角留边距、水平/垂直居中"这类需要相对
-// 容器保持稳定的手工定位场景。
-//
-// 偏移语义 (dx/dy):
-//   位于四条边上的锚点 (Top*/Middle*/Bottom*): 正偏移把控件推向内容区
-//   中心, 等价"向内边距"; 负值向容器外。
-//   正好在中线上的锚点 (TopCenter / MiddleLeft / Center / MiddleRight /
-//   BottomCenter): 该轴上没有"内外"之分, 偏移按屏幕轴直接平移
-//   (x 正向右、y 正向下)。
-//
-// 尺寸语义: 布局不改变子控件尺寸 (取 sizeHint 夹 [min,max]), 也不根据
-// 内容计算容器期望尺寸 (摆放依赖容器最终尺寸, 见 sizeHint)。若本布局所在
-// 容器还要放进父 Box 等布局, 请显式 setFixedSize / 让它 stretch。
-class JZSelfLayout : public JZLayout
+
+class JZSelfLayout
 {
 public:
     // 九宫格锚点: 子控件自身同位置点 对齐 容器内容区对应点, 再偏移。
@@ -216,33 +201,15 @@ public:
         BottomLeft, BottomCenter, BottomRight
     };
 
-    struct Item {
-        JZWidget* widget = nullptr;
-        Anchor anchor = TopLeft;
-        int dx = 0;   // 水平偏移 (靠边锚点: 向内容中心为正; 中线锚点: 按屏幕轴)
-        int dy = 0;   // 垂直偏移 (同上)
-    };
+    JZSelfLayout();
+    ~JZSelfLayout();
 
-    JZSelfLayout(int pad = 0);
-    ~JZSelfLayout() override = default;
-
-    // 登记/更新子控件锚点 (子控件父必须就是容器; 重复 addWidget 仅改锚点参数)
-    void addWidget(JZWidget* widget, Anchor anchor = TopLeft, int dx = 0, int dy = 0);
-    void setAnchor(JZWidget* widget, Anchor anchor, int dx = 0, int dy = 0);
-
-    int count() const { return (int)m_items.size(); }
-    void removeAt(int index);
-    void removeWidget(JZWidget* widget) override;
-    void clear() override;
-
-    JZSize sizeHint() const override;
-    JZSize minimumSizeHint() const override;
-
-protected:
-    void updateLayout() override;
-
-private:
-    std::vector<Item> m_items;
+    void setAnchor(Anchor anchor, int dx, int dy);
+    
+protected:    
+    Anchor m_anchor;
+    int m_dx;
+    int m_dy;
 };
 
 #endif // JZ_WIDGET_LAYOUT_H_

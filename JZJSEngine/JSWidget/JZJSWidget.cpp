@@ -132,13 +132,6 @@ void cacheLayoutRef(JSContext* ctx, JSValueConst this_val, JSValue wrap)
 
 }   // namespace
 
-void jzSetCppOwner(JSValueConst value, bool cppOwner)
-{
-    jsbind::JSPointerBase* cp = wrapperOf(value);
-    if (cp)
-        cp->setCppOwner(cppOwner);
-}
-
 // ---------- 父控件 ----------
 
 JSValue js_JZWidget_setParentWidget(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
@@ -169,17 +162,12 @@ JSValue js_JZWidget_setParentWidget(JSContext* ctx, JSValueConst this_val, int a
 
     self->setParentWidget(parent);
 
-    // /TransferThis/: 挂进父对象树后由父(对象树)负责 delete ⇒ 翻转**自己**的包装为"非拥有";
-    // 脱离对象树则交回 JS 拥有。翻转的是共享 PointInfo, JS 侧那份同步生效。
-    // (接收者的包装只能从 this_val 拿 —— 这正是本接口要做成 C 函数的原因。)
-    jzSetCppOwner(this_val, hasParent);
-
     // 模块侧登记: 进树 → 由父控件保活本包装; 脱离 → 撤销保活(包装交回 JS)。
     // **必须是最后一步**: 撤销保活可能让包装立刻析构, 顺带把 self 也 delete 掉 —— 之后不得再碰 self。
-    if (hasParent)
-        module->bindWidgetToParent(parent, self, this_val);
-    else
-        module->unbindWidget(self);
+    //if (hasParent)
+      //  module->bindWidgetToParent(parent, self, this_val);
+    //else
+      //  module->unbindWidget(self);
 
     return JS_UNDEFINED;
 }
@@ -325,7 +313,7 @@ JSValue js_JZWidget_setLayout(JSContext* ctx, JSValueConst this_val, int argc, J
         JS_FreeValue(ctx, old);
     }
 
-    jzSetCppOwner(argv[0], true);   // /Transfer/: JS 造的布局交给控件, 之后由 C++ delete
+    //jzSetCppOwner(argv[0], true);   // /Transfer/: JS 造的布局交给控件, 之后由 C++ delete
 
     self->setLayout(lay);
 
@@ -363,7 +351,7 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
 // ============================================================================
 // JS 构造器(C 版本) —— 每个类一个, 覆盖 C++ 侧的构造重载
 // ============================================================================
-// 与"引擎按 createArgs 生成的构造器"的区别(那个只管 new 一个默认对象, 收不到实参):
+// 与"引擎按 create 生成的构造器"的区别(那个只管 new 一个默认对象, 收不到实参):
 //   * 按 JS 实参形态分派到不同的 C++ 构造; 报错能用 JS_ThrowTypeError 写准;
 //   * 构造完统一走 jzNewWidget / jzNewValue / jzNewLayout —— jzNewWidget 会过 createValue
 //     (触发 onCreated 回写 m_jsvalue/m_engine), 并把控件登记进 JZJSWidgetModule 的控件表:
@@ -563,9 +551,6 @@ JSValue jzNewWidget(JSContext* ctx, Class* obj)
     JSValue value = engine->createValue(type, new jsbind::JSObjectPointer(obj, false));
     if (JS_IsException(value))
         return value;
-
-    if (JZJSWidgetModule* module = engine->widgetModule())
-        module->registerCreatedWidget(obj, value);   // 有父 → 保活; 无父 → 顶层节点
 
     return value;
 }
@@ -859,16 +844,7 @@ JSValue js_JZGridLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueCons
 // JZSelfLayout: () / (pad)
 JSValue js_JZSelfLayout_ctor(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
 {
-    const char* what = "new JZSelfLayout(pad?)";
-    if (argc > 1)
-    {
-        JS_ThrowTypeError(ctx, "%s: 至多 1 个参数", what);
-        return JS_EXCEPTION;
-    }
-    int pad = 0;
-    if (argc == 1 && !jzParseInt(ctx, argv[0], pad, what, 0))
-        return JS_EXCEPTION;
-    return jzNewLayout<JZSelfLayout>(ctx, new JZSelfLayout(pad));
+    return JS_UNDEFINED;
 }
 
 // ---------- 值类型 ----------

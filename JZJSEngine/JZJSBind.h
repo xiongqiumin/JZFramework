@@ -336,7 +336,7 @@ std::function<JSPointerBase*(JSContext*, int, JSValueConst*)> makeDefaultCreate(
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
 std::function<JSPointerBase*(JSContext*, int, JSValueConst*)> makeDefaultCreate()
 {
-    // createArgs 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
+    // create 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
     return [](JSContext* ctx, int, JSValueConst*) -> JSPointerBase* {
         JS_ThrowInternalError(ctx, "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
         return nullptr;
@@ -363,7 +363,7 @@ public:
         // 统一包装模型: 值/引用类对象 opaque 同样存放 JSRawPointer<Class>*, 由 JS 管理 wrapper;
         // 底层对象所有权按 cppOwner 决定(默认 false = JS 拥有并随 GC 释放), 与 JSRawPointer 一致。
         m_define.isPointer = true;
-        m_define.createArgs = makeDefaultCreate<Class>();
+        m_define.create = makeDefaultCreate<Class>();
         // 经多态基类释放: opaque 的实际包装类型未必与注册的 Class 对应
         // (JZObject 派生类用 JSObjectPointer, 其余用 JSRawPointer<T>), 按具体类型强转再 delete 是 UB。
         // JSPointerBase 有虚析构, 可安全释放任意包装。
@@ -380,7 +380,7 @@ public:
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
         m_define.isPointer = true;
-        m_define.createArgs = makeDefaultCreate<Class>();
+        m_define.create = makeDefaultCreate<Class>();
         // 同上一处: 经 JSPointerBase(虚析构)释放, 不按具体包装类型强转。
         m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };
         m_define.superCTypeid = super.classDefine().ctypeid;
@@ -388,15 +388,11 @@ public:
 
     // 自定义构造(无默认构造/需参数/需回写 JS 句柄的类): 覆盖默认工厂。
     // 签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*, 句柄回写交 setInstanceBind 注册的 onCreated。
-    void setCreate(std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> create) { m_define.createArgs = std::move(create); }
+    void setCreate(std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> create) { m_define.create = std::move(create); }
 
     // 便捷重载: 无参构造(忽略 argc/argv), 用于事件/抽象基类等无状态工厂(如 setCreate([](){ return new JSRawPointer<Class>(new Class(), false); }))。
-    void setCreate(std::function<jsbind::JSPointerBase*()> create) { m_define.createArgs = [create](JSContext*, int, JSValueConst*) { return create(); }; }
-
-    // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次, 回写 JSValue 句柄 / engine 等到 C++ 包裹对象。
-    // 因每条包装路径(含 toJsValueFromPtr → createJSValue → createValue(type, ptr))都经此, 返回值转换 / toValuePtr / createCanvas 同样触发。
-    void setInstanceBind(std::function<void(JSContext*, JSValue, jsbind::JSPointerBase*)> bind) { m_define.onCreated = std::move(bind); }
-
+    void setCreate(std::function<jsbind::JSPointerBase*()> create) { m_define.create = [create](JSContext*, int, JSValueConst*) { return create(); }; }
+    
     // 声明"指针语义": 该类型的包装登记进引擎的身份表(同底层对象 ⇒ 同 JS 对象, `===` 才有意义),
     // 并支持 moveToCpp/moveToJs 的句柄托管。**默认是值语义**, 值类型(JZPoint/JZSize/JZRect/
     // JZColor/JZFont/JZImage)别调这个。加不加都不影响 cppOwner/clear 的既有行为。

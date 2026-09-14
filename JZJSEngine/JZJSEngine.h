@@ -281,18 +281,13 @@ public:
     // create=false 只查; create=true 时表里没有就用 cppOwnerIfNew 建一份 —— 之所以要这个参数:
     // 建状态的是**第一次包装**那次调用(toJsValueFromPtr 传进来的 cppOwner 是调用方的意图),
     // 之后同对象的包装共享同一份状态, 各自传来的 cppOwner 不再生效(这正是"翻转同步"的前提)。
-    std::shared_ptr<jsbind::JSPointerState> pointerStateFor(const void* ptr, bool create,
-                                                           bool cppOwnerIfNew = true);
-    void bindPointerHandle(const void* ptr, JSValueConst jsValue);  // moveToCpp: dup 后登记
-    JSValue takePointerHandle(const void* ptr);                     // moveToJs: 新引用 + 摘登记
-    void forgetPointerState(const void* ptr);                       // clear: 释放托管句柄 + 摘表(不动底层对象)
+
+    void addPointer(jsbind::JSPointerBase *pointer);
+    void removePointer(jsbind::JSPointerBase *pointer);
+    jsbind::JSPointerBase *pointerStateFor(const void* ptr);
     JSValue pointerHandle(const void* ptr) const;                   // 查询(借用引用; 身份复用用)
     void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表
 
-    // 收集所有"挂了扩展数据"的状态项(key = 底层对象裸指针, value = 数据本体, 见 JSPointerState::data)。
-    // **返回快照**而不是迭代器/引用: 调用方(绑定层清理)处理每一项时都会摘掉它并释放数据, 而这些动作
-    // 会改动身份表并可能级联(放掉保活句柄 -> 控件销毁 -> 又摘别的项), 边遍历边改表必炸。
-    std::vector<std::pair<const void*, jsbind::JSPointerData*>> pointerDataList() const;
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
     JSValue createResolvedPromise(JSValue jsValue);
@@ -515,10 +510,7 @@ protected:
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
     std::set<int> m_JSRawPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 JSRawPointer<Class>
-
-    // 指针语义对象的共享状态表(key = 底层裸指针; 见 pointerStateFor)。
-    // state 本身是 shared_ptr, 包装们各持一份引用 ⇒ 摘表不影响已发出的句柄(它们仍能读到 cleared)。
-    std::map<const void*, std::shared_ptr<jsbind::JSPointerState>> m_pointerStates;
+    std::vector<jsbind::JSPointerBase*> m_jsPoints;
 
     // 回调 GC 根数组(全局 __jzCallbackRoot 里那份的宿主)与登记计数, 见 retainCallback。
     JSValue m_cbRoot = JS_UNDEFINED;

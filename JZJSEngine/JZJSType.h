@@ -44,15 +44,20 @@ struct JSPointerData
 
 struct JSPointerState
 {
-    bool cppOwner = true;           // false = JS 拥有(最后一个包装析构时 delete 底层对象)
-    JSValue handle = JS_UNDEFINED;  // C++ 侧托管的那份句柄(dup 过; moveToCpp/moveToJs/clear 管理)
+    bool cppOwner = true;            // false = JS 拥有(最后一个包装析构时 delete 底层对象)
+    JSValue jsValue = JS_UNDEFINED;  // 只有在 cppOwner 为true 时有效
     std::unique_ptr<JSPointerData> data;
 };
 
 class JSPointerBase
 {
 public:
-    virtual ~JSPointerBase() = default;
+    virtual ~JSPointerBase();
+
+    std::shared_ptr<JSPointerState> state() const
+    {
+        return m_state;
+    }
 
     // ---- 底层指针 ----
     // 返回底层对象裸指针(继承向上转型时, 无需知道具体 Class 模板参数即可取对象指针);
@@ -67,25 +72,14 @@ public:
     { 
         return !m_state || m_state->cppOwner; 
     }
-    
-    void setCppOwner(bool owner)
-    {
-        if (m_state)
-        {
-            m_state->cppOwner = owner;
-        }
-    }
-
+        
     void moveToCpp(JSValueConst jsValue);
     JSValue moveToJs();
-    void clear();
-
-    void setEngine(JZJSEngine *engine) 
-    {
-        m_engine = nullptr;
-    }
-
+    void clear();   //表示 c++ 指针无效    
+    
 protected:
+    friend JZJSEngine;
+
     virtual void onClear() = 0;
 
     std::shared_ptr<JSPointerState> m_state;
@@ -357,16 +351,8 @@ class CClassDefine
 public:
     // 唯一构造入口: JS `new Cls(...)` 透传 (ctx, argc, argv) 生成底层对象并包成 JSRawPointer<Class>*。
     // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
-    std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> createArgs;
-
+    std::function<jsbind::JSPointerBase*(JSContext*, int, JSValueConst*)> create;
     std::function<void(jsbind::JSPointerBase*)> destory;
-
-    // 实例创建后钩子: createValue(type, ptr) 在 JS 对象建好并塞入 opaque 后调用一次
-    // (覆盖 new / 返回值转换 / toValuePtr / createCanvas 全部包装路径, 因 toJsValueFromPtr → createJSValue → createValue(type, ptr))。
-    // opaque 即 JSRawPointer<Class>*; 用于把 JSValue 句柄回写到 C++ 侧(控件的做法是给控件装一个
-    // 事件转发过滤器 JZSWidgetEventFilter, 由它持有句柄并以该 JS 对象为 this 调方法, 见 JZJSWidgetModule.h)。
-    // 由 setInstanceBind 注册。
-    std::function<void(JSContext*, JSValue, jsbind::JSPointerBase* opaque)> onCreated;
 
     std::string name;
     std::string ctypeid;
@@ -397,7 +383,7 @@ template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<s
 T fromJSValue(JSContext* ctx, JSValueConst value);
 
 // 上层校验入口: 判断 JS 值是否是 Class(或 is-a 派生) 的注册对象。
-// 供"没有参数类型表"的地方(如各类 createArgs / 构造参数)在转换前校验;
+// 供"没有参数类型表"的地方(如各类 create / 构造参数)在转换前校验;
 // 函数/方法形参的类型校验由 JZJSEngine::call() 按 CFunctionParam 完成。
 // 校验通过后 fromJSValue 内部的类型不匹配分支就只剩 JZ_ASSERT 兜底(属于上层漏校验=框架 bug)。
 template <class Class>
@@ -638,7 +624,7 @@ T& fromJSValue(JSContext* ctx, JSValueConst value)
         if (actual_cid != want_cid)
         {
             // 已由上层拦下: JZJSEngine::call() 按 CFunctionParam::exactClass 拒绝派生类对象,
-            // createArgs 那类地方用 js_check_class_arg(..., true) 校验。这里只兜底报错。
+            // create 那类地方用 js_check_class_arg(..., true) 校验。这里只兜底报错。
             JZ_ASSERT_X(0, "fromJSValue<JSRawPointer<Class>&>: 形参只接受精确类(上层应已校验)");
             return jstype::emptyWrapper<CP>();
         }

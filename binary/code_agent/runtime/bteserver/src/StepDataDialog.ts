@@ -10,14 +10,17 @@
 // ---------------------------------------------------------------------------
 
 import { tr, emit, sprintf } from './BTEServer.js';
-import { PackDefine, STEP_TYPE_STOP, STEP_TYPE_NULL, STEP_CHARGE, STEP_DISCHARGE, STEP_CHARGE_OTHER, stru_BTS_CMD_SEND_DFDATA76 } from './structs.js';
+import { stru_BTS_CMD_SEND_DFDATA76 } from './structs.js';
+import { PackDefine, STEP_CHARGE, STEP_CHARGE_OTHER, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
+import { QPen, Qt } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // class StepDataDialog : public QDialog
 // ---------------------------------------------------------------------------
 export class StepDataDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // StepDataDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

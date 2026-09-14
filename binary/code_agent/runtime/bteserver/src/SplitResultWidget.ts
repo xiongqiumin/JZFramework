@@ -1,3 +1,4 @@
+import { QRect, qRgb } from './qtcompat.js';
 // ---------------------------------------------------------------------------
 // SplitResultWidget.js —— 对应 C++ BTEServer/SplitResultWidget.h + SplitResultWidget.cpp
 //
@@ -9,6 +10,7 @@
 // ---------------------------------------------------------------------------
 export class SplitResultWidget
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // SplitResultWidget(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

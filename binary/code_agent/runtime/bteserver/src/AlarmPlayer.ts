@@ -1,3 +1,4 @@
+import { FALSE, NULL, SND_ASYNC, SND_FILENAME, SND_LOOP, SND_NODEFAULT } from './qtcompat.js';
 // ---------------------------------------------------------------------------
 // AlarmPlayer.js —— 对应 C++ BTEServer/AlarmPlayer.h + AlarmPlayer.cpp
 //
@@ -9,6 +10,7 @@
 
 export class AlarmPlayer
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // AlarmPlayer();
     constructor()
     {

@@ -449,6 +449,7 @@ function copyOut(src, map, out)
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_SEND_INFO
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.Version = 0;
@@ -509,6 +510,7 @@ export class stru_BTS_CMD_SEND_INFO
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_SEND_RTDATA76
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // enum WorkStatus { WORK_COMPLETE, WORK_RUN, WORK_USER_STOP, WORK_ERROR_STOP };
     static get WORK_COMPLETE() { return 0; }
     static get WORK_RUN() { return 1; }
@@ -580,6 +582,7 @@ export class stru_BTS_CMD_SEND_RTDATA76
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_SEND_DFDATA76
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // 对应 C++ 的 stru_BTS_CMD_SEND_DFDATA76::Data (83 字节)
     static get Data() { return stru_BTS_CMD_SEND_DFDATA76_Data; }
 
@@ -627,6 +630,7 @@ const DFDATA_FIELD_MAP = {
 
 export class stru_BTS_CMD_SEND_DFDATA76_Data
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.DataFlag = 0;
@@ -673,6 +677,7 @@ export class stru_BTS_CMD_SEND_DFDATA76_Data
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_SEND_DFDATA_RESP76
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.Index = 0; }
     pack(buffer)
     {
@@ -695,6 +700,7 @@ export class stru_ChannelPackBase
 
 export class stru_BTS_CMD_START70 extends stru_ChannelPackBase
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(src)
     {
         super();
@@ -731,6 +737,7 @@ export class stru_BTS_CMD_RESUME extends stru_BTS_CMD_STOP
 
 export class stru_BTS_CMD_STEP_JUMP extends stru_ChannelPackBase
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         super();
@@ -746,6 +753,7 @@ export class stru_BTS_CMD_STEP_JUMP extends stru_ChannelPackBase
 
 export class stru_BTS_CMD_RESUME_CONFIRM
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.Result = 0; }
     pack(buffer)
     {
@@ -757,6 +765,7 @@ export class stru_BTS_CMD_RESUME_CONFIRM
 
 export class stru_BTS_CMD_SET_RTC
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.Year = 0; this.Month = 0; this.Day = 0;
@@ -782,6 +791,7 @@ export class stru_BTS_CMD_SET_RTC
 
 export class stru_BGS66_CMD_SET_RT_INTERVAL
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.Interval = 0; }
     pack(buffer)
     {
@@ -793,6 +803,7 @@ export class stru_BGS66_CMD_SET_RT_INTERVAL
 
 export class stru_BTS_CMD_SEND_PARALLEL extends stru_ChannelPackBase
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         super();
@@ -816,6 +827,7 @@ export class stru_BTS_CMD_SEND_PARALLEL_CANCEL extends stru_BTS_CMD_SEND_PARALLE
 
 export class stru_BTS_CMD_LED_ON
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.Led = new Uint8Array(8); }
     pack(buffer)
     {
@@ -830,6 +842,7 @@ export class stru_BTS_CMD_LED_ON
 // ---- 回应帧(只解包) ----
 export class stru_BTS_CMD_START_RESP70
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.Guid = new Uint8Array(16); this.ChannelCount = 0; this.channelInfo = []; }
     unpack(body)
     {
@@ -843,6 +856,7 @@ export class stru_BTS_CMD_START_RESP70
 
 export class stru_BTS_CMD_CHANNEL_RESP
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this.ChannelID = new Uint8Array(8); }
     unpack(body)
     {
@@ -860,6 +874,7 @@ export class stru_BTS_CMD_STEP_JUMP_RESP extends stru_BTS_CMD_CHANNEL_RESP { }
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_STEP_REQUEST
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.Guid = new Uint8Array(16);
@@ -904,6 +919,7 @@ export class stru_BTS_CMD_STEP_REQUEST
 // ---------------------------------------------------------------------------
 export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.StepLine = new Uint8Array(8);      // 参数位图: 两个 32 位(低 4 字节 + 高 4 字节)
@@ -1035,6 +1051,7 @@ stru_BTS_CMD_SET_STEP76_Ex_StepInfo.typeList = new Array(64).fill(2);
 
 export class stru_BTS_CMD_SET_STEP76_Ex
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     static get StepInfo() { return stru_BTS_CMD_SET_STEP76_Ex_StepInfo; }
 
     constructor()

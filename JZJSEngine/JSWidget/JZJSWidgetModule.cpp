@@ -5,6 +5,10 @@
 #include "JZApplication.h"
 #include "JZWidget.h"
 #include "JZWindow.h"
+#include "JZDialog.h"
+#include "JZMessageBox.h"
+#include "JZFileDialog.h"
+#include "JZSettings.h"
 #include "JZLayout.h"
 #include "JZPainter.h"
 #include "JZPen.h"
@@ -364,6 +368,9 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     registImage();
     registEvents();
     registWidgets();
+    registDialogs();
+    registSettings();
+    registItems();
     registViews();
     registLayouts();
     registPens();
@@ -710,6 +717,9 @@ void JZJSWidgetModule::registGeometry()
     bind_point.def("x", [](JZPoint* p) { return p->x(); });
     bind_point.def("y", [](JZPoint* p) { return p->y(); });
     bind_point.def("isNull", [](JZPoint* p) { return p->isNull(); });
+    // 值相等: JS/TS 没有运算符重载 ⇒ `a === b` 用的是包装身份(每次取都是新包装, 恒 false),
+    // 要比"坐标一样"必须显式调用。其余值类型(JZSize/JZRect/JZColor/JZFont)同理。
+    bind_point.def("equal", [](JZPoint* p, const JZPoint& o) { return *p == o; });
     m_engine->registClass(bind_point.classDefine());
 
     jsbind::ClassBind<JZSize> bind_size("JZSize");
@@ -719,6 +729,7 @@ void JZJSWidgetModule::registGeometry()
     bind_size.def("height", [](JZSize* s) { return s->height(); });
     bind_size.def("isEmpty", [](JZSize* s) { return s->isEmpty(); });
     bind_size.def("isValid", [](JZSize* s) { return s->isValid(); });
+    bind_size.def("equal", [](JZSize* s, const JZSize& o) { return *s == o; });
     m_engine->registClass(bind_size.classDefine());
 
     jsbind::ClassBind<JZRect> bind_rect("JZRect");
@@ -744,6 +755,7 @@ void JZJSWidgetModule::registGeometry()
     bind_rect.def("intersect", [](JZRect* r, const JZRect& o) { return r->intersect(o); });
     bind_rect.def("united", [](JZRect* r, const JZRect& o) { return r->united(o); });
     bind_rect.def("isEmpty", [](JZRect* r) { return r->isEmpty(); });
+    bind_rect.def("equal", [](JZRect* r, const JZRect& o) { return *r == o; });
     m_engine->registClass(bind_rect.classDefine());
 }
 
@@ -758,6 +770,7 @@ void JZJSWidgetModule::registColor()
     bind_color.def("alpha", [](JZColor* c) { return (int)c->alpha(); });
     bind_color.def("setRgb", [](JZColor* c, int r, int g, int b) { c->setRgb((uint8_t)r, (uint8_t)g, (uint8_t)b); });
     bind_color.def("setRgba", [](JZColor* c, int r, int g, int b, int a) { c->setRgba((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)a); });
+    bind_color.def("equal", [](JZColor* c, const JZColor& o) { return *c == o; });
     m_engine->registClass(bind_color.classDefine());
 }
 
@@ -933,6 +946,206 @@ static void setWidgetCreate(jsbind::ClassBind<W>& bind)
 // JZVariant -> JS 值(`w.property(name)` 用)。JZVariant 存取是**精确类型**(toXxx 会断言类型匹配),
 // 所以这里按 typeId 逐个精确取值; 覆盖: 空/标量/字符串/字节串/数组/对象/JS 值(注册的 metatype)。
 // 其它 metatype(C++ 侧自定义类型)没有通用转换, 明确抛异常 —— 不静默返回 null 丢信息。
+// ---------- 对话框 (模态) ----------
+// 模态循环 = JZWin32Thread::execModal(可重入, 与主循环共用轮体): exec() 期间照常跑 JS 回调与定时器,
+// 所以 exec() 返回后"世界可能已经变了"(与 Qt 同款约定)。同一个对象嵌套 exec() 由 JZDialog 自己拒绝
+// (警告 + 返回 -1, 见 JZDialog.cpp); 不同对话框互相嵌套是支持的(各自独立栈帧)。
+// 注册方式: JZDialog 是 JZObject -> 按类注册; JZMessageBox / JZFileDialog 只有静态接口 ->
+// 挂成全局对象(与 uiLoader / jzWidget 同套路)。
+// 注: 这些入口是 quickjs C 函数(不走 JZJSEngine::call), 所以**不能抛 C++ 异常** —— 出错一律
+// JS_ThrowTypeError + return JS_EXCEPTION(与 js_JZImageCreate 同一约定)。
+
+// 解析对话框的 (parent?, caption?, dir?, filter?): 允许省略尾部参数; 类型不对时已设 JS 异常。
+static bool jzJsParseDialogArgs(JSContext* ctx, int argc, JSValueConst* argv, const char* what,
+                                JZWidget*& parent, std::string& caption, std::string& dir, std::string& filter,
+                                std::string* directoryOnly = nullptr)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine)
+        return false;
+
+    if (argc > 0 && !JS_IsNull(argv[0]) && !JS_IsUndefined(argv[0]))
+    {
+        if (!js_check_class_arg<JZWidget>(ctx, argv[0]))
+        {
+            JS_ThrowTypeError(ctx, "%s: 第 1 个参数需要 JZWidget(或其子类), 也可以传 null", what);
+            return false;
+        }
+        parent = fromJSValue<JZWidget*>(ctx, argv[0]);
+    }
+
+    std::string* outs[3] = { &caption, &dir, directoryOnly ? directoryOnly : &filter };
+    for (int i = 0; i < 3; i++)
+    {
+        int index = i + 1;
+        if (argc <= index || JS_IsNull(argv[index]) || JS_IsUndefined(argv[index]))
+            continue;
+        if (!engine->checkType(argv[index], JSType_string))
+        {
+            JS_ThrowTypeError(ctx, "%s: 第 %d 个参数需要字符串", what, index + 1);
+            return false;
+        }
+        *outs[i] = fromJSValue<std::string>(ctx, argv[index]);
+    }
+    return true;
+}
+
+// JZMessageBox.information/warning/question(parent, title, text) -> 1=Accepted / 0=Rejected
+// 语义取 Qt5 的静态接口(直接给结果), 但不是把 C++ 那个"返回对话框对象"照搬: 对话框是一次性的,
+// exec() 结束后 deleteLater 收尾, 不把句柄交给 JS(省掉所有权问题)。
+static JSValue jsJZMessageBoxRun(JSContext* ctx, int argc, JSValueConst* argv, int kind)
+{
+    const char* what = "JZMessageBox.information/warning/question(parent, title, text)";
+    if (argc != 3)
+        return JS_ThrowTypeError(ctx, "%s: 需要 3 个参数", what);
+
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine)
+        return JS_EXCEPTION;
+    if (!js_check_class_arg<JZWidget>(ctx, argv[0]))
+        return JS_ThrowTypeError(ctx, "%s: 第 1 个参数需要 JZWidget(或其子类)", what);
+    if (!engine->checkType(argv[1], JSType_string) || !engine->checkType(argv[2], JSType_string))
+        return JS_ThrowTypeError(ctx, "%s: title / text 需要字符串", what);
+
+    JZWidget* parent = fromJSValue<JZWidget*>(ctx, argv[0]);
+    std::string title = fromJSValue<std::string>(ctx, argv[1]);
+    std::string text = fromJSValue<std::string>(ctx, argv[2]);
+
+    JZMessageBox* box = (kind == 2) ? JZMessageBox::question(parent, title, text)
+                        : (kind == 1) ? JZMessageBox::warning(parent, title, text)
+                                      : JZMessageBox::information(parent, title, text);
+    int result = box->exec();
+    box->deleteLater();   // 延后删除: 模态循环里不立刻析构
+    return JS_NewInt32(ctx, result);
+}
+
+static JSValue jsJZMessageBoxInformation(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{ return jsJZMessageBoxRun(ctx, argc, argv, 0); }
+static JSValue jsJZMessageBoxWarning(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{ return jsJZMessageBoxRun(ctx, argc, argv, 1); }
+static JSValue jsJZMessageBoxQuestion(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{ return jsJZMessageBoxRun(ctx, argc, argv, 2); }
+
+// 文件对话框: 直接转发 JZFileDialog 的静态接口(内部是原生模态对话框, 期间照常跑 JS 回调/定时器)。
+// 取消 / 失败 -> null(单个) 或 [](多个) —— 比 C++ 的空串更好判。
+static JSValue jsJZFileDialogGetOpenFileName(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZFileDialog.getOpenFileName(parent?, caption?, dir?, filter?)";
+    JZWidget* parent = nullptr;
+    std::string caption, dir, filter;
+    if (!jzJsParseDialogArgs(ctx, argc, argv, what, parent, caption, dir, filter))
+        return JS_EXCEPTION;
+    std::string path = JZFileDialog::getOpenFileName(parent, caption, dir, filter);
+    return path.empty() ? JS_NULL : JS_NewString(ctx, path.c_str());
+}
+
+static JSValue jsJZFileDialogGetOpenFileNames(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZFileDialog.getOpenFileNames(parent?, caption?, dir?, filter?)";
+    JZWidget* parent = nullptr;
+    std::string caption, dir, filter;
+    if (!jzJsParseDialogArgs(ctx, argc, argv, what, parent, caption, dir, filter))
+        return JS_EXCEPTION;
+
+    std::vector<std::string> files = JZFileDialog::getOpenFileNames(parent, caption, dir, filter);
+    JSValue arr = JS_NewArray(ctx);
+    for (size_t i = 0; i < files.size(); i++)
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, JS_NewString(ctx, files[i].c_str()));
+    return arr;
+}
+
+static JSValue jsJZFileDialogGetSaveFileName(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZFileDialog.getSaveFileName(parent?, caption?, dir?, filter?)";
+    JZWidget* parent = nullptr;
+    std::string caption, dir, filter;
+    if (!jzJsParseDialogArgs(ctx, argc, argv, what, parent, caption, dir, filter))
+        return JS_EXCEPTION;
+    std::string path = JZFileDialog::getSaveFileName(parent, caption, dir, filter);
+    return path.empty() ? JS_NULL : JS_NewString(ctx, path.c_str());
+}
+
+static JSValue jsJZFileDialogGetExistingDirectory(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    const char* what = "JZFileDialog.getExistingDirectory(parent?, caption?, dir?)";
+    JZWidget* parent = nullptr;
+    std::string caption, dir, filter;
+    if (!jzJsParseDialogArgs(ctx, argc, argv, what, parent, caption, dir, filter, &dir))
+        return JS_EXCEPTION;
+    std::string path = JZFileDialog::getExistingDirectory(parent, caption, dir);
+    return path.empty() ? JS_NULL : JS_NewString(ctx, path.c_str());
+}
+
+// ---------- 配置 (JZSettings, INI) ----------
+// 对应 Qt 的 QSettings: 打开一个 ini 文件 -> beginGroup/setValue/getValue/sync。
+// 只绑"不需要默认值参数"的形式(getValue(name) 返回空串 / getInt(name) 返回 0), 因为引擎的 def
+// 要求形参个数精确匹配 —— 要默认值就在 JS 里写 `s.getValue('x') || 'def'`。
+void JZJSWidgetModule::registSettings()
+{
+    jsbind::ClassBind<JZSettings> bind_set("JZSettings");
+    // 普通堆对象(不是 JZObject): cppOwner=false -> JS 拥有, GC 时 delete
+    bind_set.setCreate([](JSContext*, int, JSValueConst*) -> jsbind::JSPointerBase* {
+        return new jsbind::JSRawPointer<JZSettings>(new JZSettings(), false);
+    });
+
+    bind_set.def("open", [](JZSettings* s, const std::string& file) { return s->open(file); });
+    bind_set.def("sync", [](JZSettings* s) { s->sync(); });
+    bind_set.def("beginGroup", [](JZSettings* s, const std::string& g) { return s->beginGroup(g); });
+    bind_set.def("endGroup", [](JZSettings* s) { s->endGroup(); });
+    bind_set.def("hasGroup", [](JZSettings* s, const std::string& g) { return s->hasGroup(g); });
+    bind_set.def("hasValue", [](JZSettings* s, const std::string& n) { return s->hasValue(n); });
+    bind_set.def("setValue", [](JZSettings* s, const std::string& n, const std::string& v) { s->setValue(n, v); });
+    bind_set.def("getValue", [](JZSettings* s, const std::string& n) { return s->getValue(n); });
+    bind_set.def("setBool", [](JZSettings* s, const std::string& n, bool v) { s->setBool(n, v); });
+    bind_set.def("getBool", [](JZSettings* s, const std::string& n) { return s->getBool(n); });
+    bind_set.def("setInt", [](JZSettings* s, const std::string& n, int v) { s->setInt(n, v); });
+    bind_set.def("getInt", [](JZSettings* s, const std::string& n) { return s->getInt(n); });
+    bind_set.def("setDouble", [](JZSettings* s, const std::string& n, double v) { s->setDouble(n, v); });
+    bind_set.def("getDouble", [](JZSettings* s, const std::string& n) { return s->getDouble(n); });
+    m_engine->registClass(bind_set.classDefine());
+}
+
+void JZJSWidgetModule::registDialogs()
+{
+    // 基类绑定: 只为拿 superCtypeid(与 registViews 同一套路; JZWidget 已在 registWidgets 里注册)
+    jsbind::ClassBind<JZWidget> bind_w("JZWidget");
+
+    // ---- JZDialog: 自定义模态对话框 ----
+    //   const dlg = new JZDialog();
+    //   dlg.setParentWidget(owner);      // 可选: 有 owner 才会"模态禁用 owner" + 相对它居中
+    //   ... 往 dlg 里放控件 ...
+    //   const r = dlg.exec();            // 阻塞(嵌套事件循环); 1=Accepted, 0=Rejected, -1=递归调用被拒
+    jsbind::ClassBind<JZDialog> bind_dlg("JZDialog", bind_w);
+    setWidgetCreate<JZDialog>(bind_dlg);
+    bind_dlg.setInstanceBind([this](JSContext* ctx, JSValue obj, void* opaque) {
+        jzBindWidgetInstance<JZDialog>(ctx, obj, opaque, this);
+    });
+    bind_dlg.def("exec", [](JZDialog* d) { return d->exec(); });
+    bind_dlg.def("accept", [](JZDialog* d) { d->accept(); });
+    bind_dlg.def("reject", [](JZDialog* d) { d->reject(); });
+    bind_dlg.def("result", [](JZDialog* d) { return (int)d->result(); });
+    bind_dlg.def("onAccepted", [this](JZDialog* d, JSValue cb) { bindSignal(d->sigAccepted, cb); });
+    bind_dlg.def("onRejected", [this](JZDialog* d, JSValue cb) { bindSignal(d->sigRejected, cb); });
+    bind_dlg.def("onFinished", [this](JZDialog* d, JSValue cb) { bindSignal(d->sigFinished, cb); });
+    m_engine->registClass(bind_dlg.classDefine());
+
+    // ---- 全局 JZMessageBox / JZFileDialog(只有静态接口, 挂成普通对象) ----
+    JSContext* ctx = m_engine->context();
+
+    JSValue messageBox = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, messageBox, "information", JS_NewCFunction(ctx, jsJZMessageBoxInformation, "information", 3));
+    JS_SetPropertyStr(ctx, messageBox, "warning", JS_NewCFunction(ctx, jsJZMessageBoxWarning, "warning", 3));
+    JS_SetPropertyStr(ctx, messageBox, "question", JS_NewCFunction(ctx, jsJZMessageBoxQuestion, "question", 3));
+    m_engine->setProperty(m_engine->globalObject(), "JZMessageBox", messageBox);
+
+    JSValue fileDialog = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, fileDialog, "getOpenFileName", JS_NewCFunction(ctx, jsJZFileDialogGetOpenFileName, "getOpenFileName", 4));
+    JS_SetPropertyStr(ctx, fileDialog, "getOpenFileNames", JS_NewCFunction(ctx, jsJZFileDialogGetOpenFileNames, "getOpenFileNames", 4));
+    JS_SetPropertyStr(ctx, fileDialog, "getSaveFileName", JS_NewCFunction(ctx, jsJZFileDialogGetSaveFileName, "getSaveFileName", 4));
+    JS_SetPropertyStr(ctx, fileDialog, "getExistingDirectory", JS_NewCFunction(ctx, jsJZFileDialogGetExistingDirectory, "getExistingDirectory", 3));
+    m_engine->setProperty(m_engine->globalObject(), "JZFileDialog", fileDialog);
+}
+
 static JSValue variantToJSValue(JSContext* ctx, const JZVariant& var)
 {
     switch (var.typeId())
@@ -1052,6 +1265,10 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("property", [this](JZWidget* w, const std::string& name) -> JSValue {
         return variantToJSValue(m_engine->context(), w->property(name));
     });
+
+    // 延后删除 —— 嵌套模态循环里删控件的正规做法: 事件派发期间(尤其 exec() 的模态循环里)直接把控件
+    // delete 掉, 会让外层正在派发的事件对象悬垂; deleteLater 排到本轮事件处理完之后。
+    bind_w.def("deleteLater", [](JZWidget* w) { w->deleteLater(); });
 
     bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
     bind_w.def("x", [](JZWidget* w) { return w->x(); });
@@ -1393,6 +1610,92 @@ void JZJSWidgetModule::registWidgets()
 
 }
 
+// ---------- 列表 / 表格的 item 对象 ----------
+// 之前刻意没开(item 类型没注册成 JS 类, 所有权/失效逻辑也没接线); 现在按"原子对象 + 组合"补齐:
+//   * 构造 `new JZTableWidgetItem(text?)` / `new JZListWidgetItem(text?)` —— JS 拥有, GC 时释放;
+//   * 交给容器(setItem / addItem / insertItem)时**所有权翻转**(/Transfer/, 与控件进对象树同一套),
+//     之后由容器(unique_ptr)负责 delete;
+//   * `item(r,c)` / `item(i)` / `currentItem()` 取回的是**借用句柄**(returnOwnedByCpp): 地址稳定到
+//     该项被 takeItem / removeRow / removeColumn / clearContents / clear / removeItem 掉为止 ——
+//     那些操作之后旧句柄**不能再碰**(与 C++ 的借用指针同一约束); takeItem 系列把所有权交回 JS。
+//   * `data` / `setData` 直接收 JS 值(走注册的 JZJSValuePtr metatype), 不做有损转换。
+
+// JS 值 -> JZVariant: 原样持有。形参是借用的 JSValue, 所以先 dup 再交给 makeValuePtr(它接管所有权)。
+static JZVariant jsHeldVariant(JZJSEngine* engine, JSValueConst v)
+{
+    JSContext* ctx = engine->context();
+    return JZVariant::fromValue(engine->makeValuePtr(JS_DupValue(ctx, v)));
+}
+
+// 取 item 实参并把所有权翻给容器;/ 传 null / undefined 时返回 nullptr(容器语义: 清空该格/该行)。
+template <class Item>
+static Item* jsTakeItemArg(JSContext* ctx, JSValueConst value, const char* what)
+{
+    if (JS_IsNull(value) || JS_IsUndefined(value))
+        return nullptr;
+
+    if (!js_check_class_arg<Item>(ctx, value))
+        throw std::runtime_error(std::string(what) + ": 需要 " + typeid(Item).name() + "(或 null)");
+
+    jzSetCppOwner(value, true);   // /Transfer/: 之后由容器负责 delete
+    return fromJSValue<Item*>(ctx, value);
+}
+
+void JZJSWidgetModule::registItems()
+{
+    // 构造实参 (text?): 对应 C++ 的 () 与 (const std::string&) 两个构造
+    auto parseTextArg = [](JSContext* c, int argc, JSValueConst* argv, const char* what) -> std::string {
+        if (argc <= 0 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0]))
+            return std::string();
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(c);
+        if (!engine || !engine->checkType(argv[0], JSType_string))
+            throw std::runtime_error(std::string(what) + ": 文本需要字符串");
+        return fromJSValue<std::string>(c, argv[0]);
+    };
+
+    // ---- JZTableWidgetItem ----
+    jsbind::ClassBind<JZTableWidgetItem> bind_titem("JZTableWidgetItem");
+    bind_titem.setCreate([parseTextArg](JSContext* c, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
+        return new jsbind::JSRawPointer<JZTableWidgetItem>(
+            new JZTableWidgetItem(parseTextArg(c, argc, argv, "new JZTableWidgetItem")), false);
+    });
+    bind_titem.def("text", [](JZTableWidgetItem* it) { return it->text(); });
+    bind_titem.def("setText", [](JZTableWidgetItem* it, const std::string& t) { it->setText(t); });
+    bind_titem.def("icon", [](JZTableWidgetItem* it) { return it->icon(); });
+    bind_titem.def("setIcon", [](JZTableWidgetItem* it, JZImage* img) { it->setIcon(*img); });
+    bind_titem.def("data", [this](JZTableWidgetItem* it) -> JSValue {
+        return variantToJSValue(m_engine->context(), it->data());
+    });
+    bind_titem.def("setData", [this](JZTableWidgetItem* it, JSValue v) { it->setData(jsHeldVariant(m_engine, v)); });
+    bind_titem.def("row", [](JZTableWidgetItem* it) { return it->row(); });         // 未入表为 -1
+    bind_titem.def("column", [](JZTableWidgetItem* it) { return it->column(); });   // 未入表为 -1
+    bind_titem.def("table", [this](JZTableWidgetItem* it) -> JSValue {
+        JZTableWidget* t = it->table();
+        return t ? toJsValueFromPtr(m_engine->context(), t, true) : JS_NULL;   // 未入表 -> null
+    });
+    m_engine->registClass(bind_titem.classDefine());
+
+    // ---- JZListWidgetItem ----
+    jsbind::ClassBind<JZListWidgetItem> bind_litem("JZListWidgetItem");
+    bind_litem.setCreate([parseTextArg](JSContext* c, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
+        return new jsbind::JSRawPointer<JZListWidgetItem>(
+            new JZListWidgetItem(parseTextArg(c, argc, argv, "new JZListWidgetItem")), false);
+    });
+    bind_litem.def("text", [](JZListWidgetItem* it) { return it->text(); });
+    bind_litem.def("setText", [](JZListWidgetItem* it, const std::string& t) { it->setText(t); });
+    bind_litem.def("icon", [](JZListWidgetItem* it) { return it->icon(); });
+    bind_litem.def("setIcon", [](JZListWidgetItem* it, JZImage* img) { it->setIcon(*img); });
+    bind_litem.def("data", [this](JZListWidgetItem* it) -> JSValue {
+        return variantToJSValue(m_engine->context(), it->data());
+    });
+    bind_litem.def("setData", [this](JZListWidgetItem* it, JSValue v) { it->setData(jsHeldVariant(m_engine, v)); });
+    bind_litem.def("listWidget", [this](JZListWidgetItem* it) -> JSValue {
+        JZListWidget* l = it->widget();
+        return l ? toJsValueFromPtr(m_engine->context(), l, true) : JS_NULL;   // 未入列表 -> null
+    });
+    m_engine->registClass(bind_litem.classDefine());
+}
+
 // ---------- 容器 / 视图类控件 ----------
 //
 // 这些控件的数据/子项由 C++ 持有, JS 侧只做"值级"操作(文本、行数、当前项、滚动位置),
@@ -1411,12 +1714,44 @@ void JZJSWidgetModule::registViews()
     bind_list.def("appendItems", [this](JZListWidget* l, JSValue texts) {
         l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.appendItems"));
     });
-    bind_list.def("insertItem", [](JZListWidget* l, int i, const std::string& t) { l->insertItem(i, t); });
+    bind_list.def("insertItem", [this](JZListWidget* l, int i, JSValue v) {
+        // Qt 同名同义: 第二实参是字符串就建文本项, 是 JZListWidgetItem 就接管它
+        if (JS_IsString(v))
+            l->insertItem(i, fromJSValue<std::string>(m_engine->context(), v));
+        else
+            l->insertItem(i, jsTakeItemArg<JZListWidgetItem>(m_engine->context(), v, "JZListWidget.insertItem"));
+    });
     // JZListWidget 与 Qt 一样**没有** removeItem: 摘除 + 释放 = takeItem 后自己 delete
     bind_list.def("removeItem", [](JZListWidget* l, int i) { delete l->takeItem(i); });
     bind_list.def("clear", [](JZListWidget* l) { l->clear(); });
     bind_list.def("count", [](JZListWidget* l) { return l->count(); });
     bind_list.def("itemText", [](JZListWidget* l, int i) { return l->itemText(i); });
+    bind_list.def("itemData", [this](JZListWidget* l, int i) -> JSValue {
+        return variantToJSValue(m_engine->context(), l->itemData(i));
+    });
+
+    // ---- item 对象形态(所有权: 交给列表 = 交给列表 delete; takeItem = 交回 JS) ----
+    bind_list.def("addItem", [this](JZListWidget* l, JSValue v) {
+        // Qt: addItem(QString) / addItem(QListWidgetItem*)
+        if (JS_IsString(v))
+            l->appendItem(fromJSValue<std::string>(m_engine->context(), v));
+        else
+            l->appendItem(jsTakeItemArg<JZListWidgetItem>(m_engine->context(), v, "JZListWidget.addItem"));
+    });
+    bind_list.def("item", [this](JZListWidget* l, int i) -> JSValue {
+        JZListWidgetItem* it = l->item(i);
+        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+    });
+    bind_list.def("takeItem", [this](JZListWidget* l, int i) -> JSValue {
+        JZListWidgetItem* it = l->takeItem(i);
+        return it ? toJsValueFromPtr(m_engine->context(), it, false) : JS_NULL;   // JS 拥有
+    });
+    bind_list.def("row", [](JZListWidget* l, JZListWidgetItem* it) { return l->row(it); });
+    bind_list.def("currentItem", [this](JZListWidget* l) -> JSValue {
+        JZListWidgetItem* it = l->currentItem();
+        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+    });
+    bind_list.def("setCurrentItem", [](JZListWidget* l, JZListWidgetItem* it) { l->setCurrentItem(it); });
     bind_list.def("currentIndex", [](JZListWidget* l) { return l->currentIndex(); });
     bind_list.def("setCurrentIndex", [](JZListWidget* l, int i) { l->setCurrentIndex(i); });
     bind_list.def("setItemHeight", [](JZListWidget* l, int h) { l->setItemHeight(h); });
@@ -1447,6 +1782,29 @@ void JZJSWidgetModule::registViews()
     bind_table.def("setCurrentCell", [](JZTableWidget* t, int r, int c) { t->setCurrentCell(r, c); });
     bind_table.def("currentRow", [](JZTableWidget* t) { return t->currentRow(); });
     bind_table.def("currentColumn", [](JZTableWidget* t) { return t->currentColumn(); });
+
+    // ---- item 对象形态(所有权: setItem = 交给表格 delete; takeItem = 交回 JS; item/currentItem = 借用) ----
+    // 注: 空单元格/无选中在这里**显式判空返回 null** —— 指针-out 通路会把 nullptr 包成一个空壳对象,
+    //     而 Qt 语义是 null(item()/currentItem() 可判空)。借用句柄按 toJsValueFromPtr(..., true) 造,
+    //     每次调用都是一份新包装(见 JZJSType.h 的说明), 所以别用 `===` 比实例, 判 null 即可。
+    bind_table.def("setItem", [this](JZTableWidget* t, int r, int c, JSValue item) {
+        t->setItem(r, c, jsTakeItemArg<JZTableWidgetItem>(m_engine->context(), item, "JZTableWidget.setItem"));
+    });
+    bind_table.def("item", [this](JZTableWidget* t, int r, int c) -> JSValue {
+        JZTableWidgetItem* it = t->item(r, c);
+        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+    });
+    bind_table.def("takeItem", [this](JZTableWidget* t, int r, int c) -> JSValue {
+        JZTableWidgetItem* it = t->takeItem(r, c);
+        return it ? toJsValueFromPtr(m_engine->context(), it, false) : JS_NULL;   // JS 拥有
+    });
+    bind_table.def("row", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->row(it); });
+    bind_table.def("column", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->column(it); });
+    bind_table.def("currentItem", [this](JZTableWidget* t) -> JSValue {
+        JZTableWidgetItem* it = t->currentItem();
+        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+    });
+    bind_table.def("setCurrentItem", [](JZTableWidget* t, JZTableWidgetItem* it) { t->setCurrentItem(it); });
     bind_table.def("onCurrentRowChanged", [this](JZTableWidget* t, JSValue cb) { bindSignal(t->currentRowChanged, cb); });
     setWidgetCreate(bind_table);
     m_engine->registClass(bind_table.classDefine());
@@ -1986,6 +2344,7 @@ void JZJSWidgetModule::registPens()
     bind_font.def("underline", [](JZFont* f) { return f->underline(); });
     bind_font.def("setStrikeOut", [](JZFont* f, bool on) { f->setStrikeOut(on); });
     bind_font.def("strikeOut", [](JZFont* f) { return f->strikeOut(); });
+    bind_font.def("equal", [](JZFont* f, const JZFont& o) { return *f == o; });   // C++ 侧本来就有 operator==
     m_engine->registClass(bind_font.classDefine());
 
     // 风格位常量挂到 JZFont 构造器上(JS 侧写 JZFont.Bold / JZFont.Italic ...), 与 C++ 枚举同值。

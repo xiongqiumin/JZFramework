@@ -11,6 +11,7 @@ import { tr } from './BTEServer.js';
 // ---------------------------------------------------------------------------
 export class DeviceMacDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // DeviceMacDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

@@ -193,6 +193,7 @@ export function decodeFrame(u8) {
 //   避免一次错位把后面的好帧一起丢掉(真实设备上更容易恢复)。
 // ---------------------------------------------------------------------------
 export class FrameParser {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(opts) {
         opts = opts || {};
         this.buf = new Uint8Array(0);

@@ -27,6 +27,7 @@ import {
 } from './storage.js';
 // stru_* 报文包类: 网络报文的字节布局由它们负责(与存档无关)
 import { stru_BTS_CMD_SEND_INFO } from './structs.js';
+import { QApplication, QDir, QFile } from './qtcompat.js';
 
 // ---- BTEProject.h 里的状态码 ----
 export const STATUS_OK = 0;            // 正常
@@ -39,6 +40,7 @@ export const STATUS_PARAM_ERROR = 3;   // 参数错误
 // ---------------------------------------------------------------------------
 export class SplitInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // struct Range { Range(); bool vaild; double lower; double upper; };
     static get Range() { return SplitInfo_Range; }
 
@@ -55,6 +57,7 @@ export class SplitInfo
 
 class SplitInfo_Range
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // SplitInfo::Range::Range()
     constructor()
     {
@@ -75,6 +78,7 @@ class SplitInfo_Range
 // ---------------------------------------------------------------------------
 export class ParallelInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.channels = [];   // QVector<int> channels;
@@ -88,6 +92,7 @@ export class ParallelInfo
 // ---------------------------------------------------------------------------
 export class DeviceData
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // DeviceData();
     constructor()
     {
@@ -165,6 +170,7 @@ export class DeviceData
 // ---------------------------------------------------------------------------
 export class BTEProject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // BTEProject();
     constructor()
     {
@@ -761,7 +767,7 @@ function sprintf(format, ...args)
 }
 
 function qMax(a, b) { return a > b ? a : b; }
-function qMin(a, b) { return a < b ? a : b; }
+export function qMin(a, b) { return a < b ? a : b; }
 
 // std::equal_range 的起点等价物(first): 在 [begin, end) 内找第一个不小于 midCap 的位置
 function lowerBound(list, begin, end, midCap, cmp)

@@ -195,7 +195,9 @@ function pad3(v) { return String(v).padStart(3, "0"); }
 // ---------------------------------------------------------------------------
 // 3. Qt 枚举 / 全局常量
 // ---------------------------------------------------------------------------
-const Qt = {
+// 具名颜色(Qt.white / Qt.black / Qt.darkBlue ...)是**运行期回填**的(见下面的 Qt.white = null
+// 与 QColor 定义后的回填循环), 所以这里显式标成"任意键"—— 否则 TS 按对象字面量推断, 回填的名字全都报错。
+export const Qt: { [k: string]: any } = {
     // 鼠标
     NoButton: 0, LeftButton: 1, RightButton: 2, MidButton: 4, MiddleButton: 4,
     // 右键策略
@@ -242,21 +244,22 @@ Qt.white = null;   // 由下方 QColor 定义后回填
 Qt.black = null;
 
 // QtMsgType
-const QtDebugMsg = 0, QtInfoMsg = 4, QtWarningMsg = 1, QtCriticalMsg = 2, QtFatalMsg = 3;
+export const QtDebugMsg = 0, QtInfoMsg = 4, QtWarningMsg = 1, QtCriticalMsg = 2, QtFatalMsg = 3;
 const QtMsgType = { QtDebugMsg, QtInfoMsg, QtWarningMsg, QtCriticalMsg, QtFatalMsg };
 
 // Win32 常量(AlarmPlayer / main.js 里按原样保留的调用)
-const NULL = null;
-const TRUE = 1, FALSE = 0;
-const SND_SYNC = 0x0000, SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002,
+export const NULL = null;
+export const TRUE = 1, FALSE = 0;
+export const SND_SYNC = 0x0000, SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002,
     SND_MEMORY = 0x0004, SND_LOOP = 0x0008, SND_FILENAME = 0x00020000;
-const EXCEPTION_ACCESS_VIOLATION = 0xc0000005;
+export const EXCEPTION_ACCESS_VIOLATION = 0xc0000005;
 
 // ---------------------------------------------------------------------------
 // 4. 值类型
 // ---------------------------------------------------------------------------
-class QColor
+export class QColor
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(r, g, b, a)
     {
         if (r instanceof QColor)
@@ -303,11 +306,12 @@ function parseColorName(name)
     };
     return T[name] || [0, 0, 0];
 }
-function qRgb(r, g, b) { return (0xff000000 | (r << 16) | (g << 8) | b) >>> 0; }
+export function qRgb(r, g, b) { return (0xff000000 | (r << 16) | (g << 8) | b) >>> 0; }
 function qRgba(r, g, b, a) { return ((a << 24) | (r << 16) | (g << 8) | b) >>> 0; }
 
-class QPoint
+export class QPoint
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(x, y) { this._x = x | 0; this._y = y | 0; }
     x() { return this._x; }
     y() { return this._y; }
@@ -321,6 +325,7 @@ class QPoint
 
 class QSize
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(w, h) { this._w = w | 0; this._h = h | 0; }
     width() { return this._w; }
     height() { return this._h; }
@@ -329,8 +334,9 @@ class QSize
     isEmpty() { return this._w <= 0 || this._h <= 0; }
 }
 
-class QRect
+export class QRect
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(a, b, c, d)
     {
         if (a instanceof QPoint && b instanceof QPoint)
@@ -367,7 +373,7 @@ class QRect
     }
 }
 
-class QPen
+export class QPen
 {
     constructor(a, b)
     {
@@ -392,7 +398,7 @@ class QPen
     setStyle(s) { this._style = s; }
 }
 
-class QBrush
+export class QBrush
 {
     constructor(c) { this._color = (c instanceof QColor || typeof c === "number") ? new QColor(c) : new QColor(0, 0, 0); }
     color() { return this._color; }
@@ -402,6 +408,7 @@ class QBrush
 
 class QFont
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(family, size)
     {
         this._family = family || "sans-serif";
@@ -420,8 +427,9 @@ class QFont
     setPointSizeF(s) { this._size = s; }
 }
 
-class QFontMetrics
+export class QFontMetrics
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(font) { this._font = font; }
     horizontalAdvance(t) { return String(t).length * ((this._font && this._font.pixelSize()) || 12); }
     width(t) { return this.horizontalAdvance(t); }
@@ -429,16 +437,18 @@ class QFontMetrics
     boundingRect(t) { return new QRect(0, 0, this.horizontalAdvance(t), this.height()); }
 }
 
-class QLinearGradient
+export class QLinearGradient
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor() { this._stops = []; this._c0 = new QPoint(0, 0); this._c1 = new QPoint(0, 1); }
     setStart(x, y) { this._c0 = new QPoint(x, y); }
     setFinalStop(x, y) { this._c1 = new QPoint(x, y); }
     setColorAt(pos, color) { this._stops.push({ pos, color }); }
 }
 
-class QTextOption
+export class QTextOption
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(align) { this._align = align || 0; }
     setAlignment(a) { this._align = a; }
     alignment() { return this._align; }
@@ -464,8 +474,9 @@ class QTextOption
 // ---------------------------------------------------------------------------
 const QIODevice = { NotOpen: 0, ReadOnly: 1, WriteOnly: 2, ReadWrite: 3, Append: 4, Truncate: 8, Text: 16, Unbuffered: 32 };
 
-class QFile
+export class QFile
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // 内部缓冲直接用 Uint8Array(原 QByteArray); 文本走 utf8Of/textOfUtf8 转换。
     // 注: 只有**写模式**(WriteOnly/Append)打开时 close() 才落盘 —— 原来读模式的 close()
     //     也会把缓冲写回去(等于重写原文件), 是个隐患, 顺手修掉。
@@ -539,8 +550,9 @@ class QFile
     static rename(a, b) { noteMissing("QFile::rename"); return false; }
 }
 
-class QDir
+export class QDir
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(path, nameFilter, sort, filters)
     {
         this._path = (path === undefined || path === null) ? "." : String(path);
@@ -573,8 +585,9 @@ function joinPath(a, b)
     return String(a).replace(/[\/\\]+$/, "") + sep + String(b);
 }
 
-class QTextStream
+export class QTextStream
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(device, mode)
     {
         this._dev = device;
@@ -598,8 +611,9 @@ class QTextStream
     write(s) { if (this._dev instanceof QFile) this._dev.write(String(s)); return this; }
 }
 
-class QSettings
+export class QSettings
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(fileName, format, parent)
     {
         // QSettings(QString, Format[, QObject*]) / QSettings(Format, Scope, org, app)
@@ -680,6 +694,7 @@ class QSettings
 // ---------------------------------------------------------------------------
 class QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent)
     {
         this._parent = parent || null;
@@ -704,8 +719,9 @@ class QObject
 //   Qt 里"定时器是对象 + timeout 信号"在本移植里没有价值: 每个定时器只有一个槽。
 //   BTEServer 的 m_heartTimer/m_autoTimer/m_stepTimer 现在存的就是 setInterval 句柄。
 
-class QApplication extends QObject
+export class QApplication extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(argc, argv)
     {
         super(null);
@@ -783,15 +799,17 @@ class QApplication extends QObject
 }
 QApplication._inst = null;
 
-class QTranslator extends QObject
+export class QTranslator extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent) { super(parent); this._loaded = false; }
     load(a, b) { this._loaded = true; noteMissing("QTranslator::load(.qm 未接入, 直接当作加载成功)"); return true; }
     isEmpty() { return !this._loaded; }
 }
 
-class QSharedMemory extends QObject
+export class QSharedMemory extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(key, parent) { super(parent); this._key = key; this._attached = false; }
     attach() { return false; }
     detach() { this._attached = false; }
@@ -876,6 +894,7 @@ export function onWorkerMessage(cb)
 
 class QThread extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent)
     {
         super(parent);
@@ -1012,6 +1031,7 @@ class QThread extends QObject
 // 跨线程计数要走消息(postTo)或让 worker 自己维护。
 class QAtomicInteger
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(v) { this._v = v | 0; }
     load() { return this._v; }
     store(v) { this._v = v | 0; }
@@ -1022,8 +1042,9 @@ class QAtomicInteger
 // ---------------------------------------------------------------------------
 // 10. 消息框 / 对话框(无 GUI 时: 确定性默认返回值 + 记账, 绝不弹窗阻塞)
 // ---------------------------------------------------------------------------
-class QMessageBox extends QObject
+export class QMessageBox extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent) { super(parent); this._text = ""; this.sigFinished = []; }
     setText(t) { this._text = t; }
     text() { return this._text; }
@@ -1048,8 +1069,9 @@ class QMessageBox extends QObject
     static get OkCancel() { return 0x00000400 | 0x00400000; }
 }
 
-class QFileDialog extends QObject
+export class QFileDialog extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent) { super(parent); this.sigAccepted = []; }
     exec() { noteMissing("QFileDialog::exec(无 GUI)"); return 0; }
     setDirectory() { }
@@ -1061,8 +1083,9 @@ class QFileDialog extends QObject
     static getExistingDirectory() { noteMissing("QFileDialog::getExistingDirectory"); return ""; }
 }
 
-class QInputDialog extends QObject
+export class QInputDialog extends QObject
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent) { super(parent); this.sigAccepted = []; }
     setLabelText() { }
     setTextValue() { }
@@ -1383,6 +1406,7 @@ class QKeySequenceJS
 }
 class QShortcutJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(keySeq, parent)
     {
         this._key = (keySeq && typeof keySeq.toString === "function") ? keySeq.toString() : String(keySeq === undefined ? "" : keySeq);
@@ -1403,6 +1427,7 @@ class QShortcutJS
 }
 class QActionJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(textOrParent, parent)
     {
         this._text = (typeof textOrParent === "string") ? textOrParent : "";
@@ -1453,6 +1478,7 @@ class QActionJS
 }
 class QActionGroupJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent)
     {
         this._parent = parent || null;
@@ -1479,6 +1505,7 @@ class QActionGroupJS
 }
 class QMenuJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(titleOrParent, parent)
     {
         this._title = (typeof titleOrParent === "string") ? titleOrParent : "";
@@ -1550,6 +1577,7 @@ function qtDateTimeFormat(d, fmt)
 }
 class QDateTimeEditJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parentOrDate)
     {
         this._dt = (parentOrDate instanceof Date) ? new Date(parentOrDate.getTime()) : new Date();
@@ -2710,6 +2738,7 @@ if (typeof globalThis.Worker === "function")
 // ---------------------------------------------------------------------------
 class QTableWidgetItemJS
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(text)
     {
         this._text = (text === undefined || text === null) ? "" : String(text);

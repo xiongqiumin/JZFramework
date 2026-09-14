@@ -38,6 +38,9 @@ protected:
     void paintEvent(JZPainterEvent* event) override;
 
     Result m_result;
+    // exec() 正在跑(模态循环进行中): 对齐 Qt —— 再对同一对象调 exec() 时打警告并返回 -1,
+    // 不动 m_result(见 JZDialog.cpp)。不同对话框互相嵌套是支持的(独立栈帧)。
+    bool m_inExec = false;
 };
 
 #endif

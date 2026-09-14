@@ -32,7 +32,9 @@ add_executable(test_bteserver test_bteserver.cpp)
 target_link_libraries(test_bteserver JZFramework)
 target_compile_definitions(test_bteserver PRIVATE
     JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}"
-    JZ_BTESERVER_DIR="${CMAKE_SOURCE_DIR}/binary/code_agent/runtime/bteserver")
+    # bteserver 已迁到 TypeScript: 源码在 bteserver/src/*.ts, 引擎加载的是 tsc 产物 bteserver/build/*.js
+    # (构建前先跑: <tsc> -p binary/code_agent/runtime/bteserver/tsconfig.json)
+    JZ_BTESERVER_DIR="${CMAKE_SOURCE_DIR}/binary/code_agent/runtime/bteserver/build")
 
 # ---- ctest 注册 ----
 add_test(NAME jsengine.test_jsengine COMMAND test_jsengine)

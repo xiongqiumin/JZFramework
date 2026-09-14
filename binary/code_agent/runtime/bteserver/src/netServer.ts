@@ -26,6 +26,7 @@ import { NetInfo } from './netInfo.js';
 
 export class NetServer
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // NetServer(QObject * parent = NULL);
     constructor(parent)
     {

@@ -1,7 +1,7 @@
 // 容器 / 视图类控件 —— 全局类(JZJSWidgetModule::registViews)。
 //
-// 这些控件的数据/子项由 C++ 持有, JS 侧只做"值级"操作(文本、行数、当前项、滚动位置),
-// **不从 JS 创建 item 对象**(item 类型没有注册成 JS 类, 也没有对应的镜像/包装类)。
+// 这些控件的数据/子项由 C++ 持有; JS 侧既有"值级"操作(文本、行数、当前项、滚动位置),
+// 也能用 item 对象(见 items.d.ts 的 JZTableWidgetItem / JZListWidgetItem)。
 //
 // 所有权(与 JZWindow.addWidget 同一套): addWidget / insertWidget / addTab / setWidget /
 // setParentWidget 都会把 JS 包装翻成"C++ 拥有"(/Transfer/), 之后由对象树负责 delete,
@@ -16,14 +16,28 @@ declare class JZListWidget extends JZWidget {
   appendItem(text: string): void;
   appendItems(items: string[]): void;
   insertItem(index: number, text: string): void;
+  insertItem(index: number, item: JZListWidgetItem): void;
   /** 摘除并**释放**第 index 项 */
   removeItem(index: number): void;
   clear(): void;
   count(): number;
   itemText(index: number): string;
+  itemData(index: number): any;
   currentIndex(): number;
   setCurrentIndex(index: number): void;
   setItemHeight(h: number): void;
+
+  // ---- item 对象形态(Qt: addItem / item / takeItem / row / currentItem) ----
+  /** Qt: addItem(QString) / addItem(QListWidgetItem*) */
+  addItem(item: JZListWidgetItem | string): void;
+  /** 借用句柄; 越界返回 null。⚠ 该项被 takeItem/removeItem/clear 掉之后不要再碰 */
+  item(index: number): JZListWidgetItem | null;
+  /** 所有权交回 JS */
+  takeItem(index: number): JZListWidgetItem | null;
+  /** 未找到返回 -1 */
+  row(item: JZListWidgetItem): number;
+  currentItem(): JZListWidgetItem | null;
+  setCurrentItem(item: JZListWidgetItem | null): void;
 
   onCurrentIndexChanged(cb: (index: number) => void): void;
   /** 激活(点击项 / Enter) */
@@ -54,6 +68,19 @@ declare class JZTableWidget extends JZWidget {
   setCurrentCell(row: number, col: number): void;
   currentRow(): number;
   currentColumn(): number;
+
+  // ---- item 对象形态(Qt: setItem / item / takeItem / currentItem) ----
+  /** 交给表格接管(所有权翻转); 传 null 清空该格 */
+  setItem(row: number, col: number, item: JZTableWidgetItem | null): void;
+  /** 借用句柄; 越界或空单元格返回 null。⚠ 被 takeItem/removeRow/removeColumn/clearContents 掉之后不要再碰 */
+  item(row: number, col: number): JZTableWidgetItem | null;
+  /** 所有权交回 JS */
+  takeItem(row: number, col: number): JZTableWidgetItem | null;
+  /** 未找到返回 -1 */
+  row(item: JZTableWidgetItem): number;
+  column(item: JZTableWidgetItem): number;
+  currentItem(): JZTableWidgetItem | null;
+  setCurrentItem(item: JZTableWidgetItem | null): void;
 
   onCurrentRowChanged(cb: (row: number) => void): void;
 }

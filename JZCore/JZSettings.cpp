@@ -24,9 +24,27 @@ bool JZSettings::open(const std::string& iniFilePath)
     JZFile file;
     if (!file.open(iniFilePath, "rt"))
     {
-        m_isFileOpen = false;
-        m_iniFilePath.clear();
-        return false;
+        // 文件还不存在(首次运行) -> 建一个空 ini, 当成"空配置"打开 —— 对应 QSettings 会创建文件的行为。
+        // 注意先判存在: 文件**存在但读不了**(权限/是目录)时不能拿 "wt" 去开(会把内容截掉), 直接失败。
+        if (JZFile::exists(iniFilePath))
+        {
+            m_isFileOpen = false;
+            m_iniFilePath.clear();
+            return false;
+        }
+
+        JZFile create;
+        if (!create.open(iniFilePath, "wt"))
+        {
+            m_isFileOpen = false;
+            m_iniFilePath.clear();
+            return false;
+        }
+
+        m_iniData.clear();
+        m_iniFilePath = iniFilePath;
+        m_isFileOpen = true;
+        return true;
     }
 
     JZTextStream stream(&file);

@@ -11,6 +11,7 @@ import { StepTableHelper } from './StepSettingDialog.js';
 // ---------------------------------------------------------------------------
 export class StepJumpDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // StepJumpDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

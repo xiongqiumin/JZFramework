@@ -34,22 +34,29 @@ import {
     BTS_CMD_STEP_JUMP, BTS_CMD_STEP_JUMP_RESP,
     BTS_CMD_SEND_PARALLEL, BTS_CMD_SEND_PARALLEL_RESP,
     BTS_CMD_SEND_RTDATA76, BTS_CMD_SEND_DFDATA76, BTS_CMD_SEND_DFDATA_RESP76,
-    BTS_CMD_RESUME_QUERY, BTS_CMD_RESUME_QUERY_RESP,
-} from './PackDefine.js';
+    BTS_CMD_RESUME_QUERY, BTS_CMD_RESUME_QUERY_RESP, BTS_CMD_CONNECT, BTS_CMD_CONNECT_RESP, BTS_CMD_HEART_BEAT, BTS_CMD_LED_ON, BTS_CMD_LED_ON_RESP, BTS_CMD_SEND_INFO, BTS_CMD_SEND_INFO_RESP, STEP_CHARGE, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP, WRITE_DEVICE_IP } from './PackDefine.js';
 import { AlarmPlayer } from './AlarmPlayer.js';
 // 原 ServerThread.js(QThread 包装 NetServer)已删除: JS 无真线程, 直接用 NetServer;
 // 线程包装去掉后端口启动方法也由 init(port) 变为 startServer(port), 见构造与 closeEvent。
 import { NetServer } from './netServer.js';
-import { BTEProject, DeviceData, SplitInfo, g_project, setGProject } from './BTEProject.js';
+import { BTEProject, DeviceData, SplitInfo, g_project, setGProject, ParallelInfo, STATUS_OK } from './BTEProject.js';
 import { BTERecord, BTERecordInfo, BTEStepInfo } from './BTERecordDataBase.js';
-import { BTEItemWidget } from './BTEItemWidget.js';
-import { SplitResult } from './SplitSettingWidget.js';
+import { BTEItemWidget, Item_Normal, Item_Small } from './BTEItemWidget.js';
+import { SplitResult, ExportSplitResult } from './SplitSettingWidget.js';
 import { StepDataDialog } from './StepDataDialog.js';
 import {
     stru_BTS_CMD_SEND_RTDATA76, stru_BTS_CMD_SEND_DFDATA76, stru_BTS_CMD_SEND_DFDATA_RESP76,
     stru_BTS_CMD_SEND_PARALLEL, stru_BTS_CMD_STEP_REQUEST, stru_BTS_CMD_SET_STEP76_Ex,
     stru_BTS_CMD_SEND_INFO,
 } from './structs.js';
+import { HelpDialog } from './HelpDialog.js';
+import { QApplication, QFile, QFileDialog, QInputDialog, QMessageBox, QPoint, QRect, QSettings, Qt, qRgb } from './qtcompat.js';
+import { SplitDialog } from './SplitDialog.js';
+import { StepInfoDialog } from './StepInfoDialog.js';
+import { StepJumpDialog } from './StepJumpDialog.js';
+import { StepSettingDialog } from './StepSettingDialog.js';
+import { stru_BGS66_CMD_SET_RT_INTERVAL, stru_BTS_CMD_LED_ON, stru_BTS_CMD_RESUME, stru_BTS_CMD_RESUME_CONFIRM, stru_BTS_CMD_RESUME_RESP, stru_BTS_CMD_SEND_PARALLEL_CANCEL, stru_BTS_CMD_SET_RTC, stru_BTS_CMD_START70, stru_BTS_CMD_START_RESP70, stru_BTS_CMD_STEP_JUMP, stru_BTS_CMD_STEP_JUMP_RESP, stru_BTS_CMD_STOP, stru_BTS_CMD_STOP_RESP } from './structs.js';
+import { switchAppLang } from './main.js';
 
 // #define HIDE_TEST_PAGE 1
 const HIDE_TEST_PAGE = 1;
@@ -76,6 +83,7 @@ export const LST_END_DIS_CAP = 14;  // 终止容量
 // ---------------------------------------------------------------------------
 export class DeviceInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // enum { Status_Complete, Status_WaitStart, Status_Run, Status_WaitStop,
     //        Status_Stop, Status_WaitJump, Status_Error, Status_OffLine, };
     static get Status_Complete() { return 0; }
@@ -121,6 +129,7 @@ export class DeviceInfo
 // ---------------------------------------------------------------------------
 export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本身
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // 注意: C++ 里 QT 的 on_xxx_clicked / on_xxx_triggered 是"自动连接槽",
     //       由 ui_*.h 的 setupUi 按名字自动 connect; JS 侧保留同名方法, 由调用方显式绑。
 
@@ -3164,6 +3173,7 @@ function cloneStepRequest(base)
 //   QRegExp -> JS RegExp(exactMatch 用 ^...$ 锚定 + test)
 export class MyValidator
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor(parent, type)
     {
         const ipReg = "\\.((2(5[0-5]|[0-4]\\d))|[0-1]?\\d{1,2})";

@@ -92,6 +92,22 @@ bool JZDir::rename(const string &oldPath, const string &newPath, string *error)
     return JZFile::rename(oldPath, newPath, error);
 }
 
+// 设置进程当前工作目录(对应 Qt 的 QDir::setCurrent, 本框架改名 setCurrentPath 与 currentPath() 对称)。
+// path 为 UTF-8。失败时返回 false 且不动当前目录; 其余平台(如 ESP32)没有进程工作目录概念, 直接 false。
+bool JZDir::setCurrentPath(const string &path)
+{
+    if (path.empty())
+        return false;
+
+#if JZ_OS == JZ_OS_WINDOWS
+    return SetCurrentDirectoryA(str_utf8_to_local(path).c_str()) != 0;
+#elif JZ_OS == JZ_OS_LINUX
+    return ::chdir(path.c_str()) == 0;
+#else
+    return false;
+#endif
+}
+
 string JZDir::currentPath()
 {
 #if JZ_OS == JZ_OS_WINDOWS

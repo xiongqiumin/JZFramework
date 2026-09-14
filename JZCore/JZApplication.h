@@ -26,7 +26,7 @@ public:
     // （QCoreApplication 只有 applicationDirPath()，即 exe 所在目录）；
     // 这里只是 jzApp 上的便捷入口，实现转调 JZDir::currentPath()。
     // 别与 applicationDirPath() 混淆：双击 exe 时两者常常相同，但从别的目录敲命令行
-    // 启动就不同了。设置工作目录的 QDir::setCurrent() 目前未提供。
+    // 启动就不同了。设置工作目录用 JZDir::setCurrent()（对应 QDir::setCurrent）。
     std::string workingDirPath() const;
 
     JZThread *mainThread();

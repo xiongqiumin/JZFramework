@@ -28,6 +28,8 @@ declare class JZColor {
 
   setRgb(r: number, g: number, b: number): void;
   setRgba(r: number, g: number, b: number, a: number): void;
+  /** 值相等(比 rgba 四个分量) */
+  equal(other: JZColor): boolean;
 }
 
 // ColorEnum 的**值**(与 C++ JZColor::ColorEnum 同序), 但**没有**挂成 JS 常量

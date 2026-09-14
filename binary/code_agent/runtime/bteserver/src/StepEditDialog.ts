@@ -12,6 +12,7 @@ import { tr, sprintf } from './BTEServer.js';
 import { PackDefine, STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_7, STEP_TYPE_IDLE, STEP_TYPE_LOOP, STEP_TYPE_STOP, PARAM_Current, PARAM_Voltage, PARAM_StopCurrent, PARAM_StopVoltage, PARAM_Time, PARAM_Capacity, PARAM_Tempature, PARAM_CountLoop, PARAM_BeginStepID, OP_EQU, OP_BIG_EQU, OP_SMALL_EQU } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
 import { g_project } from './BTEProject.js';
+import { QMessageBox } from './qtcompat.js';
 
 //工步容量设定上限(Ah),精度百分之一
 const MAX_STEP_CAPACITY = 10000.0;
@@ -23,6 +24,7 @@ const MAX_STEP_TEMPATURE = 300.0;
 // ---------------------------------------------------------------------------
 export class StepEditDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // StepEditDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

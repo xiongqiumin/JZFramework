@@ -35,6 +35,10 @@ public:
     void setRgb(uint8_t r, uint8_t g, uint8_t b);
     void setRgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
+    // 值相等: 两个 JZColor 比 rgba(JS 侧对应 equal(other))
+    bool operator==(const JZColor& o) const { return m_r == o.m_r && m_g == o.m_g && m_b == o.m_b && m_a == o.m_a; }
+    bool operator!=(const JZColor& o) const { return !(*this == o); }
+
 private:
     uint8_t m_r = 0;
     uint8_t m_g = 0;

@@ -8,8 +8,10 @@
 // ---------------------------------------------------------------------------
 
 import { emit, tr, DeviceInfo } from './BTEServer.js';
-import { PackDefine, STEP_TYPE_NULL, STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_7, STEP_TYPE_STOP, stru_BTS_CMD_SEND_RTDATA76 } from './structs.js';
+import { stru_BTS_CMD_SEND_RTDATA76 } from './structs.js';
+import { PackDefine, STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_7, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
+import { QApplication, QColor, QFontMetrics, QPen, QPoint, QRect, QTextOption, Qt, makeRealWidget } from './qtcompat.js';
 
 // enum { Item_Normal, Item_Small, };
 export const Item_Normal = 0;
@@ -24,6 +26,7 @@ const FaultClearedBgColor = new QColor(255, 140, 0);
 // ---------------------------------------------------------------------------
 export class BTEItemWidget
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // BTEItemWidget(QWidget *parent = Q_NULLPTR);
     //
     // 真控件化(2026-09-13): 不再用 `QWidget.call(this, parent)` 那种"JS 对象冒充控件"的写法,

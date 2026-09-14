@@ -46,6 +46,10 @@ public:
     bool contains(const JZPoint& p) const;
     bool isEmpty() const;
 
+    // 值相等: 两个 JZRect 比 x/y/w/h(JS 侧对应 equal(other))
+    bool operator==(const JZRect& o) const { return m_x == o.m_x && m_y == o.m_y && m_w == o.m_w && m_h == o.m_h; }
+    bool operator!=(const JZRect& o) const { return !(*this == o); }
+
     // 几何运算: 交集(无交返回空矩形) / 并集外接框 / 是否相交
     JZRect intersect(const JZRect& other) const;
     JZRect united(const JZRect& other) const;

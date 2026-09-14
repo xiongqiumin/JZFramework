@@ -13,12 +13,14 @@ import { UiHelper, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';
 import { BTEProject, SplitInfo, g_project } from './BTEProject.js';
+import { QFileDialog, QInputDialog, QMessageBox, Qt } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // struct SplitResult
 // ---------------------------------------------------------------------------
 export class SplitResult
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // struct RecordInfo { ... };
     static get RecordInfo() { return SplitResult_RecordInfo; }
 
@@ -36,6 +38,7 @@ export class SplitResult
 // struct SplitResult::RecordInfo
 class SplitResult_RecordInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.itemIndex = 0;
@@ -68,6 +71,7 @@ class SplitResult_RecordInfo
 // ---------------------------------------------------------------------------
 export class SplitSettingWidget
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // SplitSettingWidget(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

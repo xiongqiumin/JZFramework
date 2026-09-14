@@ -230,6 +230,9 @@ private:
     void registImage();      // JZImage
     void registEvents();     // JZEvent 及其子类
     void registWidgets();    // JZWidget / JZWindow 及基础控件(Label/Button/Slider/.../Chart)
+    void registDialogs();    // JZDialog + 全局 JZMessageBox / JZFileDialog(模态对话框)
+    void registSettings();   // JZSettings(INI 配置, 对应 QSettings)
+    void registItems();      // JZTableWidgetItem / JZListWidgetItem(容器子项)
     void registViews();      // 容器/视图类控件(List/Table/Tab/Splitter/ScrollArea/ScrollBar/...)
     void registLayouts();    // JZLayout 及其四个具体布局
     void registPainter();    // JZPainter

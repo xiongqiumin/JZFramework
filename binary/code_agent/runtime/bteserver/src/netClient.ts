@@ -26,6 +26,7 @@ import { NetDataManager, noteNoBlockingIO } from './netDataManager.js';
 
 export class NetClient
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // NetClient(QObject * parent = NULL);
     constructor(parent)
     {

@@ -24,6 +24,7 @@ import {
     STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_IDLE, STEP_TYPE_LOOP, STEP_TYPE_7,
 } from './PackDefine.js';
 import { stru_BTS_CMD_SET_STEP76_Ex } from './structs.js';
+import { QApplication, QFile, QSettings, QTextStream } from './qtcompat.js';
 
 export const NETPACK_INVAILD = 0;
 export const NETPACK_VARIANT = 1;
@@ -33,6 +34,7 @@ export const NETPACK_VARIANT = 1;
 // ---------------------------------------------------------------------------
 export class NetPackVariant extends NetPack
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // DECLAR_PACK(NetPackVariant, NETPACK_VARIANT);  -> 静态成员 + type() 覆写
     static netPackCreate() { return new NetPackVariant(); }
     type() { return NetPackVariant.NetType; }

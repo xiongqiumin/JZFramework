@@ -13,13 +13,15 @@ import { tr, sprintf } from './BTEServer.js';
 // 注: C++ 侧 StepInfo(PackDefine.cpp) 与 PackDefine.h 的常量在同一个头文件里, 翻译成分文件后
 //     `stru_BTS_CMD_SET_STEP76_Ex` 在 ./structs.js; structs.js 又 `export *` 了 PackDefine.js 的全部
 //     导出, 所以这里统一从 './structs.js' 取即可(原来是 './PackDefine.js' → 找不到该导出)。
-import { PackDefine, STEP_TYPE_7, STEP_TYPE_LOOP, STEP_TYPE_STOP, OP_EQU, OP_BIG_EQU, OP_SMALL_EQU, stru_BTS_CMD_SET_STEP76_Ex, PARAM_RecordTimeInterval, PARAM_RecordVoltageChange, PARAM_RecordCurrentChange, PARAM_ProtectVoltageLower, PARAM_ProtectVoltageUpper, PARAM_ProtectCurrentLower, PARAM_ProtectCurrentUpper, PARAM_ProtectTempatureLower, PARAM_ProtectTempatureUpper, PARAM_ProtectDelayTime, PARAM_ProtectDetalVolTime, PARAM_ProtectDetalVol } from './structs.js';
+import { stru_BTS_CMD_SET_STEP76_Ex } from './structs.js';
+import { OP_BIG_EQU, OP_EQU, OP_SMALL_EQU, PARAM_ProtectCurrentLower, PARAM_ProtectCurrentUpper, PARAM_ProtectDelayTime, PARAM_ProtectDetalVol, PARAM_ProtectDetalVolTime, PARAM_ProtectTempatureLower, PARAM_ProtectTempatureUpper, PARAM_ProtectVoltageLower, PARAM_ProtectVoltageUpper, PARAM_RecordCurrentChange, PARAM_RecordTimeInterval, PARAM_RecordVoltageChange, PackDefine, STEP_TYPE_7, STEP_TYPE_LOOP, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
 import { btStepInfoToJson, btStepInfoSetJson, bytesToText } from './storage.js';
 import { g_project } from './BTEProject.js';
 // 注: BTEStepInfo 在 C++ 里属于 BTERecordDataBase.h, JS 侧同 (BTEProject.js 只导出 g_project/BTEProject/DeviceData/...)
 import { BTEStepInfo } from './BTERecordDataBase.js';
 import { StepEditDialog } from './StepEditDialog.js';
+import { QFile, QFileDialog, QMessageBox, Qt } from './qtcompat.js';
 
 //工步容量设定上限(Ah),精度百分之一
 const MAX_STEP_CAPACITY = 10000.0;
@@ -41,6 +43,7 @@ const COL_COUNT = 9;
 // ---------------------------------------------------------------------------
 export class StepTableHelper
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.tableWidget = null;   // QTableWidget *tableWidget;
@@ -121,6 +124,7 @@ export class StepTableHelper
 // ---------------------------------------------------------------------------
 export class StepSettingDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // StepSettingDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

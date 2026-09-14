@@ -74,6 +74,8 @@ declare class JZFont {
   underline(): boolean;
   setStrikeOut(on: boolean): void;
   strikeOut(): boolean;
+  /** 值相等(比字体族/字号/风格位); C++ 侧就是 JZFont::operator== */
+  equal(other: JZFont): boolean;
 }
 
-// 未暴露(C++ 有): JZFont 的 operator== / operator!=(比较字体是否相同)。
+// C++ 的 operator!= 没有单独暴露 —— JS 侧写 !a.equal(b) 即可。

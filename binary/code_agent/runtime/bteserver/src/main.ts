@@ -35,6 +35,7 @@ import {
     unpackBody, unpackRTData76, unpackDFData76, unpackSendInfo, packRTData76, packDFData76,
     workStatusText, isChannelFault, aTimeToISO, SIZE,
 } from './structs.js';
+import { EXCEPTION_ACCESS_VIOLATION, NULL, QApplication, QMessageBox, QSettings, QSharedMemory, QTranslator, Qt, QtCriticalMsg, QtDebugMsg, QtFatalMsg, QtInfoMsg, QtWarningMsg } from './qtcompat.js';
 
 // ===========================================================================
 // 职责 1: 协议离线自测(合并自原根目录 main.js)

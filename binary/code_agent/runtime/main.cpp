@@ -95,10 +95,19 @@ int main(int argc, char *argv[])
         return 1;   // 防御：真走到这里说明用法不合法
 
     // 运行根：显式 --root 优先，否则用当前工作目录（双击 exe / run.bat 时 cwd 即包所在目录）。
-    // 要以别的目录为运行根，也可由调用方设置子进程工作目录。
+    // 给了 --root 就把它**同时设为进程工作目录**（QDir::setCurrent 语义）：工程里所有相对路径
+    // （读配置 / 写日志 / sqlite 文件 ...）都以运行根为准，而不是"启动它的人当时在哪个目录"。
+    // 顺序要紧：先用**原来的** cwd 把 --root 解析成绝对路径，再切目录 —— 这样 --root 传相对路径
+    // 也照样按启动时的 cwd 解析（切完目录后它还等于运行根）。
     string absRoot = cmdRoot.empty()
         ? jzApp->workingDirPath()
         : JZDir(cmdRoot).absolutePath();
+
+    if (!cmdRoot.empty() && !JZDir::setCurrentPath(absRoot))
+    {
+        printf("[code_runtime] setCurrentPath failed: %s\n", absRoot.c_str());
+        fflush(stdout);
+    }
 
     // 是否开启调试器：命令行 --debug 优先；否则读自身资源（导出时由 JZExeResource 写入）。
     bool debugMode = cmdDebug;

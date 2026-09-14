@@ -23,6 +23,7 @@ import {
 // ---------------------------------------------------------------------------
 export class PackInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // PackInfo();
     constructor()
     {
@@ -120,6 +121,7 @@ PackInfo.LittleEndian = 0;   // QDataStream::LittleEndian
 // ---------------------------------------------------------------------------
 export class NetPack
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // NetPack();
     constructor()
     {
@@ -152,6 +154,7 @@ export function netPackCreate(Class)
 // ---------------------------------------------------------------------------
 export class NetPackManager
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // static NetPackManager *instance();
     static instance()
     {

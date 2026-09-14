@@ -819,6 +819,113 @@ int main()
             evalStr(engine, "c6.setProperty('label', null); 'ok'");
             check("setProperty: 传 null 移除属性", !c6w->property("label").isValid());
             check("property: 移除后读回 null", evalStr(engine, "String(c6.property('label'))") == "null");
+
+            // ⑧ 对话框绑定(registDialogs): 类/全局对象与接口在即可。
+            //    不在这里调 exec(): 它会真开模态循环, 无桌面会话下没有可交互的窗口(桌面环境里另测)。
+            check("JZDialog: 已注册(可 new + result/accept/reject/onFinished)",
+                  evalStr(engine,
+                          "var d8 = new JZDialog();"
+                          "d8.result() + '|' + (typeof d8.exec) + '|' + (typeof d8.accept) + '|' + (typeof d8.onFinished)")
+                      == "0|function|function|function");
+            check("JZMessageBox: 静态接口在",
+                  evalStr(engine, "(typeof JZMessageBox.information) + '|' + (typeof JZMessageBox.warning) + '|' + (typeof JZMessageBox.question)")
+                      == "function|function|function");
+            check("JZFileDialog: 4 个静态接口都在",
+                  evalStr(engine, "[JZFileDialog.getOpenFileName, JZFileDialog.getOpenFileNames, JZFileDialog.getSaveFileName, JZFileDialog.getExistingDirectory].every(function (f) { return typeof f === 'function'; })")
+                      == "true");
+            check("deleteLater: 已绑定(嵌套模态里删控件的正规做法)",
+                  evalStr(engine, "typeof d8.deleteLater") == "function");
+
+            // 探针: 绑定类能不能被 JS 继承 —— bteserver 的 UI 类写的是 `class XxxDialog extends QDialog`
+            // 这种风格, 若将来去掉 Qt 适配层改用真实绑定, 这一步必须先成立。
+            // 这里把结论拼进断言名(始终 PASS, 只为把诊断打出来)。
+            check("JZSettings: 首次运行自建文件 + set/get 往返 + 分组",
+                  evalStr(engine,
+                          "var st8 = new JZSettings();"
+                          "var ok8 = st8.open('jzsettings_probe.ini');"
+                          "st8.setValue('k', 'v');"
+                          "st8.setInt('n', 7);"
+                          "st8.beginGroup('g'); st8.setValue('x', 'y'); var gv8 = st8.getValue('x'); st8.endGroup();"
+                          "var h8 = st8.hasValue('k');"
+                          "st8.sync();"
+                          "ok8 + '|' + st8.getValue('k') + '|' + st8.getInt('n') + '|' + gv8 + '|' + h8")
+                      == "true|v|7|y|true");
+
+            // 值类型的等值: JS/TS 没有运算符重载 ⇒ 值类型(JZPoint/JZSize/JZRect/JZColor/JZFont)
+            // 一律提供 equal(other)(C++ 侧 operator==); `===` 比的是包装身份, 两份独立构造的值恒不等。
+            check("值类型 equal(): 比内容不比包装 ===",
+                  evalStr(engine,
+                          "var p1 = new JZPoint(1, 2), p2 = new JZPoint(1, 2), p3 = new JZPoint(1, 3);"
+                          "var s1 = new JZSize(3, 4), s2 = new JZSize(3, 4);"
+                          "var r1 = new JZRect(1, 2, 3, 4), r2 = new JZRect(1, 2, 3, 4), r3 = new JZRect(1, 2, 3, 5);"
+                          "var c1 = new JZColor(255, 0, 0), c2 = new JZColor(255, 0, 0), c3 = new JZColor(255, 0, 1);"
+                          "var f1 = new JZFont('A', 12), f2 = new JZFont('A', 12), f3 = new JZFont('A', 13);"
+                          "var T = function (v) { return v ? 'T' : 'F'; };"
+                          "var w = new JZWidget(); w.setGeometry(1, 2, 30, 40);"
+                          "T(p1.equal(p2)) + T(p1.equal(p3)) + T(p1 !== p2)"
+                          " + T(s1.equal(s2))"
+                          " + T(r1.equal(r2)) + T(r1.equal(r3))"
+                          " + T(c1.equal(c2)) + T(c1.equal(c3))"
+                          " + T(f1.equal(f2)) + T(f1.equal(f3))"
+                          " + T(w.geometry().equal(new JZRect(1, 2, 30, 40)))")
+                      == "TFTTTFTFTFT");
+
+            // 句柄比较语义: JS 的 == / === 对两个对象是**纯引用比较**(ECMAScript 规定, 不查任何钩子),
+            // 而绑定层每次取都是**一份新包装** ⇒ 同一个 C++ 对象的两份句柄 == 恒为 false。
+            // 这条断言把语义钉住: 将来若加了"身份缓存/同一性 API", 这里会立刻变红, 提醒改文档与迁移说明。
+            check("句柄比较语义: 每次取都是新包装(== 恒 false), 只有同一变量才 true",
+                  evalStr(engine,
+                          "var lw9 = new JZListWidget(); lw9.addItem('a');"
+                          "var a9 = lw9.item(0), b9 = lw9.item(0);"
+                          "var tw9 = new JZTableWidget(); tw9.setRowCount(1); tw9.setColumnCount(1);"
+                          "tw9.setItem(0, 0, new JZTableWidgetItem('x'));"
+                          "var c9 = tw9.item(0, 0), d9 = tw9.item(0, 0);"
+                          "var w9 = new JZWidget(), p9 = new JZWidget();"
+                          "w9.setParentWidget(p9);"
+                          "var T = function (v) { return v ? 'T' : 'F'; };"
+                          "T(a9 == b9) + T(a9 === b9) + T(a9 == a9)"
+                          " + '|' + T(c9 == d9) + T(c9 === d9)"
+                          " + '|' + T(w9 == w9) + T(w9.parentWidget() == w9.parentWidget()) + T(w9.parentWidget() == p9)"
+                          " + '|' + (typeof a9.valueOf) + ',' + (typeof a9.equals)")
+                      == "FFT|FF|TFF|function,undefined");
+            check("JZTableWidgetItem: setItem/item/takeItem + data 原样 + 空单元格为 null",
+                  evalStr(engine,
+                          "var tw8 = new JZTableWidget();"
+                          "tw8.setRowCount(2); tw8.setColumnCount(2);"
+                          "var it8 = new JZTableWidgetItem('cell');"
+                          "it8.setData({ n: 7 });"
+                          "tw8.setItem(0, 0, it8);"
+                          "var back8 = tw8.item(0, 0);"
+                          "var s1 = back8.text() + '|' + back8.row() + '|' + back8.column() + '|' + back8.table().rowCount();"
+                          "back8.setText('x2');"
+                          "var s2 = tw8.itemText(0, 0) + '|' + back8.data().n;"
+                          "var taken8 = tw8.takeItem(0, 0);"
+                          "var s3 = taken8.text() + '|' + String(tw8.item(0, 0)) + '|' + String(taken8.table());"
+                          "s1 + ' || ' + s2 + ' || ' + s3")
+                      == "cell|0|0|2 || x2|7 || x2|null|null");
+
+            check("JZListWidgetItem: addItem(item|text) + item/row/listWidget/data + takeItem",
+                  evalStr(engine,
+                          "var lw8 = new JZListWidget();"
+                          "var li8 = new JZListWidgetItem('a');"
+                          "li8.setData(42);"
+                          "lw8.addItem(li8);"
+                          "lw8.addItem('b');"
+                          "var got8 = lw8.item(0);"
+                          "var s4 = lw8.count() + '|' + got8.text() + '|' + lw8.row(got8) + '|' + got8.data() + '|' + got8.listWidget().count();"
+                          "var tk8 = lw8.takeItem(0);"
+                          "s4 + ' || ' + lw8.count() + '|' + tk8.text() + '|' + lw8.item(0).text()")
+                      == "2|a|0|42|2 || 1|a|b");
+
+            check("继承绑定类探针 => " + evalStr(engine,
+                      "(function () {"
+                      "  try {"
+                      "    class D8 extends JZDialog { constructor() { super(); } }"
+                      "    var o = new D8();"
+                      "    return 'ok(D=' + (o instanceof D8) + ',JZ=' + (o instanceof JZDialog) + ',accept=' + (typeof o.accept) + ')';"
+                      "  } catch (e) { return 'throw: ' + e.message; }"
+                      "})()"),
+                  true);
         }
     }
 

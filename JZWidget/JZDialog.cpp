@@ -1,5 +1,7 @@
 #include "JZDialog.h"
 #include "JZPainter.h"
+#include "JZDebug.h"
+#include "JZLog.h"
 
 JZ_OBJECT_IMPL(JZDialog, JZWindow)
 
@@ -22,6 +24,24 @@ JZDialog::Result JZDialog::result() const
 
 int JZDialog::exec()
 {
+    // 对齐 Qt (QDialog::exec 源码): 模态循环进行中再对**同一对象**调 exec() —— 打警告 + 返回 -1,
+    // 并且不碰 m_result / show() / execModal(), 所以外层那次完全不受影响。
+    //   Qt: if (d->eventLoop) { qWarning("QDialog::exec: Recursive call detected"); return -1; }
+    // 会走到这里通常只有两种: 模态期间定时器/回调里又调了同一个 dlg.exec(); 或代码写错了。
+    // (不同对话框互相嵌套开模态是允许的: 各自的 execModal 独立栈帧。)
+    if (m_inExec)
+    {
+        jzWarning() << "JZDialog::exec: Recursive call detected";
+        return -1;
+    }
+
+    struct ExecFlag
+    {
+        bool& flag;
+        ExecFlag(bool& f) : flag(f) { flag = true; }
+        ~ExecFlag() { flag = false; }
+    } in_exec(m_inExec);
+
     m_result = Rejected;
     show();
     // 模态循环已收敛到 JZWindow::execModal (泵 Win32 消息 + 框架事件 + 渲染,

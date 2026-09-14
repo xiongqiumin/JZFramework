@@ -8,12 +8,15 @@
 // ---------------------------------------------------------------------------
 
 import { tr } from './BTEServer.js';
+import { QBrush, QColor, QLinearGradient, QRect, QTextOption, Qt } from './qtcompat.js';
+import { qMin } from './BTEProject.js';
 
 // ---------------------------------------------------------------------------
 // class SplitPieChart : public QWidget
 // ---------------------------------------------------------------------------
 export class SplitPieChart
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // explicit SplitPieChart(QWidget *parent = 0);
     constructor(parent)
     {

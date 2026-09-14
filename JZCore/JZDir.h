@@ -28,6 +28,12 @@ public:
     static bool isAbsolutePath(std::string path);
     static std::string currentPath();
 
+    // 设置进程当前工作目录 (path 为 UTF-8)。
+    // 失败(目录不存在/无权限/平台不支持)返回 false, 当前目录保持不变。
+    // 命名与上面的 currentPath() 对称 —— 这里**有意偏离** Qt: QDir 的静态 setter 叫 setCurrent()
+    // (Qt 那一对本来不对称, 实例侧才是 path()/setPath()); 本框架静态这一对统一用 xxxPath 后缀。
+    static bool setCurrentPath(const std::string &path);
+
     // 递归拷贝目录（含子目录）。Qt 没有对应的 API，取名与已有的 removeRecursively()
     // 对称。src 必须是目录；dst 不存在会 mkpath 出来，已存在则合并进去（cp -r 语义）。
     // force: 目标下已存在同名**文件**时是否覆盖

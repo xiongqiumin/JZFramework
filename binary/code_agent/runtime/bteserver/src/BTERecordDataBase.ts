@@ -41,6 +41,7 @@ const zipBuffer = new Uint8Array(ZIP_BUFFER_SIZE);   // static char zipBuffer[ZI
 // ---------------------------------------------------------------------------
 export class BTEStepInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // BTEStepInfo();
     constructor()
     {
@@ -65,6 +66,7 @@ export class BTEStepInfo
 // ---------------------------------------------------------------------------
 export class BTERecordInfo
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // struct DataCache
     // {
     //     int beginDis;         //最后一次放电起始
@@ -118,6 +120,7 @@ export class BTERecordInfo
 
 class BTERecordInfo_DataCache
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.beginDis = 0;
@@ -141,6 +144,7 @@ class BTERecordInfo_DataCache
 // struct BTERecord { BTERecordInfo info; QVector<Data> dataList; };
 export class BTERecord
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     constructor()
     {
         this.info = new BTERecordInfo();
@@ -156,6 +160,7 @@ export const USER_START_ID = 1000;   // static const int USER_START_ID = 1000;
 
 export class BTERecordDataBase
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // BTERecordDataBase();
     constructor()
     {

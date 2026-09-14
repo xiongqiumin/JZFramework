@@ -10,12 +10,14 @@
 import { tr, sprintf } from './BTEServer.js';
 import { UiHelper } from './Common.js';
 import { SplitSettingWidget, ExportSplitResult } from './SplitSettingWidget.js';
+import { QMessageBox } from './qtcompat.js';
 
 // ---------------------------------------------------------------------------
 // class SplitDialog : public QDialog
 // ---------------------------------------------------------------------------
 export class SplitDialog
 {
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // SplitDialog(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {

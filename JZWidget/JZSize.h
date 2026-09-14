@@ -16,6 +16,10 @@ public:
     bool isEmpty() const;   // w <= 0 || h <= 0
     bool isValid() const;   // w >= 0 && h >= 0
 
+    // 值相等: 两个 JZSize 比宽高(JS 侧对应 equal(other))
+    bool operator==(const JZSize& o) const { return m_w == o.m_w && m_h == o.m_h; }
+    bool operator!=(const JZSize& o) const { return !(*this == o); }
+
 private:
     int m_w = 0;
     int m_h = 0;

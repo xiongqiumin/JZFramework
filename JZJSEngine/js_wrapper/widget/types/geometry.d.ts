@@ -26,6 +26,8 @@ declare class JZPoint {
   setPoint(x: number, y: number): void;
   /** x === 0 && y === 0 */
   isNull(): boolean;
+  /** 值相等(比 x/y) */
+  equal(other: JZPoint): boolean;
 }
 
 // 未暴露(C++ 有): operator+ / operator- / operator+= / operator-=
@@ -42,6 +44,8 @@ declare class JZSize {
   isEmpty(): boolean;
   /** w >= 0 && h >= 0 */
   isValid(): boolean;
+  /** 值相等(比宽高) */
+  equal(other: JZSize): boolean;
 }
 
 /** @final */
@@ -86,6 +90,9 @@ declare class JZRect {
   intersect(other: JZRect): JZRect;
   /** 并集的外接框 */
   united(other: JZRect): JZRect;
+
+  /** 值相等(比 x/y/width/height) */
+  equal(other: JZRect): boolean;
 }
 
 // 未暴露(C++ 有): JZRect.topRight / bottomLeft / clear / contains(JZPoint)

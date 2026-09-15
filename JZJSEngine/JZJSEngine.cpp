@@ -1056,9 +1056,9 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         updateFunction(prop.write);
         // 原型上的属性访问器 = 类实例方法(this = 实例) -> 进"当前 this"栈, 见 CFunction::bindInstance
         if (prop.read)
-            prop.read->bindInstance = true;
+            prop.read->memberFunction = true;
         if (prop.write)
-            prop.write->bindInstance = true;
+            prop.write->memberFunction = true;
 
         int magic = (int)m_funcList.size();
 
@@ -1088,7 +1088,7 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         updateFunction(func);
         // 原型方法 = 类实例方法(this = 实例) -> 进"当前 this"栈, 见 CFunction::bindInstance
         if (func)
-            func->bindInstance = true;
+            func->memberFunction = true;
 
         int magic = (int)m_funcList.size();
         m_funcList.push_back(func);
@@ -1291,14 +1291,10 @@ int JZJSEngine::jsTypeToType(int js_type)
 
 int JZJSEngine::typeToJSType(int type)
 {
-    auto it = m_jsTypeMap.begin();
-    while (it != m_jsTypeMap.end())
-    {
-        if (it->second == type)
-            return it->first;
+    auto it = m_typeMap.begin();
+    if (it != m_typeMap.end())
+        return it->second.jsType;
 
-        it++;
-    }
     return JS_TAG_UNDEFINED;
 }
 
@@ -1467,8 +1463,8 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     else
     {
         const CClassDefine& define = m_typeMap[type].classDefine;
-        void* ptr = define.create(m_ctx, argc, argv);
-
+        jsbind::JSPointerBase* ptr = define.create(this, argc, argv);
+        
         // create 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
         // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
         // 没挂异常却返回空 = create 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
@@ -1478,17 +1474,27 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
             return JS_EXCEPTION;
         }
 
-        JSClassID js_class_id = typeToJSType(type);
-        JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
-
-        JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-        JS_SetOpaque(obj, ptr);
-        assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
-
-        JS_FreeValue(m_ctx, proto);
-
-        return obj;
+        return createValue(type, ptr);               
     }
+}
+
+JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase *ptr)
+{
+    JSClassID js_class_id = typeToJSType(type);
+    JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
+
+    JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
+    JS_SetOpaque(obj, ptr);
+    assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
+    if (ptr->cppOwner())
+    {
+        ptr->m_state->jsValue = JS_DupValue(m_ctx, obj);
+        m_jsPoints.push_back(ptr);
+    }
+
+    JS_FreeValue(m_ctx, proto);
+
+    return obj;
 }
 
 void JZJSEngine::addPointer(jsbind::JSPointerBase *pointer)
@@ -1501,7 +1507,21 @@ void JZJSEngine::removePointer(jsbind::JSPointerBase *pointer)
     vec_removeOne(m_jsPoints, pointer);
 }
 
-jsbind::JSPointerBase* JZJSEngine::pointerStateFor(const void* ptr)
+void JZJSEngine::movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue jsValue)
+{
+    JZ_ASSERT(JS_IsUndefined(pointer->m_state->jsValue));
+    pointer->m_state->jsValue = dupValue(jsValue);
+}
+
+JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
+{
+    JZ_ASSERT(pointer->m_state->cppOwner);
+    JSValue jsValue = pointer->m_state->jsValue;
+    pointer->m_state->jsValue = JS_UNDEFINED;
+    return jsValue;
+}
+
+jsbind::JSPointerBase* JZJSEngine::getPointer(const void* ptr)
 {
     if (!ptr)
         return nullptr;
@@ -1579,17 +1599,13 @@ void jsbind::JSPointerBase::clear()
 }
 
 void jsbind::JSPointerBase::moveToCpp(JSValueConst jsValue)
-{    
-    JZ_ASSERT(JS_IsUndefined(m_state->jsValue));
-    m_state->jsValue = m_engine->dupValue(jsValue);    
+{   
+    m_engine->movePointerToCpp(this, jsValue);    
 }
 
 JSValue jsbind::JSPointerBase::moveToJs()
 {
-    JZ_ASSERT(m_state->cppOwner);
-    JSValue jsValue = m_state->jsValue;
-    m_state->jsValue = JS_UNDEFINED;
-    return jsValue;
+    return m_engine->movePointerToJs(this);
 }
 
 void JZJSEngine::freeValue(JSValue value)
@@ -1723,21 +1739,7 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
         return true;
 
     int js_type = jsValueType(value);
-    if (param.exactClass)
-    {
-        // JSRawPointer<Class> 形参要的是"JS 对象内部那个包装的引用"(setCppOwner / clear 要靠它传播),
-        // 派生类对象的包装是 JSRawPointer<Derived>, 共享不到 -> 只接受精确类。
-        if (js_type != arg_type)
-        {
-            string need_type = typeName(arg_type);
-            string input_type = typeName(js_type);
-            std::string error = "参数错误:参数" + to_string(index) + "需要精确类型" + need_type +
-                                "(共享包装引用形参不支持派生类), 输入是" + input_type;
-            JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-            return false;
-        }
-    }
-    else if (js_type != arg_type && !canConvert(js_type, arg_type))
+    if (js_type != arg_type && !canConvert(js_type, arg_type))
     {
         string input_type = typeName(js_type);
         string need_type = typeName(arg_type);

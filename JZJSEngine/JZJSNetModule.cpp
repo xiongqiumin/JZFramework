@@ -1204,13 +1204,13 @@ void JZJSNetModule::deinitEngine()
 JSValue JZJSNetModule::makeSocketValue(JZJSNetSocket* obj)
 {
     addSink(&obj->sink, [obj]() { obj->destroy(); });
-    return m_engine->createValue(m_typeSocket, new jsbind::JSRawPointer<JZJSNetSocket>(obj, false));
+    return m_engine->createValue(m_typeSocket, new jsbind::JSRawPointer<JZJSNetSocket>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::makeWsValue(JZJSWebSocket* obj)
 {
     addSink(&obj->sink, [obj]() { obj->close(); });
-    return m_engine->createValue(m_typeWs, new jsbind::JSRawPointer<JZJSWebSocket>(obj, false));
+    return m_engine->createValue(m_typeWs, new jsbind::JSRawPointer<JZJSWebSocket>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::netCreateSocket()
@@ -1241,7 +1241,7 @@ JSValue JZJSNetModule::netCreateServer()
         }
     });
 
-    return m_engine->createValue(m_typeServer, new jsbind::JSRawPointer<JZJSNetServer>(obj, false));
+    return m_engine->createValue(m_typeServer, new jsbind::JSRawPointer<JZJSNetServer>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::dgramCreateSocket()
@@ -1274,7 +1274,7 @@ JSValue JZJSNetModule::dgramCreateSocket()
         self->sink.emit("error", JS_NewString(ctx, err.c_str()));
     });
 
-    return m_engine->createValue(m_typeUdp, new jsbind::JSRawPointer<JZJSUdpSocket>(obj, false));
+    return m_engine->createValue(m_typeUdp, new jsbind::JSRawPointer<JZJSUdpSocket>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::wsConnect(const std::string& url)
@@ -1354,7 +1354,7 @@ JSValue JZJSNetModule::wsCreateServer()
         }
     });
 
-    return m_engine->createValue(m_typeWsServer, new jsbind::JSRawPointer<JZJSWebSocketServer>(obj, false));
+    return m_engine->createValue(m_typeWsServer, new jsbind::JSRawPointer<JZJSWebSocketServer>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::mqttConnect(const std::string& url, const Json::Value& options)
@@ -1404,7 +1404,7 @@ JSValue JZJSNetModule::mqttConnect(const std::string& url, const Json::Value& op
     }
 
     obj->client->connectToHost(url, opt);
-    return m_engine->createValue(m_typeMqtt, new jsbind::JSRawPointer<JZJSMqttClient>(obj, false));
+    return m_engine->createValue(m_typeMqtt, new jsbind::JSRawPointer<JZJSMqttClient>(m_engine, obj));
 }
 
 void JZJSNetModule::httpRequest(int promiseHandle, const Json::Value& options, JSValue body)
@@ -1586,7 +1586,7 @@ Json::Value JZJSNetModule::osNetworkInterfaces()
 
 JSValue JZJSNetModule::makeHttpResponseValue(JZJSHttpResponse* obj)
 {
-    return m_engine->createValue(m_typeHttpResponse, new jsbind::JSRawPointer<JZJSHttpResponse>(obj, false));
+    return m_engine->createValue(m_typeHttpResponse, new jsbind::JSRawPointer<JZJSHttpResponse>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::httpCreateServer()
@@ -1599,7 +1599,7 @@ JSValue JZJSNetModule::httpCreateServer()
     obj->server->addRoute("/<path:path>", obj->handler);
     addSink(&obj->sink, [obj]() { obj->close(); });
 
-    return m_engine->createValue(m_typeHttpServer, new jsbind::JSRawPointer<JZJSHttpServer>(obj, false));
+    return m_engine->createValue(m_typeHttpServer, new jsbind::JSRawPointer<JZJSHttpServer>(m_engine, obj));
 }
 
 JSValue JZJSNetModule::bytesFromString(const std::string& text)

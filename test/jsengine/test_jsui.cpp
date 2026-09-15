@@ -182,8 +182,7 @@ int main()
         engine.init();
         JZJSWidgetModule widgetModule;
         widgetModule.initEngine(&engine);
-        engine.setProperty(engine.globalObject(), "img",
-                           toJsValueFromPtr(engine.context(), &image, true));
+        engine.setProperty(engine.globalObject(), "img", engine.toJsValueFromPtr( &image, true));
 
         auto outside = engine.eval(
             "var r = 'no-throw';"

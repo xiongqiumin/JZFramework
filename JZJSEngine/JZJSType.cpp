@@ -77,19 +77,11 @@ Json::Value fromJSValue(JSContext* ctx, JSValueConst value)
     return ret_value;
 }
 
-// to js
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid)
 {
     JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int id = engine->ctypeidToType(ctypeid);
-    return engine->createValue(id);
-}
-
-JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, jsbind::JSPointerBase* opaque)
-{
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int id = engine->ctypeidToType(ctypeid);
-    return engine->createValue(id, opaque);
+    int type = engine->ctypeidToType(ctypeid);
+    return engine->createValue(type, 0, nullptr);
 }
 
 template <>

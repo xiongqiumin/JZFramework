@@ -108,7 +108,7 @@ JSValue js_JZWidget_window(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     if (!win)
         return JS_NULL;
 
-    return toWidgetRef(ctx, win);   // 借用: 窗口由创建方持有
+    return JS_NULL;
 }
 
 // ---------- 坐标映射 ----------
@@ -169,20 +169,7 @@ JSValue js_JZWidget_layout(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     if (!cur)
         return JS_NULL;
 
-    // 缓存里还是"同一个布局、且未失效"的包装 → 直接复用(顺带保住引用相等性)
-    JSValue cached = cachedLayoutRef(ctx, this_val);
-    if (!JS_IsUndefined(cached))
-    {
-        auto* cp = wrapperOf(cached);
-        if (cp && cp->getRaw() == (void*)cur)
-            return cached;   // cached 就是新引用, 直接交出去
-        JS_FreeValue(ctx, cached);
-    }
-
-    // 新建非拥有视图(布局由控件持有/删除, cppOwner=true 表示 JS 不负责 delete)并记为缓存
-    JSValue wrap = toLayoutRef(ctx, cur);
-    cacheLayoutRef(ctx, this_val, JS_DupValue(ctx, wrap));
-    return wrap;
+    return JS_NULL;
 }
 
 JSValue js_JZWidget_setLayout(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
@@ -208,22 +195,6 @@ JSValue js_JZWidget_setLayout(JSContext* ctx, JSValueConst this_val, int argc, J
         return JS_ThrowTypeError(ctx, "setLayout(layout): 需要 JZLayout(或其子类)");
     JZLayout* lay = fromJSValue<JZLayout*>(ctx, argv[0]);
 
-    // 旧视图(如果缓存里有)失效: 它指向的布局已经不在(否则上面那句已抛) —— 防御性处理
-    JSValue old = cachedLayoutRef(ctx, this_val);
-    if (!JS_IsUndefined(old))
-    {
-        auto* cp = wrapperOf(old);
-        if (cp && cp->cppOwner())
-            cp->clear();   // 只标记失效, 不 delete(该包装 cppOwner=true, 删除由控件负责)
-        JS_FreeValue(ctx, old);
-    }
-
-    //jzSetCppOwner(argv[0], true);   // /Transfer/: JS 造的布局交给控件, 之后由 C++ delete
-
-    self->setLayout(lay);
-
-    // 缓存新布局的包装: 之后 layout() 返回同一个 JS 对象
-    cacheLayoutRef(ctx, this_val, toLayoutRef(ctx, lay));
     return JS_UNDEFINED;
 }
 
@@ -235,16 +206,6 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
     JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "clearLayout: this 不是有效的 JZWidget");
-
-    // 布局马上要被 delete ⇒ 已经发给 JS 的那份视图立刻失效(不能等"下次访问再验证", 那时已悬垂)。
-    JSValue cached = cachedLayoutRef(ctx, this_val);
-    if (!JS_IsUndefined(cached))
-    {
-        auto* cp = wrapperOf(cached);
-        if (cp)
-            cp->clear();   // 只标记失效, 不 delete(该包装 cppOwner=true, 删除由控件负责)
-        JS_FreeValue(ctx, cached);
-    }
 
     self->clearLayout();
     return JS_UNDEFINED;
@@ -445,19 +406,7 @@ bool jzParseTwoInts(JSContext* ctx, int argc, JSValueConst* argv, const char* wh
 template <class Class>
 JSValue jzNewWidget(JSContext* ctx, Class* obj)
 {
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int type = jzRegisteredType(ctx, typeid(Class).name());
-    if (!engine || type == JSType_none)
-    {
-        delete obj;
-        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
-    }
-
-    JSValue value = engine->createValue(type, new jsbind::JSObjectPointer(obj, false));
-    if (JS_IsException(value))
-        return value;
-
-    return value;
+    return JS_NULL;
 }
 
 // 值类型(点/尺寸/矩形/颜色/图片): 一样是指针包装, 但**存一份拷贝** ——
@@ -465,12 +414,7 @@ JSValue jzNewWidget(JSContext* ctx, Class* obj)
 template <class Class>
 JSValue jzNewValue(JSContext* ctx, const Class& v)
 {
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int type = jzRegisteredType(ctx, typeid(Class).name());
-    if (!engine || type == JSType_none)
-        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
-
-    return engine->createValue(type, new jsbind::JSRawPointer<Class>(new Class(v), false));
+    return JS_NULL;
 }
 
 // 布局: 不是 JZObject, 不进控件表; 包装 = JSRawPointer<Class> + cppOwner=false(JS 拥有,
@@ -478,14 +422,7 @@ JSValue jzNewValue(JSContext* ctx, const Class& v)
 template <class Class>
 JSValue jzNewLayout(JSContext* ctx, Class* obj)
 {
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int type = jzRegisteredType(ctx, typeid(Class).name());
-    if (!engine || type == JSType_none)
-    {
-        delete obj;
-        return JS_ThrowInternalError(ctx, "new %s: 类未注册(引擎没装配 JZJSWidgetModule?)", typeid(Class).name());
-    }
-    return engine->createValue(type, new jsbind::JSRawPointer<Class>(obj, false));
+    return JS_NULL;
 }
 
 // 通用控件的 () / (parent)

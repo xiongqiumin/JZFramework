@@ -102,9 +102,10 @@ public:
         JZObjectPointer ptr;
     };
 
-    JSObjectPointer(JZJSEngine* engine,JZObject* ptr)
+    JSObjectPointer(JZJSEngine* engine,JZObject* ptr, bool cppOwner = false)
         :JSPointerBase(engine)
     {
+        m_state->cppOwner = cppOwner;
         m_ptr = ptr->guardPointer();
     }
 
@@ -135,9 +136,10 @@ public:
 
     using Info = std::shared_ptr<PointInfo>;
 
-    JSRawPointer(JZJSEngine* engine, Class* ptr)
+    JSRawPointer(JZJSEngine* engine, Class* ptr, bool cppOwner = false)
         :JSPointerBase(engine)
     {
+        m_state->cppOwner = cppOwner;
         m_info = std::make_shared<PointInfo>();
         m_info->ptr = ptr;
     }
@@ -162,6 +164,22 @@ protected:
 
     std::shared_ptr<PointInfo> m_info;
 };
+
+// 派生自JZObject 的分支
+template<typename T>
+std::enable_if_t<std::is_base_of_v<JZObject, T>, JSPointerBase*>
+make_js_pointer(JZJSEngine* mod, T* ptr)
+{
+    return new JSObjectPointer(mod, ptr);
+}
+
+// 不派生自JZObject 的分支
+template<typename T>
+std::enable_if_t<!std::is_base_of_v<JZObject, T>, JSPointerBase*>
+make_js_pointer(JZJSEngine* mod, T* ptr)
+{
+    return new JSRawPointer<T>(mod, ptr);
+}
 
 // JSRawPointer 萃取: 仅当 T 为 jsbind::JSRawPointer<X> 时 type 存在。
 namespace detail
@@ -260,12 +278,7 @@ struct CFunctionParam
 
     std::string name;
     std::string ctypeid;
-    int type;
-
-    // 形参是 JSRawPointer<Class>(共享包装引用, 改动要能传播回 JS 那份)时置 true:
-    // 这类形参只接受**精确类**, 派生类对象不能传(会共享不到同一个包装 -> 重复 delete / clear 不传播)。
-    // 由 JZJSEngine::call() 在转换前按此标记校验, 免得落到底层断言。
-    bool exactClass = false;
+    int type;;
 };
 
 class CFunction
@@ -280,16 +293,7 @@ public:
     CFunctionParam result;
     std::vector<CFunctionParam> params;
     bool returnCppOwner = false;   // 返回值所有权: 注册返回裸指针的函数时记录; false=JS 拥有(GC 时 delete), true=C++ 持有(JS 不释放)
-
-    // 这个函数是不是"**类实例方法**"(挂在类原型上的: ClassBind::def 的方法 / defProperty 的访问器)。
-    // 判据来自注册路径, 不是运行期猜的:
-    //   * registClass   -> 原型方法/属性访问器: 形参表首参就是"对象自己"(见派生的约定), this = 类实例;
-    //   * registFunction-> 挂任意对象上的普通函数(全局 / 命名空间 / 模块导出): 形参就是普通实参, this 只是"挂在哪",
-    //                     不是实例 -> 不算实例方法(回调里 self() 不该看到它)。
-    // 用途: JS -> C++ 入口据此决定要不要把 this 压进引擎的"当前 this"栈(见 JZJSEngine::self)。
-    // 注: 裸 C 函数(CRawFunction / CDataFunction)不参与 —— 它们的 C 实现本来就拿得到 this_val 形参,
-    //     不需要引擎替它们记(self() 也就不会为它们单独起一帧)。
-    bool bindInstance = false;
+    bool memberFunction = false;
 };
 
 class CProperty
@@ -338,8 +342,8 @@ class CClassDefine
 public:
     // 唯一构造入口: JS `new Cls(...)` 透传 (ctx, argc, argv) 生成底层对象并包成 JSRawPointer<Class>*。
     // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
-    std::function<void*(JZJSEngine*, int, JSValueConst*)> create;
-    std::function<void(void*)> destory;
+    std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> create;
+    std::function<void(jsbind::JSPointerBase*)> destory;
 
     std::string name;
     std::string ctypeid;
@@ -613,20 +617,12 @@ Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
 
 // to js
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);
-JSValue createJSValue(JSContext* ctx, const std::string& ctypeid, jsbind::JSPointerBase* opaque);
 
 template <class T>
 JSValue toJSValue(JSContext* ctx, const T& t);
 
-// JSRawPointer: 按值接收并转移所有权到 JS 对象(底层对象随 JS 对象 GC 释放或保留取决于 cppOwner)。
-// 通过移动构造, 调用方的 JSRawPointer 被置空, 不存在重复释放。
-template <class Class>
-JSValue toJSValue(JSContext* ctx, jsbind::JSRawPointer<Class> t)
-{
-    // 统一包装: JSRawPointer<Class> 与 Class 共用同一 JS 类(typeid(Class)), opaque 始终是 JSRawPointer<Class>*
-    std::string ctypeid = typeid(Class).name();
-    return createJSValue(ctx, ctypeid, new jsbind::JSRawPointer<Class>(std::move(t)));
-}
+template <class T>
+JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool cppOwner);
 
 // 返回值转换统一入口: 裸指针走 toJsValueFromPtr(ctx, ptr, cppOwner), 其余走 toJSValue。
 // cppOwner 来自注册时记录的返回值所有权(CFunction::returnCppOwner), 不再由这里私自默认。

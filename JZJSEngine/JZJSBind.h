@@ -194,10 +194,6 @@ void getFunctionParam(std::vector<CFunctionParam>& list)
     CFunctionParam param;
     param.type = -1;
     param.ctypeid = getCTypeid<T>();
-    // JSRawPointer<Class> 形参(共享包装引用)必须精确类匹配: 派生类对象共享不到同一个包装。
-    // 记在参数上, 由 JZJSEngine::call() 在转换前校验。
-    param.exactClass = jsbind::is_class_pointer<jstype::remove_cvr_t<T>>::value;
-
     list.push_back(param);
     getFunctionParam<type, Args...>(list);
 }
@@ -329,26 +325,32 @@ std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noex
 //   - 可默认构造: 用 new Class() 生成实例(JSWidgetClass<Class> 还会经 using Class::Class 继承基类构造);
 //   - 抽象类 / 非抽象但无默认构造(如 JZPainter 必须传 widget): 运行期抛异常(需 setCreate 覆盖)。
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && std::is_default_constructible<Class>::value, int> = 0>
-std::function<JSValue(JZJSEngine*engine, int, JSValueConst*)> makeDefaultCreate()
+std::function<jsbind::JSPointerBase*(JZJSEngine *engine, int, JSValueConst*)> makeDefaultCreate()
 {
-    return engine_createValue(engine,typeid(Class).name());
+    /*if (std::is_base_of_v<JZObject, Class>)
+        return jsbind::JSObjectPointer(engine, new Class());
+    else*/
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
+        return new jsbind::JSRawPointer<Class>(ctx, new Class());
+    };        
 }
+
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
-std::function<JSValue(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
+std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
 {
     // create 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
-    return [](JZJSEngine* ctx, int, JSValueConst*) ->void* {
-        JS_ThrowInternalError(ctx, "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
-        return JS_UNDEFINED;
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
+        JS_ThrowInternalError(ctx->context(), "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
+        return nullptr;
     };
 }
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && !std::is_default_constructible<Class>::value, int> = 0>
-std::function<JSValue(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
+std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
 {
     // 同上: 无默认构造的类必须自己 setCreate。
-    return [](JZJSEngine* ctx, int, JSValueConst*) ->void* {
-        JS_ThrowInternalError(ctx, "ClassBind: 类无默认构造, 需用 setCreate");
-        return JS_UNDEFINED;
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
+        JS_ThrowInternalError(ctx->context(), "ClassBind: 类无默认构造, 需用 setCreate");
+        return nullptr;
     };
 }
 
@@ -388,7 +390,7 @@ public:
 
     // 自定义构造(无默认构造/需参数/需回写 JS 句柄的类): 覆盖默认工厂。
     // 签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*, 句柄回写交 setInstanceBind 注册的 onCreated。
-    void setCreate(std::function<JSValue(JZJSEngine**, int, JSValueConst*)> create) { m_define.create = std::move(create); }
+    void setCreate(std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> create) { m_define.create = std::move(create); }
 
     // 声明"指针语义": 该类型的包装登记进引擎的身份表(同底层对象 ⇒ 同 JS 对象, `===` 才有意义),
     // 并支持 moveToCpp/moveToJs 的句柄托管。**默认是值语义**, 值类型(JZPoint/JZSize/JZRect/

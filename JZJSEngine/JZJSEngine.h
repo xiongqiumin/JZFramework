@@ -104,7 +104,7 @@ public:
             if (engine && magic >= 0 && magic < (int)engine->m_funcList.size())
             {
                 const std::shared_ptr<CFunction>& func = engine->m_funcList[magic];
-                if (func && func->bindInstance)   // 见 CFunction::bindInstance
+                if (func && func->memberFunction)   // 见 CFunction::bindInstance
                     push(self);
             }
         }
@@ -269,6 +269,7 @@ public:
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type, int argc, JSValueConst* argv);
+    JSValue createValue(int type, jsbind::JSPointerBase *ptr);
 
     // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
     // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
@@ -283,9 +284,11 @@ public:
 
     void addPointer(jsbind::JSPointerBase *pointer);
     void removePointer(jsbind::JSPointerBase *pointer);
-    jsbind::JSPointerBase *pointerStateFor(const void* ptr);
+    void movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue value);
+    JSValue movePointerToJs(jsbind::JSPointerBase *pointer);
+    jsbind::JSPointerBase *getPointer(const void* ptr);
     JSValue pointerHandle(const void* ptr) const;                   // 查询(借用引用; 身份复用用)
-    void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表
+    void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表    
 
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
@@ -314,20 +317,20 @@ public:
     template <class T>
     JSValue toJsValueFromPtr(T* ptr, bool cppOwner)
     {
-        auto js_ptr = pointerStateFor(ptr);
+        auto js_ptr = getPointer(ptr);
         JZ_ASSERT_X(!js_ptr, "应该使用 moveToJs 获得JSValue");
 
-        jsbind::JSObjectPointer *base = nullptr;
-        if constexpr (std::is_base_of_v<JZObject, T>)
-            base = jsbind::JSObjectPointer(this, ptr);
-        else
-            base = jsbind::JSRawPointer(this, ptr);
+        jsbind::JSPointerBase *base = jsbind::make_js_pointer(this, ptr);        
 
         int type = ctypeidToType(typeid(T).name());
         int js_class_id = m_typeMap[type].jsType;
+        JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
         JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
+        JS_FreeValue(m_ctx, proto);
+    
         if (cppOwner)
             base->moveToCpp(obj);
+
         return obj;
     }
 
@@ -575,5 +578,12 @@ protected:
     JZJSWorkerModule* m_workerModule;   // 本引擎的 worker 模块(未装为空)
     JZJSWidgetModule* m_widgetModule;   // 本引擎的 widget 模块(未装为空; 见 setWidgetModule)
 };
+
+template <class T>
+JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool cppOwner)
+{
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    return engine->toJsValueFromPtr(ptr, cppOwner);
+}
 
 #endif  // !JS_ENGINE_H_

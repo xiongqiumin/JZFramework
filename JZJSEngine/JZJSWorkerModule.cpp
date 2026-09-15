@@ -370,7 +370,7 @@ void JZJSWorkerModule::registNamespace()
 void JZJSWorkerModule::registWorkerClass()
 {
     JZJSWorkerModule* self = this;
-
+/*
     jsbind::ClassBind<JZJSWorker> bind_worker("Worker");
     bind_worker.setCreate([self](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase*
                           { return self->createWorker(ctx, argc, argv); });
@@ -388,6 +388,7 @@ void JZJSWorkerModule::registWorkerClass()
 
     m_engine->registClass(bind_worker.classDefine());
     m_typeWorker = m_engine->ctypeidToType(typeid(JZJSWorker).name());
+*/
 }
 
 JSValue JZJSWorkerModule::jsSelfId()
@@ -526,7 +527,7 @@ jsbind::JSPointerBase* JZJSWorkerModule::createWorker(JSContext* ctx, int argc, 
     wtrace("createWorker owner=" + std::to_string(m_selfId) + " id=" + std::to_string(id)
            + " entry=" + entry + " dataBytes=" + std::to_string(data.size()));
 
-    return new jsbind::JSRawPointer<JZJSWorker>(w, false);   // false = JS 拥有句柄
+    return new jsbind::JSRawPointer<JZJSWorker>(m_engine, w);   // false = JS 拥有句柄
 }
 
 JSValue JZJSWorkerModule::workerPostMessage(JZJSWorker* w, JSValue value)

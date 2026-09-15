@@ -181,7 +181,7 @@ void JZJSWorkerThread::run()
     t_workerId = m_id;
     wtrace("run start id=" + std::to_string(m_id) + " entry=" + m_entry);
 
-    JZJSEngine* main = JZJSEngine::mainEngine();
+    JZJSEngine* main = nullptr;
     if (!buildEngine())
     {
         destroyEngine();

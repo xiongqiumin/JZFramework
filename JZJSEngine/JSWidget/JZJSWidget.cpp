@@ -37,101 +37,6 @@
 #include <string>
 #include <typeinfo>
 
-// 布局包装的"失效开关"缓存键: 存在 **JS 对象自己**的隐藏属性上(非枚举)。
-// 好处是不必在 C++ 侧维护"控件 -> 缓存"的表(那张表要跟着控件生死, 很难不出错),
-// 而布局被替换/清空时我们手上正好有 this_val, 拿得到旧缓存并让它失效。
-// 同一控件 + 同一布局 ⇒ 返回同一个 JS 对象(引用相等性也保住了)。
-static const char* kLayoutRefProp = "__jzLayoutRef";
-
-namespace
-{
-
-// this_val -> JZWidget; 不是控件 / 包装已失效时返回 nullptr(调用方回一个 JS 异常)。
-// 注意顺序: 先验类再取指针 —— fromJSValue 类型不符或包装已 clear 都会**致命断言**。
-JZWidget* widgetFromThis(JSContext* ctx, JSValueConst this_val)
-{
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    if (!engine)
-        return nullptr;
-
-    JSClassID class_id = 0;
-    void* opaque = JS_GetAnyOpaque(this_val, &class_id);
-    if (!opaque || !engine->isJSRawPointerClassId(class_id))
-        return nullptr;
-    if (!js_check_class_arg<JZWidget>(ctx, this_val))
-        return nullptr;
-
-    auto* cp = (jsbind::JSPointerBase*)opaque;
-    if (!cp->getRaw())
-        return nullptr;
-
-    return fromJSValue<JZWidget*>(ctx, this_val);
-}
-
-// 取包装的共享状态(非包装对象返回 nullptr)。
-jsbind::JSPointerBase* wrapperOf(JSValueConst value)
-{
-    JSClassID class_id = 0;
-    void* opaque = JS_GetAnyOpaque(value, &class_id);
-    return (jsbind::JSPointerBase*)opaque;
-}
-
-// 造一个 JS 包装, **类 id 取动态类型**(typeid(*obj)): 这样 JS 侧看到的是具体类 ——
-//   * `p instanceof JZLabel` 成立;
-//   * `w.layout().addWidget(...)` 可用(JZBoxLayout 的方法挂在 JZVBoxLayout 原型上,
-//     若按静态类型 JZLayout 造包装, 子类方法在 JS 里就是"不是函数")。
-// 动态类型意外没注册时退回基类(cppOwner=true 的借用包装, 两者都能安全释放)。
-JSValue makeDynamicValue(JSContext* ctx, const char* dynCtypeid, const char* baseCtypeid,
-                         jsbind::JSPointerBase* wrapper)
-{
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    int type = engine->ctypeidToType(dynCtypeid);
-    if (type == JSType_none)
-        type = engine->ctypeidToType(baseCtypeid);
-    if (type == JSType_none)
-    {
-        delete wrapper;   // 目标类没注册: 别把包装漏在堆上
-        return JS_ThrowInternalError(ctx, "JS 包装: 类型未注册(%s)", baseCtypeid);
-    }
-    return engine->createValue(type, wrapper);
-}
-
-// 控件的借用句柄: 用**守卫指针**包装(与创建时一致) —— 控件被对象树 delete 后守卫自动置空,
-// JS 手里那份再被调用会抛异常, 而不是悬垂访问。
-JSValue toWidgetRef(JSContext* ctx, JZWidget* w)
-{
-    return makeDynamicValue(ctx, typeid(*w).name(), typeid(JZWidget).name(),
-                            new jsbind::JSObjectPointer(w, true));
-}
-
-// 布局的借用视图: 布局不是 JZObject(没有守卫指针) ⇒ JSRawPointer + cppOwner=true(JS 不负责 delete)。
-JSValue toLayoutRef(JSContext* ctx, JZLayout* l)
-{
-    return makeDynamicValue(ctx, typeid(*l).name(), typeid(JZLayout).name(),
-                            new jsbind::JSRawPointer<JZLayout>(l, true));
-}
-
-// 布局包装缓存: 返回一个**新引用**(调用方负责 free)。没有缓存/取值出错返回 JS_UNDEFINED。
-JSValue cachedLayoutRef(JSContext* ctx, JSValueConst this_val)
-{
-    JSValue ref = JS_GetPropertyStr(ctx, this_val, kLayoutRefProp);
-    if (JS_IsException(ref))
-    {
-        JS_FreeValue(ctx, ref);
-        return JS_UNDEFINED;
-    }
-    return ref;
-}
-
-// 记下新的布局包装(JS_DefinePropertyValueStr **消费** value, 且用 JS_PROP_CONFIGURABLE
-// 使其成为不可枚举属性 —— 不能在 for-in / Object.keys 里冒出来)。
-void cacheLayoutRef(JSContext* ctx, JSValueConst this_val, JSValue wrap)
-{
-    JS_DefinePropertyValueStr(ctx, this_val, kLayoutRefProp, wrap, JS_PROP_CONFIGURABLE);
-}
-
-}   // namespace
-
 // ---------- 父控件 ----------
 
 JSValue js_JZWidget_setParentWidget(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
@@ -147,7 +52,7 @@ JSValue js_JZWidget_setParentWidget(JSContext* ctx, JSValueConst this_val, int a
     if (!module)
         return JS_EXCEPTION;
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "setParentWidget: this 不是有效的 JZWidget");
 
@@ -177,7 +82,7 @@ JSValue js_JZWidget_parentWidget(JSContext* ctx, JSValueConst this_val, int argc
     (void)argc;
     (void)argv;
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "parentWidget: this 不是有效的 JZWidget");
 
@@ -185,7 +90,7 @@ JSValue js_JZWidget_parentWidget(JSContext* ctx, JSValueConst this_val, int argc
     if (!p)
         return JS_NULL;   // 真正的 null: 空包装对象是真值, JS 侧判不出"没有父控件"
 
-    return toWidgetRef(ctx, p);   // 借用: 父控件由对象树持有, JS 只持句柄
+    return toJsValueFromPtr(ctx, p, true);   // 借用: 父控件由对象树持有, JS 只持句柄
 }
 
 // ---------- 所属窗口 ----------
@@ -195,7 +100,7 @@ JSValue js_JZWidget_window(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     (void)argc;
     (void)argv;
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "window: this 不是有效的 JZWidget");
 
@@ -213,7 +118,7 @@ JSValue js_JZWidget_mapTo(JSContext* ctx, JSValueConst this_val, int argc, JSVal
     if (argc != 2 && argc != 3)
         return JS_ThrowTypeError(ctx, "mapTo(parentOrNull, point) 或 mapTo(parentOrNull, x, y)");
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "mapTo: this 不是有效的 JZWidget");
 
@@ -256,7 +161,7 @@ JSValue js_JZWidget_layout(JSContext* ctx, JSValueConst this_val, int argc, JSVa
     (void)argc;
     (void)argv;
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "layout: this 不是有效的 JZWidget");
 
@@ -285,7 +190,7 @@ JSValue js_JZWidget_setLayout(JSContext* ctx, JSValueConst this_val, int argc, J
     if (argc != 1)
         return JS_ThrowTypeError(ctx, "setLayout(layout) 需要 1 个参数");
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "setLayout: this 不是有效的 JZWidget");
 
@@ -327,7 +232,7 @@ JSValue js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc,
     (void)argc;
     (void)argv;
 
-    JZWidget* self = widgetFromThis(ctx, this_val);
+    JZWidget* self = fromJSValue<JZWidget*>(ctx, this_val);
     if (!self)
         return JS_ThrowTypeError(ctx, "clearLayout: this 不是有效的 JZWidget");
 

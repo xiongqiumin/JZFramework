@@ -90,7 +90,8 @@ public:
     // 这个钩子每条造包装的路径都走, 而 getter 造的临时包装没人保活)。
     // 幂等: 重复 installEventFilter 会被忽略。
     void bindJsEventFilter(JZWidget* widget, JSValueConst value);
-    JZWidget *takeWidget(JSValue w);
+    JZWidget * takeWidgetFromJs(JSValue w);  //移动到 c++ 测
+    JSValue moveWidgetToJs(JZWidget *);
 
     // quickjs C 函数的 func_data -> 模块指针(见 jsbind::ClassBind::defData)。
     // 约定: func_data[0] 是"模块指针句柄"(以 JS_NewInt64 存的整数, JS 侧看不到也拿不到)。

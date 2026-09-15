@@ -23,9 +23,6 @@
 using namespace jsbind;
 using namespace std;
 
-// 主引擎(Process 级的"第一个 init 的引擎"): 进程级 worker 线程表挂在它上面。
-// 读取方主要是 worker 线程(取 hub 投消息/发退出通知), 写入只发生在主线程。
-static JZJSEngine* s_mainEngine = nullptr;
 
 // 事件驱动唤醒事件: C++ 侧结算 promise / 外部注入任务后投递本事件到引擎线程,
 // 引擎收到后 execOnce 泵一轮。JZObject 事件分发: type >= JZEvent_user 的自定义
@@ -362,18 +359,16 @@ JZJSEngine::~JZJSEngine()
     // 兜底: 宿主不一定显式调 deinit()(测试/临时引擎很常见)。worker 线程表就在引擎里,
     // 必须在这里收掉, 否则:
     //   1) 线程对象泄漏;
-    //   2) s_mainEngine 悬挂 —— 还在跑的 worker 线程去 mainEngine() 会解引用已销毁的
+    //   2) m_mainEngine 悬挂 —— 还在跑的 worker 线程去 mainEngine() 会解引用已销毁的
     //      引擎, 直接崩(0xC0000005)。
     // 注意: 这里只清"进程级资源", 不碰 JS 侧的 rt/ctx —— 那仍由 deinit() 负责,
     // 以免破坏"借给 JS 的 C++ 对象"的既有生命周期约定。
     reapAllWorkers();
-    if (s_mainEngine == this)
-        s_mainEngine = nullptr;
 }
 
 JZJSEngine* JZJSEngine::mainEngine()
 {
-    return s_mainEngine;
+    return m_mainEngine;
 }
 
 void JZJSEngine::init()
@@ -388,9 +383,9 @@ void JZJSEngine::init()
 
     // 第一个 init 的引擎成为主引擎: worker 线程表与 id 分配都归它。
     // 主线程自己也是一个可投递的 id(0), 所以表里先放它自己。
-    if (!s_mainEngine)
+    if (!m_mainEngine)
     {
-        s_mainEngine = this;
+        m_mainEngine = this;
 
         WorkerEntry& e = m_workers[0];
         e.parentId = -1;
@@ -405,8 +400,8 @@ void JZJSEngine::deinit()
 {
         // 主引擎: 先收掉所有 worker 线程(请求退出 + join + delete, 必须在主线程做)
     reapAllWorkers();
-    if (s_mainEngine == this)
-        s_mainEngine = nullptr;
+    if (m_mainEngine == this)
+        m_mainEngine = nullptr;
 
     // 统一放掉身份表里托管的句柄(必须在 deinitJSEnv / JS_FreeContext 之前 —— 那之后不能再碰 JSValue)。
     clearPointerStates();
@@ -470,6 +465,8 @@ void JZJSEngine::deinitJSEnv()
     m_selfStack.clear();   // 借用值, 直接丢(不该还有值: 这里已不在 JS 调用栈里)
     if (m_rt)
     {
+        JS_FreeValue(m_ctx, m_cbRoot);
+
         for (int i = 0; i < (int)m_timeTasks.size(); i++)
         {
             JS_FreeValue(m_ctx, m_timeTasks[i].callback);
@@ -482,6 +479,9 @@ void JZJSEngine::deinitJSEnv()
         JS_FreeRuntime(m_rt);
         setStatus(Engine_none);
     }
+    m_cbRoot = JS_UNDEFINED;
+    m_cbId = 0;
+
     m_global = JS_NULL;
     m_ctx = nullptr;
     m_rt = nullptr;
@@ -1270,7 +1270,7 @@ int JZJSEngine::typeNameToType(std::string type_name)
         return JSType_none;
 
     auto it = m_typeMap.begin();
-    if (it != m_typeMap.end())
+    while (it != m_typeMap.end())
     {
         if (it->second.name == type_name)
             return it->first;
@@ -1467,43 +1467,28 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     else
     {
         const CClassDefine& define = m_typeMap[type].classDefine;
-        jsbind::JSPointerBase* ptr = define.create(m_ctx, argc, argv);
-        return createValue(type, ptr);
+        void* ptr = define.create(m_ctx, argc, argv);
+
+        // create 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
+        // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
+        // 没挂异常却返回空 = create 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
+        if (!ptr)
+        {
+            JZ_ASSERT_X(JS_HasException(m_ctx), "createValue: create 返回空指针但没有设置 JS 异常");
+            return JS_EXCEPTION;
+        }
+
+        JSClassID js_class_id = typeToJSType(type);
+        JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
+
+        JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
+        JS_SetOpaque(obj, ptr);
+        assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
+
+        JS_FreeValue(m_ctx, proto);
+
+        return obj;
     }
-}
-
-JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase* ptr)
-{
-    // create 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
-    // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
-    // 没挂异常却返回空 = create 写错了(断言会 fatal 掉, 免得吞成一个空异常)。
-    if (!ptr)
-    {
-        JZ_ASSERT_X(JS_HasException(m_ctx), "createValue: create 返回空指针但没有设置 JS 异常");
-        return JS_EXCEPTION;
-    }        
-
-    // 指针语义类型(显式声明, 见 ClassBind::setPointerSemantics): 挂上身份表里那份共享状态。
-    //   ① 同底层对象 ⇒ 同状态 ⇒ 所有权翻转/失效在所有包装间同步;
-    //   ② 该对象已经托管了句柄(在对象树里/被 C++ 持有着) ⇒ 直接把**同一个 JS 对象**交还给 JS,
-    //      这样 `===` 才成立(值语义类型不进这里, 每次都是新包装)。
-    const CClassDefine& ptrDefine = m_typeMap[type].classDefine;
-    if (ptrDefine.pointerSemantics)
-    {
-        ptr->m_engine = this;
-        m_jsPoints.push_back(ptr);        
-    }
-
-    JSClassID js_class_id = typeToJSType(type);
-    JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
-
-    JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-    JS_SetOpaque(obj, ptr);
-    assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
-
-    JS_FreeValue(m_ctx, proto);
-
-    return obj;
 }
 
 void JZJSEngine::addPointer(jsbind::JSPointerBase *pointer)
@@ -2401,7 +2386,7 @@ int JZJSEngine::spawnWorker(const std::string& entry, const JZByteArray& workerD
                             const std::string& workDir, const std::vector<std::string>& libraryDirs)
 {
     // 表在主引擎上: 从哪个引擎调都统一落到它
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return -1;
 
@@ -2461,7 +2446,7 @@ int JZJSEngine::doSpawnWorker(const std::string& entry, const JZByteArray& worke
 
 bool JZJSEngine::postToWorker(int targetId, int fromId, const JZByteArray& data)
 {
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return false;
 
@@ -2478,7 +2463,7 @@ bool JZJSEngine::postToWorker(int targetId, int fromId, const JZByteArray& data)
 
 void JZJSEngine::attachWorkerEngine(int id, JZJSEngine* engine)
 {
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return;
     JZMutexLocker lock(&owner->m_workerMutex);
@@ -2489,7 +2474,7 @@ void JZJSEngine::attachWorkerEngine(int id, JZJSEngine* engine)
 
 void JZJSEngine::detachWorkerEngine(int id)
 {
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return;
     JZMutexLocker lock(&owner->m_workerMutex);
@@ -2505,7 +2490,7 @@ bool JZJSEngine::terminateWorker(int id)
 {
     JZJSWorkerThread* t = nullptr;
     {
-        JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+        JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
         if (!owner)
             return false;
         JZMutexLocker lock(&owner->m_workerMutex);
@@ -2524,7 +2509,7 @@ bool JZJSEngine::terminateWorker(int id)
 std::vector<int> JZJSEngine::workerIds()
 {
     std::vector<int> out;
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return out;
 
@@ -2537,7 +2522,7 @@ std::vector<int> JZJSEngine::workerIds()
 std::vector<int> JZJSEngine::workerChildIds(int parentId)
 {
     std::vector<int> out;
-    JZJSEngine* owner = (this == s_mainEngine) ? this : s_mainEngine;
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
     if (!owner)
         return out;
 

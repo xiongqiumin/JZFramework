@@ -895,14 +895,12 @@ struct UiScriptGen {
         std::string title = menu.props.isMember("title")
             ? tsLiteral(menu.props["title"].asString()) : "\"\"";
         out += indent + "var " + m + " = " + parentExpr + ".addMenu(" + title + ");\n";
-        out += indent + "__keep.push(" + m + ");\n";
         for (const auto& c : menu.children) {
             if (c.type == "Action") {
                 std::string a = "__w" + std::to_string(counter++);
                 std::string text = c.props.isMember("text")
                     ? tsLiteral(c.props["text"].asString()) : "\"\"";
                 out += indent + "var " + a + " = " + m + ".addAction(" + text + ");\n";
-                out += indent + "__keep.push(" + a + ");\n";
                 if (c.props.isMember("shortcut"))
                     out += indent + a + ".setShortcut(" + tsLiteral(c.props["shortcut"].asString()) + ");\n";
                 if (c.props.isMember("checkable"))
@@ -929,7 +927,6 @@ struct UiScriptGen {
             // 菜单栏专属: __mk 出 JZMenuBar, 内部用 addMenu/addAction/addSeparator 构造菜单树
             std::string var = "__w" + std::to_string(counter++);
             out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
-            out += indent + "__keep.push(" + var + ");\n";
             if (!node.id.empty())
                 out += indent + "__ui." + sanitizeId(node.id) + " = " + var + ";\n";
             for (const auto& m : node.children)
@@ -938,8 +935,6 @@ struct UiScriptGen {
         }
         std::string var = "__w" + std::to_string(counter++);
         out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
-        // 保持引用, 避免无 id 的子控件被 JS GC 回收后底层 C++ 对象悬空
-        out += indent + "__keep.push(" + var + ");\n";
 
         const Json::Value& props = node.props;
         if (props.isObject()) {
@@ -1059,8 +1054,8 @@ struct UiScriptGen {
                 out += indent + var + ".setWidget(" + childExpr + ");\n";
                 break;
             case UiMount::WindowAdd:
-                // Window / Dialog: addWidget(自动补 VBox)
-                out += indent + var + ".addWidget(" + childExpr + ");\n";
+                // Window / Dialog: 没有内置布局, 子控件用 setParentWidget 挂到窗口下(绝对定位, 不自动补 VBox)
+                out += indent + childExpr + ".setParentWidget(" + var + ");\n";
                 break;
             case UiMount::None:
                 // 非容器(ComboBox / ListWidget / TableWidget)不接受 widget 子控件,
@@ -1148,17 +1143,16 @@ JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
     std::string rootExpr = g.genNode(m_root, 2);
     std::string body = g.out + "  __ui.root = " + rootExpr + ";\n";
 
-    // 脚本: IIFE 构造控件树并返回 { root, <id>: widget, __keep: [...] }
+    // 脚本: IIFE 构造控件树并返回 { root, <id>: widget }
     std::string script = R"(
 (function(){
   function __mk(t){ var C = __types[t]; if(!C) throw new Error("unknown widget type: " + t); return new C(); }
   function __css(s){ var o=""; for(var k in s){ if(!Object.prototype.hasOwnProperty.call(s,k)) continue; var v=s[k]; var css=k.replace(/[A-Z]/g, function(m){ return "-" + m.toLowerCase(); }); o += css + ":" + v + ";"; } return o; }
   var __ui = {};
-  var __keep = [];
 )";
     script += "  var __types = " + typesObj + ";\n";
     script += body;
-    script += "  __ui.__keep = __keep;\n  return __ui;\n})()\n";
+    script += "  return __ui;\n})()\n";
 
     JZJSValuePtr res = engine->eval(script);
     if (!engine->runtimeError().empty()) {

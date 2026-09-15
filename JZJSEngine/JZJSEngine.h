@@ -152,7 +152,7 @@ public:
     // 投递落点 = "目标 worker 的引擎": 引擎是 JZObject, 在它自己的线程上,
     // 所以 jzApp->postEvent(目标引擎, 消息事件) 就能把消息送到那个线程,
     // 再由该引擎的 customEvent 转给它自己的 worker 模块(见 JZJSWorkerModule)。
-    static JZJSEngine* mainEngine();
+    JZJSEngine* mainEngine();
 
     // 本引擎装配的 worker 模块(由 JZJSWorkerModule::initEngine 登记):
     // 它是消息事件与"worker 退出"事件的 JS 落点。
@@ -268,8 +268,7 @@ public:
 
     JSValue globalObject();
     JSValue createObject();
-    JSValue createValue(int type, int argc = 0, JSValueConst* argv = nullptr);
-    JSValue createValue(int type, jsbind::JSPointerBase* ptr);
+    JSValue createValue(int type, int argc, JSValueConst* argv);
 
     // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
     // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
@@ -313,6 +312,26 @@ public:
     }
     
     template <class T>
+    JSValue toJsValueFromPtr(T* ptr, bool cppOwner)
+    {
+        auto js_ptr = pointerStateFor(ptr);
+        JZ_ASSERT_X(!js_ptr, "应该使用 moveToJs 获得JSValue");
+
+        jsbind::JSObjectPointer *base = nullptr;
+        if constexpr (std::is_base_of_v<JZObject, T>)
+            base = jsbind::JSObjectPointer(this, ptr);
+        else
+            base = jsbind::JSRawPointer(this, ptr);
+
+        int type = ctypeidToType(typeid(T).name());
+        int js_class_id = m_typeMap[type].jsType;
+        JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
+        if (cppOwner)
+            base->moveToCpp(obj);
+        return obj;
+    }
+
+    template <class T>
     JZJSValuePtr toValuePtr(const T& t)
     {
         return makeValuePtr(toJSValue(t));
@@ -324,7 +343,7 @@ public:
     template <class T>
     JZJSValuePtr toValuePtrFromPtr(T* ptr, bool cppOwner)
     {
-        return makeValuePtr(toJsValueFromPtr(m_ctx, ptr, cppOwner));
+        return makeValuePtr(toJsValueFromPtr(ptr, cppOwner));
     }
 
     JZJSValuePtr makeValuePtr(JSValue value);
@@ -549,6 +568,7 @@ protected:
     void onWorkerFinished(int id);      // 收到 worker 的 sigFinished(已排队到主线程): 回收 + 级联 + 转告 owner
     int workerOwnerId(int id);
 
+    JZJSEngine* m_mainEngine = nullptr;
     JZMutex m_workerMutex;
     int m_nextWorkerId;                 // 0 保留给主线程
     std::map<int, WorkerEntry> m_workers;

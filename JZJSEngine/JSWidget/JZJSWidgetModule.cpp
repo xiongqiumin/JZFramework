@@ -404,8 +404,8 @@ jsbind::JSPointerBase* JZJSWidgetModule::createPainter(JSContext* ctx, int argc,
     if (m_engine->checkType(argv[0], "JZImage"))   // 校验在前(构造参数没有类型表, 得自己先校验)
     {
         JZImage* img = fromJSValue<JZImage*>(ctx, argv[0]);
-        auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(*img), false);   // JS 拥有
-        return wrapper;
+        auto* painter = new JZPainter(*img);
+        return m_engine->toJsValueFromPtr(painter, false);
     }
     else if(m_engine->checkType(argv[0], "JZWidget"))   // 校验在前(构造参数没有类型表, 得自己先校验)
     {
@@ -421,7 +421,7 @@ jsbind::JSPointerBase* JZJSWidgetModule::createPainter(JSContext* ctx, int argc,
             return nullptr;
         }
 
-        auto* wrapper = new jsbind::JSRawPointer<JZPainter>(new JZPainter(w), true);
+        auto* wrapper = new jsbind::JSRawPointer<JZPainter>(m_engine, new JZPainter(w), true);
         m_painter = wrapper;
         return wrapper;
     }
@@ -773,7 +773,6 @@ void JZJSWidgetModule::registEvents()
     m_engine->registClass(bind_close.classDefine());    
 
     jsbind::ClassBind<JZTimerEvent> bind_timer("JZTimerEvent", bind_event);
-    bind_timer.setCreate([]() { return new jsbind::JSRawPointer<JZTimerEvent>(new JZTimerEvent(0), false); });
     bind_timer.def("id", [](JZTimerEvent* e) { return e->id(); });
     m_engine->registClass(bind_timer.classDefine());
 }
@@ -801,8 +800,7 @@ static JZWidget* jsWidgetArg(JSContext* ctx, JSValueConst value, const char* wha
 //     后者分两种情况:
 //       * **控件**: 由 JZSWidgetModule 的控件登记(保活)兜住 —— 挂进树的每条入口都会登记
 //         (addWidget/insertWidget/addTab/setWidget/setParentWidget/构造带父, 见 bindWidgetToParent);
-//       * **布局**(JZLayout 不是 JZObject, 进不了控件登记表): 仍要求 JS 侧持有引用,
-//         uiLoader 生成的脚本里 __keep 主要就是为它准备的。
+//       * **布局**(JZLayout 不是 JZObject, 进不了控件登记表): 仍要求 JS 侧持有引用。
 template <class W>
 static void setWidgetCreate(jsbind::ClassBind<W>& bind)
 {
@@ -951,11 +949,6 @@ static JSValue jsJZFileDialogGetExistingDirectory(JSContext* ctx, JSValueConst, 
 void JZJSWidgetModule::registSettings()
 {
     jsbind::ClassBind<JZSettings> bind_set("JZSettings");
-    // 普通堆对象(不是 JZObject): cppOwner=false -> JS 拥有, GC 时 delete
-    bind_set.setCreate([](JSContext*, int, JSValueConst*) -> jsbind::JSPointerBase* {
-        return new jsbind::JSRawPointer<JZSettings>(new JZSettings(), false);
-    });
-
     bind_set.def("open", [](JZSettings* s, const std::string& file) { return s->open(file); });
     bind_set.def("sync", [](JZSettings* s) { s->sync(); });
     bind_set.def("beginGroup", [](JZSettings* s, const std::string& g) { return s->beginGroup(g); });
@@ -1066,9 +1059,6 @@ void JZJSWidgetModule::registWidgets()
 {
     // 基类 JZWidget —— 裸类对象; 事件转发靠 JZSWidgetEventFilter(见 JZJSWidgetModule.h)
     jsbind::ClassBind<JZWidget> bind_w("JZWidget");
-    bind_w.setCreate([this](JSContext* ctx, int, JSValueConst*) -> jsbind::JSPointerBase* {
-        return new jsbind::JSObjectPointer(new JZWidget(), false);   // 守卫指针, 见 setWidgetCreate
-    });
     // 事件回调属性: JS 侧写法与以前完全一样(`w.onPaint = fn` / `w.onPaint = null` 清空), 但回调
     // **存在模块这边**(见 WidgetInfo::slots / setSlot) —— 与"回调挂在哪份包装上"彻底解耦:
     // getter 造出来的临时包装、包装被 GC、包装被换掉, 都不再影响事件转发。
@@ -1187,34 +1177,10 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("rect", [](JZWidget* w) { return w->rect(); });
     m_engine->registClass(bind_w.classDefine());
 
-    // JZWindow (继承 JZWidget) —— 裸类对象(事件转发同 JZWidget, 靠过滤器)
-    // 注意: 这里**不再**预装默认 VBox —— 布局是"只能设一次"的(Qt 语义, 见 JZWidget::setLayout),
-    // 预装会把 JS 里很常见的 `new JZWindow(...); win.setLayout(v)` 变成"重复设置"而被拒。
-    // JS 想要默认纵向布局就直接 win.addWidget(...)(JZWindow.addWidget 会按需补一个 VBox)。
     auto makeWindow = [](int w, int h, const std::string& title, JZWidget* parent) {
         return new JZWindow(w, h, title, parent);
     };
     jsbind::ClassBind<JZWindow> bind_win("JZWindow", bind_w);
-    bind_win.setCreate([this, makeWindow](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
-        int w = 800, h = 600;
-        std::string title = "JZWindow";
-        JZWidget* parent = nullptr;
-        if (argc >= 1) w = fromJSValue<int>(ctx, argv[0]);
-        if (argc >= 2) h = fromJSValue<int>(ctx, argv[1]);
-        if (argc >= 3) title = fromJSValue<std::string>(ctx, argv[2]);
-        if (argc >= 4)
-        {
-            // 构造参数没有参数类型表(call() 的形参校验帮不上), 所以在转换前先校验。
-            // create 约定: 出错"设 JS 异常 + 返回 nullptr"(不抛 C++ 异常)。
-            if (!js_check_class_arg<JZWidget>(ctx, argv[3]))
-            {
-                JS_ThrowTypeError(ctx, "new JZWindow(w, h, title, parent): parent 需要 JZWidget");
-                return nullptr;
-            }
-            parent = fromJSValue<JZWidget*>(ctx, argv[3]);
-        }
-        return new jsbind::JSObjectPointer(makeWindow(w, h, title, parent), false);   // 守卫指针, 见 setWidgetCreate
-    });
     bind_win.def("setTitle", [](JZWindow* w, const std::string& t) { w->setTitle(t); });
     bind_win.def("title", [](JZWindow* w) { return w->title(); });
     bind_win.def("show", [](JZWindow* w) { w->show(); });
@@ -1226,16 +1192,16 @@ void JZJSWidgetModule::registWidgets()
     // uiLoader 把 <widget class="MainWindow"> 映射成 JZMainWindow, 子控件用
     // setCentralWidget(至多一个中央控件) / addMenuBar(菜单栏) 挂载, 不走通用 addWidget。
     // ⚠ 基类必须传 bind_win(JZWindow), 不是 bind_w —— JZMainWindow 派生自 JZWindow,
-    // 传 bind_w 会让 setTitle/setGeometry/show/close/addWidget 这些**窗口方法在它身上全部缺失**
+    // 传 bind_w 会让 setTitle/setGeometry/show/close 这些**窗口方法在它身上全部缺失**
     // (uiLoader 生成 `__w0.setTitle(...)` 直接 "not a function")。
     jsbind::ClassBind<JZMainWindow> bind_main("JZMainWindow", bind_win);
     setWidgetCreate(bind_main);
     bind_main.def("setCentralWidget", [this](JZMainWindow* w, JSValue c) {
-        JZWidget* child = takeWidget(c);
+        JZWidget* child = takeWidgetFromJs(c);
         w->setCentralWidget(child);
     });
     bind_main.def("addMenuBar", [this](JZMainWindow* w, JSValue c) {
-        JZWidget* mb = takeWidget(c);
+        JZWidget* mb = takeWidgetFromJs(c);
         w->addMenuBar(static_cast<JZMenuBar*>(mb));
     });
     bind_main.def("menuBar", [](JZMainWindow* w) { return w->menuBar(); }, jsbind::returnOwnedByCpp);
@@ -1567,10 +1533,6 @@ void JZJSWidgetModule::registItems()
 
     // ---- JZTableWidgetItem ----
     jsbind::ClassBind<JZTableWidgetItem> bind_titem("JZTableWidgetItem");
-    bind_titem.setCreate([parseTextArg](JSContext* c, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
-        return new jsbind::JSRawPointer<JZTableWidgetItem>(
-            new JZTableWidgetItem(parseTextArg(c, argc, argv, "new JZTableWidgetItem")), false);
-    });
     bind_titem.def("text", [](JZTableWidgetItem* it) { return it->text(); });
     bind_titem.def("setText", [](JZTableWidgetItem* it, const std::string& t) { it->setText(t); });
     bind_titem.def("icon", [](JZTableWidgetItem* it) { return it->icon(); });
@@ -1589,10 +1551,6 @@ void JZJSWidgetModule::registItems()
 
     // ---- JZListWidgetItem ----
     jsbind::ClassBind<JZListWidgetItem> bind_litem("JZListWidgetItem");
-    bind_litem.setCreate([parseTextArg](JSContext* c, int argc, JSValueConst* argv) -> jsbind::JSPointerBase* {
-        return new jsbind::JSRawPointer<JZListWidgetItem>(
-            new JZListWidgetItem(parseTextArg(c, argc, argv, "new JZListWidgetItem")), false);
-    });
     bind_litem.def("text", [](JZListWidgetItem* it) { return it->text(); });
     bind_litem.def("setText", [](JZListWidgetItem* it, const std::string& t) { it->setText(t); });
     bind_litem.def("icon", [](JZListWidgetItem* it) { return it->icon(); });
@@ -1652,16 +1610,16 @@ void JZJSWidgetModule::registViews()
     });
     bind_list.def("item", [this](JZListWidget* l, int i) -> JSValue {
         JZListWidgetItem* it = l->item(i);
-        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+        return m_engine->toValueFromPtr(m_engine->context(), it, true);
     });
     bind_list.def("takeItem", [this](JZListWidget* l, int i) -> JSValue {
         JZListWidgetItem* it = l->takeItem(i);
-        return it ? toJsValueFromPtr(m_engine->context(), it, false) : JS_NULL;   // JS 拥有
+        return m_engine->toValueFromPtr(m_engine->context(), it, false);
     });
     bind_list.def("row", [](JZListWidget* l, JZListWidgetItem* it) { return l->row(it); });
     bind_list.def("currentItem", [this](JZListWidget* l) -> JSValue {
         JZListWidgetItem* it = l->currentItem();
-        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+        return m_engine->toValueFromPtr(m_engine->context(), it, true);
     });
     bind_list.def("setCurrentItem", [](JZListWidget* l, JZListWidgetItem* it) { l->setCurrentItem(it); });
     bind_list.def("currentIndex", [](JZListWidget* l) { return l->currentIndex(); });
@@ -1704,17 +1662,17 @@ void JZJSWidgetModule::registViews()
     });
     bind_table.def("item", [this](JZTableWidget* t, int r, int c) -> JSValue {
         JZTableWidgetItem* it = t->item(r, c);
-        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+        return m_engine->toValueFromPtr(m_engine->context(), it, true);
     });
     bind_table.def("takeItem", [this](JZTableWidget* t, int r, int c) -> JSValue {
         JZTableWidgetItem* it = t->takeItem(r, c);
-        return it ? toJsValueFromPtr(m_engine->context(), it, false) : JS_NULL;   // JS 拥有
+        return m_engine->toValueFromPtr(m_engine->context(), it, false);
     });
     bind_table.def("row", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->row(it); });
     bind_table.def("column", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->column(it); });
     bind_table.def("currentItem", [this](JZTableWidget* t) -> JSValue {
         JZTableWidgetItem* it = t->currentItem();
-        return it ? toJsValueFromPtr(m_engine->context(), it, true) : JS_NULL;
+        return m_engine->toValueFromPtr(m_engine->context(), it, true);
     });
     bind_table.def("setCurrentItem", [](JZTableWidget* t, JZTableWidgetItem* it) { t->setCurrentItem(it); });
     //defSignalProperty(bind_table, "onCurrentRowChanged", &JZTableWidget::currentRowChanged);   // (int)
@@ -1723,13 +1681,9 @@ void JZJSWidgetModule::registViews()
 
     // JZStackedWidget —— 页容器(注意: 构造函数**没有**默认实参, 必须自定义工厂)
     jsbind::ClassBind<JZStackedWidget> bind_stack("JZStackedWidget", bind_w);
-    bind_stack.setCreate([](JSContext*, int, JSValueConst*) -> jsbind::JSPointerBase* {
-        // 构造函数没有默认实参 ⇒ 不能走 setWidgetCreate 的模板
-        return new jsbind::JSObjectPointer(new JZStackedWidget(nullptr), false);
-    });
     bind_stack.def("addWidget", [this](JZStackedWidget* s, JSValue w) {
-        // 父控件 = 本容器: 走 takeWidget(所有权转移 + 登记保活), 与 JZWindow.addWidget 同一套
-        return s->addWidget(takeWidget(w));
+        // 父控件 = 本容器: 走 takeWidgetFromJs(所有权转移 + 登记保活), 与 JZWindow.addWidget 同一套
+        return s->addWidget(takeWidgetFromJs(w));
     });
     bind_stack.def("count", [](JZStackedWidget* s) { return s->count(); });
     bind_stack.def("currentIndex", [](JZStackedWidget* s) { return s->currentIndex(); });
@@ -1742,7 +1696,7 @@ void JZJSWidgetModule::registViews()
     // 页面所有权: 加入后由标签控件持有 ⇒ 形参收 JSValue 把 JS 侧包装翻成 C++ 拥有(/Transfer/)
     // 并登记保活(父控件 = 本标签控件)
     bind_tab.def("addTab", [this](JZTabWidget* t, JSValue page, const std::string& label) {
-        return t->addTab(takeWidget(page), label);
+        return t->addTab(takeWidgetFromJs(page), label);
     });
     bind_tab.def("count", [](JZTabWidget* t) { return t->count(); });
     bind_tab.def("tabText", [](JZTabWidget* t, int i) { return t->tabText(i); });
@@ -1757,10 +1711,10 @@ void JZJSWidgetModule::registViews()
     bind_split.def("setOrientation", [](JZSplitter* s, int o) { s->setOrientation((JZSplitter::Orientation)o); });
     bind_split.def("orientation", [](JZSplitter* s) { return (int)s->orientation(); });
     bind_split.def("addWidget", [this](JZSplitter* s, JSValue w) {
-        s->addWidget(takeWidget(w));
+        s->addWidget(takeWidgetFromJs(w));
     });
     bind_split.def("insertWidget", [this](JZSplitter* s, int i, JSValue w) {
-        s->insertWidget(i, takeWidget(w));
+        s->insertWidget(i, takeWidgetFromJs(w));
     });
     bind_split.def("removeWidget", [](JZSplitter* s, JZWidget* w) { s->removeWidget(w); });
     bind_split.def("count", [](JZSplitter* s) { return s->count(); });
@@ -1793,7 +1747,7 @@ void JZJSWidgetModule::registViews()
     // 内容控件由滚动区接管生命周期 ⇒ 形参收 JSValue 把 JS 侧包装翻成 C++ 拥有(/Transfer/)
     // 并登记保活(父控件 = 本滚动区; setWidget 内部会把它挂到内部 viewport 下, 属本控件的对象树)
     bind_area.def("setWidget", [this](JZScrollArea* a, JSValue c) {
-        a->setWidget(takeWidget(c));
+        a->setWidget(takeWidgetFromJs(c));
     });
     bind_area.def("widget", [](JZScrollArea* a) { return a->widget(); }, jsbind::returnOwnedByCpp);
     bind_area.def("setContentSize", [](JZScrollArea* a, int w, int h) { a->setContentSize(w, h); });
@@ -1832,17 +1786,17 @@ template <class Layout>
 static void defBoxLayoutMethods(jsbind::ClassBind<Layout>& bind, JZJSWidgetModule* module)
 {
     // addWidget/insertWidget 收 JSValue: 子控件进布局后由容器对象树负责 delete, 并且要登记到
-    // 父控件的控件表里(保活它的 JS 包装) —— 两件事都在 module->takeWidget 里做。
+    // 父控件的控件表里(保活它的 JS 包装) —— 两件事都在 module->takeWidgetFromJs 里做。
     // 父控件 = 布局的容器(apply 时记下)。尚未 setLayout 时容器为空: 此时只能转移所有权,
     // 登记等 apply 把控件挂到容器下之后再说(那种写法请改用 w.layout().addWidget(...))。
     bind.def("addWidget", [module](Layout* l, JSValue w, int stretch) {        
-        JZWidget* child = module->takeWidget(w);
+        JZWidget* child = module->takeWidgetFromJs(w);
         l->addWidget(child, stretch);
     });
     bind.def("addSpacing", [](Layout* l, int s) { l->addSpacing(s); });
     bind.def("addStretch", [](Layout* l, int s) { l->addStretch(s); });
     bind.def("insertWidget", [module](Layout* l, int i, JSValue w, int stretch) {
-        JZWidget* child = module->takeWidget(w);
+        JZWidget* child = module->takeWidgetFromJs(w);
         l->insertWidget(i, child, stretch);
     });
     bind.def("removeAt", [](Layout* l, int i) { l->removeAt(i); });
@@ -1878,11 +1832,11 @@ void JZJSWidgetModule::registLayouts()
     jsbind::ClassBind<JZGridLayout> bind_grid("JZGridLayout", bind_layout);
     // 父控件 = 布局的容器(尚未 setLayout 时为空, 那种写法只能转所有权); 与盒子布局同一套
     bind_grid.def("addWidget", [this](JZGridLayout* l, JSValue w, int row, int col) {
-        JZWidget* child = takeWidget(w);
+        JZWidget* child = takeWidgetFromJs(w);
         l->addWidget(child, row, col);
     });
     bind_grid.def("addWidgetSpan", [this](JZGridLayout* l, JSValue w, int r, int c, int rs, int cs) {
-        JZWidget* child = takeWidget(w);
+        JZWidget* child = takeWidgetFromJs(w);
         l->addWidget(child, r, c, rs, cs);
     });
     bind_grid.def("setRowStretch", [](JZGridLayout* l, int row, int s) { l->setRowStretch(row, s); });
@@ -2277,7 +2231,7 @@ void JZJSWidgetModule::registPainter()
         return this->createPainter(ctx, argc, argv);
     });
     // 显式结束绘制: 离屏模式立即把图层合成回 image(之后 image 才可用), 屏幕模式提前补 Pop。
-    bind_p.def("end", [this](jsbind::JSRawPointer<JZPainter>& p) { p.get()->endDevice(); });
+    bind_p.def("end", [this](JZPainter *p) { p->endDevice(); });
     bind_p.def("save", [](JZPainter* p) { p->save(); });
     bind_p.def("restore", [](JZPainter* p) { p->restore(); });
     bind_p.def("translate", [](JZPainter* p, double dx, double dy) { p->translate(dx, dy); });
@@ -2313,8 +2267,8 @@ void JZJSWidgetModule::registPainter()
     m_engine->registClass(bind_p.classDefine());
 }
 
-// 从 createUi 返回的 { root, <id>: widget, __keep } 取出 root 窗口, 并把 root 之外的全部属性
-// (含 id 子控件与 __keep 保活数组)挂到 root 上, 使 ui 既是 JZWindow, 又能通过 ui.<id> 访问子控件。
+// 从 createUi 返回的 { root, <id>: widget } 取出 root 窗口, 并把 root 之外的全部属性
+// (即按 id 命名的子控件)挂到 root 上, 使 ui 既是 JZWindow, 又能通过 ui.<id> 访问子控件。
 static JSValue uiLoaderResultToWindow(JSContext* ctx, JSValue uiObj)
 {
     JSValue root = JS_GetPropertyStr(ctx, uiObj, "root");
@@ -2520,9 +2474,18 @@ void JZJSWidgetModule::registUiLoader()
     m_engine->setProperty(m_engine->globalObject(), "uiLoader", uiLoader);
 }
 
-JZWidget *JZJSWidgetModule::takeWidget(JSValue w)
+JZWidget *JZJSWidgetModule::takeWidgetFromJs(JSValue w)
 {
-    jsbind::JSObjectPointer *ptr = fromJSValue<jsbind::JSObjectPointer*>(m_engine->context(), w);
-    ptr->moveToCpp(w);
-    return (JZWidget *)ptr->get();    
+    JSClassID class_id;
+    void* ptr = JS_GetAnyOpaque(w, &class_id);
+
+    jsbind::JSObjectPointer* obj_ptr = (jsbind::JSObjectPointer * )ptr;
+    obj_ptr->moveToCpp(w);
+    return (JZWidget *)obj_ptr->get();
+}
+
+JSValue JZJSWidgetModule::moveWidgetToJs(JZWidget *w)
+{
+    auto ptr = m_engine->pointerStateFor(w);
+    return ptr->moveToJs();
 }

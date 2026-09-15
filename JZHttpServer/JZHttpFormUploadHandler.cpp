@@ -183,7 +183,8 @@ void JZHttpFormUploadHandler::handle(JZHttpServerClient* client, const JZHttpReq
             if (m_writeMd5)
             {
                 JZFile mf;
-                if (mf.open(dst + ".md5", "wb")) mf.write(hex);
+                if (mf.open(dst + ".md5", "wb")) 
+                    mf.write(hex.data(), hex.size());
             }
 
             if (!firstFile) filesJson += ",";

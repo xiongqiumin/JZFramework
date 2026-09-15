@@ -11,8 +11,10 @@
 
 // 基于 Windows ReadDirectoryChangesW 的文件系统监视器。
 //  - 仅在 Windows 平台提供真实实现；其它平台为兼容空壳（接口一致、不触发任何信号）。
-//  - 监视目录（可递归子树）的文件增/删/改/重命名，并通过信号通知；
-//    典型用途：配合 JZFileWatch，在文件变更时使缓存条目失效 (连接 sigFileChanged -> cache.remove)。
+//  - 监视目录（可递归子树）的文件增/删/改/重命名，并通过信号通知。
+//  - ⚠ 非 Windows 下是空壳、且事件本身也可能丢（缓冲区溢出、网络盘、事件延迟），
+//    所以**不要拿它做正确性保证**（例如靠它失效缓存）；它只适合做"尽力而为"的刷新提示。
+//  - 当前全仓无使用者（此前的文件内容 LRU 缓存已删除）。
 #ifdef _WIN32
 
 class JZFileSystemWatcher : public JZObject

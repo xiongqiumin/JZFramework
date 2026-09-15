@@ -17,26 +17,22 @@
  *   2. 按块（一次性）压缩 / 解压：整段内存输入 -> 整段输出。
  *   3. 标准 zip 归档：压缩整个文件夹 -> .zip，并支持读取 / 按需解压归档内条目。
  *
- * 仅采用 HTTP 内容编码（Content-Encoding）支持的算法：
- *   - Deflate / Zlib / GZip / Brotli：HTTP 原生支持（gzip/deflate/br）。
- *   - Zstd：IANA 已注册为 "zstd" 内容编码，支持面较新，作为可选。
+ * 当前后端为 miniz，已实现的 HTTP 内容编码算法：Deflate / Zlib / GZip。
+ * 各算法对应 HTTP Content-Encoding 令牌：GZip->"gzip"、Deflate/Zlib->"deflate"。
  *
  * 关于 ZIP：ZIP 是归档容器（非 HTTP 内容编码），其条目内部使用的正是
  * Deflate 内核。因此 zip 功能复用上面的 Deflate 压缩器，二者共享同一内核，
  * 但帧封装不同（HTTP 直接传 deflate/gzip 流；ZIP 把 deflate 块包进归档结构）。
  *
- * 当前本文件仅定义接口，所有方法返回 JZResult::Error("not implemented")，
- * 待选定底层实现（如 zlib / miniz 移植）后填充。
+ * 底层后端已接入 miniz（deflate/zlib/gzip + zip 归档）。
  */
 
 // ==================== 算法枚举（均为 HTTP 内容编码支持） ====================
 enum class JZCompressAlgorithm
 {
-    Deflate,    // raw deflate 流（HTTP "deflate" 用 zlib 封装的 raw deflate）
+    Deflate,    // raw deflate 流（HTTP "deflate" 实际为 zlib 封装的 raw deflate）
     Zlib,       // zlib 封装 (rfc1950)，裸流易嵌入自定义协议
     GZip,       // gzip 封装 (rfc1952)，带文件头 / CRC，HTTP 最常用
-    Brotli,     // Google Brotli，HTTP "br" 内容编码
-    Zstd,       // Zstandard，HTTP "zstd" 内容编码（支持面较新，可选）
 };
 
 // 算法 -> 可读名称（用于日志 / 错误描述）
@@ -63,7 +59,7 @@ JZResult<JZByteArray> jzDecompressBlock(const JZByteArray &in, JZCompressAlgorit
  *     CRC/ISIZE 必须在确认无更多输入后才能生成，故由调用方在喂完所有块后显式
  *     调用 JZCompressStream::finish() 封帧尾（同 zlib 的 Z_FINISH）。这是用户层
  *     约定，不是周期性动作。
- *   - 解压端则相反：deflate 最终块位 / gzip 帧尾 / zstd 帧结束标记本身是数据自带的
+ *   - 解压端则相反：deflate 最终块位 / gzip 帧尾本身是数据自带的
  *     「结束信号」，write() 内部可自动判定流结束；但调用方仍须调用
  *     JZDecompressStream::finish() 触发尾部校验（CRC/Adler），损坏数据才会在
  *     finish() 以 JZResult 错误暴露，而非静默通过。
@@ -86,7 +82,7 @@ public:
     JZByteArray write(const JZByteArray &input);
 
     // 终结调用：调用方确认再无输入后调用，返回帧尾字节
-    // （gzip CRC+ISIZE / zstd 帧尾等）并标记流结束。仅在末尾调用一次。
+    // （gzip CRC+ISIZE 等）并标记流结束。仅在末尾调用一次。
     JZByteArray finish();
 
     // 重置内部状态，可复用对象开始新一轮压缩。

@@ -1,5 +1,8 @@
 #include "JZCodeAgent.h"
 
+#include "JZTerminalTools.h"
+#include "JZVirtualTerminal.h"
+
 #include "JZTsLangTools.h"
 #include "JZTsEditTools.h"
 
@@ -68,6 +71,7 @@ JZCodeAgent::JZCodeAgent(JZObject *parent)
     : JZObject(parent)
     , sigRecoveryFinished(this)
     , sigBuildFinished(this)
+    , m_toolHost(this)
 {
     m_tsServer = new JZTsLangServer(this);
 }
@@ -99,7 +103,6 @@ void JZCodeAgent::init(const CodeAgentConfig &code)
     m_logs.clear();
     m_logId = 0;
     m_busy = false;
-    setupFileWatch();
     buildAgent();
     // 注：载入哪段对话（任务存档）由上层决定，见 JZCodeAgent::loadConversationJson()
 }
@@ -392,30 +395,12 @@ bool JZCodeAgent::setWorkspace(const string &path)
     // 在切换前保存，这里只负责把 agent 与工作区配置换掉。
     m_codeConfig.workspace = newPath;
     for (auto* tool : m_tools)
-        tool->setAgent(this);
+        tool->setHost(&m_toolHost);
     applyZoneConfig();
-    setupFileWatch();
 
     // 重建 agent（工具与 systemPrompt 重新登记）；载入哪段对话由上层决定
     buildAgent();
     return true;
-}
-
-void JZCodeAgent::setupFileWatch()
-{
-    // 每次切换工作区都重建监视与缓存，避免跨工作区串味
-    m_fileWatcher.clear();
-    m_fileCache.clear();
-    if (m_codeConfig.workspace.empty())
-        return;
-
-    m_fileWatcher.addPath(m_codeConfig.workspace);
-    // 任意文件变更 -> 失效对应缓存条目；键格式与 readFile 写入缓存时完全一致（均小写 + 统一分隔符）
-    connect(&m_fileWatcher.sigFileChanged, this,
-        [this](const std::string& path)
-        {
-            m_fileCache.remove(str_toLower(codeNormalizePath(path)));
-        });
 }
 
 // ==================== TS 工程支持 ====================
@@ -1287,27 +1272,22 @@ JZResult<string> JZCodeAgent::readFile(const string &path)
     if (!codeResolvePath(m_codeConfig.workspace, path, abs, err))
         return JZResult<string>::Error(err);
 
-    // 缓存键统一为"小写 + 统一分隔符"，与 setupFileWatch 中失效 remove 的键完全一致，
-    // 保证编辑器改动（含 rename 类原子替换）触发的 sigFileChanged 能精确命中。
-    string key = str_toLower(codeNormalizePath(abs));
-    JZByteArray data = m_fileCache.get(key);
-    if (!data.isEmpty())
-        return JZResult<string>::Ok(str_fromUtf8(data));
-
+    // 直读磁盘，进程内不再做缓存。理由：OS 页缓存已经在做同一件事且失效是正确的；
+    // 自建 LRU 还要额外背一套"变更失效"协议，而它的失效机制有洞（非 Windows 平台
+    // JZFileSystemWatcher 是空壳、授信目录不在监视范围、自己写完不同步失效），
+    // 一旦命中陈旧内容，modify_file 会基于旧内容整体回写，静默覆盖掉外部改动。
     JZFile file;
     if (!file.open(abs, "rb"))
         return JZResult<string>::Error("打开文件失败: " + abs);
     JZByteArray read = file.readAll();
     file.close();
 
-    string text = str_fromUtf8(read);
-    m_fileCache.insert(key, text);
-    return JZResult<string>::Ok(std::move(text));
+    return JZResult<string>::Ok(str_fromUtf8(read));
 }
 
 bool JZCodeAgent::readFileText(const string &rel, string &text, string &error)
 {
-    // 网页端只读预览：越界 / 2MB / 二进制 限制与改造前一致；实际读取走 readFile（带缓存 + 失效）。
+    // 网页端只读预览：越界 / 2MB / 二进制 限制与改造前一致；实际读取走 readFile。
     string abs;
     if (!codeResolvePath(m_codeConfig.workspace, rel, abs, error))
         return false;
@@ -1338,19 +1318,81 @@ bool JZCodeAgent::readFileText(const string &rel, string &text, string &error)
     return true;
 }
 
+// ==========================================================================
+// JZCodeAgentToolHost —— 工具宿主(组合, 不让 JZCodeAgent 多继承 ICodeToolHost)
+// 通用工具库(binary/agent_tool)只认 ICodeToolHost, 不认 CodeAgentConfig, 这里是两者的桥。
+// ==========================================================================
+
+JZCodeAgentToolHost::JZCodeAgentToolHost(JZCodeAgent *agent)
+    : m_agent(agent)
+{
+}
+
+void JZCodeAgentToolHost::setZone(const ZoneConfig &zone)
+{
+    m_zone = zone;
+}
+
+void JZCodeAgentToolHost::setProgramPolicy(const ProgramPolicy &policy)
+{
+    m_policy = policy;
+}
+
+bool JZCodeAgentToolHost::toolReadFile(const std::string &absPath, std::string &text, std::string &error)
+{
+    if (!m_agent)
+    {
+        error = "工具宿主已失效";
+        return false;
+    }
+
+    JZResult<std::string> r = m_agent->readFile(absPath);
+    if (r.isError())
+    {
+        error = r.errorMessage();
+        return false;
+    }
+    text = r.value();
+    return true;
+}
+
+bool JZCodeAgentToolHost::toolIsBuildRunning() const
+{
+    return m_agent && m_agent->isBuildRunning();
+}
+
+bool JZCodeAgentToolHost::toolBuildProject(std::string &error)
+{
+    if (!m_agent)
+    {
+        error = "工具宿主已失效";
+        return false;
+    }
+    return m_agent->buildProject(error);
+}
+
+JZSignal<bool, const std::string &> *JZCodeAgentToolHost::toolBuildFinished()
+{
+    return m_agent ? &m_agent->sigBuildFinished : nullptr;
+}
+
 void JZCodeAgent::applyZoneConfig()
 {
-    ZoneConfig zc;
-    zc.workspace = m_codeConfig.workspace;
-    zc.trustedDirs = m_codeConfig.trustedDirs;
-    for (auto *tool : m_tools)
+    ZoneConfig zone;
+    zone.workspace = m_codeConfig.workspace;
+    zone.trustedDirs = m_codeConfig.trustedDirs;
+
+    // 注意: 这一份是**给工具看的**区域视图, 必须与 CodeAgentConfig 保持同步 ——
+    // JZCodeTool::checkPathPermission 拿的就是它, 漏刷新等于权限误判。
+    m_toolHost.setZone(zone);
+
+    // 终端是真正的执行面, 区域与策略同样要同步过去：
+    // 重定向目标和 edit_file 的越界判定都靠它。
+    // setZoneConfig() 会把已有会话的 cwd 拉回工作区根 —— 换工作区时正好需要。
+    if (m_terminal)
     {
-        auto *term = dynamic_cast<JZVirtualTerminal *>(tool);
-        if (term)
-        {
-            term->setZoneConfig(zc);
-            term->setTrustedPrograms(m_codeConfig.trustedPrograms);
-        }
+        m_terminal->setZoneConfig(zone);
+        m_terminal->setProgramPolicy(m_toolHost.toolProgramPolicy());
     }
 }
 
@@ -1394,24 +1436,29 @@ void JZCodeAgent::buildAgent()
 
     auto addTool = [this](JZCodeTool *tool)
     {
-        tool->setAgent(this);
+        tool->setHost(&m_toolHost);
         m_agent->addTool(tool);
         m_tools.push_back(tool);
         m_toolNames.push_back(tool->toolName());
     };
 
-    addTool(new JZListDirTool());
-    addTool(new JZWriteFileTool());
-    addTool(new JZAppendFileTool());
-    addTool(new JZReadFileTool());
-    addTool(new JZSearchFileTool());
+    // ---- 文件操作全走终端 ----
+    // ls / cat / mkdir / rm / cp / mv / grep 都是 shell 命令, 由 terminal_run 直接覆盖,
+    // 不再各做一个工具(两套做法只会让模型不知道该用哪个)。
+    // 只有 edit_file 留下来: sed 不校验唯一匹配, 拿它改代码太容易改错地方。
+    if (!m_terminal)
+        m_terminal = new JZVirtualTerminal(this);
+    addTool(new JZTerminalRunTool(m_terminal));
+    addTool(new JZTerminalOpenTool(m_terminal));
+    addTool(new JZTerminalListTool(m_terminal));
+    addTool(new JZTerminalCloseTool(m_terminal));
     addTool(new JZModifyFileTool());
+    addTool(new JZSearchFileTool());
     addTool(new JZGetDateTimeTool());
 
     auto shell_tool = new JZShellTool();
     shell_tool->setExeSearchPaths({ jzApp->applicationDirPath() + "/ts_compiler/tsc" });
     addTool(shell_tool);
-    //addTool(new JZVirtualTerminal());
 
     // build_project：打包/发布当前工作区（异步 tsc + main.js 入口校验 + project.json），
     // 是 run_tool 的前置步骤；编译错误直接回给模型自修。
@@ -1473,7 +1520,7 @@ void JZCodeAgent::buildAgent()
         using K = JZTsEditTool::Kind;
         for (K k : {K::Summary, K::AddClass, K::RenameClass, K::DeleteClass,
                     K::AddFunction, K::RenameFunction, K::ReplaceFunction, K::DeleteFunction})
-            addTool(new JZTsEditTool(m_tsServer, k, this));
+            addTool(new JZTsEditTool(m_tsServer, k, &m_toolHost));
     }
 
     m_agent->setSystemPrompt(buildSystemPrompt());

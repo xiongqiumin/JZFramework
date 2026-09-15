@@ -16,9 +16,22 @@
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkRequest.h"
 #include "json/json.h"
-#include "JZCodeAgent.h"
 
 using namespace std;
+
+// 说明: 本文件是通用工具库, **不允许** include binary/code_agent 下的任何头。
+// 需要宿主提供的能力(工作区/读文件/打包)一律走 ICodeToolHost。
+
+// 读文件统一收口: 工具只管拿内容, "怎么读"(LRU 缓存 / 直读 / 远端传输)由宿主决定
+static bool readHostFile(ICodeToolHost *host, const string &abs, string &text, string &error)
+{
+    if (!host)
+    {
+        error = "工具没有绑定宿主, 无法读文件";
+        return false;
+    }
+    return host->toolReadFile(abs, text, error);
+}
 
 // ==================== 基础工具函数 ====================
 
@@ -356,16 +369,23 @@ const char *denyReasonText(DenyReason reason)
 // ==================== JZCodeTool ====================
 JZCodeTool::JZCodeTool()
 {
-    m_agent = nullptr;
 }
 
 JZCodeTool::~JZCodeTool()
 {
 }
 
+void JZCodeTool::setHost(ICodeToolHost *host)
+{
+    m_host = host;
+}
+
 DenyReason JZCodeTool::checkPathPermission(ToolOperator op, std::string rel_path)
 {
-    auto &cfg = m_agent->codeConfig();
+    if (!m_host)
+        return DenyReason::None;   // 无宿主(测试环境)放行
+
+    auto &cfg = m_host->toolZone();
     auto path = fullPath(rel_path);
     if (str_startsWith(path, cfg.workspace))
         return DenyReason::None;
@@ -382,11 +402,6 @@ DenyReason JZCodeTool::checkPathPermission(ToolOperator op, std::string rel_path
     }
 
     return DenyReason::CommandDenied;
-}
-
-void JZCodeTool::setAgent(JZCodeAgent* agent)
-{
-    m_agent = agent;
 }
 
 ParamSchema JZCodeTool::makeParam(const string &name, ParamType type, const string &desc)
@@ -411,171 +426,15 @@ std::string JZCodeTool::fullPath(std::string path)
 {
     if (JZDir::isAbsolutePath(path))
         return JZFileInfo::weaklyCanonicalPath(path);
-    else
-    {
-        return JZFileInfo::weaklyCanonicalPath(m_agent->codeConfig().workspace + "/" + path);
-    }
+
+    string root;
+    if (m_host)
+        root = m_host->toolZone().workspace;
+    if (root.empty())
+        return JZFileInfo::weaklyCanonicalPath(path);   // 无宿主: 按进程当前目录理解
+    return JZFileInfo::weaklyCanonicalPath(root + "/" + path);
 }
 
-// ==================== JZListDirTool ====================
-JZListDirTool::JZListDirTool()
-{
-    ToolDefine def;
-    def.name = "list_dir";
-    def.description = "列出工作区中某个目录的文件和子目录。路径使用相对于工作区根目录的相对路径，" \
-                      "根目录用 \".\" 表示。返回值中目录名以 \"/\" 结尾。";
-    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的目录路径，默认 \".\""));
-    def.parameters.push_back(makeParam("recursive", ParamType::Boolean, "是否递归列出子目录，默认 false"));
-    def.parameters.push_back(makeParam("max_entries", ParamType::Number, "最多返回多少条，默认 300"));
-    def.required_parameters.push_back("path");
-    setToolDefine(def);
-}
-
-static void collectDir(const string &absDir, const string &relBase, bool recursive,
-                       vector<string> &out, int maxEntries)
-{
-    JZDir dir(absDir);
-    vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
-    for (const auto &info : list)
-    {
-        if ((int)out.size() >= maxEntries)
-            return;
-
-        string rel = relBase.empty() ? info.fileName() : relBase + "/" + info.fileName();
-        if (info.isDir())
-        {
-            out.push_back(rel + "/");
-            if (recursive && !isSkipDir(info.fileName()))
-                collectDir(info.filePath(), rel, true, out, maxEntries);
-        }
-        else
-        {
-            out.push_back(rel);
-        }
-    }
-}
-
-void JZListDirTool::call(const ToolCall &params)
-{
-    string rel = params.params.get("path", ".").asString();
-    bool recursive = params.params.get("recursive", false).asBool();
-    int maxEntries = params.params.get("max_entries", 300).asInt();
-    if (maxEntries < 1)
-        maxEntries = 300;
-
-    string abs = fullPath(rel);
-    auto ret = checkPathPermission(ToolOperator::Read, rel);
-    if (ret != DenyReason::None)
-    {
-        finish(params, false, denyReasonText(ret), ret);
-        return;
-    }
-
-    JZFileInfo info(abs);
-    if (!info.exists())
-    {
-        finish(params, false, "路径不存在: " + rel, DenyReason::NotFound);
-        return;
-    }
-
-    vector<string> entries;
-    if (info.isDir())
-    {
-        collectDir(abs, string(), recursive, entries, maxEntries);
-
-        string text = "目录 " + rel + ":\n";
-        for (const auto &e : entries)
-            text += "  " + e + "\n";
-        if ((int)entries.size() >= maxEntries)
-            text += "  ... 已达到 max_entries 上限\n";
-        finish(params, true, text);
-    }
-    else
-    {
-        finish(params, true, rel + "  是文件 (" + to_string(info.size()) + " 字节)，如需查看内容请用 read_file。");
-    }
-}
-
-// ==================== JZReadFileTool ====================
-JZReadFileTool::JZReadFileTool()
-{
-    ToolDefine def;
-    def.name = "read_file";
-    def.description = "读取工作区中某个文本文件的内容，带行号返回。可以用 start_line / line_count " \
-                      "只读取感兴趣的行范围（行号从 1 开始）。";
-    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("start_line", ParamType::Number, "起始行号（从 1 开始），默认 1"));
-    def.parameters.push_back(makeParam("line_count", ParamType::Number, "读取多少行，0 或省略表示读到文件末尾"));
-    def.required_parameters.push_back("path");
-    setToolDefine(def);
-}
-
-void JZReadFileTool::call(const ToolCall &params)
-{
-    string rel = params.params.get("path", "").asString();
-    if (rel.empty())
-    {
-        finish(params, false, "参数 path 不能为空");
-        return;
-    }
-    int startLine = params.params.get("start_line", 1).asInt();
-    int lineCount = params.params.get("line_count", 0).asInt();
-    if (startLine < 1)
-        startLine = 1;
-
-    string abs = fullPath(rel);
-    DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
-    if (ret != DenyReason::None)
-    {
-        finish(params, false, denyReasonText(ret), DenyReason::PathOutside);
-        return;
-    }
-
-    JZFileInfo info(abs);
-    if (!info.exists() || !info.isFile())
-    {
-        finish(params, false, "文件不存在: " + rel, DenyReason::NotFound);
-        return;
-    }
-    if (!isTextFile(abs))
-    {
-        finish(params, false, "不是文本文件: " + rel);
-        return;
-    }
-
-    JZResult<string> r = m_agent->readFile(abs);
-    if (r.isError())
-    {
-        finish(params, false, r.errorMessage());
-        return;
-    }
-
-    string content = r.value();
-    vector<string> lines = readLines(content);
-    int begin = startLine - 1;
-    if (begin >= (int)lines.size())
-    {
-        finish(params, false, "start_line 超出文件行数（共 " + to_string(lines.size()) + " 行）");
-        return;
-    }
-
-    int end = (lineCount > 0) ? min(begin + lineCount, (int)lines.size()) : (int)lines.size();
-    const int kMaxLines = 2000;
-    bool truncated = false;
-    if (end - begin > kMaxLines)
-    {
-        end = begin + kMaxLines;
-        truncated = true;
-    }
-
-    string text = "文件 " + rel + "（共 " + to_string(lines.size()) + " 行）:\n";
-    for (int i = begin; i < end; i++)
-        text += to_string(i + 1) + ": " + lines[i] + "\n";
-    if (truncated)
-        text += "... 单次最多返回 " + to_string(kMaxLines) + " 行，请用 start_line / line_count 分段读取\n";
-
-    finish(params, true, text);
-}
 
 // ==================== JZSearchFileTool ====================
 JZSearchFileTool::JZSearchFileTool()
@@ -599,7 +458,7 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
                         const string &fileFilter, bool caseSensitive, bool useRegex,
                         int maxResults, int maxFiles,                         long long maxBytes,
                         vector<string> &out, int &totalFiles, long long &totalBytes, bool &stopped,
-                        JZCodeAgent *agent)
+                        ICodeToolHost *host)
 {
     if (stopped || (int)out.size() >= maxResults || totalFiles >= maxFiles || totalBytes >= maxBytes)
         return;
@@ -616,7 +475,7 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
         {
             if (!isSkipDir(info.fileName()))
                 searchInDir(info.filePath(), rel, pattern, fileFilter, caseSensitive, useRegex,
-                            maxResults, maxFiles, maxBytes, out, totalFiles, totalBytes, stopped, agent);
+                            maxResults, maxFiles, maxBytes, out, totalFiles, totalBytes, stopped, host);
             continue;
         }
 
@@ -628,11 +487,10 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
             continue;
 
         totalFiles++;
-        JZResult<string> r = agent->readFile(info.filePath());
-        if (r.isError())
+        string content, readError;
+        if (!readHostFile(host, info.filePath(), content, readError))
             continue;
 
-        string content = r.value();
         totalBytes += (long long)content.size();
         vector<string> lines = readLines(content);
         JZRegExp reg;
@@ -717,7 +575,7 @@ void JZSearchFileTool::call(const ToolCall &params)
     {
         searchInDir(abs, string(), pattern, fileFilter, caseSensitive, useRegex,
                     maxResults, maxFiles, maxBytes, results, totalFiles, totalBytes, stopped,
-                    m_agent);
+                    m_host);
     }
     else
     {
@@ -726,13 +584,12 @@ void JZSearchFileTool::call(const ToolCall &params)
             finish(params, false, "二进制文件无法搜索: " + rel);
             return;
         }
-        JZResult<string> r = m_agent->readFile(abs);
-        if (r.isError())
+        string content, readError;
+        if (!readHostFile(m_host, abs, content, readError))
         {
-            finish(params, false, r.errorMessage());
+            finish(params, false, readError);
             return;
         }
-        string content = r.value();
         totalFiles = 1;
         string needle = caseSensitive ? pattern : str_toLower(pattern);
         vector<string> lines = readLines(content);
@@ -763,155 +620,41 @@ void JZSearchFileTool::call(const ToolCall &params)
     finish(params, true, text);
 }
 
-// ------------------------------------------------------------------
-// write_file: 新建或完整覆写文件
-// ------------------------------------------------------------------
-JZWriteFileTool::JZWriteFileTool()
-{
-    ToolDefine def;
-    def.name = "write_file";
-    def.description = "新建文件或者完整覆写已有文件，传入完整文件内容。"
-        "原有文件全部内容会丢失；局部修改请使用 modify_file。";
-    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("content", ParamType::String, "完整文件文本内容"));
-    def.required_parameters.push_back("path");
-    def.required_parameters.push_back("content");
-    setToolDefine(def);
-}
-
-void JZWriteFileTool::call(const ToolCall& params)
-{
-    string rel = params.params.get("path", "").asString();
-    string content = params.params.get("content", "").asString();
-    if (rel.empty())
-    {
-        finish(params, false, "参数 path 不能为空");
-        return;
-    }
-
-    string abs = fullPath(rel);
-    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
-    if (ret != DenyReason::None)
-    {
-        finish(params, false, denyReasonText(ret), ret);
-        return;
-    }
-
-    bool existed = JZFileInfo::exists(abs);
-    if (existed && !isTextFile(abs))
-    {
-        finish(params, false, "不能覆写二进制文件: " + rel);
-        return;
-    }
-
-    JZFile file;
-    if (!file.open(abs, "wb"))
-    {
-        finish(params, false, "写入文件失败（无法打开）: " + rel);
-        return;
-    }
-    int written = file.write(str_toUtf8(content));
-    file.close();
-    if (written != (int)content.size())
-    {
-        finish(params, false, "写入文件失败（写入长度不符）: " + rel);
-        return;
-    }
-
-    vector<string> lines = readLines(content);
-    string msg;
-    if (existed)
-        msg = "已完整覆写文件 " + rel + "，共 " + to_string(lines.size()) + " 行。";
-    else
-        msg = "已新建文件 " + rel + "，共 " + to_string(lines.size()) + " 行。";
-
-    finish(params, true, msg);
-}
-
-// ------------------------------------------------------------------
-// append_file: 在已有文件末尾追加文本，不会覆盖原有内容
-// ------------------------------------------------------------------
-JZAppendFileTool::JZAppendFileTool()
-{
-    ToolDefine def;
-    def.name = "append_file";
-    def.description = "在已有文件末尾追加文本。文件必须已存在，不会自动创建新文件；新建文件使用 write_file。";
-    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("content", ParamType::String, "要追加的文本内容"));
-    def.required_parameters.push_back("path");
-    def.required_parameters.push_back("content");
-    setToolDefine(def);
-}
-
-void JZAppendFileTool::call(const ToolCall& params)
-{
-    string rel = params.params.get("path", "").asString();
-    string appendContent = params.params.get("content", "").asString();
-    if (rel.empty())
-    {
-        finish(params, false, "参数 path 不能为空");
-        return;
-    }
-
-    string abs = fullPath(rel);
-    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
-    if (ret != DenyReason::None)
-    {
-        finish(params, false, denyReasonText(ret), ret);
-        return;
-    }
-
-    bool existed = JZFileInfo::exists(abs);
-    if (!existed)
-    {
-        finish(params, false, "append_file：目标文件不存在，不能自动创建，请改用 write_file: " + rel, DenyReason::NotFound);
-        return;
-    }
-    if (!isTextFile(abs))
-    {
-        finish(params, false, "不能向二进制文件追加内容: " + rel);
-        return;
-    }
-
-    JZFile file;
-    if (!file.open(abs, "ab"))
-    {
-        finish(params, false, "追加文件失败（无法打开）: " + rel);
-        return;
-    }
-    int written = file.write(str_toUtf8(appendContent));
-    file.close();
-    if (written != (int)appendContent.size())
-    {
-        finish(params, false, "追加文件失败（写入长度不符）: " + rel);
-        return;
-    }
-
-    string msg = "已向 " + rel + " 末尾追加 " + to_string(appendContent.size()) + " 字节。";
-    finish(params, true, msg);
-}
-
-
 // ==================== JZModifyFileTool ====================
 JZModifyFileTool::JZModifyFileTool()
 {
     ToolDefine def;
     def.name = "modify_file";
-    def.description = "对已有文件做局部片段修复替换。"
-        "old_str 必须填写，精确匹配文件内原文并替换为 new_str；默认要求 old_str 在文件中唯一匹配。"
-        "**不能用于新建或完整覆写文件**，新建/覆写请使用 write_file。"
-        "修改前请务必先用 read_file 或 search_file 确认原文。";
-    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区的文件路径"));
-    def.parameters.push_back(makeParam("old_str", ParamType::String, "要被替换的原文，必须提供，不能为空"));
-    def.parameters.push_back(makeParam("new_str", ParamType::String, "替换后的新片段内容"));
-    def.parameters.push_back(makeParam("replace_all", ParamType::Boolean, "old_str 有多处匹配时是否全部替换，默认 false"));
+    def.description =
+        "修改（或创建）一个文件。\n"
+        "old_str 非空: 精确匹配文件里的原文并替换为 new_str, **默认要求 old_str 唯一匹配**"
+        "(匹配到多处会报错, 这时请补上上下文使它唯一, 或者设 replace_all=true)。\n"
+        "old_str 为空: 直接用 new_str **覆盖整个文件** —— 新建文件 / 整文件重写用这种写法。\n"
+        "改代码务必先看清原文: 空格、换行、缩进必须完全一致。";
+    def.parameters.push_back(makeParam("path", ParamType::String, "文件路径(相对工作区或绝对路径)"));
+    def.parameters.push_back(makeParam("old_str", ParamType::String,
+                                       "要被替换掉的原文; 空串 = 整文件覆盖(新建/重写)"));
+    def.parameters.push_back(makeParam("new_str", ParamType::String, "替换后的新内容"));
+    def.parameters.push_back(makeParam("replace_all", ParamType::Boolean,
+                                       "old_str 匹配多处时是否全部替换(默认 false = 报错)"));
     def.required_parameters.push_back("path");
-    def.required_parameters.push_back("old_str");
     def.required_parameters.push_back("new_str");
     setToolDefine(def);
 }
 
-static string makeContextSnippet(const vector<string>& lines, int lineIndex, int radius)
+// 取父目录("a/b/c.txt" -> "a/b"; 没有父目录返回空)
+static string jzDirPart(const string &path)
+{
+    size_t pos = path.find_last_of("/\\");
+    if (pos == string::npos)
+        return string();
+    if (pos == 0)
+        return path.substr(0, 1);
+    return path.substr(0, pos);
+}
+
+// 把命中位置前后几行带行号贴出来 —— 成功后让模型确认改对了地方, 失败时帮它定位
+static string makeContextSnippet(const vector<string> &lines, int lineIndex, int radius)
 {
     int begin = max(0, lineIndex - radius);
     int end = min((int)lines.size(), lineIndex + radius + 1);
@@ -921,7 +664,19 @@ static string makeContextSnippet(const vector<string>& lines, int lineIndex, int
     return text;
 }
 
-void JZModifyFileTool::call(const ToolCall& params)
+// 字符偏移 -> 行号(0 基)。多行 old_str 也能定位到起始行。
+static int lineOfOffset(const string &text, size_t offset)
+{
+    int line = 0;
+    for (size_t i = 0; i < offset && i < text.size(); ++i)
+    {
+        if (text[i] == '\n')
+            line++;
+    }
+    return line;
+}
+
+void JZModifyFileTool::call(const ToolCall &params)
 {
     string rel = params.params.get("path", "").asString();
     if (rel.empty())
@@ -929,18 +684,13 @@ void JZModifyFileTool::call(const ToolCall& params)
         finish(params, false, "参数 path 不能为空");
         return;
     }
+
     string oldStr = params.params.get("old_str", "").asString();
     string newStr = params.params.get("new_str", "").asString();
     bool replaceAll = params.params.get("replace_all", false).asBool();
 
-    // old_str禁止为空，移除全量覆盖逻辑
-    if (oldStr.empty())
-    {
-        finish(params, false, "old_str 不能为空。modify_file 仅用于局部片段替换；新建/完整覆写文件请使用 write_file。");
-        return;
-    }
-
     string abs = fullPath(rel);
+
     DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
     if (ret != DenyReason::None)
     {
@@ -948,45 +698,107 @@ void JZModifyFileTool::call(const ToolCall& params)
         return;
     }
 
-    bool existed = JZFileInfo::exists(abs);
-    if (!existed)
+    JZFileInfo info(abs);
+    if (info.exists() && info.isDir())
     {
-        finish(params, false, "文件不存在，modify_file 不能新建文件，请使用 write_file: " + rel, DenyReason::NotFound);
+        finish(params, false, "目标是目录, 不能写: " + rel, DenyReason::WriteDenied);
         return;
     }
 
+    // ---- old_str 为空: 整文件覆盖(新建 / 重写) ----
+    if (oldStr.empty())
+    {
+        string out = newStr;
+
+        // 已存在的文件原来是 CRLF 就保持它 —— 否则一次编辑会把整个文件的行尾改掉
+        if (info.exists() && !out.empty())
+        {
+            string oldText;
+            string readError;
+            if (readHostFile(m_host, abs, oldText, readError) &&
+                oldText.find("\r\n") != string::npos && out.find("\r\n") == string::npos)
+            {
+                str_replace(out, "\n", "\r\n");
+            }
+        }
+
+        string dir = jzDirPart(abs);
+        if (!dir.empty())
+        {
+            JZDir parent;
+            if (!parent.exists(dir) && !parent.mkpath(dir))
+            {
+                finish(params, false, "创建父目录失败: " + dir, DenyReason::WriteDenied);
+                return;
+            }
+        }
+
+        JZFile file;
+        if (!file.open(abs, "wb"))
+        {
+            finish(params, false, "打开文件失败(权限?): " + rel, DenyReason::WriteDenied);
+            return;
+        }
+        int written = file.write(str_toUtf8(out));
+        file.close();
+        if (written != (int)out.size())
+        {
+            finish(params, false, "写入长度不符: " + rel, DenyReason::EditFailed);
+            return;
+        }
+
+        finish(params, true, "已写入 " + rel + " (" + to_string(out.size()) + " 字节)" +
+                             (info.exists() ? ", 原内容已被完整覆盖" : ""));
+        return;
+    }
+
+    // ---- old_str 非空: 精确替换 ----
+    if (!info.exists())
+    {
+        finish(params, false, "文件不存在: " + rel + "  (要新建文件请把 old_str 留空)",
+               DenyReason::NotFound);
+        return;
+    }
     if (!isTextFile(abs))
     {
         finish(params, false, "不能修改二进制文件: " + rel);
         return;
     }
 
-    JZResult<string> r = m_agent->readFile(abs);
-    if (r.isError())
+    string oldContent;
+    string readError;
+    if (!readHostFile(m_host, abs, oldContent, readError))
     {
-        finish(params, false, r.errorMessage());
+        finish(params, false, readError, DenyReason::NotFound);
         return;
     }
 
-    string oldContent = r.value();
+    vector<size_t> hits;
     size_t pos = 0;
-    int count = 0;
     while ((pos = oldContent.find(oldStr, pos)) != string::npos)
     {
-        count++;
+        hits.push_back(pos);
         pos += oldStr.size();
     }
-    if (count == 0)
+
+    if (hits.empty())
     {
-        finish(params, false, "在 " + rel + " 中找不到 old_str，请先用 read_file 确认原文（注意空格、换行与缩进必须完全一致）。",
-            DenyReason::EditFailed);
+        finish(params, false,
+               "在 " + rel + " 中找不到 old_str, 请先看清原文(空格/换行/缩进必须完全一致)。",
+               DenyReason::EditFailed);
         return;
     }
-    if (count > 1 && !replaceAll)
+    if (hits.size() > 1 && !replaceAll)
     {
-        finish(params, false, "old_str 在 " + rel + " 中匹配了 " + to_string(count) +
-            " 处，请补充更多上下文使其唯一，或设置 replace_all=true。",
-            DenyReason::EditFailed);
+        // 把前几处命中贴出来 —— 模型看完就知道该补什么上下文
+        vector<string> lines = readLines(oldContent);
+        string text = "old_str 在 " + rel + " 中匹配了 " + to_string(hits.size()) +
+                      " 处, 请补上上下文使它唯一, 或者设 replace_all=true。命中位置:\n";
+        int shown = 0;
+        for (size_t i = 0; i < hits.size() && shown < 3; ++i, ++shown)
+            text += "-- 第 " + to_string(lineOfOffset(oldContent, hits[i]) + 1) + " 行附近:\n" +
+                    makeContextSnippet(lines, lineOfOffset(oldContent, hits[i]), 2);
+        finish(params, false, text, DenyReason::EditFailed);
         return;
     }
 
@@ -1019,30 +831,21 @@ void JZModifyFileTool::call(const ToolCall& params)
     JZFile file;
     if (!file.open(abs, "wb"))
     {
-        finish(params, false, "写入文件失败（无法打开）: " + rel);
+        finish(params, false, "打开文件失败(权限?): " + rel, DenyReason::WriteDenied);
         return;
     }
     int written = file.write(str_toUtf8(newContent));
     file.close();
     if (written != (int)newContent.size())
     {
-        finish(params, false, "写入文件失败（写入长度不符）: " + rel);
+        finish(params, false, "写入长度不符: " + rel, DenyReason::EditFailed);
         return;
     }
 
-    string text;
-    text = "已修改 " + rel + "，替换 " + to_string(replaced) + " 处。改动位置上下文:\n";
+    // 成功也回一段上下文: 让模型自己确认改到了预期的地方
+    string text = "已修改 " + rel + ", 替换 " + to_string(replaced) + " 处。改动位置上下文:\n";
     vector<string> lines = readLines(newContent);
-    int hitLine = -1;
-    string firstLine = str_mid(newStr, 0, (int)newStr.find('\n'));
-    for (int i = 0; i < (int)lines.size(); i++)
-    {
-        if (!firstLine.empty() && str_indexOf(lines[i], firstLine) != -1)
-        {
-            hitLine = i;
-            break;
-        }
-    }
+    int hitLine = lineOfOffset(newContent, newContent.find(newStr));
     if (hitLine >= 0)
         text += makeContextSnippet(lines, hitLine, 4);
 
@@ -1413,7 +1216,21 @@ JZBuildProjectTool::JZBuildProjectTool()
 
 void JZBuildProjectTool::call(const ToolCall &params)
 {
-    if (m_agent->isBuildRunning())
+    if (!m_host)
+    {
+        finish(params, false, "工具没有绑定宿主，无法打包");
+        return;
+    }
+
+    // 打包是宿主可选能力：不提供结束信号的宿主(例如远端 agent_node)直接拒绝
+    JZSignal<bool, const std::string &> *buildSignal = m_host->toolBuildFinished();
+    if (!buildSignal)
+    {
+        finish(params, false, "当前宿主不支持打包/发布");
+        return;
+    }
+
+    if (m_host->toolIsBuildRunning())
     {
         finish(params, false, "已有任务进行中，请等待其完成后再试");
         return;
@@ -1422,7 +1239,7 @@ void JZBuildProjectTool::call(const ToolCall &params)
     if (!m_connected)
     {
         m_connected = true;
-        connect(&m_agent->sigBuildFinished, this,
+        connect(buildSignal, this,
                 [this](bool ok, const std::string &error)
                 {
                     onBuildDone(ok, error);
@@ -1430,7 +1247,7 @@ void JZBuildProjectTool::call(const ToolCall &params)
     }
 
     string error;
-    if (!m_agent->buildProject(error))
+    if (!m_host->toolBuildProject(error))
     {
         finish(params, false, error);
         return;
@@ -1619,878 +1436,6 @@ bool splitCommandStrict(const string &cmd, vector<string> &argv, string &error)
     if (!cur.empty())
         argv.push_back(cur);
     return true;
-}
-
-// ==================== JZVirtualTerminal ====================
-JZVirtualTerminal::JZVirtualTerminal()
-{
-    // 规格表：P0 只有内建命令，shellTemplate 留空；
-    // 后续 mkdir/rm/cp/mv 在此登记，并填上转发 cmd /c 的模板（flag 固定）。
-    CommandSpec spec;
-    spec.name = "pwd";
-    spec.usage = "pwd              显示当前目录";
-    m_specs["pwd"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "cd";
-    spec.usage = "cd [目录]        切换当前目录，省略目录则回到工作区根";
-    spec.args.push_back({ArgKind::Path, Access::Read});
-    m_specs["cd"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "ls";
-    spec.usage = "ls [目录]        列出目录内容，目录名以 \"/\" 结尾";
-    spec.args.push_back({ArgKind::Path, Access::Read});
-    m_specs["ls"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "cat";
-    spec.usage = "cat <文件>       显示文本文件内容（带行号，单次最多 2000 行）";
-    spec.args.push_back({ArgKind::Path, Access::Read});
-    m_specs["cat"] = spec;
-
-    // ---- 写命令：路径审查通过后转发 shell，flag 在这里固定死 ----
-    // copy / move 不加 /Y、del 不加 /Q 时会停下来等确认，直接把整个终端卡住。
-#ifdef _WIN32
-    spec = CommandSpec();
-    spec.name = "mkdir";
-    spec.usage = "mkdir <目录>     创建目录（可一次建多级）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "md {0}";
-    m_specs["mkdir"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "rmdir";
-    spec.usage = "rmdir <目录>     删除空目录（非空目录请用 rm -r）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "rd /Q {0}";
-    m_specs["rmdir"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "rm";
-    spec.usage = "rm [-r] <路径>   删除文件；加 -r 删除整个目录";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.allowRecursive = true;
-    spec.shellTemplate = "del /F /Q {0}";
-    spec.shellTemplateDir = "rd /S /Q {0}";
-    m_specs["rm"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "cp";
-    spec.usage = "cp <源> <目标>   复制文件";
-    spec.args.push_back({ArgKind::Path, Access::Read});
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "copy /Y {0} {1}";
-    m_specs["cp"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "mv";
-    spec.usage = "mv <源> <目标>   移动或重命名（源会消失，故源也必须在工作区内）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "move /Y {0} {1}";
-    m_specs["mv"] = spec;
-#else
-    spec = CommandSpec();
-    spec.name = "mkdir";
-    spec.usage = "mkdir <目录>     创建目录（可一次建多级）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "mkdir -p {0}";
-    m_specs["mkdir"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "rmdir";
-    spec.usage = "rmdir <目录>     删除空目录（非空目录请用 rm -r）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "rmdir {0}";
-    m_specs["rmdir"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "rm";
-    spec.usage = "rm [-r] <路径>   删除文件；加 -r 删除整个目录";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.allowRecursive = true;
-    spec.shellTemplate = "rm -f {0}";
-    spec.shellTemplateDir = "rm -rf {0}";
-    m_specs["rm"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "cp";
-    spec.usage = "cp <源> <目标>   复制文件";
-    spec.args.push_back({ArgKind::Path, Access::Read});
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "cp -f {0} {1}";
-    m_specs["cp"] = spec;
-
-    spec = CommandSpec();
-    spec.name = "mv";
-    spec.usage = "mv <源> <目标>   移动或重命名（源会消失，故源也必须在工作区内）";
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.args.push_back({ArgKind::Path, Access::Write});
-    spec.shellTemplate = "mv -f {0} {1}";
-    m_specs["mv"] = spec;
-#endif
-
-    // ---- 外部程序白名单 ----
-    // code_agent 只服务 TypeScript / JavaScript：仅放行 git / node / tsc，
-    // 其它语言(C++/Go/Python...)与 dotnet 的构建工具一律不放行。
-    // tsc 指向 TS 环境目录里的原生编译器(TSGO 单文件版)，由设置注入全路径。
-    // exeNames 同时给出带 .exe 与不带的写法，Windows / Linux 都能命中。
-    // 只把"工具"登记进来；副作用大的单独归类，由策略开关控制。
-    addProgram("git", {"git.exe", "git"}, CmdCategory::Tool,
-               {"-C", "--exec", "-c", "--upload-pack", "--upload-archive"});
-    addProgram("tsc", {"tsc.exe", "tsc"}, CmdCategory::Tool);
-    addProgram("cmake", {"cmake.exe", "cmake"}, CmdCategory::Tool);
-
-    addProgram("pip", {"pip.exe", "pip"}, CmdCategory::PackageManager);
-    addProgram("npm", {"npm.exe", "npm"}, CmdCategory::PackageManager);
-    addProgram("npx", {"npx.exe", "npx"}, CmdCategory::PackageManager);
-    addProgram("conda", {"conda.exe", "conda"}, CmdCategory::PackageManager);
-
-    addProgram("curl", {"curl.exe", "curl"}, CmdCategory::Network);
-    addProgram("wget", {"wget.exe", "wget"}, CmdCategory::Network);
-
-    addProgram("reg", {"reg.exe", "reg"}, CmdCategory::SystemAdmin);
-    addProgram("sc", {"sc.exe", "sc"}, CmdCategory::SystemAdmin);
-    addProgram("net", {"net.exe", "net"}, CmdCategory::SystemAdmin);
-    addProgram("setx", {"setx.exe", "setx"}, CmdCategory::SystemAdmin);
-    addProgram("schtasks", {"schtasks.exe", "schtasks"}, CmdCategory::SystemAdmin);
-
-    ToolDefine def;
-    def.name = "terminal";
-    def.description =
-        "虚拟终端：像在终端里敲命令一样操作文件与目录。" \
-        "注意它不是通用 shell，不支持管道(|)、重定向(>)与命令串联(&&)。" \
-        "路径只能指向工作区与授信目录，越界会被拒绝；写操作只允许发生在工作区内。" \
-        "同一个 terminal 名字会保留 cd 之后的目录，换个名字即可开一个独立终端。";
-    def.parameters.push_back(makeParam("command", ParamType::String, "要执行的命令，如 \"cd build\"、\"ls src\"、\"pwd\""));
-    def.parameters.push_back(makeParam("terminal", ParamType::String, "终端名，默认 default；不同名字各自维护当前目录"));
-    def.required_parameters.push_back("command");
-    setToolDefine(def);
-}
-
-void JZVirtualTerminal::setZoneConfig(const ZoneConfig &cfg)
-{
-    m_zone = cfg;
-    m_zone.workspace = zoneNormalizeRoot(m_zone.workspace);
-    for (auto &d : m_zone.trustedDirs)
-        d.path = zoneNormalizeRoot(d.path);
-    // 目录基准变了，已有会话的 cwd 可能失效，直接清空
-    m_sessions.clear();
-}
-
-const ZoneConfig &JZVirtualTerminal::zoneConfig() const
-{
-    return m_zone;
-}
-
-void JZVirtualTerminal::setProgramPolicy(const ProgramPolicy &policy)
-{
-    m_policy = policy;
-}
-
-const ProgramPolicy &JZVirtualTerminal::programPolicy() const
-{
-    return m_policy;
-}
-
-vector<string> JZVirtualTerminal::availablePrograms() const
-{
-    vector<string> out;
-    for (const auto &it : m_programs)
-    {
-        string abs;
-        if (findProgram(it.first, it.second.exeNames, abs))
-            out.push_back(it.first);
-    }
-    return out;
-}
-
-void JZVirtualTerminal::setTrustedPrograms(const vector<TrustedProgram> &progs)
-{
-    m_trustedPrograms.clear();
-    for (const auto &p : progs)
-    {
-        if (!p.name.empty() && !p.path.empty())
-            m_trustedPrograms[str_toLower(p.name)] = p.path;
-    }
-}
-
-const map<string, string> &JZVirtualTerminal::trustedPrograms() const
-{
-    return m_trustedPrograms;
-}
-
-JZVirtualTerminal::Session &JZVirtualTerminal::session(const string &name)
-{
-    auto it = m_sessions.find(name);
-    if (it != m_sessions.end())
-        return it->second;
-
-    Session s;
-    s.cwd = zoneNormalizeRoot(m_zone.workspace);
-    return m_sessions.insert(make_pair(name, s)).first->second;
-}
-
-string JZVirtualTerminal::relToWorkspace(const string &abs) const
-{
-    string root = m_zone.workspace;
-    if (!root.empty() && str_indexOf(abs, root) == 0)
-    {
-        string rel = abs.substr(root.size());
-        return rel.empty() ? string(".") : rel;
-    }
-    return abs;
-}
-
-void JZVirtualTerminal::call(const ToolCall &params)
-{
-    string command = str_trimmed(params.params.get("command", "").asString());
-    if (command.empty())
-    {
-        finish(params, false, "参数 command 不能为空");
-        return;
-    }
-
-    vector<string> argv;
-    string error;
-    if (!splitCommandStrict(command, argv, error))
-    {
-        finish(params, false, error, DenyReason::CommandDenied);
-        return;
-    }
-    if (argv.empty())
-    {
-        finish(params, false, "命令解析结果为空: " + command);
-        return;
-    }
-    if (m_zone.workspace.empty())
-    {
-        finish(params, false, "工作区未配置，无法使用虚拟终端");
-        return;
-    }
-
-    string termName = params.params.get("terminal", "default").asString();
-    if (termName.empty())
-        termName = "default";
-
-    string name = str_toLower(argv[0]);
-    // 常见别名统一到主命令，这样 help 里只列一套
-    if (name == "dir")  name = "ls";
-    if (name == "type") name = "cat";
-    if (name == "del")  name = "rm";
-    if (name == "copy") name = "cp";
-    if (name == "move") name = "mv";
-
-    if (name == "help" || name == "?")
-    {
-        runHelp(params, argv);
-        return;
-    }
-
-    auto it = m_specs.find(name);
-    if (it == m_specs.end())
-    {
-        // 不是内建/转发命令 -> 当作外部程序（白名单，或工作区内带路径的可执行程序）
-        Session &s = session(termName);
-        runExternalProgram(params, argv, s);
-        return;
-    }
-
-    Session &s = session(termName);
-    if (name == "pwd")
-        runPwd(params, argv, s);
-    else if (name == "cd")
-        runCd(params, argv, s);
-    else if (name == "ls")
-        runLs(params, argv, s);
-    else if (name == "cat")
-        runCat(params, argv, s);
-    else if (!it->second.shellTemplate.empty())
-        runShellCommand(params, name, it->second, argv, s);
-    else
-        runExternalProgram(params, argv, s);
-}
-
-void JZVirtualTerminal::runHelp(const ToolCall &call, const vector<string> &argv)
-{
-    string text = "可用命令:\n";
-    for (const auto &it : m_specs)
-        text += "  " + it.second.usage + "\n";
-    text += "  help             显示本帮助\n";
-    text += "\n当前工作区: " + m_zone.workspace + "\n";
-    if (m_zone.trustedDirs.empty())
-        text += "授信目录: (未配置，只能访问工作区)\n";
-    else
-    {
-        text += "授信目录:\n";
-        for (const auto &d : m_zone.trustedDirs)
-            text += "  " + d.path + (d.writable ? "（可读写）" : "（只读）") + "\n";
-    }
-
-    // 只列在授信目录里真实存在的程序，避免模型去反复尝试没装的东西
-    text += "\n可执行的程序:\n";
-    int found = 0;
-    for (const auto &it : m_programs)
-    {
-        string abs;
-        if (findProgram(it.first, it.second.exeNames, abs))
-        {
-            text += "  " + it.first + "  (" + abs + ")\n";
-            found++;
-        }
-    }
-    if (found == 0)
-        text += "  (无：未配置授信目录，或授信目录里没有找到已登记的程序)\n";
-    text += "  工作区内编译出来的程序可直接带路径执行，如 build/Debug/demo.exe\n";
-
-    if (!m_policy.allowPackageManager)
-        text += "\n注意: 包管理命令(pip/npm/conda 等)与下载命令(curl/wget)当前被禁用。\n";
-
-    finish(call, true, text);
-}
-
-void JZVirtualTerminal::runPwd(const ToolCall &call, const vector<string> &argv, Session &s)
-{
-    finish(call, true, s.cwd + "\n(工作区内相对路径: " + relToWorkspace(s.cwd) + ")");
-}
-
-void JZVirtualTerminal::runCd(const ToolCall &call, const vector<string> &argv, Session &s)
-{
-    if (argv.size() > 2)
-    {
-        finish(call, false, "cd 只接受一个参数: cd [目录]");
-        return;
-    }
-    // 无参数时回到工作区根（对应真终端里 cd 回 home 的习惯）
-    string target = (argv.size() == 2) ? argv[1] : m_zone.workspace;
-
-    string abs, error;
-    Zone zone;
-    if (!zoneResolvePath(m_zone, s.cwd, target, abs, zone, error))
-    {
-        finish(call, false, error, DenyReason::PathOutside);
-        return;
-    }
-
-    JZFileInfo info(abs);
-    if (!info.exists() || !info.isDir())
-    {
-        finish(call, false, "不是目录: " + target, DenyReason::NotFound);
-        return;
-    }
-
-    s.cwd = abs;
-    finish(call, true, "当前目录: " + abs + "（" + zoneText(zone) + "）");
-}
-
-void JZVirtualTerminal::runLs(const ToolCall &call, const vector<string> &argv, Session &s)
-{
-    if (argv.size() > 2)
-    {
-        finish(call, false, "ls 只接受一个参数: ls [目录]");
-        return;
-    }
-    string target = (argv.size() == 2) ? argv[1] : ".";
-
-    string abs, error;
-    Zone zone;
-    if (!zoneResolvePath(m_zone, s.cwd, target, abs, zone, error))
-    {
-        finish(call, false, error, DenyReason::PathOutside);
-        return;
-    }
-
-    JZFileInfo info(abs);
-    if (!info.exists())
-    {
-        finish(call, false, "路径不存在: " + target, DenyReason::NotFound);
-        return;
-    }
-    if (!info.isDir())
-    {
-        finish(call, true, target + "  是文件 (" + to_string(info.size()) + " 字节)");
-        return;
-    }
-
-    JZDir dir(abs);
-    vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot,
-                                                JZDir::SortName);
-    string text = "目录 " + abs + "（" + zoneText(zone) + "）:\n";
-    int dirCount = 0, fileCount = 0;
-    for (const auto &e : list)
-    {
-        if (e.isDir())
-        {
-            text += "  " + e.fileName() + "/\n";
-            dirCount++;
-        }
-        else
-        {
-            text += "  " + e.fileName() + "\n";
-            fileCount++;
-        }
-    }
-    text += "共 " + to_string(dirCount) + " 个目录, " + to_string(fileCount) + " 个文件";
-    finish(call, true, text);
-}
-
-void JZVirtualTerminal::runCat(const ToolCall &call, const vector<string> &argv, Session &s)
-{
-    if (argv.size() != 2)
-    {
-        finish(call, false, "用法: cat <文件>");
-        return;
-    }
-    string target = argv[1];
-
-    string abs, error;
-    Zone zone;
-    if (!zoneResolvePath(m_zone, s.cwd, target, abs, zone, error))
-    {
-        finish(call, false, error, DenyReason::PathOutside);
-        return;
-    }
-
-    JZFileInfo info(abs);
-    if (!info.exists() || !info.isFile())
-    {
-        finish(call, false, "不是文件: " + target, DenyReason::NotFound);
-        return;
-    }
-    if (info.size() > 2 * 1024 * 1024)
-    {
-        finish(call, false, "文件过大(>2MB): " + target);
-        return;
-    }
-    if (!isTextFile(abs))
-    {
-        finish(call, false, "不是文本文件: " + target);
-        return;
-    }
-
-    JZResult<string> r = m_agent->readFile(abs);
-    if (r.isError())
-    {
-        finish(call, false, r.errorMessage());
-        return;
-    }
-
-    string content = r.value();
-    vector<string> lines = readLines(content);
-    const int kMaxLines = 2000;
-    bool truncated = (int)lines.size() > kMaxLines;
-    int end = truncated ? kMaxLines : (int)lines.size();
-
-    string text = "文件 " + abs + "（共 " + to_string(lines.size()) + " 行）:\n";
-    for (int i = 0; i < end; i++)
-        text += to_string(i + 1) + ": " + lines[i] + "\n";
-    if (truncated)
-        text += "... 单次最多显示 " + to_string(kMaxLines) + " 行\n";
-
-    finish(call, true, text);
-}
-
-bool JZVirtualTerminal::checkShellSafe(const string &path, string &error)
-{
-    // 拼回命令行时路径会被引号包住，路径自身含引号会破坏配对
-    if (str_contains(path, "\""))
-    {
-        error = "路径不允许包含双引号: " + path;
-        return false;
-    }
-    return true;
-}
-
-bool JZVirtualTerminal::resolveArg(const vector<string> &argv, int index, const Session &s,
-                                   bool writeAccess, string &abs, string &error, DenyReason &deny)
-{
-    string raw = argv[index];
-    deny = DenyReason::None;
-
-    // 通配符交给 shell 展开，但必须保证展开范围落在工作区内
-    if (str_contains(raw, "*") || str_contains(raw, "?"))
-    {
-        size_t pos = raw.find_last_of("/\\");
-        string parent = (pos == string::npos) ? string(".") : raw.substr(0, pos);
-        if (parent.empty())
-            parent = ".";
-
-        string parentAbs, e;
-        Zone z;
-        if (!zoneResolvePath(m_zone, s.cwd, parent, parentAbs, z, e))
-        {
-            error = "通配符的展开范围越界: " + raw + "（" + e + "）";
-            deny = DenyReason::PathOutside;
-            return false;
-        }
-        if (z != Zone::Workspace)
-        {
-            error = "通配符只能在工区内使用（展开范围必须是工作区）: " + raw;
-            deny = DenyReason::PathOutside;
-            return false;
-        }
-        abs = raw;    // 保留原样，由 shell 在 cwd 下展开
-        return true;
-    }
-
-    string a, e;
-    Zone z;
-    if (!zoneResolvePath(m_zone, s.cwd, raw, a, z, e))
-    {
-        error = e;
-        deny = DenyReason::PathOutside;
-        return false;
-    }
-    if (writeAccess)
-    {
-        string e2;
-        if (!zoneCheckWrite(m_zone, a, e2))
-        {
-            error = e2;
-            deny = DenyReason::PathOutside;
-            return false;
-        }
-    }
-    abs = a;
-    return true;
-}
-
-// 递归统计目录下的文件数，超过 limit 提前返回（避免为了计数遍历整个大目录）
-static int countDirFiles(const string &absDir, int limit)
-{
-    JZDir dir(absDir);
-    if (!dir.exists())
-        return 0;
-
-    int count = 0;
-    vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot);
-    for (const auto &info : list)
-    {
-        if (info.isDir())
-            count += countDirFiles(info.filePath(), limit);
-        else
-            count++;
-
-        if (count > limit)
-            return count;
-    }
-    return count;
-}
-
-void JZVirtualTerminal::runShellCommand(const ToolCall &call, const string &name,
-                                        const CommandSpec &spec, const vector<string> &argv,
-                                        Session &s)
-{
-    // 1. 分出选项与路径参数
-    vector<string> operands;
-    bool recursive = false;
-    for (size_t i = 1; i < argv.size(); i++)
-    {
-        string a = argv[i];
-        if (a.size() > 1 && a[0] == '-')
-        {
-            string f = str_toLower(a);
-            if ((f == "-r" || f == "-rf" || f == "-fr" || f == "--recursive") && spec.allowRecursive)
-                recursive = true;
-            else
-            {
-                finish(call, false, "不支持的选项: " + a + "\n用法: " + spec.usage);
-                return;
-            }
-        }
-        else
-        {
-            operands.push_back(a);
-        }
-    }
-
-    if (operands.size() != spec.args.size())
-    {
-        finish(call, false, "用法: " + spec.usage);
-        return;
-    }
-
-    // 2. 逐个解析路径并校验读写权限
-    vector<string> absList;
-    for (size_t i = 0; i < operands.size(); i++)
-    {
-        string abs, error;
-        DenyReason deny = DenyReason::None;
-        if (!resolveArg(operands, (int)i, s, spec.args[i].access == Access::Write, abs, error, deny))
-        {
-            finish(call, false, error, deny);
-            return;
-        }
-        absList.push_back(abs);
-    }
-
-    // 3. 目标是已存在目录时改用目录模板（rm -r 走 rd /S /Q）
-    string tmpl = spec.shellTemplate;
-    if (!spec.shellTemplateDir.empty())
-    {
-        JZFileInfo info(absList[0]);
-        if (info.exists() && info.isDir())
-        {
-            if (!recursive)
-            {
-                finish(call, false, absList[0] + " 是目录，删除目录请加 -r");
-                return;
-            }
-            tmpl = spec.shellTemplateDir;
-        }
-    }
-
-    // 4. 删除类的兜底保护：不许删工作区根，且 -r 有数量上限
-    if (name == "rm" || name == "rmdir")
-    {
-        for (const auto &p : absList)
-        {
-            if (str_toLower(p) == str_toLower(m_zone.workspace))
-            {
-                finish(call, false, "不允许删除工作区根目录: " + p);
-                return;
-            }
-        }
-        if (recursive && !str_contains(absList[0], "*") && !str_contains(absList[0], "?"))
-        {
-            const int kMaxDeleteFiles = 200;
-            int count = countDirFiles(absList[0], kMaxDeleteFiles);
-            if (count > kMaxDeleteFiles)
-            {
-                finish(call, false, "待删除文件数超过上限 " + to_string(kMaxDeleteFiles) +
-                                        "（当前 " + to_string(count) + " 个），已阻止。" \
-                                        "确认要删请缩小范围后分批执行。");
-                return;
-            }
-        }
-    }
-
-    // 5. 拼命令行：路径一律加引号（含空格的路径不加引号会被切断）
-    string cmdline = tmpl;
-    for (size_t i = 0; i < absList.size(); i++)
-    {
-        string error;
-        if (!checkShellSafe(absList[i], error))
-        {
-            finish(call, false, error);
-            return;
-        }
-        str_replace(cmdline, "{" + to_string(i) + "}", "\"" + absList[i] + "\"");
-    }
-
-    // 6. 转发给系统 shell（flag 已在模板里固定，模型无法注入）
-    string program;
-    vector<string> args;
-    buildProcessArgs(cmdline, program, args);
-
-    const int kShellTimeoutMs = 60000;
-    runProcess(call, program, args, s.cwd, kShellTimeoutMs, name + ": " + cmdline, false);
-}
-
-void JZVirtualTerminal::addProgram(const string &name, vector<string> exeNames,
-                                   CmdCategory category,
-                                   vector<string> denyFlags, vector<string> denyModules)
-{
-    ProgramSpec ps;
-    ps.name = name;
-    ps.exeNames = exeNames;
-    ps.category = category;
-    ps.denyFlags = denyFlags;
-    ps.denyModules = denyModules;
-    m_programs[name] = ps;
-}
-
-bool JZVirtualTerminal::findProgram(const string &name, const vector<string> &exeNames, string &abs) const
-{
-    // 1. 显式配置的可信程序（全路径）优先：用户已确认信任该路径
-    auto pit = m_trustedPrograms.find(str_toLower(name));
-    if (pit != m_trustedPrograms.end() && !pit->second.empty())
-    {
-        if (JZFileInfo::exists(pit->second))
-        {
-            abs = codeNormalizePath(pit->second);
-            return true;
-        }
-        return false;   // 配置了但文件不存在，不要退化到目录搜索（避免指向错误程序）
-    }
-
-    // 2. 在授信目录里按 exe 名搜索
-    for (const auto &d : m_zone.trustedDirs)
-    {
-        if (d.path.empty())
-            continue;
-        for (const auto &exe : exeNames)
-        {
-            string p = d.path + "/" + exe;
-            if (JZFileInfo::exists(p))
-            {
-                abs = codeNormalizePath(p);
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool JZVirtualTerminal::checkCategory(CmdCategory cat, string &error) const
-{
-    switch (cat)
-    {
-    case CmdCategory::PackageManager:
-        if (!m_policy.allowPackageManager)
-        {
-            error = "已阻止：包管理命令会安装或升级依赖，当前不允许执行（防止改动环境）。" \
-                    "如确需执行，请让用户在设置中开启。";
-            return false;
-        }
-        return true;
-    case CmdCategory::Network:
-        if (!m_policy.allowNetwork)
-        {
-            error = "已阻止：网络下载命令当前不允许执行。" \
-                    "如确需执行，请让用户在设置中开启。";
-            return false;
-        }
-        return true;
-    case CmdCategory::SystemAdmin:
-        error = "已阻止：系统管理命令（修改注册表/服务/环境变量/计划任务）不允许执行。";
-        return false;
-    default:
-        return true;
-    }
-}
-
-// 检查受限参数：前缀匹配（如 git -c / --exec），外加 -m <module> 的组合判断
-static bool hasDenyFlag(const vector<string> &argv, const ProgramSpec &spec, string &bad)
-{
-    for (size_t i = 0; i < argv.size(); i++)
-    {
-        string a = str_toLower(argv[i]);
-        for (const auto &f : spec.denyFlags)
-        {
-            if (a == f || (f.size() >= 2 && str_indexOf(a, f) == 0))
-            {
-                bad = argv[i];
-                return true;
-            }
-        }
-        // python -m pip 这类绕法单独挡：模块名逐个比
-        if (a == "-m" && i + 1 < argv.size())
-        {
-            string mod = str_toLower(argv[i + 1]);
-            for (const auto &m : spec.denyModules)
-            {
-                if (mod == m)
-                {
-                    bad = "-m " + argv[i + 1];
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-void JZVirtualTerminal::runExternalProgram(const ToolCall &call, const vector<string> &argv, Session &s)
-{
-    string first = argv[0];
-    string abs;
-
-    if (str_contains(first, "/") || str_contains(first, "\\") || codeIsAbsPath(first))
-    {
-        // 显式给出路径：必须是工作区/授信区内的可执行程序（工作区里的编译产物走这条路）
-        string error;
-        Zone zone;
-        if (!zoneResolvePath(m_zone, s.cwd, first, abs, zone, error))
-        {
-            finish(call, false, "不允许执行该路径下的程序: " + first + "（" + error + "）",
-                   DenyReason::ProgramDenied);
-            return;
-        }
-        JZFileInfo info(abs);
-        if (!info.isFile())
-        {
-            finish(call, false, "程序不存在: " + first, DenyReason::NotFound);
-            return;
-        }
-        string suffix = str_toLower(info.suffix());
-        if (suffix != "exe" && suffix != "bat" && suffix != "cmd")
-        {
-            finish(call, false, "不是可执行程序(.exe/.bat/.cmd): " + first);
-            return;
-        }
-    }
-    else
-    {
-        string progName = str_toLower(first);
-        if (str_endsWith(progName, ".exe"))
-            progName = progName.substr(0, progName.size() - 4);
-
-        auto it = m_programs.find(progName);
-        if (it == m_programs.end())
-        {
-            finish(call, false,
-                   "不允许执行程序: " + first + "。可执行程序请用 \"help\" 查看；" \
-                   "若是工作区里编译出来的程序，请带上路径，如 build/Debug/demo.exe。",
-                   DenyReason::ProgramDenied);
-            return;
-        }
-
-        const ProgramSpec &ps = it->second;
-        string policyError;
-        if (!checkCategory(ps.category, policyError))
-        {
-            finish(call, false, policyError, DenyReason::EnvChange);
-            return;
-        }
-
-        vector<string> rest(argv.begin() + 1, argv.end());
-        string bad;
-        if (hasDenyFlag(rest, ps, bad))
-        {
-            finish(call, false, "该参数被禁止: " + bad + "（" + ps.name + " 的受限参数）",
-                   DenyReason::CommandDenied);
-            return;
-        }
-
-        if (!findProgram(ps.name, ps.exeNames, abs))
-        {
-            string dirs;
-            for (const auto &d : m_zone.trustedDirs)
-                dirs += (dirs.empty() ? string() : string(", ")) + d.path;
-            if (dirs.empty())
-                dirs = "(未配置授信目录)";
-
-            // 单独发一条 notice：模型不一定转述，用户要能在界面上直接看到缺什么
-            finish(call, false,
-                   "未找到程序 " + ps.name + "。已在授信目录中查找: " + dirs + "。" \
-                   "不要换其它写法重试；请直接告诉用户需要安装该程序，并说明装好后" \
-                   "要在设置里把安装目录加为授信目录。",
-                   DenyReason::NotFound);
-            return;
-        }
-    }
-
-    vector<string> args(argv.begin() + 1, argv.end());
-    string program = abs;
-
-    // CreateProcess 不能直接跑 .bat/.cmd，必须经 shell
-    string suffix = str_toLower(JZFileInfo(abs).suffix());
-    if (suffix == "bat" || suffix == "cmd")
-    {
-        string cmdline = "\"" + abs + "\"";
-        for (const auto &a : args)
-            cmdline += " \"" + a + "\"";
-        buildProcessArgs(cmdline, program, args);
-    }
-
-    string logText;
-    for (const auto &a : argv)
-        logText += (logText.empty() ? string() : string(" ")) + a;
-
-    const int kProgramTimeoutMs = 300000;   // 5 分钟
-    runProcess(call, program, args, s.cwd, kProgramTimeoutMs, logText, false);
 }
 
 // ==================== JZWebSearchTool ====================

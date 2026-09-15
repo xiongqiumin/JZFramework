@@ -25,11 +25,6 @@ int makeCompressFlags(JZCompressAlgorithm algo, int level)
     return static_cast<int>(tdefl_create_comp_flags_from_zip_params(lvl, wb, 0));
 }
 
-bool isUnsupported(JZCompressAlgorithm algo)
-{
-    return algo == JZCompressAlgorithm::Brotli || algo == JZCompressAlgorithm::Zstd;
-}
-
 // 解析 gzip 文件头。返回头长度（>0 成功）；返回 0 表示字节不足需更多；返回 -1 表示非法。
 int parseGzipHeader(const uint8_t *p, size_t n, bool &needMore)
 {
@@ -77,8 +72,6 @@ const char *jzCompressAlgorithmName(JZCompressAlgorithm algo)
     case JZCompressAlgorithm::Deflate: return "Deflate";
     case JZCompressAlgorithm::Zlib:    return "Zlib";
     case JZCompressAlgorithm::GZip:    return "GZip";
-    case JZCompressAlgorithm::Zstd:    return "Zstd";
-    case JZCompressAlgorithm::Brotli:  return "Brotli";
     }
     return "Unknown";
 }
@@ -86,8 +79,6 @@ const char *jzCompressAlgorithmName(JZCompressAlgorithm algo)
 // ---------------- 一次性（按块）压缩 / 解压（复用流式接口） ----------------
 JZResult<JZByteArray> jzCompressBlock(const JZByteArray &in, JZCompressAlgorithm algo, int level)
 {
-    if (isUnsupported(algo))
-        return JZResult<JZByteArray>::Error("JZCompress: algorithm not implemented (Brotli/Zstd)");
     JZCompressStream s(algo, level);
     // 一次性压缩：用超大 blockSize 避免中途 SYNC_FLUSH，仅 finish() 收尾，保证压缩比。
     s.setBlockSize(INT_MAX);
@@ -98,8 +89,6 @@ JZResult<JZByteArray> jzCompressBlock(const JZByteArray &in, JZCompressAlgorithm
 
 JZResult<JZByteArray> jzDecompressBlock(const JZByteArray &in, JZCompressAlgorithm algo)
 {
-    if (isUnsupported(algo))
-        return JZResult<JZByteArray>::Error("JZCompress: algorithm not implemented (Brotli/Zstd)");
     JZDecompressStream s(algo);
     JZByteArray out = s.write(in);
     out.append(s.finish());
@@ -120,7 +109,6 @@ struct JZCompressStream::Impl
     uint64_t totalIn;       // gzip 用：原始数据总长度（ISIZE）
     int64_t inputSinceFlush;
     std::vector<uint8_t> outBuf;
-    bool unsupported;
 };
 
 JZCompressStream::JZCompressStream(JZCompressAlgorithm algo, int level)
@@ -136,7 +124,6 @@ JZCompressStream::JZCompressStream(JZCompressAlgorithm algo, int level)
     m_impl->totalIn = 0;
     m_impl->inputSinceFlush = 0;
     m_impl->outBuf.resize(65536);
-    m_impl->unsupported = isUnsupported(algo);
 }
 
 JZCompressStream::~JZCompressStream()
@@ -152,7 +139,7 @@ void JZCompressStream::setBlockSize(int blockSize)
 JZByteArray JZCompressStream::write(const JZByteArray &input)
 {
     JZByteArray result;
-    if (!m_impl || m_impl->finished || m_impl->unsupported) return result;
+    if (!m_impl || m_impl->finished) return result;
 
     if (!m_impl->started)
     {
@@ -203,7 +190,7 @@ JZByteArray JZCompressStream::write(const JZByteArray &input)
 JZByteArray JZCompressStream::finish()
 {
     JZByteArray result;
-    if (!m_impl || m_impl->finished || m_impl->unsupported) return result;
+    if (!m_impl || m_impl->finished) return result;
     m_impl->finished = true;
 
     if (!m_impl->started)
@@ -360,7 +347,6 @@ JZByteArray JZDecompressStream::write(const JZByteArray &input)
 {
     JZByteArray result;
     if (!m_impl || m_impl->finished || m_impl->done) return result;
-    if (isUnsupported(m_impl->algo)) { m_impl->finished = true; return result; }
 
     const uint8_t *deflatePtr = reinterpret_cast<const uint8_t *>(input.constData());
     size_t deflateLen = static_cast<size_t>(input.size());
@@ -390,7 +376,6 @@ JZByteArray JZDecompressStream::finish()
     JZByteArray result;
     if (!m_impl || m_impl->finished) return result;
     m_impl->finished = true;
-    if (isUnsupported(m_impl->algo)) return result;
     if (m_impl->isGzip && m_impl->m_gzipHdrState == 0) return result; // 头未完成，无法解压
 
     m_impl->process(nullptr, 0, true, result);

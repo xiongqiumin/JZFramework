@@ -1,6 +1,83 @@
 #include "JZHttpRespone.h"
 #include <sstream>
+#include <algorithm>
+#include <cstdlib>
 #include "JZStd.h"
+
+namespace
+{
+// 按 RFC 7231 / RFC 7694 解析 Accept-Encoding，按 q 值选出本库支持的算法。
+// 支持: gzip, x-gzip, deflate(=zlib 封装), identity, *。
+// 选择优先级(同 q 时): gzip > deflate。
+bool parseSelectEncoding(const std::string& acceptEncoding,
+                        JZCompressAlgorithm& outAlgo, std::string& outName)
+{
+    struct Cand { std::string name; double q; };
+    std::vector<Cand> cands;
+    double qStar = -1.0;     // "*" 通配的质量
+    bool hasIdentity = false;
+    double qIdentity = 1.0;
+
+    std::string s = acceptEncoding;
+    size_t pos = 0;
+    while (pos < s.size())
+    {
+        size_t comma = s.find(',', pos);
+        std::string tok = (comma == std::string::npos) ? s.substr(pos)
+                                                        : s.substr(pos, comma - pos);
+        pos = (comma == std::string::npos) ? s.size() : comma + 1;
+
+        double q = 1.0;
+        std::string enc;
+        size_t semi = tok.find(';');
+        if (semi != std::string::npos)
+        {
+            enc = str_trimmed(tok.substr(0, semi));
+            std::string rest = tok.substr(semi + 1);
+            size_t eq = rest.find('=');
+            if (eq != std::string::npos)
+                q = atof(str_trimmed(rest.substr(eq + 1)).c_str());
+        }
+        else
+        {
+            enc = str_trimmed(tok);
+        }
+
+        std::string le = str_toLower(enc);
+        if (le == "*")            qStar = q;
+        else if (le == "identity") { hasIdentity = true; qIdentity = q; }
+        else if (le == "gzip" || le == "x-gzip" || le == "deflate")
+            cands.push_back({le, q});
+    }
+    (void)qStar; (void)hasIdentity; (void)qIdentity;
+
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b)
+    {
+        if (a.q != b.q) return a.q > b.q;
+        auto prio = [](const std::string& n) { return n == "gzip" ? 2 : (n == "deflate" ? 1 : 0); };
+        return prio(a.name) > prio(b.name);
+    });
+
+    for (const auto& c : cands)
+    {
+        if (c.q <= 0.0) break;       // q=0 表示显式拒绝
+        if (c.name == "gzip" || c.name == "x-gzip")
+        {
+            outAlgo = JZCompressAlgorithm::GZip;
+            outName = "gzip";
+            return true;
+        }
+        if (c.name == "deflate")
+        {
+            // HTTP "deflate" 为 zlib 封装(deflate 内核), 见 RFC 7694
+            outAlgo = JZCompressAlgorithm::Zlib;
+            outName = "deflate";
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
 
 JZHttpRespone::JZHttpRespone()
     : m_statusCode(200)
@@ -111,6 +188,11 @@ void JZHttpRespone::setFile(const JZByteArray& data, const std::string& filename
 
 JZByteArray JZHttpRespone::toHeadByteArray(int contentLength) const
 {
+    return toHeadByteArray(contentLength, true);
+}
+
+JZByteArray JZHttpRespone::toHeadByteArray(int contentLength, bool includeContentLength) const
+{
     std::ostringstream oss;
     oss << "HTTP/1.1 " << m_statusCode << " " << m_statusText << "\r\n";
 
@@ -119,7 +201,8 @@ JZByteArray JZHttpRespone::toHeadByteArray(int contentLength) const
         oss << pair.first << ": " << pair.second << "\r\n";
     }
 
-    oss << "Content-Length: " << contentLength << "\r\n";
+    if (includeContentLength)
+        oss << "Content-Length: " << contentLength << "\r\n";
     oss << "\r\n";
 
     std::string headerStr = oss.str();
@@ -132,6 +215,47 @@ JZByteArray JZHttpRespone::toByteArray() const
     result.append(m_body);
 
     return result;
+}
+
+bool JZHttpRespone::applyContentEncoding(const std::string& acceptEncoding)
+{
+    // 已设置 Content-Encoding 则不再重复压缩
+    if (!header("Content-Encoding").empty())
+        return false;
+    // 无正文无需压缩
+    if (m_body.isEmpty())
+        return false;
+
+    JZCompressAlgorithm algo;
+    std::string name;
+    if (!selectContentEncoding(acceptEncoding, algo, name))
+        return false;
+
+    auto r = jzCompressBlock(m_body, algo);
+    if (!r.isOk())
+        return false;
+
+    const JZByteArray& comp = r.value();
+    // 压缩后没有更小则放弃，直接发送原文（避免无谓膨胀）
+    if (comp.isEmpty() || comp.size() >= m_body.size())
+        return false;
+
+    m_body = comp;
+    setHeader("Content-Encoding", name);
+    setHeader("Vary", "Accept-Encoding");
+    return true;
+}
+
+const std::string& JZHttpRespone::contentEncoding() const
+{
+    return header("Content-Encoding");
+}
+
+bool JZHttpRespone::selectContentEncoding(const std::string& acceptEncoding,
+                                          JZCompressAlgorithm& outAlgo,
+                                          std::string& outName)
+{
+    return parseSelectEncoding(acceptEncoding, outAlgo, outName);
 }
 
 std::string JZHttpRespone::getStatusText(int code)

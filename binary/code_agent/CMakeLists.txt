@@ -1,9 +1,5 @@
 
 set(CODE_AGENT_CORE_SOURCES
-    JZFileWatch.h
-    JZFileWatch.cpp
-    JZCodeTools.h
-    JZCodeTools.cpp
     JZTsLangServer.h
     JZTsLangServer.cpp
     JZTsLangTools.h
@@ -16,6 +12,10 @@ set(CODE_AGENT_CORE_SOURCES
     JZExeResource.cpp
 )
 add_library(code_agent_core STATIC ${CODE_AGENT_CORE_SOURCES})
+# 通用工具在 binary/agent_tool 单独一个库(供远端 agent_node 复用同一批实现)。
+# 这里必须 PUBLIC: ICodeToolHost 出现在 JZCodeAgent.h 的接口上(基类列表),
+# 所有链 code_agent_core 的目标都要能看到 agent_tool 的 include 目录。
+target_link_libraries(code_agent_core PUBLIC agent_tool)
 target_link_libraries(code_agent_core PRIVATE JZFramework)
 
 set(CODE_AGENT_SOURCES

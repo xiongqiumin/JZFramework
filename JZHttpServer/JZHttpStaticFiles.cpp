@@ -97,6 +97,56 @@ static int64_t parseHttpDate(const std::string &s)
     return -1;
 }
 
+// 客户端 Accept-Encoding 是否接受某编码（支持 q 值，q=0 视为显式拒绝）
+static bool acceptsEncoding(const std::string& header, const std::string& enc)
+{
+    if (header.empty())
+        return false;
+    std::string cur;
+    for (size_t i = 0; i <= header.size(); i++)
+    {
+        char c = (i < header.size()) ? header[i] : ',';
+        if (c == ',')
+        {
+            std::string tok = str_trimmed(cur);
+            cur.clear();
+            size_t q = tok.find(';');
+            std::string name = (q == std::string::npos) ? tok : str_trimmed(tok.substr(0, q));
+            if (name == enc)
+            {
+                if (q != std::string::npos)
+                {
+                    std::string rest = str_trimmed(tok.substr(q + 1));
+                    if (str_startsWith(rest, "q="))
+                    {
+                        double v = atof(rest.substr(2).c_str());
+                        if (v <= 0.0)
+                            return false;   // q=0 显式拒绝
+                    }
+                }
+                return true;
+            }
+        }
+        else
+        {
+            cur += c;
+        }
+    }
+    return false;
+}
+
+// 文件（含资源路径 :/...）是否存在
+static bool fileExists(const std::string& p)
+{
+    JZFile f;
+    if (f.open(p, "rb"))
+    {
+        f.close();
+        return true;
+    }
+    return false;
+}
+
 JZHttpStaticFiles::JZHttpStaticFiles(const std::string& rootDir)
 {
     // 以 ':' 开头的 rootDir 表示资源路径（如 ":/xxx"），否则为文件系统目录。
@@ -187,8 +237,33 @@ void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& 
         }
     }
 
-    // 打开文件流
-    if (!openStreamFile(client, local_path))
+    // ---- 预压缩文件探测（app.js.gz / app.js.br）----
+    // 客户端接受且磁盘存在对应变体时，直接发送预压缩字节（零运行时压缩开销）。
+    // Content-Type 仍按原始文件名决定；Content-Encoding 标记实际编码。
+    // 不存在预压缩变体时，按原文件流式发送（不再做运行时压缩）。
+    std::string serve_path = local_path;
+    std::string contentEncoding;
+    bool hasVariant = false;
+    if (req.methodString() == "GET" || req.methodString() == "HEAD")
+    {
+        bool acceptBr = acceptsEncoding(req.header("Accept-Encoding"), "br");
+        bool acceptGzip = acceptsEncoding(req.header("Accept-Encoding"), "gzip");
+        if (acceptBr && fileExists(local_path + ".br"))
+        {
+            serve_path = local_path + ".br";
+            contentEncoding = "br";
+            hasVariant = true;
+        }
+        else if (acceptGzip && fileExists(local_path + ".gz"))
+        {
+            serve_path = local_path + ".gz";
+            contentEncoding = "gzip";
+            hasVariant = true;
+        }
+    }
+
+    // 打开文件流（可能是预压缩变体）
+    if (!openStreamFile(client, serve_path))
     {
         resp.setStatusCode(404);
         resp.setBody("404 Not Found");
@@ -199,8 +274,13 @@ void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& 
     StreamState& st = m_streams[client];
     if (isResource)
         fileSize = st.remainSize;   // 资源路径没有提前 stat，从流状态获取
-    resp.setHeader("Content-Type", getContentType(local_path));
+    resp.setHeader("Content-Type", getContentType(local_path));   // 按原始文件名定类型
     resp.setHeader("Accept-Ranges", "bytes");
+
+    if (hasVariant)
+        resp.setHeader("Vary", "Accept-Encoding");
+    if (!contentEncoding.empty())
+        resp.setHeader("Content-Encoding", contentEncoding);
 
     if (isResource)
     {
@@ -218,23 +298,28 @@ void JZHttpStaticFiles::handle(JZHttpServerClient* client, const JZHttpRequest& 
         resp.setHeader("Last-Modified", lastModified);
     }
 
+    // Range：预压缩变体的字节范围与原始文件不同，跳过 Range 直接整发（标准做法）
     long long rstart = 0, rend = 0;
-    int rc = parseRange(req.header("Range"), fileSize, rstart, rend);
-    if (rc == 2)
+    int rc = 0;
+    if (contentEncoding.empty())
     {
-        resp.setStatusCode(416);
-        resp.setHeader("Content-Range", "bytes */" + std::to_string(fileSize));
-        client->response(resp.toByteArray());
-        closeStreamFile(client);
-        return;
-    }
-    if (rc == 1)
-    {
-        resp.setStatusCode(206);
-        resp.setHeader("Content-Range",
-            "bytes " + std::to_string(rstart) + "-" + std::to_string(rend) + "/" + std::to_string(fileSize));
-        st.file.seek((int)rstart, SEEK_SET);
-        st.remainSize = (int)(rend - rstart + 1);
+        rc = parseRange(req.header("Range"), fileSize, rstart, rend);
+        if (rc == 2)
+        {
+            resp.setStatusCode(416);
+            resp.setHeader("Content-Range", "bytes */" + std::to_string(fileSize));
+            client->response(resp.toByteArray());
+            closeStreamFile(client);
+            return;
+        }
+        if (rc == 1)
+        {
+            resp.setStatusCode(206);
+            resp.setHeader("Content-Range",
+                "bytes " + std::to_string(rstart) + "-" + std::to_string(rend) + "/" + std::to_string(fileSize));
+            st.file.seek((int)rstart, SEEK_SET);
+            st.remainSize = (int)(rend - rstart + 1);
+        }
     }
 
     if (req.methodString() == "HEAD")

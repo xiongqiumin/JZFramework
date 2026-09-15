@@ -64,6 +64,13 @@ void JZHttpServerClient::response(const JZByteArray& buffer)
     write(buffer.data(), buffer.size(), true);        
 }
 
+void JZHttpServerClient::response(const JZHttpRespone& resp, const JZHttpRequest& req)
+{
+    JZHttpRespone r(resp);
+    r.applyContentEncoding(req.header("Accept-Encoding"));
+    response(r.toByteArray());
+}
+
 void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
 {
     write(data.data(), data.size(), is_finish);    
@@ -145,12 +152,19 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
 {
     struct mg_http_message hm;
     int parse_result = mg_http_parse((const char*)buffer.data(), buffer.size(), &hm);
+
+    // 提取客户端支持的压缩编码，供错误响应压缩使用
+    std::string accept_encoding;
+    struct mg_str* ae = mg_http_get_header(&hm, "Accept-Encoding");
+    if (ae)
+        accept_encoding = std::string(ae->buf, ae->len);
     
     if (parse_result <= 0)
     {
         JZHttpRespone response;
         response.setStatusCode(400);
         response.setText("Bad Request");
+        response.applyContentEncoding(accept_encoding);
         client->response(response.toByteArray());
         return;
     }
@@ -209,6 +223,7 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         JZHttpRespone response;
         response.setStatusCode(404);
         response.setText("Not Found");
+        response.applyContentEncoding(request.header("Accept-Encoding"));
         client->response(response.toByteArray());
     }
 }

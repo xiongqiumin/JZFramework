@@ -18,6 +18,8 @@ public:
 
     void setHandle(JZHttpHandler *handle);
     void response(const JZByteArray &buffer);
+    // 发送完整响应并按请求的 Accept-Encoding 自动压缩正文(Content-Encoding: gzip/deflate)
+    void response(const JZHttpRespone &resp, const JZHttpRequest &req);
 
     // 流式写入，is_finish=true 时结束响应（复用/关闭连接）
     void write(const JZByteArray &data, bool is_finish);  

@@ -11,9 +11,9 @@
 #include "JZAgentTool.h"
 #include "JZCodeTools.h"
 #include "JZTsLangServer.h"
-#include "JZFileWatch.h"
-#include "JZFileSystemWatcher.h"
 #include "JZResult.h"
+
+class JZVirtualTerminal;   // 执行/审核面（agent_tool/JZVirtualTerminal.h）
 
 // 代码助手自身的配置（与大模型配置 JZAgentConfig 分开）
 class CodeAgentConfig
@@ -101,6 +101,43 @@ struct ExportConfig
     bool debug = true;
 };
 
+class JZCodeAgent;   // 下面这个宿主类只持有它的指针
+
+// ------------------------------------------------------------------
+// JZCodeAgentToolHost —— 把 JZCodeAgent 暴露成"工具宿主"
+//
+// 走**组合**，不让 JZCodeAgent 多继承 ICodeToolHost：本类只是一层薄转发，
+// JZCodeAgent 依然只继承 JZObject。
+//
+// 工具看到的那份区域/策略视图存在本类里，由 JZCodeAgent::applyZoneConfig() 刷新
+// （refresh 是必须的，漏了就等于权限误判）。
+//
+// 用法：所有工具的 setHost() 都传 &agent->toolHost()。
+// 本对象是 JZCodeAgent 的成员，生命周期与之相同，不要在 agent 之外持有它。
+// ------------------------------------------------------------------
+class JZCodeAgentToolHost : public ICodeToolHost
+{
+public:
+    explicit JZCodeAgentToolHost(JZCodeAgent *agent);
+
+    // 由 JZCodeAgent::applyZoneConfig() 调用
+    void setZone(const ZoneConfig &zone);
+    void setProgramPolicy(const ProgramPolicy &policy);
+
+    const ZoneConfig &toolZone() const override { return m_zone; }
+    const ProgramPolicy &toolProgramPolicy() const override { return m_policy; }
+
+    bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) override;
+    bool toolIsBuildRunning() const override;
+    bool toolBuildProject(std::string &error) override;
+    JZSignal<bool, const std::string &> *toolBuildFinished() override;
+
+private:
+    JZCodeAgent *m_agent = nullptr;
+    ZoneConfig m_zone;
+    ProgramPolicy m_policy;
+};
+
 // 代码助手：把 JZAgent 与一组代码工具(编译/运行/改代码/找代码)组装起来，
 // 并维护一份可供网页端增量拉取的会话日志。
 class JZCodeAgent : public JZObject
@@ -126,6 +163,11 @@ public:
     const CodeAgentConfig &codeConfig() const;
     const JZAgentConfig &llmConfig() const;
     bool setWorkspace(const std::string &path);
+
+    // ---- 工具宿主 ----
+    // 通用工具库(binary/agent_tool)要的是 ICodeToolHost；本类是组合而非多继承,
+    // 所以这里给出那个转发对象, 工具注册时 setHost(agent->toolHost())。
+    ICodeToolHost *toolHost() { return &m_toolHost; }
 
     // ---- TS 工程支持 ----
     // 工程目录 = 根目录有 tsconfig.json（编译规则入口）；不引入 npm/package.json 概念。
@@ -203,8 +245,8 @@ public:
 
     // 文件浏览（网页端复用与工具一致的路径校验）
     bool listFiles(const std::string &rel, std::vector<std::string> &out, std::string &error) const;
-    // 统一的文件读取入口：解析路径（相对工作区则拼接，绝对路径做越界校验）、走 LRU 缓存、
-    // 文件变更由 m_fileWatcher 自动失效。读取失败（越界 / 打开失败）返回 Error，否则返回内容。
+    // 统一的文件读取入口：解析路径（相对工作区则拼接，绝对路径做越界校验）后直读磁盘。
+    // 读取失败（越界 / 打开失败）返回 Error，否则返回内容。
     JZResult<std::string> readFile(const std::string &path);
 
     // 网页端只读预览：在 readFile 之上做 2MB / 二进制 限制，行为保持与改造前一致
@@ -213,9 +255,6 @@ public:
     const std::vector<std::string> &toolNames() const;
     bool isTrustedDir(std::string dir) const;
     bool isTrustedProgram(std::string prog) const;
-
-    // 文件内容缓存（默认 20MB LRU）。工具读文件时优先命中，文件变更由 m_fileWatcher 自动失效。
-    JZFileWatch* fileCache() { return &m_fileCache; }
 
     // 任务级自动恢复序列结束通知：(passed, attempts)
     // 打包/发布结束通知：(ok, error)；ok=false 时 error 为失败原因/编译输出
@@ -257,17 +296,18 @@ protected:
     CodeAgentConfig m_codeConfig;
     CodeProjectStatus m_project;   // 最近一次 openProject 的探测结果
 
+    // 工具宿主: 通用工具库只认 ICodeToolHost, 不认 CodeAgentConfig —— 这一层是两者的桥。
+    // 组合而非继承; 区域/策略视图在它内部, 由 applyZoneConfig() 刷新。
+    JZCodeAgentToolHost m_toolHost;
+
     std::vector<JZCodeTool *> m_tools;
     std::vector<std::string> m_toolNames;
 
     JZTsLangServer *m_tsServer = nullptr;   // 直连 TSGO 语言服务；随 agent 生命周期常驻
 
-    // 文件内容缓存（20MB LRU）与文件系统监视器：工具读文件优先命中缓存，
-    // 监视工作区变更并自动失效对应缓存条目（见 setupFileWatch）。
-    JZFileWatch m_fileCache;
-    JZFileSystemWatcher m_fileWatcher;
-
-    void setupFileWatch();
+    // 这台机器上唯一的执行面与审核面（terminal_run / edit_file 背后就是它）。
+    // 是 this 的子对象；区域/策略由 applyZoneConfig() 同步过去。
+    JZVirtualTerminal *m_terminal = nullptr;
 
     // 所有网络工具（web_search / web_fetch）共享的访问管理器，代理只在此统一设置一次
     JZNetworkAccessManager *m_netMan = nullptr;

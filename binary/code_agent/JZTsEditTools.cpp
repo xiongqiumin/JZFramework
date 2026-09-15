@@ -307,10 +307,10 @@ static bool applyRenameEdits(vector<string> &lines, vector<TextEdit1> edits, str
 // ============================================================
 // 工具定义
 // ============================================================
-JZTsEditTool::JZTsEditTool(JZTsLangServer *server, Kind kind, JZCodeAgent *agent)
+JZTsEditTool::JZTsEditTool(JZTsLangServer *server, Kind kind, ICodeToolHost *host)
     : m_server(server), m_kind(kind)
 {
-    setAgent(agent); // 空指针也安全：checkWrite 判空跳过
+    setHost(host); // 空指针也安全：checkWrite / checkPathPermission 判空跳过
     ToolDefine def;
     ParamSchema file = makeParam("file", ParamType::String, "TypeScript/JavaScript 文件路径（相对工作区或绝对）");
     ParamSchema scope = makeParam("scope", ParamType::String,
@@ -440,7 +440,7 @@ void JZTsEditTool::parseScope(const string &scope, string &file, string &cls)
 
 DenyReason JZTsEditTool::checkWrite(const string &abs)
 {
-    if (!m_agent)
+    if (!m_host)
         return DenyReason::None; // 测试/无宿主环境跳过
     return checkPathPermission(ToolOperator::Write, abs);
 }
@@ -528,7 +528,7 @@ void JZTsEditTool::doSummary(const ToolCall &params, const Json::Value &p)
 {
     (void)p; // 简化后无参数：固定为工程级总览（file/class 级由 ts_outline/ts_members 覆盖）
 
-    string ws = m_agent ? m_agent->codeConfig().workspace : string();
+    string ws = m_host ? m_host->toolZone().workspace : string();
     if (ws.empty())
     {
         finishEdit(params, false, "ts_summary 需要 agent 工作区；单文件结构请用 ts_outline(file)");

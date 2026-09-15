@@ -30,8 +30,9 @@ public:
         DeleteFunction   // ts_delete_function
     };
 
-    // agent 用于写路径权限校验（可空：测试/无宿主环境跳过校验）
-    JZTsEditTool(JZTsLangServer *server, Kind kind, JZCodeAgent *agent = nullptr);
+    // 宿主用于写路径权限校验（可空：测试/无宿主环境跳过校验）。
+    // 传 ICodeToolHost 而不是 JZCodeAgent —— 工具库里不认识 code_agent 这个具体类。
+    JZTsEditTool(JZTsLangServer *server, Kind kind, ICodeToolHost *host = nullptr);
     virtual void call(const ToolCall &params) override;
 
 private:

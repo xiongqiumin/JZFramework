@@ -9,6 +9,12 @@
 	JZHttpHandler.h
 	JZHttpStaticFiles.h
 	JZHttpStaticFiles.cpp
+    JZHttpStream.h
+	JZHttpStream.cpp
+    JZHttpUploadHandler.h
+	JZHttpUploadHandler.cpp
+    JZHttpFormUploadHandler.h
+	JZHttpFormUploadHandler.cpp
     JZHttpServer.cpp
 	JZHttpServer.h
 )

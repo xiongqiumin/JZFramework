@@ -1,3 +1,5 @@
+add_subdirectory(agent_tool)
+add_subdirectory(agent_node)
 add_subdirectory(frpc)
 add_subdirectory(code_agent)
 add_subdirectory(updater)

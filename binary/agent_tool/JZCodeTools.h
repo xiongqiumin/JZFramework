@@ -10,8 +10,6 @@
 #include "JZTimer.h"
 #include "JZCommandLineParser.h"
 
-class JZCodeAgent;
-
 // ------------------------------------------------------------------
 // 工作区路径工具（网页端文件浏览复用同一套越界校验，避免两处规则不一致）
 // ------------------------------------------------------------------
@@ -46,7 +44,7 @@ enum class ToolOperator
 
 // ------------------------------------------------------------------
 // 工具拒绝原因（结构化）
-//   只用来让上层(CJZCodeAgent)区分"真的失败了"与"被策略拦了"，
+//   只用来让上层(宿主)区分"真的失败了"与"被策略拦了"，
 //   从而对"反复被拦"这类卡死行为做统计与熔断。
 //   普通的调用错误(参数缺失、文件过大等)用 None，由"重复调用"那道闸兜住。
 // ------------------------------------------------------------------
@@ -65,11 +63,17 @@ enum class DenyReason
 // 拒绝原因的中文说明（用于日志与提示）
 const char *denyReasonText(DenyReason reason);
 
+// 工具宿主：工具唯一需要外部提供的东西。定义见本文件末尾（它要用到
+// ZoneConfig / ProgramPolicy 这两个在后面才定义的类型）。
+class ICodeToolHost;
+
 // ------------------------------------------------------------------
 // 所有代码工具的基类：
 //   - 统一管理工作区根目录与路径越界校验
 //   - 统一的结果回传（finish）
-//   - 统一的调用/返回日志信号（sigToolLog），供网页端展示执行过程
+//
+// 本类**不认识** JZCodeAgent：宿主一侧的能力全部经 ICodeToolHost 拿，
+// 所以同一份实现既能给本地 code_agent 用，也能给远端 agent_node 用。
 // ------------------------------------------------------------------
 class JZCodeTool : public JZAgentTool
 {
@@ -77,7 +81,10 @@ public:
     JZCodeTool();
     virtual ~JZCodeTool();
 
-    void setAgent(JZCodeAgent* agenet);
+    // 绑定宿主（可传 nullptr：测试/无宿主环境下路径检查直接放行）
+    void setHost(ICodeToolHost *host);
+    ICodeToolHost *host() const { return m_host; }
+
     DenyReason checkPathPermission(ToolOperator op, std::string path);
 
     static ParamSchema makeParam(const std::string &name, ParamType type, const std::string &desc);
@@ -88,53 +95,18 @@ protected:
 
     std::string fullPath(std::string path);
 
-    JZCodeAgent *m_agent;
+    ICodeToolHost *m_host = nullptr;
 };
 
 // ------------------------------------------------------------------
-// list_dir: 列出目录内容
-// ------------------------------------------------------------------
-class JZListDirTool : public JZCodeTool
-{
-public:
-    JZListDirTool();
-    virtual void call(const ToolCall &params) override;
-};
-
-// ------------------------------------------------------------------
-// read_file: 读取文件（可按行号范围）
-// ------------------------------------------------------------------
-class JZReadFileTool : public JZCodeTool
-{
-public:
-    JZReadFileTool();
-    virtual void call(const ToolCall &params) override;
-};
-
-// ------------------------------------------------------------------
-// write_file
-// ------------------------------------------------------------------
-class JZWriteFileTool : public JZCodeTool
-{
-public:
-    JZWriteFileTool();
-    virtual void call(const ToolCall& params) override;
-};
-
-// ------------------------------------------------------------------
-// append_file: 读取文件（可按行号范围）
-// ------------------------------------------------------------------
-class JZAppendFileTool : public JZCodeTool
-{
-public:
-    JZAppendFileTool();
-    virtual void call(const ToolCall& params) override;
-};
-
-// ------------------------------------------------------------------
-// modify_code: 修改（或创建）文件
-//   old_str 为空  -> 用 new_str 覆盖整个文件（新建/重写）
-//   old_str 非空  -> 精确替换，默认要求唯一匹配
+// modify_file: 修改（或创建）文件
+//   old_str 为空   -> 用 new_str 覆盖整个文件（新建 / 重写）
+//   old_str 非空   -> 精确替换，默认要求唯一匹配（replace_all=true 则全部替换）
+//
+// 为什么这一条留成**工具**而不是让模型用 shell:
+//   `sed` 不校验唯一匹配 —— 改代码时很容易改错地方; 而且本工具成功时回上下文片段
+//   (让模型确认改对了地方)、失败时回命中位置(帮它补上下文), 这两点 shell 都给不了。
+// 其它文件操作(ls/cat/mkdir/rm/cp/mv)都有等价的 shell 命令, 所以不再单独做工具。
 // ------------------------------------------------------------------
 class JZModifyFileTool : public JZCodeTool
 {
@@ -255,9 +227,10 @@ private:
 
 // ------------------------------------------------------------------
 // build_project: 打包/发布当前工作区的 TS 工程
-//   走 JZCodeAgent::buildProject（异步 tsc 全量编译），编译结束后自动校验
-//   入口产物 main.js 并生成/刷新 project.json；编译错误回传给模型自修。
-//   打包完成后才能用 run_js（code_runtime）运行。
+//   走宿主可选能力 ICodeToolHost::toolBuildProject（本地实现=JZCodeAgent::buildProject，
+//   异步 tsc 全量编译），编译结束后自动校验入口产物 main.js 并生成/刷新 project.json；
+//   编译错误回传给模型自修。打包完成后才能用 run_js（code_runtime）运行。
+//   不提供 toolBuildFinished() 的宿主(远端节点)用不了本工具。
 // ------------------------------------------------------------------
 class JZBuildProjectTool : public JZCodeTool
 {
@@ -354,6 +327,10 @@ bool splitCommandStrict(const std::string &cmd, std::vector<std::string> &argv, 
 enum class CmdCategory
 {
     Tool = 0,           // 编译/构建/测试：默认允许
+    Shell,              // 基础 shell / coreutils（ls cat grep mkdir rm cp mv ...）：默认允许。
+                        //   单独一档是因为"命令都走 shell"之后，不认这些等于什么都跑不了 ——
+                        //   它们就是文件工具被删掉以后的替代品。名单两边通用：
+                        //   Linux 系统自带；Windows 由 Git Bash 提供（同名）。
     PackageManager,     // pip/npm/conda 等：默认拒绝，设置里可开
     Network,            // curl/wget 等：默认拒绝，设置里可开
     SystemAdmin         // reg/sc/net/setx 等：永不放行
@@ -384,71 +361,40 @@ struct TrustedProgram
 };
 
 // ------------------------------------------------------------------
-// terminal: 虚拟终端
-//   模型像在终端里敲命令一样使用它，但命令由我们自己解释，不经通用 shell。
-//   支持多个命名会话，每个会话独立维护当前目录（cd 的效果会保留到后续命令）。
+// 工具宿主接口
+//
+// 工具向外唯一需要的东西: 三件必需的 + 一个可选能力(打包)。
+//   - 本地 code_agent: JZCodeAgent 实现它(工作区/授信目录走 CodeAgentConfig,
+//     读文件走它自己的 LRU 缓存, 打包转调 buildProject)
+//   - 远端 agent_node: 自己实现一份(node 侧没有 TS 工程, 打包用默认实现)
+// 这样工具实现与权限规则全仓只有一份, 本地和远端行为逐字一致。
 // ------------------------------------------------------------------
-class JZVirtualTerminal : public JZProcessRunner
+class ICodeToolHost
 {
 public:
-    JZVirtualTerminal();
+    virtual ~ICodeToolHost() {}
 
-    void setZoneConfig(const ZoneConfig &cfg);
-    const ZoneConfig &zoneConfig() const;
+    // 区域配置（工作区 + 授信目录，含各自的写权限）。
+    // 注意: workspace 为空时 checkPathPermission 的前缀比较会放行一切 ——
+    // 实现方必须保证它非空（节点侧默认取进程当前工作目录）。
+    virtual const ZoneConfig &toolZone() const = 0;
 
-    void setProgramPolicy(const ProgramPolicy &policy);
-    const ProgramPolicy &programPolicy() const;
+    // 程序/命令策略
+    virtual const ProgramPolicy &toolProgramPolicy() const = 0;
 
-    // 显式指定的可信程序（全路径）：优先于在授信目录里按名搜索
-    void setTrustedPrograms(const std::vector<TrustedProgram> &progs);
-    const std::map<std::string, std::string> &trustedPrograms() const;
+    // 读文件（absPath 必须是绝对路径）。失败返回 false 并把原因写进 error。
+    // 宿主可以在这里挂缓存；不想要缓存就直接读。
+    virtual bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) = 0;
 
-    // 当前实际可用的程序名（在授信目录里真实存在的），供提示词动态生成
-    std::vector<std::string> availablePrograms() const;
-
-    virtual void call(const ToolCall &params) override;
-
-protected:
-    struct Session
+    // ---- 可选能力：打包/发布（只有本地 TS 工程宿主支持）----
+    virtual bool toolIsBuildRunning() const { return false; }
+    virtual bool toolBuildProject(std::string &error)
     {
-        std::string cwd;    // 规范化后的绝对目录
-    };
-
-    void addProgram(const std::string &name, std::vector<std::string> exeNames,
-                    CmdCategory category,
-                    std::vector<std::string> denyFlags = std::vector<std::string>(),
-                    std::vector<std::string> denyModules = std::vector<std::string>());
-    // 在授信目录里定位程序；返回 false 表示没装或没配授信目录
-    bool findProgram(const std::string &name, const std::vector<std::string> &exeNames, std::string &abs) const;
-
-    Session &session(const std::string &name);
-    std::string relToWorkspace(const std::string &abs) const;
-
-    // 内建命令（自己实现）
-    void runHelp(const ToolCall &call, const std::vector<std::string> &argv);
-    void runPwd(const ToolCall &call, const std::vector<std::string> &argv, Session &s);
-    void runCd(const ToolCall &call, const std::vector<std::string> &argv, Session &s);
-    void runLs(const ToolCall &call, const std::vector<std::string> &argv, Session &s);
-    void runCat(const ToolCall &call, const std::vector<std::string> &argv, Session &s);
-
-    // 转发类命令（路径审查通过后按 shellTemplate 走 cmd /c）
-    void runShellCommand(const ToolCall &call, const std::string &name,
-                         const CommandSpec &spec, const std::vector<std::string> &argv, Session &s);
-    // 外部程序：白名单 + 绝对路径化 + 不经 shell
-    void runExternalProgram(const ToolCall &call, const std::vector<std::string> &argv, Session &s);
-    bool checkCategory(CmdCategory cat, std::string &error) const;
-    // 解析出一个路径参数；writeAccess 为真时额外要求落在工作区
-    bool resolveArg(const std::vector<std::string> &argv, int index, const Session &s,
-                    bool writeAccess, std::string &abs, std::string &error, DenyReason &deny);
-    // 拼进 cmd 命令行前的检查：拒绝引号等会破坏命令行的字符
-    bool checkShellSafe(const std::string &path, std::string &error);
-
-    ZoneConfig m_zone;
-    std::map<std::string, Session> m_sessions;
-    std::map<std::string, CommandSpec> m_specs;
-    std::map<std::string, ProgramSpec> m_programs;
-    std::map<std::string, std::string> m_trustedPrograms;   // 小写 name -> 全路径
-    ProgramPolicy m_policy;
+        error = "当前宿主不支持打包/发布";
+        return false;
+    }
+    // 打包结束信号；返回 nullptr 表示永远不会有结果（工具会直接失败）
+    virtual JZSignal<bool, const std::string &> *toolBuildFinished() { return nullptr; }
 };
 
 // ------------------------------------------------------------------

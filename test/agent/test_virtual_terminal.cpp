@@ -1,0 +1,483 @@
+// JZVirtualTerminal 冒烟测试(不依赖 JZProcess 的那部分)
+//
+// 覆盖: 会话外壳 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单。
+// 期望输出: ALL PASS
+
+#include <stdio.h>
+#include <string>
+
+#include "JZApplication.h"
+#include "JZDir.h"
+#include "JZFile.h"
+#include "JZFileInfo.h"
+#include "JZTimer.h"
+#include "JZVirtualTerminal.h"
+
+using namespace std;
+
+static int g_fail = 0;
+
+static void check(bool ok, const string &what)
+{
+    printf("%s %s\n", ok ? "[ok]  " : "[fail]", what.c_str());
+    if (!ok)
+        g_fail++;
+}
+
+static bool contains(const string &text, const string &needle)
+{
+    return text.find(needle) != string::npos;
+}
+
+static int g_auditCount = 0;
+static string g_lastAuditAction;
+
+class TerminalTest
+{
+public:
+    int run()
+    {
+        // 用一个自己的临时工作区, 免得污染仓库
+        m_ws = jzApp->applicationDirPath() + "/vt_test_ws";
+        JZDir(m_ws).removeRecursively();
+        JZDir().mkpath(m_ws);
+
+        ZoneConfig zone;
+        zone.workspace = m_ws;
+        m_term.setZoneConfig(zone);
+        m_term.setAuditCallback([](const string &action, const JZVirtualTerminal::Verdict &v, const string &)
+        {
+            g_auditCount++;
+            g_lastAuditAction = action + (v.allowed() ? ":allow" : ":deny");
+        });
+
+        // 注意: run() 用的 echo **不手动 addProgram** —— 基础 shell 命令必须在默认表里。
+
+        printf("     workspace=%s\n\n", m_ws.c_str());
+
+        // 兜底: 回调没来也不能把测试挂死(异步步骤一旦断了, exec() 会永不返回)
+        JZTimer watchdog;
+        connect(&watchdog.sigTimeout, [this]()
+                {
+                    g_fail++;
+                    printf("[fail] 超时: 20 秒还没跑完\n");
+                    jzApp->quit();
+                });
+        watchdog.start(20000);
+
+        stepSession();
+        return jzApp->exec();
+    }
+
+private:
+    void stepSession()
+    {
+        string error;
+        m_id = m_term.openSession(string(), error);
+        check(!m_id.empty(), "开启会话: " + error);
+
+        JZVirtualTerminal::SessionInfo info;
+        check(m_term.sessionInfo(m_id, info) && info.cwd == m_ws, "会话 cwd == 工作区");
+        check(m_term.sessions().size() == 1, "sessions() 列出 1 个");
+        stepWrite();
+    }
+
+    void stepWrite()
+    {
+        string error;
+        // 父目录不存在应该自动建出来
+        check(m_term.writeFile(m_id, "a/b.txt", "hello\nworld\n", false, error),
+              "write 相对路径(自动建父目录): " + error);
+        check(JZFileInfo(m_ws + "/a/b.txt").isFile(), "文件确实落盘了");
+        stepRead();
+    }
+
+    void stepRead()
+    {
+        string text, error;
+        check(m_term.readFile(m_id, "a/b.txt", text, error), "read 相对路径: " + error);
+        check(contains(text, "hello"), "内容正确");
+        stepList();
+    }
+
+    void stepList()
+    {
+        vector<string> names;
+        string error;
+        check(m_term.listDir(m_id, "a", names, error), "ls: " + error);
+        check(names.size() == 1 && names[0] == "b.txt", "ls 列出 b.txt");
+
+        names.clear();
+        check(m_term.listDir(m_id, ".", names, error), "ls .");
+        check(names.size() == 1 && names[0] == "a/", "ls . 里目录带 '/'");
+        stepEdit();
+    }
+
+    void stepEdit()
+    {
+        string error;
+        check(m_term.editFile(m_id, "a/b.txt", "world", "there", false, error), "edit 唯一匹配: " + error);
+
+        string text;
+        m_term.readFile(m_id, "a/b.txt", text, error);
+        check(contains(text, "there") && !contains(text, "world"), "edit 生效");
+
+        // "l" 出现多次 ⇒ 不唯一, 必须拒绝
+        check(!m_term.editFile(m_id, "a/b.txt", "l", "L", false, error), "edit 匹配多处被拒");
+        stepCpMv();
+    }
+
+    void stepCpMv()
+    {
+        string error;
+        check(m_term.makeDir(m_id, "c/d", error), "mkdir -p: " + error);
+        check(m_term.copyPath(m_id, "a/b.txt", "c/d/e.txt", error), "cp: " + error);
+
+        string text;
+        check(m_term.readFile(m_id, "c/d/e.txt", text, error) && contains(text, "there"), "cp 内容一致");
+
+        check(m_term.movePath(m_id, "c/d/e.txt", "c/f.txt", error), "mv: " + error);
+        check(!m_term.readFile(m_id, "c/d/e.txt", text, error), "源已不在");
+        check(m_term.readFile(m_id, "c/f.txt", text, error), "目标在");
+        stepRm();
+    }
+
+    void stepRm()
+    {
+        string error;
+        check(m_term.removePath(m_id, "c/f.txt", false, error), "rm 文件: " + error);
+
+        error.clear();
+        check(m_term.removePath(m_id, "c/d", false, error), "rmdir 空目录: " + error);
+
+        error.clear();
+        check(!m_term.removePath(m_id, "a", false, error), "rm 非空目录(未 recursive)被拒");
+
+        error.clear();
+        check(m_term.removePath(m_id, "a", true, error), "rm -r");
+        check(!JZFileInfo::exists(m_ws + "/a"), "目录真的没了");
+        stepEscape();
+    }
+
+    // ---- 重点: 区域审核 ----
+    void stepEscape()
+    {
+        string text, error;
+
+        // 相对路径往上跑
+        check(!m_term.readFile(m_id, "../../../../Windows/win.ini", text, error),
+              "相对路径越界被拒");
+        // 绝对路径在工作区外
+        check(!m_term.readFile(m_id, "C:/Windows/win.ini", text, error),
+              "绝对路径越界被拒");
+        // 写也一样
+        check(!m_term.writeFile(m_id, "C:/Windows/_vt_probe.txt", "x", false, error),
+              "越界写被拒");
+        // 删也一样
+        check(!m_term.removePath(m_id, "C:/Windows/notepad.exe", false, error),
+              "越界删被拒");
+
+        JZVirtualTerminal::Verdict v = m_term.checkRead("C:/Windows/win.ini");
+        check(!v.allowed() && v.reason == DenyReason::PathOutside, "checkRead 给出 PathOutside");
+
+        v = m_term.checkWrite("C:/Windows/x.txt");
+        check(!v.allowed(), "checkWrite 越界被拒");
+        stepCd();
+    }
+
+    void stepCd()
+    {
+        string error;
+        // ws 的父目录在区域外
+        check(!m_term.changeDir(m_id, "..", error), "cd .. 到工作区外被拒");
+
+        check(m_term.makeDir(m_id, "sub", error), "建 sub");
+        check(m_term.changeDir(m_id, "sub", error), "cd sub: " + error);
+
+        string cwd;
+        check(m_term.printDir(m_id, cwd) && cwd == m_ws + "/sub", "cwd 已经变了");
+
+        // 相对路径现在应该基于新 cwd
+        check(m_term.writeFile(m_id, "g.txt", "x", false, error), "以新 cwd 为基准写文件");
+        check(JZFileInfo(m_ws + "/sub/g.txt").isFile(), "文件落在 sub 下");
+        stepExec();
+    }
+
+    void stepExec()
+    {
+        check(m_term.checkExec("git").allowed(), "git 在白名单且默认放行");
+        check(!m_term.checkExec("reg").allowed(), "reg(SystemAdmin)永不放行");
+
+        JZVirtualTerminal::Verdict v = m_term.checkExec("npm");
+        check(!v.allowed() && v.reason == DenyReason::EnvChange, "npm 默认拒绝(装东西)");
+
+        v = m_term.checkExec("git", { "-C", "C:/x" });
+        check(!v.allowed(), "git -C 参数级黑名单命中");
+
+        v = m_term.checkExec("git", { "status" });
+        check(v.allowed(), "git status 放行");
+
+        check(!m_term.checkExec("some_unknown_prog").allowed(), "白名单外的程序被拒");
+
+        // 基础 shell 命令必须**默认**放行 —— 文件工具删掉之后, 模型就靠这些干活。
+        // 这里刻意不手动 addProgram: 那会掩盖"默认表缺项"这个真正的毛病。
+        check(m_term.checkExec("ls").allowed(), "ls 默认放行(基础 shell 类)");
+        check(m_term.checkExec("cat").allowed(), "cat 默认放行");
+        check(m_term.checkExec("mkdir").allowed(), "mkdir 默认放行");
+        check(m_term.checkExec("rm").allowed(), "rm 默认放行");
+        check(m_term.checkExec("grep").allowed(), "grep 默认放行");
+        stepRun();
+    }
+
+    // ---- run(): 真起进程(异步) ----
+    // 这是"模型全走终端命令"的立足点: 没有它, 文件工具一删模型就什么都做不了。
+    void stepRun()
+    {
+        // 命令是整条交给这个 shell 的。Windows 上必须是 Git Bash —— 找不到就**报错**,
+        // 不退回 cmd(退回会让同一句话两边行为不一样, 更难查)。
+        printf("     shell=%s\n", m_term.shellProgram().c_str());
+        check(!m_term.shellProgram().empty(),
+              "探测到可用的 shell: " + m_term.shellProgram());
+
+        string error;
+        bool started = m_term.run(m_id, "echo jz_terminal_ok", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "run echo 正常结束" +
+                                                (err.empty() ? string() : ": " + err));
+                                      check(contains(out, "jz_terminal_ok"),
+                                            "run 拿到 stdout: " + out);
+                                      stepRunDeny();
+                                  }, error);
+        check(started, "run 启动命令: " + error);
+        if (!started)
+            stepRunDeny();          // 别把后面几步挂住
+    }
+
+    void stepRunDeny()
+    {
+        string error;
+        // 白名单外的程序: 必须在**起进程之前**就被拒
+        check(!m_term.run(m_id, "some_unknown_prog --do-it", 20000,
+                          [](bool, const string &, const string &) {}, error),
+              "run 拒绝白名单外的程序");
+
+        // 重定向目标在工作区外: 也要拒(zone 模型的写边界就靠这条)
+        string outside = jzApp->applicationDirPath() + "/vt_outside.txt";
+        JZFile::remove(outside);
+        check(!m_term.run(m_id, "echo x > " + outside, 20000,
+                          [](bool, const string &, const string &) {}, error),
+              "run 拒绝越界的重定向: " + error);
+        check(!JZFileInfo(outside).exists(), "越界文件确实没被创建");
+
+        // 单独一条设/清变量: 不跨命令保留, 必须**明确报错**(否则模型会以为设过了)
+        check(!m_term.run(m_id, "export JZ_X=1", 20000,
+                          [](bool, const string &, const string &) {}, error),
+              "run 拒绝单独一条 export");
+        check(!m_term.run(m_id, "JZ_X=1", 20000,
+                          [](bool, const string &, const string &) {}, error),
+              "run 拒绝单独一条赋值");
+        check(!m_term.run(m_id, "unset PATH", 20000,
+                          [](bool, const string &, const string &) {}, error),
+              "run 拒绝单独一条 unset");
+
+        stepRunShell();
+    }
+
+    // 真正要验证的: 用 shell 的 coreutils 干活 —— 文件工具删掉之后模型靠的就是这些。
+    // 顺带验证 `&&` 串联(整条交给 shell, 我们不解析)。
+    void stepRunShell()
+    {
+        string error;
+        bool started = m_term.run(m_id, "ls -1 && mkdir -p deep/dir && ls -1", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "run ls/mkdir 链式: " +
+                                                (err.empty() ? string() : err));
+                                      check(contains(out, "g.txt") && contains(out, "deep"),
+                                            "shell 的 ls/mkdir 真的生效: " + out);
+                                      check(JZFileInfo(m_ws + "/sub/deep/dir").isDir(),
+                                            "mkdir -p 的目录真的建出来了");
+                                      stepRunInlineEnv();
+                                  }, error);
+        check(started, "run shell coreutils: " + error);
+        if (!started)
+            stepRunInlineEnv();
+    }
+
+    // 内联写变量是**合法**的(在那一条命令内有效) —— 这就是"不做会话级 env"的替代写法
+    void stepRunInlineEnv()
+    {
+        string error;
+        bool started = m_term.run(m_id, "export JZ_X=42 && echo val=$JZ_X", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "内联 export 那条命令本身正常: " + err);
+                                      check(contains(out, "val=42"),
+                                            "变量在那条命令内部生效: " + out);
+                                      stepRunCdChain();
+                                  }, error);
+        check(started, "run 内联 export: " + error);
+        if (!started)
+            stepRunCdChain();
+    }
+
+    // 链式 `cd build && cmd`: 交给 shell —— 那一条命令内 cd 有效, 与真 shell 语义一致
+    void stepRunCdChain()
+    {
+        string error;
+        bool started = m_term.run(m_id, "cd deep && pwd", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "链式 cd 那条命令本身正常: " + err);
+                                      check(contains(out, "deep"),
+                                            "cd 在该条命令内生效: " + out);
+
+                                      // ⭐ 但链式 cd **不**改会话 cwd —— 这是**文档化的行为**, 不是漏。
+                                      // 每条命令是一个新进程, cd 只活在那个 bash 里(它跑完就没了)。
+                                      // 想要持久就单独发一条 `cd <目录>`(见下一步)。
+                                      JZVirtualTerminal::SessionInfo info;
+                                      check(m_term.sessionInfo(m_id, info) &&
+                                                !contains(info.cwd, "deep"),
+                                            "链式 cd 不改会话 cwd(下一条命令仍在原目录): " +
+                                                info.cwd);
+                                      stepRunCdPersist();
+                                  }, error);
+        check(started, "run 链式 cd(现在 cd 必须在白名单里): " + error);
+        if (!started)
+            stepRunCdPersist();
+    }
+
+    // 单独一条 `cd <目录>`: 我们接管, 改会话 cwd(唯一跨命令保留的状态)
+    void stepRunCdPersist()
+    {
+        string error;
+        bool started = m_term.run(m_id, "cd deep", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "单独一条 cd 本身正常: " + err);
+                                      JZVirtualTerminal::SessionInfo info;
+                                      check(m_term.sessionInfo(m_id, info) &&
+                                                contains(info.cwd, "deep"),
+                                            "会话 cwd 真的变了: " + info.cwd);
+                                      stepRunPwd();
+                                  }, error);
+        check(started, "run 单独 cd: " + error);
+        if (!started)
+            stepRunPwd();
+    }
+
+    // 下一条命令落在新 cwd 里 —— "跨命令保留"这才算真的成立
+    void stepRunPwd()
+    {
+        string error;
+        bool started = m_term.run(m_id, "pwd", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "pwd 正常: " + err);
+                                      check(contains(out, "deep"),
+                                            "下一条命令确实在新 cwd 里: " + out);
+                                      stepRunAuditDeny();
+                                  }, error);
+        check(started, "run pwd: " + error);
+        if (!started)
+            stepRunAuditDeny();
+    }
+
+    // 审查: "脱离进程管理"与"审不下去"的写法一律**先拒后起**
+    void stepRunAuditDeny()
+    {
+        string error;
+        struct Case
+        {
+            const char *cmd;
+            const char *what;
+        };
+        const Case cases[] = {
+            { "nohup cmake ..",         "nohup(脱离管理)" },
+            { "setsid cmake ..",        "setsid(脱离管理)" },
+            { "cmake .. &",             "结尾的后台 `&`" },
+            { "echo hi & echo bye",     "中间的后台 `&`" },
+            { "echo $(whoami)",         "$( ) 命令替换" },
+            { "echo `whoami`",          "反引号命令替换" },
+            { "cat <<EOF",              "heredoc(<<)" },
+            { "diff <(ls) <(ls)",       "进程替换 <( )" },
+            { "echo \"a $(whoami) b\"", "双引号里的 $( ) (仍会展开)" },
+        };
+
+        for (const Case &c : cases)
+        {
+            check(!m_term.run(m_id, c.cmd, 20000,
+                              [](bool, const string &, const string &) {}, error),
+                  string("拒绝 ") + c.what);
+        }
+
+        // 反过来: `&&` 不能被误当成后台 `&`。
+        // 注意 check 的消息是**提前**拼好的, 所以只在失败时才带 error(否则会带上一次拒绝的旧文本)
+        bool andOk = m_term.run(m_id, "echo a && echo b", 20000,
+                                [this](bool ok, const string &out, const string &err)
+                                {
+                                    check(ok, "&& 那条命令本身正常: " + err);
+                                    check(contains(out, "a") && contains(out, "b"),
+                                          "&& 两边都跑了: " + out);
+                                    stepRunSingleQuoteLiteral();
+                                }, error);
+        check(andOk, "run 允许 &&" + (andOk ? string() : ": " + error));
+        if (!andOk)
+            stepAudit();
+    }
+
+    // 单引号里的是**字面量**(真 shell 也不展开) —— 上面 $( ) 那条规则不能误伤它
+    void stepRunSingleQuoteLiteral()
+    {
+        string error;
+        bool started = m_term.run(m_id, "echo 'a $(whoami) b'", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "单引号里的 $( ) 只是字面量: " + err);
+                                      check(contains(out, "$(whoami)"),
+                                            "原样输出, 没被展开: " + out);
+                                      stepAudit();
+                                  }, error);
+        check(started, "run 单引号字面量: " + error);
+        if (!started)
+            stepAudit();
+    }
+
+    void stepAudit()
+    {
+        check(g_auditCount > 0, "审计回调被调用过");
+        check(contains(g_lastAuditAction, ":deny") || contains(g_lastAuditAction, ":allow"),
+              "审计里带动作与结论: " + g_lastAuditAction);
+
+        check(m_term.closeSession(m_id), "关闭会话");
+        check(m_term.sessions().empty(), "会话列表空了");
+
+        JZVirtualTerminal::SessionInfo gone;
+        check(!m_term.sessionInfo(m_id, gone), "查不到了");
+
+        JZDir(m_ws).removeRecursively();
+        jzApp->quit();
+    }
+
+    JZVirtualTerminal m_term;
+    string m_ws;
+    string m_id;
+};
+
+int main(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    setvbuf(stdout, nullptr, _IONBF, 0);   // 崩了也能看到跑到哪
+    printf("[step] main\n");
+
+    JZApplication app;
+
+    TerminalTest test;
+    int ret = test.run();
+
+    printf("\n%s (fail=%d)\n", g_fail == 0 ? "ALL PASS" : "FAILED", g_fail);
+    return g_fail == 0 ? ret : 1;
+}

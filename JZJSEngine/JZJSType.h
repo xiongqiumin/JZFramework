@@ -265,10 +265,9 @@ enum
     JSType_int,
     JSType_double,
     JSType_string,
-
-    JSType_object = 1000,
     JSType_jsonValue,
 
+    JSType_object = 1000,
     JSType_objectUser = 2000,
 };
 
@@ -347,7 +346,6 @@ public:
 
     std::string name;
     std::string ctypeid;
-    bool isPointer = false;   // true: 该类型对应 JSRawPointer<Class>, 检测阶段需判断是否已 clear
 
     // 语义: **默认值语义**(每次包装独立, 不做同一性/句柄管理)。
     // 显式声明为"指针语义"(有身份的多态对象: 控件/布局/事件/item/painter...)才进引擎的身份表,
@@ -427,7 +425,12 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
 
     // 区分原始类与 JSRawPointer 包装类: 后者登记在 m_JSRawPointerTypes 中
     auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    if (engine && engine->isJSRawPointerClassId(class_id))
+    if (engine->isJSRawPointerClassId(class_id))
+    {
+        JZ_ASSERT(0);
+        return nullptr;
+    }
+    else
     {
         auto* cpb = (jsbind::JSPointerBase*)ptr;
         if (!cpb->getRaw())
@@ -466,9 +469,6 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
         JZ_ASSERT_X(0, "fromJSValue<Class*>: 参数类型不匹配(上层应已校验)");
         return nullptr;
     }
-
-    // 原始类对象: opaque 即真实对象, 直接转型
-    return (T)ptr;
 }
 
 template <class T>
@@ -490,27 +490,6 @@ T fromJSValueVector(JSContext* ctx, JSValueConst array, std::true_type)
     return vec;
 }
 
-// JSRawPointer 在 check type 阶段的 clear 检查(仅对 JSRawPointer 类型生效)。
-// 用 tag 派发(C++14 兼容, 不使用 if constexpr): true_type 分支做检查并可能抛 JS 异常。
-template <class T>
-void checkJSRawPointerCleared(JSContext* ctx, void* ptr, std::true_type)
-{
-    (void)sizeof(T);  // 保留 T 依赖, 避免未使用模板参数告警
-    // 用 JSPointerBase 安全转型(派生类 JS 对象的 opaque 是 JSRawPointer<Derived>*, 无法按 Inner 强转)
-    auto* cpb = (jsbind::JSPointerBase*)ptr;
-    if (cpb->isCleared())
-    {
-        // 同 fromJSValuePointer: 上层(call/callAsync)已预检, 这里只兜底(断言 fatal, 不再继续取对象)。
-        JZ_ASSERT_X(0, "fromJSValue: 传入已失效(clear)的 JSRawPointer, 上层应已拦截");
-        JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-        JZ_UNREACHABLE();
-    }
-}
-template <class T>
-void checkJSRawPointerCleared(JSContext*, void*, std::false_type)
-{
-}
-
 template <class T>
 T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
 {
@@ -522,8 +501,6 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
     auto ptr = JS_GetAnyOpaque(value, &class_id);
 
     using Base = jstype::remove_cvr_t<T>;
-    checkJSRawPointerCleared<Base>(ctx, ptr,
-        std::integral_constant<bool, jsbind::is_class_pointer<Base>::value>());
 
     // JSRawPointer<Class> 形参已在上面的 is_class_pointer 分支处理(返回 wrapper 本身)。
     // 普通 Class 值/引用形参: 统一模型下其 opaque 始终是 JSRawPointer<Base>*, 取底层对象;
@@ -531,46 +508,37 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
     if (!jsbind::is_class_pointer<Base>::value)
     {
         auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        if (engine && engine->isJSRawPointerClassId(class_id))
+        auto* cpb = (jsbind::JSPointerBase*)ptr;
+        if (!cpb->getRaw())
         {
-            auto* cpb = (jsbind::JSPointerBase*)ptr;
-            if (!cpb->getRaw())
-            {
-                // 运行期状态: 上层(call/callAsync)已预检。值/引用返回没有安全的兜底值,
-                // 故断言后直接 JZ_UNREACHABLE(致命), 绝不拿已失效包装取对象。
-                JZ_ASSERT_X(0, "fromJSValue<Class&>: 传入已失效(clear)的包装, 上层应已拦截");
-                JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-                JZ_UNREACHABLE();
-                return *((Base*)cpb->getRaw());   // 仅为满足签名: 上面已致命, 正常不会执行
-            }
-
-            // 真实类就是 Base 直接取; 派生类对象走 JS 原型链判断 is-a 后, 单继承下直接把派生指针当基类指针用
-            std::string actual_cid = engine->classCTypeId(class_id);
-            std::string want_cid = typeid(Base).name();
-            if (actual_cid == want_cid)
-            {
-                // 同 fromJSValuePointer: 走多态基类取底层指针, 不按具体包装类型强转。
-                return *((Base*)cpb->getRaw());
-            }
-            // is-a 判定: 复用 JS 原型链
-            int base_type = engine->ctypeidToType(want_cid);
-            if (base_type != JSType_none)
-            {
-                JSValue base_ctor = engine->classConstructor(base_type);
-                bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
-                JS_FreeValue(ctx, base_ctor);
-                if (is_base)
-                {
-                    void* obj = cpb->getRaw();
-                    return *((Base*)obj);
-                }
-            }
-            // 类型不匹配属于上层漏校验(call/callAsync 已按参数类型表拦下): 断言 + 兜底(值/引用无安全默认值)。
-            JZ_ASSERT_X(0, "fromJSValue<Class&>: 参数类型不匹配(上层应已校验)");
-            JS_ThrowTypeError(ctx, "参数类型不匹配: 期望 %s, 实际 %s", want_cid.c_str(), actual_cid.c_str());
-            JZ_UNREACHABLE();
-            return *((Base*)ptr);   // 仅为满足签名: 上面已致命, 正常不会执行
+            // 运行期状态: 上层(call/callAsync)已预检。值/引用返回没有安全的兜底值,
+            // 故断言后直接 JZ_UNREACHABLE(致命), 绝不拿已失效包装取对象。
+            JZ_ASSERT_X(0, "fromJSValue<Class&>: 传入已失效(clear)的包装, 上层应已拦截");
         }
+
+        // 真实类就是 Base 直接取; 派生类对象走 JS 原型链判断 is-a 后, 单继承下直接把派生指针当基类指针用
+        std::string actual_cid = engine->classCTypeId(class_id);
+        std::string want_cid = typeid(Base).name();
+        if (actual_cid == want_cid)
+        {
+            // 同 fromJSValuePointer: 走多态基类取底层指针, 不按具体包装类型强转。
+            return *((Base*)cpb->getRaw());
+        }
+        // is-a 判定: 复用 JS 原型链
+        int base_type = engine->ctypeidToType(want_cid);
+        if (base_type != JSType_none)
+        {
+            JSValue base_ctor = engine->classConstructor(base_type);
+            bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
+            JS_FreeValue(ctx, base_ctor);
+            if (is_base)
+            {
+                void* obj = cpb->getRaw();
+                return *((Base*)obj);
+            }
+        }
+        // 类型不匹配属于上层漏校验(call/callAsync 已按参数类型表拦下): 断言 + 兜底(值/引用无安全默认值)。
+        JZ_ASSERT_X(0, "fromJSValue<Class&>: 参数类型不匹配(上层应已校验)");
     }
     return *((Base*)ptr);
 }

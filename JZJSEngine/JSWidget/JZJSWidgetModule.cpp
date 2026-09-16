@@ -705,23 +705,14 @@ void JZJSWidgetModule::registImage()
 
 // ---------- 事件 (按类注册) ----------
 
-// 基类公共方法(type/accept/ignore/isAccepted)按子类分别注册; 用模板而非泛型 lambda,
-// 否则把含模板化 operator() 的 lambda 传给 ClassBind::def 时, 绑定 trait strip_function_object
-// 无法对 decltype(&F::operator()) 分解, 会编译失败。
-template <class E>
-static void defEventCommon(jsbind::ClassBind<E>& b)
-{
-    b.def("type", [](E* e) { return e->type(); });
-    b.def("accept", [](E* e) { e->accept(); });
-    b.def("ignore", [](E* e) { e->ignore(); });
-    b.def("isAccepted", [](E* e) { return e->isAccepted(); });
-}
-
 void JZJSWidgetModule::registEvents()
 {
     // 基类方法只在 JZEvent 上注册一次, 子类经 JS 原型链继承 (ClassBind<Sub>(name, bind_event))。
     jsbind::ClassBind<JZEvent> bind_event("JZEvent");
-    defEventCommon(bind_event);
+    bind_event.def("type", [](JZEvent* e) { return e->type(); });
+    bind_event.def("accept", [](JZEvent* e) { e->accept(); });
+    bind_event.def("ignore", [](JZEvent* e) { e->ignore(); });
+    bind_event.def("isAccepted", [](JZEvent* e) { return e->isAccepted(); });
     m_engine->registClass(bind_event.classDefine());
 
     jsbind::ClassBind<JZMouseEvent> bind_mouse("JZMouseEvent", bind_event);
@@ -1834,8 +1825,6 @@ static JZPainter* jzPainterFromThis(JSContext* ctx, JSValueConst this_val)
 
     JSClassID class_id = 0;
     void* opaque = JS_GetAnyOpaque(this_val, &class_id);
-    if (!opaque || !engine->isJSRawPointerClassId(class_id))
-        return nullptr;
     if (!js_check_class_arg<JZPainter>(ctx, this_val))
         return nullptr;
 

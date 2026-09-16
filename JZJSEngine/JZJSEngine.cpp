@@ -1031,8 +1031,6 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
     info.classDefine = define;
     info.superCTypeId = define.superCTypeid;
     info.funcList = funcList;
-    if (define.isPointer)
-        m_JSRawPointerTypes.insert(object_id);
     registType(info);
 
     // ---- 名字的宿主: m_typeMap 里那份 TypeInfo::classDefine ----
@@ -1291,7 +1289,7 @@ int JZJSEngine::jsTypeToType(int js_type)
 
 int JZJSEngine::typeToJSType(int type)
 {
-    auto it = m_typeMap.begin();
+    auto it = m_typeMap.find(type);
     if (it != m_typeMap.end())
         return it->second.jsType;
 
@@ -1308,11 +1306,6 @@ int JZJSEngine::jsValueType(JSValue v)
             return JSType_jsonValue;
     }
     return jsTypeToType(js_type);
-}
-
-bool JZJSEngine::isJSRawPointerClassId(JSClassID id) const
-{
-    return m_JSRawPointerTypes.count((int)id) > 0;
 }
 
 std::string JZJSEngine::classCTypeId(JSClassID id) const
@@ -1749,10 +1742,15 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
     }
 
     // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常(不落到 fromJSValue)
-    if (m_JSRawPointerTypes.count(arg_type) && isJSRawPointerCleared(m_ctx, value))
+    if (arg_type > JSType_object)
     {
-        std::string error = "参数错误:参数" + to_string(index) + "的指针已被释放(clear)，无法访问";
-        JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+        JSClassID class_id = JS_GetClassID(value);
+        auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
+        if (!ptr->getRaw())
+        {
+            std::string error = "参数错误:参数" + to_string(index) + "的指针已被释放(clear)，无法访问";
+            JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+        }
         return false;
     }
     return true;

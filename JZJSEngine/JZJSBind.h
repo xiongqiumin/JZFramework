@@ -362,9 +362,6 @@ public:
     {
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
-        // 统一包装模型: 值/引用类对象 opaque 同样存放 JSRawPointer<Class>*, 由 JS 管理 wrapper;
-        // 底层对象所有权按 cppOwner 决定(默认 false = JS 拥有并随 GC 释放), 与 JSRawPointer 一致。
-        m_define.isPointer = true;
         m_define.create = makeDefaultCreate<Class>();
         // 经多态基类释放: opaque 的实际包装类型未必与注册的 Class 对应
         // (JZObject 派生类用 JSObjectPointer, 其余用 JSRawPointer<T>), 按具体类型强转再 delete 是 UB。
@@ -381,7 +378,6 @@ public:
         static_assert(std::is_base_of<Base, Class>::value, "ClassBind: Class 必须公开继承 Base");
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
-        m_define.isPointer = true;
         m_define.create = makeDefaultCreate<Class>();
         // 同上一处: 经 JSPointerBase(虚析构)释放, 不按具体包装类型强转。
         m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };

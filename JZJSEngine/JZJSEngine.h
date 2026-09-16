@@ -245,6 +245,7 @@ public:
     int typeToJSType(int type);
     
     int jsValueType(JSValue v);
+    bool isJSRawPointerClassId(JSClassID class_id) { return false;  }
 
     bool checkType(JSValue value, int type);
     bool checkType(JSValue value, std::string type_name);
@@ -254,9 +255,6 @@ public:
     // 类型(含 JSRawPointer 形参的精确类) + 包装是否已 clear。
     // 返回 false 表示校验失败, 且已 JS_Throw*(调用方直接返回 JS_EXCEPTION)。
     bool checkFunctionArg(const CFunctionParam& param, int index, JSValueConst value);
-
-    // 判断某 JSClassID 是否属于 JSRawPointer 包装类(供 fromJSValuePointer 统一原始类/指针类)
-    bool isJSRawPointerClassId(JSClassID id) const;
 
     // ---- 继承支持 ----
     // class_id -> 该类的 ctypeid(供 fromJSValue 向上转型时取真实类)
@@ -409,9 +407,9 @@ protected:
 
         std::string name;
         int type;
-        int jsType;  // 这里的jsType 是 tag 和 class_id 组合，有潜在问题，先这样
+        int jsType;     // 这里的jsType 是 tag 和 class_id 组合，有潜在问题，先这样
         std::string ctypeId;
-        int valueType;
+        int valueType;  // 值类型,对于vector类有效
         // 继承: 单继承下记录直接基类 ctypeid(供 canConvert 做类型兼容判定)
         std::string superCTypeId;
         CClassDefine classDefine;
@@ -531,7 +529,6 @@ protected:
     std::map<int, TypeInfo> m_typeMap;
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
-    std::set<int> m_JSRawPointerTypes;   // ctypeidToType 得到的 JSType id, 对应 JSRawPointer<Class>
     std::vector<jsbind::JSPointerBase*> m_jsPoints;
 
     // 回调 GC 根数组(全局 __jzCallbackRoot 里那份的宿主)与登记计数, 见 retainCallback。

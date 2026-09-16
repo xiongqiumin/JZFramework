@@ -119,12 +119,64 @@ function(_jz_add_module MODULE_NAME)
     set(JZFRAMEWORK_ADDED_MODULES "${JZFRAMEWORK_ADDED_MODULES}" CACHE INTERNAL "")
 endfunction()
 
-macro(jz_module_exists MODULE_NAME RESULT_VAR)
-	set(${RESULT_VAR} OFF)
-	if(${MODULE_NAME} IN_LIST JZFRAMEWORK_ADDED_MODULES)
-		set(${RESULT_VAR} ON)
+# ==================== 模块启用状态(全局可查) ====================
+# 背景: 模块的 .cmake 是在 jzframework_use_modules 的**遍历过程中** include 的, 所以
+# "是否已添加"(JZFRAMEWORK_ADDED_MODULES)取决于模块在列表里的先后 —— 排在后面的模块
+# (如 JZWidget)对排在前面的模块(JZJSEngine)恒为 OFF, 想用就得靠"调用方手动排顺序", 很脆。
+#
+# 做法: 进入 jzframework_use_modules 时先把"请求的模块 + 传递依赖"**一次性收全**, 存进
+# GLOBAL PROPERTY(JZFRAMEWORK_ENABLED_MODULES), 再导出成 HAS_<模块> **缓存变量**。
+# 于是任何目录(模块 .cmake / 子目录 CMakeLists)里都能直接写, 与模块顺序无关:
+#     if(HAS_JZWidget)
+#         list(APPEND MY_SOURCES ...)
+#     endif()
+# 之所以用缓存变量而不是普通变量: 普通变量只在当前目录作用域可见, 子目录看不到;
+# 缓存变量全项目共享 —— 这比"查一次再 if"的封装更好用(那种写法用 PARENT_SCOPE 传结果,
+# 在函数里调用时结果只活在那一层)。
+# 语义 = "本次构建是否启用该模块", 与 C++ 侧的 HAS_<模块> 编译宏(见 _jz_declare_model)一致。
+# 注: 在 jzframework_use_modules **之前**取一律为假 —— 那时还不知道模块列表。
+
+# 递归收集模块及其传递依赖(结果进 GLOBAL PROPERTY, 不受函数作用域影响)
+function(_jz_collect_modules MODULE_NAME)
+    get_property(_collected GLOBAL PROPERTY JZFRAMEWORK_ENABLED_MODULES)
+    if("${MODULE_NAME}" IN_LIST _collected)
+        return()   # 已收过: 兼作依赖成环时的终止条件
     endif()
-endmacro()
+    set_property(GLOBAL APPEND PROPERTY JZFRAMEWORK_ENABLED_MODULES "${MODULE_NAME}")
+
+    set(_depends_var "MODULE_DEPENDS_${MODULE_NAME}")
+    if(DEFINED ${_depends_var})
+        foreach(_dep ${${_depends_var}})
+            _jz_collect_modules("${_dep}")
+        endforeach()
+    endif()
+endfunction()
+
+# 把全局集合导出成 HAS_<模块> 缓存变量: 子目录/模块 .cmake 里可直接 if(HAS_xxx)
+function(_jz_export_module_flags)
+    # 先清掉上一轮 configure 生成的, 否则"从列表里删掉的模块"会残留 ON
+    foreach(_v ${JZFRAMEWORK_HAS_MODULE_VARS})
+        unset(${_v} CACHE)
+    endforeach()
+
+    get_property(_enabled GLOBAL PROPERTY JZFRAMEWORK_ENABLED_MODULES)
+    set(_vars "")
+    foreach(_m ${_enabled})
+        set(HAS_${_m} ON CACHE INTERNAL "JZFramework: module ${_m} enabled")
+        list(APPEND _vars HAS_${_m})
+    endforeach()
+    set(JZFRAMEWORK_HAS_MODULE_VARS "${_vars}" CACHE INTERNAL "")
+endfunction()
+
+# 全局查询: 任何目录/作用域都能问"某模块本次构建是否启用"。
+# 查的是 HAS_<模块> 缓存变量, 所以与模块在 jzframework_use_modules 里的先后顺序无关。
+function(jz_module_exists MODULE_NAME RESULT_VAR)
+    if(HAS_${MODULE_NAME})
+        set(${RESULT_VAR} ON PARENT_SCOPE)
+    else()
+        set(${RESULT_VAR} OFF PARENT_SCOPE)
+    endif()
+endfunction()
 
 # ==================== 用户接口：设置要启用的模块 ====================
 macro(jzframework_use_modules)
@@ -144,7 +196,18 @@ macro(jzframework_use_modules)
         target_compile_options(${JZ_MODULE_TARGET} PRIVATE -Wno-psabi)
     endif()
     unset(JZFRAMEWORK_ADDED_MODULES CACHE)
-	
+
+	# 先把"启用集合"算全(见上面"模块启用状态"): 必须在 include 任何模块 .cmake 之前,
+	# 这样模块配置里 if(HAS_xxx) 与模块在列表里的顺序无关。
+	set_property(GLOBAL PROPERTY JZFRAMEWORK_ENABLED_MODULES "")
+	foreach(MODULE ${modules})
+		_jz_collect_modules("${MODULE}")
+	endforeach()
+	foreach(s ${single_modules})
+		_jz_collect_modules("${s}")
+	endforeach()
+	_jz_export_module_flags()
+
 	foreach(MODULE ${modules})
         _jz_declare_model(${MODULE})
     endforeach()

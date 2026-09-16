@@ -6,15 +6,13 @@ set(JZSIMULATOR_SOURCES
 )
 
 # JZSimulator 依赖 JZBle/JZNet/JZGpio，这些模块始终存在
-jz_module_exists(JZBle JZSIM_HAS_BLE)
-jz_module_exists(JZGpio JZSIM_HAS_GPIO)
-if(JZSIM_HAS_BLE)
+if(HAS_JZBle)
     list(APPEND JZSIMULATOR_SOURCES
         JZBleDriverSimulator.h
         JZBleDriverSimulator.cpp
     )
 endif()
-if(JZSIM_HAS_GPIO)
+if(HAS_JZGpio)
     list(APPEND JZSIMULATOR_SOURCES
         JZGpioDriverSimulator.h
         JZGpioDriverSimulator.cpp
@@ -22,24 +20,21 @@ if(JZSIM_HAS_GPIO)
 endif()
 
 # 以下模块为可选：仅当对应模块被启用时才编译其模拟驱动
-jz_module_exists(JZWifi JZSIM_HAS_WIFI)
-if(JZSIM_HAS_WIFI)
+if(HAS_JZWifi)
     list(APPEND JZSIMULATOR_SOURCES
         JZWifiDriverSimulator.h
         JZWifiDriverSimulator.cpp
     )
 endif()
 
-jz_module_exists(JZSensor JZSIM_HAS_SENSOR)
-if(JZSIM_HAS_SENSOR)
+if(HAS_JZSensor)
     list(APPEND JZSIMULATOR_SOURCES
         JZSensorDriverSimulator.h
         JZSensorDriverSimulator.cpp
     )
 endif()
 
-jz_module_exists(JZOTA JZSIM_HAS_OTA)
-if(JZSIM_HAS_OTA)
+if(HAS_JZOTA)
     list(APPEND JZSIMULATOR_SOURCES
         JZOTADriverSimulator.h
         JZOTADriverSimulator.cpp

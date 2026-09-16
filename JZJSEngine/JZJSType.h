@@ -167,7 +167,7 @@ protected:
 
 // 派生自JZObject 的分支
 template<typename T>
-std::enable_if_t<std::is_base_of_v<JZObject, T>, JSPointerBase*>
+std::enable_if_t<std::is_base_of<JZObject, T>::value, JSPointerBase*>
 make_js_pointer(JZJSEngine* mod, T* ptr)
 {
     return new JSObjectPointer(mod, ptr);
@@ -175,7 +175,7 @@ make_js_pointer(JZJSEngine* mod, T* ptr)
 
 // 不派生自JZObject 的分支
 template<typename T>
-std::enable_if_t<!std::is_base_of_v<JZObject, T>, JSPointerBase*>
+std::enable_if_t<!std::is_base_of<JZObject, T>::value, JSPointerBase*>
 make_js_pointer(JZJSEngine* mod, T* ptr)
 {
     return new JSRawPointer<T>(mod, ptr);

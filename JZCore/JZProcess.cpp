@@ -537,6 +537,7 @@ public:
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
+    bool m_terminateRequested;
 
     pid_t pid;
     int stdinWrite;
@@ -557,6 +558,7 @@ JZProcessPrivate::JZProcessPrivate(JZProcess *q)
       state(JZProcess::NotRunning),
       exitCode(0),
       exitStatus(JZProcess::NormalExit),
+      m_terminateRequested(false),
       pid(-1),
       stdinWrite(-1),
       stdoutRead(-1),

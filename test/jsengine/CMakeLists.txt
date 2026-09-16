@@ -1,6 +1,8 @@
 add_executable(test_jsengine test_jsengine.cpp)
 target_link_libraries(test_jsengine JZFramework)
 
+# 以下 UI 相关用例需要自绘 UI(JZWidget)支持, 未启用该模块时整个跳过。
+if(HAS_JZWidget)
 add_executable(test_jsui test_jsui.cpp)
 target_link_libraries(test_jsui JZFramework)
 # 把 UI 描述资源拷到构建目录, 供 uiLoader.loadFile 测试
@@ -12,6 +14,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/timer_ui.xml
 add_executable(test_load_ui test_load_ui.cpp)
 target_link_libraries(test_load_ui JZFramework)
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+endif()
 
 add_executable(test_jsnet test_jsnet.cpp)
 target_link_libraries(test_jsnet JZFramework)
@@ -42,8 +45,10 @@ set_tests_properties(jsengine.test_jssqlite PROPERTIES TIMEOUT 120)
 add_test(NAME jsengine.test_jsmodbus COMMAND test_jsmodbus)
 set_tests_properties(jsengine.test_jsmodbus PROPERTIES TIMEOUT 120)
 
+if(HAS_JZWidget)
 add_test(NAME jsengine.test_jsui COMMAND test_jsui)
 set_tests_properties(jsengine.test_jsui PROPERTIES TIMEOUT 60)
+endif()
 
 add_test(NAME jsengine.test_jsnet COMMAND test_jsnet)
 set_tests_properties(jsengine.test_jsnet PROPERTIES TIMEOUT 300)
@@ -52,9 +57,11 @@ add_test(NAME jsengine.test_jsworker COMMAND test_jsworker)
 set_tests_properties(jsengine.test_jsworker PROPERTIES TIMEOUT 180)
 
 # load_ui: 一份数据一份测试(运行时各跑一份, 互不影响)。新增数据文件时在此加一行即可。
+if(HAS_JZWidget)
 add_test(NAME jsengine.test_load_ui.basic COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/basic_window.xml)
 set_tests_properties(jsengine.test_load_ui.basic PROPERTIES TIMEOUT 60)
 add_test(NAME jsengine.test_load_ui.menubar COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/main_menubar.xml)
 set_tests_properties(jsengine.test_load_ui.menubar PROPERTIES TIMEOUT 60)
 add_test(NAME jsengine.test_load_ui.containers COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/containers.xml)
 set_tests_properties(jsengine.test_load_ui.containers PROPERTIES TIMEOUT 60)
+endif()

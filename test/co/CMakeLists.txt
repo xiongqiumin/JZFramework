@@ -7,8 +7,7 @@ add_executable(test_co
 	test_coUdp.cpp
 	test_coWebSocket.cpp)
 
-jz_module_exists(JZBle HAS_JZBLE)
-if(HAS_JZBLE)
+if(HAS_JZBle)
     list(APPEND JZCO_SOURCES test_coBle.cpp)
 endif()
 

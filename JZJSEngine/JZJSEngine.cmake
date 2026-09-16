@@ -26,12 +26,16 @@
 	JZJSModbusModule.cpp
 	JZJSUiLoader.h
 	JZJSUiLoader.cpp
-    JSWidget/JZJSWidgetModule.h
-	JSWidget/JZJSWidgetModule.cpp
-
-	JSWidget/JZJSWidget.h
-	JSWidget/JZJSWidget.cpp
 )
+
+# JS 侧的界面能力建立在自绘 UI(JZWidget)之上: 没启用 JZWidget 时不参与编译,
+# C++ 侧对应的 #ifdef HAS_JZWidget 守卫见 JZJSEngine.cpp 的模块注册处。
+if(HAS_JZWidget)
+    list(APPEND JZJSENGINE_SOURCES JSWidget/JZJSWidgetModule.h
+		JSWidget/JZJSWidgetModule.cpp
+		JSWidget/JZJSWidget.h
+		JSWidget/JZJSWidget.cpp)
+endif()
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)
 

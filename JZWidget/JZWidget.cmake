@@ -173,9 +173,9 @@ target_link_libraries(${JZ_MODULE_TARGET} PUBLIC JZWidget_emoji_resources)
 
 # ---- AI/MCP 工具桥 (可选): JZMcpServer 模块参与构建时, 把语义树/截图/驱动
 #      暴露为 MCP 工具 (get_ui_state / ui_screenshot / ui_invoke)。
-#      注意: JZMcpServer 需在 jzframework_use_modules 中排在 JZWidget 之前。
-jz_module_exists(JZMcpServer JZ_HAS_MCP_SERVER)
-if(JZ_HAS_MCP_SERVER)
+#      与模块顺序无关: HAS_JZMcpServer 是 jzframework_use_modules 开头就定好的全局缓存变量
+#      (见 JZFramework.cmake "模块启用状态")。
+if(HAS_JZMcpServer)
     set(JZ_AI_SOURCES
         JZUiMcpTools.h
         JZUiMcpTools.cpp

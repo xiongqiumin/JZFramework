@@ -76,7 +76,7 @@ int main()
         std::this_thread::sleep_for(std::chrono::seconds(120));
         logLine("[watchdog] TIMEOUT -> force exit");
         fflush(NULL);
-        _exit(99);
+        _Exit(99);   // <cstdlib>: 立即终止, 不做 flush/静态析构(看门狗语义)
     }).detach();
 
     JZApplication a;

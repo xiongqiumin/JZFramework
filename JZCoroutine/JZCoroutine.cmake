@@ -30,7 +30,6 @@ set(JZCO_NET_SOURCES
 	JZCoWebSocketServer.h
 )
 
-jz_module_exists(JZNet HAS_JZNet)
 if(HAS_JZNet)
     list(APPEND JZCO_SOURCES ${JZCO_NET_SOURCES})
 endif()
@@ -44,8 +43,7 @@ set(JZCO_BLE_SOURCES
     JZCoBleDiscoveryAgent.h
 )
 
-jz_module_exists(JZBle HAS_JZBLE)
-if(HAS_JZBLE)
+if(HAS_JZBle)
     list(APPEND JZCO_SOURCES ${JZCO_BLE_SOURCES})
 endif()
 
@@ -54,7 +52,6 @@ set(JZCO_SERIAL_SOURCES
     JZCoSerialPort.h
 )
 
-jz_module_exists(JZSerialPort HAS_JZSerialPort)
 if(HAS_JZSerialPort)
     list(APPEND JZCO_SOURCES ${JZCO_SERIAL_SOURCES})
 endif()

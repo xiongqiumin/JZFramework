@@ -67,10 +67,19 @@ if (JZ_ENABLE_ASAN)
     endif()
 endif()
 
+#module list
+set(JZ_MODULE_LIST JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashReport
+        JZCv JZFrp JZGpio JZHttpServer JZJSEngine JZJson JZMcpServer JZModbus JZNode
+        JZOTA JZSensor JZSerialPort JZTest JZCompress JZXml)
+
+# JZWidget(自绘 UI)依赖平台窗口/字体等能力, 目前只在 Windows 下参与构建。
+# 关掉它以后 HAS_JZWidget 为假, 各模块里依赖 UI 的源文件会自动跳过(见 JZFramework.cmake)。
+if(WIN32)
+    list(APPEND JZ_MODULE_LIST JZWidget)
+endif()
+
 include(JZFramework.cmake)
-jzframework_use_modules(JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashReport
-    JZCv JZFrp JZGpio JZHttpServer JZJSEngine JZJson JZMcpServer JZModbus JZNode
-    JZOTA JZSensor JZSerialPort JZTest JZWidget JZCompress JZXml)
+jzframework_use_modules(${JZ_MODULE_LIST})
 target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)

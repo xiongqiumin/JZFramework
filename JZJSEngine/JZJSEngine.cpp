@@ -1864,6 +1864,7 @@ void JZJSEngine::movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue jsValu
 {
     JZ_ASSERT(JS_IsUndefined(pointer->m_state->jsValue));
     pointer->m_state->jsValue = dupValue(jsValue);
+    pointer->m_state->cppOwner = true;   // 转入 C++ 对象树: 底层对象由 C++ (父控件/容器) 负责 delete
 }
 
 JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
@@ -1871,6 +1872,7 @@ JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
     JZ_ASSERT(pointer->m_state->cppOwner);
     JSValue jsValue = pointer->m_state->jsValue;
     pointer->m_state->jsValue = JS_UNDEFINED;
+    pointer->m_state->cppOwner = false;  // 交回 JS: 由 JS 决定生死(GC 时释放)
     return jsValue;
 }
 
@@ -1904,8 +1906,14 @@ void JZJSEngine::clearPointerStates()
     {
         if (pt->cppOwner())
         {
-            auto value = pt->moveToJs();
-            JS_FreeValue(m_ctx, value);
+            // 引擎销毁: 不"转移所有权到 JS"(无意义, 上下文即将销毁), 只把 JS 侧保存的包装引用
+            // 释放, 使其失效。moveToJs 在这里语义易误解, 故直接清引用。
+            JSValue& jv = pt->m_state->jsValue;
+            if (!JS_IsUndefined(jv))
+            {
+                JS_FreeValue(m_ctx, jv);
+                jv = JS_UNDEFINED;
+            }
         }
     }
     m_jsPoints.clear();

@@ -1111,7 +1111,7 @@ void JZJSWidgetModule::registWidgets()
     // setParentWidget 还要往本模块的控件表里登记(把接收者的 JS 包装交给父控件保活), 而 C 函数
     // 拿不到模块 —— 所以它注册成**带 func_data 的 C 函数**: 注入模块指针, 回调第 6 个参数就是它
     // (见 jsbind::ClassBind::defData / JZJSWidgetModule::fromFuncData)。其余几个不需要模块。
-    bind_w.def("setParentWidget", [this](JZWidget *w, JZWidget* parent)->JZWidget* {        
+    bind_w.def("setParentWidget", [this](JZWidget *w, JZWidget* parent)->JZWidget* {
         if (w->parent())
         {
             w->setParent(parent);
@@ -1131,10 +1131,11 @@ void JZJSWidgetModule::registWidgets()
                 base->moveToCpp(value);
             }
         }
-    });
-    bind_w.def("parentWidget", &JZWidget::parentWidget);
-    bind_w.def("window", &JZWidget::window);
-    bind_w.def("layout", &JZWidget::layout);
+        return w;
+    }, jsbind::returnOwnedByCpp);
+    bind_w.def("parentWidget", &JZWidget::parentWidget, jsbind::returnOwnedByCpp);
+    bind_w.def("window", &JZWidget::window, jsbind::returnOwnedByCpp);
+    bind_w.def("layout", &JZWidget::layout, jsbind::returnOwnedByCpp);
     // setLayout: Qt 语义, 只能设一次(已有布局/传 null 都抛错); 换布局先 clearLayout()
     bind_w.def("setLayout", [] {
 

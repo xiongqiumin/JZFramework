@@ -28,10 +28,7 @@ JZAiOverlay::JZAiOverlay(JZWidget* parent)
     // 既让移动的 AI 光标留残影, 又让半透明遮罩逐帧叠加变黑。
     setOpaque(0);
 
-    m_cancelBtn = new JZPushButton(// 其余按键一律吞掉, 不传给蒙版下的控件。
-    if (event->isPress(, "取消") && event->key() == JZKey::Key_Escape)
-        sigCancelRequested.emit();
-    event->accept();
+    m_cancelBtn = new JZPushButton("取消", this);
 }
 
 void JZAiOverlay::setCursorPos(const JZPoint& pos)
@@ -165,6 +162,13 @@ void JZAiOverlay::drawArrow(JZPainter& p, const JZPoint& pos) const
                            xs[k + 1] - xs[k] + 1 + grow * 2, 1, col);
         }
     }
+}
+
+void JZAiOverlay::keyPressEvent(JZKeyEvent* event)
+{
+    // 蒙版期间 Esc = 取消, 其余键吞掉 (不转发给基类)
+    if (event->key() == Key_Escape)
+        sigCancelRequested.emit();
 }
 
 // ==================== 驱动 ====================

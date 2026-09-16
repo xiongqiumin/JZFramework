@@ -395,7 +395,8 @@ void MainWindow::setupUi()
     bar->setStyleClass("panel");   // 通用容器也吃样式 (JZWidget 基类画样式盒子)
     JZHBoxLayout* barLayout = new JZHBoxLayout(6, 4);
 
-    m_themeBtn = new JZPushButton(0, 24);
+    m_themeBtn = new JZPushButton("", nullptr);
+    m_themeBtn->setWidth(24);
     barLayout->addStretch(1);
     bar->setLayout(barLayout);
     connect(&m_themeBtn->sigClicked, this, &MainWindow::onToggleTheme);
@@ -551,7 +552,8 @@ void MainWindow::buildPages()
         l->setAlign(JZAlignCenter);
         l->setText("Hello");
         m_labelDemo = l;
-        JZPushButton* b = new JZPushButton(&MainWindow::onLabelUpdate, "Update");
+        JZPushButton* b = new JZPushButton("Update");
+        connect(&b->sigClicked, this, &MainWindow::onLabelUpdate);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(l);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
         m_preview->addWidget(page);
@@ -560,7 +562,8 @@ void MainWindow::buildPages()
     // ---- PushButton ----
     {
         JZWidget* page = makePage();
-        JZPushButton* b = new JZPushButton(&MainWindow::onLogVoid, "Click Me");
+        JZPushButton* b = new JZPushButton("Click Me");
+        connect(&b->sigClicked, this, &MainWindow::onLogVoid);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
         m_preview->addWidget(page);
     }
@@ -586,7 +589,8 @@ void MainWindow::buildPages()
         p->setRange(0, 100);
         p->setValue(m_pbVal, true);
         p->resize(150, p->height());
-        JZPushButton* b = new JZPushButton(&MainWindow::onPbInc, "+10");
+        JZPushButton* b = new JZPushButton("+10");
+        connect(&b->sigClicked, this, &MainWindow::onPbInc);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(p);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
         m_preview->addWidget(page);
@@ -650,7 +654,8 @@ void MainWindow::buildPages()
         m_te = te;
         te->setText("edit me");
         te->resize(160, 70);
-        JZPushButton* b = new JZPushButton(&MainWindow::onLogTextEdit, "Log");
+        JZPushButton* b = new JZPushButton("Log");
+        connect(&b->sigClicked, this, &MainWindow::onLogTextEdit);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(te);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(b);
         m_preview->addWidget(page);
@@ -672,7 +677,9 @@ void MainWindow::buildPages()
         JZHBoxLayout* hlay = new JZHBoxLayout(6, 6);
         bar->setLayout(hlay);
 
-        JZPushButton* bAdd = new JZPushButton(bar, "Add Row");
+        JZPushButton* bAdd = new JZPushButton("Add Row", bar);
+        JZPushButton* bAdd10 = new JZPushButton("Add 10", bar);
+        JZPushButton* bClear = new JZPushButton("Clear", bar);
         bAdd->setObjectName("btnTableAdd");
         bAdd10->setObjectName("btnTableAdd10");
         bClear->setObjectName("btnTableClear");
@@ -717,8 +724,11 @@ void MainWindow::buildPages()
         JZHBoxLayout* fileLay = new JZHBoxLayout(6, 6);
         fileBar->setLayout(fileLay);
 
-        JZPushButton* bOpen   = new JZPushButton(fileBar, "Open File...");
-        JZPushButton* bDir    = new JZPushButton(&MainWindow::onFileOpen, "Choose Directory...");
+        JZPushButton* bOpen   = new JZPushButton("Open File...", fileBar);
+        JZPushButton* bDir    = new JZPushButton("Choose Directory...");
+        JZPushButton* bOpenM  = new JZPushButton("Open Files...", fileBar);
+        JZPushButton* bSave   = new JZPushButton("Save File...", fileBar);
+        connect(&bDir->sigClicked, this, &MainWindow::onFileOpen);
         connect(&bOpenM->sigClicked, this, &MainWindow::onFileOpenMany);
         connect(&bSave->sigClicked, this, &MainWindow::onFileSave);
         connect(&bDir->sigClicked, this, &MainWindow::onFileDir);
@@ -734,7 +744,9 @@ void MainWindow::buildPages()
         JZHBoxLayout* msgLay = new JZHBoxLayout(6, 6);
         msgBar->setLayout(msgLay);
 
-        JZPushButton* bInfo = new JZPushButton(msgBar, "Information");
+        JZPushButton* bInfo = new JZPushButton("Information", msgBar);
+        JZPushButton* bWarn = new JZPushButton("Warning", msgBar);
+        JZPushButton* bQues = new JZPushButton("Question", msgBar);
         bInfo->setObjectName("btnMsgInfo");
         bWarn->setObjectName("btnMsgWarn");
         bQues->setObjectName("btnMsgQuestion");
@@ -771,7 +783,8 @@ void MainWindow::buildPages()
 
         JZWidget* tabB = new JZWidget();
         tabB->setLayout(new JZVBoxLayout(10, 10));
-        JZPushButton* bb = new JZPushButton(&MainWindow::onLogVoid, "Btn in Tab B");
+        JZPushButton* bb = new JZPushButton("Btn in Tab B");
+        connect(&bb->sigClicked, this, &MainWindow::onLogVoid);
         static_cast<JZVBoxLayout*>(tabB->layout())->addWidget(bb);
 
         JZWidget* tabC = new JZWidget();
@@ -860,7 +873,7 @@ void MainWindow::buildPages()
         sb->setRange(0, 100);
         sb->setValue(10);
         glay->addWidget(sb);
-        glay->addWidget(new JZPushButton(每 80×80 一个编号按钮 ----
+        glay->addWidget(new JZPushButton("Button", gb->contentWidget()));
     // 内容控件 setWidget 后挂到内部 viewport, 尺寸固定为世界大小; 滚动 = 滚动区
     // 把世界平移到 viewport 内 (-sx, -sy, "Apply") 并由视口裁剪, 拖滚动条/滚轮/键盘翻页
     // 均能漫游整个 4000×4000, 点任意按钮把编号 (含世界行列坐标) 打进日志。
@@ -887,14 +900,18 @@ void MainWindow::buildPages()
         for (int r = 0; r < kCount; r++) {
             for (int c = 0; c < kCount; c++) {
                 const std::string num = std::to_string(id);
-                JZPushButton* b = new JZPushButton(id, r, c] {
-                    log("scroll btn #" + std::to_string(id, r * kCell) + " (row=" +
+                JZPushButton* b = new JZPushButton(num);
+                connect(&b->sigClicked, this, [id, r, c, this]() {
+                    log("scroll btn #" + std::to_string(id) + " (row=" +
                         std::to_string(r) + ", col=" + std::to_string(c) + ") clicked");
                 });
                 id++;
             }
         }
         area->setWidget(world);
+        m_preview->addWidget(page);
+    }
+
         m_preview->addWidget(page);
     }
 
@@ -909,13 +926,15 @@ void MainWindow::buildPages()
         hint->setText("动画方块: JZPropertyAnimation 修改 x / y / w / h (A<->B)");
         vlay->addWidget(hint);
 
-        JZPushButton* go = new JZPushButton(&MainWindow::startAnimDemo, "动画: 移动+缩放");
+        JZPushButton* go = new JZPushButton("动画: 移动+缩放");
+        connect(&go->sigClicked, this, &MainWindow::startAnimDemo);
 
         DemoStage* stage = new DemoStage(page);
         stage->setObjectName("animStage");
         vlay->addWidget(stage, 1);
 
-        JZPushButton* box = new JZPushButton([this] { log("anim finished", 24); });
+        JZPushButton* box = new JZPushButton("finished");
+        connect(&box->sigClicked, this, [this]() { log("anim finished"); });
 
         m_preview->addWidget(page);
     }

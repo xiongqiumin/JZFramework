@@ -512,13 +512,25 @@ jsbind::JSPointerBase* js_JZColor_ctor(JZJSEngine *engine, int argc, JSValueCons
 // JZImage: () / (filePath) / (bytes: Uint8Array)
 jsbind::JSPointerBase* js_JZImage_ctor(JZJSEngine *engine, int argc, JSValueConst *argv)
 {
-    std::vector<ArgResult> r;
-    int g = engine->checkAndSetArgs("int,int", &r);
-    if (g == -1)
-        return nullptr;
-    
     JSContext* ctx = engine->context();
-    return jzNewValue<JZColor>(ctx, new JZImage(w, h));
+    if (argc == 0)
+        return jzNewValue<JZImage>(ctx, JZImage());
+
+    if (argc == 1)
+    {
+        // (filePath): 按文件头探测格式解码; (bytes: Uint8Array): 按内存数据解码
+        if (engine->checkType(argv[0], JSType_string))
+        {
+            std::string file = fromJSValue<std::string>(ctx, argv[0]);
+            return jzNewValue<JZImage>(ctx, JZImage(file));
+        }
+        size_t size = 0;
+        uint8_t* buf = JS_GetUint8Array(ctx, &size, argv[0]);
+        return jzNewValue<JZImage>(ctx, JZImage((const char*)buf, (int)size));
+    }
+
+    JS_ThrowTypeError(ctx, "JZImage: 参数应为 () / (filePath) / (bytes)");
+    return nullptr;
 }
 
 // ---------- 画笔样式(JZPen / JZBrush / JZFont) ----------

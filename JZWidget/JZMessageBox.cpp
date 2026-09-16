@@ -24,11 +24,15 @@ JZMessageBox::JZMessageBox(JZWidget* parent, const std::string& title,
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(8, 8);
     bh->addStretch(1);
-    auto* okBtn = new JZPushButton(btnRow, "OK");
+    auto* okBtn = new JZPushButton("OK", btnRow);
+    bh->addWidget(okBtn, 0);
+    connect(&okBtn->sigClicked, this, &JZDialog::accept);
+    if (hasCancel)
+    {
+        auto* cancelBtn = new JZPushButton("Cancel", btnRow);
         bh->addWidget(cancelBtn, 0);
         connect(&cancelBtn->sigClicked, this, &JZDialog::reject);
     }
-    connect(&okBtn->sigClicked, this, &JZDialog::accept);
     btnRow->setLayout(bh);
     vbox->addWidget(btnRow, 0);
 }

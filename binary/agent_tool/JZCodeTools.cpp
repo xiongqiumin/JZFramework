@@ -620,24 +620,192 @@ void JZSearchFileTool::call(const ToolCall &params)
     finish(params, true, text);
 }
 
+// ==================== JZReadFileTool ====================
+JZReadFileTool::JZReadFileTool()
+{
+    ToolDefine def;
+    def.name = "read_file";
+    def.description = "读取工作区中某个文本文件的内容，带行号返回。" \
+                      "可以用 start_line / line_count 只读取感兴趣的行范围（行号从 1 开始），" \
+                      "避免把大文件整篇灌进上下文；单次最多返回 2000 行，超出请分段读取。" \
+                      "二进制文件会被拒绝。读文件优先用本工具而不是 `cat` —— 行号 / 分段 / 编码判定 shell 都给不了。";
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区或绝对路径"));
+    def.parameters.push_back(makeParam("start_line", ParamType::Number, "起始行号（从 1 开始），默认 1"));
+    def.parameters.push_back(makeParam("line_count", ParamType::Number, "读取多少行，0 或省略表示读到文件末尾"));
+    def.required_parameters.push_back("path");
+    setToolDefine(def);
+}
+
+void JZReadFileTool::call(const ToolCall &params)
+{
+    string rel = params.params.get("path", "").asString();
+    if (rel.empty())
+    {
+        finish(params, false, "参数 path 不能为空");
+        return;
+    }
+    int startLine = params.params.get("start_line", 1).asInt();
+    int lineCount = params.params.get("line_count", 0).asInt();
+    if (startLine < 1)
+        startLine = 1;
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), DenyReason::PathOutside);
+        return;
+    }
+
+    JZFileInfo info(abs);
+    if (!info.exists() || !info.isFile())
+    {
+        finish(params, false, "文件不存在: " + rel, DenyReason::NotFound);
+        return;
+    }
+    if (!isTextFile(abs))
+    {
+        finish(params, false, "不是文本文件（或含二进制内容）: " + rel);
+        return;
+    }
+
+    string content, readError;
+    if (!readHostFile(m_host, abs, content, readError))
+    {
+        finish(params, false, readError, DenyReason::NotFound);
+        return;
+    }
+
+    vector<string> lines = readLines(content);
+    int begin = startLine - 1;
+    if (begin >= (int)lines.size())
+    {
+        finish(params, false, "start_line 超出文件行数（共 " + to_string(lines.size()) + " 行）");
+        return;
+    }
+
+    int end = (lineCount > 0) ? min(begin + lineCount, (int)lines.size()) : (int)lines.size();
+    const int kMaxLines = 2000;
+    bool truncated = false;
+    if (end - begin > kMaxLines)
+    {
+        end = begin + kMaxLines;
+        truncated = true;
+    }
+
+    string text = "文件 " + rel + "（共 " + to_string(lines.size()) + " 行）:\n";
+    for (int i = begin; i < end; i++)
+        text += to_string(i + 1) + ": " + lines[i] + "\n";
+    if (truncated)
+        text += "... 单次最多返回 " + to_string(kMaxLines) + " 行，请用 start_line / line_count 分段读取\n";
+
+    finish(params, true, text);
+}
+
+// ==================== JZWriteFileTool ====================
+JZWriteFileTool::JZWriteFileTool()
+{
+    ToolDefine def;
+    def.name = "write_file";
+    def.description = "创建文件，或整文件覆盖写入（完全重写，局部修改请用 modify_file）。" \
+                      "content 为文件的完整内容；已存在文件会被整体替换。父目录不存在会自动创建。";
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区或绝对路径"));
+    def.parameters.push_back(makeParam("content", ParamType::String, "文件的完整内容（会整体覆盖旧文件）"));
+    def.required_parameters.push_back("path");
+    def.required_parameters.push_back("content");
+    setToolDefine(def);
+}
+
+void JZWriteFileTool::call(const ToolCall &params)
+{
+    string rel = params.params.get("path", "").asString();
+    if (rel.empty())
+    {
+        finish(params, false, "参数 path 不能为空");
+        return;
+    }
+    string content = params.params.get("content", "").asString();
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), ret);
+        return;
+    }
+
+    JZFileInfo info(abs);
+    if (info.exists() && info.isDir())
+    {
+        finish(params, false, "目标是目录, 不能写: " + rel, DenyReason::WriteDenied);
+        return;
+    }
+
+    bool existed = info.exists();
+
+    // 已存在的文件原来是 CRLF 就保持它 —— 否则一次编辑会把整个文件的行尾改掉
+    string out = content;
+    if (existed && !out.empty())
+    {
+        string oldText;
+        string readError;
+        if (readHostFile(m_host, abs, oldText, readError) &&
+            oldText.find("\r\n") != string::npos && out.find("\r\n") == string::npos)
+        {
+            str_replace(out, "\n", "\r\n");
+        }
+    }
+
+    string dir = jzDirPart(abs);
+    if (!dir.empty())
+    {
+        JZDir parent;
+        if (!parent.exists(dir) && !parent.mkpath(dir))
+        {
+            finish(params, false, "创建父目录失败: " + dir, DenyReason::WriteDenied);
+            return;
+        }
+    }
+
+    JZFile file;
+    if (!file.open(abs, "wb"))
+    {
+        finish(params, false, "打开文件失败(权限?): " + rel, DenyReason::WriteDenied);
+        return;
+    }
+    int written = file.write(str_toUtf8(out));
+    file.close();
+    if (written != (int)out.size())
+    {
+        finish(params, false, "写入长度不符: " + rel, DenyReason::EditFailed);
+        return;
+    }
+
+    vector<string> lines = readLines(out);
+    string msg = (existed ? "已完整覆写文件 " : "已新建文件 ") + rel +
+                 "，共 " + to_string(lines.size()) + " 行。";
+    finish(params, true, msg);
+}
+
 // ==================== JZModifyFileTool ====================
 JZModifyFileTool::JZModifyFileTool()
 {
     ToolDefine def;
     def.name = "modify_file";
     def.description =
-        "修改（或创建）一个文件。\n"
-        "old_str 非空: 精确匹配文件里的原文并替换为 new_str, **默认要求 old_str 唯一匹配**"
+        "对已有文件做局部片段精确替换（不动其它内容）。\n"
+        "old_str 必须非空，且**默认要求唯一匹配**文件里的原文并替换为 new_str"
         "(匹配到多处会报错, 这时请补上上下文使它唯一, 或者设 replace_all=true)。\n"
-        "old_str 为空: 直接用 new_str **覆盖整个文件** —— 新建文件 / 整文件重写用这种写法。\n"
+        "整文件写入 / 新建文件请用 write_file；本工具只做片段级修改。\n"
         "改代码务必先看清原文: 空格、换行、缩进必须完全一致。";
     def.parameters.push_back(makeParam("path", ParamType::String, "文件路径(相对工作区或绝对路径)"));
     def.parameters.push_back(makeParam("old_str", ParamType::String,
-                                       "要被替换掉的原文; 空串 = 整文件覆盖(新建/重写)"));
+                                       "要被替换掉的原文(必须非空; 整文件写入请改用 write_file)"));
     def.parameters.push_back(makeParam("new_str", ParamType::String, "替换后的新内容"));
     def.parameters.push_back(makeParam("replace_all", ParamType::Boolean,
                                        "old_str 匹配多处时是否全部替换(默认 false = 报错)"));
     def.required_parameters.push_back("path");
+    def.required_parameters.push_back("old_str");
     def.required_parameters.push_back("new_str");
     setToolDefine(def);
 }
@@ -705,57 +873,18 @@ void JZModifyFileTool::call(const ToolCall &params)
         return;
     }
 
-    // ---- old_str 为空: 整文件覆盖(新建 / 重写) ----
+    // ---- old_str 必须非空: 整文件写入交给 write_file ----
     if (oldStr.empty())
     {
-        string out = newStr;
-
-        // 已存在的文件原来是 CRLF 就保持它 —— 否则一次编辑会把整个文件的行尾改掉
-        if (info.exists() && !out.empty())
-        {
-            string oldText;
-            string readError;
-            if (readHostFile(m_host, abs, oldText, readError) &&
-                oldText.find("\r\n") != string::npos && out.find("\r\n") == string::npos)
-            {
-                str_replace(out, "\n", "\r\n");
-            }
-        }
-
-        string dir = jzDirPart(abs);
-        if (!dir.empty())
-        {
-            JZDir parent;
-            if (!parent.exists(dir) && !parent.mkpath(dir))
-            {
-                finish(params, false, "创建父目录失败: " + dir, DenyReason::WriteDenied);
-                return;
-            }
-        }
-
-        JZFile file;
-        if (!file.open(abs, "wb"))
-        {
-            finish(params, false, "打开文件失败(权限?): " + rel, DenyReason::WriteDenied);
-            return;
-        }
-        int written = file.write(str_toUtf8(out));
-        file.close();
-        if (written != (int)out.size())
-        {
-            finish(params, false, "写入长度不符: " + rel, DenyReason::EditFailed);
-            return;
-        }
-
-        finish(params, true, "已写入 " + rel + " (" + to_string(out.size()) + " 字节)" +
-                             (info.exists() ? ", 原内容已被完整覆盖" : ""));
+        finish(params, false, "old_str 不能为空：整文件写入 / 新建文件请用 write_file，"
+                               "本工具只做片段级替换。", DenyReason::EditFailed);
         return;
     }
 
-    // ---- old_str 非空: 精确替换 ----
+    // ---- 精确替换 ----
     if (!info.exists())
     {
-        finish(params, false, "文件不存在: " + rel + "  (要新建文件请把 old_str 留空)",
+        finish(params, false, "文件不存在: " + rel + "  (新建文件请用 write_file)",
                DenyReason::NotFound);
         return;
     }

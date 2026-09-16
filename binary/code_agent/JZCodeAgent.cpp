@@ -1442,16 +1442,19 @@ void JZCodeAgent::buildAgent()
         m_toolNames.push_back(tool->toolName());
     };
 
-    // ---- 文件操作全走终端 ----
+    // ---- 文件操作 ----
     // ls / cat / mkdir / rm / cp / mv / grep 都是 shell 命令, 由 terminal_run 直接覆盖,
     // 不再各做一个工具(两套做法只会让模型不知道该用哪个)。
-    // 只有 edit_file 留下来: sed 不校验唯一匹配, 拿它改代码太容易改错地方。
+    // 专门的文件工具只留三个: read_file(带行号/分段读, 避免大文件灌上下文)、
+    // write_file(整文件覆盖)、modify_file(局部替换, sed 不校验唯一匹配, 且回上下文片段)。
     if (!m_terminal)
         m_terminal = new JZVirtualTerminal(this);
     addTool(new JZTerminalRunTool(m_terminal));
     addTool(new JZTerminalOpenTool(m_terminal));
     addTool(new JZTerminalListTool(m_terminal));
     addTool(new JZTerminalCloseTool(m_terminal));
+    addTool(new JZReadFileTool());
+    addTool(new JZWriteFileTool());
     addTool(new JZModifyFileTool());
     addTool(new JZSearchFileTool());
     addTool(new JZGetDateTimeTool());

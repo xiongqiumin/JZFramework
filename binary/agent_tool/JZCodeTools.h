@@ -99,9 +99,35 @@ protected:
 };
 
 // ------------------------------------------------------------------
-// modify_file: 修改（或创建）文件
-//   old_str 为空   -> 用 new_str 覆盖整个文件（新建 / 重写）
-//   old_str 非空   -> 精确替换，默认要求唯一匹配（replace_all=true 则全部替换）
+// read_file: 读取文本文件内容（带行号）
+//   用 start_line / line_count 只读某段行范围，避免把大文件整篇灌进上下文；
+//   单次最多返回 2000 行，超出请分段。带行号返回便于后续定位；
+//   二进制文件直接拒绝。读文件优先用本工具而不是 `cat`
+//   —— 行号 / 分段 / 编码判定 shell 都给不了。
+// ------------------------------------------------------------------
+class JZReadFileTool : public JZCodeTool
+{
+public:
+    JZReadFileTool();
+    virtual void call(const ToolCall &params) override;
+};
+
+// ------------------------------------------------------------------
+// write_file: 创建或整文件覆盖写入
+//   用 content 整体覆盖一个文件（新建 / 完全重写）。
+//   局部片段修改请用 modify_file —— 它校验唯一匹配且回上下文，sed 给不了这些。
+// ------------------------------------------------------------------
+class JZWriteFileTool : public JZCodeTool
+{
+public:
+    JZWriteFileTool();
+    virtual void call(const ToolCall &params) override;
+};
+
+// ------------------------------------------------------------------
+// modify_file: 局部精确替换（不改其它内容）
+//   old_str 必须非空且唯一匹配（replace_all=true 则全部替换），用 new_str 替换它。
+//   整文件写入请用 write_file；本工具只做"片段级"修改。
 //
 // 为什么这一条留成**工具**而不是让模型用 shell:
 //   `sed` 不校验唯一匹配 —— 改代码时很容易改错地方; 而且本工具成功时回上下文片段

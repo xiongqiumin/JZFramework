@@ -124,7 +124,10 @@ void JZAgentNode::init(const JZNodeConfig &config)
         addTool(new JZTerminalOpenTool(m_terminal));
         addTool(new JZTerminalListTool(m_terminal));
         addTool(new JZTerminalCloseTool(m_terminal));
-        // 文件编辑走 agent_tool 里现成的 modify_file(sed 不校验唯一匹配, 且它回上下文片段)
+        // 文件读写走 agent_tool 里现成的 read_file / write_file / modify_file
+        // (sed 不校验唯一匹配, 且 modify_file 回上下文片段; 大文件读取用 read_file 分段)
+        addTool(new JZReadFileTool());
+        addTool(new JZWriteFileTool());
         addTool(new JZModifyFileTool());
     }
     else

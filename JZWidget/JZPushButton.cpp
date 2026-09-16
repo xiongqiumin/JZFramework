@@ -11,16 +11,10 @@ JZPushButton::JZPushButton(JZWidget* parent)
     , sigClicked(this)
 {}
 
-JZPushButton::JZPushButton(JZWidget* parent, int w, int h, const std::string& text)
+JZPushButton::JZPushButton(const std::string& text, JZWidget* parent)
     : JZPushButton(parent)
 {
-    resize(w, h);
     setText(text);
-}
-
-void* JZPushButton::labelHandle() const
-{
-    return m_label;
 }
 
 void JZPushButton::setText(const std::string& text)

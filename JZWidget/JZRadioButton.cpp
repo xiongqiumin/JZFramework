@@ -13,7 +13,7 @@ JZRadioButton::JZRadioButton(JZWidget* parent)
     , sigToggled(this)
 {}
 
-JZRadioButton::JZRadioButton(JZWidget* parent, const std::string& text)
+JZRadioButton::JZRadioButton(const std::string& text, JZWidget* parent)
     : JZRadioButton(parent)
 {
     setText(text);

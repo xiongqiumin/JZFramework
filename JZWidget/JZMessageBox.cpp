@@ -24,10 +24,7 @@ JZMessageBox::JZMessageBox(JZWidget* parent, const std::string& title,
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(8, 8);
     bh->addStretch(1);
-    auto* okBtn = new JZPushButton(btnRow, 75, 30, "OK");
-    bh->addWidget(okBtn, 0);
-    if (hasCancel) {
-        auto* cancelBtn = new JZPushButton(btnRow, 75, 30, "Cancel");
+    auto* okBtn = new JZPushButton(btnRow, "OK");
         bh->addWidget(cancelBtn, 0);
         connect(&cancelBtn->sigClicked, this, &JZDialog::reject);
     }

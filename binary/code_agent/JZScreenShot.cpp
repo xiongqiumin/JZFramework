@@ -578,14 +578,11 @@ JZShotCanvas::JZShotCanvas(JZWidget* parent)
 
     for (int i = 0; i < 3; i++)
     {
-        JZPushButton* b = new JZPushButton(this, kBtnW, kBtnH, kToolNames[i]);
-        connect(&b->sigClicked, this, [this, i]() { setTool(i); });
+        JZPushButton* b = new JZPushButton([this, i](, kToolNames[i]) { setTool(i); });
         m_tools.push_back(b);
     }
 
-    JZPushButton* undoBtn = new JZPushButton(this, kBtnW, kBtnH, "撤销");
-    JZPushButton* cancelBtn = new JZPushButton(this, kBtnW, kBtnH, "取消");
-    JZPushButton* okBtn = new JZPushButton(this, kBtnW, kBtnH, "完成");
+    JZPushButton* undoBtn = new JZPushButton(this, "撤销");
     connect(&undoBtn->sigClicked, this, [this]() { undo(); });
     connect(&cancelBtn->sigClicked, this, [this]() { sigReject.emit(); });
     connect(&okBtn->sigClicked, this, [this]() { sigAccept.emit(); });

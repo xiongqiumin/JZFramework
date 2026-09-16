@@ -28,18 +28,8 @@ JZAiOverlay::JZAiOverlay(JZWidget* parent)
     // 既让移动的 AI 光标留残影, 又让半透明遮罩逐帧叠加变黑。
     setOpaque(0);
 
-    m_cancelBtn = new JZPushButton(this, 54, 26, "取消");
-    m_cancelBtn->hide();
-    connect(&m_cancelBtn->sigClicked, [this]() {
-        sigCancelRequested.emit();
-    });
-}
-
-void JZAiOverlay::keyPressEvent(JZKeyEvent* event)
-{
-    // 全屏蒙版期间窗口把键盘统一交给蒙版 (JZWindow::dispatchKey): Esc = 取消,
-    // 其余按键一律吞掉, 不传给蒙版下的控件。
-    if (event->isPress() && event->key() == JZKey::Key_Escape)
+    m_cancelBtn = new JZPushButton(// 其余按键一律吞掉, 不传给蒙版下的控件。
+    if (event->isPress(, "取消") && event->key() == JZKey::Key_Escape)
         sigCancelRequested.emit();
     event->accept();
 }

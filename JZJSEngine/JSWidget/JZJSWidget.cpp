@@ -308,19 +308,17 @@ jsbind::JSPointerBase* js_JZLabel_ctor(JZJSEngine *engine, int argc, JSValueCons
     return jzNewWidget<JZLabel>(ctx, new JZLabel(text, parent));
 }
 
-// JZPushButton: (w, h, text) / (w, h, text, parent)   —— parent 放最后
+// JZPushButton: (text) / (text, parent)   —— 对齐 Qt: text 在前, parent 放最后(构造不再收 w/h)
 jsbind::JSPointerBase* js_JZPushButton_ctor(JZJSEngine *engine, int argc, JSValueConst *argv)
 {
     JSContext* ctx = engine->context();
     std::vector<ArgResult> r;
-    int g = engine->checkAndSetArgs("int=0,int=0,string=\"\",JZWidget=null", &r);
+    int g = engine->checkAndSetArgs("string=\"\",JZWidget=null", &r);
     if (g == -1)
         return nullptr;
-    int w = r[0].i;
-    int h = r[1].i;
-    std::string text = *r[2].str_ptr;
-    JZWidget* parent = static_cast<JZWidget*>(r[3].p);
-    return jzNewWidget<JZPushButton>(ctx, new JZPushButton(parent, w, h, text));
+    std::string text = *r[0].str_ptr;
+    JZWidget* parent = static_cast<JZWidget*>(r[1].p);
+    return jzNewWidget<JZPushButton>(ctx, new JZPushButton(text, parent));
 }
 
 // () / (parent) 的控件们(构造只有一个 parent 参数)
@@ -369,7 +367,7 @@ jsbind::JSPointerBase* js_JZRadioButton_ctor(JZJSEngine *engine, int argc, JSVal
         return nullptr;
     std::string text = *r[0].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[1].p);
-    return jzNewWidget<JZRadioButton>(ctx, new JZRadioButton(parent, text));
+    return jzNewWidget<JZRadioButton>(ctx, new JZRadioButton(text, parent));
 }
 
 // JZGroupBox: (title) / (title, parent)   —— parent 放最后

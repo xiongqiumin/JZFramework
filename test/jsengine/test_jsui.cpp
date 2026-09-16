@@ -546,16 +546,16 @@ int main()
                       " && cc.red() === 255 && cc.green() === 0 && cc.blue() === 0) ? 'ok' : 'bad'") == "ok");
 
         // 控件: 带文本/带尺寸/带方向的形态
-        check("构造器实参: 控件 (text,parent) / (parent,w,h,text) / (title,parent) / (orientation,parent)",
+        check("构造器实参: 控件 (text,parent) / (title,parent) / (orientation,parent)",
               evalStr(engine,
                       "var hw = new JZWindow(300, 180, 'host');"
                       "var lb = new JZLabel('hello', hw);"
-                      "var bt = new JZPushButton(hw, 90, 28, 'OK');"
+                      "var bt = new JZPushButton('OK', hw);"
                       "var rb = new JZRadioButton('r1', hw);"
                       "var gb = new JZGroupBox('grp', hw);"
                       "var sp = new JZSplitter(1, hw);"
                       "var vl = new JZVBoxLayout(3, 7);"
-                      "((lb.text() === 'hello' && bt.text() === 'OK' && bt.width() === 90 && bt.height() === 28)"
+                      "((lb.text() === 'hello' && bt.text() === 'OK')"
                       " && rb.text() === 'r1' && gb.title() === 'grp' && vl.spacing() === 7) ? 'ok' : 'bad'") == "ok");
 
         // 构造时就带 parent: 父链/对象树立刻成立(C++ 侧核对), 且登记进模块的控件表

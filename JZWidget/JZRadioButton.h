@@ -10,7 +10,7 @@ class JZRadioButton : public JZWidget
 
 public:
     explicit JZRadioButton(JZWidget* parent = nullptr);
-    JZRadioButton(JZWidget* parent, const std::string& text);
+    JZRadioButton(const std::string& text, JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
     JZSize minimumSizeHint() const override;
@@ -33,8 +33,6 @@ protected:
     void mousePressEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
 
-    void* m_label = nullptr;
-    void* m_indicator = nullptr;   // 透明占位, 为圆环预留布局宽度
     bool m_checked = false;
     bool m_pressed = false;
     std::string m_text;

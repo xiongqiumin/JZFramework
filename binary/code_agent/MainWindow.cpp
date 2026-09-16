@@ -159,19 +159,8 @@ InputEdit::InputEdit(JZWidget* parent)
     // 发送按钮嵌入输入框内部: 浮动在底部文本区下方的"按钮带"里。
     // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
     const int btnW = 70, btnH = 30;
-    m_sendBtn = new JZPushButton(this, btnW, btnH, "发送");
-
-    // 发送按钮左侧的 token 用量圆环（26x26，与按钮垂直居中对齐）
-    m_tokenRing = new TokenRing(this);
-
-    // 圆环左侧的 [截图] 按钮：抓主屏并附加到下一条消息
-    const int shotW = 60;
-    m_shotBtn = new JZPushButton(this, shotW, btnH, "截图");
-    m_shotBtn->setTooltip("截取屏幕并附加到下一条消息");
-/*
-    // selfLayout 锚定右下角: 右/下锚点下正 dx/dy 向内取反 = 距右/底边距 8/6,
-    // 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
-    // 由右向左依次摆放: 发送(8) | 圆环(8+btnW+8) | 截图(圆环左侧再留 8)
+    m_sendBtn = new JZPushButton(// 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
+    // 由右向左依次摆放: 发送(8, "发送") | 圆环(8+btnW+8) | 截图(圆环左侧再留 8)
     auto* layout = new JZSelfLayout();
     layout->addWidget(m_sendBtn, JZSelfLayout::BottomRight, 8, 6);
     layout->addWidget(m_tokenRing, JZSelfLayout::BottomRight,
@@ -340,11 +329,7 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
         h->addWidget(edit, 1);
         if (withBrowse)
         {
-            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
-            h->addWidget(browseBtn, 0);
-        }
-        row->setLayout(h);
-        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
+            browseBtn = new JZPushButton(0, "浏览...");
     };
     addRow("位置", m_baseEdit, true, m_baseBrowseBtn);
     m_baseEdit->setPlaceholderText("工程所在目录（将在这里创建工程子目录）");
@@ -355,9 +340,7 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "创建");
-    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
-    bh->addWidget(ok, 0);
+    JZPushButton* ok = new JZPushButton(0, "创建");
     bh->addWidget(cancel, 0);
     btnRow->setLayout(bh);
     static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
@@ -435,11 +418,7 @@ ExportDialog::ExportDialog(JZWidget* parent)
         h->addWidget(edit, 1);
         if (withBrowse)
         {
-            browseBtn = new JZPushButton(row, 70, 28, "浏览...");
-            h->addWidget(browseBtn, 0);
-        }
-        row->setLayout(h);
-        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
+            browseBtn = new JZPushButton(0, "浏览...");
     };
     addRow("程序名", m_nameEdit, false, m_iconBrowseBtn);
     m_nameEdit->setPlaceholderText("运行时 exe 名（不含 .exe），留空=code_runtime");
@@ -465,9 +444,7 @@ ExportDialog::ExportDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "导出");
-    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
-    bh->addWidget(ok, 0);
+    JZPushButton* ok = new JZPushButton(0, "导出");
     bh->addWidget(cancel, 0);
     btnRow->setLayout(bh);
     static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
@@ -551,10 +528,7 @@ WelcomePage::WelcomePage(JZWidget* parent)
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(10, 6);
-    JZPushButton* newBtn = new JZPushButton(btnRow, 120, 34, "新建工程");
-    JZPushButton* openBtn = new JZPushButton(btnRow, 120, 34, "打开工程");
-    bh->addStretch(1);
-    bh->addWidget(newBtn, 0);
+    JZPushButton* newBtn = new JZPushButton(0, "新建工程");
     bh->addWidget(openBtn, 0);
     bh->addStretch(1);
     btnRow->setLayout(bh);
@@ -664,23 +638,11 @@ void MainWindow::setupUi()
     m_topLabel = new JZLabel("", topBar);       // 打开工程后显示工程名（任务列表归属）
     topLayout->addWidget(m_topLabel, 0);
     topLayout->addStretch();
-    m_clearBtn = new JZPushButton(topBar, 84, 28, "清空");
-    topLayout->addWidget(m_clearBtn, 0);
-    topBar->setLayout(topLayout);
-
-    // 中央区用 stacked widget: 0=欢迎页(未打开工程) 1=对话页。
-    // 未打开工程时输入框与"清空"也会隐藏（无工作区时发指令没有意义）。
-    m_stack = new JZStackedWidget(m_editorSplitter);
-    m_welcome = new WelcomePage(m_stack);
-    m_chatView = new ChatView(m_stack);
-    m_stack->addWidget(m_welcome);
-    m_stack->addWidget(m_chatView);
-
-    // 底部输入区: 多行输入框, 发送按钮与 token 圆环由 InputEdit 用 selfLayout
+    m_clearBtn = new JZPushButton(发送按钮与 token 圆环由 InputEdit 用 selfLayout
     // 锚定在右下角, 输入框尺寸变化时自动重排。
     // 不能 setFixedHeight：splitter 靠 setGeometry 摆放，固定高会被夹住而拖不动；
     // 初始高度由 resizeEvent 里的 setSizes 按 m_inputHeight 分配。
-    m_inputEdit = new InputEdit(m_editorSplitter);
+    m_inputEdit = new InputEdit(m_editorSplitter, "清空");
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setMinimumHeight(64);
 

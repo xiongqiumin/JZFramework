@@ -155,8 +155,8 @@ TaskPanel::TaskPanel(JZWidget* parent)
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(0, 6);
-    m_newBtn = new JZPushButton(btnRow, 0, 30, "新建任务");
-    m_delBtn = new JZPushButton(btnRow, 0, 30, "删除");
+    m_newBtn = new JZPushButton("新建任务", btnRow);
+    m_delBtn = new JZPushButton("删除", btnRow);
     bh->addWidget(m_newBtn, 1);
     bh->addWidget(m_delBtn, 1);
     btnRow->setLayout(bh);

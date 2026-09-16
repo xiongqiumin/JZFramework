@@ -11,11 +11,10 @@ class JZPushButton : public JZWidget
 
 public:
     explicit JZPushButton(JZWidget* parent = nullptr);
-    JZPushButton(JZWidget* parent, int w, int h, const std::string& text);
+    JZPushButton(const std::string& text, JZWidget* parent = nullptr);
 
     JZSize sizeHint() const override;
     JZSize minimumSizeHint() const override;
-    void* labelHandle() const;
 
     void setText(const std::string& text);
     std::string text() const;
@@ -46,7 +45,6 @@ protected:
     void mouseReleaseEvent(JZMouseEvent* event) override;
 
 private:
-    void* m_label = nullptr;
     std::string m_text;
     JZImage m_icon;
     bool m_pressed = false;

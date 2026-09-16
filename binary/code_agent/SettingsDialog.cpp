@@ -107,7 +107,7 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
             h->addWidget(edit, 1);
             if (withBrowse)
             {
-                browseBtn = new JZPushButton(row, 70, 28, "浏览...");
+                browseBtn = new JZPushButton("浏览...", row);
                 h->addWidget(browseBtn, 0);
             }
             row->setLayout(h);
@@ -150,8 +150,8 @@ SettingsDialog::SettingsDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(12, 8);
     bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(btnRow, 90, 32, "保存");
-    JZPushButton* cancel = new JZPushButton(btnRow, 90, 32, "取消");
+    JZPushButton* ok = new JZPushButton("保存", btnRow);
+    JZPushButton* cancel = new JZPushButton("取消", btnRow);
     bh->addWidget(ok, 0);
     bh->addWidget(cancel, 0);
     btnRow->setLayout(bh);

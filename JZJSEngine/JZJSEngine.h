@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <cstring>
 
 #include "json/json.h"
 #include "quickjs/quickjs.h"
@@ -50,6 +51,59 @@ struct JZAsyncResult
 {
     int result;                       // callAsyncFunction 返回的句柄
     std::vector<JZJSValuePtr> params; // promise resolve 的参数列表(一般 1 个元素)
+};
+
+// checkAndSetArgs 的结果载体: 把每个实参转换后填进对应成员, 调用方按 format 声明的类型直接读取。
+// 标量存值(int/double/bool)、类对象存裸指针(void* p)、string/Json/vector 存堆指针(由析构自动释放)。
+struct ArgResult
+{
+    enum Kind { kInvalid, kInt, kDouble, kBool, kPointer,
+                kString, kJson,
+                kVecInt, kVecDouble, kVecString, kVecJson, kVecPtr };
+    Kind kind = kInvalid;
+    union
+    {
+        int i;
+        double d;
+        bool b;
+        void* p;                          // 类对象: 底层对象裸指针
+        std::string* str_ptr;
+        Json::Value* json_ptr;
+        std::vector<int>* vec_int_ptr;
+        std::vector<double>* vec_double_ptr;
+        std::vector<std::string>* vec_string_ptr;
+        std::vector<Json::Value>* vec_json_ptr;
+        std::vector<void*>* vec_ptr_ptr;   // 类对象数组
+    };
+
+    ArgResult() {}
+    ~ArgResult() { reset(); }
+    ArgResult(ArgResult&& o) noexcept { moveFrom(std::move(o)); }
+    ArgResult& operator=(ArgResult&& o) noexcept { if (this != &o) { reset(); moveFrom(std::move(o)); } return *this; }
+    ArgResult(const ArgResult&) = delete;
+    ArgResult& operator=(const ArgResult&) = delete;
+
+    void reset()
+    {
+        switch (kind)
+        {
+        case kString: delete str_ptr; break;
+        case kJson: delete json_ptr; break;
+        case kVecInt: delete vec_int_ptr; break;
+        case kVecDouble: delete vec_double_ptr; break;
+        case kVecString: delete vec_string_ptr; break;
+        case kVecJson: delete vec_json_ptr; break;
+        case kVecPtr: delete vec_ptr_ptr; break;
+        default: break;
+        }
+        kind = kInvalid;
+    }
+
+    void moveFrom(ArgResult&& o)
+    {
+        std::memcpy(this, &o, sizeof(*this));
+        o.kind = kInvalid;
+    }
 };
 
 // JZJSEngine
@@ -249,6 +303,15 @@ public:
 
     bool checkType(JSValue value, int type);
     bool checkType(JSValue value, std::string type_name);
+    // 构造参数的"检测 + 取值"一步到位: format 形如 "int=0,int=0|array<int>[2]"(参考 TS 形参格式),
+    // 多个 group 用 '|' 分隔对应 JS 重载。返回命中的 group 下标, 全不匹配则已抛 JS 异常并返回 -1。
+    //   vector<ArgResult> r;
+    //   int g = engine->checkAndSetArgs("int=0,int=0|array<int>[2]", &r);
+    //   if (g == -1) return JS_EXCEPTION;
+    //   if (g == 0) return new JZRect(r[0].i, r[1].i);
+    //   vector<int>* v = r[0].vec_int_ptr; return new JZPoint((*v)[0], (*v)[1]);
+    // 仅适用于构造器(JS new Cls(...)): 实参 argc/argv 取自首层 createValue。
+    int checkAndSetArgs(const std::string& format, std::vector<ArgResult>* result);
     bool canConvert(int from_type, int to_type);
 
     // 单个形参的转换前校验(同步 call / 异步 callAsync 共用, 避免两条路校验不一致):
@@ -280,6 +343,7 @@ public:
     // 建状态的是**第一次包装**那次调用(toJsValueFromPtr 传进来的 cppOwner 是调用方的意图),
     // 之后同对象的包装共享同一份状态, 各自传来的 cppOwner 不再生效(这正是"翻转同步"的前提)。
 
+    jsbind::JSPointerBase* getValuePointer(JSValue value);
     void addPointer(jsbind::JSPointerBase *pointer);
     void removePointer(jsbind::JSPointerBase *pointer);
     void movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue value);
@@ -502,6 +566,8 @@ protected:
 
     JSRuntime* m_rt;
     JSContext* m_ctx;
+    int m_currentArgc = 0;             // checkAndSetArgs 读取的当前构造实参个数/数组(由 createValue 设置)
+    JSValueConst* m_currentArgv = nullptr;
     JSValue m_global;
     int m_objectId;
     std::string m_workDir;

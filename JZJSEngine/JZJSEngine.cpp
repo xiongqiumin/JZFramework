@@ -6,6 +6,7 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <cstdlib>
 
 #include "JZJSBind.h"
 #include "JZJSWorkerThread.h"
@@ -1399,6 +1400,355 @@ bool JZJSEngine::checkType(JSValue value, std::string type_name)
     return checkType(value, type_id);
 }
 
+// =====================================================================
+// 构造参数的"检测 + 取值"一步到位(checkAndSetArgs)
+// =====================================================================
+namespace {
+
+// 单个形参描述(format 解析结果)
+struct JZArgSpec
+{
+    enum Kind { kInt, kDouble, kBool, kString, kJson, kArray, kClass };
+    Kind kind;
+    bool hasDefault = false;
+    int defInt = 0;
+    double defDouble = 0;
+    bool defBool = false;
+    std::string defString;
+    Json::Value defJson;
+    std::string arrayElem;   // kArray: 元素类型(int/double/string/json/<类名>)
+    int arrayLen = -1;       // kArray: 期望长度(-1 = 不限)
+    std::string className;   // kClass: 注册类名
+};
+
+// 解析一个重载组(以 ',' 分隔的形参列表)
+std::vector<JZArgSpec> jzParseArgGroup(const std::string& group)
+{
+    std::vector<JZArgSpec> out;
+    size_t start = 0;
+    while (start <= group.size())
+    {
+        size_t comma = group.find(',', start);
+        std::string seg = (comma == std::string::npos) ? group.substr(start) : group.substr(start, comma - start);
+        if (!seg.empty())
+        {
+            size_t eq = seg.find('=');
+            std::string type = seg, def;
+            if (eq != std::string::npos)
+            {
+                type = seg.substr(0, eq);
+                def = seg.substr(eq + 1);
+            }
+
+            JZArgSpec s;
+            if (type.rfind("array<", 0) == 0)
+            {
+                s.kind = JZArgSpec::kArray;
+                size_t l = type.find('<');
+                size_t r = type.find('>');
+                s.arrayElem = type.substr(l + 1, r - l - 1);
+                std::string rest = type.substr(r + 1);
+                if (!rest.empty() && rest[0] == '[')
+                {
+                    size_t re = rest.find(']');
+                    if (re != std::string::npos)
+                        s.arrayLen = std::atoi(rest.substr(1, re - 1).c_str());
+                }
+            }
+            else if (type == "int") s.kind = JZArgSpec::kInt;
+            else if (type == "double" || type == "number") s.kind = JZArgSpec::kDouble;
+            else if (type == "bool") s.kind = JZArgSpec::kBool;
+            else if (type == "string") s.kind = JZArgSpec::kString;
+            else if (type == "json" || type == "Json" || type == "Json::Value") s.kind = JZArgSpec::kJson;
+            else { s.kind = JZArgSpec::kClass; s.className = type; }
+
+            if (eq != std::string::npos)
+            {
+                s.hasDefault = true;
+                if (s.kind == JZArgSpec::kInt) s.defInt = std::atoi(def.c_str());
+                else if (s.kind == JZArgSpec::kDouble) s.defDouble = std::atof(def.c_str());
+                else if (s.kind == JZArgSpec::kBool) s.defBool = (def == "true" || def == "1");
+                else if (s.kind == JZArgSpec::kString)
+                {
+                    if (def.size() >= 2 && def.front() == '"' && def.back() == '"')
+                        def = def.substr(1, def.size() - 2);
+                    s.defString = def;
+                }
+            }
+            out.push_back(s);
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return out;
+}
+
+// 把单个 JS 数组值转成对应类型的 vector, 写入 out
+bool jzConvertArray(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, ArgResult& out)
+{
+    JSContext* ctx = engine->context();
+    if (!JS_IsArray(v))
+        return false;
+    int64_t len = 0;
+    JS_GetLength(ctx, v, &len);
+    if (spec.arrayLen >= 0 && (int64_t)spec.arrayLen != len)
+        return false;
+
+    const std::string& elem = spec.arrayElem;
+    if (elem == "int")
+    {
+        auto* vec = new std::vector<int>;
+        vec->reserve((size_t)len);
+        for (int64_t i = 0; i < len; i++)
+        {
+            JSValue e = JS_GetPropertyInt64(ctx, v, i);
+            if (!engine->checkType(e, JSType_int))
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            int32_t x = 0;
+            JS_ToInt32(ctx, &x, e);
+            vec->push_back(x);
+            JS_FreeValue(ctx, e);
+        }
+        out.vec_int_ptr = vec;
+        out.kind = ArgResult::kVecInt;
+        return true;
+    }
+    else if (elem == "double")
+    {
+        auto* vec = new std::vector<double>;
+        vec->reserve((size_t)len);
+        for (int64_t i = 0; i < len; i++)
+        {
+            JSValue e = JS_GetPropertyInt64(ctx, v, i);
+            if (!JS_IsNumber(e))
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            double d = 0;
+            JS_ToFloat64(ctx, &d, e);
+            vec->push_back(d);
+            JS_FreeValue(ctx, e);
+        }
+        out.vec_double_ptr = vec;
+        out.kind = ArgResult::kVecDouble;
+        return true;
+    }
+    else if (elem == "string")
+    {
+        auto* vec = new std::vector<std::string>;
+        vec->reserve((size_t)len);
+        for (int64_t i = 0; i < len; i++)
+        {
+            JSValue e = JS_GetPropertyInt64(ctx, v, i);
+            if (!engine->checkType(e, JSType_string))
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            vec->push_back(::fromJSValue<std::string>(ctx, e));
+            JS_FreeValue(ctx, e);
+        }
+        out.vec_string_ptr = vec;
+        out.kind = ArgResult::kVecString;
+        return true;
+    }
+    else if (elem == "json")
+    {
+        auto* vec = new std::vector<Json::Value>;
+        vec->reserve((size_t)len);
+        for (int64_t i = 0; i < len; i++)
+        {
+            JSValue e = JS_GetPropertyInt64(ctx, v, i);
+            vec->push_back(::fromJSValue<Json::Value>(ctx, e));
+            JS_FreeValue(ctx, e);
+        }
+        out.vec_json_ptr = vec;
+        out.kind = ArgResult::kVecJson;
+        return true;
+    }
+    else
+    {
+        // 类对象数组: 元素存裸指针
+        auto* vec = new std::vector<void*>;
+        vec->reserve((size_t)len);
+        for (int64_t i = 0; i < len; i++)
+        {
+            JSValue e = JS_GetPropertyInt64(ctx, v, i);
+            if (!engine->checkType(e, elem))
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            JSClassID cid;
+            void* ptr = JS_GetAnyOpaque(e, &cid);
+            void* raw = ptr ? ((jsbind::JSPointerBase*)ptr)->getRaw() : nullptr;
+            if (!raw)
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            vec->push_back(raw);
+            JS_FreeValue(ctx, e);
+        }
+        out.vec_ptr_ptr = vec;
+        out.kind = ArgResult::kVecPtr;
+        return true;
+    }
+}
+
+// 把单个 JS 实参转换成 spec 描述的类型, 写入 out
+bool jzConvertArg(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, ArgResult& out)
+{
+    JSContext* ctx = engine->context();
+    switch (spec.kind)
+    {
+    case JZArgSpec::kInt:
+    {
+        if (!engine->checkType(v, JSType_int)) return false;
+        int32_t x = 0;
+        JS_ToInt32(ctx, &x, v);
+        out.i = x;
+        out.kind = ArgResult::kInt;
+        return true;
+    }
+    case JZArgSpec::kDouble:
+    {
+        if (!JS_IsNumber(v)) return false;
+        double d = 0;
+        JS_ToFloat64(ctx, &d, v);
+        out.d = d;
+        out.kind = ArgResult::kDouble;
+        return true;
+    }
+    case JZArgSpec::kBool:
+    {
+        if (!JS_IsBool(v)) return false;
+        out.b = (JS_ToBool(ctx, v) != 0);
+        out.kind = ArgResult::kBool;
+        return true;
+    }
+    case JZArgSpec::kString:
+    {
+        if (!engine->checkType(v, JSType_string)) return false;
+        out.str_ptr = new std::string(::fromJSValue<std::string>(ctx, v));
+        out.kind = ArgResult::kString;
+        return true;
+    }
+    case JZArgSpec::kJson:
+    {
+        out.json_ptr = new Json::Value(::fromJSValue<Json::Value>(ctx, v));
+        out.kind = ArgResult::kJson;
+        return true;
+    }
+    case JZArgSpec::kArray:
+        return jzConvertArray(engine, v, spec, out);
+    case JZArgSpec::kClass:
+    {
+        if (!engine->checkType(v, spec.className)) return false;
+        JSClassID cid;
+        void* ptr = JS_GetAnyOpaque(v, &cid);
+        if (!ptr) return false;
+        void* raw = ((jsbind::JSPointerBase*)ptr)->getRaw();
+        if (!raw) return false;
+        out.p = raw;
+        out.kind = ArgResult::kPointer;
+        return true;
+    }
+    }
+    return false;
+}
+
+// 设置缺省值(省略的可选参数)
+void jzSetDefault(const JZArgSpec& spec, ArgResult& out)
+{
+    switch (spec.kind)
+    {
+    case JZArgSpec::kInt:    out.i = spec.defInt; out.kind = ArgResult::kInt; break;
+    case JZArgSpec::kDouble: out.d = spec.defDouble; out.kind = ArgResult::kDouble; break;
+    case JZArgSpec::kBool:   out.b = spec.defBool; out.kind = ArgResult::kBool; break;
+    case JZArgSpec::kString: out.str_ptr = new std::string(spec.defString); out.kind = ArgResult::kString; break;
+    case JZArgSpec::kJson:   out.json_ptr = new Json::Value(spec.defJson); out.kind = ArgResult::kJson; break;
+    case JZArgSpec::kClass:  out.p = nullptr; out.kind = ArgResult::kPointer; break;
+    case JZArgSpec::kArray:
+        if (spec.arrayElem == "int") { out.vec_int_ptr = new std::vector<int>; out.kind = ArgResult::kVecInt; }
+        else if (spec.arrayElem == "double") { out.vec_double_ptr = new std::vector<double>; out.kind = ArgResult::kVecDouble; }
+        else if (spec.arrayElem == "string") { out.vec_string_ptr = new std::vector<std::string>; out.kind = ArgResult::kVecString; }
+        else if (spec.arrayElem == "json") { out.vec_json_ptr = new std::vector<Json::Value>; out.kind = ArgResult::kVecJson; }
+        else { out.vec_ptr_ptr = new std::vector<void*>; out.kind = ArgResult::kVecPtr; }
+        break;
+    }
+}
+
+}  // namespace
+
+int JZJSEngine::checkAndSetArgs(const std::string& format, std::vector<ArgResult>* result)
+{
+    // 按 '|' 拆分重载组
+    std::vector<std::vector<JZArgSpec>> groups;
+    {
+        size_t start = 0;
+        while (start <= format.size())
+        {
+            size_t bar = format.find('|', start);
+            std::string g = (bar == std::string::npos) ? format.substr(start) : format.substr(start, bar - start);
+            if (!g.empty())
+            {
+                if (g == "null" || g == "nullptr" || g == "undefined")
+                    groups.push_back({});   // 零参数组: 匹配 argc == 0, 作为无参重载的"补位"
+                else
+                    groups.push_back(jzParseArgGroup(g));
+            }
+            if (bar == std::string::npos) break;
+            start = bar + 1;
+        }
+    }
+
+    int argc = m_currentArgc;
+    JSValueConst* argv = m_currentArgv;
+    for (size_t gi = 0; gi < groups.size(); gi++)
+    {
+        const std::vector<JZArgSpec>& args = groups[gi];
+        int total = (int)args.size();
+        int required = total;
+        for (const auto& a : args)
+            if (a.hasDefault) required--;
+        if (argc < required || argc > total)
+            continue;
+
+        std::vector<ArgResult> out(total);
+        bool ok = true;
+        for (int i = 0; i < total && ok; i++)
+        {
+            if (i < argc)
+            {
+                if (!jzConvertArg(this, argv[i], args[i], out[i]))
+                    ok = false;
+            }
+            else
+            {
+                jzSetDefault(args[i], out[i]);
+            }
+        }
+        if (ok)
+        {
+            *result = std::move(out);
+            return (int)gi;
+        }
+    }
+
+    JS_ThrowTypeError(m_ctx, "参数不匹配: 期望 %s", format.c_str());
+    return -1;
+}
+
 JSValue JZJSEngine::makeParamNumError(int num)
 {
     return JS_ThrowTypeError(m_ctx, "需要%d个参数", num);
@@ -1437,6 +1787,9 @@ JSValue JZJSEngine::createObject()
 
 JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
 {
+    m_currentArgc = argc;
+    m_currentArgv = argv;
+
     if (type == JSType_bool)
     {
         return JS_NewBool(m_ctx, 0);
@@ -1488,6 +1841,13 @@ JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase *ptr)
     JS_FreeValue(m_ctx, proto);
 
     return obj;
+}
+
+jsbind::JSPointerBase* JZJSEngine::getValuePointer(JSValue value)
+{
+    JSClassID class_id = JS_GetClassID(value);
+    auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
+    return ptr;
 }
 
 void JZJSEngine::addPointer(jsbind::JSPointerBase *pointer)

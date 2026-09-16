@@ -372,11 +372,6 @@ void JZJSWidgetModule::initEngine(JZJSEngine* engine)
     registPainter();
     registUiLoader();
 
-    // 最后一步: 把各类在全局上的构造函数换成 C 版本(js_JZWidget_ctor 系列) ——
-    // 引擎那个只会调 create(收不到实参), 换成 C 版本才能按 JS 实参形态分派,
-    // 并在构造后登记控件表(有父就保活)。必须在所有类注册完之后调用。
-    jzRegistWidgetJsConstructors(m_engine->context());
-
     m_typeWindow = m_engine->ctypeidToType(typeid(JZWindow).name());    
 }
 
@@ -1116,16 +1111,37 @@ void JZJSWidgetModule::registWidgets()
     // setParentWidget 还要往本模块的控件表里登记(把接收者的 JS 包装交给父控件保活), 而 C 函数
     // 拿不到模块 —— 所以它注册成**带 func_data 的 C 函数**: 注入模块指针, 回调第 6 个参数就是它
     // (见 jsbind::ClassBind::defData / JZJSWidgetModule::fromFuncData)。其余几个不需要模块。
-    bind_w.defData("setParentWidget", js_JZWidget_setParentWidget, 1, 0, { m_widgetData });
-    bind_w.def("parentWidget", js_JZWidget_parentWidget, 0);
-    bind_w.def("window", js_JZWidget_window, 0);
-    bind_w.def("mapTo", js_JZWidget_mapTo, 2);
-    // 布局三件套不动模块: layout() 的包装缓存在 JS 对象自己的隐藏属性上(见 JZJSWidget.cpp),
-    // setLayout 只做所有权转移, clearLayout 只让缓存视图失效。
-    bind_w.def("layout", js_JZWidget_layout, 0);
+    bind_w.def("setParentWidget", [this](JZWidget *w, JZWidget* parent)->JZWidget* {        
+        if (w->parent())
+        {
+            w->setParent(parent);
+            if (!parent)
+            {
+                auto ptr = m_engine->getPointer(w);
+                ptr->moveToJs();
+            }
+        }
+        else
+        {
+            w->setParent(parent);
+            if (parent)
+            {
+                JSValue value = m_engine->self();
+                jsbind::JSPointerBase *base = m_engine->getValuePointer(value);
+                base->moveToCpp(value);
+            }
+        }
+    });
+    bind_w.def("parentWidget", &JZWidget::parentWidget);
+    bind_w.def("window", &JZWidget::window);
+    bind_w.def("layout", &JZWidget::layout);
     // setLayout: Qt 语义, 只能设一次(已有布局/传 null 都抛错); 换布局先 clearLayout()
-    bind_w.def("setLayout", js_JZWidget_setLayout, 1);
-    bind_w.def("clearLayout", js_JZWidget_clearLayout, 0);
+    bind_w.def("setLayout", [] {
+
+        });
+    bind_w.def("clearLayout", [] {
+
+        });
     bind_w.def("setFocus", [](JZWidget* w) { w->setFocus(); });
     bind_w.def("hasFocus", [](JZWidget* w) { return w->hasFocus(); });
     bind_w.def("update", [](JZWidget* w) { w->update(); });

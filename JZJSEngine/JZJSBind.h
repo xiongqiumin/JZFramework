@@ -439,26 +439,6 @@ public:
         m_define.rawFunctions.push_back(std::move(raw));
     }
 
-    // ---- 带 func_data 的 C 函数 ----
-    //   JSValue fn(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
-    //              int magic, JSValueConst* func_data)
-    // 与 def(name, js_cfunc) 的区别: 注册时把一份 C 侧数据(JSValue 数组)绑在函数对象上, 调用时
-    // 原样交给第 6 个参数(quickjs 的 JSCFunctionData; 数据由 quickjs 持有, JS 侧看不到)。
-    // 用途: C 函数要拿到"注册它的人" —— 例: JZWidget.setParentWidget 要把接收者登记进
-    //       JZJSWidgetModule 的控件表(保活 JS 包装), 而 this_val 只是 JS 对象、ctx opaque 只有
-    //       引擎、magic 只能放一个 int, 所以模块指针只能随函数带(见 JZJSWidget.cpp)。
-    // length/magic 原样透传; data 里放什么由调用方决定(本项目放"模块指针", 见其说明)。
-    void defData(std::string name, JSCFunctionData* fn, int length, int magic, const std::vector<JSValue>& data)
-    {
-        CDataFunction dfn;
-        dfn.name = std::move(name);
-        dfn.function = fn;
-        dfn.length = length;
-        dfn.magic = magic;
-        dfn.data = data;
-        m_define.dataFunctions.push_back(std::move(dfn));
-    }
-
     template <typename PropertyType>
     void defProperty(std::string name, PropertyType Class::* member)
     {

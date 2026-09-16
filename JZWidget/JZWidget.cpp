@@ -340,7 +340,7 @@ JZWidget* JZWidget::parentWidget() const
     return w;
 }
 
-class JZWindow* JZWidget::window()
+class JZWindow* JZWidget::window() const
 {
     JZWidget* p = (JZWidget*)this;
     while (p)
@@ -351,12 +351,6 @@ class JZWindow* JZWidget::window()
         p = p->parentWidget();
     }
     return nullptr;
-}
-
-class JZWindow* JZWidget::window() const
-{
-    // window() 不修改对象状态, const 重载复用非 const 版本
-    return const_cast<JZWidget*>(this)->window();
 }
 
 // ==================== 位置 ====================

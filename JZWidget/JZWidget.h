@@ -79,7 +79,6 @@ public:
     JZWidget* parentWidget() const;
 
     // 找到所属显示设备 (回溯到根控件, 由其提供渲染设备)
-    class JZWindow* window();
     class JZWindow* window() const;
 
     // 位置
@@ -98,12 +97,8 @@ public:
 
     JZRect rect() const;
 
-    JZPoint mapTo(JZWidget* parent, const JZPoint& rect) const;
-
-    // 控件坐标 -> 屏幕逻辑坐标 (与 Qt 的 mapToGlobal 一致; popup/IME 等
-    // 自定位窗口放置、合成鼠标事件 globalPos 对齐均用它)。无原生窗口时退化
-    // 为控件树内累加坐标。
-    JZPoint mapToGlobal(const JZPoint& rect) const;
+    JZPoint mapTo(JZWidget* parent, const JZPoint& pt) const;
+    JZPoint mapToGlobal(const JZPoint& pt) const;
 
     JZRect mapTo(JZWidget *parent, const JZRect& rect) const;
     JZRect mapToGlobal(const JZRect &rect) const;

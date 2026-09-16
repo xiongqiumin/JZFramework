@@ -13,30 +13,6 @@
 // JZPen/JZBrush 构造器共用同一套解析(单一来源, 别在别处再抄一份)。
 JZColor jzParseColor(const std::string& s);
 
-// ---- JS 侧接口(名字 = 注册处 def 的第一个参数, 即 JS 方法名) ----
-
-// setParentWidget(parentOrNull): 进/出对象树 + 同步所有权 + 登记到模块的控件表。
-// 签名是 **JSCFunctionData**(末尾多 magic / func_data 两参): 注册时(defData)把模块指针注进
-// func_data[0], 回调里经 JZJSWidgetModule::fromFuncData 取回 —— 进树时由父控件保活接收者的
-// JS 包装, 脱离父树时交回 JS 拥有。见 JZJSWidgetModule.h 的控件登记说明。
-jsbind::JSPointerBase *js_JZWidget_setParentWidget(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv,
-                                    int magic, JSValueConst* func_data);
-// parentWidget(): 父控件(借用句柄); 无父返回 null。
-jsbind::JSPointerBase *js_JZWidget_parentWidget(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-// window(): 所属顶层窗口(借用句柄); 无窗口返回 null。
-jsbind::JSPointerBase *js_JZWidget_window(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-// mapTo(parentOrNull, point) / mapTo(parentOrNull, x, y): parent 为 null 时映射到屏幕坐标。
-jsbind::JSPointerBase *js_JZWidget_mapTo(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-// layout(): 当前布局的非拥有视图(同一控件+同一布局返回同一个 JS 对象, 缓存见 JZJSWidget.cpp); 无布局返回真 null。
-jsbind::JSPointerBase *js_JZWidget_layout(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-// setLayout(layout): 控件接管布局(/Transfer/)。
-// **Qt 语义: 只能设一次** —— 已有布局 / 参数为 null 都直接抛 TypeError(Qt 那边是"警告 + 空操作";
-// JS 里报错更有用, 也免得传进来的布局被翻成 C++ 拥有却没人接管)。要换布局先 clearLayout()。
-jsbind::JSPointerBase *js_JZWidget_setLayout(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-// clearLayout(): 清空布局(删掉布局对象, 之后 layout() 为 null), 等价 Qt 的 `delete w->layout()`。
-// 之前发给 JS 的**视图**(layout() 的返回值)立刻失效; 注意 setLayout 传进去的那份包装不在其列。
-jsbind::JSPointerBase *js_JZWidget_clearLayout(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv);
-
 // ============================================================================
 // JS 构造器(C 版本) —— 每个类一个, 覆盖 C++ 侧的**全部构造重载**
 // ============================================================================

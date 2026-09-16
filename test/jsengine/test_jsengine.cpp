@@ -95,7 +95,7 @@ int main()
         jzDebug() << "[js:error] " << s; 
     });
     engine.init();
-    
+
     // ==================== 基础测试 ====================
 
     // 1. 基础表达式求值
@@ -151,6 +151,36 @@ int main()
         check("exception detect", engine.isException(v.get()));
         engine.deinit();
         engine.init();   // 重新初始化, 清除异常上下文状态
+    }
+
+    // 7b. 异常文本要能看内容: Error 带类型前缀; throw 非 Error(字符串/对象)时按抛出物本身呈现,
+    //     不能退化成 "undefined\nundefined"
+    {
+        {
+            auto v = engine.eval("null.x");
+            string err = engine.runtimeError();
+            check("exception text: Error keeps name",
+                  engine.isException(v.get()) && err.find("TypeError") == 0 &&
+                  err.find("null") != string::npos);
+            engine.deinit();
+            engine.init();
+        }
+        {
+            auto v = engine.eval("throw 'str boom'");
+            string err = engine.runtimeError();
+            check("exception text: string throw",
+                  engine.isException(v.get()) && err.find("str boom") != string::npos);
+            engine.deinit();
+            engine.init();
+        }
+        {
+            auto v = engine.eval("throw {code: 7}");
+            string err = engine.runtimeError();
+            check("exception text: object throw",
+                  engine.isException(v.get()) && err.find("code: 7") != string::npos);
+            engine.deinit();
+            engine.init();
+        }
     }
 
     // 8. 重新初始化后仍能正常求值
@@ -218,6 +248,21 @@ int main()
             engine.registClass(bindPP.classDefine());
 
             static PP s_ppOwned;   // C++ 持有, 用于验证 cppOwner 语义
+            static PP s_ppClear;   // 单独给 clear 用例(同一 C++ 对象不能重复生成新包装: 第二次会撞 toJsValueFromPtr 的断言)
+
+            // 注: 这几个函数以前压根没注册 —— 用例靠 "调用函数不存在 -> ReferenceError" 误判为通过。
+            engine.registFunction(engine.globalObject(), "makePRaw",
+                jsbind::createFunction([]() -> PP* { return &s_ppOwned; }, jsbind::returnOwnedByCpp));
+            engine.registFunction(engine.globalObject(), "makePOwned",
+                jsbind::createFunction([]() -> PP* { return new PP(); }, jsbind::returnOwnedByJs));
+            engine.registFunction(engine.globalObject(), "useP",
+                jsbind::createFunction([](PP* p) -> int { return p ? p->v : -1; }));
+            // detachPointerFromRaw(按底层裸指针找到共享状态并 detach) —— JSRawPointer<PP>& 形参
+            // 走 call() 转发是**不支持**的(fromJSValue 那条重载被 static_assert 禁用), 只能这样清。
+            engine.registFunction(engine.globalObject(), "makePRawClear",
+                jsbind::createFunction([]() -> PP* { return &s_ppClear; }, jsbind::returnOwnedByCpp));
+            engine.registFunction(engine.globalObject(), "clearP",
+                jsbind::createFunction([&engine](PP* p) -> void { engine.detachPointerFromRaw(p); }));
 
             // (a) 裸指针返回 -> JS 对象可用, 读取字段
             {
@@ -236,13 +281,18 @@ int main()
             }
 
             // (c) clear 后再次引用 -> JS 异常
+            //     这里必须用 makePRaw(C++ 拥有): detachPointerFromRaw 按底层裸指针在 m_jsPoints
+            //     (只有 cppOwner 的包装进表)里找状态, JS 拥有的包装查不到。
             {
                 auto v = engine.eval(
-                    "var p = makePOwned();"
+                    "var p = makePRawClear();"
                     "clearP(p);"
                     "useP(p);");
                 check("JSRawPointer clear then use -> JS exception", engine.isException(v.get()));
             }
+
+            // cppOwner 的包装必须在引擎销毁前 detach(否则 ~JSPointerBase 会断言 cppOwner 仍为 true)
+            engine.detachPointerFromRaw(&s_ppOwned);
 
             engine.deinit();
             engine.init();
@@ -319,6 +369,9 @@ int main()
             PP* raw = engine.fromJSValue<PP*>(jsPtr.get());
             check("conv fromJSValue<PP*>", raw == &obj && raw->v == 5);
 
+            // cppOwner 包装不能活到 deinit(否则 ~JSPointerBase 断言 cppOwner 仍为 true)
+            engine.detachPointerFromRaw(&obj);
+
             // null / undefined -> nullptr
             JSValue nullv = JS_NULL;
             check("conv fromJSValue<PP*> null", engine.fromJSValue<PP*>(nullv) == nullptr);
@@ -340,6 +393,7 @@ int main()
         {
             engine.registFunction(engine.globalObject(), "takeRawP",
                 jsbind::createFunction([](PP* p) -> int { return p ? p->v : -1; }));
+
             auto v = engine.eval(
                 "var r = 'no-throw';"
                 "try { takeRawP(123); } catch (e) { r = 'throw'; }"
@@ -348,8 +402,9 @@ int main()
 
             PP obj2; obj2.v = 5;
             JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
-            // clear 走 JSRawPointer<PP>& 形参(经 call() 转发), 不能用 engine.fromJSValue<jsbind::JSRawPointer<PP>>(不支持)
-            engine.callFunction("clearOwnedP", { jsOwned });
+            // JSRawPointer<PP>& 形参(经 call() 转发)不被支持(fromJSValue 那条重载是 static_assert),
+            // 所以直接在 C++ 侧 detach(按底层裸指针找共享状态)。
+            engine.detachPointerFromRaw(&obj2);
             // 已 clear 是运行期状态: JS 侧调用由 call() 预检拦下(直接转换只留断言, 不再抛异常)
             engine.setProperty(engine.globalObject(), "clearedP",
                                JS_DupValue(engine.context(), jsOwned.get()));

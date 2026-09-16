@@ -320,6 +320,30 @@ std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noex
 }
 #endif
 
+// 普通非JZObject派生类
+template<class Class, bool IsJZObjectDerived>
+struct DefaultCreateCallback;
+
+// 普通类分支
+template<class Class>
+struct DefaultCreateCallback<Class, false>
+{
+    static jsbind::JSPointerBase* invoke(JZJSEngine* ctx, int /*argc*/, JSValueConst* /*argv*/)
+    {
+        return new jsbind::JSRawPointer<Class>(ctx, new Class());
+    }
+};
+
+// JZObject派生类分支
+template<class Class>
+struct DefaultCreateCallback<Class, true>
+{
+    static jsbind::JSPointerBase* invoke(JZJSEngine* ctx, int /*argc*/, JSValueConst* /*argv*/)
+    {
+        return new jsbind::JSObjectPointer(ctx, new Class());
+    }
+};
+
 // 默认构造工厂: 按类能力分派, 避免对抽象类 / 无默认构造类实例化 `new Class()` 导致编译失败。
 // 统一签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*; 句柄回写(m_jsvalue / engine)交 onCreated 钩子。
 //   - 可默认构造: 用 new Class() 生成实例(JSWidgetClass<Class> 还会经 using Class::Class 继承基类构造);
@@ -327,12 +351,8 @@ std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noex
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && std::is_default_constructible<Class>::value, int> = 0>
 std::function<jsbind::JSPointerBase*(JZJSEngine *engine, int, JSValueConst*)> makeDefaultCreate()
 {
-    /*if (std::is_base_of_v<JZObject, Class>)
-        return jsbind::JSObjectPointer(engine, new Class());
-    else*/
-    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
-        return new jsbind::JSRawPointer<Class>(ctx, new Class());
-    };        
+    constexpr bool isJzObj = std::is_base_of_v<JZObject, Class>;
+    return &DefaultCreateCallback<Class, isJzObj>::invoke;
 }
 
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>

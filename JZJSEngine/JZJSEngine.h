@@ -540,6 +540,8 @@ protected:
     void registConsole();
 
     std::string getPropertyStr(JSValue var, std::string prop);
+    // JS 值 -> 可读文本; 转不了(symbol 等)时吞掉残留异常并返回空串
+    std::string jsValueToStr(JSValue value);
 
 
     // ---- ESM 模块支持(供 quickjs 模块 loader / runModuleFile 内部使用) ----

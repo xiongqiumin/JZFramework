@@ -848,14 +848,35 @@ std::string JZJSEngine::getPropertyStr(JSValue var, std::string name)
     std::string ret;
 
     JSValue prop = JS_GetPropertyStr(m_ctx, var, name.c_str());
-    const char* msg = JS_ToCString(m_ctx, prop);
-    if (msg)
+    if (JS_IsException(prop))
     {
-        ret = msg;
-        JS_FreeCString(m_ctx, msg);
+        // 取值本身就抛异常(var 是 null/undefined, 或 getter 抛错): 必须吞掉,
+        // 否则异常残留到下一次 JS 调用里, 错误定位会彻底跑偏。
+        JS_FreeValue(m_ctx, JS_GetException(m_ctx));
+        return ret;
     }
+
+    // 属性不存在(undefined/null)返回空串, 便于调用方区分"没有这个属性"
+    if (!JS_IsUndefined(prop) && !JS_IsNull(prop))
+        ret = jsValueToStr(prop);
+
     JS_FreeValue(m_ctx, prop);   // prop 也是 JS_GetPropertyStr 返回的引用, 必须释放
 
+    return ret;
+}
+
+std::string JZJSEngine::jsValueToStr(JSValue value)
+{
+    const char* text = JS_ToCString(m_ctx, value);
+    if (!text)
+    {
+        // symbol 等无法转字符串, 且失败会留下待处理异常
+        JS_FreeValue(m_ctx, JS_GetException(m_ctx));
+        return std::string();
+    }
+
+    std::string ret = text;
+    JS_FreeCString(m_ctx, text);
     return ret;
 }
 
@@ -866,9 +887,36 @@ bool JZJSEngine::isException(JSValue value)
 
 std::string JZJSEngine::getExceptionDescript(JSValue exc)
 {
+    // 异常已被别人取走时 JS_GetException 返回 JS_UNINITIALIZED; 正常情况下不应到这里 ——
+    // 出现说明有代码 return JS_EXCEPTION 却没先 JS_Throw*(见 call() 里的 JZ_ASSERT_X 保护)
+    if (JS_IsUninitialized(exc))
+        return "<no pending exception: return JS_EXCEPTION 但没有 JS_Throw*>";
+    if (JS_IsUndefined(exc))
+        return "<undefined>";
+    if (JS_IsNull(exc))
+        return "<null>";
+
+    // throw "str" / throw 123 / throw {...}: 这种抛出物没有 message / stack,
+    // 直接读属性只会得到 "undefined\nundefined" —— 按抛出物本身转文本。
+    if (!JS_IsError(exc))
+    {
+        if (JS_IsObject(exc))
+        {
+            std::string text = printObject(exc);
+            if (!text.empty())
+                return text;
+        }
+        return jsValueToStr(exc);
+    }
+
+    std::string name = getPropertyStr(exc, "name");
     std::string msg = getPropertyStr(exc, "message");
     std::string stack = getPropertyStr(exc, "stack");
-    std::string error = std::string(msg) + "\n" + stack;
+
+    std::string error = name.empty() ? msg : name + ": " + msg;
+    if (!stack.empty())
+        error += "\n" + stack;
+
     return error;
 }
 
@@ -1233,8 +1281,17 @@ string JZJSEngine::printObject(JSValue value)
     JSValue print_func = JS_GetPropertyStr(m_ctx, m_global, "__printObject__");
     JSValue argv[] = {value};
     JSValue result = JS_Call(m_ctx, print_func, JS_NULL, 1, argv);
-    string str = ::fromJSValue<string>(m_ctx, result);
     JS_FreeValue(m_ctx, print_func);
+
+    string str;
+    if (JS_IsException(result))
+    {
+        // 打印过程中抛错(getter 抛错 / __printObject__ 缺失): 吞掉异常, 回退到默认转换
+        JS_FreeValue(m_ctx, JS_GetException(m_ctx));
+        str = jsValueToStr(value);
+    }
+    else
+        str = ::fromJSValue<string>(m_ctx, result);
     JS_FreeValue(m_ctx, result);
 
     return str;
@@ -1870,9 +1927,15 @@ JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
 
 void JZJSEngine::detachPointerCpp(jsbind::JSPointerBase *pointer)
 {
-    JS_FreeValue(m_ctx, pointer->m_state->jsValue);
+    // 顺序很重要: 必须先摘 C++ 所有权再释放 JS 引用。
+    // JS_FreeValue 有可能就是最后一处引用 —— 那会立刻跑 finalizer 删掉包装, 而
+    // ~JSPointerBase 会断言 cppOwner 为 false; 另外释放期间 pointer 可能已失效, 别再解引用。
+    JSValue js_value = pointer->m_state->jsValue;
+    pointer->m_state->jsValue = JS_UNDEFINED;
     pointer->m_state->cppOwner = false;
     vec_removeOne(m_jsPoints, pointer);
+
+    JS_FreeValue(m_ctx, js_value);
 }
 
 jsbind::JSPointerBase* JZJSEngine::getPointerFrowRaw(const void* ptr)
@@ -2107,17 +2170,20 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
         return false;
     }
 
-    // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则直接返回 JS 异常(不落到 fromJSValue)
+    // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则抛 JS 异常(不落到 fromJSValue)。
+    // 注意: 包装正常时必须 return true。以前这里把 return false 写在了 if 外面 —— 任何
+    // "类指针"形参(成员方法的 this 也是)都被判失败, 且失败时**没有 JS_Throw** -> call() 直接
+    // return JS_EXCEPTION, 于是外层拿到"异常"却取不到任何 pending 异常(表现为
+    // runtimeError() = "undefined\nundefined")。
     if (arg_type > JSType_object)
     {
-        JSClassID class_id = JS_GetClassID(value);
-        auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
-        if (!ptr->getRaw())
+        if (isJSRawPointerCleared(m_ctx, value))
         {
             std::string error = "参数错误:参数" + to_string(index) + "的指针已被释放(clear)，无法访问";
             JS_ThrowTypeError(m_ctx, "%s", error.c_str());
+            return false;
         }
-        return false;
+        return true;
     }
     return true;
 }
@@ -2134,7 +2200,11 @@ JSValue JZJSEngine::call(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < (int)func->params.size(); i++)
     {
         if (!checkFunctionArg(func->params[i], i, argv[i]))
+        {
+            // 返回 JS_EXCEPTION 前必须有 pending 异常, 否则上层会拿到一个"取不到内容的空异常"
+            JZ_ASSERT_X(JS_HasException(m_ctx), "checkFunctionArg 失败但未设置 JS 异常");
             return JS_EXCEPTION;
+        }
     }
 
     try
@@ -2161,7 +2231,10 @@ JSValue JZJSEngine::callAsync(int magic, int argc, JSValueConst* argv)
     for (int i = 0; i < argc; i++)
     {
         if (!checkFunctionArg(func->params[i + 1], i, argv[i]))
+        {
+            JZ_ASSERT_X(JS_HasException(m_ctx), "checkFunctionArg 失败但未设置 JS 异常");
             return JS_EXCEPTION;
+        }
     }
 
     int promise_handle = m_promiseTaskId++;

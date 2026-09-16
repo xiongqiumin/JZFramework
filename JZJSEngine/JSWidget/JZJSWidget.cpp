@@ -232,19 +232,7 @@ jsbind::JSPointerBase* jzCtorParentOnly(JZJSEngine *engine, int argc, JSValueCon
     if (g == -1)
         return nullptr;
     JZWidget* parent = static_cast<JZWidget*>(r[0].p);
-    return jzNewWidget<Class>(ctx, new Class(parent));
-}
-
-// ---- 构造辅助: 把底层对象包成 JSPointerBase* 交给引擎, 并按"是否有父控件"翻转 cppOwner ----
-// 有父控件 ⇒ C++ 拥有底层对象(由父控件在对象树里负责 delete), JS 只持句柄 ⇒ cppOwner = true。
-template <class Class>
-jsbind::JSPointerBase* jzNewWidget(JSContext* ctx, Class* obj)
-{
-    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    jsbind::JSPointerBase* ptr = jsbind::make_js_pointer(engine, obj);
-    if (obj->parentWidget())
-        ptr->state()->cppOwner = true;   // 有父: 交 C++ 拥有
-    return ptr;
+    return jsbind::make_js_pointer(engine, new Class(parent));
 }
 
 template <class Class>
@@ -275,7 +263,7 @@ jsbind::JSPointerBase* js_JZWidget_ctor(JZJSEngine *engine, int argc, JSValueCon
     if (g == -1)
         return nullptr;
     JZWidget* parent = static_cast<JZWidget*>(r[0].p);
-    return jzNewWidget<JZWidget>(ctx, new JZWidget(parent));
+    return jsbind::make_js_pointer(engine, new JZWidget(parent));
 }
 
 // JZWindow: (w, h) / (w, h, title) / (w, h, title, parent)
@@ -292,7 +280,7 @@ jsbind::JSPointerBase* js_JZWindow_ctor(JZJSEngine *engine, int argc, JSValueCon
     int h = r[1].i;
     std::string title = *r[2].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[3].p);
-    return jzNewWidget<JZWindow>(ctx, new JZWindow(w, h, title, parent));
+    return jsbind::make_js_pointer(engine, new JZWindow(w, h, title, parent));
 }
 
 // JZLabel: (text) / (text, parent)   —— parent 放最后
@@ -305,7 +293,7 @@ jsbind::JSPointerBase* js_JZLabel_ctor(JZJSEngine *engine, int argc, JSValueCons
         return nullptr;
     std::string text = *r[0].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[1].p);
-    return jzNewWidget<JZLabel>(ctx, new JZLabel(text, parent));
+    return jsbind::make_js_pointer(engine, new JZLabel(text, parent));
 }
 
 // JZPushButton: (text) / (text, parent)   —— 对齐 Qt: text 在前, parent 放最后(构造不再收 w/h)
@@ -318,7 +306,7 @@ jsbind::JSPointerBase* js_JZPushButton_ctor(JZJSEngine *engine, int argc, JSValu
         return nullptr;
     std::string text = *r[0].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[1].p);
-    return jzNewWidget<JZPushButton>(ctx, new JZPushButton(text, parent));
+    return jsbind::make_js_pointer(engine, new JZPushButton(text, parent));
 }
 
 // () / (parent) 的控件们(构造只有一个 parent 参数)
@@ -354,7 +342,7 @@ jsbind::JSPointerBase* js_JZStackedWidget_ctor(JZJSEngine *engine, int argc, JSV
     if (g == -1)
         return nullptr;
     JZWidget* parent = static_cast<JZWidget*>(r[0].p);
-    return jzNewWidget<JZStackedWidget>(ctx, new JZStackedWidget(parent));
+    return jsbind::make_js_pointer(engine, new JZStackedWidget(parent));
 }
 
 // JZRadioButton: (text) / (text, parent)   —— parent 放最后
@@ -367,7 +355,7 @@ jsbind::JSPointerBase* js_JZRadioButton_ctor(JZJSEngine *engine, int argc, JSVal
         return nullptr;
     std::string text = *r[0].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[1].p);
-    return jzNewWidget<JZRadioButton>(ctx, new JZRadioButton(text, parent));
+    return jsbind::make_js_pointer(engine, new JZRadioButton(text, parent));
 }
 
 // JZGroupBox: (title) / (title, parent)   —— parent 放最后
@@ -380,7 +368,7 @@ jsbind::JSPointerBase* js_JZGroupBox_ctor(JZJSEngine *engine, int argc, JSValueC
         return nullptr;
     std::string title = *r[0].str_ptr;
     JZWidget* parent = static_cast<JZWidget*>(r[1].p);
-    return jzNewWidget<JZGroupBox>(ctx, new JZGroupBox(title, parent));
+    return jsbind::make_js_pointer(engine, new JZGroupBox(title, parent));
 }
 
 // JZSplitter / JZScrollBar: (orientation) / (orientation, parent)   0=横 1=纵, parent 放最后
@@ -400,7 +388,7 @@ static jsbind::JSPointerBase* jzCtorOrientation(JZJSEngine *engine, int argc, JS
         JS_ThrowTypeError(ctx, "%s: orientation 只能是 0(横) 或 1(纵)", what);
         return nullptr;
     }
-    return jzNewWidget<Class>(ctx, new Class((typename Class::Orientation)orientation, parent));
+    return jsbind::make_js_pointer(engine, new Class((typename Class::Orientation)orientation, parent));
 }
 
 jsbind::JSPointerBase* js_JZSplitter_ctor(JZJSEngine *engine, int argc, JSValueConst *argv)

@@ -91,7 +91,9 @@ int main()
     JZJSEngine engine;
     // 日志 / 错误输出到控制台
     connect(&engine.sigLog, [](const string& s) { jzDebug() << "[js:log] " << s; });
-    connect(&engine.sigError, [](const string& s) { jzDebug() << "[js:error] " << s; });
+    connect(&engine.sigError, [&engine](const string& s) {        
+        jzDebug() << "[js:error] " << s; 
+    });
     engine.init();
     
     // ==================== 基础测试 ====================
@@ -184,7 +186,7 @@ int main()
             AAA a;
             JZJSValuePtr js_a = engine.toValuePtr(a);
             JZJSValuePtr js_a_ptr = engine.toValuePtrFromPtr(&a, true);
-
+            
             AAA::resetStats();
             if (isPtr)
                 engine.callFunction(js_func, { js_a_ptr });
@@ -192,7 +194,8 @@ int main()
                 engine.callFunction(js_func, { js_a });
             int copy = AAA::s_copyCtor;
             int dtor = AAA::s_dtor;
-            check(name, copy == expCopy && dtor == expDtor);
+            check(name, copy == expCopy && dtor == expDtor);    
+            engine.detachPointerFromRaw(&a);
         };
 
         checkCall("takeValue", "takeValue", false, 1, 1);
@@ -293,9 +296,16 @@ int main()
 
         // 3) 类对象(值) 双向: makePP 构造带字段, readP 读取字段
         engine.registFunction(engine.globalObject(), "makePP",
-            jsbind::createFunction([]() -> PP { PP p; p.v = 42; return p; }));
+            jsbind::createFunction([]() -> PP { 
+                PP p; 
+                p.v = 42; 
+                return p; 
+            }));
         engine.registFunction(engine.globalObject(), "readP",
-            jsbind::createFunction([](PP p) -> int { return p.v; }));
+            jsbind::createFunction([](PP p) -> int 
+            { 
+                return p.v; 
+            }));
         {
             auto v = engine.eval("readP(makePP());");
             check("conv class value", engine.fromJSValue<int>(v.get()) == 42);

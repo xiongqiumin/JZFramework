@@ -271,7 +271,7 @@ void JZJSWidgetModule::forwardJs(WidgetInfo& node, const char* name, E* event)
     // cppOwner=true —— JS 只持句柄, GC 不会去动底层对象。
     JSValue thisVal = m_engine->toJsValueFromPtr(static_cast<JZWidget*>(node.object), true);
     m_engine->callMemberFunction(name, JZJSValuePtr(ctx, thisVal), params);
-    ref.clear();   // 派发结束: JS 侧若还留着该事件对象, 访问它会失效而不是读悬垂内存
+    ref.detachCpp();   // 派发结束: JS 侧若还留着该事件对象, 访问它会失效而不是读悬垂内存
 }
 
 template <class E>
@@ -437,7 +437,7 @@ void JZJSWidgetModule::endPainter()
     if (m_painter)
     {
         delete m_painter->get();
-        m_painter->clear();
+        m_painter->detachCpp();
         m_painter = nullptr;
     }
     m_paintWidget = nullptr;
@@ -494,7 +494,7 @@ JZJSWidgetModule::WidgetInfo* JZJSWidgetModule::findWidgetInfo(JZObject* object)
         return nullptr;
 
     // 节点挂在引擎身份表那份状态的 data 槽上(键 = 控件裸指针)。该对象没被包装过就没有状态。
-    auto ptr = m_engine->getPointer(object);
+    auto ptr = m_engine->getPointerFrowRaw(object);
     if (!ptr)
         return nullptr;
 
@@ -513,7 +513,7 @@ void JZJSWidgetModule::onWidgetCreate(jsbind::JSPointerBase *ptr, JZWidget* obje
     std::unique_ptr<WidgetInfo> info(new WidgetInfo());
     info->object = object;
     info->engine = m_engine;    
-    ptr->state()->data = std::move(info);
+    ptr->setData(std::move(info));
 }
 
 JZJSWidgetModule* JZJSWidgetModule::fromFuncData(JSContext* ctx, JSValueConst* func_data)
@@ -1117,7 +1117,7 @@ void JZJSWidgetModule::registWidgets()
             w->setParent(parent);
             if (!parent)
             {
-                auto ptr = m_engine->getPointer(w);
+                auto ptr = m_engine->getPointerFrowRaw(w);
                 ptr->moveToJs();
             }
         }
@@ -2448,6 +2448,6 @@ JZWidget *JZJSWidgetModule::takeWidgetFromJs(JSValue w)
 
 JSValue JZJSWidgetModule::moveWidgetToJs(JZWidget *w)
 {
-    auto ptr = m_engine->getPointer(w);
+    auto ptr = m_engine->getPointerFrowRaw(w);
     return ptr->moveToJs();
 }

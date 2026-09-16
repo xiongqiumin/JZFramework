@@ -1850,21 +1850,12 @@ jsbind::JSPointerBase* JZJSEngine::getValuePointer(JSValue value)
     return ptr;
 }
 
-void JZJSEngine::addPointer(jsbind::JSPointerBase *pointer)
-{
-    m_jsPoints.push_back(pointer);
-}
-
-void JZJSEngine::removePointer(jsbind::JSPointerBase *pointer)
-{
-    vec_removeOne(m_jsPoints, pointer);
-}
-
 void JZJSEngine::movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue jsValue)
 {
     JZ_ASSERT(JS_IsUndefined(pointer->m_state->jsValue));
     pointer->m_state->jsValue = dupValue(jsValue);
     pointer->m_state->cppOwner = true;   // 转入 C++ 对象树: 底层对象由 C++ (父控件/容器) 负责 delete
+    m_jsPoints.push_back(pointer);
 }
 
 JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
@@ -1873,10 +1864,18 @@ JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
     JSValue jsValue = pointer->m_state->jsValue;
     pointer->m_state->jsValue = JS_UNDEFINED;
     pointer->m_state->cppOwner = false;  // 交回 JS: 由 JS 决定生死(GC 时释放)
+    vec_removeOne(m_jsPoints, pointer);
     return jsValue;
 }
 
-jsbind::JSPointerBase* JZJSEngine::getPointer(const void* ptr)
+void JZJSEngine::detachPointerCpp(jsbind::JSPointerBase *pointer)
+{
+    JS_FreeValue(m_ctx, pointer->m_state->jsValue);
+    pointer->m_state->cppOwner = false;
+    vec_removeOne(m_jsPoints, pointer);
+}
+
+jsbind::JSPointerBase* JZJSEngine::getPointerFrowRaw(const void* ptr)
 {
     if (!ptr)
         return nullptr;
@@ -1889,7 +1888,7 @@ jsbind::JSPointerBase* JZJSEngine::getPointer(const void* ptr)
     return nullptr;
 }
 
-JSValue JZJSEngine::pointerHandle(const void* ptr) const
+JSValue JZJSEngine::getJSValueFromRaw(const void* ptr) const
 {
     for (size_t i = 0; i < m_jsPoints.size(); i++)
     {
@@ -1899,6 +1898,12 @@ JSValue JZJSEngine::pointerHandle(const void* ptr) const
     return JS_UNDEFINED;
 }
 
+void JZJSEngine::detachPointerFromRaw(const void* ptr)
+{
+    jsbind::JSPointerBase *wrapper = JZJSEngine::getPointerFrowRaw(ptr);
+    wrapper->detachCpp();
+}
+
 void JZJSEngine::clearPointerStates()
 {
     auto points = m_jsPoints;
@@ -1906,8 +1911,6 @@ void JZJSEngine::clearPointerStates()
     {
         if (pt->cppOwner())
         {
-            // 引擎销毁: 不"转移所有权到 JS"(无意义, 上下文即将销毁), 只把 JS 侧保存的包装引用
-            // 释放, 使其失效。moveToJs 在这里语义易误解, 故直接清引用。
             JSValue& jv = pt->m_state->jsValue;
             if (!JS_IsUndefined(jv))
             {
@@ -1944,24 +1947,19 @@ void JZJSEngine::releaseCallback(int id, JSValue value)
 // ---- JSPointerBase 的三个成员(放这里定义: 需要完整的 JZJSEngine) ----
 jsbind::JSPointerBase::~JSPointerBase()
 {
-    if(m_engine)
-        m_engine->removePointer(this);
-}
-
-void jsbind::JSPointerBase::clear()
-{
-    // 只有 "C++ 拥有"(即不负责 delete 的那一侧)才允许标失效 —— 否则会把"JS 拥有、
-    // 还等着析构时 delete"的对象变成永远不释放。各调用点都遵守这条(见 JZJSWidget.cpp)。
-    JZ_ASSERT(cppOwner());
-    if (!m_state)
-        return;
-
-    onClear();
+    //cpp 侧的应该在析构之前主动释放所有权以释放js侧的 
+    JZ_ASSERT(!m_state->cppOwner);
 }
 
 void jsbind::JSPointerBase::moveToCpp(JSValueConst jsValue)
 {   
     m_engine->movePointerToCpp(this, jsValue);    
+}
+
+void jsbind::JSPointerBase::detachCpp()
+{
+    onDetach();
+    m_engine->detachPointerCpp(this);
 }
 
 JSValue jsbind::JSPointerBase::moveToJs()

@@ -60,33 +60,35 @@ public:
     }
     virtual ~JSPointerBase();
 
-    std::shared_ptr<JSPointerState> state() const
+    const JSPointerState* state() const
     {
-        return m_state;
+        return m_state.get();
     }
 
     // ---- 底层指针 ----
     // 返回底层对象裸指针(继承向上转型时, 无需知道具体 Class 模板参数即可取对象指针);
     // 已失效时返回 nullptr(派生类的 get() 负责, 见 onClear)。
     virtual void* getRaw() const = 0;
-
-    // ---- 所有权(对应 SIP 的 /Transfer/ 与 /TransferBack/) ----
-    // 所有权翻转(运行期可变)。绑定层实现 /Transfer/ /TransferBack/ 时经此翻转, 好处是
-    // **不需要知道具体的包装类型** —— 例如 JZJSWidget 拿到自己的包装只要一个 JSPointerBase*,
-    // 就能把"自己"的所有权交给父控件。
+       
     bool cppOwner() const 
     { 
         return m_state->cppOwner; 
     }
-        
+
+    void setData(std::unique_ptr<JSPointerData> &&data)
+    {
+        m_state->data = std::move(data);
+    }
+    
+    //所有权
     void moveToCpp(JSValueConst jsValue);
-    JSValue moveToJs();
-    void clear();   //表示 c++ 指针无效    
+    void detachCpp();  //表示 c++ 指针无效,同时释放js引用
+    JSValue moveToJs();    
     
 protected:
     friend JZJSEngine;
 
-    virtual void onClear() = 0;
+    virtual void onDetach() = 0;
 
     int m_magic = 93847534;
     std::shared_ptr<JSPointerState> m_state;
@@ -118,7 +120,7 @@ public:
     void* getRaw() const override { return get(); }
 
 protected:
-    void onClear() override
+    void onDetach() override
     {
     }
 
@@ -153,7 +155,7 @@ public:
     void* getRaw() const override { return get(); }
 
 protected:
-    void onClear() override
+    void onDetach() override
     {
         if (m_info)
         {

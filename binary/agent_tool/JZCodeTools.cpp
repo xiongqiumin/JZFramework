@@ -756,7 +756,7 @@ void JZWriteFileTool::call(const ToolCall &params)
         }
     }
 
-    string dir = jzDirPart(abs);
+    string dir = JZFileInfo(abs).path();
     if (!dir.empty())
     {
         JZDir parent;

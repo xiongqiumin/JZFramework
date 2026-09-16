@@ -330,7 +330,15 @@ public:
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type, int argc, JSValueConst* argv);
-    JSValue createValue(int type, jsbind::JSPointerBase *ptr);
+    JSValue createValue(int type, jsbind::JSPointerBase *ptr);    
+
+    void freeValue(JSValue value);
+    JSValue dupValue(JSValue value);
+    JSValue createResolvedPromise(JSValue jsValue);
+    JSValue createRejectPromise(JSValue jsValue);
+
+    void setProperty(JSValue obj, std::string name, JSValue value);  // 不会拷贝, set后不能释放
+    JSValue getProperty(JSValue obj, std::string name);
 
     // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
     // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
@@ -344,21 +352,13 @@ public:
     // 之后同对象的包装共享同一份状态, 各自传来的 cppOwner 不再生效(这正是"翻转同步"的前提)。
 
     jsbind::JSPointerBase* getValuePointer(JSValue value);
-    void addPointer(jsbind::JSPointerBase *pointer);
-    void removePointer(jsbind::JSPointerBase *pointer);
     void movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue value);
     JSValue movePointerToJs(jsbind::JSPointerBase *pointer);
-    jsbind::JSPointerBase *getPointer(const void* ptr);
-    JSValue pointerHandle(const void* ptr) const;                   // 查询(借用引用; 身份复用用)
-    void clearPointerStates();                                      // deinit: 统一释放托管句柄 + 清表    
+    void detachPointerCpp(jsbind::JSPointerBase *pointer);
 
-    void freeValue(JSValue value);
-    JSValue dupValue(JSValue value);
-    JSValue createResolvedPromise(JSValue jsValue);
-    JSValue createRejectPromise(JSValue jsValue);
-
-    void setProperty(JSValue obj, std::string name, JSValue value);  // 不会拷贝, set后不能释放
-    JSValue getProperty(JSValue obj, std::string name);
+    jsbind::JSPointerBase *getPointerFrowRaw(const void* ptr);
+    JSValue getJSValueFromRaw(const void* ptr) const;
+    void detachPointerFromRaw(const void* ptr);
 
     // 对外只暴露 值/const 值/引用/const 引用/指针 四种类对象提取形式:
     //   engine.fromJSValue<Class*> / <Class> / <Class&> / <const Class&>
@@ -379,21 +379,15 @@ public:
     template <class T>
     JSValue toJsValueFromPtr(T* ptr, bool cppOwner)
     {
-        auto js_ptr = getPointer(ptr);
+        auto js_ptr = getPointerFrowRaw(ptr);
         JZ_ASSERT_X(!js_ptr, "应该使用 moveToJs 获得JSValue");
 
         jsbind::JSPointerBase *base = jsbind::make_js_pointer(this, ptr);        
+        if (cppOwner)
+            base->m_state->cppOwner = true;
 
         int type = ctypeidToType(typeid(T).name());
-        int js_class_id = m_typeMap[type].jsType;
-        JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
-        JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-        JS_FreeValue(m_ctx, proto);
-    
-        if (cppOwner)
-            base->moveToCpp(obj);
-
-        return obj;
+        return createValue(type, base);
     }
 
     template <class T>
@@ -403,7 +397,7 @@ public:
     }
 
     // 裸指针: 包装为 JSRawPointer。
-    // cppOwner=true (默认): C++ 拥有底层对象, JS 仅持句柄, 不会 delete 外部指针;
+    // cppOwner=true (默认): C++ 拥有底层对象, JS 仅持句柄, 不会 delete 外部指针, cpp 侧一定要在失效的时候调用
     // cppOwner=false: JS 拥有, JS 对象 GC 时释放底层对象(须由 new 分配, 勿传栈/外部托管指针)。
     template <class T>
     JZJSValuePtr toValuePtrFromPtr(T* ptr, bool cppOwner)
@@ -540,6 +534,7 @@ protected:
     void initTypeMap();
     void initJSEnv();
     void deinitJSEnv();
+    void clearPointerStates();
 
     void registInternal();
     void registConsole();

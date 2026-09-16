@@ -203,11 +203,37 @@ std::string JZFileInfo::filePath() const
 
 std::string JZFileInfo::path() const
 {
-    size_t pos = m_path.find_last_of("/\\");
-    if (pos == std::string::npos)
-        return m_path;
+    const auto& s = m_path;
+    if (s.empty())
+        return "";
 
-    return m_path.substr(0, pos);
+    // 先判断末尾是否是分隔符：尾斜杠 → 直接返回完整字符串（Qt规则）
+    char last = s.back();
+    if (last == '/' || last == '\\')
+    {
+        return s;
+    }
+
+    size_t pos = s.find_last_of("/\\");
+    if (pos == std::string::npos)
+    {
+        // Qt行为：纯文件名，无目录，返回 "."
+        return ".";
+    }
+
+    // 根路径 "/"
+    if (pos == 0)
+    {
+        return "/";
+    }
+#ifdef _WIN32
+    // Windows盘符根 D:\
+        if (pos == 2 && s.size() >= 2 && s[1] == ':')
+    {
+        return s.substr(0, pos + 1);
+    }
+#endif
+    return s.substr(0, pos);
 }
 
 std::string JZFileInfo::baseName() const

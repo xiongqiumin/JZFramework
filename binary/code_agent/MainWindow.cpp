@@ -4,6 +4,7 @@
 #include "json/json.h"
 
 #include "JZSplitter.h"
+#include "JZStackedWidget.h"
 #include "JZLayout.h"
 #include "JZLineEdit.h"
 #include "JZPushButton.h"
@@ -334,8 +335,12 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
         h->addWidget(edit, 1);
         if (withBrowse)
         {
-            browseBtn = new JZPushButton(0, "浏览...");
+            browseBtn = new JZPushButton("浏览...", row);
+            h->addWidget(browseBtn, 0);
+        }
+        row->setLayout(h);
     };
+
     addRow("位置", m_baseEdit, true, m_baseBrowseBtn);
     m_baseEdit->setPlaceholderText("工程所在目录（将在这里创建工程子目录）");
     addRow("工程名", m_nameEdit, false, m_baseBrowseBtn);
@@ -345,8 +350,10 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(0, "创建");
+    JZPushButton* cancel = new JZPushButton("取消", this);
+    JZPushButton* ok = new JZPushButton("创建", this);
     bh->addWidget(cancel, 0);
+    bh->addWidget(ok, 0);
     btnRow->setLayout(bh);
     static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
 
@@ -423,7 +430,10 @@ ExportDialog::ExportDialog(JZWidget* parent)
         h->addWidget(edit, 1);
         if (withBrowse)
         {
-            browseBtn = new JZPushButton(0, "浏览...");
+            browseBtn = new JZPushButton("浏览...", row);
+            h->addWidget(browseBtn, 0);
+        }
+        row->setLayout(h);
     };
     addRow("程序名", m_nameEdit, false, m_iconBrowseBtn);
     m_nameEdit->setPlaceholderText("运行时 exe 名（不含 .exe），留空=code_runtime");
@@ -449,8 +459,10 @@ ExportDialog::ExportDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* ok = new JZPushButton(0, "导出");
+    JZPushButton* cancel = new JZPushButton("取消", this);
+    JZPushButton* ok = new JZPushButton("导出", this);
     bh->addWidget(cancel, 0);
+    bh->addWidget(ok, 0);
     btnRow->setLayout(bh);
     static_cast<JZVBoxLayout*>(this->layout())->addWidget(btnRow, 0);
 
@@ -533,7 +545,9 @@ WelcomePage::WelcomePage(JZWidget* parent)
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(10, 6);
-    JZPushButton* newBtn = new JZPushButton(0, "新建工程");
+    JZPushButton* newBtn = new JZPushButton("新建工程", this);
+    JZPushButton* openBtn = new JZPushButton("打开工程", this);
+    bh->addWidget(newBtn, 0);
     bh->addWidget(openBtn, 0);
     bh->addStretch(1);
     btnRow->setLayout(bh);
@@ -651,6 +665,15 @@ void MainWindow::setupUi()
     m_inputEdit = new InputEdit(m_editorSplitter);
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setMinimumHeight(64);
+
+    // 中央堆叠区: 0=欢迎页(未打开工程) 1=对话页(ChatView)。
+    // 这三个控件在 setupUi 里此前漏建, 导致 m_stack/m_welcome/m_chatView 皆为 nullptr,
+    // connect(&m_welcome->sigNewProject,...) 直接解引用空指针崩溃。
+    m_stack = new JZStackedWidget(m_editorSplitter);
+    m_welcome = new WelcomePage(m_stack);
+    m_stack->addWidget(m_welcome);
+    m_chatView = new ChatView(m_stack);
+    m_stack->addWidget(m_chatView);
 
     m_editorSplitter->addWidget(m_stack);
     m_editorSplitter->addWidget(m_inputEdit);

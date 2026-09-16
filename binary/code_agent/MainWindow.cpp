@@ -156,19 +156,24 @@ InputEdit::InputEdit(JZWidget* parent)
     , sigStop(this)
     , sigShot(this)
 {
-    // 发送按钮嵌入输入框内部: 浮动在底部文本区下方的"按钮带"里。
-    // 给文本区留出底部 margin (按钮高度 + 上下间距), 文字永远不与按钮重叠。
+    // 发送按钮 / token 圆环 / 截图按钮 用 selfLayout 锚定在输入框内部右下角,
+    // 输入框尺寸变化时父控件 resize 自动按锚点重摆, 无需手写 resizeEvent。
+    // 文字区底部留 margin(按钮高度 + 间距), 永远不与按钮重叠。
     const int btnW = 70, btnH = 30;
-    m_sendBtn = new JZPushButton(// 输入框尺寸变化时容器自动 relayout, 无需手写 resizeEvent。
-    // 由右向左依次摆放: 发送(8, "发送") | 圆环(8+btnW+8) | 截图(圆环左侧再留 8)
-    auto* layout = new JZSelfLayout();
-    layout->addWidget(m_sendBtn, JZSelfLayout::BottomRight, 8, 6);
-    layout->addWidget(m_tokenRing, JZSelfLayout::BottomRight,
-                      8 + btnW + 8, 6 + (btnH - 26) / 2);
-    layout->addWidget(m_shotBtn, JZSelfLayout::BottomRight,
-                      8 + btnW + 8 + 26 + 8, 6);
-    setLayout(layout);
-*/
+    m_sendBtn = new JZPushButton("发送", this);
+    m_sendBtn->setFixedSize(btnW, btnH);
+    m_sendBtn->setSelfLayout(new JZSelfLayout(JZSelfLayout::BottomRight, 8, 6));
+
+    m_tokenRing = new TokenRing(this);
+    m_tokenRing->setFixedSize(26, 26);
+    m_tokenRing->setSelfLayout(new JZSelfLayout(JZSelfLayout::BottomRight,
+                                                8 + btnW + 8, 6 + (btnH - 26) / 2));
+
+    m_shotBtn = new JZPushButton("截图", this);
+    m_shotBtn->setFixedSize(48, 26);
+    m_shotBtn->setSelfLayout(new JZSelfLayout(JZSelfLayout::BottomRight,
+                                              8 + btnW + 8 + 26 + 8, 6));
+
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
     connect(&m_shotBtn->sigClicked, this, [this]() { sigShot.emit(); });
     connect(&sigTextChanged, this, [this](const std::string&) { updateButton(); });
@@ -638,11 +643,12 @@ void MainWindow::setupUi()
     m_topLabel = new JZLabel("", topBar);       // 打开工程后显示工程名（任务列表归属）
     topLayout->addWidget(m_topLabel, 0);
     topLayout->addStretch();
-    m_clearBtn = new JZPushButton(发送按钮与 token 圆环由 InputEdit 用 selfLayout
-    // 锚定在右下角, 输入框尺寸变化时自动重排。
+    m_clearBtn = new JZPushButton("清空");
+    topLayout->addWidget(m_clearBtn, 0);
+    // 发送按钮与 token 圆环由 InputEdit 用 selfLayout 锚定在右下角, 输入框尺寸变化时自动重排。
     // 不能 setFixedHeight：splitter 靠 setGeometry 摆放，固定高会被夹住而拖不动；
     // 初始高度由 resizeEvent 里的 setSizes 按 m_inputHeight 分配。
-    m_inputEdit = new InputEdit(m_editorSplitter, "清空");
+    m_inputEdit = new InputEdit(m_editorSplitter);
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setMinimumHeight(64);
 

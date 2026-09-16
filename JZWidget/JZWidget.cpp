@@ -133,6 +133,13 @@ JZWidget::~JZWidget()
         m_layout = nullptr;
     }
 
+    // 2.5) 释放本控件自有的自布局
+    if (m_selfLayout)
+    {
+        delete m_selfLayout;
+        m_selfLayout = nullptr;
+    }
+
     // 3) 释放控件级样式表解析结果
     if (m_styleSheet)
     {
@@ -411,6 +418,13 @@ void JZWidget::resize(int w, int h)
 
     if (m_layout)
         m_layout->updateLayout();
+    // self-layout 子控件: 父尺寸变化后按各自锚点重摆自身(见 JZSelfLayout::update)
+    for (auto* c : m_childs) {
+        if (JZWidget* w = dynamic_cast<JZWidget*>(c)) {
+            if (JZSelfLayout* sl = w->selfLayout())
+                sl->update();
+        }
+    }
     update();   // 新尺寸并入脏区
 }
 
@@ -730,6 +744,19 @@ void JZWidget::clearLayout()
     delete old;
 
     updateGeometry();   // 没有布局了: sizeHint 改变, 向上级联(父布局需重排)
+}
+
+void JZWidget::setSelfLayout(JZSelfLayout* layout)
+{
+    if (m_selfLayout && m_selfLayout != layout)
+        delete m_selfLayout;
+    m_selfLayout = layout;
+    if (m_selfLayout)
+    {
+        m_selfLayout->setWidget(this);
+        if (parentWidget())
+            m_selfLayout->update();
+    }
 }
 
 void JZWidget::updateLayout()

@@ -190,23 +190,35 @@ private:
 };
 
 
+// 自布局: 挂在一个**控件自身**上, 依据父控件尺寸把该控件按九宫格锚点 + 偏移
+// 摆放(保持自身当前尺寸)。父控件 resize 时由框架自动重摆(见 JZWidget::resize),
+// 因此控件在父内永远相对父边角对齐, 父尺寸变化无需手写 resizeEvent。
 class JZSelfLayout
 {
 public:
-    // 九宫格锚点: 子控件自身同位置点 对齐 容器内容区对应点, 再偏移。
-    // 如 TopLeft = 子控件左上角对齐内容区左上角。
+    // 九宫格锚点: 控件自身的对应点对齐父控件内容区对应点, 再叠加 (dx, dy) 偏移。
+    // 如 BottomRight = 控件右下角对齐父右下角; dx/dy 为正表示向内(远离边角)缩进。
     enum Anchor {
         TopLeft = 0, TopCenter, TopRight,
         MiddleLeft, Center, MiddleRight,
         BottomLeft, BottomCenter, BottomRight
     };
 
-    JZSelfLayout();
+    JZSelfLayout(Anchor anchor = BottomRight, int dx = 0, int dy = 0);
     ~JZSelfLayout();
 
+    // 绑定目标控件(由 JZWidget::setSelfLayout 自动调用, 一般无需手动调)
+    void setWidget(JZWidget* w) { m_widget = w; }
+    JZWidget* widget() const { return m_widget; }
+
     void setAnchor(Anchor anchor, int dx, int dy);
-    
-protected:    
+
+    // 依据父控件当前尺寸, 把自身控件(保持当前尺寸)摆到锚点 + 偏移处。
+    // 父控件 resize 时由框架自动调用; 也可手动调用立即重摆。
+    void update();
+
+protected:
+    JZWidget* m_widget = nullptr;
     Anchor m_anchor;
     int m_dx;
     int m_dy;

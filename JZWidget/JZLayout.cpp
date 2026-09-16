@@ -798,10 +798,50 @@ JZSize JZGridLayout::minimumSizeHint() const
 
 // ==================== JZSelfLayout ====================
 
-JZSelfLayout::JZSelfLayout()
+JZSelfLayout::JZSelfLayout(Anchor anchor, int dx, int dy)
+    : m_anchor(anchor)
+    , m_dx(dx)
+    , m_dy(dy)
 {
 }
 
 JZSelfLayout::~JZSelfLayout()
 {
+}
+
+void JZSelfLayout::setAnchor(Anchor anchor, int dx, int dy)
+{
+    m_anchor = anchor;
+    m_dx = dx;
+    m_dy = dy;
+    update();
+}
+
+void JZSelfLayout::update()
+{
+    if (!m_widget)
+        return;
+    JZWidget* parent = m_widget->parentWidget();
+    if (!parent)
+        return;
+
+    int pw = parent->width();
+    int ph = parent->height();
+    int w = m_widget->width();
+    int h = m_widget->height();
+
+    int x = 0, y = 0;
+    switch (m_anchor)
+    {
+    case TopLeft:      x = m_dx;                 y = m_dy;                 break;
+    case TopCenter:    x = (pw - w) / 2 + m_dx;  y = m_dy;                 break;
+    case TopRight:     x = pw - w - m_dx;        y = m_dy;                 break;
+    case MiddleLeft:   x = m_dx;                 y = (ph - h) / 2 + m_dy; break;
+    case Center:       x = (pw - w) / 2 + m_dx;  y = (ph - h) / 2 + m_dy; break;
+    case MiddleRight:  x = pw - w - m_dx;        y = (ph - h) / 2 + m_dy; break;
+    case BottomLeft:   x = m_dx;                 y = ph - h - m_dy;        break;
+    case BottomCenter: x = (pw - w) / 2 + m_dx;  y = ph - h - m_dy;        break;
+    case BottomRight:  x = pw - w - m_dx;        y = ph - h - m_dy;        break;
+    }
+    m_widget->move(x, y);
 }

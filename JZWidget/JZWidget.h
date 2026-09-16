@@ -212,6 +212,11 @@ public:
     // 布局不拥有子控件: 子控件留在对象树上、保持最后一次几何, 只是不再被布局管理。
     void clearLayout();
 
+    // 自布局: 把自身控件按 JZSelfLayout 描述(锚点 + 偏移)摆放在父控件内。
+    // 父控件 resize 时框架自动重摆(见 JZWidget::resize); setSelfLayout 时也会立即按当前父尺寸摆一次。
+    void setSelfLayout(JZSelfLayout* layout);
+    JZSelfLayout* selfLayout() const { return m_selfLayout; }
+
     // 控件样式 (背景/边框/圆角/padding)。paintEvent 内经 JZStylePainter 主动绘制;
     // 后续由样式表 (JZStyleSheet) 解析填充。
     JZStyleSet& style() { return m_style; }
@@ -340,6 +345,7 @@ protected:
     virtual void focusOutEvent(JZEvent* event);
 
     JZLayout* m_layout = nullptr;
+    JZSelfLayout* m_selfLayout = nullptr;   // 控件自身挂的自布局(父 resize 时重摆)
 
     JZStyleSet m_style;
 

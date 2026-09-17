@@ -153,7 +153,7 @@ public:
         }
 
         // 只有"类实例方法"才占帧: JS -> C++ 的入口(它们走 magic 分发)用这个版本
-        SelfScope(JZJSEngine* engine, int magic, JSValueConst self)
+        SelfScope(JZJSEngine* engine, int magic, JSValueConst self) : m_engine(engine)
         {
             if (engine && magic >= 0 && magic < (int)engine->m_funcList.size())
             {
@@ -379,8 +379,15 @@ public:
     template <class T>
     JSValue toJsValueFromPtr(T* ptr, bool cppOwner)
     {
-        auto js_ptr = getPointerFrowRaw(ptr);
-        JZ_ASSERT_X(!js_ptr, "应该使用 moveToJs 获得JSValue");
+        if (!ptr)
+            return JS_NULL;
+
+        auto pre_ptr = getPointerFrowRaw(ptr);
+        if (pre_ptr)
+        {
+            JZ_ASSERT_X(cppOwner, "cppOwner = false, 使用 moveToJson");
+            return pre_ptr->m_state->jsValue;
+        }
 
         jsbind::JSPointerBase *base = jsbind::make_js_pointer(this, ptr);        
         if (cppOwner)

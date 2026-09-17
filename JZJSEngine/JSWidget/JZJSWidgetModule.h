@@ -166,11 +166,22 @@ private:
         JZJSEngine* engine = nullptr;
         std::shared_ptr<WidgetExtState> ext;
         std::set<const JZBaseSignal*> connected;
+        // 回调槽(事件 onPaint/onMousePress... 与信号 onClicked/onValueChanged... 共用一张表):
+        // **单发/覆盖式**(后一次赋值替换前一次, 赋 null 清空), 模块持有引用 —— 与"回调挂在哪份
+        // 包装上"彻底解耦: 包装被 GC / getter 现造的临时包装, 都不影响派发。
+        SlotMap slots;
+        // 缓存的 layout() JS 包装: 保证 w.layout() === w.layout() 为同一份; setLayout/clearLayout 时失效。
+        JSValue layoutValue = JS_UNDEFINED;
     };
 
     JZJSEngine* m_engine = nullptr;
     int m_typeWindow = -1;
     int m_typeCanvas = -1;
+
+    // 控件 -> 登记节点(键 = 控件裸指针)。节点放模块自己这张表里(不是包装的状态上):
+    // 包装只是句柄, 会被 GC / 被新的 getter 包装取代, 而"回调 / 缓存布局包装"必须活到控件销毁,
+    // 所以归模块持有; 控件销毁时由 sigDestroyed 摘掉(见 onWidgetDestroyed)。
+    std::unordered_map<JZObject*, std::unique_ptr<WidgetInfo>> m_nodes;
 
     jsbind::JSRawPointer<JZPainter>* m_painter = nullptr;
     JZWidget* m_paintWidget = nullptr;
@@ -200,7 +211,15 @@ private:
     void forwardJs(WidgetInfo& node, const char* name, E* event);
 
     void onWidgetCreate(jsbind::JSPointerBase *ptr, JZWidget* object);
-    WidgetInfo* findWidgetInfo(JZObject* object);    
+    WidgetInfo* findWidgetInfo(JZObject* object);
+    // 取(没有就建)该对象的登记节点: 建节点时顺手给控件装事件过滤器 + 订阅 sigDestroyed。
+    WidgetInfo* ensureWidgetInfo(JZObject* object);
+    // 摘掉该对象的登记节点(控件销毁 / 模块收尾): 节点析构负责释放它持有的 JS 引用。
+    void removeWidgetInfo(JZObject* object);
+    // 把模块从所有登记控件的过滤器表上摘掉(模块先于控件销毁会留下悬垂过滤器指针)。
+    void detachWidgetFilters();
+    // layout() 缓存失效: 布局被换/清空时让旧包装(及其所有 dup)标记失效并释放缓存引用。
+    void invalidateLayoutCache(JZWidget* w);
 
     // 分类注册 (initEngine 中统一调用)
     void registGeometry();   // JZPoint / JZSize / JZRect
@@ -230,6 +249,25 @@ private:
     // owner = 信号所属对象(见 JZSignal::object()): 调用期间把它压成"当前 this", 于是回调里
     // self() 拿到的就是"发信号的那个控件/对象" —— 箭头函数写的 onClicked 也能认出自己是谁。
     JSValue callJsCallback(JSValueConst fn, JZObject* owner, int argc, JSValueConst* argv);
+
+    // 把 C++ 信号接到槽上(按信号形状重载; JS 侧属性名由注册处给出)。幂等: 同一个(对象, 信号)
+    // 只 connect 一次 —— 之后 setter 只换槽里的值, 空槽在触发时直接跳过, 所以"清空"不必断开连接。
+    void ensureConnected(JZObject* owner, JZSigVoid& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigBool& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigInt& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigString& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSignal<int, int>& sig, const char* name);
+
+    // 注册一个"信号属性"的样板(按信号形状分派到上面的 ensureConnected):
+    // getter 读槽(slotToJs) / setter 写槽(setSlot) + 首次赋值时 connect。各控件注册处因此只需一行:
+    //   defSignalProperty(bind_spin, "onValueChanged", &JZSpinBox::sigValueChanged);
+    // 两个模板形参: C = 注册的类(与 ClassBind 一致), S = 信号**声明的**类 —— 二者常常不同
+    // (如 sigTextChanged 声明在 JZAbstractTextEdit 上而注册在 JZLineEdit 上), S 必须自己推导。
+    template <class C, class S> void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigVoid S::* sig);
+    template <class C, class S> void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigBool S::* sig);
+    template <class C, class S> void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigInt S::* sig);
+    template <class C, class S> void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSigString S::* sig);
+    template <class C, class S> void defSignalProperty(jsbind::ClassBind<C>& bind, const char* name, JZSignal<int, int> S::* sig);
 
     // 注册一个"信号属性"的样板(按信号形状分派到 5 个重载, 与上面的 ensureConnected 对应):
     //   getter 读槽(slotToJs) / setter 写槽(setSlot) + 首次赋值时 connect。

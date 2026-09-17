@@ -266,16 +266,24 @@ jsbind::JSPointerBase* js_JZWidget_ctor(JZJSEngine *engine, int argc, JSValueCon
     return jsbind::make_js_pointer(engine, new JZWidget(parent));
 }
 
-// JZWindow: (w, h) / (w, h, title) / (w, h, title, parent)
-//   新版统一 parent 放最后(与 JZLabel / JZPushButton 等一致): w,h 必填, title/parent 均可省略(默认 "" / null)。
+// JZWindow: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)
+//   实参形态与 TS 声明(js_wrapper/widget/types/widgets.d.ts)一致:
+//   * 不给尺寸(() 与 (parent))时用 C++ 默认尺寸 —— uiLoader 的 __mk 就是 `new JZWindow()`
+//     之后再用 setGeometry 落到 XML 里的 geometry, 所以窗口的尺寸必须允许省略;
+//   * 给了 w 就必须给 h((w,h) 起), `new JZWindow(100)` 仍然是"参数不匹配"错误。
+//   parent 统一放最后(与 JZLabel / JZPushButton 等一致), title/parent 可省略(默认 "" / null)。
 jsbind::JSPointerBase* js_JZWindow_ctor(JZJSEngine *engine, int argc, JSValueConst *argv)
 {
     JSContext* ctx = engine->context();
     std::vector<ArgResult> r;
-    // 重载组: (w,h)[,(title)][,(parent:JZWidget)]  —— 后两者可省略
-    int g = engine->checkAndSetArgs("int,int,string=\"\",JZWidget=null", &r);
+    // 重载组: () | (parent:JZWidget) | (w,h)[,(title)][,(parent:JZWidget)] —— 后两者可省略
+    int g = engine->checkAndSetArgs("null|JZWidget|int,int,string=\"\",JZWidget=null", &r);
     if (g == -1)
         return nullptr;
+    if (g == 0)
+        return jsbind::make_js_pointer(engine, new JZWindow());
+    if (g == 1)
+        return jsbind::make_js_pointer(engine, new JZWindow(static_cast<JZWidget*>(r[0].p)));
     int w = r[0].i;
     int h = r[1].i;
     std::string title = *r[2].str_ptr;

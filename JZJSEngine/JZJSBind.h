@@ -224,12 +224,19 @@ public:
     JSValue dealCall(JSContext* ctx, JSValueConst* argv, std::true_type)
     {
         callFunction(ctx, argv, make_index_sequence<sizeof...(Args)>());
+        // 绑定层报错的通行写法是 lambda 里 JS_ThrowXxx(...) 然后直接 return(没有返回值可给),
+        // 所以这里必须把"挂着的异常"变成 JS_EXCEPTION 交出去 —— 否则 JS 侧 try/catch 捕不到
+        // (异常只是挂在 ctx 上), 而且会污染后续调用。
+        if (JS_HasException(ctx))
+            return JS_EXCEPTION;
         return JS_UNDEFINED;
     }
 
     JSValue dealCall(JSContext* ctx, JSValueConst* argv, std::false_type)
     {
         Return ret = callFunction(ctx, argv, make_index_sequence<sizeof...(Args)>());
+        if (JS_HasException(ctx))
+            return JS_EXCEPTION;   // 同上: lambda 抛了 JS 异常就别再交返回值了
         return toJSValueReturn(ctx, std::move(ret), returnCppOwner);
     }
 
@@ -414,27 +421,30 @@ public:
     void setPointerSemantics() { m_define.pointerSemantics = true; }
 
     template <typename Return, typename... Args, typename... Extra>
-    void def(std::string name, Return (Class::*f)(Args...), Extra... extra)
+    CFunction *def(std::string name, Return (Class::*f)(Args...), Extra... extra)
     {
         std::shared_ptr<CFunction> impl = createFunction(f, extra...);
         impl->name = name;
         m_define.functions.push_back(impl);
+        return m_define.functions.back().get();
     }
 
     template <typename Return, typename... Args, typename... Extra>
-    void def(std::string name, Return (Class::*f)(Args...) const, Extra... extra)
+    CFunction *def(std::string name, Return (Class::*f)(Args...) const, Extra... extra)
     {
         std::shared_ptr<CFunction> impl = createFunction(f, extra...);
         impl->name = name;
         m_define.functions.push_back(impl);
+        return m_define.functions.back().get();
     }
 
     template <typename Func, typename... Extra>
-    void def(std::string name, Func f, Extra... extra)
+    CFunction *def(std::string name, Func f, Extra... extra)
     {
         std::shared_ptr<CFunction> impl = createFunction(f, extra...);
         impl->name = name;
         m_define.functions.push_back(impl);
+        return m_define.functions.back().get();
     }
 
     // ---- 直接挂 quickjs C 函数 ----

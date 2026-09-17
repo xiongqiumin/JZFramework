@@ -157,11 +157,12 @@ public:
 protected:
     void onDetach() override
     {
+        // 只作废"手里的这个指针": 之后 get()/getRaw() 返回 nullptr, 调用其方法会被上层抛异常。
+        // 注: 不要求 cppOwner —— 除了"C++ 托管的那份包装要解除托管"(detachCpp 的本意),
+        // 还有一类用法是**主动作废**一份 JS 拥有的包装: 底层对象已经自己结束掉了(如离屏
+        // JZPainter 的 end(): 对象就地回收, 之后这份句柄不该再能用)。两种情况都只需要置空指针。
         if (m_info)
-        {
-            JZ_ASSERT(m_state->cppOwner);
             m_info->ptr = nullptr;
-        }
     }
 
     std::shared_ptr<PointInfo> m_info;
@@ -263,6 +264,8 @@ enum
     JSType_none = -1,
 
     JSType_oriValue,  // 原始的JSValue
+    JSType_null,
+    JSType_undefined,
     JSType_bool,
     JSType_int,
     JSType_double,
@@ -277,9 +280,10 @@ struct CFunctionParam
 {
     CFunctionParam();
 
+    int type = JSType_none;
     std::string name;
     std::string ctypeid;
-    int type;;
+    bool allowNull = false;
 };
 
 class CFunction
@@ -604,6 +608,10 @@ JSValue toJSValueReturn(JSContext* ctx, T&& t, bool cppOwner)
 template <class T>
 JSValue toJSValueReturn(JSContext* ctx, T* t, bool cppOwner)
 {
+    // 空指针 = "C++ 侧没有这个对象" -> 交给 JS 真 null(与 JS 语义一致: `if (p)` / `p === null` 判得出空)。
+    // 不能走 toJsValueFromPtr: 它会去包一个空指针(包装的守卫指针构造要解引用底层对象) —— 直接崩。
+    if (!t)
+        return JS_NULL;
     return toJsValueFromPtr(ctx, t, cppOwner);
 }
 

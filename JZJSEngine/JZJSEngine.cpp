@@ -523,7 +523,9 @@ void JZJSEngine::wait(int delay)
 void JZJSEngine::initTypeMap()
 {
     registBase("JSValue", JSType_oriValue, -100, typeid(JSValue).name());
-
+    
+    registBase("null", JSType_null, JS_TAG_NULL, typeid(nullptr_t).name());
+    registBase("undefined", JSType_undefined, JS_TAG_UNDEFINED, "undefined");
     registBase("bool", JSType_bool, JS_TAG_BOOL, typeid(bool).name());
     registBase("int", JSType_int, JS_TAG_INT, typeid(int).name());
     registBase("double", JSType_double, JS_TAG_FLOAT64, typeid(double).name());
@@ -2010,8 +2012,8 @@ void JZJSEngine::releaseCallback(int id, JSValue value)
 // ---- JSPointerBase 的三个成员(放这里定义: 需要完整的 JZJSEngine) ----
 jsbind::JSPointerBase::~JSPointerBase()
 {
-    //cpp 侧的应该在析构之前主动释放所有权以释放js侧的 
-    JZ_ASSERT(!m_state->cppOwner);
+    if(m_state->cppOwner)
+        m_engine->detachPointerCpp(this);
 }
 
 void jsbind::JSPointerBase::moveToCpp(JSValueConst jsValue)
@@ -2161,6 +2163,9 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
         return true;
 
     int js_type = jsValueType(value);
+    if (js_type == JSType_null && arg_type > JSType_object && param.allowNull)
+        return true;
+
     if (js_type != arg_type && !canConvert(js_type, arg_type))
     {
         string input_type = typeName(js_type);

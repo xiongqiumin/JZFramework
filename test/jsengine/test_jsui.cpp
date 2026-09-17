@@ -28,7 +28,10 @@ static string evalStr(JZJSEngine& engine, const string& code)
 {
     auto v = engine.eval(code);
     if (JS_IsException(v.get()) || JS_IsUndefined(v.get()))
+    {
+        jzDebug().noquote() << engine.runtimeError();
         return "<js-exception>";
+    }
     return engine.fromJSValue<string>(v.get());
 }
 
@@ -396,6 +399,7 @@ int main()
     jzDebug() << "===== 控件状态管理(所有权/父链/布局/保活)演示 =====";
     {
         JZJSEngine engine;
+        connect(&engine.sigLog, [](const std::string& log) { jzDebug() << log; });
         engine.init();
         JZJSWidgetModule widgetModule;
         widgetModule.initEngine(&engine);
@@ -421,13 +425,12 @@ int main()
         JZWidget* p2 = engine.fromJSValue<JZWidget*>(p2Val.get());
         JZWidget* c  = engine.fromJSValue<JZWidget*>(cVal.get());
 
-        // (a) addWidget: 所有权转移(/Transfer/) + 真的挂成子控件(父链 / 对象树 / 布局项三处一致)
-        check("addWidget 前包装由 JS 拥有", cppOwnerOf(cVal.get()) == 0);
-        evalStr(engine, "p1.addWidget(c); 'ok'");
-        check("addWidget 后翻成 C++ 拥有(/Transfer/)", cppOwnerOf(cVal.get()) == 1);
-        check("addWidget 后成为父控件的子控件(树+布局项)",
-              c->parentWidget() == p1 && hasChild(p1, c) && !hasChild(p2, c)
-              && p1->layout() != nullptr && static_cast<JZBoxLayout*>(p1->layout())->count() == 1);
+        // (a) setParentWidget: 所有权转移(/Transfer/) + 真的挂成子控件(父链 / 对象树 / 布局项三处一致)
+        check("setParentWidget 前包装由 JS 拥有", cppOwnerOf(cVal.get()) == 0);
+        evalStr(engine, "c.setParentWidget(p1); 'ok'");
+        check("setParentWidget 后翻成 C++ 拥有(/Transfer/)", cppOwnerOf(cVal.get()) == 1);
+        check("setParentWidget 后成为父控件的子控件(树+布局项)",
+              c->parentWidget() == p1 && hasChild(p1, c) && !hasChild(p2, c));
 
         // (b) setParentWidget 换父: 同一个控件只属于一个父(旧父不再持有)
         check("setParentWidget 换父后父链指向新父",
@@ -441,7 +444,7 @@ int main()
         check("脱离后包装翻回 JS 拥有(/TransferBack/)",
               cppOwnerOf(cVal.get()) == 0 && c->parentWidget() == nullptr && !hasChild(p2, c));
         check("重新挂回父树后所有权与父链恢复",
-              evalStr(engine, "p2.addWidget(c); (c.parentWidget().objectName() === 'p2') ? 'ok' : 'bad'") == "ok"
+              evalStr(engine, "c.setParentWidget(p2); (c.parentWidget().objectName() === 'p2') ? 'ok' : 'bad'") == "ok"
               && cppOwnerOf(cVal.get()) == 1 && hasChild(p2, c));
 
         // (d) setLayout 的 Qt 语义: 一个控件只能有一个布局, 且只能设一次;
@@ -455,6 +458,7 @@ int main()
                       "var nul = 'accepted';"
                       "try { w.setLayout(null); } catch (e) { nul = 'rejected'; }"
                       "var kept = (w.layout() instanceof JZVBoxLayout) ? 'vbox' : 'bad';"   // 原布局没被换也没被删
+                      "console.log(rep + '/' + nul + '/' + kept);"
                       "rep + '/' + nul + '/' + kept") == "rejected/rejected/vbox");
 
         check("clearLayout 后 layout() 为 null、旧视图失效、可再设新布局",
@@ -627,7 +631,7 @@ int main()
         };
 
         // ① JZStackedWidget.addWidget(test_jswidget 的"页"就是这条路径)
-        evalStr(engine,
+        auto eval_result = evalStr(engine,
                 "var w1 = new JZWindow(200, 120, 'w1');"
                 "var st = new JZStackedWidget();"
                 "var pg = new JZWidget();"

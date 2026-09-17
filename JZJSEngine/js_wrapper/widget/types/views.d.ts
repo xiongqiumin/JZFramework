@@ -3,9 +3,9 @@
 // 这些控件的数据/子项由 C++ 持有; JS 侧既有"值级"操作(文本、行数、当前项、滚动位置),
 // 也能用 item 对象(见 items.d.ts 的 JZTableWidgetItem / JZListWidgetItem)。
 //
-// 所有权(与 JZWindow.addWidget 同一套): addWidget / insertWidget / addTab / setWidget /
-// setParentWidget 都会把 JS 包装翻成"C++ 拥有"(/Transfer/), 之后由对象树负责 delete,
-// 同时把包装登记到父节点下**保活**(父节点持一份引用防 GC)。
+// 生命周期(与 JZWidget 同一套, 见 index.d.ts 的"生命周期 / 包活"): JS 包装归 GC, 挂进容器时
+// 由 `@jz/widget` 运行期登记**保活**(容器持子控件的强引用, 子控件弱引用容器)。
+// addWidget / insertWidget / addTab / setWidget 这些入口都已包好, 传进去的控件不需要自己 keep。
 
 // 列表(选页 / 选择用)。注意与 Qt 一样**没有** removeItem 的"摘除"语义:
 // 绑定层的 removeItem(i) = takeItem(i) + delete, 确实会释放该项。

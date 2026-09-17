@@ -17,9 +17,17 @@
 //
 // ⚠ 真控件不在本模块: 它们是**引擎注册的全局类**(见 ./types/widgets.d.ts / views.d.ts):
 //   new JZWindow(w, h, title) / new JZPushButton(...) / new JZLabel(text) ...
-//   父子上树用 setParentWidget() / 布局 addWidget() / JZWindow.addWidget(),
+//   父子上树用 setParent() / setParentWidget() / 布局 addWidget() / JZWindow.addWidget(),
 //   绘制用全局 JZPainter(见 ./types/painter.d.ts)。要建真实界面请直接用全局类;
 //   本模块只在你实现"UI 定义 -> 数据树"这一层(如 .ui 代码生成)时才需要。
+//
+// 另外本模块**顺带**给真控件装上对象树支持(./tree.ts: 父子登记 + 保活 + 子控件弱引用父,
+// 以及 setParent() / parent() / children() / JZLayout.children() / JZLayout.parentWidget())。
+// 那些方法是 C++ 侧还没注册的, 所以**必须 import 本包才可用**(模块加载即装上, 幂等):
+//   import '@jz/widget';
+
+// 真控件的对象树(保活 / 弱引用父) —— 模块加载即装到全局类的原型上, 见 ./tree.ts
+export * from './tree';
 
 export type EventName = string;
 export type Handler = (...args: any[]) => void;

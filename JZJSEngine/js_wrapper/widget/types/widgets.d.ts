@@ -20,14 +20,17 @@
 //
 // ⚠ 空指针返回值: parentWidget() / window() / layout() / JZGroupBox.contentWidget() 之类
 //   在 C++ 侧没有对象时返回**真 null**(不再是"空包装对象"那种真值, `if (p)` 判得出空)。
-// ⚠ 引用相等性: parentWidget() / window() / widget() / contentWidget() / currentWidget() /
-//   verticalScrollBar() ... 这些 getter **按当前调用现造包装** —— 同一个控件的两份包装不是同一个
-//   JS 对象, 所以 `===` 比不得, 也别把 JS 侧状态(自定义字段)挂在包装上指望"下次还是它"。
+// ⚠ 引用相等性: window() / widget() / contentWidget() / currentWidget() / verticalScrollBar() ...
+//   这些 getter **按当前调用现造包装** —— 同一个控件的两份包装不是同一个 JS 对象, 所以 `===` 比不得。
+//   parentWidget() / parent() 相反: 只要父子关系是 JS 侧建的(setParent / layout.addWidget /
+//   window.addWidget / ...), 就由 `@jz/widget` 运行期登记, 拿回的是你当初传进去的那份, `===` 成立;
+//   关系不是 JS 侧建的(构造时直接带父 `new JZLabel(win)`)则落到原生兜底, 仍是现造包装。
 //   事件回调不受影响(onPaint 等存在 C++ 侧的槽里, 在哪份包装上赋都生效)。layout() 走缓存, 返回同一份。
 // ⚠ 别把状态挂在包装对象上: 包装是**纯句柄** —— `w.foo = 1` 这类写法 TS 下本来就编译不过(这些类的
 //   声明里没有索引签名, 也不打算加), 而绕过它(声明合并 / `as any`)之后运行期同样靠不住: getter
-//   现造包装, 同一控件的两份包装是两个 JS 对象, 于是"以包装对象为键的 Map/WeakMap"和挂在包装上的
-//   字段一样会丢。要 per 控件状态: 用稳定键(objectName / 你自己持有的那份包装)自建表, 或放 C++ 侧绑定层。
+//   现造包装, 同一控件的两份包装是两个 JS 对象。但你自己**长期持有的那份包装**身份是稳定的,
+//   所以以它为键的 WeakMap(运行期对象树就是这么记父子/保活的)可靠; 挂在包装上的字段一样会丢。
+//   要 per 控件状态: 用稳定键(objectName / 你自己持有的那份包装)自建表, 或放 C++ 侧绑定层。
 // ⚠ 布局的生命周期: 布局归控件所有、由控件负责 delete。layout() 返回的视图在 clearLayout()
 //   之后会被置失效(再调用抛异常); 但你交给 setLayout 的那份包装**不会**被标记失效 ——
 //   布局被删之后不要再继续用那个变量。
@@ -71,9 +74,15 @@ declare class JZWidget {
   update(): void;
 
   // ---- 对象树 / 坐标 ----
-  /** 传 null 表示脱离父级(所有权交回 JS, 见模块头的所有权说明) */
+  /** 传 null 表示脱离父树(不再被父节点保活) */
   setParentWidget(parent: JZWidget | null): void;
+  /** setParentWidget 的同义写法(由 @jz/widget 运行期提供, 见下) */
+  setParent(parent: JZWidget | null): void;
   parentWidget(): JZWidget | null;
+  /** parentWidget() 的同义写法(由 @jz/widget 运行期提供) */
+  parent(): JZWidget | null;
+  /** JS 侧登记过的**直接**子控件(由 @jz/widget 运行期提供; 只登记得到经 JS 建立的关系) */
+  children(): JZWidget[];
   /** 所属顶层窗口; 不在窗口里返回 null(每个调用都是新包装对象, 别用 === 比) */
   window(): JZWindow | null;
   /** parent 为 null 时映射到屏幕坐标 */

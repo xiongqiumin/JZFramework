@@ -55,14 +55,23 @@
 //   JZFont          () / (size) / (family, size) / (family, size, style)
 //   JZMatrix2D      () / (a, b, c, d, e, f) / (other)
 //
-// ============================ 所有权(重要) ============================
-//   * **挂进对象树 = 所有权转移**: addWidget / insertWidget / addTab / setWidget /
-//     setParentWidget / setLayout 都会把 JS 包装翻成"C++ 拥有", 之后由对象树负责 delete;
-//     同时按控件登记到 JZJSWidgetModule —— 父节点持一份"子控件 JS 包装"的引用防 GC。
-//     所以挂进树的控件/布局**不需要**自己 keep, 放手也不会被回收。
-//   * **顶层对象归 JS 所有**(一般就是窗口, 没有父控件): JS 放手 → 包装析构 → 窗口 delete
-//     → 没有窗口了, code_runtime 退出。故顶层窗口必须留一份引用。
-//   * setParentWidget(null) 把控件交回 JS 拥有(脱离树)。
+// ============================ 生命周期 / 包活(重要) ============================
+//   * **JS 包装归 GC**: 包装被回收 ⇒ 底层控件被 delete。所以"把控件挂进对象树"必须在 JS 侧
+//     **保活** —— 否则子控件的包装一被 GC, 控件就被删掉, 而它还挂在父控件的子树里 ⇒ 悬垂。
+//   * 保活由 `@jz/widget` 的运行期(../tree.ts)做; C++ 侧(2026-09-17 起)**不再做归属权转移**:
+//       - 宿主(父控件 / 布局)持子控件包装的**强引用**;
+//       - 子控件只**弱引用**(WeakRef)父控件 —— 不成环, 顶层窗口照样能被回收;
+//       - 入口(已全部包好): setParent / setParentWidget / 布局 addWidget|insertWidget /
+//         JZWindow.addWidget / setCentralWidget / addMenuBar / addTab /
+//         JZStackedWidget.addWidget / JZSplitter.addWidget|insertWidget / JZScrollArea.setWidget。
+//     ⚠ 只有**经 JS 建立**的关系才登记得到: 构造时直接带父(`new JZLabel(win)`)不经过 JS,
+//       那种写法补一句 `label.setParent(win)`。要彻底解决得在 C++ 侧做"同一底层对象 ⇒ 同一包装"
+//       的身份表(未做)。
+//   * **顶层对象(一般就是窗口)仍归你**: 没人引用它 ⇒ 被 GC ⇒ 窗口 delete ⇒ 运行时退出。
+//     故顶层窗口必须自己留一份引用。
+//   * setParent(null) / setParentWidget(null) 脱离父树(不再被保活, 回收交给 GC)。
+//   * ⚠ setParent() / parent() / children() / JZLayout.children() / JZLayout.parentWidget()
+//     目前**只由 JS 运行期提供**(C++ 侧没注册), `import '@jz/widget'` 之后才存在。
 
 /// <reference path="./geometry.d.ts" />
 /// <reference path="./color.d.ts" />
@@ -79,4 +88,6 @@
 // 另一层(模块形式的 'widget', 与真控件无关): UI 树数据节点构建器, 只有 .ui 代码生成用得到
 // (JZJSUiLoader::generateTsClass 生成的类里 `import { Widget } from 'widget'`)。类型契约在同目录
 // widget.d.ts, 运行期实现在 ../index.ts; 裸模块名的 ambient 声明见 ambient.d.ts。
+// 同一份 ../index.ts 还顺带装上真控件的对象树支持(../tree.ts): 保活 + 弱引用父 +
+// setParent()/parent()/children()/JZLayout.children()/JZLayout.parentWidget()。
 export * from './widget';

@@ -7,6 +7,14 @@
 // 具体布局都经 ClassBind<Layout>(name, bind_layout) 注册了基类, 所以 `layout instanceof JZLayout`
 // 成立 —— JZWidget.setLayout(JZLayout) 的参数校验要求这一点。
 //
+// 包活(由 `@jz/widget` 运行期提供, 见 ../tree.ts; C++ 侧尚未注册这两个方法):
+//   控件 -> 布局  : setLayout() 之后控件持一份布局包装的**强引用**(布局归控件所有, 包装不能被 GC);
+//   布局 -> 控件  : addWidget / insertWidget 把子控件登记到布局 + 布局的宿主控件下(强引用保活),
+//                   子控件再**弱引用**(WeakRef)宿主控件 —— 不成环, 顶层窗口仍能被回收;
+//   children()    : 加进本布局的控件(布局里的 spacing/stretch 不是控件, 不在其中);
+//   parentWidget(): 本布局的宿主控件(setLayout 过才有; 没 setLayout 返回 null)。
+//   ⚠ 只有经 JS 侧这些入口加进来的控件才登记得到(构造时直接带父的补一句 setParent)。
+//
 // 构造实参(与 C++ 构造一致):
 //   new JZLayout() / (pad) / (pad, spacing)   —— JZLayout 在 JS 侧**可 new**:
 //        与旧行为一致地造一个 JZVBoxLayout, 但 JS 类仍是 JZLayout(instanceof JZVBoxLayout 为假)
@@ -22,6 +30,11 @@ declare class JZLayout {
   spacing(): number;
   /** 内容边距(布局留白) */
   setContentsMargins(left: number, top: number, right: number, bottom: number): void;
+
+  /** 加进本布局的控件(由 @jz/widget 运行期提供; 只登记得到经 JS 建立的关系) */
+  children(): JZWidget[];
+  /** 本布局的宿主控件(由 @jz/widget 运行期提供; 还没 setLayout 时返回 null) */
+  parentWidget(): JZWidget | null;
 }
 
 /** @final */

@@ -393,7 +393,10 @@ public:
         if (cppOwner)
             base->m_state->cppOwner = true;
 
-        int type = ctypeidToType(typeid(T).name());
+        int type = ctypeidToType(typeid(*ptr).name());
+        if (type == JSType_none)
+            type = ctypeidToType(typeid(T).name());
+
         return createValue(type, base);
     }
 

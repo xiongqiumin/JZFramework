@@ -16,7 +16,6 @@
 #include "JZThread.h"
 #include "JZTimer.h"
 #include "JZUrl.h"
-#include "JZWebSocket.h"
 
 // 协议版本: 与 JZMcpCore 一致, 只支持无状态的 2026-07-28(无 initialize 握手)
 static const char *kProtocolVersion = "2026-07-28";
@@ -178,7 +177,6 @@ JZ_OBJECT_IMPL(JZMcpClient, JZObject)
 
 JZMcpClient::JZMcpClient(JZObject *parent)
     : JZObject(parent), sigFinished(this)
-    , sigDisconnected(this), sigReconnected(this)
 {
 }
 
@@ -188,16 +186,13 @@ JZMcpClient::~JZMcpClient()
 }
 
 bool JZMcpClient::startProcess(const std::string &program, const std::vector<std::string> &arguments,
-                               int timeoutMs, bool reconnect)
+                               int timeoutMs)
 {
     if (!prepareConnect())
         return false;
 
     m_transport = Process;
     m_timeoutMs = timeoutMs;
-    m_reconnecting = reconnect;
-    m_program = program;          // 重连时原样复用
-    m_arguments = arguments;
 
     std::string prog = program;
 #ifdef _WIN32
@@ -210,11 +205,8 @@ bool JZMcpClient::startProcess(const std::string &program, const std::vector<std
     connect(&m_process->sigReadyReadStandardOutput, this, &JZMcpClient::onProcessOutput);
     connect(&m_process->sigFinished, this, [this](int code, JZProcess::ExitStatus)
     {
-        // 进程退出 = 连接丢失: 自动重连则计划重连, 否则走永久失败
-        if (m_autoReconnect)
-            onTransportLost("MCP 进程退出, 退出码 " + std::to_string(code));
-        else
-            setFailed("MCP 进程退出, 退出码 " + std::to_string(code));
+        // 进程退出 = 本次连接流程失败(连接已丢失), 走永久失败并由 sigFinished 通知调用方
+        setFailed("MCP 进程退出, 退出码 " + std::to_string(code));
     });
 
     if (!m_process->start(prog, arguments))
@@ -225,15 +217,11 @@ bool JZMcpClient::startProcess(const std::string &program, const std::vector<std
     }
 
     // 异步: 发起后立即返回, 连接流程结束由 sigFinished 通知(结果看 isReady())
-    // 重连不握手, 直接恢复可用; 首次连接走 server/discover + tools/list
-    if (m_reconnecting)
-        onReconnectReady();
-    else
-        beginNegotiate();
+    beginNegotiate();
     return true;
 }
 
-bool JZMcpClient::startHttp(const std::string &url, int timeoutMs, bool reconnect)
+bool JZMcpClient::startHttp(const std::string &url, int timeoutMs)
 {
     if (!prepareConnect())
         return false;
@@ -241,52 +229,9 @@ bool JZMcpClient::startHttp(const std::string &url, int timeoutMs, bool reconnec
     m_transport = Http;
     m_url = url;
     m_timeoutMs = timeoutMs;
-    m_reconnecting = reconnect;
     m_net = new JZNetworkAccessManager(this);
 
-    // HTTP 不重连, 这里恒为首次连接
     beginNegotiate();
-    return true;
-}
-
-bool JZMcpClient::startWebSocket(const std::string &url, int timeoutMs, bool reconnect)
-{
-    if (!prepareConnect())
-        return false;
-
-    m_transport = WebSocket;
-    m_url = url;
-    m_timeoutMs = timeoutMs;
-    m_reconnecting = reconnect;
-
-    m_ws = new JZWebSocket(this);
-    connect(&m_ws->sigTextMessageReceived, this, &JZMcpClient::onWsMessage);
-    // WebSocket 连上后才开始协商: 首次连接走 server/discover + tools/list; 重连不握手, 直接恢复
-    connect(&m_ws->sigConnected, this, [this]()
-    {
-        if (m_reconnecting)
-            onReconnectReady();
-        else
-            beginNegotiate();
-    });
-    connect(&m_ws->sigDisconnected, this, [this]()
-    {
-        // 连接断开 = 连接丢失: 自动重连则计划重连, 否则走永久失败
-        if (m_autoReconnect)
-            onTransportLost("MCP WebSocket 连接已断开");
-        else
-            setFailed("MCP WebSocket 连接已断开");
-    });
-    connect(&m_ws->sigError, this, [this]()
-    {
-        if (m_autoReconnect)
-            onTransportLost("MCP WebSocket 连接错误");
-        else
-            setFailed("MCP WebSocket 连接错误");
-    });
-
-    // 异步: 连接结果由 sigConnected/sigError/sigDisconnected 通知
-    m_ws->connectToHost(url);
     return true;
 }
 
@@ -297,25 +242,14 @@ void JZMcpClient::close()
     m_transport = None;
     m_readBuffer.clear();
 
-    // 取消挂起的重连定时器(手动 close 即放弃自动重连)
-    if (m_reconnectTimer)
-        m_reconnectTimer->stop();
-    m_reconnectPending = false;
-
+    // 取消挂起的请求超时定时器由 finishPending 处理; 此处仅释放传输资源
     if (m_process)
     {
-        // 主动关闭也会触发进程退出/WS 断开等信号, 屏蔽以免误发 sigError
+        // 主动关闭也会触发进程退出等信号, 屏蔽以免误发 sigError
         m_process->blockSignals(true);
         m_process->killProcess();
         m_process->deleteLater();
         m_process = nullptr;
-    }
-    if (m_ws)
-    {
-        m_ws->blockSignals(true);
-        m_ws->disconnectFromHost();
-        m_ws->deleteLater();
-        m_ws = nullptr;
     }
     if (m_net)
     {
@@ -505,13 +439,6 @@ bool JZMcpClient::sendRaw(const std::string &text)
         reply->setTimeOut(m_callTimeoutMs + 5000);
         return true;
     }
-    else if (m_transport == WebSocket)
-    {
-        if (!m_ws || !m_ws->isConnected())
-            return false;
-        m_ws->sendTextMessage(text);
-        return true;
-    }
 
     return false;
 }
@@ -620,7 +547,7 @@ bool JZMcpClient::prepareConnect()
     m_error.clear();
     m_finished = false;
 
-    // 三种传输都靠 JZApplication 的事件循环驱动(进程读管道 / HTTP / WebSocket)
+    // 两种传输都靠 JZApplication 的事件循环驱动(进程读管道 / HTTP)
     if (!jzApp)
     {
         m_error = "MCP 客户端依赖事件循环, 请先创建 JZApplication";
@@ -645,7 +572,7 @@ void JZMcpClient::onDiscoverDone(bool ok, const Json::Value &value)
 {
     if (!ok)
     {
-        // 重连不会走到这里(重连不握手); 仅首次连接失败
+        // 仅首次连接失败
         abortConnect("server/discover 失败: " + value.get("message", "").asString());
         return;
     }
@@ -677,7 +604,7 @@ void JZMcpClient::onToolsDone(bool ok, const Json::Value &value)
         return;
     }
 
-    // 清掉上一批代理工具与名字映射(仅首次/手动重连经由此处; 自动重连不拉工具列表)
+    // 清掉上一批代理工具与名字映射
     for (auto *t : m_tools)
         delete t;
     m_tools.clear();
@@ -713,104 +640,11 @@ void JZMcpClient::onToolsDone(bool ok, const Json::Value &value)
 }
 
 // 连接阶段失败统一收口: 首个错误经 setFailed 记录并发 sigFinished(重复失败不重复通知),
-// 随后释放传输资源, 调用方可在 sigFinished 后安全重连。
+// 随后释放传输资源。
 void JZMcpClient::abortConnect(const std::string &error)
 {
     setFailed(error);
     close();
-}
-
-// ==================== 自动重连 ====================
-void JZMcpClient::setAutoReconnect(bool on)
-{
-    m_autoReconnect = on;
-}
-
-bool JZMcpClient::autoReconnect() const
-{
-    return m_autoReconnect;
-}
-
-void JZMcpClient::setReconnectInterval(int ms)
-{
-    m_reconnectIntervalMs = (ms > 0) ? ms : 0;
-}
-
-int JZMcpClient::reconnectInterval() const
-{
-    return m_reconnectIntervalMs;
-}
-
-// 传输层断开(进程退出 / WS 断开或错误)。
-// 自动重连开启则计划重连并发 sigDisconnected; 否则走永久失败(发 sigFinished)。
-// 注: HTTP 无状态, 不走此路径(见 onHttpReply)。
-void JZMcpClient::onTransportLost(const std::string &reason)
-{
-    m_ready = false;
-    m_reconnecting = false;
-
-    if (m_autoReconnect && m_transport != None && !m_reconnectPending)
-    {
-        m_error = reason;
-        clearPending(true);
-        sigDisconnected.emit();
-        scheduleReconnect();
-        return;
-    }
-
-    // 非自动重连: 走原来的永久失败(首个错误为准, 只发一次 sigFinished)
-    setFailed(reason);
-}
-
-// 安排一次延迟重连(去重, 同时只挂一个定时器)
-void JZMcpClient::scheduleReconnect()
-{
-    if (m_reconnectPending || m_transport == None)
-        return;
-
-    m_reconnectPending = true;
-    if (!m_reconnectTimer)
-    {
-        m_reconnectTimer = new JZTimer(this);
-        m_reconnectTimer->setSingleShot(true);
-        connect(&m_reconnectTimer->sigTimeout, this, &JZMcpClient::reconnect);
-    }
-    m_reconnectTimer->start(m_reconnectIntervalMs);
-}
-
-// 用已保存的连接参数重新发起连接(重连用, 不更新已登记工具)
-void JZMcpClient::reconnect()
-{
-    m_reconnectPending = false;
-    if (!m_autoReconnect || m_transport == None)
-        return;
-
-    // 重连不握手、不拉工具(工具集合沿用旧身份); 传输恢复后直接 onReconnectReady 恢复可用。
-    // 注意: HTTP 是无状态传输, 没有"连接"可丢失, 不会走到 onTransportLost, 这里也不重连。
-    switch (m_transport)
-    {
-    case Process:
-        startProcess(m_program, m_arguments, m_timeoutMs, true);
-        break;
-    case WebSocket:
-        startWebSocket(m_url, m_timeoutMs, true);
-        break;
-    default:
-        // Http / None: 不重连
-        m_reconnecting = false;
-        break;
-    }
-}
-
-// 重连完成: 不握手、不拉工具, 直接恢复可用。工具集合沿用旧身份(不更新);
-// 之后一律以服务器实际返回为准(不检测/不猜测服务器是否变更)。
-void JZMcpClient::onReconnectReady()
-{
-    m_reconnecting = false;
-    m_ready = true;
-    m_finished = true;
-    m_error.clear();
-    sigReconnected.emit();
 }
 
 // ==================== 传输层事件 ====================
@@ -849,11 +683,6 @@ void JZMcpClient::onHttpReply(JZNetworkReply *reply)
     }
 
     onRecvText(str_fromUtf8(reply->readAll()));
-}
-
-void JZMcpClient::onWsMessage(const std::string &text)
-{
-    onRecvText(text);
 }
 
 // ==================== tools/call ====================

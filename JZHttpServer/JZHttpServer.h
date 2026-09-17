@@ -33,6 +33,11 @@ protected:
 
     JZHttpHandler *m_handle = nullptr;
     bool m_keepAlive = true;  // HTTP/1.1 默认 keep-alive, HTTP/1.0 由 Connection 头决定
+    // 响应是否自定界: 含 Content-Length 或 Transfer-Encoding: chunked 时可复用 keep-alive 连接;
+    // 否则(如 SSE 流式无 Content-Length)只能靠关闭连接来界定响应结束, sendFinished() 据此自动关连接。
+    bool m_responseDelimited = true;
+    bool m_responseStarted = false;   // 是否已从首段写入解析过响应头
+    std::string m_headAccum;          // 累积响应头(头可能被拆分到多次写入)
 };
 
 class JZHttpServer : public JZNetObject

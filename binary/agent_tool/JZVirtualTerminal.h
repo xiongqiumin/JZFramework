@@ -91,6 +91,26 @@ public:
         std::string error;
     };
 
+    // 后台/流式运行留下的逐行日志(供 terminal_query 拉取, 支持最近 N 行、按流/关键字过滤)
+    struct RunLogLine
+    {
+        std::string stream;   // "stdout" / "stderr"
+        std::string text;     // 一行输出(已去掉行尾 \r\n)
+    };
+
+    // 一次运行的快照(给 terminal_query 用)
+    struct RunRecordInfo
+    {
+        std::string runId;
+        std::string sessionId;
+        std::string command;
+        std::string status;   // "running" / "done"
+        int exitCode = -1;
+        bool timedOut = false;
+        std::string error;    // 收尾原因(超时/被杀/非零退出), 可为空
+        std::vector<RunLogLine> log;
+    };
+
     explicit JZVirtualTerminal(JZObject *parent = nullptr);
     ~JZVirtualTerminal() override;
 
@@ -174,10 +194,24 @@ public:
     // `|` 管道、`>` `>>` `<` 重定向、通配符与变量展开。不支持的写法会明确报错。
     //
     // 超时后先按 ok=false 应答一次, 命令不打断, 之后用 takeOutput 取增量。
+    //
+    // 扩展参数(均有默认值, 旧调用方无需改动):
+    //   runId    : 非 nullptr 时回填本次运行的 id(供 terminal_query 引用)
+    //   onChunk  : 非空的逐块输出回调(流式), 每次有输出按 stdout/stderr 各推一次
+    //   background: true 时命令在后台跑, run() 返回即启动, 不阻塞 cb(收尾只更新运行记录)
     bool run(const std::string &sessionId, const std::string &command,
-             int timeoutMs, const RunCallback &cb, std::string &error);
+             int timeoutMs, const RunCallback &cb, std::string &error,
+             std::string *runId = nullptr,
+             const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
+             bool background = false);
     bool cancel(const std::string &sessionId);
     std::string takeOutput(const std::string &sessionId);
+
+    // ==================== 运行记录(后台/流式留下的日志) ====================
+    // 取某次运行的快照(含逐行日志)。runId 不存在返回 false。
+    bool runSnapshot(const std::string &runId, RunRecordInfo &out) const;
+    // 列出运行 id: sessionId 为空时返回全部, 否则只返回该会话的(均按发生先后排序)
+    std::vector<std::string> runIds(const std::string &sessionId = "") const;
 
     // ==================== 会话状态(我们自己维护, 不是某个 shell 的) ====================
     // 环境变量: 会话级覆盖(等价于 shell 里的 set/export)。命令进程起的时候
@@ -196,12 +230,28 @@ public:
 protected:
     struct Session;
 
+    // 一次运行的记录(后台/流式留下的日志)。stdout/stderr 分存, 可按流/关键字过滤。
+    struct RunRecord
+    {
+        std::string runId;
+        std::string sessionId;
+        std::string command;
+        std::string status = "running";   // "running" / "done"
+        int exitCode = -1;
+        bool timedOut = false;
+        std::string error;
+        std::vector<RunLogLine> log;
+    };
+
     Session *findSession(const std::string &id);
     const Session *findSession(const std::string &id) const;
     void reapIdle();              // 由回收定时器驱动
     void ensureReaper();          // 首次开会话时才建回收定时器(免得空转)
     void buildDefaultPrograms();  // 装默认程序白名单
     void touch(Session *session); // 刷新活跃时间 + 记审计
+
+    // 把一块输出追加到会话(合并)与运行记录(逐行, 带流标签), 并按需推给流式回调
+    void appendRunOutput(Session *session, const std::string &stream, const std::string &chunk);
 
     // 审核通过/被拒都记一笔; action 是动词名(ls/read/write/...) —— 审计与统计都看它
     void audit(const std::string &action, const Verdict &verdict, const std::string &detail);
@@ -220,6 +270,11 @@ protected:
     int m_recycleMs = 15 * 60 * 1000;
     int m_idGen = 0;
     JZTimer *m_reapTimer = nullptr;
+
+    // 运行记录(后台/流式): runId -> 记录, 发生顺序另用 m_runOrder 保序
+    std::map<std::string, RunRecord> m_runs;
+    std::vector<std::string> m_runOrder;
+    int m_runIdGen = 0;
 
     AuditCallback m_audit;
 };

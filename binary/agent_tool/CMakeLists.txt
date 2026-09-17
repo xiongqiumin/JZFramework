@@ -20,6 +20,8 @@ add_library(agent_tool STATIC
     JZVirtualTerminal.cpp
     JZTerminalTools.h
     JZTerminalTools.cpp
+    JZTerminalMcpTools.h
+    JZTerminalMcpTools.cpp
 )
 
 target_link_libraries(agent_tool PUBLIC JZFramework)

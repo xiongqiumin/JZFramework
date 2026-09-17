@@ -6,6 +6,7 @@ JZMcpTool::JZMcpTool(JZObject* parent)
     : JZObject(parent)
     , sigFinished(this)
     , sigCanceled(this)
+    , sigNotify(this)
 {
     // 默认 inputSchema 为合法的空 object
     m_inputSchema = Json::Value(Json::objectValue);

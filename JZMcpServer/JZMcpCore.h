@@ -72,12 +72,14 @@ public:
     /**
      * 异步处理一段 JSON-RPC 文本(单请求或批量数组)。
      * 结果通过 cb 回送, 不阻塞调用线程(便于后端在传输线程上异步处理)。
-     *   cb 签名: void(bool hasResponse, const std::string& outJson)
+     *   cb 签名: void(bool hasResponse, const std::string& outJson, bool finished)
      *     - hasResponse: 是否有响应体(整段为通知时为 false, 此时 outJson 为空)
-     *     - outJson:     响应文本(JSON-RPC 响应或解析错误)
+     *     - outJson:     响应文本(JSON-RPC 响应 / 通知 / 解析错误)
+     *     - finished:    true 表示这是该请求的最后一个分块(传输层应结束响应);
+     *                   false 表示流式中间分块(如 POST 内联 SSE 的通知), 传输层保持连接。
      * @return true 表示已提交处理(结果稍后由 cb 异步回送)。
      */
-    using ProcessCallback = std::function<void(bool hasResponse, const std::string& outJson)>;
+    using ProcessCallback = std::function<void(bool hasResponse, const std::string& outJson, bool finished)>;
     bool process(const std::string& body, ProcessCallback cb);
 
     // ---- 供 JZMcpServer 后端查询 ----
@@ -124,6 +126,8 @@ private:
     void ensureConnected(JZMcpTool* tool);
     // 工具完成信号回调: canceled=true 表示来自 sigCanceled
     void onToolSignal(JZMcpTool* tool, const Json::Value& id, const Json::Value& result, bool canceled);
+    // 工具流式通知回调: 在 POST 响应内联 SSE 分块回送, 不结束请求
+    void onToolNotify(JZMcpTool* tool, const Json::Value& id, const Json::Value& notification);
 
     const Tool* findTool(const std::string& name) const;
     const Tool* findTool(int toolId) const;

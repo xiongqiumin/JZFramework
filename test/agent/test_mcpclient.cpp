@@ -94,7 +94,7 @@ static int runStdioServer()
 
         bool hasResponse = false;
         string out;
-        server.processText(line, [&](bool has, const string& text)
+        server.processText(line, [&](bool has, const string& text, bool)
         {
             hasResponse = has;
             out = text;

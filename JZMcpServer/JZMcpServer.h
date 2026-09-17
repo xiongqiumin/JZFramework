@@ -9,15 +9,12 @@ class JZMcpCore;
 class JZHttpServer;
 class JZHttpHandler;
 class JZMcpHttpHandler;
-class JZWebSocketServer;
-class JZWebSocket;
 
 /**
  * JZMcpServer —— MCP 后端传输层。
  *
  * 持有 JZMcpCore(协议核心), 并对外提供多种接入方式:
  *   - HTTP:    listenHttp(port, path)   —— Streamable HTTP(POST 端点, 2026-07-28 无会话)
- *   - WS:      listenWebSocket(port)    —— WebSocket 文本帧
  *   - 纯文本:  processText(in, cb)       —— 异步处理 JSON 文本, 结果通过回调返回
  *
  * 协议语义(工具注册、JSON-RPC 分发)全部在 JZMcpCore 中完成,
@@ -36,16 +33,13 @@ public:
     // HTTP: Streamable HTTP, 在 port 监听, 端点路径 path(默认 "/mcp")
     bool listenHttp(int port, const std::string& path = "/mcp");
     bool listenHttp(std::string ip, int port, const std::string& path = "/mcp");
-
-    // WebSocket: 在 port 监听, 文本帧即 JSON-RPC 请求
-    bool listenWebSocket(int port);
-    bool listenWebSocket(std::string ip,int port);
     // 纯文本: 异步处理一段 JSON 文本, 结果通过回调返回。
-    //   cb 签名: void(bool hasResponse, const std::string& outJson)
+    //   cb 签名: void(bool hasResponse, const std::string& outJson, bool finished)
     //     - hasResponse: 是否有响应体(整段为通知时为 false, 此时 outJson 为空)
-    //     - outJson:     响应文本(JSON-RPC 响应或解析错误)
+    //     - outJson:     响应文本(JSON-RPC 响应 / 通知 / 解析错误)
+    //     - finished:    true=该请求最后一个分块(结束响应); false=流式中间分块(保持连接)
     // 返回 true 表示已成功提交处理(结果稍后由 cb 异步回送)。
-    using ProcessCallback = std::function<void(bool hasResponse, const std::string& outJson)>;
+    using ProcessCallback = std::function<void(bool hasResponse, const std::string& outJson, bool finished)>;
     bool processText(const std::string& in, ProcessCallback cb);
 
     void close();
@@ -54,14 +48,9 @@ public:
 private:
     friend class JZMcpHttpHandler;
 
-    // WebSocket 回调
-    void onWsAccept();
-    void onWsMessage(const std::string& text);
-
     JZMcpCore*        m_core;
     JZHttpServer*     m_http;
     JZMcpHttpHandler* m_httpHandler;
-    JZWebSocketServer* m_ws;
     std::string       m_path;
 };
 

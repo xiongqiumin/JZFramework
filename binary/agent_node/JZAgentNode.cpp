@@ -9,6 +9,7 @@
 #include "JZMcpServer.h"
 #include "JZMcpToolBridge.h"
 #include "JZTerminalTools.h"
+#include "JZTerminalMcpTools.h"
 #include "JZVirtualTerminal.h"
 
 using namespace std;
@@ -120,7 +121,11 @@ void JZAgentNode::init(const JZNodeConfig &config)
 
     if (m_config.allowTerminal)
     {
-        addTool(new JZTerminalRunTool(m_terminal));
+        // terminal 的 MCP 直出门面(不经过 agent_tool 包装):
+        //   terminal_run    —— 支持 stream(内联 SSE 流式日志)/ background(立即返回 run_id)
+        //   terminal_query  —— 取后台/历史运行日志(支持 tail / stream / grep 过滤)
+        addTool(new JZTerminalRunMcpTool(m_terminal));
+        addTool(new JZTerminalQueryMcpTool(m_terminal));
         addTool(new JZTerminalOpenTool(m_terminal));
         addTool(new JZTerminalListTool(m_terminal));
         addTool(new JZTerminalCloseTool(m_terminal));
@@ -153,6 +158,12 @@ void JZAgentNode::addTool(JZAgentTool *tool)
     m_server->core()->registerTool(new JZMcpToolBridge(tool));
 }
 
+void JZAgentNode::addTool(JZMcpTool *tool)
+{
+    // terminal 的 MCP 直出门面: 直接挂进 core, 不经过 agent_tool 包装。
+    m_server->core()->registerTool(tool);
+}
+
 string JZAgentNode::buildInstructions() const
 {
     string text;
@@ -166,7 +177,16 @@ string JZAgentNode::buildInstructions() const
     text += "  modify_file     精确字符串替换(要求唯一匹配); old_str 留空 = 整文件覆盖(新建/重写)。"
             "改代码用这个, **不要用 sed**。\n";
     text += "  terminal_open / terminal_list / terminal_close   多会话(一般用不到, "
-            "terminal_run 会自动开一个默认会话)。\n\n";
+            "terminal_run 会自动开一个默认会话)。\n";
+    text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n\n";
+
+    text += "terminal_run 的两种进阶用法:\n";
+    text += "  - 流式(stream=true): 长命令会边跑边把日志以 notifications/message 推过来"
+            "(POST 响应内联 SSE, 结束再给结果), 适合编译/跑测试这类慢慢出日志的命令。"
+            "可配 stream_filter(stdout/stderr/all) 与 grep 只推关心的行。\n";
+    text += "  - 后台(background=true): 命令在后台跑, 立刻返回 run_id(不流式、不带日志);"
+            "之后用 terminal_query 取日志。可配 tail(最近 N 行)、stream、grep 过滤。\n";
+    text += "    前台命令的结果末尾也会回一行 `[run_id]`, 可用 terminal_query 复查该次运行的完整/历史日志。\n\n";
 
     // ⚠ 这段是这个节点最重要的一段说明: 模型的 shell 直觉在这里只有一部分成立,
     // 不写清楚它一定会踩(cd 不持久 / export 不持久 / & 不支持)。

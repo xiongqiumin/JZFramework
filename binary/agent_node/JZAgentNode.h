@@ -9,6 +9,7 @@
 
 class JZMcpServer;
 class JZAgentTool;
+class JZMcpTool;           // 直接挂进 MCP 的工具(不经过 agent_tool 包装)
 class JZVirtualTerminal;   // 执行/审核面, 见 agent_tool/JZVirtualTerminal.h(目前只有声明, 待接)
 
 // ---------------------------------------------------------------------------
@@ -76,13 +77,13 @@ private:
 // ---------------------------------------------------------------------------
 // JZAgentNode —— 被控端节点: 把本机能力包成一个 MCP server
 //
-// 传输方式(HTTP / WebSocket / 后面要加的 stdio)由 main.cpp 决定, 本类只负责
+// 传输方式(HTTP / 后面要加的 stdio)由 main.cpp 决定, 本类只负责
 // "这台机器上有什么工具":
-//   终端:  terminal_run / terminal_open / terminal_list / terminal_close
+//   终端(MCP 直出门面):  terminal_run / terminal_query / terminal_open / terminal_list / terminal_close
 //   编辑:  modify_file(精确替换 + 唯一匹配校验 + 回上下文片段)
 // 文件操作(ls/cat/mkdir/rm/cp/mv/grep...)不再单独做工具 —— 它们都是 shell 命令,
 // 由 terminal_run 覆盖; 只有 modify_file 留在我们这边(sed 不校验唯一匹配)。
-// 所有工具都经 JZMcpToolBridge 挂成 MCP 工具。
+// 终端 MCP 工具直接继承 JZMcpTool(terminal 的两个门面之一); 其余工具经 JZMcpToolBridge 挂成 MCP。
 // ---------------------------------------------------------------------------
 class JZAgentNode : public JZObject
 {
@@ -100,6 +101,8 @@ public:
 protected:
     // 把 agent_tool 的一个工具经 bridge 挂进 MCP(接管 tool 所有权)
     void addTool(JZAgentTool *tool);
+    // 把 JZMcpTool 直接挂进 MCP(接管 tool 所有权)—— 如 terminal 的 MCP 门面
+    void addTool(JZMcpTool *tool);
 
     std::string buildInstructions() const;
 

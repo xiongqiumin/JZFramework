@@ -3,14 +3,31 @@
 #include "JZLog.h"
 #include "JZApplication.h"
 #include "JZDebug.h"
+#include "JZStd.h"
 #include "mongoose.h"
 
 using namespace std;
+
+// 判断 HTTP 响应头是否"自定界": 含 Content-Length 或 Transfer-Encoding: chunked 时为 true。
+// 不自定界的响应(如 SSE 流式, 无 Content-Length)在 HTTP/1.1 keep-alive 下客户端无法判断
+// 响应何时结束, 只能靠关闭连接来界定 —— 因此 sendFinished() 应自动关闭连接。
+static bool headIsDelimited(const std::string &head)
+{
+    std::string h = str_toLower(head);
+    if (h.find("content-length:") != std::string::npos)
+        return true;
+    size_t te = h.find("transfer-encoding:");
+    if (te != std::string::npos && h.find("chunked", te) != std::string::npos)
+        return true;
+    return false;
+}
 
 JZHttpServerClient::JZHttpServerClient(JZObject* parent) 
     : JZNetObject(parent)
 {
     m_conn = INVALID_NET_HANDLE;
+    m_responseStarted = false;
+    m_responseDelimited = true;
 }
 
 JZHttpServerClient::~JZHttpServerClient()
@@ -54,8 +71,11 @@ void JZHttpServerClient::sendFinished()
     req->conn = m_conn;
     postReqEvent(req);
 
-    // 非 keep-alive: 通知 mongoose 响应完成后关闭连接
-    if (!m_keepAlive)
+    // 连接是否关闭:
+    //  - 请求未要求 keep-alive, 或
+    //  - 响应不自定界(无 Content-Length 也无 chunked, 如 SSE 流式)→ 只能靠关闭连接界定响应结束
+    // 否则(有 Content-Length 的普通响应)保持 keep-alive 复用连接。无需业务代码手动干预。
+    if (!m_keepAlive || !m_responseDelimited)
         closeConn(false);
 }
 
@@ -78,6 +98,20 @@ void JZHttpServerClient::write(const JZByteArray& data, bool is_finish)
 
 void JZHttpServerClient::write(const char *data, int size, bool is_finish)
 {
+    // 首次写入时解析响应头, 判定响应是否自定界(决定是否在 sendFinished 时关闭连接)。
+    // 头通常随首段写入一次性到达(普通响应头+体合一, SSE 响应头单独一段); 若被拆分则累积到收全再判定。
+    if (!m_responseStarted)
+    {
+        m_headAccum.append(data, size);
+        auto pos = m_headAccum.find("\r\n\r\n");
+        if (pos != std::string::npos)
+        {
+            m_responseDelimited = headIsDelimited(m_headAccum);
+            m_responseStarted = true;
+            m_headAccum.clear();
+        }
+    }
+
     writeConn(WriteBin, data, size);
     if (is_finish)
     {
@@ -178,6 +212,11 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         if (conn_val == "close" || conn_val == "Close")
             client->m_keepAlive = false;
     }
+
+    // 每个请求(keep-alive 会复用同一 client 对象)重置响应自定界判定状态
+    client->m_responseStarted = false;
+    client->m_responseDelimited = true;
+    client->m_headAccum.clear();
 
     JZHttpRequest request;
     

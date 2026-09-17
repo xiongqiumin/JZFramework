@@ -26,8 +26,7 @@ static void printUsage()
     printf("agent_node - 被控端 MCP 节点(让本地大模型操作这台机器)\n\n");
     printf("用法: agent_node [选项]\n\n");
     printf("传输:\n");
-    printf("  --http <port>         监听 Streamable HTTP, 端点 /mcp。默认, 端口 39000\n");
-    printf("  --ws <port>           监听 WebSocket\n\n");
+    printf("  --http <port>         监听 Streamable HTTP, 端点 /mcp。默认, 端口 39000\n\n");
     printf("配置:\n");
     printf("  --name <name>         节点名。**多节点时必须唯一** —— 本地工具名前缀就是它\n");
     printf("  --root <dir>          工作区根目录(相对路径以它为基准), 默认进程当前工作目录\n");
@@ -40,7 +39,6 @@ static void printUsage()
     printf("本地侧连法:\n");
     printf("  auto *c = new JZMcpClient();\n");
     printf("  c->setToolPrefix(\"<节点名>__\");          // 默认就是它, 名字唯一即可\n");
-    printf("  c->setAutoReconnect(true);\n");
     printf("  c->startHttp(\"http://<这台机器>:<port>/mcp\");\n");
     printf("  // sigFinished 里 isReady() 之后: agent->addMcp(c);\n");
 }
@@ -68,7 +66,6 @@ static bool parseTrusted(const string &text, TrustedDir &out)
 int main(int argc, char *argv[])
 {
     JZNodeConfig config;
-    string mode = "http";
     int port = 39000;
 
     for (int i = 1; i < argc; i++)
@@ -86,13 +83,7 @@ int main(int argc, char *argv[])
 
         if (a == "--http")
         {
-            mode = "http";
             port = atoi(nextValue("--http").c_str());
-        }
-        else if (a == "--ws")
-        {
-            mode = "ws";
-            port = atoi(nextValue("--ws").c_str());
         }
         else if (a == "--name")
             config.nodeName = nextValue("--name");
@@ -140,26 +131,13 @@ int main(int argc, char *argv[])
     JZAgentNode node;
     node.init(config);
 
-    bool listening = false;
-    if (mode == "http")
-        listening = node.server()->listenHttp("0.0.0.0", port);
-    else
-        listening = node.server()->listenWebSocket("0.0.0.0", port);
-
-    if (!listening)
+    if (!node.server()->listenHttp("0.0.0.0", port))
     {
         jzError().nospace() << "监听失败, port=" << port << "(端口被占用?)";
         return 1;
     }
 
-    if (mode == "http")
-    {
-        jzInfo().nospace() << "节点已就绪: http://<本机IP>:" << port << "/mcp   节点名=" << config.nodeName;
-    }
-    else
-    {
-        jzInfo().nospace() << "节点已就绪: ws://<本机IP>:" << port << "   节点名=" << config.nodeName;
-    }
+    jzInfo().nospace() << "节点已就绪: http://<本机IP>:" << port << "/mcp   节点名=" << config.nodeName;
 
     return app.exec();
 }

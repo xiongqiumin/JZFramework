@@ -113,11 +113,8 @@ int main(int argc, char* argv[])
     JZApplication app;
 
     int httpPort = 3000;
-    int wsPort   = 3001;
     if (argc > 1)
         httpPort = atoi(argv[1]);
-    if (argc > 2)
-        wsPort = atoi(argv[2]);
 
     JZMcpServer server;
 
@@ -136,21 +133,13 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 后端2: WebSocket
-    if (!server.listenWebSocket(wsPort))
-    {
-        jzError() << "WebSocket 服务启动失败";
-        return 1;
-    }
-
     jzInfo() << "JZMcpServer 已启动:";
-    jzInfo() << "  HTTP      端点: POST http://127.0.0.1:" << httpPort << "/mcp";
-    jzInfo() << "  WebSocket 端点: ws://127.0.0.1:" << wsPort;
+    jzInfo() << "  HTTP 端点: POST http://127.0.0.1:" << httpPort << "/mcp";
 
     // 后端3: 纯文本(示例代码, 实际使用时可把任意字符串喂入 processText, 结果通过回调异步返回)
     // 2026-07-28: 每请求需在 _meta 携带协议版本(无 initialize 握手)。
     // server.processText(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}})",
-    //     [](bool hasResponse, const std::string& outJson) {
+    //     [](bool hasResponse, const std::string& outJson, bool) {
     //         if (hasResponse) jzInfo() << "RESP:" << outJson;
     //     });
 
@@ -169,7 +158,7 @@ int main(int argc, char* argv[])
         text = text.substr(b, e - b + 1);
 
         server.processText(text,
-            [](bool hasResponse, const std::string& outJson) {
+            [](bool hasResponse, const std::string& outJson, bool) {
                 if (hasResponse)
                     jzInfo() << "RESP:" << outJson;
             });

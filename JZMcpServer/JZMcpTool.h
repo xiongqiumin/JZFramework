@@ -54,6 +54,10 @@ jz_signals:
     JZSignal<const Json::Value&, const Json::Value&> sigFinished;
     // 被取消: (请求 id)
     JZSignal<const Json::Value&> sigCanceled;
+    // 流式通知(工具执行过程中主动推送, 如 terminal_run 的逐块日志):
+    //   (请求 id, 通知对象) —— 通知对象应是完整 JSON-RPC notification(如 notifications/message)。
+    //   核心据此在 POST 响应内联 SSE 分块回送, 不结束请求; 最终仍以 sigFinished 结束。
+    JZSignal<const Json::Value&, const Json::Value&> sigNotify;
 
 protected:
     std::string m_name;

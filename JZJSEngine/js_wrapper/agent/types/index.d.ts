@@ -295,10 +295,10 @@ export class Agent extends EventEmitter {
 }
 
 /** MCP 客户端传输方式 */
-export type McpTransport = 'none' | 'process' | 'http' | 'websocket';
+export type McpTransport = 'none' | 'process' | 'http';
 
 /**
- * MCP 客户端。连接一个 MCP 服务器(stdio 子进程 / Streamable HTTP / WebSocket),
+ * MCP 客户端。连接一个 MCP 服务器(stdio 子进程 / Streamable HTTP),
  * 拉取远端工具列表, 每个工具在 agent 侧成为可登记的本地代理工具。
  *
  * 三个 startXxx 都是异步发起(只返回"是否成功发起"), 连接流程结束会发 'finished' 事件;
@@ -313,8 +313,6 @@ export class McpClient extends EventEmitter {
     startProcess(program: string, arguments: string[], timeoutMs?: number): boolean;
     /** Streamable HTTP: 每个请求一次 POST, 响应支持 JSON 与 SSE 两种格式 */
     startHttp(url: string, timeoutMs?: number): boolean;
-    /** WebSocket 传输 */
-    startWebSocket(url: string, timeoutMs?: number): boolean;
 
     /** 关闭连接并清空远端工具 */
     close(): void;
@@ -352,21 +350,9 @@ export class McpClient extends EventEmitter {
     makeLocalName(remoteName: string): string;
     remoteToolName(localName: string): string;
 
-    /** 是否开启自动重连(默认 false: 断开即永久失败)。仅对 Process / WebSocket 生效;
-     *  HTTP 为无状态传输(每次请求独立), 无"连接"可丢失, 故永不重连。 */
-    setAutoReconnect(on: boolean): void;
-    autoReconnect(): boolean;
-    /** 自动重连间隔(毫秒, 默认 3000) */
-    setReconnectInterval(ms: number): void;
-    reconnectInterval(): number;
-
     // ---- 事件重载 ----
     /** 一次连接流程结束: 成功(isReady()==true)或失败 */
     on(event: 'finished', listener: () => void): this;
-    /** 自动重连: 连接中途断开(将尝试重连) */
-    on(event: 'disconnected', listener: () => void): this;
-    /** 自动重连成功: 传输已恢复, 工具集合沿用旧身份(服务器返回什么就用什么) */
-    on(event: 'reconnected', listener: () => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
 }
 

@@ -175,7 +175,7 @@ private:
     // ---- 1. 元数据: ToolDefine -> MCP 的 name/description/inputSchema ----
     void stepList()
     {
-        m_server.processText(request(1, "tools/list", ""), [this](bool has, const string &out)
+        m_server.processText(request(1, "tools/list", ""), [this](bool has, const string &out, bool)
         {
             check(has, "tools/list 有响应");
             Json::Value resp = parseJson(out);
@@ -209,7 +209,7 @@ private:
     void stepEcho()
     {
         m_server.processText(request(2, "tools/call", R"({"name":"br_echo","arguments":{"text":"hello"}})"),
-                             [this](bool has, const string &out)
+                             [this](bool has, const string &out, bool)
         {
             check(has, "br_echo 有响应");
             Json::Value resp = parseJson(out);
@@ -225,7 +225,7 @@ private:
     void stepSlow()
     {
         m_server.processText(request(3, "tools/call", R"({"name":"br_slow","arguments":{"text":"slow"}})"),
-                             [](bool has, const string &out)
+                             [](bool has, const string &out, bool)
         {
             check(has, "br_slow 有响应");
             Json::Value resp = parseJson(out);
@@ -241,7 +241,7 @@ private:
     void stepFail()
     {
         m_server.processText(request(4, "tools/call", R"({"name":"br_fail","arguments":{}})"),
-                             [this](bool has, const string &out)
+                             [this](bool has, const string &out, bool)
         {
             check(has, "br_fail 有响应");
             Json::Value resp = parseJson(out);
@@ -257,7 +257,7 @@ private:
     {
         m_pendingConcurrent = 2;
         m_server.processText(request(5, "tools/call", R"({"name":"br_slow","arguments":{"text":"A"}})"),
-                             [this](bool has, const string &out)
+                             [this](bool has, const string &out, bool)
         {
             Json::Value resp = parseJson(out);
             check(resp["id"].asInt() == 5, "并发调用 A 的响应 id == 5");
@@ -267,7 +267,7 @@ private:
                 finish();
         });
         m_server.processText(request(6, "tools/call", R"({"name":"br_slow","arguments":{"text":"B"}})"),
-                             [this](bool has, const string &out)
+                             [this](bool has, const string &out, bool)
         {
             Json::Value resp = parseJson(out);
             check(resp["id"].asInt() == 6, "并发调用 B 的响应 id == 6");

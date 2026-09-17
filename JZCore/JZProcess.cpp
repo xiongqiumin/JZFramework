@@ -12,20 +12,59 @@ using namespace std;
 
 #include <Windows.h>
 
+// Windows 命令行参数引号规则(与 CommandLineToArgvW 一致):
+// 参数含空格/制表符/双引号时必须整体加引号; 参数内的双引号转义为 \", 其前的反斜杠要翻倍。
+// 旧实现只"含空格就加引号"但不转义内层引号, 导致 `bash -c "python -c \"x\""` 这类
+// 嵌套引号被 CreateProcess 解析错位(典型表现: 经 shell 执行的命令里内层引号被吃掉)。
+static string winQuoteArg(const string &arg)
+{
+    bool needQuote = false;
+    for (char c : arg)
+    {
+        if (c == ' ' || c == '\t' || c == '"')
+        {
+            needQuote = true;
+            break;
+        }
+    }
+    if (!needQuote)
+        return arg;
+
+    string out = "\"";
+    int backslashes = 0;
+    for (char c : arg)
+    {
+        if (c == '\\')
+        {
+            backslashes++;
+        }
+        else if (c == '"')
+        {
+            out.append((size_t)backslashes * 2, '\\');   // 翻倍前面的反斜杠
+            out += "\\\"";                                // 再转义这个引号
+            backslashes = 0;
+        }
+        else
+        {
+            out.append((size_t)backslashes, '\\');
+            out += c;
+            backslashes = 0;
+        }
+    }
+    out.append((size_t)backslashes * 2, '\\');           // 结尾的反斜杠翻倍
+    out += "\"";
+    return out;
+}
+
 static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
 {
-    // 与 createProcess 相同的引号规则: 含空格的 token 必须加引号
+    // 与 createProcess 相同的引号规则(见 winQuoteArg)
     string programToken = program;
     if (str_contains(programToken, " "))
         programToken = "\"" + programToken + "\"";
     string cmdLine = programToken;
     for (const auto &arg : arguments)
-    {
-        if (str_contains(arg, " "))
-            cmdLine += " \"" + arg + "\"";
-        else
-            cmdLine += " " + arg;
-    }
+        cmdLine += " " + winQuoteArg(arg);
 
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
@@ -240,12 +279,7 @@ bool JZProcessPrivate::createProcess()
         programToken = "\"" + programToken + "\"";
     string cmdLine = programToken;
     for (const auto &arg : arguments)
-    {
-        if (str_contains(arg, " "))
-            cmdLine += " \"" + arg + "\"";
-        else
-            cmdLine += " " + arg;
-    }
+        cmdLine += " " + winQuoteArg(arg);
 
     BOOL success;
     // 传入绝对路径作为 lpApplicationName, 可绕过部分 Hook 对命令行首 token 的重新解析

@@ -94,6 +94,11 @@ void JZMcpCore::ensureConnected(JZMcpTool* tool)
     connect(&tool->sigCanceled, [=](const Json::Value& id) {
         onToolSignal(tool, id, Json::Value::null, true);
     });
+
+    // 流式通知: 在请求结束前多次回送(不结束请求)
+    connect(&tool->sigNotify, [=](const Json::Value& id, const Json::Value& notification) {
+        onToolNotify(tool, id, notification);
+    });
 }
 
 void JZMcpCore::onToolSignal(JZMcpTool* tool, const Json::Value& id, const Json::Value& result, bool canceled)
@@ -109,9 +114,23 @@ void JZMcpCore::onToolSignal(JZMcpTool* tool, const Json::Value& id, const Json:
     if (!cb)
         return;
     if (canceled)
-        cb(true, writeJson(makeError(id, kRequestCancelled, "Request canceled")));
+        cb(true, writeJson(makeError(id, kRequestCancelled, "Request canceled")), true);
     else
-        cb(true, writeJson(makeResult(id, result)));
+        cb(true, writeJson(makeResult(id, result)), true);
+}
+
+void JZMcpCore::onToolNotify(JZMcpTool* tool, const Json::Value& id, const Json::Value& notification)
+{
+    std::string key = idKey(id);
+    auto it = m_running.find(key);
+    if (it == m_running.end())
+        return;                     // 请求已结束(或不存在), 丢弃通知
+
+    ProcessCallback cb = it->second.cb;
+    if (!cb)
+        return;
+    // finished=false: 流式中间分块, 传输层保持连接(如 POST 内联 SSE)
+    cb(true, writeJson(notification), false);
 }
 
 void JZMcpCore::runToolAsync(int toolId, const Json::Value& id, const Json::Value& args, ProcessCallback cb)
@@ -120,7 +139,7 @@ void JZMcpCore::runToolAsync(int toolId, const Json::Value& id, const Json::Valu
     if (!tool)
     {
         if (cb)
-            cb(true, writeJson(makeError(id, kInvalidParams, "Unknown tool")));
+            cb(true, writeJson(makeError(id, kInvalidParams, "Unknown tool")), true);
         return;
     }
 
@@ -148,7 +167,7 @@ bool JZMcpCore::process(const std::string& body, ProcessCallback cb)
     Json::Value root;
     if (!parseJson(body, root))
     {
-        cb(true, writeJson(makeError(Json::Value::null, kParseError, "Parse error")));
+        cb(true, writeJson(makeError(Json::Value::null, kParseError, "Parse error")), true);
         return true;
     }
 
@@ -163,7 +182,7 @@ bool JZMcpCore::process(const std::string& body, ProcessCallback cb)
             if (asyncHandled)
                 continue;               // 响应稍后由信号回调回送
             if (!isNotification)
-                cb(true, writeJson(resp));
+                cb(true, writeJson(resp), true);
         }
         return true;
     }
@@ -176,11 +195,11 @@ bool JZMcpCore::process(const std::string& body, ProcessCallback cb)
         return true;
     if (isNotification)
     {
-        cb(false, std::string());
+        cb(false, std::string(), true);
         return true;
     }
 
-    cb(true, writeJson(resp));
+    cb(true, writeJson(resp), true);
     return true;
 }
 
@@ -340,7 +359,7 @@ void JZMcpCore::onToolsCall(const Json::Value& id, const Json::Value& params,
     if (name.empty())
     {
         if (cb)
-            cb(true, writeJson(makeError(id, kInvalidParams, "Missing tool name")));
+            cb(true, writeJson(makeError(id, kInvalidParams, "Missing tool name")), true);
         return;
     }
 
@@ -348,7 +367,7 @@ void JZMcpCore::onToolsCall(const Json::Value& id, const Json::Value& params,
     if (!tool)
     {
         if (cb)
-            cb(true, writeJson(makeError(id, kInvalidParams, "Unknown tool: " + name)));
+            cb(true, writeJson(makeError(id, kInvalidParams, "Unknown tool: " + name)), true);
         return;
     }
 

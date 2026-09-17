@@ -17,6 +17,16 @@ using namespace std;
 // 单次读文件上限: 工具自己还会按行裁剪, 这里只是别把几百兆的东西读进内存
 static const int kMaxReadBytes = 8 * 1024 * 1024;
 
+// 运行记录上限: 保留多少条运行、每条最多多少行日志(防内存无限增长)
+static const int kMaxRuns = 200;
+static const int kMaxRunLines = 4000;
+
+// JZByteArray -> std::string
+std::string bytesToString(const JZByteArray &data)
+{
+    return std::string(data.data(), data.size());
+}
+
 // ==========================================================================
 // 小工具
 // ==========================================================================
@@ -440,9 +450,11 @@ struct JZVirtualTerminal::Session
     // ⚠ 回调里只按 sessionId 反查, 不捕获 Session* —— 会话被回收后指针就是悬垂的。
     JZProcess *proc = nullptr;
     JZTimer *timeoutTimer = nullptr;
-    std::string output;                       // 累积输出, takeOutput 取一次清一次
+    std::string output;                       // 累积输出(合并 stdout/stderr), takeOutput 取一次清一次
     bool timedOut = false;
     RunCallback cb;                           // 在途命令的应答回调
+    std::string runId;                        // 当前运行的记录 id(供 appendRunOutput 反查)
+    std::function<void(const std::string &, const std::string &)> onChunk;  // 流式逐块回调
 };
 
 // ==========================================================================
@@ -1348,8 +1360,13 @@ bool JZVirtualTerminal::printDir(const string &sessionId, string &cwd) const
 // ==========================================================================
 
 bool JZVirtualTerminal::run(const string &sessionId, const string &command,
-                            int timeoutMs, const RunCallback &cb, string &error)
+                            int timeoutMs, const RunCallback &cb, string &error,
+                            string *runId,
+                            const std::function<void(const string &, const string &)> &onChunk,
+                            bool background)
 {
+    (void)background;   // 后台模式由调用方(工具)用"立即返回 + 空 cb"实现, 终端本身总是启动进程
+
     Session *s = findSession(sessionId);
     if (!s)
     {
@@ -1539,19 +1556,46 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         }
     }
 
-    // ---- 起进程 ----
+    // ---- 起进程 + 建运行记录 ----
     // proc 随会话建一次, 之后复用 —— 所以信号**只连一次**, 否则第 N 次 run
     // 会让回调被连 N 遍(每条命令应答 N 次)。
     string id = sessionId;
+
+    // 本次运行的记录(后台/流式留下的日志, 供 terminal_query 拉取)
+    string rid = "r" + std::to_string(++m_runIdGen);
+    RunRecord rec;
+    rec.runId = rid;
+    rec.sessionId = sessionId;
+    rec.command = command;
+    rec.status = "running";
+    m_runs[rid] = rec;
+    m_runOrder.push_back(rid);
+    while (m_runOrder.size() > (size_t)kMaxRuns)   // 控制记录条数, 防无限增长
+    {
+        m_runs.erase(m_runOrder.front());
+        m_runOrder.erase(m_runOrder.begin());
+    }
+    if (runId)
+        *runId = rid;
+
     if (!s->proc)
     {
         s->proc = new JZProcess(this);
 
+        // stdout / stderr 分两路读, 各自追加到合并输出与运行记录(带流标签)
         connect(&s->proc->sigReadyReadStandardOutput, this, [this, id]()
                 {
                     Session *sess = findSession(id);
                     if (sess && sess->proc)
-                        appendBytes(sess->output, sess->proc->readAllStandardOutput());
+                        appendRunOutput(sess, "stdout",
+                                        bytesToString(sess->proc->readAllStandardOutput()));
+                });
+        connect(&s->proc->sigReadyReadStandardError, this, [this, id]()
+                {
+                    Session *sess = findSession(id);
+                    if (sess && sess->proc)
+                        appendRunOutput(sess, "stderr",
+                                        bytesToString(sess->proc->readAllStandardError()));
                 });
         connect(&s->proc->sigFinished, this, [this, id](int exitCode, JZProcess::ExitStatus status)
                 {
@@ -1565,8 +1609,23 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
                     // 收尾: 管道里剩下的读完(最后一段输出 + stderr)
                     if (sess->proc)
                     {
-                        appendBytes(sess->output, sess->proc->readAllStandardOutput());
-                        appendBytes(sess->output, sess->proc->readAllStandardError());
+                        appendRunOutput(sess, "stdout",
+                                        bytesToString(sess->proc->readAllStandardOutput()));
+                        appendRunOutput(sess, "stderr",
+                                        bytesToString(sess->proc->readAllStandardError()));
+                    }
+
+                    // 更新运行记录(后台模式也靠它收尾, 即便没有 cb)
+                    auto it = m_runs.find(sess->runId);
+                    if (it != m_runs.end())
+                    {
+                        RunRecord &r = it->second;
+                        r.status = "done";
+                        r.exitCode = exitCode;
+                        r.timedOut = sess->timedOut;
+                        if (sess->timedOut)                r.error = "命令超时, 已被强制终止";
+                        else if (status == JZProcess::CrashExit) r.error = "命令异常退出";
+                        else if (exitCode != 0)           r.error = "退出码 " + std::to_string(exitCode);
                     }
 
                     string out = sess->output;
@@ -1594,12 +1653,14 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
     }
 
     s->proc->setWorkingDirectory(s->cwd);
-    // 合并 stdout/stderr: 分离的话模型看不到 stderr 里的编译错误
-    s->proc->setProcessChannelMode(JZProcess::MergedChannels);
+    // 分通道捕获 stdout/stderr(各自带标签存进运行记录); 合并输出仍喂给前台 cb
+    s->proc->setProcessChannelMode(JZProcess::SeparateChannels);
 
     s->cb = cb;
     s->timedOut = false;
     s->output.clear();
+    s->runId = rid;          // 让 appendRunOutput / sigFinished 反查到本次记录
+    s->onChunk = onChunk;   // 流式逐块回调(后台/非流式为空)
 
     if (timeoutMs > 0)
     {
@@ -1626,6 +1687,13 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
             s->timeoutTimer->stop();
         s->running = false;
         s->cb = RunCallback();
+        s->onChunk = nullptr;
+        auto it = m_runs.find(rid);
+        if (it != m_runs.end())
+        {
+            it->second.status = "done";
+            it->second.error = "启动失败: " + command;
+        }
         error = "启动失败: " + command;
         if (cb)
             cb(false, string(), error);
@@ -1655,6 +1723,73 @@ string JZVirtualTerminal::takeOutput(const string &sessionId)
     string out = s->output;
     s->output.clear();
     return out;
+}
+
+void JZVirtualTerminal::appendRunOutput(Session *sess, const string &stream, const string &chunk)
+{
+    if (chunk.empty())
+        return;
+
+    // 合并输出(前台 cb 仍拿合并文本, 行为不变)
+    sess->output += chunk;
+
+    // 逐行存入运行记录(带流标签), 便于按流/关键字过滤与"最近 N 行"
+    auto it = m_runs.find(sess->runId);
+    if (it != m_runs.end())
+    {
+        RunRecord &rec = it->second;
+        size_t pos = 0;
+        while (true)
+        {
+            size_t nl = chunk.find('\n', pos);
+            string line = (nl == string::npos) ? chunk.substr(pos) : chunk.substr(pos, nl - pos);
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (!line.empty())
+                rec.log.push_back({stream, line});
+            if (nl == string::npos)
+                break;
+            pos = nl + 1;
+        }
+        while (rec.log.size() > (size_t)kMaxRunLines)   // 控制每条记录的日志行数
+            rec.log.erase(rec.log.begin());
+    }
+
+    // 流式逐块回调(由工具决定过滤/推送给客户端)—— 无论记录是否还在都触发
+    if (sess->onChunk)
+        sess->onChunk(stream, chunk);
+}
+
+bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) const
+{
+    auto it = m_runs.find(runId);
+    if (it == m_runs.end())
+        return false;
+    const RunRecord &r = it->second;
+    out.runId = r.runId;
+    out.sessionId = r.sessionId;
+    out.command = r.command;
+    out.status = r.status;
+    out.exitCode = r.exitCode;
+    out.timedOut = r.timedOut;
+    out.error = r.error;
+    out.log = r.log;
+    return true;
+}
+
+vector<string> JZVirtualTerminal::runIds(const string &sessionId) const
+{
+    vector<string> ids;
+    for (const string &rid : m_runOrder)
+    {
+        auto it = m_runs.find(rid);
+        if (it == m_runs.end())
+            continue;
+        if (!sessionId.empty() && it->second.sessionId != sessionId)
+            continue;
+        ids.push_back(rid);
+    }
+    return ids;
 }
 
 // ==========================================================================

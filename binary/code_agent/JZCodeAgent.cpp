@@ -1448,7 +1448,10 @@ void JZCodeAgent::buildAgent()
     // 专门的文件工具只留三个: read_file(带行号/分段读, 避免大文件灌上下文)、
     // write_file(整文件覆盖)、modify_file(局部替换, sed 不校验唯一匹配, 且回上下文片段)。
     if (!m_terminal)
+    {
         m_terminal = new JZVirtualTerminal(this);
+        m_terminal->setId("default");   // 单用户终端的会话 id(供 terminal_open/list 展示)
+    }
     addTool(new JZTerminalRunTool(m_terminal));
     addTool(new JZTerminalOpenTool(m_terminal));
     addTool(new JZTerminalListTool(m_terminal));

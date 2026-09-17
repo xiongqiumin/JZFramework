@@ -15,8 +15,8 @@ JZCommandLineOption::JZCommandLineOption()
 
 JZCommandLineOption::JZCommandLineOption(std::string name,std::string shortName,std::string desc,bool required)
 {
-    JZ_ASSERT(str_startsWith(name,"--"));
-    JZ_ASSERT(str_startsWith(shortName,"-"));
+    JZ_ASSERT_X(str_startsWith(name,"--"), "name should starts with --");
+    JZ_ASSERT_X(str_startsWith(shortName,"-"), "short name should starts with -");
 
     this->name = name;
     this->shortName = shortName;

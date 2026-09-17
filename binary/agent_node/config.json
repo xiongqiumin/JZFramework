@@ -1,0 +1,11 @@
+{
+    "nodeName":      "agent_node",
+    "version":       "1.0.0",
+    "port":          39000,
+    "rootDir":       "",
+    "trustedDirs":   [],
+    "shellProgram":  "",
+    "recycleSec":    900,
+    "allowTerminal": true,
+    "logFile":       ""
+}

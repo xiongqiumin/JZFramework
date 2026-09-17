@@ -1,11 +1,13 @@
 #ifndef JZ_AGENT_NODE_H_
 #define JZ_AGENT_NODE_H_
 
+#include <map>
 #include <string>
 #include <vector>
 
 #include "JZCodeTools.h"     // ICodeToolHost / ZoneConfig / ProgramPolicy / TrustedDir
 #include "JZObject.h"
+#include "JZTerminalRegistry.h"   // JZTerminalRegistry: 会话 -> 终端 的注册表(本节点实现)
 
 class JZMcpServer;
 class JZAgentTool;
@@ -13,7 +15,8 @@ class JZMcpTool;           // 直接挂进 MCP 的工具(不经过 agent_tool �
 class JZVirtualTerminal;   // 执行/审核面, 见 agent_tool/JZVirtualTerminal.h(目前只有声明, 待接)
 
 // ---------------------------------------------------------------------------
-// 节点配置: main.cpp 解析命令行后交给 JZAgentNode::init()
+// 节点配置: main.cpp 从 config.json 读取后交给 JZAgentNode::init()
+//   (默认读取 exe 同目录的 config.json, 可用 -c 指定)
 // ---------------------------------------------------------------------------
 class JZNodeConfig
 {
@@ -41,6 +44,9 @@ public:
 
     // 会话空闲多久回收(秒), <=0 表示不回收。默认 15 分钟。
     int recycleSec = 15 * 60;
+
+    // HTTP 监听端口(端点 /mcp)。默认 39000。
+    int port = 39000;
 
     std::string logFile;         // 预留: 日志落文件(stdio 模式用)
 };
@@ -85,7 +91,7 @@ private:
 // 由 terminal_run 覆盖; 只有 modify_file 留在我们这边(sed 不校验唯一匹配)。
 // 终端 MCP 工具直接继承 JZMcpTool(terminal 的两个门面之一); 其余工具经 JZMcpToolBridge 挂成 MCP。
 // ---------------------------------------------------------------------------
-class JZAgentNode : public JZObject
+class JZAgentNode : public JZObject, public JZTerminalRegistry
 {
 public:
     explicit JZAgentNode(JZObject *parent = nullptr);
@@ -96,7 +102,14 @@ public:
 
     JZMcpServer *server() const { return m_server; }
     const JZNodeConfig &config() const { return m_config; }
-    JZVirtualTerminal *terminal() const { return m_terminal; }
+    JZTerminalRegistry *terminalRegistry() { return this; }
+
+    // ---- JZTerminalRegistry: 会话 -> 终端 ----
+    JZVirtualTerminal *terminal(const std::string &sessionId, std::string &error) override;
+    std::string open(const std::string &cwd, std::string &error) override;
+    bool close(const std::string &sessionId) override;
+    std::vector<JZVirtualTerminal::SessionInfo> list() override;
+    bool runSnapshot(const std::string &runId, JZVirtualTerminal::RunRecordInfo &out) const override;
 
 protected:
     // 把 agent_tool 的一个工具经 bridge 挂进 MCP(接管 tool 所有权)
@@ -109,8 +122,12 @@ protected:
     JZNodeConfig m_config;
     JZAgentNodeHost m_host;
     JZMcpServer *m_server = nullptr;
-    // 执行+审核面。是 this 的子对象(随节点销毁), 工具只持非拥有指针。
-    JZVirtualTerminal *m_terminal = nullptr;
+
+    // 会话 -> 终端。每个会话一个独立 JZVirtualTerminal(各自 cwd / 前后台进程 / 运行记录);
+    // 生命周期(创建/销毁/空闲回收)由节点管。终端是 this 的子对象(随节点销毁),
+    // MCP 工具只持注册表、不绑定具体终端。
+    std::map<std::string, JZVirtualTerminal *> m_terminals;
+    int m_sessionIdGen = 0;
 };
 
 #endif // !JZ_AGENT_NODE_H_

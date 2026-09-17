@@ -74,7 +74,7 @@ public:
         if (isError())
             return false;
 
-        int pre_level = m_values.size();
+        int pre_level = (int)m_values.size();
         int last_idx = str_lastIndexOf(name, ".");
         std::string child_name;
         if (last_idx == -1)

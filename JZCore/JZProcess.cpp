@@ -136,6 +136,7 @@ public:
     HANDLE hStdoutRead;
     char stdErrTail;
     HANDLE hStderrRead;
+    DWORD pid = 0;        // 真实进程号(CreateProcess 填的 dwProcessId); 未启动/已回收为 0
 
     JZByteArray stdoutBuffer;
     JZByteArray stderrBuffer;
@@ -322,6 +323,7 @@ bool JZProcessPrivate::createProcess()
 
     hProcess = pi.hProcess;
     hThread = pi.hThread;
+    pid = pi.dwProcessId;
 
     return true;
 }
@@ -1277,6 +1279,11 @@ JZProcess::ProcessState JZProcess::state() const
 int JZProcess::exitCode() const
 {
     return d_ptr->exitCode;
+}
+
+int JZProcess::processId() const
+{
+    return d_ptr ? (int)d_ptr->pid : -1;
 }
 
 JZProcess::ExitStatus JZProcess::exitStatus() const

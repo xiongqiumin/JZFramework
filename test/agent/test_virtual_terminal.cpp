@@ -1,7 +1,9 @@
 // JZVirtualTerminal 冒烟测试(不依赖 JZProcess 的那部分)
 //
-// 覆盖: 会话外壳 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单。
+// 覆盖: 单终端 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单。
 // 期望输出: ALL PASS
+//
+// 注: JZVirtualTerminal 现在就是"一个终端"(无多会话), cwd/env/在跑进程都是它自己的状态。
 
 #include <stdio.h>
 #include <string>
@@ -44,7 +46,7 @@ public:
 
         ZoneConfig zone;
         zone.workspace = m_ws;
-        m_term.setZoneConfig(zone);
+        m_term.setZoneConfig(zone);   // setZoneConfig 会把 cwd 拉到工作区根
         m_term.setAuditCallback([](const string &action, const JZVirtualTerminal::Verdict &v, const string &)
         {
             g_auditCount++;
@@ -65,28 +67,16 @@ public:
                 });
         watchdog.start(20000);
 
-        stepSession();
+        stepWrite();
         return jzApp->exec();
     }
 
 private:
-    void stepSession()
-    {
-        string error;
-        m_id = m_term.openSession(string(), error);
-        check(!m_id.empty(), "开启会话: " + error);
-
-        JZVirtualTerminal::SessionInfo info;
-        check(m_term.sessionInfo(m_id, info) && info.cwd == m_ws, "会话 cwd == 工作区");
-        check(m_term.sessions().size() == 1, "sessions() 列出 1 个");
-        stepWrite();
-    }
-
     void stepWrite()
     {
         string error;
         // 父目录不存在应该自动建出来
-        check(m_term.writeFile(m_id, "a/b.txt", "hello\nworld\n", false, error),
+        check(m_term.writeFile("a/b.txt", "hello\nworld\n", false, error),
               "write 相对路径(自动建父目录): " + error);
         check(JZFileInfo(m_ws + "/a/b.txt").isFile(), "文件确实落盘了");
         stepRead();
@@ -95,7 +85,7 @@ private:
     void stepRead()
     {
         string text, error;
-        check(m_term.readFile(m_id, "a/b.txt", text, error), "read 相对路径: " + error);
+        check(m_term.readFile("a/b.txt", text, error), "read 相对路径: " + error);
         check(contains(text, "hello"), "内容正确");
         stepList();
     }
@@ -104,11 +94,11 @@ private:
     {
         vector<string> names;
         string error;
-        check(m_term.listDir(m_id, "a", names, error), "ls: " + error);
+        check(m_term.listDir("a", names, error), "ls: " + error);
         check(names.size() == 1 && names[0] == "b.txt", "ls 列出 b.txt");
 
         names.clear();
-        check(m_term.listDir(m_id, ".", names, error), "ls .");
+        check(m_term.listDir(".", names, error), "ls .");
         check(names.size() == 1 && names[0] == "a/", "ls . 里目录带 '/'");
         stepEdit();
     }
@@ -116,45 +106,45 @@ private:
     void stepEdit()
     {
         string error;
-        check(m_term.editFile(m_id, "a/b.txt", "world", "there", false, error), "edit 唯一匹配: " + error);
+        check(m_term.editFile("a/b.txt", "world", "there", false, error), "edit 唯一匹配: " + error);
 
         string text;
-        m_term.readFile(m_id, "a/b.txt", text, error);
+        m_term.readFile("a/b.txt", text, error);
         check(contains(text, "there") && !contains(text, "world"), "edit 生效");
 
         // "l" 出现多次 ⇒ 不唯一, 必须拒绝
-        check(!m_term.editFile(m_id, "a/b.txt", "l", "L", false, error), "edit 匹配多处被拒");
+        check(!m_term.editFile("a/b.txt", "l", "L", false, error), "edit 匹配多处被拒");
         stepCpMv();
     }
 
     void stepCpMv()
     {
         string error;
-        check(m_term.makeDir(m_id, "c/d", error), "mkdir -p: " + error);
-        check(m_term.copyPath(m_id, "a/b.txt", "c/d/e.txt", error), "cp: " + error);
+        check(m_term.makeDir("c/d", error), "mkdir -p: " + error);
+        check(m_term.copyPath("a/b.txt", "c/d/e.txt", error), "cp: " + error);
 
         string text;
-        check(m_term.readFile(m_id, "c/d/e.txt", text, error) && contains(text, "there"), "cp 内容一致");
+        check(m_term.readFile("c/d/e.txt", text, error) && contains(text, "there"), "cp 内容一致");
 
-        check(m_term.movePath(m_id, "c/d/e.txt", "c/f.txt", error), "mv: " + error);
-        check(!m_term.readFile(m_id, "c/d/e.txt", text, error), "源已不在");
-        check(m_term.readFile(m_id, "c/f.txt", text, error), "目标在");
+        check(m_term.movePath("c/d/e.txt", "c/f.txt", error), "mv: " + error);
+        check(!m_term.readFile("c/d/e.txt", text, error), "源已不在");
+        check(m_term.readFile("c/f.txt", text, error), "目标在");
         stepRm();
     }
 
     void stepRm()
     {
         string error;
-        check(m_term.removePath(m_id, "c/f.txt", false, error), "rm 文件: " + error);
+        check(m_term.removePath("c/f.txt", false, error), "rm 文件: " + error);
 
         error.clear();
-        check(m_term.removePath(m_id, "c/d", false, error), "rmdir 空目录: " + error);
+        check(m_term.removePath("c/d", false, error), "rmdir 空目录: " + error);
 
         error.clear();
-        check(!m_term.removePath(m_id, "a", false, error), "rm 非空目录(未 recursive)被拒");
+        check(!m_term.removePath("a", false, error), "rm 非空目录(未 recursive)被拒");
 
         error.clear();
-        check(m_term.removePath(m_id, "a", true, error), "rm -r");
+        check(m_term.removePath("a", true, error), "rm -r");
         check(!JZFileInfo::exists(m_ws + "/a"), "目录真的没了");
         stepEscape();
     }
@@ -165,16 +155,16 @@ private:
         string text, error;
 
         // 相对路径往上跑
-        check(!m_term.readFile(m_id, "../../../../Windows/win.ini", text, error),
+        check(!m_term.readFile("../../../../Windows/win.ini", text, error),
               "相对路径越界被拒");
         // 绝对路径在工作区外
-        check(!m_term.readFile(m_id, "C:/Windows/win.ini", text, error),
+        check(!m_term.readFile("C:/Windows/win.ini", text, error),
               "绝对路径越界被拒");
         // 写也一样
-        check(!m_term.writeFile(m_id, "C:/Windows/_vt_probe.txt", "x", false, error),
+        check(!m_term.writeFile("C:/Windows/_vt_probe.txt", "x", false, error),
               "越界写被拒");
         // 删也一样
-        check(!m_term.removePath(m_id, "C:/Windows/notepad.exe", false, error),
+        check(!m_term.removePath("C:/Windows/notepad.exe", false, error),
               "越界删被拒");
 
         JZVirtualTerminal::Verdict v = m_term.checkRead("C:/Windows/win.ini");
@@ -189,16 +179,16 @@ private:
     {
         string error;
         // ws 的父目录在区域外
-        check(!m_term.changeDir(m_id, "..", error), "cd .. 到工作区外被拒");
+        check(!m_term.changeDir("..", error), "cd .. 到工作区外被拒");
 
-        check(m_term.makeDir(m_id, "sub", error), "建 sub");
-        check(m_term.changeDir(m_id, "sub", error), "cd sub: " + error);
+        check(m_term.makeDir("sub", error), "建 sub");
+        check(m_term.changeDir("sub", error), "cd sub: " + error);
 
         string cwd;
-        check(m_term.printDir(m_id, cwd) && cwd == m_ws + "/sub", "cwd 已经变了");
+        check(m_term.printDir(cwd) && cwd == m_ws + "/sub", "cwd 已经变了");
 
         // 相对路径现在应该基于新 cwd
-        check(m_term.writeFile(m_id, "g.txt", "x", false, error), "以新 cwd 为基准写文件");
+        check(m_term.writeFile("g.txt", "x", false, error), "以新 cwd 为基准写文件");
         check(JZFileInfo(m_ws + "/sub/g.txt").isFile(), "文件落在 sub 下");
         stepExec();
     }
@@ -240,7 +230,7 @@ private:
               "探测到可用的 shell: " + m_term.shellProgram());
 
         string error;
-        bool started = m_term.run(m_id, "echo jz_terminal_ok", 20000,
+        bool started = m_term.run("echo jz_terminal_ok", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "run echo 正常结束" +
@@ -258,26 +248,26 @@ private:
     {
         string error;
         // 白名单外的程序: 必须在**起进程之前**就被拒
-        check(!m_term.run(m_id, "some_unknown_prog --do-it", 20000,
+        check(!m_term.run("some_unknown_prog --do-it", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝白名单外的程序");
 
         // 重定向目标在工作区外: 也要拒(zone 模型的写边界就靠这条)
         string outside = jzApp->applicationDirPath() + "/vt_outside.txt";
         JZFile::remove(outside);
-        check(!m_term.run(m_id, "echo x > " + outside, 20000,
+        check(!m_term.run("echo x > " + outside, 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝越界的重定向: " + error);
         check(!JZFileInfo(outside).exists(), "越界文件确实没被创建");
 
         // 单独一条设/清变量: 不跨命令保留, 必须**明确报错**(否则模型会以为设过了)
-        check(!m_term.run(m_id, "export JZ_X=1", 20000,
+        check(!m_term.run("export JZ_X=1", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条 export");
-        check(!m_term.run(m_id, "JZ_X=1", 20000,
+        check(!m_term.run("JZ_X=1", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条赋值");
-        check(!m_term.run(m_id, "unset PATH", 20000,
+        check(!m_term.run("unset PATH", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条 unset");
 
@@ -289,7 +279,7 @@ private:
     void stepRunShell()
     {
         string error;
-        bool started = m_term.run(m_id, "ls -1 && mkdir -p deep/dir && ls -1", 20000,
+        bool started = m_term.run("ls -1 && mkdir -p deep/dir && ls -1", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "run ls/mkdir 链式: " +
@@ -309,7 +299,7 @@ private:
     void stepRunInlineEnv()
     {
         string error;
-        bool started = m_term.run(m_id, "export JZ_X=42 && echo val=$JZ_X", 20000,
+        bool started = m_term.run("export JZ_X=42 && echo val=$JZ_X", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "内联 export 那条命令本身正常: " + err);
@@ -326,20 +316,19 @@ private:
     void stepRunCdChain()
     {
         string error;
-        bool started = m_term.run(m_id, "cd deep && pwd", 20000,
+        bool started = m_term.run("cd deep && pwd", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "链式 cd 那条命令本身正常: " + err);
                                       check(contains(out, "deep"),
                                             "cd 在该条命令内生效: " + out);
 
-                                      // ⭐ 但链式 cd **不**改会话 cwd —— 这是**文档化的行为**, 不是漏。
+                                      // ⭐ 但链式 cd **不**改终端 cwd —— 这是**文档化的行为**, 不是漏。
                                       // 每条命令是一个新进程, cd 只活在那个 bash 里(它跑完就没了)。
                                       // 想要持久就单独发一条 `cd <目录>`(见下一步)。
-                                      JZVirtualTerminal::SessionInfo info;
-                                      check(m_term.sessionInfo(m_id, info) &&
-                                                !contains(info.cwd, "deep"),
-                                            "链式 cd 不改会话 cwd(下一条命令仍在原目录): " +
+                                      JZVirtualTerminal::SessionInfo info = m_term.info();
+                                      check(!contains(info.cwd, "deep"),
+                                            "链式 cd 不改终端 cwd(下一条命令仍在原目录): " +
                                                 info.cwd);
                                       stepRunCdPersist();
                                   }, error);
@@ -348,18 +337,17 @@ private:
             stepRunCdPersist();
     }
 
-    // 单独一条 `cd <目录>`: 我们接管, 改会话 cwd(唯一跨命令保留的状态)
+    // 单独一条 `cd <目录>`: 我们接管, 改终端 cwd(唯一跨命令保留的状态)
     void stepRunCdPersist()
     {
         string error;
-        bool started = m_term.run(m_id, "cd deep", 20000,
+        bool started = m_term.run("cd deep", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "单独一条 cd 本身正常: " + err);
-                                      JZVirtualTerminal::SessionInfo info;
-                                      check(m_term.sessionInfo(m_id, info) &&
-                                                contains(info.cwd, "deep"),
-                                            "会话 cwd 真的变了: " + info.cwd);
+                                      JZVirtualTerminal::SessionInfo info = m_term.info();
+                                      check(contains(info.cwd, "deep"),
+                                            "终端 cwd 真的变了: " + info.cwd);
                                       stepRunPwd();
                                   }, error);
         check(started, "run 单独 cd: " + error);
@@ -371,7 +359,7 @@ private:
     void stepRunPwd()
     {
         string error;
-        bool started = m_term.run(m_id, "pwd", 20000,
+        bool started = m_term.run("pwd", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "pwd 正常: " + err);
@@ -407,14 +395,14 @@ private:
 
         for (const Case &c : cases)
         {
-            check(!m_term.run(m_id, c.cmd, 20000,
+            check(!m_term.run(c.cmd, 20000,
                               [](bool, const string &, const string &) {}, error),
                   string("拒绝 ") + c.what);
         }
 
         // 反过来: `&&` 不能被误当成后台 `&`。
         // 注意 check 的消息是**提前**拼好的, 所以只在失败时才带 error(否则会带上一次拒绝的旧文本)
-        bool andOk = m_term.run(m_id, "echo a && echo b", 20000,
+        bool andOk = m_term.run("echo a && echo b", 20000,
                                 [this](bool ok, const string &out, const string &err)
                                 {
                                     check(ok, "&& 那条命令本身正常: " + err);
@@ -431,7 +419,7 @@ private:
     void stepRunSingleQuoteLiteral()
     {
         string error;
-        bool started = m_term.run(m_id, "echo 'a $(whoami) b'", 20000,
+        bool started = m_term.run("echo 'a $(whoami) b'", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "单引号里的 $( ) 只是字面量: " + err);
@@ -450,19 +438,12 @@ private:
         check(contains(g_lastAuditAction, ":deny") || contains(g_lastAuditAction, ":allow"),
               "审计里带动作与结论: " + g_lastAuditAction);
 
-        check(m_term.closeSession(m_id), "关闭会话");
-        check(m_term.sessions().empty(), "会话列表空了");
-
-        JZVirtualTerminal::SessionInfo gone;
-        check(!m_term.sessionInfo(m_id, gone), "查不到了");
-
         JZDir(m_ws).removeRecursively();
         jzApp->quit();
     }
 
     JZVirtualTerminal m_term;
     string m_ws;
-    string m_id;
 };
 
 int main(int argc, char *argv[])

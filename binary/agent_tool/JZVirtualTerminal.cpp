@@ -14,10 +14,10 @@
 
 using namespace std;
 
-// 单次读文件上限: 工具自己还会按行裁剪, 这里只是别把几百兆的东西读进内存
+// 单次读文件上限
 static const int kMaxReadBytes = 8 * 1024 * 1024;
 
-// 运行记录上限: 保留多少条运行、每条最多多少行日志(防内存无限增长)
+// 运行记录上限
 static const int kMaxRuns = 200;
 static const int kMaxRunLines = 4000;
 
@@ -39,13 +39,11 @@ int64_t currentMs()
     return JZDateTime::currentMSecsSinceEpoch();
 }
 
-// 进程输出按字节原样拼进 string(JZByteArray 没有到 std::string 的隐式转换)
 void appendBytes(string &dst, const JZByteArray &data)
 {
     dst.append(data.data(), (size_t)data.size());
 }
 
-// 统一分隔符成 '/'
 string toSlash(string path)
 {
     for (char &c : path)
@@ -56,7 +54,6 @@ string toSlash(string path)
     return path;
 }
 
-// 取父目录("a/b/c.txt" -> "a/b"; 无父目录返回空)
 string dirPart(const string &path)
 {
     size_t pos = path.find_last_of('/');
@@ -67,7 +64,6 @@ string dirPart(const string &path)
     return path.substr(0, pos);
 }
 
-// 程序名归一成白名单键: 取末段、去扩展名、小写("C:/x/git.exe" -> "git")
 string programKey(const string &program)
 {
     string name = str_toLower(toSlash(program));
@@ -79,15 +75,7 @@ string programKey(const string &program)
     return name;
 }
 
-// 跑命令用哪个 shell。
-//   POSIX   : /bin/sh
-//   Windows : Git for Windows 的 Git/bin/bash.exe
-//             Windows 的 PATH 里**没有** ls/cat/grep(只有 Git Bash 那份), 而 Git Bash 的
-//             coreutils 与 Linux **同名** ⇒ 白名单与模型看到的命令两边一致。
-// ⛔ **不退回 cmd.exe**: 找不到就返回空串, 调用方报错。理由: cmd 只有 dir/type 而且语法
-//    与 Linux 完全不同, 悄悄退过去会变成"同一句话两边行为不一样", 比直接失败更难查。
 #ifdef _WIN32
-// 取环境变量。MSVC 把 getenv 标成 C4996, 用 _dupenv_s 免掉那个警告。
 string envValue(const char *name)
 {
     char *buf = nullptr;
@@ -116,7 +104,7 @@ string detectShell()
         if (JZFileInfo(p).isFile())
             return p;
     }
-    return string();        // 没装 Git for Windows
+    return string();
 #else
     return "/bin/sh";
 #endif
@@ -151,7 +139,6 @@ string trim(const string &s)
     return s.substr(b, e - b);
 }
 
-// 取一个片段的首 token(程序名), 去掉引号; 跳过 `NAME=value` 形式的前缀赋值。
 string commandHead(const string &segment)
 {
     size_t i = 0;
@@ -162,7 +149,6 @@ string commandHead(const string &segment)
         if (i >= segment.size())
             return string();
 
-        // 收集一个 token(带引号感知)
         string tok;
         char quote = 0;
         while (i < segment.size())
@@ -189,7 +175,6 @@ string commandHead(const string &segment)
             i++;
         }
 
-        // `FOO=bar cmd` 的前缀赋值不是程序名
         size_t eq = tok.find('=');
         if (eq != string::npos && eq > 0 && tok[0] != '/' && tok[0] != '.')
             continue;
@@ -198,14 +183,6 @@ string commandHead(const string &segment)
     return string();
 }
 
-// 把一整条命令按**顶层**运算符切开。结果: segments.size() == ops.size() + 1,
-// ops[i] 是 segments[i] 与 segments[i+1] 之间的运算符("&&" / "||" / "|" / "&" / ";")。
-//
-// 为什么要把运算符**留下来**而不是只留切片: `&`(后台) 和 `&&`(短路) 必须分得清 ——
-// 前者要拒(进程会脱离管理), 后者只是串联。旧版把两者合并了, 就拦不住 `cmd &`。
-//
-// 引号/转义内的运算符不算。引号不配对返回 false —— 调用方**必须拒绝**整条命令:
-// 宁可拒绝, 也不能让"审不到的片段"跑起来。
 bool parseTopLevel(const string &line, vector<string> &segments, vector<string> &ops)
 {
     segments.clear();
@@ -242,7 +219,7 @@ bool parseTopLevel(const string &line, vector<string> &segments, vector<string> 
         if (c == '&' || c == '|')
         {
             op = string(1, c);
-            if (i + 1 < line.size() && line[i + 1] == c)   // && / || 一起吃
+            if (i + 1 < line.size() && line[i + 1] == c)
             {
                 op += c;
                 i++;
@@ -269,11 +246,6 @@ bool parseTopLevel(const string &line, vector<string> &segments, vector<string> 
     return true;
 }
 
-// 扫一遍"我们审不下去"的写法。**必须拒绝**, 不是嫌麻烦:
-//   `$(...)` / `` `...` `` 把一段命令塞进参数里 —— 审核看到的首 token 是外层程序
-//   (`echo $(rm -rf /)` 只看到 echo), 真正被执行的东西我们一个字都没审到。
-//   `<<` heredoc / `<( )` `>( )` 进程替换同理(内容/目标不在参数位置上)。
-// 单引号里的都是字面量(真 shell 也不展开), 不算命中。
 bool scanUnsupported(const string &line, string &error)
 {
     char quote = 0;
@@ -282,14 +254,12 @@ bool scanUnsupported(const string &line, string &error)
     {
         char c = line[i];
 
-        // 反斜杠转义(单引号里不算转义 —— shell 里单引号内一切都是字面量)
         if (c == '\\' && quote != '\'' && i + 1 < line.size())
         {
             i++;
             continue;
         }
 
-        // 单引号内**没有任何展开** ⇒ 里面全是安全字面量, 整段跳过
         if (quote == '\'')
         {
             if (c == '\'')
@@ -297,9 +267,6 @@ bool scanUnsupported(const string &line, string &error)
             continue;
         }
 
-        // ⚠ 双引号内 `$( )` 与反引号**照样展开** —— 所以这里只能处理引号本身的进出,
-        // **不能**把后面的检查一起跳过(我第一版就是在这里 `continue` 掉了, 于是
-        // `echo "a $(whoami) b"` 被放行 —— 测试直接把它抓出来了)。
         if (c == '"')
         {
             quote = quote ? 0 : '"';
@@ -336,9 +303,6 @@ bool scanUnsupported(const string &line, string &error)
     return true;
 }
 
-// 会"脱离进程管理"的命令: 一律拒绝。
-// 理由不是安全洁癖 —— 它们起的进程**我们收不到输出、杀不掉**, 会话回收也收不干净,
-// 机器上会慢慢攒下一堆没人管的孤儿进程。
 const char *detachReason(const string &head)
 {
     static const char *kDetach[] = {
@@ -352,8 +316,6 @@ const char *detachReason(const string &head)
     return nullptr;
 }
 
-// 从片段里取出重定向目标(`>` / `>>` 后面那个 token)。
-// 目标带展开字符($ ~ ` *)时审不了具体是哪条路径 —— 返回 false, 调用方应当拒绝整条命令。
 bool redirectTargets(const string &segment, vector<string> &out, string &error)
 {
     char quote = 0;
@@ -381,7 +343,7 @@ bool redirectTargets(const string &segment, vector<string> &out, string &error)
             continue;
 
         i++;
-        if (i < segment.size() && segment[i] == '>')   // >>
+        if (i < segment.size() && segment[i] == '>')
             i++;
         while (i < segment.size() && (segment[i] == ' ' || segment[i] == '\t'))
             i++;
@@ -434,30 +396,6 @@ bool redirectTargets(const string &segment, vector<string> &out, string &error)
 } // namespace
 
 // ==========================================================================
-// 会话
-// ==========================================================================
-struct JZVirtualTerminal::Session
-{
-    std::string id;
-    std::string cwd;                          // 规范化后的绝对目录
-    std::map<std::string, std::string> env;   // 会话级环境变量覆盖
-    bool running = false;                     // 有命令在途
-    int64_t lastActive = 0;
-
-    // ---- 在途命令 ----
-    // proc 随会话常驻(不是每条命令新起一个), 命令跑完后同一个对象可以再 start。
-    // 所有权在终端(this), 所以 Session 析构不需要管它。
-    // ⚠ 回调里只按 sessionId 反查, 不捕获 Session* —— 会话被回收后指针就是悬垂的。
-    JZProcess *proc = nullptr;
-    JZTimer *timeoutTimer = nullptr;
-    std::string output;                       // 累积输出(合并 stdout/stderr), takeOutput 取一次清一次
-    bool timedOut = false;
-    RunCallback cb;                           // 在途命令的应答回调
-    std::string runId;                        // 当前运行的记录 id(供 appendRunOutput 反查)
-    std::function<void(const std::string &, const std::string &)> onChunk;  // 流式逐块回调
-};
-
-// ==========================================================================
 // 构造 / 策略
 // ==========================================================================
 
@@ -470,19 +408,16 @@ JZVirtualTerminal::JZVirtualTerminal(JZObject *parent)
 
 JZVirtualTerminal::~JZVirtualTerminal()
 {
-    // 先摘表: 之后任何"已结束/被杀"的回调 findSession 都返回 nullptr, 不会碰正在析构的会话。
-    vector<Session *> all;
-    for (auto &item : m_sessions)
-        all.push_back(item.second);
-    m_sessions.clear();
-
-    for (Session *s : all)
+    if (m_proc)
     {
-        s->running = false;
-        s->cb = RunCallback();
-        if (s->proc)
-            s->proc->killProcess();     // proc 是终端的子对象, 由 ~JZObject 回收
-        delete s;
+        m_proc->killProcess();     // proc 是终端的子对象, 由 ~JZObject 回收
+        delete m_proc;
+        m_proc = nullptr;
+    }
+    if (m_timeoutTimer)
+    {
+        delete m_timeoutTimer;
+        m_timeoutTimer = nullptr;
     }
 }
 
@@ -490,9 +425,9 @@ void JZVirtualTerminal::setZoneConfig(const ZoneConfig &zone)
 {
     m_zone = zone;
 
-    // 目录基准变了, 已有会话的 cwd 可能失效 —— 拉回工作区根(而不是让它们悬着)
-    for (auto &item : m_sessions)
-        item.second->cwd = m_zone.workspace;
+    // 目录基准变了, cwd 可能失效 —— 拉回工作区根(而不是让它悬着)
+    if (m_cwd.empty())
+        m_cwd = m_zone.workspace;
 }
 
 const ZoneConfig &JZVirtualTerminal::zoneConfig() const
@@ -550,9 +485,6 @@ vector<string> JZVirtualTerminal::availablePrograms() const
 
 // ==========================================================================
 // 审核: 唯一入口
-//
-// checkRead / checkWrite / checkExec 收的都是**已经解析过的绝对路径**;
-// 相对路径那一步是 resolvePath 的活。
 // ==========================================================================
 
 JZVirtualTerminal::Verdict JZVirtualTerminal::checkRead(const string &path) const
@@ -599,7 +531,6 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
 {
     Verdict v;
 
-    // ---- 显式给定路径: 必须在工作区/授信目录内, 且是可执行文件 ----
     if (looksLikePath(program))
     {
         string abs = codeNormalizePath(program);
@@ -635,7 +566,6 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
         return v;
     }
 
-    // ---- 按名: 查白名单 ----
     string key = programKey(program);
     auto it = m_programs.find(key);
     if (it == m_programs.end())
@@ -648,7 +578,6 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
 
     const ProgramSpec &spec = it->second;
 
-    // 分类策略(SystemAdmin 不提供开关, 永不放行)
     if (spec.category == CmdCategory::SystemAdmin)
     {
         v.decision = Decision::Deny;
@@ -671,7 +600,6 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
         return v;
     }
 
-    // 参数级黑名单(前缀匹配)
     for (const string &arg : args)
     {
         for (const string &bad : spec.denyFlags)
@@ -685,7 +613,6 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
             }
         }
     }
-    // `python -m pip` 这类: 按 -m 后面跟的模块挡
     for (size_t i = 0; i + 1 < args.size(); i++)
     {
         if (args[i] != "-m")
@@ -707,10 +634,10 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
     return v;
 }
 
-bool JZVirtualTerminal::resolvePath(const SessionInfo &session, const string &path, bool writeAccess,
+bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
                                     string &absPath, Verdict &verdict, string &error) const
 {
-    string cwd = session.cwd.empty() ? m_zone.workspace : session.cwd;
+    string cwd = m_cwd.empty() ? m_zone.workspace : m_cwd;
 
     Zone zone = Zone::Outside;
     if (!zoneResolvePath(m_zone, cwd, path, absPath, zone, error))
@@ -742,169 +669,38 @@ bool JZVirtualTerminal::resolvePath(const SessionInfo &session, const string &pa
 }
 
 // ==========================================================================
-// 会话
+// 终端状态
 // ==========================================================================
 
-JZVirtualTerminal::Session *JZVirtualTerminal::findSession(const string &id)
+JZVirtualTerminal::SessionInfo JZVirtualTerminal::info() const
 {
-    auto it = m_sessions.find(id);
-    return (it == m_sessions.end()) ? nullptr : it->second;
-}
-
-const JZVirtualTerminal::Session *JZVirtualTerminal::findSession(const string &id) const
-{
-    auto it = m_sessions.find(id);
-    return (it == m_sessions.end()) ? nullptr : it->second;
-}
-
-void JZVirtualTerminal::touch(Session *session)
-{
-    if (session)
-        session->lastActive = currentMs();
-}
-
-void JZVirtualTerminal::ensureReaper()
-{
-    if (m_reapTimer || m_recycleMs <= 0)
-        return;
-
-    m_reapTimer = new JZTimer(this);
-    connect(&m_reapTimer->sigTimeout, this, [this]() { reapIdle(); });
-    m_reapTimer->start(30 * 1000);   // 每 30 秒扫一次
-}
-
-void JZVirtualTerminal::reapIdle()
-{
-    if (m_recycleMs <= 0)
-        return;
-
-    int64_t now = currentMs();
-    vector<string> dead;
-    for (const auto &item : m_sessions)
-    {
-        Session *s = item.second;
-        if (s->running)
-            continue;                                   // 有命令在跑, 不算空闲
-        if (now - s->lastActive < m_recycleMs)
-            continue;
-        dead.push_back(item.first);
-    }
-
-    for (const string &id : dead)
-    {
-        jzInfo().nospace() << "terminal 会话空闲超过 " << (m_recycleMs / 1000) << " 秒, 回收: " << id;
-        closeSession(id);
-    }
-}
-
-string JZVirtualTerminal::openSession(const string &cwd, string &error)
-{
-    string root = codeNormalizePath(m_zone.workspace);
-    if (root.empty())
-    {
-        error = "工作区未配置, 不能开会话";
-        return string();
-    }
-
-    string dir = cwd.empty() ? root : cwd;
-    Verdict verdict;
-    string abs;
-    SessionInfo probe;
-    probe.cwd = root;
-    if (!resolvePath(probe, dir, false, abs, verdict, error))
-        return string();
-
-    JZFileInfo info(abs);
-    if (!info.isDir())
-    {
-        error = "不是目录: " + abs;
-        return string();
-    }
-
-    ensureReaper();
-
-    Session *session = new Session();
-    session->id = "t" + std::to_string(++m_idGen);
-    session->cwd = abs;
-    session->lastActive = currentMs();
-    m_sessions[session->id] = session;
-
-    jzInfo().nospace() << "terminal 会话开启: id=" << session->id << " cwd=" << session->cwd;
-    return session->id;
-}
-
-bool JZVirtualTerminal::closeSession(const string &id)
-{
-    auto it = m_sessions.find(id);
-    if (it == m_sessions.end())
-        return false;
-
-    Session *s = it->second;
-
-    // 先摘表再动它: 在途命令被 kill 会同步/异步回一次 sigFinished,
-    // 那时 findSession 已经查不到这个会话, 不会拿到正在释放的指针。
-    m_sessions.erase(it);
-    s->running = false;
-    s->cb = RunCallback();
-
-    if (s->proc)
-    {
-        s->proc->killProcess();
-        delete s->proc;         // 主动放掉, 免得反复开会话把进程对象攒下来
-    }
-    delete s;
-    return true;
-}
-
-vector<JZVirtualTerminal::SessionInfo> JZVirtualTerminal::sessions() const
-{
-    vector<SessionInfo> out;
-    for (const auto &item : m_sessions)
-    {
-        const Session *s = item.second;
-        SessionInfo info;
-        info.id = s->id;
-        info.cwd = s->cwd;
-        info.running = s->running;
-        info.lastActive = s->lastActive;
-        out.push_back(info);
-    }
+    SessionInfo out;
+    out.id = m_id;
+    out.cwd = m_cwd;
+    out.running = m_running;
+    out.lastActive = m_lastActive;
     return out;
 }
 
-bool JZVirtualTerminal::sessionInfo(const string &id, SessionInfo &out) const
+void JZVirtualTerminal::touch()
 {
-    const Session *s = findSession(id);
-    if (!s)
-        return false;
-
-    out.id = s->id;
-    out.cwd = s->cwd;
-    out.running = s->running;
-    out.lastActive = s->lastActive;
-    return true;
+    m_lastActive = currentMs();
 }
 
 // ==========================================================================
-// 会话状态: 环境变量
+// 终端状态: 环境变量
 //
-// 只做存储与查询 —— 真正注入子进程要等 JZProcess 支持 setEnvironment()
-// (现在它把 lpEnvironment 写死成 nullptr = 继承父进程)。
+// 只做存储与查询 —— 真正注入子进程要等 JZProcess 支持 setEnvironment()。
 // ==========================================================================
 
-bool JZVirtualTerminal::setEnv(const string &sessionId, const string &name,
-                               const string &value, bool persistent)
+bool JZVirtualTerminal::setEnv(const string &name, const string &value, bool persistent)
 {
     if (name.empty())
         return false;
 
-    Session *s = findSession(sessionId);
-    if (!s)
-        return false;
-
     // Windows 环境变量名大小写不敏感: 覆盖时按不敏感匹配, 并保留原有写法
     string key = name;
-    for (const auto &item : s->env)
+    for (const auto &item : m_env)
     {
         if (str_toLower(item.first) == str_toLower(name))
         {
@@ -914,41 +710,36 @@ bool JZVirtualTerminal::setEnv(const string &sessionId, const string &name,
     }
 
     if (persistent)
-        s->env[key] = value;
+        m_env[key] = value;
     else
     {
         // 只对下一条命令生效: 记在"临时覆盖"里, run() 用完即清。
         // 目前 run 还没接, 先按持久处理并留个记号, 免得静默丢语义。
-        s->env[key] = value;
-        jzWarning() << "setEnv(persistent=false) 暂按持久处理(run 尚未实现)";
+        m_env[key] = value;
+        jzWarning() << "setEnv(persistent=false) 暂按持久处理(run 尚未完全接入临时覆盖)";
     }
 
-    touch(s);
+    touch();
     return true;
 }
 
-bool JZVirtualTerminal::unsetEnv(const string &sessionId, const string &name)
+bool JZVirtualTerminal::unsetEnv(const string &name)
 {
-    Session *s = findSession(sessionId);
-    if (!s)
-        return false;
-
-    for (auto it = s->env.begin(); it != s->env.end(); ++it)
+    for (auto it = m_env.begin(); it != m_env.end(); ++it)
     {
         if (str_toLower(it->first) == str_toLower(name))
         {
-            s->env.erase(it);
-            touch(s);
+            m_env.erase(it);
+            touch();
             return true;
         }
     }
     return false;
 }
 
-map<string, string> JZVirtualTerminal::env(const string &sessionId) const
+map<string, string> JZVirtualTerminal::env() const
 {
-    const Session *s = findSession(sessionId);
-    return s ? s->env : map<string, string>();
+    return m_env;
 }
 
 // ==========================================================================
@@ -972,34 +763,23 @@ void JZVirtualTerminal::audit(const string &action, const Verdict &verdict, cons
 // 动作: 先把路径审核过再动手
 // ==========================================================================
 
-bool JZVirtualTerminal::checkPath(const string &sessionId, const string &path, bool writeAccess,
+bool JZVirtualTerminal::checkPath(const string &path, bool writeAccess,
                                   const string &action, string &absPath, string &error)
 {
-    Session *s = findSession(sessionId);
-    if (!s)
-    {
-        error = "没有这个会话: " + sessionId;
-        return false;
-    }
-    touch(s);
-
-    SessionInfo info;
-    info.id = s->id;
-    info.cwd = s->cwd;
+    touch();
 
     Verdict verdict;
-    bool ok = resolvePath(info, path, writeAccess, absPath, verdict, error);
+    bool ok = resolvePath(path, writeAccess, absPath, verdict, error);
     audit(action, verdict, absPath);
     return ok;
 }
 
-bool JZVirtualTerminal::listDir(const string &sessionId, const string &path,
-                                vector<string> &names, string &error)
+bool JZVirtualTerminal::listDir(const string &path, vector<string> &names, string &error)
 {
     names.clear();
 
     string abs;
-    if (!checkPath(sessionId, path.empty() ? "." : path, false, "ls", abs, error))
+    if (!checkPath(path.empty() ? "." : path, false, "ls", abs, error))
         return false;
 
     JZFileInfo info(abs);
@@ -1021,13 +801,12 @@ bool JZVirtualTerminal::listDir(const string &sessionId, const string &path,
     return true;
 }
 
-bool JZVirtualTerminal::readFile(const string &sessionId, const string &path,
-                                 string &text, string &error)
+bool JZVirtualTerminal::readFile(const string &path, string &text, string &error)
 {
     text.clear();
 
     string abs;
-    if (!checkPath(sessionId, path, false, "read", abs, error))
+    if (!checkPath(path, false, "read", abs, error))
         return false;
 
     JZFileInfo info(abs);
@@ -1060,11 +839,10 @@ bool JZVirtualTerminal::readFile(const string &sessionId, const string &path,
     return true;
 }
 
-bool JZVirtualTerminal::writeFile(const string &sessionId, const string &path,
-                                  const string &text, bool append, string &error)
+bool JZVirtualTerminal::writeFile(const string &path, const string &text, bool append, string &error)
 {
     string abs;
-    if (!checkPath(sessionId, path, true, "write", abs, error))
+    if (!checkPath(path, true, "write", abs, error))
         return false;
 
     JZFileInfo info(abs);
@@ -1102,25 +880,23 @@ bool JZVirtualTerminal::writeFile(const string &sessionId, const string &path,
     return true;
 }
 
-bool JZVirtualTerminal::editFile(const string &sessionId, const string &path,
-                                 const string &oldStr, const string &newStr,
+bool JZVirtualTerminal::editFile(const string &path, const string &oldStr, const string &newStr,
                                  bool replaceAll, string &error)
 {
     string abs;
-    if (!checkPath(sessionId, path, true, "edit", abs, error))
+    if (!checkPath(path, true, "edit", abs, error))
         return false;
 
-    // oldStr 为空 = 整文件覆盖(等价 write)
     if (oldStr.empty())
     {
         string writeError;
-        bool ok = writeFile(sessionId, abs, newStr, false, writeError);
+        bool ok = writeFile(abs, newStr, false, writeError);
         error = writeError;
         return ok;
     }
 
     string content;
-    if (!readFile(sessionId, abs, content, error))
+    if (!readFile(abs, content, error))
         return false;
 
     size_t pos = 0;
@@ -1165,7 +941,7 @@ bool JZVirtualTerminal::editFile(const string &sessionId, const string &path,
     }
 
     string writeError;
-    if (!writeFile(sessionId, abs, out, false, writeError))
+    if (!writeFile(abs, out, false, writeError))
     {
         error = writeError;
         return false;
@@ -1173,15 +949,15 @@ bool JZVirtualTerminal::editFile(const string &sessionId, const string &path,
     return true;
 }
 
-bool JZVirtualTerminal::makeDir(const string &sessionId, const string &path, string &error)
+bool JZVirtualTerminal::makeDir(const string &path, string &error)
 {
     string abs;
-    if (!checkPath(sessionId, path, true, "mkdir", abs, error))
+    if (!checkPath(path, true, "mkdir", abs, error))
         return false;
 
     JZDir dir;
     if (dir.exists(abs))
-        return true;   // 已存在算成功(幂等)
+        return true;
 
     if (!dir.mkpath(abs))
     {
@@ -1191,14 +967,12 @@ bool JZVirtualTerminal::makeDir(const string &sessionId, const string &path, str
     return true;
 }
 
-bool JZVirtualTerminal::removePath(const string &sessionId, const string &path,
-                                   bool recursive, string &error)
+bool JZVirtualTerminal::removePath(const string &path, bool recursive, string &error)
 {
     string abs;
-    if (!checkPath(sessionId, path, true, "rm", abs, error))
+    if (!checkPath(path, true, "rm", abs, error))
         return false;
 
-    // 兜一下: 把工作区/授信根自己删了会是灾难
     string root = codeNormalizePath(m_zone.workspace);
     if (!root.empty() && (abs == root || codeIsSubPath(root, abs)))
     {
@@ -1218,7 +992,7 @@ bool JZVirtualTerminal::removePath(const string &sessionId, const string &path,
         if (!recursive)
         {
             JZDir dir(abs);
-            if (!dir.rmdir(abs))   // 只删空目录
+            if (!dir.rmdir(abs))
             {
                 error = "目录非空, 需要 recursive: " + abs;
                 return false;
@@ -1243,14 +1017,12 @@ bool JZVirtualTerminal::removePath(const string &sessionId, const string &path,
     return true;
 }
 
-bool JZVirtualTerminal::copyPath(const string &sessionId, const string &from,
-                                 const string &to, string &error)
+bool JZVirtualTerminal::copyPath(const string &from, const string &to, string &error)
 {
     string absFrom, absTo;
-    if (!checkPath(sessionId, from, false, "cp", absFrom, error))
+    if (!checkPath(from, false, "cp", absFrom, error))
         return false;
-    // 目标可能还不存在, 所以走"写"的判定(必须在可写区域)
-    if (!checkPath(sessionId, to, true, "cp", absTo, error))
+    if (!checkPath(to, true, "cp", absTo, error))
         return false;
 
     JZFileInfo src(absFrom);
@@ -1262,7 +1034,6 @@ bool JZVirtualTerminal::copyPath(const string &sessionId, const string &from,
 
     if (src.isDir())
     {
-        // cp -r 语义: 目标不存在就建, 存在就合并
         if (!JZDir().copyRecursively(absFrom, absTo, true, &error))
             return false;
         return true;
@@ -1277,13 +1048,12 @@ bool JZVirtualTerminal::copyPath(const string &sessionId, const string &from,
     return true;
 }
 
-bool JZVirtualTerminal::movePath(const string &sessionId, const string &from,
-                                 const string &to, string &error)
+bool JZVirtualTerminal::movePath(const string &from, const string &to, string &error)
 {
     string absFrom, absTo;
-    if (!checkPath(sessionId, from, true, "mv", absFrom, error))   // 源会消失 ⇒ 也要可写
+    if (!checkPath(from, true, "mv", absFrom, error))
         return false;
-    if (!checkPath(sessionId, to, true, "mv", absTo, error))
+    if (!checkPath(to, true, "mv", absTo, error))
         return false;
 
     if (!JZFileInfo::exists(absFrom))
@@ -1301,22 +1071,13 @@ bool JZVirtualTerminal::movePath(const string &sessionId, const string &from,
     return true;
 }
 
-bool JZVirtualTerminal::changeDir(const string &sessionId, const string &path, string &error)
+bool JZVirtualTerminal::changeDir(const string &path, string &error)
 {
-    Session *s = findSession(sessionId);
-    if (!s)
-    {
-        error = "没有这个会话: " + sessionId;
-        return false;
-    }
-    touch(s);
-
-    SessionInfo info;
-    info.cwd = s->cwd;
+    touch();
 
     Verdict verdict;
     string abs;
-    if (!resolvePath(info, path.empty() ? "." : path, false, abs, verdict, error))
+    if (!resolvePath(path.empty() ? "." : path, false, abs, verdict, error))
     {
         audit("cd", verdict, path);
         return false;
@@ -1330,61 +1091,38 @@ bool JZVirtualTerminal::changeDir(const string &sessionId, const string &path, s
     }
 
     audit("cd", verdict, abs);
-    s->cwd = abs;
+    m_cwd = abs;
     return true;
 }
 
-bool JZVirtualTerminal::printDir(const string &sessionId, string &cwd) const
+bool JZVirtualTerminal::printDir(string &cwd) const
 {
-    const Session *s = findSession(sessionId);
-    if (!s)
-        return false;
-
-    cwd = s->cwd;
+    cwd = m_cwd;
     return true;
 }
 
 // ==========================================================================
 // 命令 —— 都交给 shell
-//
-// "都走 shell"是定案(2026-09-15): 管道/重定向/串联**不自己解析**, 整条命令交给
-// `/bin/sh -c`(Windows 是 `cmd /c`)。理由: 目标机是 Linux, 自己再实现一遍
-// ls/cat/mkdir/rm 只是重复代码 + 两套行为。
-//
-// 代价是审核变成**命令级**(这是这个选择的固有性质, 不是没做好):
-//   - 按顶层运算符(&& || & | ; 换行)切开, 每个片段的首 token 过 checkExec 白名单;
-//   - `>` / `>>` 的目标按 checkWrite 审(写只允许落在工作区);
-//   - 切不干净(引号不配对)或重定向目标带展开字符 -> **拒绝整条命令**。
-// ⛔ 审不到的(靠"白名单程序"那一层兜, 不是文件系统边界):
-//    命令替换 $(...)/反引号内部的命令、被调用程序自己做的事(编译器/脚本能写文件)。
 // ==========================================================================
 
-bool JZVirtualTerminal::run(const string &sessionId, const string &command,
-                            int timeoutMs, const RunCallback &cb, string &error,
+bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallback &cb, string &error,
                             string *runId,
                             const std::function<void(const string &, const string &)> &onChunk,
                             bool background)
 {
-    (void)background;   // 后台模式由调用方(工具)用"立即返回 + 空 cb"实现, 终端本身总是启动进程
+    (void)background;
 
-    Session *s = findSession(sessionId);
-    if (!s)
-    {
-        error = "没有这个会话: " + sessionId;
-        return false;
-    }
     if (command.empty())
     {
         error = "命令为空";
         return false;
     }
-    if (s->running)
+    if (m_running)
     {
-        error = "这个会话还有命令在跑, 等它结束或先 cancel";
+        error = "这个终端还有命令在跑, 等它结束或先 cancel";
         return false;
     }
 
-    // 没有 shell 就什么都跑不了 —— 明确失败, 不要静默什么都不做
     if (shellProgram().empty())
     {
         error = "没有可用的 shell: Windows 上需要 Git for Windows"
@@ -1394,11 +1132,9 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         return false;
     }
 
-    touch(s);
+    touch();
 
     // ---- 审核: 自己解析 -> 逐段审 ----
-    // 执行仍然是"整条交给 shell"(我们不自己求值管道/重定向), 但**审核必须自己解析**:
-    // 不解析就只能把整串当黑盒放行, 那等于没审核。
     vector<string> segments;
     vector<string> ops;
     if (!parseTopLevel(command, segments, ops))
@@ -1412,7 +1148,6 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         return false;
     }
 
-    // 审不下去的写法($( ) / 反引号 / heredoc / 进程替换)一律拒绝
     {
         string serr;
         if (!scanUnsupported(command, serr))
@@ -1427,7 +1162,6 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         }
     }
 
-    // 后台运行 `&`: 进程会脱离管理(拿不到输出、杀不掉), 拒绝
     for (const string &op : ops)
     {
         if (op == "&")
@@ -1443,20 +1177,11 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         }
     }
 
-    // ---- 单独一条命令的特殊处理 ----
-    // 每条命令都是一个新进程 ⇒ shell 内建(export/cd...)只作用在"它自己那个进程"里。
-    // 不能跨命令保留的, 要么我们自己接管, 要么明确报错 —— 绝不能让模型以为"已经生效了"。
-    //
-    // ⚠ 只认**整条命令就一个片段**的情况。链式(如 `cd build && cmake ..`)**不拦**:
-    //   交给 shell 在那一条命令内处理, 与真 shell 语义一致 —— `cd build && cmake ..`
-    //   里 cmake 确实在 build/ 下跑。想让链式的 cd 也持久, 就得实现 `&&`/`||` 的短路求值
-    //   (`cd a || cd b`、`cmd1 && cd x`), 那才是真的"自己实现 shell", 不值得。
+    // 单独一条命令的特殊处理
     if (segments.size() == 1 && !isBlank(segments[0]))
     {
         string head = commandHead(segments[0]);
 
-        // 1) `cd <目录>`: 我们接管, 改会话 cwd(这是唯一跨命令保留的状态)。
-        //    模型要换目录就单独发一条; 夹在 `&&` 里的一次性 cd 归 shell 管。
         if (head == "cd")
         {
             string rest = segments[0];
@@ -1468,22 +1193,19 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
                 rest = rest.substr(1, rest.size() - 2);
             }
             if (rest.empty())
-                rest = m_zone.workspace;      // 光写一个 cd = 回工作区根
+                rest = m_zone.workspace;
 
-            if (!changeDir(sessionId, rest, error))
+            if (!changeDir(rest, error))
             {
                 if (cb)
                     cb(false, string(), error);
                 return false;
             }
             if (cb)
-                cb(true, s->cwd, string());   // 把新 cwd 回给调用方, 免得它猜
+                cb(true, m_cwd, string());
             return true;
         }
 
-        // 2) 只设/清环境变量: 明确报错
-        //    `export FOO=bar` 单独一条报完就没了, 但模型会以为"设过了"。
-        //    夹在 `&&` 里的(`export FOO=bar && cmd`)不拦 —— 那条命令内有效, 是推荐写法。
         if (head.empty() || head == "export" || head == "unset")
         {
             Verdict v;
@@ -1498,17 +1220,12 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         }
     }
 
-    SessionInfo info;
-    info.id = s->id;
-    info.cwd = s->cwd;
-
     for (const string &seg : segments)
     {
         string head = commandHead(seg);
         if (head.empty())
-            continue;                       // 空片段(例如结尾多的 `;`)
+            continue;
 
-        // nohup / setsid / screen ... : 脱离进程管理, 拒绝(理由要说清, 别只说"不在白名单")
         if (const char *why = detachReason(head))
         {
             Verdict v;
@@ -1546,7 +1263,7 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
             string abs;
             Verdict pv;
             string perr;
-            if (!resolvePath(info, t, true, abs, pv, perr))
+            if (!resolvePath(t, true, abs, pv, perr))
             {
                 audit("redirect", pv, t);
                 error = "重定向目标不可写: " + t + " (" + perr + ")";
@@ -1557,20 +1274,15 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
     }
 
     // ---- 起进程 + 建运行记录 ----
-    // proc 随会话建一次, 之后复用 —— 所以信号**只连一次**, 否则第 N 次 run
-    // 会让回调被连 N 遍(每条命令应答 N 次)。
-    string id = sessionId;
-
-    // 本次运行的记录(后台/流式留下的日志, 供 terminal_query 拉取)
+    // proc 随终端建一次, 之后复用 —— 所以信号只连一次。
     string rid = "r" + std::to_string(++m_runIdGen);
     RunRecord rec;
     rec.runId = rid;
-    rec.sessionId = sessionId;
     rec.command = command;
     rec.status = "running";
     m_runs[rid] = rec;
     m_runOrder.push_back(rid);
-    while (m_runOrder.size() > (size_t)kMaxRuns)   // 控制记录条数, 防无限增长
+    while (m_runOrder.size() > (size_t)kMaxRuns)
     {
         m_runs.erase(m_runOrder.front());
         m_runOrder.erase(m_runOrder.begin());
@@ -1578,65 +1290,52 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
     if (runId)
         *runId = rid;
 
-    if (!s->proc)
+    if (!m_proc)
     {
-        s->proc = new JZProcess(this);
+        m_proc = new JZProcess(this);
 
-        // stdout / stderr 分两路读, 各自追加到合并输出与运行记录(带流标签)
-        connect(&s->proc->sigReadyReadStandardOutput, this, [this, id]()
+        connect(&m_proc->sigReadyReadStandardOutput, this, [this]()
                 {
-                    Session *sess = findSession(id);
-                    if (sess && sess->proc)
-                        appendRunOutput(sess, "stdout",
-                                        bytesToString(sess->proc->readAllStandardOutput()));
+                    if (m_proc)
+                        appendRunOutput("stdout", bytesToString(m_proc->readAllStandardOutput()));
                 });
-        connect(&s->proc->sigReadyReadStandardError, this, [this, id]()
+        connect(&m_proc->sigReadyReadStandardError, this, [this]()
                 {
-                    Session *sess = findSession(id);
-                    if (sess && sess->proc)
-                        appendRunOutput(sess, "stderr",
-                                        bytesToString(sess->proc->readAllStandardError()));
+                    if (m_proc)
+                        appendRunOutput("stderr", bytesToString(m_proc->readAllStandardError()));
                 });
-        connect(&s->proc->sigFinished, this, [this, id](int exitCode, JZProcess::ExitStatus status)
+        connect(&m_proc->sigFinished, this, [this](int exitCode, JZProcess::ExitStatus status)
                 {
-                    Session *sess = findSession(id);
-                    if (!sess)
-                        return;                     // 会话已被回收: 什么都不碰
+                    if (!m_proc)
+                        return;
 
-                    if (sess->timeoutTimer)
-                        sess->timeoutTimer->stop();
+                    if (m_timeoutTimer)
+                        m_timeoutTimer->stop();
 
-                    // 收尾: 管道里剩下的读完(最后一段输出 + stderr)
-                    if (sess->proc)
-                    {
-                        appendRunOutput(sess, "stdout",
-                                        bytesToString(sess->proc->readAllStandardOutput()));
-                        appendRunOutput(sess, "stderr",
-                                        bytesToString(sess->proc->readAllStandardError()));
-                    }
+                    appendRunOutput("stdout", bytesToString(m_proc->readAllStandardOutput()));
+                    appendRunOutput("stderr", bytesToString(m_proc->readAllStandardError()));
 
-                    // 更新运行记录(后台模式也靠它收尾, 即便没有 cb)
-                    auto it = m_runs.find(sess->runId);
+                    auto it = m_runs.find(m_runId);
                     if (it != m_runs.end())
                     {
                         RunRecord &r = it->second;
                         r.status = "done";
                         r.exitCode = exitCode;
-                        r.timedOut = sess->timedOut;
-                        if (sess->timedOut)                r.error = "命令超时, 已被强制终止";
+                        r.timedOut = m_timedOut;
+                        if (m_timedOut)                r.error = "命令超时, 已被强制终止";
                         else if (status == JZProcess::CrashExit) r.error = "命令异常退出";
                         else if (exitCode != 0)           r.error = "退出码 " + std::to_string(exitCode);
                     }
 
-                    string out = sess->output;
-                    sess->output.clear();
-                    sess->running = false;
+                    string out = m_output;
+                    m_output.clear();
+                    m_running = false;
 
-                    RunCallback finished = sess->cb;
-                    sess->cb = RunCallback();
-                    bool timedOut = sess->timedOut;
-                    sess->timedOut = false;
-                    touch(sess);
+                    RunCallback finished = m_cb;
+                    m_cb = RunCallback();
+                    bool timedOut = m_timedOut;
+                    m_timedOut = false;
+                    touch();
 
                     if (!finished)
                         return;
@@ -1652,42 +1351,39 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
                 });
     }
 
-    s->proc->setWorkingDirectory(s->cwd);
-    // 分通道捕获 stdout/stderr(各自带标签存进运行记录); 合并输出仍喂给前台 cb
-    s->proc->setProcessChannelMode(JZProcess::SeparateChannels);
+    m_proc->setWorkingDirectory(m_cwd);
+    m_proc->setProcessChannelMode(JZProcess::SeparateChannels);
 
-    s->cb = cb;
-    s->timedOut = false;
-    s->output.clear();
-    s->runId = rid;          // 让 appendRunOutput / sigFinished 反查到本次记录
-    s->onChunk = onChunk;   // 流式逐块回调(后台/非流式为空)
+    m_cb = cb;
+    m_timedOut = false;
+    m_output.clear();
+    m_runId = rid;
+    m_onChunk = onChunk;
 
     if (timeoutMs > 0)
     {
-        if (!s->timeoutTimer)
+        if (!m_timeoutTimer)
         {
-            s->timeoutTimer = new JZTimer(this);
-            connect(&s->timeoutTimer->sigTimeout, this, [this, id]()
+            m_timeoutTimer = new JZTimer(this);
+            connect(&m_timeoutTimer->sigTimeout, this, [this]()
                     {
-                        Session *sess = findSession(id);
-                        if (!sess || !sess->running || !sess->proc)
+                        if (!m_running || !m_proc)
                             return;
-                        sess->timedOut = true;
-                        sess->proc->killProcess();   // 应答统一在 sigFinished 里做
+                        m_timedOut = true;
+                        m_proc->killProcess();
                     });
         }
-        s->timeoutTimer->start(timeoutMs);
+        m_timeoutTimer->start(timeoutMs);
     }
 
-    // 整条命令交给 shell; -c 对 /bin/sh 与 Git Bash 的 bash 都适用
-    bool ok = s->proc->start(shellProgram(), vector<string>{"-c", command});
+    bool ok = m_proc->start(shellProgram(), vector<string>{"-c", command});
     if (!ok)
     {
-        if (s->timeoutTimer)
-            s->timeoutTimer->stop();
-        s->running = false;
-        s->cb = RunCallback();
-        s->onChunk = nullptr;
+        if (m_timeoutTimer)
+            m_timeoutTimer->stop();
+        m_running = false;
+        m_cb = RunCallback();
+        m_onChunk = nullptr;
         auto it = m_runs.find(rid);
         if (it != m_runs.end())
         {
@@ -1700,41 +1396,34 @@ bool JZVirtualTerminal::run(const string &sessionId, const string &command,
         return false;
     }
 
-    s->running = true;
+    m_running = true;
     return true;
 }
 
-bool JZVirtualTerminal::cancel(const string &sessionId)
+bool JZVirtualTerminal::cancel()
 {
-    Session *s = findSession(sessionId);
-    if (!s || !s->running || !s->proc)
+    if (!m_running || !m_proc)
         return false;
 
-    s->proc->killProcess();   // 应答走 sigFinished
+    m_proc->killProcess();
     return true;
 }
 
-string JZVirtualTerminal::takeOutput(const string &sessionId)
+string JZVirtualTerminal::takeOutput()
 {
-    Session *s = findSession(sessionId);
-    if (!s)
-        return string();
-
-    string out = s->output;
-    s->output.clear();
+    string out = m_output;
+    m_output.clear();
     return out;
 }
 
-void JZVirtualTerminal::appendRunOutput(Session *sess, const string &stream, const string &chunk)
+void JZVirtualTerminal::appendRunOutput(const string &stream, const string &chunk)
 {
     if (chunk.empty())
         return;
 
-    // 合并输出(前台 cb 仍拿合并文本, 行为不变)
-    sess->output += chunk;
+    m_output += chunk;
 
-    // 逐行存入运行记录(带流标签), 便于按流/关键字过滤与"最近 N 行"
-    auto it = m_runs.find(sess->runId);
+    auto it = m_runs.find(m_runId);
     if (it != m_runs.end())
     {
         RunRecord &rec = it->second;
@@ -1751,13 +1440,12 @@ void JZVirtualTerminal::appendRunOutput(Session *sess, const string &stream, con
                 break;
             pos = nl + 1;
         }
-        while (rec.log.size() > (size_t)kMaxRunLines)   // 控制每条记录的日志行数
+        while (rec.log.size() > (size_t)kMaxRunLines)
             rec.log.erase(rec.log.begin());
     }
 
-    // 流式逐块回调(由工具决定过滤/推送给客户端)—— 无论记录是否还在都触发
-    if (sess->onChunk)
-        sess->onChunk(stream, chunk);
+    if (m_onChunk)
+        m_onChunk(stream, chunk);
 }
 
 bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) const
@@ -1767,7 +1455,6 @@ bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) con
         return false;
     const RunRecord &r = it->second;
     out.runId = r.runId;
-    out.sessionId = r.sessionId;
     out.command = r.command;
     out.status = r.status;
     out.exitCode = r.exitCode;
@@ -1777,80 +1464,49 @@ bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) con
     return true;
 }
 
-vector<string> JZVirtualTerminal::runIds(const string &sessionId) const
+vector<string> JZVirtualTerminal::runIds() const
 {
-    vector<string> ids;
-    for (const string &rid : m_runOrder)
-    {
-        auto it = m_runs.find(rid);
-        if (it == m_runs.end())
-            continue;
-        if (!sessionId.empty() && it->second.sessionId != sessionId)
-            continue;
-        ids.push_back(rid);
-    }
-    return ids;
+    return m_runOrder;
 }
 
 // ==========================================================================
 // 默认程序白名单
-//
-// 定位是"副作用管控": 不让 agent 擅自装东西、下载、改系统设置。
-// **不是安全边界** —— 白名单里有解释器就等于任意代码执行, 拦不住;
-// 真正的边界只能是沙箱。
 // ==========================================================================
 
 void JZVirtualTerminal::buildDefaultPrograms()
 {
     m_programs.clear();
 
-    // --- 开发工具: 默认放行 ---
     addProgram("git", { "git.exe", "git" }, CmdCategory::Tool,
                { "-C", "--exec", "-c", "--upload-pack", "--upload-archive" });
     addProgram("cmake", { "cmake.exe", "cmake" }, CmdCategory::Tool);
     addProgram("tsc", { "tsc.exe", "tsc" }, CmdCategory::Tool);
     addProgram("node", { "node.exe", "node" }, CmdCategory::Tool);
     addProgram("python", { "python.exe", "python", "python3" }, CmdCategory::Tool,
-               { "-c" }, { "pip" });   // python -m pip 归到"装东西"那档, 挡掉
+               { "-c" }, { "pip" });
 
-    // --- 包管理: 默认拒绝(别装/升级依赖) ---
     addProgram("pip", { "pip.exe", "pip", "pip3.exe", "pip3" }, CmdCategory::PackageManager);
     addProgram("npm", { "npm.exe", "npm" }, CmdCategory::PackageManager);
     addProgram("npx", { "npx.exe", "npx" }, CmdCategory::PackageManager);
     addProgram("conda", { "conda.exe", "conda" }, CmdCategory::PackageManager);
     addProgram("yarn", { "yarn.exe", "yarn" }, CmdCategory::PackageManager);
 
-    // --- 网络下载: 默认拒绝 ---
     addProgram("curl", { "curl.exe", "curl" }, CmdCategory::Network);
     addProgram("wget", { "wget.exe", "wget" }, CmdCategory::Network);
 
-    // --- 系统管理: 永不放行 ---
     addProgram("reg", { "reg.exe", "reg" }, CmdCategory::SystemAdmin);
     addProgram("sc", { "sc.exe", "sc" }, CmdCategory::SystemAdmin);
     addProgram("net", { "net.exe", "net" }, CmdCategory::SystemAdmin);
     addProgram("setx", { "setx.exe", "setx" }, CmdCategory::SystemAdmin);
     addProgram("schtasks", { "schtasks.exe", "schtasks" }, CmdCategory::SystemAdmin);
 
-    // --- 基础 shell / coreutils: 默认放行 ---
-    // "命令都走 shell"之后, 不认这些等于什么都跑不了 —— 它们就是文件工具被删掉后的替代品。
-    // 名单**两边通用**: Linux 系统自带, Windows 由 Git Bash 提供(同名, 见 detectShell())。
-    // 注意这一档是**最宽**的: 白名单里有 rm/mv/chmod 就等于"能改工作区外的文件",
-    // 真正的边界只能是沙箱 —— 这档只做"副作用收敛", 不是安全边界。
     static const char *kShellCmds[] = {
-        // 目录 / 文件
         "ls", "cat", "mkdir", "rm", "rmdir", "cp", "mv", "touch", "ln", "chmod", "stat", "readlink",
-        // 查找 / 文本处理
         "find", "grep", "egrep", "fgrep", "sed", "awk", "sort", "uniq", "cut", "tr", "head", "tail",
         "wc", "diff", "xargs", "tee", "basename", "dirname", "realpath", "seq", "printf", "nl",
-        // 压缩 / 打包
-        "tar", "gzip", "gunzip", "zip", "unzip",
-        // shell 内建 / 环境
-        // ⚠ `cd` 一定不能漏: `cd build && cmake ..` 是模型最常用的句式之一。
         "echo", "pwd", "cd", "pushd", "popd", "dirs", "env", "printenv", "export", "unset",
         "test", "[", ":", "true", "false", "source", ".", "umask", "ulimit", "kill", "wait",
         "date", "sleep", "which", "command", "type", "du", "df", "file", "less", "more",
-        // 注意: 这里**故意不收** eval / exec / sh / bash —— 它们是"审不下去"的逃逸口,
-        // 不收只是多一层摩擦, 不代表这是安全边界(见上面那段说明)。
     };
     for (const char *cmd : kShellCmds)
         addProgram(cmd, { cmd }, CmdCategory::Shell);

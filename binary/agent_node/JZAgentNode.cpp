@@ -111,24 +111,19 @@ void JZAgentNode::init(const JZNodeConfig &config)
     // ---- 终端: 这台机器上唯一的执行面与审核面 ----
     // 文件操作不再是单独的工具了 —— ls / cat / mkdir / rm / cp / mv / grep 都是 shell
     // 命令, 由 terminal_run 直接覆盖; 只有 edit_file 留下来(sed 不校验唯一匹配)。
-    m_terminal = new JZVirtualTerminal(this);
-    m_terminal->setZoneConfig(m_host.toolZone());
-    m_terminal->setProgramPolicy(m_host.toolProgramPolicy());
-    if (!m_config.shellProgram.empty())
-        m_terminal->setShellProgram(m_config.shellProgram);
-    if (m_config.recycleSec > 0)
-        m_terminal->setRecycleMs(m_config.recycleSec * 1000);
+    // 终端按会话管理(map<session, JZVirtualTerminal>, 见 JZTerminalRegistry):
+    // 每个会话一个独立终端实例, 由 terminal_open 按需创建(见 open())。
 
     if (m_config.allowTerminal)
     {
         // terminal 的 MCP 直出门面(不经过 agent_tool 包装):
         //   terminal_run    —— 支持 stream(内联 SSE 流式日志)/ background(立即返回 run_id)
         //   terminal_query  —— 取后台/历史运行日志(支持 tail / stream / grep 过滤)
-        addTool(new JZTerminalRunMcpTool(m_terminal));
-        addTool(new JZTerminalQueryMcpTool(m_terminal));
-        addTool(new JZTerminalOpenTool(m_terminal));
-        addTool(new JZTerminalListTool(m_terminal));
-        addTool(new JZTerminalCloseTool(m_terminal));
+        addTool(new JZTerminalRunMcpTool(this));
+        addTool(new JZTerminalQueryMcpTool(this));
+        addTool(new JZTerminalOpenMcpTool(this));
+        addTool(new JZTerminalListMcpTool(this));
+        addTool(new JZTerminalCloseMcpTool(this));
         // 文件读写走 agent_tool 里现成的 read_file / write_file / modify_file
         // (sed 不校验唯一匹配, 且 modify_file 回上下文片段; 大文件读取用 read_file 分段)
         addTool(new JZReadFileTool());
@@ -142,7 +137,7 @@ void JZAgentNode::init(const JZNodeConfig &config)
 
     jzInfo().nospace() << "agent_node 就绪: name=" << m_config.nodeName
                        << " root=" << m_config.rootDir
-                       << " shell=" << m_terminal->shellProgram();
+                       << " shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram);
 }
 
 void JZAgentNode::addTool(JZAgentTool *tool)
@@ -176,8 +171,8 @@ string JZAgentNode::buildInstructions() const
             "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
     text += "  modify_file     精确字符串替换(要求唯一匹配); old_str 留空 = 整文件覆盖(新建/重写)。"
             "改代码用这个, **不要用 sed**。\n";
-    text += "  terminal_open / terminal_list / terminal_close   多会话(一般用不到, "
-            "terminal_run 会自动开一个默认会话)。\n";
+    text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
+            "**必须先 terminal_open** 拿到 session id 才能跑(节点是单租户, 不再自动开默认会话)。\n";
     text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n\n";
 
     text += "terminal_run 的两种进阶用法:\n";
@@ -198,4 +193,69 @@ string JZAgentNode::buildInstructions() const
     text += "  - 不支持: 后台 `&`、nohup/setsid/screen、`$( )`、反引号、heredoc、进程替换。\n";
     text += "  - 交互式程序(vim / top / REPL)跑不了 —— 子进程的 stdin/stdout 是管道, 不是 tty。\n";
     return text;
+}
+
+// ==========================================================================
+// JZTerminalRegistry: 会话 -> 终端
+// ==========================================================================
+
+JZVirtualTerminal *JZAgentNode::terminal(const std::string &sessionId, std::string &error)
+{
+    auto it = m_terminals.find(sessionId);
+    if (it == m_terminals.end())
+    {
+        error = "没有这个会话: " + sessionId + " (用 terminal_list 看有哪些, 或先 terminal_open)";
+        return nullptr;
+    }
+    return it->second;
+}
+
+std::string JZAgentNode::open(const std::string &cwd, std::string &error)
+{
+    // 每个会话一个独立终端实例(各自 cwd / 前后台进程 / 运行记录);
+    // JZVirtualTerminal 本身不含会话概念, 生命周期由本节点管。
+    JZVirtualTerminal *t = new JZVirtualTerminal(this);
+    t->setZoneConfig(m_host.toolZone());
+    t->setProgramPolicy(m_host.toolProgramPolicy());
+    if (!m_config.shellProgram.empty())
+        t->setShellProgram(m_config.shellProgram);
+    if (m_config.recycleSec > 0)
+        t->setRecycleMs(m_config.recycleSec * 1000);
+
+    if (!cwd.empty() && !t->changeDir(cwd, error))
+        return std::string();   // changeDir 已填 error(越界等)
+
+    std::string sid = "t" + std::to_string(++m_sessionIdGen);
+    t->setId(sid);
+    m_terminals[sid] = t;
+    return sid;
+}
+
+bool JZAgentNode::close(const std::string &sessionId)
+{
+    auto it = m_terminals.find(sessionId);
+    if (it == m_terminals.end())
+        return false;
+    JZVirtualTerminal *t = it->second;
+    m_terminals.erase(it);
+    delete t;   // 析构会 kill 在跑的进程; 同时从 this 的子对象里摘掉
+    return true;
+}
+
+std::vector<JZVirtualTerminal::SessionInfo> JZAgentNode::list()
+{
+    std::vector<JZVirtualTerminal::SessionInfo> out;
+    for (auto &kv : m_terminals)
+        out.push_back(kv.second->info());
+    return out;
+}
+
+bool JZAgentNode::runSnapshot(const std::string &runId, JZVirtualTerminal::RunRecordInfo &out) const
+{
+    for (auto &kv : m_terminals)
+    {
+        if (kv.second->runSnapshot(runId, out))
+            return true;
+    }
+    return false;
 }

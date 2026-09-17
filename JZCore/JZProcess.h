@@ -69,6 +69,10 @@ public:
     int exitCode() const;
     ExitStatus exitStatus() const;
 
+    // 真实操作系统进程号(Linux = fork 出来的 pid; Windows = CreateProcess 的 dwProcessId)。
+    // 未启动 / 已回收返回 -1。JZVirtualTerminal 用它把"运行记录"和真实进程对应起来。
+    int processId() const;
+
     std::string program() const;
     std::vector<std::string> arguments() const;
 

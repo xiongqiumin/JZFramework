@@ -22,12 +22,16 @@ class JZMcpTool;
  *     把响应回送给对端
  *   - 取消: 收到 notifications/cancelled 时, 通过 cancelRequest() 调用对应工具的 cancel()
  *
- * 协议版本: 2026-07-28(最新, 无状态, 不做兼容)。
- *   - 无 initialize 握手; 协议版本与客户端能力由每请求/每响应的 _meta
- *     (io.modelcontextprotocol/protocolVersion 等)携带。
- *   - 服务器信息通过 server/discover 暴露, 并在每个 result 的 _meta 中附带
- *     io.modelcontextprotocol/serverInfo。
- *   - 所有 result 带 resultType("complete" / "input_required")。
+ * 协议版本: 同时兼容 2025-06-18 与 2026-07-28(最新, 无状态)。
+ *   - 2026-07-28: 无 initialize 握手; 协议版本与客户端能力由每请求/每响应的 _meta
+ *     (io.modelcontextprotocol/protocolVersion 等)携带; 服务器信息通过 server/discover
+ *     暴露, 并在每个 result 的 _meta 中附带 io.modelcontextprotocol/serverInfo;
+ *     所有 result 带 resultType("complete" / "input_required")。
+ *   - 2025-06-18: 标准协议, 走 initialize 握手(协议版本在 params.protocolVersion),
+ *     之后每请求不再携带版本信息(无 _meta); result 不带 resultType / _meta 额外字段,
+ *     与 2026 版的工具结果(content + isError)保持一致。
+ *   判定方式: 请求 _meta 中 protocolVersion == "2026-07-28" 时按 2026 格式构造响应,
+ *   否则(含无 _meta 的 2025 客户端)按 2025 格式。
  *
  * JZMcpCore 不关心传输方式(HTTP / WebSocket / 纯文本)。
  * 它由 JZMcpServer(后端)持有, 后端负责把输入喂给 process()、并把
@@ -44,6 +48,13 @@ public:
     {
         int toolId;        // 注册时分配的唯一序号
         JZMcpTool* tool;   // 工具对象(生命周期由本核心接管)
+    };
+
+    // 响应格式版本: 依据请求是否携带 2026-07-28 的 _meta 协议版本来判定。
+    enum class McpFormat
+    {
+        V2025,   // 标准 2025-06-18: 不带 resultType / _meta.serverInfo, 走 initialize 握手
+        V2026    // 无状态 2026-07-28: 每结果带 resultType 与 _meta.serverInfo
     };
 
     explicit JZMcpCore(JZObject* parent = nullptr);
@@ -95,6 +106,7 @@ private:
         JZMcpTool* tool = nullptr;
         Json::Value id;          // 请求 id(用于构造响应)
         ProcessCallback cb;
+        McpFormat fmt = McpFormat::V2026;   // 该请求协商出的响应格式
     };
 
     // 单请求分发 -> 响应 Json::Value(异步方法通过 asyncHandled 标记已由信号异步回送)
@@ -107,20 +119,32 @@ private:
     static const char* kMetaServerInfo;
     static const char* kMetaClientInfo;
 
-    // 校验请求 _meta 中的协议版本: 不一致返回 UnsupportedProtocolVersionError(-32022),
-    // 否则返回 null。versionMismatch 为 true 时表示缺少 _meta 也视为不兼容(严格模式)。
+    // 支持的协议版本集合(2025-06-18 与 2026-07-28)
+    static const char* const kSupportedProtocolVersions[];
+
+    // 判定请求应使用的响应格式: _meta 中 protocolVersion == "2026-07-28" 为 V2026, 否则 V2025。
+    McpFormat detectFormat(const Json::Value& request) const;
+    // 版本是否在支持集合内
+    bool isSupportedVersion(const std::string& v) const;
+
+    // 校验请求 _meta 中的协议版本: 若 _meta 显式带了版本但不被支持, 返回
+    // UnsupportedProtocolVersionError(-32022), 否则返回 null(无 _meta 视为 2025 客户端, 放行)。
     Json::Value checkProtocolVersion(const Json::Value& request) const;
 
-    // server/discover: 替代旧版 initialize 握手, 暴露版本/能力/身份
+    // server/discover: 2026-07-28 无状态发现接口, 暴露版本/能力/身份
     Json::Value onDiscover() const;
 
+    // initialize: 2025-06-18 标准握手, 回显协商出的协议版本/能力/身份
+    Json::Value onInitialize(const Json::Value& params) const;
+
     Json::Value onToolsList();
-    void onToolsCall(const Json::Value& id, const Json::Value& params,
+    void onToolsCall(McpFormat fmt, const Json::Value& id, const Json::Value& params,
                      ProcessCallback cb, bool& asyncHandled);
     void onCancel(const Json::Value& params);
 
     // 提交工具执行: 连接完成信号并调用 run(); 信号触发后通过 cb 回送响应
-    void runToolAsync(int toolId, const Json::Value& id, const Json::Value& args, ProcessCallback cb);
+    void runToolAsync(int toolId, McpFormat fmt, const Json::Value& id,
+                      const Json::Value& args, ProcessCallback cb);
 
     // 每个工具只连接一次完成信号(JZSignal 的断开接口有缺陷, 故不重复连接/断开)
     void ensureConnected(JZMcpTool* tool);
@@ -133,7 +157,7 @@ private:
     const Tool* findTool(int toolId) const;
 
     // JSON-RPC 响应/错误构造(纯 Json::Value)
-    Json::Value makeResult(const Json::Value& id, const Json::Value& result);
+    Json::Value makeResult(const Json::Value& id, const Json::Value& result, McpFormat fmt);
     static Json::Value makeError(const Json::Value& id, int code, const std::string& message);
     static Json::Value makeErrorData(const Json::Value& id, int code,
                                      const std::string& message, const Json::Value& data);

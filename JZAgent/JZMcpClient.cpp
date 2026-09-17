@@ -24,6 +24,7 @@ static const char *kMetaProtocolVersion = "io.modelcontextprotocol/protocolVersi
 static const char *kMetaClientInfo = "io.modelcontextprotocol/clientInfo";
 
 static const int kClientError = -32000;      // 本地错误(超时 / 连接不可用)
+static const int kRequestCancelled = -32800; // MCP: 请求被客户端取消
 
 // ==================== JSON 工具 ====================
 static bool mcpParseJson(const std::string &text, Json::Value &out)
@@ -700,4 +701,29 @@ void JZMcpClient::callTool(const std::string &name, const Json::Value &args, Rep
     params["arguments"] = args.isNull() ? Json::Value(Json::objectValue) : args;
 
     sendRequest("tools/call", params, cb, m_callTimeoutMs, m_protocolVersion);
+}
+
+bool JZMcpClient::cancel(int requestId, const std::string &reason)
+{
+    if (!m_ready)
+        return false;
+
+    auto it = m_pending.find(requestId);
+    if (it == m_pending.end())
+        return false;       // 请求已回过响应(或 id 不对), 没有可取消的
+
+    Json::Value params(Json::objectValue);
+    params["requestId"] = requestId;
+    if (!reason.empty())
+        params["reason"] = reason;
+
+    Json::Value note(Json::objectValue);
+    note["jsonrpc"] = "2.0";
+    note["method"] = "notifications/cancelled";
+    note["params"] = params;
+    sendRaw(mcpWriteJson(note));
+
+    // 服务端按规范不会再回这个请求的响应, 所以本地直接以 -32800 收口, 不等它回。
+    finishPending(requestId, false, mcpMakeError(kRequestCancelled, "Request canceled"));
+    return true;
 }

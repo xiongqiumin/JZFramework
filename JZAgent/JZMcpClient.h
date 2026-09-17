@@ -141,6 +141,11 @@ jz_signals:
     // 一次 tools/call(供 JZMcpClientTool 使用)
     void callTool(const std::string &name, const Json::Value &args, ReplyCallback cb);
 
+    // 取消一个在途请求(MCP notifications/cancelled)。按规范: 服务端停止处理后
+    // **不再回送响应**, 所以这里同时以 -32800(Request canceled)本地收口, 回调 cb。
+    // @param requestId sendRequest 返回的请求 id; 请求已结束(或 id 不存在)时返回 false。
+    bool cancel(int requestId, const std::string &reason = std::string());
+
 protected:
     struct Pending
     {

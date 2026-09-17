@@ -40,7 +40,8 @@ public:
 
         // 该端点仅接受 POST。流式走"POST 响应内联 SSE"(2026-07-28 标准):
         // 工具执行中先回 notifications/message(按 SSE 分块), 最后 tools/call 结果作为末块;
-        // 本实现不提供独立的 GET/SSE 长连接。
+        // 本实现不提供独立的 GET/SSE 长连接。2025-06-18 客户端走 initialize 握手,
+        // 握手后请求同样以 POST 提交(无 _meta), 由核心按版本构造响应。
         if (method != "POST")
         {
             resp.setStatusCode(405);
@@ -64,11 +65,15 @@ public:
                 return std::string("data: ") + json + "\n\n";
             };
 
-            // 纯通知(无响应体): 仅在尚未开始 SSE 流时回 202
+            // 纯通知 / 被取消的请求(无响应体): 尚未发头就回 202; 已经开始 SSE 流的话
+            // 只能把流结束掉(关闭连接), 否则对端这个 POST 会一直挂着等"结束"。
             if (!hasResponse)
             {
                 if (*sentHeaders)
+                {
+                    client->write("", 0, true);
                     return;
+                }
                 JZHttpRespone r = resp;
                 r.setStatusCode(202);
                 r.setBody(std::string());

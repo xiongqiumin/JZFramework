@@ -13,3 +13,6 @@ endif()
 
 add_executable(test_frp test_frp.cpp net/net_test_common.cpp)
 target_link_libraries(test_frp JZFramework)
+
+add_executable(test_mcpserver test_mcpserver.cpp)
+target_link_libraries(test_mcpserver JZFramework)

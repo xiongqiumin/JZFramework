@@ -14,6 +14,10 @@
 add_library(agent_tool STATIC
     JZCodeTools.h
     JZCodeTools.cpp
+    JZShellParser.h
+    JZShellParser.cpp
+    JZVirtualTerminalConfig.h
+    JZVirtualTerminalConfig.cpp
     JZMcpToolBridge.h
     JZMcpToolBridge.cpp
     JZVirtualTerminal.h

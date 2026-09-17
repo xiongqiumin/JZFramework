@@ -82,7 +82,11 @@ string codeNormalizePath(const string &path, bool *escaped)
     if (prefix.empty())
         return str_join(out, "/");
 
-    string res = prefix + "/";
+    // POSIX 根的 "/" 本身就是分隔符, 不能再补一个(否则 "/tmp" -> "//tmp")
+    if (prefix == "/")
+        return "/" + str_join(out, "/");
+
+    string res = prefix + "/";   // Windows 盘符: "C:" -> "C:/"
     res += str_join(out, "/");
     return res;
 }
@@ -356,6 +360,7 @@ const char *denyReasonText(DenyReason reason)
     switch (reason)
     {
     case DenyReason::PathOutside:   return "路径越界";
+    case DenyReason::AccessDenied:  return "该区域不允许此操作";
     case DenyReason::NotFound:      return "目标不存在";
     case DenyReason::WriteDenied:   return "只读区域";
     case DenyReason::CommandDenied: return "命令被禁止";
@@ -385,23 +390,18 @@ DenyReason JZCodeTool::checkPathPermission(ToolOperator op, std::string rel_path
     if (!m_host)
         return DenyReason::None;   // 无宿主(测试环境)放行
 
-    auto &cfg = m_host->toolZone();
-    auto path = fullPath(rel_path);
-    if (str_startsWith(path, cfg.workspace))
+    // 跟终端用同一份策略: 读按 Read 位(区外默认只读, 所以 read_file 能读系统文件),
+    // 写按 Write 位(默认只有工作区)。授信目录的 writable 标记在 accessOfZone 里生效。
+    const JZVirtualTerminalConfig &cfg = m_host->toolTerminalConfig();
+    string path = fullPath(rel_path);
+    int need = (op == ToolOperator::Write) ? FileAccess::Write : FileAccess::Read;
+
+    string error;
+    if (zoneCheckAccess(cfg, path, need, error))
         return DenyReason::None;
 
-    for (size_t i = 0; i < cfg.trustedDirs.size(); i++)
-    {
-        if (str_startsWith(path, cfg.trustedDirs[i].path))
-        {
-            if (op == ToolOperator::Read)
-                return DenyReason::None;
-            else if (op == ToolOperator::Write && !cfg.trustedDirs[i].writable)
-                return DenyReason::WriteDenied;
-        }
-    }
-
-    return DenyReason::CommandDenied;
+    // 不在工作区也不在任何授信目录(且该区域不允许此操作) —— 是权限问题, 不是"命令被禁止"
+    return (op == ToolOperator::Write) ? DenyReason::WriteDenied : DenyReason::AccessDenied;
 }
 
 ParamSchema JZCodeTool::makeParam(const string &name, ParamType type, const string &desc)
@@ -429,7 +429,7 @@ std::string JZCodeTool::fullPath(std::string path)
 
     string root;
     if (m_host)
-        root = m_host->toolZone().workspace;
+        root = m_host->toolTerminalConfig().zone.workspace;
     if (root.empty())
         return JZFileInfo::weaklyCanonicalPath(path);   // 无宿主: 按进程当前目录理解
     return JZFileInfo::weaklyCanonicalPath(root + "/" + path);
@@ -1403,108 +1403,6 @@ void JZBuildProjectTool::onBuildDone(bool ok, const std::string &error)
         finish(call, false, error);
 }
 
-// ==================== 虚拟终端：区域模型 ====================
-// 根目录统一规范化：统一分隔符、消掉 "." / ".."、去掉尾部斜杠
-// （保留 "C:/" 这样的盘符根，size()>2 的判断就是为此）
-static string zoneNormalizeRoot(const string &path)
-{
-    string r = codeNormalizePath(path);
-    while (r.size() > 2 && str_endsWith(r, "/"))
-        str_chop(r, 1);
-    return r;
-}
-
-const char *zoneText(Zone zone)
-{
-    switch (zone)
-    {
-    case Zone::Workspace:   return "工作区";
-    case Zone::Trusted:     return "授信目录";
-    default:                return "区域外";
-    }
-}
-
-Zone zoneOfPath(const ZoneConfig &cfg, const string &absPath)
-{
-    string p = codeNormalizePath(absPath);
-
-    string root = zoneNormalizeRoot(cfg.workspace);
-    if (!root.empty() && codeIsSubPath(p, root))
-        return Zone::Workspace;
-
-    for (const auto &d : cfg.trustedDirs)
-    {
-        string t = zoneNormalizeRoot(d.path);
-        if (!t.empty() && codeIsSubPath(p, t))
-            return Zone::Trusted;
-    }
-    return Zone::Outside;
-}
-
-bool zoneResolvePath(const ZoneConfig &cfg, const string &cwd, const string &input,
-                     string &absPath, Zone &zone, string &error)
-{
-    string root = zoneNormalizeRoot(cfg.workspace);
-    if (root.empty())
-    {
-        error = "工作区未配置";
-        return false;
-    }
-
-    bool escaped = false;
-    string p = codeNormalizePath(input, &escaped);
-    // 越过起始目录的 ".." 直接拒绝，而不是静默夹住
-    if (escaped)
-    {
-        error = "路径越界，不能超出所在分区的根: " + input;
-        return false;
-    }
-
-    string base = cwd.empty() ? root : cwd;
-    string full;
-    if (p.empty() || p == ".")
-        full = base;
-    else if (codeIsAbsPath(p))
-        full = p;
-    else
-        full = base + "/" + p;
-
-    full = codeNormalizePath(full);
-    Zone z = zoneOfPath(cfg, full);
-    if (z == Zone::Outside)
-    {
-        error = "路径越界，只允许访问工作区与授信目录: " + input;
-        return false;
-    }
-
-    absPath = full;
-    zone = z;
-    return true;
-}
-
-bool zoneCheckWrite(const ZoneConfig &cfg, const string &absPath, string &error)
-{
-    Zone z = zoneOfPath(cfg, absPath);
-    if (z == Zone::Workspace)
-        return true;
-    if (z == Zone::Trusted)
-    {
-        // 只有被显式标记为可写的授信目录才允许写入
-        string p = codeNormalizePath(absPath);
-        for (const auto &d : cfg.trustedDirs)
-        {
-            if (d.writable && codeIsSubPath(p, zoneNormalizeRoot(d.path)))
-            {
-                error.clear();
-                return true;
-            }
-        }
-        error = "写操作只允许发生在工作区，或被标记为可写的授信目录: " + absPath;
-        return false;
-    }
-    error = "写操作只允许发生在工作区: " + absPath;
-    return false;
-}
 
 bool splitCommandStrict(const string &cmd, vector<string> &argv, string &error)
 {

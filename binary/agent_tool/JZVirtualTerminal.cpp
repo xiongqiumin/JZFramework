@@ -1,6 +1,13 @@
 #include "JZVirtualTerminal.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <set>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <tlhelp32.h>
+#endif
 
 #include "JZByteArray.h"
 #include "JZDateTime.h"
@@ -9,6 +16,7 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZProcess.h"
+#include "JZShellParser.h"
 #include "JZString.h"
 #include "JZTimer.h"
 
@@ -37,6 +45,62 @@ namespace
 int64_t currentMs()
 {
     return JZDateTime::currentMSecsSinceEpoch();
+}
+
+// 取父进程号(kill 归属判定要用: 得知道这个 pid 是不是本终端起的)。失败返回 -1。
+int parentPidOf(int pid)
+{
+    if (pid <= 0)
+        return -1;
+
+#ifdef _WIN32
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return -1;
+
+    PROCESSENTRY32W pe;
+    memset(&pe, 0, sizeof(pe));
+    pe.dwSize = sizeof(pe);
+    int ppid = -1;
+    if (Process32FirstW(snap, &pe))
+    {
+        do
+        {
+            if ((int)pe.th32ProcessID == pid)
+            {
+                ppid = (int)pe.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return ppid;
+#else
+    // /proc/<pid>/stat 形如 "1234 (bash) S 1200 ..." —— comm 里可能有空格和括号,
+    // 所以从最后一个 ')' 往后读, 跳过 state 就是 ppid
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    string s(buf);
+    size_t rb = s.rfind(')');
+    if (rb == string::npos)
+        return -1;
+
+    char state = 0;
+    int ppid = -1;
+    if (sscanf(s.c_str() + rb + 1, " %c %d", &state, &ppid) != 2)
+        return -1;
+    return ppid;
+#endif
 }
 
 void appendBytes(string &dst, const JZByteArray &data)
@@ -118,190 +182,6 @@ bool looksLikePath(const string &program)
     return p.size() > 1 && p[1] == ':';
 }
 
-bool isBlank(const string &s)
-{
-    for (char c : s)
-    {
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
-            return false;
-    }
-    return true;
-}
-
-string trim(const string &s)
-{
-    size_t b = 0;
-    size_t e = s.size();
-    while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\n' || s[b] == '\r'))
-        b++;
-    while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\n' || s[e - 1] == '\r'))
-        e--;
-    return s.substr(b, e - b);
-}
-
-string commandHead(const string &segment)
-{
-    size_t i = 0;
-    while (i < segment.size())
-    {
-        while (i < segment.size() && (segment[i] == ' ' || segment[i] == '\t'))
-            i++;
-        if (i >= segment.size())
-            return string();
-
-        string tok;
-        char quote = 0;
-        while (i < segment.size())
-        {
-            char c = segment[i];
-            if (quote)
-            {
-                if (c == quote)
-                    quote = 0;
-                else
-                    tok.push_back(c);
-                i++;
-                continue;
-            }
-            if (c == '\'' || c == '"')
-            {
-                quote = c;
-                i++;
-                continue;
-            }
-            if (c == ' ' || c == '\t')
-                break;
-            tok.push_back(c);
-            i++;
-        }
-
-        size_t eq = tok.find('=');
-        if (eq != string::npos && eq > 0 && tok[0] != '/' && tok[0] != '.')
-            continue;
-        return tok;
-    }
-    return string();
-}
-
-bool parseTopLevel(const string &line, vector<string> &segments, vector<string> &ops)
-{
-    segments.clear();
-    ops.clear();
-
-    string cur;
-    char quote = 0;
-
-    for (size_t i = 0; i < line.size(); ++i)
-    {
-        char c = line[i];
-
-        if (c == '\\' && i + 1 < line.size())
-        {
-            cur.push_back(c);
-            cur.push_back(line[++i]);
-            continue;
-        }
-        if (quote)
-        {
-            cur.push_back(c);
-            if (c == quote)
-                quote = 0;
-            continue;
-        }
-        if (c == '\'' || c == '"')
-        {
-            quote = c;
-            cur.push_back(c);
-            continue;
-        }
-
-        string op;
-        if (c == '&' || c == '|')
-        {
-            op = string(1, c);
-            if (i + 1 < line.size() && line[i + 1] == c)
-            {
-                op += c;
-                i++;
-            }
-        }
-        else if (c == ';' || c == '\n')
-            op = ";";
-
-        if (op.empty())
-        {
-            cur.push_back(c);
-            continue;
-        }
-
-        segments.push_back(cur);
-        ops.push_back(op);
-        cur.clear();
-    }
-
-    if (quote)
-        return false;
-
-    segments.push_back(cur);
-    return true;
-}
-
-bool scanUnsupported(const string &line, string &error)
-{
-    char quote = 0;
-
-    for (size_t i = 0; i < line.size(); ++i)
-    {
-        char c = line[i];
-
-        if (c == '\\' && quote != '\'' && i + 1 < line.size())
-        {
-            i++;
-            continue;
-        }
-
-        if (quote == '\'')
-        {
-            if (c == '\'')
-                quote = 0;
-            continue;
-        }
-
-        if (c == '"')
-        {
-            quote = quote ? 0 : '"';
-            continue;
-        }
-        if (quote == 0 && c == '\'')
-        {
-            quote = '\'';
-            continue;
-        }
-
-        if (c == '`')
-        {
-            error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
-            return false;
-        }
-        if (c == '$' && i + 1 < line.size() && line[i + 1] == '(')
-        {
-            error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
-            return false;
-        }
-        if (c == '<' && i + 1 < line.size() && (line[i + 1] == '<' || line[i + 1] == '('))
-        {
-            error = (line[i + 1] == '<') ? "不支持 heredoc(<<): 内容不在参数位置上, 审核不到"
-                                         : "不支持进程替换 <( ): 审核不到";
-            return false;
-        }
-        if (c == '>' && i + 1 < line.size() && line[i + 1] == '(')
-        {
-            error = "不支持进程替换 >( ): 审核不到";
-            return false;
-        }
-    }
-    return true;
-}
 
 const char *detachReason(const string &head)
 {
@@ -316,81 +196,21 @@ const char *detachReason(const string &head)
     return nullptr;
 }
 
-bool redirectTargets(const string &segment, vector<string> &out, string &error)
+// shell 复合语句(for / while / if ...): 我们只按 && || ; | 拆段逐段审,
+// 循环体/分支体内部的命令审不到(比如 `for f in *; do rm -rf $f; done`), 所以明确拒绝,
+// 而不是让它们落到"程序不在白名单里"这种看不懂的报错上。
+const char *compoundReason(const string &head)
 {
-    char quote = 0;
-    for (size_t i = 0; i < segment.size(); ++i)
+    static const char *kCompound[] = {
+        "for", "while", "until", "if", "elif", "case", "select", "function",
+    };
+    for (const char *cmd : kCompound)
     {
-        char c = segment[i];
-
-        if (c == '\\' && i + 1 < segment.size())
-        {
-            i++;
-            continue;
-        }
-        if (quote)
-        {
-            if (c == quote)
-                quote = 0;
-            continue;
-        }
-        if (c == '\'' || c == '"')
-        {
-            quote = c;
-            continue;
-        }
-        if (c != '>')
-            continue;
-
-        i++;
-        if (i < segment.size() && segment[i] == '>')
-            i++;
-        while (i < segment.size() && (segment[i] == ' ' || segment[i] == '\t'))
-            i++;
-
-        string tok;
-        char q2 = 0;
-        while (i < segment.size())
-        {
-            char t = segment[i];
-            if (q2)
-            {
-                if (t == q2)
-                {
-                    q2 = 0;
-                    i++;
-                    continue;
-                }
-                tok.push_back(t);
-                i++;
-                continue;
-            }
-            if (t == '\'' || t == '"')
-            {
-                q2 = t;
-                i++;
-                continue;
-            }
-            if (t == ' ' || t == '\t')
-                break;
-            tok.push_back(t);
-            i++;
-        }
-
-        if (tok.empty())
-        {
-            error = "重定向 `>` 后面没有目标路径";
-            return false;
-        }
-        if (tok.find('$') != string::npos || tok.find('~') != string::npos ||
-            tok.find('`') != string::npos || tok.find('*') != string::npos)
-        {
-            error = "重定向目标带了展开字符(`$ ~ ` *`), 审不出具体写哪条路径: " + tok;
-            return false;
-        }
-        out.push_back(tok);
+        if (head == cmd)
+            return "不支持 shell 复合语句(循环/分支): 里面的命令审不到。"
+                   "请拆成多条命令, 或改用 xargs / 管道 / && 串联(如 `ls *.log | xargs rm`)";
     }
-    return true;
+    return nullptr;
 }
 
 } // namespace
@@ -421,28 +241,18 @@ JZVirtualTerminal::~JZVirtualTerminal()
     }
 }
 
-void JZVirtualTerminal::setZoneConfig(const ZoneConfig &zone)
+void JZVirtualTerminal::setTerminalConfig(const JZVirtualTerminalConfig &config)
 {
-    m_zone = zone;
+    m_config = config;
 
     // 目录基准变了, cwd 可能失效 —— 拉回工作区根(而不是让它悬着)
     if (m_cwd.empty())
-        m_cwd = m_zone.workspace;
+        m_cwd = m_config.zone.workspace;
 }
 
-const ZoneConfig &JZVirtualTerminal::zoneConfig() const
+const JZVirtualTerminalConfig &JZVirtualTerminal::terminalConfig() const
 {
-    return m_zone;
-}
-
-void JZVirtualTerminal::setProgramPolicy(const ProgramPolicy &policy)
-{
-    m_policy = policy;
-}
-
-const ProgramPolicy &JZVirtualTerminal::programPolicy() const
-{
-    return m_policy;
+    return m_config;
 }
 
 void JZVirtualTerminal::setShellProgram(const string &program)
@@ -473,6 +283,15 @@ void JZVirtualTerminal::addProgram(const string &name, vector<string> exeNames, 
     spec.denyFlags = std::move(denyFlags);
     spec.denyModules = std::move(denyModules);
     m_programs[programKey(name)] = spec;
+
+    // 可执行文件别名也要能查到: 否则 `python3 x.py` 会因为表里只有 "python" 被当成
+    // 陌生程序拒掉 —— exeNames 本来就是"这个程序还可能叫什么"
+    for (const string &exe : spec.exeNames)
+    {
+        string k = programKey(exe);
+        if (k != programKey(name))
+            m_programs[k] = spec;
+    }
 }
 
 vector<string> JZVirtualTerminal::availablePrograms() const
@@ -480,6 +299,10 @@ vector<string> JZVirtualTerminal::availablePrograms() const
     vector<string> names;
     for (const auto &item : m_programs)
         names.push_back(item.second.name);
+
+    // 别名(python / python3 指向同一条)会重复出现, 去重后再给出去
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -490,25 +313,27 @@ vector<string> JZVirtualTerminal::availablePrograms() const
 JZVirtualTerminal::Verdict JZVirtualTerminal::checkRead(const string &path) const
 {
     Verdict v;
-    Zone zone = zoneOfPath(m_zone, codeNormalizePath(path));
-    if (zone == Zone::Outside)
+    string abs = codeNormalizePath(path);
+    string error;
+    if (!zoneCheckAccess(m_config, abs, FileAccess::Read, error))
     {
         v.decision = Decision::Deny;
-        v.reason = DenyReason::PathOutside;
-        v.detail = "路径越界, 只允许访问工作区与授信目录: " + path;
+        v.reason = DenyReason::AccessDenied;
+        v.detail = error;
         return v;
     }
 
     v.decision = Decision::Allow;
-    v.detail = string("区域: ") + zoneText(zone);
+    v.detail = string("区域: ") + zoneText(zoneOfPath(m_config.zone, abs));
     return v;
 }
 
 JZVirtualTerminal::Verdict JZVirtualTerminal::checkWrite(const string &path) const
 {
     Verdict v;
+    string abs = codeNormalizePath(path);
     string error;
-    if (!zoneCheckWrite(m_zone, path, error))
+    if (!zoneCheckAccess(m_config, abs, FileAccess::Write, error))
     {
         v.decision = Decision::Deny;
         v.reason = DenyReason::WriteDenied;
@@ -517,7 +342,7 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkWrite(const string &path) con
     }
 
     v.decision = Decision::Allow;
-    v.detail = "可写";
+    v.detail = string("可写, 区域: ") + zoneText(zoneOfPath(m_config.zone, abs));
     return v;
 }
 
@@ -527,19 +352,26 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program) c
 }
 
 JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
-                                                       const vector<string> &args) const
+                                                       const vector<string> &args,
+                                                       const string &base) const
 {
     Verdict v;
+    string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
 
     if (looksLikePath(program))
     {
-        string abs = codeNormalizePath(program);
-        Zone zone = zoneOfPath(m_zone, abs);
-        if (zone == Zone::Outside)
+        // 相对路径(./hello、build/app)必须按基准目录解析, 否则会被当成区外程序拒掉
+        string p = toSlash(program);
+        bool isAbs = (!p.empty() && p[0] == '/') || (p.size() > 1 && p[1] == ':');
+        string abs = codeNormalizePath(isAbs ? p : (cwd + "/" + p));
+        // 工作区/授信目录里的程序默认可执行(编译产物 ./app、SDK 里的工具);
+        // 区外程序不许直接按路径跑 —— 要走白名单(白名单里的 g++ 之类不受此限)
+        string execError;
+        if (!zoneCheckAccess(m_config, abs, FileAccess::Exec, execError))
         {
             v.decision = Decision::Deny;
             v.reason = DenyReason::ProgramDenied;
-            v.detail = "不允许执行该路径下的程序(不在工作区/授信目录内): " + program;
+            v.detail = execError;
             return v;
         }
 
@@ -585,14 +417,21 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
         v.detail = "禁止调用会改系统设置的命令: " + program;
         return v;
     }
-    if (spec.category == CmdCategory::PackageManager && !m_policy.allowPackageManager)
+    if (spec.category == CmdCategory::Dangerous)
+    {
+        v.decision = Decision::Deny;
+        v.reason = DenyReason::CommandDenied;
+        v.detail = "危险命令, 不放行: " + program;
+        return v;
+    }
+    if (spec.category == CmdCategory::PackageManager && !m_config.allowPackageManager)
     {
         v.decision = Decision::Deny;
         v.reason = DenyReason::EnvChange;
         v.detail = "禁止安装/升级依赖(策略未放行): " + program;
         return v;
     }
-    if (spec.category == CmdCategory::Network && !m_policy.allowNetwork)
+    if (spec.category == CmdCategory::Network && !m_config.allowNetwork)
     {
         v.decision = Decision::Deny;
         v.reason = DenyReason::EnvChange;
@@ -613,6 +452,14 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
             }
         }
     }
+    if (const char *why = dangerousArgReason(program, args, cwd))
+    {
+        v.decision = Decision::Deny;
+        v.reason = DenyReason::CommandDenied;
+        v.detail = string("危险用法, 不放行: ") + program + " —— " + why;
+        return v;
+    }
+
     for (size_t i = 0; i + 1 < args.size(); i++)
     {
         if (args[i] != "-m")
@@ -634,13 +481,102 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
     return v;
 }
 
-bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
-                                    string &absPath, Verdict &verdict, string &error) const
+const char *JZVirtualTerminal::dangerousArgReason(const string &program,
+                                                  const vector<string> &args,
+                                                  const string &base) const
 {
-    string cwd = m_cwd.empty() ? m_zone.workspace : m_cwd;
+    string prog = str_toLower(program);
+
+    // kill: 默认放行, 但只许杀自己启动的进程
+    if (prog == "kill" || prog == "killall" || prog == "pkill")
+    {
+        // killall / pkill 按名字杀, 判不出归属(会连带杀别人的), 一律不干
+        if (prog != "kill")
+            return "按名字杀进程无法判定归属, 请改用 kill <pid>(只能杀本终端启动的)";
+
+        for (const string &a : args)
+        {
+            if (a.empty() || a[0] == '-')
+                continue;   // -9 / -TERM 等信号
+            if (a[0] == '%')
+                return "不支持作业号(如 %1), 请直接给 pid";
+
+            int pid = atoi(a.c_str());
+            if (pid > 0 && !isOwnProcess(pid))
+                return "只能 kill 本终端自己启动的进程(给了别人的 pid)";
+        }
+        return nullptr;   // kill -l 之类没有 pid 的用法照常放行
+    }
+
+    if (prog == "rm")
+    {
+        // 删也是"写": 按写权限判(工作区 + 系统临时目录 + 标了可写的授信目录),
+        // 别处一律不让删。工作区里的 build/、out/、junk/ 照删 —— 那是它自己的产物。
+        bool recursive = false;
+        for (const string &a : args)
+        {
+            if (a == "-r" || a == "-rf" || a == "-fr" || a == "-R" || a == "-Rf" || a == "-fR")
+                recursive = true;
+        }
+
+        for (const string &a : args)
+        {
+            if (a.empty() || a[0] == '-')
+                continue;
+
+            bool isAbs = (a[0] == '/') || (a.size() > 1 && a[1] == ':');
+            string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
+            string abs = codeNormalizePath(isAbs ? a : (cwd + "/" + a));
+            string werr;
+            if (!zoneCheckAccess(m_config, abs, FileAccess::Write, werr))
+                return recursive ? "不能递归删除没有写权限的目录"
+                                 : "不能删除没有写权限的文件";
+        }
+        return nullptr;
+    }
+
+    if (prog == "dd")
+    {
+        for (const string &a : args)
+        {
+            if (str_startsWith(a, "of=/dev/") && a != "of=/dev/null" && a != "of=/dev/zero")
+                return "不能往块设备写";
+        }
+    }
+
+    return nullptr;
+}
+
+bool JZVirtualTerminal::isOwnProcess(int pid) const
+{
+    if (pid <= 0)
+        return false;
+    if (m_ownPids.count(pid))
+        return true;
+
+    // 子进程也算自己起的: make 拉的 gcc、sh 拉的子命令, 它们的祖先链上有我们记的根 pid。
+    // 往上最多追 32 层, 到 init / 查不到就停。
+    int cur = pid;
+    for (int i = 0; i < 32; i++)
+    {
+        int ppid = parentPidOf(cur);
+        if (ppid <= 0 || ppid == 1)
+            return false;
+        if (m_ownPids.count(ppid))
+            return true;
+        cur = ppid;
+    }
+    return false;
+}
+
+bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
+                                    string &absPath, Verdict &verdict, string &error,
+                                    const string &base) const
+{
+    string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
 
     Zone zone = Zone::Outside;
-    if (!zoneResolvePath(m_zone, cwd, path, absPath, zone, error))
+    if (!zoneResolvePath(m_config.zone, cwd, path, absPath, zone, error))
     {
         verdict.decision = Decision::Deny;
         verdict.reason = DenyReason::PathOutside;
@@ -648,17 +584,16 @@ bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
         return false;
     }
 
-    if (writeAccess)
+    // 读按 Read 位判(区外默认只读, 所以读 /etc/hosts 能过), 写按 Write 位判(默认只有工作区)
+    int need = writeAccess ? (FileAccess::Read | FileAccess::Write) : FileAccess::Read;
+    string accessError;
+    if (!zoneCheckAccess(m_config, absPath, need, accessError))
     {
-        string writeError;
-        if (!zoneCheckWrite(m_zone, absPath, writeError))
-        {
-            verdict.decision = Decision::Deny;
-            verdict.reason = DenyReason::WriteDenied;
-            verdict.detail = writeError;
-            error = writeError;
-            return false;
-        }
+        verdict.decision = Decision::Deny;
+        verdict.reason = writeAccess ? DenyReason::WriteDenied : DenyReason::AccessDenied;
+        verdict.detail = accessError;
+        error = accessError;
+        return false;
     }
 
     verdict.decision = Decision::Allow;
@@ -764,12 +699,13 @@ void JZVirtualTerminal::audit(const string &action, const Verdict &verdict, cons
 // ==========================================================================
 
 bool JZVirtualTerminal::checkPath(const string &path, bool writeAccess,
-                                  const string &action, string &absPath, string &error)
+                                  const string &action, string &absPath, string &error,
+                                  const string &base)
 {
     touch();
 
     Verdict verdict;
-    bool ok = resolvePath(path, writeAccess, absPath, verdict, error);
+    bool ok = resolvePath(path, writeAccess, absPath, verdict, error, base);
     audit(action, verdict, absPath);
     return ok;
 }
@@ -973,7 +909,7 @@ bool JZVirtualTerminal::removePath(const string &path, bool recursive, string &e
     if (!checkPath(path, true, "rm", abs, error))
         return false;
 
-    string root = codeNormalizePath(m_zone.workspace);
+    string root = codeNormalizePath(m_config.zone.workspace);
     if (!root.empty() && (abs == root || codeIsSubPath(root, abs)))
     {
         error = "不能删除根目录本身: " + abs;
@@ -1134,76 +1070,52 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
 
     touch();
 
-    // ---- 审核: 自己解析 -> 逐段审 ----
-    vector<string> segments;
-    vector<string> ops;
-    if (!parseTopLevel(command, segments, ops))
+    // ---- 审核: 解析成语法树 -> 逐条审 ----
+    // 以前是字符串扫描 + 各种特判(& 是不是后台、2>&1 是不是重定向), 现在统一由
+    // JZShell 出结构, 这里只负责按结构过策略。
+    JZShell::Line parsed;
+    string perr;
+    if (!JZShell::parse(command, parsed, perr))
     {
         Verdict v;
         v.decision = Decision::Deny;
         v.reason = DenyReason::CommandDenied;
-        v.detail = "命令里的引号不配对, 无法审核";
+        v.detail = perr;
+        audit("exec", v, command);
+        error = perr;
+        return false;
+    }
+    if (parsed.background)
+    {
+        Verdict v;
+        v.decision = Decision::Deny;
+        v.reason = DenyReason::CommandDenied;
+        v.detail = "不支持后台运行(`&`): 进程会脱离管理(拿不到输出、杀不掉)。"
+                   "长任务请直接前台跑并设 timeout";
         audit("exec", v, command);
         error = v.detail;
         return false;
     }
 
-    {
-        string serr;
-        if (!scanUnsupported(command, serr))
-        {
-            Verdict v;
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::CommandDenied;
-            v.detail = serr;
-            audit("exec", v, command);
-            error = serr;
-            return false;
-        }
-    }
-
-    for (const string &op : ops)
-    {
-        if (op == "&")
-        {
-            Verdict v;
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::CommandDenied;
-            v.detail = "不支持后台运行(`&`): 进程会脱离管理(拿不到输出、杀不掉)。"
-                       "长任务请直接前台跑并设 timeout";
-            audit("exec", v, command);
-            error = v.detail;
-            return false;
-        }
-    }
-
     // 单独一条命令的特殊处理
-    if (segments.size() == 1 && !isBlank(segments[0]))
+    if (parsed.pipelines.size() == 1 && parsed.pipelines[0].commands.size() == 1)
     {
-        string head = commandHead(segments[0]);
+        const JZShell::Command &cmd = parsed.pipelines[0].commands[0];
+        string head = cmd.argv.empty() ? string() : cmd.argv[0];
 
         if (head == "cd")
         {
-            string rest = segments[0];
-            size_t p = rest.find("cd");
-            rest = trim(rest.substr(p + 2));
-            if (rest.size() >= 2 && (rest.front() == '\'' || rest.front() == '"') &&
-                rest.back() == rest.front())
-            {
-                rest = rest.substr(1, rest.size() - 2);
-            }
-            if (rest.empty())
-                rest = m_zone.workspace;
-
-            if (!changeDir(rest, error))
-            {
-                if (cb)
-                    cb(false, string(), error);
-                return false;
-            }
-            if (cb)
-                cb(true, m_cwd, string());
-            return true;
+            // 每条命令都是一个新的 sh: cd 只在"这一条命令"里有效, 单独发一条什么也留不下。
+            // 与其让它悄悄失效(模型还以为自己在那个目录), 不如直接点破正确写法。
+            Verdict v;
+            v.decision = Decision::Deny;
+            v.reason = DenyReason::CommandDenied;
+            v.detail = "单独的 cd 没有意义: 每条命令都是一个新的 shell, cd 影响不到后面的命令。"
+                       "要在某个目录里执行就写 `cd <目录> && <命令>`(只对这一条生效); "
+                       "要一直待在某处, 用工具自带的 -C 参数(如 make -C build)";
+            audit("cd", v, head);
+            error = v.detail;
+            return false;
         }
 
         if (head.empty() || head == "export" || head == "unset")
@@ -1214,68 +1126,134 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
             v.detail = "环境变量不跨命令保留(每条命令都是一个新进程): 这条命令只是在设/清变量, "
                        "下一条就没了。请写进需要它的那条命令里: `FOO=bar <命令>` "
                        "或 `export FOO=bar && <命令>`";
-            audit("env", v, segments[0]);
+            audit("env", v, head);
             error = v.detail;
             return false;
         }
     }
 
-    for (const string &seg : segments)
+    // 审核基准: 从工作区根出发。遇到 `cd X && ...` 要跟着走进 X —— 因为 sh 是真的会
+    // chdir 过去的, 后面那些相对路径是相对 X 的; 静态检查不跟着走, 就会出现"审的是
+    // 工作区里的 f、实际写的是 X/f", 写保护直接被绕过去。
+    string base = m_cwd.empty() ? m_config.zone.workspace : m_cwd;
+
+    for (size_t pi = 0; pi < parsed.pipelines.size(); pi++)
     {
-        string head = commandHead(seg);
-        if (head.empty())
-            continue;
+        const JZShell::Pipeline &pl = parsed.pipelines[pi];
 
-        if (const char *why = detachReason(head))
+        // 单条(非管道)的 cd: 只改这一条命令的基准, 不改终端状态。
+        // 管道里的 cd 在子 shell 里跑, 影响不到后面的段, 所以不算数。
+        if (pl.commands.size() == 1 && !pl.commands[0].argv.empty()
+            && pl.commands[0].argv[0] == "cd")
         {
-            Verdict v;
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::CommandDenied;
-            v.detail = string("命令被拒绝: ") + head + " —— " + why;
-            audit("exec", v, head);
-            error = v.detail;
-            return false;
-        }
+            const JZShell::Command &cd = pl.commands[0];
+            string target = (cd.argv.size() >= 2) ? cd.argv[1] : string();
+            if (target.empty())
+                target = base;
 
-        Verdict v = checkExec(head);
-        audit("exec", v, head);
-        if (!v.allowed())
-        {
-            error = "命令被拒绝: " + head +
-                    (v.detail.empty() ? string() : " (" + v.detail + ")");
-            return false;
-        }
-
-        vector<string> targets;
-        string terr;
-        if (!redirectTargets(seg, targets, terr))
-        {
-            Verdict bad;
-            bad.decision = Decision::Deny;
-            bad.reason = DenyReason::CommandDenied;
-            bad.detail = terr;
-            audit("redirect", bad, seg);
-            error = terr;
-            return false;
-        }
-        for (const string &t : targets)
-        {
-            string abs;
-            Verdict pv;
-            string perr;
-            if (!resolvePath(t, true, abs, pv, perr))
+            if (target.find_first_of("$~*?") != string::npos)
             {
-                audit("redirect", pv, t);
-                error = "重定向目标不可写: " + t + " (" + perr + ")";
+                Verdict v;
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = "cd 的目标里有变量/通配符, 静态审不出是哪个目录: " + target +
+                           "。请写成确定的目录";
+                audit("cd", v, target);
+                error = v.detail;
                 return false;
             }
-            audit("redirect", pv, abs);
+
+            string abs;
+            Verdict pv;
+            string cderr;
+            if (!resolvePath(target, false, abs, pv, cderr, base))
+            {
+                audit("cd", pv, target);
+                error = "cd 的目标不可读: " + target + " (" + cderr + ")";
+                return false;
+            }
+            audit("cd", pv, abs);
+            base = abs;
+            continue;
+        }
+
+        for (const JZShell::Command &cmd : pl.commands)
+        {
+            string head = cmd.argv.empty() ? string() : cmd.argv[0];
+            if (head.empty())
+                continue;   // 只有 VAR=val 前缀的一段(如 `FOO=bar && cmd`), 没有程序可调
+
+            if (cmd.programExpanded)
+            {
+                Verdict v;
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = "程序名带了变量/通配符展开, 审不出到底要跑哪个程序: " + head +
+                           "。请写成确定的程序名";
+                audit("exec", v, head);
+                error = v.detail;
+                return false;
+            }
+
+            if (const char *why = detachReason(head))
+            {
+                Verdict v;
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = string("命令被拒绝: ") + head + " —— " + why;
+                audit("exec", v, head);
+                error = v.detail;
+                return false;
+            }
+
+            if (const char *why = compoundReason(head))
+            {
+                Verdict v;
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = string("命令被拒绝: ") + head + " —— " + why;
+                audit("exec", v, head);
+                error = v.detail;
+                return false;
+            }
+
+            // 带上参数审: 光看程序名不够 —— `python -c ...`、`git -C ...`、`rm -rf /`
+            // 这些危险都藏在参数里
+            Verdict v = checkExec(head, cmd.argv, base);
+            audit("exec", v, head);
+            if (!v.allowed())
+            {
+                error = "命令被拒绝: " + head +
+                        (v.detail.empty() ? string() : " (" + v.detail + ")");
+                return false;
+            }
+
+            // 重定向: fd 复制(2>&1 / >&-)不碰文件, 其余按读/写审路径
+            for (const JZShell::Redirect &r : cmd.redirects)
+            {
+                if (r.fdDup)
+                    continue;
+
+                string abs;
+                Verdict pv;
+                string rerr;
+                if (!resolvePath(r.target, !r.read, abs, pv, rerr, base))
+                {
+                    audit("redirect", pv, r.target);
+                    error = (r.read ? string("重定向来源不可读: ") : string("重定向目标不可写: ")) +
+                            r.target + " (" + rerr + ")";
+                    return false;
+                }
+                audit("redirect", pv, abs);
+            }
         }
     }
 
     // ---- 起进程 + 建运行记录 ----
     // proc 随终端建一次, 之后复用 —— 所以信号只连一次。
-    string rid = "r" + std::to_string(++m_runIdGen);
+    // run_id 必须全局唯一: 带上终端(会话)id。否则每个会话都从 r1 开始编号,
+    // 而 terminal_query 是按 run_id 全局查的(跨会话遍历注册表), 会命中别的会话的同名记录。
+    string rid = (m_id.empty() ? string("r") : (m_id + "-r")) + std::to_string(++m_runIdGen);
     RunRecord rec;
     rec.runId = rid;
     rec.command = command;
@@ -1396,6 +1374,11 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
         return false;
     }
 
+    // 记下根 pid: kill 的归属判定靠它(只许杀自己启动的进程)
+    int pid = m_proc->processId();
+    if (pid > 0)
+        m_ownPids.insert(pid);
+
     m_running = true;
     return true;
 }
@@ -1479,7 +1462,29 @@ void JZVirtualTerminal::buildDefaultPrograms()
 
     addProgram("git", { "git.exe", "git" }, CmdCategory::Tool,
                { "-C", "--exec", "-c", "--upload-pack", "--upload-archive" });
+
+    // C/C++ 构建链: 没有编译器就没法在这上面编译工程
+    addProgram("gcc", { "gcc.exe", "gcc" }, CmdCategory::Tool);
+    addProgram("g++", { "g++.exe", "g++" }, CmdCategory::Tool);
+    addProgram("cc", { "cc" }, CmdCategory::Tool);
+    addProgram("c++", { "c++" }, CmdCategory::Tool);
+    addProgram("clang", { "clang.exe", "clang" }, CmdCategory::Tool);
+    addProgram("clang++", { "clang++.exe", "clang++" }, CmdCategory::Tool);
+    addProgram("make", { "make.exe", "make" }, CmdCategory::Tool);
+    addProgram("ninja", { "ninja.exe", "ninja" }, CmdCategory::Tool);
+    addProgram("ar", { "ar.exe", "ar" }, CmdCategory::Tool);
     addProgram("cmake", { "cmake.exe", "cmake" }, CmdCategory::Tool);
+    addProgram("ctest", { "ctest.exe", "ctest" }, CmdCategory::Tool);
+    addProgram("pkg-config", { "pkg-config.exe", "pkg-config" }, CmdCategory::Tool);
+    addProgram("ccache", { "ccache.exe", "ccache" }, CmdCategory::Tool);
+    // 查链接/符号问题用得到(nm/objdump/readelf/addr2line)
+    addProgram("ld", { "ld" }, CmdCategory::Tool);
+    addProgram("nm", { "nm" }, CmdCategory::Tool);
+    addProgram("objdump", { "objdump" }, CmdCategory::Tool);
+    addProgram("readelf", { "readelf" }, CmdCategory::Tool);
+    addProgram("addr2line", { "addr2line" }, CmdCategory::Tool);
+    addProgram("strip", { "strip" }, CmdCategory::Tool);
+    addProgram("size", { "size" }, CmdCategory::Tool);
     addProgram("tsc", { "tsc.exe", "tsc" }, CmdCategory::Tool);
     addProgram("node", { "node.exe", "node" }, CmdCategory::Tool);
     addProgram("python", { "python.exe", "python", "python3" }, CmdCategory::Tool,
@@ -1500,6 +1505,28 @@ void JZVirtualTerminal::buildDefaultPrograms()
     addProgram("setx", { "setx.exe", "setx" }, CmdCategory::SystemAdmin);
     addProgram("schtasks", { "schtasks.exe", "schtasks" }, CmdCategory::SystemAdmin);
 
+    // 危险/破坏性命令: 一律拒绝, 不提供开关。
+    // 它们本来也不在白名单里(会报"不在白名单"), 单列一档是为了给一句人看得懂的话 ——
+    // 模型看到"危险命令, 不放行"才知道换路子, 而不是反复重试。
+    static const char *kDangerous[] = {
+        // 动磁盘/文件系统
+        "dd", "mkfs", "mke2fs", "mkfs.ext4", "fdisk", "sfdisk", "parted", "fsck", "mkswap",
+        "swapon", "swapoff", "mount", "umount",
+        // 开关机/系统服务
+        "shutdown", "reboot", "halt", "poweroff", "init", "telinit", "systemctl", "service",
+        // 提权与账号
+        "sudo", "su", "passwd", "chpasswd", "useradd", "userdel", "usermod", "groupadd",
+        "groupdel", "chroot",
+        // 权限归属
+        "chown", "chgrp", "setfacl", "chattr",
+        // 内核/防火墙/计划任务
+        "modprobe", "insmod", "rmmod", "iptables", "ufw", "sysctl", "crontab",
+        // 杀别人的进程(kill 自己起的进程用 kill)
+        "killall", "pkill",
+    };
+    for (const char *cmd : kDangerous)
+        addProgram(cmd, { cmd }, CmdCategory::Dangerous);
+
     static const char *kShellCmds[] = {
         "ls", "cat", "mkdir", "rm", "rmdir", "cp", "mv", "touch", "ln", "chmod", "stat", "readlink",
         "find", "grep", "egrep", "fgrep", "sed", "awk", "sort", "uniq", "cut", "tr", "head", "tail",
@@ -1507,6 +1534,12 @@ void JZVirtualTerminal::buildDefaultPrograms()
         "echo", "pwd", "cd", "pushd", "popd", "dirs", "env", "printenv", "export", "unset",
         "test", "[", ":", "true", "false", "source", ".", "umask", "ulimit", "kill", "wait",
         "date", "sleep", "which", "command", "type", "du", "df", "file", "less", "more",
+        // 打包/压缩(拉依赖、解源码包常用)
+        "tar", "zip", "unzip", "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd",
+        // 其它常用
+        "patch", "mktemp", "install", "cmp", "split", "paste", "join", "od", "xxd", "truncate",
+        "md5sum", "sha1sum", "sha256sum", "cksum", "timeout", "time", "nproc", "uname",
+        "hostname", "id", "whoami", "ps", "free",
     };
     for (const char *cmd : kShellCmds)
         addProgram(cmd, { cmd }, CmdCategory::Shell);

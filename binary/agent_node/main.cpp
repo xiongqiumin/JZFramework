@@ -21,6 +21,7 @@
 #include "JZApplication.h"
 #include "JZCodeTools.h"
 #include "JZDebug.h"
+#include "JZFileInfo.h"
 #include "JZMcpServer.h"
 #include "JZString.h"
 #include "JZPlatform.h"
@@ -76,6 +77,12 @@ static bool parseTrusted(const string &text, TrustedDir &out)
 
 static bool writeDefaultConfig(const string &path, string &error)
 {
+    if(JZFileInfo::exists(path))
+    {
+        error = "配置文件已存在: " + path;
+        return false;
+    }
+
     ofstream ofs(path, ios::binary);
     if (!ofs)
     {
@@ -179,7 +186,7 @@ int main(int argc, char *argv[])
         "配置文件路径(默认 exe 同目录 config.json)"), &cmdConfig);
 
     bool cmdInit = false;
-    parser.addOption(JZCommandLineOption("--init", "-i",
+    parser.addOption(JZCommandLineOption("--init", "",
         "生成默认 config.json 后退出(不启动服务)"), &cmdInit);
 
     if (!parser.parse(argc, argv))

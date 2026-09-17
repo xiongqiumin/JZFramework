@@ -121,11 +121,9 @@ public:
     explicit JZCodeAgentToolHost(JZCodeAgent *agent);
 
     // 由 JZCodeAgent::applyZoneConfig() 调用
-    void setZone(const ZoneConfig &zone);
-    void setProgramPolicy(const ProgramPolicy &policy);
+    void setTerminalConfig(const JZVirtualTerminalConfig &config);
 
-    const ZoneConfig &toolZone() const override { return m_zone; }
-    const ProgramPolicy &toolProgramPolicy() const override { return m_policy; }
+    const JZVirtualTerminalConfig &toolTerminalConfig() const override { return m_config; }
 
     bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) override;
     bool toolIsBuildRunning() const override;
@@ -134,8 +132,7 @@ public:
 
 private:
     JZCodeAgent *m_agent = nullptr;
-    ZoneConfig m_zone;
-    ProgramPolicy m_policy;
+    JZVirtualTerminalConfig m_config;
 };
 
 // 代码助手：把 JZAgent 与一组代码工具(编译/运行/改代码/找代码)组装起来，

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "JZCodeTools.h"     // ICodeToolHost / ZoneConfig / ProgramPolicy / TrustedDir
+#include "JZCodeTools.h"     // ICodeToolHost / JZVirtualTerminalConfig / TrustedDir
 #include "JZObject.h"
 #include "JZTerminalRegistry.h"   // JZTerminalRegistry: 会话 -> 终端 的注册表(本节点实现)
 
@@ -70,14 +70,12 @@ public:
     // 从 config 重建区域视图(init 之后调一次; 配置可热改时再调)
     void refresh();
 
-    const ZoneConfig &toolZone() const override { return m_zone; }
-    const ProgramPolicy &toolProgramPolicy() const override { return m_policy; }
+    const JZVirtualTerminalConfig &toolTerminalConfig() const override { return m_terminalConfig; }
     bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) override;
 
 private:
     const JZNodeConfig *m_config = nullptr;
-    ZoneConfig m_zone;
-    ProgramPolicy m_policy;
+    JZVirtualTerminalConfig m_terminalConfig;
 };
 
 // ---------------------------------------------------------------------------

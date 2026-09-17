@@ -1328,14 +1328,9 @@ JZCodeAgentToolHost::JZCodeAgentToolHost(JZCodeAgent *agent)
 {
 }
 
-void JZCodeAgentToolHost::setZone(const ZoneConfig &zone)
+void JZCodeAgentToolHost::setTerminalConfig(const JZVirtualTerminalConfig &config)
 {
-    m_zone = zone;
-}
-
-void JZCodeAgentToolHost::setProgramPolicy(const ProgramPolicy &policy)
-{
-    m_policy = policy;
+    m_config = config;
 }
 
 bool JZCodeAgentToolHost::toolReadFile(const std::string &absPath, std::string &text, std::string &error)
@@ -1378,22 +1373,20 @@ JZSignal<bool, const std::string &> *JZCodeAgentToolHost::toolBuildFinished()
 
 void JZCodeAgent::applyZoneConfig()
 {
-    ZoneConfig zone;
-    zone.workspace = m_codeConfig.workspace;
-    zone.trustedDirs = m_codeConfig.trustedDirs;
+    // 默认策略(工作区读+写+执行 / 授信目录读+执行 / 区外只读) + 本工程的目录边界
+    JZVirtualTerminalConfig config;
+    config.zone.workspace = m_codeConfig.workspace;
+    config.zone.trustedDirs = m_codeConfig.trustedDirs;
 
     // 注意: 这一份是**给工具看的**区域视图, 必须与 CodeAgentConfig 保持同步 ——
     // JZCodeTool::checkPathPermission 拿的就是它, 漏刷新等于权限误判。
-    m_toolHost.setZone(zone);
+    m_toolHost.setTerminalConfig(config);
 
     // 终端是真正的执行面, 区域与策略同样要同步过去：
     // 重定向目标和 edit_file 的越界判定都靠它。
-    // setZoneConfig() 会把已有会话的 cwd 拉回工作区根 —— 换工作区时正好需要。
+    // setTerminalConfig() 会把已有会话的 cwd 拉回工作区根 —— 换工作区时正好需要。
     if (m_terminal)
-    {
-        m_terminal->setZoneConfig(zone);
-        m_terminal->setProgramPolicy(m_toolHost.toolProgramPolicy());
-    }
+        m_terminal->setTerminalConfig(m_toolHost.toolTerminalConfig());
 }
 
 void JZCodeAgent::buildAgent()

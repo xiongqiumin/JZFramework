@@ -528,7 +528,7 @@ void JZTsEditTool::doSummary(const ToolCall &params, const Json::Value &p)
 {
     (void)p; // 简化后无参数：固定为工程级总览（file/class 级由 ts_outline/ts_members 覆盖）
 
-    string ws = m_host ? m_host->toolZone().workspace : string();
+    string ws = m_host ? m_host->toolTerminalConfig().zone.workspace : string();
     if (ws.empty())
     {
         finishEdit(params, false, "ts_summary 需要 agent 工作区；单文件结构请用 ts_outline(file)");

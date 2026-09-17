@@ -358,7 +358,7 @@ struct DefaultCreateCallback<Class, true>
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && std::is_default_constructible<Class>::value, int> = 0>
 std::function<jsbind::JSPointerBase*(JZJSEngine *engine, int, JSValueConst*)> makeDefaultCreate()
 {
-    constexpr bool isJzObj = std::is_base_of_v<JZObject, Class>;
+    constexpr bool isJzObj = std::is_base_of<JZObject, Class>::value;
     return &DefaultCreateCallback<Class, isJzObj>::invoke;
 }
 

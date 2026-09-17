@@ -28,11 +28,11 @@ JZAgentNodeHost::JZAgentNodeHost(const JZNodeConfig *config)
 
 void JZAgentNodeHost::refresh()
 {
-    m_zone.workspace = m_config ? m_config->rootDir : string();
-    m_zone.trustedDirs = m_config ? m_config->trustedDirs : vector<TrustedDir>();
-    // 节点侧的命令策略: 没有"安装/下载"这类对话式放行, 一律按默认拒绝
-    // (真要装东西, 让模型显式用 terminal_run 跑一条, 由人看着)。
-    m_policy = ProgramPolicy();
+    // 默认策略: 工作区读+写+执行, 授信目录读+执行, 系统临时目录读+写, 区外只读;
+    // 包管理/网络一律拒绝(真要装东西, 让模型显式用 terminal_run 跑一条, 由人看着)。
+    m_terminalConfig = JZVirtualTerminalConfig();
+    m_terminalConfig.zone.workspace = m_config ? m_config->rootDir : string();
+    m_terminalConfig.zone.trustedDirs = m_config ? m_config->trustedDirs : vector<TrustedDir>();
 }
 
 bool JZAgentNodeHost::toolReadFile(const std::string &absPath, std::string &text, std::string &error)
@@ -163,14 +163,15 @@ string JZAgentNode::buildInstructions() const
 {
     string text;
     text += "你是运行在主机 \"" + m_config.nodeName + "\" 上的操作节点。\n";
-    text += "工作区: " + m_config.rootDir + "  —— 相对路径以它为基准; "
-            "越出工作区与授信目录的路径会被拒绝。\n\n";
+    text += "工作区: " + m_config.rootDir + "  —— 相对路径以它为基准。\n";
+    text += "写权限: 工作区(读+写+执行)、系统临时目录(读+写, 如 /tmp)、授信目录(默认只读, "
+            "单独开了可写的才能写); 别处一律只读 —— 往那里写会被拒绝。\n\n";
 
     text += "可用工具:\n";
     text += "  terminal_run    执行一条命令。命令**整条交给 shell**, "
             "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
-    text += "  modify_file     精确字符串替换(要求唯一匹配); old_str 留空 = 整文件覆盖(新建/重写)。"
-            "改代码用这个, **不要用 sed**。\n";
+    text += "  read_file / write_file   按行读(带行号, 可分段) / 整文件写入。\n";
+    text += "  modify_file     精确字符串替换(要求唯一匹配); 改代码用这个, **不要用 sed**。\n";
     text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
             "**必须先 terminal_open** 拿到 session id 才能跑(节点是单租户, 不再自动开默认会话)。\n";
     text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n\n";
@@ -186,11 +187,15 @@ string JZAgentNode::buildInstructions() const
     // ⚠ 这段是这个节点最重要的一段说明: 模型的 shell 直觉在这里只有一部分成立,
     // 不写清楚它一定会踩(cd 不持久 / export 不持久 / & 不支持)。
     text += "⚠ 这里**没有常驻 shell**, 每条命令都是一个新进程:\n";
-    text += "  - 只有**单独一条** `cd <目录>` 会改变后续命令的目录。"
-            "`cd build && cmake ..` 里的 cd 只在那一句内有效。\n";
-    text += "    terminal_run 的结果末尾会回一行 `[cwd]`, 那是你当前真正的目录 —— 不确定就看它。\n";
+    text += "  - `cd` 只对**当前这一条命令**有效: 要进目录执行就写 `cd <目录> && <命令>`。"
+            "单独一条 `cd` 会被拒绝(它改变不了后面的命令)。\n";
+    text += "    `cd X &&` 后面的相对路径按 X 解析, 权限也按 X 判 —— "
+            "cd 到工作区外(临时目录除外)依然写不了。\n";
+    text += "    相对路径一律以工作区根为基准: terminal_run 结果末尾那行 `[cwd]` 就是它,"
+            "不确定就看它(单独的 `pwd` 也返回它)。\n";
     text += "  - 环境变量不跨命令保留, 要用就内联写: `FOO=bar <命令>`。\n";
-    text += "  - 不支持: 后台 `&`、nohup/setsid/screen、`$( )`、反引号、heredoc、进程替换。\n";
+    text += "  - 不支持: 后台 `&`、nohup/setsid/screen、`$( )`、反引号、heredoc、进程替换, "
+            "以及 for/while/if 等复合语句(内部命令审不到)。\n";
     text += "  - 交互式程序(vim / top / REPL)跑不了 —— 子进程的 stdin/stdout 是管道, 不是 tty。\n";
     return text;
 }
@@ -215,8 +220,7 @@ std::string JZAgentNode::open(const std::string &cwd, std::string &error)
     // 每个会话一个独立终端实例(各自 cwd / 前后台进程 / 运行记录);
     // JZVirtualTerminal 本身不含会话概念, 生命周期由本节点管。
     JZVirtualTerminal *t = new JZVirtualTerminal(this);
-    t->setZoneConfig(m_host.toolZone());
-    t->setProgramPolicy(m_host.toolProgramPolicy());
+    t->setTerminalConfig(m_host.toolTerminalConfig());
     if (!m_config.shellProgram.empty())
         t->setShellProgram(m_config.shellProgram);
     if (m_config.recycleSec > 0)

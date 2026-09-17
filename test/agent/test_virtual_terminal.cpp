@@ -44,9 +44,9 @@ public:
         JZDir(m_ws).removeRecursively();
         JZDir().mkpath(m_ws);
 
-        ZoneConfig zone;
-        zone.workspace = m_ws;
-        m_term.setZoneConfig(zone);   // setZoneConfig 会把 cwd 拉到工作区根
+        JZVirtualTerminalConfig cfg;
+        cfg.zone.workspace = m_ws;
+        m_term.setTerminalConfig(cfg);   // setTerminalConfig 会把 cwd 拉到工作区根
         m_term.setAuditCallback([](const string &action, const JZVirtualTerminal::Verdict &v, const string &)
         {
             g_auditCount++;

@@ -9,6 +9,7 @@
 #include "JZProcess.h"
 #include "JZTimer.h"
 #include "JZCommandLineParser.h"
+#include "JZVirtualTerminalConfig.h"   // Zone / TrustedDir / ZoneConfig / JZVirtualTerminalConfig
 
 // ------------------------------------------------------------------
 // 工作区路径工具（网页端文件浏览复用同一套越界校验，避免两处规则不一致）
@@ -52,6 +53,7 @@ enum class DenyReason
 {
     None = 0,           // 非拒绝类失败
     PathOutside,        // 路径越界，不在工作区/授信区内
+    AccessDenied,       // 区域策略不允许该操作(如区外只读 → 写被拒)
     NotFound,           // 文件/目录/程序不存在
     WriteDenied,        // 不允许写   
     CommandDenied,      // 命令被策略禁止
@@ -64,7 +66,7 @@ enum class DenyReason
 const char *denyReasonText(DenyReason reason);
 
 // 工具宿主：工具唯一需要外部提供的东西。定义见本文件末尾（它要用到
-// ZoneConfig / ProgramPolicy 这两个在后面才定义的类型）。
+// JZVirtualTerminalConfig 这个类型）。
 class ICodeToolHost;
 
 // ------------------------------------------------------------------
@@ -274,44 +276,6 @@ private:
 };
 
 // ------------------------------------------------------------------
-// 虚拟终端的区域模型
-//   Workspace  工作区，可读写
-//   Trusted    授信目录（编译器 / SDK 等），默认只读
-//   Outside    其余一切，一律拒绝
-// ------------------------------------------------------------------
-enum class Zone
-{
-    Outside = 0,
-    Workspace,
-    Trusted
-};
-
-// 授信目录：每个目录可单独配置是否允许写入（默认只读）
-struct TrustedDir
-{
-    std::string path;
-    bool writable = false;                  // 是否允许写入（默认只读）
-};
-
-struct ZoneConfig
-{
-    std::string workspace;                  // 工作区根（可读写）
-    std::vector<TrustedDir> trustedDirs;    // 授信目录（默认只读，可单独标记可写）
-};
-
-const char *zoneText(Zone zone);
-
-// 判定一个绝对路径属于哪个区域
-Zone zoneOfPath(const ZoneConfig &cfg, const std::string &absPath);
-
-// 解析路径并判定区域：相对路径基于 cwd（cwd 自身也在工作区/授信区内），越界返回 false
-bool zoneResolvePath(const ZoneConfig &cfg, const std::string &cwd, const std::string &input,
-                     std::string &absPath, Zone &zone, std::string &error);
-
-// 写操作只允许落在工作区（与当前目录无关）
-bool zoneCheckWrite(const ZoneConfig &cfg, const std::string &absPath, std::string &error);
-
-// ------------------------------------------------------------------
 // 命令规格表
 //   shellTemplate 为空   -> 由 C++ 自己实现
 //   shellTemplate 非空   -> 路径审查通过后按模板转发 cmd /c，如 "copy /Y {0} {1}"；
@@ -359,7 +323,9 @@ enum class CmdCategory
                         //   Linux 系统自带；Windows 由 Git Bash 提供（同名）。
     PackageManager,     // pip/npm/conda 等：默认拒绝，设置里可开
     Network,            // curl/wget 等：默认拒绝，设置里可开
-    SystemAdmin         // reg/sc/net/setx 等：永不放行
+    SystemAdmin,        // reg/sc/net/setx 等：永不放行
+    Dangerous           // dd/mkfs/sudo/shutdown/chown 等破坏性或系统级命令：永不放行
+                        //   （动磁盘、改系统、提权、杀别人的进程 —— 手滑一次就是重装系统）
 };
 
 struct ProgramSpec
@@ -369,13 +335,6 @@ struct ProgramSpec
     CmdCategory category = CmdCategory::Tool;
     std::vector<std::string> denyFlags;     // 禁止出现的参数（前缀匹配）
     std::vector<std::string> denyModules;   // 配合 -m：挡掉 python -m pip 这类
-};
-
-struct ProgramPolicy
-{
-    bool allowPackageManager = false;   // 默认关：不要安装/升级依赖
-    bool allowNetwork = false;          // 默认关：不要下载
-    // SystemAdmin 永不放行，不提供开关
 };
 
 // 显式指定的可信程序：用全路径直接定位，优先于在授信目录里按名搜索。
@@ -400,13 +359,10 @@ class ICodeToolHost
 public:
     virtual ~ICodeToolHost() {}
 
-    // 区域配置（工作区 + 授信目录，含各自的写权限）。
-    // 注意: workspace 为空时 checkPathPermission 的前缀比较会放行一切 ——
+    // 终端配置: 目录边界(zone) + 权限分档 + 命令策略, 见 JZVirtualTerminalConfig.h。
+    // 注意: zone.workspace 为空时前缀比较会放行一切 ——
     // 实现方必须保证它非空（节点侧默认取进程当前工作目录）。
-    virtual const ZoneConfig &toolZone() const = 0;
-
-    // 程序/命令策略
-    virtual const ProgramPolicy &toolProgramPolicy() const = 0;
+    virtual const JZVirtualTerminalConfig &toolTerminalConfig() const = 0;
 
     // 读文件（absPath 必须是绝对路径）。失败返回 false 并把原因写进 error。
     // 宿主可以在这里挂缓存；不想要缓存就直接读。

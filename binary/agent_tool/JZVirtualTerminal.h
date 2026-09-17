@@ -4,9 +4,10 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <set>
 #include <vector>
 
-#include "JZCodeTools.h"   // ZoneConfig / ProgramPolicy / TrustedProgram / DenyReason
+#include "JZCodeTools.h"   // JZVirtualTerminalConfig / TrustedProgram / DenyReason
 #include "JZObject.h"
 
 class JZProcess;
@@ -95,11 +96,10 @@ public:
     std::string id() const { return m_id; }
 
     // ==================== 策略(审核依据) ====================
-    void setZoneConfig(const ZoneConfig &zone);
-    const ZoneConfig &zoneConfig() const;
-
-    void setProgramPolicy(const ProgramPolicy &policy);
-    const ProgramPolicy &programPolicy() const;
+    // 终端配置: 目录边界 + 权限分档 + 命令策略(见 JZVirtualTerminalConfig.h)。
+    // 换工作区时会把 cwd 拉回工作区根(旧 cwd 可能已经失效)
+    void setTerminalConfig(const JZVirtualTerminalConfig &config);
+    const JZVirtualTerminalConfig &terminalConfig() const;
 
     // 显式指定的可信程序(全路径): 优先于在授信目录里按名搜索
     void setTrustedPrograms(const std::vector<TrustedProgram> &programs);
@@ -119,11 +119,16 @@ public:
     Verdict checkRead(const std::string &path) const;
     Verdict checkWrite(const std::string &path) const;
     Verdict checkExec(const std::string &program) const;
-    Verdict checkExec(const std::string &program, const std::vector<std::string> &args) const;
+    // base: 审核时解析相对路径用的基准目录, 空 = 用本终端的 cwd(工作区根)。
+    // `cd X && cmd` 这种, sh 会真的 chdir 过去, 静态检查必须跟着走进去,
+    // 否则审的是工作区里的路径、实际写的却是 X 里的 —— 审核就成了摆设。
+    Verdict checkExec(const std::string &program, const std::vector<std::string> &args,
+                      const std::string &base = std::string()) const;
 
-    // 解析一个路径参数: 相对路径按本终端 cwd 拼, 然后按 writeAccess 审核。
+    // 解析一个路径参数: 相对路径按 base(默认本终端 cwd) 拼, 然后按 writeAccess 审核。
     bool resolvePath(const std::string &path, bool writeAccess,
-                     std::string &absPath, Verdict &verdict, std::string &error) const;
+                     std::string &absPath, Verdict &verdict, std::string &error,
+                     const std::string &base = std::string()) const;
 
     // ==================== 终端状态 ====================
     // 本终端的快照(id/cwd/running/lastActive), 给上层 list 用。
@@ -177,6 +182,16 @@ public:
 protected:
     void buildDefaultPrograms();   // 装默认程序白名单(构造时调)
 
+    // `rm -rf /`、`dd of=/dev/sda` 这类: 单看程序名审不出来(rm/dd 本身在白名单里),
+    // 得看参数组合。返回 nullptr 表示用法没问题。
+    const char *dangerousArgReason(const std::string &program,
+                                   const std::vector<std::string> &args,
+                                   const std::string &base = std::string()) const;
+
+    // kill 的归属判定: pid 是本终端启动的进程(含它的子进程)才算数。
+    // 别人的进程 —— 包括 agent 自己 —— 一律不许 kill。
+    bool isOwnProcess(int pid) const;
+
     // 一次运行的记录(后台/流式留下的日志)。stdout/stderr 分存, 可按流/关键字过滤。
     struct RunRecord
     {
@@ -197,12 +212,16 @@ protected:
 
     // 把一个绝对路径按"读 or 写"审核, 通过则填 absPath
     bool checkPath(const std::string &path, bool writeAccess,
-                   const std::string &action, std::string &absPath, std::string &error);
+                   const std::string &action, std::string &absPath, std::string &error,
+                   const std::string &base = std::string());
 
-    ZoneConfig m_zone;
-    ProgramPolicy m_policy;
+    JZVirtualTerminalConfig m_config;
     std::map<std::string, std::string> m_trustedPrograms;   // 小写程序名 -> 全路径
     std::map<std::string, ProgramSpec> m_programs;          // 小写程序名 -> 白名单项
+
+    // 本终端启动过的进程根 pid(用于 kill 的归属判定)。
+    // 不随进程退出清理: 超时被杀的只杀到 sh, 孙进程可能残留, 事后要能收拾掉。
+    std::set<int> m_ownPids;
 
     // ---- 单终端状态(原 Session 的字段提到这里) ----
     std::string m_id;                   // 会话 key(上层设)

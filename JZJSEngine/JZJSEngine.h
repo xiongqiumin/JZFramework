@@ -386,7 +386,7 @@ public:
         if (pre_ptr)
         {
             JZ_ASSERT_X(cppOwner, "cppOwner = false, 使用 moveToJson");
-            return pre_ptr->m_state->jsValue;
+            return JS_DupValue(m_ctx, pre_ptr->m_state->jsValue);
         }
 
         jsbind::JSPointerBase *base = jsbind::make_js_pointer(this, ptr);        

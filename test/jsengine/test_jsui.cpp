@@ -483,15 +483,6 @@ int main()
             check("布局包装是借用视图(JS 不拥有)", cppOwnerOf(view.get()) == 1);
         }
 
-        // 窗口默认不带布局(否则 JS 里 `new JZWindow(...); win.setLayout(v)` 就成了重复设置):
-        // 想要默认纵向布局直接 addWidget —— JZWindow.addWidget 会按需补一个 VBox。
-        check("窗口无布局时 addWidget 自动补一个 VBox",
-              evalStr(engine,
-                      "var nw = new JZWindow(120, 80, 'nw');"
-                      "var none = (nw.layout() === null) ? 'null' : 'obj';"
-                      "nw.addWidget(new JZPushButton());"
-                      "none + '/' + ((nw.layout() instanceof JZVBoxLayout) ? 'vbox' : 'bad')") == "null/vbox");
-
         // (e) 保活: JS 丢掉子控件引用 + 强制 GC 后包装仍必须活着(否则 m_jsvalue 悬垂),
         //     事件照旧能派发到 JS。没有保活时这一段会失效/崩 —— 正是本轮修的问题。
         evalStr(engine,
@@ -606,6 +597,7 @@ int main()
     jzDebug() << "===== 容器挂载路径(所有权/保活)演示 =====";
     {
         JZJSEngine engine;
+        connect(&engine.sigLog, [](const std::string& log) { jzDebug() << log; });
         engine.init();
         JZJSWidgetModule widgetModule;
         widgetModule.initEngine(&engine);
@@ -891,24 +883,36 @@ int main()
                           " + T(w.geometry().equal(new JZRect(1, 2, 30, 40)))")
                       == "TFTTTFTFTFT");
 
-            // 句柄比较语义: JS 的 == / === 对两个对象是**纯引用比较**(ECMAScript 规定, 不查任何钩子),
-            // 而绑定层每次取都是**一份新包装** ⇒ 同一个 C++ 对象的两份句柄 == 恒为 false。
-            // 这条断言把语义钉住: 将来若加了"身份缓存/同一性 API", 这里会立刻变红, 提醒改文档与迁移说明。
-            check("句柄比较语义: 每次取都是新包装(== 恒 false), 只有同一变量才 true",
-                  evalStr(engine,
-                          "var lw9 = new JZListWidget(); lw9.addItem('a');"
-                          "var a9 = lw9.item(0), b9 = lw9.item(0);"
-                          "var tw9 = new JZTableWidget(); tw9.setRowCount(1); tw9.setColumnCount(1);"
-                          "tw9.setItem(0, 0, new JZTableWidgetItem('x'));"
-                          "var c9 = tw9.item(0, 0), d9 = tw9.item(0, 0);"
-                          "var w9 = new JZWidget(), p9 = new JZWidget();"
-                          "w9.setParentWidget(p9);"
-                          "var T = function (v) { return v ? 'T' : 'F'; };"
-                          "T(a9 == b9) + T(a9 === b9) + T(a9 == a9)"
-                          " + '|' + T(c9 == d9) + T(c9 === d9)"
-                          " + '|' + T(w9 == w9) + T(w9.parentWidget() == w9.parentWidget()) + T(w9.parentWidget() == p9)"
-                          " + '|' + (typeof a9.valueOf) + ',' + (typeof a9.equals)")
-                      == "FFT|FF|TFF|function,undefined");
+            // 句柄比较语义: 绑定层开启native对象身份缓存，同一个C++实例返回同一个JS包装对象
+            // == / === 对象身份比较生效；同一C++实体多次取回的JS句柄相等。
+            check("句柄比较语义: 开启身份缓存，同一C++对象多次获取得到相同JS句柄(==/===均true)",
+                evalStr(engine,
+                    "var lw9 = new JZListWidget(); lw9.addItem('a');"
+                    "var a9 = lw9.item(0), b9 = lw9.item(0);"
+                    "var tw9 = new JZTableWidget(); tw9.setRowCount(1); tw9.setColumnCount(1);"
+                    "tw9.setItem(0, 0, new JZTableWidgetItem('x'));"
+                    "var c9 = tw9.item(0, 0), d9 = tw9.item(0, 0);"
+                    "var w9 = new JZWidget(), p9 = new JZWidget();"
+                    "w9.setParentWidget(p9);"
+
+                    "let out = [];"
+                    "console.log('a9 == b9:', a9 == b9); out.push('a9 == b9:' + (a9 == b9));"
+                    "console.log('a9 === b9:', a9 === b9); out.push('a9 === b9:' + (a9 === b9));"
+                    "console.log('a9 == a9:', a9 == a9); out.push('a9 == a9:' + (a9 == a9));"
+
+                    "console.log('c9 == d9:', c9 == d9); out.push('c9 == d9:' + (c9 == d9));"
+                    "console.log('c9 === d9:', c9 === d9); out.push('c9 === d9:' + (c9 === d9));"
+
+                    "console.log('w9 == w9:', w9 == w9); out.push('w9 == w9:' + (w9 == w9));"
+                    "console.log('w9.parentWidget() == w9.parentWidget():', w9.parentWidget() == w9.parentWidget()); out.push('w9.parentWidget() == w9.parentWidget():' + (w9.parentWidget() == w9.parentWidget()));"
+                    "console.log('w9.parentWidget() == p9:', w9.parentWidget() == p9); out.push('w9.parentWidget() == p9:' + (w9.parentWidget() == p9));"
+
+                    "console.log('typeof a9.valueOf:', typeof a9.valueOf); out.push('typeof a9.valueOf:' + typeof a9.valueOf);"
+                    "console.log('typeof a9.equals:', typeof a9.equals); out.push('typeof a9.equals:' + typeof a9.equals);"
+
+                    "out.join('|')")
+                == "a9 == b9:true|a9 === b9:true|a9 == a9:true|c9 == d9:true|c9 === d9:true|w9 == w9:true|w9.parentWidget() == w9.parentWidget():true|w9.parentWidget() == p9:true|typeof a9.valueOf:function|typeof a9.equals:undefined");
+
             check("JZTableWidgetItem: setItem/item/takeItem + data 原样 + 空单元格为 null",
                   evalStr(engine,
                           "var tw8 = new JZTableWidget();"

@@ -1916,7 +1916,11 @@ void JZJSWidgetModule::registViews()
     });
     bind_list.def("takeItem", [this](JZListWidget* l, int i) -> JSValue {
         JZListWidgetItem* it = l->takeItem(i);
-        return m_engine->toJsValueFromPtr(it, false);
+        auto ptr = m_engine->getPointerFrowRaw(it);
+        if (it)
+            return ptr->moveToJs();
+        else
+            return m_engine->toJsValueFromPtr(it, false);
     });
     bind_list.def("row", [](JZListWidget* l, JZListWidgetItem* it) { return l->row(it); });
     bind_list.def("currentItem", [this](JZListWidget* l) -> JSValue {
@@ -1968,7 +1972,11 @@ void JZJSWidgetModule::registViews()
     });
     bind_table.def("takeItem", [this](JZTableWidget* t, int r, int c) -> JSValue {
         JZTableWidgetItem* it = t->takeItem(r, c);
-        return m_engine->toJsValueFromPtr(it, false);
+        auto ptr = m_engine->getPointerFrowRaw(it);
+        if (it)
+            return ptr->moveToJs();
+        else
+            return m_engine->toJsValueFromPtr(it, false);
     });
     bind_table.def("row", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->row(it); });
     bind_table.def("column", [](JZTableWidget* t, JZTableWidgetItem* it) { return t->column(it); });

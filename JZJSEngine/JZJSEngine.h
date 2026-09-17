@@ -330,7 +330,7 @@ public:
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type, int argc, JSValueConst* argv);
-    JSValue createValue(int type, jsbind::JSPointerBase *ptr);    
+    JSValue createValue(int type, void *ptr);    
 
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
@@ -339,33 +339,9 @@ public:
 
     void setProperty(JSValue obj, std::string name, JSValue value);  // 不会拷贝, set后不能释放
     JSValue getProperty(JSValue obj, std::string name);
-
-    // ---- 指针语义对象的身份表(状态见 JZSType.h 的 JSPointerState) ----
-    // key = 底层对象裸指针(getRaw())。同一个对象只对应一份状态 ⇒
-    //   ① 不同包装共享 cppOwner/cleared -> 所有权翻转/失效同步;
-    //   ② 托管了句柄(state->handle)后再包给 JS, 直接复用**同一个 JS 对象** -> `===` 成立;
-    //   ③ 绑定层可以把"每对象状态"挂在 state->data 上(见 jsbind::JSPointerData / pointerDataList):
-    //      键同样是底层对象, 于是一份状态就够当"对象 <-> 绑定层状态"的登记表, 不必再自建一张。
-    // 值语义类型(默认, 见 CClassDefine::pointerSemantics)不进这张表, 状态各自一份。
-    // create=false 只查; create=true 时表里没有就用 cppOwnerIfNew 建一份 —— 之所以要这个参数:
-    // 建状态的是**第一次包装**那次调用(toJsValueFromPtr 传进来的 cppOwner 是调用方的意图),
-    // 之后同对象的包装共享同一份状态, 各自传来的 cppOwner 不再生效(这正是"翻转同步"的前提)。
-
-    jsbind::JSPointerBase* getValuePointer(JSValue value);
-    void movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue value);
-    JSValue movePointerToJs(jsbind::JSPointerBase *pointer);
-    void detachPointerCpp(jsbind::JSPointerBase *pointer);
-
-    jsbind::JSPointerBase *getPointerFrowRaw(const void* ptr);
-    JSValue getJSValueFromRaw(const void* ptr) const;
-    void detachPointerFromRaw(const void* ptr);
-
-    // 对外只暴露 值/const 值/引用/const 引用/指针 四种类对象提取形式:
-    //   engine.fromJSValue<Class*> / <Class> / <Class&> / <const Class&>
-    // JSRawPointer<Class> 的提取不对外提供(内部由 call() 经自由 ::fromJSValue<JSRawPointer<Class>> 转发)。
-    template <class T>
-    std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, T>
-    fromJSValue(JSValue v)
+       
+    template <class T>    
+    T fromJSValue(JSValue v)
     {
         return ::fromJSValue<T>(m_ctx, v);
     }
@@ -377,21 +353,10 @@ public:
     }
     
     template <class T>
-    JSValue toJsValueFromPtr(T* ptr, bool cppOwner)
+    JSValue toJsValueFromPtr(T* ptr)
     {
         if (!ptr)
             return JS_NULL;
-
-        auto pre_ptr = getPointerFrowRaw(ptr);
-        if (pre_ptr)
-        {
-            JZ_ASSERT_X(cppOwner, "cppOwner = false, 使用 moveToJson");
-            return JS_DupValue(m_ctx, pre_ptr->m_state->jsValue);
-        }
-
-        jsbind::JSPointerBase *base = jsbind::make_js_pointer(this, ptr);        
-        if (cppOwner)
-            base->m_state->cppOwner = true;
 
         int type = ctypeidToType(typeid(*ptr).name());
         if (type == JSType_none)
@@ -602,7 +567,6 @@ protected:
     std::map<int, TypeInfo> m_typeMap;
     std::map<std::string, int> m_cTypeMap;
     std::map<int, int> m_jsTypeMap;
-    std::vector<jsbind::JSPointerBase*> m_jsPoints;
 
     // 回调 GC 根数组(全局 __jzCallbackRoot 里那份的宿主)与登记计数, 见 retainCallback。
     JSValue m_cbRoot = JS_UNDEFINED;

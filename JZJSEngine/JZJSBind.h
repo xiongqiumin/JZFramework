@@ -107,9 +107,8 @@ struct function_return<R(A...)>
     using type = R;
 };
 
-// 统一包装模型下, JSRawPointer<Class> 与 Class 共用同一个 JS 类(typeid(Class)),
-// 因此形参/返回值类型推导时, 把 JSRawPointer<Class> 映射成 typeid(Class)(指针/引用再加 "*")。
-template <class T, class Enable = void>
+
+template <class T>
 struct ctypeid_of
 {
     static std::string get()
@@ -120,61 +119,6 @@ struct ctypeid_of
         return base_type;
     }
 };
-
-template <class T>
-struct ctypeid_of<T, enable_if_t<is_class_pointer<remove_cvr_t<T>>::value>>
-{
-    static std::string get()
-    {
-        using Class = typename detail::class_pointer_inner<remove_cvr_t<T>>::type;
-        std::string base_type = typeid(Class).name();
-        if (std::is_pointer<T>::value || std::is_reference<T>::value)
-            base_type += "*";
-        return base_type;
-    }
-};
-
-// 返回值所有权策略: 注册返回裸指针的函数/方法时, 必须显式用标签声明 JS GC 时是否 delete 底层对象
-// (见 createFunctionImpl 中的 static_assert, 漏传会编译失败)。
-//   returnOwnedByJs  : 底层对象由 new 分配, JS 拥有, GC 时释放
-//   returnOwnedByCpp : 底层对象由 C++ 持有(栈/成员/静态/外部托管), JS 仅持句柄, 不释放
-enum class ReturnOwnership { Js, Cpp };
-struct ReturnOwnershipTag { ReturnOwnership value; };
-const ReturnOwnershipTag returnOwnedByJs{ReturnOwnership::Js};
-const ReturnOwnershipTag returnOwnedByCpp{ReturnOwnership::Cpp};
-
-// 编译期检查: extra 列表中是否包含返回值所有权标签
-template <class... Extra>
-struct hasReturnOwnershipTag : std::false_type
-{
-};
-template <class... Rest>
-struct hasReturnOwnershipTag<ReturnOwnershipTag, Rest...> : std::true_type
-{
-};
-template <class First, class... Rest>
-struct hasReturnOwnershipTag<First, Rest...> : hasReturnOwnershipTag<Rest...>
-{
-};
-
-// 从注册 extra 中提取返回值所有权标签(忽略其它 extra 类型, C++14 兼容: 重载区分 + 初始化列表展开)。
-inline bool applyReturnOwnership(bool cppOwner, const ReturnOwnershipTag& e)
-{
-    return e.value == ReturnOwnership::Cpp ? true : cppOwner;
-}
-template <class E>
-bool applyReturnOwnership(bool cppOwner, const E&)
-{
-    return cppOwner;
-}
-template <class... Extra>
-bool extractReturnOwnership(const Extra&... extra)
-{
-    bool cppOwner = false;
-    using swallow = bool[];
-    (void)swallow{ false, (cppOwner = applyReturnOwnership(cppOwner, extra), false)... };
-    return cppOwner;
-}
 
 // CFunctionImpl
 template <class T>
@@ -249,133 +193,102 @@ public:
     Func func;
 };
 
-template <typename Func, typename Return, typename... Args, typename... Extra>
-CFunctionImpl<Func, Return, Args...>* dealCreateFunctionImpl(Func func, Return (*)(Args...), Extra... extra)
+template <typename Func, typename Return, typename... Args>
+CFunctionImpl<Func, Return, Args...>* dealCreateFunctionImpl(Func func, Return (*)(Args...))
 {
-    return new CFunctionImpl<Func, Return, Args...>(func, extractReturnOwnership(extra...));
+    return new CFunctionImpl<Func, Return, Args...>(func);
 }
 
-template <typename Func, typename... Extra>
-std::shared_ptr<CFunction> createFunctionImpl(Func f, Extra... extra)
+template <typename Func>
+std::shared_ptr<CFunction> createFunctionImpl(Func f)
 {
-    using ReturnT = typename function_return<function_signature_t<Func>>::type;
-    // 返回值是指针时, 必须显式声明所有权(returnOwnedByJs / returnOwnedByCpp),
-    // 否则 JS GC 无法判断该不该 delete 底层对象(可能误删 C++ 托管的对象)。
-    static_assert(!std::is_pointer<ReturnT>::value || hasReturnOwnershipTag<Extra...>::value,
-        "返回值是指针时, 必须声明所有权: createFunction(f, jsbind::returnOwnedByJs) 或 jsbind::returnOwnedByCpp");
-    // 非指针返回值不应传所有权标签(无意义, 且会被静默忽略)
-    static_assert(std::is_pointer<ReturnT>::value || sizeof...(Extra) == 0,
-        "返回值非指针时, 不应传 returnOwnedByJs / returnOwnedByCpp 等所有权标签");
+    using ReturnT = typename function_return<function_signature_t<Func>>::type;    
+    static_assert(!std::is_pointer<ReturnT>::value,  "返回值不能是指针, 请在js侧包装");    
 
-    auto cfunc = dealCreateFunctionImpl(f, (function_signature_t<Func>*)nullptr, extra...);
+    auto cfunc = dealCreateFunctionImpl(f, (function_signature_t<Func>*)nullptr);
     return std::shared_ptr<CFunction>(cfunc);
 }
 
-template <typename Return, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Return (*f)(Args...), Extra... extra)
+template <typename Return, typename... Args>
+std::shared_ptr<CFunction> createFunction(Return (*f)(Args...))
 {
-    return createFunctionImpl<decltype(f), Extra...>(f, extra...);
+    return createFunctionImpl<decltype(f)>(f);
 }
 
-template <typename Func, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Func f, Extra... extra)
+template <typename Func>
+std::shared_ptr<CFunction> createFunction(Func f)
 {
-    return createFunctionImpl<decltype(f), Extra...>(f, extra...);
+    return createFunctionImpl<decltype(f)>(f);
 }
 
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...), Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...))
 {
     auto func = [f](Class* inst, Args... args) -> Return { return (inst->*f)(args...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func)>(func);
 }
 
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const, Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const)
 {
     auto func = [f](Class* inst, Args... args) -> Return { return (inst->*f)(args...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func)>(func);
 }
 
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createSelfFunction(Class* self, Return (Class::*f)(Args...), Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createSelfFunction(Class* self, Return (Class::*f)(Args...))
 {
     auto func = [self, f](Args... args) -> Return { return (self->*f)(std::forward<Args>(args)...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func)>(func);
 }
 
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createSelfFunction(Class* self, Return (Class::*f)(Args...) const, Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createSelfFunction(Class* self, Return (Class::*f)(Args...) const)
 {
     auto func = [self, f](Args... args) -> Return { return (self->*f)(std::forward<Args>(args)...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func)>(func);
 }
 
 #if __cplusplus >= 201703L
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) noexcept, Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) noexcept)
 {
     auto func = [f](Class* inst, Args... args) -> Return { return (inst->*f)(args...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func), Extra...>(func);
 }
 
-template <typename Return, typename Class, typename... Args, typename... Extra>
-std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noexcept, Extra... extra)
+template <typename Return, typename Class, typename... Args>
+std::shared_ptr<CFunction> createFunction(Return (Class::*f)(Args...) const noexcept)
 {
     auto func = [f](Class* inst, Args... args) -> Return { return (inst->*f)(args...); };
-    return createFunctionImpl<decltype(func), Extra...>(func, extra...);
+    return createFunctionImpl<decltype(func), Extra...>(func);
 }
 #endif
 
-// 普通非JZObject派生类
-template<class Class, bool IsJZObjectDerived>
-struct DefaultCreateCallback;
 
-// 普通类分支
-template<class Class>
-struct DefaultCreateCallback<Class, false>
-{
-    static jsbind::JSPointerBase* invoke(JZJSEngine* ctx, int /*argc*/, JSValueConst* /*argv*/)
-    {
-        return new jsbind::JSRawPointer<Class>(ctx, new Class());
-    }
-};
 
-// JZObject派生类分支
-template<class Class>
-struct DefaultCreateCallback<Class, true>
-{
-    static jsbind::JSPointerBase* invoke(JZJSEngine* ctx, int /*argc*/, JSValueConst* /*argv*/)
-    {
-        return new jsbind::JSObjectPointer(ctx, new Class());
-    }
-};
-
-// 默认构造工厂: 按类能力分派, 避免对抽象类 / 无默认构造类实例化 `new Class()` 导致编译失败。
-// 统一签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*; 句柄回写(m_jsvalue / engine)交 onCreated 钩子。
-//   - 可默认构造: 用 new Class() 生成实例(JSWidgetClass<Class> 还会经 using Class::Class 继承基类构造);
-//   - 抽象类 / 非抽象但无默认构造(如 JZPainter 必须传 widget): 运行期抛异常(需 setCreate 覆盖)。
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && std::is_default_constructible<Class>::value, int> = 0>
-std::function<jsbind::JSPointerBase*(JZJSEngine *engine, int, JSValueConst*)> makeDefaultCreate()
-{
-    constexpr bool isJzObj = std::is_base_of<JZObject, Class>::value;
-    return &DefaultCreateCallback<Class, isJzObj>::invoke;
+std::function<void*(JZJSEngine *engine, int, JSValueConst*)> makeDefaultCreate()
+{    
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->void* {
+        return new Class();
+    };
 }
 
 template <class Class, std::enable_if_t<std::is_abstract<Class>::value, int> = 0>
-std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
+std::function<void*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
 {
     // create 统一约定: 出错"设 JS 异常 + 返回 nullptr", 不抛 C++ 异常(见 JZJSEngine::createValue)。
-    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->void* {
         JS_ThrowInternalError(ctx->context(), "ClassBind: 抽象类不能用默认构造, 需用 setCreate");
         return nullptr;
     };
 }
 template <class Class, std::enable_if_t<!std::is_abstract<Class>::value && !std::is_default_constructible<Class>::value, int> = 0>
-std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
+std::function<void*(JZJSEngine*, int, JSValueConst*)> makeDefaultCreate()
 {
     // 同上: 无默认构造的类必须自己 setCreate。
-    return [](JZJSEngine* ctx, int, JSValueConst*) ->jsbind::JSPointerBase* {
+    return [](JZJSEngine* ctx, int, JSValueConst*) ->void* {
         JS_ThrowInternalError(ctx->context(), "ClassBind: 类无默认构造, 需用 setCreate");
         return nullptr;
     };
@@ -393,7 +306,7 @@ public:
         // 经多态基类释放: opaque 的实际包装类型未必与注册的 Class 对应
         // (JZObject 派生类用 JSObjectPointer, 其余用 JSRawPointer<T>), 按具体类型强转再 delete 是 UB。
         // JSPointerBase 有虚析构, 可安全释放任意包装。
-        m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };
+        m_define.destory = [](void* p) { delete p; };
     }
 
     // 继承: 声明 Class 公开继承 Base(单继承)。
@@ -407,13 +320,13 @@ public:
         m_define.ctypeid = typeid(Class).name();
         m_define.create = makeDefaultCreate<Class>();
         // 同上一处: 经 JSPointerBase(虚析构)释放, 不按具体包装类型强转。
-        m_define.destory = [](jsbind::JSPointerBase* p) { delete p; };
+        m_define.destory = [](void* p) { delete p; };
         m_define.superCTypeid = super.classDefine().ctypeid;
     }
 
     // 自定义构造(无默认构造/需参数/需回写 JS 句柄的类): 覆盖默认工厂。
     // 签名 (ctx, argc, argv): 仅负责造底层对象并包成 JSRawPointer<Class>*, 句柄回写交 setInstanceBind 注册的 onCreated。
-    void setCreate(std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> create) { m_define.create = std::move(create); }
+    void setCreate(std::function<void*(JZJSEngine*, int, JSValueConst*)> create) { m_define.create = std::move(create); }
 
     // 声明"指针语义": 该类型的包装登记进引擎的身份表(同底层对象 ⇒ 同 JS 对象, `===` 才有意义),
     // 并支持 moveToCpp/moveToJs 的句柄托管。**默认是值语义**, 值类型(JZPoint/JZSize/JZRect/

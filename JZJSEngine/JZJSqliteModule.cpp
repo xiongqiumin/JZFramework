@@ -169,7 +169,7 @@ JSValue JZJSqliteModule::openDb(const std::string& path, const Json::Value& opti
     obj->db = db;
     obj->path = path;
 
-    return m_engine->createValue(m_typeDb, new jsbind::JSRawPointer<JZJSSqliteDb>(m_engine, obj));
+    return m_engine->createValue(m_typeDb, obj);
 }
 
 JSValue JZJSqliteModule::dbExec(JZJSSqliteDb* o, const std::string& sql)

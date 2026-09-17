@@ -28,7 +28,7 @@ JZColor jzParseColor(const std::string& s);
 //   * 控件对象一律是**裸类**实例(不做派生包裹); JS 事件转发由控件的事件过滤器
 //     (JZSWidgetEventFilter)负责, 挂在"被 JS 包装过的控件"上, 见 JZJSWidgetModule.h;
 //   * 包装: 控件 = JSObjectPointer(守卫指针) + cppOwner=false(JS 拥有, 挂进对象树时翻);
-//     布局 = JSRawPointer<JZLayout> + cppOwner=false; 值类型 = 值语义(tojsbind::JSPointerBase *)。
+//     布局 = JSRawPointer<JZLayout> + cppOwner=false; 值类型 = 值语义(tovoid *)。
 //   * 构造函数**返回对象**即为 new 的结果(quickjs 语义: 构造函数返回对象时用它当结果),
 //     所以这里不需要 new_target。
 //   * 构造完的对象与旧路径一样会走 onCreated 钩子(JZWidget/JZWindow 靠它拿到 JS 句柄)。
@@ -60,55 +60,55 @@ JZColor jzParseColor(const std::string& s);
 //   JZFont          () / (size) / (family, size) / (family, size, style)
 //   JZMatrix2D      () / (a, b, c, d, e, f) / (other)
 
-jsbind::JSPointerBase *js_JZWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZWindow_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZLabel_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZPushButton_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZLineEdit_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZTextEdit_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZCheckbox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZRadioButton_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSwitch_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSlider_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZProgressBar_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZComboBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSpinBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZGroupBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZChart_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZImageLabel_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZListWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZTableWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZStackedWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZTabWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSplitter_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZScrollArea_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZScrollBar_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZWindow_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZLabel_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZPushButton_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZLineEdit_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZTextEdit_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZCheckbox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZRadioButton_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSwitch_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSlider_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZProgressBar_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZComboBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSpinBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZGroupBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZChart_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZImageLabel_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZListWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZTableWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZStackedWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZTabWidget_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSplitter_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZScrollArea_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZScrollBar_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 
-jsbind::JSPointerBase *js_JZLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZVBoxLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZHBoxLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZGridLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSelfLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZVBoxLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZHBoxLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZGridLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSelfLayout_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 
-jsbind::JSPointerBase *js_JZPoint_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZSize_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZRect_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZColor_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZImage_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZPoint_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZSize_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZRect_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZColor_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZImage_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 
 // 画笔样式三件套(值类型, 传给 JZPainter.setPen/setBrush/setFont):
 //   JZPen   () / (color) / (color, width)                  color = JZColor 或 '#rrggbb'/颜色名
 //   JZBrush () / (color) / (color, opacity)                opacity 0~255(缺省 255 = 不透明)
 //   JZFont  () / (size) / (family, size) / (family, size, style)
 //          style 为位或: JZFont.Normal 0 / Bold 1 / Italic 2 / Underline 4 / StrikeOut 8
-jsbind::JSPointerBase *js_JZPen_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZBrush_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
-jsbind::JSPointerBase *js_JZFont_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZPen_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZBrush_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZFont_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 
 // JZMatrix2D (2x3 仿射变换矩阵, 传给 JZPainter.setTransform):
 //   () / (a, b, c, d, e, f) / (other: JZMatrix2D)   —— 无参 = 单位阵
 //   静态工厂: JZMatrix2D.translation(dx,dy) / scaling(sx,sy) / rotation(deg) / rotationRadians(rad)
-jsbind::JSPointerBase *js_JZMatrix2D_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZMatrix2D_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 
 
 #endif // !JZ_JS_WIDGET_H_

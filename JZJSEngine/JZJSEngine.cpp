@@ -1647,8 +1647,7 @@ bool jzConvertArray(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, A
                 return false;
             }
             JSClassID cid;
-            void* ptr = JS_GetAnyOpaque(e, &cid);
-            void* raw = ptr ? ((jsbind::JSPointerBase*)ptr)->getRaw() : nullptr;
+            void* raw = JS_GetAnyOpaque(e, &cid);            
             if (!raw)
             {
                 JS_FreeValue(ctx, e);
@@ -1716,9 +1715,7 @@ bool jzConvertArg(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, Arg
         JSClassID cid;
         void* ptr = JS_GetAnyOpaque(v, &cid);
         if (!ptr) return false;
-        void* raw = ((jsbind::JSPointerBase*)ptr)->getRaw();
-        if (!raw) return false;
-        out.p = raw;
+        out.p = ptr;
         out.kind = ArgResult::kPointer;
         return true;
     }
@@ -1868,7 +1865,7 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     else
     {
         const CClassDefine& define = m_typeMap[type].classDefine;
-        jsbind::JSPointerBase* ptr = define.create(this, argc, argv);
+        void* ptr = define.create(this, argc, argv);
         
         // create 里参数不合法时不再抛 C++ 异常, 而是"JS_Throw* + 返回 nullptr" ——
         // 这里检测到空指针就说明已经挂了 JS 异常, 直接把它交给 JS(不建对象)。
@@ -1883,108 +1880,16 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
     }
 }
 
-JSValue JZJSEngine::createValue(int type, jsbind::JSPointerBase *ptr)
+JSValue JZJSEngine::createValue(int type, void *ptr)
 {
     JSClassID js_class_id = typeToJSType(type);
     JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
 
     JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-    JS_SetOpaque(obj, ptr);
-    assert(JS_GetAnyOpaque(obj, &js_class_id) == ptr);
-    if (ptr->cppOwner())
-    {
-        ptr->m_state->jsValue = JS_DupValue(m_ctx, obj);
-        m_jsPoints.push_back(ptr);
-    }
-
+    JS_SetOpaque(obj, ptr);    
     JS_FreeValue(m_ctx, proto);
 
     return obj;
-}
-
-jsbind::JSPointerBase* JZJSEngine::getValuePointer(JSValue value)
-{
-    JSClassID class_id = JS_GetClassID(value);
-    auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
-    return ptr;
-}
-
-void JZJSEngine::movePointerToCpp(jsbind::JSPointerBase *pointer, JSValue jsValue)
-{
-    JZ_ASSERT(JS_IsUndefined(pointer->m_state->jsValue));
-    pointer->m_state->jsValue = dupValue(jsValue);
-    pointer->m_state->cppOwner = true;   // 转入 C++ 对象树: 底层对象由 C++ (父控件/容器) 负责 delete
-    m_jsPoints.push_back(pointer);
-}
-
-JSValue JZJSEngine::movePointerToJs(jsbind::JSPointerBase *pointer)
-{
-    JZ_ASSERT(pointer->m_state->cppOwner);
-    JSValue jsValue = pointer->m_state->jsValue;
-    pointer->m_state->jsValue = JS_UNDEFINED;
-    pointer->m_state->cppOwner = false;  // 交回 JS: 由 JS 决定生死(GC 时释放)
-    vec_removeOne(m_jsPoints, pointer);
-    return jsValue;
-}
-
-void JZJSEngine::detachPointerCpp(jsbind::JSPointerBase *pointer)
-{
-    // 顺序很重要: 必须先摘 C++ 所有权再释放 JS 引用。
-    // JS_FreeValue 有可能就是最后一处引用 —— 那会立刻跑 finalizer 删掉包装, 而
-    // ~JSPointerBase 会断言 cppOwner 为 false; 另外释放期间 pointer 可能已失效, 别再解引用。
-    JSValue js_value = pointer->m_state->jsValue;
-    pointer->m_state->jsValue = JS_UNDEFINED;
-    pointer->m_state->cppOwner = false;
-    vec_removeOne(m_jsPoints, pointer);
-
-    JS_FreeValue(m_ctx, js_value);
-}
-
-jsbind::JSPointerBase* JZJSEngine::getPointerFrowRaw(const void* ptr)
-{
-    if (!ptr)
-        return nullptr;
-
-    for (size_t i = 0; i < m_jsPoints.size(); i++)
-    {
-        if (m_jsPoints[i]->getRaw() == ptr)
-            return m_jsPoints[i];
-    }
-    return nullptr;
-}
-
-JSValue JZJSEngine::getJSValueFromRaw(const void* ptr) const
-{
-    for (size_t i = 0; i < m_jsPoints.size(); i++)
-    {
-        if (m_jsPoints[i]->getRaw() == ptr)
-            return m_jsPoints[i]->m_state->jsValue;
-    }
-    return JS_UNDEFINED;
-}
-
-void JZJSEngine::detachPointerFromRaw(const void* ptr)
-{
-    jsbind::JSPointerBase *wrapper = JZJSEngine::getPointerFrowRaw(ptr);
-    wrapper->detachCpp();
-}
-
-void JZJSEngine::clearPointerStates()
-{
-    auto points = m_jsPoints;
-    for (auto& pt : points)
-    {
-        if (pt->cppOwner())
-        {
-            JSValue& jv = pt->m_state->jsValue;
-            if (!JS_IsUndefined(jv))
-            {
-                JS_FreeValue(m_ctx, jv);
-                jv = JS_UNDEFINED;
-            }
-        }
-    }
-    m_jsPoints.clear();
 }
 
 int JZJSEngine::retainCallback(JSValueConst cb)
@@ -2007,29 +1912,6 @@ void JZJSEngine::releaseCallback(int id, JSValue value)
     if (id >= 0 && !JS_IsUndefined(m_cbRoot))
         JS_SetPropertyInt64(m_ctx, m_cbRoot, id, JS_UNDEFINED);   // 释放根数组对该回调的引用
     JS_FreeValue(m_ctx, value);
-}
-
-// ---- JSPointerBase 的三个成员(放这里定义: 需要完整的 JZJSEngine) ----
-jsbind::JSPointerBase::~JSPointerBase()
-{
-    if(m_state->cppOwner)
-        m_engine->detachPointerCpp(this);
-}
-
-void jsbind::JSPointerBase::moveToCpp(JSValueConst jsValue)
-{   
-    m_engine->movePointerToCpp(this, jsValue);    
-}
-
-void jsbind::JSPointerBase::detachCpp()
-{
-    onDetach();
-    m_engine->detachPointerCpp(this);
-}
-
-JSValue jsbind::JSPointerBase::moveToJs()
-{
-    return m_engine->movePointerToJs(this);
 }
 
 void JZJSEngine::freeValue(JSValue value)
@@ -2136,19 +2018,8 @@ void JZJSEngine::deconstructor(JSValue value)
 
     JSClassID class_id = JS_GetClassID(value);
 
-    auto ptr = (jsbind::JSPointerBase*)JS_GetOpaque(value, class_id);
+    auto ptr = JS_GetOpaque(value, class_id);
     m_typeMap[type].classDefine.destory(ptr);
-}
-
-// 检测阶段主动判断 argv 是否为已 clear 的 JSRawPointer(不进入 fromJSValue, 不抛 C++ 异常)。
-// 仅对已知 JSRawPointer 类型(arg_type ∈ m_JSRawPointerTypes)的 JS 对象调用, 安全。
-static bool isJSRawPointerCleared(JSContext* ctx, JSValueConst value)
-{
-    JSClassID class_id;
-    void* ptr = JS_GetAnyOpaque(value, &class_id);
-    if (!ptr)
-        return false;
-    return ((jsbind::JSPointerBase*)ptr)->getRaw() == nullptr;
 }
 
 // 单个形参的转换前校验(同步 / 异步共用): 类型 + JSRawPointer 精确类 + 是否已 clear。
@@ -2174,22 +2045,7 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
         JS_ThrowTypeError(m_ctx, "%s", error.c_str());
         return false;
     }
-
-    // 检测阶段主动判断 JSRawPointer 是否已 clear: 已释放则抛 JS 异常(不落到 fromJSValue)。
-    // 注意: 包装正常时必须 return true。以前这里把 return false 写在了 if 外面 —— 任何
-    // "类指针"形参(成员方法的 this 也是)都被判失败, 且失败时**没有 JS_Throw** -> call() 直接
-    // return JS_EXCEPTION, 于是外层拿到"异常"却取不到任何 pending 异常(表现为
-    // runtimeError() = "undefined\nundefined")。
-    if (arg_type > JSType_object)
-    {
-        if (isJSRawPointerCleared(m_ctx, value))
-        {
-            std::string error = "参数错误:参数" + to_string(index) + "的指针已被释放(clear)，无法访问";
-            JS_ThrowTypeError(m_ctx, "%s", error.c_str());
-            return false;
-        }
-        return true;
-    }
+    
     return true;
 }
 

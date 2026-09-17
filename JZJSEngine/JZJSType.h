@@ -18,196 +18,6 @@
 
 class JZJSEngine;   // 前向声明: fromJSValuePointer 统一处理原始类/JSRawPointer 时需查询类型集合
 
-namespace jsbind
-{
-
-// 非模板基类: 让检测阶段(不依赖具体 Class)即可判断包装指针是否已失效。
-// 非模板基类: 让检测阶段(不依赖具体 Class)即可判断包装指针是否已失效。
-//
-// ==================== 指针语义对象的共享状态 ====================
-// 类型分两类(见 CClassDefine::pointerSemantics):
-//   * **值语义**(默认): JZPoint/JZSize/JZRect/JZColor/JZFont/JZImage ... —— 没有身份概念,
-//     每次包装都是新对象(所以 `a === b` 恒 false, 判等用 equal()); 不进引擎的身份表, 状态各自一份。
-//   * **指针语义**(显式声明): 控件/布局/事件/item/painter ... —— 有身份, 需要
-//     ① 同底层对象 ⇒ 同 JS 对象(`===` 才有意义) ② 所有权翻转/失效在所有包装间同步。
-//     状态由引擎按**底层裸指针**建表共享(JZJSEngine::pointerStateFor)。
-// ==================== 状态的扩展数据槽 ====================
-// 绑定层把自己的每对象状态派生成它的子类, new 出来挂进 JSPointerState::data:
-//   * 一个状态最多挂一份(再挂即替换);
-//   * 析构时机 = 状态的最后一个持有者消失(引擎摘表且所有包装都放掉) —— 所以派生类析构里只能做
-//     "不依赖底层对象还活着"的事(如放掉自己持有的 JS 句柄);
-//   * 引擎全程**不知道**派生类型: 取回数据由绑定层自己 dynamic_cast(基类有虚析构)。
-struct JSPointerData
-{
-    virtual ~JSPointerData() = default;
-};
-
-struct JSPointerState
-{
-    bool cppOwner = true;            // false = JS 拥有(最后一个包装析构时 delete 底层对象)
-    JSValue jsValue = JS_UNDEFINED;  // 只有在 cppOwner 为true 时有效
-    std::unique_ptr<JSPointerData> data;
-};
-
-class JSPointerBase
-{
-public:
-    JSPointerBase(JZJSEngine* engine) 
-    {
-        m_engine = engine;
-        m_state = std::make_shared<JSPointerState>();
-        m_state->cppOwner = false;
-    }
-    virtual ~JSPointerBase();
-
-    const JSPointerState* state() const
-    {
-        return m_state.get();
-    }
-
-    // ---- 底层指针 ----
-    // 返回底层对象裸指针(继承向上转型时, 无需知道具体 Class 模板参数即可取对象指针);
-    // 已失效时返回 nullptr(派生类的 get() 负责, 见 onClear)。
-    virtual void* getRaw() const = 0;
-       
-    bool cppOwner() const 
-    { 
-        return m_state->cppOwner; 
-    }
-
-    void setData(std::unique_ptr<JSPointerData> &&data)
-    {
-        m_state->data = std::move(data);
-    }
-    
-    //所有权
-    void moveToCpp(JSValueConst jsValue);
-    void detachCpp();  //表示 c++ 指针无效,同时释放js引用
-    JSValue moveToJs();    
-    
-protected:
-    friend JZJSEngine;
-
-    virtual void onDetach() = 0;
-
-    int m_magic = 93847534;
-    std::shared_ptr<JSPointerState> m_state;
-    JZJSEngine* m_engine = nullptr;
-};
-
-// ==================== JS 侧指针包装 ====================
-class JSObjectPointer : public JSPointerBase
-{
-public:
-    struct PointInfo
-    {
-        JZObjectPointer ptr;
-    };
-
-    JSObjectPointer(JZJSEngine* engine,JZObject* ptr, bool cppOwner = false)
-        :JSPointerBase(engine)
-    {
-        m_state->cppOwner = cppOwner;
-        m_ptr = ptr->guardPointer();
-    }
-
-    // 底层对象裸指针
-    JZObject* get() const
-    {
-        return m_ptr ? m_ptr.object() : nullptr;
-    }
-
-    void* getRaw() const override { return get(); }
-
-protected:
-    void onDetach() override
-    {
-    }
-
-    JZObjectPointer m_ptr;
-};
-
-template <class Class>
-class JSRawPointer : public JSPointerBase
-{
-public:
-    struct PointInfo
-    {
-        Class* ptr = nullptr;
-    };
-
-    using Info = std::shared_ptr<PointInfo>;
-
-    JSRawPointer(JZJSEngine* engine, Class* ptr, bool cppOwner = false)
-        :JSPointerBase(engine)
-    {
-        m_state->cppOwner = cppOwner;
-        m_info = std::make_shared<PointInfo>();
-        m_info->ptr = ptr;
-    }
-
-    // 底层对象裸指针; 已 clear 时返回 nullptr。
-    Class* get() const
-    {
-        return m_info ? m_info->ptr : nullptr;
-    }
-
-    void* getRaw() const override { return get(); }
-
-protected:
-    void onDetach() override
-    {
-        // 只作废"手里的这个指针": 之后 get()/getRaw() 返回 nullptr, 调用其方法会被上层抛异常。
-        // 注: 不要求 cppOwner —— 除了"C++ 托管的那份包装要解除托管"(detachCpp 的本意),
-        // 还有一类用法是**主动作废**一份 JS 拥有的包装: 底层对象已经自己结束掉了(如离屏
-        // JZPainter 的 end(): 对象就地回收, 之后这份句柄不该再能用)。两种情况都只需要置空指针。
-        if (m_info)
-            m_info->ptr = nullptr;
-    }
-
-    std::shared_ptr<PointInfo> m_info;
-};
-
-// 派生自JZObject 的分支
-template<typename T>
-std::enable_if_t<std::is_base_of<JZObject, T>::value, JSPointerBase*>
-make_js_pointer(JZJSEngine* mod, T* ptr)
-{
-    return new JSObjectPointer(mod, ptr);
-}
-
-// 不派生自JZObject 的分支
-template<typename T>
-std::enable_if_t<!std::is_base_of<JZObject, T>::value, JSPointerBase*>
-make_js_pointer(JZJSEngine* mod, T* ptr)
-{
-    return new JSRawPointer<T>(mod, ptr);
-}
-
-// JSRawPointer 萃取: 仅当 T 为 jsbind::JSRawPointer<X> 时 type 存在。
-namespace detail
-{
-template <class T>
-struct class_pointer_inner
-{
-};
-template <class Class>
-struct class_pointer_inner<JSRawPointer<Class>>
-{
-    using type = Class;
-};
-}  // namespace detail
-
-template <class T>
-struct is_class_pointer : std::false_type
-{
-};
-template <class Class>
-struct is_class_pointer<JSRawPointer<Class>> : std::true_type
-{
-};
-}  // namespace jsbind
-
 namespace jstype
 {
 
@@ -347,8 +157,8 @@ class CClassDefine
 public:
     // 唯一构造入口: JS `new Cls(...)` 透传 (ctx, argc, argv) 生成底层对象并包成 JSRawPointer<Class>*。
     // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
-    std::function<jsbind::JSPointerBase*(JZJSEngine*, int, JSValueConst*)> create;
-    std::function<void(jsbind::JSPointerBase*)> destory;
+    std::function<void*(JZJSEngine*, int, JSValueConst*)> create;
+    std::function<void(void*)> destory;
 
     std::string name;
     std::string ctypeid;
@@ -374,13 +184,9 @@ public:
 };
 
 // from js
-template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int> = 0>
+template <class T>
 T fromJSValue(JSContext* ctx, JSValueConst value);
 
-// 上层校验入口: 判断 JS 值是否是 Class(或 is-a 派生) 的注册对象。
-// 供"没有参数类型表"的地方(如各类 create / 构造参数)在转换前校验;
-// 函数/方法形参的类型校验由 JZJSEngine::call() 按 CFunctionParam 完成。
-// 校验通过后 fromJSValue 内部的类型不匹配分支就只剩 JZ_ASSERT 兜底(属于上层漏校验=框架 bug)。
 template <class Class>
 bool js_check_class_arg(JSContext* ctx, JSValueConst value, bool exact = false)
 {
@@ -404,12 +210,6 @@ bool js_check_class_arg(JSContext* ctx, JSValueConst value, bool exact = false)
     return exact ? (actual == want) : engine->isInstanceOf(actual, want);
 }
 
-// T 为裸指针(Class*): 把 JS 对象转成 T*。JS 对象可能是两种表示(与 JZNodeEditor 的统一语义一致):
-//   - 原始类(值/引用)对象: 其 opaque 本身就是真实对象指针, 直接转型返回即可;
-//   - JSRawPointer<Class> 包装类: 其 opaque 是 JSRawPointer<Class>*, 取 get() (并判断是否已 clear)。
-// null/undefined 映射为空指针。
-// 类型校验不在这里做(见 js_check_class_arg / JZJSEngine::call): 走到不匹配分支说明上层漏校验,
-// 只 JZ_ASSERT 报错 + 返回空指针(避免异常与 UB)—— 与 null/undefined 同语义。
 template <class T>
 T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
 {
@@ -429,52 +229,7 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
         return nullptr;
     }
 
-    // 区分原始类与 JSRawPointer 包装类: 后者登记在 m_JSRawPointerTypes 中
-    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    if (engine->isJSRawPointerClassId(class_id))
-    {
-        JZ_ASSERT(0);
-        return nullptr;
-    }
-    else
-    {
-        auto* cpb = (jsbind::JSPointerBase*)ptr;
-        if (!cpb->getRaw())
-        {
-            // 运行期状态(不是类型不匹配): JS 侧调用已由 JZJSEngine::call()/callAsync 的预检拦下,
-            // 走到这里说明有路径漏校验。断言(fatal) + 返回空指针(与 null/undefined 同语义)。
-            JZ_ASSERT_X(0, "fromJSValue<Class*>: 传入已失效(clear)的包装, 上层应已拦截");
-            JS_ThrowTypeError(ctx, "指针已被释放(clear)，无法访问");
-            return nullptr;
-        }
-
-        // 统一包装模型: 派生类 JS 对象的 opaque 是 JSRawPointer<Derived>*, 形参可能要 Base*。
-        // 真实类就是 Class 时直接取; 否则复用 JS 原型链判断 is-a(instanceof),
-        // 单继承下直接把派生指针当基类指针用(偏移为 0), 无需 C++ upcast。
-        std::string actual_cid = engine->classCTypeId(class_id);
-        std::string want_cid = typeid(Class).name();
-        if (actual_cid == want_cid)
-        {
-            // 经多态基类取底层指针: opaque 可能是 JSRawPointer<Class> 或 JSObjectPointer,
-            // 不能按某一种具体包装类型强转。
-            return (Class*)cpb->getRaw();
-        }
-        // is-a 判定: 走 JS 原型链(原型已在 registClass 时挂好), 不另维护平行类型表
-        int base_type = engine->ctypeidToType(want_cid);
-        if (base_type != JSType_none)
-        {
-            JSValue base_ctor = engine->classConstructor(base_type);
-            bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
-            JS_FreeValue(ctx, base_ctor);
-            if (is_base)
-            {
-                void* obj = cpb->getRaw();
-                return (Class*)obj;
-            }
-        }
-        JZ_ASSERT_X(0, "fromJSValue<Class*>: 参数类型不匹配(上层应已校验)");
-        return nullptr;
-    }
+    return (T)ptr;
 }
 
 template <class T>
@@ -505,47 +260,7 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
 
     JSClassID class_id;
     auto ptr = JS_GetAnyOpaque(value, &class_id);
-
-    using Base = jstype::remove_cvr_t<T>;
-
-    // JSRawPointer<Class> 形参已在上面的 is_class_pointer 分支处理(返回 wrapper 本身)。
-    // 普通 Class 值/引用形参: 统一模型下其 opaque 始终是 JSRawPointer<Base>*, 取底层对象;
-    // 值形参返回拷贝, 引用形参返回底层对象的左值引用(生命周期由 JS 对象担保)。
-    if (!jsbind::is_class_pointer<Base>::value)
-    {
-        auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        auto* cpb = (jsbind::JSPointerBase*)ptr;
-        if (!cpb->getRaw())
-        {
-            // 运行期状态: 上层(call/callAsync)已预检。值/引用返回没有安全的兜底值,
-            // 故断言后直接 JZ_UNREACHABLE(致命), 绝不拿已失效包装取对象。
-            JZ_ASSERT_X(0, "fromJSValue<Class&>: 传入已失效(clear)的包装, 上层应已拦截");
-        }
-
-        // 真实类就是 Base 直接取; 派生类对象走 JS 原型链判断 is-a 后, 单继承下直接把派生指针当基类指针用
-        std::string actual_cid = engine->classCTypeId(class_id);
-        std::string want_cid = typeid(Base).name();
-        if (actual_cid == want_cid)
-        {
-            // 同 fromJSValuePointer: 走多态基类取底层指针, 不按具体包装类型强转。
-            return *((Base*)cpb->getRaw());
-        }
-        // is-a 判定: 复用 JS 原型链
-        int base_type = engine->ctypeidToType(want_cid);
-        if (base_type != JSType_none)
-        {
-            JSValue base_ctor = engine->classConstructor(base_type);
-            bool is_base = (JS_IsInstanceOf(ctx, value, base_ctor) == 1);
-            JS_FreeValue(ctx, base_ctor);
-            if (is_base)
-            {
-                void* obj = cpb->getRaw();
-                return *((Base*)obj);
-            }
-        }
-        // 类型不匹配属于上层漏校验(call/callAsync 已按参数类型表拦下): 断言 + 兜底(值/引用无安全默认值)。
-        JZ_ASSERT_X(0, "fromJSValue<Class&>: 参数类型不匹配(上层应已校验)");
-    }
+    JZ_ASSERT(!ptr);
     return *((Base*)ptr);
 }
 
@@ -555,20 +270,10 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::false_type)
     return fromJSValueVector<T>(ctx, value, jstype::is_vector<T>());
 }
 
-template <class T, std::enable_if_t<!jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int>>
+template <class T>
 T fromJSValue(JSContext* ctx, JSValueConst value)
 {
     return fromJSValuePointer<T>(ctx, value, std::is_pointer<T>());
-}
-
-// JSRawPointer<Class> 形参提取: 返回 JS 对象内部存储的 wrapper 引用(而非副本),
-// 使 cppOwner/cleared 等状态修改能传播回同一个 wrapper(clear 传播语义)。
-// 调用方若需独立副本用 auto cp = fromJSValue<JSRawPointer<Class>>(...) (拷贝),
-// 若需修改同一 wrapper 用 auto& cp = ... 。
-template <class T, std::enable_if_t<jsbind::is_class_pointer<std::remove_cv_t<std::remove_reference_t<T>>>::value, int> = 0>
-T& fromJSValue(JSContext* ctx, JSValueConst value)
-{
-    static_assert(0,"invaild use");
 }
 
 template <>
@@ -621,7 +326,7 @@ template <class T>
 JSValue toJSValuePointer(JSContext* ctx, const T& t, std::true_type)
 {
     static_assert(!std::is_pointer<T>::value,
-        "toJSValue 不支持裸指针; 请改用 toJsValueFromPtr(ctx, ptr, cppOwner) 或返回 jsbind::JSRawPointer<T>(ptr, cppOwner)");
+        "toJSValue 不支持裸指针; 请改用 toJsValueFromPtr(ctx, ptr, cppOwner)");
     (void)ctx; (void)t;
     return JS_UNDEFINED;
 }
@@ -648,13 +353,10 @@ JSValue toJSValueVector(JSContext* ctx, const T& t, std::false_type)
 
     std::string ctypeid = typeid(base_type).name();
 
-    // 统一包装: 经 create 构造 JSRawPointer<base_type> 包装(默认构造底层对象),
-    // 再以赋值写入 t, 与统一前"原位存储"语义一致(仅成员赋值, 不触发拷贝构造)。
     JSValue value = createJSValue(ctx, ctypeid);
     JSClassID class_id;
-    // 经多态基类取底层指针(包装类型不确定), 不按具体包装类型强转。
-    auto* cpb = (jsbind::JSPointerBase*)JS_GetAnyOpaque(value, &class_id);
-    *((base_type*)cpb->getRaw()) = t;
+    auto* cpb = (T*)JS_GetAnyOpaque(value, &class_id);
+    *((base_type*)cpb) = t;
     return value;
 }
 

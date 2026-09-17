@@ -97,7 +97,7 @@ public:
     JSValue jsExit();
 
     // ---- Worker 类 ----
-    jsbind::JSPointerBase* createWorker(JSContext* ctx, int argc, JSValueConst* argv);
+    void* createWorker(JSContext* ctx, int argc, JSValueConst* argv);
     JSValue workerPostMessage(JZJSWorker* w, JSValue value);
     JSValue workerOn(JZJSWorker* w, const std::string& event, JSValue cb);
     JSValue workerTerminate(JZJSWorker* w);

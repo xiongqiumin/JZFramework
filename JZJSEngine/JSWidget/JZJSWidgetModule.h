@@ -54,7 +54,7 @@ public:
     void deinitEngine();
 
     JZJSEngine* engine() const { return m_engine; }
-    jsbind::JSPointerBase* createPainter(JSContext* ctx, int argc, JSValueConst* argv);
+    JZPainter* createPainter(JSContext* ctx, int argc, JSValueConst* argv);
     void beginPainter(JZWidget* widget);
     void endPainter();
 
@@ -90,136 +90,31 @@ public:
     // 这个钩子每条造包装的路径都走, 而 getter 造的临时包装没人保活)。
     // 幂等: 重复 installEventFilter 会被忽略。
     void bindJsEventFilter(JZWidget* widget, JSValueConst value);
-    JZWidget * takeWidgetFromJs(JSValue w);  //移动到 c++ 测
-    JSValue moveWidgetToJs(JZWidget *);
 
     // quickjs C 函数的 func_data -> 模块指针(见 jsbind::ClassBind::defData)。
     // 约定: func_data[0] 是"模块指针句柄"(以 JS_NewInt64 存的整数, JS 侧看不到也拿不到)。
     // 取不到时返回 nullptr **并已设 JS 异常**, 调用方直接 `return JS_EXCEPTION`。
     static JZJSWidgetModule* fromFuncData(JSContext* ctx, JSValueConst* func_data);
     
-private:
-    // 各控件"额外的扩展状态": 由该控件相关的绑定代码自己派生子类放进来
-    // (如列表/表格将来真做 JS 侧 item 接口时的"每项失效开关表"、缓存等)。
-    // 状态属于**绑定层** —— 不往控件类上加成员, 也不派生镜像类(见 JZJSWidget.h 顶部"状态放哪")。
-    struct WidgetExtState
-    {
-        virtual ~WidgetExtState() = default;
+private:    
+    enum{ Slot_paint, Slot_mousePress, Slot_mouseRelease, Slot_mouseMove, Slot_wheel, Slot_enter, Slot_leave,
+        Slot_keyPress, Slot_keyRelease, Slot_focusIn, Slot_focusOut, Slot_show, Slot_hide, Slot_resize, EventSlot_count
     };
-
-    // ---- 事件回调槽(JS 侧 `w.onPaint = fn` 注入的回调, 存在模块这边) ----
-    // 为什么放 C++ 侧而不是"包装对象上的自有属性": 包装对象是不可靠的 —— getter(area.widget() 等)
-    // 会新建包装、包装还可能被 GC; 而"回调挂在哪一份包装上"根本没法从 C 侧判断。
-    // 存这里之后: 回调与包装的身份/生命周期**彻底解耦**, 派发时只查槽; 包装只用于两件事 ——
-    // 当 this 调回调、以及当 self() 的栈顶。
-    enum EventSlot
-    {
-        Slot_paint = 0,
-        Slot_mousePress, Slot_mouseRelease, Slot_mouseMove, Slot_wheel,
-        Slot_enter, Slot_leave,
-        Slot_keyPress, Slot_keyRelease,
-        Slot_focusIn, Slot_focusOut,
-        Slot_show, Slot_hide, Slot_resize,
-        EventSlot_count
-    };
-    // 槽位对应的 JS 属性名(= 原来那套 onXxx 名字, 写法不变)
-    static const char* eventSlotName(int slot);
-
-    // ---- 回调槽(事件与信号共用**一张表**: 键 = JS 侧属性名, 值 = 模块持有的引用) ----
-    // 为什么按"名字"而不是枚举索引: 事件槽是固定 14 项, 但**信号**每个控件类各一套
-    // (onClicked / onToggled / onCurrentIndexChanged / ...), 想共用一张表就只能用名字当键;
-    // 好处是以后新增任何回调(事件或信号)都只改注册处, 不动这里的结构。
-    // 键一律用注册代码里的字符串字面量(静态存储期, 地址永久有效) —— 不要传临时字符串。
-    struct jzCStrHash
-    {
-        size_t operator()(const char* s) const
-        {
-            size_t h = 2166136261u;   // FNV-1a
-            for (; *s; ++s)
-                h = (h ^ (size_t)(unsigned char)*s) * 16777619u;
-            return h;
-        }
-    };
-    struct jzCStrEq
-    {
-        bool operator()(const char* a, const char* b) const { return a == b || ::strcmp(a, b) == 0; }
-    };
-    // 槽里的一个回调: 模块持有的引用 + 它在引擎回调 GC 根里的登记 id(释放时要按下标置空)。
-    // rootId < 0 = 未登记(引擎已关/登记失败), 此时 value 仍有效, 只需 JS_FreeValue。
-    struct SlotValue
-    {
-        int rootId = -1;
-        JSValue value = JS_UNDEFINED;
-
-        SlotValue() {}
-        SlotValue(int id, JSValue v) : rootId(id), value(v) {}
-    };
-    using SlotMap = std::unordered_map<const char*, SlotValue, jzCStrHash, jzCStrEq>;
-
-    // 单个控件的 JS 侧状态(一个控件一条; 挂在引擎身份表那份共享状态的 data 槽上, 键 = object)。
-    // 派生自 jsbind::JSPointerData: 引擎不认识派生类型, 取回由模块自己 dynamic_cast。
-    struct WidgetInfo : public jsbind::JSPointerData
-    {        
-        ~WidgetInfo() override;
-
-        JZObject* object = nullptr;
-        JZJSEngine* engine = nullptr;
-        std::shared_ptr<WidgetExtState> ext;
-        std::set<const JZBaseSignal*> connected;
-        // 回调槽(事件 onPaint/onMousePress... 与信号 onClicked/onValueChanged... 共用一张表):
-        // **单发/覆盖式**(后一次赋值替换前一次, 赋 null 清空), 模块持有引用 —— 与"回调挂在哪份
-        // 包装上"彻底解耦: 包装被 GC / getter 现造的临时包装, 都不影响派发。
-        SlotMap slots;
-        // 缓存的 layout() JS 包装: 保证 w.layout() === w.layout() 为同一份; setLayout/clearLayout 时失效。
-        JSValue layoutValue = JS_UNDEFINED;
-    };
+    
+    const char* eventSlotName(int slot);
+    JSValue slotValue(JSValue value, const char *slot_name);
 
     JZJSEngine* m_engine = nullptr;
-    int m_typeWindow = -1;
-    int m_typeCanvas = -1;
-
-    // 控件 -> 登记节点(键 = 控件裸指针)。节点放模块自己这张表里(不是包装的状态上):
-    // 包装只是句柄, 会被 GC / 被新的 getter 包装取代, 而"回调 / 缓存布局包装"必须活到控件销毁,
-    // 所以归模块持有; 控件销毁时由 sigDestroyed 摘掉(见 onWidgetDestroyed)。
-    std::unordered_map<JZObject*, std::unique_ptr<WidgetInfo>> m_nodes;
-
-    jsbind::JSRawPointer<JZPainter>* m_painter = nullptr;
+    JZPainter *m_painter = nullptr;
     JZWidget* m_paintWidget = nullptr;
-
-    // 注: 回调不再集中登记在模块的数组里 —— 每个回调存在所属对象的槽表(WidgetInfo::slots),
-    // 并在**引擎的回调 GC 根**上登记一份(见 JZJSEngine::retainCallback: 防"闭包与包装成环"
-    // 被 quickjs 的循环 GC 回收), 随该对象销毁一起释放。
-
-    void onWidgetDestroyed(JZObject *object);
-
-    // ---- 回调槽的读写(注册成属性的 getter/setter 用; 键 = JS 侧属性名) ----
-    // setter: 校验是函数(null/undefined = 清空), dup 一份存进槽(顺序: 先 dup 新的再 free 旧的)
-    void setSlot(JZObject* object, const char* name, JSValueConst cb);
-    // 从一个已取到的节点直接读槽(借用值); 没设返回 JS_UNDEFINED
-    JSValue slotValue(const WidgetInfo& node, const char* name) const;
-    // 按对象读槽(借用值); 没有登记节点 / 没设过返回 JS_UNDEFINED
-    JSValue slot(JZObject* object, const char* name);
-    // 属性 getter 的样板: 没设返回 JS_NULL, 有则 dup 一份交给 JS(返回值由 JS 拥有)
-    JSValue slotToJs(JZObject* object, const char* name);
 
     // ---- JS 事件转发的内部实现 ----
     // 该槽设了回调就转发并返回 true(事件被拦下), 否则返回 false(放行走原生实现)
     template <class E>
-    bool forwardIf(WidgetInfo& node, const char* name, E* event);
+    bool forwardIf(JSValue node, const char* name, E* event);
     // 以该控件那份包装为 this 调回调; 事件对象包成**借用**包装(栈事件, 派发完即失效)
     template <class E>
-    void forwardJs(WidgetInfo& node, const char* name, E* event);
-
-    void onWidgetCreate(jsbind::JSPointerBase *ptr, JZWidget* object);
-    WidgetInfo* findWidgetInfo(JZObject* object);
-    // 取(没有就建)该对象的登记节点: 建节点时顺手给控件装事件过滤器 + 订阅 sigDestroyed。
-    WidgetInfo* ensureWidgetInfo(JZObject* object);
-    // 摘掉该对象的登记节点(控件销毁 / 模块收尾): 节点析构负责释放它持有的 JS 引用。
-    void removeWidgetInfo(JZObject* object);
-    // 把模块从所有登记控件的过滤器表上摘掉(模块先于控件销毁会留下悬垂过滤器指针)。
-    void detachWidgetFilters();
-    // layout() 缓存失效: 布局被换/清空时让旧包装(及其所有 dup)标记失效并释放缓存引用。
-    void invalidateLayoutCache(JZWidget* w);
+    void forwardJs(JSValue node, const char* name, E* event);
 
     // 分类注册 (initEngine 中统一调用)
     void registGeometry();   // JZPoint / JZSize / JZRect
@@ -228,8 +123,7 @@ private:
     void registEvents();     // JZEvent 及其子类
     void registWidgets();    // JZWidget / JZWindow 及基础控件(Label/Button/Slider/.../Chart)
     void registDialogs();    // JZDialog + 全局 JZMessageBox / JZFileDialog(模态对话框)
-    void registSettings();   // JZSettings(INI 配置, 对应 QSettings)
-    void registItems();      // JZTableWidgetItem / JZListWidgetItem(容器子项)
+    void registSettings();   // JZSettings(INI 配置, 对应 QSettings)    
     void registApp();        // 全局 jzApp(JZApplication 的应用级入口: 路径 / quit / exit)
     void registViews();      // 容器/视图类控件(List/Table/Tab/Splitter/ScrollArea/ScrollBar/...)
     void registLayouts();    // JZLayout 及其四个具体布局

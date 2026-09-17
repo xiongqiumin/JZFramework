@@ -467,7 +467,7 @@ JSValue JZJSWorkerModule::jsExit()
 // -------------------------------------------------------------------------
 // Worker 类
 // -------------------------------------------------------------------------
-jsbind::JSPointerBase* JZJSWorkerModule::createWorker(JSContext* ctx, int argc, JSValueConst* argv)
+void* JZJSWorkerModule::createWorker(JSContext* ctx, int argc, JSValueConst* argv)
 {
     if (argc < 1 || !JS_IsString(argv[0]))
     {
@@ -527,7 +527,7 @@ jsbind::JSPointerBase* JZJSWorkerModule::createWorker(JSContext* ctx, int argc, 
     wtrace("createWorker owner=" + std::to_string(m_selfId) + " id=" + std::to_string(id)
            + " entry=" + entry + " dataBytes=" + std::to_string(data.size()));
 
-    return new jsbind::JSRawPointer<JZJSWorker>(m_engine, w);   // false = JS 拥有句柄
+    return w;
 }
 
 JSValue JZJSWorkerModule::workerPostMessage(JZJSWorker* w, JSValue value)

@@ -124,6 +124,7 @@ JZTcpSocket *JZFrpClient::localClient(int port, int id)
 void JZFrpClient::removeLocalClient(JZTcpSocket *c)
 {
     c->blockSignals(true);
+    c->disconnectFromHost();
     c->deleteLater();
     auto it = m_localSocketMap.find(c);
     if (it != m_localSocketMap.end())
@@ -191,6 +192,7 @@ void JZFrpClient::onRecvPacket(JZNetPackPtr packet)
         if (!m_isValid)
         {
             jzError() << hand->message;
+            m_timer->stop();
             m_client->disconnectFromHost();
         }
     }
@@ -240,8 +242,8 @@ void JZFrpClient::onRecvPacket(JZNetPackPtr packet)
                 return;
             }
 
-            mg->disconnectFromHost();
-            mg->deleteLater();
+            mg->blockSignals(true);
+            removeLocalClient(mg);
         }
         else if (trans->type == FrpTrans_Write)
         {            

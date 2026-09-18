@@ -207,6 +207,20 @@ void JZFrpServer::onRecvPacket(uint64_t c, JZNetPackPtr packet)
                 break;
             }
 
+            // 检查该端口是否已被其它 frp 客户端占用
+            for (auto &other : m_frpClient)
+            {
+                if (other.second.get() == frp)
+                    continue;
+                if (other.second->frps.count(serverPort))
+                {
+                    error = "server port " + to_string(serverPort) + " already used by another client";
+                    break;
+                }
+            }
+            if (!error.empty())
+                break;
+
             auto mgr_info = std::make_shared<RemoteInfo>();
             frp->frps[serverPort] = mgr_info;
             mgr_info->port = serverPort;
@@ -247,6 +261,10 @@ void JZFrpServer::onRecvPacket(uint64_t c, JZNetPackPtr packet)
             auto *remote_c = frp->remoteClient(pack_trans->serverPort, pack_trans->connectId);
             if (remote_c)
             {
+                remote_c->blockSignals(true);
+                auto frps_it = frp->frps.find(pack_trans->serverPort);
+                if (frps_it != frp->frps.end())
+                    map_remove(frps_it->second->remoteConnects, pack_trans->connectId);
                 remote_c->disconnectFromHost();
                 remote_c->deleteLater();
             }
@@ -317,9 +335,13 @@ void JZFrpServer::onFrpcAccept()
 void JZFrpServer::onFrpcRead()
 {
     JZTcpSocket *c = (JZTcpSocket *)sender();
+    if (!map_contains(m_remoteInfo, c))
+        return;
 
     RemoteClientInfo *remote_info = &m_remoteInfo[c];
     FrpConnection *frp = getFrpClientByPort(remote_info->serverPort);
+    if (!frp)
+        return;
 
     JZFrpTrans packet;
     packet.type = FrpTrans_Write;

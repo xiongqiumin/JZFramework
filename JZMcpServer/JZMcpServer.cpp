@@ -11,7 +11,31 @@
 #include "JZThread.h"      // runOnObject
 #include "JZTimer.h"
 
+#include "json/json.h"
+
+#include <exception>
 #include <memory>
+
+// 把任意异常转成 JSON-RPC 内部错误响应: 工具的 run() 里若抛了未捕获的异常(典型是
+// Json::Value::asInt() 拿到非整数参数), 不应让整个节点进程 terminate —— 回一条
+// error 给客户端即可。
+namespace
+{
+std::string jsonRpcInternalError(const std::string &message)
+{
+    Json::Value err(Json::objectValue);
+    err["jsonrpc"] = "2.0";
+    err["id"] = Json::Value::null;
+    Json::Value eo(Json::objectValue);
+    eo["code"] = -32603;
+    eo["message"] = message;
+    err["error"] = eo;
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    builder["emitUTF8"] = true;
+    return Json::writeString(builder, err);
+}
+} // namespace
 
 // ======================================================================
 // HTTP 处理器: 把 POST /mcp 的 body 交给 JZMcpCore 处理
@@ -102,61 +126,75 @@ public:
         // sentHeaders 用 shared_ptr<bool> 共享: onToolNotify 每次会拷贝 cb(std::function 复制闭包),
         // 若按值捕获 bool, 拷贝版与原版各自一份状态, 结束时原版仍认为"未发头"会再发一遍完整
         // HTTP 头 → 响应里出现两个 HTTP 头, 连接不关闭, 客户端一直等到超时。共享同一份状态即可。
-        m_server->processText(bodyStr, [client, resp, sentHeaders = std::make_shared<bool>(false)]
-                               (bool hasResponse, const std::string& outJson, bool finished) mutable {
-            const auto sseFrame = [](const std::string& json) {
-                return std::string("data: ") + json + "\n\n";
-            };
+        try
+        {
+            m_server->processText(bodyStr, [client, resp, sentHeaders = std::make_shared<bool>(false)]
+                                   (bool hasResponse, const std::string& outJson, bool finished) mutable {
+                const auto sseFrame = [](const std::string& json) {
+                    return std::string("data: ") + json + "\n\n";
+                };
 
-            // 纯通知 / 被取消的请求(无响应体): 尚未发头就回 202; 已经开始 SSE 流的话
-            // 只能把流结束掉(关闭连接), 否则对端这个 POST 会一直挂着等"结束"。
-            if (!hasResponse)
-            {
-                if (*sentHeaders)
+                // 纯通知 / 被取消的请求(无响应体): 尚未发头就回 202; 已经开始 SSE 流的话
+                // 只能把流结束掉(关闭连接), 否则对端这个 POST 会一直挂着等"结束"。
+                if (!hasResponse)
                 {
-                    client->write("", 0, true);
+                    if (*sentHeaders)
+                    {
+                        client->write("", 0, true);
+                        return;
+                    }
+                    JZHttpRespone r = resp;
+                    r.setStatusCode(202);
+                    r.setBody(std::string());
+                    client->response(r.toByteArray());
                     return;
                 }
-                JZHttpRespone r = resp;
-                r.setStatusCode(202);
-                r.setBody(std::string());
-                client->response(r.toByteArray());
-                return;
-            }
 
-            if (!*sentHeaders)
-            {
-                *sentHeaders = true;
-                if (finished)
+                if (!*sentHeaders)
                 {
-                    // 普通单次 JSON 响应
-                    JZHttpRespone r = resp;
-                    r.setStatusCode(200);
-                    r.setJson(outJson);
-                    client->response(r.toByteArray());
+                    *sentHeaders = true;
+                    if (finished)
+                    {
+                        // 普通单次 JSON 响应
+                        JZHttpRespone r = resp;
+                        r.setStatusCode(200);
+                        r.setJson(outJson);
+                        client->response(r.toByteArray());
+                    }
+                    else
+                    {
+                        // 开始 SSE 流: 无 Content-Length 头部 + 首块
+                        // 连接关闭由 JZHttpServerClient 自动判定: 响应无 Content-Length(不自定界),
+                        // 终帧 sendFinished() 会关闭连接, 客户端据此得知响应结束。
+                        JZHttpRespone head = resp;
+                        head.setStatusCode(200);
+                        head.setHeader("Content-Type", "text/event-stream");
+                        head.setHeader("Cache-Control", "no-cache");
+                        head.setHeader("Connection", "close");
+                        head.setHeader("X-Accel-Buffering", "no");   // 关掉反代缓冲
+                        client->write(head.toHeadByteArray(0, false), false);
+                        std::string frame = sseFrame(outJson);
+                        client->write(frame.data(), (int)frame.size(), false);
+                    }
                 }
                 else
                 {
-                    // 开始 SSE 流: 无 Content-Length 头部 + 首块
-                    // 连接关闭由 JZHttpServerClient 自动判定: 响应无 Content-Length(不自定界),
-                    // 终帧 sendFinished() 会关闭连接, 客户端据此得知响应结束。
-                    JZHttpRespone head = resp;
-                    head.setStatusCode(200);
-                    head.setHeader("Content-Type", "text/event-stream");
-                    head.setHeader("Cache-Control", "no-cache");
-                    head.setHeader("Connection", "close");
-                    head.setHeader("X-Accel-Buffering", "no");   // 关掉反代缓冲
-                    client->write(head.toHeadByteArray(0, false), false);
                     std::string frame = sseFrame(outJson);
-                    client->write(frame.data(), (int)frame.size(), false);
+                    client->write(frame.data(), (int)frame.size(), finished);
                 }
-            }
-            else
-            {
-                std::string frame = sseFrame(outJson);
-                client->write(frame.data(), (int)frame.size(), finished);
-            }
-        });
+            });
+        }
+        catch (const std::exception &e)
+        {
+            // 工具执行中抛出的未捕获异常(典型: Json::Value::asInt() 收到非整数参数)
+            // 不能让它冒泡到传输层导致整个节点进程 terminate。转成 JSON-RPC 内部错误回送,
+            // 连接照常结束。异常发生在同步分发/执行阶段(尚未发响应头), 这里正常回包即可。
+            jzError() << "JZMcpServer: 处理请求时抛异常(已转为内部错误响应):" << e.what();
+            JZHttpRespone r = resp;
+            r.setStatusCode(200);
+            r.setJson(jsonRpcInternalError(std::string("Internal error: ") + e.what()));
+            client->response(r.toByteArray());
+        }
     }
 
 private:

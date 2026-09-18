@@ -18,3 +18,6 @@ target_link_libraries(test_frp JZFramework)
 
 add_executable(test_mcpserver test_mcpserver.cpp)
 target_link_libraries(test_mcpserver JZFramework)
+
+add_test(NAME co.test_co COMMAND test_co)
+set_tests_properties(co.test_co PROPERTIES TIMEOUT 180)

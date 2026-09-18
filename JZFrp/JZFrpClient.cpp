@@ -24,8 +24,8 @@ void JZFrpClientConfig::addProxy(std::string name, std::string localIp, int loca
 }
 
 // JZFrpClient 实现
-JZFrpClient::JZFrpClient() 
-    : sigConnected(this)
+JZFrpClient::JZFrpClient(JZObject *parent) 
+    : JZObject(parent), sigConnected(this)
 {        
     m_isValid = false;
     m_timer = new JZTimer(this);

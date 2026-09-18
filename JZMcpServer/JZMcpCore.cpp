@@ -181,10 +181,21 @@ void JZMcpCore::onToolSignal(JZMcpTool* tool, const Json::Value& id, const Json:
 
     if (!cb)
         return;
-    if (canceled)
-        cb(true, writeJson(makeError(id, kRequestCancelled, "Request canceled")), true);
-    else
-        cb(true, writeJson(makeResult(id, result, fmt)), true);
+    try
+    {
+        if (canceled)
+            cb(true, writeJson(makeError(id, kRequestCancelled, "Request canceled")), true);
+        else
+            cb(true, writeJson(makeResult(id, result, fmt)), true);
+    }
+    catch (const std::exception& e)
+    {
+        // 回送阶段抛异常(序列化/传输)不能冒泡到工具回调线程(通常是终端的工作线程),
+        // 否则会 terminate 整个进程。记录并尽力回一条内部错误。
+        jzError() << "JZMcpCore: onToolSignal 回送异常:" << e.what();
+        try { cb(true, writeJson(makeError(id, kInternalError, std::string("Internal error: ") + e.what())), true); }
+        catch (...) {}
+    }
 }
 
 void JZMcpCore::onToolNotify(JZMcpTool* tool, const Json::Value& id, const Json::Value& notification)
@@ -198,7 +209,15 @@ void JZMcpCore::onToolNotify(JZMcpTool* tool, const Json::Value& id, const Json:
     if (!cb)
         return;
     // finished=false: 流式中间分块, 传输层保持连接(如 POST 内联 SSE)
-    cb(true, writeJson(notification), false);
+    try
+    {
+        cb(true, writeJson(notification), false);
+    }
+    catch (const std::exception& e)
+    {
+        // 流式帧回送异常(传输层)同样不能冒泡到工作线程
+        jzError() << "JZMcpCore: onToolNotify 回送异常:" << e.what();
+    }
 }
 
 void JZMcpCore::runToolAsync(int toolId, McpFormat fmt, const Json::Value& id,

@@ -53,6 +53,18 @@ namespace
             return cwd;
         return std::string();
     }
+
+    // 从客户端参数里取整数: 客户端(尤其模型生成的 tool call)可能把"该是整数"的字段
+    // 传成字符串 / null / 数组, 而 JsonCpp 的 asInt() 在类型不可转换时会抛 Json::LogicError,
+    // 这个异常没被接住会直接 terminate 掉整个节点进程。这里改成"不可转换就用默认",
+    // 让脏参数降级成合理行为而不是崩溃。
+    int jIntArg(const Json::Value &args, const char *name, int def)
+    {
+        const Json::Value &v = args.get(name, def);
+        if (v.isConvertibleTo(Json::intValue))
+            return v.asInt();
+        return def;
+    }
 }
 
 // ======================================================================
@@ -122,7 +134,7 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
     bool stream = args.get("stream", false).asBool();
     std::string streamFilter = args.get("stream_filter", "all").asString();
     std::string grep = args.get("grep", "").asString();
-    int timeoutMs = args.get("timeout_ms", 120000).asInt();
+    int timeoutMs = jIntArg(args, "timeout_ms", 120000);
     if (timeoutMs < 1000)
         timeoutMs = 120000;
 
@@ -279,7 +291,7 @@ void JZTerminalQueryMcpTool::run(const Json::Value &id, const Json::Value &args)
 
     std::string runId = args.get("run_id", "").asString();
     std::string session = args.get("session", "").asString();
-    int tail = args.get("tail", 0).asInt();
+    int tail = jIntArg(args, "tail", 0);
     std::string stream = args.get("stream", "all").asString();
     std::string grep = args.get("grep", "").asString();
 

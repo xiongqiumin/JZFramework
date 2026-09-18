@@ -32,7 +32,7 @@ public:
 class JZFrpClient : public JZObject 
 {
 public:
-    JZFrpClient();
+    JZFrpClient(JZObject *parent = nullptr);
     ~JZFrpClient();
         
     void setConfig(JZFrpClientConfig config);

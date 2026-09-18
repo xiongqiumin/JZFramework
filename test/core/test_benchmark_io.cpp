@@ -40,6 +40,9 @@ static void benchmark_timer()
 {
     printf("\n========== JZTimer Benchmark ==========\n");
     JZBenchmark bm(/*targetMs=*/100);
+    // ⚠ 这一项测的其实是 msleep(1) 的粒度(Windows ≈15ms): 一次 fire 只等一次 msleep,
+    //   所以总数 ≈ fire 次数 × 15ms —— **看不出** singleShot(0) 内部是走定时器还是走事件。
+    //   要对比实现开销请看下面 "x10000 + drain"(不 sleep, 纯 processEvents 排空)。
     bm.runAndPrint("JZTimer::singleShot(0) fire x100", []() {
         for (int i = 0; i < 100; i++)
         {
@@ -53,6 +56,33 @@ static void benchmark_timer()
             JZ_TEST_TRUE(fired.load());
         }
     });
+
+    // 批量 post + 纯事件排空: 衡量"一次 singleShot(0)"的实现开销(分配/定时器表/派发),
+    // 不带 msleep 的 15ms 干扰。0ms 走事件队列后这里应明显变快(不再建 JZSingleTimer、
+    // 不进线程定时器表、也不需要 deleteLater 的第二次投递)。
+    bm.runAndPrint("JZTimer::singleShot(0) x10000 + drain", []() {
+        std::atomic<int> fired{0};
+        for (int i = 0; i < 10000; i++)
+            JZTimer::singleShot(0, [&]() { fired++; });
+        int guard = 0;
+        while (fired.load() < 10000 && guard++ < 100000)
+            jzApp->processEvents();
+        JZ_TEST_TRUE(fired.load() == 10000);
+    });
+
+    // 带接收者版本(语义: 接收者已销毁则不跑)同样走事件队列
+    {
+        JZObject receiver;
+        bm.runAndPrint("JZTimer::singleShot(0, obj) x10000 + drain", [&receiver]() {
+            std::atomic<int> fired{0};
+            for (int i = 0; i < 10000; i++)
+                JZTimer::singleShot(0, &receiver, [&]() { fired++; });
+            int guard = 0;
+            while (fired.load() < 10000 && guard++ < 100000)
+                jzApp->processEvents();
+            JZ_TEST_TRUE(fired.load() == 10000);
+        });
+    }
     printf("-----------------------------------------------------\n\n");
 }
 

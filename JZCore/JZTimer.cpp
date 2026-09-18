@@ -1,6 +1,8 @@
 #include "JZTimer.h"
 #include "JZTx.h"
 #include "JZDebug.h"
+#include "JZThread.h"
+#include "JZApplication.h"
 
 class JZSingleTimer : public JZObject
 {
@@ -34,17 +36,37 @@ public:
     JZObjectPointer objectPtr;
 };
 
-//JZTimer
 void JZTimer::singleShot(int msec, std::function<void()> func)
 {
+    if (msec <= 0)
+    {
+        runOnThread(jzApp->currentThread(), std::move(func));
+        return;
+    }
+
     JZSingleTimer *t = new JZSingleTimer(msec, nullptr);
-    t->func = func;
+    t->func = std::move(func);
 }
 
 void JZTimer::singleShot(int msec, JZObject *object, std::function<void()> func)
 {
+    if (msec <= 0)
+    {
+        // 语义与 JZSingleTimer 保持一致: 在**当前线程**跑; 接收者已销毁就不跑(原来由 objectPtr 判断)
+        JZObjectPointer guard;
+        if (object)
+            guard = object->guardPointer();
+
+        runOnThread(jzApp->currentThread(), [guard, func]() {
+            if (guard && !guard.object())
+                return;     // 接收者已经不在了: 跳过
+            func();
+        });
+        return;
+    }
+
     JZSingleTimer *t = new JZSingleTimer(msec, object);
-    t->func = func;
+    t->func = std::move(func);
 }
 
 JZTimer::JZTimer(JZObject *parent)

@@ -15,6 +15,10 @@
 //   授信目录      读 + 执行        —— 放编译器/SDK; 哪个目录要写, 把 TrustedDir.writable 打开
 //   系统临时目录   读 + 写         —— /tmp 这类地方, 默认就能写(扔临时文件不需要特殊权限)
 //   区外其它      只读             —— 编译要读 /usr/include、/usr/lib; 但不许改系统
+//   空设备        一律放行         —— /dev/null(还有 /dev/zero、/dev/stdout|stderr|stdin;
+//                                   Windows 侧 NUL): 写它不产生文件副作用, `cmd > /dev/null` 该过
+//   ⚠ Windows 上模型给的是 Git Bash 风格路径(`/tmp/x`、`/c/...`、`/dev/null`): 判定前先翻成
+//     真实 Windows 路径(zoneCheckPath), 否则 `/tmp/x` 会被当成"区域外"拒掉。
 //
 // ⚠ 这不是安全边界(白名单里有 g++ 就等于能执行任意代码), 它管的是副作用收敛
 //   与防误操作; 真正的边界只能是沙箱/容器。

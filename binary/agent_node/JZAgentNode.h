@@ -12,7 +12,8 @@
 class JZMcpServer;
 class JZAgentTool;
 class JZMcpTool;           // 直接挂进 MCP 的工具(不经过 agent_tool 包装)
-class JZVirtualTerminal;   // 执行/审核面, 见 agent_tool/JZVirtualTerminal.h(目前只有声明, 待接)
+class JZVirtualTerminal;   // 执行/审核面, 见 agent_tool/JZVirtualTerminal.h
+class JZTimer;
 
 // ---------------------------------------------------------------------------
 // 节点配置: main.cpp 从 config.json 读取后交给 JZAgentNode::init()
@@ -27,6 +28,12 @@ public:
     std::string nodeName = "agent_node";
     std::string version = "1.0.0";
 
+    // HTTP 监听(端点 /mcp)。host 默认 0.0.0.0(所有网卡)。
+    // ⚠ 节点**没有鉴权**: 谁连上来谁就能用这台机器的终端。只想让本机的 agent 连就写
+    // 127.0.0.1; 跨机器访问请走 ssh 隧道之类的通道, 别直接把 39000 暴露出去。
+    std::string host = "0.0.0.0";
+    int port = 39000;
+
     // 文件工具的根目录(相对路径按它拼接), 同时也是区域模型里的"工作区"(可读写)。
     // 为空时取进程当前工作目录。
     std::string rootDir;
@@ -34,21 +41,34 @@ public:
     // 授信目录(编译器/SDK 之类), 默认只读, 需要写就设 writable。
     std::vector<TrustedDir> trustedDirs;
 
-    // 是否注册终端工具。⚠ 关掉的话这个节点就**一个工具都没有了** ——
-    // 终端是这台机器上唯一的执行面(文件操作全走 shell 命令), 所以一般保持开着。
+    // ---- 工具开关 ----
+    // 终端是这台机器上唯一的执行面: 关掉它, 文件操作(ls/cat/cp/grep...)也没了 ——
+    // 那些都是 shell 命令。
     bool allowTerminal = true;
+    // 文件工具(read_file / write_file / modify_file)。关掉后只剩终端,
+    // 读写就得走 shell(大文件分段读、改代码校验唯一匹配这些能力会一起没掉)。
+    bool allowFileTools = true;
+
+    // ---- 命令策略(见 JZVirtualTerminalConfig) ----
+    // 包管理(pip/npm/apt...)与联网(curl/wget...)默认关: 装依赖、下载东西是
+    // 副作用最大的一类, 要开是人(管理员)的决定, 不该由模型临时起意。
+    // ⚠ 危险命令(dd/sudo/shutdown...)与改系统设置的命令没有开关, 一律拒绝。
+    bool allowPackageManager = false;
+    bool allowNetwork = false;
 
     // 跑命令用哪个 shell。空 = 自动探测: POSIX 是 /bin/sh;
     // Windows 是 Git for Windows 的 Git/bin/bash.exe(探测不到会直接报错, 不退回 cmd)。
     std::string shellProgram;
 
+    // ---- 会话(终端) ----
+    // 同时最多开几个会话: 每个会话是一个独立终端(各自 cwd / 在跑的进程 / 运行记录),
+    // 不设上限的话, 模型忘了 terminal_close 就会一路堆上去。<=0 表示不限。
+    int maxSessions = 8;
     // 会话空闲多久回收(秒), <=0 表示不回收。默认 15 分钟。
     int recycleSec = 15 * 60;
 
-    // HTTP 监听端口(端点 /mcp)。默认 39000。
-    int port = 39000;
-
-    std::string logFile;         // 预留: 日志落文件(stdio 模式用)
+    // 日志落文件(空 = 只打控制台)。长驻进程看日志全靠它。
+    std::string logFile;
 };
 
 // ---------------------------------------------------------------------------
@@ -81,13 +101,17 @@ private:
 // ---------------------------------------------------------------------------
 // JZAgentNode —— 被控端节点: 把本机能力包成一个 MCP server
 //
-// 传输方式(HTTP / 后面要加的 stdio)由 main.cpp 决定, 本类只负责
-// "这台机器上有什么工具":
+// 传输方式(HTTP)由 main.cpp 决定, 本类只负责"这台机器上有什么工具":
 //   终端(MCP 直出门面):  terminal_run / terminal_query / terminal_open / terminal_list / terminal_close
-//   编辑:  modify_file(精确替换 + 唯一匹配校验 + 回上下文片段)
-// 文件操作(ls/cat/mkdir/rm/cp/mv/grep...)不再单独做工具 —— 它们都是 shell 命令,
+//   文件:  read_file / write_file / modify_file
+// 文件操作(ls/cat/mkdir/rm/cp/mv/grep...)不单独做工具 —— 它们都是 shell 命令,
 // 由 terminal_run 覆盖; 只有 modify_file 留在我们这边(sed 不校验唯一匹配)。
-// 终端 MCP 工具直接继承 JZMcpTool(terminal 的两个门面之一); 其余工具经 JZMcpToolBridge 挂成 MCP。
+// 终端 MCP 工具直接继承 JZMcpTool; 文件工具经 JZMcpToolBridge 挂成 MCP。
+// 两组各有开关(allowTerminal / allowFileTools), 关掉哪个, instructions 里就只写
+// 剩下的那部分(见 buildInstructions)。
+//
+// 本类还管会话的生命周期: open() 建(受 maxSessions 限制)、close() 销毁、
+// 后台定时器按 recycleSec 回收空闲的 —— JZVirtualTerminal 自己不管这些。
 // ---------------------------------------------------------------------------
 class JZAgentNode : public JZObject, public JZTerminalRegistry
 {
@@ -101,6 +125,7 @@ public:
     JZMcpServer *server() const { return m_server; }
     const JZNodeConfig &config() const { return m_config; }
     JZTerminalRegistry *terminalRegistry() { return this; }
+    int sessionCount() const { return (int)m_terminals.size(); }
 
     // ---- JZTerminalRegistry: 会话 -> 终端 ----
     JZVirtualTerminal *terminal(const std::string &sessionId, std::string &error) override;
@@ -117,6 +142,13 @@ protected:
 
     std::string buildInstructions() const;
 
+    // 空闲回收: 起一个周期定时器扫会话(recycleSec <= 0 时不开)。
+    // ⚠ JZVirtualTerminal 自己不管生命周期(它只把 recycleMs 存着给上层看),
+    //   不扫的话"空闲回收"这个配置就是一句空话 —— 会话会一直堆到进程退出。
+    void startRecycleTimer();
+    // 关掉空闲超过 recycleSec 的会话(在跑命令的不动)
+    void recycleIdleSessions();
+
     JZNodeConfig m_config;
     JZAgentNodeHost m_host;
     JZMcpServer *m_server = nullptr;
@@ -126,6 +158,7 @@ protected:
     // MCP 工具只持注册表、不绑定具体终端。
     std::map<std::string, JZVirtualTerminal *> m_terminals;
     int m_sessionIdGen = 0;
+    JZTimer *m_recycleTimer = nullptr;
 };
 
 #endif // !JZ_AGENT_NODE_H_

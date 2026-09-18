@@ -1,11 +1,16 @@
 {
-    "nodeName":      "agent_node",
-    "version":       "1.0.0",
-    "port":          39000,
-    "rootDir":       "",
-    "trustedDirs":   [],
-    "shellProgram":  "",
-    "recycleSec":    900,
-    "allowTerminal": true,
-    "logFile":       ""
+    "nodeName":            "agent_node",
+    "version":             "1.0.0",
+    "host":                "0.0.0.0",
+    "port":                7500,
+    "rootDir":             "",
+    "trustedDirs":         [],
+    "allowTerminal":       true,
+    "allowFileTools":      true,
+    "allowPackageManager": false,
+    "allowNetwork":        false,
+    "shellProgram":        "",
+    "maxSessions":         8,
+    "recycleSec":          900,
+    "logFile":             ""
 }

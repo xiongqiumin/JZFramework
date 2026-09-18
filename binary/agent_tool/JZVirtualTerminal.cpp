@@ -375,26 +375,28 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
             return v;
         }
 
-        JZFileInfo info(abs);
-        if (!info.isFile())
-        {
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::NotFound;
-            v.detail = "程序不存在: " + program;
-            return v;
-        }
+        // 不在审核阶段检查目标是否存在: 编译产物(./app)往往由同一条链路里的前序命令
+        // 生成(如 `g++ -o hello hello.cpp && ./hello`), 静态审核时它还不存在, 预先判
+        // "不存在"会把合理的 build+run 整条拦掉。路径合法(区域允许执行)即放行,
+        // 目标不存在时由 OS 在执行期报 "No such file" —— 与普通 shell 行为一致, 也不削弱
+        // 安全(真正的边界是上面的 zoneCheckAccess: 区外程序一律拒绝)。
+        // 仅对"已存在但后缀不对"的可执行(Windows)做后缀拦截; 缺失文件跳过(运行时再说)。
 #ifdef WIN32
-        string suffix = str_toLower(info.suffix());
-        if (suffix != "exe" && suffix != "bat" && suffix != "cmd")
+        JZFileInfo info(abs);
+        if (info.isFile())
         {
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::ProgramDenied;
-            v.detail = "不是可执行程序(.exe/.bat/.cmd): " + program;
-            return v;
+            string suffix = str_toLower(info.suffix());
+            if (suffix != "exe" && suffix != "bat" && suffix != "cmd")
+            {
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::ProgramDenied;
+                v.detail = "不是可执行程序(.exe/.bat/.cmd): " + program;
+                return v;
+            }
         }
 #endif
         v.decision = Decision::Allow;
-        v.detail = "工作区内的可执行文件";
+        v.detail = "工作区内的可执行文件(执行期若不存在由 OS 报错)";
         return v;
     }
 

@@ -56,7 +56,6 @@ public:
     JZLogItemPtr log;
 };
 
-class JZObject;
 class JZLogConfig
 {
 public:
@@ -65,7 +64,15 @@ public:
     bool shouldSaveToFile = false;     // 是否保存日志到文件
     bool shouldAutoSplitFile = false;  // 是否自动分割文件
     std::string logPath;               // 日志保存路径
+
+    // 文件日志的落盘间隔(毫秒)。日志先攒在内存里, 由 JZLogManager 的定时器定期
+    // flush —— 没有它, 就只剩析构时那一次 flush: 长驻进程(agent_node 这种)等于
+    // "退出才看得到日志", 而且攒的那份会一直涨。<=0 表示不自动落盘。
+    int flushIntervalMs = 1000;
 };
+
+class JZObject;
+class JZTimer;
 
 class JZLogManager
 {
@@ -104,10 +111,16 @@ protected:
     const char* getLevelPrefix(int level);
 
     void flushFile();
+    // 按当前配置起/停落盘定时器: 有模块开了 File 且间隔 > 0 才跑。
+    // ⚠ 需要 jzApp(JZTimer 构造要取 jzApp->currentThread()), 没有 app 时什么都不做 ——
+    //   先记着配置, 等下次 setConfig / setModuleConfig 时再试。
+    void updateFlushTimer();
+
     std::map<int, JZLogModule*> m_modules;
     JZLogConfig m_config;
     JZMutex m_lock;
     std::string m_fatalError;
+    JZTimer *m_flushTimer = nullptr;
 };
 
 #define LOG_D(message) JZLogManager::instance()->log(LogModule_General,LOG_DEBUG,message)

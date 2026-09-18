@@ -8,8 +8,10 @@
 #include "JZMcpCore.h"
 #include "JZMcpServer.h"
 #include "JZMcpToolBridge.h"
+#include "JZDateTime.h"
 #include "JZTerminalTools.h"
 #include "JZTerminalMcpTools.h"
+#include "JZTimer.h"
 #include "JZVirtualTerminal.h"
 
 using namespace std;
@@ -28,11 +30,18 @@ JZAgentNodeHost::JZAgentNodeHost(const JZNodeConfig *config)
 
 void JZAgentNodeHost::refresh()
 {
-    // 默认策略: 工作区读+写+执行, 授信目录读+执行, 系统临时目录读+写, 区外只读;
-    // 包管理/网络一律拒绝(真要装东西, 让模型显式用 terminal_run 跑一条, 由人看着)。
+    // 默认策略: 工作区读+写+执行, 授信目录读+执行, 系统临时目录读+写, 区外只读。
     m_terminalConfig = JZVirtualTerminalConfig();
     m_terminalConfig.zone.workspace = m_config ? m_config->rootDir : string();
     m_terminalConfig.zone.trustedDirs = m_config ? m_config->trustedDirs : vector<TrustedDir>();
+    // 包管理 / 联网两道闸: 默认关(见 JZNodeConfig 的注释), 开了才放行。
+    // 终端与文件工具共用这一份配置(文件工具的写权限判定走的也是它), 所以这里
+    // 是"这台机器的策略"唯一的事实来源。
+    if (m_config)
+    {
+        m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
+        m_terminalConfig.allowNetwork = m_config->allowNetwork;
+    }
 }
 
 bool JZAgentNodeHost::toolReadFile(const std::string &absPath, std::string &text, std::string &error)
@@ -108,12 +117,22 @@ void JZAgentNode::init(const JZNodeConfig &config)
     m_server->core()->setServerInfo(m_config.nodeName, m_config.version);
     m_server->core()->setInstructions(buildInstructions());
 
+    // ---- 文件工具 ----
+    // read_file / write_file / modify_file 是 agent_tool 里现成的那份(与本地
+    // code_agent 同一份实现): 按行读带行号、可分段, 改代码校验唯一匹配并回上下文
+    // 片段 —— 这几件事 shell 给不了, 所以不走终端。
+    if (m_config.allowFileTools)
+    {
+        addTool(new JZReadFileTool());
+        addTool(new JZWriteFileTool());
+        addTool(new JZModifyFileTool());
+    }
+
     // ---- 终端: 这台机器上唯一的执行面与审核面 ----
-    // 文件操作不再是单独的工具了 —— ls / cat / mkdir / rm / cp / mv / grep 都是 shell
-    // 命令, 由 terminal_run 直接覆盖; 只有 edit_file 留下来(sed 不校验唯一匹配)。
+    // ls / cat / mkdir / rm / cp / mv / grep 都不再单独做工具 —— 它们是 shell 命令,
+    // 由 terminal_run 直接覆盖。
     // 终端按会话管理(map<session, JZVirtualTerminal>, 见 JZTerminalRegistry):
     // 每个会话一个独立终端实例, 由 terminal_open 按需创建(见 open())。
-
     if (m_config.allowTerminal)
     {
         // terminal 的 MCP 直出门面(不经过 agent_tool 包装):
@@ -124,20 +143,21 @@ void JZAgentNode::init(const JZNodeConfig &config)
         addTool(new JZTerminalOpenMcpTool(this));
         addTool(new JZTerminalListMcpTool(this));
         addTool(new JZTerminalCloseMcpTool(this));
-        // 文件读写走 agent_tool 里现成的 read_file / write_file / modify_file
-        // (sed 不校验唯一匹配, 且 modify_file 回上下文片段; 大文件读取用 read_file 分段)
-        addTool(new JZReadFileTool());
-        addTool(new JZWriteFileTool());
-        addTool(new JZModifyFileTool());
-    }
-    else
-    {
-        jzWarning() << "allowTerminal=false: 这个节点一个工具都没注册";
     }
 
-    jzInfo().nospace() << "agent_node 就绪: name=" << m_config.nodeName
-                       << " root=" << m_config.rootDir
-                       << " shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram);
+    if (!m_config.allowFileTools && !m_config.allowTerminal)
+        jzWarning() << "allowTerminal 与 allowFileTools 都是 false: 这个节点一个工具都没注册";
+
+    // 空闲会话的回收: 只有开了终端才有会话可管
+    startRecycleTimer();
+
+    jzInfo().noquote().nospace() << "agent_node 就绪: name=" << m_config.nodeName
+                                 << " root=" << m_config.rootDir
+                                 << " shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram)
+                                 << " 会话上限=" << m_config.maxSessions
+                                 << " 空闲回收=" << (m_config.recycleSec > 0 ? to_string(m_config.recycleSec) + "s" : string("关"))
+                                 << " 包管理=" << (m_config.allowPackageManager ? string("开") : string("关"))
+                                 << " 联网=" << (m_config.allowNetwork ? string("开") : string("关"));
 }
 
 void JZAgentNode::addTool(JZAgentTool *tool)
@@ -159,22 +179,45 @@ void JZAgentNode::addTool(JZMcpTool *tool)
     m_server->core()->registerTool(tool);
 }
 
+// ⚠ 说明是"给模型看的说明书", 必须和 init() 里真正注册的工具一一对应 ——
+// 写死一份的话, 关掉某个开关后模型还在按不存在的工具规划, 只会白试。
 string JZAgentNode::buildInstructions() const
 {
     string text;
     text += "你是运行在主机 \"" + m_config.nodeName + "\" 上的操作节点。\n";
     text += "工作区: " + m_config.rootDir + "  —— 相对路径以它为基准。\n";
     text += "写权限: 工作区(读+写+执行)、系统临时目录(读+写, 如 /tmp)、授信目录(默认只读, "
-            "单独开了可写的才能写); 别处一律只读 —— 往那里写会被拒绝。\n\n";
+            "单独开了可写的才能写); 别处一律只读 —— 往那里写会被拒绝。\n";
+    text += "命令策略: " + string(m_config.allowPackageManager ? "允许" : "禁止") +
+            "装/升依赖(pip/npm/apt...), " + string(m_config.allowNetwork ? "允许" : "禁止") +
+            "联网下载(curl/wget...); 破坏性命令(dd/sudo/shutdown...)一律拒绝。\n\n";
 
     text += "可用工具:\n";
-    text += "  terminal_run    执行一条命令。命令**整条交给 shell**, "
-            "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
-    text += "  read_file / write_file   按行读(带行号, 可分段) / 整文件写入。\n";
-    text += "  modify_file     精确字符串替换(要求唯一匹配); 改代码用这个, **不要用 sed**。\n";
-    text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
-            "**必须先 terminal_open** 拿到 session id 才能跑(节点是单租户, 不再自动开默认会话)。\n";
-    text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n\n";
+    if (m_config.allowTerminal)
+    {
+        text += "  terminal_run    执行一条命令。命令**整条交给 shell**, "
+                "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
+        text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
+                "**必须先 terminal_open** 拿到 session id 才能跑(节点不自动开默认会话)。\n";
+        text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n";
+        if (m_config.maxSessions > 0)
+        {
+            text += "    会话上限 " + to_string(m_config.maxSessions) + " 个, 空闲 " +
+                    to_string(m_config.recycleSec) + " 秒会被自动回收 —— 不用了就 terminal_close, "
+                    "别靠回收清理。\n";
+        }
+    }
+    if (m_config.allowFileTools)
+    {
+        text += "  read_file / write_file   按行读(带行号, 可分段) / 整文件写入。\n";
+        text += "  modify_file     精确字符串替换(要求唯一匹配); 改代码用这个, **不要用 sed**。\n";
+    }
+    if (!m_config.allowTerminal)
+        text += "  ⚠ 本节点没开终端: 文件操作(ls/cat/cp/grep...)都没有了, 只能用上面的文件工具。\n";
+    text += "\n";
+
+    if (!m_config.allowTerminal)
+        return text;
 
     text += "terminal_run 的两种进阶用法:\n";
     text += "  - 流式(stream=true): 长命令会边跑边把日志以 notifications/message 推过来"
@@ -215,8 +258,69 @@ JZVirtualTerminal *JZAgentNode::terminal(const std::string &sessionId, std::stri
     return it->second;
 }
 
+// 空闲会话回收(定时器周期调用 / open() 触顶时也先试一次)
+// ⚠ 在跑命令的会话不动: 那是一条命令的正常耗时, 不是"没人用"。
+void JZAgentNode::recycleIdleSessions()
+{
+    if (m_config.recycleSec <= 0)
+        return;
+
+    int64_t now = JZDateTime::currentMSecsSinceEpoch();
+    std::vector<std::string> dead;
+    for (auto &kv : m_terminals)
+    {
+        JZVirtualTerminal *t = kv.second;
+        JZVirtualTerminal::SessionInfo info = t->info();
+        if (info.running || info.lastActive <= 0)
+            continue;
+        if (t->recycleMs() <= 0)
+            continue;
+        if (now - info.lastActive < t->recycleMs())
+            continue;
+        dead.push_back(kv.first);
+    }
+
+    for (const std::string &sid : dead)
+    {
+        jzInfo().noquote().nospace() << "会话空闲超时, 回收: " << sid
+                                     << " (空闲 " << (now - m_terminals[sid]->info().lastActive) / 1000 << "s)";
+        close(sid);
+    }
+}
+
+void JZAgentNode::startRecycleTimer()
+{
+    if (m_config.recycleSec <= 0 || !m_config.allowTerminal)
+        return;
+    if (m_recycleTimer)
+        return;
+
+    // 扫描周期取回收时长的 1/4, 夹在 [5s, 60s]: 15 分钟 -> 每 60s 扫一次。
+    // 扫得太勤没意义(回收本来就允许几分钟的误差), 太懒则堆一堆僵尸会话。
+    int gapMs = m_config.recycleSec * 1000 / 4;
+    gapMs = std::max(gapMs, 5 * 1000);
+    gapMs = std::min(gapMs, 60 * 1000);
+
+    m_recycleTimer = new JZTimer(this);
+    connect(&m_recycleTimer->sigTimeout, this, [this]() { recycleIdleSessions(); });
+    m_recycleTimer->start(gapMs);
+}
+
 std::string JZAgentNode::open(const std::string &cwd, std::string &error)
 {
+    // 上限不是硬墙: 先回收掉空闲的, 还满才拒绝 ——
+    // 否则模型开了一堆不关之后就再也开不了会话, 只能重启节点。
+    if (m_config.maxSessions > 0 && (int)m_terminals.size() >= m_config.maxSessions)
+    {
+        recycleIdleSessions();
+        if ((int)m_terminals.size() >= m_config.maxSessions)
+        {
+            error = "会话数已达上限(" + to_string(m_config.maxSessions) + "): "
+                    "先用 terminal_close 关掉不用的, 或调大配置里的 maxSessions";
+            return std::string();
+        }
+    }
+
     // 每个会话一个独立终端实例(各自 cwd / 前后台进程 / 运行记录);
     // JZVirtualTerminal 本身不含会话概念, 生命周期由本节点管。
     JZVirtualTerminal *t = new JZVirtualTerminal(this);
@@ -226,12 +330,18 @@ std::string JZAgentNode::open(const std::string &cwd, std::string &error)
     if (m_config.recycleSec > 0)
         t->setRecycleMs(m_config.recycleSec * 1000);
 
-    if (!cwd.empty() && !t->changeDir(cwd, error))
+    // 空 cwd 也要走一次 changeDir: 一是把 cwd 落成工作区根的绝对路径(否则会话的
+    // cwd 是空的, 工具回的 [cwd] 行没内容), 二是它会刷新 lastActive ——
+    // 不刷新的话这个会话"从 1970 年就没动过", 下一轮扫描直接被回收掉。
+    if (!t->changeDir(cwd, error))
         return std::string();   // changeDir 已填 error(越界等)
 
     std::string sid = "t" + std::to_string(++m_sessionIdGen);
     t->setId(sid);
     m_terminals[sid] = t;
+
+    jzInfo().noquote().nospace() << "开会话 " << sid << " cwd=" << t->info().cwd
+                                 << " (当前 " << m_terminals.size() << "/" << m_config.maxSessions << ")";
     return sid;
 }
 
@@ -242,6 +352,7 @@ bool JZAgentNode::close(const std::string &sessionId)
         return false;
     JZVirtualTerminal *t = it->second;
     m_terminals.erase(it);
+    jzInfo().noquote().nospace() << "关会话 " << sessionId << " (剩下 " << m_terminals.size() << ")";
     delete t;   // 析构会 kill 在跑的进程; 同时从 this 的子对象里摘掉
     return true;
 }

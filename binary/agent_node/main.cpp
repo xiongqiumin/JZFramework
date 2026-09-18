@@ -21,7 +21,9 @@
 #include "JZApplication.h"
 #include "JZCodeTools.h"
 #include "JZDebug.h"
+#include "JZDir.h"
 #include "JZFileInfo.h"
+#include "JZLog.h"
 #include "JZMcpServer.h"
 #include "JZString.h"
 #include "JZPlatform.h"
@@ -34,15 +36,20 @@ using namespace std;
 // --init 把它写出来; loadConfig 也是按这些字段读的。
 static const char *kDefaultConfigJson =
     "{\n"
-    "    \"nodeName\":      \"agent_node\",\n"
-    "    \"version\":       \"1.0.0\",\n"
-    "    \"port\":          39000,\n"
-    "    \"rootDir\":       \"\",\n"
-    "    \"trustedDirs\":   [],\n"
-    "    \"shellProgram\":  \"\",\n"
-    "    \"recycleSec\":    900,\n"
-    "    \"allowTerminal\": true,\n"
-    "    \"logFile\":       \"\"\n"
+    "    \"nodeName\":           \"agent_node\",\n"
+    "    \"version\":            \"1.0.0\",\n"
+    "    \"host\":               \"0.0.0.0\",\n"
+    "    \"port\":               7500,\n"
+    "    \"rootDir\":            \"\",\n"
+    "    \"trustedDirs\":        [],\n"
+    "    \"allowTerminal\":      true,\n"
+    "    \"allowFileTools\":     true,\n"
+    "    \"allowPackageManager\": false,\n"
+    "    \"allowNetwork\":       false,\n"
+    "    \"shellProgram\":       \"\",\n"
+    "    \"maxSessions\":        8,\n"
+    "    \"recycleSec\":         900,\n"
+    "    \"logFile\":            \"\"\n"
     "}\n";
 
 static string pathJoin(const string &dir, const string &name)
@@ -127,10 +134,15 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     JZJsonStream js(&root);
     js.readMemberDefault("nodeName", config.nodeName, config.nodeName);
     js.readMemberDefault("version", config.version, config.version);
+    js.readMemberDefault("host", config.host, config.host);
     js.readMemberDefault("port", config.port, config.port);
     js.readMemberDefault("rootDir", config.rootDir, config.rootDir);
     js.readMemberDefault("shellProgram", config.shellProgram, config.shellProgram);
     js.readMemberDefault("allowTerminal", config.allowTerminal, config.allowTerminal);
+    js.readMemberDefault("allowFileTools", config.allowFileTools, config.allowFileTools);
+    js.readMemberDefault("allowPackageManager", config.allowPackageManager, config.allowPackageManager);
+    js.readMemberDefault("allowNetwork", config.allowNetwork, config.allowNetwork);
+    js.readMemberDefault("maxSessions", config.maxSessions, config.maxSessions);
     js.readMemberDefault("recycleSec", config.recycleSec, config.recycleSec);
     js.readMemberDefault("logFile", config.logFile, config.logFile);
 
@@ -176,6 +188,34 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     return true;
 }
 
+// 打印"生效配置"(空值在这里补成默认值), 远程部署时先跑一次 --check:
+// 看清楚这个节点到底把哪儿当工作区、开了哪些口子, 比起来之后从工具报错里猜快得多。
+static void printConfig(const string &configPath, const JZNodeConfig &config)
+{
+    string trusted;
+    for (size_t i = 0; i < config.trustedDirs.size(); i++)
+    {
+        if (i)
+            trusted += ", ";
+        trusted += config.trustedDirs[i].path + (config.trustedDirs[i].writable ? "(rw)" : "(ro)");
+    }
+
+    jzInfo().noquote().nospace() << "配置文件: " << configPath;
+    jzInfo().noquote().nospace() << "  节点名    " << config.nodeName << " v" << config.version;
+    jzInfo().noquote().nospace() << "  监听      " << config.host << ":" << config.port << "/mcp";
+    jzInfo().noquote().nospace() << "  工作区    " << (config.rootDir.empty()
+        ? JZDir::currentPath() + "  (配置为空, 取进程当前目录)" : config.rootDir);
+    jzInfo().noquote().nospace() << "  授信目录  " << (trusted.empty() ? string("(无)") : trusted);
+    jzInfo().noquote().nospace() << "  工具      终端=" << (config.allowTerminal ? "开" : "关")
+                                 << "  文件=" << (config.allowFileTools ? "开" : "关");
+    jzInfo().noquote().nospace() << "  命令策略  包管理=" << (config.allowPackageManager ? "开" : "关")
+                                 << "  联网=" << (config.allowNetwork ? "开" : "关");
+    jzInfo().noquote().nospace() << "  会话      上限=" << config.maxSessions
+                                 << "  空闲回收=" << (config.recycleSec > 0 ? to_string(config.recycleSec) + "s" : string("关"));
+    jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测") : config.shellProgram);
+    jzInfo().noquote().nospace() << "  日志文件  " << (config.logFile.empty() ? string("(只打控制台)") : config.logFile);
+}
+
 int main(int argc, char *argv[])
 {
     JZCommandLineParser parser;
@@ -188,6 +228,10 @@ int main(int argc, char *argv[])
     bool cmdInit = false;
     parser.addOption(JZCommandLineOption("--init", "",
         "生成默认 config.json 后退出(不启动服务)"), &cmdInit);
+
+    bool cmdCheck = false;
+    parser.addOption(JZCommandLineOption("--check", "",
+        "校验配置并打印生效配置后退出(不启动服务)"), &cmdCheck);
 
     if (!parser.parse(argc, argv))
         return 1;   // 用法不合法(parser 内部已打印错误并退出)
@@ -221,18 +265,61 @@ int main(int argc, char *argv[])
         jzError().nospace() << "端口不合法: " << config.port;
         return 1;
     }
+    if (config.host.empty())
+        config.host = "0.0.0.0";
+    if (config.maxSessions < 0)
+        config.maxSessions = 0;
+
+    // 配置没问题(不启服务): 打印生效配置, 让部署的人确认一遍
+    if (cmdCheck)
+    {
+        printConfig(configPath, config);
+        return 0;
+    }
 
     JZApplication app;
+
+    // 日志落文件: 直接走 JZLogManager 自带的 File 输出(它有定时器定期 flush,
+    // 见 JZLogManager::updateFlushTimer)。⚠ 必须晚于 JZApplication —— 定时器要
+    // 挂到 app 的事件循环上, 没有 app 就起不来。
+    if (!config.logFile.empty())
+    {
+        JZFileInfo info(config.logFile);
+        string logDir = info.path();
+        if (logDir.empty())
+            logDir = ".";
+        if (!JZFileInfo::exists(logDir) && !JZDir().mkpath(logDir))
+        {
+            jzError().nospace() << "无法创建日志目录: " << logDir;
+            return 1;
+        }
+
+        // JZLogManager 的文件名是 "<logPath>/<模块名>.log", 所以把用户给的路径拆成
+        // 目录 + 不带后缀的模块名(/var/log/agent_node.log -> /var/log + agent_node)。
+        JZLogConfig logConfig;
+        logConfig.shouldSaveToFile = true;
+        logConfig.logPath = logDir;
+
+        JZLogModuleConfig moduleConfig = JZLogManager::instance()->moduleConfig(LogModule_General);
+        moduleConfig.name = info.baseName();
+        moduleConfig.type = JZLogModuleConfig::Console | JZLogModuleConfig::File;
+
+        JZLogManager::instance()->setConfig(logConfig);
+        JZLogManager::instance()->setModuleConfig(LogModule_General, moduleConfig);
+    }
+
     JZAgentNode node;
     node.init(config);
 
-    if (!node.server()->listenHttp("0.0.0.0", config.port))
+    if (!node.server()->listenHttp(config.host, config.port))
     {
-        jzError().nospace() << "监听失败, port=" << config.port << "(端口被占用?)";
+        jzError().nospace() << "监听失败 " << config.host << ":" << config.port << "(端口被占用 / 地址不可用?)";
         return 1;
     }
 
-    jzInfo().nospace() << "节点已就绪: http://<本机IP>:" << config.port << "/mcp   节点名=" << config.nodeName;
+    string showHost = (config.host == "0.0.0.0") ? string("<本机IP>") : config.host;
+    jzInfo().noquote().nospace() << "节点已就绪: http://" << showHost << ":" << config.port
+                                 << "/mcp   节点名=" << config.nodeName;
 
     return app.exec();
 }

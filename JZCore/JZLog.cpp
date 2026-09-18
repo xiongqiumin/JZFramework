@@ -3,6 +3,7 @@
 #include "JZLog.h"
 #include "JZDateTime.h"
 #include "JZApplication.h"
+#include "JZTimer.h"
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -70,6 +71,15 @@ JZLogManager::JZLogManager()
 
 JZLogManager::~JZLogManager()
 {
+    // ⚠ 单例是函数内 static, 析构在 main 之后 —— 那时 JZApplication 通常已经没了
+    // (jzApp == nullptr), 定时器所在的事件循环也没了, 不能再碰它。漏一个定时器
+    // 在退出阶段无所谓。
+    if (jzApp && m_flushTimer)
+    {
+        delete m_flushTimer;
+        m_flushTimer = nullptr;
+    }
+
     flushFile();
           
     jzDeleteAll(m_modules);
@@ -86,6 +96,7 @@ JZLogConfig JZLogManager::config()
 void JZLogManager::setConfig(JZLogConfig config)
 {
     m_config = config;
+    updateFlushTimer();
 }
 
 void JZLogManager::addModule(int module, JZLogModuleConfig config)
@@ -122,6 +133,8 @@ void JZLogManager::setModuleConfig(int id, JZLogModuleConfig config)
     {
         m_modules[id]->file.close();
     }
+
+    updateFlushTimer();
 }
 
 void JZLogManager::addObserver(int module, JZObject *recv)
@@ -140,21 +153,62 @@ void JZLogManager::removeObserver(int module, JZObject *recv)
     vec_removeAll(m_modules[module]->recvObjects, recv);
 }
 
+void JZLogManager::updateFlushTimer()
+{
+    if (!jzApp)
+        return;
+
+    bool hasFileModule = false;
+    auto it = m_modules.begin();
+    while (it != m_modules.end())
+    {
+        if (it->second->config.type & JZLogModuleConfig::File)
+            hasFileModule = true;
+        it++;
+    }
+
+    if (!hasFileModule || m_config.flushIntervalMs <= 0)
+    {
+        if (m_flushTimer)
+            m_flushTimer->stop();
+        return;
+    }
+
+    if (!m_flushTimer)
+    {
+        m_flushTimer = new JZTimer();
+        connect(&m_flushTimer->sigTimeout, [this]() { flushFile(); });
+    }
+
+    // 间隔可能刚被改过, 直接重启一次(定时器空闲时 stop 是安全的)
+    m_flushTimer->stop();
+    m_flushTimer->start(m_config.flushIntervalMs);
+}
+
 void JZLogManager::flushFile()
 {
+    // log() 可能正在别的线程往 logCache 里塞, 这里得锁着搬
+    JZMutexLocker locker(&m_lock);
+
     auto it = m_modules.begin();
     while (it != m_modules.end())
     {
         auto &logs = it->second->logCache;
-        for (int line = 0; line < (int)logs.size(); line++)
+        // 文件没开(File 被关掉了 / 路径打不开): 写不进去就丢掉, 别攒着涨内存
+        if (it->second->file.isOpen())
         {
-            auto log = logs[line].get();
+            for (int line = 0; line < (int)logs.size(); line++)
+            {
+                auto log = logs[line].get();
 
-            JZDateTime time = JZDateTime::fromMSecsSinceEpoch(log->time);
-            std::string log_save = time.toString("[yyyy-MM-dd HH:mm:ss zzz] ");
-            log_save += log->message + "\n";
+                JZDateTime time = JZDateTime::fromMSecsSinceEpoch(log->time);
+                std::string log_save = time.toString("[yyyy-MM-dd HH:mm:ss zzz] ");
+                log_save += log->message + "\n";
 
-            it->second->file.write(log_save.c_str(), (int)log_save.size());
+                it->second->file.write(log_save.c_str(), (int)log_save.size());
+            }
+            // 光 write 不够: 那只是进了 stdio 的缓冲区, 得 fflush 才真的落盘
+            it->second->file.flush();
         }
         logs.clear();
 

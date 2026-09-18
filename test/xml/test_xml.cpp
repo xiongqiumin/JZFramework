@@ -90,18 +90,36 @@ bool jzxml_cdata_and_comment_and_pi()
         if (docChildren.item(i).isComment()) hasComment = true;
     JZ_TEST_TRUE(hasComment);
 
-    // 处理指令
+    // 处理指令: 样本里它在根元素 <catalog> **内部**(合法 XML) ⇒ 按 DOM 语义应作为该元素的子节点,
+    // 文档级子节点只有注释 / DOCTYPE。
+    JZDomNodeList catalogChildren = doc.documentElement().childNodes();
     bool hasPI = false;
-    for (int i = 0; i < docChildren.count(); i++)
+    for (int i = 0; i < catalogChildren.count(); i++)
     {
-        if (docChildren.item(i).isProcessingInstruction())
+        if (catalogChildren.item(i).isProcessingInstruction())
         {
             hasPI = true;
-            JZ_TEST_EQ(docChildren.item(i).toProcessingInstruction().target(), "process-instruction");
-            JZ_TEST_EQ(docChildren.item(i).toProcessingInstruction().data(), "sample data");
+            JZ_TEST_EQ(catalogChildren.item(i).toProcessingInstruction().target(), "process-instruction");
+            JZ_TEST_EQ(catalogChildren.item(i).toProcessingInstruction().data(), "sample data");
         }
     }
     JZ_TEST_TRUE(hasPI);
+
+    // 文档级(根元素之后)的处理指令也要能解析
+    JZDomDocument tailDoc;
+    JZ_TEST_TRUE(tailDoc.setContent("<r/><?after-root target?>"));
+    bool hasTailPI = false;
+    JZDomNodeList tailChildren = tailDoc.childNodes();
+    for (int i = 0; i < tailChildren.count(); i++)
+    {
+        if (tailChildren.item(i).isProcessingInstruction())
+        {
+            hasTailPI = true;
+            JZ_TEST_EQ(tailChildren.item(i).toProcessingInstruction().target(), "after-root");
+            JZ_TEST_EQ(tailChildren.item(i).toProcessingInstruction().data(), "target");
+        }
+    }
+    JZ_TEST_TRUE(hasTailPI);
     return true;
 }
 

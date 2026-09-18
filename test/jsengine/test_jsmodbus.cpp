@@ -63,6 +63,9 @@ int main()
     // ---- JS 引擎 + modbus 模块 ----
     JZJSEngine engine;
     engine.init();
+    // JS 适配层(modbus/dist/index.js)自己 `import { EventEmitter } from 'net/dist'` ——
+    // 裸标识符要靠 library dir 才能解析到 js_wrapper 下(与 test_jsnet 的初始化一致)。
+    engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });
     connect(&engine.sigLog, [](const string& s) { jzDebug() << "[js:log] " << s; });
     connect(&engine.sigError, [](const string& s) { jzDebug() << "[js:error] " << s; });
     engine.start();

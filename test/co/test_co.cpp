@@ -15,6 +15,7 @@ int test_coSerialPort();
 
 int main()
 {
+    setbuf(stdout, NULL);   // 不缓冲: 崩在哪个子用例上也能看到已经打过的进度(与其它测试一致)
     JZApplication a;
     jzco_init();
 

@@ -9,6 +9,7 @@
     "allowFileTools":      true,
     "allowPackageManager": false,
     "allowNetwork":        false,
+    "unrestricted":        false,
     "shellProgram":        "",
     "maxSessions":         8,
     "recycleSec":          900,

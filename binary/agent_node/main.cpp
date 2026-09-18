@@ -46,6 +46,7 @@ static const char *kDefaultConfigJson =
     "    \"allowFileTools\":     true,\n"
     "    \"allowPackageManager\": false,\n"
     "    \"allowNetwork\":       false,\n"
+    "    \"unrestricted\":       false,\n"
     "    \"shellProgram\":       \"\",\n"
     "    \"maxSessions\":        8,\n"
     "    \"recycleSec\":         900,\n"
@@ -142,6 +143,7 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     js.readMemberDefault("allowFileTools", config.allowFileTools, config.allowFileTools);
     js.readMemberDefault("allowPackageManager", config.allowPackageManager, config.allowPackageManager);
     js.readMemberDefault("allowNetwork", config.allowNetwork, config.allowNetwork);
+    js.readMemberDefault("unrestricted", config.unrestricted, config.unrestricted);
     js.readMemberDefault("maxSessions", config.maxSessions, config.maxSessions);
     js.readMemberDefault("recycleSec", config.recycleSec, config.recycleSec);
     js.readMemberDefault("logFile", config.logFile, config.logFile);
@@ -209,7 +211,8 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
     jzInfo().noquote().nospace() << "  工具      终端=" << (config.allowTerminal ? "开" : "关")
                                  << "  文件=" << (config.allowFileTools ? "开" : "关");
     jzInfo().noquote().nospace() << "  命令策略  包管理=" << (config.allowPackageManager ? "开" : "关")
-                                 << "  联网=" << (config.allowNetwork ? "开" : "关");
+                                 << "  联网=" << (config.allowNetwork ? "开" : "关")
+                                 << "  权限等级=" << (config.unrestricted ? "全部不检查" : "按区域分档");
     jzInfo().noquote().nospace() << "  会话      上限=" << config.maxSessions
                                  << "  空闲回收=" << (config.recycleSec > 0 ? to_string(config.recycleSec) + "s" : string("关"));
     jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测") : config.shellProgram);

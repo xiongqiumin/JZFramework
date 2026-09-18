@@ -20,6 +20,9 @@
 //   ⚠ Windows 上模型给的是 Git Bash 风格路径(`/tmp/x`、`/c/...`、`/dev/null`): 判定前先翻成
 //     真实 Windows 路径(zoneCheckPath), 否则 `/tmp/x` 会被当成"区域外"拒掉。
 //
+// 整档切换另有 AccessLevel(见下): 除了上面这套"按区域分档", 还有一档
+//   Unrestricted = 全部不检查(什么都放行)。
+//
 // ⚠ 这不是安全边界(白名单里有 g++ 就等于能执行任意代码), 它管的是副作用收敛
 //   与防误操作; 真正的边界只能是沙箱/容器。
 // ---------------------------------------------------------------------------
@@ -59,8 +62,28 @@ enum Flags
 };
 }
 
+// 权限等级(整档切换)
+enum class AccessLevel
+{
+    // 按区域分档(默认, 推荐): 就是上面那张表, 由下面的
+    // workspaceAccess / trustedAccess / outsideAccess 决定每档给哪些位。
+    Standard = 0,
+
+    // 全部不检查: 目录边界、读 / 写 / 执行、程序白名单、危险命令(dd / sudo / shutdown ...)、
+    // 包管理与联网开关 —— 一律放行, 命令原样交给 shell 跑。
+    // ⚠ 语义是"我信任这个终端里跑的一切"(本机单人开发、一次性脚本), 它**不是**安全边界:
+    //    开着它就别把终端暴露给不受信任的输入(远端 agent_node 尤其)。
+    Unrestricted,
+};
+
 struct JZVirtualTerminalConfig
 {
+    // ---- 权限等级 ----
+    // Standard     = 按区域分档
+    // Unrestricted = 全部不检查(见 AccessLevel 的注释)
+    AccessLevel level = AccessLevel::Standard;
+    bool unrestricted() const { return level == AccessLevel::Unrestricted; }
+
     // ---- 文件访问: 按区域分档(位组合 FileAccess::*) ----
     int workspaceAccess = FileAccess::All;                  // 工作区: 读 + 写 + 执行
     int trustedAccess   = FileAccess::Read | FileAccess::Exec;  // 授信目录: 默认只读可执行
@@ -77,7 +100,8 @@ struct JZVirtualTerminalConfig
     // ---- 目录边界 ----
     ZoneConfig zone;
 
-    // 某个绝对路径适用哪些权限。授信目录按 TrustedDir.writable 单独加写权限
+    // 某个绝对路径适用哪些权限。授信目录按 TrustedDir.writable 单独加写权限。
+    // ⚠ level == Unrestricted 时一律返回 FileAccess::All(全部不检查)
     int accessOfPath(const std::string &absPath) const;
     int accessOfZone(Zone z, const std::string &absPath) const;
 };
@@ -90,10 +114,12 @@ Zone zoneOfPath(const ZoneConfig &cfg, const std::string &absPath);
 // 解析路径并判定区域: 相对路径基于 cwd。
 // ⚠ 区外**不算失败**(区外默认只读) —— 能不能读/写由 zoneCheckAccess() 按意图判,
 //   这样 `cat /etc/hosts` 能读、`echo x > /etc/hosts` 被拒, 而不是一律"路径越界"。
+// strict=false("全部不检查"那档): 连"工作区未配置"与".. 越界"也不算失败。
 bool zoneResolvePath(const ZoneConfig &cfg, const std::string &cwd, const std::string &input,
-                     std::string &absPath, Zone &zone, std::string &error);
+                     std::string &absPath, Zone &zone, std::string &error, bool strict = true);
 
-// 统一权限判定: need 是 FileAccess 的位组合, 缺哪一位就报错(并返回该区域的权限说明)
+// 统一权限判定: need 是 FileAccess 的位组合, 缺哪一位就报错(并返回该区域的权限说明)。
+// ⚠ cfg.level == Unrestricted 时直接放行(全部不检查)
 bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const std::string &absPath,
                      int need, std::string &error);
 

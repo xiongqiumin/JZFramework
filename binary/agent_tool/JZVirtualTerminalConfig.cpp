@@ -187,10 +187,10 @@ Zone zoneOfPath(const ZoneConfig &cfg, const string &absPath)
 }
 
 bool zoneResolvePath(const ZoneConfig &cfg, const string &cwd, const string &input,
-                     string &absPath, Zone &zone, string &error)
+                     string &absPath, Zone &zone, string &error, bool strict)
 {
     string root = zoneNormalizeRoot(cfg.workspace);
-    if (root.empty())
+    if (strict && root.empty())
     {
         error = "工作区未配置";
         return false;
@@ -199,7 +199,7 @@ bool zoneResolvePath(const ZoneConfig &cfg, const string &cwd, const string &inp
     bool escaped = false;
     string p = codeNormalizePath(input, &escaped);
     // 越过起始目录的 ".." 直接拒绝，而不是静默夹住
-    if (escaped)
+    if (strict && escaped)
     {
         error = "路径越界，不能超出所在分区的根: " + input;
         return false;
@@ -227,6 +227,10 @@ bool zoneResolvePath(const ZoneConfig &cfg, const string &cwd, const string &inp
 // 注意参数叫 z 不叫 zone: 后者会把成员 zone(ZoneConfig) 遮蔽掉
 int JZVirtualTerminalConfig::accessOfZone(Zone z, const string &absPath) const
 {
+    // 全部不检查: 任何区域都给满权限(这一处是所有权限判定的唯一出口)
+    if (unrestricted())
+        return FileAccess::All;
+
     if (z == Zone::Workspace)
         return workspaceAccess;
 
@@ -275,6 +279,10 @@ bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const string &absPath,
     string where = string(zoneText(z));
 
     error.clear();
+
+    // 全部不检查: 不问区域、不问读写执行位
+    if (cfg.unrestricted())
+        return true;
 
     if ((need & FileAccess::Read) && !(access & FileAccess::Read))
     {

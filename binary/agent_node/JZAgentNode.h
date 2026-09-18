@@ -56,6 +56,12 @@ public:
     bool allowPackageManager = false;
     bool allowNetwork = false;
 
+    // 权限等级: true = 全部不检查(JZVirtualTerminalConfig::AccessLevel::Unrestricted) ——
+    // 目录边界、读写执行、程序白名单、危险命令、上面两个开关 统统失效, 命令原样交给 shell。
+    // ⚠ 只在本机自用 / 明确的沙箱里开; 节点是 HTTP 零鉴权的, 开着它就等于把这台机器
+    //   的 shell 交给了任何能连上端口的人。
+    bool unrestricted = false;
+
     // 跑命令用哪个 shell。空 = 自动探测: POSIX 是 /bin/sh;
     // Windows 是 Git for Windows 的 Git/bin/bash.exe(探测不到会直接报错, 不退回 cmd)。
     std::string shellProgram;

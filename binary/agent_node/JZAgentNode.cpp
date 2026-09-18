@@ -39,6 +39,9 @@ void JZAgentNodeHost::refresh()
     // 是"这台机器的策略"唯一的事实来源。
     if (m_config)
     {
+        // 权限等级: 全部不检查时, 下面这些开关就不看了(见 JZVirtualTerminalConfig::level)
+        m_terminalConfig.level = m_config->unrestricted ? AccessLevel::Unrestricted
+                                                       : AccessLevel::Standard;
         m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
         m_terminalConfig.allowNetwork = m_config->allowNetwork;
     }

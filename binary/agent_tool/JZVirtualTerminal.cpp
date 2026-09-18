@@ -358,6 +358,15 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
     Verdict v;
     string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
 
+    // 全部不检查(AccessLevel::Unrestricted): 程序白名单、危险命令、包管理/联网、
+    // denyFlags、危险参数组合 一概不问 —— 到这里就放行。
+    if (m_config.unrestricted())
+    {
+        v.decision = Decision::Allow;
+        v.detail = "全部不检查(Unrestricted): " + program;
+        return v;
+    }
+
     if (looksLikePath(program))
     {
         // 相对路径(./hello、build/app)必须按基准目录解析, 否则会被当成区外程序拒掉
@@ -578,7 +587,8 @@ bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
     string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
 
     Zone zone = Zone::Outside;
-    if (!zoneResolvePath(m_config.zone, cwd, path, absPath, zone, error))
+    // 最后那个参数 = strict: "全部不检查"那档连"工作区未配置"/".. 越界"也不算失败
+    if (!zoneResolvePath(m_config.zone, cwd, path, absPath, zone, error, !m_config.unrestricted()))
     {
         verdict.decision = Decision::Deny;
         verdict.reason = DenyReason::PathOutside;
@@ -1075,9 +1085,15 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
     // ---- 审核: 解析成语法树 -> 逐条审 ----
     // 以前是字符串扫描 + 各种特判(& 是不是后台、2>&1 是不是重定向), 现在统一由
     // JZShell 出结构, 这里只负责按结构过策略。
+    // ⚠ 权限等级 = Unrestricted(见 JZVirtualTerminalConfig::level): 连解析都不做,
+    //    parsed 为空 ⇒ 后面那些"逐段审"的循环一次也不进 —— 命令整条原样交给 shell。
     JZShell::Line parsed;
     string perr;
-    if (!JZShell::parse(command, parsed, perr))
+    if (m_config.unrestricted())
+    {
+        // 全部不检查
+    }
+    else if (!JZShell::parse(command, parsed, perr))
     {
         Verdict v;
         v.decision = Decision::Deny;

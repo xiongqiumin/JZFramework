@@ -22,16 +22,20 @@ class JZMcpTool;
  *     把响应回送给对端
  *   - 取消: 收到 notifications/cancelled 时, 通过 cancelRequest() 调用对应工具的 cancel()
  *
- * 协议版本: 同时兼容 2025-06-18 与 2026-07-28(最新, 无状态)。
+ * 协议版本: 握手时代 2024-11-05 / 2025-03-26 / 2025-06-18 / 2025-11-25 + 现代 2026-07-28(无状态)。
  *   - 2026-07-28: 无 initialize 握手; 协议版本与客户端能力由每请求/每响应的 _meta
  *     (io.modelcontextprotocol/protocolVersion 等)携带; 服务器信息通过 server/discover
- *     暴露, 并在每个 result 的 _meta 中附带 io.modelcontextprotocol/serverInfo;
+ *     暴露(结果**必须**带 supportedVersions / cacheScope / ttlMs, 否则客户端解析失败会退回
+ *     握手), 并在每个 result 的 _meta 中附带 io.modelcontextprotocol/serverInfo;
  *     所有 result 带 resultType("complete" / "input_required")。
- *   - 2025-06-18: 标准协议, 走 initialize 握手(协议版本在 params.protocolVersion),
- *     之后每请求不再携带版本信息(无 _meta); result 不带 resultType / _meta 额外字段,
- *     与 2026 版的工具结果(content + isError)保持一致。
+ *   - 握手时代: initialize 协商(版本在 params.protocolVersion) —— 要的版本在握手表里就回显,
+ *     否则回自己最新的握手版本 2025-11-25 做反报价, **不报错**; 之后每请求不再带版本(无 _meta),
+ *     result 不带 resultType / _meta 额外字段, 工具结果(content + isError)与 2026 版一致。
+ *   - 只有"每请求 _meta 里的版本"既不在握手表也不等于现代版本时, 才回 -32022 Unsupported
+ *     protocol version(+data.supported 全表): 客户端靠这个列表决定"换现代协议 / 退回握手 /
+ *     真的不兼容"(见官方 client 的 _probe.py)。
  *   判定方式: 请求 _meta 中 protocolVersion == "2026-07-28" 时按 2026 格式构造响应,
- *   否则(含无 _meta 的 2025 客户端)按 2025 格式。
+ *   否则(含无 _meta 的握手客户端)按 2025 格式。
  *
  * JZMcpCore 不关心传输方式(HTTP / WebSocket / 纯文本)。
  * 它由 JZMcpServer(后端)持有, 后端负责把输入喂给 process()、并把
@@ -119,13 +123,18 @@ private:
     static const char* kMetaServerInfo;
     static const char* kMetaClientInfo;
 
-    // 支持的协议版本集合(2025-06-18 与 2026-07-28)
+    // 全部支持的协议版本(握手时代 2024-11-05 ~ 2025-11-25 + 现代 2026-07-28),
+    // 用于 -32022 的 data.supported 回显
     static const char* const kSupportedProtocolVersions[];
+    // 握手时代的版本(initialize 只能协商这些)
+    static const char* const kHandshakeProtocolVersions[];
 
     // 判定请求应使用的响应格式: _meta 中 protocolVersion == "2026-07-28" 为 V2026, 否则 V2025。
     McpFormat detectFormat(const Json::Value& request) const;
     // 版本是否在支持集合内
     bool isSupportedVersion(const std::string& v) const;
+    // 版本是否在"握手时代"集合内(2024-11-05 ~ 2025-11-25)
+    bool isHandshakeVersion(const std::string& v) const;
 
     // 校验请求 _meta 中的协议版本: 若 _meta 显式带了版本但不被支持, 返回
     // UnsupportedProtocolVersionError(-32022), 否则返回 null(无 _meta 视为 2025 客户端, 放行)。

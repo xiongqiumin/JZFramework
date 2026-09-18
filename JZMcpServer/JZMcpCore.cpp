@@ -18,9 +18,22 @@ static const int kRequestCancelled = -32800;  // MCP: 请求被取消
 // ======================================================================
 // JZMcpCore
 // ======================================================================
-// 本服务器支持的 MCP 协议版本集合。最新为 2026-07-28(无状态), 同时兼容标准 2025-06-18。
-static const char* kLatestProtocolVersion  = "2026-07-28";
-static const char* kLegacyProtocolVersion = "2025-06-18";
+// 协议版本登记表 —— 对齐官方 SDK(mcp_types/version.py):
+//   HANDSHAKE(走 initialize 握手) = 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25
+//   MODERN  (无状态, 版本走每请求 _meta)                          = 2026-07-28
+// ⚠ 客户端是"拿自己的版本号来协商"的, 规则照抄官方(_probe.py + 官方 server 实测):
+//   - initialize 握手: 要的版本在 HANDSHAKE 表里 → 原样回显; 否则**回自己最新的握手版本**
+//     (2025-11-25) 做反报价, 不是报错 —— 官方 server 对 "2026-07-28 的 initialize" 就是回
+//     2025-11-25。报 -32022 会把整档客户端挡死(我们踩过: CodeBuddy 报的就是它)。
+//   - 每请求 _meta: 要的版本既不在 HANDSHAKE 也不等于 MODERN 才回 -32022(带 data.supported
+//     全表)。客户端靠这个列表判断"换现代协议 / 退回握手 / 真的不兼容", 所以列表要全。
+//   - server/discover 的结果必须带 supportedVersions / cacheScope / ttlMs, 否则客户端把结果
+//     反序列化成 DiscoverResult 失败 ⇒ 判定"不是现代 server" ⇒ 退回 initialize(见 onDiscover)。
+static const char* kModernProtocolVersion  = "2026-07-28";   // MODERN: 无状态, 版本走每请求 _meta
+static const char* kLatestHandshakeVersion = "2025-11-25";   // HANDSHAKE 里最新, 用作反报价
+static const char* kLegacyProtocolVersion  = "2025-06-18";
+static const char* kOldProtocolVersion     = "2025-03-26";
+static const char* kOldestProtocolVersion  = "2024-11-05";
 
 // 2026-07-18 起移除 initialize 握手: 协议版本/能力改走每请求 _meta 命名空间。
 const char* JZMcpCore::kMetaProtocolVersion   = "io.modelcontextprotocol/protocolVersion";
@@ -28,20 +41,46 @@ const char* JZMcpCore::kMetaClientCapabilities = "io.modelcontextprotocol/client
 const char* JZMcpCore::kMetaServerInfo         = "io.modelcontextprotocol/serverInfo";
 const char* JZMcpCore::kMetaClientInfo         = "io.modelcontextprotocol/clientInfo";
 
-// 同时支持 2026-07-28 与 2025-06-18 两种版本(顺序无关, 仅用于错误回显)。
-const char* const JZMcpCore::kSupportedProtocolVersions[] = {
-    kLatestProtocolVersion,
+// 握手时代的版本(initialize 只能协商这几个; 顺序无关)
+const char* const JZMcpCore::kHandshakeProtocolVersions[] = {
+    kOldestProtocolVersion,
+    kOldProtocolVersion,
     kLegacyProtocolVersion,
+    kLatestHandshakeVersion,
+};
+
+// 全部支持的版本 = 握手时代 + 现代, 只用于 -32022 的 data.supported 回显
+const char* const JZMcpCore::kSupportedProtocolVersions[] = {
+    kModernProtocolVersion,
+    kLatestHandshakeVersion,
+    kLegacyProtocolVersion,
+    kOldProtocolVersion,
+    kOldestProtocolVersion,
 };
 
 // 2026-07-28 错误码(替代旧版 -32602 + supported)
 static const int kUnsupportedProtocolVersion = -32022;
 
+// 取请求里的"信封" _meta。⚠ 2026-07-28 规范把它放在 **params._meta**(官方 python/ts 客户端
+// 就是这么发的: params={'_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28', ...}});
+// 早期实现(和我们自己的旧客户端)放在请求顶层。两处都认, 否则会把现代请求当 2025 请求处理
+// —— 具体表现: 结果里不带 resultType/cacheScope/ttlMs, 客户端反序列化校验直接失败。
+static const Json::Value& requestMeta(const Json::Value& request)
+{
+    static const Json::Value kNull;
+    if (request.isMember("params") && request["params"].isObject()
+        && request["params"].isMember("_meta"))
+        return request["params"]["_meta"];
+    if (request.isMember("_meta"))
+        return request["_meta"];
+    return kNull;
+}
+
 JZMcpCore::JZMcpCore(JZObject* parent)
     : JZObject(parent)
     , m_serverName("JZMcpServer")
     , m_serverVersion("1.0.0")
-    , m_protocolVersion(kLatestProtocolVersion)
+    , m_protocolVersion(kModernProtocolVersion)
     , m_nextToolId(0)
 {
 }
@@ -343,24 +382,11 @@ Json::Value JZMcpCore::dispatch(const Json::Value& request, bool& isNotification
     // ---- 请求类 ----
     if (method == "initialize")
     {
-        // 2025-06-18 标准握手。版本校验必须在这里做: 校验失败要回 JSON-RPC error,
-        // 若放进 onInitialize 里返回, 会被下面的 makeResult 当成 result 包起来,
-        // 客户端看到的就是 result.error 而不是 error —— 等于握手失败也当成功了。
+        // 标准握手(2024-11-05 ~ 2025-11-25)。版本协商放在 onInitialize 里: 要的版本在
+        // 握手表里就回显, 否则回自己最新的握手版本做反报价 —— **不报错**(官方 server 就是
+        // 这么干的: 对 2026-07-28 的 initialize 回 2025-11-25)。报 -32022 会把整档客户端
+        // 挡死, 客户端接不接受反报价由它自己决定(不支持就断开)。
         isNotification = false;
-
-        const std::string requested = params.get("protocolVersion", "").asString();
-        if (!isSupportedVersion(requested))
-        {
-            Json::Value data(Json::objectValue);
-            Json::Value supported(Json::arrayValue);
-            for (const char* v : kSupportedProtocolVersions)
-                supported.append(v);
-            data["supported"] = supported;
-            if (!requested.empty())
-                data["requested"] = requested;
-            return makeErrorData(id, kUnsupportedProtocolVersion,
-                                 "Unsupported protocol version: " + requested, data);
-        }
         return makeResult(id, onInitialize(params), McpFormat::V2025);
     }
     if (method == "ping")
@@ -394,9 +420,8 @@ Json::Value JZMcpCore::dispatch(const Json::Value& request, bool& isNotification
 Json::Value JZMcpCore::checkProtocolVersion(const Json::Value& request) const
 {
     // 2026-07-28: 协议版本由每请求 _meta[kMetaProtocolVersion] 携带, 无握手。
-    // 若 _meta 显式声明了版本, 必须受支持; 否则(无 _meta, 即 2025-06-18 客户端)放行。
-    const Json::Value& meta = request.isMember("_meta") ? request["_meta"]
-                                                        : Json::Value::null;
+    // 若 _meta 显式声明了版本, 必须受支持; 否则(无 _meta, 即握手时代客户端)放行。
+    const Json::Value& meta = requestMeta(request);
     std::string clientVersion;
     if (meta.isObject() && meta.isMember(kMetaProtocolVersion))
         clientVersion = meta[kMetaProtocolVersion].asString();
@@ -417,11 +442,10 @@ Json::Value JZMcpCore::checkProtocolVersion(const Json::Value& request) const
 
 JZMcpCore::McpFormat JZMcpCore::detectFormat(const Json::Value& request) const
 {
-    // _meta 中 protocolVersion == "2026-07-28" → V2026; 其余(含无 _meta 的 2025 客户端) → V2025。
-    const Json::Value& meta = request.isMember("_meta") ? request["_meta"]
-                                                        : Json::Value::null;
+    // _meta 中 protocolVersion == "2026-07-28" → V2026; 其余(含无 _meta 的握手客户端) → V2025。
+    const Json::Value& meta = requestMeta(request);
     if (meta.isObject() && meta.isMember(kMetaProtocolVersion)
-        && meta[kMetaProtocolVersion].asString() == kLatestProtocolVersion)
+        && meta[kMetaProtocolVersion].asString() == kModernProtocolVersion)
         return McpFormat::V2026;
     return McpFormat::V2025;
 }
@@ -434,15 +458,25 @@ bool JZMcpCore::isSupportedVersion(const std::string& v) const
     return false;
 }
 
+bool JZMcpCore::isHandshakeVersion(const std::string& v) const
+{
+    for (const char* s : kHandshakeProtocolVersions)
+        if (v == s)
+            return true;
+    return false;
+}
+
 Json::Value JZMcpCore::onInitialize(const Json::Value& params) const
 {
-    // 2025-06-18 标准握手。协议版本校验已在 dispatch 里做过(不受支持直接回 error),
-    // 走到这里说明版本可用 —— 直接回显客户端请求的版本。
+    // 标准握手(2024-11-05 ~ 2025-11-25)。
     const std::string requested = params.get("protocolVersion", "").asString();
 
-    // 回显协商出的协议版本(取客户端请求的版本; 本实现支持 2025 故直接回显)。
+    // 回显协商出的协议版本: 客户端要的是握手版本就回显它; 否则(没带版本 / 带了个不是握手
+    // 时代的版本, 例如把现代的 2026-07-28 塞进 initialize)回自己最新的握手版本做反报价 ——
+    // 客户端若不支持这个版本, 按规范由它自行断开。
     Json::Value result(Json::objectValue);
-    result["protocolVersion"] = requested;
+    result["protocolVersion"] = isHandshakeVersion(requested) ? requested
+                                                              : std::string(kLatestHandshakeVersion);
 
     Json::Value capabilities(Json::objectValue);
     Json::Value toolsCap(Json::objectValue);
@@ -464,9 +498,19 @@ Json::Value JZMcpCore::onInitialize(const Json::Value& params) const
 
 Json::Value JZMcpCore::onDiscover() const
 {
-    // 替代旧版 initialize: 暴露服务器支持的协议版本/能力/身份。
+    // 替代旧版 initialize: 暴露服务器支持的协议版本/能力/身份(2026-07-28 无状态发现)。
+    // ⚠ 字段必须照官方 DiscoverResult 给全 —— 客户端(官方 python/ts client)拿到结果会先
+    //   反序列化成 DiscoverResult, 缺 supportedVersions / cacheScope 就直接解析失败 ⇒
+    //   判定"这台不是现代 server" ⇒ 退回 initialize 握手。我们之前缺这两个字段, 于是
+    //   每个客户端都被平白降级到握手时代(实测官方 client 就是这样退回的)。
+    //   supportedVersions 只列**现代(无状态)**版本: 客户端会从里面挑一个用于后续请求,
+    //   混进握手版本会被挑走。
     Json::Value result(Json::objectValue);
-    result["protocolVersion"] = m_protocolVersion;
+    Json::Value supported(Json::arrayValue);
+    supported.append(m_protocolVersion);   // m_protocolVersion = 本服务器讲的现代版本
+    result["supportedVersions"] = supported;
+    result["cacheScope"] = "private";      // 结果含主机名/工作区等信息, 不跨授权上下文共享
+    result["ttlMs"] = 0;                   // 不做缓存
 
     Json::Value capabilities(Json::objectValue);
     Json::Value toolsCap(Json::objectValue);
@@ -576,11 +620,18 @@ Json::Value JZMcpCore::makeResult(const Json::Value& id, const Json::Value& resu
 
     if (fmt == McpFormat::V2026)
     {
-        // 2026-07-28: 所有 result 必须带 resultType("complete" / "input_required"),
-        // 并在 _meta 中附带服务器身份 serverInfo。
+        // 2026-07-28: 所有 result 必须带 resultType("complete" / "input_required");
+        // 列表类结果(tools/list / server/discover / prompts/list / resources/list ...)还
+        // **必须**带 cacheScope —— 客户端会拿该版本的 schema 反序列化校验, 少一个字段整条
+        // 请求就报错(实测官方 client: "unhandled errors in a TaskGroup")。所有 result 再在
+        // _meta 中附带服务器身份 serverInfo。
         Json::Value res = result;
         if (!res.isMember("resultType"))
             res["resultType"] = "complete";
+        if (!res.isMember("cacheScope"))
+            res["cacheScope"] = "private";
+        if (!res.isMember("ttlMs"))
+            res["ttlMs"] = 0;          // 0 = 不缓存(cacheScope/ttlMs 都是客户端校验的必填项)
         resp["result"] = withServerMeta(res);
     }
     else

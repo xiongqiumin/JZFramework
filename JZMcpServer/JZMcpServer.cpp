@@ -5,8 +5,11 @@
 #include "JZHttpHandler.h"
 #include "JZHttpRequest.h"
 #include "JZHttpRespone.h"
+#include "JZHttpStream.h"
 #include "JZByteArray.h"
 #include "JZDebug.h"
+#include "JZThread.h"      // runOnObject
+#include "JZTimer.h"
 
 #include <memory>
 
@@ -43,7 +46,7 @@ public:
         //     工具执行中先回 notifications/message(按 SSE 分块), 最后 tools/call 结果作为末块;
         //   - GET: 建立服务端→客户端的 SSE 推送长连接(见下方分支), 用于服务器主动通知
         //     (logging / tools/list_changed 等), 经 broadcastNotification()/logMessage() 推送。
-        // 2025-06-18 客户端走 initialize 握手, 握手后请求同样以 POST 提交(无 _meta),
+        // 2025-11-25 / 2025-06-18 客户端走 initialize 握手, 握手后请求同样以 POST 提交(无 _meta),
         // 由核心按版本构造响应。
         if (method == "GET")
         {
@@ -60,22 +63,24 @@ public:
                 return;
             }
 
-            // 打开 SSE 流: 无 Content-Length, 首块发一个注释帧让客户端确认流已建立;
-            // 连接保持打开(不调用 sendFinished), 直到客户端断开 —— 期间服务端可经
-            // broadcastNotification()/logMessage() 主动推送通知。注册为推送目标,
-            // 连接断开由 sigDestroyed 自动移除。
-            JZHttpRespone head = resp;
-            head.setStatusCode(200);
-            head.setHeader("Content-Type", "text/event-stream");
-            head.setHeader("Cache-Control", "no-cache");
-            head.setHeader("X-Accel-Buffering", "no");   // 关掉反代缓冲
-            client->write(head.toHeadByteArray(0, false), false);
-            const std::string sse_hello = ": connected\n\n";
-            client->write(sse_hello.data(), (int)sse_hello.size(), false);
+            // 开流用 JZHttpStream(不输出 Content-Length ⇒ 长连接, 由分块写入维持):
+            //   - 首帧发一个注释帧, 客户端据此确认流已建立;
+            //   - 流以 client 为父对象 ⇒ 客户端断开时随之析构, 这里只需 connect sigDestroyed 注销;
+            //   - 之后服务端主动推送(broadcastNotification/logMessage)与空闲心跳都走这条流。
+            // ⚠ 心跳必须留着: SSE 流上长期没有字节, 客户端的读体超时(undici bodyTimeout)
+            //   会到点报 "TypeError: terminated: Body Timeout Error"(addSseClient 里起的心跳)。
+            JZHttpStream* stream = new JZHttpStream(client);
+            stream->setSSE(true);
+            // 跨域(方便浏览器端 MCP 客户端调试), 与上面的普通响应保持一致
+            stream->setHeader("Access-Control-Allow-Origin", "*");
+            stream->setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+            stream->setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id");
+            stream->open();
+            stream->comment(" connected");
 
-            m_server->addSseClient(client);
-            connect(&client->sigDestroyed, [this, client](JZObject*) {
-                m_server->removeSseClient(client);
+            m_server->addSseClient(stream);
+            connect(&client->sigDestroyed, [this, stream](JZObject*) {
+                m_server->removeSseClient(stream);
             });
             return;
         }
@@ -210,23 +215,48 @@ bool JZMcpServer::processText(const std::string& in, ProcessCallback cb)
 // ======================================================================
 // SSE 推送流(GET /mcp 建立的服务器→客户端长连接)
 // ======================================================================
-void JZMcpServer::addSseClient(JZHttpServerClient* client)
+void JZMcpServer::addSseClient(JZHttpStream* stream)
 {
-    if (!client)
+    if (!stream)
         return;
-    std::lock_guard<std::mutex> lk(m_sseMutex);
-    m_sseClients.push_back({client->guardPointer(), client});
+
+    {
+        std::lock_guard<std::mutex> lk(m_sseMutex);
+        m_sseClients.push_back({stream->guardPointer(), stream});
+    }
+
+    // 心跳定时器只能在 server 自己的线程上 startTimer(JZObject::startTimer 有线程断言),
+    // 而本函数是 HTTP 网络线程调进来的 ⇒ 跳回 server 线程再起(server 没了就不执行)。
+    runOnObject(this, [this]() { ensureSseHeartbeatStarted(); });
 }
 
-void JZMcpServer::removeSseClient(JZHttpServerClient* client)
+void JZMcpServer::removeSseClient(JZHttpStream* stream)
 {
     std::lock_guard<std::mutex> lk(m_sseMutex);
     for (auto it = m_sseClients.begin(); it != m_sseClients.end();)
     {
-        if (it->client == client)
+        if (it->stream == stream)
             it = m_sseClients.erase(it);
         else
             ++it;
+    }
+    // 这里不停心跳: 本函数可能从网络线程(客户端析构)进来, 跨线程 killTimer 不安全;
+    // 下一次心跳发现没有订阅者会自己停掉。
+}
+
+void JZMcpServer::forEachSseClient(const std::function<void(JZHttpStream*)>& fn)
+{
+    // 拷贝快照后解锁再写: 避免在持有锁时回调到网络层; guard.object() 为空表示该流
+    // 已断开(对象析构中), 跳过即可, 不存在悬空写入。
+    std::vector<SseClient> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(m_sseMutex);
+        snapshot = m_sseClients;
+    }
+    for (const auto& e : snapshot)
+    {
+        if (e.guard.object() && e.stream)
+            fn(e.stream);
     }
 }
 
@@ -236,26 +266,51 @@ bool JZMcpServer::hasSseClients() const
     return !m_sseClients.empty();
 }
 
+void JZMcpServer::ensureSseHeartbeatStarted()
+{
+    if (m_sseHeartbeatMs <= 0)
+        return;
+
+    if (!m_sseHeartbeat)
+    {
+        m_sseHeartbeat = new JZTimer(this);
+        m_sseHeartbeat->setSingleShot(false);
+        connect(&m_sseHeartbeat->sigTimeout, [this]() { heartbeatTick(); });
+    }
+    if (!m_sseHeartbeat->isActive())
+        m_sseHeartbeat->start(m_sseHeartbeatMs);
+}
+
+void JZMcpServer::heartbeatTick()
+{
+    // 空闲的 SSE 流上什么都不发的话, 客户端读体会超时(undici bodyTimeout 默认 300s,
+    // 多数 MCP 客户端调到 30~60s)⇒ 报 "TypeError: terminated: Body Timeout Error"。
+    // SSE 注释帧(以 ':' 开头)不会被客户端当成事件, 纯粹保活。
+    forEachSseClient([](JZHttpStream* s) { s->comment(" ping"); });
+
+    // 没有订阅者了就停掉自己 —— 在定时器自己的线程上 stop, 不跨线程 killTimer
+    if (!hasSseClients() && m_sseHeartbeat)
+        m_sseHeartbeat->stop();
+}
+
+void JZMcpServer::setSseHeartbeatInterval(int ms)
+{
+    m_sseHeartbeatMs = ms;
+    if (m_sseHeartbeat && m_sseHeartbeat->isActive())
+    {
+        m_sseHeartbeat->stop();
+        if (ms > 0)
+            m_sseHeartbeat->start(ms);
+    }
+}
+
 void JZMcpServer::broadcastNotification(const std::string& jsonRpcNotification)
 {
     if (jsonRpcNotification.empty())
         return;
 
-    // SSE 帧: "data: <json>\n\n"
-    const std::string frame = std::string("data: ") + jsonRpcNotification + "\n\n";
-
-    // 拷贝快照后解锁再写: 避免在持有锁时回调到网络层; guard.object() 为空表示该连接
-    // 已断开(对象析构中), 跳过即可, 不存在悬空写入。
-    std::vector<SseClient> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(m_sseMutex);
-        snapshot = m_sseClients;
-    }
-    for (const auto& e : snapshot)
-    {
-        if (e.guard.object())
-            e.client->write(frame.data(), (int)frame.size(), false);
-    }
+    // 走 JZHttpStream 的 SSE 帧封装(多行 data 也能正确分行)
+    forEachSseClient([&jsonRpcNotification](JZHttpStream* s) { s->send(jsonRpcNotification); });
 }
 
 void JZMcpServer::logMessage(const std::string& level, const std::string& message)

@@ -22,6 +22,7 @@ static const char *kProtocolVersion = "2026-07-28";
 
 static const char *kMetaProtocolVersion = "io.modelcontextprotocol/protocolVersion";
 static const char *kMetaClientInfo = "io.modelcontextprotocol/clientInfo";
+static const char *kMetaClientCapabilities = "io.modelcontextprotocol/clientCapabilities";
 
 static const int kClientError = -32000;      // 本地错误(超时 / 连接不可用)
 static const int kRequestCancelled = -32800; // MCP: 请求被客户端取消
@@ -363,14 +364,21 @@ Json::Value JZMcpClient::makeRequest(const std::string &method, const Json::Valu
     if (!params.isNull())
         req["params"] = params;
 
-    // 2026-07-28: 协议版本与客户端身份走每请求的 _meta
+    // 2026-07-28: 协议版本与客户端身份走每请求的"信封" _meta —— 规范里它挂在 **params._meta**
+    // (官方 jsonrpc 客户端就是这么发的; 官方 server 会校验 params._meta 里带 protocolVersion +
+    // clientCapabilities, 缺了直接回 -32602 "params._meta must be an object carrying ...")。
+    // 别再挂到请求顶层了: 那样只有"同样读顶层"的实现能认。
     Json::Value meta(Json::objectValue);
     meta[kMetaProtocolVersion] = protocolVersion.empty() ? std::string(kProtocolVersion) : protocolVersion;
     Json::Value clientInfo(Json::objectValue);
     clientInfo["name"] = "JZMcpClient";
     clientInfo["version"] = "1.0.0";
     meta[kMetaClientInfo] = clientInfo;
-    req["_meta"] = meta;
+    meta[kMetaClientCapabilities] = Json::Value(Json::objectValue);   // 目前不上报任何能力
+
+    if (!req["params"].isObject())
+        req["params"] = Json::Value(Json::objectValue);
+    req["params"]["_meta"] = meta;
 
     req["id"] = m_nextId++;
     return req;

@@ -7,6 +7,7 @@
 #include "JZJSUiLoader.h"
 #include "JZJSWidgetModule.h"
 #include "JZWidget.h"
+#include "JZMouseEvent.h"    // 右键菜单用例: 合成 Release + RightButton 事件
 #include "JZImage.h"
 #include "JZJSType.h"
 #include "JZTableWidget.h"
@@ -1082,6 +1083,76 @@ int main()
                       "})()"),
                   true);
         }
+    }
+
+    // 15) 右键菜单(contextMenuPolicy + onCustomContextMenuRequested): 与 Qt 同名同语义 ——
+    //     策略挂在控件上; 右键**释放**时沿父链向上找第一个"管这件事"的控件, 给它自己的局部坐标。
+    jzDebug() << "===== 右键菜单(策略 / 父链递交 / 坐标换算)演示 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
+        widgetModule.initEngine(&engine);
+
+        check("右键菜单: 策略常量挂在 JZWidget 构造器上",
+              evalStr(engine,
+                      "(typeof JZWidget === 'function'"
+                      " && JZWidget.NoContextMenu === 0 && JZWidget.PreventContextMenu === 1"
+                      " && JZWidget.DefaultContextMenu === 2 && JZWidget.ActionsContextMenu === 3"
+                      " && JZWidget.CustomContextMenu === 4) ? 'ok' : 'bad'")
+                  == "ok");
+
+        check("右键菜单: CustomContextMenu 回调收到本控件局部坐标",
+              evalStr(engine,
+                      "var cw = new JZWidget();"
+                      "globalThis.__ctx = '';"
+                      "cw.setContextMenuPolicy(JZWidget.CustomContextMenu);"
+                      "cw.onCustomContextMenuRequested = function (x, y) { globalThis.__ctx = x + ',' + y; };"
+                      "cw.requestContextMenu(7, 9);"
+                      "globalThis.__ctx + '|' + cw.contextMenuPolicy()")
+                  == "7,9|4");
+
+        check("右键菜单: 默认策略沿父链递交(坐标换算) + PreventContextMenu 就地吞掉",
+              evalStr(engine,
+                      "var pp = new JZWidget(); pp.setGeometry(0, 0, 200, 100);"
+                      "var ch = new JZWidget(); ch.setGeometry(10, 20, 50, 30); ch.setParentWidget(pp);"
+                      "globalThis.__up = '';"
+                      "pp.setContextMenuPolicy(JZWidget.CustomContextMenu);"
+                      "pp.onCustomContextMenuRequested = function (x, y) { globalThis.__up = x + ',' + y; };"
+                      "ch.requestContextMenu(5, 6);"                 // 子的局部 -> 父里是 15,26
+                      "var s = globalThis.__up;"
+                      "ch.setContextMenuPolicy(JZWidget.PreventContextMenu);"
+                      "globalThis.__up = '';"
+                      "ch.requestContextMenu(1, 2);"                 // 被吞掉: 父不再收到
+                      "s + '|' + globalThis.__up + '|' + String(new JZWidget().contextMenu() === null)")
+                  == "15,26||true");
+
+        check("右键菜单: ActionsContextMenu 借用菜单(setContextMenu 往返; 无窗口则不弹)",
+              evalStr(engine,
+                      "var aw = new JZWidget();"
+                      "var cm = new JZMenu(); cm.addAction('copy');"
+                      "aw.setContextMenu(cm);"
+                      "aw.setContextMenuPolicy(JZWidget.ActionsContextMenu);"
+                      "aw.requestContextMenu(0, 0);"                 // 没有所属窗口 -> 不弹(不阻塞)
+                      "var got = aw.contextMenu();"
+                      "String(got === cm) + '|' + got.actionCount()")
+                  == "true|1");
+
+        // 上面都是从 JS 直接调 requestContextMenu; 这里补"真鼠标事件"那条线: WM_RBUTTONUP 分派
+        // 到控件后才会走到上下文菜单流程(见 JZWidget::event)。
+        JZWidget host;
+        host.setContextMenuPolicy(JZWidget::CustomContextMenu);
+        int gotX = -1, gotY = -1;
+        connect(&host.sigCustomContextMenuRequested, [&](int x, int y) { gotX = x; gotY = y; });
+        JZMouseEvent rightUp(JZMouseEvent::Release, JZMouseEvent::RightButton, JZPoint(0, 0), JZPoint(3, 4));
+        jzApp->sendEvent(&host, &rightUp);
+        check("右键菜单: 鼠标右键 Release 触发(JZWidget::event 那条线)", gotX == 3 && gotY == 4);
+
+        gotX = -1;
+        JZMouseEvent leftUp(JZMouseEvent::Release, JZMouseEvent::LeftButton, JZPoint(0, 0), JZPoint(3, 4));
+        jzApp->sendEvent(&host, &leftUp);
+        check("右键菜单: 左键 Release 不触发", gotX == -1);
     }
 
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");

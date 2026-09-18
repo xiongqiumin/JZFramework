@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include "JZWidget.h"
+#include "JZMenu.h"
 #include "JZDebug.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
@@ -87,6 +88,7 @@ JZ_OBJECT_IMPL(JZWidget,JZObject)
 
 JZWidget::JZWidget(JZWidget* parent)
     : JZObject(parent)
+    , sigCustomContextMenuRequested(this)
 {
     m_minW = 0;
     m_minH = 0;
@@ -889,7 +891,14 @@ bool JZWidget::event(JZEvent* e)
         JZMouseEvent* me = (JZMouseEvent*)e;
         switch (me->mouseType()) {
         case JZMouseEvent::Press:   mousePressEvent(me);   return true;
-        case JZMouseEvent::Release: mouseReleaseEvent(me); return true;
+        case JZMouseEvent::Release:
+            mouseReleaseEvent(me);
+            // 右键释放 = 请求上下文菜单 (Qt 在收到 QContextMenuEvent 时才处理, Windows 上
+            // 同样是 WM_RBUTTONUP 之后)。放在 Release 之后: 列表/表格等控件先按右键更新
+            // 选中态, 菜单里的动作才作用在"刚点到那一项"上。
+            if (me->button() == JZMouseEvent::RightButton)
+                requestContextMenu(me->localPos());
+            return true;
         case JZMouseEvent::Move:    mouseMoveEvent(me);    return true;
         case JZMouseEvent::Wheel:   wheelEvent(me);        return true;
         }
@@ -1084,6 +1093,69 @@ void JZWidget::hideEvent(JZHideEvent*)
 {
     // 控件隐藏 (含所在窗口关闭) 时, 收起其悬浮提示, 避免残留
     hideTooltip();
+}
+
+// ==================== 右键菜单 ====================
+// 形态与 Qt 对齐: 策略 + 自定义菜单信号, 处理权沿父链递交。详见 JZWidget.h 的 ContextMenuPolicy。
+//
+// 默认 (NoContextMenu) 时本控件不管这件事 —— 请求沿父链向上递交, 于是"给整个面板设一次
+// CustomContextMenu"就能覆盖它里面所有子控件(Qt 同款: 处理权逐级交给父控件);
+// 想拦住某个子控件不给上面递, 把它设成 PreventContextMenu。
+
+void JZWidget::setContextMenu(JZMenu* menu)
+{
+    m_contextMenu = menu ? menu->guardPointer() : JZObjectPointer();
+}
+
+JZMenu* JZWidget::contextMenu() const
+{
+    JZObject* obj = m_contextMenu.object();
+    return obj ? static_cast<JZMenu*>(obj) : nullptr;
+}
+
+void JZWidget::requestContextMenu(const JZPoint& pos)
+{
+    // 沿父链找第一个"管这件事"的控件: pos 要一路换算到它的局部坐标(它收到的就是它自己的坐标,
+    // 与"右键点在这儿的控件"可能隔了好几层)。
+    JZPoint local = pos;
+    for (JZWidget* target = this; target; )
+    {
+        switch (target->m_contextMenuPolicy)
+        {
+        case PreventContextMenu:
+            return;                              // 就地吞掉
+        case ActionsContextMenu:
+            target->popupContextMenu(local);
+            return;
+        case CustomContextMenu:
+            target->sigCustomContextMenuRequested.emit(local.x(), local.y());
+            return;
+        default:
+            break;                               // NoContextMenu / DefaultContextMenu: 交给父控件
+        }
+
+        JZWidget* parent = target->parentWidget();
+        if (!parent)
+            return;
+        local = target->mapTo(parent, local);
+        target = parent;
+    }
+}
+
+// 自动弹菜单 (ActionsContextMenu): 锚点 = 点击处换算出的**屏幕逻辑坐标**做成一个 1×1 的矩形,
+// JZMenu::popup 会把它当成锚点矩形, 菜单贴它的下沿展开。
+void JZWidget::popupContextMenu(const JZPoint& pos)
+{
+    JZMenu* menu = contextMenu();
+    if (!menu)
+        return;
+
+    JZWindow* owner = window();
+    if (!owner)
+        return;
+
+    JZPoint gp = mapToGlobal(pos);
+    menu->popup(owner, JZRect(gp.x(), gp.y(), 1, 1));
 }
 
 // ==================== 悬浮提示 ====================

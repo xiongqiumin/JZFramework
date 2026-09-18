@@ -66,6 +66,7 @@ private:
 
 class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
 class JZStyleSheetParser;   // 样式表解析器 (控件级 setStyleSheet 持有, 见 JZStyleSheetParser.h)
+class JZMenu;    // 上下文菜单 (右键菜单; 见 setContextMenu / setContextMenuPolicy)
 
 class JZWidget : public JZObject
 {
@@ -198,6 +199,40 @@ public:
     void setTooltip(const JZString& tip);
     const JZString& tooltip() const;
 
+    // ---- 上下文菜单 (右键菜单, 等价 Qt 的 contextMenuPolicy / customContextMenuRequested) ----
+    // 触发时机: 右键**释放** (与 Windows WM_CONTEXTMENU / Qt 的默认时机一致) —— 放在
+    //   mouseReleaseEvent 之后, 于是列表/表格等控件先按右键更新选中态, 再轮到菜单。
+    // 处理权沿父链向上递交: 策略为 NoContextMenu (= 默认, "本控件没有菜单")时交给父控件,
+    //   直到某个控件的策略不是 NoContextMenu (Qt 同款语义); PreventContextMenu 就地吞掉。
+    //
+    // 两种用法 (对应 Qt 的两种主要策略):
+    //   CustomContextMenu  —— 发 sigCustomContextMenuRequested(x, y): x/y 是**发起者控件**的
+    //                         局部坐标, 菜单由接收方自己弹 (menu->popup(window(), ...), 屏幕坐标);
+    //   ActionsContextMenu —— 直接弹 setContextMenu() 挂上的那份菜单。
+    enum ContextMenuPolicy {
+        NoContextMenu,        // 0 (默认): 没有菜单, 交给父控件
+        PreventContextMenu,   // 1: 吞掉请求, 到此为止
+        DefaultContextMenu,   // 2: 预留给"由子类提供默认菜单"(当前等同 NoContextMenu)
+        ActionsContextMenu,   // 3: 弹 setContextMenu() 挂的那份菜单
+        CustomContextMenu,    // 4: 发 sigCustomContextMenuRequested(x, y)
+    };
+    void setContextMenuPolicy(ContextMenuPolicy policy) { m_contextMenuPolicy = policy; }
+    ContextMenuPolicy contextMenuPolicy() const { return m_contextMenuPolicy; }
+
+    // 挂一份右键菜单 (只有策略为 ActionsContextMenu 时由框架自动弹)。
+    // **借用**: 菜单的存活由调用方负责 —— 与 JS 侧的 `new JZMenu()` 归 JS 拥有同一套路
+    // (对照 setLayoutFromJs), 控件只持守卫: 菜单先没了自己变成空, 不会留下悬垂指针。
+    void setContextMenu(JZMenu* menu);
+    JZMenu* contextMenu() const;
+
+    // 走一遍上下文菜单流程 (pos = 本控件局部坐标): 策略处理 + 向上递交。
+    // 也是程序/AI 合成的触发入口 (`w->requestContextMenu(w->rect().center())`)。
+    void requestContextMenu(const JZPoint& pos);
+
+jz_signals:
+    JZSignal<int, int> sigCustomContextMenuRequested;   // (x, y) 发起者控件的局部坐标
+
+public:
     // 布局 (Qt 语义, 对齐 QWidget::setLayout):
     //   一个控件最多一个布局, 只在**还没有布局**时能设:
     //     * 已有布局时再 setLayout → 警告并忽略(Qt 同款行为: 新布局不被接管, 由调用方自行释放);
@@ -397,6 +432,12 @@ protected:
     // (对应 Qt "布局析构时同步把所属控件的布局指针置空", 保证 delete layout / clearLayout 不留悬垂)。
     void _clearLayoutPointer(JZLayout* layout);
     std::vector<JZLayout*> m_layoutOwners;   // 引用本控件的布局 (析构时自动摘除)
+
+    // ---- 右键菜单内部实现 (见 ContextMenuPolicy) ----
+    void popupContextMenu(const JZPoint& pos);   // 弹 m_contextMenu(ActionsContextMenu 走到这里)
+
+    ContextMenuPolicy m_contextMenuPolicy = NoContextMenu;
+    JZObjectPointer   m_contextMenu;     // 借用: 菜单活着就用, 没了就自然失效
 
     // ---- 悬浮提示内部实现 (setTooltip 设置文本; enterEvent 起延时, 到时显示; leaveEvent 收起) ----
     void showTooltip();

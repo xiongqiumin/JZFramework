@@ -76,6 +76,7 @@ defProps(typeof JZWidget !== 'undefined' ? JZWidget : undefined, [
 ]);
 
 // ---- 信号(与 C++ 侧 defSignalProperty 一一对应) ----
+defProps(typeof JZWidget !== 'undefined' ? JZWidget : undefined, ['onCustomContextMenuRequested']);
 defProps(typeof JZDialog !== 'undefined' ? JZDialog : undefined, ['onAccepted', 'onRejected', 'onFinished']);
 defProps(typeof JZMenu !== 'undefined' ? JZMenu : undefined, ['onActionTriggered']);
 defProps(typeof JZAction !== 'undefined' ? JZAction : undefined, ['onTriggered']);

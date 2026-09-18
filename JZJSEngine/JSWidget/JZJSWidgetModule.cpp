@@ -398,6 +398,22 @@ void JZJSWidgetModule::defNative(JSValue proto, const char* name, JSCFunction* f
                               JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
 }
 
+// 把整数常量挂到某个已存在的全局类(构造器)上 —— JS 侧 `JZWidget.CustomContextMenu` 取到。
+// 与 JZChart 的类型常量同一套路: def() 注册的是**原型方法**, 静态值只能挂在构造器本身。
+// 类还不存在(没加载 widget/dist/classes.js)就静默跳过: 没有类也就没有可写 JS。
+void JZJSWidgetModule::defClassInt(const char* className, const char* name, int value)
+{
+    JSContext* ctx = m_engine->context();
+    JSValue cls = JS_GetPropertyStr(ctx, m_engine->globalObject(), className);
+    if (!JS_IsObject(cls))
+    {
+        JS_FreeValue(ctx, cls);
+        return;
+    }
+    JS_SetPropertyStr(ctx, cls, name, JS_NewInt32(ctx, value));
+    JS_FreeValue(ctx, cls);
+}
+
 // ============================================================================
 // 透明控件类: 原生方法(def) / 初始化入口(setInit) / 类查找
 // ============================================================================
@@ -1688,6 +1704,34 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("setMaximumHeight", [](JZWidget* w, int v) { w->setMaximumHeight(v); });
     // 自身矩形(控件本地坐标: x/y 为 0), 绘制回调里填背景用
     bind_w.def("rect", [](JZWidget* w) { return w->rect(); });
+
+    // ---- 右键菜单 (见 JZWidget::ContextMenuPolicy) ----
+    bind_w.def("setContextMenuPolicy", [](JZWidget* w, int policy) {
+        w->setContextMenuPolicy((JZWidget::ContextMenuPolicy)policy);
+    });
+    bind_w.def("contextMenuPolicy", [](JZWidget* w) { return (int)w->contextMenuPolicy(); });
+    // 菜单是**借用**的(详见 JZWidget::setContextMenu): 控件持守卫不负责 delete, 也**不替它保活**
+    // —— JS 侧那份被 GC 就把真菜单删了, 收到影子时 contextMenu() 会返回 null。
+    // setContextMenu(null) = 解挂。
+    auto func_setContextMenu = bind_w.def("setContextMenu", [](JZWidget* w, JZMenu* m) { w->setContextMenu(m); });
+    func_setContextMenu->params[1].allowNull = true;
+    bind_w.def("contextMenu", [this](JZWidget* w) -> JSValue {
+        JZMenu* menu = w->contextMenu();
+        if (!menu)
+            return JS_NULL;
+        JSValue v = jsValueOf(menu);
+        return JS_IsUndefined(v) ? JS_NULL : JS_DupValue(m_engine->context(), v);
+    });
+    // 程序化触发同一套流程(AI / 测试: 坐标是本控件局部坐标)
+    bind_w.def("requestContextMenu", [](JZWidget* w, int x, int y) { w->requestContextMenu(JZPoint(x, y)); });
+    defSignalProperty(bind_w, "onCustomContextMenuRequested", &JZWidget::sigCustomContextMenuRequested);
+
+    // 策略常量: JS 侧 `JZWidget.CustomContextMenu` / `JZLabel.NoContextMenu`(子类构造器也能取到)
+    defClassInt("JZWidget", "NoContextMenu", (int)JZWidget::NoContextMenu);
+    defClassInt("JZWidget", "PreventContextMenu", (int)JZWidget::PreventContextMenu);
+    defClassInt("JZWidget", "DefaultContextMenu", (int)JZWidget::DefaultContextMenu);
+    defClassInt("JZWidget", "ActionsContextMenu", (int)JZWidget::ActionsContextMenu);
+    defClassInt("JZWidget", "CustomContextMenu", (int)JZWidget::CustomContextMenu);
 
     // 通用属性(setProperty/property): **不在 C++ 侧绑** —— 由 @jz/widget 的 props.ts 在 JS 侧
     // 用 WeakMap 存(见那里的说明: 值本来就是 JS 值, 绕 C++ 只会多一层转换与生命周期)。

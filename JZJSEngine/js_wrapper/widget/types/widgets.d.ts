@@ -115,6 +115,25 @@ declare class JZWidget {
   clearLayout(): void;
   layout(): JZLayout | null;
 
+  /**
+   * 右键菜单策略。触发时机是**右键释放**(与 Windows/Qt 默认一致), 且处理权沿父链向上递交:
+   * 策略为 NoContextMenu(默认, 即"本控件没有菜单")时交给父控件 —— 于是给容器设一次
+   * CustomContextMenu 就能覆盖它里面所有控件; PreventContextMenu 则就地吞掉。
+   * 取值: JZWidget.NoContextMenu / PreventContextMenu / DefaultContextMenu /
+   *       ActionsContextMenu / CustomContextMenu
+   */
+  setContextMenuPolicy(policy: number): void;
+  contextMenuPolicy(): number;
+  /**
+   * 挂一份右键菜单 —— 只有策略为 ActionsContextMenu 时由框架自动弹出(锚点即鼠标位置)。
+   * **借用**: 控件不负责它的存活(C++ 也不替它保活), 菜单对象被 GC 这里就自然失效
+   * (contextMenu() 转 null); 传 null 解挂。想长期有效就自己留引用, 例如 w.setProperty('menu', m)。
+   */
+  setContextMenu(menu: JZMenu | null): void;
+  contextMenu(): JZMenu | null;
+  /** 程序化触发同一套流程(坐标是本控件局部坐标; AI / 测试用), 等价于右键点了这一下 */
+  requestContextMenu(x: number, y: number): void;
+
   // ---- 提示 / 样式表 ----
   setTooltip(text: string): void;
   tooltip(): string;
@@ -153,6 +172,18 @@ declare class JZWidget {
   onResize?: (event: JZResizeEvent) => void;
   onKeyPress?: (event: JZKeyEvent) => void;
   onKeyRelease?: (event: JZKeyEvent) => void;
+  /**
+   * 右键菜单请求(策略为 CustomContextMenu 时才有)。x / y 是**接收请求的那个控件**的局部坐标
+   * —— 最常见用法: `new JZPoint(x, y)` 经 `this.mapToGlobal(...)` 转成屏幕坐标后交给 menu.popup()。
+   */
+  onCustomContextMenuRequested?: (x: number, y: number) => void;
+
+  // ---- 右键菜单策略常量(C++ 侧挂在**构造器**上, 子类也能取到: JZLabel.CustomContextMenu) ----
+  static readonly NoContextMenu: number;
+  static readonly PreventContextMenu: number;
+  static readonly DefaultContextMenu: number;
+  static readonly ActionsContextMenu: number;
+  static readonly CustomContextMenu: number;
 }
 
 // 顶层窗口。构造实参: () / (parent) / (w, h) / (w, h, title) / (w, h, title, parent)。

@@ -178,6 +178,9 @@ public:
 
     // 往原型上挂一个原生方法(就是 JS_NewCFunction, 不经引擎的形参表/magic 分发)
     void defNative(JSValue proto, const char* name, JSCFunction* fn, int length);
+    // 往某个已存在的全局类(**构造器**)上挂整数常量: JS 侧 `JZWidget.CustomContextMenu` 取到。
+    // def() 挂的是原型方法, 静态值只能挂构造器; 类不存在就静默跳过。
+    void defClassInt(const char* className, const char* name, int value);
     // 建 op 槽所需的类与基构造器(initEngine 里调)
     void initWidgetOpClass();
     // 加载 TS 类层(js_wrapper/widget/dist/classes.js —— 定义全局控件类), 之后 C++ 把方法挂到这些类

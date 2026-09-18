@@ -86,6 +86,12 @@ public:
     int row(const JZTableWidgetItem* item) const;              // 不在本表返回 -1   (Qt: row(item))
     int column(const JZTableWidgetItem* item) const;           //                  (Qt: column(item))
 
+    // 数据变了(行列增删 / 单元格文本/图标/data / 表头)就发一次 sigDataChanged —— JS 侧的
+    // "视图镜像"(`@jz/widget` 的 dataview)靠它把控件侧的变化回灌到 JS。
+    // ⚠ 视图自己发起的那次变更也会发信号: 视图侧要设静默标志, 否则回灌成环。
+    // 只发信号, 不负责重绘/尺寸刷新(调用点各自保留原有行为)。
+    void notifyDataChanged();
+
     // 便捷值访问(等价 item(row,col)->text(): 写时自动建 item, 读时无单元格返回空串)
     void setItemText(int row, int col, const std::string& text);
     std::string itemText(int row, int col) const;
@@ -112,6 +118,7 @@ public:
 jz_signals:
     JZSigInt currentRowChanged;
     JZSigInt currentColumnChanged;
+    JZSigVoid sigDataChanged;   // 数据(行列/单元格/表头)变化 —— 供 JS 侧视图镜像刷新
 
 protected:
     void showEvent(JZShowEvent* e) override;

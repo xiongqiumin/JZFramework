@@ -21,13 +21,24 @@
 //   绘制用全局 JZPainter(见 ./types/painter.d.ts)。要建真实界面请直接用全局类;
 //   本模块只在你实现"UI 定义 -> 数据树"这一层(如 .ui 代码生成)时才需要。
 //
-// 另外本模块**顺带**给真控件装上对象树支持(./tree.ts: 父子登记 + 保活 + 子控件弱引用父,
-// 以及 setParent() / parent() / children() / JZLayout.children() / JZLayout.parentWidget())。
-// 那些方法是 C++ 侧还没注册的, 所以**必须 import 本包才可用**(模块加载即装上, 幂等):
-//   import '@jz/widget';
+// 另外本模块**顺带**干两件事(引擎装配 widget 模块时会加载本包, 加载即生效, 幂等):
+//   1. 定义控件族的**类层**(./classes.ts): JZWidget/JZWindow/JZLabel... 全局类在这里定义,
+//      构造器转发给 C 侧的 init_c_xxx; 方法由 C++ 挂到这些原型上。控件族对 JZJSEngine 透明
+//      (引擎不注册它们), 类型契约见 ./types/*.d.ts。
+//   2. 给真控件装上对象树支持(./tree.ts: 父子登记 + 保活 + 子控件弱引用父, 以及
+//      setParent() / parent() / children() / JZLayout.children() / JZLayout.parentWidget())。
+//      那些方法是 C++ 侧还没注册的, 所以**必须 import 本包才可用**:
+//        import '@jz/widget';
+// 顺序要紧: 先类层(定义全局类), 再 tree(往那些原型上装方法)。
+
+// 控件族的类层(必须最先执行)
+import './classes';
 
 // 真控件的对象树(保活 / 弱引用父) —— 模块加载即装到全局类的原型上, 见 ./tree.ts
 export * from './tree';
+
+// 列表/表格的视图镜像(JZTableWidget/JZListWidget 的 dataView()) —— 同样挂在原型上, 见 ./dataview.ts
+export * from './dataview';
 
 export type EventName = string;
 export type Handler = (...args: any[]) => void;

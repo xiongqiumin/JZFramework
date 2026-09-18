@@ -152,6 +152,13 @@ struct CDataFunction
     std::vector<JSValue> data;    // 原样透传给 C 函数(注册时 quickjs 会对每个元素 dup 一份)
 };
 
+// 指针语义类(JZObject 派生)的 opaque 约定: 存 **JZObjectPointer*** (JZCore 现成的共享守卫的堆副本),
+// 而不是底层对象裸指针。为什么:
+//   ① 所有权一直在 JS 侧(对象由建它的 JS 对象负责 delete), 但底层对象也可能**先被 C++ 侧删掉**
+//      (控件挂进对象树后由父控件 delete)。裸指针这时就是 UAF、GC 时再 delete 就是 double free;
+//      JZObjectPointer 由 ~JZObject 置空, 于是"已销毁"能被认出来(调用抛异常、终结时跳过 delete)。
+//   ② 不引入所有权翻转: 谁删都可能, 守卫决定"还该不该删"。
+// 释放: JZClassDefine::destory 负责 —— object() 还有就 delete 对象, 再 delete 守卫本身。
 class CClassDefine
 {
 public:
@@ -159,6 +166,10 @@ public:
     // 仅当类无默认构造(如 JZPainter 必须传 widget)或需要构造参数时才用 setCreate 覆盖。
     std::function<void*(JZJSEngine*, int, JSValueConst*)> create;
     std::function<void(void*)> destory;
+
+    // opaque 是 JZObjectPointer*(JZObject 派生类: 控件/窗口/菜单/对话框...), 而不是裸对象指针。
+    // 由 ClassBind 按 `Class 是否派生自 JZObject` 自动置位; 非 JZObject 的类(值类型/JZPainter/item)保持裸指针。
+    bool guardedOpaque = false;
 
     std::string name;
     std::string ctypeid;
@@ -220,7 +231,7 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
     if (JS_IsNull(value) || JS_IsUndefined(value))
         return nullptr;
 
-    // 必须是对象(原始类或 JSRawPointer 包装类); 主动判断 value 是否为对象
+    // 必须是对象(注册类对象); 主动判断 value 是否为对象
     JSClassID class_id;
     void* ptr = JS_GetAnyOpaque(value, &class_id);
     if (!ptr)
@@ -229,7 +240,9 @@ T fromJSValuePointer(JSContext* ctx, JSValueConst value, std::true_type)
         return nullptr;
     }
 
-    return (T)ptr;
+    // 指针语义类: opaque 是 JZObjectPointer(守卫) -> 解出底层对象; 对象已被删掉时抛异常(不是 UAF)
+    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    return (T)engine->objectFromOpaque((int)class_id, ptr);
 }
 
 template <class T>
@@ -258,10 +271,15 @@ T fromJSValueVector(JSContext* ctx, JSValueConst value, std::false_type)
     jstype::check_forbid_reference<T, std::string>();
     jstype::check_forbid_reference<T, Json::Value>();
 
-    JSClassID class_id;
-    auto ptr = JS_GetAnyOpaque(value, &class_id);
-    JZ_ASSERT(!ptr);
-    return *((Base*)ptr);
+    using RawType = std::remove_cv_t<std::remove_reference_t<T>>;
+
+    // 值语义类对象形参(JZFont / JZColor / JZRect / JZPen ...): opaque 就是对象本身(裸指针),
+    // 按形参类型(值 / const 引用)直接取出。
+    JSClassID class_id = 0;
+    auto* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    void* ptr = engine->objectFromOpaque((int)JS_GetClassID(value), JS_GetAnyOpaque(value, &class_id));
+    JZ_ASSERT_X(ptr, "fromJSValue: 参数不是注册类对象(上层应已校验)");
+    return *((RawType*)ptr);
 }
 
 template <class T>

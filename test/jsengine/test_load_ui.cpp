@@ -65,6 +65,7 @@ int main(int argc, char** argv)
     JZJSEngine engine;
     engine.init();
     JZJSWidgetModule widgetModule;
+    engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
     widgetModule.initEngine(&engine);
 
     JSValue ui = loader.createUi(&engine);

@@ -218,6 +218,17 @@ public:
     // (addWidget/setParentWidget 之外的另一条登记入口, 见 JZJSWidgetModule::registerCreatedWidget)。
     void setWidgetModule(JZJSWidgetModule* module);
     JZJSWidgetModule* widgetModule() const;
+    // 透明控件类的 op class(见 JZJSWidgetModule::initWidgetOpClass): 由 widget 模块登记, 引擎靠它
+    // 认出"这个 opaque 是守卫而不是裸指针"(isGuardedClass)。0 = 没有透明控件类。
+    void setWidgetOpClassId(int class_id) { m_widgetOpClassId = class_id; }
+    int widgetOpClassId() const { return m_widgetOpClassId; }
+
+    // ---- create 造出 JS 对象之后的回调(绑定层用) ----
+    // 为什么需要: `new JZLabel(...)` 走到 create 时 JS 对象还不存在, 而"宿主句柄"(把 JS 对象记到
+    // C++ 对象上, 见 JZJSWidgetModule 的 js_value)必须在这一刻就建立 —— 事件派发、getter 复用
+    // 同一个 JS 对象、所有权翻转都靠它。回调里拿到的是**借用**的 JSValue(要留就自己 dup)。
+    typedef std::function<void(int type, JSValueConst object, void* ptr)> JZObjectCreatedCallback;
+    void setObjectCreatedCallback(JZObjectCreatedCallback cb) { m_objectCreated = std::move(cb); }
 
     // 创建 worker(任意线程可调: 内部保证在主线程建线程对象并等它就绪)。失败返回 -1。
     int spawnWorker(const std::string& entry, const JZByteArray& workerData,
@@ -312,6 +323,9 @@ public:
     //   vector<int>* v = r[0].vec_int_ptr; return new JZPoint((*v)[0], (*v)[1]);
     // 仅适用于构造器(JS new Cls(...)): 实参 argc/argv 取自首层 createValue。
     int checkAndSetArgs(const std::string& format, std::vector<ArgResult>* result);
+    // 把"当前构造实参"交给 checkAndSetArgs —— createValue(type, argc, argv) 之外还想复用同一套
+    // 实参解析时必须先喂一次(例: 透明控件类的 init_c_xxx(this, ...) 复用既有 js_JZxxx_ctor)。
+    void setCurrentArgs(int argc, JSValueConst* argv) { m_currentArgc = argc; m_currentArgv = argv; }
     bool canConvert(int from_type, int to_type);
 
     // 单个形参的转换前校验(同步 call / 异步 callAsync 共用, 避免两条路校验不一致):
@@ -330,7 +344,21 @@ public:
     JSValue globalObject();
     JSValue createObject();
     JSValue createValue(int type, int argc, JSValueConst* argv);
-    JSValue createValue(int type, void *ptr);    
+    // ptr: 底层对象(非空, 由 create 造出来)。
+    // opaque 的形态由 define.guardedOpaque 决定: JZObject 派生类存 JZObjectPointer*(守卫), 其余存裸指针。
+    JSValue createValue(int type, void *ptr);
+
+    // opaque -> 底层对象. guardedOpaque 的类解守卫(对象已销毁 -> 抛异常 + 返回 nullptr);
+    // 其余类原样返回 opaque。
+    void* objectFromOpaque(int class_id, void* opaque);
+    bool isGuardedClass(int class_id) const;
+    // 该 **type** 的类是不是"指针语义 + JZObject 派生"(opaque = 守卫)? 绑定层用它分辨
+    // onJsObjectCreated 回调里的 ptr 到底是什么(值类型指针 / JZObject / 借出去的视图)。
+    bool isGuardedType(int type) { return isGuardedClass(typeToJSType(type)); }
+
+    // 把"借给 JS 看的视图对象"作废: 释放守卫并置空 opaque(之后 JS 从它拿不到对象, 也不会删对象)。
+    // 用于借出去的东西是 C++ 自己负责生命周期的(如栈上的事件对象)。
+    void disarmOpaque(JSValue obj);
 
     void freeValue(JSValue value);
     JSValue dupValue(JSValue value);
@@ -352,6 +380,9 @@ public:
         return ::toJSValue(m_ctx, t);
     }
     
+    // 裸指针 -> JS 视图(造一份守卫句柄; 对象被销毁后这份视图自动失效: 用它抛异常, 不会 UAF)。
+    // 注意: 视图的终结会**按守卫决定要不要 delete** —— 借出去的对象若不由 JS 拥有,
+    //      用完请调 disarmOpaque()(如 forwardJs 里的栈事件对象)。
     template <class T>
     JSValue toJsValueFromPtr(T* ptr)
     {
@@ -361,8 +392,10 @@ public:
         int type = ctypeidToType(typeid(*ptr).name());
         if (type == JSType_none)
             type = ctypeidToType(typeid(T).name());
+        if (type == JSType_none)
+            return JS_NULL;    // 未注册的类(如 JZWidget 家族的新式绑定)由绑定层自己造视图
 
-        return createValue(type, base);
+        return createValue(type, (void*)ptr);
     }
 
     template <class T>
@@ -509,7 +542,6 @@ protected:
     void initTypeMap();
     void initJSEnv();
     void deinitJSEnv();
-    void clearPointerStates();
 
     void registInternal();
     void registConsole();
@@ -611,13 +643,16 @@ protected:
     std::map<int, WorkerEntry> m_workers;
     JZJSWorkerModule* m_workerModule;   // 本引擎的 worker 模块(未装为空)
     JZJSWidgetModule* m_widgetModule;   // 本引擎的 widget 模块(未装为空; 见 setWidgetModule)
+    int m_widgetOpClassId = 0;          // 透明控件类的 op class(见 setWidgetOpClassId)
+    JZObjectCreatedCallback m_objectCreated;   // 见 setObjectCreatedCallback
 };
 
+// 兼容旧签名的转发: cppOwner 已无意义(指针不再有"所有权翻转"的包装), 一律按"造一份守卫视图"处理。
 template <class T>
-JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool cppOwner)
+JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool /*cppOwner*/)
 {
     JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-    return engine->toJsValueFromPtr(ptr, cppOwner);
+    return engine->toJsValueFromPtr(ptr);
 }
 
 #endif  // !JS_ENGINE_H_

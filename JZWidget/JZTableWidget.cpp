@@ -18,6 +18,7 @@ JZTableWidget::JZTableWidget(JZWidget* parent)
     : JZAbstractViewWidget(parent)
     , currentRowChanged(this)
     , currentColumnChanged(this)
+    , sigDataChanged(this)
 {}
 
 JZTableWidget::~JZTableWidget()
@@ -35,19 +36,30 @@ void JZTableWidgetItem::setText(const std::string& t)
 {
     m_text = t;
     if (m_table)
+    {
         m_table->update();
+        m_table->notifyDataChanged();
+    }
 }
 
 void JZTableWidgetItem::setIcon(const JZImage& i)
 {
     m_icon = i;
     if (m_table)
+    {
         m_table->update();
+        m_table->notifyDataChanged();
+    }
 }
 
 void JZTableWidgetItem::setData(const JZVariant& d)
 {
     m_data = d;
+    if (m_table)
+    {
+        m_table->update();   // 自定义 itemPaint 可能依据 data 绘制, 故同样重绘
+        m_table->notifyDataChanged();
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -123,6 +135,7 @@ void JZTableWidget::setItem(int row, int col, JZTableWidgetItem* item)
 
     placeItem(row, col, std::unique_ptr<JZTableWidgetItem>(item));
     invalidateAll();
+    notifyDataChanged();
 }
 
 JZTableWidgetItem* JZTableWidget::item(int row, int col) const
@@ -139,6 +152,7 @@ JZTableWidgetItem* JZTableWidget::takeItem(int row, int col)
         return nullptr;
 
     invalidateAll();
+    notifyDataChanged();
     return item.release();      // 所有权交回调用方
 }
 
@@ -190,6 +204,7 @@ void JZTableWidget::setColumnCount(int cols)
 
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 int JZTableWidget::columnCount() const
@@ -214,6 +229,7 @@ void JZTableWidget::setRowCount(int rows)
 
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 int JZTableWidget::rowCount() const
@@ -234,6 +250,7 @@ void JZTableWidget::insertRow(int row)
     reindexItems();
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 void JZTableWidget::removeRow(int row)
@@ -255,6 +272,7 @@ void JZTableWidget::removeRow(int row)
     reindexItems();
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 void JZTableWidget::insertColumn(int col)
@@ -274,6 +292,7 @@ void JZTableWidget::insertColumn(int col)
     reindexItems();
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 void JZTableWidget::removeColumn(int col)
@@ -305,6 +324,7 @@ void JZTableWidget::removeColumn(int col)
     reindexItems();
     updateContentSize();
     invalidateAll();
+    notifyDataChanged();
 }
 
 void JZTableWidget::clearContents()
@@ -318,6 +338,7 @@ void JZTableWidget::clearContents()
     m_curRow = -1;
     m_curCol = -1;
     invalidateAll();
+    notifyDataChanged();
 }
 
 void JZTableWidget::clear()
@@ -325,6 +346,12 @@ void JZTableWidget::clear()
     clearContents();
     m_headerLabels.clear();
     invalidateAll();
+    notifyDataChanged();   // 表头也算数据(视图镜像里带列标题)
+}
+
+void JZTableWidget::notifyDataChanged()
+{
+    sigDataChanged.emit();
 }
 
 void JZTableWidget::setItemText(int row, int col, const std::string& text)
@@ -341,6 +368,7 @@ void JZTableWidget::setItemText(int row, int col, const std::string& text)
 
     placeItem(row, col, std::unique_ptr<JZTableWidgetItem>(new JZTableWidgetItem(text)));
     invalidateAll();
+    notifyDataChanged();
 }
 
 std::string JZTableWidget::itemText(int row, int col) const
@@ -375,6 +403,7 @@ void JZTableWidget::setHorizontalHeaderLabels(const std::vector<std::string>& la
 {
     m_headerLabels = labels;
     update();
+    notifyDataChanged();
 }
 
 void JZTableWidget::setRowHeight(int h)

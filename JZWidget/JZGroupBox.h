@@ -26,6 +26,10 @@ public:
 
     // 同普通控件: 把布局应用到内部内容区 (等价 contentWidget()->setLayout)
     void setLayout(JZLayout* layout);
+    // 绑定层走这两个虚口子: 布局/清空都转发到内部内容区(内容区同样是"只借用不 delete")
+    void setLayoutFromJs(JZLayout* layout) override;
+    JZLayout* appliedLayout() const override;
+    void clearLayout() override;
 
 protected:
     void paintEvent(JZPainterEvent* event) override;

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <climits>
 
+JZ_OBJECT_IMPL(JZLayout, JZObject)
+
 namespace {
 
 // 在单条轴上, 依据 min/max/weight 把可用空间分配给各单元。

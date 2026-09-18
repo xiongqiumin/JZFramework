@@ -303,10 +303,7 @@ public:
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
         m_define.create = makeDefaultCreate<Class>();
-        // 经多态基类释放: opaque 的实际包装类型未必与注册的 Class 对应
-        // (JZObject 派生类用 JSObjectPointer, 其余用 JSRawPointer<T>), 按具体类型强转再 delete 是 UB。
-        // JSPointerBase 有虚析构, 可安全释放任意包装。
-        m_define.destory = [](void* p) { delete p; };
+        initOpaqueConvention();
     }
 
     // 继承: 声明 Class 公开继承 Base(单继承)。
@@ -319,9 +316,34 @@ public:
         m_define.name = name;
         m_define.ctypeid = typeid(Class).name();
         m_define.create = makeDefaultCreate<Class>();
-        // 同上一处: 经 JSPointerBase(虚析构)释放, 不按具体包装类型强转。
-        m_define.destory = [](void* p) { delete p; };
+        initOpaqueConvention();
         m_define.superCTypeid = super.classDefine().ctypeid;
+    }
+
+    // opaque 约定(见 CClassDefine::guardedOpaque):
+    //   JZObject 派生类(控件/窗口/菜单/对话框...)的 opaque 是 JZObjectPointer*(守卫) ——
+    //     所有权在 JS 侧(JS 对象终结时 delete 底层对象), 但对象也可能先被 C++(父控件)删掉,
+    //     守卫能认出"已销毁", 于是这里只删还活着的那个, 天然防重复删除;
+    //   其余类(值类型/JZPainter/item)的 opaque 就是裸对象指针, JS 拥有, 终结时 delete。
+    // destory 的语义 = "释放 opaque"(不是"释放对象")。
+    void initOpaqueConvention()
+    {
+        if (std::is_base_of<JZObject, Class>::value)
+        {
+            m_define.guardedOpaque = true;
+            m_define.destory = [](void* p) {
+                JZObjectPointer* guard = (JZObjectPointer*)p;
+                if (!guard)
+                    return;
+                if (guard->object())
+                    delete guard->object();   // 还活着 -> 由建它的 JS 对象收尾(已销毁则父控件删过了)
+                delete guard;
+            };
+        }
+        else
+        {
+            m_define.destory = [](void* p) { delete p; };
+        }
     }
 
     // 自定义构造(无默认构造/需参数/需回写 JS 句柄的类): 覆盖默认工厂。

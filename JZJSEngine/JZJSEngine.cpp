@@ -404,8 +404,8 @@ void JZJSEngine::deinit()
     if (m_mainEngine == this)
         m_mainEngine = nullptr;
 
-    // 统一放掉身份表里托管的句柄(必须在 deinitJSEnv / JS_FreeContext 之前 —— 那之后不能再碰 JSValue)。
-    clearPointerStates();
+    // 注: 旧"指针身份表 + 托管句柄"已随包装层一起删除(2026-09-17), 这里不再有需要统一放掉的句柄 ——
+    //     对象的 JS 侧状态(opaque 里的守卫 / C++ 对象上的 js_value)都随各自的对象生命周期走。
 
     deinitJSEnv();
 }
@@ -1070,7 +1070,14 @@ void JZJSEngine::registClass(const CClassDefine& define, int define_id)
         return;
     }
 
-    JSClassID js_class_id = object_id;
+    // ⚠ 类 id 必须由 quickjs 发号, 别拿引擎的"类型号"当 classID: 两者是**两套号段**
+    // (类型号从 JSType_objectUser 起, quickjs 的 classID 由 JS_NewClassID 全局递增发号),
+    // 混用就会与其它用 JS_NewClassID 的模块(控件族的 op 类等)撞号。撞号后 jsValueType()
+    // 会把控件对象当成某个引擎类 -> 形参校验/转换时好时坏(2026-09-18 抓到的偶发崩就是它:
+    // 同一个 JZWindow 有时 checkType(v,"JZWidget")==false, js_JZLabel_ctor 进而抛"参数不匹配")。
+    // 两套号靠 m_jsTypeMap 关联(见 registType / jsTypeToType)。
+    JSClassID js_class_id = 0;
+    JS_NewClassID(m_rt, &js_class_id);
 
     auto funcList = std::make_shared<vector<JSCFunctionListEntry>>();
 
@@ -1302,7 +1309,10 @@ string JZJSEngine::printObject(JSValue value)
 bool JZJSEngine::isVectorType(int type)
 {
     auto it = m_typeMap.find(type);
-    assert(it != m_typeMap.end());
+    // 查不到就是"没这个类型"(见 checkType 的说明) —— 以前这里 assert + 直接解 end(), Release 下
+    // 是 UB(读出来的 valueType 随机), 会让同一个值时而当 vector 时而当别的。
+    if (it == m_typeMap.end())
+        return false;
 
     return (it->second.valueType != JSType_none);
 }
@@ -1427,6 +1437,14 @@ bool JZJSEngine::canConvert(int from_type, int to_type)
 
 bool JZJSEngine::checkType(JSValue value, int type)
 {
+    // JSType_none = 没解析到类型(通常是"类名不在类型表里")。这种形参**不做校验**:
+    //   * 控件族对引擎透明(类压根没注册), 它们的形参 `JZWidget` 永远解析不到类型 —— 类型由 TS 侧管;
+    //   * 形如 `w.setProperty(name, JSValue)` 这种也一样(引擎没有对应类型号)。
+    // ⚠ 这里必须显式短路: 旧代码会落到 isVectorType(JSType_none) 去查 m_typeMap(键是类型号, 没有
+    //   -1) -> 读 end() = UB, 于是"同一个控件的形参校验时好时坏"(2026-09-18 那个偶发崩的根因)。
+    if (type == JSType_none)
+        return true;
+
     if (isVectorType(type))
     {
         if (!JS_IsArray(value))
@@ -1646,8 +1664,16 @@ bool jzConvertArray(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, A
                 delete vec;
                 return false;
             }
-            JSClassID cid;
-            void* raw = JS_GetAnyOpaque(e, &cid);            
+            JSClassID cid = 0;
+            void* raw = JS_GetAnyOpaque(e, &cid);
+            if (!raw)
+            {
+                JS_FreeValue(ctx, e);
+                delete vec;
+                return false;
+            }
+            // 同 kClass: opaque 可能是守卫, 统一解成底层对象
+            raw = engine->objectFromOpaque((int)cid, raw);
             if (!raw)
             {
                 JS_FreeValue(ctx, e);
@@ -1711,11 +1737,16 @@ bool jzConvertArg(JZJSEngine* engine, JSValueConst v, const JZArgSpec& spec, Arg
         return jzConvertArray(engine, v, spec, out);
     case JZArgSpec::kClass:
     {
-        if (!engine->checkType(v, spec.className)) return false;
-        JSClassID cid;
+        bool typeOk = engine->checkType(v, spec.className);
+        JSClassID cid = 0;
         void* ptr = JS_GetAnyOpaque(v, &cid);
+        if (!typeOk) return false;
         if (!ptr) return false;
-        out.p = ptr;
+        // ⚠ opaque 未必就是底层对象: 指针语义的类(JZObject 派生 / 控件族那套 op 槽)存的是**守卫**。
+        //   统一交给 objectFromOpaque 解 —— 它对两种都认(见 isGuardedClass), 直接把 opaque 当对象
+        //   交出去会让 C++ 构造器拿到"守卫的地址"(形如 `new JZLabel(text, 守卫地址)` → 崩)。
+        out.p = engine->objectFromOpaque((int)cid, ptr);
+        if (!out.p) return false;
         out.kind = ArgResult::kPointer;
         return true;
     }
@@ -1876,7 +1907,14 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
             return JS_EXCEPTION;
         }
 
-        return createValue(type, ptr);               
+        JSValue obj = createValue(type, ptr);
+        // 对象造好了 -> 通知绑定层(把宿主句柄记到 C++ 对象上, 见 setObjectCreatedCallback)。
+        // 传借用值: 回调要留就自己 dup。
+        // 注意: ptr 未必是 JZObject(值类型 JZRect/JZColor/JZImage... 就不是) —— 绑定层自己用
+        // isGuardedType(type) 分辨, 别直接当 JZObject 用。
+        if (m_objectCreated && !JS_IsException(obj))
+            m_objectCreated(type, obj, ptr);
+        return obj;
     }
 }
 
@@ -1886,10 +1924,75 @@ JSValue JZJSEngine::createValue(int type, void *ptr)
     JSValue proto = JS_GetClassProto(m_ctx, js_class_id);
 
     JSValue obj = JS_NewObjectProtoClass(m_ctx, proto, js_class_id);
-    JS_SetOpaque(obj, ptr);    
+
+    // 指针语义类(JZObject 派生): opaque 存**守卫**(JZObjectPointer 的堆副本)而不是裸指针 ——
+    // 所有权在 JS(JS 对象终结时 delete), 但对象也可能先被 C++ 删掉, 守卫负责认出"已经没了"。
+    // 其余类(值类型/JZPainter/item)保持裸指针, JS 拥有。
+    if (isGuardedClass((int)js_class_id))
+        JS_SetOpaque(obj, new JZObjectPointer(((JZObject*)ptr)->guardPointer()));
+    else
+        JS_SetOpaque(obj, ptr);
+
     JS_FreeValue(m_ctx, proto);
 
     return obj;
+}
+
+void JZJSEngine::disarmOpaque(JSValue obj)
+{
+    // "视图对象"用完作废: 释放守卫并置空 opaque, 之后任何终结/调用都从空 opaque 出发。
+    // 用途: 借给 JS 的对象是 C++ 栈对象(事件)、或 C++ 自己负责生命周期的对象 ——
+    // 不能让 JS 对象将来按守卫去 delete 它。
+    if (!JS_IsObject(obj))
+        return;
+
+    JSClassID class_id = 0;
+    void* opaque = JS_GetAnyOpaque(obj, &class_id);
+    if (!opaque)
+        return;
+
+    if (isGuardedClass((int)class_id))
+        delete (JZObjectPointer*)opaque;
+
+    JS_SetOpaque(obj, nullptr);
+}
+
+bool JZJSEngine::isGuardedClass(int class_id) const
+{
+    // 透明控件类的 op class 也走守卫(opaque = JZObjectPointer*): 它的类没进 m_typeMap(控件族对
+    // 引擎透明), 所以由 widget 模块把 class id 告诉引擎 —— 不然 fromJSValue<JZWidget*> 会把守卫
+    // 当裸指针交出去。
+    if (m_widgetOpClassId != 0 && class_id == m_widgetOpClassId)
+        return true;
+
+    auto jt = m_jsTypeMap.find(class_id);
+    if (jt == m_jsTypeMap.end())
+        return false;
+
+    auto tt = m_typeMap.find(jt->second);
+    if (tt == m_typeMap.end())
+        return false;
+
+    return tt->second.classDefine.guardedOpaque;
+}
+
+void* JZJSEngine::objectFromOpaque(int class_id, void* opaque)
+{
+    if (!opaque)
+        return nullptr;
+
+    if (!isGuardedClass(class_id))
+        return opaque;
+
+    JZObject* object = ((JZObjectPointer*)opaque)->object();
+    if (!object)
+    {
+        // 上层通常已用 checkFunctionArg/js_check_class_arg 拦过, 走到这里说明对象在调用期间被销毁
+        // (父控件被删 / 派发中途 deleteLater 生效)。给 JS 一个明确异常, 而不是让它读悬垂内存。
+        JS_ThrowTypeError(m_ctx, "对象已被销毁(底层 C++ 对象不存在了)");
+        return nullptr;
+    }
+    return object;
 }
 
 int JZJSEngine::retainCallback(JSValueConst cb)
@@ -2036,6 +2139,25 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
     int js_type = jsValueType(value);
     if (js_type == JSType_null && arg_type > JSType_object && param.allowNull)
         return true;
+
+    // 指针语义的类参数必须能解析出**还活着**的 C++ 对象, 两种情况都在这里拦成 JS 异常:
+    //   * opaque 为空: 被 disarm 过的视图(绘制派发结束后的 JZPainter、事件视图) —— 类还是那个类,
+    //     但已经不对应任何 C++ 对象;
+    //   * opaque 是守卫但守卫已失效: 底层对象被 C++ 删掉了(如布局被 clearLayout/控件析构收走)。
+    // 必须拦在这一步: 否则 fromJSValue 会给出**空指针**, 直接进 C++ 方法就是解空指针(崩), 而不是
+    // 可捕获的 JS 异常。objectFromOpaque 对"守卫失效"会自己抛异常, 这里只管 return false。
+    if (arg_type > JSType_object && js_type != JSType_null && js_type != JSType_undefined)
+    {
+        JSClassID class_id = 0;
+        void* opaque = JS_GetAnyOpaque(value, &class_id);
+        if (!opaque)
+        {
+            JS_ThrowTypeError(m_ctx, "参数%d对应的对象已失效", index);
+            return false;
+        }
+        if (!objectFromOpaque((int)class_id, opaque))
+            return false;
+    }
 
     if (js_type != arg_type && !canConvert(js_type, arg_type))
     {

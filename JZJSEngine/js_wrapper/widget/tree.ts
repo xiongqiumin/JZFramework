@@ -98,6 +98,33 @@ function dropChild(host: JZWidget | JZLayout, child: JZWidget): void {
     if (i >= 0) list.splice(i, 1);
 }
 
+/** 按序号插入(与 C++ 侧 insertWidget(i, w) 的存放顺序保持一致 -> widget(i) 才对得上) */
+function insertChildAt(host: JZWidget, index: number, child: JZWidget): void {
+    unlink(child);
+    const list = childListOf(host, true);
+    if (!list) return;
+    const at = Math.max(0, Math.min(index, list.length));
+    list.splice(at, 0, child);
+
+    const n = widgetNode(child, true)!;
+    n.host = new WeakRef(host);
+    n.parent = new WeakRef(host);
+}
+
+/** 按序号摘除(C++ 侧 removeWidget(i) / removeTab(i) 是按下标删的) */
+function removeChildAt(host: JZWidget, index: number): void {
+    const list = childListOf(host, false);
+    if (!list) return;
+    const child = list[index];
+    if (!child) return;
+    list.splice(index, 1);
+    const n = widgetNode(child, false);
+    if (n) {
+        n.host = undefined;
+        n.parent = undefined;
+    }
+}
+
 /** 把 child 挂到 host 下(保活)并记下父控件(弱)。host 是布局时父控件取布局的宿主控件 */
 function link(host: JZWidget | JZLayout, child: JZWidget): void {
     unlink(child);                       // 换父: 先从旧宿主上摘掉
@@ -182,7 +209,13 @@ export function installWidgetTree(): void {
     // 那份是现造的包装, 与你的变量 `===` 不成立(见文件头 ⚠ 覆盖面)。
     JZWidget.prototype.parent = function (this: JZWidget): JZWidget | null {
         const p = parentOf(this);
-        return p ? p : nativeParent.call(this);
+        if (p)
+            return p;
+        // 兜底: 只有关系不是经 JS 侧入口建立时才走原生(且该方法可能压根没注册 ——
+        // 它返回指针, 涉及"同一底层对象 ⇒ 同一包装"的问题, 目前由本模块自己维护)
+        if (typeof nativeParent === 'function')
+            return nativeParent.call(this);
+        return null;
     };
     JZWidget.prototype.parentWidget = JZWidget.prototype.parent;
 
@@ -192,14 +225,29 @@ export function installWidgetTree(): void {
     };
 
     JZWidget.prototype.setLayout = function (this: JZWidget, layout: JZLayout): void {
-        nativeSetLayout.call(this, layout);
-        bindLayoutTo(this, layout);
+        // C++ 的 setLayout 是 Qt 语义(已有布局 / null → 警告 + 忽略, 不抛), 并返回"是否被接受"。
+        // JS 侧的约定见 types/widgets.d.ts: 这两种情况**抛 TypeError**(一个控件只能设一次布局,
+        // 换布局先 clearLayout()), 而且只有被接受了才登记 —— 否则 w.layout() 会返回被拒的那份。
+        // 注: 声明里 setLayout 是 void, 这里按内部约定取返回值(所以先转 any)。
+        const accepted: any = (nativeSetLayout as any).call(this, layout);
+        if (accepted === false)
+            throw new TypeError('setLayout: 一个控件只能有一个布局, 且只能设一次(换布局请先 clearLayout(); null 不是清空手段)');
+        if (layout)
+            bindLayoutTo(this, layout);
     };
 
     JZWidget.prototype.layout = function (this: JZWidget): JZLayout | null {
-        const l = nativeLayout.call(this);
-        if (l) (widgetNode(this, true) as WidgetNode).layout = l;
-        return l;
+        // 先看 JS 侧登记(本模块维护的"同一布局 ⇒ 同一包装"); 没登记过才走原生兜底。
+        // ⚠ nativeLayout 可能压根没注册(它返回指针, 涉及"同一底层对象 ⇒ 同一包装"), 别直接 .call。
+        const n = widgetNode(this, false);
+        if (n && n.layout)
+            return n.layout;
+        if (typeof nativeLayout === 'function') {
+            const l = nativeLayout.call(this);
+            if (l) (widgetNode(this, true) as WidgetNode).layout = l;
+            return l;
+        }
+        return null;
     };
 
     JZWidget.prototype.clearLayout = function (this: JZWidget): void {
@@ -207,12 +255,22 @@ export function installWidgetTree(): void {
         nativeClearLayout.call(this);
     };
 
-    // ---- JZGroupBox: 布局实际装到内容区, 保活也挂到内容区 ----
+    // ---- JZGroupBox: 布局实际装到内容区(C++ 侧 JZGroupBox::setLayout 转发), JS 侧登记挂自己身上 ----
+    // 注: 内容区那个控件是 C++ 内部造的, JS 侧压根没有它的对象(也不打算中转造一份) —— 所以这里的
+    // 宿主用 groupbox 自己(保活 / layout.parentWidget() 都指它)。子控件从布局侧拿(布局是 JS 对象 ✅)。
     if (typeof JZGroupBox !== 'undefined') {
         const nativeBoxSetLayout = JZGroupBox.prototype.setLayout;
+        const nativeBoxClearLayout = JZGroupBox.prototype.clearLayout;
         JZGroupBox.prototype.setLayout = function (this: JZGroupBox, layout: JZLayout): void {
-            nativeBoxSetLayout.call(this, layout);
-            bindLayoutTo(this.contentWidget(), layout);
+            const accepted: any = (nativeBoxSetLayout as any).call(this, layout);   // 虚: C++ 转发到内容区
+            if (accepted === false)
+                throw new TypeError('setLayout: 一个控件只能有一个布局, 且只能设一次(换布局请先 clearLayout()); null 不是清空手段');
+            if (layout)
+                bindLayoutTo(this, layout);
+        };
+        JZGroupBox.prototype.clearLayout = function (this: JZGroupBox): void {
+            unbindLayout(this);
+            nativeBoxClearLayout.call(this);
         };
     }
 
@@ -313,39 +371,79 @@ export function installWidgetTree(): void {
     patchLayoutRemove(typeof JZGridLayout !== 'undefined' ? (JZGridLayout.prototype as any) : undefined);
     patchLayoutRemove(typeof JZSelfLayout !== 'undefined' ? (JZSelfLayout.prototype as any) : undefined);
 
-    // ---- 视图容器 ----
+    // ---- 视图容器: 登记子控件 + 按序号取回 ----
+    // `widget(i)` / `currentWidget()` 这类"回吐控件"的 getter **只能在 JS 侧回答**:
+    // C++ 侧只有裸指针, 变不回同一个 JS 对象(引擎没有身份表)。这里按 add/insert/remove 的序号
+    // 维护登记表(与 C++ 的存放顺序一致), 于是下标能对上, 拿回的也是你当初传进去的那份。
     if (typeof JZStackedWidget !== 'undefined') {
-        const nativeAdd = JZStackedWidget.prototype.addWidget;
-        JZStackedWidget.prototype.addWidget = function (this: JZStackedWidget, page: JZWidget): number {
+        const ps = JZStackedWidget.prototype as any;
+        const nativeAdd = ps.addWidget;
+        const nativeInsert = ps.insertWidget;
+        const nativeRemoveIndex = ps.removeWidget;
+        ps.addWidget = function (this: JZStackedWidget, page: JZWidget): number {
             const i = nativeAdd.call(this, page);
             link(this, page);
             return i;
         };
+        ps.insertWidget = function (this: JZStackedWidget, index: number, page: JZWidget): void {
+            nativeInsert.call(this, index, page);
+            insertChildAt(this, index, page);
+        };
+        ps.removeWidget = function (this: JZStackedWidget, index: number): void {
+            nativeRemoveIndex.call(this, index);
+            removeChildAt(this, index);
+        };
+        ps.widget = function (this: JZStackedWidget, index: number): JZWidget | null {
+            const n = widgetNode(this, false);
+            return n && n.children[index] ? n.children[index] : null;
+        };
+        ps.currentWidget = function (this: JZStackedWidget): JZWidget | null {
+            const i = this.currentIndex();
+            return i >= 0 ? this.widget(i) : null;
+        };
     }
     if (typeof JZTabWidget !== 'undefined') {
-        const nativeAdd = JZTabWidget.prototype.addTab;
-        JZTabWidget.prototype.addTab = function (this: JZTabWidget, page: JZWidget, label: string): number {
+        const pt = JZTabWidget.prototype as any;
+        const nativeAdd = pt.addTab;
+        const nativeRemoveIndex = pt.removeTab;
+        pt.addTab = function (this: JZTabWidget, page: JZWidget, label: string): number {
             const i = nativeAdd.call(this, page, label);
             link(this, page);
             return i;
+        };
+        pt.removeTab = function (this: JZTabWidget, index: number): void {
+            nativeRemoveIndex.call(this, index);
+            removeChildAt(this, index);
+        };
+        pt.widget = function (this: JZTabWidget, index: number): JZWidget | null {
+            const n = widgetNode(this, false);
+            return n && n.children[index] ? n.children[index] : null;
+        };
+        pt.currentWidget = function (this: JZTabWidget): JZWidget | null {
+            const i = this.currentIndex();
+            return i >= 0 ? this.widget(i) : null;
         };
     }
     if (typeof JZSplitter !== 'undefined') {
         const ps = JZSplitter.prototype as any;
         const nativeAdd = ps.addWidget;
+        const nativeInsert = ps.insertWidget;
+        const nativeRemove = ps.removeWidget;
         ps.addWidget = function (this: JZSplitter, w: JZWidget): void {
             nativeAdd.call(this, w);
             link(this, w);
         };
-        const nativeInsert = ps.insertWidget;
         ps.insertWidget = function (this: JZSplitter, index: number, w: JZWidget): void {
             nativeInsert.call(this, index, w);
-            link(this, w);
+            insertChildAt(this, index, w);
         };
-        const nativeRemove = ps.removeWidget;
         ps.removeWidget = function (this: JZSplitter, w: JZWidget): void {
             nativeRemove.call(this, w);
             unlink(w);
+        };
+        ps.widget = function (this: JZSplitter, index: number): JZWidget | null {
+            const n = widgetNode(this, false);
+            return n && n.children[index] ? n.children[index] : null;
         };
     }
     if (typeof JZScrollArea !== 'undefined') {
@@ -354,7 +452,20 @@ export function installWidgetTree(): void {
             nativeSetWidget.call(this, content);
             link(this, content);
         };
+        // 内容控件(setWidget 设进来的)是 JS 对象 -> 登记表里就有它, 拿回同一份
+        JZScrollArea.prototype.widget = function (this: JZScrollArea): JZWidget | null {
+            const n = widgetNode(this, false);
+            return n && n.children.length ? n.children[n.children.length - 1] : null;
+        };
     }
+
+    // ---- 构造时直接带父的补登记 ----
+    // `new JZLabel('x', win)` / `new JZPushButton('ok', win)` 这类写法: C++ 侧构造器自己就把父子
+    // 关系建好了(不经过上面那些包装函数), 本模块不知情 —— 而**保活**和 parent()/children() 全靠
+    // 这张登记表。所以引擎在构造完成后回调这个钩子, 由这里补一条登记(与 setParent 同一条路径)。
+    (globalThis as any).__jzWidgetLink = function (parent: JZWidget, child: JZWidget): void {
+        link(parent, child);
+    };
 }
 
 installWidgetTree();

@@ -25,6 +25,7 @@ JZListWidget::JZListWidget(JZWidget* parent)
     : JZAbstractViewWidget(parent)
     , currentIndexChanged(this)
     , sigActivated(this)
+    , sigDataChanged(this)
 {}
 
 JZListWidget::~JZListWidget()
@@ -37,21 +38,30 @@ void JZListWidgetItem::setText(const std::string& t)
 {
     m_text = t;
     if (m_widget)
+    {
         m_widget->update();
+        m_widget->notifyDataChanged();
+    }
 }
 
 void JZListWidgetItem::setIcon(const JZImage& i)
 {
     m_icon = i;
     if (m_widget)
+    {
         m_widget->update();
+        m_widget->notifyDataChanged();
+    }
 }
 
 void JZListWidgetItem::setData(const JZVariant& d)
 {
     m_data = d;
     if (m_widget)
+    {
         m_widget->update();   // 自定义 itemPaint 可能依据 data 绘制, 故同样重绘
+        m_widget->notifyDataChanged();
+    }
 }
 
 // ---- JZListWidget: 数据模型 ----
@@ -73,6 +83,7 @@ JZListWidgetItem* JZListWidget::insertItemAt(int index, std::unique_ptr<JZListWi
 
     updateContentSize();
     update();
+    notifyDataChanged();
     return raw;
 }
 
@@ -112,6 +123,7 @@ void JZListWidget::appendItems(const std::vector<std::string>& texts)
     }
     updateContentSize();
     update();
+    notifyDataChanged();
 }
 
 JZListWidgetItem* JZListWidget::takeItem(int index)
@@ -130,6 +142,7 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
 
     updateContentSize();
     update();
+    notifyDataChanged();
     return raw;
 }
 
@@ -141,6 +154,12 @@ void JZListWidget::clear()
     m_current = -1;
     updateContentSize();
     update();
+    notifyDataChanged();
+}
+
+void JZListWidget::notifyDataChanged()
+{
+    sigDataChanged.emit();
 }
 
 int JZListWidget::count() const

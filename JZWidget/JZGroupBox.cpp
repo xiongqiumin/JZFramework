@@ -40,6 +40,23 @@ void JZGroupBox::setLayout(JZLayout* layout)
         m_content->setLayout(layout);
 }
 
+void JZGroupBox::setLayoutFromJs(JZLayout* layout)
+{
+    if (m_content)
+        m_content->setLayoutFromJs(layout);   // 内容区那层同样"只借用不 delete"(布局归 JS)
+}
+
+JZLayout* JZGroupBox::appliedLayout() const
+{
+    return m_content ? m_content->layout() : nullptr;
+}
+
+void JZGroupBox::clearLayout()
+{
+    if (m_content)
+        m_content->clearLayout();
+}
+
 void JZGroupBox::resize(int w, int h)
 {
     JZWidget::resize(w, h);   // 基类设尺寸 + 重绘 (GroupBox 自身无布局)

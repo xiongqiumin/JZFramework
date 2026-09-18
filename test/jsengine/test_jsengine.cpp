@@ -214,9 +214,9 @@ int main()
         // 持久实例 gInst 在本次调用中不会被析构, 故 dtor 只反映本次形参的拷贝析构
         auto checkCall = [&](const string& name, const string& js_func, bool isPtr, int expCopy, int expDtor) {
             AAA a;
-            JZJSValuePtr js_a = engine.toValuePtr(a);
-            JZJSValuePtr js_a_ptr = engine.toValuePtrFromPtr(&a, true);
-            
+            JZJSValuePtr js_a = engine.toValuePtr(a);                                  // 值语义: JS 侧一份拷贝
+            JZJSValuePtr js_a_ptr = engine.makeValuePtr(engine.toJsValueFromPtr(&a));  // 指针形参: 借给 JS 的视图
+
             AAA::resetStats();
             if (isPtr)
                 engine.callFunction(js_func, { js_a_ptr });
@@ -224,8 +224,9 @@ int main()
                 engine.callFunction(js_func, { js_a });
             int copy = AAA::s_copyCtor;
             int dtor = AAA::s_dtor;
-            check(name, copy == expCopy && dtor == expDtor);    
-            engine.detachPointerFromRaw(&a);
+            check(name, copy == expCopy && dtor == expDtor);
+            // 借用视图用完必须作废: a 是栈对象, 不然 JS 对象终结时会把 destory 打到它身上
+            engine.disarmOpaque(js_a_ptr.get());
         };
 
         checkCall("takeValue", "takeValue", false, 1, 1);
@@ -235,64 +236,58 @@ int main()
         checkCall("takePtr", "takePtr", true, 0, 0);
         checkCall("takeConstPtr", "takeConstPtr", true, 0, 0);
 
-        // ==================== JSRawPointer: 指针包装 / clear 触发 JS 异常 ====================
-        // 验证: C 函数返回裸指针与 JSRawPointer 都能包装成 JS 对象; 以 JSRawPointer& 形参接收;
-        //       C++ 侧 clear() 后, JS 再引用该对象即在 check type 阶段抛出 JS 异常。
+        // ==================== 指针视图: JS 拥有 / 借出去的视图作废 ====================
+        // 新模型(2026-09-18 定案): JSRawPointer / cppOwner / clear 那套已随包装层删除。现在的规则:
+        //   * 裸指针交给 JS = **JS 拥有**(JS 对象终结时 delete), 所以只能传 new 出来的对象;
+        //   * 只想"借给 JS 看一眼"(栈对象/C++ 自己管生命周期的对象): 用完必须 disarmOpaque(),
+        //     否则终结器会去 delete 它; 作废之后再从 JS 侧用它 -> 上层形参预检拦下(抛 JS 异常)。
+        //   * JZObject 派生的类另有"守卫": 对象被 C++ 删掉后 JS 视图自动失效(见 test_jsui)。
         {
             engine.deinit();
             engine.init();
 
-            // 注册 PP 类(值类与 JSRawPointer<PP> 统一为同一个 JS 类), 并注册字段 v 以便 JS 侧读写转发到底层对象
             jsbind::ClassBind<PP> bindPP("PP");
             bindPP.defProperty("v", &PP::v);
             engine.registClass(bindPP.classDefine());
 
-            static PP s_ppOwned;   // C++ 持有, 用于验证 cppOwner 语义
-            static PP s_ppClear;   // 单独给 clear 用例(同一 C++ 对象不能重复生成新包装: 第二次会撞 toJsValueFromPtr 的断言)
-
-            // 注: 这几个函数以前压根没注册 —— 用例靠 "调用函数不存在 -> ReferenceError" 误判为通过。
-            engine.registFunction(engine.globalObject(), "makePRaw",
-                jsbind::createFunction([]() -> PP* { return &s_ppOwned; }, jsbind::returnOwnedByCpp));
-            engine.registFunction(engine.globalObject(), "makePOwned",
-                jsbind::createFunction([]() -> PP* { return new PP(); }, jsbind::returnOwnedByJs));
+            engine.registFunction(engine.globalObject(), "makeP",
+                jsbind::createFunction([&engine]() -> JSValue {
+                    // 注: jsbind 禁止 C 函数**直接返回指针**(static_assert: "返回值不能是指针") ——
+                    //     "交出所有权"要用 toJsValueFromPtr 显式造一份 JS 对象返回。
+                    return engine.toJsValueFromPtr(new PP());
+                }));
             engine.registFunction(engine.globalObject(), "useP",
                 jsbind::createFunction([](PP* p) -> int { return p ? p->v : -1; }));
-            // detachPointerFromRaw(按底层裸指针找到共享状态并 detach) —— JSRawPointer<PP>& 形参
-            // 走 call() 转发是**不支持**的(fromJSValue 那条重载被 static_assert 禁用), 只能这样清。
-            engine.registFunction(engine.globalObject(), "makePRawClear",
-                jsbind::createFunction([]() -> PP* { return &s_ppClear; }, jsbind::returnOwnedByCpp));
-            engine.registFunction(engine.globalObject(), "clearP",
-                jsbind::createFunction([&engine](PP* p) -> void { engine.detachPointerFromRaw(p); }));
+            engine.registFunction(engine.globalObject(), "setP",
+                jsbind::createFunction([](PP* p, int v) -> void { if (p) p->v = v; }));
 
-            // (a) 裸指针返回 -> JS 对象可用, 读取字段
+            // (a) 指针交给 JS(JS 拥有) -> JS 侧可读写, 字段转发到底层对象
             {
                 auto v = engine.eval(
-                    "var p = makePRaw();"
+                    "var p = makeP();"
+                    "setP(p, 7);"
                     "useP(p);");
-                check("JSRawPointer raw ptr return + read field", engine.fromJSValue<int>(v.get()) == 0);
+                check("指针交给 JS: JS 拥有且字段可读写", engine.fromJSValue<int>(v.get()) == 7);
             }
 
-            // (b) JSRawPointer(C++ 拥有) 返回 -> 可读
+            // (b) 借给 JS 的视图: disarm 前可用, disarm 之后再用 -> 上层拦下(JS 异常)
             {
-                auto v = engine.eval(
-                    "var p = makePOwned();"
-                    "useP(p);");
-                check("JSRawPointer cpp-owned return + read field", engine.fromJSValue<int>(v.get()) == 0);
-            }
+                PP borrowed;
+                borrowed.v = 9;
+                JZJSValuePtr view = engine.makeValuePtr(engine.toJsValueFromPtr(&borrowed));
+                engine.setProperty(engine.globalObject(), "borrowedP",
+                                   JS_DupValue(engine.context(), view.get()));
 
-            // (c) clear 后再次引用 -> JS 异常
-            //     这里必须用 makePRaw(C++ 拥有): detachPointerFromRaw 按底层裸指针在 m_jsPoints
-            //     (只有 cppOwner 的包装进表)里找状态, JS 拥有的包装查不到。
-            {
-                auto v = engine.eval(
-                    "var p = makePRawClear();"
-                    "clearP(p);"
-                    "useP(p);");
-                check("JSRawPointer clear then use -> JS exception", engine.isException(v.get()));
-            }
+                auto v1 = engine.eval("useP(borrowedP);");
+                check("借用视图: disarm 前可用", engine.fromJSValue<int>(v1.get()) == 9);
 
-            // cppOwner 的包装必须在引擎销毁前 detach(否则 ~JSPointerBase 会断言 cppOwner 仍为 true)
-            engine.detachPointerFromRaw(&s_ppOwned);
+                engine.disarmOpaque(view.get());   // 栈对象: 用完作废(终结器见空 opaque 只放引用)
+                auto v2 = engine.eval(
+                    "var r = 'no-throw';"
+                    "try { useP(borrowedP); } catch (e) { r = 'throw'; }"
+                    "r;");
+                check("借用视图: disarm 后使用 -> JS 异常", engine.fromJSValue<string>(v2.get()) == "throw");
+            }
 
             engine.deinit();
             engine.init();
@@ -361,16 +356,16 @@ int main()
             check("conv class value", engine.fromJSValue<int>(v.get()) == 42);
         }
 
-        // 5) 裸指针(Class*) 提取: fromJSValue<Class*> 直接取 JSRawPointer 内裸指针;
-        //    null/undefined 映射为空指针, 非指针类型报错, 已 clear 报错。
+        // 5) 裸指针(Class*) 提取: fromJSValue<Class*> 取出 JS 视图里的底层指针;
+        //    null/undefined 映射为空指针, 非指针类型报错, 已作废(disarm)的视图由上层拦下。
         {
             PP obj; obj.v = 5;
-            JZJSValuePtr jsPtr = engine.toValuePtrFromPtr(&obj, true);   // JSRawPointer<PP>(cppOwner=true)
+            JZJSValuePtr jsPtr = engine.makeValuePtr(engine.toJsValueFromPtr(&obj));   // 借给 JS 的视图
             PP* raw = engine.fromJSValue<PP*>(jsPtr.get());
             check("conv fromJSValue<PP*>", raw == &obj && raw->v == 5);
 
-            // cppOwner 包装不能活到 deinit(否则 ~JSPointerBase 断言 cppOwner 仍为 true)
-            engine.detachPointerFromRaw(&obj);
+            // 栈对象只能借: 用完作废(不然终结器会把 destory 打到它身上)
+            engine.disarmOpaque(jsPtr.get());
 
             // null / undefined -> nullptr
             JSValue nullv = JS_NULL;
@@ -401,18 +396,15 @@ int main()
             check("PP* 形参传非对象: 上层(call)拦下 -> JS 异常", engine.fromJSValue<string>(v.get()) == "throw");
 
             PP obj2; obj2.v = 5;
-            JZJSValuePtr jsOwned = engine.toValuePtrFromPtr(&obj2, true);
-            // JSRawPointer<PP>& 形参(经 call() 转发)不被支持(fromJSValue 那条重载是 static_assert),
-            // 所以直接在 C++ 侧 detach(按底层裸指针找共享状态)。
-            engine.detachPointerFromRaw(&obj2);
-            // 已 clear 是运行期状态: JS 侧调用由 call() 预检拦下(直接转换只留断言, 不再抛异常)
-            engine.setProperty(engine.globalObject(), "clearedP",
-                               JS_DupValue(engine.context(), jsOwned.get()));
+            JZJSValuePtr borrowed = engine.makeValuePtr(engine.toJsValueFromPtr(&obj2));
+            engine.setProperty(engine.globalObject(), "borrowedP",
+                               JS_DupValue(engine.context(), borrowed.get()));
+            engine.disarmOpaque(borrowed.get());   // 借出去的视图作废(栈对象生命周期已过)
             auto v2 = engine.eval(
                 "var r = 'no-throw';"
-                "try { takeRawP(clearedP); } catch (e) { r = 'throw'; }"
+                "try { takeRawP(borrowedP); } catch (e) { r = 'throw'; }"
                 "r;");
-            check("PP* 形参传已 clear 的包装: 上层拦下 -> JS 异常", engine.fromJSValue<string>(v2.get()) == "throw");
+            check("PP* 形参传已作废的视图: 上层拦下 -> JS 异常", engine.fromJSValue<string>(v2.get()) == "throw");
         }
 
         engine.deinit();

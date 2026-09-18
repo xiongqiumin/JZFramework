@@ -22,6 +22,15 @@ target_link_libraries(test_jsnet JZFramework)
 set(JZ_JS_WRAPPER_DIR "${CMAKE_SOURCE_DIR}/JZJSEngine/js_wrapper")
 target_compile_definitions(test_jsnet PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
+# UI 用例也要它: JZJSWidgetModule 初始化时会加载 widget/dist/index.js(控件族类层: 定义全局控件类),
+# 靠 libraryDir 定位 —— 跟前几个包一样按源码树路径直接指过去。
+if(TARGET test_jsui)
+target_compile_definitions(test_jsui PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
+endif()
+if(TARGET test_load_ui)
+target_compile_definitions(test_load_ui PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
+endif()
+
 add_executable(test_jssqlite test_jssqlite.cpp)
 target_link_libraries(test_jssqlite JZFramework)
 # 同 test_jsnet: 让测试能按固定路径 import 编译产物(sqlite/dist/index.js)

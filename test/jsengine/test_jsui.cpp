@@ -113,6 +113,7 @@ int main()
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
         JSValue ui = loader.createUi(&engine);
@@ -144,6 +145,7 @@ int main()
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
         auto api = engine.eval(
@@ -180,12 +182,15 @@ int main()
     //    离屏: new JZPainter(image)  —— 自持图层, end() 时把内容合成回 image。
     jzDebug() << "===== JS 画笔生命周期演示 =====";
     {
-        JZImage image = JZImage::create(20, 10, JZColor(0, 0, 0, 0));   // 栈对象, 借用给 JS(cppOwner=true)
+        // 值类型(JZImage)交给 JS 时**所有权归 JS**: 给一份堆拷贝, JS 对象回收时由终结器 delete。
+        // (C++ 栈对象不能这么交出去 —— 那种"借给 JS 看"的视图必须用完 disarmOpaque。)
+        JZImage* image = new JZImage(JZImage::create(20, 10, JZColor(0, 0, 0, 0)));
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
-        engine.setProperty(engine.globalObject(), "img", engine.toJsValueFromPtr( &image, true));
+        engine.setProperty(engine.globalObject(), "img", engine.toJsValueFromPtr(image));
 
         auto outside = engine.eval(
             "var r = 'no-throw';"
@@ -323,6 +328,7 @@ int main()
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
         check("JZChart 类与类型常量已注册",
@@ -402,14 +408,23 @@ int main()
         connect(&engine.sigLog, [](const std::string& log) { jzDebug() << log; });
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
-        // 包装的所有权在谁手上: 1 = C++ 拥有(JS 不删, /Transfer/), 0 = JS 拥有, -1 = 不是 jsbind 包装。
-        // /Transfer/ /TransferBack/ 翻转的就是它; PointInfo 是共享的 ⇒ 从 JS 那份包装上读到的就是真实状态。
-        auto cppOwnerOf = [](JSValueConst v) {
+        // 新模型(2026-09-18 定案): **不做所有权翻转**。控件族对象的唯一指针槽是"守卫"
+        // (JS 对象 opaque 里的 JZObjectPointer*, 见 JZJSWidgetModule 的 op 槽):
+        //   1 = 守卫有效(底层对象还活着) / 0 = 底层对象已删(守卫被 ~JZObject 置空) / -1 = 空槽
+        //   -2 = 不是控件(布局/值类型等仍是引擎注册类, opaque 是裸指针, 不能当守卫解)
+        // 谁负责 delete: JS 侧(JS 对象被回收时由守卫决定"还该不该删") — 父控件先删过的就只放守卫。
+        const JSClassID opClass = (JSClassID)engine.widgetOpClassId();
+        auto aliveOf = [opClass](JSValueConst v) {
             JSClassID id = 0;
-            auto* p = (jsbind::JSPointerBase*)JS_GetAnyOpaque(v, &id);
-            return p ? (p->cppOwner() ? 1 : 0) : -1;
+            void* opaque = JS_GetAnyOpaque(v, &id);
+            if (!opaque)
+                return -1;
+            if (id != opClass)
+                return -2;
+            return ((JZObjectPointer*)opaque)->object() ? 1 : 0;
         };
         auto hasChild = [](JZObject* parent, JZObject* child) {
             for (JZObject* o : parent->children())
@@ -425,10 +440,10 @@ int main()
         JZWidget* p2 = engine.fromJSValue<JZWidget*>(p2Val.get());
         JZWidget* c  = engine.fromJSValue<JZWidget*>(cVal.get());
 
-        // (a) setParentWidget: 所有权转移(/Transfer/) + 真的挂成子控件(父链 / 对象树 / 布局项三处一致)
-        check("setParentWidget 前包装由 JS 拥有", cppOwnerOf(cVal.get()) == 0);
+        // (a) setParentWidget: 真的挂成子控件(父链 / 对象树 / 布局项三处一致); 所有权**不翻转**
+        check("setParentWidget 前控件已建好(守卫有效)", aliveOf(cVal.get()) == 1);
         evalStr(engine, "c.setParentWidget(p1); 'ok'");
-        check("setParentWidget 后翻成 C++ 拥有(/Transfer/)", cppOwnerOf(cVal.get()) == 1);
+        check("setParentWidget 不翻转所有权(仍归 JS)", aliveOf(cVal.get()) == 1);
         check("setParentWidget 后成为父控件的子控件(树+布局项)",
               c->parentWidget() == p1 && hasChild(p1, c) && !hasChild(p2, c));
 
@@ -436,16 +451,16 @@ int main()
         check("setParentWidget 换父后父链指向新父",
               evalStr(engine, "c.setParentWidget(p2); c.parentWidget().objectName()") == "p2");
         check("换父后 C++ 对象树同步(旧父不再持有)",
-              c->parentWidget() == p2 && !hasChild(p1, c) && hasChild(p2, c) && cppOwnerOf(cVal.get()) == 1);
+              c->parentWidget() == p2 && !hasChild(p1, c) && hasChild(p2, c) && aliveOf(cVal.get()) == 1);
 
         // (c) 脱离父树: 交回 JS 拥有; 之后再挂回又能进树
         check("setParentWidget(null) 脱离父树",
               evalStr(engine, "c.setParentWidget(null); (c.parentWidget() === null) ? 'null' : 'obj'") == "null");
-        check("脱离后包装翻回 JS 拥有(/TransferBack/)",
-              cppOwnerOf(cVal.get()) == 0 && c->parentWidget() == nullptr && !hasChild(p2, c));
-        check("重新挂回父树后所有权与父链恢复",
+        check("脱离父树不改变所有权(控件仍活着, 只是没父了)",
+              aliveOf(cVal.get()) == 1 && c->parentWidget() == nullptr && !hasChild(p2, c));
+        check("重新挂回父树后父链恢复",
               evalStr(engine, "c.setParentWidget(p2); (c.parentWidget().objectName() === 'p2') ? 'ok' : 'bad'") == "ok"
-              && cppOwnerOf(cVal.get()) == 1 && hasChild(p2, c));
+              && aliveOf(cVal.get()) == 1 && hasChild(p2, c));
 
         // (d) setLayout 的 Qt 语义: 一个控件只能有一个布局, 且只能设一次;
         //     清空只能 clearLayout()(等价 Qt 的 `delete w->layout()`), 之后才能设新的。
@@ -461,16 +476,15 @@ int main()
                       "console.log(rep + '/' + nul + '/' + kept);"
                       "rep + '/' + nul + '/' + kept") == "rejected/rejected/vbox");
 
-        check("clearLayout 后 layout() 为 null、旧视图失效、可再设新布局",
+        // 注: JZLayout 现在也继承 JZObject(2026-09-18) -> 布局的 JS 句柄带**守卫**, 被 C++ 删掉后
+        // 再使用会抛"对象已被销毁", 不再是悬垂裸指针(见下面 "布局句柄有守卫" 那条)。
+        check("clearLayout 后 layout() 为 null、可再设新布局",
               evalStr(engine,
-                      "var view = w.layout();"       // 视图(缓存那份): clearLayout 后会被置失效
                       "w.clearLayout();"
                       "var cleared = (w.layout() === null) ? 'null' : 'obj';"
-                      "var dead = 'usable';"
-                      "try { view.addSpacing(1); } catch (e) { dead = 'released'; }"
                       "w.setLayout(new JZHBoxLayout());"
-                      "cleared + '/' + dead + '/' + ((w.layout() instanceof JZHBoxLayout) ? 'hbox' : 'bad')")
-              == "null/released/hbox");
+                      "cleared + '/' + ((w.layout() instanceof JZHBoxLayout) ? 'hbox' : 'bad')")
+              == "null/hbox");
 
         check("layout() 返回同一个包装(缓存, 引用相等)",
               evalStr(engine, "(w.layout() === w.layout()) ? 'same' : 'diff'") == "same");
@@ -480,7 +494,15 @@ int main()
             check("C++ 侧布局已是 HBox", dynamic_cast<JZHBoxLayout*>(w->layout()) != nullptr);
 
             JZJSValuePtr view = engine.eval("w.layout()");
-            check("布局包装是借用视图(JS 不拥有)", cppOwnerOf(view.get()) == 1);
+            check("布局的 opaque 不是控件族那个 op 槽(它走自己类的守卫)", aliveOf(view.get()) == -2);
+
+            // 布局继承 JZObject 的直接收益: C++ 侧把布局删掉, JS 那份句柄自动失效(以前是裸指针 -> UAF)
+            JZJSValuePtr lvVal = engine.eval("var lv = new JZVBoxLayout(4, 4); lv;");
+            JZLayout* lvRaw = engine.fromJSValue<JZLayout*>(lvVal.get());
+            check("布局: JS 句柄能取回底层对象", lvRaw != nullptr && lvRaw->spacing() == 4);
+            delete lvRaw;   // C++ 侧收走(模拟"布局被 C++ 删掉"的路径)
+            check("布局句柄有守卫: C++ 删掉后 JS 再用 -> 抛异常(不 UAF)",
+                  evalStr(engine, "var gr='ok'; try { lv.count(); } catch (e) { gr='throw'; } gr;") == "throw");
         }
 
         // (e) 保活: JS 丢掉子控件引用 + 强制 GC 后包装仍必须活着(否则 m_jsvalue 悬垂),
@@ -517,6 +539,7 @@ int main()
         JZJSEngine engine;
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
         auto hasChild = [](JZObject* parent, JZObject* child) {
@@ -592,26 +615,31 @@ int main()
     }
 
     // 12) 容器专用挂载路径: StackedWidget.addWidget / TabWidget.addTab / ScrollArea.setWidget /
-    //     Splitter.addWidget —— 与 addWidget 同一套(所有权转移 + 登记保活)。
+    //     Splitter.addWidget —— 与 addWidget 同一套(JS 侧登记 + 保活, 见 tree.ts)。
     //     验证: 挂进去 → JS 丢掉引用 → 强制 GC → 事件仍能派发到 JS(包装还活着 = 保活生效)。
-    jzDebug() << "===== 容器挂载路径(所有权/保活)演示 =====";
+    jzDebug() << "===== 容器挂载路径(登记/保活)演示 =====";
     {
         JZJSEngine engine;
         connect(&engine.sigLog, [](const std::string& log) { jzDebug() << log; });
         engine.init();
         JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
         widgetModule.initEngine(&engine);
 
-        auto cppOwnerOf = [](JSValueConst v) {
+        const JSClassID opClass = (JSClassID)engine.widgetOpClassId();
+        auto aliveOf = [opClass](JSValueConst v) {
             JSClassID id = 0;
-            auto* p = (jsbind::JSPointerBase*)JS_GetAnyOpaque(v, &id);
-            return p ? (p->cppOwner() ? 1 : 0) : -1;
+            void* opaque = JS_GetAnyOpaque(v, &id);
+            if (!opaque || id != opClass)
+                return -1;
+            return ((JZObjectPointer*)opaque)->object() ? 1 : 0;
         };
 
-        // 丢掉 JS 引用 + 强制 GC, 然后往控件上派发一次鼠标按下, 返回 JS 侧计数器
-        auto revive = [&engine, &cppOwnerOf](JSValueConst childVal, const char* childName, const char* hitsName) {
+        // 丢掉 JS 引用 + 强制 GC, 然后往控件上派发一次鼠标按下, 返回 JS 侧计数器。
+        // 保活来自 JS 侧对象树(tree.ts: 父/容器持子控件的强引用), 所以 GC 后包装与事件都得还在。
+        auto revive = [&engine, &aliveOf](JSValueConst childVal, const char* childName, const char* hitsName) {
             JZWidget* child = engine.fromJSValue<JZWidget*>(childVal);
-            bool transferred = (cppOwnerOf(childVal) == 1);
+            bool mounted = (aliveOf(childVal) == 1);
             evalStr(engine, std::string(childName) + " = null; 'ok'");
             JS_RunGC(JS_GetRuntime(engine.context()));
 
@@ -619,7 +647,7 @@ int main()
             jzApp->sendEvent(child, &press);
 
             std::string hits = evalStr(engine, std::string("String(globalThis.") + hitsName + ")");
-            return transferred && hits == "1";
+            return mounted && hits == "1";
         };
 
         // ① JZStackedWidget.addWidget(test_jswidget 的"页"就是这条路径)
@@ -687,6 +715,35 @@ int main()
             check("JZSplitter.addWidget: 转移所有权 + GC 后保活", revive(pnVal.get(), "pn", "__h4"));
         }
 
+        // ④b 回吐子控件的 getter: 由 JS 侧对象树回答(C++ 只有裸指针, 变不回同一个 JS 对象) ——
+        //     拿回的就是你当初 addXxx 传进去的那份包装(`===` 成立), 下标与 C++ 存放顺序一致。
+        check("容器 getter: widget(i)/currentWidget()/widget() 拿回同一份包装",
+              evalStr(engine,
+                      "var sc = new JZStackedWidget();"
+                      "var p0 = new JZWidget(), p1 = new JZWidget();"
+                      "var i0 = sc.addWidget(p0); sc.addWidget(p1);"
+                      "var ins = new JZWidget(); sc.insertWidget(1, ins);"
+                      "sc.setCurrentIndex(2);"
+                      "var ok1 = (i0 === 0 && sc.count() === 3 && sc.widget(0) === p0"
+                      "           && sc.widget(1) === ins && sc.widget(2) === p1);"
+                      "var ok2 = (sc.currentWidget() === p1);"
+                      "sc.removeWidget(1);"
+                      "var ok3 = (sc.count() === 2 && sc.widget(1) === p1);"
+                      "var ta = new JZTabWidget();"
+                      "var t0 = new JZWidget(); ta.addTab(t0, 'A');"
+                      "var ok4 = (ta.widget(0) === t0 && ta.tabText(0) === 'A'"
+                      "           && ta.currentWidget() === ta.widget(ta.currentIndex())"
+                      "           && ta.indexOf(t0) === 0);"
+                      "var sa = new JZScrollArea();"
+                      "var ct = new JZWidget(); sa.setWidget(ct);"
+                      "var ok5 = (sa.widget() === ct);"
+                      "var sp = new JZSplitter();"
+                      "var s0 = new JZWidget(), s1 = new JZWidget();"
+                      "sp.addWidget(s0); sp.addWidget(s1);"
+                      "var ok6 = (sp.widget(0) === s0 && sp.widget(1) === s1 && sp.count() === 2);"
+                      "String(ok1 && ok2 && ok3 && ok4 && ok5 && ok6)")
+                      == "true");
+
         // ⑤ onPaint / onMousePress 这类回调: JS 侧写法不变(`w.onPaint = fn`), 但回调**存在模块的槽里**
         //    (见 JZJSWidgetModule::WidgetInfo::callbacks) —— 与包装对象的身份/生命周期解耦:
         //    丢 JS 变量、包装被 GC、getter 每次拿到哪份包装, 都不影响事件转发。
@@ -699,7 +756,9 @@ int main()
                 "sa5.setWidget(cw);"
                 "w5.addWidget(sa5);"
                 "globalThis.__w5 = w5;"
-                "globalThis.__sameWidget = (sa5.widget() === cw) ? 'same' : 'diff';"
+                // 新模型: 父子/容器关系由 JS 便利层登记(@jz/widget 的 tree.ts), 所以 children() 拿回的
+                // 就是你当初传进去的那份包装(`===` 成立, 保活也靠这份强引用)。
+                "globalThis.__sameWidget = (sa5.children()[0] === cw) ? 'same' : 'diff';"
                 "'ok'");
         {
             JZWidget* cw = engine.fromJSValue<JZWidget*>(engine.eval("cw").get());
@@ -712,12 +771,12 @@ int main()
             }
             check("setWidget 内容的 onPaint: 丢引用+GC 后仍派发到 JS",
                   evalStr(engine, "String(globalThis.__p5)") == "1");
-            // getter 按当前调用**现造包装**: 同一控件的两份包装不是同一个 JS 对象(`===` 比不得,
-            // 见 widgets.d.ts)。事件回调不受影响 —— 回调存在 C 侧槽里, 在哪份包装上赋都生效。
-            check("getter 返回新包装(=== 比不得; 回调仍生效)",
-                  evalStr(engine, "globalThis.__sameWidget") == "diff");
+            // JS 侧登记的关系: children()/parent() 拿回的是**同一份**包装(不是现造的), `===` 成立。
+            check("JS 侧登记的关系拿回同一份包装(=== 成立)",
+                  evalStr(engine, "globalThis.__sameWidget") == "same");
 
-            // ⑥ 回调存在 C++ 侧的槽里(而不是包装的自有属性): 读回同一个函数、类型校验、null 清空。
+            // ⑥ 回调就是实例上的普通属性(派发时现读): 读回同一个函数; 赋非函数**不校验**(等到派发时
+            //    按"这一项没有回调"处理, 回退 C++ 默认实现); 清空写 null。
             evalStr(engine,
                     "globalThis.__p6 = 0;"
                     "globalThis.__readback = 'bad';"
@@ -731,12 +790,14 @@ int main()
                     "globalThis.__readback = (c6.onPaint === f6) ? 'same-fn' : 'diff-fn';"
                     "globalThis.__own = Object.prototype.hasOwnProperty.call(c6, 'onPaint') ? 'own' : 'proto';"
                     "try { c6.onPaint = 123; } catch (e) { globalThis.__typeerr = 'throw'; }"
+                    "c6.onPaint = f6;"   // 上面赋了非函数: 这里放回函数, 后面还要用
                     "'ok'");
-            check("onPaint 读回同一个函数(回调存在 C 侧槽里)",
+            check("onPaint 读回同一个函数(就是实例属性)",
                   evalStr(engine, "globalThis.__readback") == "same-fn");
-            check("onPaint 是原型上的访问器(不是包装的自有属性)",
-                  evalStr(engine, "globalThis.__own") == "proto");
-            check("onPaint 赋非函数抛异常", evalStr(engine, "globalThis.__typeerr") == "throw");
+            check("onPaint 是实例上的普通属性(不是原型访问器)",
+                  evalStr(engine, "globalThis.__own") == "own");
+            check("onPaint 赋非函数不抛(派发时按没回调处理)",
+                  evalStr(engine, "globalThis.__typeerr") == "no-throw");
 
             // 回调照旧生效(存在 C 侧, 与包装无关)
             JZWidget* c6w = engine.fromJSValue<JZWidget*>(engine.eval("c6").get());
@@ -833,10 +894,10 @@ int main()
             check("deleteLater: 已绑定(嵌套模态里删控件的正规做法)",
                   evalStr(engine, "typeof d8.deleteLater") == "function");
 
-            // ⑨ 信号属性化(defSignalProperty): 与事件槽同一条规则 —— 赋值设 / 覆盖上一次 /
-            //    赋 null 清空 / 赋非函数抛异常 / 读回当前回调。JZSpinBox::setValue 会 emit, 用它验证
-            //    "信号真的接到了最新那个回调上"(覆盖 + 清空都要在触发路径上体现)。
-            check("信号是属性: 覆盖式 + null 清空 + 非函数抛异常",
+            // ⑨ 信号属性化(defSignalProperty): 与事件槽同一条规则(都是**实例上的普通属性**, 派发时
+            //    现读) —— 赋值设 / 覆盖上一次 / 赋 null 清空 / 赋非函数不校验(派发时按"没回调"处理)。
+            //    用 JZSpinBox::setValue 触发, 验证"信号接到了最新那个回调上"。
+            check("信号是属性: 覆盖式 + null 清空 + 赋非函数不抛",
                   evalStr(engine,
                           "(function(){ var sp = new JZSpinBox(); sp.setRange(0, 100); var log = '';"
                           " sp.onValueChanged = function (v) { log += 'A' + v; };"
@@ -847,7 +908,8 @@ int main()
                           " var thrown = 'none';"
                           " try { sp.onValueChanged = 1; } catch (e) { thrown = 'throw'; }"
                           " return log + '|' + thrown + '|' + String(sp.onValueChanged); })()")
-                      == "B7|throw|null");
+                      // 读回就是你赋进去的那个值(1) —— 新模型下回调槽就是实例上的普通属性, 不校验赋值
+                      == "B7|none|1");
 
             // 探针: 绑定类能不能被 JS 继承 —— bteserver 的 UI 类写的是 `class XxxDialog extends QDialog`
             // 这种风格, 若将来去掉 Qt 适配层改用真实绑定, 这一步必须先成立。
@@ -883,64 +945,102 @@ int main()
                           " + T(w.geometry().equal(new JZRect(1, 2, 30, 40)))")
                       == "TFTTTFTFTFT");
 
-            // 句柄比较语义: 绑定层开启native对象身份缓存，同一个C++实例返回同一个JS包装对象
-            // == / === 对象身份比较生效；同一C++实体多次取回的JS句柄相等。
-            check("句柄比较语义: 开启身份缓存，同一C++对象多次获取得到相同JS句柄(==/===均true)",
+            // 句柄指向同一个 C++ 对象吗? 新模型里**没有引擎侧身份缓存**(2026-09-17 随包装层删掉了):
+            // 身份由"谁登记"决定 —— JS 侧登记的关系(setParent / addWidget / ...)拿回的就是你当初传进去
+            // 的那份包装(=== 成立); 而"现造包装"的 getter(值类型, 如 w.geometry())每次都是新对象,
+            // 比内容要用 equal()(见上一条)。这里验证前一半 + 跨父不串。
+            check("句柄身份: JS 侧登记的关系 === 成立(没有引擎侧身份缓存)",
                 evalStr(engine,
-                    "var lw9 = new JZListWidget(); lw9.addItem('a');"
-                    "var a9 = lw9.item(0), b9 = lw9.item(0);"
-                    "var tw9 = new JZTableWidget(); tw9.setRowCount(1); tw9.setColumnCount(1);"
-                    "tw9.setItem(0, 0, new JZTableWidgetItem('x'));"
-                    "var c9 = tw9.item(0, 0), d9 = tw9.item(0, 0);"
-                    "var w9 = new JZWidget(), p9 = new JZWidget();"
-                    "w9.setParentWidget(p9);"
+                    "var pa = new JZWidget(), pb = new JZWidget();"
+                    "var ca = new JZWidget(), cb = new JZWidget();"
+                    "ca.setParentWidget(pa);"
+                    "cb.setParentWidget(pb);"
+                    "String(pa.children()[0] === ca)"                       // 父拿回子: 同一份
+                    " + '|' + String(ca.parentWidget() === pa)"              // 子拿回父: 同一份
+                    " + '|' + ((pa.children()[0] === pb.children()[0]) ? 'same' : 'diff')")   // 跨父不串
+                == "true|true|diff");
 
-                    "let out = [];"
-                    "console.log('a9 == b9:', a9 == b9); out.push('a9 == b9:' + (a9 == b9));"
-                    "console.log('a9 === b9:', a9 === b9); out.push('a9 === b9:' + (a9 === b9));"
-                    "console.log('a9 == a9:', a9 == a9); out.push('a9 == a9:' + (a9 == a9));"
-
-                    "console.log('c9 == d9:', c9 == d9); out.push('c9 == d9:' + (c9 == d9));"
-                    "console.log('c9 === d9:', c9 === d9); out.push('c9 === d9:' + (c9 === d9));"
-
-                    "console.log('w9 == w9:', w9 == w9); out.push('w9 == w9:' + (w9 == w9));"
-                    "console.log('w9.parentWidget() == w9.parentWidget():', w9.parentWidget() == w9.parentWidget()); out.push('w9.parentWidget() == w9.parentWidget():' + (w9.parentWidget() == w9.parentWidget()));"
-                    "console.log('w9.parentWidget() == p9:', w9.parentWidget() == p9); out.push('w9.parentWidget() == p9:' + (w9.parentWidget() == p9));"
-
-                    "console.log('typeof a9.valueOf:', typeof a9.valueOf); out.push('typeof a9.valueOf:' + typeof a9.valueOf);"
-                    "console.log('typeof a9.equals:', typeof a9.equals); out.push('typeof a9.equals:' + typeof a9.equals);"
-
-                    "out.join('|')")
-                == "a9 == b9:true|a9 === b9:true|a9 == a9:true|c9 == d9:true|c9 === d9:true|w9 == w9:true|w9.parentWidget() == w9.parentWidget():true|w9.parentWidget() == p9:true|typeof a9.valueOf:function|typeof a9.equals:undefined");
-
-            check("JZTableWidgetItem: setItem/item/takeItem + data 原样 + 空单元格为 null",
+            // JS 侧**不暴露** item 对象(JZTableWidgetItem/JZListWidgetItem 没注册成 JS 类; 那套
+            // 所有权/失效逻辑从未接线, 属死代码 —— 见 JZJSWidgetModule::registViews 的说明)。
+            // 这里验证"值级"接口(文本/计数/当前项/行列数) + 下面的**视图镜像**(dataview);
+            // 控件本身的能力由第 8 节的 C++ 用例覆盖。
+            check("JZTableWidget(值级接口): setItemText/itemText + 行列数 + 当前格",
                   evalStr(engine,
                           "var tw8 = new JZTableWidget();"
                           "tw8.setRowCount(2); tw8.setColumnCount(2);"
-                          "var it8 = new JZTableWidgetItem('cell');"
-                          "it8.setData({ n: 7 });"
-                          "tw8.setItem(0, 0, it8);"
-                          "var back8 = tw8.item(0, 0);"
-                          "var s1 = back8.text() + '|' + back8.row() + '|' + back8.column() + '|' + back8.table().rowCount();"
-                          "back8.setText('x2');"
-                          "var s2 = tw8.itemText(0, 0) + '|' + back8.data().n;"
-                          "var taken8 = tw8.takeItem(0, 0);"
-                          "var s3 = taken8.text() + '|' + String(tw8.item(0, 0)) + '|' + String(taken8.table());"
-                          "s1 + ' || ' + s2 + ' || ' + s3")
-                      == "cell|0|0|2 || x2|7 || x2|null|null");
+                          "tw8.setItemText(0, 0, 'cell');"
+                          "var s1 = tw8.rowCount() + '|' + tw8.columnCount() + '|' + tw8.itemText(0, 0);"
+                          "tw8.setCurrentCell(1, 1);"
+                          "s1 + '|' + tw8.currentRow() + '|' + tw8.currentColumn()")
+                      == "2|2|cell|1|1");
 
-            check("JZListWidgetItem: addItem(item|text) + item/row/listWidget/data + takeItem",
+            check("JZListWidget(值级接口): appendItem/appendItems/count/itemText/currentIndex",
                   evalStr(engine,
                           "var lw8 = new JZListWidget();"
-                          "var li8 = new JZListWidgetItem('a');"
-                          "li8.setData(42);"
-                          "lw8.addItem(li8);"
-                          "lw8.addItem('b');"
-                          "var got8 = lw8.item(0);"
-                          "var s4 = lw8.count() + '|' + got8.text() + '|' + lw8.row(got8) + '|' + got8.data() + '|' + got8.listWidget().count();"
-                          "var tk8 = lw8.takeItem(0);"
-                          "s4 + ' || ' + lw8.count() + '|' + tk8.text() + '|' + lw8.item(0).text()")
-                      == "2|a|0|42|2 || 1|a|b");
+                          "lw8.appendItem('a');"
+                          "lw8.appendItems(['b', 'c']);"
+                          "var s4 = lw8.count() + '|' + lw8.itemText(0) + '|' + lw8.itemText(2);"
+                          "lw8.setCurrentIndex(1);"
+                          "s4 + '|' + lw8.currentIndex()")
+                      == "3|a|c|1");
+
+            // ---- dataview: JS 侧"视图镜像"与控件双向绑定(见 @jz/widget 的 dataview.ts) ----
+            // 视图侧增删 -> 控件立刻同步; 控件侧改数据 -> 视图自动重读(靠 onDataChanged 回灌)。
+            check("dataview(表格): 视图增删改 <-> 控件同步",
+                  evalStr(engine,
+                          "var tw9 = new JZTableWidget();"
+                          "var dv9 = tw9.dataView();"
+                          "dv9.push(['A', 1]);"                 // 数字也收(按文本存)
+                          "dv9.push(['B', 2]);"
+                          "var s = tw9.rowCount() + '|' + tw9.columnCount() + '|' + tw9.itemText(1, 0) + '|' + tw9.itemText(0, 1);"
+                          "dv9[1] = ['B2', 22];"                 // 下标赋值 = 换整行
+                          "s += '|' + tw9.itemText(1, 0) + '|' + tw9.itemText(1, 1) + '|' + dv9[1][0];"
+                          "dv9.splice(0, 1);"                    // 数组习惯删一行
+                          "s += '|' + tw9.rowCount() + '|' + tw9.itemText(0, 0) + '|' + dv9.length;"
+                          "dv9.columns(['名称', '值']);"         // 列(表头)
+                          "s + '|' + dv9.columns()[1]")
+                      == "2|2|B|1|B2|22|B2|1|B2|1|值");
+
+            check("dataview(表格): 控件侧改数据 -> 视图自动回灌 + 值级快照",
+                  evalStr(engine,
+                          "tw9.setItemText(0, 0, 'C');"          // C++ 侧改文本
+                          "var a = dv9[0][0];"
+                          "tw9.setRowCount(3);"                  // C++ 侧改行数
+                          "var b = dv9.length;"
+                          "var snap = dv9.rows();"
+                          "snap[0][0] = 'X';"                    // 改快照不脏镜像
+                          "a + '|' + b + '|' + dv9[0][0] + '|' + snap.length")
+                      == "C|3|C|3");
+
+            check("dataview(列表): push/remove/长度 + 控件侧同步",
+                  evalStr(engine,
+                          "var lw9 = new JZListWidget();"
+                          "var lv9 = lw9.dataView();"
+                          "lv9.push('a'); lv9.push('b'); lv9.push('c');"
+                          "var s = lw9.count() + '|' + lw9.itemText(2) + '|' + lv9[1];"
+                          "lv9.remove(0);"
+                          "s += '|' + lw9.count() + '|' + lw9.itemText(0) + '|' + lv9[0];"
+                          "lw9.appendItem('d');"                 // 控件侧加 -> 视图回灌
+                          "s + '|' + lv9.length + '|' + lv9[2]")
+                      == "3|c|b|2|b|b|3|d");
+
+            check("dataview: 同一控件只有一份视图 + 取到的是数组习惯的视图对象",
+                  evalStr(engine,
+                          "var same = (tw9.dataView() === dv9) ? 'same' : 'diff';"
+                          "var it = [];"
+                          "for (var r of dv9) it.push(r[0]);"
+                          "same + '|' + it.join(',')")
+                      == "same|C,,");
+
+            // 视图是**值级**的, item 类更没有暴露给 JS(用户明确要求):
+            check("dataview: 不暴露 item 类, 单元格类型受限",
+                  evalStr(engine,
+                          "var t1 = (typeof JZTableWidgetItem === 'undefined') ? 'noTableItem' : 'hasTableItem';"
+                          "var t2 = (typeof JZListWidgetItem === 'undefined') ? 'noListItem' : 'hasListItem';"
+                          "var bad = 'ok';"
+                          "try { dv9.push([{ k: 1 }]); } catch (e) { bad = 'throw'; }"
+                          "t1 + '/' + t2 + '/' + bad")
+                      == "noTableItem/noListItem/throw");
 
             check("继承绑定类探针 => " + evalStr(engine,
                       "(function () {"

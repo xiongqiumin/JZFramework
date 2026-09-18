@@ -129,8 +129,10 @@ JZWidget::~JZWidget()
     //    对象树在随后的 ~JZObject 中统一析构; 此处先解绑可避免双重释放。
     if (m_layout)
     {
-        delete m_layout;
+        if (!m_layoutFromJs)
+            delete m_layout;   // 归 JS 的那份由 JS 回收(见 setLayoutFromJs)
         m_layout = nullptr;
+        m_layoutFromJs = false;
     }
 
     // 2.5) 释放本控件自有的自布局
@@ -712,6 +714,16 @@ bool JZWidget::isVisible() const
 
 void JZWidget::setLayout(JZLayout* layout)
 {
+    setLayoutImpl(layout, false);
+}
+
+void JZWidget::setLayoutFromJs(JZLayout* layout)
+{
+    setLayoutImpl(layout, true);
+}
+
+void JZWidget::setLayoutImpl(JZLayout* layout, bool fromJs)
+{
     // Qt 语义(QWidget::setLayout): 一个控件只能有一个布局, 且只能"一次性"设上。
     //   * 已有布局时: 警告 + 忽略本次调用, **不接管**新布局(Qt 也是只警告; 新布局的
     //     释放责任在调用方 —— 比如 JS 侧那份仍归 JS 拥有, GC 会收);
@@ -729,8 +741,9 @@ void JZWidget::setLayout(JZLayout* layout)
     }
 
     m_layout = layout;
-    m_layout->apply(this);  // 内部 updateLayout(): 重排自身子控件
-    updateGeometry();       // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
+    m_layoutFromJs = fromJs;   // 归 JS 的那份由 JS 回收, 本控件不 delete
+    m_layout->apply(this);     // 内部 updateLayout(): 重排自身子控件
+    updateGeometry();          // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
 }
 
 void JZWidget::clearLayout()
@@ -740,8 +753,11 @@ void JZWidget::clearLayout()
 
     // 先清指针再删: 旧布局析构时的 _clearLayoutPointer 回调就是空操作了(不必依赖它)
     JZLayout* old = m_layout;
+    bool fromJs = m_layoutFromJs;
     m_layout = nullptr;
-    delete old;
+    m_layoutFromJs = false;
+    if (!fromJs)
+        delete old;   // JS 侧那份仍归 JS(它的 JS 对象回收时 delete), 这里只解绑
 
     updateGeometry();   // 没有布局了: sizeHint 改变, 向上级联(父布局需重排)
 }
@@ -798,7 +814,10 @@ void JZWidget::_clearLayoutPointer(JZLayout* layout)
     // 布局被销毁(delete w->layout() / clearLayout)或换了宿主: 本控件不该再指向它,
     // 否则这里就是悬垂指针(`~JZWidget` 还会再 delete 一次)。
     if (m_layout == layout)
+    {
         m_layout = nullptr;
+        m_layoutFromJs = false;
+    }
 }
 
 void JZWidget::updateGeometry()

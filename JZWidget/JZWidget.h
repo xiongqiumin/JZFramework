@@ -205,12 +205,21 @@ public:
     //   清空/替换的正确姿势: 先 clearLayout()(等价 Qt 的 `delete w->layout()`, 布局析构会
     //   同步清掉本控件的布局指针), 再 setLayout(新布局)。
     void setLayout(JZLayout* layout);
+    // 从 JS 侧设布局: 与 setLayout 同一套 Qt 语义, 但**本控件不接管释放责任** —— 那份布局
+    // 仍归它的 JS 对象(JS 对象回收时 delete)。clearLayout()/析构只解绑, 不 delete。
+    // 理由: JS 侧的 `new JZVBoxLayout()` 是 JS 拥有的句柄(新模型: 谁创建谁持有), 控件再删一次
+    // 就是双重释放; C++ 内部自建的布局走 setLayout(由本控件 delete)。
+    virtual void setLayoutFromJs(JZLayout* layout);
+    // "布局实际装在哪": 普通控件就是自己; 容器子类可覆写(如 JZGroupBox 装到内部内容区)。
+    // 绑定层靠它判断 setLayoutFromJs 有没有被接受, 也用不着去猜子类的内部结构。
+    virtual JZLayout* appliedLayout() const { return m_layout; }
     JZLayout* layout() const;
 
     // 清空当前布局: 删除布局对象并把指针置空。Qt 没有这个 API(那边直接 `delete w->layout()`),
     // 给显式入口是为了 JS 侧 —— JS 删不掉 C++ 对象。
     // 布局不拥有子控件: 子控件留在对象树上、保持最后一次几何, 只是不再被布局管理。
-    void clearLayout();
+    // 虚: 容器子类(如 JZGroupBox)的布局装在内部内容区, 要转发。
+    virtual void clearLayout();
 
     // 自布局: 把自身控件按 JZSelfLayout 描述(锚点 + 偏移)摆放在父控件内。
     // 父控件 resize 时框架自动重摆(见 JZWidget::resize); setSelfLayout 时也会立即按当前父尺寸摆一次。
@@ -345,6 +354,8 @@ protected:
     virtual void focusOutEvent(JZEvent* event);
 
     JZLayout* m_layout = nullptr;
+    bool m_layoutFromJs = false;            // true: 布局归 JS 拥有(setLayoutFromJs) -> 本控件不 delete
+    void setLayoutImpl(JZLayout* layout, bool fromJs);
     JZSelfLayout* m_selfLayout = nullptr;   // 控件自身挂的自布局(父 resize 时重摆)
 
     JZStyleSet m_style;

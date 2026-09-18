@@ -3,12 +3,17 @@
 #include <vector>
 #include <cstddef>
 #include "JZSize.h"
-#include "JZObjectPointer.h"
+#include "JZObject.h"
 
 class JZWidget;
 
-class JZLayout
+// 布局继承 JZObject: 布局对象也会被 JS 侧持有(见 JZJSWidgetModule::registLayouts 的注册类),
+// 有了 JZObject 就有"守卫"(guardPointer) —— 布局被 C++ 删掉之后, JS 侧那份句柄自动失效
+// (再用会抛异常), 而不是变成悬垂裸指针。子类(JZBoxLayout/JZGridLayout...)随之一起。
+class JZLayout : public JZObject
 {
+    JZ_OBJECT_DECLARE(JZLayout)
+
 public:
     virtual ~JZLayout();
 

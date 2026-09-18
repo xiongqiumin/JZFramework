@@ -6,34 +6,35 @@
 //
 // 事件走**属性写法**(不是 on()/addListener): 在实例上赋 onPaint / onMousePress / ... ; 清空写 null。
 // **信号也是属性**(onClicked / onToggled / onValueChanged / onCurrentIndexChanged ...):
-//   `btn.onClicked = () => {...}` 赋值即设、覆盖上一次、`= null` 清空、读回能拿到当前回调 ——
-//   与事件槽**同一条规则**(单发; 见 JZJSWidgetModule 的 defSignalProperty)。不再是方法调用。
+//   `btn.onClicked = () => {...}` 赋值即设、覆盖上一次、`= null` 清空、读回拿到你赋进去的那个值。
+//   **赋值不校验**: 赋非函数不会抛, 派发时按"这一项没有回调"处理(回退 C++ 默认实现)。
 // 框架派发时看该控件"这一项"有没有回调: 有就转给 JS 并把事件**拦下**, 没有则回退 C++ 默认实现。
-// 回调**存在 C++ 侧**(不是包装对象的属性), 所以与"挂在哪一份包装上"无关: 任何被 JS 包装过的控件
-//   (含 C++ 侧 new 好再交给 JS 的控件、groupBox.contentWidget() 这类内部控件)赋 onXxx 都生效;
-//   赋 null 清空、赋非函数抛异常。
-// 回调里拿"当前控件": 写成箭头函数时没有自己的 this, 用引擎全局 self() —— 等价于这里的 this,
-//   例: pane.onPaint = (e) => { const p = new JZPainter(self()); };  (见 types/globals.d.ts)
-//   转发状态存在 JZJSWidgetModule 的控件登记节点上(不是控件对象的成员): 模块自己就是这些
-//   控件的**事件过滤器**(installEventFilter), 所以 C++ 侧建好再交给 JS 的 JZWidget/JZWindow
-//   (如 groupBox.contentWidget()、parentWidget())同样能收到 onXxx, 改父后也照旧。
+// 回调就是**实例上的普通属性**(现读): 所以它与包装对象绑在一起 —— 包装被 GC 掉(没人保活了)
+//   回调也就没了。保活由 `@jz/widget` 的对象树负责(见下面的引用相等性说明)。
+// 回调里拿"当前控件": 写成箭头函数时没有自己的 this, 用引擎全局 self(), 例:
+//   pane.onPaint = (e) => { const p = new JZPainter(self()); };  (见 types/globals.d.ts)
 //
-// ⚠ 空指针返回值: parentWidget() / window() / layout() / JZGroupBox.contentWidget() 之类
-//   在 C++ 侧没有对象时返回**真 null**(不再是"空包装对象"那种真值, `if (p)` 判得出空)。
-// ⚠ 引用相等性: window() / widget() / contentWidget() / currentWidget() / verticalScrollBar() ...
-//   这些 getter **按当前调用现造包装** —— 同一个控件的两份包装不是同一个 JS 对象, 所以 `===` 比不得。
-//   parentWidget() / parent() 相反: 只要父子关系是 JS 侧建的(setParent / layout.addWidget /
-//   window.addWidget / ...), 就由 `@jz/widget` 运行期登记, 拿回的是你当初传进去的那份, `===` 成立;
-//   关系不是 JS 侧建的(构造时直接带父 `new JZLabel(win)`)则落到原生兜底, 仍是现造包装。
-//   事件回调不受影响(onPaint 等存在 C++ 侧的槽里, 在哪份包装上赋都生效)。layout() 走缓存, 返回同一份。
+// ⚠ 空指针返回值: parentWidget() / parent() / layout() 之类在 C++ 侧没有对象时返回 null。
+// ⚠ 引用相等性: 没有"引擎侧身份缓存"(2026-09-17 随旧包装层删掉了) —— 一个底层对象对应哪个 JS 对象,
+//   完全由**谁登记**决定。JS 侧登记的关系(setParent / layout.addWidget / window.addWidget /
+//   setCentralWidget / addTab / setWidget / 构造时带父 ...)由 `@jz/widget` 的对象树维护, 拿回的就是
+//   你当初传进去的那份包装(`===` 成立, 保活也靠这份强引用); layout() 返回缓存那份, 也是同一个。
+//   需要"回吐控件指针"的 getter 分两类:
+//     * 容器里的子控件(Stacked/Tab 的 widget(i)/currentWidget()、Splitter 的 widget(i)、
+//       ScrollArea 的 widget()): 答案是 **JS 侧的对象树**给出来的 —— 拿回的就是你当初 addXxx 传进去
+//       的那份包装(`===` 成立, 保活也是那份);
+//     * C++ 内部自建的控件(JZGroupBox.contentWidget()、JZScrollArea 的 viewport()/滚动条):
+//       JS 侧根本没有它们的对象, 也**不做 C++ 中转**, 所以不提供 —— 需要就直接在 C++ 侧用。
+//   值类型(geometry()/rect()/size())每次现造, 比内容用 equal()。
 // ⚠ 别把状态挂在包装对象上: 包装是**纯句柄** —— `w.foo = 1` 这类写法 TS 下本来就编译不过(这些类的
-//   声明里没有索引签名, 也不打算加), 而绕过它(声明合并 / `as any`)之后运行期同样靠不住: getter
-//   现造包装, 同一控件的两份包装是两个 JS 对象。但你自己**长期持有的那份包装**身份是稳定的,
-//   所以以它为键的 WeakMap(运行期对象树就是这么记父子/保活的)可靠; 挂在包装上的字段一样会丢。
+//   声明里没有索引签名, 也不打算加)。你自己**长期持有的那份包装**身份是稳定的, 所以以它为键的
+//   WeakMap(运行期对象树就是这么记父子/保活的)可靠; 挂在包装上的字段一样会丢。
 //   要 per 控件状态: 用稳定键(objectName / 你自己持有的那份包装)自建表, 或放 C++ 侧绑定层。
-// ⚠ 布局的生命周期: 布局归控件所有、由控件负责 delete。layout() 返回的视图在 clearLayout()
-//   之后会被置失效(再调用抛异常); 但你交给 setLayout 的那份包装**不会**被标记失效 ——
-//   布局被删之后不要再继续用那个变量。
+// ⚠ 布局的生命周期(谁建谁拥有): JS 侧 `new JZVBoxLayout()` 那份归 JS, 控件只是引用它 ——
+//   clearLayout() / 控件析构都只解绑, 不 delete(所以手动 setLayout 的布局可以在之后继续用);
+//   C++ 内部自建的布局(如 JZWindow.addWidget 按需补的 VBox)归控件, 由控件回收。
+//   布局(JZLayout)也继承 JZObject ⇒ 它的 JS 句柄带**守卫**: 万一布局被 C++ 先删掉(或不是 JS 那份
+//   归 JS 的), 再用那个句柄会抛"对象已被销毁", 不会踩悬垂指针。
 
 /** @final */
 declare class JZWidget {
@@ -103,13 +104,13 @@ declare class JZWidget {
    * 已有布局或传 null 都抛 TypeError。换布局请 `clearLayout()` 之后再 `setLayout(新布局)`。
    * 注: 窗口不再预装默认布局, 所以 `new JZWindow(...); win.setLayout(v)` 是合法的"第一次设置";
    * 想要默认纵向布局直接 `win.addWidget(child)` 即可(内部会按需补一个 VBox)。
-   * 之后 `w.layout()` 返回的是**缓存视图**(不是 `v` 本身); 布局被删时 `v` 不会被标记失效 ——
-   * 别在 clearLayout() / 控件销毁之后再用 `v`。
+   * 之后 `w.layout()` 返回的是**缓存视图**(同一个 JS 对象); 布局本身归 JS(`v` 还能继续用 ——
+   * clearLayout() 只是解绑, 不会 delete 它)。
    */
   setLayout(layout: JZLayout): void;
   /**
-   * 清空布局(删除布局对象, 之后 layout() 为 null), 等价 Qt 的 `delete w->layout()`。
-   * `layout()` 之前发出去的视图会立刻失效(再调用抛异常)。
+   * 清空布局(解绑 + 之后 layout() 为 null)。JS 侧 new 出来的布局归 JS, 这里**不删**它
+   * (C++ 内部自建的布局会随控件回收); `layout()` 之前发出去的视图仍是同一个对象, 可继续用。
    */
   clearLayout(): void;
   layout(): JZLayout | null;

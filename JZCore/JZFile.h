@@ -31,6 +31,11 @@ public:
     bool open(std::string filepath, std::string mode);
     void close();
 
+    // 把 stdio 缓冲区里的内容真正交给系统(fflush)。
+    // ⚠ write() 只写进 stdio 的缓冲区: 不 flush 的话, 日志这种"写了但量不大"的内容
+    //   会一直憋在内存里, 直到 close() 或攒满缓冲区 —— 进程被 kill 就全丢了。
+    void flush();
+
     bool atEnd() const;
     void seek(int pos);
     void seek(int pos, int origin);

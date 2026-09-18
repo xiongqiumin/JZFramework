@@ -167,6 +167,13 @@ bool JZFile::open(std::string filepath, std::string mode)
 #endif
 }
 
+void JZFile::flush()
+{
+    // 平台实例的 fopen 返回的同样是 FILE*, 所以两边都能直接 fflush
+    if (m_fp)
+        fflush(m_fp);
+}
+
 void JZFile::close()
 {
     if (m_fp)

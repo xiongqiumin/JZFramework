@@ -42,9 +42,6 @@ int test_coSerialPort()
     const char *kA = "COM1";
     const char *kB = "COM2";
 
-    // 注册平台串口驱动单例（提供 COM 底层读写）
-    JZDriver::init();
-
     JZCoSerialPort a;
     JZCoSerialPort b;
     for (auto *sp : {&a, &b})

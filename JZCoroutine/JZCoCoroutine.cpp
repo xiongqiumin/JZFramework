@@ -248,14 +248,7 @@ void JZCoCondition::wakeOne()
 
     JZCoCoroutine* co = m_coList.front();
     vec_popFront(m_coList);
-    if (!g_scheduler->isInCoroutine())
-    {
-        g_scheduler->resume(co);
-    }
-    else
-    {
-        JZTimer::singleShot(0, [co] { g_scheduler->resume(co); });
-    }
+    JZTimer::singleShot(0, [co] { g_scheduler->resume(co); });
 }
 
 void JZCoCondition::wakeAll()
@@ -263,18 +256,11 @@ void JZCoCondition::wakeAll()
     std::vector<JZCoCoroutine*> co_list = m_coList;
     m_coList.clear();
 
-    if (!g_scheduler->isInCoroutine())
-    {
-        for (int i = 0; i < (int)co_list.size(); i++)
-            g_scheduler->resume(co_list[i]);
-    }
-    else
-    {
-        JZTimer::singleShot(0, [co_list] {
+    JZTimer::singleShot(0, [co_list] 
+        {
             for (int i = 0; i < (int)co_list.size(); i++)
                 g_scheduler->resume(co_list[i]);
-            });
-    }
+        });
 }
 
 //JZCoThread

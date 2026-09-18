@@ -142,12 +142,18 @@ static void testCoCondition()
 
         jzApp->processEvents();                         // 等两个 waiter 真正进入等待
         JZTimer::singleShot(0, [&]() { cond.wakeOne(); });
-        
-        jzApp->processEvents();
+
+        // wakeOne/wakeAll 现在**统一延迟到下一轮**再恢复(协程里和协程外一个语义):
+        // 第一次泵只执行 singleShot 里的 wakeOne; 它投出的"恢复事件"是本次调用里才入队的
+        // (processEvents 开头快照了本轮要处理的数量) ⇒ 要再泵一轮才轮到 → 这里泵到生效为止(带上限)。
+        for (int k = 0; k < 10 && woken == 0; k++)
+            jzApp->processEvents();
         CO_TEST_ASSERT(woken == 1, "wakeOne 后应唤醒 1 个, 实际=" + to_string(woken));
 
         cond.wakeOne();
-        jzco_waitAny(waiters);
+        // 第二次 wakeOne 同样是延迟恢复; 而 woken 里已经有一个(上一个醒的), jzco_waitAny 会立刻返回
+        // ⇒ 这里等**两个 waiter 都跑完**(wakeOne 会把剩下那个也唤醒), 真事件循环会把延迟恢复跑到。
+        jzco_waitAll(waiters);
         CO_TEST_ASSERT(woken == 2, "再次 wakeOne 后应唤醒 2 个, 实际=" + to_string(woken));
     }
 

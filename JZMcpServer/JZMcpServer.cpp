@@ -70,7 +70,8 @@ public:
             head.setHeader("Cache-Control", "no-cache");
             head.setHeader("X-Accel-Buffering", "no");   // 关掉反代缓冲
             client->write(head.toHeadByteArray(0, false), false);
-            client->write(": connected\n\n", false);
+            const std::string sse_hello = ": connected\n\n";
+            client->write(sse_hello.data(), (int)sse_hello.size(), false);
 
             m_server->addSseClient(client);
             connect(&client->sigDestroyed, [this, client](JZObject*) {

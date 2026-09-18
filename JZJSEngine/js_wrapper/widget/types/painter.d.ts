@@ -66,12 +66,18 @@ declare class JZPainter {
   fillRoundRect(x: number, y: number, w: number, h: number, r: number, color: string): void;
   drawEllipse(x: number, y: number, w: number, h: number): void;
   fillEllipse(x: number, y: number, w: number, h: number, color: string): void;
+  /**
+   * 画圆弧(描边), 圆心 (x, y) + 半径 radius。
+   * 角度单位是**度**: 0 = 3 点方向, 顺时针递增; `drawArc(x, y, r, 0, 360)` = 整圈。
+   * (C++ 侧内部再按 LVGL 的 1/10 度处理, JS 这边只写度。)
+   */
+  drawArc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
   drawText(x: number, y: number, text: string): void;
   /** img 不能为 null(绑定层会抛异常) */
   drawImage(img: JZImage, x: number, y: number, w: number, h: number): void;
 }
 
-// 未暴露(C++ 有): pen()/brush()/font() 读取(transform() 已暴露, 见 matrix.d.ts), drawArc,
-// drawPath/fillPath (JZPainterPath), drawCurve, drawPixmap。
+// 未暴露(C++ 有): pen()/brush()/font() 读取(transform() 已暴露, 见 matrix.d.ts)、
+// drawPath/fillPath (JZPainterPath)、drawCurve、drawPixmap。
 // 注: fillRect / fillRoundRect / fillEllipse 都带颜色实参(内部用自己的画刷), 所以
 //     setBrush 对它们没有效果 —— 可见效果在 drawRoundRect 的内部填充与路径填充上。

@@ -40,6 +40,15 @@ export * from './tree';
 // 列表/表格的视图镜像(JZTableWidget/JZListWidget 的 dataView()) —— 同样挂在原型上, 见 ./dataview.ts
 export * from './dataview';
 
+// 控件的通用属性表(setProperty/property) —— **纯 JS 侧存储**, 见 ./props.ts
+export * from './props';
+
+// 菜单句柄保活(JZMenu/JZMenuBar 交回的是借用句柄, 见 ./menus.ts)
+export * from './menus';
+
+// 信号/事件装成原型属性(默认 null) —— 见 ./signals.ts
+export * from './signals';
+
 export type EventName = string;
 export type Handler = (...args: any[]) => void;
 export type StyleMap = Record<string, string | number | boolean>;

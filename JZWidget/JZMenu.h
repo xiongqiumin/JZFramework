@@ -77,11 +77,15 @@ public:
 jz_signals:
     JZSigVoid aboutToShow;
     JZSigVoid aboutToHide;
+    JZSigInt sigActionTriggered;   // (index) 某个菜单项被触发 —— 值级给 JS 用(JS 不持 action 句柄)
 
 protected:
     void updateLayout();   // 计算每项矩形 / 总尺寸 (内容变化后调用)
 
 private:
+    // 把 action 的 triggered 接到 sigActionTriggered(索引) 上(见 JZMenu.cpp)
+    void connectActionIndex(JZAction* action);
+
     void ensurePopup();
     void closeAll();       // 关闭自身及所有父菜单弹层
 

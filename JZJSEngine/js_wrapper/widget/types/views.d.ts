@@ -197,10 +197,26 @@ declare class JZScrollArea extends JZWidget {
   /** 虚拟内容总尺寸(w/h < 0 表示该方向跟随视口) */
   setContentSize(w: number, h: number): void;
   scrollTo(x: number, y: number): void;
+  scrollToX(x: number): void;
+  scrollToY(y: number): void;
+  scrollToTop(): void;
+  scrollToBottom(): void;
   scrollX(): number;
   scrollY(): number;
+  maxScrollX(): number;
+  maxScrollY(): number;
+  canScrollVertically(): boolean;
+  canScrollHorizontally(): boolean;
+  contentWidth(): number;
+  contentHeight(): number;
   viewportWidth(): number;
   viewportHeight(): number;
+  /** 0=Vertical 1=Horizontal 2=Both(与 setScrollDirection 对齐) */
+  setScrollDirection(direction: number): void;
+  /** 策略: 0=AsNeeded 1=AlwaysOff 2=AlwaysOn(见 C++ JZScrollArea::ScrollBarPolicy) */
+  setScrollBarPolicy(policy: number): void;
+  setVerticalScrollBarPolicy(policy: number): void;
+  setHorizontalScrollBarPolicy(policy: number): void;
 }
 
 // 图片显示(缩放倍率 / 旋转角度)
@@ -216,10 +232,8 @@ declare class JZImageLabel extends JZWidget {
   setRotation(angle: number): void;
 }
 
-// 未暴露(C++ 有): JZScrollArea 的滚动条策略 / viewport() / verticalScrollBar|horizontalScrollBar()
-//   / maxScrollX|Y / scrollToTop|Bottom (视口与滚动条都是 C++ 内部造的子控件, JS 侧没有它们的对象;
-//   要开的话得让 JS 侧先拿到句柄 —— 现在不中转, 所以直接不给);
+// 未暴露(C++ 有): JZScrollArea 的 viewport() 与 verticalScrollBar()/horizontalScrollBar()
+//   (视口与滚动条都是 C++ 内部造的子控件, JS 侧没有它们的包装; 要看/改滚动位置请用
+//    scrollX/Y()、scrollTo()/scrollToX/Y/Top/Bottom、maxScrollX/Y()、canScrollXxx());
 // 视图类: JZTableWidget 的列视图接口(setColumnWidth / setRowHeight / insertColumn / removeColumn /
-//   clear —— dataview 只管整行数据, 列宽行高这类"看的"暂时没给 JS 口子)、JZTabWidget.removeTab /
-//   widget(i) / indexOf、JZStackedWidget.insertWidget / removeWidget / widget(i)、
-//   JZSplitter.setSizes / sizes、JZImageLabel.setPivot。
+//   clear —— dataview 只管整行数据, 列宽行高这类"看的"暂时没给 JS 口子)、JZSplitter.setSizes / sizes。

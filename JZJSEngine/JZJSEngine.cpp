@@ -1907,13 +1907,8 @@ JSValue JZJSEngine::createValue(int type, int argc, JSValueConst* argv)
             return JS_EXCEPTION;
         }
 
+        // 通知绑定层那一步在 createValue(type, ptr) 里(所有创建路径共用一处)
         JSValue obj = createValue(type, ptr);
-        // 对象造好了 -> 通知绑定层(把宿主句柄记到 C++ 对象上, 见 setObjectCreatedCallback)。
-        // 传借用值: 回调要留就自己 dup。
-        // 注意: ptr 未必是 JZObject(值类型 JZRect/JZColor/JZImage... 就不是) —— 绑定层自己用
-        // isGuardedType(type) 分辨, 别直接当 JZObject 用。
-        if (m_objectCreated && !JS_IsException(obj))
-            m_objectCreated(type, obj, ptr);
         return obj;
     }
 }
@@ -1934,6 +1929,16 @@ JSValue JZJSEngine::createValue(int type, void *ptr)
         JS_SetOpaque(obj, ptr);
 
     JS_FreeValue(m_ctx, proto);
+
+    // 对象造好了 -> 通知绑定层(把宿主句柄记到 C++ 对象上 + 连信号, 见 setObjectCreatedCallback)。
+    // ⚠ 这条通知必须**所有**创建路径都发: 不只是 `new X()`(下面 createValue(type,argc,argv)),
+    //   还有 toJsValueFromPtr(把 C++ 侧持有的对象交给 JS, 如菜单/菜单项句柄) —— 绑定层正是靠它
+    //   把 onXxx 信号接到这份 JS 包装上; 漏发的话句柄上的 onTriggered 之类永远不响。
+    // 传借用值: 回调要留就自己 dup。
+    // 注意: ptr 未必是 JZObject(值类型 JZRect/JZColor/JZImage... 就不是) —— 绑定层自己用
+    // isGuardedType(type) 分辨, 别直接当 JZObject 用。
+    if (m_objectCreated && !JS_IsException(obj))
+        m_objectCreated(type, obj, ptr);
 
     return obj;
 }

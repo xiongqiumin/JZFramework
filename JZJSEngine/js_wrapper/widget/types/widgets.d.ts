@@ -123,11 +123,11 @@ declare class JZWidget {
   styleSheet(): string;
 
   /**
-   * 通用属性(JZObject::setProperty) —— 存进控件的属性表, 用 property(name) 读回。
-   * 子类的"预定义属性"由各自的 override 认名字, 认不出的落到这张通用表。
-   * 值: null/undefined(**表示移除该属性**)、number、string、boolean 按各自类型存;
-   *   其余值(数组 / 对象 / 函数 / 类的实例)按**原样**存(注册的 metatype JZJSValuePtr, 不做有损转换):
-   *   身份保留, 读回来还是同一个对象; 引用计数由引擎管, 存活到该属性被覆盖/移除或引擎关闭。
+   * 通用属性 —— **纯 JS 侧存储**(@jz/widget 的 props.ts 用 WeakMap 挂在 JZWidget 原型上),
+   * 不经过 C++: 想往控件上挂什么就挂什么。
+   *   值: null/undefined 表示**移除**该属性; 其余值(标量 / 数组 / 对象 / 函数 / 控件实例)
+   *   一律**原样**存 —— 读回来是同一个对象(身份保留)。
+   *   控件被回收时它的属性一起消失; 属性不会额外保活控件本身。
    */
   setProperty(name: string, value: unknown): void;
 
@@ -192,13 +192,80 @@ declare class JZMenuBar extends JZWidget {
   constructor();
   constructor(parent: JZWidget | null);
 
-  /** 添加一个菜单, 返回其 JZMenu 指针(继续 addAction / addMenu); 内部菜单项 JZMenu 暂未暴露 */
-  addMenu(title: string): any;
+  /**
+   * 添加一个菜单, 返回 JZMenu(**借用句柄**: 菜单栏持有, JS 不负责 delete)。
+   * @jz/widget 的 menus.ts 会在 JS 侧保活这个句柄 —— 否则它被 GC 时会按守卫约定把真菜单删掉。
+   */
+  addMenu(title: string): JZMenu;
+  /** 第 i 个菜单(借用句柄, 同上) */
+  menuAt(index: number): JZMenu | null;
+  menuCount(): number;
+}
+
+/**
+ * 菜单(数据模型; 不是渲染树控件)。菜单树用 addAction/addMenu/addSeparator 建,
+ * 要弹出来用 popup(owner, anchorRect)。
+ * ⚠ addAction/addMenu/actionAt/menuAt 返回的都是**借用句柄**(菜单持有) —— JS 侧由
+ *   @jz/widget 的 menus.ts 保活。
+ */
+/** @final */
+declare class JZMenu {
+  constructor();
+  constructor(title: string);
+
+  setTitle(title: string): void;
+  title(): string;
+
+  /** 建一个菜单项(借用句柄), 触发时跑它自己的 onTriggered */
+  addAction(text: string): JZAction;
+  /** 建子菜单(借用句柄, 由本菜单持有) */
+  addMenu(title: string): JZMenu;
+  addSeparator(): void;
+
+  actionCount(): number;
+  actionAt(index: number): JZAction | null;
+  menuCount(): number;
+  menuAt(index: number): JZMenu | null;
+
+  // ---- 下标式的便捷形式(不拿句柄时用; 触发回调报下标) ----
+  setActionEnabled(index: number, enabled: boolean): void;
+  setActionChecked(index: number, checked: boolean): void;
+  isActionChecked(index: number): boolean;
+  /** 某一项被触发(回调参数 = 该项下标) */
+  onActionTriggered: ((index: number) => void) | null;
+
+  /**
+   * 弹层: anchor 是**屏幕逻辑坐标**下的触发区(菜单在其下沿展开), 传 (globalX, globalY, 1, 1) 即可。
+   * 注意它**不是**同步的 exec(): 弹层是异步的, "选中了哪一项"由 onActionTriggered / action.onTriggered 告诉你。
+   */
+  popup(owner: JZWindow, anchor: JZRect): void;
+  hidePopup(): void;
+  isPopupOpen(): boolean;
+}
+
+/** 菜单项(数据模型) */
+/** @final */
+declare class JZAction {
+  setText(text: string): void;
+  text(): string;
+  setShortcut(shortcut: string): void;
+  shortcut(): string;
+  setEnabled(enabled: boolean): void;
+  isEnabled(): boolean;
+  setCheckable(checkable: boolean): void;
+  isCheckable(): boolean;
+  setChecked(checked: boolean): void;
+  isChecked(): boolean;
+  setIcon(icon: JZImage): void;
+  /** 触发一次(等价"用户点了这一项") */
+  trigger(): void;
+  /** 被触发(属性形: 赋值设 / 覆盖旧的 / `= null` 清空) */
+  onTriggered: (() => void) | null;
 }
 
 /** @final */
 declare class JZLabel extends JZWidget {
-  /** 运行期 (parent) / (text) / (text, parent) 都接受(顺序无关) */
+  /** 运行期形态只有 (text?, parent?): 文字在前, parent 放最后(parent 只能跟在文字后面) */
   constructor(text?: string, parent?: JZWidget | null);
 
   setText(text: string): void;
@@ -209,9 +276,11 @@ declare class JZLabel extends JZWidget {
 
 /** @final */
 declare class JZPushButton extends JZWidget {
-  constructor();
-  constructor(parent: JZWidget | null);
-  constructor(parent: JZWidget | null, w: number, h: number, text: string);
+  /**
+   * 运行期形态: () / (text) / (text, parent) —— **文字在前, parent 放最后**。
+   * 构造不收尺寸: 要固定大小就用 setFixedSize(w, h)(或 setWidth/setHeight)。
+   */
+  constructor(text?: string, parent?: JZWidget | null);
 
   setText(text: string): void;
   text(): string;

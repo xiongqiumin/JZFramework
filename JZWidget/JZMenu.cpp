@@ -262,6 +262,7 @@ JZMenu::JZMenu(JZObject* parent)
     : JZObject(parent)
     , aboutToShow(this)
     , aboutToHide(this)
+    , sigActionTriggered(this)
 {
 }
 
@@ -301,7 +302,28 @@ JZAction* JZMenu::addAction(const std::string& text)
 {
     JZAction* a = new JZAction(text, this);
     m_actions.push_back(a);
+    connectActionIndex(a);
     return a;
+}
+
+// 把"某项被触发"转成 sigActionTriggered(索引): JS 侧按索引认项(值级, 不持 action 句柄)。
+// 索引在**触发时**现算, 所以之后再有增删也认得对(本类的菜单项只增不删, 见 actionAt)。
+void JZMenu::connectActionIndex(JZAction* action)
+{
+    if (!action)
+        return;
+
+    JZMenu* self = this;
+    connect(&action->triggered, [self, action]() {
+        for (size_t i = 0; i < self->m_actions.size(); i++)
+        {
+            if (self->m_actions[i] == action)
+            {
+                self->sigActionTriggered.emit((int)i);
+                return;
+            }
+        }
+    });
 }
 
 JZAction* JZMenu::addAction(const std::string& text, std::function<void()> triggered)
@@ -318,6 +340,7 @@ JZAction* JZMenu::addAction(JZAction* action)
         return nullptr;
     action->setParent(this);
     m_actions.push_back(action);
+    connectActionIndex(action);
     return action;
 }
 

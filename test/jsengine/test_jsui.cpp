@@ -10,6 +10,8 @@
 #include "JZImage.h"
 #include "JZJSType.h"
 #include "JZTableWidget.h"
+#include "JZMenu.h"
+#include "JZAction.h"
 #include "quickjs/quickjs.h"
 
 using namespace std;
@@ -828,8 +830,9 @@ int main()
             check("onShow = null 清空回调(不再派发)", evalStr(engine, "String(globalThis.__s6)") == "1");
             check("清空后 getter 返回 null", evalStr(engine, "String(c6.onShow)") == "null");
 
-            // ⑦ 属性系统: `w.setProperty(name, value)` —— 参数收 JSValue。标量走 JZVariant 原生类型;
-            //    其余(数组/对象/函数/实例)用注册的 metatype(JZJSValueHolder)**原样**存; C++ 侧 property() 读回。
+            // ⑦ 属性系统: `w.setProperty(name, value)` / `property(name)` —— **纯 JS 侧存**
+            //    (@jz/widget 的 props.ts 用 WeakMap 挂在 JZWidget 原型上), 不落 C++:
+            //    值原样(同一身份)、函数/控件实例都能挂、控件回收时属性跟着走。
             evalStr(engine,
                     "c6.setProperty('answer', 42);"
                     "c6.setProperty('pi', 3.5);"
@@ -839,42 +842,25 @@ int main()
                     "c6.setProperty('obj', { n: 7 });"
                     "c6.setProperty('fn', function () { return 1; });"
                     "'ok'");
-            {
-                JZVariant vInt = c6w->property("answer");
-                JZVariant vDbl = c6w->property("pi");
-                JZVariant vStr = c6w->property("label");
-                JZVariant vBool = c6w->property("on");
-                check("setProperty: int / double / string / bool",
-                      vInt.toInt() == 42 && vDbl.toDouble() == 3.5 && vStr.toString() == "hi" && vBool.toBool());
 
-                // 非标量: 走注册的 metatype(JZJSValuePtr), 原样存 —— 数组/对象/函数身份都保留
-                JSContext* ctx = engine.context();
-                JZJSValuePtr listPtr = c6w->property("list").value<JZJSValuePtr>();
-                check("setProperty: 数组原样存(仍是 JS 数组)", JS_IsArray(listPtr.get()));
-
-                JZJSValuePtr objPtr = c6w->property("obj").value<JZJSValuePtr>();
-                JSValue nv = JS_GetPropertyStr(ctx, objPtr.get(), "n");
-                int32_t n = 0;
-                JS_ToInt32(ctx, &n, nv);
-                JS_FreeValue(ctx, nv);
-                check("setProperty: 对象原样存(能读回字段)", n == 7);
-
-                JZJSValuePtr fnPtr = c6w->property("fn").value<JZJSValuePtr>();
-                check("setProperty: 函数不再是错误(原样存)", JS_IsFunction(ctx, fnPtr.get()));
-            }
-            check("setProperty: 控件实例也能存(不再抛异常)",
-                  evalStr(engine, "try { c6.setProperty('w', c6); 'ok'; } catch (e) { 'throw'; }") == "ok");
-
-            // property(name): JS 侧读回 —— 标量按类型还, JS 值原样还(同一身份), 未设置/已移除 -> null
-            check("property: 标量读回",
-                  evalStr(engine, "String(c6.property('answer')) + '|' + String(c6.property('pi')) + '|' + String(c6.property('on'))") == "42|3.5|true");
+            check("property: 标量读回(仍是原生类型)",
+                  evalStr(engine, "String(c6.property('answer')) + '|' + String(c6.property('pi')) + '|' + String(c6.property('on')) + '|' + c6.property('label')")
+                      == "42|3.5|true|hi");
             check("property: JS 值原样读回(同一身份 + 内容对)",
-                  evalStr(engine, "var l2 = c6.property('list'); String(l2 === c6.property('list')) + '|' + String(l2[1]) + '|' + String(c6.property('obj').n)") == "true|a|7");
+                  evalStr(engine, "var l2 = c6.property('list'); String(l2 === c6.property('list')) + '|' + String(l2[1]) + '|' + String(c6.property('obj').n) + '|' + String(c6.property('fn')())")
+                      == "true|a|7|1");
+            check("setProperty: 控件实例也能挂(同一身份)",
+                  evalStr(engine, "try { c6.setProperty('w', c6); String(c6.property('w') === c6); } catch (e) { 'throw'; }") == "true");
             check("property: 未设置的属性 -> null", evalStr(engine, "String(c6.property('nope'))") == "null");
-            // null/undefined = 移除该属性; 之后读回是 null
-            evalStr(engine, "c6.setProperty('label', null); 'ok'");
-            check("setProperty: 传 null 移除属性", !c6w->property("label").isValid());
-            check("property: 移除后读回 null", evalStr(engine, "String(c6.property('label'))") == "null");
+
+            // 存 JS 侧的硬证据: C++ 的属性表里查不到这些名字(引擎自己的宿主句柄 js_value 不算)
+            check("setProperty 不落 C++ 侧(底层属性表里没有)",
+                  !c6w->property("answer").isValid() && !c6w->property("list").isValid() && !c6w->property("obj").isValid());
+
+            // null / undefined = 移除该属性
+            evalStr(engine, "c6.setProperty('label', null); c6.setProperty('obj', undefined); 'ok'");
+            check("setProperty: 传 null/undefined 移除属性",
+                  evalStr(engine, "String(c6.property('label')) + '|' + String(c6.property('obj'))") == "null|null");
 
             // ⑧ 对话框绑定(registDialogs): 类/全局对象与接口在即可。
             //    不在这里调 exec(): 它会真开模态循环, 无桌面会话下没有可交互的窗口(桌面环境里另测)。
@@ -1031,6 +1017,50 @@ int main()
                           "for (var r of dv9) it.push(r[0]);"
                           "same + '|' + it.join(',')")
                       == "same|C,,");
+
+            check("list.itemData/setItemData: 业务数据槽原样往返(没有 item 句柄)",
+                  evalStr(engine,
+                          "var lw10 = new JZListWidget();"
+                          "lw10.appendItem('dev');"
+                          "lw10.appendItem('dev2');"
+                          "var payload = { netId: 7, id: 'A1' };"
+                          "lw10.setItemData(0, payload);"
+                          "lw10.setItemData(1, ['x', 'y']);"
+                          "var d0 = lw10.itemData(0);"
+                          "(d0 === payload) + '|' + d0.netId + '|' + d0.id + '|' + lw10.itemData(1)[1]")
+                      == "true|7|A1|y");
+
+            // 菜单: **句柄式**为主(uiLoader 生成的 setupUi() 与 app 都按这个写):
+            //   addAction/addMenu/actionAt/menuAt -> JZAction/JZMenu 句柄; 句柄上挂 onTriggered。
+            // 另有下标式的便捷形式(setActionXxx / isActionChecked / onActionTriggered 下标回调)。
+            // ⚠ 句柄是"借用"(对象由菜单持有) —— JS 侧由 @jz/widget 的 menus.ts 保活。
+            check("JZMenu: addAction 返回 JZAction 句柄 + 下标式状态读写",
+                  evalStr(engine,
+                          "var mn = new JZMenu();"
+                          "var a0 = mn.addAction('a'); var a1 = mn.addAction('b');"
+                          "a1.setCheckable(true); a1.setChecked(true); a1.setEnabled(false);"
+                          "globalThis.__menu = mn; globalThis.__menuHit = -1; globalThis.__a0Hit = 0;"
+                          "mn.onActionTriggered = function (i) { globalThis.__menuHit = i; };"
+                          "globalThis.__a0 = a0;"
+                          "(typeof a0.text) + '|' + a0.text() + '|' + mn.actionCount() + '|' + String(a1.isChecked()) + '|' + mn.isActionChecked(1)")
+                      == "function|a|2|true|true");
+            evalStr(engine, "globalThis.__a0.onTriggered = function () { globalThis.__a0Hit = 1; }; 'ok'");
+            {
+                JZJSValuePtr mv = engine.eval("globalThis.__menu");
+                JZMenu* menu = engine.fromJSValue<JZMenu*>(mv.get());
+                check("JZMenu: JS 侧拿到的是真菜单对象", menu != nullptr);
+                if (menu)
+                {
+                    menu->actionAt(0)->trigger();              // 句柄式回调(onTriggered)
+                    menu->actionAt(1)->setEnabled(true);      // disabled 的 trigger 会被 JZAction 忽略
+                    menu->actionAt(1)->trigger();              // 下标式回调(onActionTriggered)
+                    jzApp->processEvents();
+                }
+                check("JZMenu: 句柄上的 onTriggered 生效",
+                      evalStr(engine, "String(globalThis.__a0Hit)") == "1");
+                check("JZMenu: 下标式 onActionTriggered 收到下标 1",
+                      evalStr(engine, "String(globalThis.__menuHit)") == "1");
+            }
 
             // 视图是**值级**的, item 类更没有暴露给 JS(用户明确要求):
             check("dataview: 不暴露 item 类, 单元格类型受限",

@@ -3,6 +3,7 @@
 #include "JZJSBind.h"
 #include "JZJSWidget.h"
 #include "JZApplication.h"
+#include "JZDesktopServices.h"
 #include "JZDebug.h"   // LOG_W(透明控件类找不到全局类时的告警)
 #include "JZDir.h"
 #include "JZWidget.h"
@@ -1623,61 +1624,6 @@ void JZJSWidgetModule::registDialogs()
     m_engine->setProperty(m_engine->globalObject(), "JZFileDialog", fileDialog);
 }
 
-// ---------- 通用属性: JS 值 <-> JZVariant ----------
-// 规则见 types/widgets.d.ts: 标量按各自原生类型存; 其余(数组/对象/函数/实例)用注册的 metatype
-// (JZJSValuePtr)**原样**存一份强引用(读回拿到的是同一个 JS 对象); null/undefined = 移除该属性。
-
-// JS 值 -> JZVariant
-static JZVariant jzJsToVariant(JZJSEngine* engine, JSValueConst v)
-{
-    JSContext* ctx = engine->context();
-
-    if (JS_IsNull(v) || JS_IsUndefined(v))
-        return JZVariant();                    // None: JZObject::setProperty 会删掉该属性
-
-    if (JS_IsBool(v))
-        return JZVariant::fromValue((bool)(JS_ToBool(ctx, v) != 0));
-
-    if (JS_IsNumber(v))
-    {
-        double d = 0;
-        JS_ToFloat64(ctx, &d, v);
-        int32_t i = 0;
-        if (JS_ToInt32(ctx, &i, v) == 0 && (double)i == d)
-            return JZVariant::fromValue((int)i);   // 整数值 -> Int(与 d.ts 的 "number" 一致)
-        return JZVariant::fromValue(d);
-    }
-
-    if (JS_IsString(v))
-        return JZVariant::fromValue(fromJSValue<std::string>(ctx, v));
-
-    return JZVariant::fromValue(JZJSValuePtr(ctx, JS_DupValue(ctx, v)));
-}
-
-// JZVariant -> JS 值
-static JSValue jzVariantToJs(JZJSEngine* engine, const JZVariant& v)
-{
-    JSContext* ctx = engine->context();
-    if (!v.isValid())
-        return JS_NULL;                        // 未设置 / 已移除
-
-    int type = v.typeId();
-    if (type == jzMetaTypeId<bool>())
-        return JS_NewBool(ctx, v.toBool());
-    if (type == jzMetaTypeId<int>())
-        return JS_NewInt32(ctx, v.toInt());
-    if (type == jzMetaTypeId<double>())
-        return JS_NewFloat64(ctx, v.toDouble());
-    if (type == jzMetaTypeId<std::string>())
-        return JS_NewString(ctx, v.toString().c_str());
-    if (type == jzMetaTypeId<JZJSValuePtr>())
-        return JS_DupValue(ctx, v.value<JZJSValuePtr>().get());
-
-    // 其它 C++ 侧自定义类型: 明确抛错, 不静默返回 null(丢信息)
-    JS_ThrowTypeError(ctx, "property(): 该属性是 C++ 侧类型(id=%d), 不能直接交给 JS", type);
-    return JS_EXCEPTION;
-}
-
 void JZJSWidgetModule::registWidgets()
 {
     // 基类 JZWidget —— 裸类对象。
@@ -1743,14 +1689,9 @@ void JZJSWidgetModule::registWidgets()
     // 自身矩形(控件本地坐标: x/y 为 0), 绘制回调里填背景用
     bind_w.def("rect", [](JZWidget* w) { return w->rect(); });
 
-    // 通用属性(见 types/widgets.d.ts): 标量按原生类型存; 其余原样存一份强引用; null/undefined 移除。
-    // 子类的"预定义属性"(title/geometry/text...)由各自的 override 认名字, 认不出的落到通用表。
-    bind_w.def("setProperty", [this](JZWidget* w, const std::string& name, JSValue v) {
-        w->setProperty(name, jzJsToVariant(m_engine, v));
-    });
-    bind_w.def("property", [this](JZWidget* w, const std::string& name) -> JSValue {
-        return jzVariantToJs(m_engine, w->property(name));
-    });
+    // 通用属性(setProperty/property): **不在 C++ 侧绑** —— 由 @jz/widget 的 props.ts 在 JS 侧
+    // 用 WeakMap 存(见那里的说明: 值本来就是 JS 值, 绕 C++ 只会多一层转换与生命周期)。
+    // C++ 的 JZObject::setProperty/property 仍在(引擎自己的宿主句柄 js_value 用它), 但不暴露给 JS。
 
     bind_w.setCreate(js_JZWidget_ctor);
     mountTransparentClass(bind_w.classDefine());
@@ -1804,8 +1745,15 @@ void JZJSWidgetModule::registWidgets()
     // JZMenuBar —— 菜单栏(addMenuBar 的子控件)。仅注册构造 + 实例绑定,
     // 内部菜单项(JZMenu)暂未绑定到 JS, 由 C++ 侧继续 addMenu。
     jsbind::ClassBind<JZMenuBar> bind_menubar("JZMenuBar", bind_w);    
-    // JZMenuBar.addMenu: 返回 JZMenu(由菜单栏托管, JS 不拥有, 避免 GC 误删导致双重释放)
-    
+    // JZMenuBar: 菜单栏本身是控件; 内部菜单树由 addMenu/addAction 建(见下面的 JZMenu)。
+    // addMenu/menuAt 返回 JZMenu 的**借用句柄**(对象由菜单栏持有; JS 不负责 delete) ——
+    // 保活由 @jz/widget 的 menus.ts 在 JS 侧做(否则句柄被 GC 会把真菜单删掉)。
+    bind_menubar.def("addMenu", [this](JZMenuBar* mb, const std::string& title) -> JSValue {
+        return m_engine->toJsValueFromPtr(mb->addMenu(title));
+    });
+    bind_menubar.def("menuAt", [this](JZMenuBar* mb, int i) -> JSValue {
+        return m_engine->toJsValueFromPtr(mb->menuAt(i));
+    });
     bind_menubar.def("menuCount", [](JZMenuBar* mb) { return mb->menuCount(); });    
     mountTransparentClass(bind_menubar.classDefine());
 
@@ -1816,6 +1764,44 @@ void JZJSWidgetModule::registWidgets()
     bind_menu.def("addSeparator", [](JZMenu* m) { m->addSeparator(); });
     bind_menu.def("menuCount", [](JZMenu* m) { return m->menuCount(); });    
     bind_menu.def("actionCount", [](JZMenu* m) { return m->actionCount(); });    
+    // 从 JS 建菜单树(loader 生成的 setupUi() / 手写右键菜单都这么用):
+    //   const mb = new JZMenuBar();
+    //   const m  = mb.addMenu("文件");                 // -> JZMenu
+    //   const a  = m.addAction("退出");                 // -> JZAction
+    //   a.onTriggered = () => { ... };  a.setShortcut("Ctrl+Q");
+    //   m.popup(win, new JZRect(gx, gy, 1, 1));        // 弹层锚点 = 屏幕逻辑坐标
+    // ⚠ addAction/addMenu/actionAt/menuAt 返回的都是**借用句柄**(对象由菜单/菜单栏持有, JS 不
+    //   负责 delete): 句柄若被 GC, 按守卫约定会把真对象删掉 —— 所以 @jz/widget 的 menus.ts
+    //   会在 JS 侧把句柄挂到宿主上保活。要"不持句柄"的写法, 见下面的下标式 setActionXxx。
+    bind_menu.def("addAction", [this](JZMenu* m, const std::string& text) -> JSValue {
+        return m_engine->toJsValueFromPtr(m->addAction(text));
+    });
+    bind_menu.def("addMenu", [this](JZMenu* m, const std::string& title) -> JSValue {
+        return m_engine->toJsValueFromPtr(m->addMenu(title));
+    });
+    bind_menu.def("actionAt", [this](JZMenu* m, int i) -> JSValue {
+        return m_engine->toJsValueFromPtr(m->actionAt(i));
+    });
+    bind_menu.def("menuAt", [this](JZMenu* m, int i) -> JSValue {
+        return m_engine->toJsValueFromPtr(m->menuAt(i));
+    });
+    bind_menu.def("setActionEnabled", [](JZMenu* m, int i, bool on) {
+        if (JZAction* a = m->actionAt(i)) a->setEnabled(on);
+    });
+    bind_menu.def("setActionChecked", [](JZMenu* m, int i, bool on) {
+        if (JZAction* a = m->actionAt(i)) a->setChecked(on);
+    });
+    bind_menu.def("isActionChecked", [](JZMenu* m, int i) {
+        JZAction* a = m->actionAt(i);
+        return a ? a->isChecked() : false;
+    });
+    defSignalProperty(bind_menu, "onActionTriggered", &JZMenu::sigActionTriggered);
+    bind_menu.def("popup", [](JZMenu* m, JZWindow* owner, const JZRect& anchor) {
+        if (owner)
+            m->popup(owner, anchor);
+    });
+    bind_menu.def("hidePopup", [](JZMenu* m) { m->hidePopup(); });
+    bind_menu.def("isPopupOpen", [](JZMenu* m) { return m->isPopupOpen(); });
     m_engine->registClass(bind_menu.classDefine());
 
     // JZAction —— 菜单项(数据模型)。triggered 信号转 JS 回调。
@@ -2124,6 +2110,38 @@ void JZJSWidgetModule::registViews()
         if (JZListWidgetItem* it = l->item(i))
             it->setText(s);
     });
+    // 项的业务数据槽: 原样持有 JS 值(取回来还是同一个对象), 与文本分开 —— 老代码用 item.setData(...)
+    // 挂 [netId, DeviceString] 这类负载, 迁到值级接口后用这两个口子(不回到 item 句柄)。
+    bind_list.def("setItemData", [this](JZListWidget* l, int i, JSValue v) {
+        JZListWidgetItem* it = l->item(i);
+        if (!it)
+            throw std::runtime_error("JZListWidget.setItemData: 下标越界");
+        it->setData(JZVariant::fromValue(m_engine->makeValuePtr(JS_DupValue(m_engine->context(), v))));
+    });
+    bind_list.def("itemData", [this](JZListWidget* l, int i) -> JSValue {
+        // 直接交回 JS 值本身(同一对象), 不走 JZVariant 的通用转换 —— 通用转换不认 JZJSValuePtr,
+        // 拿回来会是个空值。C++ 侧塞的原生值(字符串/整数/浮点/布尔)顺手转一下, 其余给 undefined。
+        JZListWidgetItem* it = l->item(i);
+        if (!it)
+            return JS_UNDEFINED;
+
+        JSContext* ctx = m_engine->context();
+        const JZVariant& d = it->data();
+        const int t = d.typeId();
+        if (t == jzMetaTypeId<JZJSValuePtr>())
+            return JS_DupValue(ctx, d.valueRef<JZJSValuePtr>().get());
+        if (t == jzMetaTypeId<bool>())
+            return JS_NewBool(ctx, d.toBool());
+        if (t == jzMetaTypeId<int>())
+            return JS_NewInt32(ctx, d.toInt());
+        if (t == jzMetaTypeId<int64_t>())
+            return JS_NewInt64(ctx, d.toInt64());
+        if (t == jzMetaTypeId<double>())
+            return JS_NewFloat64(ctx, d.toDouble());
+        if (t == jzMetaTypeId<std::string>())
+            return JS_NewString(ctx, d.toString().c_str());
+        return JS_UNDEFINED;
+    });
     defSignalProperty(bind_list, "onDataChanged", &JZListWidget::sigDataChanged);
 
     bind_list.setCreate(js_JZListWidget_ctor);
@@ -2210,6 +2228,9 @@ void JZJSWidgetModule::registViews()
     bind_table.def("setHeaderLabels", [this](JZTableWidget* t, JSValue labels) {
         t->setHorizontalHeaderLabels(jzJsToStringArray(m_engine->context(), labels, "JZTableWidget.setHeaderLabels"));
     });
+    // 行几何(把"点击位置"换算成行号要用: 表格没有 itemAt/单元格控件, 鼠标事件在 JS 侧处理)
+    bind_table.def("rowHeight", [](JZTableWidget* t) { return t->rowHeight(); });
+    bind_table.def("headerHeight", [](JZTableWidget* t) { return t->headerHeight(); });
     defSignalProperty(bind_table, "onDataChanged", &JZTableWidget::sigDataChanged);
 
     bind_table.setCreate(js_JZTableWidget_ctor);
@@ -2317,6 +2338,8 @@ void JZJSWidgetModule::registViews()
     // ---- JZScrollBar: 一般由 JZScrollArea 内部持有, 也允许单独用 ----
     // 注: 构造实参 (orientation, parent); 取方向用整数(枚举值) —— 与 JZSplitter.orientation 一致。
     jsbind::ClassBind<JZScrollBar> bind_sbar("JZScrollBar", bind_w);
+    bind_sbar.def("setOrientation", [](JZScrollBar* b, int o) { b->setOrientation((JZScrollBar::Orientation)o); });
+    bind_sbar.def("orientation", [](JZScrollBar* b) { return (int)b->orientation(); });
     bind_sbar.def("setRange", [](JZScrollBar* b, int lo, int hi) { b->setRange(lo, hi); });
     bind_sbar.def("setMinimum", [](JZScrollBar* b, int v) { b->setMinimum(v); });
     bind_sbar.def("minimum", [](JZScrollBar* b) { return b->minimum(); });
@@ -3086,6 +3109,20 @@ JSValue js_jzApp_exit(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv
 void JZJSWidgetModule::registApp()
 {
     JSContext* ctx = m_engine->context();
+
+    // JZDesktopServices.openUrl(url) —— 打开链接/文件(等价 Qt QDesktopServices::openUrl)。
+    // C++ 侧本来就有这个类, 之前没给 JS 门面; 有界面代码要"点帮助打开网页"就靠它。
+    {
+        JSValue ds = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ds, "openUrl", JS_NewCFunction(ctx, [](JSContext* ctx2, JSValueConst, int argc, JSValueConst* argv) -> JSValue {
+            if (argc < 1)
+                return JS_ThrowTypeError(ctx2, "JZDesktopServices.openUrl(url): 需要 url");
+            const std::string url = fromJSValue<std::string>(ctx2, argv[0]);
+            return JS_NewBool(ctx2, JZDesktopServices::openUrl(url));
+        }, "openUrl", 1));
+        m_engine->setProperty(m_engine->globalObject(), "JZDesktopServices", ds);
+    }
+
     JSValue app = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, app, "applicationDirPath",
                       JS_NewCFunction(ctx, js_jzApp_applicationDirPath, "applicationDirPath", 0));

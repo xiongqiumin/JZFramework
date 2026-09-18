@@ -1,9 +1,12 @@
-// 五子棋 (Gomoku) — 使用 JZJSWidgetModule 新注册的 widget 类
-//   JZWindow (工厂) / JZLabel / JZCanvas / JZPushButton / JZRect / JZPoint
+// 五子棋 (Gomoku) — 使用 JZJSWidgetModule 注册的 widget 类
+//   JZWindow / JZWidget(画布) / JZLabel / JZPushButton / JZRect / JZPoint / JZPainter
 // 运行: code_runtime --root <本目录>
 //
 // 注意: win / canvas / status / restart 必须处于模块顶层作用域 (ESM 模块对象会被引擎保留),
 // 不能被 GC 回收, 否则会销毁底层窗口。
+//
+// 2026-09-18 更新: 旧的 `win.createCanvas(w, h)`(JZCanvas) 包装已从引擎移除 ——
+//   画布 = **普通 JZWidget + onPaint + JZPainter**(与 test_jswidget/test_jsshooter 同款)。
 
 const GRID = 15;            // 15x15
 const CELL = 40;            // 格距(逻辑像素)
@@ -24,21 +27,27 @@ let over = false;
 
 const win = new JZWindow(WIN_W, WIN_H, "五子棋");
 
+// 窗口的 addWidget 会按需补一个纵向布局(VBox, margin/spacing = 0), 所以三个子控件
+// 各自给固定尺寸, 从上到下就是: 状态栏 / 棋盘 / 按钮。
 // 顶部状态栏 (JZLabel)
 const status = new JZLabel();
 status.setText("轮到: 黑棋 (点击落子)");
 status.setAlign(1);         // 1 = 居中
+status.setFixedSize(BOARD, STATUS_H);
 win.addWidget(status);
 
-// 棋盘画布 (JZCanvas)
-const canvas = win.createCanvas(BOARD, BOARD);
+// 棋盘画布: 普通 JZWidget + onPaint 里用 JZPainter 画
+const canvas = new JZWidget();
+canvas.setFixedSize(BOARD, BOARD);
+win.addWidget(canvas);
 
 // 底部重新开局按钮 (JZPushButton)
 const restart = new JZPushButton();
 restart.setText("重新开始");
+restart.setFixedSize(BOARD, BTN_H);
 win.addWidget(restart);
 
-// 用新注册的几何类做命中测试
+// 用几何类做命中测试
 const boardRect = new JZRect(MARGIN, MARGIN, (GRID - 1) * CELL, (GRID - 1) * CELL);
 
 function statusText()
@@ -117,7 +126,7 @@ canvas.onMousePress = (e) => {
     const x = e.localX();
     const y = e.localY();
     const button = e.button();
-    if (over || button !== 0) return;            // 仅左键
+    if (over || button !== 1) return;            // 仅左键(JZMouseEvent: 1=Left 2=Right 3=Middle)
     if (!boardRect.contains(x, y)) return;       // 用 JZRect 做边界判定
     const pt = new JZPoint(x, y);                // 用 JZPoint 取坐标
     const c = Math.round((pt.x() - MARGIN) / CELL);
@@ -142,7 +151,7 @@ canvas.onMousePress = (e) => {
     }
     status.setText(statusText());
     canvas.update();
-});
+};   // <- 这里是"箭头函数赋值"的收尾(原文件写成 `});`, 多一个右括号 = 语法错, 这才是它起不来的直接原因)
 
 restart.onClicked = () => reset();   // 信号是属性
 

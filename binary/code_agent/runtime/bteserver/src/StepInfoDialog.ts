@@ -42,10 +42,9 @@ export class StepInfoDialog
     }
 
     // void showEvent(QShowEvent *event);
-    showEvent(event)
+    onShow(event)
     {
         this.updateTable();
-        QDialog.prototype.showEvent.call(this, event);   // __super::showEvent(event);
     }
 
     // void updateTable();
@@ -56,82 +55,82 @@ export class StepInfoDialog
         //info
         this.ui.tableInfo.setRowCount(7);
 
-        this.ui.tableInfo.setItem(0, 0, new QTableWidgetItem(tr("设备_单元_通道")));
-        this.ui.tableInfo.setItem(0, 1, new QTableWidgetItem(sprintf("%d-%02d", (this.record.info.itemIndex / 8 | 0) + 1, this.record.info.itemIndex % 8 + 1)));
+        this.ui.tableInfo.setItemText(0, 0, tr("设备_单元_通道"));
+        this.ui.tableInfo.setItemText(0, 1, sprintf("%d-%02d", (this.record.info.itemIndex / 8 | 0) + 1, this.record.info.itemIndex % 8 + 1));
 
-        this.ui.tableInfo.setItem(1, 0, new QTableWidgetItem(tr("启动时间")));
-        this.ui.tableInfo.setItem(1, 1, new QTableWidgetItem(formatDateTime(this.record.info.recordTime, "yyyy-MM-dd HH:mm:ss")));
+        this.ui.tableInfo.setItemText(1, 0, tr("启动时间"));
+        this.ui.tableInfo.setItemText(1, 1, formatDateTime(this.record.info.recordTime, "yyyy-MM-dd HH:mm:ss"));
 
-        this.ui.tableInfo.setItem(2, 0, new QTableWidgetItem(tr("起始工步")));
-        this.ui.tableInfo.setItem(2, 1, new QTableWidgetItem(String(step.startStepIndex)));
+        this.ui.tableInfo.setItemText(2, 0, tr("起始工步"));
+        this.ui.tableInfo.setItemText(2, 1, String(step.startStepIndex));
 
-        this.ui.tableInfo.setItem(3, 0, new QTableWidgetItem(tr("记录条件-时间")));
-        this.ui.tableInfo.setItem(4, 0, new QTableWidgetItem(tr("记录条件-电压")));
-        this.ui.tableInfo.setItem(5, 0, new QTableWidgetItem(tr("记录条件-电流")));
+        this.ui.tableInfo.setItemText(3, 0, tr("记录条件-时间"));
+        this.ui.tableInfo.setItemText(4, 0, tr("记录条件-电压"));
+        this.ui.tableInfo.setItemText(5, 0, tr("记录条件-电流"));
 
-        this.ui.tableInfo.setItem(0, 2, new QTableWidgetItem(tr("电压下限")));
-        this.ui.tableInfo.setItem(1, 2, new QTableWidgetItem(tr("电压上限")));
-        this.ui.tableInfo.setItem(2, 2, new QTableWidgetItem(tr("电流下限")));
-        this.ui.tableInfo.setItem(3, 2, new QTableWidgetItem(tr("电流上限")));
-        this.ui.tableInfo.setItem(4, 2, new QTableWidgetItem(tr("温度上限")));
-        this.ui.tableInfo.setItem(5, 2, new QTableWidgetItem(tr("温度下限")));
-        this.ui.tableInfo.setItem(6, 2, new QTableWidgetItem(tr("延迟时间")));
+        this.ui.tableInfo.setItemText(0, 2, tr("电压下限"));
+        this.ui.tableInfo.setItemText(1, 2, tr("电压上限"));
+        this.ui.tableInfo.setItemText(2, 2, tr("电流下限"));
+        this.ui.tableInfo.setItemText(3, 2, tr("电流上限"));
+        this.ui.tableInfo.setItemText(4, 2, tr("温度上限"));
+        this.ui.tableInfo.setItemText(5, 2, tr("温度下限"));
+        this.ui.tableInfo.setItemText(6, 2, tr("延迟时间"));
 
-        this.ui.tableInfo.setItem(0, 4, new QTableWidgetItem(tr("化成检测时间")));
-        this.ui.tableInfo.setItem(1, 4, new QTableWidgetItem(tr("化成电压值")));
+        this.ui.tableInfo.setItemText(0, 4, tr("化成检测时间"));
+        this.ui.tableInfo.setItemText(1, 4, tr("化成电压值"));
 
         if (step.step.stepList.length > 0)
         {
             const stepInfo = step.step.stepList[0];
             //记录
             if (stepInfo.isRecordTimeIntervalVaild())
-                this.ui.tableInfo.setItem(3, 1, new QTableWidgetItem(String((stepInfo.RecordTimeInterval() / 1000) | 0) + "s"));
+                this.ui.tableInfo.setItemText(3, 1, String((stepInfo.RecordTimeInterval() / 1000) | 0) + "s");
             if (stepInfo.isRecordVoltageChangeVaild())
-                this.ui.tableInfo.setItem(4, 1, new QTableWidgetItem(String(stepInfo.RecordVoltageChange()) + "V"));
+                this.ui.tableInfo.setItemText(4, 1, String(stepInfo.RecordVoltageChange()) + "V");
             if (stepInfo.isRecordCurrentChangeVaild())
-                this.ui.tableInfo.setItem(5, 1, new QTableWidgetItem(String(stepInfo.RecordCurrentChange()) + "A"));
+                this.ui.tableInfo.setItemText(5, 1, String(stepInfo.RecordCurrentChange()) + "A");
 
             //上下限
             if (stepInfo.isProtectVoltageLowerVaild())
-                this.ui.tableInfo.setItem(0, 3, new QTableWidgetItem(Number(stepInfo.ProtectVoltageLower()).toFixed(4) + "V"));
+                this.ui.tableInfo.setItemText(0, 3, Number(stepInfo.ProtectVoltageLower()).toFixed(4) + "V");
 
             if (stepInfo.isProtectVoltageUpperVaild())
-                this.ui.tableInfo.setItem(1, 3, new QTableWidgetItem(Number(stepInfo.ProtectVoltageUpper()).toFixed(4) + "V"));
+                this.ui.tableInfo.setItemText(1, 3, Number(stepInfo.ProtectVoltageUpper()).toFixed(4) + "V");
 
             if (stepInfo.isProtectCurrentLowerVaild())
-                this.ui.tableInfo.setItem(2, 3, new QTableWidgetItem(Number(stepInfo.ProtectCurrentLower()).toFixed(4) + "A"));
+                this.ui.tableInfo.setItemText(2, 3, Number(stepInfo.ProtectCurrentLower()).toFixed(4) + "A");
 
             if (stepInfo.isProtectCurrentUpperVaild())
-                this.ui.tableInfo.setItem(3, 3, new QTableWidgetItem(Number(stepInfo.ProtectCurrentUpper()).toFixed(4) + "A"));
+                this.ui.tableInfo.setItemText(3, 3, Number(stepInfo.ProtectCurrentUpper()).toFixed(4) + "A");
 
             if (stepInfo.isProtectTempatureLowerVaild())
-                this.ui.tableInfo.setItem(4, 3, new QTableWidgetItem(Number(stepInfo.ProtectTempatureLower()).toFixed(4) + "°C"));
+                this.ui.tableInfo.setItemText(4, 3, Number(stepInfo.ProtectTempatureLower()).toFixed(4) + "°C");
 
             if (stepInfo.isProtectTempatureUpperVaild())
-                this.ui.tableInfo.setItem(5, 3, new QTableWidgetItem(Number(stepInfo.ProtectTempatureUpper()).toFixed(4) + "°C"));
+                this.ui.tableInfo.setItemText(5, 3, Number(stepInfo.ProtectTempatureUpper()).toFixed(4) + "°C");
 
             if (stepInfo.isProtectDelayTimeVaild())
-                this.ui.tableInfo.setItem(6, 3, new QTableWidgetItem(String((stepInfo.ProtectDelayTime() / 1000) | 0) + "S"));
+                this.ui.tableInfo.setItemText(6, 3, String((stepInfo.ProtectDelayTime() / 1000) | 0) + "S");
 
             if (stepInfo.isProtectDetalVolVaild())
-                this.ui.tableInfo.setItem(0, 5, new QTableWidgetItem(Number(stepInfo.ProtectDetalVol()).toFixed(4) + "V"));
+                this.ui.tableInfo.setItemText(0, 5, Number(stepInfo.ProtectDetalVol()).toFixed(4) + "V");
 
             if (stepInfo.isProtectDetalVolTimeVaild())
-                this.ui.tableInfo.setItem(1, 5, new QTableWidgetItem(String((stepInfo.ProtectDetalVolTime() / 1000) | 0) + "S"));
+                this.ui.tableInfo.setItemText(1, 5, String((stepInfo.ProtectDetalVolTime() / 1000) | 0) + "S");
         }
 
 
-        this.ui.tableInfo.setItem(2, 4, new QTableWidgetItem(tr("电池批号")));
-        this.ui.tableInfo.setItem(2, 5, new QTableWidgetItem(step.cellBatch));
+        this.ui.tableInfo.setItemText(2, 4, tr("电池批号"));
+        this.ui.tableInfo.setItemText(2, 5, step.cellBatch);
 
-        this.ui.tableInfo.setItem(3, 4, new QTableWidgetItem(tr("电池编号")));
-        this.ui.tableInfo.setItem(3, 5, new QTableWidgetItem(step.cellNo));
+        this.ui.tableInfo.setItemText(3, 4, tr("电池编号"));
+        this.ui.tableInfo.setItemText(3, 5, step.cellNo);
 
-        this.ui.tableInfo.setItem(4, 4, new QTableWidgetItem(tr("创建人")));
-        this.ui.tableInfo.setItem(4, 5, new QTableWidgetItem(step.creator));
+        this.ui.tableInfo.setItemText(4, 4, tr("创建人"));
+        this.ui.tableInfo.setItemText(4, 5, step.creator);
 
-        this.ui.tableInfo.setItem(5, 4, new QTableWidgetItem(tr("备注")));
-        this.ui.tableInfo.setItem(6, 5, new QTableWidgetItem(step.memo));
+        this.ui.tableInfo.setItemText(5, 4, tr("备注"));
+        this.ui.tableInfo.setItemText(6, 5, step.memo);
 
         //info
         this.m_tableHelper.updateTable(step);

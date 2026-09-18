@@ -343,14 +343,14 @@ export class BTEItemWidget
     }
 
     // virtual void mousePressEvent(QMouseEvent *event) override;
-    mousePressEvent(event)
+    onMousePress(event)
     {
-        if (event.button() === Qt.LeftButton || event.button() === Qt.RightButton)
+        if (event.button() === 1 || event.button() === 2)   // JZMouseEvent.Button: 1=左 2=右(原 Qt.LeftButton/RightButton)
             this.m_mouseDown = true;
 
         // 原 Qt 的 setContextMenuPolicy(Qt.CustomContextMenu): 引擎控件没有那个开关,
         // 右键固定在这里发"请求上下文菜单"(带的点就是控件局部坐标)。
-        if (event.button() === Qt.RightButton)
+        if (event.button() === 2)
             emit(this.sigCustomContextMenuRequested, new JZPoint(event.localX(), event.localY()));
     }
 
@@ -364,7 +364,7 @@ export class BTEItemWidget
             const old_check = this.m_checked;
             // 原 QApplication::keyboardModifiers() != Qt.ControlModifier:
             // 引擎没有"全局修饰键", 用本次事件的 modifiers()(1=Shift 2=Ctrl 4=Alt)。
-            if ((event.modifiers() & Qt.ControlModifier) === 0)
+            if ((event.modifiers() & 2 /* JZKeyEvent.CtrlModifier */) === 0)
             {
                 if (!this.m_checked)
                 {
@@ -372,8 +372,8 @@ export class BTEItemWidget
                     this.update();
                 }
 
-                if (event.button() === Qt.LeftButton
-                    || (event.button() === Qt.RightButton && !old_check))
+                if (event.button() === 1
+                    || (event.button() === 2 && !old_check))
                     emit(this.sigToggled, true);   // emit toggled(true);
             }
             else

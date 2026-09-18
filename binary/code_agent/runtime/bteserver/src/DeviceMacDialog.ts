@@ -26,11 +26,7 @@ export class DeviceMacDialog
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
         this.dev = this.mac = 0;
 
-        // 原: QIntValidator(1..255) —— 引擎没有输入校验器(控件只存文本), 取值范围的判断留给提交处。
-        // const l = new QIntValidator(this); l.setRange(1, 255);
-
-        this.ui.lineDevice.setValidator(l);
-        this.ui.lineMac.setValidator(l);
+        // 原 QIntValidator(1..255): 引擎没有输入校验器(控件只存文本), 取值范围在提交处(parseInt 后)判断。
     }
 
     // ~DeviceMacDialog();
@@ -39,7 +35,7 @@ export class DeviceMacDialog
     }
 
     // void showEvent(QShowEvent *event);
-    showEvent(event)
+    onShow(event)
     {
         this.ui.lineDevice.setText(String(this.dev));
         this.ui.lineMac.setText(String(this.mac));

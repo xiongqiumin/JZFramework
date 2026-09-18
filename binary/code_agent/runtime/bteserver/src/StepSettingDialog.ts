@@ -66,7 +66,7 @@ export class StepTableHelper
         // 引擎的 JZTableWidget 只有列数/表头这些结构接口; 选中模式、"不可编辑"、表头显隐
         // 都是框架默认行为, Qt 那三个开关没有对应接口(原调用点见下面注释)。
         this.tableWidget.setColumnCount(strListHeader.length);
-        this.tableWidget.setHorizontalHeaderLabels(strListHeader);
+        this.tableWidget.setHeaderLabels(strListHeader);
         // 原来是: setSelectionMode(SingleSelection) / setSelectionBehavior(SelectRows) / setEditTriggers(NoEditTriggers)
     }
 
@@ -84,42 +84,35 @@ export class StepTableHelper
         {
             const step = stru_step.stepList[row];
 
-            const tableItem = new Array(COL_COUNT).fill(null);   // QTableWidgetItem *tableItem[32] = {0};
-            for (let i = 0; i < item_count; i++)
-            {
-                tableItem[i] = new QTableWidgetItem();
-                if (row === step_count - 1) //停止
-                {
-                    const flag = tableItem[i].flags();
-                    tableItem[i].setFlags(flag & (~Qt.ItemIsSelectable));
-                }
-            }
-            tableItem[0].setText(String(row + 1));
-            tableItem[1].setText(step.stepName());
+            // 一行 32 格的文本(值级: setItemText); 原 Qt 的 item + flags 操作(最后一行不可选)
+            // 在 JZ 表格里没有对应接口 —— 直接去掉(表格本来就不支持按格设可选性)。
+            const cells = new Array(COL_COUNT).fill("");
+            cells[0] = String(row + 1);
+            cells[1] = step.stepName();
 
             if (step.isTimeVaild())
-                tableItem[COL_TIME].setText(DataTrans.fromTimeUnit(step.Time()));
+                cells[COL_TIME] = String(DataTrans.fromTimeUnit(step.Time()));
             if (step.isVoltageVaild())
-                tableItem[COL_VOLT].setText(Number(step.Voltage()).toFixed(prec));
+                cells[COL_VOLT] = Number(step.Voltage()).toFixed(prec);
             if (step.isCurrentVaild())
-                tableItem[COL_CURRENT].setText(Number(step.Current()).toFixed(prec));
+                cells[COL_CURRENT] = Number(step.Current()).toFixed(prec);
             if (step.isStopCurrentVaild())
-                tableItem[COL_STOP_CURRENT].setText(Number(step.StopCurrent()).toFixed(prec));
+                cells[COL_STOP_CURRENT] = Number(step.StopCurrent()).toFixed(prec);
             if (step.isStopVoltageVaild())
-                tableItem[COL_STOP_VOLT].setText(Number(step.StopVoltage()).toFixed(prec));
+                cells[COL_STOP_VOLT] = Number(step.StopVoltage()).toFixed(prec);
             if (step.isCapacityVaild())
-                tableItem[COL_CAPACITY].setText(Number(step.Capacity()).toFixed(2));
+                cells[COL_CAPACITY] = Number(step.Capacity()).toFixed(2);
             if (step.isTempatureVaild())
-                tableItem[COL_TEMP_UP].setText(Number(step.Tempature()).toFixed(1));
+                cells[COL_TEMP_UP] = Number(step.Tempature()).toFixed(1);
 
             if (step.StepType === STEP_TYPE_LOOP)
             {
-                tableItem[COL_TIME].setText(tr("起始:") + String(step.BeginStepID()));
-                tableItem[COL_VOLT].setText(tr("次数:") + String(step.CountLoop()));
+                cells[COL_TIME] = tr("起始:") + String(step.BeginStepID());
+                cells[COL_VOLT] = tr("次数:") + String(step.CountLoop());
             }
 
             for (let i = 0; i < item_count; i++)
-                this.tableWidget.setItem(row, i, tableItem[i]);
+                this.tableWidget.setItemText(row, i, String(cells[i]));
         }
     }
 }
@@ -158,10 +151,9 @@ export class StepSettingDialog
     }
 
     // void showEvent(QShowEvent *event) override;
-    showEvent(event)
+    onShow(event)
     {
         this.initStep();
-        QDialog.prototype.showEvent.call(this, event);   // __super::showEvent(event);
     }
 
     // void stepParamToUi(const stru_BTS_CMD_SET_STEP76_Ex::StepInfo &step, int param_index, QCheckBox *box, QLineEdit *edit);
@@ -371,7 +363,7 @@ export class StepSettingDialog
         dlg.itemIndex = this.itemIndex;
         dlg.step.StepType = STEP_TYPE_7;
         dlg.step.StepLine = this.ui.tableWidget.rowCount();
-        if (dlg.exec() !== QDialog.Accepted)
+        if (dlg.exec() !== 1)   // JZDialog.exec(): 1 = accept(原 QDialog.Accepted)
             return;
 
         const idx = this.stepInfo.step.stepList.length - 1;
@@ -417,7 +409,7 @@ export class StepSettingDialog
         dlg.itemIndex = this.itemIndex;
         dlg.step = this.stepInfo.step.stepList[row];
         dlg.step.StepLine = row + 1;
-        if (dlg.exec() !== QDialog.Accepted)
+        if (dlg.exec() !== 1)   // JZDialog.exec(): 1 = accept(原 QDialog.Accepted)
             return;
 
         this.stepInfo.step.stepList[row] = dlg.step;

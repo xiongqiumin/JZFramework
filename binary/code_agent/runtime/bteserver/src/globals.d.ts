@@ -1,14 +1,25 @@
 // ---------------------------------------------------------------------------
 // bteserver 里"不在 TS 源码中声明"的全局名字 —— 分两类, **性质完全不同**:
 //
-// A) 还没迁完的 Qt 名字(QWidget/QTableWidget/Ui_*Class/QMenu/...) ——
-//    2026-09-14 之前由 src/qtcompat.ts 那个 Qt 运行期替身提供; **该文件已删除**,
-//    所以现在这些名字**运行期没有任何实现**(碰到的调用点会 undefined 报错),
+// A) 还没迁完的 Qt 名字 —— 2026-09-14 之前由 src/qtcompat.ts 那个 Qt 运行期替身提供;
+//    **该文件已删除**, 所以这些名字运行期没有任何实现(碰到的调用点会 undefined 报错),
 //    这里保留宽松声明只是为了: ① 让还没收口的界面层文件能通过 tsc;
 //    ② 把"还剩哪些 Qt 名字要迁"这件事留在类型层可见。
 //    声明一律用 `declare const X: any`(不是 declare class): 业务里既 `new X()` 又
 //    `X.静态成员` 两种用法都有, any 才能同时罩住(类的静态侧没法加索引签名)。
 //    → 迁完一个删一条; 全部删光 = 界面层迁移完成。
+//
+//    2026-09-18 收口进度: 列表/表格的 item 对象(JZTableWidgetItem 等)、单元格控件
+//    (QCheckBox/setCellWidget)、输入校验器(QIntValidator/QDoubleValidator/QValidator)、
+//    弹窗与布局类(QDialog/QVBoxLayout/QHBoxLayout/QGridLayout/QLabel/QLineEdit/QPushButton)、
+//    Qt 常量(Qt.LeftButton 之类)全部迁完(见各文件的"原 Qt ..."注释)。
+//    **只剩两处**:
+//      * `QMenu`(3 个右键菜单, BTEServer.ts) —— 引擎侧值级菜单接口已就绪:
+//        `new JZMenu()` → `addAction(text)` 返回下标 → `onActionTriggered = (i) => {...}` →
+//        `popup(win, new JZRect(globalX, globalY, 1, 1))`; `menu.exec(pos)` 那种**同步**取选中项
+//        的写法引擎没有(弹层是异步的, 靠回调)。改完把这条声明删掉。
+//      * `QTreeWidgetItem`(StepDataDialog.ts 的工步树) —— 引擎的 JZTreeWidget 在 C++ 侧是
+//        **指针式 item**, JS 侧还没有对应接口(要有 value 级的树接口才能迁)。
 //
 // B) 引擎的真实全局(见 JZJSEngine/js_wrapper 里部署的 jz_types) ——
 //    JZ* 控件/画笔/几何类型、jzApp/jzWidget/uiLoader、各 netPack 的 stru_* 包类、
@@ -18,48 +29,12 @@
 // ---------------------------------------------------------------------------
 
 // ---- A) 待迁移的 Qt 名字(运行期已无实现; 迁完即删) ----
-// 控件 / 布局 / 视图
-declare const QWidget: any;
-declare const QLabel: any;
-declare const QPushButton: any;
-declare const QCheckBox: any;
-declare const QLineEdit: any;
-declare const QDialog: any;
-declare const QMainWindow: any;
 declare const QMenu: any;
-declare const QActionGroup: any;
-declare const QShortcut: any;
-declare const QKeySequence: any;
-declare const QGridLayout: any;
-declare const QHBoxLayout: any;
-declare const QVBoxLayout: any;
-declare const QTableWidget: any;
-declare const QTableWidgetItem: any;
-declare const QListWidgetItem: any;
 declare const QTreeWidgetItem: any;
-declare const QHeaderView: any;
-declare const QAbstractItemView: any;
-declare const QPainter: any;
-declare const QDesktopServices: any;
-declare const QIntValidator: any;
-declare const QDoubleValidator: any;
-declare const QValidator: any;
 // 第三方 Qt 库(随工程分发, 不参与 JS 移植; 调用点按 Qt API 原样保留)
 declare const QCustomPlot: any;
 declare const QCP: any;
 declare const QCPAxisTickerTime: any;
-// Nightcharts 的声明已删: 包它的 SplitPieChart.ts 早前就删了(饼图改用真 JZChart)。
-// uic 生成的 UI 类(现在由 uiLoader + UI XML 取代, 见 bteserverUi.ts)
-declare const Ui_BTEServerClass: any;
-declare const Ui_DeviceMacDialogClass: any;
-declare const Ui_HelpDialogClass: any;
-declare const Ui_SplitDialogClass: any;
-declare const Ui_SplitSettingWidgetClass: any;
-declare const Ui_StepDataDialogClass: any;
-declare const Ui_StepEditDialogClass: any;
-declare const Ui_StepInfoDialogClass: any;
-declare const Ui_StepJumpDialogClass: any;
-declare const Ui_StepSettingDialogClass: any;
 
 // ---- B) 引擎的真实全局 ----
 // JZWidget 家族/值类型(JZPoint/JZRect/JZColor/JZPen/JZFont/JZPainter/...)、
@@ -88,6 +63,11 @@ declare class JZSettings {
   setDouble(name: string, value: number): void;
   getDouble(name: string): number;
 }
+
+// JZDesktopServices —— registApp(): 打开链接/文件(等价 Qt QDesktopServices::openUrl)。
+declare const JZDesktopServices: {
+  openUrl(url: string): boolean;
+};
 
 // jzApp —— registApp(): 应用级入口(C++ 的 JZApplication 在 JS 侧的门面)。
 //   applicationDirPath() 入口脚本所在目录(没加载过脚本时是空串);

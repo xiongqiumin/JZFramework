@@ -47,6 +47,6 @@ export class HelpDialog
     // void on_textHelp_anchorClicked(const QUrl & link);
     on_textHelp_anchorClicked(link)
     {
-        QDesktopServices.openUrl(link);
+        JZDesktopServices.openUrl(link);   // 引擎侧门面: JZDesktopServices.openUrl
     }
 }

@@ -43,7 +43,8 @@ export class SplitDialog
         strListSplitList.push(tr("序号"), tr("设备-单元-通道"), tr("放电容量(Ah)"), tr("放电时间（H:M:S:MS）"),
             tr("中值电压（V）"), tr("恒流比（%）"), tr("级别"), tr("电池批号"));
         UiHelper.SetTable(this.ui.tableSplitList, strListSplitList);
-        this.ui.tableSplitList.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive);
+        // 原 Qt 的 horizontalHeader().setSectionResizeMode(Interactive)(可拖列宽)在 JZTableWidget
+        // 上没有对应的表头对象/接口 —— 去掉(要开放列宽得先给表格/绑定加 setColumnWidth)。
     }
 
     // ~SplitDialog();
@@ -52,11 +53,10 @@ export class SplitDialog
     }
 
     // void showEvent(QShowEvent *event);
-    showEvent(event)
+    onShow(event)
     {
         this.ui.splitSetting.init();
         this.ui.splitSetting.recordList = this.recordList;
-        QDialog.prototype.showEvent.call(this, event);   // __super::showEvent(event);
     }
 
     // void onSplitFinish();
@@ -83,16 +83,11 @@ export class SplitDialog
             {
                 const name = (i < 15) ? String.fromCharCode('A'.charCodeAt(0) + i) : tr("落选");
 
-                const itemNumber = new QTableWidgetItem(String(split_ret.indexs[i].length));
-
-                const itemNo = new QCheckBox(name);
-                itemNo.setProperty("level", i);
-                itemNo.setChecked(true);
-                // C++ 槽里用 sender() 取控件, JS 侧由回调把控件传进去
-                itemNo.onClicked = () => this.onSplitItemNo(itemNo);
-
-                this.ui.tableSplitLevel.setCellWidget(row, 0, itemNo);
-                this.ui.tableSplitLevel.setItem(row, 1, itemNumber);
+                // 值级接口: 第 0 列 = 等级, 第 1 列 = 电池个数。
+                // 原 Qt 版第 0 列是 QCheckBox(等级勾选)—— JZ 表格**没有单元格控件**, 也没有点击信号,
+                // 勾选交互没法替换 ⇒ 去掉该列, 分选按**全部等级**处理(见 onSplitItemNo)。
+                this.ui.tableSplitLevel.setItemText(row, 0, name);
+                this.ui.tableSplitLevel.setItemText(row, 1, String(split_ret.indexs[i].length));
 
                 row++;
             }
@@ -102,21 +97,14 @@ export class SplitDialog
     }
 
     // void onSplitItemNo();
-    //   C++ 里 idx 来自 sender()->property("level"); JS 侧由信号回调传入控件。
-    onSplitItemNo(senderWidget)
+    //   原 Qt 版按"等级勾选框"挑通道; JZ 表格没有勾选交互 ⇒ 全部等级都算。
+    onSplitItemNo()
     {
         const split_ret = this.ui.splitSetting.result;
 
-        const idx = Number(senderWidget.property("level"));
         const items = [];
-        const count = this.ui.tableSplitLevel.rowCount();
-        for (let i = 0; i < count; i++)
-        {
-            const box = this.ui.tableSplitLevel.cellWidget(i, 0);   // (QCheckBox*)
-            const level = Number(box.property("level"));
-            if (box.isChecked())
-                items.push(...split_ret.indexs[level]);   // items << split_ret.indexs[level];
-        }
+        for (let level = 0; level < split_ret.indexs.length; level++)
+            items.push(...split_ret.indexs[level]);   // items << split_ret.indexs[level];
 
         //update table
         this.ui.tableSplitList.clearContents();
@@ -127,23 +115,14 @@ export class SplitDialog
             const info = split_ret.recordList[rec_idx];
             const item_idx = info.itemIndex;
 
-            const itemNo = new QTableWidgetItem(String(i + 1));
-            const itemPos = new QTableWidgetItem(String((item_idx / 8 | 0) + 1) + "-" + String(item_idx % 8 + 1));
-            const itemCap = new QTableWidgetItem(String(info.DisChargeCap));
-            const itemTime = new QTableWidgetItem(info.TimeText());
-            const itemVolt = new QTableWidgetItem(String(info.MeanVoltage));
-            const itemRatio = new QTableWidgetItem(Number(info.CcRatio).toFixed(2));
-            const itemLevel = new QTableWidgetItem(info.LevelText());
-            const itemCellNo = new QTableWidgetItem(info.CellNo);
-
-            this.ui.tableSplitList.setItem(i, 0, itemNo);
-            this.ui.tableSplitList.setItem(i, 1, itemPos);
-            this.ui.tableSplitList.setItem(i, 2, itemCap);
-            this.ui.tableSplitList.setItem(i, 3, itemTime);
-            this.ui.tableSplitList.setItem(i, 4, itemVolt);
-            this.ui.tableSplitList.setItem(i, 5, itemRatio);
-            this.ui.tableSplitList.setItem(i, 6, itemLevel);
-            this.ui.tableSplitList.setItem(i, 7, itemCellNo);
+            this.ui.tableSplitList.setItemText(i, 0, String(i + 1));
+            this.ui.tableSplitList.setItemText(i, 1, String((item_idx / 8 | 0) + 1) + "-" + String(item_idx % 8 + 1));
+            this.ui.tableSplitList.setItemText(i, 2, String(info.DisChargeCap));
+            this.ui.tableSplitList.setItemText(i, 3, info.TimeText());
+            this.ui.tableSplitList.setItemText(i, 4, String(info.MeanVoltage));
+            this.ui.tableSplitList.setItemText(i, 5, Number(info.CcRatio).toFixed(2));
+            this.ui.tableSplitList.setItemText(i, 6, info.LevelText());
+            this.ui.tableSplitList.setItemText(i, 7, info.CellNo);
         }
     }
 
@@ -162,7 +141,7 @@ export class SplitDialog
             const line = [];
             for (let j = 0; j < 8; j++)
             {
-                line.push(this.ui.tableSplitList.item(i, j).text());
+                line.push(this.ui.tableSplitList.itemText(i, j));
             }
             text.push(line);
         }

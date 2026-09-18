@@ -454,6 +454,8 @@ export async function main(argc, argv)
             // 那时整个 catch 会往外抛 ⇒ main() 的 Promise 被拒绝, 表现成"**无栈**的 not a function",
             // 反而把真正的失败原因盖掉。直接把 e 交给 console.error(多参形态)。
             console.error("[main] BTEServer 起界面失败(界面层仍在移植), 退回真窗口外壳:", e);
+            // 排查用: 拿栈也要包一层 try(同上, 读属性本身可能再抛)
+            try { console.error("[main] 起界面失败的栈:", (e as any).stack); } catch (e2) { console.error("[main] (取不到栈)"); }
         }
     }
 
@@ -486,7 +488,7 @@ function buildMainWindow()
 
     const table = new JZTableWidget();
     table.setColumnCount(3);
-    table.setHorizontalHeaderLabels(["设备", "状态", "IP"]);
+    table.setHeaderLabels(["设备", "状态", "IP"]);
     table.setRowCount(0);
     lay.addWidget(table, 1);
 

@@ -135,9 +135,10 @@ function label(text: string): JZLabel
 
 function button(text: string, onClick?: () => void, w?: number, h?: number): JZPushButton
 {
-    const b = (w !== undefined && h !== undefined) ? new JZPushButton(null, w, h, text)
-                                                   : new JZPushButton();
-    if (w === undefined || h === undefined) b.setText(text);
+    // JZPushButton 的构造形态是 (text, parent) —— 尺寸不在构造里传, 要固定大小用 setFixedSize
+    const b = new JZPushButton(text);
+    if (w !== undefined && h !== undefined)
+        b.setFixedSize(w, h);
     if (onClick) b.onClicked = onClick;   // 信号是属性(赋值设 / = null 清空)
     return b;
 }
@@ -282,7 +283,7 @@ builders.Table = function (): JZWidget {
     const { page, lay } = makePage();
     const tbl = K(new JZTableWidget());
     tbl.setColumnCount(3);
-    tbl.setHorizontalHeaderLabels(["Id", "Name", "Val"]);
+    tbl.setHeaderLabels(["Id", "Name", "Val"]);
     lay.addWidget(tbl, 1);
 
     let seq = 0;
@@ -616,10 +617,10 @@ builders.GroupBox = function (): JZWidget {
     const { page, lay } = makePage();
     const gb = K(new JZGroupBox());
     gb.setTitle("Settings");
-    const content = gb.contentWidget();      // 装载子控件的内容区
-    const glay = K(new JZVBoxLayout());
-    glay.setSpacing(8);
-    content.setLayout(glay);
+    // 内容区不用自己取: 绑定层把 JZGroupBox 的 setLayout/layout 都转发到内部内容区
+    // (等价 C++ 的 gb->contentWidget()->setLayout(...)), 所以直接 setLayout 即可。
+    const glay = K(new JZVBoxLayout(8, 8));   // 边距 8, 间距 8
+    gb.setLayout(glay);
 
     const cb = K(new JZCheckbox());
     cb.setText("Enable feature");
@@ -664,10 +665,9 @@ builders.ScrollArea = function (): JZWidget {
     }
     area.setWidget(world);
 
-    const vbar = area.verticalScrollBar();
-    const hbar = area.horizontalScrollBar();
-    vbar.onValueChanged = (v) => log("scroll y: " + v);
-    hbar.onValueChanged = (v) => log("scroll x: " + v);
+    // 滚动条对象(verticalScrollBar()/horizontalScrollBar())是 C++ 内部子控件, JS 侧没有它们的包装;
+    // 要看/改滚动位置用 scrollX()/scrollY() 与 scrollTo()/scrollToX/Y()、maxScrollX/Y()。
+    lay.addWidget(button("打印滚动位置", () => log("scroll x=" + area.scrollX() + " y=" + area.scrollY()), 160, 28), 0);
 
     lay.addWidget(button("scrollTo(800, 1200)", () => area.scrollTo(800, 1200), 160, 28), 0);
     return page;
@@ -817,6 +817,7 @@ for (let i = 0; i < NAMES.length; i++)
         el.addWidget(label("page '" + name + "' failed: " + (err as Error).message), 0);
         stack.addWidget(ep);
         log("page error [" + name + "]: " + (err as Error).message);
+        console.log("[test_jswidget] page error [" + name + "]: " + (err as Error).message);   // 同上, 但落到 stdout(方便无人值守跑时看)
         failed++;
     }
 }

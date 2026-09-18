@@ -95,9 +95,8 @@ export class StepDataDialog
     }
 
     // void showEvent(QShowEvent *event);
-    showEvent(event)
+    onShow(event)
     {
-        QDialog.prototype.showEvent.call(this, event);   // QDialog::showEvent(event);
     }
 
     // QString deviceId();
@@ -274,10 +273,10 @@ export class StepDataDialog
         customPlot.xAxis.setTicker(timeTicker);
 
         customPlot.addGraph(customPlot.xAxis, customPlot.yAxis);
-        customPlot.graph(0).setPen(new JZPen(Qt.blue)); // line color blue for first graph
+        customPlot.graph(0).setPen(new JZPen("blue")); // line color blue for first graph
 
         customPlot.addGraph(customPlot.xAxis, customPlot.yAxis2);
-        customPlot.graph(1).setPen(new JZPen(Qt.red)); // line color red for second graph
+        customPlot.graph(1).setPen(new JZPen("red")); // line color red for second graph
 
         // pass data points to graphs:
         customPlot.graph(0).setName(names[0]);
@@ -402,14 +401,14 @@ export class StepDataDialog
 
         const step_num = loop_item.childCount();
         let step_item = (step_num === 0) ? null : loop_item.child(step_num - 1);
-        if (!step_item || Number(step_item.data(0, Qt.UserRole)) !== step.StepID)
+        if (!step_item || Number(step_item.data(0, 0)) !== step.StepID)
         {
             this.updateLastStepItem();
 
             //添加新的子项
             step_item = new QTreeWidgetItem();
             step_item.setText(0, String(step_num + 1) + "-" + PackDefine.StepNameList[step.StepType]);
-            step_item.setData(0, Qt.UserRole, step.StepID);
+            step_item.setData(0, 0, step.StepID);
             loop_item.addChild(step_item);
 
             this.m_stepChargeType = charge_type;

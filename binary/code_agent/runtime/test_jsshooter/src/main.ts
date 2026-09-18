@@ -734,7 +734,7 @@ function drawPowerUps(p: JZPainter): void
     }
 }
 
-// 爆炸: C++ 用 drawArc 画两段圆环(角度单位 1/10 度, 0..3600 = 整圈), 这里同款
+// 爆炸: C++ 用 drawArc 画两段圆环(角度单位是**度**: 0 = 3 点方向, 顺时针递增; 0..360 = 整圈), 这里同款
 function drawExplosions(p: JZPainter): void
 {
     frameDraws += 2 * booms.length;   // 每个爆炸 2 段弧
@@ -744,9 +744,9 @@ function drawExplosions(p: JZPainter): void
         const r = b.max - b.life + 4;
         const a = Math.floor(200 * b.life / b.max);
         p.setPen(col(255, 180, 60, a), 2);
-        p.drawArc(b.x, b.y, r, 0, 3600);
+        p.drawArc(b.x, b.y, r, 0, 360);
         p.setPen(col(255, 240, 120, Math.floor(a * 0.6)), 2);
-        p.drawArc(b.x, b.y, Math.floor(r * 2 / 3), 0, 3600);
+        p.drawArc(b.x, b.y, Math.floor(r * 2 / 3), 0, 360);
     }
 }
 

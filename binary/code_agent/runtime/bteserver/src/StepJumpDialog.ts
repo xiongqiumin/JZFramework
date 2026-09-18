@@ -32,17 +32,16 @@ export class StepJumpDialog
     }
 
     // virtual void showEvent(QShowEvent *event) override;
-    showEvent(event)
+    onShow(event)
     {
         this.updateTable();
-        QDialog.prototype.showEvent.call(this, event);   // __super::showEvent(event);
     }
 
     // void updateTable();
     updateTable()
     {
         this.m_tableHelper.updateTable(this.stepInfo);
-        this.ui.tableWidget.setCurrentItem(this.ui.tableWidget.item(0, 0));
+        this.ui.tableWidget.setCurrentCell(0, 0);   // 值级接口: 直接按行列定位当前格(没有 item 句柄)
     }
 
     // void on_btnOk_clicked();

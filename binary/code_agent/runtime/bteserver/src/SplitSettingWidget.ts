@@ -130,7 +130,7 @@ export class SplitSettingWidget
         const strListSplit = [];
         strListSplit.push(tr("等级"), tr("放电容量"), tr("放电中值电压"));
         this.ui.tableWidgetSplit.setColumnCount(strListSplit.length);
-        this.ui.tableWidgetSplit.setHorizontalHeaderLabels(strListSplit);
+        this.ui.tableWidgetSplit.setHeaderLabels(strListSplit);
 
         // Qt 的 setSelectionMode/setSelectionBehavior/verticalHeader().hide() 在真 JZTableWidget
         // 上没有对应接口(非必须的显示行为) —— 保留调用点说明, 不再调假接口。
@@ -139,15 +139,10 @@ export class SplitSettingWidget
         this.ui.tableWidgetSplit.setRowCount(15);
         for (let i = 0; i < 15; i++)
         {
-            // 单元格项用引擎的真 JZTableWidgetItem(表格本体也是真 JZTableWidget)。
-            // 原 item.setFlags(flags & ~Qt.ItemIsEditable) 去掉: JZ 的项没有 flags,
-            // 本来就是"不可编辑"的(只能通过 setText 改)。
-            const item = new JZTableWidgetItem(String.fromCharCode('A'.charCodeAt(0) + i));
-            const item1 = new JZTableWidgetItem();
-            const item2 = new JZTableWidgetItem();
-            this.ui.tableWidgetSplit.setItem(i, 0, item);
-            this.ui.tableWidgetSplit.setItem(i, 1, item1);
-            this.ui.tableWidgetSplit.setItem(i, 2, item2);
+            // 第 0 列填等级字母(A..O); 第 1/2 列后面按分选区间填。
+            // JZ 的表格是**值级**的(setItemText), 没有 item 对象, 也没有 flags/可编辑开关 ——
+            // 单元格本来就只能通过 setItemText 改。
+            this.ui.tableWidgetSplit.setItemText(i, 0, String.fromCharCode('A'.charCodeAt(0) + i));
         }
 
         this.ui.boxSplitType.addItem(tr("放电容量"));
@@ -196,7 +191,7 @@ export class SplitSettingWidget
         {
             const idx = types[type_idx] + 1;
             for (let i = 0; i < 15; i++)
-                this.ui.tableWidgetSplit.item(i, idx).setText("");
+                this.ui.tableWidgetSplit.setItemText(i, idx, "");
 
             const gap = (max - min) / count;
             let e = max;
@@ -207,7 +202,7 @@ export class SplitSettingWidget
                     s = min;
 
                 const text = sprintf("%0.2f , %0.2f", s, e);
-                this.ui.tableWidgetSplit.item(i, idx).setText(text);
+                this.ui.tableWidgetSplit.setItemText(i, idx, text);
 
                 s -= gap;
                 e -= gap;
@@ -336,10 +331,10 @@ export class SplitSettingWidget
                 if (ranges[idx][i].vaild)
                 {
                     const text = sprintf("%0.2f,%0.2f", ranges[idx][i].lower, ranges[idx][i].upper);
-                    this.ui.tableWidgetSplit.item(i, idx + 1).setText(text);
+                    this.ui.tableWidgetSplit.setItemText(i, idx + 1, text);
                 }
                 else
-                    this.ui.tableWidgetSplit.item(i, idx + 1).setText("");
+                    this.ui.tableWidgetSplit.setItemText(i, idx + 1, "");
             }
         }
     }
@@ -371,7 +366,7 @@ export class SplitSettingWidget
         {
             for (let i = 0; i < count; i++)
             {
-                if (!this.parseRange(this.ui.tableWidgetSplit.item(i, idx + 1).text(), this.m_range[idx][i]))
+                if (!this.parseRange(this.ui.tableWidgetSplit.itemText(i, idx + 1), this.m_range[idx][i]))
                 {
                     // .arg(%1,%2) -> sprintf(%d,%d)
                     const tips = sprintf(tr("第行%d,第列%d 数据范围错误,请检查"), i + 1, idx + 2);
@@ -405,11 +400,8 @@ export class SplitSettingWidget
         this.ui.tableSplitSelect.setRowCount(list.length);
         for (let i = 0; i < list.length; i++)
         {
-            const itemNo = new QTableWidgetItem(String(i + 1));
-            const itemName = new QTableWidgetItem(list[i].name);
-
-            this.ui.tableSplitSelect.setItem(i, 0, itemNo);
-            this.ui.tableSplitSelect.setItem(i, 1, itemName);
+            this.ui.tableSplitSelect.setItemText(i, 0, String(i + 1));
+            this.ui.tableSplitSelect.setItemText(i, 1, list[i].name);
         }
     }
 

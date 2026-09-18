@@ -61,13 +61,8 @@ export class StepEditDialog
         this.ui.lineTime.setInputMask("99:99:99:999");
         this.ui.lineTime.setText("00:00:00:000");
 
-        const v = new TimeValidator(this);
-        this.ui.lineTime.setValidator(v);
-
-        //容量:0.01 - 10000.00 Ah,精度百分之一
-        const capValidator = new QDoubleValidator(0.01, MAX_STEP_CAPACITY, 2, this);
-        capValidator.setNotation(QDoubleValidator.StandardNotation);
-        this.ui.lineCapacity.setValidator(capValidator);
+        // 原 TimeValidator / QDoubleValidator: 引擎没有输入校验器(控件只存文本) ——
+        // 时间格式与容量范围都在提交处判断(见 on_btnOk_clicked 里的 toTimeUnit / MAX_STEP_CAPACITY)。
 
         //温度:0 - 300 ℃,以0.5℃为单位
         this.ui.spinTempature.setRange(0, MAX_STEP_TEMPATURE);
@@ -82,12 +77,11 @@ export class StepEditDialog
     }
 
     // void showEvent(QShowEvent *event);
-    showEvent(event)
+    onShow(event)
     {
         this.stepToUi();
         this.on_boxType_currentIndexChanged(this.ui.boxType.currentIndex());
 
-        QDialog.prototype.showEvent.call(this, event);   // __super::showEvent(event);
     }
 
     // bool isVaildParam(int stepType, int param); //是否有效参数
@@ -437,23 +431,4 @@ function findKey(map, value, def)
 
 // ---------------------------------------------------------------------------
 // C++ 里定义在 StepEditDialog.cpp 的类外校验器
-// ---------------------------------------------------------------------------
-// class TimeValidator : public QValidator
-export class TimeValidator
-{
-    // TimeValidator(QObject *parent);
-    constructor(parent)
-    {
-        QValidator.call(this, parent);   // :QValidator(parent)
-    }
-
-    // virtual State validate(QString &input, int &pos) const;
-    validate(input, pos)
-    {
-        const list = input.split(":");
-        if (list.length === 4 && Number(list[1]) < 60 && Number(list[2]) < 60)
-            return QValidator.State.Acceptable;
-
-        return QValidator.State.Invalid;
-    }
-}
+// (原 TimeValidator : public QValidator 已删: 引擎没有输入校验器)

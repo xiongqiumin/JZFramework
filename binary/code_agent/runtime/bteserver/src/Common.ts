@@ -28,6 +28,6 @@ export class UiHelper
     static SetTable(table, list)
     {
         table.setColumnCount(list.length);
-        table.setHorizontalHeaderLabels(list);
+        table.setHeaderLabels(list);
     }
 }

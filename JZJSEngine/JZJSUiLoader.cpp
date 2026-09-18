@@ -1154,6 +1154,23 @@ JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
     script += body;
     script += "  return __ui;\n})()\n";
 
+    // 排查用: 设了环境变量就把生成的脚本原样打出来(报错里的 "eval:12:25" 指的就是它的行:列)。
+    if (::getenv("JZ_DUMP_UI_SCRIPT"))
+    {
+        std::printf("===== createUi 生成的脚本 =====\n");
+        int line = 0;
+        std::string cur;
+        for (size_t i = 0; i <= script.size(); ++i) {
+            if (i == script.size() || script[i] == '\n') {
+                std::printf("%4d: %s\n", ++line, cur.c_str());
+                cur.clear();
+            } else {
+                cur += script[i];
+            }
+        }
+        std::printf("===== 脚本结束 =====\n");
+    }
+
     JZJSValuePtr res = engine->eval(script);
     if (!engine->runtimeError().empty()) {
         m_error = engine->runtimeError();

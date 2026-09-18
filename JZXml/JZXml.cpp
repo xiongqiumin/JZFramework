@@ -680,6 +680,10 @@ private:
                 }
             }
         }
+
+        // 走到这里 = 没等到 </name> 就到达文本末尾(上面的 while 条件在"已经在 EOF"时根本不会进循环体,
+        // 所以循环内那处检查兜不住 `<root><a>` 这种"最后一段没闭合"的情况) —— 必须在这里报错。
+        setError("元素 " + el->name + " 未闭合");
     }
 
     static std::string str_trim(const std::string& s)

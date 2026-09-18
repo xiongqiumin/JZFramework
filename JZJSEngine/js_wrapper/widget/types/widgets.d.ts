@@ -182,8 +182,12 @@ declare class JZMainWindow extends JZWindow {
 
   /** 设置中央控件(占用菜单栏外的全部剩余空间); 重复调用替换旧的 */
   setCentralWidget(widget: JZWidget): void;
+  /** 取回中央控件(没设过 -> null) */
+  centralWidget(): JZWidget | null;
   /** 设置顶部菜单栏(始终排在最顶行); 重复调用替换旧的 */
   addMenuBar(menuBar: JZMenuBar): void;
+  /** 取回菜单栏(没设过 -> null) */
+  menuBar(): JZMenuBar | null;
 }
 
 // 菜单栏(水平排列若干菜单入口)。uiLoader 把它作为 JZMainWindow 的 <widget> 子节点(addMenuBar)。

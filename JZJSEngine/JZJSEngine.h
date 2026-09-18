@@ -240,6 +240,12 @@ public:
 
     // worker 线程: 引擎就绪后登记为投递落点 / 引擎销毁前摘除(此后不再被投递)
     void attachWorkerEngine(int id, JZJSEngine* engine);
+    // worker 线程在"入口脚本跑完"后调用: 把引擎挂上之前排队进来的消息补投出去(见 WorkerEntry::pending)
+    void flushPendingWorkerMessages(int id);
+    // 告诉本引擎"主引擎是谁" —— worker 线程的引擎必须设(spawnWorker/postToWorker 里的
+    // m_mainEngine 收敛就是靠它): 不设的话, 每个 worker 引擎在自己的 init() 里都会把自己
+    // 当成主引擎, 于是 worker 里 postTo(0, ...) 会在自己的表里查到 id 0 = 自己 ⇒ 消息投回自己。
+    void setMainEngine(JZJSEngine* main);
     void detachWorkerEngine(int id);
 
     bool terminateWorker(int id);           // 请求某个 worker 退出(协作式)
@@ -628,6 +634,10 @@ protected:
         bool exited;
         JZJSWorkerThread* thread;      // 线程对象(归主线程, 由主引擎回收)
         JZJSEngine* engine;            // 该 worker 的引擎 = 投递落点; 未就绪为空
+        // worker 线程还没把引擎挂上期间收到的消息((fromId, 数据) 按投递顺序排队,
+        // attachWorkerEngine 时补投): `new Worker(...)` 之后立刻 postMessage 是常见写法,
+        // Node 也正是在 worker 'online' 之前缓冲消息 —— 不该让调用方收到"not ready"。
+        std::vector<std::pair<int, JZByteArray> > pending;
     };
 
     int doSpawnWorker(const std::string& entry, const JZByteArray& workerData,
@@ -653,6 +663,23 @@ JSValue toJsValueFromPtr(JSContext* ctx, T* ptr, bool /*cppOwner*/)
 {
     JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
     return engine->toJsValueFromPtr(ptr);
+}
+
+// 取 Uint8Array / Buffer 的裸指针(只读, 不复制)。**不是** typed array 时返回 nullptr, 而且
+// **不留下待决异常** —— 这点很要紧: JS_GetUint8Array 自己在类型不符时会抛 "not a TypedArray",
+// 把它当"类型探测"用(先试它、不成就按数字/其它类型继续处理)会把那个异常留在上下文里, 之后
+// 任何 quickjs 调用都变成抛错 / 返回 JS_EXCEPTION ⇒ 整个 native 调用无故失败。
+// (sqlite 的 bindOne、core 的 jsValueToBytes、net、serialport 都踩过这个坑。)
+inline uint8_t* jzUint8ArrayOrNull(JSContext* ctx, size_t* size, JSValueConst v)
+{
+    if (size)
+        *size = 0;
+    if (!JS_IsObject(v))
+        return nullptr;     // JS_GetTypedArrayType 内部直接取对象指针, 非对象时不能调
+    const int ta = JS_GetTypedArrayType(v);
+    if (ta != JS_TYPED_ARRAY_UINT8 && ta != JS_TYPED_ARRAY_UINT8C)
+        return nullptr;
+    return JS_GetUint8Array(ctx, size, v);
 }
 
 #endif  // !JS_ENGINE_H_

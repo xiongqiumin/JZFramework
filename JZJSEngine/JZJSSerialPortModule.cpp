@@ -34,7 +34,7 @@ static bool jsValueToBytes(JSContext* ctx, JSValue v, JZByteArray& out)
     }
 
     size_t size = 0;
-    uint8_t* buf = JS_GetUint8Array(ctx, &size, v);
+    uint8_t* buf = jzUint8ArrayOrNull(ctx, &size, v);
     if (buf)
     {
         out = JZByteArray((const char*)buf, (int)size);

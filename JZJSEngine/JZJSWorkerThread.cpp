@@ -62,8 +62,9 @@ JZJSWorkerThread::~JZJSWorkerThread()
 }
 
 void JZJSWorkerThread::setup(int id, int parentId,
-                             const std::string& entry, const JZByteArray& workerData,
-                             const std::string& workDir, const std::vector<std::string>& libraryDirs)
+                                const std::string& entry, const JZByteArray& workerData,
+                                const std::string& workDir, const std::vector<std::string>& libraryDirs,
+                                JZJSEngine* main)
 {
     m_id = id;
     m_parentId = parentId;
@@ -71,6 +72,7 @@ void JZJSWorkerThread::setup(int id, int parentId,
     m_workerData = workerData;
     m_workDir = workDir;
     m_libraryDirs = libraryDirs;
+    m_main = main;
 }
 
 bool JZJSWorkerThread::waitReady(int timeoutMs)
@@ -117,6 +119,11 @@ bool JZJSWorkerThread::buildEngine()
     engine->setWorkDir(m_workDir);
     engine->setLibraryDir(m_libraryDirs);
     engine->init();
+    // 关键: init() 会让"第一个 init 的引擎"把自己当主引擎 —— worker 引擎必须被显式纠正成
+    // "主引擎是主线程那个", 否则 worker 里 postTo(0, ...) 会投回自己(spawnWorker/postToWorker
+    // 都靠 m_mainEngine 收敛到主引擎的 worker 表)。
+    if (m_main)
+        engine->setMainEngine(m_main);
 
     // 内置模块: core(fs/path/process/os) + net(worker 里也能跑 TCP/HTTP —— 底层
     // JZNetThread 是进程级单例, 这里只是各引擎一份上层包装)。不装 widget(GUI 只能主线程)。
@@ -181,7 +188,7 @@ void JZJSWorkerThread::run()
     t_workerId = m_id;
     wtrace("run start id=" + std::to_string(m_id) + " entry=" + m_entry);
 
-    JZJSEngine* main = nullptr;
+    JZJSEngine* main = m_main;   // 主引擎(setup 时传进来的): worker 表在它那儿
     if (!buildEngine())
     {
         destroyEngine();
@@ -208,6 +215,11 @@ void JZJSWorkerThread::run()
         reportError(err);
     }
     wtrace("run entry done id=" + std::to_string(m_id) + " running=" + std::to_string((int)m_running));
+
+    // 入口脚本跑完了(onMessage 该注册的都注册了): 补投之前排队进来的消息。
+    // 投早了会被 worker 当"没注册 handler"丢掉, 所以必须放在这里而不是 attachWorkerEngine 里。
+    if (main)
+        main->flushPendingWorkerMessages(m_id);
 
     // 事件循环: 消息由主引擎直接 postEvent 到本引擎(见 JZJSEngine::customEvent)
     if (m_running)

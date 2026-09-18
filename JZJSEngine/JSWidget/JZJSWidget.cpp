@@ -520,9 +520,22 @@ void* js_JZImage_ctor(JZJSEngine *engine, int argc, JSValueConst *argv)
             std::string file = fromJSValue<std::string>(ctx, argv[0]);
             return jzNewValue<JZImage>(ctx, JZImage(file));
         }
-        size_t size = 0;
-        uint8_t* buf = JS_GetUint8Array(ctx, &size, argv[0]);
-        return jzNewValue<JZImage>(ctx, JZImage((const char*)buf, (int)size));
+        // (bytes: Uint8Array) —— 先按类型确认再取指针: JS_GetUint8Array 对非 typed array 会抛
+        // "not a TypedArray"(留下待决异常), 不适合当探测用(见 jzUint8ArrayOrNull 的说明)。
+        if (JS_IsObject(argv[0]))
+        {
+            const int ta = JS_GetTypedArrayType(argv[0]);
+            if (ta == JS_TYPED_ARRAY_UINT8 || ta == JS_TYPED_ARRAY_UINT8C)
+            {
+                size_t size = 0;
+                const uint8_t* buf = JS_GetUint8Array(ctx, &size, argv[0]);
+                if (size == 0 || !buf)
+                    return jzNewValue<JZImage>(ctx, JZImage());
+                return jzNewValue<JZImage>(ctx, JZImage((const char*)buf, (int)size));
+            }
+        }
+        JS_ThrowTypeError(ctx, "JZImage: 参数应为 () / (filePath) / (bytes: Uint8Array)");
+        return nullptr;
     }
 
     JS_ThrowTypeError(ctx, "JZImage: 参数应为 () / (filePath) / (bytes)");

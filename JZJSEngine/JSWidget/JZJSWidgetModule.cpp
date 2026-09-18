@@ -1740,6 +1740,22 @@ void JZJSWidgetModule::registWidgets()
         if (mb)
             w->addMenuBar(static_cast<JZMenuBar*>(mb));
     });
+    // 取回挂上去的那一个(没有就是 null)。**返回 JS 侧那一份包装** —— 控件族每个对象只有一份宿主句柄,
+    // 现造第二份会把第一份作废(见 menus.ts 的说明), 所以走 jsValueOf 而不是现造视图。
+    bind_main.def("menuBar", [this](JZMainWindow* w) -> JSValue {
+        JZMenuBar* mb = w->menuBar();
+        if (!mb)
+            return JS_NULL;
+        JSValue v = jsValueOf(mb);
+        return JS_IsUndefined(v) ? JS_NULL : JS_DupValue(m_engine->context(), v);
+    });
+    bind_main.def("centralWidget", [this](JZMainWindow* w) -> JSValue {
+        JZWidget* c = w->centralWidget();
+        if (!c)
+            return JS_NULL;
+        JSValue v = jsValueOf(c);
+        return JS_IsUndefined(v) ? JS_NULL : JS_DupValue(m_engine->context(), v);
+    });
     mountTransparentClass(bind_main.classDefine());
 
     // JZMenuBar —— 菜单栏(addMenuBar 的子控件)。仅注册构造 + 实例绑定,

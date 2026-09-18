@@ -269,7 +269,7 @@ bool JZJSqliteModule::bindOne(sqlite3_stmt* stmt, int index, JSValue v)
     // Uint8Array / ArrayBuffer -> BLOB
     {
         size_t size = 0;
-        uint8_t* buf = JS_GetUint8Array(ctx, &size, v);
+        uint8_t* buf = jzUint8ArrayOrNull(ctx, &size, v);
         if (buf)
         {
             sqlite3_bind_blob(stmt, index, buf, (int)size, SQLITE_TRANSIENT);

@@ -2840,7 +2840,9 @@ int JZJSEngine::doSpawnWorker(const std::string& entry, const JZByteArray& worke
     int id = m_nextWorkerId++;
 
     JZJSWorkerThread* t = new JZJSWorkerThread();
-    t->setup(id, parentId, entry, workerData, workDir, libraryDirs);
+    // 最后一个实参 = 主引擎: worker 线程起来后要拿它 attachWorkerEngine(否则消息投不进来)。
+    // doSpawnWorker 一定跑在主引擎上(spawnWorker 已经做过 this/mainEngine 的收敛)。
+    t->setup(id, parentId, entry, workerData, workDir, libraryDirs, this);
 
     {
         JZMutexLocker lock(&m_workerMutex);
@@ -2881,8 +2883,15 @@ bool JZJSEngine::postToWorker(int targetId, int fromId, const JZByteArray& data)
     // 锁顺序 = 引擎表锁 -> 目标线程事件锁; 反向无人持线程锁来拿表锁, 不会死锁。
     JZMutexLocker lock(&owner->m_workerMutex);
     std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(targetId);
-    if (it == owner->m_workers.end() || it->second.exited || !it->second.engine)
+    if (it == owner->m_workers.end() || it->second.exited)
         return false;
+
+    if (!it->second.engine)
+    {
+        // worker 线程还没把引擎挂上: 先排队, attachWorkerEngine 时补投(见 WorkerEntry::pending)
+        it->second.pending.push_back(std::make_pair(fromId, data));
+        return true;
+    }
 
     jzApp->postEvent(it->second.engine, new JZJSWorkerMessageEvent(fromId, data));
     return true;
@@ -2899,6 +2908,36 @@ void JZJSEngine::attachWorkerEngine(int id, JZJSEngine* engine)
         it->second.engine = engine;
 }
 
+// 补投"引擎挂上之前"排队进来的消息(见 WorkerEntry::pending)。由 worker 线程在**入口脚本跑完
+// 之后**调用 —— 入口脚本的第一件事通常是 __jz.worker.onMessage(...), 投早了会被当"没注册
+// handler"丢掉(dropped message: __jz.worker.onMessage is not registered)。
+void JZJSEngine::setMainEngine(JZJSEngine* main)
+{
+    m_mainEngine = main ? main : this;
+}
+
+void JZJSEngine::flushPendingWorkerMessages(int id)
+{
+    JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
+    if (!owner)
+        return;
+
+    std::vector<std::pair<int, JZByteArray> > pending;
+    JZJSEngine* target = nullptr;
+    {
+        JZMutexLocker lock(&owner->m_workerMutex);
+        std::map<int, WorkerEntry>::iterator it = owner->m_workers.find(id);
+        if (it == owner->m_workers.end() || !it->second.engine)
+            return;
+        target = it->second.engine;
+        pending.swap(it->second.pending);
+    }
+
+    // 投递放在锁外: postEvent 自己会拿目标线程的事件锁, 这里不再需要引擎表锁
+    for (size_t i = 0; i < pending.size(); i++)
+        jzApp->postEvent(target, new JZJSWorkerMessageEvent(pending[i].first, pending[i].second));
+}
+
 void JZJSEngine::detachWorkerEngine(int id)
 {
     JZJSEngine* owner = (this == m_mainEngine) ? this : m_mainEngine;
@@ -2910,6 +2949,7 @@ void JZJSEngine::detachWorkerEngine(int id)
     {
         it->second.engine = nullptr;    // 引擎即将销毁: 之后投递一律失败
         it->second.exited = true;
+        it->second.pending.clear();     // 没投出去的消息随 worker 一起丢掉
     }
 }
 

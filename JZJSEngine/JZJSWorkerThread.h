@@ -64,9 +64,12 @@ public:
     ~JZJSWorkerThread();
 
     // 创建方在 start() 之前调用(此时线程体还没跑, 直接写字段无需加锁)
+    // main: 主引擎 —— 跑起来后要把自己的引擎挂到它的 worker 表上(attachWorkerEngine),
+    //       之后消息才投得进来。**必须传**(传空 = 这个 worker 收不到任何消息)。
     void setup(int id, int parentId,
                const std::string& entry, const JZByteArray& workerData,
-               const std::string& workDir, const std::vector<std::string>& libraryDirs);
+               const std::string& workDir, const std::vector<std::string>& libraryDirs,
+               JZJSEngine* main = nullptr);
 
     int workerId() const { return m_id; }
     int parentWorkerId() const { return m_parentId; }
@@ -109,6 +112,7 @@ private:
     std::string m_workDir;
     std::vector<std::string> m_libraryDirs;
 
+    JZJSEngine* m_main;        // 主引擎(worker 表在那儿; 见 setup 的 main 参数)
     JZJSEngine* m_engine;
     JZJSWorkerModule* m_module;
     JZJSCoreModule* m_coreModule;

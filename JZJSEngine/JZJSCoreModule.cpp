@@ -49,7 +49,7 @@ bool JZJSCoreModule::jsValueToBytes(JSContext* ctx, JSValue v, JZByteArray& out)
     }
 
     size_t size = 0;
-    uint8_t* buf = JS_GetUint8Array(ctx, &size, v);
+    uint8_t* buf = jzUint8ArrayOrNull(ctx, &size, v);
     if (buf)
     {
         out = JZByteArray((const char*)buf, (int)size);
@@ -279,7 +279,21 @@ std::string JZJSCoreModule::fileName(const std::string& path)
 
 std::string JZJSCoreModule::dirName(const std::string& path)
 {
-    return JZFileInfo(path).path();
+    // JZFileInfo::path() 给目录时**带尾分隔符**(Qt 的 dirPath 习惯: "/a/b/"),
+    // 而 Node 的 path.dirname 不带 => 这里按 Node 语义削掉尾分隔符(根例外: "/"、"C:/"、"C:\" 保留)。
+    std::string d = JZFileInfo(path).path();
+    while (d.size() > 1)
+    {
+        const char c = d.back();
+        if (c != '/' && c != '\\')
+            break;
+        const std::string trimmed = d.substr(0, d.size() - 1);
+        // "C:" 这种(盘符 + 冒号)再削就成相对路径了, 保留那个分隔符
+        if (trimmed.size() == 2 && trimmed[1] == ':')
+            break;
+        d = trimmed;
+    }
+    return d;
 }
 
 std::string JZJSCoreModule::extName(const std::string& path)

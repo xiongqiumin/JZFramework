@@ -370,10 +370,12 @@ void JZJSWorkerModule::registNamespace()
 void JZJSWorkerModule::registWorkerClass()
 {
     JZJSWorkerModule* self = this;
-/*
+
     jsbind::ClassBind<JZJSWorker> bind_worker("Worker");
-    bind_worker.setCreate([self](JSContext* ctx, int argc, JSValueConst* argv) -> jsbind::JSPointerBase*
-                          { return self->createWorker(ctx, argc, argv); });
+    // setCreate 现在的签名是 (JZJSEngine*, argc, argv): 自己造底层对象并**原样返回**(引擎负责包成
+    // 基类对应类型的句柄 + 回写宿主句柄), 所以这里把 ctx 从 engine 里取出来再交给 createWorker。
+    bind_worker.setCreate([self](JZJSEngine* engine, int argc, JSValueConst* argv) -> void*
+                          { return self->createWorker(engine->context(), argc, argv); });
 
     bind_worker.def("postMessage", [self](JZJSWorker* w, JSValue v) -> JSValue
                                   { return self->workerPostMessage(w, v); });
@@ -388,7 +390,6 @@ void JZJSWorkerModule::registWorkerClass()
 
     m_engine->registClass(bind_worker.classDefine());
     m_typeWorker = m_engine->ctypeidToType(typeid(JZJSWorker).name());
-*/
 }
 
 JSValue JZJSWorkerModule::jsSelfId()

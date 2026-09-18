@@ -54,8 +54,11 @@ set(JZCORE_SOURCES
     JZMutex.cpp
     JZReadWriteLock.h
     JZReadWriteLock.cpp
-    JZCrypto.h
+    crypto/JZMd5.h
+    crypto/JZMd5.cpp
+    crypto/JZXorShift.h
     JZCrypto.cpp
+    JZCrypto.h
     JZElapsedTimer.h
     JZElapsedTimer.cpp
     JZConditionVariable.h

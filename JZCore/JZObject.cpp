@@ -264,6 +264,10 @@ bool JZObject::event(JZEvent *e)
     {
         customEvent(e);
     }
+    else if (e->type() == JZEvent_childAdded || e->type() == JZEvent_childRemoved)
+    {
+        childEvent(static_cast<JZChildEvent*>(e));
+    }
 
     return true;
 }
@@ -317,6 +321,10 @@ void JZObject::customEvent(JZEvent *event)
 
 }
 
+void JZObject::childEvent(JZChildEvent *event)
+{
+}
+
 JZObject *JZObject::sender()
 {
     auto &q = m_thread->m_senderQueue;
@@ -327,11 +335,15 @@ void JZObject::addChild(JZObject *obj)
 {
     JZ_ASSERT(obj != this && !obj->hasChild(this) && !hasChild(obj));
     m_childs.push_back(obj);
+    JZChildEvent ce(JZEvent_childAdded, obj);
+    childEvent(&ce);
 }
 
 void JZObject::removeChild(JZObject *obj)
 {
     vec_removeAll(m_childs, obj);
+    JZChildEvent ce(JZEvent_childRemoved, obj);
+    childEvent(&ce);
 }
 
 bool JZObject::hasChild(JZObject* child) const

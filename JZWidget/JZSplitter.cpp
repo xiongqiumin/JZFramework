@@ -81,12 +81,8 @@ void JZSplitter::removeWidget(JZWidget* widget)
     int i = indexOf(widget);
     if (i < 0)
         return;
-    widget->removeEventFilter(this);   // 与 insertWidget 里 install 配对
-    widget->setParentWidget(nullptr);   // 脱离渲染树 (调用方仍持有所有权)
-    m_items.erase(m_items.begin() + i);
-    m_sizes.erase(m_sizes.begin() + i);
-    relayout();
-    update();
+    
+    delete widget;
 }
 
 int JZSplitter::count() const
@@ -464,6 +460,25 @@ bool JZSplitter::eventFilter(JZObject* watched, JZEvent* event)
         update();
     }
     return JZWidget::eventFilter(watched, event);
+}
+
+// 子对象移除 (ChildRemoved): 本控件是各子面板的事件过滤器, 子面板被外部 reparent
+// 或析构时及时摘除过滤器并从 m_items 移除, 防止子面板仍存活时事件分发到已析构的
+// 本控件过滤器上 (等价于 ~JZSplitter 里那段摘除循环, 这里提前、按单次精准处理)。
+void JZSplitter::childEvent(JZChildEvent* event)
+{
+    if (event->type() == JZEvent_childRemoved) {
+        JZObject* c = event->child();
+        for (int i = 0; i < (int)m_items.size(); ++i) {
+            if (m_items[i].widget == c) {
+                m_items[i].widget->removeEventFilter(this);
+                m_items.erase(m_items.begin() + i);
+                m_sizes.erase(m_sizes.begin() + i);
+                break;
+            }
+        }
+    }
+    JZWidget::childEvent(event);
 }
 
 // 悬停/拖动光标: 分隔条热区与绘制/命中一致 (含 handleIndexAt 的 ±3px 抓取容差);

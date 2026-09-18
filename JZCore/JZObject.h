@@ -118,6 +118,7 @@ protected:
     virtual bool eventFilter(JZObject *watched, JZEvent *event);
     virtual void timerEvent(JZTimerEvent *event);
     virtual void customEvent(JZEvent *event);    
+    virtual void childEvent(JZChildEvent *event);
 
     void addChild(JZObject *child);
     void removeChild(JZObject *child);

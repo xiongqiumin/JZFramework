@@ -211,11 +211,11 @@ static void benchmark_dir()
 // md5 基准 (128k)
 static void benchmark_md5()
 {
-    printf("\n========== JZCrypto::md5 Benchmark ==========\n");
+    printf("\n========== JZCrypto::hash(MD5) Benchmark ==========\n");
     JZByteArray data = makeIoTestData(kIoTestSize);
     JZBenchmark bm(/*targetMs=*/100);
-    bm.runAndPrint("JZCrypto::md5 128k", [&]() {
-        JZByteArray hash = JZCrypto::md5(data);
+    bm.runAndPrint("JZCrypto::hash(MD5) 128k", [&]() {
+        JZByteArray hash = JZCrypto::hash(JZCrypto::HashAlgorithm::MD5, data);
         JZ_TEST_EQ(hash.size(), 16);
     });
     printf("-----------------------------------------------------\n\n");

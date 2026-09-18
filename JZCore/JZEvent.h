@@ -1,6 +1,8 @@
 #ifndef JZ_EVENT_H_
 #define JZ_EVENT_H_
 
+class JZObject;   // 前向声明: JZChildEvent 仅持有 JZObject* 指针
+
 enum {
     JZEvent_none,
     JZEvent_deleteObject,
@@ -20,6 +22,8 @@ enum {
     JZEvent_enter,      // 鼠标进入控件 (Qt 的 QEvent::Enter)
     JZEvent_leave,      // 鼠标离开控件 (Qt 的 QEvent::Leave)
     JZEvent_close,
+    JZEvent_childAdded,     // 子对象加入 (Qt QEvent::ChildAdded)
+    JZEvent_childRemoved,   // 子对象移除 (Qt QEvent::ChildRemoved)
     JZEvent_user = 1000,
 };
 
@@ -70,6 +74,21 @@ class JZLeaveEvent : public JZEvent
 {
 public:
     JZLeaveEvent() : JZEvent(JZEvent_leave) {}
+};
+
+// 子对象增删 (同 Qt 的 QEvent::ChildAdded / QEvent::ChildRemoved)。
+// 由 JZObject::addChild / removeChild 同步派发到父对象 (this),
+// 父对象在 childEvent(JZChildEvent*) 里收 (如 JZSplitter 借此摘除事件过滤器)。
+class JZChildEvent : public JZEvent
+{
+public:
+    JZChildEvent(int type, JZObject *child);
+    ~JZChildEvent();
+
+    JZObject *child() const;
+
+protected:
+    JZObject *m_child;
 };
 
 #endif // !JZ_EVENT_H_

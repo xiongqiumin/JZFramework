@@ -19,7 +19,7 @@ JZNetPacketProcessor::~JZNetPacketProcessor()
 
 void JZNetPacketProcessor::setPassword(std::string token)
 {
-    JZByteArray md5Result = JZCrypto::md5(token.data(), (int)token.size());
+    JZByteArray md5Result = JZCrypto::hash(JZCrypto::HashAlgorithm::MD5, token.data(), (int)token.size());
     const uint32_t *arr = reinterpret_cast<const uint32_t *>(md5Result.data());
     uint32_t pass = arr[0] ^ arr[1] ^ arr[2] ^ arr[3];
     if (pass == 0)

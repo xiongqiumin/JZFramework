@@ -30,3 +30,18 @@ int JZTimerEvent::id() const
 {
     return m_id;
 }
+
+//JZChildEvent
+JZChildEvent::JZChildEvent(int type, JZObject *child)
+    : JZEvent(type), m_child(child)
+{
+}
+
+JZChildEvent::~JZChildEvent()
+{
+}
+
+JZObject *JZChildEvent::child() const
+{
+    return m_child;
+}

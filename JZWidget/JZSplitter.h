@@ -62,6 +62,7 @@ protected:
     void mouseMoveEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
     bool eventFilter(JZObject* watched, JZEvent* event) override;
+    void childEvent(JZChildEvent* event) override;
 
     // 按当前几何 + m_sizes 摆放子控件; m_sizes 未初始化时按拉伸因子分配。
     // 隐藏(setVisible(false))的子控件不参与: 尺寸为 0、不占空间、也不产生分隔条，

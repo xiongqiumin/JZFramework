@@ -179,7 +179,7 @@ void JZHttpFormUploadHandler::handle(JZHttpServerClient* client, const JZHttpReq
             f.close();
 
             int64_t sz = JZFileInfo(dst).size();
-            std::string hex = toHex(JZCrypto::md5(data));
+            std::string hex = toHex(JZCrypto::hash(JZCrypto::HashAlgorithm::MD5, data));
             if (m_writeMd5)
             {
                 JZFile mf;

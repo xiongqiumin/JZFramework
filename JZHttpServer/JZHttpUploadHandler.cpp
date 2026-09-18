@@ -223,7 +223,7 @@ void JZHttpUploadHandler::handleComplete(JZHttpServerClient* client, const JZHtt
         }
         whole = f.readAll();
     }
-    std::string hex = toHex(JZCrypto::md5(whole));
+    std::string hex = toHex(JZCrypto::hash(JZCrypto::HashAlgorithm::MD5, whole));
     if (!s.expectedMd5.empty() && hex != s.expectedMd5)
     {
         sendJson(client, req, 400, "{\"status\":\"error\",\"msg\":\"md5 mismatch\"}");

@@ -383,7 +383,7 @@ JSValue JZJSCoreModule::md5(JSValue data)
     JZByteArray buf;
     if (!jsValueToBytes(m_engine->context(), data, buf))
         return throwError("ERR_INVALID_ARG_TYPE: data must be string, Uint8Array or ArrayBuffer");
-    JZByteArray digest = JZCrypto::md5(buf);
+    JZByteArray digest = JZCrypto::hash(JZCrypto::HashAlgorithm::MD5, buf);
     return makeUint8Array(digest);
 }
 

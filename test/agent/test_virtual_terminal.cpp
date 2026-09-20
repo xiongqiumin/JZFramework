@@ -31,6 +31,20 @@ static bool contains(const string &text, const string &needle)
     return text.find(needle) != string::npos;
 }
 
+// 只为验证"短名 -> 全路径"的替换结果: expandProgramPaths 是 protected, 派生类才够得着
+class ExpandProbe : public JZVirtualTerminal
+{
+public:
+    string expand(const string &command)
+    {
+        JZShell::Line line;
+        string err;
+        if (!JZShell::parse(command, line, err))
+            return string();
+        return expandProgramPaths(line, command);
+    }
+};
+
 static int g_auditCount = 0;
 static string g_lastAuditAction;
 
@@ -219,6 +233,47 @@ private:
         check(m_term.checkExec("rm").allowed(), "rm 默认放行");
         check(m_term.checkExec("grep").allowed(), "grep 默认放行");
         check(m_term.checkExec("head").allowed(), "head 默认放行(基础 shell 类)");
+
+        // ---- 程序映射(运行时可配, 动态登记) ----
+        // 场景: tsc / code_runtime 这类"随部署走、不在 PATH 里"的程序, 默认表里没有;
+        // 经 JZVirtualTerminalConfig::programPaths 登记后应能审过、能查到全路径。
+        {
+            JZVirtualTerminalConfig saved = m_term.terminalConfig();
+            check(!m_term.checkExec("my_tool").allowed(), "登记前: my_tool 不在白名单(被拒)");
+
+            JZVirtualTerminalConfig cfg = saved;
+            cfg.programPaths["my_tool"] = "C:/tools/my_tool.exe";
+            m_term.setTerminalConfig(cfg);
+
+            check(m_term.checkExec("my_tool").allowed(), "登记后: my_tool 进白名单(命令名可审过)");
+            check(m_term.programPath("my_tool") == "C:/tools/my_tool.exe", "登记后: 能查到可执行文件全路径");
+
+            // 映射只认短名字: 目录**不**进授信目录, 写全路径仍按路径审核(区外拒)
+            bool hasDir = false;
+            for (const TrustedDir &d : m_term.terminalConfig().zone.trustedDirs)
+                if (d.path.find("C:/tools") != string::npos)
+                    hasDir = true;
+            check(!hasDir, "登记后: 可执行文件所在目录不进授信目录(只认短名字)");
+            check(!m_term.checkExec("C:/tools/my_tool.exe").allowed(),
+                  "登记后: 写全路径走路径审核(区外被拒)");
+
+            // 真正交给 shell 的那条命令: 审过之后把短名原地换成全路径(不再注入 PATH)
+            ExpandProbe probe;
+            JZVirtualTerminalConfig pcfg = probe.terminalConfig();
+            pcfg.programPaths["my_tool"] = "C:/tools/my_tool.exe";
+            probe.setTerminalConfig(pcfg);
+            check(probe.expand("my_tool -p .") == "C:/tools/my_tool.exe -p .",
+                  "执行串: 短名换成全路径");
+            check(probe.expand("cd src && my_tool -p .") == "cd src && C:/tools/my_tool.exe -p .",
+                  "执行串: && 后面的短名也换");
+            check(probe.expand("ls | my_tool") == "ls | C:/tools/my_tool.exe",
+                  "执行串: 管道里的短名也换");
+            check(probe.expand("echo my_tool") == "echo my_tool",
+                  "执行串: 参数位置上的同名不换(按位置替换, 不是字符串硬找)");
+            check(probe.expand("ls") == "ls", "执行串: 没配映射的原样不动");
+
+            m_term.setTerminalConfig(saved);   // 还原, 不影响后续步骤
+        }
         stepRun();
     }
 

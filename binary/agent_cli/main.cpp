@@ -54,6 +54,7 @@ static const char *kDefaultConfigJson = R"json({
         "rootDir":          "",
         "trustedDirs":      [],
         "shellProgram":     "",
+        "programs":         {},
         "recycleSec":       900,
         "allowTerminal":    true,
         "allowFileTools":   true,
@@ -211,6 +212,21 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigBool(root, "terminal", "allowNetwork", "allowNetwork", config.allowNetwork);
     readConfigBool(root, "terminal", "unrestricted", "unrestricted", config.unrestricted);
 
+    // 程序映射: 程序名 -> 可执行文件全路径, 如 {"tsc": "D:/app/ts_compiler/tsc/tsc.exe"}
+    //   登记后: 短名字进白名单(能过审) + 执行时把短名换成这条全路径(能找到程序)。
+    //   只认短名字(写全路径走路径审核); 没登记的程序 agent 就用不了(不做自动探测)。
+    const Json::Value *progs = findConfigMember(root, "terminal", "programs", "programs");
+    if (progs && progs->isObject())
+    {
+        for (Json::Value::const_iterator it = progs->begin(); it != progs->end(); ++it)
+        {
+            string name = str_toLower(it.key().asString());
+            string path = (*it).isString() ? (*it).asString() : string();
+            if (!name.empty() && !path.empty())
+                config.programPaths[name] = path;
+        }
+    }
+
     // 日志(全局项, 不归终端)
     readConfigString(root, "", "logFile", "logFile", config.logFile);
 
@@ -287,7 +303,16 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
             config.allowPackageManager ? "开" : "关",
             config.allowNetwork ? "开" : "关",
             config.unrestricted ? "全部不检查" : "按区域分档");
+    string programs;
+    for (const auto &kv : config.programPaths)
+    {
+        if (!programs.empty())
+            programs += ", ";
+        programs += kv.first + "=" + kv.second;
+    }
     fprintf(stderr, "  shell     %s\n", config.shellProgram.empty() ? "自动探测" : config.shellProgram.c_str());
+    fprintf(stderr, "  程序映射  %s\n",
+            programs.empty() ? "(空: agent 只能用授信目录里的程序)" : programs.c_str());
     fprintf(stderr, "  日志文件  %s\n", config.logFile.empty() ? "(不打印到控制台)" : config.logFile.c_str());
 }
 

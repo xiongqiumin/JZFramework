@@ -307,6 +307,25 @@ body.resizing iframe { pointer-events: none; }
 }
 .sys.err { color: var(--fail); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.08); }
 .sys.ok { color: var(--ok); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
+.sys.dim { opacity: .65; font-size: 11px; padding: 3px 10px; }
+
+/* 过程行(来自 SSE: thinking / reply / tool_call / tool_result) */
+.proc {
+  align-self: flex-start; max-width: 88%;
+  padding: 6px 11px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1.5; color: var(--muted);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 150px; overflow: auto;
+}
+.proc.think { font-style: italic; opacity: .85; }
+.proc.say { color: var(--text); }
+.proc.tool {
+  color: var(--accent);
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+}
+.proc.res { color: var(--ok); font-family: ui-monospace, Consolas, "Courier New", monospace; }
+.proc.res.fail { color: var(--fail); }
 
 /* 窄屏: 左侧栏收窄 / 折到对话上方, 保证"任务与验证"不被整段隐藏 */
 @media (max-width: 980px) {

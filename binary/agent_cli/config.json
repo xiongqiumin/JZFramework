@@ -16,6 +16,7 @@
         "rootDir":          "",
         "trustedDirs":      [],
         "shellProgram":     "",
+        "programs":         {},
         "recycleSec":       900,
         "allowTerminal":    true,
         "allowFileTools":   true,

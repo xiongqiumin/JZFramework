@@ -315,6 +315,27 @@ string JZDir::absolutePath() const
     }
 }
 
+// 切到上一级目录(同 Qt 的 QDir::cdUp())。见 JZDir.h: 已经在根上就返回 false、目录不动。
+bool JZDir::cdUp()
+{
+    string p = m_path;
+    while (p.size() > 1 && p.back() == '/')
+        p.pop_back();
+    if (p.empty() || p == "/")
+        return false;
+
+    size_t pos = p.find_last_of('/');
+    if (pos == string::npos)
+        return false;                       // 无分隔符的相对路径 / 盘符根 "C:"
+    if (pos == 0)
+        setPath("/");                       // "/x" -> "/"
+    else if (p[pos - 1] == ':')
+        setPath(p.substr(0, pos + 1));      // "C:/a" -> "C:/"(盘符根保留尾斜杠)
+    else
+        setPath(p.substr(0, pos));
+    return true;
+}
+
 string JZDir::absoluteFilePath(string path) const
 {
     if (JZDir::isAbsolutePath(path))

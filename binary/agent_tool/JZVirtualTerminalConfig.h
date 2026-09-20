@@ -1,6 +1,7 @@
 #ifndef JZ_VIRTUAL_TERMINAL_CONFIG_H_
 #define JZ_VIRTUAL_TERMINAL_CONFIG_H_
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,18 @@ struct JZVirtualTerminalConfig
     bool allowNetwork = false;          // 默认关: 不要下载
     // ⚠ 危险指令(dd / mkfs / sudo / shutdown ...)与改系统设置的命令(SystemAdmin)
     //   一律拒绝, 不提供开关。
+
+    // ---- 程序映射(运行时可配, 动态登记) ----
+    //   程序名 -> 可执行文件全路径。例: {"tsc": "D:/app/ts_compiler/tsc/tsc.exe"}
+    //   登记一条映射做两件事(见 JZVirtualTerminal::applyProgramPaths):
+    //     ① 该名字补进程序白名单(CmdCategory::Tool) —— 默认表里没有的(如 code_runtime)也能过审;
+    //     ② 审过之后, 执行时把命令里这个短名原地换成全路径(见 expandProgramPaths),
+    //        所以 `tsc xxx` 这种裸命令名能真正找到程序 —— 不改 PATH, 只改命令本身。
+    //   典型用途: 本仓库自带的 tsc / code_runtime 这类"随部署走、通常不在 PATH 里"的程序。
+    //   ⚠ 只认短名字: 命令里写全路径走的是**路径审核**(区外一律拒), 这条映射管不到 ——
+    //     要按全路径跑, 就把那个目录配进 zone.trustedDirs(映射本身不授信任何目录)。
+    //   ⚠ 名字用小写, 与命令里写的名字一致; 路径必须是可执行文件本身(不是目录)。
+    std::map<std::string, std::string> programPaths;
 
     // ---- 目录边界 ----
     ZoneConfig zone;

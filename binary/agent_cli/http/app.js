@@ -286,6 +286,8 @@
   function startTask(task) {
     var g = epoch;
     cur = task;
+    endProc();                 // 新任务: 过程气泡另起
+    resetProcKeep();           // 过程步数重新计数(旧任务的步骤留在界面上)
     dropPendingItem(task);
     makeCard(task);
     curListEl.insertBefore(task.el, curListEl.firstChild);
@@ -404,6 +406,57 @@
   // ------------------------------------------------------------------
   var evtSrc = null;
 
+  // 过程气泡: 思考/回复是流式增量, 追加进同一条; 工具调用与结果各起一条。
+  // 这样任务跑的过程中网页能看到 agent 在想什么/调什么工具, 而不是干等最后回包。
+  // 只留最近 PROC_KEEP 步(用户输入 + 最近这些步骤), 更早的移除 —— 长任务不刷屏。
+  var PROC_KEEP = 10;
+  var procEl = null;
+  var procKind = '';
+  var procEls = [];        // 当前任务的过程气泡, 按时间从旧到新
+  var procOmitEl = null;   // "已省略 N 步" 标记
+  var procOmitN = 0;
+
+  function endProc() { procEl = null; procKind = ''; }
+
+  function resetProcKeep() {
+    procEls.length = 0;
+    procOmitN = 0;
+    if (procOmitEl && procOmitEl.parentNode) procOmitEl.parentNode.removeChild(procOmitEl);
+    procOmitEl = null;
+  }
+
+  function trimProc() {
+    while (procEls.length > PROC_KEEP) {
+      var oldEl = procEls.shift();
+      if (oldEl.parentNode) oldEl.parentNode.removeChild(oldEl);
+      procOmitN += 1;
+    }
+    if (procOmitN === 0) return;
+
+    if (!procOmitEl) {
+      procOmitEl = el('div', 'sys dim', '');
+      var first = procEls[0];
+      if (first && first.parentNode) messagesEl.insertBefore(procOmitEl, first);
+      else messagesEl.appendChild(procOmitEl);
+    }
+    procOmitEl.textContent = '…（前面 ' + procOmitN + ' 步已省略）';
+  }
+
+  function addProc(kind, prefix, text) {
+    if (!procEl || procKind !== kind) {
+      procEl = document.createElement('div');
+      procEl.className = 'proc ' + kind;
+      procEl.textContent = prefix;
+      messagesEl.appendChild(procEl);
+      procKind = kind;
+      procEls.push(procEl);
+      trimProc();
+    }
+    if (procEl.textContent.length < 2000) procEl.textContent += text;
+    else if (procEl.textContent.length < 2100) procEl.textContent += '…（已省略）';
+    scrollBottom();
+  }
+
   function addSystem(text, kind) {
     var d = document.createElement('div');
     d.className = 'sys' + (kind ? ' ' + kind : '');
@@ -423,7 +476,34 @@
       return;
     }
 
+    if (type === 'thinking') {
+      addProc('think', '思考: ', data.text || '');
+      return;
+    }
+
+    if (type === 'reply') {
+      addProc('say', '回复: ', data.text || '');
+      return;
+    }
+
+    if (type === 'tool_call') {
+      endProc();
+      var args = String(data.args || '');
+      if (args.length > 200) args = args.slice(0, 200) + '…';
+      addProc('tool', '⚙ ' + (data.name || 'tool'), args ? (' ' + args) : '');
+      return;
+    }
+
+    if (type === 'tool_result') {
+      endProc();
+      var res = String(data.result || '');
+      if (res.length > 300) res = res.slice(0, 300) + '…';
+      addProc('res' + (data.ok ? '' : ' fail'), data.ok ? '✔ ' : '✘ ', res);
+      return;
+    }
+
     if (type === 'task_start') {
+      endProc();
       if (cur) {
         cur.rounds.textContent = '· 第 ' + (cur.roundN || 1) + ' 轮';
         if (data.verify_cmd) cur.result.textContent = '验证待跑: ' + data.verify_cmd;
@@ -433,6 +513,7 @@
 
     if (type === 'verify') {
       if (!cur) return;
+      endProc();
       cur.roundN = (data.round || 0) + 1;
       cur.rounds.textContent = '· 轮次 ' + cur.roundN;
       if (data.output) {
@@ -447,12 +528,14 @@
     }
 
     if (type === 'error') {
+      endProc();
       addSystem('⚠ 运行错误: ' + (data.text || '未知错误'), 'err');
       if (cur) cur.result.textContent = '运行时错误';
       return;
     }
 
     if (type === 'reset') {
+      endProc();
       addSystem(data.cancelled ? '任务已被重置' : '会话已重置(对话历史已清空)');
       return;
     }

@@ -6,16 +6,31 @@
 //   {status, verify_rounds, agent_reply, last_verify_output, error?}, 以 status 判定。
 //
 // 与 code_agent_benchmark 的关键差异:
-//   - 不初始化 TS 工程 / 不 tsc 编译 / 不跑 code_runtime; agent 自己用 terminal/file 工具干活。
+//   - 不初始化 TS 工程 / 不 tsc 编译 / 不跑 code_runtime; agent 自己用 terminal/file 工具干活
+//     (所以 tsc / code_runtime 要对 agent 可用, 靠下面的"程序映射"登记, 而不是宿主代跑)。
 //   - 用例加载逻辑完全一致(同 parseCaseObject/loadCases), benchmark/data 里的用例直接作输入。
 //     verify 字段 -> submitTask 的 verify_cmd; 无 verify 的用例 -> status 以 agent 成败为准。
+//
+// 程序映射(动态): JZCliConfig::programPaths = 程序名 -> 可执行文件全路径,
+//   登记后由 JZVirtualTerminal 做两件事: 进命令白名单(短名字能过审) + 执行时把命令里
+//   这个短名换成全路径(`tsc xxx` 这种短命令名能找到程序, 不往子进程 PATH 里塞东西)。⚠ 只认短名字 —— 写全路径走路径审核(区外拒),
+//   映射不会顺带授信那个目录。每个用例的 JZAgentCli 都按这套配置重建, 所以换一份配置就是
+//   换一套可用程序 —— 不是编译期写死的。
+//   tsc / code_runtime 由本程序(外部)自己按 exe 目录向上找到 build 再定位: 找到就填进
+//   cfg.programPaths 传进去 —— JZAgentCli 只认配置, 自己不探测。
 //
 // 配置(命令行 / 环境变量):
 //   --modelUrl / --modelName / --modelToken   大模型接入(缺省沿用仓库测试默认值)
 //   --data    评测集目录(缺省 bin/<CONFIG>/data/agent_cli_test)
 //   --cases   逗号分隔的用例名, 仅跑这些
 //   --http-port   输入 HTTP 服务监听端口(JS/agent 用 fetch 读输入)
+//   --cli-http-port 每个用例的 JZAgentCli 网页服务起始端口(默认 19090, 逐用例 +1)
 //   --no-color   关闭 ANSI 彩色输出
+//
+// 实时过程打印:
+//   每个用例的 JZAgentCli 会 startHttp()(就是网页控制台用的那套: POST /task + GET /events),
+//   本程序再以 HTTP 客户端身份 GET /events 订阅同一条 SSE 事件流, 把思考/工具调用/验证
+//   结果实时打到控制台 —— 没有为测试单独开接口, 走的完全是网页接口。
 // 退出码: 0=全部用例通过; 1=有失败; 2=前置条件缺失(模型未配置 / 评测集加载失败)。
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -41,7 +56,11 @@
 #include "JZFileInfo.h"
 #include "JZHttpServer.h"
 #include "JZHttpHandler.h"
+#include "JZNetworkAccessManager.h"
+#include "JZNetworkReply.h"
+#include "JZNetworkRequest.h"
 #include "JZPlatform.h"
+#include "JZTimer.h"
 #include "JZUuid.h"
 #include "JZStd.h"
 
@@ -86,6 +105,7 @@ bool enableConsoleColor()
 const char *clr(const char *ansi) { return g_colorEnabled ? ansi : ""; }
 
 const char *CLR_RESET  = "\033[0m";
+const char *CLR_GRAY   = "\033[90m";
 const char *CLR_GREEN  = "\033[32m";
 const char *CLR_RED    = "\033[31m";
 const char *CLR_YELLOW = "\033[33m";
@@ -133,6 +153,8 @@ public:
     virtual void run() override
     {
         exec();
+        // 退出前先在自己这个线程里关掉监听, 再把 server 交还主线程 —— 之后才能安全析构。
+        server->close();
         server->moveToThread(jzApp->mainThread());
     }
 };
@@ -161,12 +183,15 @@ public:
             const std::string &dataDir)
         : m_loop(loop), m_config(cfg), m_codeRuntime(codeRuntime), m_dataDir(dataDir)
     {
+        m_net = new JZNetworkAccessManager(this);
     }
 
     void setCases(const std::vector<BenchmarkCase> &cases) { m_cases = cases; }
+    void setCliPortBase(int p) { m_cliPortBase = p; }
 
     bool startHttpServer(int p)
     {
+        m_httpPort = p;
         m_http = new JZHttpServer(this);
         m_httpHandler = new InputHttpHandler();
         m_httpHandler->getInput = [this]() { return currentInput(); };
@@ -188,6 +213,22 @@ public:
         m_httpThread.server = m_http;
         m_httpThread.start();
         return true;
+    }
+
+    // 收尾: 让输入 HTTP 线程退出并 join。
+    // 必须在 CliTest 析构之前调用 —— 否则 JZThread 析构时会撞上仍处于 joinable 的
+    // std::thread, std::thread::~thread 直接 terminate(表现为崩在 ucrtbased.dll)。
+    void stopHttpServer()
+    {
+        if (!m_http)
+            return;
+
+        m_httpThread.quit();
+        m_httpThread.wait();     // join; 线程的 run() 里已 close() 并把 server 交还主线程
+
+        delete m_http;           // parent 是 this, 这里先释放, 避免和 CliTest 析构重复
+        m_http = nullptr;
+        m_httpHandler = nullptr; // 随 m_http 一起没了
     }
 
     void run()
@@ -219,6 +260,7 @@ protected:
 
         JZCliConfig cfg = m_config;
         cfg.rootDir = root;
+        cfg.httpPort = m_cliPortBase + (int)i;   // 每用例一个端口, 便于起网页服务 + 订阅 /events
 
         JZAgentCli *cli = new JZAgentCli(this);
         std::string err;
@@ -249,8 +291,176 @@ protected:
                             << "] 开始 (maxAttempts=" << m_case.maxAttempts
                             << ", root=" << root << ") ====" << clr(CLR_RESET);
 
-        m_llmStartMs = JZPlatform::getTickCountMs();
-        m_cli->submitTask(req, [this](const Json::Value &r) { onSubmitDone(r); });
+        // 打印本用例实际生效的程序映射: 看不到 tsc/code_runtime 就说明外部没传进来
+        std::string progs;
+        for (const auto &kv : cli->programPaths())
+        {
+            if (!progs.empty())
+                progs += ", ";
+            progs += kv.first + "=" + kv.second;
+        }
+        jzDebug().nospace() << clr(CLR_GRAY) << "  程序映射: "
+                            << (progs.empty() ? "(无)" : progs) << clr(CLR_RESET);
+
+        // 起网页那套 HTTP(POST /task + GET /events), 再以客户端身份订阅事件流 -> 实时打印过程
+        cli->startHttp();
+        startSse(cfg.httpPort);
+
+        m_pendingReq = req;
+        waitSseThenSubmit(0);
+    }
+
+    // 等 SSE 首帧(hello)到了再提交, 免得漏掉开头的过程; 连不上也不卡着: 3s 后照提
+    void waitSseThenSubmit(int waitedMs)
+    {
+        if (m_sseHello || waitedMs >= 3000)
+        {
+            m_llmStartMs = JZPlatform::getTickCountMs();
+            m_cli->submitTask(m_pendingReq, [this](const Json::Value &r) { onSubmitDone(r); });
+            return;
+        }
+        // 服务端 listen() 是异步的: 头一两次订阅可能扑空(连接直接失败), 隔 500ms 重试一次
+        if (!m_sse && waitedMs > 0 && (waitedMs % 500) == 0)
+            startSse(m_ssePort);
+
+        JZTimer::singleShot(100, [this, waitedMs]() { waitSseThenSubmit(waitedMs + 100); });
+    }
+
+    // -----------------------------------------------------------------------
+    // 实时过程: 订阅当前用例 JZAgentCli 的 GET /events(网页同款 SSE), 打到控制台
+    // -----------------------------------------------------------------------
+    void startSse(int port)
+    {
+        m_ssePort = port;
+        std::string url = "http://127.0.0.1:" + std::to_string(port) + "/events";
+        JZNetworkRequest req(url);
+        req.setHeader(JZNetworkRequest::AcceptHeader, "text/event-stream");
+        m_sse = m_net->get(req);
+        m_sse->setTimeOut(-1);          // 长连接: 别按默认 30s 空闲超时掐断
+        connect(&m_sse->sigReadyRead, this, [this]() { onSseData(); });
+        connect(&m_sse->sigFinished, this, [this]() { onSseFinished(); });
+    }
+
+    void stopSse()
+    {
+        flushStream();                  // 把攒着的思考/回复尾巴打出来
+        if (!m_sse)
+            return;
+        m_sse->close();                 // -> UserCancelError; sigFinished 里 deleteLater
+        m_sse = nullptr;
+        m_sseBuf.clear();
+        m_sseHello = false;
+    }
+
+    void onSseData()
+    {
+        if (!m_sse)
+            return;
+        m_sseBuf += str_fromUtf8(m_sse->readAll());
+
+        size_t pos;
+        while ((pos = m_sseBuf.find("\n\n")) != std::string::npos)
+        {
+            std::string block = m_sseBuf.substr(0, pos);
+            m_sseBuf.erase(0, pos + 2);
+
+            size_t d = block.find("data: ");
+            if (d == std::string::npos)
+                continue;
+            Json::Value ev;
+            Json::Reader rd;
+            if (!rd.parse(block.substr(d + 6), ev) || !ev.isMember("type"))
+                continue;
+            onSseEvent(ev);
+        }
+    }
+
+    void onSseEvent(const Json::Value &ev)
+    {
+        std::string type = ev["type"].asString();
+        const Json::Value &d = ev["data"];
+
+        if (type == "hello")
+        {
+            m_sseHello = true;          // 连接就绪
+            return;
+        }
+        // 思考/回复是流式增量: 攒起来, 遇到别的事件或用例结束再整段打, 免得一个 token 一行
+        if (type == "thinking")
+        {
+            m_thinkBuf += d.isMember("text") ? d["text"].asString() : "";
+            return;
+        }
+        if (type == "reply")
+        {
+            m_sayBuf += d.isMember("text") ? d["text"].asString() : "";
+            return;
+        }
+        flushStream();
+
+        if (type == "tool_call")
+        {
+            std::string args = d.isMember("args") ? d["args"].asString() : "";
+            procLine(clr(CLR_YELLOW), "⚙ " + (d.isMember("name") ? d["name"].asString() : "tool"),
+                     args, 240);
+            return;
+        }
+        if (type == "tool_result")
+        {
+            bool ok = d.isMember("ok") ? d["ok"].asBool() : false;
+            std::string res = d.isMember("result") ? d["result"].asString() : "";
+            procLine(ok ? clr(CLR_GREEN) : clr(CLR_RED), ok ? "✔" : "✘", res, 240);
+            return;
+        }
+        if (type == "verify")
+        {
+            bool passed = d.isMember("passed") ? d["passed"].asBool() : false;
+            std::string txt = "第 " + std::to_string(d.isMember("round") ? d["round"].asInt() + 1 : 1)
+                              + " 轮验证: " + (passed ? "通过" : "失败(退出码 "
+                              + std::to_string(d.isMember("exit_code") ? d["exit_code"].asInt() : -1) + ")");
+            jzDebug().nospace() << "  " << clr(passed ? CLR_GREEN : CLR_RED) << txt << clr(CLR_RESET);
+            return;
+        }
+        if (type == "error")
+        {
+            procLine(clr(CLR_RED), "⚠", d.isMember("text") ? d["text"].asString() : "", 300);
+            return;
+        }
+    }
+
+    void onSseFinished()
+    {
+        // 用例结束时 CliTest 主动 close() -> UserCancelError; 服务端先关则是 ConnectError(无终止块),
+        // 都不算问题 —— 过程已经在 sigReadyRead 里打过了
+        if (m_sse)
+            m_sse->deleteLater();
+        m_sse = nullptr;
+    }
+
+    void flushStream()
+    {
+        if (!m_thinkBuf.empty())
+        {
+            procLine("", "思考", m_thinkBuf, 240);
+            m_thinkBuf.clear();
+        }
+        if (!m_sayBuf.empty())
+        {
+            procLine("", "回复", m_sayBuf, 300);
+            m_sayBuf.clear();
+        }
+    }
+
+    // 单行过程输出: 折叠换行、截断长度, 免得长文本把控制台刷爆
+    void procLine(const char *color, const std::string &tag, const std::string &text, int maxLen)
+    {
+        std::string t = text;
+        for (char &c : t)
+            if (c == '\r' || c == '\n')
+                c = ' ';
+        if ((int)t.size() > maxLen)
+            t = t.substr(0, maxLen) + "…";
+        jzDebug().nospace() << "  " << color << tag << (t.empty() ? "" : (" " + t)) << clr(CLR_RESET);
     }
 
     void onSubmitDone(const Json::Value &r)
@@ -312,6 +522,7 @@ protected:
 
         m_results.push_back(r);
 
+        stopSse();                  // 先断开本用例的事件流, 再销毁它的 agent_cli
         if (m_cli)
             m_cli->deleteLater();
         m_cli = nullptr;
@@ -416,6 +627,17 @@ protected:
     int m_totalTokens = 0;
     int m_totalCached = 0;
     int64_t m_totalLlmMs = 0;
+
+    // 网页服务的客户端侧: 订阅 GET /events, 把事件流实时打到控制台
+    JZNetworkAccessManager *m_net = nullptr;
+    JZNetworkReply *m_sse = nullptr;
+    int m_ssePort = 0;
+    std::string m_sseBuf;
+    bool m_sseHello = false;
+    std::string m_thinkBuf;
+    std::string m_sayBuf;
+    Json::Value m_pendingReq;
+    int m_cliPortBase = 19090;
 
     JZHttpServer *m_http = nullptr;
     InputHttpHandler *m_httpHandler = nullptr;
@@ -599,10 +821,65 @@ static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &ou
     return false;
 }
 
+// 路径的最后一段目录名(不看尾斜杠)
+static std::string lastDirName(const std::string &path)
+{
+    std::string s = path;
+    while (s.size() > 1 && s.back() == '/')
+        s.pop_back();
+    size_t pos = s.find_last_of('/');
+    return pos == std::string::npos ? s : s.substr(pos + 1);
+}
+
+// 在某个基目录下按相对路径找程序: 产物可能在 Debug / Release 两个子目录里, 逐个试。
+static std::string findUnder(const std::string &baseDir, const std::vector<std::string> &names)
+{
+    static const char *kSubs[] = { "/binary/code_agent/bin/Release", "/binary/code_agent/bin/Debug",
+                                   "/bin/Release", "/bin/Debug", "" };
+
+    std::string base = baseDir;
+    while (base.size() > 1 && base.back() == '/')
+        base.pop_back();
+    if (base.empty())
+        return std::string();
+
+    for (const std::string &name : names)
+    {
+        for (int k = 0; k < (int)(sizeof(kSubs) / sizeof(kSubs[0])); k++)
+        {
+            std::string cand = base + kSubs[k] + "/" + name;
+            if (JZFileInfo::exists(cand))
+                return codeNormalizePath(cand);
+        }
+    }
+    return std::string();
+}
+
+// 定位程序(tsc / code_runtime 随部署走, 路径不固定): 从 exe 目录逐级**向上找到 build 目录**,
+// 再在 build 里按名字找 —— 仓库内构建就是 <build>/binary/code_agent/bin/<CONFIG>/xxx.exe。
+// 找不到返回空串(那就没得用: 不填进配置)。
+static std::string detectProgram(const std::string &nameNoExt)
+{
+    std::vector<std::string> names;   // Windows 带 .exe, 其它平台不带后缀
+    names.push_back(nameNoExt + ".exe");
+    names.push_back(nameNoExt);
+
+    JZDir dir(JZPlatform::applicationDirPath());   // 构造即把 '\' 归一成 '/'
+    std::string exeDir = dir.path();
+    for (int level = 0; level < 12; level++)
+    {
+        if (lastDirName(dir.path()) == "build")
+            return findUnder(dir.path(), names);   // 找到 build 就在它里面找, 不再往外找
+        if (!dir.cdUp())
+            break;
+    }
+    return findUnder(exeDir, names);   // 没有 build 祖先: exe 附近找
+}
+
 static JZCliConfig loadCliConfig(JZCommandLineParser &parser)
 {
     JZCliConfig cfg;
-    cfg.modelUrl = "http://127.0.0.1:8080/v1/chat/completions";   // 默认本地; 用环境变量/命令行覆盖
+    cfg.modelUrl = "http://172.17.160.147:8080/v1/chat/completions";   // 默认本地; 用环境变量/命令行覆盖
     cfg.modelName = "my_model";
     cfg.maxRounds = 100;
 
@@ -631,6 +908,7 @@ int main(int argc, char *argv[])
             dataDir[i] = '/';
     std::string casesFilter;
     int httpPort = 18090;
+    int cliHttpPort = 19090;
     bool noColor = false;
 
     JZCommandLineParser parser;
@@ -639,6 +917,7 @@ int main(int argc, char *argv[])
     parser.addOption("--data", &dataDir);
     parser.addOption("--cases", &casesFilter);
     parser.addOption("--http-port", &httpPort);
+    parser.addOption("--cli-http-port", &cliHttpPort);
     parser.addOption("--no-color", &noColor);
     if (!parser.parse(argc, argv))
     {
@@ -654,14 +933,31 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    // code_runtime 路径: 仅用于展开 verify 命令里的 ${runtime}(server 型用例); 缺省不强制。
-    std::string codeRuntime = JZPlatform::applicationDirPath();
-    for (size_t i = 0; i < codeRuntime.size(); i++)
-        if (codeRuntime[i] == '\\')
-            codeRuntime[i] = '/';
-    codeRuntime += "/code_runtime.exe";
+    // 程序映射: 本程序(外部)自己定位 tsc / code_runtime, 填进配置传给 JZAgentCli ——
+    // agent 侧只认配置, 不做探测。
+    std::string tscPath = detectProgram("ts_compiler/tsc/tsc");
+    std::string runtimePath = detectProgram("code_runtime");
+    if (!tscPath.empty())
+        cfg.programPaths["tsc"] = tscPath;
+    if (!runtimePath.empty())
+        cfg.programPaths["code_runtime"] = runtimePath;
+
+    // code_runtime 路径: 仅用于展开 verify 命令里的 ${runtime}(server 型用例); 探测不到就留空。
+    std::string codeRuntime = runtimePath;
     if (!JZFileInfo::exists(codeRuntime))
         codeRuntime.clear();
+
+    if (!cfg.programPaths.empty())
+    {
+        std::string line;
+        for (const auto &kv : cfg.programPaths)
+        {
+            if (!line.empty())
+                line += ", ";
+            line += kv.first + "=" + kv.second;
+        }
+        jzDebug().nospace() << clr(CLR_GRAY) << "程序映射(agent 可用): " << line << clr(CLR_RESET);
+    }
 
     std::vector<BenchmarkCase> cases;
     std::string loadErr;
@@ -699,6 +995,7 @@ int main(int argc, char *argv[])
     JZEventLoop loop;
     CliTest test(&loop, cfg, codeRuntime, dataDir);
     test.setCases(cases);
+    test.setCliPortBase(cliHttpPort);
 
     // 输入 HTTP 服务(供需要输入的用例, 如 hello_http)
     if (!test.startHttpServer(httpPort))
@@ -707,6 +1004,8 @@ int main(int argc, char *argv[])
     test.run();
 
     int ret = loop.exec();
+    // 先停 HTTP 线程(join), 再让 CliTest / loop 析构
+    test.stopHttpServer();
     (void)ret;
     return 0;
 }

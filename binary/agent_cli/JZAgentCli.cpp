@@ -48,6 +48,7 @@ void JZCliToolHost::refresh()
                                                         : AccessLevel::Standard;
         m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
         m_terminalConfig.allowNetwork = m_config->allowNetwork;
+        m_terminalConfig.programPaths = m_config->programPaths;
     }
 }
 
@@ -101,6 +102,7 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
 {
     m_config = config;
 
+    // 程序映射: 只用配置里给的(外部传入)。这里不做任何自动探测 —— 没配就是没得用。
     if (m_config.rootDir.empty())
         m_config.rootDir = JZDir::currentPath();
     m_config.rootDir = codeNormalizePath(m_config.rootDir);
@@ -126,6 +128,9 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     m_agent->init(ac);
 
     connect(&m_agent->sigReply, this, &JZAgentCli::onReply);
+    connect(&m_agent->sigThinking, this, &JZAgentCli::onThinking);
+    connect(&m_agent->sigToolCall, this, &JZAgentCli::onToolCall);
+    connect(&m_agent->sigToolResult, this, &JZAgentCli::onToolResult);
     connect(&m_agent->sigError, this, &JZAgentCli::onError);
     connect(&m_agent->sigFinished, this, &JZAgentCli::onFinished);
 
@@ -200,6 +205,12 @@ string JZAgentCli::buildSystemPrompt() const
     text += "  - 不支持后台 `&`、heredoc、进程替换、for/while/if 复合语句。\n";
     text += "  - 优先用 read_file 而不是 cat, 用 modify_file 而不是 sed。\n";
     text += "  - 写权限: 工作区(读写执行)/授信目录(默认只读)/区外只读; 破坏性命令(dd/sudo...)被拒。\n";
+    if (!m_config.programPaths.empty())
+    {
+        text += "\n本机程序(命令名 -> 全路径): 执行时会把命令里的命令名换成全路径, **只写命令名**(写全路径会被路径审核拒):\n";
+        for (const auto &kv : m_config.programPaths)
+            text += "  " + kv.first + "    " + kv.second + "\n";
+    }
     text += "\nWork through the user's request step by step using the tools. "
             "When done, give a concise summary of what you changed.\n";
     return text;
@@ -336,6 +347,19 @@ void JZAgentCli::sendJson(JZHttpServerClient *client, int code, const Json::Valu
 // 实时事件流(GET /events, SSE) —— 任务进行中的即时反馈
 // ==========================================================================
 
+// SSE 帧 -> HTTP chunked 分块(长度前缀 + 帧 + CRLF)。
+// /events 声明了 Transfer-Encoding: chunked, 每帧必须按分块格式写, 否则客户端解不出帧边界。
+static std::string makeSseChunk(const std::string &payload)
+{
+    std::string frame = "data: " + payload + "\n\n";
+    char head[32];
+    snprintf(head, sizeof(head), "%x\r\n", (unsigned)frame.size());
+    std::string chunk = head;
+    chunk += frame;
+    chunk += "\r\n";
+    return chunk;
+}
+
 void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     if (!checkToken(req))
@@ -344,13 +368,16 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
         return;
     }
 
-    // 响应头不带 Content-Length(SSE 靠连接关闭界定结束)
+    // 响应头不带 Content-Length; 用 chunked 分块 —— 浏览器 EventSource 两种都能实时收,
+    // 但只有 chunked 才能让**非浏览器**客户端(如 JZNetworkReply)逐帧读到: 无 Content-Length
+    // 的流式响应在那些客户端里要等连接关闭才一次性交付, 过程就全憋到最后了。
     JZHttpRespone resp;
     resp.setStatusCode(200);
     resp.setContentType("text/event-stream");
     resp.setHeader("Cache-Control", "no-cache");
     resp.setHeader("Connection", "keep-alive");
     resp.setHeader("X-Accel-Buffering", "no");
+    resp.setHeader("Transfer-Encoding", "chunked");
     client->write(resp.toHeadByteArray(0, false), false);
 
     m_eventClients.push_back(client);
@@ -367,8 +394,8 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
     std::string payload = Json::FastWriter().write(first);
     while (!payload.empty() && (payload.back() == '\n' || payload.back() == '\r'))
         payload.pop_back();
-    std::string frame = "data: " + payload + "\n\n";
-    client->write(frame.data(), (int)frame.size(), false);
+    std::string chunk = makeSseChunk(payload);
+    client->write(chunk.data(), (int)chunk.size(), false);
 }
 
 void JZAgentCli::removeEventClient(JZHttpServerClient *client)
@@ -393,9 +420,9 @@ void JZAgentCli::pushEvent(const std::string &type, const Json::Value &data)
     std::string payload = Json::FastWriter().write(j);
     while (!payload.empty() && (payload.back() == '\n' || payload.back() == '\r'))
         payload.pop_back();
-    std::string frame = "data: " + payload + "\n\n";
+    std::string chunk = makeSseChunk(payload);
     for (JZHttpServerClient *c : m_eventClients)
-        c->write(frame.data(), (int)frame.size(), false);
+        c->write(chunk.data(), (int)chunk.size(), false);
 }
 
 bool JZAgentCli::checkToken(const JZHttpRequest &req) const
@@ -795,6 +822,47 @@ string JZAgentCli::extractUserText(const Json::Value &params)
 void JZAgentCli::onReply(const std::string &text)
 {
     m_accumReply += text;   // 累积本轮最终回复(循环结束一次性回包)
+
+    if (hasEventConsumer())
+    {
+        Json::Value d;
+        d["text"] = text;
+        pushEvent("reply", d);
+    }
+}
+
+void JZAgentCli::onThinking(const std::string &text)
+{
+    if (!hasEventConsumer())
+        return;
+
+    Json::Value d;
+    d["text"] = text;
+    pushEvent("thinking", d);
+}
+
+void JZAgentCli::onToolCall(const ToolCall &call)
+{
+    if (!hasEventConsumer())
+        return;
+
+    Json::Value d;
+    d["id"] = call.id;
+    d["name"] = call.function_name;
+    d["args"] = call.function_args;
+    pushEvent("tool_call", d);
+}
+
+void JZAgentCli::onToolResult(const ToolCallResult &result)
+{
+    if (!hasEventConsumer())
+        return;
+
+    Json::Value d;
+    d["id"] = result.id;
+    d["ok"] = result.isOk;
+    d["result"] = result.result;
+    pushEvent("tool_result", d);
 }
 
 void JZAgentCli::onError(const std::string &err)

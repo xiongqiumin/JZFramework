@@ -1,5 +1,6 @@
 #include "JZVirtualTerminal.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -372,6 +373,9 @@ void JZVirtualTerminal::setTerminalConfig(const JZVirtualTerminalConfig &config)
 {
     m_config = config;
 
+    // 程序映射(programPaths)是配置的一部分: 每次换配置都重新登记一遍, 故这里是动态的
+    applyProgramPaths();
+
     // 目录基准变了, cwd 可能失效 —— 拉回工作区根(而不是让它悬着)
     if (m_cwd.empty())
         m_cwd = m_config.zone.workspace;
@@ -398,6 +402,70 @@ void JZVirtualTerminal::setTrustedPrograms(const std::vector<TrustedProgram> &pr
 const map<string, string> &JZVirtualTerminal::trustedPrograms() const
 {
     return m_trustedPrograms;
+}
+
+// 路径里的文件名(统一按 '/' 处理)
+static string pathFileOf(const string &path)
+{
+    string s = toSlash(path);
+    size_t pos = s.find_last_of('/');
+    return pos == string::npos ? s : s.substr(pos + 1);
+}
+
+void JZVirtualTerminal::applyProgramPaths()
+{
+    for (const auto &kv : m_config.programPaths)
+    {
+        string name = str_toLower(kv.first);
+        if (name.empty() || kv.second.empty())
+            continue;
+
+        // ① 补白名单: 默认表里没有的程序(如 code_runtime)按 Tool 档登记, 否则连名字都过不了审
+        if (!m_programs.count(programKey(name)))
+            addProgram(name, { pathFileOf(kv.second) }, CmdCategory::Tool);
+
+        // ② 记全路径(与 setTrustedPrograms 同一张表), 供上层提示词 / 自检查询
+        m_trustedPrograms[programKey(name)] = kv.second;
+
+        // ⚠ 不把可执行文件所在目录并入授信目录: 映射只负责"短名字能过审、执行时能换成
+        //   全路径", 目录授信是另一码事(想按全路径跑就自己配 zone.trustedDirs)。
+        //   因此命令要写短名字 —— 写全路径走的是路径审核, 区外一律拒。
+    }
+}
+
+string JZVirtualTerminal::programPath(const string &name) const
+{
+    auto it = m_config.programPaths.find(name);
+    if (it == m_config.programPaths.end())
+        it = m_config.programPaths.find(str_toLower(name));
+
+    return it == m_config.programPaths.end() ? string() : it->second;
+}
+
+// 短程序名 -> 全路径(审核通过后原地替换):
+// 映射里的程序通常不在 PATH 上(随部署走的 tsc / code_runtime), 直接把 `tsc xxx`
+// 交给 shell 就是 "command not found"。做法是把命令串里"程序位置上"的那个短名
+// 换成配置里的全路径, 而不是给子进程注入 PATH —— 改的是命令, 环境不动。
+//
+// 换哪些、换成什么, 由本终端的映射决定; 怎么改命令串是 AST 的事(JZShell::rewritePrograms:
+// 按 Command::programPos/programLen 定位, 只动程序名那几个字符)。
+// ⚠ 只在审核之后调 —— 换完就是全路径, 再过审核走的是路径判定(区外拒)。
+string JZVirtualTerminal::expandProgramPaths(const JZShell::Line &line, const string &command) const
+{
+    auto resolve = [this](const JZShell::Command &cmd) -> string
+    {
+        string full = programPath(cmd.argv[0]);
+        if (full.empty())
+            return string();   // 没配映射: 原样(PATH 里自己找)
+
+        full = toSlash(full);
+        // 路径里有空格就得加引号, 否则 shell 会把它拆成两个词
+        if (full.find(' ') != string::npos)
+            full = "\"" + full + "\"";
+        return full;
+    };
+
+    return JZShell::rewritePrograms(command, line, resolve);
 }
 
 void JZVirtualTerminal::addProgram(const string &name, vector<string> exeNames, CmdCategory category,
@@ -1526,6 +1594,10 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
         }
     }
 
+    // 审核过了: 配了 programPaths 映射的短程序名, 在这里换成全路径再交给 shell。
+    // (必须在审完之后 —— 换完就是路径, 再拿去审走的是路径判定, 区外一律拒)
+    string execCommand = expandProgramPaths(parsed, command);
+
     // ---- 起进程 + 建运行记录 ----
     // proc 随终端建一次, 之后复用 —— 所以信号只连一次。
     // run_id 必须全局唯一: 带上终端(会话)id。否则每个会话都从 r1 开始编号,
@@ -1652,7 +1724,9 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
         m_timeoutTimer->start(timeoutMs);
     }
 
-    bool ok = m_proc->start(shellProgram(), vector<string>{"-c", command});
+    // 跑的是"换过短名"的串: 命令已按原文审过, 这里只把配了映射的程序名换成全路径
+    // (运行记录/报错里仍是原文 —— 那是用户写的那条)
+    bool ok = m_proc->start(shellProgram(), vector<string>{"-c", execCommand});
     if (!ok)
     {
         if (m_timeoutTimer)

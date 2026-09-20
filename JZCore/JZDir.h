@@ -67,6 +67,12 @@ public:
     std::string absolutePath() const;
     std::string absoluteFilePath(std::string path) const;
 
+    // 切到上一级目录(同 Qt 的 QDir::cdUp()): 成功返回 true, 目录变为父目录。
+    // 已经在根上返回 false, 目录不变 —— 根包括盘符根("C:/"、"C:")与 "/",
+    // 以及"没有分隔符的相对路径"(如 "build")。
+    // 例: "C:/a/b/c" -> "C:/a/b" -> "C:/a" -> "C:/"(盘符根保留尾斜杠) -> false。
+    bool cdUp();
+
     bool isResource() const;   // 路径以 ':' 开头, 指向 JZResources 中的资源组
 
     // 获取目录中所有文件信息

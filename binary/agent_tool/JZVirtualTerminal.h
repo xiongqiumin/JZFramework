@@ -106,6 +106,10 @@ public:
     void setTrustedPrograms(const std::vector<TrustedProgram> &programs);
     const std::map<std::string, std::string> &trustedPrograms() const;
 
+    // 查配置里的程序映射(JZVirtualTerminalConfig::programPaths):
+    // 返回该名字对应的可执行文件全路径, 没有则返回空串。
+    std::string programPath(const std::string &name) const;
+
     // 程序白名单。构造时会装一份默认表。
     void addProgram(const std::string &name, std::vector<std::string> exeNames, CmdCategory category,
                     std::vector<std::string> denyFlags = std::vector<std::string>(),
@@ -190,6 +194,18 @@ public:
 
 protected:
     void buildDefaultPrograms();   // 装默认程序白名单(构造时调)
+
+    // 应用配置里的程序映射(programPaths): 补白名单 + 记全路径。
+    // 每次 setTerminalConfig() 都会重跑一遍 —— 映射是动态的, 换了配置就换一套程序。
+    void applyProgramPaths();
+
+    // 审核通过后, 把命令里的"短程序名"换成配置里的全路径:
+    //   `tsc -p .` -> `D:/x/ts_compiler/tsc/tsc.exe -p .`
+    // 走 AST: JZShell::rewritePrograms() 按 Command::programPos/programLen 定位,
+    // 只动程序名那几个字符 —— 名字出现在参数里不会被误换。
+    // ⚠ 必须在审核**之后**调: 审核认的是短名(白名单按名字查), 换成全路径走的就是
+    //   路径审核(区外一律拒), 那是另一套判定。
+    std::string expandProgramPaths(const JZShell::Line &line, const std::string &command) const;
 
     // `rm -rf /`、`dd of=/dev/sda` 这类: 单看程序名审不出来(rm/dd 本身在白名单里),
     // 得看参数组合。返回 nullptr 表示用法没问题。

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <map>
 #include <vector>
 
 #include "JZObject.h"
@@ -48,6 +49,13 @@ struct JZCliConfig
     std::string shellProgram;
     int recycleSec = 15 * 60;
     std::string logFile;
+
+    // 程序映射: 程序名 -> 可执行文件全路径(动态登记, 见 JZVirtualTerminalConfig::programPaths)
+    //   典型是 tsc / code_runtime 这类"随部署走、通常不在 PATH 里"的程序 —— 登记后:
+    //   进白名单(短名字能过审) + 执行时把命令里的短名换成全路径(短名字能找到程序)。
+    //   ⚠ 只认短名字: 写全路径走路径审核(区外拒), 需要就另外把它配进 rootDir/trustedDirs。
+    //   由外部(配置文件 terminal.programs / 宿主代码)传入; 没登记的程序 agent 就用不了。
+    std::map<std::string, std::string> programPaths;
 
     // ---- HTTP 传输 ----
     std::string httpBind = "127.0.0.1";
@@ -120,7 +128,8 @@ public:
     //   把 agent 的 sigError / 验证结果 / 任务起止实时推给网页 —— 否则任务跑很久时
     //   界面只能干等到 /task 的一次性回包, 中途报错无从得知。
     //   帧格式: data: {"type":"...","data":{...}}
-    //   type: hello / task_start / error / verify / task_end / reset
+    //   type: hello / task_start / thinking / reply / tool_call / tool_result /
+    //         error / verify / task_end / reset
     void onEvents(JZHttpServerClient *client, const JZHttpRequest &req);
     void pushEvent(const std::string &type, const Json::Value &data);   // 推给所有订阅者
     void removeEventClient(JZHttpServerClient *client);
@@ -132,6 +141,9 @@ public:
 
     JZAgent *agent() const { return m_agent; }
 
+    // 生效的程序映射(即配置里传进来的那份), 供宿主打印/自检
+    const std::map<std::string, std::string> &programPaths() const { return m_config.programPaths; }
+
 protected:
     void setupAgent();
     std::string buildSystemPrompt() const;
@@ -140,8 +152,14 @@ protected:
 
     // JZAgent 信号
     void onReply(const std::string &text);
+    void onThinking(const std::string &text);
+    void onToolCall(const ToolCall &call);
+    void onToolResult(const ToolCallResult &result);
     void onError(const std::string &err);
     void onFinished();
+
+    // 有没有 SSE 订阅者: 没有就不必构造高频的流式事件(thinking/reply)JSON
+    bool hasEventConsumer() const { return !m_eventClients.empty(); }
 
     // HTTP 传输 + 验证脚本门控循环
     static std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd);

@@ -107,8 +107,6 @@ JZNetworkConnect::JZNetworkConnect(JZNetworkAccessManager *manager)
 
 JZNetworkConnect::~JZNetworkConnect()
 {
-    jzDebug() << "remove connect";
-
     close();
 }
 
@@ -850,7 +848,6 @@ void JZNetworkAccessManager::onDisconnected()
     {
         if (m_netConnects[i] == conn)
         {
-            jzDebug() << "remove conn";
             m_netConnects[i]->deleteLater();
             vec_removeAt(m_netConnects, i);
             break;

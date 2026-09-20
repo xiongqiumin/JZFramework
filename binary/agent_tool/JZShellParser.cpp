@@ -1,6 +1,7 @@
 // 见 JZShellParser.h: 这里是"词法 + 语法"两层, 只产出结构, 不执行任何命令
 #include "JZShellParser.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 
@@ -20,6 +21,8 @@ struct Token
     bool quoted = false;   // Word 是否曾被引号包住
     bool expand = false;   // Word 里含 $ ~ * ?(静态看不出真实值)
     int fd = -1;           // Redirect 的左侧 fd, 如 2>
+    std::size_t pos = 0;   // Word: 该词在原串里的起点(含引号)
+    std::size_t end = 0;   // Word: 该词在原串里的终点(不含)
 };
 
 bool isSpace(char c) { return c == ' ' || c == '\t'; }
@@ -165,6 +168,8 @@ public:
                 error = "命令里有解析不了的字符: " + std::string(1, c);
                 return false;
             }
+            t.pos = before;   // 原串位置: 上层换"短名 -> 全路径"要靠它原地替换
+            t.end = m_i;
             out.push_back(t);
         }
         return true;
@@ -557,8 +562,15 @@ bool parseCommand(const std::vector<Token> &toks, size_t &i, Command &cmd, std::
             continue;
         }
 
-        if (cmd.argv.empty() && t.expand)
-            cmd.programExpanded = true;
+        if (cmd.argv.empty())
+        {
+            if (t.expand)
+                cmd.programExpanded = true;
+
+            // 第一个词就是程序名: 记下它在原串里的位置(供上层原地换成全路径)
+            cmd.programPos = t.pos;
+            cmd.programLen = (t.end > t.pos) ? (t.end - t.pos) : 0;
+        }
 
         cmd.argv.push_back(t.text);
         i++;
@@ -623,6 +635,56 @@ bool parse(const std::string &text, Line &out, std::string &error, bool allowUns
     }
 
     return true;
+}
+
+std::string rewritePrograms(const std::string &text, const Line &line,
+                            const std::function<std::string(const Command &cmd)> &resolver)
+{
+    if (!resolver)
+        return text;
+
+    struct Repl
+    {
+        std::size_t pos;
+        std::size_t len;
+        std::string text;
+    };
+    std::vector<Repl> repls;
+
+    for (const Pipeline &pl : line.pipelines)
+    {
+        for (const Command &cmd : pl.commands)
+        {
+            // 没有程序名 / 位置未知 / 程序名带展开(审不出是哪个程序): 都不换
+            if (cmd.argv.empty() || cmd.programLen == 0 || cmd.programExpanded)
+                continue;
+
+            std::string repl = resolver(cmd);
+            if (repl.empty())
+                continue;
+
+            Repl r;
+            r.pos = cmd.programPos;
+            r.len = cmd.programLen;
+            r.text = repl;
+            repls.push_back(r);
+        }
+    }
+    if (repls.empty())
+        return text;
+
+    // 从后往前换: 后面的替换不会把前面的位置挪歪
+    std::sort(repls.begin(), repls.end(),
+              [](const Repl &a, const Repl &b) { return a.pos > b.pos; });
+
+    std::string out = text;
+    for (const Repl &r : repls)
+    {
+        if (r.pos + r.len > out.size())
+            continue;   // 兜底: 位置对不上就不动它
+        out.replace(r.pos, r.len, r.text);
+    }
+    return out;
 }
 
 } // namespace JZShell

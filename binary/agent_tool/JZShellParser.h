@@ -1,6 +1,8 @@
 #ifndef JZ_SHELL_PARSER_H_
 #define JZ_SHELL_PARSER_H_
 
+#include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -46,6 +48,13 @@ struct Command
     std::vector<std::string> argv;     // argv[0] 是程序名(已去掉引号, 未做展开)
     std::vector<Redirect> redirects;
     bool programExpanded = false;      // 程序名里带 $ ~ * ?, 静态审不出是哪个程序
+
+    // argv[0] 在原命令串里的位置([pos, pos+len))。
+    // 用途: 上层"按短名审过之后"要把短名换成全路径 —— 只能照这个位置原地替换,
+    // 不能拿名字去字符串里硬找(那样 `echo tsc` 里的 tsc 会被误换成全路径)。
+    // programLen == 0 表示位置未知(不该发生, 兜底用: 上层见到 0 就不替换)。
+    std::size_t programPos = 0;
+    std::size_t programLen = 0;
 };
 
 struct Pipeline
@@ -62,6 +71,17 @@ struct Line
 
     bool empty() const { return pipelines.empty(); }
 };
+
+// 照 AST 改命令串: 把每条命令的"程序名"换成 resolver 给的文本(返回空串 = 这条不换)。
+//
+// 位置是 AST 自己记的(Command::programPos/programLen, 词法阶段记的词跨度), 不是拿
+// 名字在串里硬找 —— 所以 `echo tsc` 里出现在**参数位置**的 tsc 不会被误换。
+//
+// ⚠ 是"按 AST 定位, 在原文上打补丁", 不是"从 AST 重新生成命令串": 注释、多余空格,
+//   以及 allowUnsafe 下整段跳过的 $( ) / heredoc / 子shell 内容都不在 AST 里,
+//   重建会把它们弄丢(命令被悄悄改掉)。打补丁则只动程序名那几个字符。
+std::string rewritePrograms(const std::string &text, const Line &line,
+                            const std::function<std::string(const Command &cmd)> &resolver);
 
 // 解析失败时 error 是能直接给人/模型看的中文原因。
 // allowUnsafe: true 时不再把 heredoc/命令替换/进程替换/子shell 当成错误,

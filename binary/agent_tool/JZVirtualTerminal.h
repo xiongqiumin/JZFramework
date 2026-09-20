@@ -9,6 +9,7 @@
 
 #include "JZCodeTools.h"   // JZVirtualTerminalConfig / TrustedProgram / DenyReason
 #include "JZObject.h"
+#include "JZShellParser.h"  // JZShell::Command(安全底线要用)
 
 class JZProcess;
 class JZTimer;
@@ -165,6 +166,14 @@ public:
     bool cancel();                       // 停掉本终端在跑的命令
     std::string takeOutput();            // 取一次累积输出并清空
 
+    // ==================== 输出过滤 ====================
+    // 开关开(默认开)时所有命令的输出都做截断: 编译命令(build set 见 cpp isBuildCommand)
+    // 走"错误上下文"特殊处理(成功尾部 20 行 / 失败开头约 100 行错误且错误块完整);
+    // 其它命令超长时保留头 50 + 尾 50 行、中间省略。完整日志仍可由 terminal_query 取。
+    // 模型可在 terminal_run 用 error_context=false 关掉。
+    void setFilterOutput(bool on) { m_filterOutput = on; }
+    bool filterOutput() const { return m_filterOutput; }
+
     // ==================== 运行记录(后台/流式留下的日志) ====================
     bool runSnapshot(const std::string &runId, RunRecordInfo &out) const;
     std::vector<std::string> runIds() const;   // 本终端的全部运行 id(按发生先后)
@@ -187,6 +196,17 @@ protected:
     const char *dangerousArgReason(const std::string &program,
                                    const std::vector<std::string> &args,
                                    const std::string &base = std::string()) const;
+
+    // 安全底线: 即便 AccessLevel::Unrestricted(全部不检查)也始终生效, 命令原样交给
+    // shell 之前最后一道闸。覆盖两类永远不许的:
+    //   1) 特别危险的指令(关机 / 格式化磁盘 / 往块设备写 ...)
+    //   2) 删除工作区外的文件(rm / rmdir 的目标不在工作区树内 —— 含根目录本身)
+    // 返回 Allow 表示通过底线(其余检查在不限制档里本来就跳过)。
+    const char *criticalDangerReason(const std::string &program,
+                                     const std::vector<std::string> &args) const;
+    bool isDeleteCommand(const std::string &programLower) const;   // "rm"/"rmdir"...
+    bool isWithinWorkspace(const std::string &absPath) const;      // 相对工作区根
+    Verdict checkCriticalFloor(const JZShell::Command &cmd, const std::string &base) const;
 
     // kill 的归属判定: pid 是本终端启动的进程(含它的子进程)才算数。
     // 别人的进程 —— 包括 agent 自己 —— 一律不许 kill。
@@ -236,6 +256,7 @@ protected:
     JZProcess *m_proc = nullptr;
     JZTimer *m_timeoutTimer = nullptr;
     std::string m_output;               // 累积输出(合并 stdout/stderr), takeOutput 取一次清一次
+    bool m_outputTruncated = false;     // m_output 超过字节上限被裁过, takeOutput 时补一次标记
     bool m_timedOut = false;
     RunCallback m_cb;                   // 在途命令的应答回调
     std::string m_runId;                // 当前运行的记录 id(供 appendRunOutput 反查)
@@ -244,6 +265,7 @@ protected:
     std::string m_shell;                // 见 shellProgram(): 构造时自动探测
     int m_recycleMs = 15 * 60 * 1000;
     int m_runIdGen = 0;
+    bool m_filterOutput = true;         // 编译输出错误截取(默认开, 见 setFilterOutput)
 
     // 运行记录(后台/流式): runId -> 记录, 发生顺序另用 m_runOrder 保序
     std::map<std::string, RunRecord> m_runs;

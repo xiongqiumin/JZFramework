@@ -38,7 +38,7 @@ bool isDelim(char c)
 class Tokenizer
 {
 public:
-    Tokenizer(const std::string &text) : m_s(text) {}
+    Tokenizer(const std::string &text, bool unsafe = false) : m_s(text), m_unsafe(unsafe) {}
 
     bool run(std::vector<Token> &out, std::string &error)
     {
@@ -133,11 +133,24 @@ public:
 
             if (c == '`')
             {
+                if (m_unsafe)
+                {
+                    skipBacktick();
+                    continue;
+                }
                 error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
                 return false;
             }
             if (c == '(' || c == ')')
             {
+                if (m_unsafe)
+                {
+                    if (c == '(')
+                        skipToCloseParen();
+                    else
+                        m_i++;   // 散落的 ')': 直接跳过
+                    continue;
+                }
                 error = "不支持子shell ( ): 里面的命令审核不到。请拆成多条命令";
                 return false;
             }
@@ -164,6 +177,96 @@ private:
         t.type = Token::Op;
         t.text = text;
         out.push_back(t);
+    }
+
+    // ---- allowUnsafe 下的"跳过"辅助: 把不被支持的结构整段吃掉, 不报错 ----
+    // 跳到下一个反引号(含闭合的反引号), 找不到就跳到串尾
+    void skipBacktick()
+    {
+        m_i++;   // 跳过开头的 `
+        while (m_i < m_s.size() && m_s[m_i] != '`')
+            m_i++;
+        if (m_i < m_s.size())
+            m_i++;   // 吃掉闭合 `
+    }
+    // 从 '(' 起, 跳到匹配的 ')'(尊重引号; 内部嵌套的 ( ) 一起数)。
+    // 调用前 m_i 必须指向 '('。
+    void skipToCloseParen()
+    {
+        int depth = 1;
+        m_i++;   // 吃掉 '('
+        while (m_i < m_s.size() && depth > 0)
+        {
+            char c = m_s[m_i];
+            if (c == '\'' || c == '"')
+            {
+                char q = c;
+                m_i++;
+                while (m_i < m_s.size() && m_s[m_i] != q)
+                {
+                    if (m_s[m_i] == '\\' && m_i + 1 < m_s.size())
+                        m_i++;
+                    m_i++;
+                }
+                if (m_i < m_s.size())
+                    m_i++;   // 闭引号
+                continue;
+            }
+            if (c == '`')
+            {
+                skipBacktick();
+                continue;
+            }
+            if (c == '(')
+            {
+                depth++;
+                m_i++;
+                continue;
+            }
+            if (c == ')')
+            {
+                depth--;
+                m_i++;
+                continue;
+            }
+            m_i++;
+        }
+    }
+    // 从 '<<'(或 '<<-') 起, 跳到终止符所在行(整行等于终止符才结束)。
+    // 调用前 m_i 必须指向第一个 '<' 且 m_s[m_i+1] == '<'。
+    void skipHeredoc()
+    {
+        m_i += 2;                       // 吃掉 <<
+        if (m_i < m_s.size() && m_s[m_i] == '-')
+            m_i++;                      // <<- 去过行首 tab
+        while (m_i < m_s.size() && isSpace(m_s[m_i]))
+            m_i++;
+        std::string delim;
+        if (m_i < m_s.size() && (m_s[m_i] == '\'' || m_s[m_i] == '"'))
+        {
+            char q = m_s[m_i++];
+            while (m_i < m_s.size() && m_s[m_i] != q)
+                delim.push_back(m_s[m_i++]);
+            if (m_i < m_s.size())
+                m_i++;                  // 闭引号
+        }
+        else
+        {
+            while (m_i < m_s.size() && !isSpace(m_s[m_i]) && !isBreak(m_s[m_i]))
+                delim.push_back(m_s[m_i++]);
+        }
+        while (m_i < m_s.size())
+        {
+            std::string line;
+            while (m_i < m_s.size() && !isBreak(m_s[m_i]))
+                line.push_back(m_s[m_i++]);
+            while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
+                line.pop_back();
+            if (line == delim)
+                break;
+            while (m_i < m_s.size() && isBreak(m_s[m_i]))
+                m_i++;
+        }
     }
 
     // 读一个词(可能由多段拼起来: a"b c"d)。遇到分隔符就停, 让主循环处理
@@ -198,6 +301,17 @@ private:
                 while (m_i < m_s.size())
                 {
                     char d = m_s[m_i];
+                    // 双引号里同样不允命令替换: 里面的命令审核不到(单引号里才是字面量)
+                    if (q == '"' && d == '$' && m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
+                    {
+                        error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
+                        return false;
+                    }
+                    if (q == '"' && d == '`')
+                    {
+                        error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
+                        return false;
+                    }
                     if (q == '"' && d == '\\' && m_i + 1 < m_s.size())
                     {
                         cur.push_back(m_s[m_i + 1]);
@@ -229,6 +343,12 @@ private:
             {
                 if (m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
                 {
+                    if (m_unsafe)
+                    {
+                        m_i++;               // 指向 '('
+                        skipToCloseParen();
+                        continue;
+                    }
                     error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
                     return false;
                 }
@@ -260,11 +380,22 @@ private:
 
         if (first == '<' && m_i + 1 < m_s.size() && m_s[m_i + 1] == '<')
         {
+            if (m_unsafe)
+            {
+                skipHeredoc();
+                return true;
+            }
             error = "不支持 heredoc(<<): 内容不在参数位置上, 审核不到";
             return false;
         }
         if (m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
         {
+            if (m_unsafe)
+            {
+                m_i++;               // 指向 '('
+                skipToCloseParen();
+                return true;
+            }
             error = (first == '<') ? "不支持进程替换 <( ): 里面的命令审核不到"
                                    : "不支持进程替换 >( ): 里面的命令审核不到";
             return false;
@@ -357,6 +488,7 @@ private:
     size_t m_i = 0;
     int m_fd = -1;
     bool m_ampRedirect = false;
+    bool m_unsafe = false;   // allowUnsafe: 跳过不支持的结构而不是报错
 };
 
 // ==================== 语法 ====================
@@ -436,10 +568,10 @@ bool parseCommand(const std::vector<Token> &toks, size_t &i, Command &cmd, std::
 
 } // namespace
 
-bool parse(const std::string &text, Line &out, std::string &error)
+bool parse(const std::string &text, Line &out, std::string &error, bool allowUnsafe)
 {
     std::vector<Token> toks;
-    Tokenizer tz(text);
+    Tokenizer tz(text, allowUnsafe);
     if (!tz.run(toks, error))
         return false;
 

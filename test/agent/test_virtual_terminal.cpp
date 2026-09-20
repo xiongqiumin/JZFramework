@@ -154,21 +154,23 @@ private:
     {
         string text, error;
 
-        // 相对路径往上跑
+        // 相对路径用 ".." 逃出工作区根: strict 解析会直接拒(防止越界)
         check(!m_term.readFile("../../../../Windows/win.ini", text, error),
-              "相对路径越界被拒");
-        // 绝对路径在工作区外
-        check(!m_term.readFile("C:/Windows/win.ini", text, error),
-              "绝对路径越界被拒");
-        // 写也一样
+              "相对路径越界(..逃出根)被拒");
+        // 绝对路径在工作区外: 区外默认**只读**(设计如此 —— 编译要读 /usr/include),
+        // 所以"读"是允许的; 真正被拦的是"写/删区外"(见下)。这条区分是区域模型的本意,
+        // 别和"相对路径越界"混为一谈。
+        check(m_term.readFile("C:/Windows/System32/drivers/etc/hosts", text, error),
+              "读区外文件允许(只读, 设计如此): " + error);
+        // 写一样被拦
         check(!m_term.writeFile("C:/Windows/_vt_probe.txt", "x", false, error),
               "越界写被拒");
         // 删也一样
         check(!m_term.removePath("C:/Windows/notepad.exe", false, error),
               "越界删被拒");
 
-        JZVirtualTerminal::Verdict v = m_term.checkRead("C:/Windows/win.ini");
-        check(!v.allowed() && v.reason == DenyReason::PathOutside, "checkRead 给出 PathOutside");
+        JZVirtualTerminal::Verdict v = m_term.checkRead("C:/Windows/System32/drivers/etc/hosts");
+        check(v.allowed(), "checkRead: 区外=只读允许(写/删才拦, 不是 PathOutside)");
 
         v = m_term.checkWrite("C:/Windows/x.txt");
         check(!v.allowed(), "checkWrite 越界被拒");
@@ -216,6 +218,7 @@ private:
         check(m_term.checkExec("mkdir").allowed(), "mkdir 默认放行");
         check(m_term.checkExec("rm").allowed(), "rm 默认放行");
         check(m_term.checkExec("grep").allowed(), "grep 默认放行");
+        check(m_term.checkExec("head").allowed(), "head 默认放行(基础 shell 类)");
         stepRun();
     }
 
@@ -337,25 +340,24 @@ private:
             stepRunCdPersist();
     }
 
-    // 单独一条 `cd <目录>`: 我们接管, 改终端 cwd(唯一跨命令保留的状态)
+    // 单独一条 `cd <目录>`: 现在**直接拒绝**(设计变了 —— 每条命令都是新 shell, 单独 cd
+    // 什么也留不下; 真要跨命令待在某目录, 用文件工具的 changeDir 或命令自带 `-C` 参数)。
     void stepRunCdPersist()
     {
         string error;
+        // run("cd deep"): 同步拒(起进程之前), 回调不会被调到, started=false
         bool started = m_term.run("cd deep", 20000,
-                                  [this](bool ok, const string &out, const string &err)
-                                  {
-                                      check(ok, "单独一条 cd 本身正常: " + err);
-                                      JZVirtualTerminal::SessionInfo info = m_term.info();
-                                      check(contains(info.cwd, "deep"),
-                                            "终端 cwd 真的变了: " + info.cwd);
-                                      stepRunPwd();
-                                  }, error);
-        check(started, "run 单独 cd: " + error);
-        if (!started)
-            stepRunPwd();
+                                  [](bool, const string &, const string &) {}, error);
+        check(!started, "run 拒绝单独一条 cd(应改用 `cd x && cmd` 或工具 -C 参数): " + error);
+        check(contains(error, "单独的 cd"), "拒绝信息点明正确写法");
+
+        // 被拒的 cd 当然没改终端 cwd —— 它仍然是最初 changeDir 持久化的 sub
+        JZVirtualTerminal::SessionInfo info = m_term.info();
+        check(contains(info.cwd, "sub"), "被拒的 cd 没动终端 cwd(仍是 sub): " + info.cwd);
+        stepRunPwd();
     }
 
-    // 下一条命令落在新 cwd 里 —— "跨命令保留"这才算真的成立
+    // 终端 cwd 反映的就是 changeDir 持久化的那个(单独 cd 不持久)
     void stepRunPwd()
     {
         string error;
@@ -363,8 +365,8 @@ private:
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "pwd 正常: " + err);
-                                      check(contains(out, "deep"),
-                                            "下一条命令确实在新 cwd 里: " + out);
+                                      check(contains(out, "sub"),
+                                            "pwd 反映 changeDir 持久化的 cwd(sub): " + out);
                                       stepRunAuditDeny();
                                   }, error);
         check(started, "run pwd: " + error);
@@ -412,7 +414,7 @@ private:
                                 }, error);
         check(andOk, "run 允许 &&" + (andOk ? string() : ": " + error));
         if (!andOk)
-            stepAudit();
+            stepRunSingleQuoteLiteral();
     }
 
     // 单引号里的是**字面量**(真 shell 也不展开) —— 上面 $( ) 那条规则不能误伤它
@@ -425,9 +427,73 @@ private:
                                       check(ok, "单引号里的 $( ) 只是字面量: " + err);
                                       check(contains(out, "$(whoami)"),
                                             "原样输出, 没被展开: " + out);
-                                      stepAudit();
+                                      stepRunPipe();
                                   }, error);
         check(started, "run 单引号字面量: " + error);
+        if (!started)
+            stepRunPipe();
+    }
+
+    // 管道 `|`: 拆段逐段审, 每段程序在白名单就放行(与 `grep ... | head` 同形态)。
+    // 之前有人怀疑 `|` 会触发 "arguments must be a valid JSON string" 或命令被拒 —— 这里坐实不会。
+    void stepRunPipe()
+    {
+        string error;
+        bool started = m_term.run("printf 'a\\nb\\nc\\n' | head -n 1", 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "run 管道 | 命令正常: " + err);
+                                      check(contains(out, "a"),
+                                            "管道两端都跑通(grep...|head 同形态): " + out);
+                                      stepUnrestrictedFloor();
+                                  }, error);
+        check(started, "run 管道命令启动: " + error);
+        if (!started)
+            stepUnrestrictedFloor();
+    }
+
+    // ⭐ Unrestricted(全部不检查)档: 白名单/区域/危险参数全跳过, 但"安全底线"仍在
+    //   —— 特别危险的指令 + 删除工作区外的文件, 即便信任档也永远拒且不真执行。
+    void stepUnrestrictedFloor()
+    {
+        JZVirtualTerminalConfig cfg = m_term.terminalConfig();
+        cfg.level = AccessLevel::Unrestricted;
+        m_term.setTerminalConfig(cfg);
+
+        string error;
+        auto deny = [&](const string &cmd, const string &what)
+        {
+            // 底线命中是同步拒(起进程之前), 回调不会被调到
+            check(!m_term.run(cmd, 20000, [](bool, const string &, const string &) {}, error),
+                  "Unrestricted 仍拒绝 " + what);
+        };
+
+        // 1) 删除工作区外的文件(含根目录) —— 永远拒, 且不真执行
+        string outside = jzApp->applicationDirPath() + "/vt_outside_rm.txt";
+        JZFile::remove(outside);
+        deny("rm -rf " + outside, "删除工作区外的文件");
+        deny("rmdir " + outside, "删除工作区外的目录");
+        deny("rm -rf /", "删除根目录");
+
+        // 2) 特别危险的指令
+        deny("shutdown", "关机");
+        deny("mkfs.ext4 /dev/sda1", "格式化磁盘");
+        deny("dd if=/dev/zero of=/dev/sda", "往块设备写");
+
+        // 3) 放行面: 工作区内命令 + heredoc(Unrestricted 下仍要能解析 heredoc)
+        string cmd = "echo unrestricted_floor_ok && cat > " + m_ws +
+                     "/_h.txt <<'EOF'\nhello heredoc\nEOF";
+        bool started = m_term.run(cmd, 20000,
+                                  [this](bool ok, const string &out, const string &err)
+                                  {
+                                      check(ok, "Unrestricted 放行工作区内命令/heredoc: " + err);
+                                      check(contains(out, "unrestricted_floor_ok"),
+                                            "普通命令照常执行: " + out);
+                                      check(JZFileInfo(m_ws + "/_h.txt").isFile(),
+                                            "heredoc 在 Unrestricted 下也写进去了");
+                                      stepAudit();
+                                  }, error);
+        check(started, "run Unrestricted 放行命令: " + error);
         if (!started)
             stepAudit();
     }

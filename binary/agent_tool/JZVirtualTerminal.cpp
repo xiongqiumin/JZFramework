@@ -28,6 +28,133 @@ static const int kMaxReadBytes = 8 * 1024 * 1024;
 // 运行记录上限
 static const int kMaxRuns = 200;
 static const int kMaxRunLines = 4000;
+static const size_t kMaxRunOutputBytes = 8 * 1024 * 1024;   // 累积输出字节上限(防 OOM)
+
+// ---- 编译输出错误截取 ----
+// 编译/构建类的首 token: 命中才走"错误上下文"过滤(其它命令原样回传, 不误伤)。
+static const char *kBuildCmds[] = {
+    "make", "gmake", "cmake", "ninja", "gcc", "g++", "clang", "clang++",
+    "cc", "c++", "cxx", "ld", "ar", "mingw32-make", "nmake", "msbuild",
+};
+static bool isBuildCommand(const string &command)
+{
+    // 取首个非空白 token(命令可能带 cd x && / 管道前缀, 但构建命令一般打头)
+    size_t i = 0, n = command.size();
+    while (i < n && isspace((unsigned char)command[i]))
+        i++;
+    size_t s = i;
+    while (i < n && !isspace((unsigned char)command[i]))
+        i++;
+    if (i == s)
+        return false;
+    string head = command.substr(s, i - s);
+    // 去掉可能的 ./ 前缀(如 ./build.sh 不算构建命令, 仅认白名单里的)
+    if (head.size() >= 2 && head[0] == '.' && head[1] == '/')
+        head = head.substr(2);
+    for (const char *c : kBuildCmds)
+    {
+        if (head == c)
+            return true;
+    }
+    return false;
+}
+
+// 一行是否算"错误/致命"(保守: 命中任一即算)
+static bool isErrorLine(const string &line)
+{
+    string low = str_toLower(line);
+    if (low.find("error:") != string::npos)   return true;   // gcc/clang/ninja
+    if (low.find("fatal") != string::npos)    return true;   // fatal error
+    if (low.find("undefined reference") != string::npos) return true;
+    if (low.find("failed:") != string::npos)  return true;   // ninja: FAILED:
+    if (low.find("ld: ") != string::npos)     return true;   // GNU ld 错误
+    if (low.find("make: ***") != string::npos) return true;  // make: *** [t] Error N
+    if (low.find("cmake error") != string::npos) return true; // CMake Error at ...
+    return false;
+}
+
+// 编译输出过滤: 成功取尾部 kTailOnSuccess 行; 失败从开头取约 kHeadErrorCap 行错误,
+// 错误块(错误行 + 其缩进续行)完整保留, 不被截断在半截。
+static const int kTailOnSuccess = 20;
+static const int kHeadErrorCap = 100;
+string filterBuildOutput(const vector<JZVirtualTerminal::RunLogLine> &log, bool success)
+{
+    string out;
+    if (success)
+    {
+        int n = (int)log.size();
+        int from = (n > kTailOnSuccess) ? n - kTailOnSuccess : 0;
+        for (int i = from; i < n; i++)
+            out += log[i].stream + ": " + log[i].text + "\n";
+        return out;
+    }
+
+    int kept = 0;
+    bool inBlock = false;   // 正处于多行错误块内(错误行后的缩进续行)
+    for (size_t i = 0; i < log.size(); i++)
+    {
+        const JZVirtualTerminal::RunLogLine &l = log[i];
+        bool err = isErrorLine(l.text);
+        bool keep;
+        if (err)
+        {
+            keep = true;
+            inBlock = true;
+        }
+        else if (inBlock)
+        {
+            // 错误块续行: 空行或缩进行(源片段 / `^~~` 指示符都缩进)
+            if (l.text.empty() || (l.text[0] == ' ' || l.text[0] == '\t'))
+                keep = true;
+            else
+            {
+                inBlock = false;
+                keep = false;
+            }
+        }
+        else
+        {
+            keep = false;
+        }
+        // 错误前一行的上下文(通常是 make 的目标行 / 编译器调用行)
+        if (!keep && i + 1 < log.size() && isErrorLine(log[i + 1].text))
+            keep = true;
+
+        if (keep)
+        {
+            out += l.stream + ": " + l.text + "\n";
+            kept++;
+            bool nextErr = (i + 1 < log.size() && isErrorLine(log[i + 1].text));
+            // 到上限就停, 但不切断正在输出的错误块 / 错误前一行 / 紧邻的下一个错误
+            if (kept >= kHeadErrorCap && !err && !inBlock && !nextErr)
+                break;
+        }
+    }
+    return out;
+}
+
+// 通用截断(非编译命令): 超过上限时保留头部 kGenericHead 行 + 尾部 kGenericTail 行,
+// 中间省略, 避免长输出(git log / cat 大文件 / 海量 ls 等)撑爆上下文。
+static const int kGenericHead = 50;
+static const int kGenericTail = 50;
+string truncateGeneric(const vector<JZVirtualTerminal::RunLogLine> &log)
+{
+    int n = (int)log.size();
+    if (n <= kGenericHead + kGenericTail)
+    {
+        string out;
+        for (int i = 0; i < n; i++)
+            out += log[i].stream + ": " + log[i].text + "\n";
+        return out;
+    }
+    string out;
+    for (int i = 0; i < kGenericHead; i++)
+        out += log[i].stream + ": " + log[i].text + "\n";
+    out += "[... 省略 " + std::to_string(n - kGenericHead - kGenericTail) + " 行 ...]\n";
+    for (int i = n - kGenericTail; i < n; i++)
+        out += log[i].stream + ": " + log[i].text + "\n";
+    return out;
+}
 
 // JZByteArray -> std::string
 std::string bytesToString(const JZByteArray &data)
@@ -85,7 +212,7 @@ int parentPidOf(int pid)
     if (!f)
         return -1;
 
-    char buf[1024];
+    char buf[4096];
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     buf[n] = '\0';
     fclose(f);
@@ -289,8 +416,13 @@ void JZVirtualTerminal::addProgram(const string &name, vector<string> exeNames, 
     for (const string &exe : spec.exeNames)
     {
         string k = programKey(exe);
-        if (k != programKey(name))
-            m_programs[k] = spec;
+        if (k == programKey(name))
+            continue;
+        auto ex = m_programs.find(k);
+        if (ex != m_programs.end() && ex->second.name != name)
+            jzWarning() << "addProgram: 别名 '" << exe << "' 已被程序 '" << ex->second.name
+                        << "' 占用, 现被 '" << name << "' 静默覆盖";
+        m_programs[k] = spec;
     }
 }
 
@@ -406,6 +538,10 @@ JZVirtualTerminal::Verdict JZVirtualTerminal::checkExec(const string &program,
 #endif
         v.decision = Decision::Allow;
         v.detail = "工作区内的可执行文件(执行期若不存在由 OS 报错)";
+        // 已知局限: 工作区内原生程序本身可信(区域已校验), 但其**参数里写的文件路径**、
+        // 以及程序**内部自己打开**的文件, 静态 AST 审核不到 —— 真正的边界是沙箱/容器。
+        // 重定向(> / >>)会在后面单独遍历校验, 所以 `./app > /etc/x` 仍会被拦;
+        // 但 `./app --out /etc/x`(程序内打开)无法静态感知。文档需明确这一条。
         return v;
     }
 
@@ -566,9 +702,10 @@ bool JZVirtualTerminal::isOwnProcess(int pid) const
         return true;
 
     // 子进程也算自己起的: make 拉的 gcc、sh 拉的子命令, 它们的祖先链上有我们记的根 pid。
-    // 往上最多追 32 层, 到 init / 查不到就停。
+    // 沿父链向上追, 直到 init(ppid==1)或查不到为止; 上限 256 层兜底(正常进程树远不到,
+    // 之前 32 层在极深嵌套容器里会误判成"不是自己的进程" → kill 误拒)。
     int cur = pid;
-    for (int i = 0; i < 32; i++)
+    for (int i = 0; i < 256; i++)
     {
         int ppid = parentPidOf(cur);
         if (ppid <= 0 || ppid == 1)
@@ -578,6 +715,104 @@ bool JZVirtualTerminal::isOwnProcess(int pid) const
         cur = ppid;
     }
     return false;
+}
+
+// ==========================================================================
+// 安全底线: 即便 Unrestricted(全部不检查)也始终生效
+//   1) 特别危险的指令(关机 / 格式化 / 往块设备写 ...)
+//   2) 删除工作区外的文件(rm / rmdir 的目标不在工作区树内)
+// 设计取舍: 子shell ( ) / 命令替换 $( ) 内部藏的 rm 不会被抽出(allowUnsafe 把它们
+//   整段跳过), 所以底线只覆盖"顶层 / 管道"里的命令; 这正是 Unrestricted 信任档的语义
+//   —— 真正的安全边界仍然是沙箱/容器, 这里只是最后一道明显自杀动作的闸。
+// ==========================================================================
+
+const char *JZVirtualTerminal::criticalDangerReason(const string &program,
+                                                    const vector<string> &args) const
+{
+    string p = str_toLower(program);
+    if (p == "shutdown" || p == "reboot" || p == "halt" || p == "poweroff" ||
+        p == "init" || p == "telinit" || p == "fdisk" || p == "parted" ||
+        p == "wipefs" || p == "mkswap" || p == "format" || p == "diskpart" ||
+        str_startsWith(p, "mkfs") || str_startsWith(p, "mke2fs"))
+    {
+        return "系统/磁盘危险指令(关机/格式化/分区), 即便 Unrestricted 也禁止";
+    }
+    if (p == "dd")
+    {
+        for (const string &a : args)
+        {
+            if (str_startsWith(a, "of=/dev/") && a != "of=/dev/null" && a != "of=/dev/zero")
+                return "不能往块设备写(dd of=/dev/...), 即便 Unrestricted 也禁止";
+        }
+    }
+    return nullptr;
+}
+
+bool JZVirtualTerminal::isDeleteCommand(const string &programLower) const
+{
+    return programLower == "rm" || programLower == "rmdir" ||
+           programLower == "rmtrash" || programLower == "trash" ||
+           programLower == "trash-put";
+}
+
+bool JZVirtualTerminal::isWithinWorkspace(const string &absPath) const
+{
+    string root = codeNormalizePath(m_config.zone.workspace);
+    if (root.empty())
+        return true;   // 没配工作区: 无法界定"区外", 按信任档放行
+    string abs = codeNormalizePath(absPath);
+    return abs == root || codeIsSubPath(root, abs);
+}
+
+JZVirtualTerminal::Verdict JZVirtualTerminal::checkCriticalFloor(const JZShell::Command &cmd,
+                                                                 const string &base) const
+{
+    Verdict v;
+    v.decision = Decision::Allow;
+
+    string head = cmd.argv.empty() ? string() : cmd.argv[0];
+    if (head.empty())
+        return v;
+
+    // 1) 特别危险的指令: 永远禁止
+    if (const char *why = criticalDangerReason(head, cmd.argv))
+    {
+        v.decision = Decision::Deny;
+        v.reason = DenyReason::CommandDenied;
+        v.detail = why;
+        return v;
+    }
+
+    // 2) 删除工作区外的文件(rm / rmdir ...)
+    string lc = str_toLower(head);
+    if (isDeleteCommand(lc))
+    {
+        string cwd = base.empty() ? (m_cwd.empty() ? m_config.zone.workspace : m_cwd) : base;
+        for (const string &a : cmd.argv)
+        {
+            if (a.empty() || a[0] == '-')
+                continue;   // 选项(-r / -rf ...), 不是路径
+            bool isAbs = (a[0] == '/') || (a.size() > 1 && a[1] == ':');
+            string abs = codeNormalizePath(isAbs ? a : (cwd + "/" + a));
+            // 根目录本身: 即便工作区是 "/", 也不许 rm -rf /
+            string fsRoot = (abs.size() > 1 && abs[1] == ':') ? abs.substr(0, 3) : string("/");
+            if (abs == fsRoot)
+            {
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = "Unrestricted 下仍禁止删除根目录: " + a;
+                return v;
+            }
+            if (!isWithinWorkspace(abs))
+            {
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = "Unrestricted 下仍禁止删除工作区外的文件: " + a;
+                return v;
+            }
+        }
+    }
+    return v;
 }
 
 bool JZVirtualTerminal::resolvePath(const string &path, bool writeAccess,
@@ -1085,13 +1320,23 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
     // ---- 审核: 解析成语法树 -> 逐条审 ----
     // 以前是字符串扫描 + 各种特判(& 是不是后台、2>&1 是不是重定向), 现在统一由
     // JZShell 出结构, 这里只负责按结构过策略。
-    // ⚠ 权限等级 = Unrestricted(见 JZVirtualTerminalConfig::level): 连解析都不做,
-    //    parsed 为空 ⇒ 后面那些"逐段审"的循环一次也不进 —— 命令整条原样交给 shell。
+    // 权限等级 = Unrestricted(见 JZVirtualTerminalConfig::level): 仍解析(allowUnsafe)
+    // 以跑安全底线, 但跳过白名单/区域/危险参数等全部检查; 后台(&) 也放行(信任档)。
     JZShell::Line parsed;
     string perr;
     if (m_config.unrestricted())
     {
-        // 全部不检查
+        if (!JZShell::parse(command, parsed, perr, /*allowUnsafe=*/true))
+        {
+            // allowUnsafe 下解析只做结构跳过, 理论上不该失败; 万一还是失败, 保守拒绝。
+            Verdict v;
+            v.decision = Decision::Deny;
+            v.reason = DenyReason::CommandDenied;
+            v.detail = perr;
+            audit("exec", v, command);
+            error = perr;
+            return false;
+        }
     }
     else if (!JZShell::parse(command, parsed, perr))
     {
@@ -1103,7 +1348,7 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
         error = perr;
         return false;
     }
-    if (parsed.background)
+    if (parsed.background && !m_config.unrestricted())
     {
         Verdict v;
         v.decision = Decision::Deny;
@@ -1200,6 +1445,20 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
             string head = cmd.argv.empty() ? string() : cmd.argv[0];
             if (head.empty())
                 continue;   // 只有 VAR=val 前缀的一段(如 `FOO=bar && cmd`), 没有程序可调
+
+            // 不限制档(Unrestricted): 跑完"安全底线"就放行, 其余检查全跳过。
+            if (m_config.unrestricted())
+            {
+                Verdict fv = checkCriticalFloor(cmd, base);
+                audit("floor", fv, head);
+                if (!fv.allowed())
+                {
+                    error = "命令被拒绝(安全底线): " + head +
+                            (fv.detail.empty() ? string() : " (" + fv.detail + ")");
+                    return false;
+                }
+                continue;   // 跳过白名单 / 区域 / 危险参数 / 重定向的全部检查
+            }
 
             if (cmd.programExpanded)
             {
@@ -1300,7 +1559,7 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
                     if (m_proc)
                         appendRunOutput("stderr", bytesToString(m_proc->readAllStandardError()));
                 });
-        connect(&m_proc->sigFinished, this, [this](int exitCode, JZProcess::ExitStatus status)
+        connect(&m_proc->sigFinished, this, [this, command](int exitCode, JZProcess::ExitStatus status)
                 {
                     if (!m_proc)
                         return;
@@ -1323,7 +1582,28 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
                         else if (exitCode != 0)           r.error = "退出码 " + std::to_string(exitCode);
                     }
 
+                    // 输出过滤开关开(默认开): 所有命令都做截断, 编译命令特殊处理。
+                    //  - 编译命令: 成功取尾部 20 行, 失败取开头 ~100 行错误(错误块完整)
+                    //  - 其它命令: 超过上限时保留头 50 + 尾 50 行, 中间省略
+                    // 完整日志仍可用 terminal_query 取。用逐行 RunRecord.log, 不受 m_output 头截断影响。
                     string out = m_output;
+                    if (m_filterOutput)
+                    {
+                        auto it2 = m_runs.find(m_runId);
+                        if (it2 != m_runs.end())
+                        {
+                            if (isBuildCommand(command))
+                            {
+                                bool success = (exitCode == 0 && status == JZProcess::NormalExit
+                                                && !m_timedOut);
+                                out = filterBuildOutput(it2->second.log, success);
+                            }
+                            else
+                            {
+                                out = truncateGeneric(it2->second.log);
+                            }
+                        }
+                    }
                     m_output.clear();
                     m_running = false;
 
@@ -1413,6 +1693,11 @@ bool JZVirtualTerminal::cancel()
 string JZVirtualTerminal::takeOutput()
 {
     string out = m_output;
+    if (m_outputTruncated)
+    {
+        out = "\n[... output truncated ...]\n" + out;
+        m_outputTruncated = false;
+    }
     m_output.clear();
     return out;
 }
@@ -1423,6 +1708,13 @@ void JZVirtualTerminal::appendRunOutput(const string &stream, const string &chun
         return;
 
     m_output += chunk;
+    // 累积输出只保留末尾 kMaxRunOutputBytes 字节, 超了从头部裁掉, 避免长输出(编译巨量
+    // 日志)把内存吃爆。截断标记在 takeOutput 时补一次(见 takeOutput)。
+    if (m_output.size() > kMaxRunOutputBytes)
+    {
+        m_outputTruncated = true;
+        m_output.erase(0, m_output.size() - kMaxRunOutputBytes);
+    }
 
     auto it = m_runs.find(m_runId);
     if (it != m_runs.end())

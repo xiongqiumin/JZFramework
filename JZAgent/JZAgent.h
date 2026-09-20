@@ -202,9 +202,14 @@ public:
     void setStreamEnabled(bool enabled);
     void setThinkEnabled(bool enabled);
 
+    // 事务(批量提交): transaction() 之后提交的多条消息先入队不发送, commit() 时
+    // 合并成一次请求发出(多条消息进同一轮)。与"运行期禁止提交"是两回事:
+    // 事务期内只入队不算提交, 真正的提交点是 commit(), 故不受 rejectWhileRunning 约束。
     void transaction();  //暂时不提交
-    void commit();       //提交  
+    void commit();       //提交
 
+    // 提交一条消息。注: agent 运行中(一轮对话尚未结束)不允许提交, 会被拒绝并 jzWarning,
+    // 不再缓存起来等下一轮发出 —— 请先 stop() 或等 sigFinished 后再提交。
     void systemRequest(std::string sys_prompt);
     void request(std::string user_prompt);  // 发送用户消息
 
@@ -272,6 +277,12 @@ protected:
     // 返回 true 表示已拒绝并打了 jzWarning, 调用方应直接 return。
     bool rejectWhileActive(const char *what) const;
 
+    // agent 正在运行(一轮对话已开始且尚未结束)时拒绝提交新消息:
+    // 运行期提交不会被缓存, 直接丢弃并 jzWarning(调用方要么 stop(), 要么等 sigFinished)。
+    // 事务期(transaction 后 / commit 前)只是入队, 不算提交, 故不拦截。
+    // 返回 true 表示已拒绝并打了 jzWarning, 调用方应直接 return。
+    bool rejectWhileRunning(const char *what) const;
+
     std::string readFile(std::string filepath);
 
     // 生成一条请求（带递增 id）
@@ -279,6 +290,9 @@ protected:
 
     // 带图片的 user 消息: images 为拼好的 data URL
     void requestWithImages(const std::string &text, const std::vector<std::string> &images);
+
+    // 入队一条请求: 事务期进 m_transactionRequests(不发送), 否则进 m_requests 并驱动 llmLoop
+    void pushRequest(const JZAgentRequestPtr &req);
 
     void clear();
     void llmRequest();
@@ -329,7 +343,8 @@ protected:
 
     bool m_inTransaction;
 
-    std::vector<JZAgentRequestPtr> m_requests;
+    std::vector<JZAgentRequestPtr> m_requests;             // 常规请求队列(提交即发出)
+    std::vector<JZAgentRequestPtr> m_transactionRequests;  // 事务期暂存的批次, commit() 时整批搬入 m_requests
     bool m_isActive;
     int m_currentRound;  //单词llm 请求的round
     State m_state;

@@ -63,8 +63,11 @@ struct Line
     bool empty() const { return pipelines.empty(); }
 };
 
-// 解析失败时 error 是能直接给人/模型看的中文原因
-bool parse(const std::string &text, Line &out, std::string &error);
+// 解析失败时 error 是能直接给人/模型看的中文原因。
+// allowUnsafe: true 时不再把 heredoc/命令替换/进程替换/子shell 当成错误,
+//   而是把它们的"内容"整段跳过(子shell/$( ) 内部的命令不会被抽出, 这是已知取舍)。
+//   供"全部不检查(Unrestricted)"档用: 仍要解析出结构来跑安全底线, 但信任整条命令。
+bool parse(const std::string &text, Line &out, std::string &error, bool allowUnsafe = false);
 
 }  // namespace JZShell
 

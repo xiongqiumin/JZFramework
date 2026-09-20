@@ -43,6 +43,10 @@ JZTerminalRunTool::JZTerminalRunTool(JZVirtualTerminal *term)
     vector<ParamSchema> params;
     params.push_back(JZCodeTool::makeParam("command", ParamType::String, "要执行的命令"));
     params.push_back(JZCodeTool::makeParam("timeout_ms", ParamType::Number, "超时毫秒(默认 120000)"));
+    params.push_back(JZCodeTool::makeParam("error_context", ParamType::Boolean,
+                                           "输出过滤开关(默认 true, 所有命令都截断, 编译命令特殊处理): "
+                                           "非编译超长保留头50+尾50行; 编译成功取尾部20行、失败取开头约100行错误"
+                                           "(默认 true; false=原样全量)"));
     setToolDefine(makeDef("terminal_run",
                           "在沙箱终端执行一条 shell 命令(本地 code_agent 单用户终端)。",
                           params, { "command" }));
@@ -66,6 +70,9 @@ void JZTerminalRunTool::call(const ToolCall &params)
     int timeoutMs = p.get("timeout_ms", 120000).asInt();
     if (timeoutMs < 1000)
         timeoutMs = 120000;
+
+    // 编译输出错误截取开关(默认开); 单终端串行, 这里设给本次运行即可
+    m_term->setFilterOutput(p.get("error_context", true).asBool());
 
     string error;
     bool started = m_term->run(command, timeoutMs,

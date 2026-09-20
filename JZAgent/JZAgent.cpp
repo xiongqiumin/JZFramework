@@ -166,6 +166,7 @@ void JZAgent::clear()
     m_currentRound = -1;
     m_isActive = false;
     m_inTransaction = false;
+    m_transactionRequests.clear();
     m_streamEnabled = false;
     m_thinkEnabled = true;
     m_toolError = 0;
@@ -353,27 +354,73 @@ std::string JZAgent::dumpSystemPrompt()
     return m_systemPrompt + buildSkillSummary();
 }
 
+bool JZAgent::rejectWhileRunning(const char *what) const
+{
+    if (m_inTransaction)
+        return false;   // 事务期内只入队, 提交点是 commit()
+    if (!m_isActive && m_state != State::WaitingReply)
+        return false;
+
+    jzWarning() << "JZAgent: 提交" << what
+                << "被拒绝: agent 正在运行中(一轮对话尚未结束), 运行期不允许提交;"
+                << " 请先 stop() 或等 sigFinished 后再提交。";
+    return true;
+}
+
 void JZAgent::transaction()
 {
     m_inTransaction = true;
+    m_transactionRequests.clear();   // 开启新的一批
 }
 
 void JZAgent::commit()
 {
+    // 先结束事务再判定: 否则 rejectWhileRunning 会因为"事务期只入队"而放行
     m_inTransaction = false;
+
+    // commit() 才是事务批次的真正提交点, 与 request() 同规矩: 运行中不允许提交,
+    // 报警并丢弃这批(不搬进 m_requests 缓存起来), 请先 stop() 或等 sigFinished 后再提交。
+    if (rejectWhileRunning("事务批次"))
+    {
+        m_transactionRequests.clear();
+        return;
+    }
+
+    // 整批搬到常规队列末尾(保持事务内的先后顺序), 由 llmLoop 合并成一次请求发出
+    for (const auto &req : m_transactionRequests)
+        m_requests.push_back(req);
+    m_transactionRequests.clear();
+    llmLoop();
+}
+
+// 入队: 事务期进事务队列(不触发发送), 否则进常规队列并立即驱动 llmLoop
+void JZAgent::pushRequest(const JZAgentRequestPtr &req)
+{
+    if (m_inTransaction)
+    {
+        m_transactionRequests.push_back(req);
+        return;
+    }
+
+    m_requests.push_back(req);
     llmLoop();
 }
 
 void JZAgent::systemRequest(std::string sys_prompt)
 {
+    if (rejectWhileRunning("system 消息"))
+        return;
+
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::SystemPrompt);
     req->systemPrompt = sys_prompt;
-    m_requests.push_back(req);
-    llmLoop();
+    pushRequest(req);
 }
 
 void JZAgent::request(std::string user_prompt)
 {
+    if (rejectWhileRunning("user 消息"))
+        return;
+
     if (!m_isActive)
     {
         m_isActive = true;
@@ -383,8 +430,7 @@ void JZAgent::request(std::string user_prompt)
 
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
     req->userPrompt = user_prompt;
-    m_requests.push_back(req);
-    llmLoop();
+    pushRequest(req);
 }
 
 void JZAgent::request(const std::string &text, const std::string &image_url)
@@ -404,6 +450,9 @@ void JZAgent::request(const std::string &text, const std::vector<std::string> &i
 
 void JZAgent::requestWithImages(const std::string &text, const std::vector<std::string> &images)
 {
+    if (rejectWhileRunning("user 消息"))
+        return;
+
     if (!m_isActive)
     {
         m_isActive = true;
@@ -414,8 +463,7 @@ void JZAgent::requestWithImages(const std::string &text, const std::vector<std::
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
     req->userPrompt = text;
     req->images = images;
-    m_requests.push_back(req);
-    llmLoop();
+    pushRequest(req);
 }
 
 const std::vector<JZAgentRequestPtr> &JZAgent::requestList() const

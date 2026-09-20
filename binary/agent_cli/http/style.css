@@ -1,0 +1,324 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --border: #2a2f3a;
+  --text: #e6e9ef;
+  --muted: #8a93a6;
+  --accent: #4f8cff;
+  --accent-2: #2c6fe0;
+  --ok: #3fb950;
+  --fail: #f85149;
+  --user: #2c6fe0;
+}
+
+* { box-sizing: border-box; }
+.hidden { display: none; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* 顶栏 */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  font-weight: 700; color: #fff; letter-spacing: 1px;
+}
+.brand-text h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.brand-text .sub { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+.status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.off { background: var(--fail); }
+
+/* 顶栏: 模型地址(GET /info) */
+.model-info {
+  max-width: 340px;
+  padding: 4px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg);
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+button { cursor: pointer; border: none; border-radius: 8px; font-size: 14px; }
+.ghost {
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); padding: 6px 10px;
+}
+.ghost:hover { color: var(--text); border-color: var(--accent); }
+.primary {
+  background: var(--accent); color: #fff; padding: 8px 18px; font-weight: 600;
+}
+.primary:hover { background: var(--accent-2); }
+.primary:disabled { opacity: .55; cursor: not-allowed; }
+
+/* 设置面板 */
+.settings {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  display: grid; gap: 10px;
+}
+.settings.hidden { display: none; }
+.settings label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.settings input, .composer input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+/* 主体: 左任务栏 + 右对话 */
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.chat {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.messages {
+  flex: 1; min-width: 0; overflow-y: auto;
+  padding: 16px; display: flex; flex-direction: column; gap: 14px;
+}
+
+/* 左右分栏拖动条(双击复位) */
+.splitter {
+  flex: none; width: 8px; position: relative;
+  cursor: col-resize; background: transparent; touch-action: none;
+}
+.splitter::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: var(--border); transition: background .12s, width .12s, left .12s;
+}
+.splitter:hover::before, .splitter.active::before {
+  left: 2px; width: 3px; background: var(--accent);
+}
+body.resizing { user-select: none; cursor: col-resize; }
+body.resizing iframe { pointer-events: none; }
+
+.side {
+  width: 340px; flex: none;
+  align-self: stretch;          /* 纵向拉满: 从顶栏一路到底 */
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel);      /* 分隔线由 .splitter 提供 */
+}
+.side-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .5px;
+}
+.side-head .tiny { padding: 3px 8px; font-size: 12px; }
+.side-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 12px; }
+.side-group {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 6px;
+  font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .5px;
+}
+.side-group .hint { font-weight: 400; opacity: .8; }
+.task-list {
+  list-style: none; margin: 0; padding: 0 10px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.side-empty { padding: 6px 12px 10px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.side-empty.hidden { display: none; }
+
+/* 待提交队列(对话下方, 输入区上方) —— 整块都在右栏 */
+.pending {
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+  padding: 10px 16px;
+}
+.pending.hidden { display: none; }
+.pending-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; font-size: 12px; color: var(--muted);
+}
+.pending-list {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 8px; max-height: 190px; overflow-y: auto;
+}
+.pending-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px dashed var(--border); border-radius: 10px;
+  padding: 8px 10px; background: var(--bg);
+}
+.pending-item .p-no { flex: none; font-size: 11px; font-weight: 700; color: var(--accent); }
+.pending-item .p-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.pending-item .p-text {
+  font-size: 13px; line-height: 1.5; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.pending-item .p-cmd {
+  font-size: 11px; color: var(--muted); word-break: break-all;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+}
+.pending-item .p-del { flex: none; padding: 2px 8px; font-size: 12px; }
+
+.task-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-2); padding: 10px 11px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 7px;
+}
+.task-card:hover { border-color: #3a4152; }
+.task-card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(79,140,255,.35); }
+.task-card.done-ok { border-color: rgba(63,185,80,.35); }
+.task-card.done-fail { border-color: rgba(248,81,73,.35); }
+.task-card.done-cancel { border-color: var(--border); opacity: .75; }
+
+.task-top { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); }
+.task-no { font-weight: 700; color: var(--text); }
+.task-badge { padding: 1px 7px; border-radius: 999px; font-weight: 600; font-size: 11px; }
+.task-badge.run { background: rgba(79,140,255,.16); color: var(--accent); }
+.task-badge.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+.task-badge.fail { background: rgba(248,81,73,.15); color: var(--fail); }
+.task-badge.cancel { background: rgba(138,147,166,.18); color: var(--muted); }
+
+.task-title {
+  font-size: 13px; line-height: 1.6; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.task-verify { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.task-verify .row { display: flex; align-items: baseline; gap: 6px; }
+.task-verify .k { flex: none; opacity: .8; }
+.task-verify .cmd {
+  font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12px; color: var(--text);
+  word-break: break-all;
+}
+.task-verify .none { font-style: italic; opacity: .75; }
+.task-concl {
+  margin-top: 2px; padding-top: 7px; border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.task-concl .row { display: flex; gap: 6px; font-size: 12px; color: var(--muted); }
+.task-concl .k { flex: none; opacity: .8; }
+.task-concl .text {
+  color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px;
+}
+.task-concl .text.ok { color: var(--ok); }
+.task-out {
+  margin: 2px 0 0; padding: 8px; max-height: 180px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted);
+}
+
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 88%; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.assistant { align-self: flex-start; align-items: flex-start; }
+.bubble {
+  padding: 10px 13px; border-radius: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+.msg.user .bubble { background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+.msg.assistant .bubble { background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.msg.assistant .bubble i { color: var(--muted); }
+
+.meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.badge { padding: 1px 8px; border-radius: 999px; font-weight: 600; font-size: 11px; }
+.badge.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+.badge.fail { background: rgba(248,81,73,.15); color: var(--fail); }
+.rounds { color: var(--muted); }
+.err { color: var(--fail); font-size: 13px; }
+.verifyout { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.verifyout summary { cursor: pointer; user-select: none; }
+.verifyout pre {
+  margin: 6px 0 0; padding: 10px; max-height: 240px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word; font-size: 12px;
+}
+
+/* 输入区: 验证命令一行, 任务输入框一行, 按钮一行 —— 整块都在右栏(左列表列从上贯通到底) */
+.composer {
+  flex: none;
+  border-top: 1px solid var(--border);
+  padding: 12px 16px; background: var(--panel);
+  display: flex; flex-direction: column; gap: 8px;
+}
+/* 验证命令: 标签 + 输入框同一行 */
+.composer-field { display: flex; align-items: center; gap: 8px; width: 100%; }
+.field-label {
+  flex: none; white-space: nowrap;
+  font-size: 12px; color: var(--muted);
+}
+.composer input {
+  flex: 1; min-width: 0;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+}
+.composer input:focus { outline: none; border-color: var(--accent); }
+.composer textarea {
+  width: 100%; resize: none;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-size: 14px; line-height: 1.5;
+  font-family: inherit;
+}
+.composer textarea:disabled { opacity: .6; }
+.composer textarea:focus { outline: none; border-color: var(--accent); }
+.composer-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.composer-actions .ghost { padding: 8px 12px; }
+.composer-actions .primary { min-width: 92px; height: 38px; }
+
+/* 系统/错误行(来自 SSE 事件) */
+.sys {
+  align-self: center; max-width: 92%;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1.5; color: var(--muted);
+  white-space: pre-wrap; word-break: break-word;
+}
+.sys.err { color: var(--fail); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.08); }
+.sys.ok { color: var(--ok); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
+
+/* 窄屏: 左侧栏收窄 / 折到对话上方, 保证"任务与验证"不被整段隐藏 */
+@media (max-width: 980px) {
+  .app { max-width: none; }
+  .side { width: 300px; }
+}
+@media (max-width: 700px) {
+  .body { flex-direction: column; }
+  .splitter { display: none; }   /* 纵向堆叠时无可拖 rightsizing */
+  .model-info { display: none; } /* 窄屏省出按钮空间(悬停信息仍在 .status 之外不可见, 由 title 兜底) */
+  .side {
+    width: auto; max-height: 42vh;
+    border-bottom: 1px solid var(--border);
+  }
+}

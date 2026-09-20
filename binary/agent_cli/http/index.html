@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JZAgent 网页控制台</title>
+<link rel="stylesheet" href="style.css?v=7">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">JZ</span>
+      <div class="brand-text">
+        <h1>Agent 网页控制台</h1>
+        <p class="sub">POST /task · 每次提交都是独立任务（后端不保留上下文）</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="connDot" class="dot off"></span>
+      <span id="connText">连接中…</span>
+      <span id="modelInfo" class="model-info">模型: —</span>
+      <button id="resetBtn" class="ghost" title="中止当前任务(含待提交队列)并重置会话">重置任务</button>
+      <button id="clearHistoryBtn" class="ghost" title="清空对话历史并重置会话">清空历史</button>
+      <button id="settingsBtn" class="ghost" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <section id="settings" class="settings hidden">
+    <label>访问令牌 (token)
+      <input id="token" type="text" placeholder="与 config.json 的 http.token 一致（也可放 URL ?token=）">
+    </label>
+    <label>最大验证轮次 (max_verify_rounds)
+      <input id="maxRounds" type="number" value="10" min="1" max="200">
+    </label>
+  </section>
+
+  <div class="body">
+    <aside class="side">
+      <div class="side-head">
+        <span>任务与验证</span>
+        <button id="clearTasksBtn" class="ghost tiny">清空</button>
+      </div>
+      <div class="side-body">
+        <div class="side-group"><span>当前任务</span><span id="curHint" class="hint"></span></div>
+        <ul id="curList" class="task-list"></ul>
+        <div id="curEmpty" class="side-empty">暂无运行中的任务。</div>
+
+        <div class="side-group"><span>历史任务</span><span id="histHint" class="hint"></span></div>
+        <ul id="histList" class="task-list"></ul>
+        <div id="histEmpty" class="side-empty">完成的任务会归档到这里（含验证脚本与结论）。</div>
+      </div>
+    </aside>
+
+    <div id="splitter" class="splitter" title="拖动调整宽度（双击复位）"></div>
+
+    <div class="chat">
+      <main id="messages" class="messages"></main>
+
+      <section id="pending" class="pending hidden">
+        <div class="pending-head">
+          <span>待提交任务（<span id="pendingCount">0</span>）</span>
+          <button id="clearPendingBtn" class="ghost tiny">清空队列</button>
+        </div>
+        <ul id="pendingList" class="pending-list"></ul>
+      </section>
+
+      <footer class="composer">
+        <label class="composer-field">
+          <span class="field-label">验证命令:</span>
+          <input id="verifyCmd" type="text" placeholder="留空 = 不验证（退出码 0 通过 / 非 0 失败，例如：python3 verify.py）">
+        </label>
+        <textarea id="input" rows="3" placeholder="输入任务…（Enter 发送，Shift+Enter 换行；运行中会自动排入待提交队列）"></textarea>
+        <div class="composer-actions">
+          <button id="clearBtn" class="ghost">清空对话</button>
+          <button id="sendBtn" class="primary">发送</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+</div>
+<script src="app.js?v=7"></script>
+</body>
+</html>

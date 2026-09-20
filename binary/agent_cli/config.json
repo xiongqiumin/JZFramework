@@ -1,0 +1,33 @@
+{
+    "agentName":            "agent_cli",
+    "version":              "1.0.0",
+    "logFile":              "",
+
+    "llm": {
+        "url":              "",
+        "name":             "",
+        "token":            "",
+        "netTimeoutMs":     120000,
+        "maxRounds":        100,
+        "maxToken":         100000
+    },
+
+    "terminal": {
+        "rootDir":          "",
+        "trustedDirs":      [],
+        "shellProgram":     "",
+        "recycleSec":       900,
+        "allowTerminal":    true,
+        "allowFileTools":   true,
+        "allowPackageManager": false,
+        "allowNetwork":     false,
+        "unrestricted":     false
+    },
+
+    "http": {
+        "bind":             "127.0.0.1",
+        "port":             8080,
+        "token":            "",
+        "dir":              ""
+    }
+}

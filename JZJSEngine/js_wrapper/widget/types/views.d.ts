@@ -1,9 +1,10 @@
 // 容器 / 视图类控件 —— 全局类(JZJSWidgetModule::registViews)。
 //
-// 这些控件的数据/子项由 C++ 持有; JS 侧只做**值级**操作(文本、行数、当前项、滚动位置),
-// **不暴露任何 item 句柄**(没有 JZTableWidgetItem / JZListWidgetItem 这类东西)。
-// 列表/表格另外有"视图镜像"这一层: `const dv = w.dataView()` —— 一张 JS 数组式的表,
-// 视图侧增删自动同步到控件, 控件侧改动也自动回灌(见 dataview.d.ts)。
+// 这些控件的数据/子项由 C++ 持有; JS 侧只做**索引式值操作**(文本、行数、当前项、滚动位置),
+// **不暴露任何 item 句柄**(没有 JZTableWidgetItem / JZListWidgetItem 这类东西) ——
+// "值级原语 + 索引" 就是这层的全部接口形态: 整行/整项进出, 或者按下标读写单项/单格。
+// 需要"数组式"批量处理时, 显式取快照再回写:
+//     const rows = table.rows();  rows.splice(1, 1);  table.setRows(rows);
 //
 // 生命周期(与 JZWidget 同一套, 见 index.d.ts 的"生命周期 / 包活"): JS 包装归 GC, 挂进容器时
 // 由 `@jz/widget` 运行期登记**保活**(容器持子控件的强引用, 子控件弱引用容器)。
@@ -39,14 +40,11 @@ declare class JZListWidget extends JZWidget {
   setItemHeight(h: number): void;
   itemHeight(): number;
 
-  /** 视图镜像(1:1 绑定, 见 dataview.d.ts) */
-  dataView(): JZListDataView;
-
   /** 当前项索引变化(属性形) */
   onCurrentIndexChanged: ((index: number) => void) | null;
   /** 激活(点击项 / Enter)(属性形) */
   onActivated: ((index: number) => void) | null;
-  /** 数据变化(增删项/改文本); 视图镜像靠它回灌(属性形, 单个处理器) */
+  /** 数据变化(增删项/改文本; 含 C++ 侧/AI 工具改的)(属性形, 单个处理器) */
   onDataChanged: (() => void) | null;
 }
 
@@ -58,16 +56,31 @@ declare class JZTableWidget extends JZWidget {
   // ---- 行列 ----
   setRowCount(n: number): void;
   rowCount(): number;
+  /** 在 row 处插一个空行(其后行号顺延) */
+  insertRow(row: number): void;
+  /** 删整行 */
+  removeRow(row: number): void;
   setColumnCount(n: number): void;
   columnCount(): number;
+  /** 在 col 处插一个空列 */
+  insertColumn(col: number): void;
+  /** 删整列 */
+  removeColumn(col: number): void;
+
+  // ---- 表头 ----
   /** 表头标签(只影响显示) */
   setHeaderLabels(labels: string[]): void;
+  /** 读回表头标签 */
+  headerLabels(): string[];
 
   // ---- 单元格(值级) ----
   /** 写时自动建单元格 */
   setItemText(row: number, col: number, text: string): void;
   itemText(row: number, col: number): string;
+  /** 只清数据(item + 表头都清) */
   clearContents(): void;
+  /** 清数据 + 表头标签 */
+  clear(): void;
 
   // ---- 整行(值级) ----
   /** 末尾加一行(行比列数多时自动加列), 如 appendRow(["A", 1]) */
@@ -82,18 +95,23 @@ declare class JZTableWidget extends JZWidget {
   /** 整表读(一律按文本返回) */
   rows(): string[][];
 
+  // ---- 行高 / 列宽(看的) ----
+  /** 全局行高(表头高度同此) */
+  setRowHeight(h: number): void;
+  rowHeight(): number;
+  headerHeight(): number;
+  /** 单列宽度 */
+  setColumnWidth(col: number, w: number): void;
+
   // ---- 选择 ----
   setCurrentCell(row: number, col: number): void;
   currentRow(): number;
   currentColumn(): number;
 
-  /** 视图镜像(1:1 绑定, 见 dataview.d.ts) */
-  dataView(): JZTableDataView;
-
   /** 当前行 / 列变化(属性形) */
   onCurrentRowChanged: ((row: number) => void) | null;
   onCurrentColumnChanged: ((col: number) => void) | null;
-  /** 数据变化(行列增删/单元格改/表头); 视图镜像靠它回灌(属性形, 单个处理器) */
+  /** 数据变化(行列增删/单元格改/表头; 含 C++ 侧/AI 工具改的)(属性形, 单个处理器) */
   onDataChanged: (() => void) | null;
 }
 
@@ -235,5 +253,5 @@ declare class JZImageLabel extends JZWidget {
 // 未暴露(C++ 有): JZScrollArea 的 viewport() 与 verticalScrollBar()/horizontalScrollBar()
 //   (视口与滚动条都是 C++ 内部造的子控件, JS 侧没有它们的包装; 要看/改滚动位置请用
 //    scrollX/Y()、scrollTo()/scrollToX/Y/Top/Bottom、maxScrollX/Y()、canScrollXxx());
-// 视图类: JZTableWidget 的列视图接口(setColumnWidth / setRowHeight / insertColumn / removeColumn /
-//   clear —— dataview 只管整行数据, 列宽行高这类"看的"暂时没给 JS 口子)、JZSplitter.setSizes / sizes。
+//   JZTableWidget 的 item(row,col)/takeItem/row(item)/currentItem/setCurrentItem(那是 item 句柄接口,
+//   按定稿不给 JS —— 要数据用上面的索引式值接口)、JZSplitter.setSizes / sizes。

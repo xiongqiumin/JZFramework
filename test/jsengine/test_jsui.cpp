@@ -971,53 +971,79 @@ int main()
                           "s4 + '|' + lw8.currentIndex()")
                       == "3|a|c|1");
 
-            // ---- dataview: JS 侧"视图镜像"与控件双向绑定(见 @jz/widget 的 dataview.ts) ----
-            // 视图侧增删 -> 控件立刻同步; 控件侧改数据 -> 视图自动重读(靠 onDataChanged 回灌)。
-            check("dataview(表格): 视图增删改 <-> 控件同步",
+            // ---- 列表/表格: 索引式值接口(不暴露 item 句柄) ----
+            // 数组式批量操作 = 显式取快照 -> 改 -> 回写(没有"视图对象", 也没有镜像/自动回灌)。
+            check("JZTableWidget(索引式): 整行原语 + 行列结构",
                   evalStr(engine,
                           "var tw9 = new JZTableWidget();"
-                          "var dv9 = tw9.dataView();"
-                          "dv9.push(['A', 1]);"                 // 数字也收(按文本存)
-                          "dv9.push(['B', 2]);"
+                          "tw9.appendRow(['A', 1]);"            // 数字按文本存, 列数自动定
+                          "tw9.appendRow(['B', 2]);"
                           "var s = tw9.rowCount() + '|' + tw9.columnCount() + '|' + tw9.itemText(1, 0) + '|' + tw9.itemText(0, 1);"
-                          "dv9[1] = ['B2', 22];"                 // 下标赋值 = 换整行
-                          "s += '|' + tw9.itemText(1, 0) + '|' + tw9.itemText(1, 1) + '|' + dv9[1][0];"
-                          "dv9.splice(0, 1);"                    // 数组习惯删一行
-                          "s += '|' + tw9.rowCount() + '|' + tw9.itemText(0, 0) + '|' + dv9.length;"
-                          "dv9.columns(['名称', '值']);"         // 列(表头)
-                          "s + '|' + dv9.columns()[1]")
-                      == "2|2|B|1|B2|22|B2|1|B2|1|值");
+                          "tw9.setRowAt(1, ['B2', 22]);"        // 换整行
+                          "s += '|' + tw9.itemText(1, 0) + '|' + tw9.itemText(1, 1);"
+                          "tw9.removeRowAt(0);"                 // 删整行
+                          "s += '|' + tw9.rowCount() + '|' + tw9.itemText(0, 0);"
+                          "tw9.insertRow(0);"                   // 插空行(其后行号顺延)
+                          "s += '|' + tw9.rowCount() + '|' + (tw9.itemText(0, 0) === '' ? 'empty' : 'x');"
+                          "var rows = tw9.rows(); rows.push(['C', 3]); tw9.setRows(rows);"
+                          "s + '|' + tw9.rowCount() + '|' + tw9.itemText(2, 0)")
+                      == "2|2|B|1|B2|22|1|B2|2|empty|3|C");
 
-            check("dataview(表格): 控件侧改数据 -> 视图自动回灌 + 值级快照",
+            check("JZTableWidget(索引式): 表头读写 + 列增删 + 行高列宽",
                   evalStr(engine,
-                          "tw9.setItemText(0, 0, 'C');"          // C++ 侧改文本
-                          "var a = dv9[0][0];"
-                          "tw9.setRowCount(3);"                  // C++ 侧改行数
-                          "var b = dv9.length;"
-                          "var snap = dv9.rows();"
-                          "snap[0][0] = 'X';"                    // 改快照不脏镜像
-                          "a + '|' + b + '|' + dv9[0][0] + '|' + snap.length")
-                      == "C|3|C|3");
+                          "var tw11 = new JZTableWidget();"
+                          "tw11.setColumnCount(2);"
+                          "tw11.setHeaderLabels(['名称', '值']);"
+                          "var s = tw11.headerLabels()[1] + '|' + tw11.headerLabels().length;"
+                          "tw11.insertColumn(1);"
+                          "s += '|' + tw11.columnCount();"
+                          "tw11.removeColumn(1);"
+                          "s += '|' + tw11.columnCount();"
+                          "tw11.setColumnWidth(0, 120); tw11.setRowHeight(30);"
+                          "s += '|' + tw11.rowHeight() + '|' + tw11.headerHeight();"
+                          "tw11.appendRow(['x', 'y']); tw11.clearContents();"
+                          "s += '|' + tw11.rowCount() + '|' + (tw11.itemText(0, 0) === '' ? 'empty' : 'x');"
+                          "tw11.clear();"
+                          "s + '|' + tw11.headerLabels().length")
+                      == "值|2|3|2|30|30|1|empty|0");
 
-            check("dataview(列表): push/remove/长度 + 控件侧同步",
+            check("JZListWidget(索引式): 单项增删改 + 快照回写",
                   evalStr(engine,
                           "var lw9 = new JZListWidget();"
-                          "var lv9 = lw9.dataView();"
-                          "lv9.push('a'); lv9.push('b'); lv9.push('c');"
-                          "var s = lw9.count() + '|' + lw9.itemText(2) + '|' + lv9[1];"
-                          "lv9.remove(0);"
-                          "s += '|' + lw9.count() + '|' + lw9.itemText(0) + '|' + lv9[0];"
-                          "lw9.appendItem('d');"                 // 控件侧加 -> 视图回灌
-                          "s + '|' + lv9.length + '|' + lv9[2]")
-                      == "3|c|b|2|b|b|3|d");
+                          "lw9.setItems(['a', 'b', 'c']);"
+                          "lw9.insertItem(1, 'x');"
+                          "var s = lw9.count() + '|' + lw9.itemText(1);"
+                          "lw9.setItemText(1, 'x2');"
+                          "s += '|' + lw9.itemText(1);"
+                          "lw9.removeItem(0);"
+                          "s += '|' + lw9.count() + '|' + lw9.itemText(0);"
+                          "var it = lw9.items(); it.push('d'); lw9.setItems(it);"
+                          "s + '|' + lw9.count() + '|' + lw9.itemText(3)")
+                      == "4|x|x2|3|x2|4|d");
 
-            check("dataview: 同一控件只有一份视图 + 取到的是数组习惯的视图对象",
+            check("列表/表格: 外部改数据 -> onDataChanged 通知(只是通知, 不回灌)",
                   evalStr(engine,
-                          "var same = (tw9.dataView() === dv9) ? 'same' : 'diff';"
-                          "var it = [];"
-                          "for (var r of dv9) it.push(r[0]);"
-                          "same + '|' + it.join(',')")
-                      == "same|C,,");
+                          "var tw12 = new JZTableWidget();"
+                          "globalThis.__dchHit = 0;"
+                          "tw12.onDataChanged = function () { globalThis.__dchHit = globalThis.__dchHit + 1; };"
+                          "tw12.appendRow(['x', 'y']);"
+                          "tw12.setItemText(0, 0, 'z');"
+                          "tw12.rowCount() + '|' + tw12.itemText(0, 0) + '|' + (globalThis.__dchHit > 0 ? 'fired' : 'silent')")
+                      == "1|z|fired");
+
+
+            // 容器的"挂载"必须把子控件挂进对象树(渲染/命中只走 children()): JZStackedWidget
+            // 曾经只记 m_pages 不 reparent, 于是 JS 侧新建的页面(无父)一页都画不出来(右侧空白)。
+            check("JZStackedWidget: 页面挂进对象树 + 切页可见性",
+                  evalStr(engine,
+                          "var sk = new JZStackedWidget();"
+                          "var sp0 = new JZWidget(), sp1 = new JZWidget();"
+                          "sk.addWidget(sp0); sk.addWidget(sp1);"
+                          "var s = String(sp0.parentWidget() === sk);"
+                          "s += '|' + String(sp0.isVisible()) + '|' + String(sp1.isVisible());"
+                          "sk.setCurrentIndex(1);"
+                          "s + '|' + String(sp0.isVisible()) + '|' + String(sp1.isVisible())")
+                      == "true|true|false|false|true");
 
             check("list.itemData/setItemData: 业务数据槽原样往返(没有 item 句柄)",
                   evalStr(engine,
@@ -1063,15 +1089,17 @@ int main()
                       evalStr(engine, "String(globalThis.__menuHit)") == "1");
             }
 
-            // 视图是**值级**的, item 类更没有暴露给 JS(用户明确要求):
-            check("dataview: 不暴露 item 类, 单元格类型受限",
+            // 接口是**索引式值**的, item 类更没有暴露给 JS(用户明确要求):
+            check("列表/表格: 不暴露 item 类/方法, 单元格类型受限",
                   evalStr(engine,
                           "var t1 = (typeof JZTableWidgetItem === 'undefined') ? 'noTableItem' : 'hasTableItem';"
                           "var t2 = (typeof JZListWidgetItem === 'undefined') ? 'noListItem' : 'hasListItem';"
+                          "var t3 = (typeof JZTableWidget.prototype.item === 'function') ? 'hasItemFn' : 'noItemFn';"
                           "var bad = 'ok';"
-                          "try { dv9.push([{ k: 1 }]); } catch (e) { bad = 'throw'; }"
-                          "t1 + '/' + t2 + '/' + bad")
-                      == "noTableItem/noListItem/throw");
+                          "var tw13 = new JZTableWidget(); tw13.appendRow(['a']);"
+                          "try { tw13.setRowAt(0, [{ k: 1 }]); } catch (e) { bad = 'throw'; }"
+                          "t1 + '/' + t2 + '/' + t3 + '/' + bad")
+                      == "noTableItem/noListItem/noItemFn/throw");
 
             check("继承绑定类探针 => " + evalStr(engine,
                       "(function () {"

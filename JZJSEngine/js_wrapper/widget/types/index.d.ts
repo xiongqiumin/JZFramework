@@ -25,7 +25,6 @@
 //   widgets.d.ts  -> JZWidget / JZWindow / 基础控件       (registWidgets)
 //   dialogs.d.ts  -> JZDialog + JZMessageBox / JZFileDialog (registDialogs, 模态)
 //   views.d.ts    -> 容器与视图控件                       (registViews)
-//   dataview.d.ts -> 列表/表格的"视图镜像" dataView()     (dataview.ts, 挂原型)
 //   layout.d.ts   -> JZLayout / 四种具体布局              (registLayouts)
 //   pen.d.ts      -> JZPen / JZBrush / JZFont            (registPens)
 //   matrix.d.ts   -> JZMatrix2D                         (registMatrix)

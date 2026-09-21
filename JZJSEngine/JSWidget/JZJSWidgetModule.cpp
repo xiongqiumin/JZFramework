@@ -168,9 +168,9 @@ static std::vector<std::string> jzJsToStringArray(JSContext* ctx, JSValueConst v
     return list;
 }
 
-// ---------- dataview(列表/表格的"整行"数据原语) ----------
-// JS 侧的视图镜像(@jz/widget 的 dataview)只跟"整行/整项"的普通 JS 值打交道: 这里负责
-// JS 数组 <-> std::vector<std::string> 的互转。单元格允许 字符串/数字/布尔(统一成文本),
+// ---------- 列表/表格的"整行/整项"数据转换 ----------
+// 这层的接口只跟"整行/整项"的普通 JS 值打交道: 这里负责 JS 数组 <->
+// std::vector<std::string> 的互转。单元格允许 字符串/数字/布尔(统一成文本),
 // 其余类型一律报错 —— 免得对象被悄悄变成 "[object Object]" 存进去。
 
 static std::vector<std::string> jzJsToRow(JSContext* ctx, JSValueConst value, const char* what)
@@ -2116,20 +2116,21 @@ void JZJSWidgetModule::registWidgets()
 }
 
 // ---------- 列表 / 表格: 不暴露 item 对象 ----------
-// 结论(2026-09-18 定稿): **不给 JS 任何 `JZTableWidgetItem` / `JZListWidgetItem` 句柄** ——
-// 那套"JS 拥有 / 所有权翻转 / 借用句柄失效"的语义对调用方太贵(而且当初从未接线, 属死代码)。
-// 取而代之的是两层"值"接口:
-//   1. 值级: setRows/rows/appendRow/insertRowAt/removeRowAt/setRowAt + setItemText/itemText,
-//      列表 setItems/items/appendItem/insertItem/removeItem/setItemText —— 整行/整项进出;
-//   2. 视图镜像(dataview): JS 侧(@jz/widget 的 dataview.ts)维护一份数组镜像, 增删改自动同步到
-//      控件; 控件侧改动通过 `onDataChanged`(sigDataChanged)回灌到镜像。主要工作在 JS, C++ 只出
-//      "整块喂 / 整块读 / 单行增删"的朴素原语(见 registViews 里的 dataview 段)。
+// 结论(2026-09-18 定稿, 2026-09-21 复核): **不给 JS 任何 `JZTableWidgetItem` /
+// `JZListWidgetItem` 句柄** —— 那套"JS 拥有 / 所有权翻转 / 借用句柄失效"的语义对调用方太贵
+// (而且当初从未接线, 属死代码)。JS 侧只有**索引式值接口**(与 C++ 同名同义, 一一对应):
+//   * 行/项粒度: setRows/rows/appendRow/insertRow/removeRow/insertRowAt/removeRowAt/setRowAt,
+//     列表 setItems/items/appendItem/insertItem/removeItem;
+//   * 单元格/单项: setItemText/itemText(+ 列表 itemData/setItemData 业务数据槽);
+//   * 结构/表现: setRowCount/insertColumn/removeColumn/setHeaderLabels/headerLabels/
+//     setRowHeight/setColumnWidth/clear。
+// 需要"数组式"批量操作时, JS 侧显式取快照再回写(rows() -> 改 -> setRows()), 不做镜像层。
+// 只读"外部改过数据"用 onDataChanged(sigDataChanged): 它只是通知, 不携带数据、不参与回灌。
 
 // ---------- 容器 / 视图类控件 ----------
 //
-// 这些控件的数据/子项由 C++ 持有, JS 侧只做"值级"操作(文本、行数、当前项、滚动位置),
-// **不向 JS 暴露 item 句柄**(见上面那段结论)。列表/表格另有"视图镜像": JS 侧一份数组镜像 +
-// onDataChanged 回灌, 见 registViews 里的 dataview 段与 @jz/widget 的 dataview.ts。
+// 这些控件的数据/子项由 C++ 持有, JS 侧只做"索引式值操作"(文本、行数、当前项、滚动位置),
+// **不向 JS 暴露 item 句柄**(见上面那段结论)。
 void JZJSWidgetModule::registViews()
 {
     // 基类绑定: 只为拿 superCtypeid(JZWidget 已在 registWidgets 挂好; 透明类不必注册到引擎)
@@ -2151,9 +2152,8 @@ void JZJSWidgetModule::registViews()
     bind_list.def("itemHeight", [](JZListWidget* l) { return l->itemHeight(); });
     defSignalProperty(bind_list, "onCurrentIndexChanged", &JZListWidget::currentIndexChanged);
     defSignalProperty(bind_list, "onActivated", &JZListWidget::sigActivated);
-    // ---- dataview 原语(整项/整行粒度; JS 侧 dataview 视图镜像就架在这几个口子上) ----
-    // 设计: 视图的"主要工作"在 JS(@jz/widget/dataview.ts 维护镜像数组 + 双向同步),
-    // C++ 这边只提供"整块喂 / 整块读 / 单行增删"的朴素原语, 不引入任何 item 句柄。
+    // ---- 整项/整块原语(索引式值接口; 不引入任何 item 句柄) ----
+    // 与 C++ 的 setItems/items/removeItem/setItemText 一一对应; "整块喂 / 整块读 / 单项增删"。
     bind_list.def("setItems", [this](JZListWidget* l, JSValue texts) {
         l->clear();
         l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.setItems"));
@@ -2222,8 +2222,8 @@ void JZJSWidgetModule::registViews()
     defSignalProperty(bind_table, "onCurrentRowChanged", &JZTableWidget::currentRowChanged);
     defSignalProperty(bind_table, "onCurrentColumnChanged", &JZTableWidget::currentColumnChanged);
 
-    // ---- dataview 原语(整行粒度; 见 JZListWidget 那段说明) ----
-    // "整行"= 字符串数组; 行比列宽时会自动加列(视图喂数据不用先算列数), 空串 = 清该格。
+    // ---- 整行原语(索引式值接口; 见 JZListWidget 那段说明) ----
+    // "整行"= 字符串数组; 行比列宽时会自动加列(喂数据不用先算列数), 空串 = 清该格。
     bind_table.def("setRows", [this](JZTableWidget* t, JSValue rows) {
         const std::vector<std::vector<std::string>> data =
             jzJsToRows(m_engine->context(), rows, "JZTableWidget.setRows");
@@ -2288,9 +2288,18 @@ void JZJSWidgetModule::registViews()
     bind_table.def("setHeaderLabels", [this](JZTableWidget* t, JSValue labels) {
         t->setHorizontalHeaderLabels(jzJsToStringArray(m_engine->context(), labels, "JZTableWidget.setHeaderLabels"));
     });
-    // 行几何(把"点击位置"换算成行号要用: 表格没有 itemAt/单元格控件, 鼠标事件在 JS 侧处理)
+    bind_table.def("headerLabels", [](JZTableWidget* t) { return t->headerLabels(); });
+    // 行列结构(索引式): 插/删空行空列; clear() = 清数据 + 清表头(clearContents 只清数据)
+    bind_table.def("insertRow", [](JZTableWidget* t, int i) { t->insertRow(i); });
+    bind_table.def("removeRow", [](JZTableWidget* t, int i) { t->removeRow(i); });
+    bind_table.def("insertColumn", [](JZTableWidget* t, int c) { t->insertColumn(c); });
+    bind_table.def("removeColumn", [](JZTableWidget* t, int c) { t->removeColumn(c); });
+    bind_table.def("clear", [](JZTableWidget* t) { t->clear(); });
+    // 行几何 / 列宽(把"点击位置"换算成行号要用: 表格没有 itemAt/单元格控件, 鼠标事件在 JS 侧处理)
     bind_table.def("rowHeight", [](JZTableWidget* t) { return t->rowHeight(); });
     bind_table.def("headerHeight", [](JZTableWidget* t) { return t->headerHeight(); });
+    bind_table.def("setRowHeight", [](JZTableWidget* t, int h) { t->setRowHeight(h); });
+    bind_table.def("setColumnWidth", [](JZTableWidget* t, int c, int w) { t->setColumnWidth(c, w); });
     defSignalProperty(bind_table, "onDataChanged", &JZTableWidget::sigDataChanged);
 
     bind_table.setCreate(js_JZTableWidget_ctor);

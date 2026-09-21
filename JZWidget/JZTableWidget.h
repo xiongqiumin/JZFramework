@@ -86,9 +86,9 @@ public:
     int row(const JZTableWidgetItem* item) const;              // 不在本表返回 -1   (Qt: row(item))
     int column(const JZTableWidgetItem* item) const;           //                  (Qt: column(item))
 
-    // 数据变了(行列增删 / 单元格文本/图标/data / 表头)就发一次 sigDataChanged —— JS 侧的
-    // "视图镜像"(`@jz/widget` 的 dataview)靠它把控件侧的变化回灌到 JS。
-    // ⚠ 视图自己发起的那次变更也会发信号: 视图侧要设静默标志, 否则回灌成环。
+    // 数据变了(行列增删 / 单元格文本/图标/data / 表头)就发一次 sigDataChanged ——
+    // 外部观察者(JS 的 `onDataChanged`、AI 工具)靠它感知"数据被改过了"。
+    // 任何改数据的入口(含 JS 绑定层自己发起的那些)都会发, 不做"谁发起"的区分。
     // 只发信号, 不负责重绘/尺寸刷新(调用点各自保留原有行为)。
     void notifyDataChanged();
 
@@ -101,6 +101,7 @@ public:
     // ---- 视图 ----
     void setColumnWidth(int col, int w);
     void setHorizontalHeaderLabels(const std::vector<std::string>& labels);
+    std::vector<std::string> headerLabels() const;   // 表头标签快照 (setHorizontalHeaderLabels 的读回)
     void setRowHeight(int h);
     int rowHeight() const;
     int headerHeight() const;   // 表头高度(= 行高)
@@ -118,7 +119,7 @@ public:
 jz_signals:
     JZSigInt currentRowChanged;
     JZSigInt currentColumnChanged;
-    JZSigVoid sigDataChanged;   // 数据(行列/单元格/表头)变化 —— 供 JS 侧视图镜像刷新
+    JZSigVoid sigDataChanged;   // 数据(行列/单元格/表头)变化 —— 外部观察者(JS onDataChanged)用
 
 protected:
     void showEvent(JZShowEvent* e) override;

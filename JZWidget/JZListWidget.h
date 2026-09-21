@@ -75,9 +75,9 @@ public:
 
     void clear();
 
-    // 数据变了(增删项 / 文本 / 图标 / data)就发一次 sigDataChanged —— JS 侧的"视图镜像"
-    // (`@jz/widget` 的 dataview)靠它把控件侧的变化回灌到 JS。
-    // ⚠ 视图自己发起的增删**也会**发信号: 视图侧对"自己发起的那次变更"要设静默标志, 否则成环。
+    // 数据变了(增删项 / 文本 / 图标 / data)就发一次 sigDataChanged ——
+    // 外部观察者(JS 的 `onDataChanged`、AI 工具)靠它感知"数据被改过了"。
+    // 任何改数据的入口(含 JS 绑定层自己发起的那些)都会发, 不做"谁发起"的区分。
     // 只发信号, 不做重绘/尺寸刷新(调用点各自负责, 保持原有行为不变)。
     void notifyDataChanged();
 
@@ -112,7 +112,7 @@ public:
 jz_signals:
     JZSigInt currentIndexChanged;
     JZSigInt sigActivated;   // 激活 (点击项 / Enter), 下拉弹层收编用
-    JZSigVoid sigDataChanged;   // 数据(增删项/文本/图标/data)变化 —— 供 JS 侧视图镜像刷新
+    JZSigVoid sigDataChanged;   // 数据(增删项/文本/图标/data)变化 —— 外部观察者(JS onDataChanged)用
 
 public:
     // ---- AI 语义 ----

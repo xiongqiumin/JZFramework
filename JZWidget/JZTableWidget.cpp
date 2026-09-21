@@ -346,7 +346,7 @@ void JZTableWidget::clear()
     clearContents();
     m_headerLabels.clear();
     invalidateAll();
-    notifyDataChanged();   // 表头也算数据(视图镜像里带列标题)
+    notifyDataChanged();   // 表头也算数据(headerLabels() 读得到)
 }
 
 void JZTableWidget::notifyDataChanged()
@@ -404,6 +404,12 @@ void JZTableWidget::setHorizontalHeaderLabels(const std::vector<std::string>& la
     m_headerLabels = labels;
     update();
     notifyDataChanged();
+}
+
+// 表头文本快照(与 setHorizontalHeaderLabels 对称; JS 侧 setHeaderLabels/headerLabels 用它读回)
+std::vector<std::string> JZTableWidget::headerLabels() const
+{
+    return m_headerLabels;
 }
 
 void JZTableWidget::setRowHeight(int h)

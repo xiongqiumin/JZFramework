@@ -13,8 +13,17 @@ JZStackedWidget::JZStackedWidget(JZWidget* parent)
 
 int JZStackedWidget::addWidget(JZWidget* w)
 {
+    if (!w)
+        return -1;
     m_pages.push_back(w);
     int idx = (int)m_pages.size() - 1;
+
+    // 页面必须挂进本控件的对象树: 渲染与命中都只走 children()(m_childs), 不在树上的页面
+    // 尺寸/可见性设了也画不出来。C++ 侧常写成 `new JZWidget(stack)` 而天然带父, 但
+    // JS 侧(以及"先建后挂"的写法)新建的页面没有父 —— 在这里统一补上(与 JZTabWidget::addTab
+    // 的 page->setParentWidget(m_pageArea)、JZSplitter::insertWidget 同一规则)。
+    if (w->parentWidget() != this)
+        w->setParentWidget(this);
 
     // 页面铺满 stacked widget 区域
     w->setGeometry(0, 0, width(), height());
@@ -32,9 +41,15 @@ int JZStackedWidget::addWidget(JZWidget* w)
 
 void JZStackedWidget::insertWidget(int index, JZWidget* w)
 {
+    if (!w)
+        return;
     if (index < 0 || index > (int)m_pages.size())
         index = (int)m_pages.size();
     m_pages.insert(m_pages.begin() + index, w);
+
+    // 同上: 页面要挂进对象树才可能被绘制
+    if (w->parentWidget() != this)
+        w->setParentWidget(this);
 
     w->setGeometry(0, 0, width(), height());
 

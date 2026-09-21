@@ -38,9 +38,6 @@ export * from './classes';
 // 真控件的对象树(保活 / 弱引用父) —— 模块加载即装到全局类的原型上, 见 ./tree.ts
 export * from './tree';
 
-// 列表/表格的视图镜像(JZTableWidget/JZListWidget 的 dataView()) —— 同样挂在原型上, 见 ./dataview.ts
-export * from './dataview';
-
 // 控件的通用属性表(setProperty/property) —— **纯 JS 侧存储**, 见 ./props.ts
 export * from './props';
 

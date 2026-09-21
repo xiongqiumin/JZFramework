@@ -270,6 +270,24 @@ private:
     // 行高 = max(baseH, 本行最大图片高 + 2)
     int  lineHeightOfParts(int flatStart, int flatEnd, int baseH) const;
 
+    // ---- 文本字节视图缓存 (性能) ----
+    // m_text 是**码点数组** (UTF-32), 而段落/IME/绘制用**字节**坐标, 于是到处要做
+    // "码点下标 <-> UTF-8 字节下标"。早期实现每次换算都 `m_text.toStdString()` 转
+    // 整串, 而 relayout()/xOfIndex()/paintEvent() 是**按行/按段**调用它们,
+    // 退化成 O(行数 × 字符数) 的重复整串转码 (实测 24 行 setText 530us、
+    // 48 行 1717us, 且随日志增长持续变慢)。
+    // 这里缓存一份 UTF-8 镜像 + 每个码点的起始字节偏移, 由 relayout() 在文本
+    // 变化后重建; 之后所有换算都是 O(1) / O(log n) 查表。
+    void rebuildByteCache() const;                  // 重建 m_u8Cache / m_cpToByte
+    bool byteCacheReady() const;                    // 缓存与当前文本是否一致
+    // [cpFrom, cpTo) 内是否含必须独立成段的码点 (内联图片 / emoji)。
+    // 纯文本行可跳过段落枚举 (枚举要分配 vector + 拷贝子串), 这是按行调用的热路径。
+    bool hasSpecialCode(int cpFrom, int cpTo) const;
+
+    mutable std::string m_u8Cache;        // m_text 的 UTF-8 镜像
+    // 长度 = 码点个数 + 1; [i] = 第 i 个码点的起始字节偏移, 末项 = 字节总长
+    mutable std::vector<int> m_cpToByte;
+
     // 段落序列的起点**码点下标**列表 (含末尾哨兵 = 末尾码点下标), 供光标按段移动。
     // 段落起点 = 每个 segment 的起点的码点下标, 最后追加末尾哨兵作为"末尾插入点"。
     std::vector<int> segmentStarts(int from = 0, int len = -1) const;

@@ -193,6 +193,22 @@ static bool jzPopupPressFilter(const MSG& msg)
     return JZWindow::filterPopupPress(msg.pt.x, msg.pt.y);
 }
 
+// 鼠标移动合并: 高刷鼠标每秒能产生上百条 WM_MOUSEMOVE, 而**中间位置对框架没有
+// 任何意义** —— 位置由最后一条决定 (拖拽锚点也记在按下那一刻, 见 JZSplitter::mouseMoveEvent),
+// 每条都跑一遍"命中测试 + 重排 + 业务槽"纯属浪费, 一旦跟不上就积压成"拖不动"。
+// 这里把本窗口队列里后续的 WM_MOUSEMOVE 全部取出丢掉, 只保留最新坐标的那条派发
+// (等价 Qt 的做法: 处理前先 PeekMessage 把同窗口的鼠标移动压成最后一条)。
+// 其它消息 (按键/重绘/定时器) 不受影响, 仍按原顺序留在队列里。
+static void jzMergePendingMouseMove(MSG& msg)
+{
+    if (msg.message != WM_MOUSEMOVE || !msg.hwnd)
+        return;
+
+    MSG next;
+    while (PeekMessageW(&next, msg.hwnd, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE))
+        msg = next;         // 保留最新位置 (lParam/pt 已是最新)
+}
+
 // 共享一轮: 处理框架事件+绘制 -> 算 gap 并 SetTimer 唤醒 -> GetMessageW 阻塞等一条
 // -> PeekMessageW 排空剩余。返回 false 表示 WM_QUIT 或线程停止(m_running=false)。
 bool JZWin32Thread::pumpOnce()
@@ -229,6 +245,7 @@ bool JZWin32Thread::pumpOnce()
         m_running = false;          // WM_QUIT(0) 或错误(-1)
         return false;
     }
+    jzMergePendingMouseMove(msg);   // 鼠标移动: 只派发最新一条
     if (!jzPopupPressFilter(msg))
     {
         TranslateMessage(&msg);
@@ -239,6 +256,7 @@ bool JZWin32Thread::pumpOnce()
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
     {
         if (msg.message == WM_QUIT) { m_running = false; return false; }
+        jzMergePendingMouseMove(msg);   // 同上: 同一批里只留最新的移动
         if (jzPopupPressFilter(msg))
             continue;
         TranslateMessage(&msg);

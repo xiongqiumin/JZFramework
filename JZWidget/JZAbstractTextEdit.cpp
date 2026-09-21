@@ -159,6 +159,14 @@ int JZAbstractTextEdit::xOfIndex(int line, int partCount) const
     JZFont font(kFontPixelSize);
     const int stop = flatStart + partCount;   // 只累计到这个码点之前
 
+    // 快路径: 区间内没有图片/emoji ⇒ 整段就是一个 Text 段, 直接一次前缀测宽。
+    // 与下面的通用路径结果完全一致 (通用路径此时也只会测这一个区间), 但省掉
+    // enumerateSegments 的分配与逐段循环 —— 本函数在 paintEvent 里按行按段调用。
+    if (!hasSpecialCode(flatStart, stop)) {
+        const JZString sub = displayString(m_text.mid(flatStart, stop - flatStart));
+        return JZFontMetrics::textWidth(sub.toStdString(), font);
+    }
+
     // 本行的段落序列 (字节区间), 一次取出反复用
     const int byteStart = codepointToUtf8Byte(flatStart);
     const int byteStop  = codepointToUtf8Byte(stop);
@@ -519,13 +527,61 @@ bool JZAbstractTextEdit::segmentImage(const Segment& seg, const JZPixmap*& out,
 // 坐标: Segment::start/size 用 **UTF-8 字节** (与 text()/setText() 同坐标系),
 // 而控件内部光标/索引用**码点**。两者换算统一走 utf8ByteToCodepoint() 等辅助。
 
+// ---- 文本字节视图缓存 ----
+// 见头文件说明: 一次整串转码 + 建表, 之后所有 码点<->字节 换算都是查表/二分。
+void JZAbstractTextEdit::rebuildByteCache() const
+{
+    m_u8Cache = m_text.toStdString();
+
+    const int cpCount = m_text.size();
+    const int byteCount = static_cast<int>(m_u8Cache.size());
+    m_cpToByte.assign(static_cast<size_t>(cpCount) + 1, 0);
+
+    int cp = 0;
+    JZUtf8Iterator it(m_u8Cache);
+    while (it.isValid() && cp < cpCount) {
+        m_cpToByte[static_cast<size_t>(cp)] = it.byteIndex();
+        ++cp;
+        ++it;
+    }
+    // 非法字节会让迭代器提前跳到末尾: 剩余项统一填字节总长, 保证单调不减
+    for (; cp <= cpCount; ++cp)
+        m_cpToByte[static_cast<size_t>(cp)] = byteCount;
+}
+
+// 缓存与当前文本是否一致 (长度不符即视为失效, 回退到旧慢路径, 不返回错值)
+bool JZAbstractTextEdit::byteCacheReady() const
+{
+    return !m_cpToByte.empty()
+        && static_cast<int>(m_cpToByte.size()) == m_text.size() + 1;
+}
+
+bool JZAbstractTextEdit::hasSpecialCode(int cpFrom, int cpTo) const
+{
+    cpFrom = std::max(0, cpFrom);
+    cpTo = std::min(cpTo, m_text.size());
+    for (int i = cpFrom; i < cpTo; ++i) {
+        const char32_t cp = m_text[i].toUnicode();
+        if (JZTextImageMap::isImageCode(cp) || JZEmoji::isEmoji(cp))
+            return true;
+    }
+    return false;
+}
+
 // UTF-8 字节下标 -> 码点下标 (相对整个 m_text)。不是码点起点时向下取到该码点。
 int JZAbstractTextEdit::utf8ByteToCodepoint(int byteOffset) const
 {
-    const std::string u8 = m_text.toStdString();
     if (byteOffset <= 0)
         return 0;
 
+    if (byteCacheReady()) {
+        // 第一个"起点字节 >= byteOffset"的码点 (与旧实现语义逐值一致)
+        const std::vector<int>::const_iterator it =
+            std::lower_bound(m_cpToByte.begin(), m_cpToByte.end(), byteOffset);
+        return static_cast<int>(it - m_cpToByte.begin());
+    }
+
+    const std::string u8 = m_text.toStdString();
     JZUtf8Iterator it(u8);
     int cpIndex = 0;
     while (it.isValid()) {
@@ -540,10 +596,15 @@ int JZAbstractTextEdit::utf8ByteToCodepoint(int byteOffset) const
 // 码点下标 -> UTF-8 字节下标 (相对整个 m_text)
 int JZAbstractTextEdit::codepointToUtf8Byte(int cpIndex) const
 {
-    const std::string u8 = m_text.toStdString();
     if (cpIndex <= 0)
         return 0;
 
+    if (byteCacheReady())
+        return (cpIndex >= m_text.size())
+            ? static_cast<int>(m_u8Cache.size())
+            : m_cpToByte[static_cast<size_t>(cpIndex)];
+
+    const std::string u8 = m_text.toStdString();
     JZUtf8Iterator it(u8);
     int n = 0;
     while (it.isValid()) {
@@ -561,7 +622,10 @@ JZAbstractTextEdit::enumerateSegments(int from, int len) const
 {
     std::vector<Segment> segs;
 
-    const std::string u8 = m_text.toStdString();
+    // 走缓存镜像: 本函数被按行调用, 每行再整串 toStdString() 是 O(行数×字符数)
+    const bool cached = byteCacheReady();
+    const std::string fallback = cached ? std::string() : m_text.toStdString();
+    const std::string& u8 = cached ? m_u8Cache : fallback;
     const int n = static_cast<int>(u8.size());
 
     from = std::max(0, std::min(from, n));
@@ -780,6 +844,7 @@ void JZAbstractTextEdit::setMaxLengthLimit(int n)
     m_maxLength = n;
     if (m_maxLength > 0 && m_text.size() > m_maxLength) {
         m_text = m_text.left(m_maxLength);
+        rebuildByteCache();         // 文本被截断: 字节缓存必须同步重建
         m_undoStack->clear();       // 文本被外力截断, 历史补丁不再一致
     }
 }
@@ -857,6 +922,9 @@ int JZAbstractTextEdit::lineHeightOf(int line) const
 void JZAbstractTextEdit::relayout()
 {
     m_lines.clear();
+    // 本函数是所有文本变化路径的统一收口 (setText / 编辑 / 撤销 / 粘贴 / 图片插入
+    // 都经 afterContentChanged 到这里), 因此字节视图缓存也在这里重建。
+    rebuildByteCache();
     syncImageRefs();        // 文本变了 -> 同步图片引用计数 (先于布局)
 
     const int n = m_text.size();
@@ -931,6 +999,10 @@ int JZAbstractTextEdit::lineHeightOfParts(int flatStart, int flatEnd, int baseH)
 {
     int h = baseH;
     flatEnd = std::min(flatEnd, m_text.size());
+
+    // 纯文本行: 行高就是基准行高, 不必枚举段落 (枚举要分配 vector + 拷贝子串)
+    if (!hasSpecialCode(flatStart, flatEnd))
+        return h;
 
     const int byteStart = codepointToUtf8Byte(std::max(0, flatStart));
     const int byteLen = codepointToUtf8Byte(flatEnd) - byteStart;
@@ -1485,9 +1557,11 @@ void JZAbstractTextEdit::paintEvent(JZPainterEvent*)
                 continue;
 
             if (!selecting) {
-                // 组字期间: 整段落在覆盖区内则不画; 部分相交则只画左半前缀
-                const int xsEnd = xs + JZFontMetrics::textWidth(u8, font);
-                const bool hitComp = onCompLine && (xsEnd > compX0 && xs < compX1);
+                // 组字期间: 整段落在覆盖区内则不画; 部分相交则只画左半前缀。
+                // 测宽只在组字所在行才需要 —— 否则每段每帧白测一次 (长文本代价可观)
+                const bool hitComp = onCompLine
+                    && (xs + JZFontMetrics::textWidth(u8, font) > compX0)
+                    && (xs < compX1);
                 if (hitComp) {
                     if (compX0 > xs) {
                         const int cpCount = cpCountForWidth(u8, font, compX0 - xs);

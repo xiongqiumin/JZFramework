@@ -239,6 +239,11 @@ public:
 
     std::string errorString();
 
+    // 最近一次错误的分类(见 AgentError)。llmError() 里"先置分类, 再发 sigError",
+    // 所以 sigError 回调里读到的就是本次错误的分类; 供调用方决定值不值得重试
+    // (连接失败/超时/5xx 值得; 用户取消/超轮次/超 token 重试也没用)。
+    AgentError errorCode() const { return m_errorCode; }
+
 jz_signals: 
     JZSigString sigReply;
     JZSigString sigThinking;   // 推理/思考增量(实时), 与 sigReply 并行
@@ -334,8 +339,10 @@ protected:
     std::vector<SkillDefine> m_skills;
     std::atomic<int> m_paramIdGen{ 0 };
 
-    bool m_streamEnabled;  //是否流式传输
-    bool m_thinkEnabled;   //是否思考
+    // 配置项(不是运行态): 只由 setStreamEnabled/setThinkEnabled 改, clear()/reset() 不该动它们 ——
+    // 否则"清空历史重开一个任务"会把流式/思考设置一起抹掉(第二个任务起悄悄退回非流式)。
+    bool m_streamEnabled = false;  //是否流式传输
+    bool m_thinkEnabled = true;    //是否思考
 
     JZAgentTool *m_readSkill;
     LLMContext m_context;

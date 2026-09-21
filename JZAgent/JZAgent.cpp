@@ -167,8 +167,10 @@ void JZAgent::clear()
     m_isActive = false;
     m_inTransaction = false;
     m_transactionRequests.clear();
-    m_streamEnabled = false;
-    m_thinkEnabled = true;
+    // 注意: 这里**不**复位 m_streamEnabled / m_thinkEnabled —— 它们是配置(由 setXxx 设定),
+    // 不是本次运行的运行态。以前在 clear() 里复位, 结果 reset() 重开任务时把"流式"关掉了:
+    // 第二个任务起 stream 字段不再发给模型, 只能拿整包(界面增量显示也就没了),
+    // 思考开关也被恢复默认。clear() 只负责运行态/错误/回复缓存。
     m_toolError = 0;
 
     m_error.clear();

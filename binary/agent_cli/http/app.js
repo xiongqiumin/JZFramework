@@ -17,11 +17,9 @@
   var settingsBtn = $('settingsBtn');
   var settingsEl = $('settings');
 
-  var curListEl = $('curList');
-  var curEmptyEl = $('curEmpty');
-  var curHintEl = $('curHint');
-  var histListEl = $('histList');
-  var histEmptyEl = $('histEmpty');
+  // 单列表: 运行中与已完成的任务同列显示(不再分"当前任务/历史任务")
+  var taskListEl = $('histList');
+  var taskEmptyEl = $('histEmpty');
   var histHintEl = $('histHint');
   var clearTasksBtn = $('clearTasksBtn');
 
@@ -43,6 +41,10 @@
   var queue = [];              // 待提交队列
   var selected = null;         // 右侧选中的卡片
   var epoch = 0;               // UI 世代号: 清空历史后, 旧任务的回包不再落到界面
+
+  // 左列表最多保留多少张卡片: 再早的从界面上摘掉(右侧对话记录仍在), 免得列表越滚越长
+  var MAX_CARDS = 20;
+  var droppedCards = 0;        // 已被摘掉的卡片数(只用于提示"共多少条 / 只显示最近几条")
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -84,10 +86,25 @@
   }
 
   function refreshSide() {
-    curEmptyEl.classList.toggle('hidden', curListEl.children.length > 0);
-    histEmptyEl.classList.toggle('hidden', histListEl.children.length > 0);
-    curHintEl.textContent = curListEl.children.length ? '运行中 ' + curListEl.children.length : '';
-    histHintEl.textContent = histListEl.children.length ? '共 ' + histListEl.children.length + ' 条' : '';
+    var n = taskListEl.children.length;
+    taskEmptyEl.classList.toggle('hidden', n > 0);
+    if (!n) { histHintEl.textContent = ''; return; }
+    histHintEl.textContent = droppedCards
+      ? ('共 ' + (n + droppedCards) + ' 条 · 只显示最近 ' + n + ' 条')
+      : ('共 ' + n + ' 条');
+  }
+
+  // 列表只留最近 MAX_CARDS 张: 超出就把最老的(排在最后的)卡片摘掉
+  function trimCards() {
+    while (taskListEl.children.length > MAX_CARDS) {
+      var last = taskListEl.lastElementChild;
+      if (!last || (cur && cur.el === last))   // 运行中的卡片永远不摘
+        break;
+      if (selected && selected.el === last)
+        selected = null;
+      taskListEl.removeChild(last);
+      droppedCards += 1;
+    }
   }
 
   function focusMsg(task) {
@@ -161,6 +178,7 @@
       ? (info.reply || '（空回复，验证脚本退出码 0）')
       : (info.error || info.reply || '（无结论）');
     task.conclText.textContent = concl;
+    task.conclText.title = concl;      // 卡片里只露几行, 完整结论看悬停
     task.conclText.className = 'text' + (ok ? ' ok' : '');
     task.concl.classList.remove('hidden');
 
@@ -169,9 +187,7 @@
       task.out.classList.remove('hidden');
     }
 
-    // 归档: 当前任务区 → 历史任务区(最新在最上)
-    if (task.el.parentNode === curListEl) curListEl.removeChild(task.el);
-    histListEl.insertBefore(task.el, histListEl.firstChild);
+    // 单列表: 卡片就地更新, 不再从"当前任务"搬运到"历史任务"
     if (selected === task) selected = null;
     refreshSide();
   }
@@ -290,7 +306,8 @@
     resetProcKeep();           // 过程步数重新计数(旧任务的步骤留在界面上)
     dropPendingItem(task);
     makeCard(task);
-    curListEl.insertBefore(task.el, curListEl.firstChild);
+    taskListEl.insertBefore(task.el, taskListEl.firstChild);
+    trimCards();
     selectCard(task);
     refreshSide();
     setUiRunning(true);
@@ -410,13 +427,15 @@
   // 这样任务跑的过程中网页能看到 agent 在想什么/调什么工具, 而不是干等最后回包。
   // 只留最近 PROC_KEEP 步(用户输入 + 最近这些步骤), 更早的移除 —— 长任务不刷屏。
   var PROC_KEEP = 10;
-  var procEl = null;
+  var PROC_TAG = { 'think': '思考', 'say': '回复', 'tool': '工具', 'res': '结果', 'res fail': '结果' };
+  var procEl = null;       // 正在追加的步骤行
+  var procBody = null;     // 该步骤行的正文
   var procKind = '';
-  var procEls = [];        // 当前任务的过程气泡, 按时间从旧到新
+  var procEls = [];        // 当前任务的过程行, 按时间从旧到新
   var procOmitEl = null;   // "已省略 N 步" 标记
   var procOmitN = 0;
 
-  function endProc() { procEl = null; procKind = ''; }
+  function endProc() { procEl = null; procBody = null; procKind = ''; }
 
   function resetProcKeep() {
     procEls.length = 0;
@@ -442,18 +461,37 @@
     procOmitEl.textContent = '…（前面 ' + procOmitN + ' 步已省略）';
   }
 
-  function addProc(kind, prefix, text) {
+  // 一行步骤: 标题(圆点 + 类型标签 [+ 工具名]) + 正文(可滚动)
+  function makeProc(kind, name) {
+    var row = el('div', 'proc ' + kind);
+
+    var head = el('div', 'proc-head');
+    head.appendChild(el('span', 'proc-dot'));
+    head.appendChild(el('span', 'proc-tag', PROC_TAG[kind] || '步骤'));
+    if (name) head.appendChild(el('span', 'proc-name', name));
+    row.appendChild(head);
+
+    var mono = (kind === 'tool' || kind === 'res' || kind === 'res fail');
+    var body = el('div', 'proc-body' + (mono ? ' mono' : '') + ' hidden');
+    row.appendChild(body);
+    row.body = body;
+    return row;
+  }
+
+  // kind: think / say / tool / res / res fail；name 仅工具行使用
+  function addProc(kind, text, name) {
     if (!procEl || procKind !== kind) {
-      procEl = document.createElement('div');
-      procEl.className = 'proc ' + kind;
-      procEl.textContent = prefix;
+      procEl = makeProc(kind, name);
+      procBody = procEl.body;
       messagesEl.appendChild(procEl);
       procKind = kind;
       procEls.push(procEl);
       trimProc();
     }
-    if (procEl.textContent.length < 2000) procEl.textContent += text;
-    else if (procEl.textContent.length < 2100) procEl.textContent += '…（已省略）';
+    var cur = procBody.textContent;
+    if (cur.length < 2000) procBody.textContent = cur + (text || '');
+    else if (cur.length < 2100) procBody.textContent = cur + '…（已省略）';
+    procBody.classList.toggle('hidden', procBody.textContent === '');
     scrollBottom();
   }
 
@@ -477,28 +515,28 @@
     }
 
     if (type === 'thinking') {
-      addProc('think', '思考: ', data.text || '');
+      addProc('think', data.text || '');
       return;
     }
 
     if (type === 'reply') {
-      addProc('say', '回复: ', data.text || '');
+      addProc('say', data.text || '');
       return;
     }
 
     if (type === 'tool_call') {
       endProc();
       var args = String(data.args || '');
-      if (args.length > 200) args = args.slice(0, 200) + '…';
-      addProc('tool', '⚙ ' + (data.name || 'tool'), args ? (' ' + args) : '');
+      if (args.length > 600) args = args.slice(0, 600) + '…';
+      addProc('tool', args, data.name || 'tool');
       return;
     }
 
     if (type === 'tool_result') {
       endProc();
       var res = String(data.result || '');
-      if (res.length > 300) res = res.slice(0, 300) + '…';
-      addProc('res' + (data.ok ? '' : ' fail'), data.ok ? '✔ ' : '✘ ', res);
+      if (res.length > 800) res = res.slice(0, 800) + '…';
+      addProc(data.ok ? 'res' : 'res fail', res);
       return;
     }
 
@@ -529,8 +567,19 @@
 
     if (type === 'error') {
       endProc();
-      addSystem('⚠ 运行错误: ' + (data.text || '未知错误'), 'err');
-      if (cur) cur.result.textContent = '运行时错误';
+      addSystem('⚠ 运行错误: ' + (data.text || '未知错误')
+        + (data.retryable ? '（将自动重试）' : ''), 'err');
+      if (cur) cur.result.textContent = data.retryable ? '出错，准备重试' : '运行时错误';
+      return;
+    }
+
+    if (type === 'retry') {
+      endProc();
+      var rn = data.retry || 1, rm = data.max_retries || 0;
+      addSystem('自动重试 ' + rn + '/' + rm + '：'
+        + (data.delay_ms ? ('等待 ' + data.delay_ms + 'ms 后') : '')
+        + '把错误反馈给 agent 继续任务', 'err');
+      if (cur) cur.result.textContent = '自动重试 ' + rn + '/' + rm + ' 中';
       return;
     }
 
@@ -591,12 +640,12 @@
     clearPendingQueue();
     postReset(scope).then(function () {
       messagesEl.innerHTML = '';
-      histListEl.innerHTML = '';
-      curListEl.innerHTML = '';
+      taskListEl.innerHTML = '';
       cur = null;
       queue.length = 0;
       pendingListEl.innerHTML = '';
       selected = null;
+      droppedCards = 0;
       setUiRunning(false);
       refreshSide();
       refreshPending();
@@ -606,8 +655,12 @@
   sendBtn.addEventListener('click', submit);
   clearBtn.addEventListener('click', function () { messagesEl.innerHTML = ''; });
   clearTasksBtn.addEventListener('click', function () {
-    histListEl.innerHTML = '';
+    // 只清列表: 运行中的任务卡片保留(否则任务还在跑卡片却没了)
+    if (selected && selected.el) selected.el.classList.remove('sel');
     selected = null;
+    taskListEl.innerHTML = '';
+    if (cur && cur.el) taskListEl.appendChild(cur.el);
+    droppedCards = 0;
     refreshSide();
   });
   clearPendingBtn.addEventListener('click', function () {

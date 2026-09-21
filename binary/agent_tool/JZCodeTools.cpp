@@ -1051,6 +1051,220 @@ void JZGetDateTimeTool::call(const ToolCall &params)
     finish(params, true, writer.write(root));
 }
 
+// ==================== JZMemoryTool ====================
+JZMemoryTool::JZMemoryTool()
+{
+    ToolDefine def;
+    def.name = "memory";
+    def.description =
+        "跨任务的长期记忆(一个纯文本文件)。agent 每次开工时这份记忆会被自动带进上下文, "
+        "所以这里只记\"下次还用得上\"的结论, 不记流水账。\n"
+        "action=read    : 看当前记忆的内容(超上限时只返回最近的部分)。\n"
+        "action=append  : 追加一条(自动带时间戳)。拿到值得跨任务复用的结论就用它 —— "
+        "环境事实(构建/运行命令、程序路径、依赖)、踩过的坑、接口/目录约定、最终结论。\n"
+        "action=replace : 整文件重写。只在需要精简或纠正过时结论时用, 重写前先 read, 别丢内容。";
+    def.parameters.push_back(makeParam("action", ParamType::String, "read / append / replace"));
+    def.parameters.push_back(makeParam("text", ParamType::String,
+        "append / replace 要写入的内容(append 一条一句或一小段; replace 是整份新内容)"));
+    def.required_parameters.push_back("action");
+    setToolDefine(def);
+}
+
+void JZMemoryTool::setup(const string &file, int maxBytes)
+{
+    m_file = file;
+    m_maxBytes = maxBytes > 0 ? maxBytes : 8192;
+}
+
+// 记忆条目时间戳(本地时间)
+static string memoryStamp()
+{
+    time_t t = time(nullptr);
+    struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    char buf[64] = {0};
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
+    return string(buf);
+}
+
+bool JZMemoryTool::readRaw(string &text) const
+{
+    text.clear();
+    if (m_file.empty())
+        return false;
+    JZFileInfo info(m_file);
+    if (!info.exists() || !info.isFile())
+        return false;
+
+    JZFile file;
+    if (!file.open(m_file, "rb"))
+        return false;
+    JZByteArray data = file.readAll();
+    file.close();
+
+    text.assign(data.data(), data.size());
+    // 去掉 BOM: 记忆文件是给人看也给人编的, 编辑器存出来的 BOM 别渗进模型上下文
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text = text.substr(3);
+    return true;
+}
+
+bool JZMemoryTool::writeAll(const string &text, string &error) const
+{
+    string dir = JZFileInfo(m_file).path();
+    if (!dir.empty())
+    {
+        JZDir parent;
+        if (!parent.exists(dir) && !parent.mkpath(dir))
+        {
+            error = "创建记忆文件所在目录失败: " + dir;
+            return false;
+        }
+    }
+
+    JZFile file;
+    if (!file.open(m_file, "wb"))
+    {
+        error = "打开记忆文件失败(权限?): " + m_file;
+        return false;
+    }
+    int written = file.write(str_toUtf8(text));
+    file.close();
+    if (written != (int)text.size())
+    {
+        error = "写入记忆文件长度不符: " + m_file;
+        return false;
+    }
+    return true;
+}
+
+string JZMemoryTool::readMemory(int *totalBytes, bool *truncated) const
+{
+    if (totalBytes)
+        *totalBytes = 0;
+    if (truncated)
+        *truncated = false;
+
+    string text;
+    if (!readRaw(text))
+        return string();
+
+    while (!text.empty() && (text[text.size() - 1] == '\n' || text[text.size() - 1] == '\r'))
+        text.erase(text.size() - 1);
+
+    if (totalBytes)
+        *totalBytes = (int)text.size();
+    if ((int)text.size() <= m_maxBytes)
+        return text;
+
+    // 超上限: 只给最近的(append 语义下新的在后面), 旧的还在文件里, 让它自己去看/去精简
+    if (truncated)
+        *truncated = true;
+    string tail = text.substr(text.size() - m_maxBytes);
+    size_t nl = tail.find('\n');
+    if (nl != string::npos)
+        tail = tail.substr(nl + 1);
+    return "(更早的记忆已省略: 共 " + to_string(text.size()) + " 字节, 上限 " + to_string(m_maxBytes) +
+           " 字节。旧内容还在 " + m_file + " 里, 可以用 read_file 分段看; 如果这条旧记忆不再有用, "
+           "用 memory replace 把它精简掉)\n" + tail;
+}
+
+void JZMemoryTool::call(const ToolCall &params)
+{
+    if (m_file.empty())
+    {
+        finish(params, false, "记忆功能没有配置存储文件, 不可用");
+        return;
+    }
+
+    string action = str_toLower(str_trimmed(params.params.get("action", "").asString()));
+    string text = params.params.get("text", "").asString();
+    if (action.empty())
+        action = "read";       // 缺省只读: 写动作必须显式说, 免得误写
+
+    if (action == "read")
+    {
+        int total = 0;
+        bool cut = false;
+        string mem = readMemory(&total, &cut);
+        if (str_trimmed(mem).empty())
+        {
+            finish(params, true, "记忆还是空的(" + m_file + ")。"
+                                 "后面得到值得跨任务复用的结论时, 用 memory append 写进来。");
+            return;
+        }
+        string head = "记忆文件: " + m_file + "  共 " + to_string(total) + " 字节" +
+                      (cut ? " (本次只返回最近的部分)" : "") + "\n";
+        finish(params, true, head + mem);
+        return;
+    }
+
+    if (action == "append" || action == "replace")
+    {
+        if (str_trimmed(text).empty())
+        {
+            finish(params, false, "text 不能为空");
+            return;
+        }
+
+        string body;
+        if (action == "append")
+        {
+            // 记忆每次开工都要注入上下文: 无限长 = 每次任务都白烧一遍 token, 还会把真正
+            // 关键的结论挤到省略区外面。所以超过硬上限就拒绝追加, 逼模型先精简 ——
+            // 这一次"什么才算关键"的取舍, 比继续往上堆有价值。
+            string raw;
+            readRaw(raw);
+            long long hard = (long long)m_maxBytes * 4;
+            if ((long long)raw.size() > hard)
+            {
+                finish(params, false, "记忆文件已 " + to_string(raw.size()) + " 字节, 超过上限 " +
+                                          to_string(hard) + " 字节。请先 read, 再用 memory replace "
+                                          "精简成条目式结论(合并重复的、删掉过时的), 然后继续。");
+                return;
+            }
+
+            while (!raw.empty() && (raw[raw.size() - 1] == '\n' || raw[raw.size() - 1] == '\r'))
+                raw.erase(raw.size() - 1);
+
+            string one = text;
+            str_replace(one, "\r\n", "\n");
+            str_replace(one, "\n", "\n  ");     // 多行缩进两格: 一条一块, 注入时好读
+            string entry = "- [" + memoryStamp() + "] " + one;
+            body = raw.empty() ? entry : (raw + "\n" + entry);
+            body += "\n";
+        }
+        else
+        {
+            body = text;
+            if (!body.empty() && body[body.size() - 1] != '\n')
+                body += "\n";
+        }
+
+        string error;
+        if (!writeAll(body, error))
+        {
+            finish(params, false, error, DenyReason::WriteDenied);
+            return;
+        }
+
+        string msg = (action == "append" ? "已追加到记忆" : "已重写记忆");
+        msg += "(" + m_file + ", 现在 " + to_string(body.size()) + " 字节)";
+        if ((int)body.size() > m_maxBytes)
+            msg += "。⚠ 已超过注入上限 " + to_string(m_maxBytes) + " 字节, 超出的旧内容不会被自动带进上下文, "
+                   "建议用 memory replace 精简";
+        finish(params, true, msg);
+        return;
+    }
+
+    finish(params, false, "action 必须是 read / append / replace");
+}
+
 // ==================== JZProcessRunner ====================
 JZProcessRunner::~JZProcessRunner()
 {

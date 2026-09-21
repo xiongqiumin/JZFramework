@@ -15,9 +15,12 @@
 #include "JZHttpStaticFiles.h"
 
 #include <cstdio>
+#include <cstdlib>            // atoi(解析 "HTTP 402 ..." 里的状态码)
 #ifndef _WIN32
 #include <sys/wait.h>         // WIFEXITED / WEXITSTATUS(popen 取退出码)
 #endif
+
+#include "JZTimer.h"          // 重试前的延时(JZTimer::singleShot)
 
 #include "JZTerminalTools.h"  // 本地终端工具(JZTerminalRunTool 等)
 
@@ -125,6 +128,7 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     ac.netTimeout = m_config.netTimeout;
     ac.maxRounds = m_config.maxRounds;
     ac.maxToken = m_config.maxToken;
+    ac.tokenStrategy = JZAgentConfig::TokenCompress;
     m_agent->init(ac);
 
     connect(&m_agent->sigReply, this, &JZAgentCli::onReply);
@@ -177,6 +181,16 @@ void JZAgentCli::setupAgent()
         addTool(new JZSearchFileTool());
         addTool(new JZGetDateTimeTool());
     }
+
+    if (m_config.memoryEnabled)
+    {
+        // 长期记忆: 跨任务的结论沉淀 —— 开工时注入任务消息(见 buildMemoryBlock),
+        // 任务里由模型自己用 memory append 写。文件路径由宿主给定(模型改不了), 所以
+        // 这个工具不参与路径审核; 配到工作区外就等于授权它往那儿写。
+        m_memory = new JZMemoryTool();
+        m_memory->setup(memoryFilePath(), m_config.memoryMaxBytes);
+        addTool(m_memory);
+    }
 }
 
 string JZAgentCli::buildSystemPrompt() const
@@ -199,6 +213,8 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  search_code    在工作区内搜索文本/正则。\n";
         text += "  get_datetime   获取当前日期时间(需要\"今天\"这类信息时优先用)。\n";
     }
+    if (m_config.memoryEnabled)
+        text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";
     text += "\nShell notes (important):\n";
     text += "  - 每条命令都是一个新 shell: 要进目录执行写 `cd <dir> && <cmd>`; "
             "单独的 `cd` 会被拒绝。cd/export 不跨命令保留。\n";
@@ -211,9 +227,56 @@ string JZAgentCli::buildSystemPrompt() const
         for (const auto &kv : m_config.programPaths)
             text += "  " + kv.first + "    " + kv.second + "\n";
     }
+    if (m_config.memoryEnabled)
+    {
+        text += "\nMemory (跨任务的长期记忆):\n";
+        text += "  - 每次任务的开头, 消息里可能带一段 <memory> —— 那是之前任务留下的结论, 先看再用。\n";
+        text += "  - 得到值得跨任务复用的结论时, 用 memory 工具 append 记下来: 环境事实(构建/运行命令、"
+                "程序路径、依赖版本)、踩过的坑、接口/目录约定、最终结论。一条一句, 写清\"是什么\"和"
+                "\"为什么\"; 别记流水账(过程已经在对话历史里了)。\n";
+        text += "  - 记忆可能过期: 与当前代码/文件冲突时以实际文件为准, 并把更正后的结论写回记忆"
+                "(用 replace 精简, 别只往上堆)。\n";
+    }
     text += "\nWork through the user's request step by step using the tools. "
             "When done, give a concise summary of what you changed.\n";
     return text;
+}
+
+// ---------------------------------------------------------------------------
+// 长期记忆
+//   记忆是"跨任务"的: 进程内每个任务都会 reset 会话(提交前 m_agent->reset()),
+//   所以结论必须落成文件才有意义 —— 落在工作区根目录, 换个人/换个 CLI 也能接着用。
+// ---------------------------------------------------------------------------
+string JZAgentCli::memoryFilePath() const
+{
+    string path = m_config.memoryFile.empty() ? string(".agent_memory.md") : m_config.memoryFile;
+    if (!JZDir::isAbsolutePath(path))
+        path = m_config.rootDir + "/" + path;
+    return codeNormalizePath(path);
+}
+
+string JZAgentCli::buildMemoryBlock() const
+{
+    if (!m_memory || !m_memory->enabled())
+        return string();
+
+    int total = 0;
+    bool cut = false;
+    string mem = m_memory->readMemory(&total, &cut);
+    if (str_trimmed(mem).empty())
+        return string();
+
+    // 注入时明确标出"这是记忆、可能过期": 记忆最危险的失败模式就是拿过期的旧结论
+    // 覆盖当前代码 —— 所以每次都提醒它"以实际文件为准"。
+    string s;
+    s += "<memory file=\"" + m_memory->file() + "\" bytes=\"" + to_string(total) + "\"";
+    if (cut)
+        s += " truncated=\"true\"";
+    s += ">\n";
+    s += mem + "\n</memory>\n";
+    s += "上面是之前任务留下的长期记忆(可能已经过期; 与当前代码/文件冲突时以实际文件为准)。"
+         "本次如果得到值得跨任务复用的结论, 用 memory 工具 append 记下来。\n\n";
+    return s;
 }
 
 // ==========================================================================
@@ -498,13 +561,28 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
         return;
     }
 
+    // 长期记忆: 开工时把记忆注入任务消息(不是 system prompt —— 那个是进程级的, 改一次
+    // 就把 KV 前缀缓存整段作废)。use_memory=false 可单次关掉(评测/一次性任务用)。
+    std::string memoryBlock;
+    if (req.isMember("use_memory") ? req["use_memory"].asBool() : true)
+        memoryBlock = buildMemoryBlock();
+
     std::string script = req.isMember("verify_script") ? req["verify_script"].asString() : "";
     std::string explicitCmd = req.isMember("verify_cmd") ? req["verify_cmd"].asString() : "";
     m_verifyCmd = deriveVerifyCmd(script, explicitCmd);
-    m_verifyTimeoutMs = req.isMember("verify_timeout") ? req["verify_timeout"].asInt() : 60000;
-    m_maxLoopRounds = req.isMember("max_verify_rounds") ? req["max_verify_rounds"].asInt() : 10;
+    // 默认值来自配置(verify.maxRounds / verify.timeoutMs), 本次请求可覆盖
+    m_verifyTimeoutMs = req.isMember("verify_timeout") ? req["verify_timeout"].asInt() : m_config.verifyTimeoutMs;
+    m_maxLoopRounds = req.isMember("max_verify_rounds") ? req["max_verify_rounds"].asInt() : m_config.verifyMaxRounds;
     if (m_verifyTimeoutMs <= 0) m_verifyTimeoutMs = 60000;
-    if (m_maxLoopRounds <= 0) m_maxLoopRounds = 10;
+    if (m_maxLoopRounds <= 0) m_maxLoopRounds = 30;
+
+    // 出错自动重试: 默认取配置(llm.maxRetries / llm.maxFixRetries / llm.retryDelayMs), 本次请求可覆盖
+    m_maxErrorRetries = req.isMember("max_retries") ? req["max_retries"].asInt() : m_config.maxRetries;
+    m_maxFixRetries = req.isMember("max_fix_retries") ? req["max_fix_retries"].asInt() : m_config.maxFixRetries;
+    m_retryDelayMs = req.isMember("retry_delay_ms") ? req["retry_delay_ms"].asInt() : m_config.retryDelayMs;
+    if (m_maxErrorRetries < 0) m_maxErrorRetries = 0;
+    if (m_maxFixRetries < 0) m_maxFixRetries = 0;
+    if (m_retryDelayMs < 0) m_retryDelayMs = 0;
 
     m_respond = std::move(respond);
     m_loopActive = true;
@@ -515,32 +593,119 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
+    m_lastErrorCode = JZAgent::None;
+    m_errorRetries = 0;
+    m_fixRetries = 0;
+    m_retryPending = false;
+    m_lastFeedbackSig.clear();
+    m_sameFailCount = 0;
+    m_loopEpoch++;          // 新任务: 作废上一个任务残留的延时重试
 
     Json::Value start;
     start["verify_cmd"] = m_verifyCmd;
     start["max_rounds"] = m_maxLoopRounds;
+    start["max_retries"] = m_maxErrorRetries;
+    start["max_fix_retries"] = m_maxFixRetries;
+    start["memory_bytes"] = (int)memoryBlock.size();      // 0 = 没带记忆(未启用/还没记忆/本次关掉)
     pushEvent("task_start", start);
 
     if (m_sessionStarted)
         m_agent->reset();
-    m_agent->request(prompt);
+    m_agent->request(memoryBlock + prompt);
     m_sessionStarted = true;
     // 注意: 不在此回包; onLoopFinished 在 agent 结束后被调用并回包(经 m_respond)。
 }
 
-std::string JZAgentCli::deriveVerifyCmd(const std::string &script, const std::string &explicitCmd)
+// ---------------------------------------------------------------------------
+// 验证命令的解释器选择
+//   Windows(cmd)下 `python3` / `bash` 经常根本不存在 —— 装了 Python 往往只有 python.exe,
+//   Git Bash 也没进 PATH。硬写 python3 会让验证脚本每一轮都以 9009/127 退出(看着像"测试
+//   一直失败"), 白烧掉所有续跑轮次。所以推导时先挑一个"本机真能跑"的, 顺序:
+//     ① 配置的程序映射(terminal.programs, 如 {"python":"C:/.../python.exe"})
+//     ② 候选名逐个探测(`<name> --version` 退出码 0 算能跑)
+//     ③ 都没有就退回默认名(保持旧行为: 至少错误信息会在验证输出里露出来)
+//   探测结果进程内缓存(每条任务 spawn 一次探测进程没必要)。
+// ---------------------------------------------------------------------------
+static bool programRunnable(const std::string &name)
+{
+    static std::map<std::string, bool> cache;
+    std::map<std::string, bool>::iterator it = cache.find(name);
+    if (it != cache.end())
+        return it->second;
+
+#ifdef _WIN32
+    std::string probe = "\"" + name + "\" --version > nul 2>&1";
+    FILE *f = _popen(probe.c_str(), "r");
+#else
+    std::string probe = "\"" + name + "\" --version > /dev/null 2>&1";
+    FILE *f = popen(probe.c_str(), "r");
+#endif
+    bool ok = false;
+    if (f)
+    {
+        char buf[256];
+        while (std::fgets(buf, sizeof(buf), f)) { }
+#ifdef _WIN32
+        ok = (_pclose(f) == 0);
+#else
+        ok = (pclose(f) == 0);
+#endif
+    }
+    cache[name] = ok;
+    return ok;
+}
+
+// 含空格的全路径要引号(cmd 会把 "C:/Program Files/..." 截在空格处)
+static std::string quotePath(const std::string &p)
+{
+    if (p.find(' ') != std::string::npos && p.find('/') != std::string::npos)
+        return "\"" + p + "\"";
+    return p;
+}
+
+std::string JZAgentCli::resolveProgram(const std::vector<std::string> &cands, const std::string &fallback) const
+{
+    for (size_t i = 0; i < cands.size(); ++i)
+    {
+        const std::string &c = cands[i];
+        // 全路径(含空格)整体当程序名; 否则按第一个空格拆掉参数("py -3" -> "py")
+        std::string name = (c.find('/') != std::string::npos) ? c : c.substr(0, c.find(' '));
+
+        std::map<std::string, std::string>::const_iterator it = m_config.programPaths.find(name);
+        if (it != m_config.programPaths.end() && JZFileInfo::exists(it->second))
+            return quotePath(it->second) + c.substr(name.size());   // 配置映射优先
+
+        if (programRunnable(name))
+            return (name == c) ? quotePath(c) : c;   // 带参数的候选原样返回
+    }
+    return fallback;
+}
+
+std::string JZAgentCli::deriveVerifyCmd(const std::string &script, const std::string &explicitCmd) const
 {
     if (!explicitCmd.empty())
-        return explicitCmd;
+        return explicitCmd;      // 显式命令: 调用方自己给的, 原样用(包括它选定的解释器)
     if (script.empty())
         return "";
     size_t dot = script.find_last_of('.');
     std::string ext = (dot != std::string::npos) ? str_toLower(script.substr(dot + 1)) : "";
     std::string q = "\"" + script + "\"";   // 路径含空格时保险
-    if (ext == "py")  return "python3 " + q;
-    if (ext == "sh")  return "bash " + q;
     if (ext == "exe") return q;
-    return "bash " + q;   // 默认按 shell 脚本处理
+
+    if (ext == "py")
+        return resolveProgram({"python3", "python", "py -3"}, "python3") + " " + q;
+
+    // sh 及未知后缀按 shell 脚本处理; 终端配了 shell 就优先用它
+    std::vector<std::string> shells;
+    if (!m_config.shellProgram.empty())
+        shells.push_back(m_config.shellProgram);
+    shells.push_back("bash");
+#ifdef _WIN32
+    shells.push_back("C:/Program Files/Git/bin/bash.exe");
+    shells.push_back("C:/Program Files/Git/usr/bin/bash.exe");
+    shells.push_back("C:/Program Files (x86)/Git/bin/bash.exe");
+#endif
+    return resolveProgram(shells, "bash") + " " + q;
 }
 
 void JZAgentCli::runVerify(const std::string &cmd, int timeoutMs, const std::string &cwd,
@@ -593,6 +758,21 @@ void JZAgentCli::runVerify(const std::string &cmd, int timeoutMs, const std::str
     }
 }
 
+// 喂回给模型的验证输出: 只留头尾(错误栈/断言通常在两端), 中间省略。
+// 完整输出可能几十 KB, 整段贴回上下文很容易把 token 预算顶爆(顶爆只能靠压缩救, 成功率更低);
+// 回包给界面/客户端的仍是完整输出(m_lastVerifyOutput)。
+static std::string clipForModel(const std::string &out)
+{
+    const size_t kHead = 4096;
+    const size_t kTail = 4096;
+    if (out.size() <= kHead + kTail)
+        return out;
+    std::string r = out.substr(0, kHead);
+    r += "\n...(中间省略 " + std::to_string(out.size() - kHead - kTail) + " 字节, 需要时用工具自己去看)...\n";
+    r += out.substr(out.size() - kTail);
+    return r;
+}
+
 void JZAgentCli::onLoopFinished()
 {
     // 1) 无验证脚本时, 以 agent 自身成败为准
@@ -605,7 +785,26 @@ void JZAgentCli::onLoopFinished()
         return;
     }
 
-    // 2) 运行验证脚本(退出码 0 通过, 1 失败)
+    // 2) agent 这一轮自身报错(错误重试预算已用完 / 这条错误不值得重试): 验证循环救不了它 ——
+    //    模型这会儿连请求都发不出去, 再喂回只是重复空转(白烧轮次)。但先给它一次机会:
+    //    agent 之前几轮的改动可能已经让验证脚本通过了, 只是最后一条消息没取到 ——
+    //    所以跑一次验证: 通过就算成功; 不通过就按 agent 错误收尾。
+    //    (验证循环负责的是另一类失败: 模型能干活, 但结果不对。)
+    if (m_failed)
+    {
+        int code = 1;
+        std::string out;
+        runVerify(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir, code, out);
+        if (code == 0)
+            respondTask("success", m_loopRound, m_accumReply, out, "");
+        else
+            respondTask("failed", m_loopRound, m_accumReply, out,
+                        m_lastError.empty() ? std::string("agent 执行失败") : m_lastError);
+        endLoop();
+        return;
+    }
+
+    // 3) 运行验证脚本(退出码 0 通过, 1 失败)
     int exitCode = 0;
     std::string out;
     runVerify(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir, exitCode, out);
@@ -616,6 +815,7 @@ void JZAgentCli::onLoopFinished()
     ve["exit_code"] = exitCode;
     ve["output"] = out;
     ve["passed"] = (exitCode == 0);
+    ve["max_rounds"] = m_maxLoopRounds;
     pushEvent("verify", ve);
 
     if (exitCode == 0)
@@ -625,7 +825,7 @@ void JZAgentCli::onLoopFinished()
         return;
     }
 
-    // 2) 失败: 超过最大轮次则放弃
+    // 4) 失败: 超过最大轮次则放弃
     m_loopRound++;
     if (m_loopRound >= m_maxLoopRounds)
     {
@@ -635,12 +835,29 @@ void JZAgentCli::onLoopFinished()
         return;
     }
 
-    // 3) 把验证输出喂回 agent, 自动续跑
+    // 5) 把验证输出喂回 agent, 自动续跑
+    //    先看看这一轮的失败是不是和上一轮一模一样(原地打转: 同样的改动再做一次还是会失败)
+    std::string sig = std::to_string(exitCode) + "|" + out;
+    if (sig == m_lastFeedbackSig)
+        m_sameFailCount++;
+    else
+    {
+        m_lastFeedbackSig = sig;
+        m_sameFailCount = 1;
+    }
+
     std::string feedback = "验证脚本执行失败(退出码 " + std::to_string(exitCode) + ")。"
-        "其完整输出如下:\n```\n" + out + "\n```\n"
+        "其输出如下:\n```\n" + clipForModel(out) + "\n```\n"
         "请根据以上输出定位并修复问题, 然后我会重新运行验证脚本。只做必要的修改, 不要做无关改动。";
-    if (m_failed)
-        feedback += "\n(上一轮 agent 自身也报错: " + m_lastError + ")";
+    // 9009(cmd: 不是内部或外部命令) / 127,126(sh: 命令未找到/不可执行):
+    // 这是"验证命令本身跑不起来", 不是"测试没通过" —— 得让模型知道, 否则它会一直去改被测代码。
+    if (exitCode == 9009 || exitCode == 127 || exitCode == 126)
+        feedback += "\n注意: 这个退出码说明**验证命令本身**没找到或不能执行(不是测试没通过)。"
+                    "请先把这条命令依赖的程序/脚本准备好, 或换成一条确实能跑的命令。";
+    if (m_sameFailCount >= 3)
+        feedback += "\n注意: 你已经连续 " + std::to_string(m_sameFailCount) +
+                    " 次拿到完全相同的失败输出, 说明前面的做法没有生效。这一轮请先换做法: "
+                    "用 read_file 读真正相关的文件、先把问题复现出来再改, 不要重复上一轮已经做过的修改。";
     m_accumReply.clear();
     m_failed = false;
     m_cancelled = false;
@@ -656,6 +873,9 @@ void JZAgentCli::respondTask(const std::string &status, int rounds, const std::s
     Json::Value r;
     r["status"] = status;
     r["verify_rounds"] = rounds;
+    r["retries"] = m_errorRetries + m_fixRetries;   // 本次任务用掉的重试次数(两档合计)
+    r["retries_transient"] = m_errorRetries;        // 其中"继续"档
+    r["retries_fix"] = m_fixRetries;                // 其中"改一版"档
     r["agent_reply"] = reply;
     r["last_verify_output"] = verifyOut;
     if (!err.empty())
@@ -737,6 +957,13 @@ void JZAgentCli::resetSession(bool cancelRunning)
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
+    m_lastErrorCode = JZAgent::None;
+    m_errorRetries = 0;
+    m_fixRetries = 0;
+    m_retryPending = false;
+    m_lastFeedbackSig.clear();
+    m_sameFailCount = 0;
+    m_loopEpoch++;             // 重置: 作废在途的延时重试
 }
 
 void JZAgentCli::onClientDestroyed(JZObject *)
@@ -865,16 +1092,141 @@ void JZAgentCli::onToolResult(const ToolCallResult &result)
     pushEvent("tool_result", d);
 }
 
+// ---------------------------------------------------------------------------
+// 出错自动重试
+//   瞬时错误(连接失败/超时/5xx)不该让整个任务直接判失败 —— 把错误原因告诉模型,
+//   让它从中断处继续做。分类来自 JZAgent::errorCode(): llmError() 里先置分类再发
+//   sigError, 所以 onError 里读到的就是本次错误的分类。
+// ---------------------------------------------------------------------------
+
+// "HTTP 402 错误: ..." -> 1=瞬时(原样重发有意义) / 2=可修复(原样重发必然再失败)。
+// 408/409/425/429 是超时/冲突/限流, 归瞬时; 其余 4xx 是"我们发出去的东西有问题"
+// (400 参数或工具调用 JSON 不合法、413/422 等), 归可修复: 把原因丢回模型让它改一版。
+// 没有状态码(连接失败/超时等)按瞬时处理。
+static int httpErrorMode(const std::string &err)
+{
+    if (err.compare(0, 5, "HTTP ") != 0)
+        return 1;
+
+    int code = atoi(err.c_str() + 5);
+    if (code <= 0)
+        return 1;
+    if (code >= 500 || code == 408 || code == 409 || code == 425 || code == 429)
+        return 1;
+    return (code < 400) ? 1 : 2;
+}
+
+JZAgentCli::RetryMode JZAgentCli::classifyError(JZAgent::AgentError code, const std::string &err)
+{
+    switch (code)
+    {
+        case JZAgent::ConnectError:
+        case JZAgent::TimeOutError:
+        case JZAgent::NoError:          // 内部/解析类错误: 多半是瞬时协议问题
+        case JZAgent::ToolCallError:
+            return RetryTransient;
+        case JZAgent::HttpError:
+            return (httpErrorMode(err) == 2) ? RetryFix : RetryTransient;
+        case JZAgent::MaxRoundError:
+            // 轮次用尽只是"这一轮预算跑完": llmEnd() 已把轮次计数清零, 发条"继续"就能接着干
+            // (总量仍受重试次数约束, 不会无限跑)。
+            return RetryTransient;
+        case JZAgent::MaxTokenError:
+            // 上下文撑爆: 原样重发还是超, 但"让模型收着点"(别再整段贴文件/贴输出)常能救回来。
+            return RetryFix;
+        default:                        // None / UserCancelError
+            return RetryNone;
+    }
+}
+
+// 重试时喂给模型的"接着干"消息: 带上出错原因, 让它从中断处继续 / 换个做法
+std::string JZAgentCli::buildRetryPrompt(RetryMode mode, const std::string &err) const
+{
+    std::string e = err.empty() ? std::string("(无错误信息)") : err;
+    if (e.size() > 300)
+        e = e.substr(0, 300) + "…";
+
+    if (mode == RetryFix)
+        return "上一次请求被服务端拒绝了: " + e + "\n"
+               "这是第 " + std::to_string(m_fixRetries) + " 次修正尝试: 原样重发还会被拒, "
+               "请换一个做法把当前任务做完 —— 若上一条工具调用的参数不是合法 JSON, 就重新发一个参数合法的调用; "
+               "若上下文太长, 不要再整段贴文件/整段贴命令输出, 改用搜索定位到具体行再看; "
+               "已经完成的部分不要重复做, 已经确认的结论直接沿用。";
+
+    return "上一次请求因错误中断: " + e + "\n"
+           "这是一次自动重试, 请从中断处继续完成当前任务: 已经完成的部分不要重复做, "
+           "已经确认的结论直接沿用; 若任务其实已经完成, 直接给出最终结论即可。";
+}
+
+// 记一次重试 -> 等 retryDelayMs -> 再 request 一条"继续/修正"消息(结束后重新进 onFinished 走验证)
+void JZAgentCli::scheduleErrorRetry(RetryMode mode)
+{
+    int epoch = m_loopEpoch;              // 记下当前任务世代, 延时期间任务换掉就不再续跑
+    bool fix = (mode == RetryFix);
+    int next = (fix ? m_fixRetries : m_errorRetries) + 1;
+    int budget = fix ? m_maxFixRetries : m_maxErrorRetries;
+    std::string err = m_lastError;
+
+    // 半截回复作废, 重试后重新累积(与验证失败续跑同一套语义); 成败等重试结果出来再定
+    m_accumReply.clear();
+    m_failed = false;
+    m_lastError.clear();
+
+    Json::Value d;
+    d["error"] = err;
+    d["code"] = (int)m_lastErrorCode;
+    d["mode"] = fix ? "fix" : "continue";    // fix = 让模型换做法; continue = 从中断处接着干
+    d["retry"] = next;
+    d["max_retries"] = budget;
+    d["delay_ms"] = m_retryDelayMs;
+    pushEvent("retry", d);
+
+    jzWarning().nospace() << "agent 报错, 第 " << next << "/" << budget
+                          << (fix ? " 次修正式重试" : " 次自动重试")
+                          << "(" << m_retryDelayMs << "ms 后): " << err;
+
+    auto fire = [this, epoch, err, mode]() {
+        m_retryPending = false;
+        // 等待期间被取消/重置/换了任务: 不再续跑(否则会把消息发进新任务的会话里)
+        if (!m_loopActive || epoch != m_loopEpoch || !m_busy)
+            return;
+        if (!m_agent)
+            return;
+
+        if (mode == RetryFix)
+            m_fixRetries++;
+        else
+            m_errorRetries++;
+        m_agent->request(buildRetryPrompt(mode, err));
+    };
+
+    m_retryPending = true;
+    if (m_retryDelayMs > 0)
+        JZTimer::singleShot(m_retryDelayMs, this, fire);
+    else
+        fire();
+}
+
 void JZAgentCli::onError(const std::string &err)
 {
     m_failed = true;
     m_lastError = err;
+    m_lastErrorCode = m_agent ? m_agent->errorCode() : JZAgent::NoError;
+
+    RetryMode mode = classifyError(m_lastErrorCode, err);
+    bool retryable = (mode == RetryTransient) ? (m_errorRetries < m_maxErrorRetries)
+                   : (mode == RetryFix)       ? (m_fixRetries < m_maxFixRetries)
+                                              : false;
 
     // sigError 实时推给网页: 任务中途出错(LLM 失败/拒答/取消等)不再只能等最后回包
     Json::Value d;
     d["text"] = err;
     d["round"] = m_loopRound;
     d["loop_active"] = m_loopActive;
+    d["code"] = (int)m_lastErrorCode;    // 错误分类, 见 JZAgent::AgentError
+    d["retry"] = (mode == RetryFix) ? m_fixRetries : m_errorRetries;   // 该档已用掉的重试次数
+    d["retry_mode"] = (mode == RetryFix) ? "fix" : (mode == RetryTransient ? "continue" : "none");
+    d["retryable"] = retryable;          // 还会自动重试吗(网页据此提示"将自动重试")
     pushEvent("error", d);
 }
 
@@ -883,6 +1235,20 @@ void JZAgentCli::onFinished()
     // 任务被取消 / 客户端断开时不跑验证
     if (!m_loopActive)
         return;
+
+    // agent 报错: 在(分档的)重试预算内"接着发继续任务"/"让它改一版", 而不是直接判失败
+    // (预算用完才走原流程: 有验证脚本就交给验证循环处理)
+    if (m_failed)
+    {
+        RetryMode mode = classifyError(m_lastErrorCode, m_lastError);
+        if ((mode == RetryTransient && m_errorRetries < m_maxErrorRetries)
+            || (mode == RetryFix && m_fixRetries < m_maxFixRetries))
+        {
+            scheduleErrorRetry(mode);
+            return;
+        }
+    }
+
     // agent 每结束一轮就跑验证, 失败则把输出喂回 agent 自动续跑
     onLoopFinished();
 }

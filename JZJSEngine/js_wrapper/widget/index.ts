@@ -31,8 +31,9 @@
 //        import '@jz/widget';
 // 顺序要紧: 先类层(定义全局类), 再 tree(往那些原型上装方法)。
 
-// 控件族的类层(必须最先执行)
-import './classes';
+// 控件族的类层(必须最先执行); 同时作为模块命名导出, 让 `import { JZWindow } from 'widget'` 可用
+// (类对象既挂到 globalThis, 也走这里的导出, 是同一份)。
+export * from './classes';
 
 // 真控件的对象树(保活 / 弱引用父) —— 模块加载即装到全局类的原型上, 见 ./tree.ts
 export * from './tree';

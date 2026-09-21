@@ -168,6 +168,48 @@ public:
 };
 
 // ------------------------------------------------------------------
+// memory: 跨任务的长期记忆(一个纯文本文件 + read / append / replace 三个动作)
+//   记什么: 跨任务还能用上的结论 —— 环境事实(构建/运行命令、程序路径)、踩过的坑、
+//           接口/约定、最终结论。不是流水账(流水账在对话历史里, 每轮重放只会烧 token)。
+//
+//   为什么做成工具而不是"让模型自己用 write_file/modify_file 维护一个 md":
+//     - append 语义: 模型不用 read-modify-write 整个文件(长记忆时这一步极易写坏/截断)
+//     - 时间戳 + 单条一行, 格式统一, 注入时好读
+//     - 有大小上限, 不会无限膨胀(超了让模型先 replace 整理)
+//     - 文件工具被关掉(allowFileTools=false)时记忆仍然可用
+//
+//   路径由宿主 setup 给定 —— 模型改不了(工具没有 path 参数 = 没有越界面), 所以这里
+//   不做路径审核; 但要知道这条写权限是宿主授权的: 配到工作区外的路径就等于往外写。
+//   读取/注入的上限是同一个数: 超了只给**最近的**(append 语义下新的在后面), 旧内容还在
+//   文件里, 模型可以用 read_file 分段看, 或者用 replace 精简。
+// ------------------------------------------------------------------
+class JZMemoryTool : public JZCodeTool
+{
+public:
+    JZMemoryTool();
+
+    // file: 记忆文件全路径(为空则不可用); maxBytes: 注入/读取上限(<=0 取 8192)
+    void setup(const std::string &file, int maxBytes);
+
+    virtual void call(const ToolCall &params) override;
+
+    bool enabled() const { return !m_file.empty(); }
+    const std::string &file() const { return m_file; }
+
+    // 读记忆(超上限只返回尾部)。返回空串 = 还没有记忆(文件不存在/为空)。
+    // 宿主"开工注入"和工具的 read 动作走同一份逻辑 —— 模型读到的 == 注入的, 不两套。
+    // totalBytes/truncated 可选回传原始大小与是否被截断。
+    std::string readMemory(int *totalBytes = nullptr, bool *truncated = nullptr) const;
+
+private:
+    bool readRaw(std::string &text) const;                        // 整份原文(不截断, 去 BOM)
+    bool writeAll(const std::string &text, std::string &error) const;
+
+    std::string m_file;
+    int m_maxBytes = 8192;
+};
+
+// ------------------------------------------------------------------
 // 进程运行器：管理工作区内的子进程（超时 kill + 输出回传）
 //   派生类只负责决定"启动什么程序"，结果的收集、超时终止与回传由这里统一处理，
 //   避免每个用到进程的工具各写一套。

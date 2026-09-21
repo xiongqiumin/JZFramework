@@ -35,6 +35,23 @@ struct JZCliConfig
     int netTimeout = 120 * 1000;   // 网络请求超时(ms)
     int maxRounds = 100;           // 单任务最大对话轮次(-1=不限)
     int maxToken = 100000;         // 单任务 token 预算上限
+    // 出错重试: 本地跑重试几乎没有成本, 所以预算给得比较宽 —— 瞬时错误(连接失败/超时/5xx)
+    // 发条"继续"就能接着干, 不该让整个任务判失败。
+    int maxRetries = 10;           // 瞬时错误后"接着发继续任务"的次数, 0=不重试
+    int maxFixRetries = 2;         // 可修复错误(请求被拒/上下文超长)后"让模型改一版"的次数
+    int retryDelayMs = 1000;       // 两次重试之间的等待(ms)
+
+    // ---- 验证脚本门控循环的默认值(/task 的 max_verify_rounds / verify_timeout 可覆盖) ----
+    int verifyMaxRounds = 30;      // 验证失败最多喂回 agent 几轮
+    int verifyTimeoutMs = 60000;   // 单次验证脚本运行上限(ms)
+
+    // ---- 长期记忆(跨任务: 开工注入 + memory 工具读写) ----
+    //   每次任务开始时把记忆注入任务消息, 任务过程中模型用 memory 工具 append 结论。
+    //   注入放在任务消息里而不是 system prompt —— system prompt 是进程级的, 改它会连带
+    //   把 KV 前缀缓存整段作废; 任务消息本来就每次都是新的。
+    bool memoryEnabled = true;
+    std::string memoryFile;        // 记忆文件; 空 = <rootDir>/.agent_memory.md (相对路径按 rootDir 解析)
+    int memoryMaxBytes = 8192;     // 注入/读取上限(超出只给最近的; 追加的硬上限是它的 4 倍)
 
     // ---- 工作区 / 工具 ----
     std::string rootDir;
@@ -88,9 +105,11 @@ private:
 // JZAgentCli —— 通过 HTTP 暴露任务提交的 agent
 //
 // 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / verify_script /
-// verify_cmd / verify_timeout / max_verify_rounds / token?), 本端跑 JZAgent, 每轮
-// 结束跑验证脚本(返回 0 通过 / 1 失败), 失败把输出喂回 agent 自动续跑, 直到验证
-// 通过或达最大轮次, 再一次性回 JSON {status, verify_rounds, agent_reply, ...}。
+// verify_cmd / verify_timeout / max_verify_rounds / max_retries / max_fix_retries /
+// retry_delay_ms / use_memory / token?), 本端跑 JZAgent, 每轮结束跑验证脚本(返回 0 通过 / 1 失败),
+// 失败把输出喂回 agent 自动续跑, 直到验证通过或达最大轮次, 再一次性回 JSON
+// {status, verify_rounds, retries, agent_reply, last_verify_output, ...}。
+// agent 中途报错不会直接判失败: 在(分档的)重试预算内自动"接着干"(见 RetryMode)。
 //
 // 工具由本端**本地执行**: JZAgent 直接调用 agent_tool 里的工具(走 JZAgentTool 接口),
 // 不经过 MCP。所以 agent_cli = "没有 UI 的 code_agent" + HTTP 传输层。
@@ -148,6 +167,12 @@ protected:
     void setupAgent();
     std::string buildSystemPrompt() const;
 
+    // ---- 长期记忆(跨任务) ----
+    // 记忆文件全路径: 配置 memory.file 优先(相对路径按 rootDir 解析), 空则 <rootDir>/.agent_memory.md
+    std::string memoryFilePath() const;
+    // 开工时注入任务消息的记忆头部(未启用/还没有记忆时返回空串)。注入与 memory read 同一份逻辑。
+    std::string buildMemoryBlock() const;
+
     std::string extractUserText(const Json::Value &params);
 
     // JZAgent 信号
@@ -158,11 +183,25 @@ protected:
     void onError(const std::string &err);
     void onFinished();
 
+    // ---- 出错自动重试(在重试预算内"接着发继续任务") ----
+    // 分两档:
+    //   Transient 瞬时错误(连接失败/超时/5xx/轮次用尽): 原样"继续"就行, 预算 maxRetries;
+    //   Fix       可修复错误(4xx 请求被拒/上下文撑爆): 原样重发必然再失败, 改成"让模型换做法"
+    //             (重发合法的工具调用 / 别整段贴文件), 预算 maxFixRetries;
+    //   None      用户取消等: 不重试, 直接判失败。
+    enum RetryMode { RetryNone = 0, RetryTransient = 1, RetryFix = 2 };
+    static RetryMode classifyError(JZAgent::AgentError code, const std::string &err);
+    std::string buildRetryPrompt(RetryMode mode, const std::string &err) const;
+    void scheduleErrorRetry(RetryMode mode);
+
     // 有没有 SSE 订阅者: 没有就不必构造高频的流式事件(thinking/reply)JSON
     bool hasEventConsumer() const { return !m_eventClients.empty(); }
 
     // HTTP 传输 + 验证脚本门控循环
-    static std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd);
+    std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd) const;
+    // 从候选里挑一个"本机真能跑"的解释器(配置 programPaths 优先, 否则探测):
+    // Windows cmd 下 python3 / bash 常常不存在, 硬写会让验证脚本永远起不来。
+    std::string resolveProgram(const std::vector<std::string> &cands, const std::string &fallback) const;
     static void runVerify(const std::string &cmd, int timeoutMs, const std::string &cwd,
                          int &exitCode, std::string &output);
     void onLoopFinished();
@@ -179,11 +218,22 @@ protected:
     JZVirtualTerminal *m_terminal = nullptr;
     JZAgent *m_agent = nullptr;
     std::vector<JZAgentTool *> m_tools;
+    JZMemoryTool *m_memory = nullptr;    // 非拥有(m_tools 持有); 未启用记忆时为空
 
     std::atomic<bool> m_busy{false};
     std::atomic<bool> m_failed{false};
     std::atomic<bool> m_cancelled{false};
     std::string m_lastError;
+
+    // 出错重试状态(每个任务一份: submitTask/resetSession 里清零)
+    JZAgent::AgentError m_lastErrorCode = JZAgent::None;  // 本次错误分类, sigError 时从 agent 取
+    int m_errorRetries = 0;          // 本任务已用掉的"瞬时错误"重试次数
+    int m_maxErrorRetries = 0;       // 瞬时错误预算(来自配置, 可被 /task 的 max_retries 覆盖)
+    int m_fixRetries = 0;            // 本任务已用掉的"可修复错误"重试次数
+    int m_maxFixRetries = 0;         // 可修复错误预算(可被 /task 的 max_fix_retries 覆盖)
+    int m_retryDelayMs = 1000;       // 重试等待(ms), 可被 /task 的 retry_delay_ms 覆盖
+    bool m_retryPending = false;     // 已排队一次延时重试, 等 JZTimer 触发
+    int m_loopEpoch = 0;             // 任务世代号: 新任务/重置时 +1, 作废在途的延时重试
 
     // HTTP 传输
     JZHttpServer *m_http = nullptr;
@@ -195,6 +245,8 @@ protected:
     int m_verifyTimeoutMs = 60000;
     std::string m_accumReply;                        // 累积本轮 agent 最终回复
     std::string m_lastVerifyOutput;
+    std::string m_lastFeedbackSig;                   // 上一轮"喂回模型"的失败签名(退出码+输出)
+    int m_sameFailCount = 0;                         // 连续拿到完全一致失败的次数(识别原地打转)
     bool m_sessionStarted = false;                   // 是否已发起过首轮 request(避免首轮 reset 告警)
 
     // 传输无关扩展

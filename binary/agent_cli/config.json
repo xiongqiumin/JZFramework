@@ -9,7 +9,21 @@
         "token":            "",
         "netTimeoutMs":     120000,
         "maxRounds":        100,
-        "maxToken":         100000
+        "maxToken":         100000,
+        "maxRetries":       10,
+        "maxFixRetries":    2,
+        "retryDelayMs":     1000
+    },
+
+    "verify": {
+        "maxRounds":        30,
+        "timeoutMs":        60000
+    },
+
+    "memory": {
+        "enabled":          true,
+        "file":             "",
+        "maxBytes":         8192
     },
 
     "terminal": {

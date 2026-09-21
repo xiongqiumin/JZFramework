@@ -1,19 +1,32 @@
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e6e9ef;
-  --muted: #8a93a6;
-  --accent: #4f8cff;
-  --accent-2: #2c6fe0;
-  --ok: #3fb950;
-  --fail: #f85149;
-  --user: #2c6fe0;
+  /* 亮色主题 */
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #f7f8fa;
+  --field: #ffffff;
+  --border: #e2e5ea;
+  --border-strong: #cbd2dc;
+  --text: #1f2328;
+  --muted: #6b7280;
+  --accent: #2f6fed;
+  --accent-2: #1f5bd0;
+  --ok: #1a7f37;
+  --fail: #cf222e;
+  --user: #2f6fed;
+  --shadow: 0 1px 2px rgba(31, 35, 40, .06);
 }
 
 * { box-sizing: border-box; }
 .hidden { display: none; }
+
+/* 细滚动条 */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent; border-radius: 999px;
+  background: #cbd2dc; background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: #adb6c2; background-clip: content-box; }
 
 html, body {
   margin: 0;
@@ -55,7 +68,7 @@ html, body {
 
 .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(26,127,55,.18); }
 .dot.off { background: var(--fail); }
 
 /* 顶栏: 模型地址(GET /info) */
@@ -93,7 +106,7 @@ button { cursor: pointer; border: none; border-radius: 8px; font-size: 14px; }
   font-size: 12px; color: var(--muted);
 }
 .settings input, .composer input {
-  background: var(--bg);
+  background: var(--field);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 8px;
@@ -176,7 +189,7 @@ body.resizing iframe { pointer-events: none; }
 .pending-item {
   display: flex; align-items: flex-start; gap: 10px;
   border: 1px dashed var(--border); border-radius: 10px;
-  padding: 8px 10px; background: var(--bg);
+  padding: 8px 10px; background: var(--panel-2);
 }
 .pending-item .p-no { flex: none; font-size: 11px; font-weight: 700; color: var(--accent); }
 .pending-item .p-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
@@ -195,25 +208,26 @@ body.resizing iframe { pointer-events: none; }
   border: 1px solid var(--border); border-radius: 10px;
   background: var(--panel-2); padding: 10px 11px;
   cursor: pointer; display: flex; flex-direction: column; gap: 7px;
+  box-shadow: var(--shadow);
 }
-.task-card:hover { border-color: #3a4152; }
-.task-card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(79,140,255,.35); }
-.task-card.done-ok { border-color: rgba(63,185,80,.35); }
-.task-card.done-fail { border-color: rgba(248,81,73,.35); }
-.task-card.done-cancel { border-color: var(--border); opacity: .75; }
+.task-card:hover { border-color: var(--border-strong); }
+.task-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(47,111,237,.18); }
+.task-card.done-ok { border-color: rgba(26,127,55,.45); }
+.task-card.done-fail { border-color: rgba(207,34,46,.4); }
+.task-card.done-cancel { border-color: var(--border); opacity: .78; }
 
 .task-top { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); }
 .task-no { font-weight: 700; color: var(--text); }
 .task-badge { padding: 1px 7px; border-radius: 999px; font-weight: 600; font-size: 11px; }
-.task-badge.run { background: rgba(79,140,255,.16); color: var(--accent); }
-.task-badge.ok { background: rgba(63,185,80,.15); color: var(--ok); }
-.task-badge.fail { background: rgba(248,81,73,.15); color: var(--fail); }
-.task-badge.cancel { background: rgba(138,147,166,.18); color: var(--muted); }
+.task-badge.run { background: rgba(47,111,237,.12); color: var(--accent); }
+.task-badge.ok { background: rgba(26,127,55,.12); color: var(--ok); }
+.task-badge.fail { background: rgba(207,34,46,.1); color: var(--fail); }
+.task-badge.cancel { background: rgba(107,114,128,.14); color: var(--muted); }
 
 .task-title {
   font-size: 13px; line-height: 1.6; color: var(--text);
   white-space: pre-wrap; word-break: break-word;
-  display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .task-verify { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
 .task-verify .row { display: flex; align-items: baseline; gap: 6px; }
@@ -221,6 +235,7 @@ body.resizing iframe { pointer-events: none; }
 .task-verify .cmd {
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12px; color: var(--text);
   word-break: break-all;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .task-verify .none { font-style: italic; opacity: .75; }
 .task-concl {
@@ -232,11 +247,13 @@ body.resizing iframe { pointer-events: none; }
 .task-concl .text {
   color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word;
   font-size: 12px;
+  /* 结论可能很长: 卡片里只露 3 行, 完整内容看右侧对话/悬停 title */
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .task-concl .text.ok { color: var(--ok); }
 .task-out {
   margin: 2px 0 0; padding: 8px; max-height: 180px; overflow: auto;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--field); border: 1px solid var(--border); border-radius: 8px;
   white-space: pre-wrap; word-break: break-word;
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted);
 }
@@ -249,20 +266,23 @@ body.resizing iframe { pointer-events: none; }
   white-space: pre-wrap; word-break: break-word;
 }
 .msg.user .bubble { background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
-.msg.assistant .bubble { background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.msg.assistant .bubble {
+  background: var(--panel); border: 1px solid var(--border);
+  border-bottom-left-radius: 4px; box-shadow: var(--shadow);
+}
 .msg.assistant .bubble i { color: var(--muted); }
 
 .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .badge { padding: 1px 8px; border-radius: 999px; font-weight: 600; font-size: 11px; }
-.badge.ok { background: rgba(63,185,80,.15); color: var(--ok); }
-.badge.fail { background: rgba(248,81,73,.15); color: var(--fail); }
+.badge.ok { background: rgba(26,127,55,.12); color: var(--ok); }
+.badge.fail { background: rgba(207,34,46,.1); color: var(--fail); }
 .rounds { color: var(--muted); }
 .err { color: var(--fail); font-size: 13px; }
 .verifyout { margin-top: 4px; font-size: 12px; color: var(--muted); }
 .verifyout summary { cursor: pointer; user-select: none; }
 .verifyout pre {
   margin: 6px 0 0; padding: 10px; max-height: 240px; overflow: auto;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--field); border: 1px solid var(--border); border-radius: 8px;
   white-space: pre-wrap; word-break: break-word; font-size: 12px;
 }
 
@@ -286,7 +306,7 @@ body.resizing iframe { pointer-events: none; }
 .composer input:focus { outline: none; border-color: var(--accent); }
 .composer textarea {
   width: 100%; resize: none;
-  background: var(--bg); color: var(--text);
+  background: var(--field); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px;
   padding: 10px 12px; font-size: 14px; line-height: 1.5;
   font-family: inherit;
@@ -305,27 +325,53 @@ body.resizing iframe { pointer-events: none; }
   font-size: 12px; line-height: 1.5; color: var(--muted);
   white-space: pre-wrap; word-break: break-word;
 }
-.sys.err { color: var(--fail); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.08); }
-.sys.ok { color: var(--ok); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
+.sys.err { color: var(--fail); border-color: rgba(207,34,46,.35); background: rgba(207,34,46,.06); }
+.sys.ok { color: var(--ok); border-color: rgba(26,127,55,.35); background: rgba(26,127,55,.06); }
 .sys.dim { opacity: .65; font-size: 11px; padding: 3px 10px; }
 
-/* 过程行(来自 SSE: thinking / reply / tool_call / tool_result) */
+/* 执行过程(SSE: thinking / reply / tool_call / tool_result) —— 时间线式步骤行 */
 .proc {
-  align-self: flex-start; max-width: 88%;
-  padding: 6px 11px; border-radius: 10px;
-  background: var(--panel-2); border: 1px solid var(--border);
-  font-size: 12px; line-height: 1.5; color: var(--muted);
-  white-space: pre-wrap; word-break: break-word;
-  max-height: 150px; overflow: auto;
+  align-self: stretch;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 7px 12px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  animation: procIn .16s ease-out;
 }
-.proc.think { font-style: italic; opacity: .85; }
-.proc.say { color: var(--text); }
-.proc.tool {
-  color: var(--accent);
+.proc + .proc { margin-top: -6px; }   /* 连续步骤紧凑成一串 */
+
+.proc-head { display: flex; align-items: center; gap: 7px; }
+.proc-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--border-strong); }
+.proc-tag { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .5px; color: var(--muted); }
+.proc-name {
+  min-width: 0; font-size: 12px; font-weight: 600; color: var(--text);
   font-family: ui-monospace, Consolas, "Courier New", monospace;
+  word-break: break-all;
 }
-.proc.res { color: var(--ok); font-family: ui-monospace, Consolas, "Courier New", monospace; }
-.proc.res.fail { color: var(--fail); }
+.proc-body { max-height: 132px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.proc-body.mono { font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12px; }
+
+/* 分类: 左侧色条 + 圆点 */
+.proc.think { border-left-color: var(--border-strong); }
+.proc.think .proc-body { font-style: italic; color: var(--muted); }
+.proc.say { border-left-color: var(--accent); }
+.proc.say .proc-dot { background: var(--accent); }
+.proc.tool { border-left-color: #7c5cff; }
+.proc.tool .proc-dot { background: #7c5cff; }
+.proc.res { border-left-color: var(--ok); }
+.proc.res .proc-dot { background: var(--ok); }
+.proc.res.fail { border-left-color: var(--fail); }
+.proc.res.fail .proc-dot { background: var(--fail); }
+.proc.res.fail .proc-body { color: var(--fail); }
+
+@keyframes procIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
 
 /* 窄屏: 左侧栏收窄 / 折到对话上方, 保证"任务与验证"不被整段隐藏 */
 @media (max-width: 980px) {

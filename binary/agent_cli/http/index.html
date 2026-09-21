@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JZAgent 网页控制台</title>
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
 <div class="app">
@@ -42,13 +42,9 @@
         <button id="clearTasksBtn" class="ghost tiny">清空</button>
       </div>
       <div class="side-body">
-        <div class="side-group"><span>当前任务</span><span id="curHint" class="hint"></span></div>
-        <ul id="curList" class="task-list"></ul>
-        <div id="curEmpty" class="side-empty">暂无运行中的任务。</div>
-
-        <div class="side-group"><span>历史任务</span><span id="histHint" class="hint"></span></div>
+        <div class="side-group"><span>任务</span><span id="histHint" class="hint"></span></div>
         <ul id="histList" class="task-list"></ul>
-        <div id="histEmpty" class="side-empty">完成的任务会归档到这里（含验证脚本与结论）。</div>
+        <div id="histEmpty" class="side-empty">提交任务后会显示在这里（运行中 → 通过/失败），含验证脚本与结论；列表只留最近 20 条，更早的记录在右侧对话里。</div>
       </div>
     </aside>
 
@@ -79,6 +75,6 @@
     </div>
   </div>
 </div>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

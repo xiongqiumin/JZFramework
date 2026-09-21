@@ -47,7 +47,21 @@ static const char *kDefaultConfigJson = R"json({
         "token":            "",
         "netTimeoutMs":     120000,
         "maxRounds":        100,
-        "maxToken":         100000
+        "maxToken":         160000,
+        "maxRetries":       10,
+        "maxFixRetries":    2,
+        "retryDelayMs":     1000
+    },
+
+    "verify": {
+        "maxRounds":        30,
+        "timeoutMs":        60000
+    },
+
+    "memory": {
+        "enabled":          true,
+        "file":             "",
+        "maxBytes":         8192
     },
 
     "terminal": {
@@ -201,6 +215,18 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigInt(root, "llm", "netTimeoutMs", "netTimeout", config.netTimeout);
     readConfigInt(root, "llm", "maxRounds", "maxRounds", config.maxRounds);
     readConfigInt(root, "llm", "maxToken", "maxToken", config.maxToken);
+    readConfigInt(root, "llm", "maxRetries", "maxRetries", config.maxRetries);
+    readConfigInt(root, "llm", "maxFixRetries", "maxFixRetries", config.maxFixRetries);
+    readConfigInt(root, "llm", "retryDelayMs", "retryDelayMs", config.retryDelayMs);
+
+    // verify(验证脚本门控循环的默认值: /task 里同名参数可覆盖)
+    readConfigInt(root, "verify", "maxRounds", "verifyMaxRounds", config.verifyMaxRounds);
+    readConfigInt(root, "verify", "timeoutMs", "verifyTimeoutMs", config.verifyTimeoutMs);
+
+    // memory(跨任务长期记忆: 开工注入 + memory 工具读写)
+    readConfigBool(root, "memory", "enabled", "memoryEnabled", config.memoryEnabled);
+    readConfigString(root, "memory", "file", "memoryFile", config.memoryFile);
+    readConfigInt(root, "memory", "maxBytes", "memoryMaxBytes", config.memoryMaxBytes);
 
     // terminal(工作区 / shell / 会话回收 / 工具与命令策略: 都是本地终端这一摊)
     readConfigString(root, "terminal", "rootDir", "rootDir", config.rootDir);
@@ -294,6 +320,22 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  模型      %s @ %s\n",
             config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
             config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
+    string retry = "关";
+    if (config.maxRetries > 0 || config.maxFixRetries > 0)
+        retry = "瞬时 " + to_string(config.maxRetries) + " 次 + 修正 " + to_string(config.maxFixRetries)
+                + " 次, 间隔 " + to_string(config.retryDelayMs) + " ms";
+    fprintf(stderr, "  出错重试  %s\n", retry.c_str());
+    fprintf(stderr, "  验证循环  最多 %d 轮, 单次超时 %d ms\n",
+            config.verifyMaxRounds, config.verifyTimeoutMs);
+    if (!config.memoryEnabled)
+        fprintf(stderr, "  长期记忆  关\n");
+    else
+        fprintf(stderr, "  长期记忆  %s  (注入上限 %d 字节)\n",
+                config.memoryFile.empty()
+                    ? (config.rootDir.empty() ? string("<工作区>/.agent_memory.md")
+                                              : config.rootDir + "/.agent_memory.md").c_str()
+                    : config.memoryFile.c_str(),
+                config.memoryMaxBytes);
     fprintf(stderr, "  工作区    %s\n",
             (config.rootDir.empty() ? string(JZDir::currentPath() + "  (配置为空, 取进程目录)") : config.rootDir).c_str());
     fprintf(stderr, "  授信目录  %s\n", trusted.empty() ? "(无)" : trusted.c_str());

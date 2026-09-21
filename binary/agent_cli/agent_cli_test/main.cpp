@@ -431,6 +431,14 @@ protected:
             procLine(clr(CLR_RED), "⚠", d.isMember("text") ? d["text"].asString() : "", 300);
             return;
         }
+        if (type == "retry")
+        {
+            std::string tag = "↻ 自动重试 "
+                + std::to_string(d.isMember("retry") ? d["retry"].asInt() : 1) + "/"
+                + std::to_string(d.isMember("max_retries") ? d["max_retries"].asInt() : 0);
+            procLine(clr(CLR_YELLOW), tag, d.isMember("error") ? d["error"].asString() : "", 300);
+            return;
+        }
     }
 
     void onSseFinished()

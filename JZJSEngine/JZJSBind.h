@@ -187,6 +187,9 @@ public:
     template <size_t... idx>
     Return callFunction(JSContext* ctx, JSValueConst* argv, index_sequence<idx...>)
     {
+        // 形参是从 argv **借用**转换来的: 值类型/字符串等是拷贝, 形参类型为 JSValue 时就是
+        // argv[i] 本身(不 JS_DupValue)。所以 lambda 里不能对 JSValue 形参 JS_FreeValue,
+        // 要留存请自己 JS_DupValue(详见 JZJSType.cpp 的 fromJSValue<JSValue>)。
         return func((fromJSValue<remove_cvr_special_t<Args>>(ctx, argv[idx]))...);
     }
 

@@ -20,6 +20,15 @@ CFunction::~CFunction()
 }
 
 // from js
+// JSValue 形参 = **借用引用(borrowed)**, 与 quickjs C API 的 argv 约定一致:
+// 绑定层把调用方的 argv[i] 原样交过来, 不 JS_DupValue。于是:
+//   * 只是"读一下"(jsValueToBytes / JS_IsFunction / JS_Call ...) —— 直接用, 不要 free;
+//   * 要**留下来**(挂监听、存成员、跨调用持有) —— 自己 JS_DupValue 一次(如 JZJSEventSink::on),
+//     并在释放时 free 自己那一份。
+// ⚠ 绝不能对形参调 JS_FreeValue —— 那减的是**调用方(JS 侧)**那一份的引用计数, 会提前析构
+//   => UAF(历史 bug: JZJSHttpResponse::write/end, 表现是 res.end() 发完响应后引擎 0xC0000005)。
+// 反过来若在这里 JS_DupValue(改成"移交所有权"), 则所有只读形参的调用点都会每次泄漏一个引用
+// (如 socket.write(buf) 循环 -> 缓冲区永不回收), 代价更大。
 template <>
 JSValue fromJSValue(JSContext* ctx, JSValueConst value)
 {

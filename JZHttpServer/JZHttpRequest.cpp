@@ -28,10 +28,16 @@ std::string urlDecode(const std::string& s)
 }
 
 // URL 编码: 直接复用 mongoose 的 mg_url_encode(非 url-safe 字符统一编为 %XX)。
+// ⚠ 缓冲区必须留足余量: mg_url_encode 的循环**每一轮开头**都要求 `已写字节数 n + 4 < len`,
+//   不满足就**直接 return 0**(一个字节都不写 = 编成空串)。按"最长 3 倍"算出的 len = 3k+1
+//   在两种常见输入上会被判 0:
+//     * 单字符(k=1, len=4): 首轮 n+4 = 4 >= 4;
+//     * 全是不安全字符(每字 3 字节, 末轮 n = 3k-3, 3k+1 >= 3k+1)。
+//   实测影响: `?room_id=1` 里那个 "1" 被编成空串 => JZHttpRequest::query() 还原出 "room_id=",
+//   JS 侧拿到残缺的 req.url。这里给 +8 余量(最坏情形 3k+1 < 3k+8 恒成立)。
 std::string urlEncode(const std::string& s)
 {
-    // 编码后最长 3 倍 + 1, mg_url_encode 内部会在溢出时返回 0(不写入), 故预留余量。
-    std::string out(s.size() * 3 + 1, '\0');
+    std::string out(s.size() * 3 + 8, '\0');
     size_t n = mg_url_encode(s.data(), s.size(), &out[0], out.size());
     out.resize(n);
     return out;

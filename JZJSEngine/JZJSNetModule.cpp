@@ -767,7 +767,9 @@ void JZJSHttpResponse::write(JSValue data)
         if (JZJSNetModule::jsValueToBytes(ctx, data, buf))
             body.append(buf);
     }
-    JS_FreeValue(ctx, data);
+    // 注意: data 是绑定层传进来的**借用**引用(fromJSValue<JSValue> 直接返回 argv[i], 不 dup),
+    // 不能在这里 JS_FreeValue —— 释放的是调用方(JS 侧)那一份, 引用计数被多减一次 => UAF
+    // (表现: res.end() 发完响应后 JS 引擎崩/卡, 退出码 0xC0000005)。对齐 JZJSNetSocket::write。
 }
 
 void JZJSHttpResponse::end(JSValue data)
@@ -782,7 +784,7 @@ void JZJSHttpResponse::end(JSValue data)
         if (JZJSNetModule::jsValueToBytes(ctx, data, buf))
             body.append(buf);
     }
-    JS_FreeValue(ctx, data);
+    // 同 write(): data 是借用引用, 不能 free(见上)。
 
     if (finished || !client)
     {

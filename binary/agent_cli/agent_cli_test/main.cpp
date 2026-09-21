@@ -276,10 +276,17 @@ protected:
         m_cli = cli;
 
         // 构造提交体
-        std::string prompt = m_case.prompt;
+        std::string system_prompt = R"(你是 c++ 开发助手，按照这套固定流程开发：
+1. 产出代码必须是 `.ts` 源码；
+2. 项目使用 `tsc` 编译，tsconfig 配置：target ES2020，module CommonJS，rootDir ./src，outDir ./dist；
+3. 编译后 dist 目录会生成 main.js；
+4. 运行命令：`code_runtime --root ./dist`，code_runtime 要求 --root 目录下**直接存在 main.js**，不能嵌套；
+5. 输出规范：优先输出 src 下 ts 代码，附带必要 tsconfig.json/package.json，不要直接输出 js；)";
+        std::string prompt = system_prompt + "\n" + m_case.prompt;
         if (!m_case.input.empty() && !m_httpPromptExtra.empty())
             prompt += m_httpPromptExtra;
 
+        jzDebug() << prompt;
         Json::Value req;
         req["prompt"] = prompt;
         if (!m_case.verifyCmd.empty())
@@ -299,8 +306,6 @@ protected:
                 progs += ", ";
             progs += kv.first + "=" + kv.second;
         }
-        jzDebug().nospace() << clr(CLR_GRAY) << "  程序映射: "
-                            << (progs.empty() ? "(无)" : progs) << clr(CLR_RESET);
 
         // 起网页那套 HTTP(POST /task + GET /events), 再以客户端身份订阅事件流 -> 实时打印过程
         cli->startHttp();
@@ -956,7 +961,6 @@ int main(int argc, char *argv[])
                 line += ", ";
             line += kv.first + "=" + kv.second;
         }
-        jzDebug().nospace() << clr(CLR_GRAY) << "程序映射(agent 可用): " << line << clr(CLR_RESET);
     }
 
     std::vector<BenchmarkCase> cases;

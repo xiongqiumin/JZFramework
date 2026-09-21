@@ -154,6 +154,19 @@ private:
     void onTableAdd();
     void onTableAdd10();
     void onTableClear();
+    // Table 选中: 点击单元格 / 方向键 (JZTableWidget 的 currentRowChanged/currentColumnChanged)
+    void onTableRowChanged(int row);
+    void onTableColChanged(int col);
+    void logTableSelection();
+    void onTableSelBehaviorChanged(int idx);   // 选择粒度: 按单元格 / 按整行
+
+    // ListWidget 演示: 增删项 / 清空 / 选中
+    void appendListItems(int n);
+    void onListAdd();
+    void onListRemove();
+    void onListClear();
+    void onListSelected(int idx);
+    void onListActivated(int idx);
 
     JZListWidget    *m_list = nullptr;
     JZWidget        *m_top = nullptr;
@@ -174,6 +187,10 @@ private:
     // Table 演示
     JZTableWidget* m_table = nullptr;
     int m_tableSeq = 0;
+
+    // ListWidget 演示
+    JZListWidget* m_listDemo = nullptr;
+    int m_listSeq = 0;
 
     // Animation 演示
     JZAnimationGroup* m_animGroup = nullptr;   // 组并行驱动 x/y/w/h 四条动画

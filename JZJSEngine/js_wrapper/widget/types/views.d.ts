@@ -40,7 +40,11 @@ declare class JZListWidget extends JZWidget {
   setItemHeight(h: number): void;
   itemHeight(): number;
 
-  /** 当前项索引变化(属性形) */
+  /**
+   * 当前项索引变化(属性形)。
+   * `index` 为 `-1` 表示**没有选中项**: 摘除当前项(removeItem)或 clear() 时发一次。
+   * 注意摘除当前项不会自动把选择挪到邻项 —— 要保持选中就自己再 setCurrentIndex()。
+   */
   onCurrentIndexChanged: ((index: number) => void) | null;
   /** 激活(点击项 / Enter)(属性形) */
   onActivated: ((index: number) => void) | null;
@@ -104,9 +108,17 @@ declare class JZTableWidget extends JZWidget {
   setColumnWidth(col: number, w: number): void;
 
   // ---- 选择 ----
+  // 点单元格 / 方向键都会选中(选中处蓝底高亮), 变化时发 onCurrentRowChanged / onCurrentColumnChanged;
+  // 这些入口用于代码里主动定位。
   setCurrentCell(row: number, col: number): void;
   currentRow(): number;
   currentColumn(): number;
+  /**
+   * 选中粒度: `0` = 单元格(默认) / `1` = 整行 (对齐 Qt SelectItems/SelectRows)。
+   * 两种模式下 currentRow/currentColumn 都是"当前格", 只有高亮范围不同。
+   */
+  setSelectionBehavior(behavior: number): void;
+  selectionBehavior(): number;
 
   /** 当前行 / 列变化(属性形) */
   onCurrentRowChanged: ((row: number) => void) | null;

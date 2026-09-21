@@ -2219,6 +2219,11 @@ void JZJSWidgetModule::registViews()
     bind_table.def("setCurrentCell", [](JZTableWidget* t, int r, int c) { t->setCurrentCell(r, c); });
     bind_table.def("currentRow", [](JZTableWidget* t) { return t->currentRow(); });
     bind_table.def("currentColumn", [](JZTableWidget* t) { return t->currentColumn(); });
+    // 选中粒度: 0 = 单元格(默认, Qt SelectItems), 1 = 整行(Qt SelectRows) —— 取值同 C++ 枚举
+    bind_table.def("setSelectionBehavior", [](JZTableWidget* t, int b) {
+        t->setSelectionBehavior((JZTableWidget::SelectionBehavior)b);
+    });
+    bind_table.def("selectionBehavior", [](JZTableWidget* t) { return (int)t->selectionBehavior(); });
     defSignalProperty(bind_table, "onCurrentRowChanged", &JZTableWidget::currentRowChanged);
     defSignalProperty(bind_table, "onCurrentColumnChanged", &JZTableWidget::currentColumnChanged);
 

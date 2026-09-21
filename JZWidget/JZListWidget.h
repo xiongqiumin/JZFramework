@@ -110,6 +110,8 @@ public:
     void setCurrentItem(JZListWidgetItem* item, bool emitSignal = true);
 
 jz_signals:
+    // 当前项变化; **-1 = 无选中** (摘除当前项 / clear() 时发一次)。
+    // 摘除当前项后不会自动把选择挪到邻项(Qt 语义), 要保持选中由调用方自己 setCurrentIndex。
     JZSigInt currentIndexChanged;
     JZSigInt sigActivated;   // 激活 (点击项 / Enter), 下拉弹层收编用
     JZSigVoid sigDataChanged;   // 数据(增删项/文本/图标/data)变化 —— 外部观察者(JS onDataChanged)用

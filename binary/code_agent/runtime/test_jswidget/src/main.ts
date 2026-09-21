@@ -1,9 +1,9 @@
 // test_jswidget —— test/widget/widget(C++ 控件演示 test_widget) 的 **TS 版**。
 //
-// 对照关系(左侧列表的 20 项与 C++ 版一一对应):
+// 对照关系(左侧列表的 21 项与 C++ 版一一对应):
 //   Label / PushButton / Slider / ProgressBar / Switch / Checkbox / RadioButton / ComboBox /
-//   LineEdit / TextEdit / Table / ImageLabel / Dialog / TabWidget / Splitter / SpinBox /
-//   ScrollBar / GroupBox / ScrollArea / Animation
+//   LineEdit / TextEdit / ListWidget / TableWidget / ImageLabel / Dialog / TabWidget /
+//   Splitter / SpinBox / ScrollBar / GroupBox / ScrollArea / Animation
 //
 // 编译/运行:
 //   <tsc> -p tsconfig.json          (tsgo: <code_runtime 同目录>/ts_compiler/tsc/tsc.exe)
@@ -149,9 +149,9 @@ function button(text: string, onClick?: () => void, w?: number, h?: number): JZP
 
 const NAMES: string[] = [
     "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-    "RadioButton", "ComboBox", "LineEdit", "TextEdit", "Table", "ImageLabel",
-    "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox",
-    "ScrollArea", "Animation"
+    "RadioButton", "ComboBox", "LineEdit", "TextEdit", "ListWidget", "TableWidget",
+    "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar",
+    "GroupBox", "ScrollArea", "Animation"
 ];
 
 const builders: Record<string, () => JZWidget> = {};
@@ -278,13 +278,70 @@ builders.TextEdit = function (): JZWidget {
     return page;
 };
 
-// ---- Table ----
-builders.Table = function (): JZWidget {
+// ---- ListWidget ----
+builders.ListWidget = function (): JZWidget {
     const { page, lay } = makePage();
+    const list = K(new JZListWidget());
+    list.setObjectName("demoList");
+    list.setItemHeight(26);
+    lay.addWidget(list, 1);
+
+    // 选中/激活: 列表自己会发 (点击项 = 先选中再激活); i === -1 表示"无选中"(摘除当前项/清空)
+    list.onCurrentIndexChanged = (i) => { if (i >= 0) log("list select: " + i + " '" + list.itemText(i) + "'"); };
+    list.onActivated = (i) => log("list activated: " + i + " '" + list.itemText(i) + "'");
+
+    let seq = 0;
+    function appendItems(n: number): void
+    {
+        for (let i = 0; i < n; i++)
+        {
+            seq++;
+            list.appendItem("item " + seq);
+        }
+        if (list.currentIndex() < 0 && list.count() > 0)
+            list.setCurrentIndex(0);          // 有选中项才看得出选中态
+        log("list items: " + list.count());
+    }
+    appendItems(3);
+
+    const { row, lay: hlay } = makeRow();
+    hlay.addWidget(button("Add Item", () => appendItems(1), 90, 28), 0);
+    hlay.addWidget(button("Remove Item", () => {
+        if (list.count() <= 0) return;
+        const i = list.currentIndex() >= 0 ? list.currentIndex() : list.count() - 1;
+        list.removeItem(i);                   // 绑定层 = takeItem + delete
+        // 摘除当前项后列表清空选择(高亮消失) —— 按常见交互补选"顶上来那一项", 让选中态连续
+        if (list.count() > 0)
+            list.setCurrentIndex(i < list.count() ? i : list.count() - 1);
+        log("list remove: " + i + ", items: " + list.count());
+    }, 110, 28), 0);
+    hlay.addWidget(button("Clear", () => { list.clear(); log("list cleared, items: 0"); }, 90, 28), 0);
+    hlay.addStretch(1);
+    lay.addWidget(row, 0);
+    return page;
+};
+
+// ---- TableWidget ----
+builders.TableWidget = function (): JZWidget {
+    const { page, lay } = makePage();
+    lay.addWidget(label("点击单元格 / 方向键 选中(蓝底高亮); 选择粒度见下方下拉框"), 0);
+
     const tbl = K(new JZTableWidget());
     tbl.setColumnCount(3);
     tbl.setHeaderLabels(["Id", "Name", "Val"]);
     lay.addWidget(tbl, 1);
+
+    // 选中变化: 点击单元格或方向键都会发
+    function logSelect(): void
+    {
+        const r = tbl.currentRow(), c = tbl.currentColumn();
+        if (r < 0 || c < 0)
+            log("table select: (none)");
+        else
+            log("table select: (" + r + ", " + c + ") = '" + tbl.itemText(r, c) + "'");
+    }
+    tbl.onCurrentRowChanged = () => logSelect();
+    tbl.onCurrentColumnChanged = () => logSelect();
 
     let seq = 0;
     function appendRows(n: number): void
@@ -309,6 +366,17 @@ builders.Table = function (): JZWidget {
         tbl.setRowCount(0);
         log("table cleared, rows: 0");
     }, 90, 28), 0);
+
+    // 选中粒度: 0 = 按单元格(默认) / 1 = 按整行
+    const cbSel = K(new JZComboBox());
+    cbSel.setObjectName("cbTableSel");
+    cbSel.addItems(["按单元格", "按整行"]);
+    cbSel.onCurrentIndexChanged = (i) => {
+        tbl.setSelectionBehavior(i === 1 ? 1 : 0);
+        log("table selection behavior: " + (i === 1 ? "row" : "cell"));
+    };
+    hlay.addWidget(cbSel, 0);
+
     hlay.addStretch(1);
     lay.addWidget(row, 0);
     return page;

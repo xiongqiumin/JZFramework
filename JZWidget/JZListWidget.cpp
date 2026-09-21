@@ -135,6 +135,7 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
     raw->m_widget = nullptr;                            // 不再属于本列表
     m_items.erase(m_items.begin() + index);
 
+    bool hadCurrent = (m_current >= 0);
     if (m_current == index)
         m_current = -1;                                 // 选中项被摘除 -> 清空选择
     else if (m_current > index)
@@ -143,6 +144,13 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
     updateContentSize();
     update();
     notifyDataChanged();
+
+    // 选中项被摘除 = 选择变成"无": 必须发信号, 否则外部观察者(JS 的 onCurrentIndexChanged)
+    // 手里还留着一个已经不存在的旧索引。这是"选择被清空"的唯一出口(没有别的通知途径)。
+    // 注意 Qt 语义: 摘除当前项**不会**自动把选择挪到邻项 —— 要保持选中, 由调用方自己再 setCurrentIndex。
+    if (hadCurrent && m_current < 0)
+        currentIndexChanged.emit(-1);
+
     return raw;
 }
 
@@ -150,11 +158,14 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
 
 void JZListWidget::clear()
 {
+    bool hadCurrent = (m_current >= 0);
     m_items.clear();
     m_current = -1;
     updateContentSize();
     update();
     notifyDataChanged();
+    if (hadCurrent)
+        currentIndexChanged.emit(-1);   // 选择被清空(同上: 摘除选中项后索引变 -1 要通知外部)
 }
 
 void JZListWidget::notifyDataChanged()

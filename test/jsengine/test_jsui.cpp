@@ -971,6 +971,28 @@ int main()
                           "s4 + '|' + lw8.currentIndex()")
                       == "3|a|c|1");
 
+            // 表格选中粒度: 0 = 单元格(默认) / 1 = 整行 (对齐 Qt SelectItems/SelectRows)
+            check("JZTableWidget: setSelectionBehavior/selectionBehavior (0=格 1=行)",
+                  evalStr(engine,
+                          "var tw10 = new JZTableWidget();"
+                          "var s10 = tw10.selectionBehavior();"
+                          "tw10.setSelectionBehavior(1);"
+                          "s10 + '|' + tw10.selectionBehavior()")
+                      == "0|1");
+
+            // 列表摘除当前项 = 清空选择: currentIndex 变 -1, 且 onCurrentIndexChanged 收到 -1
+            // (否则外部观察者手里会留着一个已经不存在的旧索引)
+            check("JZListWidget: removeItem 当前项 -> currentIndex = -1 且信号收到 -1",
+                  evalStr(engine,
+                          "var lw10 = new JZListWidget();"
+                          "lw10.appendItems(['a', 'b', 'c']);"
+                          "var tr10 = '';"
+                          "lw10.onCurrentIndexChanged = function (i) { tr10 += i + ','; };"
+                          "lw10.setCurrentIndex(1);"
+                          "lw10.removeItem(1);"
+                          "lw10.currentIndex() + '|' + tr10 + '|' + lw10.count()")
+                      == "-1|1,-1,|2");
+
             // ---- 列表/表格: 索引式值接口(不暴露 item 句柄) ----
             // 数组式批量操作 = 显式取快照 -> 改 -> 回写(没有"视图对象", 也没有镜像/自动回灌)。
             check("JZTableWidget(索引式): 整行原语 + 行列结构",

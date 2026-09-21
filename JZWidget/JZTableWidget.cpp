@@ -5,6 +5,10 @@
 #include "JZPen.h"
 #include "JZFont.h"
 #include "JZFontMetrics.h"
+#include "JZMouseEvent.h"
+#include "JZKeyEvent.h"
+
+#include <algorithm>
 
 JZ_OBJECT_IMPL(JZTableWidget, JZAbstractViewWidget)
 
@@ -440,6 +444,19 @@ void JZTableWidget::setItemPaint(PaintFn fn)
 // 选择
 // ----------------------------------------------------------------------------
 
+void JZTableWidget::setSelectionBehavior(SelectionBehavior behavior)
+{
+    if (m_selBehavior == behavior)
+        return;
+    m_selBehavior = behavior;
+    invalidateAll();   // 高亮范围变了, 整表重画
+}
+
+JZTableWidget::SelectionBehavior JZTableWidget::selectionBehavior() const
+{
+    return m_selBehavior;
+}
+
 void JZTableWidget::setCurrentCell(int row, int col)
 {
     if (row < 0 || row >= (int)m_grid.size() || col < 0 || col >= m_cols)
@@ -542,9 +559,12 @@ void JZTableWidget::updateContentSize()
 // 内置默认绘图: 背景(选中/普通) + 图标 + 文本 + 列/行分隔线
 void JZTableWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidgetItem* item, int row, int col)
 {
-    bool sel = (row == m_curRow && col == m_curCol);
-    if (sel)
+    // 选中态: SelectItems 看当前格; SelectRows 看当前行(整行同一个选中态, 文字也用白字)
+    bool sel = (m_selBehavior == SelectRows) ? (row == m_curRow)
+                                             : (row == m_curRow && col == m_curCol);
+    if (sel && m_selBehavior == SelectItems)
         p.fillRect(rect.x(), rect.y(), rect.width(), rect.height(), JZColor(0x33, 0x66, 0xcc));
+    // (SelectRows 的整行选中带由 paintEvent 一次性铺满视口宽, 这里不再逐格填)
     // 未选中: 不填充, 透出白底, 黑字
 
     if (item)
@@ -638,6 +658,13 @@ void JZTableWidget::paintEvent(JZPainterEvent* event)
         if (lastRow > rows) lastRow = rows;
 
         for (int r = firstRow; r < lastRow; r++) {
+            // 整行选中: 先铺一条横贯视口的选中带(不越过冻结表头), 单元格再叠加图标/文本
+            if (m_selBehavior == SelectRows && r == m_curRow) {
+                int cy = hh + r * rh - sy;
+                int y0 = std::max(cy, hh);
+                if (cy + rh > y0)
+                    p.fillRect(0, y0, viewW, cy + rh - y0, JZColor(0x33, 0x66, 0xcc));
+            }
             for (int c = firstCol; c <= lastCol; c++) {
                 int cx = m_colOffsets[c] - sx;
                 int cy = hh + r * rh - sy;
@@ -662,6 +689,66 @@ void JZTableWidget::paintEvent(JZPainterEvent* event)
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
+
+// 左键点击表体 = 选中该格 (Qt QTableWidget 语义), 发 currentRowChanged/currentColumnChanged。
+// 表头区(冻结行)不处理 —— 留给将来的排序/拖列宽。
+// 焦点不用自己设: JZWindow::dispatchMouse 在左键按下时统一 setFocus(命中控件), 键盘导航才收得到键。
+void JZTableWidget::mousePressEvent(JZMouseEvent* event)
+{
+    if (event->button() != JZMouseEvent::LeftButton || m_cols <= 0 || m_grid.empty()) {
+        JZScrollArea::mousePressEvent(event);
+        return;
+    }
+
+    const int hh = headerHeight();
+    const JZPoint pos = event->localPos();
+    if (pos.y() < hh)
+        return;                                        // 表头区
+
+    // 与 paintEvent 同一套坐标: 单元格左上 = (colOffsets[c] - scrollX, hh + r*rh - scrollY)
+    const int row = (pos.y() + scrollY() - hh) / m_rowHeight;
+    const int col = colFromX(pos.x() + scrollX());
+    if (row < 0 || row >= (int)m_grid.size() || col < 0)
+        return;
+
+    setCurrentCell(row, col);
+    event->accept();
+}
+
+// 方向键移动当前格 (带滚入视口); 其余键交基类(滚动区的翻页/滚动)。
+void JZTableWidget::keyPressEvent(JZKeyEvent* event)
+{
+    if (m_cols > 0 && !m_grid.empty()) {
+        int r = m_curRow;
+        int c = m_curCol;
+        if (r < 0) {
+            r = 0;                                     // 还没选中: 任意方向键都从首格开始
+            c = 0;
+        }
+
+        switch (event->key()) {
+        case JZKey::Key_Up:    r--; break;
+        case JZKey::Key_Down:  r++; break;
+        case JZKey::Key_Left:  c--; break;
+        case JZKey::Key_Right: c++; break;
+        default:
+            JZScrollArea::keyPressEvent(event);
+            return;
+        }
+
+        r = std::max(0, std::min(r, (int)m_grid.size() - 1));
+        c = std::max(0, std::min(c, m_cols - 1));
+        setCurrentCell(r, c);
+
+        const int top = headerHeight() + r * m_rowHeight;
+        ensureVisible(top, top + m_rowHeight);
+        event->accept();
+        return;
+    }
+
+    JZScrollArea::keyPressEvent(event);
+}
+
 void JZTableWidget::showEvent(JZShowEvent* e)
 {
     JZScrollArea::showEvent(e);

@@ -41,8 +41,9 @@ MainWindow::MainWindow(JZWidget* parent)
 {
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
-        "RadioButton", "ComboBox", "LineEdit", "TextEdit", "Table", "ImageLabel", "Dialog",
-        "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox", "ScrollArea", "Animation"
+        "RadioButton", "ComboBox", "LineEdit", "TextEdit", "ListWidget", "TableWidget",
+        "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox",
+        "ScrollArea", "Animation"
     };
 
     setupUi();
@@ -395,8 +396,11 @@ void MainWindow::setupUi()
     bar->setStyleClass("panel");   // 通用容器也吃样式 (JZWidget 基类画样式盒子)
     JZHBoxLayout* barLayout = new JZHBoxLayout(6, 4);
 
-    m_themeBtn = new JZPushButton("", nullptr);
-    m_themeBtn->setWidth(24);
+    // 换肤按钮: 必须 addWidget 进工具条布局 —— 只 new 出来(无父、不在布局里)就不在对象树上,
+    // 渲染/命中都看不到它(这正是"最上角切换样式的按钮没了"的原因)。
+    m_themeBtn = new JZPushButton("主题: 浅色", nullptr);
+    m_themeBtn->setFixedSize(120, 30);
+    barLayout->addWidget(m_themeBtn, 0);
     barLayout->addStretch(1);
     bar->setLayout(barLayout);
     connect(&m_themeBtn->sigClicked, this, &MainWindow::onToggleTheme);
@@ -661,16 +665,62 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
+    // ---- ListWidget ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
+        JZListWidget* lw = new JZListWidget(page);
+        lw->setObjectName("demoList");
+        lw->setItemHeight(26);
+        vlay->addWidget(lw, 1);
+        m_listDemo = lw;
+
+        // 选中 / 激活: 列表自己就发 (点击项 = 选中 + 激活)
+        connect(&lw->currentIndexChanged, this, &MainWindow::onListSelected);
+        connect(&lw->sigActivated, this, &MainWindow::onListActivated);
+
+        // 按钮行: 加一项 / 删当前项 / 清空
+        JZWidget* bar = new JZWidget(page);
+        JZHBoxLayout* hlay = new JZHBoxLayout(6, 6);
+        bar->setLayout(hlay);
+
+        JZPushButton* bAdd = new JZPushButton("Add Item", bar);
+        JZPushButton* bDel = new JZPushButton("Remove Item", bar);
+        JZPushButton* bClear = new JZPushButton("Clear", bar);
+        bAdd->setObjectName("btnListAdd");
+        bDel->setObjectName("btnListRemove");
+        bClear->setObjectName("btnListClear");
+        connect(&bAdd->sigClicked, this, &MainWindow::onListAdd);
+        connect(&bDel->sigClicked, this, &MainWindow::onListRemove);
+        connect(&bClear->sigClicked, this, &MainWindow::onListClear);
+        hlay->addWidget(bAdd);
+        hlay->addWidget(bDel);
+        hlay->addWidget(bClear);
+        hlay->addStretch(1);
+        vlay->addWidget(bar, 0);
+
+        appendListItems(3);
+        m_preview->addWidget(page);
+    }
+
     // ---- Table ----
     {
         JZWidget* page = makePage();
         JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
+        JZLabel* hint = new JZLabel("点击单元格 / 方向键 选中(蓝底高亮); 选择粒度见下方下拉框", page);
+        vlay->addWidget(hint, 0);
 
         JZTableWidget* tbl = new JZTableWidget(page);
         tbl->setColumnCount(3);
         tbl->setHorizontalHeaderLabels({ "Id", "Name", "Val" });
         vlay->addWidget(tbl, 1);
         m_table = tbl;
+
+        // 选中变化: 点击单元格或方向键都会发 (点击 → setCurrentCell)
+        connect(&tbl->currentRowChanged, this, &MainWindow::onTableRowChanged);
+        connect(&tbl->currentColumnChanged, this, &MainWindow::onTableColChanged);
 
         // 按钮行: 增加数据 / 清空数据
         JZWidget* bar = new JZWidget(page);
@@ -689,6 +739,14 @@ void MainWindow::buildPages()
         hlay->addWidget(bAdd);
         hlay->addWidget(bAdd10);
         hlay->addWidget(bClear);
+
+        // 选中粒度: 按单元格(默认) / 按整行
+        JZComboBox* cbSel = new JZComboBox(page);
+        cbSel->setObjectName("cbTableSel");
+        cbSel->addItems({ "按单元格", "按整行" });
+        connect(&cbSel->currentIndexChanged, this, &MainWindow::onTableSelBehaviorChanged);
+        hlay->addWidget(cbSel);
+
         hlay->addStretch(1);
 
         vlay->addWidget(bar, 0);
@@ -874,6 +932,12 @@ void MainWindow::buildPages()
         sb->setValue(10);
         glay->addWidget(sb);
         glay->addWidget(new JZPushButton("Button", gb->contentWidget()));
+
+        vlay->addWidget(gb, 1);        // 组框要挂进本页布局, 否则不参与排布(页面空白)
+        m_preview->addWidget(page);    // GroupBox 页: 必须与 m_names 的顺序一致(在 ScrollArea 之前)
+    }
+
+    // ---- ScrollArea: 4000×4000 世界 + 50×50 按钮 (拖滚动条/滚轮漫游) ----
     // 内容控件 setWidget 后挂到内部 viewport, 尺寸固定为世界大小; 滚动 = 滚动区
     // 把世界平移到 viewport 内 (-sx, -sy, "Apply") 并由视口裁剪, 拖滚动条/滚轮/键盘翻页
     // 均能漫游整个 4000×4000, 点任意按钮把编号 (含世界行列坐标) 打进日志。
@@ -900,7 +964,11 @@ void MainWindow::buildPages()
         for (int r = 0; r < kCount; r++) {
             for (int c = 0; c < kCount; c++) {
                 const std::string num = std::to_string(id);
-                JZPushButton* b = new JZPushButton(num);
+                // 按钮必须挂在世界(world)下: 不在对象树上的控件渲染/命中都看不到 —— 之前
+                // 只 new 出来没给父控件, 于是"世界"里一个按钮都没有(滚动区看着是空的)。
+                JZPushButton* b = new JZPushButton(num, world);
+                b->setFixedSize(kCell, kCell);
+                b->move(c * kCell, r * kCell);
                 connect(&b->sigClicked, this, [id, r, c, this]() {
                     log("scroll btn #" + std::to_string(id) + " (row=" +
                         std::to_string(r) + ", col=" + std::to_string(c) + ") clicked");
@@ -909,9 +977,6 @@ void MainWindow::buildPages()
             }
         }
         area->setWidget(world);
-        m_preview->addWidget(page);
-    }
-
         m_preview->addWidget(page);
     }
 
@@ -928,13 +993,23 @@ void MainWindow::buildPages()
 
         JZPushButton* go = new JZPushButton("动画: 移动+缩放");
         connect(&go->sigClicked, this, &MainWindow::startAnimDemo);
+        vlay->addWidget(go, 0);            // 触发按钮也要进布局(否则点不到)
 
         DemoStage* stage = new DemoStage(page);
         stage->setObjectName("animStage");
         vlay->addWidget(stage, 1);
 
-        JZPushButton* box = new JZPushButton("finished");
+        // 被动画的方块: 挂在舞台上(舞台无布局, 由 move/setFixedSize 自由定位)
+        JZPushButton* box = new JZPushButton("finished", stage);
+        box->setObjectName("animBox");
+        box->setFixedSize(96, 96);
+        box->move(24, 24);
         connect(&box->sigClicked, this, [this]() { log("anim finished"); });
+
+        // 演示所需的三件套交给成员(否则 startAnimDemo() 直接早退, 点了没反应)
+        m_animStage = stage;
+        m_animBox = box;
+        m_animGroup = new JZAnimationGroup(this);
 
         m_preview->addWidget(page);
     }
@@ -1101,4 +1176,94 @@ void MainWindow::onTableClear()
     if (!m_table) return;
     m_table->setRowCount(0);
     log("table cleared, rows: 0");
+}
+
+void MainWindow::onTableRowChanged(int row)
+{
+    (void)row;
+    logTableSelection();
+}
+
+void MainWindow::onTableColChanged(int col)
+{
+    (void)col;
+    logTableSelection();
+}
+
+// 选中粒度: 按单元格(默认) / 按整行
+void MainWindow::onTableSelBehaviorChanged(int idx)
+{
+    if (!m_table) return;
+    m_table->setSelectionBehavior(idx == 1 ? JZTableWidget::SelectRows
+                                           : JZTableWidget::SelectItems);
+    log(std::string("table selection behavior: ") + (idx == 1 ? "row" : "cell"));
+}
+
+// 选中格变化 -> 日志: (row, col) = '文本'
+void MainWindow::logTableSelection()
+{
+    if (!m_table) return;
+    const int r = m_table->currentRow();
+    const int c = m_table->currentColumn();
+    if (r < 0 || c < 0) {
+        log("table select: (none)");
+        return;
+    }
+    log("table select: (" + std::to_string(r) + ", " + std::to_string(c) +
+        ") = '" + m_table->itemText(r, c) + "'");
+}
+
+// ==================== ListWidget 演示 ====================
+
+void MainWindow::appendListItems(int n)
+{
+    if (!m_listDemo || n <= 0) return;
+    for (int i = 0; i < n; i++) {
+        m_listSeq++;
+        m_listDemo->appendItem("item " + std::to_string(m_listSeq));
+    }
+    if (m_listDemo->currentIndex() < 0 && m_listDemo->count() > 0)
+        m_listDemo->setCurrentIndex(0);        // 有选中项才看得出选中态
+    log("list items: " + std::to_string(m_listDemo->count()));
+}
+
+void MainWindow::onListAdd()
+{
+    appendListItems(1);
+}
+
+void MainWindow::onListRemove()
+{
+    if (!m_listDemo || m_listDemo->count() <= 0) return;
+    int i = m_listDemo->currentIndex();
+    if (i < 0)
+        i = m_listDemo->count() - 1;
+    delete m_listDemo->takeItem(i);    // Qt 语义: 摘除即交出所有权, 删除由调用方做(JS 侧 removeItem 包的就是这句)
+
+    // 摘除当前项后列表按 Qt 语义清空选择(m_current = -1, 高亮随之消失)。
+    // 列表不替调用方挪选择, 这里按常见交互补选"顶上来那一项"(删到尾部就选新的末项), 让选中态连续。
+    if (m_listDemo->count() > 0) {
+        int next = (i < m_listDemo->count()) ? i : m_listDemo->count() - 1;
+        m_listDemo->setCurrentIndex(next);
+    }
+    log("list remove: " + std::to_string(i) + ", items: " + std::to_string(m_listDemo->count()));
+}
+
+void MainWindow::onListClear()
+{
+    if (!m_listDemo) return;
+    m_listDemo->clear();
+    log("list cleared, items: 0");
+}
+
+void MainWindow::onListSelected(int idx)
+{
+    if (!m_listDemo || idx < 0) return;
+    log("list select: " + std::to_string(idx) + " '" + m_listDemo->itemText(idx) + "'");
+}
+
+void MainWindow::onListActivated(int idx)
+{
+    if (!m_listDemo || idx < 0) return;
+    log("list activated: " + std::to_string(idx) + " '" + m_listDemo->itemText(idx) + "'");
 }

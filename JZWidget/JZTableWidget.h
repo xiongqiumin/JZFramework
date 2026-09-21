@@ -110,6 +110,17 @@ public:
     void setItemPaint(PaintFn fn);
 
     // ---- 选择 ----
+    // 选中粒度(对齐 Qt QAbstractItemView::SelectionBehavior; 取值顺序与 Qt 一致):
+    //   SelectItems = 选中一个单元格(默认), SelectRows = 选中整行(整行高亮)。
+    // 两种模式下 currentRow/currentColumn 都指向"当前格"(点击的单元格), 区别只在**高亮范围**。
+    enum SelectionBehavior {
+        SelectItems,     // 单元格 (Qt 默认)
+        SelectRows       // 整行
+    };
+
+    void setSelectionBehavior(SelectionBehavior behavior);
+    SelectionBehavior selectionBehavior() const;
+
     void setCurrentCell(int row, int col);
     int currentRow() const;
     int currentColumn() const;
@@ -124,6 +135,9 @@ jz_signals:
 protected:
     void showEvent(JZShowEvent* e) override;
     void paintEvent(JZPainterEvent* event) override;   // 绘制冻结表头
+    // 选中: 左键点单元格 / 方向键移动当前格 (Qt QTableWidget 语义; 焦点由窗口在按下时给)
+    void mousePressEvent(JZMouseEvent* event) override;
+    void keyPressEvent(JZKeyEvent* event) override;
 
     void updateContentSize();
     void defaultPaint(JZPainter& p, const JZRect& rect, JZTableWidgetItem* item, int row, int col);
@@ -152,6 +166,7 @@ protected:
 
     int m_curRow = -1;
     int m_curCol = -1;
+    SelectionBehavior m_selBehavior = SelectItems;
 
     PaintFn m_paintFn;
 };

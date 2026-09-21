@@ -609,8 +609,6 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     start["memory_bytes"] = (int)memoryBlock.size();      // 0 = 没带记忆(未启用/还没记忆/本次关掉)
     pushEvent("task_start", start);
 
-    if (m_sessionStarted)
-        m_agent->reset();
     m_agent->request(memoryBlock + prompt);
     m_sessionStarted = true;
     // 注意: 不在此回包; onLoopFinished 在 agent 结束后被调用并回包(经 m_respond)。

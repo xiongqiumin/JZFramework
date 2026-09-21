@@ -180,6 +180,11 @@ void JZAgent::reset()
 
     m_context.clear();  // 清空对话历史与累计 usage
     m_requests.clear();
+
+    // 循环检测按"一次 request 驱动的连续工作"计 —— 新任务从空窗口开始。
+    m_loopDetector.reset();
+    m_textLoop.reset();
+    m_pendingCalls.clear();
 }
 
 const LLMContext* JZAgent::context() const
@@ -265,6 +270,8 @@ void JZAgent::loadContext(const LLMContext &ctx)
 void JZAgent::init(JZAgentConfig config)
 {
     m_config = config;
+    m_loopDetector.setConfig(m_config.loopDetect);
+    m_textLoop.setConfig(m_config.loopDetect);
 
     std::string system_root = readFile(m_config.rootPath + "/system.md");
     if (!system_root.empty())
@@ -685,6 +692,10 @@ void JZAgent::llmRequest()
         request_body["stream_options"]["include_usage"] = true;
     }
 
+    // 输出上限: 不给的话服务端默认不限(llama.cpp: n_predict=-1), 模型复读时能吐上万 token
+    if (m_config.maxTokens > 0)
+        request_body["max_tokens"] = m_config.maxTokens;
+
     // 构建消息上下文
     Json::Value messages = buildContext();
     request_body["messages"] = messages;
@@ -751,6 +762,15 @@ JZAgentTool* JZAgent::getTool(const std::string &name)
 void JZAgent::processToolCall(ToolCall& tool_call)
 {
     sigToolCall.emit(tool_call);
+
+    // 先记下"这一步调用了什么" —— 结果要等工具返回才知道, 而工具可能同步回调
+    // (工具不存在/参数解析失败都是同步 onToolCallResult), 所以必须在调用之前记。
+    {
+        PendingCall call;
+        call.name = tool_call.function_name;
+        call.args = tool_call.function_args;
+        m_pendingCalls[tool_call.id] = call;
+    }
 
     JZAgentTool *tool = getTool(tool_call.function_name);
     if (!tool)
@@ -1201,6 +1221,16 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
         m_pendingTools.erase(it);
     }
 
+    // 本轮已经因为错误/取消结束(llmError -> llmEnd, 含循环检测中止与 stop()):
+    // 这个结果是上一轮的尾巴(工具晚回来/被 cancel 时的回调), 丢弃 —— 入队会驱动
+    // llmLoop 把已经结束的对话重新跑起来。
+    if (m_errorCode != AgentError::None)
+        return;
+
+    // 循环检测: 命中即 llmError 中止本轮, 不把结果再喂回去(否则又驱动下一轮)
+    if (checkToolLoop(response.id, response.result))
+        return;
+
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::ToolCallResultPrompt);
     req->toolCallResult = response;
     m_requests.push_back(req);
@@ -1208,6 +1238,29 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
     JZTimer::singleShot(0,[this]{
         llmLoop();
     });
+}
+
+// 登记一步工具调用并判定是否在原地打转。
+//   返回 true = 已中止本轮(llmError 已发, 调用方直接 return)。
+bool JZAgent::checkToolLoop(const std::string &toolId, const std::string &result)
+{
+    PendingCall call;
+    auto it = m_pendingCalls.find(toolId);
+    if (it != m_pendingCalls.end())
+    {
+        call = it->second;
+        m_pendingCalls.erase(it);
+    }
+    if (call.name.empty())
+        return false;
+
+    JZToolLoopEvent ev = m_loopDetector.step(call.name, call.args, result);
+    if (!ev.loop)
+        return false;
+
+    jzWarning() << "JZAgent: " << ev.message;
+    llmError(LoopError, ev.message);   // -> sigError(LoopError) -> llmEnd
+    return true;
 }
 
 void JZAgent::addSkill(const SkillDefine& tool)
@@ -1271,6 +1324,13 @@ void JZAgent::llmEnd()
     m_isActive = false;
     m_inTransaction = false;
 
+    // 一次连续工作结束(含被循环检测中止): 循环窗口清零, 下次 request 重新开始统计。
+    // 同一个模型的同一个坏习惯不该跨任务累积 —— 新任务里重复调用同一个工具的前几次
+    // 完全可能是正常的(比如"按上次的失败重新读一遍文件")。
+    m_loopDetector.reset();
+    m_textLoop.reset();
+    m_pendingCalls.clear();
+
     m_state = State::Idle;
     sigFinished.emit();
 }
@@ -1281,6 +1341,10 @@ void JZAgent::processResponseDelta(const std::string &content,
                                    const Json::Value &tool_calls,
                                    const Json::Value &usage)
 {
+    // 本轮已经结束(循环检测/解析错误等已 llmError -> llmEnd): 后面的分片不再累积
+    if (m_errorCode != AgentError::None)
+        return;
+
     // 单次回复对应唯一一条 assistant 历史，首次增量时创建
     if (!m_replyHistory)
     {
@@ -1295,12 +1359,29 @@ void JZAgent::processResponseDelta(const std::string &content,
     {
         reply.thinking += thinking;
         sigThinking.emit(thinking);   // 思考过程实时增量上抛（与 sigReply 并行）
+
+        // 思考在原地打转(同一句翻来覆去): 让它继续只会白烧输出 token —— 直接中止本轮。
+        JZTextLoopEvent ev = m_textLoop.check(reply.thinking, "思考");
+        if (ev.loop)
+        {
+            jzWarning() << "JZAgent: " << ev.message;
+            llmError(LoopError, ev.message);
+            return;
+        }
     }
 
     if (!content.empty())
     {
         reply.content += content;
         sigReply.emit(content);   // 首次 sigReply 即代表思考阶段结束，进入正式回复
+
+        JZTextLoopEvent ev = m_textLoop.check(reply.content, "回复");
+        if (ev.loop)
+        {
+            jzWarning() << "JZAgent: " << ev.message;
+            llmError(LoopError, ev.message);
+            return;
+        }
     }
 
     // 累积 tool_calls：流式按 index 合并增量片段，非流式无 index 时直接追加
@@ -1375,6 +1456,16 @@ bool JZAgent::startCompressHistory()
 
     Json::Value request_body;
     request_body["model"] = m_config.modelName;
+
+    // 与 llmRequest 保持一致: 输出上限 + 调用方自定义字段(采样参数等), 免得摘要这一路
+    // 又变成"服务端默认不限"的漏网之鱼。
+    if (m_config.maxTokens > 0)
+        request_body["max_tokens"] = m_config.maxTokens;
+    if (m_config.extraBody.isObject())
+    {
+        for (const std::string &key : m_config.extraBody.getMemberNames())
+            request_body[key] = m_config.extraBody[key];
+    }
 
     // 构建消息上下文
     Json::Value messages = buildContext();
@@ -1591,6 +1682,10 @@ void JZAgent::onLLMStreamReadyRead()
         std::string event = buffer.substr(pos, sep - pos);
         pos = sep + 2;
         processSSEEvent(event);
+
+        // 处理中已中止(循环检测等 llmError -> llmEnd 关掉了回复): 同一批里的后续分片不再处理
+        if (!m_llmReply)
+            break;
     }
 }
 
@@ -1787,6 +1882,10 @@ void JZAgent::onLLMRequest()
         Json::Value usage = extractUsageJson(result);
         processResponseDelta(content, thinking, tool_calls, usage);
     }
+
+    // 解析过程中已中止(循环检测等): 半截回复不再入历史, 也不驱动下一轮
+    if (m_errorCode != AgentError::None)
+        return;
 
     // 流式与非流式统一收尾
     finalizeResponse();

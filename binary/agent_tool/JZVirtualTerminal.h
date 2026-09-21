@@ -133,7 +133,12 @@ public:
                     std::vector<std::string> denyModules = std::vector<std::string>());
     std::vector<std::string> availablePrograms() const;   // 供提示词/自检
 
-    // 跑命令用的 shell。自动探测: POSIX = /bin/sh。
+    // 跑命令用的 shell(整条命令交给它 `-c` 执行; 也是"没有 shebang 的脚本"的兜底解释器)。
+    // 自动探测: **优先 bash**(Windows 找 Git Bash 的安装目录, POSIX 先看 /bin、/usr/bin 再扫
+    // PATH), 找不到回退 sh(/bin/sh 或 PATH 里的 sh)。两个都没有才为空 ⇒ run() 明确报错,
+    // 不静默退回别的解释器。
+    // 探测结果会进模型提示词(见 JZAgentCli::buildSystemPrompt 的 Shell notes), 模型据此
+    // 决定写不写 bash 专有语法。要固定: setShellProgram() 或配置 terminal.shellProgram。
     void setShellProgram(const std::string &program);
     std::string shellProgram() const { return m_shell; }
 

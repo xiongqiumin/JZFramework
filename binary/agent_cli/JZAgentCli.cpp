@@ -132,8 +132,19 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     ac.netTimeout = m_config.netTimeout;
     ac.maxRounds = m_config.maxRounds;
     ac.maxToken = m_config.maxToken;
+    ac.maxTokens = m_config.maxTokens;
+    ac.extraBody = m_config.extraBody;
     ac.reuseConnection = false;
     ac.tokenStrategy = JZAgentConfig::TokenCompress;
+    // 循环检测(工具重复调用 / 思考回复原地打转): 命中直接中止本轮(见 JZCliConfig 同名字段)
+    ac.loopDetect.enabled = m_config.loopDetect;
+    ac.loopDetect.window = m_config.loopWindow;
+    ac.loopDetect.repeat = m_config.loopRepeat;
+    ac.loopDetect.sameResult = m_config.loopSameResult;
+    ac.loopDetect.textLineRepeat = m_config.loopLineRepeat;
+    ac.loopDetect.textBlockRepeat = m_config.loopBlockRepeat;
+    ac.loopDetect.textPeriodMax = m_config.loopPeriodMax;
+    ac.loopDetect.textPeriodRepeat = m_config.loopPeriodRepeat;
     m_agent->init(ac);
 
     connect(&m_agent->sigReply, this, &JZAgentCli::onReply);
@@ -255,6 +266,17 @@ string JZAgentCli::buildSystemPrompt() const
     if (m_config.memoryEnabled)
         text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";
     text += "\nShell notes (important):\n";
+    if (m_terminal && !m_terminal->shellProgram().empty())
+    {
+        // 把探测到的 shell 告诉模型: 是 bash 才敢用 bash 专有语法; 回退成 sh 时得写 POSIX,
+        // 否则模型会一直撞"语法错误"然后换做法(它自己意识不到解释器换了)。
+        const string shell = m_terminal->shellProgram();
+        const bool isBash = str_toLower(shell).find("bash") != string::npos;
+        text += "  - 命令交给 " + shell + " 解释("
+                + (isBash ? "bash: `[[ ]]`、数组、`local`、`source` 都能用"
+                          : "POSIX sh: 用 `[ ]` 而不是 `[[ ]]`, 用 `.` 而不是 `source`")
+                + ")。脚本自身看它的 shebang; 没有 shebang 时也按这个 shell 解释。\n";
+    }
     text += "  - 每条命令都是一个新 shell: 要进目录执行写 `cd <dir> && <cmd>`; "
             "单独的 `cd` 会被拒绝。cd/export 不跨命令保留。\n";
     text += "  - 不支持后台 `&`、heredoc、进程替换、for/while/if 复合语句。\n";
@@ -1326,24 +1348,40 @@ JZAgentCli::RetryMode JZAgentCli::classifyError(JZAgent::AgentError code, const 
         case JZAgent::MaxTokenError:
             // 上下文撑爆: 原样重发还是超, 但"让模型收着点"(别再整段贴文件/贴输出)常能救回来。
             return RetryFix;
+        case JZAgent::LoopError:
+            // 在原地打转(工具反复相同调用 / 思考回复复读), 已被循环检测中止: 原样重发
+            // 必然接着打转, 但"换做法"通常能解 —— 归可修复(预算受 maxFixRetries 约束)。
+            return RetryFix;
         default:                        // None / UserCancelError
             return RetryNone;
     }
 }
 
 // 重试时喂给模型的"接着干"消息: 带上出错原因, 让它从中断处继续 / 换个做法
-std::string JZAgentCli::buildRetryPrompt(RetryMode mode, const std::string &err) const
+std::string JZAgentCli::buildRetryPrompt(RetryMode mode, JZAgent::AgentError code,
+                                         const std::string &err) const
 {
     std::string e = err.empty() ? std::string("(无错误信息)") : err;
     if (e.size() > 300)
         e = e.substr(0, 300) + "…";
 
     if (mode == RetryFix)
+    {
+        // 循环检测中止: 唯一的解法是"别再重复" —— 笼统的"换做法"模型容易理解成
+        // "把同样的命令再发一次"或"把那段话再写一遍", 所以这里两样都点名。
+        if (code == JZAgent::LoopError)
+            return "上一轮被中止了, 原因不是任务失败, 而是检测到你在原地打转:\n" + e + "\n"
+                   "这一轮请**不要再重复**: 不要用完全相同的参数再调用同一个工具"
+                   "(不要重复读同一个文件、不要重复跑同一条命令), 也不要把同样的内容"
+                   "反复写出来。先换做法(换目标/换参数/换工具确认现状), "
+                   "如果信息其实已经足够, 就直接给出最终结论。";
+
         return "上一次请求被服务端拒绝了: " + e + "\n"
                "这是第 " + std::to_string(m_fixRetries) + " 次修正尝试: 原样重发还会被拒, "
                "请换一个做法把当前任务做完 —— 若上一条工具调用的参数不是合法 JSON, 就重新发一个参数合法的调用; "
                "若上下文太长, 不要再整段贴文件/整段贴命令输出, 改用搜索定位到具体行再看; "
                "已经完成的部分不要重复做, 已经确认的结论直接沿用。";
+    }
 
     return "上一次请求因错误中断: " + e + "\n"
            "这是一次自动重试, 请从中断处继续完成当前任务: 已经完成的部分不要重复做, "
@@ -1358,6 +1396,7 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
     int next = (fix ? m_fixRetries : m_errorRetries) + 1;
     int budget = fix ? m_maxFixRetries : m_maxErrorRetries;
     std::string err = m_lastError;
+    JZAgent::AgentError code = m_lastErrorCode;   // 延时期间可能被覆盖, 先记下来给提示文案用
 
     // 半截回复作废, 重试后重新累积(与验证失败续跑同一套语义); 成败等重试结果出来再定
     m_accumReply.clear();
@@ -1377,7 +1416,7 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
                           << (fix ? " 次修正式重试" : " 次自动重试")
                           << "(" << m_retryDelayMs << "ms 后): " << err;
 
-    auto fire = [this, epoch, err, mode]() {
+    auto fire = [this, epoch, err, mode, code]() {
         m_retryPending = false;
         // 等待期间被取消/重置/换了任务: 不再续跑(否则会把消息发进新任务的会话里)
         if (!m_loopActive || epoch != m_loopEpoch || !m_busy)
@@ -1389,7 +1428,7 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
             m_fixRetries++;
         else
             m_errorRetries++;
-        m_agent->request(buildRetryPrompt(mode, err));
+        m_agent->request(buildRetryPrompt(mode, code, err));
     };
 
     m_retryPending = true;

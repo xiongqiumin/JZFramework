@@ -5,6 +5,8 @@
 	JZAgentTool.cpp
 	JZMcpClient.h
 	JZMcpClient.cpp
+	JZLoopDetect.h
+	JZLoopDetect.cpp
 )
 
 convert_to_abs_paths(JZAGENT_SOURCES)

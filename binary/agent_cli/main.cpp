@@ -48,9 +48,22 @@ static const char *kDefaultConfigJson = R"json({
         "netTimeoutMs":     120000,
         "maxRounds":        100,
         "maxToken":         160000,
+        "maxTokens":        8192,
         "maxRetries":       10,
         "maxFixRetries":    2,
-        "retryDelayMs":     1000
+        "retryDelayMs":     1000,
+        "body":             {}
+    },
+
+    "loop": {
+        "enabled":          true,
+        "window":           24,
+        "repeat":           3,
+        "sameResult":       2,
+        "lineRepeat":       6,
+        "blockRepeat":      3,
+        "periodMax":        256,
+        "periodRepeat":     8
     },
 
     "verify": {
@@ -224,9 +237,28 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigInt(root, "llm", "netTimeoutMs", "netTimeout", config.netTimeout);
     readConfigInt(root, "llm", "maxRounds", "maxRounds", config.maxRounds);
     readConfigInt(root, "llm", "maxToken", "maxToken", config.maxToken);
+    readConfigInt(root, "llm", "maxTokens", "maxTokens", config.maxTokens);
     readConfigInt(root, "llm", "maxRetries", "maxRetries", config.maxRetries);
     readConfigInt(root, "llm", "maxFixRetries", "maxFixRetries", config.maxFixRetries);
     readConfigInt(root, "llm", "retryDelayMs", "retryDelayMs", config.retryDelayMs);
+
+    // 请求体附加字段(llm.body): 原样并进请求体, 用于私有参数 / 采样参数
+    // (如 repeat_penalty / dry_multiplier / dry_base / dry_allowed_length、chat_template_kwargs)。
+    const Json::Value *body = findConfigMember(root, "llm", "body", "extraBody");
+    if (body && body->isObject())
+        config.extraBody = *body;
+
+    // loop(循环检测: 工具重复调用 + 思考/回复原地打转 -> 直接中止本轮)
+    //   工具侧: 结果也相同 = 证据更强, 阈值更低; 结果不同可能只是合法轮询(等编译/等运行)。
+    //   输出侧: 同一行刷屏 / 同一段反复 / 周期串复读。
+    readConfigBool(root, "loop", "enabled", "loopDetect", config.loopDetect);
+    readConfigInt(root, "loop", "window", "loopWindow", config.loopWindow);
+    readConfigInt(root, "loop", "repeat", "loopRepeat", config.loopRepeat);
+    readConfigInt(root, "loop", "sameResult", "loopSameResult", config.loopSameResult);
+    readConfigInt(root, "loop", "lineRepeat", "loopLineRepeat", config.loopLineRepeat);
+    readConfigInt(root, "loop", "blockRepeat", "loopBlockRepeat", config.loopBlockRepeat);
+    readConfigInt(root, "loop", "periodMax", "loopPeriodMax", config.loopPeriodMax);
+    readConfigInt(root, "loop", "periodRepeat", "loopPeriodRepeat", config.loopPeriodRepeat);
 
     // verify(验证脚本门控循环的默认值: /task 里同名参数可覆盖)
     readConfigInt(root, "verify", "maxRounds", "verifyMaxRounds", config.verifyMaxRounds);
@@ -337,11 +369,38 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  模型      %s @ %s\n",
             config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
             config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
+    if (config.maxTokens > 0)
+        fprintf(stderr, "  输出上限  单次回复 %d tokens (max_tokens)\n", config.maxTokens);
+    else
+        fprintf(stderr, "  输出上限  (不传 max_tokens: 服务端默认, llama.cpp 下等于不限)\n");
+    if (config.extraBody.isObject() && config.extraBody.size() > 0)
+    {
+        string extra;
+        Json::FastWriter writer;
+        for (const string &key : config.extraBody.getMemberNames())
+        {
+            if (!extra.empty())
+                extra += ", ";
+            string value = writer.write(config.extraBody[key]);
+            while (!value.empty() && (value[value.size() - 1] == '\n' || value[value.size() - 1] == '\r'))
+                value.erase(value.size() - 1);
+            extra += key + "=" + value;
+        }
+        fprintf(stderr, "  请求体附加 %s\n", extra.c_str());
+    }
     string retry = "关";
     if (config.maxRetries > 0 || config.maxFixRetries > 0)
         retry = "瞬时 " + to_string(config.maxRetries) + " 次 + 修正 " + to_string(config.maxFixRetries)
                 + " 次, 间隔 " + to_string(config.retryDelayMs) + " ms";
     fprintf(stderr, "  出错重试  %s\n", retry.c_str());
+    if (!config.loopDetect)
+        fprintf(stderr, "  循环检测  关\n");
+    else
+        fprintf(stderr, "  循环检测  开 (工具: 窗口 %d 步, 重复 %d 次/结果也相同 %d 次 -> 中止; "
+                        "输出: 同行 %d 次/同段 %d 次/周期 %d 字符 %d 次 -> 中止)\n",
+                config.loopWindow, config.loopRepeat, config.loopSameResult,
+                config.loopLineRepeat, config.loopBlockRepeat,
+                config.loopPeriodMax, config.loopPeriodRepeat);
     fprintf(stderr, "  验证循环  最多 %d 轮, 单次超时 %d ms\n",
             config.verifyMaxRounds, config.verifyTimeoutMs);
     if (!config.memoryEnabled)
@@ -379,7 +438,9 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
             programs += ", ";
         programs += kv.first + "=" + kv.second;
     }
-    fprintf(stderr, "  shell     %s\n", config.shellProgram.empty() ? "自动探测" : config.shellProgram.c_str());
+    fprintf(stderr, "  shell     %s\n", config.shellProgram.empty()
+                                             ? "自动探测(优先 bash, 找不到回退 /bin/sh)"
+                                             : config.shellProgram.c_str());
     fprintf(stderr, "  程序映射  %s\n",
             programs.empty() ? "(空: agent 只能用授信目录里的程序)" : programs.c_str());
     fprintf(stderr, "  日志文件  %s\n", config.logFile.empty() ? "(不打印到控制台)" : config.logFile.c_str());

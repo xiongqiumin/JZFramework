@@ -19,5 +19,6 @@ target_link_libraries(test_frp JZFramework)
 add_executable(test_mcpserver test_mcpserver.cpp)
 target_link_libraries(test_mcpserver JZFramework)
 
-add_test(NAME co.test_co COMMAND test_co)
-set_tests_properties(co.test_co PROPERTIES TIMEOUT 180)
+# 注: co.test_co 的 ctest 注册在 test/co/CMakeLists.txt 里(那里才是 test_co 的 target 所在)。
+# 这里原来又写了一份同名 add_test, 同一个测试被注册两遍 —— ctest 会跑两次(两次都要花时间,
+# 失败时也在报告里出现两条)。同名测试不要重复注册。

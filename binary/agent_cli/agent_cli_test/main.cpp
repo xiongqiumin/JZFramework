@@ -6,10 +6,16 @@
 //   {status, verify_rounds, agent_reply, last_verify_output, error?}, 以 status 判定。
 //
 // 与 code_agent_benchmark 的关键差异:
-//   - 不初始化 TS 工程 / 不 tsc 编译 / 不跑 code_runtime; agent 自己用 terminal/file 工具干活
+//   - 宿主只负责"铺工程骨架"(initProject: tsconfig outDir=build / rootDir=src + src/main.ts +
+//     jz_types/jz_js), 之后编译/运行都由 agent 自己用 terminal/file 工具干, 或由验证脚本复核
 //     (所以 tsc / code_runtime 要对 agent 可用, 靠下面的"程序映射"登记, 而不是宿主代跑)。
 //   - 用例加载逻辑完全一致(同 parseCaseObject/loadCases), benchmark/data 里的用例直接作输入。
-//     verify 字段 -> submitTask 的 verify_cmd; 无 verify 的用例 -> status 以 agent 成败为准。
+//     - 带 verify 字段的用例 -> submitTask 的 verify_cmd(benchmark 原样搬过来);
+//     - 没有 verify 但带 expect.contains 的用例 -> 自动挂**通用验证**
+//       (data/stdout_verify.py: tsc 先编译 -> 按 tsconfig 定位产物目录 -> 跑 code_runtime
+//        -> 比对输出), 也就是 benchmark 宿主原本内联在 main.cpp 里的那段判定
+//       (BenchCase.check + tsc 编译 + runCodeRuntime)搬成的脚本;
+//     - 两者都没有 -> 不挂验证, status 以 agent 自身成败为准(烟雾测试)。
 //
 // 程序映射(动态): JZCliConfig::programPaths = 程序名 -> 可执行文件全路径,
 //   登记后由 JZVirtualTerminal 做两件事: 进命令白名单(短名字能过审) + 执行时把命令里
@@ -128,9 +134,11 @@ struct BenchmarkCase
     std::string verifyCmd;
     int verifyPort = 3900;
 
-    // benchmark 兼容字段(本测试不消费, 仅占位)
-    std::function<bool(const std::string &)> check;
-    std::function<std::string(const std::string &, const std::string &)> retry;
+    // 输出预期(benchmark 的 expect.contains / caseInsensitive):
+    //   没有 verify 命令时, 由本程序自动组织成"通用 stdout 验证"(data/stdout_verify.py:
+    //   跑 code_runtime 比对产物输出), 等价于 benchmark 宿主原本内联的 check()。
+    std::string expectContains;
+    bool expectCaseInsensitive = false;
 };
 
 // 全局输入 HTTP 服务 handler
@@ -180,13 +188,183 @@ struct CaseResult
     std::string lastAgentError;
 };
 
+// ---- 通用 stdout 验证命令的组织 ----
+// 解释器候选顺序与 JZAgentCli::resolveProgram 一致: 配置映射(programPaths)优先, 然后逐个探测
+// (`<name> --version` 退出码 0 算能跑), 都不行才退回 python3。
+// 为什么不能硬写 python3: Windows 下装了 Python 往往只有 python.exe / py.exe, 硬写会让
+// 验证脚本每一轮都以 9009 退出(看着像"测试一直失败"), 白烧掉所有续跑轮次。
+static bool probeProgramRunnable(const std::string &name)
+{
+#ifdef _WIN32
+    std::string probe = "\"" + name + "\" --version > nul 2>&1";
+    FILE *f = _popen(probe.c_str(), "r");
+#else
+    std::string probe = "\"" + name + "\" --version > /dev/null 2>&1";
+    FILE *f = popen(probe.c_str(), "r");
+#endif
+    if (!f)
+        return false;
+    char buf[256];
+    while (std::fgets(buf, sizeof(buf), f)) { }
+#ifdef _WIN32
+    return _pclose(f) == 0;
+#else
+    return pclose(f) == 0;
+#endif
+}
+
+static std::string detectVerifyInterpreter(const std::map<std::string, std::string> &programs)
+{
+    const char *cands[] = { "python3", "python", "py -3" };
+    for (const char *c : cands)
+    {
+        std::string s = c;
+        std::string name = s.substr(0, s.find(' '));
+        std::map<std::string, std::string>::const_iterator it = programs.find(name);
+        if (it != programs.end() && JZFileInfo::exists(it->second))
+            return "\"" + it->second + "\"" + s.substr(name.size());   // 全路径要引号(含空格)
+        if (probeProgramRunnable(name))
+            return s;
+    }
+    return "python3";
+}
+
+// cmd 下双引号参数内的转义: 双引号本身要转义, % 会被当变量展开(转成 %%)。
+static std::string escapeCmdArg(const std::string &s)
+{
+    std::string r;
+    for (char c : s)
+    {
+        if (c == '"')
+            r += "\\\"";
+        else if (c == '%')
+            r += "%%";
+        else
+            r += c;
+    }
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// 工程骨架: 对齐 JZCodeAgent::initProject 的"标准 TS 工程"
+//   每个用例先在固定位置铺好骨架(tsconfig.json + src/main.ts + jz_types/jz_js),
+//   agent 只负责往 src/ 里写代码 —— 产物目录由 tsconfig 的 outDir 定死(<用例根>/build),
+//   验证脚本据此去跑, 不需要在文件系统里搜 main.js。
+//   jz_types / jz_js 从 code_agent 的 bin 目录(code_runtime 所在目录)各拷一份, 使工程自包含
+//   (fetch/WebSocket 等全局声明来自 jz_types, 缺了连编译都过不去)。
+// ---------------------------------------------------------------------------
+static bool writeTextIfAbsent(const std::string &path, const std::string &text)
+{
+    if (JZFileInfo::exists(path))
+        return true;                       // 已存在不覆盖(与 JZCodeAgent::initProject 一致)
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    out << text;
+    out.close();
+    return JZFileInfo(path).isFile();
+}
+
+static bool initProject(const std::string &root, const std::string &codeBinDir, std::string &error)
+{
+    error.clear();
+    JZDir mk;
+    if (!mk.mkpath(root))
+    {
+        error = "创建工程目录失败: " + root;
+        return false;
+    }
+
+    // jz_types / jz_js 各拷一份进工程(新部署在 jz_engine/ 下, 旧部署平铺在 bin 目录)
+    auto copyIfPresent = [&](const std::string &rel, bool &flag) {
+        std::string src = codeBinDir + "/jz_engine/" + rel;
+        if (!JZFileInfo(src).isDir())
+            src = codeBinDir + "/" + rel;
+        if (!JZFileInfo(src).isDir())
+            return;                        // 源不存在: 不报错(工程只是不引用运行时类型)
+        std::string copyErr;
+        if (!JZDir::copyRecursively(src, root + "/" + rel, false, &copyErr))
+            error = "复制 " + rel + " 失败: " + copyErr;
+        else
+            flag = true;
+    };
+    bool hasJzTypes = false;
+    bool hasJzJs = false;
+    copyIfPresent("jz_types", hasJzTypes);
+    copyIfPresent("jz_js", hasJzJs);
+    if (!error.empty())
+        return false;
+
+    std::string include = "\"src/**/*.ts\"";
+    if (hasJzTypes)
+        include += ", \"jz_types/**/*.d.ts\"";
+
+    // outDir=build 就是"固定的产物目录"; sourceMap 是运行期把 JS 栈翻译回 TS 源码的必备项。
+    std::string tsconfig =
+        "{\n"
+        "  \"compilerOptions\": {\n"
+        "    \"target\": \"ES2022\",\n"
+        "    \"module\": \"esnext\",\n"
+        "    \"moduleResolution\": \"bundler\",\n"
+        "    \"lib\": [\"ES2025\"],\n"
+        "    \"strict\": true,\n"
+        "    \"skipLibCheck\": true,\n"
+        "    \"noImplicitAny\": true,\n"
+        "    \"noEmitOnError\": true,\n"
+        "    \"sourceMap\": true,\n"
+        "    \"outDir\": \"build\",\n"
+        "    \"rootDir\": \"src\"\n"
+        "  },\n"
+        "  \"include\": [" + include + "],\n"
+        "  \"jzCompilerOptions\": {}\n"
+        "}\n";
+    if (!writeTextIfAbsent(root + "/tsconfig.json", tsconfig))
+    {
+        error = "写入 tsconfig.json 失败: " + root;
+        return false;
+    }
+    if (!writeTextIfAbsent(root + "/.gitignore", "build/\nnode_modules/\n"))
+    {
+        error = "写入 .gitignore 失败: " + root;
+        return false;
+    }
+
+    // src 空则补一个可编译的占位入口(生成 dir 也建好, 与 initProject 一致)
+    JZDir srcDir(root + "/src");
+    std::vector<std::string> items =
+        srcDir.exists() ? srcDir.entryList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot)
+                        : std::vector<std::string>();
+    if (items.empty())
+    {
+        mk.mkpath(root + "/src");
+        std::string mainTs =
+            "// 工程入口(示例, 可自行删改)\n"
+            "// 编译: tsc -p tsconfig.json  ->  产物 build/main.js\n"
+            "export function main(): void\n"
+            "{\n"
+            "    console.log(\"hello from project\");\n"
+            "}\n"
+            "main();\n";
+        if (!writeTextIfAbsent(root + "/src/main.ts", mainTs))
+        {
+            error = "写入 src/main.ts 失败: " + root;
+            return false;
+        }
+    }
+    mk.mkpath(root + "/src/GenerateFiles");
+    return true;
+}
+
 // ---- JZAgentCli 评测驱动 ----
 class CliTest : public JZObject
 {
 public:
+    // codeBinDir = code_runtime / tsc 所在的部署目录(bin/<CONFIG>): 工程骨架的
+    // jz_types / jz_js 从这里拷进每个用例工程。
     CliTest(JZEventLoop *loop, const JZCliConfig &cfg, const std::string &codeRuntime,
-            const std::string &dataDir)
-        : m_loop(loop), m_config(cfg), m_codeRuntime(codeRuntime), m_dataDir(dataDir)
+            const std::string &codeBinDir, const std::string &dataDir)
+        : m_loop(loop), m_config(cfg), m_codeRuntime(codeRuntime),
+          m_codeBinDir(codeBinDir), m_dataDir(dataDir)
     {
         m_net = new JZNetworkAccessManager(this);
     }
@@ -261,7 +439,20 @@ protected:
         m_result.name = m_case.name;
 
         std::string root = m_baseRoot + "/case_" + std::to_string(i);
-        JZDir().mkpath(root);
+
+        // 先铺好标准 TS 工程骨架(tsconfig outDir=build / rootDir=src), agent 只往 src/ 里写代码。
+        // 骨架铺不成(拷 jz_types 失败等)就没什么可评测的, 直接判该用例失败。
+        {
+            std::string perr;
+            if (!initProject(root, m_codeBinDir, perr))
+            {
+                jzError().nospace() << "[用例 " << m_case.name << "] 初始化工程失败: " << perr;
+                m_result.lastAgentError = "initProject: " + perr;
+                m_result.passed = false;
+                finishCase();
+                return;
+            }
+        }
 
         JZCliConfig cfg = m_config;
         cfg.rootDir = root;
@@ -280,22 +471,30 @@ protected:
         }
         m_cli = cli;
 
-        // 构造提交体
-        std::string system_prompt = R"(你是 c++ 开发助手，按照这套固定流程开发：
-1. 产出代码必须是 `.ts` 源码；
-2. 项目使用 `tsc` 编译，tsconfig 配置：target ES2020，module CommonJS，rootDir ./src，outDir ./dist；
-3. 编译后 dist 目录会生成 main.js；
-4. 运行命令：`code_runtime --root ./dist`，code_runtime 要求 --root 目录下**直接存在 main.js**，不能嵌套；
-5. 输出规范：优先输出 src 下 ts 代码，附带必要 tsconfig.json/package.json，不要直接输出 js；)";
+        // 构造提交体。工程骨架已由本程序初始化好(见 initProject): agent 不要再另建工程/改 tsconfig,
+        // 只写 src/ 下的 .ts —— 产物固定落在 build/ 下的 main.js, 验证脚本按 tsconfig 的 outDir 去跑。
+        std::string system_prompt = R"(你是 TypeScript 开发助手，工程骨架已初始化好，按这套固定流程干活：
+1. 直接在 `src/` 下写 `.ts` 源码，入口必须是 `src/main.ts`（编译产物为 `build/main.js`）；
+2. tsconfig.json 已配置好（target ES2022，module esnext，rootDir ./src，outDir ./build，noEmitOnError），不要改它，也不要另建工程；
+3. 需要编译自检时执行：`tsc -p tsconfig.json`；需要跑起来时执行：`code_runtime --root ./build`；
+4. 只用 TS 写代码，不要直接写 .js（build/ 下的 js 是编译产物）。)";
         std::string prompt = system_prompt + "\n" + m_case.prompt;
         if (!m_case.input.empty() && !m_httpPromptExtra.empty())
             prompt += m_httpPromptExtra;
 
         jzDebug() << prompt;
+
+        // 验证命令: 用例给了 verify 就用它(benchmark 原样搬过来); 没给但有 expect.contains,
+        // 就挂通用 stdout 验证(data/stdout_verify.py: 先 tsc 编译 -> 按 tsconfig 定位产物
+        // -> 跑 code_runtime -> 比对输出), 即 benchmark 宿主原本内联的那段判定。
+        std::string verifyCmd = m_case.verifyCmd;
+        if (verifyCmd.empty() && !m_case.expectContains.empty())
+            verifyCmd = buildStdoutVerifyCmd(cfg, root, m_case);
+
         Json::Value req;
         req["prompt"] = prompt;
-        if (!m_case.verifyCmd.empty())
-            req["verify_cmd"] = expandVerifyCmd(m_case.verifyCmd, root);
+        if (!verifyCmd.empty())
+            req["verify_cmd"] = expandVerifyCmd(verifyCmd, root);
         req["verify_timeout"] = m_case.timeoutMs;
         req["max_verify_rounds"] = m_case.maxAttempts;
 
@@ -303,7 +502,8 @@ protected:
                             << "] 开始 (maxAttempts=" << m_case.maxAttempts
                             << ", root=" << root << ") ====" << clr(CLR_RESET);
 
-        // 打印本用例实际生效的程序映射: 看不到 tsc/code_runtime 就说明外部没传进来
+        // 打印本用例实际生效的程序映射与验证命令: 看不到 tsc/code_runtime 就说明外部没传进来;
+        // 验证命令为空 = 本用例没有判定标准(收尾只看 agent 自己有没有报错)。
         std::string progs;
         for (const auto &kv : cli->programPaths())
         {
@@ -311,6 +511,9 @@ protected:
                 progs += ", ";
             progs += kv.first + "=" + kv.second;
         }
+        jzDebug().nospace() << "  程序映射: " << (progs.empty() ? "(空)" : progs);
+        jzDebug().nospace() << "  验证命令: "
+                            << (verifyCmd.empty() ? "(无验证)" : expandVerifyCmd(verifyCmd, root));
 
         // 起网页那套 HTTP(POST /task + GET /events), 再以客户端身份订阅事件流 -> 实时打印过程
         cli->startHttp();
@@ -638,6 +841,39 @@ protected:
         return s;
     }
 
+    // 通用 stdout 验证命令(等价于 benchmark 宿主内联的 check):
+    //   <python> "${data}/stdout_verify.py" --tsc "<tsc 全路径>" --runtime "${runtime}" \
+    //       --root "${root}" --contains "<expect.contains>" [--case-insensitive] --timeout <秒>
+    // 脚本按传入的这几个路径干活(不搜索): 先 tsc -p <root>/tsconfig.json 编译, 再按 tsconfig 的
+    // compilerOptions.outDir 定位产物目录(骨架里是 build), 检查 main.js 是否真的生成了,
+    // 最后跑 code_runtime 比对 stdout。退出码 0=通过 / 1=未通过(输出喂回模型重试)。
+    // 解释器(哪个 python)与 tsc 全路径在这里定死(都是外部探测到的), ${data}/${runtime}/${root}
+    // 留给 expandVerifyCmd 展开。
+    std::string buildStdoutVerifyCmd(const JZCliConfig &cfg, const std::string &root,
+                                     const BenchmarkCase &c)
+    {
+        std::string tsc;
+        std::map<std::string, std::string>::const_iterator it = cfg.programPaths.find("tsc");
+        if (it != cfg.programPaths.end())
+            tsc = it->second;
+
+        std::string cmd = detectVerifyInterpreter(cfg.programPaths)
+                          + " \"${data}/stdout_verify.py\""
+                          + " --tsc \"" + escapeCmdArg(tsc) + "\""
+                          + " --runtime \"${runtime}\""
+                          + " --root \"${root}\""
+                          + " --contains \"" + escapeCmdArg(c.expectContains) + "\"";
+        if (c.expectCaseInsensitive)
+            cmd += " --case-insensitive";
+
+        // 产物运行上限: 比验证总超时留出余量(验证超时 = 用例 timeout, 见 req["verify_timeout"])。
+        int secs = c.timeoutMs / 1000 - 10;
+        if (secs < 5)
+            secs = 5;
+        cmd += " --timeout " + std::to_string(secs);
+        return cmd;
+    }
+
     std::string currentInput()
     {
         std::lock_guard<std::mutex> lk(m_inputMutex);
@@ -652,6 +888,7 @@ protected:
     JZEventLoop *m_loop;
     JZCliConfig m_config;
     std::string m_codeRuntime;
+    std::string m_codeBinDir;      // code_runtime / tsc 所在目录(工程骨架取 jz_types/jz_js)
     std::string m_dataDir;
 
     JZAgentCli *m_cli = nullptr;
@@ -732,6 +969,16 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     c.verifyCmd = (root.isMember("verify") && root["verify"].isString())
                       ? root["verify"].asString() : "";
     c.verifyPort = root.isMember("verifyPort") ? root["verifyPort"].asInt() : 3900;
+
+    // 输出预期(与 benchmark 的 expect 同解析): 没有 verify 时用它组织通用 stdout 验证
+    if (root.isMember("expect") && root["expect"].isObject())
+    {
+        const Json::Value &exp = root["expect"];
+        if (exp.isMember("contains") && exp["contains"].isString())
+            c.expectContains = exp["contains"].asString();
+        if (exp.isMember("caseInsensitive"))
+            c.expectCaseInsensitive = exp["caseInsensitive"].asBool();
+    }
 
     if (c.prompt.empty())
     {
@@ -994,6 +1241,12 @@ int main(int argc, char *argv[])
     if (!JZFileInfo::exists(codeRuntime))
         codeRuntime.clear();
 
+    // code_agent 的部署目录(bin/<CONFIG>): code_runtime / tsc / jz_engine 都在这儿。
+    // 工程骨架的 jz_types / jz_js 从这里拷, 所以要求能定位到。
+    std::string codeBinDir;
+    if (!codeRuntime.empty())
+        codeBinDir = parentDirOf(codeRuntime);
+
     if (!cfg.programPaths.empty())
     {
         std::string line;
@@ -1003,6 +1256,11 @@ int main(int argc, char *argv[])
                 line += ", ";
             line += kv.first + "=" + kv.second;
         }
+        jzDebug().nospace() << "[agent_cli_test] 程序映射: " << line;
+    }
+    else
+    {
+        jzWarning() << "[agent_cli_test] 未探测到 tsc / code_runtime, agent 可能编不出产物";
     }
 
     std::vector<BenchmarkCase> cases;
@@ -1038,8 +1296,34 @@ int main(int argc, char *argv[])
         }
     }
 
+    // 需要"通用 stdout 验证"的用例(expect.contains 且没给 verify)必须有 code_runtime + tsc:
+    // 验证脚本要 tsc 先编译、code_runtime 再跑产物, 两者都从 build 目录定位(见 detectProgram)。
+    // 找不到就直接失败(与 benchmark 一致) —— 否则这些用例会一路"无验证"跑成假 PASS。
+    {
+        bool needRuntime = false;
+        for (const auto &c : cases)
+            if (c.verifyCmd.empty() && !c.expectContains.empty())
+                needRuntime = true;
+        if (needRuntime && (codeRuntime.empty() || tscPath.empty()))
+        {
+            jzError().nospace() << "未在 build 目录里找到 "
+                                << (codeRuntime.empty() ? "code_runtime " : "")
+                                << (tscPath.empty() ? "tsc " : "")
+                                << "(请先构建对应目标), 无法对 expect.contains 型用例做 stdout 验证";
+            return 2;
+        }
+        // 验证脚本是随评测集(data/agent_cli_test)一起拷过来的: 老构建产物里可能还没有它
+        // (POST_BUILD 的 copy_directory 只在重新构建 agent_cli_test 时跑), 提示重新构建。
+        if (needRuntime && !JZFileInfo::exists(dataDir + "/stdout_verify.py"))
+        {
+            jzError().nospace() << "评测集目录里没有 stdout_verify.py: " << dataDir
+                                << "(请重新构建 agent_cli_test 以同步评测集)";
+            return 2;
+        }
+    }
+
     JZEventLoop loop;
-    CliTest test(&loop, cfg, codeRuntime, dataDir);
+    CliTest test(&loop, cfg, codeRuntime, codeBinDir, dataDir);
     test.setCases(cases);
     test.setCliPortBase(cliHttpPort);
 

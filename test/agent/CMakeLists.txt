@@ -14,4 +14,8 @@ target_link_libraries(test_agenttoolbridge JZFramework agent_tool)
 add_executable(test_virtual_terminal test_virtual_terminal.cpp)
 target_link_libraries(test_virtual_terminal JZFramework agent_tool)
 
+# 工具循环检测(纯逻辑, 不需要模型/网络/事件循环)
+add_executable(test_loopdetect test_loopdetect.cpp)
+target_link_libraries(test_loopdetect JZFramework)
+
 add_subdirectory(five_chess)

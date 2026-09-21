@@ -33,6 +33,14 @@ static void testCoTcp()
             JZByteArray buf = coReadLine(cli);
             cli->write(buf);          // 原样回传
         }
+        // 收尾: 等客户端把最后一个 echo 读完并主动断开(这里读到连接关闭)再关连接。
+        // ⚠ 不能写完最后一个 echo 就 disconnectFromHost(): 客户端可能"已经收到、还没读走"这条数据,
+        //    连接一关, readAll() 里 waitForReadyRead 之后是按 isConnected() 判成败的, 那份数据会被丢掉,
+        //    末轮 coReadLine 偶发读到空 → 断言失败(Debug 下更容易撞上)。
+        //    客户端只会发 rounds 条消息, 所以这个循环总是等到"对方断开"才退出。
+        while (cli->readAll().isOk())
+        {
+        }
         cli->disconnectFromHost();
     });
 

@@ -283,11 +283,60 @@ string envValue(const char *name)
     free(buf);
     return v;
 }
+#else
+string envValue(const char *name)
+{
+    const char *v = getenv(name);
+    return v ? string(v) : string();
+}
 #endif
 
+#ifndef _WIN32
+// POSIX: 找一个存在的可执行文件 —— 先看几个常见系统目录(PATH 可能被裁过), 再逐段扫 PATH。
+// 找到返回全路径, 找不到返回空串。
+string findProgram(const string &name)
+{
+    static const char *kDirs[] = { "/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin" };
+    for (const char *dir : kDirs)
+    {
+        string p = string(dir) + "/" + name;
+        if (JZFileInfo(p).isFile())
+            return p;
+    }
+
+    string path = envValue("PATH");
+    size_t i = 0;
+    while (i < path.size())
+    {
+        size_t pos = path.find(':', i);
+        string dir = (pos == string::npos) ? path.substr(i) : path.substr(i, pos - i);
+        if (!dir.empty())
+        {
+            string p = toSlash(dir) + "/" + name;
+            if (JZFileInfo(p).isFile())
+                return p;
+        }
+        if (pos == string::npos)
+            break;
+        i = pos + 1;
+    }
+    return string();
+}
+#endif
+
+// 探测跑命令用的 shell。
+//   优先 bash: 模型写的命令基本是 bash 语法([[ ]] / 数组 / source / local); 更要紧的是
+//   **没有 shebang 的脚本**, 它 ENOEXEC 之后的兜底解释器就是这里这个 shell —— 用 bash
+//   能省掉一大类"语法错误(没想到我是 dash)"的坑。Windows 侧本来就是 Git Bash。
+//   ⛔ 不写死 bash: Alpine/BusyBox、Yocto/Buildroot(嵌入式板子)与精简容器里常常只有
+//   /bin/sh -> busybox ash, 写死会让**所有**命令都起不来。分级探测, 找不到就回退 sh。
+//   两者都没有才返回空(调用方会明确报"没有可用的 shell", 不静默退回一个别的解释器)。
 string detectShell()
 {
 #ifdef _WIN32
+    // Windows 没有系统 sh: 用 Git for Windows 带的 bash。
+    // ⚠ 只在 Git 的安装目录里找, **不扫 PATH** —— PATH 里叫 bash.exe 的还可能是
+    //   C:\Windows\System32\bash.exe(WSL 启动器), 那会把命令送进另一个系统, 语义完全不同。
     const char *envs[] = { "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA" };
     const char *subs[] = { "/Git/bin/bash.exe", "/Git/bin/bash.exe", "/Programs/Git/bin/bash.exe" };
 
@@ -302,7 +351,10 @@ string detectShell()
     }
     return string();
 #else
-    return "/bin/sh";
+    string bash = findProgram("bash");
+    if (!bash.empty())
+        return bash;
+    return findProgram("sh");
 #endif
 }
 
@@ -1407,7 +1459,7 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
 
     if (shellProgram().empty())
     {
-        error = "没有可用的 shell: Windows 上需要 Git for Windows"
+        error = "没有可用的 shell: POSIX 上需要 bash 或 /bin/sh; Windows 上需要 Git for Windows"
                 "(没找到 Git/bin/bash.exe); 也可以用 setShellProgram() 指定";
         if (cb)
             cb(false, string(), error);
@@ -2086,7 +2138,11 @@ void JZVirtualTerminal::buildDefaultPrograms()
         "find", "grep", "egrep", "fgrep", "sed", "awk", "sort", "uniq", "cut", "tr", "head", "tail",
         "wc", "diff", "xargs", "tee", "basename", "dirname", "realpath", "seq", "printf", "nl",
         "echo", "pwd", "cd", "pushd", "popd", "dirs", "env", "printenv", "export", "unset",
-        "test", "[", ":", "true", "false", "source", ".", "umask", "ulimit", "kill", "wait",
+        // `[[ ]]`: bash 的条件表达式 —— 整条链里最常写的一种。审核面只把它当"一条普通命令"
+        //   (程序名是 `[[`, 后面都是参数), 结构上不需要特殊对待。默认 shell 是 bash 才有这个
+        //   内建; 回退到 dash/busybox 时运行期会报 "[[ not found"(与 source 在 dash 下的
+        //   情形同理: 过审靠白名单, 能不能跑由 shell 决定)。
+        "test", "[", "[[", ":", "true", "false", "source", ".", "umask", "ulimit", "kill", "wait",
         "date", "sleep", "which", "command", "type", "du", "df", "file", "less", "more",
         // 打包/压缩(拉依赖、解源码包常用)
         "tar", "zip", "unzip", "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd",

@@ -215,7 +215,7 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
                                  << "  权限等级=" << (config.unrestricted ? "全部不检查" : "按区域分档");
     jzInfo().noquote().nospace() << "  会话      上限=" << config.maxSessions
                                  << "  空闲回收=" << (config.recycleSec > 0 ? to_string(config.recycleSec) + "s" : string("关"));
-    jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测") : config.shellProgram);
+    jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测(优先 bash, 找不到回退 /bin/sh)") : config.shellProgram);
     jzInfo().noquote().nospace() << "  日志文件  " << (config.logFile.empty() ? string("(只打控制台)") : config.logFile);
 }
 

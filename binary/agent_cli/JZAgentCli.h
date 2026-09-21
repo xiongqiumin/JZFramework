@@ -35,12 +35,37 @@ struct JZCliConfig
     std::string modelToken;
     int netTimeout = 120 * 1000;   // 网络请求超时(ms)
     int maxRounds = 100;           // 单任务最大对话轮次(-1=不限)
-    int maxToken = 160000;         // 单任务 token 预算上限
+    int maxToken = 160000;         // 单任务 token 预算上限(上下文, 见 JZAgent::windowTokens())
+    // 单次回复的**输出**上限(请求体 max_tokens)。<=0 = 不传, 由服务端默认决定 ——
+    // ⚠ llama.cpp 默认 n_predict=-1(不限): 模型一开始复读就能吐上万 token。
+    int maxTokens = 8192;
+    // 请求体附加字段(llm.body): 各家私有参数 / 采样参数, 逐字段并进请求体, 同名以它为准。
+    // 治"输出复读"最有效的是服务端采样侧, 例如:
+    //   {"repeat_penalty": 1.05, "dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2}
+    Json::Value extraBody;
     // 出错重试: 本地跑重试几乎没有成本, 所以预算给得比较宽 —— 瞬时错误(连接失败/超时/5xx)
     // 发条"继续"就能接着干, 不该让整个任务判失败。
     int maxRetries = 10;           // 瞬时错误后"接着发继续任务"的次数, 0=不重试
     int maxFixRetries = 2;         // 可修复错误(请求被拒/上下文超长)后"让模型改一版"的次数
     int retryDelayMs = 1000;       // 两次重试之间的等待(ms)
+
+    // ---- 循环检测(命中直接中止本轮, 报 JZAgent::LoopError) ----
+    //   两类"原地打转":
+    //     ① 工具反复用**相同参数**调同一个工具(每一步都成功 ⇒ 不报错), 只把上下文
+    //        一轮轮堆大(每轮重发整段 prompt), 一路烧到 maxRounds;
+    //     ② 思考/回复文本尾部原地打转(同一行刷屏、同一段反复、周期串复读),
+    //        输出能涨到上万 token 还不结束。
+    //   结果也相同 = 证据更强(再试必然还是这个结果), 阈值更低; 结果不同可能只是
+    //   合法轮询(等编译/等运行)。
+    //   中止后在 agent_cli 里按"换做法"重试(见 classifyError)。
+    bool loopDetect = true;
+    int loopWindow = 24;             // 工具: 只看最近 N 步工具调用(0=不限窗口)
+    int loopRepeat = 3;              // 工具: 同签名重复 N 次 -> 中止
+    int loopSameResult = 2;          // 工具: 同签名且结果也相同 N 次 -> 中止
+    int loopLineRepeat = 6;          // 输出: 同一行连续重复 N 次 -> 中止
+    int loopBlockRepeat = 3;         // 输出: 同一段(空行分隔)连续重复 N 次 -> 中止
+    int loopPeriodMax = 256;         // 输出: 周期串最长多少字符
+    int loopPeriodRepeat = 8;        // 输出: 周期串至少重复多少次
 
     // ---- 验证脚本门控循环的默认值(/task 的 max_verify_rounds / verify_timeout 可覆盖) ----
     int verifyMaxRounds = 30;      // 验证失败最多喂回 agent 几轮
@@ -231,7 +256,7 @@ protected:
     //   None      用户取消等: 不重试, 直接判失败。
     enum RetryMode { RetryNone = 0, RetryTransient = 1, RetryFix = 2 };
     static RetryMode classifyError(JZAgent::AgentError code, const std::string &err);
-    std::string buildRetryPrompt(RetryMode mode, const std::string &err) const;
+    std::string buildRetryPrompt(RetryMode mode, JZAgent::AgentError code, const std::string &err) const;
     void scheduleErrorRetry(RetryMode mode);
 
     // 有没有 SSE 订阅者: 没有就不必构造高频的流式事件(thinking/reply)JSON

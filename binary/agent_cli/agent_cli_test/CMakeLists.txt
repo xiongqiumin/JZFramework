@@ -7,7 +7,9 @@
 # 用例加载逻辑与 benchmark 完全一致(同 parseCaseObject/loadCases), 因此 code_agent/benchmark/data
 # 里的用例可直接作为本测试的"输入", 无需改写:
 #   - verify 字段(外部验证命令模板) -> submitTask 的 verify_cmd(JZAgentCli 原生验证机制);
-#   - 无 verify 的用例(expect.contains 型) -> 不挂验证, status 以 agent 自身成败为准(烟雾测试)。
+#   - 无 verify 的用例(expect.contains 型) -> 挂"通用 stdout 验证"(data/stdout_verify.py:
+#     跑 code_runtime 再比对产物输出), 即 benchmark 宿主原本内联的那段 check();
+#   - 两者都没有 -> 不挂验证, status 以 agent 自身成败为准(烟雾测试)。
 # 注: benchmark 的 verify 命令通常假定由 code_runtime 跑产物(server 型用例), 在 agent_cli 下由
 #      agent 自行用工具驱动, 语义不完全一致, 此类用例可能 FAIL —— 这是数据层面的差异, 非测试 bug。
 

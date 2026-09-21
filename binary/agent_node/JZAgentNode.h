@@ -62,8 +62,9 @@ public:
     //   的 shell 交给了任何能连上端口的人。
     bool unrestricted = false;
 
-    // 跑命令用哪个 shell。空 = 自动探测: POSIX 是 /bin/sh;
-    // Windows 是 Git for Windows 的 Git/bin/bash.exe(探测不到会直接报错, 不退回 cmd)。
+    // 跑命令用哪个 shell。空 = 自动探测: **优先 bash**(POSIX 先看 /bin、/usr/bin 再扫 PATH;
+    // Windows 找 Git for Windows 的 Git/bin/bash.exe), 找不到回退 /bin/sh;
+    // 两个都没有会直接报错, 不静默退回 cmd / 别的解释器。
     std::string shellProgram;
 
     // ---- 会话(终端) ----

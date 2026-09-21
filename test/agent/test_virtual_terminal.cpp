@@ -368,9 +368,32 @@ private:
                                             "shell 的 ls/mkdir 真的生效: " + out);
                                       check(JZFileInfo(m_ws + "/sub/deep/dir").isDir(),
                                             "mkdir -p 的目录真的建出来了");
-                                      stepRunInlineEnv();
+                                      stepRunCond();
                                   }, error);
         check(started, "run shell coreutils: " + error);
+        if (!started)
+            stepRunCond();
+    }
+
+    // `[[ ]]`(bash 条件表达式): 审核面把它当普通命令 —— 靠的是白名单里有 "[[",
+    // 与用哪个 shell 无关; 但 **只有 bash 有**这个内建, 回退到 dash/busybox 时运行期是 127。
+    // 所以分开断言: "过审"必须成立(任何 shell), "真跑出分支"只在探测到 bash 时要求。
+    void stepRunCond()
+    {
+        string error;
+        const bool isBash = m_term.shellProgram().find("bash") != string::npos;
+        bool started = runCmd("[[ -n \"x\" ]] && echo jz_cond_ok", 20000,
+                                  [this, isBash](bool ok, const string &out, const string &err)
+                                  {
+                                      if (isBash)
+                                      {
+                                          check(ok, "[[ ]] 正常结束: " + err);
+                                          check(contains(out, "jz_cond_ok"),
+                                                "[[ ]] 条件成立真的进了分支: " + out);
+                                      }
+                                      stepRunInlineEnv();
+                                  }, error);
+        check(started, "[[ ]] 过审(白名单里有 [[): " + error);
         if (!started)
             stepRunInlineEnv();
     }

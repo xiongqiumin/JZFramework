@@ -176,7 +176,6 @@ void JZAgent::reset()
 
     m_error.clear();
     m_errorCode = AgentError::None;  // 未设置错误时为 None
-    m_state = State::Idle;   // 重置：未运行/已停止
     m_replyHistory = std::shared_ptr<LLMHistory>();
 
     m_context.clear();  // 清空对话历史与累计 usage

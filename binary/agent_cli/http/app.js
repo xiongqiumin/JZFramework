@@ -435,18 +435,26 @@
   var procOmitEl = null;   // "已省略 N 步" 标记
   var procOmitN = 0;
 
+  // 工具气泡: id -> 等待结果回填的 DOM 节点(参考 ChatView.m_pendingToolIdx)。
+  // 一个工具调用连同它的返回合并在同一个气泡里, 而不是分两行。
+  var toolBubbles = {};
+  var toolSeq = 0;         // tool_call 不带 id 时的兜底自增号
+
   function endProc() { procEl = null; procBody = null; procKind = ''; }
 
   function resetProcKeep() {
     procEls.length = 0;
     procOmitN = 0;
+    toolBubbles = {};
     if (procOmitEl && procOmitEl.parentNode) procOmitEl.parentNode.removeChild(procOmitEl);
     procOmitEl = null;
   }
 
   function trimProc() {
     while (procEls.length > PROC_KEEP) {
-      var oldEl = procEls.shift();
+      var oldEl = procEls[0];
+      if (oldEl && oldEl.__pending) break;   // 还在等输出: 不摘(最旧的应是已收到结果的)
+      procEls.shift();
       if (oldEl.parentNode) oldEl.parentNode.removeChild(oldEl);
       procOmitN += 1;
     }
@@ -476,6 +484,46 @@
     row.appendChild(body);
     row.body = body;
     return row;
+  }
+
+  // 工具气泡: 调用参数与"输出"合并在同一张卡片里。参考 code_agent/ChatView 的
+  // appendTool + appendToolResult —— 用 call.id 把结果回填到对应的工具卡。
+  // 这样网页里一个工具调用连同它的返回只占一个气泡, 而不是分两行。
+  function makeToolBubble(name, args) {
+    var row = el('div', 'proc tool');
+
+    var head = el('div', 'proc-head');
+    head.appendChild(el('span', 'proc-dot'));
+    head.appendChild(el('span', 'proc-tag', PROC_TAG.tool || '工具'));
+    if (name) head.appendChild(el('span', 'proc-name', name));
+    row.appendChild(head);
+
+    var body = el('div', 'proc-body mono');
+    body.textContent = args || '（无参数）';
+    row.appendChild(body);
+
+    // 结果段: 调用发出时先隐藏, tool_result 到达后回填并展开
+    var resSec = el('div', 'proc-result hidden');
+    resSec.appendChild(el('div', 'proc-res-label', '输出'));
+    var resBody = el('div', 'proc-body mono');
+    resSec.appendChild(resBody);
+    row.appendChild(resSec);
+
+    row.__resSec = resSec;
+    row.__resBody = resBody;
+    row.__pending = true;        // 收到结果前不要被 trimProc 摘掉
+    return row;
+  }
+
+  function fillToolResult(row, ok, result) {
+    row.__pending = false;
+    row.classList.toggle('fail', !ok);
+    row.__resSec.classList.remove('hidden');
+    row.__resBody.classList.add(ok ? 'ok' : 'fail');
+    var res = String(result == null ? '' : result);
+    if (res.length > 800) res = res.slice(0, 800) + '…';
+    row.__resBody.textContent = res || '（空返回）';
+    scrollBottom();
   }
 
   // kind: think / say / tool / res / res fail；name 仅工具行使用
@@ -525,18 +573,32 @@
     }
 
     if (type === 'tool_call') {
-      endProc();
-      var args = String(data.args || '');
-      if (args.length > 600) args = args.slice(0, 600) + '…';
-      addProc('tool', args, data.name || 'tool');
+      endProc();                       // 工具调用单独成泡, 不与上一段思考/回复混行
+      var targs = String(data.args || '');
+      if (targs.length > 600) targs = targs.slice(0, 600) + '…';
+      var bubble = makeToolBubble(data.name || 'tool', targs);
+      messagesEl.appendChild(bubble);
+      procEls.push(bubble);
+      trimProc();
+      var tid = data.id || ('t' + (++toolSeq));   // 无 id 时兜底自增
+      toolBubbles[tid] = bubble;
+      procKind = 'tool';               // 标记当前段为工具, 后续思考/回复另起一行
       return;
     }
 
     if (type === 'tool_result') {
       endProc();
-      var res = String(data.result || '');
-      if (res.length > 800) res = res.slice(0, 800) + '…';
-      addProc(data.ok ? 'res' : 'res fail', res);
+      var rid = data.id;
+      var bub = rid ? toolBubbles[rid] : null;
+      if (bub && bub.parentNode) {     // 命中工具泡: 结果回填到同一个气泡
+        fillToolResult(bub, data.ok, data.result);
+        delete toolBubbles[rid];
+      } else {
+        // 没有可配对的工具调用(历史数据或不携带 id): 退化成独立结果行
+        var res = String(data.result || '');
+        if (res.length > 800) res = res.slice(0, 800) + '…';
+        addProc(data.ok ? 'res' : 'res fail', res);
+      }
       return;
     }
 

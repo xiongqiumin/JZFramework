@@ -251,14 +251,6 @@ jz_signals:
     JZSignal<const ToolCallResult&> sigToolResult;
     JZSigString sigError;
     JZSigVoid   sigFinished;
-    // 历史新增了一条消息(增量, 追加到末尾)。用于增量持久化: 接收方按序追加一条即可,
-    // 不必等一轮结束再整段保存 —— 这样存档里能留下**完整**对话记录(含被压缩掉的旧消息),
-    // 恢复时界面显示全部, 而给模型的上下文只取最后一条 ContextStart 之后的部分。
-    // 压缩时发出的就是那条摘要本身(它既是新消息, 也是新的上下文起点)。
-    // 参数是共享指针, 接收方可以长期持有。
-    // 注: 只覆盖"追加"; 出错裁剪 / reset 清空导致的缩减不通知(接收方按需自行全量对齐)。
-    // 跨线程(Queued/BlockingQueued)连接会把参数打包成 JZVariant, 自定义类型请用
-    // 默认的 Auto(同线程即直连)/Direct 连接。
     JZSignal<std::shared_ptr<LLMHistory>> sigLLMHistory;
 
 protected:
@@ -361,7 +353,6 @@ protected:
 
     // 历史压缩(TokenCompress)相关的在途请求与临时状态
     JZNetworkReply* m_compressReply = nullptr;
-    std::vector<std::shared_ptr<LLMHistory>> m_compressChunk;  // 本次被压缩的历史块
 
     JZNetworkAccessManager* m_net;
     JZAgentConfig m_config;

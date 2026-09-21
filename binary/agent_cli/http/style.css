@@ -368,6 +368,22 @@ body.resizing iframe { pointer-events: none; }
 .proc.res.fail .proc-dot { background: var(--fail); }
 .proc.res.fail .proc-body { color: var(--fail); }
 
+/* 工具气泡: 调用参数与"输出"合并显示, 用分隔线 + 标签区分两段 */
+.proc.tool.fail { border-left-color: var(--fail); }
+.proc.tool.fail .proc-dot { background: var(--fail); }
+.proc-result {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-top: 4px; padding-top: 5px;
+  border-top: 1px dashed var(--border);
+}
+.proc-res-label {
+  flex: none; font-size: 11px; font-weight: 600; letter-spacing: .5px;
+  color: var(--ok);
+}
+.proc.tool.fail .proc-res-label { color: var(--fail); }
+.proc-body.ok { color: var(--ok); }
+.proc-body.fail { color: var(--fail); }
+
 @keyframes procIn {
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: none; }

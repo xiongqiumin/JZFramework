@@ -137,15 +137,21 @@ JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
     m_readSkill = new ReadSkillTool();    
     m_readSkill->setParent(this);
 
-    clear();
+    reset();
 }
 
 JZAgent::~JZAgent()
 {    
 }
 
-void JZAgent::clear()
+// 一轮对话结束(Idle)后重开新任务: 仅 Idle 允许, 复位到 Inactive 并清空对话历史。
+void JZAgent::reset()
 {
+    if (m_state == WaitingReply)
+    {
+        JZ_ASSERT(0);
+    }
+
     if (m_llmReply)
     {
         auto reply = m_llmReply;
@@ -162,35 +168,17 @@ void JZAgent::clear()
         creply->deleteLater();
     }
 
+    m_state = State::Inactive;
     m_currentRound = -1;
     m_isActive = false;
     m_inTransaction = false;
     m_transactionRequests.clear();
-    // 注意: 这里**不**复位 m_streamEnabled / m_thinkEnabled —— 它们是配置(由 setXxx 设定),
-    // 不是本次运行的运行态。以前在 clear() 里复位, 结果 reset() 重开任务时把"流式"关掉了:
-    // 第二个任务起 stream 字段不再发给模型, 只能拿整包(界面增量显示也就没了),
-    // 思考开关也被恢复默认。clear() 只负责运行态/错误/回复缓存。
-    m_toolError = 0;
 
     m_error.clear();
     m_errorCode = AgentError::None;  // 未设置错误时为 None
-
-    m_state = State::Inactive;   // 重置：未运行/已停止
+    m_state = State::Idle;   // 重置：未运行/已停止
     m_replyHistory = std::shared_ptr<LLMHistory>();
-}
 
-// 一轮对话结束(Idle)后重开新任务: 仅 Idle 允许, 复位到 Inactive 并清空对话历史。
-void JZAgent::reset()
-{
-    if (m_state != State::Idle)
-    {
-        const char *state = (m_state == State::Inactive)
-            ? "Inactive(无需重置)" : "WaitingReply(请求在途, 请先 stop 或等 sigFinished)";
-        jzWarning() << "JZAgent: reset() 被拒绝: 仅一轮对话结束后(Idle)可重置, 当前状态" << state;
-        return;
-    }
-
-    clear();            // 复位运行态/错误/回复缓存, 内部置 Inactive
     m_context.clear();  // 清空对话历史与累计 usage
     m_requests.clear();
 }
@@ -426,7 +414,6 @@ void JZAgent::request(std::string user_prompt)
     {
         m_isActive = true;
         m_currentRound = 0;
-        m_toolError = 0;
     }
 
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
@@ -458,7 +445,6 @@ void JZAgent::requestWithImages(const std::string &text, const std::vector<std::
     {
         m_isActive = true;
         m_currentRound = 0;
-        m_toolError = 0;
     }
 
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::UserPrompt);
@@ -1162,7 +1148,6 @@ void JZAgent::llmEnd()
     m_currentRound = 0;
     m_isActive = false;
     m_inTransaction = false;
-    m_toolError = 0;
 
     m_state = State::Idle;
     sigFinished.emit();

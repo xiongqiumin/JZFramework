@@ -291,7 +291,6 @@ protected:
     // 入队一条请求: 事务期进 m_transactionRequests(不发送), 否则进 m_requests 并驱动 llmLoop
     void pushRequest(const JZAgentRequestPtr &req);
 
-    void clear();
     void llmRequest();
     void onLLMRequest();
     void onLLMStreamReadyRead();
@@ -331,16 +330,15 @@ protected:
     std::vector<SkillDefine> m_skills;
     std::atomic<int> m_paramIdGen{ 0 };
 
-    // 配置项(不是运行态): 只由 setStreamEnabled/setThinkEnabled 改, clear()/reset() 不该动它们 ——
+    // 配置项(不是运行态): 只由 setStreamEnabled/setThinkEnabled 改, reset() 不该动它们 ——
     // 否则"清空历史重开一个任务"会把流式/思考设置一起抹掉(第二个任务起悄悄退回非流式)。
     bool m_streamEnabled = false;  //是否流式传输
     bool m_thinkEnabled = true;    //是否思考
 
     JZAgentTool *m_readSkill;
     LLMContext m_context;
-    int m_toolError;
 
-    bool m_inTransaction;
+    bool m_inTransaction;   //事物,用于一次提交多组
 
     std::vector<JZAgentRequestPtr> m_requests;             // 常规请求队列(提交即发出)
     std::vector<JZAgentRequestPtr> m_transactionRequests;  // 事务期暂存的批次, commit() 时整批搬入 m_requests

@@ -5,6 +5,7 @@
 #include "JZDir.h"
 #include "JZFile.h"
 #include "JZFileInfo.h"
+#include "JZNetworkAccessManager.h"   // 联网工具共享的访问管理器(+ JZProxyConfig)
 #include "JZPlatform.h"
 #include "JZString.h"        // str_toLower
 #include "JZVirtualTerminal.h"
@@ -186,6 +187,34 @@ void JZAgentCli::setupAgent()
         addTool(new JZGetDateTimeTool());
     }
 
+    if (m_config.allowNetworkTools)
+    {
+        // 联网工具: web_search(搜索) + web_fetch(抓正文)。两者共享同一个访问管理器,
+        // 代理只在管理器上设一次(http / https 都生效)。
+        // 没有宿主也能跑 —— 它们不出工作区, 也不需要 ICodeToolHost, 所以不参与区域审核。
+        if (!m_netMan)
+            m_netMan = new JZNetworkAccessManager(this);
+        if (!m_config.proxyHost.empty())
+        {
+            JZProxyConfig pc;
+            pc.host = m_config.proxyHost;
+            pc.port = m_config.proxyPort;
+            pc.user = m_config.proxyUser;
+            pc.password = m_config.proxyPassword;
+            m_netMan->setProxy(pc);
+        }
+
+        auto *searchTool = new JZWebSearchTool();
+        if (!m_config.webSearchUrl.empty())
+            searchTool->setSearchUrlTemplate(m_config.webSearchUrl);
+        searchTool->setNetworkAccessManager(m_netMan);
+        addTool(searchTool);
+
+        auto *fetchTool = new JZWebFetchTool();
+        fetchTool->setNetworkAccessManager(m_netMan);
+        addTool(fetchTool);
+    }
+
     if (m_config.memoryEnabled)
     {
         // 长期记忆: 跨任务的结论沉淀 —— 开工时注入任务消息(见 buildMemoryBlock),
@@ -216,6 +245,12 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  read_file / write_file / modify_file   按行读(带行号)/整文件写/局部精确替换。\n";
         text += "  search_code    在工作区内搜索文本/正则。\n";
         text += "  get_datetime   获取当前日期时间(需要\"今天\"这类信息时优先用)。\n";
+    }
+    if (m_config.allowNetworkTools)
+    {
+        text += "  web_search     联网搜索(给查询词, 回标题/链接/摘要): 查官方文档、API 用法、报错原因、"
+                "第三方库这类需要实时信息的问题。\n";
+        text += "  web_fetch      抓取某个 URL 的正文(转纯文本), 与 web_search 配合看某条结果的详情。\n";
     }
     if (m_config.memoryEnabled)
         text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";

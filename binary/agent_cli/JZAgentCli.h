@@ -14,6 +14,7 @@
 
 class JZAgentTool;
 class JZVirtualTerminal;
+class JZNetworkAccessManager;
 class JZHttpServer;
 class JZHttpServerClient;
 class JZHttpRequest;
@@ -62,6 +63,17 @@ struct JZCliConfig
     bool allowPackageManager = false;
     bool allowNetwork = false;
     bool unrestricted = false;
+
+    // ---- 网络工具(web_search / web_fetch) ----
+    //   与上面的 allowNetwork 是两码事: 那个管"shell 命令能不能联网(下载)", 这个管
+    //   "给模型挂不挂联网工具"。agent_cli 是自己在本地跑, 所以默认开。
+    bool allowNetworkTools = true;
+    std::string webSearchUrl;      // 搜索接口模板(含 {q} 占位符); 空 = 内置源(Bing RSS)
+    // HTTP 代理(http / https 都走它, https 走 CONNECT 隧道); host 空 = 不用代理
+    std::string proxyHost;
+    int proxyPort = 0;
+    std::string proxyUser;
+    std::string proxyPassword;
 
     std::string shellProgram;
     int recycleSec = 15 * 60;
@@ -244,6 +256,9 @@ protected:
     JZCliConfig m_config;
     JZCliToolHost m_host;
     JZVirtualTerminal *m_terminal = nullptr;
+    // 联网工具(web_search / web_fetch)共享的访问管理器 —— 代理只在它上面设一次。
+    // 是本对象的子对象; 没挂网络工具时为空。
+    JZNetworkAccessManager *m_netMan = nullptr;
     JZAgent *m_agent = nullptr;
     std::vector<JZAgentTool *> m_tools;
     JZMemoryTool *m_memory = nullptr;    // 非拥有(m_tools 持有); 未启用记忆时为空

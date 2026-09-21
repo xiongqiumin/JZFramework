@@ -77,6 +77,15 @@ static const char *kDefaultConfigJson = R"json({
         "unrestricted":     false
     },
 
+    "network": {
+        "enabled":          true,
+        "searchUrl":        "",
+        "proxyHost":        "",
+        "proxyPort":        0,
+        "proxyUser":        "",
+        "proxyPassword":    ""
+    },
+
     "http": {
         "bind":             "127.0.0.1",
         "port":             8080,
@@ -253,6 +262,14 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
         }
     }
 
+    // network(联网工具: web_search / web_fetch —— 与 terminal.allowNetwork(命令能否联网)独立)
+    readConfigBool(root, "network", "enabled", "allowNetworkTools", config.allowNetworkTools);
+    readConfigString(root, "network", "searchUrl", "webSearchUrl", config.webSearchUrl);
+    readConfigString(root, "network", "proxyHost", "proxyHost", config.proxyHost);
+    readConfigInt(root, "network", "proxyPort", "proxyPort", config.proxyPort);
+    readConfigString(root, "network", "proxyUser", "proxyUser", config.proxyUser);
+    readConfigString(root, "network", "proxyPassword", "proxyPassword", config.proxyPassword);
+
     // 日志(全局项, 不归终端)
     readConfigString(root, "", "logFile", "logFile", config.logFile);
 
@@ -339,9 +356,19 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  工作区    %s\n",
             (config.rootDir.empty() ? string(JZDir::currentPath() + "  (配置为空, 取进程目录)") : config.rootDir).c_str());
     fprintf(stderr, "  授信目录  %s\n", trusted.empty() ? "(无)" : trusted.c_str());
-    fprintf(stderr, "  工具      终端=%s  文件=%s\n",
-            config.allowTerminal ? "开" : "关", config.allowFileTools ? "开" : "关");
-    fprintf(stderr, "  命令策略  包管理=%s  联网=%s  权限=%s\n",
+    fprintf(stderr, "  工具      终端=%s  文件=%s  网络=%s\n",
+            config.allowTerminal ? "开" : "关", config.allowFileTools ? "开" : "关",
+            config.allowNetworkTools ? "开" : "关");
+    if (config.allowNetworkTools)
+    {
+        string proxy;
+        if (!config.proxyHost.empty())
+            proxy = config.proxyHost + ":" + to_string(config.proxyPort);
+        fprintf(stderr, "  搜索源    %s\n",
+                config.webSearchUrl.empty() ? "内置(Bing RSS)" : config.webSearchUrl.c_str());
+        fprintf(stderr, "  网络代理  %s\n", proxy.empty() ? "(不用)" : proxy.c_str());
+    }
+    fprintf(stderr, "  命令策略  包管理=%s  联网命令=%s  权限=%s\n",
             config.allowPackageManager ? "开" : "关",
             config.allowNetwork ? "开" : "关",
             config.unrestricted ? "全部不检查" : "按区域分档");

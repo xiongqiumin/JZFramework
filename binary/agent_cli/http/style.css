@@ -247,8 +247,7 @@ body.resizing iframe { pointer-events: none; }
 .task-concl .text {
   color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word;
   font-size: 12px;
-  /* 结论可能很长: 卡片里只露 3 行, 完整内容看右侧对话/悬停 title */
-  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  /* 结论就是模型的回复: 不截断, 全文显示 */
 }
 .task-concl .text.ok { color: var(--ok); }
 .task-out {
@@ -304,18 +303,23 @@ body.resizing iframe { pointer-events: none; }
   font-family: ui-monospace, Consolas, "Courier New", monospace;
 }
 .composer input:focus { outline: none; border-color: var(--accent); }
+/* 输入框: 发送按钮浮在框内右下角(底部留出按钮空间, 文字不会被压住) */
+.composer-input { position: relative; }
 .composer textarea {
-  width: 100%; resize: none;
+  width: 100%; resize: none; display: block;
   background: var(--field); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 12px; font-size: 14px; line-height: 1.5;
+  padding: 10px 12px 48px; font-size: 14px; line-height: 1.5;
   font-family: inherit;
 }
 .composer textarea:disabled { opacity: .6; }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
-.composer-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
-.composer-actions .ghost { padding: 8px 12px; }
-.composer-actions .primary { min-width: 92px; height: 38px; }
+.composer-send {
+  position: absolute; right: 10px; bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.composer-send .ghost { padding: 5px 10px; font-size: 12px; background: var(--field); }
+.composer-send .primary { min-width: 84px; height: 32px; padding: 4px 16px; font-size: 13px; }
 
 /* 系统/错误行(来自 SSE 事件) */
 .sys {
@@ -328,6 +332,14 @@ body.resizing iframe { pointer-events: none; }
 .sys.err { color: var(--fail); border-color: rgba(207,34,46,.35); background: rgba(207,34,46,.06); }
 .sys.ok { color: var(--ok); border-color: rgba(26,127,55,.35); background: rgba(26,127,55,.06); }
 .sys.dim { opacity: .65; font-size: 11px; padding: 3px 10px; }
+
+/* "等待回复" 提示: 运行中超过 5s 没收到新消息时补在对话末尾, 收到消息即隐藏 */
+.sys.waiting { display: inline-flex; align-items: center; gap: 6px; }
+.sys.waiting::after {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; animation: waitPulse 1s ease-in-out infinite;
+}
+@keyframes waitPulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 
 /* 执行过程(SSE: thinking / reply / tool_call / tool_result) —— 时间线式步骤行 */
 .proc {
@@ -354,6 +366,8 @@ body.resizing iframe { pointer-events: none; }
 }
 .proc-body { max-height: 132px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .proc-body.mono { font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12px; }
+/* 回复是这次任务的最终答案: 整段展开, 不给滚动窗口(思考/工具仍限高) */
+.proc.say .proc-body { max-height: none; overflow: visible; }
 
 /* 分类: 左侧色条 + 圆点 */
 .proc.think { border-left-color: var(--border-strong); }

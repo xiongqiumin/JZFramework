@@ -170,6 +170,11 @@ struct CaseResult
     int totalTokens = 0;
     int cachedTokens = 0;
     int llmMs = 0;
+    // llama.cpp 计时(其他 provider 恒为 0)，速率按 token/ms 现算
+    double promptMs = 0;
+    double predMs = 0;
+    int draftN = 0;            // MTP/投机采样草稿数
+    int draftAccepted = 0;     // MTP/投机采样被接受数
     std::string lastStatus;
     std::string lastVerifyOutput;
     std::string lastAgentError;
@@ -509,10 +514,18 @@ protected:
             m_result.completionTokens = u.completion_tokens;
             m_result.totalTokens = u.total_tokens;
             m_result.cachedTokens = u.cached_tokens;
+            m_result.promptMs = u.prompt_ms;
+            m_result.predMs = u.predicted_ms;
+            m_result.draftN = u.draft_tokens;
+            m_result.draftAccepted = u.draft_accepted_tokens;
             m_totalPrompt += u.prompt_tokens;
             m_totalCompletion += u.completion_tokens;
             m_totalTokens += u.total_tokens;
             m_totalCached += u.cached_tokens;
+            m_totalPromptMs += u.prompt_ms;
+            m_totalPredMs += u.predicted_ms;
+            m_totalDraft += u.draft_tokens;
+            m_totalDraftAccepted += u.draft_accepted_tokens;
         }
         m_totalLlmMs += m_result.llmMs;
 
@@ -569,7 +582,14 @@ protected:
                                 << (r.promptTokens > 0
                                     ? (" (" + std::to_string(r.cachedTokens * 100 / r.promptTokens) + "%)")
                                     : std::string())
-                                << ", LLM=" << (r.llmMs / 1000.0) << "s)";
+                                << ", LLM=" << (r.llmMs / 1000.0) << "s"
+                                << (r.predMs > 0
+                                    ? (", 生成=" + std::to_string((int)(r.completionTokens * 1000.0 / r.predMs)) + " tok/s")
+                                    : std::string())
+                                << (r.draftN > 0
+                                    ? (", MTP=" + std::to_string(r.draftAccepted) + "/" + std::to_string(r.draftN))
+                                    : std::string())
+                                << ")";
             if (!r.passed)
             {
                 if (!r.lastAgentError.empty())
@@ -588,6 +608,16 @@ protected:
             jzDebug().nospace() << "缓存利用率(prompt): " << m_totalCached << "/"
                                 << m_totalPrompt << " = "
                                 << (m_totalCached * 100 / m_totalPrompt) << "%";
+        // llama.cpp 计时: 其他 provider 不带 timings(恒为 0)，不打这两行
+        if (m_totalPromptMs > 0 || m_totalPredMs > 0)
+            jzDebug().nospace() << "推理速度(llama.cpp): prefill="
+                                << (m_totalPromptMs > 0 ? m_totalPrompt * 1000.0 / m_totalPromptMs : 0.0)
+                                << " tok/s, 生成="
+                                << (m_totalPredMs > 0 ? m_totalCompletion * 1000.0 / m_totalPredMs : 0.0)
+                                << " tok/s";
+        if (m_totalDraft > 0)
+            jzDebug().nospace() << "投机采样(MTP): 接受 " << m_totalDraftAccepted << "/" << m_totalDraft
+                                << " = " << (m_totalDraftAccepted * 100.0 / m_totalDraft) << "%";
         jzDebug().nospace() << "耗时分解: 总=" << (m_benchTimer.elapsed() / 1000.0) << "s"
                             << "  LLM=" << (m_totalLlmMs / 1000.0) << "s";
         jzDebug() << "=====================================================";
@@ -639,6 +669,10 @@ protected:
     int m_totalCompletion = 0;
     int m_totalTokens = 0;
     int m_totalCached = 0;
+    double m_totalPromptMs = 0;   // 全部用例累计 prefill 耗时(llama.cpp)
+    double m_totalPredMs = 0;     // 全部用例累计生成耗时(llama.cpp)
+    int m_totalDraft = 0;         // 全部用例累计投机采样草稿数
+    int m_totalDraftAccepted = 0; // 全部用例累计投机采样被接受数
     int64_t m_totalLlmMs = 0;
 
     // 网页服务的客户端侧: 订阅 GET /events, 把事件流实时打到控制台

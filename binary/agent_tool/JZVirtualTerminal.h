@@ -9,6 +9,7 @@
 
 #include "JZCodeTools.h"   // JZVirtualTerminalConfig / TrustedProgram / DenyReason
 #include "JZObject.h"
+#include "JZResult.h"       // run() 返回 JZResult<std::string>(成功=run_id)
 #include "JZShellParser.h"  // JZShell::Command(安全底线要用)
 
 class JZProcess;
@@ -29,6 +30,11 @@ class JZTimer;
 // ⛔ 参数一律结构化, 绝不拼命令行字符串。
 // ⚠ 命令由我们解释(不挂常驻 shell): 每条命令一个 JZProcess, cwd/env 由我们维护。
 //   好处: 状态可序列化、可审计, `a && b` 能逐条审权限。代价: 交互式程序做不了。
+//
+// 并发(2026-09-21): 一个终端可以**同时跑多条命令** —— 每次 run() = 一条在途运行, 各带
+//   自己的 JZProcess + 超时定时器 + 输出 + 回调, 按 run_id 区分(做法同 JZProcessRunner
+//   的多任务列表)。以前是"终端只有一个 proc / 一条在途命令", 第二条只能等第一条结束
+//   (还会直接报错)。cwd 仍是终端级的: 每条命令按**启动那一刻**的 cwd 跑。
 // 本类不是 JZAgentTool —— 是否暴露、以什么名字暴露由上层决定
 // (本地 code_agent 直接持有; 远端 agent_node 经 JZTerminalRegistry 包成 MCP 工具)。
 //
@@ -64,11 +70,22 @@ public:
         std::string id;        // 上层分配的会话 key(由 setId 设置, 终端逻辑本身不用)
         std::string cwd;
         bool running = false;    // 有命令在途
+        int runningCount = 0;    // 在途运行的条数(一个终端可以同时跑多条)
         int64_t lastActive = 0;  // 毫秒时间戳
     };
 
     // 命令结果回调: ok=false 时 error 有原因(output 可能是已拿到的部分)
     typedef std::function<void(bool ok, const std::string &output, const std::string &error)> RunCallback;
+
+    // 单次运行的输出过滤开关(见 setFilterOutput)。
+    // 为什么按次给而不是只留终端级开关: 一个终端能同时跑多条命令, 终端级开关会互相串 ——
+    // 后启动的那条会把前面那条的过滤行为改掉。
+    enum class OutputFilter
+    {
+        Default,   // 用终端设置(见 setFilterOutput)
+        On,
+        Off,
+    };
 
     // 后台/流式运行留下的逐行日志(供 terminal_query 拉取, 支持最近 N 行、按流/关键字过滤)
     struct RunLogLine
@@ -159,22 +176,33 @@ public:
 
     // ==================== 命令 ====================
     // 语法由我们解析(不是 shell): 支持 && || ; 串联、| 管道、> >> < 重定向、通配符与变量展开。
+    // ⭐ 可以并发: 同一个终端同时跑多条命令, 每条各自一个进程/超时/输出/回调, 靠 runId 区分。
+    // run() 自己**不阻塞**(起完进程就返回, 结果走 cb)。
+    // 返回: 成功 = 本次运行的 run_id(供 terminal_query / cancel 引用); 失败 = 原因
+    // (命令被拒 / 起不来 —— 这时 cb 也会被同步调一次 ok=false)。
     // 扩展参数(均有默认值):
-    //   runId    : 非 nullptr 时回填本次运行的 id(供 terminal_query 引用)
     //   onChunk  : 非空的逐块输出回调(流式)
-    //   background: true 时命令在后台跑, run() 返回即启动, 不阻塞 cb
-    bool run(const std::string &command, int timeoutMs, const RunCallback &cb, std::string &error,
-             std::string *runId = nullptr,
-             const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
-             bool background = false);
-    bool cancel();                       // 停掉本终端在跑的命令
-    std::string takeOutput();            // 取一次累积输出并清空
+    //   background: 兼容旧签名(启动即返回, 多路并发后已无实际区别)
+    //   filter   : 本次运行的输出过滤开关(见 OutputFilter)
+    JZResult<std::string> run(const std::string &command, int timeoutMs, const RunCallback &cb,
+                              const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
+                              bool background = false,
+                              OutputFilter filter = OutputFilter::Default);
+    // 停一条命令: **必须带 runId**(在途运行的 id 见 activeRunIds() 或 run() 的返回值)。
+    // 被杀的命令照样走它自己的 RunCallback(ok=false), 收尾只有一条路径。
+    bool cancel(const std::string &runId);
+    // 停掉本终端所有在跑的命令, 返回停掉了几条(各自照常收尾)。
+    int cancelAll();
+    std::vector<std::string> activeRunIds() const;   // 在途运行的 id(按启动先后)
+    std::string takeOutput();                        // 取所有在途运行的累积输出并清空
+    std::string takeOutput(const std::string &runId);   // 取指定运行的累积输出并清空
 
     // ==================== 输出过滤 ====================
     // 开关开(默认开)时所有命令的输出都做截断: 编译命令(build set 见 cpp isBuildCommand)
     // 走"错误上下文"特殊处理(成功尾部 20 行 / 失败开头约 100 行错误且错误块完整);
     // 其它命令超长时保留头 50 + 尾 50 行、中间省略。完整日志仍可由 terminal_query 取。
     // 模型可在 terminal_run 用 error_context=false 关掉。
+    // 这是**终端级默认值**: 单次运行可以用 run() 的 filter 参数覆盖(见 OutputFilter)。
     void setFilterOutput(bool on) { m_filterOutput = on; }
     bool filterOutput() const { return m_filterOutput; }
 
@@ -240,9 +268,42 @@ protected:
         std::vector<RunLogLine> log;
     };
 
+    // ---- 在途运行(可多个并发) ----
+    // 一次 run() = 一个 RunTask = 一个 JZProcess + 一个超时 JZTimer, 各自一份输出与回调。
+    // 只用 runId 认人(回调里按 runId 现查, 不存 RunTask* —— 列表会增减, 指针会失效)。
+    struct RunTask
+    {
+        std::string runId;
+        std::string command;                // 原文(报错/输出过滤用)
+        JZProcess *proc = nullptr;
+        JZTimer *timer = nullptr;           // 本次运行的超时定时器(timeoutMs<=0 则 null)
+        bool timedOut = false;
+        bool filterOutput = true;           // 本次运行是否做输出截断
+        std::string output;                 // 本次运行的累积输出(合并 stdout/stderr)
+        bool outputTruncated = false;       // output 超过字节上限被裁过(见 takeOutput)
+        int64_t startTime = 0;
+        RunCallback cb;
+        std::function<void(const std::string &stream, const std::string &chunk)> onChunk;
+    };
+
+    // run() 的实现(审核 + 起进程): 失败时填 error 返回 false, 成功时回填 runId。
+    // 拆出来是因为中间几十处 Deny 都是"填 error + return false", 包一层比逐处改成 JZResult 干净。
+    bool startRun(const std::string &command, int timeoutMs, const RunCallback &cb, std::string &error,
+                  std::string *runId,
+                  const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk,
+                  bool background, OutputFilter filter);
+
+    RunTask *taskOf(const std::string &runId);
+    const RunTask *taskOf(const std::string &runId) const;
+    void eraseTask(const std::string &runId);
+    // 一次运行结束的收尾(唯一路径: 自然退出 / 超时被杀 / cancel 被杀)。
+    // 记结果 -> 摘任务 -> 回调, 全部按 runId 走。
+    void onRunFinished(const std::string &runId, JZProcess *proc, int exitCode,
+                       JZProcess::ExitStatus status, const std::string &command);
+
     void touch();                       // 刷新活跃时间 + 记审计
-    // 把一块输出追加到本终端(合并)与运行记录(逐行, 带流标签), 并按需推给流式回调
-    void appendRunOutput(const std::string &stream, const std::string &chunk);
+    // 把一块输出追加到该次运行(合并)与运行记录(逐行, 带流标签), 并按需推给它的流式回调
+    void appendRunOutput(const std::string &runId, const std::string &stream, const std::string &chunk);
 
     void audit(const std::string &action, const Verdict &verdict, const std::string &detail);
 
@@ -263,20 +324,11 @@ protected:
     std::string m_id;                   // 会话 key(上层设)
     std::string m_cwd;                  // 规范化后的绝对目录
     std::map<std::string, std::string> m_env;   // 终端级环境变量覆盖
-    bool m_running = false;             // 有命令在途
     int64_t m_lastActive = 0;
 
-    // ---- 在途命令 ----
-    // proc 随终端建一次(不是每条命令新起一个), 命令跑完后同一个对象可以再 start。
-    // 所有权在终端(this), 析构时 killProcess + delete。
-    JZProcess *m_proc = nullptr;
-    JZTimer *m_timeoutTimer = nullptr;
-    std::string m_output;               // 累积输出(合并 stdout/stderr), takeOutput 取一次清一次
-    bool m_outputTruncated = false;     // m_output 超过字节上限被裁过, takeOutput 时补一次标记
-    bool m_timedOut = false;
-    RunCallback m_cb;                   // 在途命令的应答回调
-    std::string m_runId;                // 当前运行的记录 id(供 appendRunOutput 反查)
-    std::function<void(const std::string &, const std::string &)> m_onChunk;  // 流式逐块回调
+    // ---- 在途运行(一次 run() 一条) ----
+    // 每条各自一个 JZProcess + JZTimer, 所有权在终端(this), 结束/析构时 kill + 回收。
+    std::vector<RunTask> m_tasks;
 
     std::string m_shell;                // 见 shellProgram(): 构造时自动探测
     int m_recycleMs = 15 * 60 * 1000;

@@ -326,6 +326,11 @@ JZAgentTokenUsage JZCodeAgent::usage() const
     return m_agent->context()->usage;
 }
 
+int JZCodeAgent::windowTokens() const
+{
+    return m_agent ? m_agent->windowTokens() : 0;
+}
+
 const CodeAgentConfig &JZCodeAgent::codeConfig() const
 {
     return m_codeConfig;

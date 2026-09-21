@@ -24,12 +24,17 @@ protected:
 
 // terminal_run(本地版): 同 agent_node 的 terminal_run, 但直接在 code_agent 进程里跑,
 // 单用户终端、自动用默认会话, 不需要显式 open。
+// 可以并发: 同一个终端同时跑多条命令, 每次调用各自一个 run_id(取消按 run_id 精确停)。
 class JZTerminalRunTool : public JZTerminalToolBase
 {
 public:
     explicit JZTerminalRunTool(JZVirtualTerminal *term);
     void call(const ToolCall &params) override;
     void cancel(const std::string &id) override;
+
+private:
+    // 在跑的调用: tool call id -> run_id(用于 cancel 精确停那一条)
+    std::map<std::string, std::string> m_runs;
 };
 
 class JZTerminalOpenTool : public JZTerminalToolBase

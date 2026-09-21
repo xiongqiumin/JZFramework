@@ -157,6 +157,10 @@ public:
     const std::vector<CodeAgentLog> &logs() const;
     JZAgentTokenUsage usage() const;
 
+    // 当前上下文大小(token 估算)。界面"上下文用量环"用它 —— 别用 usage().total_tokens:
+    // 那是 Σ 各轮 usage, 而每轮记的是整段 prompt, 累加会把同一段历史重复计入轮数遍。
+    int windowTokens() const;
+
     const CodeAgentConfig &codeConfig() const;
     const JZAgentConfig &llmConfig() const;
     bool setWorkspace(const std::string &path);

@@ -29,6 +29,10 @@ static const int kMaxReadBytes = 8 * 1024 * 1024;
 // 运行记录上限
 static const int kMaxRuns = 200;
 static const int kMaxRunLines = 4000;
+
+// 一个终端同时能跑的命令条数上限。并发是为了"长任务别把别的命令全堵住",
+// 不是无上限 —— 模型一口气提几十条会把机器拖死, 到顶就让它等前面的结束。
+static const int kMaxConcurrentRuns = 32;
 static const size_t kMaxRunOutputBytes = 8 * 1024 * 1024;   // 累积输出字节上限(防 OOM)
 
 // ---- 编译输出错误截取 ----
@@ -356,17 +360,25 @@ JZVirtualTerminal::JZVirtualTerminal(JZObject *parent)
 
 JZVirtualTerminal::~JZVirtualTerminal()
 {
-    if (m_proc)
+    // 在跑的命令全部收掉(可能多条): 先杀再删。
+    // proc / timer 都是本终端的子对象, 这里显式清一次 —— 删了就会从子对象表里摘掉,
+    // 与以前"单 proc"的写法一致, 不依赖 ~JZObject 的回收顺序。
+    for (RunTask &t : m_tasks)
     {
-        m_proc->killProcess();     // proc 是终端的子对象, 由 ~JZObject 回收
-        delete m_proc;
-        m_proc = nullptr;
+        if (t.proc)
+        {
+            t.proc->killProcess();
+            delete t.proc;
+            t.proc = nullptr;
+        }
+        if (t.timer)
+        {
+            t.timer->stop();
+            delete t.timer;
+            t.timer = nullptr;
+        }
     }
-    if (m_timeoutTimer)
-    {
-        delete m_timeoutTimer;
-        m_timeoutTimer = nullptr;
-    }
+    m_tasks.clear();
 }
 
 void JZVirtualTerminal::setTerminalConfig(const JZVirtualTerminalConfig &config)
@@ -927,7 +939,8 @@ JZVirtualTerminal::SessionInfo JZVirtualTerminal::info() const
     SessionInfo out;
     out.id = m_id;
     out.cwd = m_cwd;
-    out.running = m_running;
+    out.running = !m_tasks.empty();
+    out.runningCount = (int)m_tasks.size();
     out.lastActive = m_lastActive;
     return out;
 }
@@ -1356,21 +1369,39 @@ bool JZVirtualTerminal::printDir(string &cwd) const
 // 命令 —— 都交给 shell
 // ==========================================================================
 
-bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallback &cb, string &error,
-                            string *runId,
-                            const std::function<void(const string &, const string &)> &onChunk,
-                            bool background)
+// 对外入口: 成功 = run_id, 失败 = 原因。审核/起进程在 startRun() 里 —— 中间几十处 Deny 都是
+// "填 error + return false" 的老写法, 包一层比逐处改成 JZResult 干净。
+JZResult<string> JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallback &cb,
+                                        const std::function<void(const string &, const string &)> &onChunk,
+                                        bool background,
+                                        OutputFilter filter)
 {
-    (void)background;
+    string error;
+    string runId;
+    if (!startRun(command, timeoutMs, cb, error, &runId, onChunk, background, filter))
+        return JZResult<string>::Error(error);
+    return JZResult<string>::Ok(runId);
+}
+
+bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const RunCallback &cb, string &error,
+                                 string *runId,
+                                 const std::function<void(const string &, const string &)> &onChunk,
+                                 bool background,
+                                 OutputFilter filter)
+{
+    (void)background;   // 起完进程就返回(结果走 cb), 所以没有"前台阻塞"这回事了
 
     if (command.empty())
     {
         error = "命令为空";
         return false;
     }
-    if (m_running)
+    // 可以多条并发, 但有上限(见 kMaxConcurrentRuns): 到顶就等前面的结束, 或先 cancel 掉不要的。
+    if ((int)m_tasks.size() >= kMaxConcurrentRuns)
     {
-        error = "这个终端还有命令在跑, 等它结束或先 cancel";
+        error = "这个终端同时在跑的命令太多(" + std::to_string(m_tasks.size()) + "/" +
+                std::to_string(kMaxConcurrentRuns) +
+                "): 等其中一条结束, 或用 cancel(run_id) 停掉不要的";
         return false;
     }
 
@@ -1598,8 +1629,7 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
     // (必须在审完之后 —— 换完就是路径, 再拿去审走的是路径判定, 区外一律拒)
     string execCommand = expandProgramPaths(parsed, command);
 
-    // ---- 起进程 + 建运行记录 ----
-    // proc 随终端建一次, 之后复用 —— 所以信号只连一次。
+    // ---- 建运行记录 + 在途任务 ----
     // run_id 必须全局唯一: 带上终端(会话)id。否则每个会话都从 r1 开始编号,
     // 而 terminal_query 是按 run_id 全局查的(跨会话遍历注册表), 会命中别的会话的同名记录。
     string rid = (m_id.empty() ? string("r") : (m_id + "-r")) + std::to_string(++m_runIdGen);
@@ -1609,131 +1639,105 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
     rec.status = "running";
     m_runs[rid] = rec;
     m_runOrder.push_back(rid);
+    // 记录上限: 只淘汰**已结束**的旧记录。并发之后在跑的记录可能不止一条, 按老写法直接
+    // 淘汰最旧的一条会把它连日志一起扔掉 —— terminal_query 就查不到还在跑的那条了。
     while (m_runOrder.size() > (size_t)kMaxRuns)
     {
-        m_runs.erase(m_runOrder.front());
-        m_runOrder.erase(m_runOrder.begin());
+        size_t victim = m_runOrder.size();
+        for (size_t i = 0; i < m_runOrder.size(); i++)
+        {
+            auto rit = m_runs.find(m_runOrder[i]);
+            if (rit != m_runs.end() && rit->second.status == "done")
+            {
+                victim = i;
+                break;
+            }
+        }
+        if (victim == m_runOrder.size())
+            break;   // 全都还在跑: 一条也不淘汰(等它们结束自然会腾出位置)
+        m_runs.erase(m_runOrder[victim]);
+        m_runOrder.erase(m_runOrder.begin() + victim);
     }
     if (runId)
         *runId = rid;
 
-    if (!m_proc)
-    {
-        m_proc = new JZProcess(this);
+    // 本次运行的输出过滤开关(默认取终端设置; 上层可按次覆盖, 见 OutputFilter)
+    bool useFilter = m_filterOutput;
+    if (filter == OutputFilter::On)
+        useFilter = true;
+    else if (filter == OutputFilter::Off)
+        useFilter = false;
 
-        connect(&m_proc->sigReadyReadStandardOutput, this, [this]()
-                {
-                    if (m_proc)
-                        appendRunOutput("stdout", bytesToString(m_proc->readAllStandardOutput()));
-                });
-        connect(&m_proc->sigReadyReadStandardError, this, [this]()
-                {
-                    if (m_proc)
-                        appendRunOutput("stderr", bytesToString(m_proc->readAllStandardError()));
-                });
-        connect(&m_proc->sigFinished, this, [this, command](int exitCode, JZProcess::ExitStatus status)
-                {
-                    if (!m_proc)
-                        return;
+    // ---- 一条在途运行 = 一个进程 + 一个超时定时器 ----
+    // 进程**每条命令新建**、不再复用同一个: 一个 JZProcess 只能跑一条命令, 并发下必须各起各的。
+    RunTask task;
+    task.runId = rid;
+    task.command = command;
+    task.filterOutput = useFilter;
+    task.startTime = JZPlatform::getTickCountMs();
+    task.cb = cb;
+    task.onChunk = onChunk;
+    task.proc = new JZProcess(this);
+    task.proc->setWorkingDirectory(m_cwd);    // 启动那一刻的 cwd(终端级状态)
+    task.proc->setProcessChannelMode(JZProcess::SeparateChannels);
 
-                    if (m_timeoutTimer)
-                        m_timeoutTimer->stop();
-
-                    appendRunOutput("stdout", bytesToString(m_proc->readAllStandardOutput()));
-                    appendRunOutput("stderr", bytesToString(m_proc->readAllStandardError()));
-
-                    auto it = m_runs.find(m_runId);
-                    if (it != m_runs.end())
-                    {
-                        RunRecord &r = it->second;
-                        r.status = "done";
-                        r.exitCode = exitCode;
-                        r.timedOut = m_timedOut;
-                        if (m_timedOut)                r.error = "命令超时, 已被强制终止";
-                        else if (status == JZProcess::CrashExit) r.error = "命令异常退出";
-                        else if (exitCode != 0)           r.error = "退出码 " + std::to_string(exitCode);
-                    }
-
-                    // 输出过滤开关开(默认开): 所有命令都做截断, 编译命令特殊处理。
-                    //  - 编译命令: 成功取尾部 20 行, 失败取开头 ~100 行错误(错误块完整)
-                    //  - 其它命令: 超过上限时保留头 50 + 尾 50 行, 中间省略
-                    // 完整日志仍可用 terminal_query 取。用逐行 RunRecord.log, 不受 m_output 头截断影响。
-                    string out = m_output;
-                    if (m_filterOutput)
-                    {
-                        auto it2 = m_runs.find(m_runId);
-                        if (it2 != m_runs.end())
-                        {
-                            if (isBuildCommand(command))
-                            {
-                                bool success = (exitCode == 0 && status == JZProcess::NormalExit
-                                                && !m_timedOut);
-                                out = filterBuildOutput(it2->second.log, success);
-                            }
-                            else
-                            {
-                                out = truncateGeneric(it2->second.log);
-                            }
-                        }
-                    }
-                    m_output.clear();
-                    m_running = false;
-
-                    RunCallback finished = m_cb;
-                    m_cb = RunCallback();
-                    bool timedOut = m_timedOut;
-                    m_timedOut = false;
-                    touch();
-
-                    if (!finished)
-                        return;
-
-                    if (timedOut)
-                        finished(false, out, "命令超时, 已被强制终止");
-                    else if (status == JZProcess::CrashExit)
-                        finished(false, out, "命令异常退出");
-                    else if (exitCode != 0)
-                        finished(false, out, "退出码 " + std::to_string(exitCode));
-                    else
-                        finished(true, out, string());
-                });
-    }
-
-    m_proc->setWorkingDirectory(m_cwd);
-    m_proc->setProcessChannelMode(JZProcess::SeparateChannels);
-
-    m_cb = cb;
-    m_timedOut = false;
-    m_output.clear();
-    m_runId = rid;
-    m_onChunk = onChunk;
+    // 信号随进程各连一份, 回调只认 runId: 输出/退出都回它自己那一次运行。
+    JZProcess *proc = task.proc;
+    connect(&proc->sigReadyReadStandardOutput, this, [this, rid, proc]()
+            {
+                appendRunOutput(rid, "stdout", bytesToString(proc->readAllStandardOutput()));
+            });
+    connect(&proc->sigReadyReadStandardError, this, [this, rid, proc]()
+            {
+                appendRunOutput(rid, "stderr", bytesToString(proc->readAllStandardError()));
+            });
+    connect(&proc->sigFinished, this, [this, rid, proc, command](int exitCode, JZProcess::ExitStatus status)
+            {
+                jzDebug() << "proc finished" << rid;
+                onRunFinished(rid, proc, exitCode, status, command);
+            });
 
     if (timeoutMs > 0)
     {
-        if (!m_timeoutTimer)
-        {
-            m_timeoutTimer = new JZTimer(this);
-            connect(&m_timeoutTimer->sigTimeout, this, [this]()
+        task.timer = new JZTimer(this);
+        JZTimer *timer = task.timer;
+        connect(&timer->sigTimeout, this, [this, rid, timer]()
+                {
+                    // 到点: 标记这条运行超时并强杀。杀完照样走 sigFinished, 收尾仍只有那一条路径。
+                    RunTask *t = taskOf(rid);
+                    if (!t || !t->proc)
+                        return;
+                    t->timedOut = true;
+                    if (t->timer)
                     {
-                        if (!m_running || !m_proc)
-                            return;
-                        m_timedOut = true;
-                        m_proc->killProcess();
-                    });
-        }
-        m_timeoutTimer->start(timeoutMs);
+                        t->timer->stop();
+                        t->timer->deleteLater();   // 定时器只管"到点杀一次", 用完撤掉
+                        t->timer = nullptr;
+                    }
+                    t->proc->killProcess();
+                });
+        timer->start(timeoutMs);
     }
+
+    // 先入列再 start: 启动本身就可能同步抛出输出/退出信号, 那时得能按 runId 查到这条任务。
+    m_tasks.push_back(task);
 
     // 跑的是"换过短名"的串: 命令已按原文审过, 这里只把配了映射的程序名换成全路径
     // (运行记录/报错里仍是原文 —— 那是用户写的那条)
-    bool ok = m_proc->start(shellProgram(), vector<string>{"-c", execCommand});
+    bool ok = proc->start(shellProgram(), vector<string>{"-c", execCommand});
+    jzDebug() << "proc start" << execCommand;
     if (!ok)
     {
-        if (m_timeoutTimer)
-            m_timeoutTimer->stop();
-        m_running = false;
-        m_cb = RunCallback();
-        m_onChunk = nullptr;
+        // 起不来: 撤掉这条任务与它的定时器, 记录标结束, 照常回调(别让调用方一直等)
+        RunTask *t = taskOf(rid);
+        if (t && t->timer)
+        {
+            t->timer->stop();
+            delete t->timer;
+            t->timer = nullptr;
+        }
+        eraseTask(rid);
+        proc->deleteLater();
         auto it = m_runs.find(rid);
         if (it != m_runs.end())
         {
@@ -1747,50 +1751,101 @@ bool JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallb
     }
 
     // 记下根 pid: kill 的归属判定靠它(只许杀自己启动的进程)
-    int pid = m_proc->processId();
+    int pid = proc->processId();
     if (pid > 0)
         m_ownPids.insert(pid);
 
-    m_running = true;
     return true;
 }
 
-bool JZVirtualTerminal::cancel()
+// 在途运行的 id(按启动先后): 上层展示/挑一条 cancel 时用。
+vector<string> JZVirtualTerminal::activeRunIds() const
 {
-    if (!m_running || !m_proc)
-        return false;
+    vector<string> ids;
+    ids.reserve(m_tasks.size());
+    for (const RunTask &t : m_tasks)
+        ids.push_back(t.runId);
+    return ids;
+}
 
-    m_proc->killProcess();
+bool JZVirtualTerminal::cancel(const string &runId)
+{
+    // 指定一条: 杀掉即可, 收尾(记结果/摘任务/回调)由它自己的 sigFinished 走。
+    RunTask *t = taskOf(runId);
+    if (!t || !t->proc)
+        return false;
+    t->proc->killProcess();
     return true;
+}
+
+int JZVirtualTerminal::cancelAll()
+{
+    // ⚠ 必须先把进程指针收集出来: killProcess 会(同步)触发 sigFinished -> 收尾 -> 摘掉任务,
+    //   一边遍历一边删 m_tasks 会踩空。
+    vector<JZProcess *> procs;
+    for (RunTask &t : m_tasks)
+    {
+        if (t.proc)
+            procs.push_back(t.proc);
+    }
+    for (JZProcess *p : procs)
+        p->killProcess();
+    return (int)procs.size();
 }
 
 string JZVirtualTerminal::takeOutput()
 {
-    string out = m_output;
-    if (m_outputTruncated)
+    // 并发之后"取一次输出"= 把所有在途运行的输出按启动先后拼起来, 每段各自补一次截断标记。
+    // 只要某一条, 用 takeOutput(runId)。
+    string out;
+    for (RunTask &t : m_tasks)
     {
-        out = "\n[... output truncated ...]\n" + out;
-        m_outputTruncated = false;
+        if (t.output.empty() && !t.outputTruncated)
+            continue;
+        if (!out.empty())
+            out += "\n";
+        if (t.outputTruncated)
+            out += "[... output truncated ...]\n";
+        out += t.output;
+        t.output.clear();
+        t.outputTruncated = false;
     }
-    m_output.clear();
     return out;
 }
 
-void JZVirtualTerminal::appendRunOutput(const string &stream, const string &chunk)
+string JZVirtualTerminal::takeOutput(const string &runId)
+{
+    RunTask *t = taskOf(runId);
+    if (!t)
+        return string();
+
+    string out = t->output;
+    if (t->outputTruncated)
+        out = "\n[... output truncated ...]\n" + out;
+    t->output.clear();
+    t->outputTruncated = false;
+    return out;
+}
+
+void JZVirtualTerminal::appendRunOutput(const string &runId, const string &stream, const string &chunk)
 {
     if (chunk.empty())
         return;
 
-    m_output += chunk;
-    // 累积输出只保留末尾 kMaxRunOutputBytes 字节, 超了从头部裁掉, 避免长输出(编译巨量
-    // 日志)把内存吃爆。截断标记在 takeOutput 时补一次(见 takeOutput)。
-    if (m_output.size() > kMaxRunOutputBytes)
+    RunTask *task = taskOf(runId);
+    if (task)
     {
-        m_outputTruncated = true;
-        m_output.erase(0, m_output.size() - kMaxRunOutputBytes);
+        task->output += chunk;
+        // 累积输出只保留末尾 kMaxRunOutputBytes 字节, 超了从头部裁掉, 避免长输出(编译巨量
+        // 日志)把内存吃爆。截断标记在 takeOutput 时补一次(见 takeOutput)。
+        if (task->output.size() > kMaxRunOutputBytes)
+        {
+            task->outputTruncated = true;
+            task->output.erase(0, task->output.size() - kMaxRunOutputBytes);
+        }
     }
 
-    auto it = m_runs.find(m_runId);
+    auto it = m_runs.find(runId);
     if (it != m_runs.end())
     {
         RunRecord &rec = it->second;
@@ -1811,8 +1866,123 @@ void JZVirtualTerminal::appendRunOutput(const string &stream, const string &chun
             rec.log.erase(rec.log.begin());
     }
 
-    if (m_onChunk)
-        m_onChunk(stream, chunk);
+    if (task && task->onChunk)
+        task->onChunk(stream, chunk);
+}
+
+// ==========================================================================
+// 在途运行的查找/收尾(全部按 runId —— 列表会随命令结束增减, 不存 RunTask*)
+// ==========================================================================
+
+JZVirtualTerminal::RunTask *JZVirtualTerminal::taskOf(const string &runId)
+{
+    for (RunTask &t : m_tasks)
+    {
+        if (t.runId == runId)
+            return &t;
+    }
+    return nullptr;
+}
+
+const JZVirtualTerminal::RunTask *JZVirtualTerminal::taskOf(const string &runId) const
+{
+    for (const RunTask &t : m_tasks)
+    {
+        if (t.runId == runId)
+            return &t;
+    }
+    return nullptr;
+}
+
+void JZVirtualTerminal::eraseTask(const string &runId)
+{
+    for (auto it = m_tasks.begin(); it != m_tasks.end(); ++it)
+    {
+        if (it->runId == runId)
+        {
+            m_tasks.erase(it);
+            return;
+        }
+    }
+}
+
+// 一次运行的唯一收尾路径: 自然退出 / 超时被杀 / cancel 被杀 都走这里。
+// 顺序: 停表 -> 取净剩余输出 -> 算回给调用方的那份(过滤) -> 记结果 -> 摘任务 -> 回调。
+void JZVirtualTerminal::onRunFinished(const string &runId, JZProcess *proc, int exitCode,
+                                      JZProcess::ExitStatus status, const string &command)
+{
+    RunTask *t = taskOf(runId);
+    if (!t)
+        return;   // 已经收过尾了(sigFinished 只该来一次, 保险起见)
+
+    // 定时器: 超时那条路已经把它撤了, 这里管"命令先结束"的情况
+    if (t->timer)
+    {
+        t->timer->stop();
+        t->timer->deleteLater();
+        t->timer = nullptr;
+    }
+
+    if (proc)
+    {
+        appendRunOutput(runId, "stdout", bytesToString(proc->readAllStandardOutput()));
+        appendRunOutput(runId, "stderr", bytesToString(proc->readAllStandardError()));
+    }
+
+    // 先把这条任务上要用的东西取出来(下面 eraseTask 之后 t 就失效了)
+    const bool timedOut = t->timedOut;
+    const bool filterOn = t->filterOutput;
+    string out = t->output;
+    RunCallback finished = t->cb;
+
+    // 输出过滤开关开(默认开): 编译命令特殊处理, 其它命令超长保留头 50 + 尾 50 行。
+    //  - 编译命令: 成功取尾部 20 行, 失败取开头 ~100 行错误(错误块完整)
+    // 完整日志仍可用 terminal_query 取。用逐行 RunRecord.log, 不受 output 头截断影响。
+    if (filterOn)
+    {
+        auto fit = m_runs.find(runId);
+        if (fit != m_runs.end())
+        {
+            if (isBuildCommand(command))
+            {
+                bool success = (exitCode == 0 && status == JZProcess::NormalExit && !timedOut);
+                out = filterBuildOutput(fit->second.log, success);
+            }
+            else
+            {
+                out = truncateGeneric(fit->second.log);
+            }
+        }
+    }
+
+    auto it = m_runs.find(runId);
+    if (it != m_runs.end())
+    {
+        RunRecord &r = it->second;
+        r.status = "done";
+        r.exitCode = exitCode;
+        r.timedOut = timedOut;
+        if (timedOut)                            r.error = "命令超时, 已被强制终止";
+        else if (status == JZProcess::CrashExit)  r.error = "命令异常退出";
+        else if (exitCode != 0)                   r.error = "退出码 " + std::to_string(exitCode);
+    }
+
+    eraseTask(runId);
+    if (proc)
+        proc->deleteLater();
+    touch();
+
+    if (!finished)
+        return;
+
+    if (timedOut)
+        finished(false, out, "命令超时, 已被强制终止");
+    else if (status == JZProcess::CrashExit)
+        finished(false, out, "命令异常退出");
+    else if (exitCode != 0)
+        finished(false, out, "退出码 " + std::to_string(exitCode));
+    else
+        finished(true, out, string());
 }
 
 bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) const

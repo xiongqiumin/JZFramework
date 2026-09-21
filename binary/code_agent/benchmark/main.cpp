@@ -235,6 +235,11 @@ struct CaseResult
     int totalTokens = 0;        // 本用例消耗的总 token
     int cachedTokens = 0;       // 本用例从 KV 缓存命中的输入 token（前缀缓存命中）
     int llmMs = 0;              // 本用例 LLM 生成耗时（含工具自驱循环，跨重试累计）
+    // llama.cpp 计时(其他 provider 恒为 0)，速率按 token/ms 现算
+    double promptMs = 0;        // 本用例累计 prefill 耗时
+    double predMs = 0;          // 本用例累计生成耗时
+    int draftN = 0;             // 本用例累计 MTP/投机采样草稿数
+    int draftAccepted = 0;      // 本用例累计 MTP/投机采样被接受数
     int toolCalls = 0;         // 本用例工具调用总次数（含成功/失败）
     int toolFails = 0;         // 本用例工具调用失败次数
     std::map<std::string, int> toolCount;      // 本用例各工具调用次数（按 function_name）
@@ -677,10 +682,18 @@ protected:
         m_result.completionTokens = u.completion_tokens;
         m_result.totalTokens = u.total_tokens;
         m_result.cachedTokens = u.cached_tokens;
+        m_result.promptMs = u.prompt_ms;
+        m_result.predMs = u.predicted_ms;
+        m_result.draftN = u.draft_tokens;
+        m_result.draftAccepted = u.draft_accepted_tokens;
         m_totalPrompt     += u.prompt_tokens;
         m_totalCompletion += u.completion_tokens;
         m_totalTokens     += u.total_tokens;
         m_totalCached     += u.cached_tokens;
+        m_totalPromptMs   += u.prompt_ms;
+        m_totalPredMs     += u.predicted_ms;
+        m_totalDraft      += u.draft_tokens;
+        m_totalDraftAccepted += u.draft_accepted_tokens;
         m_totalLlmMs      += m_result.llmMs;
         m_totalBuildMs    += m_result.buildMs;
         m_totalRunMs      += m_result.runMs;
@@ -742,6 +755,12 @@ protected:
                                 << ", distinct=" << ts.distinct
                                 << ", toolFail=" << r.toolFails
                                 << ", LLM=" << (r.llmMs/1000.0) << "s"
+                                << (r.predMs > 0
+                                    ? (", 生成=" + std::to_string((int)(r.completionTokens * 1000.0 / r.predMs)) + " tok/s")
+                                    : std::string())
+                                << (r.draftN > 0
+                                    ? (", MTP=" + std::to_string(r.draftAccepted) + "/" + std::to_string(r.draftN))
+                                    : std::string())
                                 << ", 编译=" << (r.buildMs/1000.0) << "s"
                                 << ", 运行=" << (r.runMs/1000.0) << "s" << ")"
                                 << loopNote;
@@ -781,6 +800,16 @@ protected:
             jzDebug().nospace() << "缓存利用率(prompt): " << m_totalCached << "/"
                                 << m_totalPrompt << " = "
                                 << (m_totalCached * 100 / m_totalPrompt) << "%";
+        // llama.cpp 计时: 其他 provider 不带 timings(恒为 0)，不打这两行
+        if (m_totalPromptMs > 0 || m_totalPredMs > 0)
+            jzDebug().nospace() << "推理速度(llama.cpp): prefill="
+                                << (m_totalPromptMs > 0 ? m_totalPrompt * 1000.0 / m_totalPromptMs : 0.0)
+                                << " tok/s, 生成="
+                                << (m_totalPredMs > 0 ? m_totalCompletion * 1000.0 / m_totalPredMs : 0.0)
+                                << " tok/s";
+        if (m_totalDraft > 0)
+            jzDebug().nospace() << "投机采样(MTP): 接受 " << m_totalDraftAccepted << "/" << m_totalDraft
+                                << " = " << (m_totalDraftAccepted * 100.0 / m_totalDraft) << "%";
         int64_t totalMs = m_benchTimer.elapsed();
         int64_t accounted = m_totalLlmMs + m_totalBuildMs + m_totalRunMs;
         int64_t otherMs = totalMs > accounted ? totalMs - accounted : 0;
@@ -867,6 +896,10 @@ protected:
     int m_totalCompletion = 0;
     int m_totalTokens = 0;
     int m_totalCached = 0;       // 全部用例累计从 KV 缓存命中的输入 token
+    double m_totalPromptMs = 0;  // 全部用例累计 prefill 耗时(llama.cpp)
+    double m_totalPredMs = 0;    // 全部用例累计生成耗时(llama.cpp)
+    int m_totalDraft = 0;        // 全部用例累计 MTP/投机采样草稿数
+    int m_totalDraftAccepted = 0;// 全部用例累计 MTP/投机采样被接受数
     int64_t m_llmStartMs = 0;       // 本轮 LLM 请求发出时刻（doAttempt）
     int64_t m_totalLlmMs = 0;       // 全部用例累计 LLM 耗时
     int64_t m_totalBuildMs = 0;     // 全部用例累计编译耗时

@@ -103,7 +103,12 @@ export interface SkillDefine {
     usage: string;
 }
 
-/** 一轮对话的 token 用量 */
+/**
+ * 一轮(或累计)的 token 用量。
+ * 兼容 OpenAI 与 llama.cpp 两种写法: 后者用 prompt_n/predicted_n/cache_n 报 token,
+ * 并额外给 timings 计时(下面 4 个字段, 其他 provider 恒为 0)。
+ * 计时只存原始量, 速率请按 Σtoken / Σms 现算(多轮求和无意义)。
+ */
 export interface TokenUsage {
     /** 本次输入 token */
     prompt_tokens: number;
@@ -113,6 +118,14 @@ export interface TokenUsage {
     total_tokens: number;
     /** 本次从 KV 缓存命中的输入 token(前缀缓存命中) */
     cached_tokens: number;
+    /** llama.cpp: 本次 prefill(输入)耗时(ms) */
+    prompt_ms: number;
+    /** llama.cpp: 本次生成(输出)耗时(ms) */
+    predicted_ms: number;
+    /** llama.cpp: 投机采样/MTP 草稿 token 数 */
+    draft_n: number;
+    /** llama.cpp: 投机采样/MTP 被接受数 */
+    draft_n_accepted: number;
 }
 
 /** 历史消息角色 */

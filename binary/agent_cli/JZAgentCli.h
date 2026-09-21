@@ -34,7 +34,7 @@ struct JZCliConfig
     std::string modelToken;
     int netTimeout = 120 * 1000;   // 网络请求超时(ms)
     int maxRounds = 100;           // 单任务最大对话轮次(-1=不限)
-    int maxToken = 100000;         // 单任务 token 预算上限
+    int maxToken = 160000;         // 单任务 token 预算上限
     // 出错重试: 本地跑重试几乎没有成本, 所以预算给得比较宽 —— 瞬时错误(连接失败/超时/5xx)
     // 发条"继续"就能接着干, 不该让整个任务判失败。
     int maxRetries = 10;           // 瞬时错误后"接着发继续任务"的次数, 0=不重试
@@ -101,6 +101,32 @@ private:
     JZVirtualTerminalConfig m_terminalConfig;
 };
 
+// 本轮已发生的工具调用(供 SSE 连接时做当前状态快照)
+struct JZCliToolSnap
+{
+    std::string id;
+    std::string name;
+    std::string args;
+    bool hasResult = false;   // 已收到 tool_result?
+    bool ok = false;          // 结果是否成功(仅 hasResult 时有效)
+    std::string result;       // 工具返回(仅 hasResult 时有效)
+};
+
+// 最近任务的一条记录(长程任务: 网页不会一直开着, 重连时靠 hello / GET /info 的 recent 补回界面)
+struct JZCliHistoryItem
+{
+    int seq = 0;
+    std::string prompt;        // 请求原文("最近的请求")
+    std::string verifyCmd;
+    std::string status;        // running / success / failed / cancelled
+    std::string reply;         // agent 最终回复(结论)
+    std::string verifyOut;     // 最后一次验证输出
+    std::string error;
+    int rounds = 0;            // 验证轮次
+    int64_t startMs = 0;
+    int64_t endMs = 0;
+};
+
 // ---------------------------------------------------------------------------
 // JZAgentCli —— 通过 HTTP 暴露任务提交的 agent
 //
@@ -147,8 +173,10 @@ public:
     //   把 agent 的 sigError / 验证结果 / 任务起止实时推给网页 —— 否则任务跑很久时
     //   界面只能干等到 /task 的一次性回包, 中途报错无从得知。
     //   帧格式: data: {"type":"...","data":{...}}
-    //   type: hello / task_start / thinking / reply / tool_call / tool_result /
+    //   type: hello / state / task_start / thinking / reply / tool_call / tool_result /
     //         error / verify / task_end / reset
+    //   state: 新连接时若正有任务在跑, 推一份当前状态快照(让刚打开网页的人看到进行中的任务);
+    //          data = {busy, round, verify_cmd, prompt, reply, think, last_verify_output, tools[]}
     void onEvents(JZHttpServerClient *client, const JZHttpRequest &req);
     void pushEvent(const std::string &type, const Json::Value &data);   // 推给所有订阅者
     void removeEventClient(JZHttpServerClient *client);
@@ -245,9 +273,30 @@ protected:
     int m_verifyTimeoutMs = 60000;
     std::string m_accumReply;                        // 累积本轮 agent 最终回复
     std::string m_lastVerifyOutput;
+
+    // 最近一次任务的回包。提交方(POST /task 的那条连接)断连后任务仍在跑完 —— 那时结果只能
+    // 经 SSE 出口; 若订阅者也恰好不在(网页关了又开), 重连时的 hello 帧带上它, 让界面收尾。
+    Json::Value m_lastResult;
+    bool m_hasLastResult = false;
+
+    // 当前状态快照(SSE 新连接时推过去, 让刚打开网页的人看到正在跑的任务)
+    std::string m_currentPrompt;                     // 当前任务 prompt
+    std::string m_accumThink;                        // 累积本轮思考(thinking)
+    std::vector<JZCliToolSnap> m_toolSnaps;          // 本轮已发生的工具调用/结果
     std::string m_lastFeedbackSig;                   // 上一轮"喂回模型"的失败签名(退出码+输出)
     int m_sameFailCount = 0;                         // 连续拿到完全一致失败的次数(识别原地打转)
     bool m_sessionStarted = false;                   // 是否已发起过首轮 request(避免首轮 reset 告警)
+
+    // 最近任务历史: 长程任务跑几十分钟很常见, 网页不会一直开着 —— 服务端记住最近若干次
+    // 请求与它们的结果, 新连接(hello 帧)或 GET /info 时以 recent 数组吐出去, 界面据此重建。
+    std::vector<JZCliHistoryItem> m_history;   // 最旧在前, 上限 kHistoryMax
+    int m_historySeq = 0;
+    static const int kHistoryMax = 20;
+    void pushHistory(const std::string &prompt, const std::string &verifyCmd);
+    void finishHistory(const std::string &status, int rounds, const std::string &reply,
+                       const std::string &verifyOut, const std::string &err);
+    Json::Value recentJson() const;            // 最近在前(与界面"新的在上"一致)
+    static int64_t nowMs();
 
     // 传输无关扩展
     std::function<void(const Json::Value &)> m_respond;  // 循环结束的回包回调

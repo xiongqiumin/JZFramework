@@ -16,6 +16,7 @@ class JZVirtualTerminal;
 //   - stream=true    : 执行中按 notifications/message 逐块推送日志(POST 内联 SSE), 结束推结果
 //   - background=true : 后台运行, 立即返回 run_id(不流式), 日志用 terminal_query 取
 //   - stream_filter / grep : 流式与查询时按流(stdout/stderr)或关键字过滤
+// ⭐ 同一个会话可以同时跑多条命令(终端侧并发): 每个调用各自一条运行、各自一个 run_id。
 class JZTerminalRunMcpTool : public JZMcpTool
 {
 public:
@@ -31,10 +32,15 @@ private:
                    const std::string &streamFilter, const std::string &grep);
 
     JZTerminalRegistry *m_registry = nullptr;
-    // 在跑的前台调用: call id -> 会话 id。每个 call id 对应一条前台命令, 用于 cancel
-    // 按调用精确定位会话(前台命令落在不同会话时各自独立)。
-    // 运行态本身在 JZVirtualTerminal 里按会话维护, 这里不复制那套状态。
-    std::map<std::string, std::string> m_inflight;
+    // 在跑的前台调用: call id -> (会话 id, run_id)。
+    // 一个会话现在能同时跑多条命令, 所以取消要按 **run_id** 精确停那一条, 不能"停整个会话"。
+    // 运行态本身在 JZVirtualTerminal 里按会话 + run_id 维护, 这里不复制那套状态。
+    struct Inflight
+    {
+        std::string session;
+        std::string runId;
+    };
+    std::map<std::string, Inflight> m_inflight;
 };
 
 // terminal_query: 取后台/历史运行的日志。

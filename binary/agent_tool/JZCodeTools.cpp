@@ -441,10 +441,11 @@ JZSearchFileTool::JZSearchFileTool()
 {
     ToolDefine def;
     def.name = "search_file";
-    def.description = "在工作区的代码中搜索文本或正则表达式，返回 \"相对路径:行号:内容\" 形式的匹配列表。" \
-                      "默认跳过隐藏目录和 build/out 等生成目录。";
+    def.description = "在工作区的代码中搜索文本或正则表达式，返回 \"相对工作区路径:行号:内容\" 形式的匹配列表。" \
+                      "path 可以是目录(递归搜索)也可以是单个文件；regex=true 时 pattern 按正则解析。" \
+                      "默认跳过隐藏目录和 build/out 等生成目录；二进制 / 超过 2MB / 读取失败的文件会跳过并在结果里注明数量，不会静默漏掉。";
     def.parameters.push_back(makeParam("pattern", ParamType::String, "要搜索的文本或正则表达式"));
-    def.parameters.push_back(makeParam("path", ParamType::String, "在哪个目录下搜索，默认 \".\" 表示整个工作区"));
+    def.parameters.push_back(makeParam("path", ParamType::String, "在哪个目录或文件下搜索，默认 \".\" 表示整个工作区"));
     def.parameters.push_back(makeParam("file_filter", ParamType::String, "文件名过滤，支持 * ? 与逗号分隔多个模式，如 \"*.cpp,*.h\"，默认 \"*\""));
     def.parameters.push_back(makeParam("case_sensitive", ParamType::Boolean, "是否区分大小写，默认 false"));
     def.parameters.push_back(makeParam("regex", ParamType::Boolean, "pattern 是否按正则表达式解析，默认 false（纯文本搜索）"));
@@ -454,60 +455,109 @@ JZSearchFileTool::JZSearchFileTool()
     setToolDefine(def);
 }
 
-static void searchInDir(const string &absDir, const string &relBase, const string &pattern,
-                        const string &fileFilter, bool caseSensitive, bool useRegex,
-                        int maxResults, int maxFiles,                         long long maxBytes,
-                        vector<string> &out, int &totalFiles, long long &totalBytes, bool &stopped,
-                        ICodeToolHost *host)
+// 正则只编译一次, 目录搜索与单文件搜索共用同一份
+static bool compileSearchReg(const string &pattern, bool caseSensitive, JZRegExp &reg)
 {
-    if (stopped || (int)out.size() >= maxResults || totalFiles >= maxFiles || totalBytes >= maxBytes)
+    int flags = JZRegExp::Global | (caseSensitive ? 0 : JZRegExp::IgnoreCase);
+    return reg.compile(JZString::fromStdString(pattern), flags);
+}
+
+// 结果里的路径统一写成"相对工作区" —— 这样模型能把返回的路径直接喂回 read_file /
+// modify_file。不在工作区内(区外只读授权目录)或没有宿主时, 只能退回绝对路径。
+static string workspaceRelPath(ICodeToolHost *host, const string &abs)
+{
+    string root;
+    if (host)
+        root = host->toolTerminalConfig().zone.workspace;
+    root = codeNormalizePath(root);
+    while (root.size() > 2 && str_endsWith(root, "/"))
+        str_chop(root, 1);
+    if (root.empty())
+        return abs;
+
+    string norm = codeNormalizePath(abs);
+    if (!codeIsSubPath(norm, root))
+        return abs;                                  // 工作区外: 相对路径没有意义
+
+    string rel = norm.substr(root.size());
+    while (!rel.empty() && rel[0] == '/')
+        rel = rel.substr(1);
+    return rel.empty() ? string(".") : rel;
+}
+
+// 单次搜索的共享统计(递归里累加): 触顶判断、以及"有多少文件被跳过"的说明都靠它
+struct SearchStat
+{
+    int files = 0;         // 真正读过并搜索过的文件数
+    long long bytes = 0;   // 累计读入的字节数
+    int skipped = 0;       // 因过大 / 二进制 / 读取失败被跳过的文件数
+    bool stopped = false;  // 是否因扫描预算(max_files / maxBytes)触顶提前停止
+};
+
+static void searchInDir(const string &absDir, const string &relBase, const string &pattern,
+                        const string &fileFilter, bool caseSensitive, const JZRegExp *regexp,
+                        int maxResults, int maxFiles, long long maxBytes,
+                        vector<string> &out, SearchStat &stat, ICodeToolHost *host)
+{
+    if (stat.stopped || (int)out.size() >= maxResults)
+        return;                                      // 结果已够 / 已停止
+    if (stat.files >= maxFiles || stat.bytes >= maxBytes)
+    {
+        stat.stopped = true;                         // 预算用完 ⇒ 结果可能不全, 要告诉模型
         return;
+    }
 
     JZDir dir(absDir);
     vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
     for (const auto &info : list)
     {
-        if (stopped || (int)out.size() >= maxResults || totalFiles >= maxFiles || totalBytes >= maxBytes)
+        if ((int)out.size() >= maxResults)
+            return;                                  // 结果够了: 不算"预算触顶"
+        if (stat.stopped || stat.files >= maxFiles || stat.bytes >= maxBytes)
+        {
+            stat.stopped = true;
             return;
+        }
 
         string rel = relBase.empty() ? info.fileName() : relBase + "/" + info.fileName();
         if (info.isDir())
         {
             if (!isSkipDir(info.fileName()))
-                searchInDir(info.filePath(), rel, pattern, fileFilter, caseSensitive, useRegex,
-                            maxResults, maxFiles, maxBytes, out, totalFiles, totalBytes, stopped, host);
+                searchInDir(info.filePath(), rel, pattern, fileFilter, caseSensitive, regexp,
+                            maxResults, maxFiles, maxBytes, out, stat, host);
             continue;
         }
 
         if (info.size() > 2 * 1024 * 1024)
+        {
+            stat.skipped++;                          // 大文件不搜, 但要让模型知道漏了它
             continue;
+        }
         if (!fileFilterMatch(info.fileName(), fileFilter, false))
             continue;
         if (!isTextFile(info.filePath()))
-            continue;
-
-        totalFiles++;
-        string content, readError;
-        if (!readHostFile(host, info.filePath(), content, readError))
-            continue;
-
-        totalBytes += (long long)content.size();
-        vector<string> lines = readLines(content);
-        JZRegExp reg;
-        bool regOk = false;
-        if (useRegex)
         {
-            int flags = JZRegExp::Global | (caseSensitive ? 0 : JZRegExp::IgnoreCase);
-            regOk = reg.compile(JZString::fromStdString(pattern), flags);
+            stat.skipped++;
+            continue;
         }
 
+        stat.files++;
+        string content, readError;
+        if (!readHostFile(host, info.filePath(), content, readError))
+        {
+            stat.skipped++;
+            continue;
+        }
+
+        stat.bytes += (long long)content.size();
+        vector<string> lines = readLines(content);
         string needle = caseSensitive ? pattern : str_toLower(pattern);
         for (int i = 0; i < (int)lines.size(); i++)
         {
             bool hit = false;
-            if (useRegex)
+            if (regexp)
             {
-                hit = regOk && reg.test(JZString::fromStdString(lines[i]));
+                hit = regexp->test(JZString::fromStdString(lines[i]));
             }
             else
             {
@@ -527,9 +577,9 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
         }
     }
 
-    // 因文件数 / 字节数触顶而提前结束
-    if (totalFiles >= maxFiles || totalBytes >= maxBytes)
-        stopped = true;
+    // 这个目录正好走完时触顶(正常退出路径, 不是循环里的提前 return)
+    if (stat.files >= maxFiles || stat.bytes >= maxBytes)
+        stat.stopped = true;
 }
 
 void JZSearchFileTool::call(const ToolCall &params)
@@ -552,6 +602,19 @@ void JZSearchFileTool::call(const ToolCall &params)
         maxFiles = 1000;
     long long maxBytes = 64LL * 1024 * 1024;   // 单次搜索最多扫描约 64MB 文件内容，避免大仓库卡死
 
+    // 正则只编译一次(顺带校验): 写错的正则要明确报错, 不能静默变成"没有匹配"
+    JZRegExp reg;
+    const JZRegExp *regexp = nullptr;
+    if (useRegex)
+    {
+        if (!compileSearchReg(pattern, caseSensitive, reg))
+        {
+            finish(params, false, "正则表达式无效: " + pattern + " (" + reg.errorString() + ")");
+            return;
+        }
+        regexp = &reg;
+    }
+
     string abs = fullPath(rel);
     DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
     if (ret != DenyReason::None)
@@ -563,60 +626,93 @@ void JZSearchFileTool::call(const ToolCall &params)
     JZFileInfo info(abs);
     if (!info.exists())
     {
-        finish(params, false, "路径不存在: " + rel, ret);
+        finish(params, false, "路径不存在: " + rel, DenyReason::NotFound);
         return;
     }
 
+    // 结果里的路径一律相对工作区(能直接再喂给 read_file / modify_file)
+    string outBase = workspaceRelPath(m_host, abs);
+
     vector<string> results;
-    int totalFiles = 0;
-    long long totalBytes = 0;
-    bool stopped = false;
+    SearchStat stat;
     if (info.isDir())
     {
-        searchInDir(abs, string(), pattern, fileFilter, caseSensitive, useRegex,
-                    maxResults, maxFiles, maxBytes, results, totalFiles, totalBytes, stopped,
-                    m_host);
+        searchInDir(abs, outBase == "." ? string() : outBase, pattern, fileFilter, caseSensitive, regexp,
+                    maxResults, maxFiles, maxBytes, results, stat, m_host);
     }
     else
     {
+        // 显式点了文件名时也要过 file_filter, 别悄悄忽略模型给的过滤条件
+        if (!fileFilterMatch(info.fileName(), fileFilter, false))
+        {
+            finish(params, false, "文件名不匹配 file_filter: " + info.fileName() +
+                                  " (file_filter = " + fileFilter + ")");
+            return;
+        }
         if (!isTextFile(abs))
         {
             finish(params, false, "二进制文件无法搜索: " + rel);
             return;
         }
+        if (info.size() > maxBytes)
+        {
+            finish(params, false, "文件过大(" + to_string(info.size() / (1024 * 1024)) +
+                                  "MB)，请改用 read_file 分段查看: " + rel);
+            return;
+        }
+
         string content, readError;
         if (!readHostFile(m_host, abs, content, readError))
         {
             finish(params, false, readError);
             return;
         }
-        totalFiles = 1;
+        stat.files = 1;
+        stat.bytes = (long long)content.size();
+
         string needle = caseSensitive ? pattern : str_toLower(pattern);
         vector<string> lines = readLines(content);
         for (int i = 0; i < (int)lines.size(); i++)
         {
-            string target = caseSensitive ? lines[i] : str_toLower(lines[i]);
-            if (str_indexOf(target, needle) != -1)
-                results.push_back(rel + ":" + to_string(i + 1) + ": " + lines[i]);
+            bool hit = false;
+            if (regexp)
+                hit = regexp->test(JZString::fromStdString(lines[i]));
+            else
+            {
+                string target = caseSensitive ? lines[i] : str_toLower(lines[i]);
+                hit = str_indexOf(target, needle) != -1;
+            }
+            if (!hit)
+                continue;
+
+            string line = lines[i];
+            if ((int)line.size() > 300)
+                line = line.substr(0, 300) + "...";
+            results.push_back(outBase + ":" + to_string(i + 1) + ": " + line);
+            if ((int)results.size() >= maxResults)
+                break;
         }
     }
 
     string text;
     if (results.empty())
     {
-        text = "没有找到匹配 \"" + pattern + "\" 的内容（已搜索 " + to_string(totalFiles) + " 个文件）。";
+        text = "没有找到匹配 \"" + pattern + "\" 的内容（已搜索 " + to_string(stat.files) + " 个文件）。";
     }
     else
     {
         text = "匹配 \"" + pattern + "\" 共 " + to_string(results.size()) + " 处" +
-               (results.size() == (size_t)maxResults ? "（已达结果上限）" : "") + ":\n";
+               (results.size() == (size_t)maxResults ?
+                    "（已达 max_results 上限，可能还有更多，可缩小 path / file_filter）" : "") + ":\n";
         for (const auto &r : results)
             text += r + "\n";
-        if (stopped)
-            text += "\n（已扫描 " + to_string(totalFiles) + " 个文件 / 约 " +
-                    to_string(totalBytes / (1024 * 1024)) + "MB，达到单次搜索上限，提前停止；"
-                    "可缩小 path / file_filter 范围后重试）";
     }
+    if (stat.stopped)
+        text += "\n（已扫描 " + to_string(stat.files) + " 个文件 / 约 " +
+                to_string(stat.bytes / (1024 * 1024)) + "MB，达到单次搜索上限，结果可能不全；"
+                "可缩小 path / file_filter 范围后重试）";
+    if (stat.skipped > 0)
+        text += "\n（另有 " + to_string(stat.skipped) + " 个文件因二进制内容 / 超过 2MB / 读取失败被跳过）";
     finish(params, true, text);
 }
 

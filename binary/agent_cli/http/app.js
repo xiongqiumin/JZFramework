@@ -131,7 +131,7 @@
     var rCmd = el('div', 'row');
     rCmd.appendChild(el('span', 'k', '验证:'));
     if (task.cmd) rCmd.appendChild(el('span', 'cmd', task.cmd));
-    else rCmd.appendChild(el('span', 'none', '未设置'));
+    else rCmd.appendChild(el('span', 'none', '无验证'));
     v.appendChild(rCmd);
 
     var rRes = el('div', 'row');
@@ -171,11 +171,11 @@
     if (typeof info.rounds === 'number') task.rounds.textContent = '· 轮次 ' + info.rounds;
 
     if (cancelled) task.result.textContent = '任务已被重置';
-    else if (ok) task.result.textContent = info.out ? '验证通过' : '任务完成';
+    else if (ok) task.result.textContent = task.cmd ? '验证通过' : '通过（无验证）';
     else task.result.textContent = info.error ? ('错误: ' + info.error) : '未通过';
 
     var concl = ok
-      ? (info.reply || '（空回复，验证脚本退出码 0）')
+      ? (info.reply || (task.cmd ? '（空回复，验证脚本退出码 0）' : '（空回复）'))
       : (info.error || info.reply || '（无结论）');
     task.conclText.textContent = concl;
     task.conclText.title = concl;      // 卡片里只露几行, 完整结论看悬停
@@ -189,6 +189,86 @@
 
     // 单列表: 卡片就地更新, 不再从"当前任务"搬运到"历史任务"
     if (selected === task) selected = null;
+    refreshSide();
+  }
+
+  // 服务端当前状态快照(新连接且正有任务在跑时推送): 重建进行中任务的卡片与过程气泡。
+  // 仅当本地还没有 cur 时才重建 —— 同一页面的 SSE 自动重连不应重复建卡(live 事件会继续续推)。
+  function applyState(data) {
+    if (!data || !data.busy) return;
+    if (cur) return;
+
+    taskNo += 1;
+    var task = { no: taskNo, prompt: data.prompt || '(进行中的任务)', cmd: data.verify_cmd || '' };
+    cur = task;
+    endProc();
+    resetProcKeep();
+    makeCard(task);
+    taskListEl.insertBefore(task.el, taskListEl.firstChild);
+    trimCards();
+    selectCard(task);
+    refreshSide();
+    setUiRunning(true);
+
+    if (typeof data.round === 'number')
+      task.rounds.textContent = '· 轮次 ' + data.round;
+
+    if (data.think) addProc('think', String(data.think));
+    if (data.reply) {
+      addProc('say', String(data.reply));
+      task.replyStreamed = true;      // 快照里的回复也算已经显示过
+    }
+
+    var tools = data.tools || [];
+    for (var i = 0; i < tools.length; i++) {
+      var t = tools[i];
+      var bubble = makeToolBubble(t.name || 'tool', String(t.args || ''));
+      messagesEl.appendChild(bubble);
+      procEls.push(bubble);
+      if (t.hasOwnProperty('ok'))
+        fillToolResult(bubble, t.ok, t.result);   // 已有结果: 回填
+      else
+        bubble.__pending = true;                  // 还在等结果: 别被 trimProc 摘掉
+    }
+    trimProc();
+
+    // 快照里带了上一轮验证输出就显示出来(重连前已经跑过验证的话, 否则这边看不到)
+    if (data.last_verify_output) {
+      task.out.textContent = data.last_verify_output;
+      task.out.classList.remove('hidden');
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 最近任务(服务端记的那一摞): 刚打开网页时用它把历史卡片补回来。
+  //   长程任务跑几十分钟很常见, 网页不会一直开着 —— 关掉期间跑完的任务不能凭空消失,
+  //   所以服务端保留最近若干次请求 + 结论 + 验证输出, 连接上来就随 hello 帧送过来。
+  //   只在本地还没有任何卡片时重建(SSE 自动重连时 live 事件本来就在往这边推)。
+  // ------------------------------------------------------------------
+  function fmtClock(ms) {
+    var d = new Date(ms);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function applyRecent(list) {
+    if (!Array.isArray(list) || !list.length) return;
+    if (cur || taskListEl.children.length) return;
+
+    for (var i = list.length - 1; i >= 0; i--) {   // 服务端最近在前: 倒着插, 新的才落在最上面
+      var it = list[i];
+      if (!it || it.status === 'running') continue;   // 在跑的那条由 state 快照建卡
+      taskNo += 1;
+      var task = { no: taskNo, prompt: it.prompt || '(任务)', cmd: it.verify_cmd || '' };
+      makeCard(task);
+      taskListEl.insertBefore(task.el, taskListEl.firstChild);
+      finishCard(task, {
+        status: it.status, rounds: it.verify_rounds, error: it.error,
+        out: it.last_verify_output, reply: it.agent_reply
+      });
+      if (it.end_ms) task.rounds.textContent += ' · ' + fmtClock(it.end_ms);
+    }
+    trimCards();
     refreshSide();
   }
 
@@ -209,7 +289,7 @@
     var t = el('div', 'p-text', task.prompt);
     t.title = task.prompt;
     body.appendChild(t);
-    body.appendChild(el('div', 'p-cmd', task.cmd ? ('验证: ' + task.cmd) : '验证: 未设置'));
+    body.appendChild(el('div', 'p-cmd', task.cmd ? ('验证: ' + task.cmd) : '验证: 无验证'));
     li.appendChild(body);
 
     var del = el('button', 'ghost p-del', '移除');
@@ -238,7 +318,9 @@
   // ------------------------------------------------------------------
   // 任务提交 / 队列泵
   // ------------------------------------------------------------------
-  function addMessage(role, bodyHtml, meta) {
+  // skipBody: 只落状态行(徽标/轮次/错误/验证输出), 不再贴一遍回复正文 ——
+  //           回复已经作为过程气泡流式显示过时用(见 finishTask)。
+  function addMessage(role, bodyHtml, meta, skipBody) {
     var wrap = document.createElement('div');
     wrap.className = 'msg ' + role;
 
@@ -267,10 +349,12 @@
       }
       wrap.appendChild(head);
 
-      var b2 = document.createElement('div');
-      b2.className = 'bubble';
-      b2.innerHTML = escapeHtml(bodyHtml) || '<i>（空回复）</i>';
-      wrap.appendChild(b2);
+      if (!skipBody) {
+        var b2 = document.createElement('div');
+        b2.className = 'bubble';
+        b2.innerHTML = escapeHtml(bodyHtml) || '<i>（空回复）</i>';
+        wrap.appendChild(b2);
+      }
 
       if (meta && meta.error) {
         var e = document.createElement('div');
@@ -295,8 +379,70 @@
     return wrap;
   }
 
+  // 发送按钮: 运行中不再显示"处理中…"。文案跟着输入框走 ——
+  //   有文字 → "发送"(运行中提交会排进待提交队列); 没文字 → "停止"(中止当前任务)。
+  function syncSendBtn() {
+    var canStop = !!(cur && !inputEl.value.trim());
+    var txt = canStop ? '停止' : '发送';
+    if (sendBtn.textContent !== txt) sendBtn.textContent = txt;
+    sendBtn.title = canStop
+      ? '中止当前任务（待提交队列保留，会接着跑下一个）'
+      : '发送（Enter）';
+  }
+
+  // "停止" = 只中止当前任务: 不动待提交队列, 当前任务收尾后 pump() 会接着跑下一个。
+  function stopCurrent() {
+    postReset('task');
+  }
+
   function setUiRunning(run) {
-    sendBtn.textContent = run ? '处理中…' : '发送';
+    syncSendBtn();
+  }
+
+  // ------------------------------------------------------------------
+  // "等待回复" 提示: 任务在跑的时候, 若连续 5 秒没有收到任何新消息(SSE 事件 / 回包),
+  // 就在对话最末尾补一条等待提示; 一旦有新消息到达立刻隐藏并重新计时。
+  // ------------------------------------------------------------------
+  var WAIT_MS = 5000;
+  var waitEl = null;
+  var waitTimer = null;
+
+  function hideWaiting() {
+    if (waitTimer) { clearTimeout(waitTimer); waitTimer = null; }
+    if (waitEl && waitEl.parentNode) waitEl.parentNode.removeChild(waitEl);
+  }
+
+  // 有新消息(或状态变化)就调一次: 撤掉提示, 还在跑就重新起 5s 计时
+  function noteActivity() {
+    hideWaiting();
+    if (!cur) return;
+    waitTimer = setTimeout(showWaiting, WAIT_MS);
+  }
+
+  function showWaiting() {
+    waitTimer = null;
+    if (!cur) return;
+    if (!waitEl) waitEl = el('div', 'sys dim waiting', '正在等待回复…');
+    messagesEl.appendChild(waitEl);     // 永远落在对话末尾
+    scrollBottom();
+  }
+
+  // 收尾当前任务: 结论落聊天 + 卡片归档 + 复位按钮 + 泵下一个。
+  //   /task 的回包 与 SSE 的 task_end 都走这里(提交方断连时只有后者会到 —— 服务端不会因为
+  //   网页断开就停任务), 靠 cur 判空天然幂等: 先到的那条收尾, 后到的不再重复落一条回复。
+  function finishTask(info) {
+    var task = cur;
+    cur = null;
+    setUiRunning(false);
+    if (task) {
+      // 回复正文已经流式显示过(过程气泡里就是全文): 这里只补一行状态, 不再重贴一遍回复。
+      addMessage('assistant', info.reply || '', {
+        status: info.status, rounds: info.rounds, error: info.error, verifyOut: info.out
+      }, !!task.replyStreamed);
+      finishCard(task, info);
+    }
+    pump();
+    noteActivity();          // 收尾后复位计时(已泵出新任务就重新计时, 否则撤掉提示)
   }
 
   function startTask(task) {
@@ -311,6 +457,7 @@
     selectCard(task);
     refreshSide();
     setUiRunning(true);
+    noteActivity();
 
     var req = { prompt: task.prompt };
     if (task.cmd) req.verify_cmd = task.cmd;
@@ -337,20 +484,17 @@
         });
       })
       .catch(function (e) {
-        done({ status: 'failed', error: '请求失败: ' + e.message });
+        // 连接层面失败 ≠ 任务没跑起来: 服务端可能已经收到并在跑(它不因这条连接断开而停)。
+        // 先问一次 /info: 还在跑就交给 SSE 的 task_end 收尾; 确实没在跑才是真的提交失败。
+        isServerBusy(function (busy) {
+          if (!busy) done({ status: 'failed', error: '请求失败: ' + e.message });
+        });
       });
 
     function done(info) {
-      if (g !== epoch) return;   // 已被"清空历史"作废: 不落聊天/不归档
-      addMessage('assistant', info.reply || '', {
-        status: info.status, rounds: info.rounds, error: info.error, verifyOut: info.out
-      });
-      if (cur === task) {
-        finishCard(task, info);
-        cur = null;
-      }
-      setUiRunning(false);
-      pump();
+      if (g !== epoch) return;      // 已被"清空历史"作废: 不落聊天/不归档
+      if (cur !== task) return;     // 已由 SSE 的 task_end 收尾: 不重复落一条
+      finishTask(info);
     }
   }
 
@@ -369,6 +513,7 @@
 
     task.msg = addMessage('user', prompt);
     inputEl.value = '';
+    syncSendBtn();          // 输入框已清空: 运行中按钮切回"停止"
     inputEl.focus();
 
     if (cur) {
@@ -408,6 +553,14 @@
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(applyInfo)
       .catch(function () { /* 保持占位 */ });
+  }
+
+  // 服务端是否正忙(GET /info)。问不到(服务不在)就当不忙 —— 那种情况下确实也没任务在跑。
+  function isServerBusy(cb) {
+    fetch(infoUrl(), { method: 'GET' })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (d) { cb(!!(d && d.busy)); })
+      .catch(function () { cb(false); });
   }
 
   // GET /scripts 只当连通性探针(下拉选脚本已移除, 验证命令手填一行)
@@ -527,6 +680,9 @@
   }
 
   // kind: think / say / tool / res / res fail；name 仅工具行使用
+  //   回复(say)是这次任务的最终答案: 一个字都不截断, 结尾也不再重复贴一遍(收尾只补一行状态),
+  //   所以这里必须显示全文。思考/工具等过程信息仍限长, 免得长任务把页面刷爆。
+  var PROC_MAX = 2000;
   function addProc(kind, text, name) {
     if (!procEl || procKind !== kind) {
       procEl = makeProc(kind, name);
@@ -537,8 +693,9 @@
       trimProc();
     }
     var cur = procBody.textContent;
-    if (cur.length < 2000) procBody.textContent = cur + (text || '');
-    else if (cur.length < 2100) procBody.textContent = cur + '…（已省略）';
+    var max = (kind === 'say') ? 0 : PROC_MAX;   // 0 = 不限长
+    if (!max || cur.length < max) procBody.textContent = cur + (text || '');
+    else if (cur.length < max + 100) procBody.textContent = cur + '…（已省略）';
     procBody.classList.toggle('hidden', procBody.textContent === '');
     scrollBottom();
   }
@@ -559,6 +716,22 @@
     if (type === 'hello') {
       setConn(true);
       applyInfo(data);          // hello 帧带同一份运行信息
+      // 连上来时服务端已经闲着, 而我这边还挂着一张"运行中"的卡片: 那是断连期间跑完的任务
+      // (服务端不因网页断开而停任务) —— 用 hello 帧里带的最后一次结果给它收尾。
+      if (cur && data.busy === false && data.last_result) {
+        var lr = data.last_result;
+        endProc();
+        finishTask({
+          status: lr.status, rounds: lr.verify_rounds, error: lr.error,
+          out: lr.last_verify_output, reply: lr.agent_reply
+        });
+      }
+      applyRecent(data.recent);   // 最近若干次请求/结果: 刚打开的网页据此补出历史卡片
+      return;
+    }
+
+    if (type === 'state') {
+      applyState(data);         // 新连接且正有任务在跑: 重建进行中任务的卡片与过程
       return;
     }
 
@@ -568,6 +741,8 @@
     }
 
     if (type === 'reply') {
+      // 回复已经在过程气泡里流式显示了(全文): 打个标记, 收尾时不再把同一段再贴一遍。
+      if (cur && data.text) cur.replyStreamed = true;
       addProc('say', data.text || '');
       return;
     }
@@ -606,7 +781,8 @@
       endProc();
       if (cur) {
         cur.rounds.textContent = '· 第 ' + (cur.roundN || 1) + ' 轮';
-        if (data.verify_cmd) cur.result.textContent = '验证待跑: ' + data.verify_cmd;
+        // 没填验证命令就是"无验证": 跑完即通过, 不再有验证这一步
+        cur.result.textContent = data.verify_cmd ? ('验证待跑: ' + data.verify_cmd) : '无验证';
       }
       return;
     }
@@ -645,6 +821,17 @@
       return;
     }
 
+    if (type === 'task_end') {
+      // 任务收尾: 与 /task 的回包同一份数据。提交方连接已断(网页刷新/关页面)时这是唯一的
+      // 结果出口 —— 服务端不会因此停任务, 跑完照样推这一帧。
+      endProc();
+      finishTask({
+        status: data.status, rounds: data.verify_rounds, error: data.error,
+        out: data.last_verify_output, reply: data.agent_reply
+      });
+      return;
+    }
+
     if (type === 'reset') {
       endProc();
       addSystem(data.cancelled ? '任务已被重置' : '会话已重置(对话历史已清空)');
@@ -666,7 +853,9 @@
     es.onmessage = function (e) {
       var obj;
       try { obj = JSON.parse(e.data); } catch (err) { return; }
-      if (obj && obj.type) onServerEvent(obj);
+      if (!obj || !obj.type) return;
+      onServerEvent(obj);
+      noteActivity();          // 收到消息: 立刻隐藏"等待回复", 并按最新状态重新计时
     };
   }
 
@@ -709,12 +898,17 @@
       selected = null;
       droppedCards = 0;
       setUiRunning(false);
+      noteActivity();          // 已无在跑任务: 顺带撤掉"等待回复"
       refreshSide();
       refreshPending();
     });
   });
 
-  sendBtn.addEventListener('click', submit);
+  sendBtn.addEventListener('click', function () {
+    if (cur && !inputEl.value.trim()) { stopCurrent(); return; }   // 空输入 + 运行中 = 停止
+    submit();
+  });
+  inputEl.addEventListener('input', syncSendBtn);
   clearBtn.addEventListener('click', function () { messagesEl.innerHTML = ''; });
   clearTasksBtn.addEventListener('click', function () {
     // 只清列表: 运行中的任务卡片保留(否则任务还在跑卡片却没了)
@@ -802,5 +996,6 @@
   connectEvents();
   refreshSide();
   refreshPending();
+  syncSendBtn();
   inputEl.focus();
 })();

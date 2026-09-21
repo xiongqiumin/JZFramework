@@ -462,6 +462,11 @@ void JZAgent::clearRequestList()
     m_requests.clear();
 }
 
+void JZAgent::compressHistory()
+{
+    startCompressHistory();
+}
+
 void JZAgent::stop()
 {
     llmError(UserCancelError, "user cancel");
@@ -561,7 +566,7 @@ JZResult<SkillDefine> JZAgent::loadSkill(std::string skill_name, const std::stri
     return JZResult<SkillDefine>::Ok(std::move(def));
 }
 
-std::string JZAgent::buildSkillSummary()
+std::string JZAgent::buildSkillSummary() const
 {
     if (m_skills.size() == 0)
         return std::string();
@@ -602,7 +607,7 @@ Json::Value JZAgent::buildContext()
 }
 
 // 构建大模型所需的工具JSON结构（逻辑不变，序列化函数已更新）
-Json::Value JZAgent::buildTools()
+Json::Value JZAgent::buildTools() const
 {
     Json::Value tools(Json::arrayValue);
     if (m_skills.size() > 0)
@@ -622,6 +627,38 @@ Json::Value JZAgent::buildTools()
     }
 
     return tools;
+}
+
+// 字符数 → token 数的粗估(中英混排): 中文 1 字≈3 字节≈1 token, 英文/代码 1 token≈3~4 字符。
+// 取"3 字节 = 1 token"整体偏保守(略高估) —— 宁可早一点压缩, 也别把超长的 prompt 发出去。
+static int estimateTokensByChars(size_t bytes)
+{
+    return bytes == 0 ? 0 : (int)(bytes / 3) + 1;
+}
+
+// 下一次请求实际要发出的上下文大小(见头文件注释)。
+//   只能"从最近一轮的真实用量往前推 + 对还没发过的消息按字符估"，因为历史里没有
+//   消息级的 token 数(usage 记的是请求级的整段 prompt)。
+int JZAgent::windowTokens() const
+{
+    const auto &hist = m_context.history;
+
+    // 最近一条"被真实测量过"的消息(assistant 回复): 
+    // 对于有些工具调用返回的, 没有测量过, 只有服务器返回的才会测量
+    int window = 0;
+    bool measured = false;
+    size_t firstUnsent = 0;      // 该下标之后的消息还没进过任何一次请求
+    for (size_t i = hist.size(); i > 0; i--)
+    {
+        const auto &h = hist[i - 1];
+        if (!h || h->usage.prompt_tokens + h->usage.completion_tokens <= 0)
+            continue;
+        window = h->usage.prompt_tokens + h->usage.completion_tokens;
+        firstUnsent = i;
+        break;
+    }
+
+    return window;
 }
 
 void JZAgent::llmRequest()
@@ -740,8 +777,8 @@ void JZAgent::processToolCall(ToolCall& tool_call)
 
     tool_call.params = param;
     // 统一接口：把已解析的参数交给工具，工具通过 sigResult 回传结果
-    tool->call(tool_call);
     m_pendingTools[tool_call.id] = tool;
+    tool->call(tool_call);
 }
 
 // LLMHistory
@@ -907,6 +944,78 @@ bool LLMHistory::fromJson(const Json::Value& root)
     return true;
 }
 
+// ---- usage 解析：OpenAI 标准写法与 llama.cpp 写法共用一条路径 ----
+// llama.cpp 的计时对象(最早见 /completion，现在也随 OpenAI 兼容接口下发)：
+//   {cache_n, prompt_n, prompt_ms, prompt_per_token_ms, prompt_per_second,
+//    predicted_n, predicted_ms, predicted_per_token_ms, predicted_per_second,
+//    draft_n, draft_n_accepted}
+// 它可能挂在根级(与 usage 同级)，也可能整个就是 usage，故两边都认。
+// ⚠ 只覆盖"源里确实出现"的字段：流式下两家都会分批下发(先 prompt 后 predicted)，
+// 整段覆盖会把先前收到的值清零。速率字段不存，按 Σtoken/Σms 现算(见类内注释)。
+void LLMHistory::mergeUsageJson(const Json::Value &src, JZAgentTokenUsage &usage)
+{
+    if (!src.isObject())
+        return;
+
+    auto has = [&src](const char *k) { return src.isMember(k) && !src[k].isNull(); };
+    auto intOf = [&src](const char *k) { return src[k].asInt(); };
+
+    // 缓存命中：OpenAI 放 prompt_tokens_details.cached_tokens，llama.cpp 用 cache_n
+    // (更早的 /completion 是 tokens_cached)，三者都认。
+    int cached = usage.cached_tokens;
+    if (has("cached_tokens"))
+        cached = intOf("cached_tokens");
+    else if (has("cache_n"))
+        cached = intOf("cache_n");
+    else if (has("tokens_cached"))
+        cached = intOf("tokens_cached");
+    else if (src["prompt_tokens_details"].isObject())
+        cached = src["prompt_tokens_details"].get("cached_tokens", cached).asInt();
+
+    // 输入/输出：标准字段优先。llama.cpp 的 prompt_n 只数"本次实际评估的输入"，
+    // 命中缓存的 cache_n 同样属于本次输入，两者相加才是完整输入。
+    if (has("prompt_tokens"))
+        usage.prompt_tokens = intOf("prompt_tokens");
+    else if (has("prompt_n"))
+        usage.prompt_tokens = intOf("prompt_n") + cached;
+
+    if (has("completion_tokens"))
+        usage.completion_tokens = intOf("completion_tokens");
+    else if (has("predicted_n"))
+        usage.completion_tokens = intOf("predicted_n");
+
+    if (has("total_tokens"))
+        usage.total_tokens = intOf("total_tokens");
+    else if (has("prompt_tokens") || has("prompt_n") || has("completion_tokens") || has("predicted_n"))
+        usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+
+    usage.cached_tokens = cached;
+
+    // 计时：优先取内嵌 timings，没有就按"当前对象自己就是 timings"处理。
+    const Json::Value &t = src["timings"].isObject() ? src["timings"] : src;
+    if (t.isObject())
+    {
+        if (t.isMember("prompt_ms"))
+            usage.prompt_ms = t["prompt_ms"].asDouble();
+        if (t.isMember("predicted_ms"))
+            usage.predicted_ms = t["predicted_ms"].asDouble();
+        if (t.isMember("draft_n"))
+            usage.draft_tokens = t["draft_n"].asInt();
+        if (t.isMember("draft_n_accepted"))
+            usage.draft_accepted_tokens = t["draft_n_accepted"].asInt();
+    }
+}
+
+// 从响应根对象里取 usage：llama.cpp 把计时放根级 timings(与 usage 平级)，
+// 这里并进来，后面(流式/非流式)就都走同一条解析路径。
+static Json::Value extractUsageJson(const Json::Value &root)
+{
+    Json::Value usage = root["usage"];
+    if (root["timings"].isObject())
+        usage["timings"] = root["timings"];
+    return usage;
+}
+
 // LLMContext
 LLMContext::LLMContext()
 {
@@ -927,6 +1036,11 @@ void LLMContext::recalcUsage()
         usage.completion_tokens += h->usage.completion_tokens;
         usage.total_tokens      += h->usage.total_tokens;
         usage.cached_tokens     += h->usage.cached_tokens;
+        // 计时只累加"原始量"，平均速率由 promptTokensPerSecond / predictedTokensPerSecond 现算
+        usage.prompt_ms              += h->usage.prompt_ms;
+        usage.predicted_ms           += h->usage.predicted_ms;
+        usage.draft_tokens           += h->usage.draft_tokens;
+        usage.draft_accepted_tokens  += h->usage.draft_accepted_tokens;
     }
 }
 
@@ -944,6 +1058,11 @@ Json::Value LLMContext::toJson() const
     u["completion_tokens"] = usage.completion_tokens;
     u["total_tokens"] = usage.total_tokens;
     u["cached_tokens"] = usage.cached_tokens;
+    // llama.cpp 计时(无则 0)，存档带回后速率仍可现算
+    u["prompt_ms"] = usage.prompt_ms;
+    u["predicted_ms"] = usage.predicted_ms;
+    u["draft_n"] = usage.draft_tokens;
+    u["draft_n_accepted"] = usage.draft_accepted_tokens;
     root["usage"] = u;
 
     return root;
@@ -962,6 +1081,10 @@ bool LLMContext::fromJson(const Json::Value& root)
     usage.completion_tokens = u.get("completion_tokens", 0).asInt();
     usage.total_tokens = u.get("total_tokens", 0).asInt();
     usage.cached_tokens = u.get("cached_tokens", 0).asInt();
+    usage.prompt_ms = u.get("prompt_ms", 0.0).asDouble();
+    usage.predicted_ms = u.get("predicted_ms", 0.0).asDouble();
+    usage.draft_tokens = u.get("draft_n", 0).asInt();
+    usage.draft_accepted_tokens = u.get("draft_n_accepted", 0).asInt();
 
     // history → 直接复用 fromJson
     auto& hist = root["history"];
@@ -1207,23 +1330,12 @@ void JZAgent::processResponseDelta(const std::string &content,
         }
     }
 
+    // 记录本轮请求的 token 用量：reply 恒为 Assistant，usage 仅来自回复。
+    // ⚠ 这里存的是**请求级**的量(prompt 是整段 prompt)，不是这条回复自身的 token 数。
+    // context.usage 不再在此累加，而是由 history 重算得到，避免裁剪历史后无法回落。
+    // 解析兼容 OpenAI 与 llama.cpp(见 mergeUsageJson)，前面已把根级 timings 并进 usage。
     if (usage.isObject())
-    {
-        int prompt = usage.get("prompt_tokens", 0).asInt();
-        int completion = usage.get("completion_tokens", 0).asInt();
-        int total = usage.get("total_tokens", 0).asInt();
-        int cached = 0;
-        // SSE 开启 include_usage 时，usage 可能携带 prompt_tokens_details.cached_tokens（前缀缓存命中）
-        if (usage.isMember("prompt_tokens_details") && usage["prompt_tokens_details"].isObject())
-            cached = usage["prompt_tokens_details"].get("cached_tokens", 0).asInt();
-
-        // 记录本轮（Assistant 回复）token 增量：reply 恒为 Assistant，usage 仅来自回复。
-        // context.usage 不再在此累加，而是由 history 重算得到，避免裁剪历史后无法回落。
-        reply.usage.prompt_tokens     = prompt;
-        reply.usage.completion_tokens = completion;
-        reply.usage.total_tokens      = total;
-        reply.usage.cached_tokens     = cached;
-    }
+        LLMHistory::mergeUsageJson(usage, reply.usage);
 }
 
 void JZAgent::finalizeResponse()
@@ -1267,19 +1379,14 @@ bool JZAgent::startCompressHistory()
     // 构建消息上下文
     Json::Value messages = buildContext();
 
-    // system: 总结指令 + 原任务的系统提示(让摘要保留任务/项目背景, 不丢上下文)
-    Json::Value sysMsg(Json::objectValue);
-    sysMsg["role"] = "system";
-    sysMsg["content"] = "请基于以上背景，协助用户总结之前的所有任务、完成情况，以及最近的请求，"
-        "整理成一段可作为下一轮输入的摘要。"
-        "不要调用工具，不要编造信息，只输出摘要本身，不要输出任何解释或多余文字。";
-    messages.append(sysMsg);
-
-    // 收尾: 触发模型开始总结
+    // 总结指令
     Json::Value userMsg(Json::objectValue);
     userMsg["role"] = "user";
-    userMsg["content"] = "以上是之前的全部对话，请开始总结。";
+    userMsg["content"] = "请基于以上背景，协助用户总结之前的所有任务、完成情况，以及最近的请求，"
+        "整理成一段可作为下一轮输入的摘要。"
+        "不要调用工具，不要编造信息，只输出摘要本身，不要输出任何解释或多余文字。开始总结";
     messages.append(userMsg);
+
     request_body["messages"] = messages;
 
     // 如果有注册工具，添加 tools 参数
@@ -1301,7 +1408,7 @@ bool JZAgent::startCompressHistory()
 
     m_compressReply = m_net->post(req, str_toUtf8(writer.write(request_body)));
     connect(&m_compressReply->sigFinished, this, &JZAgent::onCompressFinished);
-    m_compressReply->setTimeOut(m_config.netTimeout);
+    m_compressReply->setTimeOut(10 * 60 * 1000);
     return true;
 }
 
@@ -1350,9 +1457,7 @@ void JZAgent::onCompressFinished()
     m_context.recalcUsage();  // 历史已压缩，重算累计 usage 使其回落
     sigLLMHistory.emit(sum);  // 这条摘要也是一条新入历史的消息(同时是新上下文起点)
 
-    int window_tokens = 0;
-    for (size_t i = 0; i < m_context.history.size(); i++)
-        window_tokens += m_context.history[i]->usage.total_tokens;
+    int window_tokens = windowTokens();
     if (window_tokens > m_config.maxToken)
         llmError(MaxTokenError, "上下文压缩失败,还剩余" + std::to_string(window_tokens));
     else
@@ -1376,9 +1481,9 @@ void JZAgent::llmLoop()
 
     // 预算按"实际发给模型"的活跃窗口(token 用量来自窗口内消息)判定,
     // 而非完整存档(完整存档含被压缩的旧消息, 不发给模型)。
-    int window_tokens = 0;
-    for (size_t i = 0; i < m_context.history.size(); i++)
-        window_tokens += m_context.history[i]->usage.total_tokens;
+    // windowTokens() = "下一次请求实际会发出的上下文"估算 —— 别再 Σ history[i].usage:
+    // 那条数的是每轮的整段 prompt, 累加等于把同一段历史重复计入轮数遍, 预算会被提前顶爆。
+    int window_tokens = windowTokens();
 
     if (window_tokens > m_config.maxToken)
     {
@@ -1545,7 +1650,8 @@ void JZAgent::processSSEData(const std::string& payload)
 
     // 流式收尾常带一个 choices=[] 但含 usage 的结尾包（需 stream_options.include_usage=true）。
     // 必须先提取 usage，避免被下面的空 choices 提前 return 吞掉，否则 token 统计恒为 0。
-    Json::Value usage = result["usage"];
+    // llama.cpp 的计时在根级 timings(与 usage 平级)，extractUsageJson 一并并进来。
+    Json::Value usage = extractUsageJson(result);
 
     Json::Value choices = result["choices"];
     if (!choices.isArray() || choices.size() == 0)
@@ -1678,7 +1784,7 @@ void JZAgent::onLLMRequest()
         if (message.isMember("tool_calls") && message["tool_calls"].isArray())
             tool_calls = message["tool_calls"];
 
-        Json::Value usage = result["usage"];
+        Json::Value usage = extractUsageJson(result);
         processResponseDelta(content, thinking, tool_calls, usage);
     }
 

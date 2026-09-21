@@ -80,6 +80,9 @@ JZTerminalRunMcpTool::JZTerminalRunMcpTool(JZTerminalRegistry *reg)
         "在沙箱终端执行一条 shell 命令(语法由服务器解析: 支持 && || ; 串联、| 管道、"
         "> >> < 重定向、通配符与变量展开)。\n"
         "默认同步执行, 返回合并输出 + 退出信息。\n"
+        "⭐ 同一个会话可以**同时跑多条命令**(终端侧并发, 各跑各的): 一条长任务不会堵住别的命令。\n"
+        "每次调用返回一个 [run_id], 用 terminal_query 按 run_id 查它; 客户端对在跑的请求发取消\n"
+        "(notifications/cancelled)只会停那一条, 不影响同会话里其它在跑的命令。\n"
         "可选:\n"
         "  - stream=true    : 边跑边按 notifications/message 流式推日志(POST 内联 SSE), 结束再推结果。\n"
         "  - background=true : 后台运行, 立即返回 run_id(不流式), 之后用 terminal_query 取日志。\n"
@@ -152,22 +155,23 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
         sigFinished.emit(id, mcpTextResult(error, true));
         return;
     }
-    // 编译输出错误截取开关(默认开); 单终端串行, 这里设给本次运行即可
-    term->setFilterOutput(args.get("error_context", true).asBool());
+    // 输出过滤开关(默认开): 按次给(终端能同时跑多条, 用终端级开关会互相串)
+    JZVirtualTerminal::OutputFilter filter = args.get("error_context", true).asBool()
+                                                 ? JZVirtualTerminal::OutputFilter::On
+                                                 : JZVirtualTerminal::OutputFilter::Off;
 
     // ---- 后台模式: 启动即返回 run_id, 不流式 ----
     if (background)
     {
-        auto ridPtr = std::make_shared<std::string>();
-        bool started = term->run(command, timeoutMs,
-                                 [](bool, const std::string &, const std::string &) {}, error,
-                                 ridPtr.get(), nullptr, true);
-        if (!started)
+        JZResult<std::string> started = term->run(command, timeoutMs,
+                                                  [](bool, const std::string &, const std::string &) {},
+                                                  nullptr, true, filter);
+        if (started.isError())
         {
-            sigFinished.emit(id, mcpTextResult(error, true));
+            sigFinished.emit(id, mcpTextResult(started.errorMessage(), true));
             return;
         }
-        std::string text = "已后台启动(只返回 id, 日志用 terminal_query 取)\nrun_id: " + *ridPtr;
+        std::string text = "已后台启动(只返回 id, 日志用 terminal_query 取)\nrun_id: " + started.value();
         std::string cwd = cwdOf(term);
         if (!cwd.empty())
             text += "\n[cwd] " + cwd;
@@ -176,22 +180,32 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
     }
 
     // ---- 前台(可选流式) ----
+    // run_id 拿到的时间点比回调晚(命令被拒时回调会**同步**跑在 run() 里, 那时还没有 run_id),
+    // 所以放共享变量里, 回调按它取值; fired 用来避免"同步回调 + 下面再回一次"发两遍结果。
     auto ridPtr = std::make_shared<std::string>();
-    bool started = term->run(command, timeoutMs,
-                             [this, id, ridPtr, term](bool ok, const std::string &out, const std::string &err)
-                             { onRunDone(id, ok, out, err, *ridPtr, term); },
-                             error, ridPtr.get(),
-                             stream ? std::function<void(const std::string &, const std::string &)>(
-                                 [this, id, streamFilter, grep](const std::string &stream, const std::string &chunk)
-                                 { emitChunk(id, stream, chunk, streamFilter, grep); })
-                                    : nullptr,
-                             false);
-    if (!started)
+    auto fired = std::make_shared<bool>(false);
+    JZResult<std::string> started = term->run(command, timeoutMs,
+                                              [this, id, ridPtr, fired, term](bool ok, const std::string &out, const std::string &err)
+                                              {
+                                                  *fired = true;
+                                                  onRunDone(id, ok, out, err, *ridPtr, term);
+                                              },
+                                              stream ? std::function<void(const std::string &, const std::string &)>(
+                                                  [this, id, streamFilter, grep](const std::string &stream, const std::string &chunk)
+                                                  { emitChunk(id, stream, chunk, streamFilter, grep); })
+                                                     : nullptr,
+                                              false, filter);
+    if (started.isError())
     {
-        sigFinished.emit(id, mcpTextResult(error, true));
+        if (!*fired)
+            sigFinished.emit(id, mcpTextResult(started.errorMessage(), true));
         return;
     }
-    m_inflight[id.asString()] = sid;
+    *ridPtr = started.value();
+    Inflight info;
+    info.session = sid;
+    info.runId = *ridPtr;
+    m_inflight[id.asString()] = info;
 }
 
 void JZTerminalRunMcpTool::onRunDone(const Json::Value &id, bool ok, const std::string &out,
@@ -246,13 +260,20 @@ void JZTerminalRunMcpTool::cancel(const Json::Value &id)
     auto it = m_inflight.find(id.asString());
     if (it == m_inflight.end())
         return;
-    std::string session = it->second;
+    std::string session = it->second.session;
+    std::string runId = it->second.runId;
     m_inflight.erase(it);
 
     std::string error;
     JZVirtualTerminal *term = m_registry ? m_registry->terminal(session, error) : nullptr;
-    if (term)
-        term->cancel();
+    if (!term)
+        return;
+
+    // 只停这一条(同会话里别的在跑命令不动)。run_id 为空(理论上不该有)就退回全停。
+    if (!runId.empty())
+        term->cancel(runId);
+    else
+        term->cancelAll();
 }
 
 // ======================================================================
@@ -264,7 +285,8 @@ JZTerminalQueryMcpTool::JZTerminalQueryMcpTool(JZTerminalRegistry *reg)
     setName("terminal_query");
     setDescription(
         "取后台/历史运行的日志(由 terminal_run 留下的运行记录)。\n"
-        "  - run_id : 取指定运行(缺省时必须带 session, 取该会话最近一次运行)\n"
+        "  - run_id : 取指定运行(缺省时必须带 session, 取该会话最近一次运行;\n"
+        "             若该会话还有命令在跑, 优先给最近那条**还在跑**的, 并列出全部在跑的 run_id)\n"
         "  - tail   : 只取最近 N 行(0=全部)\n"
         "  - stream : stdout/stderr/all 流过滤\n"
         "  - grep   : 只保留含该关键字的整行");
@@ -305,6 +327,7 @@ void JZTerminalQueryMcpTool::run(const Json::Value &id, const Json::Value &args)
     std::string grep = args.get("grep", "").asString();
 
     JZVirtualTerminal::RunRecordInfo rec;
+    JZVirtualTerminal *termPtr = nullptr;   // 按 session 查时才有: 末尾列出"还有哪些在跑"
     if (!runId.empty())
     {
         if (!m_registry->runSnapshot(runId, rec))
@@ -327,13 +350,25 @@ void JZTerminalQueryMcpTool::run(const Json::Value &id, const Json::Value &args)
             sigFinished.emit(id, mcpTextResult(error, true));
             return;
         }
+        termPtr = term;
         std::vector<std::string> ids = term->runIds();
         if (ids.empty())
         {
             sigFinished.emit(id, mcpTextResult("该会话没有运行记录(先用 terminal_run 跑过)", false));
             return;
         }
+        // 并发之后"最近一次"有多个候选: 优先给最近那条**还在跑**的(模型多半就是想知道
+        // 它跑到哪了), 没有在跑的就退回最后一条记录。
         runId = ids.back();
+        for (auto rit = ids.rbegin(); rit != ids.rend(); ++rit)
+        {
+            JZVirtualTerminal::RunRecordInfo tmp;
+            if (term->runSnapshot(*rit, tmp) && tmp.status == "running")
+            {
+                runId = *rit;
+                break;
+            }
+        }
         term->runSnapshot(runId, rec);
     }
 
@@ -359,6 +394,18 @@ void JZTerminalQueryMcpTool::run(const Json::Value &id, const Json::Value &args)
     if (rec.status == "done")
         text += "  exit=" + std::to_string(rec.exitCode) + (rec.timedOut ? " (超时)" : "");
     text += "\n";
+    // 该会话还有别的命令在跑时一并列出: 并发下"我在等的那条"和"还在跑的别的条"很容易混
+    if (termPtr)
+    {
+        std::vector<std::string> live = termPtr->activeRunIds();
+        if (!live.empty())
+        {
+            text += "该会话在跑 " + std::to_string(live.size()) + " 条:";
+            for (const std::string &rid : live)
+                text += " " + rid;
+            text += "\n";
+        }
+    }
     if (!rec.error.empty())
         text += "[结束] " + rec.error + "\n";
     text += "---- 日志(" + std::to_string(lines.size()) + " 行) ----\n";
@@ -415,7 +462,7 @@ JZTerminalListMcpTool::JZTerminalListMcpTool(JZTerminalRegistry *reg)
     : m_registry(reg)
 {
     setName("terminal_list");
-    setDescription("列出当前所有终端会话(id / cwd / 是否正在跑)。");
+    setDescription("列出当前所有终端会话(id / cwd / 在跑几条命令)。");
     Json::Value p(Json::objectValue);
     p["type"] = "object";
     p["properties"] = Json::objectValue;
@@ -441,7 +488,12 @@ void JZTerminalListMcpTool::run(const Json::Value &id, const Json::Value &args)
     {
         text += "session: " + s.id + "\n";
         text += "  cwd: " + s.cwd + "\n";
-        text += "  状态: " + std::string(s.running ? "运行中" : "空闲") + "\n";
+        text += "  状态: ";
+        if (s.runningCount > 0)
+            text += "运行中(" + std::to_string(s.runningCount) + " 条在跑)";
+        else
+            text += "空闲";
+        text += "\n";
     }
     sigFinished.emit(id, mcpTextResult(text, false));
 }

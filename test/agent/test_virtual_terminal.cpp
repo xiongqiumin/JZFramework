@@ -1,9 +1,12 @@
 // JZVirtualTerminal 冒烟测试(不依赖 JZProcess 的那部分)
 //
-// 覆盖: 单终端 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单。
+// 覆盖: 单终端 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单 /
+//       **并发运行**(同一终端同时跑多条命令 + 按 run_id 精确 cancel + cancelAll)。
+// run() 形态: JZResult<std::string>(成功 = run_id, 失败 = 原因) —— 测试里统一走 runCmd() 包装。
 // 期望输出: ALL PASS
 //
-// 注: JZVirtualTerminal 现在就是"一个终端"(无多会话), cwd/env/在跑进程都是它自己的状态。
+// 注: JZVirtualTerminal 现在就是"一个终端"(无多会话), cwd/env/在跑进程都是它自己的状态;
+//     一个终端可以同时跑多条命令(每条一个 JZProcess, 用 run_id 区分)。
 
 #include <stdio.h>
 #include <string>
@@ -277,6 +280,25 @@ private:
         stepRun();
     }
 
+    // run() 现在返回 JZResult<std::string>(成功 = run_id, 失败 = 原因)。测试里统一走这个包装,
+    // 保持"started + error"的原写法 —— 否则几十处断言都得改成 JZResult 判定。
+    bool runCmd(const string &command, int timeoutMs, const JZVirtualTerminal::RunCallback &cb, string &error,
+                string *runId = nullptr,
+                const std::function<void(const string &, const string &)> &onChunk = nullptr,
+                bool background = false,
+                JZVirtualTerminal::OutputFilter filter = JZVirtualTerminal::OutputFilter::Default)
+    {
+        JZResult<string> r = m_term.run(command, timeoutMs, cb, onChunk, background, filter);
+        if (r.isError())
+        {
+            error = r.errorMessage();
+            return false;
+        }
+        if (runId)
+            *runId = r.value();
+        return true;
+    }
+
     // ---- run(): 真起进程(异步) ----
     // 这是"模型全走终端命令"的立足点: 没有它, 文件工具一删模型就什么都做不了。
     void stepRun()
@@ -288,7 +310,7 @@ private:
               "探测到可用的 shell: " + m_term.shellProgram());
 
         string error;
-        bool started = m_term.run("echo jz_terminal_ok", 20000,
+        bool started = runCmd("echo jz_terminal_ok", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "run echo 正常结束" +
@@ -306,26 +328,26 @@ private:
     {
         string error;
         // 白名单外的程序: 必须在**起进程之前**就被拒
-        check(!m_term.run("some_unknown_prog --do-it", 20000,
+        check(!runCmd("some_unknown_prog --do-it", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝白名单外的程序");
 
         // 重定向目标在工作区外: 也要拒(zone 模型的写边界就靠这条)
         string outside = jzApp->applicationDirPath() + "/vt_outside.txt";
         JZFile::remove(outside);
-        check(!m_term.run("echo x > " + outside, 20000,
+        check(!runCmd("echo x > " + outside, 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝越界的重定向: " + error);
         check(!JZFileInfo(outside).exists(), "越界文件确实没被创建");
 
         // 单独一条设/清变量: 不跨命令保留, 必须**明确报错**(否则模型会以为设过了)
-        check(!m_term.run("export JZ_X=1", 20000,
+        check(!runCmd("export JZ_X=1", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条 export");
-        check(!m_term.run("JZ_X=1", 20000,
+        check(!runCmd("JZ_X=1", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条赋值");
-        check(!m_term.run("unset PATH", 20000,
+        check(!runCmd("unset PATH", 20000,
                           [](bool, const string &, const string &) {}, error),
               "run 拒绝单独一条 unset");
 
@@ -337,7 +359,7 @@ private:
     void stepRunShell()
     {
         string error;
-        bool started = m_term.run("ls -1 && mkdir -p deep/dir && ls -1", 20000,
+        bool started = runCmd("ls -1 && mkdir -p deep/dir && ls -1", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "run ls/mkdir 链式: " +
@@ -357,7 +379,7 @@ private:
     void stepRunInlineEnv()
     {
         string error;
-        bool started = m_term.run("export JZ_X=42 && echo val=$JZ_X", 20000,
+        bool started = runCmd("export JZ_X=42 && echo val=$JZ_X", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "内联 export 那条命令本身正常: " + err);
@@ -374,7 +396,7 @@ private:
     void stepRunCdChain()
     {
         string error;
-        bool started = m_term.run("cd deep && pwd", 20000,
+        bool started = runCmd("cd deep && pwd", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "链式 cd 那条命令本身正常: " + err);
@@ -401,7 +423,7 @@ private:
     {
         string error;
         // run("cd deep"): 同步拒(起进程之前), 回调不会被调到, started=false
-        bool started = m_term.run("cd deep", 20000,
+        bool started = runCmd("cd deep", 20000,
                                   [](bool, const string &, const string &) {}, error);
         check(!started, "run 拒绝单独一条 cd(应改用 `cd x && cmd` 或工具 -C 参数): " + error);
         check(contains(error, "单独的 cd"), "拒绝信息点明正确写法");
@@ -416,7 +438,7 @@ private:
     void stepRunPwd()
     {
         string error;
-        bool started = m_term.run("pwd", 20000,
+        bool started = runCmd("pwd", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "pwd 正常: " + err);
@@ -452,14 +474,14 @@ private:
 
         for (const Case &c : cases)
         {
-            check(!m_term.run(c.cmd, 20000,
+            check(!runCmd(c.cmd, 20000,
                               [](bool, const string &, const string &) {}, error),
                   string("拒绝 ") + c.what);
         }
 
         // 反过来: `&&` 不能被误当成后台 `&`。
         // 注意 check 的消息是**提前**拼好的, 所以只在失败时才带 error(否则会带上一次拒绝的旧文本)
-        bool andOk = m_term.run("echo a && echo b", 20000,
+        bool andOk = runCmd("echo a && echo b", 20000,
                                 [this](bool ok, const string &out, const string &err)
                                 {
                                     check(ok, "&& 那条命令本身正常: " + err);
@@ -476,7 +498,7 @@ private:
     void stepRunSingleQuoteLiteral()
     {
         string error;
-        bool started = m_term.run("echo 'a $(whoami) b'", 20000,
+        bool started = runCmd("echo 'a $(whoami) b'", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "单引号里的 $( ) 只是字面量: " + err);
@@ -494,17 +516,151 @@ private:
     void stepRunPipe()
     {
         string error;
-        bool started = m_term.run("printf 'a\\nb\\nc\\n' | head -n 1", 20000,
+        bool started = runCmd("printf 'a\\nb\\nc\\n' | head -n 1", 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "run 管道 | 命令正常: " + err);
                                       check(contains(out, "a"),
                                             "管道两端都跑通(grep...|head 同形态): " + out);
-                                      stepUnrestrictedFloor();
+                                      stepRunConcurrent();
                                   }, error);
         check(started, "run 管道命令启动: " + error);
         if (!started)
-            stepUnrestrictedFloor();
+            stepRunConcurrent();
+    }
+
+    // ⭐ 并发: 同一个终端**同时**跑多条命令。以前第二条会被"这个终端还有命令在跑"直接拒掉,
+    //    现在两条各跑各的(都 sleep 1s, 所以确实是同时在跑, 不是排队), 各自的输出/回调/run_id 不串。
+    void stepRunConcurrent()
+    {
+        string error;
+        m_left = 2;   // 两条(起失败的那条也会同步回调, 计数照样对得上)
+        bool startedA = runCmd("echo conc_a && sleep 1 && echo conc_a_done", 20000,
+                                   [this](bool ok, const string &out, const string &err)
+                                   {
+                                       check(ok, "并发 A 正常结束: " + err);
+                                       m_outA = out;
+                                       if (--m_left == 0)
+                                           stepRunConcurrentCheck();
+                                   }, error, &m_ridA);
+        bool startedB = runCmd("echo conc_b && sleep 1 && echo conc_b_done", 20000,
+                                   [this](bool ok, const string &out, const string &err)
+                                   {
+                                       check(ok, "并发 B 正常结束: " + err);
+                                       m_outB = out;
+                                       if (--m_left == 0)
+                                           stepRunConcurrentCheck();
+                                   }, error, &m_ridB);
+
+        check(startedA && startedB, "同一终端可以同时起两条命令: " + error);
+        check(!m_ridA.empty() && !m_ridB.empty() && m_ridA != m_ridB,
+              "两条运行各自一个 run_id: " + m_ridA + " / " + m_ridB);
+        check(m_term.info().runningCount == 2, "状态里是 2 条在跑");
+        check(m_term.activeRunIds().size() == 2, "activeRunIds() 列出两条在跑");
+
+        if (m_left <= 0)
+            stepRunConcurrentCheck();
+    }
+
+    void stepRunConcurrentCheck()
+    {
+        if (m_concDone)
+            return;
+        m_concDone = true;
+
+        check(contains(m_outA, "conc_a_done"), "A 的输出归 A: " + m_outA);
+        check(contains(m_outB, "conc_b_done"), "B 的输出归 B: " + m_outB);
+        check(!contains(m_outA, "conc_b") && !contains(m_outB, "conc_a"),
+              "两条输出没有串到对方身上");
+        check(m_term.info().runningCount == 0, "跑完就都摘掉了(0 条在跑)");
+
+        // 运行记录也各留各的(terminal_query 按 run_id 取)
+        JZVirtualTerminal::RunRecordInfo ra, rb;
+        check(m_term.runSnapshot(m_ridA, ra) && contains(ra.command, "conc_a"),
+              "run_id A 的记录是 A 那条命令");
+        check(m_term.runSnapshot(m_ridB, rb) && contains(rb.command, "conc_b"),
+              "run_id B 的记录是 B 那条命令");
+
+        stepRunCancelOne();
+    }
+
+    // 按 run_id 精确停: 停掉一条长任务, 同一终端里另一条照跑、照收尾。
+    void stepRunCancelOne()
+    {
+        string error;
+        m_left = 2;
+        bool startedLong = runCmd("sleep 30", 60000,
+                                      [this](bool ok, const string &out, const string &err)
+                                      {
+                                          check(!ok, "被 cancel 的那条以失败收尾: " + err);
+                                          m_cancelOut = out;
+                                          if (--m_left == 0)
+                                              stepRunCancelCheck();
+                                      }, error, &m_ridLong);
+        bool startedPeer = runCmd("echo cancel_peer_ok", 20000,
+                                      [this](bool ok, const string &out, const string &err)
+                                      {
+                                          check(ok, "同终端里另一条不受影响: " + err);
+                                          m_peerOut = out;
+                                          if (--m_left == 0)
+                                              stepRunCancelCheck();
+                                      }, error, &m_ridPeer);
+
+        check(startedLong && startedPeer, "起一长一短两条并发命令: " + error);
+        check(m_term.cancel(m_ridLong), "cancel(run_id) 停掉指定的那条");
+        check(m_term.info().runningCount <= 1, "被停的那条很快摘掉(最多剩另一条)");
+
+        if (m_left <= 0)
+            stepRunCancelCheck();
+    }
+
+    void stepRunCancelCheck()
+    {
+        if (m_cancelDone)
+            return;
+        m_cancelDone = true;
+
+        check(contains(m_peerOut, "cancel_peer_ok"), "另一条正常跑完: " + m_peerOut);
+        check(m_term.info().runningCount == 0, "两条都收尾干净(0 条在跑)");
+
+        stepRunCancelAll();
+    }
+
+    // cancelAll(): 一次停掉本终端所有在跑的命令(返回停掉几条, 各自照常收尾)。
+    void stepRunCancelAll()
+    {
+        string error;
+        m_left = 2;
+        m_killed = 0;
+        auto cb = [this](bool ok, const string &, const string &err)
+        {
+            check(!ok, "cancelAll 停掉的那条以失败收尾: " + err);
+            m_killed++;
+            if (--m_left == 0)
+                stepRunCancelAllCheck();
+        };
+        bool startedA = runCmd("sleep 30", 60000, cb, error);
+        bool startedB = runCmd("sleep 30", 60000, cb, error);
+        check(startedA && startedB, "起两条长任务: " + error);
+
+        check(m_term.cancelAll() == 2, "cancelAll() 返回停掉的条数(2)");
+
+        // ⚠ "还剩下几条在跑" 只能在收尾闸里断言: kill 是同步收尾的, 上面这一行就可能把整条链
+        //    (包括下一步新起的命令)全跑完, 那时再看 runningCount 已经不是这一阶段的状态了。
+        if (m_left <= 0)
+            stepRunCancelAllCheck();
+    }
+
+    void stepRunCancelAllCheck()
+    {
+        if (m_cancelAllDone)
+            return;
+        m_cancelAllDone = true;
+
+        check(m_killed == 2, "被停的两条各自都收到了收尾回调: " + to_string(m_killed));
+        check(m_term.info().runningCount == 0, "cancelAll 之后一条都不剩");
+
+        stepUnrestrictedFloor();
     }
 
     // ⭐ Unrestricted(全部不检查)档: 白名单/区域/危险参数全跳过, 但"安全底线"仍在
@@ -518,8 +674,10 @@ private:
         string error;
         auto deny = [&](const string &cmd, const string &what)
         {
-            // 底线命中是同步拒(起进程之前), 回调不会被调到
-            check(!m_term.run(cmd, 20000, [](bool, const string &, const string &) {}, error),
+            // 底线命中是同步拒(起进程之前), 回调不会被调到。
+            // 单独用一份 error: 否则最后那条 check 的消息里会挂着上一次拒绝的原因, 看着像没过。
+            string why;
+            check(!runCmd(cmd, 20000, [](bool, const string &, const string &) {}, why),
                   "Unrestricted 仍拒绝 " + what);
         };
 
@@ -538,7 +696,7 @@ private:
         // 3) 放行面: 工作区内命令 + heredoc(Unrestricted 下仍要能解析 heredoc)
         string cmd = "echo unrestricted_floor_ok && cat > " + m_ws +
                      "/_h.txt <<'EOF'\nhello heredoc\nEOF";
-        bool started = m_term.run(cmd, 20000,
+        bool started = runCmd(cmd, 20000,
                                   [this](bool ok, const string &out, const string &err)
                                   {
                                       check(ok, "Unrestricted 放行工作区内命令/heredoc: " + err);
@@ -565,6 +723,17 @@ private:
 
     JZVirtualTerminal m_term;
     string m_ws;
+
+    // ---- 并发步骤用 ----
+    int m_left = 0;                  // 还没回调的条数(到 0 才继续下一步)
+    bool m_concDone = false;         // 各步的一次性闸: 同步回调 + 尾部兜底可能都触发下一步,
+    bool m_cancelDone = false;       // 不加闸就会把后面的步骤跑两遍
+    bool m_cancelAllDone = false;
+    int m_killed = 0;                // cancelAll 收到收尾回调的条数
+    string m_ridA, m_ridB;           // 并发两条的 run_id
+    string m_ridLong, m_ridPeer;     // cancel 步骤的 run_id
+    string m_outA, m_outB;
+    string m_cancelOut, m_peerOut;
 };
 
 int main(int argc, char *argv[])

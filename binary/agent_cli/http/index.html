@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JZAgent 网页控制台</title>
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <div class="app">
@@ -64,17 +64,19 @@
       <footer class="composer">
         <label class="composer-field">
           <span class="field-label">验证命令:</span>
-          <input id="verifyCmd" type="text" placeholder="留空 = 不验证（退出码 0 通过 / 非 0 失败，例如：python3 verify.py）">
+          <input id="verifyCmd" type="text" placeholder="留空 = 无验证（跑完即通过）；填了就按退出码判定（0 通过 / 非 0 失败，例如：python3 verify.py）">
         </label>
-        <textarea id="input" rows="3" placeholder="输入任务…（Enter 发送，Shift+Enter 换行；运行中会自动排入待提交队列）"></textarea>
-        <div class="composer-actions">
-          <button id="clearBtn" class="ghost">清空对话</button>
-          <button id="sendBtn" class="primary">发送</button>
+        <div class="composer-input">
+          <textarea id="input" rows="3" placeholder="输入任务…（Enter 发送，Shift+Enter 换行；运行中会自动排入待提交队列）"></textarea>
+          <div class="composer-send">
+            <button id="clearBtn" class="ghost tiny" title="清空对话显示">清空</button>
+            <button id="sendBtn" class="primary">发送</button>
+          </div>
         </div>
       </footer>
     </div>
   </div>
 </div>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

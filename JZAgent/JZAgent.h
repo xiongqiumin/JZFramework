@@ -18,6 +18,14 @@ struct SkillDefine
     std::string usage;
 };
 
+// 单轮(或多轮累计)的 token 用量。
+// 同时兼容两家写法：
+//   - OpenAI: {prompt_tokens, completion_tokens, total_tokens, prompt_tokens_details.cached_tokens}
+//   - llama.cpp: {prompt_n, predicted_n, cache_n} + 计时对象 timings
+//     {prompt_ms, prompt_per_token_ms, prompt_per_second, predicted_ms, predicted_per_token_ms,
+//      predicted_per_second, draft_n, draft_n_accepted}
+// 计时类只存"原始量"(token 数与毫秒)，速率一律现算 —— 速率求和无意义，
+// 多轮累计只能按 Σtoken / Σms 算平均速率(见 promptTokensPerSecond / predictedTokensPerSecond)。
 class JZAgentTokenUsage
 {
 public:
@@ -25,6 +33,37 @@ public:
     int completion_tokens = 0;  // 本次输出token
     int total_tokens = 0;       // 本次总计
     int cached_tokens = 0;      // 本次从 KV 缓存命中的输入token（前缀缓存命中，计费通常折扣）
+
+    // ---- llama.cpp timings（其他 provider 不带就是 0）----
+    double prompt_ms = 0;           // 本次 prefill(输入) 耗时
+    double predicted_ms = 0;        // 本次生成(输出) 耗时
+    int draft_tokens = 0;           // 投机采样/MTP 草稿 token 数(llama.cpp draft_n)
+    int draft_accepted_tokens = 0;  // 投机采样/MTP 被接受数(llama.cpp draft_n_accepted)
+
+    bool hasTimings() const
+    {
+        return prompt_ms > 0 || predicted_ms > 0 || draft_tokens > 0;
+    }
+    // prefill 速度(token/s)；无耗时返回 0
+    double promptTokensPerSecond() const
+    {
+        return prompt_ms > 0 ? prompt_tokens * 1000.0 / prompt_ms : 0.0;
+    }
+    // 生成速度(token/s)；无耗时返回 0
+    double predictedTokensPerSecond() const
+    {
+        return predicted_ms > 0 ? completion_tokens * 1000.0 / predicted_ms : 0.0;
+    }
+    // 投机采样接受率 [0,1]；无草稿返回 0
+    double draftAcceptRate() const
+    {
+        return draft_tokens > 0 ? double(draft_accepted_tokens) / double(draft_tokens) : 0.0;
+    }
+    // 前缀缓存命中率 [0,1]（相对输入 token）
+    double cacheHitRate() const
+    {
+        return prompt_tokens > 0 ? double(cached_tokens) / double(prompt_tokens) : 0.0;
+    }
 };
 
 // 历史消息：承载角色、内容、工具请求/返回等全部负载
@@ -59,10 +98,17 @@ public:
     std::vector<std::string> images;    // 附带的图片(data URL), 多模态消息用
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
-    JZAgentTokenUsage usage;            // 本轮 token 增量（仅 Assistant 回复由响应 usage 填充）
+    // 本条消息所属**那一轮请求**的 token 用量(仅 Assistant 回复由响应 usage 填充)。
+    // ⚠ prompt_tokens 是那轮的**整段 prompt**(prompt_n + 命中的 cache_n)，不是这条消息自身
+    // 的 token 数 —— 所以它不能逐条相加当"上下文大小"用(见 JZAgent::windowTokens())。
+    JZAgentTokenUsage usage;
 
     Json::Value toJson() const;
     bool fromJson(const Json::Value& root);
+
+    // 把响应里的 usage 并入出参：兼容 OpenAI 标准写法与 llama.cpp(timings/cache_n/prompt_n)，
+    // 只覆盖源里出现的字段(流式分批下发时不会被清零)。流式/非流式共用。
+    static void mergeUsageJson(const Json::Value& src, JZAgentTokenUsage& usage);
 
 private:
     // 角色 / 消息性质 字符串 <-> 枚举 的通用转换，供序列化/反序列化复用
@@ -80,11 +126,13 @@ struct LLMContext
     bool fromJson(const Json::Value& root);
     Json::Value toJson() const;
 
-    // 根据 history 中每条历史的 usage（增量）重算累计 usage
+    // 根据 history 中每条历史的 usage（各轮请求用量）重算累计 usage
     void recalcUsage();
 
     std::vector<std::shared_ptr<LLMHistory>> history;
-    JZAgentTokenUsage usage;  // 累计 token = sum(history[i].usage)
+    // 会话累计消耗 = Σ history[i].usage（计费口径；同一段历史会在每一轮的 prompt 里各计一次，
+    // **不是**当前上下文大小 —— 要上下文大小用 JZAgent::windowTokens()）。
+    JZAgentTokenUsage usage;
 };
 
 // 请求：承载类型、id 与对应负载
@@ -135,7 +183,9 @@ public:
     bool reuseConnection = true;
 
     int maxRounds = 100;    // -1代表不限制
-    int maxToken = 100000;  // 单次任务 token 预算上限，超出触发 maxTokenError
+    // 上下文预算上限：按 JZAgent::windowTokens()（下一次请求实际会发出的上下文估算）判定，
+    // 超出按 tokenStrategy 处理(error / compress)。应与模型的 n_ctx 对齐并留出生成余量。
+    int maxToken = 100000;
 
     TokenStrategy tokenStrategy = TokenError;
 
@@ -171,6 +221,12 @@ public:
     void init(JZAgentConfig config);
     
     const LLMContext* context() const;
+
+    // 下一次请求实际要发出的上下文大小(token 估算) —— 预算判定与界面用量环都该用它。
+    //   ⚠ 别拿 context()->usage.total_tokens 当"上下文": 那是 Σ history[i].usage, 而每条
+    //   assistant 的 usage 记的是**那一轮整段 prompt**(prompt_n + cache_n, 见 mergeUsageJson),
+    //   累加等于把同一段历史重复计入轮数遍(实测能到真实值的 4~6 倍)，预算会被提前顶爆。
+    int windowTokens() const;
 
     // ---- 上下文存取（存储介质由调用方决定：文件 / SQLite / ...） ----
     // 导出当前上下文。systemPrompt / 工具 / 技能都不在里面, 由调用方重新设置。
@@ -225,6 +281,8 @@ public:
     void request(const std::string &text, const std::vector<std::string> &image_urls);
     const std::vector<JZAgentRequestPtr> &requestList() const;
     void clearRequestList();
+
+    void compressHistory();
 
     void stop();
 
@@ -307,9 +365,9 @@ protected:
 
     void onToolCallResult(const ToolCallResult &response);
 
-    std::string buildSkillSummary();
+    std::string buildSkillSummary() const;
     Json::Value buildContext();
-    Json::Value buildTools();
+    Json::Value buildTools() const;
     
     JZAgentTool* getTool(const std::string &name);
     void processToolCall(ToolCall &call);

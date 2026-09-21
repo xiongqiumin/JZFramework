@@ -26,8 +26,11 @@
 
 #include <iostream>
 #include <thread>
+#include <chrono>             // 历史记录的起止时间戳(nowMs)
 
 using namespace std;
+
+const int JZAgentCli::kHistoryMax;
 
 // 单次读文件上限(与 node 一致): 避免把几百兆读进内存。
 static const int kReadFileLimit = 8 * 1024 * 1024;
@@ -118,7 +121,7 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
 
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
-    m_agent->setThinkEnabled(false);
+    m_agent->setThinkEnabled(true);
 
     JZAgentConfig ac;
     ac.rootPath = m_config.rootDir;
@@ -128,6 +131,7 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     ac.netTimeout = m_config.netTimeout;
     ac.maxRounds = m_config.maxRounds;
     ac.maxToken = m_config.maxToken;
+    ac.reuseConnection = false;
     ac.tokenStrategy = JZAgentConfig::TokenCompress;
     m_agent->init(ac);
 
@@ -203,7 +207,7 @@ string JZAgentCli::buildSystemPrompt() const
     text += "Available tools:\n";
     if (m_config.allowTerminal)
     {
-        text += "  terminal_run    执行一条 shell 命令(命令整条交给 shell: 管道/重定向/串联/通配符/变量都生效)。\n";
+        text += "  terminal_run    执行一条 shell 命令(命令整条交给 shell: 管道/重定向/串联/通配符/变量都生效; 同一会话可同时跑多条)。\n";
         text += "  terminal_open / terminal_list / terminal_close   多会话管理(单终端场景下可不用)。\n";
         text += "  shell           在工作区内跑一条外部命令(带超时)。\n";
     }
@@ -395,6 +399,7 @@ void JZAgentCli::onInfo(JZHttpServerClient *client, const JZHttpRequest &req)
     Json::Value j = makeInfo();
     j["busy"] = (bool)m_busy;
     j["round"] = m_loopRound;
+    j["recent"] = recentJson();      // 最近若干次请求与结果(网页刚打开时靠它补回历史)
     sendJson(client, 200, j);
 }
 
@@ -451,6 +456,11 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
     Json::Value d = makeInfo();
     d["busy"] = (bool)m_busy;
     d["round"] = m_loopRound;
+    // 连接上来时已经闲着 + 留着上次结果: 带上, 让"断开期间跑完"的任务能在这边收尾
+    // (典型: 网页刷新时 /task 的连接被 abort, 任务其实继续跑完了 —— 见 onClientDestroyed)。
+    if (!m_busy && m_hasLastResult)
+        d["last_result"] = m_lastResult;
+    d["recent"] = recentJson();      // 最近若干次请求与结果: 新开的网页靠它把历史卡片补回来
     Json::Value first;
     first["type"] = "hello";
     first["data"] = d;
@@ -459,6 +469,42 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
         payload.pop_back();
     std::string chunk = makeSseChunk(payload);
     client->write(chunk.data(), (int)chunk.size(), false);
+
+    // 正有任务在跑: 推一份当前状态快照, 让刚打开/刷新网页的人也能看到进行中的任务
+    // (prompt / 已累积的思考·回复 / 在途工具调用)。随后该任务的实时事件会接着这个快照续推。
+    if (m_busy)
+    {
+        // 思考/回复可能跨多轮累积得很大, 快照只取尾部, 避免单帧过大(界面展示也只取尾部)
+        const size_t kSnapCap = 6000;
+        auto tail = [&](const std::string &s) -> std::string {
+            return s.size() <= kSnapCap ? s : ("…(前面已省略)\n" + s.substr(s.size() - kSnapCap));
+        };
+
+        Json::Value s;
+        s["busy"] = true;
+        s["round"] = m_loopRound;
+        s["verify_cmd"] = m_verifyCmd;
+        s["prompt"] = m_currentPrompt;
+        s["reply"] = tail(m_accumReply);
+        s["think"] = tail(m_accumThink);
+        s["last_verify_output"] = m_lastVerifyOutput;
+        Json::Value tools(Json::arrayValue);
+        for (const auto &t : m_toolSnaps)
+        {
+            Json::Value o;
+            o["id"] = t.id;
+            o["name"] = t.name;
+            o["args"] = t.args;
+            if (t.hasResult)
+            {
+                o["ok"] = t.ok;
+                o["result"] = t.result;
+            }
+            tools.append(o);
+        }
+        s["tools"] = tools;
+        pushEvent("state", s);   // 广播给所有订阅者(含本连接)
+    }
 }
 
 void JZAgentCli::removeEventClient(JZHttpServerClient *client)
@@ -589,6 +635,9 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     m_loopRound = 0;
     m_accumReply.clear();
     m_lastVerifyOutput.clear();
+    m_currentPrompt = prompt;          // 记录 prompt, 供连接快照
+    m_accumThink.clear();
+    m_toolSnaps.clear();
     m_busy = true;
     m_failed = false;
     m_cancelled = false;
@@ -608,6 +657,7 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     start["max_fix_retries"] = m_maxFixRetries;
     start["memory_bytes"] = (int)memoryBlock.size();      // 0 = 没带记忆(未启用/还没记忆/本次关掉)
     pushEvent("task_start", start);
+    pushHistory(prompt, m_verifyCmd);   // 记一条"最近任务"(running), 收尾时回填结果
 
     m_agent->request(memoryBlock + prompt);
     m_sessionStarted = true;
@@ -773,12 +823,12 @@ static std::string clipForModel(const std::string &out)
 
 void JZAgentCli::onLoopFinished()
 {
-    // 1) 无验证脚本时, 以 agent 自身成败为准
+    // 1) 无验证命令 = 无验证: 没有判定标准, 直接按"通过"收尾。
+    //    agent 自身的报错只当提示带回去(网页显示成一行提示), 不把整个任务判成"失败"——
+    //    任务本身没有可失败的验收项, 失败徽标只会误导(模型答完还在闲聊/轮次用尽很常见)。
     if (m_verifyCmd.empty())
     {
-        std::string status = m_failed ? "failed" : "success";
-        std::string err = m_failed ? m_lastError : "";
-        respondTask(status, m_loopRound, m_accumReply, "", err);
+        respondTask("success", m_loopRound, m_accumReply, "", m_failed ? m_lastError : "");
         endLoop();
         return;
     }
@@ -863,11 +913,85 @@ void JZAgentCli::onLoopFinished()
     m_agent->request(feedback);   // 重新驱动 agent; 结束后再次进入 onLoopFinished
 }
 
+// ---------------------------------------------------------------------------
+// 最近任务历史
+//   长程任务跑几十分钟很常见, 网页不可能一直开着 —— 服务端记住最近若干次请求与它们的结果,
+//   新连接(SSE hello 帧)或 GET /info 时以 recent 数组吐出去, 界面据此把历史卡片补回来。
+//   只存"摘要"(请求 / 结论 / 最后一次验证输出), 不存逐轮过程 —— 那是流式事件该干的事。
+// ---------------------------------------------------------------------------
+int64_t JZAgentCli::nowMs()
+{
+    return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void JZAgentCli::pushHistory(const std::string &prompt, const std::string &verifyCmd)
+{
+    JZCliHistoryItem it;
+    it.seq = ++m_historySeq;
+    it.prompt = prompt;
+    it.verifyCmd = verifyCmd;
+    it.status = "running";
+    it.startMs = nowMs();
+    m_history.push_back(it);
+
+    while ((int)m_history.size() > kHistoryMax)
+        m_history.erase(m_history.begin());   // 最旧的先走
+}
+
+void JZAgentCli::finishHistory(const std::string &status, int rounds, const std::string &reply,
+                               const std::string &verifyOut, const std::string &err)
+{
+    // 回填"最后一条还没收尾的"(正常就是刚跑完这条); 极端情况(如重置时才回包)没有就补一条
+    for (int i = (int)m_history.size() - 1; i >= 0; --i)
+    {
+        if (m_history[i].status != "running")
+            continue;
+        JZCliHistoryItem &it = m_history[i];
+        it.status = status;
+        it.rounds = rounds;
+        it.reply = reply;
+        it.verifyOut = verifyOut;
+        it.error = err;
+        it.endMs = nowMs();
+        return;
+    }
+
+    pushHistory(m_currentPrompt, m_verifyCmd);
+    m_history.back().status = status;
+    m_history.back().rounds = rounds;
+    m_history.back().reply = reply;
+    m_history.back().verifyOut = verifyOut;
+    m_history.back().error = err;
+    m_history.back().endMs = nowMs();
+}
+
+Json::Value JZAgentCli::recentJson() const
+{
+    Json::Value arr(Json::arrayValue);
+    for (int i = (int)m_history.size() - 1; i >= 0; --i)   // 最近在前
+    {
+        const JZCliHistoryItem &it = m_history[i];
+        Json::Value o;
+        o["seq"] = it.seq;
+        o["prompt"] = it.prompt;
+        o["verify_cmd"] = it.verifyCmd;
+        o["status"] = it.status;
+        o["verify_rounds"] = it.rounds;
+        o["agent_reply"] = it.reply;
+        o["last_verify_output"] = it.verifyOut;
+        if (!it.error.empty())
+            o["error"] = it.error;
+        o["start_ms"] = (Json::Int64)it.startMs;
+        o["end_ms"] = (Json::Int64)it.endMs;
+        arr.append(o);
+    }
+    return arr;
+}
+
 void JZAgentCli::respondTask(const std::string &status, int rounds, const std::string &reply,
                              const std::string &verifyOut, const std::string &err)
 {
-    if (!m_respond)   // 客户端已断开 / 不应回包
-        return;
     Json::Value r;
     r["status"] = status;
     r["verify_rounds"] = rounds;
@@ -878,7 +1002,15 @@ void JZAgentCli::respondTask(const std::string &status, int rounds, const std::s
     r["last_verify_output"] = verifyOut;
     if (!err.empty())
         r["error"] = err;
+    // 先推事件再回包: 提交方可能已经断开(见 onClientDestroyed), 那样只有 SSE 订阅者
+    // (重连上来的网页)还能看到这次收尾 —— 它是那时唯一的结果出口。
     pushEvent("task_end", r);
+    m_lastResult = r;              // 留一份: 断连期间跑完的任务, 重连时靠 hello 帧补给界面
+    m_hasLastResult = true;
+    finishHistory(status, rounds, reply, verifyOut, err);   // 归档进"最近任务"
+
+    if (!m_respond)   // 客户端已断开 / 不应回包
+        return;
     auto cb = std::move(m_respond);
     cb(r);
 }
@@ -914,6 +1046,14 @@ void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
 
     bool cancelRunning = (scope == "task");
     bool taskCancelled = false;
+
+    // 清空历史: 连服务端记的"最近任务"一起清(否则网页一刷新它们又回来了)
+    if (scope == "history")
+    {
+        m_history.clear();
+        m_hasLastResult = false;
+        m_lastResult = Json::nullValue;
+    }
 
     // 有任务在跑: 先给调用方一个明确结果(status:"cancelled"), 再停 agent
     if (cancelRunning && m_loopActive)
@@ -952,6 +1092,9 @@ void JZAgentCli::resetSession(bool cancelRunning)
     m_loopRound = 0;
     m_accumReply.clear();
     m_lastVerifyOutput.clear();
+    m_currentPrompt.clear();
+    m_accumThink.clear();
+    m_toolSnaps.clear();
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
@@ -964,23 +1107,20 @@ void JZAgentCli::resetSession(bool cancelRunning)
     m_loopEpoch++;             // 重置: 作废在途的延时重试
 }
 
-void JZAgentCli::onClientDestroyed(JZObject *)
+void JZAgentCli::onClientDestroyed(JZObject *obj)
 {
-    // HTTP 客户端在循环结束前断开: 终止任务, 避免回包到野指针
+    // 提交方(POST /task 的那条连接)在任务跑完前断开: 只是"没人收回包"了, 任务继续跑完。
+    //   典型场景是网页刷新/关页面 —— 浏览器会 abort 掉那条 /task 请求, 这种断连不该把在跑的
+    //   任务杀掉(改了一半的工作就丢了)。结果仍会经 SSE 推给在线订阅者(task_end / verify ...),
+    //   网页重连时也能用 state 快照接着看进行中的任务。
+    //   ⚠ 所以这里只丢回包通道(避免写野指针), 刻意不动 m_loopActive / 不 stop agent。
+    //   真要中止任务走 POST /reset(那是用户明确的操作)。
+    if (obj != m_pendingClient)
+        return;   // 不是当前在途任务的那条连接(上一个任务早已回包, 连接延后析构): 与本任务无关
+
     m_pendingClient = nullptr;
-    m_respond = nullptr;   // 断开即不再回包
-    if (m_loopActive)
-    {
-        m_loopActive = false;
-        if (m_agent)
-            m_agent->stop();
-        m_busy = false;
-    }
+    m_respond = nullptr;   // 断开即不再回包; 任务本身照跑, 结束由 endLoop() 复位状态
 }
-
-
-
-
 
 void JZAgentCli::onListScripts(JZHttpServerClient *client, const JZHttpRequest &req)
 {
@@ -1058,6 +1198,8 @@ void JZAgentCli::onReply(const std::string &text)
 
 void JZAgentCli::onThinking(const std::string &text)
 {
+    m_accumThink += text;          // 累积, 供连接快照(与回包无关)
+
     if (!hasEventConsumer())
         return;
 
@@ -1068,6 +1210,12 @@ void JZAgentCli::onThinking(const std::string &text)
 
 void JZAgentCli::onToolCall(const ToolCall &call)
 {
+    JZCliToolSnap snap;
+    snap.id = call.id;
+    snap.name = call.function_name;
+    snap.args = call.function_args;
+    m_toolSnaps.push_back(snap);   // 记录, 供连接快照
+
     if (!hasEventConsumer())
         return;
 
@@ -1080,6 +1228,17 @@ void JZAgentCli::onToolCall(const ToolCall &call)
 
 void JZAgentCli::onToolResult(const ToolCallResult &result)
 {
+    for (auto &t : m_toolSnaps)     // 回填结果, 供连接快照
+    {
+        if (t.id == result.id)
+        {
+            t.hasResult = true;
+            t.ok = result.isOk;
+            t.result = result.result;
+            break;
+        }
+    }
+
     if (!hasEventConsumer())
         return;
 

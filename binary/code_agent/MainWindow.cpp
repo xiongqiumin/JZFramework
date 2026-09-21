@@ -1508,8 +1508,10 @@ void MainWindow::onPoll()
         m_renderedId = seq;
     }
 
-    // token 用量圆环：当前上下文累计用量 / 上限（悬停提示按 K 折算）
-    m_inputEdit->tokenRing()->setUsage(m_agent->usage().total_tokens,
+    // token 用量圆环：当前上下文大小 / 预算上限（悬停提示按 K 折算）。
+    // 用 windowTokens()(估算"下一次请求实际发出的上下文"), 不是 usage().total_tokens
+    // —— 后者是 Σ 各轮 usage(每轮记的是整段 prompt), 会把同一段历史重复计入好几遍。
+    m_inputEdit->tokenRing()->setUsage(m_agent->windowTokens(),
                                        m_agent->llmConfig().maxToken);
 
     bool busy = m_agent->isBusy();

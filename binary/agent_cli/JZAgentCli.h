@@ -36,9 +36,7 @@ struct JZCliConfig
     int netTimeout = 120 * 1000;   // 网络请求超时(ms)
     int maxRounds = 100;           // 单任务最大对话轮次(-1=不限)
     int maxToken = 160000;         // 单任务 token 预算上限(上下文, 见 JZAgent::windowTokens())
-    // 单次回复的**输出**上限(请求体 max_tokens)。<=0 = 不传, 由服务端默认决定 ——
-    // ⚠ llama.cpp 默认 n_predict=-1(不限): 模型一开始复读就能吐上万 token。
-    int maxTokens = 8192;
+
     // 请求体附加字段(llm.body): 各家私有参数 / 采样参数, 逐字段并进请求体, 同名以它为准。
     // 治"输出复读"最有效的是服务端采样侧, 例如:
     //   {"repeat_penalty": 1.05, "dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2}

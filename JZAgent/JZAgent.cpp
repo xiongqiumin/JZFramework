@@ -692,10 +692,6 @@ void JZAgent::llmRequest()
         request_body["stream_options"]["include_usage"] = true;
     }
 
-    // 输出上限: 不给的话服务端默认不限(llama.cpp: n_predict=-1), 模型复读时能吐上万 token
-    if (m_config.maxTokens > 0)
-        request_body["max_tokens"] = m_config.maxTokens;
-
     // 构建消息上下文
     Json::Value messages = buildContext();
     request_body["messages"] = messages;
@@ -1456,11 +1452,6 @@ bool JZAgent::startCompressHistory()
 
     Json::Value request_body;
     request_body["model"] = m_config.modelName;
-
-    // 与 llmRequest 保持一致: 输出上限 + 调用方自定义字段(采样参数等), 免得摘要这一路
-    // 又变成"服务端默认不限"的漏网之鱼。
-    if (m_config.maxTokens > 0)
-        request_body["max_tokens"] = m_config.maxTokens;
     if (m_config.extraBody.isObject())
     {
         for (const std::string &key : m_config.extraBody.getMemberNames())

@@ -129,10 +129,14 @@ JZWidget::~JZWidget()
 
     // 2) 释放本控件自有的布局。布局不拥有子控件 (只持有引用), 子控件仍由
     //    对象树在随后的 ~JZObject 中统一析构; 此处先解绑可避免双重释放。
+    //    布局还是本控件的**子对象**(见 setLayoutImpl 的 setParent): C++ 自建的那份在这里
+    //    显式 delete(其析构会走 removeChild, 基类不会再删一次); 归 JS 的那份不显式删,
+    //    由随后的 ~JZObject 随对象树回收 —— 于是布局绝不会活得比容器久(m_container 不悬垂),
+    //    JS 侧那份包装随后终结时见到守卫已空, 不会再 delete(见 jzWidgetOpFinalizer)。
     if (m_layout)
     {
         if (!m_layoutFromJs)
-            delete m_layout;   // 归 JS 的那份由 JS 回收(见 setLayoutFromJs)
+            delete m_layout;   // 归 JS 的那份由对象树/JS 回收(见 setLayoutFromJs)
         m_layout = nullptr;
         m_layoutFromJs = false;
     }
@@ -744,8 +748,32 @@ void JZWidget::setLayoutImpl(JZLayout* layout, bool fromJs)
 
     m_layout = layout;
     m_layoutFromJs = fromJs;   // 归 JS 的那份由 JS 回收, 本控件不 delete
+
+    // 布局装成**本控件的子对象**(JZObject 父子树): 布局的生死从此绑在控件上 ——
+    //   * 本控件析构 → 基类 ~JZObject 随对象树把它一起收掉(归 JS 的那份同样如此),
+    //     布局不会活得比容器久, JZLayout::m_container 也就不会变成悬垂指针;
+    //   * 布局先被销毁(JS 的 GC / `delete w->layout()`)→ JZObject 析构里 removeChild
+    //     派发 ChildRemoved, 本控件的 childEvent 把 m_layout 置空, 不留悬垂。
+    // 换宿主时(同一份布局被别的控件 setLayout)这一步会先从旧宿主摘除, 旧宿主随之自动置空
+    // (见 childEvent), 与 apply() 里那句 _clearLayoutPointer 互为兜底。
+    // 只在宿主确实不同时才动: 同父 remove/add 会先派发一次 ChildRemoved(被 childEvent 误解成"布局没了")。
+    if (layout->parent() != this)
+        layout->setParent(this);
+
     m_layout->apply(this);     // 内部 updateLayout(): 重排自身子控件
     updateGeometry();          // 持有布局后 sizeHint 改变, 向上级联(父布局需重排)
+}
+
+void JZWidget::childEvent(JZChildEvent* event)
+{
+    // 布局是本控件的子对象(见 setLayoutImpl): 它被销毁或被 reparent 走时立刻把 m_layout
+    // 置空 —— 这是 m_layout 与布局实际生死的唯一同步点, 覆盖"布局先于控件消失"的所有路径
+    // (JS 侧 GC 掉布局句柄、外部 delete w->layout()、clearLayout() 里的 delete)。
+    if (event->type() == JZEvent_childRemoved && event->child() == m_layout)
+    {
+        m_layout = nullptr;
+        m_layoutFromJs = false;   // 指针已空, 归属标记一并复位
+    }
 }
 
 void JZWidget::clearLayout()

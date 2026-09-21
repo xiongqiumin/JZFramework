@@ -188,12 +188,6 @@ public:
     // 超出按 tokenStrategy 处理(error / compress)。应与模型的 n_ctx 对齐并留出生成余量。
     int maxToken = 100000;
 
-    // 单次回复的**输出上限**(请求体的 max_tokens)。<=0 = 不传, 由服务端默认决定 ——
-    // ⚠ llama.cpp 的默认是 n_predict=-1(不限): 模型一旦开始复读就会一路吐到天荒地老
-    // (实测能到上万 token, 日志里就是这种情况)。所以默认给一个上限: 正常一轮回复够用,
-    // 又能把失控输出硬截断在可控范围(截断时 finish_reason=length, 上层还能续跑/换做法)。
-    int maxTokens = 8192;
-
     TokenStrategy tokenStrategy = TokenError;
 
     // 附加到聊天请求体上的自定义字段, 用于对接各家私有参数

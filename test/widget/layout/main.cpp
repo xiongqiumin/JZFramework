@@ -120,6 +120,87 @@ static bool hint_present_still_wins()
     return true;
 }
 
+// setLayout 后布局成为**控件的子对象** (JZObject 父子树): 所以控件析构会把它一起收掉,
+// 布局绝不会活得比容器久 (JZLayout::m_container 不会悬垂)。
+static bool layout_is_child_object()
+{
+    JZWindow win;
+    win.resize(400, 300);
+
+    JZWidget* box = new JZWidget(&win);
+    JZVBoxLayout* lay = new JZVBoxLayout(4, 4);
+    box->setLayout(lay);
+
+    JZ_TEST_EQ(box, lay->parent());
+    JZ_TEST_EQ(box->layout(), (JZLayout*)lay);
+
+    bool inChildren = false;
+    for (JZObject* c : box->children())
+        if (c == lay)
+            inChildren = true;
+    JZ_TEST_TRUE(inChildren);
+    return true;
+}
+
+// 布局先被外部销毁 (等价 Qt 的 `delete w->layout()`): ChildRemoved 里把控件的布局指针置空,
+// 不留悬垂, 之后还能再设新布局。
+static bool layout_destroyed_clears_pointer()
+{
+    JZWindow win;
+    win.resize(400, 300);
+
+    JZWidget* box = new JZWidget(&win);
+    JZVBoxLayout* lay = new JZVBoxLayout(4, 4);
+    box->setLayout(lay);
+    JZ_TEST_EQ(box->layout(), (JZLayout*)lay);
+
+    delete lay;
+    JZ_TEST_EQ(box->layout(), (JZLayout*)nullptr);
+
+    box->setLayout(new JZVBoxLayout(4, 4));   // 指针已清 -> 能再设
+    JZ_TEST_TRUE(box->layout() != nullptr);
+    return true;
+}
+
+// 同一份布局换宿主: 旧宿主经 ChildRemoved 自动置空, 新宿主接管。
+static bool retarget_layout_clears_old_host()
+{
+    JZWindow win;
+    win.resize(400, 300);
+
+    JZWidget* a = new JZWidget(&win);
+    JZWidget* b = new JZWidget(&win);
+    JZVBoxLayout* lay = new JZVBoxLayout(4, 4);
+
+    a->setLayout(lay);
+    b->setLayout(lay);
+
+    JZ_TEST_EQ(a->layout(), (JZLayout*)nullptr);
+    JZ_TEST_EQ(b->layout(), (JZLayout*)lay);
+    JZ_TEST_EQ(lay->container(), b);
+    JZ_TEST_EQ(lay->parent(), (JZObject*)b);
+    return true;
+}
+
+// 归 JS 拥有的布局 (setLayoutFromJs) 同样挂成子对象: 控件先析构时随对象树一起回收,
+// 底层对象消失后 JS 侧那份守卫句柄自然失效 (终结器不会再 delete 一次)。
+static bool js_owned_layout_follows_widget()
+{
+    JZWindow win;
+    win.resize(400, 300);
+
+    JZWidget* box = new JZWidget(&win);
+    JZVBoxLayout* lay = new JZVBoxLayout(4, 4);
+    JZObjectPointer guard = lay->guardPointer();
+
+    box->setLayoutFromJs(lay);   // 归 JS 拥有: 本控件不显式 delete
+    JZ_TEST_EQ(box->layout(), (JZLayout*)lay);
+
+    delete box;                  // 控件先走: 布局随对象树被收掉
+    JZ_TEST_TRUE(guard.object() == nullptr);
+    return true;
+}
+
 static void test_layout(JZTest* test)
 {
     auto suite = std::make_shared<JZTestSuite>("JZLayout");
@@ -129,6 +210,10 @@ static void test_layout(JZTest* test)
     suite->addTestCase("hbox_fixed_uses_sizehint", hbox_fixed_uses_sizehint);
     suite->addTestCase("vbox_fixed_uses_sizehint", vbox_fixed_uses_sizehint);
     suite->addTestCase("hint_present_still_wins", hint_present_still_wins);
+    suite->addTestCase("layout_is_child_object", layout_is_child_object);
+    suite->addTestCase("layout_destroyed_clears_pointer", layout_destroyed_clears_pointer);
+    suite->addTestCase("retarget_layout_clears_old_host", retarget_layout_clears_old_host);
+    suite->addTestCase("js_owned_layout_follows_widget", js_owned_layout_follows_widget);
 }
 
 int main(int argc, char* argv[])

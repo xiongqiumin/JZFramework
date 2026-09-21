@@ -237,7 +237,6 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigInt(root, "llm", "netTimeoutMs", "netTimeout", config.netTimeout);
     readConfigInt(root, "llm", "maxRounds", "maxRounds", config.maxRounds);
     readConfigInt(root, "llm", "maxToken", "maxToken", config.maxToken);
-    readConfigInt(root, "llm", "maxTokens", "maxTokens", config.maxTokens);
     readConfigInt(root, "llm", "maxRetries", "maxRetries", config.maxRetries);
     readConfigInt(root, "llm", "maxFixRetries", "maxFixRetries", config.maxFixRetries);
     readConfigInt(root, "llm", "retryDelayMs", "retryDelayMs", config.retryDelayMs);
@@ -369,10 +368,7 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  模型      %s @ %s\n",
             config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
             config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
-    if (config.maxTokens > 0)
-        fprintf(stderr, "  输出上限  单次回复 %d tokens (max_tokens)\n", config.maxTokens);
-    else
-        fprintf(stderr, "  输出上限  (不传 max_tokens: 服务端默认, llama.cpp 下等于不限)\n");
+
     if (config.extraBody.isObject() && config.extraBody.size() > 0)
     {
         string extra;

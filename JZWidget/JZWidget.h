@@ -239,9 +239,12 @@ public:
     //     * setLayout(nullptr) → 警告并忽略(Qt 是 "Cannot set layout to 0", null 不是清空手段)。
     //   清空/替换的正确姿势: 先 clearLayout()(等价 Qt 的 `delete w->layout()`, 布局析构会
     //   同步清掉本控件的布局指针), 再 setLayout(新布局)。
+    //   装上后布局即成为**本控件的子对象**(JZObject 父子树): 随控件一起析构(布局不会活得比
+    //   容器久), 布局先被销毁时经 ChildRemoved 把 m_layout 置空(见 childEvent), 永不留悬垂。
     void setLayout(JZLayout* layout);
-    // 从 JS 侧设布局: 与 setLayout 同一套 Qt 语义, 但**本控件不接管释放责任** —— 那份布局
-    // 仍归它的 JS 对象(JS 对象回收时 delete)。clearLayout()/析构只解绑, 不 delete。
+    // 从 JS 侧设布局: 与 setLayout 同一套 Qt 语义, 但**本控件不显式 delete** —— 那份布局
+    // 归它的 JS 对象(JS 对象回收时 delete)。同样会挂成本控件的子对象, 故控件先析构时由对象树
+    // 回收它(JS 侧包装靠守卫识别"已经没了", 不会重复 delete)。
     // 理由: JS 侧的 `new JZVBoxLayout()` 是 JS 拥有的句柄(新模型: 谁创建谁持有), 控件再删一次
     // 就是双重释放; C++ 内部自建的布局走 setLayout(由本控件 delete)。
     virtual void setLayoutFromJs(JZLayout* layout);
@@ -250,7 +253,8 @@ public:
     virtual JZLayout* appliedLayout() const { return m_layout; }
     JZLayout* layout() const;
 
-    // 清空当前布局: 删除布局对象并把指针置空。Qt 没有这个 API(那边直接 `delete w->layout()`),
+    // 清空当前布局: 把指针置空(C++ 自建的那份顺便 delete; 归 JS 的那份只解绑, 仍作为子对象
+    // 挂在控件上, 由对象树随控件回收)。Qt 没有这个 API(那边直接 `delete w->layout()`),
     // 给显式入口是为了 JS 侧 —— JS 删不掉 C++ 对象。
     // 布局不拥有子控件: 子控件留在对象树上、保持最后一次几何, 只是不再被布局管理。
     // 虚: 容器子类(如 JZGroupBox)的布局装在内部内容区, 要转发。
@@ -387,6 +391,11 @@ protected:
     // 焦点进出: 文本控件在此开关光标闪烁, 并接上 / 断开输入上下文。
     virtual void focusInEvent(JZEvent* event);
     virtual void focusOutEvent(JZEvent* event);
+
+    // 子对象增删 (JZObject::childEvent 重写): 布局是本控件的子对象(见 setLayout),
+    // 它被销毁 / 被 reparent 走时同步把 m_layout 置空 —— m_layout 与布局的实际生死
+    // 只有这一个同步点, 故外部先一步销毁布局(JS 的 GC、`delete w->layout()`)也不留悬垂。
+    void childEvent(JZChildEvent* event) override;
 
     JZLayout* m_layout = nullptr;
     bool m_layoutFromJs = false;            // true: 布局归 JS 拥有(setLayoutFromJs) -> 本控件不 delete

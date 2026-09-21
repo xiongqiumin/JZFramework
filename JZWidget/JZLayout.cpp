@@ -110,10 +110,11 @@ void JZLayout::addManaged(JZWidget* widget)
     for (auto& ptr : m_managed)
         if (ptr.object() == widget)
             return;   // 已登记
-    // addWidget 的控件若已被其它父控件持有 (且不是本布局容器), 属于误用:
-    // 布局会在 apply / relayout 时强制 reparent 到本容器, 此处给出告警便于定位。
-    // 仅当布局已 apply (m_container 非空) 时才能比较; 先 addWidget 再 setLayout
-    // 的情况由 apply 里统一告警。
+    // 布局已 apply 到容器(setLayout 之后)时, 新增控件必须立刻挂到容器 child 树,
+    // 否则渲染遍历(w->children())看不到它, 整窗白屏 —— 这正是 test_jswidget 白屏的根因
+    // (main.ts 先 setLayout 再 addWidget, 而 apply() 只在 setLayout 那一刻 reparent)。
+    // 仅当 m_container 为空(先 addWidget 再 setLayout)时交给 apply() 统一 reparent。
+    // 与 apply() 同一条规则: 已属其它父控件则强制 reparent 到本容器(告警便于定位误用)。
     if (m_container)
     {
         JZWidget* p = widget->parentWidget();
@@ -123,6 +124,8 @@ void JZLayout::addManaged(JZWidget* widget)
                   p->objectName() + "\"持有, 但被加入布局容器\"" +
                   m_container->objectName() + "\", 将被强制 reparent 到本容器");
         }
+        if (p != m_container)
+            widget->setParentWidget(m_container);
     }
     m_managed.push_back(widget->guardPointer());
     widget->_layoutAttach(this);

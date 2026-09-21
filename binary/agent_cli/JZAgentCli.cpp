@@ -132,7 +132,6 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     ac.netTimeout = m_config.netTimeout;
     ac.maxRounds = m_config.maxRounds;
     ac.maxToken = m_config.maxToken;
-    ac.maxTokens = m_config.maxTokens;
     ac.extraBody = m_config.extraBody;
     ac.reuseConnection = false;
     ac.tokenStrategy = JZAgentConfig::TokenCompress;

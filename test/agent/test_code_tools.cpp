@@ -107,6 +107,8 @@ public:
         testFindEdges();
         testSearchContent();
         testSearchEdges();
+        testTextClassifyEdges();
+        testSkippedCountOnlyCountsScanned();
 
         printf("\n%s: fail=%d\n", g_fail == 0 ? "ALL PASS" : "FAILED", g_fail);
         return g_fail;
@@ -279,6 +281,41 @@ private:
         runContext("{\"pattern\":\"generated\",\"path\":\"build/gen/skip.d.ts\"}");
         check(m_contextRes.ok && contains(m_contextRes.text, "build/gen/skip.d.ts:1:"),
               "path 直接指文件时可以搜生成目录里的文件");
+    }
+
+    // ---- 文本/二进制判定与"跳过"统计 ----
+
+    // isTextFile 只采样前 16KB 判 UTF-8 合法性, 而采样边界**可能正好切在一个多字节字符中间** ——
+    // 那时不能把文件判成二进制(否则 read_file / modify_file / search_* 都会拒绝一份正常源码)。
+    // 构造: 纯"中"(3 字节/字) 8000 字 = 24000 字节 ⇒ 第 16384 字节正落在某个"中"的中间。
+    void testTextClassifyEdges()
+    {
+        printf("isTextFile: UTF-8 采样边界\n");
+        string cjk;
+        for (int i = 0; i < 8000; i++)
+            cjk += "\xE4\xB8\xAD";                 // "中" 的 UTF-8 三字节
+        const string rel = "src/zh_big.txt";
+        makeFile(rel, cjk + "\nNEEDLE_ZH\n");
+
+        check(isTextFile(m_ws + "/" + rel),
+              "16384 采样边界切在多字节字符中间时仍判为文本(不是二进制)");
+
+        runContext("{\"pattern\":\"NEEDLE_ZH\",\"path\":\"" + rel + "\"}");
+        check(m_contextRes.ok && contains(m_contextRes.text, "NEEDLE_ZH"),
+              "边界切在中文中间的文件也能被 search_context 搜到");
+    }
+
+    // "另有 N 个文件被跳过"是给模型看的**信号**(漏了哪些), 所以只该统计"本来要搜、但没搜成"的文件;
+    // 被 file_filter 排除掉的(模型自己指定的过滤)不该算进来, 否则回包会谎报漏搜。
+    void testSkippedCountOnlyCountsScanned()
+    {
+        printf("search_context: 跳过统计只算本要搜的文件\n");
+        makeFile("src/huge.dat", string(3 * 1024 * 1024, 'x'));   // 3MB, 超过 2MB 单文件上限
+
+        runContext("{\"pattern\":\"NEEDLE_A\",\"path\":\"src\",\"file_filter\":\"*.ts\"}");
+        check(m_contextRes.ok && contains(m_contextRes.text, "src/a.ts:1:"), "过滤 *.ts 后仍能搜到");
+        check(m_contextRes.text.find("被跳过") == string::npos,
+              "被 file_filter 排除的大文件不该算进\"跳过\"统计(不然模型以为漏搜了相关文件)");
     }
 
     string m_ws;

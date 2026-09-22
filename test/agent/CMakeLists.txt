@@ -25,6 +25,11 @@ target_link_libraries(test_loopdetect JZFramework)
 # 文件工具类: search_file(按文件名找) / search_context(搜文本·正则) —— 同步回包, 不需要事件循环
 add_executable(test_code_tools test_code_tools.cpp)
 target_link_libraries(test_code_tools JZFramework agent_tool)
+# 自包含(临时工作区建在 exe 目录, 无网络 / 无窗口 / 无模型): 进 ctest。
+# 这两个工具的回包文案与"文本判定"都是**模型实际看到的行为**, 最容易悄悄回归(踩过: 16KB 采样
+# 边界把中文源码判成二进制 ⇒ read_file/modify_file/search_context 一起失效), 必须有自动回归。
+add_test(NAME agent.test_code_tools COMMAND test_code_tools)
+set_tests_properties(agent.test_code_tools PROPERTIES TIMEOUT 120)
 
 # 上下文压缩(TokenCompress): 连真实 LLM(按当前设置 maxToken=150000), 每轮评审同一份
 # 固定的 ~1150 行源码(整份进 prompt, 每轮约涨 12k token), 靠 sigLLMHistory 抓"压缩发生"

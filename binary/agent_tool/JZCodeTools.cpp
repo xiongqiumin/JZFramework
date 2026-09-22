@@ -212,7 +212,9 @@ static vector<string> readLines(const string &text)
 }
 
 // 判定字节序列是否为合法 UTF-8（用于区分文本/二进制文件）
-static bool isValidUtf8(const char *data, int size)
+// allowTruncatedTail: 采样前缀的**末尾**可能把一个多字节字符切开(如中文 3 字节正好跨在 16KB 边界上)——
+// 那是"采样"造成的截断, 不是坏编码, 调用方要允许; 否则正常的中文源码会被判成二进制。
+static bool isValidUtf8(const char *data, int size, bool allowTruncatedTail = false)
 {
     int i = 0;
     while (i < size)
@@ -232,7 +234,18 @@ static bool isValidUtf8(const char *data, int size)
         else return false;               // 非法首字节
 
         if (i + extra >= size)
-            return false;                // 多字节序列被截断
+        {
+            if (!allowTruncatedTail)
+                return false;            // 多字节序列被截断
+            // 采样区里已经出现的续字节是否合法: 都合法就只能是被采样边界切断, 不是坏编码
+            for (int j = i + 1; j < size; j++)
+            {
+                unsigned char n = (unsigned char)data[j];
+                if (n < 0x80 || n > 0xBF)
+                    return false;
+            }
+            return true;
+        }
         for (int j = 1; j <= extra; j++)
         {
             unsigned char n = (unsigned char)data[i + j];
@@ -264,7 +277,7 @@ bool isTextFile(const string &path)
         if (data[i] == '\0')
             return false;
     }
-    return isValidUtf8(data, head.size());
+    return isValidUtf8(data, head.size(), true);   // 采样前缀: 末尾允许被切断(见 isValidUtf8)
 }
 
 static string truncateMiddle(const string &text, int maxChars)
@@ -565,13 +578,16 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
             continue;
         }
 
+        // 顺序讲究: 先过 file_filter, 再判"太大 / 是二进制"。
+        // skipped 是给模型的信号("有该搜而没搜成的"), 被模型自己给的过滤条件排除掉的文件不算漏搜 ——
+        // 否则回包会谎报(如 file_filter=*.ts 时把几 MB 的 .dat 也算进"跳过 N 个")。
+        if (!fileFilterMatch(info.fileName(), fileFilter, false))
+            continue;
         if (info.size() > 2 * 1024 * 1024)
         {
             stat.skipped++;                          // 大文件不搜, 但要让模型知道漏了它
             continue;
         }
-        if (!fileFilterMatch(info.fileName(), fileFilter, false))
-            continue;
         if (!isTextFile(info.filePath()))
         {
             stat.skipped++;

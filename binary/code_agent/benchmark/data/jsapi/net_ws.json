@@ -1,0 +1,12 @@
+{
+  "name": "jsapi_net_ws",
+  "purpose": "net 包 WebSocket 封装是否好学：ws.createServer({port}) 与 connection/message/send，客户端是运行期全局 WebSocket（onopen/onmessage，data 是字符串），服务端 socket 既是 EventEmitter 又能 WebSocket 风格。",
+  "prompt": "用 TypeScript 完成（ws 是内置模块：`import ws from 'ws'`；WebSocket 客户端是运行期全局类，无需 import）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 用 ws.createServer({ port: PORT }) 起一个 WebSocket 服务：每条收到的消息原样发回；\n3) 用运行期全局 WebSocket 连 'ws://127.0.0.1:PORT'，打开后发送文本 T，收到回显后校验与 T 相同；\n4) 打印一行：WS=<回显文本的 md5>@<回显是否与 T 相同(1/0)>（用 '@' 连接，不要空格）。\n提示：监听中的套接字不会让引擎保持运行，注意保活/收尾。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "jznet-ws 3914",
+  "expect": {
+    "contains": "283ccc4ce3b7558bd4d85bad4c26aede@1"
+  },
+  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；ws.createServer({port}) 起服务并把收到的消息原样发回；客户端用全局 WebSocket 连 ws://127.0.0.1:PORT，open 后 send(文本)，onmessage 里校验并打印 WS=<md5(回显)>@<是否相同>。"
+}

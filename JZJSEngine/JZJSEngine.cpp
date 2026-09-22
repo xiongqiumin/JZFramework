@@ -30,6 +30,98 @@ using namespace std;
 // 事件统一进 customEvent(见 JZObject::event)。
 static const int JZEngine_WakeUp = JZEvent_user + 1;
 
+// ---------------------------------------------------------------------------
+// Node 风格"内置模块"表
+//
+// 对齐 Node 的关键点: Node 里 `import http from 'http'` 之所以能用裸名, 是因为 loader
+// 认一张内置名表, 不需要 node_modules。本引擎没有 node_modules, 所以这张表就是它的等价物 ——
+// 而且 allowlist 式的查找比"按路径找文件"更快。
+//
+// 难点: 本框架的 dist 是**按包**(net/core/...)编译的, 一个包出口里同时躺着多个 Node
+// 内置模块(net/dist/index.js 导出 net/dgram/http/mqtt/ws/url/os)。解决办法是在 loader
+// 层给内置名合成一段 ESM 桥接源码, 把"包出口里的某个导出"提升成 default, 于是:
+//      import http from 'http'      -> 桥接 -> http 对象
+// 不会再出现"类型声明写着 'http' 可用、运行时却不认"的漂移。
+//
+// ⚠ 只支持 ESM: 没有 require, 也不认 module.exports / exports。写 CommonJS 会报
+//    "require is not defined"。
+//
+// file   : 包 dist 出口, 写"相对 libraryDirs 的裸名"(与 core/dist/index.js 相互 import 的写法一致,
+//          见 readModuleCode 的三候选解析)。也可以是包里的**第二个入口文件**(如 core/dist/bytes.js)
+// name   : 该出口里的具名导出; nullptr = 用包自带的 default; "*" = 整个 namespace
+// merge  : 第二来源。os 的一半在 core(EOL 等)、一半在 net(networkInterfaces), 按 Node 的语义合并。
+//
+// ⚠ 加一行名字要同步三处(与 Node 那边 '@types/node 按同名给类型' 是一回事):
+//   1) 本表;
+//   2) 该包 types/ambient.d.ts 里的 `declare module '<名字>' { export * from './<模块>' }`;
+//   3) 类型清单 js_wrapper/types/index.d.ts 的内置名列表(与提示词里的内置名列表)。
+//   缺 2) 的症状: 编译期 TS2307(名字没有类型声明), 运行期却是好的 —— 模型会被绊一次。
+// ---------------------------------------------------------------------------
+struct BuiltinModule
+{
+    const char* name;        // 裸模块名(不含 node: 前缀)
+    const char* file;        // 包 dist 出口(相对 libraryDirs 的裸名路径)
+    const char* exportName;  // 该出口里的具名导出; nullptr = 用包自带的 default; "*" = 整个 namespace
+    const char* mergeFile;   // 可选第二来源(见 os)
+};
+
+static const BuiltinModule builtinModules[] = {
+    // ---- net 包(net/dist/index.js: net/dgram/http/mqtt/ws/url/os + EventEmitter) ----
+    { "net",        "net/dist/index.js",        "net",          nullptr             },
+    { "dgram",      "net/dist/index.js",        "dgram",        nullptr             },
+    { "http",       "net/dist/index.js",        "http",         nullptr             },
+    { "mqtt",       "net/dist/index.js",        "mqtt",         nullptr             },
+    { "ws",         "net/dist/index.js",        "ws",           nullptr             },
+    { "url",        "net/dist/index.js",        "url",          nullptr             },
+    { "events",     "net/dist/index.js",        "EventEmitter", nullptr             },
+    // ---- core 包(core/dist/index.js: fs/path/os/process/crypto + bytes 工具) ----
+    { "fs",         "core/dist/index.js",       "fs",           nullptr             },
+    { "path",       "core/dist/index.js",       "path",         nullptr             },
+    { "process",    "core/dist/index.js",       "process",      nullptr             },
+    { "crypto",     "core/dist/index.js",       "crypto",       nullptr             },
+    // bytes 是 core 包里的**第二个入口文件**(core/dist/bytes.js): 单独给一个 Node 风格名字,
+    // 免得用户/模型被迫按工程内相对路径 import 实现文件(Node 里没有这种写法, 且相对的是
+    // 产物目录、类型来源也跟着漂)。exportName="*" ⇒ 桥接生成 `export * from`,
+    // 于是 `import { ByteReader, ByteWriter, hexOf } from 'bytes'`(无 default, 用具名导入)。
+    { "bytes",      "core/dist/bytes.js",       "*",            nullptr             },
+    // os 的一半在 core(EOL 等)、一半在 net(networkInterfaces): 按 Node 语义合并成一个对象
+    { "os",         "core/dist/index.js",       "os",           "net/dist/index.js" },
+    // ---- 自带 default 的单导出包(import SerialPort from 'serialport') ----
+    { "serialport", "serialport/dist/index.js", nullptr,        nullptr             },
+    { "modbus",     "modbus/dist/index.js",     nullptr,        nullptr             },
+    // ---- 无 default 的包: 直接给 namespace(对齐 Node 的 node:sqlite 形态) ----
+    { "sqlite",     "sqlite/dist/index.js",     "*",            nullptr             },
+};
+
+// 剥掉 Node 的 node: 前缀('node:http' -> 'http'), 并去掉空白字符。
+static string normalizeBuiltinName(const string& specifier)
+{
+    string name;
+    for (char c : specifier)
+    {
+        if (c > ' ')
+            name.push_back(c);
+    }
+    const string prefix = "node:";
+    if (name.size() >= prefix.size() && name.compare(0, prefix.size(), prefix) == 0)
+        name.erase(0, prefix.size());
+    return name;
+}
+
+static const BuiltinModule* findBuiltinModule(const string& specifier)
+{
+    string name = normalizeBuiltinName(specifier);
+    if (name.empty())
+        return nullptr;
+
+    for (size_t i = 0; i < sizeof(builtinModules) / sizeof(builtinModules[0]); i++)
+    {
+        if (name == builtinModules[i].name)
+            return &builtinModules[i];
+    }
+    return nullptr;
+}
+
 class JZJSEngineInternalFunction
 {
 public:
@@ -638,6 +730,7 @@ function __printObject__(obj, seen = new WeakSet()) {
     JSValue interrup_func = JS_NewCFunction(m_ctx, JSInter::js_is_interruption, "isInterruption", 2);
     JS_SetPropertyStr(m_ctx, engine, "isInterruption", interrup_func);
     JS_SetPropertyStr(m_ctx, m_global, "engine", engine);
+
 }
 
 void JZJSEngine::registConsole()
@@ -2524,13 +2617,51 @@ bool JZJSEngine::readModuleCode(const std::string& module_name, std::string& cod
     return false;
 }
 
+bool JZJSEngine::builtinBridgeCode(const std::string& name, std::string& code)
+{
+    const BuiltinModule* m = findBuiltinModule(name);
+    if (!m)
+        return false;
+
+    // 桥接源码里的 specifier 写"相对 libraryDirs 的裸名"(如 'net/dist/index.js'),
+    // 与 core/modbus 包互相 import 的写法一致: 默认 normalizer 对不含 './' 的说明符
+    // 原样交给 loader, 于是照旧按 readModuleCode 的 workDir -> libraryDirs 顺序命中。
+    string file(m->file);
+
+    // os 跨两个包: 合并成一个对象再作 default(对齐 Node 里 os 是一个完整模块)
+    if (m->mergeFile)
+    {
+        string exp(m->exportName ? m->exportName : "");
+        code = "import * as __jzA from '" + file + "';\n";
+        code += "import * as __jzB from '" + string(m->mergeFile) + "';\n";
+        code += "export const " + exp + " = Object.assign({}, __jzA." + exp +
+                ", __jzB." + exp + ");\n";
+        code += "export default " + exp + ";\n";
+        return true;
+    }
+
+    // export * : 让该 dist 出口里的具名导出都可见(如 `import { net } from 'net/dist/index.js'` 的老写法)
+    code = "export * from '" + file + "';\n";
+    if (!m->exportName)
+        code += "export { default } from '" + file + "';\n";       // 包自带 default(serialport/modbus)
+    else if (string(m->exportName) == "*")
+        ;   // namespace 形态(如 sqlite): export * 已足够, 没有 default
+    else
+        code += "export { " + string(m->exportName) + " as default } from '" + file + "';\n";
+    return true;
+}
+
 JSModuleDef* JZJSEngine::loadModuleDef(const std::string& module_name)
 {
     if (!m_ctx)
         return NULL;
 
+    // Node 风格内置模块(http / fs / node:http ...): 它不是文件, 由 builtinBridgeCode
+    // 合成一段桥接源码(把包 dist 出口里的那个导出提升为 default)。这一步同时让
+    // `import http from 'http'` 可用 —— 在此之前写裸名只会得到 "could not load module"。
     std::string code;
-    if (!readModuleCode(module_name, code))
+    bool builtin = builtinBridgeCode(module_name, code);
+    if (!builtin && !readModuleCode(module_name, code))
     {
         JS_ThrowReferenceError(m_ctx, "could not load module '%s'", module_name.c_str());
         return NULL;

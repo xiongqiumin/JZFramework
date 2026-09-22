@@ -12,9 +12,10 @@
  *   POST /play        {"room_id","token","x","y"}       -> {ok,error,result}
  * 规则：黑先手；任意方向连成 5 子者胜；棋盘下满无胜者为和；非法落子 ok=false 且不动棋盘。
  *
- * 运行期依赖：引擎的 Node 风格模块必须 **import**（本运行时没有 `require`）——
- *   用例 JSON 的 prompt 里写的 `const http = require('http')` 在 JZJSEngine 里不成立：
- *   `require` 已不再提供，内置模块一律从工程内的运行期包按相对路径 import。
+ * 运行期依赖：引擎的模块机制是 ESM（**没有 require**，写了就是 ReferenceError）——
+ *   内置模块写裸名即可：import http from 'http'（'node:http' 也认）；
+ *   也可以按工程内相对路径 import jz_js 的包出口（那种写法要再解一层具名导出：{ http }）。
+ *   注意裸名只支持**默认导入**：`import { createServer } from 'http'` 不成立。
  *   工程根下的 jz_js/ 由 initProject 从 <exe>/jz_engine/jz_js 拷入（打包/发布产物里同目录）。
  *   另外：引擎的"还有活干吗"(`hasPendingJob`) 只认定时器/微任务，**监听中的套接字不算** ——
  *   只 createServer+listen 而没有任何 setTimeout/setInterval 时，顶层跑完进程就退出了，

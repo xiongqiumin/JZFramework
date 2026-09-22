@@ -1,0 +1,12 @@
+{
+  "name": "jsapi_core_bytes",
+  "purpose": "core 包 bytes 工具（ByteReader/ByteWriter/hexOf）的发现与使用成本。2026-09-22 起它有 Node 风格裸名 'bytes'（namespace 形态、无 default，必须具名导入，同 sqlite）——之前只能按工程内相对路径 import jz_js 的 dist 实现文件，那是 Node 里没有的写法。本条同时考：按游标顺序读写、小端、eof 判定、ByteWriter 先给长度。",
+  "prompt": "用 TypeScript 完成。框架提供了带游标的字节读写工具 ByteReader / ByteWriter / hexOf（内置模块，具名导入即可：`import { ByteReader, ByteWriter, hexOf } from 'bytes'`；注意它没有 default 导出；类型声明见工程里的 jz_types/core/types/bytes.d.ts）：\n1) 先 fetch 读评测输入，得到一串十六进制字符串（例如 '3412…'），转成字节；\n2) 用 ByteReader 依次读：u16() 得 A、u8v() 得 B、bytes(3) 得 R；\n3) 用 ByteWriter 依次写回 u16(A)、u8v(B)、raw(R)；\n4) 打印一行：\nBYTES=<写回字节的十六进制小写>@<A*3+B>@<读完 R 之后 reader.eof() 的布尔值>\n（各段用 '@' 连接，不要空格。）",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "3412ab00efbe",
+  "expect": {
+    "contains": "3412ab00efbe@14151@true"
+  },
+  "retryHint": "上一次运行的结果不对。要求：`import { ByteReader, ByteWriter, hexOf } from 'bytes'`（该模块无 default，别写默认导入）→ 读 /input 的十六进制串用 Uint8Array.fromHex 转字节 → ByteReader 顺序读 u16()、u8v()、bytes(3) → ByteWriter 按同样顺序写回 → 打印 BYTES=<写回字节的 hex>@<u16*3+u8>@<eof()>。注意 u16 是小端；ByteWriter 要先给长度再写。"
+}

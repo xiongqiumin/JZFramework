@@ -564,6 +564,14 @@ protected:
     // resolved 非空时回填**实际命中的绝对路径**(供 appFile 记录第一个加载的脚本)
     bool readModuleCode(const std::string& module_name, std::string& code,
                         std::string* resolved = nullptr);
+
+    // ---- Node 风格 "内置模块" ----
+    // 剥掉 'node:' 前缀后在内置模块表里查 name(支持 'http' 与 'node:http')。
+    // 内置模块**不以独立文件存在**, 而是"包 dist 出口里的某个导出":
+    // loader 层给内置名合成一段 ESM 桥接源码(把该导出提升为 default), 于是
+    // `import http from 'http'` 可用(不支持 require)。
+    // 见 JZJSEngine.cpp 的 builtinModules 表。
+    bool builtinBridgeCode(const std::string& name, std::string& code);
     // 泵 promise 任务队列(含未处理拒绝上报 Engine_error)
     void pumpPendingJobs();
 

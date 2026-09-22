@@ -1,0 +1,12 @@
+{
+  "name": "jsapi_core_fs",
+  "purpose": "core 包 fs/path 的 Node 风格封装是否好学：同步读写+编码参数、mkdir recursive、append 语义、path 纯函数、process/os 形态。断言值依赖运行时注入的输入（不可硬编码）。",
+  "prompt": "用 TypeScript 完成（框架的 fs/path/process/os 是内置模块，用 `import fs from 'fs'` 这种默认导入；先 fetch 读评测输入，返回的文本记作 T）：\n1) 在工程目录下建 data/ 子目录（不存在时递归创建）；\n2) 写入文件 data/a.txt，内容为 T 接上 '-A'（不要加换行）；\n3) 再往同一文件追加 '-B'；\n4) 用 fs 读回全文（utf8）记作 C；\n5) 打印一行：\nFS=<C 的 md5 小写十六进制>@<C.length>@<path.basename('x/y/z.ts')>@<path.extname('x/y/z.ts')>@<path.dirname('x/y/z.ts')>@<path.join('a','b','..','c')>\n（各段用 '@' 连接，不要空格；md5 用 crypto 的 createHash('md5')。）",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "jzcore-fs",
+  "expect": {
+    "contains": "9b50a6b5d68080b851cbb689cae82aec@13@z.ts@.ts@x/y@a/c"
+  },
+  "retryHint": "上一次运行的结果不对。要求：读 /input 得到 T → 写 data/a.txt = T+'-A' → 追加 '-B' → 读回记作 C → 打印 FS=<md5(C)>@<C.length>@basename@extname@dirname@join('a','b','..','c')（用 '@' 连接、不要空格；目录要递归创建；追加不要覆盖）。"
+}

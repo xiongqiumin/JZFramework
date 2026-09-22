@@ -1,0 +1,12 @@
+{
+  "name": "jsapi_net_http",
+  "purpose": "net 包 http 的封装是否好学：createServer(handler) 的 req/res 形态（req.method/req.url/req.text、res.writeHead/end）、fetch 全局的请求形态、404 判定、以及\"监听中的套接字不算活\"时必须留心跳定时器。",
+  "prompt": "用 TypeScript 完成（http 是内置模块：`import http from 'http'`；fetch 是运行期全局，无需 import）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 用 http 起一个服务监听 PORT：\n   - GET /ping → 200，正文 'pong'\n   - POST /echo → 200，Content-Type: application/json，正文 {\"echo\":<请求体原文>,\"n\":<请求体长度>}\n   - 其它 → 404\n3) 服务起来后用它自己的 fetch 自测：向 /echo POST 文本 T，再 GET 一个不存在的路径；\n4) 打印一行：HTTP=<T 的 md5>@<echo 返回的 n>@<不存在路径的状态码>@<回显文本是否与 T 相同(1/0)>\n（各段用 '@' 连接，不要空格。）\n提示：监听中的套接字不会让引擎保持运行，注意保活/收尾。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "jznet-http 3911",
+  "expect": {
+    "contains": "54225c33dac4bce0d286dd383aa72980@10@404@1"
+  },
+  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；http 服务监听该端口（GET /ping→200 'pong'，POST /echo→200 JSON {echo,n}，其它→404）；再 fetch 自测 POST /echo（body 为文本）与一个 404 路径；打印 HTTP=<md5(文本)>@<n>@<404 状态码>@<回显是否相同>。"
+}

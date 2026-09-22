@@ -1,4 +1,4 @@
-// core 包对外暴露的 Node 风格模块名 (ambient 模块声明): fs / path / process / crypto。
+// core 包对外暴露的 Node 风格模块名 (ambient 模块声明): fs / path / process / crypto / bytes。
 //
 // 为什么单独一个文件、而不是并进同目录的 ./fs.d.ts:
 //   ambient `declare module '<裸名>'` 只能写在**全局脚本文件**里(无顶层 import/export)。
@@ -25,4 +25,11 @@ declare module 'process' {
 
 declare module 'crypto' {
     export * from './crypto';
+}
+
+// bytes 是 core 包里的第二个入口文件(JZJSEngine.cpp 的 builtinModules 里 file=core/dist/bytes.js)。
+// 形态与 sqlite 一样是 namespace(**没有 default**): 用具名导入 `import { ByteReader } from 'bytes'`,
+// 不要写 `import bytes from 'bytes'`(运行期会报 "Could not find export 'default'")。
+declare module 'bytes' {
+    export * from './bytes';
 }

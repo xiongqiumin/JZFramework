@@ -1,0 +1,12 @@
+{
+  "name": "jsapi_net_udp",
+  "purpose": "net 包 dgram 封装是否好学：createSocket('udp4')/bind/on('message',(msg,rinfo))/send(msg,port,address)；msg 是 Uint8Array（dgram 的 setEncoding 没进类型声明，得用 toHex()/手工解码）；rinfo.address 可用。",
+  "prompt": "用 TypeScript 完成（dgram 是内置模块，用默认导入 `import dgram from 'dgram'`）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 建一个 udp4 socket 并 bind 到 PORT，收到消息时打印一行：\nUDP=<消息字节的十六进制小写>@<发送方地址>\n（hex 用 Uint8Array 的 toHex()；发送方地址取 message 事件第二个参数 rinfo.address；各段用 '@' 连接，不要空格）；\n3) 另建一个 udp4 socket，向 127.0.0.1:PORT 发送文本 T。\n提示：绑定的套接字不会让引擎保持运行，注意保活/收尾。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "input": "jznet-udp 3913",
+  "expect": {
+    "contains": "6a7a6e65742d756470@127.0.0.1"
+  },
+  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；一个 udp4 socket bind 到该端口并在 'message' 事件里打印 UDP=<消息 toHex()>@<rinfo.address>；另一个 socket 用 send(文本, 端口, '127.0.0.1') 发出。"
+}

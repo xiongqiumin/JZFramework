@@ -1,3 +1,12 @@
 {"file": "hello/hello_world.json"}
 {"file": "hello/hello_http.json"}
 {"file": "five_chess_server/five_chess_server.json"}
+{"file": "jsapi/core_fs.json"}
+{"file": "jsapi/core_bytes.json"}
+{"file": "jsapi/core_crypto.json"}
+{"file": "jsapi/net_http.json"}
+{"file": "jsapi/net_tcp.json"}
+{"file": "jsapi/net_udp.json"}
+{"file": "jsapi/net_ws.json"}
+{"file": "jsapi/url_events.json"}
+{"file": "jsapi/sqlite.json"}

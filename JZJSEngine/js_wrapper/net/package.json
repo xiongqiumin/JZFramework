@@ -1,14 +1,9 @@
 {
   "name": "@jz/net",
   "version": "1.0.0",
-  "description": "JZ framework net module external definitions (net/dgram/http/mqtt/ws/url/os)",
+  "description": "JZ framework net module",
   "main": "dist/index.js",
   "types": "types/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./types/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
+  "exports": { ".": { "types": "./types/index.d.ts", "default": "./dist/index.js" } },
   "license": "MIT"
 }

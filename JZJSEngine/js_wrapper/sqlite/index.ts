@@ -194,3 +194,6 @@ const sqlite = {
 };
 
 export { DatabaseSync, StatementSync, version, sqlite };
+
+// 默认导出 = 模块对象(与其它内置名一致: 具名导入是推荐写法, 但默认导入也不会炸)
+export default sqlite;

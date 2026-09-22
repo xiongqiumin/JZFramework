@@ -12,9 +12,9 @@
 
 import type { OpenOptions, PortInfo, Data } from './types/index';
 
-// 事件发射器: 用 net 包那份(**全框架唯一实现**, 见 net/index.ts 顶部说明)。
+// 事件发射器: 用 events 包那份(**全框架唯一实现**, 见 events/index.ts 顶部说明)。
 // 以前这里自己抄过一份, 两边会分叉; 现在只 import, 不再有第二份定义。
-import { EventEmitter } from 'net/dist';
+import { EventEmitter } from 'events/dist';
 
 // 引擎注入的原生原子 API(运行时由 C++ 注册到 globalThis.__jz)。
 declare const __jz: any;

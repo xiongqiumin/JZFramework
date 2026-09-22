@@ -32,10 +32,10 @@
  */
 'use strict';
 
-// 事件发射器: 用 net 包那份(**全框架唯一实现**, 见 net/index.ts 顶部说明)。
+// 事件发射器: 用 events 包那份(**全框架唯一实现**, 见 events/index.ts 顶部说明)。
 // 本文件曾自带一份私有 Emitter("不想依赖 net"), 现在统一 —— 两份实现容易走偏
-// (net 版是 Node 同名 API + `listeners()/listenerCount()` 等查询方法)。
-import { EventEmitter } from 'net/dist';
+// (events 版是 Node 同名 API + `listeners()/listenerCount()` 等查询方法)。
+import { EventEmitter } from 'events/dist';
 
 declare const __jz: any;
 // setTimeout / clearTimeout 由引擎注入为全局(见 JZJSEngine 的时间任务), 编译期需自行声明

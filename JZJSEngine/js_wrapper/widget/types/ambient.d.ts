@@ -1,10 +1,10 @@
-// @jz/widget 对外暴露的裸模块名(ambient 模块声明)。
-// 必须写在全局脚本文件里(本文件无顶层 import/export), 不能并进同为模块形式的 ./widget.d.ts
-// (那会变成"模块增强")。模块类型的单一来源仍是同目录的 widget.d.ts, 本文件只声明裸名并转发。
+// 'widget' —— 对外的裸模块名(= 目录名): 这里只声明名字, 类型转发给同目录的 ./index.d.ts
+// (ambient `declare module` 只能写在全局脚本文件里, 所以单独一个文件)。
 //
-// 注: UI 树数据节点(Widget)与真控件类(JZWindow / JZPushButton / ...)都从这里导出,
-// 所以 `import { Widget } from 'widget'` 与 `import { JZWindow } from 'widget'` 都可用;
-// 其余引擎全局类(JZColor / JZPainter / JZLayout / JZEvent 家族 ...) 仍是全局, 直接当全局用。
+// 注意本包的特殊之处:
+//   - 控件类是**引擎注册的全局类**(JZWindow / JZPushButton / ...), 运行期由 C++ 按路径
+//     先加载 widget/dist/classes.js 与 widget/dist/index.js, 裸名 import 只是"同样能拿到"。
+//   - 包入口只有具名导出(没有 default) ⇒ `import { JZWindow } from 'widget'` 是正确写法。
 declare module 'widget' {
-    export * from './widget';
+    export * from './index';
 }

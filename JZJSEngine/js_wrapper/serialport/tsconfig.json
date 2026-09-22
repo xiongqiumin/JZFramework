@@ -14,9 +14,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "paths": {
-      "net/dist": ["../net/dist"]
-    },
+    "paths": { "events/dist": ["../events/dist"] },
     "types": []
   },
   "include": ["index.ts", "types/**/*.d.ts"]

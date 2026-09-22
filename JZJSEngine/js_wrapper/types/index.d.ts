@@ -14,15 +14,22 @@
  *   - URL / URLSearchParams / WebSocket / EventEmitter (运行期就是全局对象/全局类)
  *   - common.d.ts: 公共类型别名(Data / Chunk / DataEncoding) + Uint8Array 扩展方法
  *
- * 各 Node 风格模块的**裸名 ambient 声明**(declare module 'fs' | 'net' | ...)与模块类型
- * 本身都不放在这里, 而是就近放在各自包里(单一来源, 不与实现脱节):
- *   - core/types/ambient.d.ts        -> fs / path / process / crypto / bytes   (模块类型见同目录 <module>.d.ts)
- *   - net/types/ambient.d.ts         -> net / dgram / http / mqtt / url / os / ws / events
- *   - serialport/types/ambient.d.ts  -> serialport (+ 运行期全局 serialport)
- *   - sqlite/types/ambient.d.ts      -> sqlite
- *   - modbus/types/ambient.d.ts      -> modbus
- * 控件侧(全局类, 无模块)见 widget/types/(json 见 widget 包)。
- * (ambient `declare module '<裸名>'` 只能写在全局脚本文件里, 所以每包多一个 ambient.d.ts;
+ * ⭐ 布局(2026-09-22 起): **一个名字 = 一个包目录, 目录名就是 import 的名字**
+ *   js_wrapper/<名字>/index.ts            运行期实现(tsc -> <名字>/dist/index.js)
+ *   js_wrapper/<名字>/types/index.d.ts    模块类型(单一来源, 与实现同目录)
+ *   js_wrapper/<名字>/types/ambient.d.ts  只声明裸名并转发(declare module '<名字>')
+ *   js_wrapper/types/                     不属于任何名字的共享声明(本目录: 全局/console/fetch/...)
+ *   js_wrapper/internal/                  **不是**内置名的内部工具(各包实现互相 import 用)
+ * 于是"名字 → 类型文件 → 运行期入口"三者同名: 想查 http 有哪些成员, 就看
+ * jz_types/http/types/index.d.ts(目录名就是 import 的名字, 不用再记"http 藏在 net 包里")。
+ *
+ * 16 个内置名(与 JZJSEngine.cpp 的 builtinModules 一一对应):
+ *   net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / bytes /
+ *   os / serialport / modbus / sqlite(控件族另有 widget; 这些名字都是"包目录名")
+ * 每个名字都是"**默认导出 = 模块对象** + **具名导出 = 各成员**", 两种写法都成立:
+ *   import http from 'http';                 import { createServer } from 'http';
+ *   import { DatabaseSync } from 'sqlite';   import fs from 'node:fs';
+ * (ambient `declare module '<裸名>'` 只能写在全局脚本文件里, 所以每个包多一个 ambient.d.ts;
  *  模块形式的 <module>.d.ts 若混写 declare module 会被当成"模块增强"而找不到目标。)
  *
  * Types are imported as type-only, so they are erased at runtime and never load a module:
@@ -37,31 +44,20 @@
  *       import fs from 'node:fs';
  *
  *   (2) 相对路径(jz_types / jz_js 由 initProject 一起拷进用户工程, 按工程内相对路径 import)
- *       import { http } from '../jz_js/net/dist/index.js';
- *       import { fs, path } from '../jz_js/core/dist/index.js';
+ *       import http from '../jz_js/http/dist/index.js';
+ *       import fs from '../jz_js/fs/dist/index.js';
  *       import { SerialPort } from '../jz_js/serialport/dist/index.js';
  *
- * 内置的裸名有: net / dgram / http / mqtt / ws / url / events / fs / path / process /
- * crypto / bytes / os / serialport / modbus / sqlite(详见 JZJSEngine.cpp 的 builtinModules)。
- * ⭐ 名字 = 契约: 每个名字都必须在**该包** types/ambient.d.ts 里有 `declare module '<名字>'`,
+ * ⭐ 名字 = 契约: 每个名字都必须在**该包的** types/ambient.d.ts 里有 `declare module '<名字>'`,
  *   类型与运行按同一个名字对齐(与 @types/node 按同名给类型是一回事); 缺 ambient 的症状是
  *   TS2307 —— 编译不过、运行期却是好的, 模型会被白绊一次。
- * 注意区别: 裸名导入拿到的是**那个模块自己**(如 http 对象, http.createServer);
- * 相对路径导入必须再解一层具名导出({ http }), 因为它导入的是整个包出口。
  *
  * ⚠ 不支持 CommonJS: 没有 require, 也不认 module.exports / exports。
- *   导入形态按名字分两类:
- *     - 包级入口(有默认导出): import http from 'http'; import fs from 'node:fs';
- *     - namespace 形态(**无 default**, 必须具名导入): import { DatabaseSync } from 'sqlite';
- *       import { ByteReader, ByteWriter, hexOf } from 'bytes';
- *   ⚠ 目前包级入口只转发"包出口的具名导出", 并不是 Node 意义上的子模块成员:
- *     `import { createServer } from 'http'` 编译能过、运行报 "Could not find export 'createServer'"。
- *     想拿子模块成员, 现阶段的正确写法是默认导入再用成员(http.createServer)。
  *
  * 部署产物布局(package.py 打包; 与源码 js_wrapper/ 同构 => 相对引用原样可解析):
- *   <exe>/jz_engine/jz_types/types/**        <- js_wrapper/types(本目录, 只有全局声明)
- *   <exe>/jz_engine/jz_types/<pkg>/types/**  <- js_wrapper/<pkg>/types(模块类型 + ambient.d.ts)
- *   <exe>/jz_engine/jz_js/<pkg>/dist/**      <- js_wrapper/<pkg>/dist
+ *   <exe>/jz_engine/jz_types/types/**         <- js_wrapper/types(本目录, 只有共享/全局声明)
+ *   <exe>/jz_engine/jz_types/<名字>/types/**  <- js_wrapper/<名字>/types(模块类型 + ambient.d.ts)
+ *   <exe>/jz_engine/jz_js/<名字>/dist/**      <- js_wrapper/<名字>/dist
  *
  * Usage in a TS project:
  *   1. copy the deployed jz_types/ folder to <project>/jz_types/

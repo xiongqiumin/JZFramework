@@ -1,0 +1,9 @@
+{
+  "name": "@jz/http",
+  "version": "1.0.0",
+  "description": "JZ framework http module",
+  "main": "dist/index.js",
+  "types": "types/index.d.ts",
+  "exports": { ".": { "types": "./types/index.d.ts", "default": "./dist/index.js" } },
+  "license": "MIT"
+}

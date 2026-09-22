@@ -1,16 +1,84 @@
-/**
- * @jz/net —— 外部定义汇总 (external definitions, public contract).
- *
- * 本包对应 JZJSNetModule 注入的全局模块: net / dgram / http / mqtt / ws / url / os.
- * 各模块的具名导出分散在同目录的 <module>.d.ts, 这里统一再导出,
- * 便于按包路径引用(如 `import type { Socket } from '@jz/net'`)。
- *
- * 全局类 URL / URLSearchParams / WebSocket 见 js_wrapper/types/globals.d.ts。
- */
-export * from './net';
-export * from './dgram';
-export * from './http';
-export * from './mqtt';
-export * from './websocket';
-export * from './url';
-export * from './os';
+/// <reference path="../../types/common.d.ts" />
+/// <reference path="../../types/events.d.ts" />
+
+export interface TcpNetConnectOpts {
+    port: number;
+    host?: string;
+    /** not supported, accepted and ignored */
+    localAddress?: string;
+    /** ms, 0 = no timeout */
+    timeout?: number;
+}
+
+export interface ListenOptions {
+    port?: number;
+    host?: string;
+    /** not supported, accepted and ignored */
+    backlog?: number;
+}
+
+export interface AddressInfo {
+    port: number;
+    address: string;
+    family: 'IPv4';
+}
+
+export class Socket extends EventEmitter {
+    constructor(options?: TcpNetConnectOpts);
+
+    connect(port: number, host?: string, connectListener?: () => void): this;
+    connect(options: TcpNetConnectOpts, connectListener?: () => void): this;
+
+    write(data: Data, encoding?: DataEncoding, cb?: (err?: Error) => void): boolean;
+    end(data?: Data, encoding?: DataEncoding, cb?: (err?: Error) => void): this;
+    destroy(error?: Error): this;
+
+    /** emits 'timeout' when there is no activity for ms; 0 disables */
+    setTimeout(ms: number, cb?: () => void): this;
+    /** 'data' events deliver string instead of Uint8Array */
+    setEncoding(encoding: DataEncoding | null): this;
+
+    readonly remoteAddress: string | undefined;
+    readonly remotePort: number | undefined;
+    /** undefined for client sockets created by connect() */
+    readonly localAddress: string | undefined;
+    readonly localPort: number | undefined;
+    readonly bytesRead: number;
+    readonly bytesWritten: number;
+    readonly destroyed: boolean;
+    readonly readyState: 'opening' | 'open' | 'closed';
+
+    on(event: 'connect' | 'close' | 'end' | 'timeout', listener: () => void): this;
+    on(event: 'data', listener: (chunk: Chunk) => void): this;
+    on(event: 'error', listener: (err: Error) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+}
+
+export class Server extends EventEmitter {
+    listen(port?: number, listeningListener?: () => void): this;
+    listen(port: number, host?: string, listeningListener?: () => void): this;
+    listen(options: ListenOptions, listeningListener?: () => void): this;
+
+    close(cb?: (err?: Error) => void): this;
+    /** null when not listening */
+    address(): AddressInfo | null;
+
+    readonly listening: boolean;
+    maxConnections: number;
+
+    on(event: 'listening' | 'close', listener: () => void): this;
+    on(event: 'connection', listener: (socket: Socket) => void): this;
+    on(event: 'error', listener: (err: Error) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+}
+
+export function createServer(connectionListener?: (socket: Socket) => void): Server;
+export function createServer(options: ListenOptions, connectionListener?: (socket: Socket) => void): Server;
+
+export function createConnection(port: number, host?: string, connectListener?: () => void): Socket;
+export function createConnection(options: TcpNetConnectOpts, connectListener?: () => void): Socket;
+export const connect: typeof createConnection;
+
+/** default export = the module object (same usage as Node: import x from 'net') */
+declare const _default: { Socket: typeof Socket, Server: typeof Server, createServer: typeof createServer, createConnection: typeof createConnection, connect: typeof createConnection };
+export default _default;

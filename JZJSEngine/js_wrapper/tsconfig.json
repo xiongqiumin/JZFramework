@@ -1,11 +1,23 @@
 {
   "files": [],
   "references": [
-    { "path": "./serialport" },
+    { "path": "./internal" },
+    { "path": "./events" },
+    { "path": "./url" },
+    { "path": "./os" },
     { "path": "./net" },
-    { "path": "./widget" },
-    { "path": "./core" },
+    { "path": "./dgram" },
+    { "path": "./http" },
+    { "path": "./mqtt" },
+    { "path": "./ws" },
+    { "path": "./fs" },
+    { "path": "./path" },
+    { "path": "./process" },
+    { "path": "./crypto" },
+    { "path": "./bytes" },
     { "path": "./sqlite" },
-    { "path": "./modbus" }
+    { "path": "./modbus" },
+    { "path": "./serialport" },
+    { "path": "./widget" }
   ]
 }

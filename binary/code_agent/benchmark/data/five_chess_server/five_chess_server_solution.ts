@@ -14,8 +14,9 @@
  *
  * 运行期依赖：引擎的模块机制是 ESM（**没有 require**，写了就是 ReferenceError）——
  *   内置模块写裸名即可：import http from 'http'（'node:http' 也认）；
- *   也可以按工程内相对路径 import jz_js 的包出口（那种写法要再解一层具名导出：{ http }）。
- *   注意裸名只支持**默认导入**：`import { createServer } from 'http'` 不成立。
+ *   一个名字 = 一个包目录，**默认导入与具名导入都成立**：
+ *     import http from 'http' 与 import { createServer } from 'http' 都可以。
+ *   也可以按工程内相对路径 import（jz_js/<名字>/dist/index.js，默认导出 = 模块对象）。
  *   工程根下的 jz_js/ 由 initProject 从 <exe>/jz_engine/jz_js 拷入（打包/发布产物里同目录）。
  *   另外：引擎的"还有活干吗"(`hasPendingJob`) 只认定时器/微任务，**监听中的套接字不算** ——
  *   只 createServer+listen 而没有任何 setTimeout/setInterval 时，顶层跑完进程就退出了，
@@ -30,7 +31,7 @@
  *     moduleResolution bundler / lib ES2025 / strict / sourceMap / outDir build / rootDir src）
  */
 
-import { http } from '../jz_js/net/dist/index.js';
+import http from 'http';
 
 // ============================================================================
 // 常量

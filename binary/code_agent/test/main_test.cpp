@@ -851,9 +851,10 @@ int main()
             check(tsText2.find("jz_types") != string::npos,
                   "initProject 生成的 tsconfig 包含 jz_types 类型", tsText2);
             // 新结构: initProject 同时把运行时 jz_js 拷进工程(供入口被动 import)
-            check(fileExists(typesRoot + "/jz_js/net/dist/index.js") &&
-                  fileExists(typesRoot + "/jz_js/core/dist/index.js"),
-                  "initProject 把运行时 jz_js 一同拷进工程(jz_js/<pkg>/dist)",
+            // ⭐ 一个名字一个包目录(目录名 = 名字), 所以这里按名字取路径
+            check(fileExists(typesRoot + "/jz_js/http/dist/index.js") &&
+                  fileExists(typesRoot + "/jz_js/fs/dist/index.js"),
+                  "initProject 把运行时 jz_js 一同拷进工程(jz_js/<名字>/dist)",
                   typesRoot + "/jz_js");
 
             // 该 TS 直接引用 jz_types 的 fs/path/os/process（框架自定义模块），
@@ -1021,24 +1022,25 @@ int main()
 
         string eJs;
         check(agentJs.initProject(jsRoot, eJs), "initProject 创建挂 jz_js 运行时的工程", eJs);
-        check(fileExists(jsRoot + "/jz_js/net/dist/index.js") &&
-              fileExists(jsRoot + "/jz_js/core/dist/index.js"),
-              "initProject 把运行时 jz_js 拷进工程(jz_js/<pkg>/dist)", jsRoot + "/jz_js");
+        check(fileExists(jsRoot + "/jz_js/http/dist/index.js") &&
+              fileExists(jsRoot + "/jz_js/fs/dist/index.js"),
+              "initProject 把运行时 jz_js 拷进工程(jz_js/<名字>/dist)", jsRoot + "/jz_js");
 
-        // 入口被动 import 运行期全局(net/fs/path), 顶层自执行并 console.log 结果。
-        // 相对路径 '../jz_js/...' 由引擎按运行根(build/)的 '../' 解析回工程根的 jz_js,
-        // 包间兄弟式相对 import(net<-core)同理落在 <root>/jz_js 下。
+        // 入口被动 import 运行期模块(http/fs/path), 顶层自执行并 console.log 结果。
+        // 相对路径 '../jz_js/...' 由引擎按运行根(build/)的 '../' 解析回工程根的 jz_js;
+        // 一个名字一个包目录 ⇒ 每条 import 都是 '<名字>/dist/index.js'。
         string mainJs =
             "// jz_js_use/main.ts - 被动 import 随附 jz_js 运行时(纯 import 模型)\n"
-            "import { net } from '../jz_js/net/dist/index.js';\n"
-            "import { fs, path } from '../jz_js/core/dist/index.js';\n"
+            "import http from '../jz_js/http/dist/index.js';\n"
+            "import fs from '../jz_js/fs/dist/index.js';\n"
+            "import path from '../jz_js/path/dist/index.js';\n"
             "export function main(): string\n"
             "{\n"
             "    const sep: string = path.sep;\n"
             "    const hasFetch: boolean = typeof (globalThis as any).fetch === 'function';\n"
             "    const hasFs: boolean = typeof (fs as any).existsSync === 'function';\n"
             "    const joined: string = path.join('x', 'y');\n"
-            "    const isObj: boolean = typeof net === 'object';\n"
+            "    const isObj: boolean = typeof http === 'object';\n"
             "    return 'jzjs-ok ' + sep + ' ' + hasFetch + ' ' + hasFs + ' ' + joined +\n"
             "           ' ' + isObj;\n"
             "}\n"

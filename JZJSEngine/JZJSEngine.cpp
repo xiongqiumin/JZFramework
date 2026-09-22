@@ -37,60 +37,59 @@ static const int JZEngine_WakeUp = JZEvent_user + 1;
 // 认一张内置名表, 不需要 node_modules。本引擎没有 node_modules, 所以这张表就是它的等价物 ——
 // 而且 allowlist 式的查找比"按路径找文件"更快。
 //
-// 难点: 本框架的 dist 是**按包**(net/core/...)编译的, 一个包出口里同时躺着多个 Node
-// 内置模块(net/dist/index.js 导出 net/dgram/http/mqtt/ws/url/os)。解决办法是在 loader
-// 层给内置名合成一段 ESM 桥接源码, 把"包出口里的某个导出"提升成 default, 于是:
-//      import http from 'http'      -> 桥接 -> http 对象
-// 不会再出现"类型声明写着 'http' 可用、运行时却不认"的漂移。
+// ⭐ 布局原则(2026-09-22 起): **一个名字 = 一个包目录, 目录名就是名字**
+//   js_wrapper/<名字>/{index.ts, types/index.d.ts, types/ambient.d.ts, dist/}
+//   ⇒ 表里 file 就是"它自己的 dist 入口", 不再有"名字 A 藏在包 B 里"(以前 http 在 net 包里、
+//     bytes 在 core 包里、os 还在两个包里合并)。类型文件与实现在同一个目录, 查定义只需看名字。
 //
 // ⚠ 只支持 ESM: 没有 require, 也不认 module.exports / exports。写 CommonJS 会报
 //    "require is not defined"。
 //
-// file   : 包 dist 出口, 写"相对 libraryDirs 的裸名"(与 core/dist/index.js 相互 import 的写法一致,
-//          见 readModuleCode 的三候选解析)。也可以是包里的**第二个入口文件**(如 core/dist/bytes.js)
-// name   : 该出口里的具名导出; nullptr = 用包自带的 default; "*" = 整个 namespace
-// merge  : 第二来源。os 的一半在 core(EOL 等)、一半在 net(networkInterfaces), 按 Node 的语义合并。
+// file   : 包 dist 出口, 写"相对 libraryDirs 的裸名"(见 readModuleCode 的候选解析)。
+// exportName: 该出口里用来当 default 的具名导出:
+//            nullptr = 用包自带的 default(现在的常规形态:
+//                      每个包的 index.ts 都 `export default <模块对象>` + 具名导出各成员,
+//                      于是 `import http from 'http'` 与 `import { createServer } from 'http'` 都成立);
+//            "*"     = namespace 形态(只有具名导出, 没有 default)。
 //
 // ⚠ 加一行名字要同步三处(与 Node 那边 '@types/node 按同名给类型' 是一回事):
 //   1) 本表;
-//   2) 该包 types/ambient.d.ts 里的 `declare module '<名字>' { export * from './<模块>' }`;
+//   2) 该包 types/ambient.d.ts 里的 `declare module '<名字>' { export * from './index' ... }`;
 //   3) 类型清单 js_wrapper/types/index.d.ts 的内置名列表(与提示词里的内置名列表)。
 //   缺 2) 的症状: 编译期 TS2307(名字没有类型声明), 运行期却是好的 —— 模型会被绊一次。
 // ---------------------------------------------------------------------------
 struct BuiltinModule
 {
-    const char* name;        // 裸模块名(不含 node: 前缀)
-    const char* file;        // 包 dist 出口(相对 libraryDirs 的裸名路径)
-    const char* exportName;  // 该出口里的具名导出; nullptr = 用包自带的 default; "*" = 整个 namespace
-    const char* mergeFile;   // 可选第二来源(见 os)
+    const char* name;        // 裸模块名(不含 node: 前缀); 同时也是包目录名
+    const char* file;        // 该名字的 dist 入口(相对 libraryDirs 的裸名路径)
+    const char* exportName;  // 用来当 default 的具名导出; nullptr = 用包自带 default; "*" = namespace
 };
 
 static const BuiltinModule builtinModules[] = {
-    // ---- net 包(net/dist/index.js: net/dgram/http/mqtt/ws/url/os + EventEmitter) ----
-    { "net",        "net/dist/index.js",        "net",          nullptr             },
-    { "dgram",      "net/dist/index.js",        "dgram",        nullptr             },
-    { "http",       "net/dist/index.js",        "http",         nullptr             },
-    { "mqtt",       "net/dist/index.js",        "mqtt",         nullptr             },
-    { "ws",         "net/dist/index.js",        "ws",           nullptr             },
-    { "url",        "net/dist/index.js",        "url",          nullptr             },
-    { "events",     "net/dist/index.js",        "EventEmitter", nullptr             },
-    // ---- core 包(core/dist/index.js: fs/path/os/process/crypto + bytes 工具) ----
-    { "fs",         "core/dist/index.js",       "fs",           nullptr             },
-    { "path",       "core/dist/index.js",       "path",         nullptr             },
-    { "process",    "core/dist/index.js",       "process",      nullptr             },
-    { "crypto",     "core/dist/index.js",       "crypto",       nullptr             },
-    // bytes 是 core 包里的**第二个入口文件**(core/dist/bytes.js): 单独给一个 Node 风格名字,
-    // 免得用户/模型被迫按工程内相对路径 import 实现文件(Node 里没有这种写法, 且相对的是
-    // 产物目录、类型来源也跟着漂)。exportName="*" ⇒ 桥接生成 `export * from`,
-    // 于是 `import { ByteReader, ByteWriter, hexOf } from 'bytes'`(无 default, 用具名导入)。
-    { "bytes",      "core/dist/bytes.js",       "*",            nullptr             },
-    // os 的一半在 core(EOL 等)、一半在 net(networkInterfaces): 按 Node 语义合并成一个对象
-    { "os",         "core/dist/index.js",       "os",           "net/dist/index.js" },
-    // ---- 自带 default 的单导出包(import SerialPort from 'serialport') ----
-    { "serialport", "serialport/dist/index.js", nullptr,        nullptr             },
-    { "modbus",     "modbus/dist/index.js",     nullptr,        nullptr             },
-    // ---- 无 default 的包: 直接给 namespace(对齐 Node 的 node:sqlite 形态) ----
-    { "sqlite",     "sqlite/dist/index.js",     "*",            nullptr             },
+    // ---- 网络类(每个名字一个包) ----
+    { "net",        "net/dist/index.js",        nullptr },   // net 对象的 default + Socket/Server/... 具名
+    { "dgram",      "dgram/dist/index.js",      nullptr },
+    { "http",       "http/dist/index.js",       nullptr },   // http.createServer 与具名 createServer 都在
+    { "mqtt",       "mqtt/dist/index.js",       nullptr },
+    { "ws",         "ws/dist/index.js",         nullptr },   // 客户端类还同时是全局 WebSocket
+    { "url",        "url/dist/index.js",        nullptr },   // URL / URLSearchParams 同时是全局
+    { "os",         "os/dist/index.js",         nullptr },   // 以前 cross-package 合并, 现在一个包
+    { "events",     "events/dist/index.js",     nullptr },   // EventEmitter 的**唯一实现**(同时是全局)
+    // ---- 系统类 ----
+    { "fs",         "fs/dist/index.js",         nullptr },
+    { "path",       "path/dist/index.js",       nullptr },
+    { "process",    "process/dist/index.js",    nullptr },
+    { "crypto",     "crypto/dist/index.js",     nullptr },
+    { "bytes",      "bytes/dist/index.js",      nullptr },   // 本框架特有的字节工具(零依赖)
+    // ---- 设备 / 数据库 ----
+    { "serialport", "serialport/dist/index.js", nullptr },
+    { "modbus",     "modbus/dist/index.js",     nullptr },
+    { "sqlite",     "sqlite/dist/index.js",     nullptr },   // 全同步 API, 对齐 node:sqlite(另有 default)
+    // ---- 控件族(特殊: 包入口由引擎按路径先加载, 这里只是让裸名 import 也成立) ----
+    // "*" = namespace 形态(包入口只有具名导出): `import { JZWindow } from 'widget'` 运行期可用。
+    // 类层是**幂等**的(见 widget/classes.ts 的说明), 所以"引擎按路径加载过一次 + 用户再按名字
+    // import"不会重建类、不会换掉原型。
+    { "widget",     "widget/dist/index.js",     "*"     },
 };
 
 // 剥掉 Node 的 node: 前缀('node:http' -> 'http'), 并去掉空白字符。
@@ -2623,29 +2622,18 @@ bool JZJSEngine::builtinBridgeCode(const std::string& name, std::string& code)
     if (!m)
         return false;
 
-    // 桥接源码里的 specifier 写"相对 libraryDirs 的裸名"(如 'net/dist/index.js'),
-    // 与 core/modbus 包互相 import 的写法一致: 默认 normalizer 对不含 './' 的说明符
+    // 桥接源码里的 specifier 写"相对 libraryDirs 的裸名"(如 'http/dist/index.js'),
+    // 与各包互相 import 的写法一致: 默认 normalizer 对不含 './' 的说明符
     // 原样交给 loader, 于是照旧按 readModuleCode 的 workDir -> libraryDirs 顺序命中。
     string file(m->file);
 
-    // os 跨两个包: 合并成一个对象再作 default(对齐 Node 里 os 是一个完整模块)
-    if (m->mergeFile)
-    {
-        string exp(m->exportName ? m->exportName : "");
-        code = "import * as __jzA from '" + file + "';\n";
-        code += "import * as __jzB from '" + string(m->mergeFile) + "';\n";
-        code += "export const " + exp + " = Object.assign({}, __jzA." + exp +
-                ", __jzB." + exp + ");\n";
-        code += "export default " + exp + ";\n";
-        return true;
-    }
-
-    // export * : 让该 dist 出口里的具名导出都可见(如 `import { net } from 'net/dist/index.js'` 的老写法)
+    // export * : 该包出口里的具名导出都可见 ⇒ `import { createServer } from 'http'` 成立
+    //            (一名字一包之后, 模块成员就是包的具名导出, 不再有"藏在别人包里的成员").
     code = "export * from '" + file + "';\n";
     if (!m->exportName)
-        code += "export { default } from '" + file + "';\n";       // 包自带 default(serialport/modbus)
+        code += "export { default } from '" + file + "';\n";       // 包自带 default(常规形态)
     else if (string(m->exportName) == "*")
-        ;   // namespace 形态(如 sqlite): export * 已足够, 没有 default
+        ;   // namespace 形态: export * 已足够, 没有 default
     else
         code += "export { " + string(m->exportName) + " as default } from '" + file + "';\n";
     return true;

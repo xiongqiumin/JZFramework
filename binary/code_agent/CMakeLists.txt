@@ -73,7 +73,7 @@ jz_copy_asan_runtime(code_agent)
 # ---------------------------------------------------------------------------
 # 打包 JZ JS 引擎产物到 exe 同配置目录(bin/<CONFIG>/), 统一放进一个大的部署目录 jz_engine/:
 #   - jz_engine/jz_types/ : 完整类型定义(供 initProject 拷进用户工程, 使工程自包含)
-#   - jz_engine/jz_js/    : 运行时 JS(dist 编译产物: core/net/serialport), 供用户工程 import
+#   - jz_engine/jz_js/    : 运行时 JS(各内置名一个目录: http/fs/net/serialport/... 的 dist), 供用户工程 import
 # 类型不再有独立的 JZJSEngine/types 源目录, 单一来源就是 js_wrapper 自身:
 #   - js_wrapper/types/       只有跨模块的真全局声明(console/fetch/URL/WebSocket/EventEmitter)
 #   - js_wrapper/<pkg>/types/ 各包类型 + 该包裸露模块名的 ambient 声明(ambient.d.ts)

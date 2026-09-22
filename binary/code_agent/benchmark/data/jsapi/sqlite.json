@@ -1,7 +1,7 @@
 {
   "name": "jsapi_sqlite",
   "purpose": "sqlite 封装的可达性与易学性：它是内置模块且有 Node 风格裸名（2026-09-22 起补了 ambient 声明 ⇒ `import { DatabaseSync } from 'sqlite'` 同时过编译与运行，对齐 node:sqlite 的具名导入）。考的是正确识别「namespace 形态、没有 default 导出」（写 `import sqlite from 'sqlite'` 运行期必报 Could not find export 'default'）、以及 DatabaseSync/exec/prepare/run/get 与位置参数绑定。",
-  "prompt": "用 TypeScript 完成。框架自带 sqlite 封装（内置模块，对齐 node:sqlite 的同步 API：`import { DatabaseSync } from 'sqlite'` —— 它是 namespace 形态、**没有 default 导出**，别写默认导入；类型声明见工程里的 jz_types/sqlite/types/index.d.ts）：\n1) 先 fetch 读评测输入，返回文本记作 T；\n2) 在工程目录下打开数据库 ./jzapi.db，建表 users(id INTEGER PRIMARY KEY, name TEXT)（表存在就先删掉）；\n3) 用预编译语句 + **位置参数**（? 占位）插入两行：(1, T) 与 (2, 'bob')；\n4) 查询总行数与 id 最小那行的 name；\n5) 打印一行：\nSQL=<总行数>@<第一行的 name>@<第一次插入返回的 changes>@<第二次插入返回的 lastInsertRowid>\n（各段用 '@' 连接，不要空格）；\n6) 关闭数据库。",
+  "prompt": "用 TypeScript 完成。框架自带 sqlite 封装（内置模块，对齐 node:sqlite 的同步 API：`import { DatabaseSync } from 'sqlite'` —— 推荐具名导入；类型声明见工程里的 jz_types/sqlite/types/index.d.ts）：\n1) 先 fetch 读评测输入，返回文本记作 T；\n2) 在工程目录下打开数据库 ./jzapi.db，建表 users(id INTEGER PRIMARY KEY, name TEXT)（表存在就先删掉）；\n3) 用预编译语句 + **位置参数**（? 占位）插入两行：(1, T) 与 (2, 'bob')；\n4) 查询总行数与 id 最小那行的 name；\n5) 打印一行：\nSQL=<总行数>@<第一行的 name>@<第一次插入返回的 changes>@<第二次插入返回的 lastInsertRowid>\n（各段用 '@' 连接，不要空格）；\n6) 关闭数据库。",
   "maxAttempts": 3,
   "timeout": 30,
   "input": "jzsqlite",

@@ -68,14 +68,24 @@ int main()
     serialModule.initEngine(&engine);
     STEP("serial port module init");
 
-    // 测试侧引导: 加载 net/core 适配层并把"导入式模块"重新暴露为全局, 供下面以裸名
-    // 运行的 eval 断言复用(生产侧已改为 import-only, 对齐 Node; 这里是测试便利, 不影响生产代码)。
+    // 测试侧引导: 把各"导入式模块"重新暴露为全局, 供下面以裸名运行的 eval 断言复用
+    // (生产侧是 import-only, 对齐 Node; 这里是测试便利, 不影响生产代码)。
+    // ⭐ 一名字一包之后每个模块都有自己的目录, 默认导出就是模块对象。
     {
         std::string wrapper = JZ_JS_WRAPPER_DIR;
         std::string tmp = std::string(wrapper) + "/_test_globals.mjs";
         std::string mjs =
-            "import { net, dgram, http, mqtt, ws, url } from './net/dist/index.js';\n"
-            "import { fs, path, process, crypto, os } from './core/dist/index.js';\n"
+            "import net from './net/dist/index.js';\n"
+            "import dgram from './dgram/dist/index.js';\n"
+            "import http from './http/dist/index.js';\n"
+            "import mqtt from './mqtt/dist/index.js';\n"
+            "import ws from './ws/dist/index.js';\n"
+            "import url from './url/dist/index.js';\n"
+            "import os from './os/dist/index.js';\n"
+            "import fs from './fs/dist/index.js';\n"
+            "import path from './path/dist/index.js';\n"
+            "import process from './process/dist/index.js';\n"
+            "import crypto from './crypto/dist/index.js';\n"
             "globalThis.net = net; globalThis.dgram = dgram; globalThis.http = http;\n"
             "globalThis.mqtt = mqtt; globalThis.ws = ws; globalThis.url = url;\n"
             "globalThis.os = os; globalThis.fs = fs; globalThis.path = path;\n"
@@ -424,14 +434,14 @@ int main()
 
     // 12. 新机制演示: 分离式加载 + ES module import(固定相对路径)
     //     在 wrapper 目录写一个临时 .mjs, 用相对固定路径 import 已编译的 net 包,
-    //     验证: (a) 模块能从磁盘加载; (b) import 返回的对象与 initEngine 注入的全局 net 同一实例。
+    //     验证: (a) 模块能从磁盘加载; (b) import 返回的对象就是全局那份(同一实例)。
     {
         std::string wrapper = JZ_JS_WRAPPER_DIR;
         std::string tmpPath = std::string(wrapper) + "/_import_check.mjs";
         std::string mjs =
-            "import { net as n } from './net/dist/index.js';\n"
-            "globalThis.__impNet = n;\n"
-            "globalThis.__impSame = (n === net);\n";
+            "import net from './net/dist/index.js';\n"
+            "globalThis.__impNet = net;\n"
+            "globalThis.__impSame = (net === globalThis.net);\n";
         FILE* f = fopen(tmpPath.c_str(), "wb");
         if (f) { fwrite(mjs.data(), 1, mjs.size(), f); fclose(f); }
 
@@ -449,14 +459,17 @@ int main()
         remove(tmpPath.c_str());
     }
 
-    // 13. core 包同样支持分离式加载 + ES module import(固定相对路径)
+    // 13. fs/path/process/crypto 各自独立成包后, 同样支持分离式加载 + ES module import
     {
         std::string wrapper = JZ_JS_WRAPPER_DIR;
         std::string tmpPath = std::string(wrapper) + "/_import_check_core.mjs";
         std::string mjs =
-            "import { fs as f, path as p, process as pr, crypto as c } from './core/dist/index.js';\n"
+            "import f from './fs/dist/index.js';\n"
+            "import p from './path/dist/index.js';\n"
+            "import pr from './process/dist/index.js';\n"
+            "import c from './crypto/dist/index.js';\n"
             "globalThis.__impFs = f;\n"
-            "globalThis.__impSameFs = (f === fs);\n"
+            "globalThis.__impSameFs = (f === globalThis.fs);\n"
             "globalThis.__impHasApi = (typeof f.writeFileSync === 'function'"
             " && typeof p.join === 'function' && typeof pr.cwd === 'function'"
             " && typeof c.randomUUID === 'function');\n";

@@ -222,26 +222,36 @@ bool JZEngineRuntime::initEngine(const string &workDir)
 
 void JZEngineRuntime::bootstrapWebGlobals(const string &wd)
 {
+    // Web 标准全局现在按"谁实现谁挂"分散在各自的包里(2026-09-22 一名字一包之后):
+    //   events -> EventEmitter / url -> URL·URLSearchParams / ws -> WebSocket /
+    //   http   -> fetch·Headers·Response
+    // 所以这里要按顺序把这四个模块跑起来(它们在装载时把全局挂到 globalThis)。
+    //
     // 候选路径: 优先工程自带的 jz_js(与用户 import 解析到的绝对路径一致, 避免重复执行),
     // 回退到 exe 同目录部署的 jz_engine/jz_js(或旧平铺 jz_js)。路径先规范化(消解 ..),
-    // 保证与入口 `import '../jz_js/net/dist/index.js'` 解析到同一文件、命中同一模块缓存。
-    vector<string> candidates;
-    candidates.push_back(rtAbsPath(wd + "/jz_js/net/dist/index.js"));        // 运行根带 jz_js
-    candidates.push_back(rtAbsPath(wd + "/../jz_js/net/dist/index.js"));     // 运行根在 build/ 子目录
+    // 保证与入口 `import '../jz_js/<名字>/dist/index.js'` 解析到同一文件、命中同一模块缓存。
+    static const char *kWebGlobalModules[] = { "events", "url", "ws", "http" };
     string appDir = JZPlatform::applicationDirPath();
-    if (!appDir.empty())
+    for (size_t i = 0; i < sizeof(kWebGlobalModules) / sizeof(kWebGlobalModules[0]); i++)
     {
-        candidates.push_back(rtAbsPath(appDir + "/jz_engine/jz_js/net/dist/index.js"));  // 新部署
-        candidates.push_back(rtAbsPath(appDir + "/jz_js/net/dist/index.js"));           // 旧平铺
-    }
-    for (const string &cand : candidates)
-    {
-        if (JZFileInfo(cand).isFile())
+        const string rel = string("/jz_js/") + kWebGlobalModules[i] + "/dist/index.js";
+        vector<string> candidates;
+        candidates.push_back(rtAbsPath(wd + rel));        // 运行根带 jz_js
+        candidates.push_back(rtAbsPath(wd + "/.." + rel)); // 运行根在 build/ 子目录
+        if (!appDir.empty())
         {
-            // 副作用执行: 把 Web 标准全局挂上 globalThis。按绝对路径加载, 与用户入口
-            // 的 import 命中同一 QuickJS 模块缓存, 不会重复执行。失败不致命(静默)。
-            m_engine->runModuleFile(cand);
-            break;                                  // 命中即止
+            candidates.push_back(rtAbsPath(appDir + "/jz_engine" + rel));  // 新部署
+            candidates.push_back(rtAbsPath(appDir + rel));                 // 旧平铺
+        }
+        for (const string &cand : candidates)
+        {
+            if (JZFileInfo(cand).isFile())
+            {
+                // 副作用执行: 把该模块负责的 Web 全局挂上 globalThis。按绝对路径加载, 与用户
+                // 入口的 import 命中同一 QuickJS 模块缓存, 不会重复执行。失败不致命(静默)。
+                m_engine->runModuleFile(cand);
+                break;                                  // 命中即止
+            }
         }
     }
 }

@@ -12,7 +12,7 @@
 //
 //  1) 工具调用循环(JZToolLoopDetector)
 //     模型反复用**完全相同的参数**调同一个工具(反复 read_file 同一个文件、
-//     search_file 同一个 pattern、terminal_run 同一条命令)。每一步工具都成功
+//     search_context 同一个 pattern、terminal_run 同一条命令)。每一步工具都成功
 //     ⇒ 永远不报错, 只把上下文一轮轮堆大(每轮重发整段 prompt), 一路烧到 maxRounds。
 //     判定依据 = 同签名(工具名 + 归一化参数)重复; 结果也相同 ⇒ 证据更强, 阈值更低。
 //

@@ -22,6 +22,10 @@ target_link_libraries(test_terminal_tools JZFramework agent_tool)
 add_executable(test_loopdetect test_loopdetect.cpp)
 target_link_libraries(test_loopdetect JZFramework)
 
+# 文件工具类: search_file(按文件名找) / search_context(搜文本·正则) —— 同步回包, 不需要事件循环
+add_executable(test_code_tools test_code_tools.cpp)
+target_link_libraries(test_code_tools JZFramework agent_tool)
+
 # 上下文压缩(TokenCompress): 连真实 LLM(按当前设置 maxToken=150000), 每轮评审同一份
 # 固定的 ~1150 行源码(整份进 prompt, 每轮约涨 12k token), 靠 sigLLMHistory 抓"压缩发生"
 # 与触发时机; **长跑不退出**(Ctrl+C / Stop-Process 停) —— 不是离线测试, 更不是 ctest 用例,

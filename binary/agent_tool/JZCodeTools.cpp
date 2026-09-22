@@ -361,13 +361,14 @@ string jzTsRuntimeNotes()
     string s;
     s += "TypeScript 运行时边界(本工程跑在 JZ 定制运行时上, 不是 Node; 下面几条与 Node 不同):\n";
     s += "  - 只支持 ESM: 没有 require, 也不认 module.exports / exports。\n";
-    s += "  - 内置模块直接写裸名(写 'node:http' 也认)。内置名分两类, 别搞反:\n";
-    s += "      有默认导出(用默认导入): net / dgram / http / mqtt / ws / url / events / fs / path / "
-         "process / crypto / os / serialport / modbus;\n";
-    s += "      没有 default(必须具名导入): sqlite —— `import { DatabaseSync } from 'sqlite'`; "
-         "bytes —— `import { ByteReader, ByteWriter, hexOf } from 'bytes'`。\n";
-    s += "  - 包级内置名**不支持对子模块成员的具名导入**: `import { createServer } from 'http'` 编译能过、"
-         "运行会报 Could not find export —— 写 `import http from 'http'`, 再用 http.createServer()。\n";
+    s += "  - 内置模块直接写裸名(写 'node:http' 也认)。⭐ 一个名字 = 一个包目录, "
+         "**默认导入与具名导入都能用**(以前成员只能挂在模块对象上, 写成具名导入会运行期报错):\n";
+    s += "      import http from 'http';                  import { createServer } from 'http';\n";
+    s += "      import { DatabaseSync } from 'sqlite';    import fs from 'node:fs';\n";
+    s += "    内置名: net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / "
+         "bytes / os / serialport / modbus / sqlite(控件另有 widget)。\n";
+    s += "  - 想查某个名字有哪些成员: 直接读工程里的 jz_types/<名字>/types/index.d.ts"
+         "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
     s += "  - 起服务/监听后要不要保活: 引擎只在还有定时器/微任务/未结算的异步(如 await fetch)时才继续跑。"
          "自己后面还要 await 就不必额外加定时器; 只 listen、等外部来连(自身没有 pending 异步)时, "
@@ -471,14 +472,15 @@ std::string JZCodeTool::fullPath(std::string path)
 }
 
 
-// ==================== JZSearchFileTool ====================
-JZSearchFileTool::JZSearchFileTool()
+// ==================== JZSearchContextTool ====================
+JZSearchContextTool::JZSearchContextTool()
 {
     ToolDefine def;
-    def.name = "search_file";
+    def.name = "search_context";
     def.description = "在工作区的代码中搜索文本或正则表达式，返回 \"相对工作区路径:行号:内容\" 形式的匹配列表。" \
                       "path 可以是目录(递归搜索)也可以是单个文件；regex=true 时 pattern 按正则解析。" \
-                      "默认跳过隐藏目录和 build/out 等生成目录；二进制 / 超过 2MB / 读取失败的文件会跳过并在结果里注明数量，不会静默漏掉。";
+                      "默认跳过隐藏目录和 build/out 等生成目录；二进制 / 超过 2MB / 读取失败的文件会跳过并在结果里注明数量，不会静默漏掉。" \
+                      "找**文件名**请用 search_file（本工具是找内容）。";
     def.parameters.push_back(makeParam("pattern", ParamType::String, "要搜索的文本或正则表达式"));
     def.parameters.push_back(makeParam("path", ParamType::String, "在哪个目录或文件下搜索，默认 \".\" 表示整个工作区"));
     def.parameters.push_back(makeParam("file_filter", ParamType::String, "文件名过滤，支持 * ? 与逗号分隔多个模式，如 \"*.cpp,*.h\"，默认 \"*\""));
@@ -617,7 +619,7 @@ static void searchInDir(const string &absDir, const string &relBase, const strin
         stat.stopped = true;
 }
 
-void JZSearchFileTool::call(const ToolCall &params)
+void JZSearchContextTool::call(const ToolCall &params)
 {
     string pattern = params.params.get("pattern", "").asString();
     if (pattern.empty())
@@ -748,6 +750,194 @@ void JZSearchFileTool::call(const ToolCall &params)
                 "可缩小 path / file_filter 范围后重试）";
     if (stat.skipped > 0)
         text += "\n（另有 " + to_string(stat.skipped) + " 个文件因二进制内容 / 超过 2MB / 读取失败被跳过）";
+    finish(params, true, text);
+}
+
+// ==================== JZSearchFileTool (按文件名/路径找文件) ====================
+JZSearchFileTool::JZSearchFileTool()
+{
+    ToolDefine def;
+    def.name = "search_file";
+    def.description = "按**文件名 / 相对路径**在工作区里找文件，返回相对工作区路径列表(目录带尾 \"/\")。" \
+                      "pattern 用通配符 * ?，可逗号分隔多个(如 \"*.d.ts,tsconfig.json\")；命中规则 = 文件名或相对工作区路径任一匹配" \
+                      "(所以既能写 \"*.d.ts\"，也能写 \"jz_types/*/types/*.d.ts\")。" \
+                      "本工具只回路径、不回内容: 找内容用 search_context，看内容用 read_file。" \
+                      "默认跳过隐藏目录和 build/out/bin 等生成目录，跳过与触顶都会在结果末尾注明。";
+    def.parameters.push_back(makeParam("pattern", ParamType::String, "文件名/路径通配符(* ?)，逗号分隔多个，如 \"*.d.ts,tsconfig.json\""));
+    def.parameters.push_back(makeParam("path", ParamType::String, "从哪个目录或文件开始找，默认 \".\" 表示整个工作区"));
+    def.parameters.push_back(makeParam("case_sensitive", ParamType::Boolean, "是否区分大小写，默认 false"));
+    def.parameters.push_back(makeParam("max_results", ParamType::Number, "最多返回多少个文件/目录，默认 100"));
+    def.parameters.push_back(makeParam("max_entries", ParamType::Number, "最多扫描多少个目录项，默认 20000，避免大仓库一次扫太多"));
+    def.required_parameters.push_back("pattern");
+    setToolDefine(def);
+}
+
+// 找文件的扫描统计: 触顶/跳过都要说清楚 —— 否则模型会把"没扫到"当成"不存在"
+struct FindStat
+{
+    int entries = 0;       // 扫过的目录项数(文件 + 目录)
+    int dirs = 0;          // 扫过的目录数
+    int hitFiles = 0;      // 命中文件数
+    int hitDirs = 0;       // 命中目录数
+    bool stopped = false;  // 是否因扫描预算(max_entries)触顶提前停止
+};
+
+// 记下被跳过的目录名(去重, 最多记若干个) —— 用于在回包里告诉模型"什么被排除了"
+static void noteSkippedDir(vector<string> &skipped, const string &name)
+{
+    if (skipped.size() >= 20)
+        return;
+    for (const auto &s : skipped)
+    {
+        if (s == name)
+            return;
+    }
+    skipped.push_back(name);
+}
+
+static void findInDir(const string &absDir, const string &relBase, const string &pattern,
+                      bool caseSensitive, int maxResults, int maxEntries,
+                      vector<string> &out, vector<string> &skippedDirs, FindStat &stat)
+{
+    if (stat.stopped || (int)out.size() >= maxResults)
+        return;
+    if (stat.entries >= maxEntries)
+    {
+        stat.stopped = true;
+        return;
+    }
+
+    JZDir dir(absDir);
+    vector<JZFileInfo> list = dir.entryInfoList(JZDir::Files | JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
+    for (const auto &info : list)
+    {
+        if ((int)out.size() >= maxResults)
+            return;                                  // 结果够了: 不算"预算触顶"
+        if (stat.entries >= maxEntries)
+        {
+            stat.stopped = true;
+            return;
+        }
+        stat.entries++;
+
+        const string name = info.fileName();
+        const string rel = relBase.empty() ? name : relBase + "/" + name;
+        const bool hit = fileFilterMatch(name, pattern, caseSensitive) ||
+                         fileFilterMatch(rel, pattern, caseSensitive);
+
+        if (info.isDir())
+        {
+            if (isSkipDir(name))
+            {
+                noteSkippedDir(skippedDirs, name);
+                continue;
+            }
+            stat.dirs++;
+            if (hit)
+            {
+                out.push_back(rel + "/");
+                stat.hitDirs++;
+                if ((int)out.size() >= maxResults)
+                    return;
+            }
+            findInDir(info.filePath(), rel, pattern, caseSensitive, maxResults, maxEntries, out, skippedDirs, stat);
+            continue;
+        }
+
+        if (hit)
+        {
+            out.push_back(rel);
+            stat.hitFiles++;
+        }
+    }
+
+    if (stat.entries >= maxEntries)
+        stat.stopped = true;
+}
+
+void JZSearchFileTool::call(const ToolCall &params)
+{
+    string pattern = params.params.get("pattern", "").asString();
+    if (pattern.empty())
+    {
+        finish(params, false, "参数 pattern 不能为空");
+        return;
+    }
+    string rel = params.params.get("path", ".").asString();
+    bool caseSensitive = params.params.get("case_sensitive", false).asBool();
+    int maxResults = params.params.get("max_results", 100).asInt();
+    if (maxResults < 1)
+        maxResults = 100;
+    int maxEntries = params.params.get("max_entries", 20000).asInt();
+    if (maxEntries < 1)
+        maxEntries = 20000;
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Read, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), DenyReason::PathOutside);
+        return;
+    }
+
+    JZFileInfo info(abs);
+    if (!info.exists())
+    {
+        finish(params, false, "路径不存在: " + rel, DenyReason::NotFound);
+        return;
+    }
+
+    // 结果里的路径一律相对工作区(能直接再喂给 read_file / search_context)
+    string outBase = workspaceRelPath(m_host, abs);
+
+    vector<string> results;
+    vector<string> skippedDirs;
+    FindStat stat;
+    if (info.isDir())
+    {
+        findInDir(abs, outBase == "." ? string() : outBase, pattern, caseSensitive,
+                  maxResults, maxEntries, results, skippedDirs, stat);
+    }
+    else
+    {
+        // 显式点了文件: 名字或路径命中就回它, 否则明确说不匹配(别静默返回空)
+        const bool hit = fileFilterMatch(info.fileName(), pattern, caseSensitive) ||
+                         fileFilterMatch(outBase, pattern, caseSensitive);
+        if (!hit)
+        {
+            finish(params, false, "文件名/路径不匹配 pattern: " + outBase + " (pattern = " + pattern + ")");
+            return;
+        }
+        stat.entries = 1;
+        results.push_back(outBase);
+        stat.hitFiles = 1;
+    }
+
+    string text;
+    if (results.empty())
+    {
+        text = "没有匹配 \"" + pattern + "\" 的文件或目录（已扫描 " + to_string(stat.entries) +
+               " 个目录项 / " + to_string(stat.dirs) + " 个目录）。";
+    }
+    else
+    {
+        text = "匹配 \"" + pattern + "\" 共 " + to_string(results.size()) + " 项" +
+               "（文件 " + to_string(stat.hitFiles) + " / 目录 " + to_string(stat.hitDirs) + "）:\n";
+        for (const auto &r : results)
+            text += r + "\n";
+        if ((int)results.size() >= maxResults)
+            text += "（已达 max_results 上限，可能还有更多，可缩小 path / pattern）";
+    }
+    if (stat.stopped)
+        text += "\n（已扫描 " + to_string(stat.entries) + " 个目录项，达到单次搜索上限，结果可能不全；可缩小 path 后重试）";
+    if (!skippedDirs.empty())
+    {
+        string names;
+        for (const auto &s : skippedDirs)
+            names += (names.empty() ? "" : ", ") + s;
+        text += "\n（已跳过这些生成/隐藏目录: " + names +
+                "；要找里面的东西请直接把 path 指到该目录）";
+    }
     finish(params, true, text);
 }
 

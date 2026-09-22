@@ -1459,7 +1459,8 @@ void JZCodeAgent::buildAgent()
     addTool(new JZReadFileTool());
     addTool(new JZWriteFileTool());
     addTool(new JZModifyFileTool());
-    addTool(new JZSearchFileTool());
+    addTool(new JZSearchFileTool());      // 按文件名/路径找文件(如 "*.d.ts")
+    addTool(new JZSearchContextTool());   // 搜文本/正则(原 search_file, 已改名)
     addTool(new JZGetDateTimeTool());
 
     auto shell_tool = new JZShellTool();

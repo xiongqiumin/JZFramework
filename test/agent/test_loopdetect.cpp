@@ -59,7 +59,7 @@ int main()
           "参数键序不同 => 同一个签名");
     check(sig("read_file", "{\"a\":1}") != sig("read_file", "{\"a\":2}"),
           "参数值不同 => 不同签名");
-    check(sig("read_file", "{\"a\":1}") != sig("search_file", "{\"a\":1}"),
+    check(sig("read_file", "{\"a\":1}") != sig("search_context", "{\"a\":1}"),
           "工具名不同 => 不同签名");
     check(sig("terminal_run", "ls  -l\n") == sig("terminal_run", "ls -l"),
           "参数不是合法 JSON => 折叠空白后比较");

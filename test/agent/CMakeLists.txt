@@ -14,8 +14,19 @@ target_link_libraries(test_agenttoolbridge JZFramework agent_tool)
 add_executable(test_virtual_terminal test_virtual_terminal.cpp)
 target_link_libraries(test_virtual_terminal JZFramework agent_tool)
 
+# terminal_run / terminal_query / terminal_cancel 三个工具类(终端 API 见上一条)
+add_executable(test_terminal_tools test_terminal_tools.cpp)
+target_link_libraries(test_terminal_tools JZFramework agent_tool)
+
 # 工具循环检测(纯逻辑, 不需要模型/网络/事件循环)
 add_executable(test_loopdetect test_loopdetect.cpp)
 target_link_libraries(test_loopdetect JZFramework)
+
+# 上下文压缩(TokenCompress): 连真实 LLM(按当前设置 maxToken=150000), 每轮评审同一份
+# 固定的 ~1150 行源码(整份进 prompt, 每轮约涨 12k token), 靠 sigLLMHistory 抓"压缩发生"
+# 与触发时机; **长跑不退出**(Ctrl+C / Stop-Process 停) —— 不是离线测试, 更不是 ctest 用例,
+# 详见源文件头注释
+add_executable(test_agent_compress test_agent_compress.cpp)
+target_link_libraries(test_agent_compress JZFramework)
 
 add_subdirectory(five_chess)

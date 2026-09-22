@@ -478,6 +478,11 @@ protected:
 2. tsconfig.json 已配置好（target ES2022，module esnext，rootDir ./src，outDir ./build，noEmitOnError），不要改它，也不要另建工程；
 3. 需要编译自检时执行：`tsc -p tsconfig.json`；需要跑起来时执行：`code_runtime --root ./build`；
 4. 只用 TS 写代码，不要直接写 .js（build/ 下的 js 是编译产物）。)";
+        // 运行时的模块/生命周期边界(与 Node 不同, 模型猜不出来): 共用 agent_tool 里那一份
+        system_prompt += "\n" + jzTsRuntimeNotes();
+        // 起服务类用例怎么跑(terminal_run 的 background / query / cancel): 同上, 只有一份
+        system_prompt += "\n" + jzTerminalRunNotes();
+
         std::string prompt = system_prompt + "\n" + m_case.prompt;
         if (!m_case.input.empty() && !m_httpPromptExtra.empty())
             prompt += m_httpPromptExtra;
@@ -1256,7 +1261,6 @@ int main(int argc, char *argv[])
                 line += ", ";
             line += kv.first + "=" + kv.second;
         }
-        jzDebug().nospace() << "[agent_cli_test] 程序映射: " << line;
     }
     else
     {

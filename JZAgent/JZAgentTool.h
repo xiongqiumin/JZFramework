@@ -100,6 +100,11 @@ public:
     virtual void call(const ToolCall &params) = 0;
     virtual void cancel(const std::string &id);
 
+    // 轮询类工具: 用**同样的参数**反复调用本身就是正常用法(如 terminal_query 查后台任务
+    // 进度、terminal_list 看会话), 不该被循环检测当成"原地打转"打掉。返回 true 的工具
+    // 走放宽阈值(见 JZLoopConfig::pollRepeat / pollSameResult)。
+    virtual bool isPollTool() const { return false; }
+
 jz_signals:
     JZSignal<ToolCallResult> sigResult;
 

@@ -137,6 +137,10 @@ public:
     char stdErrTail;
     HANDLE hStderrRead;
     DWORD pid = 0;        // 真实进程号(CreateProcess 填的 dwProcessId); 未启动/已回收为 0
+    // 每次启动建的作业对象: 用它才**杀得掉整棵进程树**(见 terminate)。
+    // 只 TerminateProcess 只会杀到我们自己起的那个进程(通常是 shell), 它的子进程
+    // (真正的服务 / sleep / node ...)会活下来继续占端口。
+    HANDLE hJob = INVALID_HANDLE_VALUE;
 
     JZByteArray stdoutBuffer;
     JZByteArray stderrBuffer;
@@ -153,7 +157,8 @@ JZProcessPrivate::JZProcessPrivate(JZProcess *q)
       hThread(INVALID_HANDLE_VALUE),
       hStdinWrite(INVALID_HANDLE_VALUE),
       hStdoutRead(INVALID_HANDLE_VALUE),
-      hStderrRead(INVALID_HANDLE_VALUE)
+      hStderrRead(INVALID_HANDLE_VALUE),
+      hJob(INVALID_HANDLE_VALUE)
 {
     stdOutTail = 0;
     stdErrTail = 0;
@@ -190,6 +195,13 @@ void JZProcessPrivate::closeHandles()
     {
         CloseHandle(hThread);
         hThread = INVALID_HANDLE_VALUE;
+    }
+    // 关作业对象: 带 KILL_ON_JOB_CLOSE, 所以这里是"最后一次清理子孙进程"的机会
+    // (进程正常跑完时作业里早没活了, 不会误杀)。
+    if (hJob != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hJob);
+        hJob = INVALID_HANDLE_VALUE;
     }
 }
 
@@ -324,6 +336,34 @@ bool JZProcessPrivate::createProcess()
     hProcess = pi.hProcess;
     hThread = pi.hThread;
     pid = pi.dwProcessId;
+
+    // 把子进程放进一个作业对象: 以后 TerminateJobObject 就能连它的**整棵进程树**一起收掉
+    // (只 TerminateProcess 的话, `bash -c "node server.js"` 里真正占端口的 node 会活下来)。
+    // KILL_ON_JOB_CLOSE: 我们(agent)退出/崩溃时, 作业句柄关闭 ⇒ 子孙进程自动被清理,
+    // 不会留下占着端口的孤儿。
+    // ⚠ 作业是**每次启动**新建的: 一个命令一棵树, 停它不影响别的命令。
+    // ⚠ 已有作业里再放作业需要系统支持(嵌套作业): 分配失败就退回"只杀直接子进程"的老行为。
+    if (hJob != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(hJob);
+        hJob = INVALID_HANDLE_VALUE;
+    }
+    hJob = CreateJobObjectA(nullptr, nullptr);
+    if (hJob != INVALID_HANDLE_VALUE)
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+        ZeroMemory(&info, sizeof(info));
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info)) ||
+            !AssignProcessToJobObject(hJob, pi.hProcess))
+        {
+            // 失败(常见于"我们自己已经在别人的作业里且不允许嵌套"): 关掉作业, 退回老行为
+            jzWarning() << "JZProcess: 作业对象不可用(进程树收尾退化为只杀直接子进程), err:"
+                        << (int)GetLastError();
+            CloseHandle(hJob);
+            hJob = INVALID_HANDLE_VALUE;
+        }
+    }
 
     return true;
 }
@@ -478,7 +518,12 @@ void JZProcessPrivate::terminate()
         return;
     }
     m_terminateRequested = true;
-    TerminateProcess(hProcess, 1);
+    // 优先杀**整棵进程树**(作业对象): 只杀直接子进程的话, shell 底下的服务会变成孤儿,
+    // 端口不释放 —— 那正是"起了服务收不干净"的根因。
+    if (hJob != INVALID_HANDLE_VALUE)
+        TerminateJobObject(hJob, 1);
+    else
+        TerminateProcess(hProcess, 1);
     // 同步等待进程真正退出再上报结束: 异步定时器路径在长时进程下有竞态,
     // 会让 state 长期卡在 Running。最多等 3s, TerminateProcess 必然使进程退出。
     WaitForSingleObject(hProcess, 3000);
@@ -564,6 +609,8 @@ public:
     void killProcess();
     void closeWriteChannel();
     void processRead();
+    // 杀整棵进程树(见实现): 子进程 setpgid(0,0) 之后 kill(-pid) 命中整组
+    void killTree(int sig);
 
     JZProcess *q_ptr;
     string program;
@@ -670,6 +717,10 @@ bool JZProcessPrivate::createProcess()
     if (pid == 0)
     {
         // ============ 子进程 ============
+        // 自己当进程组组长(pgid = 本进程 pid): 之后 terminate/kill 用 kill(-pid) 就能把
+        // **整棵进程树**一起收掉。只杀直接子进程的话, shell 底下的服务会变孤儿继续占端口。
+        ::setpgid(0, 0);   // 失败也无妨(极少见): 退化成只杀直接子进程
+
         ::close(errorPipe[0]);
 
         if (::dup2(stdinPipe[0], STDIN_FILENO) == -1)
@@ -1023,12 +1074,20 @@ void JZProcessPrivate::terminate()
     if (state != JZProcess::Running || pid <= 0)
         return;
 
-    if (::kill(pid, SIGTERM) == -1)
-    {
-        // kill失败通常意味着进程已经退出，尝试收尸
-        tryWaitForExit();
-    }
+    killTree(SIGTERM);
     closeHandles();
+}
+
+// 把**整棵进程树**干掉: 子进程启动时 setpgid(0,0) 成了进程组组长, 所以 kill(-pid) 会
+// 命中整组(子进程的子孙默认继承这个组)。只杀直接子进程的话, shell 底下的服务会变孤儿
+// 继续占端口 —— 这是"起了服务收不干净"的根因。
+// 组不存在(kill(-pid) 失败)时退回杀它自己; 两个都失败说明进程已经没了, 顺手收尸。
+void JZProcessPrivate::killTree(int sig)
+{
+    if (::kill(-pid, sig) == 0)
+        return;
+    if (::kill(pid, sig) == -1)
+        tryWaitForExit();
 }
 
 void JZProcessPrivate::killProcess()
@@ -1036,10 +1095,7 @@ void JZProcessPrivate::killProcess()
     if (state != JZProcess::Running || pid <= 0)
         return;
 
-    if (::kill(pid, SIGKILL) == -1)
-    {
-        tryWaitForExit();
-    }
+    killTree(SIGKILL);
 }
 
 void JZProcessPrivate::closeWriteChannel()

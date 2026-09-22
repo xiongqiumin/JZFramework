@@ -31,9 +31,16 @@ struct JZLoopConfig
 
     // ---- 工具调用 ----
     int window = 24;              // 只看最近 N 步工具调用(<=0 表示不限窗口)
-    int repeat = 3;               // 窗口内同签名重复 N 次 -> 中止
+    int repeat = 5;               // 窗口内同签名重复 N 次 -> 中止
     int sameResult = 2;           // 同签名**且结果也相同** N 次 -> 中止(证据更强)
     int resultCompareBytes = 4096;// 结果比较只取前 N 字节(0 = 全长)
+
+    // 轮询类工具(见 JZAgentTool::isPollTool): "用同样的参数反复调"本身就是**正常用法**
+    // (查后台任务进度 / 列会话), 用 repeat 的小阈值会把正常轮询误判成打转 —— 而发布给
+    // 模型的提示词恰恰写着"用 terminal_query 反复查状态与日志"。这两条把它们放宽:
+    // 只有"查了很多次且结果一直没变"这种真卡死才判(阈值 = 5~6 倍才算, 仍受 maxRounds 兜底)。
+    int pollRepeat = 16;          // 轮询类工具: 同签名重复 N 次 -> 中止
+    int pollSameResult = 6;       // 轮询类工具: 同签名且结果也相同 N 次 -> 中止
 
     // ---- 输出文本(思考/回复) ----
     int textTailBytes = 4096;     // 只看累计输出的尾部这么多字节
@@ -78,8 +85,9 @@ public:
 
     // 登记一步**已完成**的工具调用并判定。
     // argsJson 传原始 arguments 串(解析不了也能比: 退化成折叠空白后的原文)。
+    // pollTool = 该工具是轮询类(见 JZAgentTool::isPollTool): 用放宽的阈值判定。
     JZToolLoopEvent step(const std::string &toolName, const std::string &argsJson,
-                         const std::string &result);
+                         const std::string &result, bool pollTool = false);
 
     // 签名归一化: 参数能解析成 JSON 就**按键排序**后序列化(免得 {"a":1,"b":2} 与
     // {"b":2,"a":1} 被当成两次不同的调用), 否则折叠空白按原文比。

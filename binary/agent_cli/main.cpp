@@ -58,8 +58,10 @@ static const char *kDefaultConfigJson = R"json({
     "loop": {
         "enabled":          true,
         "window":           24,
-        "repeat":           3,
+        "repeat":           5,
         "sameResult":       2,
+        "pollRepeat":       16,
+        "pollSameResult":   6,
         "lineRepeat":       6,
         "blockRepeat":      3,
         "periodMax":        256,
@@ -249,11 +251,15 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
 
     // loop(循环检测: 工具重复调用 + 思考/回复原地打转 -> 直接中止本轮)
     //   工具侧: 结果也相同 = 证据更强, 阈值更低; 结果不同可能只是合法轮询(等编译/等运行)。
+    //   轮询类工具(terminal_query/terminal_list)用 pollRepeat/pollSameResult 单独放宽 ——
+    //   提示词本身就教模型"用 terminal_query 反复查进度", 用主阈值会误杀。
     //   输出侧: 同一行刷屏 / 同一段反复 / 周期串复读。
     readConfigBool(root, "loop", "enabled", "loopDetect", config.loopDetect);
     readConfigInt(root, "loop", "window", "loopWindow", config.loopWindow);
     readConfigInt(root, "loop", "repeat", "loopRepeat", config.loopRepeat);
     readConfigInt(root, "loop", "sameResult", "loopSameResult", config.loopSameResult);
+    readConfigInt(root, "loop", "pollRepeat", "loopPollRepeat", config.loopPollRepeat);
+    readConfigInt(root, "loop", "pollSameResult", "loopPollSameResult", config.loopPollSameResult);
     readConfigInt(root, "loop", "lineRepeat", "loopLineRepeat", config.loopLineRepeat);
     readConfigInt(root, "loop", "blockRepeat", "loopBlockRepeat", config.loopBlockRepeat);
     readConfigInt(root, "loop", "periodMax", "loopPeriodMax", config.loopPeriodMax);
@@ -393,8 +399,10 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
         fprintf(stderr, "  循环检测  关\n");
     else
         fprintf(stderr, "  循环检测  开 (工具: 窗口 %d 步, 重复 %d 次/结果也相同 %d 次 -> 中止; "
+                        "轮询类工具 %d/%d 次; "
                         "输出: 同行 %d 次/同段 %d 次/周期 %d 字符 %d 次 -> 中止)\n",
                 config.loopWindow, config.loopRepeat, config.loopSameResult,
+                config.loopPollRepeat, config.loopPollSameResult,
                 config.loopLineRepeat, config.loopBlockRepeat,
                 config.loopPeriodMax, config.loopPeriodRepeat);
     fprintf(stderr, "  验证循环  最多 %d 轮, 单次超时 %d ms\n",
@@ -437,8 +445,6 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  shell     %s\n", config.shellProgram.empty()
                                              ? "自动探测(优先 bash, 找不到回退 /bin/sh)"
                                              : config.shellProgram.c_str());
-    fprintf(stderr, "  程序映射  %s\n",
-            programs.empty() ? "(空: agent 只能用授信目录里的程序)" : programs.c_str());
     fprintf(stderr, "  日志文件  %s\n", config.logFile.empty() ? "(不打印到控制台)" : config.logFile.c_str());
 }
 

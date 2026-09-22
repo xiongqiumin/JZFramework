@@ -36,6 +36,20 @@ bool isTextFile(const std::string &path);
 bool codeListDir(const std::string &workspace, const std::string &rel,
                  std::vector<std::string> &out, std::string &error);
 
+// ------------------------------------------------------------------
+// TypeScript 运行时说明（写进 system prompt 的一段话）
+//
+//   本框架的 JS 运行时是自己的 JZJSEngine(QuickJS), **不是 Node**: 能写什么模块、
+//   怎么导入、进程什么时候退出都跟 Node 不一样。这些边界模型猜不出来, 只能靠提示词
+//   告诉它 —— 否则它会按 Node 习惯写 require / 具名导入 / 只 listen 不留心跳, 一路撞
+//   到"编译过了但跑不起来"。三个宿主(code_agent / agent_cli / 评测)共用这一份,
+//   避免各写一段然后漂移。
+// ------------------------------------------------------------------
+std::string jzTsRuntimeNotes();
+
+// 同上，另一段：终端怎么跑"起服务 + 测"这类长任务（terminal_run 的 background / query / cancel）。
+std::string jzTerminalRunNotes();
+
 enum class ToolOperator
 {
     Read,

@@ -636,36 +636,27 @@ Json::Value JZAgent::buildTools() const
     return tools;
 }
 
-// 字符数 → token 数的粗估(中英混排): 中文 1 字≈3 字节≈1 token, 英文/代码 1 token≈3~4 字符。
-// 取"3 字节 = 1 token"整体偏保守(略高估) —— 宁可早一点压缩, 也别把超长的 prompt 发出去。
-static int estimateTokensByChars(size_t bytes)
-{
-    return bytes == 0 ? 0 : (int)(bytes / 3) + 1;
-}
-
-// 下一次请求实际要发出的上下文大小(见头文件注释)。
-//   只能"从最近一轮的真实用量往前推 + 对还没发过的消息按字符估"，因为历史里没有
-//   消息级的 token 数(usage 记的是请求级的整段 prompt)。
 int JZAgent::windowTokens() const
 {
     const auto &hist = m_context.history;
 
-    // 最近一条"被真实测量过"的消息(assistant 回复): 
-    // 对于有些工具调用返回的, 没有测量过, 只有服务器返回的才会测量
-    int window = 0;
-    bool measured = false;
-    size_t firstUnsent = 0;      // 该下标之后的消息还没进过任何一次请求
+    int anchorPrompt = 0;            // 锚点那轮的实测 prompt(= 那一刻的上下文)
+    size_t tailFrom = hist.size();   // 从这条开始是"锚点之后"的消息
+    size_t anchorIndex = hist.size();
     for (size_t i = hist.size(); i > 0; i--)
     {
         const auto &h = hist[i - 1];
-        if (!h || h->usage.prompt_tokens + h->usage.completion_tokens <= 0)
-            continue;
-        window = h->usage.prompt_tokens + h->usage.completion_tokens;
-        firstUnsent = i;
-        break;
+        if (h && h->usage.prompt_tokens > 0)
+        {
+            anchorPrompt = h->usage.prompt_tokens;
+            anchorIndex = i - 1;
+            tailFrom = i;
+            break;
+        }
     }
 
-    return window;
+    int tokens = anchorPrompt;
+    return tokens;
 }
 
 void JZAgent::llmRequest()
@@ -1250,7 +1241,9 @@ bool JZAgent::checkToolLoop(const std::string &toolId, const std::string &result
     if (call.name.empty())
         return false;
 
-    JZToolLoopEvent ev = m_loopDetector.step(call.name, call.args, result);
+    // 轮询类工具(terminal_query / terminal_list ...)用放宽的阈值: 同参数反复查进度是正常用法
+    const JZAgentTool *t = tool(call.name);
+    JZToolLoopEvent ev = m_loopDetector.step(call.name, call.args, result, t && t->isPollTool());
     if (!ev.loop)
         return false;
 

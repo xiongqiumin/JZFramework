@@ -7,6 +7,7 @@
 #include "JZFileInfo.h"
 #include "JZNetworkAccessManager.h"   // 联网工具共享的访问管理器(+ JZProxyConfig)
 #include "JZPlatform.h"
+#include "JZProcess.h"       // 验证命令的异步执行(超时/进程树收尾)
 #include "JZString.h"        // str_toLower
 #include "JZVirtualTerminal.h"
 #include "json/json.h"
@@ -35,6 +36,38 @@ const int JZAgentCli::kHistoryMax;
 
 // 单次读文件上限(与 node 一致): 避免把几百兆读进内存。
 static const int kReadFileLimit = 8 * 1024 * 1024;
+
+// 验证输出回包上限(与旧 popen 实现一致): 几十 KB 足够定位, 再大只会撑爆 JSON 回包与上下文。
+static const size_t kMaxVerifyBytes = 65536;
+
+// JZByteArray -> std::string(进程输出按字节接回来, 原样存)
+static std::string bytesToText(const JZByteArray &data)
+{
+    if (data.size() <= 0 || !data.data())
+        return std::string();
+    return std::string(data.data(), data.size());
+}
+
+// 临时目录(放验证命令的包装脚本用): TEMP/TMPDIR 都没有就退回当前目录。
+static std::string tempDirPath()
+{
+#ifdef _WIN32
+    const char *t = std::getenv("TEMP");
+    if (!t || !*t)
+        t = std::getenv("TMP");
+#else
+    const char *t = std::getenv("TMPDIR");
+#endif
+    std::string dir = (t && *t) ? std::string(t) : std::string(".");
+    for (size_t i = 0; i < dir.size(); i++)
+    {
+        if (dir[i] == '\\')
+            dir[i] = '/';
+    }
+    while (dir.size() > 1 && dir.back() == '/')
+        dir.pop_back();
+    return dir;
+}
 
 // ==========================================================================
 // JZCliToolHost
@@ -140,6 +173,8 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     ac.loopDetect.window = m_config.loopWindow;
     ac.loopDetect.repeat = m_config.loopRepeat;
     ac.loopDetect.sameResult = m_config.loopSameResult;
+    ac.loopDetect.pollRepeat = m_config.loopPollRepeat;
+    ac.loopDetect.pollSameResult = m_config.loopPollSameResult;
     ac.loopDetect.textLineRepeat = m_config.loopLineRepeat;
     ac.loopDetect.textBlockRepeat = m_config.loopBlockRepeat;
     ac.loopDetect.textPeriodMax = m_config.loopPeriodMax;
@@ -180,6 +215,8 @@ void JZAgentCli::setupAgent()
         // 终端是这台机器上唯一的执行面: ls/cat/mkdir/rm/cp/mv/grep 都是 shell 命令,
         // 由 terminal_run 覆盖; 这里只挂终端会话管理 + 一个通用 shell 工具。
         addTool(new JZTerminalRunTool(m_terminal));
+        addTool(new JZTerminalQueryTool(m_terminal));
+        addTool(new JZTerminalCancelTool(m_terminal));
         addTool(new JZTerminalOpenTool(m_terminal));
         addTool(new JZTerminalListTool(m_terminal));
         addTool(new JZTerminalCloseTool(m_terminal));
@@ -247,6 +284,8 @@ string JZAgentCli::buildSystemPrompt() const
     if (m_config.allowTerminal)
     {
         text += "  terminal_run    执行一条 shell 命令(命令整条交给 shell: 管道/重定向/串联/通配符/变量都生效; 同一会话可同时跑多条)。\n";
+        text += "  terminal_query  按 run_id 查一次运行的状态与日志(run_id 省略 = 最近一次运行; 后台起的、前台跑完的都能查)。\n";
+        text += "  terminal_cancel 按 run_id 停掉一条还在跑的命令(run_id 省略 = 最近一条在跑的)。\n";
         text += "  terminal_open / terminal_list / terminal_close   多会话管理(单终端场景下可不用)。\n";
         text += "  shell           在工作区内跑一条外部命令(带超时)。\n";
     }
@@ -279,6 +318,9 @@ string JZAgentCli::buildSystemPrompt() const
     text += "  - 每条命令都是一个新 shell: 要进目录执行写 `cd <dir> && <cmd>`; "
             "单独的 `cd` 会被拒绝。cd/export 不跨命令保留。\n";
     text += "  - 不支持后台 `&`、heredoc、进程替换、for/while/if 复合语句。\n";
+    // "起服务再测"怎么跑必须说清楚: 模型容易给服务器那条一个很长的 timeout_ms 然后前台干等 ——
+    // 那条要挂满超时才回(中途取不到输出), 而且超时那一刻服务就被杀掉了。正确做法是 background=true。
+    text += jzTerminalRunNotes();
     text += "  - 优先用 read_file 而不是 cat, 用 modify_file 而不是 sed。\n";
     text += "  - 写权限: 工作区(读写执行)/授信目录(默认只读)/区外只读; 破坏性命令(dd/sudo...)被拒。\n";
     if (!m_config.programPaths.empty())
@@ -287,6 +329,10 @@ string JZAgentCli::buildSystemPrompt() const
         for (const auto &kv : m_config.programPaths)
             text += "  " + kv.first + "    " + kv.second + "\n";
     }
+    // 配了 code_runtime = 本机就是 JZ 的 TS 运行时: 把它的模块/生命周期边界一并告诉模型。
+    // 模型只会按 Node 的习惯写, 这些边界它猜不出来(猜错就是"编译过了但跑不起来")。
+    if (m_config.programPaths.count("code_runtime"))
+        text += "\n" + jzTsRuntimeNotes();
     if (m_config.memoryEnabled)
     {
         text += "\nMemory (跨任务的长期记忆):\n";
@@ -395,6 +441,43 @@ private:
     JZAgentCli *m_cli;
 };
 
+// 路由处理器: 后台任务面板(GET /terminal, GET /terminal/log, POST /terminal/cancel)
+class TerminalListHandler : public JZHttpHandler
+{
+public:
+    explicit TerminalListHandler(JZAgentCli *cli) : m_cli(cli) {}
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        m_cli->onTerminalList(client, req);
+    }
+private:
+    JZAgentCli *m_cli;
+};
+
+class TerminalLogHandler : public JZHttpHandler
+{
+public:
+    explicit TerminalLogHandler(JZAgentCli *cli) : m_cli(cli) {}
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        m_cli->onTerminalLog(client, req);
+    }
+private:
+    JZAgentCli *m_cli;
+};
+
+class TerminalCancelHandler : public JZHttpHandler
+{
+public:
+    explicit TerminalCancelHandler(JZAgentCli *cli) : m_cli(cli) {}
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        m_cli->onTerminalCancel(client, req);
+    }
+private:
+    JZAgentCli *m_cli;
+};
+
 // 路由处理器: 重置会话(POST /reset)
 class ResetHandler : public JZHttpHandler
 {
@@ -429,6 +512,11 @@ void JZAgentCli::startHttp()
     m_http->addRoute("/task", new TaskHandler(this));
     m_http->addRoute("/reset", new ResetHandler(this));
     m_http->addRoute("/events", new EventsHandler(this));
+
+    // 后台任务面板(网页): 列运行 / 取日志 / 停一条 —— 人想"看看服务在打什么"时不用去问模型
+    m_http->addRoute("/terminal", new TerminalListHandler(this));
+    m_http->addRoute("/terminal/log", new TerminalLogHandler(this));
+    m_http->addRoute("/terminal/cancel", new TerminalCancelHandler(this));
     if (!m_http->listen(m_config.httpBind, m_config.httpPort))
         jzWarning() << "HttpServer 监听失败:" << m_config.httpBind << ":" << m_config.httpPort;
 }
@@ -457,6 +545,160 @@ void JZAgentCli::onInfo(JZHttpServerClient *client, const JZHttpRequest &req)
     j["round"] = m_loopRound;
     j["recent"] = recentJson();      // 最近若干次请求与结果(网页刚打开时靠它补回历史)
     sendJson(client, 200, j);
+}
+
+void JZAgentCli::onTerminalList(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (!checkToken(req))
+    {
+        sendJson(client, 401, Json::objectValue);
+        return;
+    }
+
+    Json::Value arr(Json::arrayValue);
+    int running = 0;
+    if (m_terminal)
+    {
+        running = (int)m_terminal->activeRunIds().size();
+        int64_t now = JZPlatform::getTickCountMs();
+        std::vector<std::string> ids = m_terminal->runIds();   // 按发生先后
+        // 新的在前, 最多 30 条(网页那一栏放不下更多; 逐条日志要单独取)
+        for (size_t i = ids.size(); i-- > 0 && arr.size() < 30;)
+        {
+            JZVirtualTerminal::RunRecordInfo info;
+            if (!m_terminal->runSnapshot(ids[i], info))
+                continue;
+            int64_t end = info.endTime > 0 ? info.endTime : now;
+            Json::Value o;
+            o["run_id"] = info.runId;
+            o["command"] = info.command;
+            o["status"] = info.status;
+            o["background"] = info.background;
+            o["pid"] = info.pid;
+            o["exit_code"] = info.exitCode;
+            o["timed_out"] = info.timedOut;
+            o["error"] = info.error;
+            o["elapsed_ms"] = (Json::Int64)(end - info.startTime);
+            o["lines"] = (Json::UInt)info.totalLines;
+            arr.append(o);
+        }
+    }
+
+    Json::Value r;
+    r["running"] = running;
+    r["runs"] = arr;
+    sendJson(client, 200, r);
+}
+
+void JZAgentCli::onTerminalLog(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (!checkToken(req))
+    {
+        sendJson(client, 401, Json::objectValue);
+        return;
+    }
+
+    std::string runId = req.queryParam("run_id");
+    JZVirtualTerminal::RunRecordInfo info;
+    if (!m_terminal || runId.empty() || !m_terminal->runSnapshot(runId, info))
+    {
+        Json::Value e;
+        e["error"] = "没有这个 run_id: " + runId;
+        sendJson(client, 404, e);
+        return;
+    }
+
+    int tail = atoi(req.queryParam("tail").c_str());
+    if (tail <= 0)
+        tail = 200;
+    std::string grep = req.queryParam("grep");
+    std::string stream = str_toLower(req.queryParam("stream"));
+    if (stream == "all")
+        stream.clear();
+
+    // 与模型侧的 terminal_query 同一套过滤, 但**不碰增量游标**(那是模型的读位置, 网页别去动它)
+    const size_t kMaxBytes = 64 * 1024;
+    std::string text;
+    size_t shown = 0;
+    size_t from = 0;
+    if (info.log.size() > (size_t)tail)
+        from = info.log.size() - (size_t)tail;
+    for (size_t i = from; i < info.log.size(); i++)
+    {
+        const JZVirtualTerminal::RunLogLine &l = info.log[i];
+        if (!stream.empty() && l.stream != stream)
+            continue;
+        if (!grep.empty() && l.text.find(grep) == std::string::npos)
+            continue;
+        std::string one = l.stream + "| " + l.text + "\n";
+        if (text.size() + one.size() > kMaxBytes)
+        {
+            text += "...(日志过大, 只显示到这里; 用 grep 缩小范围)\n";
+            break;
+        }
+        text += one;
+        shown++;
+    }
+
+    Json::Value r;
+    r["run_id"] = info.runId;
+    r["command"] = info.command;
+    r["status"] = info.status;
+    r["exit_code"] = info.exitCode;
+    r["timed_out"] = info.timedOut;
+    r["background"] = info.background;
+    r["pid"] = info.pid;
+    r["total_lines"] = (Json::UInt)info.totalLines;
+    r["shown"] = (Json::UInt)shown;
+    r["dropped"] = (Json::UInt)info.firstLine;    // 记录上限丢掉的更早行数
+    r["truncated"] = (from > 0);
+    r["text"] = text;
+    sendJson(client, 200, r);
+}
+
+void JZAgentCli::onTerminalCancel(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (!checkToken(req))
+    {
+        sendJson(client, 401, Json::objectValue);
+        return;
+    }
+
+    std::string runId = req.queryParam("run_id");
+    if (runId.empty())
+    {
+        // 也允许 POST body: {"run_id":"xxx"}
+        Json::Value root;
+        Json::Reader reader;
+        if (reader.parse(std::string(req.body().data(), req.body().size()), root) && root.isObject())
+            runId = root.get("run_id", "").asString();
+    }
+
+    bool ok = false;
+    int killed = 0;
+    if (m_terminal)
+    {
+        if (!runId.empty())
+            ok = m_terminal->cancel(runId);
+        else
+        {
+            killed = m_terminal->cancelAll();   // 没指定 = 停所有在跑的(网页"全停")
+            ok = (killed > 0);
+        }
+    }
+
+    Json::Value r;
+    r["ok"] = ok;
+    r["run_id"] = runId;
+    r["killed"] = killed;
+    if (ok)
+    {
+        Json::Value e;
+        e["run_id"] = runId;
+        e["killed"] = killed;
+        pushEvent("terminal_cancel", e);   // 其它开着的页面也刷新一下
+    }
+    sendJson(client, ok ? 200 : 409, r);
 }
 
 void JZAgentCli::sendJson(JZHttpServerClient *client, int code, const Json::Value &j)
@@ -812,54 +1054,179 @@ std::string JZAgentCli::deriveVerifyCmd(const std::string &script, const std::st
     return resolveProgram(shells, "bash") + " " + q;
 }
 
-void JZAgentCli::runVerify(const std::string &cmd, int timeoutMs, const std::string &cwd,
-                           int &exitCode, std::string &output)
+void JZAgentCli::runVerifyAsync(const std::string &cmd, int timeoutMs, const std::string &cwd,
+                                const std::function<void(int, const std::string &)> &cb)
 {
-    output.clear();
-    // 在 cwd 下执行, 合并 stderr 到 stdout 以便把失败信息一并发给模型
-    std::string run = "cd \"" + cwd + "\" && " + cmd + " 2>&1";
-    if (timeoutMs > 0)
-    {
+    m_verifyCb = cb;
+    m_verifyOut.clear();
+    m_verifyTimedOut = false;
+    const int gen = ++m_verifyGen;
+    const int timeoutVal = timeoutMs;
+
+    // 合并 stderr 到 stdout, 失败信息才能一并发给模型。
+    // ⚠ 工作目录走 setWorkingDirectory, **不**拼 `cd "..." &&`: cmd.exe 对转义引号的
+    //   解析跟 sh 完全不同(JZProcess 会给含空格的参数加引号), 拼进去轻则 cd 失败、
+    //   重则整条命令被读错 —— 这也是旧 popen 那条链路的隐藏坑。
+    // 解释器与旧 popen 保持一致: Windows = cmd.exe /c, POSIX = /bin/sh -c
+    // (配了 terminal.shellProgram 就用它, 好跟终端行为对齐)。
+    std::string run = cmd + " 2>&1";
+    std::string shell;
+    std::vector<std::string> args;
 #ifdef _WIN32
-        // Windows 下暂不包 timeout 包装(可按需改用 timeout.exe)
+    shell = m_config.shellProgram.empty() ? std::string("cmd.exe") : m_config.shellProgram;
+    if (str_toLower(shell).find("cmd") == std::string::npos)
+    {
+        // 配了 bash 之类非 cmd 的 shell: 直接 `-c <命令>`(它们认 JZProcess 的 \" 转义)
+        args.push_back("-c");
+        args.push_back(run);
+    }
+    else
+    {
+        // ⭐ Windows 上要把命令**先写进临时 .cmd**, 再让 cmd.exe 只带一个脚本路径执行。
+        //   直接 `cmd.exe /c "<含引号的命令>"` 会坏: JZProcess 按 argv 规则给整个参数加引号、
+        //   并把内层 " 转义成 \" —— 而 **cmd.exe 不认 \"**, 内层引号会变成字面量。
+        //   实测症状(agent_cli_test 的 hello_world 用例):
+        //     python 收到带引号的路径 →
+        //     can't open file 'C:\tmp\...\case_0\"C:\...\stdout_verify.py"' [Errno 22]
+        //   (旧的 _popen 由 CRT 拼命令行, 所以没这个坑; 换成 JZProcess 后必须自己绕开。)
+        std::string dir = tempDirPath();
+        std::string path = dir + "/jz_verify_" + std::to_string(JZPlatform::getTickCountMs()) + "_" +
+                           std::to_string(gen) + ".cmd";
+        JZFile script;
+        std::string body = "@echo off\r\n" + run + "\r\n";
+        if (script.open(path, "wb"))
+        {
+            script.write(body.data(), (int)body.size());
+            script.flush();
+            script.close();
+            m_verifyScript = path;
+            args.push_back("/c");
+            args.push_back(path);   // 只有一个干净的路径参数(内层引号全在脚本内容里)
+        }
+        else
+        {
+            // 写不出临时脚本(权限/磁盘): 退回直传, 至少能跑无引号的命令
+            jzWarning() << "验证命令的临时脚本写不出来, 退回直接 -c 传参:" << path;
+            args.push_back("/c");
+            args.push_back(run);
+        }
+    }
 #else
-        run = "timeout " + std::to_string(timeoutMs / 1000 + 1) + "s " + run;
+    shell = m_config.shellProgram.empty() ? std::string("/bin/sh") : m_config.shellProgram;
+    args.push_back("-c");
+    args.push_back(run);   // POSIX 下 argv 是直传(没有 cmd 那套引号规则)
 #endif
+
+    JZProcess *proc = new JZProcess(this);
+    proc->setWorkingDirectory(cwd);
+    m_verifyProc = proc;
+    m_verifyRunning = true;
+
+    auto collect = [this, proc]()
+    {
+        m_verifyOut += bytesToText(proc->readAllStandardOutput());
+        m_verifyOut += bytesToText(proc->readAllStandardError());
+        // 累积上限: 验证输出几十 KB 足够定位问题, 别让它把内存/JSON 回包撑爆
+        if (m_verifyOut.size() > kMaxVerifyBytes * 2)
+            m_verifyOut.resize(kMaxVerifyBytes);
+    };
+    connect(&proc->sigReadyReadStandardOutput, collect);
+    connect(&proc->sigReadyReadStandardError, collect);
+    connect(&proc->sigFinished, [this, proc, gen, collect](int exitCode, JZProcess::ExitStatus)
+            {
+                if (gen != m_verifyGen)
+                    return;   // 上一轮验证的尾巴(已被 kill/replace), 丢掉
+                collect();
+                finishVerify(exitCode);
+            });
+    connect(&proc->sigErrorOccurred, [this, proc, gen](JZProcess::ProcessError)
+            {
+                if (gen != m_verifyGen)
+                    return;
+                // 起不来(解释器/脚本不存在): 与 popen 失败同义 —— 报 -1 + 可读原因,
+                // 让"验证命令本身跑不起来"这条信息照样能回到模型(见 onVerifyDone 的 127/9009 处理)
+                m_verifyOut = "无法启动验证命令: " + m_verifyCmd;
+                finishVerify(-1);
+            });
+
+    if (!proc->start(shell, args))
+        return;   // sigErrorOccurred 已经走过 finishVerify(它会 deleteLater)
+
+    // 超时: 到点连**整棵进程树**一起杀(JZProcess 的作业对象/进程组)。
+    // ⚠ Windows 以前完全不包超时(旧实现是 #ifndef _WIN32 的 timeout 包装) ⇒ 验证命令
+    //   不退出就永久卡死; 现在两个平台都走这条真超时。
+    if (timeoutVal > 0)
+    {
+        JZTimer::singleShot(timeoutVal, [this, gen]()
+                             {
+                                 if (gen != m_verifyGen || !m_verifyRunning)
+                                     return;
+                                 m_verifyTimedOut = true;
+                                 if (m_verifyProc)
+                                     m_verifyProc->killProcess();   // 同步收尾 -> finishVerify
+                             });
+    }
+}
+
+void JZAgentCli::killVerify()
+{
+    if (!m_verifyRunning)
+        return;
+    // 主动停: 结果已经没人要了(任务被重置/收尾), 所以先把分发清掉再杀
+    m_verifyCb = nullptr;
+    m_verifyRunning = false;
+    m_verifyGen++;   // 让在途的超时定时器与信号都作废
+    JZProcess *proc = m_verifyProc;
+    m_verifyProc = nullptr;
+    if (proc)
+    {
+        proc->killProcess();   // 同步收尾: 此刻 finishVerify 会因为 m_verifyRunning=false 直接返回
+        proc->deleteLater();
+    }
+    if (!m_verifyScript.empty())
+    {
+        JZFile::remove(m_verifyScript);
+        m_verifyScript.clear();
+    }
+}
+
+// 一次验证结束(自然退出 / 超时被杀 / 起不来): 截断输出 -> 回调
+void JZAgentCli::finishVerify(int exitCode)
+{
+    if (!m_verifyRunning)
+        return;
+    m_verifyRunning = false;
+
+    JZProcess *proc = m_verifyProc;
+    m_verifyProc = nullptr;
+    if (proc)
+        proc->deleteLater();
+
+    if (!m_verifyScript.empty())
+    {
+        JZFile::remove(m_verifyScript);   // Windows 的临时包装脚本: 用完就删
+        m_verifyScript.clear();
     }
 
-#ifdef _WIN32
-    FILE *f = _popen(run.c_str(), "r");
-#else
-    FILE *f = popen(run.c_str(), "r");
-#endif
-    if (!f)
+    std::string out = m_verifyOut;
+    if (m_verifyTimedOut)
     {
+        // 带个 ASCII 标记: 脚本/冒烟按它判定("验证命令超时"是中文, 日志编码不一定对得上)
+        out += "\n...[verify-timeout] 验证命令超时(" + std::to_string(m_verifyTimeoutMs) +
+               " ms), 进程已被强制终止";
         exitCode = -1;
-        output = "无法启动验证命令: " + cmd;
-        return;
     }
-    char buf[4096];
-    while (std::fgets(buf, sizeof(buf), f))
-        output += buf;
-#ifdef _WIN32
-    int st = _pclose(f);
-    exitCode = (st == -1) ? -1 : st;
-#else
-    int st = pclose(f);
-    if (st == -1)
-        exitCode = -1;
-    else if (WIFEXITED(st))
-        exitCode = WEXITSTATUS(st);
-    else
-        exitCode = -1;   // 被信号杀掉 / timeout
-#endif
-    // 截断超大输出, 避免 JSON 体积爆炸
-    const size_t kMax = 65536;
-    if (output.size() > kMax)
+    if (out.size() > kMaxVerifyBytes)
     {
-        output = output.substr(0, kMax) + "\n...(验证输出已截断, 共 " +
-                std::to_string(output.size()) + " 字节)";
+        size_t total = out.size();
+        out = out.substr(0, kMaxVerifyBytes) + "\n...(验证输出已截断, 共 " +
+              std::to_string(total) + " 字节)";
     }
+
+    std::function<void(int, const std::string &)> cb = m_verifyCb;
+    m_verifyCb = nullptr;
+    if (cb)
+        cb(exitCode, out);   // 回调里可能再起一次验证 / 收尾, 放最后
 }
 
 // 喂回给模型的验证输出: 只留头尾(错误栈/断言通常在两端), 中间省略。
@@ -896,22 +1263,34 @@ void JZAgentCli::onLoopFinished()
     //    (验证循环负责的是另一类失败: 模型能干活, 但结果不对。)
     if (m_failed)
     {
-        int code = 1;
-        std::string out;
-        runVerify(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir, code, out);
-        if (code == 0)
-            respondTask("success", m_loopRound, m_accumReply, out, "");
-        else
-            respondTask("failed", m_loopRound, m_accumReply, out,
-                        m_lastError.empty() ? std::string("agent 执行失败") : m_lastError);
-        endLoop();
+        runVerifyAsync(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir,
+                       [this](int code, const std::string &out)
+                       {
+                           if (!m_loopActive)
+                               return;   // 验证途中任务被重置了
+                           if (code == 0)
+                               respondTask("success", m_loopRound, m_accumReply, out, "");
+                           else
+                               respondTask("failed", m_loopRound, m_accumReply, out,
+                                           m_lastError.empty() ? std::string("agent 执行失败")
+                                                               : m_lastError);
+                           endLoop();
+                       });
         return;
     }
 
-    // 3) 运行验证脚本(退出码 0 通过, 1 失败)
-    int exitCode = 0;
-    std::string out;
-    runVerify(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir, exitCode, out);
+    // 3) 运行验证脚本(退出码 0 通过, 1 失败)。**异步**: 起进程后立刻返回, 结果经 onVerifyDone
+    //    回到主线程 —— 期间事件循环照常转(SSE 心跳/网页请求/工具回调都不会被卡住)。
+    runVerifyAsync(m_verifyCmd, m_verifyTimeoutMs, m_config.rootDir,
+                   [this](int code, const std::string &out) { onVerifyDone(code, out); });
+}
+
+// 验证结果的分发(正常路径): SSE 事件 -> 通过/失败 -> 超过轮次 -> 把输出喂回 agent 续跑
+void JZAgentCli::onVerifyDone(int exitCode, const std::string &out)
+{
+    if (!m_loopActive)
+        return;   // 验证途中任务被重置/取消了
+
     m_lastVerifyOutput = out;
 
     Json::Value ve;
@@ -1073,6 +1452,23 @@ void JZAgentCli::respondTask(const std::string &status, int rounds, const std::s
 
 void JZAgentCli::endLoop()
 {
+    // 任务收尾: 在跑的验证进程先停掉(重置/取消时它还可能在跑; 正常路径下此时已经没有在跑的)
+    killVerify();
+
+    // 停掉这轮留下的后台命令(agent 起的服务之类)。
+    // 后台任务没有超时、也不会自己结束, 而 agent 这会儿已经不管它们了 —— 不清掉就会跨任务
+    // 残留(典型后果: 端口还占着, 下一个用例的服务起不来)。
+    if (m_terminal)
+    {
+        int killed = m_terminal->cancelAll();
+        if (killed > 0)
+        {
+            Json::Value e;
+            e["killed"] = killed;
+            pushEvent("terminal_cleanup", e);
+        }
+    }
+
     m_loopActive = false;
     m_busy = false;
     m_pendingClient = nullptr;

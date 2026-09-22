@@ -102,6 +102,7 @@ public:
     // 本条消息所属**那一轮请求**的 token 用量(仅 Assistant 回复由响应 usage 填充)。
     // ⚠ prompt_tokens 是那轮的**整段 prompt**(prompt_n + 命中的 cache_n)，不是这条消息自身
     // 的 token 数 —— 所以它不能逐条相加当"上下文大小"用(见 JZAgent::windowTokens())。
+    // ⚠ completion_tokens 含**思考 token**, 而思考不回写上下文 ⇒ 不能当"这条消息占多少上下文"。
     JZAgentTokenUsage usage;
 
     Json::Value toJson() const;
@@ -230,6 +231,15 @@ public:
     const LLMContext* context() const;
 
     // 下一次请求实际要发出的上下文大小(token 估算) —— 预算判定与界面用量环都该用它。
+    // 口径 = 最近一条被实测过的消息那一轮的 prompt_tokens(= 当时的上下文)
+    //        + 锚点自己回写出去的正文/工具请求
+    //        + 锚点之后新增的消息(工具返回等)
+    //        + m_requests 里待发的消息
+    //        没有锚点时(首轮/服务端不下发 usage/历史刚载入)退回全量估算(system+工具+历史+待发)。
+    //   ⚠ 计数**不含思考 token**: 思考只实时上抛、不回写上下文(见 LLMHistory::thinking)。
+    //   以前这里用的是 prompt+completion, 会把上一轮的思考也算进上下文 ⇒ 高估
+    //   (实测 prompt=6378/completion=2878 而下一轮真实 prompt 只到 6624, 高估 ~40%),
+    //   预算被虚占、压缩提前。
     //   ⚠ 别拿 context()->usage.total_tokens 当"上下文": 那是 Σ history[i].usage, 而每条
     //   assistant 的 usage 记的是**那一轮整段 prompt**(prompt_n + cache_n, 见 mergeUsageJson),
     //   累加等于把同一段历史重复计入轮数遍(实测能到真实值的 4~6 倍)，预算会被提前顶爆。

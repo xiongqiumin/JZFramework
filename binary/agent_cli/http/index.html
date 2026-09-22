@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JZAgent 网页控制台</title>
-<link rel="stylesheet" href="style.css?v=15">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 <div class="app">
@@ -45,6 +45,11 @@
         <div class="side-group"><span>任务</span><span id="histHint" class="hint"></span></div>
         <ul id="histList" class="task-list"></ul>
         <div id="histEmpty" class="side-empty">提交任务后会显示在这里（运行中 → 通过/失败），含验证脚本与结论；列表只留最近 20 条，更早的记录在右侧对话里。</div>
+
+        <div class="side-group"><span>终端运行</span><span id="termHint" class="hint"></span></div>
+        <ul id="termList" class="term-list"></ul>
+        <div id="termEmpty" class="side-empty">agent 用 terminal_run 跑过的命令（含 background 起的服务）会显示在这里：点一条看日志，右边有按钮停掉它。</div>
+        <div id="termLog" class="term-log hidden"></div>
       </div>
     </aside>
 
@@ -77,6 +82,6 @@
     </div>
   </div>
 </div>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

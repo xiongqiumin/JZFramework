@@ -355,6 +355,41 @@ bool codeListDir(const string &workspace, const string &rel, vector<string> &out
     return true;
 }
 
+// ==================== TypeScript 运行时说明（写进 system prompt） ====================
+string jzTsRuntimeNotes()
+{
+    string s;
+    s += "TypeScript 运行时边界(本工程跑在 JZ 定制运行时上, 不是 Node; 下面几条与 Node 不同):\n";
+    s += "  - 只支持 ESM: 没有 require, 也不认 module.exports / exports。\n";
+    s += "  - 内置模块直接写裸名(写 'node:http' 也认)。内置名分两类, 别搞反:\n";
+    s += "      有默认导出(用默认导入): net / dgram / http / mqtt / ws / url / events / fs / path / "
+         "process / crypto / os / serialport / modbus;\n";
+    s += "      没有 default(必须具名导入): sqlite —— `import { DatabaseSync } from 'sqlite'`; "
+         "bytes —— `import { ByteReader, ByteWriter, hexOf } from 'bytes'`。\n";
+    s += "  - 包级内置名**不支持对子模块成员的具名导入**: `import { createServer } from 'http'` 编译能过、"
+         "运行会报 Could not find export —— 写 `import http from 'http'`, 再用 http.createServer()。\n";
+    s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
+    s += "  - 起服务/监听后要不要保活: 引擎只在还有定时器/微任务/未结算的异步(如 await fetch)时才继续跑。"
+         "自己后面还要 await 就不必额外加定时器; 只 listen、等外部来连(自身没有 pending 异步)时, "
+         "顶层代码跑完进程就退出 —— 这时留一个心跳定时器。\n";
+    return s;
+}
+
+string jzTerminalRunNotes()
+{
+    string s;
+    s += "terminal_run 两种模式: 默认**前台**(结果要等命令自己退出才回, 到 timeout_ms 强杀, 中途取不到输出); "
+         "background=true 时**后台**(启动成功就返回 run_id, 不等它结束、也不设超时)。\n";
+    s += "  - 起服务/常驻进程这类**自己不退出**的命令: 用 background=true 起, 拿返回的 run_id, "
+         "之后用 terminal_query 反复查状态与日志(可给 tail / grep); 用完了用 terminal_cancel 停掉。\n";
+    s += "  - 别再给服务器那条设一个很长的 timeout_ms 前台干等: 它必然以「命令超时, 已被强制终止」收尾, "
+         "而且超时那一刻服务就被杀掉了。\n";
+    s += "  - 前台跑完的命令同样能用 terminal_query 查: 那里是**完整日志**, 不受回包时的截断影响。\n";
+    s += "  - 要并发就在**同一条消息里发多个工具调用**; 分成两条消息发的话, 后一条要等前一条返回"
+         "(前台那条不结束就不回) —— 那就等于串行了。\n";
+    return s;
+}
+
 const char *denyReasonText(DenyReason reason)
 {
     switch (reason)

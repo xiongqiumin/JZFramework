@@ -31,6 +31,12 @@
   var resetBtn = $('resetBtn');
   var clearHistoryBtn = $('clearHistoryBtn');
 
+  // 终端运行面板(terminal_run 跑过的命令 / background 起的服务)
+  var termListEl = $('termList');
+  var termEmptyEl = $('termEmpty');
+  var termHintEl = $('termHint');
+  var termLogEl = $('termLog');
+
   tokenEl.value = token;
 
   // ------------------------------------------------------------------
@@ -829,12 +835,20 @@
         status: data.status, rounds: data.verify_rounds, error: data.error,
         out: data.last_verify_output, reply: data.agent_reply
       });
+      refreshTerminal();     // 任务收尾会把后台命令清掉(terminal_cleanup), 面板跟着刷新
       return;
     }
 
     if (type === 'reset') {
       endProc();
       addSystem(data.cancelled ? '任务已被重置' : '会话已重置(对话历史已清空)');
+      refreshTerminal();
+      return;
+    }
+
+    // 终端相关的收尾(root 用别的页面停了命令 / 任务收尾清理了后台任务): 面板跟着刷新
+    if (type === 'terminal_cleanup' || type === 'terminal_cancel') {
+      refreshTerminal();
       return;
     }
   }
@@ -859,7 +873,11 @@
     };
   }
 
-  tokenEl.addEventListener('change', function () { connectEvents(); });
+  tokenEl.addEventListener('change', function () {
+    connectEvents();
+    termFail = 0;            // token 换了: 面板立刻重试(否则要等退避周期)
+    refreshTerminal();
+  });
 
   // ------------------------------------------------------------------
   // 重置: POST /reset (后端调 JZAgent::reset())
@@ -992,10 +1010,126 @@
     });
   })();
 
+  // ------------------------------------------------------------------
+  // 终端运行面板: GET /terminal (列表) / GET /terminal/log (日志) / POST /terminal/cancel
+  //   为什么要有它: agent 用 terminal_run(background=true) 起的服务, 以前只有模型自己能看
+  //   —— 人想知道"服务在打什么"只能去问模型(烧 token)。这里给人一个出口, 代价是每 3 秒
+  //   一次 /terminal 轮询(纯内存, 很便宜)。
+  // ------------------------------------------------------------------
+  var termOpenId = null;         // 当前展开日志的 run_id
+  var termFail = 0;              // 连续失败次数(服务不在就别一直刷)
+  var TERM_KEEP = 8;             // 面板上最多显示几条(服务端给 30 条)
+
+  function termUrl(path) {
+    var tk = tokenEl.value.trim() || token;
+    return tk ? (path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tk)) : path;
+  }
+
+  function fmtDuration(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm' + (s % 60 ? (s % 60) + 's' : '');
+    return Math.floor(m / 60) + 'h' + (m % 60 ? (m % 60) + 'm' : '');
+  }
+
+  function renderTerminal(list) {
+    var runs = (list && list.runs) || [];
+    termListEl.innerHTML = '';
+    termEmptyEl.classList.toggle('hidden', runs.length > 0);
+    termHintEl.textContent = list && list.running ? (list.running + ' 条在跑') : '';
+
+    for (var i = 0; i < runs.length && i < TERM_KEEP; i++) {
+      var r = runs[i];
+      var li = el('li', 'term-item' + (r.status === 'running' ? ' running' : ''));
+      if (r.run_id === termOpenId) li.classList.add('sel');
+
+      var head = el('div', 'term-head');
+      var badge = el('span', 'term-badge ' + (r.status === 'running' ? 'run' : (r.exit_code === 0 ? 'ok' : 'fail')),
+        r.status === 'running' ? '运行中' : (r.exit_code === 0 ? '完成' : '结束'));
+      head.appendChild(badge);
+      if (r.background) head.appendChild(el('span', 'term-tag', '后台'));
+      head.appendChild(el('span', 'term-time', fmtDuration(r.elapsed_ms)));
+      var stop = el('button', 'ghost tiny term-stop', '停止');
+      stop.title = '停掉这条命令(连它的子进程一起收)';
+      stop.addEventListener('click', function (e) {
+        e.stopPropagation();
+        stopTerminalRun(this.getAttribute('data-rid'));
+      });
+      stop.setAttribute('data-rid', r.run_id);
+      if (r.status !== 'running') stop.disabled = true;
+      head.appendChild(stop);
+      li.appendChild(head);
+
+      li.appendChild(el('div', 'term-cmd', r.command || '(空命令)'));
+      var meta = r.run_id + ' · ' + r.lines + ' 行';
+      if (r.pid > 0 && r.status === 'running') meta += ' · pid ' + r.pid;
+      li.appendChild(el('div', 'term-meta', meta));
+
+      li.addEventListener('click', function () {
+        var rid = this.getAttribute('data-rid');
+        if (termOpenId === rid) { termOpenId = null; termLogEl.classList.add('hidden'); renderTerminal(lastTerminal); return; }
+        loadTerminalLog(rid);
+      });
+      li.setAttribute('data-rid', r.run_id);
+      termListEl.appendChild(li);
+    }
+  }
+
+  var lastTerminal = null;
+
+  var termTick = 0;
+
+  function refreshTerminal() {
+    termTick += 1;
+    // 连续失败(服务不在/token 不对)时退到 15 秒一次, 别每 3 秒刷一堆失败请求; 成功了自动恢复
+    if (termFail >= 3 && (termTick % 5) !== 0) return;
+    fetch(termUrl('/terminal'), { method: 'GET' })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (d) {
+        termFail = 0;
+        lastTerminal = d || { runs: [] };
+        renderTerminal(lastTerminal);
+        if (termOpenId) loadTerminalLog(termOpenId, true);   // 展开着就跟着刷新
+      })
+      .catch(function () { termFail += 1; });
+  }
+
+  function loadTerminalLog(runId, silent) {
+    fetch(termUrl('/terminal/log?run_id=' + encodeURIComponent(runId) + '&tail=200'), { method: 'GET' })
+      .then(function (resp) { return resp.json().catch(function () { return null; }); })
+      .then(function (d) {
+        if (!d || !d.run_id) {
+          if (!silent) { termOpenId = null; termLogEl.classList.add('hidden'); }
+          return;
+        }
+        termOpenId = d.run_id;
+        var head = '[' + d.run_id + '] ' + (d.status === 'running' ? '运行中' : '结束')
+          + '  ' + d.total_lines + ' 行' + (d.dropped ? ('(更早 ' + d.dropped + ' 行已丢弃)') : '');
+        termLogEl.textContent = head + '\n' + (d.text || '(暂无输出)');
+        termLogEl.classList.remove('hidden');
+        renderTerminal(lastTerminal);
+      })
+      .catch(function () { /* 忽略 */ });
+  }
+
+  function stopTerminalRun(runId) {
+    if (!runId) return;
+    fetch(termUrl('/terminal/cancel?run_id=' + encodeURIComponent(runId)), { method: 'POST' })
+      .then(function () { refreshTerminal(); })
+      .catch(function () { /* 忽略 */ });
+  }
+
+  // 每 3 秒刷一次(hidden 时跳过: 不占后台标签页的 CPU)
+  setInterval(function () {
+    if (!document.hidden) refreshTerminal();
+  }, 3000);
+
   probe();
   connectEvents();
   refreshSide();
   refreshPending();
+  refreshTerminal();
   syncSendBtn();
   inputEl.focus();
 })();

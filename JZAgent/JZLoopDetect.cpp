@@ -238,7 +238,7 @@ std::string JZToolLoopDetector::argsPreview(const std::string &argsJson, int max
 }
 
 JZToolLoopEvent JZToolLoopDetector::step(const std::string &toolName, const std::string &argsJson,
-                                        const std::string &result)
+                                        const std::string &result, bool pollTool)
 {
     JZToolLoopEvent ev;
     ev.toolName = toolName;
@@ -273,16 +273,20 @@ JZToolLoopEvent JZToolLoopDetector::step(const std::string &toolName, const std:
     ev.repeat = repeat;
     ev.sameResult = sameResult;
 
-    bool hit = (m_config.sameResult > 0 && sameResult >= m_config.sameResult)
-            || (m_config.repeat > 0 && repeat >= m_config.repeat);
+    // 轮询类工具用放宽的阈值: 同参数反复查询是正常用法, 别把"查进度"当成打转
+    const int repeatLimit = pollTool ? m_config.pollRepeat : m_config.repeat;
+    const int sameResultLimit = pollTool ? m_config.pollSameResult : m_config.sameResult;
+
+    bool hit = (sameResultLimit > 0 && sameResult >= sameResultLimit)
+            || (repeatLimit > 0 && repeat >= repeatLimit);
     if (!hit)
         return ev;
 
     m_hit = true;
     ev.loop = true;
 
-    std::string text = "循环检测: 工具 " + toolName + " 已被用完全相同的参数调用 "
-                     + std::to_string(repeat) + " 次";
+    std::string text = "循环检测: " + std::string(pollTool ? "轮询类工具 " : "工具 ") + toolName
+                     + " 已被用完全相同的参数调用 " + std::to_string(repeat) + " 次";
     if (sameResult >= 2)
         text += "(其中 " + std::to_string(sameResult) + " 次返回结果也相同)";
     text += ", 判定为原地打转, 本轮已中止。参数: " + ev.argsPreview;

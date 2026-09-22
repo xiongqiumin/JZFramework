@@ -2,7 +2,8 @@
 //
 // 覆盖:
 //   工具循环 —— 签名归一化(键序/嵌套/坏 JSON) / 同参数同结果(更早命中) /
-//               同参数不同结果(容忍合法轮询) / 参数一直变(永不命中) / 窗口滑动 / reset / 开关
+//               同参数不同结果(攒够主阈值才判) / 轮询类工具单独放宽 / 参数一直变(永不命中) /
+//               窗口滑动 / reset / 开关
 //   输出循环 —— 同一行刷屏 / 同一段反复 / 周期串复读 / 分隔线不误判 / 正常文本不误判 / 检查频率
 // 期望输出: ALL PASS
 //
@@ -91,20 +92,64 @@ int main()
         check(e2.message.find("\n") == string::npos, "错误文案是单行");
     }
 
-    // ---- 3) 同参数 + 结果不同: 容忍合法轮询, 第 3 次才判定 ----
-    printf("\n同参数不同结果(合法轮询的容忍):\n");
+    // ---- 3) 同参数 + 结果不同: 普通工具攒够主阈值(默认 5)才判 ----
+    //   "改一版编一次"这种正常流程里, 同一条命令跑 3~4 次是常事, 不该被打成打转。
+    printf("\n同参数不同结果(等编译/等运行这类重复):\n");
     {
         JZToolLoopDetector det;
-        const string args = "{\"run_id\":\"r1\"}";
+        const string args = "{\"command\":\"tsc -p tsconfig.json\"}";
+        for (int i = 1; i <= 4; i++)
+            check(!det.step("terminal_run", args, "输出第 " + to_string(i) + " 版").loop,
+                  "第 " + to_string(i) + " 次: 不判定(改一次编一次是正常流程)");
 
-        check(!det.step("terminal_query", args, "still running #0").loop, "第 1 次: 不判定");
-        check(!det.step("terminal_query", args, "still running #1").loop, "第 2 次: 不判定");
-        JZToolLoopEvent e3 = det.step("terminal_query", args, "still running #2");
-        check(e3.loop && e3.repeat == 3 && e3.sameResult == 1,
-              "第 3 次: 命中(只是重复, 结果并不一样)");
+        JZToolLoopEvent e5 = det.step("terminal_run", args, "输出第 5 版");
+        check(e5.loop && e5.repeat == 5 && e5.sameResult == 1,
+              "第 5 次: 命中(同签名重复 5 次, 结果并不一样)");
     }
 
-    // ---- 4) 参数一直变: 永不判定 ----
+    // ---- 4) 轮询类工具: 同参数反复查进度是正常用法, 走单独放宽的阈值 ----
+    printf("\n轮询类工具(terminal_query):\n");
+    {
+        JZToolLoopDetector det;
+        const string args = "{\"run_id\":\"t1-r1\"}";
+
+        bool early = false;
+        for (int i = 1; i <= 15; i++)
+        {
+            // 结果每次都在变(后台任务的日志在涨) —— 这正是"查进度"的常态
+            if (det.step("terminal_query", args, "still running #" + to_string(i), true).loop)
+                early = true;
+        }
+        check(!early, "轮询 15 次(结果一直在变): 不判定");
+
+        JZToolLoopEvent e16 = det.step("terminal_query", args, "still running #16", true);
+        check(e16.loop && e16.repeat == 16, "第 16 次: 命中(轮询阈值 pollRepeat=16)");
+        check(e16.message.find("轮询类工具") != string::npos, "错误文案标明是轮询类工具");
+        check(e16.message.find("\n") == string::npos, "错误文案是单行");
+
+        // 豁免靠**工具自己声明**, 不是靠名字: 同一个名字不带标记就走主阈值
+        JZToolLoopDetector plain;
+        bool hit5 = false;
+        for (int i = 1; i <= 5; i++)
+            hit5 = plain.step("terminal_query", args, "x" + to_string(i)).loop;
+        check(hit5, "不带轮询标记时按主阈值判定: 第 5 次命中");
+
+        // 轮询工具"结果一直没变"仍要能拦住(真卡死): 走 pollSameResult=6
+        JZToolLoopDetector stuck;
+        int stuckAt = 0;
+        for (int i = 1; i <= 8; i++)
+        {
+            if (stuck.step("terminal_query", args, "同样的一行输出", true).loop)
+            {
+                stuckAt = i;
+                break;
+            }
+        }
+        check(stuckAt == 6, "轮询工具结果一直相同: 第 6 次命中(pollSameResult=6), 实际 " +
+                                to_string(stuckAt));
+    }
+
+    // ---- 5) 参数一直变: 永不判定 ----
     printf("\n参数一直变(模型在换做法):\n");
     {
         JZToolLoopDetector det;
@@ -117,20 +162,23 @@ int main()
         check(!any, "30 次不同参数: 一次都不判定");
     }
 
-    // ---- 5) 窗口滑动 ----
+    // ---- 6) 窗口滑动 ----
     printf("\n窗口滑动:\n");
     {
         // 序列 A X1 X2 A X3 A (每步结果都不同, 免得"结果相同"那条更强的规则先命中):
         //   不限窗口 -> 第 6 步时 A 出现 3 次 => 命中
         //   窗口=4   -> 第 6 步时窗口里只剩 2 次 A => 不判定
+        // 这里把阈值显式定成 3, 免得默认值一改这条测试就跟着飘。
         JZToolLoopDetector limited;
         JZLoopConfig lc;
         lc.window = 4;
+        lc.repeat = 3;
         limited.setConfig(lc);
 
         JZToolLoopDetector unlimited;
         JZLoopConfig uc;
         uc.window = 0;   // 不限窗口
+        uc.repeat = 3;
         unlimited.setConfig(uc);
 
         const char *names[6] = { "A", "X1", "X2", "A", "X3", "A" };
@@ -145,7 +193,7 @@ int main()
         check(eu.loop && eu.repeat == 3, "不限窗口: 数到 3 次 A => 命中");
     }
 
-    // ---- 6) 开关 / 阈值 / reset ----
+    // ---- 7) 开关 / 阈值 / reset ----
     printf("\n配置与 reset:\n");
     {
         JZToolLoopDetector off;

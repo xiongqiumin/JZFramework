@@ -170,6 +170,46 @@ body.resizing iframe { pointer-events: none; }
 .side-empty { padding: 6px 12px 10px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 .side-empty.hidden { display: none; }
 
+/* 终端运行面板(terminal_run 跑过的命令): 点一条看日志, 运行中的可以停 */
+.term-list {
+  list-style: none; margin: 0; padding: 0 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.term-item {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); padding: 7px 9px; cursor: pointer;
+}
+.term-item:hover { border-color: var(--border-strong); }
+.term-item.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.term-item.running { background: #eef4ff; }
+.term-head { display: flex; align-items: center; gap: 6px; }
+.term-badge {
+  font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  background: #eceff3; color: var(--muted);
+}
+.term-badge.run { background: #e2ecff; color: var(--accent-2); }
+.term-badge.ok { background: #e6f4ea; color: var(--ok); }
+.term-badge.fail { background: #fdeceb; color: var(--fail); }
+.term-tag {
+  font-size: 11px; padding: 1px 5px; border-radius: 4px;
+  background: #f0e9ff; color: #6b46c1;
+}
+.term-time { margin-left: auto; font-size: 11px; color: var(--muted); }
+.term-stop { padding: 2px 6px; font-size: 11px; }
+.term-stop:disabled { opacity: .45; cursor: default; }
+.term-cmd {
+  margin-top: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.term-meta { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.term-log {
+  margin: 6px 10px 10px; padding: 8px 10px; max-height: 260px; overflow: auto;
+  background: #1f2328; color: #e6e6e6; border-radius: 8px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-all;
+}
+.term-log.hidden { display: none; }
+
 /* 待提交队列(对话下方, 输入区上方) —— 整块都在右栏 */
 .pending {
   flex: none;

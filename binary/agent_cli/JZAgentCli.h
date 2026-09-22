@@ -18,6 +18,7 @@ class JZNetworkAccessManager;
 class JZHttpServer;
 class JZHttpServerClient;
 class JZHttpRequest;
+class JZProcess;
 
 // ---------------------------------------------------------------------------
 // agent_cli 配置
@@ -58,8 +59,12 @@ struct JZCliConfig
     //   中止后在 agent_cli 里按"换做法"重试(见 classifyError)。
     bool loopDetect = true;
     int loopWindow = 24;             // 工具: 只看最近 N 步工具调用(0=不限窗口)
-    int loopRepeat = 3;              // 工具: 同签名重复 N 次 -> 中止
+    int loopRepeat = 5;              // 工具: 同签名重复 N 次 -> 中止
     int loopSameResult = 2;          // 工具: 同签名且结果也相同 N 次 -> 中止
+    // 轮询类工具(terminal_query / terminal_list): 同参数反复调用是正常用法(查后台任务进度),
+    // 用上面的小阈值会误杀 ⇒ 单独放宽(见 JZLoopConfig::pollRepeat / pollSameResult)。
+    int loopPollRepeat = 16;         // 轮询类工具: 同签名重复 N 次 -> 中止
+    int loopPollSameResult = 6;      // 轮询类工具: 同签名且结果也相同 N 次 -> 中止
     int loopLineRepeat = 6;          // 输出: 同一行连续重复 N 次 -> 中止
     int loopBlockRepeat = 3;         // 输出: 同一段(空行分隔)连续重复 N 次 -> 中止
     int loopPeriodMax = 256;         // 输出: 周期串最长多少字符
@@ -216,6 +221,14 @@ public:
     void pushEvent(const std::string &type, const Json::Value &data);   // 推给所有订阅者
     void removeEventClient(JZHttpServerClient *client);
 
+    // 网页"后台任务"面板(给人看的, 不占模型的上下文):
+    //   GET  /terminal[?tail=]              -> {running, runs:[{run_id,command,status,...}]}
+    //   GET  /terminal/log?run_id=&tail=&grep=&stream= -> {run_id,status,text,...}
+    //   POST /terminal/cancel?run_id=...    -> {ok,run_id}  (run_id 省略 = 停所有在跑的)
+    void onTerminalList(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onTerminalLog(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onTerminalCancel(JZHttpServerClient *client, const JZHttpRequest &req);
+
     // 任务提交核心: 由 HTTP(onTaskSubmit) 调用, 解析 prompt / 验证脚本 / 轮次, 进入"提交→验证"循环。
     // respond 在循环结束(成功/失败/取消)时被调用一次, 带回 JSON 结果
     //   {status, verify_rounds, agent_reply, last_verify_output, error?}。
@@ -265,8 +278,16 @@ protected:
     // 从候选里挑一个"本机真能跑"的解释器(配置 programPaths 优先, 否则探测):
     // Windows cmd 下 python3 / bash 常常不存在, 硬写会让验证脚本永远起不来。
     std::string resolveProgram(const std::vector<std::string> &cands, const std::string &fallback) const;
-    static void runVerify(const std::string &cmd, int timeoutMs, const std::string &cwd,
-                         int &exitCode, std::string &output);
+    // 跑一次验证命令。**异步**: 起进程后立刻返回, 结果经 cb(exitCode, output) 回调。
+    // 为什么不用 _popen: ① 它是同步的, 会卡住主线程(SSE/HTTP/定时器全停, 网页看着像挂了);
+    // ② Windows 下根本没有超时手段(以前那段 timeout 包装是 #ifndef _WIN32) ⇒ 验证命令
+    //    一旦不退出, 整个 agent_cli 永久卡死, verify_timeout 形同虚设。
+    // 现在统一用 JZProcess + JZTimer 超时(到点连进程树一起杀, 见 JZProcess 的作业对象)。
+    void runVerifyAsync(const std::string &cmd, int timeoutMs, const std::string &cwd,
+                        const std::function<void(int, const std::string &)> &cb);
+    void killVerify();                       // 停掉在跑的验证进程(重置/收尾时用)
+    void finishVerify(int exitCode);         // 一次验证的收尾(截断输出 + 回调)
+    void onVerifyDone(int exitCode, const std::string &out);   // 验证结果的分发(正常路径)
     void onLoopFinished();
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                     const std::string &verifyOut, const std::string &err);
@@ -311,6 +332,16 @@ protected:
     int m_verifyTimeoutMs = 60000;
     std::string m_accumReply;                        // 累积本轮 agent 最终回复
     std::string m_lastVerifyOutput;
+    // 在跑的验证进程(异步): 收尾/重置时要能把它连同子孙一起停掉
+    JZProcess *m_verifyProc = nullptr;
+    bool m_verifyRunning = false;
+    bool m_verifyTimedOut = false;
+    int m_verifyGen = 0;                             // 世代号: 作废上一轮验证的定时器/信号
+    std::string m_verifyOut;                         // 本次验证的累积输出(共用 stdout/stderr)
+    // Windows: 命令写进的临时 .cmd 路径(见 runVerifyAsync 的说明), 收尾时删掉
+    std::string m_verifyScript;
+    // 分发用的回调: 起进程时存下来, sigFinished 里调
+    std::function<void(int, const std::string &)> m_verifyCb;
 
     // 最近一次任务的回包。提交方(POST /task 的那条连接)断连后任务仍在跑完 —— 那时结果只能
     // 经 SSE 出口; 若订阅者也恰好不在(网页关了又开), 重连时的 hello 帧带上它, 让界面收尾。

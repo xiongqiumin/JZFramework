@@ -1,6 +1,7 @@
 #ifndef JZ_VIRTUAL_TERMINAL_H_
 #define JZ_VIRTUAL_TERMINAL_H_
 
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -103,7 +104,21 @@ public:
         int exitCode = -1;
         bool timedOut = false;
         std::string error;    // 收尾原因(超时/被杀/非零退出), 可为空
+        bool background = false;   // 后台运行起的(见 runBackground): 没有超时, 启动即返回
+        int pid = -1;              // 根进程号(本终端起的; 展示与 kill 归属判定用)
+        int64_t startTime = 0;     // 启动时刻(毫秒), 查"已经跑了多久"用
+        int64_t endTime = 0;       // 结束时刻(毫秒), 还在跑时为 0(算总耗时用)
         std::vector<RunLogLine> log;
+
+        // ---- 日志的"绝对行号"信息(给 terminal_query 做增量读取) ----
+        // 记录有上限, 旧的会从头部丢 ⇒ log[0] 的绝对行号不再是 0。这里给出:
+        //   totalLines: 这条运行**累计产出**过多少行(只增不减)
+        //   firstLine : log[0] 的绝对行号(= totalLines - log.size(), 更早的已被丢弃)
+        //   readPos   : 上次 terminal_query 读到哪(增量查询从这里接着读)
+        // 绝对行号 = 从这条运行的第一行开始数, 与 readPos 同一个坐标系。
+        size_t totalLines = 0;
+        size_t firstLine = 0;
+        size_t readPos = 0;
     };
 
     explicit JZVirtualTerminal(JZObject *parent = nullptr);
@@ -193,6 +208,21 @@ public:
                               const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
                               bool background = false,
                               OutputFilter filter = OutputFilter::Default);
+
+    // 后台运行(2026-09-22): 起一条命令后**立即返回**, 不等它结束, 也不设超时 ——
+    //   给"自己不退出"的长程任务用(起服务 / 常驻进程 / 长时间构建), 这类命令前台跑必然
+    //   撞死在 timeout 上(超时还会把进程杀掉, 那正是以前"起服务"用例最大的坑)。
+    // 命令本身还是**普通命令**: 同样过审核、同样由本终端起进程、同样收输出 —— 区别只在
+    //   "我们不等它 / 不定时杀它", 进程始终在管理之下(不像 shell 的 `&` 那样脱离)。
+    // 返回: 成功 = run_id(之后用 runSnapshot(runId) 查状态与日志、cancel(runId) 停掉);
+    //       失败 = 命令被拒或起不来(这时不留记录, 也没有东西可查)。
+    // cb 可以为空: 没人对结果感兴趣时(纯"起个服务")照样收尾 —— 结果只写进运行记录,
+    //   之后按 run_id 查得到(状态/退出码/日志)。
+    // ⚠ 生命期: 后台运行与前台共用并发上限(kMaxConcurrentRuns); 终端析构时会把它们一起杀掉。
+    JZResult<std::string> runBackground(const std::string &command,
+                                        const RunCallback &cb = RunCallback(),
+                                        OutputFilter filter = OutputFilter::Default);
+
     // 停一条命令: **必须带 runId**(在途运行的 id 见 activeRunIds() 或 run() 的返回值)。
     // 被杀的命令照样走它自己的 RunCallback(ok=false), 收尾只有一条路径。
     bool cancel(const std::string &runId);
@@ -214,6 +244,11 @@ public:
     // ==================== 运行记录(后台/流式留下的日志) ====================
     bool runSnapshot(const std::string &runId, RunRecordInfo &out) const;
     std::vector<std::string> runIds() const;   // 本终端的全部运行 id(按发生先后)
+
+    // 把这条运行的"增量读取游标"前移(见 RunRecordInfo::readPos)。
+    // terminal_query 默认只回上次之后的新增行, 读完就前移到这里 —— 轮询查进度时
+    // 不会把同一段日志反复灌进模型的上下文(长任务上这是最大的浪费来源)。
+    bool advanceRunReadPos(const std::string &runId, size_t pos);
 
     // ==================== 环境变量(本终端级覆盖) ====================
     bool setEnv(const std::string &name, const std::string &value, bool persistent);
@@ -270,7 +305,23 @@ protected:
         int exitCode = -1;
         bool timedOut = false;
         std::string error;
-        std::vector<RunLogLine> log;
+        bool background = false;          // 后台运行(见 runBackground): 没有超时
+        int pid = -1;                     // 根进程号(起进程成功后回填)
+        int64_t startTime = 0;            // 启动时刻(毫秒)
+        int64_t endTime = 0;              // 结束时刻(毫秒; 0 = 还在跑)
+
+        // 日志行: 用 deque —— 超上限时从头部丢, pop_front 是 O(1)。
+        // (以前是 vector + erase(begin()), 每多一行就把整段搬一次: 高频输出的后台服务
+        //  在 4000 行窗口上等于 O(n²), 白烧 CPU。)
+        std::deque<RunLogLine> log;
+        int64_t logBytes = 0;             // log 里文本+流标签的字节数(按字节淘汰用)
+        size_t totalLines = 0;            // 累计产出的行数(只增; 见 RunRecordInfo::totalLines)
+        size_t readPos = 0;               // terminal_query 的增量读取游标(绝对行号)
+
+        // 每路输出"还没换行的那半截": 输出是按块读进来的, 一行的两半可能落在两次读里 ——
+        // 只落**完整行**, 否则一行会被切碎成好几条日志(查询时看到的日志就错位了)。
+        std::string partialStdout;
+        std::string partialStderr;
     };
 
     // ---- 在途运行(可多个并发) ----

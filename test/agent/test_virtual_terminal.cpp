@@ -1,7 +1,8 @@
 // JZVirtualTerminal 冒烟测试(不依赖 JZProcess 的那部分)
 //
 // 覆盖: 单终端 / 内建文件动作 / **区域审核**(越界必须被拒) / 审计回调 / 程序白名单 /
-//       **并发运行**(同一终端同时跑多条命令 + 按 run_id 精确 cancel + cancelAll)。
+//       **并发运行**(同一终端同时跑多条命令 + 按 run_id 精确 cancel + cancelAll) /
+//       **后台运行** / **进程树收尾**(停一条命令要连它的子孙一起收, 不留占端口的孤儿)。
 // run() 形态: JZResult<std::string>(成功 = run_id, 失败 = 原因) —— 测试里统一走 runCmd() 包装。
 // 期望输出: ALL PASS
 //
@@ -10,6 +11,7 @@
 
 #include <stdio.h>
 #include <string>
+#include <utility>
 
 #include "JZApplication.h"
 #include "JZDir.h"
@@ -18,9 +20,103 @@
 #include "JZTimer.h"
 #include "JZVirtualTerminal.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <tlhelp32.h>
+#else
+#include <dirent.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
 using namespace std;
 
 static int g_fail = 0;
+
+// 枚举当前所有进程的 (pid, 父 pid) —— 用来验证"停一条命令有没有把它的子孙一起收掉"。
+// 只测这个用途, 所以尽量简单: Windows 走 Toolhelp32, Linux 扫 /proc/<pid>/stat。
+static vector<pair<unsigned long, unsigned long>> listProcesses()
+{
+    vector<pair<unsigned long, unsigned long>> out;
+#ifdef _WIN32
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return out;
+    PROCESSENTRY32 pe;
+    ZeroMemory(&pe, sizeof(pe));
+    pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe))
+    {
+        do
+        {
+            out.push_back(make_pair((unsigned long)pe.th32ProcessID, (unsigned long)pe.th32ParentProcessID));
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+#else
+    DIR *d = ::opendir("/proc");
+    if (!d)
+        return out;
+    while (dirent *e = ::readdir(d))
+    {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9')
+            continue;
+        unsigned long pid = ::strtoul(e->d_name, nullptr, 10);
+        string path = string("/proc/") + e->d_name + "/stat";
+        FILE *f = ::fopen(path.c_str(), "r");
+        if (!f)
+            continue;
+        char buf[512] = { 0 };
+        size_t n = ::fread(buf, 1, sizeof(buf) - 1, f);
+        ::fclose(f);
+        buf[n] = 0;
+        char *r = ::strrchr(buf, ')');   // comm 可能含空格/括号, 取最后一个 ')'
+        unsigned long ppid = 0;
+        char state = 0;
+        if (r)
+            ::sscanf(r + 1, " %c %lu", &state, &ppid);
+        out.push_back(make_pair(pid, ppid));
+    }
+    ::closedir(d);
+#endif
+    return out;
+}
+
+// rootPid 的子孙进程个数(不递归只看一层是不够的: git-bash 会再套一层 bash)
+static int descendantCount(unsigned long rootPid)
+{
+    vector<pair<unsigned long, unsigned long>> all = listProcesses();
+    vector<unsigned long> parents;
+    parents.push_back(rootPid);
+
+    int count = 0;
+    bool grew = true;
+    while (grew)
+    {
+        grew = false;
+        for (size_t i = 0; i < all.size(); i++)
+        {
+            unsigned long pid = all[i].first;
+            unsigned long ppid = all[i].second;
+            bool known = false;
+            for (size_t k = 0; k < parents.size() && !known; k++)
+                known = (parents[k] == pid);
+            if (known)
+                continue;
+            for (size_t k = 0; k < parents.size(); k++)
+            {
+                if (parents[k] == ppid)
+                {
+                    parents.push_back(pid);
+                    count++;
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+    return count;
+}
 
 static void check(bool ok, const string &what)
 {
@@ -683,6 +779,100 @@ private:
         check(m_killed == 2, "被停的两条各自都收到了收尾回调: " + to_string(m_killed));
         check(m_term.info().runningCount == 0, "cancelAll 之后一条都不剩");
 
+        stepRunBackground();
+    }
+
+    // ⭐ 后台运行 runBackground(): 就是"起服务"这类**自己不退出**的长程任务的跑法。
+    //   命令还是普通命令(同样过审、同样由本终端起进程), 区别只在: 启动成功就返回 run_id,
+    //   不等它结束、也不设超时 —— 以前只能前台干等, 撞满 timeout_ms 还会把服务杀掉。
+    void stepRunBackground()
+    {
+        m_bgCalledBack = false;
+        JZResult<string> started = m_term.runBackground(
+            "echo bg_start && sleep 30 && echo bg_end",
+            [this](bool, const string &, const string &) { m_bgCalledBack = true; });
+        check(!started.isError(), "runBackground 启动成功" +
+              (started.isError() ? ": " + started.errorMessage() : string()));
+        if (started.isError())
+        {
+            stepUnrestrictedFloor();
+            return;
+        }
+        m_ridBg = started.value();
+
+        // 启动这一步只回 run_id: 命令还在跑(收尾回调没来, 输出也没给回)
+        check(!m_ridBg.empty(), "后台运行也有 run_id: " + m_ridBg);
+        check(!m_bgCalledBack, "runBackground 启动即返回(没等命令结束)");
+
+        JZVirtualTerminal::RunRecordInfo info;
+        check(m_term.runSnapshot(m_ridBg, info), "能按 run_id 查到这条后台运行");
+        check(info.background, "记录里标了它是后台运行");
+        check(info.status == "running", "查到的状态是 running: " + info.status);
+        check(info.pid > 0, "记录里带根 pid: " + to_string(info.pid));
+
+        // 等一拍再查: 后台任务照样在收输出(日志查得到), 而且没有超时来杀它
+        JZTimer::singleShot(1200, [this]() { stepRunBackgroundCheck(); });
+    }
+
+    void stepRunBackgroundCheck()
+    {
+        JZVirtualTerminal::RunRecordInfo info;
+        check(m_term.runSnapshot(m_ridBg, info), "1.2 秒后仍能查到这条后台运行");
+        check(info.status == "running", "后台任务不会被超时杀掉(仍在 running): " + info.status);
+        bool hasStart = false;
+        for (const JZVirtualTerminal::RunLogLine &l : info.log)
+        {
+            if (contains(l.text, "bg_start"))
+                hasStart = true;
+        }
+        check(hasStart, "后台任务的输出照样进运行记录(terminal_query 能查到)");
+        check(!m_bgCalledBack, "还在跑, 收尾回调没来");
+
+        check(m_term.cancel(m_ridBg), "cancel(run_id) 能停掉后台任务");
+        check(m_term.runSnapshot(m_ridBg, info) && info.status == "done",
+              "停掉后状态变 done(结果留在记录里可查): " + info.status);
+
+        stepRunTreeKill();
+    }
+
+    // ---- 进程树收尾: 停一条命令要连它的**子孙**一起收 ----
+    //   执行面是 `bash -c "<命令>"`, 真正的服务/长任务都在 bash 底下(git-bash 实测还会再
+    //   套一层 bash: bash -> bash -> sleep)。只杀直接子进程的话, 它们会变成孤儿进程继续
+    //   占端口 —— 这就是"起了服务收不干净"的根因。这里用真实进程树断言收尾是否彻底。
+    void stepRunTreeKill()
+    {
+        JZResult<string> started = m_term.runBackground("echo tree_probe && sleep 60",
+                                                       [](bool, const string &, const string &) {});
+        check(!started.isError(), "进程树: 后台起一条会把子进程挂住的命令" +
+                                      (started.isError() ? ": " + started.errorMessage() : string()));
+        if (started.isError())
+        {
+            stepUnrestrictedFloor();
+            return;
+        }
+        m_treeRid = started.value();
+
+        JZVirtualTerminal::RunRecordInfo info;
+        check(m_term.runSnapshot(m_treeRid, info) && info.pid > 0, "进程树: 拿到根进程 pid");
+        m_treeRoot = (unsigned long)info.pid;
+
+        // 先等它把子孙起出来(否则这个测试什么也没验证), 再停
+        JZTimer::singleShot(800, [this]()
+                            {
+                                m_treeDescBefore = descendantCount(m_treeRoot);
+                                check(m_treeDescBefore > 0,
+                                      "进程树: 跑起来之后确实有子孙进程(" +
+                                          to_string(m_treeDescBefore) + " 个)");
+                                check(m_term.cancel(m_treeRid), "进程树: cancel(run_id) 停掉这条");
+                                JZTimer::singleShot(800, [this]() { stepRunTreeKillCheck(); });
+                            });
+    }
+
+    void stepRunTreeKillCheck()
+    {
+        int left = descendantCount(m_treeRoot);
+        check(left == 0, "进程树: 停掉之后子孙一个不剩(跑着时 " + to_string(m_treeDescBefore) +
+                             " 个, 现在 " + to_string(left) + " 个)");
         stepUnrestrictedFloor();
     }
 
@@ -755,8 +945,15 @@ private:
     int m_killed = 0;                // cancelAll 收到收尾回调的条数
     string m_ridA, m_ridB;           // 并发两条的 run_id
     string m_ridLong, m_ridPeer;     // cancel 步骤的 run_id
+    string m_ridBg;                  // 后台运行步骤的 run_id
+    bool m_bgCalledBack = false;     // 后台那条有没有来过收尾回调
     string m_outA, m_outB;
     string m_cancelOut, m_peerOut;
+
+    // ---- 进程树收尾步骤用 ----
+    string m_treeRid;                // 那棵树对应的 run_id
+    unsigned long m_treeRoot = 0;    // 根进程 pid
+    int m_treeDescBefore = 0;        // 停掉之前数到的子孙进程个数
 };
 
 int main(int argc, char *argv[])

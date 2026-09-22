@@ -29,6 +29,27 @@ static const int kMaxReadBytes = 8 * 1024 * 1024;
 // 运行记录上限
 static const int kMaxRuns = 200;
 static const int kMaxRunLines = 4000;
+// 单条运行的日志字节上限(行数之外再兜一层: 少数行也可能很长, 比如压缩过的 JSON 输出)
+static const int64_t kMaxRunBytes = 512 * 1024;
+// 落一行的上限: 每路输出"没有换行的那半截"攒到这么多就先当一行落下(进度条 \r 刷屏等)
+static const int kMaxPartialBytes = 64 * 1024;
+
+// 往运行记录里落一行(唯一入口): 维护字节计数 + 超上限(行数/字节)时从头部丢。
+// 用 deque 的 pop_front 是 O(1) —— 以前 vector.erase(begin()) 在满窗口时每行都要整体搬一遍。
+// totalLines 是"累计产出行数"(只增): 绝对行号 = totalLines - log.size() 起算,
+// terminal_query 的增量游标就建在它上面。
+static void pushRunLogLine(std::deque<JZVirtualTerminal::RunLogLine> &log, int64_t &bytes,
+                           size_t &totalLines, const std::string &stream, const std::string &text)
+{
+    log.push_back({stream, text});
+    totalLines++;
+    bytes += (int64_t)(text.size() + stream.size());
+    while ((int)log.size() > kMaxRunLines || (kMaxRunBytes > 0 && bytes > kMaxRunBytes))
+    {
+        bytes -= (int64_t)(log.front().text.size() + log.front().stream.size());
+        log.pop_front();
+    }
+}
 
 // 一个终端同时能跑的命令条数上限。并发是为了"长任务别把别的命令全堵住",
 // 不是无上限 —— 模型一口气提几十条会把机器拖死, 到顶就让它等前面的结束。
@@ -82,7 +103,7 @@ static bool isErrorLine(const string &line)
 // 错误块(错误行 + 其缩进续行)完整保留, 不被截断在半截。
 static const int kTailOnSuccess = 20;
 static const int kHeadErrorCap = 100;
-string filterBuildOutput(const vector<JZVirtualTerminal::RunLogLine> &log, bool success)
+string filterBuildOutput(const deque<JZVirtualTerminal::RunLogLine> &log, bool success)
 {
     string out;
     if (success)
@@ -142,7 +163,7 @@ string filterBuildOutput(const vector<JZVirtualTerminal::RunLogLine> &log, bool 
 // 中间省略, 避免长输出(git log / cat 大文件 / 海量 ls 等)撑爆上下文。
 static const int kGenericHead = 50;
 static const int kGenericTail = 50;
-string truncateGeneric(const vector<JZVirtualTerminal::RunLogLine> &log)
+string truncateGeneric(const deque<JZVirtualTerminal::RunLogLine> &log)
 {
     int n = (int)log.size();
     if (n <= kGenericHead + kGenericTail)
@@ -1435,13 +1456,22 @@ JZResult<string> JZVirtualTerminal::run(const string &command, int timeoutMs, co
     return JZResult<string>::Ok(runId);
 }
 
+JZResult<string> JZVirtualTerminal::runBackground(const string &command, const RunCallback &cb,
+                                                  OutputFilter filter)
+{
+    // 后台 = 同一条执行路径, 只是 timeoutMs = 0(不设定时器, 见 startRun 里 timeoutMs > 0 的分支)
+    // + background 标记(运行记录里标出来, 淘汰时区别对待)。审核/起进程/收输出完全一样。
+    return run(command, /*timeoutMs=*/0, cb, nullptr, /*background=*/true, filter);
+}
+
 bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const RunCallback &cb, string &error,
                                  string *runId,
                                  const std::function<void(const string &, const string &)> &onChunk,
                                  bool background,
                                  OutputFilter filter)
 {
-    (void)background;   // 起完进程就返回(结果走 cb), 所以没有"前台阻塞"这回事了
+    // background 不是"起完就不管": 它只决定 **没有超时定时器**(前台那条到点会被强杀)。
+    // 进程/输出/收尾前后台走完全同一套, 所以后台命令照样可查(runSnapshot)可停(cancel)。
 
     if (command.empty())
     {
@@ -1689,6 +1719,8 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     rec.runId = rid;
     rec.command = command;
     rec.status = "running";
+    rec.background = background;
+    rec.startTime = JZPlatform::getTickCountMs();
     m_runs[rid] = rec;
     m_runOrder.push_back(rid);
     // 记录上限: 只淘汰**已结束**的旧记录。并发之后在跑的记录可能不止一条, 按老写法直接
@@ -1805,7 +1837,13 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     // 记下根 pid: kill 的归属判定靠它(只许杀自己启动的进程)
     int pid = proc->processId();
     if (pid > 0)
+    {
         m_ownPids.insert(pid);
+        // 也进运行记录: 后台运行要能查到"它到底起了哪个进程"(展示 + 事后 kill 核对)
+        auto rit = m_runs.find(rid);
+        if (rit != m_runs.end())
+            rit->second.pid = pid;
+    }
 
     return true;
 }
@@ -1901,21 +1939,35 @@ void JZVirtualTerminal::appendRunOutput(const string &runId, const string &strea
     if (it != m_runs.end())
     {
         RunRecord &rec = it->second;
+        const bool isErr = (stream == "stderr");
+        std::string &partial = isErr ? rec.partialStderr : rec.partialStdout;
+        partial += chunk;
+
+        // ⚠ 只落**完整行**: 输出是按块读进来的, 一行的两半很可能落在两次读里 ——
+        //   以前把"没换行的尾巴"也当一行落下, 一行就被切碎成好几条日志(query 时看到的
+        //   日志错位、行数虚高)。残半留着等下一块拼上, 收尾时再 flush(见 onRunFinished)。
         size_t pos = 0;
         while (true)
         {
-            size_t nl = chunk.find('\n', pos);
-            string line = (nl == string::npos) ? chunk.substr(pos) : chunk.substr(pos, nl - pos);
+            size_t nl = partial.find('\n', pos);
+            if (nl == string::npos)
+                break;
+            string line = partial.substr(pos, nl - pos);
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
             if (!line.empty())
-                rec.log.push_back({stream, line});
-            if (nl == string::npos)
-                break;
+                pushRunLogLine(rec.log, rec.logBytes, rec.totalLines, stream, line);
             pos = nl + 1;
         }
-        while (rec.log.size() > (size_t)kMaxRunLines)
-            rec.log.erase(rec.log.begin());
+        if (pos > 0)
+            partial.erase(0, pos);
+
+        // 一直没有换行的超长残行(进度条 \r 刷屏之类)不能无限攒: 到上限就当成一行落下
+        if (partial.size() > (size_t)kMaxPartialBytes)
+        {
+            pushRunLogLine(rec.log, rec.logBytes, rec.totalLines, stream, partial);
+            partial.clear();
+        }
     }
 
     if (task && task->onChunk)
@@ -1981,6 +2033,27 @@ void JZVirtualTerminal::onRunFinished(const string &runId, JZProcess *proc, int 
         appendRunOutput(runId, "stderr", bytesToString(proc->readAllStandardError()));
     }
 
+    // 收尾: 两路输出最后那半截(始终没有换行的)别丢 —— 落成各自最后一行。
+    // 之后这条运行不再有输出, 残半留着也没人来拼了。
+    {
+        auto rit = m_runs.find(runId);
+        if (rit != m_runs.end())
+        {
+            RunRecord &rec = rit->second;
+            if (!rec.partialStdout.empty())
+            {
+                pushRunLogLine(rec.log, rec.logBytes, rec.totalLines, "stdout", rec.partialStdout);
+                rec.partialStdout.clear();
+            }
+            if (!rec.partialStderr.empty())
+            {
+                pushRunLogLine(rec.log, rec.logBytes, rec.totalLines, "stderr", rec.partialStderr);
+                rec.partialStderr.clear();
+            }
+        }
+    }
+
+
     // 先把这条任务上要用的东西取出来(下面 eraseTask 之后 t 就失效了)
     const bool timedOut = t->timedOut;
     const bool filterOn = t->filterOutput;
@@ -2012,6 +2085,7 @@ void JZVirtualTerminal::onRunFinished(const string &runId, JZProcess *proc, int 
     {
         RunRecord &r = it->second;
         r.status = "done";
+        r.endTime = JZPlatform::getTickCountMs();
         r.exitCode = exitCode;
         r.timedOut = timedOut;
         if (timedOut)                            r.error = "命令超时, 已被强制终止";
@@ -2049,7 +2123,24 @@ bool JZVirtualTerminal::runSnapshot(const string &runId, RunRecordInfo &out) con
     out.exitCode = r.exitCode;
     out.timedOut = r.timedOut;
     out.error = r.error;
-    out.log = r.log;
+    out.background = r.background;
+    out.pid = r.pid;
+    out.startTime = r.startTime;
+    out.endTime = r.endTime;
+    out.log.assign(r.log.begin(), r.log.end());   // deque -> vector(对外保持原类型)
+    out.totalLines = r.totalLines;
+    out.firstLine = r.totalLines - r.log.size();  // log[0] 的绝对行号(更早的已被丢弃)
+    out.readPos = r.readPos;
+    return true;
+}
+
+bool JZVirtualTerminal::advanceRunReadPos(const string &runId, size_t pos)
+{
+    auto it = m_runs.find(runId);
+    if (it == m_runs.end())
+        return false;
+    if (pos > it->second.readPos)
+        it->second.readPos = pos;
     return true;
 }
 

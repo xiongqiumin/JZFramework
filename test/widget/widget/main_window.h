@@ -20,6 +20,7 @@
 #include "JZScrollBar.h"
 #include "JZScrollArea.h"
 #include "JZGroupBox.h"
+#include "JZChart.h"
 #include "JZAnimationGroup.h"
 #include "JZColor.h"
 #include "JZPainter.h"
@@ -149,6 +150,11 @@ private:
     // Animation 演示: JZPropertyAnimation 修改方块 x/y/w/h, A↔B 往返
     void startAnimDemo();
 
+    // Chart 演示: 切换折线/柱状/饼图 + 随机数据
+    void onChartTypeChanged(int idx);
+    void onChartRandomize();
+    void fillChartSeries(bool random);
+
     // Table 演示: 增加/清空数据
     void appendTableRows(int n);
     void onTableAdd();
@@ -191,6 +197,10 @@ private:
     // ListWidget 演示
     JZListWidget* m_listDemo = nullptr;
     int m_listSeq = 0;
+
+    // Chart 演示
+    JZChart* m_chart = nullptr;
+    unsigned m_chartSeed = 20260922u;   // 线性同余随机源("随机数据"每次点击结果都不同)
 
     // Animation 演示
     JZAnimationGroup* m_animGroup = nullptr;   // 组并行驱动 x/y/w/h 四条动画

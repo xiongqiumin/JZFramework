@@ -4,7 +4,7 @@
 // 客户端: 连服务器、收发包、等待某个包。
 //
 // Qt -> JS (2026-09-13 改为"真跑得起来"的版本):
-//   QTcpSocket -> 引擎 net 模块的 Socket (net/dist/index.js)
+//   QTcpSocket -> 引擎 net 模块的 Socket(裸名 'net' 的 Socket)
 //     connectToHost(host,port)        -> socket.connect(port, host)(异步)
 //     waitForConnected(ms)            -> **没有对应物**(引擎 socket 无阻塞等待)
 //     disconnectFromHost()/abort()    -> socket.end() / socket.destroy()
@@ -21,7 +21,7 @@
 //       **返回 null 并记账**(不再能靠阻塞拿到包); 异步版本是 waitPackAsync() 等, 返回 Promise。
 // ---------------------------------------------------------------------------
 
-import { net } from 'net/dist/index.js';
+import net from 'net';
 import { NetDataManager, noteNoBlockingIO } from './netDataManager.js';
 
 export class NetClient

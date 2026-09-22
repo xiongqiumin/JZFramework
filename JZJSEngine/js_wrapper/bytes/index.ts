@@ -140,3 +140,12 @@ export function hexOf(u8: Uint8Array): string
     }
     return s;
 }
+
+// ---------------------------------------------------------------------------
+// 默认导出 = 模块对象(与 types/index.d.ts 的 `export default _default` 一致)。
+// ⚠ 必须保留: 引擎内置名表里 'bytes' 的 exportName 是 nullptr(用包自带 default),
+//   桥接源码会生成 `export { default } from 'bytes/dist/index.js'` —— 缺了它,
+//   裸名 `import ... from 'bytes'` 连桥接模块都链接不过(整名字不可用, 不是"少个成员")。
+// ---------------------------------------------------------------------------
+const bytes = { ByteReader, ByteWriter, concatBytes, hexOf };
+export default bytes;

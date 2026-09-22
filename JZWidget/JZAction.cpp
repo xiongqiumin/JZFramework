@@ -85,6 +85,16 @@ bool JZAction::isSeparator() const
     return m_separator;
 }
 
+void JZAction::setVisible(bool visible)
+{
+    m_visible = visible;
+}
+
+bool JZAction::isVisible() const
+{
+    return m_visible;
+}
+
 void JZAction::setSubMenu(JZMenu* menu)
 {
     m_submenu = menu;

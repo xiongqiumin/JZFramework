@@ -6,12 +6,13 @@
 // QDataStream 约定同 BTERecordDataBase.js: `s << x` -> `s.write(x)`, `s >> x` -> `x = s.read()`。
 //
 // Qt -> JS: QMap<QString, DeviceDataPtr> -> Map; QSharedPointer -> 直接引用;
-//           QDataStream -> write/read; QFile/QDir -> fs(core/dist/index.js);
+//           QDataStream -> write/read; QFile/QDir -> fs(裸名 'fs' 模块);
 //           QApplication::applicationDirPath() -> 保留调用; QVector<int> -> 数组;
 //           std::array<Range, MAX_SPLIT_LEVEL> rangeList[2] -> 二维数组。
 // ---------------------------------------------------------------------------
 
-import { fs, path } from 'core/dist/index.js';
+import fs from 'fs';
+import path from 'path';
 import { MAX_DEVICE_ITEM, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';

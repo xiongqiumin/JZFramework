@@ -43,4 +43,10 @@ declare const jzApp: {
    * 各完整给一次, 而不是"改一个变量"。语法错误抛 SyntaxError(错误串见 styleSheetError())。
    */
   setStyleSheet(css: string): boolean;
+  /**
+   * 当前活动窗口(优先持键盘焦点的那个; 都没有返回 null)。
+   * 用途: 弹层/对话框/菜单需要一个 owner 窗口 —— 例如 `menu.exec(w.mapToGlobal(pt))`
+   * 省略 owner 时就走这里; 也可用来给 JZMessageBox 之类找宿主。
+   */
+  activeWindow(): JZWindow | null;
 };

@@ -38,6 +38,11 @@ public:
     void setSeparator(bool separator);
     bool isSeparator() const;
 
+    // 可见性 (对应 QAction::setVisible): 菜单的布局/绘制/命中/键盘巡航都跳过不可见项 ——
+    // 项仍留在 m_actions 里(下标不移动), 只是在菜单里占 0 高度。
+    void setVisible(bool visible);
+    bool isVisible() const;
+
     // 关联子菜单 (由 JZMenu::addMenu 设置); 非空表示该项是"子菜单入口"
     void setSubMenu(class JZMenu* menu);
     class JZMenu* subMenu() const;
@@ -56,6 +61,7 @@ private:
     bool m_checkable = false;
     bool m_checked = false;
     bool m_separator = false;
+    bool m_visible = true;
     class JZMenu* m_submenu = nullptr;
 };
 

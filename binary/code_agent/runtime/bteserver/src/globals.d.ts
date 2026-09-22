@@ -13,23 +13,23 @@
 //    (QCheckBox/setCellWidget)、输入校验器(QIntValidator/QDoubleValidator/QValidator)、
 //    弹窗与布局类(QDialog/QVBoxLayout/QHBoxLayout/QGridLayout/QLabel/QLineEdit/QPushButton)、
 //    Qt 常量(Qt.LeftButton 之类)全部迁完(见各文件的"原 Qt ..."注释)。
-//    **只剩两处**:
-//      * `QMenu`(3 个右键菜单, BTEServer.ts) —— 引擎侧值级菜单接口已就绪:
-//        `new JZMenu()` → `addAction(text)` 返回下标 → `onActionTriggered = (i) => {...}` →
-//        `popup(win, new JZRect(globalX, globalY, 1, 1))`; `menu.exec(pos)` 那种**同步**取选中项
-//        的写法引擎没有(弹层是异步的, 靠回调)。改完把这条声明删掉。
+//    2026-09-22: **3 个右键菜单也迁完了**(BTEServer.ts 的 onListItemMenu / onBTEItemMenu /
+//    onTableQueryMenu 改用真 JZMenu): 弹层没有同步 exec(), 所以改成"每项挂 onTriggered →
+//    统一进 dispatch(act) 函数", 判定链与原来逐字一致; 弹层锚点 = `mapToGlobal(pt)` 转屏幕坐标。
+//    同时给引擎补了 `JZAction.setVisible()`(原来只有 setEnabled; 通道右键菜单要隐藏"结束"/
+//    "强制显示全部"两项 —— 隐藏项在菜单里占 0 高, 不绘制/不可点/键盘巡航也跳过)。
+//    **只剩一处**:
 //      * `QTreeWidgetItem`(StepDataDialog.ts 的工步树) —— 引擎的 JZTreeWidget 在 C++ 侧是
 //        **指针式 item**, JS 侧还没有对应接口(要有 value 级的树接口才能迁)。
 //
 // B) 引擎的真实全局(见 JZJSEngine/js_wrapper 里部署的 jz_types) ——
 //    JZ* 控件/画笔/几何类型、jzApp/jzWidget/uiLoader、各 netPack 的 stru_* 包类、
-//    sqlite3_* / workbook_* 等原生库函数。这些是**真东西**, 大多数已经在
+//    workbook_*/worksheet_*(libxlsxwriter)等原生库函数。这些是**真东西**, 大多数已经在
 //    js_wrapper 的 .d.ts 里(user 工程把它拷成 jz_types/ 后 include 即可);
 //    这里只补本工程还引用的少数几个(或与 jz_types 重复但被 skipLibCheck 放过的)。
 // ---------------------------------------------------------------------------
 
 // ---- A) 待迁移的 Qt 名字(运行期已无实现; 迁完即删) ----
-declare const QMenu: any;
 declare const QTreeWidgetItem: any;
 // 第三方 Qt 库(随工程分发, 不参与 JS 移植; 调用点按 Qt API 原样保留)
 declare const QCustomPlot: any;
@@ -70,43 +70,23 @@ declare const JZDesktopServices: {
 };
 
 // jzApp —— registApp(): 应用级入口(C++ 的 JZApplication 在 JS 侧的门面)。
-//   applicationDirPath() 入口脚本所在目录(没加载过脚本时是空串);
-//   workingDirPath() 进程当前工作目录; quit()/exit(code) 请求事件循环退出。
-declare const jzApp: {
-  applicationDirPath(): string;
-  applicationFilePath(): string;
-  workingDirPath(): string;
-  quit(): void;
-  exit(code?: number): void;
-};
+// ⚠ 类型**不在本地重复声明**: js_wrapper/widget/types/loader.d.ts 已有完整契约
+//   (applicationDirPath / applicationFilePath / workingDirPath / quit / exit /
+//    setStyleSheet / activeWindow)。以前两边各写一份 ⇒ 本地那份缺 activeWindow,
+//   而 skipLibCheck 又把"重复声明"的报错吃掉, 于是"缺方法"只能等运行期才发现。
 
 // 其余用到的原生/库函数与报文包类(引擎注入, 见结构体/协议层的注册)
 declare const PlaySoundW: any;
 declare const RaiseException: any;
-declare const SQLITE_DONE: any;
-declare const SQLITE_OK: any;
-declare const SQLITE_ROW: any;
 declare const __jz: any;
 declare const format_set_bg_color: any;
 declare const format_set_num_format: any;
 declare const qInstallMessageHandler: any;
 // 注: TRUE / FALSE / NULL 这类 Win32/Qt 常量**故意不声明** —— 它们原来由 qtcompat 导出,
 //     各文件已就地改成 false/true/null; 留着宽松声明只会把真正的缺名字错误藏起来。
-// sqlite3_* / libxlsxwriter / zip 的 C API(引擎注入的 WASM/原生库)
-declare const sqlite3_bind_blob: any;
-declare const sqlite3_bind_int: any;
-declare const sqlite3_close: any;
-declare const sqlite3_column_blob: any;
-declare const sqlite3_column_bytes: any;
-declare const sqlite3_column_int: any;
-declare const sqlite3_exec: any;
-declare const sqlite3_open: any;
-declare const sqlite3_prepare: any;
-declare const sqlite3_prepare_v2: any;
-declare const sqlite3_reset: any;
-declare const sqlite3_step: any;
-declare const unzip_mem: any;
-declare const zip_mem: any;
+// libxlsxwriter 的 C API(引擎注入的原生库, 报表导出用)。
+// 注: 原 sqlite3_*/SQLITE_*/zip_mem/unzip_mem 的声明已删除 —— 记录库改用引擎的
+//     `sqlite` 模块(DatabaseSync), 存档不再压缩(见 BTERecordDataBase.ts 文件头)。
 declare const workbook_add_format: any;
 declare const workbook_add_worksheet: any;
 declare const workbook_close: any;

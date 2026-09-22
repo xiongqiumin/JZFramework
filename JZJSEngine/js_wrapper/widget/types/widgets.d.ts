@@ -86,9 +86,20 @@ declare class JZWidget {
   children(): JZWidget[];
   /** 所属顶层窗口; 不在窗口里返回 null(每个调用都是新包装对象, 别用 === 比) */
   window(): JZWindow | null;
-  /** parent 为 null 时映射到屏幕坐标 */
+  /**
+   * 坐标映射到 parent 的**客户区**(Qt 语义)。
+   * ⚠ parent 传 null 不是"映射到屏幕": C++ 是"沿父链一直累加到链尾"(窗口自身的 x/y 也算进去,
+   * 且不做 DPI 换算) —— 屏幕坐标请用 mapToGlobal。null 只在"控件还没有窗口"的退化路径里有意义。
+   */
   mapTo(parent: JZWidget | null, point: JZPoint): JZPoint;
-  mapTo(parent: JZWidget | null, x: number, y: number): JZPoint;
+  mapTo(parent: JZWidget | null, rect: JZRect): JZRect;
+  /**
+   * 控件局部坐标 -> **屏幕逻辑坐标**(内部已做 ×scale / ClientToScreen)。
+   * 右键菜单 / 弹层的锚点就是这么算的: `const p = w.mapToGlobal(pt)` 再
+   * `menu.popup(win, new JZRect(p.x(), p.y(), 1, 1))`(或 `menu.exec(p)`)。
+   */
+  mapToGlobal(point: JZPoint): JZPoint;
+  mapToGlobal(rect: JZRect): JZRect;
 
   // ---- 对象名 / 样式 ----
   /** 样式表 #id 选择器、AI 定位、自检都靠它 */
@@ -271,11 +282,27 @@ declare class JZMenu {
 
   /**
    * 弹层: anchor 是**屏幕逻辑坐标**下的触发区(菜单在其下沿展开), 传 (globalX, globalY, 1, 1) 即可。
-   * 注意它**不是**同步的 exec(): 弹层是异步的, "选中了哪一项"由 onActionTriggered / action.onTriggered 告诉你。
+   * 它**没有返回值** —— "选中了哪一项"由 onActionTriggered / action.onTriggered 告知;
+   * 想要 Qt 那样"同步拿到选中项"用 exec()。
+   * owner 可为 null(只影响弹层的 DPI 缩放与模态归属, 仍会弹出)。
    */
-  popup(owner: JZWindow, anchor: JZRect): void;
+  popup(owner: JZWindow | null, anchor: JZRect): void;
   hidePopup(): void;
   isPopupOpen(): boolean;
+
+  /**
+   * Qt 风格**同步**弹层(由 @jz/widget 的 menus.ts 提供): 阻塞到菜单关闭, 返回被触发的项,
+   * 取消 / 点空白返回 null。anchor 是**屏幕逻辑坐标** —— 用 `w.mapToGlobal(pt)` 换算:
+   *
+   *   const act = menu.exec(btn.mapToGlobal(pt));
+   *   if (act === act1) { ... }
+   *
+   * 省略 owner 时取 `jzApp.activeWindow()`; 也可写 `menu.exec(owner, anchor)` / `menu.exec(x, y)`。
+   * ⚠ 返回的是与 `addAction` / `actionAt` **同一份**包装 ⇒ 能直接 `===` 比较。
+   */
+  exec(anchor: JZPoint | JZRect): JZAction | null;
+  exec(owner: JZWindow, anchor: JZPoint | JZRect): JZAction | null;
+  exec(x: number, y: number): JZAction | null;
 }
 
 /** 菜单项(数据模型) */
@@ -287,6 +314,9 @@ declare class JZAction {
   shortcut(): string;
   setEnabled(enabled: boolean): void;
   isEnabled(): boolean;
+  /** 可见性: 隐藏的项在菜单里占 0 高(不绘制 / 不可点 / 键盘巡航也跳过) */
+  setVisible(visible: boolean): void;
+  isVisible(): boolean;
   setCheckable(checkable: boolean): void;
   isCheckable(): boolean;
   setChecked(checked: boolean): void;

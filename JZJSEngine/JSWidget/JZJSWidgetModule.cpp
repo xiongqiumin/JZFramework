@@ -1665,6 +1665,30 @@ void JZJSWidgetModule::registWidgets()
     bind_w.def("setMaximumSize", [](JZWidget* w, int w_, int h) { w->setMaximumSize(w_, h); });
     bind_w.def("setGeometry", [](JZWidget* w, int x, int y, int w_, int h) { w->setGeometry(x, y, w_, h); });
     bind_w.def("geometry", [](JZWidget* w) { return w->geometry(); });
+    // 坐标映射: C++ 里 mapTo/mapToGlobal 各有 JZPoint / JZRect 两个重载, 而 jsbind 一个名字
+    // 只有一条形参表 ⇒ 形参收 JSValue 自行判型, 两个重载都暴露(传别的类型抛 TypeError)。
+    //   mapTo(parent, pt)      parent 为 null 时等价于映射到屏幕(与 C++ 一致)
+    //   mapToGlobal(pt)        控件局部 -> 屏幕逻辑坐标(内部已做 ×scale / ClientToScreen)
+    // 典型用途: 右键菜单/弹层锚点 —— `const p = w.mapToGlobal(pt); menu.popup(win, new JZRect(p.x(), p.y(), 1, 1))`;
+    // 对位对齐/命中判断用 mapTo(容器, pt)。
+    auto f_mapTo = bind_w.def("mapTo", [this](JZWidget* w, JZWidget* parent, JSValue v) -> JSValue {
+        JSContext* ctx = m_engine->context();
+        if (js_check_class_arg<JZPoint>(ctx, v))
+            return toJSValue(ctx, w->mapTo(parent, fromJSValue<JZPoint>(ctx, v)));
+        if (js_check_class_arg<JZRect>(ctx, v))
+            return toJSValue(ctx, w->mapTo(parent, fromJSValue<JZRect>(ctx, v)));
+        return JS_ThrowTypeError(ctx, "JZWidget.mapTo(parent, pt): pt 需要 JZPoint(或 JZRect)");
+    });
+    f_mapTo->params[1].allowNull = true;      // parent = null ⇒ 映射到屏幕坐标
+
+    bind_w.def("mapToGlobal", [this](JZWidget* w, JSValue v) -> JSValue {
+        JSContext* ctx = m_engine->context();
+        if (js_check_class_arg<JZPoint>(ctx, v))
+            return toJSValue(ctx, w->mapToGlobal(fromJSValue<JZPoint>(ctx, v)));
+        if (js_check_class_arg<JZRect>(ctx, v))
+            return toJSValue(ctx, w->mapToGlobal(fromJSValue<JZRect>(ctx, v)));
+        return JS_ThrowTypeError(ctx, "JZWidget.mapToGlobal(pt): 需要 JZPoint(或 JZRect)");
+    });
     bind_w.def("setVisible", [](JZWidget* w, bool v) { w->setVisible(v); });
     bind_w.def("isVisible", [](JZWidget* w) { return w->isVisible(); });
     bind_w.def("show", [](JZWidget* w) { w->show(); });
@@ -1856,10 +1880,12 @@ void JZJSWidgetModule::registWidgets()
         return a ? a->isChecked() : false;
     });
     defSignalProperty(bind_menu, "onActionTriggered", &JZMenu::sigActionTriggered);
-    bind_menu.def("popup", [](JZMenu* m, JZWindow* owner, const JZRect& anchor) {
-        if (owner)
-            m->popup(owner, anchor);
+    // owner 允许 null(以前是"null 就静默不弹" —— 那样 JS 侧没有窗口句柄时右键菜单会毫无反应):
+    // owner 只用于取 DPI 缩放与模态归属, 为 null 时弹层按 1.0 缩放定位(仍会正常弹出)。
+    auto f_menuPopup = bind_menu.def("popup", [](JZMenu* m, JZWindow* owner, const JZRect& anchor) {
+        m->popup(owner, anchor);
     });
+    f_menuPopup->params[1].allowNull = true;
     bind_menu.def("hidePopup", [](JZMenu* m) { m->hidePopup(); });
     bind_menu.def("isPopupOpen", [](JZMenu* m) { return m->isPopupOpen(); });
     m_engine->registClass(bind_menu.classDefine());
@@ -1872,6 +1898,8 @@ void JZJSWidgetModule::registWidgets()
     bind_action.def("shortcut", [](JZAction* a) { return a->shortcut(); });
     bind_action.def("setEnabled", [](JZAction* a, bool on) { a->setEnabled(on); });
     bind_action.def("isEnabled", [](JZAction* a) { return a->isEnabled(); });
+    bind_action.def("setVisible", [](JZAction* a, bool on) { a->setVisible(on); });
+    bind_action.def("isVisible", [](JZAction* a) { return a->isVisible(); });
     bind_action.def("setCheckable", [](JZAction* a, bool on) { a->setCheckable(on); });
     bind_action.def("isCheckable", [](JZAction* a) { return a->isCheckable(); });
     bind_action.def("setChecked", [](JZAction* a, bool on) { a->setChecked(on); });
@@ -3178,6 +3206,33 @@ JSValue js_jzApp_exit(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv
     jzApp->exit(code);
     return JS_UNDEFINED;
 }
+
+// JZWindow* jzApp.activeWindow(): 当前活动窗口(优先持键盘焦点的那个; 都没有 -> null)。
+// 用途: 弹层/对话框/菜单需要一个 owner 窗口 —— owner 决定弹层的 DPI 缩放与定位基准,
+// 而 JS 侧常常只有"当前正在交互的那个窗口"这一个概念(如右键菜单由 jzApp.activeWindow() 定位)。
+JSValue js_jzApp_activeWindow(JSContext* ctx, JSValueConst, int, JSValueConst*)
+{
+    if (!jzApp)
+        return JS_ThrowInternalError(ctx, "jzApp.activeWindow: 应用对象不存在(JZApplication 未创建)");
+
+    JZWindow* w = jzApp->activeWindow();
+    if (!w)
+        return JS_NULL;
+
+    // 返回**已有的那份包装**(控件族一个对象只有一份宿主句柄, 现造第二份会把第一份作废) ——
+    // 与 JZMainWindow.centralWidget/menuBar 同套路。
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    JZJSWidgetModule* mod = engine ? engine->widgetModule() : nullptr;
+    if (!mod)
+        return JS_NULL;
+
+    JSValue v = mod->jsValueOf(w);
+    if (!JS_IsUndefined(v))
+        return JS_DupValue(ctx, v);
+
+    // 该窗口没有 JS 包装(例如纯 C++ 建的内部窗口): 拿不到视图, 只能报 null。
+    return JS_NULL;
+}
 }   // namespace
 
 void JZJSWidgetModule::registApp()
@@ -3207,6 +3262,8 @@ void JZJSWidgetModule::registApp()
     JS_SetPropertyStr(ctx, app, "quit", JS_NewCFunction(ctx, js_jzApp_quit, "quit", 0));
     JS_SetPropertyStr(ctx, app, "exit", JS_NewCFunction(ctx, js_jzApp_exit, "exit", 1));
     JS_SetPropertyStr(ctx, app, "setStyleSheet", JS_NewCFunction(ctx, js_jzApp_setStyleSheet, "setStyleSheet", 1));
+    JS_SetPropertyStr(ctx, app, "activeWindow",
+                      JS_NewCFunction(ctx, js_jzApp_activeWindow, "activeWindow", 0));
     m_engine->setProperty(m_engine->globalObject(), "jzApp", app);
 }
 

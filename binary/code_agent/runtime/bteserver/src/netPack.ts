@@ -4,13 +4,14 @@
 // 包信息(PackInfo) / 包基类(NetPack) / 包工厂(NetPackManager)。
 //
 // Qt -> JS: QByteArray -> Uint8Array; QDataStream(小端) -> 由 ByteWriter
-//           (core/dist/bytes.js) 承担; QMap -> Map; QAtomicInteger -> 普通 number;
+//           (裸名 'bytes' 模块) 承担; QMap -> Map; QAtomicInteger -> 普通 number;
 //           Q_ASSERT -> console.assert; QSharedPointer<NetPack> -> 对象引用。
 //           DECLAR_PACK 宏在 JS 里展开为"给类挂静态成员"(netPackCreate/NetType),
 //           并在子类里覆写 type()。
 // ---------------------------------------------------------------------------
 
-import { ByteReader, ByteWriter } from 'core/dist/bytes.js';
+import bytes from 'bytes';             // 默认导入取成员(具名导入在 tsgo 下 TS2614, 见 protocol.ts 说明)
+const ByteWriter = bytes.ByteWriter;
 import {
     BTS_CMD_CONNECT_RESP, BTS_CMD_SEND_INFO_RESP, BTS_CMD_GET_RTC_RESP, BTS_CMD_SET_RTC_RESP,
     BGS66_CMD_SET_RT_INTERVAL_RESP, BTS_CMD_SEND_PARALLEL_RESP, BTS70_CMD_SET_TESTID_RESP,
@@ -73,7 +74,7 @@ export class PackInfo
     Pack(buffer)
     {
         // 注: Qt 侧要 out.setByteOrder(QDataStream::LittleEndian); 这里的 ByteWriter
-        // 本身就是小端(core/dist/bytes.js), 没有也不需要字节序设置接口。
+        // 本身就是小端(bytes 包), 没有也不需要字节序设置接口。
         const out = new ByteWriter(6 + (this.IsRecvPack() ? 1 : 0));
 
         out.u8v(this.DeviceID);

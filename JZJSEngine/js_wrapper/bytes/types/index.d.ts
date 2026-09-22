@@ -2,7 +2,7 @@
  * @jz/core/bytes —— 二进制读写工具的类型 (与 bytes.ts 同源)。
  *
  * 零依赖, 可单独按子路径使用:
- *   import { ByteReader, ByteWriter } from '<...>/jz_js/core/dist/bytes.js';
+ *   import { ByteReader, ByteWriter } from '<...>/jz_js/bytes/dist/index.js';
  *
  * 说明: 这一层补的是 ES 标准缺的"游标自增"(DataView 要求自己传 offset,
  * 且长度固定不扩容)。Node 的 Buffer 同样没有游标, 所以不是缺 Node API。

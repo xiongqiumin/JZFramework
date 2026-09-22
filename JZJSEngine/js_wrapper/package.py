@@ -77,7 +77,12 @@ def copy_tree_clean(src, dst, label, bundle_root, hint=""):
 
 
 def find_packages(wrap):
-    """js_wrapper 下带 types/ 或 dist/ 的一级子目录即运行时包(共享目录 types/ 除外)。"""
+    """js_wrapper 下带 types/ 或 dist/ 的一级子目录即运行时包(共享目录 types/ 除外)。
+
+    另要求**有源码(index.ts)或有类型(types/)**: 只有 dist/ 的目录是"重命名/拆分后
+    残留的陈旧产物"(典型: 历史上的 core/ 包被拆成 fs/path/process 之后只剩 dist/),
+    它不是包, 不该打进部署(--js-wrapper 下 dist/ 已 gitignore, 这类目录本就不可复现)。
+    """
     pkgs = []
     for name in sorted(os.listdir(wrap)):
         if name == SHARED_TYPES_DIR or name.startswith("."):
@@ -85,7 +90,14 @@ def find_packages(wrap):
         d = os.path.join(wrap, name)
         if not os.path.isdir(d):
             continue
-        if os.path.isdir(os.path.join(d, SHARED_TYPES_DIR)) or os.path.isdir(os.path.join(d, "dist")):
+        has_types = os.path.isdir(os.path.join(d, SHARED_TYPES_DIR))
+        has_src = os.path.isfile(os.path.join(d, "index.ts"))
+        has_dist = os.path.isdir(os.path.join(d, "dist"))
+        if not (has_types or has_src):
+            if has_dist:
+                print(f"[package.py] SKIP stale dist-only dir (no index.ts/types/): {name}")
+            continue
+        if has_types or has_dist:
             pkgs.append(name)
     return pkgs
 

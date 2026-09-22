@@ -7,18 +7,37 @@
 //   C++ 的 `s << x` 翻译成 `s.write(x)`; `s >> x` 翻译成 `x = s.read()`。
 //   这里保持的是**序列化顺序**(即真正的逻辑), stream 对象本身先不管是否存在。
 //
-// 依赖说明(按"先不管类是否存在"处理): 下面 import 的 stru_* 结构体类目前**尚未**
-// 从 ../structs.js 导出(收口批次补齐), 现在只保证代码结构与 C++ 一致。
+// 2026-09-22 变更 —— 记录库真正可用(原来整库是"不可用"的退化状态):
+//   C++ 直接调 sqlite3 C API(sqlite3_open/exec/prepare/bind_blob/step/column_*),
+//   引擎里没有这些全局(见 globals.d.ts 的说明), 于是 open() 只会打印
+//   "sqlite3 未移植, 记录库不可用" 并返回 false —— 历史记录彻底没存。
+//   现在改用**引擎内置的 `sqlite` 模块**(node:sqlite 风格的同步封装, 见
+//   jz_types/sqlite/types/index.d.ts, 由 JZJSqliteModule 提供):
 //
-// Qt -> JS: QDataStream -> 上述 write/read; QVector<...> << 逐项 push;
-//           QByteArray -> Uint8Array; QDateTime -> Date;
-//           sqlite3 C API(sqlite3_open/exec/prepare/bind_blob/step/column_*)
-//           按原样保留 —— 对应实现待定; zip_mem/unzip_mem 来自被排除的 gzip/,
-//           同样保留调用。
+//     const db = new DatabaseSync(path);      // 打开(不存在则新建)
+//     db.exec(sql);                           // 建表/事务/无结果语句
+//     db.prepare(sql).run(a, b)               // 绑定 + 执行
+//     db.prepare(sql).get()  /  .all()        // 取一行 / 取全部
+//
+//   位置参数 `?` 与具名参数都支持; JS 侧 Uint8Array <-> sqlite BLOB 双向可用
+//   (引擎绑定层 sqlite3_bind_blob / SQLITE_BLOB -> Uint8Array)。
+//   ⚠ BLOB 列读回来是 Uint8Array, 但历史上手工写入的可能是 TEXT ⇒ 统一过 asBytes()。
+//
+// 与 C++ 的差异(存档格式, 只影响"能不能读 C++ 写的老库"):
+//   C++ 的 blob 是 QDataStream 二进制 + recordMagic 魔数, saveRecord 还先过
+//   zip_mem 压缩(gzip/ 未移植, 引擎没有 zip/unzip); 本移植的 blob 是 **JSON 文本**
+//   (见 storage.js)且**不压缩**。所以 JS 写的 .db 与 C++ 生成的 .db 互不通用 ——
+//   JS 侧读写自洽(同一版本内 save/load 往返一致)。
 // ---------------------------------------------------------------------------
 
 import { MAX_DEVICE_ITEM } from './Common.js';
 import { stru_BTS_CMD_SEND_DFDATA76, stru_BTS_CMD_SET_STEP76_Ex, stru_BTS_CMD_SEND_RTDATA76 } from './structs.js';
+// 记录库后端: 引擎内置 sqlite 模块(node:sqlite 风格; 由用户入口被动加载同包 dist)。
+// ⚠ 用**默认导入**取成员, 不写 `import { DatabaseSync } from 'sqlite'`: 随工程分发的
+//   TS 7.0.2(tsgo) 不解析 ambient 里的相对通配再导出(仓库源码这份), 具名导入会 TS2614;
+//   部署后的 jz_types 由 package.py 补了显式具名再导出, 两种写法都行 —— 默认导入最稳。
+import sqlite from 'sqlite';
+const DatabaseSync = sqlite.DatabaseSync;
 // 存档(记录库 blob)的 JSON 编解码 —— 取代原来的 QDataStream + recordMagic 魔数
 import {
     recordInfoToJson, recordInfoSetJson,
@@ -26,15 +45,23 @@ import {
     textToBytes, bytesToText, jsonTextOf, parseJsonText,
 } from './storage.js';
 
-// extern "C" int zip_mem(char *in, int in_size, char *out, int out_size);
-// extern "C" int unzip_mem(char *in, int in_size, char *out, int out_size);
-// (来自 gzip/, 按用户要求未移植)
-
-export const ZIP_BUFFER_SIZE = (20 * 1024 * 1024);
-const zipBuffer = new Uint8Array(ZIP_BUFFER_SIZE);   // static char zipBuffer[ZIP_BUFFER_SIZE];
+// 注: zip_mem/unzip_mem(来自未移植的 gzip/)与 20MB 的 static zipBuffer 已删除 ——
+//     存档改为不压缩的 JSON 文本(见文件头"与 C++ 的差异")。
 
 // 注: recordMagic()/sizeof_* 已删除 —— 它们是 QDataStream 二进制 blob 的"魔数+长度"版本校验,
 //     现在 blob 里是 JSON, 校验退化为"能否解析"(见 storage.parseJsonText)。
+
+// sqlite 的 blob 列读回来是 Uint8Array; 兼容"曾经写成 TEXT"的库(字符串/ArrayBuffer)。
+function asBytes(v): Uint8Array
+{
+    if (v instanceof Uint8Array)
+        return v;
+    if (typeof v === 'string')
+        return textToBytes(v);
+    if (v instanceof ArrayBuffer)
+        return new Uint8Array(v);
+    return new Uint8Array(0);
+}
 
 // ---------------------------------------------------------------------------
 // BTEStepInfo
@@ -161,11 +188,16 @@ export const USER_START_ID = 1000;   // static const int USER_START_ID = 1000;
 export class BTERecordDataBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    // static const int USER_START_ID = 1000;
+    // 声明成静态字段(原来只在类外挂了一次) —— 否则 `BTERecordDataBase.USER_START_ID`
+    // 在类型层是"属性不存在", 且赋值那句会被判 TS2339。
+    static USER_START_ID = USER_START_ID;
+
     // BTERecordDataBase();
     constructor()
     {
         this.recordHistory = new Map();   // QMap<int,BTERecordInfo> recordHistory;
-        this.m_db = null;                 // sqlite3 *m_db;
+        this.m_db = null;                 // sqlite3 *m_db;  ->  引擎 sqlite 模块的 DatabaseSync
         this.recordId = BTERecordDataBase.USER_START_ID;  // 记录id 0-1000 留作实时备份, 正式id 从 1000 开始
         this.m_transFlag = 0;
 
@@ -183,33 +215,29 @@ export class BTERecordDataBase
     // bool open(QString filepath);
     open(filepath)
     {
-        // sqlite3 后端尚未移植(BTERecordDataBase 里 sqlite3_* 是 C API 直调)。
-        // 这里显式退化: 记录库不可用, 但**不影响**工程/存档的加载(只是没有历史记录)。
-        // (测试与无界面运行都会走到这条分支)
-        if (typeof sqlite3_open !== "function")
+        // 原 C++: sqlite3_open + 三条 create table(重复执行安全) + loadHistory()。
+        // 引擎的 DatabaseSync 打开失败/建表失败都抛异常 ⇒ 这里编译期就不需要"未移植"守卫了。
+        try
         {
-            console.error("[BTERecordDataBase] sqlite3 未移植, 记录库不可用: " + filepath);
+            const db = new DatabaseSync(filepath);
+            db.exec("create table if not exists record_table(id INTEGER PRIMARY KEY,data blob)");
+            db.exec("create table if not exists recordinfo_table(id INTEGER PRIMARY KEY,data blob)");
+            for (let i = 0; i < 32; i++)
+            {
+                db.exec(sprintf(
+                    "create table if not exists record_real_table_%d(id INTEGER PRIMARY KEY,data blob)", i));
+            }
+            this.m_db = db;
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] 打开记录库失败: " + filepath + " (" + e + ")");
             this.m_db = null;
             return false;
         }
 
-        let nRes = sqlite3_open(filepath, this.m_db);   // sqlite3_open(filepath.toUtf8().data(), &m_db)
-        if (nRes === SQLITE_OK)
-        {
-            const sSQL1 = "create table if not exists record_table(id INTEGER PRIMARY KEY,data blob)";
-            nRes = sqlite3_exec(this.m_db, sSQL1, 0, 0, null);
-
-            const sSQL2 = "create table if not exists recordinfo_table(id INTEGER PRIMARY KEY,data blob)";
-            nRes = sqlite3_exec(this.m_db, sSQL2, 0, 0, null);
-
-            for (let i = 0; i < 32; i++)
-            {
-                const sSQL3 = sprintf("create table if not exists record_real_table_%d(id INTEGER PRIMARY KEY,data blob)", i);
-                nRes = sqlite3_exec(this.m_db, sSQL3, 0, 0, null);
-            }
-        }
         this.loadHistory();
-        return nRes === SQLITE_OK;
+        return true;
     }
 
     // void close();
@@ -217,7 +245,14 @@ export class BTERecordDataBase
     {
         if (this.m_db)
         {
-            sqlite3_close(this.m_db);
+            try
+            {
+                this.m_db.close();
+            }
+            catch (e)
+            {
+                console.error("[BTERecordDataBase] 关闭记录库出错: " + e);
+            }
             this.m_db = null;
         }
     }
@@ -229,7 +264,7 @@ export class BTERecordDataBase
             return;
 
         if (this.m_transFlag === 0)
-            sqlite3_exec(this.m_db, "begin;", 0, 0, null); // 开启事务
+            this.m_db.exec("begin;"); // 开启事务
 
         this.m_transFlag++;
     }
@@ -242,7 +277,7 @@ export class BTERecordDataBase
 
         this.m_transFlag--;
         if (this.m_transFlag === 0)
-            sqlite3_exec(this.m_db, "commit;", 0, 0, null);
+            this.m_db.exec("commit;");
     }
 
     // void loadHistory();
@@ -253,27 +288,20 @@ export class BTERecordDataBase
 
         this.recordHistory.clear();
 
-        const sql = sprintf("select * from recordinfo_table");
+        // 原: sqlite3_prepare("select * from recordinfo_table") + 逐行 step + column_blob(1)
+        const rows = this.m_db.prepare("select * from recordinfo_table").all();
 
-        let stmt = null;
-        const result = sqlite3_prepare(this.m_db, sql, -1, stmt, 0);   // sqlite3_prepare(..., &stmt, 0)
-
-        if (result === SQLITE_OK)                                     // 查询成功返回的是SQLITE_ROW
+        for (let i = 0; i < rows.length; i++)
         {
-            while (sqlite3_step(stmt) === SQLITE_ROW)
+            // 原: QDataStream 解 + recordMagic 魔数校验; 现在 blob 就是 JSON 文本,
+            //     解析失败(parseJsonText 返回 null)即视为该行无效
+            const j = parseJsonText(bytesToText(asBytes(rows[i].data)));
+            if (j)
             {
-                const data = sqlite3_column_blob(stmt, 1); // 读取数据，返回一个指针
-                const data_len = sqlite3_column_bytes(stmt, 1);    // 返回数据大小
+                const info = new BTERecordInfo();
+                recordInfoSetJson(info, j);
 
-                // 原: QDataStream 解 + recordMagic 魔数校验; 现在 blob 就是 JSON 文本
-                const j = parseJsonText(bytesToText(new Uint8Array(data, 0, data_len)));
-                if (j)
-                {
-                    const info = new BTERecordInfo();
-                    recordInfoSetJson(info, j);
-
-                    this.recordHistory.set(info.recordId, info);
-                }
+                this.recordHistory.set(info.recordId, info);
             }
         }
 
@@ -289,16 +317,18 @@ export class BTERecordDataBase
         if (!this.m_db)
             return;
 
-        const sql = sprintf("insert or replace into recordinfo_table values(%d,?)", info.recordId);
-
-        let stmt = null;
-        sqlite3_prepare(this.m_db, sql, sql.length, stmt, 0);            // 完成对sql语句的解析
-
-        // 原: QDataStream 写进 QByteArray; 现在直接把 JSON 文本当 blob 存
+        // 原: insert or replace into recordinfo_table values(%d,?) —— id 拼进 SQL、data 绑 ?;
+        //     这里 id 也走 bind(等价, 少一处字符串拼接)。
         const bytes = textToBytes(jsonTextOf(recordInfoToJson(info)));
-
-        sqlite3_bind_blob(stmt, 1, bytes, bytes.length, null);
-        sqlite3_step(stmt);
+        try
+        {
+            this.m_db.prepare("insert or replace into recordinfo_table values(?,?)")
+                .run(info.recordId, bytes);
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] saveHistory 失败(id=" + info.recordId + "): " + e);
+        }
     }
 
     // void newRealTimeRecord(int id);
@@ -307,28 +337,28 @@ export class BTERecordDataBase
         if (!this.m_db)
             return;
 
-        const sql = sprintf("delete from record_real_table_%d", id);
-        sqlite3_exec(this.m_db, sql, null, null, null);
+        // 表名带通道号 ⇒ 只能拼进 SQL(值都走 bind)
+        this.m_db.exec(sprintf("delete from record_real_table_%d", id));
     }
 
     // int getRowCount(int id);
     getRowCount(id)
     {
         if (!this.m_db)
-            return false;
+            return false;   // 与 C++ 一致(无库时返回 false/0; 调用点都先判了 m_db)
 
-        let stmt = null;
-
-        const sql = sprintf("select count(*) from record_real_table_%d", id);
-        let rc = sqlite3_prepare_v2(this.m_db, sql, -1, stmt, null);
-        if (rc !== SQLITE_OK)
+        try
+        {
+            // 原 C++ 是 prepare_v2 + step + column_int; 这里 get() 取第一行(count(*) 恒有 1 行)
+            const row = this.m_db.prepare(
+                sprintf("select count(*) as c from record_real_table_%d", id)).get();
+            return row ? row.c : -1;
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] getRowCount 失败(id=" + id + "): " + e);
             return -1;
-
-        rc = sqlite3_step(stmt);
-        if (rc !== SQLITE_ROW)
-            return -1;
-
-        return sqlite3_column_int(stmt, 0);
+        }
     }
 
     // bool saveRealTimeRecord(int id, const BTERecord &info);
@@ -340,24 +370,26 @@ export class BTERecordDataBase
         console.assert(id < MAX_DEVICE_ITEM);   // Q_ASSERT(id < MAX_DEVICE_ITEM);
 
         const start = this.getRowCount(id);
+        if (start < 0)          // 原 C++ 没有这条(prepare 失败返回 -1, 循环会从 -1 开始插)
+            return false;
         if (start === record.dataList.length)
             return true;
 
-        const sql = sprintf("insert or replace into record_real_table_%d values(?,?)", id);
-
-        let stmt = null;
-        sqlite3_prepare(this.m_db, sql, sql.length, stmt, 0);            // 完成对sql语句的解析
-        for (let i = start; i < record.dataList.length; i++)
+        // 原 C++: insert or replace into record_real_table_%d values(?,?) + bind_int(i) + bind_blob
+        try
         {
-            const bytes = textToBytes(jsonTextOf(dfDataToJson(record.dataList[i])));
-
-            let nRes = sqlite3_bind_int(stmt, 1, i);
-            nRes = sqlite3_bind_blob(stmt, 2, bytes, bytes.length, null);
-            nRes = sqlite3_step(stmt);
-            if (nRes !== SQLITE_DONE)
-                return false;
-
-            sqlite3_reset(stmt);
+            const stmt = this.m_db.prepare(
+                sprintf("insert or replace into record_real_table_%d values(?,?)", id));
+            for (let i = start; i < record.dataList.length; i++)
+            {
+                const bytes = textToBytes(jsonTextOf(dfDataToJson(record.dataList[i])));
+                stmt.run(i, bytes);          // StatementSync 每次 run 前自动 reset(= C++ 的 sqlite3_reset)
+            }
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] saveRealTimeRecord 失败(id=" + id + "): " + e);
+            return false;
         }
 
         return true;
@@ -371,19 +403,12 @@ export class BTERecordDataBase
 
         record.dataList.length = 0;   // record.dataList.clear();
 
-        const sql = sprintf("select * from record_real_table_%d", id);
-
-        let stmt = null;
-        const result = sqlite3_prepare(this.m_db, sql, -1, stmt, 0);
-
-        if (result === SQLITE_OK)                                     // 查询成功返回的是SQLITE_ROW
+        try
         {
-            while (sqlite3_step(stmt) === SQLITE_ROW)
+            const rows = this.m_db.prepare(sprintf("select * from record_real_table_%d", id)).all();
+            for (let i = 0; i < rows.length; i++)
             {
-                const data = sqlite3_column_blob(stmt, 1); // 读取数据，返回一个指针
-                const data_len = sqlite3_column_bytes(stmt, 1);    // 返回数据大小
-
-                const j = parseJsonText(bytesToText(new Uint8Array(data, 0, data_len)));
+                const j = parseJsonText(bytesToText(asBytes(rows[i].data)));
                 if (!j)
                     break;
 
@@ -393,13 +418,17 @@ export class BTERecordDataBase
                 record.dataList.push(dfData);                     // record.dataList << dfData;
             }
         }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] loadRealTimeRecord 失败(id=" + id + "): " + e);
+        }
 
         if (record.info.recordNum !== record.dataList.length)
         {
             this.newRealTimeRecord(id);
 
             record.info.recordNum = 0;
-            console.error("Load RealTime Record Failed,index = %d", id);
+            console.error("Load RealTime Record Failed,index = " + id);
         }
 
         return true;
@@ -429,11 +458,15 @@ export class BTERecordDataBase
         if (!this.m_db)
             return;
 
-        let sql = sprintf("delete from record_table where id = %d", id);
-        let ret = sqlite3_exec(this.m_db, sql, null, null, null);
-
-        sql = sprintf("delete from recordinfo_table where id = %d", id);
-        ret = sqlite3_exec(this.m_db, sql, null, null, null);
+        try
+        {
+            this.m_db.exec(sprintf("delete from record_table where id = %d", id));
+            this.m_db.exec(sprintf("delete from recordinfo_table where id = %d", id));
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] deleteRecord 失败(id=" + id + "): " + e);
+        }
 
         this.recordHistory.delete(id);
     }
@@ -446,22 +479,24 @@ export class BTERecordDataBase
 
         console.assert(id >= USER_START_ID);   // Q_ASSERT(id >= USER_START_ID);
 
-        const sql = sprintf("insert or replace into record_table values(%d,?)", id);
-
-        let stmt = null;
-        sqlite3_prepare(this.m_db, sql, sql.length, stmt, 0);            // 完成对sql语句的解析
-
-        // 原: QDataStream 写 QByteArray(魔数 + dataList) 再 zip; 现在是 JSON 文本再 zip
+        // 原: QDataStream(魔数 + dataList) 再 zip_mem 压缩进 blob;
+        // 现在: dataList 的 JSON 文本直接当 blob(**不压缩** —— 引擎没有 zip; 见文件头差异说明)。
         const list = [];
         for (let i = 0; i < record.dataList.length; i++)
             list.push(dfDataToJson(record.dataList[i]));
-        const buffer = textToBytes(jsonTextOf(list));
+        const bytes = textToBytes(jsonTextOf(list));
 
-        const zip_len = zip_mem(buffer, buffer.length, zipBuffer, ZIP_BUFFER_SIZE);
-        sqlite3_bind_blob(stmt, 1, zipBuffer, zip_len, null);
-        const nRes = sqlite3_step(stmt);
+        try
+        {
+            this.m_db.prepare("insert or replace into record_table values(?,?)").run(id, bytes);
+        }
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] saveRecord 失败(id=" + id + "): " + e);
+            return false;
+        }
 
-        return nRes === SQLITE_OK;
+        return true;
     }
 
     // bool loadRecord(int id, BTERecord &info);
@@ -472,33 +507,32 @@ export class BTERecordDataBase
 
         console.assert(id >= USER_START_ID);   // Q_ASSERT(id >= USER_START_ID);
 
-        const sql = sprintf("select * from record_table where id = %d", id);
-
-        let stmt = null;
-        sqlite3_prepare(this.m_db, sql, -1, stmt, 0);
-
-        const result = sqlite3_step(stmt);
-        let find = false;
-        if (result === SQLITE_ROW)                                     // 查询成功返回的是SQLITE_ROW
+        let row = null;
+        try
         {
-            const data = sqlite3_column_blob(stmt, 1); // 读取数据，返回一个指针
-            const data_len = sqlite3_column_bytes(stmt, 1);    // 返回数据大小
-
-            const zip_len = unzip_mem(data, data_len, zipBuffer, ZIP_BUFFER_SIZE);
-            const j = parseJsonText(bytesToText(new Uint8Array(zipBuffer, 0, zip_len)));
-            if (j)
-            {
-                record.dataList = [];                              // 原: record.dataList = s.read();
-                for (let i = 0; i < j.length; i++)
-                {
-                    const d = new stru_BTS_CMD_SEND_DFDATA76.Data();
-                    dfDataSetJson(d, j[i]);
-                    record.dataList.push(d);
-                }
-                find = true;
-            }
+            row = this.m_db.prepare(sprintf("select * from record_table where id = %d", id)).get();
         }
-        return find;
+        catch (e)
+        {
+            console.error("[BTERecordDataBase] loadRecord 失败(id=" + id + "): " + e);
+            return false;
+        }
+        if (!row)
+            return false;
+
+        // 原: 先 unzip_mem 解压再按 JSON 读; 现在 blob 就是未压缩的 JSON
+        const j = parseJsonText(bytesToText(asBytes(row.data)));
+        if (!j)
+            return false;
+
+        record.dataList = [];                              // 原: record.dataList = s.read();
+        for (let i = 0; i < j.length; i++)
+        {
+            const d = new stru_BTS_CMD_SEND_DFDATA76.Data();
+            dfDataSetJson(d, j[i]);
+            record.dataList.push(d);
+        }
+        return true;
     }
 }
 BTERecordDataBase.USER_START_ID = USER_START_ID;

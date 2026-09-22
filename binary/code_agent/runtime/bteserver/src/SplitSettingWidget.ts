@@ -13,9 +13,12 @@ import { UiHelper, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';
 import { BTEProject, SplitInfo, g_project } from './BTEProject.js';
+import { SPLITSETTINGWIDGET_UI_XML } from './ui/SPLITSETTINGWIDGET_UI_XML.js';
 // 迁移: 弹窗/文件对话框改用引擎的真实现(JZMessageBox / JZFileDialog, 都是全局)。
 // 2026-09-14 去 Qt 兼容层: 原来的 QInputDialog 引擎还没绑定(JZInputDialog) ——
 // 见 on_btnSaveSplit_clicked 里的 TODO, 那一步先停用。
+
+declare const uiLoader: any;
 
 // ---------------------------------------------------------------------------
 // struct SplitResult
@@ -82,8 +85,8 @@ export class SplitSettingWidget
     // SplitSettingWidget(QWidget *parent = Q_NULLPTR);
     constructor(parent)
     {
-        // : QWidget(parent) —— 真控件本体(组合): 子控件都挂在它下面, 布局也设在它上面
-        this.root = new JZWidget(parent);
+        // : QWidget(parent) —— 真控件本体(组合): 真本体由下面的 uiLoader 载入(载入对象本身就是控件)
+        this.root = null;
 
         this.recordList = [];   // QVector<BTERecordPtr> recordList; 分选数据
         this.result = new SplitResult();   // SplitResult result; 分选结果
@@ -99,27 +102,24 @@ export class SplitSettingWidget
         this.sigPrepareData = [];   // signals: void sigPrepareData();
         this.sigSplitFinish = [];   // signals: void sigSplitFinish();
 
-        // ---- 真 UI(原 Ui_SplitSettingWidgetClass + setupUi 的替身) ----
-        // 6 个控件直接 new 真 JZ 类, 用真布局排起来, 不再依赖 qtcompat 的 uic 替身。
-        const lay = new JZVBoxLayout();
+        // ---- 真 UI: 直接载入本控件自己的 XML(原 Ui_SplitSettingWidgetClass + setupUi) ----
+        // 2026-09-22 变更: 原来是手搓 6 个控件(2 表格 + 下拉 + 3 SpinBox), **漏了 4 个按钮**
+        // (保存模版 / 删除模版 / 分选 / 等分) —— 于是下面那些 on_btnXxx_clicked 槽从来没有连接点,
+        // 主窗口那边 wire('btnSaveSplit') 也找不到控件(一直打 "[connectUi] UI 里没有控件")。
+        // 现在改为吃 SPLITSETTINGWIDGET_UI_XML(由原 SplitSettingWidget.ui 转出, 控件名与 C++ 的
+        // ui_* 一致): 控件齐、布局由 XML 给, 不再手写。
+        this.ui = uiLoader.load(SPLITSETTINGWIDGET_UI_XML);
+        if (!this.ui)
+            throw new Error("SplitSettingWidget: uiLoader.load 返回空(XML 解析/建控件失败, 见引擎日志)");
+        this.root = this.ui;                 // 载入对象本身就是控件本体(与 bteserverUi 的 createUi 同套路)
+        if (parent)
+            this.root.setParentWidget(parent);
 
-        this.ui = {};
-        this.ui.tableSplitSelect = new JZTableWidget(this.root);
-        this.ui.tableWidgetSplit = new JZTableWidget(this.root);
-        this.ui.boxSplitType = new JZComboBox(this.root);
-        this.ui.spinSplitMin = new JZSpinBox(this.root);
-        this.ui.spinSplitMax = new JZSpinBox(this.root);
-        this.ui.spinSplitNum = new JZSpinBox(this.root);
-        // 原 uic 生成的 setupUi(): 这里控件都在上面建好了, 留空实现对齐名字
-        this.ui.setupUi = function (_w) { };
-
-        lay.addWidget(this.ui.boxSplitType, 0);
-        lay.addWidget(this.ui.spinSplitMin, 0);
-        lay.addWidget(this.ui.spinSplitMax, 0);
-        lay.addWidget(this.ui.spinSplitNum, 0);
-        lay.addWidget(this.ui.tableSplitSelect, 1);
-        lay.addWidget(this.ui.tableWidgetSplit, 2);
-        this.root.setLayout(lay);
+        // 原 uic 的 connectSlotsByName: on_btnXxx_clicked 自动连接 —— JS 侧显式接
+        this.ui.btnSplitEqual.onClicked = () => this.on_btnSplitEqual_clicked();
+        this.ui.btnSplit.onClicked = () => this.on_btnSplit_clicked();
+        this.ui.btnSaveSplit.onClicked = () => this.on_btnSaveSplit_clicked();
+        this.ui.btnDeleteSplit.onClicked = () => this.on_btnDeleteSplit_clicked();
 
         //tableSplit
         const strListSelect = [];

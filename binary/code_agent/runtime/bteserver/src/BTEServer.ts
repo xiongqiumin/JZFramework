@@ -15,7 +15,9 @@
 //   C 的 QString::asprintf / sprintf -> 自写 format(fmt, ...args)。
 // ---------------------------------------------------------------------------
 
-import { fs, path, process } from 'core/dist/index.js';
+import fs from 'fs';
+import path from 'path';
+import process from 'process';
 import { NetDataManager } from './netDataManager.js';
 import { NetPackVariant } from './netPackDefine.js';
 import { UiHelper, MAX_SUB_DEVICE, MAX_CHANNEL_NUM, MAX_DEVICE_ITEM, MAX_SPLIT_LEVEL } from './Common.js';
@@ -1196,7 +1198,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         if (netId < 0)
             return;
 
-        const menu = new QMenu();
+        // 右键菜单: 真 JZMenu 的**同步** exec()(Qt 写法) —— 屏幕坐标由 mapToGlobal 换算,
+        // 返回值就是被点的那一项(句柄与 addAction 拿到的是同一份, 所以能 === 比)。
+        const menu = new JZMenu();
         const act1 = menu.addAction(tr("更改中位机IP"));
         /*
         const act2 = menu.addAction(tr("写PC服务器IP"));
@@ -1323,7 +1327,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             }
         }
 
-        const menu = new QMenu();
+        const menu = new JZMenu();   // 同步 exec 见 onListItemMenu 里的说明
         const actStart = menu.addAction(tr("单点启动"));
         const actStop = menu.addAction(tr("单点停止"));
         menu.addSeparator();
@@ -1416,7 +1420,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         actFinish.setVisible(false);
         foucsNum.setVisible(false);
 
-        //菜单
+        //菜单(同步 exec: 屏幕坐标由 mapToGlobal 换算)
         const act = menu.exec(item.mapToGlobal(pt));
         if (stepCmd.indexOf(act) >= 0)
         {
@@ -2084,7 +2088,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         wire('btnDeleteMonth', 'onClicked', () => this.on_btnDeleteMonth_clicked());
         wire('btnDeleteYear', 'onClicked', () => this.on_btnDeleteYear_clicked());
         wire('btnDeleteDevice', 'onClicked', () => this.on_btnDeleteDevice_clicked());
-        wire('btnSaveSplit', 'onClicked', () => this.on_btnSaveSplit_clicked());
+        // btnSaveSplit **不在这里接**: 主窗口 XML 里没有这个控件(原 BTEServer.ui 也没有 ——
+        // C++ 的 BTEServer::on_btnSaveSplit_clicked() 是个空槽, connectSlotsByName 找不到同名
+        // 控件因此从不触发)。真按钮在 SplitSettingWidget 自己的 XML 里, 由那个类构造时接自己的槽。
         wire('btnCopySplitList', 'onClicked', () => this.on_btnCopySplitList_clicked());
         wire('btnResetServer', 'onClicked', () => this.on_btnResetServer_clicked());
         wire('btnClearSend', 'onClicked', () => this.on_btnClearSend_clicked());
@@ -2536,7 +2542,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         if (row < 0 || row >= this.ui.tableQuery.rowCount())
             return;
 
-        const menu = new QMenu();
+        const menu = new JZMenu();   // 同步 exec 见 onListItemMenu 里的说明
         const actInfo = menu.addAction(tr("通道信息"));
         const actData = menu.addAction(tr("通道数据"));
 

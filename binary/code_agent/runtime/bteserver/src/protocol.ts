@@ -13,16 +13,21 @@
 //   chksum  u8 = Σ(head + body), 即自 sync 之后起 Length-8-2 个字节
 //   tail    0x5A
 //
-// 二进制读写器(ByteReader/ByteWriter/hexOf/concatBytes)已提到共用处
-// JZJSEngine/js_wrapper/core/bytes.ts, 本文件只 import + 再导出。
-// 裸模块名 'core/dist/bytes.js' 由引擎的 libraryDirs 解析(运行根/jz_js、
-// exe 的 jz_engine/jz_js); 走这个子路径不会执行 core 的 Node 模块层,
-// 也就不需要 __jz.core 存在。
+// 二进制读写器(ByteReader/ByteWriter/hexOf/concatBytes)在独立包 js_wrapper/bytes/
+// (本框架特有的名字, 不是 Node 模块), 本文件只 import + 再导出。
+// 裸名 'bytes' 由引擎的内置名表 + libraryDirs 解析(运行根/jz_js、
+// exe 的 jz_engine/jz_js); 该包零依赖、不引用 __jz, 所以不需要 __jz.core 存在。
 
 // 注意: `export ... from` 只做转发, 不会在本模块建局部绑定, 所以本地要用的
 // 类型必须单独 import 一次。
-import { ByteReader, ByteWriter } from 'core/dist/bytes.js';
-export { ByteReader, ByteWriter, concatBytes, hexOf } from 'core/dist/bytes.js';
+// 引擎内置 bytes 包: **默认导入**取成员(不写具名导入) —— tsgo(TS7) 不解析 ambient 里
+// 的相对通配再导出, 具名导入会 TS2614(部署后的 jz_types 有 package.py 的补丁, 源码这份没有)。
+// 默认导出 = 模块对象(对齐 Node 的 `import x from 'x'`), 成员与具名导出完全一致。
+import bytes from 'bytes';
+export const ByteReader = bytes.ByteReader;
+export const ByteWriter = bytes.ByteWriter;
+export const concatBytes = bytes.concatBytes;
+export const hexOf = bytes.hexOf;
 
 export const SYNC_LEN = 8;
 export const SEND_HEAD_LEN = 6;

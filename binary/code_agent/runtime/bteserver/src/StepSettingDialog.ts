@@ -21,7 +21,7 @@ import { g_project } from './BTEProject.js';
 // 注: BTEStepInfo 在 C++ 里属于 BTERecordDataBase.h, JS 侧同 (BTEProject.js 只导出 g_project/BTEProject/DeviceData/...)
 import { BTEStepInfo } from './BTERecordDataBase.js';
 import { StepEditDialog } from './StepEditDialog.js';
-import { fs } from 'core/dist/index.js';
+import fs from 'fs';
 import { STEPSETTINGDIALOG_UI_XML } from './ui/STEPSETTINGDIALOG_UI_XML.js';
 
 // Qt 枚举里本文件用到的那一项(值与原 Qt 一致): 原来由 qtcompat 提供。

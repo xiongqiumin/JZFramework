@@ -18,7 +18,8 @@
 //   Q_ASSERT -> console.assert。
 // ---------------------------------------------------------------------------
 
-import { ByteWriter } from 'core/dist/bytes.js';
+import bytes from 'bytes';             // 默认导入取成员(具名导入在 tsgo 下 TS2614, 见 protocol.ts 说明)
+const ByteWriter = bytes.ByteWriter;
 import { NetPack, NetPackManager, PackInfo } from './netPack.js';
 import { NetPackVariant, NETPACK_VARIANT } from './netPackDefine.js';
 

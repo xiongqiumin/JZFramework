@@ -4,7 +4,7 @@
 // 服务端: 监听端口, 维护 netId -> socket 表, 收包分发。
 //
 // Qt -> JS (2026-09-13 改为"真跑得起来"的版本):
-//   QTcpServer    -> 引擎 net 模块的 Server (net/dist/index.js, Node 风格:
+//   QTcpServer    -> 引擎 net 模块的 Server(裸名 'net' 的 Server, Node 风格:
 //                    listen(port)/close()/listening/on('connection'))
 //   QTcpSocket    -> 引擎 net 模块的 Socket (on('data'|'close'|'error')/
 //                    write(u8)/end()/destroy()/remoteAddress/remotePort)
@@ -20,7 +20,7 @@
 //   2) 收数据没有同步 read(): readyRead 的对应物是 socket 的 'data' 事件, 见 onData()。
 // ---------------------------------------------------------------------------
 
-import { net } from 'net/dist/index.js';
+import net from 'net';
 import { NetDataManager } from './netDataManager.js';
 import { NetInfo } from './netInfo.js';
 

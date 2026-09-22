@@ -42,8 +42,8 @@ MainWindow::MainWindow(JZWidget* parent)
     m_names = {
         "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
         "RadioButton", "ComboBox", "LineEdit", "TextEdit", "ListWidget", "TableWidget",
-        "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar", "GroupBox",
-        "ScrollArea", "Animation"
+        "Chart", "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar",
+        "GroupBox", "ScrollArea", "Animation"
     };
 
     setupUi();
@@ -756,6 +756,46 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
+    // ---- Chart: 折线 / 柱状 / 饼图 (下拉框切换类型 + 随机数据) ----
+    {
+        JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
+        JZLabel* hint = new JZLabel("JZChart: 下拉框切换类型; 饼图只吃第一条序列(显示百分比)", page);
+        vlay->addWidget(hint, 0);
+
+        JZChart* chart = new JZChart(page);
+        chart->setObjectName("demoChart");
+        chart->setTitle("月度销量");
+        chart->setCategories({ "一月", "二月", "三月", "四月", "五月", "六月" });
+        chart->setShowLegend(true);
+        chart->setShowGrid(true);
+        chart->setShowAxis(true);
+        m_chart = chart;
+        vlay->addWidget(chart, 1);        // 图表吃满剩余高度
+
+        // 按钮行: 类型下拉 + 随机数据
+        JZWidget* bar = new JZWidget(page);
+        JZHBoxLayout* hlay = new JZHBoxLayout(6, 6);
+        bar->setLayout(hlay);
+
+        JZComboBox* cbType = new JZComboBox(bar);
+        cbType->setObjectName("cbChartType");
+        cbType->addItems({ "折线图", "柱状图", "饼图" });
+        connect(&cbType->currentIndexChanged, this, &MainWindow::onChartTypeChanged);
+        hlay->addWidget(cbType, 0);
+
+        JZPushButton* bRand = new JZPushButton("随机数据", bar);
+        bRand->setObjectName("btnChartRandom");
+        connect(&bRand->sigClicked, this, &MainWindow::onChartRandomize);
+        hlay->addWidget(bRand, 0);
+        hlay->addStretch(1);
+        vlay->addWidget(bar, 0);
+
+        fillChartSeries(false);           // 初始数据: 两条序列 x 6 个分类
+        m_preview->addWidget(page);       // Chart 页: 顺序须与 m_names 一致(TableWidget 之后 / ImageLabel 之前)
+    }
+
     // ---- ImageLabel ----
     {
         JZWidget* page = makePage();
@@ -999,10 +1039,13 @@ void MainWindow::buildPages()
         stage->setObjectName("animStage");
         vlay->addWidget(stage, 1);
 
-        // 被动画的方块: 挂在舞台上(舞台无布局, 由 move/setFixedSize 自由定位)
+        // 被动画的方块: 挂在舞台上(舞台无布局, 由 move/resize 自由定位)。
+        // ⚠ 这里**不能**用 setFixedSize(): 它把 min/max 都钉在 96, 而 JZWidget::resize()
+        //   按 [minimumSize, maximumSize] 钳制 ⇒ w/h 两条动画每帧都被钳回 96,
+        //   表现为"方块只移动、不缩放"(与 Qt 一致: 固定尺寸控件不能再被改尺寸)。
         JZPushButton* box = new JZPushButton("finished", stage);
         box->setObjectName("animBox");
-        box->setFixedSize(96, 96);
+        box->resize(96, 96);       // 给初值即可, 不要约束
         box->move(24, 24);
         connect(&box->sigClicked, this, [this]() { log("anim finished"); });
 
@@ -1266,4 +1309,57 @@ void MainWindow::onListActivated(int idx)
 {
     if (!m_listDemo || idx < 0) return;
     log("list activated: " + std::to_string(idx) + " '" + m_listDemo->itemText(idx) + "'");
+}
+
+// ==================== Chart 演示 ====================
+
+// 两条序列 x 6 个分类。random=false 用固定初值(便于肉眼回归/截图比对),
+// random=true 用线性同余(不引 rand 的全局状态)换一批, 每次点都不同。
+void MainWindow::fillChartSeries(bool random)
+{
+    if (!m_chart) return;
+    static const double kInitA[6] = { 82, 64, 95, 47, 73, 58 };
+    static const double kInitB[6] = { 55, 78, 41, 88, 62, 70 };
+
+    std::vector<double> a(6), b(6);
+    for (int i = 0; i < 6; i++) {
+        if (!random) {
+            a[i] = kInitA[i];
+            b[i] = kInitB[i];
+            continue;
+        }
+        m_chartSeed = m_chartSeed * 1103515245u + 12345u;
+        a[i] = 20 + (int)((m_chartSeed >> 16) % 80);
+        m_chartSeed = m_chartSeed * 1103515245u + 12345u;
+        b[i] = 15 + (int)((m_chartSeed >> 16) % 70);
+    }
+
+    // 序列按名字重建(clearSeries + addSeries 与"新建图表"等价), 颜色取默认调色板
+    m_chart->clearSeries();
+    const int s1 = m_chart->addSeries("北京", JZChart::paletteColor(0));
+    const int s2 = m_chart->addSeries("上海", JZChart::paletteColor(1));
+    m_chart->setSeriesData(s1, a);
+    m_chart->setSeriesData(s2, b);
+}
+
+void MainWindow::onChartRandomize()
+{
+    if (!m_chart) return;
+    fillChartSeries(true);
+    log("chart data: randomized");
+}
+
+// 类型切换: 饼图只使用第 1 条序列的值(扇区名取分类标签), 顺便开关"显示数值"
+// (柱状图显示各柱数值; 饼图显示百分比; 折线图保持清爽)。
+void MainWindow::onChartTypeChanged(int idx)
+{
+    if (!m_chart) return;
+    JZChart::ChartType t = JZChart::LineChart;
+    if (idx == 1)
+        t = JZChart::BarChart;
+    else if (idx == 2)
+        t = JZChart::PieChart;
+    m_chart->setChartType(t);
+    m_chart->setShowValue(t != JZChart::LineChart);
+    log(std::string("chart type: ") + (idx == 0 ? "line" : (idx == 1 ? "bar" : "pie")));
 }

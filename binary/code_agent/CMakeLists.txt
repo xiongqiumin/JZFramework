@@ -97,13 +97,11 @@ file(GLOB JZ_TYPE_FILES CONFIGURE_DEPENDS
      "${JZ_WRAP_SRC}/types/*.d.ts" "${JZ_WRAP_SRC}/types/*.ts"
      "${JZ_WRAP_SRC}/*/types/*.d.ts")
 list(APPEND JZ_JS_DEPS ${JZ_TYPE_FILES})
-# 仅把已存在的 dist 加入依赖, 避免未跑 tsc 时 configure 报找不到文件
-foreach(pkg core net serialport sqlite modbus)
-    set(_d "${JZ_WRAP_SRC}/${pkg}/dist/index.js")
-    if(EXISTS "${_d}")
-        list(APPEND JZ_JS_DEPS "${_d}")
-    endif()
-endforeach()
+# 把各包的 dist 入口加进依赖(GLOB 只返回已存在的文件, 所以未跑 tsc 时也不会 configure 报错)。
+# ⚠ 不能写死包名清单: "一个名字 = 一个包目录"之后增删名字很频繁, 写死会出现
+#   "改了某个包的 .ts, 但它的 dist 不在 DEPENDS 里 -> stamp 不失效 -> 部署不更新"。
+file(GLOB JZ_JS_DIST_FILES CONFIGURE_DEPENDS "${JZ_WRAP_SRC}/*/dist/index.js")
+list(APPEND JZ_JS_DEPS ${JZ_JS_DIST_FILES})
 
 add_custom_command(
     OUTPUT "${JZ_JS_STAMP}"

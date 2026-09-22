@@ -1,8 +1,8 @@
 // test_jswidget —— test/widget/widget(C++ 控件演示 test_widget) 的 **TS 版**。
 //
-// 对照关系(左侧列表的 21 项与 C++ 版一一对应):
+// 对照关系(左侧列表的 22 项与 C++ 版一一对应):
 //   Label / PushButton / Slider / ProgressBar / Switch / Checkbox / RadioButton / ComboBox /
-//   LineEdit / TextEdit / ListWidget / TableWidget / ImageLabel / Dialog / TabWidget /
+//   LineEdit / TextEdit / ListWidget / TableWidget / Chart / ImageLabel / Dialog / TabWidget /
 //   Splitter / SpinBox / ScrollBar / GroupBox / ScrollArea / Animation
 //
 // 编译/运行:
@@ -150,7 +150,7 @@ function button(text: string, onClick?: () => void, w?: number, h?: number): JZP
 const NAMES: string[] = [
     "Label", "PushButton", "Slider", "ProgressBar", "Switch", "Checkbox",
     "RadioButton", "ComboBox", "LineEdit", "TextEdit", "ListWidget", "TableWidget",
-    "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar",
+    "Chart", "ImageLabel", "Dialog", "TabWidget", "Splitter", "SpinBox", "ScrollBar",
     "GroupBox", "ScrollArea", "Animation"
 ];
 
@@ -377,6 +377,70 @@ builders.TableWidget = function (): JZWidget {
     };
     hlay.addWidget(cbSel, 0);
 
+    hlay.addStretch(1);
+    lay.addWidget(row, 0);
+    return page;
+};
+
+// ---- Chart ----
+// 折线 / 柱状 / 饼图: 类型切换 + 随机数据。
+// 颜色形参用 CSS 风格字符串('' = 取默认调色板); setSeriesData / setCategories 吃 JS 数组。
+builders.Chart = function (): JZWidget {
+    const { page, lay } = makePage();
+    lay.addWidget(label("JZChart: 下拉框切换类型; 饼图只吃第一条序列(显示百分比)"), 0);
+
+    const chart = K(new JZChart());
+    chart.setObjectName("demoChart");
+    chart.setTitle("月度销量");
+    chart.setCategories(["一月", "二月", "三月", "四月", "五月", "六月"]);
+    chart.setShowLegend(true);
+    chart.setShowGrid(true);
+    lay.addWidget(chart, 1);
+
+    // 数据: random=false 用固定初值(便于肉眼回归), true 每次点击都换一批
+    let seed = 20260922;
+    function fill(random: boolean): void
+    {
+        const initA = [82, 64, 95, 47, 73, 58];
+        const initB = [55, 78, 41, 88, 62, 70];
+        const a: number[] = [];
+        const b: number[] = [];
+        for (let i = 0; i < 6; i++)
+        {
+            if (!random)
+            {
+                a.push(initA[i]);
+                b.push(initB[i]);
+                continue;
+            }
+            // 线性同余(不依赖 Math.random 的全局状态, 结果每次仍不同)
+            seed = (seed * 1103515245 + 12345) % 2147483648;
+            a.push(20 + (seed >> 8) % 80);
+            seed = (seed * 1103515245 + 12345) % 2147483648;
+            b.push(15 + (seed >> 8) % 70);
+        }
+        chart.clearSeries();                       // 重建序列(与新建图表等价)
+        const s1 = chart.addSeries("北京", "");    // '' = 默认调色板(第二个实参必填)
+        const s2 = chart.addSeries("上海", "");
+        chart.setSeriesData(s1, a);
+        chart.setSeriesData(s2, b);
+    }
+    fill(false);
+
+    const { row, lay: hlay } = makeRow();
+    const cbType = K(new JZComboBox());
+    cbType.setObjectName("cbChartType");
+    cbType.addItems(["折线图", "柱状图", "饼图"]);
+    cbType.onCurrentIndexChanged = (i) => {
+        chart.setChartType(i === 1 ? JZChart.BarChart : (i === 2 ? JZChart.PieChart : JZChart.LineChart));
+        chart.setShowValue(i !== 0);              // 柱状/饼图显示数值(饼图 = 百分比)
+        log("chart type: " + (i === 0 ? "line" : (i === 1 ? "bar" : "pie")));
+    };
+    hlay.addWidget(cbType, 0);
+    hlay.addWidget(button("随机数据", () => {
+        fill(true);
+        log("chart data: randomized");
+    }, 100, 28), 0);
     hlay.addStretch(1);
     lay.addWidget(row, 0);
     return page;
@@ -759,7 +823,10 @@ builders.Animation = function (): JZWidget {
         p.end();
     };
 
-    const box = button("box", () => log("anim box clicked at x=" + box.x() + " y=" + box.y()), 96, 96);
+    // ⚠ 不要给 button() 传 w/h: 那会走 setFixedSize, 把 min/max 钉在 96 ⇒ resize 每帧被钳回,
+    //   动画就只剩移动没有缩放(与 C++ 版同一个坑)。用 resize 给初值, 不加约束。
+    const box = button("box", () => log("anim box clicked at x=" + box.x() + " y=" + box.y()));
+    box.resize(96, 96);
     box.move(24, 24);
     box.setParentWidget(stage);
 

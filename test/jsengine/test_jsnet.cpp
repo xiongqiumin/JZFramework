@@ -1,14 +1,12 @@
 // JZJSNetModule 端到端测试: 全部走本机 loopback, 不依赖外网
 //
-// 新架构(分离式加载):
-//   JS 适配层不再以原始字符串内嵌进 C++, 而是由 js_wrapper/net/index.ts 与
-//   js_wrapper/core/index.ts 经 tsc 分别编译为 js_wrapper/net/dist/index.js 与
-//   js_wrapper/core/dist/index.js。JZJSNetModule::initEngine / JZJSCoreModule::initEngine
-//   通过 JZJSEngine::runModuleFile 以 ES module 形式从磁盘加载并求值这些文件:
-//   net 把 __jz.* 包装成 net/dgram/http/mqtt/ws/url/os, 挂到 globalThis; core 把
-//   __jz.core 包装成 fs/path/os/process/crypto, 同时把 os 与 net 注入的全局 os
-//   (含 networkInterfaces) 合并。require() 不再支持, 模块通过固定路径 import 使用
-//   (见 check 12/13), 全局脚本也可直接访问已装入的全局对象(net/fs/os/...)。
+// 新架构(分离式加载, 一个名字 = 一个包目录):
+//   JS 适配层不再以原始字符串内嵌进 C++, 而是由 js_wrapper/<名字>/index.ts 经 tsc
+//   编译为 <名字>/dist/index.js。JZJSNetModule::initEngine / JZJSCoreModule::initEngine
+//   只注册 __jz.* 原子 API 与原生类; 适配层属于"用户入口"一侧, 由 import 被动加载
+//   —— 本测试在下面用一段临时 .mjs 逐个 import 各包(每个包的默认导出就是模块对象,
+//   具名导出是各成员), 再挂回 globalThis 供断言使用。
+//   require() 不再支持, 只认 ESM。
 
 #include <cstdio>
 #include <string>
@@ -52,7 +50,7 @@ int main()
     connect(&engine.sigLog, [](const string& s) { jzDebug() << "[js:log] " << s; });
     connect(&engine.sigError, [](const string& s) { jzDebug() << "[js:error] " << s; });
     engine.start();
-    // 供 core 等包以裸模块名(net/dist/index.js)被动 import 兄弟包 net 时定位
+    // 供各包以裸模块名(events/dist、internal/dist)互相 import 时定位
     engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });
     STEP("engine start");
 

@@ -57,6 +57,18 @@ public:
     void hidePopup();
     bool isPopupOpen() const;
 
+    // Qt QMenu::exec 语义: **阻塞**弹出, 返回被触发的项; 取消 / 点空白 / 空菜单 -> nullptr。
+    // 与 popup() 是同一套模态循环(内部 execModal), 区别只在"有返回值":
+    //   popup() 靠 sigActionTriggered / action.triggered 回调往下走;
+    //   exec()   直接给结果 —— "取一项就继续"的分支代码写起来与 Qt 一致:
+    //       if (JZAction* a = menu.exec(win, anchor)) { if (a == act1) {...} }
+    // 子菜单里的项也能作为结果返回(信号/下标都在子菜单身上, 结果沿父链写回发起 exec 的那个菜单)。
+    //
+    // ⚠ 别把这个(返回指针的)版本绑给 JS: 菜单/菜单项不是指针语义类, 引擎每次 toJsValueFromPtr
+    //   都造**新包装并作废旧包装** ⇒ JS 侧 `act === addAction(...)` 会失效、旧句柄还会报"对象已销毁"。
+    //   JS 用同名方法在包装层实现(下标 -> 缓存句柄), 见 js_wrapper/widget/menus.ts。
+    JZAction* exec(JZWindow* owner, const JZRect& anchor);
+
     // ---- 供 JZMenuView 使用的布局 / 命中查询 (友元) ----
     const std::vector<JZAction*>& actions() const { return m_actions; }
     int itemCount() const { return (int)m_itemRects.size(); }
@@ -99,6 +111,12 @@ private:
     JZMenuView* m_view = nullptr;
     JZMenu* m_parentMenu = nullptr;     // 若为子菜单, 指向父菜单
     int m_hover = -1;
+
+    // exec() 的现场: 正在 exec(沿父链就近写结果) + 本次被触发的项(见 activateAction)。
+    // 用成员而不是 exec() 里的局部变量 + 传参: activateAction 是弹层内部深层的调用
+    // (鼠标/键盘 -> JZMenuView -> 菜单), 一路上没有"带着 exec 上下文"的通道。
+    bool m_execMode = false;
+    JZAction* m_execResult = nullptr;
 };
 
 #endif // JZ_MENU_H_

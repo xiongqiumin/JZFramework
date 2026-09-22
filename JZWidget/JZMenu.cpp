@@ -78,6 +78,9 @@ void JZMenuView::paintEvent(JZPainterEvent* event)
         JZAction* a = m_menu->actionAt(i);
         JZRect r = m_menu->itemRect(i);
 
+        if (!a->isVisible())
+            continue;
+
         if (a->isSeparator()) {
             p.setPen(JZPen(JZColor(0xd8, 0xd8, 0xd8), 1));
             int y = r.top() + r.height() / 2;
@@ -216,7 +219,7 @@ void JZMenuView::stepHover(int dir)
         if (i == cur)
             break;
         JZAction* a = m_menu->actionAt(i);
-        if (!a->isSeparator() && a->isEnabled())
+        if (!a->isSeparator() && a->isEnabled() && a->isVisible())
             break;
     }
     if (i != cur) {
@@ -354,6 +357,12 @@ void JZMenu::addSeparator()
 JZMenu* JZMenu::addMenu(const std::string& title)
 {
     JZMenu* sub = new JZMenu(title, this);
+    // 父子关系是**建的时候就有**的结构关系, 这里就定下来。
+    // 以前只在 JZMenuView::openSubMenu 里设(即"打开过才有爹"), 于是任何"没等打开就走父链"的
+    // 逻辑都会静默失效: closeAll() 收不起整条弹层链(弹层关不掉, 模态循环卡死)、
+    // exec() 沿父链写回结果找不到发起者。openSubMenu 里那次保留(它兼管 addAction(JZAction*)
+    // 把子菜单挪到别的父菜单下的情形)。
+    sub->setParentMenu(this);
     JZAction* a = new JZAction(title, this);
     a->setSubMenu(sub);
     m_actions.push_back(a);
@@ -412,6 +421,12 @@ void JZMenu::updateLayout()
     m_itemRects.clear();
 
     for (auto* a : m_actions) {
+        // 不可见项: 仍占一个 rect 位(与 m_actions 一一对应 ⇒ 下标不移动), 但高度 0 ——
+        // 于是不绘制、命中不到(hitTestItem 判 y < top-1)、键盘巡航也会跳过(见 stepHover)。
+        if (!a->isVisible()) {
+            m_itemRects.push_back(JZRect(0, y, 0, 0));
+            continue;
+        }
         if (a->isSeparator()) {
             m_itemRects.push_back(JZRect(0, y, 10, kSepH));
             y += kSepH;
@@ -457,7 +472,40 @@ void JZMenu::activateAction(int index)
     // 反过来 (先 emit 后收起) 时, 动作处理器里再开的模态对话框出现时弹层还开着,
     // 用户点对话框的关闭按钮会被弹层的"外部按下关闭"吞掉, 表现为要点两次才关。
     closeAll();
+
+    // 同步 exec() 的结果: 沿父链找**离本项最近的、正在 exec 的菜单**写回。
+    // 为什么要沿父链: 子菜单里的项走的是子菜单自己的 activateAction, 而发起弹层/调用 exec 的
+    // 是父菜单(甚至更上层) —— 结果得写到那次 exec 的接收者身上, 弹层返回时它才读得到。
+    // 就近(break)是给"菜单项的处理器里又 exec 一个菜单"这种嵌套留的: 内层不污染外层现场。
+    for (JZMenu* m = this; m; m = m->m_parentMenu)
+    {
+        if (m->m_execMode)
+        {
+            m->m_execResult = a;
+            break;
+        }
+    }
+
     a->triggered.emit();
+}
+
+JZAction* JZMenu::exec(JZWindow* owner, const JZRect& anchor)
+{
+    if (m_actions.empty())
+        return nullptr;          // 空菜单: popup() 也会早退, 直接给 nullptr(不阻塞)
+
+    // 保存/恢复现场: exec 可重入(处理器里再 exec 一个菜单), 逐层各记各的结果。
+    JZAction* prevResult = m_execResult;
+    const bool prevMode = m_execMode;
+    m_execResult = nullptr;
+    m_execMode = true;
+
+    popup(owner, anchor);        // 阻塞到菜单关闭(内部 execModal)
+
+    JZAction* result = m_execResult;
+    m_execResult = prevResult;
+    m_execMode = prevMode;
+    return result;
 }
 
 void JZMenu::closeAll()
@@ -554,7 +602,7 @@ std::vector<std::string> JZMenu::aiItems() const
 {
     std::vector<std::string> v;
     for (auto* a : m_actions) {
-        if (!a->isSeparator())
+        if (!a->isSeparator() && a->isVisible())
             v.push_back(a->text());
     }
     return v;

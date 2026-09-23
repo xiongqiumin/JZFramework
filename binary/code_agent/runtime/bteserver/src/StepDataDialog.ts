@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { tr, emit, sprintf } from './BTEServer.js';
-import { stru_BTS_CMD_SEND_DFDATA76 } from './structs.js';
+import { stru_BTS_CMD_SEND_DFDATA76, aTimeToMSec, aTimeToISO } from './structs.js';
 import { PackDefine, STEP_CHARGE, STEP_CHARGE_OTHER, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
 import { STEPDATADIALOG_UI_XML } from './ui/STEPDATADIALOG_UI_XML.js';
@@ -114,11 +114,12 @@ export class StepDataDialog
     // void updateTreeHeader(int level);
     updateTreeHeader(level)
     {
-        // 原: this.ui.treeWidget.setHeaderLabels(...) —— 原版的 QTreeWidget 已按转换报告换成 TableWidget,
-        // 而引擎的表没有"设置表头文本"的接口(只有 setColumnCount), 列头先留空(报告里记着)。
-        // if (level < 2) this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList1);
-        // else this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList2);
-        void level;
+        // 原版的 QTreeWidget 按转换报告换成了 TableWidget; 引擎的表**有**表头文本接口
+        // (JZTableWidget.setHeaderLabels -> C++ setHorizontalHeaderLabels), 这里照原样写回。
+        if (level < 2)
+            this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList1);
+        else
+            this.ui.treeWidget.setHeaderLabels(this.m_treeHeaderList2);
     }
 
     // void init(bool isReal, QString deviceString, int index, BTERecordPtr recordInfo);
@@ -147,7 +148,7 @@ export class StepDataDialog
         }
 
         if (this.m_recordInfo.dataList.length > 0)
-            this.m_baseTime = this.m_recordInfo.dataList[0].ATime.toMSec();
+            this.m_baseTime = aTimeToMSec(this.m_recordInfo.dataList[0].ATime);
         else
             this.m_baseTime = 0;
 
@@ -217,7 +218,7 @@ export class StepDataDialog
             if (step.StepType === STEP_TYPE_STOP || step.StepType === STEP_TYPE_NULL)
                 continue;
 
-            const time = ((step.ATime.toMSec() - this.m_baseTime) / 1000) | 0;
+            const time = ((aTimeToMSec(step.ATime) - this.m_baseTime) / 1000) | 0;
             const current = DataTrans.fromElectricUnit(step.Current);
             const volt = DataTrans.fromVoltageUnit(step.Voltage);
             const cap = DataTrans.fromCapUnit(step.ChargeCap);
@@ -328,7 +329,7 @@ export class StepDataDialog
         if (step.StepType === STEP_TYPE_STOP || step.StepType === STEP_TYPE_NULL)
             return;
 
-        const time = ((step.ATime.toMSec() - this.m_baseTime) / 1000) | 0;
+        const time = ((aTimeToMSec(step.ATime) - this.m_baseTime) / 1000) | 0;
         const current = DataTrans.fromElectricUnit(step.Current);
         const volt = DataTrans.fromVoltageUnit(step.Voltage);
         const cap = DataTrans.fromCapUnit(step.ChargeCap);
@@ -373,7 +374,7 @@ export class StepDataDialog
         let cap = 0;
         let eng = 0;
         const volt = DataTrans.fromVoltageUnit(step.Voltage);
-        const time_ms = step.ATime.toMSec();
+        const time_ms = aTimeToMSec(step.ATime);
         const charge_type = PackDefine.StepChargeType(step.StepType);
 
         if (charge_type === STEP_CHARGE)
@@ -436,7 +437,7 @@ export class StepDataDialog
         sub_item.setText(3, DataTrans.fromElectricUnit(step.Current).toFixed(prec));
         sub_item.setText(4, cap.toFixed(prec));
         sub_item.setText(5, eng.toFixed(prec));
-        sub_item.setText(6, step.ATime.toString());
+        sub_item.setText(6, aTimeToISO(step.ATime));
         sub_item.setText(7, DataTrans.fromTempUnit(step.Tempature).toFixed(1));
 
         /*需求要求第一项和最后一项独立显示，其他项作为在第一项的子项，但是整体添加时每次判断较慢，这里做判断*/

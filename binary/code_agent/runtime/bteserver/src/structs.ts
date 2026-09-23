@@ -8,6 +8,8 @@
 // 未移植(见文件末 TODO): 0x0200 SET_STEP76_Ex 工步下发(StepInfo 的参数位图/参数表)。
 
 import { ByteReader, ByteWriter, CMD, channelMask, maskChannels, hexOf } from './protocol.js';
+// 工步包 pack/unpack 要做单位换算(与 C++ PackDefine.cpp 里用 DataTrans::toXxxUnit 一致)
+import { DataTrans } from './DataTrans.js';
 // 工步参数下标(权威定义在 PackDefine.js): 工步包的参数位图/参数值表按它们索引
 import {
     PARAM_Current, PARAM_Voltage, PARAM_Time, PARAM_Capacity, PARAM_Tempature,
@@ -17,6 +19,14 @@ import {
     PARAM_ProtectTempatureUpper, PARAM_ProtectTempatureLower,
     PARAM_ProtectDelayTime, PARAM_ProtectDetalVol, PARAM_ProtectDetalVolTime,
     PARAM_RecordTimeInterval, PARAM_RecordVoltageChange, PARAM_RecordCurrentChange,
+    // 工步包 pack/unpack 的类型判定要用(C++ StepInfo::isVolt/isCurrent/... 里引用的下标)
+    PARAM_ReservedParam1, PARAM_ReservedParam2, PARAM_JumpLine, PARAM_VoltageChange,
+    PARAM_RecordTempatureChange,
+    // 各命令包的 type() 用(下面 `export * from` 只做转发, 不建本地绑定, 所以这里要显式 import)
+    BTS_CMD_START70, BTS_CMD_STOP, BTS_CMD_RESUME, BTS_CMD_STEP_JUMP,
+    BTS_CMD_RESUME_CONFIRM, BTS_CMD_SET_RTC, BGS66_CMD_SET_RT_INTERVAL,
+    BTS_CMD_SEND_PARALLEL, BTS_CMD_SEND_PARALLEL_CANCEL, BTS_CMD_SET_STEP76_Ex,
+    OP_EQU,
 } from './PackDefine.js';
 
 // C++ 侧 PackDefine.h 把"命令字/参数枚举/错误码/PackDefine 类"和"各 stru_* 命令包"
@@ -43,6 +53,40 @@ export const SIZE = {
     SEND_LOG: 22,
     RTDEVSTATUS: 8,
 };
+
+// ---------------------------------------------------------------------------
+// CRC32 —— 逐字对照 PackDefine.cpp 的 getCRC32():
+//   反射表(标准多项式 0xEDB88320) + **初值 0** + 末尾 `crc ^ 0xFFFFFFFF`。
+//   ⚠ 与 zlib/标准 CRC-32(初值 0xFFFFFFFF、末尾不再取反)写法不同, 数值也不一样 ——
+//   工步包的 CRC 必须与下位机逐字节一致, 所以照抄 C++ 的算法而不是"标准写法"。
+// ---------------------------------------------------------------------------
+let _crc32Table = null;
+function crc32Table()
+{
+    if (!_crc32Table)
+    {
+        _crc32Table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++)
+        {
+            let c = i;
+            for (let k = 0; k < 8; k++)
+                c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+            _crc32Table[i] = c >>> 0;
+        }
+    }
+    return _crc32Table;
+}
+
+export function crc32(buf)
+{
+    if (!buf || buf.length < 1)
+        return 0xffffffff;          // 与 C++ 的空输入返回一致
+    const t = crc32Table();
+    let crc = 0;
+    for (let i = 0; i < buf.length; i++)
+        crc = (t[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
+    return (crc ^ 0xffffffff) >>> 0;
+}
 
 // ---------------------------------------------------------------------------
 // 设备信息 (0x72, 108 字节)
@@ -175,6 +219,18 @@ export function aTimeToISO(a) {
     const dt = new Date(ms);
     return dt.getUTCFullYear() + '-' + pad(dt.getUTCMonth() + 1, 2) + '-' + pad(dt.getUTCDate(), 2) +
         ' ' + pad(dt.getUTCHours(), 2) + ':' + pad(dt.getUTCMinutes(), 2) + ':' + pad(dt.getUTCSeconds(), 2);
+}
+
+// ATime_t::toMSec() —— 同上按天进位后转 epoch 毫秒。
+// (C++ 侧是 ATime_t 的成员函数; 本移植的 aTime 是纯数据对象(协议解包/存档反序列化都产它),
+//  所以做成自由函数 —— 原来业务代码里写的 `.ATime.toMSec()` 是照搬 C++ 的调用形态,
+//  aTime 上根本没有这个方法, 那几处调用会直接抛 "toMSec is not a function"。)
+export function aTimeToMSec(a) {
+    if (!a)
+        return 0;
+    const extraDays = Math.floor(a.hour / 24);
+    const hour = a.hour % 24;
+    return Date.UTC(a.year, a.month - 1, a.day + extraDays, hour, a.minute, a.second);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,20 +743,76 @@ export class stru_BTS_CMD_SEND_DFDATA_RESP76
     }
 }
 
-// 带通道位图的命令包基类(Qt 侧是各结构体各自实现, 这里收口成一处):
-//   START70 / STOP / RESUME / STEP_JUMP / PARALLEL(及 CANCEL) 都是"通道位图 + 附加字段"
-export class stru_ChannelPackBase
+// ---------------------------------------------------------------------------
+// stru_BTS_CMD_STEP_REQUEST —— 工步下发队列里的包(C++ 里是 NetPack 的子类)。
+// C++ 里 START70 / STOP / RESUME / RESUME_CONFIRM / STEP_JUMP / SEND_PARALLEL(CANCEL)
+// / SET_RTC / SET_STEP76_Ex **全都继承它**, 所以基类必须是它(见下面 stru_ChannelPackBase)。
+//
+// ⚠ 2026-09-23 修正(原来是断的): 这些包以前继承的是另一个互不相干的 stru_ChannelPackBase,
+//   而 BTEServer.send(netId, pack) 用 `pack instanceof stru_BTS_CMD_STEP_REQUEST` 判
+//   "第 2 个参数是包还是命令字" ⇒ 判断永远为假, 启动/停止/接续/跳转/并联的发送路径整条走不通
+//   (会掉进"当成命令字"的分支, 然后 data.length 报错)。同时补上各包的 type()
+//   (原来只有基类有 type() 且恒返回 0x0200 —— 就算 instanceof 修好了也会把所有包都发成工步包)。
+// ---------------------------------------------------------------------------
+export class stru_BTS_CMD_STEP_REQUEST
 {
-    constructor() { this.ChannelID = new Uint8Array(8); }
-    // ChannelID[8] 共 64 位, 与 BTEServer.js 里 pack.setChannel(chn_idx) 的用法一致
-    setChannel(channels) { this.ChannelID = channelMask(channels); return this; }
-    clearChannel() { this.ChannelID = new Uint8Array(8); return this; }
+  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    constructor()
+    {
+        this.Guid = new Uint8Array(16);
+        this.ChannelID = new Uint8Array(8);
+        this.DataEndFlag = 0;
+        this.DataIndex = 0;
+    }
+    type() { return CMD.SET_STEP76_Ex; }   // 派生类各自覆写
+    // C++ stru_BTS_CMD_*::setChannel(int idx): 把**第 idx 路**对应的位**置进** ChannelID
+    // (下标 0 基, 可多次调用累加多路)。注意这不是"整张位图"——createPackList 里就是
+    // 逐路调用 pack.setChannel(chn_idx) 来攒出一张位图的, 传数组是另一种写法(兼容保留)。
+    setChannel(idx)
+    {
+        if (typeof idx === 'number')
+        {
+            if (idx >= 0 && idx < 64)
+                this.ChannelID[(idx / 8) | 0] |= (1 << (idx % 8));
+        }
+        else if (idx && idx.length !== undefined)
+            this.ChannelID = channelMask(idx);
+        return this;
+    }
     channels() { return maskChannels(this.ChannelID); }
+    clearChannel() { this.ChannelID = new Uint8Array(8); }
+    pack(buffer)
+    {
+        const out = new ByteWriter(16 + 8 + 1 + 2);
+        out.raw(this.Guid);
+        out.raw(this.ChannelID);
+        out.u8v(this.DataEndFlag);
+        out.u16(this.DataIndex);
+        const b = out.bytes();
+        if (buffer) buffer.push(b);
+        return b;
+    }
+    unPack(buffer)
+    {
+        const r = new ByteReader(buffer);
+        this.Guid = r.bytes(16);
+        this.ChannelID = r.bytes(8);
+        this.DataEndFlag = r.u8v();
+        this.DataIndex = r.u16();
+        return true;
+    }
+}
+
+// 带通道位图的命令包基类: START70 / STOP / RESUME / STEP_JUMP / PARALLEL(及 CANCEL)
+// 都是"通道位图 + 附加字段", 与 C++ 同一条继承链(基类就是 STEP_REQUEST, 不再另立一份)。
+export class stru_ChannelPackBase extends stru_BTS_CMD_STEP_REQUEST
+{
 }
 
 export class stru_BTS_CMD_START70 extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    type() { return BTS_CMD_START70; }
     constructor(src)
     {
         super();
@@ -723,6 +835,7 @@ export class stru_BTS_CMD_START70 extends stru_ChannelPackBase
 
 export class stru_BTS_CMD_STOP extends stru_ChannelPackBase
 {
+    type() { return BTS_CMD_STOP; }
     pack(buffer)
     {
         const b = new Uint8Array(this.ChannelID);   // 通道位图原样下发
@@ -733,69 +846,81 @@ export class stru_BTS_CMD_STOP extends stru_ChannelPackBase
 
 export class stru_BTS_CMD_RESUME extends stru_BTS_CMD_STOP
 {
+    type() { return BTS_CMD_RESUME; }
 }
 
 export class stru_BTS_CMD_STEP_JUMP extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    // C++ 成员名是小写 jumpStepId(PackDefine.h:648), 调用点写的也是 pack.jumpStepId = ...
     constructor()
     {
         super();
-        this.JumpStepID = 1;
+        this.jumpStepId = 1;
     }
+    type() { return BTS_CMD_STEP_JUMP; }
     pack(buffer)
     {
-        const b = packStepJump({ mask: this.ChannelID, jumpStepId: this.JumpStepID });
+        const b = packStepJump({ mask: this.ChannelID, jumpStepId: this.jumpStepId });
         if (buffer) buffer.push(b);
         return b;
     }
 }
 
-export class stru_BTS_CMD_RESUME_CONFIRM
+export class stru_BTS_CMD_RESUME_CONFIRM extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
-    constructor() { this.Result = 0; }
+    // C++ 成员名是小写 result, 且构造默认 1(PackDefine.cpp:1282-1285)。调用点写的也是
+    // `confirm.result = ...` —— 之前类里叫 Result, 两边对不上(pack 会恒发默认值)。
+    constructor() { super(); this.result = 1; }
+    type() { return BTS_CMD_RESUME_CONFIRM; }
     pack(buffer)
     {
-        const b = packResumeConfirm(this.Result);
+        const b = packResumeConfirm(this.result);
         if (buffer) buffer.push(b);
         return b;
     }
 }
 
-export class stru_BTS_CMD_SET_RTC
+export class stru_BTS_CMD_SET_RTC extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    // C++: `QDateTime time;`(PackDefine.h:340) —— 小写 time, 调用点写的也是 rtc.time = Date。
     constructor()
     {
+        super();
+        this.time = null;   // Date(原 C++ 是 QDateTime); 也允许逐字段设(见下)
         this.Year = 0; this.Month = 0; this.Day = 0;
         this.Hour = 0; this.Minute = 0; this.Second = 0;
-        this.Time = null;   // Date; 设了就用它拆出年月日时分秒(原 C++ 是 QDateTime)
     }
+    type() { return BTS_CMD_SET_RTC; }
     pack(buffer)
     {
-        // 年月日时分秒逐个字段优先, 缺的从 Time 取(原 C++: Time.date().year()/Time.time().hour())
-        const t = (this.Time instanceof Date) ? this.Time : null;
+        // C++ 只用 time(PackDefine.cpp:167-180): 年(-2000) 月 日 时 分 秒 各 1 字节。
+        // 逐字段那几个是移植时留的备用口子: time 没设时用它们。
+        const t = (this.time instanceof Date) ? this.time : null;
         const b = packSetRtc({
-            year: this.Year || (t ? t.getFullYear() : 0),
-            month: this.Month || (t ? t.getMonth() + 1 : 0),
-            day: this.Day || (t ? t.getDate() : 0),
-            hour: this.Hour || (t ? t.getHours() : 0),
-            minute: this.Minute || (t ? t.getMinutes() : 0),
-            second: this.Second || (t ? t.getSeconds() : 0),
+            year: t ? t.getFullYear() : this.Year,
+            month: t ? t.getMonth() + 1 : this.Month,
+            day: t ? t.getDate() : this.Day,
+            hour: t ? t.getHours() : this.Hour,
+            minute: t ? t.getMinutes() : this.Minute,
+            second: t ? t.getSeconds() : this.Second,
         });
         if (buffer) buffer.push(b);
         return b;
     }
 }
 
-export class stru_BGS66_CMD_SET_RT_INTERVAL
+export class stru_BGS66_CMD_SET_RT_INTERVAL extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
-    constructor() { this.Interval = 0; }
+    // C++ 成员名是 RTInterval(PackDefine.h:359), 调用点写的也是 RTInterval.RTInterval = 1。
+    constructor() { super(); this.RTInterval = 0; }
+    type() { return BGS66_CMD_SET_RT_INTERVAL; }
     pack(buffer)
     {
-        const b = packSetRtInterval(this.Interval);
+        const b = packSetRtInterval(this.RTInterval);
         if (buffer) buffer.push(b);
         return b;
     }
@@ -804,17 +929,20 @@ export class stru_BGS66_CMD_SET_RT_INTERVAL
 export class stru_BTS_CMD_SEND_PARALLEL extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+    // C++: 基类的 SubDeviceId + `QVector<uchar> channelInfo`(PackDefine.h:686-693);
+    // 调用点写的也是 pack.SubDeviceId / pack.channelInfo.push(...)。
     constructor()
     {
         super();
-        this.SubDevID = 0;
-        this.Channels = [];
+        this.SubDeviceId = 0;
+        this.channelInfo = [];
     }
+    type() { return BTS_CMD_SEND_PARALLEL; }
     pack(buffer)
     {
         const b = packParallel({
-            subDevId: this.SubDevID,
-            channels: this.Channels.length ? this.Channels : maskChannels(this.ChannelID),
+            subDevId: this.SubDeviceId,
+            channels: this.channelInfo.length ? this.channelInfo : maskChannels(this.ChannelID),
         });
         if (buffer) buffer.push(b);
         return b;
@@ -823,6 +951,7 @@ export class stru_BTS_CMD_SEND_PARALLEL extends stru_ChannelPackBase
 
 export class stru_BTS_CMD_SEND_PARALLEL_CANCEL extends stru_BTS_CMD_SEND_PARALLEL
 {
+    type() { return BTS_CMD_SEND_PARALLEL_CANCEL; }
 }
 
 export class stru_BTS_CMD_LED_ON
@@ -870,45 +999,6 @@ export class stru_BTS_CMD_RESUME_RESP extends stru_BTS_CMD_CHANNEL_RESP { }
 export class stru_BTS_CMD_STEP_JUMP_RESP extends stru_BTS_CMD_CHANNEL_RESP { }
 
 // ---------------------------------------------------------------------------
-// stru_BTS_CMD_STEP_REQUEST —— 工步下发队列里的包(C++ 里是 NetPack 子类)
-// ---------------------------------------------------------------------------
-export class stru_BTS_CMD_STEP_REQUEST
-{
-  [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
-    constructor()
-    {
-        this.Guid = new Uint8Array(16);
-        this.ChannelID = new Uint8Array(8);
-        this.DataEndFlag = 0;
-        this.DataIndex = 0;
-    }
-    type() { return CMD.SET_STEP76_Ex; }
-    setChannel(channels) { this.ChannelID = channelMask(channels); return this; }
-    channels() { return maskChannels(this.ChannelID); }
-    clearChannel() { this.ChannelID = new Uint8Array(8); }
-    pack(buffer)
-    {
-        const out = new ByteWriter(16 + 8 + 1 + 2);
-        out.raw(this.Guid);
-        out.raw(this.ChannelID);
-        out.u8v(this.DataEndFlag);
-        out.u16(this.DataIndex);
-        const b = out.bytes();
-        if (buffer) buffer.push(b);
-        return b;
-    }
-    unPack(buffer)
-    {
-        const r = new ByteReader(buffer);
-        this.Guid = r.bytes(16);
-        this.ChannelID = r.bytes(8);
-        this.DataEndFlag = r.u8v();
-        this.DataIndex = r.u16();
-        return true;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // stru_BTS_CMD_SET_STEP76_Ex (0x0200) —— 工步下发
 //
 // **未收口**: 参数位图 + 参数表的 pack/unpack 对应 PackDefine.cpp:435-830,
@@ -927,6 +1017,11 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
         this.paramOp = [];                      // 各参数的比较运算符(OP_*), undefined = 未设置
         this.StepType = 0;
         this.StepID = 1;
+        // ⚠ 名字说明: C++ 的 `ushort StepLine` 是**工步行号**(updateStepLine 里 = 工步序号 + 1),
+        //   而报文里的**参数位图**在 C++ 里是 paramList[i].vaild + getBitmap()。
+        //   本移植把 StepLine 这个名字用给了参数位图(界面层的 isXxxVaild/_setBit 都读它),
+        //   所以工步行号另立一个字段 stepLineNo, 语义与 C++ 的 StepLine 一致。
+        this.stepLineNo = 0;
     }
 
     // ---- 参数位图(PARAM_* 索引 -> bit) ----
@@ -1014,19 +1109,220 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
         return this;
     }
 
-    unpack(body)
+    // 清空**单个**参数(值 + 运算符 + 位图位) —— 对应 C++ `paramList[i].clear()`
+    // (原调用点写的是 `step.paramList[i].clear()`; 本移植的 paramList 是纯值数组,
+    //  没有 ParamInfo 对象, 所以收口成这个方法。见 StepSettingDialog.ts 的调用点。)
+    clearParam(i)
     {
-        // TODO(未收口): PackDefine.cpp:435-830 的"位图 + 参数表"解析。
-        // 这段是**网络报文**格式, 必须与 C++ 逐字节一致, 不能凭猜 —— 等拿到 JZBTEServer
-        // 的 PackDefine.cpp 再补(见文件末 TODO)。
-        console.error("[structs] SET_STEP76_Ex.StepInfo::unpack 尚未移植(0x0200 工步包)");
-        return false;
+        delete this.paramList[i];
+        delete this.paramOp[i];
+        this._clearBit(i);
+        return this;
     }
+
+    // ---- 参数类型判定(一一对应 C++ StepInfo::isReserved/isVolt/isCurrent/isTemp/
+    //      isCapacity/isTime64/isInt32; 决定该参数在报文里的字节宽度) ----
+    // 注意与上面那些 isXxxVaild() 区分: 这里判的是"参数**类型**", 那里判的是"有没有被设置"。
+    isReserved(i) { return i === PARAM_ReservedParam1 || i === PARAM_ReservedParam2; }
+    isVolt(i)
+    {
+        return i === PARAM_Voltage || i === PARAM_StopVoltage || i === PARAM_VoltageChange
+            || i === PARAM_ProtectVoltageLower || i === PARAM_ProtectVoltageUpper
+            || i === PARAM_RecordVoltageChange || i === PARAM_ProtectDetalVol;
+    }
+    isCurrent(i)
+    {
+        return i === PARAM_Current || i === PARAM_StopCurrent
+            || i === PARAM_ProtectCurrentUpper || i === PARAM_ProtectCurrentLower
+            || i === PARAM_RecordCurrentChange;
+    }
+    isTemp(i)
+    {
+        return i === PARAM_Tempature || i === PARAM_ProtectTempatureUpper
+            || i === PARAM_ProtectTempatureLower || i === PARAM_RecordTempatureChange;
+    }
+    isCapacity(i) { return i === PARAM_Capacity; }
+    isTime64(i) { return i === PARAM_Time || i === PARAM_RecordTimeInterval; }
+    isInt32(i)
+    {
+        return i === PARAM_BeginStepID || i === PARAM_CountLoop || i === PARAM_JumpLine
+            || i === PARAM_ProtectDelayTime || i === PARAM_ProtectDetalVolTime;
+    }
+
+    // C++ getBitmap(index): 取第 index 个 32 位位图; 非 0 时置 bit31 = "后面还有位图"。
+    _bitmapOf(index)
+    {
+        const s = index * 32;
+        let v = 0;
+        for (let i = s; i < s + 32 && i < 64; i++)
+            if (this._hasBit(i))
+                v |= (1 << (i - s));
+        if (v !== 0)
+            v |= (1 << 31);
+        return v >>> 0;
+    }
+
+    // C++ setBitmap(index, bitmap): 把位图回填到 paramList(⚠ C++ 那边循环上界是 s+31,
+    // 即漏掉每组的最后一位 bit30 —— 这是它的原样行为, 这里照抄以保持逐字节一致)。
+    setBitmap(index, bitmap)
+    {
+        const s = index * 32;
+        const e = s + 31;
+        for (let i = s; i < e && i < 64; i++)
+        {
+            if ((bitmap & (1 << (i - s))) !== 0)
+                this._setBit(i);
+            else
+                this._clearBit(i);
+        }
+    }
+    getBitmap(index) { return this._bitmapOf(index); }
+
+    // 该参数比较运算符(C++ clearParams 把 op 全置 OP_EQU; 本移植的 paramOp 是稀疏数组,
+    // 缺省同样按 OP_EQU 处理)
+    _op(i)
+    {
+        const op = this.paramOp[i];
+        return (op === undefined || op === null) ? OP_EQU : op;
+    }
+
+    // ---- C++ StepInfo::pack(PackDefine.cpp:435-507) —— 单个工步的报文 ----
+    //   ushort 长度(= body + 10, 即 6 字节头 + 4 字节 crc)
+    //   ushort StepLine(工步行号) | uchar StepID | uchar StepType
+    //   body: bitMap[0..n-1](u32, 遇到 0 结束; bit31 = 后面还有 bitMap 的标志位)
+    //         + 按位序依次排列的有效参数:
+    //             预留参数: i32(无运算符)   其余: op(1B) + 数值
+    //             电压/电流/温度/整型 = 4B, 容量/时间 = 8B
+    //   u32 crc32(覆盖前 长度+头+body 的全部字节)
     pack(buffer)
     {
-        // TODO(未收口): 同上
-        console.error("[structs] SET_STEP76_Ex.StepInfo::pack 尚未移植(0x0200 工步包)");
-        return new Uint8Array(0);
+        // 1) 位图: 一直取到"某个 32 位为 0"(那一个也要写进去), 最多 12 个
+        const bitMaps = [];
+        for (let i = 0; i < 12; i++)
+        {
+            const m = this._bitmapOf(i);
+            bitMaps.push(m);
+            if (m === 0)
+                break;
+        }
+
+        // 2) body
+        // ⚠ ByteWriter.bytes() 返回的是**整个缓冲**(没写满的尾部是 0), 所以这里按 offset 截断;
+        //    缓冲大小只是上界(参数最多 64 项 × 9 字节)。
+        const w = new ByteWriter(bitMaps.length * 4 + 64 * 9);
+        for (let i = 0; i < bitMaps.length; i++)
+            w.u32(bitMaps[i]);
+
+        const param_count = Math.min(64, bitMaps.length * 32);
+        for (let i = 0; i < param_count; i++)
+        {
+            if (i % 32 === 31)
+                continue;                      // bit31 是标志位, 不携带数据
+            if (!this._hasBit(i))
+                continue;                      // 未设置的参数不占字节
+            const v = this._get(i);
+            if (this.isReserved(i))
+            {
+                w.i32(v | 0);                  // 预留参数: 只有 4 字节整数
+            }
+            else
+            {
+                w.u8v(this._op(i));
+                if (this.isVolt(i))          w.u32(DataTrans.toVoltageUnit(v));
+                else if (this.isCurrent(i))  w.u32(DataTrans.ElectricUnit(v));
+                else if (this.isTemp(i))     w.u32(DataTrans.toTempUnit(v));
+                else if (this.isCapacity(i)) w.i64(DataTrans.toCapUnit(v));
+                else if (this.isTime64(i))   w.u64(BigInt(Math.trunc(v)));
+                else if (this.isInt32(i))    w.i32(v | 0);
+                else
+                    throw new Error('StepInfo.pack: 参数下标 ' + i + ' 不属于任何协议类型');
+            }
+        }
+        const body = w.bytes().subarray(0, w.offset);
+
+        // 3) 组包 + CRC(覆盖包头 + body)
+        const head = new ByteWriter(6 + body.length + 4);
+        head.u16(body.length + 10);            // 6(长度/工步行号/工步号/类型) + 4(crc)
+        head.u16(this.stepLineNo);
+        head.u8v(this.StepID);
+        head.u8v(this.StepType);
+        head.raw(body);
+        const prefix = head.bytes().subarray(0, head.offset);
+        const out = new ByteWriter(prefix.length + 4);
+        out.raw(prefix);
+        out.u32(crc32(prefix));
+
+        const b = out.bytes().subarray(0, out.offset);
+        if (buffer) buffer.push(b);
+        return b;
+    }
+
+    // ---- C++ StepInfo::unpack(PackDefine.cpp:526-641) —— 与 pack 完全对称 ----
+    unpack(stepPack)
+    {
+        const head_size = 6;    // 长度 + 工步行号 + 工步号 + 工步类型
+        const crc_size = 4;
+        if (!stepPack || stepPack.length < head_size + crc_size)
+            return false;
+
+        // CRC: 最后 4 字节是小端 u32, 覆盖它前面的全部字节
+        const n = stepPack.length;
+        const stored = (stepPack[n - 4] | (stepPack[n - 3] << 8)
+            | (stepPack[n - 2] << 16) | (stepPack[n - 1] << 24)) >>> 0;
+        if (stored !== crc32(stepPack.subarray(0, n - crc_size)))
+            return false;
+
+        const r = new ByteReader(stepPack);
+        const packLen = r.u16();
+        if (packLen !== (n & 0xffff))          // C++: packLen != (ushort)stepPack.size()
+            return false;
+        this.stepLineNo = r.u16();
+        this.StepID = r.u8v();
+        this.StepType = r.u8v();
+
+        this.clearParams();
+
+        // 位图: 一直读到 0(那一个也算在读到的个数里), 最多 12 个
+        const bitMaps = [];
+        for (let i = 0; i < 12; i++)
+        {
+            const m = r.u32();
+            bitMaps.push(m);
+            if (m === 0)
+                break;
+        }
+
+        // 按位表读参数; 越界的位直接忽略(paramList 固定 64 项)
+        const max = Math.min(bitMaps.length * 32, 64);
+        for (let i = 0; i < max; i++)
+        {
+            if (i % 32 === 31)
+                continue;                      // bit31 = 标志位, 不代表参数有效
+            if (((bitMaps[(i / 32) | 0] >>> (i % 32)) & 1) === 0)
+                continue;
+
+            this._setBit(i);
+            if (this.isReserved(i))
+            {
+                this.paramList[i] = r.i32();
+            }
+            else
+            {
+                this.paramOp[i] = r.u8v();
+                if (this.isVolt(i))          this.paramList[i] = DataTrans.fromVoltageUnit(r.u32());
+                else if (this.isCurrent(i))  this.paramList[i] = DataTrans.fromElectricUnit(r.u32());
+                else if (this.isTemp(i))     this.paramList[i] = DataTrans.fromTempUnit(r.u32());
+                else if (this.isCapacity(i)) this.paramList[i] = DataTrans.fromCapUnit(r.i64());
+                else if (this.isTime64(i))   this.paramList[i] = Number(r.u64());
+                else if (this.isInt32(i))    this.paramList[i] = r.i32();
+                else
+                {
+                    this._clearBit(i);         // 类型不在协议表里 -> 整个包判为坏包(C++ 同款)
+                    return false;
+                }
+            }
+        }
+        return true;
     }
     genDefaultStep(type)
     {
@@ -1049,13 +1345,17 @@ stru_BTS_CMD_SET_STEP76_Ex_StepInfo.ParamInfo = {
 // 64 项参数类型表(netPackDefine 初始化时按工步参数个数填 TYPE_PARAM, 首尾为 TYPE_NONE)
 stru_BTS_CMD_SET_STEP76_Ex_StepInfo.typeList = new Array(64).fill(2);
 
-export class stru_BTS_CMD_SET_STEP76_Ex
+// C++: `struct stru_BTS_CMD_SET_STEP76_Ex : stru_BTS_CMD_STEP_REQUEST`(PackDefine.h:435)
+// —— 继承是必需的: BTEServer.send(netId, pack) 靠 `instanceof stru_BTS_CMD_STEP_REQUEST`
+//    分辨"包还是命令字", 工步下发走的正是这条路(否则整个下发队列都发不出去)。
+export class stru_BTS_CMD_SET_STEP76_Ex extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     static get StepInfo() { return stru_BTS_CMD_SET_STEP76_Ex_StepInfo; }
 
     constructor()
     {
+        super();
         this.Guid = new Uint8Array(16);
         this.ChannelID = new Uint8Array(8);
         this.DataEndFlag = 0;
@@ -1063,9 +1363,77 @@ export class stru_BTS_CMD_SET_STEP76_Ex
         this.StepCount = 0;
         this.stepList = [];   // QVector<StepInfo>
     }
-    setChannel(channels) { this.ChannelID = channelMask(channels); return this; }
-    clearChannel() { this.ChannelID = new Uint8Array(8); }
-    channels() { return maskChannels(this.ChannelID); }
+    // setChannel/clearChannel/channels 继承基类(语义与 C++ 的 setChannel(int idx) 一致)
+    type() { return BTS_CMD_SET_STEP76_Ex; }                      // 0x0200
+
+    // ---- C++ stru_BTS_CMD_SET_STEP76_Ex::pack(PackDefine.cpp:761-795) —— 工步文件包 ----
+    //   Guid[16] + ChannelID[8] + StepFileLen(int32) + 工步数(ushort)
+    //   + DataEndFlag(uchar) + DataIndex(ushort) + 每个工步的工步包(见 StepInfo::pack)
+    // ⚠ C++ 里那两个分包字段写的是**局部常量** 0x02 / 0x01(成员值被忽略), 这里照抄。
+    pack(buffer)
+    {
+        const packs = [];
+        let fileLen = 0;
+        for (let i = 0; i < this.stepList.length; i++)
+        {
+            const one = this.stepList[i].pack(null);   // 单个工步的包(含它自己的 crc)
+            packs.push(one);
+            fileLen += one.length;
+        }
+
+        const w = new ByteWriter(16 + 8 + 4 + 2 + 1 + 2 + fileLen);   // 精确大小(见上面的说明)
+        w.raw(this.Guid);
+        w.raw(this.ChannelID);
+        w.i32(fileLen);
+        w.u16(packs.length & 0xffff);
+        w.u8v(0x02);        // DataEndFlag: 0x02 = 后面没有数据包了
+        w.u16(0x01);        // DataIndex: 第一包
+        for (let i = 0; i < packs.length; i++)
+            w.raw(packs[i]);
+
+        const b = w.bytes().subarray(0, w.offset);
+        if (buffer) buffer.push(b);
+        return b;
+    }
+
+    // ---- C++ stru_BTS_CMD_SET_STEP76_Ex::unpack(PackDefine.cpp:802-848) ----
+    unpack(data)
+    {
+        const head_size = 16 + 8 + 4 + 2 + 1 + 2;
+        if (!data || data.length < head_size)
+            return false;
+
+        const r = new ByteReader(data);
+        this.Guid = r.bytes(16);
+        this.ChannelID = r.bytes(8);
+        const fileLen = r.i32();
+        const stepCount = r.u16();
+        this.DataEndFlag = r.u8v();
+        this.DataIndex = r.u16();
+
+        if (fileLen !== data.length - head_size)
+            return false;
+
+        this.stepList = [];
+        this.StepCount = 0;
+        let pos = head_size;
+        for (let i = 0; i < stepCount; i++)
+        {
+            if (pos + 2 > data.length)
+                return false;
+            const stepLen = data[pos] | (data[pos + 1] << 8);
+            if (stepLen < 10 || pos + stepLen > data.length)
+                return false;
+
+            const step = new stru_BTS_CMD_SET_STEP76_Ex_StepInfo();
+            if (!step.unpack(data.subarray(pos, pos + stepLen)))
+                return false;
+            this.stepList.push(step);
+            pos += stepLen;
+        }
+        this.StepCount = this.stepList.length;
+        return true;
+    }
 
     // 复位成"默认工步包": 清空通道位图与工步表。
     // 传了 stepType -> 生成一条该类型的默认工步(C++ 侧 genDefaultStep(stepType) 的用法);
@@ -1089,11 +1457,17 @@ export class stru_BTS_CMD_SET_STEP76_Ex
         return this.updateStepLine();
     }
 
-    // 重算所有工步的参数位图(界面改完参数后调一次)
+    // 重算所有工步的参数位图(界面改完参数后调一次) + 回填工步行号/工步号
+    // (C++ PackDefine.cpp:750-759 的 updateStepLine: StepLine = StepID = 工步序号 + 1)
     updateStepLine()
     {
         for (let i = 0; i < this.stepList.length; i++)
+        {
             this.stepList[i].updateStepLine();
+            this.stepList[i].stepLineNo = i + 1;
+            this.stepList[i].StepID = i + 1;
+        }
+        this.StepCount = this.stepList.length;
         return this;
     }
 }

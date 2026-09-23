@@ -31,7 +31,9 @@ import {
     packStart70, packStop, packResume, packStepJump, packDFDataResp, packSetRtc,
     unpackBody, unpackRTData76, unpackDFData76, unpackSendInfo, packRTData76, packDFData76,
     workStatusText, isChannelFault, aTimeToISO, SIZE,
+    stru_BTS_CMD_SET_STEP76_Ex, stru_BTS_CMD_START70, stru_BTS_CMD_STOP, stru_BTS_CMD_STEP_REQUEST,
 } from './structs.js';
+import { OP_SMALL_EQU, OP_BIG_EQU, BTS_CMD_START70, BTS_CMD_SET_STEP76_Ex } from './PackDefine.js';
 // 本文件已**不再依赖 Qt 兼容层**: 应用对象用全局 jzApp, 配置用 JZSettings, 弹窗用 JZMessageBox,
 // 窗口/控件用 JZ*(全是引擎的真实实现)。其余文件仍在迁移中 —— 见 main() 末尾的 TODO。
 
@@ -280,7 +282,67 @@ export function protocolSelfTest()
     checkEq(unpackBody(0x1234, new Uint8Array([1, 2])).name, 'UNKNOWN', 'unpackBody 未知命令返回 UNKNOWN');
 
     // -----------------------------------------------------------------------
-    // 6. 解析结果演示(打印一帧实时数据)
+    // 6b. 工步下发 0x0200 往返(StepInfo 的参数位图 + 参数表 + 逐包 CRC32)
+    //     这段是**下发给中位机**的报文, 必须与 C++ PackDefine.cpp:435-641 逐字节一致 ——
+    //     往返自洽只是底线, 所以同时锁死"包头 + 长度自洽 + 坏包被 CRC 拒"。
+    // -----------------------------------------------------------------------
+    section('6b. 工步下发 SET_STEP76_Ex 往返');
+
+    const stepPack = new stru_BTS_CMD_SET_STEP76_Ex();
+    const setupPack = new stru_BTS_CMD_STOP();      // 停止包(顺带验证 instanceof 的那条链)
+    stepPack.Guid.set(GUID.subarray(0, 16));
+    {
+        const s0 = new stru_BTS_CMD_SET_STEP76_Ex.StepInfo();
+        s0.StepType = 1;                        // 恒流充电
+        s0.setCurrent(OP_SMALL_EQU, 3);         // 3A
+        s0.setStopVoltage(OP_BIG_EQU, 4.2);     // 4.2V
+        s0.setTime(OP_BIG_EQU, 3600000);        // 3600000ms
+        stepPack.stepList.push(s0);
+        stepPack.updateStepLine();              // 回填工步行号/工步号 + 参数位图
+    }
+    const stepBody = stepPack.pack(null);
+    {
+        // 外层头: Guid(16) + ChannelID(8) + StepFileLen(int32) + 工步数(u16) + 0x02 + DataIndex(u16)
+        const fileLen = stepBody[24] | (stepBody[25] << 8) | (stepBody[26] << 16) | (stepBody[27] << 24);
+        checkEq(stepBody.length, 33 + fileLen, '外层工步文件包长度自洽(StepFileLen)');
+        checkEq(stepBody[28] | (stepBody[29] << 8), 1, '工步数 = 1');
+        checkEq(stepBody[30], 0x02, 'DataEndFlag = 0x02(传完了)');
+        checkEq(stepBody[31] | (stepBody[32] << 8), 0x01, 'DataIndex = 0x01(第一包)');
+        checkEq(hexOf(stepBody.subarray(0, 16)), hexOf(GUID), 'Guid 原样带上');
+    }
+
+    const stepBack = new stru_BTS_CMD_SET_STEP76_Ex();
+    check(stepBack.unpack(stepBody), '工步包 unpack 成功(含逐工步 CRC 校验)');
+    checkEq(stepBack.stepList.length, 1, '读回工步数');
+    {
+        const b0 = stepBack.stepList[0];
+        checkEq(b0.StepType, 1, '读回 StepType');
+        checkEq(b0.StepID, 1, '读回 StepID(updateStepLine 回填的 1)');
+        checkEq(b0.stepLineNo, 1, '读回工步行号');
+        check(Math.abs(b0.Current() - 3) < 1e-6, 'Current 往返(A, 单位换算后)');
+        check(Math.abs(b0.StopVoltage() - 4.2) < 1e-6, 'StopVoltage 往返(V)');
+        checkEq(b0.Time(), 3600000, 'Time 往返(int64)');
+        check(b0.isCurrentVaild() && b0.isStopVoltageVaild() && b0.isTimeVaild(), '位图/参数表一致');
+        check(!b0.isVoltageVaild() && !b0.isCapacityVaild(), '没设的参数不在位图里');
+    }
+    {
+        const bad = new Uint8Array(stepBody);
+        bad[bad.length - 6] ^= 0xff;            // 打坏工步包里的一个字节(CRC 覆盖范围)
+        check(!new stru_BTS_CMD_SET_STEP76_Ex().unpack(bad), '工步包 CRC 坏包被拒');
+        const badLen = new Uint8Array(stepBody);
+        badLen[24] = 0x7f;                      // 改 StepFileLen -> 长度不符, 直接拒
+        check(!new stru_BTS_CMD_SET_STEP76_Ex().unpack(badLen), 'StepFileLen 不符被拒');
+    }
+    // 各命令包的 type(): send() 靠它决定帧头命令字(以前只有基类有, 且恒为 0x0200)
+    checkEq(new stru_BTS_CMD_SET_STEP76_Ex().type(), BTS_CMD_SET_STEP76_Ex, '工步包 type() = 0x0200');
+    checkEq(new stru_BTS_CMD_START70().type(), BTS_CMD_START70, '启动包 type() = 0x6E');
+    check(new stru_BTS_CMD_START70() instanceof stru_BTS_CMD_STEP_REQUEST
+        && stepPack instanceof stru_BTS_CMD_STEP_REQUEST
+        && setupPack instanceof stru_BTS_CMD_STEP_REQUEST,
+        '各包(启动/工步/停止) instanceof STEP_REQUEST(下发队列认得出)');
+
+    // -----------------------------------------------------------------------
+    // 7. 解析结果演示(打印一帧实时数据)
     // -----------------------------------------------------------------------
     section('6. 解析结果演示');
     function showRT(ip, frame) {

@@ -49,7 +49,7 @@ import { StepDataDialog } from './StepDataDialog.js';
 import {
     stru_BTS_CMD_SEND_RTDATA76, stru_BTS_CMD_SEND_DFDATA76, stru_BTS_CMD_SEND_DFDATA_RESP76,
     stru_BTS_CMD_SEND_PARALLEL, stru_BTS_CMD_STEP_REQUEST, stru_BTS_CMD_SET_STEP76_Ex,
-    stru_BTS_CMD_SEND_INFO,
+    stru_BTS_CMD_SEND_INFO, aTimeToMSec, aTimeToISO,
 } from './structs.js';
 import { HelpDialog } from './HelpDialog.js';
 import { createUi } from './bteserverUi.js';   // 主窗口的真 UI(uic 的 Ui_BTEServerClass 替身)
@@ -1851,10 +1851,10 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
                 worksheet_write_number(sheet_statis, row, 6, DataTrans.fromElectricUnit(stepS.Current), fmt(6));
                 worksheet_write_number(sheet_statis, row, 7, DataTrans.fromElectricUnit(stepE.Current), fmt(7));
 
-                const time_gap = stepE.ATime.toMSec() - stepS.ATime.toMSec();
+                const time_gap = aTimeToMSec(stepE.ATime) - aTimeToMSec(stepS.ATime);
                 worksheet_write_string(sheet_statis, row, 8, DataTrans.fromTimeUnitSec(time_gap), fmt(8));
                 worksheet_write_string(sheet_statis, row, 9, DataTrans.fromTimeUnitSec(time_gap), fmt(9));
-                worksheet_write_string(sheet_statis, row, 10, stepE.ATime.toString(), fmt(10));
+                worksheet_write_string(sheet_statis, row, 10, aTimeToISO(stepE.ATime), fmt(10));
 
                 start_idx = end_idx + 1;
             }
@@ -1918,7 +1918,7 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             }
 
             worksheet_write_string(sheet_detail, row, 9, DataTrans.fromTimeUnit(step.TestTime), fmt(9));
-            worksheet_write_string(sheet_detail, row, 10, step.ATime.toString(), fmt(10));
+            worksheet_write_string(sheet_detail, row, 10, aTimeToISO(step.ATime), fmt(10));
 
             worksheet_write_number(sheet_detail, row, 11, DataTrans.fromTempUnit(step.Tempature), fmt(11));
 

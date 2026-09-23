@@ -270,7 +270,7 @@ export class StepSettingDialog
         {
             const step = list[i];
             for (let j = 0; j < extParam.length; j++)
-                step.paramList[extParam[j]].clear();
+                step.clearParam(extParam[j]);   // 原: step.paramList[i].clear()(paramList 是值数组)
 
             if (step.StepType === STEP_TYPE_STOP)
                 continue;

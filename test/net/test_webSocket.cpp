@@ -263,7 +263,7 @@ int test_websocket_multi()
 
 int test_websocket()
 {
-    jzDebug() << "########## WebSocket 测试 (单线程 + 多线程, 各 15s) ##########";
+    jzDebug() << "########## WebSocket 测试 (单线程 + 多线程, 各 " << (NET_TEST_LOOP_MS / 1000) << "s) ##########";
     test_websocket_single();
     jzDebug() << "【OK】WebSocket 单线程通过";
     test_websocket_multi();

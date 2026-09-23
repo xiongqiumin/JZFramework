@@ -283,7 +283,7 @@ int test_tcp_multi()
 
 int test_tcp()
 {
-    jzDebug() << "########## TCP 测试 (单线程 + 多线程, 各 15s) ##########";
+    jzDebug() << "########## TCP 测试 (单线程 + 多线程, 各 " << (NET_TEST_LOOP_MS / 1000) << "s) ##########";
     test_tcp_single();
     jzDebug() << "【OK】TCP 单线程通过";
     test_tcp_multi();

@@ -205,7 +205,7 @@ int test_udp_multi()
 
 int test_udp()
 {
-    jzDebug() << "########## UDP 测试 (单线程 + 多并发, 各 15s) ##########";
+    jzDebug() << "########## UDP 测试 (单线程 + 多并发, 各 " << (NET_TEST_LOOP_MS / 1000) << "s) ##########";
     test_udp_single();
     jzDebug() << "【OK】UDP 单线程通过";
     test_udp_multi();

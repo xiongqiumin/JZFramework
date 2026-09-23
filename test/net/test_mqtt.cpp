@@ -329,7 +329,7 @@ int test_mqtt_multi()
 
 int test_mqtt()
 {
-    jzDebug() << "########## MQTT 测试 (单线程 + 多线程, 各 15s) ##########";
+    jzDebug() << "########## MQTT 测试 (单线程 + 多线程, 各 " << (NET_TEST_LOOP_MS / 1000) << "s) ##########";
     test_mqtt_single();
     jzDebug() << "【OK】MQTT 单线程通过";
     test_mqtt_multi();

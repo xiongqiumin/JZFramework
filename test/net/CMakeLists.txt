@@ -10,7 +10,7 @@ add_executable(test_net net_test_common.cpp
 	test_webSocket.cpp)
 target_link_libraries(test_net JZFramework)
 
-# ---- ctest 注册: 仅自包含的 test_net(local 模式, 单/多线程各15s) ----
+# ---- ctest 注册: 仅自包含的 test_net(local 模式, 单/多线程各5s, 时长见 net_test_common.h 的 NET_TEST_LOOP_MS) ----
 # test_tcp_bench/test_mg* 为基准程序、test_proxy/test_net_compress 依赖本地 python 服务, 不注册
 add_test(NAME net.test_net COMMAND test_net)
 set_tests_properties(net.test_net PROPERTIES TIMEOUT 600 LABELS "slow")

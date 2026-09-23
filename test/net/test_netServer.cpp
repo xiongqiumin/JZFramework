@@ -240,7 +240,7 @@ int test_netServer_multi()
 
 int test_netServer()
 {
-    jzDebug() << "########## JZNetServer 测试 (单线程 + 多线程, 各 15s) ##########";
+    jzDebug() << "########## JZNetServer 测试 (单线程 + 多线程, 各 " << (NET_TEST_LOOP_MS / 1000) << "s) ##########";
     test_netServer_single();
     jzDebug() << "【OK】JZNetServer 单线程通过";
     test_netServer_multi();

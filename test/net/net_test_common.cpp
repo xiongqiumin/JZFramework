@@ -83,9 +83,9 @@ void NetTpsCounter::onTick()
 
 double NetTpsCounter::average() const
 {
-    // 平均 TPS 分母固定按 15 秒算(客户端实际发送时长);
+    // 平均 TPS 分母按"客户端实际发送时长"算 = 单轮时长 NET_TEST_LOOP_MS;
     // 纯服务器模式 g_option.loopTime 为退出等待时长(30s), 不能用作平均分母
-    int ms = (g_option.enableServer && !g_option.enableClient) ? 15000 : g_option.loopTime;
+    int ms = (g_option.enableServer && !g_option.enableClient) ? NET_TEST_LOOP_MS : g_option.loopTime;
     double el = ms / 1000.0;
     return el > 0 ? (double)m_total / el : 0.0;
 }

@@ -10,11 +10,16 @@
 
 #define NET_TEST_THREAD_COUNT 8
 
+// 单轮测试的运行时长: net.test_net 里 TCP/UDP/WebSocket/MQTT/HTTP/JZNetServer 每个模块都跑
+// "单线程 + 多线程"两轮, 每轮跑这么久 —— 改这一个数就是改整条用例的单轮时长。
+// ⚠ 与 NetTpsCounter::average() 的分母同源(见 net_test_common.cpp), 别各改一边。
+#define NET_TEST_LOOP_MS 5000
+
 struct TestOption
 {
     bool enableServer = true;
     bool enableClient = true;
-    int loopTime = 15000;
+    int loopTime = NET_TEST_LOOP_MS;
     int delayTime = 0;
     int port = 18100;                  // 监听/连接端口(由 --port 指定)
     double threshold = 200.0;          // TPS 通过阈值(由 --threshold 指定, 默认 200)
@@ -61,7 +66,7 @@ public:
 
     void onTick();
 
-    // 整体平均 TPS = 总消息数 / g_option.loopTime(秒), 用于结束后的 benchmark 判断
+    // 整体平均 TPS = 总消息数 / 单轮时长(NET_TEST_LOOP_MS)的秒数, 用于结束后的 benchmark 判断
     double average() const;
 
     // 累计总消息数

@@ -977,10 +977,18 @@ int main()
             // 探针: 绑定类能不能被 JS 继承 —— bteserver 的 UI 类写的是 `class XxxDialog extends QDialog`
             // 这种风格, 若将来去掉 Qt 适配层改用真实绑定, 这一步必须先成立。
             // 这里把结论拼进断言名(始终 PASS, 只为把诊断打出来)。
+            // 路径用 exe 目录拼绝对值: 相对路径会落到**进程当前目录**(从仓库根跑测试就是仓库根),
+            // 把探针 ini 脏在源码树里。jzApp.applicationDirPath() 是 C++ 侧的 exe 目录
+            // (JS 侧的同名接口对纯 eval 的引擎返回空串, 用不了)。
+            // ⚠ Windows 的 applicationDirPath 是反斜杠, 直接塞进 JS 字符串会被当转义 —— 换成 '/'。
+            std::string iniPath = jzApp->applicationDirPath() + "/jzsettings_probe.ini";
+            for (char& ch : iniPath)
+                if (ch == '\\')
+                    ch = '/';
             check("JZSettings: 首次运行自建文件 + set/get 往返 + 分组",
                   evalStr(engine,
                           "var st8 = new JZSettings();"
-                          "var ok8 = st8.open('jzsettings_probe.ini');"
+                          "var ok8 = st8.open('" + iniPath + "');"
                           "st8.setValue('k', 'v');"
                           "st8.setInt('n', 7);"
                           "st8.beginGroup('g'); st8.setValue('x', 'y'); var gv8 = st8.getValue('x'); st8.endGroup();"

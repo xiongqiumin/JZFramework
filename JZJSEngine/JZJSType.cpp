@@ -86,6 +86,29 @@ Json::Value fromJSValue(JSContext* ctx, JSValueConst value)
     return ret_value;
 }
 
+// 对象指针形参: opaque 里存的就是 JZObjectPointer* —— **借用**, 不 dup 不 delete
+// (所有权在该 JS 对象的终结器: 它负责 delete 守卫与底层对象)。
+// 这里只取值; "是不是活着的对象指针"由 checkFunctionArg 在调用前校验(见 JSType_objectPointer)。
+template <>
+JZObjectPointer* fromJSValue(JSContext* ctx, JSValueConst value)
+{
+    if (JS_IsNull(value) || JS_IsUndefined(value))
+        return nullptr;
+
+    JSClassID class_id = 0;
+    void* opaque = JS_GetAnyOpaque(value, &class_id);
+    if (!opaque)
+        return nullptr;
+
+    JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+    if (!engine || !engine->isGuardedClass((int)class_id))
+    {
+        JZ_ASSERT_X(0, "fromJSValue<JZObjectPointer*>: 不是对象指针(上层应已校验)");
+        return nullptr;
+    }
+    return (JZObjectPointer*)opaque;
+}
+
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid)
 {
     JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);

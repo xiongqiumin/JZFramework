@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstring>
+#include <typeinfo>
 
 #include "JZJSEngine.h"
 #include "JZColor.h"
@@ -183,6 +184,45 @@ public:
     //    ToCString, 不会断言, 类型不对是 JS 侧的问题)。
     // 唯一保留校验的是**控件形参**: 极端情况(传 null / 传别的对象)下不能让 C++ 拿到空指针/野指针。
     bool argWidget(JSContext* ctx, JSValueConst v, JZWidget*& out, const char* what, bool allowNull);
+
+    // ========================================================================
+    // 从"对象指针形参"取控件 —— 控件方法绑定的统一写法
+    // ========================================================================
+    // 宿主/对象形参声明成 `JZObjectPointer*`(引擎的 JSType_objectPointer, 见 initTypeMap):
+    //     bind_label.def("setText", [this](JZObjectPointer* w, const std::string& text) {
+    //         if (JZLabel* label = widgetFromThis<JZLabel>(w, "setText"))
+    //             label->setText(text);
+    //     });
+    // 分两层校验:
+    //   ① 形参层(引擎, 调用前): 必须是"活着的对象指针" —— checkFunctionArg 按 JSType_objectPointer
+    //      判 opaque + 守卫, 传数字/字符串/普通对象直接抛异常;
+    //   ② 方法体(这里): dynamic_cast 到声明的类 —— 传错控件类抛可捕获的 JS 异常。
+    // 老写法 `JZLabel* w` 两头都缺: 控件没注册进类型表 ⇒ 引擎查不出类型、也不报错, 再按声明的类
+    // static_cast ⇒ 传错类就是类型不符的野指针(UB)。
+    // 语义: 空指针(实参 null/undefined 时由 fromJSValue 转出) -> 返回 nullptr 且**不设异常**
+    //       (Qt 的"给个空就什么都不做"); 已销毁 / 类型不符 -> 已 JS_Throw* 并返回 nullptr。
+    template <class T>
+    T* widgetFromThis(JZObjectPointer* guard, const char* what)
+    {
+        if (!guard)
+            return nullptr;
+
+        JZObject* object = guard->object();
+        if (!object)
+        {
+            JS_ThrowTypeError(m_engine->context(), "%s: 对象已被销毁", what);
+            return nullptr;
+        }
+
+        T* typed = dynamic_cast<T*>(object);
+        if (!typed)
+        {
+            JS_ThrowTypeError(m_engine->context(), "%s: 需要 %s, 实际是 %s", what,
+                              typeid(T).name(), object->className().c_str());
+            return nullptr;
+        }
+        return typed;
+    }
 
     // 往原型上挂一个原生方法(就是 JS_NewCFunction, 不经引擎的形参表/magic 分发)
     void defNative(JSValue proto, const char* name, JSCFunction* fn, int length);

@@ -538,11 +538,32 @@ JSValue JZJSWidgetModule::callTransparentMethod(int index, JSValueConst thisVal,
 
     CFunction* func = m_methods[index].get();
 
-    // 形参个数只做**越界保护**(少了会读到 argv 之外): 类型不校验, 那是 TS 侧的事。
+    // 形参个数只做**越界保护**(少了会读到 argv 之外)。
     // 注意 params[0] 是 this(成员函数), 真实形参个数要减 1。
     int need = (int)func->params.size() - 1;
     if (argc != need)
         return JS_ThrowTypeError(ctx, "%s: 需要 %d 个参数", func->name.c_str(), need);
+
+    // 宿主(形参表第 0 项, 即 this)也按对象指针校验: `JZLabel.prototype.setText.call(123, 'x')`
+    // 这类"拿方法去调一个非控件"要被立刻拦下, 而不是静默什么都不做。
+    {
+        const CFunctionParam& p0 = func->params[0];
+        int t0 = (p0.type == JSType_none) ? m_engine->ctypeidToType(p0.ctypeid) : p0.type;
+        if (t0 == JSType_objectPointer && !m_engine->checkFunctionArg(p0, 0, thisVal))
+            return JS_EXCEPTION;
+    }
+
+    // 对象形参的**形参层校验**: 声明成 `JZObjectPointer*` 的形参必须是"活着的对象指针" ——
+    // 交给引擎的 checkFunctionArg(它按 JSType_objectPointer 判 opaque + 守卫存活)。这样
+    // "传了个数字/字符串/普通对象当控件"在进方法体之前就被拦下, 而不是拖到里面当指针用。
+    // 标量/字符串/值类型形参仍不在这里校验(类型契约在 types/*.d.ts)。
+    for (int i = 0; i < argc; i++)
+    {
+        const CFunctionParam& p = func->params[i + 1];
+        int arg_type = (p.type == JSType_none) ? m_engine->ctypeidToType(p.ctypeid) : p.type;
+        if (arg_type == JSType_objectPointer && !m_engine->checkFunctionArg(p, i, argv[i]))
+            return JS_EXCEPTION;
+    }
 
     // CFunction 的约定: argv[0] = this, 后面是实参
     std::vector<JSValue> args;
@@ -1635,10 +1656,22 @@ void JZJSWidgetModule::registDialogs()
     //   const r = dlg.exec();            // 阻塞(嵌套事件循环); 1=Accepted, 0=Rejected, -1=递归调用被拒
     jsbind::ClassBind<JZDialog> bind_dlg("JZDialog", bind_w);
     
-    bind_dlg.def("exec", [](JZDialog* d) { return d->exec(); });
-    bind_dlg.def("accept", [](JZDialog* d) { d->accept(); });
-    bind_dlg.def("reject", [](JZDialog* d) { d->reject(); });
-    bind_dlg.def("result", [](JZDialog* d) { return (int)d->result(); });
+    bind_dlg.def("exec", [this](JZObjectPointer* d) {
+        JZDialog* dlg = widgetFromThis<JZDialog>(d, "exec");
+        return dlg ? dlg->exec() : -1;
+    });
+    bind_dlg.def("accept", [this](JZObjectPointer* d) {
+        if (JZDialog* dlg = widgetFromThis<JZDialog>(d, "accept"))
+            dlg->accept();
+    });
+    bind_dlg.def("reject", [this](JZObjectPointer* d) {
+        if (JZDialog* dlg = widgetFromThis<JZDialog>(d, "reject"))
+            dlg->reject();
+    });
+    bind_dlg.def("result", [this](JZObjectPointer* d) {
+        JZDialog* dlg = widgetFromThis<JZDialog>(d, "result");
+        return dlg ? (int)dlg->result() : 0;
+    });
     // 对话框信号: 属性形(单发/覆盖式); onFinished 带 result(int)
     defSignalProperty(bind_dlg, "onAccepted", &JZDialog::sigAccepted);
     defSignalProperty(bind_dlg, "onRejected", &JZDialog::sigRejected);
@@ -1672,108 +1705,249 @@ void JZJSWidgetModule::registWidgets()
 
     // 延后删除 —— 嵌套模态循环里删控件的正规做法: 事件派发期间(尤其 exec() 的模态循环里)直接把控件
     // delete 掉, 会让外层正在派发的事件对象悬垂; deleteLater 排到本轮事件处理完之后。
-    bind_w.def("deleteLater", [](JZWidget* w) { w->deleteLater(); });
+    bind_w.def("deleteLater", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "deleteLater"))
+            self->deleteLater();
+    });
 
-    bind_w.def("move", [](JZWidget* w, int x, int y) { w->move(x, y); });
-    bind_w.def("x", [](JZWidget* w) { return w->x(); });
-    bind_w.def("y", [](JZWidget* w) { return w->y(); });
-    bind_w.def("width", [](JZWidget* w) { return w->width(); });
-    bind_w.def("height", [](JZWidget* w) { return w->height(); });
-    bind_w.def("resize", [](JZWidget* w, int w_, int h) { w->resize(w_, h); });
-    bind_w.def("setFixedSize", [](JZWidget* w, int w_, int h) { w->setFixedSize(w_, h); });
-    bind_w.def("setFixedWidth", [](JZWidget* w, int v) { w->setFixedWidth(v); });
-    bind_w.def("setFixedHeight", [](JZWidget* w, int v) { w->setFixedHeight(v); });
-    bind_w.def("setMinimumSize", [](JZWidget* w, int w_, int h) { w->setMinimumSize(w_, h); });
-    bind_w.def("setMaximumSize", [](JZWidget* w, int w_, int h) { w->setMaximumSize(w_, h); });
-    bind_w.def("setGeometry", [](JZWidget* w, int x, int y, int w_, int h) { w->setGeometry(x, y, w_, h); });
-    bind_w.def("geometry", [](JZWidget* w) { return w->geometry(); });
+    bind_w.def("move", [this](JZObjectPointer* w, int x, int y) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "move"))
+            self->move(x, y);
+    });
+    bind_w.def("x", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "x");
+        return self ? self->x() : 0;
+    });
+    bind_w.def("y", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "y");
+        return self ? self->y() : 0;
+    });
+    bind_w.def("width", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "width");
+        return self ? self->width() : 0;
+    });
+    bind_w.def("height", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "height");
+        return self ? self->height() : 0;
+    });
+    bind_w.def("resize", [this](JZObjectPointer* w, int w_, int h) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "resize"))
+            self->resize(w_, h);
+    });
+    bind_w.def("setFixedSize", [this](JZObjectPointer* w, int w_, int h) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setFixedSize"))
+            self->setFixedSize(w_, h);
+    });
+    bind_w.def("setFixedWidth", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setFixedWidth"))
+            self->setFixedWidth(v);
+    });
+    bind_w.def("setFixedHeight", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setFixedHeight"))
+            self->setFixedHeight(v);
+    });
+    bind_w.def("setMinimumSize", [this](JZObjectPointer* w, int w_, int h) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMinimumSize"))
+            self->setMinimumSize(w_, h);
+    });
+    bind_w.def("setMaximumSize", [this](JZObjectPointer* w, int w_, int h) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMaximumSize"))
+            self->setMaximumSize(w_, h);
+    });
+    bind_w.def("setGeometry", [this](JZObjectPointer* w, int x, int y, int w_, int h) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setGeometry"))
+            self->setGeometry(x, y, w_, h);
+    });
+    bind_w.def("geometry", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "geometry");
+        return self ? self->geometry() : JZRect();
+    });
     // 坐标映射: C++ 里 mapTo/mapToGlobal 各有 JZPoint / JZRect 两个重载, 而 jsbind 一个名字
     // 只有一条形参表 ⇒ 形参收 JSValue 自行判型, 两个重载都暴露(传别的类型抛 TypeError)。
     //   mapTo(parent, pt)      parent 为 null 时等价于映射到屏幕(与 C++ 一致)
     //   mapToGlobal(pt)        控件局部 -> 屏幕逻辑坐标(内部已做 ×scale / ClientToScreen)
     // 典型用途: 右键菜单/弹层锚点 —— `const p = w.mapToGlobal(pt); menu.popup(win, new JZRect(p.x(), p.y(), 1, 1))`;
     // 对位对齐/命中判断用 mapTo(容器, pt)。
-    auto f_mapTo = bind_w.def("mapTo", [this](JZWidget* w, JZWidget* parent, JSValue v) -> JSValue {
+    auto f_mapTo = bind_w.def("mapTo", [this](JZObjectPointer* w, JZObjectPointer* parent, JSValue v) -> JSValue {
         JSContext* ctx = m_engine->context();
+        JZWidget* self = widgetFromThis<JZWidget>(w, "mapTo");
+        if (!self)
+            return JS_EXCEPTION;
+        // parent = null/undefined ⇒ 映射到屏幕坐标(形参层按 allowNull 放行); 传非对象已被形参层拦下
+        JZWidget* host = widgetFromThis<JZWidget>(parent, "mapTo");
         if (js_check_class_arg<JZPoint>(ctx, v))
-            return toJSValue(ctx, w->mapTo(parent, fromJSValue<JZPoint>(ctx, v)));
+            return toJSValue(ctx, self->mapTo(host, fromJSValue<JZPoint>(ctx, v)));
         if (js_check_class_arg<JZRect>(ctx, v))
-            return toJSValue(ctx, w->mapTo(parent, fromJSValue<JZRect>(ctx, v)));
+            return toJSValue(ctx, self->mapTo(host, fromJSValue<JZRect>(ctx, v)));
         return JS_ThrowTypeError(ctx, "JZWidget.mapTo(parent, pt): pt 需要 JZPoint(或 JZRect)");
     });
     f_mapTo->params[1].allowNull = true;      // parent = null ⇒ 映射到屏幕坐标
 
-    bind_w.def("mapToGlobal", [this](JZWidget* w, JSValue v) -> JSValue {
+    bind_w.def("mapToGlobal", [this](JZObjectPointer* w, JSValue v) -> JSValue {
         JSContext* ctx = m_engine->context();
+        JZWidget* self = widgetFromThis<JZWidget>(w, "mapToGlobal");
+        if (!self)
+            return JS_EXCEPTION;
         if (js_check_class_arg<JZPoint>(ctx, v))
-            return toJSValue(ctx, w->mapToGlobal(fromJSValue<JZPoint>(ctx, v)));
+            return toJSValue(ctx, self->mapToGlobal(fromJSValue<JZPoint>(ctx, v)));
         if (js_check_class_arg<JZRect>(ctx, v))
-            return toJSValue(ctx, w->mapToGlobal(fromJSValue<JZRect>(ctx, v)));
+            return toJSValue(ctx, self->mapToGlobal(fromJSValue<JZRect>(ctx, v)));
         return JS_ThrowTypeError(ctx, "JZWidget.mapToGlobal(pt): 需要 JZPoint(或 JZRect)");
     });
-    bind_w.def("setVisible", [](JZWidget* w, bool v) { w->setVisible(v); });
-    bind_w.def("isVisible", [](JZWidget* w) { return w->isVisible(); });
+    bind_w.def("setVisible", [this](JZObjectPointer* w, bool v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setVisible"))
+            self->setVisible(v);
+    });
+    bind_w.def("isVisible", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "isVisible");
+        return self && self->isVisible();
+    });
     // 使能状态(等价 Qt setEnabled/isEnabled): 禁用的控件不接收鼠标/键盘/IME 事件,
     // isEnabled() 沿父链判定(祖先禁用则自身也禁用)。语义详见 JZWidget.h。
-    bind_w.def("setEnabled", [](JZWidget* w, bool on) { w->setEnabled(on); });
-    bind_w.def("isEnabled", [](JZWidget* w) { return w->isEnabled(); });
-    bind_w.def("show", [](JZWidget* w) { w->show(); });
-    bind_w.def("hide", [](JZWidget* w) { w->hide(); });
-   
-    // setParentWidget: 收 JSValue(允许 null/undefined = 脱离父树)。null/undefined ⇒ 脱离;
-    // 其余必须是 JZWidget。脱离时把接收者翻回 JS 拥有, 挂载时翻成 C++ 拥有(见 JZJSWidget.h 所有权约定)。
-    auto func_setParentWidget = bind_w.def("setParentWidget", &JZWidget::setParentWidget);
-    func_setParentWidget->params[1].allowNull = true;
+    bind_w.def("setEnabled", [this](JZObjectPointer* w, bool on) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setEnabled"))
+            self->setEnabled(on);
+    });
+    bind_w.def("isEnabled", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "isEnabled");
+        return self && self->isEnabled();
+    });
+    bind_w.def("show", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "show"))
+            self->show();
+    });
+    bind_w.def("hide", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "hide"))
+            self->hide();
+    });
+
+    // setParentWidget: parent 允许 null/undefined = 脱离父树, 其余必须是控件。
+    // 脱离时把接收者翻回 JS 拥有, 挂载时翻成 C++ 拥有(见 JZJSWidget.h 所有权约定)。
+    auto f_setParent = bind_w.def("setParentWidget", [this](JZObjectPointer* w, JZObjectPointer* parent) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "setParentWidget");
+        if (!self)
+            return;
+        // parent 传非对象/已销毁 -> 形参层(checkFunctionArg)已经拦下并抛异常, 走不到这里
+        self->setParentWidget(widgetFromThis<JZWidget>(parent, "setParentWidget"));   // null ⇒ 脱离
+    });
+    f_setParent->params[1].allowNull = true;   // params[0] 是 this; parent = null/undefined ⇒ 脱离父树
 
     // setLayout 返回"是否被接受": C++ 是 Qt 语义(已有布局 / null -> 警告 + 忽略, 不抛),
     // JS 便利层(tree.ts)靠这个返回值决定要不要登记布局(登记错了 w.layout() 就会返回被拒的那份)。
     // 注: 走 setLayoutFromJs —— JS 侧 `new JZVBoxLayout()` 的句柄归 JS 拥有, 控件不能替它 delete
     // (否则 clearLayout()/控件析构时和 JS 的终结器双重释放)。
-    bind_w.def("setLayout", [](JZWidget* w, JZLayout* layout) -> bool {
-        w->setLayoutFromJs(layout);             // 虚: 容器子类(GroupBox)把它转发到内容区
-        return w->appliedLayout() == layout;    // 虚: GroupBox 看的是内容区那份
+    // (JZLayout* 形参保持引擎转换: JZLayout 是注册类, 类型表认它)
+    bind_w.def("setLayout", [this](JZObjectPointer* w, JZLayout* layout) -> bool {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "setLayout");
+        if (!self)
+            return false;
+        self->setLayoutFromJs(layout);             // 虚: 容器子类(GroupBox)把它转发到内容区
+        return self->appliedLayout() == layout;    // 虚: GroupBox 看的是内容区那份
     });
-    bind_w.def("clearLayout", &JZWidget::clearLayout);
-    bind_w.def("setFocus", [](JZWidget* w) { w->setFocus(); });
-    bind_w.def("hasFocus", [](JZWidget* w) { return w->hasFocus(); });
-    bind_w.def("update", [](JZWidget* w) { w->update(); });
-    bind_w.def("setTooltip", [](JZWidget* w, const std::string& s) { w->setTooltip(JZString(s.c_str())); });
-    bind_w.def("tooltip", [](JZWidget* w) { return w->tooltip().toStdString(); });
-    bind_w.def("setStyleSheet", [](JZWidget* w, const std::string& css) { return w->setStyleSheet(css); });
-    bind_w.def("styleSheet", [](JZWidget* w) { return w->styleSheet(); });
+    bind_w.def("clearLayout", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "clearLayout"))
+            self->clearLayout();
+    });
+    bind_w.def("setFocus", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setFocus"))
+            self->setFocus();
+    });
+    bind_w.def("hasFocus", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "hasFocus");
+        return self && self->hasFocus();
+    });
+    bind_w.def("update", [this](JZObjectPointer* w) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "update"))
+            self->update();
+    });
+    bind_w.def("setTooltip", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setTooltip"))
+            self->setTooltip(JZString(s.c_str()));
+    });
+    bind_w.def("tooltip", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "tooltip");
+        return self ? self->tooltip().toStdString() : std::string();
+    });
+    bind_w.def("setStyleSheet", [this](JZObjectPointer* w, const std::string& css) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "setStyleSheet");
+        return self ? self->setStyleSheet(css) : false;
+    });
+    bind_w.def("styleSheet", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "styleSheet");
+        return self ? self->styleSheet() : std::string();
+    });
     // 对象名(JZObject): 样式表 #id 选择器、AI 定位、自检都靠它
-    bind_w.def("setObjectName", [](JZWidget* w, const std::string& n) { w->setObjectName(n); });
-    bind_w.def("objectName", [](JZWidget* w) { return w->objectName(); });
+    bind_w.def("setObjectName", [this](JZObjectPointer* w, const std::string& n) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setObjectName"))
+            self->setObjectName(n);
+    });
+    bind_w.def("objectName", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "objectName");
+        return self ? self->objectName() : std::string();
+    });
     // 样式类名(空格分隔, 供 .class 选择器)
-    bind_w.def("setStyleClass", [](JZWidget* w, const std::string& cls) { w->setStyleClass(cls); });
-    bind_w.def("styleClass", [](JZWidget* w) { return w->styleClass(); });
+    bind_w.def("setStyleClass", [this](JZObjectPointer* w, const std::string& cls) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setStyleClass"))
+            self->setStyleClass(cls);
+    });
+    bind_w.def("styleClass", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "styleClass");
+        return self ? self->styleClass() : std::string();
+    });
     // 尺寸上下限的单项设置(布局里给"固定/伸缩"留余地, 比 setMinimumSize 好用)
-    bind_w.def("setMinimumWidth", [](JZWidget* w, int v) { w->setMinimumWidth(v); });
-    bind_w.def("setMinimumHeight", [](JZWidget* w, int v) { w->setMinimumHeight(v); });
-    bind_w.def("setMaximumWidth", [](JZWidget* w, int v) { w->setMaximumWidth(v); });
-    bind_w.def("setMaximumHeight", [](JZWidget* w, int v) { w->setMaximumHeight(v); });
+    bind_w.def("setMinimumWidth", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMinimumWidth"))
+            self->setMinimumWidth(v);
+    });
+    bind_w.def("setMinimumHeight", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMinimumHeight"))
+            self->setMinimumHeight(v);
+    });
+    bind_w.def("setMaximumWidth", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMaximumWidth"))
+            self->setMaximumWidth(v);
+    });
+    bind_w.def("setMaximumHeight", [this](JZObjectPointer* w, int v) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setMaximumHeight"))
+            self->setMaximumHeight(v);
+    });
     // 自身矩形(控件本地坐标: x/y 为 0), 绘制回调里填背景用
-    bind_w.def("rect", [](JZWidget* w) { return w->rect(); });
+    bind_w.def("rect", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "rect");
+        return self ? self->rect() : JZRect();
+    });
 
     // ---- 右键菜单 (见 JZWidget::ContextMenuPolicy) ----
-    bind_w.def("setContextMenuPolicy", [](JZWidget* w, int policy) {
-        w->setContextMenuPolicy((JZWidget::ContextMenuPolicy)policy);
+    bind_w.def("setContextMenuPolicy", [this](JZObjectPointer* w, int policy) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setContextMenuPolicy"))
+            self->setContextMenuPolicy((JZWidget::ContextMenuPolicy)policy);
     });
-    bind_w.def("contextMenuPolicy", [](JZWidget* w) { return (int)w->contextMenuPolicy(); });
+    bind_w.def("contextMenuPolicy", [this](JZObjectPointer* w) {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "contextMenuPolicy");
+        return self ? (int)self->contextMenuPolicy() : 0;
+    });
     // 菜单是**借用**的(详见 JZWidget::setContextMenu): 控件持守卫不负责 delete, 也**不替它保活**
     // —— JS 侧那份被 GC 就把真菜单删了, 收到影子时 contextMenu() 会返回 null。
-    // setContextMenu(null) = 解挂。
-    auto func_setContextMenu = bind_w.def("setContextMenu", [](JZWidget* w, JZMenu* m) { w->setContextMenu(m); });
-    func_setContextMenu->params[1].allowNull = true;
-    bind_w.def("contextMenu", [this](JZWidget* w) -> JSValue {
-        JZMenu* menu = w->contextMenu();
+    // setContextMenu(null) = 解挂。(JZMenu* 形参保持引擎转换: JZMenu 是注册类)
+    bind_w.def("setContextMenu", [this](JZObjectPointer* w, JZMenu* m) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "setContextMenu"))
+            self->setContextMenu(m);
+    });
+    bind_w.def("contextMenu", [this](JZObjectPointer* w) -> JSValue {
+        JZWidget* self = widgetFromThis<JZWidget>(w, "contextMenu");
+        if (!self)
+            return JS_EXCEPTION;
+        JZMenu* menu = self->contextMenu();
         if (!menu)
             return JS_NULL;
         JSValue v = jsValueOf(menu);
         return JS_IsUndefined(v) ? JS_NULL : JS_DupValue(m_engine->context(), v);
     });
     // 程序化触发同一套流程(AI / 测试: 坐标是本控件局部坐标)
-    bind_w.def("requestContextMenu", [](JZWidget* w, int x, int y) { w->requestContextMenu(JZPoint(x, y)); });
+    bind_w.def("requestContextMenu", [this](JZObjectPointer* w, int x, int y) {
+        if (JZWidget* self = widgetFromThis<JZWidget>(w, "requestContextMenu"))
+            self->requestContextMenu(JZPoint(x, y));
+    });
     defSignalProperty(bind_w, "onCustomContextMenuRequested", &JZWidget::sigCustomContextMenuRequested);
 
     // 策略常量: JS 侧 `JZWidget.CustomContextMenu` / `JZLabel.NoContextMenu`(子类构造器也能取到)
@@ -1794,24 +1968,41 @@ void JZJSWidgetModule::registWidgets()
         return new JZWindow(w, h, title, parent);
     };
     jsbind::ClassBind<JZWindow> bind_win("JZWindow", bind_w);
-    bind_win.def("setTitle", [](JZWindow* w, const std::string& t) { w->setTitle(t); });
-    bind_win.def("title", [](JZWindow* w) { return w->title(); });
-    bind_win.def("show", [](JZWindow* w) { w->show(); });
-    bind_win.def("close", [](JZWindow* w) { w->close(); });
+    bind_win.def("setTitle", [this](JZObjectPointer* w, const std::string& t) {
+        if (JZWindow* win = widgetFromThis<JZWindow>(w, "setTitle"))
+            win->setTitle(t);
+    });
+    bind_win.def("title", [this](JZObjectPointer* w) {
+        JZWindow* win = widgetFromThis<JZWindow>(w, "title");
+        return win ? win->title() : std::string();
+    });
+    bind_win.def("show", [this](JZObjectPointer* w) {
+        if (JZWindow* win = widgetFromThis<JZWindow>(w, "show"))
+            win->show();
+    });
+    bind_win.def("close", [this](JZObjectPointer* w) {
+        if (JZWindow* win = widgetFromThis<JZWindow>(w, "close"))
+            win->close();
+    });
     // 窗口的默认纵向布局: `win.addWidget(child)` 等价 Qt 的 `win->layout()->addWidget(child)` ——
     // 窗口不再预装默认布局, 所以这里**按需补一个 VBox**。JS 侧(@jz/widget 的 tree.ts)会在外面
     // 再套一层"登记保活", 所以这里只管 C++ 侧: reparent + 进布局。
-    bind_win.def("addWidget", [](JZWindow* w, JZWidget* child) {
-        if (!child)
-            throw std::runtime_error("JZWindow.addWidget: 需要子控件");
-        JZBoxLayout* box = dynamic_cast<JZBoxLayout*>(w->layout());
+    // child 传 null 由形参层挡下(没声明 allowNull), 传非对象/已销毁同样在形参层报错。
+    bind_win.def("addWidget", [this](JZObjectPointer* w, JZObjectPointer* child) {
+        JZWindow* win = widgetFromThis<JZWindow>(w, "addWidget");
+        if (!win)
+            return;
+        JZWidget* c = widgetFromThis<JZWidget>(child, "addWidget");
+        if (!c)
+            return;
+        JZBoxLayout* box = dynamic_cast<JZBoxLayout*>(win->layout());
         if (!box)
         {
             box = new JZVBoxLayout(0, 0);
-            w->setLayout(box);          // 所有权交给窗口(m_layout), ~JZWidget 里 delete
+            win->setLayout(box);        // 所有权交给窗口(m_layout), ~JZWidget 里 delete
         }
-        child->setParentWidget(w);      // 与 JZMainWindow::setCentralWidget 同一套路
-        box->addWidget(child);
+        c->setParentWidget(win);        // 与 JZMainWindow::setCentralWidget 同一套路
+        box->addWidget(c);
     });
     bind_win.setCreate(js_JZWindow_ctor);
     mountTransparentClass(bind_win.classDefine());    
@@ -1824,27 +2015,38 @@ void JZJSWidgetModule::registWidgets()
     // 传 bind_w 会让 setTitle/setGeometry/show/close 这些**窗口方法在它身上全部缺失**
     // (uiLoader 生成 `__w0.setTitle(...)` 直接 "not a function")。
     jsbind::ClassBind<JZMainWindow> bind_main("JZMainWindow", bind_win);    
-    bind_main.def("setCentralWidget", [this](JZMainWindow* w, JSValue c) {
-        JZWidget* child = takeWidgetFromJs(c);
-        if (child)
-            w->setCentralWidget(child);
+    bind_main.def("setCentralWidget", [this](JZObjectPointer* w, JZObjectPointer* c) {
+        JZMainWindow* win = widgetFromThis<JZMainWindow>(w, "setCentralWidget");
+        if (!win)
+            return;
+        if (JZWidget* child = widgetFromThis<JZWidget>(c, "setCentralWidget"))
+            win->setCentralWidget(child);
     });
-    bind_main.def("addMenuBar", [this](JZMainWindow* w, JSValue c) {
-        JZWidget* mb = takeWidgetFromJs(c);
-        if (mb)
-            w->addMenuBar(static_cast<JZMenuBar*>(mb));
+    bind_main.def("addMenuBar", [this](JZObjectPointer* w, JZObjectPointer* c) {
+        JZMainWindow* win = widgetFromThis<JZMainWindow>(w, "addMenuBar");
+        if (!win)
+            return;
+        // 形参层已保证"是活的对象"; 这里再要求它确实是菜单栏(子类不符抛 TypeError)
+        if (JZMenuBar* mb = widgetFromThis<JZMenuBar>(c, "addMenuBar"))
+            win->addMenuBar(mb);
     });
     // 取回挂上去的那一个(没有就是 null)。**返回 JS 侧那一份包装** —— 控件族每个对象只有一份宿主句柄,
     // 现造第二份会把第一份作废(见 menus.ts 的说明), 所以走 jsValueOf 而不是现造视图。
-    bind_main.def("menuBar", [this](JZMainWindow* w) -> JSValue {
-        JZMenuBar* mb = w->menuBar();
+    bind_main.def("menuBar", [this](JZObjectPointer* w) -> JSValue {
+        JZMainWindow* win = widgetFromThis<JZMainWindow>(w, "menuBar");
+        if (!win)
+            return JS_EXCEPTION;
+        JZMenuBar* mb = win->menuBar();
         if (!mb)
             return JS_NULL;
         JSValue v = jsValueOf(mb);
         return JS_IsUndefined(v) ? JS_NULL : JS_DupValue(m_engine->context(), v);
     });
-    bind_main.def("centralWidget", [this](JZMainWindow* w) -> JSValue {
-        JZWidget* c = w->centralWidget();
+    bind_main.def("centralWidget", [this](JZObjectPointer* w) -> JSValue {
+        JZMainWindow* win = widgetFromThis<JZMainWindow>(w, "centralWidget");
+        if (!win)
+            return JS_EXCEPTION;
+        JZWidget* c = win->centralWidget();
         if (!c)
             return JS_NULL;
         JSValue v = jsValueOf(c);
@@ -1858,13 +2060,18 @@ void JZJSWidgetModule::registWidgets()
     // JZMenuBar: 菜单栏本身是控件; 内部菜单树由 addMenu/addAction 建(见下面的 JZMenu)。
     // addMenu/menuAt 返回 JZMenu 的**借用句柄**(对象由菜单栏持有; JS 不负责 delete) ——
     // 保活由 @jz/widget 的 menus.ts 在 JS 侧做(否则句柄被 GC 会把真菜单删掉)。
-    bind_menubar.def("addMenu", [this](JZMenuBar* mb, const std::string& title) -> JSValue {
-        return m_engine->toJsValueFromPtr(mb->addMenu(title));
+    bind_menubar.def("addMenu", [this](JZObjectPointer* w, const std::string& title) -> JSValue {
+        JZMenuBar* mb = widgetFromThis<JZMenuBar>(w, "addMenu");
+        return mb ? m_engine->toJsValueFromPtr(mb->addMenu(title)) : JS_EXCEPTION;
     });
-    bind_menubar.def("menuAt", [this](JZMenuBar* mb, int i) -> JSValue {
-        return m_engine->toJsValueFromPtr(mb->menuAt(i));
+    bind_menubar.def("menuAt", [this](JZObjectPointer* w, int i) -> JSValue {
+        JZMenuBar* mb = widgetFromThis<JZMenuBar>(w, "menuAt");
+        return mb ? m_engine->toJsValueFromPtr(mb->menuAt(i)) : JS_EXCEPTION;
     });
-    bind_menubar.def("menuCount", [](JZMenuBar* mb) { return mb->menuCount(); });    
+    bind_menubar.def("menuCount", [this](JZObjectPointer* w) {
+        JZMenuBar* mb = widgetFromThis<JZMenuBar>(w, "menuCount");
+        return mb ? mb->menuCount() : 0;
+    });
     mountTransparentClass(bind_menubar.classDefine());
 
     // JZMenu —— 菜单(数据 + 弹层控制器, 非渲染树控件)。菜单项由 addAction/addMenu/addSeparator 建立。
@@ -1908,8 +2115,9 @@ void JZJSWidgetModule::registWidgets()
     defSignalProperty(bind_menu, "onActionTriggered", &JZMenu::sigActionTriggered);
     // owner 允许 null(以前是"null 就静默不弹" —— 那样 JS 侧没有窗口句柄时右键菜单会毫无反应):
     // owner 只用于取 DPI 缩放与模态归属, 为 null 时弹层按 1.0 缩放定位(仍会正常弹出)。
-    auto f_menuPopup = bind_menu.def("popup", [](JZMenu* m, JZWindow* owner, const JZRect& anchor) {
-        m->popup(owner, anchor);
+    auto f_menuPopup = bind_menu.def("popup", [this](JZMenu* m, JZObjectPointer* owner, const JZRect& anchor) {
+        // owner 允许 null(按 1.0 缩放定位); 传了非对象由形参层拦下(JSType_objectPointer 校验)
+        m->popup(owner ? widgetFromThis<JZWindow>(owner, "popup") : nullptr, anchor);
     });
     f_menuPopup->params[1].allowNull = true;
     bind_menu.def("hidePopup", [](JZMenu* m) { m->hidePopup(); });
@@ -1937,40 +2145,101 @@ void JZJSWidgetModule::registWidgets()
 
     // JZLabel
     jsbind::ClassBind<JZLabel> bind_label("JZLabel", bind_w);
-    bind_label.def("setText", &JZLabel::setText);
-    bind_label.def("text", &JZLabel::text);
-    bind_label.def("setAlign", [](JZLabel* w, int a) { w->setAlign(a); });    
+    // 宿主形参收 JSValue(引擎原样传、不做任何检测), 函数体内 dynamic_cast 到真正的类 ——
+    // 传错控件类是**可捕获的 JS 异常**, 而不是"按声明类型 static_cast 出来的野指针"。
+    // 为什么: 控件族对引擎透明, `JZLabel* w` 这种形参解析不到类型号(校验静默跳过), 见
+    // docs/widget-binding-design.md §9。
+    bind_label.def("setText", [this](JZObjectPointer* w, const std::string& text) {
+        if (JZLabel* label = widgetFromThis<JZLabel>(w, "setText"))
+            label->setText(text);
+    });
+    bind_label.def("text", [this](JZObjectPointer* w) {
+        JZLabel* label = widgetFromThis<JZLabel>(w, "text");
+        return label ? label->text() : std::string();
+    });
+    bind_label.def("setAlign", [this](JZObjectPointer* w, int a) {
+        if (JZLabel* label = widgetFromThis<JZLabel>(w, "setAlign"))
+            label->setAlign(a);
+    });
     bind_label.setCreate(js_JZLabel_ctor);
     mountTransparentClass(bind_label.classDefine());
 
     // JZPushButton
     jsbind::ClassBind<JZPushButton> bind_btn("JZPushButton", bind_w);
-    bind_btn.def("setText", &JZPushButton::setText);
-    bind_btn.def("text", &JZPushButton::text);
-    bind_btn.def("setIcon", [](JZPushButton* w, JZImage* img) { w->setIcon(*img); });
-    bind_btn.def("icon", [](JZPushButton* w) { return w->icon(); });
-    bind_btn.def("setWidth", [](JZPushButton* w, int v) { w->setWidth(v); });
-    bind_btn.def("setHeight", [](JZPushButton* w, int v) { w->setHeight(v); });
+    bind_btn.def("setText", [this](JZObjectPointer* w, const std::string& t) {
+        if (JZPushButton* btn = widgetFromThis<JZPushButton>(w, "setText"))
+            btn->setText(t);
+    });
+    bind_btn.def("text", [this](JZObjectPointer* w) {
+        JZPushButton* btn = widgetFromThis<JZPushButton>(w, "text");
+        return btn ? btn->text() : std::string();
+    });
+    // JZImage* 形参照旧交给引擎转换: JZImage 是**注册类**, 引擎的类型表认它(类型不符会拦)
+    bind_btn.def("setIcon", [this](JZObjectPointer* w, JZImage* img) {
+        if (JZPushButton* btn = widgetFromThis<JZPushButton>(w, "setIcon"))
+            btn->setIcon(*img);
+    });
+    bind_btn.def("icon", [this](JZObjectPointer* w) {
+        JZPushButton* btn = widgetFromThis<JZPushButton>(w, "icon");
+        return btn ? btn->icon() : JZImage();
+    });
+    bind_btn.def("setWidth", [this](JZObjectPointer* w, int v) {
+        if (JZPushButton* btn = widgetFromThis<JZPushButton>(w, "setWidth"))
+            btn->setWidth(v);
+    });
+    bind_btn.def("setHeight", [this](JZObjectPointer* w, int v) {
+        if (JZPushButton* btn = widgetFromThis<JZPushButton>(w, "setHeight"))
+            btn->setHeight(v);
+    });
     // 点击信号: 属性形(单发/覆盖式) —— `btn.onClicked = () => ...`; 赋 null 清空
     defSignalProperty(bind_btn, "onClicked", &JZPushButton::sigClicked);    
     bind_btn.setCreate(js_JZPushButton_ctor);
     mountTransparentClass(bind_btn.classDefine());
 
     // JZLineEdit (文本编辑接口在 JZAbstractTextEdit)
-    // 注意: setText/text 在 JZAbstractTextEdit 上, 这里必须写 lambda 而不是成员指针 ——
-    // `&JZLineEdit::setText` 推导出的宿主类是 JZAbstractTextEdit, 而那个类**没有注册到 JS**,
-    // 它的形参类型解析成 JSType_none ⇒ 调用时"参数0类型不匹配"直接抛异常。
+    // 宿主形参统一走 widgetFromThis: 成员指针 `&JZLineEdit::setText` 会把宿主推导成
+    // JZAbstractTextEdit(JS 侧没有这个类), 写 lambda 才能点名要 JZLineEdit。
     jsbind::ClassBind<JZLineEdit> bind_edit("JZLineEdit", bind_w);
-    bind_edit.def("setText", [](JZLineEdit* w, const std::string& s) { w->setText(s); });
-    bind_edit.def("text", [](JZLineEdit* w) { return w->text(); });
-    bind_edit.def("setPassword", [](JZLineEdit* w, bool on) { w->setPassword(on); });
-    bind_edit.def("isPassword", [](JZLineEdit* w) { return w->isPassword(); });
-    bind_edit.def("setMaxLength", [](JZLineEdit* w, int n) { w->setMaxLength(n); });
-    bind_edit.def("maxLength", [](JZLineEdit* w) { return w->maxLength(); });
-    bind_edit.def("setReadOnly", [](JZLineEdit* w, bool on) { w->setReadOnly(on); });
-    bind_edit.def("isReadOnly", [](JZLineEdit* w) { return w->isReadOnly(); });
-    bind_edit.def("setPlaceholderText", [](JZLineEdit* w, const std::string& s) { w->setPlaceholderText(s); });
-    bind_edit.def("placeholderText", [](JZLineEdit* w) { return w->placeholderText(); });
+    bind_edit.def("setText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "setText"))
+            e->setText(s);
+    });
+    bind_edit.def("text", [this](JZObjectPointer* w) {
+        JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "text");
+        return e ? e->text() : std::string();
+    });
+    bind_edit.def("setPassword", [this](JZObjectPointer* w, bool on) {
+        if (JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "setPassword"))
+            e->setPassword(on);
+    });
+    bind_edit.def("isPassword", [this](JZObjectPointer* w) {
+        JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "isPassword");
+        return e && e->isPassword();
+    });
+    bind_edit.def("setMaxLength", [this](JZObjectPointer* w, int n) {
+        if (JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "setMaxLength"))
+            e->setMaxLength(n);
+    });
+    bind_edit.def("maxLength", [this](JZObjectPointer* w) {
+        JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "maxLength");
+        return e ? e->maxLength() : 0;
+    });
+    bind_edit.def("setReadOnly", [this](JZObjectPointer* w, bool on) {
+        if (JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "setReadOnly"))
+            e->setReadOnly(on);
+    });
+    bind_edit.def("isReadOnly", [this](JZObjectPointer* w) {
+        JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "isReadOnly");
+        return e && e->isReadOnly();
+    });
+    bind_edit.def("setPlaceholderText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "setPlaceholderText"))
+            e->setPlaceholderText(s);
+    });
+    bind_edit.def("placeholderText", [this](JZObjectPointer* w) {
+        JZLineEdit* e = widgetFromThis<JZLineEdit>(w, "placeholderText");
+        return e ? e->placeholderText() : std::string();
+    });
     // 文本类信号(实现在 JZAbstractTextEdit 上)
     // 文本类信号(声明在 JZAbstractTextEdit 上, 所以成员指针的宿主类型是它 —— 模板的 S 参数)
     defSignalProperty(bind_edit, "onTextChanged", &JZLineEdit::sigTextChanged);
@@ -1981,57 +2250,127 @@ void JZJSWidgetModule::registWidgets()
 
     // JZCheckBox
     jsbind::ClassBind<JZCheckbox> bind_check("JZCheckbox", bind_w);
-    bind_check.def("setText", &JZCheckbox::setText);
-    bind_check.def("text", &JZCheckbox::text);
-    bind_check.def("setChecked", [](JZCheckbox* w, bool on) { w->setChecked(on); });
-    bind_check.def("isChecked", [](JZCheckbox* w) { return w->isChecked(); });
+    bind_check.def("setText", [this](JZObjectPointer* w, const std::string& t) {
+        if (JZCheckbox* c = widgetFromThis<JZCheckbox>(w, "setText"))
+            c->setText(t);
+    });
+    bind_check.def("text", [this](JZObjectPointer* w) {
+        JZCheckbox* c = widgetFromThis<JZCheckbox>(w, "text");
+        return c ? c->text() : std::string();
+    });
+    bind_check.def("setChecked", [this](JZObjectPointer* w, bool on) {
+        if (JZCheckbox* c = widgetFromThis<JZCheckbox>(w, "setChecked"))
+            c->setChecked(on);
+    });
+    bind_check.def("isChecked", [this](JZObjectPointer* w) {
+        JZCheckbox* c = widgetFromThis<JZCheckbox>(w, "isChecked");
+        return c && c->isChecked();
+    });
     defSignalProperty(bind_check, "onToggled", &JZCheckbox::sigToggled);   // 回调带 (bool)    
     bind_check.setCreate(js_JZCheckbox_ctor);
     mountTransparentClass(bind_check.classDefine());
 
     // JZRadioButton
     jsbind::ClassBind<JZRadioButton> bind_radio("JZRadioButton", bind_w);
-    bind_radio.def("setText", &JZRadioButton::setText);
-    bind_radio.def("text", &JZRadioButton::text);
-    bind_radio.def("setChecked", [](JZRadioButton* w, bool on) { w->setChecked(on); });
-    bind_radio.def("isChecked", [](JZRadioButton* w) { return w->isChecked(); });
+    bind_radio.def("setText", [this](JZObjectPointer* w, const std::string& t) {
+        if (JZRadioButton* r = widgetFromThis<JZRadioButton>(w, "setText"))
+            r->setText(t);
+    });
+    bind_radio.def("text", [this](JZObjectPointer* w) {
+        JZRadioButton* r = widgetFromThis<JZRadioButton>(w, "text");
+        return r ? r->text() : std::string();
+    });
+    bind_radio.def("setChecked", [this](JZObjectPointer* w, bool on) {
+        if (JZRadioButton* r = widgetFromThis<JZRadioButton>(w, "setChecked"))
+            r->setChecked(on);
+    });
+    bind_radio.def("isChecked", [this](JZObjectPointer* w) {
+        JZRadioButton* r = widgetFromThis<JZRadioButton>(w, "isChecked");
+        return r && r->isChecked();
+    });
     defSignalProperty(bind_radio, "onToggled", &JZRadioButton::sigToggled);   // RadioButton 的信号**无参**    
     bind_radio.setCreate(js_JZRadioButton_ctor);
     mountTransparentClass(bind_radio.classDefine());
 
     // JZSlider
     jsbind::ClassBind<JZSlider> bind_slider("JZSlider", bind_w);
-    bind_slider.def("setRange", [](JZSlider* w, int min, int max) { w->setRange(min, max); });
-    bind_slider.def("setValue", [](JZSlider* w, int v) { w->setValue(v); });
-    bind_slider.def("value", [](JZSlider* w) { return w->value(); });
+    bind_slider.def("setRange", [this](JZObjectPointer* w, int min, int max) {
+        if (JZSlider* s = widgetFromThis<JZSlider>(w, "setRange"))
+            s->setRange(min, max);
+    });
+    bind_slider.def("setValue", [this](JZObjectPointer* w, int v) {
+        if (JZSlider* s = widgetFromThis<JZSlider>(w, "setValue"))
+            s->setValue(v);
+    });
+    bind_slider.def("value", [this](JZObjectPointer* w) {
+        JZSlider* s = widgetFromThis<JZSlider>(w, "value");
+        return s ? s->value() : 0;
+    });
     defSignalProperty(bind_slider, "onValueChanged", &JZSlider::sigValueChanged);   // 回调带 (int)    
     bind_slider.setCreate(js_JZSlider_ctor);
     mountTransparentClass(bind_slider.classDefine());
 
     // JZProgressBar
     jsbind::ClassBind<JZProgressBar> bind_bar("JZProgressBar", bind_w);
-    bind_bar.def("setRange", [](JZProgressBar* w, int min, int max) { w->setRange(min, max); });
-    bind_bar.def("setValue", [](JZProgressBar* w, int v) { w->setValue(v); });
-    bind_bar.def("value", [](JZProgressBar* w) { return w->value(); });    
+    bind_bar.def("setRange", [this](JZObjectPointer* w, int min, int max) {
+        if (JZProgressBar* b = widgetFromThis<JZProgressBar>(w, "setRange"))
+            b->setRange(min, max);
+    });
+    bind_bar.def("setValue", [this](JZObjectPointer* w, int v) {
+        if (JZProgressBar* b = widgetFromThis<JZProgressBar>(w, "setValue"))
+            b->setValue(v);
+    });
+    bind_bar.def("value", [this](JZObjectPointer* w) {
+        JZProgressBar* b = widgetFromThis<JZProgressBar>(w, "value");
+        return b ? b->value() : 0;
+    });    
     bind_bar.setCreate(js_JZProgressBar_ctor);
     mountTransparentClass(bind_bar.classDefine());
 
     // JZComboBox
     jsbind::ClassBind<JZComboBox> bind_combo("JZComboBox", bind_w);
-    bind_combo.def("addItem", [](JZComboBox* w, const std::string& s) { w->addItem(s); });
+    bind_combo.def("addItem", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "addItem"))
+            cb->addItem(s);
+    });
     // 形参用 JSValue 不用 vector<string>: JS 数组过不了引擎的形参类型校验(数组 class id 不在
     // 类型表里, 见 JZChart 那段注释), 所以自行转换。
-    bind_combo.def("addItems", [this](JZComboBox* w, JSValue items) {
-        w->addItems(jzJsToStringArray(m_engine->context(), items, "JZComboBox.addItems"));
+    bind_combo.def("addItems", [this](JZObjectPointer* w, JSValue items) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "addItems"))
+            cb->addItems(jzJsToStringArray(m_engine->context(), items, "JZComboBox.addItems"));
     });
-    bind_combo.def("removeItem", [](JZComboBox* w, int i) { w->removeItem(i); });
-    bind_combo.def("clear", [](JZComboBox* w) { w->clear(); });
-    bind_combo.def("currentIndex", [](JZComboBox* w) { return w->currentIndex(); });
-    bind_combo.def("setCurrentIndex", [](JZComboBox* w, int i) { w->setCurrentIndex(i); });
-    bind_combo.def("currentText", [](JZComboBox* w) { return w->currentText(); });
-    bind_combo.def("setCurrentText", [](JZComboBox* w, const std::string& s) { w->setCurrentText(s); });
-    bind_combo.def("itemText", [](JZComboBox* w, int i) { return w->itemText(i); });
-    bind_combo.def("count", [](JZComboBox* w) { return w->count(); });
+    bind_combo.def("removeItem", [this](JZObjectPointer* w, int i) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "removeItem"))
+            cb->removeItem(i);
+    });
+    bind_combo.def("clear", [this](JZObjectPointer* w) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "clear"))
+            cb->clear();
+    });
+    bind_combo.def("currentIndex", [this](JZObjectPointer* w) {
+        JZComboBox* cb = widgetFromThis<JZComboBox>(w, "currentIndex");
+        return cb ? cb->currentIndex() : -1;
+    });
+    bind_combo.def("setCurrentIndex", [this](JZObjectPointer* w, int i) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "setCurrentIndex"))
+            cb->setCurrentIndex(i);
+    });
+    bind_combo.def("currentText", [this](JZObjectPointer* w) {
+        JZComboBox* cb = widgetFromThis<JZComboBox>(w, "currentText");
+        return cb ? cb->currentText() : std::string();
+    });
+    bind_combo.def("setCurrentText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZComboBox* cb = widgetFromThis<JZComboBox>(w, "setCurrentText"))
+            cb->setCurrentText(s);
+    });
+    bind_combo.def("itemText", [this](JZObjectPointer* w, int i) {
+        JZComboBox* cb = widgetFromThis<JZComboBox>(w, "itemText");
+        return cb ? cb->itemText(i) : std::string();
+    });
+    bind_combo.def("count", [this](JZObjectPointer* w) {
+        JZComboBox* cb = widgetFromThis<JZComboBox>(w, "count");
+        return cb ? cb->count() : 0;
+    });
     defSignalProperty(bind_combo, "onCurrentIndexChanged", &JZComboBox::currentIndexChanged);   // (int)
     defSignalProperty(bind_combo, "onCurrentTextChanged", &JZComboBox::currentTextChanged);    // (string)    
     bind_combo.setCreate(js_JZComboBox_ctor);
@@ -2039,34 +2378,85 @@ void JZJSWidgetModule::registWidgets()
 
     // JZSpinBox
     jsbind::ClassBind<JZSpinBox> bind_spin("JZSpinBox", bind_w);
-    bind_spin.def("setRange", [](JZSpinBox* w, int min, int max) { w->setRange(min, max); });
-    bind_spin.def("setMinimum", [](JZSpinBox* w, int v) { w->setMinimum(v); });
-    bind_spin.def("minimum", [](JZSpinBox* w) { return w->minimum(); });
-    bind_spin.def("setMaximum", [](JZSpinBox* w, int v) { w->setMaximum(v); });
-    bind_spin.def("maximum", [](JZSpinBox* w) { return w->maximum(); });
-    bind_spin.def("setStep", [](JZSpinBox* w, int v) { w->setStep(v); });
-    bind_spin.def("step", [](JZSpinBox* w) { return w->step(); });
-    bind_spin.def("setValue", [](JZSpinBox* w, int v) { w->setValue(v); });
-    bind_spin.def("value", [](JZSpinBox* w) { return w->value(); });
-    bind_spin.def("setSuffix", [](JZSpinBox* w, const std::string& s) { w->setSuffix(s); });
-    bind_spin.def("suffix", [](JZSpinBox* w) { return w->suffix(); });
-    bind_spin.def("setReadOnly", [](JZSpinBox* w, bool on) { w->setReadOnly(on); });
-    bind_spin.def("isReadOnly", [](JZSpinBox* w) { return w->isReadOnly(); });
+    bind_spin.def("setRange", [this](JZObjectPointer* w, int min, int max) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setRange"))
+            s->setRange(min, max);
+    });
+    bind_spin.def("setMinimum", [this](JZObjectPointer* w, int v) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setMinimum"))
+            s->setMinimum(v);
+    });
+    bind_spin.def("minimum", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "minimum");
+        return s ? s->minimum() : 0;
+    });
+    bind_spin.def("setMaximum", [this](JZObjectPointer* w, int v) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setMaximum"))
+            s->setMaximum(v);
+    });
+    bind_spin.def("maximum", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "maximum");
+        return s ? s->maximum() : 0;
+    });
+    bind_spin.def("setStep", [this](JZObjectPointer* w, int v) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setStep"))
+            s->setStep(v);
+    });
+    bind_spin.def("step", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "step");
+        return s ? s->step() : 0;
+    });
+    bind_spin.def("setValue", [this](JZObjectPointer* w, int v) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setValue"))
+            s->setValue(v);
+    });
+    bind_spin.def("value", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "value");
+        return s ? s->value() : 0;
+    });
+    bind_spin.def("setSuffix", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZSpinBox* b = widgetFromThis<JZSpinBox>(w, "setSuffix"))
+            b->setSuffix(s);
+    });
+    bind_spin.def("suffix", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "suffix");
+        return s ? s->suffix() : std::string();
+    });
+    bind_spin.def("setReadOnly", [this](JZObjectPointer* w, bool on) {
+        if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setReadOnly"))
+            s->setReadOnly(on);
+    });
+    bind_spin.def("isReadOnly", [this](JZObjectPointer* w) {
+        JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "isReadOnly");
+        return s && s->isReadOnly();
+    });
     defSignalProperty(bind_spin, "onValueChanged", &JZSpinBox::sigValueChanged);   // 回调带 (int)    
     bind_spin.setCreate(js_JZSpinBox_ctor);
     mountTransparentClass(bind_spin.classDefine());
 
     // JZGroupBox
     jsbind::ClassBind<JZGroupBox> bind_group("JZGroupBox", bind_w);
-    bind_group.def("setTitle", [](JZGroupBox* w, const std::string& s) { w->setTitle(s); });
-    bind_group.def("title", [](JZGroupBox* w) { return w->title(); });    
+    bind_group.def("setTitle", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZGroupBox* g = widgetFromThis<JZGroupBox>(w, "setTitle"))
+            g->setTitle(s);
+    });
+    bind_group.def("title", [this](JZObjectPointer* w) {
+        JZGroupBox* g = widgetFromThis<JZGroupBox>(w, "title");
+        return g ? g->title() : std::string();
+    });    
     bind_group.setCreate(js_JZGroupBox_ctor);
     mountTransparentClass(bind_group.classDefine());
 
     // JZSwitch (开关: on/off)
     jsbind::ClassBind<JZSwitch> bind_switch("JZSwitch", bind_w);
-    bind_switch.def("setState", [](JZSwitch* w, bool on) { w->setState(on); });
-    bind_switch.def("isOn", [](JZSwitch* w) { return w->isOn(); });
+    bind_switch.def("setState", [this](JZObjectPointer* w, bool on) {
+        if (JZSwitch* s = widgetFromThis<JZSwitch>(w, "setState"))
+            s->setState(on);
+    });
+    bind_switch.def("isOn", [this](JZObjectPointer* w) {
+        JZSwitch* s = widgetFromThis<JZSwitch>(w, "isOn");
+        return s && s->isOn();
+    });
     defSignalProperty(bind_switch, "onToggled", &JZSwitch::sigToggled);   // 回调带 (bool)    
     bind_switch.setCreate(js_JZSwitch_ctor);
     mountTransparentClass(bind_switch.classDefine());
@@ -2074,17 +2464,50 @@ void JZJSWidgetModule::registWidgets()
     // JZTextEdit (多行文本编辑; 只读时可直接当滚动日志用)
     // 同 JZLineEdit: 文本接口都在 JZAbstractTextEdit(未注册) 上, 全部写 lambda 包一层。
     jsbind::ClassBind<JZTextEdit> bind_text("JZTextEdit", bind_w);
-    bind_text.def("setText", [](JZTextEdit* w, const std::string& s) { w->setText(s); });
-    bind_text.def("text", [](JZTextEdit* w) { return w->text(); });
-    bind_text.def("setPlaceholderText", [](JZTextEdit* w, const std::string& s) { w->setPlaceholderText(s); });
-    bind_text.def("placeholderText", [](JZTextEdit* w) { return w->placeholderText(); });
-    bind_text.def("setReadOnly", [](JZTextEdit* w, bool on) { w->setReadOnly(on); });
-    bind_text.def("isReadOnly", [](JZTextEdit* w) { return w->isReadOnly(); });
-    bind_text.def("setLineWrap", [](JZTextEdit* w, bool wrap) { w->setLineWrap(wrap); });
-    bind_text.def("lineWrap", [](JZTextEdit* w) { return w->lineWrap(); });
-    bind_text.def("cursorPosition", [](JZTextEdit* w) { return w->cursorPosition(); });
-    bind_text.def("setCursorPosition", [](JZTextEdit* w, int pos) { w->setCursorPosition(pos); });
-    bind_text.def("selectAll", [](JZTextEdit* w) { w->selectAll(); });
+    bind_text.def("setText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "setText"))
+            e->setText(s);
+    });
+    bind_text.def("text", [this](JZObjectPointer* w) {
+        JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "text");
+        return e ? e->text() : std::string();
+    });
+    bind_text.def("setPlaceholderText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "setPlaceholderText"))
+            e->setPlaceholderText(s);
+    });
+    bind_text.def("placeholderText", [this](JZObjectPointer* w) {
+        JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "placeholderText");
+        return e ? e->placeholderText() : std::string();
+    });
+    bind_text.def("setReadOnly", [this](JZObjectPointer* w, bool on) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "setReadOnly"))
+            e->setReadOnly(on);
+    });
+    bind_text.def("isReadOnly", [this](JZObjectPointer* w) {
+        JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "isReadOnly");
+        return e && e->isReadOnly();
+    });
+    bind_text.def("setLineWrap", [this](JZObjectPointer* w, bool wrap) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "setLineWrap"))
+            e->setLineWrap(wrap);
+    });
+    bind_text.def("lineWrap", [this](JZObjectPointer* w) {
+        JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "lineWrap");
+        return e && e->lineWrap();
+    });
+    bind_text.def("cursorPosition", [this](JZObjectPointer* w) {
+        JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "cursorPosition");
+        return e ? e->cursorPosition() : 0;
+    });
+    bind_text.def("setCursorPosition", [this](JZObjectPointer* w, int pos) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "setCursorPosition"))
+            e->setCursorPosition(pos);
+    });
+    bind_text.def("selectAll", [this](JZObjectPointer* w) {
+        if (JZTextEdit* e = widgetFromThis<JZTextEdit>(w, "selectAll"))
+            e->selectAll();
+    });
     defSignalProperty(bind_text, "onTextChanged", &JZTextEdit::sigTextChanged);   // (string)    
     bind_text.setCreate(js_JZTextEdit_ctor);
     mountTransparentClass(bind_text.classDefine());
@@ -2095,91 +2518,172 @@ void JZJSWidgetModule::registWidgets()
     // 唯一要额外做的是序列读取的**越界校验** —— 基类 series(i) 是 vector[i] 不做检查, JS 传错下标
     // 不能把进程带走(抛异常, 由 call() 转成 JS 异常)。
     jsbind::ClassBind<JZChart> bind_chart("JZChart", bind_w);
-    bind_chart.def("setChartType", [](JZChart* c, int type) {
+    bind_chart.def("setChartType", [this](JZObjectPointer* w, int type) {
+        JZChart* c = widgetFromThis<JZChart>(w, "setChartType");
+        if (!c)
+            return;
         if (type < (int)JZChart::LineChart || type > (int)JZChart::PieChart)
             throw std::runtime_error("JZChart.setChartType: 需要 JZChart.LineChart/BarChart/PieChart");
         c->setChartType((JZChart::ChartType)type);
     });
-    bind_chart.def("chartType", [](JZChart* c) { return (int)c->chartType(); });
+    bind_chart.def("chartType", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "chartType");
+        return c ? (int)c->chartType() : 0;
+    });
     // 颜色参数用 CSS 风格字符串('#rrggbb' / 'red'), 与 JZPainter.setPen/setBrush 一致;
     // 传空串取默认调色板(与 setData 的自动配色一致)。
-    bind_chart.def("addSeries", [](JZChart* c, const std::string& name, const std::string& color) {
+    bind_chart.def("addSeries", [this](JZObjectPointer* w, const std::string& name, const std::string& color) {
+        JZChart* c = widgetFromThis<JZChart>(w, "addSeries");
+        if (!c)
+            return -1;
         JZColor col = color.empty() ? JZChart::paletteColor(c->seriesCount()) : jzParseColor(color);
         return c->addSeries(name, col);
     });
-    bind_chart.def("setSeriesData", [this](JZChart* c, int index, JSValue data) {
-        c->setSeriesData(index, jzJsToDoubleArray(m_engine->context(), data, "JZChart.setSeriesData"));
+    bind_chart.def("setSeriesData", [this](JZObjectPointer* w, int index, JSValue data) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setSeriesData"))
+            c->setSeriesData(index, jzJsToDoubleArray(m_engine->context(), data, "JZChart.setSeriesData"));
     });
-    bind_chart.def("setSeriesName", [](JZChart* c, int index, const std::string& name) {
-        c->setSeriesName(index, name);
+    bind_chart.def("setSeriesName", [this](JZObjectPointer* w, int index, const std::string& name) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setSeriesName"))
+            c->setSeriesName(index, name);
     });
-    bind_chart.def("setSeriesColor", [](JZChart* c, int index, const std::string& color) {
-        c->setSeriesColor(index, jzParseColor(color));
+    bind_chart.def("setSeriesColor", [this](JZObjectPointer* w, int index, const std::string& color) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setSeriesColor"))
+            c->setSeriesColor(index, jzParseColor(color));
     });
-    bind_chart.def("clearSeries", [](JZChart* c) { c->clearSeries(); });
-    bind_chart.def("seriesCount", [](JZChart* c) { return c->seriesCount(); });
-    bind_chart.def("seriesName", [](JZChart* c, int index) -> std::string {
+    bind_chart.def("clearSeries", [this](JZObjectPointer* w) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "clearSeries"))
+            c->clearSeries();
+    });
+    bind_chart.def("seriesCount", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesCount");
+        return c ? c->seriesCount() : 0;
+    });
+    bind_chart.def("seriesName", [this](JZObjectPointer* w, int index) -> std::string {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesName");
+        if (!c)
+            return std::string();
         if (index < 0 || index >= c->seriesCount())
             throw std::runtime_error("JZChart.seriesName: 序列下标越界");
         return c->series(index).name;
     });
-    bind_chart.def("seriesColor", [](JZChart* c, int index) -> JZColor {
+    bind_chart.def("seriesColor", [this](JZObjectPointer* w, int index) -> JZColor {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesColor");
+        if (!c)
+            return JZColor();
         if (index < 0 || index >= c->seriesCount())
             throw std::runtime_error("JZChart.seriesColor: 序列下标越界");
         return c->series(index).color;
     });
-    bind_chart.def("seriesData", [](JZChart* c, int index) -> std::vector<double> {
+    bind_chart.def("seriesData", [this](JZObjectPointer* w, int index) -> std::vector<double> {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesData");
+        if (!c)
+            return std::vector<double>();
         if (index < 0 || index >= c->seriesCount())
             throw std::runtime_error("JZChart.seriesData: 序列下标越界");
         return c->series(index).data;
     });
     // 一次性设置多条序列: setData([[1,2],[3,4]]) —— 颜色/名称用默认值(独立配色, 名称 "Series N")
-    bind_chart.def("setData", [this](JZChart* c, JSValue data) {
-        c->setData(jzJsToDoubleMatrix(m_engine->context(), data, "JZChart.setData"));
+    bind_chart.def("setData", [this](JZObjectPointer* w, JSValue data) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setData"))
+            c->setData(jzJsToDoubleMatrix(m_engine->context(), data, "JZChart.setData"));
     });
     // 分类标签: 折线/柱状的 X 轴标签, 饼图的扇区名称
-    bind_chart.def("setCategories", [this](JZChart* c, JSValue categories) {
-        c->setCategories(jzJsToStringArray(m_engine->context(), categories, "JZChart.setCategories"));
+    bind_chart.def("setCategories", [this](JZObjectPointer* w, JSValue categories) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setCategories"))
+            c->setCategories(jzJsToStringArray(m_engine->context(), categories, "JZChart.setCategories"));
     });
     // ---- 数值 X 轴 / 右 Y 轴 / 轴标题 (见 JZChart.h): 画"电压-容量""电流-时间"这类
     //      X 不是序号的曲线必须用它; 原来的 setCategories 只认索引对齐的字符串标签。----
-    bind_chart.def("setSeriesKeys", [this](JZChart* c, int index, JSValue keys) {
-        c->setSeriesKeys(index, jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesKeys"));
+    bind_chart.def("setSeriesKeys", [this](JZObjectPointer* w, int index, JSValue keys) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setSeriesKeys"))
+            c->setSeriesKeys(index, jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesKeys"));
     });
-    bind_chart.def("setSeriesDataXY", [this](JZChart* c, int index, JSValue keys, JSValue values) {
-        c->setSeriesDataXY(index,
-            jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesDataXY"),
-            jzJsToDoubleArray(m_engine->context(), values, "JZChart.setSeriesDataXY"));
+    bind_chart.def("setSeriesDataXY", [this](JZObjectPointer* w, int index, JSValue keys, JSValue values) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setSeriesDataXY"))
+            c->setSeriesDataXY(index,
+                jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesDataXY"),
+                jzJsToDoubleArray(m_engine->context(), values, "JZChart.setSeriesDataXY"));
     });
-    bind_chart.def("seriesKeys", [](JZChart* c, int index) -> std::vector<double> {
+    bind_chart.def("seriesKeys", [this](JZObjectPointer* w, int index) -> std::vector<double> {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesKeys");
+        if (!c)
+            return std::vector<double>();
         if (index < 0 || index >= c->seriesCount())
             throw std::runtime_error("JZChart.seriesKeys: 序列下标越界");
         return c->seriesKeys(index);
     });
-    bind_chart.def("hasSeriesKeys", [](JZChart* c, int index) { return c->hasSeriesKeys(index); });
-    bind_chart.def("setSeriesValueAxis", [](JZChart* c, int index, int axis) {
+    bind_chart.def("hasSeriesKeys", [this](JZObjectPointer* w, int index) {
+        JZChart* c = widgetFromThis<JZChart>(w, "hasSeriesKeys");
+        return c && c->hasSeriesKeys(index);
+    });
+    bind_chart.def("setSeriesValueAxis", [this](JZObjectPointer* w, int index, int axis) {
+        JZChart* c = widgetFromThis<JZChart>(w, "setSeriesValueAxis");
+        if (!c)
+            return;
         if (axis != 0 && axis != 1)
             throw std::runtime_error("JZChart.setSeriesValueAxis: 轴只能是 0(左)/1(右)");
         c->setSeriesValueAxis(index, axis);
     });
-    bind_chart.def("seriesValueAxis", [](JZChart* c, int index) { return c->seriesValueAxis(index); });
-    bind_chart.def("hasValueAxis", [](JZChart* c, int axis) { return c->hasValueAxis(axis); });
-    // 轴标题: 三个都要给(不用的轴传空串) —— 引擎按精确参数个数校验, 不做可选参数
-    bind_chart.def("setAxisLabels", [](JZChart* c, const std::string& xl,
-                                       const std::string& yl, const std::string& y2l) {
-        c->setAxisLabels(xl, yl, y2l);
+    bind_chart.def("seriesValueAxis", [this](JZObjectPointer* w, int index) {
+        JZChart* c = widgetFromThis<JZChart>(w, "seriesValueAxis");
+        return c ? c->seriesValueAxis(index) : 0;
     });
-    bind_chart.def("xAxisLabel", [](JZChart* c) { return c->xAxisLabel(); });
-    bind_chart.def("yAxisLabel", [](JZChart* c) { return c->yAxisLabel(); });
-    bind_chart.def("y2AxisLabel", [](JZChart* c) { return c->y2AxisLabel(); });
-    bind_chart.def("categories", [](JZChart* c) { return c->categories(); });   // 值语义: 返回拷贝
-    bind_chart.def("setTitle", [](JZChart* c, const std::string& title) { c->setTitle(title); });
-    bind_chart.def("title", [](JZChart* c) { return c->title(); });
-    bind_chart.def("setShowGrid", [](JZChart* c, bool on) { c->setShowGrid(on); });
-    bind_chart.def("setShowLegend", [](JZChart* c, bool on) { c->setShowLegend(on); });
-    bind_chart.def("setShowAxis", [](JZChart* c, bool on) { c->setShowAxis(on); });
-    bind_chart.def("setShowPoint", [](JZChart* c, bool on) { c->setShowPoint(on); });
-    bind_chart.def("setShowValue", [](JZChart* c, bool on) { c->setShowValue(on); });    
+    bind_chart.def("hasValueAxis", [this](JZObjectPointer* w, int axis) {
+        JZChart* c = widgetFromThis<JZChart>(w, "hasValueAxis");
+        return c && c->hasValueAxis(axis);
+    });
+    // 轴标题: 三个都要给(不用的轴传空串) —— 引擎按精确参数个数校验, 不做可选参数
+    bind_chart.def("setAxisLabels", [this](JZObjectPointer* w, const std::string& xl,
+                                           const std::string& yl, const std::string& y2l) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setAxisLabels"))
+            c->setAxisLabels(xl, yl, y2l);
+    });
+    bind_chart.def("xAxisLabel", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "xAxisLabel");
+        return c ? c->xAxisLabel() : std::string();
+    });
+    bind_chart.def("yAxisLabel", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "yAxisLabel");
+        return c ? c->yAxisLabel() : std::string();
+    });
+    bind_chart.def("y2AxisLabel", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "y2AxisLabel");
+        return c ? c->y2AxisLabel() : std::string();
+    });
+    bind_chart.def("categories", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "categories");
+        // 值语义: 返回拷贝(C++ 侧返回的是 const 引用, 这里 decay 成值再拷一份)
+        return c ? c->categories() : std::decay_t<decltype(c->categories())>();
+    });
+    bind_chart.def("setTitle", [this](JZObjectPointer* w, const std::string& title) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setTitle"))
+            c->setTitle(title);
+    });
+    bind_chart.def("title", [this](JZObjectPointer* w) {
+        JZChart* c = widgetFromThis<JZChart>(w, "title");
+        return c ? c->title() : std::string();
+    });
+    bind_chart.def("setShowGrid", [this](JZObjectPointer* w, bool on) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setShowGrid"))
+            c->setShowGrid(on);
+    });
+    bind_chart.def("setShowLegend", [this](JZObjectPointer* w, bool on) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setShowLegend"))
+            c->setShowLegend(on);
+    });
+    bind_chart.def("setShowAxis", [this](JZObjectPointer* w, bool on) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setShowAxis"))
+            c->setShowAxis(on);
+    });
+    bind_chart.def("setShowPoint", [this](JZObjectPointer* w, bool on) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setShowPoint"))
+            c->setShowPoint(on);
+    });
+    bind_chart.def("setShowValue", [this](JZObjectPointer* w, bool on) {
+        if (JZChart* c = widgetFromThis<JZChart>(w, "setShowValue"))
+            c->setShowValue(on);
+    });    
     bind_chart.setCreate(js_JZChart_ctor);
     mountTransparentClass(bind_chart.classDefine());
 
@@ -2223,49 +2727,93 @@ void JZJSWidgetModule::registViews()
 
     // ---- JZListWidget: JS 侧只做值级操作(文本/行数/当前项), item 对象不从 JS 创建 ----
     jsbind::ClassBind<JZListWidget> bind_list("JZListWidget", bind_w);
-    bind_list.def("appendItem", [](JZListWidget* l, const std::string& t) { l->appendItem(t); });
-    bind_list.def("appendItems", [this](JZListWidget* l, JSValue texts) {
-        l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.appendItems"));
+    bind_list.def("appendItem", [this](JZObjectPointer* w, const std::string& t) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "appendItem"))
+            l->appendItem(t);
     });
-    bind_list.def("insertItem", [](JZListWidget* l, int i, const std::string& t) { l->insertItem(i, t); });
-    bind_list.def("clear", [](JZListWidget* l) { l->clear(); });
-    bind_list.def("count", [](JZListWidget* l) { return l->count(); });
-    bind_list.def("itemText", [](JZListWidget* l, int i) { return l->itemText(i); });
-    bind_list.def("currentIndex", [](JZListWidget* l) { return l->currentIndex(); });
-    bind_list.def("setCurrentIndex", [](JZListWidget* l, int i) { l->setCurrentIndex(i); });
-    bind_list.def("setItemHeight", [](JZListWidget* l, int h) { l->setItemHeight(h); });
-    bind_list.def("itemHeight", [](JZListWidget* l) { return l->itemHeight(); });
+    bind_list.def("appendItems", [this](JZObjectPointer* w, JSValue texts) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "appendItems"))
+            l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.appendItems"));
+    });
+    bind_list.def("insertItem", [this](JZObjectPointer* w, int i, const std::string& t) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "insertItem"))
+            l->insertItem(i, t);
+    });
+    bind_list.def("clear", [this](JZObjectPointer* w) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "clear"))
+            l->clear();
+    });
+    bind_list.def("count", [this](JZObjectPointer* w) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "count");
+        return l ? l->count() : 0;
+    });
+    bind_list.def("itemText", [this](JZObjectPointer* w, int i) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "itemText");
+        return l ? l->itemText(i) : std::string();
+    });
+    bind_list.def("currentIndex", [this](JZObjectPointer* w) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "currentIndex");
+        return l ? l->currentIndex() : -1;
+    });
+    bind_list.def("setCurrentIndex", [this](JZObjectPointer* w, int i) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "setCurrentIndex"))
+            l->setCurrentIndex(i);
+    });
+    bind_list.def("setItemHeight", [this](JZObjectPointer* w, int h) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItemHeight"))
+            l->setItemHeight(h);
+    });
+    bind_list.def("itemHeight", [this](JZObjectPointer* w) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "itemHeight");
+        return l ? l->itemHeight() : 0;
+    });
     defSignalProperty(bind_list, "onCurrentIndexChanged", &JZListWidget::currentIndexChanged);
     defSignalProperty(bind_list, "onActivated", &JZListWidget::sigActivated);
     // ---- 整项/整块原语(索引式值接口; 不引入任何 item 句柄) ----
     // 与 C++ 的 setItems/items/removeItem/setItemText 一一对应; "整块喂 / 整块读 / 单项增删"。
-    bind_list.def("setItems", [this](JZListWidget* l, JSValue texts) {
-        l->clear();
-        l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.setItems"));
+    bind_list.def("setItems", [this](JZObjectPointer* w, JSValue texts) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItems"))
+        {
+            l->clear();
+            l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.setItems"));
+        }
     });
-    bind_list.def("items", [](JZListWidget* l) {
+    bind_list.def("items", [this](JZObjectPointer* w) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "items");
         std::vector<std::string> v;
+        if (!l)
+            return v;
         v.reserve(l->count());
         for (int i = 0; i < l->count(); i++)
             v.push_back(l->itemText(i));
         return v;
     });
-    bind_list.def("removeItem", [](JZListWidget* l, int i) { delete l->takeItem(i); });   // 摘除并真删
-    bind_list.def("setItemText", [](JZListWidget* l, int i, const std::string& s) {
-        if (JZListWidgetItem* it = l->item(i))
+    bind_list.def("removeItem", [this](JZObjectPointer* w, int i) {
+        if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "removeItem"))
+            delete l->takeItem(i);   // 摘除并真删
+    });
+    bind_list.def("setItemText", [this](JZObjectPointer* w, int i, const std::string& s) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItemText");
+        if (JZListWidgetItem* it = l ? l->item(i) : nullptr)
             it->setText(s);
     });
     // 项的业务数据槽: 原样持有 JS 值(取回来还是同一个对象), 与文本分开 —— 老代码用 item.setData(...)
     // 挂 [netId, DeviceString] 这类负载, 迁到值级接口后用这两个口子(不回到 item 句柄)。
-    bind_list.def("setItemData", [this](JZListWidget* l, int i, JSValue v) {
+    bind_list.def("setItemData", [this](JZObjectPointer* w, int i, JSValue v) {
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItemData");
+        if (!l)
+            return;
         JZListWidgetItem* it = l->item(i);
         if (!it)
             throw std::runtime_error("JZListWidget.setItemData: 下标越界");
         it->setData(JZVariant::fromValue(m_engine->makeValuePtr(JS_DupValue(m_engine->context(), v))));
     });
-    bind_list.def("itemData", [this](JZListWidget* l, int i) -> JSValue {
+    bind_list.def("itemData", [this](JZObjectPointer* w, int i) -> JSValue {
         // 直接交回 JS 值本身(同一对象), 不走 JZVariant 的通用转换 —— 通用转换不认 JZJSValuePtr,
         // 拿回来会是个空值。C++ 侧塞的原生值(字符串/整数/浮点/布尔)顺手转一下, 其余给 undefined。
+        JZListWidget* l = widgetFromThis<JZListWidget>(w, "itemData");
+        if (!l)
+            return JS_EXCEPTION;
         JZListWidgetItem* it = l->item(i);
         if (!it)
             return JS_UNDEFINED;

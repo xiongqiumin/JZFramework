@@ -631,6 +631,30 @@ int main()
                       "((lb.text() === 'hello' && bt.text() === 'OK')"
                       " && rb.text() === 'r1' && gb.title() === 'grp' && vl.spacing() === 7) ? 'ok' : 'bad'") == "ok");
 
+        // 控件方法宿主校验: 宿主形参写成 JSValue(引擎原样传、不做检测), 函数体内 dynamic_cast 到
+        // 声明的类 —— 用别的控件类调 JZLabel.setText 必须抛可捕获的 TypeError。
+        // (对照老写法 `JZLabel* w` 形参: 引擎解析不出控件的类型号, 校验被静默跳过, 再按声明的类
+        //  static_cast —— 传错类不会报错, 而是拿到一个类型不符的野指针。)
+        check("控件方法宿主: setText 往返 + 换别的控件类调用抛 TypeError",
+              evalStr(engine,
+                      "var lb2 = new JZLabel('');"
+                      "lb2.setText('hello2');"
+                      "var hb2 = new JZPushButton('x');"
+                      "var hostBad = false;"
+                      "try { JZLabel.prototype.setText.call(hb2, 'y'); }"
+                      "catch (e) { hostBad = (e instanceof TypeError); }"
+                      "(String(lb2.text()) === 'hello2' && hostBad) ? 'ok' : 'bad'") == "ok");
+
+        // 形参层校验: 宿主/对象形参声明成 JZObjectPointer*, 引擎认得这个类型号 —— 传非对象
+        // (数字/字符串/普通对象)在**进方法体之前**就被 checkFunctionArg 拦成 TypeError。
+        // 对照: 老写法 `JZLabel* w` 形参时宿主传 123 会变成空指针, 静默什么都不做。
+        check("对象形参: 宿主传非对象(数字)抛 TypeError",
+              evalStr(engine,
+                      "var lbNum = false;"
+                      "try { JZLabel.prototype.setText.call(123, 'x'); }"
+                      "catch (e) { lbNum = (e instanceof TypeError); }"
+                      "lbNum ? 'ok' : 'bad'") == "ok");
+
         // 构造时就带 parent: 父链/对象树立刻成立(C++ 侧核对), 且登记进模块的控件表
         {
             JZWidget* hw = engine.fromJSValue<JZWidget*>(engine.eval("hw").get());

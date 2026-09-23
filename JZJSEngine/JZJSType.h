@@ -83,6 +83,14 @@ enum
     JSType_jsonValue,
 
     JSType_object = 1000,
+
+    // 透明控件类的实例统一按"对象指针"上报: 控件族对引擎透明(共用一个 op class, 没有各自的类型号),
+    // 所以 jsValueType 对 op class 的实例回这个类型, 而控件方法的**对象形参**声明成
+    // `JZObjectPointer*`(见 initTypeMap 的注册 / JZJSWidgetModule::widgetFromThis)。
+    // 值取 1100: 要 > JSType_object(才能走 checkFunctionArg 的"对象"校验分支),
+    // 又要 < JSType_objectUser(那是 m_objectId 给注册类分配的起点)。
+    JSType_objectPointer = 1100,
+
     JSType_objectUser = 2000,
 };
 
@@ -311,6 +319,12 @@ std::string fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
 Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
+
+// 对象指针形参(控件方法的宿主/对象形参): 取 opaque 里那份 JZObjectPointer —— **借用**。
+// 类型号 JSType_objectPointer 由 initTypeMap 注册, "是否活着的对象指针"由 checkFunctionArg 校验。
+class JZObjectPointer;
+template <>
+JZObjectPointer* fromJSValue(JSContext* ctx, JSValueConst value);
 
 // to js
 JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);

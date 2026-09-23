@@ -622,6 +622,12 @@ void JZJSEngine::initTypeMap()
     registBase("double", JSType_double, JS_TAG_FLOAT64, typeid(double).name());
     registBase("string", JSType_string, JS_TAG_STRING, typeid(string).name());
     registBase("any", JSType_jsonValue, JS_TAG_OBJECT, typeid(Json::Value).name());
+
+    // 透明控件类的"对象指针"形参类型(JSType_objectPointer): 控件族共用一个 op class, 在类型表里
+    // 没有各自的类型号, 所以控件方法的对象形参统一声明成 `JZObjectPointer*` —— 引擎据此能在
+    // **形参层**校验"必须是活着的对象指针"(见 checkFunctionArg 的 arg_type > JSType_object 分支)。
+    // js_type 传一个不存在的 tag(-101, 与上面 JSValue 那条同款写法)以免污染 m_jsTypeMap。
+    registBase("JZObjectPointer", JSType_objectPointer, -101, typeid(JZObjectPointer).name());
 }
 
 void JZJSEngine::registInternal()
@@ -2232,6 +2238,31 @@ bool JZJSEngine::checkFunctionArg(const CFunctionParam& param, int index, JSValu
     // JSValue(原始 JS 值)参数不做类型检查: 任意 JS 值都可以传
     if (arg_type == JSType_oriValue)
         return true;
+
+    // 对象指针形参(JZObjectPointer*): 控件族对引擎透明 —— 它们在类型表里没有各自的类型号
+    // (所有控件共用一个 op class), 所以这里**不走类型号比较**, 直接按"opaque 是不是活着的
+    // 对象指针"判。形参写 JZObjectPointer* 的意义就在这一层: 传数字/字符串/普通对象会被拦下,
+    // 而不是拖到方法体里再当指针用。
+    if (arg_type == JSType_objectPointer)
+    {
+        if (JS_IsNull(value) || JS_IsUndefined(value))
+        {
+            if (param.allowNull)
+                return true;             // 允许空(如 parent/owner)由注册处声明 allowNull
+            // 返回 false 必须**带着 pending 异常**(调用方有 JZ_ASSERT_X(JS_HasException) 兜底)
+            JS_ThrowTypeError(m_ctx, "参数错误:参数%d需要控件对象(不能为空)", index);
+            return false;
+        }
+        JSClassID class_id = 0;
+        void* opaque = JS_GetAnyOpaque(value, &class_id);
+        if (!opaque || !isGuardedClass((int)class_id))
+        {
+            JS_ThrowTypeError(m_ctx, "参数错误:参数%d需要控件对象", index);
+            return false;
+        }
+        // 守卫失效(底层对象已被删)时 objectFromOpaque 自己抛异常
+        return objectFromOpaque((int)class_id, opaque) != nullptr;
+    }
 
     int js_type = jsValueType(value);
     if (js_type == JSType_null && arg_type > JSType_object && param.allowNull)

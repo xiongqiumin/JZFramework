@@ -2842,27 +2842,64 @@ void JZJSWidgetModule::registViews()
 
     // ---- JZTableWidget: 同上(item 对象不走 JS) ----
     jsbind::ClassBind<JZTableWidget> bind_table("JZTableWidget", bind_w);
-    bind_table.def("setRowCount", [](JZTableWidget* t, int n) { t->setRowCount(n); });
-    bind_table.def("rowCount", [](JZTableWidget* t) { return t->rowCount(); });
-    bind_table.def("setColumnCount", [](JZTableWidget* t, int n) { t->setColumnCount(n); });
-    bind_table.def("columnCount", [](JZTableWidget* t) { return t->columnCount(); });
-    bind_table.def("setItemText", [](JZTableWidget* t, int r, int c, const std::string& s) { t->setItemText(r, c, s); });
-    bind_table.def("itemText", [](JZTableWidget* t, int r, int c) { return t->itemText(r, c); });
-    bind_table.def("clearContents", [](JZTableWidget* t) { t->clearContents(); });
-    bind_table.def("setCurrentCell", [](JZTableWidget* t, int r, int c) { t->setCurrentCell(r, c); });
-    bind_table.def("currentRow", [](JZTableWidget* t) { return t->currentRow(); });
-    bind_table.def("currentColumn", [](JZTableWidget* t) { return t->currentColumn(); });
-    // 选中粒度: 0 = 单元格(默认, Qt SelectItems), 1 = 整行(Qt SelectRows) —— 取值同 C++ 枚举
-    bind_table.def("setSelectionBehavior", [](JZTableWidget* t, int b) {
-        t->setSelectionBehavior((JZTableWidget::SelectionBehavior)b);
+    bind_table.def("setRowCount", [this](JZObjectPointer* w, int n) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setRowCount"))
+            t->setRowCount(n);
     });
-    bind_table.def("selectionBehavior", [](JZTableWidget* t) { return (int)t->selectionBehavior(); });
+    bind_table.def("rowCount", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "rowCount");
+        return t ? t->rowCount() : 0;
+    });
+    bind_table.def("setColumnCount", [this](JZObjectPointer* w, int n) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setColumnCount"))
+            t->setColumnCount(n);
+    });
+    bind_table.def("columnCount", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "columnCount");
+        return t ? t->columnCount() : 0;
+    });
+    bind_table.def("setItemText", [this](JZObjectPointer* w, int r, int c, const std::string& s) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setItemText"))
+            t->setItemText(r, c, s);
+    });
+    bind_table.def("itemText", [this](JZObjectPointer* w, int r, int c) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "itemText");
+        return t ? t->itemText(r, c) : std::string();
+    });
+    bind_table.def("clearContents", [this](JZObjectPointer* w) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "clearContents"))
+            t->clearContents();
+    });
+    bind_table.def("setCurrentCell", [this](JZObjectPointer* w, int r, int c) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setCurrentCell"))
+            t->setCurrentCell(r, c);
+    });
+    bind_table.def("currentRow", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "currentRow");
+        return t ? t->currentRow() : -1;
+    });
+    bind_table.def("currentColumn", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "currentColumn");
+        return t ? t->currentColumn() : -1;
+    });
+    // 选中粒度: 0 = 单元格(默认, Qt SelectItems), 1 = 整行(Qt SelectRows) —— 取值同 C++ 枚举
+    bind_table.def("setSelectionBehavior", [this](JZObjectPointer* w, int b) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setSelectionBehavior"))
+            t->setSelectionBehavior((JZTableWidget::SelectionBehavior)b);
+    });
+    bind_table.def("selectionBehavior", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "selectionBehavior");
+        return t ? (int)t->selectionBehavior() : 0;
+    });
     defSignalProperty(bind_table, "onCurrentRowChanged", &JZTableWidget::currentRowChanged);
     defSignalProperty(bind_table, "onCurrentColumnChanged", &JZTableWidget::currentColumnChanged);
 
     // ---- 整行原语(索引式值接口; 见 JZListWidget 那段说明) ----
     // "整行"= 字符串数组; 行比列宽时会自动加列(喂数据不用先算列数), 空串 = 清该格。
-    bind_table.def("setRows", [this](JZTableWidget* t, JSValue rows) {
+    bind_table.def("setRows", [this](JZObjectPointer* w, JSValue rows) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setRows");
+        if (!t)
+            return;
         const std::vector<std::vector<std::string>> data =
             jzJsToRows(m_engine->context(), rows, "JZTableWidget.setRows");
         size_t maxCols = 0;
@@ -2875,7 +2912,10 @@ void JZJSWidgetModule::registViews()
             for (int c = 0; c < (int)data[r].size(); c++)
                 t->setItemText(r, c, data[r][c]);
     });
-    bind_table.def("rows", [this](JZTableWidget* t) {
+    bind_table.def("rows", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "rows");
+        if (!t)
+            return JS_EXCEPTION;
         std::vector<std::vector<std::string>> data;
         data.reserve(t->rowCount());
         for (int r = 0; r < t->rowCount(); r++)
@@ -2888,7 +2928,10 @@ void JZJSWidgetModule::registViews()
         }
         return jzRowsToJs(m_engine->context(), data);
     });
-    bind_table.def("appendRow", [this](JZTableWidget* t, JSValue cells) {
+    bind_table.def("appendRow", [this](JZObjectPointer* w, JSValue cells) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "appendRow");
+        if (!t)
+            return;
         const std::vector<std::string> row =
             jzJsToRow(m_engine->context(), cells, "JZTableWidget.appendRow");
         if ((int)row.size() > t->columnCount())
@@ -2899,7 +2942,10 @@ void JZJSWidgetModule::registViews()
         for (int c = 0; c < (int)row.size(); c++)
             t->setItemText(r, c, row[c]);
     });
-    bind_table.def("insertRowAt", [this](JZTableWidget* t, int i, JSValue cells) {
+    bind_table.def("insertRowAt", [this](JZObjectPointer* w, int i, JSValue cells) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "insertRowAt");
+        if (!t)
+            return;
         const std::vector<std::string> row =
             jzJsToRow(m_engine->context(), cells, "JZTableWidget.insertRowAt");
         if (i < 0 || i > t->rowCount())
@@ -2911,8 +2957,14 @@ void JZJSWidgetModule::registViews()
         for (int c = 0; c < (int)row.size(); c++)
             t->setItemText(i, c, row[c]);
     });
-    bind_table.def("removeRowAt", [](JZTableWidget* t, int i) { t->removeRow(i); });
-    bind_table.def("setRowAt", [this](JZTableWidget* t, int i, JSValue cells) {
+    bind_table.def("removeRowAt", [this](JZObjectPointer* w, int i) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "removeRowAt"))
+            t->removeRow(i);
+    });
+    bind_table.def("setRowAt", [this](JZObjectPointer* w, int i, JSValue cells) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setRowAt");
+        if (!t)
+            return;
         if (i < 0 || i >= t->rowCount())
             throw std::runtime_error("JZTableWidget.setRowAt: 行号越界");
         const std::vector<std::string> row =
@@ -2923,88 +2975,175 @@ void JZJSWidgetModule::registViews()
         for (int c = 0; c < t->columnCount(); c++)   // 整行替换: 多出来的格子清空
             t->setItemText(i, c, c < (int)row.size() ? row[c] : std::string());
     });
-    bind_table.def("setHeaderLabels", [this](JZTableWidget* t, JSValue labels) {
-        t->setHorizontalHeaderLabels(jzJsToStringArray(m_engine->context(), labels, "JZTableWidget.setHeaderLabels"));
+    bind_table.def("setHeaderLabels", [this](JZObjectPointer* w, JSValue labels) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setHeaderLabels"))
+            t->setHorizontalHeaderLabels(jzJsToStringArray(m_engine->context(), labels, "JZTableWidget.setHeaderLabels"));
     });
-    bind_table.def("headerLabels", [](JZTableWidget* t) { return t->headerLabels(); });
+    bind_table.def("headerLabels", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "headerLabels");
+        return t ? t->headerLabels() : std::decay_t<decltype(t->headerLabels())>();
+    });
     // 行列结构(索引式): 插/删空行空列; clear() = 清数据 + 清表头(clearContents 只清数据)
-    bind_table.def("insertRow", [](JZTableWidget* t, int i) { t->insertRow(i); });
-    bind_table.def("removeRow", [](JZTableWidget* t, int i) { t->removeRow(i); });
-    bind_table.def("insertColumn", [](JZTableWidget* t, int c) { t->insertColumn(c); });
-    bind_table.def("removeColumn", [](JZTableWidget* t, int c) { t->removeColumn(c); });
-    bind_table.def("clear", [](JZTableWidget* t) { t->clear(); });
+    bind_table.def("insertRow", [this](JZObjectPointer* w, int i) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "insertRow"))
+            t->insertRow(i);
+    });
+    bind_table.def("removeRow", [this](JZObjectPointer* w, int i) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "removeRow"))
+            t->removeRow(i);
+    });
+    bind_table.def("insertColumn", [this](JZObjectPointer* w, int c) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "insertColumn"))
+            t->insertColumn(c);
+    });
+    bind_table.def("removeColumn", [this](JZObjectPointer* w, int c) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "removeColumn"))
+            t->removeColumn(c);
+    });
+    bind_table.def("clear", [this](JZObjectPointer* w) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "clear"))
+            t->clear();
+    });
     // 行几何 / 列宽(把"点击位置"换算成行号要用: 表格没有 itemAt/单元格控件, 鼠标事件在 JS 侧处理)
-    bind_table.def("rowHeight", [](JZTableWidget* t) { return t->rowHeight(); });
-    bind_table.def("headerHeight", [](JZTableWidget* t) { return t->headerHeight(); });
-    bind_table.def("setRowHeight", [](JZTableWidget* t, int h) { t->setRowHeight(h); });
-    bind_table.def("setColumnWidth", [](JZTableWidget* t, int c, int w) { t->setColumnWidth(c, w); });
+    bind_table.def("rowHeight", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "rowHeight");
+        return t ? t->rowHeight() : 0;
+    });
+    bind_table.def("headerHeight", [this](JZObjectPointer* w) {
+        JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "headerHeight");
+        return t ? t->headerHeight() : 0;
+    });
+    bind_table.def("setRowHeight", [this](JZObjectPointer* w, int h) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setRowHeight"))
+            t->setRowHeight(h);
+    });
+    bind_table.def("setColumnWidth", [this](JZObjectPointer* w, int c, int wd) {
+        if (JZTableWidget* t = widgetFromThis<JZTableWidget>(w, "setColumnWidth"))
+            t->setColumnWidth(c, wd);
+    });
     defSignalProperty(bind_table, "onDataChanged", &JZTableWidget::sigDataChanged);
 
     bind_table.setCreate(js_JZTableWidget_ctor);
     mountTransparentClass(bind_table.classDefine());
 
-    // ---- JZStackedWidget: 页容器(子控件带 JZWidget* 形参 -> 走 op 槽取指针, 所有权仍在 JS) ----
+    // ---- JZStackedWidget: 页容器(对象形参 = JZObjectPointer*: 形参层先校验, 方法体再 dynamic_cast) ----
     jsbind::ClassBind<JZStackedWidget> bind_stack("JZStackedWidget", bind_w);
-    bind_stack.def("addWidget", [](JZStackedWidget* s, JZWidget* w) -> int {
-        if (!w)
-            throw std::runtime_error("JZStackedWidget.addWidget: 需要控件");
-        return s->addWidget(w);
+    bind_stack.def("addWidget", [this](JZObjectPointer* s, JZObjectPointer* w) -> int {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "addWidget");
+        JZWidget* page = widgetFromThis<JZWidget>(w, "addWidget");   // 传 null 已由形参层报错
+        if (!stack || !page)
+            return -1;
+        return stack->addWidget(page);
     });
-    bind_stack.def("insertWidget", [](JZStackedWidget* s, int i, JZWidget* w) {
-        if (!w)
-            throw std::runtime_error("JZStackedWidget.insertWidget: 需要控件");
-        s->insertWidget(i, w);
+    bind_stack.def("insertWidget", [this](JZObjectPointer* s, int i, JZObjectPointer* w) {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "insertWidget");
+        JZWidget* page = widgetFromThis<JZWidget>(w, "insertWidget");
+        if (!stack || !page)
+            return;
+        stack->insertWidget(i, page);
     });
-    bind_stack.def("removeWidget", [](JZStackedWidget* s, int i) { s->removeWidget(i); });
-    bind_stack.def("count", [](JZStackedWidget* s) { return s->count(); });
-    bind_stack.def("indexOf", [](JZStackedWidget* s, JZWidget* w) { return s->indexOf(w); });
-    bind_stack.def("currentIndex", [](JZStackedWidget* s) { return s->currentIndex(); });
-    bind_stack.def("setCurrentIndex", [](JZStackedWidget* s, int i) { s->setCurrentIndex(i); });
+    bind_stack.def("removeWidget", [this](JZObjectPointer* s, int i) {
+        if (JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "removeWidget"))
+            stack->removeWidget(i);
+    });
+    bind_stack.def("count", [this](JZObjectPointer* s) {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "count");
+        return stack ? stack->count() : 0;
+    });
+    bind_stack.def("indexOf", [this](JZObjectPointer* s, JZObjectPointer* w) {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "indexOf");
+        if (!stack)
+            return -1;
+        JZWidget* page = widgetFromThis<JZWidget>(w, "indexOf");
+        return page ? stack->indexOf(page) : -1;
+    });
+    bind_stack.def("currentIndex", [this](JZObjectPointer* s) {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "currentIndex");
+        return stack ? stack->currentIndex() : -1;
+    });
+    bind_stack.def("setCurrentIndex", [this](JZObjectPointer* s, int i) {
+        if (JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "setCurrentIndex"))
+            stack->setCurrentIndex(i);
+    });
     // 回吐页控件(返回**同一份 JS 对象**, `===` 成立; 见 widgetJsView):
     // 原来 C++ 侧不绑这几条, 靠 JS 便利层(tree.ts)的登记表回答 —— 但那张表只认"经 JS 入口
     // 建立的关系", 页面若是 C++ 侧挂上去的(或关系经别的路径建立)就答不出来。改为引擎侧
     // 优先还控件的宿主句柄, 覆盖面更大; 从没被 JS 拿到过的页返回 null(那本来也没有对象可回吐)。
-    bind_stack.def("widget", [this](JZStackedWidget* s, int i) -> JSValue {
-        return widgetJsView(s->widget(i));
+    bind_stack.def("widget", [this](JZObjectPointer* s, int i) -> JSValue {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "widget");
+        return stack ? widgetJsView(stack->widget(i)) : JS_EXCEPTION;
     });
-    bind_stack.def("currentWidget", [this](JZStackedWidget* s) -> JSValue {
-        return widgetJsView(s->currentWidget());
+    bind_stack.def("currentWidget", [this](JZObjectPointer* s) -> JSValue {
+        JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "currentWidget");
+        return stack ? widgetJsView(stack->currentWidget()) : JS_EXCEPTION;
     });
     // 传 null 也能过形参校验(等价 Qt "给个空指针就什么都不做")
     {
-        auto* f = bind_stack.def("setCurrentWidget", [](JZStackedWidget* s, JZWidget* w) {
-            s->setCurrentWidget(w);   // 非本容器的页 / null -> 静默忽略(Qt 同款)
+        auto* f = bind_stack.def("setCurrentWidget", [this](JZObjectPointer* s, JZObjectPointer* w) {
+            JZStackedWidget* stack = widgetFromThis<JZStackedWidget>(s, "setCurrentWidget");
+            if (!stack)
+                return;
+            // 非本容器的页 / null -> 静默忽略(Qt 同款); 传非对象由形参层拦下
+            stack->setCurrentWidget(w ? widgetFromThis<JZWidget>(w, "setCurrentWidget") : nullptr);
         });
-        f->params[1].allowNull = true;
+        f->params[1].allowNull = true;   // params[0] 是 this; 页 = null ⇒ 静默忽略
     }
     bind_stack.setCreate(js_JZStackedWidget_ctor);
     mountTransparentClass(bind_stack.classDefine());
 
     // ---- JZTabWidget: 页签容器 ----
     jsbind::ClassBind<JZTabWidget> bind_tab("JZTabWidget", bind_w);
-    bind_tab.def("addTab", [](JZTabWidget* t, JZWidget* page, const std::string& label) -> int {
-        if (!page)
-            throw std::runtime_error("JZTabWidget.addTab: 需要控件");
-        return t->addTab(page, label);
+    bind_tab.def("addTab", [this](JZObjectPointer* t, JZObjectPointer* page, const std::string& label) -> int {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "addTab");
+        JZWidget* p = widgetFromThis<JZWidget>(page, "addTab");   // 传 null 已由形参层报错
+        if (!tab || !p)
+            return -1;
+        return tab->addTab(p, label);
     });
-    bind_tab.def("removeTab", [](JZTabWidget* t, int i) { t->removeTab(i); });
-    bind_tab.def("count", [](JZTabWidget* t) { return t->count(); });
-    bind_tab.def("indexOf", [](JZTabWidget* t, JZWidget* page) { return t->indexOf(page); });
-    bind_tab.def("currentIndex", [](JZTabWidget* t) { return t->currentIndex(); });
-    bind_tab.def("setCurrentIndex", [](JZTabWidget* t, int i) { t->setCurrentIndex(i); });
-    bind_tab.def("tabText", [](JZTabWidget* t, int i) { return t->tabText(i); });
+    bind_tab.def("removeTab", [this](JZObjectPointer* t, int i) {
+        if (JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "removeTab"))
+            tab->removeTab(i);
+    });
+    bind_tab.def("count", [this](JZObjectPointer* t) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "count");
+        return tab ? tab->count() : 0;
+    });
+    bind_tab.def("indexOf", [this](JZObjectPointer* t, JZObjectPointer* page) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "indexOf");
+        if (!tab)
+            return -1;
+        JZWidget* p = widgetFromThis<JZWidget>(page, "indexOf");
+        return p ? tab->indexOf(p) : -1;
+    });
+    bind_tab.def("currentIndex", [this](JZObjectPointer* t) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "currentIndex");
+        return tab ? tab->currentIndex() : -1;
+    });
+    bind_tab.def("setCurrentIndex", [this](JZObjectPointer* t, int i) {
+        if (JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "setCurrentIndex"))
+            tab->setCurrentIndex(i);
+    });
+    bind_tab.def("tabText", [this](JZObjectPointer* t, int i) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "tabText");
+        return tab ? tab->tabText(i) : std::string();
+    });
     // 同 JZStackedWidget: 回吐页控件(见 widgetJsView)
-    bind_tab.def("widget", [this](JZTabWidget* t, int i) -> JSValue {
-        return widgetJsView(t->widget(i));
+    bind_tab.def("widget", [this](JZObjectPointer* t, int i) -> JSValue {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "widget");
+        return tab ? widgetJsView(tab->widget(i)) : JS_EXCEPTION;
     });
-    bind_tab.def("currentWidget", [this](JZTabWidget* t) -> JSValue {
-        return widgetJsView(t->currentWidget());
+    bind_tab.def("currentWidget", [this](JZObjectPointer* t) -> JSValue {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "currentWidget");
+        return tab ? widgetJsView(tab->currentWidget()) : JS_EXCEPTION;
     });
     {
-        auto* f = bind_tab.def("setCurrentWidget", [](JZTabWidget* t, JZWidget* page) {
-            t->setCurrentWidget(page);
+        auto* f = bind_tab.def("setCurrentWidget", [this](JZObjectPointer* t, JZObjectPointer* page) {
+            JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "setCurrentWidget");
+            if (!tab)
+                return;
+            tab->setCurrentWidget(page ? widgetFromThis<JZWidget>(page, "setCurrentWidget") : nullptr);
         });
-        f->params[1].allowNull = true;
+        f->params[1].allowNull = true;   // params[0] 是 this; 页 = null ⇒ 静默忽略
     }
     defSignalProperty(bind_tab, "onCurrentChanged", &JZTabWidget::currentChanged);
     bind_tab.setCreate(js_JZTabWidget_ctor);
@@ -3012,108 +3151,262 @@ void JZJSWidgetModule::registViews()
 
     // ---- JZSplitter: 可拖动分隔 ----
     jsbind::ClassBind<JZSplitter> bind_split("JZSplitter", bind_w);
-    bind_split.def("addWidget", [](JZSplitter* s, JZWidget* w) {
-        if (!w)
-            throw std::runtime_error("JZSplitter.addWidget: 需要控件");
-        s->addWidget(w);
+    bind_split.def("addWidget", [this](JZObjectPointer* s, JZObjectPointer* w) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "addWidget");
+        JZWidget* child = widgetFromThis<JZWidget>(w, "addWidget");   // 传 null 已由形参层报错
+        if (!split || !child)
+            return;
+        split->addWidget(child);
     });
-    bind_split.def("insertWidget", [](JZSplitter* s, int i, JZWidget* w) {
-        if (!w)
-            throw std::runtime_error("JZSplitter.insertWidget: 需要控件");
-        s->insertWidget(i, w);
+    bind_split.def("insertWidget", [this](JZObjectPointer* s, int i, JZObjectPointer* w) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "insertWidget");
+        JZWidget* child = widgetFromThis<JZWidget>(w, "insertWidget");
+        if (!split || !child)
+            return;
+        split->insertWidget(i, child);
     });
-    bind_split.def("removeWidget", [](JZSplitter* s, JZWidget* w) { s->removeWidget(w); });
-    bind_split.def("count", [](JZSplitter* s) { return s->count(); });
-    bind_split.def("indexOf", [](JZSplitter* s, JZWidget* w) { return s->indexOf(w); });
+    bind_split.def("removeWidget", [this](JZObjectPointer* s, JZObjectPointer* w) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "removeWidget");
+        if (!split)
+            return;
+        if (JZWidget* child = widgetFromThis<JZWidget>(w, "removeWidget"))
+            split->removeWidget(child);
+    });
+    bind_split.def("count", [this](JZObjectPointer* s) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "count");
+        return split ? split->count() : 0;
+    });
+    bind_split.def("indexOf", [this](JZObjectPointer* s, JZObjectPointer* w) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "indexOf");
+        if (!split)
+            return -1;
+        JZWidget* child = widgetFromThis<JZWidget>(w, "indexOf");
+        return child ? split->indexOf(child) : -1;
+    });
     // 回吐子控件(见 widgetJsView); 拿不到 JS 包装的(从没被 JS 拿到过)返回 null
-    bind_split.def("widget", [this](JZSplitter* s, int i) -> JSValue {
-        return widgetJsView(s->widget(i));
+    bind_split.def("widget", [this](JZObjectPointer* s, int i) -> JSValue {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "widget");
+        return split ? widgetJsView(split->widget(i)) : JS_EXCEPTION;
     });
     // 方向用整数(与 JS 侧 types 里的枚举值一致): JZSplitter::Orientation 是本类内的嵌套枚举
-    bind_split.def("setOrientation", [](JZSplitter* s, int o) { s->setOrientation((JZSplitter::Orientation)o); });
-    bind_split.def("orientation", [](JZSplitter* s) { return (int)s->orientation(); });
-    bind_split.def("setStretchFactor", [](JZSplitter* s, int i, int v) { s->setStretchFactor(i, v); });
-    bind_split.def("stretchFactor", [](JZSplitter* s, int i) { return s->stretchFactor(i); });
-    bind_split.def("setHandleWidth", [](JZSplitter* s, int w) { s->setHandleWidth(w); });
-    bind_split.def("handleWidth", [](JZSplitter* s) { return s->handleWidth(); });
-    bind_split.def("setCollapsible", [](JZSplitter* s, int i, bool c) { s->setCollapsible(i, c); });
-    bind_split.def("isCollapsible", [](JZSplitter* s, int i) { return s->isCollapsible(i); });
+    bind_split.def("setOrientation", [this](JZObjectPointer* s, int o) {
+        if (JZSplitter* split = widgetFromThis<JZSplitter>(s, "setOrientation"))
+            split->setOrientation((JZSplitter::Orientation)o);
+    });
+    bind_split.def("orientation", [this](JZObjectPointer* s) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "orientation");
+        return split ? (int)split->orientation() : 0;
+    });
+    bind_split.def("setStretchFactor", [this](JZObjectPointer* s, int i, int v) {
+        if (JZSplitter* split = widgetFromThis<JZSplitter>(s, "setStretchFactor"))
+            split->setStretchFactor(i, v);
+    });
+    bind_split.def("stretchFactor", [this](JZObjectPointer* s, int i) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "stretchFactor");
+        return split ? split->stretchFactor(i) : 0;
+    });
+    bind_split.def("setHandleWidth", [this](JZObjectPointer* s, int w) {
+        if (JZSplitter* split = widgetFromThis<JZSplitter>(s, "setHandleWidth"))
+            split->setHandleWidth(w);
+    });
+    bind_split.def("handleWidth", [this](JZObjectPointer* s) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "handleWidth");
+        return split ? split->handleWidth() : 0;
+    });
+    bind_split.def("setCollapsible", [this](JZObjectPointer* s, int i, bool c) {
+        if (JZSplitter* split = widgetFromThis<JZSplitter>(s, "setCollapsible"))
+            split->setCollapsible(i, c);
+    });
+    bind_split.def("isCollapsible", [this](JZObjectPointer* s, int i) {
+        JZSplitter* split = widgetFromThis<JZSplitter>(s, "isCollapsible");
+        return split && split->isCollapsible(i);
+    });
     defSignalProperty(bind_split, "onSplitterMoved", &JZSplitter::sigSplitterMoved);
     bind_split.setCreate(js_JZSplitter_ctor);
     mountTransparentClass(bind_split.classDefine());
 
-    // ---- JZScrollArea: 视图容器(setWidget(content) 是唯一挂载入口) ----
+    // ---- JZScrollArea: 视图容器(setWidget(content) 是唯一挂载入口; 对象形参 = JZObjectPointer*) ----
     jsbind::ClassBind<JZScrollArea> bind_area("JZScrollArea", bind_w);
-    bind_area.def("setWidget", [](JZScrollArea* a, JZWidget* content) {
-        if (!content)
-            throw std::runtime_error("JZScrollArea.setWidget: 需要控件");
-        a->setWidget(content);
+    bind_area.def("setWidget", [this](JZObjectPointer* a, JZObjectPointer* content) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setWidget");
+        JZWidget* c = widgetFromThis<JZWidget>(content, "setWidget");   // 传 null 已由形参层报错
+        if (area && c)
+            area->setWidget(c);
     });
     // 内容控件(setWidget 进来的 = JS 造的, 答得出) / 内部视口(C++ 造的, 从没被 JS 拿到过 ->
     // 返回 null; 要 JS 侧的对象得走 JS 便利层的登记表 —— 但那本来也没有对应 JS 对象)
-    bind_area.def("widget", [this](JZScrollArea* a) -> JSValue {
-        return widgetJsView(a->widget());
+    bind_area.def("widget", [this](JZObjectPointer* a) -> JSValue {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "widget");
+        return area ? widgetJsView(area->widget()) : JS_EXCEPTION;
     });
-    bind_area.def("viewport", [this](JZScrollArea* a) -> JSValue {
-        return widgetJsView(a->viewport());
+    bind_area.def("viewport", [this](JZObjectPointer* a) -> JSValue {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "viewport");
+        return area ? widgetJsView(area->viewport()) : JS_EXCEPTION;
     });
-    bind_area.def("setScrollDirection", [](JZScrollArea* a, int d) { a->setScrollDirection(d); });
-    bind_area.def("setScrollBarPolicy", [](JZScrollArea* a, int p) { a->setScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p); });
-    bind_area.def("setVerticalScrollBarPolicy", [](JZScrollArea* a, int p) {
-        a->setVerticalScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p);
+    bind_area.def("setScrollDirection", [this](JZObjectPointer* a, int d) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setScrollDirection"))
+            area->setScrollDirection(d);
     });
-    bind_area.def("setHorizontalScrollBarPolicy", [](JZScrollArea* a, int p) {
-        a->setHorizontalScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p);
+    bind_area.def("setScrollBarPolicy", [this](JZObjectPointer* a, int p) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setScrollBarPolicy"))
+            area->setScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p);
     });
-    bind_area.def("setContentSize", [](JZScrollArea* a, int w, int h) { a->setContentSize(w, h); });
-    bind_area.def("contentWidth", [](JZScrollArea* a) { return a->contentWidth(); });
-    bind_area.def("contentHeight", [](JZScrollArea* a) { return a->contentHeight(); });
-    bind_area.def("viewportWidth", [](JZScrollArea* a) { return a->viewportWidth(); });
-    bind_area.def("viewportHeight", [](JZScrollArea* a) { return a->viewportHeight(); });
-    bind_area.def("scrollX", [](JZScrollArea* a) { return a->scrollX(); });
-    bind_area.def("scrollY", [](JZScrollArea* a) { return a->scrollY(); });
-    bind_area.def("maxScrollX", [](JZScrollArea* a) { return a->maxScrollX(); });
-    bind_area.def("maxScrollY", [](JZScrollArea* a) { return a->maxScrollY(); });
-    bind_area.def("scrollTo", [](JZScrollArea* a, int x, int y) { a->scrollTo(x, y); });
-    bind_area.def("scrollToX", [](JZScrollArea* a, int x) { a->scrollToX(x); });
-    bind_area.def("scrollToY", [](JZScrollArea* a, int y) { a->scrollToY(y); });
-    bind_area.def("scrollToTop", [](JZScrollArea* a) { a->scrollToTop(); });
-    bind_area.def("scrollToBottom", [](JZScrollArea* a) { a->scrollToBottom(); });
-    bind_area.def("canScrollVertically", [](JZScrollArea* a) { return a->canScrollVertically(); });
-    bind_area.def("canScrollHorizontally", [](JZScrollArea* a) { return a->canScrollHorizontally(); });
+    bind_area.def("setVerticalScrollBarPolicy", [this](JZObjectPointer* a, int p) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setVerticalScrollBarPolicy"))
+            area->setVerticalScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p);
+    });
+    bind_area.def("setHorizontalScrollBarPolicy", [this](JZObjectPointer* a, int p) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setHorizontalScrollBarPolicy"))
+            area->setHorizontalScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p);
+    });
+    bind_area.def("setContentSize", [this](JZObjectPointer* a, int w, int h) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "setContentSize"))
+            area->setContentSize(w, h);
+    });
+    bind_area.def("contentWidth", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "contentWidth");
+        return area ? area->contentWidth() : 0;
+    });
+    bind_area.def("contentHeight", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "contentHeight");
+        return area ? area->contentHeight() : 0;
+    });
+    bind_area.def("viewportWidth", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "viewportWidth");
+        return area ? area->viewportWidth() : 0;
+    });
+    bind_area.def("viewportHeight", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "viewportHeight");
+        return area ? area->viewportHeight() : 0;
+    });
+    bind_area.def("scrollX", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollX");
+        return area ? area->scrollX() : 0;
+    });
+    bind_area.def("scrollY", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollY");
+        return area ? area->scrollY() : 0;
+    });
+    bind_area.def("maxScrollX", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "maxScrollX");
+        return area ? area->maxScrollX() : 0;
+    });
+    bind_area.def("maxScrollY", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "maxScrollY");
+        return area ? area->maxScrollY() : 0;
+    });
+    bind_area.def("scrollTo", [this](JZObjectPointer* a, int x, int y) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollTo"))
+            area->scrollTo(x, y);
+    });
+    bind_area.def("scrollToX", [this](JZObjectPointer* a, int x) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollToX"))
+            area->scrollToX(x);
+    });
+    bind_area.def("scrollToY", [this](JZObjectPointer* a, int y) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollToY"))
+            area->scrollToY(y);
+    });
+    bind_area.def("scrollToTop", [this](JZObjectPointer* a) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollToTop"))
+            area->scrollToTop();
+    });
+    bind_area.def("scrollToBottom", [this](JZObjectPointer* a) {
+        if (JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "scrollToBottom"))
+            area->scrollToBottom();
+    });
+    bind_area.def("canScrollVertically", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "canScrollVertically");
+        return area && area->canScrollVertically();
+    });
+    bind_area.def("canScrollHorizontally", [this](JZObjectPointer* a) {
+        JZScrollArea* area = widgetFromThis<JZScrollArea>(a, "canScrollHorizontally");
+        return area && area->canScrollHorizontally();
+    });
     bind_area.setCreate(js_JZScrollArea_ctor);
     mountTransparentClass(bind_area.classDefine());
 
     // ---- JZScrollBar: 一般由 JZScrollArea 内部持有, 也允许单独用 ----
     // 注: 构造实参 (orientation, parent); 取方向用整数(枚举值) —— 与 JZSplitter.orientation 一致。
     jsbind::ClassBind<JZScrollBar> bind_sbar("JZScrollBar", bind_w);
-    bind_sbar.def("setOrientation", [](JZScrollBar* b, int o) { b->setOrientation((JZScrollBar::Orientation)o); });
-    bind_sbar.def("orientation", [](JZScrollBar* b) { return (int)b->orientation(); });
-    bind_sbar.def("setRange", [](JZScrollBar* b, int lo, int hi) { b->setRange(lo, hi); });
-    bind_sbar.def("setMinimum", [](JZScrollBar* b, int v) { b->setMinimum(v); });
-    bind_sbar.def("minimum", [](JZScrollBar* b) { return b->minimum(); });
-    bind_sbar.def("setMaximum", [](JZScrollBar* b, int v) { b->setMaximum(v); });
-    bind_sbar.def("maximum", [](JZScrollBar* b) { return b->maximum(); });
-    bind_sbar.def("setValue", [](JZScrollBar* b, int v) { b->setValue(v); });
-    bind_sbar.def("value", [](JZScrollBar* b) { return b->value(); });
-    bind_sbar.def("setSingleStep", [](JZScrollBar* b, int v) { b->setSingleStep(v); });
-    bind_sbar.def("singleStep", [](JZScrollBar* b) { return b->singleStep(); });
-    bind_sbar.def("setPageStep", [](JZScrollBar* b, int v) { b->setPageStep(v); });
-    bind_sbar.def("pageStep", [](JZScrollBar* b) { return b->pageStep(); });
+    bind_sbar.def("setOrientation", [this](JZObjectPointer* b, int o) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setOrientation"))
+            bar->setOrientation((JZScrollBar::Orientation)o);
+    });
+    bind_sbar.def("orientation", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "orientation");
+        return bar ? (int)bar->orientation() : 0;
+    });
+    bind_sbar.def("setRange", [this](JZObjectPointer* b, int lo, int hi) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setRange"))
+            bar->setRange(lo, hi);
+    });
+    bind_sbar.def("setMinimum", [this](JZObjectPointer* b, int v) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setMinimum"))
+            bar->setMinimum(v);
+    });
+    bind_sbar.def("minimum", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "minimum");
+        return bar ? bar->minimum() : 0;
+    });
+    bind_sbar.def("setMaximum", [this](JZObjectPointer* b, int v) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setMaximum"))
+            bar->setMaximum(v);
+    });
+    bind_sbar.def("maximum", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "maximum");
+        return bar ? bar->maximum() : 0;
+    });
+    bind_sbar.def("setValue", [this](JZObjectPointer* b, int v) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setValue"))
+            bar->setValue(v);
+    });
+    bind_sbar.def("value", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "value");
+        return bar ? bar->value() : 0;
+    });
+    bind_sbar.def("setSingleStep", [this](JZObjectPointer* b, int v) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setSingleStep"))
+            bar->setSingleStep(v);
+    });
+    bind_sbar.def("singleStep", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "singleStep");
+        return bar ? bar->singleStep() : 0;
+    });
+    bind_sbar.def("setPageStep", [this](JZObjectPointer* b, int v) {
+        if (JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "setPageStep"))
+            bar->setPageStep(v);
+    });
+    bind_sbar.def("pageStep", [this](JZObjectPointer* b) {
+        JZScrollBar* bar = widgetFromThis<JZScrollBar>(b, "pageStep");
+        return bar ? bar->pageStep() : 0;
+    });
     defSignalProperty(bind_sbar, "onValueChanged", &JZScrollBar::sigValueChanged);
     bind_sbar.setCreate(js_JZScrollBar_ctor);
     mountTransparentClass(bind_sbar.classDefine());
 
     // ---- JZImageLabel: 单图显示(图像按值进, 读回的是拷贝) ----
     jsbind::ClassBind<JZImageLabel> bind_imglab("JZImageLabel", bind_w);
-    bind_imglab.def("setImage", [](JZImageLabel* l, const JZImage& img) { l->setImage(img); });
-    bind_imglab.def("setScale", [](JZImageLabel* l, int zoom) {
+    bind_imglab.def("setImage", [this](JZObjectPointer* l, const JZImage& img) {
+        if (JZImageLabel* lab = widgetFromThis<JZImageLabel>(l, "setImage"))
+            lab->setImage(img);
+    });
+    bind_imglab.def("setScale", [this](JZObjectPointer* l, int zoom) {
+        JZImageLabel* lab = widgetFromThis<JZImageLabel>(l, "setScale");
+        if (!lab)
+            return;
         if (zoom < 0 || zoom > 0xFFFF)
             throw std::runtime_error("JZImageLabel.setScale: 缩放倍数需要在 0~65535 之间");
-        l->setScale((uint16_t)zoom);
+        lab->setScale((uint16_t)zoom);
     });
-    bind_imglab.def("setRotation", [](JZImageLabel* l, int angle) { l->setRotation(angle); });
-    bind_imglab.def("setPivot", [](JZImageLabel* l, int x, int y) { l->setPivot(x, y); });
+    bind_imglab.def("setRotation", [this](JZObjectPointer* l, int angle) {
+        if (JZImageLabel* lab = widgetFromThis<JZImageLabel>(l, "setRotation"))
+            lab->setRotation(angle);
+    });
+    bind_imglab.def("setPivot", [this](JZObjectPointer* l, int x, int y) {
+        if (JZImageLabel* lab = widgetFromThis<JZImageLabel>(l, "setPivot"))
+            lab->setPivot(x, y);
+    });
     bind_imglab.setCreate(js_JZImageLabel_ctor);
     mountTransparentClass(bind_imglab.classDefine());
 
@@ -3153,7 +3446,15 @@ static void defBoxLayoutMethods(jsbind::ClassBind<Layout>& bind, JZJSWidgetModul
         l->insertWidget(i, child, stretch);
     });
     bind.def("removeAt", [](Layout* l, int i) { l->removeAt(i); });
-    bind.def("removeWidget", [](Layout* l, JZWidget* w) { l->removeWidget(w); });
+    // 注: 这处在自由函数里(没有 this), 所以不用 widgetFromThis —— 自己做 dynamic_cast;
+    // 形参层(引擎)已经保证"是个活着的对象指针", 这里只管"是不是控件"(不符抛异常 -> JS 抛出错)
+    bind.def("removeWidget", [](Layout* l, JZObjectPointer* w) {
+        JZObject* object = w ? w->object() : nullptr;
+        JZWidget* child = object ? dynamic_cast<JZWidget*>(object) : nullptr;
+        if (!child)
+            throw std::runtime_error("JZLayout.removeWidget: 需要控件");
+        l->removeWidget(child);
+    });
     bind.def("clear", [](Layout* l) { l->clear(); });
     bind.def("count", [](Layout* l) { return l->count(); });
 }
@@ -3205,7 +3506,10 @@ void JZJSWidgetModule::registLayouts()
     bind_grid.def("rowCount", [](JZGridLayout* l) { return l->rowCount(); });
     bind_grid.def("columnCount", [](JZGridLayout* l) { return l->columnCount(); });
     bind_grid.def("count", [](JZGridLayout* l) { return l->count(); });
-    bind_grid.def("removeWidget", [](JZGridLayout* l, JZWidget* w) { l->removeWidget(w); });
+    bind_grid.def("removeWidget", [this](JZGridLayout* l, JZObjectPointer* w) {
+        if (JZWidget* child = widgetFromThis<JZWidget>(w, "removeWidget"))
+            l->removeWidget(child);
+    });
     bind_grid.def("clear", [](JZGridLayout* l) { l->clear(); });
     bind_grid.setCreate(js_JZGridLayout_ctor);
     m_engine->registClass(bind_grid.classDefine());

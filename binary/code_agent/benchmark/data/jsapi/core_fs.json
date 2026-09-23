@@ -1,12 +1,10 @@
 {
   "name": "jsapi_core_fs",
-  "purpose": "core 包 fs/path 的 Node 风格封装是否好学：同步读写+编码参数、mkdir recursive、append 语义、path 纯函数、process/os 形态。断言值依赖运行时注入的输入（不可硬编码）。",
-  "prompt": "用 TypeScript 完成（框架的 fs/path/process/os 是内置模块，用 `import fs from 'fs'` 这种默认导入；先 fetch 读评测输入，返回的文本记作 T）：\n1) 在工程目录下建 data/ 子目录（不存在时递归创建）；\n2) 写入文件 data/a.txt，内容为 T 接上 '-A'（不要加换行）；\n3) 再往同一文件追加 '-B'；\n4) 用 fs 读回全文（utf8）记作 C；\n5) 打印一行：\nFS=<C 的 md5 小写十六进制>@<C.length>@<path.basename('x/y/z.ts')>@<path.extname('x/y/z.ts')>@<path.dirname('x/y/z.ts')>@<path.join('a','b','..','c')>\n（各段用 '@' 连接，不要空格；md5 用 crypto 的 createHash('md5')。）",
+  "purpose": "core 包 fs/path 的 Node 风格封装是否好学：同步读写+编码、mkdir recursive、append 语义、path 纯函数。用“真实文件副作用”评测（setup 制备固件，verify 检查目录与文件内容），不再用 md5。",
+  "prompt": "用 TypeScript 完成（框架的 fs/path 是内置模块，默认导入：`import fs from 'fs'`；path 也默认导入：`import path from 'path'`）。\n你的程序运行时的 cwd 是工程构建目录 build/，里面已经有一个 sandbox/ 目录，其下有 hello.txt，内容为 jzframework（这是 setup 脚本制备的固件，记为 T）。请：\n1) 读取 ./sandbox/hello.txt 全文（utf8）得到 T；\n2) 在 ./sandbox/ 下递归创建 a/b/c/ 目录（用 fs.mkdirSync 的 recursive 选项）；\n3) 把 T 反转后的字符串写入 ./sandbox/a/b/c/rev.txt（不要加换行）；\n4) 在该文件末尾追加 'OK'（也不要加换行，注意不要覆盖已有内容）；\n5) 打印一行：FS_DONE=<a/b/c 目录是否建好>@<rev.txt 是否存在>（用 '@' 连接，不要空格）。\n提示：用 path.join 组合路径；反转用 [...].reverse().join('') 之类；追加用 fs.appendFileSync。",
   "maxAttempts": 3,
   "timeout": 30,
-  "input": "jzcore-fs",
-  "expect": {
-    "contains": "9b50a6b5d68080b851cbb689cae82aec@13@z.ts@.ts@x/y@a/c"
-  },
-  "retryHint": "上一次运行的结果不对。要求：读 /input 得到 T → 写 data/a.txt = T+'-A' → 追加 '-B' → 读回记作 C → 打印 FS=<md5(C)>@<C.length>@basename@extname@dirname@join('a','b','..','c')（用 '@' 连接、不要空格；目录要递归创建；追加不要覆盖）。"
+  "setup": "fs_setup.py",
+  "verify": "python ${data}/jsapi/fs_verify.py --runtime ${runtime} --build ${build} --root ${root}",
+  "retryHint": "上一次运行未通过文件检查。要求：读 ./sandbox/hello.txt（cwd 是 build 目录，sandbox 在里面）得到 T='jzframework' → fs.mkdirSync(path.join('sandbox','a','b','c'), {recursive:true}) 递归建目录 → 写 rev.txt 内容为 T 反转('krowemarfzj') 不要换行 → fs.appendFileSync 追加 'OK'（不要覆盖、不要换行）→ 期望文件内容恰好是 'krowemarfzjOK'。目录与文件都在 build/sandbox/a/b/c/ 下。"
 }

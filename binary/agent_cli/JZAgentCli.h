@@ -19,6 +19,36 @@ class JZHttpServer;
 class JZHttpServerClient;
 class JZHttpRequest;
 class JZProcess;
+class JZFrpClient;
+
+// ---------------------------------------------------------------------------
+// FRP 内网穿透配置(client 角色 = frpc)
+//   ⚠ JZAgentCli 只承担"客户端"角色(frpc): 连到远端 frps, 把本机服务(如本机 HTTP
+//     任务接口)经代理暴露到远端 frps 的 remotePort 上。
+//   "服务端"角色(frps)由单独的 JZAgentCliServer(见 server/ 目录)承担。
+//   默认关; 需要时在 config.json 的 frp.client.* 打开。
+// ---------------------------------------------------------------------------
+struct JZCliFrpProxy
+{
+    std::string name;        // 代理名(远端 frps 侧标识)
+    std::string localIp;     // 本地服务地址(默认 127.0.0.1)
+    int localPort = 0;       // 本地服务端口
+    int remotePort = 0;      // 在 frps 上注册的对外端口
+};
+
+struct JZCliFrpClientConfig   // frpc: 本端连到远端 frps, 暴露本地服务
+{
+    bool enabled = false;
+    std::string serverAddr;   // 远端 frps 地址
+    int serverPort = 7000;    // 远端 frps 端口
+    std::string token;
+    std::vector<JZCliFrpProxy> proxies;
+};
+
+struct JZCliFrpConfig
+{
+    JZCliFrpClientConfig client;   // 客户端(frpc); 服务端(frps)在 JZAgentCliServer
+};
 
 // ---------------------------------------------------------------------------
 // agent_cli 配置
@@ -119,6 +149,11 @@ struct JZCliConfig
     int httpPort = 8080;
     std::string httpToken;             // 非空则要求 ?token= 或 Authorization: Bearer(防裸奔)
     std::string httpDir;               // 网页静态目录; 空=exe 同目录/http
+
+    // ---- FRP 内网穿透(frps 服务端 + frpc 客户端; "server" 角色即 frps) ----
+    //   默认都关; 需要时打开 frp.server.enabled(本端当 frps 中转) 或 frp.client.enabled
+    //   (本端当 frpc 把本地服务暴露到远端 frps)。详见 JZCliFrpConfig。
+    JZCliFrpConfig frp;
 };
 
 // ---------------------------------------------------------------------------
@@ -191,6 +226,11 @@ public:
 
     // 起 HTTP 服务: 暴露 POST /task 提交任务 + 验证脚本门控循环。
     void startHttp();
+
+    // 起 FRP 穿透(client 角色 = frpc): 按配置连到远端 frps, 把本地服务经代理暴露出去。
+    // 必须在事件循环起来前(建 HTTP 之后)调用; 内部创建 JZFrpClient 并异步连接。
+    // ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担, 本类只做客户端。
+    void startFrpc();
 
     // /task 请求入口(由内部 TaskHandler 调用)
     void onTaskSubmit(JZHttpServerClient *client, const JZHttpRequest &req);
@@ -324,6 +364,10 @@ protected:
 
     // HTTP 传输
     JZHttpServer *m_http = nullptr;
+
+    // FRP 穿透(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
+    //   按配置创建 JZFrpClient, 连到远端 frps 暴露本地服务; 本对象的子对象。
+    JZFrpClient *m_frpClient = nullptr;
     JZHttpServerClient *m_pendingClient = nullptr;   // 当前在跑任务对应的 HTTP 连接(循环结束回包)
     bool m_loopActive = false;                       // 是否处于"提交→验证循环"模式
     int m_loopRound = 0;

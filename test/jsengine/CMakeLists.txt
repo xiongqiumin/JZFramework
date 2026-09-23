@@ -43,6 +43,9 @@ target_compile_definitions(test_jsmodbus PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAP
 
 add_executable(test_jsworker test_jsworker.cpp)
 target_link_libraries(test_jsworker JZFramework)
+# 同 test_jsnet: net 模块注册时要按裸名装载 Web 全局包(events/url/ws/http), 靠 libraryDir 定位;
+# worker 引擎继承同一份 libraryDir ⇒ worker 里也有这些全局。
+target_compile_definitions(test_jsworker PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
 # ---- ctest 注册 ----
 add_test(NAME jsengine.test_jsengine COMMAND test_jsengine)

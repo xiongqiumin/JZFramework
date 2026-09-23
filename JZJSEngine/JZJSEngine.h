@@ -286,6 +286,10 @@ public:
     // - import 依赖由内置模块 loader 自动解析(扩展名可省略，自动补 .js / index.js)；
     // - 出错时与 eval() 一致：记录到 runtimeError(通过 sigError/sigLog 上报)。
     bool runModuleFile(const std::string& filepath);
+    // 同上, 但**失败不升级成引擎错误**(不置 Engine_error / 不发 sigError): 错误文本回填 error。
+    // 给"可选预加载"用(如 net 模块装载 Web 全局包): 包没部署/没编译时只该记一条日志,
+    // 不该把整个引擎打成错误态(宿主会当成 JS 崩了弹窗/中断)。
+    bool tryRunModuleFile(const std::string& filepath, std::string* error);
     void execOnce();    
 
     // 引擎是否还有待执行的异步工作(接下来再调 execOnce/跑事件循环会有事做)：
@@ -564,6 +568,9 @@ protected:
     // resolved 非空时回填**实际命中的绝对路径**(供 appFile 记录第一个加载的脚本)
     bool readModuleCode(const std::string& module_name, std::string& code,
                         std::string* resolved = nullptr);
+
+    // runModuleFile / tryRunModuleFile 的共同实现(见 .cpp 注释)
+    bool runModuleFileImpl(const std::string& filepath, std::string* error);
 
     // ---- Node 风格 "内置模块" ----
     // 剥掉 'node:' 前缀后在内置模块表里查 name(支持 'http' 与 'node:http')。

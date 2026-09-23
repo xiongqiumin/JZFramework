@@ -1,9 +1,10 @@
 {
   "name": "jsapi_core_crypto",
   "purpose": "core 包 crypto 子集的边界是否可发现：只实现 md5（sha256 必须抛错）、randomUUID 的 v4 形态、randomInt 取值区间。模型能不能从类型/报错里看出能力边界。",
-  "prompt": "用 TypeScript 完成（框架的 crypto 是内置模块，用默认导入 `import crypto from 'crypto'`；先 fetch 读评测输入，返回文本记作 T）：\n1) 算 H = T 的 md5（小写十六进制）；\n2) 生成一个 UUID，判断它是否符合 UUID v4 格式（第 3 组首字符为 '4'，第 4 组首字符为 8/9/a/b），符合记 U=1，否则 U=0；\n3) 试着用 crypto.createHash('sha256') 建一个散列对象：抛异常记 S=1，没抛记 S=0；\n4) 打印一行：CRYPTO=<H>@<U>@<S>（用 '@' 连接，不要空格）。",
+  "prompt": "用 TypeScript 完成（框架的 crypto 是内置模块，用默认导入 `import crypto from 'crypto'`；读 ./_input.txt（pre 脚本已写入输入文本，记为 T））：\n1) 算 H = T 的 md5（小写十六进制）；\n2) 生成一个 UUID，判断它是否符合 UUID v4 格式（第 3 组首字符为 '4'，第 4 组首字符为 8/9/a/b），符合记 U=1，否则 U=0；\n3) 试着用 crypto.createHash('sha256') 建一个散列对象：抛异常记 S=1，没抛记 S=0；\n4) 打印一行：CRYPTO=<H>@<U>@<S>（用 '@' 连接，不要空格）。",
   "maxAttempts": 3,
   "timeout": 30,
+  "setup": "write_input.py",
   "input": "jzcore-crypto",
   "expect": {
     "contains": "c4af206f24e261a146c7a617fa85099e@1@1"

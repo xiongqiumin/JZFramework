@@ -1,0 +1,10 @@
+# 一行一个算法用例：格式 id|标题|难度（仅写 id 也行，标题/难度回退到 setup.py 的 PROBLEMS 默认）
+# 运行：在本目录 `python setup.py`，会生成 gen_<id>.json 供 benchmark 加载。
+bubble_sort|冒泡排序|easy
+reverse_array|数组反转|easy
+binary_search|二分查找|medium
+two_sum|两数之和|easy
+fib|斐波那契|easy
+is_palindrome|回文判断|easy
+max_subarray|最大子数组和(Kadane)|medium
+gcd|最大公约数|easy

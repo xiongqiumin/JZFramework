@@ -1,12 +1,13 @@
 {
   "name": "jsapi_net_udp",
-  "purpose": "net 包 dgram 封装是否好学：createSocket('udp4')/bind/on('message',(msg,rinfo))/send(msg,port,address)；msg 是 Uint8Array（dgram 的 setEncoding 没进类型声明，得用 toHex()/手工解码）；rinfo.address 可用。",
-  "prompt": "用 TypeScript 完成（dgram 是内置模块，用默认导入 `import dgram from 'dgram'`）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 建一个 udp4 socket 并 bind 到 PORT，收到消息时打印一行：\nUDP=<消息字节的十六进制小写>@<发送方地址>\n（hex 用 Uint8Array 的 toHex()；发送方地址取 message 事件第二个参数 rinfo.address；各段用 '@' 连接，不要空格）；\n3) 另建一个 udp4 socket，向 127.0.0.1:PORT 发送文本 T。\n提示：绑定的套接字不会让引擎保持运行，注意保活/收尾。",
+  "purpose": "net 包 dgram 封装是否好学：createSocket('udp4')/bind/on('message',(msg,rinfo))/send(msg,port,address)；msg 是 Uint8Array（dgram 的 setEncoding 没进类型声明，得用 toHex()/手工解码）；rinfo.address 可用。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
+  "prompt": "用 TypeScript 完成（dgram 是内置模块，用默认导入 `import dgram from 'dgram'`）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 建一个 udp4 socket 并 bind 到 port，收到消息时（在 'message' 事件里）记下消息与发送方地址；\n2) 另建一个 udp4 socket，向 127.0.0.1:port 发送文本 text；\n3) 待收到回包后，返回一行：\nUDP=<消息字节的十六进制小写>@<发送方地址>\n（hex 用 Uint8Array 的 toHex()；发送方地址取 message 事件第二个参数 rinfo.address；各段用 '@' 连接，不要空格）。\n提示：绑定的套接字不会让引擎保持运行；务必在返回的 Promise 里 await 收到消息之后再 resolve，不要只 bind 就立即返回。",
   "maxAttempts": 3,
   "timeout": 30,
+  "setup": "net_setup.py",
   "input": "jznet-udp 3913",
   "expect": {
     "contains": "6a7a6e65742d756470@127.0.0.1"
   },
-  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；一个 udp4 socket bind 到该端口并在 'message' 事件里打印 UDP=<消息 toHex()>@<rinfo.address>；另一个 socket 用 send(文本, 端口, '127.0.0.1') 发出。"
+  "retryHint": "上一次运行的结果不对。要求：在 src/solution.ts 实现 solve(text, port)（不要改 main.ts、不要自行读 _input.txt 或 console.log）；一个 udp4 socket bind 到 port 并在 'message' 事件里记录消息 toHex() 与 rinfo.address；另一个 socket 用 send(text, port, '127.0.0.1') 发出；收到后返回 UDP=<消息 toHex()>@<rinfo.address>。务必 await 收到消息再 resolve。"
 }

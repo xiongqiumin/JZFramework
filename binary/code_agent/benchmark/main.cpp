@@ -73,6 +73,7 @@ __declspec(dllimport) int  __stdcall SetConsoleMode(void *hConsoleHandle, unsign
 
 namespace
 {
+static std::string detectPythonInterpreter();
 
 const unsigned long kStdOutputHandle = (unsigned long)-11;
 const unsigned long kStdErrorHandle  = (unsigned long)-12;
@@ -115,6 +116,15 @@ const char *CLR_GREEN  = "\033[32m";   // 成功
 const char *CLR_RED    = "\033[31m";   // 失败
 const char *CLR_YELLOW = "\033[33m";   // 用例标题
 
+// 毫秒 -> 秒文本, 保留 1 位小数。
+// ⚠ 必须返回字符串: jzDebug 打 double 走 %f(6 位小数), 直接给 double 会打成 51.738000s。
+static std::string sec1(int64_t ms)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.1f", ms / 1000.0);
+    return std::string(buf);
+}
+
 // ---- 用例定义 ----
 struct BenchmarkCase
 {
@@ -141,6 +151,11 @@ struct BenchmarkCase
     // 注：验证程序自行负责启动模型生成的 server 并测试（如 python verify.py --runtime ${runtime} --build ${build} --port ${port}）。
     std::string verifyCmd;
     int verifyPort = 3900;
+
+    // setup 准备脚本: 相对『用例 json 所在目录』的 .py 路径; initProject 之后、agent 开始前
+    // 由宿主同步执行, 传入 --root <工程根> --input <输入> --data <评测集目录>; 非零退出判 setup 失败。
+    std::string setup;
+    std::string sourceDir;     // 用例 json 所在目录(setup 相对路径在此解析)
 };
 
 // 全局输入 HTTP 服务用的 handler：模型生成的 JS 通过 fetch('http://127.0.0.1:<port>/input')
@@ -247,6 +262,7 @@ struct CaseResult
     std::vector<ToolCallRecord> toolTrace;      // 本用例工具调用轨迹（按时间序，仅做循环/重复分析，不打印）
     int buildMs = 0;            // 本用例宿主编译耗时
     int runMs = 0;              // 本用例 code_runtime 运行耗时
+    int contextTokens = 0;      // 最后一轮的上下文占用(JZAgent::windowTokens())：与 totalTokens 不同口径
     std::string lastOutput;
     std::string lastBuildError;
     std::string lastAgentError;
@@ -375,6 +391,20 @@ protected:
         }
         m_root = root;
 
+        // setup 脚本: initProject 之后、agent 开始前同步执行的 python 准备脚本(如把输入写成文件);
+        // 非零退出视为该用例 setup 失败(与 initProject 失败同样处理)。
+        if (!m_case.setup.empty())
+        {
+            std::string perr;
+            if (!runSetupScript(m_case, m_root, m_dataDir, perr))
+            {
+                jzError().nospace() << "[用例 " << m_case.name << "] setup 脚本失败: " << perr;
+                m_result.lastAgentError = "setup: " + perr;
+                finishCase();
+                return;
+            }
+        }
+
         if (i == 0)
         {
             jzDebug().noquote().nospace() << "系统提示词:\n" << m_agent->agent()->dumpSystemPrompt() << "\n";
@@ -384,7 +414,8 @@ protected:
         // setWorkspace 内部会 buildAgent 重建 agent，把 startHttpServer 追加的"读取输入"约定冲掉，
         // 因此重建之后再注入一次，确保模型知道从 http://127.0.0.1:<port>/input 读取输入。
         auto jz_agent = m_agent->agent();
-        if (!m_httpPromptExtra.empty())
+        // setup 脚本已把输入写成文件的用例, 不再注入 fetch 提示(避免与"读本地文件"冲突)
+        if (!m_httpPromptExtra.empty() && m_case.setup.empty())
         {
             jz_agent->setSystemPrompt(jz_agent->systemPrompt() + m_httpPromptExtra);
         }
@@ -628,6 +659,79 @@ protected:
         return s;
     }
 
+    // 把 detectPythonInterpreter 返回的解释器串拆成 (程序, 前置参数) 并去掉外层引号,
+    // 以便直接用 JZProcess 拉起(不再经 cmd.exe /c, 避免 Windows 多层引号把路径拆坏)。
+    static void splitInterpreter(const std::string &interp, std::string &program,
+                                 std::vector<std::string> &preArgs)
+    {
+        std::string s = interp;
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+            s = s.substr(1, s.size() - 2);
+        size_t i = 0, n = s.size();
+        while (i < n)
+        {
+            while (i < n && (s[i] == ' ' || s[i] == '\t')) i++;
+            if (i >= n) break;
+            size_t j = i;
+            while (j < n && s[j] != ' ' && s[j] != '\t') j++;
+            std::string tok = s.substr(i, j - i);
+            if (program.empty())
+                program = tok;
+            else
+                preArgs.push_back(tok);
+            i = j;
+        }
+    }
+
+    // setup 脚本: initProject 之后、agent 开始前由宿主同步执行。解释器用 detectPythonInterpreter
+    // (python3/python/py); 直接拉起解释器 + 脚本 + 参数(JZProcess, 不经 cmd.exe /c, 避免 Windows
+    // 多层引号把路径拆坏), 传入:
+    //   --root <工程根>  --input <输入>  --data <评测集目录>
+    // 脚本非零退出视为该用例 setup 失败。
+    bool runSetupScript(const BenchmarkCase &c, const std::string &root,
+                        const std::string &dataDir, std::string &err)
+    {
+        std::string setupPath = c.setup;
+        if (!JZDir::isAbsolutePath(setupPath))
+            setupPath = c.sourceDir + "/" + setupPath;
+        if (!JZFileInfo::exists(setupPath))
+        {
+            err = "setup 脚本不存在: " + setupPath;
+            return false;
+        }
+        // 直接拉起解释器 + 脚本 + 参数(不再经 cmd.exe /c), 避免 Windows 多层引号转义把路径拆坏。
+        // 同样的坑见 JZAgentCli::runVerifyAsync 注释。
+        std::string py = detectPythonInterpreter();
+        std::string program;
+        std::vector<std::string> args;
+        splitInterpreter(py, program, args);
+        args.push_back(setupPath);
+        args.push_back("--root");   args.push_back(root);
+        args.push_back("--input");  args.push_back(c.input);
+        args.push_back("--data");   args.push_back(dataDir);
+        JZProcess proc;
+        proc.setProcessChannelMode(JZProcess::MergedChannels);
+        if (!proc.start(program, args))
+        {
+            err = "无法启动 setup 脚本: " + py + " " + setupPath;
+            return false;
+        }
+        if (!proc.waitForFinished(60000))
+        {
+            proc.killProcess();
+            err = "setup 脚本超时(60s)";
+            return false;
+        }
+        int rc = proc.exitCode();
+        if (rc != 0)
+        {
+            err = "setup 脚本退出码 " + std::to_string(rc) + ": "
+                  + str_fromLocal(proc.readAllStandardOutput());
+            return false;
+        }
+        return true;
+    }
+
     // 运行外部验证程序（Windows 下经 cmd /c 启动，命令可含空格与重定向）。
     // 返回 true 表示成功启动并收尾；exitCode/errOut 带出验证程序退出码与合并输出。
     bool runVerify(const std::string &cmd, int &exitCode, std::string &errOut)
@@ -686,6 +790,14 @@ protected:
         m_result.predMs = u.predicted_ms;
         m_result.draftN = u.draft_tokens;
         m_result.draftAccepted = u.draft_accepted_tokens;
+        // 与"计费总量"不同口径: windowTokens() = 最后一轮实际会发出的上下文
+        // (锚点那条 usage.prompt_tokens, 含 system+工具+历史, 不含思考)。
+        m_result.contextTokens = m_agent->agent()->windowTokens();
+        if (m_result.contextTokens > m_maxContextTokens)
+        {
+            m_maxContextTokens = m_result.contextTokens;
+            m_maxContextName = m_result.name;
+        }
         m_totalPrompt     += u.prompt_tokens;
         m_totalCompletion += u.completion_tokens;
         m_totalTokens     += u.total_tokens;
@@ -705,10 +817,24 @@ protected:
             m_toolTotalFail[kv.first] += kv.second;
 
         const CaseResult &r = m_result;
-        jzDebug().nospace() << "---- 用例[" << r.name << "] 结束: "
+        jzDebug().nospace() << "---- 用例[" << r.name.c_str() << "] 结束: "
                             << clr(r.passed ? CLR_GREEN : CLR_RED) << (r.passed ? "PASS" : "FAIL") << clr(CLR_RESET)
-                            << " (attempts=" << r.attempts
-                            << ", token=" << r.totalTokens << ")";
+                            << " (attempts=" << r.attempts << ")";
+        // 两种口径分开打, 免得把"计费总量"当成"上下文大小":
+        //   计费 = Σ 每轮的整段 prompt + 生成(同一段 system/工具/历史会被计入轮数遍)
+        //   上下文 = 最后一轮实际会发出的量(windowTokens)
+        // 缓存命中写成 "命中/整段 (百分比)" —— 命中部分**也算进了 prompt**, 所以只说"省了 prefill"
+        const std::string cacheNote = (r.promptTokens > 0)
+            ? (std::to_string(r.cachedTokens) + "/" + std::to_string(r.promptTokens) + " (" +
+               std::to_string(r.cachedTokens * 100 / r.promptTokens) + "%)")
+            : std::string("0");
+        jzDebug().nospace() << "     计费 token=" << r.totalTokens
+                            << " = prompt " << r.promptTokens << " + completion " << r.completionTokens
+                            << "   " << clr(CLR_GRAY) << "[总成本口径: 每轮整段 prompt 相加; 其中缓存命中 "
+                            << cacheNote.c_str() << " 已含在 prompt 里]" << clr(CLR_RESET);
+        jzDebug().nospace() << "     上下文(最后一轮)=" << r.contextTokens
+                            << "   " << clr(CLR_GRAY) << "[windowTokens: 预算/压缩看这个, 与计费总量不同口径]"
+                            << clr(CLR_RESET);
         m_results.push_back(r);
 
         size_t next = m_idx + 1;
@@ -740,30 +866,33 @@ protected:
             std::string crashTag = r.crashed
                 ? (std::string(clr(CLR_RED)) + "[CRASH] " + clr(CLR_RESET))
                 : std::string();
+            const std::string cacheNote = (r.promptTokens > 0)
+                ? (std::to_string(r.cachedTokens) + "/" + std::to_string(r.promptTokens) + " (" +
+                   std::to_string(r.cachedTokens * 100 / r.promptTokens) + "%)")
+                : std::string("0");
+            const std::string speed = (r.predMs > 0)
+                ? ("，生成 " + std::to_string((int)(r.completionTokens * 1000.0 / r.predMs)) + " tok/s")
+                : std::string();
+            const std::string mtp = (r.draftN > 0)
+                ? ("，MTP " + std::to_string(r.draftAccepted) + "/" + std::to_string(r.draftN))
+                : std::string();
             jzDebug().nospace() << clr(r.passed ? CLR_GREEN : CLR_RED)
                                 << (r.passed ? "[PASS] " : "[FAIL] ") << clr(CLR_RESET)
-                                << crashTag
-                                << r.name << "  (attempts=" << r.attempts
-                                << ", token=" << r.totalTokens
-                                << ", pt=" << r.promptTokens
-                                << ", ct=" << r.completionTokens
-                                << ", cached=" << r.cachedTokens
-                                << (r.promptTokens > 0
-                                    ? (" (" + std::to_string(r.cachedTokens * 100 / r.promptTokens) + "%)")
-                                    : std::string())
+                                << crashTag.c_str()
+                                << r.name.c_str() << "  (attempts=" << r.attempts
+                                << ", 计费=" << r.totalTokens
+                                << " [prompt " << r.promptTokens
+                                << " 其中缓存命中 " << cacheNote.c_str()
+                                << " + completion " << r.completionTokens
+                                << "], 上下文=" << r.contextTokens
                                 << ", tool=" << r.toolCalls
                                 << ", distinct=" << ts.distinct
                                 << ", toolFail=" << r.toolFails
-                                << ", LLM=" << (r.llmMs/1000.0) << "s"
-                                << (r.predMs > 0
-                                    ? (", 生成=" + std::to_string((int)(r.completionTokens * 1000.0 / r.predMs)) + " tok/s")
-                                    : std::string())
-                                << (r.draftN > 0
-                                    ? (", MTP=" + std::to_string(r.draftAccepted) + "/" + std::to_string(r.draftN))
-                                    : std::string())
-                                << ", 编译=" << (r.buildMs/1000.0) << "s"
-                                << ", 运行=" << (r.runMs/1000.0) << "s" << ")"
-                                << loopNote;
+                                << ", LLM " << sec1(r.llmMs).c_str() << "s"
+                                << speed.c_str() << mtp.c_str()
+                                << ", 编译 " << sec1(r.buildMs).c_str() << "s"
+                                << ", 运行 " << sec1(r.runMs).c_str() << "s)"
+                                << loopNote.c_str();
             if (!r.passed)
             {
                 if (!r.lastAgentError.empty())
@@ -787,19 +916,27 @@ protected:
                 for (const auto &r : m_results)
                 {
                     if (!r.passed && r.crashed)
-                        jzDebug().nospace() << "  [CRASH] " << r.name << "  output: "
+                        jzDebug().nospace() << "  [CRASH] " << r.name.c_str() << "  output: "
                                             << r.lastOutput.substr(0, 300);
                 }
             }
         }
-        jzDebug().nospace() << "总消耗 token: prompt=" << m_totalPrompt
-                            << " completion=" << m_totalCompletion
-                            << " total=" << m_totalTokens
-                            << " cached=" << m_totalCached;
-        if (m_totalPrompt > 0)
-            jzDebug().nospace() << "缓存利用率(prompt): " << m_totalCached << "/"
-                                << m_totalPrompt << " = "
-                                << (m_totalCached * 100 / m_totalPrompt) << "%";
+        // 计费口径: Σ prompt + Σ completion。prompt 里已经含缓存命中的那部分
+        // (llama.cpp: prompt = prompt_n + cache_n; prompt_n 只是本次真正 prefill 的量),
+        // 所以"这次烧了多少"看 total, 缓存命中率只说明 prefill 省了多少。
+        const std::string totalCache = (m_totalPrompt > 0)
+            ? (std::to_string(m_totalCached) + "/" + std::to_string(m_totalPrompt) + " (" +
+               std::to_string(m_totalCached * 100 / m_totalPrompt) + "%)")
+            : std::string("0");
+        jzDebug().nospace() << "总消耗 token(计费口径) = " << m_totalTokens
+                            << " = prompt " << m_totalPrompt
+                            << " 其中缓存命中 " << totalCache.c_str()
+                            << " + completion " << m_totalCompletion
+                            << "   " << clr(CLR_GRAY) << "[每轮整段 prompt 相加, 横向比成本用]" << clr(CLR_RESET);
+        if (m_maxContextTokens >= 0)
+            jzDebug().nospace() << "上下文(各用例最后一轮的最大值) = " << m_maxContextTokens
+                                << " (" << m_maxContextName.c_str() << ")"
+                                << "   " << clr(CLR_GRAY) << "[windowTokens; 预算/压缩看这个]" << clr(CLR_RESET);
         // llama.cpp 计时: 其他 provider 不带 timings(恒为 0)，不打这两行
         if (m_totalPromptMs > 0 || m_totalPredMs > 0)
             jzDebug().nospace() << "推理速度(llama.cpp): prefill="
@@ -813,11 +950,11 @@ protected:
         int64_t totalMs = m_benchTimer.elapsed();
         int64_t accounted = m_totalLlmMs + m_totalBuildMs + m_totalRunMs;
         int64_t otherMs = totalMs > accounted ? totalMs - accounted : 0;
-        jzDebug().nospace() << "耗时分解: 总=" << (totalMs/1000.0) << "s"
-                            << "  LLM=" << (m_totalLlmMs/1000.0) << "s"
-                            << "  编译=" << (m_totalBuildMs/1000.0) << "s"
-                            << "  运行=" << (m_totalRunMs/1000.0) << "s"
-                            << "  其他=" << (otherMs/1000.0) << "s";
+        jzDebug().nospace() << "耗时分解: 总=" << sec1(totalMs).c_str() << "s"
+                            << "  LLM=" << sec1(m_totalLlmMs).c_str() << "s"
+                            << "  编译=" << sec1(m_totalBuildMs).c_str() << "s"
+                            << "  运行=" << sec1(m_totalRunMs).c_str() << "s"
+                            << "  其他=" << sec1(otherMs).c_str() << "s";
 
         // ---- 工具调用汇总（静默统计后的结果）----
         jzDebug().nospace() << "工具调用: 总计=" << m_totalToolCalls
@@ -900,6 +1037,8 @@ protected:
     double m_totalPredMs = 0;    // 全部用例累计生成耗时(llama.cpp)
     int m_totalDraft = 0;        // 全部用例累计 MTP/投机采样草稿数
     int m_totalDraftAccepted = 0;// 全部用例累计 MTP/投机采样被接受数
+    int m_maxContextTokens = -1; // 各用例"最后一轮上下文"的最大值(用例会话互相独立, 只报最大)
+    std::string m_maxContextName;
     int64_t m_llmStartMs = 0;       // 本轮 LLM 请求发出时刻（doAttempt）
     int64_t m_totalLlmMs = 0;       // 全部用例累计 LLM 耗时
     int64_t m_totalBuildMs = 0;     // 全部用例累计编译耗时
@@ -923,6 +1062,37 @@ protected:
     HttpThread m_httpThread;
 };
 
+// 探测某程序是否可运行(Windows 下用 cmd /c 跑 "<name> --version" 看退出码)
+static bool probeProgramRunnable(const std::string &name)
+{
+#ifdef _WIN32
+    std::string probe = "\"" + name + "\" --version > nul 2>&1";
+    FILE *f = _popen(probe.c_str(), "r");
+#else
+    std::string probe = "\"" + name + "\" --version > /dev/null 2>&1";
+    FILE *f = popen(probe.c_str(), "r");
+#endif
+    if (!f)
+        return false;
+    char buf[256];
+    while (std::fgets(buf, sizeof(buf), f)) { }
+#ifdef _WIN32
+    return _pclose(f) == 0;
+#else
+    return pclose(f) == 0;
+#endif
+}
+
+// 选一个能用的 python 解释器(顺序: python3 / python / py)
+static std::string detectPythonInterpreter()
+{
+    const char *cands[] = { "python3", "python", "py" };
+    for (const char *c : cands)
+        if (probeProgramRunnable(c))
+            return std::string(c);
+    return "python3";
+}
+
 // 把 src 中所有 from 替换为 to（std::string 无内置 replace-all）
 static void replaceAll(std::string &s, const std::string &from, const std::string &to)
 {
@@ -934,6 +1104,44 @@ static void replaceAll(std::string &s, const std::string &from, const std::strin
         s.replace(pos, from.size(), to);
         pos += to.size();
     }
+}
+
+// 简单通配符匹配（用于 --cases 过滤）：
+//   *  : 匹配任意长度（含空串）的任意字符
+//   ?  : 匹配任意一个字符
+//   .  : 也当作“任意一个字符”匹配（这样 jsapi.* 也能匹配 jsapi_core_fs 这类带下划线的名）
+//   其余字符：逐字符精确比较（区分大小写）。
+// 没有通配符的 pattern 退化为精确匹配，与原有 --cases 行为兼容。
+static bool wildcardMatch(const std::string &pat, const std::string &str)
+{
+    const char *p = pat.c_str();
+    const char *s = str.c_str();
+    const char *star = nullptr;
+    const char *mark = s;
+    while (*s)
+    {
+        if (*p == '*')
+        {
+            star = p++;
+            mark = s;
+        }
+        else if (*p == *s || *p == '?' || *p == '.')
+        {
+            p++; s++;
+        }
+        else if (star)
+        {
+            p = star + 1;
+            s = ++mark;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    while (*p == '*')
+        p++;
+    return *p == '\0';
 }
 
 // 大小写不敏感地判断 output 是否包含子串
@@ -978,6 +1186,13 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     c.verifyCmd = (root.isMember("verify") && root["verify"].isString())
                       ? root["verify"].asString() : "";
     c.verifyPort = root.isMember("verifyPort") ? root["verifyPort"].asInt() : 3900;
+    c.setup = (root.isMember("setup") && root["setup"].isString())
+                ? root["setup"].asString() : "";
+    {
+        std::string s = src;
+        size_t p = s.find_last_of("/\\");
+        c.sourceDir = (p == std::string::npos) ? std::string(".") : s.substr(0, p);
+    }
 
     std::string contains;
     bool ci = false;
@@ -1187,9 +1402,11 @@ static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &ou
     return false;
 }
 
-static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
+// ⚠ 必须"填调用方的对象"(传引用进来), 不能自己建局部 cfg 再按值返回:
+//   parser.addOption 存的是**指针**, 局部对象在函数返回后已析构, 调用方 parse() 时
+//   会写进已经销毁的内存 —— 传 --modelUrl/--modelName 就 0xC0000005(实测)。
+static void loadLlmConfig(JZCommandLineParser &parser, JZAgentConfig &cfg)
 {
-    JZAgentConfig cfg;
     // 缺省沿用仓库 test/agent/test_agent.cpp 的接入；可用命令行 / 环境变量覆盖
     cfg.modelUrl = "http://172.17.160.147:8080/v1/chat/completions";
     cfg.modelName = "my_model";
@@ -1205,7 +1422,6 @@ static JZAgentConfig loadLlmConfig(JZCommandLineParser &parser)
     parser.addOption("--modelUrl", &cfg.modelUrl);
     parser.addOption("--modelName", &cfg.modelName);
     parser.addOption("--modelToken", &cfg.modelToken);
-    return cfg;
 }
 
 } // namespace
@@ -1224,7 +1440,7 @@ int main(int argc, char *argv[])
     std::string tscPath = jzApp->applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
     std::string tsgoPath = tscPath;   // 原生 tsc 也经同一 shim（支持 --lsp --stdio）
     std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
-    std::string casesFilter;   // --cases：逗号分隔的用例名，仅跑这些（可多个）
+    std::string casesFilter;   // --cases：逗号分隔的用例名/通配符，仅跑匹配的（可多个）
     int httpPort = 18080;      // --http-port：输入 HTTP 服务监听端口（JS 用 fetch 读输入）
     bool noColor = false;      // --no-color：关闭 ANSI 彩色输出（重定向时本就自动关闭）
     for (size_t i = 0; i < dataDir.size(); i++)
@@ -1233,7 +1449,8 @@ int main(int argc, char *argv[])
 
     JZCommandLineParser parser;
     parser.setDescription("code_agent 用例评测");
-    JZAgentConfig llm = loadLlmConfig(parser);   // 注册 --model* 选项
+    JZAgentConfig llm;                 // 生命周期必须覆盖 parse(): parser 里存的是它的成员地址
+    loadLlmConfig(parser, llm);        // 注册 --model* 选项
     parser.addOption("--tsc", &tscPath);
     parser.addOption("--tsgo", &tsgoPath);
     parser.addOption("--data", &dataDir);
@@ -1282,7 +1499,8 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    // 按 --cases 过滤（逗号分隔，可多个；忽略前后空白；名字不匹配的跳过）
+    // 按 --cases 过滤（逗号分隔，可多个；忽略前后空白；支持通配符 * ? .）。
+    // 例如：jsapi.* 跑全部 jsapi 用例；algo_* 跑全部算法用例；net_http 仅跑单个精确名。
     if (!casesFilter.empty())
     {
         std::vector<std::string> want;
@@ -1301,14 +1519,20 @@ int main(int argc, char *argv[])
         {
             bool hit = false;
             for (const auto &w : want)
-                if (w == c.name) { hit = true; break; }
+            {
+                if (wildcardMatch(w, c.name) || w == c.name)
+                {
+                    hit = true;
+                    break;
+                }
+            }
             if (hit)
                 filtered.push_back(std::move(c));
         }
         cases = std::move(filtered);
         if (cases.empty())
         {
-            jzError().nospace() << "指定的用例都不存在: " << casesFilter;
+            jzError().nospace() << "指定的用例都不存在(或通配符无匹配): " << casesFilter;
             return 2;
         }
     }

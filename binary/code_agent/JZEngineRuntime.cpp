@@ -195,12 +195,9 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_workerModule = std::make_unique<JZJSWorkerModule>();
     m_workerModule->initEngine(engine, 0, -1, JZByteArray());
 
-    // Node 兼容: 引擎启动即把 net 适配层的 Web 标准全局(fetch/Headers/Response/
-    // WebSocket/EventEmitter/URL/URLSearchParams)挂到 globalThis, 用户无需 import 即可
-    // 用(等价 Node 启动装载 undici/whatwg)。net 模块按绝对路径加载, 与用户入口
-    // `import '../jz_js/net/dist/index.js'` 命中同一模块缓存, 不会重复执行; 找不到
-    // 【注意】必须放在下面 `m_engine = engine` 之后: bootstrapWebGlobals 用的是成员
-    // m_engine(不是局部 engine), 放在赋值之前 = 空指针解引用(runModuleFile 里 AV)。
+    // Node 兼容的 Web 标准全局(fetch/Headers/Response/WebSocket/EventEmitter/URL/URLSearchParams)
+    // 不在这里装了 —— 由 JZJSNetModule 在注册时自己装载(见 loadWebGlobalModules),
+    // 宿主不必再关心包部署在哪, 也不会重复求值。
     LogBridge *bridge = new LogBridge();
     bridge->rt = this;
     connect(&engine->sigLog, bridge, &LogBridge::onLog);
@@ -214,47 +211,17 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_engineWorkDir = wd;
     m_engineRunning = true;
 
-    bootstrapWebGlobals(wd);
-
     m_lastError.clear();
     return true;
 }
 
-void JZEngineRuntime::bootstrapWebGlobals(const string &wd)
-{
-    // Web 标准全局现在按"谁实现谁挂"分散在各自的包里(2026-09-22 一名字一包之后):
-    //   events -> EventEmitter / url -> URL·URLSearchParams / ws -> WebSocket /
-    //   http   -> fetch·Headers·Response
-    // 所以这里要按顺序把这四个模块跑起来(它们在装载时把全局挂到 globalThis)。
-    //
-    // 候选路径: 优先工程自带的 jz_js(与用户 import 解析到的绝对路径一致, 避免重复执行),
-    // 回退到 exe 同目录部署的 jz_engine/jz_js(或旧平铺 jz_js)。路径先规范化(消解 ..),
-    // 保证与入口 `import '../jz_js/<名字>/dist/index.js'` 解析到同一文件、命中同一模块缓存。
-    static const char *kWebGlobalModules[] = { "events", "url", "ws", "http" };
-    string appDir = JZPlatform::applicationDirPath();
-    for (size_t i = 0; i < sizeof(kWebGlobalModules) / sizeof(kWebGlobalModules[0]); i++)
-    {
-        const string rel = string("/jz_js/") + kWebGlobalModules[i] + "/dist/index.js";
-        vector<string> candidates;
-        candidates.push_back(rtAbsPath(wd + rel));        // 运行根带 jz_js
-        candidates.push_back(rtAbsPath(wd + "/.." + rel)); // 运行根在 build/ 子目录
-        if (!appDir.empty())
-        {
-            candidates.push_back(rtAbsPath(appDir + "/jz_engine" + rel));  // 新部署
-            candidates.push_back(rtAbsPath(appDir + rel));                 // 旧平铺
-        }
-        for (const string &cand : candidates)
-        {
-            if (JZFileInfo(cand).isFile())
-            {
-                // 副作用执行: 把该模块负责的 Web 全局挂上 globalThis。按绝对路径加载, 与用户
-                // 入口的 import 命中同一 QuickJS 模块缓存, 不会重复执行。失败不致命(静默)。
-                m_engine->runModuleFile(cand);
-                break;                                  // 命中即止
-            }
-        }
-    }
-}
+// 注(2026-09-23): 原来这里有 bootstrapWebGlobals() —— 宿主按绝对路径探测 jz_js/{events,url,ws,http}
+// 再 runModuleFile。它有三个问题: ① 只在 code_runtime 侧跑, 别的宿主/worker 引擎没有;
+// ② 依赖磁盘布局(产物没重编或 jz_js 没部署 → 漏装 fetch, 只报 "fetch is not defined");
+// ③ 按**绝对路径**加载 ⇒ 模块缓存键与 import 链路('events/dist/index.js')不同, 每个包被求值两份
+//    (globalThis.Headers/WebSocket 被后加载的那份覆盖, 跨份 instanceof 失败; 已实测复现)。
+// 现在改由 JZJSNetModule::loadWebGlobalModules() 在**注册时**按契约相对名装载(与 Node 启动装
+// undici 同义), 宿主换谁跑都一样。这里不再需要任何 host 端动作。
 
 void JZEngineRuntime::shutdownEngine()
 {

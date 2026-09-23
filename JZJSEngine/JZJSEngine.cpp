@@ -2675,8 +2675,32 @@ JSModuleDef* JZJSEngine::loadModuleDef(const std::string& module_name)
 
 bool JZJSEngine::runModuleFile(const std::string& filepath)
 {
+    return runModuleFileImpl(filepath, nullptr);
+}
+
+bool JZJSEngine::tryRunModuleFile(const std::string& filepath, std::string* error)
+{
+    return runModuleFileImpl(filepath, error);
+}
+
+bool JZJSEngine::runModuleFileImpl(const std::string& filepath, std::string* error)
+{
     if (!m_ctx)
+    {
+        if (error)
+            *error = "engine 未初始化";
         return false;
+    }
+
+    // 取出挂起的异常文本(取走后 ctx 不再有 pending exception)。
+    // error != nullptr 的分支全靠它把异常转成回填文本 —— 不能走 unHandleException,
+    // 那条路会把引擎打成 Engine_error(宿主会当成 JS 崩了)。
+    auto takePending = [this]() -> std::string {
+        JSValue exc = JS_GetException(m_ctx);
+        std::string text = getExceptionDescript(exc);
+        JS_FreeValue(m_ctx, exc);
+        return text;
+    };
 
     // quickjs 默认模块 normalizer 按 '/' 切分基名, 统一转成 '/' 分隔
     std::string module_name = filepath;
@@ -2686,7 +2710,13 @@ bool JZJSEngine::runModuleFile(const std::string& filepath)
     std::string resolved;
     if (!readModuleCode(module_name, code, &resolved))
     {
-        JS_ThrowReferenceError(m_ctx, "could not load module '%s'", module_name.c_str());
+        std::string text = "could not load module '" + module_name + "'";
+        if (error)
+        {
+            *error = text;
+            return false;
+        }
+        JS_ThrowReferenceError(m_ctx, "%s", text.c_str());
         unHandleException();
         return false;
     }
@@ -2701,7 +2731,13 @@ bool JZJSEngine::runModuleFile(const std::string& filepath)
                                  JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     if (JS_IsException(module_val))
     {
-        unHandleException();
+        std::string text = "could not compile module '" + module_name + "': " + takePending();
+        if (error)
+        {
+            *error = text;
+            return false;
+        }
+        JS_ThrowReferenceError(m_ctx, "%s", text.c_str());
         return false;
     }
 
@@ -2710,6 +2746,13 @@ bool JZJSEngine::runModuleFile(const std::string& filepath)
     JSValue result = JS_EvalFunction(m_ctx, module_val);
     if (JS_IsException(result))
     {
+        std::string text = takePending();
+        if (error)
+        {
+            *error = text.empty() ? ("evaluate module failed: " + module_name) : text;
+            return false;
+        }
+        JS_ThrowInternalError(m_ctx, "%s", text.c_str());
         unHandleException();
         return false;
     }

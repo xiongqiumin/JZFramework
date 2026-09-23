@@ -25,3 +25,6 @@ add_custom_command(TARGET agent_cli POST_BUILD
 
 # agent_cli_test: 复用 code_agent/benchmark 用例评测 JZAgentCli(见 agent_cli_test/CMakeLists.txt)
 add_subdirectory(agent_cli_test)
+
+# JZAgentCliServer: FRP 服务端(frps) —— 与 agent_cli(client 角色 = frpc)配对
+add_subdirectory(server)

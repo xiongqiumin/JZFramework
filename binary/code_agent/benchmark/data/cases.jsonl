@@ -1,6 +1,5 @@
 {"file": "hello/hello_world.json"}
 {"file": "hello/hello_http.json"}
-{"file": "five_chess_server/five_chess_server.json"}
 {"file": "jsapi/core_fs.json"}
 {"file": "jsapi/core_bytes.json"}
 {"file": "jsapi/core_crypto.json"}
@@ -10,3 +9,12 @@
 {"file": "jsapi/net_ws.json"}
 {"file": "jsapi/url_events.json"}
 {"file": "jsapi/sqlite.json"}
+{"file": "five_chess_server/five_chess_server.json"}
+{"file": "algorithms/gen_bubble_sort.json"}
+{"file": "algorithms/gen_reverse_array.json"}
+{"file": "algorithms/gen_binary_search.json"}
+{"file": "algorithms/gen_two_sum.json"}
+{"file": "algorithms/gen_fib.json"}
+{"file": "algorithms/gen_is_palindrome.json"}
+{"file": "algorithms/gen_max_subarray.json"}
+{"file": "algorithms/gen_gcd.json"}

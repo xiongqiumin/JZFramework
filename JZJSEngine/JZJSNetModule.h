@@ -287,6 +287,11 @@ protected:
     JSValue makeWsValue(JZJSWebSocket* obj);
     void onNetFinish();
 
+    // 注册时(initEngine 末尾)把 events/url/ws/http 四个包跑一遍, 让它们把 Web 标准全局
+    // (EventEmitter / URL·URLSearchParams / WebSocket / fetch·Headers·Response)挂上 globalThis。
+    // 见 .cpp 里的详细说明(为什么必须按契约相对名加载、为什么用 tryRunModuleFile)。
+    void loadWebGlobalModules();
+
     JZJSEngine* m_engine;
     JZNetworkAccessManager* m_net;
     int m_typeSocket;

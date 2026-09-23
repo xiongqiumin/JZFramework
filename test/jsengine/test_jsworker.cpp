@@ -94,6 +94,9 @@ int main()
         d.mkpath(root);
     }
     engine.setWorkDir(root);
+    // 运行环境的模块查找目录(与生产一致): net 模块注册时要按裸名装载 Web 全局包
+    // (events/url/ws/http), worker 引擎继承同一份 ⇒ worker 里也能零 import 用 fetch/URL/WebSocket。
+    engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });
     engine.start();
 
     // 内置模块(core) —— 与 worker 线程内的装配保持一致

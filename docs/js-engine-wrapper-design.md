@@ -188,11 +188,17 @@ Node 语义由**包内 `index.ts`** 抹平，原则是"**只翻译，不实现**
 | `WebSocket` | `ws/` |
 | `fetch` / `Headers` / `Response` | `http/` |
 
-挂载方式：宿主启动时 `JZEngineRuntime::bootstrapWebGlobals()` 按绝对路径依次
-`runModuleFile(jz_js/{events,url,ws,http}/dist/index.js)` 副作用执行（顺序固定，命中即止）；
-用户入口再 import 同名模块会命中同一模块缓存，不会重复执行。
+挂载方式：`JZJSNetModule::initEngine()` 在**注册时**按契约相对名依次副作用装载
+`events/dist/index.js` → `url/dist/index.js` → `ws/dist/index.js` → `http/dist/index.js`
+（各包在自己的模块顶层 `globalThis.X = ...`）。语义与 Node 启动时装 undici 相同：**运行时初始化动作**，
+不需要宿主参与，也不取决于磁盘布局。
 
-⚠ 因此"能不能零 import 用 `fetch`"取决于**宿主是否预加载了这几个包**（`code_runtime` / agent 侧是加载的）。
+- ⚠ 模块名必须写"契约相对名"（与 import 链路里的说明符完全一致）：QuickJS 的模块缓存按**模块名**
+  索引，用绝对路径会装出**第二份**实例（`globalThis.Headers` 会被后加载的那份覆盖、跨份
+  `instanceof` 失败）。用户入口再 import 同名包会命中同一份，不会重复执行。
+- ⚠ 走 `JZJSEngine::tryRunModuleFile()`：包没部署/没编译只记一条 `LOG_W`，**不**把引擎打成
+  `Engine_error`（否则宿主会当成"JS 崩了"弹窗/中断）。
+- ⚠ `worker` 引擎也装 net 模块 ⇒ 同样有这些全局（对齐 Node 的 Worker）。
 
 ---
 

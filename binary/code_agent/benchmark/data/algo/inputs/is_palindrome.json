@@ -1,0 +1,1 @@
+{"problem": "is_palindrome", "inputs": ["aba", "abba", "abc", "a", "ab", "", "racecar", "hello"]}

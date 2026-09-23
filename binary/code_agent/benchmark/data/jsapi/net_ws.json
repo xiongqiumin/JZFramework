@@ -1,12 +1,13 @@
 {
   "name": "jsapi_net_ws",
-  "purpose": "net 包 WebSocket 封装是否好学：ws.createServer({port}) 与 connection/message/send，客户端是运行期全局 WebSocket（onopen/onmessage，data 是字符串），服务端 socket 既是 EventEmitter 又能 WebSocket 风格。",
-  "prompt": "用 TypeScript 完成（ws 是内置模块：`import ws from 'ws'`；WebSocket 客户端是运行期全局类，无需 import）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 用 ws.createServer({ port: PORT }) 起一个 WebSocket 服务：每条收到的消息原样发回；\n3) 用运行期全局 WebSocket 连 'ws://127.0.0.1:PORT'，打开后发送文本 T，收到回显后校验与 T 相同；\n4) 打印一行：WS=<回显文本的 md5>@<回显是否与 T 相同(1/0)>（用 '@' 连接，不要空格）。\n提示：监听中的套接字不会让引擎保持运行，注意保活/收尾。",
+  "purpose": "net 包 WebSocket 封装是否好学：ws.createServer({port}) 与 connection/message/send，客户端是运行期全局 WebSocket（onopen/onmessage，data 是字符串），服务端 socket 既是 EventEmitter 又能 WebSocket 风格。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
+  "prompt": "用 TypeScript 完成（ws 是内置模块：`import ws from 'ws'`；WebSocket 客户端是运行期全局类，无需 import）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 用 ws.createServer({ port: port }) 起一个 WebSocket 服务：每条收到的消息原样发回；\n2) 用运行期全局 WebSocket 连 'ws://127.0.0.1:port'，打开后发送文本 text，收到回显后校验与 text 相同；\n3) 待回显收到后，返回一行：WS=<回显文本的 md5>@<回显是否与 text 相同(1/0)>（用 '@' 连接，不要空格）。\n提示：监听中的套接字不会让引擎保持运行；务必在返回的 Promise 里 await 收到回显之后再 resolve，不要只创建服务就立即返回。",
   "maxAttempts": 3,
   "timeout": 30,
+  "setup": "net_setup.py",
   "input": "jznet-ws 3914",
   "expect": {
     "contains": "283ccc4ce3b7558bd4d85bad4c26aede@1"
   },
-  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；ws.createServer({port}) 起服务并把收到的消息原样发回；客户端用全局 WebSocket 连 ws://127.0.0.1:PORT，open 后 send(文本)，onmessage 里校验并打印 WS=<md5(回显)>@<是否相同>。"
+  "retryHint": "上一次运行的结果不对。要求：在 src/solution.ts 实现 solve(text, port)（不要改 main.ts、不要自行读 _input.txt 或 console.log）；ws.createServer({port}) 起服务并把收到的消息原样发回；客户端用全局 WebSocket 连 ws://127.0.0.1:port，open 后 send(text)，onmessage 里校验；返回 WS=<md5(回显)>@<是否相同>。务必 await 收到回显再 resolve。"
 }

@@ -16,6 +16,9 @@
 #include "JZHttpHandler.h"
 #include "JZHttpStaticFiles.h"
 
+#include "JZFrpClient.h"      // 内嵌 FRP 客户端(frpc, client 角色)
+#include "JZNet/JZNetPacket.h"  // JZNetPackInit(frpc 的 JZNetClient 依赖包注册)
+
 #include <cstdio>
 #include <cstdlib>            // atoi(解析 "HTTP 402 ..." 里的状态码)
 #ifndef _WIN32
@@ -521,6 +524,61 @@ void JZAgentCli::startHttp()
     m_http->addRoute("/terminal/cancel", new TerminalCancelHandler(this));
     if (!m_http->listen(m_config.httpBind, m_config.httpPort))
         jzWarning() << "HttpServer 监听失败:" << m_config.httpBind << ":" << m_config.httpPort;
+}
+
+// ==========================================================================
+// FRP 内网穿透(client 角色 = frpc)
+//   本端连到配置里的远端 frps, 把本地服务(如本机 HTTP/admin 接口)通过代理暴露到
+//   远端 frps 的 remotePort 上 —— 这样在外网/其它机器上访问 <frps>:<remotePort>
+//   就能转发到本机的 <localIp>:<localPort>。
+//   ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担; 这里只做客户端。
+//   frpc 靠 JZNetPack 收发包, 启动前必须先 JZNetPackInit() + JZFrpPacketInit()
+//   (与 binary/frpc 的 jzfrpc 一致); 这两个是幂等的, 重复调用无害。
+// ==========================================================================
+void JZAgentCli::startFrpc()
+{
+    // 包类型注册(frpc 的 JZNetClient 依赖它)。幂等, 放最前面只调一次。
+    JZNetPackInit();
+    JZFrpPacketInit();
+
+    // frpc 客户端: 本端连到远端 frps, 把本地服务经代理暴露出去。
+    if (!m_config.frp.client.enabled)
+        return;
+
+    if (m_config.frp.client.serverAddr.empty())
+    {
+        jzWarning() << "frp.client 已启用但 serverAddr 为空, 跳过 frpc 启动";
+        return;
+    }
+    if (m_config.frp.client.proxies.empty())
+    {
+        jzWarning() << "frp.client 已启用但没有任何 proxy, 跳过 frpc 启动";
+        return;
+    }
+
+    JZFrpClientConfig cc;
+    cc.serverIp = m_config.frp.client.serverAddr;
+    cc.serverPort = m_config.frp.client.serverPort;
+    cc.token = m_config.frp.client.token;
+    for (const auto &p : m_config.frp.client.proxies)
+    {
+        if (p.localPort > 0 && p.remotePort > 0)
+            cc.addProxy(p.name.empty() ? ("proxy" + to_string(cc.proxyList.size()))
+                                        : p.name,
+                        p.localIp.empty() ? std::string("127.0.0.1") : p.localIp,
+                        p.localPort, p.remotePort);
+    }
+    if (cc.proxyList.empty())
+    {
+        jzWarning() << "frp.client 所有 proxy 的 localPort/remotePort 无效, 跳过 frpc 启动";
+        return;
+    }
+
+    m_frpClient = new JZFrpClient(this);
+    m_frpClient->setConfig(cc);
+    m_frpClient->connectToServer();   // 异步连接 + 内置 15s 重连, 不阻塞主线程
+    jzInfo() << "FrpClient(frpc) 已连接远端 frps:" << cc.serverIp << ":" << cc.serverPort
+             << "  代理数:" << cc.proxyList.size();
 }
 
 Json::Value JZAgentCli::makeInfo() const

@@ -106,6 +106,23 @@ static const char *kDefaultConfigJson = R"json({
         "port":             8080,
         "token":            "",
         "dir":              ""
+    },
+
+    "frp": {
+        "server": {
+            "enabled":      false,
+            "bindPort":     7000,
+            "token":        ""
+        },
+        "client": {
+            "enabled":      false,
+            "serverAddr":   "",
+            "serverPort":   7000,
+            "token":        "",
+            "proxies": [
+                { "name": "http", "localIp": "127.0.0.1", "localPort": 8080, "remotePort": 8080 }
+            ]
+        }
     }
 }
 )json";
@@ -168,9 +185,25 @@ static bool writeDefaultConfig(const string &path, string &error)
 static const Json::Value *findConfigMember(const Json::Value &root, const string &group,
                                           const string &name, const string &legacy)
 {
-    if (!group.empty() && root.isMember(group) && root[group].isObject() &&
-        root[group].isMember(name))
-        return &root[group][name];
+    // 优先走分组: name 支持 "a.b.c" 多级嵌套(如 frp.client.enabled ->
+    //   root["frp"]["client"]["enabled"]); 单段名(如 http.bind)同样适用。
+    if (!group.empty() && root.isMember(group) && root[group].isObject())
+    {
+        const Json::Value *cur = &root[group];
+        size_t start = 0;
+        while (true)
+        {
+            size_t dot = name.find('.', start);
+            std::string seg = (dot == std::string::npos)
+                ? name.substr(start) : name.substr(start, dot - start);
+            if (!cur->isObject() || !cur->isMember(seg))
+                break;
+            cur = &(*cur)[seg];
+            if (dot == std::string::npos)
+                return cur;
+            start = dot + 1;
+        }
+    }
 
     if (!legacy.empty() && root.isMember(legacy))
         return &root[legacy];
@@ -316,6 +349,32 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigString(root, "http", "token", "httpToken", config.httpToken);
     readConfigString(root, "http", "dir", "httpDir", config.httpDir);
 
+    // frp(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
+    //   本端连到远端 frps, 把本地服务经 proxy 暴露出去。
+    readConfigBool(root, "frp", "client.enabled", "frpClientEnabled", config.frp.client.enabled);
+    readConfigString(root, "frp", "client.serverAddr", "frpServerAddr", config.frp.client.serverAddr);
+    readConfigInt(root, "frp", "client.serverPort", "frpServerPort", config.frp.client.serverPort);
+    readConfigString(root, "frp", "client.token", "frpClientToken", config.frp.client.token);
+    const Json::Value *frpProxies = findConfigMember(root, "frp", "client.proxies", "frpProxies");
+    if (frpProxies && frpProxies->isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < frpProxies->size(); ++i)
+        {
+            const Json::Value &p = (*frpProxies)[i];
+            if (!p.isObject())
+                continue;
+            JZCliFrpProxy proxy;
+            JZJsonStream ps(&p);
+            ps.readMemberDefault("name", proxy.name, std::string());
+            ps.readMemberDefault("localIp", proxy.localIp, std::string("127.0.0.1"));
+            ps.readMemberDefault("localPort", proxy.localPort, 0);
+            ps.readMemberDefault("remotePort", proxy.remotePort, 0);
+            // localIp 允许空(默认 127.0.0.1); 但端口必须有效才收
+            if (proxy.localPort > 0 && proxy.remotePort > 0)
+                config.frp.client.proxies.push_back(proxy);
+        }
+    }
+
     const Json::Value *dirs = findConfigMember(root, "terminal", "trustedDirs", "trustedDirs");
     const Json::Value &arr = dirs ? *dirs : Json::Value::nullRef;
     if (!arr.isNull())
@@ -435,6 +494,14 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
             config.allowPackageManager ? "开" : "关",
             config.allowNetwork ? "开" : "关",
             config.unrestricted ? "全部不检查" : "按区域分档");
+    // frp(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
+    if (!config.frp.client.enabled)
+        fprintf(stderr, "  FRP       关(仅 client 角色; 服务端在 JZAgentCliServer)\n");
+    else
+        fprintf(stderr, "  FRP 客户端  frpc -> %s:%d, 代理 %d 条\n",
+                config.frp.client.serverAddr.empty() ? "(未配 serverAddr)"
+                                                     : config.frp.client.serverAddr.c_str(),
+                config.frp.client.serverPort, (int)config.frp.client.proxies.size());
     string programs;
     for (const auto &kv : config.programPaths)
     {
@@ -511,6 +578,7 @@ int main(int argc, char *argv[])
             config.httpBind.c_str(), config.httpPort,
             config.httpToken.empty() ? "(无)" : "(已启用)");
     cli.startHttp();
+    cli.startFrpc();     // client 角色 = frpc: 连到远端 frps 暴露本地服务(关着就不连)
 
     return app.exec();
 }

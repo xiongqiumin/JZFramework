@@ -4,6 +4,7 @@
 
 #include "JZByteArray.h"
 #include "JZJSBind.h"
+#include "JZLog.h"      // LOG_W: Web 全局包没装上时的提示(见 loadWebGlobalModules)
 
 // 注: 早先这里有个自写的 jsSameValue(直接比 ptr + tag)。现在 off() 里统一用 quickjs 的
 // JS_IsStrictEqual —— 语义等价(同一对象 / 同一原始值), 且不必依赖 JSValue 的内部布局。
@@ -1149,6 +1150,35 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     m_engine->setProperty(jz, "bytes", ns_bytes);
 
     m_engine->setProperty(global, "__jz", jz);
+
+    loadWebGlobalModules();
+}
+
+// Web 标准全局(Node 语义: 启动即有, 不需要 import)
+//   events -> EventEmitter / url -> URL·URLSearchParams / ws -> WebSocket / http -> fetch·Headers·Response
+// 这几个包在**自己装载时**把全局挂到 globalThis("谁实现谁挂", 见 docs/js-engine-wrapper-design.md §6),
+// 所以这里在 net 模块注册时把它们跑一遍 —— 与 Node 启动装 undici 同义: 是运行时的初始化动作,
+// 不依赖宿主自己去磁盘上找包(以前宿主 bootstrap 按绝对路径探测, 产物布局一变就漏装, 还会装成两份)。
+//
+// ⚠ 模块名必须用"契约相对名"(='<名>/dist/index.js'), 与 import 链路里的说明符完全一致:
+//   QuickJS 的模块缓存按**模块名**索引, 用绝对路径会得到第二份实例(全局被后加载的那份覆盖,
+//   跨份 instanceof 失败 —— 实测 `globalThis.Headers` 会被 import 的那份换掉)。
+// ⚠ 顺序: http 依赖 events(EventEmitter), 先 events 再 url/ws 最后 http。
+// ⚠ 用 tryRunModuleFile: 包没部署/没编译只记日志, 不能把引擎打成 Engine_error。
+void JZJSNetModule::loadWebGlobalModules()
+{
+    if (!m_engine)
+        return;
+
+    static const char* kWebGlobalModules[] = { "events", "url", "ws", "http" };
+    for (size_t i = 0; i < sizeof(kWebGlobalModules) / sizeof(kWebGlobalModules[0]); i++)
+    {
+        const std::string entry = std::string(kWebGlobalModules[i]) + "/dist/index.js";
+        std::string err;
+        if (!m_engine->tryRunModuleFile(entry, &err))
+            LOG_W("Web 全局包没装上(" + entry + "): 相关全局(fetch/URL/WebSocket/EventEmitter)不可用 —— " +
+                  err + " | 检查 libraryDir 是否含 jz_js、是否跑过 tsc");
+    }
 }
 
 void JZJSNetModule::deinitEngine()

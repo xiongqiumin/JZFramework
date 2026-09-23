@@ -1,12 +1,13 @@
 {
   "name": "jsapi_net_http",
-  "purpose": "net 包 http 的封装是否好学：createServer(handler) 的 req/res 形态（req.method/req.url/req.text、res.writeHead/end）、fetch 全局的请求形态、404 判定、以及\"监听中的套接字不算活\"时必须留心跳定时器。",
-  "prompt": "用 TypeScript 完成（http 是内置模块：`import http from 'http'`；fetch 是运行期全局，无需 import）：\n1) 先 fetch 读评测输入，内容是 \"<文本> <端口>\"（空格分隔），取出文本 T 与端口 PORT；\n2) 用 http 起一个服务监听 PORT：\n   - GET /ping → 200，正文 'pong'\n   - POST /echo → 200，Content-Type: application/json，正文 {\"echo\":<请求体原文>,\"n\":<请求体长度>}\n   - 其它 → 404\n3) 服务起来后用它自己的 fetch 自测：向 /echo POST 文本 T，再 GET 一个不存在的路径；\n4) 打印一行：HTTP=<T 的 md5>@<echo 返回的 n>@<不存在路径的状态码>@<回显文本是否与 T 相同(1/0)>\n（各段用 '@' 连接，不要空格。）\n提示：监听中的套接字不会让引擎保持运行，注意保活/收尾。",
+  "purpose": "net 包 http 的封装是否好学：createServer(handler) 的 req/res 形态（req.method/req.url/req.text、res.writeHead/end）、fetch 全局的请求形态、404 判定、以及\"监听中的套接字不算活\"时必须留心跳定时器。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
+  "prompt": "用 TypeScript 完成（http 是内置模块：`import http from 'http'`；fetch 是运行期全局，无需 import）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 用 http 起一个服务监听 port：\n   - GET /ping → 200，正文 'pong'\n   - POST /echo → 200，Content-Type: application/json，正文 {\"echo\":<请求体原文>,\"n\":<请求体长度>}\n   - 其它 → 404\n2) 服务起来后用它自己的 fetch 自测：向 /echo POST 文本 text，再 GET 一个不存在的路径；\n3) 返回一行：HTTP=<text 的 md5>@<echo 返回的 n>@<不存在路径的状态码>@<回显文本是否与 text 相同(1/0)>\n（各段用 '@' 连接，不要空格。）\n提示：监听中的套接字不会让引擎保持运行；务必在返回的 Promise 里 await 完所有网络往返（自测请求/响应）之后再 resolve，不要只创建监听就立即返回。",
   "maxAttempts": 3,
   "timeout": 30,
+  "setup": "net_setup.py",
   "input": "jznet-http 3911",
   "expect": {
     "contains": "54225c33dac4bce0d286dd383aa72980@10@404@1"
   },
-  "retryHint": "上一次运行的结果不对。要求：从 /input 解析出 \"<文本> <端口>\"；http 服务监听该端口（GET /ping→200 'pong'，POST /echo→200 JSON {echo,n}，其它→404）；再 fetch 自测 POST /echo（body 为文本）与一个 404 路径；打印 HTTP=<md5(文本)>@<n>@<404 状态码>@<回显是否相同>。"
+  "retryHint": "上一次运行的结果不对。要求：在 src/solution.ts 实现 solve(text, port)（不要改 main.ts、不要自行读 _input.txt 或 console.log）；用 http 在 port 起服务（GET /ping→200 'pong'，POST /echo→200 JSON {echo,n}，其它→404）；再用 fetch 自测 POST /echo（body 为 text）与一个 404 路径；返回 HTTP=<md5(text)>@<n>@<404 状态码>@<回显是否相同>。务必 await 完网络往返再 resolve。"
 }

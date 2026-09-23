@@ -1,12 +1,13 @@
 {
   "name": "jsapi_url_events",
   "purpose": "运行期全局（URL / URLSearchParams / EventEmitter）的语义是否与 Node 一致：URL 各字段与 searchParams 取值；EventEmitter 的 on/once/off/emit/listenerCount 计数语义。顺带考\"没有 import 的文件不能顶层 await\"这条 tsconfig 约束。",
-  "prompt": "用 TypeScript 完成（URL / URLSearchParams / EventEmitter 都是运行期全局类，无需 import）：\n1) 先 fetch 读评测输入，得到一段 URL 文本（去掉首尾空白后记作 T）；\n2) 用全局 URL 解析 T，取出 hostname、port、pathname，以及 searchParams.get('x')；\n3) 用全局 EventEmitter 做一遍订阅计数：\n   - on('e', f1)、once('e', f2)\n   - emit('e') 两次\n   - off('e', f1)，再 emit('e') 一次\n   - 记 total = 两个监听函数被调用的总次数，left = 此时 listenerCount('e')\n4) 打印一行：\nURL=<hostname>@<port>@<pathname>@<searchParams.get('x')>@<total>@<left>@<T 的 md5 小写十六进制>\n（各段用 '@' 连接，不要空格。）",
+  "prompt": "用 TypeScript 完成（URL / URLSearchParams / EventEmitter 都是运行期全局类，无需 import）：\n1) 读 ./_input.txt（pre 脚本已写入一段 URL 文本，去掉首尾空白后记作 T）；\n2) 用全局 URL 解析 T，取出 hostname、port、pathname，以及 searchParams.get('x')；\n3) 用全局 EventEmitter 做一遍订阅计数：\n   - on('e', f1)、once('e', f2)\n   - emit('e') 两次\n   - off('e', f1)，再 emit('e') 一次\n   - 记 total = 两个监听函数被调用的总次数，left = 此时 listenerCount('e')\n4) 打印一行：\nURL=<hostname>@<port>@<pathname>@<searchParams.get('x')>@<total>@<left>@<T 的 md5 小写十六进制>\n（各段用 '@' 连接，不要空格。）",
   "maxAttempts": 3,
   "timeout": 30,
+  "setup": "write_input.py",
   "input": "https://example.com:8443/a/b/c.html?q=1&x=plain",
   "expect": {
     "contains": "example.com@8443@/a/b/c.html@plain@3@0@76bb443ebb5ff3da8fff6b94cb8b5a4a"
   },
-  "retryHint": "上一次运行的结果不对。要求：用全局 URL 解析 /input 的 URL（hostname/port/pathname/searchParams.get('x')）；用全局 EventEmitter 做 on+once → emit×2 → off(on 那个) → emit×1，记录总调用次数与最后的 listenerCount；打印 URL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<md5(输入文本)>。"
+  "retryHint": "上一次运行的结果不对。要求：用全局 URL 解析 ./_input.txt 的 URL（hostname/port/pathname/searchParams.get('x')）；用全局 EventEmitter 做 on+once → emit×2 → off(on 那个) → emit×1，记录总调用次数与最后的 listenerCount；打印 URL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<md5(输入文本)>。"
 }

@@ -371,10 +371,12 @@ export function installWidgetTree(): void {
     patchLayoutRemove(typeof JZGridLayout !== 'undefined' ? (JZGridLayout.prototype as any) : undefined);
     patchLayoutRemove(typeof JZSelfLayout !== 'undefined' ? (JZSelfLayout.prototype as any) : undefined);
 
-    // ---- 视图容器: 登记子控件 + 按序号取回 ----
-    // `widget(i)` / `currentWidget()` 这类"回吐控件"的 getter **只能在 JS 侧回答**:
-    // C++ 侧只有裸指针, 变不回同一个 JS 对象(引擎没有身份表)。这里按 add/insert/remove 的序号
-    // 维护登记表(与 C++ 的存放顺序一致), 于是下标能对上, 拿回的也是你当初传进去的那份。
+    // ---- 视图容器: 只登记子控件(保活) ----
+    // 2026-09-23: `widget(i)` / `currentWidget()` / `setCurrentWidget(w)` 这些"回吐控件"的
+    // getter 已由**引擎侧**绑定(见 JZJSWidgetModule::widgetJsView): 控件被 JS 包装过就在
+    // 动态属性 js_value 上留了宿主句柄, 引擎直接还回**同一份** JS 对象(`===` 成立), 且不限于
+    // "经 JS 入口建立的关系"。所以本层不再提供这些 getter(会与引擎实现重复且口径更窄),
+    // 只保留 add/insert/remove 的**登记**(父强引用子包装 = 保活), 引擎那侧不负责保活。
     if (typeof JZStackedWidget !== 'undefined') {
         const ps = JZStackedWidget.prototype as any;
         const nativeAdd = ps.addWidget;
@@ -393,14 +395,6 @@ export function installWidgetTree(): void {
             nativeRemoveIndex.call(this, index);
             removeChildAt(this, index);
         };
-        ps.widget = function (this: JZStackedWidget, index: number): JZWidget | null {
-            const n = widgetNode(this, false);
-            return n && n.children[index] ? n.children[index] : null;
-        };
-        ps.currentWidget = function (this: JZStackedWidget): JZWidget | null {
-            const i = this.currentIndex();
-            return i >= 0 ? this.widget(i) : null;
-        };
     }
     if (typeof JZTabWidget !== 'undefined') {
         const pt = JZTabWidget.prototype as any;
@@ -414,14 +408,6 @@ export function installWidgetTree(): void {
         pt.removeTab = function (this: JZTabWidget, index: number): void {
             nativeRemoveIndex.call(this, index);
             removeChildAt(this, index);
-        };
-        pt.widget = function (this: JZTabWidget, index: number): JZWidget | null {
-            const n = widgetNode(this, false);
-            return n && n.children[index] ? n.children[index] : null;
-        };
-        pt.currentWidget = function (this: JZTabWidget): JZWidget | null {
-            const i = this.currentIndex();
-            return i >= 0 ? this.widget(i) : null;
         };
     }
     if (typeof JZSplitter !== 'undefined') {
@@ -441,21 +427,12 @@ export function installWidgetTree(): void {
             nativeRemove.call(this, w);
             unlink(w);
         };
-        ps.widget = function (this: JZSplitter, index: number): JZWidget | null {
-            const n = widgetNode(this, false);
-            return n && n.children[index] ? n.children[index] : null;
-        };
     }
     if (typeof JZScrollArea !== 'undefined') {
         const nativeSetWidget = JZScrollArea.prototype.setWidget;
         JZScrollArea.prototype.setWidget = function (this: JZScrollArea, content: JZWidget): void {
             nativeSetWidget.call(this, content);
             link(this, content);
-        };
-        // 内容控件(setWidget 设进来的)是 JS 对象 -> 登记表里就有它, 拿回同一份
-        JZScrollArea.prototype.widget = function (this: JZScrollArea): JZWidget | null {
-            const n = widgetNode(this, false);
-            return n && n.children.length ? n.children[n.children.length - 1] : null;
         };
     }
 

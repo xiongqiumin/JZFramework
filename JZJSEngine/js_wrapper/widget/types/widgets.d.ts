@@ -64,11 +64,19 @@ declare class JZWidget {
   setMaximumWidth(w: number): void;
   setMaximumHeight(h: number): void;
 
-  // ---- 显隐 / 焦点 / 重绘 ----
+  // ---- 显隐 / 使能 / 焦点 / 重绘 ----
   setVisible(visible: boolean): void;
   isVisible(): boolean;
   show(): void;
   hide(): void;
+  /**
+   * 使能状态(等价 Qt setEnabled)。禁用的控件**不接收**鼠标(含滚轮/右键菜单)、键盘、输入法
+   * 事件 —— 事件被本控件吞掉, 不向父控件冒泡; 已持有焦点时立即失焦。绘制/布局照常。
+   * 外观(灰化)由控件自己决定: 需要灰化的控件在绘制时查 isEnabled() 自行换色。
+   */
+  setEnabled(enabled: boolean): void;
+  /** 沿父链判定: 任一祖先被禁用, 自身也视为禁用(Qt 同款) */
+  isEnabled(): boolean;
   setFocus(): void;
   hasFocus(): boolean;
   /** 排一次重绘(合并脏区后走 paintEvent) */
@@ -545,6 +553,29 @@ declare class JZChart extends JZWidget {
   // ---- 分类标签(折线/柱状的 X 轴; 饼图的扇区名) ----
   setCategories(categories: string[]): void;
   categories(): string[];
+
+  // ---- 数值 X 轴 / 右 Y 轴 / 轴标题 ----
+  // 原版 JZChart 的 X 只有"索引 + 分类标签"两种, 画不了"电压-容量""电流-时间"这类
+  // X 不是序号的曲线(等价 qcustomplot 的 key 轴)。下面这几个补上:
+  //   * setSeriesKeys / setSeriesDataXY: 给序列配数值 X(与 data 一一对应; 长度不一致按短的截断);
+  //   * setSeriesValueAxis: 该序列用左轴(0, 默认)还是右轴(1) —— 右轴只在真的有条序列用时才画;
+  //   * setAxisLabels: 三条轴的标题(不用的传空串; 引擎按精确参数个数校验, 没有可选参数)。
+  // ⚠ 同一张图里"给了 keys"和"没给 keys"的序列别混用: 数值模式下没给 keys 的序列按索引画。
+  setSeriesKeys(index: number, keys: number[]): void;
+  setSeriesDataXY(index: number, keys: number[], values: number[]): void;
+  seriesKeys(index: number): number[];
+  /** 该序列是否处于数值 X 模式(keys 非空且与 data 等长) */
+  hasSeriesKeys(index: number): boolean;
+  /** axis: 0 = 左轴(默认) / 1 = 右轴; 传别的值抛异常 */
+  setSeriesValueAxis(index: number, axis: number): void;
+  seriesValueAxis(index: number): number;
+  /** 是否有序列用了这条轴(决定画不画) */
+  hasValueAxis(axis: number): boolean;
+  /** 三条轴的标题; 不用的轴传 '' */
+  setAxisLabels(xLabel: string, yLabel: string, y2Label: string): void;
+  xAxisLabel(): string;
+  yAxisLabel(): string;
+  y2AxisLabel(): string;
 
   // ---- 外观 ----
   setTitle(title: string): void;

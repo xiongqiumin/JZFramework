@@ -715,6 +715,39 @@ bool JZWidget::isVisible() const
     return m_visible; 
 }
 
+// ==================== 使能状态 ====================
+
+void JZWidget::setEnabled(bool enabled)
+{
+    if (m_enabled == enabled)
+        return;
+
+    m_enabled = enabled;
+
+    if (!enabled)
+    {
+        // 禁用的控件不该继续接收键盘/IME: 正持有焦点就交还窗口(等价 Qt 禁用时清焦点)。
+        if (JZWindow* win = window())
+        {
+            if (win->focusWidget() == this)
+                win->setFocusWidget(nullptr);
+        }
+        // 悬停面板立刻收起(禁用后不再有 enter/leave 派发, 留着会残留在屏幕上)
+        hideTooltip();
+    }
+
+    update();
+}
+
+bool JZWidget::isEnabled() const
+{
+    if (!m_enabled)
+        return false;
+    // 禁用可继承: 任一祖先被禁用, 自身也视为禁用(Qt 同款)。
+    const JZWidget* p = parentWidget();
+    return p ? p->isEnabled() : true;
+}
+
 
 // ==================== 布局 ====================
 
@@ -876,6 +909,10 @@ JZLayout* JZWidget::layout() const
 
 void JZWidget::setFocus()
 {
+    // 禁用(含祖先禁用)的控件不接收焦点(Qt 同款)
+    if (!isEnabled())
+        return;
+
     JZWindow* win = window();
     if (win)
         win->setFocusWidget(this);
@@ -907,6 +944,16 @@ void JZWidget::update()
 
 bool JZWidget::event(JZEvent* e)
 {
+    // 禁用态 (见 setEnabled): 鼠标/键盘/输入法事件在本控件**吞掉** —— 既不派发也不向父控件
+    // 冒泡(Qt 同款: 点到禁用控件上不会穿透到下面的控件)。绘制/显隐/尺寸等照常处理:
+    // 禁用的控件仍要画(灰化交给控件自己)、仍参与布局。
+    if (!isEnabled())
+    {
+        const int t = e->type();
+        if (t == JZEvent_mouse || t == JZEvent_key || t == JZEvent_ime)
+            return true;
+    }
+
     if (e->type() == JZEvent_paint)
     {
         resolvedStyle();   // 绘制前确保样式已按当前样式表解析 (内部缓存)

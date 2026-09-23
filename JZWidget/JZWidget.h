@@ -163,6 +163,17 @@ public:
     void show();
     void hide();
 
+    // ---- 使能状态 (等价 Qt QWidget::setEnabled / isEnabled) ----
+    // 语义(对齐 Qt):
+    //   * isEnabled() 沿父链判定 —— 任一祖先被禁用, 自身也视为禁用 (禁用是可继承的);
+    //   * 被禁用的控件**不接收**鼠标(含滚轮与右键菜单)、键盘、输入法事件: 事件在本控件
+    //     被吞掉(既不派发也不向父控件冒泡, Qt 同款); 已持有焦点时立即失焦;
+    //   * 绘制/显隐/尺寸等事件照常处理 (禁用的控件仍要画、仍参与布局);
+    //   * 外观(灰化)由控件自己决定 —— 框架不动样式, 需要灰化的控件在 paintEvent 里查
+    //     isEnabled() 自行换色 (与 Qt 的 disabled 调色板由样式层负责一致)。
+    void setEnabled(bool enabled);
+    bool isEnabled() const;
+
     // 不透明度: 用于刷新遍历时的"剔除"判断 (等价 LVGL lv_obj 的 opaque 标志)
     void setOpaque(int opaque);
     int opaque() const;
@@ -426,6 +437,7 @@ protected:
     int m_height;
 
     bool m_visible;
+    bool m_enabled = true;         // 自身使能位 (祖先禁用经 isEnabled 沿父链体现)
     bool m_passThrough = false;
     bool m_clipChildren = false;
     int m_opaque = 255;    // 是否向身后的兄弟控件贡献"不透明覆盖"(重绘剔除; 0=透明覆盖层)

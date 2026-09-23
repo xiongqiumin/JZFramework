@@ -21,6 +21,7 @@
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZFont.h"
+#include "JZFontMetrics.h"   // JZFont.measureText/textWidth/... (JZFontMetrics 门面)
 #include "JZColor.h"
 #include "JZMatrix2D.h"
 
@@ -696,6 +697,17 @@ void JZJSWidgetModule::attachJsValue(JZObject* object, JSValueConst value)
     object->setProperty(JZ_JS_VALUE_PROP, JZVariant::fromValue(JZJSHandle(m_engine, value)));
 }
 
+JSValue JZJSWidgetModule::widgetJsView(JZWidget* widget)
+{
+    if (!m_engine || !widget)
+        return JS_NULL;
+
+    JSValue js = jsValueOf(widget);       // 借用
+    if (JS_IsUndefined(js))
+        return JS_NULL;                   // 从没被 JS 拿到过: 造不出"同一份", 交给调用方决定怎么报
+    return JS_DupValue(m_engine->context(), js);
+}
+
 void JZJSWidgetModule::bindJsEventFilter(JZWidget* widget, JSValueConst value)
 {
     if (!m_engine || !widget)
@@ -837,6 +849,16 @@ bool JZJSWidgetModule::eventFilter(JZObject* watched, JZEvent* event)
 {
     if (!m_engine || !watched || !event)
         return false;
+
+    // 禁用态先于一切: 被 setEnabled(false) 的控件(含祖先禁用, 见 JZWidget::isEnabled)对输入类
+    // 事件一律**吞掉** —— 既不转给 JS 回调, 也不放行走原生实现。这一步必须在过滤器里做:
+    // 过滤器比 JZWidget::event 更靠前(见 JZObject::sendEvent 的链), 只在 event() 里拦会漏掉
+    // JS 回调(它正是在这里被转发的)。
+    if (event->type() == JZEvent_mouse || event->type() == JZEvent_key || event->type() == JZEvent_ime)
+    {
+        if (!static_cast<JZWidget*>(watched)->isEnabled())
+            return true;
+    }
 
     // 转发目标 = 控件自己那个 JS 对象(挂在动态属性 js_value 上)。取不到(纯 C++ 建出来的控件、
     // 或 JS 对象已经回收)就直接放行走原生实现。
@@ -1691,6 +1713,10 @@ void JZJSWidgetModule::registWidgets()
     });
     bind_w.def("setVisible", [](JZWidget* w, bool v) { w->setVisible(v); });
     bind_w.def("isVisible", [](JZWidget* w) { return w->isVisible(); });
+    // 使能状态(等价 Qt setEnabled/isEnabled): 禁用的控件不接收鼠标/键盘/IME 事件,
+    // isEnabled() 沿父链判定(祖先禁用则自身也禁用)。语义详见 JZWidget.h。
+    bind_w.def("setEnabled", [](JZWidget* w, bool on) { w->setEnabled(on); });
+    bind_w.def("isEnabled", [](JZWidget* w) { return w->isEnabled(); });
     bind_w.def("show", [](JZWidget* w) { w->show(); });
     bind_w.def("hide", [](JZWidget* w) { w->hide(); });
    
@@ -2115,6 +2141,37 @@ void JZJSWidgetModule::registWidgets()
     bind_chart.def("setCategories", [this](JZChart* c, JSValue categories) {
         c->setCategories(jzJsToStringArray(m_engine->context(), categories, "JZChart.setCategories"));
     });
+    // ---- 数值 X 轴 / 右 Y 轴 / 轴标题 (见 JZChart.h): 画"电压-容量""电流-时间"这类
+    //      X 不是序号的曲线必须用它; 原来的 setCategories 只认索引对齐的字符串标签。----
+    bind_chart.def("setSeriesKeys", [this](JZChart* c, int index, JSValue keys) {
+        c->setSeriesKeys(index, jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesKeys"));
+    });
+    bind_chart.def("setSeriesDataXY", [this](JZChart* c, int index, JSValue keys, JSValue values) {
+        c->setSeriesDataXY(index,
+            jzJsToDoubleArray(m_engine->context(), keys, "JZChart.setSeriesDataXY"),
+            jzJsToDoubleArray(m_engine->context(), values, "JZChart.setSeriesDataXY"));
+    });
+    bind_chart.def("seriesKeys", [](JZChart* c, int index) -> std::vector<double> {
+        if (index < 0 || index >= c->seriesCount())
+            throw std::runtime_error("JZChart.seriesKeys: 序列下标越界");
+        return c->seriesKeys(index);
+    });
+    bind_chart.def("hasSeriesKeys", [](JZChart* c, int index) { return c->hasSeriesKeys(index); });
+    bind_chart.def("setSeriesValueAxis", [](JZChart* c, int index, int axis) {
+        if (axis != 0 && axis != 1)
+            throw std::runtime_error("JZChart.setSeriesValueAxis: 轴只能是 0(左)/1(右)");
+        c->setSeriesValueAxis(index, axis);
+    });
+    bind_chart.def("seriesValueAxis", [](JZChart* c, int index) { return c->seriesValueAxis(index); });
+    bind_chart.def("hasValueAxis", [](JZChart* c, int axis) { return c->hasValueAxis(axis); });
+    // 轴标题: 三个都要给(不用的轴传空串) —— 引擎按精确参数个数校验, 不做可选参数
+    bind_chart.def("setAxisLabels", [](JZChart* c, const std::string& xl,
+                                       const std::string& yl, const std::string& y2l) {
+        c->setAxisLabels(xl, yl, y2l);
+    });
+    bind_chart.def("xAxisLabel", [](JZChart* c) { return c->xAxisLabel(); });
+    bind_chart.def("yAxisLabel", [](JZChart* c) { return c->yAxisLabel(); });
+    bind_chart.def("y2AxisLabel", [](JZChart* c) { return c->y2AxisLabel(); });
     bind_chart.def("categories", [](JZChart* c) { return c->categories(); });   // 值语义: 返回拷贝
     bind_chart.def("setTitle", [](JZChart* c, const std::string& title) { c->setTitle(title); });
     bind_chart.def("title", [](JZChart* c) { return c->title(); });
@@ -2355,6 +2412,23 @@ void JZJSWidgetModule::registViews()
     bind_stack.def("indexOf", [](JZStackedWidget* s, JZWidget* w) { return s->indexOf(w); });
     bind_stack.def("currentIndex", [](JZStackedWidget* s) { return s->currentIndex(); });
     bind_stack.def("setCurrentIndex", [](JZStackedWidget* s, int i) { s->setCurrentIndex(i); });
+    // 回吐页控件(返回**同一份 JS 对象**, `===` 成立; 见 widgetJsView):
+    // 原来 C++ 侧不绑这几条, 靠 JS 便利层(tree.ts)的登记表回答 —— 但那张表只认"经 JS 入口
+    // 建立的关系", 页面若是 C++ 侧挂上去的(或关系经别的路径建立)就答不出来。改为引擎侧
+    // 优先还控件的宿主句柄, 覆盖面更大; 从没被 JS 拿到过的页返回 null(那本来也没有对象可回吐)。
+    bind_stack.def("widget", [this](JZStackedWidget* s, int i) -> JSValue {
+        return widgetJsView(s->widget(i));
+    });
+    bind_stack.def("currentWidget", [this](JZStackedWidget* s) -> JSValue {
+        return widgetJsView(s->currentWidget());
+    });
+    // 传 null 也能过形参校验(等价 Qt "给个空指针就什么都不做")
+    {
+        auto* f = bind_stack.def("setCurrentWidget", [](JZStackedWidget* s, JZWidget* w) {
+            s->setCurrentWidget(w);   // 非本容器的页 / null -> 静默忽略(Qt 同款)
+        });
+        f->params[1].allowNull = true;
+    }
     bind_stack.setCreate(js_JZStackedWidget_ctor);
     mountTransparentClass(bind_stack.classDefine());
 
@@ -2371,6 +2445,19 @@ void JZJSWidgetModule::registViews()
     bind_tab.def("currentIndex", [](JZTabWidget* t) { return t->currentIndex(); });
     bind_tab.def("setCurrentIndex", [](JZTabWidget* t, int i) { t->setCurrentIndex(i); });
     bind_tab.def("tabText", [](JZTabWidget* t, int i) { return t->tabText(i); });
+    // 同 JZStackedWidget: 回吐页控件(见 widgetJsView)
+    bind_tab.def("widget", [this](JZTabWidget* t, int i) -> JSValue {
+        return widgetJsView(t->widget(i));
+    });
+    bind_tab.def("currentWidget", [this](JZTabWidget* t) -> JSValue {
+        return widgetJsView(t->currentWidget());
+    });
+    {
+        auto* f = bind_tab.def("setCurrentWidget", [](JZTabWidget* t, JZWidget* page) {
+            t->setCurrentWidget(page);
+        });
+        f->params[1].allowNull = true;
+    }
     defSignalProperty(bind_tab, "onCurrentChanged", &JZTabWidget::currentChanged);
     bind_tab.setCreate(js_JZTabWidget_ctor);
     mountTransparentClass(bind_tab.classDefine());
@@ -2390,6 +2477,10 @@ void JZJSWidgetModule::registViews()
     bind_split.def("removeWidget", [](JZSplitter* s, JZWidget* w) { s->removeWidget(w); });
     bind_split.def("count", [](JZSplitter* s) { return s->count(); });
     bind_split.def("indexOf", [](JZSplitter* s, JZWidget* w) { return s->indexOf(w); });
+    // 回吐子控件(见 widgetJsView); 拿不到 JS 包装的(从没被 JS 拿到过)返回 null
+    bind_split.def("widget", [this](JZSplitter* s, int i) -> JSValue {
+        return widgetJsView(s->widget(i));
+    });
     // 方向用整数(与 JS 侧 types 里的枚举值一致): JZSplitter::Orientation 是本类内的嵌套枚举
     bind_split.def("setOrientation", [](JZSplitter* s, int o) { s->setOrientation((JZSplitter::Orientation)o); });
     bind_split.def("orientation", [](JZSplitter* s) { return (int)s->orientation(); });
@@ -2409,6 +2500,14 @@ void JZJSWidgetModule::registViews()
         if (!content)
             throw std::runtime_error("JZScrollArea.setWidget: 需要控件");
         a->setWidget(content);
+    });
+    // 内容控件(setWidget 进来的 = JS 造的, 答得出) / 内部视口(C++ 造的, 从没被 JS 拿到过 ->
+    // 返回 null; 要 JS 侧的对象得走 JS 便利层的登记表 —— 但那本来也没有对应 JS 对象)
+    bind_area.def("widget", [this](JZScrollArea* a) -> JSValue {
+        return widgetJsView(a->widget());
+    });
+    bind_area.def("viewport", [this](JZScrollArea* a) -> JSValue {
+        return widgetJsView(a->viewport());
     });
     bind_area.def("setScrollDirection", [](JZScrollArea* a, int d) { a->setScrollDirection(d); });
     bind_area.def("setScrollBarPolicy", [](JZScrollArea* a, int p) { a->setScrollBarPolicy((JZScrollArea::ScrollBarPolicy)p); });
@@ -2470,12 +2569,15 @@ void JZJSWidgetModule::registViews()
     bind_imglab.setCreate(js_JZImageLabel_ctor);
     mountTransparentClass(bind_imglab.classDefine());
 
-    // 注: 下面这些**需要回吐"控件指针"**的 getter 暂时没绑 ——
-    //   JZStackedWidget::widget(i)/currentWidget(), JZTabWidget::widget(i),
-    //   JZSplitter::widget(i), JZScrollArea::widget()/viewport()/verticalScrollBar()...
-    // 原因: 新模型里控件族的 JS 对象是"JS 侧造的", C++ 侧拿一个 JZWidget* 没法凭空变回**同一个**
-    // JS 对象(身份表已删)。要开这些接口, 得让 JS 便利层(tree.ts)按自己的登记表来回答(它知道
-    // 谁挂在谁下面), 或者在 JS 侧保留"控件 -> 包装"的弱表。见 types/*.d.ts 里那几条"现造包装"的说明。
+    // 注(2026-09-23 更新): 需要回吐"控件指针"的 getter 现在都绑了 ——
+    //   JZStackedWidget.widget(i)/currentWidget()/setCurrentWidget(w),
+    //   JZTabWidget.widget(i)/currentWidget()/setCurrentWidget(w),
+    //   JZSplitter.widget(i), JZScrollArea.widget()/viewport()。
+    // 做法见 widgetJsView: 控件族的 JS 对象仍是"JS 侧造的", 但每个被 JS 包装过的控件都在
+    // 对象动态属性 js_value 上留了**宿主句柄**, 于是 C++ 拿 JZWidget* 就能还回**同一个** JS 对象
+    // (`===` 成立, 不再需要另立身份表)。只有"从没被 JS 拿到过"的控件(如 JZScrollArea 内部视口、
+    // C++ 内部造的页)返回 null —— 那种情况本来也没有 JS 对象可回吐。
+    // 另: 仍在 JS 便利层(tree.ts)登记关系的是**保活**(父强引用子包装), 与本层互补, 不重复。
 }
 
 // ---------- 布局 ----------
@@ -2897,6 +2999,17 @@ void JZJSWidgetModule::registPens()
     bind_font.def("setStrikeOut", [](JZFont* f, bool on) { f->setStrikeOut(on); });
     bind_font.def("strikeOut", [](JZFont* f) { return f->strikeOut(); });
     bind_font.def("equal", [](JZFont* f, const JZFont& o) { return *f == o; });   // C++ 侧本来就有 operator==
+    // ---- 字体度量 (等价 Qt QFontMetrics::width/height; 原 C++ 侧由 JZFontMetrics 门面提供) ----
+    // 自绘控件排版用: 后端(GDI+)注册了度量引擎就是**真度量**, 否则按 UTF-8 估算
+    // (ASCII ~0.55em / CJK 1em, 见 JZFontMetrics::estimateWidth)。JS 侧典型用法:
+    //   const f = painter.font();            // 屏幕上真正在用的那份字体
+    //   const w = f.measureText(text);       // 真宽度(像素)
+    //   painter.drawText(x + (cw - w) / 2, y, text);
+    bind_font.def("measureText", [](JZFont* f, const std::string& text) { return JZFontMetrics::textWidth(text, *f); });
+    bind_font.def("textWidth", [](JZFont* f, const std::string& text) { return JZFontMetrics::textWidth(text, *f); });
+    bind_font.def("textHeight", [](JZFont* f) { return JZFontMetrics::textHeight(*f); });
+    bind_font.def("ascent", [](JZFont* f) { return JZFontMetrics::ascent(*f); });
+    bind_font.def("descent", [](JZFont* f) { return JZFontMetrics::descent(*f); });
     bind_font.setCreate(js_JZFont_ctor);
     m_engine->registClass(bind_font.classDefine());
 
@@ -3005,6 +3118,9 @@ void JZJSWidgetModule::registPainter()
     bind_p.def("setPen", js_JZPainter_setPen, 1);
     bind_p.def("setBrush", js_JZPainter_setBrush, 1);
     bind_p.def("setFont", js_JZPainter_setFont, 1);
+    // 当前字体(拷贝): 自绘控件要按"屏幕上真正用的那份字体"量文本宽度时读它,
+    // 再交给 JZFont.measureText() —— 见 pen.d.ts 的说明。
+    bind_p.def("font", [](JZPainter* p) { return p->font(); });
     bind_p.def("drawLine", [](JZPainter* p, int x1, int y1, int x2, int y2) { p->drawLine(x1, y1, x2, y2); });
     bind_p.def("drawRect", [](JZPainter* p, int x, int y, int w, int h) { p->drawRect(x, y, w, h); });
     bind_p.def("drawRoundRect", [](JZPainter* p, int x, int y, int w, int h, int r) { p->drawRoundRect(x, y, w, h, r); });

@@ -103,6 +103,19 @@ void JZTabWidget::setCurrentIndex(int index)
     currentChanged.emit(index);
 }
 
+JZWidget* JZTabWidget::currentWidget() const
+{
+    return widget(m_current);
+}
+
+void JZTabWidget::setCurrentWidget(JZWidget* page)
+{
+    int i = indexOf(page);
+    if (i < 0)
+        return;                 // 非本控件的页: 静默忽略(Qt 同款)
+    setCurrentIndex(i);         // 已经是当前页时 setCurrentIndex 自己会 no-op
+}
+
 void JZTabWidget::showCurrentPage()
 {
     for (int i = 0; i < (int)m_pages.size(); ++i)

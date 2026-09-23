@@ -140,11 +140,17 @@ declare class JZStackedWidget extends JZWidget {
   removeWidget(index: number): void;
   count(): number;
   indexOf(page: JZWidget): number;
-  /** 第 i 个页面; 关系是 JS 侧建的(addWidget/insertWidget)时拿回的就是你传进去的那份包装 */
+  /**
+   * 第 i 个页面。**引擎侧回答**(见 JZJSWidgetModule::widgetJsView): 只要该页面被 JS 包装过
+   * 就还回**同一份**对象(`===` 成立)—— 不限于"关系经 JS 入口建立"(C++ 侧挂上去的也认);
+   * 从没被 JS 拿到过的页面返回 null(那种情况本来也没有 JS 对象)。
+   */
   widget(index: number): JZWidget | null;
   currentIndex(): number;
   setCurrentIndex(index: number): void;
   currentWidget(): JZWidget | null;
+  /** 切到指定页(等价 QStackedWidget::setCurrentWidget); page 不是本容器的页 / 传 null 时什么都不做 */
+  setCurrentWidget(page: JZWidget | null): void;
 }
 
 // 标签页(页面所有权: 加入后由标签控件持有)
@@ -158,9 +164,11 @@ declare class JZTabWidget extends JZWidget {
   removeTab(index: number): void;
   count(): number;
   indexOf(page: JZWidget): number;
-  /** 第 i 个页面(与 addTab 的顺序一致) */
+  /** 第 i 个页面(与 addTab 的顺序一致; 回吐规则同 JZStackedWidget.widget) */
   widget(index: number): JZWidget | null;
   currentWidget(): JZWidget | null;
+  /** 切到指定页(等价 QTabWidget::setCurrentWidget); page 不是本控件的页 / 传 null 时什么都不做 */
+  setCurrentWidget(page: JZWidget | null): void;
   tabText(index: number): string;
   currentIndex(): number;
   setCurrentIndex(index: number): void;
@@ -184,6 +192,10 @@ declare class JZSplitter extends JZWidget {
   insertWidget(index: number, widget: JZWidget): void;
   removeWidget(widget: JZWidget): void;
   count(): number;
+  /** 子控件在容器里的下标(-1 = 不在其中) */
+  indexOf(widget: JZWidget): number;
+  /** 第 i 个子控件(回吐规则同 JZStackedWidget.widget) */
+  widget(index: number): JZWidget | null;
   setStretchFactor(index: number, stretch: number): void;
   setHandleWidth(w: number): void;
   handleWidth(): number;
@@ -222,8 +234,13 @@ declare class JZScrollArea extends JZWidget {
 
   /** 内容控件挂到内部 viewport 下, 内容尺寸取自它的 width()/height() */
   setWidget(content: JZWidget): void;
-  /** 取回 setWidget 设进去的那份包装(JS 侧登记的关系, `===` 成立) */
+  /** 取回 setWidget 设进去的那份包装(引擎侧回答, `===` 成立; 见 JZStackedWidget.widget 的说明) */
   widget(): JZWidget | null;
+  /**
+   * 内部视口控件(内容控件的父)。它是 C++ 侧造的、从没被 JS 拿到过 ⇒ 返回 **null**
+   * (engine 里没有"凭空造同一份 JS 对象"的能力); 要 JS 侧对象就用 `widget()`。
+   */
+  viewport(): JZWidget | null;
   /** 虚拟内容总尺寸(w/h < 0 表示该方向跟随视口) */
   setContentSize(w: number, h: number): void;
   scrollTo(x: number, y: number): void;

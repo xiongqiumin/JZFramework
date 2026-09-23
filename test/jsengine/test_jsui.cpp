@@ -11,6 +11,7 @@
 #include "JZImage.h"
 #include "JZJSType.h"
 #include "JZTableWidget.h"
+#include "JZStackedWidget.h"   // 第 17 节: C++ 侧 addWidget 验证"引擎回吐"比 JS 登记表强
 #include "JZMenu.h"
 #include "JZAction.h"
 #include "quickjs/quickjs.h"
@@ -38,6 +39,8 @@ static string evalStr(JZJSEngine& engine, const string& code)
     return engine.fromJSValue<string>(v.get());
 }
 
+static void testContainerGetters();   // 第 17 节: 容器 getter(引擎侧回吐控件对象)
+
 // 递归打印定义树, 便于人眼查看每个节点的 type / id / props / children
 static void dumpNode(const JZUiNode& node, int depth)
 {
@@ -55,6 +58,8 @@ int main()
     setbuf(stdout, NULL);   // 测试输出不缓冲: 崩溃/断言时也能看到已跑过的用例
 
     JZApplication a;
+
+    testContainerGetters();   // 第 17 节: 容器 getter(引擎侧回吐控件对象)
 
     // 样例 Qt 风格 ui 文件(XML):
     // - <class> 指定生成 TS 类名 DemoUi;
@@ -393,6 +398,53 @@ int main()
                       "var r = 'no-throw';"
                       "try { c.setSeriesData(0, 'not-array'); } catch (e) { r = 'throw'; }"
                       "r") == "throw");
+
+        // 数值 X 轴: keys 与 data 一一对应; 长度不一致按短的截断(宁缺勿错位)
+        check("JZChart 数值 X: setSeriesDataXY/seriesKeys/hasSeriesKeys + 长度截断",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "var s0 = c.addSeries('I-V', '');"
+                      "c.setSeriesDataXY(s0, [0, 1, 2, 3], [1.2, 2.4, 3.6]);"   // keys 多一个 -> 截断
+                      "var s1 = c.addSeries('plain', '');"
+                      "c.setSeriesData(s1, [5, 6]);"
+                      "(c.hasSeriesKeys(s0) === true && c.hasSeriesKeys(s1) === false"
+                      " && c.seriesKeys(s0).join(',') === '0,1,2'"
+                      " && c.seriesData(s0).join(',') === '1.2,2.4,3.6') ? 'ok' : 'bad'") == "ok");
+
+        // 右 Y 轴 + 三条轴标题; 轴号只认 0/1, 其余抛异常
+        check("JZChart 右 Y 轴 + 轴标题: 往返与轴号校验",
+              evalStr(engine,
+                      "var c = new JZChart();"
+                      "var s0 = c.addSeries('I', ''); c.setSeriesData(s0, [1, 2]);"
+                      "var s1 = c.addSeries('V', ''); c.setSeriesData(s1, [3, 4]);"
+                      "c.setSeriesValueAxis(s1, 1);"
+                      "c.setAxisLabels('time(s)', 'I(A)', 'V(V)');"
+                      "var bad = 'no-throw';"
+                      "try { c.setSeriesValueAxis(s1, 2); } catch (e) { bad = 'throw'; }"
+                      "(c.seriesValueAxis(s0) === 0 && c.seriesValueAxis(s1) === 1"
+                      " && c.hasValueAxis(0) === true && c.hasValueAxis(1) === true"
+                      " && c.xAxisLabel() === 'time(s)' && c.yAxisLabel() === 'I(A)'"
+                      " && c.y2AxisLabel() === 'V(V)' && bad === 'throw') ? 'ok' : 'bad'") == "ok");
+
+        // 真画一遍: 数值 X + 右轴 + 轴标题, 绘制路径必须走通。
+        // 这里**故意混用**一条带 keys、一条不带(索引模式)的序列: 按文档别这么写, 但混了也不能崩。
+        {
+            evalStr(engine,
+                    "var cwin = new JZWindow(360, 220, 'chart');"
+                    "var cv = new JZChart(cwin);"
+                    "cv.setGeometry(0, 0, 340, 200);"
+                    "var ca = cv.addSeries('I', ''); cv.setSeriesDataXY(ca, [0, 1, 2, 3], [1, 2, 1.5, 3]);"
+                    "var cb = cv.addSeries('V', ''); cv.setSeriesData(cb, [4.0, 4.1, 4.05, 4.2]);"
+                    "cv.setSeriesValueAxis(cb, 1);"
+                    "cv.setAxisLabels('t(s)', 'I(A)', 'V(V)');"
+                    "globalThis.__chartWin = cwin;"     // 顶层窗口留 JS 引用
+                    "'ok'");
+            JZWidget* cv = engine.fromJSValue<JZWidget*>(engine.eval("cv").get());
+            JZPainterEvent pe;
+            pe.setRect(JZRect(0, 0, 340, 200));
+            jzApp->sendEvent(cv, &pe);
+            check("JZChart 数值 X + 右轴 + 轴标题: 绘制走通(混用数值/索引模式不崩)", cv != nullptr);
+        }
 
         // uiLoader 支持 Chart 类型(class + 属性 title)
         std::string chartXml = R"(<?xml version="1.0" encoding="UTF-8"?><ui><widget class="Window" name="root"><property name="geometry">0,0,240,160</property><widget class="Chart" name="chart"><property name="title">Trend</property><property name="geometry">0,0,240,160</property></widget></widget></ui>)";
@@ -1205,6 +1257,188 @@ int main()
         check("右键菜单: 左键 Release 不触发", gotX == -1);
     }
 
+    // 16) 使能状态(JZWidget.setEnabled/isEnabled) + 字体度量(JZFont.measureText / painter.font()):
+    //     这两样原来是引擎的短板 —— 使能位只有 JZAction 有, 控件侧空白(移植来的卡片只能自己
+    //     打 setEnabled 补丁); 字体度量只有 C++ 的 JZFontMetrics 门面, JS 侧只能按"字符数 × 系数"
+    //     估算。这里覆盖: 默认值 / 沿父链继承 / 吞事件 / 真度量可用。
+    jzDebug() << "===== 使能状态 / 字体度量 =====";
+    {
+        JZJSEngine engine;
+        engine.init();
+        JZJSWidgetModule widgetModule;
+        engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });   // 控件类层(widget/dist/index.js)靠它定位
+        widgetModule.initEngine(&engine);
+
+        // (a) 默认使能; 关掉后为假; 祖先禁用沿父链传递到子
+        check("使能: 默认 true / setEnabled(false) 后 false / 父禁用传递到子",
+              evalStr(engine,
+                      "var en_p = new JZWidget();"
+                      "var en_c = new JZWidget(); en_c.setParentWidget(en_p);"
+                      "var en_s0 = String(en_c.isEnabled());"
+                      "en_c.setEnabled(false);"
+                      "var en_s1 = String(en_c.isEnabled());"
+                      "en_c.setEnabled(true);"
+                      "en_p.setEnabled(false);"
+                      "var en_s2 = String(en_c.isEnabled());"    // 祖先禁用 -> 自身也禁用
+                      "en_p.setEnabled(true);"
+                      "en_s0 + '/' + en_s1 + '/' + en_s2 + '/' + String(en_c.isEnabled())")
+                  == "true/false/false/true");
+
+        // (b) 禁用控件吞掉鼠标/键盘事件: 不派发到 JS, 也不向父控件冒泡(Qt 同款)
+        evalStr(engine,
+                "var en_w = new JZWindow(200, 120, 'enabled');"
+                "var en_hit = new JZWidget(); en_hit.setFixedSize(50, 30);"
+                "globalThis.__enHits = 0;"
+                "en_hit.onMousePress = function () { globalThis.__enHits++; };"
+                "globalThis.__enParentHits = 0;"
+                "en_w.onMousePress = function () { globalThis.__enParentHits++; };"
+                "en_w.addWidget(en_hit);"
+                "globalThis.__enWin = en_w;"     // 顶层窗口留 JS 引用
+                "'ok'");
+        {
+            JZWidget* en_hit = engine.fromJSValue<JZWidget*>(engine.eval("en_hit").get());
+            JZMouseEvent press(JZMouseEvent::Press, JZMouseEvent::LeftButton,
+                               JZPoint(5, 5), JZPoint(5, 5));
+            jzApp->sendEvent(en_hit, &press);                       // 使能态: 正常派发
+            evalStr(engine, "en_hit.setEnabled(false); 'ok'");
+            jzApp->sendEvent(en_hit, &press);                       // 禁用态: 被本控件吞掉
+            check("使能: 禁用后鼠标事件不再派发到 JS(且不冒泡到父控件)",
+                  evalStr(engine,
+                          "String(globalThis.__enHits) + '/' + String(globalThis.__enParentHits)")
+                      == "1/0");
+
+            // 禁用控件不接收焦点(Qt: 禁用的控件不可聚焦)
+            evalStr(engine, "en_hit.setEnabled(false); en_hit.setFocus(); 'ok'");
+            check("使能: 禁用的控件拿不到焦点",
+                  evalStr(engine, "String(en_hit.hasFocus())") == "false");
+        }
+
+        // (c) 字体度量: measureText 与 textWidth 同义; 文本越长越宽; 行高/ascent/descent 可用
+        //     (后端没注册度量引擎时走 UTF-8 估算, 所以这里只断言"量得出且单调")
+        check("字体度量: measureText/textWidth 一致 + 单调 + 行高/ascent/descent",
+              evalStr(engine,
+                      "var en_f = new JZFont(16);"
+                      "var en_w1 = en_f.measureText('abc');"
+                      "var en_w2 = en_f.textWidth('abc');"
+                      "var en_w3 = en_f.textWidth('abcdef');"
+                      "var en_h = en_f.textHeight();"
+                      "var en_a = en_f.ascent();"
+                      "var en_d = en_f.descent();"
+                      "String(en_w1 === en_w2 && en_w1 > 0 && en_w3 > en_w1"
+                      " && en_h > 0 && en_a > 0 && en_d >= 0 && en_a <= en_h) ? 'ok' : 'bad'")
+                  == "ok");
+
+        // (d) 自绘场景: painter.font() 读回画笔里那份字体(字号/度量随之变化)
+        evalStr(engine,
+                "var en_fw = new JZWindow(200, 120, 'font');"
+                "globalThis.__fontProbe = '';"
+                "en_fw.onPaint = function () {"
+                "  var en_p = new JZPainter(en_fw);"
+                "  en_p.setFont(new JZFont('微软雅黑', 20));"
+                "  var en_pf = en_p.font();"
+                "  globalThis.__fontProbe = en_pf.size() + '/' + en_pf.family()"
+                "      + '/' + (en_pf.measureText('测试') > 0);"
+                "};"
+                "globalThis.__fontWin = en_fw;"
+                "'ok'");
+        {
+            JZWidget* en_fw = engine.fromJSValue<JZWidget*>(engine.eval("en_fw").get());
+            JZPainterEvent pe;
+            pe.setRect(JZRect(0, 0, 200, 120));
+            jzApp->sendEvent(en_fw, &pe);
+            check("字体度量: 画笔字体往返(字号 20 / 字体族 / 度量可用)",
+                  evalStr(engine, "globalThis.__fontProbe") == "20/微软雅黑/true");
+        }
+    }
+
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");
     return g_fail == 0 ? 0 : 1;
 }
+
+// 17) 容器 getter(回吐控件对象): 由**引擎侧**回答(见 JZJSWidgetModule::widgetJsView) ——
+//     控件被 JS 包装过就在动态属性 js_value 上留了宿主句柄, 于是 C++ 拿 JZWidget* 能还回
+//     同一份 JS 对象。比 JS 便利层(tree.ts)那张"只认 JS 入口建立的关系"的登记表覆盖面大。
+static void testContainerGetters()
+{
+    JZJSEngine engine;
+    engine.init();
+    JZJSWidgetModule widgetModule;
+    engine.setLibraryDir({ std::string(JZ_JS_WRAPPER_DIR) });
+    widgetModule.initEngine(&engine);
+
+    // (a) JS 路径: addWidget 进去的页, 下标取 / 当前页取都拿回原包装
+    check("容器 getter: JS addWidget 的页 widget(i)/currentWidget() === 原包装",
+          evalStr(engine,
+                  "var cg = new JZStackedWidget();"
+                  "var cg0 = new JZWidget(), cg1 = new JZWidget();"
+                  "var cgi = cg.addWidget(cg0); cg.addWidget(cg1);"
+                  "var cgins = new JZWidget(); cg.insertWidget(1, cgins);"
+                  "cg.setCurrentIndex(1);"
+                  "String(cgi) + '/' + String(cg.count())"
+                  " + '/' + String(cg.widget(0) === cg0 && cg.widget(1) === cgins && cg.widget(2) === cg1)"
+                  " + '/' + String(cg.currentWidget() === cgins)")
+              == "0/3/true/true");
+
+    // (b) setCurrentWidget(等价 QStackedWidget::setCurrentWidget; bteserver 里就调这个):
+    //     按对象切页; 不是本容器的页 / null 都静默忽略(Qt 同款), 不抛
+    check("JZStackedWidget.setCurrentWidget: 按对象切页 + 非本容器的页与 null 静默忽略",
+          evalStr(engine,
+                  "var sw = new JZStackedWidget();"
+                  "var sp0 = new JZWidget(), sp1 = new JZWidget();"
+                  "sw.addWidget(sp0); sw.addWidget(sp1);"
+                  "sw.setCurrentWidget(sp1);"
+                  "var s1 = sw.currentIndex();"
+                  "sw.setCurrentWidget(new JZWidget());"     // 不是本容器的页
+                  "var s2 = sw.currentIndex();"
+                  "var s3 = 'no-throw';"
+                  "try { sw.setCurrentWidget(null); } catch (e) { s3 = 'throw'; }"
+                  "String(s1) + '/' + String(s2) + '/' + s3"
+                  " + '/' + String(sw.currentWidget() === sp1)")
+              == "1/1/no-throw/true");
+
+    // (c) 引擎比 JS 登记表强的地方: 页面由 **C++ 侧**挂上去(JS 的 tree.ts 登记表不知道这条
+    //     关系 —— 它只认经 JS 入口建立的关系), 只要该页被 JS 包装过, 引擎照样回吐同一份
+    {
+        evalStr(engine,
+                "globalThis.__cgStk = new JZStackedWidget();"
+                "globalThis.__cgPage = new JZWidget();"
+                "'ok'");
+        JZWidget* stkRaw = engine.fromJSValue<JZWidget*>(engine.eval("__cgStk").get());
+        JZWidget* pageRaw = engine.fromJSValue<JZWidget*>(engine.eval("__cgPage").get());
+        JZStackedWidget* stk = dynamic_cast<JZStackedWidget*>(stkRaw);
+        check("容器 getter: 从 JS 取到的是真 JZStackedWidget", stk != nullptr && pageRaw != nullptr);
+        if (stk && pageRaw)
+        {
+            stk->addWidget(pageRaw);   // 绕过 JS 的 addWidget 包装: 登记表里没有这条关系
+            check("容器 getter: C++ 侧挂的页也答得出同一份包装(JS 登记表答不了)",
+                  evalStr(engine,
+                          "String(__cgStk.count())"
+                          " + '/' + String(__cgStk.widget(0) === __cgPage)"
+                          " + '/' + String(__cgStk.currentWidget() === __cgPage)")
+                      == "1/true/true");
+        }
+    }
+
+    // (d) JZTabWidget / JZSplitter 的同类 getter
+    check("容器 getter: JZTabWidget/JZSplitter 的 widget(i)/currentWidget/setCurrentWidget/indexOf",
+          evalStr(engine,
+                  "var tw = new JZTabWidget();"
+                  "var t0 = new JZWidget(), t1 = new JZWidget();"
+                  "tw.addTab(t0, 'A'); tw.addTab(t1, 'B');"
+                  "tw.setCurrentWidget(t1);"
+                  "var sp = new JZSplitter(); var s0 = new JZWidget(); sp.addWidget(s0);"
+                  "String(tw.widget(1) === t1) + '/' + String(tw.currentWidget() === t1)"
+                  " + '/' + String(tw.indexOf(t0)) + '/' + String(sp.widget(0) === s0)"
+                  " + '/' + String(sp.indexOf(s0))")
+              == "true/true/0/true/0");
+
+    // (e) 从没被 JS 拿到过的控件返回 null: JZScrollArea 的内部视口是 C++ 侧造的
+    check("容器 getter: 从没被 JS 包装过的控件返回 null(JZScrollArea.viewport)",
+          evalStr(engine,
+                  "var sa = new JZScrollArea(); var sc = new JZWidget();"
+                  "sa.setWidget(sc);"
+                  "String(sa.widget() === sc) + '/' + String(sa.viewport())")
+              == "true/null");
+}
+
+

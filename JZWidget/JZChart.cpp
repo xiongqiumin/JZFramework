@@ -107,6 +107,71 @@ JZChart::Series& JZChart::series(int index)
     return m_series[index];
 }
 
+// ---- 数值 X 轴 ----
+
+void JZChart::setSeriesKeys(int index, const std::vector<double>& keys)
+{
+    if (index >= 0 && index < (int)m_series.size())
+        m_series[index].keys = keys;
+}
+
+void JZChart::setSeriesDataXY(int index, const std::vector<double>& keys, const std::vector<double>& values)
+{
+    if (index < 0 || index >= (int)m_series.size())
+        return;
+    Series& s = m_series[index];
+    s.data = values;
+    // X/Y 必须一一对应: 长度不一致时按短的截断(宁缺勿错位 —— 错位画出来的曲线是假的)
+    size_t n = std::min(keys.size(), values.size());
+    s.keys.assign(keys.begin(), keys.begin() + n);
+    s.data.resize(n);
+}
+
+const std::vector<double>& JZChart::seriesKeys(int index) const
+{
+    static const std::vector<double> empty;
+    if (index < 0 || index >= (int)m_series.size())
+        return empty;
+    return m_series[index].keys;
+}
+
+bool JZChart::hasSeriesKeys(int index) const
+{
+    if (index < 0 || index >= (int)m_series.size())
+        return false;
+    const Series& s = m_series[index];
+    return !s.keys.empty() && s.keys.size() == s.data.size();
+}
+
+void JZChart::setSeriesValueAxis(int index, int axis)
+{
+    if (index >= 0 && index < (int)m_series.size())
+        m_series[index].valueAxis = (axis == 1) ? 1 : 0;
+}
+
+int JZChart::seriesValueAxis(int index) const
+{
+    if (index < 0 || index >= (int)m_series.size())
+        return 0;
+    return m_series[index].valueAxis;
+}
+
+bool JZChart::hasValueAxis(int axis) const
+{
+    for (const auto& s : m_series)
+        if (s.valueAxis == axis && !s.data.empty())
+            return true;
+    return false;
+}
+
+void JZChart::setAxisLabels(const std::string& xLabel, const std::string& yLabel,
+                            const std::string& y2Label)
+{
+    m_xLabel = xLabel;
+    m_yLabel = yLabel;
+    m_y2Label = y2Label;
+}
+
 void JZChart::setData(const std::vector<std::vector<double>>& seriesList)
 {
     m_series.clear();
@@ -150,9 +215,16 @@ void JZChart::setShowValue(bool on)  { m_showValue = on; }
 
 void JZChart::computeRange(double& yMin, double& yMax) const
 {
+    computeRangeFor(0, yMin, yMax);
+}
+
+void JZChart::computeRangeFor(int axis, double& yMin, double& yMax) const
+{
     bool any = false;
     double lo = 0, hi = 0;
     for (const auto& s : m_series) {
+        if (s.valueAxis != axis)
+            continue;
         for (double v : s.data) {
             if (!any) { lo = hi = v; any = true; }
             else { lo = std::min(lo, v); hi = std::max(hi, v); }
@@ -168,6 +240,37 @@ void JZChart::computeRange(double& yMin, double& yMax) const
     else { double pad = (hi - lo) * 0.1; lo -= pad; hi += pad; }
     yMin = lo;
     yMax = hi;
+}
+
+// X 值域 + 模式判定:
+//   数值模式 —— 有任一条序列给了 keys(且与 data 等长): 取所有 keys 的并集;
+//   索引模式 —— 否则 X = 0..maxN-1(原来的行为, 分类标签也按索引对齐)。
+// 同一张图里"给了 keys"和"没给 keys"的序列不要混用(number 模式下没给 keys 的那条按索引画,
+// 只会画到左上角一小段 —— 属于调用方的错误用法)。
+void JZChart::computeXRange(double& xMin, double& xMax, bool& numeric) const
+{
+    numeric = false;
+    xMin = 0; xMax = 1;
+    int maxN = 0;
+    bool any = false;
+    for (int si = 0; si < (int)m_series.size(); si++) {
+        const Series& s = m_series[si];
+        maxN = std::max(maxN, (int)s.data.size());
+        if (!hasSeriesKeys(si))
+            continue;
+        numeric = true;
+        for (double k : s.keys) {
+            if (!any) { xMin = xMax = k; any = true; }
+            else { xMin = std::min(xMin, k); xMax = std::max(xMax, k); }
+        }
+    }
+    if (!numeric) {
+        xMin = 0;
+        xMax = (maxN > 1) ? (double)(maxN - 1) : 1.0;
+        return;
+    }
+    if (!any) { xMin = 0; xMax = 1; return; }
+    if (xMin == xMax) { xMin -= 0.5; xMax += 0.5; }
 }
 
 void JZChart::paintEvent(JZPainterEvent* event)
@@ -213,23 +316,36 @@ void JZChart::paintEvent(JZPainterEvent* event)
     if (m_showLegend && !names.empty())
         legendW = legendWidthOf(names, JZFont(11));
 
-    int left = m_showAxis ? 46 : 10;
-    int right = 10 + legendW;
-    int bottom = m_showAxis ? 24 : 10;
-    int top = content.y() + 6;
-    JZRect plot(left, top, std::max(1, w - left - right),
-                std::max(1, content.height() - 6 - bottom));
+    // 右 Y 轴(有条序列用 axis=1 才画)与两条轴标题都要占版面
+    const bool rightAxis = m_showAxis && hasValueAxis(1);
 
-    double yMin, yMax;
-    computeRange(yMin, yMax);
+    int left = m_showAxis ? 46 : 10;
+    int right = 10 + legendW + (rightAxis ? 34 : 0);   // 右轴刻度的位置
+    int bottom = m_showAxis ? 24 : 10;
+    if (m_showAxis && !m_xLabel.empty())
+        bottom += 16;                                   // X 轴标题
+    int top = content.y() + 6;
+    if (m_showAxis && (!m_yLabel.empty() || (rightAxis && !m_y2Label.empty())))
+        top += 16;                                      // 左右 Y 轴标题
+    JZRect plot(left, top, std::max(1, w - left - right),
+                std::max(1, content.height() - (top - content.y()) - bottom));
+
+    double yMin, yMax, y2Min = 0, y2Max = 1;
+    computeRangeFor(0, yMin, yMax);
+    if (rightAxis)
+        computeRangeFor(1, y2Min, y2Max);
+
+    double xMin, xMax;
+    bool numericX;
+    computeXRange(xMin, xMax, numericX);
 
     if (m_showAxis || m_showGrid)
-        drawAxis(p, plot, yMin, yMax);
+        drawAxis(p, plot, yMin, yMax, y2Min, y2Max, rightAxis, xMin, xMax, numericX);
 
     if (m_type == BarChart)
         drawBarChart(p, plot, yMin, yMax);
     else
-        drawLineChart(p, plot, yMin, yMax);
+        drawLineChart(p, plot, yMin, yMax, y2Min, y2Max, xMin, xMax, numericX);
 
     if (legendW > 0) {
         JZRect la(w - legendW, content.y() + 6, legendW, content.height() - 12);
@@ -237,7 +353,9 @@ void JZChart::paintEvent(JZPainterEvent* event)
     }
 }
 
-void JZChart::drawAxis(JZPainter& p, const JZRect& plot, double yMin, double yMax) const
+void JZChart::drawAxis(JZPainter& p, const JZRect& plot,
+                       double yMin, double yMax, double y2Min, double y2Max, bool rightAxis,
+                       double xMin, double xMax, bool numericX) const
 {
     JZFont axisFont(10);
     const int divs = 4;
@@ -252,12 +370,14 @@ void JZChart::drawAxis(JZPainter& p, const JZRect& plot, double yMin, double yMa
     }
 
     if (m_showAxis) {
-        // 轴线
+        // 轴线 (有右轴时右边界也画一条)
         p.setPen(JZPen(JZColor(0x88, 0x88, 0x88), 1));
         p.drawLine(plot.left(), plot.top(), plot.left(), plot.bottom());
         p.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom());
+        if (rightAxis)
+            p.drawLine(plot.right(), plot.top(), plot.right(), plot.bottom());
 
-        // Y 轴刻度标签
+        // 左 Y 轴刻度标签
         p.setPen(JZPen(JZColor(0x55, 0x55, 0x55), 1));
         p.setFont(axisFont);
         for (int i = 0; i <= divs; i++) {
@@ -268,51 +388,103 @@ void JZChart::drawAxis(JZPainter& p, const JZRect& plot, double yMin, double yMa
             p.drawText(plot.left() - 4 - tw, y - axisFont.size() / 2, label.c_str());
         }
 
-        // X 轴刻度标签 (取 0 / 中点 / 末点; 有分类标签则优先使用)
-        int maxN = 0;
-        for (const auto& s : m_series)
-            maxN = std::max(maxN, (int)s.data.size());
-        if (maxN > 0) {
-            int ticks[] = { 0, maxN / 2, maxN - 1 };
-            for (int t : ticks) {
-                if (t < 0 || t >= maxN) continue;
-                int x = xAt(t, maxN, plot);
-                std::string label;
-                if (t < (int)m_categories.size())
-                    label = m_categories[t];
-                else {
-                    char buf[16];
-                    snprintf(buf, sizeof(buf), "%d", t);
-                    label = buf;
-                }
+        // 右 Y 轴刻度标签 (只在真的用了右轴时画)
+        if (rightAxis) {
+            for (int i = 0; i <= divs; i++) {
+                double v = y2Min + (y2Max - y2Min) * i / divs;
+                int y = yAt(v, y2Min, y2Max, plot);
+                std::string label = fmtValue(v);
+                p.drawText(plot.right() + 4, y - axisFont.size() / 2, label.c_str());
+            }
+        }
+
+        // X 轴刻度标签: 数值模式按值域等分(等价 qcustomplot 的数值 tick);
+        // 索引模式沿用原行为(0 / 中点 / 末点, 有分类标签优先用分类)
+        if (numericX) {
+            for (int i = 0; i <= divs; i++) {
+                double v = xMin + (xMax - xMin) * i / divs;
+                int x = xAtValue(v, xMin, xMax, plot);
+                std::string label = fmtValue(v);
                 int tw = JZFontMetrics::textWidth(label, axisFont);
                 p.drawText(x - tw / 2, plot.bottom() + 4, label.c_str());
             }
+        } else {
+            int maxN = 0;
+            for (const auto& s : m_series)
+                maxN = std::max(maxN, (int)s.data.size());
+            if (maxN > 0) {
+                int ticks[] = { 0, maxN / 2, maxN - 1 };
+                for (int t : ticks) {
+                    if (t < 0 || t >= maxN) continue;
+                    int x = xAt(t, maxN, plot);
+                    std::string label;
+                    if (t < (int)m_categories.size())
+                        label = m_categories[t];
+                    else {
+                        char buf[16];
+                        snprintf(buf, sizeof(buf), "%d", t);
+                        label = buf;
+                    }
+                    int tw = JZFontMetrics::textWidth(label, axisFont);
+                    p.drawText(x - tw / 2, plot.bottom() + 4, label.c_str());
+                }
+            }
+        }
+
+        // 轴标题 (等价 qcustomplot 的 axis->setLabel): X 在刻度行下面居中, Y 在轴上方
+        JZFont labelFont(11);
+        p.setFont(labelFont);
+        p.setPen(JZPen(JZColor(0x33, 0x33, 0x33), 1));
+        if (!m_xLabel.empty()) {
+            int tw = JZFontMetrics::textWidth(m_xLabel, labelFont);
+            p.drawText(plot.left() + (plot.width() - tw) / 2, plot.bottom() + 4 + axisFont.size() + 3,
+                       m_xLabel.c_str());
+        }
+        if (!m_yLabel.empty())
+            p.drawText(plot.left(), plot.top() - 4 - labelFont.size(), m_yLabel.c_str());
+        if (rightAxis && !m_y2Label.empty()) {
+            int tw = JZFontMetrics::textWidth(m_y2Label, labelFont);
+            p.drawText(plot.right() - tw, plot.top() - 4 - labelFont.size(), m_y2Label.c_str());
         }
     }
 }
 
-void JZChart::drawLineChart(JZPainter& p, const JZRect& plot, double yMin, double yMax) const
+void JZChart::drawLineChart(JZPainter& p, const JZRect& plot,
+                            double yMin, double yMax, double y2Min, double y2Max,
+                            double xMin, double xMax, bool numericX) const
 {
-    for (const auto& s : m_series) {
+    for (int si = 0; si < (int)m_series.size(); si++) {
+        const Series& s = m_series[si];
         int n = (int)s.data.size();
         if (n == 0)
             continue;
 
+        // 本序列用哪条 Y 轴 / 哪种 X 映射 (数值模式见 computeXRange 的说明)
+        const double aMin = (s.valueAxis == 1) ? y2Min : yMin;
+        const double aMax = (s.valueAxis == 1) ? y2Max : yMax;
+        const bool keys = hasSeriesKeys(si);
+        const int ni = keys ? (int)s.keys.size() : n;
+
+        auto xOf = [&](int i) {
+            return keys ? xAtValue(s.keys[i], xMin, xMax, plot) : xAt(i, n, plot);
+        };
+
         p.setPen(JZPen(s.color, 2));
-        if (n >= 2) {
-            int px = xAt(0, n, plot), py = yAt(s.data[0], yMin, yMax, plot);
-            for (int i = 1; i < n; i++) {
-                int cx = xAt(i, n, plot), cy = yAt(s.data[i], yMin, yMax, plot);
+        if (ni >= 2) {
+            int px = xOf(0), py = yAt(s.data[0], aMin, aMax, plot);
+            for (int i = 1; i < ni; i++) {
+                int cx = xOf(i), cy = yAt(s.data[i], aMin, aMax, plot);
                 p.drawLine(px, py, cx, cy);
                 px = cx; py = cy;
             }
         }
 
-        if (m_showPoint) {
+        // 数据点: 点太密就不画(几千个点的曲线画点只会糊成一片, 与 qcustomplot 的
+        // "setScatterStyle 关掉"同理)。阈值 200 与 plot 宽度无关, 只看数量。
+        if (m_showPoint && ni <= 200) {
             p.setBrush(JZBrush(s.color));
-            for (int i = 0; i < n; i++) {
-                int cx = xAt(i, n, plot), cy = yAt(s.data[i], yMin, yMax, plot);
+            for (int i = 0; i < ni; i++) {
+                int cx = xOf(i), cy = yAt(s.data[i], aMin, aMax, plot);
                 p.fillEllipse(cx - 2, cy - 2, 5, 5, s.color);
             }
         }
@@ -480,6 +652,15 @@ int JZChart::xAt(int i, int n, const JZRect& plot)
     if (n <= 1)
         return plot.left() + plot.width() / 2;
     return plot.left() + (int)(0.5 + (double)i / (n - 1) * plot.width());
+}
+
+// 数值 X -> 像素 (X = v 在 [xMin, xMax] 里的位置)
+int JZChart::xAtValue(double v, double xMin, double xMax, const JZRect& plot)
+{
+    if (xMax <= xMin)
+        return plot.left() + plot.width() / 2;
+    double t = (v - xMin) / (xMax - xMin);
+    return plot.left() + (int)(0.5 + t * plot.width());
 }
 
 int JZChart::yAt(double v, double yMin, double yMax, const JZRect& plot)

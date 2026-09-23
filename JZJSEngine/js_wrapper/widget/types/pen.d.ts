@@ -76,6 +76,22 @@ declare class JZFont {
   strikeOut(): boolean;
   /** 值相等(比字体族/字号/风格位); C++ 侧就是 JZFont::operator== */
   equal(other: JZFont): boolean;
+
+  // ---- 字体度量(等价 Qt QFontMetrics::width/height) ----
+  // 由 C++ 的 JZFontMetrics 门面提供: 后端(GDI+)注册了度量引擎就是**真度量**,
+  // 否则按 UTF-8 估算(ASCII ~0.55em / CJK 1em)。
+  // 自绘控件排版用(替代"字符数 × 系数"的估算):
+  //   const f = painter.font();
+  //   painter.drawText(x + ((w - f.measureText(t)) / 2 | 0), y, t);
+  /** 文本像素宽度(measureText 的别名, 语义相同) */
+  measureText(text: string): number;
+  textWidth(text: string): number;
+  /** 单行文本行高(像素) */
+  textHeight(): number;
+  /** 基线以上高度(像素) */
+  ascent(): number;
+  /** 基线以下高度(像素) */
+  descent(): number;
 }
 
 // C++ 的 operator!= 没有单独暴露 —— JS 侧写 !a.equal(b) 即可。

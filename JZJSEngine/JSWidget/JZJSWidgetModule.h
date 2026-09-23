@@ -125,6 +125,14 @@ public:
     JSValue jsValueOf(JZObject* object);
     void attachJsValue(JZObject* object, JSValueConst value);
 
+    // 把"C++ 侧的控件指针"回吐给 JS(容器 getter 用: widget(i) / currentWidget() / widget() ...)。
+    //   有宿主句柄 -> 还那份 JS 对象(`===` 成立), 返回**新引用**(调用方负责交给 JS);
+    //   没有句柄   -> JS_NULL(控件族的 JS 对象是 JS 侧造的, 引擎没有"底层指针 -> JS 对象"的身份表,
+    //                 凭空变不出同一份; 但**只要该控件被 JS 包装过就一定答得出** —— 这比
+    //                 "只认 JS 侧登记过的父子关系"(tree.ts 的 WeakMap)覆盖面更大:
+    //                 C++ 侧 addWidget 挂上的、关系经别的路径建立的控件同样能回吐)。
+    JSValue widgetJsView(JZWidget* widget);
+
     // 布局 addWidget 的实参: 校验是控件并取裸指针(拿不到抛 JS 异常 + 返回 nullptr)。
     JZWidget* takeWidgetFromJs(JSValue value);
 

@@ -122,6 +122,16 @@ JZWidget* JZStackedWidget::currentWidget() const
     return widget(m_current);
 }
 
+void JZStackedWidget::setCurrentWidget(JZWidget* w)
+{
+    // 非本控件的页 / 空指针: 静默忽略(与 QStackedWidget::setCurrentWidget 一致 —— 它在这里
+    // 只记一条 qWarning)。页被删掉后再调也不会翻页, 因为 indexOf 找不到它。
+    int i = indexOf(w);
+    if (i < 0)
+        return;
+    setCurrentIndex(i);
+}
+
 void JZStackedWidget::updateVisibility()
 {
     for (int i = 0; i < (int)m_pages.size(); i++)

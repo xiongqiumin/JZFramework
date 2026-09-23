@@ -34,6 +34,10 @@ public:
 
     int currentIndex() const;
     void setCurrentIndex(int index);      // 切换并发 currentChanged
+    // 当前页 / 切到指定页(等价 QTabWidget::currentWidget / setCurrentWidget):
+    // page 不是本控件的页时什么都不做(Qt 同款)。
+    JZWidget* currentWidget() const;
+    void setCurrentWidget(JZWidget* page);
 
     void resize(int w, int h) override;
     void setGeometry(int x, int y, int w, int h) override;

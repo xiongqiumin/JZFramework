@@ -56,6 +56,11 @@ declare class JZPainter {
   setBrush(color: string | JZColor, opacity?: number): void;
   setFont(font: JZFont): void;
   setFont(family: string, size: number): void;
+  /**
+   * 当前字体(拷贝)。自绘控件要按"屏幕上真正在用的那份字体"量文本宽度时读它, 再交给
+   * `font.measureText(text)`(见 pen.d.ts 的 JZFont 度量接口)。
+   */
+  font(): JZFont;
 
   // ---- 图元 ----
   drawLine(x1: number, y1: number, x2: number, y2: number): void;

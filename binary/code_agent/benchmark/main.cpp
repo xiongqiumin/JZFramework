@@ -156,6 +156,17 @@ struct BenchmarkCase
     // 由宿主同步执行, 传入 --root <工程根> --input <输入> --data <评测集目录>; 非零退出判 setup 失败。
     std::string setup;
     std::string sourceDir;     // 用例 json 所在目录(setup 相对路径在此解析)
+
+    // daemon 后台服务(可选): 与 setup 的区别是生命周期 —— setup 是一次性脚本(跑完就退出),
+    // daemon 是整个用例期间常驻的辅助进程, 典型场景是被测产物要连的"另一侧"：
+    //   模拟下位机(Modbus TCP 从站) / 对端的 MES 服务端 / 持续吐数据的数据源。
+    // 命令模板支持与 verify 相同的占位符: ${root} ${build} ${runtime} ${port} ${bench} ${data}
+    //   （端口等额外参数由各脚本自己约定，宿主不强加 --port）。
+    // 相对路径同 setup: 以 sourceDir（用例 json 所在目录）解析。
+    // 时机: setup 之后、agent 之前启动(异步, 不等待其退出); finishCase() 时连子孙进程一起杀掉
+    //   (JZProcess 在 Windows 下建了 Job Object, 能带走 python 拉起的子进程)。
+    std::string daemon;
+    int daemonReadyMs = 3000;   // 启动后轮询等待其就绪的上限(毫秒); 超时不判失败(daemon 可能本就无输出)
 };
 
 // 全局输入 HTTP 服务用的 handler：模型生成的 JS 通过 fetch('http://127.0.0.1:<port>/input')
@@ -304,6 +315,7 @@ public:
 
     ~Benchmark()
     {
+        stopDaemon();          // 兜底: 异常退出时也别把 python 后台进程留在端口上
         m_httpThread.quit();
         m_httpThread.wait();
     }
@@ -400,6 +412,20 @@ protected:
             {
                 jzError().nospace() << "[用例 " << m_case.name << "] setup 脚本失败: " << perr;
                 m_result.lastAgentError = "setup: " + perr;
+                finishCase();
+                return;
+            }
+        }
+
+        // daemon 后台服务: setup 之后拉起, 整个用例期间常驻(供产物连接, 如模拟下位机/MES),
+        // 直到 finishCase() 才连同子孙进程杀掉。启动即退出(端口被占等)视为本用例失败。
+        if (!m_case.daemon.empty())
+        {
+            std::string derr;
+            if (!startDaemon(m_case, m_root, derr))
+            {
+                jzError().nospace() << "[用例 " << m_case.name << "] daemon 启动失败: " << derr;
+                m_result.lastAgentError = "daemon: " + derr;
                 finishCase();
                 return;
             }
@@ -646,6 +672,62 @@ protected:
         }
     }
 
+    // daemon 后台服务: setup 之后、agent 之前异步拉起, 整个用例期间常驻, finishCase() 时杀掉。
+    // 与 runSetupScript 的关键差别是"不等待它退出" —— daemon 本来就该一直跑着,
+    // 所以我们只做两件事: ①确认它没在启动瞬间就挂掉(端口被占 → 退出码非 0 → 判本用例失败);
+    // ②轮询它的 stdout, 有输出即视为就绪(脚本惯用做法: listen 完成后打印一行 ready 并 flush)。
+    // 超时不判失败: 有些 daemon 本来就不输出, 且真实使用发生在几十秒后的运行/验证阶段。
+    bool startDaemon(const BenchmarkCase &c, const std::string &root, std::string &err)
+    {
+        std::string cmd = expandVerifyCmd(c.daemon);
+        m_daemon = new JZProcess(this);
+        m_daemon->setProcessChannelMode(JZProcess::MergedChannels);
+        if (!m_daemon->start("cmd.exe", { "/c", cmd }))
+        {
+            std::string e = "无法启动 daemon: " + cmd;
+            delete m_daemon;
+            m_daemon = nullptr;
+            err = e;
+            return false;
+        }
+
+        int waited = 0;
+        while (waited < c.daemonReadyMs)
+        {
+            JZThread::msleep(100);
+            waited += 100;
+            if (!m_daemon->readAllStandardOutput().isEmpty())
+                break;                                   // 有输出 -> 认为就绪
+            if (m_daemon->state() == JZProcess::NotRunning)
+                break;                                   // 进程已退出, 不再等
+        }
+
+        // 启动后立刻就退出的(端口被占 / 脚本报错)才算失败, 其输出作为失败原因回给报告
+        if (m_daemon->state() == JZProcess::NotRunning)
+        {
+            std::string out = str_fromLocal(m_daemon->readAllStandardOutput());
+            int rc = m_daemon->exitCode();
+            delete m_daemon;
+            m_daemon = nullptr;
+            err = "daemon 启动后立即退出(退出码 " + std::to_string(rc) + "): " + cmd
+                  + (out.empty() ? std::string() : ("\n" + out));
+            return false;
+        }
+        jzDebug().nospace() << clr(CLR_GRAY) << "[benchmark] daemon 已启动: " << cmd << clr(CLR_RESET);
+        return true;
+    }
+
+    // 收掉本用例的 daemon(连子孙进程一起): 不先读残留输出的话管道可能留脏数据, 读了丢掉即可
+    void stopDaemon()
+    {
+        if (!m_daemon)
+            return;
+        m_daemon->killProcess();
+        m_daemon->readAllStandardOutput();
+        delete m_daemon;
+        m_daemon = nullptr;
+    }
+
     // 把 verify 命令模板里的占位符替换为实际路径/端口
     std::string expandVerifyCmd(const std::string &tpl)
     {
@@ -779,6 +861,8 @@ protected:
 
     void finishCase()
     {
+        stopDaemon();       // 先收掉本用例的后台服务, 再统计/切下一个用例(避免残留占端口)
+
         // 及时抓取本用例累计 token：下一用例 setWorkspace 会重建底层 agent、context 清零，
         // 故必须在此处（当前用例 agent 尚在）抓取并累加到全局总量。
         const auto &u = m_agent->agent()->context()->usage;
@@ -1060,6 +1144,9 @@ protected:
     std::mutex m_inputMutex;
     std::string m_httpPromptExtra; // startHttpServer 构造的"读取输入"约定，重建 agent 后需重新注入   
     HttpThread m_httpThread;
+
+    // 本用例的后台服务(daemon 字段拉起): 用例期间常驻, finishCase() 时 killProcess() 带走
+    JZProcess *m_daemon = nullptr;
 };
 
 // 探测某程序是否可运行(Windows 下用 cmd /c 跑 "<name> --version" 看退出码)
@@ -1168,6 +1255,12 @@ bool containsIC(const std::string &hay, const std::string &needle)
 //   verify          : 外部验证命令模板（非空则启用外部验证，详见 BenchmarkCase 注释）
 //   verifyPort      : 外部验证用端口（缺省 3900，注入 ${port}）
 //   retryHint       : 重试时给模型的提示（实际输出/编译错误/验证输出会自动追加在后）
+//   setup           : 准备脚本（相对用例 json 目录），一次性执行，跑完就退出
+//   daemon          : 后台服务命令模板（相对路径同 setup；占位符同 verify），整个用例期间常驻
+//                     —— 用于起"被测程序的另一侧"（如 Modbus 从站 / 对端 MES 服务端），
+//                     setup 之后、agent 之前拉起，用例结束（含失败）时连子孙进程一起杀掉。
+//                     端口等参数由各脚本自己约定不强加（宿主只透传占位符）。
+//   daemonReadyMs   : daemon 启动后轮询等待其就绪的上限毫秒（缺省 3000）；超时不判失败
 static bool parseCaseObject(const Json::Value &root, const std::string &src, BenchmarkCase &c)
 {
     if (!root.isObject())
@@ -1188,6 +1281,9 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     c.verifyPort = root.isMember("verifyPort") ? root["verifyPort"].asInt() : 3900;
     c.setup = (root.isMember("setup") && root["setup"].isString())
                 ? root["setup"].asString() : "";
+    c.daemon = (root.isMember("daemon") && root["daemon"].isString())
+                ? root["daemon"].asString() : "";
+    c.daemonReadyMs = root.isMember("daemonReadyMs") ? root["daemonReadyMs"].asInt() : 3000;
     {
         std::string s = src;
         size_t p = s.find_last_of("/\\");

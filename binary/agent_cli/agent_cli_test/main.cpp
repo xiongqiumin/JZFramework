@@ -148,6 +148,12 @@ struct BenchmarkCase
     std::string setup;
     std::string sourceDir;     // 用例 json 所在目录(setup 相对路径在此解析)
 
+    // daemon 后台服务(可选, 与 benchmark 同语义): setup 一次性跑完就退出, daemon 是整个用例
+    // 期间常驻的辅助进程(模拟下位机 / 对端 MES 等), setup 之后、agent 之前拉起, finishCase() 杀掉。
+    // 命令模板支持同样的占位符: ${root} ${build} ${runtime} ${port} ${bench} ${data}。
+    std::string daemon;
+    int daemonReadyMs = 3000;   // 启动后轮询等待其就绪的上限(毫秒); 超时不判失败
+
     // 输出预期(benchmark 的 expect.contains / caseInsensitive):
     //   没有 verify 命令时, 由本程序自动组织成"通用 stdout 验证"(data/stdout_verify.py:
     //   跑 code_runtime 比对产物输出), 等价于 benchmark 宿主原本内联的 check()。
@@ -509,6 +515,20 @@ protected:
             }
         }
 
+        // daemon 后台服务: setup 之后、agent 之前拉起, 整个用例期间常驻(同 benchmark)。
+        if (!m_case.daemon.empty())
+        {
+            std::string derr;
+            if (!startDaemon(m_case, root, derr))
+            {
+                jzError().nospace() << "[用例 " << m_case.name << "] daemon 启动失败: " << derr;
+                m_result.lastAgentError = "daemon: " + derr;
+                m_result.passed = false;
+                finishCase();
+                return;
+            }
+        }
+
         JZCliConfig cfg = m_config;
         cfg.rootDir = root;
         cfg.httpPort = m_cliPortBase + (int)i;   // 每用例一个端口, 便于起网页服务 + 订阅 /events
@@ -804,6 +824,8 @@ protected:
 
     void finishCase()
     {
+        stopDaemon();       // 先收掉本用例的后台服务(避免残留占住端口影响下一个用例)
+
         const CaseResult &r = m_result;
         jzDebug().nospace() << "---- 用例[" << r.name.c_str() << "] 结束: "
                             << clr(r.passed ? CLR_GREEN : CLR_RED)
@@ -943,6 +965,60 @@ protected:
         return s;
     }
 
+    // daemon 后台服务: setup 之后拉起, 整个用例期间常驻(供产物连接, 如模拟下位机/MES),
+    // finishCase() 时连子孙进程一起杀掉。与 setup 脚本的差别是"不等待它退出":
+    //   ①进程在启动瞬间就退出(端口被占等) => 判本用例失败;
+    //   ②轮询 stdout, 有输出即视为就绪(脚本 listen 完通常打印一行 ready), 超时不判失败。
+    bool startDaemon(const BenchmarkCase &c, const std::string &root, std::string &err)
+    {
+        std::string cmd = expandVerifyCmd(c.daemon, root);
+        m_daemon = new JZProcess(this);
+        m_daemon->setProcessChannelMode(JZProcess::MergedChannels);
+        if (!m_daemon->start("cmd.exe", { "/c", cmd }))
+        {
+            std::string e = "无法启动 daemon: " + cmd;
+            delete m_daemon;
+            m_daemon = nullptr;
+            err = e;
+            return false;
+        }
+
+        int waited = 0;
+        while (waited < c.daemonReadyMs)
+        {
+            JZThread::msleep(100);
+            waited += 100;
+            if (!m_daemon->readAllStandardOutput().isEmpty())
+                break;
+            if (m_daemon->state() == JZProcess::NotRunning)
+                break;
+        }
+
+        if (m_daemon->state() == JZProcess::NotRunning)
+        {
+            std::string out = str_fromLocal(m_daemon->readAllStandardOutput());
+            int rc = m_daemon->exitCode();
+            delete m_daemon;
+            m_daemon = nullptr;
+            err = "daemon 启动后立即退出(退出码 " + std::to_string(rc) + "): " + cmd
+                  + (out.empty() ? std::string() : ("\n" + out));
+            return false;
+        }
+        jzDebug().nospace() << clr(CLR_GRAY) << "[cli_test] daemon 已启动: " << cmd << clr(CLR_RESET);
+        return true;
+    }
+
+    // 收掉本用例的 daemon(kill 之前不读的话管道里会留脏数据, 读了丢掉即可)
+    void stopDaemon()
+    {
+        if (!m_daemon)
+            return;
+        m_daemon->killProcess();
+        m_daemon->readAllStandardOutput();
+        delete m_daemon;
+        m_daemon = nullptr;
+    }
+
     // setup 脚本: initProject 之后、agent 开始前由宿主同步执行。解释器复用 detectVerifyInterpreter
     // (programPaths 优先, 否则探测 python3/python/py); 直接拉起解释器 + 脚本 + 参数(JZProcess, 不经
     // cmd.exe /c, 避免 Windows 多层引号把路径拆坏), 传入:
@@ -1044,6 +1120,7 @@ protected:
     std::string m_dataDir;
 
     JZAgentCli *m_cli = nullptr;
+    JZProcess *m_daemon = nullptr;   // 本用例的后台服务(daemon 字段拉起), finishCase() 时杀掉
     std::string m_baseRoot;
     int64_t m_llmStartMs = 0;
 
@@ -1162,6 +1239,9 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     c.verifyPort = root.isMember("verifyPort") ? root["verifyPort"].asInt() : 3900;
     c.setup = (root.isMember("setup") && root["setup"].isString())
                 ? root["setup"].asString() : "";
+    c.daemon = (root.isMember("daemon") && root["daemon"].isString())
+                ? root["daemon"].asString() : "";
+    c.daemonReadyMs = root.isMember("daemonReadyMs") ? root["daemonReadyMs"].asInt() : 3000;
     {
         std::string s = src;
         size_t p = s.find_last_of("/\\");

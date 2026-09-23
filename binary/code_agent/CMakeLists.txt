@@ -47,6 +47,12 @@ add_executable(code_agent ${CODE_AGENT_SOURCES})
 target_link_libraries(code_agent PRIVATE JZFramework)
 target_link_libraries(code_agent PRIVATE code_agent_core)
 
+# exe 统一输出到 <build>/binary/code_agent/bin/<CONFIG>（说明见下面那段注释）。
+# ⚠ 必须**在子目录 add_subdirectory 之前**定义: 子目录(runtime 的 jsapi_example 要取
+#   code_runtime.exe 旁的 ts_compiler/tsc/)靠它推导 bin/<配置>/ 下的路径 —— 晚定义的话
+#   子目录作用域里看不到这个变量。
+set(CODE_AGENT_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin")
+
 add_subdirectory(runtime)
 add_subdirectory(test)
 add_subdirectory(benchmark)
@@ -59,8 +65,9 @@ add_subdirectory(benchmark)
 # 目录，initProject 用 applicationDirPath() 能正确定位到配套的 jz_types，benchmark
 # 用 $<TARGET_FILE_DIR:...> 也能跟到对应配置。
 # 用 $<CONFIG> 生成器表达式，对单配置 / 多配置生成器都自动按配置分目录。
+# (变量 CODE_AGENT_BIN_DIR 已在上面定义 —— 目标是在子目录里创建的, 所以这一轮
+#  set_target_properties 必须在子目录之后。)
 # ---------------------------------------------------------------------------
-set(CODE_AGENT_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin")
 foreach(t code_agent code_runtime code_agent_test code_agent_lsp_test code_agent_benchmark)
     set_target_properties(${t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CODE_AGENT_BIN_DIR}/$<CONFIG>")
 endforeach()

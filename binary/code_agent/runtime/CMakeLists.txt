@@ -30,21 +30,90 @@ jz_copy_asan_runtime(code_runtime)
 # jsapi_example: 一份脚本一个主题 的 JS API 例子(读者=模型/初学者)
 #
 # 两个作用:
-#   ① 文档 —— '--entry <这份 js>' 就能跑, 每条语句旁边写了"这行在干嘛/边界在哪";
-#   ② 回归 —— 每个例子自带自检(helper/assert.js), 断言不成立就 throw =>
+#   ① 文档 —— 编译后 '--entry <build/那份 js>' 就能跑, 每条语句旁边写了"这行在干嘛/边界在哪";
+#   ② 回归 —— 每个例子自带自检(helper/assert.ts), 断言不成立就 throw =>
 #             code_runtime 退出码非 0 => 下表的 ctest 变红。
-# 例子直接用 source dir(不放进 build): 改了脚本下一次跑就是新的。
 #
-# ⚠ GLOB 在 configure 时求值 —— 新加一份例子要重新配一次 CMake(或动一下本文件)
-#   才会出现对应测试; 改例子内容不需要。helper/ 是共用脚本(不是例子), 只收顶层 *.js。
+# 例子是 **TypeScript 工程**(src/*.ts + tsconfig.json, 与 bteserver / test_jswidget 同一套骨架):
+# 引擎只认 JS(quickjs 不做转译), 所以用例跑的是**编译产物** build/*.js —— 构建期由下面的
+# custom target 调 tsc 生成(例子本身不拷进 build: 改了 .ts 下一次跑就是新的)。
+#
+# ⚠ GLOB 在 configure 时求值(CONFIGURE_DEPENDS 会自动重配) —— 新加一份例子
+#   (src/10_xxx.ts) 会自己长出对应测试; helper/ 是共用脚本(不是例子), 只收 src 顶层 *.ts。
+# ⚠ 编译器取 code_runtime.exe 同目录的 ts_compiler/tsc/tsc.exe(与 code_agent 同源);
+#   那里没有的时候这批用例会被跳过(configure 时明确提示), 不静默丢 ——
+#   要换别的编译器就 -DJZ_TS_TSC=<tsc.exe 全路径> 或设同名环境变量。
 # ---------------------------------------------------------------------------
 if(BUILD_TEST)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/jsapi_example" JZ_JSAPI_EXAMPLE_DIR)
-    file(GLOB JZ_JSAPI_EXAMPLES "${JZ_JSAPI_EXAMPLE_DIR}/*.js")
-    foreach(JZ_EXAMPLE ${JZ_JSAPI_EXAMPLES})
-        get_filename_component(JZ_EXAMPLE_NAME "${JZ_EXAMPLE}" NAME_WE)
-        add_test(NAME jsapi_example.${JZ_EXAMPLE_NAME}
-                 COMMAND code_runtime --entry ${JZ_EXAMPLE})
-        set_tests_properties(jsapi_example.${JZ_EXAMPLE_NAME} PROPERTIES TIMEOUT 60)
-    endforeach()
+    file(GLOB JZ_JSAPI_EXAMPLES CONFIGURE_DEPENDS "${JZ_JSAPI_EXAMPLE_DIR}/src/*.ts")
+
+    # 编译用的 tsc(tsgo): 就用 **code_runtime.exe 同目录**下的 ts_compiler/tsc/tsc.exe
+    # —— 与 code_agent / MainWindow 的默认同源(applicationDirPath()/ts_compiler/tsc/tsc.exe),
+    # 目录由父目录定死的 CODE_AGENT_BIN_DIR 得到: ${CODE_AGENT_BIN_DIR}/<配置>/ts_compiler/tsc/
+    # (见 code_agent/CMakeLists.txt; 变量在 add_subdirectory 之前定义, 所以这里可见)。
+    # 要换别的编译器: -DJZ_TS_TSC=<全路径> 或同名环境变量。
+    set(JZ_TS_TSC "$ENV{JZ_TS_TSC}" CACHE FILEPATH "jsapi_example 编译用的 tsc/tsgo 全路径(留空 = 取 code_runtime.exe 旁的 ts_compiler/tsc/)")
+    set(_jz_tsc "${JZ_TS_TSC}")
+    if(_jz_tsc AND NOT EXISTS "${_jz_tsc}")
+        message(WARNING "JZ_TS_TSC=${_jz_tsc} 不存在, 改用 code_runtime.exe 旁的 ts_compiler/tsc/")
+        set(_jz_tsc "")
+    endif()
+    if(NOT _jz_tsc)
+        # 配置期探测 —— 只是用来决定"要不要注册用例", 所以只做存在性检查:
+        # 单配置生成器看 CMAKE_BUILD_TYPE, 多配置(VS/Xcode)逐个配置看。
+        # ⚠ 实际执行时用 $<CONFIG> 展开(见下面 add_custom_command) —— 按当前配置取,
+        #   不会 Debug/Release 错配。
+        set(_jz_tsc_cfgs ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
+        list(REMOVE_DUPLICATES _jz_tsc_cfgs)
+        foreach(_cfg IN LISTS _jz_tsc_cfgs)
+            if(_cfg AND EXISTS "${CODE_AGENT_BIN_DIR}/${_cfg}/ts_compiler/tsc/tsc.exe")
+                set(_jz_tsc "${CODE_AGENT_BIN_DIR}/$<CONFIG>/ts_compiler/tsc/tsc.exe")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(_jz_tsc)
+        # src/**/*.ts -> build/**/*.js(+ .js.map, 子目录保持镜像结构); *.d.ts 不产出 js。
+        file(GLOB_RECURSE JZ_JSAPI_EXAMPLE_SRCS CONFIGURE_DEPENDS
+             "${JZ_JSAPI_EXAMPLE_DIR}/src/*.ts")
+        set(JZ_JSAPI_EXAMPLE_OUTPUTS)
+        foreach(_src ${JZ_JSAPI_EXAMPLE_SRCS})
+            if(_src MATCHES "\\.d\\.ts$")
+                continue()
+            endif()
+            file(RELATIVE_PATH _rel "${JZ_JSAPI_EXAMPLE_DIR}/src" "${_src}")
+            string(REGEX REPLACE "\\.ts$" ".js" _rel "${_rel}")
+            list(APPEND JZ_JSAPI_EXAMPLE_OUTPUTS
+                 "${JZ_JSAPI_EXAMPLE_DIR}/build/${_rel}"
+                 "${JZ_JSAPI_EXAMPLE_DIR}/build/${_rel}.map")
+        endforeach()
+
+        add_custom_command(
+            OUTPUT ${JZ_JSAPI_EXAMPLE_OUTPUTS}
+            COMMAND "${_jz_tsc}" -p "${JZ_JSAPI_EXAMPLE_DIR}/tsconfig.json"
+            WORKING_DIRECTORY "${JZ_JSAPI_EXAMPLE_DIR}"
+            DEPENDS ${JZ_JSAPI_EXAMPLE_SRCS} "${JZ_JSAPI_EXAMPLE_DIR}/tsconfig.json"
+            COMMENT "Build jsapi_example (TypeScript -> build/*.js)"
+            VERBATIM)
+        add_custom_target(jsapi_example_ts ALL DEPENDS ${JZ_JSAPI_EXAMPLE_OUTPUTS})
+
+        foreach(JZ_EXAMPLE ${JZ_JSAPI_EXAMPLES})
+            if(JZ_EXAMPLE MATCHES "\\.d\\.ts$")   # globals.d.ts 是类型声明, 不是例子
+                continue()
+            endif()
+            get_filename_component(JZ_EXAMPLE_NAME "${JZ_EXAMPLE}" NAME_WE)
+            set(JZ_EXAMPLE_JS "${JZ_JSAPI_EXAMPLE_DIR}/build/${JZ_EXAMPLE_NAME}.js")
+            add_test(NAME jsapi_example.${JZ_EXAMPLE_NAME}
+                     COMMAND code_runtime --entry ${JZ_EXAMPLE_JS})
+            # REQUIRED_FILES: 没先构建 jsapi_example_ts 时给一条明确的失败, 而不是"跑了个不存在的入口"
+            set_tests_properties(jsapi_example.${JZ_EXAMPLE_NAME} PROPERTIES
+                                 TIMEOUT 60 REQUIRED_FILES "${JZ_EXAMPLE_JS}")
+        endforeach()
+    else()
+        message(STATUS "jsapi_example: code_runtime.exe 旁没有 ts_compiler/tsc/tsc.exe "
+                       "(按 bin/<配置>/ts_compiler/tsc/ 找的), 跳过 TS 例子的编译与用例; "
+                       "用 -DJZ_TS_TSC=<tsc.exe 全路径> 指定编译器即可恢复")
+    endif()
 endif()

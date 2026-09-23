@@ -1,10 +1,11 @@
 // 02_timer —— 定时器三件套: setTimeout / setInterval / clearTimeout / clearInterval。
 //
-// 跑起来:  code_runtime --entry <本文件>
+// 编译跑起来:  <tsc> -p tsconfig.json
+//              code_runtime --entry <本目录>/build/02_timer.js
 //
 // 语义与浏览器一致: 都是"一次性"或"周期任务", 返回 id 用于取消。
 // ⚠ 别用 sleep(ms)(全局那个会阻塞整个线程, 定时器与网络回调都跟着停);
-//   想等一会儿就 await delay(ms)(见 helper/assert.js)。
+//   想等一会儿就 await delay(ms)(见 helper/assert.ts)。
 
 import { check, delay } from './helper/assert.js';
 

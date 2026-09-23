@@ -1,6 +1,7 @@
 // 04_bytes_crypto —— 协议帧打包/解包(bytes) + 摘要与随机数(crypto)。
 //
-// 跑起来:  code_runtime --entry <本文件>
+// 编译跑起来:  <tsc> -p tsconfig.json
+//              code_runtime --entry <本目录>/build/04_bytes_crypto.js
 //
 // 上位机脚本最常干的两件底层事都在这一份里:
 //   * 设备通信的帧: ByteWriter 顺序写 / ByteReader 顺序读(自带游标, 小端);
@@ -43,7 +44,7 @@ check('concatBytes', joined.toHex() === '01020304');
 
 const num = new ByteWriter(12);
 num.i32(-2);
-num.u64(0x0102030405060708n);
+num.u64(0x0102030405060708n);       // 64 位用 bigint 传, 免得掉精度
 const rd = new ByteReader(num.bytes());
 check('i32 有符号', rd.i32() === -2);
 check('u64 -> bigint', rd.u64() === 0x0102030405060708n);

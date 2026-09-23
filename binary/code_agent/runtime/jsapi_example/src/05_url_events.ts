@@ -1,6 +1,7 @@
 // 05_url_events —— URL 解析与事件总线(设备/服务端脚本里最常见的两件小事)。
 //
-// 跑起来:  code_runtime --entry <本文件>
+// 编译跑起来:  <tsc> -p tsconfig.json
+//              code_runtime --entry <本目录>/build/05_url_events.js
 //
 // 两个来源要分清:
 //   * URL / URLSearchParams / WebSocket / EventEmitter 是**运行期全局**(引擎装的, 不用 import);
@@ -31,11 +32,11 @@ check('URLSearchParams 组装', q.toString() === 'device=pump-01&value=36.5');
 
 // ---- 2) EventEmitter: 模块之间解耦用(采集 -> 入库/上报各自监听) ----
 const bus = new EventEmitter();
-const seen = [];
+const seen: string[] = [];
 
-function onSample(v) { seen.push('sample:' + v); }
+function onSample(v: number): void { seen.push('sample:' + v); }
 bus.on('sample', onSample);
-bus.once('sample', function (v) { seen.push('once:' + v); });
+bus.once('sample', function (v: number) { seen.push('once:' + v); });
 
 bus.emit('sample', 36.5);       // on + once      -> sample, once
 bus.emit('sample', 37.1);       // once 已消耗 -> 只剩 on
@@ -47,7 +48,7 @@ check('on / once / off 的触发顺序', seen.join(',') === 'sample:36.5,once:36
 // 不带 payload / 多参数的 emit 都行
 let sum = 0;
 const bus2 = new EventEmitter();
-bus2.on('add', function (a, b) { sum = a + b; });
+bus2.on('add', function (a: number, b: number) { sum = a + b; });
 bus2.emit('add', 2, 3);
 check('emit 带多个参数', sum === 5);
 

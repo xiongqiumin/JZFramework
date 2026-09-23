@@ -1,15 +1,17 @@
 // 09_worker —— 把 CPU 密集的活丢给另一个线程(worker), 主线程只管收发消息。
 //
-// 跑起来:  code_runtime --entry <本文件>
+// 编译跑起来:  <tsc> -p tsconfig.json
+//              code_runtime --entry <本目录>/build/09_worker.js
 //
 // worker 的关键事实:
 //   * 每个 worker 是**独立引擎**: 全新环境, 不继承主线程的全局变量, 有自己的事件循环;
 //   * 两边只靠消息通信(postMessage / __jz.worker.postTo), 消息里的对象可以带共享引用与环;
-//   * 入口脚本的路径按**运行根**解析 = --entry 那份脚本所在的目录, 所以这里写
-//     'helper/worker_sum.js';
+//   * 入口脚本的路径按**运行根**解析 = 入口 js 所在的 build/ 目录, 所以这里写
+//     'helper/worker_sum.js'(不带 './', 也不带 src/);
 //   * 用完 w.terminate() 收掉(或 worker 自己 __jz.worker.exit()), 不然线程一直挂着。
 //
 // 等 worker 回信的那段"没有待办任务"(理由见 06_net_echo), 所以同样吊一个定时器保活。
+// worker 那套 API 的类型声明在 src/globals.d.ts(js_wrapper 里还没有这份契约)。
 
 import { check, keepAlive } from './helper/assert.js';
 
@@ -28,7 +30,7 @@ console.log('spawned worker id=' + w.id);
 let answered = false;
 
 // 主线程收消息: from 是发送方 id
-__jz.worker.onMessage(function (from, msg) {
+__jz.worker.onMessage(function (from: number, msg: any): void {
     if (answered)
         return;
     answered = true;

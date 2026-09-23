@@ -1,15 +1,21 @@
 // 03_fs_path —— 文件与路径: fs(同步 API, 对齐 Node) + path + os + process。
 //
-// 跑起来:  code_runtime --entry <本文件>
+// 编译跑起来:  <tsc> -p tsconfig.json
+//              code_runtime --entry <本目录>/build/03_fs_path.js
 //
 // 两点要记牢:
-//   * fs 的相对路径按**当前工作目录**解析 = --entry 那份脚本所在的目录, 所以想把东西写到
+//   * fs 的相对路径按**当前工作目录**解析 = 入口 js 所在的 build/ 目录, 所以想把东西写到
 //     别处就用绝对路径; 需要一个临时目录就用 os.tmpdir() 起手;
 //   * path 是纯字符串处理, 分隔符输出统一是 '/'; ⚠ 当前实现识别不了 Windows 盘符形式的
 //     绝对路径(path.join(os.tmpdir(), 'x') 会拼成 '/C:/...'), 所以带盘符的用 path.sep 自己接,
 //     path.join 只喂相对路径。
+//
+// TS 侧的一个注意: 内置包的类型是 `declare module '<名字>'` 形式的 ambient 声明, 随工程分发的
+// tsgo(TS 7) **不给这种导出函数的回调形参做上下文推导** —— 回调形参得自己写类型(下面的 d: Dirent),
+// 类型也从同一个包名里 `import type` 取。
 
 import fs from 'fs';
+import type { Dirent } from 'fs';
 import os from 'os';
 import path from 'path';
 import process from 'process';
@@ -20,7 +26,7 @@ console.log('cwd=' + process.cwd() + ' platform=' + os.platform() + ' sep=' + pa
 
 // 实验场放在系统临时目录: 跑之前清场, 跑完删掉, 不在源码树里留垃圾
 const dir = os.tmpdir() + path.sep + 'jz_example_fs';
-function under(name) { return dir + path.sep + name; }   // 绝对路径自己接(见文件头那条注意)
+function under(name: string): string { return dir + path.sep + name; }   // 绝对路径自己接(见文件头那条注意)
 
 if (fs.existsSync(dir))
     fs.rmSync(dir, { recursive: true });
@@ -38,7 +44,7 @@ check('追加写', fs.readFileSync(file, 'utf8') === 'hello-world');
 const st = fs.statSync(file);
 check('statSync: 是文件且大小为 11', st.isFile() && st.size === 11);
 
-const bytes = fs.readFileSync(file);            // 不给编码 -> Uint8Array
+const bytes = fs.readFileSync(file);            // 不给编码 -> Uint8Array(重载靠参数类型区分)
 check('按字节读回 Uint8Array', bytes instanceof Uint8Array && bytes.length === 11);
 
 // ---- 2) 目录 ----
@@ -49,7 +55,7 @@ check('readdirSync 能看到 sub', names.indexOf('sub') >= 0);
 check('readdirSync 能看到 hello.txt', names.indexOf('hello.txt') >= 0);
 
 const dirents = fs.readdirSync(dir, { withFileTypes: true });
-const subs = dirents.filter(function (d) { return d.isDirectory(); });
+const subs = dirents.filter(function (d: Dirent) { return d.isDirectory(); });
 check('withFileTypes: 目录项带类型', subs.length === 1 && subs[0].name === 'sub');
 
 fs.copyFileSync(file, under('sub') + path.sep + 'hello-copy.txt');

@@ -346,6 +346,11 @@ void JZEngineRuntime::setUnhandledExceptionHandler(const UnhandledHandler& handl
 
 bool JZEngineRuntime::init(const string& projectDir)
 {
+    return init(projectDir, "main.js");
+}
+
+bool JZEngineRuntime::init(const string& projectDir, const string& entry)
+{
     m_root = rtAbsPath(projectDir);
     while (m_root.size() > 2 && str_endsWith(m_root, "/"))
         str_chop(m_root, 1);
@@ -354,13 +359,21 @@ bool JZEngineRuntime::init(const string& projectDir)
         m_lastError = "init: 工程根为空";
         return false;
     }
-
-    // 主入口统一为运行根下的 main.js（project.json 只是补充信息，不声明入口）
-    std::string main_js = m_root + "/main.js";
-    if(!JZFileInfo::exists(main_js))
+    if (entry.empty())
     {
-        m_lastError = "init: 找不到主入口 main.js: " + main_js +
-                      "（工程尚未打包/发布？运行根应是 main.js 所在的产物目录）";
+        m_lastError = "init: 入口为空";
+        return false;
+    }
+
+    // 主入口：缺省是运行根下的 main.js（project.json 只是补充信息，不声明入口）；
+    // 显式给了 entry 就跑那一份（相对运行根，也可以是绝对路径——调用方挑好的文件）。
+    std::string abs_entry = JZFileInfo::exists(entry) ? rtAbsPath(entry) : rtAbsPath(m_root + "/" + entry);
+    if(!JZFileInfo::exists(abs_entry))
+    {
+        m_lastError = "init: 找不到主入口: " + abs_entry +
+                      (entry == "main.js"
+                           ? "（工程尚未打包/发布？运行根应是 main.js 所在的产物目录）"
+                           : "（--entry 给的这份 js 不存在）");
         return false;
     }
 
@@ -378,8 +391,10 @@ bool JZEngineRuntime::init(const string& projectDir)
         return false;
     }
 
-    // 2) 以 ESM 方式加载并执行入口模块（入口具名导出绑定到全局）
-    if (!runModule("main.js"))
+    // 2) 以 ESM 方式加载并执行入口模块（入口具名导出绑定到全局）。
+    //    传绝对路径：入口里 './xxx.js' 这种相对 import 会以它为基准归一化，
+    //    给相对名则会按运行根归一化（两种都对，前者与磁盘上的真实位置一致）。
+    if (!runModule(abs_entry))
         return false;
 
     return true;

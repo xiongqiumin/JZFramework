@@ -1,14 +1,16 @@
 // code_runtime - 运行"已编译好的 TS 工程产物"的隔离进程（无 GUI）。
 //
 // 用法:
-//   code_runtime                    （不带参数）
+//   code_runtime --entry <file.js>   入口 = 那一份 JS；以它**所在的目录**为运行根
+//                                    （同时切成进程工作目录，脚本里的相对路径都以它为基准）
+//   code_runtime                      （不带参数，旧用法）
 //     运行根 = 当前工作目录（jzApp->workingDirPath()，等价 Qt 的 QDir::currentPath()），
 //     即 main.js 所在的产物目录（如 <工程根>/build）。双击 exe / run.bat 时 cwd 就是
 //     包所在目录；要以别的目录为运行根，由调用方设置子进程工作目录。
 //
 // 行为:
-//   1) rt.init(root) 一步完成：设运行根 -> 以主入口 main.js 跑起来
-//      （主入口固定为运行根下的 main.js；运行根下可读到 project.json 时，
+//   1) rt.init(root, entry) 一步完成：设运行根 -> 以主入口那份 js 跑起来
+//      （不指定入口时仍按老规矩取运行根下的 main.js；运行根下可读到 project.json 时，
 //      里面的"原路径地址/编译时间"等补充信息会用于解析与展示）
 //      -> 新建干净引擎会话 -> 以 ESM 模块方式加载并执行 main.js（引擎自动解析
 //      import 依赖，扩展名可省略，自动补 .js / index.js；入口具名导出绑定到全局）。
@@ -69,9 +71,10 @@ int main(int argc, char *argv[])
 
     JZCommandLineParser parser;
     parser.setDescription(
-        "code_runtime - 运行已打包/发布好的 TS 工程产物（隔离进程）\n"
-        "主入口读取工程根 main.js 的 entry；缺失或产物不存在时报错退出\n"
-        "支持 JS 创建 GUI（窗口/画布）；存在可见顶层窗口时不自动退出");
+        "code_runtime - 运行一份 JS（隔离进程）\n"
+        "--entry <file.js> 指定入口，以该文件所在目录为运行根；\n"
+        "不给 --entry 时按老规矩：以当前工作目录为运行根，跑下面的 main.js；\n"
+        "入口缺失时报错退出；存在可见顶层窗口时不自动退出");
 
     JZCommandLineArgument arg;
 
@@ -87,26 +90,40 @@ int main(int argc, char *argv[])
     int uiMcpPort = 0;
     parser.addOption("--ui-mcp-port", &uiMcpPort);
 
-    // 运行根：--root <dir> 显式指定；缺省为当前工作目录。
-    string cmdRoot;
-    parser.addOption("--root", &cmdRoot);
+    // 入口脚本：--entry <file.js>；缺省即运行根下的 main.js（老用法）。
+    string cmdEntry;
+    parser.addOption("--entry", &cmdEntry);
 
     if (!parser.parse(argc, argv))
         return 1;   // 防御：真走到这里说明用法不合法
 
-    // 运行根：显式 --root 优先，否则用当前工作目录（双击 exe / run.bat 时 cwd 即包所在目录）。
-    // 给了 --root 就把它**同时设为进程工作目录**（QDir::setCurrent 语义）：工程里所有相对路径
-    // （读配置 / 写日志 / sqlite 文件 ...）都以运行根为准，而不是"启动它的人当时在哪个目录"。
-    // 顺序要紧：先用**原来的** cwd 把 --root 解析成绝对路径，再切目录 —— 这样 --root 传相对路径
-    // 也照样按启动时的 cwd 解析（切完目录后它还等于运行根）。
-    string absRoot = cmdRoot.empty()
-        ? jzApp->workingDirPath()
-        : JZDir(cmdRoot).absolutePath();
+    // 运行根 + 入口：
+    //   * 给了 --entry -> 那份 js 所在的目录就是运行根（并切成进程工作目录）；
+    //   * 没给        -> 运行根 = 当前工作目录，入口 = 运行根下的 main.js。
+    // ⚠ 顺序要紧：先用**原来的** cwd 把 --entry 解析成绝对路径，再切目录 —— 这样 --entry 传
+    // 相对路径也照样按启动时的 cwd 解析（切完目录后它就等于运行根了）。
+    // 切目录的意义：脚本里所有相对路径（读配置 / 写日志 / sqlite 文件 ...）都以运行根为准，
+    // 而不是"启动它的人当时在哪个目录"。
+    string absRoot = jzApp->workingDirPath();
+    string absEntry;
 
-    if (!cmdRoot.empty() && !JZDir::setCurrentPath(absRoot))
+    if (!cmdEntry.empty())
     {
-        printf("[code_runtime] setCurrentPath failed: %s\n", absRoot.c_str());
-        fflush(stdout);
+        absEntry = JZDir(cmdEntry).absolutePath();
+        JZFileInfo fi(absEntry);
+        if (!fi.exists() || !fi.isFile())
+        {
+            printf("[code_runtime] entry not found: %s\n", absEntry.c_str());
+            fflush(stdout);
+            return 1;
+        }
+        absRoot = fi.path();     // 入口所在的目录（不带文件名）
+
+        if (!JZDir::setCurrentPath(absRoot))
+        {
+            printf("[code_runtime] setCurrentPath failed: %s\n", absRoot.c_str());
+            fflush(stdout);
+        }
     }
 
     // 是否开启调试器：命令行 --debug 优先；否则读自身资源（导出时由 JZExeResource 写入）。
@@ -289,7 +306,7 @@ int main(int argc, char *argv[])
     };
     rt.setUnhandledExceptionHandler(onUnhandledException);
 
-    bool ok = rt.init(absRoot);
+    bool ok = absEntry.empty() ? rt.init(absRoot) : rt.init(absRoot, absEntry);
     if (!ok)
     {
         jzDebug() << rt.lastError().c_str();

@@ -1,7 +1,7 @@
 {
   // bteserver —— BTE 上位机(原 Qt/C++)的 JS 移植, 现在按 TypeScript 工程编译。
   // 编译: <tsc> -p tsconfig.json
-  // 运行: code_runtime --root <本目录>/build
+  // 运行: code_runtime --entry <本目录>/build/main.js
   "compilerOptions": {
     // 与 code_agent 工程骨架(initProject 生成的 tsconfig)一致:
     // target ES2022 + lib ES2025 = quickjs 实际支持的范围; 不写 DOM, 否则

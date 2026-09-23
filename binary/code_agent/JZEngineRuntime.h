@@ -18,10 +18,10 @@ class JZJSWorkerModule;
 // ------------------------------------------------------------------
 // 运行期层：内嵌 JS 引擎会话的"运行"封装
 //
-//   只负责运行：init(root) 一步到位——把 root 设为运行根（主入口统一为它下面的
-//   main.js，即"产物目录"；TS 工程通常是 tsconfig 的 outDir，如 <工程根>/build）、
-//   开一个干净的 JZJSEngine 会话、以 ESM 模块方式加载并执行 main.js（import 依赖
-//   自动解析，入口具名导出绑定全局）。之后仍可 evalScript() 复用同一会话。
+//   只负责运行：init(root[, entry]) 一步到位——把 root 设为运行根（缺省主入口是它下面的
+//   main.js，即"产物目录"；TS 工程通常是 tsconfig 的 outDir，如 <工程根>/build），
+//   开一个干净的 JZJSEngine 会话、以 ESM 模块方式加载并执行入口（import 依赖
+//   自动解析，入口具名导出绑定全局）。给了 entry 就跑那一份 js 当入口（见下面重载）。
 //
 //   project.json（可选，与 main.js 同目录）不是入口声明，只是补充信息：编译时间、
 //   原路径地址（工程根 / 源码目录）等。init 会读它，解析（栈翻译时把源路径还原成
@@ -91,6 +91,12 @@ public:
     //
     // 换一个工程根就再 init() 一次（每次都是全新会话，模块缓存/全局互不串）。
     bool init(const std::string &work_dir);
+
+    // 指定入口版本：work_dir 仍是运行根（相对路径/读文件以它为准），但主入口换成 entry
+    // 指向的那份 js —— 想跑任意一份脚本（而不是产物里的 main.js）时用这个重载。
+    // entry 相对 work_dir 给，也可以直接给绝对路径（“可执行的那个文件”由调用方挑好）。
+    // 找不到入口文件同样报错返回 false，不回退默认入口。
+    bool init(const std::string &work_dir, const std::string &entry);
 
     // 运行根（上次 init() 设置的目录，即 main.js 所在目录）。栈里的相对模块名按它解析。
     const std::string &root() const;

@@ -324,6 +324,6 @@ import fs from 'node:fs';            // 值位置 ⇒ 真正加载模块
 ### 验证口径（"tsc 绿 ≠ 能跑"）
 
 - `tsc -b JZJSEngine/js_wrapper`：类型层；
-- **真跑**：`code_runtime --root <产物目录>` 跑一段用该 API 的小程序（`build/jsapi_ref.ps1` 的
+- **真跑**：`code_runtime --entry <产物目录>/main.js` 跑一段用该 API 的小程序（`build/jsapi_ref.ps1` 的
   9 份参考实现是范例：每条用例都要求打印一行 `@` 连接的计算值，断言输入派生值，不可硬编码）；
 - 引擎侧单测在 `test/jsengine/`（`test_jsnet` / `test_jssqlite` / `test_jsworker` / `test_jsui` ...）。

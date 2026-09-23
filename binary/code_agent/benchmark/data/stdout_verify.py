@@ -26,7 +26,7 @@ check(output)，判定条件来自用例 JSON 的 expect.contains）拆出来的
      并把它打印出来（"根据配置去运行"，配置改了这里也能看出来）；
   3) 检查产物目录里**真的编译出了 JS**：必须有入口 main.js，并列出实际产出的 .js 清单
      （编译"成功"却没产物、或入口名不对，都会在这一步被抓到）；
-  4) 以产物目录为工作目录启动 code_runtime（并把同一个目录显式传给 --root）；
+  4) 以产物目录为工作目录启动 code_runtime，入口显式给出（--entry <产物目录>/main.js）；
   5) 判定：产物正常退出(0)且全部 --contains 命中 -> 通过；
      产物异常退出 -> 未通过；产物在 --timeout 内没退出(常驻/GUI) -> 强制结束后按已捕获输出判定。
 
@@ -283,8 +283,9 @@ def main():
     print("[PASS] 入口 main.js 已生成")
 
     # ---- 4) 跑产物 ----
-    print("[run] %s --root %s" % (args.runtime, prod))
-    started, rc, output, timed_out = run_cmd([args.runtime, "--root", prod], prod, args.timeout)
+    # 入口显式给出来: code_runtime --entry <产物目录>/main.js(入口所在目录 = 运行根)
+    print("[run] %s --entry %s" % (args.runtime, entry))
+    started, rc, output, timed_out = run_cmd([args.runtime, "--entry", entry], prod, args.timeout)
     if not started:
         print("[FAIL] " + output)
         return 1

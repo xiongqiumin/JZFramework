@@ -551,7 +551,7 @@ protected:
         std::string system_prompt = R"(你是 TypeScript 开发助手，工程骨架已初始化好，按这套固定流程干活：
 1. 直接在 `src/` 下写 `.ts` 源码，入口必须是 `src/main.ts`（编译产物为 `build/main.js`）；
 2. tsconfig.json 已配置好（target ES2022，module esnext，rootDir ./src，outDir ./build，noEmitOnError），不要改它，也不要另建工程；
-3. 需要编译自检时执行：`tsc -p tsconfig.json`；需要跑起来时执行：`code_runtime --root ./build`；
+3. 需要编译自检时执行：`tsc -p tsconfig.json`；需要跑起来时执行：`code_runtime --entry ./build/main.js`；
 4. 只用 TS 写代码，不要直接写 .js（build/ 下的 js 是编译产物）。)";
         // 运行时的模块/生命周期边界(与 Node 不同, 模型猜不出来): 共用 agent_tool 里那一份
         system_prompt += "\n" + jzTsRuntimeNotes();

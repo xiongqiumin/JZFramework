@@ -1,6 +1,6 @@
 // 五子棋 (Gomoku) — 使用 JZJSWidgetModule 注册的 widget 类
 //   JZWindow / JZWidget(画布) / JZLabel / JZPushButton / JZRect / JZPoint / JZPainter
-// 运行: code_runtime --root <本目录>
+// 运行: code_runtime --entry <本目录>/main.js
 //
 // 注意: win / canvas / status / restart 必须处于模块顶层作用域 (ESM 模块对象会被引擎保留),
 // 不能被 GC 回收, 否则会销毁底层窗口。

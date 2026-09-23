@@ -4,7 +4,7 @@
 //
 // 编译/运行:
 //   <tsc> -p tsconfig.json                       (tsgo: <bin>/ts_compiler/tsc/tsc.exe)
-//   code_runtime --root <本目录>/build            (存在可见顶层窗口, 关窗才退出)
+//   code_runtime --entry <本目录>/build/main.js   (存在可见顶层窗口, 关窗才退出)
 //   类型来自仓库里的 js_wrapper 声明(见 tsconfig.json 的 include); 用户工程里则由
 //   initProject 拷进工程的 jz_types/**/*.d.ts。
 //

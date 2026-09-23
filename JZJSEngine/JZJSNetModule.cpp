@@ -312,29 +312,40 @@ void JZJSNetSocket::connectTo(int p, const std::string& h)
 
 bool JZJSNetSocket::write(JSValue data)
 {
-    if (!socket || !socket->isConnected())
+    JZTcpSocket* s = liveSocket();
+    if (!s || !s->isConnected())
         return false;
 
     JZByteArray buf;
     if (!JZJSNetModule::jsValueToBytes(engine->context(), data, buf))
         return false;
 
-    socket->write(buf);
+    s->write(buf);
     bytesWritten += buf.size();
     return true;
 }
 
+JZTcpSocket* JZJSNetSocket::liveSocket()
+{
+    // accept 出来的连接不由我们释放(server 被 delete 时会连带删掉它们), 所以先问守卫:
+    // 它已经没了 -> 摘掉本地指针, 之后一律按"已关闭"处理(不再碰那块内存)。
+    if (socket && !owned && !connGuard.object())
+        socket = nullptr;
+    return socket;
+}
+
 void JZJSNetSocket::end()
 {
-    if (!socket)
+    JZTcpSocket* s = liveSocket();
+    if (!s)
         return;
-    socket->disconnectFromHost();
+    s->disconnectFromHost();
 }
 
 void JZJSNetSocket::destroy()
 {
     sink.dispose();   // 之后底层派发的事件一律丢弃
-    if (socket)
+    if (liveSocket())
     {
         // 先摘指针再删除: 析构期间对象仍可能派发事件, 回调里靠空指针判断跳过
         JZTcpSocket* s = socket;
@@ -349,6 +360,8 @@ void JZJSNetSocket::destroy()
 int JZJSNetSocket::state() const
 {
     if (!socket || destroyed)
+        return 3;
+    if (!owned && !connGuard.object())     // 底层连接已随 server 析构消失
         return 3;
     if (socket->isConnected())
         return 1;
@@ -1268,6 +1281,9 @@ JSValue JZJSNetModule::netCreateServer()
 
             JZJSNetSocket* sock = new JZJSNetSocket(m_engine, this);
             sock->owned = false;   // conn 的 parent 是 server, 不能由我们 delete
+            // 记下守卫: server 先于本包装被关掉时, 连接随之释放 —— liveSocket() 靠它认出
+            // "连接已经没了", 于是 write/end/destroy 都不会再碰那块内存。
+            sock->connGuard = conn->guardPointer();
             sock->bind(conn, std::string(), self->listenPort);
             self->sink.emit("connection", makeSocketValue(sock));
         }

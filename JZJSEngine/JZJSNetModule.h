@@ -10,6 +10,7 @@
 #include "JZHttpServer.h"
 #include "JZNetworkAccessManager.h"
 #include "JZNetworkInterface.h"
+#include "JZObjectPointer.h"
 #include "JZMqttClient.h"
 #include "JZTcpServer.h"
 #include "JZTcpSocket.h"
@@ -77,11 +78,16 @@ struct JZJSNetSocket
     void bind(JZTcpSocket* socket, const std::string& host, int port);
     void connectTo(int port, const std::string& host);
 
+    // 取底层连接; 连接**已经没了**(accept 出来的会被 server 析构连带释放)返回 nullptr
+    // 并顺手摘掉本地指针 —— 之后所有用到 socket 的地方都不再碰它, 避免踩已释放的内存。
+    JZTcpSocket* liveSocket();
+
     JZJSEngine* engine;
     JZJSNetModule* module;
     JZTcpSocket* socket;
     JZJSEventSink sink;
     bool owned;      // false = 由 JZTcpServer 拥有(accept 出来的连接), 不能自己 delete
+    JZObjectPointer connGuard;   // owned=false 时记下底层连接的守卫(见 liveSocket: 认出"它已经没了")
     std::string host;
     int port;
     int64_t bytesRead;

@@ -86,13 +86,10 @@ struct JZJSNetSocket
     JZJSNetModule* module;
     JZTcpSocket* socket;
     JZJSEventSink sink;
-    bool owned;      // false = 由 JZTcpServer 拥有(accept 出来的连接), 不能自己 delete
-    JZObjectPointer connGuard;   // owned=false 时记下底层连接的守卫(见 liveSocket: 认出"它已经没了")
     std::string host;
     int port;
     int64_t bytesRead;
     int64_t bytesWritten;
-    bool destroyed;
 };
 
 // TCP server 包装
@@ -146,9 +143,11 @@ struct JZJSWebSocket
 
     JZJSEngine* engine;
     JZJSNetModule* module;
+    // socket 由本包装**独占**: close() 里 disconnectFromHost() + delete(见 .cpp)。
+    // accept 出来的那份在接管时已经 setParent(nullptr) 从 JZWebSocketServer 手里摘出来,
+    // 所以 server 关闭/析构不会再把它一起 delete(否则 JS 侧还攥着就悬垂了)。
     JZWebSocket* socket;
     JZJSEventSink sink;
-    bool owned;      // false = 由 JZWebSocketServer 拥有(accept 出来的连接)
     bool everConnected;
     bool closed;
 };

@@ -14,7 +14,7 @@
 // ======================================================================
 JZJSEventSink::JZJSEventSink(JZJSEngine* engine)
 {
-    m_engine = engine;
+    m_engine = engine; 
     m_module = nullptr;
     m_disposed = false;
 }
@@ -250,11 +250,9 @@ JZJSNetSocket::JZJSNetSocket(JZJSEngine* engine, JZJSNetModule* module)
     this->module = module;
     sink.setModule(module);
     socket = nullptr;
-    owned = true;
     port = 0;
     bytesRead = 0;
     bytesWritten = 0;
-    destroyed = false;
 }
 
 JZJSNetSocket::~JZJSNetSocket()
@@ -288,8 +286,7 @@ void JZJSNetSocket::bind(JZTcpSocket* s, const std::string& h, int p)
 
     connect(&s->sigDisconnected, [self]() {
         self->sink.emit("end");
-        self->sink.emit("close");
-        self->destroyed = true;
+        self->sink.emit("close");        
     });
 
     connect(&s->sigError, [self](const std::string& err) {
@@ -326,11 +323,7 @@ bool JZJSNetSocket::write(JSValue data)
 }
 
 JZTcpSocket* JZJSNetSocket::liveSocket()
-{
-    // accept 出来的连接不由我们释放(server 被 delete 时会连带删掉它们), 所以先问守卫:
-    // 它已经没了 -> 摘掉本地指针, 之后一律按"已关闭"处理(不再碰那块内存)。
-    if (socket && !owned && !connGuard.object())
-        socket = nullptr;
+{    
     return socket;
 }
 
@@ -351,17 +344,13 @@ void JZJSNetSocket::destroy()
         JZTcpSocket* s = socket;
         socket = nullptr;
         s->close();
-        if (owned)   // accept 出来的连接由 server 释放
-            delete s;
+        delete s;
     }
-    destroyed = true;
 }
 
 int JZJSNetSocket::state() const
 {
-    if (!socket || destroyed)
-        return 3;
-    if (!owned && !connGuard.object())     // 底层连接已随 server 析构消失
+    if (!socket)
         return 3;
     if (socket->isConnected())
         return 1;
@@ -523,7 +512,6 @@ JZJSWebSocket::JZJSWebSocket(JZJSEngine* engine, JZJSNetModule* module)
     this->module = module;
     sink.setModule(module);
     socket = nullptr;
-    owned = true;
     everConnected = false;
     closed = false;
 }
@@ -567,8 +555,9 @@ void JZJSWebSocket::close()
         JZWebSocket* s = socket;
         socket = nullptr;
         s->disconnectFromHost();
-        if (owned)   // accept 出来的连接由 server 释放
-            delete s;
+        // 连接由本包装独占(accept 那份接管时已 setParent(nullptr)), 所以统一由这里释放;
+        // 客户端那条路径(wsConnect)本来就是 new 出来没人管, 两者语义一致 = 谁包装谁 delete。
+        delete s;
     }
 }
 
@@ -1016,7 +1005,7 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_socket.defProperty<int>("localPort", [](JZJSNetSocket* o) { return 0; }, nullptr);
     bind_socket.defProperty<int>("bytesRead", [](JZJSNetSocket* o) { return (int)o->bytesRead; }, nullptr);
     bind_socket.defProperty<int>("bytesWritten", [](JZJSNetSocket* o) { return (int)o->bytesWritten; }, nullptr);
-    bind_socket.defProperty<bool>("destroyed", [](JZJSNetSocket* o) { return o->destroyed; }, nullptr);
+    bind_socket.defProperty<bool>("destroyed", [](JZJSNetSocket* o) { return o->socket == nullptr; }, nullptr);
     bind_socket.defProperty<int>("state", [](JZJSNetSocket* o) { return o->state(); }, nullptr);
     
     m_engine->registClass(bind_socket.classDefine());
@@ -1205,7 +1194,9 @@ void JZJSNetModule::deinitEngine()
             disposers.push_back(it->second);
     }
     m_disposers.clear();
-    // 逆序: 先关连接, 再关 server(server 析构会连带释放它 accept 出的连接)
+    // 逆序: 先关包装出来的连接, 再关 server。
+    // (accept 出的连接在接管时就 setParent(nullptr) 摘离了 server, 这里靠各自包装的
+    //  close() 释放 —— 不再是"server 析构连带释放"; 顺序保证连接先于 server 拆干净)
     for (int i = (int)disposers.size() - 1; i >= 0; i--)
     {
         disposers[i]();
@@ -1279,11 +1270,8 @@ JSValue JZJSNetModule::netCreateServer()
             if (!conn)
                 break;
 
-            JZJSNetSocket* sock = new JZJSNetSocket(m_engine, this);
-            sock->owned = false;   // conn 的 parent 是 server, 不能由我们 delete
-            // 记下守卫: server 先于本包装被关掉时, 连接随之释放 —— liveSocket() 靠它认出
-            // "连接已经没了", 于是 write/end/destroy 都不会再碰那块内存。
-            sock->connGuard = conn->guardPointer();
+            JZJSNetSocket* sock = new JZJSNetSocket(m_engine, this);     
+            conn->setParent(nullptr);
             sock->bind(conn, std::string(), self->listenPort);
             self->sink.emit("connection", makeSocketValue(sock));
         }
@@ -1381,7 +1369,11 @@ JSValue JZJSNetModule::wsCreateServer()
 
             JZJSWebSocket* ws = new JZJSWebSocket(m_engine, this);
             ws->socket = conn;
-            ws->owned = false;   // conn 的 parent 是 server, 不能由我们 delete
+            // accept 出来的连接 parent 是 server: 这里**摘出来**(setParent(nullptr)), 让本包装独占它。
+            // 不摘的话 server 一旦关闭/析构(见 JZJSWebSocketServer::close 里的 delete server)会把
+            // conn 一起 delete, 而 JS 侧可能还攥着这个 WebSocket -> 悬垂。
+            // 摘出来之后生命周期就只看 JS 侧: 包装 close/回收时由 close() 释放。
+            conn->setParent(nullptr);
             ws->everConnected = true;
 
             JZJSWebSocket* wself = ws;

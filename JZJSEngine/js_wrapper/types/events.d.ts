@@ -19,6 +19,7 @@ declare class EventEmitter {
 }
 
 /**
- * 与 Node 的差异：没有 'error' 监听器时，Node 会 throw；
- * 本实现改为输出到 console.error 并上报引擎错误链，不会抛出未捕获异常。
+ * 与 Node 一致：没有 'error' 监听器时 `emit('error', err)` 会抛异常
+ * (Unhandled 'error' event 语义)，错误不会静默吞掉。
+ * 想抑制就自己 `on('error', ...)` 接住(和 Node 一样)。
  */

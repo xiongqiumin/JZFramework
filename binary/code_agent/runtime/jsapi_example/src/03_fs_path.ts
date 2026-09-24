@@ -6,8 +6,9 @@
 // 两点要记牢:
 //   * fs 的相对路径按**当前工作目录**解析 = 入口 js 所在的 build/ 目录, 所以想把东西写到
 //     别处就用绝对路径; 需要一个临时目录就用 os.tmpdir() 起手;
-//   * path 是纯字符串处理, 分隔符输出统一是 '/'; ⚠ 当前实现识别不了 Windows 盘符形式的
-//     绝对路径(path.join(os.tmpdir(), 'x') 会拼成 '/C:/...'), 所以带盘符的用 path.sep 自己接,
+//   * path 是纯字符串处理, 分隔符统一是 '/'(引擎内部路径也都归一化成 '/', 所以 path.sep 也是 '/',
+//     join/normalize/resolve 的输出跟 path.sep 一致); ⚠ 但 path 识别不了 Windows 盘符绝对路径
+//     (path.join('C:/x', 'y') 不会保留成正常的绝对路径), 所以带盘符的路径请用 path.sep 自己拼,
 //     path.join 只喂相对路径。
 //
 // TS 侧的一个注意: 内置包的类型是 `declare module '<名字>'` 形式的 ambient 声明, 随工程分发的

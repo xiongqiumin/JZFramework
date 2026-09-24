@@ -8,8 +8,10 @@
 
 declare const __jz: any;
 
-/** 路径分隔符(与引擎平台一致) */
-export const sep: string = (__jz.core.platform() === 'win32') ? '\\' : '/';
+// 本框架所有路径在 C++ 侧都归一化成 '/' (JZFileInfo/JZDir/JZPlatformWin32 都 str_replace("\\","/")),
+// 所以 path.sep 也固定为 '/', 与 join/normalize/resolve 的输出一致 —— 这点与 Node 在 Windows 上
+// 返回 '\\' 不同, 但跟引擎真实行为一致(不会自相矛盾)。要用 path.sep 拼路径就直接拼, 别再混 '\\'。
+export const sep: string = '/';
 /** PATH 环境变量的分隔符 */
 export const delimiter: string = (__jz.core.platform() === 'win32') ? ';' : ':';
 

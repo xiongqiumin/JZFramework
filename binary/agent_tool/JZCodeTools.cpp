@@ -379,9 +379,10 @@ string jzTsRuntimeNotes()
     s += "      import http from 'http';                  import { createServer } from 'http';\n";
     s += "      import { DatabaseSync } from 'sqlite';    import fs from 'node:fs';\n";
     s += "    内置名: net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / "
-         "bytes / os / serialport / modbus / sqlite(控件另有 widget)。\n";
+         "bytes / buffer / os / serialport / modbus / sqlite / stream(控件另有 widget)。\n";
     s += "  - Web 标准全局与 Node 一致, 运行时启动即有(**不用 import**): fetch / Headers / Response / "
-         "WebSocket / URL / URLSearchParams / EventEmitter(EventEmitter 是 Node 的, 本运行时也挂全局)。\n";
+         "WebSocket / URL / URLSearchParams / EventEmitter / Buffer / TextEncoder / TextDecoder / "
+         "atob / btoa(EventEmitter/Buffer 是 Node 的, 本运行时也挂全局; 编码靠 Uint8Array.toHex/toBase64)。\n";
     s += "  - 想查某个名字有哪些成员: 直接读工程里的 jz_types/<名字>/types/index.d.ts"
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";

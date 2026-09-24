@@ -6,6 +6,8 @@
 // 两个来源要分清:
 //   * URL / URLSearchParams / WebSocket / EventEmitter 是**运行期全局**(引擎装的, 不用 import);
 //   * 'url' / 'events' 这两个包名也有导出, 想写清晰一点就显式 import —— 拿到的是同一份实现。
+//   * ⚠ EventEmitter 与 Node 一致: 没有 'error' 监听器时 `emit('error', e)` 会**抛异常**(不会静默吞掉)。
+//     所以 socket / worker 等出错了想拦住, 必须自己 `on('error', ...)`; 否则异常会冒泡成脚本失败。
 
 import { EventEmitter } from 'events';
 import { check } from './helper/assert.js';

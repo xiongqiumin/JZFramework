@@ -44,6 +44,15 @@ class Headers {
 }
 (globalThis as any).Headers = Headers;
 
+// Node 的 http 请求/响应头是**普通对象**(按小写 key 索引), 不是 Web Headers 实例 ——
+// 这里转成普通对象, 这样 `req.headers['content-type']` 与 Node 一致(Web 的 fetch/Response
+// 仍用上面的 Headers 类, 那是标准, 不混)。
+function plainHeaders(h: any): any {
+    const o: any = {};
+    if (h) for (const k in h) o[String(k).toLowerCase()] = h[k];
+    return o;
+}
+
 // ---- 客户端 ----
 export class IncomingMessage extends EventEmitter {
     statusCode: any;
@@ -57,7 +66,7 @@ export class IncomingMessage extends EventEmitter {
         super();
         this.statusCode = info.status;
         this.statusMessage = info.statusText;
-        this.headers = new Headers(info.headers);
+        this.headers = plainHeaders(info.headers);
         this.httpVersion = '1.1';
         this.url = info.url;
         this._body = info.body;
@@ -199,7 +208,7 @@ export class ServerRequest extends EventEmitter {
         super();
         this.method = info.method;
         this.url = info.url;
-        this.headers = new Headers(info.headers);
+        this.headers = plainHeaders(info.headers);
         this.httpVersion = '1.1';
         this.remoteAddress = info.remoteAddress || '';
         this._body = info.body;
@@ -217,16 +226,30 @@ export class ServerRequest extends EventEmitter {
 export class ServerResponse extends EventEmitter {
     _h: any;
     _ended: boolean;
+    _headers: any;
     constructor(h: any) {
         super();
         this._h = h;
         this._ended = false;
+        this._headers = {};
     }
     get statusCode() { return this._h.statusCode; }
     set statusCode(v: any) { this._h.statusCode = v | 0; }
     get finished() { return this._ended; }
-    setHeader(k: any, v: any) { this._h.setHeader(String(k), String(v)); return this; }
+    setHeader(k: any, v: any) {
+        this._headers[String(k).toLowerCase()] = String(v);
+        this._h.setHeader(String(k), String(v));
+        return this;
+    }
+    getHeader(k: any) { return this._headers[String(k).toLowerCase()]; }
+    removeHeader(k: any) {
+        delete this._headers[String(k).toLowerCase()];
+        // C++ JZJSHttpResponse 暂无 removeHeader: JS 侧移除以保证 getHeader 一致;
+        // 已通过 writeHead 写入且未再改动的头仍会发送(罕见路径)。
+        return this;
+    }
     writeHead(status: any, headers: any) {
+        if (headers) for (const k in headers) this._headers[String(k).toLowerCase()] = String(headers[k]);
         this._h.writeHead(status | 0, headers || {});
         return this;
     }

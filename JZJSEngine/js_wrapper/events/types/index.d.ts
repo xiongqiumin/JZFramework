@@ -10,7 +10,7 @@
  * ⚠ 运行期它同时是**全局 EventEmitter**(见共享声明 ../../types/events.d.ts) ——
  *   本文件是模块形式的那份引用(供裸名 'events' 用), 两边成员要一起改。
  *
- * 与 Node 的差异: 没有 'error' 监听器时 Node 会 throw; 本实现改为 console.error 上报。
+ * 与 Node 一致: 没有 'error' 监听器时 emit('error') 会抛异常(Unhandled 'error' event)。
  */
 export class EventEmitter {
     constructor();

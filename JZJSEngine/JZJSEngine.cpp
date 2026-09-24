@@ -81,6 +81,8 @@ static const BuiltinModule builtinModules[] = {
     { "process",    "process/dist/index.js",    nullptr },
     { "crypto",     "crypto/dist/index.js",     nullptr },
     { "bytes",      "bytes/dist/index.js",      nullptr },   // 本框架特有的字节工具(零依赖)
+    { "buffer",     "buffer/dist/index.js",     nullptr },   // Node Buffer 兼容 + TextEncoder/TextDecoder 全局(零依赖)
+    { "stream",     "stream/dist/index.js",     nullptr },   // Node stream 兼容子集(零依赖)
     // ---- 设备 / 数据库 ----
     { "serialport", "serialport/dist/index.js", nullptr },
     { "modbus",     "modbus/dist/index.js",     nullptr },

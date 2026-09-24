@@ -17,20 +17,13 @@ export interface RequestOptions {
 }
 
 export class IncomingMessage extends EventEmitter {
-    /** client: response status; server: undefined */
+    /** client: response status; server side uses ServerRequest */
     readonly statusCode: number;
     readonly statusMessage: string;
-    readonly headers: Headers;
+    /** plain object with lowercased keys (same as Node) */
+    readonly headers: Record<string, string>;
     readonly httpVersion: string;
     readonly url: string;
-    /** server side only: 'GET' | 'POST' | ... */
-    readonly method?: string;
-    /** server side only: peer address */
-    readonly remoteAddress?: string;
-    /** server side only: complete request body (empty when there is none) */
-    readonly body?: Uint8Array;
-    /** server side only: body decoded with the current encoding */
-    readonly text?: string;
     setEncoding(encoding: DataEncoding | null): this;
 
     on(event: 'data', listener: (chunk: Chunk) => void): this;
@@ -70,6 +63,27 @@ export function get(url: string, options: RequestOptions,
                     cb?: (res: IncomingMessage) => void): ClientRequest;
 export function get(url: string, cb?: (res: IncomingMessage) => void): ClientRequest;
 
+export class ServerRequest extends EventEmitter {
+    /** request method, e.g. 'GET' | 'POST' */
+    readonly method: string;
+    readonly url: string;
+    /** plain object with lowercased keys (same as Node server req.headers) */
+    readonly headers: Record<string, string>;
+    readonly httpVersion: string;
+    /** peer address */
+    readonly remoteAddress: string;
+    /** complete request body (empty when there is none) */
+    readonly body: Uint8Array;
+    /** body decoded with the current encoding (defaults to utf8) */
+    readonly text: string;
+    setEncoding(encoding: DataEncoding | null): this;
+
+    on(event: 'data', listener: (chunk: Chunk) => void): this;
+    on(event: 'end', listener: () => void): this;
+    on(event: 'error', listener: (err: Error) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+}
+
 // ------------------------------------------------------------ server
 export class ServerResponse extends EventEmitter {
     statusCode: number;
@@ -80,7 +94,7 @@ export class ServerResponse extends EventEmitter {
     removeHeader(name: string): void;
     writeHead(statusCode: number, headers?: Record<string, string | number>): this;
 
-    /** buffered, NOT sent until end() */
+    /** sent immediately (buffered by the underlying transport), same as Node write() */
     write(chunk: Data, encoding?: DataEncoding, cb?: () => void): boolean;
     end(data?: Data | (() => void), encoding?: DataEncoding | (() => void),
         cb?: () => void): this;
@@ -111,7 +125,7 @@ export class Server extends EventEmitter {
     address(): ServerAddress | null;
 
     on(event: 'request',
-       listener: (req: IncomingMessage, res: ServerResponse) => void): this;
+       listener: (req: ServerRequest, res: ServerResponse) => void): this;
     on(event: 'listening', listener: () => void): this;
     on(event: 'close', listener: () => void): this;
     on(event: 'error', listener: (err: Error) => void): this;
@@ -119,9 +133,9 @@ export class Server extends EventEmitter {
 }
 
 export function createServer(requestListener?:
-    (req: IncomingMessage, res: ServerResponse) => void): Server;
+    (req: ServerRequest, res: ServerResponse) => void): Server;
 export function createServer(options: object,
-    requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
+    requestListener?: (req: ServerRequest, res: ServerResponse) => void): Server;
 
 /** status code -> reason phrase */
 export const STATUS_CODES: Record<number, string>;

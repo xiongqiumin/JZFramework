@@ -28,6 +28,8 @@
     // include 写 "jz_types/**/*.d.ts" 即可。
     "../../../../JZJSEngine/js_wrapper/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/bytes/types/**/*.d.ts",
+    "../../../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
+    "../../../../JZJSEngine/js_wrapper/stream/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/crypto/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/events/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",

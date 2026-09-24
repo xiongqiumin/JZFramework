@@ -7,8 +7,11 @@
  *     具名导入 `import { EventEmitter } from 'events'` 同样可用;
  *   - 同时挂到 globalThis(对齐 Node 的全局 ee; 但明确依赖请用 import)。
  *
- * 与 Node 的差异: 没有 'error' 监听器时 Node 会 throw, 本实现改为 console.error 上报,
- * 不会抛出未捕获异常(见 shared types/events.d.ts 的注释)。
+ * 与 Node 一致(✅ 已对齐): 没有 'error' 监听器时 `emit('error', err)` 会**抛异常**
+ * (Node 的 Unhandled 'error' event 语义) —— 错误不会被静默吞掉。
+ * 当初没抛是担心抛在引擎事件派发里难处理; 实际上引擎对回调异常有顶层兜底
+ * (按"未捕获异常"上报失败, 跟 Node 进程崩一个效果), 所以现在严格照 Node 来。
+ * 不想让错误冒泡: 自己 `on('error', ...)` 接住即可(与 Node 完全相同)。
  */
 'use strict';
 
@@ -49,7 +52,16 @@ export class EventEmitter {
     emit(e: string, ...args: any[]): boolean {
         const list = this._ev[e];
         if (!list || !list.length) {
-            if (e === 'error') console.error('Unhandled error:', args[0]);
+            if (e === 'error') {
+                // Node 语义: 没有 'error' 监听器必须抛, 否则错误被静默吞掉(初学者最易踩的坑)。
+                // 引擎对回调异常有顶层兜底, 抛出来会按"未捕获异常"上报失败 —— 与 Node 进程崩一致。
+                // 消息格式对齐 Node v26: Error 实例直接原样抛出; 其它参数抛 `Unhandled error. (<inspect>)`
+                // (字符串用单引号包, 与 Node 的 util.inspect 行为一致)。
+                if (args.length > 0 && args[0] instanceof Error) throw args[0];
+                const a = args.length > 0 ? args[0] : undefined;
+                const s = a === undefined ? '' : (typeof a === 'string' ? "'" + a + "'" : String(a));
+                throw new Error('Unhandled error.' + (s ? ' (' + s + ')' : ''));
+            }
             return false;
         }
         const arr = list.slice();

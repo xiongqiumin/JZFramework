@@ -98,3 +98,45 @@ declare class WebSocket extends EventEmitter {
     on(event: 'error', listener: (err: Error) => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
 }
+
+/** Node Buffer 兼容的字节块(Node 启动时就是全局, 本运行时同样挂 globalThis)。Uint8Array 子类。 */
+declare class Buffer extends Uint8Array {
+    constructor(input: any, encoding?: string);
+    static from(input: any, encoding?: string): Buffer;
+    static alloc(size: number, fill?: any, encoding?: string): Buffer;
+    static allocUnsafe(size: number): Buffer;
+    static allocUnsafeSlow(size: number): Buffer;
+    static concat(list: Uint8Array[], totalLength?: number): Buffer;
+    static isBuffer(x: any): boolean;
+    static isEncoding(encoding: string): boolean;
+    static byteLength(str: string, encoding?: string): number;
+    static compare(a: Uint8Array, b: Uint8Array): number;
+    toString(encoding?: string, start?: number, end?: number): string;
+    toJSON(): { type: 'Buffer'; data: number[] };
+    equals(other: Uint8Array): boolean;
+    compare(other: Uint8Array): number;
+    copy(target: Uint8Array, targetStart?: number, sourceStart?: number, sourceEnd?: number): number;
+    slice(start?: number, end?: number): Buffer;
+    subarray(start?: number, end?: number): Buffer;
+    fill(value: any, offset?: number, end?: number, encoding?: string): this;
+    indexOf(value: any, byteOffset?: number, encoding?: string): number;
+    write(str: string, offset?: number, length?: number, encoding?: string): number;
+}
+
+/** WHATWG TextEncoder(utf-8 编码; Node/浏览器均为全局) */
+declare class TextEncoder {
+    readonly encoding: string;
+    encode(input?: string): Uint8Array;
+    encodeInto(input: string, dest: Uint8Array): { read: number; written: number };
+}
+
+/** WHATWG TextDecoder(utf-8 解码; Node/浏览器均为全局) */
+declare class TextDecoder {
+    readonly encoding: string;
+    constructor(label?: string, options?: any);
+    decode(input?: Uint8Array, options?: any): string;
+}
+
+/** QuickJS 原生全局(base64 <-> 二进制串); 与 Web/Node 同义(本运行时也挂 globalThis) */
+declare function atob(data: string): string;
+declare function btoa(data: string): string;

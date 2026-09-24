@@ -144,7 +144,16 @@ void JZJSEventSink::emitArgs(const std::string& event, std::vector<JSValue>& arg
         JSValue ret = JS_Call(ctx, list[i], JS_UNDEFINED, (int)argv.size(), argv.data());
         if (JS_IsException(ret))
         {
+            // 回调里抛异常不能跨 quickjs 的 C 调用栈传回去(事件由 C++ 侧同步 emit),
+            // 按引擎既有口径交给 reportUncaughtError 并入错误链 —— 与 Node 一致
+            // (在事件监听器里抛错 = 未捕获异常, 进程会崩)。这也让 EventEmitter 在
+            // 没有 'error' 监听器时 emit('error') 抛出的异常能真正冒泡成脚本失败,
+            // 而不是被这里静默吞掉。
             JSValue exc = JS_GetException(ctx);
+            const char* s = JS_ToCString(ctx, exc);
+            m_engine->reportUncaughtError(s ? s : "事件回调抛出异常(错误信息不可读)");
+            if (s)
+                JS_FreeCString(ctx, s);
             JS_FreeValue(ctx, exc);
         }
         JS_FreeValue(ctx, ret);
@@ -1172,7 +1181,7 @@ void JZJSNetModule::loadWebGlobalModules()
     if (!m_engine)
         return;
 
-    static const char* kWebGlobalModules[] = { "events", "url", "ws", "http" };
+    static const char* kWebGlobalModules[] = { "events", "url", "ws", "http", "buffer" };
     for (size_t i = 0; i < sizeof(kWebGlobalModules) / sizeof(kWebGlobalModules[0]); i++)
     {
         const std::string entry = std::string(kWebGlobalModules[i]) + "/dist/index.js";

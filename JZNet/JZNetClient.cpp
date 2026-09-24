@@ -189,6 +189,7 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
     if (ev == JZ_NET_EV_CONNECT)
     {
         m_packet.clearPacket();
+        m_packet.resetCrypto();
 
         // 客户端主动发起握手,先给服务器发送 Hand
         if (m_server == nullptr && m_state == ConnectingState)
@@ -200,6 +201,14 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
                 hand.nonce = JZUuid::createUuid().toString();
             }
             sendHandPacket(&hand);
+
+            // 客户端侧: 用与服务器一致的 token 派生 ChaCha20 密钥, 之后即可解密服务器回包并加密自身发包。
+            // 必须在发送 Hand(明文)之后再启用, 否则 Hand 会被加密导致服务器无法解析。
+            if (!m_token.empty())
+            {
+                std::string token = "JZ" + hand.nonce + m_token;
+                m_packet.setPassword(token, true);   // 客户端角色
+            }
         }
     }
     else if (ev == JZ_NET_EV_CLOSE)
@@ -256,7 +265,7 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
                         if (!hand->nonce.empty())
                         {
                             std::string token = "JZ" + hand->nonce + m_token;
-                            m_packet.setPassword(token);
+                            m_packet.setPassword(token, false);  // 服务器侧角色(被 accept 的连接)
                         }
 
                         JZNetPackHandRes hand_res;

@@ -150,6 +150,8 @@ JZNetObject *JZNetServer::onAccept(uint64_t conn)
     socket->m_state = ConnectingState;
     socket->moveToThread(this->thread());
     socket->m_server = this;
+    // 把服务端配置的 token 传给被 accept 的连接, 握手时才能用相同 token 派生 ChaCha20 密钥
+    socket->setToken(m_token);
 
     connect(&socket->sigDisconnected, this, &JZNetServer::onClientDisconnect);
     connect(&socket->sigPacketReceive, this, &JZNetServer::onClientPackReceive);

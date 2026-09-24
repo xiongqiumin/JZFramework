@@ -24,13 +24,15 @@ find_package(OpenSSL REQUIRED)
 
 message(STATUS "OpenSSL found: ${OPENSSL_VERSION} (root=${OPENSSL_ROOT_DIR}, include=${OPENSSL_INCLUDE_DIR})")
 
-# 切换 mongoose TLS 后端为 OpenSSL
-target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_OPENSSL)
+# 注: 不在这里切换 MG_TLS(默认 MG_TLS_BUILTIN), 仅让 JZCore/crypto 能链接 libcrypto。
+# 如需让 mongoose 走 OpenSSL TLS, 在顶层 CMakeLists 自行定义 MG_TLS=MG_TLS_OPENSSL。
 
 # 头文件与链接（优先用 imported target，回退到变量）
+# 注意: JZFramework 是 STATIC 库, 用 PUBLIC 才能让链接 JZFramework 的最终可执行文件
+# 自动带上 OpenSSL(否则会出现 OpenSSL 符号未定义)。
 if(TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto)
-    target_link_libraries(JZFramework PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(JZFramework PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 else()
-    target_include_directories(JZFramework PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(JZFramework PRIVATE ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY})
+    target_include_directories(JZFramework PUBLIC ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(JZFramework PUBLIC ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY})
 endif()

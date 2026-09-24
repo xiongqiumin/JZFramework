@@ -5,61 +5,32 @@ namespace JZCrypto
 {
 namespace
 {
+    // 文件快速指纹取样参数(实现细节, 不对外暴露)
     const int kSampleBlock = 64 * 1024;              // 每个取样块 64KB
     const int kSampleCount = 4;                      // 中部均匀取样点数
     const int kFastThreshold = 8 * 1024 * 1024;      // 超过 8MB 才走快速取样
 
-    struct HashState
+    // 按算法对一段内存求摘要(实现细节, 不对外暴露)
+    JZByteArray computeHash(HashAlgorithm algo, const char *data, int size)
     {
-        HashAlgorithm algo;
-        MD5_CTX md5;
-    };
+        if (algo == HashAlgorithm::SHA256)
+            return sha256(data, (size_t)size);
 
-    void hashInit(HashState &st)
-    {
-        switch (st.algo)
-        {
-        case HashAlgorithm::MD5: MD5_Init(&st.md5); break;
-        default: break;
-        }
-    }
-
-    void hashUpdate(HashState &st, const void *data, size_t len)
-    {
-        switch (st.algo)
-        {
-        case HashAlgorithm::MD5: MD5_Update(&st.md5, data, len); break;
-        default: break;
-        }
-    }
-
-    JZByteArray hashFinal(HashState &st)
-    {
-        switch (st.algo)
-        {
-        case HashAlgorithm::MD5:
-        {
-            unsigned char d[16];
-            MD5_Final(d, &st.md5);
-            return JZByteArray((const char *)d, 16);
-        }
-        default: return JZByteArray();
-        }
+        // 默认 MD5
+        unsigned char d[16];
+        MD5(data, (size_t)size, d);
+        return JZByteArray((const char *)d, 16);
     }
 } // namespace
 
 JZByteArray hash(HashAlgorithm algo, const char *buffer, int size)
 {
-    HashState st{algo};
-    hashInit(st);
-    if (buffer && size > 0)
-        hashUpdate(st, buffer, (size_t)size);
-    return hashFinal(st);
+    return computeHash(algo, buffer, size);
 }
 
 JZByteArray hash(HashAlgorithm algo, const JZByteArray &buffer)
 {
-    return hash(algo, buffer.data(), buffer.size());
+    return computeHash(algo, buffer.data(), buffer.size());
 }
 
 JZByteArray hashFile(HashAlgorithm algo, const std::string &path)
@@ -68,16 +39,30 @@ JZByteArray hashFile(HashAlgorithm algo, const std::string &path)
     if (!f.open(path, "rb"))
         return JZByteArray();
 
-    HashState st{algo};
-    hashInit(st);
-
     char buf[kSampleBlock];
     int n;
-    while ((n = f.read(buf, kSampleBlock)) > 0)
-        hashUpdate(st, buf, (size_t)n);
+
+    JZByteArray result;
+    if (algo == HashAlgorithm::SHA256)
+    {
+        JZSha256 ctx;
+        while ((n = f.read(buf, kSampleBlock)) > 0)
+            ctx.update(buf, (size_t)n);
+        result = ctx.final();
+    }
+    else
+    {
+        MD5_CTX ctx;
+        MD5_Init(&ctx);
+        while ((n = f.read(buf, kSampleBlock)) > 0)
+            MD5_Update(&ctx, buf, (size_t)n);
+        unsigned char d[16];
+        MD5_Final(d, &ctx);
+        result = JZByteArray((const char *)d, 16);
+    }
 
     f.close();
-    return hashFinal(st);
+    return result;
 }
 
 JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path)
@@ -95,16 +80,14 @@ JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path)
         return hashFile(algo, path);
     }
 
-    HashState st{algo};
-    hashInit(st);
-
+    JZByteArray sampled;
     char buf[kSampleBlock];
     int n;
 
     // 首块
     n = f.read(buf, kSampleBlock);
     if (n > 0)
-        hashUpdate(st, buf, (size_t)n);
+        sampled.append(buf, n);
 
     // 中部均匀取样点: 偏移 = size * i / (count+1)
     for (int i = 1; i <= kSampleCount; ++i)
@@ -117,7 +100,7 @@ JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path)
         f.seek(off);
         n = f.read(buf, kSampleBlock);
         if (n > 0)
-            hashUpdate(st, buf, (size_t)n);
+            sampled.append(buf, n);
     }
 
     // 尾块
@@ -126,10 +109,10 @@ JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path)
         f.seek(size - kSampleBlock);
         n = f.read(buf, kSampleBlock);
         if (n > 0)
-            hashUpdate(st, buf, (size_t)n);
+            sampled.append(buf, n);
     }
 
     f.close();
-    return hashFinal(st);
+    return computeHash(algo, sampled.data(), sampled.size());
 }
 } // namespace JZCrypto

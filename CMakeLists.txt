@@ -85,7 +85,6 @@ target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)
 
-add_subdirectory(demo)
 if(BUILD_TEST)
     enable_testing()
     add_subdirectory(test)

@@ -10,6 +10,7 @@ int test_websocket();
 int test_mqtt();
 int test_http();
 int test_netServer();
+int test_netCrypto();
 
 int main(int argc, char *argv[])
 {
@@ -70,7 +71,10 @@ int main(int argc, char *argv[])
     test_netServer();
     jzDebug() << "【OK】JZNetServer 通过";
 
-    jzDebug() << "【Benchmark】PASS: 所有 net 模块均正常收发 (TCP/UDP/WebSocket/MQTT/HTTP/JZNetServer)";
+    test_netCrypto();
+    jzDebug() << "【OK】Net 加密测试通过";
+
+    jzDebug() << "【Benchmark】PASS: 所有 net 模块均正常收发 (TCP/UDP/WebSocket/MQTT/HTTP/JZNetServer/加密)";
 
     return 0;
 }

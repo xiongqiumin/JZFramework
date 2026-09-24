@@ -57,6 +57,16 @@ set(JZCORE_SOURCES
     crypto/JZMd5.h
     crypto/JZMd5.cpp
     crypto/JZXorShift.h
+    crypto/JZSha256.h
+    crypto/JZSha256.cpp
+    crypto/JZHmac.h
+    crypto/JZHmac.cpp
+    crypto/JZAes.h
+    crypto/JZAes.cpp
+    crypto/JZChaCha20.h
+    crypto/JZChaCha20.cpp
+    crypto/JZChaCha20Poly1305.h
+    crypto/JZChaCha20Poly1305.cpp
     JZCrypto.cpp
     JZCrypto.h
     JZElapsedTimer.h
@@ -157,3 +167,6 @@ if(NOT ESP_PLATFORM)
         endif()
     endif()
 endif()
+
+# ---- OpenSSL: JZCore/crypto 用 EVP 实现 SHA256 / HMAC / AES / ChaCha20 ----
+include("${JZFRAMEWORK_ROOT_DIR}/cmake/openssl.cmake")

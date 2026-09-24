@@ -256,7 +256,8 @@ private:
             list.push_back(p.second);
         for (auto& v : list)
         {
-            JSValue ret = JS_Call(ctx, v, JS_UNDEFINED, (int)argv.size(), argv.data());
+            // 走引擎的 callJs: 回调里结算的 promise(续体是微任务)由引擎统一补检查点唤醒
+            JSValue ret = engine->callJs(v, JS_UNDEFINED, (int)argv.size(), argv.data());
             if (JS_IsException(ret))
             {
                 JSValue exc = JS_GetException(ctx);

@@ -269,7 +269,8 @@ JSValue JZJSWorkerModule::callCallback(int cbId, int argCount, JSValue* args, bo
         return JS_UNDEFINED;
     }
 
-    JSValue r = JS_Call(ctx, cb, JS_UNDEFINED, argCount, args);
+    // 走引擎的 callJs: 回调里结算的 promise(续体是微任务)由引擎统一补检查点唤醒
+    JSValue r = m_engine->callJs(cb, JS_UNDEFINED, argCount, args);
     JS_FreeValue(ctx, cb);
 
     if (JS_IsException(r))

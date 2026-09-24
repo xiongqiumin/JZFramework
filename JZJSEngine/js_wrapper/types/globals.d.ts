@@ -87,6 +87,14 @@ declare class WebSocket extends EventEmitter {
     close(code?: number, reason?: string): void;
     ping(data?: Data): void;
 
+    /**
+     * 连接中的/已连接的 WebSocket 默认把进程留住(对齐 Node 的 handle ref 语义)。
+     * ⚠ 注意: Node 的全局 WebSocket(undici) 没有这两个方法(它用内部的 socket.unref());
+     * 本引擎的 WebSocket 包装的是连接句柄, 所以直接给到这里 —— 语义同 net.Socket.unref()。
+     */
+    ref(): this;
+    unref(): this;
+
     onopen: ((ev: { target: WebSocket }) => void) | null;
     onmessage: ((ev: { data: Chunk; target: WebSocket }) => void) | null;
     onclose: ((ev: { code: number; reason: string; wasClean: boolean }) => void) | null;
@@ -121,6 +129,61 @@ declare class Buffer extends Uint8Array {
     fill(value: any, offset?: number, end?: number, encoding?: string): this;
     indexOf(value: any, byteOffset?: number, encoding?: string): number;
     write(str: string, offset?: number, length?: number, encoding?: string): number;
+
+    // ---- 数值读写(与 Node 同名同义; offset 必填, 返回 offset + 字节数) ----
+    readUInt8(offset?: number): number;
+    readInt8(offset?: number): number;
+    readUInt16LE(offset?: number): number;
+    readUInt16BE(offset?: number): number;
+    readInt16LE(offset?: number): number;
+    readInt16BE(offset?: number): number;
+    readUInt32LE(offset?: number): number;
+    readUInt32BE(offset?: number): number;
+    readInt32LE(offset?: number): number;
+    readInt32BE(offset?: number): number;
+    readBigUInt64LE(offset?: number): bigint;
+    readBigUInt64BE(offset?: number): bigint;
+    readBigInt64LE(offset?: number): bigint;
+    readBigInt64BE(offset?: number): bigint;
+    readFloatLE(offset?: number): number;
+    readFloatBE(offset?: number): number;
+    readDoubleLE(offset?: number): number;
+    readDoubleBE(offset?: number): number;
+    /** 变长(1~6 字节) */
+    readUIntLE(offset: number, byteLength: number): number;
+    readUIntBE(offset: number, byteLength: number): number;
+    readIntLE(offset: number, byteLength: number): number;
+    readIntBE(offset: number, byteLength: number): number;
+
+    writeUInt8(value: number, offset?: number): number;
+    writeInt8(value: number, offset?: number): number;
+    writeUInt16LE(value: number, offset?: number): number;
+    writeUInt16BE(value: number, offset?: number): number;
+    writeInt16LE(value: number, offset?: number): number;
+    writeInt16BE(value: number, offset?: number): number;
+    writeUInt32LE(value: number, offset?: number): number;
+    writeUInt32BE(value: number, offset?: number): number;
+    writeInt32LE(value: number, offset?: number): number;
+    writeInt32BE(value: number, offset?: number): number;
+    writeBigUInt64LE(value: number | bigint, offset?: number): number;
+    writeBigUInt64BE(value: number | bigint, offset?: number): number;
+    writeBigInt64LE(value: number | bigint, offset?: number): number;
+    writeBigInt64BE(value: number | bigint, offset?: number): number;
+    writeFloatLE(value: number, offset?: number): number;
+    writeFloatBE(value: number, offset?: number): number;
+    writeDoubleLE(value: number, offset?: number): number;
+    writeDoubleBE(value: number, offset?: number): number;
+    writeUIntLE(value: number, offset: number, byteLength: number): number;
+    writeUIntBE(value: number, offset: number, byteLength: number): number;
+    writeIntLE(value: number, offset: number, byteLength: number): number;
+    writeIntBE(value: number, offset: number, byteLength: number): number;
+
+    swap16(): this;
+    swap32(): this;
+    swap64(): this;
+
+    /** 整块写入(Uint8Array.prototype.set 的同义) */
+    set(src: Uint8Array, offset?: number): void;
 }
 
 /** WHATWG TextEncoder(utf-8 编码; Node/浏览器均为全局) */

@@ -222,7 +222,10 @@ int main()
 
     // 9. http/fetch: 连接失败走 reject(同时验证 pendingWork 会释放)
     //    先用 net.Server 占一个固定端口再关闭, 得到确定无监听的端口
+    //      ⚠ 基线取"此刻的 pendingWork": 上面几个用例留下的 socket/server 是**打开着的句柄**,
+    //      自 2026-09-24 起它们也计入 pendingWork(对齐 Node 的 handle ref 语义), 所以不能用 ==0。
     {
+        int pendingBase = engine.pendingWork();
         engine.eval(
             "globalThis.__httpErr = '';"
             "(function(){"
@@ -241,7 +244,8 @@ int main()
         auto v = engine.eval("globalThis.__httpErr");
         jzDebug() << "fetch result:" << (engine.isException(v.get()) ? string("<exception>")
                                                                      : engine.fromJSValue<string>(v.get()));
-        check("fetch rejects on connect error", ok && engine.pendingWork() == 0);
+        check("fetch rejects on connect error",
+              ok && engine.pendingWork() == pendingBase);   // 有借有还: 失败后回到基线
     }
 
     // 10. mqtt: 连不上时不能崩, 且 client 对象可用

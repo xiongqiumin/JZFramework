@@ -1,15 +1,15 @@
-// 04_bytes_crypto —— 协议帧打包/解包(bytes) + 摘要与随机数(crypto)。
+// 04_bytes_crypto —— 协议帧打包/解包(Buffer 数值读写) + 摘要与随机数(crypto)。
 //
 // 编译跑起来:  <tsc> -p tsconfig.json
 //              code_runtime --entry <本目录>/build/04_bytes_crypto.js
 //
 // 上位机脚本最常干的两件底层事都在这一份里:
-//   * 设备通信的帧: ByteWriter 顺序写 / ByteReader 顺序读(自带游标, 小端);
+//   * 设备通信的帧: Buffer 的 writeXxx(v, off) / readXxx(off) 顺序读写(小端, off 自己推进);
 //   * 校验与去重: md5、随机字节、uuid。
 //
-// bytes 是本框架自带的包(Node 没这个名), crypto 只实现了常用那几个。
+// Buffer 是全局(Node 同), 数值读写这套名字与 Node 完全同名同义 —— 本例子在 Node 下也能直接跑。
+// (本框架没有"游标自增"的读写器: Node 也没有, offset 一律显式传。)
 
-import { ByteWriter, ByteReader, concatBytes, hexOf } from 'bytes';
 import crypto from 'crypto';
 import { check } from './helper/assert.js';
 
@@ -17,37 +17,37 @@ console.log('--- 04_bytes_crypto ---');
 
 // ---- 1) 组帧: 站号 + 功能码 + 长度 + 数据 ----
 const payload = Uint8Array.fromHex('0a0b0c0d');
-const w = new ByteWriter(1 + 1 + 2 + payload.length);   // 先算长度再定长分配(定长帧的常规做法)
-w.u8v(0x01);            // 站号
-w.u8v(0x03);            // 功能码
-w.u16(payload.length);  // 长度(u16 小端)
-w.raw(payload);         // 数据
-const frame = w.bytes();
+const frame = Buffer.alloc(1 + 1 + 2 + payload.length);   // 先算长度再定长分配(定长帧的常规做法)
+let o = 0;
+o = frame.writeUInt8(0x01, o);               // 站号
+o = frame.writeUInt8(0x03, o);               // 功能码
+o = frame.writeUInt16LE(payload.length, o);  // 长度(u16 小端)
+frame.set(payload, o);                       // 数据
+o += payload.length;
 check('帧长度 = 8', frame.length === 8);
-check('帧内容 little endian', hexOf(frame) === '010304000a0b0c0d');
-console.log('frame = ' + hexOf(frame));
+check('帧内容 little endian', frame.toString('hex') === '010304000a0b0c0d');
+console.log('frame = ' + frame.toString('hex'));
 
-// ---- 2) 解帧: 游标自增, 不用自己算 offset ----
-const r = new ByteReader(frame);
-check('读站号', r.u8v() === 0x01);
-check('读功能码', r.u8v() === 0x03);
-const len = r.u16();
+// ---- 2) 解帧: offset 自己推进(写回值就是下一个 offset) ----
+let p = 0;
+check('读站号', frame.readUInt8(p) === 0x01); p += 1;
+check('读功能码', frame.readUInt8(p) === 0x03); p += 1;
+const len = frame.readUInt16LE(p); p += 2;
 check('读长度', len === 4);
-check('remaining 与长度对得上', r.remaining() === len);
-const body = r.bytes(len);
-check('读数据本体', hexOf(body) === '0a0b0c0d');
-check('读完到 EOF', r.eof());
+check('remaining 与长度对得上', frame.length - p === len);
+const body = frame.subarray(p, p + len); p += len;
+check('读数据本体', body.toString('hex') === '0a0b0c0d');
+check('读完到 EOF', p === frame.length);
 
 // ---- 3) 拼接 + 有符号/64 位 ----
-const joined = concatBytes([Uint8Array.fromHex('0102'), Uint8Array.fromHex('0304')]);
-check('concatBytes', joined.toHex() === '01020304');
+const joined = Buffer.concat([Uint8Array.fromHex('0102'), Uint8Array.fromHex('0304')]);
+check('Buffer.concat', joined.toString('hex') === '01020304');
 
-const num = new ByteWriter(12);
-num.i32(-2);
-num.u64(0x0102030405060708n);       // 64 位用 bigint 传, 免得掉精度
-const rd = new ByteReader(num.bytes());
-check('i32 有符号', rd.i32() === -2);
-check('u64 -> bigint', rd.u64() === 0x0102030405060708n);
+const num = Buffer.alloc(12);
+num.writeInt32LE(-2, 0);                        // 有符号
+num.writeBigUInt64LE(0x0102030405060708n, 4);   // 64 位用 bigint 传, 免得掉精度
+check('i32 有符号', num.readInt32LE(0) === -2);
+check('u64 -> bigint', num.readBigUInt64LE(4) === 0x0102030405060708n);
 
 // ---- 4) crypto ----
 check("md5('abc')", crypto.createHash('md5').update('abc').digest('hex') === '900150983cd24fb0d6963f7d28e17f72');

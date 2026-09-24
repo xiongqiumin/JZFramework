@@ -65,6 +65,27 @@ protected:
     std::map<std::string, std::vector<std::pair<int, JSValue>>> m_listeners;
 };
 
+// 句柄"是否算一票让宿主活着"—— 对齐 Node 的 handle ref 语义：
+//   打开/监听/连接 = live, 关闭/断开/析构 = 不 live;
+//   refed 默认 true, ref()/unref() 只改这个开关(**不改句柄功能**: unref 的 socket 照样收发,
+//   只是它不再吊住进程 —— 与真 Node v26 实测一致)。
+// 内部保证与 engine->addPendingWork()/releasePendingWork() **严格配对**(counted 标志 + sync),
+// 因此无论调用顺序如何(先 unref 后 bind、重复 unref、close 两次…)计数都不会跑偏。
+// ⚠ 语意: unref 在"还没 live"时调用也有效 —— 状态留着, 等它 live 时按 refed 决定要不要计票。
+struct JZJSHandleRef
+{
+    JZJSEngine* engine = nullptr;
+    bool live = false;      // 句柄是否处于打开态
+    bool refed = true;      // 是否算一票(默认算, 同 Node)
+    bool counted = false;   // 当前是否已计入引擎 pendingWork
+
+    void attach(JZJSEngine* e) { engine = e; }
+    void setLive(bool v) { live = v; sync(); }
+    void setRef(bool v) { refed = v; sync(); }
+    bool hasRef() const { return live && refed; }
+    void sync();
+};
+
 // TCP socket 包装
 struct JZJSNetSocket
 {
@@ -86,6 +107,7 @@ struct JZJSNetSocket
     JZJSNetModule* module;
     JZTcpSocket* socket;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     std::string host;
     int port;
     int64_t bytesRead;
@@ -106,6 +128,7 @@ struct JZJSNetServer
     JZJSNetModule* module;
     JZTcpServer* server;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     int listenPort;
     std::string listenHost;
     bool closed;
@@ -126,7 +149,9 @@ struct JZJSUdpSocket
     JZJSNetModule* module;
     JZUdpSocket* socket;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     int bindPort;
+    bool bound;      // 是否已经 bind 过(含隐式 bind; 显式 bind(0) 也是已 bind, 见 send())
     bool closed;
 };
 
@@ -148,6 +173,7 @@ struct JZJSWebSocket
     // 所以 server 关闭/析构不会再把它一起 delete(否则 JS 侧还攥着就悬垂了)。
     JZWebSocket* socket;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     bool everConnected;
     bool closed;
 };
@@ -166,6 +192,7 @@ struct JZJSWebSocketServer
     JZJSNetModule* module;
     JZWebSocketServer* server;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     int listenPort;
     std::string listenHost;
     bool closed;
@@ -186,6 +213,7 @@ struct JZJSMqttClient
     JZJSNetModule* module;
     JZMqttClient* client;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     bool connected;
 };
 
@@ -237,6 +265,7 @@ struct JZJSHttpServer
     JZHttpServer* server;
     JZJSHttpHandler* handler;
     JZJSEventSink sink;
+    JZJSHandleRef href;
     int listenPort;
     std::string listenHost;
     bool closed;

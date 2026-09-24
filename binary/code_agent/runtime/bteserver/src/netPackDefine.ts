@@ -4,7 +4,7 @@
 // NetPackVariant(透传字节的通用包) + NetPackRegist(注册包类型, 初始化工步名/
 // 参数类型/参数限制/错误码表)。
 //
-// Qt -> JS: QDataStream(小端) -> ByteWriter/ByteReader(裸名 'bytes' 模块);
+// Qt -> JS: QDataStream(小端) -> ByteWriter/ByteReader(本工程自己的游标, 见 protocol.ts);
 //           QFile + QTextStream 读 BTELogCode.txt -> fs.readFileSync(path, "utf8");
 //           QSettings(option.ini) -> 引擎的 JZSettings(接口对齐, value() -> getInt());
 //           qRegisterMetaType<NetPackPtr> -> 无对应物, 保留注释。
@@ -18,8 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import fs from 'fs';
-import bytes from 'bytes';             // 默认导入取成员(具名导入在 tsgo 下 TS2614, 见 protocol.ts 说明)
-const ByteWriter = bytes.ByteWriter;
+import { ByteWriter } from './protocol.js';   // 本工程的游标写(见 protocol.ts 的说明)
 import { NetPack, NetPackManager, PackInfo } from './netPack.js';
 import {
     PackDefine, PARAM_Current, PARAM_Voltage, PARAM_StopCurrent, PARAM_StopVoltage, PARAM_Time,

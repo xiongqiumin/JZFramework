@@ -1,7 +1,7 @@
 {
   "name": "jsapi_core_bytes",
-  "purpose": "core 包 bytes 工具（ByteReader/ByteWriter/hexOf）的发现与使用成本。2026-09-22 起它有 Node 风格裸名 'bytes'（namespace 形态、无 default，必须具名导入，同 sqlite）——之前只能按工程内相对路径 import jz_js 的 dist 实现文件，那是 Node 里没有的写法。本条同时考：按游标顺序读写、小端、eof 判定、ByteWriter 先给长度。",
-  "prompt": "用 TypeScript 完成。框架提供了带游标的字节读写工具 ByteReader / ByteWriter / hexOf（内置模块，具名导入即可：`import { ByteReader, ByteWriter, hexOf } from 'bytes'`；默认导入也能用；类型声明见工程里的 jz_types/bytes/types/index.d.ts）：\n1) 读 ./_input.txt（pre 脚本已写入一串十六进制字符串，例如 '3412…'），转成字节；\n2) 用 ByteReader 依次读：u16() 得 A、u8v() 得 B、bytes(3) 得 R；\n3) 用 ByteWriter 依次写回 u16(A)、u8v(B)、raw(R)；\n4) 打印一行：\nBYTES=<写回字节的十六进制小写>@<A*3+B>@<读完 R 之后 reader.eof() 的布尔值>\n（各段用 '@' 连接，不要空格。）",
+  "purpose": "字节(bytes)层面的组帧/解帧的发现与使用成本。字节块用全局 Buffer(与 Node 同名), 数值读写 readUInt16LE(offset) / writeUInt16LE(v, offset) / readUInt8(offset) / writeUInt8(v, offset) 与 Node 同名同义 —— offset 必填、不自动前进(引擎和 Node 都没有游标式读写器)。本条同时考：顺序读写时自己推进 offset、小端、是否读到末尾、Buffer.alloc 先给长度。",
+  "prompt": "用 TypeScript 完成。字节用全局 Buffer(Node 同名, 不用 import), 数值读写与 Node 完全同名: `readUInt16LE(offset)` / `writeUInt16LE(value, offset)` / `readUInt8(offset)` / `writeUInt8(value, offset)` / `subarray(a, b)` / `set(bytes, offset)` / `toString('hex')`; 十六进制串转字节用 `Uint8Array.fromHex(...)`。注意 offset 必填、读完之后不会自动前进, 要自己累加。\n1) 读 ./_input.txt(pre 脚本已写入一串十六进制字符串, 例如 '3412…'), 用 Uint8Array.fromHex 转成字节;\n2) 用 Buffer.from(...) 包一层, 依次读: readUInt16LE 得 A、readUInt8 得 B、subarray 取 3 字节得 R(每读一项自己把 offset 加上对应字节数);\n3) 用 Buffer.alloc(6) 依次写回: writeUInt16LE(A)、writeUInt8(B)、set(R)(同样自己推进 offset);\n4) 打印一行:\nBYTES=<写回字节的十六进制小写>@<A*3+B>@<读完 R 之后 offset 是否正好到末尾的布尔值>\n(各段用 '@' 连接, 不要空格。)",
   "maxAttempts": 3,
   "timeout": 30,
   "setup": "write_input.py",
@@ -9,5 +9,5 @@
   "expect": {
     "contains": "3412ab00efbe@14151@true"
   },
-  "retryHint": "上一次运行的结果不对。要求：`import { ByteReader, ByteWriter, hexOf } from 'bytes'`（该模块无 default，别写默认导入）→ 读 ./_input.txt 的十六进制串用 Uint8Array.fromHex 转字节 → ByteReader 顺序读 u16()、u8v()、bytes(3) → ByteWriter 按同样顺序写回 → 打印 BYTES=<写回字节的 hex>@<u16*3+u8>@<eof()>。注意 u16 是小端；ByteWriter 要先给长度再写。"
+  "retryHint": "上一次运行的结果不对。要求: 用全局 Buffer(不用 import)—— `Uint8Array.fromHex` 转字节 → `Buffer.from(bytes)` 后顺序读 readUInt16LE / readUInt8 / subarray(每步自己把 offset 加上 2/1/3) → `Buffer.alloc(6)` 顺序 writeUInt16LE / writeUInt8 / set 写回 → 打印 BYTES=<写回字节的 hex>@<u16*3+u8>@<offset 是否到末尾>。注意 u16 是小端; Buffer.alloc 要先给长度。"
 }

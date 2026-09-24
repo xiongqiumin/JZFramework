@@ -60,10 +60,32 @@ check('Buffer 是全局', typeof (globalThis as any).Buffer === 'function');
 check('TextEncoder 是全局', typeof (globalThis as any).TextEncoder === 'function');
 check('TextDecoder 是全局', typeof (globalThis as any).TextDecoder === 'function');
 
-// ---- 8) 与已有 bytes 互补: Buffer 是 Uint8Array, 能吃进 ByteReader ----
-import { ByteReader } from 'bytes';
+// ---- 8) 数值读写(与 Node 同名同义): offset 必填, 读/写完自己推进 ----
 {
     const b = Buffer.from([0x12, 0x34, 0x56]);
-    const r = new ByteReader(b);
-    check('Buffer 进 ByteReader', r.u8v() === 0x12 && r.u8v() === 0x34 && r.u8v() === 0x56);
+    let p = 0;
+    const a1 = b.readUInt8(p); p += 1;
+    const a2 = b.readUInt8(p); p += 1;
+    const a3 = b.readUInt8(p); p += 1;
+    check('readUInt8 顺序读', a1 === 0x12 && a2 === 0x34 && a3 === 0x56 && p === 3);
+
+    const w = Buffer.alloc(4);
+    let q = 0;
+    q = w.writeUInt16LE(0x1234, q);
+    q = w.writeUInt16LE(0x5678, q);
+    check('writeUInt16LE 顺序写', w.toString('hex') === '34127856' && q === 4);
+    check('readUInt16LE 读回', w.readUInt16LE(0) === 0x1234 && w.readUInt16LE(2) === 0x5678);
+    check('readUInt16BE 大端', w.readUInt16BE(0) === 0x3412);
+
+    // 64 位走 bigint(免得掉精度)
+    const e = Buffer.alloc(8);
+    e.writeBigUInt64LE(0x0102030405060708n, 0);
+    check('writeBigUInt64LE / readBigUInt64LE', e.readBigUInt64LE(0) === 0x0102030405060708n);
+
+    // 越界: 与 Node 一样抛 RangeError(code = ERR_OUT_OF_RANGE)
+    let threw = '';
+    try { w.readUInt32LE(2); } catch (err: any) { threw = String((err && err.code) || err); }
+    check('越界抛 ERR_OUT_OF_RANGE', threw === 'ERR_OUT_OF_RANGE');
 }
+
+console.log('11_buffer_encoding done');

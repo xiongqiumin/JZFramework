@@ -4,14 +4,14 @@
 // 包信息(PackInfo) / 包基类(NetPack) / 包工厂(NetPackManager)。
 //
 // Qt -> JS: QByteArray -> Uint8Array; QDataStream(小端) -> 由 ByteWriter
-//           (裸名 'bytes' 模块) 承担; QMap -> Map; QAtomicInteger -> 普通 number;
+//           (本工程自己的游标, 见 protocol.ts; 字节块是全局 Buffer) 承担;
+//           QMap -> Map; QAtomicInteger -> 普通 number;
 //           Q_ASSERT -> console.assert; QSharedPointer<NetPack> -> 对象引用。
 //           DECLAR_PACK 宏在 JS 里展开为"给类挂静态成员"(netPackCreate/NetType),
 //           并在子类里覆写 type()。
 // ---------------------------------------------------------------------------
 
-import bytes from 'bytes';             // 默认导入取成员(具名导入在 tsgo 下 TS2614, 见 protocol.ts 说明)
-const ByteWriter = bytes.ByteWriter;
+import { ByteWriter } from './protocol.js';   // 本工程的游标写(见 protocol.ts 的说明)
 import {
     BTS_CMD_CONNECT_RESP, BTS_CMD_SEND_INFO_RESP, BTS_CMD_GET_RTC_RESP, BTS_CMD_SET_RTC_RESP,
     BGS66_CMD_SET_RT_INTERVAL_RESP, BTS_CMD_SEND_PARALLEL_RESP, BTS70_CMD_SET_TESTID_RESP,

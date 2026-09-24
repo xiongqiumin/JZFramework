@@ -309,6 +309,9 @@ export class Server extends EventEmitter {
         this._h.close();
         return this;
     }
+    /** 让监听中的服务不再吊住进程(与 Node 的 http.Server.unref() 同义) */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
 }
 
 export function createServer(opts: any, listener: any) {

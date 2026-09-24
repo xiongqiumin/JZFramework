@@ -32,14 +32,15 @@ export function delay(ms: number): Promise<void> {
 }
 
 /**
- * "等外部事件"期间把进程吊住(见 06/07/09 的用法)。
+ * 吊一个空周期定时器把进程留住(见 09 的用法)。
  *
- * 为什么需要: 宿主(code_runtime)判断"还有没有活"看的是**引擎自己知道的那点活** ——
- * promise 微任务 / setTimeout 定时器 / 登记过的原生异步(fetch)。
- * 而等 TCP 回包、等 worker 回信这类阶段三者都为 0, 宿主会认为脚本已经跑完直接退出
- * (断言一条没跑也算"通过")。所以吊一个空周期定时器, 最后一步再 clear 掉。
- * ⚠ 别漏了 clear: 周期任务不清, 进程永远不退出。
+ * 宿主判断"还有没有活"看的是: **ref 着的定时器 / promise 微任务 / 登记过的原生异步(fetch) /
+ * 打开着的套接字与服务端**(后两条是 2026-09-24 按 Node 的 handle ref 语义对齐后的行为)。
+ * 所以等网络回包已经不需要它了; 还需要它的场景是"等待对象不被计入"的那些 ——
+ * 例如等 worker 回信/退出(worker 线程不在句柄表里)。
+ * 返回 Timeout: 不想被它吊住时可以 `.unref()`。
+ * ⚠ 别漏了 clear: 定时器不清, 进程可能永远不退出。
  */
-export function keepAlive(ms: number): number {
+export function keepAlive(ms: number): Timeout {
     return setInterval(function () { }, ms);
 }

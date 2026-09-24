@@ -18,9 +18,8 @@
  *     import http from 'http' 与 import { createServer } from 'http' 都可以。
  *   也可以按工程内相对路径 import（jz_js/<名字>/dist/index.js，默认导出 = 模块对象）。
  *   工程根下的 jz_js/ 由 initProject 从 <exe>/jz_engine/jz_js 拷入（打包/发布产物里同目录）。
- *   另外：引擎的"还有活干吗"(`hasPendingJob`) 只认定时器/微任务，**监听中的套接字不算** ——
- *   只 createServer+listen 而没有任何 setTimeout/setInterval 时，顶层跑完进程就退出了，
- *   所以末尾必须留一个心跳定时器保活（见文件尾）。
+ *   另外：退出/保活是 Node 的 handle ref 语义（2026-09-24 对齐）——**监听中的 server 自己就把
+ *   进程留住**，所以这个常驻服务不需要任何心跳定时器；反过来，想让某个句柄不吊住进程就 unref()。
  *
  * 自测（工程根执行；jz_types、jz_js 需先按 initProject 的布局就位）：
  *   copy <本文件> <工程根>/src/main.ts
@@ -364,6 +363,5 @@ server.listen(PORT, () => {
     console.log('[five_chess_server] listening on http://127.0.0.1:' + PORT);
 });
 
-// 保活：引擎的"还有活干吗"只看定时器/微任务（hasPendingJob），**监听中的套接字不算** ——
-// 没有这个心跳，main 顶层跑完进程就会直接退出（服务还没被 verify 连上就没了）。
-setInterval(() => { }, 1000);
+// 不需要心跳保活：监听中的 server 是 Node 语义下的"ref 着的句柄"，自己就会把进程留住
+// （顶层跑完也不会退；进程要退得靠 close() 或外部 kill）。要让它不吊住进程才用 server.unref()。

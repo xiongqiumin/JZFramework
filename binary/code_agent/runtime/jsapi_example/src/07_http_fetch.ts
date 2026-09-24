@@ -7,29 +7,42 @@
 // http 包给的是 Node 风格的 request/get + createServer。
 // 同样跑本机 loopback: 用完记得 server.close()。
 //
-// fetch 会登记原生待办任务( await 期间宿主知道还有活), 但服务起来那一段仍然是外部事件,
-// 所以这里也吊一个周期定时器保底(keepAlive), 最后一步 clear 掉 —— 理由见 06_net_echo。
+// 服务端读请求体用 **Node 标准形态**('data'/'end' 流), 不用引擎提供的 req.text ——
+// 后者是框架扩展, 换成别的运行时就没有了。
+//
+// fetch 会登记原生待办任务(await 期间宿主知道还有活), 监听中的 server 自己也把进程留住
+// (对齐 Node 的 handle ref 语义) —— 所以等回包不需要定时器; 反过来 server.close() 必须做,
+// 否则进程不退出。理由与用法见 06_net_echo。
 //
 // TS 侧同 06_net_echo: 内置包的类型是 ambient 的 `declare module` 声明, 随工程分发的
 // tsgo(TS 7) 不给这种导出函数的回调形参做上下文推导 —— 形参类型自己写(见下), 类型从
 // 同一个包名里 `import type` 取。
 
 import http from 'http';
-import type { IncomingMessage, ServerResponse } from 'http';
-import { check, keepAlive } from './helper/assert.js';
+import type { IncomingMessage, ServerRequest, ServerResponse } from 'http';
+import { check } from './helper/assert.js';
 
 const PORT = 23402;
 const base = 'http://127.0.0.1:' + PORT;
-const keep = keepAlive(50);
 
 console.log('--- 07_http_fetch ---');
 
 // ---- 服务端 ----
-const server = http.createServer(function (req: IncomingMessage, res: ServerResponse) {
+const server = http.createServer(function (req: ServerRequest, res: ServerResponse) {
     if (req.method === 'POST') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        // 服务端: 请求体已经在 req.text 里(没有请求体时是 undefined, 用 ?? 兜一下)
-        res.end('echo:' + (req.text ?? ''));
+        // 标准 Node 形态: 请求体是流 —— 'data' 里收,'end' 里拼完再回包。
+        // (引擎另给了 req.text 便捷 getter, 一次就把 body 解好; 那是框架扩展不是 Node 的,
+        //  所以例子里刻意走标准写法, 抄到别处也能跑。)
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', function (chunk: Uint8Array | string) {
+            if (typeof chunk === 'string')      // setEncoding('utf8') 之后给的是字符串
+                body = body + chunk;
+        });
+        req.on('end', function () {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('echo:' + body);
+        });
         return;
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -71,8 +84,7 @@ server.listen(PORT, '127.0.0.1', function () {
         });
         check('http.get 读到同样的 body', bodyText === '{"app":"jz","ok":true}');
 
-        server.close();
-        clearInterval(keep);
+        server.close();     // 监听句柄收掉, 进程才会退出
         console.log('07_http_fetch done');
     })();
 });

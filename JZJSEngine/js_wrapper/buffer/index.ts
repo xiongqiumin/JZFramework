@@ -2,11 +2,10 @@
 /**
  * @jz/buffer —— Node Buffer 兼容的二进制字节块 + WHATWG TextEncoder/TextDecoder。
  *
- * 和已有 `bytes` 的关系(不重复):
- *   - `bytes`(ByteReader/ByteWriter)补的是 ES 标准缺的"游标式顺序读写"(协议帧: 读 2 字节长度、
- *     4 字节编号…), 等价于 QDataStream/ByteBuffer;
- *   - `Buffer` 重点是**编码转换**(utf8/hex/base64/latin1)与索引读写。
- *   两者能组合: Buffer 内部就是 Uint8Array, 所以 `new ByteReader(buf)` 直接能吃。
+ * 字节能力**只此一处**: 编码转换(utf8/hex/base64/latin1) + 索引读写 + 数值读写
+ * (`readUInt16LE(offset)` / `writeUInt32LE(v, offset)` 等, 与 Node 同名同义)。
+ * 没有"游标式"读写器 —— Node 也没有(offset 必填、不自动前进), 顺序解析的调用方
+ * 自己推进 offset(协议解析常在业务侧套一层游标, 例如 bteserver 的 protocol.ts)。
  *
  * 实现说明: Buffer 用 Proxy 包一个内部 Uint8Array(而不是 `extends Uint8Array`), 这样既能像
  * Node 那样 `buf[0]` 索引、`buf.length`、当 Uint8Array 传给 DataView, 又能避免和
@@ -124,6 +123,21 @@ function asU8(x: any): Uint8Array
     return (x instanceof Buffer) ? (x as any)._u8 : x;
 }
 
+/** Node 的越界报错(带 code, 便于 `err.code === 'ERR_OUT_OF_RANGE'` 判断) */
+function outOfRange(what: string, got: number, min: number, max: number): never
+{
+    const e: any = new RangeError('The value of "' + what + '" is out of range. It must be >= '
+        + min + ' and <= ' + max + '. Received ' + got);
+    e.code = 'ERR_OUT_OF_RANGE';
+    throw e;
+}
+
+/** number | bigint -> bigint(写 64 位用, 免得 number 掉精度时静默) */
+function toBig(v: number | bigint): bigint
+{
+    return (typeof v === 'bigint') ? v : BigInt(Math.trunc(Number(v) || 0));
+}
+
 // ---------------------------------------------------------------------------
 // Buffer(Node 兼容子集; Proxy 包内部 Uint8Array)
 // ---------------------------------------------------------------------------
@@ -149,6 +163,8 @@ const BUFFER_TRAP: ProxyHandler<any> = {
 export class Buffer
 {
     _u8: Uint8Array;
+    /** 惰性 DataView(数值读写用; _u8 长度固定, 建一次即可) */
+    _dv: DataView | undefined;
 
     constructor(input?: any, enc?: string)
     {
@@ -262,6 +278,146 @@ export class Buffer
         const n = len == null ? this._u8.length - off : Math.min(len, bytes.length);
         for (let i = 0; i < n; i++) this._u8[off + i] = bytes[i];
         return n;
+    }
+
+    // -----------------------------------------------------------------------
+    // 数值读写 —— 与 Node Buffer 同名同义: offset 必填、读完不自动前进
+    // (顺序解析的调用方自己推进 offset, 或在业务侧套一层游标)
+    // -----------------------------------------------------------------------
+
+    /** 惰性 DataView: _u8 长度固定, 建一次即可 */
+    private _view(): DataView
+    {
+        if (!this._dv) this._dv = new DataView(this._u8.buffer, this._u8.byteOffset, this._u8.byteLength);
+        return this._dv as DataView;
+    }
+    /** 越界检查: [offset, offset+size) 必须落在缓冲内(Node 同款 ERR_OUT_OF_RANGE) */
+    private _need(offset: number, size: number): void
+    {
+        if (!(offset >= 0) || offset + size > this._u8.length)
+            outOfRange('offset', offset, 0, Math.max(0, this._u8.length - size));
+    }
+
+    readUInt8(offset: number = 0): number { this._need(offset, 1); return this._view().getUint8(offset); }
+    readInt8(offset: number = 0): number { this._need(offset, 1); return this._view().getInt8(offset); }
+    readUInt16LE(offset: number = 0): number { this._need(offset, 2); return this._view().getUint16(offset, true); }
+    readUInt16BE(offset: number = 0): number { this._need(offset, 2); return this._view().getUint16(offset, false); }
+    readInt16LE(offset: number = 0): number { this._need(offset, 2); return this._view().getInt16(offset, true); }
+    readInt16BE(offset: number = 0): number { this._need(offset, 2); return this._view().getInt16(offset, false); }
+    readUInt32LE(offset: number = 0): number { this._need(offset, 4); return this._view().getUint32(offset, true); }
+    readUInt32BE(offset: number = 0): number { this._need(offset, 4); return this._view().getUint32(offset, false); }
+    readInt32LE(offset: number = 0): number { this._need(offset, 4); return this._view().getInt32(offset, true); }
+    readInt32BE(offset: number = 0): number { this._need(offset, 4); return this._view().getInt32(offset, false); }
+    readBigUInt64LE(offset: number = 0): bigint { this._need(offset, 8); return this._view().getBigUint64(offset, true); }
+    readBigUInt64BE(offset: number = 0): bigint { this._need(offset, 8); return this._view().getBigUint64(offset, false); }
+    readBigInt64LE(offset: number = 0): bigint { this._need(offset, 8); return this._view().getBigInt64(offset, true); }
+    readBigInt64BE(offset: number = 0): bigint { this._need(offset, 8); return this._view().getBigInt64(offset, false); }
+    readFloatLE(offset: number = 0): number { this._need(offset, 4); return this._view().getFloat32(offset, true); }
+    readFloatBE(offset: number = 0): number { this._need(offset, 4); return this._view().getFloat32(offset, false); }
+    readDoubleLE(offset: number = 0): number { this._need(offset, 8); return this._view().getFloat64(offset, true); }
+    readDoubleBE(offset: number = 0): number { this._need(offset, 8); return this._view().getFloat64(offset, false); }
+
+    /** 变长无符号(1~6 字节), 小端 */
+    readUIntLE(offset: number, byteLength: number): number
+    {
+        this._need(offset, byteLength);
+        let v = 0, m = 1;
+        for (let i = 0; i < byteLength; i++) { v += this._u8[offset + i] * m; m *= 256; }
+        return v;
+    }
+    /** 变长无符号, 大端 */
+    readUIntBE(offset: number, byteLength: number): number
+    {
+        this._need(offset, byteLength);
+        let v = 0;
+        for (let i = 0; i < byteLength; i++) v = v * 256 + this._u8[offset + i];
+        return v;
+    }
+    readIntLE(offset: number, byteLength: number): number
+    {
+        const v = this.readUIntLE(offset, byteLength);
+        const sign = Math.pow(2, byteLength * 8 - 1);
+        return (v >= sign) ? v - sign * 2 : v;
+    }
+    readIntBE(offset: number, byteLength: number): number
+    {
+        const v = this.readUIntBE(offset, byteLength);
+        const sign = Math.pow(2, byteLength * 8 - 1);
+        return (v >= sign) ? v - sign * 2 : v;
+    }
+
+    writeUInt8(v: number, offset: number = 0): number { this._need(offset, 1); this._view().setUint8(offset, v & 0xff); return offset + 1; }
+    writeInt8(v: number, offset: number = 0): number { this._need(offset, 1); this._view().setInt8(offset, v | 0); return offset + 1; }
+    writeUInt16LE(v: number, offset: number = 0): number { this._need(offset, 2); this._view().setUint16(offset, v & 0xffff, true); return offset + 2; }
+    writeUInt16BE(v: number, offset: number = 0): number { this._need(offset, 2); this._view().setUint16(offset, v & 0xffff, false); return offset + 2; }
+    writeInt16LE(v: number, offset: number = 0): number { this._need(offset, 2); this._view().setInt16(offset, v | 0, true); return offset + 2; }
+    writeInt16BE(v: number, offset: number = 0): number { this._need(offset, 2); this._view().setInt16(offset, v | 0, false); return offset + 2; }
+    writeUInt32LE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setUint32(offset, v >>> 0, true); return offset + 4; }
+    writeUInt32BE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setUint32(offset, v >>> 0, false); return offset + 4; }
+    writeInt32LE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setInt32(offset, v | 0, true); return offset + 4; }
+    writeInt32BE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setInt32(offset, v | 0, false); return offset + 4; }
+    writeBigUInt64LE(v: number | bigint, offset: number = 0): number { this._need(offset, 8); this._view().setBigUint64(offset, toBig(v), true); return offset + 8; }
+    writeBigUInt64BE(v: number | bigint, offset: number = 0): number { this._need(offset, 8); this._view().setBigUint64(offset, toBig(v), false); return offset + 8; }
+    writeBigInt64LE(v: number | bigint, offset: number = 0): number { this._need(offset, 8); this._view().setBigInt64(offset, toBig(v), true); return offset + 8; }
+    writeBigInt64BE(v: number | bigint, offset: number = 0): number { this._need(offset, 8); this._view().setBigInt64(offset, toBig(v), false); return offset + 8; }
+    writeFloatLE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setFloat32(offset, v, true); return offset + 4; }
+    writeFloatBE(v: number, offset: number = 0): number { this._need(offset, 4); this._view().setFloat32(offset, v, false); return offset + 4; }
+    writeDoubleLE(v: number, offset: number = 0): number { this._need(offset, 8); this._view().setFloat64(offset, v, true); return offset + 8; }
+    writeDoubleBE(v: number, offset: number = 0): number { this._need(offset, 8); this._view().setFloat64(offset, v, false); return offset + 8; }
+
+    writeUIntLE(v: number, offset: number, byteLength: number): number
+    {
+        this._need(offset, byteLength);
+        let x = v;
+        for (let i = 0; i < byteLength; i++) { this._u8[offset + i] = x & 0xff; x = Math.floor(x / 256); }
+        return offset + byteLength;
+    }
+    writeUIntBE(v: number, offset: number, byteLength: number): number
+    {
+        this._need(offset, byteLength);
+        let x = v;
+        for (let i = byteLength - 1; i >= 0; i--) { this._u8[offset + i] = x & 0xff; x = Math.floor(x / 256); }
+        return offset + byteLength;
+    }
+    writeIntLE(v: number, offset: number, byteLength: number): number
+    {
+        const x = (v < 0) ? v + Math.pow(2, byteLength * 8) : v;
+        return this.writeUIntLE(x, offset, byteLength);
+    }
+    writeIntBE(v: number, offset: number, byteLength: number): number
+    {
+        const x = (v < 0) ? v + Math.pow(2, byteLength * 8) : v;
+        return this.writeUIntBE(x, offset, byteLength);
+    }
+
+    /** 就地两两交换(Uint8Array 没有, Node Buffer 有) */
+    swap16(): this
+    {
+        for (let i = 0; i + 1 < this._u8.length; i += 2) { const t = this._u8[i]; this._u8[i] = this._u8[i + 1]; this._u8[i + 1] = t; }
+        return this;
+    }
+    swap32(): this
+    {
+        for (let i = 0; i + 3 < this._u8.length; i += 4)
+        {
+            const a = this._u8[i], b = this._u8[i + 1], c = this._u8[i + 2], d = this._u8[i + 3];
+            this._u8[i] = d; this._u8[i + 1] = c; this._u8[i + 2] = b; this._u8[i + 3] = a;
+        }
+        return this;
+    }
+    swap64(): this
+    {
+        for (let i = 0; i + 7 < this._u8.length; i += 8)
+        {
+            for (let j = 0; j < 4; j++) { const t = this._u8[i + j]; this._u8[i + j] = this._u8[i + 7 - j]; this._u8[i + 7 - j] = t; }
+        }
+        return this;
+    }
+
+    /** 整块写入(Uint8Array.prototype.set 的同义, 越界由引擎抛 RangeError) */
+    set(src: Uint8Array, offset: number = 0): void
+    {
+        this._u8.set(asU8(src), offset);
     }
 }
 

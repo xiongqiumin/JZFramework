@@ -80,9 +80,9 @@ static const BuiltinModule builtinModules[] = {
     { "path",       "path/dist/index.js",       nullptr },
     { "process",    "process/dist/index.js",    nullptr },
     { "crypto",     "crypto/dist/index.js",     nullptr },
-    { "bytes",      "bytes/dist/index.js",      nullptr },   // 本框架特有的字节工具(零依赖)
-    { "buffer",     "buffer/dist/index.js",     nullptr },   // Node Buffer 兼容 + TextEncoder/TextDecoder 全局(零依赖)
+    { "buffer",     "buffer/dist/index.js",     nullptr },   // Node Buffer 兼容(编码转换 + 数值读写) + TextEncoder/TextDecoder 全局(零依赖)
     { "stream",     "stream/dist/index.js",     nullptr },   // Node stream 兼容子集(零依赖)
+    { "worker_threads", "worker_threads/dist/index.js", nullptr },   // Node worker_threads 兼容层(包 __jz.worker)
     // ---- 设备 / 数据库 ----
     { "serialport", "serialport/dist/index.js", nullptr },
     { "modbus",     "modbus/dist/index.js",     nullptr },
@@ -174,7 +174,7 @@ public:
         else
             id = engine->setInterval(argv[0], interval_ms, true);
 
-        return JS_NewInt32(ctx, id);
+        return makeTimeoutObject(ctx, id);
     }
 
     static JSValue js_clear_interval(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
@@ -184,16 +184,95 @@ public:
             return JS_ThrowTypeError(ctx, "参数错误: 时间间隔");
         }
 
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+
+        // Node 的 clearTimeout/clearInterval 两种入参都收: Timeout 对象, 或数字 id。
+        if (JS_IsObject(argv[0]))
+        {
+            JSValue id_val = JS_GetPropertyStr(ctx, argv[0], "_id");
+            if (JS_IsException(id_val))
+            {
+                JS_FreeValue(ctx, JS_GetException(ctx));   // 取属性本身抛错: 当作"不是 Timeout"
+                return JS_UNDEFINED;
+            }
+            bool ok = JS_IsNumber(id_val);
+            int id = 0;
+            if (ok && JS_ToInt32(ctx, &id, id_val) != 0)
+                ok = false;
+            JS_FreeValue(ctx, id_val);
+
+            if (ok)
+                engine->clearInterval(id);
+            // 不是本引擎的 Timeout(没有 _id): 与 Node 一样静默忽略, 不抛
+            return JS_UNDEFINED;
+        }
+
         int id;
         if (JS_ToInt32(ctx, &id, argv[0]) != 0)
         {
             return JS_ThrowTypeError(ctx, "时间间隔必须是正整数");
         }
-
-        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
         engine->clearInterval(id);
 
         return JS_UNDEFINED;
+    }
+
+    // ---- Node 风格 Timeout 对象(定时器返回值) ----
+    // Node 的 setTimeout/setInterval 返回的是 Timeout 实例(带 ref/unref/hasRef/refresh), 不是数字。
+    // 这里照做; 另补 valueOf() 让"把返回值当数字用"的老代码(+t / 比较 / clearInterval(+t))仍然成立。
+    // 注意: ref/unref 只改"是否算一票让宿主活着"这一属性, 不影响定时器本身照常触发。
+    static JSValue js_timer_ref(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
+    {
+        ((JZJSEngine*)JS_GetContextOpaque(ctx))->setTimerRef((uint32_t)magic, true);
+        return JS_DupValue(ctx, this_val);   // Node: 返回 Timeout 本身, 可链式
+    }
+
+    static JSValue js_timer_unref(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
+    {
+        ((JZJSEngine*)JS_GetContextOpaque(ctx))->setTimerRef((uint32_t)magic, false);
+        return JS_DupValue(ctx, this_val);
+    }
+
+    static JSValue js_timer_has_ref(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
+    {
+        bool refed = ((JZJSEngine*)JS_GetContextOpaque(ctx))->timerHasRef((uint32_t)magic);
+        return JS_NewBool(ctx, refed);
+    }
+
+    static JSValue js_timer_refresh(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
+    {
+        int64_t interval = 0;   // 0 = 沿用原间隔
+        if (argc >= 1 && !JS_IsUndefined(argv[0]))
+        {
+            int interval_ms = 0;
+            if (JS_ToInt32(ctx, &interval_ms, argv[0]) != 0 || interval_ms < 0)
+                return JS_ThrowTypeError(ctx, "时间间隔必须是正整数");
+            interval = interval_ms;
+        }
+        ((JZJSEngine*)JS_GetContextOpaque(ctx))->refreshTimer((uint32_t)magic, interval);
+        return JS_DupValue(ctx, this_val);
+    }
+
+    static JSValue js_timer_valueof(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv, int magic)
+    {
+        return JS_NewInt32(ctx, magic);   // 当数字用时 = 任务 id(老代码兼容)
+    }
+
+    static JSValue makeTimeoutObject(JSContext* ctx, int id)
+    {
+        JSValue obj = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, obj, "_id", JS_NewInt32(ctx, id));
+        JS_SetPropertyStr(ctx, obj, "ref",
+                          JS_NewCFunctionMagic(ctx, js_timer_ref, "ref", 0, JS_CFUNC_generic_magic, id));
+        JS_SetPropertyStr(ctx, obj, "unref",
+                          JS_NewCFunctionMagic(ctx, js_timer_unref, "unref", 0, JS_CFUNC_generic_magic, id));
+        JS_SetPropertyStr(ctx, obj, "hasRef",
+                          JS_NewCFunctionMagic(ctx, js_timer_has_ref, "hasRef", 0, JS_CFUNC_generic_magic, id));
+        JS_SetPropertyStr(ctx, obj, "refresh",
+                          JS_NewCFunctionMagic(ctx, js_timer_refresh, "refresh", 1, JS_CFUNC_generic_magic, id));
+        JS_SetPropertyStr(ctx, obj, "valueOf",
+                          JS_NewCFunctionMagic(ctx, js_timer_valueof, "valueOf", 0, JS_CFUNC_generic_magic, id));
+        return obj;
     }
 
     static JSValue js_is_interruption(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
@@ -403,6 +482,7 @@ JZJSEngine::TypeInfo::TypeInfo()
 JZJSEngine::TimerTask::TimerTask()
 {
     runOnce = false;
+    refed = true;       // 对齐 Node: 定时器默认 ref(吊住宿主), 要放行得自己 unref()
     callback = JS_UNDEFINED;
     interval = 0;
     next_run_time = 0;
@@ -892,9 +972,30 @@ void JZJSEngine::scheduleNextTimer()
 // 投递自定义事件到引擎线程, customEvent -> execOnce 泵一轮(promise job / 到期任务)。
 void JZJSEngine::wakeUp()
 {
-    if (!m_ctx)
+    if (!m_ctx || !jzApp)
         return;
     jzApp->postEvent(this, new JZEvent(JZEngine_WakeUp));
+}
+
+void JZJSEngine::wakeUpIfJobPending()
+{
+    if (m_ctx && JS_IsJobPending(m_rt))
+        wakeUp();
+}
+
+// C++ 主动调用 JS 的唯一入口(见头文件说明): JS_Call + 一次微任务检查点。
+JSValue JZJSEngine::callJs(JSValueConst func_obj, JSValueConst this_obj, int argc, JSValueConst* argv)
+{
+    if (!m_ctx)
+        return JS_EXCEPTION;   // 引擎已销毁(收尾期): 调用方自己也不该在没有 ctx 时进来
+
+    JSValue ret = JS_Call(m_ctx, func_obj, this_obj, argc, argv);
+
+    // 回调里可能: ① resolve 了别人 await 的 promise; ② 自己是个 async 函数跑到 await 就返回;
+    // ③ .then/.catch/.finally 排了新的续体 —— 都是 job, 必须让 execOnce 泵一轮(有才唤醒)。
+    wakeUpIfJobPending();
+
+    return ret;
 }
 
 void JZJSEngine::timerEvent(JZTimerEvent* event)
@@ -1328,6 +1429,7 @@ int JZJSEngine::setInterval(JSValue callback, int64_t interval, bool once)
 {
     TimerTask task;
     task.runOnce = once;
+    task.refed = true;      // unref() 才会关掉(见 setTimerRef)
     task.callback = JS_DupValue(m_ctx, callback);
     task.interval = interval;
     task.next_run_time = currentMs() + interval;
@@ -1361,6 +1463,44 @@ void JZJSEngine::clearInterval(int id)
     vec_removeAt(m_timeTasks, idx);
 }
 
+void JZJSEngine::setTimerRef(uint32_t id, bool refed)
+{
+    for (int i = 0; i < (int)m_timeTasks.size(); i++)
+    {
+        if (m_timeTasks[i].id == id)
+        {
+            m_timeTasks[i].refed = refed;
+            return;
+        }
+    }
+}
+
+bool JZJSEngine::timerHasRef(uint32_t id) const
+{
+    for (int i = 0; i < (int)m_timeTasks.size(); i++)
+    {
+        if (m_timeTasks[i].id == id)
+            return m_timeTasks[i].refed;
+    }
+    return false;   // 任务已经没了: 与 Node 的 hasRef() 一致(不存在的 handle 视为 false)
+}
+
+// Node 的 Timeout.refresh(): 从"现在"重新计时; 不给间隔就沿用原来的。
+void JZJSEngine::refreshTimer(uint32_t id, int64_t interval)
+{
+    for (int i = 0; i < (int)m_timeTasks.size(); i++)
+    {
+        if (m_timeTasks[i].id != id)
+            continue;
+
+        if (interval > 0)
+            m_timeTasks[i].interval = interval;
+        m_timeTasks[i].next_run_time = currentMs() + m_timeTasks[i].interval;
+        scheduleNextTimer();   // 可能比已挂的宿主 timer 更早到期
+        return;
+    }
+}
+
 string JZJSEngine::typeName(int type)
 {
     auto it = m_typeMap.find(type);
@@ -1389,7 +1529,7 @@ string JZJSEngine::printObject(JSValue value)
 {
     JSValue print_func = JS_GetPropertyStr(m_ctx, m_global, "__printObject__");
     JSValue argv[] = {value};
-    JSValue result = JS_Call(m_ctx, print_func, JS_NULL, 1, argv);
+    JSValue result = callJs(print_func, JS_NULL, 1, argv);
     JS_FreeValue(m_ctx, print_func);
 
     string str;
@@ -2138,7 +2278,7 @@ JSValue JZJSEngine::createResolvedPromise(JSValue jsValue)
     JSValue resolving_funcs[2];
     JSValue promise = JS_NewPromiseCapability(m_ctx, resolving_funcs);
 
-    JS_Call(m_ctx, resolving_funcs[0], JS_UNDEFINED, 1, &jsValue);
+    JS_FreeValue(m_ctx, callJs(resolving_funcs[0], JS_UNDEFINED, 1, &jsValue));
 
     // 4. 释放临时值
     JS_FreeValue(m_ctx, resolving_funcs[0]);
@@ -2153,7 +2293,7 @@ JSValue JZJSEngine::createRejectPromise(JSValue jsValue)
     JSValue resolving_funcs[2];
     JSValue promise = JS_NewPromiseCapability(m_ctx, resolving_funcs);
 
-    JS_Call(m_ctx, resolving_funcs[1], JS_UNDEFINED, 1, &jsValue);
+    JS_FreeValue(m_ctx, callJs(resolving_funcs[1], JS_UNDEFINED, 1, &jsValue));
 
     JS_FreeValue(m_ctx, resolving_funcs[0]);
     JS_FreeValue(m_ctx, resolving_funcs[1]);
@@ -2188,13 +2328,10 @@ void JZJSEngine::setPromiseResolve(int handle, const std::vector<JZJSValuePtr>& 
         value_list.push_back(result[i].get());
     }
 
-    JSValue ret = JS_Call(m_ctx, task->resolve, JS_UNDEFINED, value_list.size(), value_list.data());
+    // promise 已结算, then/await 链的微任务入队 -> callJs 内部的检查点会唤醒引擎泵一轮
+    JSValue ret = callJs(task->resolve, JS_UNDEFINED, (int)value_list.size(), value_list.data());
     JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     map_remove(m_promiseTask, handle);
-
-    // promise 已结算, then/await 链的微任务入队 -> 唤醒引擎泵一轮
-    // (本函数可能被其它线程/协程调用, wakeUp 走线程安全的事件投递)
-    wakeUp();
 }
 
 void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
@@ -2208,15 +2345,14 @@ void JZJSEngine::setPromiseReject(int handle, const std::string& error_message)
     JS_SetPropertyStr(m_ctx, error, "message", msg);
 
     JSValue args[] = {error};
-    JSValue ret = JS_Call(m_ctx, task->reject, JS_UNDEFINED, 1, args);
+    // reject 触发未处理拒绝 / await 继续等微任务 -> callJs 内部的检查点负责唤醒
+    JSValue ret = callJs(task->reject, JS_UNDEFINED, 1, args);
     fprintf(stderr, "[promise] reject handle=%d isExc=%d\n", handle, (int)JS_IsException(ret));
     fflush(stderr);
     JS_FreeValue(m_ctx, ret);   // JS_Call 返回的引用需要释放, 否则泄漏
     JS_FreeValue(m_ctx, error);
 
     map_remove(m_promiseTask, handle);
-
-    wakeUp();   // reject 触发未处理拒绝 / await 继续等微任务 -> 唤醒泵一轮
 }
 
 void JZJSEngine::deconstructor(JSValue value)
@@ -2450,7 +2586,8 @@ std::vector<JZJSValuePtr> JZJSEngine::callFunction(const std::string& func, cons
     for (size_t i = 0; i < params.size(); i++)
         args.push_back(params[i].get());
 
-    JSValue ret = JS_Call(m_ctx, fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
+    // 被调函数可能注册 timer / 产生微任务: callJs 内部会补一次微任务检查点
+    JSValue ret = callJs(fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
     JS_FreeValue(m_ctx, fn);
     if (JS_IsException(ret))
     {
@@ -2460,7 +2597,6 @@ std::vector<JZJSValuePtr> JZJSEngine::callFunction(const std::string& func, cons
 
     // 返回值所有权直接交给 JZJSValuePtr(与 eval 一致)
     result_list.push_back(JZJSValuePtr(m_ctx, ret));
-    wakeUp();   // 被调函数可能注册 timer / 产生微任务
     return result_list;
 }
 
@@ -2496,7 +2632,7 @@ std::vector<JZJSValuePtr> JZJSEngine::callMemberFunction(const std::string& func
     JSValue ret;
     {
         SelfScope self_scope(this, obj);
-        ret = JS_Call(m_ctx, fn, obj, (int)args.size(), args.empty() ? nullptr : args.data());
+        ret = callJs(fn, obj, (int)args.size(), args.empty() ? nullptr : args.data());
     }
     JS_FreeValue(m_ctx, fn);
     if (JS_IsException(ret))
@@ -2507,7 +2643,6 @@ std::vector<JZJSValuePtr> JZJSEngine::callMemberFunction(const std::string& func
 
     // 返回值所有权直接交给 JZJSValuePtr(与 eval 一致)
     result_list.push_back(JZJSValuePtr(m_ctx, ret));
-    wakeUp();   // 被调函数可能注册 timer / 产生微任务
     return result_list;
 }
 
@@ -2536,7 +2671,7 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
     for (size_t i = 0; i < params.size(); i++)
         args.push_back(params[i].get());
 
-    JSValue ret = JS_Call(m_ctx, fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
+    JSValue ret = callJs(fn, JS_UNDEFINED, (int)args.size(), args.empty() ? nullptr : args.data());
     JS_FreeValue(m_ctx, fn);
     if (JS_IsException(ret))
     {
@@ -2563,7 +2698,6 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
         ar.result = handle;
         ar.params.push_back(JZJSValuePtr(m_ctx, ret));   // 转移所有权
         sigAsyncResult.emit(ar);
-        wakeUp();   // 同步函数体内也可能产生微任务(setTimeout/Promise.resolve().then 等)
         return handle;
     }
 
@@ -2573,7 +2707,8 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
                                              JS_CFUNC_generic_magic, handle);
 
     JSValue then_args[2] = { resolve_fn, reject_fn };
-    JSValue then_ret = JS_Call(m_ctx, then_fn, ret, 2, then_args);
+    // then 回调入队也是微任务: 走 callJs 补检查点
+    JSValue then_ret = callJs(then_fn, ret, 2, then_args);
     JS_FreeValue(m_ctx, then_fn);
     JS_FreeValue(m_ctx, resolve_fn);
     JS_FreeValue(m_ctx, reject_fn);
@@ -2584,7 +2719,6 @@ int JZJSEngine::callAsyncFunction(const std::string& func, const std::vector<JZJ
         return -1;
     }
     JS_FreeValue(m_ctx, then_ret);
-    wakeUp();   // async 函数可能已同步推进到首个 await / promise 已 settle, 微任务待泵
     return handle;
 }
 
@@ -2831,6 +2965,8 @@ void JZJSEngine::execOnce()
         // 复制一份独立引用再执行: 回调内部可能调用 clearInterval 释放自身,
         // 若不持有独立引用, JS_Call 执行期间该 JS 对象会被提前释放导致崩溃
         JSValue callback = JS_DupValue(m_ctx, m_timeTasks[max_task].callback);
+        // 这里不用 callJs: 本函数自己就是泵(尾部 pumpPendingJobs 会把本轮产生的 job 排空),
+        // 再投一次唤醒只会白跑一轮。
         JSValue result = JS_Call(m_ctx, callback, JS_UNDEFINED, 0, nullptr);
         JS_FreeValue(m_ctx, callback);
 
@@ -2941,8 +3077,15 @@ bool JZJSEngine::hasPendingJob()
         return true;
 
     // JS 侧 setTimeout/setInterval: 只要没 clear/没被触发移除就算 pending
-    // (未到期的一次性任务要等 execOnce 到点才跑, 周期任务常驻会一直为 true)
-    return !m_timeTasks.empty();
+    // (未到期的一次性任务要等 execOnce 到点才跑, 周期任务常驻会一直为 true)。
+    // ⚠ 只算 **refed** 的: unref() 过的任务不吊住宿主(对齐 Node 的 Timeout.unref()),
+    //   但它照样会触发 —— 只要本进程因别的原因还活着。
+    for (int i = 0; i < (int)m_timeTasks.size(); i++)
+    {
+        if (m_timeTasks[i].refed)
+            return true;
+    }
+    return false;
 }
 
 void JZJSEngine::addPendingWork()

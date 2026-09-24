@@ -47,6 +47,12 @@ export class Socket extends EventEmitter {
     close(cb: any) { if (cb) this.on('close', cb); this._h.close(); return this; }
     address() { return this._h.address; }
     setEncoding(enc: any) { this._enc = enc || null; return this; }
+    /**
+     * 让这个 socket **不再**把进程留住(ref = 反过来)。与 Node 同义:
+     * unref 之后照样收发包, 只是宿主不再因为它留在事件循环里(未 bind 时调用也记住该状态)。
+     */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
 }
 
 export function createSocket(type: any, listener: any) {

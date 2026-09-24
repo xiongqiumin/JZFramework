@@ -13,7 +13,7 @@ import http from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { EventEmitter } from 'events';
 import path from 'path';
-import { check, keepAlive } from './helper/assert.js';
+import { check } from './helper/assert.js';
 
 console.log('--- 10_consistency ---');
 
@@ -52,7 +52,6 @@ check("path.sep === '/'", path.sep === '/');
 // 3) http 服务端 req.headers 是普通对象(可按字符串 key 取, 不是 Web Headers 实例)
 const PORT = 23410;
 const base = 'http://127.0.0.1:' + PORT;
-const keep = keepAlive(50);
 const server = http.createServer(function (req: IncomingMessage, res: ServerResponse) {
     check('req.headers 不是 Headers 实例', !(req.headers instanceof (globalThis as any).Headers));
     check("req.headers['content-type'] 可直接按下标取", req.headers['content-type'] === 'text/plain');
@@ -62,7 +61,6 @@ const server = http.createServer(function (req: IncomingMessage, res: ServerResp
 server.listen(PORT, '127.0.0.1', async function () {
     const r = await fetch(base, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'x' });
     await r.text();
-    server.close();
-    clearInterval(keep);
+    server.close();     // 监听句柄收掉, 进程才会退出(句柄默认吊住进程, 见 06/07)
     console.log('10_consistency done');
 });

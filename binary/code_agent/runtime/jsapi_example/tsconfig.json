@@ -27,9 +27,9 @@
     // 用户工程里不需要这些相对路径 —— initProject 会把部署的 jz_types 拷进工程,
     // include 写 "jz_types/**/*.d.ts" 即可。
     "../../../../JZJSEngine/js_wrapper/types/**/*.d.ts",
-    "../../../../JZJSEngine/js_wrapper/bytes/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/stream/types/**/*.d.ts",
+    "../../../../JZJSEngine/js_wrapper/worker_threads/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/crypto/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/events/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",

@@ -49,6 +49,12 @@ export class Readable extends Stream
     private _ended = false;
     private _flowing = false;
 
+    constructor(opts?: any)
+    {
+        super();
+        if (opts && typeof opts.read === 'function') this._read = opts.read;
+    }
+
     _read(size?: number): void { void size; }
 
     /** 塞入一块数据; 传 null 表示结束 */
@@ -101,7 +107,16 @@ export class Readable extends Stream
 
 export class Writable extends Stream
 {
+    constructor(opts?: any)
+    {
+        super();
+        // Node 形态: new Writable({ write(chunk, enc, cb) { ... } }) —— 不给就走默认(丢弃)
+        if (opts && typeof opts.write === 'function') this._write = opts.write;
+        if (opts && typeof opts.final === 'function') this._final = opts.final;
+    }
+
     _write(chunk: Chunk, enc: string, cb: Callback): void { void enc; cb(); }
+    _final(cb: Callback): void { cb(); }
 
     write(chunk: Chunk, enc?: string | Callback, cb?: Callback): boolean
     {
@@ -115,15 +130,22 @@ export class Writable extends Stream
     end(chunk?: Chunk, cb?: Callback): this
     {
         if (chunk !== undefined && chunk !== null) this.write(chunk);
-        this.emit('finish');
-        if (cb) cb();
+        this._final(() => { this.emit('finish'); if (cb) cb(); });
         return this;
     }
 }
 
 export class Transform extends Readable
 {
+    constructor(opts?: any)
+    {
+        super(opts);
+        if (opts && typeof opts.transform === 'function') this._transform = opts.transform;
+        if (opts && typeof opts.final === 'function') this._final = opts.final;
+    }
+
     _transform(chunk: Chunk, enc: string, cb: (err: any, out?: Chunk) => void): void { void enc; cb(null, chunk); }
+    _final(cb: Callback): void { cb(); }
 
     write(chunk: Chunk, enc?: string | Callback, cb?: Callback): boolean
     {
@@ -139,15 +161,40 @@ export class Transform extends Readable
     end(chunk?: Chunk, cb?: Callback): this
     {
         if (chunk !== undefined && chunk !== null) this.write(chunk);
-        this.emit('finish');
-        this.emit('end');
-        if (cb) cb();
+        // 可读侧的结束走 push(null)(带 _ended 幂等), 别直接 emit('end') ——
+        // 否则 final 里已经 push(null) 时会重复发一次, 下游 end() 被调两遍。
+        this._final(() => { this.emit('finish'); this.push(null); if (cb) cb(); });
         return this;
     }
 }
 
 export class Duplex extends Transform
 {
+    private _customWrite = false;
+
+    constructor(opts?: any)
+    {
+        super(opts);
+        // Node 的 Duplex 两头都得自己给(options 的 read / write)。给了 write 就走 _write 路径
+        // (同 Node: 由实现自己 push 到可读侧); 什么都不给才退回 Transform 的 _transform 透传。
+        if (opts && typeof opts.write === 'function')
+        {
+            this._write = opts.write;
+            this._customWrite = true;
+        }
+    }
+
+    _write(chunk: Chunk, enc: string, cb: Callback): void { void enc; cb(); }
+
+    write(chunk: Chunk, enc?: string | Callback, cb?: Callback): boolean
+    {
+        if (!this._customWrite)
+            return super.write(chunk, enc, cb);
+        const callback: Callback | undefined = typeof enc === 'function' ? enc : cb;
+        const encStr: string = typeof enc === 'string' ? enc : '';
+        this._write(chunk, encStr, () => { if (callback) callback(); });
+        return true;
+    }
 }
 export class PassThrough extends Transform
 {

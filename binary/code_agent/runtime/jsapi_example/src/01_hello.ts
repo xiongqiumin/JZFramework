@@ -22,8 +22,8 @@ check('数组 map/join', [1, 2, 3].map(function (x: number) { return x * 2; }).j
 check('JSON.stringify', JSON.stringify({ a: 1, b: [2, 3] }) === '{"a":1,"b":[2,3]}');
 
 // 2) 异步: 写 async 函数 + await 就行。
-//    注意: 模块顶层的同步部分跑完进程不会立刻退 —— 还挂着 setTimeout 就算"有待办任务",
-//    宿主会继续泵到它结算完为止(这是 await 延时能跑完的原因; 但等网络回包不算, 见 helper/assert.ts)。
+//    注意: 模块顶层的同步部分跑完进程不会立刻退 —— 还挂着 setTimeout / 打开着的套接字都算
+//    "有事要等"(Node 的 handle ref 语义), 宿主会继续泵到它们收摊为止; 见 helper/assert.ts。
 (async function main(): Promise<void> {
     const t0 = Date.now();
     await delay(50);

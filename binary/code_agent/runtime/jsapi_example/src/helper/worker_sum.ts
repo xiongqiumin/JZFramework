@@ -1,9 +1,11 @@
 // helper/worker_sum.ts —— 09_worker 例子的 worker 入口(worker 侧脚本不是例子本身)。
 //
-// worker 里是**另一个引擎**: 不继承主线程的全局变量, 只认 __jz.worker.* 这套 API
-// (类型声明见 src/globals.d.ts)。
-// 入口脚本的路径按**运行根**(= 入口 js 所在目录, 即本目录的 build/)解析,
+// worker 里是**另一个引擎**: 不继承主线程的全局变量; 用 Node 同名的 worker_threads 里的
+// parentPort 跟父引擎通信(主线程侧那个 parentPort 是 null)。
+// 入口脚本的路径按**运行根**(= 入口 js 所在目录, 即 build/)解析,
 // 所以主线程那边写 'helper/worker_sum.js'。
+
+import { parentPort, workerData, isMainThread, threadId } from 'worker_threads';
 
 interface SumTask {
     op: string;
@@ -11,10 +13,12 @@ interface SumTask {
     to: number;
 }
 
-// 收到消息 -> 算区间和 -> 把结果投回发送方(from 就是发送方的 id)
-__jz.worker.onMessage(function (from: number, task: SumTask): void {
+const port = parentPort!;       // worker 侧一定存在(只有主线程才是 null)
+
+// 收到消息 -> 算区间和 -> 用 parentPort 投回去(不用知道父引擎的 id)
+port.on('message', function (task: SumTask): void {
     if (task.op !== 'sum') {
-        __jz.worker.postTo(from, { op: 'error', reason: 'unknown op: ' + task.op });
+        port.postMessage({ op: 'error', reason: 'unknown op: ' + task.op });
         return;
     }
 
@@ -23,17 +27,16 @@ __jz.worker.onMessage(function (from: number, task: SumTask): void {
         s += i;
 
     // 创建时随包进来的那份数据(主线程 new Worker 时给的 workerData)
-    const data = __jz.worker.workerData as { tag: string } | null;
+    const data = workerData as { tag: string } | null;
 
-    __jz.worker.postTo(from, {
+    port.postMessage({
         op: 'sum',
         from: task.from,
         to: task.to,
         sum: s,
         tag: data ? data.tag : null,
-        // worker 自己的身份: id != 0, isMainThread = false, parentId = 创建它的那个 id
-        workerId: __jz.worker.selfId(),
-        isMain: __jz.worker.isMainThread(),
-        parent: __jz.worker.parentId(),
+        // worker 自己的身份: threadId != 0, isMainThread = false
+        workerId: threadId,
+        isMain: isMainThread,
     });
 });

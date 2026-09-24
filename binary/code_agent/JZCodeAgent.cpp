@@ -1570,7 +1570,7 @@ std::string JZCodeAgent::buildSystemPrompt() const
             "结构摘要用 ts_summary。只有无法按符号定位的局部小改动（注释、单行字面量）"
             "才退回 modify_file。\n";
     text << "代码风格class优先, 使用面向对象的风格进行编码\n";
-    // 运行时边界(不是 Node: 没有 require / 裸名只能默认导入 / 监听后要留心跳定时器)
+    // 运行时边界(不是 Node: 没有 require / 裸名只能默认导入 / 句柄与退出语义见 jzTsRuntimeNotes)
     text << "\n" << jzTsRuntimeNotes();
     // 起服务/长任务怎么跑(terminal_run 的 background / query / cancel): 与 agent_cli 同一份,
     // 否则这里注册了 background 能力却没告诉模型怎么用(它会拿很久的 timeout 前台干等)。

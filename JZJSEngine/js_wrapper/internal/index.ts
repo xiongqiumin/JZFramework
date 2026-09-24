@@ -15,7 +15,17 @@ declare const __jz: any;
 /** 各种入参 -> Uint8Array(字符串按 enc 编码; Uint8Array / ArrayBuffer 原样/视图)
  *  ⚠ 返回类型写 any 是刻意的: Uint8Array<ArrayBufferLike> 与 Uint8Array<ArrayBuffer>
  *  在这套 lib 下不互相赋值, 写成 Uint8Array 会让所有调用点(如 ServerResponse.end)报 TS2322。 */
+/**
+ * Buffer(本框架用 Proxy 包 Uint8Array 的形态, 底层在 `_u8`) -> 底层 Uint8Array。
+ * Node 里 Buffer 本身就是 Uint8Array 子类、能直接喂给 socket.write, 这里补上等价的一层;
+ * 否则 `sock.write(Buffer.from('abc'))` 会被当成"不是字节"而抛 TypeError。
+ */
+function unwrapBuffer(b: any): any {
+    return (b && b._u8 instanceof Uint8Array) ? b._u8 : b;
+}
+
 export function toBytes(data: any, enc: any): any {
+    data = unwrapBuffer(data);
     if (data === null || data === undefined) return new Uint8Array(0);
     if (typeof data === 'string') {
         if (enc === 'hex') return (Uint8Array as any).fromHex(data);
@@ -34,6 +44,7 @@ export function toBytes(data: any, enc: any): any {
 
 /** bytes -> 字符串(默认 utf8) */
 export function fromBytes(u8: any, enc: any): any {
+    u8 = unwrapBuffer(u8);
     if (!enc || enc === 'utf8' || enc === 'utf-8') return __jz.bytes.toString(u8);
     if (enc === 'hex') return u8.toHex();
     if (enc === 'base64') return u8.toBase64();

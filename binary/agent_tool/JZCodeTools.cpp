@@ -379,16 +379,21 @@ string jzTsRuntimeNotes()
     s += "      import http from 'http';                  import { createServer } from 'http';\n";
     s += "      import { DatabaseSync } from 'sqlite';    import fs from 'node:fs';\n";
     s += "    内置名: net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / "
-         "bytes / buffer / os / serialport / modbus / sqlite / stream(控件另有 widget)。\n";
+         "buffer / os / serialport / modbus / sqlite / stream / worker_threads(控件另有 widget)。\n";
+    s += "  - worker_threads(与 Node 同名): `import { Worker, isMainThread, threadId } from 'worker_threads'`; "
+         "worker 侧用 `import { parentPort, workerData } from 'worker_threads'` 的 parentPort.on('message') / "
+         "parentPort.postMessage; 入口脚本按**运行根**解析(写 './helper/x.js' 或 'helper/x.js' 都行)。\n";
     s += "  - Web 标准全局与 Node 一致, 运行时启动即有(**不用 import**): fetch / Headers / Response / "
          "WebSocket / URL / URLSearchParams / EventEmitter / Buffer / TextEncoder / TextDecoder / "
          "atob / btoa(EventEmitter/Buffer 是 Node 的, 本运行时也挂全局; 编码靠 Uint8Array.toHex/toBase64)。\n";
     s += "  - 想查某个名字有哪些成员: 直接读工程里的 jz_types/<名字>/types/index.d.ts"
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
-    s += "  - 起服务/监听后要不要保活: 引擎只在还有定时器/微任务/未结算的异步(如 await fetch)时才继续跑。"
-         "自己后面还要 await 就不必额外加定时器; 只 listen、等外部来连(自身没有 pending 异步)时, "
-         "顶层代码跑完进程就退出 —— 这时留一个心跳定时器。\n";
+    s += "  - 退出/保活(Node 的 handle ref 语义, 与 Node 一致): 打开着的套接字/服务端(监听中、连接中)、"
+         "ref 着的定时器、未结算的异步(如 await fetch)都算「有事要等」, 进程不会退出; 全部收掉才退。"
+         "自己后面还要 await 就不必额外加定时器; 服务端/连接用完记得 close() —— **不收进程就不会退出**; "
+         "确实想让某个句柄不吊住进程(例如临时探针、常驻后台服务)就对它调 unref()。"
+         "只有那些不被计入的等待(例如等 worker 回信)才需要自己留一个心跳定时器。\n";
     return s;
 }
 

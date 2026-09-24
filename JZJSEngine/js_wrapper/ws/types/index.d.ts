@@ -24,6 +24,10 @@ export class WebSocketServer extends EventEmitter {
     close(cb?: () => void): void;
     address(): { port: number; address: string; family: 'IPv4' } | null;
 
+    /** 监听中的服务默认把进程留住(对齐 Node 的 handle ref 语义); 不想被吊住就 unref() */
+    ref(): this;
+    unref(): this;
+
     on(event: 'listening', listener: () => void): this;
     on(event: 'connection', listener: (socket: WebSocket) => void): this;
     on(event: 'close', listener: () => void): this;

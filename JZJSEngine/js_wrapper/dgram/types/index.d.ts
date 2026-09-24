@@ -26,6 +26,14 @@ export class Socket extends EventEmitter {
     close(cb?: () => void): this;
     address(): SocketAddress;
 
+    /**
+     * bind 过的 socket(含首次 send 的隐式 bind)默认会把进程留住(对齐 Node);
+     * 不想被吊住就 unref()(未 bind 时调用也记住该状态), 之后可以 ref() 恢复。
+     */
+    ref(): this;
+    /** 让这个 socket 不再吊住进程(照常收发包) */
+    unref(): this;
+
     on(event: 'listening' | 'close', listener: () => void): this;
     on(event: 'message', listener: (msg: Chunk, rinfo: RemoteInfo) => void): this;
     on(event: 'error', listener: (err: Error) => void): this;

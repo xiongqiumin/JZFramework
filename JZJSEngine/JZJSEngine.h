@@ -271,6 +271,15 @@ public:
     std::vector<JZJSValuePtr> callFunction(const std::string& func, const std::vector<JZJSValuePtr>& params);
     std::vector<JZJSValuePtr> callMemberFunction(const std::string& func, const JZJSValuePtr &this_val,const std::vector<JZJSValuePtr>& params);
 
+    // C++ **主动**调用一个 JS 函数(事件回调 / 监听器 / 信号槽 / 钩子 / promise 结算 ...)的唯一入口。
+    // 语义 = JS_Call + 之后的"微任务检查点": 本引擎没有 Node 那种"每个宏任务结束跑一次微任务检查点",
+    // 泵 job 只发生在 execOnce 里, 而 execOnce 只由 JS 定时器或 wakeUp() 驱动 —— 所以 C++ 一旦主动
+    // 进了 JS(回调里 resolve 一个别人 await 的 promise / 回调本身是 async 函数), 续体就成了没人管
+    // 的 job: 没有定时器时它永远不执行, 宿主还会因 hasPendingJob() 恒真卡在事件循环里(既不输出也
+    // 不退出)。放在这里统一判断: 有 job 才投一次唤醒, 没有就完全不动(保持空闲停表)。
+    // ⚠ 模块侧一律用它, 不要再直接 JS_Call(那等于绕过检查点); 返回值/异常语义与 JS_Call 完全一致。
+    JSValue callJs(JSValueConst func_obj, JSValueConst this_obj, int argc, JSValueConst* argv);
+
     // 调用全局 JS 异步函数(async function / 返回 PromiseLike)。发起后立即返回句柄(>=0)：
     // - promise resolve 后发 sigAsyncResult{ result=句柄, params=resolve 参数 }；
     // - promise reject 走引擎"未处理拒绝"上报(Engine_error/sigError/runtimeError)；
@@ -302,6 +311,7 @@ public:
     void addPendingWork();
     void releasePendingWork();
     int pendingWork() const;
+
 
     bool isException(JSValue exc);
     std::string runtimeError();
@@ -497,6 +507,7 @@ protected:
         TimerTask();
 
         bool runOnce;
+        bool refed;             // Node 风格 ref 开关: unref 的任务不算"宿主还有活"(见 hasPendingJob)
         JSValue callback;       // 回调函数
         int64_t interval;       // 间隔时间(ms)，0表示一次性任务
         int64_t next_run_time;  // 下次执行时间(ms，从纪元开始)
@@ -534,6 +545,12 @@ protected:
 
     int setInterval(JSValue callback, int64_t interval, bool once);
     void clearInterval(int id);
+    // JS 定时任务的 ref 开关(对齐 Node 的 Timeout.ref()/unref()):
+    // unref 后该任务**不再**算"宿主还有活"(hasPendingJob 忽略它), 但到期照常触发 —— 只要循环
+    // 因别的原因还活着, unref 的定时器一样会跑(与真 Node v26 实测一致)。
+    void setTimerRef(uint32_t id, bool refed);
+    bool timerHasRef(uint32_t id) const;
+    void refreshTimer(uint32_t id, int64_t interval);   // interval<=0: 沿用原间隔
     JSValue call(int magic, int argc, JSValueConst* argv);
     JSValue callAsync(int magic, int argc, JSValueConst* argv);
 
@@ -606,6 +623,8 @@ protected:
     //    wakeUp() 投递 JZEngine_WakeUp 自定义事件唤醒引擎线程泵一轮(execOnce)。
     void scheduleNextTimer();
     void wakeUp();
+    // 只在 callJs() 里用: 有微任务在等才投一次唤醒(不打扰空闲停表)
+    void wakeUpIfJobPending();
     void startEngineTimer();   // 恢复/继续驱动(= scheduleNextTimer)
     void stopEngineTimer();    // 停表(暂停/停止/出错/析构)
 

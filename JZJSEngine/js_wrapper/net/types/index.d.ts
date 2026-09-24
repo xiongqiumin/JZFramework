@@ -47,6 +47,15 @@ export class Socket extends EventEmitter {
     readonly bytesWritten: number;
     readonly destroyed: boolean;
     readonly readyState: 'opening' | 'open' | 'closed';
+    readonly connecting: boolean;
+
+    /**
+     * 连接中的/已连接的 socket 默认会把进程留住(对齐 Node 的 handle ref 语义;
+     * 只 `new Socket()` 不 connect 不算)。不想被吊住就 unref(), 之后可以 ref() 恢复。
+     */
+    ref(): this;
+    /** 让这个 socket 不再吊住进程(socket 照常收发, 见 ref 说明) */
+    unref(): this;
 
     on(event: 'connect' | 'close' | 'end' | 'timeout', listener: () => void): this;
     on(event: 'data', listener: (chunk: Chunk) => void): this;
@@ -65,6 +74,11 @@ export class Server extends EventEmitter {
 
     readonly listening: boolean;
     maxConnections: number;
+
+    /** 监听中的 server 默认把进程留住(对齐 Node); 不想被吊住就 unref() */
+    ref(): this;
+    /** 让监听中的 server 不再吊住进程(仍照常 accept) */
+    unref(): this;
 
     on(event: 'listening' | 'close', listener: () => void): this;
     on(event: 'connection', listener: (socket: Socket) => void): this;

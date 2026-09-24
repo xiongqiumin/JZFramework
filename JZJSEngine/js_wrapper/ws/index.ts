@@ -53,6 +53,13 @@ export class WebSocket extends EventEmitter {
     }
     close(code: any, reason: any) { this._h.close(); }
     ping(data: any) { this._h.ping(); }
+    /**
+     * 让连接**不再**把进程留住(ref = 反过来)。
+     * 注: Node 的全局 WebSocket(undici) 没有这个方法(它内部用 socket.unref()); 本引擎的
+     * WebSocket 包装的是连接句柄, 所以直接给到这里, 语义与 net.Socket.unref() 一致。
+     */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
 }
 (WebSocket as any).CONNECTING = 0;
 (WebSocket as any).OPEN = 1;
@@ -73,6 +80,9 @@ export class WebSocketServer extends EventEmitter {
     }
     close(cb: any) { if (cb) this.on('close', cb); this._h.close(); }
     address() { const a = this._h.address; return (a && a.port) ? a : null; }
+    /** 让监听中的服务不再吊住进程(与 net.Server.unref() 同义) */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
 }
 
 /** WebSocketServer 的别名(Node 同名) */

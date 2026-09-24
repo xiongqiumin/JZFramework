@@ -124,6 +124,10 @@ export class Server extends EventEmitter {
     /** null when not listening */
     address(): ServerAddress | null;
 
+    /** 监听中的服务默认把进程留住(对齐 Node 的 http.Server); 不想被吊住就 unref() */
+    ref(): this;
+    unref(): this;
+
     on(event: 'request',
        listener: (req: ServerRequest, res: ServerResponse) => void): this;
     on(event: 'listening', listener: () => void): this;

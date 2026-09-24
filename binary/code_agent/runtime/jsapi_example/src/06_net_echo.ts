@@ -6,8 +6,8 @@
 // 走本机 loopback, 不依赖外网。三点值得记:
 //   * net.connect / write 都是**异步**的, 结果在 'data' 事件里回来 —— 例子写在回调串里,
 //     真实脚本里通常把它们包成 Promise;
-//   * 等 TCP 回包期间引擎"没有待办任务", 所以要吊一个周期定时器把进程留住(keepAlive),
-//     最后一步 clear 掉 —— 忘了吊, 宿主会在回包之前就退出;
+//   * 打开着的套接字/服务端自己就把进程留住(对齐 Node 的 handle ref 语义), 所以等回包期间
+//     不需要定时器 —— 反过来说, **忘了 close 进程就不会退出**; 不想被吊住用 socket.unref()/server.unref();
 //   * 收摊很重要: 客户端 end() + 服务端 close() 都做掉, 资源才干净。
 //
 // 类型上的两个坑:
@@ -19,10 +19,9 @@
 
 import net from 'net';
 import type { Socket } from 'net';
-import { check, keepAlive } from './helper/assert.js';
+import { check } from './helper/assert.js';
 
 const PORT = 23401;
-const keep = keepAlive(50);     // ⚠ 见文件头: 本例全程在等外部回调
 
 console.log('--- 06_net_echo ---');
 
@@ -61,10 +60,10 @@ server.listen(PORT, '127.0.0.1', function () {
             check('收到的是 Uint8Array', chunk instanceof Uint8Array);
             check('二进制回声一致', chunk.toHex() === '0102ff');
 
+            // 收摊: 两个客户端 end、服务端 close —— 句柄都收掉, 进程才会退出(见文件头第二条)
             bin.end();
             text.end();
             server.close();
-            clearInterval(keep);        // ⚠ 必须收掉, 否则进程不退出
             console.log('06_net_echo done');
         });
     }

@@ -634,7 +634,7 @@ JSValue JZJSWidgetModule::callTransparentInit(int index, JSValueConst /*thisVal*
                 if (JS_IsFunction(ctx, hook))
                 {
                     JSValue args[2] = { parentJs, jsThis };
-                    JSValue ret = JS_Call(ctx, hook, JS_UNDEFINED, 2, args);
+                    JSValue ret = m_engine->callJs(hook, JS_UNDEFINED, 2, args);
                     if (JS_IsException(ret))
                     {
                         JSValue err = JS_GetException(ctx);
@@ -950,7 +950,7 @@ JSValue JZJSWidgetModule::callJsCallback(JSValueConst fn, JZObject* owner, int a
 
     // 回调里抛出的异常不能跨 quickjs 的 C 调用栈传回去(信号是 C++ 侧同步 emit 的),
     // 按引擎既有口径: 交给 reportUncaughtError 并入错误链(sigError/sigLog)。
-    JSValue ret = JS_Call(ctx, held, JS_UNDEFINED, argc, argv);
+    JSValue ret = m_engine->callJs(held, JS_UNDEFINED, argc, argv);
     JS_FreeValue(ctx, held);
 
     if (JS_IsException(ret))

@@ -13,21 +13,87 @@
 //   chksum  u8 = Σ(head + body), 即自 sync 之后起 Length-8-2 个字节
 //   tail    0x5A
 //
-// 二进制读写器(ByteReader/ByteWriter/hexOf/concatBytes)在独立包 js_wrapper/bytes/
-// (本框架特有的名字, 不是 Node 模块), 本文件只 import + 再导出。
-// 裸名 'bytes' 由引擎的内置名表 + libraryDirs 解析(运行根/jz_js、
-// exe 的 jz_engine/jz_js); 该包零依赖、不引用 __jz, 所以不需要 __jz.core 存在。
+// 二进制读写: 字节块用全局 Buffer —— 它的 readXxx(offset) / writeXxx(value, offset)
+// 与 Node 同名同义(引擎侧没有、也不该有私有的字节读写器)。
+// 下面这套"游标自增"的 ByteReader / ByteWriter 是**本工程自己的**小工具(协议解析是顺序
+// 读写, 每次手算 offset 太易错), 就建在 Buffer 的数值读写之上; 它不是引擎 API。
 
-// 注意: `export ... from` 只做转发, 不会在本模块建局部绑定, 所以本地要用的
-// 类型必须单独 import 一次。
-// 引擎内置 bytes 包: **默认导入**取成员(不写具名导入) —— tsgo(TS7) 不解析 ambient 里
-// 的相对通配再导出, 具名导入会 TS2614(部署后的 jz_types 有 package.py 的补丁, 源码这份没有)。
-// 默认导出 = 模块对象(对齐 Node 的 `import x from 'x'`), 成员与具名导出完全一致。
-import bytes from 'bytes';
-export const ByteReader = bytes.ByteReader;
-export const ByteWriter = bytes.ByteWriter;
-export const concatBytes = bytes.concatBytes;
-export const hexOf = bytes.hexOf;
+/** 顺序读(小端): Buffer 的数值读 + 一个自增 offset */
+export class ByteReader
+{
+    buf: any;
+    offset: number;
+
+    constructor(u8: any)
+    {
+        this.buf = Buffer.isBuffer(u8) ? u8 : Buffer.from(u8);
+        this.offset = 0;
+    }
+
+    remaining(): number { return this.buf.length - this.offset; }
+    eof(): boolean { return this.offset >= this.buf.length; }
+    skip(n: number): ByteReader { this.offset += n; return this; }
+
+    u8v(): number { const v = this.buf.readUInt8(this.offset); this.offset += 1; return v; }
+    i8(): number { const v = this.buf.readInt8(this.offset); this.offset += 1; return v; }
+    u16(): number { const v = this.buf.readUInt16LE(this.offset); this.offset += 2; return v; }
+    i16(): number { const v = this.buf.readInt16LE(this.offset); this.offset += 2; return v; }
+    u32(): number { const v = this.buf.readUInt32LE(this.offset); this.offset += 4; return v; }
+    i32(): number { const v = this.buf.readInt32LE(this.offset); this.offset += 4; return v; }
+    /** int64 -> bigint (协议里容量/能量/耗时是 64 位) */
+    u64(): bigint { const v = this.buf.readBigUInt64LE(this.offset); this.offset += 8; return v; }
+    i64(): bigint { const v = this.buf.readBigInt64LE(this.offset); this.offset += 8; return v; }
+
+    /** 定长字节(拷贝, 可留存) */
+    bytes(n: number): any { const r = this.buf.subarray(this.offset, this.offset + n); this.offset += n; return r; }
+}
+
+/** 顺序写(小端): 先按已知长度分配, 再顺序写 */
+export class ByteWriter
+{
+    buf: any;
+    offset: number;
+
+    constructor(size: number)
+    {
+        this.buf = Buffer.alloc(size);
+        this.offset = 0;
+    }
+
+    remaining(): number { return this.buf.length - this.offset; }
+    skip(n: number): ByteWriter { this.offset += n; return this; }
+
+    u8v(v: number): ByteWriter { this.offset = this.buf.writeUInt8(v, this.offset); return this; }
+    i8(v: number): ByteWriter { this.offset = this.buf.writeInt8(v, this.offset); return this; }
+    u16(v: number): ByteWriter { this.offset = this.buf.writeUInt16LE(v, this.offset); return this; }
+    i16(v: number): ByteWriter { this.offset = this.buf.writeInt16LE(v, this.offset); return this; }
+    u32(v: number): ByteWriter { this.offset = this.buf.writeUInt32LE(v, this.offset); return this; }
+    i32(v: number): ByteWriter { this.offset = this.buf.writeInt32LE(v, this.offset); return this; }
+    u64(v: number | bigint): ByteWriter { this.offset = this.buf.writeBigUInt64LE(v, this.offset); return this; }
+    i64(v: number | bigint): ByteWriter { this.offset = this.buf.writeBigInt64LE(v, this.offset); return this; }
+
+    /** 整块写入(定长字符串/定长数组/已组好的 body) */
+    raw(b: any): ByteWriter { this.buf.set(b, this.offset); this.offset += b.length; return this; }
+    /** 重复填同一个字节(如 0xFF 同步头、0x00 保留字段) */
+    fill(n: number, v: number): ByteWriter
+    {
+        for (let i = 0; i < n; i++) this.offset = this.buf.writeUInt8(v, this.offset);
+        return this;
+    }
+
+    /** 取底层缓冲(未写满的尾部为 0) */
+    bytes(): any { return this.buf; }
+}
+
+/** 拼接多段字节 */
+export function concatBytes(parts: any[]): any { return Buffer.concat(parts); }
+
+/** 十六进制字符串(调试/抓包比对用) */
+export function hexOf(u8: any): string
+{
+    if (Buffer.isBuffer(u8)) return u8.toString('hex');
+    return (u8 && typeof u8.toHex === 'function') ? u8.toHex() : '';
+}
 
 export const SYNC_LEN = 8;
 export const SEND_HEAD_LEN = 6;

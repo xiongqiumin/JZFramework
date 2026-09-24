@@ -24,8 +24,8 @@
  * jz_types/http/types/index.d.ts(目录名就是 import 的名字, 不用再记"http 藏在 net 包里")。
  *
  * 18 个内置名(与 JZJSEngine.cpp 的 builtinModules 一一对应):
- *   net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / bytes /
- *   buffer / stream / os / serialport / modbus / sqlite(控件族另有 widget; 这些名字都是"包目录名")
+ *   net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto /
+ *   buffer / stream / worker_threads / os / serialport / modbus / sqlite(控件族另有 widget; 这些名字都是"包目录名")
  * 每个名字都是"**默认导出 = 模块对象** + **具名导出 = 各成员**", 两种写法都成立:
  *   import http from 'http';                 import { createServer } from 'http';
  *   import { DatabaseSync } from 'sqlite';   import fs from 'node:fs';

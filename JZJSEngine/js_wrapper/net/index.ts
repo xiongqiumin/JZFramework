@@ -21,20 +21,22 @@ export class Socket extends EventEmitter {
     _enc: any;
     _timeout: number;
     _timer: any;
-    constructor(h: any) {
+    constructor(h?: any) {
         super();
-        this._h = h;
+        // Node: new Socket() works without args. A native handle has an .on(); a
+        // plain options object does not, so create the handle in that case.
+        this._h = (h && typeof h.on === 'function') ? h : __jz.net.createSocket();
         this._enc = null;
         this._timeout = 0;
         this._timer = 0;
-        h.on('connect', () => this.emit('connect'));
-        h.on('data', (b: any) => {
+        this._h.on('connect', () => this.emit('connect'));
+        this._h.on('data', (b: any) => {
             if (this._timeout > 0) this._armTimeout();
             this.emit('data', this._enc ? fromBytes(b, this._enc) : b);
         });
-        h.on('end', () => this.emit('end'));
-        h.on('close', () => { this._disarm(); this.emit('close'); });
-        h.on('error', (m: any) => this.emit('error', new Error(m)));
+        this._h.on('end', () => this.emit('end'));
+        this._h.on('close', () => { this._disarm(); this.emit('close'); });
+        this._h.on('error', (m: any) => this.emit('error', new Error(m)));
     }
     _armTimeout() {
         this._disarm();
@@ -46,6 +48,16 @@ export class Socket extends EventEmitter {
         let cb: any = null;
         if (typeof a === 'number') { opts = { port: a, host: b || '127.0.0.1' }; cb = c; }
         else { opts = a || {}; cb = b; }
+        // Node: connect() without a port throws ERR_MISSING_ARGS synchronously.
+        if (opts.port == null) {
+            const e: any = new Error("net.connect: 'options.port' is required");
+            e.code = 'ERR_MISSING_ARGS';
+            throw e;
+        }
+        // Node: a second connect() on an already-connecting/connected socket is a
+        // no-op. The native layer crashes on re-entrant connectToHost, so skip it.
+        // Drive the check from the underlying C++ state (0=Unconnected,1=Connecting,2=Connected,3=destroyed).
+        if (this._h.state === 1 || this._h.state === 2) return this;
         if (cb) this.on('connect', cb);
         this._armTimeout();
         this._h.connectTo(opts.port | 0, opts.host || '127.0.0.1');
@@ -68,6 +80,13 @@ export class Socket extends EventEmitter {
     destroy() { this._disarm(); this._h.destroy(); return this; }
     setTimeout(ms: any, cb: any) { this._timeout = ms | 0; if (cb) this.on('timeout', cb); this._armTimeout(); return this; }
     setEncoding(enc: any) { this._enc = enc || null; return this; }
+    /**
+     * 让这个 socket **不再**把进程留住(ref = 反过来)。与 Node 同义:
+     * unref 之后 socket 照常收发, 只是宿主不再因为它而留在事件循环里;
+     * 连不上/已断开时调用也有效(unref 状态会留着)。
+     */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
     get remoteAddress() { return this._h.remoteAddress; }
     get remotePort() { return this._h.remotePort; }
     get localAddress() { return this._h.localAddress; }
@@ -75,10 +94,13 @@ export class Socket extends EventEmitter {
     get bytesRead() { return this._h.bytesRead; }
     get bytesWritten() { return this._h.bytesWritten; }
     get destroyed() { return this._h.destroyed; }
+    // C++ SocketState: 0=Unconnected, 1=Connecting, 2=Connected, 3=destroyed.
     get readyState() {
         const s = this._h.state;
-        return s === 1 ? 'open' : (s === 3 ? 'closed' : 'opening');
+        return s === 2 ? 'open' : (s === 1 ? 'opening' : 'closed');
     }
+    /** true while a connect() is in progress but not yet established (Node parity) */
+    get connecting() { return this._h.state === 1; }
 }
 
 export class Server extends EventEmitter {
@@ -103,6 +125,9 @@ export class Server extends EventEmitter {
     close(cb: any) { if (cb) this.on('close', cb); this._h.close(); return this; }
     address() { const a = this._h.address; return (a && a.port) ? a : null; }
     get listening() { return this._h.listening; }
+    /** 让监听中的 server 不再吊住进程(与 Node 同义; 之后可以再 ref() 回来) */
+    ref() { this._h.ref(); return this; }
+    unref() { this._h.unref(); return this; }
 }
 
 export function createServer(a: any, b: any) {
@@ -118,6 +143,12 @@ export function createConnection(a: any, b: any, c: any) {
     let opts: any, cb: any = null;
     if (typeof a === 'number') { opts = { port: a, host: b || '127.0.0.1' }; cb = c; }
     else { opts = a || {}; cb = b; }
+    // Node: createConnection()/connect() without a port throws ERR_MISSING_ARGS.
+    if (opts.port == null) {
+        const e: any = new Error("net.createConnection: 'options.port' is required");
+        e.code = 'ERR_MISSING_ARGS';
+        throw e;
+    }
     const s = new Socket(__jz.net.createSocket());
     if (cb) s.on('connect', cb);
     s.connect(opts);

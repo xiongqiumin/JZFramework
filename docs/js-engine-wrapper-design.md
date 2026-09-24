@@ -53,14 +53,14 @@ struct BuiltinModule { const char* name; const char* file; const char* exportNam
 { "dgram", "dgram/dist/index.js", nullptr },   //   包 = 目录名 = 名字
 { "http",  "http/dist/index.js",  nullptr },
 { "os",    "os/dist/index.js",    nullptr },   // 以前跨包合并，现在一个包
-{ "bytes", "bytes/dist/index.js", nullptr },
+{ "buffer","buffer/dist/index.js",nullptr },
 { "sqlite","sqlite/dist/index.js",nullptr },
 { "widget","widget/dist/index.js","*"     },   // "*" = namespace 形态（包入口没有 default）
 ```
 
 ⭐ **一个名字 = 一个包目录**（`js_wrapper/<名字>/{index.ts, types/, dist/}`）：
 表里 `file` 就是"它自己的 dist 入口"，不再有"名字 A 藏在包 B 里"（以前 `http` 在 `net` 包里、
-`bytes` 在 `core` 包里、`os` 还要跨两个包合并）。查定义时"名字 → 目录 → 类型文件"三者同名。
+`os` 还要跨两个包合并）。查定义时"名字 → 目录 → 类型文件"三者同名。
 
 ### 2.1 三处同步（加名字时必须一起改）
 
@@ -78,7 +78,7 @@ struct BuiltinModule { const char* name; const char* file; const char* exportNam
 | 形态 | 判据（表里的 `exportName`） | 用法 |
 | --- | --- | --- |
 | 有 default | 具名导出名 / `nullptr`（用包自带 default） | `import http from 'http'`；`import SerialPort from 'serialport'` |
-| namespace | `"*"` | 具名导入：`import { DatabaseSync } from 'sqlite'`、`import { ByteReader } from 'bytes'` |
+| namespace | `"*"` | 具名导入：`import { DatabaseSync } from 'sqlite'`、`import { Worker } from 'worker_threads'` |
 
 桥接（`builtinBridgeCode()`）在 loader 层**合成一段 ESM 桥接源码**，把"包出口里的某个导出"
 提升成 `default`（`"*"` 时生成 `export * from ...`），所以不会出现"类型写着可用、运行时不认"的漂移。
@@ -130,7 +130,7 @@ JZJSEngine/js_wrapper/
 ```ts
 // <pkg>/types/ambient.d.ts —— 只做"名字 -> 模块类型"的转发
 declare module 'fs'    { export * from './fs'; }
-declare module 'bytes' { export * from './bytes'; }   // 第二入口同样要有名字
+declare module 'url' { export * from './url'; }   // 第二入口同样要有名字
 ```
 
 **单一来源的红线**：类型**不允许**和实现分家（历史上 `JZJSEngine/types` 与包内 `dist` 漂移过，

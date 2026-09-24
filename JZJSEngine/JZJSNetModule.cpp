@@ -141,7 +141,8 @@ void JZJSEventSink::emitArgs(const std::string& event, std::vector<JSValue>& arg
         list.push_back(it->second[i].second);
     for (size_t i = 0; i < list.size(); i++)
     {
-        JSValue ret = JS_Call(ctx, list[i], JS_UNDEFINED, (int)argv.size(), argv.data());
+        // 走引擎的 callJs: 回调里结算的 promise(续体是微任务)由引擎统一补检查点唤醒
+        JSValue ret = m_engine->callJs(list[i], JS_UNDEFINED, (int)argv.size(), argv.data());
         if (JS_IsException(ret))
         {
             // 回调里抛异常不能跨 quickjs 的 C 调用栈传回去(事件由 C++ 侧同步 emit),
@@ -250,6 +251,22 @@ bool JZJSNetModule::jsValueToBytes(JSContext* ctx, JSValue v, JZByteArray& out)
 }
 
 // ======================================================================
+// JZJSHandleRef —— 句柄 ref 计数(见头文件说明)
+// ======================================================================
+void JZJSHandleRef::sync()
+{
+    bool want = live && refed;      // 只有"活着且 ref"才计一票
+    if (want == counted || !engine)
+        return;
+
+    if (want)
+        engine->addPendingWork();
+    else
+        engine->releasePendingWork();
+    counted = want;
+}
+
+// ======================================================================
 // JZJSNetSocket
 // ======================================================================
 JZJSNetSocket::JZJSNetSocket(JZJSEngine* engine, JZJSNetModule* module)
@@ -258,6 +275,7 @@ JZJSNetSocket::JZJSNetSocket(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     socket = nullptr;
     port = 0;
     bytesRead = 0;
@@ -294,6 +312,7 @@ void JZJSNetSocket::bind(JZTcpSocket* s, const std::string& h, int p)
     });
 
     connect(&s->sigDisconnected, [self]() {
+        self->href.setLive(false);   // 断开: 撤销那一票(否则进程永远退不出)
         self->sink.emit("end");
         self->sink.emit("close");        
     });
@@ -313,6 +332,9 @@ void JZJSNetSocket::connectTo(int p, const std::string& h)
 
     host = h.empty() ? std::string("127.0.0.1") : h;
     port = p;
+
+    // 发起连接起就计一票(对齐 Node: net.connect() 与"连上"同样吊住进程; 只 new Socket() 不算)
+    href.setLive(true);
     socket->connectToHost(host, port);
 }
 
@@ -347,6 +369,7 @@ void JZJSNetSocket::end()
 void JZJSNetSocket::destroy()
 {
     sink.dispose();   // 之后底层派发的事件一律丢弃
+    href.setLive(false);
     if (liveSocket())
     {
         // 先摘指针再删除: 析构期间对象仍可能派发事件, 回调里靠空指针判断跳过
@@ -361,9 +384,10 @@ int JZJSNetSocket::state() const
 {
     if (!socket)
         return 3;
-    if (socket->isConnected())
-        return 1;
-    return 0;
+    // SocketState: 0=Unconnected, 1=Connecting, 2=Connected, 3=destroyed(no handle).
+    // Return the raw enum (not a collapsed 0/1) so JS can distinguish connecting
+    // from unconnected and guard re-entrant connect() without its own flags.
+    return (int)socket->state();
 }
 
 // ======================================================================
@@ -375,6 +399,7 @@ JZJSNetServer::JZJSNetServer(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     server = nullptr;
     listenPort = 0;
     closed = false;
@@ -397,6 +422,7 @@ bool JZJSNetServer::listen(int port, const std::string& host)
     {
         listenPort = server->port();
         listenHost = host;
+        href.setLive(true);   // 监听中 = 吊住进程(对齐 Node; 不想被吊住用 server.unref())
         sink.emit("listening");
     }
     return ok;
@@ -407,6 +433,7 @@ void JZJSNetServer::close()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (!closed)
     {
         closed = true;
@@ -444,8 +471,10 @@ JZJSUdpSocket::JZJSUdpSocket(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     socket = nullptr;
     bindPort = 0;
+    bound = false;
     closed = false;
 }
 
@@ -465,6 +494,8 @@ bool JZJSUdpSocket::bind(int port)
         return false;
 
     bindPort = port;
+    bound = true;
+    href.setLive(true);   // bind 过(含隐式 bind) = 吊住进程(真 Node v26 实测同此)
     sink.emit("listening");
     return true;
 }
@@ -478,6 +509,12 @@ void JZJSUdpSocket::send(const std::string& ip, int port, JSValue data)
     if (!JZJSNetModule::jsValueToBytes(engine->context(), data, buf))
         return;
 
+    // Node 语义: 还没 bind 过的 socket, 首次 send 会**隐式 bind 到临时端口**(并 emit 'listening',
+    // 已用真 Node v26 核对)。不补这一步, writeDatagram 会带 INVALID 连接 id 下去, net 层
+    // 在 connMap 里查不到连接直接丢弃 —— 表现为"send 不报错、对面永远收不到"的静默丢包。
+    if (!bound)
+        bind(0);
+
     socket->writeDatagram(ip, port, buf);
 }
 
@@ -486,6 +523,7 @@ void JZJSUdpSocket::close()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (!closed)
     {
         closed = true;
@@ -520,6 +558,7 @@ JZJSWebSocket::JZJSWebSocket(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     socket = nullptr;
     everConnected = false;
     closed = false;
@@ -552,6 +591,7 @@ void JZJSWebSocket::close()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (!closed)
     {
         closed = true;
@@ -594,6 +634,7 @@ JZJSWebSocketServer::JZJSWebSocketServer(JZJSEngine* engine, JZJSNetModule* modu
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     server = nullptr;
     listenPort = 0;
     closed = false;
@@ -616,6 +657,7 @@ bool JZJSWebSocketServer::listen(int port, const std::string& host)
     {
         listenPort = port;
         listenHost = host;
+        href.setLive(true);   // 监听中 = 吊住进程(对齐 Node)
         sink.emit("listening");
     }
     return ok;
@@ -626,6 +668,7 @@ void JZJSWebSocketServer::close()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (!closed)
     {
         closed = true;
@@ -663,6 +706,7 @@ JZJSMqttClient::JZJSMqttClient(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     client = nullptr;
     connected = false;
 }
@@ -717,6 +761,7 @@ void JZJSMqttClient::end()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (connected)
     {
         connected = false;
@@ -825,6 +870,7 @@ JZJSHttpServer::JZJSHttpServer(JZJSEngine* engine, JZJSNetModule* module)
     this->engine = engine;
     this->module = module;
     sink.setModule(module);
+    href.attach(engine);
     server = nullptr;
     handler = nullptr;
     listenPort = 0;
@@ -848,6 +894,7 @@ bool JZJSHttpServer::listen(int port, const std::string& host)
     {
         listenPort = port;
         listenHost = host;
+        href.setLive(true);   // 监听中 = 吊住进程(对齐 Node)
         sink.emit("listening");
     }
     else
@@ -862,6 +909,7 @@ void JZJSHttpServer::close()
     if (sink.isDisposed())
         return;
 
+    href.setLive(false);
     if (!closed)
     {
         closed = true;
@@ -1016,7 +1064,10 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_socket.defProperty<int>("bytesWritten", [](JZJSNetSocket* o) { return (int)o->bytesWritten; }, nullptr);
     bind_socket.defProperty<bool>("destroyed", [](JZJSNetSocket* o) { return o->socket == nullptr; }, nullptr);
     bind_socket.defProperty<int>("state", [](JZJSNetSocket* o) { return o->state(); }, nullptr);
-    
+    // Node 的 handle ref 开关(见 JZJSHandleRef): Node 的 socket/server 只有 ref/unref, 没有 hasRef
+    bind_socket.def("ref", [](JZJSNetSocket* o) { o->href.setRef(true); });
+    bind_socket.def("unref", [](JZJSNetSocket* o) { o->href.setRef(false); });
+
     m_engine->registClass(bind_socket.classDefine());
     m_typeSocket = m_engine->ctypeidToType(typeid(JZJSNetSocket).name());
     
@@ -1029,6 +1080,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_server.defProperty<Json::Value>("address", [](JZJSNetServer* o) { return o->address(); }, nullptr);
     bind_server.defProperty<bool>("listening",
                                   [](JZJSNetServer* o) { return o->server && o->server->isListening(); }, nullptr);
+    bind_server.def("ref", [](JZJSNetServer* o) { o->href.setRef(true); });
+    bind_server.def("unref", [](JZJSNetServer* o) { o->href.setRef(false); });
     m_engine->registClass(bind_server.classDefine());
     m_typeServer = m_engine->ctypeidToType(typeid(JZJSNetServer).name());
 
@@ -1042,6 +1095,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_udp.def("on", [](JZJSUdpSocket* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
     bind_udp.def("off", [](JZJSUdpSocket* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
     bind_udp.defProperty<Json::Value>("address", [](JZJSUdpSocket* o) { return o->address(); }, nullptr);
+    bind_udp.def("ref", [](JZJSUdpSocket* o) { o->href.setRef(true); });
+    bind_udp.def("unref", [](JZJSUdpSocket* o) { o->href.setRef(false); });
     m_engine->registClass(bind_udp.classDefine());
     m_typeUdp = m_engine->ctypeidToType(typeid(JZJSUdpSocket).name());
 
@@ -1054,6 +1109,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_ws.def("off", [](JZJSWebSocket* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
     bind_ws.defProperty<int>("state", [](JZJSWebSocket* o) { return o->state(); }, nullptr);
     bind_ws.defProperty<std::string>("url", [](JZJSWebSocket* o) { return std::string(); }, nullptr);
+    bind_ws.def("ref", [](JZJSWebSocket* o) { o->href.setRef(true); });
+    bind_ws.def("unref", [](JZJSWebSocket* o) { o->href.setRef(false); });
     m_engine->registClass(bind_ws.classDefine());
     m_typeWs = m_engine->ctypeidToType(typeid(JZJSWebSocket).name());
 
@@ -1064,6 +1121,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_wss.def("on", [](JZJSWebSocketServer* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
     bind_wss.def("off", [](JZJSWebSocketServer* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
     bind_wss.defProperty<Json::Value>("address", [](JZJSWebSocketServer* o) { return o->address(); }, nullptr);
+    bind_wss.def("ref", [](JZJSWebSocketServer* o) { o->href.setRef(true); });
+    bind_wss.def("unref", [](JZJSWebSocketServer* o) { o->href.setRef(false); });
     m_engine->registClass(bind_wss.classDefine());
     m_typeWsServer = m_engine->ctypeidToType(typeid(JZJSWebSocketServer).name());
 
@@ -1078,6 +1137,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_mqtt.def("on", [](JZJSMqttClient* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
     bind_mqtt.def("off", [](JZJSMqttClient* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
     bind_mqtt.defProperty<bool>("connected", [](JZJSMqttClient* o) { return o->connected; }, nullptr);
+    bind_mqtt.def("ref", [](JZJSMqttClient* o) { o->href.setRef(true); });
+    bind_mqtt.def("unref", [](JZJSMqttClient* o) { o->href.setRef(false); });
     
     m_engine->registClass(bind_mqtt.classDefine());
     m_typeMqtt = m_engine->ctypeidToType(typeid(JZJSMqttClient).name());
@@ -1093,6 +1154,8 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_http_server.defProperty<Json::Value>("address", [](JZJSHttpServer* o) { return o->address(); }, nullptr);
     bind_http_server.defProperty<bool>("listening",
         [](JZJSHttpServer* o) { return o->server && o->server->isListening(); }, nullptr);
+    bind_http_server.def("ref", [](JZJSHttpServer* o) { o->href.setRef(true); });
+    bind_http_server.def("unref", [](JZJSHttpServer* o) { o->href.setRef(false); });
     m_engine->registClass(bind_http_server.classDefine());
     m_typeHttpServer = m_engine->ctypeidToType(typeid(JZJSHttpServer).name());
 
@@ -1282,6 +1345,7 @@ JSValue JZJSNetModule::netCreateServer()
             JZJSNetSocket* sock = new JZJSNetSocket(m_engine, this);     
             conn->setParent(nullptr);
             sock->bind(conn, std::string(), self->listenPort);
+            sock->href.setLive(true);   // accept 出来的连接也吊住进程(对齐 Node)
             self->sink.emit("connection", makeSocketValue(sock));
         }
     });
@@ -1346,6 +1410,7 @@ JSValue JZJSNetModule::wsConnect(const std::string& url)
     });
 
     connect(&obj->socket->sigDisconnected, [self]() {
+        self->href.setLive(false);   // 断开: 撤销那一票
         JSContext* c = self->engine->context();
         self->sink.emit("close", JS_NewInt32(c, 1006), JS_NewString(c, ""));
     });
@@ -1356,6 +1421,8 @@ JSValue JZJSNetModule::wsConnect(const std::string& url)
         self->sink.emit("error", JS_NewString(c, "websocket error"));
     });
 
+    // 发起连接起就计一票(对齐 Node: 连接中的 WebSocket 一样吊住进程)
+    obj->href.setLive(true);
     obj->socket->connectToHost(url);
 
     (void)ctx;
@@ -1384,6 +1451,7 @@ JSValue JZJSNetModule::wsCreateServer()
             // 摘出来之后生命周期就只看 JS 侧: 包装 close/回收时由 close() 释放。
             conn->setParent(nullptr);
             ws->everConnected = true;
+            ws->href.setLive(true);   // accept 出来的连接也吊住进程(对齐 Node)
 
             JZJSWebSocket* wself = ws;
             connect(&conn->sigTextMessageReceived, [wself](const std::string& msg) {
@@ -1395,6 +1463,7 @@ JSValue JZJSNetModule::wsCreateServer()
                 wself->sink.emit("message", jsMakeUint8Array(c, msg));
             });
             connect(&conn->sigDisconnected, [wself]() {
+                wself->href.setLive(false);
                 JSContext* c = wself->engine->context();
                 wself->sink.emit("close", JS_NewInt32(c, 1006), JS_NewString(c, ""));
             });
@@ -1415,6 +1484,7 @@ JSValue JZJSNetModule::mqttConnect(const std::string& url, const Json::Value& op
     JZJSMqttClient* self = obj;
     connect(&obj->client->sigConnected, [self]() {
         self->connected = true;
+        self->href.setLive(true);   // 连上 = 吊住进程(对齐 Node); 连不上/断开不计票
         self->sink.emit("connect");
     });
 
@@ -1429,6 +1499,7 @@ JSValue JZJSNetModule::mqttConnect(const std::string& url, const Json::Value& op
     connect(&obj->client->sigDisconnected, [self]() {
         bool was = self->connected;
         self->connected = false;
+        self->href.setLive(false);
         if (was)
             self->sink.emit("close");
     });

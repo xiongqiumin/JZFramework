@@ -13,15 +13,10 @@
 //   * 两边只靠消息通信(postMessage), 消息里的对象可以带共享引用与环;
 //   * 入口脚本的路径按**运行根**解析 = 入口 js 所在的 build/ 目录, 所以这里写
 //     'helper/worker_sum.js'(不带 './', 也不带 src/);
-//   * 用完 w.terminate() 收掉, 不然线程一直挂着。
-//
-// 等 worker 回信那段**不在**引擎的句柄表里(worker 线程不计"算活"), 所以照旧要吊一个
-// 定时器保活; 与网络用例(06/07, 套接字自己撑住)的区别就在这里。
-
+//   * 跑着的 worker 是**句柄**: 它会把进程留住(对齐 Node 的 handle ref 语义), 所以不需要
+//     定时器保活; 反过来**用完必须 w.terminate()** —— 引擎的 worker 不会自己退。
 import { Worker, isMainThread, threadId } from 'worker_threads';
-import { check, keepAlive } from './helper/assert.js';
-
-const keep = keepAlive(50);
+import { check } from './helper/assert.js';
 
 console.log('--- 09_worker ---');
 
@@ -46,8 +41,7 @@ w.on('message', function (msg: any): void {
     check('worker 拿到了 workerData', msg.tag === 'sum-1');
     check('1..100 的区间和 = 5050', msg.sum === 5050);
 
-    w.terminate();
-    clearInterval(keep);
+    w.terminate();      // ⚠ 必须收掉: 跑着的 worker 会把进程留住(见文件头)
     console.log('09_worker done');
 });
 

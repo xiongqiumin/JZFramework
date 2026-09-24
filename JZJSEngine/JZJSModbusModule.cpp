@@ -102,6 +102,7 @@ void JZJSModbusClient::dispose()
     disposed = true;
     openHandle = -1;
     reqHandle = -1;
+    href.detach();   // 先撤票再断引擎引用(连接没了 = 不再吊住宿主)
 
     if (client)
     {
@@ -146,6 +147,7 @@ void JZJSModbusModule::initEngine(JZJSEngine *engine)
     m_engine->registFunction(ns, "create", jsbind::createSelfFunction(this, &JZJSModbusModule::create));
     m_engine->registFunction(ns, "close", jsbind::createSelfFunction(this, &JZJSModbusModule::close));
     m_engine->registFunction(ns, "isOpen", jsbind::createSelfFunction(this, &JZJSModbusModule::isOpen));
+    m_engine->registFunction(ns, "setRef", jsbind::createSelfFunction(this, &JZJSModbusModule::setRef));
     m_engine->registFunction(ns, "setSlave", jsbind::createSelfFunction(this, &JZJSModbusModule::setSlave));
     m_engine->registFunction(ns, "setPlcMode", jsbind::createSelfFunction(this, &JZJSModbusModule::setPlcMode));
     m_engine->registFunction(ns, "lastError", jsbind::createSelfFunction(this, &JZJSModbusModule::lastError));
@@ -265,6 +267,7 @@ JSValue JZJSModbusModule::create(const Json::Value &config)
     JZJSModbusClient *o = new JZJSModbusClient();
     o->engine = m_engine;
     o->module = this;
+    o->href.attach(m_engine);
     o->client = new JZModbusClient();
     o->client->initConn(info);
 
@@ -487,6 +490,8 @@ void JZJSModbusModule::close(JZJSModbusClient *o)
     if (!o || !o->client)
         return;
 
+    o->href.setLive(false);   // 连接关掉 = 撤销那一票
+
     // close() 会清掉在途请求(之后不会再有 reply), 必须自己把 promise 结算掉
     if (o->reqHandle >= 0)
     {
@@ -506,6 +511,12 @@ void JZJSModbusModule::close(JZJSModbusClient *o)
     }
 
     o->client->close();
+}
+
+void JZJSModbusModule::setRef(JZJSModbusClient *o, bool refed)
+{
+    if (o)
+        o->href.setRef(refed);
 }
 
 bool JZJSModbusModule::isOpen(JZJSModbusClient *o)
@@ -643,6 +654,9 @@ void JZJSModbusModule::settleOpen(JZJSModbusClient *o, bool ok, const std::strin
 {
     if (!o || o->openHandle < 0)
         return;
+
+    // 连上 = 计一票(对齐 Node 的句柄语义); 连不上/超时不计 —— 已连上后被对端断开由 close/析构撤销
+    o->href.setLive(ok);
 
     int handle = o->openHandle;
     o->openHandle = -1;

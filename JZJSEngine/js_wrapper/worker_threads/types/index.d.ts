@@ -28,6 +28,9 @@ export class Worker {
     postMessage(value: any): void;
     /** 同步结束该 worker(Node 返回 Promise, 引擎是同步的) */
     terminate(): void;
+    /** 跑着的 worker 默认吊住进程; unref() 后不再吊住(worker 照常跑), ref() 恢复 */
+    ref(): this;
+    unref(): this;
 
     on(event: 'message', listener: (value: any) => void): this;
     on(event: 'exit', listener: (code: number) => void): this;

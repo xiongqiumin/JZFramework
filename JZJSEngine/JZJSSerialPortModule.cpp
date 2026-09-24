@@ -5,6 +5,7 @@
 
 #include "JZDebug.h"
 #include "JZJSBind.h"
+#include "JZJSHandleRef.h"
 
 // ======================================================================
 // 工具
@@ -86,6 +87,7 @@ public:
     JZJSSerialPort(JZJSEngine* engine = nullptr, JZJSSerialPortModule* module = nullptr)
         : engine(engine), module(module), port(nullptr), disposed(false)
     {
+        href.attach(engine);
     }
 
     ~JZJSSerialPort()
@@ -123,7 +125,9 @@ public:
     {
         if (!port)
             return false;
-        return port->open();
+        bool ok = port->open();
+        href.setLive(ok);   // 打开着 = 吊住进程(对齐 Node 的句柄语义)
+        return ok;
     }
 
     void close()
@@ -131,6 +135,7 @@ public:
         if (disposed)
             return;
         disposed = true;
+        href.setLive(false);   // 关掉 = 撤销那一票
         emit("close");
         if (port)
         {
@@ -225,6 +230,7 @@ public:
     JZJSSerialPortModule* module;
     JZSerialPort* port;
     bool disposed;
+    JZJSHandleRef href;      // 打开着的串口是句柄: open 计一票、close 撤销(见 JZJSHandleRef.h)
     std::map<std::string, std::vector<std::pair<int, JSValue>>> m_listeners;
 
     void clearListeners()
@@ -336,6 +342,9 @@ void JZJSSerialPortModule::initEngine(JZJSEngine* engine)
     bind_port.def("setRts", [](JZJSSerialPort* o, bool v) -> bool { return o->setRts(v); });
     bind_port.def("on", [](JZJSSerialPort* o, const std::string& e, JSValue cb) { o->on(e, cb); });
     bind_port.def("off", [](JZJSSerialPort* o, const std::string& e, JSValue cb) { o->off(e, cb); });
+    // 句柄 ref 开关(同 net.Socket 的 ref/unref): 打开着的串口默认吊住进程
+    bind_port.def("ref", [](JZJSSerialPort* o) { o->href.setRef(true); });
+    bind_port.def("unref", [](JZJSSerialPort* o) { o->href.setRef(false); });
     bind_port.defProperty<std::string>("portName",
         [](JZJSSerialPort* o) { return o->port ? o->port->portName() : std::string(); }, nullptr);
     bind_port.defProperty<bool>("isOpen", [](JZJSSerialPort* o) { return o->isOpen(); }, nullptr);

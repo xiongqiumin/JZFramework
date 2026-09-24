@@ -65,6 +65,9 @@ export class SerialPort extends EventEmitter {
     open(): boolean;
     close(): void;
     readonly isOpen: boolean;
+    /** 打开着的串口默认吊住进程; unref() 后不再吊住(串口照常收发), ref() 恢复 */
+    ref(): this;
+    unref(): this;
 
     write(data: Data): this;
 

@@ -251,22 +251,6 @@ bool JZJSNetModule::jsValueToBytes(JSContext* ctx, JSValue v, JZByteArray& out)
 }
 
 // ======================================================================
-// JZJSHandleRef —— 句柄 ref 计数(见头文件说明)
-// ======================================================================
-void JZJSHandleRef::sync()
-{
-    bool want = live && refed;      // 只有"活着且 ref"才计一票
-    if (want == counted || !engine)
-        return;
-
-    if (want)
-        engine->addPendingWork();
-    else
-        engine->releasePendingWork();
-    counted = want;
-}
-
-// ======================================================================
 // JZJSNetSocket
 // ======================================================================
 JZJSNetSocket::JZJSNetSocket(JZJSEngine* engine, JZJSNetModule* module)
@@ -542,9 +526,15 @@ void JZJSUdpSocket::close()
 
 Json::Value JZJSUdpSocket::address() const
 {
+    // 端口取底层连接的**实际**本端端口: 显式 bind(0) 或首次 send 的隐式 bind 时由系统分配,
+    // 用户传进来的 bindPort=0 不作数 —— 与 Node 的 socket.address().port 一致。
+    int port = socket ? socket->localPort() : 0;
+    if (port <= 0)
+        port = bindPort;
+
     Json::Value res;
     res["address"] = "0.0.0.0";
-    res["port"] = bindPort;
+    res["port"] = port;
     res["family"] = "IPv4";
     return res;
 }

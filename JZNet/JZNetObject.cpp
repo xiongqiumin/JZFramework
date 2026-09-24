@@ -160,6 +160,7 @@ JZNetOpenReq::JZNetOpenReq()
 {
     object = nullptr;
     conn = INVALID_NET_HANDLE;
+    localPort = 0;
 }
 
 //JZNetReqEventData
@@ -782,6 +783,9 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         if (conn)
         {
             req->conn = conn->id;
+            // 本端实际端口: bind(0) 时由系统分配, mongoose 在 open 时已 getsockname 回填到 loc.port
+            // (网络序 -> 转 host 序)。没用上就是 0。
+            req->localPort = (int)mg_ntohs(conn->loc.port);
 
             ConnInfo conn_info;
             conn_info.type = info.type;
@@ -1102,6 +1106,7 @@ bool JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEve
     {
         m_conn = result.conn;
         m_connType = info.type;
+        m_localPort = result.localPort;
     }
 
     return (result.conn != INVALID_NET_HANDLE);
@@ -1128,6 +1133,7 @@ void JZNetObject::closeConn(bool closeImmediate)
     m_conn = INVALID_NET_HANDLE;
     m_connType = JZSocketInfo::None;
     m_pendingBytes = 0;
+    m_localPort = 0;
 }
 
 void JZNetObject::writeConn(SocketWrite type, const void *buf, int len)

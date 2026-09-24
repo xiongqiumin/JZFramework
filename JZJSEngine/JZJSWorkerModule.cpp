@@ -34,6 +34,9 @@ JZJSWorker::JZJSWorker()
 
 JZJSWorker::~JZJSWorker()
 {
+    // 句柄没了 = 下面会请求线程退出, 所以它不再算"活着"(必须先撤票, 见 JZJSHandleRef.h)
+    href.detach();
+
     if (!module)
         return;
 
@@ -127,7 +130,10 @@ void JZJSWorkerModule::deinitEngine()
     //    JS_FreeRuntime 时才会析构 —— 留指针就是悬垂。
     //    (worker 线程本身的回收由 hub 负责, 本模块不管线程生命周期。)
     for (std::map<int, JZJSWorker*>::iterator it = m_children.begin(); it != m_children.end(); ++it)
+    {
+        it->second->href.detach();   // 句柄的票随模块一起收回(引擎马上销毁)
         it->second->module = nullptr;
+    }
     m_children.clear();
 
     // 3. 释放 JS 侧资源(必须在 ctx 释放前)
@@ -204,6 +210,7 @@ void JZJSWorkerModule::onWorkerExit(int workerId, int code)
     std::vector<int> cbIds;
     if (w)
     {
+        w->href.setLive(false);   // worker 退出 = 撤销那一票(否则宿主永远不退)
         w->exited = true;
         w->exitCode = code;
         cbIds = w->exitCbIds;
@@ -384,6 +391,10 @@ void JZJSWorkerModule::registWorkerClass()
                            { return self->workerOn(w, ev, cb); });
     bind_worker.def("terminate", [self](JZJSWorker* w) -> JSValue
                                  { return self->workerTerminate(w); });
+    bind_worker.def("ref", [self](JZJSWorker* w) -> JSValue
+                           { return self->workerRef(w, true); });
+    bind_worker.def("unref", [self](JZJSWorker* w) -> JSValue
+                             { return self->workerRef(w, false); });
 
     bind_worker.defProperty<int>("id", [self](JZJSWorker* w) { return self->workerIdOf(w); }, nullptr);
     bind_worker.defProperty<bool>("exited", [self](JZJSWorker* w) { return self->workerExitedOf(w); }, nullptr);
@@ -524,6 +535,9 @@ void* JZJSWorkerModule::createWorker(JSContext* ctx, int argc, JSValueConst* arg
     w->entry = entry;
     w->exited = false;
     w->exitCode = -1;
+    // 起着的 worker 计一票(对齐 Node: Worker 是 ref 的句柄, 会吊住进程直到退出/terminate/unref)
+    w->href.attach(m_engine);
+    w->href.setLive(true);
     m_children[id] = w;
 
     wtrace("createWorker owner=" + std::to_string(m_selfId) + " id=" + std::to_string(id)
@@ -571,7 +585,17 @@ JSValue JZJSWorkerModule::workerTerminate(JZJSWorker* w)
     if (!w)
         return throwError("terminate: invalid Worker handle");
 
+    w->href.setLive(false);   // 主动 terminate: 立刻撤票(不等 exit 通知)
     m_engine->terminateWorker(w->id);
+    return JS_UNDEFINED;
+}
+
+JSValue JZJSWorkerModule::workerRef(JZJSWorker* w, bool refed)
+{
+    if (!w)
+        return throwError("ref/unref: invalid Worker handle");
+
+    w->href.setRef(refed);
     return JS_UNDEFINED;
 }
 

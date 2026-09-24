@@ -111,6 +111,7 @@ public:
     JZSocketInfo info;
     JZNetObject* object;
     uint64_t conn;       //这里复用 mg_connection 的id, 所以是 uint64_t,这是返回的id 
+    int localPort;       // 本端实际端口(host 序): bind(0)/连接时由 net 线程回填, 见 openConn
 };
 
 class JZNetReqEventData
@@ -257,6 +258,10 @@ public:
     // 便捷接口: 等价于 setSslConfig({caPem, certPem, keyPem, false})
     void setSsl(const std::string &caPem, const std::string &certPem, const std::string &keyPem);
 
+    // 本端实际端口(host 序, 0 = 未知)。bind(0) 这种"要系统分配端口"的场景靠它回报真实端口
+    // (mongoose 在 open 时 getsockname 回填)。open 成功时写入, close 时清 0。
+    int localPort() const { return m_localPort; }
+
 protected:
     // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。
     JZSSLConfig m_ssl;
@@ -290,6 +295,7 @@ protected:
 
     int64_t m_readLimitBytesPerSec = 0;   // 本对象下行接收限速(字节/秒), 0=不限速
     uint64_t m_conn = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
+    int m_localPort = 0;                    // 本端实际端口(host 序), 见 localPort()
     JZSocketInfo::ConnType m_connType = JZSocketInfo::None;
     int m_pendingBytes = 0;
 };

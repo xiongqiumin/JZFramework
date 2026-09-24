@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "JZByteArray.h"
+#include "JZJSHandleRef.h"
 #include "JZObject.h"
 #include "JZJSType.h"
 #include "JZJSWorkerThread.h"
@@ -49,6 +50,7 @@ public:
     bool exited;
     int exitCode;
     std::vector<int> exitCbIds;   // 'exit' 回调在模块根数组里的槽位 id
+    JZJSHandleRef href;           // 跑着的 worker 是句柄: 创建计一票、退出/terminate/句柄销毁撤销
 };
 
 // =========================================================================
@@ -101,6 +103,8 @@ public:
     JSValue workerPostMessage(JZJSWorker* w, JSValue value);
     JSValue workerOn(JZJSWorker* w, const std::string& event, JSValue cb);
     JSValue workerTerminate(JZJSWorker* w);
+    // 句柄 ref 开关(ref()/unref()): 只改"算不算一票让宿主活着"
+    JSValue workerRef(JZJSWorker* w, bool refed);
     int workerIdOf(JZJSWorker* w);
     bool workerExitedOf(JZJSWorker* w);
     int workerExitCodeOf(JZJSWorker* w);

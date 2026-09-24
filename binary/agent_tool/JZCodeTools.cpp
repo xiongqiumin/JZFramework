@@ -390,10 +390,11 @@ string jzTsRuntimeNotes()
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
     s += "  - 退出/保活(Node 的 handle ref 语义, 与 Node 一致): 打开着的套接字/服务端(监听中、连接中)、"
-         "ref 着的定时器、未结算的异步(如 await fetch)都算「有事要等」, 进程不会退出; 全部收掉才退。"
-         "自己后面还要 await 就不必额外加定时器; 服务端/连接用完记得 close() —— **不收进程就不会退出**; "
-         "确实想让某个句柄不吊住进程(例如临时探针、常驻后台服务)就对它调 unref()。"
-         "只有那些不被计入的等待(例如等 worker 回信)才需要自己留一个心跳定时器。\n";
+         "ref 着的定时器、跑着的 worker、连着的 modbus 连接、**在途的异步请求(fetch / modbus 读写的 promise "
+         "还没结算)**都算「有事要等」, 进程不会退出(与真 Node 实测一致: 只发一个 fetch 不 await 也会等到回包); "
+         "全部收掉才退。服务端/连接/worker 用完记得 close()/terminate() —— **不收进程就不会退出**; "
+         "确实想让某个句柄不吊住进程(例如临时探针、常驻后台服务)就对它调 unref()"
+         "(socket/server/WebSocket/worker/modbus/Timeout 都有)。\n";
     return s;
 }
 

@@ -103,6 +103,13 @@ export class Worker
     /** 同步结束该 worker(Node 的 terminate() 返回 Promise; 这里保持引擎的同步语义) */
     terminate(): void { _workers.delete(this._h.id); this._h.terminate(); }
 
+    /**
+     * 句柄 ref 开关(Node 同名方法): 跑着的 worker 默认会把进程留住;
+     * unref() 之后它不再吊住宿主(worker 照常跑), ref() 恢复默认。
+     */
+    ref(): this { this._h.ref(); return this; }
+    unref(): this { this._h.unref(); return this; }
+
     on(event: string, listener: (...args: any[]) => void): this { this._ee.on(event, listener); return this; }
     once(event: string, listener: (...args: any[]) => void): this { this._ee.once(event, listener); return this; }
     off(event: string, listener?: (...args: any[]) => void): this { this._ee.off(event, listener); return this; }

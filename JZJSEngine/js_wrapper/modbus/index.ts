@@ -258,6 +258,14 @@ export class ModbusRTU extends EventEmitter
         return __jz.modbus.lastError(this._native);
     }
 
+    /**
+     * 句柄 ref 开关(与 net.Socket 的 ref/unref 同义):
+     * 连着的 modbus 连接默认会把进程留住(对齐 Node 的句柄语义); unref() 之后它不再吊住宿主
+     * (连接照常收发, 只是进程可以退出), ref() 恢复默认。未连接时调用也有效。
+     */
+    ref(): void { if (this._native) __jz.modbus.setRef(this._native, true); }
+    unref(): void { if (this._native) __jz.modbus.setRef(this._native, false); }
+
     /** 关闭连接（可传回调，与 modbus-serial 一致） */
     close(callback?: AnyFn): void
     {

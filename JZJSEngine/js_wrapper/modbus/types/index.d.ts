@@ -162,6 +162,13 @@ export class ModbusRTU extends Emitter {
     /** 最近一次底层错误文本（JZModbus 扩展）, 未连接返回 '' */
     getLastError(): string;
 
+    /**
+     * 句柄 ref 开关(与 net.Socket 同义): 连着的连接默认会把进程留住;
+     * unref() 后它不再吊住宿主(连接照常收发); ref() 恢复默认。
+     */
+    ref(): void;
+    unref(): void;
+
     /** 关闭连接（可传回调, 与 modbus-serial 一致） */
     close(callback?: () => void): void;
     /** 与 close 等价（并丢弃排队中的请求） */

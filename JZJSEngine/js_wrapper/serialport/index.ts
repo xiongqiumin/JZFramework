@@ -65,6 +65,12 @@ export class SerialPort extends EventEmitter {
     get isOpen(): boolean { return this._h.isOpen; }
     open(): this { if (this._h.open()) this.emit('open'); return this; }
     close(): this { this._h.close(); return this; }
+    /**
+     * 句柄 ref 开关(与 net.Socket 同义): 打开着的串口默认会把进程留住;
+     * unref() 后它不再吊住宿主(串口照常收发); ref() 恢复默认。
+     */
+    ref(): this { this._h.ref(); return this; }
+    unref(): this { this._h.unref(); return this; }
     write(data: Data): this { this._h.write(toBytes(data, null)); return this; }
     read(maxSize: number): Uint8Array { return maxSize > 0 ? this._h.read(maxSize | 0) : this._h.readAll(); }
     readAll(): Uint8Array { return this._h.readAll(); }

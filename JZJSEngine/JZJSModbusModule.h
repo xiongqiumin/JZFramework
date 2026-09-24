@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "JZJSEngine.h"
+#include "JZJSHandleRef.h"
 #include "JZModbusClient.h"
 
 class JZJSModbusModule;
@@ -28,6 +29,7 @@ struct JZJSModbusClient
     JZJSEngine* engine;             // 构造 JS 值 / 结算 promise 用(引擎销毁前可能被置空)
     JZJSModbusModule* module;       // 归属模块(引擎销毁前可能被置空)
     JZModbusClient* client;         // 底层连接(nullptr = 已释放)
+    JZJSHandleRef href;             // 连接是句柄: 连上计一票、close/析构撤销(见 JZJSHandleRef.h)
 
     int openHandle;                 // open() 在途 promise handle, -1 表示无
     int reqHandle;                  // 读/写在途 promise handle, -1 表示无
@@ -76,6 +78,8 @@ public:
                JSValue value);
 
     void close(JZJSModbusClient* o);
+    // 句柄 ref 开关(ref()/unref()): 只改"算不算一票让宿主活着", 不改连接功能
+    void setRef(JZJSModbusClient* o, bool refed);
     bool isOpen(JZJSModbusClient* o);
     bool setSlave(JZJSModbusClient* o, int slave);
     void setPlcMode(JZJSModbusClient* o, bool flag);

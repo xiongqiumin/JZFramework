@@ -38,6 +38,12 @@ double str_toDouble(const std::string& str, bool* ok = nullptr);
 
 std::string str_local_to_utf8(const std::string& local);
 std::string str_utf8_to_local(const std::string& local);
+// 这段字节是不是合法 UTF-8(空串算合法)
+bool str_is_utf8(const std::string& str);
+// 保证是 UTF-8: 已经是合法 UTF-8 就原样返回, 否则按本地编码转。
+// 用在**命令行参数**上: 传统 GBK 控制台给的是本地编码字节(要转), 而 PowerShell 7 /
+// UTF-8 控制台直接把 UTF-8 字节塞进 argv(再按本地编码转会变成乱码 —— 中文参数尤其明显)。
+std::string str_ensure_utf8(const std::string& str);
 std::wstring str_to_wstr(const std::string& str);
 std::string wstr_to_str(const std::wstring& str);
 

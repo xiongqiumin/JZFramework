@@ -274,6 +274,16 @@ public:
     //   {status, verify_rounds, agent_reply, last_verify_output, error?}。
     void submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);
 
+    // ---- --loop 模式(无人值守: 不依赖 HTTP/网页, 无限循环执行同一条指令) ----
+    //   每轮 = 一次完整任务(prompt -> 可选验证脚本门控循环 -> 收尾), 走的还是 submitTask 那套,
+    //   只是不需要 HTTP 连接; 每轮结果打一行到控制台。
+    //   会话**跨轮延续**(不重置): 每轮接在同一段对话后面 —— 与"用 HTTP 连着提交几次任务"一致;
+    //   上下文涨到预算就自动压缩(tokenStrategy = TokenCompress), 不用手管。
+    //   verifyCmd 空 = 不验证(每轮只驱动 agent 一次); intervalMs = 上一轮结束到下一轮的等待。
+    //   ⚠ 没有停止条件: 只能 Ctrl+C / 杀进程(外部重置使它 cancelled 时除外)。
+    void startLoop(const std::string &prompt, const std::string &verifyCmd, int intervalMs);
+    bool loopModeActive() const { return m_cliLoopActive; }
+
     JZAgent *agent() const { return m_agent; }
 
     // 生效的程序映射(即配置里传进来的那份), 供宿主打印/自检
@@ -329,6 +339,12 @@ protected:
     void finishVerify(int exitCode);         // 一次验证的收尾(截断输出 + 回调)
     void onVerifyDone(int exitCode, const std::string &out);   // 验证结果的分发(正常路径)
     void onLoopFinished();
+
+    // --loop 模式(见 startLoop): 排下一轮 / 跑一轮 / 一轮收尾(收尾里再排下一轮 = 无限循环)
+    void scheduleLoopRound(int delayMs);
+    void runLoopRound();
+    void onLoopRoundDone(const Json::Value &result);
+
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                     const std::string &verifyOut, const std::string &err);
     bool checkToken(const JZHttpRequest &req) const;      // ?token= / Authorization: Bearer
@@ -410,6 +426,14 @@ protected:
                        const std::string &verifyOut, const std::string &err);
     Json::Value recentJson() const;            // 最近在前(与界面"新的在上"一致)
     static int64_t nowMs();
+
+    // --loop 模式(见 startLoop): 反复执行同一条指令, 与 HTTP 无关
+    bool m_cliLoopActive = false;
+    std::string m_cliLoopPrompt;       // 反复执行的指令
+    std::string m_cliLoopVerifyCmd;    // 每轮的验证命令(空 = 不验证)
+    int m_cliLoopIntervalMs = 0;       // 轮与轮之间的等待
+    int m_cliLoopRound = 0;            // 已跑的轮数
+    int64_t m_cliLoopStartMs = 0;      // 本轮开始时间(算用时)
 
     // 传输无关扩展
     std::function<void(const Json::Value &)> m_respond;  // 循环结束的回包回调

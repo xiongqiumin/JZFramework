@@ -673,6 +673,22 @@ string str_utf8_to_local(const string& utf8_str) {
     return local_str;
 }
 
+bool str_is_utf8(const string& str)
+{
+    if (str.empty())
+        return true;
+    // MB_ERR_INVALID_CHARS: 遇到非法序列就失败(不加这个标志 Windows 会静默替换成 '?')
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str.c_str(), (int)str.size(),
+                               nullptr, 0) > 0;
+}
+
+string str_ensure_utf8(const string& str)
+{
+    if (str.empty() || str_is_utf8(str))
+        return str;
+    return str_local_to_utf8(str);
+}
+
 wstring str_to_wstr(const string& str)
 {
     if (str.empty()) 
@@ -860,6 +876,16 @@ string str_local_to_utf8(const string &str)
 string str_utf8_to_local(const string& utf8_str)
 {
     return utf8_str;
+}
+
+bool str_is_utf8(const string& str)
+{
+    return true;   // 非 Windows: 命令行/文件名本来就是 UTF-8 字节, 不做校验
+}
+
+string str_ensure_utf8(const string& str)
+{
+    return str;
 }
 
 #endif

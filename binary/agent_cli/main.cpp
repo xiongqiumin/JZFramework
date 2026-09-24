@@ -7,6 +7,8 @@
 //
 // 配置全部放 config.json(默认 exe 同目录, 可用 -c 指定); 命令行只负责:
 //   -c 指定配置文件 / --init 生成默认配置 / --check 校验并打印生效配置 / -h 帮助。
+//   --loop "<指令>" = 无人值守模式: 无限循环执行同一条指令(不起 HTTP/网页, 见 main 末尾),
+//   配套 --loop-interval <秒>(轮间等待) 与 --verify-cmd "<命令>"(每轮验证)。
 //
 // 日志默认不打印到控制台(避免污染), 可配置 logFile 落盘排查。
 
@@ -518,7 +520,8 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
 int main(int argc, char *argv[])
 {
     JZCommandLineParser parser;
-    parser.setDescription("agent_cli - HTTP task agent (POST /task)\n");
+    parser.setDescription("agent_cli - HTTP task agent (POST /task)\n"
+                          "             加 --loop 则改为无人值守: 无限循环执行同一条指令(不启 HTTP/网页)\n");
 
     string cmdConfig;
     parser.addOption(JZCommandLineOption("--config", "-c",
@@ -531,6 +534,21 @@ int main(int argc, char *argv[])
     bool cmdCheck = false;
     parser.addOption(JZCommandLineOption("--check", "",
         "校验配置并打印生效配置后退出(不启动)"), &cmdCheck);
+
+    // ---- --loop: 无人值守模式(先不管网页) ----
+    string cmdLoop;
+    parser.addOption(JZCommandLineOption("--loop", "",
+        "无人值守: 无限循环执行这条指令(不起 HTTP/网页; 会话跨轮延续, 上下文超预算自动压缩)"),
+        &cmdLoop);
+
+    int cmdLoopIntervalSec = 0;
+    parser.addOption(JZCommandLineOption("--loop-interval", "",
+        "循环模式: 上一轮结束到下一轮开始的等待(秒, 默认 0 = 立刻下一轮)"), &cmdLoopIntervalSec);
+
+    string cmdVerifyCmd;
+    parser.addOption(JZCommandLineOption("--verify-cmd", "",
+        "循环模式: 每轮的验证命令(退出码 0 通过; 失败会把输出喂回 agent 续跑; 不给 = 不验证)"),
+        &cmdVerifyCmd);
 
     if (!parser.parse(argc, argv))
         return 1;
@@ -572,6 +590,17 @@ int main(int argc, char *argv[])
     {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
+    }
+
+    // --loop: 无人值守模式 —— 先不管网页, 连 HTTP / FRP 都不起, 只反复执行这条指令。
+    //   每轮都是一次完整任务(带验证命令时含"验证脚本门控循环"), 结果打到控制台(日志)。
+    //   没有停止条件: Ctrl+C / 杀进程才停。
+    if (!cmdLoop.empty())
+    {
+        if (cmdVerifyCmd.empty())
+            fprintf(stderr, "循环模式: 未给验证命令(--verify-cmd), 每轮只驱动 agent 一次, 不验证\n");
+        cli.startLoop(cmdLoop, cmdVerifyCmd, cmdLoopIntervalSec * 1000);
+        return app.exec();
     }
 
     jzDebug("agent_cli 就绪(HTTP): http://%s:%d  token=%s",

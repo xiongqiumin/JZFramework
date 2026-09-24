@@ -372,7 +372,7 @@ bool JZCommandLineParser::valueToPosArg(const std::string& valueStr, int posArgI
             break;
         }
         case CommandValue::STRING:
-            *static_cast<std::string*>(cmd->ptr) = str_local_to_utf8(valueStr);
+            *static_cast<std::string*>(cmd->ptr) = str_ensure_utf8(valueStr);
             break;
 
         case CommandValue::INT:
@@ -544,13 +544,13 @@ bool JZCommandLineParser::parse(int argc, char** argv)
             switch (cmd->type)
             {
                 case CommandValue::STRING:
-                    *static_cast<std::string*>(cmd->ptr) = str_local_to_utf8(valueStr);
+                    *static_cast<std::string*>(cmd->ptr) = str_ensure_utf8(valueStr);
                     break;
 
                 case CommandValue::ENUM:
                 {
                     bool matched = false;
-                    std::string utf8Val = str_local_to_utf8(valueStr);
+                    std::string utf8Val = str_ensure_utf8(valueStr);
                     for (const auto& e : cmd->enumValues)
                     {
                         if (e == utf8Val)
@@ -749,7 +749,8 @@ void JZCommandLineParser::printHelp() const
 
     if(!m_description.empty())
     {
-        std::cout << m_programName << " - " << str_utf8_to_local(m_description) << "\n\n";
+        // 与其他行一致: 直接输出 UTF-8(原来这里多转了一次 local, 中文描述会变乱码)
+        std::cout << m_programName << " - " << m_description << "\n\n";
     }
 
     std::cout << usage() << "\n\n";

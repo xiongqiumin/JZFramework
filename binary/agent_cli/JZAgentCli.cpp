@@ -1023,6 +1023,126 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
 }
 
 // ---------------------------------------------------------------------------
+// --loop 模式: 无人值守, 反复把同一条指令交给 agent(不依赖 HTTP/网页)
+//   一轮 = submitTask 那套完整流程(送指令 -> 可选验证脚本门控循环 -> 收尾), 收尾回调里
+//   打一行结果, 然后排下一轮 —— 没有停止条件, 就是"无限循环"。
+//   为什么下一轮要过 JZTimer: submitTask 的 respond 回调是在 m_busy 复位**之前**调的
+//   (onLoopFinished: respondTask -> endLoop), 当场再提会被判成"已有任务在跑"; 过一遍事件
+//   循环就等到了 endLoop(), 于是 interval=0 也必须排一个 0ms 定时器。
+// ---------------------------------------------------------------------------
+
+// 日志用的截断: 按字节切, 但别切在 UTF-8 多字节序列中间(控制台会出乱码)
+static std::string clipText(const std::string &text, size_t maxBytes)
+{
+    if (text.size() <= maxBytes)
+        return text;
+    size_t end = maxBytes;
+    while (end > 0 && ((unsigned char)text[end] & 0xC0) == 0x80)
+        end--;
+    return text.substr(0, end) + " ...(共 " + std::to_string(text.size()) + " 字节)";
+}
+
+static std::string secText(double sec)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.1fs", sec);
+    return buf;
+}
+
+void JZAgentCli::startLoop(const std::string &prompt, const std::string &verifyCmd, int intervalMs)
+{
+    if (!m_agent)
+    {
+        jzError("--loop: agent 未初始化, 无法进入循环模式");
+        return;
+    }
+
+    m_cliLoopPrompt = prompt;
+    m_cliLoopVerifyCmd = verifyCmd;
+    m_cliLoopIntervalMs = (intervalMs > 0) ? intervalMs : 0;
+    m_cliLoopRound = 0;
+    m_cliLoopActive = true;
+
+    // noquote: jzInfo 默认给字符串加引号 + 转义(日志里一堆 \" 反而看不清), 这几条不用
+    jzInfo().nospace().noquote()
+        << "--loop 无人值守: 无限循环执行同一条指令(间隔 " << m_cliLoopIntervalMs
+        << " ms, 会话跨轮延续, "
+        << (m_cliLoopVerifyCmd.empty() ? std::string("不验证")
+                                       : ("验证命令: " + m_cliLoopVerifyCmd))
+        << ")";
+    jzInfo().nospace().noquote() << "--loop 指令: " << m_cliLoopPrompt;
+
+    scheduleLoopRound(0);
+}
+
+void JZAgentCli::scheduleLoopRound(int delayMs)
+{
+    JZTimer::singleShot(delayMs > 0 ? delayMs : 0, this, [this]() { runLoopRound(); });
+}
+
+void JZAgentCli::runLoopRound()
+{
+    if (!m_cliLoopActive || !m_agent)
+        return;
+
+    // 会话**跨轮延续**: 不调 resetSession —— 每轮接在同一段对话后面(与"用 HTTP 连着提交几次
+    // 任务"一致), 上下文涨到预算由 agent 自己压缩(tokenStrategy = TokenCompress)。
+    // 每轮的任务状态(轮数/回复累积/重试计数/成败标志…)由 submitTask() 开头那一段自己复位,
+    // 不需要在这里清。
+    m_cliLoopRound++;
+    m_cliLoopStartMs = nowMs();
+    jzInfo().nospace() << "[loop " << m_cliLoopRound << "] 开始";
+
+    Json::Value req(Json::objectValue);
+    req["prompt"] = m_cliLoopPrompt;
+    if (!m_cliLoopVerifyCmd.empty())
+        req["verify_cmd"] = m_cliLoopVerifyCmd;
+    submitTask(req, [this](const Json::Value &r) { onLoopRoundDone(r); });
+}
+
+void JZAgentCli::onLoopRoundDone(const Json::Value &result)
+{
+    double sec = (nowMs() - m_cliLoopStartMs) / 1000.0;
+    std::string status = result.get("status", "?").asString();
+
+    std::string line = "[loop " + std::to_string(m_cliLoopRound) + "] 结束: " + status;
+    if (result.isMember("verify_rounds"))
+        line += "  验证轮次=" + std::to_string(result["verify_rounds"].asInt());
+    if (result.isMember("retries"))
+        line += "  重试=" + std::to_string(result["retries"].asInt());
+    line += "  用时=" + secText(sec);
+    if (status == "success")
+        jzInfo().noquote() << line;
+    else
+        jzWarning().noquote() << line;
+
+    std::string err = result.get("error", "").asString();
+    if (!err.empty())
+        jzWarning().nospace().noquote() << "[loop " << m_cliLoopRound << "] 错误: " << clipText(err, 400);
+    std::string reply = result.get("agent_reply", "").asString();
+    if (!reply.empty())
+        jzInfo().nospace().noquote() << "[loop " << m_cliLoopRound << "] 回复: " << clipText(reply, 400);
+    std::string vout = result.get("last_verify_output", "").asString();
+    if (!vout.empty())
+        jzInfo().nospace().noquote() << "[loop " << m_cliLoopRound << "] 验证输出: " << clipText(vout, 400);
+
+    // 无人值守时 stdout 多半被重定向到文件: 不 flush 就"跑了一晚上一条也看不到"
+    // (printf 到文件是块缓冲, 4KB 才落一次盘; 被 Ctrl+C 杀掉时缓冲区还会丢)。
+    fflush(stdout);
+
+    // 被取消(只可能来自外部的重置/停止): 不再续下一轮
+    if (status == "cancelled")
+    {
+        m_cliLoopActive = false;
+        jzInfo().noquote() << "--loop 已停止: 任务被取消";
+        return;
+    }
+
+    // 无限循环: 不按成败判定要不要继续(失败也接着来, 重试预算在任务内部已经用过)
+    scheduleLoopRound(m_cliLoopIntervalMs);
+}
+
+// ---------------------------------------------------------------------------
 // 验证命令的解释器选择
 //   Windows(cmd)下 `python3` / `bash` 经常根本不存在 —— 装了 Python 往往只有 python.exe,
 //   Git Bash 也没进 PATH。硬写 python3 会让验证脚本每一轮都以 9009/127 退出(看着像"测试

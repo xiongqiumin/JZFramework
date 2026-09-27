@@ -27,7 +27,7 @@ static JZByteArray fromHex(const std::string &h)
         return 0;
     };
     for (size_t i = 0; i + 1 < h.size(); i += 2)
-        b.append((char)(nib(h[i]) * 16 + nib(h[i + 1])));
+        b.push_back((char)(nib(h[i]) * 16 + nib(h[i + 1])));
     return b;
 }
 

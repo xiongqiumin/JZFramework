@@ -1,10 +1,24 @@
 #include "JZLabel.h"
+#include "JZStd.h"
 #include "JZPainter.h"
 #include "JZStylePainter.h"
 #include "JZFontMetrics.h"
 #include "JZDebug.h"
 
 JZ_OBJECT_IMPL(JZLabel, JZWidget)
+
+// 按 '\n' 拆成多行 (兼容 CRLF: 行尾 '\r' 剔除, 否则会被当成缺字符字形画出来)。
+// 保留空行 —— 空行同样要占一行高度。文本非空时 str_split 至少返回一行。
+static std::vector<std::string> jzLabelLines(const std::string& text)
+{
+    std::vector<std::string> lines = str_split(text, "\n", JZ::KeepEmptyParts);
+    for (auto& line : lines)
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+    }
+    return lines;
+}
 
 JZLabel::JZLabel(JZWidget* parent)
     : JZWidget(parent)
@@ -44,11 +58,18 @@ JZSize JZLabel::sizeHint() const
     // 预留左右/上下内边距, 吸收度量误差或字体微调, 防止文字被裁切。
     if (m_text.empty())
         return JZSize(80, 20);
-    
+
+    // 多行: 宽取最宽的一行, 高按行数累加行高。
+    // 单行时 lines.size()==1, 算式与原实现完全一致, 不影响既有标签。
     JZFont font(14);
-    int tw = JZFontMetrics::textWidth(m_text, font);
-    int th = JZFontMetrics::textHeight(font);
-    return JZSize(std::max(80,tw + 12), std::max(20,th + 8));
+    std::vector<std::string> lines = jzLabelLines(m_text);
+    int lh = JZFontMetrics::textHeight(font);
+
+    int tw = 0;
+    for (const auto& line : lines)
+        tw = std::max(tw, JZFontMetrics::textWidth(line, font));
+
+    return JZSize(std::max(80, tw + 12), std::max(20, (int)lines.size() * lh + 8));
 }
 
 JZSize JZLabel::minimumSizeHint() const
@@ -81,16 +102,26 @@ void JZLabel::paintEvent(JZPainterEvent* event)
     p.setPen(JZPen(s.color.valueOr(JZColor(0x33, 0x33, 0x33)), 1));
     p.setFont(font);
 
-    int tw = JZFontMetrics::textWidth(m_text, font);
+    // 多行绘制: 先算出整块文本高度并垂直居中, 再逐行按行高下移。
+    // 单行时 totalH 就等于一行, 垂直算式与原先的 centerY(font, cr.height()) 等价。
+    std::vector<std::string> lines = jzLabelLines(m_text);
+    const int lh = JZFontMetrics::textHeight(font);
+    const int totalH = (int)lines.size() * lh;
 
     // 对齐: 0=左 1=中 2=右; 控件被压扁时垂直顶对齐而非负偏移
-    int tx = (m_align == 1) ? cr.x() + (cr.width() - tw) / 2
-           : (m_align == 2) ? cr.x() + cr.width() - tw
-                            : cr.x();
-    int ty = cr.y() + JZFontMetrics::centerY(font, cr.height());
+    int ty = cr.y() + (cr.height() - totalH) / 2;
     if (ty < cr.y())
         ty = cr.y();
-    p.drawText(tx, ty, m_text.c_str());
+
+    for (const auto& line : lines)
+    {
+        const int lw = JZFontMetrics::textWidth(line, font);
+        int tx = (m_align == 1) ? cr.x() + (cr.width() - lw) / 2
+               : (m_align == 2) ? cr.x() + cr.width() - lw
+                                : cr.x();
+        p.drawText(tx, ty, line.c_str());
+        ty += lh;   // 空行同样占一行高度
+    }
 }
 
 JZStyleSet JZLabel::uaStyle() const

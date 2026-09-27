@@ -82,6 +82,14 @@ protected:
     // 参数为屏幕逻辑坐标 (子面板上移动时由 eventFilter 转发过来)。
     void updateHoverCursor(const JZPoint& global);
 
+    // 事件过滤只装在本控件的直接子面板上, 但分隔条热区下方可能还嵌套着更深的
+    // 子孙控件(如竖向 splitter 里"工具条 + 输入框"又套了一层容器): 指针移到这些
+    // 孙子控件上时, 直接子面板的过滤器收不到事件, 导致离开分隔条后悬停光标(双向
+    // 箭头)无法清除、卡在箭头状态。因此过滤要递归装到所有子孙, 动态新增的也靠
+    // childAdded 补装, 移除时靠 childRemoved 摘除(避免悬垂过滤器)。
+    void installChildFilter(JZObject* obj);
+    void removeChildFilter(JZObject* obj);
+
     struct Item {
         JZWidget* widget = nullptr;
         int stretch = 1;

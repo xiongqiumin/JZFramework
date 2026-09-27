@@ -23,12 +23,16 @@
 
 using namespace std;
 
-// 输入框内的附图缩略图布局: 一行槽位从左往右排, 与底部按钮带同高
-static constexpr int kThumbBox    = 30;   // 槽位边长
-static constexpr int kThumbStep   = 36;   // 槽位间距(含间隔)
-static constexpr int kThumbLeft   = 14;   // 与输入框左右内边距对齐
-static constexpr int kThumbBottom = 6;    // 与底部间距(与按钮一致)
-static constexpr int kMaxImages   = 8;    // 单条消息最多附加的截图数
+// 输入框上方工具条布局: 左侧[截图]按钮, 右侧附图缩略图(点击移除)
+static constexpr int kToolShotW    = 48;   // [截图] 按钮宽
+static constexpr int kToolShotH    = 26;   // [截图] 按钮高
+static constexpr int kToolShotX    = 8;    // 按钮左内边距
+static constexpr int kToolShotY    = 6;    // 按钮上内边距(工具条高 38)
+static constexpr int kToolThumb    = 30;   // 缩略图槽位边长
+static constexpr int kToolThumbStep= 36;   // 槽位间距(含间隔)
+static constexpr int kToolThumbLeft= 8 + kToolShotW + 12;  // 缩略图起始 x(按钮右侧留白)
+static constexpr int kToolThumbY   = 4;    // 缩略图垂直居中(工具条高 38)
+static constexpr int kToolMaxImages= 8;    // 单条消息最多附加的截图数
 
 // 在 PATH 环境变量里找一个可执行文件，命中返回全路径（已规范化），否则返回空。
 // 用于启动时按本机默认补全可信程序（cmake / python 等）。
@@ -155,9 +159,8 @@ InputEdit::InputEdit(JZWidget* parent)
     : JZTextEdit(parent)
     , sigSend(this)
     , sigStop(this)
-    , sigShot(this)
 {
-    // 发送按钮 / token 圆环 / 截图按钮 用 selfLayout 锚定在输入框内部右下角,
+    // 发送按钮 / token 圆环 用 selfLayout 锚定在输入框内部右下角,
     // 输入框尺寸变化时父控件 resize 自动按锚点重摆, 无需手写 resizeEvent。
     // 文字区底部留 margin(按钮高度 + 间距), 永远不与按钮重叠。
     const int btnW = 70, btnH = 30;
@@ -170,13 +173,7 @@ InputEdit::InputEdit(JZWidget* parent)
     m_tokenRing->setSelfLayout(new JZSelfLayout(JZSelfLayout::BottomRight,
                                                 8 + btnW + 8, 6 + (btnH - 26) / 2));
 
-    m_shotBtn = new JZPushButton("截图", this);
-    m_shotBtn->setFixedSize(48, 26);
-    m_shotBtn->setSelfLayout(new JZSelfLayout(JZSelfLayout::BottomRight,
-                                              8 + btnW + 8 + 26 + 8, 6));
-
     connect(&m_sendBtn->sigClicked, this, &InputEdit::onSendClicked);
-    connect(&m_shotBtn->sigClicked, this, [this]() { sigShot.emit(); });
     connect(&sigTextChanged, this, [this](const std::string&) { updateButton(); });
 
     setTextMargins(14, 10, 14, btnH + 14);   // 底部留: 6(下边距) + 8(与文字间距)
@@ -206,29 +203,48 @@ void InputEdit::setBusy(bool busy)
 
 void InputEdit::updateButton()
 {
-    // 正在请求且没有待发内容(文字与附图都为空) -> "停止"；其它情况 -> "发送"
-    bool empty = text().empty() && m_images.empty();
+    // 正在请求且没有待发内容(文字与工具条附图都为空) -> "停止"；其它情况 -> "发送"
+    bool empty = text().empty() && !m_hasImages;
     m_sendBtn->setText(m_busy && empty ? "停止" : "发送");
 }
 
 void InputEdit::onSendClicked()
 {
     // 忙碌且没有待发内容时按"停止"处理，否则视为"发送"
-    if (m_busy && text().empty() && m_images.empty())
+    if (m_busy && text().empty() && !m_hasImages)
         sigStop.emit();
     else
         sigSend.emit();
 }
 
-// ==================== InputEdit: 附图(截图) ====================
-JZRect InputEdit::imageSlot(int index) const
+void InputEdit::paintEvent(JZPainterEvent* event)
 {
-    return JZRect(kThumbLeft + index * kThumbStep,
-                  height() - kThumbBottom - kThumbBox,
-                  kThumbBox, kThumbBox);
+    JZTextEdit::paintEvent(event);   // 基类: 外框 + 文本 + 光标
 }
 
-int InputEdit::imageAt(const JZPoint& pos) const
+// ==================== InputToolbar ====================
+InputToolbar::InputToolbar(JZWidget* parent)
+    : JZWidget(parent)
+    , sigShot(this)
+    , sigImagesChanged(this)
+{
+    setFixedHeight(38);   // 工具条固定高度(随输入区一起被 editor splitter 拉伸整体)
+
+    // [截图] 按钮用 selfLayout 锚在工具条内部左上角; 缩略图在其右侧横向排列(自绘)。
+    m_shotBtn = new JZPushButton("截图", this);
+    m_shotBtn->setFixedSize(kToolShotW, kToolShotH);
+    m_shotBtn->setSelfLayout(new JZSelfLayout(JZSelfLayout::TopLeft, kToolShotX, kToolShotY));
+    connect(&m_shotBtn->sigClicked, this, [this]() { sigShot.emit(); });
+}
+
+JZRect InputToolbar::imageSlot(int index) const
+{
+    return JZRect(kToolThumbLeft + index * kToolThumbStep,
+                  kToolThumbY,
+                  kToolThumb, kToolThumb);
+}
+
+int InputToolbar::imageAt(const JZPoint& pos) const
 {
     for (int i = 0; i < (int)m_thumbs.size(); i++)
     {
@@ -238,35 +254,39 @@ int InputEdit::imageAt(const JZPoint& pos) const
     return -1;
 }
 
-void InputEdit::addImage(const std::string& dataUrl, const JZImage& thumb)
+void InputToolbar::addImage(const std::string& dataUrl, const JZImage& thumb)
 {
-    if (dataUrl.empty() || (int)m_images.size() >= kMaxImages)
+    if (dataUrl.empty() || (int)m_images.size() >= kToolMaxImages)
         return;
     m_images.push_back(dataUrl);
     m_thumbs.push_back(thumb);
-    updateButton();          // 有图时按钮保持"发送"
-    update();                // 立即刷新缩略图预览
+    update();                  // 立即刷新缩略图预览
+    sigImagesChanged.emit();   // 通知输入框刷新"发送/停止"文案
 }
 
-std::vector<std::string> InputEdit::takeImages()
+std::vector<std::string> InputToolbar::takeImages()
 {
     std::vector<std::string> out;
     out.swap(m_images);
     m_thumbs.clear();
     update();
+    sigImagesChanged.emit();
     return out;
 }
 
-void InputEdit::clearImages()
+void InputToolbar::clearImages()
 {
+    if (m_images.empty())
+        return;
     m_images.clear();
     m_thumbs.clear();
     update();
+    sigImagesChanged.emit();
 }
 
-void InputEdit::paintEvent(JZPainterEvent* event)
+void InputToolbar::paintEvent(JZPainterEvent* event)
 {
-    JZTextEdit::paintEvent(event);   // 基类: 外框 + 文本 + 光标
+    JZWidget::paintEvent(event);   // 基类: 默认背景
 
     if (m_thumbs.empty())
         return;
@@ -296,22 +316,22 @@ void InputEdit::paintEvent(JZPainterEvent* event)
     }
 }
 
-void InputEdit::mousePressEvent(JZMouseEvent* event)
+void InputToolbar::mousePressEvent(JZMouseEvent* event)
 {
     if (event->button() == JZMouseEvent::LeftButton)
     {
         int idx = imageAt(event->localPos());
         if (idx >= 0)
         {
-            // 点在缩略图上 = 移除该附图(不交给文本编辑, 避免误移光标)
+            // 点在缩略图上 = 移除该附图(不交给基类, 避免误触发)
             m_images.erase(m_images.begin() + idx);
             m_thumbs.erase(m_thumbs.begin() + idx);
-            updateButton();
             update();
+            sigImagesChanged.emit();
             return;
         }
     }
-    JZTextEdit::mousePressEvent(event);
+    JZWidget::mousePressEvent(event);
 }
 
 // ==================== NewProjectDialog ====================
@@ -339,6 +359,9 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
             h->addWidget(browseBtn, 0);
         }
         row->setLayout(h);
+        // 关键: 这一行必须挂到对话框主布局上。只 new 出来不 addWidget 的话,
+        // row 不受主布局管理, 界面上会漏显示/位置错乱(参照 btnRow 的写法)。
+        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
     };
 
     addRow("位置", m_baseEdit, true, m_baseBrowseBtn);
@@ -350,8 +373,8 @@ NewProjectDialog::NewProjectDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* cancel = new JZPushButton("取消", this);
-    JZPushButton* ok = new JZPushButton("创建", this);
+    JZPushButton* cancel = new JZPushButton("取消", btnRow);
+    JZPushButton* ok = new JZPushButton("创建", btnRow);
     bh->addWidget(cancel, 0);
     bh->addWidget(ok, 0);
     btnRow->setLayout(bh);
@@ -434,6 +457,9 @@ ExportDialog::ExportDialog(JZWidget* parent)
             h->addWidget(browseBtn, 0);
         }
         row->setLayout(h);
+        // 关键: 这一行必须挂到对话框主布局上。只 new 出来不 addWidget 的话,
+        // row 不受主布局管理, 界面上会漏显示/位置错乱(参照 btnRow 的写法)。
+        static_cast<JZVBoxLayout*>(this->layout())->addWidget(row, 0);
     };
     addRow("程序名", m_nameEdit, false, m_iconBrowseBtn);
     m_nameEdit->setPlaceholderText("运行时 exe 名（不含 .exe），留空=code_runtime");
@@ -459,8 +485,8 @@ ExportDialog::ExportDialog(JZWidget* parent)
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(6, 6);
     bh->addStretch(1);
-    JZPushButton* cancel = new JZPushButton("取消", this);
-    JZPushButton* ok = new JZPushButton("导出", this);
+    JZPushButton* cancel = new JZPushButton("取消", btnRow);
+    JZPushButton* ok = new JZPushButton("导出", btnRow);
     bh->addWidget(cancel, 0);
     bh->addWidget(ok, 0);
     btnRow->setLayout(bh);
@@ -545,8 +571,8 @@ WelcomePage::WelcomePage(JZWidget* parent)
 
     JZWidget* btnRow = new JZWidget(this);
     JZHBoxLayout* bh = new JZHBoxLayout(10, 6);
-    JZPushButton* newBtn = new JZPushButton("新建工程", this);
-    JZPushButton* openBtn = new JZPushButton("打开工程", this);
+    JZPushButton* newBtn = new JZPushButton("新建工程", btnRow);
+    JZPushButton* openBtn = new JZPushButton("打开工程", btnRow);
     bh->addWidget(newBtn, 0);
     bh->addWidget(openBtn, 0);
     bh->addStretch(1);
@@ -659,12 +685,20 @@ void MainWindow::setupUi()
     topLayout->addStretch();
     m_clearBtn = new JZPushButton("清空");
     topLayout->addWidget(m_clearBtn, 0);
+
+    // 输入区(随工程开合显隐) = 工具条([截图] + 附图缩略图) 在上 + 输入框 在下,
+    // 整体作为一个控件挂进竖向 editorSplitter(与 ChatView 上下分割)。
+    // 这样截图缩略图从输入框内部挪到上方工具条, 输入框可专心打字。
+    m_inputBox = new JZWidget(m_editorSplitter);
+    JZVBoxLayout* inputBoxLayout = new JZVBoxLayout(0, 0);
+    m_inputToolbar = new InputToolbar(m_inputBox);   // 固定高 38
+    inputBoxLayout->addWidget(m_inputToolbar, 0);
     // 发送按钮与 token 圆环由 InputEdit 用 selfLayout 锚定在右下角, 输入框尺寸变化时自动重排。
-    // 不能 setFixedHeight：splitter 靠 setGeometry 摆放，固定高会被夹住而拖不动；
-    // 初始高度由 resizeEvent 里的 setSizes 按 m_inputHeight 分配。
-    m_inputEdit = new InputEdit(m_editorSplitter);
+    m_inputEdit = new InputEdit(m_inputBox);
     m_inputEdit->setLineWrap(true);
     m_inputEdit->setMinimumHeight(64);
+    inputBoxLayout->addWidget(m_inputEdit, 1);
+    m_inputBox->setLayout(inputBoxLayout);
 
     // 中央堆叠区: 0=欢迎页(未打开工程) 1=对话页(ChatView)。
     // 这三个控件在 setupUi 里此前漏建, 导致 m_stack/m_welcome/m_chatView 皆为 nullptr,
@@ -676,7 +710,7 @@ void MainWindow::setupUi()
     m_stack->addWidget(m_chatView);
 
     m_editorSplitter->addWidget(m_stack);
-    m_editorSplitter->addWidget(m_inputEdit);
+    m_editorSplitter->addWidget(m_inputBox);
 
     JZVBoxLayout* mainLayout = new JZVBoxLayout(6, 6);
     mainLayout->addWidget(topBar, 0);
@@ -707,7 +741,8 @@ void MainWindow::setupUi()
     connect(&m_clearBtn->sigClicked, this, &MainWindow::onClear);
     connect(&m_inputEdit->sigSend, this, &MainWindow::onSend);
     connect(&m_inputEdit->sigStop, this, &MainWindow::onStop);
-    connect(&m_inputEdit->sigShot, this, &MainWindow::onScreenshot);
+    connect(&m_inputToolbar->sigShot, this, &MainWindow::onScreenshot);
+    connect(&m_inputToolbar->sigImagesChanged, m_inputEdit, &InputEdit::refreshSendButton);
     connect(&m_welcome->sigNewProject, this, &MainWindow::onNewProject);
     connect(&m_welcome->sigOpenProject, this, &MainWindow::onOpenProject);
     connect(&m_welcome->sigOpenRecent, this, &MainWindow::onOpenRecentProject);
@@ -944,7 +979,7 @@ void MainWindow::appendLog(const CodeAgentLog& log)
 void MainWindow::onSend()
 {
     string text = str_simplified(m_inputEdit->text());
-    vector<string> images = m_inputEdit->takeImages();   // 附图随本条消息一起发出
+    vector<string> images = m_inputToolbar->takeImages();   // 附图随本条消息一起发出
     if (text.empty() && images.empty())
         return;
 
@@ -984,7 +1019,7 @@ void MainWindow::onScreenshot()
         return;
     }
 
-    m_inputEdit->addImage(dataUrl, JZScreenShot::fitTo(shot, kThumbBox - 4, kThumbBox - 4));
+    m_inputToolbar->addImage(dataUrl, JZScreenShot::fitTo(shot, kToolThumb - 4, kToolThumb - 4));
     m_inputEdit->setFocus();   // 截完直接回到输入框继续打字
 }
 
@@ -1007,6 +1042,7 @@ void MainWindow::onClear()
 {
     m_agent->stop();
     m_agent->clearHistory();
+    m_inputToolbar->clearImages();   // 未发送的附图一并清空
 
     // 当前任务的对话一起清掉，否则下次启动/切回来旧对话又会自己出现
     m_historyManager.clearConversation(m_historyManager.currentTaskId());
@@ -1218,21 +1254,21 @@ void MainWindow::onSplitterMoved(int pos, int handleIndex)
         m_navWidth = sizes[0];
 }
 
-// 竖分割：没打开工程时输入框隐藏，欢迎页占满整个高度
+// 竖分割：没打开工程时输入区隐藏，欢迎页占满整个高度
 void MainWindow::updateEditorSplitter()
 {
-    if (!m_inputEdit)
+    if (!m_inputBox)
         return;
 
-    m_inputEdit->setVisible(m_projectOpened);
+    m_inputBox->setVisible(m_projectOpened);
     if (m_projectOpened)
         applyEditorSizes();
 }
 
-// 输入区保持固定高度，剩余全给对话区（JZSplitter 默认是按比例缩放，这里手动纠正）
+// 输入区(工具条 + 输入框)保持固定高度，剩余全给对话区（JZSplitter 默认是按比例缩放，这里手动纠正）
 void MainWindow::applyEditorSizes()
 {
-    if (!m_editorSplitter || !m_inputEdit || !m_inputEdit->isVisible())
+    if (!m_editorSplitter || !m_inputBox || !m_inputBox->isVisible())
         return;
 
     int total = m_editorSplitter->height() - m_editorSplitter->handleWidth();
@@ -1242,7 +1278,7 @@ void MainWindow::applyEditorSizes()
     int h = m_inputHeight;
     int maxH = std::max(0, total - 80);        // 对话区至少留 80
     h = std::min(h, maxH);
-    h = std::max(h, std::min(64, total));      // 输入区至少 64（空间不足时按可用高度）
+    h = std::max(h, 38 + 64);                  // 输入区至少 工具条(38) + 输入框(64)
     m_editorSplitter->setSizes({total - h, h});
 }
 
@@ -1346,9 +1382,9 @@ void MainWindow::onClearRecent()
 
 void MainWindow::onNewProject()
 {
-    if (!checkAgentRun())
-        return;
-
+    // 注意: 这里不能调用 checkAgentRun() —— 那是"退出确认"(会 saveCurrentTask +
+    // stop 并弹"确定要退出吗")，点了新建工程却弹退出对话框属于显示错误。
+    // 与 onOpenProject 保持一致: 直接开对话框; 真正切换工程时的中断由 openProject 处理。
     NewProjectDialog dlg(this);
     dlg.setDefaults(m_cfg.workspace, "");
     if (dlg.exec() != JZDialog::Accepted)
@@ -1547,6 +1583,7 @@ void MainWindow::onPoll()
 
 JZ_OBJECT_IMPL(WelcomePage, JZWidget)
 JZ_OBJECT_IMPL(InputEdit, JZTextEdit)
+JZ_OBJECT_IMPL(InputToolbar, JZWidget)
 JZ_OBJECT_IMPL(BusySpinner, JZWidget)
 JZ_OBJECT_IMPL(NewProjectDialog, JZDialog)
 JZ_OBJECT_IMPL(ExportDialog, JZDialog)

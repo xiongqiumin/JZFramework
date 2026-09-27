@@ -37,38 +37,58 @@ public:
 
     JZSigVoid sigSend;
     JZSigVoid sigStop;     // 忙碌(且输入框为空)时点击按钮 -> 停止
-    JZSigVoid sigShot;     // 点击[截图]: 由上层抓屏后把图片回填到输入框(addImage)
     JZPushButton* sendButton() const { return m_sendBtn; }
     TokenRing* tokenRing() const { return m_tokenRing; }
 
     // 由外部(MainWindow::onPoll)告知是否正在请求；busy 且输入框为空时按钮显示"停止"，否则"发送"
     void setBusy(bool busy);
 
-    // ---- 随消息发送的图片(截图) ----
-    // dataUrl 为实际发给模型的图片(data URL); thumb 为输入框内的预览缩略图(等比缩放)。
-    void addImage(const std::string& dataUrl, const JZImage& thumb);
-    // 取走全部待发送图片并清空预览(发送后调用)
-    std::vector<std::string> takeImages();
-    void clearImages();
+    // 工具条里是否挂了待发截图(影响"发送/停止"文案)，由 MainWindow 同步
+    void setHasImages(bool has) { m_hasImages = has; updateButton(); }
+    void refreshSendButton() { updateButton(); }
 
 protected:
     void keyPressEvent(JZKeyEvent* event) override;
     void paintEvent(JZPainterEvent* event) override;
-    void mousePressEvent(JZMouseEvent* event) override;
 
 private:
     void onSendClicked();
-    void updateButton();   // 依据 m_busy 与当前文本刷新按钮文案
-    JZRect imageSlot(int index) const;        // 第 index 张缩略图在输入框内的槽位
-    int    imageAt(const JZPoint& pos) const; // 命中的缩略图下标(-1 未命中)
+    void updateButton();   // 依据 m_busy 与当前文本/附图刷新按钮文案
 
     JZPushButton* m_sendBtn = nullptr;
-    JZPushButton* m_shotBtn = nullptr;      // [截图] 按钮
     TokenRing*    m_tokenRing = nullptr;   // 发送按钮左侧的 token 用量圆环
     bool          m_busy = false;
+    bool          m_hasImages = false;     // 工具条里是否挂了待发截图
+};
 
-    std::vector<std::string> m_images;     // 待发送图片(data URL)
-    std::vector<JZImage>     m_thumbs;     // 预览缩略图(与 m_images 一一对应)
+// 输入框上方的工具条：左侧[截图]按钮，右侧随消息发送的附图缩略图(点击缩略图移除该张)。
+// 缩略图绘制与命中检测放在工具条自身，不再占用输入框内部空间。
+class InputToolbar : public JZWidget
+{
+    JZ_OBJECT_DECLARE(InputToolbar)
+public:
+    explicit InputToolbar(JZWidget* parent = nullptr);
+
+    JZSigVoid sigShot;             // 点击[截图]
+    JZSigVoid sigImagesChanged;    // 附图数量变化(增/删/清空)时发出，供输入框刷新发送按钮
+
+    // dataUrl 为实际发给模型的图片(data URL); thumb 为工具条内的预览缩略图(等比缩放)。
+    void addImage(const std::string& dataUrl, const JZImage& thumb);
+    std::vector<std::string> takeImages();   // 取走全部待发图并清空预览(发送后调用)
+    void clearImages();
+    bool hasImages() const { return !m_images.empty(); }
+
+protected:
+    void paintEvent(JZPainterEvent* event) override;
+    void mousePressEvent(JZMouseEvent* event) override;
+
+private:
+    JZRect imageSlot(int index) const;        // 第 index 张缩略图在工具条内的槽位
+    int    imageAt(const JZPoint& pos) const; // 命中的缩略图下标(-1 未命中)
+
+    JZPushButton* m_shotBtn = nullptr;        // [截图] 按钮
+    std::vector<std::string> m_images;        // 待发送图片(data URL)
+    std::vector<JZImage>     m_thumbs;        // 预览缩略图(与 m_images 一一对应)
 };
 
 // 工具条上工程名左侧的"运行中"指示：start() 后显示并持续旋转的圆弧，stop() 隐藏。
@@ -253,6 +273,8 @@ private:
     JZCodeAgent*     m_agent = nullptr;
     ChatView*        m_chatView = nullptr;
     InputEdit*       m_inputEdit = nullptr;
+    InputToolbar*    m_inputToolbar = nullptr;  // 输入框上方的工具条([截图] + 附图缩略图)
+    JZWidget*        m_inputBox = nullptr;      // 工具条 + 输入框 的外层容器(随工程开合显隐)
     JZPushButton*    m_clearBtn = nullptr;
     JZLabel*         m_topLabel = nullptr;     // 工具条上的工程名
     BusySpinner*     m_busySpinner = nullptr;  // 工程名左侧的运行指示（busy 转圈，空闲隐藏）
@@ -262,7 +284,7 @@ private:
     WelcomePage*     m_welcome = nullptr;
     JZSplitter*      m_splitter = nullptr;     // 左侧导航栏 | 对话区，可拖动调整
     JZSplitter*      m_editorSplitter = nullptr;// 对话区 / 输入区，竖向可拖动
-    int              m_inputHeight = 104;      // 输入区高度（拖动后记住）
+    int              m_inputHeight = 140;      // 输入区高度(含上方工具条，拖动后记住)
     NavPanel*        m_navPanel = nullptr;     // 左侧常驻导航栏(搜索+任务列表)
     int              m_navWidth = 260;         // 导航栏宽度(用户拖动后记住)
     bool             m_navInitialSized = false;// 导航栏宽度是否已初始化

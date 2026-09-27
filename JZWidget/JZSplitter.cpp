@@ -61,9 +61,11 @@ void JZSplitter::insertWidget(int index, JZWidget* widget)
         return;
     index = std::max(0, std::min(index, (int)m_items.size()));
     widget->setParentWidget(this);   // 挂为渲染子节点
-    // 事件过滤: 指针在子面板上移动时也要刷新本控件的悬停光标 (分隔条是绘制在
-    // 本控件内部的热区, 鼠标一移到面板上就收不到本控件的 mouseMove 了)。
-    widget->installEventFilter(this);
+    // 事件过滤: 指针在子面板(含其下所有子孙)上移动时也要刷新本控件的悬停光标
+    // (分隔条是绘制在本控件内部的热区, 鼠标一移到面板上就收不到本控件的 mouseMove 了)。
+    // 递归装到所有子孙: 否则移到孙子控件(如"工具条+输入框"容器里的输入框)上时,
+    // 直接子面板的过滤器收不到事件, 离开分隔条后双向箭头光标无法清除。
+    installChildFilter(widget);
 
     Item it;
     it.widget = widget;
@@ -445,7 +447,7 @@ void JZSplitter::mouseReleaseEvent(JZMouseEvent* event)
     }
 }
 
-// 子面板事件过滤: 指针移到面板上时, 按其在分隔条内的位置刷新悬停光标
+// 子面板(含所有子孙)事件过滤: 指针移到面板上时, 按其在分隔条内的位置刷新悬停光标
 // (分隔条是绘制在本控件内部的热区, 面板收走鼠标事件后本控件收不到 move)。
 // 不拦截任何事件。
 bool JZSplitter::eventFilter(JZObject* watched, JZEvent* event)
@@ -458,6 +460,14 @@ bool JZSplitter::eventFilter(JZObject* watched, JZEvent* event)
         // 子控件显示/隐藏: 立刻重排, 让剩下的可见项吃掉它腾出来的空间
         relayout();
         update();
+    } else if (event->type() == JZEvent_childAdded) {
+        // 受管子树里动态新增的子孙: 补装过滤器, 否则它上面的 move 收不到, 悬停光标清不掉
+        JZChildEvent* ce = static_cast<JZChildEvent*>(event);
+        installChildFilter(ce->child());
+    } else if (event->type() == JZEvent_childRemoved) {
+        // 动态移除的子孙: 摘除过滤器, 避免悬垂指针
+        JZChildEvent* ce = static_cast<JZChildEvent*>(event);
+        removeChildFilter(ce->child());
     }
     return JZWidget::eventFilter(watched, event);
 }
@@ -479,6 +489,28 @@ void JZSplitter::childEvent(JZChildEvent* event)
         }
     }
     JZWidget::childEvent(event);
+}
+
+// 递归给 obj 及其所有子孙装上本控件的事件过滤器 (重复安装被忽略)。
+void JZSplitter::installChildFilter(JZObject* obj)
+{
+    if (!obj)
+        return;
+    obj->installEventFilter(this);
+    const auto& kids = obj->children();
+    for (JZObject* c : kids)
+        installChildFilter(c);
+}
+
+// 摘除 obj 及其所有子孙上的本控件过滤器 (控件析构前清掉, 避免悬垂过滤器)。
+void JZSplitter::removeChildFilter(JZObject* obj)
+{
+    if (!obj)
+        return;
+    obj->removeEventFilter(this);
+    const auto& kids = obj->children();
+    for (JZObject* c : kids)
+        removeChildFilter(c);
 }
 
 // 悬停/拖动光标: 分隔条热区与绘制/命中一致 (含 handleIndexAt 的 ±3px 抓取容差);

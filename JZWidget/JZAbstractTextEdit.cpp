@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 
 // windows.h 会定义 min/max 宏, 不加这个 std::min/std::max 会被破坏
 #define NOMINMAX
@@ -1970,10 +1971,117 @@ void JZAbstractTextEdit::imeEvent(JZImeEvent* event)
 
 // ==================== 平台相关: 光标位置回写给 IME ====================
 
+// 计算 IME 需要的位置, 以**屏幕逻辑坐标**给出 (唯一的几何来源, 供下面两条路径复用):
+//   lineRect — 当前输入行(组字起点所在行)的矩形, 对应 COMPOSITIONFORM(CFS_RECT);
+//   candPos  — 候选窗左上角锚点, 对应 CANDIDATEFORM(CFS_CANDIDATEPOS)。
+// 返回 false 表示当前无输入位置可报 (无行布局 / 无原生窗口)。
+//
+// 锚点取**组字起点**而非当前光标: 组字时光标会在组字串里移动, 若用光标位置,
+// 候选条左边缘会跟着一路右移, 看起来就是"偏了"。
+bool JZAbstractTextEdit::imeWindowRect(JZRect& lineRect, JZPoint& candPos) const
+{
+    if (m_lines.empty())
+        return false;
+
+    JZWindow* win = window();
+    if (!win || !win->nativeHandle())
+        return false;
+
+    JZFont font(kFontPixelSize);
+    const int visH = JZFontMetrics::visualHeight(font);
+    const int pad  = (lineHeight() - visH) / 2;
+
+    int line = 0, col = 0;
+    locateIndex(selStart(), line, col);
+    const LineLayout& L = m_lines[static_cast<size_t>(line)];
+
+    // 必须走 xOfIndex: 否则图片之后开始组字时, 候选条会偏到图片左侧
+    const int startX = m_marginLeft - m_scrollX + xOfIndex(line, col);
+    const int startY = contentTop() + L.y + pad;
+    const int lineRightX = m_marginLeft - m_scrollX + xOfIndex(line, L.length);
+    const int bottomY    = startY + visH;
+
+    // mapToGlobal: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
+    // ÷scale), 与 Qt 一致; IME 候选条按此锚点摆放。
+    const JZPoint sTop   = mapToGlobal(JZPoint(startX, startY));
+    const JZPoint sRight = mapToGlobal(JZPoint(lineRightX, startY));
+    const JZPoint sBot   = mapToGlobal(JZPoint(startX, bottomY));
+
+    // 组字窗锚点 (相对组字起点/字形顶部微调) + 行右端/行底
+    lineRect = JZRect(sTop.x() + kImeCompOffsetX,
+                      sTop.y() + kImeCompOffsetY,
+                      std::max(1, sRight.x() - sTop.x()),
+                      std::max(1, sBot.y() - sTop.y() + kImeCandOffsetY));
+    // 候选窗左上角: 当前输入行正下方
+    candPos = JZPoint(sBot.x() + kImeCandOffsetX, sBot.y() + kImeCandOffsetY);
+
+    // —— 调试: 设置环境变量 JZ_IME_DEBUG=1 后, 把算出的候选框坐标与窗口屏幕矩形
+    // 写到 %TEMP%/jz_ime.log。用于判断"坐标算错"还是"算对了但输入法不认"。——
+    if (getenv("JZ_IME_DEBUG")) {
+        RECT wr = { 0, 0, 0, 0 };
+        if (win && win->nativeHandle())
+            GetWindowRect((HWND)win->nativeHandle(), &wr);
+        const char* td = getenv("TEMP");
+        std::string path = std::string(td ? td : "c:/temp") + "/jz_ime.log";
+        std::ofstream f(path, std::ios::app);
+        f << "[imeWindowRect] win_screen=(" << wr.left << "," << wr.top << ","
+          << wr.right << "," << wr.bottom << ") caret_logical=(" << sTop.x()
+          << "," << sTop.y() << ") lineRect=(" << lineRect.left() << ","
+          << lineRect.top() << "," << lineRect.right() << "," << lineRect.bottom()
+          << ") candPos=(" << candPos.x() << "," << candPos.y() << ")\n";
+    }
+    return true;
+}
+
+// IMR_QUERYCHARPOSITION 应答: 回报"组字串第 charPos 个字符"的屏幕位置 (屏幕逻辑坐标)。
+//
+// TSF 输入法 (QQ 拼音等) 定位候选窗走的正是这条: 它们不用 IMM 的
+// ImmSetCandidateWindow(CFS_CANDIDATEPOS), 而是发 WM_IME_REQUEST +
+// IMR_QUERYCHARPOSITION 问窗口"这个字符在屏幕哪儿", 据此摆候选框 —— 不处理时
+// 候选框就掉到控件的默认位置 (表现为"贴在控件底部、不在输入字符下面")。
+//
+// 组字串是**独立绘制**的 (不在 m_lines 文本流里), 所以第 charPos 个字符的 x =
+// 组字锚点 x + 前 charPos 个组字码点的宽度之和 (测宽走与绘制相同的 JZFontMetrics)。
+bool JZAbstractTextEdit::imeQueryCharPosition(int charPos, JZPoint& pt, int& outLineHeight,
+                                              JZRect& docRect) const
+{
+    if (m_lines.empty())
+        return false;
+
+    JZWindow* win = window();
+    if (!win || !win->nativeHandle())
+        return false;
+
+    JZFont font(kFontPixelSize);
+    const int visH = JZFontMetrics::visualHeight(font);
+    const int pad  = (lineHeight() - visH) / 2;
+
+    // 组字锚点 (与 imeWindowRect 同一来源: 组字起点所在行的起点)
+    int line = 0, col = 0;
+    locateIndex(selStart(), line, col);
+    const LineLayout& L = m_lines[static_cast<size_t>(line)];
+
+    int x = m_marginLeft - m_scrollX + xOfIndex(line, col);
+    const int n = std::min(static_cast<int>(m_comp.size()), std::max(0, charPos));
+    for (int i = 0; i < n; ++i)
+        x += JZFontMetrics::textWidth(m_comp.mid(i, 1).toStdString(), font);
+
+    const int topY = contentTop() + L.y + pad;
+    pt = mapToGlobal(JZPoint(x, topY));
+    outLineHeight = visH;
+
+    // 可编辑区 (屏幕逻辑坐标): 用控件客户区近似
+    const JZPoint tl = mapToGlobal(JZPoint(0, 0));
+    const JZPoint br = mapToGlobal(JZPoint(width(), height()));
+    docRect = JZRect(tl.x(), tl.y(), std::max(1, br.x() - tl.x()),
+                     std::max(1, br.y() - tl.y()));
+    return true;
+}
+
 void JZAbstractTextEdit::updateIMEWindowPos()
 {
     HWND hwnd = nativeHwndOf(this);
-    if (!hwnd || m_lines.empty())
+    if (!hwnd)
         return;
 
     HIMC hIMC = ImmGetContext(hwnd);
@@ -1982,51 +2090,43 @@ void JZAbstractTextEdit::updateIMEWindowPos()
 
     JZWindow* win = window();
     const float scale = (win && win->device()) ? win->device()->scale() : 1.0f;
-    JZFont font(kFontPixelSize);
 
-    const int visH = JZFontMetrics::visualHeight(font);
-    const int pad  = (lineHeight() - visH) / 2;
+    JZRect lineRect;
+    JZPoint candPos;
+    if (!imeWindowRect(lineRect, candPos)) {
+        ImmReleaseContext(hwnd, hIMC);
+        return;
+    }
 
-    // 锚点取**组字起点**而非当前光标: 组字时光标会在组字串里移动,
-    // 若用光标位置, 候选条左边缘会跟着一路右移, 看起来就是"偏了"
-    int line = 0, col = 0;
-    locateIndex(selStart(), line, col);
-    const LineLayout& L = m_lines[static_cast<size_t>(line)];
-
-    // 必须走 xOfIndex: 否则图片之后开始组字时, 候选条会偏到图片左侧
-    const int startX = m_marginLeft - m_scrollX + xOfIndex(line, col);
-    const int startY = contentTop() + L.y + pad;
-
-    // mapToGlobal: 控件坐标 -> 屏幕逻辑坐标 (内部已做 ×scale / ClientToScreen /
-    // ÷scale), 与 Qt 一致; IME 候选条按此锚点摆放。
-    const JZPoint sTop = mapToGlobal(JZPoint(startX, startY));
-    const JZPoint sBot = mapToGlobal(JZPoint(startX, startY + visH));
-
-    POINT pt, ptBot;
-    pt.x    = toPhysical(sTop.x(), scale);
-    pt.y    = toPhysical(sTop.y(), scale);
-    ptBot.x = toPhysical(sBot.x(), scale);
-    ptBot.y = toPhysical(sBot.y(), scale);
-
-    // 组字窗锚点: 微软拼音的候选条就是照这个点摆的
+    // 组字窗: 用 CFS_RECT 同时给 TSF 输入法提供"候选框定位矩形"。
+    // —— 关键修复 (一) ——
+    // 现代 TSF 输入法 (Win10/11 自带微软拼音、QQ 拼音、新版搜狗等) 会**忽略**
+    // CFS_CANDIDATEPOS, 改以"组字窗矩形"作为候选框落点。若只给 CFS_POINT(单点、
+    // 无面积), TSF 拿不到矩形, 候选框便退化到默认位置 —— 正好表现为"候选框贴在
+    // 控件底部、不在输入字符下面"。此处把组字窗设为覆盖当前输入行的矩形,
+    // TSF 就会把候选框摆在这一行正下方。
     COMPOSITIONFORM cf;
     ZeroMemory(&cf, sizeof(cf));
-    cf.dwStyle = CFS_POINT;
-    cf.ptCurrentPos.x = pt.x + toPhysical(kImeCompOffsetX, scale);
-    cf.ptCurrentPos.y = pt.y + toPhysical(kImeCompOffsetY, scale);
+    cf.dwStyle = CFS_RECT;
+    cf.ptCurrentPos.x = toPhysical(lineRect.left(), scale);
+    cf.ptCurrentPos.y = toPhysical(lineRect.top(), scale);
+    cf.rcArea.left   = toPhysical(lineRect.left(), scale);
+    cf.rcArea.top    = toPhysical(lineRect.top(), scale);
+    cf.rcArea.right  = toPhysical(lineRect.right(), scale);
+    cf.rcArea.bottom = toPhysical(lineRect.bottom(), scale);
     ImmSetCompositionWindow(hIMC, &cf);
 
-    // 候选窗左上角: 锚在当前输入行(组字起点所在行)的正下方一行。
-    // 用 CFS_CANDIDATEPOS (比 CFS_EXCLUDE 兼容性好): 微软拼音/搜狗会把候选窗左上角
-    // 直接放到 ptCurrentPos, 即"正在输入的那一行"底下 —— 这正是"输入框应在输入文字下面"。
-    // 注意: 多行输入框若当前行在框底(文本已填满), 候选窗会自然落在框底那一行下方,
+    // 候选窗左上角: 老式 IMM 输入法兜底 (直接放到当前输入行正下方一行)。
+    // TSF 输入法此处被忽略, 改用上面组字窗的矩形来定位 (或走 WM_IME_REQUEST,
+    // 见 JZWindow 的 jzHandleImeRequest), 行为一致。
+    // 注意: 多行输入框若当前行已填满到框底, 候选窗会自然落在框底那一行下方,
     // 这是预期行为, 不是偏到框外。
     CANDIDATEFORM cdf;
     ZeroMemory(&cdf, sizeof(cdf));
     cdf.dwIndex = 0;
     cdf.dwStyle = CFS_CANDIDATEPOS;
-    cdf.ptCurrentPos.x = pt.x    + toPhysical(kImeCandOffsetX, scale);
-    cdf.ptCurrentPos.y = ptBot.y + toPhysical(kImeCandOffsetY, scale);
+    cdf.ptCurrentPos.x = toPhysical(candPos.x(), scale);
+    cdf.ptCurrentPos.y = toPhysical(candPos.y(), scale);
     ImmSetCandidateWindow(hIMC, &cdf);
 
     ImmReleaseContext(hwnd, hIMC);

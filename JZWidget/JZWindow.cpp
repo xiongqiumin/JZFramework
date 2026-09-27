@@ -11,6 +11,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -171,6 +172,110 @@ static bool jzSendMouseEvent(JZWindow* self, JZMouseEvent::MouseType t, JZMouseE
     JZMouseEvent ev(t, b, self->mapToGlobal(jzPhysicalToLogical(lParam, self->device()->scale())),
                     JZPoint(), wheelDelta, jzCurrentKeyModifiers());
     return self->onWindowProcess(&ev);
+}
+
+// 应答 WM_IME_REQUEST: TSF 类输入法 (QQ 拼音 / 微软拼音 等) 通过此消息向窗口索取
+// "组字窗 / 候选窗"位置。应用不处理时, 部分输入法会把候选窗放到默认位置 —— 表现
+// 就是"候选框贴在控件底部、不在输入字符下面"。
+// 位置由焦点控件给出 (JZWidget::imeWindowRect, 屏幕逻辑坐标), 这里换算成 IME 要求的
+// 物理像素并填进 COMPOSITIONFORM / CANDIDATEFORM。返回 true 表示已填写。
+static bool jzHandleImeRequest(JZWindow* self, WPARAM request, LPARAM lpForm)
+{
+    if (!lpForm || !self->imeActive())
+        return false;
+
+    JZWidget* focus = self->focusWidget();
+    JZDisplayDevice* dev = self->device();
+    if (!focus || !dev)
+        return false;
+
+    JZRect lineRect;
+    JZPoint candPos;
+    if (!focus->imeWindowRect(lineRect, candPos))
+        return false;
+
+    const float s = dev->scale();
+    auto phys = [s](int v) { return (LONG)std::lround(v * s); };
+
+    switch (request) {
+    case IMR_COMPOSITIONWINDOW: {
+        COMPOSITIONFORM* cf = (COMPOSITIONFORM*)lpForm;
+        cf->dwStyle = CFS_RECT;
+        cf->ptCurrentPos.x = phys(lineRect.left());
+        cf->ptCurrentPos.y = phys(lineRect.top());
+        cf->rcArea.left    = phys(lineRect.left());
+        cf->rcArea.top     = phys(lineRect.top());
+        cf->rcArea.right   = phys(lineRect.right());
+        cf->rcArea.bottom  = phys(lineRect.bottom());
+        if (getenv("JZ_IME_DEBUG")) {
+            const char* td = getenv("TEMP");
+            std::string path = std::string(td ? td : "c:/temp") + "/jz_ime.log";
+            std::ofstream f(path, std::ios::app);
+            f << "[imeRequest] IMR_COMPOSITIONWINDOW rcArea=(" << cf->rcArea.left
+              << "," << cf->rcArea.top << "," << cf->rcArea.right << ","
+              << cf->rcArea.bottom << ")\n";
+        }
+        return true;
+    }
+    case IMR_CANDIDATEWINDOW: {
+        CANDIDATEFORM* cdf = (CANDIDATEFORM*)lpForm;
+        cdf->dwStyle = CFS_CANDIDATEPOS;   // 保留 IME 传入的 dwIndex (候选列表序号)
+        cdf->ptCurrentPos.x = phys(candPos.x());
+        cdf->ptCurrentPos.y = phys(candPos.y());
+        if (getenv("JZ_IME_DEBUG")) {
+            const char* td = getenv("TEMP");
+            std::string path = std::string(td ? td : "c:/temp") + "/jz_ime.log";
+            std::ofstream f(path, std::ios::app);
+            f << "[imeRequest] IMR_CANDIDATEWINDOW pt=(" << cdf->ptCurrentPos.x
+              << "," << cdf->ptCurrentPos.y << ")\n";
+        }
+        return true;
+    }
+    // —— 关键: TSF 输入法 (QQ 拼音等) 定位候选窗走的是这条, 不是 IMR_CANDIDATEWINDOW ——
+    // 它问"组字串第 dwCharPos 个字符的屏幕位置", 据此摆候选框。不处理就掉到默认位置。
+    case IMR_QUERYCHARPOSITION: {
+        IMECHARPOSITION* icp = (IMECHARPOSITION*)lpForm;
+        if (icp->dwSize < sizeof(IMECHARPOSITION))
+            return false;
+
+        JZPoint cpt;
+        int lh = 0;
+        JZRect doc;
+        if (!focus->imeQueryCharPosition(static_cast<int>(icp->dwCharPos), cpt, lh, doc))
+            return false;
+
+        icp->pt.x = phys(cpt.x());
+        icp->pt.y = phys(cpt.y());
+        LONG lhPhys = phys(lh);
+        if (lhPhys < 1)
+            lhPhys = 1;
+        icp->cLineHeight = static_cast<UINT>(lhPhys);
+        icp->rcDocument.left   = phys(doc.left());
+        icp->rcDocument.top    = phys(doc.top());
+        icp->rcDocument.right  = phys(doc.right());
+        icp->rcDocument.bottom = phys(doc.bottom());
+        if (getenv("JZ_IME_DEBUG")) {
+            const char* td = getenv("TEMP");
+            std::string path = std::string(td ? td : "c:/temp") + "/jz_ime.log";
+            std::ofstream f(path, std::ios::app);
+            f << "[imeRequest] IMR_QUERYCHARPOSITION charPos=" << icp->dwCharPos
+              << " pt=(" << icp->pt.x << "," << icp->pt.y << ") lineH="
+              << icp->cLineHeight << " doc=(" << icp->rcDocument.left << ","
+              << icp->rcDocument.top << "," << icp->rcDocument.right << ","
+              << icp->rcDocument.bottom << ")\n";
+        }
+        return true;
+    }
+    default:
+        if (getenv("JZ_IME_DEBUG")) {
+            const char* td = getenv("TEMP");
+            std::string path = std::string(td ? td : "c:/temp") + "/jz_ime.log";
+            std::ofstream f(path, std::ios::app);
+            f << "[imeRequest] unhandled request=0x" << std::hex << request
+              << std::dec << "\n";
+        }
+        return false;
+    }
 }
 
 static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -351,6 +456,14 @@ static LRESULT CALLBACK jzWindowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
 
     // ---- 输入法 (IME) ----
+
+    // TSF 类输入法 (QQ 拼音 / 微软拼音 等) 通过 WM_IME_REQUEST 向应用索取组字窗/
+    // 候选窗位置; 不处理则候选框会退化到默认位置 (控件底部)。位置由焦点控件给出,
+    // 见 JZWidget::imeWindowRect。未处理的请求 (如 IMR_QUERYCHARPOSITION) 交回默认处理。
+    case WM_IME_REQUEST:
+        if (jzHandleImeRequest(self, wParam, lParam))
+            return TRUE;
+        break;
 
     // 不让系统画组字窗: 组字串由控件在 paintEvent 里自绘, 候选窗仍交给 IME,
     // 位置由 CANDIDATEFORM 指定。必须 break 继续走 DefWindowProc (不能 return 0),

@@ -334,6 +334,29 @@ public:
     // 文本类控件 (JZLineEdit / JZTextEdit) 重写为可编辑时返回 true。
     virtual bool imeEnabled() const { return false; }
 
+    // 输入法 (IME) 位置反馈: TSF 类输入法 (QQ 拼音 / 微软拼音 等) 会通过
+    // WM_IME_REQUEST (IMR_COMPOSITIONWINDOW / IMR_CANDIDATEWINDOW) 向窗口索取
+    // "组字区 / 候选窗"位置。焦点控件把当前输入行矩形 (lineRect) 与候选窗左上角
+    // 锚点 (candPos) 以**屏幕逻辑坐标**回写, 窗口据此应答; 返回 false 表示不提供
+    // (窗口回落到 ImmSetCompositionWindow / ImmSetCandidateWindow 已设的值)。
+    virtual bool imeWindowRect(JZRect& lineRect, JZPoint& candPos) const {
+        (void)lineRect; (void)candPos;
+        return false;
+    }
+
+    // IMR_QUERYCHARPOSITION 应答: TSF 输入法 (QQ 拼音等) 通过 WM_IME_REQUEST 的
+    // 该请求索取"组字串第 charPos 个字符"的屏幕位置, 并据此摆放候选窗 —— 不处理时
+    // 候选框会退化到控件底部的默认位置。各参数均为**屏幕逻辑坐标**:
+    //   pt         — 该字符左上角
+    //   lineHeight — 该行行高
+    //   docRect    — 可编辑区矩形
+    // 返回 false 表示不提供 (窗口交回默认处理)。默认不实现。
+    virtual bool imeQueryCharPosition(int charPos, JZPoint& pt, int& outLineHeight,
+                                      JZRect& docRect) const {
+        (void)charPos; (void)pt; (void)outLineHeight; (void)docRect;
+        return false;
+    }
+
     // 重绘
     void update();
     void invalidate(const JZRect &rc);

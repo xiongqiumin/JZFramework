@@ -193,6 +193,15 @@ public:
     // 可编辑 (非只读; 单行且非密码) 时需要输入法; 窗口据此关联/断开 IMC
     bool imeEnabled() const override;
 
+    // 输入法位置反馈 (屏幕逻辑坐标): lineRect = 当前输入行矩形, candPos = 候选窗
+    // 左上角锚点。供窗口应答 WM_IME_REQUEST。见 JZWidget::imeWindowRect。
+    bool imeWindowRect(JZRect& lineRect, JZPoint& candPos) const override;
+
+    // IMR_QUERYCHARPOSITION 应答: 回报组字串第 charPos 个字符的屏幕位置 (屏幕逻辑坐标)。
+    // TSF 输入法 (QQ 拼音等) 靠它定位候选窗。见 JZWidget::imeQueryCharPosition。
+    bool imeQueryCharPosition(int charPos, JZPoint& pt, int& outLineHeight,
+                              JZRect& docRect) const override;
+
     // 最小期望尺寸: 单行/多行文本框的下限, 供布局推导窗口最小尺寸
     JZSize minimumSizeHint() const override;
 

@@ -1,13 +1,12 @@
 #ifndef JZ_SPIN_BOX_H_
 #define JZ_SPIN_BOX_H_
-
 #include <string>
 #include "JZWidget.h"
 #include "JZSignal.h"
 
 // 整数数字步进框 (类似 Qt QSpinBox): 左右为编辑区, 右侧上下两个按钮;
 // 支持按钮/滚轮/方向键步进, 聚焦后可直接键入数字 (回车提交, Esc 取消)。
-class JZSpinBox : public JZWidget
+class JZFRAMEWORK_API JZSpinBox : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZSpinBox)
 

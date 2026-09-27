@@ -1,6 +1,5 @@
 #ifndef JZ_SIM_PACK_H_
 #define JZ_SIM_PACK_H_
-
 #include "JZNetPacket.h"
 #include "JZVariant.h"
 #include "JZResult.h"
@@ -82,7 +81,7 @@ enum JZSimCmd {
 };
 
 // 一个已接入本 AP 的站点(station)完整信息。
-struct JZWifiStationInfo {
+struct JZFRAMEWORK_API JZWifiStationInfo {
     std::string mac;   // 站点 MAC
     std::string ip;    // 站点分配到的 IP
 };
@@ -93,7 +92,7 @@ struct JZWifiStationInfo {
 //   - data: 命令参数 / 回传数据的扁平或嵌套 JZVariantMap
 // 读写辅助函数已作为成员提供, 统一返回 JZResult<xxx>, 并支持多级 key(如 "a.b.c")。
 // ============================================================================
-class JZSimPack : public JZNetPack
+class JZFRAMEWORK_API JZSimPack : public JZNetPack
 {
 public:
     static constexpr int PackType = NetPack_user + 1;

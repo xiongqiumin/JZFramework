@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_MODBUS_PARAM_H_
 #define JZ_MODBUS_PARAM_H_
-
 #include <inttypes.h>
 #include <vector>
 #include "JZVariant.h"
@@ -21,7 +20,7 @@ enum {
     Param_InputRegister,
 };
 
-class JZModbusStrategy
+class JZFRAMEWORK_API JZModbusStrategy
 {
 public:
     JZModbusStrategy();
@@ -33,7 +32,7 @@ public:
 JZDataStream &operator<<(JZDataStream &s, const JZModbusStrategy &param);
 JZDataStream &operator>>(JZDataStream &s, JZModbusStrategy &param);
 
-class JZModbusParam
+class JZFRAMEWORK_API JZModbusParam
 {
 public:
     enum {
@@ -71,7 +70,7 @@ public:
 JZDataStream &operator<<(JZDataStream &s, const JZModbusParam &param);
 JZDataStream &operator>>(JZDataStream &s, JZModbusParam &param);
 
-class JZModbusParamMap
+class JZFRAMEWORK_API JZModbusParamMap
 {
 public:
     void clear();
@@ -90,7 +89,7 @@ protected:
 };
 
 //JZModbusConnetInfo
-class JZModbusConnetInfo
+class JZFRAMEWORK_API JZModbusConnetInfo
 {
 public:
     JZModbusConnetInfo();
@@ -115,7 +114,7 @@ JZDataStream &operator<<(JZDataStream &s, const JZModbusConnetInfo &param);
 JZDataStream &operator>>(JZDataStream &s, JZModbusConnetInfo &param);
 
 //JZModbusConfig
-class JZModbusConfig
+class JZFRAMEWORK_API JZModbusConfig
 {
 public:
     JZModbusConfig();

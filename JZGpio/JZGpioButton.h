@@ -1,6 +1,5 @@
 #ifndef JZ_GPIO_BUTTON_H_
 #define JZ_GPIO_BUTTON_H_
-
 #include "JZObject.h"
 #include "JZGpio.h"
 #include "JZGpioInfo.h"
@@ -26,7 +25,7 @@
 //   - 构造时自动配置为输入、开启监控(setMonitorEnabled(true))并连接
 //     sigLevelChanged, 随后打开引脚(若尚未打开)。
 //   - 时间基准使用 JZPlatform::getTickCountMs()。
-class JZGpioButton : public JZObject
+class JZFRAMEWORK_API JZGpioButton : public JZObject
 {
 public:
     // 传入引脚号, 内部创建并管理 JZGpio

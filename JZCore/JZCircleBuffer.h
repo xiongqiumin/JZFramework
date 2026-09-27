@@ -1,11 +1,10 @@
 #ifndef JZCIRCLEBUFFER_H
 #define JZCIRCLEBUFFER_H
-
 #include <vector>
 #include "JZMutex.h"
 #include "JZByteArray.h"
 
-class JZCircleBuffer
+class JZFRAMEWORK_API JZCircleBuffer
 {
 public:
     /**

@@ -1,10 +1,9 @@
 #ifndef JZ_AUDIO_DRIVER_LINUX_H_
 #define JZ_AUDIO_DRIVER_LINUX_H_
-
 #include <vector>
 #include "JZAudioDriver.h"
 
-class JZAudioDriverLinux : public JZAudioDriver
+class JZFRAMEWORK_API JZAudioDriverLinux : public JZAudioDriver
 {
 public:
     JZAudioDriverLinux();

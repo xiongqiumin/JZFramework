@@ -1,6 +1,5 @@
 #ifndef JZ_OTA_DRIVER_NORMAL_H_
 #define JZ_OTA_DRIVER_NORMAL_H_
-
 #include "JZOTADriver.h"
 #include "JZObject.h"
 #include "JZNetworkAccessManager.h"
@@ -26,7 +25,7 @@ class JZNetworkReply;
  * 内置版本信息: 桌面平台未编入 ":/JZOTA/meta" 资源时, JZOTA::readCurrentMeta
  * 回退读取 <appDir>/ota/meta.json (由 jzupdater 从升级包安装)。
  */
-class JZOTADriverNormal : public JZOTADriver, public JZObject
+class JZFRAMEWORK_API JZOTADriverNormal : public JZOTADriver, public JZObject
 {
     JZ_OBJECT_DECLARE(JZOTADriverNormal)
 public:

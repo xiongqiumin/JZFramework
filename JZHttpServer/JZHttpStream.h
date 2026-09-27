@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_STREAM_H_
 #define JZ_HTTP_STREAM_H_
-
 #include <string>
 #include <map>
 #include "JZObject.h"
@@ -24,7 +23,7 @@ class JZByteArray;
  * 生命周期：构造时把 client 设为父对象。客户端断开时 client 析构会先删本流，
  *           handler 无需手动 delete / connect sigDestroyed。推送时机由业务驱动。
  */
-class JZHttpStream : public JZObject
+class JZFRAMEWORK_API JZHttpStream : public JZObject
 {
 public:
     explicit JZHttpStream(JZHttpServerClient* client);

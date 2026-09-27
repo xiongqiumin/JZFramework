@@ -1,8 +1,8 @@
 #ifndef JZ_SIZE_H_
 #define JZ_SIZE_H_
-
+#include "JZGlobal.h"
 class JZDebug;
-class JZSize
+class JZFRAMEWORK_API JZSize
 {
 public:
     JZSize();

@@ -1,6 +1,5 @@
 #ifndef JZCO_WEB_SOCKET_H_
 #define JZCO_WEB_SOCKET_H_
-
 #include <queue>
 #include "JZNetworkAccessManager.h"
 #include "JZWebSocket.h"
@@ -8,7 +7,7 @@
 
 //JZCoWebSocket
 class JZCoWebSocketServer;
-class JZCoWebSocket : public JZObject
+class JZFRAMEWORK_API JZCoWebSocket : public JZObject
 {
 public:
     enum  MessageType{ 

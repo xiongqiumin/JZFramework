@@ -1,10 +1,9 @@
 ﻿#ifndef JZ_FILE_INFO_H_
 #define JZ_FILE_INFO_H_
-
 #include <string>
 #include "JZGlobal.h"
 
-class JZFileInfo 
+class JZFRAMEWORK_API JZFileInfo 
 {
 public:
     static bool exists(const std::string &path);
@@ -43,15 +42,5 @@ private:
     int m_size;
     int64_t m_time;
 };
-
-
-
-
-
-
-
-
-
-
 
 #endif // !JZ_FILE_INFO_H_

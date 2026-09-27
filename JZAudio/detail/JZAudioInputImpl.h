@@ -1,11 +1,10 @@
 ﻿#ifndef JZ_AUDIO_INPUT_IMPL_H_
 #define JZ_AUDIO_INPUT_IMPL_H_
-
 #include "JZAudioDeviceInfo.h"
 #include "JZObject.h"
 
 class JZAudioInput;
-class JZAudioInputImpl : public JZObject
+class JZFRAMEWORK_API JZAudioInputImpl : public JZObject
 {
 public:
     explicit JZAudioInputImpl(JZAudioInput* parent);

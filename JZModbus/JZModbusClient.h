@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_MODBUS_RTU_CLIENT_H_
 #define JZ_MODBUS_RTU_CLIENT_H_
-
 #include "JZObject.h"
 #include "JZSerialPort.h"
 #include "JZTcpSocket.h"
@@ -9,7 +8,7 @@
 #include "JZModbusParam.h"
 
 class JZModbusContext;
-class JZModebusReply
+class JZFRAMEWORK_API JZModebusReply
 {
 public:
     JZModebusReply();
@@ -21,7 +20,7 @@ public:
     std::vector<uint16_t> reg;
 };
 
-class JZModbusClient : public JZObject
+class JZFRAMEWORK_API JZModbusClient : public JZObject
 {
 public:
     JZModbusClient(JZObject *parent = nullptr);
@@ -110,7 +109,5 @@ protected:
     JZSerialPort *m_com;
     JZTcpSocket *m_socket;
 };
-
-
 
 #endif // !JZ_MODBUS_CLIENT_H_

@@ -1,6 +1,5 @@
 #ifndef JZ_KV_DATABASE_H_
 #define JZ_KV_DATABASE_H_
-
 #include <memory>
 #include <string>
 #include <map>
@@ -21,7 +20,7 @@ struct sqlite3;   // 前向声明: 不把 sqlite3.h 暴露给使用方(参照 Ta
 //   - loadFromStream() 通过 JZDataStream 反序列化自身
 // 并到 JZKvDataManager 注册, get() 才能按类型号重建出正确子类。
 // ============================================================================
-class JZKvAbstractData {
+class JZFRAMEWORK_API JZKvAbstractData {
 public:
     virtual ~JZKvAbstractData() {}
     virtual int dataType() const = 0;
@@ -34,7 +33,7 @@ typedef std::shared_ptr<JZKvAbstractData> JZKvDataPtr;
 // ============================================================================
 // 类型注册表: 让 get() 能按类型号重建正确子类(仿 JZNetPackManager)
 // ============================================================================
-class JZKvDataManager {
+class JZFRAMEWORK_API JZKvDataManager {
 public:
     typedef JZKvDataPtr (*CreateFunc)();
 
@@ -61,7 +60,7 @@ private:
 // 序列化经 JZDataStream 落到 JZByteArray, 再以 BLOB 写入。
 // 先 open() 再读写; 句柄独占(不可拷贝), 生命周期由打开者负责。
 // ============================================================================
-class JZKvDatabase {
+class JZFRAMEWORK_API JZKvDatabase {
 public:
     JZKvDatabase();
     ~JZKvDatabase();

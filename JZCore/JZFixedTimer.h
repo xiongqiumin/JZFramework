@@ -1,6 +1,5 @@
 #ifndef JZ_FIXED_TIMER_H_
 #define JZ_FIXED_TIMER_H_
-
 #include "JZObject.h"
 #include "JZElapsedTimer.h"
 
@@ -13,7 +12,7 @@
 //
 // 防死亡螺旋: 若单次落后帧数超过 maxCatchUp, 认为系统已无法跟上, 立即 stop()
 // 并通过 sigError(落后帧数) 上报, 避免无限补帧拖垮系统。
-class JZFixedTimer : public JZObject
+class JZFRAMEWORK_API JZFixedTimer : public JZObject
 {
 public:
     JZFixedTimer(JZObject *parent = nullptr);

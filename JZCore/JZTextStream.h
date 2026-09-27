@@ -1,11 +1,10 @@
 ﻿#ifndef JZ_TEXT_STREAM_H
 #define JZ_TEXT_STREAM_H
-
 #include <string>
 
 #include "JZFile.h"
 
-class JZTextStream
+class JZFRAMEWORK_API JZTextStream
 {
 public:
     enum Codec

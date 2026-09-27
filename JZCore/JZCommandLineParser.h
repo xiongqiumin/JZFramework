@@ -1,11 +1,11 @@
 #ifndef JZ_COMMANDLINEPARSER_H
 #define JZ_COMMANDLINEPARSER_H
-
+#include "JZGlobal.h"
 #include <iostream>
 #include <map>
 #include <string>
 
-class JZCommandLineOption
+class JZFRAMEWORK_API JZCommandLineOption
 {
 public:
     JZCommandLineOption();
@@ -17,7 +17,7 @@ public:
     bool required;
 };
 
-class JZCommandLineArgument
+class JZFRAMEWORK_API JZCommandLineArgument
 {
 public:
     JZCommandLineArgument();
@@ -27,7 +27,7 @@ public:
     bool required;
 };
 
-class JZCommandLineParser
+class JZFRAMEWORK_API JZCommandLineParser
 {
 public:
     JZCommandLineParser();

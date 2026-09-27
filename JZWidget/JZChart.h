@@ -1,6 +1,5 @@
 #ifndef JZ_CHART_H_
 #define JZ_CHART_H_
-
 #include "JZWidget.h"
 #include "JZColor.h"
 #include "JZRect.h"
@@ -18,7 +17,7 @@
 //   chart->setCategories({ "一", "二", "三" });
 //   int s = chart->addSeries("销量", JZColor(0x33, 0x99, 0x33));
 //   chart->setSeriesData(s, { 12, 18, 15 });
-class JZChart : public JZWidget
+class JZFRAMEWORK_API JZChart : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZChart)
 

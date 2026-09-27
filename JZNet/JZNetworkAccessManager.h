@@ -1,6 +1,5 @@
 #ifndef JZ_NET_WORK_ACCESS_MANAGER_H_
 #define JZ_NET_WORK_ACCESS_MANAGER_H_
-
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetClient.h"
@@ -11,7 +10,7 @@
 #include "JZCompress.h"
 #endif
 
-class JZNetworkConnect : public JZNetObject
+class JZFRAMEWORK_API JZNetworkConnect : public JZNetObject
 {
 public:
     JZNetworkConnect(JZNetworkAccessManager *manager);
@@ -97,7 +96,7 @@ protected:
 //    代理据此把请求转发到真实主机；响应原样返回。
 //  - https 目标：连接到代理地址后，先发送 CONNECT host:port 建立隧道，再在隧道上做 TLS 握手，
 //    之后发送正常的 https 请求；代理仅盲转发加密流量。
-struct JZProxyConfig
+struct JZFRAMEWORK_API JZProxyConfig
 {
     std::string host;         // 代理主机（如 "127.0.0.1"）
     int port = 0;             // 代理端口
@@ -109,7 +108,7 @@ struct JZProxyConfig
     static JZProxyConfig fromUrl(std::string url);
 };
 
-class JZNetworkAccessManager : public JZObject
+class JZFRAMEWORK_API JZNetworkAccessManager : public JZObject
 {
 public:
     JZNetworkAccessManager(JZObject *parent = nullptr);
@@ -154,6 +153,5 @@ protected:
     JZSSLConfig m_ssl;              // 客户端 TLS 配置
     JZOptional<JZProxyConfig> m_proxyConfig;   // HTTP 代理（http / https 目标均生效；空 = 不启用）
 };
-
 
 #endif // !JZ_NET_WORK_ACCESS_MANAGER_H_

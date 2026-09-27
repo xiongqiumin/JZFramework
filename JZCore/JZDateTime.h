@@ -1,11 +1,10 @@
 ﻿#ifndef JZ_DATE_TIME_H_
 #define JZ_DATE_TIME_H_
-
 #include <inttypes.h>
 #include <string>
 #include "JZGlobal.h"
 
-class JZDateTime
+class JZFRAMEWORK_API JZDateTime
 {
 public:    
     static int64_t currentMSecsSinceEpoch();

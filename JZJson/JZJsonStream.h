@@ -1,13 +1,12 @@
 #ifndef JSON_STREAM_H_
 #define JSON_STREAM_H_
-
 #include "JZStd.h"
 #include "JZString.h"
 #include "JZByteArray.h"
 #include "JZOptional.h"
 #include "json/json.h"
 
-class JZJsonStream
+class JZFRAMEWORK_API JZJsonStream
 {
 public:
     JZJsonStream();
@@ -315,7 +314,7 @@ void operator>>(JZJsonStream& s, std::map<std::string, T>& mapData)
     }
 }
 
-class JZJsonHelper
+class JZFRAMEWORK_API JZJsonHelper
 {
 public:
     template <class T>

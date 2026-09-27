@@ -1,10 +1,9 @@
 #ifndef JZ_TIMER_H_
 #define JZ_TIMER_H_
-
 #include "JZObject.h"
 #include <functional>
 
-class JZTimer : public JZObject
+class JZFRAMEWORK_API JZTimer : public JZObject
 {
 public:
     static void singleShot(int msec, std::function<void()> func);

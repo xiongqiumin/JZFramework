@@ -1,12 +1,11 @@
 ﻿#ifndef JZ_MODBUS_MASTER_H_
 #define JZ_MODBUS_MASTER_H_
-
 #include <map>
 #include "JZObject.h"
 #include "JZModbusParam.h"
 #include "JZModbusClient.h"
 
-class JZModbusMaster : public JZObject
+class JZFRAMEWORK_API JZModbusMaster : public JZObject
 {
 public:
     JZModbusMaster();

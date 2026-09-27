@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_STRING_H_
 #define JZ_STRING_H_
-
 #include <string>
 #include <vector>
 #include "JZGlobal.h"
@@ -8,7 +7,7 @@
 class JZDebug;
 class JZString;
 class JZRegExp;
-class JZChar
+class JZFRAMEWORK_API JZChar
 {
 public:
     JZChar();
@@ -43,7 +42,7 @@ protected:
 };
 JZDebug operator<<(JZDebug d, const JZChar& c);
 
-class JZString
+class JZFRAMEWORK_API JZString
 {
 public:
     static JZString fromStdString(const std::string& stdStr);

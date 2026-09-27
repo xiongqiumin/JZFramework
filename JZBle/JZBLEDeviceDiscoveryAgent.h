@@ -1,13 +1,12 @@
 #ifndef JZBLEDEVICEDISCOVERYAGENT_H
 #define JZBLEDEVICEDISCOVERYAGENT_H
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZBLEDeviceInfo.h"
 
 class JZBleDriver;
 
-class JZBLEDeviceDiscoveryAgent : public JZObject
+class JZFRAMEWORK_API JZBLEDeviceDiscoveryAgent : public JZObject
 {
     JZ_OBJECT_DECLARE(JZBLEDeviceDiscoveryAgent)
 

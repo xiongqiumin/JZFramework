@@ -1,6 +1,5 @@
 #ifndef JZ_NET_OBJECT_H_
 #define JZ_NET_OBJECT_H_
-
 #include "JZObject.h"
 #include "JZNetPacket.h"
 #include "JZThread.h"
@@ -64,7 +63,7 @@ enum SocketWrite
 };
 
 // TLS 配置: CA 证书 / 本端证书 / 本端私钥 / 是否跳过校验
-struct JZSSLConfig
+struct JZFRAMEWORK_API JZSSLConfig
 {
     std::string sslCa;            // CA 证书内容(PEM): 客户端校验服务端 / 服务端双向认证
     std::string sslCert;          // 证书内容(PEM): 服务端=服务器证书 / 客户端=客户端证书
@@ -77,7 +76,7 @@ struct JZSSLConfig
     }
 };
 
-struct JZSocketInfo
+struct JZFRAMEWORK_API JZSocketInfo
 {
     enum ConnType
     {
@@ -103,7 +102,7 @@ struct JZSocketInfo
     std::string websocketExt;
 };
 
-class JZNetOpenReq
+class JZFRAMEWORK_API JZNetOpenReq
 {
 public:
     JZNetOpenReq();
@@ -114,13 +113,13 @@ public:
     int localPort;       // 本端实际端口(host 序): bind(0)/连接时由 net 线程回填, 见 openConn
 };
 
-class JZNetReqEventData
+class JZFRAMEWORK_API JZNetReqEventData
 {
 public:
     virtual ~JZNetReqEventData();
 };
 
-class JZNetReqEvent : public JZEvent
+class JZFRAMEWORK_API JZNetReqEvent : public JZEvent
 {
 public:
     enum {
@@ -156,13 +155,13 @@ public:
 };
 
 //JZNetResEvent
-class JZNetResEventData
+class JZFRAMEWORK_API JZNetResEventData
 {
 public:
     virtual ~JZNetResEventData();
 };
 
-class JZNetResEvent : public JZEvent
+class JZFRAMEWORK_API JZNetResEvent : public JZEvent
 {
 public:
     JZNetResEvent();
@@ -176,7 +175,7 @@ public:
     std::shared_ptr<JZNetResEventData> extData;
 };
 
-class JZNetThread : public JZThread
+class JZFRAMEWORK_API JZNetThread : public JZThread
 {
 public:
     static JZNetThread *instance();    
@@ -207,7 +206,7 @@ protected:
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
 
     // HttpClient 流式解析状态(net 线程内持续存在, 跨多次 MG_EV_READ)
-    struct JZHttpClientParse
+    struct JZFRAMEWORK_API JZHttpClientParse
     {
         bool headerDone = false;     // 响应头是否已解析
         int statusCode = 0;          // HTTP 状态码
@@ -239,7 +238,7 @@ protected:
     JZMutex m_objectMutex;
 };
 
-class JZNetObject : public JZObject
+class JZFRAMEWORK_API JZNetObject : public JZObject
 {
     JZ_OBJECT_DECLARE(JZNetObject)
 
@@ -300,8 +299,7 @@ protected:
     int m_pendingBytes = 0;
 };
 
-
-class JZNetConfig
+class JZFRAMEWORK_API JZNetConfig
 {
 public:
     int netThreadPriority = 6;
@@ -313,7 +311,7 @@ public:
     std::string dns6;  // IPv6 DNS 服务器, 为空则不配置
 };
 
-class JZNet
+class JZFRAMEWORK_API JZNet
 {
 public:
     static void setConfig(JZNetConfig config);

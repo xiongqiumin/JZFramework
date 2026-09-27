@@ -10,7 +10,7 @@
 
 class JZBleDriver;
 
-class JZBLEService : public JZObject
+class JZFRAMEWORK_API JZBLEService : public JZObject
 {
     JZ_OBJECT_DECLARE(JZBLEService)
 

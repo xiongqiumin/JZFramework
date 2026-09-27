@@ -1,6 +1,5 @@
 #ifndef JZ_JS_WIDGET_MODULE_H_
 #define JZ_JS_WIDGET_MODULE_H_
-
 #include <map>
 #include <memory>
 #include <set>
@@ -41,7 +40,7 @@ namespace jsbind { template <class T> class ClassBind; }
 // 引用是**借用**(不 dup / 不 free): 所有权一直在 JS 侧 —— JS 对象被回收时, 它 opaque 里的守卫
 // 会 delete 底层 C++ 对象(见 JZObjectPointer 的处理), 于是"JS 对象死"与"C++ 对象死"是同一件事,
 // 这份借用值不可能被读到失效的时候。反过来若 C++ 持强引用, JS 对象就永远回收不掉 -> 泄漏。
-class JZJSHandle
+class JZFRAMEWORK_API JZJSHandle
 {
 public:
     JZJSHandle() {}
@@ -72,7 +71,7 @@ JZ_DECLARE_METATYPE(JZJSHandle)
 // 注: 旧的 JZCanvas / win.createCanvas() 包装已移除(画布改用普通 JZWidget + onPaint + JZPainter);
 //     JZJSUiLoader 的 uiClassMap 里 'Canvas' -> 'JZCanvas' 是待清理的残留项。
 //     TS 类型声明见 JZJSEngine/js_wrapper/widget/types/(与 registXxx 一一对应)。
-class JZJSWidgetModule : public JZObject
+class JZFRAMEWORK_API JZJSWidgetModule : public JZObject
 {
 public:
     JZJSWidgetModule();

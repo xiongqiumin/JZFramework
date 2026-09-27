@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_MODBUS_SERVER_H_
 #define JZ_MODBUS_SERVER_H_
-
 #include <map>
 #include "JZObject.h"
 #include "JZSerialPort.h"
@@ -10,7 +9,7 @@
 #include "JZModbusParam.h"
 
 class JZModbusContext;
-class JZModbusServer : public JZObject
+class JZFRAMEWORK_API JZModbusServer : public JZObject
 {
 public:
     JZModbusServer(JZObject *parent = nullptr);

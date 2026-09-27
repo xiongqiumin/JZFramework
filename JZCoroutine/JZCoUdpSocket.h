@@ -1,6 +1,5 @@
 #ifndef JZCO_UDP_SOCKET_H_
 #define JZCO_UDP_SOCKET_H_
-
 #include <vector>
 #include <string>
 #include "JZCo.h"
@@ -8,7 +7,7 @@
 #include "JZResult.h"
 
 // 单个 UDP 数据报（保留数据报边界与发送方地址）
-struct JZCoUdpDatagram
+struct JZFRAMEWORK_API JZCoUdpDatagram
 {
     std::string peerIp;
     int peerPort;
@@ -20,7 +19,7 @@ struct JZCoUdpDatagram
 //   - writeDatagram(ip, port, ...): 发送到指定对端
 //   - receive(): 协程等待并读取一个数据报(含发送方地址)
 //   UDP 没有连接概念, 故不提供 connectToHost / disconnectFromHost / abort / 连接态 write
-class JZCoUdpSocket : public JZObject
+class JZFRAMEWORK_API JZCoUdpSocket : public JZObject
 {
 public:
     JZCoUdpSocket(JZObject *parent = nullptr);

@@ -1,6 +1,5 @@
 #ifndef JZ_WIDGET_TABLE_H_
 #define JZ_WIDGET_TABLE_H_
-
 #include "JZAbstractViewWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
@@ -19,7 +18,7 @@ class JZTableWidget;
 // 只要不被 takeItem/removeRow/removeColumn/clearContents/表格析构清掉, 地址就稳定
 // (改别的格子不会搬移本格, 这点与 JZListWidgetItem 一致)。
 // 改值用 setText/setIcon/setData: 会通知所属表格重绘。
-class JZTableWidgetItem
+class JZFRAMEWORK_API JZTableWidgetItem
 {
 public:
     JZTableWidgetItem() {}
@@ -51,7 +50,7 @@ private:
 
 // 虚拟表格(owner-draw): 仅绘制当前可见区域的单元格, 通过 JZPainter 直接画到画布上,
 // 不创建/复用任何单元格控件。表头冻结在顶部, 主体可双向滚动。
-class JZTableWidget : public JZAbstractViewWidget
+class JZFRAMEWORK_API JZTableWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZTableWidget)
 

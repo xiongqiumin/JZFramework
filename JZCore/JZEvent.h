@@ -1,6 +1,6 @@
 #ifndef JZ_EVENT_H_
 #define JZ_EVENT_H_
-
+#include "JZGlobal.h"
 class JZObject;   // 前向声明: JZChildEvent 仅持有 JZObject* 指针
 
 enum {
@@ -29,7 +29,7 @@ enum {
 
 #define INVALID_TIMER_ID (0)
 
-class JZEvent
+class JZFRAMEWORK_API JZEvent
 {
 public:
     JZEvent(int type);
@@ -49,7 +49,7 @@ protected:
     bool m_accepted = true;
 };
 
-class JZTimerEvent : public JZEvent
+class JZFRAMEWORK_API JZTimerEvent : public JZEvent
 {
 public:
     JZTimerEvent(int id);
@@ -64,13 +64,13 @@ protected:
 // 鼠标进入/离开控件 (同 Qt 的 QEvent::Enter / QEvent::Leave)。
 // 由 JZWindow 在命中控件变化 (hitTest) 时派发: 离开旧控件链、进入新控件链
 // (含各自祖先, 止于两者最近公共祖先)。无坐标, 仅作"悬停态"通知。
-class JZEnterEvent : public JZEvent
+class JZFRAMEWORK_API JZEnterEvent : public JZEvent
 {
 public:
     JZEnterEvent() : JZEvent(JZEvent_enter) {}
 };
 
-class JZLeaveEvent : public JZEvent
+class JZFRAMEWORK_API JZLeaveEvent : public JZEvent
 {
 public:
     JZLeaveEvent() : JZEvent(JZEvent_leave) {}
@@ -79,7 +79,7 @@ public:
 // 子对象增删 (同 Qt 的 QEvent::ChildAdded / QEvent::ChildRemoved)。
 // 由 JZObject::addChild / removeChild 同步派发到父对象 (this),
 // 父对象在 childEvent(JZChildEvent*) 里收 (如 JZSplitter 借此摘除事件过滤器)。
-class JZChildEvent : public JZEvent
+class JZFRAMEWORK_API JZChildEvent : public JZEvent
 {
 public:
     JZChildEvent(int type, JZObject *child);

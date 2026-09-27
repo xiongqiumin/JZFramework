@@ -1,6 +1,5 @@
 #ifndef JZ_DISPLAY_DEVICE_H_
 #define JZ_DISPLAY_DEVICE_H_
-
 #include "JZLayer.h"
 #include "JZRect.h"
 #include "JZMouseEvent.h"
@@ -21,7 +20,7 @@ class JZWindow;
 //   - 由 JZWindow::doPaint 调用 (root 传窗口自身), 依赖方向保持 window -> device。
 //
 // 控件树/绘制任务均为逻辑像素, m_scale (DPI 缩放) 负责逻辑 <-> 物理换算。
-class JZDisplayDevice
+class JZFRAMEWORK_API JZDisplayDevice
 {
 public:
     JZDisplayDevice();

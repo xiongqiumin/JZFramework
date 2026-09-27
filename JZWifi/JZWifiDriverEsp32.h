@@ -1,6 +1,5 @@
 #ifndef JZ_WIFI_DRIVER_ESP32_H_
 #define JZ_WIFI_DRIVER_ESP32_H_
-
 #include "JZWifiDriver.h"
 #include "JZObjectPointer.h"
 #include <string>
@@ -8,7 +7,7 @@
 // ESP32 (ESP-IDF) 平台下的 WiFi 驱动实现。
 // 基于 esp_wifi + esp_netif + esp_event, 支持 Station / AP / APSTA 三种模式,
 // 通过事件回调把底层结果经 JZWifiDriver 转发中转回 JZWifiStation / JZWifiAp / JZWifiScanner。
-class JZWifiDriverEsp32 : public JZWifiDriver
+class JZFRAMEWORK_API JZWifiDriverEsp32 : public JZWifiDriver
 {
 public:
     JZWifiDriverEsp32();

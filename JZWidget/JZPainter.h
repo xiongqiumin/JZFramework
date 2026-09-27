@@ -1,6 +1,5 @@
 #ifndef JZ_PAINTER_H_
 #define JZ_PAINTER_H_
-
 #include "JZPen.h"
 #include "JZBrush.h"
 #include "JZFont.h"
@@ -17,7 +16,7 @@ class JZWidget;
 
 // 绘制入口: 在 paintEvent 中由 JZDisplayDevice 创建并下发。
 // 所有绘制调用不直接写屏, 而是向当前图层追加 JZDrawTask (等价 LVGL 在 DRAW 事件回调里 lv_draw_xxx)。
-class JZPainter
+class JZFRAMEWORK_API JZPainter
 {
 public:
     explicit JZPainter(JZWidget* widget);

@@ -1,6 +1,5 @@
 #ifndef JZ_SENSOR_H_
 #define JZ_SENSOR_H_
-
 #include "JZObject.h"
 #include "JZSensorInfo.h"
 
@@ -14,7 +13,7 @@ class JZSensorDriver;
 //   - 线性校准(offset/gain) -> 对采样值做补偿(由子类在 onSampled 中应用)
 //
 // 传感器元信息(类型/通道/单位/id)由 JZSensorInfo 承载, 直接保存在实例中。
-class JZSensor : public JZObject
+class JZFRAMEWORK_API JZSensor : public JZObject
 {
 public:
     // 枚举当前平台可用传感器(委派给驱动)

@@ -1,6 +1,5 @@
 #ifndef JZ_GROUP_BOX_H_
 #define JZ_GROUP_BOX_H_
-
 #include <string>
 #include "JZWidget.h"
 
@@ -9,7 +8,7 @@
 //   JZGroupBox* gb = new JZGroupBox("Settings", parent);
 //   gb->contentWidget()->setLayout(new JZVBoxLayout(8, 8));
 //   gb->contentWidget()->layout()->addWidget(new JZCheckBox(gb->contentWidget()));
-class JZGroupBox : public JZWidget
+class JZFRAMEWORK_API JZGroupBox : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZGroupBox)
 

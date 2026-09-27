@@ -1,13 +1,12 @@
 #ifndef JZ_TCP_SOCKET_H_
 #define JZ_TCP_SOCKET_H_
-
 #include <string>
 #include "JZNetObject.h"
 #include "JZNetPacket.h"
 #include "JZNetPacketProcessor.h"
 
 class JZTcpServer;
-class JZTcpSocket : public JZNetObject
+class JZFRAMEWORK_API JZTcpSocket : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZTcpSocket)
 

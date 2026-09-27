@@ -4,13 +4,13 @@
 #include "binary/code_agent/JZScreenShot.h"  // captureVirtualDesktop / toDataUrl / save
 
 // 归一化矩形(相对虚拟桌面截图, [0,1])
-struct CuRect { double x = 0, y = 0, w = 0, h = 0; };
+struct CuRect JZFRAMEWORK_API { double x = 0, y = 0, w = 0, h = 0; };
 
 // 外部真实桌面的 Computer Use 底层语义。
 // 只提供"基本语义"(切桌面/点击/按键/拖拽) + "查找"(模板匹配/颜色匹配);
 // 不构建控件树 —— 控件树与 UI 操作全部在 JS 侧(computeruse 包)完成。
 // 注: 本文件未接入构建(CMake 未加), OpenCV / JZScreenShot 的链接在接入时补。
-class JZComputerUse {
+class JZFRAMEWORK_API JZComputerUse {
 public:
     enum class MouseBtn { Left, Right, Middle };
 

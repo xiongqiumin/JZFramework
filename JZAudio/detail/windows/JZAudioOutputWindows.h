@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_AUDIO_OUTPIT_IMPL_H_
 #define JZ_AUDIO_OUTPIT_IMPL_H_
-
 #include <Windows.h>
 #include <mmsystem.h>
 #include <atomic>
@@ -10,7 +9,7 @@
 #include "JZAudioOutput.h"
 #include "detail/JZAudioOutputImpl.h"
 
-class JZAudioOutputWindows : public JZAudioOutputImpl
+class JZFRAMEWORK_API JZAudioOutputWindows : public JZAudioOutputImpl
 {
 public:
     explicit JZAudioOutputWindows(JZAudioOutput* parent);

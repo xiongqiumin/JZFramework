@@ -1,6 +1,5 @@
 #ifndef JZ_BLE_DRIVER_H_
 #define JZ_BLE_DRIVER_H_
-
 #include <string>
 #include <vector>
 #include <memory>
@@ -19,7 +18,7 @@ class JZBLEController;
 class JZBLEService;
 class JZBLEDeviceDiscoveryAgent;
 
-class JZBleDriver : public JZObject
+class JZFRAMEWORK_API JZBleDriver : public JZObject
 {
 public:
     JZBleDriver() = default;
@@ -33,7 +32,7 @@ public:
     // Central 重连加密所需的密钥由上层在调用 connectToDevice(keys) 时一并传入；
     // Peripheral 重连加密所需的密钥由上层在连接建立前通过 setBondKey 预灌。
     // 驱动自身不做任何 Flash/文件持久化。
-    struct JZBleBondKey {
+    struct JZFRAMEWORK_API JZBleBondKey {
         std::string peerAddr;        // "xx:xx:xx:xx:xx:xx"
         uint8_t     peerAddrType = 0;// BLE_ADDR_PUBLIC / BLE_ADDR_RANDOM
         uint8_t     objType = 0;     // BLE_STORE_OBJ_TYPE_PEER_SEC / OUR_SEC，回灌时据此定位

@@ -1,11 +1,10 @@
 #ifndef JZCO_SEMAPHORE_H_
 #define JZCO_SEMAPHORE_H_
-
 #include <queue>
 #include "JZGlobal.h"
 
 class JZCoCoroutine;
-class JZCoSemaphore
+class JZFRAMEWORK_API JZCoSemaphore
 {
 public:    
     explicit JZCoSemaphore(int n = 0);

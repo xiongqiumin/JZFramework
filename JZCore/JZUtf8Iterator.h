@@ -1,5 +1,6 @@
 #ifndef JZ_UTF8_ITERATOR_H_
 #define JZ_UTF8_ITERATOR_H_
+#include "JZGlobal.h"
 
 #include <string>
 #include <cstdint>
@@ -19,7 +20,7 @@
 //       int bytePos = it.byteIndex();   // 该码点在原串中的字节起点
 //       ++it;
 //   }
-class JZUtf8Iterator
+class JZFRAMEWORK_API JZUtf8Iterator
 {
 public:
     explicit JZUtf8Iterator(const std::string& str);

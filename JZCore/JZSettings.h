@@ -1,12 +1,11 @@
 ﻿#ifndef JZ_SETTINGS_H_
 #define JZ_SETTINGS_H_
-
 #include <map>
 #include <vector>
 #include <string>
 #include "JZGlobal.h"
 
-class JZSettings
+class JZFRAMEWORK_API JZSettings
 {
 public:
     JZSettings();
@@ -46,6 +45,5 @@ private:
     bool m_isFileOpen = false;                            // INI文件是否成功打开
     std::vector<std::string> m_groupStack;                // 分组栈，支持多层嵌套分组
 };
-
 
 #endif // ! JZ_SETTINGS_H_

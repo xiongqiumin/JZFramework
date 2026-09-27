@@ -1,12 +1,11 @@
 #ifndef JZ_WIDGET_TEXTAREA_H_
 #define JZ_WIDGET_TEXTAREA_H_
-
 #include "JZAbstractTextEdit.h"
 
 // ==================== 多行文本编辑框 ====================
 // 全部编辑/绘制/输入法逻辑在 JZAbstractTextEdit (多行模式), 本类只提供多行语义:
 // 自动换行开关与默认尺寸。
-class JZTextEdit : public JZAbstractTextEdit
+class JZFRAMEWORK_API JZTextEdit : public JZAbstractTextEdit
 {
     JZ_OBJECT_DECLARE(JZTextEdit)
 

@@ -1,6 +1,5 @@
 #ifndef JZ_DIALOG_H_
 #define JZ_DIALOG_H_
-
 #include "JZWindow.h"
 #include "JZSignal.h"
 
@@ -12,7 +11,7 @@
 //   - accept()/reject() 结束 exec 并隐藏窗口; 原生 WM_CLOSE 走 reject。
 //
 //     JZMessageBox::question(&win, "Confirm", "Sure?")->exec();
-class JZDialog : public JZWindow
+class JZFRAMEWORK_API JZDialog : public JZWindow
 {
     JZ_OBJECT_DECLARE(JZDialog)
 

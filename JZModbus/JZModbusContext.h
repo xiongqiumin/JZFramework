@@ -1,6 +1,5 @@
-﻿#ifndef JZ_MODBUS_CONTEXT_H_
+#ifndef JZ_MODBUS_CONTEXT_H_
 #define JZ_MODBUS_CONTEXT_H_
-
 #include <inttypes.h>
 #include "JZByteArray.h"
 #include <vector>
@@ -109,14 +108,14 @@ typedef enum {
 
 /* This structure reduces the number of params in functions and so
 * optimizes the speed of execution (~ 37%). */
-typedef struct _sft {
+typedef struct _sft JZFRAMEWORK_API {
     int slave;
     int function;
     int t_id;
 } sft_t;
 
 class JZModbusContext;
-struct modbus_backend_t {
+struct modbus_backend_t JZFRAMEWORK_API {
     unsigned int backend_type;
     unsigned int header_length;
     unsigned int checksum_length;
@@ -134,13 +133,13 @@ struct modbus_backend_t {
         const uint8_t *rsp, int rsp_length);
 };
 
-struct MappingChanged
+struct MappingChanged JZFRAMEWORK_API
 {
     int addr;
     int nb;
 };
 
-class JZModbusContext
+class JZFRAMEWORK_API JZModbusContext
 {   
 public:
     JZModbusContext();
@@ -171,7 +170,5 @@ public:
     bool m_plcMode;
     const modbus_backend_t *backend;
 };
-
-
 
 #endif // !JZ_MODBUS_CLIENT_H_

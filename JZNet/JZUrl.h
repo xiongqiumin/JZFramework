@@ -1,11 +1,10 @@
 ﻿#ifndef JZ_URL_H_
 #define JZ_URL_H_
-
 #include <string>
 #include <map>
 #include "JZGlobal.h"
 
-class JZUrlQuery
+class JZFRAMEWORK_API JZUrlQuery
 {
 public:
     JZUrlQuery() = default;
@@ -23,7 +22,7 @@ private:
 };
 
 //JZUrl
-class JZUrl
+class JZFRAMEWORK_API JZUrl
 {
 public:
     JZUrl();
@@ -54,6 +53,5 @@ private:
     uint16_t m_port;
     JZUrlQuery m_query;
 };
-
 
 #endif  // !JZ_URL_H_

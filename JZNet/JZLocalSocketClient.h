@@ -1,6 +1,5 @@
 #ifndef JZ_LOCAL_SOCKET_CLIENT_H_
 #define JZ_LOCAL_SOCKET_CLIENT_H_
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZByteArray.h"
@@ -11,7 +10,7 @@ class JZLocalSocketServer;
 class JZLocalSocketThread;
 
 // 跨线程投递的接收数据事件(在 JZLocalSocketThread -> 对象线程之间传递)
-class JZLocalSocketDataEvent : public JZEvent
+class JZFRAMEWORK_API JZLocalSocketDataEvent : public JZEvent
 {
 public:
     JZLocalSocketDataEvent(JZObject* receiver, std::string data, bool binary);
@@ -20,7 +19,7 @@ public:
 };
 
 // 跨线程投递的连接状态事件(连接成功/断开)
-class JZLocalSocketNotifyEvent : public JZEvent
+class JZFRAMEWORK_API JZLocalSocketNotifyEvent : public JZEvent
 {
 public:
     JZLocalSocketNotifyEvent(JZObject* receiver, bool connected);
@@ -34,7 +33,7 @@ public:
 //  - 在 Linux / Windows 上: 通过真实的本地套接字(AF_UNIX / 127.0.0.1)通信。
 //  - 在嵌入式平台(FreeRTOS / RT-Thread)上: 通过全局变量(全局服务注册表)直接访问
 //    同一进程内的 JZLocalSocketServer, 以内存队列通信(不参与 select 轮询)。
-class JZLocalSocketClient : public JZObject
+class JZFRAMEWORK_API JZLocalSocketClient : public JZObject
 {
     JZ_OBJECT_DECLARE(JZLocalSocketClient)
 

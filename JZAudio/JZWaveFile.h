@@ -1,10 +1,9 @@
 ﻿#ifndef JZ_WAVE_FILE_H_
 #define JZ_WAVE_FILE_H_
-
 #include "JZFile.h"
 #include "JZAudioFormat.h"
 
-class JZWaveFile
+class JZFRAMEWORK_API JZWaveFile
 {
 public:
     JZWaveFile();

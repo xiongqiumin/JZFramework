@@ -1,6 +1,5 @@
 #ifndef JZ_RESIZE_EVENT_H_
 #define JZ_RESIZE_EVENT_H_
-
 #include "JZEvent.h"
 #include "JZSize.h"
 
@@ -8,7 +7,7 @@
 // 与 JZShowEvent / JZHideEvent 一样是 JZEvent 派生: 事件进入对象的统一入口是
 // JZApplication::sendEvent -> JZThread::notify, 那里先过事件过滤器链再进 event()/xxxEvent(),
 // 所以 resize 也必须能当 JZEvent 派发 —— 否则过滤器(JS 侧 onResize)看不到这个事件。
-class JZResizeEvent : public JZEvent
+class JZFRAMEWORK_API JZResizeEvent : public JZEvent
 {
 public:
     JZResizeEvent(const JZSize& size, const JZSize& oldSize);

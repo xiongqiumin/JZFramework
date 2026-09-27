@@ -13,8 +13,19 @@ else()
     message(FATAL_ERROR "[JZFramework] Python3 interpreter not found; code generation steps requiring python will fail.")
 endif()
 
-# 创建全局的 JZFramework 库目标（静态库）
-add_library(JZFramework STATIC "")
+# ==================== 静态/动态库切换 ====================
+# 默认静态库(零行为变化)。将来要编译成 DLL 时:
+#   * 打开 JZFRAMEWORK_DYNAMIC 选项(消费方也需定义它, 这里用 PUBLIC 自动传递);
+#   * 本框架作为 SHARED 库构建, CMake 会自动定义 JZFramework_EXPORTS,
+#     配合 JZGlobal.h 中的 JZFRAMEWORK_API 完成 dllexport / dllimport。
+option(JZFRAMEWORK_DYNAMIC "Build JZFramework as a shared library (DLL). Default OFF = static library." OFF)
+
+if(JZFRAMEWORK_DYNAMIC)
+    add_library(JZFramework SHARED "")
+    target_compile_definitions(JZFramework PUBLIC JZFRAMEWORK_DYNAMIC)
+else()
+    add_library(JZFramework STATIC "")
+endif()
 
 # ==================== 模块依赖关系表 ====================
 # 格式: set(MODULE_DEPENDS_<模块名> "依赖模块1;依赖模块2")

@@ -1,6 +1,5 @@
 #ifndef JZ_PROPERTY_ANIMATION_H_
 #define JZ_PROPERTY_ANIMATION_H_
-
 #include "JZAbstractAnimation.h"
 #include <string>
 
@@ -14,7 +13,7 @@
 //   "geometry"           未支持: 几何是四维, 请拆成 x/y/w/h 四条动画
 //
 // 动画期间会令目标控件逐帧 invalidate, 无需手动 update。
-class JZPropertyAnimation : public JZAbstractAnimation
+class JZFRAMEWORK_API JZPropertyAnimation : public JZAbstractAnimation
 {
     JZ_OBJECT_DECLARE(JZPropertyAnimation)
 

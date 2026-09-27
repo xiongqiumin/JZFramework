@@ -1,6 +1,5 @@
 #ifndef JZ_SERIAL_PORT_DRIVER_H_
 #define JZ_SERIAL_PORT_DRIVER_H_
-
 #include <string>
 #include <vector>
 #include "JZSerialPort.h"
@@ -8,7 +7,7 @@
 
 // 串口驱动抽象基类（单例）。具体平台（如 ESP32 / AC79 / 主机）实现自己的子类，
 // 并在程序初始化时通过 setInstance() 安装。JZSerialPort 的所有底层操作都委派给它。
-class JZSerialPortDriver
+class JZFRAMEWORK_API JZSerialPortDriver
 {
 public:
     JZSerialPortDriver() = default;

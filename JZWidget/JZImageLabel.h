@@ -1,10 +1,9 @@
 #ifndef JZ_WIDGET_IMAGE_H_
 #define JZ_WIDGET_IMAGE_H_
-
 #include "JZWidget.h"
 #include "JZImage.h"
 
-class JZImageLabel : public JZWidget
+class JZFRAMEWORK_API JZImageLabel : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZImageLabel)
 

@@ -1,6 +1,5 @@
 #ifndef JZ_LOCAL_SOCKET_SERVER_H_
 #define JZ_LOCAL_SOCKET_SERVER_H_
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZByteArray.h"
@@ -20,7 +19,7 @@ class JZLocalSocketClient;
 //  - Linux / Windows: 通过真实本地套接字(AF_UNIX / 127.0.0.1)通信。
 //  - 嵌入式(FreeRTOS / RT-Thread): 通过全局变量(全局服务注册表)被同进程内的
 //    JZLocalSocketClient 直接访问, 以内存队列通信(不参与 select 轮询)。
-class JZLocalSocketServer : public JZObject
+class JZFRAMEWORK_API JZLocalSocketServer : public JZObject
 {
     JZ_OBJECT_DECLARE(JZLocalSocketServer)
 

@@ -1,9 +1,9 @@
 #ifndef JZ_COLOR_H_
 #define JZ_COLOR_H_
-
+#include "JZGlobal.h"
 #include <cstdint>
 
-class JZColor
+class JZFRAMEWORK_API JZColor
 {
 public:
     enum ColorEnum{

@@ -1,12 +1,12 @@
 #ifndef JZ_BLE_DEVICE_INFO_H_
 #define JZ_BLE_DEVICE_INFO_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 #include <stdint.h>
 #include "JZBluetoothUuid.h"
 
-class JZBLEDeviceInfo
+class JZFRAMEWORK_API JZBLEDeviceInfo
 {
 public:
     JZBLEDeviceInfo();

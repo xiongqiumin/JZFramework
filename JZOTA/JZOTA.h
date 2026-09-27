@@ -1,6 +1,5 @@
 #ifndef JZ_OTA_H_
 #define JZ_OTA_H_
-
 #include "JZObject.h"
 #include "JZOTADriver.h"
 #include <string>
@@ -11,7 +10,7 @@
 class JZNetworkReply;
 
 // 升级信息(由服务端 manifest 提供, 服务端一定支持 HTTP Range)
-struct JZOTAUpdateInfo {
+struct JZFRAMEWORK_API JZOTAUpdateInfo {
     // ---------- 标识 / 版本 ----------
     std::string version;     // 目标固件版本号
     std::string buildId;     // 构建号 / commit hash
@@ -38,7 +37,7 @@ struct JZOTAUpdateInfo {
 
 // 当前固件自描述元数据: 作为资源 ":/JZOTA/meta" 编入镜像, 由 JZOTA::readCurrentMeta 读取用于校验。
 // 元数据随镜像一起分发(与 bin 一体), 升级后新固件自带自己的 meta。
-struct JZOTAMeta {
+struct JZFRAMEWORK_API JZOTAMeta {
     std::string version;     // 当前固件版本号
     std::string productId;   // 产品 / 型号 id(用于防刷错机型)
     std::string hwVersion;   // 硬件版本(用于兼容性校验)
@@ -46,7 +45,6 @@ struct JZOTAMeta {
     std::string infoUrl;     // 上次升级来源 manifest 地址
     std::string data;        // 扩展数据(透传的自由字符串, 如备注 / 自定义字段)
 };
-
 
 /*
  * JZOTA: OTA 升级客户端(仅客户端)
@@ -60,7 +58,7 @@ struct JZOTAMeta {
  * 写入与校验行为由 JZOTADriver(固件驱动, 如 JZOTADriverEsp32)决定,
  * 通过 JZOTADriver::instance() 获取; 驱动实例在 JZDriver::init 中按平台安装。
  */
-class JZOTA : public JZObject
+class JZFRAMEWORK_API JZOTA : public JZObject
 {
 public:
     // 读取当前固件自描述元数据(资源 ":/JZOTA/meta"; 桌面平台回退 <appDir>/ota/meta.json)。

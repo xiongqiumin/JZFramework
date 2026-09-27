@@ -1,6 +1,5 @@
 #ifndef JZ_IME_EVENT_H_
 #define JZ_IME_EVENT_H_
-
 #include <string>
 #include <vector>
 #include "JZEvent.h"
@@ -29,7 +28,7 @@ enum {
 //   - compCursor 与 compAttr 的下标是 **UTF-16 单元** (IMM 原生语义);
 //   - 而控件内部文本按**码点**索引, 两者在非 BMP 字符 (emoji / 扩展区汉字,
 //     即 UTF-16 代理对) 上会错位, 必须用下面的静态工具换算后再使用。
-class JZImeEvent : public JZEvent
+class JZFRAMEWORK_API JZImeEvent : public JZEvent
 {
 public:
     enum Flag {

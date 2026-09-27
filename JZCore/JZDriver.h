@@ -3,7 +3,7 @@
 
 #include "JZGlobal.h"
 
-class JZDriver
+class JZFRAMEWORK_API JZDriver
 {
 public:
     static void init();

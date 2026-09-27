@@ -1,12 +1,11 @@
 #ifndef JZCO_TCP_SOCKET_H_
 #define JZCO_TCP_SOCKET_H_
-
 #include "JZCo.h"
 #include "JZTcpSocket.h"
 #include "JZResult.h"
 
 class JZCoTcpServer;
-class JZCoTcpSocket : public JZObject
+class JZFRAMEWORK_API JZCoTcpSocket : public JZObject
 {
 public:
     JZCoTcpSocket(JZObject *parent = nullptr);

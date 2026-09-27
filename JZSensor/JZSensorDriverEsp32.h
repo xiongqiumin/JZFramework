@@ -1,11 +1,10 @@
 #ifndef JZ_SENSOR_DRIVER_ESP32_H_
 #define JZ_SENSOR_DRIVER_ESP32_H_
-
 #include "JZSensorDriver.h"
 
 // ESP32 内部温度传感器驱动(芯片 die 温度, 非环境温度)。
 // 无需任何外部引脚, 直接读取片上温度传感器。
-class JZSensorDriverEsp32 : public JZSensorDriver
+class JZFRAMEWORK_API JZSensorDriverEsp32 : public JZSensorDriver
 {
 public:
     JZSensorDriverEsp32();

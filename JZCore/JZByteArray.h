@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_BYTE_ARRAY_H_
 #define JZ_BYTE_ARRAY_H_
-
 #include <vector>
 #include <string>
 #include "JZGlobal.h"
@@ -8,7 +7,7 @@
 #include "JZAllocator.h"
 
 class JZDebug;
-class JZByteArray
+class JZFRAMEWORK_API JZByteArray
 {
 public:
     static JZByteArray fromBase64(const JZByteArray &base64);

@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_RESULT_H_
 #define JZ_RESULT_H_
-
 #include <cassert>
 #include <memory>
 #include <string>
@@ -9,7 +8,7 @@
 
 #include "JZGlobal.h"
 
-class JZResultStatus
+class JZFRAMEWORK_API JZResultStatus
 {
 public:
     int code = 1;
@@ -17,7 +16,7 @@ public:
 };
 
 template <typename T>
-class JZResult
+class JZFRAMEWORK_API JZResult
 {
     static_assert(!std::is_reference<T>::value, "JZResult does not support reference types");
     static_assert(!std::is_same<T, void>::value, "Use JZResult<void> specialization for void");
@@ -217,7 +216,7 @@ private:
 
 // void 特化: 仅声明, 成员实现见 JZResult.cpp
 template <>
-class JZResult<void>
+class JZFRAMEWORK_API JZResult<void>
 {
 public:
     static JZResult Ok();

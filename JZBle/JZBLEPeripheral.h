@@ -1,6 +1,5 @@
 #ifndef JZBLEPERIPHERAL_H
 #define JZBLEPERIPHERAL_H
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZBluetoothUuid.h"
@@ -11,7 +10,7 @@
 class JZBleDriver;
 class JZBleDriverEsp32;
 
-class JZBleServiceData
+class JZFRAMEWORK_API JZBleServiceData
 {
 public:
     struct CharData 
@@ -32,13 +31,13 @@ protected:
     std::vector<CharData> m_charList;
 };
 
-class JZBLEPeripheralConnect
+class JZFRAMEWORK_API JZBLEPeripheralConnect
 {
 public:
     virtual ~JZBLEPeripheralConnect();
 };
 
-class JZBLEPeripheral : public JZObject
+class JZFRAMEWORK_API JZBLEPeripheral : public JZObject
 {
     JZ_OBJECT_DECLARE(JZBLEPeripheral)
 

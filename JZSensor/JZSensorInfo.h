@@ -1,11 +1,11 @@
 #ifndef JZ_SENSOR_INFO_H_
 #define JZ_SENSOR_INFO_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 
 // 传感器测量类型
-enum class JZSensorType {
+enum class JZFRAMEWORK_API JZSensorType {
     Custom = 0,
     Temperature,   // 温度
     Humidity,      // 湿度
@@ -17,7 +17,7 @@ enum class JZSensorType {
 };
 
 // 测量单位
-enum class JZSensorUnit {
+enum class JZFRAMEWORK_API JZSensorUnit {
     None = 0,
     Celsius,       // ℃
     Fahrenheit,    // ℉
@@ -32,7 +32,7 @@ enum class JZSensorUnit {
 
 // 描述一个可用传感器通道的静态信息（枚举结果）。
 // 各平台驱动在 JZSensorDriver::availableSensors() 中填充并上报。
-class JZSensorInfo
+class JZFRAMEWORK_API JZSensorInfo
 {
 public:
     // 能力(位掩码, 可组合)

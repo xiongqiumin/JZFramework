@@ -1,6 +1,5 @@
 #ifndef JZ_DRAW_TASK_H_
 #define JZ_DRAW_TASK_H_
-
 #include "JZRect.h"
 #include "JZColor.h"
 #include "JZImage.h"
@@ -24,7 +23,7 @@
 //   Change: 非栈语义, 直接修改当前状态 (仅 Some 的字段生效, 不影响 Push/Pop 配对);
 //   Pop:    无参数, 回退到匹配 Push 之前的状态。
 // 提交统一用 std::shared_ptr<JZDrawTask> (见 JZLayer::addTask)。
-struct JZDrawTask
+struct JZFRAMEWORK_API JZDrawTask
 {
     enum Type {
         None,
@@ -49,13 +48,13 @@ struct JZDrawTask
 };
 
 // ---- Line ----
-struct JZLineTask : JZDrawTask {
+struct JZFRAMEWORK_API JZLineTask : JZDrawTask {
     JZLineTask() : JZDrawTask(Line) {}
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
 };
 
 // ---- Rect (填充) ----
-struct JZFillRectTask : JZDrawTask {
+struct JZFRAMEWORK_API JZFillRectTask : JZDrawTask {
     JZFillRectTask() : JZDrawTask(Rect) {}
     JZRect area;
     JZColor color;        // 调用参数 (fillRect 显式传入, 不走状态机)
@@ -63,14 +62,14 @@ struct JZFillRectTask : JZDrawTask {
 };
 
 // ---- Border (描边) ----
-struct JZBorderTask : JZDrawTask {
+struct JZFRAMEWORK_API JZBorderTask : JZDrawTask {
     JZBorderTask() : JZDrawTask(Border) {}
     JZRect area;
     int radius = 0;
 };
 
 // ---- Arc ----
-struct JZArcTask : JZDrawTask {
+struct JZFRAMEWORK_API JZArcTask : JZDrawTask {
     JZArcTask() : JZDrawTask(Arc) {}
     int arcCx = 0, arcCy = 0;
     int arcRadius = 0;
@@ -80,21 +79,21 @@ struct JZArcTask : JZDrawTask {
 };
 
 // ---- Text ----
-struct JZTextTask : JZDrawTask {
+struct JZFRAMEWORK_API JZTextTask : JZDrawTask {
     JZTextTask() : JZDrawTask(Text) {}
     JZRect area;
     std::string text;
 };
 
 // ---- Image ----
-struct JZImageTask : JZDrawTask {
+struct JZFRAMEWORK_API JZImageTask : JZDrawTask {
     JZImageTask() : JZDrawTask(Image) {}
     JZRect area;
     std::shared_ptr<JZImageData> image;
 };
 
 // ---- Pixmap (已转成后端原生布局的显示用位图) ----
-struct JZPixmapTask : JZDrawTask {
+struct JZFRAMEWORK_API JZPixmapTask : JZDrawTask {
     JZPixmapTask() : JZDrawTask(Pixmap) {}
     JZRect area;
     std::shared_ptr<JZPixmapData> pixmap;
@@ -104,7 +103,7 @@ struct JZPixmapTask : JZDrawTask {
 // Push: 保存绘制流当前状态, 并应用本任务携带的新状态 (pen/brush/font/clip)。
 // Pop:  无参数, 回退到匹配 Push 之前的状态。
 // JZPainter 构造/save() 发 Push; restore()/析构发 Pop (严格配对)。
-struct JZDrawPushTask : JZDrawTask {
+struct JZFRAMEWORK_API JZDrawPushTask : JZDrawTask {
     JZDrawPushTask() : JZDrawTask(Push) {}
     JZPen pen;
     JZBrush brush;
@@ -119,12 +118,12 @@ struct JZDrawPushTask : JZDrawTask {
     int oy = 0;
 };
 
-struct JZDrawPopTask : JZDrawTask {
+struct JZFRAMEWORK_API JZDrawPopTask : JZDrawTask {
     JZDrawPopTask() : JZDrawTask(Pop) {}
 };
 
 // ---- Path (矢量路径: 描边 +/或 填充) ----
-struct JZPathTask : JZDrawTask {
+struct JZFRAMEWORK_API JZPathTask : JZDrawTask {
     JZPathTask() : JZDrawTask(Path) {}
     JZPainterPath path;
     bool stroke = false;   // 用当前 pen 描边
@@ -135,7 +134,7 @@ struct JZPathTask : JZDrawTask {
 // ---- Change 状态修改 (非栈) ----
 // 直接设置绘制流当前状态: 仅 Some 的字段生效, None 的字段保持不变。
 // 不影响 Push/Pop 配对 (setPen/setBrush/setFont/setClip 等 setter 使用)。
-struct JZDrawChangeTask : JZDrawTask {
+struct JZFRAMEWORK_API JZDrawChangeTask : JZDrawTask {
     JZDrawChangeTask() : JZDrawTask(Change) {}
     JZOptional<JZPen> pen;
     JZOptional<JZBrush> brush;

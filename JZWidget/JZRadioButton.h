@@ -1,10 +1,9 @@
 #ifndef JZ_WIDGET_RADIO_BUTTON_H_
 #define JZ_WIDGET_RADIO_BUTTON_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 
-class JZRadioButton : public JZWidget
+class JZFRAMEWORK_API JZRadioButton : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZRadioButton)
 

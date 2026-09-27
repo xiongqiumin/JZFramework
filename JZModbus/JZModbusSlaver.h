@@ -1,11 +1,10 @@
 ﻿#ifndef JZ_MODBUS_SLAVE_H_
 #define JZ_MODBUS_SLAVE_H_
-
 #include "JZObject.h"
 #include "JZModbusParam.h"
 #include "JZModbusServer.h"
 
-class JZModbusSlaver : public JZObject
+class JZFRAMEWORK_API JZModbusSlaver : public JZObject
 {
 public:
     JZModbusSlaver(JZObject *parent = nullptr);

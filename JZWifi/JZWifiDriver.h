@@ -1,6 +1,5 @@
 #ifndef JZ_WIFI_DRIVER_H_
 #define JZ_WIFI_DRIVER_H_
-
 #include <string>
 #include <vector>
 #include "JZStd.h"
@@ -12,7 +11,7 @@ class JZWifiAp;
 class JZWifiScanner;
 
 // 站点(Station)连接配置: 连接到外部 AP
-struct JZWifiConfig
+struct JZFRAMEWORK_API JZWifiConfig
 {
     std::string ssid;
     std::string password;
@@ -24,7 +23,7 @@ struct JZWifiConfig
 };
 
 // 接入点(AP / SoftAP)配置: 本机作为服务对外提供 WiFi
-struct JZWifiApConfig
+struct JZFRAMEWORK_API JZWifiApConfig
 {
     std::string ssid;
     std::string password;         // 空字符串表示开放网络
@@ -37,7 +36,7 @@ struct JZWifiApConfig
 };
 
 // WiFi 扫描配置: 描述一次扫描的行为(普通扫描 / 低影响漫游扫描)
-struct JZScanConfig
+struct JZFRAMEWORK_API JZScanConfig
 {
     bool roamScan = false;        // 低影响漫游扫描: 底层驱动改用 passive + 可选仅扫当前信道, 减小对已建链路的打扰
     std::string ssid;             // 扫描过滤的 SSID(空=不过滤)
@@ -45,7 +44,7 @@ struct JZScanConfig
 };
 
 // WiFi 扫描结果: 一个可被发现的 AP
-struct JZWifiScanResult
+struct JZFRAMEWORK_API JZWifiScanResult
 {
     struct ApInfo
     {
@@ -63,7 +62,7 @@ struct JZWifiScanResult
 // 具体平台(如 JZWifiDriverEsp32)实现其纯虚接口, 并通过本类的静态转发中转
 // 把底层事件回传给 JZWifiStation / JZWifiAp / JZWifiScanner
 // (三者均是 JZWifiDriver 的 friend, 受保护的静态分发方法不对外暴露)。
-class JZWifiDriver : public JZObject
+class JZFRAMEWORK_API JZWifiDriver : public JZObject
 {
 public:
     JZWifiDriver() = default;

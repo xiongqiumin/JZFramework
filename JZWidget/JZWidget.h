@@ -1,6 +1,5 @@
 #ifndef JZ_WIDGET_WIDGET_H_
 #define JZ_WIDGET_WIDGET_H_
-
 #include "JZObject.h"
 #include "JZPoint.h"
 #include "JZSize.h"
@@ -24,14 +23,14 @@
 #include "JZImage.h"
 
 // AI 语义动作 (ai-native-design L1): invoke 工具按 name 分发
-struct JZAiAction
+struct JZFRAMEWORK_API JZAiAction
 {
     std::string name;     // "click" / "setValue" / "toggle" / "select" / "setText"
     std::string params;   // 参数说明 (v1 简化为人类可读描述)
 };
 
 // 控件光标形状 (等价 Qt Qt::CursorShape): 与 Windows 标准光标一一对应 (IDC_*)。
-enum class JZCursorShape {
+enum class JZFRAMEWORK_API JZCursorShape {
     Arrow,          // 默认箭头 (IDC_ARROW)
     IBeam,          // 文本输入 (IDC_IBEAM)
     PointingHand,   // 可点击 (IDC_HAND)
@@ -47,7 +46,7 @@ enum class JZCursorShape {
 
 // 光标对象 (等价 Qt QCursor; v1 仅封装标准形状, 后续可扩展自定义位图)。
 // 可隐式由 JZCursorShape 构造, 便于 setCursor(JZCursorShape::SizeHor) 直写。
-class JZCursor
+class JZFRAMEWORK_API JZCursor
 {
 public:
     JZCursor(JZCursorShape shape = JZCursorShape::Arrow)
@@ -68,7 +67,7 @@ class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
 class JZStyleSheetParser;   // 样式表解析器 (控件级 setStyleSheet 持有, 见 JZStyleSheetParser.h)
 class JZMenu;    // 上下文菜单 (右键菜单; 见 setContextMenu / setContextMenuPolicy)
 
-class JZWidget : public JZObject
+class JZFRAMEWORK_API JZWidget : public JZObject
 {
     JZ_OBJECT_DECLARE(JZWidget)
 

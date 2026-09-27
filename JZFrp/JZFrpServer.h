@@ -1,6 +1,5 @@
 #ifndef JZFRPSERVER_H_
 #define JZFRPSERVER_H_
-
 #include "JZObject.h"
 #include "JZFrpPacket.h"
 #include "JZNet/JZNetServer.h"
@@ -9,14 +8,14 @@
 
 class JZFrpServer;
 
-class JZFrpServerConfig
+class JZFRAMEWORK_API JZFrpServerConfig
 {
 public:
     std::string token;
 };
 
 // FRP 服务器类
-class JZFrpServer : public JZObject {
+class JZFRAMEWORK_API JZFrpServer : public JZObject {
 public:
     JZFrpServer(JZObject *parent = nullptr);
     ~JZFrpServer();

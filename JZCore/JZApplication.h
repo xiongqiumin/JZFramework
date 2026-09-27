@@ -1,6 +1,5 @@
 #ifndef JZ_APPLICATION_H_
 #define JZ_APPLICATION_H_
-
 #include <vector>
 #include "JZObject.h"
 #include "JZEventLoop.h"
@@ -10,7 +9,7 @@
 class JZWindow;     // 前视声明: 定义在 JZWidget, 这里只用指针, 不引入模块依赖
 class JZStyleSheetParser;   // 前视声明: 定义在 JZWidget (全局样式表, 仅 HAS_JZWidget 时持有)
 
-class JZApplication : public JZObject
+class JZFRAMEWORK_API JZApplication : public JZObject
 {
 public:
     static JZApplication* instance();
@@ -106,5 +105,4 @@ protected:
 extern JZApplication *jzApp;
 
 #endif
-
 

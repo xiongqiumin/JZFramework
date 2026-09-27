@@ -1,7 +1,7 @@
 #pragma once
 #include "JZPlatform.h"
 
-class JZPlatformWrapperEsp32 : public JZPlatformWrapper
+class JZFRAMEWORK_API JZPlatformWrapperEsp32 : public JZPlatformWrapper
 {
 public:
     virtual ~JZPlatformWrapperEsp32() override;

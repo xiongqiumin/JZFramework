@@ -1,6 +1,5 @@
 #ifndef JZ_BLE_DRIVER_ESP32_H_
 #define JZ_BLE_DRIVER_ESP32_H_
-
 #include "JZBleDriver.h"
 #include "JZBLEPeripheral.h"   // 完整定义 JZBLEPeripheralConnect（基类需要完整类型）
 #include "JZByteArray.h"
@@ -26,14 +25,14 @@ struct ble_gatt_dsc;
 struct PeriphGatt;
 
 // 从机特征定义（GATT 表为服务端共享；订阅状态改为按连接记录，见 JZBLEPeripheralConnectEsp32::subs）
-struct PeriphCharInfo {
+struct PeriphCharInfo JZFRAMEWORK_API {
     std::string svcUuid;     // 所属 Service UUID 字符串
     uint16_t valHandle = 0;
     int properties = 0;
     JZByteArray value;
 };
 
-class JZBLEPeripheralConnectEsp32 : public JZBLEPeripheralConnect
+class JZFRAMEWORK_API JZBLEPeripheralConnectEsp32 : public JZBLEPeripheralConnect
 {
 public:
     virtual ~JZBLEPeripheralConnectEsp32()
@@ -50,7 +49,7 @@ public:
     std::map<std::string, CharSub> subs;  // charUuid.toString() -> 订阅状态
 };
 
-class JZBleDriverEsp32 : public JZBleDriver
+class JZFRAMEWORK_API JZBleDriverEsp32 : public JZBleDriver
 {
 public:
     JZBleDriverEsp32();

@@ -1,11 +1,10 @@
 #ifndef JZ_CO_NETWORK_ACCESS_MANAGER_H_
 #define JZ_CO_NETWORK_ACCESS_MANAGER_H_
-
 #include "JZCo.h"
 #include "JZNetworkAccessManager.h"
 
 class JZCoNetworkAccessManager;
-class JZCoNetworkReply : public JZObject
+class JZFRAMEWORK_API JZCoNetworkReply : public JZObject
 {
 public:
     // 协程等待请求完成 / 读取响应体(供外部调用者使用)
@@ -33,7 +32,7 @@ protected:
     JZNetworkReply *m_reply;
 };
 
-class JZCoNetworkAccessManager : public JZObject
+class JZFRAMEWORK_API JZCoNetworkAccessManager : public JZObject
 {
 public:
     JZCoNetworkAccessManager(JZObject *parent = nullptr);

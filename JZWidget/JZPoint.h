@@ -1,7 +1,7 @@
 #ifndef JZ_POINT_H_
 #define JZ_POINT_H_
-
-class JZPoint
+#include "JZGlobal.h"
+class JZFRAMEWORK_API JZPoint
 {
 public:
     JZPoint();

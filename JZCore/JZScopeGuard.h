@@ -1,11 +1,10 @@
 ﻿#ifndef JZSCOPEGUARD_H
 #define JZSCOPEGUARD_H
-
 #include <functional>
 #include "JZGlobal.h"
 
 // 作用域守卫核心类：仅支持 std::function<void()> 类型的清理函数
-class JZScopeGuard 
+class JZFRAMEWORK_API JZScopeGuard 
 {
 public:
     explicit JZScopeGuard(std::function<void()> func);

@@ -1,6 +1,5 @@
 #ifndef JZ_MCP_CLIENT_H_
 #define JZ_MCP_CLIENT_H_
-
 #include <functional>
 #include <map>
 #include <string>
@@ -29,7 +28,7 @@ class JZMcpClient;
  * 生命周期归创建它的 JZMcpClient(以 client 为父对象); JZAgent 通过
  * JZAgent::addMcp() 只是登记这些指针, 不接管所有权。
  */
-class JZMcpClientTool : public JZAgentTool
+class JZFRAMEWORK_API JZMcpClientTool : public JZAgentTool
 {
 public:
     explicit JZMcpClientTool(JZMcpClient *client);
@@ -75,7 +74,7 @@ private:
  * 成功或失败)后发一次 sigFinished。结束后用 isReady() 判断结果, 失败原因见
  * errorString()。请先 connect 好 sigFinished 再调用 startXxx。
  */
-class JZMcpClient : public JZObject
+class JZFRAMEWORK_API JZMcpClient : public JZObject
 {
     JZ_OBJECT_DECLARE(JZMcpClient)
     friend class JZMcpClientTool;

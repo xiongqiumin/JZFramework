@@ -1,6 +1,5 @@
 #ifndef JZ_IMAGE_WRITER_H_
 #define JZ_IMAGE_WRITER_H_
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -18,7 +17,7 @@
 // JZStbImage.cpp, 本文件及使用方只 include 头文件拿声明)。
 // JPEG 编码需 quality (0~100, 默认 90); PNG/BMP/TGA 无损, 忽略 quality。
 // 失败返回 false / 空 vector。
-class JZImageWriter
+class JZFRAMEWORK_API JZImageWriter
 {
 public:
     // 可编码格式 (stb_image_write 支持集)

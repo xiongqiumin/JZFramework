@@ -1,6 +1,5 @@
 #ifndef JZBLECONTROLLER_H
 #define JZBLECONTROLLER_H
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZBLEDeviceInfo.h"
@@ -11,7 +10,7 @@
 #include "JZBleDriver.h"
 class JZBLEService;
 
-class JZBLEController : public JZObject 
+class JZFRAMEWORK_API JZBLEController : public JZObject 
 {
     JZ_OBJECT_DECLARE(JZBLEController)
 

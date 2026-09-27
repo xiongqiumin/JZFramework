@@ -1,9 +1,8 @@
 ﻿#ifndef JZCO_FILE_H
 #define JZCO_FILE_H
-
 #include "JZFile.h"
 
-class JZCoFile
+class JZFRAMEWORK_API JZCoFile
 {
 public:
     JZCoFile();

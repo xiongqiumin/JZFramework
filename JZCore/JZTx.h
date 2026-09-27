@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_TX_H_
 #define JZ_TX_H_
-
 #include <inttypes.h>
 #include <string>
 #include <vector>
@@ -8,13 +7,13 @@
 #include "JZGlobal.h"
 #include "JZMutex.h"
 
-struct JZTxFixedStr
+struct JZFRAMEWORK_API JZTxFixedStr
 {
     const char* str;
     int len;
 };
 
-struct JZTxTraceLog
+struct JZFRAMEWORK_API JZTxTraceLog
 {
     enum LogType{
         TraceNone,
@@ -29,7 +28,7 @@ struct JZTxTraceLog
     int stackUsed;
 };
 
-class JZTxTracer
+class JZFRAMEWORK_API JZTxTracer
 {
 public:
     JZTxTracer(const std::string &name);
@@ -50,14 +49,14 @@ protected:
 #define JZTX_FUNC_TRACE
 #endif
 
-class JZTxConfig
+class JZFRAMEWORK_API JZTxConfig
 {
 public:
     JZTxConfig();
 };
 
 class JZTxClient;
-class JZTxManager
+class JZFRAMEWORK_API JZTxManager
 {
 public:
     static JZTxManager* instance();

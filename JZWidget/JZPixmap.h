@@ -1,6 +1,6 @@
 #ifndef JZ_PIXMAP_H_
 #define JZ_PIXMAP_H_
-
+#include "JZGlobal.h"
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -26,7 +26,7 @@ class JZImage;
 //
 // 像素布局目前固定为 GDI+ 需要的 32bppPARGB; 将来接入别的后端时在这里扩充目标
 // 格式 (新增枚举/工厂, 由该后端负责转换) 即可。
-class JZPixmapData
+class JZFRAMEWORK_API JZPixmapData
 {
 public:
     int width() const { return m_w; }
@@ -45,7 +45,7 @@ private:
     std::vector<uint8_t> m_pixels;
 };
 
-class JZPixmap
+class JZFRAMEWORK_API JZPixmap
 {
 public:
     JZPixmap() = default;

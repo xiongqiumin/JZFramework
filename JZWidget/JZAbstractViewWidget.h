@@ -1,6 +1,5 @@
 #ifndef JZ_ABSTRACT_VIEW_WIDGET_H_
 #define JZ_ABSTRACT_VIEW_WIDGET_H_
-
 #include "JZScrollArea.h"
 
 // 抽象视图基类: 虚拟绘制 (owner-draw) 视图控件的公共底座。
@@ -10,7 +9,7 @@
 //     滚动位置用 scrollX()/scrollY();
 //   - 内容总尺寸由子类重算后调用 setContentSize() 上报, 驱动真实的 JZScrollBar;
 //   - 视口尺寸变化 (resize) 时基类统一回调 updateContentSize() 并刷新。
-class JZAbstractViewWidget : public JZScrollArea
+class JZFRAMEWORK_API JZAbstractViewWidget : public JZScrollArea
 {
     JZ_OBJECT_DECLARE(JZAbstractViewWidget)
 

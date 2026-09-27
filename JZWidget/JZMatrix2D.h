@@ -1,6 +1,6 @@
 #ifndef JZ_MATRIX2D_H_
 #define JZ_MATRIX2D_H_
-
+#include "JZGlobal.h"
 #include <cmath>
 #include <cstddef>
 
@@ -18,7 +18,7 @@
 // 组合语义 (post-multiply, 同 Qt): 每次 translate/rotate/scale 都右乘到当前矩阵,
 // 即 "在已经变换过的坐标系内" 继续变换。例如先 translate 把原点搬到控件中心,
 // 再 rotate, 则绕控件中心旋转。
-class JZMatrix2D
+class JZFRAMEWORK_API JZMatrix2D
 {
 public:
     JZMatrix2D()

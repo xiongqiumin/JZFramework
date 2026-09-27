@@ -1,6 +1,5 @@
 #ifndef JZ_TAB_WIDGET_H_
 #define JZ_TAB_WIDGET_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 #include <vector>
@@ -16,7 +15,7 @@
 //     tabs->addTab(new JZWidget(), "General");
 //     tabs->addTab(new JZWidget(), "Advanced");
 //     connect(&tabs->currentChanged, ...);
-class JZTabWidget : public JZWidget
+class JZFRAMEWORK_API JZTabWidget : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZTabWidget)
 

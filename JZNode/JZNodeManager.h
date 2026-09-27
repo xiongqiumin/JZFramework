@@ -1,9 +1,8 @@
 ﻿#ifndef JZNODEMANAGER_H
 #define JZNODEMANAGER_H
-
 #include "JZNode.h"
 
-class JZNodeManager : public JZObject
+class JZFRAMEWORK_API JZNodeManager : public JZObject
 {
 public:
     JZNodeManager(JZObject *parent = nullptr);

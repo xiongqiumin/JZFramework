@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_CONDITION_VARIABLE 
 #define JZ_CONDITION_VARIABLE 
-
 #include "JZGlobal.h"
 #include "JZMutex.h"
 #include <functional> // 仅保留 std::function（跨平台）
@@ -9,7 +8,7 @@
 #include <condition_variable>
 #endif
 
-class JZConditionVariable
+class JZFRAMEWORK_API JZConditionVariable
 {
 public:
     JZConditionVariable();
@@ -36,6 +35,5 @@ private:
         void* m_cv; // 运行时绑定 FreeRTOS 队列/RT-Thread 条件变量
     #endif
 };
-
 
 #endif

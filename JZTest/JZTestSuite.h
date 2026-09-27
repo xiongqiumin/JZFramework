@@ -1,12 +1,12 @@
 #ifndef JZTESTSUITE_H
 #define JZTESTSUITE_H
-
+#include "JZGlobal.h"
 #include <string>
 #include <functional>
 #include <vector>
 #include <memory>
 
-class JZTestSuite {
+class JZFRAMEWORK_API JZTestSuite {
 public:
     JZTestSuite(const std::string& name);
     ~JZTestSuite();

@@ -1,6 +1,5 @@
 #ifndef JZ_SHA256_H_
 #define JZ_SHA256_H_
-
 #include <stddef.h>
 #include "JZByteArray.h"
 
@@ -12,7 +11,7 @@ namespace JZCrypto
     JZByteArray sha256(const JZByteArray &data);
 
     // 增量式 SHA-256: 适合大文件 / 流式数据
-    class JZSha256
+    class JZFRAMEWORK_API JZSha256
     {
     public:
         JZSha256();

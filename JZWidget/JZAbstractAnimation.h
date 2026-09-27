@@ -1,6 +1,5 @@
 #ifndef JZ_ABSTRACT_ANIMATION_H_
 #define JZ_ABSTRACT_ANIMATION_H_
-
 #include "JZSignal.h"
 #include "JZObject.h"
 
@@ -8,7 +7,7 @@
 typedef void (*JZAnimExecCb)(void* target, int32_t value);
 
 // 缓动曲线
-enum class JZEasing
+enum class JZFRAMEWORK_API JZEasing
 {
     Linear,     // 匀速
     EaseIn,     // 加速
@@ -25,7 +24,7 @@ class JZWidget;
 // 上插值, 每帧经 onValueChanged() 输出 —— 默认派发给 setExecCb 回调,
 // 派生类 (如 JZPropertyAnimation) 覆盖 onValueChanged 驱动具体属性。
 // 驱动方式: 内部 startTimer(16ms), 由线程定时器逐帧推进。
-class JZAbstractAnimation : public JZObject
+class JZFRAMEWORK_API JZAbstractAnimation : public JZObject
 {
     JZ_OBJECT_DECLARE(JZAbstractAnimation)
 

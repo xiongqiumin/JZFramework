@@ -1,6 +1,5 @@
 #ifndef JZ_CHACHA20_POLY1305_H_
 #define JZ_CHACHA20_POLY1305_H_
-
 #include "JZByteArray.h"
 
 // RFC 8439 ChaCha20-Poly1305 AEAD (OpenSSL EVP_chacha20_poly1305 实现)。
@@ -9,7 +8,7 @@
 //       且 key 必须保密、不可跨报文复用同一 Poly1305 key(RFC 8439 内部已按 nonce 派生)。
 namespace JZCrypto
 {
-    class JZChaCha20Poly1305
+    class JZFRAMEWORK_API JZChaCha20Poly1305
     {
     public:
         // key 32 字节, nonce 12 字节(RFC 8439), aad 可为空。

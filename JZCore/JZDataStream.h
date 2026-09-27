@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_DATA_STREAM_H_
 #define JZ_DATA_STREAM_H_
-
 #include <string>
 #include <stdint.h>
 #include <type_traits>
@@ -59,7 +58,7 @@ class JZDataStream;
 template<class T>
 JZDataStream &operator<<(JZDataStream &s, const std::vector<T> &vec);
 
-class JZDataStream
+class JZFRAMEWORK_API JZDataStream
 {
 public:
     enum ByteOrder
@@ -230,18 +229,18 @@ using EnableIfEnum = typename std::enable_if<std::is_enum<T>::value, int>::type;
 
 // 预定义基础类型(仅这些类型允许走批量裸字节路径, 不含自定义结构体/类)。
 // 覆盖: bool/char/有符号无符号整型(含定宽)/浮点。枚举由专门操作符处理, 不计入。
-template<typename T> struct JZIsFundamental : std::false_type {};
-template<> struct JZIsFundamental<bool>            : std::true_type {};
-template<> struct JZIsFundamental<int8_t>          : std::true_type {};
-template<> struct JZIsFundamental<uint8_t>         : std::true_type {};
-template<> struct JZIsFundamental<int16_t>         : std::true_type {};
-template<> struct JZIsFundamental<uint16_t>        : std::true_type {};
-template<> struct JZIsFundamental<int32_t>         : std::true_type {};
-template<> struct JZIsFundamental<uint32_t>        : std::true_type {};
-template<> struct JZIsFundamental<int64_t>         : std::true_type {};
-template<> struct JZIsFundamental<uint64_t>        : std::true_type {};
-template<> struct JZIsFundamental<float>           : std::true_type {};
-template<> struct JZIsFundamental<double>          : std::true_type {};
+template<typename T> struct JZFRAMEWORK_API JZIsFundamental : std::false_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<bool>            : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<int8_t>          : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<uint8_t>         : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<int16_t>         : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<uint16_t>        : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<int32_t>         : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<uint32_t>        : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<int64_t>         : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<uint64_t>        : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<float>           : std::true_type {};
+template<> struct JZFRAMEWORK_API JZIsFundamental<double>          : std::true_type {};
 
 // 对 char* 指向的 size 字节序列原地字节交换(用于 vector 批量换序)。
 // 用 memcpy 读写, 不要求地址对齐(规避 reinterpret_cast<T*> 解引用的未对齐 UB),
@@ -460,7 +459,6 @@ inline JZDataStream &operator>>(JZDataStream &s, std::vector<bool> &vec)
     }
     return s;
 }
-
 
 template<class K, class V>
 JZDataStream &operator<<(JZDataStream &s, const std::map<K, V> &m)

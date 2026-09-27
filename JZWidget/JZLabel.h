@@ -1,9 +1,8 @@
 #ifndef JZ_WIDGET_LABEL_H_
 #define JZ_WIDGET_LABEL_H_
-
 #include "JZWidget.h"
 
-class JZLabel : public JZWidget
+class JZFRAMEWORK_API JZLabel : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZLabel)
 

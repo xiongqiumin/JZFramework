@@ -1,6 +1,5 @@
 #ifndef JZCO_BLE_CENTRAL_H_
 #define JZCO_BLE_CENTRAL_H_
-
 #include "JZCo.h"
 #include "JZBLEController.h"
 #include "JZBLEDeviceInfo.h"
@@ -15,7 +14,7 @@ class JZCoBleService;
 // 在协程中调用 connectToDevice / discoverServices，异步结果通过 JZCoCondition 等待，返回 JZResult。
 // 创建出的 JZCoBleService 由本对象管理生命周期（作为子对象），
 // 与本对象同线程，保证信号直连、协程正确恢复（参考 JZCoTcpSocket）。
-class JZCoBleCentral : public JZObject
+class JZFRAMEWORK_API JZCoBleCentral : public JZObject
 {
 public:
     JZCoBleCentral(JZObject *parent = nullptr);

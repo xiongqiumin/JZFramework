@@ -1,6 +1,5 @@
 ﻿#ifndef JZCO_CO_COROUTINE_H_
 #define JZCO_CO_COROUTINE_H_
-
 #include <functional>
 #include <memory>
 #include <vector>
@@ -19,7 +18,7 @@ class JZCoScheduler;
      同理, 也不能在协程中切换到其他协程, co1 直接切换到 co2, co1 信息就丢失了. 切换统一使用JZCoCondition
      协程让出后 -> 总是唤醒主线程 -> 再由主线程调度
 */
-class JZCoCoroutine
+class JZFRAMEWORK_API JZCoCoroutine
 {
 public:
     explicit JZCoCoroutine(int stack_size = 1024);
@@ -50,7 +49,7 @@ protected:
 };
 typedef std::shared_ptr<JZCoCoroutine> JZCoCoroutinePtr;
 
-class JZCoScheduler : public JZObject
+class JZFRAMEWORK_API JZCoScheduler : public JZObject
 {
 public:
     JZCoScheduler(JZObject *parent = nullptr);
@@ -86,7 +85,7 @@ protected:
 extern JZCoScheduler* g_scheduler;
 
 //JZCoCondition
-class JZCoCondition
+class JZFRAMEWORK_API JZCoCondition
 {
 public:
     JZCoCondition();
@@ -102,7 +101,7 @@ protected:
 };
 
 class JZCoThread;
-class JZCoThreadPool : public JZObject
+class JZFRAMEWORK_API JZCoThreadPool : public JZObject
 {
 public:
     static JZCoThreadPool *instance();
@@ -111,7 +110,7 @@ public:
 protected:
     friend JZCoThread;
 
-    struct JZCoJob
+    struct JZFRAMEWORK_API JZCoJob
     {
         JZCoCondition *cond;
         std::function<void()> task;

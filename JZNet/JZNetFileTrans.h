@@ -1,6 +1,5 @@
 ﻿#ifndef JZNET_FILE_TRANS_H_
 #define JZNET_FILE_TRANS_H_
-
 #include "JZNetPacket.h"
 #include "JZNetClient.h"
 #include "JZNetServer.h"
@@ -20,7 +19,7 @@ enum FileTaskType {
 };
 
 //JZNetPackFileOperatorf
-class JZNetPackFileOperatorReq : public JZNetPack
+class JZFRAMEWORK_API JZNetPackFileOperatorReq : public JZNetPack
 {
 public:
 	JZNetPackFileOperatorReq();
@@ -39,7 +38,7 @@ public:
 };
 
 //JZNetPackFileOperator
-class JZNetPackFileOperatorRes : public JZNetPack
+class JZFRAMEWORK_API JZNetPackFileOperatorRes : public JZNetPack
 {
 public:
     JZNetPackFileOperatorRes();
@@ -59,7 +58,7 @@ public:
 };
 
 //JZNetPackFileReq 总是先发请求数据，再发接收
-class JZNetPackFileReq : public JZNetPack
+class JZFRAMEWORK_API JZNetPackFileReq : public JZNetPack
 {
 public:
 	JZNetPackFileReq();
@@ -76,7 +75,7 @@ public:
 };
 
 //JZNetPackFileRes
-class JZNetPackFileRes : public JZNetPack
+class JZFRAMEWORK_API JZNetPackFileRes : public JZNetPack
 {
 public:
 	JZNetPackFileRes();
@@ -94,7 +93,7 @@ public:
 };
 
 //JZNetPackFileResult
-class JZNetPackFileResult : public JZNetPack
+class JZFRAMEWORK_API JZNetPackFileResult : public JZNetPack
 {
 public:
     JZNetPackFileResult();
@@ -108,7 +107,7 @@ public:
     bool isFinish;
 };
 
-class JZNetFileTask
+class JZFRAMEWORK_API JZNetFileTask
 {
 public:    
     enum Status {
@@ -139,7 +138,7 @@ typedef std::shared_ptr<JZNetFileTask> JZNetFileTaskPtr;
 /*
 先发送 JZNetPackFileOperatorReq 建立通道，通道建立后，总是由数据发送方发送 JZNetPackFileReq
 */
-class JZNetFileTrans
+class JZFRAMEWORK_API JZNetFileTrans
 {
 
 public:

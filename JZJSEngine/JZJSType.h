@@ -1,4 +1,4 @@
-﻿#ifndef JS_TYPE_H_
+#ifndef JS_TYPE_H_
 #define JS_TYPE_H_
 
 #include <assert.h>
@@ -30,7 +30,7 @@ using remove_cvr_t = remove_cv_t<remove_reference_t<T>>;
 
 // vector
 template <class T>
-struct is_vector : std::false_type
+struct is_vector JZFRAMEWORK_API : std::false_type
 {
 };
 
@@ -40,7 +40,7 @@ struct is_vector<std::vector<T, Alloc>> : std::true_type
 };
 
 template <class T>
-struct vector_value_type
+struct vector_value_type JZFRAMEWORK_API
 {
 };
 
@@ -94,7 +94,7 @@ enum
     JSType_objectUser = 2000,
 };
 
-struct CFunctionParam
+struct CFunctionParam JZFRAMEWORK_API
 {
     CFunctionParam();
 
@@ -136,7 +136,7 @@ public:
 //                 JSValue fn(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)。
 //                 所以它拿得到 this_val 和原始 argv(需要翻接收者所有权、要返回真 null、
 //                 要自定义重载分派的接口只能这么注册), 校验与错误提示全部自理。
-struct CRawFunction
+struct CRawFunction JZFRAMEWORK_API
 {
     std::string name;
     JSCFunction* function = nullptr;
@@ -151,7 +151,7 @@ struct CRawFunction
 // 用途: C 函数要拿到"注册它的人/上下文"(如 JZJSWidgetModule 指针)。this_val 是 JS 对象、
 //      ctx opaque 只有引擎、magic 只能放一个 int, 都不够, 这类数据就只能随函数对象带。
 // 注意: JSCFunctionListEntry 里没有数据字段, 所以这类函数注册时必须单独造函数对象再挂属性。
-struct CDataFunction
+struct CDataFunction JZFRAMEWORK_API
 {
     std::string name;
     JSCFunctionData* function = nullptr;

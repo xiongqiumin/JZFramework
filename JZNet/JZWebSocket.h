@@ -1,6 +1,5 @@
 #ifndef JZ_WEB_SOCKET_H_
 #define JZ_WEB_SOCKET_H_
-
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
@@ -9,13 +8,13 @@
 class JZWebSocketServer;
 
 // WebSocket response data
-class JZWsResData : public JZNetResEventData
+class JZFRAMEWORK_API JZWsResData : public JZNetResEventData
 {
 public:
     int wsFlag;
 };
 
-class JZWebSocket : public JZNetObject
+class JZFRAMEWORK_API JZWebSocket : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZWebSocket)
 

@@ -1,6 +1,5 @@
 #ifndef JZ_OTA_DRIVER_H_
 #define JZ_OTA_DRIVER_H_
-
 #include "JZStd.h"
 #include "JZByteArray.h"
 #include "JZResult.h"
@@ -15,7 +14,7 @@ struct JZOTAUpdateInfo;
  * 把"下载后的固件数据写到哪里 / 怎么写"这一行为与下载逻辑解耦。
  * JZOTA 只负责下载与调度, 真正的落盘(文件 / Flash / 自定义存储)及校验由具体驱动实现。
  */
-class JZOTADriver
+class JZFRAMEWORK_API JZOTADriver
 {
 public:
     JZOTADriver() = default;
@@ -24,7 +23,6 @@ public:
     // 全局驱动实例: 在 JZDriver::init 中按平台安装。
     static void setInstance(JZOTADriver *inst);
     static JZOTADriver *instance();
-
 
     // 校验能否升级: Ok()=环境就绪(分区存在且容量足够), Error=校验失败
     virtual JZResult<void> verify(const JZOTAUpdateInfo &info) = 0;

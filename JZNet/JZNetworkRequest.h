@@ -1,12 +1,11 @@
 #ifndef JZ_NETWORK_REQUEST_H_
 #define JZ_NETWORK_REQUEST_H_
-
 #include <string>
 #include <map>
 #include "JZGlobal.h"
 #include "JZUrl.h"
 
-class JZNetworkRequest
+class JZFRAMEWORK_API JZNetworkRequest
 {
 public:
     enum HttpMethod {

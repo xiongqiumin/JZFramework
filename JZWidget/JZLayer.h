@@ -1,13 +1,12 @@
 #ifndef JZ_LAYER_H_
 #define JZ_LAYER_H_
-
 #include "JZDrawTask.h"
 #include <vector>
 
 // 图层: 本帧待执行的 draw_task 列表 (渲染后端无关)。
 // 任务由 JZWidget 树遍历产生 (见 JZDisplayDevice::redraw), 渲染后端
 // (JZGdiBackend) 负责把任务列表翻译为具体绘制调用后清空。
-class JZLayer
+class JZFRAMEWORK_API JZLayer
 {
 public:
     JZLayer();

@@ -1,6 +1,5 @@
 #ifndef JZ_AUDIO_OUTPUT_LINUX_H_
 #define JZ_AUDIO_OUTPUT_LINUX_H_
-
 #include <alsa/asoundlib.h>
 #include <list>
 #include "JZAudioFormat.h"
@@ -10,7 +9,7 @@
 #include "detail/JZAudioOutputImpl.h"
 
 class JZAudioOutput;
-class JZAudioOutputLinux : public JZAudioOutputImpl
+class JZFRAMEWORK_API JZAudioOutputLinux : public JZAudioOutputImpl
 {
 public:
     explicit JZAudioOutputLinux(JZAudioOutput* parent);

@@ -1,13 +1,12 @@
 #ifndef JZBENCHMARK_H
 #define JZBENCHMARK_H
-
 #include <string>
 #include <functional>
 #include <cstdint>
 #include "JZElapsedTimer.h"
 
 // 单次 benchmark 的结果
-struct JZBenchmarkResult
+struct JZFRAMEWORK_API JZBenchmarkResult
 {
     std::string name;     // 名称
     int64_t iters = 0;    // 实际运行次数 (自适应)
@@ -21,7 +20,7 @@ struct JZBenchmarkResult
 // 自适应 benchmark: 先预热 + 校准估算单次耗时, 再据目标耗时反推迭代数,
 // 使总测试时间稳定在 targetMs 附近, 同时总时长被限制在 [minSec, maxSec] 内。
 // 测量采用「整批计时」: 把迭代分批, 每批只计时一次, 避免对快操作逐次计时的开销。
-class JZBenchmark
+class JZFRAMEWORK_API JZBenchmark
 {
 public:
     // targetMs : 期望的总测试时间 (毫秒), 用于推算迭代数

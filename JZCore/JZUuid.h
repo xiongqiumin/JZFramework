@@ -1,9 +1,9 @@
 #ifndef JZ_UUID_H_
 #define JZ_UUID_H_
-
+#include "JZGlobal.h"
 #include <string>
 
-class JZUuid
+class JZFRAMEWORK_API JZUuid
 {
 public:
     enum StringFormat {

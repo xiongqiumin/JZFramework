@@ -1,6 +1,5 @@
 #ifndef JS_ENGINE_CORE_MODULE_H_
 #define JS_ENGINE_CORE_MODULE_H_
-
 #include <string>
 #include <vector>
 #include <map>
@@ -17,7 +16,7 @@
 // JS core 模块: 把 JZCore 已有的 file/dir/os 能力暴露成 Node.js 风格 API
 // (fs / path / os / process)。全部为 Node 里的同步接口, 直接映射到 JZCore 的同步实现,
 // 不做任何异步包装(异步 Promise 版本后续再加)。
-class JZJSCoreModule : public JZObject
+class JZFRAMEWORK_API JZJSCoreModule : public JZObject
 {
 public:
     JZJSCoreModule();

@@ -1,5 +1,6 @@
 #ifndef JZ_STYLE_SHEET_PARSER_H_
 #define JZ_STYLE_SHEET_PARSER_H_
+#include "JZGlobal.h"
 
 #include <string>
 #include <vector>
@@ -22,7 +23,7 @@
 // 遇到上述语法直接 parse 失败并给出 errorString, 不静默丢弃。
 
 // 单条复合选择器 (不含逗号与组合器)
-struct JZStyleSelector
+struct JZFRAMEWORK_API JZStyleSelector
 {
     std::string type;                      // 类型选择器 (框架类名, 如 JZPushButton); "*" = 通配; 空 = 不限
     std::vector<std::string> classes;      // .class 复合 (全部须匹配)
@@ -36,20 +37,20 @@ struct JZStyleSelector
     std::string toString() const;          // 还原为文本 (报错/调试)
 };
 
-struct JZStyleDecl
+struct JZFRAMEWORK_API JZStyleDecl
 {
     std::string property;   // 属性名 (已小写化)
     std::string value;      // 值文本 (var() 已替换, !important 已摘除)
     bool important;         // 是否 !important
 };
 
-struct JZStyleRule
+struct JZFRAMEWORK_API JZStyleRule
 {
     std::vector<JZStyleSelector> selectors;   // 逗号组展开后的各选择器 (共享同一声明块)
     std::vector<JZStyleDecl> decls;
 };
 
-class JZStyleSheetParser
+class JZFRAMEWORK_API JZStyleSheetParser
 {
 public:
     JZStyleSheetParser();

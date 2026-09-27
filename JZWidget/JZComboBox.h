@@ -1,6 +1,5 @@
 #ifndef JZ_WIDGET_DROPDOWN_H_
 #define JZ_WIDGET_DROPDOWN_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 #include <vector>
@@ -9,7 +8,7 @@
 class JZWindow;
 class JZListWidget;
 
-class JZComboBox : public JZWidget
+class JZFRAMEWORK_API JZComboBox : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZComboBox)
 

@@ -1,11 +1,10 @@
 #ifndef JZCO_WEB_SOCKET_SERVER_H_
 #define JZCO_WEB_SOCKET_SERVER_H_
-
 #include "JZCoCoroutine.h"
 #include "JZCoWebSocket.h"
 #include "JZWebSocketServer.h"
 
-class JZCoWebSocketServer : public JZObject
+class JZFRAMEWORK_API JZCoWebSocketServer : public JZObject
 {
 public:
     JZCoWebSocketServer(JZObject* object = nullptr);

@@ -1,6 +1,5 @@
 #ifndef JZ_COMPRESS_H_
 #define JZ_COMPRESS_H_
-
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -28,7 +27,7 @@
  */
 
 // ==================== 算法枚举（均为 HTTP 内容编码支持） ====================
-enum class JZCompressAlgorithm
+enum class JZFRAMEWORK_API JZCompressAlgorithm
 {
     Deflate,    // raw deflate 流（HTTP "deflate" 实际为 zlib 封装的 raw deflate）
     Zlib,       // zlib 封装 (rfc1950)，裸流易嵌入自定义协议
@@ -66,7 +65,7 @@ JZResult<JZByteArray> jzDecompressBlock(const JZByteArray &in, JZCompressAlgorit
  *
  * 注意：write() 之间数据是连续的，不要跨对象 / 跨算法复用缓冲。
  */
-class JZCompressStream
+class JZFRAMEWORK_API JZCompressStream
 {
 public:
     JZCompressStream(JZCompressAlgorithm algo, int level = -1);
@@ -96,7 +95,7 @@ private:
     Impl *m_impl;
 };
 
-class JZDecompressStream
+class JZFRAMEWORK_API JZDecompressStream
 {
 public:
     // expectSizeHint: 可选的原始大小提示（部分格式需要，如 raw deflate）。0=未知。
@@ -122,7 +121,7 @@ private:
 };
 
 // ==================== 标准 zip 归档 ====================
-struct JZZipEntry
+struct JZFRAMEWORK_API JZZipEntry
 {
     std::string name;          // 归档内路径（使用 '/'，相对根）
     int64_t size = 0;          // 原始大小（字节）
@@ -151,7 +150,7 @@ using JZZipProgress = std::function<bool(int64_t current, int64_t total)>;
  *   z.addFolder("assets");                 // 整目录
  *   z.zip("out.zip", 6);
  */
-class JZZip
+class JZFRAMEWORK_API JZZip
 {
 public:
     JZZip();
@@ -203,7 +202,7 @@ private:
  *   u.extractToFile("bin/app.bin", "D:/out/app.bin");// 单文件落盘
  *   u.unzip("D:/out");                               // 整包解压到目录
  */
-class JZUnZip
+class JZFRAMEWORK_API JZUnZip
 {
 public:
     JZUnZip();

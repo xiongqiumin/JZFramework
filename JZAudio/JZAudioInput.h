@@ -1,13 +1,12 @@
 #ifndef JZAUDIO_INPUT_H_
 #define JZAUDIO_INPUT_H_
-
 #include "JZObject.h"
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
 #include "JZAudioDeviceInfo.h"
 
 class JZAudioInputImpl;
-class JZAudioInput : public JZObject
+class JZFRAMEWORK_API JZAudioInput : public JZObject
 {
 public:
 	JZAudioInput(JZObject *parent = nullptr);
@@ -29,7 +28,5 @@ protected:
 	JZAudioFormat m_format;
 	JZAudioInputImpl* d;
 };
-
-
 
 #endif // !JZAUDIO_INPUT_H_

@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_HANDLER_H_
 #define JZ_HTTP_HANDLER_H_
-
 #include "JZObject.h"
 #include "JZNetObject.h"
 #include "JZHttpRequest.h"
@@ -8,7 +7,7 @@
 
 class JZHttpServerClient;
 
-class JZHttpHandler : public JZObject
+class JZFRAMEWORK_API JZHttpHandler : public JZObject
 {
 public:
     virtual ~JZHttpHandler() = default;

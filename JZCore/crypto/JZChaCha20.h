@@ -1,13 +1,12 @@
 #ifndef JZ_CHACHA20_H_
 #define JZ_CHACHA20_H_
-
 #include "JZByteArray.h"
 
 // OpenSSL EVP 实现的 ChaCha20 流密码, 全部位于 JZCrypto 命名空间下。
 // 用法与 JZXorShift 一致: 加密 / 解密都是"用密钥流原地异或", 连续调用延续同一段密钥流。
 namespace JZCrypto
 {
-    class JZChaCha20
+    class JZFRAMEWORK_API JZChaCha20
     {
     public:
         JZChaCha20();

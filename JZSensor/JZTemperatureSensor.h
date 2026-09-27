@@ -1,6 +1,5 @@
 #ifndef JZ_TEMPERATURE_SENSOR_H_
 #define JZ_TEMPERATURE_SENSOR_H_
-
 #include "JZSensor.h"
 #include <cmath>
 #include <vector>
@@ -12,7 +11,7 @@
 //   t.open();
 //   t.start(1000);                 // 周期采样, 经 onSampled 刷新 temperature()
 //   double v = t.temperature();    // 最近一次温度(℃)
-class JZTemperatureSensor : public JZSensor
+class JZFRAMEWORK_API JZTemperatureSensor : public JZSensor
 {
 public:
     explicit JZTemperatureSensor(JZObject *parent = nullptr);

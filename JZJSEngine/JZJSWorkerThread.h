@@ -1,6 +1,5 @@
 #ifndef JZ_JS_WORKER_THREAD_H_
 #define JZ_JS_WORKER_THREAD_H_
-
 #include <string>
 #include <vector>
 
@@ -23,7 +22,7 @@ enum
 // 一条跨 worker 消息。
 // data 是 JS_WriteObject 得到的字节 —— 唯一能跨引擎的载体:
 // 发送方线程/ctx 序列化, 接收方线程/ctx 反序列化。
-class JZJSWorkerMessageEvent : public JZEvent
+class JZFRAMEWORK_API JZJSWorkerMessageEvent : public JZEvent
 {
 public:
     JZJSWorkerMessageEvent(int fromId, const JZByteArray& data);
@@ -37,7 +36,7 @@ public:
 // 注意: "线程结束, 主引擎去回收" **没有**对应事件 —— JZThread 自带 `sigFinished`
 // (JZThread::start 的线程体在 run() 返回后 emit, 见 JZThread.cpp), 主引擎把它
 // connect 到 JZJSEngine::onWorkerFinished 即可(Auto 连接判定跨线程 -> 排队到主线程)。
-class JZJSWorkerExitEvent : public JZEvent
+class JZFRAMEWORK_API JZJSWorkerExitEvent : public JZEvent
 {
 public:
     JZJSWorkerExitEvent(int workerId, int code);
@@ -57,7 +56,7 @@ public:
 //
 // 线程表不在这里 —— 它挂在主引擎上(JZJSEngine 的 worker 相关接口)。
 // =========================================================================
-class JZJSWorkerThread : public JZThread
+class JZFRAMEWORK_API JZJSWorkerThread : public JZThread
 {
 public:
     JZJSWorkerThread(JZObject* parent = nullptr);

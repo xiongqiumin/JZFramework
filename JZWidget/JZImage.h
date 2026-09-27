@@ -1,6 +1,5 @@
 #ifndef JZ_IMAGE_H_
 #define JZ_IMAGE_H_
-
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,7 +9,7 @@
 #include "JZColor.h"
 
 // 图像数据: RGBA8888 像素缓冲, 渲染后端 (JZGdiBackend) 懒缓存为位图。
-class JZImageData
+class JZFRAMEWORK_API JZImageData
 {
 public:
     int width() const { return m_w; }
@@ -37,7 +36,7 @@ private:
     std::vector<uint8_t> m_pixels;
 };
 
-class JZImage
+class JZFRAMEWORK_API JZImage
 {
 public:
     // 图像/文件流格式。完整集合与 JZImageReader::Format 一致(解码探测用),

@@ -1,9 +1,8 @@
 #ifndef JZ_PEN_H_
 #define JZ_PEN_H_
-
 #include "JZColor.h"
 
-class JZPen
+class JZFRAMEWORK_API JZPen
 {
 public:
     JZPen() = default;

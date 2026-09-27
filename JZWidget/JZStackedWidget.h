@@ -1,11 +1,10 @@
 #ifndef JZ_STACKED_WIDGET_H_
 #define JZ_STACKED_WIDGET_H_
-
 #include "JZWidget.h"
 #include <vector>
 
 // 类似 Qt QStackedWidget: 多个 page 叠放, 同一时刻只显示当前 page
-class JZStackedWidget : public JZWidget
+class JZFRAMEWORK_API JZStackedWidget : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZStackedWidget)
 

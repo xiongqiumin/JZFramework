@@ -1,6 +1,5 @@
 #ifndef JZ_FILE_SYSTEM_WATCHER_H
 #define JZ_FILE_SYSTEM_WATCHER_H
-
 #include <string>
 #include <set>
 #include <unordered_map>
@@ -17,7 +16,7 @@
 //  - 当前全仓无使用者（此前的文件内容 LRU 缓存已删除）。
 #ifdef _WIN32
 
-class JZFileSystemWatcher : public JZObject
+class JZFRAMEWORK_API JZFileSystemWatcher : public JZObject
 {
     JZ_OBJECT_DECLARE(JZFileSystemWatcher)
 public:
@@ -52,7 +51,7 @@ private:
 #else // !_WIN32
 
 // 非 Windows 平台占位实现：当前不参与实际监视，仅提供兼容接口。
-class JZFileSystemWatcher : public JZObject
+class JZFRAMEWORK_API JZFileSystemWatcher : public JZObject
 {
 public:
     JZFileSystemWatcher()

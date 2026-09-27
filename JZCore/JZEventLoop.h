@@ -1,12 +1,11 @@
 #ifndef JZ_EVENT_LOOP_H_
 #define JZ_EVENT_LOOP_H_
-
 #include <vector>
 #include <mutex>
 #include "JZObject.h"
 #include "JZSemaphore.h"
 
-class JZEventLoop : public JZObject
+class JZFRAMEWORK_API JZEventLoop : public JZObject
 {
 public:
     JZEventLoop();
@@ -24,13 +23,5 @@ protected:
     bool m_running;
     int m_code;
 };
-
-
-
-
-
-
-
-
 
 #endif // !JZ_EVENT_LOOP

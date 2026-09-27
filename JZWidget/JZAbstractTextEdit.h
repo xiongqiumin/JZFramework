@@ -1,6 +1,5 @@
 #ifndef JZ_ABSTRACT_TEXT_EDIT_H_
 #define JZ_ABSTRACT_TEXT_EDIT_H_
-
 #include <map>
 #include <string>
 #include <vector>
@@ -51,7 +50,7 @@
 
 class JZUndoStack;
 
-class JZAbstractTextEdit : public JZWidget
+class JZFRAMEWORK_API JZAbstractTextEdit : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZAbstractTextEdit)
 

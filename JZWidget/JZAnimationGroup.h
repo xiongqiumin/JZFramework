@@ -1,6 +1,5 @@
 #ifndef JZ_ANIMATION_GROUP_H_
 #define JZ_ANIMATION_GROUP_H_
-
 #include "JZSignal.h"
 #include "JZObject.h"
 #include "JZPropertyAnimation.h"
@@ -8,7 +7,7 @@
 
 class JZWidget;
 
-class JZAnimationGroup : public JZObject
+class JZFRAMEWORK_API JZAnimationGroup : public JZObject
 {
     JZ_OBJECT_DECLARE(JZAnimationGroup)
 

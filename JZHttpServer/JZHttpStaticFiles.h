@@ -1,13 +1,12 @@
 ﻿#ifndef JZ_SEND_FROM_DIRECTORY_H
 #define JZ_SEND_FROM_DIRECTORY_H
-
 #include <map>
 #include <string>
 
 #include "JZFile.h"
 #include "JZHttpHandler.h"
 
-class JZHttpStaticFiles : public JZHttpHandler
+class JZFRAMEWORK_API JZHttpStaticFiles : public JZHttpHandler
 {
 public:
     explicit JZHttpStaticFiles(const std::string& rootDir);

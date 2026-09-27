@@ -1,6 +1,5 @@
 #ifndef JZ_SERIAL_DRIVER_WINDOWS_H_
 #define JZ_SERIAL_DRIVER_WINDOWS_H_
-
 #include "JZSerialPortDriver.h"
 #include <windows.h>
 #include <map>
@@ -12,7 +11,7 @@
 // 基于 Win32 API (CreateFile / COM 端口) 的 JZSerialPortDriver 实现。
 // 每个打开的端口对应一个 HANDLE 和一个独立的接收线程，
 // 收到数据后通过 port->onDataReceived() 推送给 JZSerialPort 并触发 sigReadyRead。
-class JZSerialDriverWindows : public JZSerialPortDriver
+class JZFRAMEWORK_API JZSerialDriverWindows : public JZSerialPortDriver
 {
 public:
     JZSerialDriverWindows();

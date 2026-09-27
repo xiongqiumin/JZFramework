@@ -1,12 +1,11 @@
 #ifndef JZ_AUDIO_OUTPUT_H_
 #define JZ_AUDIO_OUTPUT_H_
-
 #include "JZObject.h"
 #include "JZAudioFormat.h"
 #include "JZAudioDeviceInfo.h"
 
 class JZAudioOutputImpl;
-class JZAudioOutput : public JZObject
+class JZFRAMEWORK_API JZAudioOutput : public JZObject
 {
 public:
     JZAudioOutput(JZObject *parent = nullptr);
@@ -30,6 +29,5 @@ protected:
     JZAudioOutputImpl* d;
     JZAudioFormat m_format;
 };
-
 
 #endif // !JZ_AUDIO_OUTPUT_H_

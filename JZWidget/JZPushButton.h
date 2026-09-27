@@ -1,11 +1,10 @@
 #ifndef JZ_WIDGET_BUTTON_H_
 #define JZ_WIDGET_BUTTON_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
 
-class JZPushButton : public JZWidget
+class JZFRAMEWORK_API JZPushButton : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZPushButton)
 

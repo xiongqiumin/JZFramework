@@ -1,6 +1,5 @@
 #ifndef JZ_MCP_CORE_H_
 #define JZ_MCP_CORE_H_
-
 #include <string>
 #include <vector>
 #include <map>
@@ -42,7 +41,7 @@ class JZMcpTool;
  * process() 产生的输出通过回调发回对端。
 
  */
-class JZMcpCore : public JZObject
+class JZFRAMEWORK_API JZMcpCore : public JZObject
 {
 public:
     /**

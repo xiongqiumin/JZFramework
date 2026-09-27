@@ -1,6 +1,5 @@
 #ifndef JZ_EMOJI_IMAGE_MAP_H_
 #define JZ_EMOJI_IMAGE_MAP_H_
-
 #include <map>
 #include <string>
 
@@ -31,7 +30,7 @@
 //
 // 两级缓存: m_cache 存**解码后的原图** (JZImage, 72x72), m_pixmaps 存按显示尺寸
 // 处理好的**显示用位图** (JZPixmap)。文本绘制走后者 (见 findPixmap)。
-class JZEmojiImageMap
+class JZFRAMEWORK_API JZEmojiImageMap
 {
 public:
     static JZEmojiImageMap& instance();

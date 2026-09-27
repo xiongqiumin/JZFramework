@@ -1,13 +1,12 @@
 #ifndef MG_SERVER_H_
 #define MG_SERVER_H_
-
 #include <map>
 #include <deque>
 #include "JZNetObject.h"
 #include "JZTimer.h"
 
 class JZNetClient;
-class JZNetServer : public JZNetObject
+class JZFRAMEWORK_API JZNetServer : public JZNetObject
 {
 public:
     JZNetServer(JZObject *parent = nullptr);
@@ -54,6 +53,5 @@ protected:
     // 记录每个连接进入握手(ConnectingState)的起始时间,用于超时判断
     std::map<uint64_t, int64_t> m_handTime;
 };
-
 
 #endif // ! MG_SERVER_H_

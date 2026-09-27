@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_NET_MQTT_PACKET_H_
 #define JZ_NET_MQTT_PACKET_H_
-
 #include <string>
 #include <vector>
 #include <memory>
@@ -9,7 +8,7 @@
 
 struct mg_mqtt_opts;
 class JZMgOptPacketBuilder;
-class JZMgOptPacket : public JZNetReqEventData
+class JZFRAMEWORK_API JZMgOptPacket : public JZNetReqEventData
 {
 public:
     JZMgOptPacket();
@@ -38,7 +37,7 @@ protected:
 typedef std::shared_ptr<JZMgOptPacket> JZMgOptPacketPtr;
 
 // MQTT5通用属性
-struct JZMqttProp
+struct JZFRAMEWORK_API JZMqttProp
 {
     uint8_t propId{};
     uint32_t intVal{};
@@ -46,7 +45,7 @@ struct JZMqttProp
 };
 
 // ① 连接配置：CONNECT报文专用
-struct JZMqttConnectOpt
+struct JZFRAMEWORK_API JZMqttConnectOpt
 {
     std::string clientId;
     std::string userName, password;
@@ -62,7 +61,7 @@ struct JZMqttConnectOpt
 };
 
 // ② 发布配置：PUBLISH专用
-struct JZMqttPublishOpt
+struct JZFRAMEWORK_API JZMqttPublishOpt
 {
     std::string topic;
     JZByteArray payload;   // 消息负载(可为二进制)
@@ -73,7 +72,7 @@ struct JZMqttPublishOpt
 };
 
 // ③ 订阅配置：SUBSCRIBE/UNSUBSCRIBE专用
-struct JZMqttSubOpt
+struct JZFRAMEWORK_API JZMqttSubOpt
 {
     std::string topic;
     uint8_t qos = 0;
@@ -85,7 +84,7 @@ JZMgOptPacketPtr makeMgOptPacket(const JZMqttPublishOpt& src);
 JZMgOptPacketPtr makeMgOptPacket(bool is_sub, const JZMqttSubOpt& src);
 
 // JZMqttMessage
-class JZMqttMessage
+class JZFRAMEWORK_API JZMqttMessage
 {
 public:
     std::string topic;
@@ -105,7 +104,7 @@ public:
 struct mg_mqtt_message;
 void mgMsgToMqttMessage(struct mg_mqtt_message* mg_msg, JZMqttMessage *msg);
 
-class JZMgServerPacket : public JZNetReqEventData
+class JZFRAMEWORK_API JZMgServerPacket : public JZNetReqEventData
 {
 public:
     uint8_t cmd;
@@ -115,7 +114,7 @@ public:
 };
 
 //JZMqttResPacket
-class JZMqttResPacket : public JZNetResEventData
+class JZFRAMEWORK_API JZMqttResPacket : public JZNetResEventData
 {
 public:
     ~JZMqttResPacket();

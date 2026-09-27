@@ -1,6 +1,5 @@
 #ifndef JZ_JS_HANDLE_REF_H_
 #define JZ_JS_HANDLE_REF_H_
-
 #include "JZJSEngine.h"
 
 // =========================================================================
@@ -19,7 +18,7 @@
 //   打开处 href.setLive(true);  关闭/断开/析构处 href.setLive(false);
 //   JS 面 ref()/unref() 直接转 href.setRef(true/false)。
 // =========================================================================
-struct JZJSHandleRef
+struct JZFRAMEWORK_API JZJSHandleRef
 {
     JZJSEngine* engine = nullptr;
     bool live = false;      // 句柄是否处于打开态

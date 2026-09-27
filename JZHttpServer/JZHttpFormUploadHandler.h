@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_FORM_UPLOAD_HANDLER_H_
 #define JZ_HTTP_FORM_UPLOAD_HANDLER_H_
-
 #include "JZHttpHandler.h"
 #include <string>
 
@@ -27,7 +26,7 @@
  *   - 文件名经 sanitize(去目录成分 / ".." / 非法字符), 且同名自动加 -N 后缀, 防覆盖与路径穿越。
  *   - 完成时按 m_writeMd5 写出 "<文件名>.md5" 校验和侧车。
  */
-class JZHttpFormUploadHandler : public JZHttpHandler
+class JZFRAMEWORK_API JZHttpFormUploadHandler : public JZHttpHandler
 {
 public:
     JZHttpFormUploadHandler();

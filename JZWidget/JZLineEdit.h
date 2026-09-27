@@ -1,12 +1,11 @@
 #ifndef JZ_LINE_EDIT_H_
 #define JZ_LINE_EDIT_H_
-
 #include "JZAbstractTextEdit.h"
 
 // ==================== 单行文本输入框 ====================
 // 全部编辑/绘制/输入法逻辑在 JZAbstractTextEdit (单行模式), 本类只提供单行语义:
 // 密码框、最大长度、回车/失焦 "完成编辑" 的信号含义与默认尺寸。
-class JZLineEdit : public JZAbstractTextEdit
+class JZFRAMEWORK_API JZLineEdit : public JZAbstractTextEdit
 {
     JZ_OBJECT_DECLARE(JZLineEdit)
 

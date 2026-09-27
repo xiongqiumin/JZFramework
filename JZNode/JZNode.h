@@ -1,12 +1,11 @@
 ﻿#ifndef JZNODE_H
 #define JZNODE_H
-
 #include <functional>
 #include "JZVariant.h"
 #include "JZObject.h"
 
 class JZNodeFlow;
-class JZNode
+class JZFRAMEWORK_API JZNode
 {
 public:
     JZNode();
@@ -23,7 +22,7 @@ protected:
     JZNodeFlow *m_flow;
 };
 
-class JZNodeSequence : public JZNode
+class JZFRAMEWORK_API JZNodeSequence : public JZNode
 {
 public:
     JZNodeSequence();
@@ -31,13 +30,13 @@ public:
     JZNode* next;
 };
 
-class JZNodeRoot : public JZNodeSequence
+class JZFRAMEWORK_API JZNodeRoot : public JZNodeSequence
 {
 public:
     virtual void run() override;
 };
 
-class JZNodeBranch : public JZNode 
+class JZFRAMEWORK_API JZNodeBranch : public JZNode 
 {
 public:
     virtual void run() override;
@@ -47,7 +46,7 @@ public:
     JZNode* nextFalse;
 };
 
-class JZNodeFunction : public JZNodeSequence 
+class JZFRAMEWORK_API JZNodeFunction : public JZNodeSequence 
 {
 public:
     virtual void run() override;
@@ -55,7 +54,7 @@ public:
     std::function<void()> function;
 };
 
-class JZNodeAsyncFunction : public JZNodeSequence 
+class JZFRAMEWORK_API JZNodeAsyncFunction : public JZNodeSequence 
 {
 public:
     virtual void run() override;
@@ -66,7 +65,7 @@ public:
     std::function<void(JZNodeAsyncFunction *async)> function;
 };
 
-class JZNodeAsyncFunctionRace : public JZNodeSequence 
+class JZFRAMEWORK_API JZNodeAsyncFunctionRace : public JZNodeSequence 
 {
 public:
     JZNodeAsyncFunctionRace();
@@ -85,7 +84,7 @@ protected:
     std::vector<std::function<void(int id, JZNodeAsyncFunctionRace *async)>> m_functionList;
 };
 
-class JZNodeAsyncFunctionAll : public JZNodeSequence 
+class JZFRAMEWORK_API JZNodeAsyncFunctionAll : public JZNodeSequence 
 {
 public:
     JZNodeAsyncFunctionAll();
@@ -104,7 +103,7 @@ protected:
     std::vector<std::function<void(int id, JZNodeAsyncFunctionAll *async)>> m_functionList;
 };
 
-class JZNodeFlow : public JZObject 
+class JZFRAMEWORK_API JZNodeFlow : public JZObject 
 {
 public:
     JZNodeFlow();

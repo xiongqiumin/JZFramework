@@ -1,6 +1,5 @@
 ﻿#ifndef JZTEST_H
 #define JZTEST_H
-
 #include "JZTestMacro.h"
 #include "JZTestSuite.h"
 #include "JZBenchmark.h"
@@ -8,13 +7,13 @@
 #include <vector>
 #include <string>
 
-struct JZTestResult
+struct JZFRAMEWORK_API JZTestResult
 {
     int passed = 0;
     int failed = 0;
 };
 
-class JZTest 
+class JZFRAMEWORK_API JZTest 
 {
 public:
     static void exec(int ms);

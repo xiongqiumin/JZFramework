@@ -1,6 +1,5 @@
 #ifndef JZ_PAINTER_PATH_H_
 #define JZ_PAINTER_PATH_H_
-
 #include "JZMatrix2D.h"
 #include "JZPoint.h"
 
@@ -13,7 +12,7 @@
 //
 // 坐标约定: 记录的是**控件本地坐标**; 真正下发给后端前, JZPainter 会调用
 // transformed() 把每个点过一遍当前变换矩阵并平移到显示坐标。
-class JZPainterPath
+class JZFRAMEWORK_API JZPainterPath
 {
 public:
     enum ElementType {

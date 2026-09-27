@@ -1,6 +1,5 @@
-﻿#ifndef JZ_AGENT_H_
+#ifndef JZ_AGENT_H_
 #define JZ_AGENT_H_
-
 #include <atomic>
 #include <memory>
 
@@ -12,7 +11,7 @@
 #include "JZLoopDetect.h"
 #include "json/json.h"
 
-struct SkillDefine
+struct SkillDefine JZFRAMEWORK_API
 {
     std::string name;
     std::string tips;
@@ -27,7 +26,7 @@ struct SkillDefine
 //      predicted_per_second, draft_n, draft_n_accepted}
 // 计时类只存"原始量"(token 数与毫秒)，速率一律现算 —— 速率求和无意义，
 // 多轮累计只能按 Σtoken / Σms 算平均速率(见 promptTokensPerSecond / predictedTokensPerSecond)。
-class JZAgentTokenUsage
+class JZFRAMEWORK_API JZAgentTokenUsage
 {
 public:
     int prompt_tokens = 0;      // 本次输入token
@@ -120,7 +119,7 @@ private:
     void parseKind(const Json::Value& root);
 };
 
-struct LLMContext
+struct LLMContext JZFRAMEWORK_API
 {
     LLMContext();
     void clear();
@@ -138,7 +137,7 @@ struct LLMContext
 };
 
 // 请求：承载类型、id 与对应负载
-class JZAgentRequest
+class JZFRAMEWORK_API JZAgentRequest
 {
 public:
     enum Type
@@ -163,7 +162,7 @@ public:
 };
 typedef std::shared_ptr<JZAgentRequest> JZAgentRequestPtr;
 
-class JZAgentConfig
+class JZFRAMEWORK_API JZAgentConfig
 {
 public:
     enum TokenStrategy {
@@ -204,7 +203,7 @@ public:
 
 class JZMcpClient;
 
-class JZAgent : public JZObject
+class JZFRAMEWORK_API JZAgent : public JZObject
 {
 public:
     enum State{Inactive, WaitingReply, Idle};

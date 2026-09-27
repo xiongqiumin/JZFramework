@@ -1,6 +1,5 @@
 #ifndef JZ_CAMERA_H_
 #define JZ_CAMERA_H_
-
 #include <vector>
 #include "JZObject.h"
 #include "JZTimer.h"
@@ -17,7 +16,7 @@
 //       // 处理 f.data()/f.width()/f.height()
 //   });
 //   cam->start(15);                    // 以 15fps 连续采集
-class JZCamera : public JZObject
+class JZFRAMEWORK_API JZCamera : public JZObject
 {
 public:
     explicit JZCamera(JZObject *parent = nullptr);

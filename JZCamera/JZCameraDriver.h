@@ -1,12 +1,11 @@
 #ifndef JZ_CAMERA_DRIVER_H_
 #define JZ_CAMERA_DRIVER_H_
-
 #include <vector>
 #include "JZCameraFrame.h"
 
 // 摄像头驱动抽象基类(单例)。各平台(ESP32-CAM / 模拟器)实现自己的子类,
 // 并在程序初始化时通过 setInstance() 安装。JZCamera 的所有底层操作都委派给它。
-class JZCameraDriver
+class JZFRAMEWORK_API JZCameraDriver
 {
 public:
     // 支持的分辨率项

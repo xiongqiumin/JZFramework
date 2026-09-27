@@ -1,6 +1,5 @@
 #ifndef JZ_WIDGET_SPLITTER_H_
 #define JZ_WIDGET_SPLITTER_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 #include <vector>
@@ -8,7 +7,7 @@
 // 类似 Qt QSplitter 的可拖拽分隔容器: 沿一个方向排布若干子控件,
 // 控件之间用可拖动的分隔条 (handle) 调整各自占比。本控件自行管理子控件几何
 // (不依赖 m_layout), 通过重写 resize() 在容器尺寸变化时重排子控件。
-class JZSplitter : public JZWidget
+class JZFRAMEWORK_API JZSplitter : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZSplitter)
 

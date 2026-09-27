@@ -1,6 +1,5 @@
 #ifndef JZ_LOW_ENERGY_CHARACTERISTIC_H_
 #define JZ_LOW_ENERGY_CHARACTERISTIC_H_
-
 #include <string>
 #include <vector>
 #include "JZBluetoothUuid.h"
@@ -17,7 +16,7 @@ enum JZLowEnergyCharacteristicProperty
     CHC_WriteNoResponse = 0x10,
 };
 
-class JZLowEnergyCharacteristic
+class JZFRAMEWORK_API JZLowEnergyCharacteristic
 {
 public:
     JZLowEnergyCharacteristic();

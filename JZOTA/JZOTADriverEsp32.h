@@ -20,7 +20,7 @@
  * 注: 镜像完整性由 ESP-IDF 在 esp_ota_end 内校验(配置了 SHA-256 / 安全启动时),
  *     因此本驱动不再单独做 md5 回读校验(避免整片 Flash 回读)。
  */
-class JZOTADriverEsp32 : public JZOTADriver
+class JZFRAMEWORK_API JZOTADriverEsp32 : public JZOTADriver
 {
 public:
     JZOTADriverEsp32();

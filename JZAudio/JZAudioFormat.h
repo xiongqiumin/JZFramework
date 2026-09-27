@@ -1,11 +1,10 @@
 #ifndef JZ_AUDIO_FORMAT_H_
 #define JZ_AUDIO_FORMAT_H_
-
 #include <string>
 #include <vector>
 #include "JZGlobal.h"
 
-class JZAudioFormat
+class JZFRAMEWORK_API JZAudioFormat
 {
 public:
     enum SampleFormat {

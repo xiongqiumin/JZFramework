@@ -1,6 +1,5 @@
 #ifndef JZ_MCP_SERVER_H_
 #define JZ_MCP_SERVER_H_
-
 #include <string>
 #include <functional>
 #include <vector>
@@ -27,7 +26,7 @@ class JZTimer;
  * 协议语义(工具注册、JSON-RPC 分发)全部在 JZMcpCore 中完成,
  * JZMcpServer 只负责把传输层的输入转发给 core->process()、并把输出通过回调回送。
  */
-class JZMcpServer : public JZObject
+class JZFRAMEWORK_API JZMcpServer : public JZObject
 {
 public:
     explicit JZMcpServer(JZObject* parent = nullptr);

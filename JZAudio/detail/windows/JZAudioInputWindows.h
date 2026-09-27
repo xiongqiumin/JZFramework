@@ -6,7 +6,7 @@
 #include <vector>
 #include "detail/JZAudioInputImpl.h"
 
-class JZAudioInputWindows : public JZAudioInputImpl
+class JZFRAMEWORK_API JZAudioInputWindows : public JZAudioInputImpl
 {
 public:
     explicit JZAudioInputWindows(JZAudioInput* parent);

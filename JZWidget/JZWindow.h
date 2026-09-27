@@ -1,6 +1,5 @@
 #ifndef JZ_WINDOW_H_
 #define JZ_WINDOW_H_
-
 #include "JZWidget.h"
 #include "JZDisplayDevice.h"
 
@@ -20,7 +19,7 @@
 //
 // 离屏渲染等高级用法直接使用 JZDisplayDevice (setRootWidget + backend 手动驱动)。
 
-class JZWindow : public JZWidget
+class JZFRAMEWORK_API JZWindow : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZWindow)
 

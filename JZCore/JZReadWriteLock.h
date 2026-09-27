@@ -1,13 +1,12 @@
 #ifndef JZ_READ_WRITE_LOCK_H_
 #define JZ_READ_WRITE_LOCK_H_
-
 #include "JZGlobal.h"
 #include "JZMutex.h"
 #include "JZConditionVariable.h"
 
 // 读写锁：允许多个读线程并发，写线程独占。
 // 基于 JZMutex + JZConditionVariable 实现，跨平台（普通系统 / FreeRTOS / RT-Thread）。
-class JZReadWriteLock
+class JZFRAMEWORK_API JZReadWriteLock
 {
 public:
     JZReadWriteLock();
@@ -37,7 +36,7 @@ private:
 };
 
 // 读写锁作用域辅助类（读锁）
-class JZReadLocker
+class JZFRAMEWORK_API JZReadLocker
 {
 public:
     explicit JZReadLocker(JZReadWriteLock *lock);
@@ -56,7 +55,7 @@ private:
 };
 
 // 读写锁作用域辅助类（写锁）
-class JZWriteLocker
+class JZFRAMEWORK_API JZWriteLocker
 {
 public:
     explicit JZWriteLocker(JZReadWriteLock *lock);

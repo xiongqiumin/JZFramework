@@ -1,6 +1,5 @@
-﻿#ifndef JS_ENGINE_H_
+#ifndef JS_ENGINE_H_
 #define JS_ENGINE_H_
-
 #include <functional>
 #include <map>
 #include <memory>
@@ -26,7 +25,7 @@ enum JZJSEngineStatus
     Engine_error,
 };
 
-class JZJSValuePtr
+class JZFRAMEWORK_API JZJSValuePtr
 {
 public:
     JZJSValuePtr();
@@ -47,7 +46,7 @@ protected:
 JZ_DECLARE_METATYPE(JZJSValuePtr)
 
 // C++ 调用 JS 异步函数(callAsyncFunction)的结果
-struct JZAsyncResult
+struct JZFRAMEWORK_API JZAsyncResult
 {
     int result;                       // callAsyncFunction 返回的句柄
     std::vector<JZJSValuePtr> params; // promise resolve 的参数列表(一般 1 个元素)
@@ -55,7 +54,7 @@ struct JZAsyncResult
 
 // checkAndSetArgs 的结果载体: 把每个实参转换后填进对应成员, 调用方按 format 声明的类型直接读取。
 // 标量存值(int/double/bool)、类对象存裸指针(void* p)、string/Json/vector 存堆指针(由析构自动释放)。
-struct ArgResult
+struct ArgResult JZFRAMEWORK_API
 {
     enum Kind { kInvalid, kInt, kDouble, kBool, kPointer,
                 kString, kJson,
@@ -111,7 +110,7 @@ class JZJSEngineInternalFunction;
 class JZJSWorkerModule;
 class JZJSWorkerThread;
 class JZJSWidgetModule;
-class JZJSEngine : public JZObject
+class JZFRAMEWORK_API JZJSEngine : public JZObject
 {
 public:
     JZJSEngine(JZObject* parent = nullptr);
@@ -264,7 +263,6 @@ public:
 
     JZJSValuePtr eval(const std::string& code);  // 全局空间执行(JS_EVAL_TYPE_GLOBAL)
 
-
     // 同步调用全局 JS 函数。func = 全局函数名，params 原样透传给 JS。
     // 返回值的 1 元素 vector(返回 undefined 也有 1 个元素)；失败(函数不存在/调用抛异常)
     // 与 eval() 一致走 runtimeError/sigError 错误链，返回空 vector。
@@ -311,7 +309,6 @@ public:
     void addPendingWork();
     void releasePendingWork();
     int pendingWork() const;
-
 
     bool isException(JSValue exc);
     std::string runtimeError();
@@ -576,7 +573,6 @@ protected:
     std::string getPropertyStr(JSValue var, std::string prop);
     // JS 值 -> 可读文本; 转不了(symbol 等)时吞掉残留异常并返回空串
     std::string jsValueToStr(JSValue value);
-
 
     // ---- ESM 模块支持(供 quickjs 模块 loader / runModuleFile 内部使用) ----
     // 编译 module_name 指定的文件为模块定义(找不到文件/编译失败时置 exception 返回 NULL)

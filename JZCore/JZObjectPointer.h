@@ -1,20 +1,19 @@
 #ifndef JZ_OBJECT_POINTER_H_
 #define JZ_OBJECT_POINTER_H_
-
 #include <memory>
 #include "JZGlobal.h"
 
 class JZObject;
 class JZDebug;
 
-class JZObjectPointerData
+class JZFRAMEWORK_API JZObjectPointerData
 {
 public:
     JZObject* object;
 };
 
 class JZObjectPointerGuard;
-class JZObjectPointer
+class JZFRAMEWORK_API JZObjectPointer
 {
 public:
     operator bool() const;
@@ -27,7 +26,7 @@ protected:
     std::shared_ptr<JZObjectPointerData> data;
 };
 
-class JZObjectPointerGuard
+class JZFRAMEWORK_API JZObjectPointerGuard
 {
 public:
     JZObjectPointerGuard(JZObjectPointer *pointer);
@@ -42,7 +41,6 @@ protected:
     JZObjectPointer *m_pointer;
     bool m_isLocked;
 };
-
 
 JZDebug operator<<(JZDebug d, const JZObjectPointer& p);
 

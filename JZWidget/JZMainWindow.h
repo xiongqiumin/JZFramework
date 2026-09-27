@@ -1,6 +1,5 @@
 #ifndef JZ_MAIN_WINDOW_H_
 #define JZ_MAIN_WINDOW_H_
-
 #include "JZWindow.h"
 
 class JZMenuBar;
@@ -10,7 +9,7 @@ class JZMenuBar;
 //   addMenuBar / setCentralWidget 都会自动把控件 reparent 到本窗口,
 //   显示次序固定为 菜单栏(可选) -> 中央区(可选)。setCentralWidget 的中央控件
 //   需要自带布局负责内部内容排列 (本类只保证它占满剩余区域)。
-class JZMainWindow : public JZWindow
+class JZFRAMEWORK_API JZMainWindow : public JZWindow
 {
     JZ_OBJECT_DECLARE(JZMainWindow)
 

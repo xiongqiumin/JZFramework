@@ -1,6 +1,5 @@
 #ifndef JZCO_WATCH_H_
 #define JZCO_WATCH_H_
-
 #include <vector>
 #include "JZObject.h"
 #include "JZEventLoop.h"
@@ -14,7 +13,7 @@ JZCoWatch: 基于 JZCoScheduler::sigFinished(JZCoCoroutine *co) 的协程监视�
   - 主线程(非协程): 用 JZEventLoop 驱动事件循环等待
 详见 JZCoCoroutine.h 顶部说明: 协程内不能跑事件循环(会阻塞主线程导致调度死锁)。
 */
-class JZCoWatch : public JZObject
+class JZFRAMEWORK_API JZCoWatch : public JZObject
 {
 public:
     explicit JZCoWatch(JZObject *parent = nullptr);

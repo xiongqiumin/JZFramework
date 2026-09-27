@@ -1,6 +1,5 @@
 #ifndef JZ_UI_MCP_TOOLS_H_
 #define JZ_UI_MCP_TOOLS_H_
-
 // AI-Native L3 (ai-native-design.md): JZUiMcpBridge —— 组合 JZMcpServer + UI 语义工具。
 // 仅当 JZMcpServer 模块参与构建时 (HAS_JZMcpServer, 见 JZWidget.cmake) 才编译本文件。
 // 全部工具均由主线程事件循环驱动, run() 在 UI 线程执行, 直接操作控件树安全。
@@ -23,7 +22,7 @@ class JZAiDriver;
 class JZUiMcpBridge;
 
 // get_ui_state: 导出无障碍语义树 (AccessibilityNodeInfo 风格 JSON)
-class JZUiGetStateTool : public JZMcpTool
+class JZFRAMEWORK_API JZUiGetStateTool : public JZMcpTool
 {
     JZ_OBJECT_DECLARE(JZUiGetStateTool)
 
@@ -36,7 +35,7 @@ private:
 };
 
 // ui_screenshot: PrintWindow 抓当前目标窗口当前帧 -> PNG, 返回文件路径
-class JZUiScreenshotTool : public JZMcpTool
+class JZFRAMEWORK_API JZUiScreenshotTool : public JZMcpTool
 {
     JZ_OBJECT_DECLARE(JZUiScreenshotTool)
 
@@ -51,7 +50,7 @@ private:
 };
 
 // ui_windows: 列出顶层窗口 (含 active=系统活跃窗口 / current=本服务的当前目标窗口)
-class JZUiWindowsTool : public JZMcpTool
+class JZFRAMEWORK_API JZUiWindowsTool : public JZMcpTool
 {
     JZ_OBJECT_DECLARE(JZUiWindowsTool)
 
@@ -64,7 +63,7 @@ private:
 };
 
 // ui_activate_window: 切换并激活目标窗口 (之后 get_ui_state/ui_screenshot/ui_invoke 都作用于它)
-class JZUiActivateWindowTool : public JZMcpTool
+class JZFRAMEWORK_API JZUiActivateWindowTool : public JZMcpTool
 {
     JZ_OBJECT_DECLARE(JZUiActivateWindowTool)
 
@@ -80,7 +79,7 @@ private:
 //   先由 JZAiDriver 把 AI 鼠标平滑移动到目标 (状态条提示, 可取消),
 //   到达后执行 —— click/toggle 合成真实点击 (带涟漪), 其余直调。
 //   完成或被取消后才通过 sigFinished 回送结果。
-class JZUiInvokeTool : public JZMcpTool
+class JZFRAMEWORK_API JZUiInvokeTool : public JZMcpTool
 {
     JZ_OBJECT_DECLARE(JZUiInvokeTool)
 
@@ -101,7 +100,7 @@ private:
 
 // JZUiMcpBridge: JZMcpServer + 上述五个工具。
 // root 只是"起始目标窗口"(一般取活跃窗口), 之后可用 ui_activate_window 切换。
-class JZUiMcpBridge : public JZMcpServer
+class JZFRAMEWORK_API JZUiMcpBridge : public JZMcpServer
 {
     JZ_OBJECT_DECLARE(JZUiMcpBridge)
 

@@ -1,6 +1,5 @@
 #ifndef JZCO_SERIAL_PORT_H_
 #define JZCO_SERIAL_PORT_H_
-
 #include "JZCo.h"
 #include "JZSerialPort.h"
 #include "JZResult.h"
@@ -9,7 +8,7 @@
 // 底层 JZSerialPort 由驱动后台线程异步推送数据（onDataReceived -> sigReadyRead），
 // 本类在收到数据时缓存并通过 JZCoCondition 唤醒等待中的协程，
 // 使用户可以以「同步写法」在协程里读写串口，而不必自己处理信号/回调。
-class JZCoSerialPort : public JZObject
+class JZFRAMEWORK_API JZCoSerialPort : public JZObject
 {
 public:
     JZCoSerialPort(JZObject *parent = nullptr);

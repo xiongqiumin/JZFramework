@@ -1,6 +1,6 @@
 #ifndef JZ_GDI_BACKEND_H_
 #define JZ_GDI_BACKEND_H_
-
+#include "JZGlobal.h"
 #include <memory>
 #include <vector>
 
@@ -20,7 +20,7 @@ class JZImage;
 //  按同样的接口实现一个新后端接入 JZDisplayDevice 即可。)
 //
 // 坐标系: 绘制任务为逻辑像素, 回放时 * device->scale() -> 物理像素。
-class JZGdiBackend
+class JZFRAMEWORK_API JZGdiBackend
 {
 public:
     JZGdiBackend();

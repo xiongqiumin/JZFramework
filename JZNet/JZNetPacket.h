@@ -1,6 +1,5 @@
 #ifndef MG_PACKET_H_
 #define MG_PACKET_H_
-
 #include <memory>
 #include <map>
 #include <string>
@@ -32,7 +31,7 @@ enum {
     NetPack_user = 1000,
 };
 
-class JZNetPack
+class JZFRAMEWORK_API JZNetPack
 {
 public:
     JZNetPack();
@@ -47,7 +46,7 @@ typedef std::shared_ptr<JZNetPack> JZNetPackPtr;
 JZ_DECLARE_METATYPE_INTERNAL(JZNetPackPtr, JZMetaType::NetPackPtr);
 
 // JZNetPackHand
-class JZNetPackHand : public JZNetPack
+class JZFRAMEWORK_API JZNetPackHand : public JZNetPack
 {
 public:
     JZNetPackHand();
@@ -61,7 +60,7 @@ public:
 };
 
 // JZNetPackHandRes
-class JZNetPackHandRes : public JZNetPack
+class JZFRAMEWORK_API JZNetPackHandRes : public JZNetPack
 {
 public:
     JZNetPackHandRes();
@@ -72,9 +71,8 @@ public:
     virtual void loadFromStream(JZDataStream &s);
 };
 
-
 // JZNetPackEcho
-class JZNetPackEcho : public JZNetPack
+class JZFRAMEWORK_API JZNetPackEcho : public JZNetPack
 {
 public:
     JZNetPackEcho();
@@ -92,7 +90,7 @@ JZNetPack *JZNetPackCreate() { return new T(); }
 
 //JZNetPackManager
 typedef JZNetPack *(*CreatePackFunc)();
-class JZNetPackManager
+class JZFRAMEWORK_API JZNetPackManager
 {
 public:
     static JZNetPackManager *instance();

@@ -1,13 +1,12 @@
 #ifndef JZ_DEBUG_H_
 #define JZ_DEBUG_H_
-
 #include <inttypes.h>
 #include <string>
 #include <vector>
 #include <memory>
 #include "JZLog.h"
 
-class JZDebug
+class JZFRAMEWORK_API JZDebug
 {
 public:
     explicit JZDebug(int level);
@@ -41,7 +40,7 @@ public:
     void append(const std::string& msg);
 
 protected:    
-    struct JZDebugData{
+    struct JZFRAMEWORK_API JZDebugData{
         JZDebugData();
         ~JZDebugData();
         

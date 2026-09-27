@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_VARIANT_H_
 #define JZ_VARIANT_H_
-
 #include <map>
 #include <string>
 #include <string.h>
@@ -10,7 +9,7 @@
 
 //JZVariant
 class JZDataStream;
-class JZVariant
+class JZFRAMEWORK_API JZVariant
 {
 public:
     static const JZVariant &None();

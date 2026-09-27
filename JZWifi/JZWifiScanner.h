@@ -1,6 +1,5 @@
 #ifndef JZ_WIFI_SCANNER_H_
 #define JZ_WIFI_SCANNER_H_
-
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "JZWifiDriver.h"
@@ -9,7 +8,7 @@
 // 底层操作委派给单例 JZWifiDriver。扫描结果经 JZWifiDriver 的转发中转回到本类
 // 的静态分发方法 (本类是 JZWifiDriver 的 friend), 再以信号形式通知上层,
 // 与 JZBLEDeviceDiscoveryAgent 的设计一致。
-class JZWifiScanner : public JZObject
+class JZFRAMEWORK_API JZWifiScanner : public JZObject
 {
     JZ_OBJECT_DECLARE(JZWifiScanner)
 

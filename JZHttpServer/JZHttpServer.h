@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_SERVER_H_
 #define JZ_HTTP_SERVER_H_
-
 #include <map>
 #include <functional>
 #include "JZNetObject.h"
@@ -10,7 +9,7 @@
 #include "JZHttpHandler.h"
 
 class JZHttpServer;
-class JZHttpServerClient : public JZNetObject
+class JZFRAMEWORK_API JZHttpServerClient : public JZNetObject
 {
 public:
     JZHttpServerClient(JZObject *parent = nullptr);
@@ -40,7 +39,7 @@ protected:
     std::string m_headAccum;          // 累积响应头(头可能被拆分到多次写入)
 };
 
-class JZHttpServer : public JZNetObject
+class JZFRAMEWORK_API JZHttpServer : public JZNetObject
 {
 public:
     JZHttpServer(JZObject *parent = nullptr);

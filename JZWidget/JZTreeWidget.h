@@ -1,6 +1,5 @@
 #ifndef JZ_TREE_WIDGET_H_
 #define JZ_TREE_WIDGET_H_
-
 #include "JZAbstractViewWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
@@ -16,7 +15,7 @@ class JZTreeWidget;
 // 树节点数据(与 LVGL 控件解耦, owner-draw 虚拟树只持有数据, 不持有任何 LVGL 对象)。
 // 节点由 JZTreeWidget 拥有并管理生命周期: 通过 addTopLevelItem/addChild 加入后,
 // 由树统一在 clear()/析构/被 take 时删除。
-class JZTreeWidgetItem
+class JZFRAMEWORK_API JZTreeWidgetItem
 {
 public:
     JZTreeWidgetItem();
@@ -66,7 +65,7 @@ private:
 
 // 虚拟树(owner-draw): 仅绘制可见行, 通过 JZPainter 直接画到画布,
 // 不创建/复用任何行控件。支持多级缩进、展开/折叠、单选。
-class JZTreeWidget : public JZAbstractViewWidget
+class JZFRAMEWORK_API JZTreeWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZTreeWidget)
 

@@ -1,6 +1,5 @@
 #ifndef JZ_LOCAL_SOCKET_THREAD_H_
 #define JZ_LOCAL_SOCKET_THREAD_H_
-
 #include "JZThread.h"
 #include "JZObjectPointer.h"
 #include "JZByteArray.h"
@@ -17,7 +16,7 @@ class JZLocalSocketClient;
 //    select 细节; 数据到达或连接状态变化时, 通过事件 post 回对象所属线程触发信号。
 //  - 嵌入式平台(FreeRTOS / RT-Thread)没有操作系统级套接字, 走全局变量内存队列,
 //    其对象也注册到本线程统一管理生命周期, 但不参与 select 轮询。
-class JZLocalSocketThread : public JZThread
+class JZFRAMEWORK_API JZLocalSocketThread : public JZThread
 {
 public:
     static JZLocalSocketThread* instance();

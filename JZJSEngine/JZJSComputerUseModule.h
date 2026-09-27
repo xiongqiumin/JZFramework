@@ -6,7 +6,7 @@
 // 把 JZComputerUse 的底层语义暴露给 JS: __jz.computeruse.*
 // 接入方式(构建时补): 在 JZEngineRuntime.cpp 里
 //   m_computerUseModule = std::make_unique<JZJSComputerUseModule>(); m_computerUseModule->initEngine(engine);
-class JZJSComputerUseModule : public JZObject {
+class JZFRAMEWORK_API JZJSComputerUseModule : public JZObject {
 public:
     void initEngine(JZJSEngine* engine);
     void deinitEngine();

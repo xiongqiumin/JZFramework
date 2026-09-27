@@ -1,6 +1,5 @@
 #ifndef JZ_MENU_BAR_H_
 #define JZ_MENU_BAR_H_
-
 #include "JZWidget.h"
 #include <vector>
 #include <string>
@@ -9,7 +8,7 @@ class JZMenu;
 
 // 菜单栏: 水平排列若干 JZMenu 入口, 点击在对应入口下方展开下拉菜单。
 // 菜单数据由 addMenu 创建的 JZMenu 持有, 菜单栏自身只负责标题绘制与弹层触发。
-class JZMenuBar : public JZWidget
+class JZFRAMEWORK_API JZMenuBar : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZMenuBar)
 

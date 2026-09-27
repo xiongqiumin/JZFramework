@@ -1,10 +1,9 @@
 #ifndef JZ_CAMERA_FRAME_H_
 #define JZ_CAMERA_FRAME_H_
-
 #include "JZSharedBuffer.h"
 
 // 一帧图像数据(与平台无关)。像素数据存于 JZSharedBuffer(引用计数, 拷贝成本低)。
-class JZCameraFrame
+class JZFRAMEWORK_API JZCameraFrame
 {
 public:
     // 像素格式

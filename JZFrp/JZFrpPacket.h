@@ -1,6 +1,5 @@
 #ifndef JZFRPPACKET_H_
 #define JZFRPPACKET_H_
-
 #include "JZNet/JZNetPacket.h"
 #include "JZCore/JZByteArray.h"
 #include "JZCore/JZDataStream.h"
@@ -17,7 +16,7 @@ enum
     FrpTrans_Write,
 };
 
-class JZFrpHand : public JZNetPack
+class JZFRAMEWORK_API JZFrpHand : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -27,7 +26,7 @@ public:
     std::vector<int> serverPortList; //JZFrpServer 需要监听哪些端口
 };
 
-class JZFrpHandRes : public JZNetPack
+class JZFRAMEWORK_API JZFrpHandRes : public JZNetPack
 {
 public:
     JZFrpHandRes();
@@ -40,7 +39,7 @@ public:
     std::string message;
 };
 
-class JZFrpTrans : public JZNetPack
+class JZFRAMEWORK_API JZFrpTrans : public JZNetPack
 {
 public:
     JZFrpTrans();

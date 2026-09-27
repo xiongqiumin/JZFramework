@@ -1,11 +1,10 @@
 #ifndef JZCO_TCP_SERVER_H_
 #define JZCO_TCP_SERVER_H_
-
 #include "JZTcpServer.h"
 #include "JZCoTcpSocket.h"
 
 // ========================== 协程 TCP 服务器 ==========================
-class JZCoTcpServer : public JZObject
+class JZFRAMEWORK_API JZCoTcpServer : public JZObject
 {
     JZ_OBJECT_DECLARE(JZCoTcpServer)
 public:

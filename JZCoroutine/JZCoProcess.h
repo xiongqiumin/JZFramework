@@ -1,12 +1,11 @@
 #ifndef JZCO_PROCESS_H_
 #define JZCO_PROCESS_H_
-
 #include "JZCo.h"
 #include "JZProcess.h"
 #include "JZByteArray.h"
 #include "JZResult.h"
 
-struct JZCoProcessResult
+struct JZFRAMEWORK_API JZCoProcessResult
 {
     int exitCode = -1;
     JZProcess::ExitStatus exitStatus = JZProcess::NormalExit;
@@ -14,7 +13,7 @@ struct JZCoProcessResult
     JZByteArray stdErr;
 };
 
-class JZCoProcess : public JZObject
+class JZFRAMEWORK_API JZCoProcess : public JZObject
 {
 public:
     JZCoProcess(JZObject *parent = nullptr);

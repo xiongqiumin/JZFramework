@@ -1,9 +1,9 @@
 #ifndef JZ_ELAPSED_TIMER_H_
 #define JZ_ELAPSED_TIMER_H_
-
+#include "JZGlobal.h"
 #include <inttypes.h>
 
-class JZElapsedTimer {
+class JZFRAMEWORK_API JZElapsedTimer {
 public:    
     JZElapsedTimer();
     ~JZElapsedTimer();

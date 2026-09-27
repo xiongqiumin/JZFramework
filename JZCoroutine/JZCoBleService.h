@@ -1,6 +1,5 @@
 #ifndef JZCO_BLE_SERVICE_H_
 #define JZCO_BLE_SERVICE_H_
-
 #include "JZCo.h"
 #include "JZBLEService.h"
 #include "JZLowEnergyCharacteristic.h"
@@ -17,7 +16,7 @@
 // 所有接口在协程中调用，异步结果通过 JZCoCondition 等待，返回 JZResult。
 // 注意：本对象及其底层 JZBLEService 必须创建在协程调度器线程上
 //       （参考 JZCoTcpSocket，将底层对象作为子对象即可保证同线程、直连信号）。
-class JZCoBleService : public JZObject
+class JZFRAMEWORK_API JZCoBleService : public JZObject
 {
 public:
     JZCoBleService(JZBLEService *service, JZObject *parent = nullptr);

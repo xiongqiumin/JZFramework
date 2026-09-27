@@ -1,13 +1,12 @@
 #ifndef JZ_GPIO_DRIVER_H_
 #define JZ_GPIO_DRIVER_H_
-
 #include <vector>
 #include "JZGpio.h"
 #include "JZGpioInfo.h"
 
 // GPIO 驱动抽象基类。支持注册多个驱动实例(如 MCU 原生 GPIO + I2C 扩展 GPIO),
 // 通过 addInstance() 注册, JZGpio 按引脚号查找对应驱动。
-class JZGpioDriver
+class JZFRAMEWORK_API JZGpioDriver
 {
 public:
     JZGpioDriver() = default;

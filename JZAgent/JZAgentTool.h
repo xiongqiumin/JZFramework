@@ -1,6 +1,5 @@
-﻿#ifndef JZ_AGENT_TOOL_H_
+#ifndef JZ_AGENT_TOOL_H_
 #define JZ_AGENT_TOOL_H_
-
 #include <memory>
 #include <functional>
 #include "json/json.h"
@@ -23,7 +22,7 @@ enum class ParamType
 };
 
 // 2. 参数 Schema 定义（符合 JSON Schema）
-struct ParamSchema
+struct ParamSchema JZFRAMEWORK_API
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &root);
@@ -48,7 +47,7 @@ struct ParamSchema
 };
 
 // 3. 工具调用请求（OpenAI 标准结构）
-struct ToolCall
+struct ToolCall JZFRAMEWORK_API
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &value);
@@ -62,7 +61,7 @@ struct ToolCall
     Json::Value params;
 };
 
-struct ToolCallResult
+struct ToolCallResult JZFRAMEWORK_API
 {
     ToolCallResult();
 
@@ -72,7 +71,7 @@ struct ToolCallResult
 };
 
 // 4. 工具定义（OpenAI 标准结构）
-struct ToolDefine
+struct ToolDefine JZFRAMEWORK_API
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &root);
@@ -86,7 +85,7 @@ struct ToolDefine
 class JZAgent;
 
 // 5. 工具基类
-class JZAgentTool : public JZObject
+class JZFRAMEWORK_API JZAgentTool : public JZObject
 {
 public:
     JZAgentTool();

@@ -1,6 +1,5 @@
 #ifndef JZ_WIN32_THREAD_H_
 #define JZ_WIN32_THREAD_H_
-
 #include <vector>
 #include <atomic>
 #include "JZThread.h"
@@ -16,7 +15,7 @@
 // Windows message loop in run(). All window messages of this thread (JZWindow
 // input/render timers) are pumped here; framework events wake the loop via
 // wakeUp() posting a custom message.
-class JZWin32Thread : public JZThread
+class JZFRAMEWORK_API JZWin32Thread : public JZThread
 {
 public:
     JZWin32Thread();

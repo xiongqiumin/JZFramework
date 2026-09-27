@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_UPLOAD_HANDLER_H_
 #define JZ_HTTP_UPLOAD_HANDLER_H_
-
 #include "JZHttpHandler.h"
 #include <string>
 #include <map>
@@ -27,7 +26,7 @@
  *   2) 整文件级: init 提供 md5(hex); complete 时服务端对拼接后的文件算 MD5 比对, 不符则 400。
  *      校验通过后把文件从临时 .part 改名为最终文件, 并按 m_writeMd5 写出 "<文件名>.md5" 校验和侧车。
  */
-class JZHttpUploadHandler : public JZHttpHandler
+class JZFRAMEWORK_API JZHttpUploadHandler : public JZHttpHandler
 {
 public:
     JZHttpUploadHandler();

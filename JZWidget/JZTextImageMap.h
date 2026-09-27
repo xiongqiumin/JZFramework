@@ -1,6 +1,5 @@
 #ifndef JZ_TEXT_IMAGE_MAP_H_
 #define JZ_TEXT_IMAGE_MAP_H_
-
 #include <map>
 #include <string>
 
@@ -28,7 +27,7 @@
 //
 // 注意: 码点会在应用生命周期内**复用**, 因此 key 必须能唯一标识一张图
 // (例如文件路径 / 截图 id), 不能只用序号, 否则不同内容会撞到同一码点。
-class JZTextImageMap
+class JZFRAMEWORK_API JZTextImageMap
 {
 public:
     // 私有使用区 (Plane 15) 起点。U+F0000..U+FFFFD 为补充私有使用区 A,

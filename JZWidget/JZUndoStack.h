@@ -1,6 +1,6 @@
 #ifndef JZ_UNDO_STACK_H_
 #define JZ_UNDO_STACK_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 
@@ -19,7 +19,7 @@
 // (例如文本编辑按时间窗合并连续输入) 由具体命令覆写 id()/canMergeWith()/
 // mergeWith()。撤销后 push 新命令会丢弃全部 redo 分支 (与 Qt 一致)。
 
-class JZUndoCommand
+class JZFRAMEWORK_API JZUndoCommand
 {
 public:
     explicit JZUndoCommand(const std::string& text = std::string(),
@@ -59,7 +59,7 @@ private:
     std::vector<JZUndoCommand*> m_children;
 };
 
-class JZUndoStack
+class JZFRAMEWORK_API JZUndoStack
 {
 public:
     JZUndoStack();

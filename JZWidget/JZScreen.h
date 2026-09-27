@@ -1,6 +1,5 @@
 #ifndef JZ_SCREEN_H_
 #define JZ_SCREEN_H_
-
 #include <memory>
 #include <string>
 
@@ -27,7 +26,7 @@
 // 显示器热插拔 / DPI 变更后请重新取 (primaryScreen() / screenAt() 重新构造)。
 //
 // 仅 Windows 实现 (同 JZWidget 模块: JZWidget.cmake 在非 Win32 直接 return)。
-class JZScreen
+class JZFRAMEWORK_API JZScreen
 {
 public:
     JZScreen();                     // 无效屏 (isValid()==false)

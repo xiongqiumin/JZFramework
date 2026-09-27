@@ -1,6 +1,5 @@
 #ifndef JZ_MUTEX_H_
 #define JZ_MUTEX_H_
-
 #include "JZGlobal.h"
 
 #ifdef JZ_OS_NORMAL
@@ -8,7 +7,7 @@
 #endif
 
 class JZConditionVariable;
-class JZMutex
+class JZFRAMEWORK_API JZMutex
 {
 public:
     JZMutex();
@@ -32,7 +31,7 @@ private:
 #endif
 };
 
-class JZMutexLocker
+class JZFRAMEWORK_API JZMutexLocker
 {
 public:
     explicit JZMutexLocker(JZMutex *mutex);

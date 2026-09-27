@@ -6,7 +6,7 @@
 
 // OTA 模拟驱动(暂未实现)。不注册到 JZSimServer 协议层(不占用 simulator 的 ota 类别路由),
 // 仅作为 JZOTADriver 的占位实现, 保证 JZDriver::init 在 simulator 配置下可正常注册。
-class JZOTADriverSimulator : public JZOTADriver, public JZObject
+class JZFRAMEWORK_API JZOTADriverSimulator : public JZOTADriver, public JZObject
 {
     JZ_OBJECT_DECLARE(JZOTADriverSimulator)
 public:

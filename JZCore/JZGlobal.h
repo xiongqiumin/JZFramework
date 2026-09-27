@@ -1,5 +1,32 @@
 ﻿#ifndef JZ_GLOBAL_H_
 #define JZ_GLOBAL_H_
+// ============================================================================
+// JZFRAMEWORK_API — 导出宏 (为将来把 JZFramework 编译成动态库 DLL 做准备)
+//
+// 默认(静态库 / 未定义 JZFRAMEWORK_DYNAMIC): 宏为空, 对现有静态编译零影响。
+//
+// 启用动态库的方式:
+//   1. 把 JZFramework 改为 SHARED 库 (见 JZFramework.cmake 的 JZFRAMEWORK_DYNAMIC 选项);
+//   2. 编译本框架时, CMake 会自动定义 JZFramework_EXPORTS -> dllexport;
+//   3. 外部使用方只需定义 JZFRAMEWORK_DYNAMIC -> dllimport。
+// ============================================================================
+#if defined(_WIN32)
+    #if defined(JZFRAMEWORK_DYNAMIC)
+        #ifdef JZFramework_EXPORTS
+            #define JZFRAMEWORK_API __declspec(dllexport)
+        #else
+            #define JZFRAMEWORK_API __declspec(dllimport)
+        #endif
+    #else
+        #define JZFRAMEWORK_API
+    #endif
+#else
+    #if defined(JZFRAMEWORK_DYNAMIC) && defined(__GNUC__)
+        #define JZFRAMEWORK_API __attribute__((visibility("default")))
+    #else
+        #define JZFRAMEWORK_API
+    #endif
+#endif
 
 #include <assert.h>
 #include <string>

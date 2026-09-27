@@ -1,6 +1,5 @@
 #ifndef JZ_JS_WORKER_MODULE_H_
 #define JZ_JS_WORKER_MODULE_H_
-
 #include <map>
 #include <string>
 #include <vector>
@@ -37,7 +36,7 @@ class JZJSEngine;
 // 一个 worker 句柄(JS 侧 `new Worker(...)` 的 C++ 侧)。
 // 由 JS GC 拥有(createValue 用 JSRawPointer<JZJSWorker>(obj, false))。
 // 只持有 id, 不缓存线程指针 —— 线程由 hub 回收, 句柄不会悬垂。
-class JZJSWorker
+class JZFRAMEWORK_API JZJSWorker
 {
 public:
     JZJSWorker();
@@ -59,7 +58,7 @@ public:
 //   - 持有本引擎的回调 GC 根 + 本引擎创建的 worker 句柄表(按 id);
 //   - 消息由 hub 直接 postEvent 投到本模块, 在本模块所属线程派发。
 // =========================================================================
-class JZJSWorkerModule : public JZObject
+class JZFRAMEWORK_API JZJSWorkerModule : public JZObject
 {
 public:
     JZJSWorkerModule(JZObject* parent = nullptr);

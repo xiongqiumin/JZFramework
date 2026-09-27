@@ -1,6 +1,5 @@
 #ifndef JZSerialPort_H
 #define JZSerialPort_H
-
 #include "JZObject.h"
 #include "JZByteArray.h"
 #include "JZSerialPortInfo.h"
@@ -8,7 +7,7 @@
 // JZSerialPort 是面向用户的串口类。它自身不做平台相关的收发，
 // 所有底层操作都委派给单例 JZSerialPortDriver（例如 JZSerialDriverEsp32）。
 // 接收到的数据由驱动通过 onDataReceived() 异步推送进来，并通过 sigReadyRead 通知。
-class JZSerialPort : public JZObject
+class JZFRAMEWORK_API JZSerialPort : public JZObject
 {
 public:
 

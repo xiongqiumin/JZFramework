@@ -1,6 +1,5 @@
-﻿#ifndef JZ_SIGNAL_H_
+#ifndef JZ_SIGNAL_H_
 #define JZ_SIGNAL_H_
-
 #include <memory>
 #include <vector>
 #include <map>
@@ -43,14 +42,14 @@ namespace jzsignal
     };
 
     template<typename Lambda>
-    struct function_traits : function_traits<decltype(&Lambda::operator())> {};
+    struct function_traits JZFRAMEWORK_API : function_traits<decltype(&Lambda::operator())> {};
 
     /// Strip the class from a method type
-    template <typename T> struct remove_class {};
+    template <typename T> struct remove_class JZFRAMEWORK_API {};
     template <typename C, typename R, typename... A> struct remove_class<R(C::*)(A...)> { using type = R(A...); };
     template <typename C, typename R, typename... A> struct remove_class<R(C::*)(A...) const> { using type = R(A...); };
 
-    template <typename F> struct strip_function_object {
+    template <typename F> struct strip_function_object JZFRAMEWORK_API {
         // If you are encountering an
         // 'error: name followed by "::" must be a class or namespace name'
         // with the Intel compiler and a noexcept function here,
@@ -64,7 +63,7 @@ namespace jzsignal
 
     // 核心：检测 Derived 是否继承自 成员函数所属类（基于整合后的 function_traits）
     template<typename Derived, typename Func>
-    struct is_inherits_t {
+    struct is_inherits_t JZFRAMEWORK_API {
         // 从 Func 中萃取所属类（Base）
         using Base = function_class_t<Func>;
         // 检测继承关系：Base 是基类，Derived 是待检测的派生类
@@ -93,14 +92,14 @@ namespace jzsignal
 
     // 辅助工具：判断类型是否为非常量引用（T&）
     template <typename T>
-    struct is_const_lvalue_ref : std::false_type {};
+    struct is_const_lvalue_ref JZFRAMEWORK_API : std::false_type {};
 
     template <typename T>
     struct is_const_lvalue_ref<const T&> : std::true_type {};
 
     // 核心：判断单个类型是否合法（T/const T/const T&）
     template <typename T>
-    struct is_allowed_type {
+    struct is_allowed_type JZFRAMEWORK_API {
         // 规则拆解：
         // 1. 如果是引用类型 → 必须是 const T&
         // 2. 如果不是引用类型 → 无论是否 const 都合法（T/const T）
@@ -229,7 +228,7 @@ namespace jzsignal
     }
 } // namespace jzsignal
 
-class JZBaseSlotCallback
+class JZFRAMEWORK_API JZBaseSlotCallback
 {
 public:
     virtual ~JZBaseSlotCallback(){}
@@ -241,7 +240,7 @@ template<typename Enable, typename... Args>
 class JZSlotCallback;
 
 template<>
-class JZSlotCallback<void> : public JZBaseSlotCallback
+class JZFRAMEWORK_API JZSlotCallback<void> : public JZBaseSlotCallback
 {
 public:
     std::function<void(JZObject*)> memberFunc;
@@ -257,7 +256,7 @@ public:
 };
 
 template<typename... Args>
-class JZSlotCallback<std::enable_if_t<jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
+class JZFRAMEWORK_API JZSlotCallback<std::enable_if_t<jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -287,7 +286,7 @@ private:
 };
 
 template<typename... Args>
-class JZSlotCallback<std::enable_if_t<!jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
+class JZFRAMEWORK_API JZSlotCallback<std::enable_if_t<!jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -307,7 +306,7 @@ public:
 class JZObject;
 class JZThread;
 //JZAsyncSignalEvent
-class JZAsyncSignalEvent : public JZEvent
+class JZFRAMEWORK_API JZAsyncSignalEvent : public JZEvent
 {
 public:
     JZAsyncSignalEvent();
@@ -322,7 +321,7 @@ public:
 
 //JZSLot
 template<typename... Args>
-class JZSlot
+class JZFRAMEWORK_API JZSlot
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -360,7 +359,7 @@ public:
 
 //JZConnect
 template<typename... Args>
-class JZConnect
+class JZFRAMEWORK_API JZConnect
 {
 public:
     int id;
@@ -370,7 +369,7 @@ public:
     JZSlot<Args...> slot;
 };
 
-class JZBaseSignal
+class JZFRAMEWORK_API JZBaseSignal
 {
 public:
     JZBaseSignal();
@@ -391,7 +390,7 @@ public:
 };
 
 template<typename... Args>
-class JZSignal : public JZBaseSignal
+class JZFRAMEWORK_API JZSignal : public JZBaseSignal
 {
 public:        
     JZSignal(JZObject *object)

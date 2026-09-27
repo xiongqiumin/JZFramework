@@ -1,6 +1,5 @@
 #ifndef JZ_AUDIO_INPUT_LINUX_H_
 #define JZ_AUDIO_INPUT_LINUX_H_
-
 #include <alsa/asoundlib.h>
 #include "JZAudioFormat.h"
 #include "JZByteArray.h"
@@ -9,7 +8,7 @@
 #include "detail/JZAudioInputImpl.h"
 
 class JZAudioInput;
-class JZAudioInputLinux : public JZAudioInputImpl
+class JZFRAMEWORK_API JZAudioInputLinux : public JZAudioInputImpl
 {
 public:
     explicit JZAudioInputLinux(JZAudioInput* parent);

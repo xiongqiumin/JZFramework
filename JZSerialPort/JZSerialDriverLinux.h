@@ -1,6 +1,5 @@
 #ifndef JZ_SERIAL_DRIVER_LINUX_H_
 #define JZ_SERIAL_DRIVER_LINUX_H_
-
 #include "JZSerialPortDriver.h"
 #include <map>
 #include <string>
@@ -11,7 +10,7 @@
 // 基于 POSIX termios (open /dev/tty*) 的 JZSerialPortDriver 实现。
 // 每个打开的端口对应一个 fd 和一个独立的接收线程，
 // 收到数据后通过 port->onDataReceived() 推送给 JZSerialPort 并触发 sigReadyRead。
-class JZSerialDriverLinux : public JZSerialPortDriver
+class JZFRAMEWORK_API JZSerialDriverLinux : public JZSerialPortDriver
 {
 public:
     JZSerialDriverLinux();

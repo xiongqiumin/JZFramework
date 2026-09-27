@@ -1,12 +1,11 @@
 #ifndef JZ_HTTP_RESPONE_H_
 #define JZ_HTTP_RESPONE_H_
-
 #include <string>
 #include <map>
 #include "JZByteArray.h"
 #include "JZCompress.h"
 
-class JZHttpRespone
+class JZFRAMEWORK_API JZHttpRespone
 {
 public:
     JZHttpRespone();

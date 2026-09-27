@@ -1,13 +1,12 @@
 ﻿#ifndef JZ_NET_MQTT_SERVER_H_
 #define JZ_NET_MQTT_SERVER_H_
-
 #include <map>
 #include <deque>
 #include "JZMqttClient.h"
 #include "JZOptional.h"
 #include "JZTimer.h"
 
-class JZMqttServer : public JZNetObject
+class JZFRAMEWORK_API JZMqttServer : public JZNetObject
 {
 public:
     JZMqttServer(JZObject *parent = nullptr);

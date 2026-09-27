@@ -1,13 +1,12 @@
 ﻿#ifndef JZ_OPTIONAL_H_
 #define JZ_OPTIONAL_H_
-
 #include <memory>
 #include <type_traits>
 #include <utility>
 #include "JZGlobal.h"
 
 template <typename T>
-class JZOptional
+class JZFRAMEWORK_API JZOptional
 {
     static_assert(!std::is_reference<T>::value, "JZOptional does not support reference types");
     static_assert(!std::is_same<T, void>::value, "Use JZOptional<void> specialization for void");
@@ -177,7 +176,7 @@ private:
 
 // void 特化: 仅声明, 成员实现见 JZOptional.cpp
 template <>
-class JZOptional<void>
+class JZFRAMEWORK_API JZOptional<void>
 {
 public:
     static JZOptional None();

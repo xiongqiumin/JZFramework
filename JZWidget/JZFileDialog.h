@@ -1,6 +1,6 @@
 #ifndef JZ_FILE_DIALOG_H_
 #define JZ_FILE_DIALOG_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 
@@ -11,7 +11,7 @@ class JZWidget;
 //   - 字符串统一走 UTF-8 (std::string), 与框架一致;
 //   - 取消 / 失败时返回空串 (或空 vector)。
 //   - filter 形如 "Images (*.png *.jpg);;Text (*.txt)" (与 Qt 一致), 也可传空串 (= All Files)。
-class JZFileDialog
+class JZFRAMEWORK_API JZFileDialog
 {
 public:
     // 选择单个已存在文件; 取消返回 ""。

@@ -1,5 +1,6 @@
 #ifndef JZ_EMOJI_H_
 #define JZ_EMOJI_H_
+#include "JZGlobal.h"
 
 #include <string>
 
@@ -17,7 +18,7 @@
 //
 // 注意: 这里刻意**不**做完整的 Unicode Emoji 属性表 (那需要几万行数据)。
 // 覆盖的是实际会遇到的常见区间; 需要更全时只改 isEmoji() 的区间表即可。
-class JZEmoji
+class JZFRAMEWORK_API JZEmoji
 {
 public:
     // 是否为 emoji 码点 (含常见符号/图形/表情/交通/旗帜等区间)

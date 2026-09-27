@@ -1,11 +1,11 @@
 #ifndef JZ_XORSHIFT_H_
 #define JZ_XORSHIFT_H_
-
+#include "JZGlobal.h"
 // Xorshift32 流密码: 用 32 位 RNG 产生的密钥流对 buffer 原地异或(加密/解密是同一操作)。
 // rngState 必须在多次调用之间持续持有, 才能形成连续的密钥流(流式)。
 //
 // 注意: 该算法强度很弱, 仅用于兼容/混淆。生产环境请使用 JZChaCha20 等强流密码。
-class JZXorShift
+class JZFRAMEWORK_API JZXorShift
 {
 public:
     static inline void stream(char *buffer, int size, uint32_t &rngState)

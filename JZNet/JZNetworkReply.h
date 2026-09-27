@@ -1,6 +1,5 @@
 #ifndef JZ_NEWWORK_REPLY_H_
 #define JZ_NEWWORK_REPLY_H_
-
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
@@ -9,14 +8,14 @@ class JZNetworkConnect;
 class JZNetworkAccessManager;
 
 // HTTP response data
-class JZHttpResData : public JZNetResEventData
+class JZFRAMEWORK_API JZHttpResData : public JZNetResEventData
 {
 public:
     int httpCode;
     std::string httpCodeText;
 };
 
-class JZNetworkReply : public JZObject
+class JZFRAMEWORK_API JZNetworkReply : public JZObject
 {
 public:
     enum NetworkError {

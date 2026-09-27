@@ -1,6 +1,6 @@
 ﻿#ifndef JZ_MODBUS_DEFINE_H_
 #define JZ_MODBUS_DEFINE_H_
-
+#include "JZGlobal.h"
 #include <inttypes.h>
 
 /* Modbus function codes */
@@ -17,7 +17,7 @@
 #define MODBUS_FC_MASK_WRITE_REGISTER       0x16
 #define MODBUS_FC_WRITE_AND_READ_REGISTERS  0x17
 
-struct JZModbusMapping
+struct JZFRAMEWORK_API JZModbusMapping
 {
     JZModbusMapping();
     ~JZModbusMapping();

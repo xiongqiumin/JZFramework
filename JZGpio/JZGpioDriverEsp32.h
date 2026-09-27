@@ -1,6 +1,5 @@
 #ifndef JZ_GPIO_DRIVER_ESP32_H_
 #define JZ_GPIO_DRIVER_ESP32_H_
-
 #include "JZGpioDriver.h"
 #include <map>
 
@@ -10,7 +9,7 @@
 //               再回调 JZGpio::onLevelChanged()
 //   - PWM     : LEDC 外设 (每个引脚分配一个 LEDC 通道)
 //   - 波形    : 独立的 FreeRTOS 任务 (waveTask) 周期采样, 输出到 DAC(GPIO25/26) 或调制 LEDC 占空比
-class JZGpioDriverEsp32 : public JZGpioDriver
+class JZFRAMEWORK_API JZGpioDriverEsp32 : public JZGpioDriver
 {
 public:
     JZGpioDriverEsp32();

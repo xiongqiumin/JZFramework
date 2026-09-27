@@ -1,6 +1,5 @@
 #ifndef JZ_KEY_EVENT_H_
 #define JZ_KEY_EVENT_H_
-
 #include <inttypes.h>
 #include <string>
 #include "JZEvent.h"
@@ -48,7 +47,7 @@ enum JZKey : uint32_t {
     Key_F12        = 0x7B,
 };
 
-class JZKeyEvent : public JZEvent
+class JZFRAMEWORK_API JZKeyEvent : public JZEvent
 {
 public:
     enum Modifier {

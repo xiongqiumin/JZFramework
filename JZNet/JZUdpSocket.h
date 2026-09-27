@@ -1,13 +1,12 @@
 #ifndef JZ_UDP_SOCKET_H_
 #define JZ_UDP_SOCKET_H_
-
 #include <string>
 #include <deque>
 #include "JZNetObject.h"
 #include "JZNetPacket.h"
 
 // 单个接收的数据报(含发送方地址)
-struct JZUdpDatagram
+struct JZFRAMEWORK_API JZUdpDatagram
 {
     JZByteArray data;
     std::string peerIp;
@@ -15,7 +14,7 @@ struct JZUdpDatagram
 };
 
 // UDP response data (sender address of received datagram)
-class JZUdpResData : public JZNetResEventData
+class JZFRAMEWORK_API JZUdpResData : public JZNetResEventData
 {
 public:
     std::string peerIp;
@@ -23,14 +22,14 @@ public:
 };
 
 // UDP write destination info (for writeDatagram to a specific peer)
-class JZUdpWriteData : public JZNetReqEventData
+class JZFRAMEWORK_API JZUdpWriteData : public JZNetReqEventData
 {
 public:
     std::string ip;
     int port;
 };
 
-class JZUdpSocket : public JZNetObject
+class JZFRAMEWORK_API JZUdpSocket : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZUdpSocket)
 

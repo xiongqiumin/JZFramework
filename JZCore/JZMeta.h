@@ -1,6 +1,5 @@
 #ifndef JZ_META_H_
 #define JZ_META_H_
-
 #include <string>
 #include <inttypes.h>
 #include "JZGlobal.h"
@@ -8,7 +7,7 @@
 constexpr int JZ_META_NONE = 0;
 constexpr int JZ_META_USER = 256;
 
-class JZMetaType 
+class JZFRAMEWORK_API JZMetaType 
 {
 public:
     enum {
@@ -34,7 +33,7 @@ public:
     };
 };
 
-class JZMetaBase
+class JZFRAMEWORK_API JZMetaBase
 {
 public:
     virtual ~JZMetaBase();
@@ -44,7 +43,7 @@ public:
 };
 
 template<class T>
-class JZMeta : public JZMetaBase
+class JZFRAMEWORK_API JZMeta : public JZMetaBase
 {
 public:
     virtual ~JZMeta()
@@ -66,8 +65,7 @@ public:
     T data;
 };
 
-
-class JZMetaRegister
+class JZFRAMEWORK_API JZMetaRegister
 {
 public:
     static JZMetaRegister *instance();    
@@ -84,7 +82,7 @@ protected:
 };
 
 template <class T>
-struct JZMetaTypeId
+struct JZFRAMEWORK_API JZMetaTypeId
 {
     enum { Defined = 0 };
     static int jz_metatype_id() 
@@ -95,7 +93,7 @@ struct JZMetaTypeId
 
 #define JZ_DECLARE_METATYPE_INTERNAL(TYPE,id)  \
     template <>                                \
-    struct JZMetaTypeId< TYPE >                \
+    struct JZFRAMEWORK_API JZMetaTypeId< TYPE >                \
     {                                          \
         enum { Defined = 1 };                  \
         static int jz_metatype_id()            \
@@ -106,7 +104,7 @@ struct JZMetaTypeId
 
 #define JZ_DECLARE_METATYPE(TYPE)                                   \
     template <>                                                     \
-    struct JZMetaTypeId< TYPE >                                     \
+    struct JZFRAMEWORK_API JZMetaTypeId< TYPE >                                     \
     {                                                               \
         enum { Defined = 1 };                                       \
         static int jz_metatype_id()                                 \

@@ -1,11 +1,10 @@
 #ifndef JZ_SEMAPHORE_H_
 #define JZ_SEMAPHORE_H_
-
 #include "JZGlobal.h"
 #include "JZMutex.h"
 #include "JZConditionVariable.h"
 
-class JZSemaphore
+class JZFRAMEWORK_API JZSemaphore
 {
 public:    
     explicit JZSemaphore(int n = 0);

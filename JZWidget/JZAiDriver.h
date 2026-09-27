@@ -1,6 +1,5 @@
 #ifndef JZ_AI_DRIVER_H_
 #define JZ_AI_DRIVER_H_
-
 #include "JZWidget.h"
 #include "JZTimer.h"
 #include "JZSignal.h"
@@ -15,7 +14,7 @@ class JZPushButton;
 // 注意: 覆盖层 setOpaque(0) —— 不向身后的内容贡献"不透明覆盖", 否则重绘剔除
 // 会冻结蒙版下的内容, 移动中的 AI 光标在帧缓冲里留下旧帧残影。
 // 由 JZAiDriver 驱动; 坐标为根窗口逻辑像素, 覆盖层位于根 (0,0) 处两者一致。
-class JZAiOverlay : public JZWidget
+class JZFRAMEWORK_API JZAiOverlay : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZAiOverlay)
 
@@ -51,7 +50,7 @@ private:
 // 操作序列: 状态条显示操作 -> AI 光标平滑移动 (缓动) 到目标中心 ->
 //           (click 类) 点击涟漪 + 合成真实鼠标点击 -> (其它) 直调动作 -> 结束回报。
 // 异步: 通过 sigDone(seq, ok, message) 回报; 状态条上的"取消"按钮可中断序列。
-class JZAiDriver : public JZObject
+class JZFRAMEWORK_API JZAiDriver : public JZObject
 {
     JZ_OBJECT_DECLARE(JZAiDriver)
 

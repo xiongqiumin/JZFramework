@@ -1,10 +1,9 @@
 #ifndef JZ_CRASH_REPORT_H
 #define JZ_CRASH_REPORT_H
-
 #include <string>
 #include "JZOptional.h"
 
-struct JZCrashReport
+struct JZFRAMEWORK_API JZCrashReport
 {
     std::string assert; 
     std::string stack;   // 堆栈字符串
@@ -17,7 +16,7 @@ typedef void (*JZCrashCallback)(JZCrashReport result);
 
 class JZCrashReportImpl;
 
-class JZCrashReportManager
+class JZFRAMEWORK_API JZCrashReportManager
 {
 public:
     static JZCrashReportManager* instance();

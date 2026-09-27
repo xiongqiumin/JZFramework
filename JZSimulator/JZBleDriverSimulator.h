@@ -1,6 +1,5 @@
 #ifndef JZ_BLE_DRIVER_SIMULATOR_H_
 #define JZ_BLE_DRIVER_SIMULATOR_H_
-
 #include "JZBleDriver.h"
 #include "JZByteArray.h"
 #include "JZSimServer.h"
@@ -16,7 +15,7 @@ class JZNetPack;
 // 基于 JZSimServer (内嵌 HTTP Server) 的 BLE 驱动模拟实现。
 // 内部把全部 BLE 操作封装成 JZSimPack 上报 JZSimServer; 网页/API 触发的驱动动作
 // 经 JZSimServer 路由回 onRecv。应用侧可像使用 Ac79/Esp32 驱动一样使用它。
-class JZBleDriverSimulator : public JZBleDriver
+class JZFRAMEWORK_API JZBleDriverSimulator : public JZBleDriver
 {
 public:
     JZBleDriverSimulator(const std::string &ip = "127.0.0.1", int port = 19123);
@@ -27,7 +26,6 @@ public:
 
     // 每次本驱动与模拟器交互(sendSim 发出指令 / onRecv 收到回发)都会通过此信号广播。
     JZSignal<JZSimCmd, const JZVariantMap&> sigSim{this};
-
 
     // === Central ===
     void startScan(JZBLEDeviceDiscoveryAgent *agent) override;

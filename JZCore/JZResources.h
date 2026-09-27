@@ -1,19 +1,18 @@
 #ifndef JZ_RESOURCES_H_
 #define JZ_RESOURCES_H_
-
 #include <string>
 #include <map>
 #include <cstdint>
 #include "JZStd.h"
 
-struct JZResourceData
+struct JZFRAMEWORK_API JZResourceData
 {
     const unsigned char *data;
     int size;
     int64_t mtime = 0;   // 源文件修改时间(ms, 构建时由 jz_resources.py 冻结, 运行期不变)
 };
 
-class JZResources
+class JZFRAMEWORK_API JZResources
 {
 public:
     static JZResources *instance();    

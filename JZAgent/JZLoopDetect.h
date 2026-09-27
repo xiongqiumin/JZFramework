@@ -1,6 +1,6 @@
 #ifndef JZ_LOOP_DETECT_H_
 #define JZ_LOOP_DETECT_H_
-
+#include "JZGlobal.h"
 #include <deque>
 #include <stdint.h>
 #include <string>
@@ -25,7 +25,7 @@
 //     ③ 的"至少两种字符"是为了不把 `------` 这种分隔线当循环。
 // ---------------------------------------------------------------------------
 
-struct JZLoopConfig
+struct JZFRAMEWORK_API JZLoopConfig
 {
     bool enabled = true;
 
@@ -53,7 +53,7 @@ struct JZLoopConfig
 };
 
 // 工具调用登记后的判定
-struct JZToolLoopEvent
+struct JZFRAMEWORK_API JZToolLoopEvent
 {
     bool loop = false;        // 判定为循环(调用方应 llmError)
     std::string toolName;
@@ -64,7 +64,7 @@ struct JZToolLoopEvent
 };
 
 // 输出文本判定结果
-struct JZTextLoopEvent
+struct JZFRAMEWORK_API JZTextLoopEvent
 {
     bool loop = false;
     std::string where;        // "思考" / "回复"(只用于文案)
@@ -74,7 +74,7 @@ struct JZTextLoopEvent
     std::string message;
 };
 
-class JZToolLoopDetector
+class JZFRAMEWORK_API JZToolLoopDetector
 {
 public:
     void setConfig(const JZLoopConfig &config) { m_config = config; }
@@ -108,7 +108,7 @@ private:
     bool m_hit = false;         // 已判过: 不重复判
 };
 
-class JZTextLoopDetector
+class JZFRAMEWORK_API JZTextLoopDetector
 {
 public:
     void setConfig(const JZLoopConfig &config) { m_config = config; }

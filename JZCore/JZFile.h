@@ -1,12 +1,11 @@
 #ifndef JZ_FILE_H_
 #define JZ_FILE_H_
-
 #include "JZStd.h"
 #include "JZByteArray.h"
 
 struct JZResourceData;
 
-class JZFile
+class JZFRAMEWORK_API JZFile
 {
 public:
     static bool exists(std::string filepath);

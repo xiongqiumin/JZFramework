@@ -1,13 +1,12 @@
 #ifndef JZ_FONT_METRICS_H_
 #define JZ_FONT_METRICS_H_
-
 #include <string>
 #include "JZFont.h"
 
 // 字体度量后端接口: 由渲染后端实现并在 init 时注册 (如 JZGdiBackend),
 // 保证控件测量与最终绘制使用同一套字体。后端销毁前须置空注册。
 // 度量方法携带完整 JZFont (字体族 + 字号 + 风格), 由后端决定如何建 GDI+ 字体。
-class JZFontEngine
+class JZFRAMEWORK_API JZFontEngine
 {
 public:
     virtual ~JZFontEngine() = default;
@@ -29,7 +28,7 @@ public:
 // 字体度量门面 (静态): 控件在 paintEvent / sizeHint 中测量文本,
 // 用于居中/对齐, 替代 "字符数 * 7" 式估算。
 // 未注册引擎时用 UTF-8 字符宽度估算兜底 (ASCII ~0.55em, CJK ~1em)。
-class JZFontMetrics
+class JZFRAMEWORK_API JZFontMetrics
 {
 public:
     // 注册平台实现 (不取得所有权)

@@ -2,7 +2,7 @@
 #include <vector>
 #include "JZAudioDriver.h"
 
-class JZAudioDriverWindows : public JZAudioDriver
+class JZFRAMEWORK_API JZAudioDriverWindows : public JZAudioDriver
 {
 public:
     JZAudioDriverWindows();

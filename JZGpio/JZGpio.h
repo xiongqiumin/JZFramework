@@ -1,6 +1,5 @@
 #ifndef JZ_GPIO_H_
 #define JZ_GPIO_H_
-
 #include "JZObject.h"
 #include "JZGpioInfo.h"
 
@@ -18,7 +17,7 @@ class JZGpioDriver;
 //
 // 输入电平变化由驱动通过 onLevelChanged() 异步推入，
 // 由本类判断边沿后发出 sigLevelChanged / sigTriggered。
-class JZGpio : public JZObject
+class JZFRAMEWORK_API JZGpio : public JZObject
 {
 public:
     // 引脚方向

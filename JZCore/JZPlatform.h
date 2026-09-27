@@ -1,12 +1,11 @@
 #ifndef JZ_PLAT_FORM_H_
 #define JZ_PLAT_FORM_H_
-
 #include <string>
 #include <vector>
 #include <cstddef>
 #include "JZGlobal.h"
 
-struct JZFileStat
+struct JZFRAMEWORK_API JZFileStat
 {
     bool exists = false;
     bool isFile = false;
@@ -15,7 +14,7 @@ struct JZFileStat
     int64_t lastModified = 0;  // 毫秒时间戳
 };
 
-class JZPlatformWrapper
+class JZFRAMEWORK_API JZPlatformWrapper
 {
 public:
 	virtual ~JZPlatformWrapper();
@@ -46,7 +45,7 @@ public:
 	virtual std::vector<std::string> dirEntryList(const std::string &path) = 0;
 };
 
-class JZPlatform
+class JZFRAMEWORK_API JZPlatform
 {
 public:
 	static void setInstance(JZPlatformWrapper *inst);

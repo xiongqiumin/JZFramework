@@ -1,6 +1,5 @@
 #ifndef JZ_ACTION_H_
 #define JZ_ACTION_H_
-
 #include "JZObject.h"
 #include "JZImage.h"
 #include "JZSignal.h"
@@ -9,7 +8,7 @@
 // 菜单项 (菜单栏入口 / 右键菜单条目 / 工具栏按钮的数据模型)。
 // 对应 Qt 的 QAction: 持有文本/图标/快捷键/勾选状态, 触发时发 triggered 信号。
 // 不直接参与绘制 —— 由 JZMenu / JZMenuBar 负责渲染。
-class JZAction : public JZObject
+class JZFRAMEWORK_API JZAction : public JZObject
 {
     JZ_OBJECT_DECLARE(JZAction)
 

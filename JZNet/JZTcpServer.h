@@ -1,12 +1,11 @@
 #ifndef JZ_TCP_SERVER_H_
 #define JZ_TCP_SERVER_H_
-
 #include <map>
 #include <deque>
 #include "JZNetObject.h"
 #include "JZTcpSocket.h"
 
-class JZTcpServer : public JZNetObject
+class JZFRAMEWORK_API JZTcpServer : public JZNetObject
 {
 public:
     JZTcpServer(JZObject *parent = nullptr);

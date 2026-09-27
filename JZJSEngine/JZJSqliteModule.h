@@ -1,6 +1,5 @@
 #ifndef JS_ENGINE_SQLITE_MODULE_H_
 #define JS_ENGINE_SQLITE_MODULE_H_
-
 #include <map>
 #include <string>
 
@@ -12,7 +11,7 @@ class JZJSqliteModule;
 // 一个打开的数据库连接。
 // 生命周期: 由 JS 侧的 DatabaseSync 对象拥有(jsbind ClassBind -> GC finalizer),
 // 用户显式 close() 或对象被 GC 时析构; 析构会 finalize 它创建的所有语句再关闭连接。
-struct JZJSSqliteDb
+struct JZFRAMEWORK_API JZJSSqliteDb
 {
     JZJSSqliteDb();
     ~JZJSSqliteDb();
@@ -28,7 +27,7 @@ struct JZJSSqliteDb
 
 // SQLite 数据库模块: 注册 __jz.sqlite 原子 API + 原生类 JZJSSqliteDb。
 // 上层 Node 风格封装见 JZJSEngine/js_wrapper/sqlite/index.ts (DatabaseSync/StatementSync)。
-class JZJSqliteModule : public JZObject
+class JZFRAMEWORK_API JZJSqliteModule : public JZObject
 {
 public:
     JZJSqliteModule();

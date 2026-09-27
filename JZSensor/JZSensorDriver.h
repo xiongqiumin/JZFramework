@@ -1,6 +1,5 @@
 #ifndef JZ_SENSOR_DRIVER_H_
 #define JZ_SENSOR_DRIVER_H_
-
 #include <vector>
 #include "JZObject.h"
 #include "JZSensorInfo.h"
@@ -10,7 +9,7 @@ class JZSensor;
 // 传感器驱动抽象基类。一个驱动代表一个物理传感器设备(如 ESP32 内部温度传感器、
 // BME280), 可同时提供多种测量类型(温度/湿度/气压)。
 // 通过 addInstance() 注册, JZSensor 按 id 查找对应驱动。
-class JZSensorDriver
+class JZFRAMEWORK_API JZSensorDriver
 {
 public:
     JZSensorDriver() = default;

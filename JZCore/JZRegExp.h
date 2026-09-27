@@ -1,13 +1,12 @@
 #ifndef JZ_REGEXP_H_
 #define JZ_REGEXP_H_
-
 #include <vector>
 #include <string>
 #include <memory>
 #include "JZString.h"
 
 //JZRegExpMatch
-class JZRegExpMatch
+class JZFRAMEWORK_API JZRegExpMatch
 {
 public:
     JZRegExpMatch();
@@ -21,7 +20,7 @@ public:
 };
 
 //JZRegExp
-class JZRegExp
+class JZFRAMEWORK_API JZRegExp
 {
 public:
     enum Flag {

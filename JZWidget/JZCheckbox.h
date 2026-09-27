@@ -1,10 +1,9 @@
 #ifndef JZ_WIDGET_CHECKBOX_H_
 #define JZ_WIDGET_CHECKBOX_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 
-class JZCheckbox : public JZWidget
+class JZFRAMEWORK_API JZCheckbox : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZCheckbox)
 

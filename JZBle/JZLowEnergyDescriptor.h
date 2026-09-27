@@ -1,10 +1,9 @@
 #ifndef JZ_LOW_ENERGY_DESCRIPTOR_H_
 #define JZ_LOW_ENERGY_DESCRIPTOR_H_
-
 #include <string>
 #include "JZBluetoothUuid.h"
 
-class JZLowEnergyDescriptor
+class JZFRAMEWORK_API JZLowEnergyDescriptor
 {
 public:
     JZLowEnergyDescriptor();

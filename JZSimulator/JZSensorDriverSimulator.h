@@ -11,7 +11,7 @@
 
 // 传感器模拟驱动(暂未实现)。仅作为 JZSimServer 平台下的占位实现,
 // 保证 JZDriver::init 在 simulator 配置下可正常注册。功能待补充。
-class JZSensorDriverSimulator : public JZSensorDriver, public JZObject
+class JZFRAMEWORK_API JZSensorDriverSimulator : public JZSensorDriver, public JZObject
 {
     JZ_OBJECT_DECLARE(JZSensorDriverSimulator)
 public:

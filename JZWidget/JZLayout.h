@@ -10,7 +10,7 @@ class JZWidget;
 // 布局继承 JZObject: 布局对象也会被 JS 侧持有(见 JZJSWidgetModule::registLayouts 的注册类),
 // 有了 JZObject 就有"守卫"(guardPointer) —— 布局被 C++ 删掉之后, JS 侧那份句柄自动失效
 // (再用会抛异常), 而不是变成悬垂裸指针。子类(JZBoxLayout/JZGridLayout...)随之一起。
-class JZLayout : public JZObject
+class JZFRAMEWORK_API JZLayout : public JZObject
 {
     JZ_OBJECT_DECLARE(JZLayout)
 
@@ -81,7 +81,7 @@ protected:
     int m_marginBottom = 0;
 };
 
-class JZBoxLayout : public JZLayout
+class JZFRAMEWORK_API JZBoxLayout : public JZLayout
 {
 public:
     enum ItemType {
@@ -123,7 +123,7 @@ protected:
     std::vector<Item> m_items;
 };
 
-class JZHBoxLayout : public JZBoxLayout
+class JZFRAMEWORK_API JZHBoxLayout : public JZBoxLayout
 {
 public:
     using JZBoxLayout::JZBoxLayout;
@@ -131,7 +131,7 @@ protected:
     int flexFlow() const override { return 0; }
 };
 
-class JZVBoxLayout : public JZBoxLayout
+class JZFRAMEWORK_API JZVBoxLayout : public JZBoxLayout
 {
 public:
     using JZBoxLayout::JZBoxLayout;
@@ -139,7 +139,7 @@ protected:
     int flexFlow() const override { return 1; }
 };
 
-class JZGridLayout : public JZLayout
+class JZFRAMEWORK_API JZGridLayout : public JZLayout
 {
 public:
     struct Item {
@@ -194,11 +194,10 @@ private:
     int m_vGap = -1;
 };
 
-
 // 自布局: 挂在一个**控件自身**上, 依据父控件尺寸把该控件按九宫格锚点 + 偏移
 // 摆放(保持自身当前尺寸)。父控件 resize 时由框架自动重摆(见 JZWidget::resize),
 // 因此控件在父内永远相对父边角对齐, 父尺寸变化无需手写 resizeEvent。
-class JZSelfLayout
+class JZFRAMEWORK_API JZSelfLayout
 {
 public:
     // 九宫格锚点: 控件自身的对应点对齐父控件内容区对应点, 再叠加 (dx, dy) 偏移。

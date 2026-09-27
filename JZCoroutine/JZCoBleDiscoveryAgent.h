@@ -1,6 +1,5 @@
 #ifndef JZCO_BLE_DISCOVERY_AGENT_H_
 #define JZCO_BLE_DISCOVERY_AGENT_H_
-
 #include "JZCo.h"
 #include "JZBLEDeviceDiscoveryAgent.h"
 #include "JZBLEDeviceInfo.h"
@@ -12,7 +11,7 @@
 // 在协程中调用 scan()，异步扫描结果通过 JZCoCondition 等待，返回设备列表。
 // 本对象及其底层 JZBLEDeviceDiscoveryAgent 创建在协程调度器线程上
 // （参考 JZCoTcpSocket，将底层对象作为子对象即可保证同线程、直连信号）。
-class JZCoBleDiscoveryAgent : public JZObject
+class JZFRAMEWORK_API JZCoBleDiscoveryAgent : public JZObject
 {
 public:
     JZCoBleDiscoveryAgent(JZObject *parent = nullptr);

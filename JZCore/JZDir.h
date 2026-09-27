@@ -1,10 +1,9 @@
 ﻿#ifndef JZ_DIR_H_
 #define JZ_DIR_H_
-
 #include "JZStd.h"
 #include "JZFileInfo.h"
 
-class JZDir
+class JZFRAMEWORK_API JZDir
 {
 public:
     // 过滤选项

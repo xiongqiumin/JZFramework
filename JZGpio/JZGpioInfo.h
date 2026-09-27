@@ -1,12 +1,12 @@
 #ifndef JZ_GPIO_INFO_H_
 #define JZ_GPIO_INFO_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 
 // 描述一个可用 GPIO 引脚的静态信息（引脚枚举结果）。
 // 各平台驱动在 JZGpioDriver::availableGpios() 中填充并上报。
-class JZGpioInfo
+class JZFRAMEWORK_API JZGpioInfo
 {
 public:
     // 引脚能力(位掩码, 可组合)

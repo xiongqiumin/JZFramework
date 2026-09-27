@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_LOG_H_
 #define JZ_LOG_H_
-
 #include <memory>
 #include <vector>
 #include <string>
@@ -22,7 +21,7 @@ enum {
     LogModule_User = 100,
 };
 
-class JZLogModuleConfig
+class JZFRAMEWORK_API JZLogModuleConfig
 {
 public:
     enum {
@@ -37,7 +36,7 @@ public:
     int type;
 };
 
-class JZLogItem
+class JZFRAMEWORK_API JZLogItem
 {
 public:
     static std::shared_ptr<JZLogItem> makeLog(int module, int level, std::string message);
@@ -49,14 +48,14 @@ public:
 };
 typedef std::shared_ptr<JZLogItem> JZLogItemPtr;
 
-class JZLogEvent : public JZEvent
+class JZFRAMEWORK_API JZLogEvent : public JZEvent
 {
 public:
     JZLogEvent();
     JZLogItemPtr log;
 };
 
-class JZLogConfig
+class JZFRAMEWORK_API JZLogConfig
 {
 public:
     bool shouldPrintTime = false;      // 是否打印时间（最常用）
@@ -74,7 +73,7 @@ public:
 class JZObject;
 class JZTimer;
 
-class JZLogManager
+class JZFRAMEWORK_API JZLogManager
 {
 public:
     static JZLogManager *instance();
@@ -97,7 +96,7 @@ public:
     std::string fatalError();
 
 protected:
-    class JZLogModule
+    class JZFRAMEWORK_API JZLogModule
     {
     public:
         JZLogModuleConfig config;        

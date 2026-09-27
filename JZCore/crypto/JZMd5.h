@@ -7,7 +7,7 @@
 // 标准 OpenSSL 风格 MD5 接口, 全部位于 JZCrypto 命名空间下(避免与链接的 OpenSSL libcrypto 符号冲突)。
 namespace JZCrypto
 {
-    struct MD5_CTX
+    struct MD5_CTX JZFRAMEWORK_API
     {
         uint32_t state[4];        // 4 个 32 位寄存器: A, B, C, D
         uint32_t count[2];        // 64 位计数器: 已处理的比特数(低 32 + 高 32)

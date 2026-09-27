@@ -1,6 +1,5 @@
 #ifndef JS_ENGINE_NET_MODULE_H_
 #define JS_ENGINE_NET_MODULE_H_
-
 #include <functional>
 #include <map>
 #include <string>
@@ -24,7 +23,7 @@
 class JZJSNetModule;
 
 // 原生事件 -> JS 回调。回调以 JSValue 保存(存时 dup，移除/析构时 free)。
-class JZJSEventSink
+class JZFRAMEWORK_API JZJSEventSink
 {
 public:
     JZJSEventSink(JZJSEngine* engine);
@@ -69,7 +68,7 @@ protected:
 // 句柄 ref 计数见 JZJSHandleRef.h(本方所有 socket/server 都挂一个 href)
 
 // TCP socket 包装
-struct JZJSNetSocket
+struct JZFRAMEWORK_API JZJSNetSocket
 {
     JZJSNetSocket(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSNetSocket();
@@ -97,7 +96,7 @@ struct JZJSNetSocket
 };
 
 // TCP server 包装
-struct JZJSNetServer
+struct JZFRAMEWORK_API JZJSNetServer
 {
     JZJSNetServer(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSNetServer();
@@ -117,7 +116,7 @@ struct JZJSNetServer
 };
 
 // UDP socket 包装
-struct JZJSUdpSocket
+struct JZFRAMEWORK_API JZJSUdpSocket
 {
     JZJSUdpSocket(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSUdpSocket();
@@ -138,7 +137,7 @@ struct JZJSUdpSocket
 };
 
 // WebSocket 包装(客户端连接与服务端 accept 出来的连接共用)
-struct JZJSWebSocket
+struct JZFRAMEWORK_API JZJSWebSocket
 {
     JZJSWebSocket(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSWebSocket();
@@ -161,7 +160,7 @@ struct JZJSWebSocket
 };
 
 // WebSocket server 包装
-struct JZJSWebSocketServer
+struct JZFRAMEWORK_API JZJSWebSocketServer
 {
     JZJSWebSocketServer(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSWebSocketServer();
@@ -181,7 +180,7 @@ struct JZJSWebSocketServer
 };
 
 // MQTT client 包装
-struct JZJSMqttClient
+struct JZFRAMEWORK_API JZJSMqttClient
 {
     JZJSMqttClient(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSMqttClient();
@@ -203,7 +202,7 @@ struct JZJSHttpServer;
 
 // HTTP 请求转发: JZHttpServer 收到请求后交给 JS 侧的 'request' 事件。
 // 挂在 catch-all 路由上（"/<path:path>"），全部请求都走这一个 handler。
-class JZJSHttpHandler : public JZHttpHandler
+class JZFRAMEWORK_API JZJSHttpHandler : public JZHttpHandler
 {
 public:
     JZJSHttpServer* server = nullptr;
@@ -212,7 +211,7 @@ public:
 
 // HTTP 服务端响应包装（每个请求一个）。
 // 与 Node 的差别：不是流式写，write() 只缓冲，end() 时一次性发出（见 types/http.d.ts）。
-struct JZJSHttpResponse
+struct JZFRAMEWORK_API JZJSHttpResponse
 {
     JZJSHttpResponse(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSHttpResponse();
@@ -233,7 +232,7 @@ struct JZJSHttpResponse
 };
 
 // HTTP server 包装
-struct JZJSHttpServer
+struct JZFRAMEWORK_API JZJSHttpServer
 {
     JZJSHttpServer(JZJSEngine* engine = nullptr, JZJSNetModule* module = nullptr);
     ~JZJSHttpServer();
@@ -254,7 +253,7 @@ struct JZJSHttpServer
 };
 
 // JS 网络模块: 注册 __jz.* 原子 API + 内嵌 JS 适配层(提供 Node 风格 API)
-class JZJSNetModule : public JZObject
+class JZFRAMEWORK_API JZJSNetModule : public JZObject
 {
 public:
     JZJSNetModule();

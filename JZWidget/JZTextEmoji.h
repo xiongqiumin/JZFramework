@@ -1,6 +1,5 @@
 #ifndef JZ_TEXT_EMOJI_H_
 #define JZ_TEXT_EMOJI_H_
-
 #include <string>
 #include <vector>
 #include "JZFont.h"
@@ -8,7 +7,7 @@
 // emoji 感知的一行文本分段结果: 与 JZPainter::drawText / JZAbstractTextEdit 同一口径。
 // 文本里遇到 emoji 码点(含其后的 VS16/ZWJ/肤色等修饰符)整体切成一个不可分割的 emoji 段,
 // 走 JZEmojiImageMap 取显示用位图; 其余连续普通文字合并成文本段。
-struct JZTextEmojiRun {
+struct JZFRAMEWORK_API JZTextEmojiRun {
     bool     emoji = false;       // true=emoji 段, false=普通文本段
     std::string text;             // 本段 UTF-8 (文本段或 emoji 序列)
     int      byteStart = 0;       // 段首在本行串中的字节下标

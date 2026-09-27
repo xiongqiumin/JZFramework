@@ -1,13 +1,12 @@
 #ifndef JZ_WEB_SOCKET_SERVER_H_
 #define JZ_WEB_SOCKET_SERVER_H_
-
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
 #include "JZWebSocket.h"
 #include <deque>
 
-class JZWebSocketServer : public JZNetObject
+class JZFRAMEWORK_API JZWebSocketServer : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZWebSocketServer)
 

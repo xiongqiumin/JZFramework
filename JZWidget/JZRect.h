@@ -1,11 +1,10 @@
 #ifndef JZ_RECT_H_
 #define JZ_RECT_H_
-
 #include "JZPoint.h"
 #include "JZSize.h"
 
 class JZDebug;
-class JZRect
+class JZFRAMEWORK_API JZRect
 {
 public:
     JZRect();

@@ -1,11 +1,10 @@
 #ifndef JZ_HTTP_REQUEST_H_
 #define JZ_HTTP_REQUEST_H_
-
 #include <string>
 #include <map>
 #include "JZByteArray.h"
 
-class JZHttpRequest
+class JZFRAMEWORK_API JZHttpRequest
 {
 public:
     enum Method

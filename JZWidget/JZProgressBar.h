@@ -1,9 +1,8 @@
 #ifndef JZ_WIDGET_BAR_H_
 #define JZ_WIDGET_BAR_H_
-
 #include "JZWidget.h"
 
-class JZProgressBar : public JZWidget
+class JZFRAMEWORK_API JZProgressBar : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZProgressBar)
 

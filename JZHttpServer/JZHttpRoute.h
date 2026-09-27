@@ -1,6 +1,5 @@
 #ifndef JZ_HTTP_ROUTE_H_
 #define JZ_HTTP_ROUTE_H_
-
 #include <string>
 #include <vector>
 #include <map>
@@ -38,7 +37,7 @@
  *
  * 匹配优先级: Exact > Dynamic > Path（同优先级按注册顺序）
  */
-class JZHttpRoute
+class JZFRAMEWORK_API JZHttpRoute
 {
 public:
     JZHttpRoute();

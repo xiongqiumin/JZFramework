@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_OBJECT_H_
 #define JZ_OBJECT_H_
-
 #include <vector>
 #include <string>
 #include <map>
@@ -13,7 +12,7 @@
 class JZThread;
 class JZApplication;
 
-class JZSignalDestory : public JZSignal<JZObject*>
+class JZFRAMEWORK_API JZSignalDestory : public JZSignal<JZObject*>
 {
 public:
     JZSignalDestory(JZObject *object);
@@ -23,7 +22,7 @@ public:
 
 //JZObjectDeleteEvent
 class JZObject;
-class JZObjectDeleteEvent : public JZEvent
+class JZFRAMEWORK_API JZObjectDeleteEvent : public JZEvent
 {
 public:
     JZObjectDeleteEvent();
@@ -33,7 +32,7 @@ public:
 };
 
 //JZObjectMeta
-class JZObjectMeta
+class JZFRAMEWORK_API JZObjectMeta
 {
 public:
     JZObjectMeta(const std::string& className, const JZObjectMeta* parentMeta);
@@ -55,7 +54,7 @@ public:
 
 //JZObject
 class JZVariant;
-class JZObject
+class JZFRAMEWORK_API JZObject
 {
 public:
     static const JZObjectMeta* metaObject();

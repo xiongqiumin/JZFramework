@@ -1,6 +1,5 @@
 #ifndef JZ_PRINTER_H_
 #define JZ_PRINTER_H_
-
 #include "JZImage.h"
 #include "JZSize.h"
 
@@ -27,7 +26,7 @@
 //     p.drawText(printer.mm(20), printer.mm(15), "发票");
 //     p.drawLine(...); p.drawImage(logo, ...); }
 //   printer.save("invoice.pdf");
-class JZPrinter
+class JZFRAMEWORK_API JZPrinter
 {
 public:
     JZPrinter() = default;

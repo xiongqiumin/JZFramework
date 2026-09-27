@@ -1,6 +1,5 @@
 #ifndef JZ_IMAGE_READER_H_
 #define JZ_IMAGE_READER_H_
-
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -22,7 +21,7 @@
 //  - 便捷路径: JZImage(filePath)/JZImage(data,len)/JZImage::decode() 已内置同一
 //    解码能力 (stb), 日常使用可不必显式调用本类。
 //  - 失败返回空 shared_ptr 并 (若传入 error) 填可读原因 (UTF-8)。
-class JZImageReader
+class JZFRAMEWORK_API JZImageReader
 {
 public:
     // 可解码格式 (探测与错误提示用; 子集取决于 stb_image 实际支持)

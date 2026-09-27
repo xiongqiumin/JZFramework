@@ -1,14 +1,13 @@
 
 // JZConsoleInput.h
 #pragma once
-
 #include <atomic>
 #include <thread>
 #include <iostream>
 #include <string>
 #include "JZObject.h"
 
-class JZConsoleInput : public JZObject
+class JZFRAMEWORK_API JZConsoleInput : public JZObject
 {
 public:
     explicit JZConsoleInput(JZObject* parent = nullptr);

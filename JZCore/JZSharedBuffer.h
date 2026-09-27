@@ -1,12 +1,11 @@
 #ifndef JZ_SHARED_BUFFER_H_
 #define JZ_SHARED_BUFFER_H_
-
 #include <memory>
 #include "JZGlobal.h"
 #include "JZDataStream.h"
 
 //JZSharedBufferData
-class JZSharedBufferData
+class JZFRAMEWORK_API JZSharedBufferData
 {
 public:
     JZSharedBufferData();
@@ -21,7 +20,7 @@ public:
 };
 
 //JZSharedBuffer
-class JZSharedBuffer
+class JZFRAMEWORK_API JZSharedBuffer
 {
 public:
     static JZSharedBuffer fromRaw(char *buffer,int len);

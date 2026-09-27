@@ -1,9 +1,8 @@
 #ifndef JZ_MESSAGE_BOX_H_
 #define JZ_MESSAGE_BOX_H_
-
 #include "JZDialog.h"
 
-class JZMessageBox : public JZDialog
+class JZFRAMEWORK_API JZMessageBox : public JZDialog
 {
     JZ_OBJECT_DECLARE(JZMessageBox)
 

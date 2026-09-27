@@ -1,6 +1,6 @@
 #ifndef JZ_XML_H_
 #define JZ_XML_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -18,7 +18,7 @@
 // ============================================================================
 
 // 内部节点数据。公开为简单结构体, 便于派生类直接访问。
-class JZDomNodeData : public std::enable_shared_from_this<JZDomNodeData>
+class JZFRAMEWORK_API JZDomNodeData : public std::enable_shared_from_this<JZDomNodeData>
 {
 public:
     enum class Type
@@ -85,7 +85,7 @@ enum JZDomNodeType
 // ============================================================================
 // JZDomNodeList
 // ============================================================================
-class JZDomNodeList
+class JZFRAMEWORK_API JZDomNodeList
 {
 public:
     JZDomNodeList();
@@ -106,7 +106,7 @@ private:
 // ============================================================================
 // JZDomNamedNodeMap (属性集合)
 // ============================================================================
-class JZDomNamedNodeMap
+class JZFRAMEWORK_API JZDomNamedNodeMap
 {
 public:
     JZDomNamedNodeMap();
@@ -129,7 +129,7 @@ private:
 // ============================================================================
 // JZDomNode —— DOM 树基类
 // ============================================================================
-class JZDomNode
+class JZFRAMEWORK_API JZDomNode
 {
 public:
     JZDomNode();
@@ -213,7 +213,7 @@ protected:
 // ============================================================================
 // JZDomCharacterData —— Text / Comment / CDATASection 的基类
 // ============================================================================
-class JZDomCharacterData : public JZDomNode
+class JZFRAMEWORK_API JZDomCharacterData : public JZDomNode
 {
 public:
     JZDomCharacterData();
@@ -233,7 +233,7 @@ public:
 // ============================================================================
 // JZDomElement
 // ============================================================================
-class JZDomElement : public JZDomNode
+class JZFRAMEWORK_API JZDomElement : public JZDomNode
 {
 public:
     JZDomElement();
@@ -264,7 +264,7 @@ public:
 // ============================================================================
 // JZDomAttr
 // ============================================================================
-class JZDomAttr : public JZDomNode
+class JZFRAMEWORK_API JZDomAttr : public JZDomNode
 {
 public:
     JZDomAttr();
@@ -280,7 +280,7 @@ public:
 // ============================================================================
 // JZDomText
 // ============================================================================
-class JZDomText : public JZDomCharacterData
+class JZFRAMEWORK_API JZDomText : public JZDomCharacterData
 {
 public:
     JZDomText();
@@ -293,7 +293,7 @@ public:
 // ============================================================================
 // JZDomCDATASection
 // ============================================================================
-class JZDomCDATASection : public JZDomCharacterData
+class JZFRAMEWORK_API JZDomCDATASection : public JZDomCharacterData
 {
 public:
     JZDomCDATASection();
@@ -303,7 +303,7 @@ public:
 // ============================================================================
 // JZDomComment
 // ============================================================================
-class JZDomComment : public JZDomCharacterData
+class JZFRAMEWORK_API JZDomComment : public JZDomCharacterData
 {
 public:
     JZDomComment();
@@ -313,7 +313,7 @@ public:
 // ============================================================================
 // JZDomProcessingInstruction
 // ============================================================================
-class JZDomProcessingInstruction : public JZDomNode
+class JZFRAMEWORK_API JZDomProcessingInstruction : public JZDomNode
 {
 public:
     JZDomProcessingInstruction();
@@ -327,7 +327,7 @@ public:
 // ============================================================================
 // JZDomDocumentType
 // ============================================================================
-class JZDomDocumentType : public JZDomNode
+class JZFRAMEWORK_API JZDomDocumentType : public JZDomNode
 {
 public:
     JZDomDocumentType();
@@ -341,7 +341,7 @@ public:
 // ============================================================================
 // JZDomEntityReference
 // ============================================================================
-class JZDomEntityReference : public JZDomNode
+class JZFRAMEWORK_API JZDomEntityReference : public JZDomNode
 {
 public:
     JZDomEntityReference();
@@ -353,7 +353,7 @@ public:
 // ============================================================================
 // JZDomNotation
 // ============================================================================
-class JZDomNotation : public JZDomNode
+class JZFRAMEWORK_API JZDomNotation : public JZDomNode
 {
 public:
     JZDomNotation();
@@ -367,7 +367,7 @@ public:
 // ============================================================================
 // JZDomDocumentFragment
 // ============================================================================
-class JZDomDocumentFragment : public JZDomNode
+class JZFRAMEWORK_API JZDomDocumentFragment : public JZDomNode
 {
 public:
     JZDomDocumentFragment();
@@ -377,7 +377,7 @@ public:
 // ============================================================================
 // JZDomDocument
 // ============================================================================
-class JZDomDocument : public JZDomNode
+class JZFRAMEWORK_API JZDomDocument : public JZDomNode
 {
 public:
     JZDomDocument();

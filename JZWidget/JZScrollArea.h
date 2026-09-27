@@ -1,6 +1,5 @@
 #ifndef JZ_SCROLL_AREA_H_
 #define JZ_SCROLL_AREA_H_
-
 #include "JZWidget.h"
 
 class JZScrollBar;
@@ -19,7 +18,7 @@ class JZScrollBar;
 //
 // 滚轮: 未消费的滚轮事件会沿控件父链冒泡 (JZWindow 实现), 因此在内容控件及其任意
 // 子控件上滚动也能让本滚动区滚动。
-class JZScrollArea : public JZWidget
+class JZFRAMEWORK_API JZScrollArea : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZScrollArea)
 

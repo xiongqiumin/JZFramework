@@ -1,6 +1,6 @@
 #ifndef JZ_JS_UI_LOADER_H_
 #define JZ_JS_UI_LOADER_H_
-
+#include "JZGlobal.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -16,7 +16,7 @@ class JZJSEngine;
 // - props   属性键值(原样保留 Json::Value, 保留类型: 字符串/数字/布尔/数组)
 // - children 递归子节点(控件, 即 <widget>)
 // - items   列表型子项(ComboBox / ListWidget 等不支持通用布局的控件, 用 addItem 添加)
-struct JZUiNode
+struct JZFRAMEWORK_API JZUiNode
 {
     std::string type;
     std::string id;
@@ -50,7 +50,7 @@ struct JZUiNode
 // 生成的 TS 类(Qt uic 风格):
 //   - 每个带 id 的节点对应一个公开字段(类型 Widget, 名称取 id); 另固定 root 字段;
 //   - 生成 setupUi() 方法(平坦地创建并设置属性、挂载父子关系), 由构造函数调用。
-class JZJSUiLoader
+class JZFRAMEWORK_API JZJSUiLoader
 {
 public:
     JZJSUiLoader();

@@ -1,10 +1,10 @@
 #ifndef JZ_BRUSH_H_
 #define JZ_BRUSH_H_
-
+#include "JZGlobal.h"
 #include "JZColor.h"
 #include <cstdint>
 
-class JZBrush
+class JZFRAMEWORK_API JZBrush
 {
 public:
     static constexpr uint8_t kOpaCover = 255;

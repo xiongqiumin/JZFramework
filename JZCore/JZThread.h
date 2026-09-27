@@ -1,6 +1,5 @@
 #ifndef JZ_THREAD_H_
 #define JZ_THREAD_H_
-
 #include <queue>
 #include <functional>
 #include "JZObject.h"
@@ -19,7 +18,7 @@ typedef void* JZThreadId;
 #define THREAD_ID_NONE  nullptr
 #endif
 
-class JZEventInfo
+class JZFRAMEWORK_API JZEventInfo
 {
 public:
     JZEventInfo();
@@ -30,7 +29,7 @@ public:
     JZSemaphore *sem;  //同步的flag, 有这个flag 不会删除event 
 };
 
-class JZThreadConfig
+class JZFRAMEWORK_API JZThreadConfig
 {
 public:
     int stackSizeAlign() const;
@@ -41,7 +40,7 @@ public:
 };
 
 class JZApplication;
-class JZThread : public JZObject
+class JZFRAMEWORK_API JZThread : public JZObject
 {
 public:    
     static void msleep(int ms);
@@ -132,7 +131,7 @@ protected:
     JZMutex m_mutex;
 };
 
-class JZTaskThread : public JZThread
+class JZFRAMEWORK_API JZTaskThread : public JZThread
 {
 public:
     void setTask(const std::function<void()> &task);

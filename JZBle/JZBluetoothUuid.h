@@ -1,10 +1,10 @@
 #ifndef JZ_BLUETOOTH_UUID_H_
 #define JZ_BLUETOOTH_UUID_H_
-
+#include "JZGlobal.h"
 #include <string>
 #include <stdint.h>
 
-class JZBluetoothUuid
+class JZFRAMEWORK_API JZBluetoothUuid
 {
 public:
     JZBluetoothUuid();

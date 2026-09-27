@@ -1,11 +1,10 @@
 #ifndef MG_PACKET_MANAGER_H_
 #define MG_PACKET_MANAGER_H_
-
 #include "JZNetPacket.h"
 #include "JZCore/JZDataStream.h"
 #include "JZCore/JZCrypto.h"
 
-class JZNetPacketProcessor
+class JZFRAMEWORK_API JZNetPacketProcessor
 {
 public:
     JZNetPacketProcessor();
@@ -46,6 +45,5 @@ private:
     uint64_t m_sendSeq = 0;      // 发送报文序号(每包 +1)
     uint64_t m_recvSeq = 0;      // 接收报文序号(每包 +1)
 };
-
 
 #endif // ! MG_PACKET_MANAGER_H_

@@ -1,6 +1,5 @@
 #ifndef JZ_WIFI_DRIVER_SIMULATOR_H_
 #define JZ_WIFI_DRIVER_SIMULATOR_H_
-
 #include "JZWifiDriver.h"
 #include "JZWifiStation.h"
 #include "JZWifiAp.h"
@@ -24,7 +23,7 @@
 // 只有 AP 的启动/停止需要发往模拟器(上行 ap_start/ap_stop),
 // 站点(station)的接入与断开由模拟器通过下行 station_info 包回传,
 // 驱动据此与本地集合做差分, 触发接入/断开事件。
-class JZWifiDriverSimulator : public JZWifiDriver
+class JZFRAMEWORK_API JZWifiDriverSimulator : public JZWifiDriver
 {
     JZ_OBJECT_DECLARE(JZWifiDriverSimulator)
 public:
@@ -46,7 +45,6 @@ public:
     bool isStationConnected(JZWifiStation *w) override;
     std::string stationIpAddress(JZWifiStation *w) override;
     int stationRssi(JZWifiStation *w) override;
-
 
     // === Access Point (做服务) ===
     void apStart(JZWifiAp *w, const JZWifiApConfig &cfg) override;

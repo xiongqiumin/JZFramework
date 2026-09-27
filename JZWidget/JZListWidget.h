@@ -1,6 +1,5 @@
 #ifndef JZ_LIST_WIDGET_H_
 #define JZ_LIST_WIDGET_H_
-
 #include "JZAbstractViewWidget.h"
 #include "JZSignal.h"
 #include "JZImage.h"
@@ -18,7 +17,7 @@ class JZListWidget;
 // 所有权: 由 JZListWidget 持有(unique_ptr 存于 m_items), 外部拿到的是**借用指针** ——
 // 地址只要不被 remove/take/clear 就一直稳定(增删其它项不会搬移本项), 列表析构后失效。
 // 改值用 setText/setIcon/setData: 会通知所属列表重绘。
-class JZListWidgetItem
+class JZFRAMEWORK_API JZListWidgetItem
 {
 public:
     JZListWidgetItem() {}
@@ -46,7 +45,7 @@ private:
 
 // 虚拟列表(owner-draw): 仅绘制当前可见区域, 通过 JZPainter 直接画到画布上,
 // 不创建/复用任何行控件。同时支持列表模式(单列: 图标 + 文本)与图片模式(网格)。
-class JZListWidget : public JZAbstractViewWidget
+class JZFRAMEWORK_API JZListWidget : public JZAbstractViewWidget
 {
     JZ_OBJECT_DECLARE(JZListWidget)
 

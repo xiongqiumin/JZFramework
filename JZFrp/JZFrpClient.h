@@ -1,13 +1,12 @@
 #ifndef JZFRPCLIENT_H_
 #define JZFRPCLIENT_H_
-
 #include <map>
 #include "JZFrpPacket.h"
 #include "JZNet/JZNetClient.h"
 #include "JZTcpSocket.h"
 #include "JZTimer.h"
 
-class JZFrpClientConfig
+class JZFRAMEWORK_API JZFrpClientConfig
 {
 public:
     struct Proxy
@@ -27,9 +26,8 @@ public:
     std::vector<Proxy> proxyList;
 };
 
-
 // FRP 客户端类, client 连接服务器后, 收到服务器数据,转发给本地
-class JZFrpClient : public JZObject 
+class JZFRAMEWORK_API JZFrpClient : public JZObject 
 {
 public:
     JZFrpClient(JZObject *parent = nullptr);

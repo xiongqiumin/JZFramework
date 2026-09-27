@@ -1,6 +1,5 @@
 #ifndef JS_ENGINE_SERIAL_PORT_MODULE_H_
 #define JS_ENGINE_SERIAL_PORT_MODULE_H_
-
 #include <map>
 #include <string>
 #include <vector>
@@ -17,7 +16,7 @@ class JZJSSerialPort;
  * 与 JZJSNetModule / JZJSCoreModule 平级, 各自独立 initEngine/deinitEngine,
  * 通过复用全局 __jz 命名空间(若已存在则追加 serialport 子命名空间)挂接。
  */
-class JZJSSerialPortModule : public JZObject
+class JZFRAMEWORK_API JZJSSerialPortModule : public JZObject
 {
 public:
     JZJSSerialPortModule();

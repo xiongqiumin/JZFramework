@@ -1,13 +1,12 @@
 #ifndef JZ_SCROLLBAR_H_
 #define JZ_SCROLLBAR_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 
 // 独立滚动条 (类似 Qt QScrollBar): 沿一个方向排布, 滑块长度正比于 pageStep,
 // 两端箭头单步、轨道点击翻页、滑块可拖动、滚轮单步。可挂载到任意可滚动内容
 // (如自定义 JZScrollArea 子类) 上, 由外部在 sigValueChanged 里同步滚动偏移。
-class JZScrollBar : public JZWidget
+class JZFRAMEWORK_API JZScrollBar : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZScrollBar)
 

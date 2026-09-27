@@ -1,6 +1,5 @@
 #ifndef JZPROCESS_H
 #define JZPROCESS_H
-
 #include "JZObject.h"
 #include "JZByteArray.h"
 #include "JZThread.h"
@@ -9,7 +8,7 @@
 
 class JZProcessPrivate;
 
-class JZProcess : public JZObject
+class JZFRAMEWORK_API JZProcess : public JZObject
 {
     JZ_OBJECT_DECLARE(JZProcess)
 public:

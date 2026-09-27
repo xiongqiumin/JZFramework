@@ -1,6 +1,5 @@
 #ifndef JZ_STYLE_SET_H_
 #define JZ_STYLE_SET_H_
-
 #include "JZColor.h"
 #include "JZRect.h"
 #include "JZOptional.h"
@@ -14,7 +13,7 @@
 // 因此不会出现"实现支持但没登记 / 登记了但实现不支持"的漂移。
 // 注意: 词汇表只回答"引擎有没有这个属性、值怎么解析";
 //       "某个控件会不会消费它"由该控件自己声明 (JZWidget::styleProps)。
-enum class JZStyleValueKind
+enum class JZFRAMEWORK_API JZStyleValueKind
 {
     Color,             // 颜色 (#RRGGBB / rgb() / transparent / 命名色)
     Length,            // 单长度 (Npx)
@@ -25,7 +24,7 @@ enum class JZStyleValueKind
     String,            // 字符串 (font-family ...)
 };
 
-struct JZStylePropInfo
+struct JZFRAMEWORK_API JZStylePropInfo
 {
     std::string name;
     JZStyleValueKind kind;
@@ -35,7 +34,7 @@ struct JZStylePropInfo
 // 控件已解析的样式值 (盒子外观)。
 // 可选字段为 None 时表示"不绘制该项"; 后续由样式表 (JZStyleSheet) 解析填充,
 // 当前由控件在构造时按默认外观设置。
-struct JZStyleSet
+struct JZFRAMEWORK_API JZStyleSet
 {
     JZOptional<JZColor> background;    // 背景色 (None/透明 = 不绘制)
     JZOptional<JZColor> borderColor;   // 边框色 (None/透明 = 不绘制)

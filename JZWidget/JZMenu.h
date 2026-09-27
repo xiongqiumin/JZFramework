@@ -1,6 +1,5 @@
 #ifndef JZ_MENU_H_
 #define JZ_MENU_H_
-
 #include "JZObject.h"
 #include "JZImage.h"
 #include "JZSignal.h"
@@ -17,7 +16,7 @@ class JZMenuView;
 // 菜单 (容器): 持有若干 JZAction (含分隔符 / 子菜单), 可作为弹层显示
 // (菜单栏下拉 / 右键上下文菜单)。自身是数据 + 弹层控制器, 不直接参与主窗口
 // 渲染树 —— 弹层由一个 JZWindow(Popup) 承载, 内容由内部 JZMenuView 绘制。
-class JZMenu : public JZObject
+class JZFRAMEWORK_API JZMenu : public JZObject
 {
     JZ_OBJECT_DECLARE(JZMenu)
 

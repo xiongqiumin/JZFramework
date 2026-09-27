@@ -1,13 +1,12 @@
 #ifndef MG_CLIENT_H_
 #define MG_CLIENT_H_
-
 #include <string>
 #include "JZNetObject.h"
 #include "JZNetPacket.h"
 #include "JZNetPacketProcessor.h"
 
 class JZNetServer;
-class JZNetClient : public JZNetObject
+class JZFRAMEWORK_API JZNetClient : public JZNetObject
 {
 public:
     JZNetClient(JZObject *parent = nullptr);
@@ -51,11 +50,5 @@ protected:
     JZNetServer *m_server;
     std::string m_token; 
 };
-
-
-
-
-
-
 
 #endif

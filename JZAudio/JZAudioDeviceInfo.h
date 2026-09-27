@@ -1,10 +1,10 @@
 #ifndef JZ_AUDIO_DEVICE_H_
 #define JZ_AUDIO_DEVICE_H_
-
+#include "JZGlobal.h"
 #include <vector>
 #include <string>
 
-class JZAudioDeviceInfo
+class JZFRAMEWORK_API JZAudioDeviceInfo
 {
 public:
     static std::vector<JZAudioDeviceInfo> inputList();

@@ -1,6 +1,5 @@
 #ifndef JZ_SERIAL_DRIVER_ESP32_H_
 #define JZ_SERIAL_DRIVER_ESP32_H_
-
 #include "JZSerialPortDriver.h"
 #include <map>
 #include <string>
@@ -8,7 +7,7 @@
 // 基于 ESP-IDF UART 驱动的 JZSerialPortDriver 实现。
 // 每个打开的端口对应一个 uart_port_t 和一个独立的接收任务，
 // 收到数据后通过 port->onDataReceived() 推送给 JZSerialPort 并触发 sigReadyRead。
-class JZSerialDriverEsp32 : public JZSerialPortDriver
+class JZFRAMEWORK_API JZSerialDriverEsp32 : public JZSerialPortDriver
 {
 public:
     JZSerialDriverEsp32();

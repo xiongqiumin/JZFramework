@@ -1,6 +1,5 @@
 ﻿#ifndef JZ_NET_MQTT_CLIENT_H_
 #define JZ_NET_MQTT_CLIENT_H_
-
 #include "JZNetObject.h"
 #include "JZMqttPacket.h"
 #include "JZTimer.h"
@@ -8,7 +7,7 @@
 
 class JZMqttServer;
 class JZMgOptPacket;
-class JZMqttClient : public JZNetObject
+class JZFRAMEWORK_API JZMqttClient : public JZNetObject
 {
     JZ_OBJECT_DECLARE(JZNetMqttClient)
 

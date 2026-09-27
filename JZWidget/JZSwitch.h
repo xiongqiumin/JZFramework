@@ -1,10 +1,9 @@
 #ifndef JZ_WIDGET_SWITCH_H_
 #define JZ_WIDGET_SWITCH_H_
-
 #include "JZWidget.h"
 #include "JZSignal.h"
 
-class JZSwitch : public JZWidget
+class JZFRAMEWORK_API JZSwitch : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZSwitch)
 

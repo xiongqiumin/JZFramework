@@ -1,6 +1,5 @@
 #ifndef JZ_MOUSE_EVENT_H_
 #define JZ_MOUSE_EVENT_H_
-
 #include "JZEvent.h"
 #include "JZKeyEvent.h"   // 复用 JZKeyEvent::Modifier (修饰键位组合, 与键盘事件同一套常量)
 #include "JZPoint.h"
@@ -10,7 +9,7 @@
 // localPos 为相对目标控件左上角的逻辑坐标 (命中分发时回填);
 // modifiers 为构造瞬间的 Shift/Ctrl/Alt 状态 (等价 Qt QMouseEvent::modifiers,
 //   Qt 也是"事件创建时快照", 拖动中途按下/松开修饰键不会改变已在途的事件)。
-class JZMouseEvent : public JZEvent
+class JZFRAMEWORK_API JZMouseEvent : public JZEvent
 {
 public:
     enum Button {

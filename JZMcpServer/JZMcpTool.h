@@ -1,6 +1,5 @@
 #ifndef JZ_MCP_TOOL_H_
 #define JZ_MCP_TOOL_H_
-
 #include <string>
 #include "JZObject.h"
 #include "json/json.h"
@@ -20,7 +19,7 @@
  *     取消状态(例如置一个自定义标志), 并在 run() 中周期性检查该状态, 一旦取消应尽快退出;
  *   - 核心依据 sigCanceled(id) 回送取消响应。
  */
-class JZMcpTool : public JZObject
+class JZFRAMEWORK_API JZMcpTool : public JZObject
 {
     JZ_OBJECT_DECLARE(JZMcpTool)
 

@@ -1,6 +1,5 @@
 #ifndef JZ_WIFI_AUTO_CONNECT_SERVICE_H_
 #define JZ_WIFI_AUTO_CONNECT_SERVICE_H_
-
 #include "JZObject.h"
 #include "JZEvent.h"
 #include "JZSignal.h"
@@ -14,14 +13,14 @@
 #include <unordered_map>
 
 // 自动连接候选: ssid + 密码
-struct JZWifiCredential
+struct JZFRAMEWORK_API JZWifiCredential
 {
     std::string ssid;
     std::string password;
 };
 
 // 自动连接服务配置
-struct JZWifiAutoConnectServiceConfig
+struct JZFRAMEWORK_API JZWifiAutoConnectServiceConfig
 {
     std::vector<JZWifiCredential> candidates;   // 候选网络序列
     int scanIntervalMs = 15000;                 // 基础扫描间隔(毫秒)
@@ -36,7 +35,7 @@ struct JZWifiAutoConnectServiceConfig
     bool roamScanAllChannels = false;            // 漫游扫描是否扫全信道: true=跨信道漫游(能发现不同信道上的同名 AP, 但扫描时射频离当前信道稍久); false=仅扫当前信道(打扰最小, 但无法跨信道漫游)
 };
 
-struct JZWifiConnectInfo
+struct JZFRAMEWORK_API JZWifiConnectInfo
 {
     std::string ssid;
     int rssi;
@@ -45,7 +44,7 @@ struct JZWifiConnectInfo
 // JZWifiAutoConnectService 自动连接服务。
 // 输入一组候选网络(序列), 按设定间隔定期扫描, 在可见候选中选取信号强度(rssi)最大
 // 的网络并连接; 当已连接网络丢失或发现更强候选时自动切换。
-class JZWifiAutoConnectService : public JZObject
+class JZFRAMEWORK_API JZWifiAutoConnectService : public JZObject
 {
     JZ_OBJECT_DECLARE(JZWifiAutoConnectService)
 

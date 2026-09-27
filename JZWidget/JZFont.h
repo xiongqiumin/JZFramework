@@ -1,11 +1,11 @@
 #ifndef JZ_FONT_H_
 #define JZ_FONT_H_
-
+#include "JZGlobal.h"
 #include <string>
 
 // 字体描述 (仿 Qt QFont): 字体族 + 像素字号 + 风格 (粗体/斜体/下划线/删除线)。
 // 仅携带描述, 真正的 GDI+ 字体对象由 JZGdiBackend 按此描述惰性创建。
-class JZFont
+class JZFRAMEWORK_API JZFont
 {
 public:
     enum Style {

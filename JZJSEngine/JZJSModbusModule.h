@@ -1,6 +1,5 @@
 #ifndef JS_ENGINE_MODBUS_MODULE_H_
 #define JS_ENGINE_MODBUS_MODULE_H_
-
 #include <map>
 #include <string>
 #include <vector>
@@ -18,7 +17,7 @@ class JZJSModbusModule;
 //          (结算在途 promise + 关连接 + 杀定时器), 之后的 GC finalizer 只做兜底。
 //
 // 线程: 全部操作都在 JS 引擎所在线程(m_engine 的线程)上执行, 不需要加锁。
-struct JZJSModbusClient
+struct JZFRAMEWORK_API JZJSModbusClient
 {
     JZJSModbusClient();
     ~JZJSModbusClient();
@@ -51,7 +50,7 @@ struct JZJSModbusClient
 //   JZModbusClient 的同步收发靠"泵事件循环 + 阻塞等待"实现, 在 JS 回调里直接调用
 //   会把 quickjs 重入(JS -> C++ -> processEvents -> JS)。所以这里一律走
 //   openAsync()/xxxAsync() + sigModbusOpen / sigModbusReplay 异步回填 promise。
-class JZJSModbusModule : public JZObject
+class JZFRAMEWORK_API JZJSModbusModule : public JZObject
 {
 public:
     JZJSModbusModule();

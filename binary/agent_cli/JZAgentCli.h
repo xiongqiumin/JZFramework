@@ -205,12 +205,17 @@ struct JZCliHistoryItem
 // ---------------------------------------------------------------------------
 // JZAgentCli —— 通过 HTTP 暴露任务提交的 agent
 //
-// 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / verify_script /
+// 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / images / verify_script /
 // verify_cmd / verify_timeout / max_verify_rounds / max_retries / max_fix_retries /
 // retry_delay_ms / use_memory / token?), 本端跑 JZAgent, 每轮结束跑验证脚本(返回 0 通过 / 1 失败),
 // 失败把输出喂回 agent 自动续跑, 直到验证通过或达最大轮次, 再一次性回 JSON
 // {status, verify_rounds, retries, agent_reply, last_verify_output, ...}。
 // agent 中途报错不会直接判失败: 在(分档的)重试预算内自动"接着干"(见 RetryMode)。
+//
+// images = 附带的图片(多模态): 数组, 元素是 dataURL(截图那种) 或 http(s) 链接, 与 prompt
+//   同属一条 user 消息(交给 JZAgent 的 requestWithImages, 与 code_agent 桌面版截图按钮同一条路)。
+//   也接受 OpenAI 的 messages 写法(content 数组里的 {"type":"image_url"})。
+//   文字与图片都空才算空任务 —— 允许"只发截图"。
 //
 // 工具由本端**本地执行**: JZAgent 直接调用 agent_tool 里的工具(走 JZAgentTool 接口),
 // 不经过 MCP。所以 agent_cli = "没有 UI 的 code_agent" + HTTP 传输层。
@@ -290,6 +295,9 @@ protected:
     std::string buildMemoryBlock() const;
 
     std::string extractUserText(const Json::Value &params);
+    // 收集 /task 的图片附件(多模态): images 数组 或 messages 里的 image_url 部分。
+    // 返回可直喂模型的 URL 列表; 有格式/大小/数量问题时写 error(调用方据此回 400)。
+    std::vector<std::string> extractImages(const Json::Value &params, std::string &error);
 
     // JZAgent 信号
     void onReply(const std::string &text);

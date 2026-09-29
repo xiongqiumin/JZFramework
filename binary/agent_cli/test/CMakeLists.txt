@@ -12,8 +12,18 @@
 #
 #   primes_verify.py —— 上面那个用例的验证程序(也是"验证程序该长什么样"的模板):
 #       由 test_loop_primes.py / agent_loop.py 作为 verify_cmd 传进去, 不作为独立 ctest 条目。
+#
+#   test_icon_find.py —— 图标查找回归(先用 OpenCV 后端, VLM/YOLO 后端留接口):
+#       合成截图场景 -> build 出图标库模型 -> find 定位 -> 断言召回/类别/中心点误差/零误检。
+#       纯本机计算(不需要模型, 不需要 GPU), 秒级, 直接进快速回归:
+#           ctest -C Release -R agent_cli.icon_find --output-on-failure
+#       缺 numpy/opencv 时返回 77 ⇒ 跳过(不算失败)。
 # ---------------------------------------------------------------------------
 add_test(NAME agent_cli.loop_primes
          COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_loop_primes.py
                  --agent-cli $<TARGET_FILE:agent_cli>)
 set_tests_properties(agent_cli.loop_primes PROPERTIES TIMEOUT 3600 LABELS "llm" RUN_SERIAL TRUE)
+
+add_test(NAME agent_cli.icon_find
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_find.py)
+set_tests_properties(agent_cli.icon_find PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)

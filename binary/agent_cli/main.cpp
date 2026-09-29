@@ -29,6 +29,7 @@
 #include "JZFileInfo.h"
 #include "JZJson.h"
 #include "JZLog.h"
+#include "JZNet/JZNetObject.h"    // JZNet::setConfig(抬高 HTTP 接收缓冲, 见 main 里的说明)
 #include "JZPlatform.h"
 #include "JZString.h"
 #include "JZDebug.h"
@@ -569,6 +570,16 @@ int main(int argc, char *argv[])
     {
         printConfig(configPath, config);
         return 0;
+    }
+
+    // net 层"单连接接收缓冲"默认只有 3MB(JZNetConfig::maxRecvSize ⇒ mongoose 的
+    // MG_MAX_RECV_SIZE)。/task 带图片(dataURL base64)时 body 会到 MB 级, 超了 mongoose
+    // **直接断连** —— 客户端只看到 connection aborted, 连错误回包都没有, 极难排查。
+    // 这里抬到 32MB, 与 JZAgentCli 的图片合计上限(24MB)留出 JSON 开销余量。
+    {
+        JZNetConfig netConfig;
+        netConfig.maxRecvSize = 32 * 1024 * 1024;
+        JZNet::setConfig(netConfig);
     }
 
     JZApplication app;

@@ -43,6 +43,15 @@ static const int kReadFileLimit = 8 * 1024 * 1024;
 // 验证输出回包上限(与旧 popen 实现一致): 几十 KB 足够定位, 再大只会撑爆 JSON 回包与上下文。
 static const size_t kMaxVerifyBytes = 65536;
 
+// /task 的图片附件上限(张数 / 单张字符数 / 合计字符数)。
+//   张数与 code_agent 输入框的附图上限对齐; 字符上限按"截图 base64 通常几百 KB"给足余量,
+//   但必须有硬上限 —— 整个 body 都要进内存, 还要再塞进 LLM 请求体。
+//   ⚠ 合计上限必须明显小于 main.cpp 里抬高的 net maxRecvSize(32MB), 否则先被 mongoose
+//     的接收缓冲上限掐断(客户端只看到 connection aborted, 没有任何错误回包)。
+static const int kMaxTaskImages = 8;
+static const int kMaxImageChars = 8 * 1024 * 1024;
+static const int kMaxImagesTotalChars = 24 * 1024 * 1024;
+
 // JZByteArray -> std::string(进程输出按字节接回来, 原样存)
 static std::string bytesToText(const JZByteArray &data)
 {
@@ -926,10 +935,18 @@ void JZAgentCli::onTaskSubmit(JZHttpServerClient *client, const JZHttpRequest &r
         return;
     }
 
-    // 3) 基本校验(空 prompt / 忙) -> 立即回包
-    if (extractUserText(root).empty())
+    // 3) 基本校验(空任务 / 图片不合法 / 忙) -> 立即回包
+    string preImgError;
+    std::vector<std::string> preImages = extractImages(root, preImgError);
+    if (!preImgError.empty())
     {
-        Json::Value e; e["error"] = "no prompt found (need 'prompt' or 'messages')";
+        Json::Value e; e["error"] = preImgError;
+        sendJson(client, 400, e);
+        return;
+    }
+    if (extractUserText(root).empty() && preImages.empty())
+    {
+        Json::Value e; e["error"] = "no prompt found (need 'prompt' / 'messages', or 'images')";
         sendJson(client, 400, e);
         return;
     }
@@ -957,10 +974,19 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
         if (respond) respond(e);
         return;
     }
-    std::string prompt = extractUserText(req);
-    if (prompt.empty())
+    std::string imgError;
+    std::vector<std::string> images = extractImages(req, imgError);
+    if (!imgError.empty())
     {
-        Json::Value e; e["error"] = "no prompt found (need 'prompt' or 'messages')";
+        Json::Value e; e["error"] = imgError;
+        if (respond) respond(e);
+        return;
+    }
+    std::string prompt = extractUserText(req);
+    // 文字与图片都空才算空任务(允许"只发截图", 与 code_agent 的 request() 同一口径)
+    if (prompt.empty() && images.empty())
+    {
+        Json::Value e; e["error"] = "no prompt found (need 'prompt' / 'messages', or 'images')";
         if (respond) respond(e);
         return;
     }
@@ -1014,10 +1040,16 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     start["max_retries"] = m_maxErrorRetries;
     start["max_fix_retries"] = m_maxFixRetries;
     start["memory_bytes"] = (int)memoryBlock.size();      // 0 = 没带记忆(未启用/还没记忆/本次关掉)
+    start["images"] = (int)images.size();                 // 附图张数(网页/脚本据此提示; 图本身不进事件流)
     pushEvent("task_start", start);
     pushHistory(prompt, m_verifyCmd);   // 记一条"最近任务"(running), 收尾时回填结果
 
-    m_agent->request(memoryBlock + prompt);
+    // 多模态: 图片与文字同属这一条 user 消息(走 JZAgent 的 request(text, images) 重载, 与桌面版同一条路)。
+    // 后续续跑/验证失败的喂回仍是纯文本 —— 图只在首轮给一次。
+    if (images.empty())
+        m_agent->request(memoryBlock + prompt);
+    else
+        m_agent->request(memoryBlock + prompt, images);
     m_sessionStarted = true;
     // 注意: 不在此回包; onLoopFinished 在 agent 结束后被调用并回包(经 m_respond)。
 }
@@ -1698,6 +1730,92 @@ string JZAgentCli::extractUserText(const Json::Value &params)
     if (params.isMember("text") && params["text"].isString())
         return params["text"].asString();
     return string();
+}
+
+// 收集图片附件(多模态)。两种写法都收 —— 与 OpenAI 的 messages 一致, 网页/脚本可直接搬:
+//   "images": ["data:image/png;base64,...", "http://host/a.png"]     (单张也允许直接给字符串)
+//   "messages": [{role:"user", content:[{type:"text"},{type:"image_url",image_url:{url}}]}]
+// 只认 data: URL 与 http(s) 链接(别的形态喂给模型只会拿到 400)。
+// ⚠ 上限是硬约束(kMaxTaskImages / kMaxImageChars): 超了就报错, 不静默截断 —— 否则
+//   提交方以为图发过去了、模型却看不到, 排查起来很费劲。
+std::vector<std::string> JZAgentCli::extractImages(const Json::Value &params, string &error)
+{
+    std::vector<std::string> out;
+    string bad;
+    size_t total = 0;
+
+    auto add = [&](const Json::Value &v) {
+        if (!v.isString())
+            return;
+        string url = v.asString();
+        if (url.empty())
+            return;
+        if ((int)url.size() > kMaxImageChars)
+        {
+            if (bad.empty()) bad = "单张图片过大(超过 " + to_string(kMaxImageChars) + " 字符)";
+            return;
+        }
+        if (total + url.size() > (size_t)kMaxImagesTotalChars)
+        {
+            if (bad.empty()) bad = "图片合计过大(超过 " + to_string(kMaxImagesTotalChars) + " 字符)";
+            return;
+        }
+        string head = str_toLower(url.substr(0, 5));
+        if (head.compare(0, 5, "data:") != 0 && head.compare(0, 4, "http") != 0)
+        {
+            if (bad.empty()) bad = "images 只接受 data: URL 或 http(s) 链接";
+            return;
+        }
+        if ((int)out.size() >= kMaxTaskImages)
+        {
+            if (bad.empty()) bad = "图片数量过多(超过 " + to_string(kMaxTaskImages) + " 张)";
+            return;
+        }
+        total += url.size();
+        out.push_back(url);
+    };
+
+    const Json::Value &images = params["images"];
+    if (images.isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < images.size(); ++i)
+            add(images[i]);
+    }
+    else if (images.isString())
+    {
+        add(images);
+    }
+
+    // messages 写法: 只取 user 消息 content 数组里的 image_url 部分(与 extractUserText 同一套遍历)
+    const Json::Value &msgs = params["messages"];
+    if (msgs.isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < msgs.size(); ++i)
+        {
+            const Json::Value &m = msgs[i];
+            if (m.get("role", "").asString() != "user")
+                continue;
+            const Json::Value &c = m["content"];
+            if (!c.isArray())
+                continue;
+            for (Json::ArrayIndex j = 0; j < c.size(); ++j)
+            {
+                const Json::Value &p = c[j];
+                if (!p.isObject() || p["type"].asString() != "image_url")
+                    continue;
+                const Json::Value &iu = p["image_url"];
+                if (iu.isObject())
+                    add(iu.get("url", ""));
+                else if (iu.isString())
+                    add(iu);
+            }
+        }
+    }
+
+    // 一张都没收进来但确实有毛病 -> 报错; 收了部分(超数量)也报错, 让提交方知道被截断了
+    if (!bad.empty())
+        error = bad;
+    return out;
 }
 
 // ==========================================================================

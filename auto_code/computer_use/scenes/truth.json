@@ -1,0 +1,72 @@
+{
+  "_comment": "本文件由 scenes/gen.ts 生成（题目真值）。人只读不改；改题目请改生成器。",
+  "case": "l1_random",
+  "seed": 7,
+  "level": 1,
+  "size": [
+    474,
+    236
+  ],
+  "nodes": [
+    {
+      "id": "n0",
+      "type": "window",
+      "text": "",
+      "rect": [
+        0,
+        0,
+        474,
+        236
+      ],
+      "parent": null
+    },
+    {
+      "id": "n1",
+      "type": "edit",
+      "text": "729℃",
+      "rect": [
+        12,
+        50,
+        120,
+        28
+      ],
+      "parent": "n0"
+    },
+    {
+      "id": "n2",
+      "type": "button",
+      "text": "写入",
+      "rect": [
+        162,
+        44,
+        120,
+        40
+      ],
+      "parent": "n0"
+    },
+    {
+      "id": "n3",
+      "type": "button",
+      "text": "刷新",
+      "rect": [
+        312,
+        44,
+        120,
+        40
+      ],
+      "parent": "n0"
+    },
+    {
+      "id": "n4",
+      "type": "edit",
+      "text": "332V",
+      "rect": [
+        12,
+        110,
+        120,
+        28
+      ],
+      "parent": "n0"
+    }
+  ]
+}

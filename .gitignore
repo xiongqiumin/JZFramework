@@ -24,4 +24,7 @@ __pycache__
 **/dist/
 *.tsbuildinfo
 
+# auto_code 工作区的运行产物（每轮备份/预测/分数/截图）不入库
+auto_code/**/runs/
+
 

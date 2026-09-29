@@ -96,6 +96,9 @@ private:
     JZUiMcpBridge* m_bridge;
     Json::Value m_pendingId;
     int m_pendingSeq = -1;
+    // 本次调用的 visual 覆盖 (参数带 visual 时临时设, 序列结束恢复)
+    bool m_restoreVisual = false;
+    bool m_prevVisual = false;
 };
 
 // JZUiMcpBridge: JZMcpServer + 上述五个工具。
@@ -107,6 +110,12 @@ class JZFRAMEWORK_API JZUiMcpBridge : public JZMcpServer
 public:
     explicit JZUiMcpBridge(JZWindow* root, JZObject* parent = nullptr);
     JZAiDriver* aiDriver() const { return m_driver; }
+
+    // AI 光标 / 全屏蒙版 / 状态条 / 点击涟漪 是否可见。**默认关**:
+    //   关 = ui_invoke 立即执行(无移动动画), 截图里没有光标与蒙版 ⇒ 无人值守/自动评测用;
+    //   开 = 原来"给人看"的演示行为。ui_invoke 传 visual 可只对本次调用临时覆盖。
+    void setAiVisual(bool on);
+    bool aiVisual() const;
 
     // ---- 目标窗口 (工具集的作用对象) ----
     // 当前目标 (可能已被 JS 关窗销毁, 用 liveRoot() 判定)

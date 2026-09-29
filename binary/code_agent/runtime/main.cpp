@@ -90,6 +90,12 @@ int main(int argc, char *argv[])
     int uiMcpPort = 0;
     parser.addOption("--ui-mcp-port", &uiMcpPort);
 
+    // ui_invoke 的 AI 光标/蒙版/状态条是否可见。**默认关**：无人值守与截图评测时
+    // 光标与半透明蒙版会污染截图，且要白等移动动画（一次 0.3~1.2s + 0.42s 停留）。
+    // 给人看的演示加 --ui-ai-visual 打开；也可由 ui_invoke 的 visual 参数逐次覆盖。
+    bool uiAiVisual = false;
+    parser.addOption("--ui-ai-visual", &uiAiVisual);
+
     // 入口脚本：--entry <file.js>；缺省即运行根下的 main.js（老用法）。
     string cmdEntry;
     parser.addOption("--entry", &cmdEntry);
@@ -191,6 +197,8 @@ int main(int argc, char *argv[])
             return;   // JS 还没建窗：下一轮 check_timer 再试
 
         uiMcp = new JZUiMcpBridge(root);
+        // AI 光标/蒙版默认关(截图干净 + 立即执行); --ui-ai-visual 打开给人看的演示
+        uiMcp->setAiVisual(uiAiVisual);
         uiMcp->core()->setInstructions(
             "运行中的 JS 工程的控件树自动化工具。多窗口工程按这个顺序用: "
             "① ui_windows 看有哪些顶层窗口（active=系统活跃窗口, current=本服务当前目标窗口）; "

@@ -342,12 +342,14 @@ JZUiInvokeTool::JZUiInvokeTool(JZUiMcpBridge* bridge, JZObject* parent)
     , m_bridge(bridge)
 {
     setName("ui_invoke");
-    setDescription("驱动**当前目标窗口**里的控件交互 (AI 鼠标可见移动)。target: '#viewId' 按对象名, "
+    setDescription("驱动**当前目标窗口**里的控件交互。target: '#viewId' 按对象名, "
                    "或 className(role) 如 'button'/'slider'; "
                    "action: click|toggle|setValue|setText|select; value: setValue/setText/select 的参数。"
-                   "异步: AI 光标移动到目标后执行, 可用状态条上的取消按钮中断。"
+                   "visual: 是否显示 AI 光标/半透明蒙版/状态条 (默认**不显示** —— 自动化与截图评测用; "
+                   "传 true 才走可视化流程, 那样会等移动动画且截图会带上光标与蒙版)。"
                    "目标窗口用 ui_windows 查看、ui_activate_window 切换。");
-    setInputSchema(makeSchema({{"target", "string"}, {"action", "string"}, {"value", "string"}},
+    setInputSchema(makeSchema({{"target", "string"}, {"action", "string"},
+                               {"value", "string"}, {"visual", "boolean"}},
                               {"target", "action"}));
     if (m_bridge && m_bridge->aiDriver())
         connect(&m_bridge->aiDriver()->sigDone, this, &JZUiInvokeTool::onAiDone);
@@ -357,6 +359,12 @@ void JZUiInvokeTool::onAiDone(int seq, bool ok, const std::string& msg)
 {
     if (m_pendingSeq != seq || m_pendingId.isNull())
         return;
+    // 恢复本次调用临时覆盖的 visual 开关 (见 invokeOnUi)
+    if (m_restoreVisual && m_bridge && m_bridge->aiDriver())
+    {
+        m_bridge->aiDriver()->setVisualEnabled(m_prevVisual);
+        m_restoreVisual = false;
+    }
     sigFinished.emit(m_pendingId, makeTextResult(msg, !ok));
     m_pendingId = Json::Value::null;
     m_pendingSeq = -1;
@@ -401,6 +409,18 @@ void JZUiInvokeTool::invokeOnUi(const Json::Value& id, const Json::Value& args)
         sigFinished.emit(id, makeTextResult("AI 操作进行中, 请等待或先取消", true));
         return;
     }
+
+    // 可选 visual: 只覆盖**本次**调用 —— 序列结束(onAiDone)恢复成 bridge 的默认值。
+    // 默认关(见 JZUiMcpBridge::setAiVisual): 截图干净 + 立即执行。
+    if (args.isMember("visual")) {
+        m_prevVisual = driver->visualEnabled();
+        m_restoreVisual = true;
+        driver->setVisualEnabled(args["visual"].asBool());
+    }
+    else {
+        m_restoreVisual = false;
+    }
+
     JZWidget* w = resolveWidget(root, target);
     if (!w) {
         sigFinished.emit(id, makeTextResult("未找到目标: " + target, true));
@@ -501,6 +521,17 @@ JZUiMcpBridge::JZUiMcpBridge(JZWindow* root, JZObject* parent)
     core()->registerTool(new JZUiGetStateTool(this, core()));
     core()->registerTool(new JZUiScreenshotTool(this, core()));
     core()->registerTool(new JZUiInvokeTool(this, core()));
+}
+
+void JZUiMcpBridge::setAiVisual(bool on)
+{
+    if (m_driver)
+        m_driver->setVisualEnabled(on);
+}
+
+bool JZUiMcpBridge::aiVisual() const
+{
+    return m_driver && m_driver->visualEnabled();
 }
 
 JZWindow* JZUiMcpBridge::liveRoot() const

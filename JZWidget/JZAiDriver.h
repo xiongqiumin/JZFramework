@@ -63,7 +63,16 @@ public:
     int moveToWidget(JZWidget* target, bool performClick, const std::string& statusText,
                      std::function<void()> onArrive = nullptr);
 
-    void cancel();                    // 用户中断当前序列 (下个 tick 生效)
+    void cancel();                    // 用户中断当前序列
+
+    // ---- 可视化 (AI 光标箭头 / 半透明全屏蒙版 / 左下角状态条 / 点击涟漪) ----
+    // ⭐ 默认**关闭**。关掉的三个后果(自动化/评测要的就是这个):
+    //   ① 不建覆盖层 ⇒ 截图里没有 AI 光标与蒙版, 也不会把目标控件"糊"一层半透明;
+    //   ② 不上输入屏蔽 (setInputGate) ⇒ 真实鼠标/键盘照常可用;
+    //   ③ 不做移动动画与停留展示 ⇒ click/改值**立即**执行(原来一次要约 0.3~1.2s 移动 + 0.42s 停留)。
+    // 打开 = 原"给人看"的行为(平滑移动 + 涟漪 + 状态条 + 覆盖层上的取消按钮)。
+    void setVisualEnabled(bool on);
+    bool visualEnabled() const { return m_visual; }
 
     // 切换驱动作用的根窗口 (UI MCP 的 ui_activate_window 换目标窗口时调用):
     // 覆盖层跟着迁到新窗口; 进行中的序列作废(回报取消)。传 nullptr 只解绑。
@@ -82,13 +91,16 @@ protected:
                        // 合成点击/onArrive 可能开模态循环, 嵌在 processTimers
                        // 栈内会被重入的 processTimers 再次触发 onTick)
     void finish(bool ok, const std::string& msg);
+    JZAiOverlay* ensureOverlay();   // 可视化为开时按需创建(挂在当前根窗口上)
 
 private:
     enum Phase { PhaseIdle, PhaseMoving, PhaseActing };
 
     JZWindow* m_root = nullptr;
-    JZAiOverlay* m_overlay = nullptr;
+    JZAiOverlay* m_overlay = nullptr;   // 懒建: 只有 visualEnabled() 为真才有
     JZTimer* m_timer = nullptr;
+
+    bool m_visual = false;              // 默认不显示 AI 光标/蒙版 (见 setVisualEnabled)
 
     Phase m_phase = PhaseIdle;
     int m_seq = 0;

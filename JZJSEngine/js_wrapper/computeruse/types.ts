@@ -34,11 +34,52 @@ export type Locator =
   | { kind: 'color'; color: string; region?: Rect; tol?: number }
   | { kind: 'yolo';  model: string; label?: string; region?: Rect };
 
+/**
+ * VLM 感知后端配置（OpenAI 兼容的**多模态** chat/completions）。
+ * 本包不内置地址：由调用方传（ExploreOptions.vlm）或用 setVlmConfig() 设默认值。
+ */
+export interface VlmOptions {
+  /** 完整端点，如 http://host:8080/v1/chat/completions */
+  url: string;
+  model?: string;
+  /** 需要则填（会发 Authorization: Bearer <apiKey>）。 */
+  apiKey?: string;
+  /** 单次请求超时（ms，默认 600000 —— 本机大模型很慢）。 */
+  timeoutMs?: number;
+  maxTokens?: number;
+  /** 整段替换内置提示词（坐标口径必须是归一化 [x,y,w,h]）。 */
+  prompt?: string;
+  /** 追加/覆盖请求体字段（如 { chat_template_kwargs: { enable_thinking: false } }）。 */
+  extraBody?: Record<string, unknown>;
+}
+
+/** 感知到的单个元素（rect 是**归一化**坐标，相对整图）。 */
+export interface PerceptionElement {
+  /** 已映射到本包词汇（button/label/edit/checkbox/...）。 */
+  type: string;
+  /** 控件上的可读文字；空串表示没有文字。 */
+  text: string;
+  rect: Rect;
+  /** 感知后端给的原始说法（调试用，如 "text_field"）。 */
+  rawType?: string;
+}
+
+/** 一次"看图"的结果。 */
+export interface Perception {
+  /** 窗口标题（从像素里读出来的；读不到为空串）。 */
+  title: string;
+  elements: PerceptionElement[];
+  /** 后端原始回复（调试用）。 */
+  raw?: string;
+}
+
 /** 探索/录制阶段的配置（实现期再细化字段）。 */
 export interface ExploreOptions {
   name: string;
   screenshot?: { maxDim?: number };
   anchor?: { pad?: number };
+  /** 感知后端；不传则用 setVlmConfig() 设的默认值，都没有就抛错。 */
+  vlm?: VlmOptions;
 }
 
 /** 模型序列化快照（固化到磁盘的格式，实现期定字段）。 */

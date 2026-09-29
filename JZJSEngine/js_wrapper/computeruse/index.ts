@@ -1,3 +1,4 @@
+/// <reference path="../types/globals.d.ts" />
 // computeruse 包 —— 运行期实现（控件树 + UI 操作在 JS；底层语义走 __jz.computeruse）。
 //
 // 设计：
@@ -10,7 +11,9 @@ import type {
   Rect, Point, MouseBtn, Presence, Locator, ExploreOptions,
   ComputerUseBackend, ICuNode, IButton, ITab, IMenu, IToolbar, IGroup, IWindow,
   ICanvas, ILabel, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
+  Perception, PerceptionElement,
 } from './types';
+import { perceive } from './perceive';
 
 declare const __jz: any;
 
@@ -43,8 +46,14 @@ export let backend: ComputerUseBackend = {
     const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
     return deserialize(JSON.parse(text)) as unknown as IApp;
   },
-  explore: async (_opts: ExploreOptions): Promise<IApp> => { throw new Error('[CU] explore 未实现（录制阶段，后续补）'); },
-  fromPerception: async (_tree: unknown): Promise<IApp> => { throw new Error('[CU] fromPerception 未实现'); },
+  // 探索 = "看一眼" + "装配"两步: ① 截一张**客户区**像素图; ② 感知后端(见 perceive.ts)给出元素清单;
+  // ③ 元素清单 → 控件树(纯装配, 不碰屏幕)。感知后端可换(离线/VLM/OCR), 这一步的契约不变。
+  explore: async (opts: ExploreOptions): Promise<IApp> => {
+    const shot = await backend.screenshot();
+    const p = await perceive(shot, opts ? { vlm: opts.vlm } : undefined);
+    return buildTree(p);
+  },
+  fromPerception: async (tree: unknown): Promise<IApp> => buildTree(tree as Perception),
 };
 
 export function setBackend(b: ComputerUseBackend): void { backend = b; }
@@ -244,6 +253,56 @@ export async function type(text: string): Promise<void> { return backend.type(te
 export async function wait(ms: number): Promise<void> { return backend.wait(ms); }
 
 // ————————————————————————————————————————————————
+// 感知结果 → 控件树（explore / fromPerception 的共用装配逻辑）
+// ————————————————————————————————————————————————
+
+// 只有这些类型可以"装下别人"(层级推断用)。判分侧的类型族见 verify.py 的 TYPE_FAMILY。
+const CONTAINER_TYPES: Record<string, boolean> = {
+  window: true, group: true, tab: true, menu: true, toolbar: true,
+  panel: true, frame: true, list: true, table: true, tree: true,
+};
+
+/** inner 被 outer 覆盖的面积占比（矩形包含率，[0,1]）。 */
+function coverRatio(outer: Rect, inner: Rect): number {
+  const x0 = Math.max(outer.x, inner.x), y0 = Math.max(outer.y, inner.y);
+  const x1 = Math.min(outer.x + outer.w, inner.x + inner.w);
+  const y1 = Math.min(outer.y + outer.h, inner.y + inner.h);
+  const iw = x1 - x0, ih = y1 - y0;
+  const a = inner.w * inner.h;
+  if (iw <= 0 || ih <= 0 || a <= 0) return 0;
+  return (iw * ih) / a;
+}
+
+/**
+ * 感知元素清单 → 控件树。
+ *
+ * 层级是**推断**出来的(感知只给一张平铺的框表)：面积从大到小建节点，小的挂进"能装下它的最小容器"，
+ * 找不到容器就挂根窗口。根窗口自身的文本留空 —— 截图只含**客户区**，窗口标题在标题栏(非客户区)里
+ * 看不见，所以按契约"看不到文字就留空串"，不给根节点编造文本。
+ */
+function buildTree(p: Perception | null): IApp {
+  const root = new App('');                       // ⚠ 见上：根节点不带文本（真值同样约定为空串）
+  const els: PerceptionElement[] = (p && p.elements) ? p.elements : [];
+  const items = els.slice().sort((a, b) => (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h));
+
+  const built: Array<{ el: PerceptionElement; node: CuNode }> = [];
+  for (const el of items) {
+    const node = makeNode(el.type, el.text, undefined, el.rect);
+    let host: CuNode = root;
+    let hostArea = -1;
+    for (const b of built) {
+      if (!CONTAINER_TYPES[String(b.el.type).toLowerCase()]) continue;
+      if (coverRatio(b.el.rect, el.rect) < 0.85) continue;    // 装不下就不算父节点
+      const area = b.el.rect.w * b.el.rect.h;
+      if (hostArea < 0 || area < hostArea) { host = b.node; hostArea = area; }
+    }
+    host.append(node);
+    built.push({ el, node });
+  }
+  return root;
+}
+
+// ————————————————————————————————————————————————
 // 模型序列化（JS 侧固化 / 还原）
 // ————————————————————————————————————————————————
 interface SerNode { type: string; label: string; locator?: Locator; rect?: Rect; children: SerNode[]; }
@@ -264,23 +323,29 @@ class GenericNode extends CuNode {
 
 function makeNode(type: string, label: string, locator?: Locator, rect?: Rect): CuNode {
   const o: NodeOpts = { locator, rect };
+  let n: CuNode;
   switch (type) {
-    case 'app': return new App(label, o);
-    case 'tab': return new Tab(label, locator);
-    case 'menu': return new Menu(label, locator);
-    case 'toolbar': return new Toolbar(label, locator);
-    case 'group': return new Group(label, locator);
-    case 'window': return new Window(label, locator);
-    case 'canvas': return new Canvas(label, locator);
-    case 'button': return new Button(label, locator!);
-    case 'edit': return new Edit(label, locator!);
-    case 'combobox': return new ComboBox(label, locator!);
-    case 'checkbox': return new CheckBox(label, locator!);
-    case 'label': return new Label(label, locator);
-    case 'slider': return new Slider(label, locator!);
-    case 'link': return new Link(label, locator!);
-    default: return new GenericNode(type, label, o);
+    case 'app': n = new App(label, o); break;
+    case 'tab': n = new Tab(label, locator); break;
+    case 'menu': n = new Menu(label, locator); break;
+    case 'toolbar': n = new Toolbar(label, locator); break;
+    case 'group': n = new Group(label, locator); break;
+    case 'window': n = new Window(label, locator); break;
+    case 'canvas': n = new Canvas(label, locator); break;
+    case 'button': n = new Button(label, locator!); break;
+    case 'edit': n = new Edit(label, locator!); break;
+    case 'combobox': n = new ComboBox(label, locator!); break;
+    case 'checkbox': n = new CheckBox(label, locator!); break;
+    case 'label': n = new Label(label, locator); break;
+    case 'slider': n = new Slider(label, locator!); break;
+    case 'link': n = new Link(label, locator!); break;
+    default: n = new GenericNode(type, label, o); break;
   }
+  // ⚠ 点击型控件(Button/Edit/CheckBox/...)的构造器只收 locator ⇒ 直接 return 会**丢掉 rect**。
+  //   反序列化和"感知建树"都走这里(感知给的正是 rect), 所以统一在这里补。
+  if (locator !== undefined) n.locator = locator;
+  if (rect !== undefined) n.rect = rect;
+  return n;
 }
 
 function deserialize(s: SerNode): CuNode {
@@ -292,6 +357,10 @@ function deserialize(s: SerNode): CuNode {
 // 重新导出类型，方便消费方 `import type { Rect, IButton } from 'computeruse'`
 export type {
   Rect, Point, MouseBtn, Presence, Locator, ExploreOptions, ModelSnapshot,
+  Perception, PerceptionElement, VlmOptions,
   ComputerUseBackend, ICuNode, IButton, ITab, IMenu, IToolbar, IGroup, IWindow,
   ICanvas, ILabel, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
 } from './types';
+
+// 感知层（可换后端：VLM/OCR/检测都在 perceive.ts 这一个文件里）
+export { perceive, buildPrompt, setVlmConfig, vlmConfig } from './perceive';

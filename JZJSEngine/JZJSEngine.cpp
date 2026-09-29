@@ -92,6 +92,13 @@ static const BuiltinModule builtinModules[] = {
     // 类层是**幂等**的(见 widget/classes.ts 的说明), 所以"引擎按路径加载过一次 + 用户再按名字
     // import"不会重建类、不会换掉原型。
     { "widget",     "widget/dist/index.js",     "*"     },
+    // ---- computer use(控件树 + UI 操作在 JS; 底层动作走 __jz.computeruse) ----
+    // "*" = namespace 形态(包入口只有具名导出, 没有 default):
+    //   import { App, setBackend } from 'computeruse';
+    // ⚠ 本包只"能用"当且仅当宿主注册了 __jz.computeruse(C++ JZJSComputerUseModule);
+    //   否则默认后端在第一次调用时抛异常(模块本身能 import 成功)。
+    //   离线/模拟环境用 setBackend() 注入自己的后端即可, 不依赖 C++ 侧。
+    { "computeruse", "computeruse/dist/index.js", "*"    },
 };
 
 // 剥掉 Node 的 node: 前缀('node:http' -> 'http'), 并去掉空白字符。
@@ -415,10 +422,18 @@ public:
     static void js_promise_reject(JSContext* ctx, JSValueConst promise, JSValueConst reason, bool is_handled,
                                   void* opaque)
     {
-        if (is_handled)
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        if (!engine)
             return;
 
-        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        // is_handled=true = "有人刚给这个已拒绝的 promise 挂了 handler" ⇒ **撤销**先前记下的
+        // 未处理拒绝, 而不是简单忽略(忽略的话那条错误还留在待报列表里, 宿主仍会收到运行时错误)。
+        if (is_handled)
+        {
+            engine->promiseRejectHandled(promise);
+            return;
+        }
+
         engine->unHandlePromiseReject(promise, reason);
     }
 
@@ -639,6 +654,7 @@ void JZJSEngine::deinitJSEnv()
     m_selfStack.clear();   // 借用值, 直接丢(不该还有值: 这里已不在 JS 调用栈里)
     if (m_rt)
     {
+        clearPromiseRejects();   // 释放待报拒绝持有的 promise 引用(必须在 FreeContext 之前)
         JS_FreeValue(m_ctx, m_cbRoot);
 
         for (int i = 0; i < (int)m_timeTasks.size(); i++)
@@ -662,7 +678,7 @@ void JZJSEngine::deinitJSEnv()
 
     m_workDir.clear();
     m_appFile.clear();
-    m_promiseError.clear();
+    m_promiseRejects.clear();   // 引用已在 FreeContext 之前释放(见上面 clearPromiseRejects)
     m_runtimeError.clear();
     m_funcList.clear();
     m_typeMap.clear();
@@ -1148,10 +1164,59 @@ void JZJSEngine::unHandlePromiseReject(JSValueConst promise, JSValueConst reason
         err = printObject(reason);
     }
 
-    // 多个未处理拒绝累积, 避免只保留最后一个
-    if (!m_promiseError.empty())
-        m_promiseError += "\n";
-    m_promiseError += err;
+    // 一条一条记, 每条都带上产生它的 promise(便于稍后挂 handler 时撤掉)。
+    // 多个未处理拒绝在 takePromiseRejectText 里按换行累积, 避免只保留最后一个。
+    PendingReject pr;
+    pr.promise = JS_IsUndefined(promise) ? JS_UNDEFINED : JS_DupValue(m_ctx, promise);
+    pr.text = err;
+    m_promiseRejects.push_back(std::move(pr));
+}
+
+// quickjs: 给"已经拒绝且还没人管"的 promise 挂上了 handler ⇒ 这条待报拒绝作废
+// (常见写法 Promise.reject(e).catch(...) / async 函数里抛错后由调用方 catch)
+void JZJSEngine::promiseRejectHandled(JSValueConst promise)
+{
+    if (!m_ctx || JS_IsUndefined(promise))
+        return;
+
+    for (size_t i = 0; i < m_promiseRejects.size(); i++)
+    {
+        JSValue cur = m_promiseRejects[i].promise;
+        if (JS_IsUndefined(cur))
+            continue;   // native 任务那条, 没有 promise 可匹配
+        if (JS_IsStrictEqual(m_ctx, cur, promise))
+        {
+            JS_FreeValue(m_ctx, cur);
+            m_promiseRejects.erase(m_promiseRejects.begin() + i);
+            return;
+        }
+    }
+}
+
+std::string JZJSEngine::takePromiseRejectText()
+{
+    std::string text;
+    for (size_t i = 0; i < m_promiseRejects.size(); i++)
+    {
+        if (!text.empty())
+            text += "\n";
+        text += m_promiseRejects[i].text;
+    }
+    clearPromiseRejects();
+    return text;
+}
+
+void JZJSEngine::clearPromiseRejects()
+{
+    if (m_ctx)
+    {
+        for (size_t i = 0; i < m_promiseRejects.size(); i++)
+        {
+            if (!JS_IsUndefined(m_promiseRejects[i].promise))
+                JS_FreeValue(m_ctx, m_promiseRejects[i].promise);
+        }
+    }
+    m_promiseRejects.clear();
 }
 
 void JZJSEngine::asyncResultResolve(int handle, int argc, JSValueConst* argv)
@@ -3043,24 +3108,19 @@ void JZJSEngine::pumpPendingJobs()
         }
         else if (ret == 1)
         {
-            if (!m_promiseError.empty())
-            {
-                onExceptionOccurred(m_promiseError);
-                m_promiseError.clear();
-                return;
-            }
+            // ⚠ 这里**不能**顺手判"未处理拒绝": 一个 job 结束时刚被拒的 promise 往往还有
+            //   handler 要挂上 —— 最典型是 async 函数抛错: 它返回的 promise 先被拒, 随后
+            //   `.then` 的 thenable 采纳过程(js_promise_resolve_thenable_job)作为**下一个 job**
+            //   才给它挂 handler。提前判定会把"正常接住的错误"当未处理, 让宿主收到运行时错误
+            //   (与 Node 不一致)。真判据在循环外: 队列泵空了还留在表里的才算没人管。
         }
     }
 
     // 所有 pending job 处理完后, 若仍存在未处理的 promise 拒绝,
     // 仍要触发 Engine_error。否则 QuickJS 在"无更多 job 时才回调 rejection tracker"
-    // 的实现下, m_promiseError 会被永久漏检, 引擎永远停在 running 态。
-    if (!m_promiseError.empty())
-    {
-        std::string err = m_promiseError;
-        m_promiseError.clear();
-        onExceptionOccurred(err);
-    }
+    // 的实现下, m_promiseRejects 会被永久漏检, 引擎永远停在 running 态。
+    if (hasPromiseReject())
+        onExceptionOccurred(takePromiseRejectText());
 }
 
 bool JZJSEngine::hasPendingJob()

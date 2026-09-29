@@ -553,6 +553,14 @@ protected:
 
     void unHandleException();
     void unHandlePromiseReject(JSValueConst promise, JSValueConst reason);
+    // quickjs 在"给**已拒绝**的 promise 挂 handler"时会回调 tracker(is_handled=true):
+    // 此刻要把先前记下的那条待报拒绝**撤掉**, 否则 Promise.reject(e).catch(...) 这种
+    // 被正常接住的拒绝也会被当成未处理拒绝, 让宿主收到运行时错误(与 Node 行为不符)。
+    void promiseRejectHandled(JSValueConst promise);
+    // 把所有"确实没人处理"的拒绝文本拼起来并清空(调用方负责上报)
+    std::string takePromiseRejectText();
+    bool hasPromiseReject() const { return !m_promiseRejects.empty(); }
+    void clearPromiseRejects();   // 释放持有的 promise 引用(析构路径用)
     PromiseTask* getPromiseTask(int handle);
 
     // callAsyncFunction 挂载的 promise resolve/reject 回调(由 JSInter 静态方法转发)
@@ -647,7 +655,15 @@ protected:
     std::map<int, std::shared_ptr<PromiseTask>> m_promiseTask;
 
     std::string m_runtimeError;
-    std::string m_promiseError;
+    // 未处理的 promise 拒绝。⭐ 每条都带**产生它的 promise 值**(dup 持有), 这样"稍后才挂上
+    // handler"时能按值找到并撤掉这一条 —— 见 promiseRejectHandled。native 异步任务
+    // (asyncResultReject)没有 JS promise, 用 JS_UNDEFINED 占位(这种不参与撤销)。
+    struct PendingReject
+    {
+        JSValue promise = JS_UNDEFINED;
+        std::string text;
+    };
+    std::vector<PendingReject> m_promiseRejects;
     int m_timer;
     int64_t m_timerExpire;   // 已挂一次性 timer 记录的到期时刻(scheduleNextTimer 维护)
     int m_pendingWork;       // 外部模块挂起的原生异步任务数量(见 addPendingWork)

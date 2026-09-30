@@ -131,7 +131,7 @@ export type Locator =
 ## 4. 校验（在 computeruse 包内）
 
 - 文本 / 勾选 / 范围值**先问布局**（`aiText` / `aiChecked` / `aiRangeValue`，`JZWidget.h:364-373`）；
-- 布局问不到才退像素（OCR / 颜色 / 模板）。
+- 布局问不到才退像素（OCR = 本地 PP-OCR / 颜色 / 模板）；**OCR 只识别文字，状态判定仍优先问布局**。
 
 ⇒ 布局通道是"读字符串比较"，像素通道是"截图 + OCR"，成本差一个量级。
 
@@ -139,10 +139,13 @@ export type Locator =
 
 - **JS 侧**：`types.ts` 只有类型；`index.ts` 只有类与操作，所有副作用经 `backend`（= `__jz.computeruse`）；
   `setBackend` 是注入点，后端可整体替换（换平台 / 换测试桩）。
-- **C++ 侧**：`JZComputerUse` 出 `switchToDesktop / click / drag / key / type / screenshot / findImage / findColor`；
-  `JZJSComputerUseModule` 建 `__jz.computeruse`（`match` 收 `JSON.stringify(Locator)` 并按 kind 分派）。
+- **C++ 侧**：`JZComputerUse` 出 `switchToDesktop / click / drag / key / type / screenshot / layoutTree /
+  matchImage / matchColor / matchText / ocrTexts / waitStable / launch`；`JZJSComputerUseModule` 建
+  `__jz.computeruse`（`match` 收 `JSON.stringify(Locator)` 并按 kind 分派：`layout` **不在这里** ——
+  路径规则只在 JS 侧；`image` / `color` / `ocr` 已接，`yolo` 未接）。
   `saveModel` / `loadModel` **不在 C++**：JS 侧序列化后经 `__jz.core` 读写文件。
-  `ocr` / `yolo` 未接入，`layout` 待补；**两个类都还没进 CMake**。
+  ✅ 两个类都已进 CMake（编在 `binary/code_agent/runtime`）。`ocr` 走 **JZCv（本地 PP-OCR, ONNX Runtime）**：
+  用前 `__jz.computeruse.initOcr({modelRoot})` 或设 `JZ_CU_OCR_MODEL`；虚拟桌面下 OCR **直接读桌面合成帧**（不抓屏）。
 - 为什么这样切：C++ 不碰控件树（那是业务模型），JS 不碰系统 API（副作用全走 backend）。
 
 ## 6. API 速查
@@ -184,10 +187,11 @@ edit / combobox / checkbox / slider / label / canvas`。
 
 1. **C++ 侧布局通道**：`JZComputerUse::layoutTree()`（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA）
    + `waitStable` + `launch`。现在 JS 侧拿不到就返回 null ⇒ 节点标 `degraded`（退到几何/像素兜底）。
-2. `JZComputerUse` / `JZJSComputerUseModule` 进 CMake。
+2. ✅ `JZComputerUse` / `JZJSComputerUseModule` 已进 CMake；像素族后端：`ocr` 已接（JZCv / PP-OCR，
+   ONNX Runtime），`image` / `color` 需 OpenCV（`cmake/opencv.cmake`），`yolo` 待接。
 3. 建模期的人审/标注 **UI**：`explore` 的 `review` 钩子已留（默认不传 = 行为不变），缺全屏标注窗。
 4. 接大模型：`formatEvidence()` 已能产出证据包，缺"发给模型 → 解析修法 → 写 **override** 层"。
-5. 像素族后端 `ocr` / `yolo`（降级为兜底，靠后）。
+5. 像素族后端：✅ `ocr` 已接（本地 PP-OCR，`matchText`/`ocrTexts`）；`yolo`（小检测模型）仍未接。
 6. ⏳ **闸门（预算 / 去重 / 影响面 / 无人值守）—— 最后再做。**
 
 ## 8. 参考

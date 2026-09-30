@@ -29,4 +29,9 @@ private:
     Json::Value jsLayoutTree(const std::string& optsJson); // 可访问布局树(归一化 rect); 可指定目标 title
     bool        jsWaitStable(const std::string& optsJson); // 等界面稳定(像素只当信号)
     bool        jsLaunch(const std::string& optsJson);     // 启动 / 激活目标窗口
+
+    // —— OCR 兜底(像素族里的"文字"那条; 见 docs/compute-use-design.md §4.1) ——
+    bool        jsInitOcr(const std::string& optsJson);    // { modelRoot? } -> 是否就绪
+    bool        jsOcrReady();
+    Json::Value jsOcrTexts(const std::string& optsJson);   // { region?, minScore? } -> [{text,score,x,y,w,h}]
 };

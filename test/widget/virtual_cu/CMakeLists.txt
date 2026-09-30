@@ -12,3 +12,14 @@ target_include_directories(test_cu_virtual PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binar
 target_link_libraries(test_cu_virtual JZFramework)
 
 add_test(NAME cu_virtual COMMAND test_cu_virtual)
+
+# 可选: 接上 OpenCV (像素族兜底 matchImage/matchColor)。没装就自动跳过, 不影响本测试。
+jz_opencv_enable(test_cu_virtual)
+
+# 有 JZCv(OpenCV + ONNX Runtime 齐)时再开 OCR 兜底 —— 本测试据此验证
+# match({kind:'ocr', text}) 真能在虚拟桌面上把文字找出来并点中。
+if(HAS_JZCv)
+    set_property(TARGET test_cu_virtual APPEND PROPERTY LINK_LIBRARIES JZCv)   # 兼容 plain 签名
+    target_compile_definitions(test_cu_virtual PRIVATE JZ_CU_OCR=1)
+    jz_onnx_enable(test_cu_virtual)
+endif()

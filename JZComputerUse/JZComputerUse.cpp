@@ -9,6 +9,19 @@
 #include <tlhelp32.h>    // 进程快照
 #include <cstring>       // strstr
 #include <cmath>         // lround (归一化坐标 -> 桌面像素)
+#include <cstdlib>       // getenv (OCR 模型目录)
+
+// OCR 兜底(JZCv/PP-OCR)是否编入: 构建侧在 HAS_JZCv 时定义 JZ_CU_OCR=1
+// (见 binary/code_agent/runtime/CMakeLists.txt)。没编入时下面几个接口一律返回
+// "空 / 未找到", 绝不假装成功 —— 退化路径必须显式(见 docs/compute-use-design.md §4.1)。
+#ifndef JZ_CU_OCR
+#define JZ_CU_OCR 0
+#endif
+#if JZ_CU_OCR
+#include "JZCv/JZPaddleOCR.h"    // PP-OCR (ONNX Runtime, 本地推理)
+#include <opencv2/core.hpp>
+#endif
+
 // 框架侧(布局通道要用): 语义树 / 活动窗口 / 显示器几何 / 虚拟桌面后端
 #include "JZApplication.h"
 #include "JZLog.h"
@@ -49,6 +62,22 @@ JZMouseEvent::Button cuVirtualBtn(JZComputerUse::MouseBtn b) {
     if (b == JZComputerUse::MouseBtn::Right)  return JZMouseEvent::RightButton;
     if (b == JZComputerUse::MouseBtn::Middle) return JZMouseEvent::MiddleButton;
     return JZMouseEvent::LeftButton;
+}
+
+// 当前后端的**一帧**(JZImage)。screenshot / matchImage / matchColor 必须都从这里取 ——
+// 否则归一化坐标会串台(在某个来源上定位, 却按另一个来源的尺寸归一化)。
+//   · 虚拟桌面 => 桌面合成帧(不抓屏, 不受遮挡/z 序/前台/多屏影响);
+//   · 真桌面   => 各屏拼接抓屏(captureVirtualDesktop 指**多显示器虚拟屏**, 不是本框架的虚拟桌面)。
+// ⚠ 曾经 matchImage/matchColor 直接调 captureVirtualDesktop: 虚拟模式下它们抓的是**本机真屏**,
+//   于是桌面上明明摆着目标也永远找不到(2026-09-30 由 test_cu_virtual 的像素族用例暴露)。
+JZImage currentFrame(JZRect* logical) {
+    JZVirtualDevice* d = JZComputerUse::virtualDesktop();
+    if (d) {
+        if (logical)
+            *logical = JZRect(0, 0, d->desktopWidth(), d->desktopHeight());
+        return d->screenshot();
+    }
+    return JZScreenShot::captureVirtualDesktop(logical);
 }
 
 // 语义树的 boundsInScreen 对**虚拟窗口**而言是"窗口客户区坐标"(窗口不知道桌面偏移);
@@ -478,13 +507,8 @@ void JZComputerUse::wait(int ms) { if (ms > 0) Sleep(ms); }
 
 std::string JZComputerUse::screenshot() {
     // 虚拟桌面: 直接拿桌面合成帧 (不抓屏) —— 不受遮挡/z 序/前台/多屏影响, 也不用拷屏
-    if (s_virtualDesk) {
-        JZImage img = s_virtualDesk->screenshot();
-        updateLogical(JZRect(0, 0, s_virtualDesk->desktopWidth(), s_virtualDesk->desktopHeight()));
-        return JZScreenShot::toDataUrl(img);
-    }
     JZRect logical;
-    JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
+    JZImage img = currentFrame(&logical);
     updateLogical(logical);
     return JZScreenShot::toDataUrl(img);
 }
@@ -495,7 +519,7 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     return CuRect();        // OpenCV 未接入(像素族已降级为兜底, 见文件头) ⇒ 视为未找到
 #else
     JZRect logical;
-    JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
+    JZImage img = currentFrame(&logical);
     updateLogical(logical);
     std::string shotPath = JZScreenShot::save(img, tempDir(), "cu_shot.png");
     cv::Mat hay = cv::imread(shotPath, cv::IMREAD_COLOR);
@@ -522,10 +546,13 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     const double kThresh = 0.8;            // 单尺度, 阈值偏高以抑制误命
     if (maxv < kThresh) return CuRect();
 
-    int cx = roi.x + maxLoc.x + needle.cols / 2;
-    int cy = roi.y + maxLoc.y + needle.rows / 2;
+    // 与 matchColor / matchText / ocrTexts / layoutTree 同一口径: x,y = 命中框**左上角**, w,h = 框尺寸。
+    // ⚠ 这里曾经返回的是"命中**中心** + 模板尺寸" ⇒ 调用方按 `x + w/2` 反算落点就会偏掉半个模板
+    //   ("能定位点不中"), 按 rect 去认领布局节点也会认到错的那个。2026-09-30 由 test_cu_virtual
+    //   的像素族用例(拿 matchImage 与 matchColor 的同一目标互校)暴露。
     CuRect r;
-    r.x = (double)cx / hw; r.y = (double)cy / hh;
+    r.x = (double)(roi.x + maxLoc.x) / hw;
+    r.y = (double)(roi.y + maxLoc.y) / hh;
     r.w = (double)needle.cols / hw; r.h = (double)needle.rows / hh;
     return r;
 #endif
@@ -537,7 +564,7 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
     return CuRect();        // 同上: 未接入 OpenCV ⇒ 视为未找到
 #else
     JZRect logical;
-    JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
+    JZImage img = currentFrame(&logical);
     updateLogical(logical);
     std::string shotPath = JZScreenShot::save(img, tempDir(), "cu_shot.png");
     cv::Mat hay = cv::imread(shotPath, cv::IMREAD_COLOR);
@@ -639,6 +666,212 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
     return out;
 }
 
+// ————————————————————————————————————————————————
+// OCR 兜底（像素族里的"文字"那一条；对应 JS 侧 Locator{kind:'ocr', text}）
+// ————————————————————————————————————————————————
+// 定位: 本地 PP-OCR(JZCv/JZPaddleOCR) —— 不依赖外部服务; 虚拟桌面下直接读桌面合成帧。
+// 这是**显式退化**路径: 没编入/没模型/没识别到都返回"空/未找到", 不假装成功。
+#if JZ_CU_OCR
+namespace {
+
+JZPaddleOCR* g_ocr = nullptr;   // 进程内共享: 模型加载慢, 别每次重建
+
+bool jzCvFileExists(const std::string& path)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    fclose(f);
+    return true;
+}
+
+// JZImage(RGBA8888) -> cv::Mat(8UC4)。JZPaddleOCR 内部会把 RGBA 转成 BGR。
+cv::Mat jzCvImageToMat(const JZImage& img)
+{
+    if (img.isNull() || !img.data())
+        return cv::Mat();
+    const uint8_t* px = img.data()->pixels();
+    if (!px)
+        return cv::Mat();
+    return cv::Mat(img.height(), img.width(), CV_8UC4, (void*)px).clone();
+}
+
+// 归一化 region(相对整屏) -> 像素裁剪矩形, 并夹到图内 (region 为空 => 整屏)
+cv::Rect jzCvRoiOf(const CuRect& region, int w, int h)
+{
+    if (region.w <= 0 || region.h <= 0)
+        return cv::Rect(0, 0, w, h);
+    int x0 = (int)std::lround(region.x * w);
+    int y0 = (int)std::lround(region.y * h);
+    int x1 = (int)std::lround((region.x + region.w) * w);
+    int y1 = (int)std::lround((region.y + region.h) * h);
+    x0 = std::max(0, std::min(x0, w - 1));
+    y0 = std::max(0, std::min(y0, h - 1));
+    x1 = std::max(x0 + 1, std::min(x1, w));
+    y1 = std::max(y0 + 1, std::min(y1, h));
+    return cv::Rect(x0, y0, x1 - x0, y1 - y0);
+}
+
+std::string jzCvLower(std::string s)
+{
+    for (auto& c : s)
+        c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+} // namespace
+#endif   // JZ_CU_OCR
+
+bool JZComputerUse::initOcr(const std::string& modelRoot)
+{
+#if !JZ_CU_OCR
+    (void)modelRoot;
+    LOG_FMT_E("[CU] OCR 未编入本构建 (需要 JZCv 模块: OpenCV + ONNX Runtime)");
+    return false;
+#else
+    if (g_ocr && g_ocr->isInit())
+        return true;
+
+    // 模型目录: 显式传 > 环境变量 JZ_CU_OCR_MODEL > <exe目录>/model/paddle_ocr
+    std::string root = modelRoot;
+    if (root.empty()) {
+        if (const char* env = getenv("JZ_CU_OCR_MODEL"))
+            root = env;
+    }
+    if (root.empty()) {
+        char exe[MAX_PATH] = {};
+        if (::GetModuleFileNameA(nullptr, exe, MAX_PATH) > 0) {
+            std::string p = exe;
+            const size_t cut = p.find_last_of("\\/");
+            if (cut != std::string::npos)
+                root = p.substr(0, cut) + "/model/paddle_ocr";
+        }
+    }
+    if (root.empty()) {
+        LOG_FMT_E("[CU] OCR 模型目录未指定 (传参 / JZ_CU_OCR_MODEL)");
+        return false;
+    }
+    const char last = root[root.size() - 1];
+    const std::string base = root + ((last == '/' || last == '\\') ? "" : "/");
+
+    delete g_ocr;
+    g_ocr = new JZPaddleOCR();
+
+    // 两套布局都认: ① 开发布局(与 work/lib/PaddleOCR/model 一致) ② 平铺布局
+    bool ok = false;
+    if (jzCvFileExists(base + "PP-OCRv6_small_det/inference.onnx"))
+        ok = g_ocr->initFromDir(root);
+    if (!ok)
+        ok = g_ocr->init(base + "det.onnx", base + "rec.onnx", base + "dict.txt");
+    if (!ok) {
+        LOG_FMT_E("[CU] OCR 模型载入失败: %s", base.c_str());
+        return false;
+    }
+    LOG_FMT_I("[CU] OCR 就绪 (cls=%d): %s", (int)g_ocr->hasClassifier(), base.c_str());
+    return true;
+#endif
+}
+
+bool JZComputerUse::ocrReady()
+{
+#if !JZ_CU_OCR
+    return false;
+#else
+    return g_ocr && g_ocr->isInit();
+#endif
+}
+
+void JZComputerUse::deinitOcr()
+{
+#if JZ_CU_OCR
+    delete g_ocr;
+    g_ocr = nullptr;
+#endif
+}
+
+Json::Value JZComputerUse::ocrTexts(const CuRect& region, double minScore)
+{
+    Json::Value arr(Json::arrayValue);
+#if !JZ_CU_OCR
+    (void)region; (void)minScore;
+    return arr;
+#else
+    if (!ocrReady())
+        return arr;
+
+    // 取图 + 归一化基准(与 click/layoutTree 同一条口径): 虚拟桌面走合成帧, 真桌面走抓屏
+    JZRect base;
+    JZImage img = currentFrame(&base);      // 与 screenshot/match 同源(虚拟桌面 => 桌面合成帧)
+    updateLogical(base);
+    if (img.isNull())
+        return arr;
+
+    const cv::Mat mat = jzCvImageToMat(img);
+    if (mat.empty())
+        return arr;
+
+    const cv::Rect roi = jzCvRoiOf(region, mat.cols, mat.rows);
+    cv::Mat part = mat(roi);        // 只 OCR 这个小区域: 省时间, 也少误检
+
+    const std::vector<JZOCRResult> res = g_ocr->ocr(part, (float)minScore);
+    for (const auto& r : res) {
+        Json::Value o(Json::objectValue);
+        o["text"]  = r.text;
+        o["score"] = r.score;
+        // ROI 内像素 -> 整屏归一化(与 layoutTree 的 rect 同口径 => 可以直接拿去 click)
+        o["x"] = (double)(roi.x + r.rect.x) / (double)mat.cols;
+        o["y"] = (double)(roi.y + r.rect.y) / (double)mat.rows;
+        o["w"] = (double)r.rect.width  / (double)mat.cols;
+        o["h"] = (double)r.rect.height / (double)mat.rows;
+        arr.append(o);
+    }
+    return arr;
+#endif
+}
+
+CuRect JZComputerUse::matchText(const std::string& text, const CuRect& region, double minScore)
+{
+#if !JZ_CU_OCR
+    (void)text; (void)region; (void)minScore;
+    return CuRect();
+#else
+    CuRect miss;    // w==0 = 未找到
+    if (text.empty() || !ocrReady())
+        return miss;
+
+    const Json::Value all = ocrTexts(region, minScore);
+    const std::string needle = jzCvLower(text);
+
+    const Json::Value* best = nullptr;
+    double bestScore = -1;
+    bool bestExact = false;
+    for (const auto& o : all) {
+        const std::string got = jzCvLower(o["text"].asString());
+        if (got.empty())
+            continue;
+        const bool exact = (got == needle);
+        if (!exact && got.find(needle) == std::string::npos)
+            continue;
+        const double sc = o["score"].asDouble();
+        // 优先"完全相等", 其次置信度更高 (det 已按阅读顺序给出, 同分保持更早的)
+        if (!best || (exact && !bestExact) || (exact == bestExact && sc > bestScore)) {
+            best = &o;
+            bestScore = sc;
+            bestExact = exact;
+        }
+    }
+    if (!best)
+        return miss;
+
+    CuRect hit;
+    hit.x = (*best)["x"].asDouble();
+    hit.y = (*best)["y"].asDouble();
+    hit.w = (*best)["w"].asDouble();
+    hit.h = (*best)["h"].asDouble();
+    return hit;
+#endif
+}
+
 bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
     // 虚拟桌面: 注入是**同步**的 (命令返回时那一帧已经渲染完), 不存在"界面还没渲染完" —— 恒稳。
     // 这正是确定性回放的关键: 真桌面要靠"帧间变化收敛"去猜, 这里不用猜。
@@ -652,7 +885,7 @@ bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
     // 比对用缩略图的 PNG 字节(不引图像比较 API, 也不用 OpenCV)。
     auto fingerprint = [](std::string& out) -> bool {
         JZRect rc;
-        JZImage img = JZScreenShot::captureVirtualDesktop(&rc);
+        JZImage img = currentFrame(&rc);      // 同上: 帧来源统一(虚拟桌面下本函数已提前返回)
         if (img.isNull()) return false;
         updateLogical(rc);
         JZByteArray png = JZScreenShot::toPng(JZScreenShot::fit(img, 96));   // 缩到 96px 长边再编码

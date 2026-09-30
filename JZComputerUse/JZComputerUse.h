@@ -69,6 +69,23 @@ public:
     static CuRect    matchImage(const std::string& templatePath, const CuRect& region); // 模板匹配, 未找到 w==0
     static CuRect    matchColor(const std::string& hexColor, const CuRect& region);    // 颜色查找, 未找到 w==0
 
+    // —— OCR（像素族兜底里的"文字"那一条；对应 JS 侧 Locator{kind:'ocr',text}）——
+    // 本地 PP-OCR（JZCv/JZPaddleOCR, ONNX Runtime）—— 不依赖任何外部服务, 也不碰屏幕
+    // (虚拟桌面下直接读桌面合成帧)。用途: 目标**没有可访问布局**时, 用文字定位。
+    // ⚠ 这条是**显式退化**路径(docs §4.1): 没 init / 没模型 / 没识别到, 一律返回"空/未找到",
+    //    绝不假装成功, 让上层能判出"这次的定位是退化来的"。
+    // 模型目录: 显式传; 或环境变量 JZ_CU_OCR_MODEL; 或默认 <exe目录>/model/paddle_ocr。
+    //   目录里两套布局都认: ① 开发布局 <root>/PP-OCRv6_small_{det,rec}/… (与 model/ 一致)
+    //                       ② 平铺布局 <root>/{det.onnx,rec.onnx,dict.txt}
+    static bool initOcr(const std::string& modelRoot = std::string());
+    static bool ocrReady();
+    static void deinitOcr();
+    // 屏幕上所有文字: [{text,score,x,y,w,h}]（rect 归一化, 与 layoutTree/click 同口径, 便于直接点）
+    static Json::Value ocrTexts(const CuRect& region = CuRect(), double minScore = 0.6);
+    // 按文字找: 命中返回归一化矩形; 未找到 w==0（等价 matchImage 的文本版）
+    static CuRect matchText(const std::string& text, const CuRect& region = CuRect(),
+                            double minScore = 0.6);
+
     // ————————————————————————————————————————————————
     // 后端选择: 真实桌面 / **虚拟桌面** (JZVirtualDevice)
     // ————————————————————————————————————————————————

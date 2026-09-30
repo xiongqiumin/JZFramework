@@ -13,6 +13,11 @@ if(WIN32)
 add_subdirectory(widget)
 endif()
 
+# JZCv(视觉/OCR): 只有模块真建起来(OpenCV + ONNX Runtime 都在)才加这个测试
+if(HAS_JZCv)
+    add_subdirectory(cv)
+endif()
+
 add_executable(test_frp test_frp.cpp net/net_test_common.cpp)
 target_link_libraries(test_frp JZFramework)
 

@@ -61,6 +61,12 @@ target_include_directories(JZFramework PUBLIC "${JZFRAMEWORK_ROOT_DIR}")
 # ==================== 生成版本头文件 jz_version.h ====================
 include("${JZFRAMEWORK_ROOT_DIR}/cmake/jz_version.cmake")
 
+# ==================== 可选第三方依赖 (找得到就接, 找不到就跳过) ====================
+# 这里只做**探测**(各自不 REQUIRED, 不影响别的模块); 真正接线由需要它的 target 调
+# jz_opencv_enable(<target>) / jz_onnx_enable(<target>) 完成。
+include("${JZFRAMEWORK_ROOT_DIR}/cmake/opencv.cmake")
+include("${JZFRAMEWORK_ROOT_DIR}/cmake/onnx.cmake")
+
 # 已添加模块的缓存列表（防止重复添加）
 set(JZFRAMEWORK_ADDED_MODULES "" CACHE INTERNAL "")
 

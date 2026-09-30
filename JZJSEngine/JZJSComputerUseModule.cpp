@@ -29,6 +29,10 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "layoutTree",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsLayoutTree));
     m_engine->registFunction(ns, "waitStable",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWaitStable));
     m_engine->registFunction(ns, "launch",         jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsLaunch));
+    // OCR 兜底(本地 PP-OCR): match({kind:'ocr',text}) 的后端 + 直接列屏上文字
+    m_engine->registFunction(ns, "initOcr",        jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsInitOcr));
+    m_engine->registFunction(ns, "ocrReady",       jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrReady));
+    m_engine->registFunction(ns, "ocrTexts",       jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrTexts));
     m_engine->setProperty(jz, "computeruse", ns);
 
     // 释放 getProperty 多 dup 的引用, 避免 engine 析构时 gc_obj_list 非空断言
@@ -73,8 +77,12 @@ Json::Value JZJSComputerUseModule::jsMatch(const std::string& locatorJson) {
         hit = JZComputerUse::matchImage(root["image"].asString(), region);
     else if (kind == "color" && root.isMember("color"))
         hit = JZComputerUse::matchColor(root["color"].asString(), region);
+    else if (kind == "ocr" && root.isMember("text"))
+        // 文字定位(本地 PP-OCR)。这是**退化兜底**: 没有可访问布局时才该走到这里,
+        // 且没 initOcr / 没模型 / 没识别到一律返回"未找到"(不假装成功)。
+        hit = JZComputerUse::matchText(root["text"].asString(), region);
     else
-        // ocr / yolo 需要 OCR / 检测模型后端, 当前未实现 -> 视为未找到。
+        // yolo 需要检测模型后端, 当前未实现 -> 视为未找到。
         // ⚠ `layout` 也走不到这里: 布局路径由 **JS 侧**按 layoutTree() 的索引解析(layout.ts),
         //   不把路径规则复制到 C++(两边各写一套必然漂移)。见 docs/compute-use-design.md §4.1。
         return Json::Value();
@@ -122,4 +130,36 @@ bool JZJSComputerUseModule::jsLaunch(const std::string& optsJson) {
         }
     }
     return JZComputerUse::launch(exe, args, title, timeout);
+}
+
+// ————————————————————————————————————————————————
+// OCR 兜底（像素族里的"文字"；match({kind:'ocr',text}) 的后端）
+// ————————————————————————————————————————————————
+bool JZJSComputerUseModule::jsInitOcr(const std::string& optsJson) {
+    // opts: { modelRoot?: string } —— 不给则按 C++ 侧的默认顺序(环境变量 / exe 旁 model/paddle_ocr)
+    std::string modelRoot;
+    Json::Value root; Json::Reader reader;
+    if (!optsJson.empty() && reader.parse(optsJson, root) && root.isMember("modelRoot"))
+        modelRoot = root["modelRoot"].asString();
+    return JZComputerUse::initOcr(modelRoot);
+}
+
+bool JZJSComputerUseModule::jsOcrReady() {
+    return JZComputerUse::ocrReady();
+}
+
+Json::Value JZJSComputerUseModule::jsOcrTexts(const std::string& optsJson) {
+    CuRect region; double minScore = 0.6;
+    Json::Value root; Json::Reader reader;
+    if (!optsJson.empty() && reader.parse(optsJson, root)) {
+        if (root.isMember("region") && root["region"].isObject()) {
+            auto& r = root["region"];
+            region.x = r.isMember("x") ? r["x"].asDouble() : 0;
+            region.y = r.isMember("y") ? r["y"].asDouble() : 0;
+            region.w = r.isMember("w") ? r["w"].asDouble() : 0;
+            region.h = r.isMember("h") ? r["h"].asDouble() : 0;
+        }
+        if (root.isMember("minScore")) minScore = root["minScore"].asDouble();
+    }
+    return JZComputerUse::ocrTexts(region, minScore);
 }

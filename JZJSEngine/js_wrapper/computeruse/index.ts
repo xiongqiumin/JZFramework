@@ -5,7 +5,9 @@
 //   - 控件树(App/Tab/Button/...)与所有 UI 操作都在 JS 侧完成。
 //   - 真正的"操作系统"动作(点击/按键/截图/查找) 100% 由 C++ JZJSComputerUseModule 提供，
 //     这里只通过 __jz.computeruse.* 调用, 不重复造轮子, 也不在 C++ 侧构建控件树。
-//   - ocr / yolo 两种定位策略的"后端"暂未实现; C++ 侧 match 对它们返回未找到, 待接入。
+//   - ocr 的"后端"已接**本地 PP-OCR**(JZCv, ONNX Runtime): match({kind:'ocr',text}) 直接可用,
+//     用前先 __jz.computeruse.initOcr({modelRoot}) 或设环境变量 JZ_CU_OCR_MODEL;
+//     yolo 仍待接入(C++ 侧 match 对未实现的一律返回"未找到", 不假装成功)。
 
 import type {
   Rect, Point, MouseBtn, Presence, Locator, ExploreOptions,

@@ -56,7 +56,9 @@ public:
     virtual JZPoint clientToScreen(JZWindow* w, const JZPoint& pt) const = 0;
     virtual JZPoint screenToClient(JZWindow* w, const JZPoint& pt) const = 0;
     // 本窗口当前所在显示器的缩放 (逻辑像素 -> 物理像素)。真窗口问系统 DPI;
-    // 虚拟桌面恒为 1 (它是纯逻辑桌面, 与宿主显示器无关)。
+    // 虚拟窗口问它所在的那块桌面 (默认 1 = 纯逻辑桌面; 在宿主界面里显示时, 桌面会同步成
+    // 宿主的设备缩放, 见 JZVirtualDevice::setScale / JZVirtualScreenView)。
+    // ⚠ 缩放只影响渲染分辨率 (帧缓冲/字体), 不影响坐标: 坐标恒为逻辑像素。
     virtual float deviceScale(JZWindow* w) const = 0;
     // 脏区来了 (JZWindow 收到 invalidate 事件, 见 JZWindow::event): 排给**哪个消息循环**画。
     //   · 真窗口 (默认实现) = 排进主线程的 paint task, 由消息循环统一画 (WM_PAINT 同款);

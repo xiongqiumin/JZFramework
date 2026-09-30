@@ -2,9 +2,12 @@
 #define JZ_VIRTUAL_DEVICE_H_
 #include "JZWidget.h"      // JZMouseEvent / JZKeyEvent / JZColor / JZCursorShape
 #include "JZWindowHost.h"  // 本类就是"窗口宿主"的一个实现 (见下)
+#include "JZDisplayDevice.h"   // 合成画布 = 一块离屏显示设备 (它自己的帧缓冲就是屏幕)
 #include "JZImage.h"
+#include "JZPixmap.h"
 #include "JZRect.h"
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -33,10 +36,14 @@ class JZThread;
 
 // ==================== 虚拟桌面 (虚拟显示器 + 窗口管理器) ====================
 // 它就是"这台虚拟机的屏幕": 一块 desktopW × desktopH 的画布 + 其上的窗口管理器。
-//   · 合成: 桌面底色 + 各窗口 (按 z 序由下到上) 的**外框 + 客户区帧** -> desktopImage();
+//   · 合成: 桌面底色 + 各窗口 (按 z 序由下到上) 的**外框 + 客户区帧**, 直接画进画布
+//     (m_canvas, 一块离屏显示设备) 的原生缓冲 —— 显示控件贴它的零拷贝位图
+//     (desktopPixmap), 需要 RGBA 时才按需转一份 (desktopImage);
 //   · 窗口 = JZVirtualWindow (外框) + 它里面那个真 JZWindow (客户区, 渲染/输入走框架同一条链);
-//   · 坐标: 桌面坐标 == 屏幕逻辑坐标 (左上角原点, scale 恒 1) ⇒ 与真桌面同构,
+//   · 坐标: 桌面坐标 == 屏幕**逻辑**坐标 (左上角原点) ⇒ 与真桌面同构,
 //     screenToClient / clientToScreen / "点击落在哪个窗口" / 归一化 rect 全部成立;
+//     ⚠ 缩放 (scale, 见 setScale) 只决定"渲染成多少物理像素", **不进坐标** ——
+//       坐标/命中/注入/归一化 rect 在任何 DPI 下都一模一样;
 //   · 输入: 给**桌面坐标**, 自动命中窗口 + 激活 + 按命中区域分发 ——
 //     标题栏=拖动窗口 / 边框=缩放 / 关闭=关窗 / 最小化·最大化=改窗口状态 /
 //     客户区=换算成客户区坐标投递给那个 JZWindow (与真实桌面点击同语义);
@@ -96,6 +103,28 @@ public:
     int desktopHeight() const { return m_desktopH; }
     JZSize desktopSize() const { return JZSize(m_desktopW, m_desktopH); }
 
+    // ---- DPI: 与主机共享缩放 ----
+    // 桌面坐标恒为**逻辑**的 (desktopWidth × desktopHeight) —— 坐标/命中/注入/归一化 rect
+    // 都与缩放无关; scale 只决定"渲染成多少物理像素", 与真桌面"逻辑坐标 + 显示器缩放"
+    // 同一套语义 (对照 JZDisplayDevice::scale / JZWindowBackend::deviceScale):
+    //   · 合成图 desktopImage() 尺寸 = desktopSize * scale (物理像素, 同 JZWidget::grab 约定);
+    //   · 每个虚拟窗口的客户区也按同一 scale 渲染 (帧缓冲 = 客户区逻辑尺寸 * scale)
+    //     ⇒ 宿主界面里按宿主的物理分辨率出图, 文字/图形不糊。
+    // 默认 1.0 = 纯逻辑桌面: 无头 / CU / ctest 下截图就是逻辑尺寸, 与宿主显示器无关,
+    // 脚本回放才可复现。宿主界面里由 JZVirtualScreenView 把它同步成**宿主窗口**的设备
+    // 缩放 (见该类的 syncHostScale) —— "和主机共享 DPI"就落在这一句上。
+    void setScale(float scale);
+    float scale() const { return m_scale; }
+    // 逻辑像素 -> 物理像素 (帧缓冲/合成图尺寸都用它)
+    int toPhysical(int logical) const
+    {
+        return (int)std::lround((double)logical * (double)m_scale);
+    }
+
+    // 合成序号: 每合成一帧 +1。画布是"同一块缓冲、每帧重画"的可变目标 —— 需要 RGBA
+    // 快照的消费方 (截图/CU) 据此判断自己缓存的那份是否过期 (见 desktopImage)。
+    unsigned frameSerial() const { return m_frameSerial; }
+
     // 桌面底色 (默认**白屏**)。换成灰之类便于肉眼区分"桌面"与"窗口" —— 两者都是白的话
     // 窗口在整屏帧里看不出来。只影响底色, 不影响任何坐标/语义。
     void setDesktopBackground(const JZColor& c);
@@ -105,7 +134,9 @@ public:
     // 只是"显示器", 不参与任何窗口/坐标/输入语义; 不设它也能跑 (纯无头)。
     void setView(JZVirtualScreenView* view);
     JZVirtualScreenView* view() const { return m_view; }
-    // 合成 + 让显示控件重绘 (无控件时纯无头)
+    // 合成 + 让显示控件重绘 (无控件时纯无头)。
+    // 拖动/缩放窗口**进行中**时走**同步**重绘 (窗口跟着光标走), 其余情况交给消息循环
+    // 合并重绘 —— 见 refreshNow。
     void refresh();
 
     // ---- 多窗口管理 ----
@@ -133,11 +164,19 @@ public:
     // ---- 合成 / 取帧 ----
     // ⚠ 合成只在**主线程**跑 (refresh 从别的线程调用时会被转投到主线程); compose 里读
     //   各窗口的客户区帧都是"让窗口自己的线程拷一份" (见 JZVirtualProcessBase::runSyncOnThread)。
-    const JZImage& desktopImage() const { return m_desktop; }
-    // 桌面底色 + 各窗口 (按 z 序) -> m_desktop。合成中不重绘窗口 (用它们现有帧缓冲)。
+    // 画布就是桌面自己的那块**离屏显示设备** (m_canvas): 后端把外框 + 客户区帧直接画进
+    // 它的帧缓冲 (原生布局, 与真窗口同一条渲染路径), 没有 RGBA<->PARGB 的全图往返。
+    // 尺寸 = 桌面逻辑尺寸 * scale (物理像素; 见 setScale)。
+    // 整屏一帧 (RGBA8888, 物理像素): **按需**从画布转一份并缓存 (截图 / CU / 测试用;
+    // 拖动路径不碰它 —— 显示控件贴的是下面的零拷贝位图)。
+    const JZImage& desktopImage();
+    // 画布的零拷贝显示位图 (内容只读, 每帧由 compose 重画在同一个缓冲上)。
+    // 显示控件直接贴它 ⇒ 一次拷贝/转换都没有。
+    const JZPixmap& desktopPixmap() const { return m_desktopPix; }
+    // 桌面底色 + 各窗口 (按 z 序) 画进画布。合成中不重绘窗口 (用它们现有帧缓冲)。
     void compose();
-    JZImage screenshot();                               // 整屏一帧
-    JZImage screenshotWindow(JZVirtualWindow* w);
+    JZImage screenshot();                               // 整屏一帧 (物理像素)
+    JZImage screenshotWindow(JZVirtualWindow* w);       // 客户区一帧 (物理像素)
 
     // ---- 输入注入 (坐标 = 桌面屏幕逻辑坐标) ----
     // 命中窗口 -> 激活它 -> 按命中区域分发 (拖动/缩放/按钮/客户区投递)。
@@ -175,6 +214,8 @@ private:
                                       bool hasPos, int x, int y);
     // 收掉"客户区已经没了"的窗口 (JS 侧把窗口对象回收掉时会发生; 守卫能判定)
     void pruneWindows();
+    // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
+    void ensureCanvas();
     void refreshNow();                  // 合成真身 (只允许主线程)
     void removeWindowLocked(JZVirtualWindow* w);
 
@@ -190,8 +231,15 @@ private:
     std::vector<JZVirtualWindow*> m_windows;   // z 序: 末尾最上
     JZVirtualWindow* m_active = nullptr;       // 当前活动窗口 (持键盘焦点)
     JZVirtualScreenView* m_view = nullptr;     // 宿主界面里的"屏幕"控件 (可选)
-    JZImage m_desktop;                         // 桌面底色 + 窗口合成图
+    // ⚠ 成员顺序即析构顺序: m_desktopPix 引用 m_canvas 的帧缓冲, 必须比它先析构。
+    JZDisplayDevice m_canvas;                  // 合成画布 (离屏设备; 它的帧缓冲就是"屏幕")
+    bool m_canvasReady = false;                // 画布已 initOffscreen (首次之后只 resize)
+    JZPixmap m_desktopPix;                     // 画布的零拷贝显示位图 (随画布重建刷新)
+    JZImage m_desktopImage;                    // 整屏 RGBA 快照 (按需转, 见 desktopImage)
+    unsigned m_imageSerial = ~0u;              // 上面那份快照对应的合成序号
     JZColor m_desktopBg;                       // 桌面底色 (默认白屏)
+    float m_scale = 1.0f;                      // 渲染缩放 (逻辑 -> 物理; 见 setScale)
+    unsigned m_frameSerial = 0;                // 合成序号 (见 frameSerial)
     int m_desktopW = 0;
     int m_desktopH = 0;
     bool m_composing = false;                  // 合成中: 忽略窗口的刷新通知 (防重入)

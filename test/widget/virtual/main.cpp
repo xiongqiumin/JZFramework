@@ -11,6 +11,7 @@
 //   8) 帧可存盘供肉眼确认 (virtual_desktop_frame.png)。
 //
 // 注意: 本测试**不显示宿主窗口** (不建真窗口), 因此可以进 ctest。
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -169,6 +170,32 @@ int main(int argc, char* argv[])
     check(!pixelIs(full, 40 + 100, 60 + 10, 232, 232, 232), "标题栏画出来了 (不是桌面底色)");
     check(hasInk(desk.screenshotWindow(wa)), "单窗口帧里有控件");
     check(desk.screenshotWindow(wa).width() == 240, "单窗口截图 = 客户区尺寸");
+
+    // ---- DPI: 与主机共享缩放 (scale 只改渲染分辨率; 坐标/命中/注入一律逻辑) ----
+    {
+        desk.setScale(2.0f);
+        check(desk.scale() == 2.0f, "setScale 记住缩放");
+        check(desk.desktopWidth() == 640 && desk.desktopHeight() == 480,
+              "缩放不进桌面逻辑尺寸 (坐标仍 640x480)");
+        const JZImage hi = desk.screenshot();
+        check(hi.width() == 1280 && hi.height() == 960,
+              "整屏帧 = 桌面逻辑尺寸 × 缩放 (物理像素, 同 JZWidget::grab 约定)");
+        check(pixelIs(hi, 20, 20, 232, 232, 232), "缩放后桌面底色照旧");
+        check(pixelIs(hi, 400, 400, 255, 255, 255),
+              "窗口客户区仍合成在自己的桌面上 (同一坐标 × 缩放)");
+        check(desk.screenshotWindow(wa).width() == 480, "单窗口帧 = 客户区逻辑尺寸 × 缩放");
+        check(wa->frame().width() == 480 && wa->client()->device()->scale() == 2.0f,
+              "客户区按桌面缩放渲染 (帧缓冲 = 逻辑尺寸 × 缩放)");
+        // 缩放**不进坐标**: 命中/换算/注入还是那一套逻辑坐标
+        check(desk.windowAt(wa->clientX() + 10, wa->clientY() + 10) == wa,
+              "命中测试仍按逻辑坐标 (与缩放无关)");
+        check(wa->clientToScreen(JZPoint(10, 20)) ==
+                  JZPoint(wa->clientX() + 10, wa->clientY() + 20),
+              "坐标换算不受缩放影响");
+        desk.setScale(1.0f);
+        check(desk.screenshot().width() == 640 && wa->frame().width() == 240,
+              "缩放改回 1: 帧缓冲回到逻辑尺寸");
+    }
 
     // ---- 命中测试 ----
     check(desk.windowAt(10, 10) == nullptr, "窗口外(桌面空白)不命中任何窗口");
@@ -411,9 +438,66 @@ int main(int argc, char* argv[])
         JZVirtualScreenView* view = new JZVirtualScreenView(&desk2);
         view->resize(desk2.desktopSize());
         area->setWidget(view);
-        JZVirtualWindow* w2 = desk2.createWindow(200, 120, "host-win");
+        // 显式摆到桌面左上角: 宿主窗口比虚拟屏小 (滚动区), 只有这块区域在视野/帧缓冲里
+        JZVirtualWindow* w2 = desk2.createWindow(200, 120, "host-win", 20, 20);
         check(w2 != nullptr, "宿主界面里也能正常建窗口");
         host.show();
+
+        // ---- 与主机共享 DPI: 视图把宿主窗口的设备缩放同步给桌面 ----
+        host.doPaint(host.rect());          // 同步走一遍绘制 (视图在 paintEvent 里同步 DPI)
+        const float hostScale = host.device()->scale();
+        check(desk2.scale() == hostScale, "视图把宿主 DPI 同步给桌面 (与主机共享缩放)");
+        check(w2->client()->device()->scale() == hostScale, "客户区按同一缩放渲染");
+        check(view->width() == 800 && view->height() == 600,
+              "视图仍按逻辑尺寸布局 (桌面坐标与缩放无关)");
+        check((float)w2->frame().width() == 200.0f * hostScale,
+              "窗口帧缓冲 = 客户区逻辑尺寸 × 宿主缩放");
+
+        // ---- 拖动时实时刷新: 未松开时宿主帧缓冲里窗口就已在新位置 ----
+        // (常规 update() 只是排脏区、要等消息循环下一轮 —— 那时这里是旧位置)
+        const int grabX = w2->frameX() + w2->frameWidth() - 60;   // 标题栏 (避开标题文字与按钮)
+        const int grabY = w2->frameY() + 11;
+        check(desk2.injectMouseAtScreen(JZMouseEvent::Press, JZMouseEvent::LeftButton,
+                                        grabX, grabY), "按下标题栏");
+        check(desk2.isDragging(), "拖动进行中");
+        const int step = 60;
+        desk2.injectMouseAtScreen(JZMouseEvent::Move, JZMouseEvent::LeftButton,
+                                  grabX + step, grabY + step);
+        JZImage frame;
+        const bool haveFrame = host.device()->snapshot(frame) && !frame.isNull();
+        check(haveFrame, "读到宿主窗口帧缓冲");
+        if (haveFrame) {
+            // 桌面坐标 -> 宿主客户区坐标 -> 帧缓冲里的物理像素
+            auto toFramePx = [&](int sx, int sy) {
+                const JZPoint p = view->mapTo(view->window(), JZPoint(sx, sy));
+                return JZPoint((int)(p.x() * hostScale + 0.5f), (int)(p.y() * hostScale + 0.5f));
+            };
+            const JZPoint now = toFramePx(w2->frameX() + w2->frameWidth() - 60, w2->frameY() + 11);
+            check(pixelIs(frame, now.x(), now.y(), 0x2b, 0x57, 0x9a),
+                  "拖动中 (未松开) 标题栏已画在新位置 = 实时刷新, 不等下一轮消息循环");
+            const JZPoint old = toFramePx(grabX, grabY);
+            check(pixelIs(frame, old.x(), old.y(), 255, 255, 255),
+                  "原位置已回到底色 (一帧就是重新合成的, 没有残影)");
+        }
+        // 拖动一步的代价 = 合成 (800x600 桌面 × 宿主缩放) + 宿主窗口重绘 —— 现在这一步是
+        // **同步**做掉的 (见 JZVirtualDevice::refreshNow), 所以它就是"跟手延迟"的上限。
+        // 只报数不设门限 (机器负载会变), 肉眼看它是否远小于一帧 16ms。
+        {
+            const int n = 20;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < n; ++i)
+                desk2.injectMouseAtScreen(JZMouseEvent::Move, JZMouseEvent::LeftButton,
+                                          grabX + step - i, grabY + step);
+            const auto t1 = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / n;
+            printf("  [info] 拖动一步 (合成 + 重绘) 平均 %.2f ms\n", ms);
+        }
+
+        desk2.injectMouseAtScreen(JZMouseEvent::Release, JZMouseEvent::LeftButton,
+                                  grabX + step, grabY + step);
+        check(!desk2.isDragging(), "松开结束拖动");
+
+        view->setScreen(nullptr);   // 先解绑: desk2 比宿主界面先析构 (视图不能留悬垂的 m_screen)
     }
 
     // ---- 存帧 (肉眼确认; 失败不算错) ----

@@ -1,17 +1,19 @@
 // ==================== 虚拟桌面 (虚拟显示器 + 窗口管理器) ====================
-// 分层: 桌面底色 + 窗口合成图 (m_desktop, 一张 JZImage)
+// 分层: 桌面底色 + 窗口合成图 (画布 = 自己的离屏显示设备 m_canvas)
 //          └─ JZVirtualWindow (外框: 标题栏 + 边框 + 三个按钮)
 //               └─ 真 JZWindow (客户区: 控件树/渲染/输入)
 //
-// 坐标: 桌面坐标 == 屏幕逻辑坐标 (左上角原点, scale 恒为 1)。窗口有自己的桌面坐标,
-// 所以 screenToClient / clientToScreen / 命中测试 / 归一化 rect 全都有意义 ——
-// 与真实桌面同构, CU 的"屏幕坐标 + 窗口"语义可以直接落在这块虚拟桌面上。
+// 坐标: 桌面坐标 == 屏幕**逻辑**坐标 (左上角原点; 缩放见 setScale, 它只决定渲染成多少
+// 物理像素, 不进坐标)。窗口有自己的桌面坐标, 所以 screenToClient / clientToScreen /
+// 命中测试 / 归一化 rect 全都有意义 —— 与真实桌面同构, CU 的"屏幕坐标 + 窗口"语义
+// 可以直接落在这块虚拟桌面上。
 #include "JZVirtualDevice.h"
 #include "JZVirtualWindow.h"
 #include "JZVirtualWindowBackend.h"   // 收窗口时要把客户区的后端换成它
 #include "JZVirtualScreenView.h"
 #include "JZPainter.h"
 #include "JZWindow.h"
+#include "JZDisplayDevice.h"
 #include "JZApplication.h"   // refresh 转投主线程 / 判断当前线程
 #include "JZThread.h"
 #include "JZLog.h"
@@ -26,7 +28,6 @@ int clampInt(int v, int lo, int hi)
     if (v > hi) return hi;
     return v;
 }
-
 } // namespace
 
 JZVirtualDevice::JZVirtualDevice(int desktopW, int desktopH)
@@ -34,7 +35,7 @@ JZVirtualDevice::JZVirtualDevice(int desktopW, int desktopH)
 {
     m_desktopW = desktopW > 0 ? desktopW : 800;
     m_desktopH = desktopH > 0 ? desktopH : 600;
-    m_desktop = JZImage::create(m_desktopW, m_desktopH, m_desktopBg);
+    ensureCanvas();      // 画布 = 桌面自己的离屏设备 (scale 默认 1 = 逻辑尺寸)
 }
 
 JZVirtualDevice::~JZVirtualDevice()
@@ -122,7 +123,9 @@ void JZVirtualDevice::setDesktopBackground(const JZColor& c)
 {
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
-        m_desktopBg = c;
+        // 桌面就是"屏幕": 底色必须不透明 —— 画布是后端原生缓冲, 每帧靠"铺底色"覆盖
+        // 上一帧 (半透明底色会变成"叠在上一帧上", 越叠越脏)。
+        m_desktopBg = JZColor(c.red(), c.green(), c.blue(), 255);
     }
     refresh();
 }
@@ -130,6 +133,34 @@ void JZVirtualDevice::setDesktopBackground(const JZColor& c)
 void JZVirtualDevice::setView(JZVirtualScreenView* view)
 {
     m_view = view;
+}
+
+// ==================== DPI (与主机共享缩放) ====================
+// 只改"渲染成多少物理像素": 坐标仍是逻辑的, 命中/注入/归一化 rect 一个都不动。
+// 窗口的帧缓冲尺寸与内容随缩放重建 => 这**是**一次全桌面重渲染, 只在 DPI 真变了时做。
+void JZVirtualDevice::setScale(float scale)
+{
+    if (!(scale > 0.0f))
+        scale = 1.0f;
+
+    std::vector<JZVirtualWindow*> list;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (std::fabs(scale - m_scale) <= 0.001f)
+            return;
+        m_scale = scale;
+        list = m_windows;      // 拷一份再到锁外干活 (下面会同步等窗口自己的线程重画)
+    }
+
+    // 画布自己也按新缩放重建帧缓冲 (它的显示位图随之刷新)
+    ensureCanvas();
+
+    // 每个窗口的客户区按新缩放重建帧缓冲并重画 —— 必须在**它自己的线程**上画
+    // (applyDeviceScale 内部处理跨线程), 所以这一步不能握着桌面的锁。
+    for (auto* w : list)
+        w->applyDeviceScale();
+
+    refresh();
 }
 
 // 合成只允许在**主线程**跑 (帧的读取要稳定, 也不能在别的线程上碰显示控件)。
@@ -154,8 +185,17 @@ void JZVirtualDevice::refresh()
 void JZVirtualDevice::refreshNow()
 {
     compose();
-    if (m_view)
-        m_view->update();     // 视图绘制时读 desktopImage(), 这里只需让它重绘
+    if (!m_view)
+        return;               // 纯无头: 合成完就够 (取帧见 desktopImage()/screenshot())
+    // 视图绘制时读 desktopPixmap(), 所以这里只需让它重绘 —— 但**怎么重绘**分两种:
+    //   · 拖动/缩放窗口进行中: 同步重绘 (paintNow)。窗口管理器此刻就是鼠标的主人,
+    //     用户要的是"窗口粘在光标上"; 而 update() 只是排个脏区, 要等消息循环下一轮
+    //     (快速拖动时窗口明显慢半拍 —— 实测滞后 200ms 上下);
+    //   · 其余情况: 常规 update(), 同一轮里的多次改动由消息循环合并成一帧。
+    if (m_drag != DragNone)
+        m_view->paintNow();
+    else
+        m_view->update();
 }
 
 // ==================== 窗口宿主: 新窗口落到这块桌面上 ====================
@@ -388,6 +428,28 @@ JZPoint JZVirtualDevice::clientToScreen(JZVirtualWindow* w, int clientX, int cli
 }
 
 // ==================== 合成 / 取帧 ====================
+// 画布 = 本桌面自己的一块**离屏显示设备**: 后端把外框与客户区帧直接画进它的帧缓冲
+// (GDI+ 的原生布局)。于是"画"和"贴"之间没有任何 RGBA<->PARGB 的全图转换 ——
+// 显示控件拿到的是画布缓冲的零拷贝位图 (见 desktopPixmap)。
+// 尺寸/缩放变了才重建缓冲 (拖动时零分配、零转换)。
+void JZVirtualDevice::ensureCanvas()
+{
+    m_canvas.setScale(m_scale);          // 先定缩放 (物理尺寸换算与它一致)
+    const int iw = toPhysical(m_desktopW);
+    const int ih = toPhysical(m_desktopH);
+    if (!m_canvasReady) {
+        m_canvas.initOffscreen(iw, ih);  // 首次: 自建与窗口无关的兼容 DC/DIB
+        m_canvasReady = true;
+    } else {
+        m_canvas.resize(iw, ih);         // 尺寸没变时后端内部直接返回 (零开销)
+    }
+
+    // 画布缓冲的零拷贝显示位图 (缓冲重建后要重新取一次; 同一缓冲时原样复用)
+    JZPixmap pm;
+    if (m_canvas.targetPixmap(pm))
+        m_desktopPix = pm;
+}
+
 void JZVirtualDevice::compose()
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 与进程线程的建窗/推帧互斥
@@ -396,13 +458,18 @@ void JZVirtualDevice::compose()
     m_composing = true;
 
     pruneWindows();     // 客户区已被回收的窗口先从表里摘掉 (之后再遍历才安全)
-
-    // 每帧从"桌面底色"起画 (窗口可能被移走/关掉了, 旧像素必须被盖掉)。
-    m_desktop = JZImage::create(m_desktopW, m_desktopH, m_desktopBg);
+    ensureCanvas();     // 画布缓冲 (尺寸/缩放变了才重建)
 
     {
-        // 一次合成一个 painter: 外框与客户区帧都按 z 序由下到上叠 (析构时写回整张图)。
-        JZPainter p(m_desktop);
+        // 一块画布一个 painter: 底色 + 外框 + 客户区帧按 z 序由下到上叠, 析构时一次性
+        // 回放到画布的帧缓冲 (原生布局, 不做 RGBA 往返)。
+        // ⚠ 坐标是**逻辑**的 (桌面坐标), 物理换算由画布设备的缩放施加 ——
+        //   "坐标与 DPI 无关, 只有渲染分辨率随 DPI 变"这条规矩就落在这一句上。
+        JZPainter p(&m_canvas, JZRect(0, 0, m_desktopW, m_desktopH));
+        // 每帧先铺底色 (窗口可能被移走/关掉了, 旧像素必须被盖掉)。底色必须不透明,
+        // 否则这里是"叠"上一帧而不是覆盖它 (见 setDesktopBackground)。
+        p.fillRect(0, 0, m_desktopW, m_desktopH, m_desktopBg);
+
         for (auto* w : m_windows) {
             if (!w->isVisible())
                 continue;
@@ -413,6 +480,7 @@ void JZVirtualDevice::compose()
             // 客户区: 用窗口**推上来的帧缓存** (它自己的线程在内容变化时拷好, 见
             // JZVirtualWindow::captureFrame) —— 合成因此**不会**跨线程去读别人的帧缓冲,
             // 也就永远不会阻塞在某个进程线程上 (多线程下这一点很要紧)。
+            // 帧是物理像素 (客户区逻辑尺寸 * scale), 这里给的是**逻辑**矩形 ⇒ 1:1 落上去。
             const JZImage& f = w->frame();
             if (f.isNull() || !f.data())
                 continue;
@@ -421,13 +489,29 @@ void JZVirtualDevice::compose()
         }
     }
 
+    ++m_frameSerial;      // 合成图变了 (见 frameSerial)
     m_composing = false;
+}
+
+// 整屏一帧 (RGBA8888; **物理像素**: 桌面逻辑尺寸 * scale; 无头默认 scale=1 即逻辑尺寸)。
+// ⚠ 这是"画布 -> RGBA"的一次按需转换 (O(像素)), 只在截图/CU/测试这条路上发生;
+//   显示控件走的是 desktopPixmap() 的零拷贝位图, 拖动时不会碰这里。
+const JZImage& JZVirtualDevice::desktopImage()
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    if (m_imageSerial != m_frameSerial || m_desktopImage.isNull()) {
+        ensureCanvas();
+        if (!m_canvas.snapshot(m_desktopImage))
+            m_desktopImage = JZImage();
+        m_imageSerial = m_frameSerial;
+    }
+    return m_desktopImage;
 }
 
 JZImage JZVirtualDevice::screenshot()
 {
     refresh();
-    return m_desktop;                    // 与 m_desktop 共享像素缓冲, 拷贝很轻
+    return desktopImage();               // 拷贝很轻 (像素缓冲共享)
 }
 
 JZImage JZVirtualDevice::screenshotWindow(JZVirtualWindow* w)

@@ -25,7 +25,7 @@ class JZPainter;
 class JZVirtualWindow
 {
 public:
-    // 装饰尺寸 (逻辑像素; 虚拟桌面 scale 恒为 1)
+    // 装饰尺寸 (逻辑像素 —— 桌面坐标恒为逻辑坐标, 与桌面缩放无关, 见 JZVirtualDevice::scale)
     enum {
         kBorder = 2,      // 四周边框宽
         kTitleBar = 22,   // 标题栏高 (含上边框)
@@ -130,7 +130,7 @@ public:
     void setAutoPosition(bool on = true) { m_autoPosition = on; }
     bool isAutoPosition() const { return m_autoPosition; }
 
-    // ---- 渲染 / 取帧 ----
+    // ---- 渲染 / 取帧 (尺寸 = 客户区逻辑尺寸 * 桌面 scale, 即物理像素) ----
     void renderNow();                          // 客户区重绘一帧 (并通知桌面)
     JZImage snapshot(bool renderFirst = true); // 客户区一帧 (RGBA8888; 跨线程会等窗口线程)
     JZImage clientFrame();                     // 取帧: 跨线程时让窗口自己的线程拷一份 (会等它)
@@ -157,6 +157,10 @@ public:
     JZCursorShape cursorShapeAt(int screenX, int screenY) const;
     // 外框/内容变了 -> 让桌面重新合成 (窗口自己的动作与平台后端都走它)
     void notifyScreen();
+    // 桌面的 DPI 缩放变了 (JZVirtualDevice::setScale): 客户区的设备按新缩放重建帧缓冲
+    // (物理尺寸 = 客户区逻辑尺寸 * scale) 并重画一帧 —— 由桌面逐个窗口调, 桌面那边已把
+    // 窗口表拷出来锁外调用 (本函数可能要跨线程等窗口自己的线程画完)。
+    void applyDeviceScale();
     // 首次显示时按最终尺寸居中级联 (只做一次; 由平台后端的 show 调, 见 setAutoPosition)
     void applyAutoPosition();
 

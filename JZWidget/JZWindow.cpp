@@ -161,7 +161,7 @@ void JZWindow::doPaint(const JZRect& rc)
 
 // 惰性创建 (首次 showEvent 触发): 具体做什么由后端决定 ——
 // 真窗口 = 注册窗口类 + CreateWindowExW + device->init(hwnd,...);
-// 虚拟窗口 = 建离屏帧缓冲 (scale 恒 1)。成功才把窗口标成"已创建"。
+// 虚拟窗口 = 建离屏帧缓冲 (缩放 = 它所在桌面的 DPI, 默认 1)。成功才把窗口标成"已创建"。
 void JZWindow::createWindow()
 {
     if (m_windowCreated || !m_backend)
@@ -351,7 +351,7 @@ void JZWindow::windowResized(int logicalW, int logicalH)
 }
 
 // 显示器 DPI 变化 (WM_DPICHANGED): 更新设备缩放 (重建字体)。新 scale 由后端给
-// (真窗口 = 该窗口所在显示器的 DPI; 虚拟窗口恒 1)。
+// (真窗口 = 该窗口所在显示器的 DPI; 虚拟窗口 = 它所在那块桌面的缩放)。
 void JZWindow::dpiChanged()
 {
     if (m_device && m_backend)

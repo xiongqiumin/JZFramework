@@ -447,3 +447,18 @@ void JZVirtualWindow::notifyScreen()
     if (m_screen)
         m_screen->onWindowFrameChanged(this);
 }
+
+// 桌面 DPI 缩放变了 (JZVirtualDevice::setScale 逐个窗口调):
+// 客户区的设备换缩放到新 DPI, 帧缓冲按"客户区逻辑尺寸 * scale"重建, 再重画一帧。
+// ⚠ 下面 renderNow() 会做**跨线程**同步 (窗口属于虚拟进程时让那个线程画) —— 所以
+//   调用方(桌面)必须先松开 m_mutex, 否则可能和"窗口线程回头调桌面"撞成死锁。
+void JZVirtualWindow::applyDeviceScale()
+{
+    JZWindow* c = client();
+    if (!m_screen || !c || !c->device() || !c->isWindowCreated())
+        return;                     // 还没建帧缓冲: create() 时会直接按新 scale 建
+    const float s = m_screen->scale();
+    c->device()->setScale(s);
+    c->device()->resize(m_screen->toPhysical(c->width()), m_screen->toPhysical(c->height()));
+    renderNow();                    // 重画 (帧缓冲的主人只有一个线程, 见 renderNow)
+}

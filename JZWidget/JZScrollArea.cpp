@@ -4,6 +4,7 @@
 
 #include "JZScrollBar.h"
 #include "JZPainter.h"
+#include "JZStylePainter.h"   // 底色走样式 (背景/边框/圆角)
 #include "JZPainterEvent.h"
 #include "JZMouseEvent.h"
 #include "JZKeyEvent.h"
@@ -359,8 +360,36 @@ void JZScrollArea::layoutScrollBars()
     }
 
     // 内容控件跟随滚动偏移平移到视口内
-    if (m_widgetContent)
-        m_widgetContent->move(-m_scrollX, -m_scrollY);
+    if (m_widgetContent) {
+        int x = -m_scrollX;
+        int y = -m_scrollY;
+        const int cw = m_widgetContent->width();
+        const int ch = m_widgetContent->height();
+        // 内容比视口小时, 按 alignment 摆放 (Qt QScrollArea::updateWidgetPosition 同款:
+        // 居中最优先, 其次右/下); 溢出时上面的偏移就是答案, 这里不再动。
+        if (cw < vw) {
+            if (m_alignment & AlignHCenter)
+                x += (vw - cw) / 2;
+            else if (m_alignment & AlignRight)
+                x += vw - cw;
+        }
+        if (ch < vh) {
+            if (m_alignment & AlignVCenter)
+                y += (vh - ch) / 2;
+            else if (m_alignment & AlignBottom)
+                y += vh - ch;
+        }
+        m_widgetContent->move(x, y);
+    }
+}
+
+void JZScrollArea::setAlignment(int flags)
+{
+    if (m_alignment == flags)
+        return;
+    m_alignment = flags;
+    layoutScrollBars();      // 内容位置随之更新
+    update();
 }
 
 // ----------------------------------------------------------------------------
@@ -368,12 +397,18 @@ void JZScrollArea::layoutScrollBars()
 // ----------------------------------------------------------------------------
 bool JZScrollArea::eventFilter(JZObject* watched, JZEvent* event)
 {
-    // 视口背景: 内容未覆盖的区域露出白底 (模型 A), 与独立滚动区灰底区分开
+    // 视口背景: 内容未覆盖的区域露出的底色 (模型 A), 与独立滚动区灰底区分开。
+    // 颜色走本滚动区的样式 (见 paintEvent): 默认白底, 用 setStyleSheet 能一起换掉
+    // (Qt 里给 QScrollArea 设 background 也会盖到 viewport, 这里同语义)。
     if (watched == m_viewport && event->type() == JZEvent_paint && m_widgetContent) {
         // 自建 painter: 与控件 paintEvent 同一约定(裁剪由 painter 构造设定),
         // 这里按被拦截的视口构造, 裁剪/坐标原点都对齐视口。
         JZPainter p(m_viewport);
-        p.fillRect(0, 0, m_viewport->width(), m_viewport->height(), JZColor::White);
+        const JZStyleSet& st = resolvedStyle();
+        const JZColor bg = (st.background.isSome() && st.background.value().alpha() > 0)
+                               ? st.background.value()
+                               : JZColor::White;
+        p.fillRect(0, 0, m_viewport->width(), m_viewport->height(), bg);
         return false;   // 默认 (空) paintEvent 继续派发, 无副作用
     }
     return JZWidget::eventFilter(watched, event);
@@ -389,9 +424,15 @@ void JZScrollArea::paintEvent(JZPainterEvent* event)
     layoutScrollBars();
 
     JZPainter p(this);
-    int w = width(), h = height();
-    // 滚动区底色 (浅灰), 模型 B 的子类会整体盖住, 模型 A 由 viewport 白底盖住内部
-    p.fillRect(0, 0, w, h, JZColor(0xf5, 0xf5, 0xf5));
+    const int w = width(), h = height();
+    // 滚动区底色: 默认浅灰 (模型 B 的子类会整体盖住, 模型 A 由 viewport 底色盖住内部)。
+    // 样式表给了背景就按样式画 —— 例如 setStyleSheet("JZScrollArea { background-color:
+    // #000000; }") 把滚动区刷成黑色 (viewport 那条也一并跟随, 见 eventFilter)。
+    const JZStyleSet& st = resolvedStyle();
+    if (st.background.isSome() && st.background.value().alpha() > 0)
+        JZStylePainter::drawBox(p, st, JZRect(0, 0, w, h));
+    else
+        p.fillRect(0, 0, w, h, JZColor(0xf5, 0xf5, 0xf5));
 }
 
 void JZScrollArea::wheelEvent(JZMouseEvent* event)

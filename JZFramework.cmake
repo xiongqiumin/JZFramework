@@ -52,6 +52,7 @@ set(MODULE_DEPENDS_JZCompress "JZCore")
 set(MODULE_DEPENDS_JZHttpServer "JZNet;JZCompress")
 set(MODULE_DEPENDS_JZDatabase "JZCore")
 set(MODULE_DEPENDS_JZXml "JZCore")
+set(MODULE_DEPENDS_JZDocument "JZCore;JZJson;JZXml;JZCompress")
 set(MODULE_DEPENDS_JZJSEngine "JZNet;JZJson;JZHttpServer;JZDatabase;JZModbus;JZXml")
 
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")

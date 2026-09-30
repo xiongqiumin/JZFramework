@@ -20,6 +20,7 @@
 #include "JZShowEvent.h"
 #include "JZCloseEvent.h"
 #include "JZHideEvent.h"
+#include "JZDragEvent.h"
 #include "JZImage.h"
 
 // AI 语义动作 (ai-native-design L1): invoke 工具按 name 分发
@@ -181,6 +182,15 @@ public:
     // 但子控件 (如覆盖层上的取消按钮) 正常参与命中
     void setPassThrough(bool on) { m_passThrough = on; }
     bool isPassThrough() const { return m_passThrough; }
+
+    // ---- 拖放接收开关 (等价 Qt QWidget::setAcceptDrops) ----
+    // 打开后本控件参与拖放: 外部把数据拖到它上面时, 依次收到 dragEnter -> dragMove* ->
+    // drop (拖出去则 dragLeave)。默认关闭 —— 未开 receipt 的控件对拖放完全透明。
+    // 事件沿父链逐级尝试: 最深的控件不收就交给父控件, 于是"容器整体接受拖放"
+    // 不必给每个子控件都开这一个开关 (Qt 同款语义)。
+    // 拖着的过程中改这个值: 下一次 dragMove 重新挑目标时生效。
+    void setAcceptDrops(bool on) { m_acceptDrops = on; }
+    bool acceptDrops() const { return m_acceptDrops; }
 
     // 子控件裁剪 (Qt WA_ClipChildren 语义): 开启后本控件所有子孙的绘制被裁剪到
     // 本控件的显示区域 (用于滚动区 viewport 把越界的内容控件裁掉)。
@@ -412,6 +422,30 @@ protected:
     void releaseMouse();
     bool hasMouseGrab() const;
 
+    // ---- 拖放事件 (等价 Qt 的 dragEnterEvent / dragMoveEvent / dragLeaveEvent / dropEvent) ----
+    // 仅 setAcceptDrops(true) 的控件收到。四个 handler 的默认实现都是"不接"
+    // (基类实现一律 ignore), 故通常只要重写用到的那一个:
+    //   class ImageView : public JZWidget {
+    //       ImageView() { setAcceptDrops(true); }
+    //   protected:
+    //       void dragEnterEvent(JZDragEnterEvent* e) override {
+    //           if (e->mimeData()->hasImage() || e->mimeData()->hasUrls())
+    //               e->acceptProposedAction();     // 接 := 这次拖放由本控件负责
+    //       }
+    //       void dropEvent(JZDropEvent* e) override {
+    //           JZImage img = e->mimeData()->image();     // 位图或第一个图片文件
+    //           if (img.isNull()) return;
+    //           m_image = img; update();
+    //           e->acceptProposedAction();
+    //       }
+    //   };
+    // dragMoveEvent: 想按位置区分落点 (如拖到列表的哪一项) 才重写, 同样要 accept;
+    // dragLeaveEvent: 拖走了, 复原拖着时画的那些提示 (描边 / 占位高亮)。
+    virtual void dragEnterEvent(JZDragEnterEvent* event);
+    virtual void dragMoveEvent(JZDragMoveEvent* event);
+    virtual void dragLeaveEvent(JZDragLeaveEvent* event);
+    virtual void dropEvent(JZDropEvent* event);
+
     // 键盘事件: key 为平台虚拟键码, text 为该键产生的可打印文本 (UTF-8)。
     // IME 上屏的内容**不走**这里, 走 imeEvent() 的 ResultStr。
     virtual void keyPressEvent(JZKeyEvent* event);
@@ -462,6 +496,7 @@ protected:
     bool m_enabled = true;         // 自身使能位 (祖先禁用经 isEnabled 沿父链体现)
     bool m_passThrough = false;
     bool m_clipChildren = false;
+    bool m_acceptDrops = false;    // 是否接收拖放 (setAcceptDrops; 见 dragEnterEvent)
     int m_opaque = 255;    // 是否向身后的兄弟控件贡献"不透明覆盖"(重绘剔除; 0=透明覆盖层)
 
     bool m_hasCursor = false;      // 是否经 setCursor 显式设置过光标

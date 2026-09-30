@@ -123,6 +123,15 @@ if(ESP_PLATFORM)
     list(APPEND JZCORE_SOURCES JZPlatformWrapperEsp32.cpp)
 endif()
 
+# ---- JZPlugin: 仅动态库(SHARED)场景参与编译 ----
+# 静态库没有"运行时再加载另一个 .dll/.so"的意义, 故跳过。
+# 由 JZFramework.cmake 的 JZFRAMEWORK_DYNAMIC 选项控制(开启时目标为 SHARED)。
+if(JZFRAMEWORK_DYNAMIC)
+    list(APPEND JZCORE_SOURCES
+        JZPlugin.h
+        JZPlugin.cpp)
+endif()
+
 # ---- base64 (libbase64, 直接源码引用, 非独立库) ----
 set(BASE64_DIR "${CMAKE_CURRENT_LIST_DIR}/base64")
 list(APPEND JZCORE_SOURCES

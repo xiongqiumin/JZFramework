@@ -950,7 +950,10 @@ bool JZWidget::event(JZEvent* e)
     if (!isEnabled())
     {
         const int t = e->type();
-        if (t == JZEvent_mouse || t == JZEvent_key || t == JZEvent_ime)
+        // 拖放也算输入: 禁用的控件不当落点, 也不要放行让父控件替它收。
+        if (t == JZEvent_mouse || t == JZEvent_key || t == JZEvent_ime ||
+            t == JZEvent_dragEnter || t == JZEvent_dragMove ||
+            t == JZEvent_dragLeave || t == JZEvent_drop)
             return true;
     }
 
@@ -1007,6 +1010,29 @@ bool JZWidget::event(JZEvent* e)
     if (e->type() == JZEvent_ime)
     {
         imeEvent((JZImeEvent*)e);
+        return true;
+    }
+
+    // 拖放: 由 JZWindow 的 drop target 翻译 OLE 消息后, 沿命中控件的父链逐个投递。
+    // 注意返回值不看: 是否成为落点由事件的 accept 表态决定 (四种事件默认 ignore)。
+    if (e->type() == JZEvent_dragEnter)
+    {
+        dragEnterEvent((JZDragEnterEvent*)e);
+        return true;
+    }
+    if (e->type() == JZEvent_dragMove)
+    {
+        dragMoveEvent((JZDragMoveEvent*)e);
+        return true;
+    }
+    if (e->type() == JZEvent_dragLeave)
+    {
+        dragLeaveEvent((JZDragLeaveEvent*)e);
+        return true;
+    }
+    if (e->type() == JZEvent_drop)
+    {
+        dropEvent((JZDropEvent*)e);
         return true;
     }
 
@@ -1089,6 +1115,28 @@ void JZWidget::leaveEvent(JZEvent*)
 
 void JZWidget::wheelEvent(JZMouseEvent*)
 {
+}
+
+// 拖放: 默认一律 ignore —— 只有重写并显式 accept 的控件才接收拖放。
+// (对照 Qt: QWidget 的默认 dragEnterEvent 也是 QEvent::ignore。)
+void JZWidget::dragEnterEvent(JZDragEnterEvent* event)
+{
+    (void)event;
+}
+
+void JZWidget::dragMoveEvent(JZDragMoveEvent* event)
+{
+    (void)event;
+}
+
+void JZWidget::dragLeaveEvent(JZDragLeaveEvent* event)
+{
+    (void)event;
+}
+
+void JZWidget::dropEvent(JZDropEvent* event)
+{
+    (void)event;
 }
 
 void JZWidget::setCursor(const JZCursor& cursor)

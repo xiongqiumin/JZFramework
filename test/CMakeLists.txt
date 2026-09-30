@@ -8,6 +8,7 @@ add_subdirectory(tools)
 add_subdirectory(http_server)
 add_subdirectory(agent)
 add_subdirectory(xml)
+add_subdirectory(document)
 
 if(WIN32)
 add_subdirectory(widget)

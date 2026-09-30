@@ -21,6 +21,10 @@ enum {
     JZEvent_mouse,
     JZEvent_enter,      // 鼠标进入控件 (Qt 的 QEvent::Enter)
     JZEvent_leave,      // 鼠标离开控件 (Qt 的 QEvent::Leave)
+    JZEvent_dragEnter,  // 拖放进入 (Qt 的 QEvent::DragEnter)
+    JZEvent_dragMove,   // 拖放移动 (Qt 的 QEvent::DragMove)
+    JZEvent_dragLeave,  // 拖放离开 / 取消 (Qt 的 QEvent::DragLeave)
+    JZEvent_drop,       // 放下 (Qt 的 QEvent::Drop)
     JZEvent_close,
     JZEvent_childAdded,     // 子对象加入 (Qt QEvent::ChildAdded)
     JZEvent_childRemoved,   // 子对象移除 (Qt QEvent::ChildRemoved)

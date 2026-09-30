@@ -18,6 +18,7 @@
   "include": [
     "scenes/**/*.ts",
     "probe/**/*.ts",
+    "checks/**/*.ts",
     // 类型的单一来源：仓库里的 js_wrapper 声明（引擎全局 + widget 全局类 + fs/path 模块）
     "../../JZJSEngine/js_wrapper/types/**/*.d.ts",
     "../../JZJSEngine/js_wrapper/widget/types/**/*.d.ts",

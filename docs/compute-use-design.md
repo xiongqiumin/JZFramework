@@ -39,7 +39,7 @@ await app.save('psu.json');                                // ⑤ 固化：树 +
 `layoutTree()` 对自家界面就是 `dumpSemanticTree`：每个节点自带 `viewId`（= `objectName()`），
 所以 `layout` 路径 = 从窗口往下拼 `viewId`（如 `/main/btnOutput`）；同一棵树还给出屏幕坐标与
 `text / checkable+checked / range{value,min,max}` —— 运行期的**寻址**与**校验**都用它。
-（`perceive` / `buildTree` 已实现，见 §7；`review` / `build(layout)` 待补。）
+（`perceive` / `build(per,{layout})` 已实现，见 §7；§1.1 的 `review` 钩子已留、UI 待补。）
 
 ### 1.2 运行期（无人）—— **不碰像素**
 
@@ -167,21 +167,28 @@ edit / combobox / checkbox / slider / label / canvas`。
 
 ## 7. 现状与待补
 
-**已完成**：`types.ts` / `index.ts` / `perceive.ts`（`explore = screenshot → perceive → buildTree`、
-`fromPerception`；VLM 地址由调用方给、不内置）；包已是引擎内置名（可 `import { App } from 'computeruse'`）；
-脚手架 `auto_code/computer_use/`（出题 → 截图 → 探针 → 判分，五项硬门全过）。
+**已完成**：
+
+- 包内文件：`types.ts` / `index.ts` / `perceive.ts` / **`layout.ts`**（路径 / 拍平 / 指纹 / 认领）/
+  **`diagnose.ts`**（本地分级）；`explore = screenshot → perceive → 人审 → 认领布局 → 树`；
+  VLM 地址由调用方给、不内置；包已是引擎内置名（`import { App } from 'computeruse'`）。
+- ⭐ **§4.1 的布局通道、运行期寻址、校验、§1.3 的本地分级** 已在 `computeruse` 包内落地：
+  `Locator.kind='layout'`、`backend.layoutTree()`、`App.attach / at / read / expect / sync / launch / has / diagnose`、
+  `App.build(per,{layout})` 的**认领**、序列化带上 `layout / degraded / fingerprint`。
+  **离线就能验证**（不需要模型、不需要真桌面、不需要 C++ 侧）：
+  `auto_code/computer_use/checks/layout_smoke.ts` 用"电源开/关"当用例，14 项硬门全过 ——
+  其中 G4 专门断言"整个流程里 `match` 只收到 `kind='layout'`"（铁律①的硬门）。
+- 脚手架 `auto_code/computer_use/`（出题 → 截图 → 探针 → 判分，五项硬门全过）。
 
 **待补（按依赖顺序）**：
 
-1. ⭐ **布局通道**：`layoutTree()` → `viewId` 拼路径 → `kind:'layout'` locator → `match` 支持它；
-   模型里显式区分"布局可寻址"与"退化到像素"。
-2. `App.attach()` + `sync()` + `launch()`。
-3. `read` / `expect`（布局优先的校验）+ **页面指纹**。
-4. 失败分级器（§1.3 的 A~F）—— **不需要模型就能测**（拿脚手架的场景当夹具）。
-5. 接大模型（证据包 + override 层）。
-6. `JZComputerUse` / `JZJSComputerUseModule` 进 CMake。
-7. 像素族后端 `ocr` / `yolo`（降级为兜底，靠后）。
-8. ⏳ **闸门（预算 / 去重 / 影响面 / 无人值守）—— 最后再做。**
+1. **C++ 侧布局通道**：`JZComputerUse::layoutTree()`（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA）
+   + `waitStable` + `launch`。现在 JS 侧拿不到就返回 null ⇒ 节点标 `degraded`（退到几何/像素兜底）。
+2. `JZComputerUse` / `JZJSComputerUseModule` 进 CMake。
+3. 建模期的人审/标注 **UI**：`explore` 的 `review` 钩子已留（默认不传 = 行为不变），缺全屏标注窗。
+4. 接大模型：`formatEvidence()` 已能产出证据包，缺"发给模型 → 解析修法 → 写 **override** 层"。
+5. 像素族后端 `ocr` / `yolo`（降级为兜底，靠后）。
+6. ⏳ **闸门（预算 / 去重 / 影响面 / 无人值守）—— 最后再做。**
 
 ## 8. 参考
 

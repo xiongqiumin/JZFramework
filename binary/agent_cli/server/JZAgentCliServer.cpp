@@ -238,10 +238,7 @@ void JZAgentCliServer::startFrp()
 {
     if (!m_config.frpEnabled)
         return;
-
-    JZNetPackInit();
-    JZFrpPacketInit();
-
+        
     JZFrpServerConfig sc;
     sc.token = m_config.frpToken;
     m_frpServer = new JZFrpServer(this);

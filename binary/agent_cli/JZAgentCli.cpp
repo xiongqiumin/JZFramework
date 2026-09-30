@@ -541,15 +541,12 @@ void JZAgentCli::startHttp()
 //   远端 frps 的 remotePort 上 —— 这样在外网/其它机器上访问 <frps>:<remotePort>
 //   就能转发到本机的 <localIp>:<localPort>。
 //   ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担; 这里只做客户端。
-//   frpc 靠 JZNetPack 收发包, 启动前必须先 JZNetPackInit() + JZFrpPacketInit()
-//   (与 binary/frpc 的 jzfrpc 一致); 这两个是幂等的, 重复调用无害。
+//   frpc 靠 JZNetPack 收发包, 显式写上包类型注册(与 binary/frpc 的 jzfrpc 一致)。
+//   包类型其实在 JZApplication 构造(JZDriver::init -> JZNetPackInit, 内含 JZFrpPacketInit)
+//   时就注册好了 ⇒ 这里是第二次调 —— 两个入口都有 once 保护, 重复调用无害且不重复注册。
 // ==========================================================================
 void JZAgentCli::startFrpc()
 {
-    // 包类型注册(frpc 的 JZNetClient 依赖它)。幂等, 放最前面只调一次。
-    JZNetPackInit();
-    JZFrpPacketInit();
-
     // frpc 客户端: 本端连到远端 frps, 把本地服务经代理暴露出去。
     if (!m_config.frp.client.enabled)
         return;

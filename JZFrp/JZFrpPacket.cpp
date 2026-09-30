@@ -1,3 +1,4 @@
+#include <mutex>
 #include "JZFrpPacket.h"
 #include "JZNetPacketProcessor.h"
 
@@ -71,9 +72,16 @@ void JZFrpTrans::loadFromStream(JZDataStream &s)
     s >> data;
 }
 
-void JZFrpPacketInit() 
-{   
-    JZNetPackManager::instance()->registPack<JZFrpHand>(FrpPack_Hand);
-    JZNetPackManager::instance()->registPack<JZFrpHandRes>(FrpPack_HandRes);
-    JZNetPackManager::instance()->registPack<JZFrpTrans>(FrpPack_Trans);
+void JZFrpPacketInit()
+{
+    // ⚠ 幂等 + 线程安全保护 (与 JZNetPackInit 同一个理由, 详见那边的说明):
+    //   JZNetPackInit() 内部会调本函数, 而调用方常常又跟着显式再调一次
+    //   (binary/frpc 的 main、agent_cli/server 的 startFrp 都是) ⇒ 没有这道保护,
+    //   重复注册会撞 registPack 的断言。
+    static std::once_flag once;
+    std::call_once(once, [] {
+        JZNetPackManager::instance()->registPack<JZFrpHand>(FrpPack_Hand);
+        JZNetPackManager::instance()->registPack<JZFrpHandRes>(FrpPack_HandRes);
+        JZNetPackManager::instance()->registPack<JZFrpTrans>(FrpPack_Trans);
+    });
 }

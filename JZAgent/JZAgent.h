@@ -26,6 +26,8 @@ struct SkillDefine JZFRAMEWORK_API
 //      predicted_per_second, draft_n, draft_n_accepted}
 // 计时类只存"原始量"(token 数与毫秒)，速率一律现算 —— 速率求和无意义，
 // 多轮累计只能按 Σtoken / Σms 算平均速率(见 promptTokensPerSecond / predictedTokensPerSecond)。
+// ⚠ prefill 速率的分子**只算未命中的 prompt token**(见 prefilledTokens): prompt_ms 是真正
+//    prefill 的耗时, 命中前缀缓存的那些 token 并没有走 prefill。
 class JZFRAMEWORK_API JZAgentTokenUsage
 {
 public:
@@ -44,10 +46,17 @@ public:
     {
         return prompt_ms > 0 || predicted_ms > 0 || draft_tokens > 0;
     }
-    // prefill 速度(token/s)；无耗时返回 0
+    // 真正走了 prefill 的输入 token 数 = prompt_tokens - 命中前缀缓存的那些
+    int prefilledTokens() const
+    {
+        return prompt_tokens > cached_tokens ? prompt_tokens - cached_tokens : 0;
+    }
+    // prefill 速度(token/s)；无耗时返回 0。
+    // ⚠ 分子是 prefilledTokens() 而不是 prompt_tokens: prompt_ms 只覆盖真正 prefill 的那部分,
+    //   拿整段 prompt 去除会把速率虚高(缓存命中越多越离谱, 实测能算出 1 万多 tok/s)。
     double promptTokensPerSecond() const
     {
-        return prompt_ms > 0 ? prompt_tokens * 1000.0 / prompt_ms : 0.0;
+        return prompt_ms > 0 ? prefilledTokens() * 1000.0 / prompt_ms : 0.0;
     }
     // 生成速度(token/s)；无耗时返回 0
     double predictedTokensPerSecond() const

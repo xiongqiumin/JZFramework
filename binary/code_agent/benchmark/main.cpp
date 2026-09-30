@@ -1023,11 +1023,19 @@ protected:
                                 << "   " << clr(CLR_GRAY) << "[windowTokens; 预算/压缩看这个]" << clr(CLR_RESET);
         // llama.cpp 计时: 其他 provider 不带 timings(恒为 0)，不打这两行
         if (m_totalPromptMs > 0 || m_totalPredMs > 0)
+        {
+            // ⚠ prefill 速率**只算未命中的 prompt token**: prompt_ms 是 llama.cpp 真正 prefill
+            //   的耗时, 命中前缀缓存的那些 token 没走 prefill —— 拿整段 prompt 去除会虚高好几倍
+            //   (实测命中 84% 时能算出 1 万多 tok/s)。分子分母的口径必须对得上。
+            const int prefilled = m_totalPrompt > m_totalCached ? m_totalPrompt - m_totalCached : 0;
             jzDebug().nospace() << "推理速度(llama.cpp): prefill="
-                                << (m_totalPromptMs > 0 ? m_totalPrompt * 1000.0 / m_totalPromptMs : 0.0)
-                                << " tok/s, 生成="
+                                << (m_totalPromptMs > 0 ? prefilled * 1000.0 / m_totalPromptMs : 0.0)
+                                << " tok/s [只算未命中 " << prefilled << "/" << m_totalPrompt
+                                << ", 缓存命中 " << m_totalCached << "]"
+                                << ", 生成="
                                 << (m_totalPredMs > 0 ? m_totalCompletion * 1000.0 / m_totalPredMs : 0.0)
                                 << " tok/s";
+        }
         if (m_totalDraft > 0)
             jzDebug().nospace() << "投机采样(MTP): 接受 " << m_totalDraftAccepted << "/" << m_totalDraft
                                 << " = " << (m_totalDraftAccepted * 100.0 / m_totalDraft) << "%";

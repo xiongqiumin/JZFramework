@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": []
   },
-  "include": ["index.ts", "types.ts", "perceive.ts", "layout.ts", "diagnose.ts"]
+  "include": ["index.ts", "types.ts", "perceive.ts", "layout.ts", "diagnose.ts", "repair.ts"]
 }

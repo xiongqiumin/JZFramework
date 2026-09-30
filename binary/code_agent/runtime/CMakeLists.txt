@@ -17,6 +17,14 @@ set(CODE_RUNTIME_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.h
+    # computer use：__jz.computeruse 的底层实现(见 JZEngineRuntime 的挂载点)。
+    # JZComputerUse 要 JZScreenShot(抓屏/编码) ⇒ runtime 这边也得把它编进来。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZScreenShot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZScreenShot.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
 )
 
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})

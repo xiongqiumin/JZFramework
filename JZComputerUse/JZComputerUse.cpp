@@ -4,20 +4,36 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
-#include <opencv2/opencv.hpp>
 #include <shlobj.h>      // IShellDispatch4 / CLSID_Shell (显示桌面)
 #include <objbase.h>     // CoInitializeEx / CoCreateInstance / IID_PPV_ARGS
 #include <tlhelp32.h>    // 进程快照
 #include <cstring>       // strstr
+// 框架侧(布局通道要用): 语义树 / 活动窗口 / 显示器几何
+#include "JZApplication.h"
+#include "JZLog.h"
+#include "JZWidget/JZWidget.h"
+#include "JZWidget/JZWindow.h"
+
+// OpenCV 只在"像素族匹配"(matchImage/matchColor)里用，而像素族已降级为**兜底**
+// (见 docs/compute-use-design.md §4.1) ⇒ 默认不编，避免为一个兜底能力背整条 OpenCV 依赖。
+// 要启用: CMake 里加 `target_compile_definitions(<target> PRIVATE JZ_CU_OPENCV=1)` 并链 OpenCV。
+#ifndef JZ_CU_OPENCV
+#define JZ_CU_OPENCV 0
+#endif
+#if JZ_CU_OPENCV
+#include <opencv2/opencv.hpp>
+#endif
 
 CuRect JZComputerUse::s_lastLogical;
 
 namespace {
+#if JZ_CU_OPENCV
     std::string tempDir() {
         char buf[MAX_PATH];
         if (GetTempPathA(MAX_PATH, buf) > 0) return std::string(buf);
         return std::string(".\\");
     }
+#endif
 
     void split(const std::string& s, char d, std::vector<std::string>& out) {
         std::string cur;
@@ -46,6 +62,7 @@ namespace {
         return 0;
     }
 
+#if JZ_CU_OPENCV
     // 解析 "#RRGGBB" / "RRGGBB" / "#RGB" 为 OpenCV BGR 标量
     cv::Scalar parseHex(const std::string& h) {
         std::string s = h;
@@ -56,6 +73,7 @@ namespace {
         int r = (v>>16)&0xFF, g = (v>>8)&0xFF, b = v&0xFF;
         return cv::Scalar(b, g, r);
     }
+#endif   // JZ_CU_OPENCV
 
     // —— 进程 / 窗口查找与置前（供 JZComputerUse 的进程窗口管理使用）——
     struct FindCtx { const std::string* title = nullptr; DWORD pid = 0; HWND found = nullptr; };
@@ -85,17 +103,155 @@ namespace {
         SetForegroundWindow(w);
         if (attached) AttachThreadInput(myTid, fgTid, FALSE);
     }
+    // 宽转窄(UTF-8)：进程快照给的是 wchar_t，本类对外一律用 std::string(UTF-8)
+    std::string narrow(const wchar_t* w) {
+        if (!w || !*w) return std::string();
+        int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        if (n <= 1) return std::string();
+        std::string s(n - 1, 0);
+        WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
+        return s;
+    }
+
     DWORD pidByName(const std::string& name) {
         DWORD pid = 0;
+        if (name.empty()) return 0;
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snap == INVALID_HANDLE_VALUE) return 0;
-        PROCESSENTRY32A pe = {}; pe.dwSize = sizeof(pe);
-        for (BOOL b = Process32FirstA(snap, &pe); b; b = Process32NextA(snap, &pe)) {
-            std::string p = pe.szExeFile;
+        // ⚠ 用 PROCESSENTRY32W/Process32FirstW（显式宽版）：`PROCESSENTRY32A` 在当前 SDK 里
+        //   并没有 typedef（它只是 tag 名），而这个文件以前没进过构建、一直没暴露。
+        PROCESSENTRY32W pe = {}; pe.dwSize = sizeof(pe);
+        for (BOOL b = Process32FirstW(snap, &pe); b; b = Process32NextW(snap, &pe)) {
+            std::string p = narrow(pe.szExeFile);
             if (p == name || (name.back() != '.' && p == name + ".exe")) { pid = pe.th32ProcessID; break; }
         }
         CloseHandle(snap);
         return pid;
+    }
+
+    // ———— 布局通道的工具 ————
+
+    // 虚拟桌面**逻辑**矩形 = 各显示器 geometry 的并集。
+    // 与 captureVirtualDesktop(&rc, scale) 回填的 rc 同口径（那里面也是各屏 geometry 的并集，
+    // 缩放不进 rc）⇒ 不抓图就能拿到，且与 click()/screenshot() 的归一化基准一致。
+    JZRect virtualLogicalRect() {
+        const int n = JZScreen::count();
+        int l = 0, t = 0, r = 0, b = 0; bool first = true;
+        for (int i = 0; i < n; i++) {
+            JZScreen s(i);
+            if (!s.isValid()) continue;
+            JZRect g = s.geometry();
+            if (g.width() <= 0 || g.height() <= 0) continue;
+            if (first) {
+                l = g.left(); t = g.top(); r = g.left() + g.width(); b = g.top() + g.height();
+                first = false;
+            } else {
+                l = std::min(l, g.left()); t = std::min(t, g.top());
+                r = std::max(r, g.left() + g.width()); b = std::max(b, g.top() + g.height());
+            }
+        }
+        if (first)   // 拿不到显示器信息时退回 Win32 度量（物理像素，至少别给 0）
+            return JZRect(0, 0, GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        return JZRect(l, t, r - l, b - t);
+    }
+
+    // 屏幕逻辑矩形 → 归一化 [0,1]（相对虚拟桌面逻辑矩形；与 click() 同口径）
+    Json::Value normRectJson(int x, int y, int w, int h, const JZRect& base) {
+        const double bw = base.width() > 0 ? (double)base.width() : 1.0;
+        const double bh = base.height() > 0 ? (double)base.height() : 1.0;
+        double nx = (x - base.left()) / bw, ny = (y - base.top()) / bh;
+        double nw = w / bw, nh = h / bh;
+        if (nx < 0) { nw += nx; nx = 0; }
+        if (ny < 0) { nh += ny; ny = 0; }
+        if (nx + nw > 1) nw = 1 - nx;
+        if (ny + nh > 1) nh = 1 - ny;
+        if (nw < 0) nw = 0; if (nh < 0) nh = 0;
+        Json::Value r(Json::objectValue);
+        r["x"] = nx; r["y"] = ny; r["w"] = nw; r["h"] = nh;
+        return r;
+    }
+
+    // JZWidget 语义树(dumpSemanticTree 的无障碍树) → 本包 LayoutNode 形态。
+    // 字段一一对应: className→role / viewId→id / text→text / contentDesc→name /
+    //              boundsInScreen→rect(归一化) / visible·enabled·clickable·checked·range·items·actions 直传。
+    Json::Value widgetTreeToLayout(const Json::Value& n, const JZRect& base) {
+        Json::Value o(Json::objectValue);
+        o["role"] = n.isMember("className") ? n["className"].asString() : std::string("unknown");
+        if (n.isMember("viewId")) o["id"] = n["viewId"];            // = objectName()（路径的稳定片段）
+        if (n.isMember("text")) o["text"] = n["text"];
+        if (n.isMember("contentDesc")) o["name"] = n["contentDesc"];
+        const Json::Value& b = n["boundsInScreen"];
+        if (b.isArray() && b.size() >= 4)
+            o["rect"] = normRectJson(b[0].asInt(), b[1].asInt(), b[2].asInt(), b[3].asInt(), base);
+        if (n.isMember("visible"))   o["visible"]   = n["visible"].asBool();
+        if (n.isMember("enabled"))   o["enabled"]   = n["enabled"].asBool();
+        if (n.isMember("clickable")) o["clickable"] = n["clickable"].asBool();
+        if (n.isMember("checked"))   o["checked"]   = n["checked"].asBool();
+        if (n.isMember("range"))     o["range"]     = n["range"];
+        if (n.isMember("items"))     o["items"]     = n["items"];
+        if (n.isMember("actions"))   o["actions"]   = n["actions"];
+        const Json::Value& kids = n["children"];
+        if (kids.isArray() && !kids.empty()) {
+            Json::Value arr(Json::arrayValue);
+            for (const auto& c : kids) arr.append(widgetTreeToLayout(c, base));
+            o["children"] = arr;
+        }
+        return o;
+    }
+
+    // Win32 类名 → 本包词汇(粗映射, 只为人读得懂；路径仍以类名/id 为准)
+    std::string roleFromClass(const std::string& cls) {
+        std::string c = cls;
+        for (auto& ch : c) ch = (char)tolower((unsigned char)ch);
+        if (c == "button")     return "button";
+        if (c == "edit")       return "edit";
+        if (c == "static")     return "label";
+        if (c == "combobox")   return "combobox";
+        if (c == "syslistview32") return "list";
+        if (c == "systreeview32") return "tree";
+        if (c == "systabcontrol32") return "tab";
+        if (c == "msctls_trackbar32") return "slider";
+        if (c == "msctls_updown32")   return "spinbox";
+        if (c == "msctls_progress32") return "progressbar";
+        if (c == "systoolbar32") return "toolbar";
+        if (c == "sstatusbar" || c == "msctls_statusbar32") return "statusbar";
+        if (c == "scrollbar")  return "scrollbar";
+        return c.empty() ? std::string("unknown") : c;
+    }
+
+    // 外部窗口: 递归枚举 Win32 子窗口 → LayoutNode。
+    // ⚠ 只对"标准控件"有效(按钮/编辑框/静态文本/列表…); 自绘界面拿不到内部结构 ⇒
+    //   那些节点的细节只能靠像素族兜底(或后续接 UIA)。
+    Json::Value hwndTreeToLayout(HWND w, const JZRect& base) {
+        Json::Value o(Json::objectValue);
+        char cls[256] = {};
+        GetClassNameA(w, cls, (int)sizeof(cls));
+        char txt[512] = {};
+        GetWindowTextA(w, txt, (int)sizeof(txt));
+        // 顶层窗口没有 GetDlgCtrlID 语义 ⇒ 用类名当 role, 文本当 name(路径片段会退成 role)
+        const bool top = (GetParent(w) == nullptr);
+        o["role"] = top ? std::string("window") : roleFromClass(cls);
+        if (!top) {
+            int id = GetDlgCtrlID(w);
+            if (id > 0) o["id"] = std::string("id") + std::to_string(id);   // 标准控件的稳定标识
+        } else {
+            o["id"] = roleFromClass(cls);        // 顶层窗口用类名当 id ⇒ 路径形如 /notepad
+        }
+        if (txt[0]) o["text"] = std::string(txt);
+        RECT r = {};
+        if (GetWindowRect(w, &r))
+            o["rect"] = normRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, base);
+        o["visible"]   = IsWindowVisible(w) != 0;
+        o["enabled"]   = IsWindowEnabled(w) != 0;
+        o["clickable"] = true;
+
+        Json::Value arr(Json::arrayValue);
+        for (HWND c = GetWindow(w, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+            if (!IsWindowVisible(c)) continue;                    // 不可见的子窗口不进树(与自家语义树一致)
+            arr.append(hwndTreeToLayout(c, base));
+        }
+        if (!arr.empty()) o["children"] = arr;
+        return o;
     }
 }
 
@@ -104,13 +260,42 @@ void JZComputerUse::updateLogical(const JZRect& r) {
 }
 
 // 归一化(相对虚拟桌面逻辑矩形) -> 虚拟屏幕绝对坐标(0..65535, SendInput 用)
+//
+// ⚠ 坐标系必须统一：`s_lastLogical` 是**逻辑**虚拟桌面（JZScreen::geometry()），
+//   而 DPI-aware 进程里 GetSystemMetrics(SM_*) 给的是**物理**像素 ⇒ 中间得乘 deviceScale。
+//   不乘的后果（实机自检踩到）：200% 缩放下 rect 完全正确，但点击只落到目标的一半位置，
+//   表现成"能定位、点不中" —— 这类 bug 只有真点一次才看得出来。
+//   `MOUSEEVENTF_VIRTUALDESK` 让 0..65535 覆盖**整个虚拟桌面**（与 vsX/vsW 同口径），
+//   多显示器下不设它会按主屏算，副屏上的坐标就偏了。
 void JZComputerUse::toAbsolute(double nx, double ny, DWORD& ax, DWORD& ay) {
     int vsX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vsY = GetSystemMetrics(SM_YVIRTUALSCREEN);
     int vsW = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
     int vsH = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
-    double px = s_lastLogical.x + nx * s_lastLogical.w;
-    double py = s_lastLogical.y + ny * s_lastLogical.h;
+
+    // 归一化 → **逻辑**屏幕坐标（与 layoutTree 归一化用同一个 s_lastLogical ⇒ 能原路返回）
+    double lx = s_lastLogical.x + nx * s_lastLogical.w;
+    double ly = s_lastLogical.y + ny * s_lastLogical.h;
+
+    // 逻辑 → 物理：按**该点所在显示器**的缩放。
+    // ⚠ 别用 "物理虚拟屏 / 逻辑虚拟桌面" 当比例：`JZScreen::geometry()` 在多屏下会把副屏
+    //   原点按物理值报(实测: 主屏 1440x900@2x + 副屏原点 2880 ⇒ 并集 4800x1080 是脏的)，
+    //   拿它算出来的比例会是 1，于是 200% 屏上的点击只走一半 ⇒ "能定位、点不中"。
+    //   改用该点所在屏的 devicePixelRatio；并用 "SM_CXSCREEN 是否大于主屏逻辑宽" 自校准
+    //   进程是否 DPI-aware（非 DPI-aware 时系统已把坐标虚拟化，再乘就重复了）。
+    double k = 1.0;
+    JZScreen pri = JZScreen::primaryScreen();
+    if (pri.isValid()) {
+        JZRect pg = pri.geometry();
+        const bool dpiAware = (GetSystemMetrics(SM_CXSCREEN) > pg.width() + 1);
+        if (dpiAware) {
+            JZScreen sc = JZScreen::screenAt(JZPoint((int)lx, (int)ly));
+            if (sc.isValid() && sc.devicePixelRatio() > 0)
+                k = sc.devicePixelRatio();
+        }
+    }
+
+    double px = lx * k, py = ly * k;
     ax = (DWORD)(((px - vsX) / (double)vsW) * 65535.0);
     ay = (DWORD)(((py - vsY) / (double)vsH) * 65535.0);
 }
@@ -141,12 +326,17 @@ void JZComputerUse::switchToDesktop() {
 bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
     DWORD ax, ay; toAbsolute(nx, ny, ax, ay);
     INPUT in[2] = {};
-    in[0].type = INPUT_MOUSE; in[0].mi.dx = ax; in[0].mi.dy = ay; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    in[1].type = INPUT_MOUSE; in[1].mi.dx = ax; in[1].mi.dy = ay; in[1].mi.dwFlags = btnDown(btn) | MOUSEEVENTF_ABSOLUTE;
-    SendInput(2, in, sizeof(INPUT));
+    in[0].type = INPUT_MOUSE; in[0].mi.dx = ax; in[0].mi.dy = ay; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in[1].type = INPUT_MOUSE; in[1].mi.dx = ax; in[1].mi.dy = ay; in[1].mi.dwFlags = btnDown(btn) | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    UINT n1 = SendInput(2, in, sizeof(INPUT));
     Sleep(20);
-    in[1].mi.dwFlags = btnUp(btn) | MOUSEEVENTF_ABSOLUTE;
-    SendInput(2, in, sizeof(INPUT));
+    in[1].mi.dwFlags = btnUp(btn) | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    UINT n2 = SendInput(2, in, sizeof(INPUT));
+    // 注入被系统挡掉时(SendInput 返 <2, 常见于前台锁定/UIPI)要能看出来，别静默成功
+    if (n1 < 2 || n2 < 2) {
+        LOG_FMT_E("[CU] SendInput 只注入了 %u/%u 个事件（前台上锁 / UIPI？）", n1, n2);
+        return false;
+    }
     return true;
 }
 
@@ -157,10 +347,10 @@ bool JZComputerUse::doubleClick(double nx, double ny, MouseBtn btn) {
 bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
     DWORD ax1, ay1, ax2, ay2; toAbsolute(x1, y1, ax1, ay1); toAbsolute(x2, y2, ax2, ay2);
     INPUT in[4] = {};
-    in[0].type = INPUT_MOUSE; in[0].mi.dx = ax1; in[0].mi.dy = ay1; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    in[1].type = INPUT_MOUSE; in[1].mi.dx = ax1; in[1].mi.dy = ay1; in[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE;
-    in[2].type = INPUT_MOUSE; in[2].mi.dx = ax2; in[2].mi.dy = ay2; in[2].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-    in[3].type = INPUT_MOUSE; in[3].mi.dx = ax2; in[3].mi.dy = ay2; in[3].mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE;
+    in[0].type = INPUT_MOUSE; in[0].mi.dx = ax1; in[0].mi.dy = ay1; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in[1].type = INPUT_MOUSE; in[1].mi.dx = ax1; in[1].mi.dy = ay1; in[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in[2].type = INPUT_MOUSE; in[2].mi.dx = ax2; in[2].mi.dy = ay2; in[2].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in[3].type = INPUT_MOUSE; in[3].mi.dx = ax2; in[3].mi.dy = ay2; in[3].mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     SendInput(4, in, sizeof(INPUT));
     return true;
 }
@@ -202,6 +392,10 @@ std::string JZComputerUse::screenshot() {
 }
 
 CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& region) {
+#if !JZ_CU_OPENCV
+    (void)templatePath; (void)region;
+    return CuRect();        // OpenCV 未接入(像素族已降级为兜底, 见文件头) ⇒ 视为未找到
+#else
     JZRect logical;
     JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
     updateLogical(logical);
@@ -236,9 +430,14 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     r.x = (double)cx / hw; r.y = (double)cy / hh;
     r.w = (double)needle.cols / hw; r.h = (double)needle.rows / hh;
     return r;
+#endif
 }
 
 CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& region) {
+#if !JZ_CU_OPENCV
+    (void)hexColor; (void)region;
+    return CuRect();        // 同上: 未接入 OpenCV ⇒ 视为未找到
+#else
     JZRect logical;
     JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
     updateLogical(logical);
@@ -277,7 +476,99 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
     r.x = (double)(roi.x + minx) / hw; r.y = (double)(roi.y + miny) / hh;
     r.w = (double)(maxx - minx + 1) / hw; r.h = (double)(maxy - miny + 1) / hh;
     return r;
+#endif
 }
+
+// ————————————————————————————————————————————————
+// 布局通道（运行期寻址的**正路**）
+// ————————————————————————————————————————————————
+Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
+    // 目标窗口: 指定了标题就按标题找(自动化脚本多半在终端里跑, "前台窗口"常常是终端本身),
+    // 否则退回前台窗口。
+    HWND target = nullptr;
+    if (!titleFilter.empty()) {
+        FindCtx c; c.title = &titleFilter;
+        EnumWindows(EnumFindTitle, (LPARAM)&c);
+        target = c.found;
+    }
+    if (!target) target = GetForegroundWindow();
+    HWND fg = target;
+    if (!fg || !IsWindow(fg)) return Json::Value();      // 没有目标窗口 ⇒ null(JS 侧据此标 degraded)
+
+    const JZRect base = virtualLogicalRect();
+    updateLogical(base);        // ⚠ 顺手把归一化基准对齐到"当前"虚拟桌面 —— click() 用的就是它，
+                                //   否则布局给的 rect 与点击落点会差一个桌面偏移(多屏时尤其明显)。
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid == GetCurrentProcessId()) {
+        // 自家界面: 走框架语义树(带 viewId ⇒ 布局路径稳定, 这才是"运行期应该走的那条路")
+        JZApplication* app = JZApplication::instance();
+        JZWindow* w = app ? app->activeWindow() : nullptr;
+        if (w) {
+            Json::Value out(Json::objectValue);
+            out["source"] = "semantic";
+            out["tree"] = widgetTreeToLayout(w->dumpSemanticTree(-1), base);
+            return out;
+        }
+        // 前台是本进程的窗口但框架拿不到活动窗口(极少见) ⇒ 退化到 Win32 枚举, 不假装成功
+    }
+
+    // 外部软件: 递归枚举 Win32 子窗口(标准控件够用; 自绘控件只能靠像素兜底/UIA, 后续)
+    Json::Value out(Json::objectValue);
+    out["source"] = "win32";
+    out["tree"] = hwndTreeToLayout(fg, base);
+    return out;
+}
+
+bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
+    if (settleMs < 0) settleMs = 300;
+    if (timeoutMs <= 0) timeoutMs = 10000;
+    const int step = 100;
+
+    // 像素在这里**只当信号**: 连续两帧"缩略图相同"就认为画面没在变。
+    // 比对用缩略图的 PNG 字节(不引图像比较 API, 也不用 OpenCV)。
+    auto fingerprint = [](std::string& out) -> bool {
+        JZRect rc;
+        JZImage img = JZScreenShot::captureVirtualDesktop(&rc);
+        if (img.isNull()) return false;
+        updateLogical(rc);
+        JZByteArray png = JZScreenShot::toPng(JZScreenShot::fit(img, 96));   // 缩到 96px 长边再编码
+        out.assign(png.data(), png.size());
+        return true;
+    };
+
+    std::string prev, cur;
+    if (!fingerprint(prev)) return false;
+    int sameMs = 0, waited = 0;
+    while (waited < timeoutMs) {
+        wait(step); waited += step;
+        if (!fingerprint(cur)) return false;
+        if (cur == prev) { sameMs += step; } else { sameMs = 0; prev = cur; }
+        if (sameMs >= settleMs) return true;
+    }
+    return false;              // 超时: 一直没稳定(动画/闪烁/高负载)
+}
+
+bool JZComputerUse::launch(const std::string& exe, const std::string& args,
+                           const std::string& title, int timeoutMs) {
+    if (!exe.empty() && startProcess(exe, args) == 0)
+        return false;
+
+    if (title.empty()) {
+        if (!exe.empty()) { wait(800); return true; }    // 只启动: 给它一点时间起窗口
+        return false;                                    // 既没 exe 也没 title ⇒ 没目标可做
+    }
+
+    const int limit = timeoutMs > 0 ? timeoutMs : 8000;
+    int waited = 0;
+    while (waited <= limit) {
+        if (focusWindow(title)) return true;             // 窗口出现并置前 = 目标就绪
+        wait(200); waited += 200;
+    }
+    return false;
+}
+
 
 // ————————————————————————————————————————————————
 // 进程与窗口管理（不使用按键模拟）
@@ -331,5 +622,11 @@ bool JZComputerUse::focusWindow(const std::string& title) {
     EnumWindows(EnumFindTitle, (LPARAM)&c);
     if (!c.found) return false;
     bringToFront(c.found);
-    return true;
+    // ⚠ 返回值改成"**是否真的成了前台**"（原来"找到了就返回 true"）。
+    //   Win32 的前台切换是有规则的（后台进程 SetForegroundWindow 可能只闪一下任务栏），
+    //   而"窗口在前台"是**注入点击的前提** —— 不在前台时点击会落到上层窗口上，
+    //   表现成"能定位、点不中且不报错"。调用方(脚本)可以据此重试。
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    return GetAncestor(fg, GA_ROOT) == GetAncestor(c.found, GA_ROOT);
 }

@@ -1,6 +1,6 @@
 #pragma once
 #include "JZJSEngine.h"
-#include "JZComputerUse.h"
+#include "JZComputerUse/JZComputerUse.h"   // 路径带前缀: 该目录不在 include 搜里(顶层模块目录)
 #include "json/json.h"
 
 // 把 JZComputerUse 的底层语义暴露给 JS: __jz.computeruse.*
@@ -25,4 +25,8 @@ private:
     void        jsWait(int ms);
     std::string jsScreenshot();
     Json::Value jsMatch(const std::string& locatorJson);
+    // —— 布局通道（运行期寻址的正路；见 docs/compute-use-design.md §4.1）——
+    Json::Value jsLayoutTree(const std::string& optsJson); // 可访问布局树(归一化 rect); 可指定目标 title
+    bool        jsWaitStable(const std::string& optsJson); // 等界面稳定(像素只当信号)
+    bool        jsLaunch(const std::string& optsJson);     // 启动 / 激活目标窗口
 };

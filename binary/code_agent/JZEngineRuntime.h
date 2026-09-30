@@ -14,6 +14,7 @@ class JZJSqliteModule;
 class JZJSModbusModule;
 class JZJSWidgetModule;
 class JZJSWorkerModule;
+class JZJSComputerUseModule;
 
 // ------------------------------------------------------------------
 // 运行期层：内嵌 JS 引擎会话的"运行"封装
@@ -168,6 +169,7 @@ private:
     std::unique_ptr<JZJSqliteModule> m_sqliteModule; // 内置 SQLite 模块（node:sqlite 风格）
     std::unique_ptr<JZJSModbusModule> m_modbusModule; // 内置 Modbus 模块（modbus-serial 风格）
     std::unique_ptr<JZJSWidgetModule> m_widgetModule; // 内置 widget 模块（窗口/画布 JS 桥）
+    std::unique_ptr<JZJSComputerUseModule> m_computerUseModule; // computer use（__jz.computeruse）
     std::unique_ptr<JZJSWorkerModule> m_workerModule; // 内置 worker 模块（__jz.worker + Worker 类）
     std::string m_engineWorkDir;               // 当前会话的工作目录（引擎落点）
     bool m_engineRunning = false;

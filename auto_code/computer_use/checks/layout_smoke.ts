@@ -201,10 +201,10 @@ async function main(): Promise<void> {
     await app2.expect('/main/lblOutput', 'ON');          // 校验：读布局文本
     await app2.at('/main/btnOutput').click();            // 关闭电源
     await app2.expect('/main/lblOutput', 'OFF');
-    const pixelKinds = matchLog.filter((l) => l.kind !== 'layout');
-    gate('G4 不涉像素：寻址全部走 layout',
-        pixelKinds.length === 0 && matchLog.length >= 2,
-        'kinds=' + JSON.stringify(matchLog.map((l) => l.kind)));
+    // ⭐ 布局路径在 **JS 侧**按 layoutTree 的索引解析(路径规则只留一份) ⇒ 像素 match **一次都不该被调用**
+    gate('G4 不涉像素：寻址全走布局（match 一次都没被调用）',
+        matchLog.length === 0,
+        'match 调用=' + matchLog.length + ' kinds=' + JSON.stringify(matchLog.map((l) => l.kind)));
     gate('G5 开/关电源：点击序列与断言都对',
         launches === 1 && clicks.join('>') === '/main/btnOutput>/main/btnOutput' && scene.out === 'OFF',
         'clicks=' + clicks.join('>') + ' out=' + scene.out);

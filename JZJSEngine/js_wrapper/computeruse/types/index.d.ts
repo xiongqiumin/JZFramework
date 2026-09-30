@@ -102,6 +102,9 @@ export type ExpectMatcher =
       range?: { value?: number; min?: number; max?: number };
     };
 
+/** `layoutTree()` 参数：指定目标窗口（`title` 空 = 用前台窗口）。 */
+export interface LayoutTreeOptions { title?: string; }
+
 /** `sync()` 参数：等界面稳定（像素只当信号）。 */
 export interface SyncOptions { settle?: number; timeoutMs?: number; }
 
@@ -148,6 +151,51 @@ export interface Diagnosis {
 /** 本包的错误码。 */
 export type CuErrorCode =
   | 'not-found' | 'no-layout' | 'expect-failed' | 'window-gone' | 'send-failed' | 'unsupported';
+
+// ————————————————————————————————————————————————
+// 运行期修复：界面不匹配 → （只有真错才）升级大模型 → 落 override
+// ————————————————————————————————————————————————
+
+/** 升级所需的最小 App 契约（`App` 天然满足）。 */
+export interface RepairTarget {
+  diagnose(err: unknown, opts?: { attempt?: number; maxAttempts?: number;
+                                 path?: LayoutPath; expect?: ExpectMatcher }): Promise<Diagnosis>;
+  getLayout(): LayoutNode | null;
+  override: Record<LayoutPath, LayoutPath>;
+  fingerprint?: PageFingerprint;
+}
+
+/** 修复用模型端点（OpenAI 兼容 chat/completions）。 */
+export interface RepairModelOptions {
+  url: string;
+  model?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+  prompt?: string;
+  extraBody?: Record<string, unknown>;
+}
+
+export interface RepairOptions extends RepairModelOptions {
+  path: LayoutPath;
+  expect?: ExpectMatcher;
+  attempt?: number;
+  maxAttempts?: number;
+  step?: string;
+  history?: { retries?: number; lastModelAnswer?: string };
+}
+
+export interface RepairAnswer { kind?: string; action?: string; newPath?: string; reason?: string; }
+
+export interface RepairResult {
+  diagnosis: Diagnosis;
+  localOnly: boolean;
+  answer: RepairAnswer;
+  applied: boolean;
+  override?: { from: LayoutPath; to: LayoutPath };
+  evidence?: string;
+  raw?: string;
+}
 
 /**
  * VLM 感知后端配置（OpenAI 兼容的**多模态** chat/completions）。
@@ -207,8 +255,8 @@ export interface ComputerUseBackend {
   type(text: string): Promise<void>;
   wait(ms: number): Promise<void>;
   screenshot(): Promise<string>;
-  /** 导出可访问布局树；没有可访问布局返回 null。 */
-  layoutTree?(): Promise<LayoutNode | null>;
+  /** 导出可访问布局树（可指定目标窗口）；没有目标窗口 / 没有可访问布局返回 null。 */
+  layoutTree?(opts?: LayoutTreeOptions): Promise<LayoutNode | null>;
   /** 等界面稳定（像素只当信号）；缺省退化为 wait(settle)。 */
   waitStable?(opts?: SyncOptions): Promise<boolean>;
   /** 启动 / 激活目标窗口。 */
@@ -221,6 +269,8 @@ export interface ComputerUseBackend {
 
 export let backend: ComputerUseBackend;
 export function setBackend(b: ComputerUseBackend): void;
+/** 最近一次 layoutTree 的来源：'semantic'(自家语义树) / 'win32'(外部子窗口枚举) / ''。 */
+export function layoutSource(): string;
 
 // ————————————————————————————————————————————————
 // 语义节点接口
@@ -296,8 +346,12 @@ export interface ILink extends ICuNode { readonly type: 'link'; click(btn?: Mous
 
 export interface IApp extends ICuNode {
   readonly type: 'app';
-  /** 页面指纹（建模期记下）。 */
+  /** **期望指纹**（建模期记下；attach 不覆盖它）。 */
   fingerprint?: PageFingerprint;
+  /** 目标窗口（`title` 片段）；空 = 用前台窗口。 */
+  target?: LayoutTreeOptions;
+  /** 运行期修复覆盖层（`旧路径 → 当前路径`）—— 模型只改这里。 */
+  override: Record<LayoutPath, LayoutPath>;
 
   /** 所有节点（含自己，父先于子）。 */
   nodes(): ICuNode[];
@@ -306,8 +360,14 @@ export interface IApp extends ICuNode {
   /** ⭐ 按布局路径取节点（取不到抛 `not-found`）。 */
   at(path: LayoutPath): ICuNode;
   has(path: LayoutPath): Promise<boolean>;
-  /** ⭐ 绑定布局（不涉像素）。 */
-  attach(layout?: LayoutNode | null): Promise<AttachResult>;
+  /** 当前布局树（attach 后才有）。 */
+  getLayout(): LayoutNode | null;
+  /** 路径 → 实际去查的路径（跟随 override 链）。 */
+  resolvePath(path: LayoutPath): LayoutPath;
+  /** 按布局路径问当前几何（JS 侧索引）。 */
+  locateLayoutPath(path: LayoutPath): Promise<Rect | null>;
+  /** ⭐ 绑定布局（不涉像素）；`opts` 指定并记住目标窗口。 */
+  attach(layout?: LayoutNode | null, opts?: LayoutTreeOptions): Promise<AttachResult>;
   /** 读节点状态（布局优先）。 */
   read(target: LayoutPath | ICuNode): Promise<NodeState>;
   /** 断言节点状态（不满足抛 `expect-failed`）。 */
@@ -422,6 +482,10 @@ export class App extends CuNode implements IApp {
   readonly type: 'app';
   /** **期望指纹**（建模期记下；attach 不覆盖它）。 */
   fingerprint?: PageFingerprint;
+  /** 目标窗口（`title` 片段）。 */
+  target?: LayoutTreeOptions;
+  /** 运行期修复覆盖层（`旧路径 → 当前路径`）。 */
+  override: Record<LayoutPath, LayoutPath>;
   constructor(name: string, opts?: NodeOpts);
   /** 所有节点（含自己，父先于子）。 */
   nodes(): CuNode[];
@@ -429,8 +493,10 @@ export class App extends CuNode implements IApp {
   button(l: string): IButton;
   at(path: LayoutPath): CuNode;
   getLayout(): LayoutNode | null;
+  resolvePath(path: LayoutPath): LayoutPath;
+  locateLayoutPath(path: LayoutPath): Promise<Rect | null>;
   has(path: LayoutPath): Promise<boolean>;
-  attach(layout?: LayoutNode | null): Promise<AttachResult>;
+  attach(layout?: LayoutNode | null, opts?: LayoutTreeOptions): Promise<AttachResult>;
   read(target: LayoutPath | ICuNode): Promise<NodeState>;
   expect(target: LayoutPath | ICuNode, matcher: ExpectMatcher): Promise<NodeState>;
   sync(opts?: SyncOptions): Promise<boolean>;
@@ -497,3 +563,9 @@ export interface EvidencePack {
   history?: { retries?: number; lastModelAnswer?: string };
 }
 export function formatEvidence(pack: EvidencePack): string;
+
+// ————————————————————————————————————————————————
+// 运行期修复
+// ————————————————————————————————————————————————
+/** ⭐ 界面不匹配 → 本地分级 →（只有真错才）升级大模型 → 把修法落进 override。 */
+export function escalate(app: RepairTarget, err: unknown, opts: RepairOptions): Promise<RepairResult>;

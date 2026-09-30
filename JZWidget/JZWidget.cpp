@@ -1370,6 +1370,9 @@ Json::Value JZWidget::dumpSemanticTree(int maxDepth) const
     node["boundsInScreen"] = bounds;
 
     node["visible"] = isVisible();
+    // 使能位(沿父链判定, 见 isEnabled): 自动化要判"这个控件现在能不能用" —— 缺了它
+    // 就只能靠像素猜灰化, 而灰化是外观(token)层的事, 不该进判据。
+    node["enabled"] = isEnabled();
 
     // 能力位: 由动作清单与角色推导
     auto acts = aiActions();

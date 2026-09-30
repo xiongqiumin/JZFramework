@@ -136,6 +136,15 @@ export type ExpectMatcher =
       range?: { value?: number; min?: number; max?: number };
     };
 
+/**
+ * `layoutTree()` 参数：**指定目标窗口**。
+ * `title` 为空/不给 ⇒ 用"前台窗口"；给子串 ⇒ 按标题片段找。
+ * ⚠ 自动化脚本常常跑在终端里（前台窗口是终端本身）⇒ 靠前台猜必错，能指定就指定。
+ */
+export interface LayoutTreeOptions {
+  title?: string;
+}
+
 /** `sync()` 参数：等界面稳定（像素在这里只当**信号**，不参与寻址）。 */
 export interface SyncOptions {
   /** 连续多少毫秒没有变化就算稳定（默认 300）。 */
@@ -219,6 +228,72 @@ export type CuErrorCode =
   | 'window-gone'    // 窗口/进程消失
   | 'send-failed'    // 动作注入失败
   | 'unsupported';   // 后端没实现该原语
+
+// ————————————————————————————————————————————————
+// 运行期修复：界面不匹配 → （只有真错才）升级大模型 → 落 override
+// ————————————————————————————————————————————————
+
+/**
+ * 升级所需的最小 App 契约（结构化类型：repair.ts 不 import App 类，避免循环引用）。
+ * `App` 天然满足它。
+ */
+export interface RepairTarget {
+  diagnose(err: unknown, opts?: { attempt?: number; maxAttempts?: number;
+                                 path?: LayoutPath; expect?: ExpectMatcher }): Promise<Diagnosis>;
+  /** 当前布局树（升 级证据包的主体）。 */
+  getLayout(): LayoutNode | null;
+  /** 运行期修复覆盖层（`旧路径 → 当前路径`）—— 模型**只**改这里。 */
+  override: Record<LayoutPath, LayoutPath>;
+  /** 建模期记下的期望指纹（判"还在不在同一页"）。 */
+  fingerprint?: PageFingerprint;
+}
+
+/** 修复用模型端点（OpenAI 兼容 chat/completions；与感知同一个后端也能用）。 */
+export interface RepairModelOptions {
+  /** 完整端点，如 http://host:8080/v1/chat/completions */
+  url: string;
+  model?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+  /** 整段替换内置提示词。 */
+  prompt?: string;
+  extraBody?: Record<string, unknown>;
+}
+
+/** `escalate()` 的参数。 */
+export interface RepairOptions extends RepairModelOptions {
+  /** 出问题的路径（模型要修的就是它）。 */
+  path: LayoutPath;
+  /** 该步骤的期望条件（进证据包）。 */
+  expect?: ExpectMatcher;
+  attempt?: number;
+  maxAttempts?: number;
+  step?: string;
+  history?: { retries?: number; lastModelAnswer?: string };
+}
+
+/** 模型给的结论（**只能从当前布局树里挑路径**，编造的一律不采纳）。 */
+export interface RepairAnswer {
+  kind?: string;
+  action?: string;
+  newPath?: string;
+  reason?: string;
+}
+
+/** `escalate()` 的结果。 */
+export interface RepairResult {
+  diagnosis: Diagnosis;
+  /** true = 本地就处理掉了（偶发/弹窗/前置），**没有叫模型**。 */
+  localOnly: boolean;
+  answer: RepairAnswer;
+  /** newPath 是否已写进 override。 */
+  applied: boolean;
+  override?: { from: LayoutPath; to: LayoutPath };
+  /** 实际发给模型的证据包（留档/复现用）。 */
+  evidence?: string;
+  raw?: string;
+}
 
 /**
  * VLM 感知后端配置（OpenAI 兼容的**多模态** chat/completions）。
@@ -306,8 +381,8 @@ export interface ComputerUseBackend {
   /** 虚拟桌面截图 → dataURL（建模期为主；运行期作同步信号/证据）。 */
   screenshot(): Promise<string>;
 
-  /** 导出可访问布局树；该目标没有可访问布局时返回 null（⇒ 只能走像素族兜底）。 */
-  layoutTree?(): Promise<LayoutNode | null>;
+  /** 导出可访问布局树（可指定目标窗口）；没有目标窗口 / 没有可访问布局时返回 null。 */
+  layoutTree?(opts?: LayoutTreeOptions): Promise<LayoutNode | null>;
   /** 等界面稳定：像素在实现里只当**信号**（不收敛返回 false）。缺省实现退化为 wait(settle)。 */
   waitStable?(opts?: SyncOptions): Promise<boolean>;
   /** 启动 / 激活目标窗口（外部软件入口）。 */
@@ -404,6 +479,10 @@ export interface IApp extends ICuNode {
   readonly type: 'app';
   /** 页面指纹（建模期记下，运行期判"还在不在同一页"）。 */
   fingerprint?: PageFingerprint;
+  /** 目标窗口（`title` 片段）；空 = 用前台窗口。 */
+  target?: LayoutTreeOptions;
+  /** 运行期修复覆盖层（`旧路径 → 当前路径`）—— 模型只改这里。 */
+  override: Record<LayoutPath, LayoutPath>;
 
   /** 所有节点（含自己，父先于子）。 */
   nodes(): ICuNode[];
@@ -415,9 +494,10 @@ export interface IApp extends ICuNode {
 
   /**
    * ⭐ 绑定布局（**不涉像素**）：拉一次布局树，把模型节点认领到布局节点上。
-   * 不传 `layout` 则由后端拉（`backend.layoutTree()`）；拿不到 ⇒ 全部节点标 `degraded`。
+   * 不传 `layout` 则由后端拉（`backend.layoutTree(this.target)`）；拿不到 ⇒ 全部节点标 `degraded`。
+   * `opts` 用来**指定目标窗口**，并**记住**（后续 read/diagnose 刷新布局也用它）。
    */
-  attach(layout?: LayoutNode | null): Promise<AttachResult>;
+  attach(layout?: LayoutNode | null, opts?: LayoutTreeOptions): Promise<AttachResult>;
   /** 读节点当前状态（布局优先，布局读不到才退到几何）。 */
   read(target: LayoutPath | ICuNode): Promise<NodeState>;
   /** 断言节点当前状态；不满足抛 `expect-failed`（脚本级自检）。 */

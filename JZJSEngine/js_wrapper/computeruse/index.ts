@@ -13,7 +13,7 @@ import type {
   ICanvas, ILabel, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
   Perception, PerceptionElement,
   LayoutPath, LayoutNode, PageFingerprint, AttachResult, NodeState, ExpectMatcher,
-  SyncOptions, LaunchOptions, Diagnosis, DiagnoseContext, CuErrorCode,
+  LayoutTreeOptions, SyncOptions, LaunchOptions, Diagnosis, DiagnoseContext, CuErrorCode,
 } from './types';
 import { perceive } from './perceive';
 import { claimLayout, fingerprintMatch, fingerprintOf, flatten } from './layout';
@@ -58,12 +58,16 @@ export let backend: ComputerUseBackend = {
   // —— 布局通道（运行期寻址的**正路**，见 docs/compute-use-design.md §4.1）——
   // C++ 侧还没实现 `layoutTree` 时**返回 null**（而不是抛错）："没有可访问布局"是个可判定的
   // 状态 —— 调用方会把节点标成 degraded（显式退化到像素），绝不让它悄悄变成默认行为。
-  layoutTree: async (): Promise<LayoutNode | null> => {
+  layoutTree: async (opts?: LayoutTreeOptions): Promise<LayoutNode | null> => {
     const fn = __jz && __jz.computeruse ? __jz.computeruse.layoutTree : undefined;
     if (!fn) return null;
-    const r = fn();
-    if (!r) return null;
-    return (typeof r === 'string' ? JSON.parse(r) : r) as LayoutNode;
+    const raw = fn(JSON.stringify(opts || {}));
+    if (!raw) { _layoutSource = ''; return null; }               // 没有目标窗口 ⇒ 没有布局
+    const r: any = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // C++ 给的是**信封** {source:'semantic'|'win32', tree:{...}}；树本身才是 LayoutNode
+    if (r && r.tree) { _layoutSource = String(r.source || ''); return r.tree as LayoutNode; }
+    _layoutSource = '';
+    return r as LayoutNode;
   },
   // 等界面稳定：像素在实现里只当**信号**（帧间变化是否收敛），不参与寻址。
   // 后端没实现就退化为 wait(settle) —— 语义弱一点，但行为不变。
@@ -78,7 +82,10 @@ export let backend: ComputerUseBackend = {
     const cuu = __jz ? __jz.computeruse : null;
     if (!cuu || !cuu.launch)
       throw new CuError('unsupported', '[CU] 后端没有 launch（启动/激活目标窗口）—— C++ 侧待补');
-    return !!cuu.launch(JSON.stringify(opts));
+    // ⚠ JSON.stringify(RegExp) === '{}' ⇒ 先把正则摊平成字符串（C++ 侧按"标题片段"匹配）
+    const o: Record<string, unknown> = { ...(opts as unknown as Record<string, unknown>) };
+    if (o.title instanceof RegExp) o.title = String(o.title.source);
+    return !!cuu.launch(JSON.stringify(o));
   },
   // 模型固化在 JS 侧(序列化本树 JSON), 经 __jz.core 落盘。
   // ⚠ `__jz.core.writeFile(path, data, append)` 是**三参**原生绑定 ⇒ 少传 append 会报
@@ -109,6 +116,11 @@ export let backend: ComputerUseBackend = {
 };
 
 export function setBackend(b: ComputerUseBackend): void { backend = b; }
+
+// 最近一次 layoutTree 的**来源**：'semantic'(自家语义树) / 'win32'(外部子窗口枚举) / ''。
+// 诊断与日志要看它 —— "拿不到 viewId 的树"和"根本没布局"是两回事。
+let _layoutSource = '';
+export function layoutSource(): string { return _layoutSource; }
 
 let _seq = 0;
 function genId(): string { return 'cu' + (++_seq); }
@@ -154,13 +166,23 @@ export abstract class CuNode implements ICuNode {
   //    否则"能看见布局就别猜"这条铁律就形同虚设（见 docs §4.1 推论 3）。
   async locate(): Promise<Rect | null> {
     if (this.layout) {
-      const hit = await backend.match({ kind: 'layout', path: this.layout });
+      // ⭐ 布局路径在 **JS 侧**解析(用 pullLayout 建的索引)：路径规则("viewId 逐级拼 + 重名 #n")
+      //   只有 layout.ts 一份实现 —— 复制到 C++ 里两边必然漂移。
+      const root = this.rootApp();
+      const hit = root ? await root.locateLayoutPath(this.layout) : null;
       if (hit) return hit;
       if (!this.degraded) return null;
     }
     if (this.locator) return backend.match(this.locator);
     if (this.rect) return this.rect;
     return null;
+  }
+
+  /** 所属的 App（树的根）；不在树上返回 null。 */
+  rootApp(): App | null {
+    let n: CuNode = this;
+    while (n.parent) n = n.parent;
+    return n instanceof App ? (n as App) : null;
   }
   async exists(): Promise<boolean> { return (await this.locate()) !== null; }
 
@@ -295,6 +317,14 @@ export class App extends CuNode implements IApp {
    *   只有模型里本来没有指纹时，才用首次 attach 的 live 指纹补一个基线。
    */
   fingerprint?: PageFingerprint;
+  /**
+   * **运行期修复覆盖层**：`旧路径 → 当前路径`。
+   * 由"界面不匹配 → 升级大模型 → 模型给出新路径"写进来（见 `escalate()`）；
+   * 模型文件本身**运行期只读** —— 要改模型必须显式合并（人工确认 / 再建模）。
+   */
+  override: Record<LayoutPath, LayoutPath> = {};
+  /** 目标窗口（`title` 片段）：空 = 用前台窗口。⚠ 脚本常跑在终端里，能指定就别靠前台猜。 */
+  target?: LayoutTreeOptions;
   // 最近一次 attach 的产物（诊断的证据包用）
   private m_layout: LayoutNode | null = null;
   private m_live: PageFingerprint | undefined = undefined;
@@ -345,7 +375,8 @@ export class App extends CuNode implements IApp {
    * ⭐ 绑定布局（**不涉像素**）：拉一次布局树 → 建"路径 → 布局节点"索引 → 把模型节点认领上去。
    * 不传 `layout` 就由后端拉（`backend.layoutTree()`）；拿不到 ⇒ 全部标 `degraded`（显式退化）。
    */
-  async attach(layout?: LayoutNode | null): Promise<AttachResult> {
+  async attach(layout?: LayoutNode | null, opts?: LayoutTreeOptions): Promise<AttachResult> {
+    if (opts) this.target = opts;                // 记住目标窗口(后续 read/diagnose 也用它)
     let tree: LayoutNode | null;
     if (layout !== undefined) { tree = layout || null; this.setLayout(tree); }
     else { tree = await this.pullLayout(); }     // 不传就由后端拉当前布局
@@ -356,9 +387,16 @@ export class App extends CuNode implements IApp {
     let bound = 0;
     for (const n of all) {
       if (n.layout && this.m_index.has(n.layout)) { n.degraded = false; bound++; continue; }
-      if (n.layout) missing.push(n.layout);
-      n.degraded = true;                       // 没法按布局寻址 ⇒ 显式退化（不是静默兜底）
-      degraded.push(n.layout || ('#' + n.id + ' ' + (n.label || n.type)));
+      if (n.layout) {
+        // ⚠ "模型里有路径、当前树上找不到" = **漂移**（path-drift），**不是退化**！
+        //   这里千万不能顺手标 degraded —— 那会让 locate() 静默退到几何/像素去点，
+        //   正好破坏"能看见布局就别猜"这条铁律（实机自检时踩到过：旧路径点到别处还不报错）。
+        missing.push(n.layout);
+        continue;
+      }
+      // 建模期就没有布局可寻址（该目标没有可访问布局）⇒ 显式退化
+      n.degraded = true;
+      degraded.push('#' + n.id + ' ' + (n.label || n.type));
     }
     const live = fingerprintOf(tree);
     this.m_live = tree ? live : undefined;
@@ -370,11 +408,33 @@ export class App extends CuNode implements IApp {
     return { window: live.window, fingerprint: live, pageMatch, total: all.length, bound, degraded, missing };
   }
 
+  /** 按布局路径问**当前**几何（JS 侧索引；链上 override，见 docs §1.3 的"运行期只读 + override"）。 */
+  async locateLayoutPath(path: LayoutPath): Promise<Rect | null> {
+    if (backend.layoutTree) await this.pullLayout();
+    const n = this.m_index.get(this.resolvePath(path));
+    return (n && n.rect) ? n.rect : null;
+  }
+
+  /**
+   * 布局路径 → **实际去查的路径**（跟随 override 链）。
+   * override 是"模型修复结果"的落点：模型只改这里，模型文件本身运行期**只读** ——
+   * 否则脚本会自我漂移，"可精确重复 N 次"就不成立了(见 docs §1.3 第三级)。
+   */
+  resolvePath(path: LayoutPath): LayoutPath {
+    let cur = path;
+    for (let i = 0; i < 4; i++) {                 // 限 4 跳，防环
+      const next = this.override[cur];
+      if (!next || next === cur) break;
+      cur = next;
+    }
+    return cur;
+  }
+
   /** 读节点当前状态（**布局优先**：能问布局就不读像素）。 */
   async read(target: LayoutPath | ICuNode): Promise<NodeState> {
     const n = this.resolve(target);
     if (backend.layoutTree) await this.pullLayout();   // 读状态 = 问一次**当前**布局（不啃快照）
-    const live = n.layout ? this.m_index.get(n.layout) : undefined;
+    const live = n.layout ? this.m_index.get(this.resolvePath(n.layout)) : undefined;
     if (live)
       return { exists: true, from: 'layout', text: live.text, checked: live.checked,
                enabled: live.enabled, clickable: live.clickable, range: live.range, rect: live.rect };
@@ -433,7 +493,7 @@ export class App extends CuNode implements IApp {
   /** 拉一次**当前**布局树（读状态 / 诊断前刷新）。⚠ 不覆盖模型里的**期望指纹**。 */
   private async pullLayout(): Promise<LayoutNode | null> {
     if (!backend.layoutTree) { this.setLayout(null); return null; }
-    const tree = await backend.layoutTree();
+    const tree = await backend.layoutTree(this.target);
     this.setLayout(tree || null);
     return this.m_layout;
   }
@@ -604,8 +664,9 @@ export type {
   ICanvas, ILabel, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
   // ⭐ 布局通道 / 运行期寻址 / 本地分级（docs/compute-use-design.md §4.1、§1.3）
   LayoutPath, LayoutNode, PageFingerprint, AttachResult, NodeState, ExpectMatcher,
-  SyncOptions, LaunchOptions, PerceptionReview, CuErrorCode,
+  LayoutTreeOptions, SyncOptions, LaunchOptions, PerceptionReview, CuErrorCode,
   FailureKind, FailureAction, Diagnosis, DiagnoseContext,
+  RepairTarget, RepairModelOptions, RepairOptions, RepairAnswer, RepairResult,
 } from './types';
 
 // 感知层（可换后端：VLM/OCR/检测都在 perceive.ts 这一个文件里）
@@ -619,3 +680,6 @@ export {
 export type { FlatEntry } from './layout';
 export { diagnose, formatDiagnosis, formatEvidence, stateMatches, explainMismatch } from './diagnose';
 export type { EvidencePack } from './diagnose';
+
+// 运行期修复（界面不匹配 → 本地分级 → 只有真错才升级大模型 → 落 override）
+export { escalate } from './repair';

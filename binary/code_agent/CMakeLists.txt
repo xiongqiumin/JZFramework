@@ -41,6 +41,13 @@ set(CODE_AGENT_SOURCES
     JZEngineRuntime.cpp
     JZSourceMap.h
     JZSourceMap.cpp
+    # computer use：底层桌面语义 + __jz.computeruse 桥（JZEngineRuntime 里挂载）。
+    # ⚠ 编译得放在这里(而不是 JZFramework 主体)：JZComputerUse 依赖 code_agent 的 JZScreenShot，
+    #   且它对 JZWidget 的语义树(dumpSemanticTree)有依赖 —— 都是"宿主能力"。
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})

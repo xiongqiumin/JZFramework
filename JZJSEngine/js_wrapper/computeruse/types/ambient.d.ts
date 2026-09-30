@@ -17,8 +17,9 @@ declare module 'computeruse' {
         Rect, Point, MouseBtn, Presence, Locator,
         // ⭐ 布局通道 / 运行期寻址 / 本地分级
         LayoutPath, LayoutNode, PageFingerprint, AttachResult, NodeState, ExpectMatcher,
-        SyncOptions, LaunchOptions, FailureKind, FailureAction, DiagnoseContext, Diagnosis,
+        LayoutTreeOptions, SyncOptions, LaunchOptions, FailureKind, FailureAction, DiagnoseContext, Diagnosis,
         CuErrorCode, FlatEntry, EvidencePack,
+        RepairTarget, RepairModelOptions, RepairOptions, RepairAnswer, RepairResult,
         ExploreOptions, ModelSnapshot, NodeOpts, PerceptionReview,
         Perception, PerceptionElement, VlmOptions,
         ComputerUseBackend,
@@ -26,7 +27,7 @@ declare module 'computeruse' {
         ICanvas, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
     } from './index';
     export {
-        backend, setBackend, CuError,
+        backend, setBackend, CuError, layoutSource,
         CuNode, Button, Link, Tab, Menu, Toolbar, Group, Window, Label,
         Canvas, Edit, ComboBox, CheckBox, Slider, App,
         key, type, wait,
@@ -34,5 +35,6 @@ declare module 'computeruse' {
         flatten, nodeAt, parentPath, fingerprintOf, fingerprintMatch, samePage, extraTopPaths,
         claimLayout, layoutCoverRatio,
         diagnose, formatDiagnosis, formatEvidence, stateMatches, explainMismatch,
+        escalate,
     } from './index';
 }

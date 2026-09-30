@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-algorithms 评测集的生成器（"加载框架"）：
+algo 评测集的生成器（"加载框架"）：⚠ 本目录原叫 algorithms, 改名后索引/模板里的路径要一起改
+（`data/algo/...`; 曾经漏改导致 8 个用例被两个 harness 静默跳过, 见 cases.jsonl）。
 
 - cases.txt：一行一个算法用例，格式 `id|标题|难度`（仅 id 也行）。
 - 本脚本读取 cases.txt，为每个启用的题目生成一个 benchmark 可直接加载的用例 JSON
-  （data/algorithms/gen_<id>.json），其 setup 指向同目录 algo_setup.py、verify 指向 algo_verify.py。
+  （data/algo/gen_<id>.json），其 setup 指向同目录 algo_setup.py、verify 指向 algo_verify.py。
 - algo_setup.py / algo_verify.py 是同目录提交的"测试框架"：algo_setup 把测试输入（testdata.json）
   写进工程并注入评测脚手架；algo_verify 启动模型产物并用参考实现重算正确输出、比对 agent 写出的 result.json。
 
@@ -14,7 +15,7 @@ algorithms 评测集的生成器（"加载框架"）：
 - 模型只需在 src/solution.ts 实现 `export function solve(input: any): any`（单个输入 -> 单个输出）；
 - 模型不读写任何文件、不处理输入，"单纯测算法能力"。
 
-运行：在 data/algorithms/ 下 `python setup.py`。
+运行：在 data/algo/ 下 `python setup.py`（生成后生成的用例会自动进 cases.jsonl 里那些 `algo/gen_*.json` 条目）。
 """
 import json
 import os
@@ -126,7 +127,7 @@ def build_case_json(pid, meta, inputs):
         # 只传题目 id（简单字符串，避免 --input 经 cmd 转义带引号 JSON 出问题）；
         # 真正的测试输入由 setup 按 id 从同目录 inputs/<id>.json 读取并写进工程。
         "input": pid,
-        "verify": "python ${data}/algorithms/algo_verify.py --runtime ${runtime} --build ${build} --root ${root} --problem "
+        "verify": "python ${data}/algo/algo_verify.py --runtime ${runtime} --build ${build} --root ${root} --problem "
                   + pid,
         "retryHint": "上一次运行未通过输出比对。请确认：1) 在 src/solution.ts 实现 solve(input)（不要改 main.ts、不要读写文件）；"
                      "2) 按题目 %s 的语义对“单个输入”计算并用 return 返回结果；"

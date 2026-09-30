@@ -27,8 +27,8 @@
 #include "JZLog.h"
 #include "JZWidget/JZWidget.h"
 #include "JZWidget/JZWindow.h"
-#include "JZWidget/JZVirtualDevice.h"    // 虚拟桌面 (setVirtualDesktop)
-#include "JZWidget/JZVirtualWindow.h"
+#include "binary/virtual_device/JZVirtualDevice.h"    // 虚拟桌面 (setVirtualDesktop)
+#include "binary/virtual_device/JZVirtualWindow.h"
 
 // OpenCV 只在"像素族匹配"(matchImage/matchColor)里用，而像素族已降级为**兜底**
 // (见 docs/compute-use-design.md §4.1) ⇒ 默认不编，避免为一个兜底能力背整条 OpenCV 依赖。
@@ -80,21 +80,11 @@ JZImage currentFrame(JZRect* logical) {
     return JZScreenShot::captureVirtualDesktop(logical);
 }
 
-// 语义树的 boundsInScreen 对**虚拟窗口**而言是"窗口客户区坐标"(窗口不知道桌面偏移);
-// 加上窗口的桌面坐标才是真正的"屏幕坐标" —— 与真实窗口 mapToGlobal 的语义对齐。
-// (偏移由桌面提供: 坐标系归桌面所有, 窗口只知道自己那块客户区。)
-void shiftBoundsInScreen(Json::Value& n, int dx, int dy) {
-    Json::Value& b = n["boundsInScreen"];
-    if (b.isArray() && b.size() >= 4) {
-        b[0] = b[0].asInt() + dx;
-        b[1] = b[1].asInt() + dy;
-    }
-    Json::Value& kids = n["children"];
-    if (kids.isArray()) {
-        for (auto& c : kids)
-            shiftBoundsInScreen(c, dx, dy);
-    }
-}
+// ⚠ 这里曾经有一个 shiftBoundsInScreen(): 给语义树的 boundsInScreen 补上窗口的桌面偏移,
+// 因为当时 JZWidget::mapToGlobal 在**虚拟窗口**下退化成"客户区坐标"(它靠 HWND ClientToScreen,
+// 虚拟窗口没有原生窗口) ⇒ 只能在外面手动补。JZWindow 抽平台后端之后, 坐标换算归后端
+// (虚拟窗口 = 桌面坐标), mapToGlobal 在两个平台都正确 ⇒ 再补一次就是**重复补偿**
+// (表现为 layoutTree 给的 rect 整体偏移一个窗口位置, "能定位却点不中")。故删除。
 
 #if JZ_CU_OPENCV
     std::string tempDir() {
@@ -618,9 +608,12 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
         const JZRect base(0, 0, d->desktopWidth(), d->desktopHeight());
         updateLogical(base);               // 归一化基准 = 整块桌面 (与 click 同口径)
 
-        Json::Value tree = w->dumpSemanticTree(-1);
-        // 窗口客户区坐标 -> 桌面屏幕坐标 (窗口自己不知道它在桌面上的位置)
-        shiftBoundsInScreen(tree, w->screenX(), w->screenY());
+        // 语义树走窗口的**客户区** (客户区那个真 JZWindow 才是控件树的根:
+        // 外框/标题栏是窗口管理器的, 不属于任何控件)。
+        Json::Value tree = w->client()->dumpSemanticTree(-1);
+        // boundsInScreen 已是**桌面坐标** (dumpSemanticTree 走 mapToGlobal, 虚拟窗口的
+        // mapToGlobal = 客户区坐标 + 窗口客户区在桌面上的原点, 见 JZVirtualWindow::clientToScreen)
+        // ⇒ 这里**不再**补窗口偏移 (补了就是重复补偿, rect 会整体偏一个窗口位置)。
 
         Json::Value out(Json::objectValue);
         out["source"] = "semantic";

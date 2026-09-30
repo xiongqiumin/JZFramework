@@ -10,6 +10,8 @@ add_executable(test_cu_virtual
 
 target_include_directories(test_cu_virtual PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent)
 target_link_libraries(test_cu_virtual JZFramework)
+# 虚拟桌面 (JZComputerUse::setVirtualDesktop 用的就是它)
+target_link_libraries(test_cu_virtual jz_virtual_device)
 
 add_test(NAME cu_virtual COMMAND test_cu_virtual)
 

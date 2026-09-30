@@ -91,6 +91,8 @@ add_executable(test_jscu
     ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp)
 target_include_directories(test_jscu PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent)
 target_link_libraries(test_jscu JZFramework)
+# 虚拟桌面后端 (JZComputerUse 的 setVirtualDesktop 用它)
+target_link_libraries(test_jscu jz_virtual_device)
 target_compile_definitions(test_jscu PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
 # 像素族(颜色匹配)要走 OpenCV: 装上就开, 没装自动跳过(JS 侧那条断言会打印 [skip])

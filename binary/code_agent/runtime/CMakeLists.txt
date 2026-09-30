@@ -30,6 +30,8 @@ set(CODE_RUNTIME_SOURCES
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})
 target_include_directories(code_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_runtime PRIVATE JZFramework)
+# JZComputerUse 的虚拟桌面后端在 binary/virtual_device (见那里的 CMakeLists)
+target_link_libraries(code_runtime PRIVATE jz_virtual_device)
 
 # computer use 的**像素族**后端: 有 JZCv(即 OpenCV + ONNX Runtime 齐)就把它们都开起来。
 #   JZ_CU_OPENCV=1 -> matchImage / matchColor (模板匹配 / 颜色查找)

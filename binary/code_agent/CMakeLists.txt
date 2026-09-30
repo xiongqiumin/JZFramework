@@ -53,6 +53,8 @@ set(CODE_AGENT_SOURCES
 add_executable(code_agent ${CODE_AGENT_SOURCES})
 target_link_libraries(code_agent PRIVATE JZFramework)
 target_link_libraries(code_agent PRIVATE code_agent_core)
+# JZComputerUse 的虚拟桌面后端在 binary/virtual_device (见那里的 CMakeLists)
+target_link_libraries(code_agent PRIVATE jz_virtual_device)
 
 # exe 统一输出到 <build>/binary/code_agent/bin/<CONFIG>（说明见下面那段注释）。
 # ⚠ 必须**在子目录 add_subdirectory 之前**定义: 子目录(runtime 的 jsapi_example 要取

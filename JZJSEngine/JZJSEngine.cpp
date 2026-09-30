@@ -20,6 +20,9 @@
 #include "JZLog.h"
 #include "JZPlatform.h"
 #include "JZStd.h"
+#ifdef HAS_JZWidget
+#include "JZWidget/JZWindowHost.h"   // 窗口宿主(见 setWindowHost): "之后 new 的窗口归谁托管"
+#endif
 
 using namespace jsbind;
 using namespace std;
@@ -552,6 +555,12 @@ JZJSEngine::~JZJSEngine()
     //      引擎, 直接崩(0xC0000005)。
     // 注意: 这里只清"进程级资源", 不碰 JS 侧的 rt/ctx —— 那仍由 deinit() 负责,
     // 以免破坏"借给 JS 的 C++ 对象"的既有生命周期约定。
+#ifdef HAS_JZWidget
+    // 窗口宿主也是"进程级资源": 引擎没 deinit 就析构时(临时引擎很常见)也得摘掉,
+    // 否则之后 new 出来的窗口会去找一具已经析构的宿主。
+    if (m_windowHost && jzWindowHost() == m_windowHost)
+        jzSetWindowHost(nullptr);
+#endif
     reapAllWorkers();
 }
 
@@ -583,6 +592,13 @@ void JZJSEngine::init()
         e.thread = nullptr;
         e.engine = this;
     }
+
+#ifdef HAS_JZWidget
+    // 窗口宿主: 从这一刻起, 本引擎里 new 出来的窗口(JS 的 new JZWindow 也在内)都归它托管
+    // (见 JZWindowHost —— 例如虚拟桌面: 建出来的窗口全落在虚拟桌面上)。没装宿主就是真窗口。
+    if (m_windowHost)
+        jzSetWindowHost(m_windowHost);
+#endif
 }
 
 void JZJSEngine::deinit()
@@ -591,6 +607,13 @@ void JZJSEngine::deinit()
     reapAllWorkers();
     if (m_mainEngine == this)
         m_mainEngine = nullptr;
+
+#ifdef HAS_JZWidget
+    // 引擎要没了: 摘掉窗口宿主 —— 别让之后新建的窗口去找一具已经析构的宿主。
+    // (只有"当前装的就是我这份"时才摘, 免得误摘别人装的。)
+    if (m_windowHost && jzWindowHost() == m_windowHost)
+        jzSetWindowHost(nullptr);
+#endif
 
     // 注: 旧"指针身份表 + 托管句柄"已随包装层一起删除(2026-09-17), 这里不再有需要统一放掉的句柄 ——
     //     对象的 JS 侧状态(opaque 里的守卫 / C++ 对象上的 js_value)都随各自的对象生命周期走。
@@ -3204,6 +3227,26 @@ void JZJSEngine::setWidgetModule(JZJSWidgetModule* module)
 JZJSWidgetModule* JZJSEngine::widgetModule() const
 {
     return m_widgetModule;
+}
+
+// 窗口宿主: "这台引擎里 new 出来的窗口归谁托管" (见 JZJSEngine.h / JZWindowHost.h)。
+// 装上之后 JS 侧一行不用改 —— new JZWindow(...) 出来的就是宿主那边的窗口(如虚拟窗口)。
+void JZJSEngine::setWindowHost(JZWindowHost* host)
+{
+    if (m_windowHost == host)
+        return;
+#ifdef HAS_JZWidget
+    // 引擎已经起来了 (init 过): 立刻生效/还原 —— 宿主本身是进程级的, 与 init 无关。
+    if (m_ctx)
+    {
+        if (host)
+            jzSetWindowHost(host);
+        else if (jzWindowHost() == m_windowHost)
+            jzSetWindowHost(nullptr);   // 传 nullptr = 恢复平台默认(真窗口)
+    }
+#endif
+    // 还没 init: 记下来, 由 init() 时装上 (见那里)
+    m_windowHost = host;
 }
 
 int JZJSEngine::spawnWorker(const std::string& entry, const JZByteArray& workerData,

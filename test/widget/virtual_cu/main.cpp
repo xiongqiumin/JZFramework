@@ -115,23 +115,24 @@ int main(int argc, char* argv[])
     JZApplication app;
 
     // ---- 被测应用: 一个"电源面板"窗口, 跑在虚拟桌面上 ----
-    JZVirtualDevice desk(800, 600, "Virtual Desktop");
+    JZVirtualDevice desk(800, 600);
     desk.setDesktopBackground(JZColor(232, 232, 232, 255));
 
     JZVirtualWindow* panel = desk.createWindow(360, 220, "PowerPanel", 120, 90);
-    JZCheckbox* power = new JZCheckbox(panel);
+    // 控件挂到窗口的**客户区** (客户区那个真 JZWindow 才是控件树的根)
+    JZCheckbox* power = new JZCheckbox(panel->client());
     power->setObjectName("btnPower");
     power->setText("Power");
     power->setGeometry(20, 20, 220, 40);
     power->show();
 
-    JZLabel* stateLabel = new JZLabel(panel);
+    JZLabel* stateLabel = new JZLabel(panel->client());
     stateLabel->setObjectName("lblState");
     stateLabel->setText("State: OFF");
     stateLabel->setGeometry(20, 80, 220, 30);
     stateLabel->show();
 
-    JZLineEdit* note = new JZLineEdit(panel);
+    JZLineEdit* note = new JZLineEdit(panel->client());
     note->setObjectName("editNote");
     note->setGeometry(20, 130, 220, 32);
     note->show();
@@ -225,7 +226,7 @@ int main(int argc, char* argv[])
 
     // ⑩ 新窗口压住面板: 同一个点应该打在**上层**窗口上, 面板状态不变
     JZVirtualWindow* front = desk.createWindow(360, 220, "SecondWin", 150, 130);
-    JZLabel* frontLabel = new JZLabel(front);
+    JZLabel* frontLabel = new JZLabel(front->client());
     frontLabel->setObjectName("lblFront");
     frontLabel->setText("front");
     frontLabel->setGeometry(10, 10, 200, 30);
@@ -262,7 +263,7 @@ int main(int argc, char* argv[])
             cv::Mat rgbaBig;
             cv::cvtColor(big, rgbaBig, cv::COLOR_BGR2RGBA);
             const JZImage bannerImg = JZImage::fromRGBA(rgbaBig.data, rgbaBig.cols, rgbaBig.rows);
-            JZImageLabel* banner = new JZImageLabel(ocrWin);
+            JZImageLabel* banner = new JZImageLabel(ocrWin->client());
             banner->setObjectName("imgBanner");
             banner->setGeometry(10, 10, 340, 140);
             banner->setImage(bannerImg);
@@ -322,7 +323,7 @@ int main(int argc, char* argv[])
         JZVirtualWindow* pixelWin = desk.createWindow(200, 120, "PixelPanel", 430, 30);
         cv::Mat rgbaIcon;
         cv::cvtColor(icon, rgbaIcon, cv::COLOR_BGR2RGBA);
-        JZImageLabel* iconLabel = new JZImageLabel(pixelWin);
+        JZImageLabel* iconLabel = new JZImageLabel(pixelWin->client());
         iconLabel->setObjectName("imgIcon");
         iconLabel->setGeometry(40, 20, IW, IH);
         iconLabel->setImage(JZImage::fromRGBA(rgbaIcon.data, rgbaIcon.cols, rgbaIcon.rows));
@@ -356,9 +357,11 @@ int main(int argc, char* argv[])
               "命中尺寸 == 模板尺寸 (单尺度匹配)");
 
         // ② region 限定: 目标在左上 1/4 之外 ⇒ 该区域里必须找不到(region 换算真生效)
+        // ⚠ region 是"搜索窗口", 模板必须**整个**落在里面 (matchTemplate 的语义) ——
+        //   窗口有外框之后图案整体下移了一格标题栏, 所以这里的 region 要够高。
         check(JZComputerUse::matchImage(tplPath, rectAt(0.0, 0.0, 0.25, 0.25)).w <= 0,
               "matchImage 受 region 限制: 区域外找不到");
-        check(JZComputerUse::matchImage(tplPath, rectAt(0.5, 0.0, 0.25, 0.25)).w > 0,
+        check(JZComputerUse::matchImage(tplPath, rectAt(0.5, 0.0, 0.25, 0.4)).w > 0,
               "matchImage 在给定 region 内仍命中");
 
         // ③ 颜色查找: 品红在全屏唯一

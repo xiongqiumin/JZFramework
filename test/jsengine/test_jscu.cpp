@@ -22,8 +22,8 @@
 #include "JZJSEngine.h"
 #include "JZJSComputerUseModule.h"
 #include "JZTimer.h"
-#include "JZVirtualDevice.h"
-#include "JZVirtualWindow.h"
+#include "binary/virtual_device/JZVirtualDevice.h"
+#include "binary/virtual_device/JZVirtualWindow.h"
 #include "JZCheckbox.h"
 #include "JZImage.h"
 #include "JZImageLabel.h"
@@ -61,31 +61,32 @@ int main()
     JZEventLoop loop;
 
     // ---- 被测应用: 一个跑在虚拟桌面上的"电源面板" ----
-    JZVirtualDevice desk(800, 600, "Virtual Desktop");
+    JZVirtualDevice desk(800, 600);                     // 虚拟显示器 800x600
     desk.setDesktopBackground(JZColor(232, 232, 232, 255));
 
     JZVirtualWindow* panel = desk.createWindow(360, 300, "PowerPanel", 120, 90);
+    JZWindow* panelClient = panel->client();            // 客户区 = 真 JZWindow (控件挂它下面)
 
-    JZCheckbox* power = new JZCheckbox(panel);
+    JZCheckbox* power = new JZCheckbox(panelClient);
     power->setObjectName("btnPower");
     power->setText("Power");
     power->setGeometry(20, 20, 220, 40);
     power->show();
 
-    JZLabel* stateLabel = new JZLabel(panel);
+    JZLabel* stateLabel = new JZLabel(panelClient);
     stateLabel->setObjectName("lblState");
     stateLabel->setText("State: OFF");
     stateLabel->setGeometry(20, 80, 220, 30);
     stateLabel->show();
 
-    JZLineEdit* note = new JZLineEdit(panel);
+    JZLineEdit* note = new JZLineEdit(panelClient);
     note->setObjectName("editNote");
     note->setGeometry(20, 130, 220, 32);
     note->show();
 
     // 像素族兜底用: 一块**全屏唯一**的颜色块(JS 侧 match({kind:'color'}) 要能命中它)
     JZImage blockImg = JZImage::create(120, 80, JZColor(255, 0, 255, 255));
-    JZImageLabel* block = new JZImageLabel(panel);
+    JZImageLabel* block = new JZImageLabel(panelClient);
     block->setObjectName("imgBlock");
     block->setGeometry(20, 180, 120, 80);
     block->setImage(blockImg);

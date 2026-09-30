@@ -26,7 +26,7 @@
 //   cfg.programPaths 传进去 —— JZAgentCli 只认配置, 自己不探测。
 //
 // 配置(命令行 / 环境变量):
-//   --modelUrl / --modelName / --modelToken   大模型接入(缺省沿用仓库测试默认值)
+//   --modelUrl / --modelName / --modelToken   大模型接入(缺省读 exe 同目录的 test_llm.json)
 //   --data    评测集目录(缺省 bin/<CONFIG>/data/agent_cli_test)
 //   --cases   逗号分隔的用例名/通配符, 仅跑匹配的（可多个；支持 * ? .）
 //   --http-port   输入 HTTP 服务监听端口(JS/agent 用 fetch 读输入)
@@ -937,11 +937,19 @@ protected:
                                 << "   " << clr(CLR_GRAY) << "[windowTokens; 预算/压缩看这个]" << clr(CLR_RESET);
         // llama.cpp 计时: 其他 provider 不带 timings(恒为 0)，不打这两行
         if (m_totalPromptMs > 0 || m_totalPredMs > 0)
+        {
+            // ⚠ prefill 速率**只算未命中的 prompt token**: prompt_ms 是 llama.cpp 真正 prefill
+            //   的耗时, 命中前缀缓存的那些 token 没走 prefill —— 拿整段 prompt 去除会虚高好几倍
+            //   (实测命中 84% 时能算出 1 万多 tok/s)。分子分母的口径必须对得上。
+            const int prefilled = m_totalPrompt > m_totalCached ? m_totalPrompt - m_totalCached : 0;
             jzDebug().nospace() << "推理速度(llama.cpp): prefill="
-                                << (m_totalPromptMs > 0 ? m_totalPrompt * 1000.0 / m_totalPromptMs : 0.0)
-                                << " tok/s, 生成="
+                                << (m_totalPromptMs > 0 ? prefilled * 1000.0 / m_totalPromptMs : 0.0)
+                                << " tok/s [只算未命中 " << prefilled << "/" << m_totalPrompt
+                                << ", 缓存命中 " << m_totalCached << "]"
+                                << ", 生成="
                                 << (m_totalPredMs > 0 ? m_totalCompletion * 1000.0 / m_totalPredMs : 0.0)
                                 << " tok/s";
+        }
         if (m_totalDraft > 0)
             jzDebug().nospace() << "投机采样(MTP): 接受 " << m_totalDraftAccepted << "/" << m_totalDraft
                                 << " = " << (m_totalDraftAccepted * 100.0 / m_totalDraft) << "%";
@@ -1448,16 +1456,84 @@ static std::string detectProgram(const std::string &nameNoExt)
     return findUnder(exeDir, names);   // 没有 build 祖先: exe 附近找
 }
 
+// ---- 大模型接入: 一律从 **exe 同目录的 test_llm.json** 读 ----
+// 这里刻意不写死任何端点/模型名: 写死的默认值换机器后只会变成"连着一个不存在的地址,
+// 报错还看不出是配置问题"。文件长这样(也接受平铺写法, 即 key 直接放顶层):
+//     { "llm": { "url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": "" } }
+// 取值规则与 agent_cli 的 config.json 一致: 先看 llm.<key>, 没有再回落顶层 <key>。
+// 优先级: 命令行 > 环境变量 > test_llm.json。
+static std::string llmConfigPath()
+{
+    JZDir dir(JZPlatform::applicationDirPath());     // 构造即把 '\' 归一成 '/'
+    return dir.path() + "/test_llm.json";
+}
+
+static void loadLlmConfigFile(JZCliConfig &cfg, const std::string &path, bool &found)
+{
+    found = false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return;                                      // 没有这个文件: 交给上层明确报错
+
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string text = ss.str();
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);                            // 去掉 UTF-8 BOM (记事本另存常见)
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(text, root) || !root.isObject())
+    {
+        jzWarning().nospace() << "[agent_cli_test] test_llm.json 解析失败, 按未配置处理: " << path;
+        return;
+    }
+    found = true;
+
+    const Json::Value &g = (root["llm"].isObject() ? root["llm"] : root);
+    // "分组优先, 回落顶层" —— 与 JZAgentCli 读 config.json 的 findConfigMember 同一口味
+    auto str = [&g, &root](const char *key) -> std::string {
+        if (g[key].isString())
+            return g[key].asString();
+        if (root[key].isString())
+            return root[key].asString();
+        return std::string();
+    };
+    auto num = [&g, &root](const char *key, int def) -> int {
+        if (g[key].isInt())
+            return g[key].asInt();
+        if (root[key].isInt())
+            return root[key].asInt();
+        return def;
+    };
+
+    const std::string url = str("url");
+    const std::string name = str("name");
+    const std::string token = str("token");
+    if (!url.empty())   cfg.modelUrl = url;
+    if (!name.empty())  cfg.modelName = name;
+    if (!token.empty()) cfg.modelToken = token;
+    cfg.netTimeout = num("netTimeoutMs", cfg.netTimeout);
+    cfg.maxRounds = num("maxRounds", cfg.maxRounds);
+}
+
 // ⚠ 必须"填调用方的对象"(传引用进来), 不能自己建局部 cfg 再按值返回:
 //   parser.addOption 存的是**指针**, 局部对象在函数返回后已析构, 调用方 parse() 时
 //   会写进已经销毁的内存 —— 传 --modelUrl/--modelName 就 0xC0000005(实测)。
 //   所以这个对象要活到 parse() 之后。
 static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg)
 {
-    cfg.modelUrl = "http://172.17.160.147:8080/v1/chat/completions";   // 默认本地; 用环境变量/命令行覆盖
-    cfg.modelName = "my_model";
     cfg.maxRounds = 100;
 
+    // ① 底线: exe 同目录的 test_llm.json (缺失/缺 url+name 时由 main 里明确报错, 不猜端点)
+    bool haveJson = false;
+    loadLlmConfigFile(cfg, llmConfigPath(), haveJson);
+    if (haveJson)
+        jzInfo().nospace() << "[agent_cli_test] 模型配置: " << llmConfigPath()
+                           << " (" << (cfg.modelName.empty() ? "?" : cfg.modelName.c_str()) << ")";
+
+    // ② 环境变量覆盖 (临时试另一台机器用, 不必改文件)
     const char *eUrl = std::getenv("JZ_BENCH_MODEL_URL");
     const char *eName = std::getenv("JZ_BENCH_MODEL_NAME");
     const char *eToken = std::getenv("JZ_BENCH_MODEL_TOKEN");
@@ -1465,6 +1541,7 @@ static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg)
     if (eName) cfg.modelName = eName;
     if (eToken) cfg.modelToken = eToken;
 
+    // ③ 命令行最后落 (优先级最高)
     parser.addOption("--modelUrl", &cfg.modelUrl);
     parser.addOption("--modelName", &cfg.modelName);
     parser.addOption("--modelToken", &cfg.modelToken);
@@ -1504,7 +1581,10 @@ int main(int argc, char *argv[])
 
     if (cfg.modelUrl.empty() || cfg.modelName.empty())
     {
-        jzError() << "未配置模型(请通过 --modelUrl/--modelName 或环境变量 JZ_BENCH_MODEL_* 指定)";
+        jzError().nospace()
+            << "未配置模型。请在 " << llmConfigPath()
+            << " 里写 {\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\",\"name\":\"模型名\"}}"
+               " (也可用 --modelUrl/--modelName 或环境变量 JZ_BENCH_MODEL_*)";
         return 2;
     }
 

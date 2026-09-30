@@ -23,6 +23,16 @@ add_custom_command(TARGET agent_cli POST_BUILD
         $<TARGET_FILE_DIR:agent_cli>/http
     COMMENT "copy agent_cli web ui (http/)")
 
+# 测试用的大模型接入配置: 测试脚本**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
+# 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake); 已存在的不覆盖 ——
+# 换端点改的是 exe 目录那份, 不是仓库里的模板(test/test_llm.json)。
+add_custom_command(TARGET agent_cli POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -Dsrc=${CMAKE_CURRENT_SOURCE_DIR}/test/test_llm.json
+        -Ddst=$<TARGET_FILE_DIR:agent_cli>/test_llm.json
+        -P ${JZFRAMEWORK_ROOT_DIR}/cmake/copy_if_absent.cmake
+    COMMENT "Place test_llm.json next to agent_cli (sample if absent)")
+
 # test: --loop 端到端等测试(见 test/CMakeLists.txt; 测试脚本与它的验证程序都放在那里)
 add_subdirectory(test)
 

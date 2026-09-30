@@ -28,7 +28,8 @@
 
 用法:
     python test_loop_primes.py --agent-cli <构建出来的 agent_cli.exe>
-    (模型走 JZ_BENCH_MODEL_URL / JZ_BENCH_MODEL_NAME / JZ_BENCH_MODEL_TOKEN 或同名命令行参数)
+    (模型配置读 **agent_cli.exe 同目录的 test_llm.json**: 本脚本不写死任何端点;
+     临时换端点可用 --model-url/--model-name/--model-token 或环境变量 JZ_BENCH_MODEL_*)
 """
 from __future__ import annotations
 
@@ -46,9 +47,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRIMES_VERIFY = os.path.join(HERE, "primes_verify.py")            # 本用例的验证程序(同目录)
 AGENT_LOOP = os.path.normpath(os.path.join(HERE, "..", "tools", "agent_loop.py"))   # 部署用的守护脚本
-
-DEFAULT_MODEL_URL = "http://172.17.160.147:8080/v1/chat/completions"
-DEFAULT_MODEL_NAME = "my_model"
+LLM_JSON = "test_llm.json"          # 大模型接入配置: 放 agent_cli.exe 同目录(模板见同目录 test_llm.json)
 
 PROMPT = """在工作区根目录写/改进 solve.py: 一个单线程的 Python 程序, 运行 python solve.py <N> 打印一行两个整数 —— N 以内(含 N)的质数个数 与 质数之和, 空格分隔(例: python solve.py 10 应该输出 4 17)。
 要求:
@@ -139,6 +138,40 @@ def find_agent_cli(explicit: str) -> str:
             break
         d = parent
     raise SystemExit("没找到 agent_cli(请 --agent-cli <路径>, 或先构建 agent_cli)")
+
+
+def read_llm_config(exe_dir: str) -> dict:
+    """读 <exe 目录>/test_llm.json —— 模型接入的**唯一来源**(脚本里不写死端点)。
+
+    形状(与 agent_cli 的 config.json 一致: 先看 llm.<key>, 没有再回落顶层 <key>):
+        {"llm": {"url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": ""}}
+    找不到/读不动就返回空串项(调用方据此报"没配置模型"并给出该文件的完整路径)。
+    """
+    path = os.path.join(exe_dir, LLM_JSON)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {"path": path, "url": "", "name": "", "token": ""}
+
+    data = None
+    for enc in ("utf-8-sig", "utf-8", "gbk"):      # 记事本另存的编码也兜住
+        try:
+            data = json.loads(raw.decode(enc))
+            break
+        except (UnicodeDecodeError, ValueError):
+            continue
+    if not isinstance(data, dict):
+        log("  [warn] %s 解析失败, 当作没配置" % path)
+        return {"path": path, "url": "", "name": "", "token": ""}
+
+    group = data["llm"] if isinstance(data.get("llm"), dict) else data
+
+    def pick(key: str) -> str:
+        v = group.get(key, data.get(key))
+        return v if isinstance(v, str) else ""
+
+    return {"path": path, "url": pick("url"), "name": pick("name"), "token": pick("token")}
 
 
 def kill_tree(pid: int) -> None:
@@ -249,9 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="整条链路的上限, 秒(默认 2700 = 45 分钟; 本地模型每轮波动很大)")
     p.add_argument("--tmp", default="", help="临时目录(默认自动建)")
     p.add_argument("--keep", action="store_true", help="跑完保留临时目录(排查用)")
-    p.add_argument("--model-url", default=os.environ.get("JZ_BENCH_MODEL_URL", DEFAULT_MODEL_URL))
-    p.add_argument("--model-name", default=os.environ.get("JZ_BENCH_MODEL_NAME", DEFAULT_MODEL_NAME))
-    p.add_argument("--model-token", default=os.environ.get("JZ_BENCH_MODEL_TOKEN", ""))
+    # 模型取值一律留空, 由 main 按 "命令行 > 环境变量 > <exe 目录>/test_llm.json" 定 —— 这里
+    # 不能填默认值, 否则一填就把 test_llm.json 顶掉了
+    p.add_argument("--model-url", default="", help="覆盖模型地址(缺省读 exe 同目录 test_llm.json)")
+    p.add_argument("--model-name", default="", help="覆盖模型名(缺省读 exe 同目录 test_llm.json)")
+    p.add_argument("--model-token", default="", help="覆盖模型 token(缺省读 exe 同目录 test_llm.json)")
     return p
 
 
@@ -260,6 +295,18 @@ def main(argv=None) -> int:
 
     agent_cli = find_agent_cli(args.agent_cli)
     python_exe = fwd(args.python)
+
+    # ---- 模型配置: 命令行 > 环境变量 > <agent_cli.exe 同目录>/test_llm.json ----
+    llm = read_llm_config(os.path.dirname(agent_cli))
+    model_url = args.model_url or os.environ.get("JZ_BENCH_MODEL_URL", "") or llm["url"]
+    model_name = args.model_name or os.environ.get("JZ_BENCH_MODEL_NAME", "") or llm["name"]
+    model_token = args.model_token or os.environ.get("JZ_BENCH_MODEL_TOKEN", "") or llm["token"]
+    if not model_url or not model_name:
+        raise SystemExit(
+            "没配置模型。请在 %s 里写 "
+            "{\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\",\"name\":\"模型名\"}} "
+            "(也可用 --model-url/--model-name 或环境变量 JZ_BENCH_MODEL_*)" % fwd(llm["path"]))
+
     tmp = os.path.abspath(args.tmp) if args.tmp else tempfile.mkdtemp(prefix="jz_loop_primes_")
     ws = os.path.join(tmp, "ws")
     backups = os.path.join(tmp, "backups")
@@ -272,7 +319,7 @@ def main(argv=None) -> int:
         f.write(PROMPT)
     http_port = free_port()
     cfg_file = os.path.join(tmp, "config.json")
-    write_config(cfg_file, ws, python_exe, args.model_url, args.model_name, args.model_token, http_port)
+    write_config(cfg_file, ws, python_exe, model_url, model_name, model_token, http_port)
 
     log("=" * 78)
     log("agent_cli 无人值守端到端测试(HTTP 逐轮提交 + 质数筛验证程序)")
@@ -282,7 +329,8 @@ def main(argv=None) -> int:
     log("  备份目录  : " + fwd(backups))
     log("  日志目录  : " + fwd(logs))
     log("  HTTP 提交 : http://127.0.0.1:%d" % http_port)
-    log("  模型      : %s @ %s" % (args.model_name, args.model_url))
+    log("  模型      : %s @ %s" % (model_name, model_url))
+    log("  模型配置  : %s" % fwd(llm["path"]))
     log("=" * 78)
 
     # 工作区保持"空目录 + 没有仓库": 模型一进来别去研究 .git("验证程序不碰版本控制"这条

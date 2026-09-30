@@ -8,7 +8,9 @@
 #       比"算圆周率再比字符串前缀"那种判定硬, 也没法把答案写死。
 #       因为慢且依赖本地模型, 单独挂 llm 标签(不混进快速回归):
 #           ctest -C Release -R agent_cli.loop_primes --output-on-failure
-#   模型走 JZ_BENCH_MODEL_URL / JZ_BENCH_MODEL_NAME / JZ_BENCH_MODEL_TOKEN(或同名命令行参数)。
+#   模型配置**不在代码/脚本里写死**: 读 agent_cli.exe 同目录的 test_llm.json(见同目录的
+#   test_llm.json 模板, 构建时按"缺失才铺"拷到 exe 目录); 也可用同名命令行参数
+#   (--model-url/--model-name/--model-token) 或环境变量 JZ_BENCH_MODEL_* 覆盖。
 #
 #   primes_verify.py —— 上面那个用例的验证程序(也是"验证程序该长什么样"的模板):
 #       由 test_loop_primes.py / agent_loop.py 作为 verify_cmd 传进去, 不作为独立 ctest 条目。
@@ -27,3 +29,16 @@ set_tests_properties(agent_cli.loop_primes PROPERTIES TIMEOUT 3600 LABELS "llm" 
 add_test(NAME agent_cli.icon_find
          COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_find.py)
 set_tests_properties(agent_cli.icon_find PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+
+#   test_codex/test_codex_bench.py —— 用 **Codex SDK** 跑 benchmark 的同一批用例(与 agent_cli_test
+#       同套用例/工程骨架/验证命令), 用来和 agent_cli 的通过率做对比。真模型 + 真 Codex 回合 ⇒ 很慢,
+#       同样挂 llm 标签(不混进快速回归):
+#           ctest -C Release -R agent_cli.codex_bench --output-on-failure
+#       想先看要跑什么(不连模型): python test_codex/test_codex_bench.py --dry-run
+#       ⚠ Codex 每轮发 role="developer", 本机 llama.cpp 只认 system 在开头 ⇒ 必须经
+#         test_codex/codex_proxy.py 适配(developer -> user), 细节见那个文件与 bench 脚本的头注释。
+#       没装 openai-codex SDK 时返回 77 ⇒ 跳过(不算失败)。
+add_test(NAME agent_cli.codex_bench
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_codex/test_codex_bench.py)
+set_tests_properties(agent_cli.codex_bench PROPERTIES TIMEOUT 14400 LABELS "llm" RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77)

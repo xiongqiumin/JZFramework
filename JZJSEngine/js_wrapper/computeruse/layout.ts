@@ -106,14 +106,23 @@ export function samePage(recorded: PageFingerprint | null | undefined,
   return fingerprintMatch(recorded, live) >= (threshold === undefined ? 0.6 : threshold);
 }
 
-/** 布局里"多出来的顶层节点"（疑似弹窗）：深度 ≤ 1 且不在记的指纹里。 */
+/**
+ * 布局里"多出来的顶层节点"（疑似弹窗）：深度 ≤ 1 且不在记的指纹里。
+ *
+ * ⚠ 两道过滤, 缺一不可(否则会**永久**多报出一个假弹窗, 把所有真错都吞成"偶发"):
+ *   ① 根节点本身**不是**"多出来的": 它就是本页那个窗口, 指纹用 `window` 字段单独记它,
+ *      而 `paths` 只收**带 viewId** 的节点 ⇒ 根(通常没有 viewId)永远不在 paths 里。
+ *   ② 没有 viewId 的节点**没法与指纹比对** ⇒ 一律不判它(宁缺勿错)。
+ *      不然布局树里任何一个没起 objectName 的控件都会天天被当成弹窗。
+ */
 export function extraTopPaths(recorded: PageFingerprint | null | undefined,
                               live: LayoutNode | null | undefined): LayoutPath[] {
   const known: Record<string, boolean> = {};
   if (recorded && recorded.paths) for (const p of recorded.paths) known[p] = true;
   const out: LayoutPath[] = [];
   for (const e of flatten(live)) {
-    if (e.depth > 1) continue;
+    if (e.depth < 1) continue;                 // ① 根 = 本页那个窗口, 不是"多出来的"
+    if (!e.node.id) continue;                  // ② 无 viewId ⇒ 无法比对, 不判
     if (known[e.path]) continue;
     out.push(e.path);
   }

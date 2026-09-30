@@ -1,11 +1,16 @@
 /**
- * computeruse —— 模块类型(单一来源: 与 ../index.ts + ../types.ts 同源)。
+ * computeruse —— 模块类型(单一来源: 与 ../index.ts + ../types.ts + ../layout.ts + ../diagnose.ts 同源)。
  *
  * 裸名用法(具名导入, **没有 default**):
- *   import { App, setBackend } from 'computeruse';
+ *   import { App, setBackend, diagnose } from 'computeruse';
  *
  * 坐标一律**归一化 [0,1]**(相对截图/虚拟桌面); 只有 `rect` 是屏幕/窗口逻辑像素。
  * C++ 后端(JZJSComputerUseModule)只提供底层语义; 控件树与 UI 操作全在本包(JS) 里。
+ *
+ * ⭐ 两条铁律(见 docs/compute-use-design.md):
+ *   ① 像素只在**建模期**出现: 建模时产出"像素 ↔ 布局映射"(`layout` 路径);
+ *      运行期只按布局路径寻址(`Locator.kind='layout'`), 像素族只在退化兜底时用。
+ *   ② 界面不匹配先本地分级(`diagnose`), 稳定复现才升级大模型。
  */
 
 // ————————————————————————————————————————————————
@@ -24,119 +29,220 @@ export type MouseBtn = 'left' | 'right' | 'middle';
  */
 export type Presence = 'must' | 'maybe' | 'optional';
 
+/** 布局路径：从窗口往下拼出来的稳定标识（如 `/main/btnOutput`）。 */
+export type LayoutPath = string;
+
 /**
- * 定位策略(录制/建模期决定"这个控件靠什么被找到"): ocr / image / color / yolo。
- * region 为可选的小搜索区域(归一化); 不传则搜整屏。多尺度不在范围内。
+ * 定位策略(建模期决定"这个控件靠什么被找到"):
+ *   layout ⭐ 运行期正路(按布局路径问当前几何, 不涉像素);
+ *   ocr / image / color / yolo 是**像素族**，只用于建模期辅助与无布局时的显式兜底。
+ * region 为可选的小搜索区域(归一化); 不传则搜整屏。
  */
 export type Locator =
+  | { kind: 'layout'; path: LayoutPath; region?: Rect }
   | { kind: 'ocr';   text: string; region?: Rect }
   | { kind: 'image'; image: string; region?: Rect }
   | { kind: 'color'; color: string; region?: Rect; tol?: number }
   | { kind: 'yolo';  model: string; label?: string; region?: Rect };
+
+/** 可访问布局树节点（自家 = dumpSemanticTree；外部 = Win32/UIA/MSAA）。 */
+export interface LayoutNode {
+  role: string;
+  id?: string;
+  text?: string;
+  name?: string;
+  /** 归一化矩形。 */
+  rect?: Rect;
+  visible?: boolean;
+  enabled?: boolean;
+  clickable?: boolean;
+  checked?: boolean;
+  range?: { value: number; min: number; max: number };
+  items?: string[];
+  actions?: string[];
+  children?: LayoutNode[];
+}
+
+/** 页面指纹：窗口标识 + 关键节点路径集合（判"还在不在同一页"）。 */
+export interface PageFingerprint { window?: string; paths: LayoutPath[]; }
+
+/** `attach()` 的结果。 */
+export interface AttachResult {
+  window?: string;
+  /** **当前**页面的指纹（模型里记的是"期望指纹"，两者不是一回事）。 */
+  fingerprint: PageFingerprint;
+  /** 期望指纹与当前页面的吻合度（[0,1]）。 */
+  pageMatch: number;
+  total: number;
+  bound: number;
+  degraded: LayoutPath[];
+  missing: LayoutPath[];
+}
+
+/** 节点当前状态（`read()` 的返回）。 */
+export interface NodeState {
+  exists: boolean;
+  from: 'layout' | 'rect';
+  text?: string;
+  checked?: boolean;
+  enabled?: boolean;
+  clickable?: boolean;
+  range?: { value: number; min: number; max: number };
+  rect?: Rect;
+}
+
+/** `expect()` 的期望条件。 */
+export type ExpectMatcher =
+  | string | RegExp | number | boolean
+  | {
+      text?: string | RegExp;
+      checked?: boolean;
+      enabled?: boolean;
+      exists?: boolean;
+      range?: { value?: number; min?: number; max?: number };
+    };
+
+/** `sync()` 参数：等界面稳定（像素只当信号）。 */
+export interface SyncOptions { settle?: number; timeoutMs?: number; }
+
+/** `launch()` 参数。 */
+export interface LaunchOptions {
+  exe?: string;
+  args?: string[];
+  cwd?: string;
+  title?: string | RegExp;
+  timeoutMs?: number;
+}
+
+/** 失败性质 / 本地处置建议。 */
+export type FailureKind =
+  | 'none' | 'transient' | 'popup' | 'precondition'
+  | 'page-miss' | 'path-drift' | 'process-gone' | 'no-layout';
+export type FailureAction =
+  | 'retry' | 'wait' | 'dismiss-popup' | 'add-precondition'
+  | 'ask-model' | 'restart' | 'abort';
+
+/** `diagnose()` 的输入 / 结论。 */
+export interface DiagnoseContext {
+  attempt?: number;
+  maxAttempts?: number;
+  fingerprint?: PageFingerprint | null;
+  layout?: LayoutNode | null;
+  path?: LayoutPath;
+  expect?: ExpectMatcher;
+}
+export interface Diagnosis {
+  kind: FailureKind;
+  transient: boolean;
+  action: FailureAction;
+  reason: string;
+  evidence: {
+    path?: LayoutPath;
+    fingerprintChanged?: boolean;
+    extraPaths?: string[];
+    missingPath?: string;
+    foundButUnusable?: string;
+  };
+}
+
+/** 本包的错误码。 */
+export type CuErrorCode =
+  | 'not-found' | 'no-layout' | 'expect-failed' | 'window-gone' | 'send-failed' | 'unsupported';
 
 /**
  * VLM 感知后端配置（OpenAI 兼容的**多模态** chat/completions）。
  * 本包不内置地址：由调用方传（ExploreOptions.vlm）或用 setVlmConfig() 设默认值。
  */
 export interface VlmOptions {
-  /** 完整端点，如 http://host:8080/v1/chat/completions */
   url: string;
   model?: string;
-  /** 需要则填（会发 Authorization: Bearer <apiKey>）。 */
   apiKey?: string;
-  /** 单次请求超时（ms，默认 600000 —— 本机大模型很慢）。 */
   timeoutMs?: number;
   maxTokens?: number;
   /** 整段替换内置提示词（坐标口径必须是归一化 [x,y,w,h]）。 */
   prompt?: string;
-  /** 追加/覆盖请求体字段（如 { chat_template_kwargs: { enable_thinking: false } }）。 */
   extraBody?: Record<string, unknown>;
 }
 
 /** 感知到的单个元素（rect 是**归一化**坐标，相对整图）。 */
 export interface PerceptionElement {
-  /** 已映射到本包词汇（button/label/edit/checkbox/...）。 */
   type: string;
-  /** 控件上的可读文字；空串表示没有文字。 */
   text: string;
   rect: Rect;
-  /** 感知后端给的原始说法（调试用，如 "text_field"）。 */
   rawType?: string;
 }
 
 /** 一次"看图"的结果。 */
-export interface Perception {
-  /** 窗口标题（从像素里读出来的；读不到为空串）。 */
-  title: string;
-  elements: PerceptionElement[];
-  /** 后端原始回复（调试用）。 */
-  raw?: string;
-}
+export interface Perception { title: string; elements: PerceptionElement[]; raw?: string; }
 
-/** 探索/录制阶段配置。 */
+/** 人审/标注钩子。 */
+export type PerceptionReview = (p: Perception) => Perception | Promise<Perception>;
+
+/** 建模(探索)阶段配置。 */
 export interface ExploreOptions {
   name: string;
   screenshot?: { maxDim?: number };
   anchor?: { pad?: number };
-  /** 感知后端；不传则用 setVlmConfig() 设的默认值，都没有就抛错。 */
   vlm?: VlmOptions;
+  /** 人审/标注（可选，默认不启用）。 */
+  review?: PerceptionReview;
+  /** 布局树（建模期用它把感知元素认领到布局节点 ⇒ 生成映射）。 */
+  layout?: LayoutNode | null;
 }
 
-/** 模型序列化快照(固化到磁盘的格式)。 */
-export interface ModelSnapshot {
-  name: string;
-  nodes: unknown[];
-}
-
-export interface NodeOpts { locator?: Locator; rect?: Rect; }
+/** 模型序列化快照。 */
+export interface ModelSnapshot { name: string; nodes: unknown[]; }
+export interface NodeOpts { locator?: Locator; rect?: Rect; layout?: LayoutPath; }
 
 // ————————————————————————————————————————————————
-// 底层动作后端: 运行期由 __jz.computeruse 提供; 也可用 setBackend 换成离线/模拟后端。
+// 后端
 // ————————————————————————————————————————————————
+
 export interface ComputerUseBackend {
-  /** 按定位策略在当前(小)区域内查找，返回命中矩形；找不到返回 null。单尺度。 */
+  /** 按定位策略查找；运行期应只出现 `kind:'layout'`（不涉像素）。 */
   match(locator: Locator): Promise<Rect | null>;
-  /** 在 rect 中心注入一次鼠标点击；返回是否成功。 */
   click(rect: Rect, btn?: MouseBtn): Promise<boolean>;
-  /** 在归一化坐标 from→to 之间拖拽。 */
   drag(from: Point, to: Point): Promise<boolean>;
-  /** 按名称按一个键(如 'Return' / 'Tab' / 'LWin' / 'Ctrl+A')。 */
   key(name: string): Promise<void>;
-  /** 输入一段文本。 */
   type(text: string): Promise<void>;
-  /** 等待毫秒。 */
   wait(ms: number): Promise<void>;
-  /** 虚拟桌面截图 → dataURL(录制/校验用)。 */
   screenshot(): Promise<string>;
-  /** 模型固化 / 装配(JS 侧实现, 序列化本树的 JSON)。 */
+  /** 导出可访问布局树；没有可访问布局返回 null。 */
+  layoutTree?(): Promise<LayoutNode | null>;
+  /** 等界面稳定（像素只当信号）；缺省退化为 wait(settle)。 */
+  waitStable?(opts?: SyncOptions): Promise<boolean>;
+  /** 启动 / 激活目标窗口。 */
+  launch?(opts: LaunchOptions): Promise<boolean>;
   saveModel(app: IApp, path: string): Promise<void>;
   loadModel(path: string): Promise<IApp>;
-  /** ⭐ 探索入口: 从屏幕产出语义场景树(被测实现)。 */
   explore(opts: ExploreOptions): Promise<IApp>;
   fromPerception(tree: unknown): Promise<IApp>;
 }
 
-/** 当前后端(可用 setBackend 整体替换)。 */
 export let backend: ComputerUseBackend;
-/** 替换后端(离线/模拟环境、测试夹具的关键注入点)。 */
 export function setBackend(b: ComputerUseBackend): void;
 
 // ————————————————————————————————————————————————
 // 语义节点接口
 // ————————————————————————————————————————————————
+
 export interface ICuNode {
   readonly id: string;
   readonly type: string;
   label: string;
   rect?: Rect;
   locator?: Locator;
+  /** 布局路径（运行期寻址依据）。 */
+  layout?: LayoutPath;
+  /** true = 显式标出的"退化到像素"项。 */
+  degraded?: boolean;
   presence?: Presence;
   parent?: ICuNode;
   readonly children: ICuNode[];
 
   activate(): Promise<void>;
   ensureActivated(): Promise<void>;
-  /** 解析为屏幕真实坐标：优先 locator，其次 rect。 */
+  /** 解析为屏幕真实坐标：layout → locator → rect。 */
   locate(): Promise<Rect | null>;
   exists(): Promise<boolean>;
 
@@ -184,21 +290,49 @@ export interface ICheckBox extends ICuNode {
 }
 export interface ISlider extends ICuNode {
   readonly type: 'slider';
-  /** f ∈ [0,1]，按水平滑块比例定位（垂直滑块后续补）。 */
   setFraction(f: number): Promise<void>;
 }
 export interface ILink extends ICuNode { readonly type: 'link'; click(btn?: MouseBtn): Promise<void>; }
 
 export interface IApp extends ICuNode {
   readonly type: 'app';
+  /** 页面指纹（建模期记下）。 */
+  fingerprint?: PageFingerprint;
+
+  /** 所有节点（含自己，父先于子）。 */
+  nodes(): ICuNode[];
   find(type: string, label: string): ICuNode | undefined;
   button(label: string): IButton;
+  /** ⭐ 按布局路径取节点（取不到抛 `not-found`）。 */
+  at(path: LayoutPath): ICuNode;
+  has(path: LayoutPath): Promise<boolean>;
+  /** ⭐ 绑定布局（不涉像素）。 */
+  attach(layout?: LayoutNode | null): Promise<AttachResult>;
+  /** 读节点状态（布局优先）。 */
+  read(target: LayoutPath | ICuNode): Promise<NodeState>;
+  /** 断言节点状态（不满足抛 `expect-failed`）。 */
+  expect(target: LayoutPath | ICuNode, matcher: ExpectMatcher): Promise<NodeState>;
+  /** 等界面稳定（像素只当信号）。 */
+  sync(opts?: SyncOptions): Promise<boolean>;
+  /** 启动 / 激活目标窗口。 */
+  launch(opts: LaunchOptions): Promise<boolean>;
+  /** 界面不匹配的本地分级（先拉一次当前布局再判）。 */
+  diagnose(err: unknown,
+           opts?: { attempt?: number; maxAttempts?: number; path?: LayoutPath; expect?: ExpectMatcher }): Promise<Diagnosis>;
+
   save(path: string): Promise<void>;
 }
 
 // ————————————————————————————————————————————————
 // 节点类
 // ————————————————————————————————————————————————
+
+/** 本包错误：带 `code`。 */
+export class CuError extends Error {
+  code: CuErrorCode;
+  constructor(code: CuErrorCode, message: string);
+}
+
 export abstract class CuNode implements ICuNode {
   constructor(label: string, opts?: NodeOpts);
   id: string;
@@ -206,6 +340,8 @@ export abstract class CuNode implements ICuNode {
   label: string;
   rect?: Rect;
   locator?: Locator;
+  layout?: LayoutPath;
+  degraded?: boolean;
   presence?: Presence;
   parent?: CuNode;
   children: CuNode[];
@@ -284,13 +420,29 @@ export class Slider extends CuNode implements ISlider {
 
 export class App extends CuNode implements IApp {
   readonly type: 'app';
+  /** **期望指纹**（建模期记下；attach 不覆盖它）。 */
+  fingerprint?: PageFingerprint;
   constructor(name: string, opts?: NodeOpts);
+  /** 所有节点（含自己，父先于子）。 */
+  nodes(): CuNode[];
   find(type: string, label: string): CuNode | undefined;
   button(l: string): IButton;
+  at(path: LayoutPath): CuNode;
+  getLayout(): LayoutNode | null;
+  has(path: LayoutPath): Promise<boolean>;
+  attach(layout?: LayoutNode | null): Promise<AttachResult>;
+  read(target: LayoutPath | ICuNode): Promise<NodeState>;
+  expect(target: LayoutPath | ICuNode, matcher: ExpectMatcher): Promise<NodeState>;
+  sync(opts?: SyncOptions): Promise<boolean>;
+  launch(opts: LaunchOptions): Promise<boolean>;
+  diagnose(err: unknown,
+           opts?: { attempt?: number; maxAttempts?: number; path?: LayoutPath; expect?: ExpectMatcher }): Promise<Diagnosis>;
   save(path: string): Promise<void>;
   static load(path: string): Promise<IApp>;
   static explore(opts: ExploreOptions): Promise<IApp>;
   static fromPerception(tree: unknown): Promise<IApp>;
+  /** ⭐ 由"感知结果 + 布局树"直接装配。 */
+  static build(tree: unknown, opts?: { layout?: LayoutNode | null }): IApp;
 }
 
 // ————————————————————————————————————————————————
@@ -303,10 +455,45 @@ export function wait(ms: number): Promise<void>;
 // ————————————————————————————————————————————————
 // 感知层(可换后端: VLM / OCR / 检测 都在 perceive.ts 这一个文件里)
 // ————————————————————————————————————————————————
-/** 设默认 VLM 后端(调用方不想每次传 ExploreOptions.vlm 时用; null 清除)。 */
 export function setVlmConfig(cfg: VlmOptions | null): void;
 export function vlmConfig(): VlmOptions | null;
-/** 看一张图(dataURL), 返回元素清单。 */
 export function perceive(shot: string, opts?: { vlm?: VlmOptions }): Promise<Perception>;
-/** 内置提示词(带图片尺寸与算好的归一化例子); 需要改口径时可整段替换。 */
 export function buildPrompt(imgW: number, imgH: number): string;
+
+// ————————————————————————————————————————————————
+// 布局工具 + 本地分级
+// ————————————————————————————————————————————————
+export interface FlatEntry { node: LayoutNode; path: LayoutPath; depth: number; }
+export function flatten(root?: LayoutNode | null): FlatEntry[];
+export function nodeAt(root: LayoutNode | null | undefined, path: LayoutPath): LayoutNode | null;
+export function parentPath(path: LayoutPath): string;
+export function fingerprintOf(root: LayoutNode | null | undefined,
+                             opts?: { max?: number; window?: string }): PageFingerprint;
+export function fingerprintMatch(recorded: PageFingerprint | null | undefined,
+                                live: LayoutNode | null | undefined): number;
+export function samePage(recorded: PageFingerprint | null | undefined,
+                         live: LayoutNode | null | undefined, threshold?: number): boolean;
+export function extraTopPaths(recorded: PageFingerprint | null | undefined,
+                              live: LayoutNode | null | undefined): LayoutPath[];
+export function claimLayout(entry: { rect: Rect; type?: string }, flat: FlatEntry[],
+                            opts?: { minCover?: number }): FlatEntry | null;
+export function layoutCoverRatio(outer: Rect, inner: Rect): number;
+
+export function diagnose(err: unknown, ctx?: DiagnoseContext): Diagnosis;
+export function formatDiagnosis(d: Diagnosis): string;
+export function stateMatches(state: NodeState, matcher: ExpectMatcher): boolean;
+export function explainMismatch(state: NodeState, matcher: ExpectMatcher): string;
+
+/** 升级大模型时的**证据包**（期望 + 实际 + 历史）。 */
+export interface EvidencePack {
+  step?: string;
+  path?: LayoutPath;
+  expect?: ExpectMatcher;
+  attempt?: number;
+  maxAttempts?: number;
+  diagnosis: Diagnosis;
+  fingerprint?: unknown;
+  layout?: LayoutNode | null;
+  history?: { retries?: number; lastModelAnswer?: string };
+}
+export function formatEvidence(pack: EvidencePack): string;

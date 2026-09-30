@@ -15,6 +15,8 @@
 #include "binary/code_agent/JZScreenShot.h"  // captureVirtualDesktop / toDataUrl / save
 #include "json/json.h"                     // layoutTree 的返回(Json::Value 由 jsbind 自动转 JS 对象)
 
+class JZVirtualDevice;                     // 虚拟桌面后端 (见 setVirtualDesktop)
+
 // 归一化矩形(相对虚拟桌面截图, [0,1])
 struct CuRect JZFRAMEWORK_API { double x = 0, y = 0, w = 0, h = 0; };
 
@@ -67,8 +69,26 @@ public:
     static CuRect    matchImage(const std::string& templatePath, const CuRect& region); // 模板匹配, 未找到 w==0
     static CuRect    matchColor(const std::string& hexColor, const CuRect& region);    // 颜色查找, 未找到 w==0
 
+    // ————————————————————————————————————————————————
+    // 后端选择: 真实桌面 / **虚拟桌面** (JZVirtualDevice)
+    // ————————————————————————————————————————————————
+    // 默认真实桌面(抓屏 + EnumWindows + SendInput)。传 JZVirtualDevice 之后, 上面**全部**
+    // 屏幕/窗口/输入语义都改落在那块虚拟桌面上 —— 这是"确定性回放"那条路:
+    //   screenshot()        -> 桌面合成帧 (不是抓屏; 不受遮挡/z 序/前台影响)
+    //   layoutTree(title)   -> 桌面里那个窗口的语义树, rect 归一化到**整块桌面**(与 click 同口径)
+    //   click/drag          -> 注入虚拟桌面 (命中窗口 -> 激活它 -> 换算客户区 -> 投递控件)
+    //   key/type            -> 投递给虚拟桌面的活动窗口
+    //   focusWindow(title)  -> 激活桌面上那个窗口
+    //   waitStable()        -> 恒真 (虚拟桌面渲染是同步的, 不存在"界面还没渲染完")
+    // 虚拟桌面下**不适用**的: switchToDesktop / 进程管理(start/terminate/focusProcess) /
+    //   launch / 像素族匹配 —— 一律明确返回失败, 绝不悄悄去动真实系统。
+    static void setVirtualDesktop(JZVirtualDevice* desk);   // nullptr = 回到真实桌面
+    static JZVirtualDevice* virtualDesktop();
+    static bool isVirtualDesktop();
+
 private:
     static CuRect s_lastLogical;                                   // 最近截图对应的虚拟桌面逻辑矩形(坐标换算用)
+    static JZVirtualDevice* s_virtualDesk;                         // 虚拟桌面后端 (nullptr = 真桌面)
     static void   updateLogical(const JZRect& r);
     static DWORD  btnDown(MouseBtn b);
     static DWORD  btnUp(MouseBtn b);

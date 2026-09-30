@@ -8,11 +8,14 @@
 #include <objbase.h>     // CoInitializeEx / CoCreateInstance / IID_PPV_ARGS
 #include <tlhelp32.h>    // 进程快照
 #include <cstring>       // strstr
-// 框架侧(布局通道要用): 语义树 / 活动窗口 / 显示器几何
+#include <cmath>         // lround (归一化坐标 -> 桌面像素)
+// 框架侧(布局通道要用): 语义树 / 活动窗口 / 显示器几何 / 虚拟桌面后端
 #include "JZApplication.h"
 #include "JZLog.h"
 #include "JZWidget/JZWidget.h"
 #include "JZWidget/JZWindow.h"
+#include "JZWidget/JZVirtualDevice.h"    // 虚拟桌面 (setVirtualDesktop)
+#include "JZWidget/JZVirtualWindow.h"
 
 // OpenCV 只在"像素族匹配"(matchImage/matchColor)里用，而像素族已降级为**兜底**
 // (见 docs/compute-use-design.md §4.1) ⇒ 默认不编，避免为一个兜底能力背整条 OpenCV 依赖。
@@ -25,8 +28,45 @@
 #endif
 
 CuRect JZComputerUse::s_lastLogical;
+JZVirtualDevice* JZComputerUse::s_virtualDesk = nullptr;
+
+// —— 后端选择 ——
+void JZComputerUse::setVirtualDesktop(JZVirtualDevice* desk) {
+    s_virtualDesk = desk;
+    // 归一化基准 = **整块桌面**: layoutTree 的归一化与 click 的反算用的是同一个
+    // s_lastLogical, 这样"布局给的 rect"和"点击落点"必然同口径 (与真桌面路径同一条规矩)。
+    if (desk)
+        updateLogical(JZRect(0, 0, desk->desktopWidth(), desk->desktopHeight()));
+}
+
+JZVirtualDevice* JZComputerUse::virtualDesktop() { return s_virtualDesk; }
+bool JZComputerUse::isVirtualDesktop() { return s_virtualDesk != nullptr; }
 
 namespace {
+
+// 虚拟桌面: 对外鼠标按钮 -> 框架鼠标事件按钮
+JZMouseEvent::Button cuVirtualBtn(JZComputerUse::MouseBtn b) {
+    if (b == JZComputerUse::MouseBtn::Right)  return JZMouseEvent::RightButton;
+    if (b == JZComputerUse::MouseBtn::Middle) return JZMouseEvent::MiddleButton;
+    return JZMouseEvent::LeftButton;
+}
+
+// 语义树的 boundsInScreen 对**虚拟窗口**而言是"窗口客户区坐标"(窗口不知道桌面偏移);
+// 加上窗口的桌面坐标才是真正的"屏幕坐标" —— 与真实窗口 mapToGlobal 的语义对齐。
+// (偏移由桌面提供: 坐标系归桌面所有, 窗口只知道自己那块客户区。)
+void shiftBoundsInScreen(Json::Value& n, int dx, int dy) {
+    Json::Value& b = n["boundsInScreen"];
+    if (b.isArray() && b.size() >= 4) {
+        b[0] = b[0].asInt() + dx;
+        b[1] = b[1].asInt() + dy;
+    }
+    Json::Value& kids = n["children"];
+    if (kids.isArray()) {
+        for (auto& c : kids)
+            shiftBoundsInScreen(c, dx, dy);
+    }
+}
+
 #if JZ_CU_OPENCV
     std::string tempDir() {
         char buf[MAX_PATH];
@@ -312,6 +352,9 @@ DWORD JZComputerUse::btnUp(MouseBtn b) {
 }
 
 void JZComputerUse::switchToDesktop() {
+    // 虚拟桌面下没有"显示桌面"这回事 (桌面永远是它自己那块) —— 明确 no-op, 不碰真实系统
+    if (s_virtualDesk)
+        return;
     // 不用 Win+D 按键模拟(它是 toggle, 状态不可控); 改调 Explorer 真正的"显示桌面" COM 语义。
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     IShellDispatch4* pShell = nullptr;
@@ -324,6 +367,12 @@ void JZComputerUse::switchToDesktop() {
 }
 
 bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
+    // 虚拟桌面: 归一化 -> 桌面像素 -> 命中窗口(并激活它) -> 换算客户区 -> 投递控件
+    if (s_virtualDesk) {
+        const int x = (int)std::lround(nx * s_virtualDesk->desktopWidth());
+        const int y = (int)std::lround(ny * s_virtualDesk->desktopHeight());
+        return s_virtualDesk->injectClickAt(x, y, cuVirtualBtn(btn));
+    }
     DWORD ax, ay; toAbsolute(nx, ny, ax, ay);
     INPUT in[2] = {};
     in[0].type = INPUT_MOUSE; in[0].mi.dx = ax; in[0].mi.dy = ay; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
@@ -345,6 +394,22 @@ bool JZComputerUse::doubleClick(double nx, double ny, MouseBtn btn) {
 }
 
 bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
+    // 虚拟桌面: 按下 -> 中间位移若干步 (控件靠 move 判拖拽) -> 抬起
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        const int W = d->desktopWidth(), H = d->desktopHeight();
+        const int ax = (int)std::lround(x1 * W), ay = (int)std::lround(y1 * H);
+        const int bx = (int)std::lround(x2 * W), by = (int)std::lround(y2 * H);
+        d->injectMouseAtScreen(JZMouseEvent::Press, JZMouseEvent::LeftButton, ax, ay);
+        // 抓取由控件接管 (grabMouse/m_mouseGrabber), 后续 move 会直发它 —— 与真实拖拽同一条路
+        for (int i = 1; i <= 5; ++i) {
+            const int xi = ax + (bx - ax) * i / 5;
+            const int yi = ay + (by - ay) * i / 5;
+            d->injectMouseAtScreen(JZMouseEvent::Move, JZMouseEvent::LeftButton, xi, yi);
+        }
+        d->injectMouseAtScreen(JZMouseEvent::Release, JZMouseEvent::LeftButton, bx, by);
+        return true;
+    }
     DWORD ax1, ay1, ax2, ay2; toAbsolute(x1, y1, ax1, ay1); toAbsolute(x2, y2, ax2, ay2);
     INPUT in[4] = {};
     in[0].type = INPUT_MOUSE; in[0].mi.dx = ax1; in[0].mi.dy = ay1; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
@@ -356,6 +421,28 @@ bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
 }
 
 void JZComputerUse::key(const std::string& name) {
+    // 虚拟桌面: "Ctrl+C" 拆成修饰键 + 主键 -> 注入活动窗口 (不走 SendInput)
+    if (s_virtualDesk) {
+        std::vector<std::string> parts; split(name, '+', parts);
+        uint32_t mods = JZKeyEvent::NoModifier;
+        int vk = 0;
+        for (size_t i = 0; i < parts.size(); ++i) {
+            std::string low = parts[i];
+            for (auto& c : low) c = (char)tolower((unsigned char)c);
+            if (i + 1 < parts.size()) {                 // 前缀都是修饰键
+                if (low == "ctrl" || low == "control") mods |= JZKeyEvent::CtrlModifier;
+                else if (low == "shift")               mods |= JZKeyEvent::ShiftModifier;
+                else if (low == "alt")                 mods |= JZKeyEvent::AltModifier;
+            } else {
+                vk = vkFromName(parts[i]);              // 最后一个是主键
+            }
+        }
+        if (vk == 0)
+            return;
+        s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, true);
+        s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, false);
+        return;
+    }
     std::vector<std::string> parts; split(name, '+', parts);
     std::vector<int> vks; vks.reserve(parts.size());
     for (auto& p : parts) vks.push_back(vkFromName(p));
@@ -370,6 +457,11 @@ void JZComputerUse::key(const std::string& name) {
 }
 
 void JZComputerUse::type(const std::string& text) {
+    // 虚拟桌面: 逐码点注入活动窗口 (UTF-8 原样, 不经 SendInput 的宽字符转换)
+    if (s_virtualDesk) {
+        s_virtualDesk->injectText(text);
+        return;
+    }
     int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
     std::wstring w(n - 1, 0);
@@ -385,6 +477,12 @@ void JZComputerUse::type(const std::string& text) {
 void JZComputerUse::wait(int ms) { if (ms > 0) Sleep(ms); }
 
 std::string JZComputerUse::screenshot() {
+    // 虚拟桌面: 直接拿桌面合成帧 (不抓屏) —— 不受遮挡/z 序/前台/多屏影响, 也不用拷屏
+    if (s_virtualDesk) {
+        JZImage img = s_virtualDesk->screenshot();
+        updateLogical(JZRect(0, 0, s_virtualDesk->desktopWidth(), s_virtualDesk->desktopHeight()));
+        return JZScreenShot::toDataUrl(img);
+    }
     JZRect logical;
     JZImage img = JZScreenShot::captureVirtualDesktop(&logical);
     updateLogical(logical);
@@ -483,6 +581,26 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
 // 布局通道（运行期寻址的**正路**）
 // ————————————————————————————————————————————————
 Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
+    // ---- 虚拟桌面: 目标 = 桌面上的窗口 (titleFilter 匹配不到就退回活动窗口) ----
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        JZVirtualWindow* w = titleFilter.empty() ? d->activeWindow() : d->byTitle(titleFilter);
+        if (!w)
+            return Json::Value();          // 没有目标窗口 => null (JS 侧据此标 degraded)
+
+        const JZRect base(0, 0, d->desktopWidth(), d->desktopHeight());
+        updateLogical(base);               // 归一化基准 = 整块桌面 (与 click 同口径)
+
+        Json::Value tree = w->dumpSemanticTree(-1);
+        // 窗口客户区坐标 -> 桌面屏幕坐标 (窗口自己不知道它在桌面上的位置)
+        shiftBoundsInScreen(tree, w->screenX(), w->screenY());
+
+        Json::Value out(Json::objectValue);
+        out["source"] = "semantic";
+        out["tree"] = widgetTreeToLayout(tree, base);
+        return out;
+    }
+
     // 目标窗口: 指定了标题就按标题找(自动化脚本多半在终端里跑, "前台窗口"常常是终端本身),
     // 否则退回前台窗口。
     HWND target = nullptr;
@@ -522,6 +640,10 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
 }
 
 bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
+    // 虚拟桌面: 注入是**同步**的 (命令返回时那一帧已经渲染完), 不存在"界面还没渲染完" —— 恒稳。
+    // 这正是确定性回放的关键: 真桌面要靠"帧间变化收敛"去猜, 这里不用猜。
+    if (s_virtualDesk)
+        return true;
     if (settleMs < 0) settleMs = 300;
     if (timeoutMs <= 0) timeoutMs = 10000;
     const int step = 100;
@@ -552,6 +674,9 @@ bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
 
 bool JZComputerUse::launch(const std::string& exe, const std::string& args,
                            const std::string& title, int timeoutMs) {
+    // 虚拟桌面: 不启动真实进程 —— 桌面上的窗口由宿主创建 (切目标用 focusWindow)
+    if (s_virtualDesk)
+        return false;
     if (!exe.empty() && startProcess(exe, args) == 0)
         return false;
 
@@ -574,6 +699,9 @@ bool JZComputerUse::launch(const std::string& exe, const std::string& args,
 // 进程与窗口管理（不使用按键模拟）
 // ————————————————————————————————————————————————
 DWORD JZComputerUse::startProcess(const std::string& path, const std::string& args) {
+    // 虚拟桌面: 绝不启动真实进程
+    if (s_virtualDesk)
+        return 0;
     STARTUPINFOA si = {}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
     std::string cmd = path;
@@ -590,6 +718,9 @@ DWORD JZComputerUse::startProcess(const std::string& path, const std::string& ar
 }
 
 bool JZComputerUse::terminateProcess(DWORD pid) {
+    // 虚拟桌面: 绝不去杀真实进程 (要"关掉桌面上那个窗口"用 JZVirtualDevice::destroyWindow)
+    if (s_virtualDesk)
+        return false;
     HANDLE h = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!h) return false;
     bool ok = TerminateProcess(h, 0) != 0;
@@ -604,6 +735,9 @@ bool JZComputerUse::terminateProcess(const std::string& name) {
 }
 
 bool JZComputerUse::focusProcess(DWORD pid) {
+    // 虚拟桌面: 没有"进程"这一层 —— 切目标请用 focusWindow
+    if (s_virtualDesk)
+        return false;
     FindCtx c; c.pid = pid;
     EnumWindows(EnumFindPid, (LPARAM)&c);
     if (!c.found) return false;
@@ -618,6 +752,14 @@ bool JZComputerUse::focusProcess(const std::string& name) {
 }
 
 bool JZComputerUse::focusWindow(const std::string& title) {
+    // 虚拟桌面: 激活桌面上标题匹配的那个窗口 (置顶 + 键盘焦点)
+    if (s_virtualDesk) {
+        JZVirtualWindow* w = s_virtualDesk->byTitle(title);
+        if (!w)
+            return false;
+        s_virtualDesk->activate(w);
+        return true;
+    }
     FindCtx c; c.title = &title;
     EnumWindows(EnumFindTitle, (LPARAM)&c);
     if (!c.found) return false;

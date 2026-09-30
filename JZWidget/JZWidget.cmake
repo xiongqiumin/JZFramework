@@ -91,6 +91,8 @@ set(JZ_SOURCES
     JZMessageBox.cpp
     JZDisplayDevice.h
     JZDisplayDevice.cpp
+    JZVirtualWindow.h
+    JZVirtualWindow.cpp
     JZVirtualDevice.h
     JZVirtualDevice.cpp
     JZScreen.h

@@ -123,6 +123,17 @@ JZWindow::JZWindow(int w, int h, const std::string& title, JZWidget* parent)
     setTitle(title);
 }
 
+// 不登记顶层窗口表的构造 (虚拟桌面内部的窗口用; 见 JZVirtualWindow)。
+JZWindow::JZWindow(int w, int h, const std::string& title, JZWidget* parent,
+                   SkipTopLevelRegistration)
+    : JZWidget(parent)
+{
+    m_device = new JZDisplayDevice();
+    m_visible = false;
+    resize(w, h);
+    setTitle(title);
+}
+
 JZWindow::~JZWindow()
 {
     if (jzApp)
@@ -1312,7 +1323,7 @@ void JZWindow::activateWindow()
 void JZWindow::onWindowFocus(bool got)
 {
     m_hasWindowFocus = got;
-    if (got && jzApp)
+    if (got && jzApp && registerAsAppActiveWindow())
         jzApp->setActiveWindow(this);       // JZApplication::activeWindow() 的回退值
 
     if (!got && m_focusWidget) {

@@ -216,6 +216,16 @@ protected:
     void onWindowFocus(bool got);           // 窗口获/失焦: 管理 IMC + 派发焦点进/出事件
 
 protected:
+    // 内部标记: 不登记进 JZApplication 顶层窗口表 (虚拟桌面内部的窗口用; 见 JZVirtualWindow)。
+    // 这些窗口的 z 序/活动态由虚拟桌面自己管, 不能混进 app 的"顶层窗口 /
+    // 最后一个可见窗口关闭则退出"判定。
+    struct SkipTopLevelRegistration {};
+    JZWindow(int w, int h, const std::string& title, JZWidget* parent, SkipTopLevelRegistration);
+
+    // 窗口获得键盘焦点时, 是否登记为 app 的"活动窗口" (JZApplication::activeWindow 的回退值)。
+    // 虚拟桌面内部的窗口返回 false —— 它们的活动态在桌面管理器里, 不该影响宿主 app。
+    virtual bool registerAsAppActiveWindow() const { return true; }
+
     void createWindow();
 
     JZDisplayDevice* m_device = nullptr;

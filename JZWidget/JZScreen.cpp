@@ -381,17 +381,42 @@ JZImage JZScreen::grabWindow(void* nativeHandle)
     if (!wdc)
         return JZImage();
 
-    DibTarget t = jzCreateDib(wdc, w, h);
     JZImage img;
-    if (t.ok())
+    // ⚠ PrintWindow 默认画的是**整个窗口**(含非客户区: 标题栏 + 左右下边框), 而目标 DIB 只有客户区大小
+    //   ⇒ 直接抓会得到"带标题栏、底部被裁"的图: 客户区原点整体下移一个标题栏高度, 与 hitTest /
+    //   语义树 / 合成点击 / 控件 geometry 用的**客户区坐标**全部对不上 (JZWidget::grab 的裁剪也一并错)。
+    //   正确做法: 先按"整窗尺寸"抓完整窗口, 再按客户区原点在窗口里的偏移裁出客户区。
+    RECT wr = { 0, 0, 0, 0 };
+    POINT org = { 0, 0 };
+    if (GetWindowRect(hwnd, &wr) && ClientToScreen(hwnd, &org))
     {
-        // PrintWindow 抓自绘内容 (窗口被遮挡/离屏也正确); 失败退化为屏幕拷贝
-        if (!PrintWindow(hwnd, t.mem, PW_RENDERFULLCONTENT))
-            BitBlt(t.mem, 0, 0, w, h, wdc, 0, 0, SRCCOPY | CAPTUREBLT);
-        img = t.toImage();
+        const int ww = wr.right - wr.left;
+        const int wh = wr.bottom - wr.top;
+        const int ox = org.x - wr.left;          // 客户区原点相对窗口原点的偏移 (物理像素)
+        const int oy = org.y - wr.top;
+        if (ww >= w && wh >= h && ox >= 0 && oy >= 0 && ox + w <= ww && oy + h <= wh)
+        {
+            DibTarget full = jzCreateDib(wdc, ww, wh);
+            if (full.ok() && PrintWindow(hwnd, full.mem, PW_RENDERFULLCONTENT))
+            {
+                DibTarget t = jzCreateDib(wdc, w, h);
+                if (t.ok() && BitBlt(t.mem, 0, 0, w, h, full.mem, ox, oy, SRCCOPY))
+                    img = t.toImage();
+                t.release();
+            }
+            full.release();
+        }
     }
 
-    t.release();
+    // 退化: 直接从窗口 DC 拷客户区 (GetDC(hwnd) 的 (0,0) 就是客户区原点; 会被遮挡影响, 但不会错位)
+    if (img.isNull())
+    {
+        DibTarget t = jzCreateDib(wdc, w, h);
+        if (t.ok() && BitBlt(t.mem, 0, 0, w, h, wdc, 0, 0, SRCCOPY | CAPTUREBLT))
+            img = t.toImage();
+        t.release();
+    }
+
     ReleaseDC(hwnd, wdc);
     return img;
 }

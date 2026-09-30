@@ -379,7 +379,8 @@ string jzTsRuntimeNotes()
     s += "      import http from 'http';                  import { createServer } from 'http';\n";
     s += "      import { DatabaseSync } from 'sqlite';    import fs from 'node:fs';\n";
     s += "    内置名: net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto / "
-         "buffer / os / serialport / modbus / sqlite / stream / worker_threads(控件另有 widget)。\n";
+         "buffer / os / serialport / modbus / sqlite / stream / worker_threads"
+         "(控件另有 widget; computer use 另有 computeruse —— 这两个只有具名导出, 没有 default)。\n";
     s += "  - worker_threads(与 Node 同名): `import { Worker, isMainThread, threadId } from 'worker_threads'`; "
          "worker 侧用 `import { parentPort, workerData } from 'worker_threads'` 的 parentPort.on('message') / "
          "parentPort.postMessage; 入口脚本按**运行根**解析(写 './helper/x.js' 或 'helper/x.js' 都行)。\n";

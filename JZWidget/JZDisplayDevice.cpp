@@ -12,7 +12,7 @@
 // ==================== 渲染调度 ====================
 JZDisplayDevice::JZDisplayDevice()
 {
-    m_backend = new JZGdiBackend();
+    m_backend = new JZGdiBackend();   // 默认后端; 可经 setRenderBackend 替换
 }
 
 JZDisplayDevice::~JZDisplayDevice()
@@ -24,9 +24,35 @@ JZDisplayDevice::~JZDisplayDevice()
     }
 }
 
+void JZDisplayDevice::setRenderBackend(JZRenderBackend* backend)
+{
+    if (backend == m_backend)
+        return;
+    if (m_backend) {
+        m_backend->destroy();
+        delete m_backend;
+    }
+    m_backend = backend;
+    if (!m_backend)
+        m_backend = new JZGdiBackend();   // nullptr = 恢复默认后端
+}
+
 void JZDisplayDevice::init(void* hwnd, int width, int height)
 {
-    m_backend->init(this, hwnd, width, height);
+    if (m_backend)
+        m_backend->init(this, hwnd, (unsigned)width, (unsigned)height);
+}
+
+// 离屏: 不绑定窗口, 后端只建自己的帧缓冲 (target = nullptr), 取帧走 snapshot
+void JZDisplayDevice::initOffscreen(int width, int height)
+{
+    if (m_backend)
+        m_backend->init(this, nullptr, (unsigned)width, (unsigned)height);
+}
+
+bool JZDisplayDevice::snapshot(JZImage& out)
+{
+    return m_backend ? m_backend->snapshot(out) : false;
 }
 
 JZLayer* JZDisplayDevice::layer()

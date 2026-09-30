@@ -23,6 +23,9 @@ add_custom_command(TARGET agent_cli POST_BUILD
         $<TARGET_FILE_DIR:agent_cli>/http
     COMMENT "copy agent_cli web ui (http/)")
 
+# test: --loop 端到端等测试(见 test/CMakeLists.txt; 测试脚本与它的验证程序都放在那里)
+add_subdirectory(test)
+
 # agent_cli_test: 复用 code_agent/benchmark 用例评测 JZAgentCli(见 agent_cli_test/CMakeLists.txt)
 add_subdirectory(agent_cli_test)
 

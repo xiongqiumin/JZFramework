@@ -7,8 +7,11 @@
 //
 // 配置全部放 config.json(默认 exe 同目录, 可用 -c 指定); 命令行只负责:
 //   -c 指定配置文件 / --init 生成默认配置 / --check 校验并打印生效配置 / -h 帮助。
-//   --loop "<指令>" = 无人值守模式: 无限循环执行同一条指令(不起 HTTP/网页, 见 main 末尾),
-//   配套 --loop-interval <秒>(轮间等待) 与 --verify-cmd "<命令>"(每轮验证)。
+//
+// "多轮"由外部驱动: 谁想反复跑就往 POST /task 反复提交(每轮一次), 跑几轮 / 什么时候停由
+// 提交方决定 —— 比如验证程序在自己输出里打 [loop-stop], 提交方看见后不再提交即可。
+// 落地见 binary/agent_cli/tools/agent_loop.py(拉起 + 逐轮提交 + 外部复验), 不在 CLI 里另搞
+// 一套循环模式。
 //
 // 日志默认不打印到控制台(避免污染), 可配置 logFile 落盘排查。
 
@@ -26,6 +29,7 @@
 #include "JZFileInfo.h"
 #include "JZJson.h"
 #include "JZLog.h"
+#include "JZNet/JZNetObject.h"    // JZNet::setConfig(抬高 HTTP 接收缓冲, 见 main 里的说明)
 #include "JZPlatform.h"
 #include "JZString.h"
 #include "JZDebug.h"
@@ -521,7 +525,7 @@ int main(int argc, char *argv[])
 {
     JZCommandLineParser parser;
     parser.setDescription("agent_cli - HTTP task agent (POST /task)\n"
-                          "             加 --loop 则改为无人值守: 无限循环执行同一条指令(不启 HTTP/网页)\n");
+                          "             反复跑同一件事由提交方驱动: 逐轮 POST /task 即可\n");
 
     string cmdConfig;
     parser.addOption(JZCommandLineOption("--config", "-c",
@@ -534,21 +538,6 @@ int main(int argc, char *argv[])
     bool cmdCheck = false;
     parser.addOption(JZCommandLineOption("--check", "",
         "校验配置并打印生效配置后退出(不启动)"), &cmdCheck);
-
-    // ---- --loop: 无人值守模式(先不管网页) ----
-    string cmdLoop;
-    parser.addOption(JZCommandLineOption("--loop", "",
-        "无人值守: 无限循环执行这条指令(不起 HTTP/网页; 会话跨轮延续, 上下文超预算自动压缩)"),
-        &cmdLoop);
-
-    int cmdLoopIntervalSec = 0;
-    parser.addOption(JZCommandLineOption("--loop-interval", "",
-        "循环模式: 上一轮结束到下一轮开始的等待(秒, 默认 0 = 立刻下一轮)"), &cmdLoopIntervalSec);
-
-    string cmdVerifyCmd;
-    parser.addOption(JZCommandLineOption("--verify-cmd", "",
-        "循环模式: 每轮的验证命令(退出码 0 通过; 失败会把输出喂回 agent 续跑; 不给 = 不验证)"),
-        &cmdVerifyCmd);
 
     if (!parser.parse(argc, argv))
         return 1;
@@ -583,6 +572,16 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // net 层"单连接接收缓冲"默认只有 3MB(JZNetConfig::maxRecvSize ⇒ mongoose 的
+    // MG_MAX_RECV_SIZE)。/task 带图片(dataURL base64)时 body 会到 MB 级, 超了 mongoose
+    // **直接断连** —— 客户端只看到 connection aborted, 连错误回包都没有, 极难排查。
+    // 这里抬到 32MB, 与 JZAgentCli 的图片合计上限(24MB)留出 JSON 开销余量。
+    {
+        JZNetConfig netConfig;
+        netConfig.maxRecvSize = 32 * 1024 * 1024;
+        JZNet::setConfig(netConfig);
+    }
+
     JZApplication app;
 
     JZAgentCli cli;
@@ -592,17 +591,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // --loop: 无人值守模式 —— 先不管网页, 连 HTTP / FRP 都不起, 只反复执行这条指令。
-    //   每轮都是一次完整任务(带验证命令时含"验证脚本门控循环"), 结果打到控制台(日志)。
-    //   没有停止条件: Ctrl+C / 杀进程才停。
-    if (!cmdLoop.empty())
-    {
-        if (cmdVerifyCmd.empty())
-            fprintf(stderr, "循环模式: 未给验证命令(--verify-cmd), 每轮只驱动 agent 一次, 不验证\n");
-        cli.startLoop(cmdLoop, cmdVerifyCmd, cmdLoopIntervalSec * 1000);
-        return app.exec();
-    }
-
+    // 就绪: 常驻等 POST /task(每提交一次 = 一轮; 会话跨轮延续, 上下文超预算自动压缩)。
+    //   "反复跑同一件事"由提交方驱动, 见文件头说明与 tools/agent_loop.py。
     jzDebug("agent_cli 就绪(HTTP): http://%s:%d  token=%s",
             config.httpBind.c_str(), config.httpPort,
             config.httpToken.empty() ? "(无)" : "(已启用)");

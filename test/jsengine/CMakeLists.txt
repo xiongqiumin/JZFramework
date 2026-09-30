@@ -77,3 +77,27 @@ set_tests_properties(jsengine.test_load_ui.menubar PROPERTIES TIMEOUT 60)
 add_test(NAME jsengine.test_load_ui.containers COMMAND test_load_ui ${CMAKE_CURRENT_BINARY_DIR}/data/containers.xml)
 set_tests_properties(jsengine.test_load_ui.containers PROPERTIES TIMEOUT 60)
 endif()
+
+# computer-use: JS 侧端到端(**虚拟桌面**, 无真实窗口 ⇒ 可无头跑)。
+#   TS 包(computeruse/dist) → __jz.computeruse.* → JZComputerUse → JZVirtualDevice → 控件。
+# 依赖: JZWidget(虚拟桌面/控件) + CU 那两个源文件(与 binary/code_agent/runtime 同一套依赖)。
+if(HAS_JZWidget)
+# (JZJSComputerUseModule 与 JZComputerUse 都不在 JZFramework.lib 里 —— 只有 code_runtime
+#  和本测试显式编它们, 与 binary/code_agent/runtime/CMakeLists.txt 同一套依赖。)
+add_executable(test_jscu
+    test_jscu.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp)
+target_include_directories(test_jscu PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent)
+target_link_libraries(test_jscu JZFramework)
+# 虚拟桌面后端 (JZComputerUse 的 setVirtualDesktop 用它)
+target_link_libraries(test_jscu jz_virtual_device)
+target_compile_definitions(test_jscu PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
+
+# 像素族(颜色匹配)要走 OpenCV: 装上就开, 没装自动跳过(JS 侧那条断言会打印 [skip])
+jz_opencv_enable(test_jscu)
+
+add_test(NAME jsengine.test_jscu COMMAND test_jscu)
+set_tests_properties(jsengine.test_jscu PROPERTIES TIMEOUT 120)
+endif()

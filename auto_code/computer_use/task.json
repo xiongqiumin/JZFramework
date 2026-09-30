@@ -1,0 +1,19 @@
+{
+  "name": "computer_use",
+  "goal": "让 js_wrapper/computeruse 的探索实现(App.explore)能从屏幕像素产出语义场景树",
+  "prompt": "prompt.md",
+  "verify": "python run.py",
+  "recheck": "python run.py --no-archive",
+  "cwd": ".",
+  "rounds": { "max": 20, "retrySec": 5 },
+  "agent": {
+    "bin": "../../build/binary/agent_cli/Release/agent_cli.exe",
+    "note": "agent_loop.py --agent-cmd \"<bin> -c <config.json>\"; 提交用的 URL/token 从 config.json 读（⚠ 产物在 build/binary/agent_cli/<CFG>/agent_cli.exe，没有 bin/ 这一层）"
+  },
+  "paths": {
+    "truth": "scenes/truth.json",
+    "pred": "runs/current/tree.json",
+    "result": "runs/current/result.json"
+  },
+  "note": "本文件是人/工具读的任务清单。agent_loop.py 目前不认识它 —— 参数按上面几条手敲，后续可加 run.py 翻译。"
+}

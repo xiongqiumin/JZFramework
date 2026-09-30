@@ -9,6 +9,7 @@
 #include "JZJSqliteModule.h"
 #include "JZJSModbusModule.h"
 #include "JZJSWidgetModule.h"
+#include "JZJSComputerUseModule.h"
 #include "JZJSWorkerModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
@@ -188,6 +189,12 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_widgetModule = std::make_unique<JZJSWidgetModule>();
     m_widgetModule->initEngine(engine);
 
+    // computer use：__jz.computeruse.*（点击/按键/截图/match + 布局通道 layoutTree/waitStable/launch）。
+    // 挂在这里而不是 net/core 里：它要用 JZWidget 的语义树(dumpSemanticTree)与 JZScreenShot，
+    // 属于"宿主能力"而不是语言运行时能力。⚠ 必须在 worker 之前装(见下面 net 覆盖 __jz 的说明)。
+    m_computerUseModule = std::make_unique<JZJSComputerUseModule>();
+    m_computerUseModule->initEngine(engine);
+
     // worker：__jz.worker.* + 全局 Worker 类（每个 worker 一个独立引擎 + 消息通信）。
     // 【必须最后装】JZJSNetModule::initEngine 会无条件新建并覆盖全局 __jz，而本模块
     // 往 __jz 里塞 worker 子命名空间 —— 排在 net 之前会被覆盖掉。
@@ -251,6 +258,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_modbusModule->deinitEngine();
         m_modbusModule.reset();
+    }
+    if (m_computerUseModule)
+    {
+        m_computerUseModule->deinitEngine();
+        m_computerUseModule.reset();
     }
 if (m_widgetModule)
 {

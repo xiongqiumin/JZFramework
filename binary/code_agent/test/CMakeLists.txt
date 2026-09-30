@@ -18,11 +18,18 @@ set(CODE_AGENT_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZExeResource.cpp
+    # computer use: JZEngineRuntime::initEngine 会挂载 __jz.computeruse ⇒ 这几个源文件
+    # 必须一起编进来(它们不在 JZFramework.lib 里; 与 binary/code_agent/runtime/CMakeLists.txt 同一套依赖)。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZScreenShot.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
 )
 
 add_executable(code_agent_test ${CODE_AGENT_TEST_SOURCES})
 target_include_directories(code_agent_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_agent_test PRIVATE JZFramework)
+# JZComputerUse 的虚拟桌面后端在 binary/virtual_device (见那里的 CMakeLists)
+target_link_libraries(code_agent_test PRIVATE jz_virtual_device)
 
 # 测试要"调用运行时"（code_runtime 子进程），保证其先构建
 add_dependencies(code_agent_test code_runtime)

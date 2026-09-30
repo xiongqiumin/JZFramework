@@ -41,11 +41,20 @@ set(CODE_AGENT_SOURCES
     JZEngineRuntime.cpp
     JZSourceMap.h
     JZSourceMap.cpp
+    # computer use：底层桌面语义 + __jz.computeruse 桥（JZEngineRuntime 里挂载）。
+    # ⚠ 编译得放在这里(而不是 JZFramework 主体)：JZComputerUse 依赖 code_agent 的 JZScreenShot，
+    #   且它对 JZWidget 的语义树(dumpSemanticTree)有依赖 —— 都是"宿主能力"。
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})
 target_link_libraries(code_agent PRIVATE JZFramework)
 target_link_libraries(code_agent PRIVATE code_agent_core)
+# JZComputerUse 的虚拟桌面后端在 binary/virtual_device (见那里的 CMakeLists)
+target_link_libraries(code_agent PRIVATE jz_virtual_device)
 
 # exe 统一输出到 <build>/binary/code_agent/bin/<CONFIG>（说明见下面那段注释）。
 # ⚠ 必须**在子目录 add_subdirectory 之前**定义: 子目录(runtime 的 jsapi_example 要取

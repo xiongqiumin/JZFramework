@@ -1,217 +1,201 @@
-# Compute Use 设计目标
+# Compute Use 设计
 
-> 2026-09-25 首次成文。把"截图生成按键脚本、脚本执行重复操作"这一能力的设计目标、
-> 分层边界、定位策略与未来形态写成判据，并对照**当前代码**给出实现现状。
-> 参照文档：`widget-binding-design.md`（控件族的类定义在 JS 侧、C++ 只出函数的同款决定）、
-> `js-engine-wrapper-design.md`（模块/包/名字的总原则）、`ai-native-design.md`。
->
-> **结论先行**：Compute Use 只解决一件事 ——
-> **把"人操作桌面/应用"固化成可重复执行的脚本**，回放以**确定性锚点**为主、以 LLM 感知为辅。
-> 分层上严格对齐控件族已定的原则：
-> ① 控件树与 UI 操作全在 **JS** 侧（`js_wrapper/computeruse`）；
-> ② C++ 侧（`JZComputerUse` + `JZJSComputerUseModule`）**只提供底层 OS 语义**，不构建控件树；
-> ③ 浏览器/网页只是**附带能力**，不单独建模成 `Browser`/`WebElement` 类。
+> 2026-09-25 成文；2026-09-29 收敛为「**建模期用像素，运行期用布局**」，并按用户要求**精简**：
+> 运行时闸门 / 限流等策略**最后再做**（§7 第 8 条）。
+> 参照文档：`widget-binding-design.md`（类在 JS、C++ 只出函数的同款决定）、`ai-native-design.md`。
 
----
+## 0. 一句话
 
-## 1. 要解决什么问题
+把"人操作界面"固化成**可精确重复**的脚本，而不是每步重新截图重推理。
 
-传统 Computer Use（Claude Computer Use / Operator / OmniParser 系）是
-**每一步都重新截图、重新推理坐标**。优点是通用，缺点是：
+**两条铁律**：
 
-- **脆**：窗口挪位、分辨率变化、主题色变，坐标全错；
-- **不可复现**：同一任务跑两次结果可能不同，无法"精确重复 N 次"；
-- **贵**：每步都调 VLM，延迟与成本都高。
+1. **像素只在建模期出现**：建树时同时产出「**像素 ↔ 布局映射**」；运行期只按**布局路径**寻址。
+   像素可以告诉你"**变了没 / 长什么样**"，不可以告诉你"**控件在哪**"。
+2. **界面不匹配先本地分级**，稳定复现才升级大模型；模型只写 **override**，**模型文件运行期只读**。
 
-本框架的目标场景（用户原话："截图生成按键脚本，脚本执行重复操作"）恰好是
-**可重复、可复现的批处理**——例如"在画图软件里画 100 个红圆""每天把同一份报表导出发邮件"。
-这类任务不需要每步重推理，只需要**一次标定、多次确定性回放**。
+**分层**：
 
-§9 给出对应开源范式，本设计是其中两类思路的融合。
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| JS | `js_wrapper/computeruse` | 控件树 + UI 操作 + **校验**。`app` = 引用本包的一组**脚本**（包内不做框架 / 单例） |
+| C++ | `JZComputerUse` / `JZJSComputerUseModule` | 只出 OS 原语，不建树 |
+| 附带 | 同一条树 | 网页元素当普通节点，不立 `Browser` / `WebElement` |
 
----
+## 1. 用例：打开 / 关闭电源
 
-## 2. 核心思想：持久锚点 + 确定性回放
+目标程序是**外部电源软件**（第三方上位机，只有像素和它自己的窗口布局）。
 
-把"控件在哪、长什么样"在**录制/探索期一次性**确定下来，固化为一棵**语义控件树**
-（`App / Tab / Button / Canvas ...`，用 TS 类描述，见 `js_wrapper/computeruse/index.ts`）。
-之后回放时：
+### 1.1 建模期（一次，人在环中）—— **像素在这里**
 
-1. 每个控件带一个 **Locator**（见 §4），声明"我靠什么被找到"；
-2. 回放时先在**小区域**内按 Locator 定位（模板匹配 / OCR / 颜色 / 检测）；
-3. 找到了 → 注入真实 OS 动作（点击/拖拽/按键）；找不到 → 抛"控件不存在"异常。
+```ts
+const shot = await captureScreen();                        // ① 截一张
+const per  = await perceive(shot, { vlm });                // ② VLM：屏幕上有什么
+const per2 = await review(per);                            // ③ 人审：删错检 / 补漏检 / 改类型文字
+const app  = App.build(per2, { layout: layoutTree() });    // ④ 把元素认领到布局节点 ⇒ 映射
+await app.save('psu.json');                                // ⑤ 固化：树 + layout 路径 + 页面指纹
+```
 
-窗口挪位也不怕：Locator 在小区域内重定位，坐标自动跟随。**这正是 `Button.click()` 的契约**
-（`index.ts:117-120`、`index.ts:93-98`）——先 `locate()` 判存在，找不到抛异常，找到才 `backend.click()`。
+`layoutTree()` 对自家界面就是 `dumpSemanticTree`：每个节点自带 `viewId`（= `objectName()`），
+所以 `layout` 路径 = 从窗口往下拼 `viewId`（如 `/main/btnOutput`）；同一棵树还给出屏幕坐标与
+`text / checkable+checked / range{value,min,max}` —— 运行期的**寻址**与**校验**都用它。
+（`perceive` / `build(per,{layout})` 已实现，见 §7；§1.1 的 `review` 钩子已留、UI 待补。）
 
-这与"每步重推理"形成根本区别：我们**不每步截图重猜**，只在锚点失效的异常分支才可能需要 LLM 介入
-（未来 `App.explore` / `fromPerception` 的扩展点，现状未实现，见 `types.ts:72-73`）。
+### 1.2 运行期（无人）—— **不碰像素**
 
----
+```ts
+// psu.ts —— app = 引用 computeruse 的一组脚本
+import { App, expect } from 'computeruse';
 
-## 3. 分层边界（关键约束）
+const app = App.load('psu.json');                    // 模型：树 + layout 路径 + 页面指纹
+await app.launch({ exe: 'PSU.exe', title: /电源/ });  // ① 启动 / 激活目标窗口
+await app.attach();                                  // ② 绑定布局（不涉像素）
 
-直接复用控件族在 `widget-binding-design.md` 里定下的原则：**类定义在 JS、C++ 只出函数**。
-Compute Use 的分层如下：
+// 打开电源
+await app.at('/main/btnOutput').click();             // ③ 布局寻址 → 注入
+await app.expect('/main/lblOutput', 'ON');           // ④ 校验：读布局文本，不 OCR
 
-### 3.1 JS 侧：控件树 + UI 操作（`js_wrapper/computeruse`）
+// 关闭电源
+await app.at('/main/btnOutput').click();
+await app.expect('/main/lblOutput', 'OFF');
+```
 
-- **`types.ts`** —— 纯接口契约（与实现解耦）：几何 `Rect/Point`、定位策略 `Locator`、
-  底层后端接口 `ComputerUseBackend`、语义节点接口 `ICuNode/IButton/...`。
-  这里**只有类型，没有逻辑**。
-- **`index.ts`** —— 具体类 `implements` 接口，所有 OS 动作**100% 通过 `backend`（即 `__jz.computeruse`）**，
-  自己不碰任何系统 API，也不在 JS 侧匹配图片/发键鼠。
-- 控件词汇参考 `JZWidget`：`App / Tab / Menu / Toolbar / Group / Window / Button / Edit /
-  ComboBox / CheckBox / Slider / Label / Link / Canvas`（见 §6 控件表）。
-- 模型固化在 JS 侧：`serialize`/`deserialize`（`index.ts:249-290`）把控件树序列化成 JSON，
-  经 `__jz.core` 落盘；`App.save` / `App.load` 复用之。
+业务动作（发 SCPI 命令、读数据、写日志）**不走界面**，直接走协议 / 命令行；
+界面层只做"只有人才能做的那部分"。
 
-### 3.2 C++ 侧：只提供底层 OS 语义（`JZComputerUse`）
+### 1.3 界面不匹配：先本地判，再决定要不要叫模型
 
-- **`JZComputerUse`** —— 基本 OS 语义的**纯 C++ 类**，不依赖引擎、`JZObject` 派生即可：
-  `switchToDesktop`（Win+Tab / Win+D 切虚拟桌面/显示桌面）、`click`（归一化坐标 → 屏幕像素 → `SendInput`）、
-  `drag`、`key`（名称 → `inputECoreToVK` 映射 → `SendInput`）、`type`、
-  `screenshot`（复用 `JZScreenShot::captureVirtualDesktop` → dataURL）、
-  `findImage`（OpenCV `matchTemplate` 单尺度）、`findColor`（`JZColorUtil`）。
-  **不在 C++ 侧构建任何控件树**——树在 JS 侧。
-- **`JZJSComputerUseModule`** —— 把 `JZComputerUse` 暴露给 JS，建 `__jz.computeruse`，
-  提供 `switchToDesktop / click / drag / key / type / wait / screenshot / match / saveModel / loadModel`。
-  `match` 统一收 `JSON.stringify(Locator)`，按 `kind` 分派到 `findImage`/`findColor`；
-  其中 `ocr`/`yolo` 两种策略**当前未接入**（匹配失败返回未找到，待后续接 OCR/YOLO 后端）。
-- **不进构建**：`JZComputerUse` / `JZJSComputerUseModule` 尚未加入任何 CMake，且不挂 `JZObject` 派生树
-  （`JZComputerUse` 是独立 OS 工具类）。接入时再在 `binary/code_agent/CMakeLists.txt` 注册。
+```ts
+try {
+  await app.at('/main/btnOutput').click();
+  await app.expect('/main/lblOutput', 'ON');
+} catch (e) {
+  // 分级（不调模型）：等界面稳定 → 重试 → 关掉意外弹窗 → 再重试
+  // 仍稳定复现 ⇒ 升级模型：证据包 = 期望(expect + 页面指纹) + 实际布局树 + 历史(重试次数/上次结论)
+  //    模型答：定性（偶发 / 真错）+ 修法（重试 / 补前置 / 换路径 / 更新映射）
+  // 模型结论只落 override（本次生效）；要改模型文件必须显式合并（人工确认 / 再建模）
+}
+```
 
-### 3.3 为什么这样切
+| 现象 | 性质 | 处置 |
+| --- | --- | --- |
+| A 暂时找不到（稳定 + 轮询 N 次内出现） | 偶发（时序） | 等待 + 重试 |
+| B 找到但 `enabled` / `checked` / `range` 不满足前置 | 流程前置缺失 | 补前置步骤 |
+| C 多出弹窗 / 对话框 | 偶发可自动处理 | 本地关掉后重试 |
+| D 稳定复现缺失 + **页面指纹变了** | 真错：走错流程 / 换了界面 | ⭐ 升级模型 |
+| E 同页但**节点路径变了** | 真错：版本漂移 | ⭐ 升级模型（要新路径 ⇒ 更新映射） |
+| F 窗口 / 进程消失 | 真错：程序异常 | 重启或中止 |
 
-- **C++ 不碰控件树**：控件树是"业务模型"（哪个按钮属于哪个选项卡），属于 JS 表达层；
-  底层"点击某个像素""在屏上找张图"才是 OS 原语，归 C++。两侧职责清晰、互不阻塞。
-- **JS 不碰系统 API**：所有副作用经由 `backend` 接口（`types.ts:53-74`），后端可整体替换
-  （换平台、换注入实现、换测试桩），上层语义树一行不用改——`setBackend`（`index.ts:50`）即注入点。
-- 这正好与控件族"JS 类层 + C++ 函数"的同款决定一致，不另立一套范式。
+⭐ **偶发 vs 真错 = 重试后是否稳定复现**，不靠模型拍脑袋；模型只在"稳定复现、但不知道该怎么修"时被叫来。
 
----
+⚠ 上位机会驱动**真实硬件**（电源 / 示波器 / MES）：把 error 误判成偶发而继续点 ≈ 事故，
+反之只是白停一次 ⇒ 默认**保守：拿不准就停、留证、回到可恢复点**，绝不"猜着往下点"。
 
-## 4. 定位策略 `Locator`（录制期决定"控件靠什么被找到"）
+⇒ 因此模型里必须记：每个**页面**一个**指纹**（窗口标识 + 关键节点路径集合），每个**步骤**一组**后置条件**（`expect`）。
 
-`types.ts:31-35` 把"怎么找控件"做成多态，而不是单一图片模板——对应三类控件的现实取舍：
+## 2. 两阶段
+
+| 阶段 | 输入 | 寻址依据 | 碰像素 |
+| --- | --- | --- | --- |
+| 建模期 | 截图 + 感知 + 人审 | 建立**像素 ↔ 布局映射** | ✅ 就是干这个的 |
+| 运行期 | 固化模型 | **布局路径**（控件当前几何） | ❌ 不用于寻址（同步 / 证据 / 兜底除外） |
+
+前提：**正常 app 都有布局** —— 自家有语义树；外部软件只要有 Win32 子窗口 / UIA / MSAA 就有。
+"控件在哪"是**能问出来的事实**，用像素猜是多余的 ⇒ 窗口挪位 / 缩放 / 换主题 / 换 DPI 都不必重标定。
+
+三条推论：
+
+1. **映射是建模产物的一部分**：每个节点记 `layout` 路径，像素 rect 只作证据（人标注时看得见）。
+   人审 / 标注的产物就是这个映射 —— 把"感知框"**认领**到布局节点上。
+2. **退化必须显式**：没有可访问布局（自绘 / Canvas / 游戏 / 远桌面）才允许用像素族 locator，并在模型里标出。
+3. **与评测不冲突**：评"感知能力（像素→树）"时禁用 `get_ui_state` / `dumpSemanticTree`（那是答案本身）；
+   运行期控制用布局恰好是设计目标 —— 两条线评的不是同一件事。
+
+## 3. Locator
 
 ```ts
 export type Locator =
-  | { kind: 'ocr';   text: string; region?: Rect }        // 基本文字按钮（OCR 找文字，最省事）
-  | { kind: 'image'; image: string; region?: Rect }       // 图标按钮（模板匹配，单尺度）
-  | { kind: 'color'; color: string; region?: Rect; tol?: number } // 颜色块（colorFind）
-  | { kind: 'yolo';  model: string; label?: string; region?: Rect }; // 复杂图标（小检测模型）
+  | { kind: 'layout'; path: string }                             // ⭐ 运行期正路（待落 types.ts）
+  | { kind: 'ocr'  ; text: string;  region?: Rect }              // 像素族：建模期辅助 + 无布局时兜底
+  | { kind: 'image'; image: string; region?: Rect }
+  | { kind: 'color'; color: string; region?: Rect; tol?: number }
+  | { kind: 'yolo' ; model: string; label?: string; region?: Rect };
 ```
 
-设计取舍（用户原话）：
+像素族的取舍（仍然成立，但已降级）：有文字 → `ocr`；图标 → `image`（单尺度，不做多尺度）；
+色块 → `color`；复杂图标 → `yolo`。`region` 是归一化小搜索区，不传则搜整屏。
 
-- **基本文字按钮 → `ocr`**：最省事，不需要准备任何素材；
-- **图标按钮 → `image`**：单尺度模板匹配即可，**当前不做多尺度**（多尺度不在范围内，留待后端，不改 `Locator` 形状）；
-- **颜色块 → `color`**：`colorFind` 按颜色，比模板更稳；
-- **复杂图标 → `yolo`**：几个样本即可训小检测模型，"花不了多久"。
+`click()` 契约不变：**先 `locate()` 判存在**（`index.ts:94-99`）**→ 找不到抛异常 → 找到才注入**
+（`index.ts:102-107`）。
 
-`region` 是可选的小搜索区域（归一化 `[0,1]`），不传则搜整屏。小区域带来两个好处：
-① 同名图标不误命中；② 匹配更快。**"Button.clicked 要判断自己是否存在"即 `locate()` 在小区域内找**
-（`index.ts:85-90`），找不到即视为"不存在"，抛异常而非静默继续。
+## 4. 校验（在 computeruse 包内）
 
-加策略**不破坏现有节点模型**——只是 `Locator` 多一种 `kind`，控件树结构不变。
+- 文本 / 勾选 / 范围值**先问布局**（`aiText` / `aiChecked` / `aiRangeValue`，`JZWidget.h:364-373`）；
+- 布局问不到才退像素（OCR = 本地 PP-OCR / 颜色 / 模板）；**OCR 只识别文字，状态判定仍优先问布局**。
 
----
+⇒ 布局通道是"读字符串比较"，像素通道是"截图 + OCR"，成本差一个量级。
 
-## 5. 确定性回放之外：录制/探索（未来形态，接口已留）
+## 5. 分层边界
 
-回放需要"树从哪来"。录制期职责（未来 `App.explore` / `fromPerception`，`types.ts:72-73`，现状未实现）：
+- **JS 侧**：`types.ts` 只有类型；`index.ts` 只有类与操作，所有副作用经 `backend`（= `__jz.computeruse`）；
+  `setBackend` 是注入点，后端可整体替换（换平台 / 换测试桩）。
+- **C++ 侧**：`JZComputerUse` 出 `switchToDesktop / click / drag / key / type / screenshot / layoutTree /
+  matchImage / matchColor / matchText / ocrTexts / waitStable / launch`；`JZJSComputerUseModule` 建
+  `__jz.computeruse`（`match` 收 `JSON.stringify(Locator)` 并按 kind 分派：`layout` **不在这里** ——
+  路径规则只在 JS 侧；`image` / `color` / `ocr` 已接，`yolo` 未接）。
+  `saveModel` / `loadModel` **不在 C++**：JS 侧序列化后经 `__jz.core` 读写文件。
+  ✅ 两个类都已进 CMake（编在 `binary/code_agent/runtime`）。`ocr` 走 **JZCv（本地 PP-OCR, ONNX Runtime）**：
+  用前 `__jz.computeruse.initOcr({modelRoot})` 或设 `JZ_CU_OCR_MODEL`；虚拟桌面下 OCR **直接读桌面合成帧**（不抓屏）。
+- 为什么这样切：C++ 不碰控件树（那是业务模型），JS 不碰系统 API（副作用全走 backend）。
 
-1. 截图当前界面；
-2. 用 VLM / 现有感知标出可交互锚点；
-3. **为每个控件选定 `Locator` 的 `kind`**（启发式：有文字 → `ocr`；纯色区 → `color`；
-   干净图标 → `image`；以上都不稳 → 收集样本训 `yolo`）；
-4. 固化成 `App` 模型（即 `paintApp.ts` 那种 TS 类，或序列化后的 JSON），供回放复用。
+## 6. API 速查
 
-这是一个自然的"录一次、跑百次"闭环，也是与 AppAgent（腾讯）同形的探索→固化→复用结构。
+**既有**：后端 `match / click / drag / key / type / wait / screenshot`；
+`App.explore / fromPerception / load / save`；`key / type / wait` 作为 primitive 直接导出（`index.ts:251-253`）。
+控件词汇（对齐 JZWidget）：`app / tab / menu / toolbar / group / window / button / link /
+edit / combobox / checkbox / slider / label / canvas`。
 
----
-
-## 6. 控件词汇表（对齐 JZWidget）
-
-| 控件 | type | 关键方法 | 定位/动作语义 |
-| --- | --- | --- | --- |
-| `App` | `app` | `find` / `button` / `save` / `load` / `explore` | 树根 |
-| `Tab` / `Menu` | `tab` / `menu` | `activate` / `ensureActivated` | 激活型容器：先定位再点 |
-| `Toolbar` / `Group` / `Window` / `Label` | 对应 | — | 纯容器/占位 |
-| `Button` / `Link` | `button` / `link` | `click(btn?)` | 复用基类"先判存在再注入" |
-| `Canvas` | `canvas` | `drag(from,to)` | 按坐标拖拽画形状 |
-| `Edit` | `edit` | `setText` / `clear` | 点中 → 输入 / Ctrl+A+Delete |
-| `ComboBox` | `combobox` | `select(label)` | 点开 → 输入 → 回车 |
-| `CheckBox` | `checkbox` | `toggle/check/uncheck` | 当前默认点击切换（状态判定待 OCR/colorFind） |
-| `Slider` | `slider` | `setFraction(f)` | 按水平比例拖拽（垂直待补） |
-
-所有节点共用基类 `CuNode`（`index.ts:60-114`）的"定位→点击"语义；`Button` 严格按用户最初要求实现：
-**构造传入 Locator（铅笔=图片/颜色/文字），clicked 时在小区域判存在，不存在即异常，存在才注入**。
-
----
-
-## 7. 浏览器 + 桌面一体（附带能力）
-
-用户明确：**不需要独立的 `Browser` / `WebElement` 类，这是附带功能**（`types.ts:149-150`）。
-
-- 网页里的元素（链接、输入框、提交按钮）**直接当成普通节点**，用 `image/ocr/color/yolo` 定位即可，
-  复用同一棵桌面控件树、同一套 `backend` 动作。
-- 未来若需要 DOM 选择器，只需给 `Locator` 增一种 `kind: 'dom'`，**不引入新控件类**，
-  保持"桌面与网页统一成同一棵树"的目标，但用最轻的方式落地。
-- 因此 `ICuNode` 没有 `addBrowser` / `addWebElement`，实现里也没有 `Browser` / `Page` / `WebElement` 类。
-
----
-
-## 8. 关键 API 契约（速查）
-
-**后端接口**（`types.ts:53-74`，C++ `JZJSComputerUseModule` 必须实现）：
+**待补（名字待定；一律布局优先）**：
 
 | 方法 | 语义 |
 | --- | --- |
-| `match(locator)` | 按定位策略在小区域查找，返回命中 `Rect` 或 `null`（单尺度） |
-| `click(rect, btn?)` | 在 rect 中心注入鼠标点击 |
-| `drag(from, to)` | 归一化坐标间拖拽 |
-| `key(name)` | 按名字按键（`'Return'`/`'Ctrl+A'`/`'LWin'`…） |
-| `type(text)` | 输入文本 |
-| `wait(ms)` | 等待 |
-| `screenshot()` | 虚拟桌面截图 → dataURL |
-| `saveModel/loadModel/explore/fromPerception` | 模型固化/装配（JS 侧实现序列化） |
+| `layoutTree()`（后端） | 导出可访问布局树（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA） |
+| `App.attach()` | 绑定窗口 / 布局（`img` 只用于定位窗口与退化兜底） |
+| `App.at(path)` / `find(type,label)` | 取节点（按 layout 路径寻址） |
+| `read(node)` | 读状态：文本 / 勾选 / 范围值 |
+| `expect(node, matcher)` | 断言当前状态，不满足即抛（脚本级自检，对齐 `verify.py` 的硬门思路） |
+| `exists(node)` | 存在性（= `locate() !== null`） |
+| `sync({settle})` | 等界面稳定（像素在这里只当**信号**） |
+| `launch({exe,title})` | 启动 / 激活目标窗口 |
 
-**底层 primitive**（`index.ts:242-244`）：`key` / `type` / `wait` 作为非树内通用动作直接导出。
+## 7. 现状与待补
 
----
+**已完成**：
 
-## 9. 对应开源范式（设计不凭空造轮子）
+- 包内文件：`types.ts` / `index.ts` / `perceive.ts` / **`layout.ts`**（路径 / 拍平 / 指纹 / 认领）/
+  **`diagnose.ts`**（本地分级）；`explore = screenshot → perceive → 人审 → 认领布局 → 树`；
+  VLM 地址由调用方给、不内置；包已是引擎内置名（`import { App } from 'computeruse'`）。
+- ⭐ **§4.1 的布局通道、运行期寻址、校验、§1.3 的本地分级** 已在 `computeruse` 包内落地：
+  `Locator.kind='layout'`、`backend.layoutTree()`、`App.attach / at / read / expect / sync / launch / has / diagnose`、
+  `App.build(per,{layout})` 的**认领**、序列化带上 `layout / degraded / fingerprint`。
+  **离线就能验证**（不需要模型、不需要真桌面、不需要 C++ 侧）：
+  `auto_code/computer_use/checks/layout_smoke.ts` 用"电源开/关"当用例，14 项硬门全过 ——
+  其中 G4 专门断言"整个流程里 `match` 只收到 `kind='layout'`"（铁律①的硬门）。
+- 脚手架 `auto_code/computer_use/`（出题 → 截图 → 探针 → 判分，五项硬门全过）。
 
-- **回放半（图片锚点 + 小区域匹配）**：SikuliX（Java+OpenCV 模板匹配）、
-  PyAutoGUI `locateOnScreen`、AutoHotkey `ImageSearch`、UI-Vision Kantu。
-  我们的 `findImage` 单尺度匹配 + `region` 小区域，正是此范式的精简版。
-- **录制半（VLM 生成锚点 / 语义树）**：OmniParser（微软，截图→可交互元素 bbox+标签）
-  对应"录制期感知层"；AppAgent（腾讯，探索 App→固化可复用知识树）对应我们的 `paintApp` 用 TS 类描述 UI 树。
-- **记录-回放 / RPA**：OpenAdapt（录屏+LLM 泛化重放）、Agent-S / Mobile-Agent（试错完成任务）。
+**待补（按依赖顺序）**：
 
-**我们的独特点**：主流 Computer Use 是"每步重截图重推理"；我们是"**VLM 一次性生成持久锚点 → 之后确定性模板回放**"
-——窗口挪位靠小区域重定位、任务可精确重复 N 次，契合"截图生成脚本、脚本重复操作"的目标。
+1. **C++ 侧布局通道**：`JZComputerUse::layoutTree()`（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA）
+   + `waitStable` + `launch`。现在 JS 侧拿不到就返回 null ⇒ 节点标 `degraded`（退到几何/像素兜底）。
+2. ✅ `JZComputerUse` / `JZJSComputerUseModule` 已进 CMake；像素族后端：`ocr` 已接（JZCv / PP-OCR，
+   ONNX Runtime），`image` / `color` 需 OpenCV（`cmake/opencv.cmake`），`yolo` 待接。
+3. 建模期的人审/标注 **UI**：`explore` 的 `review` 钩子已留（默认不传 = 行为不变），缺全屏标注窗。
+4. 接大模型：`formatEvidence()` 已能产出证据包，缺"发给模型 → 解析修法 → 写 **override** 层"。
+5. 像素族后端：✅ `ocr` 已接（本地 PP-OCR，`matchText`/`ocrTexts`）；`yolo`（小检测模型）仍未接。
+6. ⏳ **闸门（预算 / 去重 / 影响面 / 无人值守）—— 最后再做。**
 
----
+## 8. 参考
 
-## 10. 实现现状与待补（截至本文）
-
-**已完成（TS 接口 + 实现 + C++ 桩，均未进构建）：**
-
-- `js_wrapper/computeruse/types.ts`：完整接口契约（0 错误）。
-- `js_wrapper/computeruse/index.ts`：控件树 + UI 操作 + `backend` 对接 `__jz.computeruse`（0 错误）。
-- `JZComputerUse`（`JZCore/JZComputerUse.h/.cpp`）：`switchToDesktop/click/drag/key/type/screenshot/findImage/findColor`（未进构建）。
-- `JZJSComputerUseModule`（`JZJSEngine/JZJSComputerUseModule.h/.cpp`）：暴露 `__jz.computeruse`（未进构建）。
-- `test/compute_use/paintApp.ts`、`draw_red_circle.ts`：消费示例（独立 TS 环境解析不到包名，引擎运行时正常）。
-- `docs/compute-use-design.md`：本设计文档。
-
-**待补（按依赖顺序）：**
-
-1. **接入构建**：把 `JZComputerUse` / `JZJSComputerUseModule` 加入 `binary/code_agent/CMakeLists.txt`，
-   在引擎初始化时建 `__jz.computeruse`。
-2. **补齐 Locator 后端**：`ocr`（接 OCR 引擎）、`yolo`（接检测模型）；当前 `match` 对这两种返回未找到。
-3. **录制/探索**：实现 `App.explore` / `fromPerception`（VLM 标锚点 → 选 Locator kind → 固化模型）。
-4. **控件状态判定**：`CheckBox` 的状态读取（OCR/colorFind）、`Slider` 垂直方向、`ComboBox` 的视觉展开校验。
-5. **异常分支的 LLM 复核**（可选）：锚点失效时回退 VLM 判断"是否到了预期界面"，而非直接失败。
+主流 CU 是"每步重截图重推理"（Claude Computer Use / Operator）；我们是
+"**建模期一次生成像素 ↔ 布局映射 → 运行期按布局回放**"。相关范式：OmniParser（截图→元素）、
+AppAgent（探索 App → 固化知识树）、SikuliX（模板匹配回放，对应我们的退化兜底）。

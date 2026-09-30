@@ -1,0 +1,31 @@
+{
+  // computer_use 脚手架 —— TS 编译配置（auto_code 不参与 CMake，这里只管把 TS 编成 code_runtime 能跑的 JS）
+  // 编译: <tsc> -p auto_code/computer_use/tsconfig.json
+  // 运行: code_runtime --debug --entry <task>/build/scenes/gen.js
+  // 约定: outDir=build, rootDir=. ⇒ 运行根 = build/<子目录>，脚本用 jzApp.applicationDirPath() 定位
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2025"],
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "sourceMap": false,
+    "outDir": "build",
+    "rootDir": "."
+  },
+  "include": [
+    "scenes/**/*.ts",
+    "probe/**/*.ts",
+    "checks/**/*.ts",
+    // 类型的单一来源：仓库里的 js_wrapper 声明（引擎全局 + widget 全局类 + fs/path 模块）
+    "../../JZJSEngine/js_wrapper/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/widget/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/path/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
+    // computeruse 包（探针用的就是它; 类型与实现同源 js_wrapper/computeruse/）
+    "../../JZJSEngine/js_wrapper/computeruse/types/**/*.d.ts"
+  ]
+}

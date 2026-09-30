@@ -17,11 +17,32 @@ set(CODE_RUNTIME_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZEngineRuntime.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZSourceMap.h
+    # computer use：__jz.computeruse 的底层实现(见 JZEngineRuntime 的挂载点)。
+    # JZComputerUse 要 JZScreenShot(抓屏/编码) ⇒ runtime 这边也得把它编进来。
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZScreenShot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZScreenShot.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.h
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
 )
 
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})
 target_include_directories(code_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(code_runtime PRIVATE JZFramework)
+# JZComputerUse 的虚拟桌面后端在 binary/virtual_device (见那里的 CMakeLists)
+target_link_libraries(code_runtime PRIVATE jz_virtual_device)
+
+# computer use 的**像素族**后端: 有 JZCv(即 OpenCV + ONNX Runtime 齐)就把它们都开起来。
+#   JZ_CU_OPENCV=1 -> matchImage / matchColor (模板匹配 / 颜色查找)
+#   JZ_CU_OCR=1    -> matchText / ocrTexts (本地 PP-OCR), 即 match({kind:'ocr', text})
+# 缺依赖时这几个接口一律返回"未找到", 不影响其它功能(退化路径必须显式)。
+if(HAS_JZCv)
+    target_link_libraries(code_runtime PRIVATE JZCv)
+    target_compile_definitions(code_runtime PRIVATE JZ_CU_OCR=1)
+    jz_opencv_enable(code_runtime)   # 头/库 + 按配置拷 opencv_world DLL
+    jz_onnx_enable(code_runtime)     # 拷 onnxruntime DLL (JZCv 是静态库, 需要它)
+endif()
 
 # ASan 构建: 把 ASan 运行库拷到 exe 边上(见根 CMakeLists 的 JZ_ENABLE_ASAN)
 jz_copy_asan_runtime(code_runtime)

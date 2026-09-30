@@ -110,6 +110,7 @@ class JZJSEngineInternalFunction;
 class JZJSWorkerModule;
 class JZJSWorkerThread;
 class JZJSWidgetModule;
+class JZWindowHost;
 class JZFRAMEWORK_API JZJSEngine : public JZObject
 {
 public:
@@ -221,6 +222,24 @@ public:
     // 认出"这个 opaque 是守卫而不是裸指针"(isGuardedClass)。0 = 没有透明控件类。
     void setWidgetOpClassId(int class_id) { m_widgetOpClassId = class_id; }
     int widgetOpClassId() const { return m_widgetOpClassId; }
+
+    // ---- 窗口宿主 (平台集成): "这台引擎里 new 出来的窗口归谁托管" ----
+    // 装上之后, 引擎运行期里**所有** JZWindow (JS 里 `new JZWindow(...)`、uiLoader 造的窗口、
+    // 菜单/对话框弹层...) 都交给它托管 —— 例如装上 VirtualDevice(见 binary/virtual_device),
+    // JS 侧一行都不用改, 建出来的窗口就全落在虚拟桌面上:
+    //
+    //     JZVirtualDevice desk(800, 600);
+    //     JZJSEngine engine;
+    //     engine.setWindowHost(&desk);      // ← 就这一句
+    //     engine.init();
+    //
+    // 传 nullptr = 恢复当前平台的默认实现 (真窗口)。
+    // ⚠ 宿主本身是**进程级**的 (见 JZWidget/JZWindowHost.h 的 jzSetWindowHost); 本接口只是
+    //    把它与引擎的寿命绑在一起: init() 时装上, 引擎没了(deinit/析构)自动还原 —— 于是
+    //        "整台引擎跑在虚拟桌面上"这件事有一个与引擎同生共死的开关。
+    // ⚠ 宿主活得要比引擎久 (引擎只存指针)。
+    void setWindowHost(JZWindowHost* host);
+    JZWindowHost* windowHost() const { return m_windowHost; }
 
     // ---- create 造出 JS 对象之后的回调(绑定层用) ----
     // 为什么需要: `new JZLabel(...)` 走到 create 时 JS 对象还不存在, 而"宿主句柄"(把 JS 对象记到
@@ -553,6 +572,14 @@ protected:
 
     void unHandleException();
     void unHandlePromiseReject(JSValueConst promise, JSValueConst reason);
+    // quickjs 在"给**已拒绝**的 promise 挂 handler"时会回调 tracker(is_handled=true):
+    // 此刻要把先前记下的那条待报拒绝**撤掉**, 否则 Promise.reject(e).catch(...) 这种
+    // 被正常接住的拒绝也会被当成未处理拒绝, 让宿主收到运行时错误(与 Node 行为不符)。
+    void promiseRejectHandled(JSValueConst promise);
+    // 把所有"确实没人处理"的拒绝文本拼起来并清空(调用方负责上报)
+    std::string takePromiseRejectText();
+    bool hasPromiseReject() const { return !m_promiseRejects.empty(); }
+    void clearPromiseRejects();   // 释放持有的 promise 引用(析构路径用)
     PromiseTask* getPromiseTask(int handle);
 
     // callAsyncFunction 挂载的 promise resolve/reject 回调(由 JSInter 静态方法转发)
@@ -647,7 +674,15 @@ protected:
     std::map<int, std::shared_ptr<PromiseTask>> m_promiseTask;
 
     std::string m_runtimeError;
-    std::string m_promiseError;
+    // 未处理的 promise 拒绝。⭐ 每条都带**产生它的 promise 值**(dup 持有), 这样"稍后才挂上
+    // handler"时能按值找到并撤掉这一条 —— 见 promiseRejectHandled。native 异步任务
+    // (asyncResultReject)没有 JS promise, 用 JS_UNDEFINED 占位(这种不参与撤销)。
+    struct PendingReject
+    {
+        JSValue promise = JS_UNDEFINED;
+        std::string text;
+    };
+    std::vector<PendingReject> m_promiseRejects;
     int m_timer;
     int64_t m_timerExpire;   // 已挂一次性 timer 记录的到期时刻(scheduleNextTimer 维护)
     int m_pendingWork;       // 外部模块挂起的原生异步任务数量(见 addPendingWork)
@@ -683,6 +718,7 @@ protected:
     std::map<int, WorkerEntry> m_workers;
     JZJSWorkerModule* m_workerModule;   // 本引擎的 worker 模块(未装为空)
     JZJSWidgetModule* m_widgetModule;   // 本引擎的 widget 模块(未装为空; 见 setWidgetModule)
+    JZWindowHost* m_windowHost = nullptr;   // 窗口宿主(未装为空; 见 setWindowHost)
     int m_widgetOpClassId = 0;          // 透明控件类的 op class(见 setWidgetOpClassId)
     JZObjectCreatedCallback m_objectCreated;   // 见 setObjectCreatedCallback
 };

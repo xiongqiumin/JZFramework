@@ -75,8 +75,11 @@ if (JZ_ENABLE_ASAN)
 endif()
 
 #module list
+# 注: JZCv(视觉/OCR) **不在这个普通模块列表里** —— 它要求 C++17 且依赖 OpenCV/ONNX Runtime,
+#     以**单例模块**形式加入(见文件末尾的 JZ_SINGLE_MODULES)。放进普通模块会把它的源码编进
+#     JZFramework(全局 C++14) 里, 既编不过也污染核心库。
 set(JZ_MODULE_LIST JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashReport
-        JZCv JZFrp JZGpio JZHttpServer JZJson JZMcpServer JZModbus JZNode
+        JZFrp JZGpio JZHttpServer JZJson JZMcpServer JZModbus JZNode
         JZOTA JZSensor JZSerialPort JZTest JZCompress JZXml JZDocument)
 
 # JZWidget(自绘 UI)依赖平台窗口/字体等能力, 目前只在 Windows 下参与构建。
@@ -87,7 +90,15 @@ if(WIN32)
 endif()
 
 include(JZFramework.cmake)
-jzframework_use_modules(${JZ_MODULE_LIST})
+
+# JZCv(视觉/OCR) 依赖 OpenCV + ONNX Runtime (在上面的 include 里已探测), 缺任一就不建它。
+# 它以**单例模块**形式加入: 自己一个 target ⇒ 能单独用 C++17(OCR 内核要求), 不污染核心库。
+set(JZ_SINGLE_MODULES "")
+if(JZ_OPENCV_FOUND AND JZ_ONNXRUNTIME_FOUND)
+    list(APPEND JZ_SINGLE_MODULES JZCv)
+endif()
+
+jzframework_use_modules(${JZ_MODULE_LIST} SINGLE_MODULES ${JZ_SINGLE_MODULES})
 target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)

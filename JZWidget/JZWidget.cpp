@@ -546,15 +546,13 @@ JZPoint JZWidget::mapTo(JZWidget* parent, const JZPoint& pos) const
 JZPoint JZWidget::mapToGlobal(const JZPoint& pos) const
 {
     // 与 Qt 一致: 返回真实屏幕逻辑坐标。
-    // 先换算到所属窗口的局部坐标, 再 ×scale -> ClientToScreen -> ÷scale 得到屏幕坐标。
+    // 先换算到所属窗口的客户区坐标, 再交给**窗口的平台后端**换算成屏幕坐标 ——
+    // 真窗口 = ClientToScreen(×scale); 虚拟桌面上的窗口 = 桌面坐标。口径只有后端一份,
+    // 所以 mapToGlobal 在两个平台上都成立 (曾经的坑: 虚拟窗口下退化成客户区坐标)。
     JZWindow* win = window();
-    if (!win || !win->nativeHandle() || !win->device())
-        return mapTo(win, pos);   // 无原生窗口: 退化为控件树内累加坐标
-    JZPoint inWin = mapTo(win, pos);
-    float s = win->device()->scale();
-    POINT pt = { (int)std::lround(inWin.x() * s), (int)std::lround(inWin.y() * s) };
-    ClientToScreen((HWND)win->nativeHandle(), &pt);
-    return JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
+    if (!win)
+        return mapTo(win, pos);   // 没有所属窗口: 退化为控件树内累加坐标
+    return win->clientToScreen(mapTo(win, pos));
 }
 
 JZRect JZWidget::mapTo(JZWidget* parent, const JZRect& rc) const
@@ -574,13 +572,15 @@ JZRect JZWidget::mapToGlobal(const JZRect& rc) const
 JZImage JZWidget::grab()
 {
     JZWindow* win = window();
-    if (!win || !win->nativeHandle() || !win->device())
+    if (!win || !win->device())
         return JZImage();
     if (width() <= 0 || height() <= 0)
         return JZImage();
 
-    // 抓整幅客户区 (物理像素), 再按控件矩形裁剪
-    const JZImage full = JZScreen::grabWindow(win->nativeHandle());
+    // 抓整幅客户区 (物理像素), 再按控件矩形裁剪。
+    // ⚠ 帧的来源由**窗口后端**决定: 真窗口 = 抓屏; 虚拟窗口 = 读它自己的帧缓冲
+    //   (于是 grab() 在虚拟桌面上也有意义, 而不是恒返回空图)。
+    const JZImage full = win->grabClient();
     if (full.isNull())
         return JZImage();
 
@@ -1418,6 +1418,9 @@ Json::Value JZWidget::dumpSemanticTree(int maxDepth) const
     node["boundsInScreen"] = bounds;
 
     node["visible"] = isVisible();
+    // 使能位(沿父链判定, 见 isEnabled): 自动化要判"这个控件现在能不能用" —— 缺了它
+    // 就只能靠像素猜灰化, 而灰化是外观(token)层的事, 不该进判据。
+    node["enabled"] = isEnabled();
 
     // 能力位: 由动作清单与角色推导
     auto acts = aiActions();

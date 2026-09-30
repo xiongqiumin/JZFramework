@@ -1,0 +1,34 @@
+{
+  "case": "l0_plain",
+  "note": "硬门（与 verify.py 的 GATES 必须一致）。baseline 是本任务当前水平：每轮跑完用 verify.py --check-only 复验后更新。⚠ 数字要提交 —— 这是'进步了多少'的唯一凭据；产物本身（runs/）不入库。",
+  "gates": {
+    "detF1": 0.9,
+    "textAcc": 0.95,
+    "typeAcc": 0.9,
+    "hierF1": 0.85,
+    "iou75": 0.6
+  },
+  "baseline": {
+    "round": 24,
+    "date": "2026-09-29",
+    "cfg": "Debug",
+    "perception": "VLM（llama.cpp 多模态端点，形如 http://172.17.160.147:8080/v1/chat/completions；由 run.py 经 probe.json 传给探针）",
+    "regression": [
+      { "case": "l0_plain", "seed": 0, "level": 0, "round": "round_019", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.957, "iou75": 1.0 } },
+      { "case": "l1_random", "seed": 1, "level": 1, "round": "round_020", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.992, "iou75": 1.0 } },
+      { "case": "l1_random", "seed": 2, "level": 1, "round": "round_021", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.975, "iou75": 1.0 } },
+      { "case": "l1_random", "seed": 3, "level": 1, "round": "round_022", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.967, "iou75": 1.0 } },
+      { "case": "l1_random", "seed": 4, "level": 1, "round": "round_023", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.975, "iou75": 1.0 } },
+      { "case": "l1_random", "seed": 7, "level": 1, "round": "round_024", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.975, "iou75": 1.0 } }
+    ],
+    "worst": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iou75": 1.0, "iouMed": 0.957 },
+    "nextWeakSpot": "题目覆盖太窄，而不是实现不够：① 只有 button/edit 两类控件、层级全是平铺（hierF1 目前恒 1.0，是空指标）；② L1 的位置/数量随机，但控件本身没有'看不见的结构'。下一步加难度优先：带边框的容器（GroupBox/TabWidget）⇒ 让 hierF1 变成真指标；再往上 L2 主题/DPI、L3 隐藏结构（需主动探索）、L4 多窗口。无边框控件（Label/CheckBox/RadioButton）要先定'可见框'口径（给它们加可见边框，或另立'墨迹框'口径）。"
+  },
+  "history": [
+    {
+      "round": 24,
+      "date": "2026-09-29",
+      "note": "首次全绿且有余量：感知通道接通（TS 层 perceive() 打多模态接口）+ 修掉截图带非客户区的坐标错位（JZScreen::grabWindow）+ 尺子文本归一化改 Unicode NFKC（℃ 与 °C 不再误判）+ 题目口径收敛为'只判有可见边框的控件'。"
+    }
+  ]
+}

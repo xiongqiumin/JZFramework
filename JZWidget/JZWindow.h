@@ -5,12 +5,20 @@
 
 #include <memory>
 
-// 顶层窗口 = 原生窗口宿主 + 根控件。
+class JZWindowBackend;
+class JZWin32WindowBackend;
+
+// 顶层窗口 = 平台窗口后端 + 根控件。
 //   - 组合一个 JZDisplayDevice (渲染调度), 自身作为渲染树根;
-//   - 拥有原生 Win32 窗口的创建/销毁、WndProc 消息循环、显隐、DPI 响应;
-//     WndProc 把鼠标/键盘消息翻译成 JZEvent 后经 onWindowProcess 分发到控件树
-//     (ImGui 只负责绘图);
-//   - 窗口惰性创建: 构造零系统资源, 首次 show() (showEvent) 才创建并显示。
+//   - **平台相关的东西全部在 JZWindowBackend 里** (见 JZWindowBackend.h):
+//     本类只持"一个后端", 平台句柄由后端给出 (nativeHandle()), 自己不含任何 Win32 调用。
+//     现成后端: JZWin32WindowBackend(真窗口) / JZVirtualWindowBackend(虚拟桌面, 见
+//     binary/virtual_device); 后端把平台消息翻译成 JZEvent 后交给 onWindowProcess
+//     分发到控件树;
+//   - 窗口惰性创建: 构造零系统资源, 首次 show() (showEvent) 才 create + show;
+//   - 平台可换: 进程级"窗口宿主" (JZWindowHost.h) 能在构造时决定这批窗口活在哪儿 ——
+//     装上虚拟桌面 (jzSetWindowHost / engine.setWindowHost) 之后, **之后 new 出来的窗口
+//     (含 JS 里 new 的) 全部落在虚拟桌面上**, 调用方一行都不用改。
 //
 // 用法:
 //     JZApplication app;
@@ -42,7 +50,7 @@ public:
     std::string title() const;
 
     JZDisplayDevice* device();         // 渲染设备
-    void doPaint(const JZRect& rc);    // 重绘指定区域 (paint task 执行)
+    void doPaint(const JZRect& rc);    // 重绘指定区域 (由窗口线程的循环调, 见 onInvalidate)
     virtual void resize(int w, int h) override;        // 同步原生窗口尺寸
 
     // 显式设定 DPI 缩放 (popup 等浮层跟随 owner 显示器, 多屏/HiDPI 下避免与主屏错配);
@@ -79,9 +87,31 @@ public:
     // 外部点击只用于关闭弹层, 不再落到弹层下面的控件上。
     static bool filterPopupPress(int screenX, int screenY);
 
-    // 原生窗口句柄: Win32 下即 HWND, 窗口未创建 (惰性) 时返回 nullptr。
-    // 文本控件要用它调用 IMM 接口把光标位置回写给输入法。
-    void* nativeHandle() const { return m_hwnd; }
+    // 平台窗口句柄: **由平台后端给出** —— 真窗口 = HWND(未创建时 nullptr);
+    // 虚拟桌面上的窗口 = 那块桌面上代表本窗口的窗口对象 (二进制侧 JZVirtualWindow)。
+    // ⇒ 两个平台都有句柄, "虚拟的返回 nullptr" 是过去的事: 虚拟窗口也曾是一等窗口。
+    // ⚠ 平台类型的转换留在平台后端里 (本头文件零 Win32 类型); 这个接口的用途是
+    //   "判断平台窗口建了没有" 与 传给需要 HWND 的平台 API (如 IMM / 抓屏)。
+    void* nativeHandle() const;
+
+    // ---- 平台后端 (真窗口 / 虚拟桌面) ----
+    // 构造时 = 当前平台的默认实现 (jzCreateDefaultWindowBackend);
+    // 虚拟桌面上的窗口在构造后换成虚拟后端 (见 binary/virtual_device)。
+    // ⚠ 只在**首次 show 之前**换 (换后端会丢掉已建好的平台窗口), 所有权交给本窗口。
+    void setWindowBackend(JZWindowBackend* backend);
+    JZWindowBackend* windowBackend() const { return m_backend; }
+
+    // ---- 坐标 / 取帧 (口径都由后端决定, 见 JZWindowBackend) ----
+    // 客户区逻辑坐标 <-> 屏幕逻辑坐标。真窗口走 ClientToScreen; 虚拟窗口 = 桌面坐标。
+    // ⚠ JZWidget::mapToGlobal / 命中测试 / 归一化 rect 全都建立在这两个上面 ——
+    //   "虚拟窗口与真实窗口同口径"就靠这里一处收敛。
+    JZPoint clientToScreen(const JZPoint& pt) const;
+    JZPoint screenToClient(const JZPoint& pt) const;
+    // 客户区一帧(逻辑尺寸): 真窗口 = 抓屏; 虚拟窗口 = 读它自己的帧缓冲
+    JZImage grabClient();
+
+    // 平台窗口是否已建 (惰性创建后为真; 由后端决定"建"意味着什么)
+    bool isWindowCreated() const { return m_windowCreated; }
 
     // ---- AI 语义 ----
     std::string aiRole() const override { return "window"; }
@@ -115,9 +145,23 @@ public:
     void setInputGate(JZWidget* gate);
     JZWidget* inputGate() const { return m_inputGate; }
 
-    // 是否活动窗口: 原生窗口持有键盘焦点 (由 WM_SETFOCUS / WM_KILLFOCUS 维护)。
+    // 是否活动窗口: 平台窗口持有键盘焦点 (真窗口 = WM_SETFOCUS / WM_KILLFOCUS;
+    // 虚拟桌面 = 桌面管理器切换活动窗口) 维护。
     // JZApplication::activeWindow() 依据它判定当前活动窗口。
     bool isActiveWindow() const { return m_hasWindowFocus; }
+
+    // 平台侧的键盘焦点变化入口 (等价 WM_SETFOCUS / WM_KILLFOCUS)。
+    // 真窗口由 WndProc 调; 无平台消息的窗口 (虚拟桌面) 由它的管理器调 ——
+    // 于是"窗口获得/失去焦点"的框架语义 (焦点控件进/出事件、IMC 重算) 只有一份。
+    void setWindowFocus(bool got);
+
+    // ---- 是否"应用顶层窗口" ----
+    // true (默认): 登记进 JZApplication 的顶层窗口表, 参与"活动窗口"与
+    //   "最后一个可见窗口关闭则退出"的判定 —— 普通业务窗口就是它。
+    // false: 内部窗口 —— 它有自己的管理器 (如虚拟桌面: z 序/活动态/生命周期都在桌面
+    //   管理器里), 不该混进宿主 app 的窗口生命周期判定。必须在 show() 之前设。
+    void setTopLevelWindow(bool on);
+    bool isTopLevelWindow() const { return m_topLevelWindow; }
 
     // 前置并激活窗口 (Qt 同名 activateWindow()): 未显示过则先 show (惰性创建原生窗口),
     // 最小化则还原, 然后交给系统做前台激活 (SetForegroundWindow + SetFocus)。焦点消息
@@ -240,7 +284,7 @@ protected:
 protected:
     void createWindow();
 
-    // ---- 拖放内部实现 (见 JZWindow.cpp 的 OLE IDropTarget) ----
+    // ---- 拖放内部实现 (见 JZWindow.cpp 的 dispatch 部分; OLE 平台代码在 JZWin32WindowBackend) ----
     // 命中点到根的一条候选链 (最深 -> 本窗口), 逐个派发直到有人 accept。
     void dragChain(const JZPoint& globalLogical, std::vector<JZWidget*>& chain);
     // 沿 chain 派发: 跳过未 setAcceptDrops 的层级, 命中第一个 accept 的控件
@@ -252,13 +296,19 @@ protected:
     // 给当前目标派发 dragLeave 并清空本次拖放状态。
     // notify=false 用于窗口销毁路径 —— 那时控件可能已经随对象树一起没了, 不能再派发。
     void dragResetTarget(bool notify = true);
-    // 注销 OLE drop target (必须在 DestroyWindow 之前)
+    // 注销 OLE drop target: 委托给平台后端 (句柄在后端里)
     void revokeDropTarget();
 
+    // 平台后端要读窗口的"意图"(标题/类型/初始位置/DPI/置顶…)并写回句柄,
+    // 它们是这个窗口的平台半边 ⇒ 直接放行(不额外开一堆 getter 把这套状态暴露成公开 API)。
+    friend class JZWin32WindowBackend;
+
     JZDisplayDevice* m_device = nullptr;
-    void* m_hwnd = nullptr;             // HWND (头文件零 Win32 类型)
-    bool m_windowCreated = false;       // 原生窗口是否已创建 (惰性, showEvent 触发)
-    bool m_scaleExplicit = false;        // 已显式设定 DPI (setDeviceScale), createWindow 不覆盖
+    JZWindowBackend* m_backend = nullptr;   // 平台后端 (所有权在本窗口)
+    bool m_topLevelWindow = true;       // 是否登记进 app 顶层窗口表 (见 setTopLevelWindow)
+    bool m_windowCreated = false;       // 平台窗口是否已创建 (惰性, showEvent 触发)
+    bool m_painting = false;            // 正在 doPaint (挡"绘制中又被同步调进来"的重入)
+    bool m_scaleExplicit = false;        // 已显式设定 DPI (setDeviceScale), create 不覆盖
     std::string m_title;
     WindowType m_windowType = Normal;
     bool m_top = false;                 // 置顶
@@ -267,8 +317,7 @@ protected:
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
     JZWidget* m_hoverWidget = nullptr;  // 当前悬停的最深控件 (updateHover 派发 enter/leave)
-    void* m_imeContext = nullptr;       // 窗口级 IMC 句柄 (首次需要时取得并缓存)
-    bool m_hasWindowFocus = false;      // 原生窗口是否有键盘焦点
+    bool m_hasWindowFocus = false;      // 窗口是否有键盘焦点 (平台焦点消息回报)
     bool m_imeGotResult = false;        // 本次组字是否已由 ResultStr 上屏
     bool m_imeActive = false;           // 当前焦点是否接受 IME (见 imeActive())
     bool m_imeForceNative = false;      // 聚焦时是否强制切中文模式 (见 setImeForceNativeMode)
@@ -279,8 +328,7 @@ protected:
     int  m_screenX = 0;                 // 记录的屏幕逻辑坐标 (窗口未创建时暂存)
     int  m_screenY = 0;
 
-    // ---- 拖放状态 (OLE drop target) ----
-    void*                       m_dropTarget = nullptr;   // IDropTarget 实例 (头文件零 COM 类型)
+    // ---- 拖放状态 ----
     JZObjectPointer             m_dragTarget;             // 本次拖放的目标控件 (守卫: 拖到一半被删也不会悬垂)
     std::shared_ptr<JZMimeData> m_dragMime;               // 本次拖放的数据 (dragEnter 建立)
     JZDropActions               m_dragActions = JZDropActionNone;   // 拖方支持的动作

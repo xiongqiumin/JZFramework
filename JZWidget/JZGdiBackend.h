@@ -1,6 +1,7 @@
 #ifndef JZ_GDI_BACKEND_H_
 #define JZ_GDI_BACKEND_H_
 #include "JZGlobal.h"
+#include "JZRenderBackend.h"
 #include <memory>
 #include <vector>
 
@@ -20,15 +21,16 @@ class JZImage;
 //  按同样的接口实现一个新后端接入 JZDisplayDevice 即可。)
 //
 // 坐标系: 绘制任务为逻辑像素, 回放时 * device->scale() -> 物理像素。
-class JZFRAMEWORK_API JZGdiBackend
+class JZFRAMEWORK_API JZGdiBackend : public JZRenderBackend
 {
 public:
     JZGdiBackend();
-    ~JZGdiBackend();
+    ~JZGdiBackend() override;
 
-    // 绑定窗口 + 建双缓冲位图。hwnd/尺寸由 JZDisplayDevice 提供。
-    bool init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH);
-    void destroy();
+    // 绑定目标 + 建双缓冲位图 (hwnd / 尺寸由 JZDisplayDevice 提供)。
+    // hwnd == nullptr = 离屏: 用屏幕兼容 DC 建 DIB, render 不提交上屏 (取帧走 snapshot)。
+    bool init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH) override;
+    void destroy() override;
 
     // 字体度量引擎 (GDI+) 的进程级申请/释放, 与窗口无关、可独立调用:
     //   - 引用计数, 与 GDI+ 生命周期严格对称 (init()/destroy() 内部也走这两个函数);
@@ -38,14 +40,18 @@ public:
     static bool acquireFontEngine();
     static void releaseFontEngine();
 
-    // 渲染一帧: 回放 layer 中的绘制任务并 BitBlt 到窗口, 结束后清空任务列表。
-    void render(JZLayer* layer);
+    // 渲染一帧: 回放 layer 中的绘制任务; 有窗口则 BitBlt 提交上屏, 离屏则只留在帧缓冲。
+    // 结束后清空任务列表。
+    void render(JZLayer* layer) override;
 
-    // 原生窗口尺寸变化 (重建内存位图)。
-    void resizeSwapChain(unsigned physicalW, unsigned physicalH);
+    // 目标尺寸变化 (重建内存位图)。
+    void resizeSwapChain(unsigned physicalW, unsigned physicalH) override;
 
     // 接口占位: GDI+ 字体按任务即时创建, DPI 变化无需重建。
-    void rebuildFonts();
+    void rebuildFonts() override;
+
+    // 把当前帧缓冲 (DIB) 拷成 JZImage (BGRA -> RGBA8888)。离屏/取帧用。
+    bool snapshot(JZImage& out) override;
 
     // GDI+ 进程级生命周期 (与窗口无关, 仅管理 GDI+ 不碰字体度量引擎):
     // 供离屏绘制 (JZPainter 作用于 JZImage) 在没有任何窗口存活时也能起 GDI+。
@@ -71,9 +77,10 @@ private:
     std::shared_ptr<JZPixmapData> imagePixmap(const std::shared_ptr<JZImageData>& img);
     void purgeImageCache();
 
-    void* m_hwnd = nullptr;
+    void* m_hwnd = nullptr;      // 目标窗口; 为 nullptr 表示离屏 (不提交上屏)
     void* m_memDC = nullptr;     // HDC (内存, 双缓冲)
     void* m_memBmp = nullptr;    // HBITMAP (DIB section)
+    void* m_bits = nullptr;      // DIB 像素首地址 (top-down BGRA; snapshot 取帧用)
     void* m_oldBmp = nullptr;
     unsigned m_physW = 0;
     unsigned m_physH = 0;

@@ -20,6 +20,9 @@
 #include "JZLog.h"
 #include "JZPlatform.h"
 #include "JZStd.h"
+#ifdef HAS_JZWidget
+#include "JZWidget/JZWindowHost.h"   // 窗口宿主(见 setWindowHost): "之后 new 的窗口归谁托管"
+#endif
 
 using namespace jsbind;
 using namespace std;
@@ -92,6 +95,13 @@ static const BuiltinModule builtinModules[] = {
     // 类层是**幂等**的(见 widget/classes.ts 的说明), 所以"引擎按路径加载过一次 + 用户再按名字
     // import"不会重建类、不会换掉原型。
     { "widget",     "widget/dist/index.js",     "*"     },
+    // ---- computer use(控件树 + UI 操作在 JS; 底层动作走 __jz.computeruse) ----
+    // "*" = namespace 形态(包入口只有具名导出, 没有 default):
+    //   import { App, setBackend } from 'computeruse';
+    // ⚠ 本包只"能用"当且仅当宿主注册了 __jz.computeruse(C++ JZJSComputerUseModule);
+    //   否则默认后端在第一次调用时抛异常(模块本身能 import 成功)。
+    //   离线/模拟环境用 setBackend() 注入自己的后端即可, 不依赖 C++ 侧。
+    { "computeruse", "computeruse/dist/index.js", "*"    },
 };
 
 // 剥掉 Node 的 node: 前缀('node:http' -> 'http'), 并去掉空白字符。
@@ -415,10 +425,18 @@ public:
     static void js_promise_reject(JSContext* ctx, JSValueConst promise, JSValueConst reason, bool is_handled,
                                   void* opaque)
     {
-        if (is_handled)
+        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        if (!engine)
             return;
 
-        JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
+        // is_handled=true = "有人刚给这个已拒绝的 promise 挂了 handler" ⇒ **撤销**先前记下的
+        // 未处理拒绝, 而不是简单忽略(忽略的话那条错误还留在待报列表里, 宿主仍会收到运行时错误)。
+        if (is_handled)
+        {
+            engine->promiseRejectHandled(promise);
+            return;
+        }
+
         engine->unHandlePromiseReject(promise, reason);
     }
 
@@ -537,6 +555,12 @@ JZJSEngine::~JZJSEngine()
     //      引擎, 直接崩(0xC0000005)。
     // 注意: 这里只清"进程级资源", 不碰 JS 侧的 rt/ctx —— 那仍由 deinit() 负责,
     // 以免破坏"借给 JS 的 C++ 对象"的既有生命周期约定。
+#ifdef HAS_JZWidget
+    // 窗口宿主也是"进程级资源": 引擎没 deinit 就析构时(临时引擎很常见)也得摘掉,
+    // 否则之后 new 出来的窗口会去找一具已经析构的宿主。
+    if (m_windowHost && jzWindowHost() == m_windowHost)
+        jzSetWindowHost(nullptr);
+#endif
     reapAllWorkers();
 }
 
@@ -568,6 +592,13 @@ void JZJSEngine::init()
         e.thread = nullptr;
         e.engine = this;
     }
+
+#ifdef HAS_JZWidget
+    // 窗口宿主: 从这一刻起, 本引擎里 new 出来的窗口(JS 的 new JZWindow 也在内)都归它托管
+    // (见 JZWindowHost —— 例如虚拟桌面: 建出来的窗口全落在虚拟桌面上)。没装宿主就是真窗口。
+    if (m_windowHost)
+        jzSetWindowHost(m_windowHost);
+#endif
 }
 
 void JZJSEngine::deinit()
@@ -576,6 +607,13 @@ void JZJSEngine::deinit()
     reapAllWorkers();
     if (m_mainEngine == this)
         m_mainEngine = nullptr;
+
+#ifdef HAS_JZWidget
+    // 引擎要没了: 摘掉窗口宿主 —— 别让之后新建的窗口去找一具已经析构的宿主。
+    // (只有"当前装的就是我这份"时才摘, 免得误摘别人装的。)
+    if (m_windowHost && jzWindowHost() == m_windowHost)
+        jzSetWindowHost(nullptr);
+#endif
 
     // 注: 旧"指针身份表 + 托管句柄"已随包装层一起删除(2026-09-17), 这里不再有需要统一放掉的句柄 ——
     //     对象的 JS 侧状态(opaque 里的守卫 / C++ 对象上的 js_value)都随各自的对象生命周期走。
@@ -639,6 +677,7 @@ void JZJSEngine::deinitJSEnv()
     m_selfStack.clear();   // 借用值, 直接丢(不该还有值: 这里已不在 JS 调用栈里)
     if (m_rt)
     {
+        clearPromiseRejects();   // 释放待报拒绝持有的 promise 引用(必须在 FreeContext 之前)
         JS_FreeValue(m_ctx, m_cbRoot);
 
         for (int i = 0; i < (int)m_timeTasks.size(); i++)
@@ -662,7 +701,7 @@ void JZJSEngine::deinitJSEnv()
 
     m_workDir.clear();
     m_appFile.clear();
-    m_promiseError.clear();
+    m_promiseRejects.clear();   // 引用已在 FreeContext 之前释放(见上面 clearPromiseRejects)
     m_runtimeError.clear();
     m_funcList.clear();
     m_typeMap.clear();
@@ -1148,10 +1187,59 @@ void JZJSEngine::unHandlePromiseReject(JSValueConst promise, JSValueConst reason
         err = printObject(reason);
     }
 
-    // 多个未处理拒绝累积, 避免只保留最后一个
-    if (!m_promiseError.empty())
-        m_promiseError += "\n";
-    m_promiseError += err;
+    // 一条一条记, 每条都带上产生它的 promise(便于稍后挂 handler 时撤掉)。
+    // 多个未处理拒绝在 takePromiseRejectText 里按换行累积, 避免只保留最后一个。
+    PendingReject pr;
+    pr.promise = JS_IsUndefined(promise) ? JS_UNDEFINED : JS_DupValue(m_ctx, promise);
+    pr.text = err;
+    m_promiseRejects.push_back(std::move(pr));
+}
+
+// quickjs: 给"已经拒绝且还没人管"的 promise 挂上了 handler ⇒ 这条待报拒绝作废
+// (常见写法 Promise.reject(e).catch(...) / async 函数里抛错后由调用方 catch)
+void JZJSEngine::promiseRejectHandled(JSValueConst promise)
+{
+    if (!m_ctx || JS_IsUndefined(promise))
+        return;
+
+    for (size_t i = 0; i < m_promiseRejects.size(); i++)
+    {
+        JSValue cur = m_promiseRejects[i].promise;
+        if (JS_IsUndefined(cur))
+            continue;   // native 任务那条, 没有 promise 可匹配
+        if (JS_IsStrictEqual(m_ctx, cur, promise))
+        {
+            JS_FreeValue(m_ctx, cur);
+            m_promiseRejects.erase(m_promiseRejects.begin() + i);
+            return;
+        }
+    }
+}
+
+std::string JZJSEngine::takePromiseRejectText()
+{
+    std::string text;
+    for (size_t i = 0; i < m_promiseRejects.size(); i++)
+    {
+        if (!text.empty())
+            text += "\n";
+        text += m_promiseRejects[i].text;
+    }
+    clearPromiseRejects();
+    return text;
+}
+
+void JZJSEngine::clearPromiseRejects()
+{
+    if (m_ctx)
+    {
+        for (size_t i = 0; i < m_promiseRejects.size(); i++)
+        {
+            if (!JS_IsUndefined(m_promiseRejects[i].promise))
+                JS_FreeValue(m_ctx, m_promiseRejects[i].promise);
+        }
+    }
+    m_promiseRejects.clear();
 }
 
 void JZJSEngine::asyncResultResolve(int handle, int argc, JSValueConst* argv)
@@ -3043,24 +3131,19 @@ void JZJSEngine::pumpPendingJobs()
         }
         else if (ret == 1)
         {
-            if (!m_promiseError.empty())
-            {
-                onExceptionOccurred(m_promiseError);
-                m_promiseError.clear();
-                return;
-            }
+            // ⚠ 这里**不能**顺手判"未处理拒绝": 一个 job 结束时刚被拒的 promise 往往还有
+            //   handler 要挂上 —— 最典型是 async 函数抛错: 它返回的 promise 先被拒, 随后
+            //   `.then` 的 thenable 采纳过程(js_promise_resolve_thenable_job)作为**下一个 job**
+            //   才给它挂 handler。提前判定会把"正常接住的错误"当未处理, 让宿主收到运行时错误
+            //   (与 Node 不一致)。真判据在循环外: 队列泵空了还留在表里的才算没人管。
         }
     }
 
     // 所有 pending job 处理完后, 若仍存在未处理的 promise 拒绝,
     // 仍要触发 Engine_error。否则 QuickJS 在"无更多 job 时才回调 rejection tracker"
-    // 的实现下, m_promiseError 会被永久漏检, 引擎永远停在 running 态。
-    if (!m_promiseError.empty())
-    {
-        std::string err = m_promiseError;
-        m_promiseError.clear();
-        onExceptionOccurred(err);
-    }
+    // 的实现下, m_promiseRejects 会被永久漏检, 引擎永远停在 running 态。
+    if (hasPromiseReject())
+        onExceptionOccurred(takePromiseRejectText());
 }
 
 bool JZJSEngine::hasPendingJob()
@@ -3144,6 +3227,26 @@ void JZJSEngine::setWidgetModule(JZJSWidgetModule* module)
 JZJSWidgetModule* JZJSEngine::widgetModule() const
 {
     return m_widgetModule;
+}
+
+// 窗口宿主: "这台引擎里 new 出来的窗口归谁托管" (见 JZJSEngine.h / JZWindowHost.h)。
+// 装上之后 JS 侧一行不用改 —— new JZWindow(...) 出来的就是宿主那边的窗口(如虚拟窗口)。
+void JZJSEngine::setWindowHost(JZWindowHost* host)
+{
+    if (m_windowHost == host)
+        return;
+#ifdef HAS_JZWidget
+    // 引擎已经起来了 (init 过): 立刻生效/还原 —— 宿主本身是进程级的, 与 init 无关。
+    if (m_ctx)
+    {
+        if (host)
+            jzSetWindowHost(host);
+        else if (jzWindowHost() == m_windowHost)
+            jzSetWindowHost(nullptr);   // 传 nullptr = 恢复平台默认(真窗口)
+    }
+#endif
+    // 还没 init: 记下来, 由 init() 时装上 (见那里)
+    m_windowHost = host;
 }
 
 int JZJSEngine::spawnWorker(const std::string& entry, const JZByteArray& workerData,

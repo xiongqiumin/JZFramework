@@ -205,12 +205,17 @@ struct JZCliHistoryItem
 // ---------------------------------------------------------------------------
 // JZAgentCli —— 通过 HTTP 暴露任务提交的 agent
 //
-// 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / verify_script /
+// 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / images / verify_script /
 // verify_cmd / verify_timeout / max_verify_rounds / max_retries / max_fix_retries /
 // retry_delay_ms / use_memory / token?), 本端跑 JZAgent, 每轮结束跑验证脚本(返回 0 通过 / 1 失败),
 // 失败把输出喂回 agent 自动续跑, 直到验证通过或达最大轮次, 再一次性回 JSON
 // {status, verify_rounds, retries, agent_reply, last_verify_output, ...}。
 // agent 中途报错不会直接判失败: 在(分档的)重试预算内自动"接着干"(见 RetryMode)。
+//
+// images = 附带的图片(多模态): 数组, 元素是 dataURL(截图那种) 或 http(s) 链接, 与 prompt
+//   同属一条 user 消息(交给 JZAgent 的 requestWithImages, 与 code_agent 桌面版截图按钮同一条路)。
+//   也接受 OpenAI 的 messages 写法(content 数组里的 {"type":"image_url"})。
+//   文字与图片都空才算空任务 —— 允许"只发截图"。
 //
 // 工具由本端**本地执行**: JZAgent 直接调用 agent_tool 里的工具(走 JZAgentTool 接口),
 // 不经过 MCP。所以 agent_cli = "没有 UI 的 code_agent" + HTTP 传输层。
@@ -274,16 +279,6 @@ public:
     //   {status, verify_rounds, agent_reply, last_verify_output, error?}。
     void submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);
 
-    // ---- --loop 模式(无人值守: 不依赖 HTTP/网页, 无限循环执行同一条指令) ----
-    //   每轮 = 一次完整任务(prompt -> 可选验证脚本门控循环 -> 收尾), 走的还是 submitTask 那套,
-    //   只是不需要 HTTP 连接; 每轮结果打一行到控制台。
-    //   会话**跨轮延续**(不重置): 每轮接在同一段对话后面 —— 与"用 HTTP 连着提交几次任务"一致;
-    //   上下文涨到预算就自动压缩(tokenStrategy = TokenCompress), 不用手管。
-    //   verifyCmd 空 = 不验证(每轮只驱动 agent 一次); intervalMs = 上一轮结束到下一轮的等待。
-    //   ⚠ 没有停止条件: 只能 Ctrl+C / 杀进程(外部重置使它 cancelled 时除外)。
-    void startLoop(const std::string &prompt, const std::string &verifyCmd, int intervalMs);
-    bool loopModeActive() const { return m_cliLoopActive; }
-
     JZAgent *agent() const { return m_agent; }
 
     // 生效的程序映射(即配置里传进来的那份), 供宿主打印/自检
@@ -300,6 +295,9 @@ protected:
     std::string buildMemoryBlock() const;
 
     std::string extractUserText(const Json::Value &params);
+    // 收集 /task 的图片附件(多模态): images 数组 或 messages 里的 image_url 部分。
+    // 返回可直喂模型的 URL 列表; 有格式/大小/数量问题时写 error(调用方据此回 400)。
+    std::vector<std::string> extractImages(const Json::Value &params, std::string &error);
 
     // JZAgent 信号
     void onReply(const std::string &text);
@@ -339,11 +337,6 @@ protected:
     void finishVerify(int exitCode);         // 一次验证的收尾(截断输出 + 回调)
     void onVerifyDone(int exitCode, const std::string &out);   // 验证结果的分发(正常路径)
     void onLoopFinished();
-
-    // --loop 模式(见 startLoop): 排下一轮 / 跑一轮 / 一轮收尾(收尾里再排下一轮 = 无限循环)
-    void scheduleLoopRound(int delayMs);
-    void runLoopRound();
-    void onLoopRoundDone(const Json::Value &result);
 
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                     const std::string &verifyOut, const std::string &err);
@@ -426,14 +419,6 @@ protected:
                        const std::string &verifyOut, const std::string &err);
     Json::Value recentJson() const;            // 最近在前(与界面"新的在上"一致)
     static int64_t nowMs();
-
-    // --loop 模式(见 startLoop): 反复执行同一条指令, 与 HTTP 无关
-    bool m_cliLoopActive = false;
-    std::string m_cliLoopPrompt;       // 反复执行的指令
-    std::string m_cliLoopVerifyCmd;    // 每轮的验证命令(空 = 不验证)
-    int m_cliLoopIntervalMs = 0;       // 轮与轮之间的等待
-    int m_cliLoopRound = 0;            // 已跑的轮数
-    int64_t m_cliLoopStartMs = 0;      // 本轮开始时间(算用时)
 
     // 传输无关扩展
     std::function<void(const Json::Value &)> m_respond;  // 循环结束的回包回调

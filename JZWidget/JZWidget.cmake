@@ -55,6 +55,7 @@ set(JZ_SOURCES
     JZMimeData.cpp
     JZDragEvent.h
     JZDragEvent.cpp
+    JZRenderBackend.h
     JZGdiBackend.h
     JZGdiBackend.cpp
     JZLayout.h
@@ -86,6 +87,14 @@ set(JZ_SOURCES
     JZMainWindow.cpp
     JZWindow.h
     JZWindow.cpp    
+    # 平台窗口后端: JZWindow 只持"一个后端"(句柄也由后端给出)。
+    # 真窗口后端在本模块; 虚拟桌面的后端在 binary/virtual_device(应用侧, 不属于框架核心)。
+    JZWindowBackend.h
+    JZWin32WindowBackend.h
+    JZWin32WindowBackend.cpp
+    # 窗口宿主: "之后新建的窗口归谁托管"的开关 (装上虚拟桌面 => JS 建的窗口也是虚拟的)
+    JZWindowHost.h
+    JZWindowHost.cpp
     JZChart.h
     JZChart.cpp
     JZDialog.h

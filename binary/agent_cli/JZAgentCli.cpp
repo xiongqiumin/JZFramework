@@ -43,6 +43,15 @@ static const int kReadFileLimit = 8 * 1024 * 1024;
 // 验证输出回包上限(与旧 popen 实现一致): 几十 KB 足够定位, 再大只会撑爆 JSON 回包与上下文。
 static const size_t kMaxVerifyBytes = 65536;
 
+// /task 的图片附件上限(张数 / 单张字符数 / 合计字符数)。
+//   张数与 code_agent 输入框的附图上限对齐; 字符上限按"截图 base64 通常几百 KB"给足余量,
+//   但必须有硬上限 —— 整个 body 都要进内存, 还要再塞进 LLM 请求体。
+//   ⚠ 合计上限必须明显小于 main.cpp 里抬高的 net maxRecvSize(32MB), 否则先被 mongoose
+//     的接收缓冲上限掐断(客户端只看到 connection aborted, 没有任何错误回包)。
+static const int kMaxTaskImages = 8;
+static const int kMaxImageChars = 8 * 1024 * 1024;
+static const int kMaxImagesTotalChars = 24 * 1024 * 1024;
+
 // JZByteArray -> std::string(进程输出按字节接回来, 原样存)
 static std::string bytesToText(const JZByteArray &data)
 {
@@ -532,15 +541,12 @@ void JZAgentCli::startHttp()
 //   远端 frps 的 remotePort 上 —— 这样在外网/其它机器上访问 <frps>:<remotePort>
 //   就能转发到本机的 <localIp>:<localPort>。
 //   ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担; 这里只做客户端。
-//   frpc 靠 JZNetPack 收发包, 启动前必须先 JZNetPackInit() + JZFrpPacketInit()
-//   (与 binary/frpc 的 jzfrpc 一致); 这两个是幂等的, 重复调用无害。
+//   frpc 靠 JZNetPack 收发包, 显式写上包类型注册(与 binary/frpc 的 jzfrpc 一致)。
+//   包类型其实在 JZApplication 构造(JZDriver::init -> JZNetPackInit, 内含 JZFrpPacketInit)
+//   时就注册好了 ⇒ 这里是第二次调 —— 两个入口都有 once 保护, 重复调用无害且不重复注册。
 // ==========================================================================
 void JZAgentCli::startFrpc()
 {
-    // 包类型注册(frpc 的 JZNetClient 依赖它)。幂等, 放最前面只调一次。
-    JZNetPackInit();
-    JZFrpPacketInit();
-
     // frpc 客户端: 本端连到远端 frps, 把本地服务经代理暴露出去。
     if (!m_config.frp.client.enabled)
         return;
@@ -926,10 +932,18 @@ void JZAgentCli::onTaskSubmit(JZHttpServerClient *client, const JZHttpRequest &r
         return;
     }
 
-    // 3) 基本校验(空 prompt / 忙) -> 立即回包
-    if (extractUserText(root).empty())
+    // 3) 基本校验(空任务 / 图片不合法 / 忙) -> 立即回包
+    string preImgError;
+    std::vector<std::string> preImages = extractImages(root, preImgError);
+    if (!preImgError.empty())
     {
-        Json::Value e; e["error"] = "no prompt found (need 'prompt' or 'messages')";
+        Json::Value e; e["error"] = preImgError;
+        sendJson(client, 400, e);
+        return;
+    }
+    if (extractUserText(root).empty() && preImages.empty())
+    {
+        Json::Value e; e["error"] = "no prompt found (need 'prompt' / 'messages', or 'images')";
         sendJson(client, 400, e);
         return;
     }
@@ -957,10 +971,19 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
         if (respond) respond(e);
         return;
     }
-    std::string prompt = extractUserText(req);
-    if (prompt.empty())
+    std::string imgError;
+    std::vector<std::string> images = extractImages(req, imgError);
+    if (!imgError.empty())
     {
-        Json::Value e; e["error"] = "no prompt found (need 'prompt' or 'messages')";
+        Json::Value e; e["error"] = imgError;
+        if (respond) respond(e);
+        return;
+    }
+    std::string prompt = extractUserText(req);
+    // 文字与图片都空才算空任务(允许"只发截图", 与 code_agent 的 request() 同一口径)
+    if (prompt.empty() && images.empty())
+    {
+        Json::Value e; e["error"] = "no prompt found (need 'prompt' / 'messages', or 'images')";
         if (respond) respond(e);
         return;
     }
@@ -1014,137 +1037,31 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     start["max_retries"] = m_maxErrorRetries;
     start["max_fix_retries"] = m_maxFixRetries;
     start["memory_bytes"] = (int)memoryBlock.size();      // 0 = 没带记忆(未启用/还没记忆/本次关掉)
+    start["images"] = (int)images.size();                 // 附图张数(网页/脚本据此提示; 图本身不进事件流)
     pushEvent("task_start", start);
     pushHistory(prompt, m_verifyCmd);   // 记一条"最近任务"(running), 收尾时回填结果
 
-    m_agent->request(memoryBlock + prompt);
+    // 多模态: 图片与文字同属这一条 user 消息(走 JZAgent 的 request(text, images) 重载, 与桌面版同一条路)。
+    // 后续续跑/验证失败的喂回仍是纯文本 —— 图只在首轮给一次。
+    if (images.empty())
+        m_agent->request(memoryBlock + prompt);
+    else
+        m_agent->request(memoryBlock + prompt, images);
     m_sessionStarted = true;
     // 注意: 不在此回包; onLoopFinished 在 agent 结束后被调用并回包(经 m_respond)。
 }
 
 // ---------------------------------------------------------------------------
-// --loop 模式: 无人值守, 反复把同一条指令交给 agent(不依赖 HTTP/网页)
-//   一轮 = submitTask 那套完整流程(送指令 -> 可选验证脚本门控循环 -> 收尾), 收尾回调里
-//   打一行结果, 然后排下一轮 —— 没有停止条件, 就是"无限循环"。
-//   为什么下一轮要过 JZTimer: submitTask 的 respond 回调是在 m_busy 复位**之前**调的
-//   (onLoopFinished: respondTask -> endLoop), 当场再提会被判成"已有任务在跑"; 过一遍事件
-//   循环就等到了 endLoop(), 于是 interval=0 也必须排一个 0ms 定时器。
+// "多轮"由**外部驱动**, 不在这里再搞一个 --loop 模式:
+//   一轮 = 一次 POST /task(prompt + verify_cmd), 走的就是上面 submitTask 那一套(同一会话、
+//   同一"验证脚本门控"循环)。跑几轮 / 什么时候停, 是**提交方**的事 —— 验证程序在自己输出里
+//   打 [loop-stop], 提交方看见后不再提交下一轮即可; CLI 不需要认识任何标记, 也不需要
+//   第二个循环模式(它俩本来就是同一条链路的两种驱动方式, 分成两套只会各修一遍)。
+//   落地见 binary/agent_cli/tools/agent_loop.py: 拉起 agent_cli(HTTP) + 逐轮提交 + 外部复验。
 // ---------------------------------------------------------------------------
 
-// 日志用的截断: 按字节切, 但别切在 UTF-8 多字节序列中间(控制台会出乱码)
-static std::string clipText(const std::string &text, size_t maxBytes)
-{
-    if (text.size() <= maxBytes)
-        return text;
-    size_t end = maxBytes;
-    while (end > 0 && ((unsigned char)text[end] & 0xC0) == 0x80)
-        end--;
-    return text.substr(0, end) + " ...(共 " + std::to_string(text.size()) + " 字节)";
-}
-
-static std::string secText(double sec)
-{
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.1fs", sec);
-    return buf;
-}
-
-void JZAgentCli::startLoop(const std::string &prompt, const std::string &verifyCmd, int intervalMs)
-{
-    if (!m_agent)
-    {
-        jzError("--loop: agent 未初始化, 无法进入循环模式");
-        return;
-    }
-
-    m_cliLoopPrompt = prompt;
-    m_cliLoopVerifyCmd = verifyCmd;
-    m_cliLoopIntervalMs = (intervalMs > 0) ? intervalMs : 0;
-    m_cliLoopRound = 0;
-    m_cliLoopActive = true;
-
-    // noquote: jzInfo 默认给字符串加引号 + 转义(日志里一堆 \" 反而看不清), 这几条不用
-    jzInfo().nospace().noquote()
-        << "--loop 无人值守: 无限循环执行同一条指令(间隔 " << m_cliLoopIntervalMs
-        << " ms, 会话跨轮延续, "
-        << (m_cliLoopVerifyCmd.empty() ? std::string("不验证")
-                                       : ("验证命令: " + m_cliLoopVerifyCmd))
-        << ")";
-    jzInfo().nospace().noquote() << "--loop 指令: " << m_cliLoopPrompt;
-
-    scheduleLoopRound(0);
-}
-
-void JZAgentCli::scheduleLoopRound(int delayMs)
-{
-    JZTimer::singleShot(delayMs > 0 ? delayMs : 0, this, [this]() { runLoopRound(); });
-}
-
-void JZAgentCli::runLoopRound()
-{
-    if (!m_cliLoopActive || !m_agent)
-        return;
-
-    // 会话**跨轮延续**: 不调 resetSession —— 每轮接在同一段对话后面(与"用 HTTP 连着提交几次
-    // 任务"一致), 上下文涨到预算由 agent 自己压缩(tokenStrategy = TokenCompress)。
-    // 每轮的任务状态(轮数/回复累积/重试计数/成败标志…)由 submitTask() 开头那一段自己复位,
-    // 不需要在这里清。
-    m_cliLoopRound++;
-    m_cliLoopStartMs = nowMs();
-    jzInfo().nospace() << "[loop " << m_cliLoopRound << "] 开始";
-
-    Json::Value req(Json::objectValue);
-    req["prompt"] = m_cliLoopPrompt;
-    if (!m_cliLoopVerifyCmd.empty())
-        req["verify_cmd"] = m_cliLoopVerifyCmd;
-    submitTask(req, [this](const Json::Value &r) { onLoopRoundDone(r); });
-}
-
-void JZAgentCli::onLoopRoundDone(const Json::Value &result)
-{
-    double sec = (nowMs() - m_cliLoopStartMs) / 1000.0;
-    std::string status = result.get("status", "?").asString();
-
-    std::string line = "[loop " + std::to_string(m_cliLoopRound) + "] 结束: " + status;
-    if (result.isMember("verify_rounds"))
-        line += "  验证轮次=" + std::to_string(result["verify_rounds"].asInt());
-    if (result.isMember("retries"))
-        line += "  重试=" + std::to_string(result["retries"].asInt());
-    line += "  用时=" + secText(sec);
-    if (status == "success")
-        jzInfo().noquote() << line;
-    else
-        jzWarning().noquote() << line;
-
-    std::string err = result.get("error", "").asString();
-    if (!err.empty())
-        jzWarning().nospace().noquote() << "[loop " << m_cliLoopRound << "] 错误: " << clipText(err, 400);
-    std::string reply = result.get("agent_reply", "").asString();
-    if (!reply.empty())
-        jzInfo().nospace().noquote() << "[loop " << m_cliLoopRound << "] 回复: " << clipText(reply, 400);
-    std::string vout = result.get("last_verify_output", "").asString();
-    if (!vout.empty())
-        jzInfo().nospace().noquote() << "[loop " << m_cliLoopRound << "] 验证输出: " << clipText(vout, 400);
-
-    // 无人值守时 stdout 多半被重定向到文件: 不 flush 就"跑了一晚上一条也看不到"
-    // (printf 到文件是块缓冲, 4KB 才落一次盘; 被 Ctrl+C 杀掉时缓冲区还会丢)。
-    fflush(stdout);
-
-    // 被取消(只可能来自外部的重置/停止): 不再续下一轮
-    if (status == "cancelled")
-    {
-        m_cliLoopActive = false;
-        jzInfo().noquote() << "--loop 已停止: 任务被取消";
-        return;
-    }
-
-    // 无限循环: 不按成败判定要不要继续(失败也接着来, 重试预算在任务内部已经用过)
-    scheduleLoopRound(m_cliLoopIntervalMs);
-}
-
 // ---------------------------------------------------------------------------
-// 验证命令的解释器选择
-//   Windows(cmd)下 `python3` / `bash` 经常根本不存在 —— 装了 Python 往往只有 python.exe,
+// 验证命令的解释器选择//   Windows(cmd)下 `python3` / `bash` 经常根本不存在 —— 装了 Python 往往只有 python.exe,
 //   Git Bash 也没进 PATH。硬写 python3 会让验证脚本每一轮都以 9009/127 退出(看着像"测试
 //   一直失败"), 白烧掉所有续跑轮次。所以推导时先挑一个"本机真能跑"的, 顺序:
 //     ① 配置的程序映射(terminal.programs, 如 {"python":"C:/.../python.exe"})
@@ -1810,6 +1727,92 @@ string JZAgentCli::extractUserText(const Json::Value &params)
     if (params.isMember("text") && params["text"].isString())
         return params["text"].asString();
     return string();
+}
+
+// 收集图片附件(多模态)。两种写法都收 —— 与 OpenAI 的 messages 一致, 网页/脚本可直接搬:
+//   "images": ["data:image/png;base64,...", "http://host/a.png"]     (单张也允许直接给字符串)
+//   "messages": [{role:"user", content:[{type:"text"},{type:"image_url",image_url:{url}}]}]
+// 只认 data: URL 与 http(s) 链接(别的形态喂给模型只会拿到 400)。
+// ⚠ 上限是硬约束(kMaxTaskImages / kMaxImageChars): 超了就报错, 不静默截断 —— 否则
+//   提交方以为图发过去了、模型却看不到, 排查起来很费劲。
+std::vector<std::string> JZAgentCli::extractImages(const Json::Value &params, string &error)
+{
+    std::vector<std::string> out;
+    string bad;
+    size_t total = 0;
+
+    auto add = [&](const Json::Value &v) {
+        if (!v.isString())
+            return;
+        string url = v.asString();
+        if (url.empty())
+            return;
+        if ((int)url.size() > kMaxImageChars)
+        {
+            if (bad.empty()) bad = "单张图片过大(超过 " + to_string(kMaxImageChars) + " 字符)";
+            return;
+        }
+        if (total + url.size() > (size_t)kMaxImagesTotalChars)
+        {
+            if (bad.empty()) bad = "图片合计过大(超过 " + to_string(kMaxImagesTotalChars) + " 字符)";
+            return;
+        }
+        string head = str_toLower(url.substr(0, 5));
+        if (head.compare(0, 5, "data:") != 0 && head.compare(0, 4, "http") != 0)
+        {
+            if (bad.empty()) bad = "images 只接受 data: URL 或 http(s) 链接";
+            return;
+        }
+        if ((int)out.size() >= kMaxTaskImages)
+        {
+            if (bad.empty()) bad = "图片数量过多(超过 " + to_string(kMaxTaskImages) + " 张)";
+            return;
+        }
+        total += url.size();
+        out.push_back(url);
+    };
+
+    const Json::Value &images = params["images"];
+    if (images.isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < images.size(); ++i)
+            add(images[i]);
+    }
+    else if (images.isString())
+    {
+        add(images);
+    }
+
+    // messages 写法: 只取 user 消息 content 数组里的 image_url 部分(与 extractUserText 同一套遍历)
+    const Json::Value &msgs = params["messages"];
+    if (msgs.isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < msgs.size(); ++i)
+        {
+            const Json::Value &m = msgs[i];
+            if (m.get("role", "").asString() != "user")
+                continue;
+            const Json::Value &c = m["content"];
+            if (!c.isArray())
+                continue;
+            for (Json::ArrayIndex j = 0; j < c.size(); ++j)
+            {
+                const Json::Value &p = c[j];
+                if (!p.isObject() || p["type"].asString() != "image_url")
+                    continue;
+                const Json::Value &iu = p["image_url"];
+                if (iu.isObject())
+                    add(iu.get("url", ""));
+                else if (iu.isString())
+                    add(iu);
+            }
+        }
+    }
+
+    // 一张都没收进来但确实有毛病 -> 报错; 收了部分(超数量)也报错, 让提交方知道被截断了
+    if (!bad.empty())
+        error = bad;
+    return out;
 }
 
 // ==========================================================================

@@ -178,16 +178,22 @@ JZAiDriver::JZAiDriver(JZWindow* root, JZObject* parent)
     , sigDone(this)
     , m_root(root)
 {
-    // 有根窗口才建覆盖层; 无根(等 setRoot)时先空着 —— moveToWidget 会因 m_root 为空而拒绝
-    if (root)
+    // 覆盖层**懒建**: 只有可视化打开时才有 (默认关闭, 见 setVisualEnabled)
+    m_timer = new JZTimer(this);
+    connect(&m_timer->sigTimeout, this, &JZAiDriver::onTick);
+}
+
+JZAiOverlay* JZAiDriver::ensureOverlay()
+{
+    if (!m_visual || !m_root)
+        return m_overlay;
+    if (!m_overlay)
     {
-        m_overlay = new JZAiOverlay(root);
+        m_overlay = new JZAiOverlay(m_root);
         m_overlay->hide();
         connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
     }
-
-    m_timer = new JZTimer(this);
-    connect(&m_timer->sigTimeout, this, &JZAiDriver::onTick);
+    return m_overlay;
 }
 
 int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
@@ -202,6 +208,18 @@ int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
     m_onArrive = std::move(onArrive);
     m_from = m_cursorPos;
     m_to = target->mapTo(target->window(), JZPoint(target->width() / 2, target->height() / 2));
+
+    if (!m_visual)
+    {
+        // ---- 无可视化: 不建覆盖层 / 不屏蔽输入 / 不等动画 ----
+        // 仍然经 runOnObject 投递到事件派发上下文再执行动作 —— 与"到达后"完全同一条路径,
+        // 这样合成点击/onArrive 的行为在两种模式下一致(只是快), 也不会嵌在调用栈里执行。
+        m_cursorPos = m_to;
+        m_phase = PhaseActing;
+        m_actTicks = -1;                       // 语义同动画路径: 动作还没执行
+        runOnObject(this, [this]() { doArrive(); });
+        return m_seq;
+    }
 
     m_overlay->syncToParent();
     m_overlay->setStatusText(statusText);
@@ -225,8 +243,11 @@ int JZAiDriver::moveToWidget(JZWidget* target, bool performClick,
 
 void JZAiDriver::cancel()
 {
-    if (m_phase != PhaseIdle)
-        m_cancelRequested = true;   // 下个 tick 生效
+    if (m_phase == PhaseIdle)
+        return;
+    m_cancelRequested = true;       // 动画模式下由下个 tick 消费
+    if (!m_visual)
+        finish(false, "操作已被取消");   // 无可视化: 没有 tick 可等, 立即收尾(否则会一直"忙")
 }
 
 // 旧根窗口可能已被 JS 关窗销毁: 只比指针判断是否还在顶层窗口表里, 绝不访问对象
@@ -272,10 +293,31 @@ void JZAiDriver::setRoot(JZWindow* root)
     }
     else
     {
-        m_overlay = new JZAiOverlay(m_root);
-        m_overlay->hide();
-        connect(&m_overlay->sigCancelRequested, this, &JZAiDriver::cancel);
+        ensureOverlay();   // 仅当可视化为开才建; 关着就一直不建覆盖层
     }
+}
+
+// 开关可视化 (默认关, 见头文件注释: 截图干净 + 立即执行 + 不屏蔽真实输入)
+void JZAiDriver::setVisualEnabled(bool on)
+{
+    if (m_visual == on)
+        return;
+
+    m_visual = on;
+    if (on)
+    {
+        ensureOverlay();
+        if (m_overlay)
+            m_overlay->syncToParent();
+        return;
+    }
+
+    // 关掉: 立刻收起覆盖层 + 解除输入屏蔽 (别把真实输入锁在蒙版后面)
+    if (m_overlay)
+        m_overlay->hide();
+    if (m_root && isTopLevelAlive(m_root))
+        m_root->setInputGate(nullptr);
+    m_cursorPos = m_to;   // 位置跟上, 免得下次开启时从旧位置"飞"过来
 }
 
 void JZAiDriver::onTick()
@@ -297,7 +339,8 @@ void JZAiDriver::onTick()
         m_cursorPos = JZPoint(
             m_from.x() + (int)std::lround((m_to.x() - m_from.x()) * e),
             m_from.y() + (int)std::lround((m_to.y() - m_from.y()) * e));
-        m_overlay->setCursorPos(m_cursorPos);
+        if (m_overlay)
+            m_overlay->setCursorPos(m_cursorPos);
 
         if (m_tick >= m_totalTicks) {
             // 到达目标: 动作经 doArrive 投递到事件派发上下文执行 (脱离 timer 栈,
@@ -313,7 +356,8 @@ void JZAiDriver::onTick()
     // PhaseActing: 等待 doArrive 执行 (m_actTicks < 0), 之后涟漪/停留展示, 结束回报
     if (m_actTicks < 0)
         return;
-    m_overlay->tickEffect();
+    if (m_overlay)
+        m_overlay->tickEffect();
     if (--m_actTicks <= 0)
         finish(true, "ok");
 }
@@ -321,10 +365,11 @@ void JZAiDriver::onTick()
 // 到达后的动作 (事件派发上下文): click 类先出涟漪再合成真实点击; 其它直调
 void JZAiDriver::doArrive()
 {
-    if (m_phase == PhaseIdle)   // 投递期间被取消/结束: 丢弃动作
+    if (m_phase == PhaseIdle || m_cancelRequested)   // 投递期间被取消/结束: 丢弃动作
         return;
     if (m_performClick) {
-        m_overlay->startClickEffect(m_to);
+        if (m_overlay)
+            m_overlay->startClickEffect(m_to);   // 涟漪只在可视化模式下有
         // 合成点击投递到事件队列 (JZWindow::event 派发): 按钮槽 —— 及其可能
         // 打开的模态框 —— 在独立派发上下文执行, 不阻塞本函数, AI 序列立即
         // 收尾回报 (回报语义 = 点击已落地, 而非点击引发的模态流结束)
@@ -344,7 +389,10 @@ void JZAiDriver::doArrive()
         m_onArrive = nullptr;
         fn();
     }
-    m_actTicks = kActTicks;   // 动作完成, 开始停留展示计时
+    if (m_visual)
+        m_actTicks = kActTicks;   // 动作完成, 开始停留展示计时(等 onTick 收尾)
+    else
+        finish(true, "ok");       // 无可视化: 不等展示, 立即回报(评测里每次 invoke 省 ~0.4s)
 }
 
 void JZAiDriver::finish(bool ok, const std::string& msg)
@@ -352,7 +400,10 @@ void JZAiDriver::finish(bool ok, const std::string& msg)
     m_timer->stop();
     m_phase = PhaseIdle;
     m_onArrive = nullptr;
-    m_root->setInputGate(nullptr);   // 解除输入屏蔽, 恢复真实输入
-    m_overlay->hide();
+    // 根窗口可能已被 JS 关窗销毁: 只比指针, 不访问对象
+    if (m_root && isTopLevelAlive(m_root))
+        m_root->setInputGate(nullptr);   // 解除输入屏蔽, 恢复真实输入
+    if (m_overlay)
+        m_overlay->hide();
     sigDone.emit(m_seq, ok, msg);
 }

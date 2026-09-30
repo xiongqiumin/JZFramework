@@ -390,7 +390,8 @@ void JZGdiBackend::releaseFontEngine()
 bool JZGdiBackend::init(JZDisplayDevice* device, void* hwnd, unsigned physicalW, unsigned physicalH)
 {
     m_widgetDevice = device;
-    if (!hwnd || !acquireFontEngine())
+    // hwnd == nullptr = 离屏模式: 不需要窗口, 只要字体度量引擎 (GDI+) 可用。
+    if (!acquireFontEngine())
         return false;
     m_initialized = true;      // 之后 destroy() 才允许减引用计数
 
@@ -424,10 +425,16 @@ void JZGdiBackend::destroy()
 bool JZGdiBackend::createMemBitmap(unsigned physicalW, unsigned physicalH)
 {
     releaseMemBitmap();
-    if (!m_hwnd || physicalW == 0 || physicalH == 0)
+    if (physicalW == 0 || physicalH == 0)
         return false;
 
-    HDC dc = GetDC((HWND)m_hwnd);
+    // 有窗口: 与窗口 DC 兼容; 离屏 (无窗口): 与屏幕 DC 兼容。
+    // CreateCompatibleDC(nullptr) 是 Win32 允许的"屏幕兼容"形式, 不需要任何窗口
+    // (现有先例: GdiFontEngine 构造函数)。
+    HDC wdc = m_hwnd ? GetDC((HWND)m_hwnd) : nullptr;
+    HDC dc = wdc ? wdc : CreateCompatibleDC(nullptr);
+    if (!dc)
+        return false;
     m_memDC = CreateCompatibleDC(dc);
 
     BITMAPINFO bmi;
@@ -440,7 +447,10 @@ bool JZGdiBackend::createMemBitmap(unsigned physicalW, unsigned physicalH)
     bmi.bmiHeader.biCompression = BI_RGB;
     void* bits = nullptr;
     m_memBmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC((HWND)m_hwnd, dc);
+    if (wdc)
+        ReleaseDC((HWND)m_hwnd, wdc);
+    else
+        DeleteDC(dc);
 
     if (!m_memDC || !m_memBmp) {
         releaseMemBitmap();
@@ -451,6 +461,7 @@ bool JZGdiBackend::createMemBitmap(unsigned physicalW, unsigned physicalH)
     // 杜绝边缘露出未初始化内存 (黑/杂色/透明花边)。
     if (bits)
         memset(bits, 0xFF, (size_t)physicalW * physicalH * 4);
+    m_bits = bits;    // 帧缓冲像素首地址 (snapshot 取帧用)
     m_oldBmp = (void*)SelectObject((HDC)m_memDC, (HBITMAP)m_memBmp);
     return true;
 }
@@ -461,6 +472,7 @@ void JZGdiBackend::releaseMemBitmap()
         SelectObject((HDC)m_memDC, (HBITMAP)m_oldBmp);
     if (m_memDC) { DeleteDC((HDC)m_memDC);       m_memDC = nullptr; }
     if (m_memBmp) { DeleteObject((HBITMAP)m_memBmp); m_memBmp = nullptr; }
+    m_bits = nullptr;
     m_oldBmp = nullptr;
 }
 
@@ -485,7 +497,7 @@ void JZGdiBackend::rebuildFonts()
 // ==================== 渲染 ====================
 void JZGdiBackend::render(JZLayer* layer)
 {
-    if (!m_hwnd || !m_memDC || !layer)
+    if (!m_memDC || !layer)
         return;
     if (m_physW == 0 || m_physH == 0)
         return;
@@ -506,11 +518,37 @@ void JZGdiBackend::render(JZLayer* layer)
         replayTasks(&g, layer);
     }   // Graphics 先析构, 再提交到屏幕
 
-    HDC wdc = GetDC((HWND)m_hwnd);
-    BitBlt(wdc, 0, 0, (int)m_physW, (int)m_physH, (HDC)m_memDC, 0, 0, SRCCOPY);
-    ReleaseDC((HWND)m_hwnd, wdc);
+    // 提交上屏: 仅绑定窗口时执行。离屏后端到此为止 —— 帧就留在 DIB 里, 由 snapshot 取走。
+    if (m_hwnd) {
+        HDC wdc = GetDC((HWND)m_hwnd);
+        if (wdc) {
+            BitBlt(wdc, 0, 0, (int)m_physW, (int)m_physH, (HDC)m_memDC, 0, 0, SRCCOPY);
+            ReleaseDC((HWND)m_hwnd, wdc);
+        }
+    }
 
     layer->clearTasks();
+}
+
+// 取帧: 把帧缓冲 DIB 的像素 (top-down BGRA) 拷成 JZImage (RGBA8888)。
+// 与"渲染出来的那一帧"逐像素一致 (即窗口上看到的内容), 不做抓屏/合成,
+// 因此离屏设备同样能取帧, 且不受遮挡、z 序、前台、多屏影响。
+bool JZGdiBackend::snapshot(JZImage& out)
+{
+    if (!m_bits || m_physW == 0 || m_physH == 0)
+        return false;
+
+    const size_t count = (size_t)m_physW * m_physH;
+    std::vector<unsigned char> rgba(count * 4);
+    const unsigned char* src = (const unsigned char*)m_bits;
+    for (size_t i = 0; i < count; ++i) {
+        rgba[i * 4 + 0] = src[i * 4 + 2];   // R <- B
+        rgba[i * 4 + 1] = src[i * 4 + 1];   // G
+        rgba[i * 4 + 2] = src[i * 4 + 0];   // B <- R
+        rgba[i * 4 + 3] = src[i * 4 + 3];   // A
+    }
+    out = JZImage::fromRGBA(rgba.data(), (int)m_physW, (int)m_physH);
+    return !out.isNull();
 }
 
 // 把绘制任务回放到任意 Graphics (窗口 DIB / 离屏位图共用同一份回放逻辑)。

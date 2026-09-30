@@ -51,6 +51,7 @@ set(JZ_SOURCES
     JZCloseEvent.cpp
     JZMouseEvent.h
     JZMouseEvent.cpp
+    JZRenderBackend.h
     JZGdiBackend.h
     JZGdiBackend.cpp
     JZLayout.h
@@ -90,6 +91,8 @@ set(JZ_SOURCES
     JZMessageBox.cpp
     JZDisplayDevice.h
     JZDisplayDevice.cpp
+    JZVirtualDevice.h
+    JZVirtualDevice.cpp
     JZScreen.h
     JZScreen.cpp
     JZStackedWidget.h

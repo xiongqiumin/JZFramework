@@ -11,6 +11,7 @@
 #include "JZVirtualDevice.h"
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
+#include "JZThread.h"    // runOnObject: 把脏区投到窗口自己的线程
 
 JZVirtualWindowBackend::JZVirtualWindowBackend(JZVirtualWindow* vwin)
     : m_vwin(vwin)
@@ -73,9 +74,35 @@ void JZVirtualWindowBackend::show(JZWindow* w)
         m_vwin->notifyScreen();
 }
 
+// 脏区: 排给**窗口自己的线程**去画 (见 JZWindowBackend::onInvalidate)。
+//   · 跨线程的窗口 (虚拟进程建的) —— 发到那个进程的**事件循环**: 它每轮处理事件队列时
+//     就把这一帧画掉。虚拟进程本身就是一个 JZThread (有自己的 exec 循环), 所以这里
+//     走的是"正常消息循环"那条路, 而不是在事件派发栈里就地画;
+//   · 与宿主同线程的窗口 (宿主自己建的) —— 交给框架默认: 排进主线程的 paint task。
+// 两种都满足同一条硬约束: **画发生在帧缓冲所属的那个线程上** (见 onPainted)。
+void JZVirtualWindowBackend::onInvalidate(JZWindow* w, const JZRect& rc)
+{
+    if (!w)
+        return;
+    JZThread* owner = m_vwin ? m_vwin->process() : nullptr;
+    if (!owner)
+    {
+        JZWindowBackend::onInvalidate(w, rc);      // 同线程: 主线程的 paint task
+        return;
+    }
+    if (m_paintPending.exchange(true))
+        return;                                    // 已经有一帧排在它线程上了: 合并
+    // ⚠ 用 runOnObject 而不是 runOnThread: 窗口(客户区)在 lambda 跑之前被销毁的话,
+    //   这次投递直接作废, 不会拿着悬垂指针去画 (见 JZThread.h 里 runOnObject 的约定)。
+    runOnObject(w, [this, w]() {
+        m_paintPending = false;
+        w->doPaint(w->rect());
+    });
+}
+
 // 画完一帧: 把新帧拷进窗口的"帧缓存"并通知桌面重合成。
-// ⚠ 本函数一定在**窗口自己的线程**上被调 (见 JZWindowBackend::paintsOnDemand /
-//   JZWindow::event(JZEvent_invalidate)) —— 所以这里的拷贝不跨线程, 不需要等谁。
+// ⚠ 本函数一定在**窗口自己的线程**上被调 (见 onInvalidate / onPainted 的调用点) ——
+//   所以这里的拷贝不跨线程, 不需要等谁。
 void JZVirtualWindowBackend::onPainted(JZWindow* w)
 {
     (void)w;

@@ -2,6 +2,8 @@
 #define JZ_VIRTUAL_WINDOW_BACKEND_H_
 #include "JZWindowBackend.h"
 
+#include <atomic>
+
 class JZVirtualWindow;
 
 // ==================== 虚拟桌面窗口后端 ====================
@@ -40,8 +42,10 @@ public:
     float deviceScale(JZWindow* w) const override;
     bool containsScreenPoint(JZWindow* w, int x, int y) const override;
 
-    // 虚拟窗口没有平台消息循环 ⇒ 脏区就地画 (窗口自己的线程), 不排主线程的 paint task
-    bool paintsOnDemand() const override { return true; }
+    // 脏区: **发到窗口所属线程**去画 —— 跨线程的窗口 (虚拟进程建的) 发到它自己的进程
+    // 线程, 由那边的**事件循环**排掉 (虚拟进程也是一个 JZThread, 有自己的循环);
+    // 与宿主同线程的窗口就按框架默认, 排进主线程的 paint task。两者都不"就地画"。
+    void onInvalidate(JZWindow* w, const JZRect& rc) override;
     // 画完把这一帧推给桌面 (拷贝 + 通知重合成) —— 帧缓冲的读写都在窗口自己的线程上
     void onPainted(JZWindow* w) override;
 
@@ -58,7 +62,8 @@ public:
 
 private:
     JZVirtualWindow* m_vwin = nullptr;
-    bool m_created = false;      // 离屏帧缓冲是否已建
+    bool m_created = false;              // 离屏帧缓冲是否已建
+    std::atomic<bool> m_paintPending{false};   // 已有一帧排在窗口线程上了 (脏区合并)
 };
 
 #endif // JZ_VIRTUAL_WINDOW_BACKEND_H_

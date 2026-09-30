@@ -127,9 +127,18 @@ void JZWin32Thread::invalidate(JZWindow* window, const JZRect& rc)
 
 void JZWin32Thread::dealPaint()
 {
-    for (auto& task : m_paintTask)
-        task.window->doPaint(task.rc);
-    m_paintTask.clear();
+    // 先把本轮任务摘出来再画: doPaint 里可能又产生脏区(同步派发的 invalidate),
+    // 那些落到**下一轮**, 不能往正在遍历的容器里塞(迭代器失效)。
+    std::vector<PaintTask> tasks;
+    {
+        JZMutexLocker lock(&m_mutex);
+        tasks.swap(m_paintTask);
+    }
+    for (auto& task : tasks)
+    {
+        if (task.window)
+            task.window->doPaint(task.rc);
+    }
 }
 
 // 一轮循环体: 全量处理框架事件 + 提交脏区绘制, run() 与 execModal() 共用。

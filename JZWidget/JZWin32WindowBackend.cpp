@@ -984,6 +984,16 @@ void JZWin32WindowBackend::setCapture(JZWindow* w, bool on)
         ReleaseCapture();
 }
 
+// 脏区排进主线程的 paint task: 主线程的消息循环 (JZWin32Thread) 每轮统一画一次
+// (与 WM_PAINT 同款)。真窗口走它; 虚拟桌面上"与宿主同线程"的窗口也走它
+// (见 JZVirtualWindowBackend::onInvalidate —— 跨线程的窗口才发到那个进程去)。
+// ⚠ 只有平台实现认识 JZWin32Thread: 后端接口(JZWindowBackend.h)和 JZWindow 都看不见平台类型。
+void jzSchedulePaintOnMainThread(JZWindow* w, const JZRect& rc)
+{
+    auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread());
+    mt->invalidate(w, rc);
+}
+
 int JZWin32WindowBackend::execModal(JZWindow* w, bool disableOwner)
 {
     auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread());

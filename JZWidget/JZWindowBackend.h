@@ -7,6 +7,11 @@
 
 class JZWindow;
 
+// 脏区排进**主线程**的 paint task (由消息循环统一画一帧; 见 JZWindowBackend::onInvalidate)。
+// ⚠ 定义在 JZWin32WindowBackend.cpp: 平台类型 (JZWin32Thread) 只出现在平台实现里,
+//   后端接口与框架代码都看不见它。
+JZFRAMEWORK_API void jzSchedulePaintOnMainThread(JZWindow* w, const JZRect& rc);
+
 // ==================== 平台窗口后端 ====================
 // JZWindow 只持"**一个后端**": 平台相关的动作 (含"平台窗口句柄是什么") 全部从这里走 ——
 //   · 真窗口   JZWin32WindowBackend  (HWND / WndProc / SetCapture / IMM / 消息循环)
@@ -53,12 +58,13 @@ public:
     // 本窗口当前所在显示器的缩放 (逻辑像素 -> 物理像素)。真窗口问系统 DPI;
     // 虚拟桌面恒为 1 (它是纯逻辑桌面, 与宿主显示器无关)。
     virtual float deviceScale(JZWindow* w) const = 0;
-    // 绘制谁来驱动: false(默认) = 平台的消息循环拉脏区 (真窗口: WM_PAINT / 主线程的
-    // paint task); true = **窗口自己的线程就地画** (虚拟窗口: 没有平台消息, 帧缓冲由
-    // 合成方按需取)。见 JZWindow::event(JZEvent_invalidate) —— 这一条决定了"谁碰这块
-    // 帧缓冲": 虚拟窗口的绘制永远发生在它自己所属的线程上, 于是多线程(每窗口一个线程)
-    // 时不会有"主线程替别的线程画窗口"的竞态。
-    virtual bool paintsOnDemand() const { return false; }
+    // 脏区来了 (JZWindow 收到 invalidate 事件, 见 JZWindow::event): 排给**哪个消息循环**画。
+    //   · 真窗口 (默认实现) = 排进主线程的 paint task, 由消息循环统一画 (WM_PAINT 同款);
+    //   · 虚拟窗口 = 把脏区**发到窗口所属的虚拟进程线程** (JZVirtualProcess 有自己的事件
+    //     循环), 那边的循环画它自己的帧缓冲 —— 见 JZVirtualWindowBackend::onInvalidate。
+    // ⚠ 是"排给一个循环", 不是就地画: 帧缓冲的主人只有一个线程 (窗口自己的线程, 见
+    //   onPainted), 谁也不该在事件派发栈里替它画 (那是两套绘制时序漂移的来源)。
+    virtual void onInvalidate(JZWindow* w, const JZRect& rc) { jzSchedulePaintOnMainThread(w, rc); }
 
     // 画完一帧后的回调 (本窗口的线程上, 紧接在 render 之后)。
     // 真窗口无事可做(WM_PAINT 后系统自己上屏); 虚拟窗口在这里把新帧**推**给桌面

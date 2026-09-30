@@ -48,7 +48,7 @@ public:
     std::string title() const;
 
     JZDisplayDevice* device();         // 渲染设备
-    void doPaint(const JZRect& rc);    // 重绘指定区域 (paint task 执行)
+    void doPaint(const JZRect& rc);    // 重绘指定区域 (由窗口线程的循环调, 见 onInvalidate)
     virtual void resize(int w, int h) override;        // 同步原生窗口尺寸
 
     // 显式设定 DPI 缩放 (popup 等浮层跟随 owner 显示器, 多屏/HiDPI 下避免与主屏错配);
@@ -270,8 +270,7 @@ protected:
     JZWindowBackend* m_backend = nullptr;   // 平台后端 (所有权在本窗口)
     bool m_topLevelWindow = true;       // 是否登记进 app 顶层窗口表 (见 setTopLevelWindow)
     bool m_windowCreated = false;       // 平台窗口是否已创建 (惰性, showEvent 触发)
-    bool m_painting = false;            // 正在 doPaint (就地绘制的窗口用它挡重入)
-    bool m_paintDirty = false;          // 绘制期间又来了脏区 (画完补一帧)
+    bool m_painting = false;            // 正在 doPaint (挡"绘制中又被同步调进来"的重入)
     bool m_scaleExplicit = false;        // 已显式设定 DPI (setDeviceScale), create 不覆盖
     std::string m_title;
     WindowType m_windowType = Normal;

@@ -13,7 +13,7 @@
 #include "JZPainterEvent.h"
 #include "JZImeEvent.h"
 #include "JZApplication.h"
-#include "JZWin32Thread.h"
+#include "JZWin32Thread.h"   // 弹层唤醒用 (wakeUp 是 protected, 由主线程转发) + 键码定义
 
 #include <algorithm>
 #include <cmath>
@@ -146,26 +146,17 @@ void JZWindow::setDeviceScale(float scale)
 }
 
 // 重绘指定区域: 遍历控件树(含剔除) -> 各控件 paintEvent -> backend 渲染
-// ⚠ 虚拟窗口是"就地画"(见 paintsOnDemand): 绘制中再有脏区不能被递归进来重入
-//   (真窗口那边靠主线程的 paint task 天然串行), 这里记一笔, 画完补一帧。
 void JZWindow::doPaint(const JZRect& rc)
 {
     if (!m_device || !m_windowCreated)
         return;
-    if (m_painting) {
-        m_paintDirty = true;
+    if (m_painting)         // 绘制中再被直接调进来 (resize/show 那几条同步路径): 不重入
         return;
-    }
     m_painting = true;
     m_device->render(this, rc);
     m_painting = false;
     if (m_backend)
         m_backend->onPainted(this);     // 虚拟窗口: 把新帧推给桌面 (真窗口: 无事可做)
-
-    if (m_paintDirty && m_backend && m_backend->paintsOnDemand()) {
-        m_paintDirty = false;
-        doPaint(rect());
-    }
 }
 
 // 惰性创建 (首次 showEvent 触发): 具体做什么由后端决定 ——
@@ -453,7 +444,7 @@ void JZWindow::updateHover(JZWidget* newHover)
 
 // ==================== 事件统一入口 ====================
 
-// 事件队列派发入口: invalidate 在此合成到主线程 paint task (本轮 dealPaint 绘制)。
+// 事件队列派发入口: invalidate 在此转给**平台后端**排进消息循环 (见 onInvalidate)。
 // 不再由线程扫队列抽取 —— 那依赖事件在快照前后的时序, 定时器回调里 update()
 // 发出的重绘会被派发循环吞掉 (画面冻结); 走正常事件派发则任何上下文都不丢。
 bool JZWindow::event(JZEvent* e)
@@ -461,16 +452,15 @@ bool JZWindow::event(JZEvent* e)
     if (e->type() == JZEvent_invalidate)
     {
         JZInvalidateEvent* ev = (JZInvalidateEvent*)e;
-        // 虚拟窗口 (后端 paintsOnDemand): 没有平台消息循环来拉脏区, 就地画一帧 ——
-        // 本事件是在**本窗口所属线程**上派发的 (同线程直投 / 跨线程投递), 所以
-        // "画"永远发生在窗口自己的线程里。
-        if (m_backend && m_backend->paintsOnDemand()) {
-            doPaint(ev->rect);
-            return true;
-        }
-        auto* mt = static_cast<JZWin32Thread*>(jzApp->mainThread());
-        if (mt)
-            mt->invalidate(this, ev->rect);
+        // 脏区交给平台后端, 由它排进**某个消息循环** (JZWindow 不关心谁画、在哪画):
+        //   真窗口   = 主线程的 paint task (WM_PAINT 同款);
+        //   虚拟窗口 = 窗口所属虚拟进程的线程 (那个进程有自己的事件循环)。
+        // ⚠ 本事件是在窗口所属线程上派发的 (同线程直投 / 跨线程投递), 而画总是排给那个
+        //   线程的循环 ⇒ 帧缓冲的主人只有一个线程, 不会出现"替别的线程画窗口"。
+        if (m_backend)
+            m_backend->onInvalidate(this, ev->rect);
+        else
+            doPaint(ev->rect);       // 没有后端(退化): 没循环可排, 就地画一帧
         return true;
     }
 

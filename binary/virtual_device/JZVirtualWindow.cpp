@@ -314,7 +314,9 @@ bool JZVirtualWindow::injectMouse(JZMouseEvent::MouseType type, JZMouseEvent::Bu
     //   (JZVirtualProcess), sendEvent 会投递到那个线程并**阻塞等它处理完** ——
     //   同一线程时就是直接派发, 两条路语义一致 (同步、按顺序)。
     jzApp->sendEvent(c, &ev);
-    // 控件在自己线程里处理的期间已经就地重绘过 (paintsOnDemand), 帧也由后端推给桌面了
+    // ⚠ 返回只代表"事件被处理了", **不代表帧已刷新**: 控件改状态时发出的脏区是排给
+    //   "窗口自己的线程"由它的循环画的 (见 JZVirtualWindowBackend::onInvalidate),
+    //   要拿最新帧请 clientFrame()/renderNow() (它们会等那个线程画完)。
     return ev.isAccepted();
 }
 

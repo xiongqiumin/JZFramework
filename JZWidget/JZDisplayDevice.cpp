@@ -6,6 +6,7 @@
 #include "JZPainterEvent.h"
 #include "JZWindow.h"
 #include "JZGdiBackend.h"
+#include "JZPixmap.h"
 #include "JZApplication.h"
 #include "JZStd.h"
 
@@ -63,6 +64,33 @@ JZLayer* JZDisplayDevice::layer()
 float JZDisplayDevice::scale() const
 {
     return m_scale;
+}
+
+// 回放一份现成的绘制流 (画布型离屏设备; 见头文件)。与窗口那条路的差别只有"没有控件树":
+// 任务里的坐标是逻辑的, 物理换算照旧由后端用本设备的 DPI 缩放施加。
+void JZDisplayDevice::renderLayer(JZLayer* layer)
+{
+    if (!m_backend || !layer)
+        return;
+    m_backend->render(layer);
+}
+
+// 帧缓冲 -> 显示位图 (零拷贝引用): 后端在自己的原生缓冲上画完, 显示侧直接贴它,
+// 中间不做任何 RGBA<->PARGB 转换。缓冲随 resize/析构重建, 所以引用方必须是
+// "每次贴之前重新取"或用同一生命周期持有 (见 JZVirtualDevice::desktopPixmap)。
+bool JZDisplayDevice::targetPixmap(JZPixmap& out) const
+{
+    out = JZPixmap();
+    if (!m_backend)
+        return false;
+    int w = 0, h = 0, stride = 0;
+    const uint8_t* px = m_backend->targetPixels(w, h, stride);
+    if (!px || w <= 0 || h <= 0 || stride != w * 4)
+        return false;                 // 不支持的布局: 调用方退回 snapshot + JZPixmap::fromImage
+    std::shared_ptr<JZPixmapData> d = std::make_shared<JZPixmapData>();
+    d->setPixelsRef(w, h, px);
+    out = JZPixmap::fromData(d);
+    return true;
 }
 
 void JZDisplayDevice::setScale(float scale)

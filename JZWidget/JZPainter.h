@@ -13,6 +13,7 @@
 #include <vector>
 
 class JZWidget;
+class JZDisplayDevice;
 
 // 绘制入口: 在 paintEvent 中由 JZDisplayDevice 创建并下发。
 // 所有绘制调用不直接写屏, 而是向当前图层追加 JZDrawTask (等价 LVGL 在 DRAW 事件回调里 lv_draw_xxx)。
@@ -23,7 +24,17 @@ public:
     // 离屏绘制: 把绘制命令合成到 image 自身的像素缓冲 (坐标即 image 像素, 原点 0,0)。
     // 常用于生成图标/缩略图/离屏画布。image 必须已非 null 且尺寸有效 (见 JZImage::create)。
     // painter 析构时自动把本帧绘制回写入 image (保留原图内容, SourceOver 叠加)。
-    explicit JZPainter(JZImage& image);
+    // scale: 逻辑单位 -> image 像素的缩放 (默认 1 = "逻辑单位即像素", 与窗口那条路的
+    //   JZDisplayDevice::scale 同语义, 只是目标从窗口换成了一张 JZImage)。按宿主 DPI 渲染的
+    //   离屏画布 (如虚拟桌面的合成图) 传它, 于是 image 尺寸 = 逻辑尺寸 * scale, 画的时候
+    //   仍用逻辑坐标 —— 笔宽/文本/位图都随之按物理分辨率渲染 (文字不糊)。
+    explicit JZPainter(JZImage& image, float scale = 1.0f);
+    // 离屏**设备**绘制: 把绘制命令交给某个离屏显示设备 —— 它自己的帧缓冲 (后端原生
+    // 布局, 如 GDI+ 的 DIB) 就是画布, 析构时一次性回放 (JZDisplayDevice::renderLayer)。
+    // 与 JZImage 那条路的区别: 目标布局与后端一致, 每帧不再有 RGBA<->PARGB 全图往返。
+    //   - 坐标是**逻辑**的 (与窗口那条路同构), 由设备 DPI 缩放换算到物理像素;
+    //   - canvas 为空表示"整块画布"(调用方通常传逻辑尺寸)。
+    explicit JZPainter(JZDisplayDevice* device, const JZRect& canvas);
     ~JZPainter();   // 发 Pop 平衡构造时的 Push (未配对的 save 一并自动闭合)
 
     void endDevice();
@@ -132,8 +143,9 @@ private:
 
     // 离屏绘制 (JZPainter 作用于 JZImage) 时, 本 painter 自持一个图层, 析构时回写入 image。
     JZLayer m_ownLayer;
-    JZImage* m_imageTarget = nullptr;   // 非 null = 离屏模式
-    float m_scale = 1.0f;               // 离屏绘制缩放 (逻辑单位 == 像素, 恒为 1)
+    JZImage* m_imageTarget = nullptr;   // 非 null = 离屏 image 模式
+    JZDisplayDevice* m_deviceTarget = nullptr;   // 非 null = 离屏设备模式 (析构时回放)
+    float m_scale = 1.0f;               // 离屏绘制缩放 (逻辑单位 -> image 像素; 见构造函数)
 
     // 绘制原点: 构造时按 widget 全局坐标自动设置, 内部用于把本地坐标平移到
     // 显示坐标 (drawXxx/setClip 通用)。不对外开放, 外部不可调整。

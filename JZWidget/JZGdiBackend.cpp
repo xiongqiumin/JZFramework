@@ -143,6 +143,26 @@ static void jzDrawPixmap(Graphics& g, const std::shared_ptr<JZPixmapData>& pm, c
     if (bmp.GetLastStatus() != Ok)
         return;
 
+    // ⚠ 源位图是**设备像素**分辨率 (合成图/窗口帧缓冲都是 "逻辑尺寸 × 缩放"), 而 dest 是
+    //   世界坐标 —— 被世界变换放大后正好和源图一样大。这时必须按**设备坐标 1:1 直拷**:
+    //   GDI+ 只看世界坐标下的 dest 与位图尺寸, 会以为"要把 800x600 画进 1000x750 的位图"
+    //   而走插值路径。像素结果虽然一样 (整数对齐), 代价却是好几倍 —— 拖动时整屏重绘
+    //   30ms 里绝大部分就是它 (实测 38ms → 8ms)。
+    //   裁剪不受影响: GDI+ 的裁剪区在 SetClip 时就折算了设备坐标, 之后改变换不移动它。
+    Gdiplus::Matrix m;
+    REAL mx[6] = { 1, 0, 0, 1, 0, 0 };      // m11, m12, m21, m22, dx, dy
+    if (g.GetTransform(&m) == Ok && m.GetElements(mx) == Ok &&
+        mx[1] == 0.0f && mx[2] == 0.0f && mx[0] > 0.0f && mx[3] > 0.0f &&
+        std::fabs(dest.Width * mx[0] - (REAL)w) <= 0.5f &&
+        std::fabs(dest.Height * mx[3] - (REAL)h) <= 0.5f)
+    {
+        g.ResetTransform();
+        g.DrawImage(&bmp, Rect((INT)std::lround(dest.X * mx[0] + mx[4]),
+                               (INT)std::lround(dest.Y * mx[3] + mx[5]), w, h));
+        g.SetTransform(&m);
+        return;
+    }
+
     // 目标尺寸与源尺寸只差取整误差 (逻辑坐标 * scale 的小数) 时, 吸附成整数矩形:
     // GDI+ 只有源/目标完全对齐才走直拷路径, 差零点几像素就会整图重采样 —— 表现为
     // "整屏截图发糊"。这里把取整误差吃掉, 真正的缩放 (差异更大) 仍走插值。
@@ -549,6 +569,16 @@ bool JZGdiBackend::snapshot(JZImage& out)
     }
     out = JZImage::fromRGBA(rgba.data(), (int)m_physW, (int)m_physH);
     return !out.isNull();
+}
+
+// 帧缓冲像素的零拷贝视图 (显示侧直接贴, 不再拷成 JZImage 再转位图)。
+// DIB 是 top-down 32bpp, stride 恒为 w*4 (memset 也是按这个算的)。
+const uint8_t* JZGdiBackend::targetPixels(int& w, int& h, int& stride) const
+{
+    w = (int)m_physW;
+    h = (int)m_physH;
+    stride = (int)m_physW * 4;
+    return (const uint8_t*)m_bits;
 }
 
 // 把绘制任务回放到任意 Graphics (窗口 DIB / 离屏位图共用同一份回放逻辑)。

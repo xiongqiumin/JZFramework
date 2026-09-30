@@ -53,6 +53,10 @@ public:
     // 把当前帧缓冲 (DIB) 拷成 JZImage (BGRA -> RGBA8888)。离屏/取帧用。
     bool snapshot(JZImage& out) override;
 
+    // 帧缓冲像素的零拷贝视图 (DIB 是 top-down 32bpp, stride = w*4, 布局即 PARGB)。
+    // 显示侧据此直接贴这块缓冲, 不做 RGBA 转换 —— 见 JZDisplayDevice::targetPixmap。
+    const uint8_t* targetPixels(int& w, int& h, int& stride) const override;
+
     // GDI+ 进程级生命周期 (与窗口无关, 仅管理 GDI+ 不碰字体度量引擎):
     // 供离屏绘制 (JZPainter 作用于 JZImage) 在没有任何窗口存活时也能起 GDI+。
     // 与窗口侧的 acquireFontEngine/releaseFontEngine 引用计数相互独立、互不干扰。

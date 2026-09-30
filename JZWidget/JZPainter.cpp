@@ -41,14 +41,32 @@ JZPainter::JZPainter(JZWidget* widget)
     pushState();
 }
 
-JZPainter::JZPainter(JZImage& image)
+JZPainter::JZPainter(JZDisplayDevice* device, const JZRect& canvas)
+{
+    // 离屏**设备**模式: 任务写进设备的图层, 析构时由设备一次性回放到它自己的帧缓冲。
+    // 与"作用于 JZImage"那条路的区别: 目标是后端原生缓冲 (GDI+ 的 DIB), 不必每帧
+    // 把整幅画布在 RGBA <-> PARGB 之间来回拷 (见 JZGdiBackend::renderLayerToImage)。
+    // 坐标与窗口那条路同构: 逻辑坐标 + 设备 DPI 缩放, 放置偏移为 0。
+    m_layer = (device ? device->layer() : &m_ownLayer);
+    m_deviceTarget = device;
+    m_widget = nullptr;
+    m_ox = 0;
+    m_oy = 0;
+    m_screen = canvas;
+    m_clip = canvas;
+    pushState();
+}
+
+JZPainter::JZPainter(JZImage& image, float scale)
 {
     // 离屏模式: painter 不再向窗口图层追加任务, 而是自持一个图层, 坐标系对齐到
     // image 像素 (原点 0,0, 无父链/祖先裁剪)。析构时把图层合成回 image 像素缓冲。
     m_layer = &m_ownLayer;
     m_imageTarget = &image;
     m_widget = nullptr;
-    m_scale = 1.0f;
+    // 逻辑 -> image 像素的缩放: 尺寸校验与裁剪仍按 image 自己的像素 (物理) 来,
+    // 各 drawXxx 用逻辑坐标提交, 由它统一换算 (等价窗口那条路的 DPI 缩放)。
+    m_scale = (scale > 0.0f) ? scale : 1.0f;
 
     int w = image.width();
     int h = image.height();
@@ -81,6 +99,11 @@ void JZPainter::endDevice()
         JZGdiBackend::renderLayerToImage(*m_imageTarget, m_layer, m_scale);
         JZGdiBackend::releaseGdiplus();
         m_imageTarget = nullptr;
+    }
+    // 离屏设备模式: 把本 painter 的任务回放到设备自己的帧缓冲 (原生布局, 零转换)。
+    if (m_deviceTarget) {
+        m_deviceTarget->renderLayer(m_layer);
+        m_deviceTarget = nullptr;
     }
 }
 

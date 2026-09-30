@@ -18,6 +18,7 @@ class JZVirtualScreenView;
 class JZVirtualProcess;
 class JZWindow;
 class JZThread;
+class JZPainter;
 
 // ==================== 虚拟进程 ====================
 // "一个窗口一个线程"的那半边: 每个进程 = 一个 JZThread + 一个 JZEngineRuntime(内含
@@ -47,6 +48,10 @@ class JZThread;
 //   · 输入: 给**桌面坐标**, 自动命中窗口 + 激活 + 按命中区域分发 ——
 //     标题栏=拖动窗口 / 边框=缩放 / 关闭=关窗 / 最小化·最大化=改窗口状态 /
 //     客户区=换算成客户区坐标投递给那个 JZWindow (与真实桌面点击同语义);
+//   · 桌面 chrome: 底部**任务栏** (左边开始按钮 + 每个可见窗口一个按钮) 与它弹出来的
+//     **开始菜单** —— 由桌面自己画 (不是窗口), 恒在窗口之上; 于是"最大化"只铺到工作区
+//     (桌面减掉任务栏), 不会盖住任务栏/开始菜单; 任务栏上点窗口按钮 = 激活/还原它。
+//     菜单项由宿主登记 (桌面不认识"新建窗口/起进程"这类动作, 见 addStartMenuItem)。
 //   · 取帧: screenshot() 整屏 / screenshotWindow(w) 单窗口 —— 直接读帧缓冲, 不抓屏。
 //
 // 它**不是窗口**: 显示交给宿主 (JZVirtualScreenView + JZMainWindow, 见 main.cpp);
@@ -102,6 +107,28 @@ public:
     int desktopWidth() const { return m_desktopW; }
     int desktopHeight() const { return m_desktopH; }
     JZSize desktopSize() const { return JZSize(m_desktopW, m_desktopH); }
+
+    // ---- 底部任务栏 + 开始菜单 (桌面 chrome: 不是窗口, 恒在窗口之上) ----
+    // 任务栏是"屏幕的一条", 不属于任何窗口: 它左边是开始按钮, 右边每个**可见**窗口一个
+    // 按钮 (点它 = 激活那个窗口; 最小化的会被还原)。因为它是 chrome, 所以:
+    //   · 最大化只铺到 workArea() (桌面减掉任务栏) —— 盖不住任务栏/开始菜单;
+    //   · 任务栏那一条不参与窗口命中 (windowAt 返回 nullptr), 点它也不会漏到下面的窗口。
+    static const int kTaskbarHeight = 28;      // 逻辑像素 (随桌面缩放按物理分辨率渲染)
+    int taskbarTop() const { return m_desktopH - kTaskbarHeight; }
+    // 窗口可摆/可最大化的范围 (同真实系统的 workArea; 坐标系不变, 只是少了一条任务栏)
+    JZRect workArea() const { return JZRect(0, 0, m_desktopW, taskbarTop()); }
+
+    // 开始菜单项 (由**宿主**登记动作; 点中后回调在**锁外**执行 —— 回调里可以建窗/起进程)
+    int addStartMenuItem(const std::string& text, std::function<void()> onActivate);
+    bool isStartMenuOpen() const { return m_startMenuOpen; }
+    void setStartMenuOpen(bool on);
+
+    // chrome 几何 (逻辑像素): 绘制与命中共用这一份公式 —— 测试/自动化要"点得准"就用它,
+    // 不要另抄一套常量 (抄了就会漂)
+    JZRect startButtonRect() const;
+    JZRect taskButtonRect(int index) const;      // index = 可见窗口在 z 序里的下标
+    JZRect startMenuRect() const;
+    JZRect startMenuItemRect(int item) const;
 
     // ---- DPI: 与主机共享缩放 ----
     // 桌面坐标恒为**逻辑**的 (desktopWidth × desktopHeight) —— 坐标/命中/注入/归一化 rect
@@ -212,6 +239,17 @@ private:
     // createWindow 两个重载的共同实现 (hasPos=false 时等首次 show 自动摆位)
     JZVirtualWindow* createWindowImpl(int w, int h, const std::string& title,
                                       bool hasPos, int x, int y);
+    // ---- 任务栏 / 开始菜单的命中与绘制 ----
+    int taskButtonAt(int x, int y) const;        // 命中任务栏按钮 -> 下标, 否则 -1
+    int startMenuItemAt(int x, int y) const;     // 命中开始菜单项 -> 下标, 否则 -1
+    void paintTaskbar(JZPainter& p);
+    void paintStartMenu(JZPainter& p);
+    // 点在 chrome 上 (锁内调用): 返回 true = 这次点击归桌面, 不再往下投给窗口;
+    // pending = 需要在**锁外**执行的动作 (菜单项回调, 里面可能建窗/起进程)
+    bool handleChromePress(int x, int y, std::function<void()>& pending);
+    bool updateChromeHover(int x, int y);        // 悬停反馈; true = 光标在 chrome 上
+    void activateTaskButton(int index);
+
     // 收掉"客户区已经没了"的窗口 (JS 侧把窗口对象回收掉时会发生; 守卫能判定)
     void pruneWindows();
     // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
@@ -237,7 +275,18 @@ private:
     JZPixmap m_desktopPix;                     // 画布的零拷贝显示位图 (随画布重建刷新)
     JZImage m_desktopImage;                    // 整屏 RGBA 快照 (按需转, 见 desktopImage)
     unsigned m_imageSerial = ~0u;              // 上面那份快照对应的合成序号
-    JZColor m_desktopBg;                       // 桌面底色 (默认白屏)
+    JZColor m_desktopBg;                       // 桌面底色 (默认经典绿, 见 ctor)
+
+    // ---- 任务栏 / 开始菜单现场 ----
+    struct StartMenuItem {
+        std::string text;
+        std::function<void()> onActivate;
+    };
+    std::vector<StartMenuItem> m_startItems;
+    bool m_startMenuOpen = false;
+    int m_hoverStartItem = -1;                 // 悬停的开始菜单项 (-1 = 无)
+    int m_hoverTask = -2;                      // -2 = 无, -1 = 开始按钮, >=0 = 窗口按钮下标
+
     float m_scale = 1.0f;                      // 渲染缩放 (逻辑 -> 物理; 见 setScale)
     unsigned m_frameSerial = 0;                // 合成序号 (见 frameSerial)
     int m_desktopW = 0;

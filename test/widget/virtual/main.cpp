@@ -262,14 +262,94 @@ int main(int argc, char* argv[])
         const JZRect before = wa->frameGeometry();
         const JZPoint maxC = buttonCenter(wa, 1);
         desk.injectClickAt(maxC.x(), maxC.y());
-        check(wa->isMaximized(), "点最大化按钮 -> 铺满整块桌面");
-        check(wa->frameX() == 0 && wa->frameY() == 0 &&
-              wa->frameWidth() == desk.desktopWidth(), "最大化后外框 = 整块桌面");
+        check(wa->isMaximized(), "点最大化按钮 -> 铺满工作区");
+        check(wa->frameGeometry() == desk.workArea(),
+              "最大化后外框 = 工作区 (桌面减掉任务栏)");
+        // 任务栏是 chrome: 最大化也盖不住它 (像素级确认任务栏还在; 取按钮区右边的空白处)
+        check(pixelIs(desk.screenshot(), desk.desktopWidth() - 10, desk.taskbarTop() + 6,
+                      192, 192, 192),
+              "最大化后任务栏仍画在最上面 (没被窗口盖住)");
+        check(wa->frameY() + wa->frameHeight() <= desk.taskbarTop(),
+              "最大化窗口的下边界在任务栏之上");
         // 最大化后按钮位置跟着外框变 -> 按新位置再点一次 (按钮在右上角, 与真窗口一致)
         const JZPoint maxC2 = buttonCenter(wa, 1);
         desk.injectClickAt(maxC2.x(), maxC2.y());
         check(!wa->isMaximized(), "再点一次还原");
         check(wa->frameGeometry() == before, "还原回最大化前的窗口矩形");
+    }
+
+    // ---- 底部任务栏 + 开始菜单 (桌面 chrome) ----
+    {
+        check(desk.taskbarTop() == desk.desktopHeight() - JZVirtualDevice::kTaskbarHeight,
+              "任务栏在桌面最底下一条");
+        check(desk.workArea() == JZRect(0, 0, desk.desktopWidth(), desk.taskbarTop()),
+              "工作区 = 桌面减掉任务栏");
+
+        // 任务栏那一条上没有窗口 (即使有窗口摆在那儿: 往后拖的窗口可以探进任务栏底下)
+        const int barY = desk.taskbarTop() + 6;
+        check(desk.windowAt(desk.taskbarTop() - 6, barY) == nullptr, "任务栏区域不命中窗口");
+
+        // 每个**可见**窗口一个按钮; 点非活动窗口的按钮 = 激活它
+        std::vector<JZVirtualWindow*> vis;
+        for (auto* w : desk.windows()) {
+            if (w->isVisible())
+                vis.push_back(w);
+        }
+        check(vis.size() >= 2, "任务栏上有多个窗口按钮");
+        JZVirtualWindow* other = vis.front();
+        for (auto* w : vis) {
+            if (w != desk.activeWindow()) {
+                other = w;
+                break;
+            }
+        }
+        // ⚠ 按钮顺序 = z 序, 点一下会激活并把它置顶 -> 顺序跟着变, 所以每次都**重新取**
+        auto buttonRectOf = [&](JZVirtualWindow* target) {
+            std::vector<JZVirtualWindow*> v;
+            for (auto* x : desk.windows()) {
+                if (x->isVisible())
+                    v.push_back(x);
+            }
+            for (int i = 0; i < (int)v.size(); ++i) {
+                if (v[i] == target)
+                    return desk.taskButtonRect(i);
+            }
+            return JZRect(0, 0, 0, 0);
+        };
+        const JZRect tb = buttonRectOf(other);
+        check(!tb.isEmpty() && tb.top() >= desk.taskbarTop(), "窗口按钮排在任务栏里");
+        desk.injectClickAt(tb.left() + 4, tb.top() + 4);
+        check(desk.activeWindow() == other, "点任务栏上的窗口按钮 -> 激活那个窗口");
+
+        // 最小化后点它的按钮 = 还原 (同真实任务栏)
+        other->setMinimized(true);
+        const JZRect tb2 = buttonRectOf(other);
+        desk.injectClickAt(tb2.left() + 4, tb2.top() + 4);
+        check(!other->isMinimized(), "点最小化窗口的任务栏按钮 -> 还原它");
+
+        // 开始按钮 -> 开始菜单 (菜单项由宿主登记; 回调在这里数一下)
+        int clicks = 0;
+        desk.addStartMenuItem("测试项", [&clicks]() { ++clicks; });
+        const JZRect sb = desk.startButtonRect();
+        check(sb.intersects(desk.workArea()) == false, "开始按钮在任务栏上 (工作区之外)");
+        desk.injectClickAt(sb.left() + 4, sb.top() + 4);
+        check(desk.isStartMenuOpen(), "点开始按钮 -> 弹出开始菜单");
+        // 像素级: 菜单面板真的画在桌面上 (取面板右边距, 免得撞上高亮的菜单项)
+        check(pixelIs(desk.screenshot(), desk.startMenuRect().right() - 2,
+                      desk.startMenuRect().top() + 8, 192, 192, 192),
+              "开始菜单面板画在桌面上");
+        const JZRect it0 = desk.startMenuItemRect(0);
+        desk.injectClickAt(it0.left() + 4, it0.top() + 4);
+        check(clicks == 1, "点开始菜单项 -> 回调被执行");
+        check(!desk.isStartMenuOpen(), "执行后菜单收起");
+
+        // 菜单开着时点别处: 只收起菜单, 这一下不落到下面的窗口上
+        desk.injectClickAt(sb.left() + 4, sb.top() + 4);
+        check(desk.isStartMenuOpen(), "再点开始按钮 -> 又弹出来");
+        JZVirtualWindow* wasActive = desk.activeWindow();
+        desk.injectClickAt(desk.desktopWidth() - 4, 4);      // 桌面右上角 (无窗口处)
+        check(!desk.isStartMenuOpen(), "点空白处 -> 菜单收起");
+        check(desk.activeWindow() == wasActive, "收起菜单那一下不误触窗口");
     }
 
     // ---- 键盘注入: 路由到活动窗口的焦点控件 ----
@@ -428,6 +508,37 @@ int main(int argc, char* argv[])
         }
     }
 
+    // ---- JZScrollArea: 内容对齐 (Qt QScrollArea::setAlignment 语义) + 底色走样式表 ----
+    // (虚拟桌面的宿主就靠这两条: 屏幕在视口里居中 + 余下区域刷黑)
+    {
+        JZScrollArea* area = new JZScrollArea();
+        area->resize(200, 100);
+        JZWidget* content = new JZWidget();
+        content->resize(60, 40);
+        area->setWidget(content);        // setWidget 内部会摆一次 (默认左上)
+        check(content->x() == 0 && content->y() == 0, "默认对齐 = 左上 (老行为不变)");
+
+        area->setAlignment(JZScrollArea::AlignHCenter | JZScrollArea::AlignVCenter);
+        check(content->x() == (200 - 60) / 2 && content->y() == (100 - 40) / 2,
+              "视口比内容大 -> 内容居中");
+        area->setAlignment(JZScrollArea::AlignRight | JZScrollArea::AlignBottom);
+        check(content->x() == 200 - 60 && content->y() == 100 - 40, "对齐标志给右下 -> 靠右下");
+        area->setAlignment(JZScrollArea::AlignLeft | JZScrollArea::AlignTop);
+
+        // 内容比视口大时对齐标志不起作用 (位置由滚动偏移决定)
+        content->resize(400, 200);
+        area->setAlignment(JZScrollArea::AlignHCenter | JZScrollArea::AlignVCenter);
+        check(content->x() == 0 && content->y() == 0, "内容溢出时不参与对齐 (仍贴左上)");
+
+        check(area->resolvedStyle().background.isNone(), "默认不设底色 (仍是原来的浅灰/白)");
+        check(area->setStyleSheet("JZScrollArea { background-color: #000000; }"),
+              "滚动区样式表解析通过");
+        const JZOptional<JZColor>& bg = area->resolvedStyle().background;
+        check(bg.isSome() && bg.value().red() == 0 && bg.value().green() == 0 &&
+              bg.value().blue() == 0,
+              "样式表把滚动区底色设成黑 (viewport 同步, 见 eventFilter)");
+    }
+
     // [temp] 复现宿主界面: JZMainWindow + ScrollArea + 屏幕视图 (与 virtual_device.exe 同构)
     {
         JZMainWindow host;
@@ -476,8 +587,8 @@ int main(int argc, char* argv[])
             check(pixelIs(frame, now.x(), now.y(), 0x2b, 0x57, 0x9a),
                   "拖动中 (未松开) 标题栏已画在新位置 = 实时刷新, 不等下一轮消息循环");
             const JZPoint old = toFramePx(grabX, grabY);
-            check(pixelIs(frame, old.x(), old.y(), 255, 255, 255),
-                  "原位置已回到底色 (一帧就是重新合成的, 没有残影)");
+            check(pixelIs(frame, old.x(), old.y(), 0, 128, 128),
+                  "原位置已回到底色 (经典绿; 一帧就是重新合成的, 没有残影)");
         }
         // 拖动一步的代价 = 合成 (800x600 桌面 × 宿主缩放) + 宿主窗口重绘 —— 现在这一步是
         // **同步**做掉的 (见 JZVirtualDevice::refreshNow), 所以它就是"跟手延迟"的上限。

@@ -221,8 +221,9 @@ void JZVirtualWindow::setMaximized(bool on)
         m_restoreH = c ? c->height() : 0;
         m_maximized = true;
         m_minimized = false;
+        // 铺到**工作区** (桌面减掉任务栏): 最大化不盖住任务栏/开始菜单 (同真实系统)
         if (m_screen)
-            setFrameGeometry(JZRect(0, 0, m_screen->desktopWidth(), m_screen->desktopHeight()));
+            setFrameGeometry(m_screen->workArea());
         return;
     }
     m_maximized = false;

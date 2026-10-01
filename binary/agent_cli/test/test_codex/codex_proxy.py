@@ -52,6 +52,20 @@ ROLE_REWRITE = {"developer": "user"}
 _USAGE_RE = re.compile(r'"usage"\s*:\s*\{[^{}]*\}')
 
 
+def _clip(value, limit: int = 1200):
+    """把要落盘的请求体截断: 工具定义/instructions 常几千字, 不截断的话 dump 没法看。"""
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "…(共 %d 字)" % len(value)
+    if isinstance(value, dict):
+        return {k: _clip(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        out = [_clip(v, limit) for v in value[:60]]
+        if len(value) > 60:
+            out.append("…(还有 %d 项)" % (len(value) - 60))
+        return out
+    return value
+
+
 def responses_url_from_chat_url(chat_url: str) -> str:
     """把 chat/completions 的地址换成同一台服务的 Responses 地址。
 
@@ -88,6 +102,8 @@ class CodexProxy:
             "cached_tokens": 0,
         }
 
+        self._fail_seq = 0
+        self._sse_buf = ""               # SSE 行缓冲(见 _absorb_usage: 必须按行解析)
         self._log_fp = None
         if log_path:
             os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
@@ -148,22 +164,70 @@ class CodexProxy:
         with self._lock:
             self._stats[key] = self._stats.get(key, 0) + n
 
+    def _dump_failure(self, req: dict, status: int, resp_body: bytes) -> None:
+        """上游 >=400 时把"请求 + 响应"落盘(前面几份, Codex 会重试)。
+
+        为什么要有它: 这类 400 几乎都是"请求里带了上游不认的字段"(例如 Codex 的审批复核走的是另一套
+        请求形状), 只看状态码猜不出来 —— 实测第一次跑就靠它定位。
+        """
+        self._fail_seq += 1
+        if not self.log_path or self._fail_seq > 4:
+            return
+        path = "%s.fail-%d.json" % (self.log_path, self._fail_seq)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"status": status, "request": _clip(req),
+                           "response": resp_body.decode("utf-8", "replace")[:4000]},
+                          f, ensure_ascii=False, indent=2)
+            self.note("上游 %d: 已把失败请求落盘 %s" % (status, path))
+        except Exception as e:                                       # noqa: BLE001
+            self.note("落盘失败请求出错: %s" % e)
+
     def _absorb_usage(self, text: str) -> None:
-        """从 SSE data 行里摘 usage(统计用): llama.cpp 在 response.completed 里给 input/output tokens。"""
-        for m in _USAGE_RE.finditer(text):
+        """从 SSE 里摘 usage(只做交叉核对; 主口径是 Codex 自己报的 TurnResult.usage)。
+
+        ⚠ 必须"按行解析"而不是在 chunk 上正则:
+          ① SSE 的一次 event 可能被 TCP 切成两个 chunk(正则跨不过去);
+          ② usage 对象里**还嵌着** input_tokens_details(嵌套花括号), 简单正则匹配不到。
+        所以这里攒成"完整行"再 json.loads, 每行只认 data: 后面的 JSON。
+
+        ⚠ **usage 的位置**(实测 192.168.111.1:8080 的 /v1/responses, 2026-10-01):
+          Responses API 的收尾事件是 `{"type":"response.completed","response":{...,"usage":{...}}}`,
+          usage **嵌在 `response` 里, 顶层没有** ⇒ 原来只看 `obj["usage"]` ⇒ 统计恒为 0
+          (而自检用的假上游当时发的是扁平结构, 所以自检 8/8 也没抓到这个 —— 已把自检改成真结构)。
+        """
+        self._sse_buf += text
+        while True:
+            nl = self._sse_buf.find("\n")
+            if nl < 0:
+                break
+            line = self._sse_buf[:nl]
+            self._sse_buf = self._sse_buf[nl + 1:]
+            line = line.strip()
+            if not line.startswith("data: "):
+                continue
             try:
-                u = json.loads(m.group(0).split(":", 1)[1])
+                obj = json.loads(line[6:])
             except ValueError:
                 continue
+            if not isinstance(obj, dict):
+                continue
+            u = obj.get("usage")
+            if not isinstance(u, dict):
+                resp = obj.get("response")            # response.completed 的真形状
+                u = resp.get("usage") if isinstance(resp, dict) else None
             if not isinstance(u, dict):
                 continue
             for key, field in (("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")):
                 v = u.get(field)
                 if isinstance(v, int) and v > 0:
                     self._bump(key, v)
-            det = u.get("input_tokens_details") or u.get("prompt_tokens_details")
-            if isinstance(det, dict) and isinstance(det.get("cached_tokens"), int):
-                self._bump("cached_tokens", det["cached_tokens"])
+            for det_key in ("input_tokens_details", "prompt_tokens_details"):
+                det = u.get(det_key)
+                if isinstance(det, dict) and isinstance(det.get("cached_tokens"), int):
+                    self._bump("cached_tokens", det["cached_tokens"])
+        if len(self._sse_buf) > 1 << 20:      # 防御: 万一上游不是按行发的, 别把内存吃满
+            self._sse_buf = self._sse_buf[-65536:]
 
     # ---------------------------------------------------------------- 请求处理
     def _make_handler(proxy):                                       # noqa: N805 (闭包更直观)
@@ -229,12 +293,16 @@ class CodexProxy:
                 if length is not None:
                     self.send_header("Content-Length", length)
                     self.end_headers()
+                    body_out = bytearray()
                     while True:
                         chunk = resp.read(8192)
                         if not chunk:
                             break
+                        body_out += chunk
                         self.wfile.write(chunk)
                     self.wfile.flush()
+                    if resp.status >= 400:
+                        proxy._dump_failure(req, resp.status, bytes(body_out))
                 else:
                     # 未知长度(SSE): 自己打 chunked 帧, 边收边发 —— 不能攒完再发(Codex 要看流)
                     self.send_header("Transfer-Encoding", "chunked")

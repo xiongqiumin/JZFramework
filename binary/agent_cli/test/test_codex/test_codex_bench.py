@@ -520,8 +520,10 @@ class CodexRunner:
     def run_turn(self, prompt: str) -> dict:
         """跑一个回合(带超时)。
 
-        ⚠ SDK 没有 cancel: 超时后那个回合仍在 Codex 子进程里跑 ⇒ 默认 --on-timeout stop 直接收工,
-          别让被放弃的回合去抢模型(见 main())。返回 {ok, text, error, elapsed, status, timeout}。
+        ⚠ SDK 没有 cancel: 超时后那个回合仍在 Codex 子进程里跑。但它**活不过本用例** ——
+          run_case 的 finally 会 runner.close() 收掉这个 Codex 实例(每个用例一个实例),
+          所以 --on-timeout next(默认)不会让它去抢**下一个**用例的模型(只在"本用例验证那几秒"里还吃着)。
+          返回 {ok, text, error, elapsed, status, timeout}。
         """
         box = {}
 
@@ -568,37 +570,56 @@ def run_case(case: dict, idx: int, ctx: dict) -> dict:
     log("")
     log("==== 用例[%s] 开始 (maxAttempts=%d, root=%s) ====" % (case["name"], case["maxAttempts"], fwd(root)))
 
-    err = init_project(root, ctx["code_bin_dir"])
-    if err:
-        result["error"] = "initProject: " + err
-        result["elapsed"] = time.time() - t_case
-        log("  [FAIL] 初始化工程失败: %s" % err)
-        return result
-
-    # setup 脚本(相对用例 json 目录): 非零退出 = 本用例 setup 失败
-    if case["setup"]:
-        script = case["setup"]
-        if not os.path.isabs(script):
-            script = os.path.join(case["sourceDir"], script)
-        cmd = ('"%s" "%s" --root "%s" --input "%s" --data "%s"'
-               % (fwd(ctx["python"]), fwd(script), fwd(root), case["input"], fwd(ctx["data"])))
-        p = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True,
-                           errors="replace", timeout=300)
-        if p.returncode != 0:
-            result["error"] = "setup 退出码 %d: %s" % (p.returncode, (p.stdout or "").strip()[:500])
-            result["elapsed"] = time.time() - t_case
-            log("  [FAIL] setup 脚本失败: %s" % result["error"])
-            return result
-
-    # daemon 后台服务(可选): 整个用例期间常驻, 结束时连子孙一起收
+    # ⚠ 下面这段(铺骨架 / setup / 起 daemon)原来在 try **之外**, 而外层那个 try 的 finally 只负责
+    #    收 daemon/runner ⇒ 这三步只要抛异常(initProject 出错、setup 超 300s、Popen 失败…),
+    #    异常就会冒到 main 的用例循环之外, **整轮评测中断**。
+    #    既然要求"失败了也能跑下一个", 这里自己兜住: 记成本用例失败, 直接返回让 main 继续。
     daemon = None
     runner = None
-    if case["daemon"]:
-        cmd = expand_verify(case["daemon"], root, ctx["runtime"], case["verifyPort"], ctx["data"])
-        log("  [daemon] %s" % cmd)
-        daemon = subprocess.Popen(cmd, shell=True, cwd=root, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
-        time.sleep(max(0.5, case["daemonReadyMs"] / 1000.0))         # 有输出/超时都继续(与 C++ 一致)
+    try:
+        err = init_project(root, ctx["code_bin_dir"])
+        if err:
+            result["error"] = "initProject: " + err
+            result["elapsed"] = time.time() - t_case
+            log("  [FAIL] 初始化工程失败: %s" % err)
+            return result
+
+        # setup 脚本(相对用例 json 目录): 非零退出 = 本用例 setup 失败
+        if case["setup"]:
+            script = case["setup"]
+            if not os.path.isabs(script):
+                script = os.path.join(case["sourceDir"], script)
+            cmd = ('"%s" "%s" --root "%s" --input "%s" --data "%s"'
+                   % (fwd(ctx["python"]), fwd(script), fwd(root), case["input"], fwd(ctx["data"])))
+            p = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True,
+                               errors="replace", timeout=300)
+            if p.returncode != 0:
+                result["error"] = "setup 退出码 %d: %s" % (p.returncode, (p.stdout or "").strip()[:500])
+                result["elapsed"] = time.time() - t_case
+                log("  [FAIL] setup 脚本失败: %s" % result["error"])
+                return result
+
+        # daemon 后台服务(可选): 整个用例期间常驻, 结束时连子孙一起收
+        if case["daemon"]:
+            cmd = expand_verify(case["daemon"], root, ctx["runtime"], case["verifyPort"], ctx["data"])
+            log("  [daemon] %s" % cmd)
+            daemon = subprocess.Popen(cmd, shell=True, cwd=root, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+            time.sleep(max(0.5, case["daemonReadyMs"] / 1000.0))     # 有输出/超时都继续(与 C++ 一致)
+    except subprocess.TimeoutExpired as e:
+        result["error"] = "初始化/setup 超时: %s" % e
+        result["elapsed"] = time.time() - t_case
+        log("  [FAIL] %s" % result["error"])
+        if daemon:
+            kill_tree(daemon.pid)
+        return result
+    except Exception as e:                                           # noqa: BLE001
+        result["error"] = "初始化/setup 异常: %s: %s" % (type(e).__name__, e)
+        result["elapsed"] = time.time() - t_case
+        log("  [FAIL] %s" % result["error"])
+        if daemon:
+            kill_tree(daemon.pid)
+        return result
 
     try:
         # 验证命令: 用例给了就用它; 没有但有 expect.contains 就挂通用 stdout 验证
@@ -681,10 +702,12 @@ def run_case(case: dict, idx: int, ctx: dict) -> dict:
             result["context_tokens"] = 0
             result["usage_source"] = "proxy"      # Codex 没报(或回合被超时打断)
         result["elapsed"] = time.time() - t_case
-        log("  ---- 用例[%s] 结束: %s (attempts=%d, verify_rc=%s, 用时 %.1fs, tokens=%d [%s])"
+        n_to = sum(1 for t in result["turns"] if t.get("timeout"))
+        log("  ---- 用例[%s] 结束: %s (attempts=%d, verify_rc=%s, 用时 %.1fs, tokens=%d [%s])%s"
             % (case["name"], "PASS" if result["passed"] else "FAIL", result["attempts"],
                result["verify_rc"], result["elapsed"],
-               result["prompt_tokens"] + result["completion_tokens"], result["usage_source"]))
+               result["prompt_tokens"] + result["completion_tokens"], result["usage_source"],
+               ("  [注意] 有 %d 个回合超时(按 --on-timeout 继续)" % n_to) if n_to else ""))
         return result
     except subprocess.TimeoutExpired:
         result["error"] = "验证命令超时"
@@ -702,7 +725,10 @@ def run_case(case: dict, idx: int, ctx: dict) -> dict:
         if daemon:
             kill_tree(daemon.pid)
         if runner:
-            runner.close()          # 每个用例一个 Codex 实例(独立会话/日志): 用完要收掉子进程
+            # 每个用例一个 Codex 实例(独立会话/日志): 用完要收掉子进程。
+            # ⚠ 这也是"回合超时被放弃后不会抢下一个用例模型"的依据(--on-timeout next 安全):
+            #    僵尸回合在这个 finally 里随子进程一起消失。
+            runner.close()
 
 
 def kill_tree(pid: int) -> None:
@@ -731,6 +757,14 @@ def build_system_prompt(runtime_notes_text: str) -> str:
 
 
 def main(argv=None) -> int:
+    # ⚠ Windows 控制台默认 GBK: 帮助/日志里的 `⚠` 这类字符编不出去 ⇒ `--help` 直接 UnicodeEncodeError。
+    #    这里只放宽错误处理(不换编码), 编不出的字符退化成 '?'。
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(errors="replace")
+        except Exception:                                            # noqa: BLE001
+            pass
+
     ap = argparse.ArgumentParser(description="用 Codex SDK 跑 benchmark 用例(与 agent_cli_test 同口径)")
     ap.add_argument("--data", default="", help="评测集目录(默认 <build>/binary/code_agent/bin/<cfg>/data/agent_cli_test, "
                                                "回退仓库里的 binary/code_agent/benchmark/data)")
@@ -752,8 +786,9 @@ def main(argv=None) -> int:
     ap.add_argument("--approval", default="auto_review", choices=["deny_all", "auto_review"],
                     help="Codex 审批模式(默认 auto_review: 无人值守也能跑)")
     ap.add_argument("--turn-timeout", type=float, default=1800.0, help="单个 Codex 回合的上限(秒, 默认 1800)")
-    ap.add_argument("--on-timeout", default="stop", choices=["stop", "next"],
-                    help="回合超时后: stop=直接收工(默认, 免得被放弃的回合抢模型); next=继续下一个用例")
+    ap.add_argument("--on-timeout", default="next", choices=["stop", "next"],
+                    help="回合超时后: next=接着跑下一个用例(默认; 被放弃的回合活不过本用例, "
+                         "用例结束时会 runner.close() 收掉 Codex 子进程); stop=直接收工")
     ap.add_argument("--max-cases", type=int, default=0, help="只跑前 N 个用例(冒烟用)")
     ap.add_argument("--dry-run", action="store_true", help="只打印要跑什么(不连模型、不起 Codex)")
     args = ap.parse_args(argv)
@@ -881,7 +916,18 @@ def main(argv=None) -> int:
     stopped_early = False
     for i, case in enumerate(cases):
         input_srv.text = case["input"]
-        res = run_case(case, i, ctx)
+        try:
+            res = run_case(case, i, ctx)
+        except Exception as e:                                       # noqa: BLE001
+            # 兜底(与 run_case 里那两处 try 互补): 漏出来的异常不许中断整轮 —— 记成本用例失败继续。
+            res = {"name": case["name"], "file": case["file"], "root": "", "passed": False,
+                   "attempts": 0, "verify_rc": None, "verify_cmd": "", "last_verify_output": "",
+                   "turns": [], "final_response": "",
+                   "error": "harness 异常: %s: %s" % (type(e).__name__, e), "elapsed": 0.0,
+                   "usage": {}, "usage_source": "none", "prompt_tokens": 0, "completion_tokens": 0,
+                   "cached_tokens": 0, "context_tokens": 0,
+                   "proxy_prompt_tokens": 0, "proxy_completion_tokens": 0, "proxy_cached_tokens": 0}
+            log("  [FAIL] 用例[%s] 抛出未捕获异常, 记失败后继续下一个: %s" % (case["name"], res["error"]))
         results.append(res)
         if any(t.get("timeout") for t in res["turns"]) and args.on_timeout == "stop":
             log("!! 有回合超时, 按 --on-timeout=stop 收工(剩 %d 个用例不跑)" % (len(cases) - i - 1))

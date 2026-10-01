@@ -484,6 +484,24 @@ bool JZWindow::event(JZEvent* e)
     if (e->type() == JZEvent_mouse)
         return onWindowProcess(e);
 
+    // 键盘/IME 同理: 它们的目标是**焦点控件** (见 dispatchKey/dispatchIme), 不是窗口自己 ——
+    // 不在这里转交的话会落到 JZWidget::event -> 窗口自己的 keyPressEvent 上, 焦点控件永远
+    // 收不到 (表现为"注入了按键但输入框还是空的")。
+    // ⚠ 真窗口那条路 (WndProc) 本来就是直接调 onWindowProcess, 所以以前没人走到这里;
+    //   走这条路的正是**合成事件**: 虚拟桌面 (JZVirtualWindow::injectKey) 与队列派发的按键。
+    // ⚠ 闸: dispatchKey 的焦点链最后一级就是**窗口自己** (焦点控件沿 parentWidget 一路向上),
+    //   那一级会 sendEvent(this, ...) 再回到这里 ⇒ 不挡就是无限递归 (实测栈溢出)。
+    //   挡住之后走 JZWidget::event —— 正是那一级本来该做的事, 语义不变。
+    if (e->type() == JZEvent_key || e->type() == JZEvent_ime)
+    {
+        if (m_dispatchingKey)
+            return JZWidget::event(e);
+        m_dispatchingKey = true;
+        const bool handled = onWindowProcess(e);
+        m_dispatchingKey = false;
+        return handled;
+    }
+
     return JZWidget::event(e);
 }
 

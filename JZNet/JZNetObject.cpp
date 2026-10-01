@@ -308,6 +308,14 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         long *bytes_written = (long*)ev_data;
         JZDataStream s(&event->binData, JZ::WriteOnly);
         s << (int32_t)(*bytes_written);
+
+        // 半关闭排队中: 发送缓冲排空后补发 FIN(见 Net_ShutdownWrite 分支)
+        auto shut_it = inst->m_connMap.find(c->id);
+        if (shut_it != inst->m_connMap.end() && shut_it->second.pendingShutdownWrite && c->send.len == 0)
+        {
+            shut_it->second.pendingShutdownWrite = false;
+            inst->shutdownWriteConn(c);
+        }
     }
     else if (ev == MG_EV_ACCEPT)
     {
@@ -444,6 +452,26 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         }
         delete event;
         return;
+    }
+
+    // 本端地址/端口: 带着它一起派发, 让 JS 侧 socket.address()/localAddress 与 Node 对齐。
+    // client 要等 MG_EV_CONNECT、accept 出来的连接在 MG_EV_ACCEPT 之后 loc 才是最终值 ⇒
+    // 那时回读一次并缓存(之后每条事件只带缓存值, 不重复格式化)。
+    {
+        auto local_it = inst->m_connMap.find(c->id);
+        if (local_it != inst->m_connMap.end())
+        {
+            if (ev == MG_EV_CONNECT || ev == MG_EV_ACCEPT || ev == MG_EV_WS_OPEN || !local_it->second.locReady)
+            {
+                char *ip = mg_mprintf("%M", mg_print_ip, &c->loc);
+                local_it->second.localIp = std::string(ip ? ip : "");
+                mg_free(ip);
+                local_it->second.localPort = (int)mg_ntohs(c->loc.port);
+                local_it->second.locReady = (local_it->second.localPort != 0);
+            }
+            event->localPort = local_it->second.localPort;
+            event->localIp = local_it->second.localIp;
+        }
     }
 
     JZNetObject *object = (JZNetObject*)inst->m_connMap[c->id].object.object();
@@ -786,6 +814,10 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             // 本端实际端口: bind(0) 时由系统分配, mongoose 在 open 时已 getsockname 回填到 loc.port
             // (网络序 -> 转 host 序)。没用上就是 0。
             req->localPort = (int)mg_ntohs(conn->loc.port);
+            // 本端实际地址(给 JS 侧 socket.address()/localAddress 用)
+            char *local_ip = mg_mprintf("%M", mg_print_ip, &conn->loc);
+            req->localIp = std::string(local_ip ? local_ip : "");
+            mg_free(local_ip);
 
             ConnInfo conn_info;
             conn_info.type = info.type;
@@ -818,6 +850,15 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         else if(event->netCmd == JZNetReqEvent::Net_Close)
         {
             c->is_closing = 1;
+        }
+        else if (event->netCmd == JZNetReqEvent::Net_ShutdownWrite)
+        {
+            // 半关闭: 只关写方向(见 shutdownWriteConn)。发送缓冲还有数据就先排队,
+            // 等排空(MG_EV_WRITE 那条分支)再发 FIN —— 否则 mongoose 缓冲里剩下的字节会丢。
+            if (c->send.len == 0)
+                shutdownWriteConn(c);
+            else
+                conn_it->second.pendingShutdownWrite = true;
         }
         else if (event->netCmd == JZNetReqEvent::Net_HttpClientProxyTlsInit)
         {
@@ -1024,6 +1065,12 @@ bool JZNetObject::event(JZEvent *event)
     if (event->type() == JZEvent_netRes) 
     {
         JZNetResEvent* net_event = (JZNetResEvent*)event;
+        // 本端地址/端口随事件带过来(见 JZNetResEvent::localPort/localIp), 这里落到对象上,
+        // 供 JS 侧 socket.address()/localAddress 用(与 Node 对齐)。
+        if (net_event->localPort != 0)
+            m_localPort = net_event->localPort;
+        if (!net_event->localIp.empty())
+            m_localIp = net_event->localIp;
         onNetEvent(net_event);
         return true;
     }
@@ -1107,9 +1154,42 @@ bool JZNetObject::openConn(const JZSocketInfo &info, std::shared_ptr<JZNetReqEve
         m_conn = result.conn;
         m_connType = info.type;
         m_localPort = result.localPort;
+        m_localIp = result.localIp;
+        m_writeEnded = false;              // 新连接: 清掉上一次的半关闭标记
     }
 
     return (result.conn != INVALID_NET_HANDLE);
+}
+
+void JZNetObject::shutdownWrite()
+{
+    if (m_conn == INVALID_NET_HANDLE)
+        return;
+
+    JZNetReqEvent* req = new JZNetReqEvent();
+    req->netCmd = JZNetReqEvent::Net_ShutdownWrite;
+    req->conn = m_conn;
+    postReqEvent(req);
+    // ⚠ 刻意**不清** m_conn / m_pendingBytes: 连接还活着(读方向继续), 只是不再写。
+    m_writeEnded = true;
+}
+
+void JZNetThread::shutdownWriteConn(mg_connection *c)
+{
+    if (!c || !c->fd)
+        return;
+
+    // 半关闭(对齐 Node 的 socket.end()): 只关**写方向** —— 给对端发 FIN(它因此收到 'end'),
+    // 本端读方向继续、连接不拆; 真正断开靠对端关闭或 close()/destroy()。
+    // ⚠ **不改 mongoose 源码**: 这里只读它连接结构里的 fd(与已有的 c->is_draining / c->is_closing
+    //    同一层), 对 OS socket 调 shutdown()。没有 shutdown 的平台退回"排空后关闭"(旧行为)。
+#if defined(_WIN32)
+    ::shutdown((SOCKET)(uintptr_t)c->fd, SD_SEND);
+#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+    ::shutdown((int)(intptr_t)c->fd, SHUT_WR);
+#else
+    c->is_draining = 1;
+#endif
 }
 
 void JZNetObject::closeConn(bool closeImmediate)
@@ -1134,10 +1214,20 @@ void JZNetObject::closeConn(bool closeImmediate)
     m_connType = JZSocketInfo::None;
     m_pendingBytes = 0;
     m_localPort = 0;
+    m_localIp.clear();
+    m_writeEnded = false;
 }
 
 void JZNetObject::writeConn(SocketWrite type, const void *buf, int len)
 {
+    if (m_writeEnded)
+    {
+        // 对齐 Node: 半关闭(写入结束)之后不再接受写入。Node 是异步抛 ERR_STREAM_WRITE_AFTER_END,
+        // 这里只在 C++ 层丢弃(JS 侧 net/stream 包装另有更友好的报错), 避免把半关连接写坏。
+        jzWarning() << "write after end(半关闭), 丢弃 " << len << " 字节";
+        return;
+    }
+
     JZNetReqEvent* req = new JZNetReqEvent();
     req->netCmd = JZNetReqEvent::Net_Write;
     req->writeCmd = type;

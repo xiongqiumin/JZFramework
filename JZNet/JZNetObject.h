@@ -111,6 +111,7 @@ public:
     JZNetObject* object;
     uint64_t conn;       //这里复用 mg_connection 的id, 所以是 uint64_t,这是返回的id 
     int localPort;       // 本端实际端口(host 序): bind(0)/连接时由 net 线程回填, 见 openConn
+    std::string localIp; // 本端实际地址: 同上(给 JS 侧 socket.address()/localAddress 用)
 };
 
 class JZFRAMEWORK_API JZNetReqEventData
@@ -130,6 +131,7 @@ public:
         Net_HttpReplyFinish,
         Net_Close,
         Net_SetReadLimit,
+        Net_ShutdownWrite,    // 半关闭: 只关写方向(对齐 Node 的 socket.end())
     };
 
     JZNetReqEvent();
@@ -171,6 +173,11 @@ public:
     uint64_t conn;
     JZByteArray binData;
 
+    // 本端地址/端口(net 线程回填, 给 JS 侧 socket.address()/localAddress 对齐 Node 用;
+    // client 要等 MG_EV_CONNECT、accept 出来的连接在 MG_EV_ACCEPT 之后 loc 才是最终值)
+    int localPort = 0;
+    std::string localIp;
+
     // ext
     std::shared_ptr<JZNetResEventData> extData;
 };
@@ -201,7 +208,18 @@ protected:
 
         // 服务端 TLS 证书(监听连接配置, accept 出的连接据此初始化 TLS)
         JZSSLConfig ssl;
+
+        // 半关闭排队: 收到 Net_ShutdownWrite 时若发送缓冲还有数据, 等排空(MG_EV_WRITE)再发 FIN
+        bool pendingShutdownWrite = false;
+
+        // 本端地址/端口的缓存(见 JZNetResEvent::localPort/localIp): 只在拿到最终 loc 时回读一次
+        bool locReady = false;
+        int localPort = 0;
+        std::string localIp;
     };
+
+    // 半关闭的落地动作: 对连接的 fd 调 shutdown(只关写方向), 见 JZNetReqEvent::Net_ShutdownWrite
+    void shutdownWriteConn(mg_connection *c);
 
     friend void mg_thread_fn(mg_connection *c, int ev, void *ev_data);
 
@@ -260,6 +278,17 @@ public:
     // 本端实际端口(host 序, 0 = 未知)。bind(0) 这种"要系统分配端口"的场景靠它回报真实端口
     // (mongoose 在 open 时 getsockname 回填)。open 成功时写入, close 时清 0。
     int localPort() const { return m_localPort; }
+    // 本端实际地址(同上, 给 JS 侧 socket.address()/localAddress 用); 未知时为空串
+    const std::string &localIp() const { return m_localIp; }
+
+    // ---- 半关闭(对齐 Node 的 socket.end()) ----
+    // 语义: **只关写方向** —— 先给对端发 FIN(对端因此收到 'end'), 但本端**读方向继续**,
+    // 还能收到对端的数据; 连接不拆。真正断开要靠对端关闭或 close()/destroy()。
+    // 为什么需要它: Node 里 `socket.write(x); socket.end();` 之后**仍能收到对端回包**(常见惯用法),
+    // 而原来 end() 直接 closeInternal() 整个断开 ⇒ 回包全丢。
+    // ⚠ writeEnded 之后 writeConn() 一律丢弃(对齐 Node 的 "write after end")。
+    void shutdownWrite();
+    bool isWriteEnded() const { return m_writeEnded; }
 
 protected:
     // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。
@@ -295,8 +324,10 @@ protected:
     int64_t m_readLimitBytesPerSec = 0;   // 本对象下行接收限速(字节/秒), 0=不限速
     uint64_t m_conn = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
     int m_localPort = 0;                    // 本端实际端口(host 序), 见 localPort()
+    std::string m_localIp;                  // 本端实际地址, 见 localIp()
     JZSocketInfo::ConnType m_connType = JZSocketInfo::None;
     int m_pendingBytes = 0;
+    bool m_writeEnded = false;              // 已半关闭(shutdownWrite): 之后写操作一律丢弃
 };
 
 class JZFRAMEWORK_API JZNetConfig

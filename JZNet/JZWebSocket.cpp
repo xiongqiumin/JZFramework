@@ -244,8 +244,8 @@ void JZWebSocket::onNetEvent(JZNetResEvent*event)
     {                
         if (m_conn != INVALID_NET_HANDLE)
         {
-            sigError.emit();
-
+            // ⚠ 语义修正(对齐 Node/ws): 对端关闭**不是** error(与 JZTcpSocket.cpp 同名修改同因)。
+            // 原来这里 sigError.emit() ⇒ JS 侧先收到假 'error' 再收到 'close'。
             m_conn = INVALID_NET_HANDLE;
             closeInternal(false);
         }

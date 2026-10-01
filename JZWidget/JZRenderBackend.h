@@ -36,6 +36,16 @@ public:
 
     // 把当前帧缓冲拷成 JZImage (RGBA8888)。后端不支持时返回 false。
     virtual bool snapshot(JZImage& out) { (void)out; return false; }
+
+    // 帧缓冲像素的**零拷贝**视图 (32bppPARGB, stride = w*4; 返回 nullptr = 不支持)。
+    // 用途: 后端已经把画布画在自己的原生缓冲上了, 再拷一份成 JZImage 纯属浪费 ——
+    // 显示侧直接引用这块缓冲即可 (见 JZDisplayDevice::targetPixmap)。
+    // ⚠ 返回的指针在使用期间必须有效 (缓冲随 resize/析构重建)。
+    virtual const uint8_t* targetPixels(int& w, int& h, int& stride) const
+    {
+        (void)w; (void)h; (void)stride;
+        return nullptr;
+    }
 };
 
 #endif // JZ_RENDER_BACKEND_H_

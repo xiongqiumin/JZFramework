@@ -75,8 +75,8 @@ JZWindow::JZWindow(int w, int h, const std::string& title, JZWidget* parent)
 
 JZWindow::~JZWindow()
 {
-    if (jzApp)
-        jzApp->removeTopLevelWindow(this);
+if (jzApp)
+    jzApp->removeTopLevelWindow(this);
 
     if (m_backend) {
         m_backend->destroy(this);     // 真窗口: DestroyWindow; 虚拟: 无原生资源
@@ -161,7 +161,7 @@ void JZWindow::doPaint(const JZRect& rc)
 
 // 惰性创建 (首次 showEvent 触发): 具体做什么由后端决定 ——
 // 真窗口 = 注册窗口类 + CreateWindowExW + device->init(hwnd,...);
-// 虚拟窗口 = 建离屏帧缓冲 (scale 恒 1)。成功才把窗口标成"已创建"。
+// 虚拟窗口 = 建离屏帧缓冲 (缩放 = 它所在桌面的 DPI, 默认 1)。成功才把窗口标成"已创建"。
 void JZWindow::createWindow()
 {
     if (m_windowCreated || !m_backend)
@@ -169,6 +169,11 @@ void JZWindow::createWindow()
     if (!m_backend->create(this))
         return;
     m_windowCreated = true;
+
+    // 登记成系统拖放目标 (外部拖文件/图片进来)。窗口已创建, 句柄有效;
+    // OLE 平台代码在 JZWin32WindowBackend::registerDragAndDrop 里。
+    if (m_backend)
+        m_backend->registerDragAndDrop(this);
 }
 
 void JZWindow::showEvent(JZShowEvent* event)
@@ -346,7 +351,7 @@ void JZWindow::windowResized(int logicalW, int logicalH)
 }
 
 // 显示器 DPI 变化 (WM_DPICHANGED): 更新设备缩放 (重建字体)。新 scale 由后端给
-// (真窗口 = 该窗口所在显示器的 DPI; 虚拟窗口恒 1)。
+// (真窗口 = 该窗口所在显示器的 DPI; 虚拟窗口 = 它所在那块桌面的缩放)。
 void JZWindow::dpiChanged()
 {
     if (m_device && m_backend)
@@ -479,6 +484,24 @@ bool JZWindow::event(JZEvent* e)
     if (e->type() == JZEvent_mouse)
         return onWindowProcess(e);
 
+    // 键盘/IME 同理: 它们的目标是**焦点控件** (见 dispatchKey/dispatchIme), 不是窗口自己 ——
+    // 不在这里转交的话会落到 JZWidget::event -> 窗口自己的 keyPressEvent 上, 焦点控件永远
+    // 收不到 (表现为"注入了按键但输入框还是空的")。
+    // ⚠ 真窗口那条路 (WndProc) 本来就是直接调 onWindowProcess, 所以以前没人走到这里;
+    //   走这条路的正是**合成事件**: 虚拟桌面 (JZVirtualWindow::injectKey) 与队列派发的按键。
+    // ⚠ 闸: dispatchKey 的焦点链最后一级就是**窗口自己** (焦点控件沿 parentWidget 一路向上),
+    //   那一级会 sendEvent(this, ...) 再回到这里 ⇒ 不挡就是无限递归 (实测栈溢出)。
+    //   挡住之后走 JZWidget::event —— 正是那一级本来该做的事, 语义不变。
+    if (e->type() == JZEvent_key || e->type() == JZEvent_ime)
+    {
+        if (m_dispatchingKey)
+            return JZWidget::event(e);
+        m_dispatchingKey = true;
+        const bool handled = onWindowProcess(e);
+        m_dispatchingKey = false;
+        return handled;
+    }
+
     return JZWidget::event(e);
 }
 
@@ -608,6 +631,152 @@ bool JZWindow::dispatchIme(JZImeEvent* ev)
         return false;
     jzApp->sendEvent(m_focusWidget, ev);   // 同步派发, 过焦点控件的过滤器链
     return true;
+}
+
+// ==================== 拖放 (控件树分发; OLE 平台代码在 JZWin32WindowBackend) ====================
+//
+// dragEnter/dragOver/dragLeave/dragDrop 是平台侧 OLE 回调翻译后调进来的入口
+// (见 JZWin32WindowBackend::registerDragAndDrop 的 JZWindowDropTarget); 本段只做
+// "命中控件 + 沿父链上抛"的框架分发 (语义与 Qt 一致): 未开 acceptDrops 的控件透明,
+// 整条链都没人接时拖方显示"禁止"。
+
+// 注销 OLE drop target: 委托给平台后端 (HWND 在后端里)。必须在窗口句柄销毁前调用,
+// 否则 RevokeDragDrop 找不到句柄。
+void JZWindow::revokeDropTarget()
+{
+    if (m_backend)
+        m_backend->revokeDragAndDrop(this);
+    dragResetTarget(false);
+}
+
+JZWidget* JZWindow::dragTarget() const
+{
+    JZObject* obj = m_dragTarget.object();
+    return obj ? jzobject_cast<JZWidget*>(obj) : nullptr;
+}
+
+// 接收方选中的动作: 只 accept() 而没挑动作的按系统建议算 (Qt 中 accept() 亦含此意)。
+static JZDropAction jzResolvedDropAction(const JZDropEvent* ev)
+{
+    JZDropAction action = ev->dropAction();
+    if (action == JZDropActionNone || action == JZDropActionIgnore)
+        action = ev->proposedAction();
+    return action;
+}
+
+void JZWindow::dragChain(const JZPoint& globalLogical, std::vector<JZWidget*>& chain)
+{
+    chain.clear();
+    // 最深的命中控件起逐级上溯, 最后补上窗口自身 —— 窗口本人开了 acceptDrops 也能当落点。
+    for (JZWidget* w = hitTest(globalLogical); w; w = w->parentWidget())
+        chain.push_back(w);
+    chain.push_back(this);
+}
+
+bool JZWindow::dragDispatch(const std::vector<JZWidget*>& chain, JZDropEvent* ev)
+{
+    // 构造时 pos 里装的是屏幕逻辑坐标; 这里按每级目标换算成它的局部坐标。
+    const JZPoint global = ev->pos();
+    for (JZWidget* w : chain) {
+        if (!w || !w->acceptDrops())
+            continue;
+
+        JZPoint gTop = w->mapToGlobal(w->rect().topLeft());
+        ev->setPos(JZPoint(global.x() - gTop.x(), global.y() - gTop.y()));
+        ev->ignore();               // 每一级重新给一次表态机会
+        jzApp->sendEvent(w, ev);
+        if (!ev->isAccepted())
+            continue;
+
+        m_dragTarget = w->guardPointer();
+        m_dragAction = jzResolvedDropAction(ev);
+        return true;
+    }
+    return false;
+}
+
+void JZWindow::dragResetTarget(bool notify)
+{
+    if (JZWidget* target = dragTarget()) {
+        if (notify) {
+            JZDragLeaveEvent ev;
+            jzApp->sendEvent(target, &ev);
+        }
+    }
+    m_dragTarget = JZObjectPointer();
+    m_dragMime.reset();
+    m_dragActions = JZDropActionNone;
+    m_dragAction = JZDropActionNone;
+}
+
+bool JZWindow::dragEnter(const std::shared_ptr<JZMimeData>& mime, JZDropActions actions,
+                         JZDropAction proposed, uint32_t modifiers, const JZPoint& globalLogical)
+{
+    dragResetTarget();              // 上一轮没清干净 (数据源异常退出) 时的兜底
+    m_dragActions = actions;
+    m_dragMime = mime;
+    m_dragAction = JZDropActionNone;
+
+    std::vector<JZWidget*> chain;
+    dragChain(globalLogical, chain);
+
+    JZDragEnterEvent ev(globalLogical, mime, actions, proposed, modifiers);
+    return dragDispatch(chain, &ev);
+}
+
+bool JZWindow::dragOver(JZDropActions actions, JZDropAction proposed, uint32_t modifiers,
+                        const JZPoint& globalLogical)
+{
+    if (!m_dragMime)
+        return false;
+    m_dragActions = actions;
+
+    std::vector<JZWidget*> chain;
+    dragChain(globalLogical, chain);
+
+    // 还在原目标上 -> 直接发 move。目标是 dragEnter 那一刻定下的, 拖着经过它的子控件
+    // 不会被抢走 (Qt 同款: target 一路上不变, 位置变了也还是它)。
+    JZWidget* target = dragTarget();
+    if (target && target->acceptDrops() && target->isVisible() &&
+        std::find(chain.begin(), chain.end(), target) != chain.end()) {
+        JZPoint gTop = target->mapToGlobal(target->rect().topLeft());
+        JZDragMoveEvent ev(JZPoint(globalLogical.x() - gTop.x(), globalLogical.y() - gTop.y()),
+                           m_dragMime, actions, proposed, modifiers);
+        jzApp->sendEvent(target, &ev);
+        if (ev.isAccepted()) {
+            m_dragAction = jzResolvedDropAction(&ev);
+            return true;
+        }
+        dragResetTarget();          // 目标中途反悔 -> 拖离, 按当前位置重新挑
+    } else if (target) {
+        dragResetTarget();          // 拖出了目标的范围 -> leave 旧的, 重新挑
+    }
+
+    JZDragEnterEvent ev(globalLogical, m_dragMime, actions, proposed, modifiers);
+    return dragDispatch(chain, &ev);
+}
+
+void JZWindow::dragLeave()
+{
+    dragResetTarget();
+}
+
+bool JZWindow::dragDrop(JZDropActions actions, JZDropAction proposed, uint32_t modifiers,
+                       const JZPoint& globalLogical)
+{
+    JZWidget* target = dragTarget();
+    if (!target || !m_dragMime)
+        return false;
+
+    JZPoint gTop = target->mapToGlobal(target->rect().topLeft());
+    JZDropEvent ev(JZEvent_drop, JZPoint(globalLogical.x() - gTop.x(), globalLogical.y() - gTop.y()),
+                   m_dragMime, actions, proposed, modifiers);
+    jzApp->sendEvent(target, &ev);
+    const bool accepted = ev.isAccepted();
+
+    dragResetTarget(false);         // drop 之后没有"拖离"一说, 直接收尾
+    m_dragAction = accepted ? jzResolvedDropAction(&ev) : JZDropActionNone;
+    return accepted;
 }
 
 // 前置并激活 (Qt 同名 activateWindow()): 未显示过则先 show (惰性建窗口),
@@ -750,9 +919,9 @@ void JZWindow::closeEvent(JZCloseEvent*)
 // 之后 show() 经 createWindow() 会重新创建。
 void JZWindow::nativeDestroyed()
 {
+    revokeDropTarget();     // 拖拽过程中窗口被销毁的路径: 先把 drop target 注销 (句柄还有效)
     if (m_backend)
         m_backend->onPlatformDestroyed(this);
-
     m_windowCreated = false;
     m_focusWidget = nullptr;
     m_hasWindowFocus = false;

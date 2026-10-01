@@ -25,7 +25,7 @@ class JZPainter;
 class JZVirtualWindow
 {
 public:
-    // 装饰尺寸 (逻辑像素; 虚拟桌面 scale 恒为 1)
+    // 装饰尺寸 (逻辑像素 —— 桌面坐标恒为逻辑坐标, 与桌面缩放无关, 见 JZVirtualDevice::scale)
     enum {
         kBorder = 2,      // 四周边框宽
         kTitleBar = 22,   // 标题栏高 (含上边框)
@@ -94,6 +94,8 @@ public:
     void setFramePos(int x, int y);
     // 外框矩形 -> 客户区尺寸 (小于最小尺寸时按下限截断)。最大化还原也走它。
     void setFrameGeometry(const JZRect& rc);
+    // 设客户区尺寸 (外框坐标不动): 装饰的换算只在本类里做 (见 .cpp)
+    void setClientSize(int clientW, int clientH);
 
     // 客户区在桌面上的矩形; 客户区左上角 (输入换算/装饰绘制的锚点)
     JZRect clientGeometry() const;
@@ -130,7 +132,7 @@ public:
     void setAutoPosition(bool on = true) { m_autoPosition = on; }
     bool isAutoPosition() const { return m_autoPosition; }
 
-    // ---- 渲染 / 取帧 ----
+    // ---- 渲染 / 取帧 (尺寸 = 客户区逻辑尺寸 * 桌面 scale, 即物理像素) ----
     void renderNow();                          // 客户区重绘一帧 (并通知桌面)
     JZImage snapshot(bool renderFirst = true); // 客户区一帧 (RGBA8888; 跨线程会等窗口线程)
     JZImage clientFrame();                     // 取帧: 跨线程时让窗口自己的线程拷一份 (会等它)
@@ -147,6 +149,10 @@ public:
     bool injectClick(int x, int y, JZMouseEvent::Button button = JZMouseEvent::LeftButton);
     bool injectKey(uint32_t key, const std::string& text = std::string(),
                    uint32_t modifiers = JZKeyEvent::NoModifier, bool press = true);
+    // 按 UTF-8 逐字符输入 (每个字符一 press + 一 release, 与真键盘同序)。
+    // 桌面的 injectText 与 HTTP 的 "/api/windows/<id>/input {type:key,text}" 都落到这里 ——
+    // 于是"给某个窗口直接发键盘"与"发给活动窗口"是同一条实现, 没有第二套。
+    bool injectText(const std::string& utf8);
 
     // ---- 窗口管理器 (JZVirtualDevice 合成/命中的那半边) ----
     // 画外框 (标题栏底色+标题+按钮+边框), 坐标 = 桌面坐标; active 决定配色。
@@ -157,6 +163,10 @@ public:
     JZCursorShape cursorShapeAt(int screenX, int screenY) const;
     // 外框/内容变了 -> 让桌面重新合成 (窗口自己的动作与平台后端都走它)
     void notifyScreen();
+    // 桌面的 DPI 缩放变了 (JZVirtualDevice::setScale): 客户区的设备按新缩放重建帧缓冲
+    // (物理尺寸 = 客户区逻辑尺寸 * scale) 并重画一帧 —— 由桌面逐个窗口调, 桌面那边已把
+    // 窗口表拷出来锁外调用 (本函数可能要跨线程等窗口自己的线程画完)。
+    void applyDeviceScale();
     // 首次显示时按最终尺寸居中级联 (只做一次; 由平台后端的 show 调, 见 setAutoPosition)
     void applyAutoPosition();
 

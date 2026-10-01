@@ -51,6 +51,10 @@ set(JZ_SOURCES
     JZCloseEvent.cpp
     JZMouseEvent.h
     JZMouseEvent.cpp
+    JZMimeData.h
+    JZMimeData.cpp
+    JZDragEvent.h
+    JZDragEvent.cpp
     JZRenderBackend.h
     JZGdiBackend.h
     JZGdiBackend.cpp

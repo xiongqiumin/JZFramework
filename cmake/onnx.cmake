@@ -26,8 +26,9 @@
 include_guard(GLOBAL)
 
 if(NOT DEFINED JZ_ONNXRUNTIME_DIR)
-    # 本机 lib 仓库里的包名带版本号, 用 glob 收 (解压新版不必改这里)
+    # 本机 lib 仓库里的包名带版本号, 用 glob 收 (解压新版不必改这里; 仓库根见 JZFramework.cmake 的 JZ_LIBS_DIR)
     file(GLOB _jz_ort_candidates
+        "${JZ_LIBS_DIR}/onnxruntime-win-x64-*"
         "C:/Users/7052/Desktop/work/lib/onnxruntime-win-x64-*"
         "C:/onnxruntime*/onnxruntime-win-x64-*")
     list(APPEND _jz_ort_candidates

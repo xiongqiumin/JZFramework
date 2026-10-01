@@ -11,6 +11,7 @@
 class JZWidget;
 class JZRenderBackend;
 class JZImage;
+class JZPixmap;
 class JZWindow;
 
 // 显示设备: 纯渲染调度器 (非控件, 不在控件树中)。
@@ -53,6 +54,16 @@ public:
 
     // 遍历渲染树 (含剔除) -> 各控件 paintEvent -> backend 渲染并 Present
     void render(JZWidget* root, const JZRect& rc);
+
+    // 直接把**一份现成的绘制流**回放到本设备的帧缓冲 (不过控件树)。
+    // 用途: "画布型"离屏设备 (initOffscreen) —— 调用方自建 JZPainter(device, canvas)
+    // 把任务写进 device->layer(), 再由这里一次性回放 (见 JZPainter 的离屏设备构造)。
+    void renderLayer(JZLayer* layer);
+
+    // 本设备帧缓冲的**零拷贝**显示位图 (内容只读; 后端不支持原生像素时返回 false)。
+    // 于是"在这个设备上画, 在别的设备上贴"不需要任何 RGBA 转换:
+    // 例如虚拟桌面的合成图 (在桌面自己的离屏设备上画) 直接被显示控件贴出来。
+    bool targetPixmap(JZPixmap& out) const;
 
     // 原生窗口尺寸变化 (WM_SIZE): 同步后端交换链尺寸 (物理像素)
     void resize(int width, int height);

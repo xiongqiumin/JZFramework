@@ -11,21 +11,68 @@
 
 #include "onnx_engine.h"
 
+// ---------------------------------------------------------------------------
+// 工具集兼容: 让 MSVC v140(VS2015) 能编 ONNX Runtime 的 C API 头
+//
+// onnxruntime_c_api.h 把 NO_EXCEPTION 定义成了 `noexcept`(条件是 _MSC_VER >= 1900,
+// v140 正好命中), 而它被用在**函数指针 typedef** 里(ORT_API_T / OrtThreadPoolWorkXxxFn)。
+// "noexcept 属于函数类型的一部分" 是 C++17 才有的规则 => v140 直接报 C2279。
+// 这里把 noexcept 临时抹成空宏(MSVC 的预处理器允许给关键字定义宏), typedef 就退回成
+// 普通函数指针。两点约束:
+//   1. 必须在 ORT 头**之前**定义, 之后立刻 #undef —— 否则整个翻译单元的 noexcept 都没了;
+//   2. 标准头里大量出现 `noexcept(expr)` 形式, 被清掉会变成语法错误, 所以那些头必须先
+//      包含完(上面的 onnx_engine.h 已带 <string>/<vector>/<memory>/<opencv2/core.hpp>),
+//      靠 include guard 让 ORT 头(只包含 C 头)在 hack 期间包含不了它们。
+// 只在 v140 上生效; 换成 VS2019+ 后这段自动不参与(#if 为假), 无需删。
+// ---------------------------------------------------------------------------
+#if defined(_MSC_VER) && _MSC_VER < 1910
+#  define noexcept
+#  define JZ_ORT_V140_COMPAT 1
+#endif
+#include <onnxruntime_c_api.h>
+#if defined(JZ_ORT_V140_COMPAT)
+#  undef noexcept
+#  undef JZ_ORT_V140_COMPAT
+#endif
+
+#include <functional>   // std::multiplies (MSVC 的 <numeric> 不保证带到)
 #include <iostream>
 #include <numeric>
+#include <stdexcept>
 #ifdef _WIN32
 #  include <windows.h>    // MultiByteToWideChar (UTF-8 路径 -> ORTCHAR_T)
 #endif
 
 namespace PaddleOCR
 {
-
     namespace
     {
-        // Ort::Env 建议进程内单例
-        Ort::Env &GlobalEnv()
+        // ORT 的 C API 每次都返回 OrtStatus*(nullptr 才是成功) —— 统一在这里翻成异常
+        void OrtCheck(const OrtApi *api, OrtStatus *status, const char *what)
         {
-            static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "PaddleOCR");
+            if (!status)
+                return;
+            const char *msg = api->GetErrorMessage(status);
+            const std::string text = msg ? msg : "unknown error";
+            api->ReleaseStatus(status);
+            throw std::runtime_error(std::string(what) + ": " + text);
+        }
+
+        // Ort::Env 的 C API 版: 建议进程内单例(原实现也是 static Ort::Env)
+        OrtEnv *GlobalEnv(const OrtApi *api)
+        {
+            static OrtEnv *env = [](const OrtApi *a) -> OrtEnv * {
+                OrtEnv *e = nullptr;
+                OrtStatus *status = a->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "PaddleOCR", &e);
+                if (status)
+                {
+                    const char *msg = a->GetErrorMessage(status);
+                    const std::string text = msg ? msg : "unknown error";
+                    a->ReleaseStatus(status);
+                    throw std::runtime_error("CreateEnv: " + text);
+                }
+                return e;
+            }(api);
             return env;
         }
 
@@ -36,56 +83,135 @@ namespace PaddleOCR
             return std::accumulate(shape.begin(), shape.end(), int64_t{1},
                                    std::multiplies<int64_t>());
         }
+
+        // Ort::Session 的模型路径类型是 ORTCHAR_T: **Windows 下是 wchar_t**(Linux 是 char)。
+        // 这份内核原来在 Linux 上跑(路径直接传 char*), 拿到 Windows 编译就会报
+        // "没有重载函数可以转换所有参数类型"(C2665)。这里统一转成 ORTCHAR_T, 两个平台都对。
+        std::basic_string<ORTCHAR_T> ToOrtPath(const std::string &model_path)
+        {
+#ifdef _WIN32
+            if (model_path.empty())
+                return std::basic_string<ORTCHAR_T>();
+            const int wn = ::MultiByteToWideChar(CP_UTF8, 0, model_path.c_str(), -1, nullptr, 0);
+            if (wn <= 1)
+                return std::basic_string<ORTCHAR_T>();
+            std::wstring wide((size_t)(wn - 1), L'\0');
+            ::MultiByteToWideChar(CP_UTF8, 0, model_path.c_str(), -1, &wide[0], wn);
+            return wide;
+#else
+            return model_path;
+#endif
+        }
     } // namespace
+
+    struct OnnxEngine::Impl
+    {
+        const OrtApi *api = nullptr;
+        OrtSession *session = nullptr;          // 进程级 Env 归 GlobalEnv 管, 这里不管
+        std::vector<std::string> input_names;
+        std::vector<std::string> output_names;
+
+        ~Impl()
+        {
+            if (api && session)
+                api->ReleaseSession(session);
+        }
+    };
+
+    OnnxEngine::OnnxEngine() : impl_(new Impl()) {}
+
+    OnnxEngine::~OnnxEngine() = default;
+
+    bool OnnxEngine::IsLoaded() const
+    {
+        return impl_ && impl_->session != nullptr;
+    }
+
+    const std::vector<std::string> &OnnxEngine::InputNames() const
+    {
+        return impl_->input_names;
+    }
+
+    const std::vector<std::string> &OnnxEngine::OutputNames() const
+    {
+        return impl_->output_names;
+    }
 
     bool OnnxEngine::LoadModel(const std::string &model_path, int num_threads)
     {
+        const OrtApi *api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+        if (!api)
+        {
+            std::cerr << "[OnnxEngine] 拿不到 OrtApi(版本不匹配): " << model_path << std::endl;
+            return false;
+        }
+        impl_->api = api;
+
+        OrtSessionOptions *opts = nullptr;
+        OrtSession *session = nullptr;
         try
         {
-            Ort::SessionOptions opts;
-            opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            OrtCheck(api, api->CreateSessionOptions(&opts), "CreateSessionOptions");
+            OrtCheck(api, api->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL),
+                     "SetSessionGraphOptimizationLevel");
             if (num_threads > 0)
             {
-                opts.SetIntraOpNumThreads(num_threads);
-                opts.SetInterOpNumThreads(1);
+                OrtCheck(api, api->SetIntraOpNumThreads(opts, num_threads), "SetIntraOpNumThreads");
+                OrtCheck(api, api->SetInterOpNumThreads(opts, 1), "SetInterOpNumThreads");
             }
 
-            // ⚠ Ort::Session 的模型路径类型是 ORTCHAR_T: **Windows 下是 wchar_t**(Linux 是 char)。
-            //   这份内核原来在 Linux 上跑(路径直接传 char*), 拿到 Windows 编译就是
-            //   "Ort::Session::Session: 没有重载函数可以转换所有参数类型"(C2665)。
-            //   这里统一转成 ORTCHAR_T, 两个平台都对。
-            std::basic_string<ORTCHAR_T> os_path;
-#ifdef _WIN32
+            const std::basic_string<ORTCHAR_T> os_path = ToOrtPath(model_path);
+            OrtCheck(api, api->CreateSession(GlobalEnv(api), os_path.c_str(), opts, &session),
+                     "CreateSession");
+
+            OrtAllocator *allocator = nullptr;
+            OrtCheck(api, api->GetAllocatorWithDefaultOptions(&allocator),
+                     "GetAllocatorWithDefaultOptions");
+
+            // 名字由 ORT 用 allocator 分配, 拷进 std::string 后必须还回去
+            impl_->input_names.clear();
+            impl_->output_names.clear();
+
+            size_t count = 0;
+            OrtCheck(api, api->SessionGetInputCount(session, &count), "SessionGetInputCount");
+            for (size_t i = 0; i < count; ++i)
             {
-                const int wn = ::MultiByteToWideChar(CP_UTF8, 0, model_path.c_str(), -1, nullptr, 0);
-                if (wn > 1) {
-                    std::wstring wide((size_t)(wn - 1), L'\0');
-                    ::MultiByteToWideChar(CP_UTF8, 0, model_path.c_str(), -1, &wide[0], wn);
-                    os_path = wide;
-                }
+                char *name = nullptr;
+                OrtCheck(api, api->SessionGetInputName(session, i, allocator, &name),
+                         "SessionGetInputName");
+                impl_->input_names.emplace_back(name ? name : "");
+                if (name)
+                    api->AllocatorFree(allocator, name);
             }
-#else
-            os_path = model_path;
-#endif
-            session_ = std::make_unique<Ort::Session>(GlobalEnv(), os_path.c_str(), opts);
+
+            count = 0;
+            OrtCheck(api, api->SessionGetOutputCount(session, &count), "SessionGetOutputCount");
+            for (size_t i = 0; i < count; ++i)
+            {
+                char *name = nullptr;
+                OrtCheck(api, api->SessionGetOutputName(session, i, allocator, &name),
+                         "SessionGetOutputName");
+                impl_->output_names.emplace_back(name ? name : "");
+                if (name)
+                    api->AllocatorFree(allocator, name);
+            }
         }
-        catch (const Ort::Exception &e)
+        catch (const std::exception &e)
         {
             std::cerr << "[OnnxEngine] 加载失败 " << model_path << ": " << e.what() << std::endl;
-            session_.reset();
+            if (session)
+                api->ReleaseSession(session);
+            if (opts)
+                api->ReleaseSessionOptions(opts);
             return false;
         }
 
-        Ort::AllocatorWithDefaultOptions allocator;
-        input_names_.clear();
-        output_names_.clear();
-        for (size_t i = 0; i < session_->GetInputCount(); ++i)
-            input_names_.emplace_back(session_->GetInputNameAllocated(i, allocator).get());
-        for (size_t i = 0; i < session_->GetOutputCount(); ++i)
-            output_names_.emplace_back(session_->GetOutputNameAllocated(i, allocator).get());
+        if (opts)
+            api->ReleaseSessionOptions(opts);
+        impl_->session = session;
 
-        std::cout << "[OnnxEngine] " << model_path << "  in=" << input_names_[0]
-                  << "  out=" << output_names_[0] << std::endl;
+        std::cout << "[OnnxEngine] " << model_path << "  in=" << impl_->input_names[0]
+                  << "  out=" << impl_->output_names[0] << std::endl;
         return true;
     }
 
@@ -93,48 +219,85 @@ namespace PaddleOCR
                                        std::vector<int64_t> &out_shape, size_t out_idx)
     {
         out_shape.clear();
-        if (!session_)
+        if (!impl_->session)
             return {};
 
         const int64_t n = ElementCount(shape);
         if (n <= 0)
             return {};
 
-        auto mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        Ort::Value input = Ort::Value::CreateTensor<float>(
-            mem_info, const_cast<float *>(data), static_cast<size_t>(n), shape.data(), shape.size());
+        const OrtApi *api = impl_->api;
+        OrtMemoryInfo *mem_info = nullptr;
+        OrtValue *input = nullptr;
+        OrtTensorTypeAndShapeInfo *info = nullptr;
+        std::vector<OrtValue *> outputs(impl_->output_names.size(), nullptr);
+        std::vector<float> result;
 
-        std::vector<const char *> in_names, out_names;
-        in_names.reserve(input_names_.size());
-        out_names.reserve(output_names_.size());
-        for (auto &s : input_names_)
-            in_names.push_back(s.c_str());
-        for (auto &s : output_names_)
-            out_names.push_back(s.c_str());
-
-        std::vector<Ort::Value> outputs;
         try
         {
-            outputs = session_->Run(Ort::RunOptions{nullptr}, in_names.data(), &input, 1,
-                                    out_names.data(), out_names.size());
+            OrtCheck(api,
+                     api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info),
+                     "CreateCpuMemoryInfo");
+            OrtCheck(api,
+                     api->CreateTensorWithDataAsOrtValue(
+                         mem_info, const_cast<float *>(data), static_cast<size_t>(n) * sizeof(float),
+                         shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &input),
+                     "CreateTensorWithDataAsOrtValue");
+
+            std::vector<const char *> in_names, out_names;
+            in_names.reserve(impl_->input_names.size());
+            out_names.reserve(impl_->output_names.size());
+            for (auto &s : impl_->input_names)
+                in_names.push_back(s.c_str());
+            for (auto &s : impl_->output_names)
+                out_names.push_back(s.c_str());
+
+            // ⚠ C API 里这个函数叫 Run(C++ 包装层才叫 Session::Run)
+            OrtCheck(api,
+                     api->Run(impl_->session, nullptr, in_names.data(), &input, 1,
+                              out_names.data(), out_names.size(), outputs.data()),
+                     "Run");
+
+            if (out_idx >= outputs.size())
+                throw std::runtime_error("输出下标越界: " + std::to_string(out_idx) + " / " +
+                                         std::to_string(outputs.size()));
+
+            OrtCheck(api, api->GetTensorTypeAndShape(outputs[out_idx], &info),
+                     "GetTensorTypeAndShape");
+            size_t dim_count = 0;
+            OrtCheck(api, api->GetDimensionsCount(info, &dim_count), "GetDimensionsCount");
+            out_shape.resize(dim_count);
+            if (dim_count > 0)
+                OrtCheck(api, api->GetDimensions(info, out_shape.data(), dim_count), "GetDimensions");
+            size_t elem = 0;
+            OrtCheck(api, api->GetTensorShapeElementCount(info, &elem), "GetTensorShapeElementCount");
+
+            void *raw = nullptr;
+            OrtCheck(api, api->GetTensorMutableData(outputs[out_idx], &raw), "GetTensorMutableData");
+            const float *p = static_cast<const float *>(raw);
+            if (p && elem > 0)
+                result.assign(p, p + elem);
         }
-        catch (const Ort::Exception &e)
+        catch (const std::exception &e)
         {
             std::cerr << "[OnnxEngine] 推理失败: " << e.what() << std::endl;
-            return {};
+            result.clear();
+            out_shape.clear();
         }
 
-        if (out_idx >= outputs.size())
+        for (OrtValue *v : outputs)
         {
-            std::cerr << "[OnnxEngine] 输出下标越界: " << out_idx << " / " << outputs.size()
-                      << std::endl;
-            return {};
+            if (v)
+                api->ReleaseValue(v);
         }
+        if (info)
+            api->ReleaseTensorTypeAndShapeInfo(info);
+        if (input)
+            api->ReleaseValue(input);
+        if (mem_info)
+            api->ReleaseMemoryInfo(mem_info);
 
-        auto info = outputs[out_idx].GetTensorTypeAndShapeInfo();
-        out_shape = info.GetShape();
-        const float *p = outputs[out_idx].GetTensorData<float>();
-        return std::vector<float>(p, p + info.GetElementCount());
+        return result;
     }
 
     std::vector<float> OnnxEngine::Run(const cv::Mat &blob, std::vector<int64_t> &out_shape,

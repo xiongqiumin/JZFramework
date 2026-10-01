@@ -47,6 +47,13 @@ public:
     void imeCancel(JZWindow* w) override;
     void imeUpdateUi(JZWindow* w, bool show) override;
 
+    // ---- 拖放 (OLE IDropTarget) ----
+    // 窗口创建后登记成系统拖放目标 (外部拖文件/图片进来); 销毁前必须 Revoke。
+    // 平台侧的 OLE 回调翻译成 JZDrag*Event 后, 交给 JZWindow 的 dragEnter/dragOver/
+    // dragLeave/dragDrop 按控件树分发 (见 JZWindow.cpp)。
+    void registerDragAndDrop(JZWindow* w) override;
+    void revokeDragAndDrop(JZWindow* w) override;
+
     // 缓存的默认输入上下文 (IMC): 窗口创建后**始终保持关联**, 不随焦点断开关联 ——
     // 断开会让输入法把中/英状态重置成默认中文(见 updateImeContext 的说明)。
     void* imeContext() const { return m_imeContext; }
@@ -54,6 +61,7 @@ public:
 private:
     void* m_hwnd = nullptr;        // HWND (本头文件不引 windows.h)
     void* m_imeContext = nullptr;  // HIMC
+    void* m_dropTarget = nullptr;  // IDropTarget 实例 (头文件零 COM 类型)
 };
 
 #endif // JZ_WIN32_WINDOW_BACKEND_H_

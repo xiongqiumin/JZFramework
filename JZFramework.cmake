@@ -52,6 +52,7 @@ set(MODULE_DEPENDS_JZCompress "JZCore")
 set(MODULE_DEPENDS_JZHttpServer "JZNet;JZCompress")
 set(MODULE_DEPENDS_JZDatabase "JZCore")
 set(MODULE_DEPENDS_JZXml "JZCore")
+set(MODULE_DEPENDS_JZDocument "JZCore;JZJson;JZXml;JZCompress")
 set(MODULE_DEPENDS_JZJSEngine "JZNet;JZJson;JZHttpServer;JZDatabase;JZModbus;JZXml")
 
 set(JZFRAMEWORK_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
@@ -64,6 +65,11 @@ include("${JZFRAMEWORK_ROOT_DIR}/cmake/jz_version.cmake")
 # ==================== 可选第三方依赖 (找得到就接, 找不到就跳过) ====================
 # 这里只做**探测**(各自不 REQUIRED, 不影响别的模块); 真正接线由需要它的 target 调
 # jz_opencv_enable(<target>) / jz_onnx_enable(<target>) 完成。
+#
+# 本机第三方库仓库根目录: cmake/opencv.cmake 与 cmake/onnx.cmake 从它下面 glob 找包
+# (opencv-*/build[/install], onnxruntime-win-x64-*)。换机器/换盘只改这一处:
+#   cmake -S . -B build -DJZ_LIBS_DIR=D:/libs
+set(JZ_LIBS_DIR "E:/libs" CACHE PATH "本机第三方库仓库根目录(内含 opencv-*/ 、onnxruntime-win-x64-*/ 等)")
 include("${JZFRAMEWORK_ROOT_DIR}/cmake/opencv.cmake")
 include("${JZFRAMEWORK_ROOT_DIR}/cmake/onnx.cmake")
 

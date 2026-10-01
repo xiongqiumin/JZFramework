@@ -15,5 +15,10 @@
     "pred": "runs/current/tree.json",
     "result": "runs/current/result.json"
   },
-  "note": "本文件是人/工具读的任务清单。agent_loop.py 目前不认识它 —— 参数按上面几条手敲，后续可加 run.py 翻译。"
+  "container": {
+    "desktop": "1024x768",
+    "program": "scene",
+    "note": "run.py --container 的『屏幕』= 无头虚拟桌面容器（binary/virtual_device）。exe 位置按 --cfg 推导：build/binary/virtual_device/bin/<cfg>/virtual_device.exe（见 run.py 的 container_exe()）。desktop = 虚拟显示器尺寸（窗口摆哪不影响客户区截图）；program = 场景在容器里的程序名（POST /api/programs 的 name）。接口一览见 binary/virtual_device/JZVirtualDeviceHttp.h。"
+  },
+  "note": "本文件是人/工具读的任务清单。run.py 目前只从它读 container 那几个字段（其余参数按上面几条手敲）；agent_loop.py 还不认识它。"
 }

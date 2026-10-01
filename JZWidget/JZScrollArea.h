@@ -54,6 +54,23 @@ public:
     // 内部视口子控件 (内容控件的父), 调用 setWidget 前为 nullptr
     JZWidget* viewport() const;
 
+    // ---- 内容对齐 (Qt QScrollArea::setAlignment 语义) ----
+    // **内容比视口小**时, 内容在视口里的摆放位置 (居中 = AlignHCenter|AlignVCenter);
+    // 内容溢出时这一项不起作用 —— 那时位置由滚动偏移决定 (永远贴左上, 也就是默认值)。
+    // 取值按 Qt 的位标志: 水平取 AlignLeft/AlignRight/AlignHCenter 之一, 垂直取
+    // AlignTop/AlignBottom/AlignVCenter 之一 (同时给多个时优先级与 Qt 一致:
+    // 居中最优先, 其次右/下; 默认 AlignLeft|AlignTop)。
+    enum AlignmentFlag {
+        AlignLeft    = 1,
+        AlignRight   = 2,
+        AlignHCenter = 4,
+        AlignTop     = 8,
+        AlignBottom  = 16,
+        AlignVCenter = 32
+    };
+    void setAlignment(int flags);            // 内容位置随之更新
+    int alignment() const { return m_alignment; }
+
     // ---- 内容总大小 (模型 B: 虚拟内容范围) ----
     // w/h < 0 表示该方向跟随视口 (不产生滚动条)。
     void setContentSize(int w, int h);
@@ -96,6 +113,7 @@ protected:
     int m_contentH = -1;
     int m_scrollX = 0;
     int m_scrollY = 0;
+    int m_alignment = AlignLeft | AlignTop;   // 内容比视口小时的位置 (见 setAlignment)
 
     ScrollBarPolicy m_vPolicy = ScrollBarAsNeeded;
     ScrollBarPolicy m_hPolicy = ScrollBarAsNeeded;

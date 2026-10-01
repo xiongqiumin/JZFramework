@@ -9,6 +9,7 @@
 
 class JZVirtualWindow;
 class JZWindow;
+class JZVirtualDeviceHttp;
 
 // ==================== 虚拟进程 (一个窗口一个线程) ====================
 // 一台虚拟机上的"进程": **一个 JZThread + 一个 JZEngineRuntime(内含 JZJSEngine)**, 里面
@@ -41,11 +42,15 @@ public:
     JZVirtualProcess(JZVirtualDevice* device, const std::string& name);
     ~JZVirtualProcess() override;
 
-    // 启动: 本线程里建运行时 + 装窗口宿主, 然后跑 script
-    //   workDir: 运行根 (引擎找模块/相对路径的基准; 空 = 进程当前目录)
-    //   script : 一段 JS (全局空间执行; 里面可以 `new JZWindow(...)`), 空 = 只建会话不跑
-    // 返回 false = 线程没起来; 脚本本身的错误见 lastError()。
-    bool start(const std::string& workDir, const std::string& script);
+    // 启动: 本线程里建运行时 + 装窗口宿主, 然后**加载程序** (二选一, 与 code_runtime 的两条入口一致):
+    //   workDir  : 运行根 (引擎找模块/相对路径的基准; 空 = 进程当前目录)
+    //   moduleRel: 非空 = 以 **ESM 模块**加载它 (相对 workDir, 扩展名可省) —— 跑"真程序"用这条:
+    //              `import` 能用, 而且入口模块会被登记成 appFile ⇒ `jzApp.applicationDirPath()`
+    //              就是**程序所在目录** (脚本按入口目录找随它走的资源, 这条约定才成立)。
+    //   script   : 非空 = 当一段 JS 跑 (全局空间执行, 适合片段/脚本体; 没有模块语义、也没有入口目录)
+    // 两个都为空 = 只建会话不跑。返回 false = 线程没起来; 程序本身的错误见 lastError()。
+    bool start(const std::string& workDir, const std::string& script,
+               const std::string& moduleRel = std::string());
     // 在本进程线程上执行一段 JS (同步等它跑完); 失败见 lastError()
     bool runScript(const std::string& script);
 
@@ -89,7 +94,8 @@ private:
     JZVirtualDevice* m_device = nullptr;
     std::string m_name;
     std::string m_workDir;
-    std::string m_script;
+    std::string m_script;                    // 当脚本文本跑 (见 start)
+    std::string m_module;                    // 以模块加载 (见 start); 非空则优先
     int m_pid = 0;
     WindowHost m_host{this};                 // 只在本线程里被用 (见 initRuntime)
 
@@ -104,5 +110,14 @@ private:
     std::string m_lastError;
     bool m_error = false;
 };
+
+// ==================== 与 HTTP 接口对接 ====================
+// 把"加载程序 / 在它里面跑一段 / 列程序 / 停程序"装到 JZVirtualDeviceHttp 的宿主钩子上
+// (那个层不认识 JS 引擎, 见 JZVirtualDeviceHttp.h 的纪律 5)。宿主一行:
+//     JZVirtualDeviceHttp api(&desk);
+//     jzAttachVirtualProgramHost(&desk, &api);
+// ⚠ 只允许在主线程调用 (进程表只在主线程增删); 之后 HTTP 的 /api/programs 就能用了。
+//   不接 = 那些接口回 501, 容器其余部分 (截图/输入/窗口) 照常可用。
+void JZFRAMEWORK_API jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api);
 
 #endif // JZ_VIRTUAL_PROCESS_H_

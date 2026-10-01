@@ -7,12 +7,30 @@ void JZPixmapData::setPixels(int w, int h, std::vector<uint8_t>&& pixels)
     if (w <= 0 || h <= 0 || pixels.size() != (size_t)w * h * 4) {
         m_w = 0;
         m_h = 0;
+        m_ref = nullptr;
         m_pixels.clear();
         return;
     }
     m_w = w;
     m_h = h;
+    m_ref = nullptr;
     m_pixels = std::move(pixels);
+}
+
+// 外部缓冲引用 (不拷贝): 只记指针 + 尺寸, 由调用方保证生命周期。
+void JZPixmapData::setPixelsRef(int w, int h, const uint8_t* px)
+{
+    if (w <= 0 || h <= 0 || !px) {
+        m_w = 0;
+        m_h = 0;
+        m_ref = nullptr;
+        m_pixels.clear();
+        return;
+    }
+    m_w = w;
+    m_h = h;
+    m_ref = px;
+    m_pixels.clear();
 }
 
 bool JZPixmap::isNull() const
@@ -28,6 +46,14 @@ int JZPixmap::width() const
 int JZPixmap::height() const
 {
     return m_data ? m_data->height() : 0;
+}
+
+JZPixmap JZPixmap::fromData(const std::shared_ptr<JZPixmapData>& data)
+{
+    JZPixmap pixmap;
+    if (data && !data->isEmpty())
+        pixmap.m_data = data;
+    return pixmap;
 }
 
 // RGBA8888 -> 32bppPARGB (B,G,R,A + 预乘)。

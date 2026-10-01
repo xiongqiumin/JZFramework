@@ -31,17 +31,23 @@ class JZFRAMEWORK_API JZPixmapData
 public:
     int width() const { return m_w; }
     int height() const { return m_h; }
-    bool isEmpty() const { return m_w <= 0 || m_h <= 0 || m_pixels.empty(); }
+    bool isEmpty() const { return m_w <= 0 || m_h <= 0 || (!m_ref && m_pixels.empty()); }
 
     // 32bppPARGB: 每像素 4 字节 = B, G, R, A (R/G/B 已预乘 alpha)
-    const uint8_t* pixels() const { return m_pixels.empty() ? nullptr : m_pixels.data(); }
+    const uint8_t* pixels() const { return m_ref ? m_ref : (m_pixels.empty() ? nullptr : m_pixels.data()); }
 
     // 接管一块 pixels (w*h*4 字节); 尺寸与缓冲不符时置为空。
     void setPixels(int w, int h, std::vector<uint8_t>&& pixels);
 
+    // 引用一块**外部**像素缓冲 (不拷贝, stride = w*4, 布局同上)。
+    // 用途: 把某个设备已经画好的帧缓冲直接当显示位图贴 (如虚拟桌面的合成图: 后端在
+    // 自己的 DIB 上画完, 显示控件零拷贝引用它)。调用方保证缓冲生命周期长于本对象。
+    void setPixelsRef(int w, int h, const uint8_t* px);
+
 private:
     int m_w = 0;
     int m_h = 0;
+    const uint8_t* m_ref = nullptr;   // 非空 = 引用外部缓冲 (不拥有)
     std::vector<uint8_t> m_pixels;
 };
 
@@ -57,6 +63,10 @@ public:
 
     // 由 JZImage 生成显示用位图 (一次性转换)。空图返回空 pixmap。
     static JZPixmap fromImage(const JZImage& img);
+
+    // 直接共享一份现成的 JZPixmapData (不再转换/拷贝)。
+    // 典型: 后端已把画布画在自己的原生缓冲上, 用 setPixelsRef 造 data 后从这里给出。
+    static JZPixmap fromData(const std::shared_ptr<JZPixmapData>& data);
 
 private:
     std::shared_ptr<JZPixmapData> m_data;

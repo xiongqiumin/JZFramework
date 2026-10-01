@@ -2,7 +2,11 @@
 #include "JZVirtualScreenView.h"
 #include "JZVirtualDevice.h"
 #include "JZPainter.h"
+#include "JZPixmap.h"       // 合成图自管转换 (见 paintEvent)
 #include "JZWindow.h"
+#include "JZDisplayDevice.h"
+
+#include <cmath>
 
 JZVirtualScreenView::JZVirtualScreenView(JZVirtualDevice* screen, JZWidget* parent)
     : JZWidget(parent), m_screen(screen)
@@ -37,20 +41,50 @@ JZSize JZVirtualScreenView::sizeHint() const
 
 JZPoint JZVirtualScreenView::toScreen(const JZPoint& local) const
 {
-    // 1:1 显示: 视图坐标系与桌面坐标系重合 (原点都在左上角)。
-    // 若将来要做缩放/居中, 只改这一处 —— 事件与绘制必须走同一个换算。
+    // 1:1 显示: 视图坐标系与桌面坐标系重合 (原点都在左上角)。DPI 不进这里 ——
+    // 缩放同步给了桌面 (见 syncHostScale), 桌面坐标始终是逻辑的, 于是换算只有一个恒等映射。
     return local;
+}
+
+// 与主机共享 DPI: 宿主窗口当前的设备缩放 -> 桌面 (桌面据此渲染物理帧缓冲)。
+// ⚠ 宿主 DPI 变了才动 (setScale 内部还有一道等值判断), 平时就是两次浮点比较。
+void JZVirtualScreenView::syncHostScale()
+{
+    if (!m_screen)
+        return;
+    JZWindow* w = window();
+    if (!w || !w->device())
+        return;
+    const float s = w->device()->scale();
+    if (std::fabs(s - m_screen->scale()) > 0.001f)
+        m_screen->setScale(s);
+}
+
+// 立即重绘 (同步出帧): 拖动/缩放窗口时用 —— 见 JZVirtualDevice::refreshNow。
+void JZVirtualScreenView::paintNow()
+{
+    if (!isVisible())
+        return;
+    if (JZWindow* w = window())
+        w->doPaint(w->rect());   // 同步走一遍本窗口的绘制 (含本控件的 paintEvent)
 }
 
 void JZVirtualScreenView::paintEvent(JZPainterEvent* event)
 {
     if (!m_screen)
         return;
-    const JZImage& img = m_screen->desktopImage();
-    if (img.isNull() || !img.data())
+    syncHostScale();                     // 宿主的 DPI 可能刚变 (换显示器/改缩放)
+
+    // 合成图是画布设备帧缓冲的**零拷贝位图** (见 JZVirtualDevice::desktopPixmap):
+    // 画布在自己的原生缓冲上画完, 这里直接贴 —— 没有 RGBA 转换, 也没有每帧分配。
+    const JZPixmap& pm = m_screen->desktopPixmap();
+    if (pm.isNull())
         return;
+
     JZPainter p(this);
-    p.drawImage(img, 0, 0, img.width(), img.height());
+    // 目标矩形用**逻辑**尺寸 (控件尺寸), 位图是**物理**像素 (desktopSize * 缩放):
+    // 宿主的世界变换 (Scale(hostScale)) 把它 1:1 映射到屏幕像素 —— 不重采样, 文字清晰。
+    p.drawPixmap(pm, 0, 0, m_screen->desktopWidth(), m_screen->desktopHeight());
 }
 
 // ==================== 鼠标: 换算成桌面坐标 -> 交给窗口管理器 ====================

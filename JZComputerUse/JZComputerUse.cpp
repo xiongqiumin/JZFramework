@@ -315,7 +315,10 @@ JZImage currentFrame(JZRect* logical) {
 }
 
 void JZComputerUse::updateLogical(const JZRect& r) {
-    s_lastLogical = { (double)r.x(), (double)r.y(), (double)r.width(), (double)r.height() };
+    s_lastLogical.x = (double)r.x();
+    s_lastLogical.y = (double)r.y();
+    s_lastLogical.w = (double)r.width();
+    s_lastLogical.h = (double)r.height();
 }
 
 // 归一化(相对虚拟桌面逻辑矩形) -> 虚拟屏幕绝对坐标(0..65535, SendInput 用)

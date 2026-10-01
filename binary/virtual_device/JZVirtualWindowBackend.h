@@ -61,6 +61,8 @@ public:
     JZImage grabClient(JZWindow* w) override;        // 读它自己的帧缓冲
 
 private:
+    float deviceScaleOf() const;         // 本窗口该用的渲染缩放 (== 桌面的 scale)
+
     JZVirtualWindow* m_vwin = nullptr;
     bool m_created = false;              // 离屏帧缓冲是否已建
     std::atomic<bool> m_paintPending{false};   // 已有一帧排在窗口线程上了 (脏区合并)

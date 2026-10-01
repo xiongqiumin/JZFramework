@@ -31,8 +31,15 @@
 include_guard(GLOBAL)
 
 if(NOT DEFINED JZ_OPENCV_DIR)
+    # 本机 lib 仓库 (E:/libs, 见 JZFramework.cmake 的 JZ_LIBS_DIR):
+    #   * 自编译+INSTALL 的: opencv-<ver>/build/install  (布局与官方一致: include/ + x64/<vc>/{lib,bin})
+    #   * 官方预编译包:       opencv-<ver>/build          (opencv-4.x-windows.exe 解压到此)
+    file(GLOB _jz_ocv_install "${JZ_LIBS_DIR}/opencv-*/build/install")
+    file(GLOB _jz_ocv_build   "${JZ_LIBS_DIR}/opencv-*/build")
     set(_jz_ocv_candidates
-        "C:/Users/7052/Desktop/work/lib/opencv/build"   # 本机 lib 仓库 (opencv-4.12.0-windows.exe 解压到此)
+        ${_jz_ocv_install}
+        ${_jz_ocv_build}
+        "C:/Users/7052/Desktop/work/lib/opencv/build"   # 另一台机的 lib 仓库 (opencv-4.12.0-windows.exe 解压到此)
         "C:/opencv/build"                               # 官方安装器默认解压路径
         "C:/opencv"                                     # 有人直接解到根目录
         "$ENV{OPENCV_DIR}"                              # 环境变量给了就用
@@ -54,8 +61,9 @@ set(JZ_OPENCV_INCLUDE_DIRS "")
 set(JZ_OPENCV_VERSION "")
 
 if(JZ_OPENCV_DIR AND EXISTS "${JZ_OPENCV_DIR}/include/opencv2/opencv.hpp")
-    # vc 目录: 先 vc17(VS2022 原生), 退回 vc16/vc15 (v142/v143 二进制兼容)
-    foreach(_vc vc17 vc16 vc15)
+    # vc 目录: 先 vc17(VS2022 原生), 退回 vc16/vc15 (v142/v143 二进制兼容);
+    # vc14 是 OpenCV 自编译时 install() 用的固定标签(E:/libs 那份就是), 与工具集无关 —— 同样能链。
+    foreach(_vc vc17 vc16 vc15 vc14)
         if(EXISTS "${JZ_OPENCV_DIR}/x64/${_vc}/lib")
             set(JZ_OPENCV_VC_DIR "${JZ_OPENCV_DIR}/x64/${_vc}")
             break()

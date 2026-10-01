@@ -3,6 +3,8 @@
 #include "JZWidget.h"
 #include "JZDisplayDevice.h"
 
+#include <memory>
+
 class JZWindowBackend;
 class JZWin32WindowBackend;
 
@@ -169,6 +171,26 @@ public:
     // (这是 Win32 规则, 不是本函数能决定的) —— 故调用后仍应看 isActiveWindow()。
     void activateWindow();
 
+    // ---- 拖放 (外部拖东西进窗口: 文件 / 图片 / 文本 ...) ----
+    // 窗口创建时把自己登记成 OLE drop target (RegisterDragDrop), 之后 OLE 回调经过
+    // 下面几个入口进入控件树 —— 它们是 platform 层与本类的边界, 参数为平台无关量:
+    //   mime 一次拖放的数据 (dragEnter 时建立, 之后复用同一份);
+    //   actions / proposed 拖方支持的动作与系统建议的动作 (由 OLE effect + 修饰键推导);
+    //   globalLogical 光标所在的屏幕**逻辑**坐标 (与 JZMouseEvent::globalPos 同坐标系);
+    // 返回 true = 有控件接下了这次拖放, dropAction() 给出它选中的动作 (None = 拒收)。
+    bool dragEnter(const std::shared_ptr<JZMimeData>& mime, JZDropActions actions,
+                   JZDropAction proposed, uint32_t modifiers, const JZPoint& globalLogical);
+    bool dragOver(JZDropActions actions, JZDropAction proposed, uint32_t modifiers,
+                  const JZPoint& globalLogical);
+    void dragLeave();
+    bool dragDrop(JZDropActions actions, JZDropAction proposed, uint32_t modifiers,
+                  const JZPoint& globalLogical);
+
+    // 本次拖放接收方最终选中的动作 (dragXxx 返回 false 时为 JZDropActionNone)
+    JZDropAction dropAction() const { return m_dragAction; }
+    // 本次拖放的目标控件 (尚未确定则为 nullptr)
+    JZWidget* dragWidget() const { return dragTarget(); }
+
     // ---- 输入法 (IME) 输入上下文 ----
     // 整个窗口只有一个 HWND / 一个输入上下文 (IMC), 故 IMC 的关联必须在窗口级
     // 统一做: 窗口创建后**始终关联**, 焦点是否接受输入法只影响 IME 的 UI 与组字
@@ -262,6 +284,21 @@ protected:
 protected:
     void createWindow();
 
+    // ---- 拖放内部实现 (见 JZWindow.cpp 的 dispatch 部分; OLE 平台代码在 JZWin32WindowBackend) ----
+    // 命中点到根的一条候选链 (最深 -> 本窗口), 逐个派发直到有人 accept。
+    void dragChain(const JZPoint& globalLogical, std::vector<JZWidget*>& chain);
+    // 沿 chain 派发: 跳过未 setAcceptDrops 的层级, 命中第一个 accept 的控件
+    // (Qt 语义 —— 于是"容器整体接收拖放"不必给每个子控件都开开关);
+    // 返回 false = 整条链没人接, 拖方应顯示"禁止"。
+    bool dragDispatch(const std::vector<JZWidget*>& chain, JZDropEvent* ev);
+    // 当前目标 (守卫版; 拖的过程中目标被删掉就自然失效)
+    JZWidget* dragTarget() const;
+    // 给当前目标派发 dragLeave 并清空本次拖放状态。
+    // notify=false 用于窗口销毁路径 —— 那时控件可能已经随对象树一起没了, 不能再派发。
+    void dragResetTarget(bool notify = true);
+    // 注销 OLE drop target: 委托给平台后端 (句柄在后端里)
+    void revokeDropTarget();
+
     // 平台后端要读窗口的"意图"(标题/类型/初始位置/DPI/置顶…)并写回句柄,
     // 它们是这个窗口的平台半边 ⇒ 直接放行(不额外开一堆 getter 把这套状态暴露成公开 API)。
     friend class JZWin32WindowBackend;
@@ -277,6 +314,7 @@ protected:
     bool m_top = false;                 // 置顶
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
+    bool m_dispatchingKey = false;      // 正在派发键/IME 事件 (挡 event() 的递归, 见 JZWindow::event)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
     JZWidget* m_hoverWidget = nullptr;  // 当前悬停的最深控件 (updateHover 派发 enter/leave)
@@ -290,6 +328,12 @@ protected:
     bool m_hasScreenPos = false;        // 用户显式 moveScreen 过
     int  m_screenX = 0;                 // 记录的屏幕逻辑坐标 (窗口未创建时暂存)
     int  m_screenY = 0;
+
+    // ---- 拖放状态 ----
+    JZObjectPointer             m_dragTarget;             // 本次拖放的目标控件 (守卫: 拖到一半被删也不会悬垂)
+    std::shared_ptr<JZMimeData> m_dragMime;               // 本次拖放的数据 (dragEnter 建立)
+    JZDropActions               m_dragActions = JZDropActionNone;   // 拖方支持的动作
+    JZDropAction                m_dragAction = JZDropActionNone;   // 接收方选中的动作
 };
 
 #endif // JZ_WINDOW_H_

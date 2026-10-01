@@ -33,15 +33,27 @@ bool JZVirtualWindowBackend::create(JZWindow* w)
     if (!w || !w->device())
         return false;
 
-    // 虚拟态: 逻辑单位 == 像素。固定 scale = 1, 让渲染与宿主显示器 DPI 无关 ——
-    // 取帧与注入的坐标才可复现 (这是"脚本能精确重复"的前提)。
-    w->device()->setScale(1.0f);
+    // 渲染缩放 = **桌面的** DPI 缩放 (见 JZVirtualDevice::setScale)。默认 1 = 纯逻辑桌面:
+    // 逻辑单位即像素, 渲染与宿主显示器无关 ⇒ 取帧与注入的坐标可复现 ("脚本能精确重复"
+    // 的前提)。宿主界面里显示时, 桌面会被同步成宿主的设备缩放, 于是窗口内容按宿主的
+    // 物理分辨率渲染 (文字不糊); 而**坐标仍是逻辑的**, 注入/命中/取帧口径不变。
+    const float s = deviceScaleOf();
     const int cw = w->width() > 0 ? w->width() : 320;
     const int ch = w->height() > 0 ? w->height() : 240;
-    w->device()->initOffscreen(cw, ch);
+    w->device()->setScale(s);
+    // 离屏帧缓冲尺寸 = **物理**像素 (= 逻辑尺寸 * scale), 与真窗口后端
+    // (JZWin32WindowBackend::create 里 init(hwnd, cw*scale, ch*scale)) 同一口径。
+    const JZVirtualDevice* d = (m_vwin && m_vwin->screen()) ? m_vwin->screen() : nullptr;
+    w->device()->initOffscreen(d ? d->toPhysical(cw) : cw, d ? d->toPhysical(ch) : ch);
 
     m_created = true;
     return true;
+}
+
+// 本窗口该用的渲染缩放 = 它所在桌面的缩放 (没有桌面时 1)
+float JZVirtualWindowBackend::deviceScaleOf() const
+{
+    return (m_vwin && m_vwin->screen()) ? m_vwin->screen()->scale() : 1.0f;
 }
 
 void JZVirtualWindowBackend::destroy(JZWindow* w)
@@ -133,8 +145,11 @@ void JZVirtualWindowBackend::setClientSize(JZWindow* w, int cw, int ch)
 {
     if (!w || !m_created)
         return;
-    if (JZDisplayDevice* d = w->device())
-        d->resize(cw, ch);      // scale 恒 1 => 物理尺寸 == 逻辑尺寸
+    if (JZDisplayDevice* d = w->device()) {
+        // 帧缓冲按**物理**像素重建 (逻辑尺寸 * 桌面 scale) —— 与 create 同口径
+        const JZVirtualDevice* desk = (m_vwin && m_vwin->screen()) ? m_vwin->screen() : nullptr;
+        d->resize(desk ? desk->toPhysical(cw) : cw, desk ? desk->toPhysical(ch) : ch);
+    }
     w->doPaint(w->rect());
     if (m_vwin)
         m_vwin->notifyScreen();
@@ -163,11 +178,13 @@ JZPoint JZVirtualWindowBackend::screenToClient(JZWindow* w, const JZPoint& pt) c
     return m_vwin ? m_vwin->screenToClient(pt) : pt;
 }
 
-// 虚拟桌面是**纯逻辑桌面**: 逻辑单位 == 像素, 缩放恒 1 (与宿主显示器 DPI 无关)
+// 本窗口所在"显示器"的缩放 = 虚拟桌面的缩放 (默认 1 = 纯逻辑桌面, 与宿主显示器无关;
+// 宿主界面显示时桌面会同步成宿主的设备缩放, 见 JZVirtualScreenView::syncHostScale)。
+// JZWindow::dpiChanged / 建窗都问它 —— 与真窗口问系统 DPI 是同一层东西。
 float JZVirtualWindowBackend::deviceScale(JZWindow* w) const
 {
     (void)w;
-    return 1.0f;
+    return deviceScaleOf();
 }
 
 // "该窗口的屏幕矩形是否包含这个点": 与真窗口同口径用**外框** (弹层外部按下关闭等用它)

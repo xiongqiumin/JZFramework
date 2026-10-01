@@ -17,6 +17,8 @@
 #include "JZImeEvent.h"
 #include "JZMouseEvent.h"
 #include "JZKeyEvent.h"
+#include "JZMimeData.h"
+#include "JZDragEvent.h"
 
 #include <algorithm>
 #include <climits>
@@ -33,6 +35,9 @@
 #endif
 #include <windows.h>
 #include <imm.h>
+#include <objbase.h>      // CoTaskMemFree / ReleaseStgMedium
+#include <oleidl.h>       // IDropTarget / IDataObject / RegisterDragDrop
+#include <shellapi.h>     // DragQueryFileW (CF_HDROP)
 
 // ==================== 平台辅助 ====================
 
@@ -748,7 +753,7 @@ bool JZWin32WindowBackend::create(JZWindow* w)
 
 void JZWin32WindowBackend::destroy(JZWindow* w)
 {
-    (void)w;
+    revokeDragAndDrop(w);   // 句柄销毁前先注销 (WM_DESTROY 路径里也会再 revoke 一次, 幂等)
     if (m_hwnd) {
         DestroyWindow((HWND)m_hwnd);   // -> WM_DESTROY -> JZWindow::nativeDestroyed()
         m_hwnd = nullptr;
@@ -759,6 +764,7 @@ void JZWin32WindowBackend::destroy(JZWindow* w)
 void JZWin32WindowBackend::onPlatformDestroyed(JZWindow* w)
 {
     (void)w;
+    revokeDragAndDrop(w);
     m_hwnd = nullptr;
     m_imeContext = nullptr;
 }
@@ -1120,6 +1126,542 @@ void JZWin32WindowBackend::imeUpdateUi(JZWindow* w, bool show)
     const LPARAM lp = ISC_SHOWUIALL & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW);
     SendMessageW((HWND)m_hwnd, WM_IME_SETCONTEXT,
                  show ? TRUE : FALSE, show ? lp : static_cast<LPARAM>(0));
+}
+
+// ==================== 拖放 (OLE IDropTarget) ====================
+// 每个窗口把自己登记成一个 IDropTarget, 于是资源管理器/浏览器等外部数据源可以把
+// 文件、图片、文本拖进来。OLE 的四个回调在这里翻译成 JZDrag*Event, 交给 JZWindow 的
+// dragEnter/dragOver/dragDrop 按控件树分发 (命中 + 父链上抛, 同 Qt)。
+//
+// 选 IDropTarget 而不是 WM_DROPFILES: 后者只认文件列表, 浏览器直接拖图片
+// (CF_DIB/CF_HBITMAP)、跨应用的自定义格式一律拿不到; RegisterDragDrop 才是 Qt 底层
+// 走的那条路 (Qt 的 QWindowsDropTarget 同样如此)。
+
+// 屏幕物理像素 (OLE 的 POINTL) -> 屏幕逻辑像素 (与 JZMouseEvent::globalPos 同一坐标系)
+static JZPoint jzDragGlobalLogical(JZWindow* self, POINTL pt)
+{
+    float s = self->device() ? self->device()->scale() : 1.0f;
+    return JZPoint((int)std::lround(pt.x / s), (int)std::lround(pt.y / s));
+}
+
+static uint32_t jzDragModifiers(DWORD keyState)
+{
+    uint32_t mods = JZKeyEvent::NoModifier;
+    if (keyState & MK_SHIFT)   mods |= JZKeyEvent::ShiftModifier;
+    if (keyState & MK_CONTROL) mods |= JZKeyEvent::CtrlModifier;
+    if (keyState & MK_ALT)     mods |= JZKeyEvent::AltModifier;
+    return mods;
+}
+
+// OLE effect 位 -> 本框架的动作位 (两者顺序不同, 逐个翻译)
+static JZDropActions jzDragActions(DWORD effect)
+{
+    JZDropActions actions = JZDropActionNone;
+    if (effect & DROPEFFECT_COPY) actions |= JZDropActionCopy;
+    if (effect & DROPEFFECT_MOVE) actions |= JZDropActionMove;
+    if (effect & DROPEFFECT_LINK) actions |= JZDropActionLink;
+    return actions;
+}
+
+// 系统建议的动作 (Qt 同款规则): Ctrl=Copy / Shift=Move / Alt=Link,
+// 什么都不按则优先 Move —— 拖文件时 OLE 通常同时给 Copy|Move, 而"挪过来"更合直觉。
+// 想要的动作拖方不支持时, 回落到它支持的第一个。
+static JZDropAction jzDragProposed(DWORD keyState, JZDropActions possible)
+{
+    const uint32_t mods = jzDragModifiers(keyState);
+    const bool ctrl  = (mods & JZKeyEvent::CtrlModifier)  != 0;
+    const bool shift = (mods & JZKeyEvent::ShiftModifier) != 0;
+    const bool alt   = (mods & JZKeyEvent::AltModifier)   != 0;
+
+    JZDropAction want = JZDropActionIgnore;
+    if (ctrl && shift)                      want = JZDropActionLink;
+    else if (ctrl)                          want = JZDropActionCopy;
+    else if (shift)                         want = JZDropActionMove;
+    else if (alt)                           want = JZDropActionLink;
+    else if (possible & JZDropActionMove)   want = JZDropActionMove;
+    else if (possible & JZDropActionCopy)   want = JZDropActionCopy;
+    else if (possible & JZDropActionLink)   want = JZDropActionLink;
+
+    if ((possible & want) == 0) {
+        if (possible & JZDropActionCopy)         want = JZDropActionCopy;
+        else if (possible & JZDropActionMove)    want = JZDropActionMove;
+        else if (possible & JZDropActionLink)    want = JZDropActionLink;
+        else                                     want = JZDropActionNone;
+    }
+    return want;
+}
+
+static DWORD jzDragEffect(JZDropAction action)
+{
+    switch (action) {
+    case JZDropActionCopy: return DROPEFFECT_COPY;
+    case JZDropActionMove: return DROPEFFECT_MOVE;
+    case JZDropActionLink: return DROPEFFECT_LINK;
+    default:               return DROPEFFECT_NONE;
+    }
+}
+
+static FORMATETC jzFormatEtc(CLIPFORMAT cf)
+{
+    FORMATETC fe;
+    memset(&fe, 0, sizeof(fe));
+    fe.cfFormat = (WORD)cf;
+    fe.dwAspect = DVASPECT_CONTENT;
+    fe.lindex = -1;
+    fe.tymed = TYMED_HGLOBAL;
+    return fe;
+}
+
+// 数据源里有没有这个格式 (GetData 之前先问一圈, 免得挨个试)
+static bool jzDataHasFormat(IDataObject* data, CLIPFORMAT cf, DWORD tymed = TYMED_HGLOBAL)
+{
+    if (!data)
+        return false;
+    FORMATETC fe = jzFormatEtc(cf);
+    fe.tymed = tymed;
+    return SUCCEEDED(data->QueryGetData(&fe));
+}
+
+// 取一份 HGLOBAL 载荷的副本 (失败返回空 JZByteArray)。
+// 注意: CF_HDROP 的 HGLOBAL 直接就是 DROPFILES*, 而 DragQueryFile 的偏移量是相对它的,
+// 于是这份**副本**也能当 HDROP 用 (下面 jzMimeDataFrom 就是这么干的)。
+static JZByteArray jzGetGlobalData(IDataObject* data, CLIPFORMAT cf)
+{
+    if (!data)
+        return JZByteArray();
+
+    FORMATETC fe = jzFormatEtc(cf);
+    STGMEDIUM stg;
+    memset(&stg, 0, sizeof(stg));
+    if (FAILED(data->GetData(&fe, &stg)))
+        return JZByteArray();
+    if (stg.tymed != TYMED_HGLOBAL || !stg.hGlobal) {
+        ReleaseStgMedium(&stg);
+        return JZByteArray();
+    }
+
+    void* mem = GlobalLock(stg.hGlobal);
+    SIZE_T bytes = GlobalSize(stg.hGlobal);
+    JZByteArray out;
+    if (mem && bytes > 0)
+        out = JZByteArray((const char*)mem, (int)bytes);
+    if (mem)
+        GlobalUnlock(stg.hGlobal);
+    ReleaseStgMedium(&stg);
+    return out;
+}
+
+// CF_DIB -> RGBA 图像。DIB 的行自下而上存放 (biHeight > 0 时), 每行按 4 字节对齐。
+static JZImage jzImageFromDib(const JZByteArray& dib)
+{
+    BITMAPINFOHEADER bi;
+    if (dib.size() < (int)sizeof(bi))
+        return JZImage();
+    memcpy(&bi, dib.constData(), sizeof(bi));
+    if (bi.biWidth <= 0 || bi.biHeight == 0)
+        return JZImage();
+
+    const int w = bi.biWidth;
+    const int h = bi.biHeight < 0 ? -bi.biHeight : bi.biHeight;
+    const bool bottomUp = bi.biHeight > 0;
+    const int bpp = bi.biBitCount;
+
+    // 像素数据在头之后: <=8bpp 跟调色板, BI_BITFIELDS 跟三个通道掩码
+    size_t offset = sizeof(bi);
+    if (bpp <= 8)
+        offset += (size_t)(bi.biClrUsed ? bi.biClrUsed : (1u << bpp)) * sizeof(RGBQUAD);
+    else if (bi.biCompression == BI_BITFIELDS)
+        offset += 3 * sizeof(DWORD);
+    if (offset > (size_t)dib.size())
+        return JZImage();
+
+    const size_t stride = ((size_t)w * bpp + 31) / 32 * 4;   // 源行字节数 (4 字节对齐)
+    if (offset + stride * (size_t)h > (size_t)dib.size())
+        return JZImage();
+
+    const uint8_t* bits = (const uint8_t*)dib.constData() + offset;
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
+    for (int y = 0; y < h; ++y) {
+        // 目标第 y 行 (自上而下) 对应源的哪一行
+        const size_t srcRow = bottomUp ? (size_t)(h - 1 - y) : (size_t)y;
+        const uint8_t* src = bits + srcRow * stride;
+        uint8_t* dst = rgba.data() + (size_t)y * w * 4;
+        for (int x = 0; x < w; ++x) {
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+            switch (bpp) {
+            case 32:
+                b = src[x * 4 + 0]; g = src[x * 4 + 1]; r = src[x * 4 + 2]; a = src[x * 4 + 3];
+                // 多数拖图的 DIB 把 alpha 留 0, 照它画出来是全透明的图
+                if (a == 0) a = 255;
+                break;
+            case 24:
+                b = src[x * 3 + 0]; g = src[x * 3 + 1]; r = src[x * 3 + 2];
+                break;
+            case 8: {
+                const RGBQUAD* pal = (const RGBQUAD*)((const uint8_t*)dib.constData() + sizeof(bi));
+                const RGBQUAD& c = pal[src[x]];
+                b = c.rgbBlue; g = c.rgbGreen; r = c.rgbRed;
+                break;
+            }
+            default:
+                return JZImage();   // 更低位深 (4/1bpp) 的 DIB 不支持
+            }
+            dst[x * 4 + 0] = r;
+            dst[x * 4 + 1] = g;
+            dst[x * 4 + 2] = b;
+            dst[x * 4 + 3] = a;
+        }
+    }
+    return JZImage::fromRGBA(rgba.data(), w, h);
+}
+
+// CF_HBITMAP -> RGBA 图像 (GetDIBits 拉成 32bpp; 得到的行同样自下而上)
+static JZImage jzImageFromHBitmap(HBITMAP hbmp)
+{
+    BITMAP bm;
+    memset(&bm, 0, sizeof(bm));
+    if (!GetObjectW(hbmp, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight == 0)
+        return JZImage();
+
+    const int w = bm.bmWidth;
+    const int h = bm.bmHeight;
+    std::vector<uint8_t> bits((size_t)w * h * 4);
+
+    BITMAPINFOHEADER bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.biSize = sizeof(bi);
+    bi.biWidth = w;
+    bi.biHeight = h;
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
+
+    HDC hdc = GetDC(nullptr);
+    int rows = 0;
+    if (hdc) {
+        rows = GetDIBits(hdc, hbmp, 0, h, bits.data(), (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, hdc);
+    }
+    if (rows != h)
+        return JZImage();
+
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* src = bits.data() + (size_t)(h - 1 - y) * w * 4;
+        uint8_t* dst = rgba.data() + (size_t)y * w * 4;
+        for (int x = 0; x < w; ++x) {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = src[x * 4 + 3] ? src[x * 4 + 3] : (uint8_t)255;
+        }
+    }
+    return JZImage::fromRGBA(rgba.data(), w, h);
+}
+
+// CF_BITMAP (HBITMAP 句柄) -> RGBA 图像。
+// 这种格式的句柄要么由 STGMEDIUM::hBitmap 直接给出 (TYMED_GDI), 要么装在 HGLOBAL 里,
+// 两种都得认 —— 只按 TYMED_HGLOBAL 取的多数数据源会取不到。
+static JZImage jzImageFromBitmapFormat(IDataObject* data, CLIPFORMAT cf)
+{
+    if (!data)
+        return JZImage();
+
+    FORMATETC fe = jzFormatEtc(cf);
+    fe.tymed = TYMED_HGLOBAL | TYMED_GDI;
+    if (FAILED(data->QueryGetData(&fe)))
+        return JZImage();
+
+    STGMEDIUM stg;
+    memset(&stg, 0, sizeof(stg));
+    if (FAILED(data->GetData(&fe, &stg)))
+        return JZImage();
+
+    HBITMAP hbmp = nullptr;
+    void* locked = nullptr;
+    if (stg.tymed == TYMED_GDI) {
+        hbmp = stg.hBitmap;
+    } else if (stg.tymed == TYMED_HGLOBAL && stg.hGlobal) {
+        locked = GlobalLock(stg.hGlobal);
+        if (locked && GlobalSize(stg.hGlobal) >= sizeof(HBITMAP))
+            hbmp = *(HBITMAP*)locked;
+    }
+
+    JZImage img;
+    if (hbmp)
+        img = jzImageFromHBitmap(hbmp);
+    if (locked)
+        GlobalUnlock(stg.hGlobal);
+    ReleaseStgMedium(&stg);
+    return img;
+}
+
+// IDataObject -> JZMimeData: 先吸收成 urls / text / image 三个便捷项,
+// 再把它声明的其余格式按 MIME 名原样收进通用项 (自定义格式能自取自存)。
+static std::shared_ptr<JZMimeData> jzMimeDataFrom(IDataObject* data)
+{
+    auto mime = std::make_shared<JZMimeData>();
+    if (!data)
+        return mime;
+
+    // ---- 文件列表 (资源管理器拖文件): CF_HDROP ----
+    if (jzDataHasFormat(data, CF_HDROP)) {
+        JZByteArray raw = jzGetGlobalData(data, CF_HDROP);
+        if (!raw.isEmpty()) {
+            HDROP hdrop = (HDROP)raw.data();
+            UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, nullptr, 0);
+            std::vector<std::string> paths;
+            for (UINT i = 0; i < count; ++i) {
+                UINT len = DragQueryFileW(hdrop, i, nullptr, 0);
+                std::wstring ws((size_t)len, L'\0');
+                if (DragQueryFileW(hdrop, i, &ws[0], len + 1) == 0)
+                    continue;
+                paths.push_back(jzUtf16ToUtf8(ws.c_str(), (int)len));
+            }
+            mime->setUrls(paths);
+        }
+    }
+
+    // ---- 文本 ----
+    if (jzDataHasFormat(data, CF_UNICODETEXT)) {
+        JZByteArray raw = jzGetGlobalData(data, CF_UNICODETEXT);
+        if (!raw.isEmpty()) {
+            std::string utf8 = jzUtf16ToUtf8((const wchar_t*)raw.constData(),
+                                             raw.size() / (int)sizeof(wchar_t));
+            if (!utf8.empty())
+                mime->setText(utf8);
+        }
+    } else if (jzDataHasFormat(data, CF_TEXT)) {
+        // 老程序的 ANSI 文本 (CP_ACP -> UTF-16 -> UTF-8)
+        JZByteArray raw = jzGetGlobalData(data, CF_TEXT);
+        if (!raw.isEmpty()) {
+            int wide = MultiByteToWideChar(CP_ACP, 0, raw.constData(), raw.size(), nullptr, 0);
+            std::wstring ws((size_t)(wide > 0 ? wide : 0), L'\0');
+            if (wide > 0)
+                MultiByteToWideChar(CP_ACP, 0, raw.constData(), raw.size(), &ws[0], wide);
+            mime->setText(jzUtf16ToUtf8(ws.c_str(), wide));
+        }
+    }
+
+    // ---- 图像: CF_DIB 优先 (浏览器/看图器拖图多半给这个) ----
+    bool gotImage = false;
+    if (jzDataHasFormat(data, CF_DIB)) {
+        JZImage img = jzImageFromDib(jzGetGlobalData(data, CF_DIB));
+        if (!img.isNull()) {
+            mime->setImage(img);
+            gotImage = true;
+        }
+    }
+    if (!gotImage && jzDataHasFormat(data, CF_BITMAP, TYMED_HGLOBAL | TYMED_GDI)) {
+        JZImage img = jzImageFromBitmapFormat(data, CF_BITMAP);
+        if (!img.isNull()) {
+            mime->setImage(img);
+            gotImage = true;
+        }
+    }
+
+    // ---- 其余格式按名字收进通用项 ----
+    IEnumFORMATETC* e = nullptr;
+    if (SUCCEEDED(data->EnumFormatEtc(DATADIR_GET, &e)) && e) {
+        FORMATETC cur;
+        memset(&cur, 0, sizeof(cur));
+        while (e->Next(1, &cur, nullptr) == S_OK) {
+            // 上面已转成便捷项的、以及没法当字节用的格式跳过
+            const bool handled = cur.cfFormat == CF_HDROP || cur.cfFormat == CF_UNICODETEXT ||
+                                 cur.cfFormat == CF_TEXT || cur.cfFormat == CF_DIB ||
+                                 cur.cfFormat == CF_DIBV5 || cur.cfFormat == CF_BITMAP ||
+                                 cur.cfFormat == CF_PALETTE ||
+                                 cur.cfFormat == CF_METAFILEPICT || cur.cfFormat == CF_ENHMETAFILE ||
+                                 cur.cfFormat == CF_LOCALE || cur.cfFormat == CF_PENDATA;
+            if (!handled && (cur.tymed & TYMED_HGLOBAL)) {
+                wchar_t nameBuf[256] = { 0 };
+                std::string name;
+                if (GetClipboardFormatNameW(cur.cfFormat, nameBuf, 256) > 0)
+                    name = jzUtf16ToUtf8(nameBuf, (int)wcslen(nameBuf));
+                else
+                    name = "cf/" + std::to_string((int)cur.cfFormat);
+
+                JZByteArray raw = jzGetGlobalData(data, (CLIPFORMAT)cur.cfFormat);
+                if (!name.empty() && !raw.isEmpty())
+                    mime->setData(name, raw);
+            }
+            if (cur.ptd)
+                CoTaskMemFree(cur.ptd);
+            memset(&cur, 0, sizeof(cur));
+        }
+        e->Release();
+    }
+    return mime;
+}
+
+// 一个窗口一份: 接到 OLE 回调后转交给 JZWindow (那个才是控件树的分发者)。
+class JZWindowDropTarget : public IDropTarget
+{
+public:
+    explicit JZWindowDropTarget(JZWindow* win) : m_win(win), m_ref(1) {}
+    JZWindowDropTarget(const JZWindowDropTarget&) = delete;
+    JZWindowDropTarget& operator=(const JZWindowDropTarget&) = delete;
+
+    // ---- IUnknown ----
+    STDMETHODIMP QueryInterface(REFIID iid, void** ppv) override
+    {
+        if (!ppv)
+            return E_INVALIDARG;
+        if (iid == IID_IUnknown || iid == IID_IDropTarget) {
+            *ppv = static_cast<IDropTarget*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)InterlockedIncrement(&m_ref); }
+    STDMETHODIMP_(ULONG) Release() override
+    {
+        LONG r = InterlockedDecrement(&m_ref);
+        if (r == 0)
+            delete this;
+        return (ULONG)r;
+    }
+
+    // ---- IDropTarget ----
+    STDMETHODIMP DragEnter(IDataObject* data, DWORD keyState, POINTL pt, DWORD* effect) override
+    {
+        if (!effect)
+            return E_INVALIDARG;
+
+        const JZDropActions actions = jzDragActions(*effect);
+        const JZDropAction proposed = jzDragProposed(keyState, actions);
+        if (!data || actions == JZDropActionNone) {
+            *effect = DROPEFFECT_NONE;
+            return S_OK;
+        }
+
+        bindDataObject(data);
+        const bool ok = m_win->dragEnter(m_mime, actions, proposed, jzDragModifiers(keyState),
+                                         jzDragGlobalLogical(m_win, pt));
+        *effect = ok ? jzDragEffect(m_win->dropAction()) : DROPEFFECT_NONE;
+        return S_OK;
+    }
+
+    STDMETHODIMP DragOver(DWORD keyState, POINTL pt, DWORD* effect) override
+    {
+        if (!effect)
+            return E_INVALIDARG;
+
+        const JZDropActions actions = jzDragActions(*effect);
+        if (actions == JZDropActionNone) {
+            m_win->dragLeave();
+            *effect = DROPEFFECT_NONE;
+            return S_OK;
+        }
+
+        const JZDropAction proposed = jzDragProposed(keyState, actions);
+        const bool ok = m_win->dragOver(actions, proposed, jzDragModifiers(keyState),
+                                        jzDragGlobalLogical(m_win, pt));
+        *effect = ok ? jzDragEffect(m_win->dropAction()) : DROPEFFECT_NONE;
+        return S_OK;
+    }
+
+    STDMETHODIMP DragLeave() override
+    {
+        m_win->dragLeave();
+        return S_OK;
+    }
+
+    STDMETHODIMP Drop(IDataObject* data, DWORD keyState, POINTL pt, DWORD* effect) override
+    {
+        if (!effect)
+            return E_INVALIDARG;
+
+        const JZDropActions actions = jzDragActions(*effect);
+        const JZDropAction proposed = jzDragProposed(keyState, actions);
+        if (data && data != m_dataObject)
+            bindDataObject(data);   // 个别数据源只在真正放下时才给数据对象
+        if (!m_mime)
+            m_mime = jzMimeDataFrom(m_dataObject);
+
+        const bool ok = m_win->dragDrop(actions, proposed, jzDragModifiers(keyState),
+                                        jzDragGlobalLogical(m_win, pt));
+        *effect = ok ? jzDragEffect(m_win->dropAction()) : DROPEFFECT_NONE;
+
+        releaseDataObject();   // 一次拖放结束: 数据源与中间态全部释放 (下一轮 DragEnter 重建)
+        return S_OK;
+    }
+
+private:
+    ~JZWindowDropTarget()
+    {
+        releaseDataObject();
+    }
+
+    // 整个拖放期间持有数据源: 延迟渲染 / 流格式的载荷要等真正放下那一刻才取,
+    // 松开早了会崩。
+    void bindDataObject(IDataObject* data)
+    {
+        if (m_dataObject == data)
+            return;
+        releaseDataObject();
+        m_dataObject = data;
+        if (m_dataObject)
+            m_dataObject->AddRef();
+        m_mime = jzMimeDataFrom(m_dataObject);
+    }
+
+    void releaseDataObject()
+    {
+        if (m_dataObject) {
+            m_dataObject->Release();
+            m_dataObject = nullptr;
+        }
+        m_mime.reset();
+    }
+
+    JZWindow*                    m_win = nullptr;
+    LONG                         m_ref = 1;
+    IDataObject*                 m_dataObject = nullptr;
+    std::shared_ptr<JZMimeData>  m_mime;
+};
+
+// COM/OLE 初始化: 每进程一次即可 ( RegisterDragDrop 之前必须 OleInitialize )。
+static bool jzEnsureOle()
+{
+    static bool tried = false;
+    static bool ok = false;
+    if (!tried) {
+        tried = true;
+        ok = SUCCEEDED(OleInitialize(nullptr));
+    }
+    return ok;
+}
+
+// 登记成系统拖放目标 (外部拖文件/图片进来)。句柄已创建时才调。
+void JZWin32WindowBackend::registerDragAndDrop(JZWindow* w)
+{
+    if (!m_hwnd || m_dropTarget)
+        return;
+
+    // OLE 初始化一次即可 (进程级)。失败不影响窗口本身 —— 只是不能接收拖放。
+    if (!jzEnsureOle())
+        return;
+
+    JZWindowDropTarget* dt = new JZWindowDropTarget(w);
+    if (SUCCEEDED(RegisterDragDrop((HWND)m_hwnd, dt)))
+        m_dropTarget = dt;
+    else
+        dt->Release();
+}
+
+// 注销 OLE drop target。必须在窗口句柄销毁**之前** (RevokeDragDrop 找不到已销毁的句柄)。
+void JZWin32WindowBackend::revokeDragAndDrop(JZWindow* w)
+{
+    (void)w;
+    if (m_dropTarget) {
+        if (m_hwnd)
+            RevokeDragDrop((HWND)m_hwnd);
+        ((JZWindowDropTarget*)m_dropTarget)->Release();
+        m_dropTarget = nullptr;
+    }
 }
 
 // ==================== 默认后端工厂 ====================

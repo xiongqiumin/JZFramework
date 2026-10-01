@@ -122,6 +122,15 @@ void JZVirtualWindow::setFrameGeometry(const JZRect& rc)
         notifyScreen();
 }
 
+// 设客户区尺寸 (外框坐标不动)。"外框 = 客户区 + 装饰"的换算只留在这里 —— 外面 (HTTP 接口/
+// 自动化脚本) 说"客户区多大"就行, 不必抄 kBorder/kTitleBar 那两个常量 (抄了就会漂)。
+void JZVirtualWindow::setClientSize(int clientW, int clientH)
+{
+    setFrameGeometry(JZRect(m_x, m_y,
+                            clientW + 2 * kBorder,
+                            clientH + kTitleBar + kBorder));
+}
+
 JZRect JZVirtualWindow::clientGeometry() const
 {
     JZWindow* c = client();
@@ -221,8 +230,9 @@ void JZVirtualWindow::setMaximized(bool on)
         m_restoreH = c ? c->height() : 0;
         m_maximized = true;
         m_minimized = false;
+        // 铺到**工作区** (桌面减掉任务栏): 最大化不盖住任务栏/开始菜单 (同真实系统)
         if (m_screen)
-            setFrameGeometry(JZRect(0, 0, m_screen->desktopWidth(), m_screen->desktopHeight()));
+            setFrameGeometry(m_screen->workArea());
         return;
     }
     m_maximized = false;
@@ -339,6 +349,34 @@ bool JZVirtualWindow::injectKey(uint32_t key, const std::string& text,
     return ev.isAccepted();
 }
 
+// 按 UTF-8 逐字符输入: 每个字符拆成 press + release 两次键事件 (与真键盘同序, 控件侧
+// "按下插字、抬起收尾" 的行为都能跑到)。非可打印内容 (组合键/IME) 走 injectKey/ImeEvent。
+bool JZVirtualWindow::injectText(const std::string& utf8)
+{
+    bool any = false;
+    size_t i = 0;
+    while (i < utf8.size()) {
+        const unsigned char c0 = (unsigned char)utf8[i];
+        size_t len = 1;
+        uint32_t cp = c0;
+        if (c0 >= 0xF0)      { len = 4; cp = c0 & 0x07u; }
+        else if (c0 >= 0xE0) { len = 3; cp = c0 & 0x0Fu; }
+        else if (c0 >= 0xC0) { len = 2; cp = c0 & 0x1Fu; }
+        if (i + len > utf8.size())
+            len = 1;
+        if (len > 1) {
+            for (size_t k = 1; k < len; ++k)
+                cp = (cp << 6) | ((unsigned char)utf8[i + k] & 0x3Fu);
+        }
+        const std::string ch = utf8.substr(i, len);
+        injectKey(cp, ch, JZKeyEvent::NoModifier, true);
+        injectKey(cp, ch, JZKeyEvent::NoModifier, false);
+        any = true;
+        i += len;
+    }
+    return any;
+}
+
 // ==================== 窗口管理 (JZVirtualDevice 用) ====================
 JZRect JZVirtualWindow::buttonRect(int index) const
 {
@@ -446,4 +484,19 @@ void JZVirtualWindow::notifyScreen()
 {
     if (m_screen)
         m_screen->onWindowFrameChanged(this);
+}
+
+// 桌面 DPI 缩放变了 (JZVirtualDevice::setScale 逐个窗口调):
+// 客户区的设备换缩放到新 DPI, 帧缓冲按"客户区逻辑尺寸 * scale"重建, 再重画一帧。
+// ⚠ 下面 renderNow() 会做**跨线程**同步 (窗口属于虚拟进程时让那个线程画) —— 所以
+//   调用方(桌面)必须先松开 m_mutex, 否则可能和"窗口线程回头调桌面"撞成死锁。
+void JZVirtualWindow::applyDeviceScale()
+{
+    JZWindow* c = client();
+    if (!m_screen || !c || !c->device() || !c->isWindowCreated())
+        return;                     // 还没建帧缓冲: create() 时会直接按新 scale 建
+    const float s = m_screen->scale();
+    c->device()->setScale(s);
+    c->device()->resize(m_screen->toPhysical(c->width()), m_screen->toPhysical(c->height()));
+    renderNow();                    // 重画 (帧缓冲的主人只有一个线程, 见 renderNow)
 }

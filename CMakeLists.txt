@@ -28,6 +28,13 @@ endif()
 # ---------------------------------------------------------------------------
 option(JZ_ENABLE_ASAN "Enable AddressSanitizer (MSVC /fsanitize=address)" OFF)
 
+# ---------------------------------------------------------------------------
+# PDF 后端(jzpdf): 指向 PDFium 预编译包解压目录(内含 include/ 与 lib/)。
+# 留空则不构建 jzpdf —— JZDocument 的 docx/xlsx 照常可用, 只有 PDF 会报"找不到后端"。
+#   cmake -S . -B build -DJZ_PDFIUM_DIR=E:/libs/pdfium/win-x64
+# ---------------------------------------------------------------------------
+set(JZ_PDFIUM_DIR "" CACHE PATH "PDFium prebuilt package root (with include/ and lib/); empty = no PDF backend")
+
 # 给 exe 目标挂上"把 ASan 运行库拷到输出目录"(MSBuild 自己不做这件事)。
 # 必须在"创建该 target 的目录"里调用(CMake 对 add_custom_command(TARGET) 的限制):
 #   jz_copy_asan_runtime(code_runtime)
@@ -73,7 +80,7 @@ endif()
 #     JZFramework(全局 C++14) 里, 既编不过也污染核心库。
 set(JZ_MODULE_LIST JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashReport
         JZFrp JZGpio JZHttpServer JZJson JZMcpServer JZModbus JZNode
-        JZOTA JZSensor JZSerialPort JZTest JZCompress JZXml)
+        JZOTA JZSensor JZSerialPort JZTest JZCompress JZXml JZDocument)
 
 # JZWidget(自绘 UI)依赖平台窗口/字体等能力, 目前只在 Windows 下参与构建。
 # 关掉它以后 HAS_JZWidget 为假, 各模块里依赖 UI 的源文件会自动跳过(见 JZFramework.cmake)。

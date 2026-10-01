@@ -1,17 +1,19 @@
 // ==================== 虚拟桌面 (虚拟显示器 + 窗口管理器) ====================
-// 分层: 桌面底色 + 窗口合成图 (m_desktop, 一张 JZImage)
+// 分层: 桌面底色 + 窗口合成图 (画布 = 自己的离屏显示设备 m_canvas)
 //          └─ JZVirtualWindow (外框: 标题栏 + 边框 + 三个按钮)
 //               └─ 真 JZWindow (客户区: 控件树/渲染/输入)
 //
-// 坐标: 桌面坐标 == 屏幕逻辑坐标 (左上角原点, scale 恒为 1)。窗口有自己的桌面坐标,
-// 所以 screenToClient / clientToScreen / 命中测试 / 归一化 rect 全都有意义 ——
-// 与真实桌面同构, CU 的"屏幕坐标 + 窗口"语义可以直接落在这块虚拟桌面上。
+// 坐标: 桌面坐标 == 屏幕**逻辑**坐标 (左上角原点; 缩放见 setScale, 它只决定渲染成多少
+// 物理像素, 不进坐标)。窗口有自己的桌面坐标, 所以 screenToClient / clientToScreen /
+// 命中测试 / 归一化 rect 全都有意义 —— 与真实桌面同构, CU 的"屏幕坐标 + 窗口"语义
+// 可以直接落在这块虚拟桌面上。
 #include "JZVirtualDevice.h"
 #include "JZVirtualWindow.h"
 #include "JZVirtualWindowBackend.h"   // 收窗口时要把客户区的后端换成它
 #include "JZVirtualScreenView.h"
 #include "JZPainter.h"
 #include "JZWindow.h"
+#include "JZDisplayDevice.h"
 #include "JZApplication.h"   // refresh 转投主线程 / 判断当前线程
 #include "JZThread.h"
 #include "JZLog.h"
@@ -27,14 +29,40 @@ int clampInt(int v, int lo, int hi)
     return v;
 }
 
+// ---- 任务栏 / 开始菜单布局 (逻辑像素; 随桌面缩放按物理分辨率渲染) ----
+const int kStartBtnW = 58;
+const int kTaskBtnW = 132;
+const int kTaskGap = 3;
+const int kTaskPad = 3;
+const int kMenuW = 176;
+const int kMenuItemH = 26;
+
+// 经典 Windows 灰的立体观感 (凸: 左/上高光 + 右/下阴影)
+const JZColor kBarFace(192, 192, 192, 255);
+const JZColor kBarLight(255, 255, 255, 255);
+const JZColor kBarShadow(112, 112, 112, 255);
+const JZColor kBarText(24, 24, 24, 255);
+const JZColor kBarWhite(255, 255, 255, 255);
+const JZColor kBarActive(0x2b, 0x57, 0x9a, 255);   // 激活窗口按钮: 与标题栏同色
+
+// 任务栏上"按 z 序可见的窗口" (按钮顺序、命中、激活都用它, 三处口径一致)
+void visibleWindows(const std::vector<JZVirtualWindow*>& all, std::vector<JZVirtualWindow*>& out)
+{
+    out.clear();
+    for (auto* w : all) {
+        if (w && w->isVisible())
+            out.push_back(w);
+    }
+}
+
 } // namespace
 
 JZVirtualDevice::JZVirtualDevice(int desktopW, int desktopH)
-    : m_desktopBg(255, 255, 255, 255)
+    : m_desktopBg(0, 128, 128, 255)      // 经典桌面绿 (Win95/98 那套青绿), 不是白屏
 {
     m_desktopW = desktopW > 0 ? desktopW : 800;
     m_desktopH = desktopH > 0 ? desktopH : 600;
-    m_desktop = JZImage::create(m_desktopW, m_desktopH, m_desktopBg);
+    ensureCanvas();      // 画布 = 桌面自己的离屏设备 (scale 默认 1 = 逻辑尺寸)
 }
 
 JZVirtualDevice::~JZVirtualDevice()
@@ -122,7 +150,9 @@ void JZVirtualDevice::setDesktopBackground(const JZColor& c)
 {
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
-        m_desktopBg = c;
+        // 桌面就是"屏幕": 底色必须不透明 —— 画布是后端原生缓冲, 每帧靠"铺底色"覆盖
+        // 上一帧 (半透明底色会变成"叠在上一帧上", 越叠越脏)。
+        m_desktopBg = JZColor(c.red(), c.green(), c.blue(), 255);
     }
     refresh();
 }
@@ -130,6 +160,34 @@ void JZVirtualDevice::setDesktopBackground(const JZColor& c)
 void JZVirtualDevice::setView(JZVirtualScreenView* view)
 {
     m_view = view;
+}
+
+// ==================== DPI (与主机共享缩放) ====================
+// 只改"渲染成多少物理像素": 坐标仍是逻辑的, 命中/注入/归一化 rect 一个都不动。
+// 窗口的帧缓冲尺寸与内容随缩放重建 => 这**是**一次全桌面重渲染, 只在 DPI 真变了时做。
+void JZVirtualDevice::setScale(float scale)
+{
+    if (!(scale > 0.0f))
+        scale = 1.0f;
+
+    std::vector<JZVirtualWindow*> list;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (std::fabs(scale - m_scale) <= 0.001f)
+            return;
+        m_scale = scale;
+        list = m_windows;      // 拷一份再到锁外干活 (下面会同步等窗口自己的线程重画)
+    }
+
+    // 画布自己也按新缩放重建帧缓冲 (它的显示位图随之刷新)
+    ensureCanvas();
+
+    // 每个窗口的客户区按新缩放重建帧缓冲并重画 —— 必须在**它自己的线程**上画
+    // (applyDeviceScale 内部处理跨线程), 所以这一步不能握着桌面的锁。
+    for (auto* w : list)
+        w->applyDeviceScale();
+
+    refresh();
 }
 
 // 合成只允许在**主线程**跑 (帧的读取要稳定, 也不能在别的线程上碰显示控件)。
@@ -154,8 +212,17 @@ void JZVirtualDevice::refresh()
 void JZVirtualDevice::refreshNow()
 {
     compose();
-    if (m_view)
-        m_view->update();     // 视图绘制时读 desktopImage(), 这里只需让它重绘
+    if (!m_view)
+        return;               // 纯无头: 合成完就够 (取帧见 desktopImage()/screenshot())
+    // 视图绘制时读 desktopPixmap(), 所以这里只需让它重绘 —— 但**怎么重绘**分两种:
+    //   · 拖动/缩放窗口进行中: 同步重绘 (paintNow)。窗口管理器此刻就是鼠标的主人,
+    //     用户要的是"窗口粘在光标上"; 而 update() 只是排个脏区, 要等消息循环下一轮
+    //     (快速拖动时窗口明显慢半拍 —— 实测滞后 200ms 上下);
+    //   · 其余情况: 常规 update(), 同一轮里的多次改动由消息循环合并成一帧。
+    if (m_drag != DragNone)
+        m_view->paintNow();
+    else
+        m_view->update();
 }
 
 // ==================== 窗口宿主: 新窗口落到这块桌面上 ====================
@@ -206,7 +273,13 @@ JZPoint JZVirtualDevice::defaultWindowPos(int clientW, int clientH) const
     const int fw = (clientW > 0 ? clientW : 320) + 2 * JZVirtualWindow::kBorder;
     const int fh = (clientH > 0 ? clientH : 240) + JZVirtualWindow::kTitleBar +
                    JZVirtualWindow::kBorder;
-    return JZPoint((m_desktopW - fw) / 2 + off, (m_desktopH - fh) / 2 + off);
+    // 在**工作区**里居中 (任务栏那一条不摆窗口, 免得一上来就被任务栏压住/压住任务栏)
+    const int areaH = taskbarTop();
+    int x = (m_desktopW - fw) / 2 + off;
+    int y = (areaH - fh) / 2 + off;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    return JZPoint(x, y);
 }
 
 // ==================== 多窗口管理 ====================
@@ -325,17 +398,22 @@ void JZVirtualDevice::activate(JZVirtualWindow* w)
 {
     if (!w)
         return;
-    std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 进程线程也会调 (show 里)
-    raise(w);
-
-    if (m_active == w) {
-        if (!w->isActive())
-            w->setFocus(true);
-        return;
+    JZVirtualWindow* old = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 进程线程也会调 (show 里)
+        raise(w);
+        if (m_active == w && w->isActive())
+            return;                                          // 已经是活动且已聚焦: 没事可做
+        old = (m_active == w) ? nullptr : m_active;
+        m_active = w;
     }
-    if (m_active)
-        m_active->setFocus(false);    // 旧活动窗口失焦 (派发 focusOut, 取消未上屏的编辑)
-    m_active = w;
+
+    // ⚠ 聚焦是**跨线程**的: client()->setWindowFocus -> onWindowFocus -> sendEvent 会投递到
+    //   窗口自己的线程并**等它处理** —— 所以必须锁外做。握着锁等别的线程时, 那个线程可能
+    //   正回头抢这把锁 (推帧/它自己 show 里激活), 于是双方互等: 死锁。
+    //   (实测复现: 进程窗口 show 时它自己调 activate, 同时主线程正点它 —— 必卡死。)
+    if (old)
+        old->setFocus(false);        // 旧活动窗口失焦 (派发 focusOut, 取消未上屏的编辑)
     w->setFocus(true);
     refresh();
 }
@@ -344,6 +422,28 @@ void JZVirtualDevice::moveWindow(JZVirtualWindow* w, int x, int y)
 {
     if (w)
         w->setFramePos(x, y);         // 窗口自己会通知桌面重新合成
+}
+
+// 窗口表的**快照** (锁内拷一份, z 序不变)。
+// 为什么要有它: windows() 返回的是那张活表 —— 进程线程建窗 (adoptWindow) / 客户区被 GC 都会
+// 动它, 跨线程或"先查后用"的调用方一旦直接遍历就是在读一份随时会变的数据。要拷出来就用这个。
+std::vector<JZVirtualWindow*> JZVirtualDevice::windowList() const
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    return m_windows;
+}
+
+// 某个进程建的窗口 (z 序, 由下到上)。p 传 nullptr = 宿主自己 (同线程) 建的那些窗口 ——
+// "查一个程序在桌面上开了哪些窗口" 就靠它 (进程对桌面来说只是 JZThread, 见类头注释)。
+std::vector<JZVirtualWindow*> JZVirtualDevice::windowsOfProcess(JZThread* p) const
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    std::vector<JZVirtualWindow*> out;
+    for (auto* w : m_windows) {
+        if (w->process() == p)
+            out.push_back(w);
+    }
+    return out;
 }
 
 JZVirtualWindow* JZVirtualDevice::byTitle(const std::string& title) const
@@ -362,6 +462,8 @@ JZVirtualWindow* JZVirtualDevice::byTitle(const std::string& title) const
 JZVirtualWindow* JZVirtualDevice::windowAt(int screenX, int screenY) const
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    if (screenY >= taskbarTop())
+        return nullptr;      // 任务栏那一条是桌面 chrome: 那里没有窗口 (视觉上也是它盖着)
     for (auto it = m_windows.rbegin(); it != m_windows.rend(); ++it) {
         JZVirtualWindow* w = *it;
         if (!w->isVisible())
@@ -387,7 +489,232 @@ JZPoint JZVirtualDevice::clientToScreen(JZVirtualWindow* w, int clientX, int cli
     return w->clientToScreen(JZPoint(clientX, clientY));
 }
 
+// ==================== 桌面 chrome: 任务栏 + 开始菜单 ====================
+// 任务栏是"屏幕底下的一条", 由桌面自己画 (不是窗口) —— 于是它天然压在窗口之上, 且
+// 最大化只铺到 workArea() (见 JZVirtualWindow::setMaximized), 不会盖住它。
+// 几何只有这一份: 绘制与命中都调下面这几个 rect。
+JZRect JZVirtualDevice::startButtonRect() const
+{
+    return JZRect(kTaskPad, taskbarTop() + kTaskPad, kStartBtnW, kTaskbarHeight - 2 * kTaskPad);
+}
+
+JZRect JZVirtualDevice::taskButtonRect(int index) const
+{
+    const int x = kTaskPad + kStartBtnW + kTaskGap + (kTaskBtnW + kTaskGap) * index;
+    return JZRect(x, taskbarTop() + kTaskPad, kTaskBtnW, kTaskbarHeight - 2 * kTaskPad);
+}
+
+JZRect JZVirtualDevice::startMenuRect() const
+{
+    const int h = (int)m_startItems.size() * kMenuItemH + 2 * kTaskPad;
+    int y = taskbarTop() - h - kTaskGap;         // 从开始按钮往**上**弹
+    if (y < 0)
+        y = 0;
+    return JZRect(kTaskPad, y, kMenuW, h);
+}
+
+JZRect JZVirtualDevice::startMenuItemRect(int item) const
+{
+    const JZRect m = startMenuRect();
+    return JZRect(m.left() + kTaskPad, m.top() + kTaskPad + item * kMenuItemH,
+                  m.width() - 2 * kTaskPad, kMenuItemH);
+}
+
+int JZVirtualDevice::taskButtonAt(int x, int y) const
+{
+    if (y < taskbarTop())
+        return -1;
+    std::vector<JZVirtualWindow*> list;
+    visibleWindows(m_windows, list);
+    for (int i = 0; i < (int)list.size(); ++i) {
+        if (taskButtonRect(i).contains(x, y))
+            return i;
+    }
+    return -1;
+}
+
+int JZVirtualDevice::startMenuItemAt(int x, int y) const
+{
+    if (!m_startMenuOpen)
+        return -1;
+    for (int i = 0; i < (int)m_startItems.size(); ++i) {
+        if (startMenuItemRect(i).contains(x, y))
+            return i;
+    }
+    return -1;
+}
+
+int JZVirtualDevice::addStartMenuItem(const std::string& text, std::function<void()> onActivate)
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    StartMenuItem it;
+    it.text = text;
+    it.onActivate = std::move(onActivate);
+    m_startItems.push_back(std::move(it));
+    return (int)m_startItems.size() - 1;
+}
+
+void JZVirtualDevice::setStartMenuOpen(bool on)
+{
+    if (m_startMenuOpen == on)
+        return;
+    m_startMenuOpen = on;
+    if (!on)
+        m_hoverStartItem = -1;
+    refresh();
+}
+
+// 任务栏/开始菜单的点击: 返回 true = 这次点击归桌面 (不再往下投给窗口);
+// pending 带出"需要锁外执行"的菜单项回调 (见 injectMouseAtScreen 的注释)。
+bool JZVirtualDevice::handleChromePress(int x, int y, std::function<void()>& pending)
+{
+    const bool inBar = (y >= taskbarTop() && y < m_desktopH + 1);
+
+    // 开始菜单开着: 点菜单项 = 执行; 点别处 = 收起 (这一下**不**落到下面, 同真实开始菜单)
+    if (m_startMenuOpen) {
+        const int item = startMenuItemAt(x, y);
+        if (item >= 0) {
+            pending = m_startItems[item].onActivate;
+            setStartMenuOpen(false);
+            return true;
+        }
+        setStartMenuOpen(false);
+        return true;
+    }
+
+    if (inBar) {
+        if (startButtonRect().contains(x, y)) {
+            setStartMenuOpen(true);
+            return true;
+        }
+        const int b = taskButtonAt(x, y);
+        if (b >= 0) {
+            activateTaskButton(b);           // 点窗口按钮 = 激活/还原那个窗口
+            return true;
+        }
+        return true;                         // 任务栏空白: 吞掉
+    }
+    return false;
+}
+
+// 悬停反馈 (开始按钮/窗口按钮/菜单项高亮); 返回 true = 光标在 chrome 上
+bool JZVirtualDevice::updateChromeHover(int x, int y)
+{
+    const int item = startMenuItemAt(x, y);
+    int task = -2;                           // -2 = 无高亮
+    if (y >= taskbarTop()) {
+        if (startButtonRect().contains(x, y))
+            task = -1;
+        else
+            task = taskButtonAt(x, y);
+    }
+    const bool onChrome = (y >= taskbarTop()) || (item >= 0);
+    if (item != m_hoverStartItem || task != m_hoverTask) {
+        m_hoverStartItem = item;
+        m_hoverTask = task;
+        refresh();                           // 高亮变了: 重新合成 (普通 update 即可)
+    }
+    return onChrome;
+}
+
+void JZVirtualDevice::activateTaskButton(int index)
+{
+    std::vector<JZVirtualWindow*> list;
+    visibleWindows(m_windows, list);
+    if (index < 0 || index >= (int)list.size())
+        return;
+    JZVirtualWindow* w = list[index];
+    if (w->isMinimized())
+        w->setMinimized(false);              // 最小化的窗口: 点任务栏按钮 = 还原
+    activate(w);
+}
+
+void JZVirtualDevice::paintTaskbar(JZPainter& p)
+{
+    const int top = taskbarTop();
+    p.fillRect(0, top, m_desktopW, kTaskbarHeight, kBarFace);
+    p.fillRect(0, top, m_desktopW, 1, kBarLight);          // 上沿高光
+
+    // 开始按钮 (按下/悬停时凹下去, 与经典任务栏一致)
+    {
+        const JZRect r = startButtonRect();
+        const bool down = m_startMenuOpen || m_hoverTask == -1;
+        p.fillRect(r, down ? kBarShadow : kBarFace);
+        p.fillRect(r.left(), r.top(), r.width(), 1, down ? kBarShadow : kBarLight);
+        p.fillRect(r.left(), r.bottom(), r.width(), 1, down ? kBarLight : kBarShadow);
+        p.setFont(JZFont(12));
+        p.setPen(JZPen(down ? kBarWhite : kBarText, 1));
+        p.drawText(r.left() + 14, r.top() + 5, "开始");
+    }
+
+    // 每个可见窗口一个按钮 (点它 = 激活; 活动窗口那个是"按住"的样子)
+    std::vector<JZVirtualWindow*> list;
+    visibleWindows(m_windows, list);
+    p.setFont(JZFont(12));
+    for (int i = 0; i < (int)list.size(); ++i) {
+        const JZRect r = taskButtonRect(i);
+        if (r.right() >= m_desktopW - kTaskPad)
+            break;                                          // 摆不下了 (简单的截断)
+        const bool active = (list[i] == m_active);
+        const bool down = active || m_hoverTask == i;
+        p.fillRect(r, down ? kBarShadow : kBarFace);
+        p.fillRect(r.left(), r.top(), r.width(), 1, down ? kBarShadow : kBarLight);
+        p.fillRect(r.left(), r.bottom(), r.width(), 1, down ? kBarLight : kBarShadow);
+        p.setPen(JZPen(active ? kBarWhite : kBarText, 1));
+        // ⚠ 本框架的 save/restore 只管 pen/brush/font/matrix, **不含裁剪** (见 JZPainter 注释):
+        //   这里为了截断标题临时收窄裁剪, 画完必须显式还原成整块画布, 否则后面的开始菜单
+        //   会被裁在这颗按钮里 (踩过)。
+        p.setClip(JZRect(r.left() + 1, r.top() + 1, r.width() - 2, r.height() - 2));
+        p.drawText(r.left() + 6, r.top() + 5, list[i]->title().c_str());
+        p.setClip(JZRect(0, 0, m_desktopW, m_desktopH));
+    }
+}
+
+void JZVirtualDevice::paintStartMenu(JZPainter& p)
+{
+    if (m_startItems.empty())
+        return;
+    const JZRect m = startMenuRect();
+    p.fillRect(m, kBarFace);
+    p.fillRect(m.left(), m.top(), m.width(), 1, kBarLight);          // 立体边框
+    p.fillRect(m.left(), m.top(), 1, m.height(), kBarLight);
+    p.fillRect(m.left(), m.bottom(), m.width(), 1, kBarShadow);
+    p.fillRect(m.right(), m.top(), 1, m.height() - 1, kBarShadow);
+
+    p.setFont(JZFont(12));
+    for (int i = 0; i < (int)m_startItems.size(); ++i) {
+        const JZRect r = startMenuItemRect(i);
+        const bool hot = (m_hoverStartItem == i);
+        if (hot)
+            p.fillRect(r, kBarActive);                               // 悬停: 与标题栏同色的高亮
+        p.setPen(JZPen(hot ? kBarWhite : kBarText, 1));
+        p.drawText(r.left() + 10, r.top() + 6, m_startItems[i].text.c_str());
+    }
+}
+
 // ==================== 合成 / 取帧 ====================
+// 画布 = 本桌面自己的一块**离屏显示设备**: 后端把外框与客户区帧直接画进它的帧缓冲
+// (GDI+ 的原生布局)。于是"画"和"贴"之间没有任何 RGBA<->PARGB 的全图转换 ——
+// 显示控件拿到的是画布缓冲的零拷贝位图 (见 desktopPixmap)。
+// 尺寸/缩放变了才重建缓冲 (拖动时零分配、零转换)。
+void JZVirtualDevice::ensureCanvas()
+{
+    m_canvas.setScale(m_scale);          // 先定缩放 (物理尺寸换算与它一致)
+    const int iw = toPhysical(m_desktopW);
+    const int ih = toPhysical(m_desktopH);
+    if (!m_canvasReady) {
+        m_canvas.initOffscreen(iw, ih);  // 首次: 自建与窗口无关的兼容 DC/DIB
+        m_canvasReady = true;
+    } else {
+        m_canvas.resize(iw, ih);         // 尺寸没变时后端内部直接返回 (零开销)
+    }
+
+    // 画布缓冲的零拷贝显示位图 (缓冲重建后要重新取一次; 同一缓冲时原样复用)
+    JZPixmap pm;
+    if (m_canvas.targetPixmap(pm))
+        m_desktopPix = pm;
+}
+
 void JZVirtualDevice::compose()
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 与进程线程的建窗/推帧互斥
@@ -396,13 +723,18 @@ void JZVirtualDevice::compose()
     m_composing = true;
 
     pruneWindows();     // 客户区已被回收的窗口先从表里摘掉 (之后再遍历才安全)
-
-    // 每帧从"桌面底色"起画 (窗口可能被移走/关掉了, 旧像素必须被盖掉)。
-    m_desktop = JZImage::create(m_desktopW, m_desktopH, m_desktopBg);
+    ensureCanvas();     // 画布缓冲 (尺寸/缩放变了才重建)
 
     {
-        // 一次合成一个 painter: 外框与客户区帧都按 z 序由下到上叠 (析构时写回整张图)。
-        JZPainter p(m_desktop);
+        // 一块画布一个 painter: 底色 + 外框 + 客户区帧按 z 序由下到上叠, 析构时一次性
+        // 回放到画布的帧缓冲 (原生布局, 不做 RGBA 往返)。
+        // ⚠ 坐标是**逻辑**的 (桌面坐标), 物理换算由画布设备的缩放施加 ——
+        //   "坐标与 DPI 无关, 只有渲染分辨率随 DPI 变"这条规矩就落在这一句上。
+        JZPainter p(&m_canvas, JZRect(0, 0, m_desktopW, m_desktopH));
+        // 每帧先铺底色 (窗口可能被移走/关掉了, 旧像素必须被盖掉)。底色必须不透明,
+        // 否则这里是"叠"上一帧而不是覆盖它 (见 setDesktopBackground)。
+        p.fillRect(0, 0, m_desktopW, m_desktopH, m_desktopBg);
+
         for (auto* w : m_windows) {
             if (!w->isVisible())
                 continue;
@@ -413,21 +745,43 @@ void JZVirtualDevice::compose()
             // 客户区: 用窗口**推上来的帧缓存** (它自己的线程在内容变化时拷好, 见
             // JZVirtualWindow::captureFrame) —— 合成因此**不会**跨线程去读别人的帧缓冲,
             // 也就永远不会阻塞在某个进程线程上 (多线程下这一点很要紧)。
+            // 帧是物理像素 (客户区逻辑尺寸 * scale), 这里给的是**逻辑**矩形 ⇒ 1:1 落上去。
             const JZImage& f = w->frame();
             if (f.isNull() || !f.data())
                 continue;
             const JZRect c = w->clientGeometry();
             p.drawImage(f, c.left(), c.top(), c.width(), c.height());
         }
+
+        // 桌面 chrome: 任务栏 + (已弹出的话) 开始菜单 —— 最后画, 所以恒在窗口之上
+        paintTaskbar(p);
+        if (m_startMenuOpen)
+            paintStartMenu(p);
     }
 
+    ++m_frameSerial;      // 合成图变了 (见 frameSerial)
     m_composing = false;
+}
+
+// 整屏一帧 (RGBA8888; **物理像素**: 桌面逻辑尺寸 * scale; 无头默认 scale=1 即逻辑尺寸)。
+// ⚠ 这是"画布 -> RGBA"的一次按需转换 (O(像素)), 只在截图/CU/测试这条路上发生;
+//   显示控件走的是 desktopPixmap() 的零拷贝位图, 拖动时不会碰这里。
+const JZImage& JZVirtualDevice::desktopImage()
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    if (m_imageSerial != m_frameSerial || m_desktopImage.isNull()) {
+        ensureCanvas();
+        if (!m_canvas.snapshot(m_desktopImage))
+            m_desktopImage = JZImage();
+        m_imageSerial = m_frameSerial;
+    }
+    return m_desktopImage;
 }
 
 JZImage JZVirtualDevice::screenshot()
 {
     refresh();
-    return m_desktop;                    // 与 m_desktop 共享像素缓冲, 拷贝很轻
+    return desktopImage();               // 拷贝很轻 (像素缓冲共享)
 }
 
 JZImage JZVirtualDevice::screenshotWindow(JZVirtualWindow* w)
@@ -455,6 +809,9 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
     //   桌面的锁, 而那个线程在处理过程中又要调桌面 (推帧/激活), 就是死锁。
     JZVirtualWindow* target = nullptr;      // 要在客户区里投递的窗口 (锁外投)
     int cx = 0, cy = 0;
+    JZVirtualWindow* activateTarget = nullptr;   // 需要激活的窗口: 也锁外做 (见 activate)
+    std::function<void()> chromeAction;     // 菜单项回调: 一律锁外跑 (见 handleChromePress)
+    bool chromeHandled = false;             // 这次事件被桌面 chrome (任务栏/开始菜单) 吃掉
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
 
@@ -479,44 +836,53 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
             target = w; cx = p.x(); cy = p.y();
         }
         else if (type == JZMouseEvent::Move) {
-            return m_pressed != nullptr;      // 客户区里拖动中: 事件归我们
+            if (m_pressed)
+                return true;                  // 客户区里拖动中: 事件归我们 (含拖出客户区)
+            if (updateChromeHover(screenX, screenY))
+                return true;                  // 光标在任务栏/开始菜单上: 不打给窗口
+            return false;
         }
         else if (type == JZMouseEvent::Press) {
-            JZVirtualWindow* w = windowAt(screenX, screenY);
-            if (!w)
-                return false;                 // 点在桌面空白上: 不归任何窗口 (等价真实桌面)
-            activate(w);                      // 点击激活窗口 (与真实桌面一致)
+            // 桌面 chrome (任务栏/开始菜单) 恒在窗口之上, 先问它
+            if (handleChromePress(screenX, screenY, chromeAction)) {
+                chromeHandled = true;
+            } else {
+                JZVirtualWindow* w = windowAt(screenX, screenY);
+                if (!w)
+                    return false;             // 点在桌面空白上: 不归任何窗口 (等价真实桌面)
+                activateTarget = w;           // 点击激活窗口 (与真实桌面一致): ⚠ 锁外激活
 
-            switch (w->hitTest(screenX, screenY)) {
-            case JZVirtualWindow::HitClose:
-                destroyWindow(w);             // 点关闭 = 关掉这个窗口
-                return true;
-            case JZVirtualWindow::HitMinimize:
-                w->setMinimized(!w->isMinimized());
-                return true;
-            case JZVirtualWindow::HitMaximize:
-                w->setMaximized(!w->isMaximized());
-                return true;
-            case JZVirtualWindow::HitTitle:
-                beginDragMove(w, screenX, screenY);
-                return true;
-            case JZVirtualWindow::HitBorderLeft:       beginDragResize(w, EdgeLeft, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderRight:      beginDragResize(w, EdgeRight, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderTop:        beginDragResize(w, EdgeTop, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderBottom:     beginDragResize(w, EdgeBottom, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderTopLeft:    beginDragResize(w, EdgeLeft | EdgeTop, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderTopRight:   beginDragResize(w, EdgeRight | EdgeTop, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderBottomLeft: beginDragResize(w, EdgeLeft | EdgeBottom, screenX, screenY); return true;
-            case JZVirtualWindow::HitBorderBottomRight:beginDragResize(w, EdgeRight | EdgeBottom, screenX, screenY); return true;
-            case JZVirtualWindow::HitClient: {
-                // 客户区: 换算成客户区坐标投递给那个真 JZWindow (与被系统投递同一条路)
-                const JZPoint p = screenToClient(w, screenX, screenY);
-                m_pressed = w;
-                target = w; cx = p.x(); cy = p.y();
-                break;
-            }
-            default:
-                return true;                  // 理论上到不了
+                switch (w->hitTest(screenX, screenY)) {
+                case JZVirtualWindow::HitClose:
+                    destroyWindow(w);         // 点关闭 = 关掉这个窗口
+                    return true;
+                case JZVirtualWindow::HitMinimize:
+                    w->setMinimized(!w->isMinimized());
+                    return true;
+                case JZVirtualWindow::HitMaximize:
+                    w->setMaximized(!w->isMaximized());
+                    return true;
+                case JZVirtualWindow::HitTitle:
+                    beginDragMove(w, screenX, screenY);
+                    return true;
+                case JZVirtualWindow::HitBorderLeft:       beginDragResize(w, EdgeLeft, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderRight:      beginDragResize(w, EdgeRight, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderTop:        beginDragResize(w, EdgeTop, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderBottom:     beginDragResize(w, EdgeBottom, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderTopLeft:    beginDragResize(w, EdgeLeft | EdgeTop, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderTopRight:   beginDragResize(w, EdgeRight | EdgeTop, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderBottomLeft: beginDragResize(w, EdgeLeft | EdgeBottom, screenX, screenY); return true;
+                case JZVirtualWindow::HitBorderBottomRight:beginDragResize(w, EdgeRight | EdgeBottom, screenX, screenY); return true;
+                case JZVirtualWindow::HitClient: {
+                    // 客户区: 换算成客户区坐标投递给那个真 JZWindow (与被系统投递同一条路)
+                    const JZPoint p = screenToClient(w, screenX, screenY);
+                    m_pressed = w;
+                    target = w; cx = p.x(); cy = p.y();
+                    break;
+                }
+                default:
+                    return true;              // 理论上到不了
+                }
             }
         }
         else if (type == JZMouseEvent::Release) {
@@ -529,6 +895,18 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
             target = w; cx = p.x(); cy = p.y();
         }
     }
+
+    // ---- 锁外这一步, 三件事的顺序与"真桌面 + 真系统"一致: 先激活, 再执行 chrome 动作,
+    //      最后把事件投给客户区。⚠ 三者**都**不能握着锁做 (见 activate / 下面的注释)。 ----
+    if (activateTarget)
+        activate(activateTarget);
+
+    // 开始菜单项的回调 (建窗/起进程/停进程) 一律**锁外**执行 —— 回调里可能要等新线程
+    // (如 waitWindow), 而那个线程回头就要抢 m_mutex, 握着锁等它就是死锁。
+    if (chromeAction)
+        chromeAction();
+    if (chromeHandled)
+        return true;
 
     if (!target)
         return false;
@@ -556,34 +934,13 @@ bool JZVirtualDevice::injectKey(uint32_t key, const std::string& text,
 
 bool JZVirtualDevice::injectText(const std::string& utf8)
 {
+    JZVirtualWindow* w = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
-        if (!m_active)
-            return false;
+        w = m_active;
     }
-
-    bool any = false;
-    size_t i = 0;
-    while (i < utf8.size()) {
-        const unsigned char c0 = (unsigned char)utf8[i];
-        size_t len = 1;
-        uint32_t cp = c0;
-        if (c0 >= 0xF0)      { len = 4; cp = c0 & 0x07u; }
-        else if (c0 >= 0xE0) { len = 3; cp = c0 & 0x0Fu; }
-        else if (c0 >= 0xC0) { len = 2; cp = c0 & 0x1Fu; }
-        if (i + len > utf8.size())
-            len = 1;
-        if (len > 1) {
-            for (size_t k = 1; k < len; ++k)
-                cp = (cp << 6) | ((unsigned char)utf8[i + k] & 0x3Fu);
-        }
-        const std::string ch = utf8.substr(i, len);
-        injectKey(cp, ch, JZKeyEvent::NoModifier, true);
-        injectKey(cp, ch, JZKeyEvent::NoModifier, false);
-        any = true;
-        i += len;
-    }
-    return any;
+    // 逐字符那套实现只有一份, 在窗口上 (JZVirtualWindow::injectText) —— 锁外调用
+    return w ? w->injectText(utf8) : false;
 }
 
 JZCursorShape JZVirtualDevice::cursorAt(int screenX, int screenY) const

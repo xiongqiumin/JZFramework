@@ -122,6 +122,15 @@ void JZVirtualWindow::setFrameGeometry(const JZRect& rc)
         notifyScreen();
 }
 
+// 设客户区尺寸 (外框坐标不动)。"外框 = 客户区 + 装饰"的换算只留在这里 —— 外面 (HTTP 接口/
+// 自动化脚本) 说"客户区多大"就行, 不必抄 kBorder/kTitleBar 那两个常量 (抄了就会漂)。
+void JZVirtualWindow::setClientSize(int clientW, int clientH)
+{
+    setFrameGeometry(JZRect(m_x, m_y,
+                            clientW + 2 * kBorder,
+                            clientH + kTitleBar + kBorder));
+}
+
 JZRect JZVirtualWindow::clientGeometry() const
 {
     JZWindow* c = client();
@@ -338,6 +347,34 @@ bool JZVirtualWindow::injectKey(uint32_t key, const std::string& text,
     ev.setPress(press);
     jzApp->sendEvent(c, &ev);    // 同上: 跨线程同步投递到窗口自己的线程
     return ev.isAccepted();
+}
+
+// 按 UTF-8 逐字符输入: 每个字符拆成 press + release 两次键事件 (与真键盘同序, 控件侧
+// "按下插字、抬起收尾" 的行为都能跑到)。非可打印内容 (组合键/IME) 走 injectKey/ImeEvent。
+bool JZVirtualWindow::injectText(const std::string& utf8)
+{
+    bool any = false;
+    size_t i = 0;
+    while (i < utf8.size()) {
+        const unsigned char c0 = (unsigned char)utf8[i];
+        size_t len = 1;
+        uint32_t cp = c0;
+        if (c0 >= 0xF0)      { len = 4; cp = c0 & 0x07u; }
+        else if (c0 >= 0xE0) { len = 3; cp = c0 & 0x0Fu; }
+        else if (c0 >= 0xC0) { len = 2; cp = c0 & 0x1Fu; }
+        if (i + len > utf8.size())
+            len = 1;
+        if (len > 1) {
+            for (size_t k = 1; k < len; ++k)
+                cp = (cp << 6) | ((unsigned char)utf8[i + k] & 0x3Fu);
+        }
+        const std::string ch = utf8.substr(i, len);
+        injectKey(cp, ch, JZKeyEvent::NoModifier, true);
+        injectKey(cp, ch, JZKeyEvent::NoModifier, false);
+        any = true;
+        i += len;
+    }
+    return any;
 }
 
 // ==================== 窗口管理 (JZVirtualDevice 用) ====================

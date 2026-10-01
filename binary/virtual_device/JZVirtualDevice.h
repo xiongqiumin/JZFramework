@@ -93,13 +93,17 @@ public:
     void shutdownProcesses();                         // 全部收掉 (析构时自动调)
     void addProcess(JZThread* p);                     // 由进程自己登记 (JZVirtualProcess::start)
 
-    // 建并启动一个进程: 一个线程 + 一份 JZEngineRuntime(内含 JZJSEngine), 里面跑 script。
-    // script 里 `new JZWindow(...)` 建出来的窗口就属于该进程 (线程独立、引擎独立)。
+    // 建并启动一个进程: 一个线程 + 一份 JZEngineRuntime(内含 JZJSEngine), 里面**加载程序**。
+    // 程序里 `new JZWindow(...)` 建出来的窗口就属于该进程 (线程独立、引擎独立)。
+    //   moduleRel: 非空 = 以一个 **JS 程序 (ESM 模块)** 加载 (相对 workDir) —— 推荐这条路:
+    //              import 能用, 且 jzApp.applicationDirPath() = 程序所在目录;
+    //   script   : 只给 script = 当一段 JS 跑 (片段/脚本体, 无模块语义)。
     //   ⚠ 实现见 JZVirtualProcess.cpp (jz_virtual_process 库) —— 桌面库不依赖 JS 引擎。
     //   ⚠ 新建的窗口由**那个进程的线程**创建, 所以本函数只负责"起线程", 窗口稍后出现
     //     (要等就 JZVirtualProcess::waitWindow)。
     JZVirtualProcess* createProcess(const std::string& name, const std::string& script,
-                                    const std::string& workDir = std::string());
+                                    const std::string& workDir = std::string(),
+                                    const std::string& moduleRel = std::string());
 
     // 新窗口的默认位置 (居中级联; 由 JZVirtualWindow 首次 show 时按最终尺寸取用)
     JZPoint defaultWindowPos(int clientW, int clientH) const;
@@ -173,8 +177,13 @@ public:
     // 关掉 (移出桌面并销毁) 一个窗口
     void destroyWindow(JZVirtualWindow* w);
 
-    // 窗口列表 (z 序: 由下到上, 末尾最上)
+    // 窗口列表 (z 序: 由下到上, 末尾最上)。
+    // ⚠ 这是那张**活表**: 进程线程建窗/客户区被回收都会动它。跨线程或"先查后用"的调用方
+    //   请用 windowList() 拿一份快照 (同线程、遍历中不建/不关窗时直接用它没问题)。
     const std::vector<JZVirtualWindow*>& windows() const { return m_windows; }
+    std::vector<JZVirtualWindow*> windowList() const;                   // 快照 (锁内拷一份)
+    // 某个进程建的窗口 (z 序); 传 nullptr = 宿主自己建的那些 —— "查进程窗口"用这个
+    std::vector<JZVirtualWindow*> windowsOfProcess(JZThread* p) const;
     JZVirtualWindow* activeWindow() const { return m_active; }
     void raise(JZVirtualWindow* w);              // 置顶 (只改 z 序)
     void activate(JZVirtualWindow* w);           // 置顶 + 键盘焦点 (切换活动窗口)

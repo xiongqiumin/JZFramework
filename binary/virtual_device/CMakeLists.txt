@@ -15,6 +15,8 @@ add_library(jz_virtual_device STATIC
     JZVirtualWindowBackend.cpp
     JZVirtualDevice.h
     JZVirtualDevice.cpp
+    JZVirtualDeviceHttp.h    # HTTP 接口: 加载程序/截图/鼠标/键盘 (把桌面当容器)
+    JZVirtualDeviceHttp.cpp
     JZVirtualThread.h      # 跨线程同步调用 (jzRunOnThreadSync) 的小工具头
     JZVirtualScreenView.h
     JZVirtualScreenView.cpp
@@ -67,3 +69,32 @@ add_custom_command(TARGET virtual_device POST_BUILD
             "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/widget/dist"
             "$<TARGET_FILE_DIR:virtual_device>/jz_js/widget/dist"
     COMMENT "Deploy widget JS class layer next to virtual_device.exe")
+
+# 但它**能加载真程序**: `--program app.js` / `POST /api/programs {file}` 是按 ESM 模块加载的,
+# 程序里会 import 运行期包 (fs/path/http...)。所以这里跟 code_agent 一样, 用 js_wrapper/package.py
+# 把整套 jz_engine/{jz_types,jz_js} 部署到 exe 边上 —— 少了它, 程序只能 import 到 widget,
+# 一 import fs 就静默失败 (报 "unknown error", 很难查)。见 binary/code_agent/CMakeLists.txt 的详解。
+set(JZ_VD_WRAP_PY "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/package.py")
+# ⚠ 不能写 $<TARGET_FILE_DIR:virtual_device>: 那会让"这个自定义命令"与目标互相依赖 (CMake 报循环)。
+#   直接写 exe 的输出目录 (与上面的 RUNTIME_OUTPUT_DIRECTORY 同一处), 与 code_agent 的做法一致。
+set(JZ_VD_JS_OUT "${CMAKE_CURRENT_BINARY_DIR}/bin/$<CONFIG>")
+set(JZ_VD_WRAP_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper")
+set(JZ_VD_JS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/jz_js_packaged.stamp")
+
+set(JZ_VD_JS_DEPS "${JZ_VD_WRAP_PY}")
+file(GLOB JZ_VD_TYPE_FILES CONFIGURE_DEPENDS
+     "${JZ_VD_WRAP_SRC}/types/*.d.ts" "${JZ_VD_WRAP_SRC}/types/*.ts"
+     "${JZ_VD_WRAP_SRC}/*/types/*.d.ts")
+list(APPEND JZ_VD_JS_DEPS ${JZ_VD_TYPE_FILES})
+file(GLOB JZ_VD_JS_DIST_FILES CONFIGURE_DEPENDS "${JZ_VD_WRAP_SRC}/*/dist/index.js")
+list(APPEND JZ_VD_JS_DEPS ${JZ_VD_JS_DIST_FILES})
+
+add_custom_command(
+    OUTPUT "${JZ_VD_JS_STAMP}"
+    COMMAND ${JZ_PYTHON_EXECUTABLE} "${JZ_VD_WRAP_PY}"
+            --out "${JZ_VD_JS_OUT}" --js-wrapper "${JZ_VD_WRAP_SRC}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${JZ_VD_JS_STAMP}"
+    DEPENDS ${JZ_VD_JS_DEPS}
+    COMMENT "Package JZ JS engine (types + runtime dist) next to virtual_device.exe")
+add_custom_target(copy_jz_js_virtual_device ALL DEPENDS "${JZ_VD_JS_STAMP}")
+add_dependencies(virtual_device copy_jz_js_virtual_device)

@@ -398,17 +398,22 @@ void JZVirtualDevice::activate(JZVirtualWindow* w)
 {
     if (!w)
         return;
-    std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 进程线程也会调 (show 里)
-    raise(w);
-
-    if (m_active == w) {
-        if (!w->isActive())
-            w->setFocus(true);
-        return;
+    JZVirtualWindow* old = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 进程线程也会调 (show 里)
+        raise(w);
+        if (m_active == w && w->isActive())
+            return;                                          // 已经是活动且已聚焦: 没事可做
+        old = (m_active == w) ? nullptr : m_active;
+        m_active = w;
     }
-    if (m_active)
-        m_active->setFocus(false);    // 旧活动窗口失焦 (派发 focusOut, 取消未上屏的编辑)
-    m_active = w;
+
+    // ⚠ 聚焦是**跨线程**的: client()->setWindowFocus -> onWindowFocus -> sendEvent 会投递到
+    //   窗口自己的线程并**等它处理** —— 所以必须锁外做。握着锁等别的线程时, 那个线程可能
+    //   正回头抢这把锁 (推帧/它自己 show 里激活), 于是双方互等: 死锁。
+    //   (实测复现: 进程窗口 show 时它自己调 activate, 同时主线程正点它 —— 必卡死。)
+    if (old)
+        old->setFocus(false);        // 旧活动窗口失焦 (派发 focusOut, 取消未上屏的编辑)
     w->setFocus(true);
     refresh();
 }
@@ -417,6 +422,28 @@ void JZVirtualDevice::moveWindow(JZVirtualWindow* w, int x, int y)
 {
     if (w)
         w->setFramePos(x, y);         // 窗口自己会通知桌面重新合成
+}
+
+// 窗口表的**快照** (锁内拷一份, z 序不变)。
+// 为什么要有它: windows() 返回的是那张活表 —— 进程线程建窗 (adoptWindow) / 客户区被 GC 都会
+// 动它, 跨线程或"先查后用"的调用方一旦直接遍历就是在读一份随时会变的数据。要拷出来就用这个。
+std::vector<JZVirtualWindow*> JZVirtualDevice::windowList() const
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    return m_windows;
+}
+
+// 某个进程建的窗口 (z 序, 由下到上)。p 传 nullptr = 宿主自己 (同线程) 建的那些窗口 ——
+// "查一个程序在桌面上开了哪些窗口" 就靠它 (进程对桌面来说只是 JZThread, 见类头注释)。
+std::vector<JZVirtualWindow*> JZVirtualDevice::windowsOfProcess(JZThread* p) const
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    std::vector<JZVirtualWindow*> out;
+    for (auto* w : m_windows) {
+        if (w->process() == p)
+            out.push_back(w);
+    }
+    return out;
 }
 
 JZVirtualWindow* JZVirtualDevice::byTitle(const std::string& title) const
@@ -782,6 +809,7 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
     //   桌面的锁, 而那个线程在处理过程中又要调桌面 (推帧/激活), 就是死锁。
     JZVirtualWindow* target = nullptr;      // 要在客户区里投递的窗口 (锁外投)
     int cx = 0, cy = 0;
+    JZVirtualWindow* activateTarget = nullptr;   // 需要激活的窗口: 也锁外做 (见 activate)
     std::function<void()> chromeAction;     // 菜单项回调: 一律锁外跑 (见 handleChromePress)
     bool chromeHandled = false;             // 这次事件被桌面 chrome (任务栏/开始菜单) 吃掉
     {
@@ -822,7 +850,7 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
                 JZVirtualWindow* w = windowAt(screenX, screenY);
                 if (!w)
                     return false;             // 点在桌面空白上: 不归任何窗口 (等价真实桌面)
-                activate(w);                  // 点击激活窗口 (与真实桌面一致)
+                activateTarget = w;           // 点击激活窗口 (与真实桌面一致): ⚠ 锁外激活
 
                 switch (w->hitTest(screenX, screenY)) {
                 case JZVirtualWindow::HitClose:
@@ -868,6 +896,11 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
         }
     }
 
+    // ---- 锁外这一步, 三件事的顺序与"真桌面 + 真系统"一致: 先激活, 再执行 chrome 动作,
+    //      最后把事件投给客户区。⚠ 三者**都**不能握着锁做 (见 activate / 下面的注释)。 ----
+    if (activateTarget)
+        activate(activateTarget);
+
     // 开始菜单项的回调 (建窗/起进程/停进程) 一律**锁外**执行 —— 回调里可能要等新线程
     // (如 waitWindow), 而那个线程回头就要抢 m_mutex, 握着锁等它就是死锁。
     if (chromeAction)
@@ -901,34 +934,13 @@ bool JZVirtualDevice::injectKey(uint32_t key, const std::string& text,
 
 bool JZVirtualDevice::injectText(const std::string& utf8)
 {
+    JZVirtualWindow* w = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
-        if (!m_active)
-            return false;
+        w = m_active;
     }
-
-    bool any = false;
-    size_t i = 0;
-    while (i < utf8.size()) {
-        const unsigned char c0 = (unsigned char)utf8[i];
-        size_t len = 1;
-        uint32_t cp = c0;
-        if (c0 >= 0xF0)      { len = 4; cp = c0 & 0x07u; }
-        else if (c0 >= 0xE0) { len = 3; cp = c0 & 0x0Fu; }
-        else if (c0 >= 0xC0) { len = 2; cp = c0 & 0x1Fu; }
-        if (i + len > utf8.size())
-            len = 1;
-        if (len > 1) {
-            for (size_t k = 1; k < len; ++k)
-                cp = (cp << 6) | ((unsigned char)utf8[i + k] & 0x3Fu);
-        }
-        const std::string ch = utf8.substr(i, len);
-        injectKey(cp, ch, JZKeyEvent::NoModifier, true);
-        injectKey(cp, ch, JZKeyEvent::NoModifier, false);
-        any = true;
-        i += len;
-    }
-    return any;
+    // 逐字符那套实现只有一份, 在窗口上 (JZVirtualWindow::injectText) —— 锁外调用
+    return w ? w->injectText(utf8) : false;
 }
 
 JZCursorShape JZVirtualDevice::cursorAt(int screenX, int screenY) const

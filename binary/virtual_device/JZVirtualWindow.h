@@ -94,6 +94,8 @@ public:
     void setFramePos(int x, int y);
     // 外框矩形 -> 客户区尺寸 (小于最小尺寸时按下限截断)。最大化还原也走它。
     void setFrameGeometry(const JZRect& rc);
+    // 设客户区尺寸 (外框坐标不动): 装饰的换算只在本类里做 (见 .cpp)
+    void setClientSize(int clientW, int clientH);
 
     // 客户区在桌面上的矩形; 客户区左上角 (输入换算/装饰绘制的锚点)
     JZRect clientGeometry() const;
@@ -147,6 +149,10 @@ public:
     bool injectClick(int x, int y, JZMouseEvent::Button button = JZMouseEvent::LeftButton);
     bool injectKey(uint32_t key, const std::string& text = std::string(),
                    uint32_t modifiers = JZKeyEvent::NoModifier, bool press = true);
+    // 按 UTF-8 逐字符输入 (每个字符一 press + 一 release, 与真键盘同序)。
+    // 桌面的 injectText 与 HTTP 的 "/api/windows/<id>/input {type:key,text}" 都落到这里 ——
+    // 于是"给某个窗口直接发键盘"与"发给活动窗口"是同一条实现, 没有第二套。
+    bool injectText(const std::string& utf8);
 
     // ---- 窗口管理器 (JZVirtualDevice 合成/命中的那半边) ----
     // 画外框 (标题栏底色+标题+按钮+边框), 坐标 = 桌面坐标; active 决定配色。

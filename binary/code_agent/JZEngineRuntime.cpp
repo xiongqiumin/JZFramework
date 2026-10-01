@@ -10,6 +10,9 @@
 #include "JZJSModbusModule.h"
 #include "JZJSWidgetModule.h"
 #include "JZJSComputerUseModule.h"
+#ifdef JZ_HAS_EMULATOR
+#  include "JZEmulatorViewJs.h"   // 游戏模拟器控件挂到 JS 类层（见该文件头的"依赖方向"说明）
+#endif
 #include "JZJSWorkerModule.h"
 #include "JZPlatform.h"
 #include "JZObject.h"
@@ -188,6 +191,13 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     // 框架真控件(见 binary/code_agent/runtime/bteserver/qtcompat.js 的"框架桥")。
     m_widgetModule = std::make_unique<JZJSWidgetModule>();
     m_widgetModule->initEngine(engine);
+
+#ifdef JZ_HAS_EMULATOR
+    // 游戏模拟器控件(JZEmulatorView)：它在独立模块里（依赖方向 JZEmulator → JZFramework），
+    // 所以"JS 类定义"在框架的 widget 包里、"方法挂载"由这里显式调一次。
+    // ⚠ 必须在上面 initEngine 之后 —— 那时全局类才存在，否则 mountTransparentClass 静默跳过。
+    jzRegisterEmulatorView(engine);
+#endif
 
     // computer use：__jz.computeruse.*（点击/按键/截图/match + 布局通道 layoutTree/waitStable/launch）。
     // 挂在这里而不是 net/core 里：它要用 JZWidget 的语义树(dumpSemanticTree)与 JZScreenShot，

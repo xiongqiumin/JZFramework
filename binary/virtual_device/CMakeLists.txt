@@ -54,12 +54,24 @@ target_include_directories(jz_virtual_process PUBLIC
     "${JZFRAMEWORK_ROOT_DIR}"
     "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent")   # JZScreenShot.h 等按裸名被引用
 
+# 容器里跑的 JS 程序也可能 new JZEmulatorView（JZEngineRuntime 就在本库里），所以这里接线。
+# 静态库只接头/宏/链接，DLL 由最终 exe（virtual_device / code_runtime）去拷。
+if(HAS_JZEmulator)
+    jz_emulator_enable(jz_virtual_process)
+endif()
+
 # 宿主程序: VirtualVm 风格 —— 菜单栏 + 中央滚动区, 滚动区里是 800x600 的虚拟屏;
 # 菜单里可以"新建进程窗口"(起一个线程 + 一份 JS 运行时, 里面建窗口)
 add_executable(virtual_device main.cpp)
 target_link_libraries(virtual_device PRIVATE jz_virtual_process)
 set_target_properties(virtual_device PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin/$<CONFIG>")
+
+# 游戏模拟器控件：exe 这边负责把 mgba_host.dll 与它的 MinGW 运行库拷到边上
+# （静态库那边只接线，见上面 jz_virtual_process 的说明）
+if(HAS_JZEmulator)
+    jz_emulator_enable(virtual_device)
+endif()
 
 # 进程里的引擎按 **exe 目录** 找 JS 包 (JZEngineRuntime: <appDir>/jz_js/<pkg>/dist/...) ——
 # 把控件类层部署到 exe 边上, 于是 JS 里 new JZWindow/JZPushButton 才有类可用

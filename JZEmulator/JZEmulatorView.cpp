@@ -121,10 +121,15 @@ void JZEmulatorView::keyPressEvent(JZKeyEvent* event)
 {
     if (!event)
         return;
-    // 长按会反复来 keyPress：用 set 去重，并按"第一次按下"立刻下发，
-    // 否则 agent 的短促点击（按下+松开都在一帧内）会被整帧吞掉。
-    if (m_pressed.insert(event->key()).second)
+    // 长按会反复来 keyPress：用 set 去重，并按"第一次按下"立刻下发。
+    // ⚠ 还要处理"这一帧内又被重新按下"（见 keyReleaseEvent 的延后松开）：把它从延后表里摘掉。
+    const int vk = event->key();
+    const bool fresh = m_pressed.insert(vk).second;
+    if (fresh || m_lateRelease.erase(vk) > 0)
+    {
+        m_pressFrame[vk] = m_frames;
         syncKeys();
+    }
     event->accept();
 }
 
@@ -132,8 +137,23 @@ void JZEmulatorView::keyReleaseEvent(JZKeyEvent* event)
 {
     if (!event)
         return;
-    if (m_pressed.erase(event->key()) > 0)
-        syncKeys();
+    // ---- "至少压住一帧" ----
+    // 程序注入的"点一下"是 press+release 一瞬间（算 computer use 的 key()、容器的
+    // /api/input/key 都是这样）。若按下之后**一帧都还没跑**就松开，mGBA 眼里那一按从未发生
+    // （实测：脚本按 Start 想进菜单，画面毫无反应）。所以这种"同一帧内被松开"的键记进
+    // m_lateRelease，等下一帧带着它跑完再真松开（见 onTick）。
+    const int vk = event->key();
+    if (m_pressed.find(vk) != m_pressed.end())
+    {
+        if (m_pressFrame[vk] >= m_frames)
+            m_lateRelease.insert(vk);       // 这一帧还没跑过 ⇒ 延后到跑完那一帧
+        else
+        {
+            m_pressed.erase(vk);
+            m_pressFrame.erase(vk);
+            syncKeys();
+        }
+    }
     event->accept();
 }
 
@@ -159,6 +179,19 @@ void JZEmulatorView::onTick()
 
     syncKeys();          // 含"失焦 -> 全部松开"这条
     m_core.runFrame();
+
+    // 延后松开的那批键：这一帧已经**带着它们**跑过了，现在才真松开（见 keyReleaseEvent）。
+    // ⚠ 顺序不能反：先 syncKeys()（键按下）→ 再 runFrame()（模拟器吃到这一按）→ 才松开。
+    if (!m_lateRelease.empty())
+    {
+        for (std::set<int>::const_iterator it = m_lateRelease.begin(); it != m_lateRelease.end(); ++it)
+        {
+            m_pressed.erase(*it);
+            m_pressFrame.erase(*it);
+        }
+        m_lateRelease.clear();
+        syncKeys();
+    }
 
     int w = 0, h = 0;
     const uint8_t* src = m_core.frame(&w, &h);

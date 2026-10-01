@@ -1,0 +1,49 @@
+{
+  "name": "gba",
+  "goal": "交一个『一键通关脚本』：play/play.ts 跑在 virtual_device 容器里，用 computer use 看画面/按键，把 GBA 游戏（火焰之纹章-圣魔之光石）打完整个游戏（整部通关，不拆里程碑）",
+  "prompt": "prompt.md",
+  "artifact": {
+    "script": "play/play.ts",
+    "runsIn": "virtual_device 容器（由 run.py 用 POST /api/programs 装进去跑）",
+    "note": "产出物 = play/play.ts（+ 它自己的模块）。运行时**大模型不参与**；大模型在局与局之间看 play.log / frames/（脚本自报）与 external/ + metrics.jsonl（驱动外部抓帧）后回来改脚本。"
+  },
+  "fixture": {
+    "app": "game/game.ts",
+    "programName": "gba",
+    "note": "题目侧的『游戏机』（进程名 gba：240x160 窗口 + JZEmulatorView + ROM）：它是**被测 App**，不许改。容器里就两个进程：gba（游戏）+ script（脚本，产出物）。"
+  },
+  "verify": "python run.py",
+  "recheck": "python run.py --no-archive",
+  "cwd": ".",
+  "rounds": { "max": 50, "retrySec": 5 },
+  "agent": {
+    "bin": "../../build/binary/agent_cli/Release/agent_cli.exe",
+    "note": "一轮 = 一局：agent 看上一轮的 report.md（关键帧）+ play.log + external/ + verify 结论 → 改 play/play.ts 的**一处** → 再跑。"
+  },
+  "rom": "E:/work/simulator/火焰之纹章-圣魔之光石完美修改版.gba",
+  "paths": {
+    "script": "play/play.ts",
+    "app": "game/game.ts",
+    "playLog": "runs/current/play.log",
+    "scriptFrames": "runs/current/frames",
+    "externalFrames": "runs/current/external",
+    "metrics": "runs/current/metrics.jsonl",
+    "session": "runs/current/session.json",
+    "drive": "runs/current/drive.json",
+    "report": "runs/current/report.md",
+    "result": "runs/current/result.json",
+    "playConfig": "build/play/play.json"
+  },
+  "container": {
+    "desktop": "320x240",
+    "programs": ["gba", "script"],
+    "note": "容器 = binary/virtual_device（--headless）。里面跑**两个进程**：gba（题目侧游戏机，240x160 窗口）与 script（产出物脚本，play/play.ts）。容器自己的 computer use 后端就指向这块桌面（main.cpp 里 setVirtualDesktop）——于是脚本与 App 只通过屏幕/键鼠发生关系。接口一览见 binary/virtual_device/JZVirtualDeviceHttp.h。"
+  },
+  "session": {
+    "steps": 120,
+    "stepMs": 400,
+    "warmupSec": 3.0,
+    "note": "一局 = 脚本『等窗口 → 点一下激活 → 预热（过开机 logo）→ N 拍【截图 → 决策 → 按键】→ 收工写 session.json』。拍数/节拍/预热都由命令行给（run.py → build/play/play.json → 脚本读）。"
+  },
+  "note": "⚠ 本任务**不自动判『通关』**：verify.py 判七道**链路/证据**硬门（容器+窗口 / 脚本收工 / 脚本按过键 / 外部帧够数 / 画面有内容 / 画面在变），也不打 [loop-stop]；游戏玩得怎样由人看 runs/round_NNN/report.md（内嵌外部关键帧）决定。自动判分口径见 prompt.md 的『判定』（两条路都还没做）。"
+}

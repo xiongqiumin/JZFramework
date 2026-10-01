@@ -23,10 +23,36 @@ namespace
     const int kMaxFrameW = 240;
     const int kMaxFrameH = 160;
 
+    // UTF-8 -> ANSI(CP_ACP)：宿主 DLL 是**窄字符/ANSI** 接口 —— 实测 `mgba_load_rom`
+    // 收 UTF-8 路径直接返回 -2、收 mbcs(本机 GBK) 才成功；而框架里的字符串一律 UTF-8。
+    // 所以在这一层做一次转换（中文 ROM 名这类 ACP 表示得了的走这条就够；ACP 表示不了的
+    // 名字要支持，得让宿主 DLL 改收宽字符 —— 那属于 E:/work/simulator 那侧的事）。
+    // ⚠ 同理，`GetFileAttributesA` 也是 ANSI 口：不转换就会"文件明明在却说找不到"。
+    std::string to_ansi(const std::string& utf8)
+    {
+#ifdef _WIN32
+        if (utf8.empty())
+            return utf8;
+        const int wn = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+        if (wn <= 0)
+            return utf8;
+        std::wstring w((size_t)wn, L'\0');
+        ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &w[0], wn);
+        const int an = ::WideCharToMultiByte(CP_ACP, 0, w.c_str(), wn, nullptr, 0, nullptr, nullptr);
+        if (an <= 0)
+            return utf8;
+        std::string a((size_t)an, '\0');
+        ::WideCharToMultiByte(CP_ACP, 0, w.c_str(), wn, &a[0], an, nullptr, nullptr);
+        return a;
+#else
+        return utf8;
+#endif
+    }
+
     bool file_exists(const std::string& path)
     {
 #ifdef _WIN32
-        return !path.empty() && ::GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+        return !path.empty() && ::GetFileAttributesA(to_ansi(path).c_str()) != INVALID_FILE_ATTRIBUTES;
 #else
         return false;
 #endif
@@ -53,10 +79,20 @@ bool JZEmulatorCore::load(const std::string& dir)
     std::string path = kDllName;
     if (!dir.empty())
     {
+        // ⚠ 分隔符必须**统一成反斜杠**：实测 `LoadLibraryExA("E:\\...\\Debug/mgba_host.dll",
+        //   ..., LOAD_WITH_ALTERED_SEARCH_PATH)` 会以**错误码 126**（找不到模块）失败 ——
+        //   混合分隔符下那个"改变后的搜索路径"算不对，于是它的依赖（libgcc_s_seh-1.dll）
+        //   找不到；全用正斜杠或全用反斜杠都正常。调用方给的是自然的 Windows 路径
+        //   （反斜杠），所以在这里归一，别把这条暗坑留给每个调用方。
         std::string d = dir;
         while (!d.empty() && (d[d.size() - 1] == '\\' || d[d.size() - 1] == '/'))
             d.erase(d.size() - 1);
-        path = d + "/" + kDllName;
+        for (size_t i = 0; i < d.size(); ++i)
+        {
+            if (d[i] == '/')
+                d[i] = '\\';
+        }
+        path = d + "\\" + kDllName;
     }
     if (!file_exists(path))
     {
@@ -137,7 +173,7 @@ bool JZEmulatorCore::openRom(const std::string& path)
         m_error = "mgba_create 失败（内存不足？）";
         return false;
     }
-    if (m_loadRom(m_core, path.c_str()) != 0)
+    if (m_loadRom(m_core, to_ansi(path).c_str()) != 0)
     {
         m_error = "mgba_load_rom 失败（ROM 格式不认识 / 文件损坏？）: " + path;
         closeRom();

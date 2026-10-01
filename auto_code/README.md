@@ -33,6 +33,7 @@ auto_code/<task>/
 | 任务 | 目标 | 状态 |
 | --- | --- | --- |
 | `computer_use/` | 让 `js_wrapper/computeruse` 的探索实现（`App.explore`）能从屏幕像素产出语义场景树 | ✅ 全链路绿灯（出题→截图→感知→装配→判分→归档）：8 个种子五项硬门全过，数字见 `baseline.json`；感知后端 = `perceive()` 打多模态接口（地址由驱动给）；⚠ 最短板 `iou75` 无余量。屏幕已有两条路：真窗口路（默认）/ **无头容器路**（`run.py --container`，虚拟桌面当容器，已接入并实测链路通） |
+| `gba/` | 交一个**一键通关脚本**：容器里**两个进程** —— `gba`（游戏）+ `script`（脚本），脚本用 computer use 看画面/按键，把 GBA 游戏（火焰之纹章-圣魔之光石）**打完整个游戏**（整部，不拆里程碑） | 🟡 链路全通、形态已定：**产出 = `play/play.ts`**（作为进程 `script` 跑在 virtual_device 里，用 `__jz.computeruse.*`：screenshot/click/key/wait），对面是进程 `gba`（题目侧 `game/game.ts`，不许改）；驱动只装这两个进程、**从外面抓帧当旁证**。实测 `python run.py` 一局全绿：脚本按 Start 把游戏从标题页推到主菜单（`round_011/external/e00013.png` 为证）。观测面 = 脚本的 `play.log`/`frames/` ＋ 驱动的 `external/`/`metrics.jsonl`/`report.md`。⚠ **不判"通关"**：`verify.py` 只判七道**链路/证据**硬门且**不打 `[loop-stop]`**（通关没有自动真值，收工由人看归档画面） |
 
 ## 怎么跑（以 computer_use 为例）
 

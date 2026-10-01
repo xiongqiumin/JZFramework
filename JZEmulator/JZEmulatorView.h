@@ -1,6 +1,7 @@
 #ifndef JZ_EMULATORVIEW_H_
 #define JZ_EMULATORVIEW_H_
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -82,6 +83,10 @@ private:
     JZImage m_image;               // 当前显示帧（每拍整体换新，见 .cpp 的缓存说明）
     std::vector<uint8_t> m_rgba;   // 转换缓冲（BGRA(X) -> RGBA8888）
     std::set<int> m_pressed;       // 当前按下的 VK 键码
+    // "至少压住一帧"（见 .cpp 的 keyReleaseEvent）：
+    // 程序注入的按键是 press+release 一瞬间，两次之间若没跑过一帧，那一按就白按了。
+    std::map<int, int> m_pressFrame;   // vk -> 按下时的帧号
+    std::set<int> m_lateRelease;       // 下一帧跑完才真松开的键
     int m_frames = 0;
 };
 

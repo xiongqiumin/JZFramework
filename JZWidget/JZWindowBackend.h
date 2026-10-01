@@ -95,6 +95,12 @@ public:
     virtual void imePrepare(JZWindow* w, int fontPixelSize) {}  // 组字窗/候选窗字体
     virtual void imeCancel(JZWindow* w) {}                      // 放弃未上屏的组字
     virtual void imeUpdateUi(JZWindow* w, bool show) {}          // 重发 WM_IME_SETCONTEXT
+
+    // ---- 拖放 (OLE IDropTarget; 只有真窗口能接收外部拖放) ----
+    // 窗口创建后登记成系统拖放目标, 销毁前必须注销。虚拟桌面没有原生窗口,
+    // 默认实现为空 (拖放只对真窗口有意义)。
+    virtual void registerDragAndDrop(JZWindow* w) { (void)w; }
+    virtual void revokeDragAndDrop(JZWindow* w) { (void)w; }
 };
 
 // 当前平台的默认窗口后端 (JZWindow 构造时装它)。所有权归调用方。

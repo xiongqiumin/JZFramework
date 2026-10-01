@@ -418,6 +418,18 @@ bool JZEngineRuntime::hasPendingJob() const
     return m_engine && m_engine->hasPendingJob();
 }
 
+// process.exitCode：脚本里设过、且没有走 process.exit(n) 时，宿主在自然结束时把它当进程退出码。
+// （process.exit(n) 那条第路线是引擎直接 jzApp->exit(n)，app.exec() 的返回值就是 n。）
+int JZEngineRuntime::processExitCode() const
+{
+    return m_engine ? m_engine->processExitCode() : 0;
+}
+
+bool JZEngineRuntime::processExitCodeSet() const
+{
+    return m_engine && m_engine->processExitCodeSet();
+}
+
 const string &JZEngineRuntime::root() const
 {
     return m_root;

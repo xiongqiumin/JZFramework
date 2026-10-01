@@ -1189,7 +1189,13 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     m_typeHttpResponse = m_engine->ctypeidToType(typeid(JZJSHttpResponse).name());
 
     // ---- __jz 命名空间 ----
-    JSValue jz = m_engine->createObject();
+    // 复用已存在的 __jz(不覆盖其它子命名空间) —— 引擎在注册 console/process 时可能已经建过它,
+    // 无条件新建 + 回写会把那里挂的东西整个丢掉(踩过: 引擎侧挂的 __jz.process 就这样没了)。
+    // 与 core / sqlite / modbus / worker / serialport 模块同一套 get-or-create 写法。
+    JSValue jz = m_engine->getProperty(global, "__jz");
+    bool jzFromGet = !JS_IsUndefined(jz);
+    if (!jzFromGet)
+        jz = m_engine->createObject();
 
     JSValue ns_net = m_engine->createObject();
     m_engine->registFunction(ns_net, "createSocket",
@@ -1236,7 +1242,12 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
                              jsbind::createSelfFunction(this, &JZJSNetModule::bytesToString));
     m_engine->setProperty(jz, "bytes", ns_bytes);
 
-    m_engine->setProperty(global, "__jz", jz);
+    // 自己建的才写回全局; 复用别人建的那份不能覆盖, 且要放掉 getProperty 多出来的引用
+    // (否则 __jz 在 JS_FreeRuntime 时仍被 C++ 持有 -> gc_obj_list 非空触发断言, 见 JZJSCoreModule)。
+    if (jzFromGet)
+        JS_FreeValue(m_engine->context(), jz);
+    else
+        m_engine->setProperty(global, "__jz", jz);
 
     loadWebGlobalModules();
 }

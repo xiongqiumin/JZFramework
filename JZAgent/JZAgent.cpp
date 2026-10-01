@@ -1222,7 +1222,7 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
     req->toolCallResult = response;
     m_requests.push_back(req);
     sigToolResult.emit(response);
-    JZTimer::singleShot(0,[this]{
+    JZTimer::singleShot(0, this, [this]{
         llmLoop();
     });
 }

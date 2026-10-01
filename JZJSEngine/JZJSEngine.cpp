@@ -292,6 +292,7 @@ public:
         return JS_NewBool(ctx, flag);
     }
 
+    // console.log / error / warn: node 的 util.format 规则(见 JZJSEngine::print/nodeFormat)
     static JSValue js_console_log(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
     {
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
@@ -299,22 +300,11 @@ public:
         return JS_UNDEFINED;
     }
 
-    // console.assert(cond, ...msg) —— 对齐 Node: 断言失败只打印, **不抛异常**。
-    // (Qt->JS 的移植代码把 Q_ASSERT(...) 一律译成 console.assert(...), 若在这里抛异常
-    //  会把"夹带断言检查的正常流程"整体炸掉, 与 Node/浏览器的语义也不一致。)
-    static JSValue js_console_assert(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+    // console.debugPrint: JZ 原来的紧凑格式(见 JZJSEngine::debugPrint)
+    static JSValue js_console_debug_print(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
     {
-        if (argc >= 1)
-        {
-            int ok = JS_ToBool(ctx, argv[0]);
-            if (ok > 0)
-                return JS_UNDEFINED;
-            if (ok < 0)
-                JS_FreeValue(ctx, JS_GetException(ctx));   // 取值本身出错: 视为断言失败并继续
-        }
-
         JZJSEngine* engine = (JZJSEngine*)JS_GetContextOpaque(ctx);
-        engine->print(this_val, argc, argv);
+        engine->debugPrint(this_val, argc, argv);
         return JS_UNDEFINED;
     }
 
@@ -754,6 +744,9 @@ void JZJSEngine::initTypeMap()
 void JZJSEngine::registInternal()
 {
     string init_code = R"(
+// JZ 原来的"紧凑格式"打印器 —— 现在只给 **console.debugPrint** 用(字符串一律带双引号,
+// `{a: 1}` 没有内边距, 对象走 for...in 所以能看到继承来的可枚举属性); console.log 用的是
+// 下面那套 node 格式, 见 __nodeFormat__。错误描述(JZJSEngine::printObject)也用它。
 function __printObject__(obj, seen = new WeakSet()) {
     // 处理循环引用
     if (seen.has(obj)) {
@@ -815,6 +808,208 @@ function __printObject__(obj, seen = new WeakSet()) {
 
     return result;
 }
+
+// ==================== console.log 的输出格式 (对齐 node 的 util.format + util.inspect) ====================
+// console.log / error / warn / assert 走这一套(与 node 一致), 原来的紧凑格式留在 console.debugPrint:
+//     console.log('hi')             -> hi              (顶层字符串不加引号)
+//     console.log('a', 1, [2])      -> a 1 [ 2 ]       (多参数空格分隔; 容器带内边距)
+//     console.log({ a: 'x' })       -> { a: 'x' }      (容器里的字符串用单引号)
+//     console.log('%s=%d', 'n', 3)  -> n=3             (util.format 占位符)
+//     console.log(new Date(0))      -> 1970-01-01T00:00:00.000Z
+// 已知的简化(都是"少给一点信息", 不是格式跑偏 —— 需要时再往里补):
+//   · 不按 72 列折行(一律单行)、不截断超长字符串、嵌套深度固定 2 层(更深显示 [Object]/[Array]);
+//   · 循环引用只打 [Circular] (node 20 打 [Circular *1] 并在首现处标 <ref *1>);
+//   · Promise 的状态从 JS 侧读不到 ⇒ 打 <unknown> (要与 node 完全一致得在 C 侧调 JS_PromiseState);
+//   · 只列**自有可枚举**属性(与 node 一致; 于是 JZ 绑定的原型访问器不会列出来 —— 要看那些用
+//     console.debugPrint);  · %o 与 %O 不区分(都不列不可枚举属性)。
+function __nodeInspectQuoted__(str) {
+    let out = "'";
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === "'") out += "\\'";
+        else if (ch === "\\") out += "\\\\";
+        else if (ch === "\n") out += "\\n";
+        else if (ch === "\r") out += "\\r";
+        else if (ch === "\t") out += "\\t";
+        else out += ch;
+    }
+    return out + "'";
+}
+
+// 对象的键: 是合法标识符就裸写, 否则用引号包起来 (node 同款)
+function __nodeInspectKey__(key) {
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : __nodeInspectQuoted__(key);
+}
+
+// 空容器 node 不给内边距: `{}` / `[]` / `Map(0) {}`; 非空才前后各一个空格
+function __nodeWrapBody__(head, body) {
+    return body.length > 0 ? head + ' { ' + body + ' }' : head + ' {}';
+}
+
+// 取成员文本: 自有访问器属性不调用 getter, 与 node 一样只标 [Getter]/[Setter]
+function __nodeInspectMember__(obj, key, depth, seen) {
+    let d = null;
+    try { d = Object.getOwnPropertyDescriptor(obj, key); } catch (e) { d = null; }
+    if (d && d.get && d.set) return '[Getter/Setter]';
+    if (d && d.get) return '[Getter]';
+    if (d && d.set) return '[Setter]';
+    return __nodeInspect__(obj[key], depth, seen);
+}
+
+function __nodeInspect__(value, depth, seen) {
+    if (depth === undefined) depth = 2;          // node 的默认深度就是 2
+    if (seen === undefined) seen = [];
+
+    const type = typeof value;
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (type === 'string') return __nodeInspectQuoted__(value);
+    if (type === 'bigint') return String(value) + 'n';
+    if (type === 'symbol') return String(value);
+    // ⚠ -0: String(-0) 是 "0", 而 node 打 "-0" (Object.is 才分得出 -0 与 0)
+    if (type === 'number') return Object.is(value, -0) ? '-0' : String(value);
+    if (type === 'boolean') return String(value);
+    if (type === 'function') {
+        const name = value.name;
+        if (!name) return '[Function (anonymous)]';
+        return Function.prototype.toString.call(value).startsWith('class')
+            ? '[class ' + name + ']' : '[Function: ' + name + ']';
+    }
+
+    // ---- 以下是对象 ----
+    if (seen.indexOf(value) >= 0) return '[Circular]';
+
+    const tag = Object.prototype.toString.call(value);
+    if (depth < 0) {
+        // 太深了: node 只给"类型名", 不再展开 (标量在任意深度都会打出来, 见上面)
+        if (tag === '[object Array]') return '[Array]';
+        return tag === '[object Object]' ? '[Object]' : '[' + tag.slice(8, -1) + ']';
+    }
+    if (tag === '[object Date]') return isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString();
+    if (tag === '[object RegExp]') return String(value);
+    if (value instanceof Error || tag === '[object Error]') {
+        // node 打的是**栈**, 首行是 `Name: message`; quickjs 的 stack 只有调用帧(实测) ⇒ 缺了就补上
+        const head = (value.name || 'Error') + (value.message ? ': ' + value.message : '');
+        if (typeof value.stack === 'string' && value.stack.length > 0)
+            return value.stack.startsWith(head) ? value.stack : head + '\n' + value.stack;
+        return head;
+    }
+    if (tag === '[object Promise]') return 'Promise { <unknown> }';
+    if (tag === '[object WeakMap]') return 'WeakMap { <items unknown> }';
+    if (tag === '[object WeakSet]') return 'WeakSet { <items unknown> }';
+    if (tag === '[object ArrayBuffer]') return 'ArrayBuffer { byteLength: ' + value.byteLength + ' }';
+
+    if (tag === '[object Map]' || tag === '[object Set]') {
+        const isMap = (tag === '[object Map]');
+        const parts = [];
+        seen.push(value);
+        for (const item of value) {
+            parts.push(isMap
+                ? __nodeInspect__(item[0], depth - 1, seen) + ' => ' + __nodeInspect__(item[1], depth - 1, seen)
+                : __nodeInspect__(item, depth - 1, seen));
+        }
+        seen.pop();
+        return __nodeWrapBody__((isMap ? 'Map' : 'Set') + '(' + value.size + ')', parts.join(', '));
+    }
+    if (ArrayBuffer.isView(value) && typeof value.length === 'number') {
+        // TypedArray: node 打 `Uint8Array(3) [ 1, 2, 3 ]`
+        const parts = [];
+        seen.push(value);
+        for (let i = 0; i < value.length; i++) parts.push(String(value[i]));
+        seen.pop();
+        return tag.slice(8, -1) + '(' + value.length + ') [ ' + parts.join(', ') + ' ]';
+    }
+
+    if (tag === '[object Array]') {
+        const parts = [];
+        seen.push(value);
+        for (let i = 0; i < value.length; i++)
+            parts.push((i in value) ? __nodeInspect__(value[i], depth - 1, seen) : '<1 empty item>');
+        for (const key of Object.keys(value))          // 数组上的额外属性: node 附在末尾
+            if (!/^(0|[1-9][0-9]*)$/.test(key))
+                parts.push(__nodeInspectKey__(key) + ': ' + __nodeInspectMember__(value, key, depth - 1, seen));
+        seen.pop();
+        return parts.length > 0 ? '[ ' + parts.join(', ') + ' ]' : '[]';
+    }
+
+    // 普通对象 / 类实例
+    const proto = Object.getPrototypeOf(value);
+    const parts = [];
+    seen.push(value);
+    for (const key of Object.keys(value))
+        parts.push(__nodeInspectKey__(key) + ': ' + __nodeInspectMember__(value, key, depth - 1, seen));
+    for (const sym of Object.getOwnPropertySymbols(value)) {
+        const d = Object.getOwnPropertyDescriptor(value, sym);
+        if (d && d.enumerable)
+            parts.push('[' + String(sym) + ']: ' +
+                       ((d.get || d.set) ? '[Getter]' : __nodeInspect__(d.value, depth - 1, seen)));
+    }
+    seen.pop();
+
+    let head = '';
+    if (proto === null) head = '[Object: null prototype]';
+    else {
+        const ctor = proto.constructor;
+        const name = ctor && ctor.name;
+        if (name && name !== 'Object') head = name;    // 类实例: `Foo { a: 1 }`
+    }
+    const body = parts.join(', ');
+    return head ? __nodeWrapBody__(head, body) : (body.length > 0 ? '{ ' + body + ' }' : '{}');
+}
+
+// console.log(...args) 的全部输出 (node 的 util.format 规则 + 顶层字符串不加引号):
+//   · 一个字符串参数 -> 原样输出(不解析 %);  · 首参是字符串 -> 处理 %s %d %i %f %j %o %O %c %%,
+//   用不完的参数照旧接在后面;  · 首参不是字符串 -> 各参数空格拼接, 顶层字符串不加引号。
+//   ⚠ 认不出的说明符(如 %x)和"没有参数可填"的情况都原样保留(与 node 一致)。
+function __nodeFormat__(args) {
+    if (args.length === 0) return '';
+    const first = args[0];
+    if (args.length === 1) return (typeof first === 'string') ? first : __nodeInspect__(first);
+
+    let out = '';
+    let used = 0;
+    if (typeof first === 'string') {
+        used = 1;
+        for (let p = 0; p < first.length; p++) {
+            const ch = first[p];
+            if (ch !== '%' || p + 1 >= first.length) { out += ch; continue; }
+            const spec = first[p + 1];
+            if (spec === '%') { out += '%'; p++; continue; }
+            if ('sdifjoOc'.indexOf(spec) < 0 || used >= args.length) { out += ch; continue; }
+            const v = args[used++];
+            if (spec === 's') {
+                // node: 对象(且没有自定义 toString)按 depth 0 inspect; BigInt 带 n
+                out += (typeof v === 'bigint') ? String(v) + 'n'
+                     : (v !== null && typeof v === 'object') ? __nodeInspect__(v, 0)
+                     : String(v);
+            }
+            else if (spec === 'i') out += String(parseInt(v));
+            else if (spec === 'd') out += String(Number(v));
+            else if (spec === 'f') out += String(parseFloat(v));
+            else if (spec === 'j') { try { out += JSON.stringify(v); } catch (e) { out += '[Circular]'; } }
+            else if (spec === 'c') { /* CSS: 吃掉, 不输出 */ }
+            else out += __nodeInspect__(v);            // %o / %O
+            p++;
+        }
+    }
+    for (; used < args.length; used++) {
+        const v = args[used];
+        out += (out.length > 0 ? ' ' : '') + ((typeof v === 'string') ? v : __nodeInspect__(v));
+    }
+    return out;
+}
+
+// console.assert(value, ...args): node 语义 —— 失败**只打印不抛异常**(Qt->JS 的移植代码把
+// Q_ASSERT 一律译成 console.assert, 在这里抛异常会把"夹带断言检查的正常流程"整体炸掉);
+// 消息的拼法也与 node 一致: 没消息 -> "Assertion failed"; 首参是字符串 -> 加前缀;
+// 否则在最前面插一个 "Assertion failed"。
+function __consoleAssert__(value, ...args) {
+    if (value) return;
+    if (args.length === 0) args = ['Assertion failed'];
+    else if (typeof args[0] === 'string') args[0] = 'Assertion failed: ' + args[0];
+    else args.unshift('Assertion failed');
+    console.log(...args);        // console 对象由 C++ 侧稍后注册, 这里使用时才取
+}
 )";
 
     // 注册内部助手(全局空间执行, 与旧 loadScript 语义一致)。
@@ -863,14 +1058,21 @@ void JZJSEngine::registConsole()
 {
     JSValue console = JS_NewObject(m_ctx);
 
-    // console (log / error / warn 走同一 sink, print 不区分级别)
+    // console: log / error / warn 都是 Node 的 console 语义 —— 输出格式 = node 的 util.format
+    // (见 print/nodeFormat 与 JS 侧 __nodeFormat__), 三个只走同一 sink(sigLog), 不区分级别。
     JSValue log_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "log", 1);
     JSValue error_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "error", 1);
     JSValue warn_func = JS_NewCFunction(m_ctx, JSInter::js_console_log, "warn", 1);
-    JSValue assert_func = JS_NewCFunction(m_ctx, JSInter::js_console_assert, "assert", 1);
+    // console.debugPrint: JZ 原来的紧凑格式(字符串带引号、`{a: 1}` 无内边距, 且能列出继承来的
+    // 可枚举属性 —— 看 JZ 绑定对象时比 node 格式有信息量) ⇒ 旧输出依赖/想看全字段时用它。
+    // (没叫 print 是因为 "print" 太泛, 也容易被当成 node 有的东西; dir/debug 在 node 里已有语义。)
+    JSValue debug_print_func = JS_NewCFunction(m_ctx, JSInter::js_console_debug_print, "debugPrint", 1);
+    // console.assert: 参数语义在 JS 侧(__consoleAssert__, 见 init_code), 那里用的是 node 的规则
+    JSValue assert_func = JS_GetPropertyStr(m_ctx, m_global, "__consoleAssert__");
     JS_SetPropertyStr(m_ctx, console, "log", log_func);
     JS_SetPropertyStr(m_ctx, console, "error", error_func);
     JS_SetPropertyStr(m_ctx, console, "warn", warn_func);
+    JS_SetPropertyStr(m_ctx, console, "debugPrint", debug_print_func);
     JS_SetPropertyStr(m_ctx, console, "assert", assert_func);
     JS_SetPropertyStr(m_ctx, m_global, "console", console);
 
@@ -1600,17 +1802,56 @@ string JZJSEngine::typeName(int type)
 
 void JZJSEngine::print(JSValueConst this_val, int argc, JSValueConst* argv)
 {
+    (void)this_val;
+    sigLog.emit(nodeFormat(argc, argv));
+}
+
+// console.debugPrint: JZ 原来的紧凑格式 —— 每个参数过一遍 __printObject__(它自带引号/紧凑括号),
+// 参数之间空格拼接。与 console.log 的差别见 init_code 里两段打印器的注释。
+void JZJSEngine::debugPrint(JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    (void)this_val;
     std::string log;
     for (int i = 0; i < argc; i++)
     {
-        string text = printObject(argv[i]);
-        log += text;
-        if (i < argc - 1)
-        {
+        if (i > 0)
             log += " ";
-        }
+        log += printObject(argv[i]);
     }
     sigLog.emit(log);
+}
+
+// console.* 的输出文本: 交给 JS 侧的 __nodeFormat__(node 的 util.format + util.inspect 规则)。
+// 放在 JS 侧是因为要按类型分派(Date/Map/Set/RegExp/TypedArray/getter/symbol 键...), C++ 写一遍
+// 既长又容易与 JS 语义(原型、Symbol.toStringTag、访问器属性)对不上。
+string JZJSEngine::nodeFormat(int argc, JSValueConst* argv)
+{
+    JSValue args = JS_NewArray(m_ctx);
+    for (int i = 0; i < argc; i++)
+        JS_SetPropertyUint32(m_ctx, args, (uint32_t)i, JS_DupValue(m_ctx, argv[i]));   // 传进去的是副本
+
+    JSValue fmt_func = JS_GetPropertyStr(m_ctx, m_global, "__nodeFormat__");
+    JSValue result = callJs(fmt_func, JS_NULL, 1, &args);
+    JS_FreeValue(m_ctx, fmt_func);
+    JS_FreeValue(m_ctx, args);
+
+    string str;
+    if (JS_IsException(result))
+    {
+        // 格式化本身抛错(getter 抛错 / __nodeFormat__ 缺失): 吞掉异常, 退化成逐参数 toString
+        JS_FreeValue(m_ctx, JS_GetException(m_ctx));
+        for (int i = 0; i < argc; i++)
+        {
+            if (i > 0)
+                str += " ";
+            str += jsValueToStr(argv[i]);
+        }
+    }
+    else
+        str = ::fromJSValue<string>(m_ctx, result);
+    JS_FreeValue(m_ctx, result);
+
+    return str;
 }
 
 string JZJSEngine::printObject(JSValue value)

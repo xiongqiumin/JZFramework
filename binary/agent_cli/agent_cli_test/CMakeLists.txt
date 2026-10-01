@@ -30,3 +30,13 @@ add_custom_command(TARGET agent_cli_test POST_BUILD
             "${CMAKE_CURRENT_SOURCE_DIR}/../../code_agent/benchmark/data"
             "$<TARGET_FILE_DIR:agent_cli_test>/data/agent_cli_test"
     COMMENT "Copy benchmark evaluation set into bin/<CONFIG>/data/agent_cli_test")
+
+# 大模型接入配置: 测试**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
+# 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake) —— 已经存在的**不覆盖**,
+# 因为那份才是本机实际在用的(换端点改的是它, 不是仓库里这份模板)。
+add_custom_command(TARGET agent_cli_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+            -Dsrc=${CMAKE_CURRENT_SOURCE_DIR}/../test/test_llm.json
+            -Ddst=$<TARGET_FILE_DIR:agent_cli_test>/test_llm.json
+            -P ${JZFRAMEWORK_ROOT_DIR}/cmake/copy_if_absent.cmake
+    COMMENT "Place test_llm.json next to agent_cli_test (sample if absent)")

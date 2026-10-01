@@ -546,8 +546,17 @@ protected:
     std::string typeName(int type);
 
     bool isVectorType(int type);
+    // console.log / error / warn 的输出: **node 的 util.format 规则**(顶层字符串不加引号、
+    // 容器 `{ a: 1 }` / `[ 1, 2 ]`、字符串单引号、%s/%d/%i/%f/%j/%o/%O/%c/%% 占位符)。
+    // 实现走 JS 侧的 __nodeFormat__/__nodeInspect__(见 registInternal 的 init_code 注释)。
     void print(JSValueConst this_val, int argc, JSValueConst* argv);
+    // console.debugPrint 的输出: JZ 原来的紧凑格式(字符串带引号、`{a: 1}` 无内边距,
+    // 且按 for...in 列出**继承来的可枚举属性**)—— 看 JZ 绑定对象时比 node 格式有信息量。
+    void debugPrint(JSValueConst this_val, int argc, JSValueConst* argv);
+    // JS 值 -> JZ 紧凑文本(单个值); 也是错误描述(getExceptionDescript 等)用的格式
     std::string printObject(JSValue value);
+    // console.* 的输出文本(多个值): 调 JS 侧 __nodeFormat__; 失败退化成逐参数 toString
+    std::string nodeFormat(int argc, JSValueConst* argv);
 
     std::string makeTypeErrorText(int i, int type);
     std::string makeGetPropErrorText(std::string error);

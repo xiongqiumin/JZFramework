@@ -173,7 +173,7 @@ Node 语义由**包内 `index.ts`** 抹平，原则是"**只翻译，不实现**
 
 | 全局 | 说明 |
 | --- | --- |
-| `console` | log / error / warn / assert（同一 sink，走 `sigLog`） |
+| `console` | log / error / warn / debugPrint / assert（同一 sink，走 `sigLog`）。log/error/warn/assert 的输出格式 = **node 的 `util.format` + `util.inspect`**（顶层字符串不加引号、`{ a: 1 }` / `[ 1, 2 ]`、深度 2、`%s/%d/%j/...` 占位符）；`debugPrint` 是 JZ 原来的紧凑格式（字符串带引号、`{a: 1}` 无内边距、能列出继承来的可枚举属性） |
 | `sleep` / `setInterval` / `setTimeout` / `clearInterval` / `clearTimeout` | 引擎定时器（离引擎表就不转） |
 | `self<T>()` | 取"当前正在被 JS 调用的那个对象"的包装（箭头函数回调里没有 `this` 时用它） |
 | `engine` | `engine.isInterruption()`（长循环里配合取消） |

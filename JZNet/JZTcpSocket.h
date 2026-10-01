@@ -21,6 +21,10 @@ public:
     bool waitForConnected(int ms = 30 * 1000);
     void disconnectFromHost();
 
+    // 半关闭(对齐 Node 的 socket.end()): 只关写方向 —— 对端收到 FIN('end'), 本端仍能收数据,
+    // 连接不拆(真正断开用 disconnectFromHost()/close())。
+    void endWrite();
+
     void abort();
     void close();
 

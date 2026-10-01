@@ -347,7 +347,12 @@ void JZJSNetSocket::end()
     JZTcpSocket* s = liveSocket();
     if (!s)
         return;
-    s->disconnectFromHost();
+
+    // 对齐 Node 的 socket.end(): 半关闭 —— 只关写方向, 读方向继续(还能收到对端回包)。
+    // 想整个断开用 destroy()/close()(Node 那边也是 destroy())。
+    // 改这里之前是 s->disconnectFromHost()(整个断开), 会让 `write(); end(); 读回包` 这种
+    // Node 惯用法收不到任何回包(基准题 jsapi_net_tcp 就栽在这)。
+    s->endWrite();
 }
 
 void JZJSNetSocket::destroy()
@@ -404,10 +409,22 @@ bool JZJSNetServer::listen(int port, const std::string& host)
     bool ok = host.empty() ? server->listen(port) : server->listen(host, port);
     if (ok)
     {
-        listenPort = server->port();
+        // ⚠ listen(0)("让系统分配端口", Node 代码里测试常用)时 server->port() 恒是 0 ⇒
+        //    用底层回读的真实端口(JZNetObject::localPort(), mongoose 在 open 时 getsockname 回填),
+        //    否则 address() 永远是 null。
+        listenPort = server->port() ? server->port() : server->localPort();
         listenHost = host;
         href.setLive(true);   // 监听中 = 吊住进程(对齐 Node; 不想被吊住用 server.unref())
         sink.emit("listening");
+    }
+    else
+    {
+        // ⚠ 对齐 Node: 监听失败必须发 'error'(最常见 EADDRINUSE), 不能静默返回 false —
+        //    静默会让 `await once(server,'listening')` 这种 Node 写法永远挂住。
+        std::string msg = "listen EADDRINUSE: address already in use " +
+                          (host.empty() ? std::string("0.0.0.0") : host) + ":" + std::to_string(port);
+        JSContext* c = engine->context();
+        sink.emit("error", JS_NewString(c, msg.c_str()));
     }
     return ok;
 }
@@ -1047,9 +1064,15 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_socket.defProperty<std::string>("remoteAddress",
                                          [](JZJSNetSocket* o) { return o->host; }, nullptr);
     bind_socket.defProperty<int>("remotePort", [](JZJSNetSocket* o) { return o->port; }, nullptr);
-    bind_socket.defProperty<std::string>("localAddress",
-                                         [](JZJSNetSocket* o) { return std::string(); }, nullptr);
-    bind_socket.defProperty<int>("localPort", [](JZJSNetSocket* o) { return 0; }, nullptr);
+    // 本端地址/端口: 交给底层实际值(open 时由 net 线程 getsockname 回填, 见 JZNetObject::localIp/localPort)
+    bind_socket.defProperty<std::string>("localAddress", [](JZJSNetSocket* o) {
+        JZTcpSocket* s = o->liveSocket();
+        return s ? s->localIp() : std::string();
+    }, nullptr);
+    bind_socket.defProperty<int>("localPort", [](JZJSNetSocket* o) {
+        JZTcpSocket* s = o->liveSocket();
+        return s ? s->localPort() : 0;
+    }, nullptr);
     bind_socket.defProperty<int>("bytesRead", [](JZJSNetSocket* o) { return (int)o->bytesRead; }, nullptr);
     bind_socket.defProperty<int>("bytesWritten", [](JZJSNetSocket* o) { return (int)o->bytesWritten; }, nullptr);
     bind_socket.defProperty<bool>("destroyed", [](JZJSNetSocket* o) { return o->socket == nullptr; }, nullptr);

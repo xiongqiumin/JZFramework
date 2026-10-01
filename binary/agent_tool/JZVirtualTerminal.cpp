@@ -1449,6 +1449,12 @@ JZResult<string> JZVirtualTerminal::run(const string &command, int timeoutMs, co
                                         bool background,
                                         OutputFilter filter)
 {
+    // 前台任务硬上限 15 分钟: 防止调用方传过大的 timeout 让前台命令卡死太久;
+    // 前台传 <=0(不设时)也归到这个上限, 不允许无限前台。
+    // 后台(background)本就不设定时器, 不受此限(给"自己不退出"的长程任务用)。
+    static const int kMaxForegroundTimeoutMs = 15 * 60 * 1000;
+    if (!background && (timeoutMs <= 0 || timeoutMs > kMaxForegroundTimeoutMs))
+        timeoutMs = kMaxForegroundTimeoutMs;
     string error;
     string runId;
     if (!startRun(command, timeoutMs, cb, error, &runId, onChunk, background, filter))

@@ -145,6 +145,15 @@ public:
     // 留在事件循环里继续泵。没有会话（init 未成功/已关闭）返回 false。
     bool hasPendingJob() const;
 
+    // ---- process.exit / process.exitCode(对齐 Node; 见 js_wrapper/process 与 JZJSEngine) ----
+    //   process.exit(n)     -> 引擎里直接 jzApp->exit(n) ⇒ app.exec() 返回 n, 宿主不用管;
+    //   process.exitCode=n  -> **只记录**, 由宿主在自然结束时应用(这里读):
+    //        没有会话/没设过 -> 0 / false。
+    // 典型用法(见 runtime/main.cpp): 拿到 app.exec() 的 rc, rc==0 时才用 exitCode 覆盖
+    // (宿主自己报的错(如未处理异常 ⇒ rc=1)优先于脚本声明的 exitCode)。
+    int processExitCode() const;
+    bool processExitCodeSet() const;
+
     // 最近一次 init / runModule / evalScript 的错误（已翻译回 TS）；成功或尚未运行时为空
     const std::string &lastError() const;
 

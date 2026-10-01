@@ -93,6 +93,7 @@ struct JZFRAMEWORK_API JZJSNetSocket
     int port;
     int64_t bytesRead;
     int64_t bytesWritten;
+    bool endEmitted = false;    // 'end' 只发一次(收到 FIN 时发; 真断开时不再重复)
 };
 
 // TCP server 包装

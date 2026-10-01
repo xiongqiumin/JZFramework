@@ -278,6 +278,7 @@ void JZJSNetSocket::bind(JZTcpSocket* s, const std::string& h, int p)
     socket = s;
     host = h;
     port = p;
+    endEmitted = false;
 
     JZJSNetSocket* self = this;
     JSContext* ctx = engine->context();
@@ -295,9 +296,23 @@ void JZJSNetSocket::bind(JZTcpSocket* s, const std::string& h, int p)
         self->sink.emit("data", jsMakeUint8Array(c, data));
     });
 
+    // 对端 FIN(读方向 EOF): 发 'end' —— ⚠ 此刻**回包还能发出去**: 收尾由父类 JZNetObject::event()
+    // 在 onNetEvent 返回后发 Net_FinRes 触发(is_draining ⇒ 发送缓冲排空才关连接)。
+    // 这就是 Node 里 `socket.on('end', () => socket.write(回包))` 能work的原因(与 Node 一致)。
+    connect(&s->sigReadFin, [self]() {
+        if (self->endEmitted)
+            return;
+        self->endEmitted = true;
+        self->sink.emit("end");
+    });
+
     connect(&s->sigDisconnected, [self]() {
         self->href.setLive(false);   // 断开: 撤销那一票(否则进程永远退不出)
-        self->sink.emit("end");
+        if (!self->endEmitted)       // 正常关闭: 'end' 已在收到 FIN 时发过(Node 只发一次)
+        {
+            self->endEmitted = true;
+            self->sink.emit("end");
+        }
         self->sink.emit("close");        
     });
 
@@ -348,11 +363,13 @@ void JZJSNetSocket::end()
     if (!s)
         return;
 
-    // 对齐 Node 的 socket.end(): 半关闭 —— 只关写方向, 读方向继续(还能收到对端回包)。
+    // 对齐 Node 的 socket.end(): 半关闭 —— 只关写方向(给对端发 FIN), 读方向继续(还能收到对端回包)。
+    // 收尾链路: 对端 FIN ⇒ mongoose 发 MG_EV_FIN_REQ ⇒ 本类 sigReadFin ⇒ JS 'end'
+    //   ⇒ 父类发 Net_FinRes ⇒ is_draining ⇒ 发送缓冲排空后关连接(见 JZNet/mongoose.c 的 iolog)。
     // 想整个断开用 destroy()/close()(Node 那边也是 destroy())。
-    // 改这里之前是 s->disconnectFromHost()(整个断开), 会让 `write(); end(); 读回包` 这种
-    // Node 惯用法收不到任何回包(基准题 jsapi_net_tcp 就栽在这)。
-    s->endWrite();
+    // ⚠ 历史: 这里曾是 disconnectFromHost()(整个断开) ⇒ `write(); end(); 读回包` 回包全丢;
+    //   再改成"只打标记不发 FIN" ⇒ 回包好了但对端收不到 'end'。现在两件事都成立。
+    s->shutdownWrite();
 }
 
 void JZJSNetSocket::destroy()
@@ -1189,7 +1206,13 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     m_typeHttpResponse = m_engine->ctypeidToType(typeid(JZJSHttpResponse).name());
 
     // ---- __jz 命名空间 ----
-    JSValue jz = m_engine->createObject();
+    // 复用已存在的 __jz(不覆盖其它子命名空间) —— 引擎在注册 console/process 时可能已经建过它,
+    // 无条件新建 + 回写会把那里挂的东西整个丢掉(踩过: 引擎侧挂的 __jz.process 就这样没了)。
+    // 与 core / sqlite / modbus / worker / serialport 模块同一套 get-or-create 写法。
+    JSValue jz = m_engine->getProperty(global, "__jz");
+    bool jzFromGet = !JS_IsUndefined(jz);
+    if (!jzFromGet)
+        jz = m_engine->createObject();
 
     JSValue ns_net = m_engine->createObject();
     m_engine->registFunction(ns_net, "createSocket",
@@ -1236,7 +1259,12 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
                              jsbind::createSelfFunction(this, &JZJSNetModule::bytesToString));
     m_engine->setProperty(jz, "bytes", ns_bytes);
 
-    m_engine->setProperty(global, "__jz", jz);
+    // 自己建的才写回全局; 复用别人建的那份不能覆盖, 且要放掉 getProperty 多出来的引用
+    // (否则 __jz 在 JS_FreeRuntime 时仍被 C++ 持有 -> gc_obj_list 非空触发断言, 见 JZJSCoreModule)。
+    if (jzFromGet)
+        JS_FreeValue(m_engine->context(), jz);
+    else
+        m_engine->setProperty(global, "__jz", jz);
 
     loadWebGlobalModules();
 }

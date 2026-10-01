@@ -11,6 +11,29 @@
 #include "JZString.h"        // str_toLower
 #include "JZVirtualTerminal.h"
 #include "json/json.h"
+#include "JZLog.h"              // JZLogManager / LogModule_Agent / LOG_INFO
+
+#include <string>
+
+// 回合诊断日志: 把工具调用 / 思考 / 回复 / 输入 记进独立的 Agent 日志模块(模块 id = LogModule_Agent)。
+// 该模块不走 Console, 只有配置 logFile 才落盘到 <logFile目录>/Agent.log, 没配就不打印。
+// kMaxRoundLogLen 是单条记录上限, 避免长输出(命令回显 / 大段代码)把日志刷爆。
+namespace {
+const int kMaxRoundLogLen = 2000;   // 单条记录上限(字符), 超长截断并标注剩余长度
+std::string logTrunc(const std::string &s)
+{
+    if ((int)s.size() <= kMaxRoundLogLen)
+        return s;
+    return s.substr(0, kMaxRoundLogLen)
+           + "...[trunc " + std::to_string(s.size() - kMaxRoundLogLen) + "]";
+}
+
+// Agent 模块日志。JZLog 多模块: 每个模块独立 type(Console/File/None), 互不干扰。
+static void agentLog(const std::string &msg)
+{
+    JZLogManager::instance()->log(LogModule_Agent, LOG_INFO, msg);
+}
+}
 
 #include "JZHttpServer.h"     // HTTP 服务(路由 / JZHttpServerClient / JZHttpRespone)
 #include "JZHttpHandler.h"
@@ -1043,6 +1066,7 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
 
     // 多模态: 图片与文字同属这一条 user 消息(走 JZAgent 的 request(text, images) 重载, 与桌面版同一条路)。
     // 后续续跑/验证失败的喂回仍是纯文本 —— 图只在首轮给一次。
+    agentLog("input: " + logTrunc(memoryBlock + prompt));
     if (images.empty())
         m_agent->request(memoryBlock + prompt);
     else
@@ -1442,6 +1466,7 @@ void JZAgentCli::onVerifyDone(int exitCode, const std::string &out)
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
+    agentLog("input(continue): " + logTrunc(feedback));
     m_agent->request(feedback);   // 重新驱动 agent; 结束后再次进入 onLoopFinished
 }
 
@@ -1822,6 +1847,7 @@ std::vector<std::string> JZAgentCli::extractImages(const Json::Value &params, st
 void JZAgentCli::onReply(const std::string &text)
 {
     m_accumReply += text;   // 累积本轮最终回复(循环结束一次性回包)
+    agentLog("reply: " + logTrunc(text));
 
     if (hasEventConsumer())
     {
@@ -1834,6 +1860,7 @@ void JZAgentCli::onReply(const std::string &text)
 void JZAgentCli::onThinking(const std::string &text)
 {
     m_accumThink += text;          // 累积, 供连接快照(与回包无关)
+    agentLog("think: " + logTrunc(text));
 
     if (!hasEventConsumer())
         return;
@@ -1850,6 +1877,7 @@ void JZAgentCli::onToolCall(const ToolCall &call)
     snap.name = call.function_name;
     snap.args = call.function_args;
     m_toolSnaps.push_back(snap);   // 记录, 供连接快照
+    agentLog("tool_call: " + call.function_name + " args=" + logTrunc(call.function_args));
 
     if (!hasEventConsumer())
         return;
@@ -1876,6 +1904,8 @@ void JZAgentCli::onToolResult(const ToolCallResult &result)
 
     if (!hasEventConsumer())
         return;
+
+    agentLog("tool_result: " + std::string(result.isOk ? "ok" : "fail") + " " + logTrunc(result.result));
 
     Json::Value d;
     d["id"] = result.id;
@@ -2006,7 +2036,9 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
             m_fixRetries++;
         else
             m_errorRetries++;
-        m_agent->request(buildRetryPrompt(mode, code, err));
+        std::string retryPrompt = buildRetryPrompt(mode, code, err);
+        agentLog("input(retry/" + std::string(mode == RetryFix ? "fix" : "transient") + "): " + logTrunc(retryPrompt));
+        m_agent->request(retryPrompt);
     };
 
     m_retryPending = true;
@@ -2021,6 +2053,7 @@ void JZAgentCli::onError(const std::string &err)
     m_failed = true;
     m_lastError = err;
     m_lastErrorCode = m_agent ? m_agent->errorCode() : JZAgent::NoError;
+    agentLog("error: " + logTrunc(err));
 
     RetryMode mode = classifyError(m_lastErrorCode, err);
     bool retryable = (mode == RetryTransient) ? (m_errorRetries < m_maxErrorRetries)

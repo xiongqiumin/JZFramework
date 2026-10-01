@@ -333,8 +333,10 @@ int main(int argc, char *argv[])
         return false;
     };
 
+    // 无待执行任务且没有可见窗口 -> 直接结束。退出码取脚本声明的 process.exitCode(没设过 = 0):
+    // 这里覆盖"脚本在顶层 process.exitCode = n 之后自然结束"的场景(process.exit(n) 走 app.exit, 见下)。
     if (!keepAlive && !rt.hasPendingJob() && !hasVisibleTopWindow())
-        return 0;
+        return rt.processExitCodeSet() ? rt.processExitCode() : 0;
 
     JZTimer check_timer;
     connect(&check_timer.sigTimeout, [&]() {
@@ -374,5 +376,13 @@ int main(int argc, char *argv[])
     });
     check_timer.start(100);
 
-    return app.exec();
+    int rc = app.exec();
+    // 进程退出码(对齐 Node):
+    //   * process.exit(n) 走的是 jzApp->exit(n) ⇒ app.exec() 直接返回 n(与这里一致, 不用额外处理);
+    //   * process.exitCode = n 只是**记录**, 自然结束时由这里生效;
+    //   * rc != 0 说明宿主自己报过错(未处理 JS 异常 -> app.exit(1)) ⇒ 那种情况优先, 不被脚本的
+    //     exitCode 覆盖。
+    if (rc == 0 && rt.processExitCodeSet())
+        rc = rt.processExitCode();
+    return rc;
 }

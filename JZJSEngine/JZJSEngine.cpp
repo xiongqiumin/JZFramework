@@ -530,6 +530,9 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_timerExpire = 0;
     m_pendingWork = 0;
     m_interrupt = false;
+    m_processExitCode = 0;
+    m_processExitCodeSet = false;
+    m_processExitRequested = false;
     m_status = Engine_none;    
     m_nextWorkerId = 1;         // 0 保留给主线程
     m_workerModule = nullptr;
@@ -638,6 +641,11 @@ void JZJSEngine::initJSEnv()
     m_promiseTaskId = 0;
     m_interrupt = false;
 
+    // process.exit/exitCode 的状态(每次重建会话都要清, 见 requestProcessExit)
+    m_processExitCode = 0;
+    m_processExitCodeSet = false;
+    m_processExitRequested = false;
+
     m_rt = JS_NewRuntime();
     m_ctx = JS_NewContext(m_rt);
     m_global = JS_GetGlobalObject(m_ctx);
@@ -707,6 +715,49 @@ void JZJSEngine::setInterruption(bool flag)
 bool JZJSEngine::isInterruption() const
 {
     return m_interrupt;
+}
+
+// ---- process.exit / process.exitCode(对齐 Node; 规则表见 js_wrapper/process/index.ts) ----
+void JZJSEngine::requestProcessExit(int code)
+{
+    m_processExitCode = code;
+    m_processExitCodeSet = true;
+    m_processExitRequested = true;
+
+    // worker 引擎里的 process.exit() **只结束这个 worker**(对齐 Node: 不牵连宿主进程)。
+    // 主引擎才真退宿主 —— code_runtime 的进程退出码 = app.exec() 的返回值(见 runtime/main.cpp)。
+    JZJSEngine* main = mainEngine();
+    JZJSWorkerModule* wm = workerModule();
+    if (main && main != this && wm && wm->selfId() != 0)
+    {
+        main->terminateWorker(wm->selfId());
+        return;
+    }
+
+    if (jzApp)
+        jzApp->exit(code);
+}
+
+void JZJSEngine::setProcessExitCode(int code)
+{
+    m_processExitCode = code;
+    m_processExitCodeSet = true;
+}
+
+void JZJSEngine::clearProcessExitCode()
+{
+    m_processExitCode = 0;
+    m_processExitCodeSet = false;
+}
+
+int JZJSEngine::processExitCode() const
+{
+    return m_processExitCode;
+}
+
+bool JZJSEngine::processExitCodeSet() const
+{
+    return m_processExitCodeSet;
 }
 
 void JZJSEngine::wait(int delay)
@@ -1080,6 +1131,95 @@ void JZJSEngine::registConsole()
     JSValue process = JS_NewObject(m_ctx);
     registFunction(process, "cwd", jsbind::createFunction([this]() -> string { return m_workDir; }));
     JS_SetPropertyStr(m_ctx, m_global, "process", process);
+
+    // ---- process.exit / process.exitCode(对齐 Node) ----
+    // 分两层:
+    //   ① __jz.processRaw: C++ 侧的"原子操作"(只认已经校验过的整数, 不管参数形状);
+    //   ② 下面那段 JS 引导: 按 Node 的规则校验参数, 建出 __jz.process, 并把它挂到全局 process 上。
+    // 为什么要分: 参数规则(整数串/null/undefined/RangeError/TypeError)写 JS 里最清楚,
+    // 也与 js_wrapper/process 共用**同一份实现**(避免两处校验各自漂移)。
+    {
+        JSValue raw = JS_NewObject(m_ctx);
+        registFunction(raw, "exit", jsbind::createFunction([this](int code) { requestProcessExit(code); }));
+        registFunction(raw, "exitCode", jsbind::createFunction([this]() -> JSValue {
+            if (!m_processExitCodeSet)
+                return JS_UNDEFINED;   // 没设过 = undefined(与 Node 一致)
+            return JS_NewInt32(m_ctx, m_processExitCode);
+        }));
+        registFunction(raw, "setExitCode", jsbind::createFunction([this](int code) { setProcessExitCode(code); }));
+        registFunction(raw, "clearExitCode", jsbind::createFunction([this]() { clearProcessExitCode(); }));
+
+        // __jz: 与其它模块同一套 get-or-create(谁建的谁写回, 复用的要放掉 getProperty 多出来的引用)
+        JSValue jz = JS_GetPropertyStr(m_ctx, m_global, "__jz");
+        bool jzFromGet = !JS_IsUndefined(jz);
+        if (!jzFromGet)
+            jz = JS_NewObject(m_ctx);
+        JS_SetPropertyStr(m_ctx, jz, "processRaw", raw);
+        if (jzFromGet)
+            JS_FreeValue(m_ctx, jz);   // 复用别人建的: 放掉这份多出来的引用(见 JZJSCoreModule 的说明)
+        else
+            JS_SetPropertyStr(m_ctx, m_global, "__jz", jz);   // 自己建的才写回(这份引用被 set 消费掉)
+    }
+
+    // 参数校验 + 挂到全局 process(规则与取值都逐条对着真 Node 校过, 见 build/_codex_bench/api_parity/exit_sem.py)
+    eval(R"(
+(function () {
+    const raw = __jz.processRaw;
+    // Node: 非整数数值 -> RangeError; 其它非(整数串/整数) 类型 -> TypeError; 两者都带 .code
+    function typeError(what, v) {
+        let got = (v === null) ? 'null' : (typeof v);
+        if (got === 'object') got = 'an instance of Object';
+        else if (got !== 'string') got = got + ' (' + String(v) + ')';
+        const e = new TypeError('The "' + what + '" argument must be of type number. Received ' + got);
+        e.code = 'ERR_INVALID_ARG_TYPE';
+        throw e;
+    }
+    function rangeError(what, v) {
+        const e = new RangeError('The value of "' + what + '" is out of range. It must be an integer. Received ' + v);
+        e.code = 'ERR_OUT_OF_RANGE';
+        throw e;
+    }
+    function toInt(v, what) {
+        if (typeof v === 'number') {
+            if (!Number.isInteger(v)) rangeError(what, v);
+            return v;
+        }
+        if (typeof v === 'string' && /^[+-]?\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+        typeError(what, v);
+    }
+
+    const api = {
+        // exit(): 省略/null 时用 exitCode(设过)否则 0 —— 与 Node 一致
+        exit: function (code) {
+            let n;
+            if (code === undefined || code === null) {
+                const cur = raw.exitCode();
+                n = (cur === undefined) ? 0 : cur;
+            } else {
+                n = toInt(code, 'code');
+            }
+            raw.exit(n);      // 记退出码 + 请求宿主退出(主引擎: jzApp->exit(n))
+        },
+        exitCode: function () { return raw.exitCode(); },
+        setExitCode: function (v) {
+            if (v === undefined || v === null) { raw.clearExitCode(); return; }
+            raw.setExitCode(toInt(v, 'code'));
+        },
+    };
+    __jz.process = api;
+
+    // 全局 process(engine 注册的最小对象): Node 的脚本习惯直接用 process.exit, 这里补上
+    const p = globalThis.process;
+    if (p) {
+        p.exit = api.exit;
+        Object.defineProperty(p, 'exitCode', {
+            enumerable: true, configurable: true,
+            get: function () { return api.exitCode(); },
+            set: function (v) { api.setExitCode(v); },
+        });
+    }
+})();
+)");
 
     // fs
     JSValue read_str_func = JS_NewCFunction(m_ctx, JSInter::js_fs_readString, "readString", 1);

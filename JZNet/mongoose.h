@@ -1659,6 +1659,10 @@ enum {
   MG_EV_WAKEUP,     // mg_wakeup() data received    struct mg_str *data
   MG_EV_MDNS_REQ,   // mDNS request                 struct mg_mdns_req *
   MG_EV_MDNS_RESP,  // mDNS response                struct mg_mdns_resp *
+  // ---- JZ 扩展: 半关闭的 FIN 往返(见 JZNet/mongoose.c 的 iolog 与 JZNetObject::event) ----
+  // ⚠ 只有 REQ 这一半: 上层处理完后**不再回事件**, 而是由 net 线程直接置 c->is_draining
+  //   (见 JZNetObject.cpp 的 Net_FinRes 分支) ⇒ 这里不需要 RES。
+  MG_EV_FIN_REQ,    // 读方向 EOF(对端 FIN)到达, 等上层决定何时收尾   NULL
   MG_EV_USER        // Starting ID for user events
 };
 
@@ -1739,6 +1743,7 @@ struct mg_connection {
   unsigned is_hexdumping : 1;     // Hexdump in/out traffic
   unsigned is_draining : 1;       // Send remaining data, then close and free
   unsigned is_closing : 1;        // Close and free the connection immediately
+  unsigned is_read_eof : 1;       // JZ: 读方向已 EOF(对端 FIN); 不再读, 等上层收尾(Net_FinRes ⇒ is_draining)
   unsigned is_full : 1;           // Stop reads, until cleared
   unsigned is_tls_throttled : 1;  // Last TLS write: MG_SOCK_PENDING() was true
   unsigned is_resp : 1;           // Response is still being generated

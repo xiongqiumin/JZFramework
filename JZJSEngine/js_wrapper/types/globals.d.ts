@@ -203,3 +203,22 @@ declare class TextDecoder {
 /** QuickJS 原生全局(base64 <-> 二进制串); 与 Web/Node 同义(本运行时也挂 globalThis) */
 declare function atob(data: string): string;
 declare function btoa(data: string): string;
+
+/**
+ * 全局 `process`(引擎注册的最小对象, 见 JZJSEngine::registConsole)。
+ *
+ * Node 的脚本习惯**不 import** 直接写 process.exit(0) —— 本运行时同样支持, 且语义对齐 Node:
+ *   exit(3) / exit("7") -> 3 / 7        exit() / exit(null) -> exitCode(设过)否则 0
+ *   exit(-1) -> 4294967295(uint32 回绕) exit(1.5) -> RangeError ERR_OUT_OF_RANGE
+ *   exit("x") / exit({}) / exit(true)   -> TypeError ERR_INVALID_ARG_TYPE
+ *   exitCode 是可读写属性(整数/整数串; null/undefined 清空), 脚本自然结束时它就是进程退出码。
+ *
+ * ⚠ 这里只有 cwd / exit / exitCode; 其余成员(execPath / platform / argv ...)在 '@jz/process' 模块里,
+ *   两个是同一套底层(行为一致)。已知差异: Node 的 exit 会立即终止当前帧, 这里当前同步帧会跑完。
+ */
+declare const process: {
+    cwd(): string;
+    /** 见上: 参数与退出码规则对齐 Node */
+    exit(code?: number | string | null): void;
+    exitCode: number | string | null | undefined;
+};

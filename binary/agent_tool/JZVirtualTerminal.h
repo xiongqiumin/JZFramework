@@ -204,6 +204,8 @@ public:
     //   onChunk  : 非空的逐块输出回调(流式)
     //   background: 兼容旧签名(启动即返回, 多路并发后已无实际区别)
     //   filter   : 本次运行的输出过滤开关(见 OutputFilter)
+    //   前台超时: 硬上限 15 分钟(见实现: timeoutMs>15min 或<=0 时归一到 15min 并按时强杀);
+    //             后台(background)不受此限(本就不设定时器)。
     JZResult<std::string> run(const std::string &command, int timeoutMs, const RunCallback &cb,
                               const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
                               bool background = false,

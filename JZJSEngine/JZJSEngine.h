@@ -336,6 +336,20 @@ public:
     bool isInterruption() const;
     void wait(int ms);  // 会被打断
 
+    // ---- process.exit / process.exitCode(对齐 Node; JS 侧包装见 registConsole 的 process) ----
+    //   process.exit(n)     -> requestProcessExit(n): 记退出码 + 请求宿主退出
+    //                          (主引擎 = jzApp->exit(n) ⇒ code_runtime 的进程退出码就是 n)
+    //   process.exitCode=n  -> setProcessExitCode(n): 只记录, **不退出**;
+    //                          脚本自然结束时由宿主取用(见 JZEngineRuntime::processExitCode)
+    //   ⚠ worker 引擎里 process.exit() 只结束该 worker(对齐 Node: 不牵连宿主进程)。
+    //   ⚠ 已知差异: Node 的 process.exit 会**立即终止**(同一帧后面的语句不再执行),
+    //     这里只请求宿主退出 —— 当前同步帧会跑完, 但之后的定时器/微任务不再执行。
+    void requestProcessExit(int code);
+    void setProcessExitCode(int code);
+    void clearProcessExitCode();
+    int processExitCode() const;
+    bool processExitCodeSet() const;
+
     int ctypeidToType(std::string ctypeid);
     std::string typeToCTypeid(int type);
 
@@ -697,6 +711,11 @@ protected:
     int m_pendingWork;       // 外部模块挂起的原生异步任务数量(见 addPendingWork)
     JZJSEngineStatus m_status;
     bool m_interrupt;    
+
+    // process.exit / process.exitCode 的状态(见 requestProcessExit)
+    int m_processExitCode;         // 记录的退出码(默认 0)
+    bool m_processExitCodeSet;     // 有没有被显式设过(exitCode 未设时读回来是 undefined)
+    bool m_processExitRequested;   // 本引擎请求过退出(信息性: 宿主/worker 分支判断用)
 
     // ---- worker 线程表(仅主引擎会填; 见 worker 相关接口) ----
     struct WorkerEntry

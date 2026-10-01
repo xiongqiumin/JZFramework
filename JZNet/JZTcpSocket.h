@@ -25,6 +25,12 @@ public:
     // 连接不拆(真正断开用 disconnectFromHost()/close())。
     void endWrite();
 
+    // 真半关闭(对齐 Node 的 socket.end()): endWrite() 打标记 + 给对端**发 FIN**(shutdown SD_SEND)。
+    // 读方向继续; 对端 FIN 到达时走: MG_EV_FIN_REQ → 本类 sigReadFin → JS 'end'
+    // → 父类 JZNetObject::event() 发 Net_FinRes → is_draining → 发送缓冲排空后关连接
+    // (见 JZNet/mongoose.c 的 iolog)。end()/shutdownWrite() 幂等。
+    void shutdownWrite();
+
     void abort();
     void close();
 
@@ -39,6 +45,8 @@ jz_signals:
     JZSigVoid sigConnected;
     JZSigVoid sigDisconnected;
     JZSigVoid sigReadyRead;
+    // 读方向 EOF(对端发来 FIN): JS 侧据此发 'end' —— **此刻回包还能发出去**(收尾前会排空发送队列)
+    JZSigVoid sigReadFin;
     JZSigString sigError;
 
 protected:

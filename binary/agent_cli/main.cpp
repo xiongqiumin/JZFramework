@@ -584,6 +584,35 @@ int main(int argc, char *argv[])
 
     JZApplication app;
 
+    // 日志: 多模块(JZLog 原生支持, addModule/setModuleConfig 按模块 id 独立配置 type)。
+    //  - General: 进程级信息(就绪 / frps 连接等), 默认开 Console —— agent_cli 的 stdout 被
+    //    workflow.py 重定向到 runs/loop/agent_run.out.txt, 不污染真实控制台。
+    //  - Agent:   每轮 LLM 回合诊断(think / reply / tool_call / tool_result / input / error),
+    //    单独模块、不走 Console; 只有 config.logFile 非空才落盘到 <logFile目录>/Agent.log,
+    //    没配就不打印(满足"传入 file 才保存, 没传不打印")。
+    {
+        JZLogModuleConfig general;
+        general.name = "General";
+        general.type = JZLogModuleConfig::Console;
+        JZLogManager::instance()->setModuleConfig(LogModule_General, general);
+
+        JZLogModuleConfig agent;
+        agent.name = "Agent";     // 默认 type=None(不打印); 配了 logFile 才开 File
+        JZLogManager::instance()->addModule(LogModule_Agent, agent);
+        if (!config.logFile.empty())
+        {
+            JZLogConfig lc;
+            lc.shouldPrintTime = true;
+            lc.logPath = ([&]() {
+                auto p = config.logFile.find_last_of("/\\");
+                return p == std::string::npos ? std::string(".") : config.logFile.substr(0, p);
+            })();
+            JZLogManager::instance()->setConfig(lc);
+            agent.type = JZLogModuleConfig::File;
+            JZLogManager::instance()->setModuleConfig(LogModule_Agent, agent);
+        }
+    }
+
     JZAgentCli cli;
     if (!cli.init(config, err))
     {

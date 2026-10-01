@@ -18,6 +18,7 @@ enum {
 
 enum {
     LogModule_General,
+    LogModule_Agent,        // agent_cli 每轮 LLM 回合诊断(think/reply/tool_call/...), 单独模块
     LogModule_User = 100,
 };
 

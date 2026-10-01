@@ -10543,7 +10543,21 @@ static void iolog(struct mg_connection *c, char *buf, long n, bool r) {
   if (n == MG_IO_WAIT) {
     // Do nothing
   } else if (n <= 0) {
-    c->is_closing = 1;  // Termination. Don't call mg_error(): #1529
+    // ---- JZ 半关闭: 读方向 EOF = 对端 FIN ----
+    // 不直接拆连接, 而是把"读方向结束"交给上层: 发 MG_EV_FIN_REQ ⇒ 上层(JS 的 'end' 回调)有机会
+    // 把还没发出去的回包排进发送队列 ⇒ 上层处理完发 Net_FinRes(见 JZNetObject.cpp) ⇒ 那时才 is_draining
+    // (mongoose 在发送缓冲排空后关连接, 见 mg_mgr_poll 末尾)。这样 `write(); end();` +
+    // 对端在 'end' 里回写 的 Node 惯用法才成立(回包不会像以前那样被提前拆连接丢掉)。
+    // ⚠ 只认**裸 socket 的读**(r==true, 非 TLS, n==0): mg_tls_recv() 返回 0 是"没有完整记录",
+    //   不是 EOF; 另见 read_conn 的 NOTE(lsm): 某些栈(FreeRTOS)无数据也返回 0, 本改动不适用。
+    if (r && n == 0 && !c->is_tls) {
+      if (!c->is_read_eof) {
+        c->is_read_eof = 1;
+        mg_call(c, MG_EV_FIN_REQ, NULL);
+      }
+    } else {
+      c->is_closing = 1;  // Termination. Don't call mg_error(): #1529
+    }
   } else if (n > 0) {
     if (c->is_hexdumping) {
       MG_INFO(("\n-- %lu %M %s %M %ld", c->id, mg_print_ip_port, &c->loc,
@@ -10727,7 +10741,12 @@ static long recv_raw(struct mg_connection *c, void *buf, size_t len) {
   MG_VERBOSE(("%lu %ld %d", c->id, n, MG_SOCK_ERR(n)));
   if (MG_SOCK_PENDING(n)) return MG_IO_WAIT;
   if (MG_SOCK_RESET(n)) return MG_IO_RESET;  // MbedTLS, see #1507
-  if (n <= 0) return MG_IO_ERR;
+  // JZ: **干净 EOF(recv 返回 0 = 对端 FIN/shutdown(SD_SEND))** 要和真错误区分开 ——
+  // 原来 `n <= 0` 一律 MG_IO_ERR, 于是 iolog 里分不出"对端半关"和"出错"
+  // (实测: 对端 shutdown 后本端 recv 返回 0、WSAGetLastError()=0, 但到这里已变成 -1)。
+  // PENDING/RESET 上面已拦掉; 这里只放行"非 TLS 的 0"给 iolog 走 FIN 往返。
+  if (n == 0 && !c->is_tls) return 0;  // 干净 EOF(对端 FIN)
+  if (n <= 0) return MG_IO_ERR;        // 真错误 / 被重置
   return n;
 }
 
@@ -10747,6 +10766,8 @@ static bool ioalloc(struct mg_connection *c, struct mg_iobuf *io) {
 // NOTE(lsm): do only one iteration of reads, cause some systems
 // (e.g. FreeRTOS stack) return 0 instead of -1/EWOULDBLOCK when no data
 static void read_conn(struct mg_connection *c) {
+  // JZ: 读方向已 EOF(对端 FIN, 见 iolog) ⇒ 不再读。否则 fd 一直"可读", 每轮 poll 都 recv 到 0 空转。
+  if (c->is_read_eof) return;
   if (ioalloc(c, &c->recv)) {
     char *buf = (char *) &c->recv.buf[c->recv.len];
     size_t len = c->recv.size - c->recv.len;

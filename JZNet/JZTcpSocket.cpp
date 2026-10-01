@@ -10,7 +10,8 @@ using namespace std;
 JZ_OBJECT_IMPL(JZTcpSocket, JZNetObject)
 
 JZTcpSocket::JZTcpSocket(JZObject *parent)
-    : JZNetObject(parent), sigConnected(this), sigDisconnected(this), sigReadyRead(this), sigError(this)
+    : JZNetObject(parent), sigConnected(this), sigDisconnected(this), sigReadyRead(this),
+      sigReadFin(this), sigError(this)
 {    
     m_conn = INVALID_NET_HANDLE;  
     m_state = UnconnectedState;
@@ -97,6 +98,17 @@ void JZTcpSocket::endWrite()
     //    会全部丢 —— 实测过, 回包收不到。打标记则对端不受影响, 回包能正常收到;
     //    收尾由应用调 destroy()/close() 完成(Node 那边收尾也常用 destroy())。
     m_writeEnded = true;
+}
+
+void JZTcpSocket::shutdownWrite()
+{
+    if (isWriteEnded())
+        return;   // 幂等(Node 的 end() 可以重复调)
+
+    // 1) 打标记: 之后写入一律丢(对齐 Node 的 "write after end")
+    endWrite();
+    // 2) 真给对端发 FIN(shutdown SD_SEND; 发送缓冲非空时排队, 排空后补发)
+    JZNetObject::shutdownWrite();
 }
 
 void JZTcpSocket::abort()
@@ -195,6 +207,12 @@ void JZTcpSocket::onNetEvent(JZNetResEvent *event)
             closeInternal(false);
         }
     }    
+    else if (ev == JZ_NET_EV_FIN_REQ)
+    {
+        // 读方向 EOF(对端 FIN): 只转发事件 —— JS 侧借它在**连接关闭前**把回包写出去;
+        // 收尾由父类 JZNetObject::event() 发 Net_FinRes(is_draining) 完成(见 JZNet/mongoose.c 的 iolog)。
+        sigReadFin.emit();
+    }
     else if (ev == JZ_NET_EV_READ)
     {        
         m_buffer.append(event->binData.data(), event->binData.size());

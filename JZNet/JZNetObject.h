@@ -31,6 +31,7 @@ enum JZNetEvent
     JZ_NET_EV_MQTT_MSG,   // MQTT PUBLISH received        struct mg_mqtt_message *
     JZ_NET_EV_MQTT_OPEN,  // MQTT CONNACK received        int *connack_status_code
     JZ_NET_EV_SNTP_TIME,  // SNTP time received           uint64_t *epoch_millis
+    JZ_NET_EV_FIN_REQ,    // 读方向 EOF(对端 FIN): 交给上层决定何时收尾(见 JZNetObject::event)
 };
 const char *netEventString(int event);
 
@@ -132,6 +133,7 @@ public:
         Net_Close,
         Net_SetReadLimit,
         Net_ShutdownWrite,    // 半关闭: 只关写方向(对齐 Node 的 socket.end())
+        Net_FinRes,           // FIN 往返第二步: 上层处理完(回包已入队) ⇒ 置 is_draining 收尾
     };
 
     JZNetReqEvent();
@@ -289,6 +291,11 @@ public:
     // ⚠ writeEnded 之后 writeConn() 一律丢弃(对齐 Node 的 "write after end")。
     void shutdownWrite();
     bool isWriteEnded() const { return m_writeEnded; }
+
+    // FIN 往返的第二步(见 JZNet/mongoose.c 的 iolog): 上层处理完 MG_EV_FIN_REQ(onNetEvent 已返回)后,
+    // 通知 net 线程"可以收尾了" ⇒ 置 is_draining(mongoose 在发送缓冲排空后关连接)。
+    // 由 event() 在 onNetEvent 之后自动调用 —— 放在父类, 所有协议(net/ws/http/mqtt...)共用。
+    void postFinRes();
 
 protected:
     // TLS 配置(由 setSsl 设置, 建连时填入 JZSocketInfo); 服务端/客户端共用同一组字段。

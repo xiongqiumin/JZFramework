@@ -42,6 +42,8 @@ JZNetEvent mgEventToNetEvent(int ev)
             return JZ_NET_EV_WRITE;
         case MG_EV_CLOSE:
             return JZ_NET_EV_CLOSE;
+        case MG_EV_FIN_REQ:
+            return JZ_NET_EV_FIN_REQ;
         case MG_EV_HTTP_HDRS:
             return JZ_NET_EV_HTTP_HDRS;
         case MG_EV_HTTP_MSG:
@@ -204,6 +206,7 @@ JZNetResEvent::~JZNetResEvent()
 void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
 {
     JZNetThread *inst = JZNetThread::instance();
+
     if (ev == MG_EV_POLL)
     {
         inst->printNetConnect();
@@ -847,6 +850,14 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
         {
             c->is_draining = 1;
         }
+        else if (event->netCmd == JZNetReqEvent::Net_FinRes)
+        {
+            // FIN 往返第二步(见 mongoose.c 的 iolog): 上层处理完 MG_EV_FIN_REQ(JS 的 'end' 回调)后,
+            // 回包已经排进发送队列 ⇒ 直接置 is_draining, 让 mongoose 走"**发送缓冲排空后**关连接"那一步。
+            // 不绕 mg_call 再转一手事件: 那只是转到 mg_thread_fn 再做同一件事, 而这里本来就在 net 线程,
+            // 直接改状态即可(语义不变)。
+            c->is_draining = 1;
+        }
         else if(event->netCmd == JZNetReqEvent::Net_Close)
         {
             c->is_closing = 1;
@@ -1072,6 +1083,12 @@ bool JZNetObject::event(JZEvent *event)
         if (!net_event->localIp.empty())
             m_localIp = net_event->localIp;
         onNetEvent(net_event);
+
+        // ---- FIN 往返第一步(放在父类, 所有协议共享; 见 JZNet/mongoose.c 的 iolog) ----
+        // 上面的 onNetEvent 已经让上层(JS 的 'end' 回调)把回包写进发送队列了 ⇒ 现在告诉 net 线程
+        // "可以收尾了": 置 is_draining, 等发送缓冲排空再关连接。于是"收到 FIN 才回写"的 Node 惯用法成立。
+        if (net_event->event == JZ_NET_EV_FIN_REQ)
+            postFinRes();
         return true;
     }
 
@@ -1095,6 +1112,19 @@ void JZNetObject::postReqEvent(JZNetReqEvent *req)
     auto inst = JZNetThread::instance();
     jzApp->postEvent(inst, req);
     inst->wakeUpNet();
+}
+
+// FIN 往返的第二步(见 JZNet/mongoose.c 的 iolog 与 JZNetObject::event):
+// 上层处理完 MG_EV_FIN_REQ 之后调用 ⇒ net 线程置 is_draining(mongoose 排空发送缓冲后关连接)。
+void JZNetObject::postFinRes()
+{
+    if (m_conn == INVALID_NET_HANDLE)
+        return;   // 上层已经自己关了(例如在 'end' 回调里 destroy()): 不用再收尾
+
+    JZNetReqEvent *req = new JZNetReqEvent();
+    req->netCmd = JZNetReqEvent::Net_FinRes;
+    req->conn = m_conn;
+    postReqEvent(req);
 }
 
 int JZNetObject::pendingWriteBytes() const

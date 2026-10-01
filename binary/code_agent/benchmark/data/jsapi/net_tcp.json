@@ -1,7 +1,7 @@
 {
   "name": "jsapi_net_tcp",
   "purpose": "net 包 TCP 封装是否好学：createServer(connectionListener)/socket.on('data')/write/end 与 net.createConnection(port,host,cb)；收到的数据默认是 Uint8Array（要按文档里的 toHex()/setEncoding 处理）；以及句柄收尾（打开的套接字/监听会让进程留住，得 close/unref）。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
-  "prompt": "用 TypeScript 完成（net 是内置模块，用默认导入 `import net from 'net'`）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 用 net 起一个 TCP 服务监听 port：收到连接后，把它收到的数据原样写回并结束该连接（echo 一次）；\n2) 用 net 的客户端连 127.0.0.1:port，连接成功后写入文本 text，累积收完回包；\n3) 返回一行：TCP=<收到字节的十六进制小写>（用 Uint8Array 的 toHex()；不要带别的内容）。\n提示：本引擎的句柄语义与 Node 一致 —— 打开着的套接字/服务端会把进程留住（listen/connect 之后一直算“有事要等”）。所以要：① 在返回的 Promise 里 await 完所有网络往返（连/发/收）之后再 resolve，不要只创建监听就立即返回；② 任务完成时把 server 与客户端 socket 都收掉（close()/end()），否则进程不会退出、评测会等到超时（不想收也可以对它们调 unref()）。",
+  "prompt": "用 TypeScript 完成（net 是内置模块）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 在 port 上起一个 TCP 服务：收到连接后，把它收到的数据原样送回，然后结束该连接（echo 一次）；\n2) 再用客户端连 127.0.0.1:port，连接成功后把文本 text 发过去，累积收完回包；\n3) 返回一行：TCP=<收到字节的十六进制小写>（不要带别的内容）。\n\n收到数据默认是**字节**形式（不是字符串），要自己转成小写十六进制。\n注意：程序要自己收尾 —— 监听中的服务、打开着的连接/套接字都会把进程留住，不收干净评测会等到超时（跑完即退出才拿得到结果）。",
   "maxAttempts": 3,
   "timeout": 30,
   "setup": "net_setup.py",
@@ -9,5 +9,5 @@
   "expect": {
     "contains": "6a7a6e65742d746370"
   },
-  "retryHint": "上一次运行的结果不对。要求：在 src/solution.ts 实现 solve(text, port)（不要改 main.ts、不要自行读 _input.txt 或 console.log）；net 在 port 起 TCP 服务把收到的数据原样写回后 end；再用 net 客户端连上、写入 text、收完回包；返回 TCP=<回包字节的 toHex()>。务必 await 完网络往返再 resolve；并且收尾要把 server 与客户端 socket 收掉（close/end），打开着的套接字会吊住进程，不收会一直跑到超时。"
+  "retryHint": "上一次运行的结果不对。要求：在 src/solution.ts 实现 solve(text, port)（不要改 main.ts、不要自行读 _input.txt 或 console.log）；在 port 起 TCP 服务，把收到的数据原样送回后结束该连接；再用客户端连上、发出 text、收完回包；返回 TCP=<回包字节的十六进制小写>。务必 await 完网络往返再 resolve；跑完要把服务与连接都收干净（打开着的套接字会吊住进程，不收会一直跑到超时）。"
 }

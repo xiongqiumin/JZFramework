@@ -143,19 +143,36 @@ python3 agent_loop.py \
 - 题面口径：只收**有可见边框**的控件（`PushButton`/`LineEdit`）；无边框控件（`Label`/`CheckBox`/
   `RadioButton`）要先定"可见框"口径才收。
 
-## 7. 接入时要动的地方（清单）
+## 7. 接入时要动的地方（清单）—— 已全部落地
 
 1. ~~**脚本的"运行根"**~~ ✅ **已解决**：容器现在按 **ESM 模块**加载程序
    （`POST /api/programs {file}` / `--program`）—— 走引擎的一站式 `init(运行根, 入口)`，
    于是 `import` 能用，且 `jzApp.applicationDirPath()` = **程序所在目录**、`applicationFilePath()`
    就是那份 js（脚本按入口目录找随它走的资源，这条约定成立）。用 `{script}` 才是 eval 一段代码
    （片段用，没有入口目录）。运行期包（fs/path/http…）按 `jz_engine/jz_js` 部署在 exe 边上。
-2. `run.py` 加 `--container` 模式：把上面第 1~4 步换成 HTTP（起容器 → `POST /api/programs` →
-   `GET /api/windows` → `GET /api/screen`），其余步骤一行不改。`mcp.py`/`--no-shot` 那条真窗口路
-   **保留**（要在真桌面上对照验证时还得用它）。
-3. 容器收尾：`DELETE /api/programs/<name>` 或直接杀容器进程（无头下它不会自己退）。
-4. `task.json` 补几个字段（容器 exe 路径 / 端口 / `--desktop` 尺寸），让 `run.py` 与人都从一处读。
-5. 判分口径**不用改**（真值与预测都是逻辑像素）—— 这就是选容器的主要理由。
+2. ~~`run.py` 加 `--container` 模式~~ ✅ **已做**：起容器 → `POST /api/programs`（场景按 JS 程序加载）
+   → `GET /api/windows?process=scene`（等窗口出现, 取 `client` 客户区几何）→
+   `GET /api/screen?window=<句柄>` 存 `runs/current/shot.png`；探针/判分/归档那几步一行没改。
+   `mcp.py` 那条真窗口路 **保留**（要在真桌面上对照验证时还得用它）。
+3. ~~容器收尾~~ ✅ **已做**：`finally` 里先 `DELETE /api/programs/<name>`（连带它的窗口），
+   再 `kill_tree` 收容器进程（无头下它不会自己退 —— 见 `main.cpp` 的 `setQuitOnLastWindowClosed(false)`）。
+4. ~~`task.json` 补几个字段~~ ✅ **已做**：新增 `container { desktop, program }`，`run.py` 从它读
+   （缺省 `1024x768` / `scene`）；容器 exe 按 `--cfg` 推导为
+   `build/binary/virtual_device/bin/<cfg>/virtual_device.exe`（`--container-exe` 可覆盖）。
+5. ~~判分口径**不用改**~~ ✅ **已确认**（真值与预测都是逻辑像素）—— 这就是选容器的主要理由。
+
+### 实测（Debug, seed=0 level=0, verify 用 --no-vlm ⇒ 预期红灯）
+
+| | 真窗口路（默认） | 容器路（`--container`） |
+| --- | --- | --- |
+| 屏幕从哪来 | `code_runtime --debug --ui-mcp-port N` + `ui_screenshot` | `virtual_device.exe --headless --http-port N --desktop 1024x768` |
+| 窗口客户区 | 420x320 | 420x320（`client=[302,220,420,320]`） |
+| 截图 PNG | 525x400（scale 随宿主 DPI, 本机 1.25；不是固定倍数） | **420x320（无头下 scale 恒 1）** |
+| 需要真桌面 | 是 | 否 |
+
+容器截图另做过一次**像素级抽查**：非背景像素包围盒 `[x=12 y=40 w=398 h=104]` 与真值可见框
+并集（edit `12,40,396,40` + 一行 button 到 `y=144`）**一像素不差** ⇒ 客户区截图与
+`truth.json` 的 rect 确实是同一坐标系（§2 的两条纪律成立），判分口径不用动。
 
 ## 8. 还没做的 / 风险
 

@@ -32,7 +32,7 @@ auto_code/<task>/
 
 | 任务 | 目标 | 状态 |
 | --- | --- | --- |
-| `computer_use/` | 让 `js_wrapper/computeruse` 的探索实现（`App.explore`）能从屏幕像素产出语义场景树 | ✅ 全链路绿灯（出题→截图→感知→装配→判分→归档）：8 个种子五项硬门全过，数字见 `baseline.json`；感知后端 = `perceive()` 打多模态接口（地址由驱动给）；⚠ 最短板 `iou75` 无余量 |
+| `computer_use/` | 让 `js_wrapper/computeruse` 的探索实现（`App.explore`）能从屏幕像素产出语义场景树 | ✅ 全链路绿灯（出题→截图→感知→装配→判分→归档）：8 个种子五项硬门全过，数字见 `baseline.json`；感知后端 = `perceive()` 打多模态接口（地址由驱动给）；⚠ 最短板 `iou75` 无余量。屏幕已有两条路：真窗口路（默认）/ **无头容器路**（`run.py --container`，虚拟桌面当容器，已接入并实测链路通） |
 
 ## 怎么跑（以 computer_use 为例）
 
@@ -40,6 +40,7 @@ auto_code/<task>/
 cd auto_code\computer_use
 
 python run.py                     # 编译 → 出题 → 截图 → 探索 → 判分 → 归档（一条命令）
+python run.py --container         # 屏幕改用**无头虚拟桌面容器**（不需要真桌面, scale 恒 1）
 python run.py --seed 7 --level 1  # 换题目（种子/难度）
 python run.py --skip-build        # TS 没改，跳过 tsc
 python run.py --no-shot           # 只出题/判分（不拉常驻假 App、不截图）
@@ -49,10 +50,15 @@ python verify.py --self-test      # 只校尺子（真值当预测应满分）
 
 链路里的三段（都在本目录，都不进构建）：
 - 题目：`scenes/gen.ts`（一份声明 → `uiLoader` 真控件树 + 同源 `scenes/truth.json`）；
-- 屏幕：场景进程**常驻**拉起（`code_runtime --debug --ui-mcp-port N`），`mcp.py` 走 `ui_screenshot`
-  取 PNG（840x640 = 2 倍缩放；窗口逻辑尺寸从 `ui_windows` 的 bounds 取，真值用它同一坐标系）；
-  ⚠ 截图是**窗口客户区**（`JZScreen::grabWindow` 会从整窗抓图里裁掉标题栏/边框）——客户区坐标系
-  才与控件 geometry / `hitTest` / 合成点击一致；
+- 屏幕（两条路，用 `run.py --container` 切）：
+  · **真窗口路**（默认）：场景进程**常驻**拉起（`code_runtime --debug --ui-mcp-port N`），
+    `mcp.py` 走 `ui_screenshot` 取 PNG（尺寸随宿主 DPI，本机实测 525x400 = 1.25 倍，不是固定倍数；
+    窗口逻辑尺寸从 `ui_windows` 的 bounds 取，真值用它同一坐标系）；
+  · **容器路**（`--container`）：起 `virtual_device.exe --headless --http-port N --desktop WxH`，
+    `POST /api/programs` 把场景当 **JS 程序**加载，`GET /api/screen?window=` 取客户区 PNG ——
+    无头下 scale 恒 1 ⇒ **PNG 尺寸 == 客户区逻辑尺寸**，且不需要真桌面；
+  ⚠ 两条路的截图都是**窗口客户区**（真窗口路里 `JZScreen::grabWindow` 会从整窗抓图里裁掉标题栏/边框）
+  ——客户区坐标系才与控件 geometry / `hitTest` / 合成点击一致；
 - 探针：`probe/explore.ts` 读 PNG + 窗口几何 + **驱动给的感知后端地址**（`--vlm-url`，默认本机
   llama.cpp 多模态端点；也可用环境变量 `JZ_VLM_URL`/`JZ_VLM_MODEL`）→ `setBackend()` 注入离线后端
   → `App.explore()` → 写 `runs/current/tree.json`。

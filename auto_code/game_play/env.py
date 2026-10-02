@@ -53,17 +53,21 @@ PLAY_PROGRAM = "script"
 WINDOW_TITLE = "GBA"
 
 
-def write_play_config(build_dir, out, window=WINDOW_TITLE, warmup_sec=3.0,
+def write_play_config(script_dir, out, window=WINDOW_TITLE, warmup_sec=3.0,
                       steps=120, step_ms=400, max_seconds=0.0,
                       app=GAME_PROGRAM, play=""):
-    """给容器里的 play.ts 写参数（build/play/play.json；脚本按运行根找它）。
+    """给容器里的脚本写参数（**写在脚本自己所在目录**，名字固定 play.json）。
 
-    字段与 play/play.ts 的 PlayCfg 一一对应；路径一律**绝对路径**
+    脚本按 `jzApp.applicationDirPath()`（= 它自己所在目录）找这份配置 —— 产出物是
+    `build/play/play.js`、玩法自带的参考脚本是 `build/game/<玩法>/play.js`，各有各的根，
+    所以这里要的是**脚本产物的目录**（传成"任务 build 目录"会写歪，脚本读不到就起不来）。
+
+    字段与脚本的 PlayCfg 一一对应；路径一律**绝对路径**
     （脚本运行在容器线程里，工作目录不保证是谁的）。
     app  = 目标进程名（游戏机），由驱动按玩法给；
-    play = 玩法名（gba / shooter …）—— 脚本据此选按键映射与策略。
+    play = 玩法名（hello / shooter / gba …）—— 脚本据此选按键映射与策略。
     """
-    path = os.path.join(build_dir, "play", "play.json")
+    path = os.path.join(script_dir, "play.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     cfg = {"out": os.path.abspath(out), "app": app, "play": play, "window": window,
            "warmupSec": float(warmup_sec), "steps": int(steps), "stepMs": int(step_ms),
@@ -159,6 +163,33 @@ def play_config(play=None, cfg=None, base_dir=None):
         out["dir_abs"] = pdir
     out.update({k: v for k, v in entry.items() if k != "dir"})
     out["play"] = name
+    return out
+
+
+def play_js_path(cfg, task_dir=None, build_dir=None):
+    """玩法本体的 JS 产物路径（容器加载的那份）。
+
+    默认 `js` 是**相对任务 build/**的路径（本体在任务目录里）。
+    配 `jsRoot: "repo"` 时改成**相对仓库根** —— 给"本体不在本任务里、直接复用别处的工程"
+    （如 shooter 用 binary/code_agent/runtime/test_jsshooter）留的口子；绝对路径原样返回。
+    """
+    js = cfg.get("js") or ""
+    if not js or os.path.isabs(js):
+        return js
+    if (cfg.get("jsRoot") or "task").lower() == "repo":
+        return os.path.normpath(os.path.join(ROOT, js))
+    return os.path.normpath(os.path.join(build_dir or os.path.join(task_dir or HERE, "build"), js))
+
+
+def play_prebuild(cfg):
+    """跑局之前要先编的**别的工程**（相对仓库根，如某个 tsconfig.json）→ 绝对路径列表。
+
+    本任务自己的工程由驱动按 tsconfig 编，不用写在这儿；这里只列"本体住在别处"的工程
+    （玩法 config.json 的 `prebuild` 字段）。
+    """
+    out = []
+    for p in (cfg.get("prebuild") or []):
+        out.append(p if os.path.isabs(p) else os.path.normpath(os.path.join(ROOT, p)))
     return out
 
 
@@ -329,6 +360,17 @@ class Container:
 
     def programs(self):
         return self._json("GET", "/api/programs").get("programs") or []
+
+    def logs(self, offset=0, size=-1):
+        """程序输出 (console.log 等) —— 容器侧环形缓冲里的**最近 1000 行**，按行取。
+
+        offset = 起始**绝对行号**(累计行号; 给得太早 -> 从最老还留着的那行开始),
+        size   = 要几行 (省略/负数 = 一直到末尾)。
+        返回 {total, first, count, lines:[...]}；行文本形如 `[vproc: <进程名>] <原始输出>`。
+        ⚠ 行号是**累计**的: 先取一次 total 当基线，之后 offset=基线 就只拿新增的行 ——
+        比"容器 stdout 文件 + 字节偏移"干净(同一容器跑多轮时那边会累积, 还得自己算偏移)。
+        """
+        return self._json("GET", "/api/logs?offset=%d&size=%d" % (int(offset), int(size)))
 
     def stop_program(self, name):
         try:

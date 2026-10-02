@@ -143,8 +143,11 @@ def main():
         log("游戏窗口: title=%s client=%s" % (win.get("title"), client))
 
         # ---- ③ 装 play（产出物）----
-        E.write_play_config(BUILD, out, window=cfg["window"], warmup_sec=warmup, steps=steps,
-                            step_ms=step_ms, max_seconds=args.seconds, app=program, play=cfg["play"])
+        # play.json 放在**脚本产物所在目录**（脚本按 jzApp.applicationDirPath() 找它）：
+        # 产出物是 build/play/play.js，玩法自带的参考脚本在 build/game/<玩法>/play.js —— 各有各的根
+        E.write_play_config(os.path.dirname(play_js), out, window=cfg["window"], warmup_sec=warmup,
+                            steps=steps, step_ms=step_ms, max_seconds=args.seconds, app=program,
+                            play=cfg["play"])
         log("装脚本: %s（预热 %ss）" % (os.path.relpath(play_js, TASK), warmup))
         conn.load_program(E.PLAY_PROGRAM, play_js, work_dir=os.path.dirname(play_js))
 

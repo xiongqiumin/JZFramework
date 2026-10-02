@@ -389,7 +389,9 @@ def main():
     print("== 玩法: %s（%s）进程名=%s 窗口=%s 桌面=%s 原生=%dx%d%s"
           % (ctx["play"], ctx["app"], ctx["program"], ctx["window"], ctx["desktop"],
              ctx["native"][0], ctx["native"][1], "（要 ROM）" if ctx["need_rom"] else ""))
-    ctx["game_js"] = os.path.join(BUILD, play["js"])   # js 是相对 build 的路径(如 game/shooter/game.js)
+    # 玩法本体的 JS：默认在任务 build/ 下（js 是相对 build 的路径）；玩法配了 jsRoot="repo"
+    # 就是"本体住在别处"（如 shooter 直接用 binary/code_agent/runtime/test_jsshooter 的产物）
+    ctx["game_js"] = E.play_js_path(play, HERE, BUILD)
     ctx["play_js"] = os.path.join(BUILD, "play", "play.js")
     taskbook = read_text(ctx["prompt_file"])
 
@@ -479,6 +481,12 @@ def main():
             if want_build:
                 rc, build_out = run([tsc, "-p", os.path.join(HERE, "tsconfig.json")],
                                     cwd=HERE, check=False)
+                # 玩法声明的"别的工程"（本体住在别处，如 shooter 直接复用 test_jsshooter）
+                for proj in E.play_prebuild(play):
+                    rc2, out2 = run([tsc, "-p", proj], cwd=os.path.dirname(proj), check=False)
+                    build_out += out2
+                    if rc2 != 0:
+                        rc = rc2
                 build_ok = (rc == 0) and os.path.exists(ctx["play_js"]) \
                     and os.path.exists(ctx["game_js"])
                 if not build_ok:

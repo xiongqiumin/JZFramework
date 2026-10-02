@@ -1,6 +1,6 @@
 {
   "name": "game_play",
-  "goal": "交一个『一键通关脚本』：play/play.ts 跑在 virtual_device 容器里，用 computer use 看画面/按键，把**一个**小游戏打通。当前默认玩法 = shooter（飞行射击，800x600，方向键/空格，比 GBA 简单得多）；gba 玩法代码保留、可用 --app gba 切回。",
+  "goal": "交一个『一键通关脚本』：play/play.ts 跑在 virtual_device 容器里，用 computer use 看画面/按键，把**一个**小游戏打通。当前默认玩法 = hello（点球：随机红/蓝球，点红 +1、点蓝 -1，初始 5 分、10 分通关、0 分输，480x360 —— 比 shooter 简单得多，练的是\"看颜色 + 点位置\"）；plays 里还有 shooter（飞行射击 800x600，本体直接用 binary/code_agent/runtime/test_jsshooter）与 gba（模拟器 240x160，代码保留）。",
   "prompt": "prompt.md",
   "defaultPlay": "hello",
   "run": {
@@ -71,7 +71,7 @@
   "rom": "E:/work/simulator/火焰之纹章-圣魔之光石完美修改版.gba",
   "paths": {
     "script": "play/play.ts",
-    "app": "见玩法目录 config.json 的 app（默认 game/shooter/game.ts）",
+    "app": "见玩法目录 config.json 的 app（hello: game/hello/game.ts；shooter: binary/code_agent/runtime/test_jsshooter/src/main.ts；gba: game/gba.ts）",
     "playLog": "runs/current/play.log",
     "scriptFrames": "runs/current/frames",
     "externalFrames": "runs/current/external",

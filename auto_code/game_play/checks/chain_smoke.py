@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gba 任务 —— 链路自检（"这台游戏机还转得动吗"，不判游戏玩得好不好）
+game_play 任务 —— 链路自检（"这台游戏机还转得动吗"，不判游戏玩得好不好）
 
-一句话：起容器 → 加载 game.js（JZEmulatorView）→ 截图 / 按键 / 再截图 → 把能机械
+一句话：起容器 → 加载 gba.js（JZEmulatorView）→ 截图 / 按键 / 再截图 → 把能机械
 判定的都判掉，把图像证据落盘给人看。
 
 判什么（全部与"玩得好不好"无关）:
@@ -71,9 +71,9 @@ def main():
     if not os.path.exists(os.path.join(dll_dir, "mgba_host.dll")):
         print("FAIL: 找不到 mgba_host.dll（在 %s）—— 先构建 JZEmulator 模块" % dll_dir)
         return 1
-    game_js = os.path.join(TASK, "build", "game", "game.js")
+    game_js = os.path.join(TASK, "build", "game", "gba.js")
     if not os.path.exists(game_js):
-        print("FAIL: 找不到 %s\n      先编译: tsc -p auto_code/gba/tsconfig.json" % game_js)
+        print("FAIL: 找不到 %s\n      先编译: tsc -p auto_code/game_play/tsconfig.json" % game_js)
         return 1
     if not os.path.exists(args.rom):
         print("FAIL: 找不到 ROM: %s" % args.rom)
@@ -129,7 +129,7 @@ def main():
         time.sleep(0.6)
         s2 = g.game_status()
         print("      status: %s" % json.dumps(s2, ensure_ascii=False))
-        check(s2.get("rom") is True, "game.ts 自报 ROM 已打开（失败时 error 看上面那行）")
+        check(s2.get("rom") is True, "gba.ts 自报 ROM 已打开（失败时 error 看上面那行）")
         check(int(s2.get("frames", 0)) > int(s1.get("frames", 0)),
               "frameCount 在涨", "%s -> %s" % (s1.get("frames"), s2.get("frames")))
 

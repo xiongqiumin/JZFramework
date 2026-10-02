@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gba 任务 —— 环境侧（容器客户端 + 程序的生命周期 + 像素小工具）
+game_play 任务 —— 环境侧（容器客户端 + 程序的生命周期 + 像素小工具）
 
 这里只放"环境"这一侧的东西，一行策略都没有：
   · Container      —— virtual_device 的 HTTP 客户端（只认 /api/health、/api/windows、
                       /api/screen、/api/input/key、/api/programs*；接口权威定义见
                       binary/virtual_device/JZVirtualDeviceHttp.h）；
-  · GameSession    —— 容器里"游戏机"程序（题目侧 game.ts）的生命周期：加载 → 等窗口 →
+  · GameSession    —— 容器里"游戏机"程序（题目侧 gba.ts）的生命周期：加载 → 等窗口 →
                       截图 / 按键。**链路自检**（checks/chain_smoke.py）与外部证据都走它；
   · write_play_config —— 给容器里的 **play.ts**（最终产出的一键脚本）写参数
                       （build/play/play.json：产物目录/窗口标题/预热/步数/节拍）；
@@ -45,7 +45,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 GBA_W, GBA_H = 240, 160
 
 # 容器里就是**两个进程**（= POST /api/programs 的 name）：
-#   gba    = 题目侧的"游戏机"（game/game.ts）：只开窗 + 跑 ROM，没有任何策略；
+#   gba    = 题目侧的"游戏机"（game/gba.ts）：只开窗 + 跑 ROM，没有任何策略；
 #   script = **最终产出的一键脚本**（play/play.ts）：用 computer use 自己看画面、自己按键。
 # 脚本是"人"，gba 是"App" —— 两者只通过同一块屏幕和键盘发生关系。
 GAME_PROGRAM = "gba"
@@ -54,15 +54,18 @@ WINDOW_TITLE = "GBA"
 
 
 def write_play_config(build_dir, out, window=WINDOW_TITLE, warmup_sec=3.0,
-                      steps=120, step_ms=400, max_seconds=0.0):
+                      steps=120, step_ms=400, max_seconds=0.0,
+                      app=GAME_PROGRAM, play=""):
     """给容器里的 play.ts 写参数（build/play/play.json；脚本按运行根找它）。
 
     字段与 play/play.ts 的 PlayCfg 一一对应；路径一律**绝对路径**
     （脚本运行在容器线程里，工作目录不保证是谁的）。
+    app  = 目标进程名（游戏机），由驱动按玩法给；
+    play = 玩法名（gba / shooter …）—— 脚本据此选按键映射与策略。
     """
     path = os.path.join(build_dir, "play", "play.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    cfg = {"out": os.path.abspath(out), "app": GAME_PROGRAM, "window": window,
+    cfg = {"out": os.path.abspath(out), "app": app, "play": play, "window": window,
            "warmupSec": float(warmup_sec), "steps": int(steps), "stepMs": int(step_ms),
            "maxSeconds": float(max_seconds)}
     with open(path, "w", encoding="utf-8") as f:
@@ -121,6 +124,44 @@ def key_of(name):
                      "或 Win32 键名如 Return/Shift/Z）" % name)
 
 
+# ==================== 玩法（见 task.json 的 plays 表） ====================
+def load_task():
+    """读任务定义 task.json（玩法表 plays / 默认玩法 defaultPlay 都在里面）。"""
+    with open(os.path.join(HERE, "task.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def play_config(play=None, cfg=None, base_dir=None):
+    """取一个玩法的运行参数（配置里 plays.<名>；cfg 为空则读本目录 task.json）。
+
+    玩法有两种写法：
+      · **目录式（推荐）** `{"dir": "game/shooter"}` —— 读该目录下的 `config.json` 当主体，
+        表项里的其它字段再覆盖它。**玩法自包含**：游戏本体 / 尺子(verify.py) / 配置 都在那个目录里；
+      · 内联式（老写法）`{"app": "...", "js": "...", "program": "...", ...}`。
+
+    返回的字段：app(题目侧入口 ts) / js(编译产物, 相对 build) / program(进程名) /
+    window(窗口标题) / desktop(容器桌面) / native(原生客户区尺寸) / rom(要不要 ROM) /
+    verify(玩法自己的尺子) / 以及玩法自己的其它字段（如 targetScore）。
+    play 为空 = 用 defaultPlay；名字不认识直接抛错（别静默跑成另一个玩法）。
+    """
+    task = cfg if isinstance(cfg, dict) else load_task()
+    root = base_dir or HERE
+    plays = task.get("plays") or {}
+    name = play or task.get("defaultPlay") or "gba"
+    entry = plays.get(name)
+    if not isinstance(entry, dict):
+        raise RuntimeError("不认识的玩法: %r（配置里有: %s）" % (name, ", ".join(sorted(plays))))
+    out = {}
+    if entry.get("dir"):
+        pdir = entry["dir"] if os.path.isabs(entry["dir"]) else os.path.join(root, entry["dir"])
+        out.update(read_json(os.path.join(pdir, "config.json"), {}) or {})
+        out["dir"] = entry["dir"]
+        out["dir_abs"] = pdir
+    out.update({k: v for k, v in entry.items() if k != "dir"})
+    out["play"] = name
+    return out
+
+
 # ==================== 路径推导 ====================
 def container_exe(cfg="Debug"):
     return os.path.join(ROOT, "build", "binary", "virtual_device", "bin", cfg, "virtual_device.exe")
@@ -142,11 +183,14 @@ def emulator_dll_dir(cfg="Debug"):
     return runtime_bin_dir(cfg)
 
 
-def write_game_config(game_dir, dll_dir, rom, status_path=None):
-    """写"游戏机"的运行参数（运行根 = build/game，与 scenes/gen.json 同一套约定）。
+def write_game_config(game_dir, dll_dir, rom, status_path=None, extra=None):
+    """把玩法的运行参数写到它的**运行根**（= 编译产物所在目录，如 build/game 或
+    build/game/shooter）下的 `game.json`，由题目侧程序自己读：
 
-    游戏机是**题目侧**程序（`game/game.ts`，不是被测实现）：它只做三件事 ——
-    开窗、开 ROM、把状态（ROM 是否打开 / 跑了几帧 / 报错）写成 JSON 给驱动看。
+      · gba 玩法：dllDir / rom / statusPath（开窗 + 开 ROM + 状态上报）
+      · shooter 玩法：statusPath / targetScore（状态上报 + 通关线）
+
+    extra 里的字段原样并进去（玩法自己的参数）。
     """
     os.makedirs(game_dir, exist_ok=True)
     cfg = {
@@ -154,6 +198,8 @@ def write_game_config(game_dir, dll_dir, rom, status_path=None):
         "rom": rom,
         "statusPath": status_path or os.path.join(HERE, "runs", "current", "game_status.json"),
     }
+    if extra:
+        cfg.update(extra)
     with open(os.path.join(game_dir, "game.json"), "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
@@ -284,10 +330,6 @@ class Container:
     def programs(self):
         return self._json("GET", "/api/programs").get("programs") or []
 
-    def eval(self, name, script):
-        return self._json("POST", "/api/programs/%s/eval" % urllib.parse.quote(name),
-                          {"script": script})
-
     def stop_program(self, name):
         try:
             return self._json("DELETE", "/api/programs/" + urllib.parse.quote(name))
@@ -322,6 +364,139 @@ class ContainerProc:
         if self.log:
             self.log.close()
             self.log = None
+
+
+# ==================== agent_cli（"拉取 agent"这一侧） ====================
+class AgentCliProc:
+    """拉起/收尾一个 **agent_cli** 进程（它对外是 HTTP 服务：POST /task）。
+
+    只做三件事 —— 起进程、等它 HTTP 就绪、退出时收掉；**提交任务与循环结构不在这里**
+    （那是上层的事，见 task.json 的 run.agent）。
+
+    就绪判定与 binary/agent_cli/tools/agent_loop.py 一致：轮询 GET /info，2xx 或
+    "非 401 的 4xx" 即算起来；401 = token 不对，直接算失败（别把鉴权错当成没起来）。
+
+    http 地址来源（优先显式给的）：
+      ① 参数 http_url / token；② agent_cli 的 config.json（-c 指定的，否则 exe 同目录）；
+      ③ 兜底 http://127.0.0.1:8080（agent_cli 的默认 http.bind / http.port）。
+    """
+
+    def __init__(self, bin_path, config_path="", http_url="", token="",
+                 ready_sec=120, cwd=None, log_path=None):
+        self.bin = bin_path
+        self.config = config_path
+        self.cwd = cwd or os.path.dirname(os.path.abspath(bin_path))
+        self.log_path = log_path
+        self.ready_sec = ready_sec
+        self.proc = None
+        self.logf = None
+        self.url, self.token = self._resolve_http(http_url, token)
+
+    def _cli_config_path(self):
+        if self.config:
+            return self.config
+        return os.path.join(os.path.dirname(os.path.abspath(self.bin)), "config.json")
+
+    def _resolve_http(self, http_url, token):
+        url, tk = http_url, token
+        if not url or not tk:
+            cfg = read_json(self._cli_config_path(), {}) or {}
+            http = cfg.get("http") if isinstance(cfg.get("http"), dict) else {}
+            bind = http.get("bind") or cfg.get("httpBind") or "127.0.0.1"
+            port = http.get("port") or cfg.get("httpPort") or 8080
+            if not url:
+                url = "http://%s:%d" % (bind, port)
+            if not tk:
+                tk = http.get("token") or cfg.get("httpToken") or ""
+        return url.rstrip("/"), tk
+
+    def start(self, log_path=None):
+        """起进程并等就绪；返回是否就绪（起不来/超时/401 都返回 False，细节看日志）。"""
+        if log_path:
+            self.log_path = log_path
+        cmd = [self.bin]
+        if self.config:
+            cmd += ["-c", self.config]
+        if self.log_path:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            self.logf = open(self.log_path, "w", encoding="utf-8")
+        print("+ " + " ".join(cmd))
+        self.proc = subprocess.Popen(cmd, cwd=self.cwd, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT)
+        threading.Thread(target=self._pump, daemon=True).start()
+        return self.wait_ready()
+
+    def _pump(self):
+        for raw in self.proc.stdout:
+            line = raw.decode("utf-8", "replace").rstrip()
+            print("[agent_cli] " + line)
+            if self.logf:
+                self.logf.write(line + "\n")
+                self.logf.flush()
+
+    def _info_code(self):
+        req = urllib.request.Request(self.url + "/info")
+        if self.token:
+            req.add_header("Authorization", "Bearer " + self.token)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return r.status
+
+    def wait_ready(self, timeout=None):
+        end = time.time() + (timeout if timeout else self.ready_sec)
+        while time.time() < end:
+            try:
+                if 200 <= self._info_code() < 300:
+                    return True
+            except urllib.error.HTTPError as ex:
+                if ex.code == 401:
+                    print("!! agent_cli 起来了但 token 不对(401): %s" % self.url)
+                    return False
+                if 400 <= ex.code < 500:   # 非 401 的 4xx: 服务在, 只是这个请求它不认
+                    return True
+            except Exception:
+                pass
+            if self.proc and self.proc.poll() is not None:
+                print("!! agent_cli 退出码 %s —— 没起来, 看日志" % self.proc.returncode)
+                return False
+            time.sleep(0.5)
+        print("!! agent_cli 等不到就绪(%ds): %s" % (self.ready_sec, self.url))
+        return False
+
+    def submit_task(self, prompt, timeout=7200, extra=None):
+        """POST /task 提交一轮任务；**阻塞**到这一轮结束，返回回包 dict。
+
+        回包字段（详见 JZAgentCli.h）：status(success/failed/cancelled)、verify_rounds、
+        agent_reply、last_verify_output、error…。
+        ⚠ 不给 verify_cmd：agent 这一轮只"干活"，验证由驱动（run.py 跑一局 + verify.py）做 ——
+          否则 agent_cli 会自己再跑一遍驱动，递归。
+        网络/HTTP 错直接抛（调用方决定重试还是收工）。
+        """
+        body = {"prompt": prompt}
+        if extra:
+            body.update(extra)
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(self.url + "/task", data=data,
+                                     headers={"Content-Type": "application/json"})
+        if self.token:
+            req.add_header("Authorization", "Bearer " + self.token)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+
+    def alive(self):
+        """进程还在不在（进程在、但 HTTP 不通 = 卡住，由调用方判）。"""
+        return bool(self.proc) and self.proc.poll() is None
+
+    def stop(self):
+        if self.proc:
+            kill_tree(self.proc.pid)
+            try:
+                self.proc.wait(timeout=30)
+            except Exception:
+                pass
+            self.proc = None
+        if self.logf:
+            self.logf.close()
+            self.logf = None
 
 
 def press_keys(c, window_key, keys, hold_ms=60):
@@ -464,12 +639,12 @@ class GameSession:
     def load_game(self):
         """把"游戏机"当 JS 程序加载进容器，等它的窗口，量一次客户区。
 
-        游戏机 = `game/game.ts`（编译到 build/game/game.js）：它开一个 240x160 的窗口，
+        游戏机 = `game/gba.ts`（编译到 build/game/gba.js）：它开一个 240x160 的窗口，
         里面是 JZEmulatorView；DLL 目录与 ROM 由运行根下的 `game.json` 给（驱动写）。
         """
-        js = os.path.join(self.game_dir, "game.js")
+        js = os.path.join(self.game_dir, "gba.js")
         if not os.path.exists(js):
-            raise RuntimeError("找不到游戏机程序: %s（先编译：tsc -p auto_code/gba/tsconfig.json）" % js)
+            raise RuntimeError("找不到游戏机程序: %s（先编译：tsc -p auto_code/game_play/tsconfig.json）" % js)
         write_game_config(self.game_dir, self.dll_dir, self.rom)
         self.c.load_program(self.name, js, work_dir=self.game_dir)
         self.win = self.c.wait_window(self.name, timeout=60)

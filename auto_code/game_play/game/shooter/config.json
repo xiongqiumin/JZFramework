@@ -1,0 +1,21 @@
+{
+  "play": "shooter",
+  "app": "game/shooter/game.ts",
+  "js": "game/shooter/game.js",
+  "program": "shooter",
+  "window": "SHOOTER",
+  "desktop": "800x600",
+  "native": [800, 600],
+  "rom": false,
+
+  "targetScore": 300,
+  "statusPath": "runs/current/shooter_status.json",
+
+  "verify": "game/shooter/verify.py",
+
+  "steps": 120,
+  "stepMs": 400,
+  "warmupSec": 2.0,
+
+  "note": "shooter 玩法**自包含**：游戏本体(game.ts) + 尺子(verify.py) + 本配置(怎么跑/怎么判)。task.json 的 plays.shooter 只登记这个目录(dir)，字段都能在这里改；表项里的同名字段可覆盖本文件。targetScore = 通关线（打死敌人计分，到线算通关，见 game.ts 的状态上报）；statusPath 是 game.ts 写给**尺子**读的状态文件（脚本按红线不许读）。"
+}

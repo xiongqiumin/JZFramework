@@ -1,333 +1,240 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gba 任务 —— 尺子（断言 / 判分 / 一页摘要）
+game/shooter/verify.py —— **shooter 玩法自己的尺子**（每个玩法一份，跟玩法放一起）
 
-## 先说清楚：这把尺子**不判"通关"**
-"通关"没有自动真值（这一版刻意不让尺子读模拟器内存/存档；画面语义也还没有客观口径）。
-它判的是**这一局到底跑起来了没有** —— 而且用**两路证据互相印证**：
+它自己就能跑完一局并判定，不依赖顶层驱动：
 
-  · 脚本自报（`session.json` / `play.log` / `frames/`）——"它说它干了什么、看到了什么"；
-  · 驱动旁证（`external/` / `metrics.jsonl`）——"从外面看，那块屏当时到底是什么样"。
+  ① 清空容器里**所有**程序（GET /api/programs → 逐个 DELETE）—— 保证这一局是干净的；
+  ② 装 game（game.js）→ 等它的窗口；
+  ③ 装 play（play.js）→ 让它自己玩；
+  ④ 一边跑一边**从外面抓帧**（客观旁证：external/ + metrics.jsonl），并读**状态文件**
+     （score/lives/over/win —— 游戏自己每 500ms 写一次，见 game.ts 的"状态上报"）；
+  ⑤ 判定：cleared(通关) / game_over(被打死) / program_gone(程序没了) / running(到点还在跑)；
+  ⑥ 落盘 result.json + report.md；**退出码 0 = 通关**（其余都是没通关）。
 
-## 硬门（名字与 baseline.json 的 gates 必须一致）
-  G1 container_ok     容器起来了、游戏窗口在了（拿到客户区几何）
-  G2 window_native    客户区 = 240x160（GBA 原生 1:1）
-  G3 script_ran       脚本自己写了 session.json（= 它跑完收工了，没卡死）
-  G4 script_acted     脚本自报**按过键**（它在操作，不是干看着）
-  G5 external_alive   外面抓的帧够数、尺寸都对（证据链完整：全程有人盯着这块屏）
-  G6 screen_alive     外部帧里至少一帧不是单色块（那是真画面，不是白屏/黑屏卡住）
-  G7 screen_changed   外部帧序列里至少出现一次显著变化（画面在动 = 游戏在跑/在响应）
+用法：
+  python verify.py                                  # 自包含：自己起一个无头容器，跑完收掉
+  python verify.py --port 60180                     # 用**已有**容器（顶层 run.py 起的那个）
+  python verify.py --play-js <路径> --game-js <路径>  # 指定产物（缺省按玩法配置推）
+  python verify.py --steps 200 --step-ms 200        # 观察节奏（缺省读玩法配置）
 
-全过 ⇒ **PASS**（退出码 0）—— **故意不打 `[loop-stop]`**：跑起来 ≠ 通关，
-收工由人看归档里的画面决定（这一版就这样，见 prompt.md 的"判定"）。
-
-## 用法（本目录下）
-  python verify.py                        # 判 runs/current（run.py 跑完自动调它）
-  python verify.py --dir runs/round_003   # 判某一轮归档
-  python verify.py --check-only           # 只打印结论，不写产物（外部复验用）
-  python verify.py --self-test            # 尺子自检：伪造一好一坏两局，好局必须全过、坏局必须报对门
+⚠ 状态文件是**尺子的特权**：脚本(play.ts)按红线**不许读**它（见任务书 prompt.md）。
 """
 
 import argparse
 import json
 import os
+import shutil
 import sys
+import time
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:
-    pass
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-CUR = os.path.join(HERE, "runs", "current")
-sys.path.insert(0, HERE)
+HERE = os.path.dirname(os.path.abspath(__file__))            # game/shooter
+TASK = os.path.dirname(os.path.dirname(HERE))                # 任务目录
+BUILD = os.path.join(TASK, "build")
+CUR = os.path.join(TASK, "runs", "current")
+sys.path.insert(0, TASK)
 import env as E  # noqa: E402
 
-# 硬门（与 baseline.json 的 gates 一致；改口径要两边一起改）
-GATES = ["container_ok", "window_native", "script_ran", "script_acted",
-         "external_alive", "screen_alive", "screen_changed"]
 
-NATIVE_W, NATIVE_H = 240, 160
-DRIFT_THRESHOLD = 0.01          # 外部帧之间差多少算"画面变了"（1%）
+def log(msg):
+    print("[verify:shooter] %s" % msg)
 
 
-def _load_json(path):
-    return E.read_json(path, None)
-
-
-def _metrics(path):
-    out = []
+def read_status(path):
+    """读游戏写的状态文件（还没写/写一半都可能，所以容错）。"""
     try:
         with open(path, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    out.append(json.loads(line))
+            return json.load(f)
     except Exception:
-        pass
-    return out
-
-
-def judge(root):
-    """对一局（runs/current 或 runs/round_NNN）给出逐门结论 + 给人/模型看的摘要。"""
-    drive = _load_json(os.path.join(root, "drive.json")) or {}
-    session = _load_json(os.path.join(root, "session.json")) or {}
-    metrics = _metrics(os.path.join(root, "metrics.jsonl"))
-    ext_dir = os.path.join(root, "external")
-    ext = sorted(f for f in os.listdir(ext_dir) if f.endswith(".png")) \
-        if os.path.isdir(ext_dir) else []
-
-    res = {"gates": [], "metrics": {}, "detail": {}, "root": root}
-    if not drive and not session:
-        for name in GATES:
-            res["gates"].append((name, False, "这一局没有产物（run.py 没跑起来？）"))
-        return res
-
-    client = drive.get("clientSize") or []
-    cw = int(client[0]) if len(client) >= 2 else 0
-    ch = int(client[1]) if len(client) >= 2 else 0
-
-    # G1 容器/窗口（容器里应当就是两个进程：gba=游戏机 + script=脚本）
-    progs = drive.get("programs") or []
-    ok = cw > 0 and ch > 0
-    res["metrics"]["programs"] = progs
-    res["gates"].append(("container_ok", ok,
-                         "容器进程=%s；游戏窗口 title=%s 客户区=%s"
-                         % (progs or "（没记到）", drive.get("window"), client or "（没拿到）")))
-
-    # G2 原生尺寸
-    res["gates"].append(("window_native", (cw, ch) == (NATIVE_W, NATIVE_H),
-                         "客户区 = %sx%s（期望 %dx%d）" % (cw, ch, NATIVE_W, NATIVE_H)))
-
-    # G3 脚本收工（session.json 是 play.ts 自己写的）
-    ok = bool(session) and "reason" in session
-    res["gates"].append(("script_ran", ok,
-                         "脚本自报: %s" % (("%s，%s 拍，%s 张帧，用时 %sms"
-                                        % (session.get("reason"), session.get("steps"),
-                                           len(session.get("frames") or []), session.get("elapsedMs")))
-                                       if session else "没有 session.json（卡住了/崩了？）")))
-
-    # G4 脚本真的在操作
-    keys = session.get("keys") or []
-    res["metrics"]["scriptKeys"] = len(keys)
-    res["metrics"]["scriptKeySteps"] = len(session.get("frames") or [])
-    res["gates"].append(("script_acted", len(keys) > 0,
-                         "脚本按过 %d 次键（%s）" % (len(keys), "/".join(sorted(set(keys))[:12]) or "无")))
-
-    # G5 外部证据链
-    expect = max(5, int((drive.get("steps") or 0) * 0.5))
-    sizes_bad = [m for m in metrics if (m.get("w"), m.get("h")) != (NATIVE_W, NATIVE_H)]
-    ok = len(ext) >= min(expect, 5) and not sizes_bad
-    res["metrics"]["externalFrames"] = len(ext)
-    res["metrics"]["externalExpected"] = expect
-    res["gates"].append(("external_alive", ok,
-                         "外面抓到 %d 张（期望≥%d，尺寸不对 %d 张）"
-                         % (len(ext), min(expect, 5), len(sizes_bad))))
-
-    # G6 画面真有内容（外部帧）
-    best = None
-    for m in metrics:
-        # "内容最丰富"按 (颜色数, 非黑比例) 取最大 —— 只看颜色数会在"整块单色"之间乱挑
-        if best is None or ((m.get("colors") or 0), (m.get("nonblack") or 0.0)) > \
-                ((best.get("colors") or 0), (best.get("nonblack") or 0.0)):
-            best = m
-    if best is None and ext:                       # 归档里 metrics 可能被裁掉：直接看图
-        for f in ext[::max(1, len(ext) // 8)]:
-            img = E.read_png(os.path.join(ext_dir, f))
-            m = {"file": os.path.join("external", f), "colors": E.unique_colors(img),
-                 "nonblack": E.nonblack_ratio(img), "drift": 0.0}
-            if best is None or m["colors"] > best["colors"]:
-                best = m
-    ok = bool(best) and ((best.get("colors") or 0) >= 4 or (best.get("nonblack") or 0) > 0.05)
-    res["metrics"]["bestFrame"] = ({k: best.get(k) for k in ("file", "colors", "nonblack", "drift")}
-                                   if best else None)
-    res["gates"].append(("screen_alive", ok, "内容最丰富的一帧: %s" % (res["metrics"]["bestFrame"],)))
-
-    # G7 画面在动（外部帧序列里有显著变化）
-    drifts = [m.get("drift") or 0.0 for m in metrics]
-    changed = [d for d in drifts if d >= DRIFT_THRESHOLD]
-    if not metrics and len(ext) >= 2:              # 同上：没有 metrics 就用图现算
-        prev = None
-        for f in ext:
-            img = E.read_png(os.path.join(ext_dir, f))
-            if prev is not None:
-                d = E.diff_ratio(prev, img)
-                if d >= DRIFT_THRESHOLD:
-                    changed.append(d)
-            prev = img
-    res["metrics"]["maxDrift"] = round(max(drifts), 4) if drifts else None
-    res["metrics"]["changedFrames"] = len(changed)
-    res["gates"].append(("screen_changed", len(changed) > 0,
-                         "画面显著变化 %d 次（最大差异 %s）"
-                         % (len(changed), ("%.2f%%" % (max(drifts) * 100)) if drifts else "（没测到）")))
-
-    res["metrics"].update({
-        "elapsedSec": drive.get("elapsedSec"),
-        "driveErrors": drive.get("errors") or [],
-        "scriptErrors": session.get("errors") or [],
-        "scriptReason": session.get("reason"),
-    })
-    res["notes"] = (session.get("keys") or [])[:40]
-    return res
-
-
-def summary_lines(res):
-    m = res.get("metrics", {})
-    out = ["本局: 容器里两个进程 %s；外面抓帧 %s 张（用时 %ss）| 脚本自报按键 %s 次、%s 拍、停因=%s"
-           % (m.get("programs") or "?" , m.get("externalFrames"), m.get("elapsedSec"),
-              m.get("scriptKeys"), m.get("scriptKeySteps"), m.get("scriptReason"))]
-    if m.get("bestFrame"):
-        b = m["bestFrame"]
-        out.append("最像画面的一帧: %s（颜色数=%s，非黑=%.3f）—— 人看这一张"
-                   % (b.get("file"), b.get("colors"), b.get("nonblack") or 0.0))
-    out.append("画面显著变化 %s 次（最大差异 %s）"
-               % (m.get("changedFrames"), ("%.2f%%" % (m.get("maxDrift") * 100))
-                  if m.get("maxDrift") is not None else "（没测到）"))
-    for e in (m.get("driveErrors") or []):
-        out.append("驱动侧: %s" % e)
-    for e in (m.get("scriptErrors") or []):
-        out.append("脚本侧: %s" % e)
-    return out
-
-
-def write_report(root, res, session):
-    """一页摘要 + 关键帧（markdown 直接引用图片 ⇒ 大模型/人一眼看到"界面"）。"""
-    ext_dir = os.path.join(root, "external")
-    ext = sorted(f for f in os.listdir(ext_dir) if f.endswith(".png")) \
-        if os.path.isdir(ext_dir) else []
-    keep = ext[::max(1, len(ext) // 6)] + ([ext[-1]] if ext and ext[-1] not in ext[::max(1, len(ext) // 6)] else [])
-    lines = ["# 一局记录（play.ts 在容器里跑）", "",
-             "- 结果: %s" % ("PASS" if all(ok for _, ok, _ in res["gates"]) else "FAIL"),
-             "- 容器里的进程: %s（一个是游戏 `gba`，一个是脚本 `script`）"
-             % (res["metrics"].get("programs") or "（没记到）"),
-             "- 参数: %s" % json.dumps(session.get("cfg") or {}, ensure_ascii=False),
-             "- 脚本自报: reason=%s steps=%s 按键=%s 次 帧=%s 张"
-             % (session.get("reason"), session.get("steps"), len(session.get("keys") or []),
-                len(session.get("frames") or [])), ""]
-    lines += ["## 硬门", ""] + ["- %s %s：%s" % ("[ok]" if ok else "[FAIL]", n, info)
-                                for n, ok, info in res["gates"]]
-    lines += ["", "## 外面看到的画面（外部抓帧，每若干张选一张）", ""]
-    for f in keep:
-        lines.append("![%s](external/%s)" % (f, f))
-    if session.get("keys"):
-        lines += ["", "## 脚本按过的键（前 40 次）", "", "`%s`" % " ".join(session["keys"][:40])]
-    if session.get("errors") or (res["metrics"].get("driveErrors")):
-        lines += ["", "## 错误", ""]
-        lines += ["- 脚本: %s" % e for e in (session.get("errors") or [])]
-        lines += ["- 驱动: %s" % e for e in (res["metrics"].get("driveErrors") or [])]
-    try:
-        with open(os.path.join(root, "report.md"), "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-    except Exception as e:
-        print("WARN: 写 report.md 失败: %s" % e)
-
-
-def run(root, check_only):
-    res = judge(root)
-    for name, ok, info in res["gates"]:
-        print("%s %-16s %s" % ("[ ok ]" if ok else "[FAIL]", name, info))
-    failed = [n for n, ok, _ in res["gates"] if not ok]
-    for line in summary_lines(res):
-        print(line)
-    if failed:
-        print("--- 没过的是这些门，下一轮就照它们改（别同时改五处）---")
-        for n in failed:
-            print("  - %s" % n)
-    print("PASS" if not failed else "FAIL")
-    if not failed:
-        print("(这一局跑起来了；但『通关』没有自动判据 —— 不打 [loop-stop]，请看归档的画面)")
-
-    if not check_only:
-        try:
-            os.makedirs(CUR, exist_ok=True)
-            with open(os.path.join(root, "result.json"), "w", encoding="utf-8") as f:
-                json.dump({"pass": not failed, "gates": res["gates"], "metrics": res["metrics"]},
-                          f, ensure_ascii=False, indent=2)
-            write_report(root, res, _load_json(os.path.join(root, "session.json")) or {})
-        except Exception as e:
-            print("WARN: 写产物失败: %s" % e)
-    return 0 if not failed else 1
-
-
-def self_test():
-    """尺子自检：伪造一好一坏两局（临时目录），好局必须全过、坏局必须报出对应门。"""
-    import shutil
-    import tempfile
-    import zlib
-
-    def write_png(path, w, h, rows):
-        raw = b"".join(b"\x00" + bytes(r) for r in rows)
-
-        def chunk(t, d):
-            c = t + d
-            return len(d).to_bytes(4, "big") + c + zlib.crc32(c).to_bytes(4, "big")
-
-        png = b"\x89PNG\r\n\x1a\n" + \
-            chunk(b"IHDR", w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0])) + \
-            chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
-        with open(path, "wb") as f:
-            f.write(png)
-
-    def row(rgb, w):
-        return [v for _ in range(w) for v in (rgb[0], rgb[1], rgb[2], 255)]
-
-    def make(root, good):
-        """好局：6 张外部帧（尺寸对、有一帧内容丰富、序列里有一次显著变化）+ 脚本自报收工；
-        坏局：同样 6 张但**全是纯黑**（没内容也没变化），而且脚本**没写出 session.json**（卡死）。"""
-        ext = os.path.join(root, "external")
-        os.makedirs(ext, exist_ok=True)
-        metrics = []
-        for i in range(6):
-            rows = [row((0, 0, 0), NATIVE_W) for _ in range(NATIVE_H)]
-            colors, nonblack, drift = 1, 0.0, 0.0
-            if good and i >= 2:                      # 第 3 张起有内容，并且与上一张不同
-                rows[10] = row((255, 0, 0), NATIVE_W)
-                rows[11] = row((0, 255, 0), NATIVE_W)
-                rows[12] = row((0, 0, 255), NATIVE_W)
-                colors, nonblack, drift = 4, 3.0 / NATIVE_H, 0.02
-            write_png(os.path.join(ext, "e%05d.png" % i), NATIVE_W, NATIVE_H, rows)
-            metrics.append({"i": i, "w": NATIVE_W, "h": NATIVE_H, "colors": colors,
-                            "nonblack": nonblack, "drift": drift})
-        with open(os.path.join(root, "metrics.jsonl"), "w", encoding="utf-8") as f:
-            for m in metrics:
-                f.write(json.dumps(m) + "\n")
-        json.dump({"clientSize": [NATIVE_W, NATIVE_H], "window": "GBA", "steps": 12,
-                   "errors": [], "elapsedSec": 3.0},
-                  open(os.path.join(root, "drive.json"), "w", encoding="utf-8"))
-        if good:
-            json.dump({"reason": "steps", "steps": 12, "keys": ["A", "Start"],
-                       "frames": ["f00000.png"], "errors": [], "elapsedMs": 3000,
-                       "cfg": {"steps": 12}},
-                      open(os.path.join(root, "session.json"), "w", encoding="utf-8"))
-
-    tmp = tempfile.mkdtemp(prefix="gba_verify_")
-    try:
-        good, bad = os.path.join(tmp, "good"), os.path.join(tmp, "bad")
-        make(good, True)
-        make(bad, False)
-        rg, rb = judge(good), judge(bad)
-        ok_good = all(ok for _, ok, _ in rg["gates"])
-        bad_failed = [n for n, ok, _ in rb["gates"] if not ok]
-        ok_bad = set(bad_failed) == {"script_ran", "script_acted", "screen_alive", "screen_changed"}
-        # （坏局该失败的正是这四道：脚本没写出 session.json、没按过键；外部帧全黑 ⇒ 没内容、没变化）
-        print("self-test 好局 -> %s %s" % ("OK" if ok_good else "FAIL",
-                                          [(n, ok) for n, ok, _ in rg["gates"]]))
-        print("self-test 坏局 -> %s（该失败的门: %s）" % ("OK" if ok_bad else "FAIL", bad_failed))
-        print("SELF-TEST %s" % ("OK" if (ok_good and ok_bad) else "FAIL"))
-        return 0 if (ok_good and ok_bad) else 1
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        return None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="gba 任务断言（跑没跑起来 / 证据齐不齐；不判通关）")
-    ap.add_argument("--dir", default=CUR, help="判哪一局（默认 runs/current；也可指 runs/round_NNN）")
-    ap.add_argument("--check-only", action="store_true", help="只打印结论，不写产物（外部复验用）")
-    ap.add_argument("--self-test", action="store_true", help="尺子自检（伪造一好一坏两局）")
+    ap = argparse.ArgumentParser(description="shooter 玩法的尺子：清容器 → 装 game+play → 观察 → 判定")
+    ap.add_argument("--play", default="shooter", help="玩法名（task.json 的 plays）")
+    ap.add_argument("--port", type=int, default=0, help="已有容器的 HTTP 端口（0 = 自己起一个）")
+    ap.add_argument("--out", default=CUR, help="产物目录（默认 runs/current）")
+    ap.add_argument("--game-js", default="", help="题目侧产物（默认 build/<玩法配置的 js>）")
+    ap.add_argument("--play-js", default="", help="脚本产物（默认 build/play/play.js）")
+    ap.add_argument("--steps", type=int, default=0, help="观察多少拍（0 = 读玩法配置）")
+    ap.add_argument("--step-ms", type=int, default=0, help="每拍间隔（0 = 读玩法配置）")
+    ap.add_argument("--warmup", type=float, default=-1.0, help="装完脚本后先等多久（-1 = 读配置）")
+    ap.add_argument("--seconds", type=float, default=0.0, help="按时间收工（脚本参数）")
+    ap.add_argument("--target", type=int, default=0, help="通关线（0 = 读玩法配置）")
+    ap.add_argument("--keep", action="store_true", help="自己起的容器测完不杀（手工接着看）")
     args = ap.parse_args()
-    if args.self_test:
-        return self_test()
-    return run(args.dir, args.check_only)
+
+    cfg = E.play_config(args.play, base_dir=TASK)
+    steps = args.steps or int(cfg.get("steps", 120))
+    step_ms = args.step_ms or int(cfg.get("stepMs", 400))
+    warmup = args.warmup if args.warmup >= 0 else float(cfg.get("warmupSec", 2.0))
+    target = args.target or int(cfg.get("targetScore", 300))
+    program = cfg["program"]
+    game_js = args.game_js or os.path.join(BUILD, cfg["js"])
+    play_js = args.play_js or os.path.join(BUILD, "play", "play.js")
+    status_path = cfg.get("statusPath") or "runs/current/shooter_status.json"
+    if not os.path.isabs(status_path):
+        status_path = os.path.join(TASK, status_path)
+
+    for p, why in ((game_js, "题目侧产物(game.js)"), (play_js, "脚本产物(play.js)")):
+        if not os.path.exists(p):
+            print("FAIL: 找不到 %s: %s（先编译：tsc -p tsconfig.json）" % (why, p))
+            return 1
+
+    out = args.out
+    ext_dir = os.path.join(out, "external")
+    metrics_path = os.path.join(out, "metrics.jsonl")
+    os.makedirs(out, exist_ok=True)
+    shutil.rmtree(ext_dir, ignore_errors=True)
+    os.makedirs(ext_dir, exist_ok=True)
+    for f in ("metrics.jsonl", "result.json", "report.md", "session.json"):
+        p = os.path.join(out, f)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                open(p, "w").close()      # 删不掉就清空（本机删除会走回收站）
+
+    own_container = (args.port == 0)
+    box = None
+    started = time.time()
+    frames = 0
+    status = None
+    verdict = "unknown"
+    detail = ""
+    try:
+        # ---- 0) 容器：外部给的 or 自己起一个 ----
+        if own_container:
+            box = E.HeadlessContainer(cfg="Debug", desktop=cfg["desktop"],
+                                      log_path=os.path.join(out, "container_stdout.txt"))
+            box.__enter__()
+            conn = box.c
+            log("自起容器: %s（桌面 %s）" % (conn.base, cfg["desktop"]))
+        else:
+            conn = E.Container(args.port)
+            log("用已有容器: %s" % conn.base)
+
+        # ---- ① 清空容器里所有程序 ----
+        try:
+            names = [p.get("name") for p in conn.programs()]
+        except Exception as ex:
+            print("FAIL: 容器不可用（%s）: %r" % (conn.base, ex))
+            return 1
+        for name in names:
+            log("清掉容器里的程序: %s" % name)
+            try:
+                conn.stop_program(name)
+            except Exception as ex:
+                log("  （没清掉: %r）" % ex)
+        if names:
+            time.sleep(0.5)
+
+        # ---- ② 装 game（题目侧）----
+        E.write_game_config(os.path.dirname(game_js), cfg.get("dllDir", ""), cfg.get("rom", ""),
+                            status_path=status_path, extra={"targetScore": target})
+        log("装游戏: %s（进程名 %s）" % (os.path.relpath(game_js, TASK), program))
+        conn.load_program(program, game_js, work_dir=os.path.dirname(game_js))
+        win = conn.wait_window(program, timeout=60)
+        if not win:
+            print("FAIL: 游戏窗口没出来（%s 起不来？看 container_stdout.txt）" % program)
+            return 1
+        client = win.get("client") or [0, 0, 0, 0]
+        log("游戏窗口: title=%s client=%s" % (win.get("title"), client))
+
+        # ---- ③ 装 play（产出物）----
+        E.write_play_config(BUILD, out, window=cfg["window"], warmup_sec=warmup, steps=steps,
+                            step_ms=step_ms, max_seconds=args.seconds, app=program, play=cfg["play"])
+        log("装脚本: %s（预热 %ss）" % (os.path.relpath(play_js, TASK), warmup))
+        conn.load_program(E.PLAY_PROGRAM, play_js, work_dir=os.path.dirname(play_js))
+
+        # ---- ④ 一边跑一边抓帧 + 读状态 ----
+        session_path = os.path.join(out, "session.json")
+        budget = (args.seconds if args.seconds > 0 else steps * step_ms / 1000.0) + warmup + 30.0
+        t_end = time.time() + budget
+        script_done_at = 0.0
+        prev_img = None
+        log("观察中（最多 %.0fs；通关线 %d 分）…" % (budget, target))
+        while time.time() < t_end:
+            status = read_status(status_path)
+            if status:
+                if status.get("win"):
+                    verdict, detail = "cleared", "通关：score=%s" % status.get("score")
+                    break
+                if status.get("over"):
+                    verdict, detail = "game_over", "被打死：score=%s" % status.get("score")
+                    break
+            try:
+                progs = {p.get("name") for p in conn.programs()}
+                if program not in progs:
+                    verdict, detail = "program_gone", "游戏进程不在了"
+                    break
+                if E.PLAY_PROGRAM not in progs:
+                    verdict, detail = "script_gone", "脚本进程退出了"
+                    break
+                p = os.path.join(ext_dir, "e%05d.png" % frames)
+                with open(p, "wb") as f:
+                    f.write(conn.screen_png(win.get("id")))
+                img = E.read_png(p)
+                m = {"i": frames, "tMs": int((time.time() - started) * 1000),
+                     "file": os.path.relpath(p, TASK), "w": img[0], "h": img[1],
+                     "colors": E.unique_colors(img), "nonblack": round(E.nonblack_ratio(img), 4),
+                     "drift": round(E.diff_ratio(prev_img, img), 4) if prev_img else 0.0,
+                     "score": (status or {}).get("score")}
+                prev_img = img
+                with open(metrics_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
+                frames += 1
+            except Exception as ex:
+                log("抓帧失败: %r" % ex)
+                time.sleep(0.5)
+            if script_done_at == 0.0 and os.path.exists(session_path) \
+                    and os.path.getsize(session_path) > 0:
+                script_done_at = time.time() + 8.0     # 脚本收工后再给 8s 宽限（游戏可能还在跑）
+                log("脚本已收工，再观察 8s")
+            if script_done_at and time.time() > script_done_at:
+                verdict, detail = "running", "脚本已收工但还没通关"
+                break
+            time.sleep(max(0.05, step_ms / 1000.0))
+        else:
+            verdict, detail = "running", "到点还在跑（没通关也没死）"
+    finally:
+        if own_container and box is not None and not args.keep:
+            box.__exit__(None, None, None)
+            log("容器已收掉")
+
+    passed = (verdict == "cleared")
+    result = {
+        "play": cfg["play"], "verdict": verdict, "pass": passed, "detail": detail,
+        "target": target, "status": status or {}, "externalFrames": frames,
+        "elapsedSec": round(time.time() - started, 2),
+        "container": {"program": program, "window": cfg["window"], "native": cfg["native"],
+                      "desktop": cfg["desktop"], "own": own_container},
+        "ts": int(time.time()),
+    }
+    with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    # ---- ⑥ 一页摘要（给人/给 agent 看）----
+    best = ""
+    if frames:
+        best = os.path.relpath(os.path.join(ext_dir, "e%05d.png" % max(0, frames // 2)), TASK)
+    lines = ["# shooter 一局判定", "",
+             "- 结论: **%s**（%s）" % (verdict, detail),
+             "- 通关线: %d 分；状态: %s" % (target, json.dumps(status or {}, ensure_ascii=False)),
+             "- 观察 %d 帧 / 用时 %.1fs" % (frames, result["elapsedSec"]),
+             "- 容器: 进程 %s，窗口 %s，桌面 %s%s"
+             % (program, cfg["window"], cfg["desktop"], "（自起）" if own_container else "（外部给）"),
+             ""]
+    if best:
+        lines += ["关键帧: ![f](%s)" % best, ""]
+    with open(os.path.join(out, "report.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    print("== shooter 判定: %s（%s）｜通关线 %d｜观察 %d 帧｜用时 %.1fs"
+          % (verdict, detail, target, frames, result["elapsedSec"]))
+    print("PASS" if passed else "FAIL")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

@@ -60,6 +60,12 @@ if(HAS_JZEmulator)
     jz_emulator_enable(jz_virtual_process)
 endif()
 
+# computer use 的**像素族模板匹配**（matchImage）要 OpenCV：找到就接, 没装自动跳过。
+# ⚠ 这一份 JZComputerUse.cpp 编在**本库**里（见上面的 SOURCES），所以宏/头要加在本库上;
+#   运行库 DLL 由 exe 那侧拷（见下面 virtual_device 的 jz_opencv_enable）。
+#   颜色查找 matchColor **不依赖 OpenCV**（纯 C++ 实现, 快且能取到"最大的那块"）。
+jz_opencv_enable(jz_virtual_process)
+
 # 宿主程序: VirtualVm 风格 —— 菜单栏 + 中央滚动区, 滚动区里是 800x600 的虚拟屏;
 # 菜单里可以"新建进程窗口"(起一个线程 + 一份 JS 运行时, 里面建窗口)
 add_executable(virtual_device main.cpp)
@@ -72,6 +78,10 @@ set_target_properties(virtual_device PROPERTIES
 if(HAS_JZEmulator)
     jz_emulator_enable(virtual_device)
 endif()
+
+# computer use 的像素族（matchImage 模板匹配）也要 OpenCV ⇒ exe 这边把 opencv_world DLL
+# 按配置拷到边上（宏/头加在 jz_virtual_process 上, 因为那份 JZComputerUse.cpp 编在那里）
+jz_opencv_enable(virtual_device)
 
 # 进程里的引擎按 **exe 目录** 找 JS 包 (JZEngineRuntime: <appDir>/jz_js/<pkg>/dist/...) ——
 # 把控件类层部署到 exe 边上, 于是 JS 里 new JZWindow/JZPushButton 才有类可用

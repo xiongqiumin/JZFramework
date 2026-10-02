@@ -18,7 +18,8 @@
   6. 鼠标 + 键盘           点输入框 -> 打字 -> 点按钮 -> 窗口标题变成 "文本=hello"
   7. 拖动                  按标题栏拖 -> frame 位置真的变了 (窗口管理器那条路)
   8. /api/desktop scale=2  截图翻倍, 而坐标/几何一个都没动 (DPI 不进坐标)
-  9. 程序                  再跑一段 (eval) / 用文件加载 / 停掉 -> 窗口一起收走
+  9. 程序                  用文件加载 (ESM 模块) / 停掉 -> 窗口一起收走
+  9b. 程序异常退出        未处理异常 = 那个程序自己退出 (程序表消失 + 窗口收走); 起来就崩 -> 400
  10. 查找 / 枚举窗口       句柄 id / 下标 / 标题 三种标识, ?process= ?title= ?visible= 过滤,
                            at=x,y = WindowFromPoint (+ 客户区坐标)
  11. 直投窗口输入          给**后台窗口**发鼠标/键盘 (不激活它): 点输入框 -> 打字 -> 点按钮
@@ -304,12 +305,10 @@ def main():
         api.json("POST", "/api/desktop", {"scale": 1})
         t.eq("改回 1", png_size(api.screen()), (800, 600))
 
-        print("== 9) 程序: 再跑一段 / 加载 JS 程序(模块) / 停掉 ==")
-        ev = api.json("POST", "/api/programs/prog1/eval", {"script": "1 + 1;"})
-        t.check("eval 在已跑的程序里执行成功", ev.get("ok") is True, ev)
+        print("== 9) 程序: 加载 JS 程序(模块) / 停掉 ==")
 
         # 一个**真程序**: ESM 模块 (有 import/export), 标题里带回"运行根对不对"的结论 ——
-        # 只有按模块加载才跑得起来 (`export` 在 eval 下是语法错误), 也只有模块才有入口目录。
+        # 只有按模块加载才跑得起来 (`export` 当一段文本跑是语法错误), 也只有模块才有入口目录。
         seg = os.path.basename(out_dir)
         js_path = os.path.join(out_dir, "mod_app.js")
         with open(js_path, "w", encoding="utf-8") as f:
@@ -340,6 +339,33 @@ def main():
                 [w["title"] for w in api.windows()["windows"]])
         t.eq("程序表只剩 prog1", [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
              ["prog1"])
+
+        print("== 9b) 未处理异常 = 那个程序退出 (窗口一起收走) ==")
+        # ① 起来就抛: 加载直接失败 (400 + 错误文本), 而不是 ok + 空窗口列表
+        status, raw = api.raw("POST", "/api/programs",
+                              {"name": "prog_boot", "script": "throw new Error('boot');"})
+        t.eq("起来就崩 -> 400", status, 400)
+        t.check("错误文本回到调用方", b"boot" in raw, raw[:200])
+        t.check("它没留在程序表里",
+                "prog_boot" not in [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
+                api.json("GET", "/api/programs")["programs"])
+
+        # ② 跑起来再抛: 程序自己退出 -> 从程序表消失 + 窗口一起收走 (容器不退)
+        late = ("const w = new JZWindow(220, 120, 'late_boom'); w.show();"
+                "setTimeout(() => { throw new Error('late'); }, 400);")
+        lp = api.json("POST", "/api/programs", {"name": "prog_late", "script": late})
+        t.check("先正常跑起来 (有窗口)", len(lp.get("windows", [])) == 1, lp.get("windows"))
+        gone = False
+        for _ in range(40):                      # 最多等 2 秒
+            time.sleep(0.05)
+            if not any(p["name"] == "prog_late" for p in api.json("GET", "/api/programs")["programs"]):
+                gone = True
+                break
+        t.check("异常后程序自己退出 (从程序表消失)", gone, api.json("GET", "/api/programs"))
+        t.check("它的窗口一起收走",
+                not any(w["title"] == "late_boom" for w in api.windows()["windows"]),
+                [w["title"] for w in api.windows()["windows"]])
+        t.check("容器自己活着 (没跟着退)", api.json("GET", "/api/health").get("ok") is True)
 
         print("== 10) 查找 / 枚举窗口 (Windows 风格) ==")
         live_win = api.window_by_title(live)

@@ -33,7 +33,10 @@ class JZPainter;
 //   ② 注入输入 (点/键/滚轮): jzApp->sendEvent(clientWindow, ev) —— 跨线程会投递并**阻塞等**
 //      对方处理完 (同步 RPC), 于是点击的顺序/返回值与单线程时一样确定;
 //   ③ 取帧 (合成时读客户区帧缓冲): 让**窗口自己的线程**拷一帧 (jzRunOnThreadSync, 见
-//      JZVirtualThread.h), 桌面只拿一份拷贝, 不碰别人的帧缓冲。
+//      JZVirtualThread.h), 桌面只拿一份拷贝, 不碰别人的帧缓冲;
+//   ④ 进程**自己**结束 (未处理异常 / 线程体跑完): 进程线程投一个异步事件过来 -> 本类
+//      terminateProcess 收尾 (摘表 + 收窗口 + delete, 见 JZVirtualProcess::finishProcess)。
+//      所以桌面不需要"定期清扫死进程", 程序表里不会留跑完了的进程。
 
 // ==================== 虚拟桌面 (虚拟显示器 + 窗口管理器) ====================
 // 它就是"这台虚拟机的屏幕": 一块 desktopW × desktopH 的画布 + 其上的窗口管理器。

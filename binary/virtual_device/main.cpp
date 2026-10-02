@@ -191,7 +191,7 @@ public:
         // ---- 把 computer use 的后端指向**本容器这块桌面** ----
         // 于是容器里跑的 JS 程序可以直接用 __jz.computeruse.* (screenshot/click/key/wait...)
         // 操作同一块屏幕上的别的窗口 —— 脚本就按"像人一样操作这台小电脑"的方式写
-        // (例: auto_code/gba/play.ts)。宿主侧同样受益: 宿主里调的 CU 也就是这块桌面。
+        // (例: auto_code/game_play/play/play.ts)。宿主侧同样受益: 宿主里调的 CU 也就是这块桌面。
         // ⚠ 必须赶在下面的 --program / HTTP 加载程序之前接上: 程序一起来就可能调 CU API。
         JZComputerUse::setVirtualDesktop(&m_screen);
 

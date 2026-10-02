@@ -205,8 +205,6 @@ JZVirtualDeviceHttp::JZVirtualDeviceHttp(JZVirtualDevice* screen, JZObject* pare
     addRoute("/api/input/mouse", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleMouse(c, r); });
     addRoute("/api/input/key", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleKey(c, r); });
     addRoute("/api/programs", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handlePrograms(c, r); });
-    addRoute("/api/programs/<name>/eval",
-             [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleProgramEval(c, r); });
     addRoute("/api/programs/<name>",
              [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleProgramStop(c, r); });
 }
@@ -415,44 +413,6 @@ bool JZVirtualDeviceHttp::resolveProgram(const Json::Value& body, std::string& s
         return true;
     }
     error = "要给 file (一个 JS 程序) 或 script (一段代码)";
-    return false;
-}
-
-bool JZVirtualDeviceHttp::readScript(const Json::Value& body, std::string& script,
-                                     std::string& workDir, std::string& error) const
-{
-    if (body.isMember("script")) {
-        script = body["script"].asString();
-        workDir = body.get("workDir", "").asString();
-        if (script.empty()) {
-            error = "script 是空的";
-            return false;
-        }
-        return true;
-    }
-    if (body.isMember("file")) {
-        const std::string path = body["file"].asString();
-        JZFile f;
-        if (path.empty() || !f.open(path, "rb")) {
-            error = "读不到脚本文件: " + path;
-            return false;
-        }
-        script = str_fromUtf8(f.readAll());       // TS/JS 源码按 UTF-8 存
-        f.close();
-        if (script.empty()) {
-            error = "脚本文件是空的: " + path;
-            return false;
-        }
-        workDir = body.get("workDir", "").asString();
-        if (workDir.empty()) {
-            // 缺省运行根 = 脚本所在目录: 引擎按它找相对路径/模块 (与 code_runtime --entry 一致)
-            const int p = (int)path.find_last_of("/\\");
-            if (p > 0)
-                workDir = path.substr(0, (size_t)p);
-        }
-        return true;
-    }
-    error = "要给 script (源码) 或 file (脚本路径)";
     return false;
 }
 
@@ -1188,43 +1148,6 @@ void JZVirtualDeviceHttp::handlePrograms(JZHttpServerClient* client, const JZHtt
         (*box)["module"] = moduleRel;                  // 空的 = 跑的是脚本文本
         (*box)["workDir"] = workDir;
         (*box)["windows"] = windowsOfProgram(name);     // 拿到响应就能截图/点击, 不用自己轮询
-    });
-    if (!ok) {
-        replyError(client, req, 500, "桌面线程没有响应");
-        return;
-    }
-    replyJson(client, req, *box);
-}
-
-void JZVirtualDeviceHttp::handleProgramEval(JZHttpServerClient* client, const JZHttpRequest& req)
-{
-    if (req.method() != JZHttpRequest::POST) {
-        replyError(client, req, 405, "只支持 POST");
-        return;
-    }
-    if (!m_host.run) {
-        replyError(client, req, 501, "宿主没有登记程序管理 (JZVirtualProgramHost)");
-        return;
-    }
-    Json::Value body;
-    if (!takeBody(client, req, body))
-        return;
-    const std::string name = percentDecode(req.param("name"));    // 路径值要自己解码 (见 percentDecode)
-    std::string script, workDir, error;
-    if (!readScript(body, script, workDir, error)) {
-        replyError(client, req, 400, error);
-        return;
-    }
-    if (!m_host.run(name, script, error)) {
-        replyError(client, req, 400, error.empty() ? "执行失败" : error);
-        return;
-    }
-    auto box = std::make_shared<Json::Value>(Json::objectValue);
-    const bool ok = onScreen([this, box, name]() {
-        m_screen->refresh();
-        (*box)["ok"] = true;
-        (*box)["name"] = name;
-        (*box)["windows"] = windowsOfProgram(name);
     });
     if (!ok) {
         replyError(client, req, 500, "桌面线程没有响应");

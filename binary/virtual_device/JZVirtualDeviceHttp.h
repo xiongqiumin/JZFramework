@@ -59,10 +59,13 @@ class JZHttpRequest;
 //                                                          import 可用, 运行根 = 它所在目录,
 //                                                          workDir 缺省也取它所在目录)
 //                                                 script = 一段脚本 (直接跑, 无模块语义)
+//                                                 ⚠ 程序**起来就崩** (未处理异常/初始化失败)
+//                                                    回 400 + 错误文本 —— 不是 ok + 空窗口列表
 //   GET    /api/programs                          程序表 (名字 + 它建的窗口)
-//   POST   /api/programs/<name>/eval  {script|file}          在已跑的程序里再执行一段代码
-//                                                          (file 会被读成代码去 eval)
 //   DELETE /api/programs/<name>                   停掉程序 (连带收走它的窗口)
+//
+// ⚠ **程序的未处理异常 = 那个程序退出** (与真系统同语义): 它从 /api/programs 消失、窗口一起
+//   收走, 容器不退、别的程序不受影响 (见 JZVirtualProcess.h 的"未处理异常 = 进程退出")。
 //
 // 两套输入的区别 (与真系统同一套对照):
 //   · 走桌面 (/api/input/*): 坐标 = **桌面**逻辑坐标 —— 命中测试 -> 激活那个窗口 ->
@@ -79,7 +82,7 @@ class JZHttpRequest;
 // 线程: 本对象**在哪个线程建就在哪个线程响应** (JZHttpServer 的会话会被移到它所在线程)。
 // 宿主程序建在主线程 ⇒ 回调也主线程 ⇒ 与桌面同线程, 一切直来直去 (投递只是兜底)。
 
-// 宿主侧的"程序管理" (见上面纪律第 5 条): 四个回调都可以不给 —— 没给的那个接口回 501。
+// 宿主侧的"程序管理" (见上面纪律第 5 条): 三个回调都可以不给 —— 没给的那个接口回 501。
 // `jz_virtual_process` 已提供现成实现: `jzAttachVirtualProgramHost(desk, api)` (一行接上)。
 struct JZVirtualProgramHost
 {
@@ -89,8 +92,6 @@ struct JZVirtualProgramHost
     std::function<bool(const std::string& name, const std::string& script,
                        const std::string& workDir, const std::string& moduleRel,
                        std::string& error)> launch;
-    // 在已跑的程序里再执行一段 (同步等它跑完; 失败给 error)
-    std::function<bool(const std::string& name, const std::string& script, std::string& error)> run;
     // 程序名列表 (GET /api/programs)
     std::function<std::vector<std::string>()> list;
     // 停掉一个程序 (连带它建的窗口)
@@ -139,7 +140,6 @@ private:
     void doKeyInput(const Json::Value& body, JZVirtualWindow* target,
                     Json::Value& out, std::string& error);
     void handlePrograms(JZHttpServerClient* client, const JZHttpRequest& req);  // GET 列表 / POST 加载
-    void handleProgramEval(JZHttpServerClient* client, const JZHttpRequest& req);
     void handleProgramStop(JZHttpServerClient* client, const JZHttpRequest& req);
 
     // ---- 内部小工具 ----
@@ -161,9 +161,6 @@ private:
     //   script -> script = 那段代码 (直接跑)
     bool resolveProgram(const Json::Value& body, std::string& script, std::string& workDir,
                         std::string& moduleRel, std::string& error) const;
-    // 在已跑程序里"再执行一段代码"用: `script` 直接给, 或 `file` 从磁盘读成代码 (eval)
-    bool readScript(const Json::Value& body, std::string& script,
-                    std::string& workDir, std::string& error) const;
 
     JZVirtualDevice* m_screen = nullptr;
     JZHttpServer* m_http = nullptr;      // 监听 + 路由 (handler 挂它名下, 随本对象析构)

@@ -90,6 +90,9 @@ JZVirtualDevice::~JZVirtualDevice()
 // ==================== 进程管理 ====================
 // 桌面不认识 JS 引擎: 进程就是"一个 JZThread" —— 停它/等它/删它都是 JZThread 的接口,
 // 具体是什么进程 (JZVirtualProcess: 线程 + JZEngineRuntime) 由 jz_virtual_process 决定。
+// 登记一个进程 (进程自己在 start 里调)。停/等的入口是 terminateProcess —— 桌面只认 JZThread。
+// 进程**自己**结束 (未处理异常 -> JZVirtualProcess::run 末尾) 时也会来走 terminateProcess:
+// 那条路是进程线程往本线程(主线程)投一个异步事件, 见 JZVirtualProcess::run。
 void JZVirtualDevice::addProcess(JZThread* p)
 {
     if (!p)
@@ -109,7 +112,10 @@ void JZVirtualDevice::terminateProcess(JZThread* p)
             return;
     }
 
-    // ① 停线程 + 等它真正结束 —— 之后它再也不会碰桌面 (引擎也在那个线程里销毁了)
+    // ① 停线程 + 等它真正结束 —— 之后它再也不会碰桌面 (引擎也在那个线程里销毁了)。
+    //    ⚠ 进程线程跑完时还会往本线程投一个"清理我"的事件 (见 JZVirtualProcess::run) ——
+    //      那是个**不带发送者**的异步事件, 且捕获的是弱引用: 上面 join 之后本函数已经把 p
+    //      删掉, 那个事件后到时判活失败直接跳过, 不会碰已失效的进程。
     p->quit();          // JZThread::quit = 请求退出(协作式) + 唤醒事件循环
     p->wait();          // join
 

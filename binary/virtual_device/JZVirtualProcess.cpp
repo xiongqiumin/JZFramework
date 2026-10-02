@@ -1,8 +1,10 @@
 // ==================== 虚拟进程: 一个线程 + 一份 JS 运行时 + 它的窗口 ====================
-// 线程模型 (见 JZVirtualProcess.h 的头注释): 与桌面的通信只有三处 ——
+// 线程模型 (见 JZVirtualProcess.h 的头注释): 与桌面的通信只有四处 ——
 //   ① 建窗: 本线程 JZWindow 构造 -> 窗口宿主(内部小类 WindowHost) -> 桌面 adoptWindow;
 //   ② 输入/焦点: 桌面 jzApp->sendEvent(client, ev) -> 投到本线程并等它处理完 (同步);
-//   ③ 帧: 反过来 —— 本线程画完把帧推给桌面 (captureFrame), 桌面合成只读那份拷贝。
+//   ③ 帧: 反过来 —— 本线程画完把帧推给桌面 (captureFrame), 桌面合成只读那份拷贝;
+//   ④ 本进程结束 (异常退出/线程体跑完): 本线程投一个异步事件给桌面 -> terminateProcess
+//      收尾 (见 finishProcess: 摘表 + 收窗口 + delete, 全在主线程)。
 // 于是**没有**"跨线程直接摸别人的对象"的地方: 要么走框架的事件投递, 要么走桌面的锁。
 #include "JZVirtualProcess.h"
 #include "JZVirtualWindow.h"
@@ -86,7 +88,8 @@ void JZVirtualProcess::run()
     if (!initRuntime()) {
         jzError() << "[vproc] " << m_name << " 运行时起不来: " << lastError();
         jzSetWindowHost(nullptr);
-        return;                          // 线程立刻结束 (等待方由 waitWindow/isRunning 判定)
+        finishProcess();                 // 线程立刻结束 (等待方看 isFinished, 见头注释)
+        return;
     }
 
     // 加载程序 (它里面通常 `new JZWindow(...)` —— 那一步就把窗口交给桌面了):
@@ -105,6 +108,32 @@ void JZVirtualProcess::run()
     JZThread::exec();
 
     destroyRuntime();
+
+    finishProcess();
+}
+
+// run() 的收尾 (两处调用: 初始化失败 / 跑完): 置 isFinished + 让桌面收尾。
+// run() 到这里就已经不干活了 (引擎已销毁), 剩下的只是**通知**。
+void JZVirtualProcess::finishProcess()
+{
+    // ⚠ 必须显式置位: JZThread::isRunning 判的是"std::thread 还 joinable", 线程函数返回后
+    //   它仍为 true(要等 join) —— 所以"跑完没有"只有进程自己说得清 (见 isFinished)。
+    m_finished = true;
+
+    // 本进程跑完了 (未处理异常 / 桌面 quit): 线程即将结束, 让桌面收尾 (摘表 + 收窗口 + delete)。
+    // 用 runOnObject 这种**不带发送者**的异步投递, 而不是 JZThread::sigFinished 信号:
+    // 异步信号事件里 sender 是裸指针, 而框架"异步发送只检测接收, 不检测发送者是否存在"
+    // (见 JZSignal.h) —— DELETE /api/programs 可能先把本进程收掉, 那个在途事件就会拿着
+    // 已失效的 this。这里投递的事件没有 sender, 再捕获弱引用判活, 两头都安全。
+    if (m_device) {
+        JZObjectPointer guard = guardPointer();
+        JZVirtualDevice* desk = m_device;
+        runOnObject(desk, [desk, guard]() {
+            JZObject* obj = guard.object();       // 已被 DELETE 收掉 -> nullptr, 什么都不做
+            if (obj)
+                desk->terminateProcess(static_cast<JZThread*>(obj));
+        });
+    }
 }
 
 bool JZVirtualProcess::initRuntime()
@@ -121,7 +150,11 @@ bool JZVirtualProcess::initRuntime()
     });
     m_runtime.setUnhandledExceptionHandler([this](const std::string& e) {
         setError(e);
-        jzError() << "[vproc:" << m_name << "] 未处理异常: " << e;
+        jzError() << "[vproc:" << m_name << "] 未处理异常(进程退出): " << e;
+        // 未处理异常 = 程序失败 = 本进程退出 (与真系统同语义, 理由见头注释):
+        //   quit() 只置退出标志 + 唤醒事件循环; run() 从 exec() 出来后 destroyRuntime(),
+        //   再由 finishProcess() 通知桌面摘表 + 收窗口。这里**不**直接碰别的线程。
+        JZThread::quit();
     });
     // ⚠ 走模块那条路 (真程序) 时**不在这里建会话**: 交给一站式 init(运行根, 入口) ——
     //   它会把运行根/入口登记对, 而"程序按入口目录找随它走的资源"这条约定就落在那上面
@@ -190,6 +223,8 @@ JZWindow* JZVirtualProcess::windowClient() const
 }
 
 // 等"窗口已建出来且已显示" (JS 是异步跑的, 建窗发生在进程线程里)。
+// ⚠ 用 isFinished 而不是 JZThread::isRunning: 后者在线程函数返回后仍为 true(joinable),
+//   于是"起来就崩"的程序会让等待方白等满超时 (见 isFinished 的说明)。
 bool JZVirtualProcess::waitWindow(int timeoutMs)
 {
     const int64_t end = JZPlatform::getTickCountMs() + (timeoutMs > 0 ? timeoutMs : 3000);
@@ -197,8 +232,8 @@ bool JZVirtualProcess::waitWindow(int timeoutMs)
         JZVirtualWindow* w = window();
         if (w && w->isVisible())
             return true;
-        if (!JZThread::isRunning())
-            return w != nullptr;         // 线程结束了: 有就有, 没有不会再有
+        if (m_finished)
+            return w != nullptr;         // 线程跑完了 (含异常退出): 有就有, 没有不会再有
         if (JZPlatform::getTickCountMs() >= end)
             return w != nullptr;         // 超时: 建出来了就算成功 (可能还没 show)
         JZThread::msleep(5);
@@ -293,26 +328,19 @@ void jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api)
             return false;
         }
         if (!p->waitWindow(5000)) {
+            // 起来就结束了 (未处理异常 / 初始化失败) ⇒ 这是**加载失败**, 如实报错。否则调用方
+            // 拿到 ok + 空窗口列表, 而进程其实已经退出 (见 JZVirtualProcess.h 的异常=退出)。
+            if (p->isFinished() && !p->ok()) {
+                error = p->lastError();
+                if (error.empty())
+                    error = "程序起来就退出了 (未处理异常?): " + name;
+                desk->terminateProcess(p);     // 立刻收掉: 它还挂在程序表里
+                return false;
+            }
+            // 不建窗口的程序是合法的 (纯脚本): 等不到窗口不算失败, 由调用方看 windows 列表
             const std::string why = p->lastError();
             jzInfo() << "[vproc] " << name << " 起来了但 (5 秒内) 没建出窗口"
                      << (why.empty() ? "" : (": " + why));
-        }
-        desk->refresh();
-        return true;
-    };
-
-    // 在已跑的程序里再执行一段 (同步等它跑完): 自动化用来"喂"下一步脚本/取中间状态
-    host.run = [desk](const std::string& name, const std::string& script, std::string& error) -> bool {
-        JZVirtualProcess* p = jzFindVirtualProcess(desk, name);
-        if (!p) {
-            error = "没有这个程序: " + name;
-            return false;
-        }
-        if (!p->runScript(script)) {
-            error = p->lastError();
-            if (error.empty())
-                error = "脚本执行失败: " + name;
-            return false;
         }
         desk->refresh();
         return true;

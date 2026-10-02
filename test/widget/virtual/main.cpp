@@ -504,7 +504,10 @@ int main(int argc, char* argv[])
             check(desk.processes().empty(), "terminateProcess: 进程从桌面摘掉");
             check(desk.byTitle("proc-win") == nullptr && desk.byTitle("proc-clicked") == nullptr,
                   "进程的窗口被一起收走");
-            check(desk.windows().size() == beforeProc + 1, "进程的窗口收走后桌面回到原来的窗口数");
+            // ⚠ 期望值是 beforeProc（= 起进程**之前**的窗口数）：进程那个窗口已经在
+            //   terminateProcess 里被收走（上一条 byTitle==nullptr 就证明了），所以数量该**回退**。
+            //   原来写的 +1 是照抄了上面 js-win 那条（那条窗口是保留的，+1 才对）。
+            check(desk.windows().size() == beforeProc, "进程的窗口收走后桌面回到原来的窗口数");
         }
     }
 

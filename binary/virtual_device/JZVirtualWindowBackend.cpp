@@ -84,6 +84,11 @@ void JZVirtualWindowBackend::show(JZWindow* w)
         d->activate(m_vwin);
     else
         m_vwin->notifyScreen();
+    // 到这里"摆位 + 首帧 + 置顶聚焦"都做完了 ⇒ 置"可用"标志。
+    // ⚠ 必须放在**最后**、且由**本线程**置位: 跨线程的等待方(JZVirtualProcess::waitWindow)
+    //   只读这个标志, 就不用去碰别人线程上的窗口状态 —— 那样会形成锁序反转,
+    //   实测会把等待方卡死(整个用例从 2 秒变 60 秒超时)。
+    m_vwin->markReadyForUse();
 }
 
 // 脏区: 排给**窗口自己的线程**去画 (见 JZWindowBackend::onInvalidate)。

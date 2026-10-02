@@ -229,6 +229,13 @@ JZWindow* JZVirtualProcess::windowClient() const
 }
 
 // 等"窗口已建出来且已显示" (JS 是异步跑的, 建窗发生在进程线程里)。
+// ⚠ 这里只保证"可见"。而"可见"是 show() 流程的**第一步**, 出首帧 / 置顶聚焦都排在它后面、
+//   由**进程线程**做 ⇒ 本函数返回时窗口可能还没激活、还没有帧 (要判这个可以用
+//   JZVirtualWindow::isReadyForUse())。
+// ⚠⚠ 返回之后**不要立刻**对那个窗口做跨线程同步的动作(注入输入 / 取帧 / RPC): 那类调用是
+//   "投到窗口线程并阻塞等它"(见 JZVirtualWindow::injectMouse 与 clientFrame 的说明), 而
+//   窗口线程这时正忙着 show 排下来的脏区重绘/合成, 两边会互等 ⇒ 实测直接死锁(用例从 2 秒
+//   变成永久挂住)。那条路的等待语义还没理顺, 见 test/widget/virtual/main.cpp 的进程段。
 // ⚠ 用 isFinished 而不是 JZThread::isRunning: 后者在线程函数返回后仍为 true(joinable),
 //   于是"起来就崩"的程序会让等待方白等满超时 (见 isFinished 的说明)。
 bool JZVirtualProcess::waitWindow(int timeoutMs)

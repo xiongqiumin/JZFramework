@@ -5,6 +5,7 @@
 #include "JZImage.h"
 #include "JZRect.h"
 #include <string>
+#include <atomic>            // m_readyForUse: 跨线程可读的"可用"标志(见 isReadyForUse)
 
 class JZVirtualDevice;
 class JZThread;
@@ -115,6 +116,13 @@ public:
     bool isVisible() const;
     bool isActive() const;
     void activate();                 // 置顶 + 键盘焦点 (桌面管理器实现)
+    // "可用"信号: 平台那次 show 里的事(摆位 + 出首帧 + 置顶聚焦)**全部**做完了。
+    // 由**窗口自己的线程**在 show 末尾置位(见 JZVirtualWindowBackend::show), 所以谁都能安全地
+    // 读它 —— 跨线程的调用方(例如 JZVirtualProcess::waitWindow)该等的就是它。
+    // ⚠ 别拿 isVisible() 替代: "可见"只是 show 的第一步, 出首帧/激活都排在它后面。同理,
+    //   不要去别的线程上调 isActive()/frame() —— 它们不是给跨线程读的(实测会卡死)。
+    bool isReadyForUse() const { return m_readyForUse.load(); }
+    void markReadyForUse() { m_readyForUse.store(true); }   // 只该在窗口自己的线程上调
     void setFocus(bool got);         // 键盘焦点进/出 (== WM_SETFOCUS/WM_KILLFOCUS)
     // 关窗: 走框架的 close() (派发 closeEvent, 接受才隐藏) —— 与真窗口同语义
     bool close();
@@ -183,6 +191,9 @@ private:
     JZObjectPointer m_clientGuard;     // 客户区存活守卫: 它被别处销毁后这里自动变空
     JZImage m_frame;                   // 客户区最近一帧的拷贝 (见 captureFrame)
     bool m_frameDirty = false;         // 帧缓冲变过但还没拷 (别的线程改过状态)
+    // "可用"标志(见 isReadyForUse): 窗口线程在平台 show 末尾置真。用原子量是因为读它的
+    // 一定是**别的线程**(跨线程等窗口建成可用) —— 这里必须无锁, 免得与其线程互等。
+    std::atomic<bool> m_readyForUse{ false };
     bool m_autoPosition = false;       // 见 setAutoPosition
 
     int m_x = 0;                       // 外框左上角 (桌面坐标)

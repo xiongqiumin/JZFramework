@@ -46,7 +46,7 @@ class JZVirtualDeviceHttp;
 //
 // 用法 (宿主/测试):
 //     JZVirtualProcess* p = desk.createProcess("app1", "JS 源码");
-//     p->waitWindow(3000);                       // 等它把窗口建出来
+//     p->waitWindow(3000);                       // 等它把窗口建出来 (只保证已显示)
 //     desk.injectClickAt(x, y);                  // 点它 —— 事件会落到它自己的线程
 //     desk.terminateProcess(p);                  // 停掉它 (窗口一起收走)
 class JZVirtualProcess : public JZThread
@@ -75,7 +75,10 @@ public:
     // 本进程建的窗口 (外框对象); 还没建好时为空。第一个窗口是"本进程的窗口"。
     JZVirtualWindow* window() const;
     JZWindow* windowClient() const;
-    bool waitWindow(int timeoutMs);          // 等第一个窗口建出来 (且已显示)
+    // 等第一个窗口建出来 (且已显示)。
+    // ⚠ 只保证"可见"; 返回后**别立刻**对那个窗口做跨线程同步的动作(注入输入 / 取帧 / RPC) ——
+    //   那时窗口线程可能还在跑 show 排下来的活, 两边互等会死锁。原因与出路见 .cpp 实现上那段。
+    bool waitWindow(int timeoutMs);
 
     // ---- 运行状态 / 错误 ----
     std::string lastError() const;

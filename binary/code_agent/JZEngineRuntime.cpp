@@ -10,6 +10,8 @@
 #include "JZJSModbusModule.h"
 #include "JZJSWidgetModule.h"
 #include "JZJSComputerUseModule.h"
+#include "JZJSCvModule.h"
+#include "JZJSOnnxModule.h"
 #ifdef JZ_HAS_EMULATOR
 #  include "JZEmulatorViewJs.h"   // 游戏模拟器控件挂到 JS 类层（见该文件头的"依赖方向"说明）
 #endif
@@ -205,6 +207,19 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_computerUseModule = std::make_unique<JZJSComputerUseModule>();
     m_computerUseModule->initEngine(engine);
 
+    // OpenCV 图像处理：__jz.cv.*（滤波/颜色转换/形态学/阈值/轮廓/绘制...，见 JZJSCvModule.h）。
+    // 和 computeruse 一样是"宿主能力"，挂在同一层；JS 侧适配层在 js_wrapper/cv。
+    // ⚠ 没编 OpenCV 的构建（JZ_CU_OPENCV 未定义）也照样装这个模块 —— 它退化成"一律报未编入"，
+    //   于是脚本能明确问出 available()=false，而不是 import 直接失败（形状不一致更难查）。
+    m_cvModule = std::make_unique<JZJSCvModule>();
+    m_cvModule->initEngine(engine);
+
+    // ONNX Runtime 推理：__jz.onnx.*（加载任意 .onnx、看输入输出、喂张量拿张量，见 JZJSOnnxModule.h）。
+    // 与 cv 一样"没编也照样装" —— 退化成一律报未编入, 于是脚本能明确问出 available()=false,
+    // 而不是 import 就失败(形状不一致更难查)。
+    m_onnxModule = std::make_unique<JZJSOnnxModule>();
+    m_onnxModule->initEngine(engine);
+
     // worker：__jz.worker.* + 全局 Worker 类（每个 worker 一个独立引擎 + 消息通信）。
     // 【必须最后装】JZJSNetModule::initEngine 会无条件新建并覆盖全局 __jz，而本模块
     // 往 __jz 里塞 worker 子命名空间 —— 排在 net 之前会被覆盖掉。
@@ -273,6 +288,16 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_computerUseModule->deinitEngine();
         m_computerUseModule.reset();
+    }
+    if (m_cvModule)
+    {
+        m_cvModule->deinitEngine();     // 会清掉句柄表里挂着的所有 cv::Mat
+        m_cvModule.reset();
+    }
+    if (m_onnxModule)
+    {
+        m_onnxModule->deinitEngine();   // 会 Release 掉所有已加载的 OrtSession
+        m_onnxModule.reset();
     }
 if (m_widgetModule)
 {

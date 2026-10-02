@@ -26,6 +26,9 @@
     "../../JZJSEngine/js_wrapper/widget/types/**/*.d.ts",
     "../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",
     "../../JZJSEngine/js_wrapper/path/types/**/*.d.ts",
-    "../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts"
+    "../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/cv/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/onnx/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/ocr/types/**/*.d.ts"
   ]
 }

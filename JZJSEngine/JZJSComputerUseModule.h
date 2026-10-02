@@ -34,4 +34,8 @@ private:
     bool        jsInitOcr(const std::string& optsJson);    // { modelRoot? } -> 是否就绪
     bool        jsOcrReady();
     Json::Value jsOcrTexts(const std::string& optsJson);   // { region?, minScore? } -> [{text,score,x,y,w,h}]
+    // 能力探测 / 诊断 / 释放: "有没有 OCR 能力"与"模型好没好"是两件事, 分开问才不会误判
+    bool        jsOcrBuilt();                              // 本构建是否编入了 OCR(JZ_CU_OCR)
+    Json::Value jsOcrInfo();                               // {built, ready, cls, modelRoot, hint?}
+    void        jsDeinitOcr();                             // 释放模型占的内存
 };

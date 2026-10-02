@@ -46,6 +46,13 @@ set(JZVirtualProcess_SOURCES
     ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
+    # OpenCV 图像处理桥（__jz.cv）：和 JZComputerUse 一样"谁需要谁编"。编入 OpenCV 与否由
+    # 上面 jz_opencv_enable(jz_virtual_process) 决定 —— 容器里已经有 OpenCV(DLL 在 exe 边),
+    # 所以容器里的脚本也能直接做滤波/形态学这类像素处理。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.cpp
+    # ONNX Runtime 推理桥（__jz.onnx）：让容器里的脚本也能跑 .onnx 模型。
+    # 与 cv 一样"谁需要谁编"; 编入 ORT 与否由下面的 jz_onnx_enable 决定。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
 )
 add_library(jz_virtual_process STATIC ${JZVirtualProcess_SOURCES})
 target_link_libraries(jz_virtual_process PUBLIC jz_virtual_device)
@@ -66,6 +73,19 @@ endif()
 #   颜色查找 matchColor **不依赖 OpenCV**（纯 C++ 实现, 快且能取到"最大的那块"）。
 jz_opencv_enable(jz_virtual_process)
 
+# ONNX Runtime（__jz.onnx）：容器里的脚本跑 .onnx 模型要用。宏/头加在本库上（那份
+# JZJSOnnxModule.cpp 编在这里），运行库 DLL 由下面的 exe 那侧拷（与 OpenCV 同款分工）。
+jz_onnx_enable(jz_virtual_process)
+
+# OCR（__jz.computeruse 的 initOcr/ocrReady/ocrTexts/match{kind:'ocr'}）：让容器里的脚本
+# 也能"读屏幕上的字"。要的是 **JZCv 静态库 + JZ_CU_OCR=1**（那份 JZComputerUse.cpp 编在本库里）。
+# ⚠ 只有 OpenCV + ONNX Runtime 都在时 JZCv 才存在 ⇒ 整块挂在 HAS_JZCv 里。
+#   模型目录不在 exe 边: 用 JZ_CU_OCR_MODEL 环境变量指(或 initOcr({modelRoot}))。
+if(HAS_JZCv)
+    target_link_libraries(jz_virtual_process PRIVATE JZCv)
+    target_compile_definitions(jz_virtual_process PRIVATE JZ_CU_OCR=1)
+endif()
+
 # 宿主程序: VirtualVm 风格 —— 菜单栏 + 中央滚动区, 滚动区里是 800x600 的虚拟屏;
 # 菜单里可以"新建进程窗口"(起一个线程 + 一份 JS 运行时, 里面建窗口)
 add_executable(virtual_device main.cpp)
@@ -82,6 +102,8 @@ endif()
 # computer use 的像素族（matchImage 模板匹配）也要 OpenCV ⇒ exe 这边把 opencv_world DLL
 # 按配置拷到边上（宏/头加在 jz_virtual_process 上, 因为那份 JZComputerUse.cpp 编在那里）
 jz_opencv_enable(virtual_device)
+# ONNX Runtime 的运行库同理（宏/头在上面 jz_virtual_process 那侧）
+jz_onnx_enable(virtual_device)
 
 # 进程里的引擎按 **exe 目录** 找 JS 包 (JZEngineRuntime: <appDir>/jz_js/<pkg>/dist/...) ——
 # 把控件类层部署到 exe 边上, 于是 JS 里 new JZWindow/JZPushButton 才有类可用
@@ -110,6 +132,8 @@ file(GLOB JZ_VD_TYPE_FILES CONFIGURE_DEPENDS
 list(APPEND JZ_VD_JS_DEPS ${JZ_VD_TYPE_FILES})
 file(GLOB JZ_VD_JS_DIST_FILES CONFIGURE_DEPENDS "${JZ_VD_WRAP_SRC}/*/dist/index.js")
 list(APPEND JZ_VD_JS_DEPS ${JZ_VD_JS_DIST_FILES})
+# ⚠ 新加包目录后这个 GLOB 不一定当场生效 ⇒ exe 边没有那个包, JS 里 import 会静默退出。
+#   处理办法(重新 configure / 删 stamp)见 binary/code_agent/CMakeLists.txt 同一处的详解。
 
 add_custom_command(
     OUTPUT "${JZ_VD_JS_STAMP}"

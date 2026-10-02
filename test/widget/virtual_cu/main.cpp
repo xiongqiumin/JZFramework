@@ -388,6 +388,42 @@ int main(int argc, char* argv[])
     JZComputerUse::setVirtualDesktop(nullptr);
     check(!JZComputerUse::isVirtualDesktop(), "setVirtualDesktop(nullptr) 切回真实桌面");
 
+    // ⑫ 无障碍(UI Automation): 真桌面下读一个**外部**程序的**结构化**控件树。
+    //   ⚠ 这条要真桌面、还会弹一个窗口 ⇒ 默认**不跑**(设 JZ_CU_UIA_TEST=1 才跑) —— 无头/CI
+    //     不该因为它失败。它验的是"自绘界面唯一那条不靠像素的路"通不通。
+    {
+        char uiaBuf[8] = {};
+        const bool wantUia = GetEnvironmentVariableA("JZ_CU_UIA_TEST", uiaBuf, sizeof(uiaBuf)) > 0
+                             && uiaBuf[0] == '1';
+        if (wantUia) {
+            printf("[无障碍] 起一个记事本, 用 UIA 读它的结构化树\n");
+            const DWORD pid = JZComputerUse::startProcess("notepad.exe");
+            if (pid == 0) {
+                printf("  [跳过] notepad.exe 没起来\n");
+            } else {
+                JZComputerUse::focusProcess(pid);   // 提到前台: 下面用"前台窗口"当目标
+                Sleep(1500);                        // 等它把窗口画出来
+                Json::Value env = JZComputerUse::layoutTree("");
+                const std::string source = env.isMember("source") ? env["source"].asString() : "";
+                printf("  [info] layoutTree 来源: %s\n", source.empty() ? "(null)" : source.c_str());
+                check(source == "uia", "外部程序走无障碍(UI Automation)拿到结构化树");
+                if (env.isMember("tree") && env["tree"].isMember("children")) {
+                    const Json::Value& kids = env["tree"]["children"];
+                    printf("  [info] 子节点 %u 个, 前几个: ", (unsigned)kids.size());
+                    for (Json::Value::ArrayIndex i = 0; i < kids.size() && i < 6; i++) {
+                        const Json::Value& k = kids[i];
+                        printf("%s/%s ", k.isMember("role") ? k["role"].asString().c_str() : "?",
+                               k.isMember("text") ? k["text"].asString().c_str() : "");
+                    }
+                    printf("\n");
+                }
+                JZComputerUse::terminateProcess(pid);
+            }
+        } else {
+            printf("[无障碍] 跳过真桌面 UIA 用例 (设 JZ_CU_UIA_TEST=1 可跑; 它会弹一个记事本)\n");
+        }
+    }
+
     if (desk.screenshot().save("cu_virtual_frame.png"))
         printf("  [info] 已保存整屏帧: cu_virtual_frame.png\n");
 

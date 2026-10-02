@@ -10,6 +10,12 @@
 #include <cstring>       // strstr
 #include <cmath>         // lround (归一化坐标 -> 桌面像素)
 #include <cstdlib>       // getenv (OCR 模型目录)
+#include <uiautomation.h>   // 无障碍(UI Automation): 外部软件的结构化控件树, 见 layoutTree
+
+// 无障碍要链 uiautomationcore。用 #pragma comment 而不是改 CMake: 这份 .cpp 被**多个 target**
+// 各编一份(见各处的 CMakeLists), 逐个加链接容易漏; pragma 写进 .obj, 谁链进来谁带上。
+// (MSVC 专有, 但本框架只构建 Windows + MSVC。)
+#pragma comment(lib, "uiautomationcore.lib")
 
 // OCR 兜底(JZCv/PP-OCR)是否编入: 构建侧在 HAS_JZCv 时定义 JZ_CU_OCR=1
 // (见 binary/code_agent/runtime/CMakeLists.txt)。没编入时下面几个接口一律返回
@@ -296,6 +302,206 @@ JZImage currentFrame(JZRect* logical) {
         }
         if (!arr.empty()) o["children"] = arr;
         return o;
+    }
+
+    // ————————————————————————————————————————————————
+    // 无障碍(UI Automation): 外部软件的**结构化控件树**
+    // ————————————————————————————————————————————————
+    // 为什么要有这条腿: Win32 子窗口枚举只认"标准控件" —— 浏览器 / Electron / WPF / Qt 自绘
+    // 这些界面在它眼里常常只有一层空壳; 而 UIA 由**应用自己**暴露语义(名字/角色/值/可操作模式),
+    // 是外部软件唯一"不靠猜像素"的结构化来源(见 docs/compute-use-design.md §2/§7)。
+    // ⚠ 虚拟桌面下够不到(虚拟窗口没有原生 HWND) ⇒ 明确返回空, 由调用方退到自家语义树。
+
+    const int kUiaMaxDepth = 12;    // 树深上限
+    const int kUiaMaxNodes = 400;   // 节点预算上限(UIA 每取一个属性都是一次跨进程 COM 调用)
+
+    // BSTR(UTF-16) -> UTF-8
+    std::string bstrToUtf8(BSTR s) {
+        if (!s || !*s)
+            return std::string();
+        int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
+        if (n <= 1)
+            return std::string();
+        std::string out((size_t)(n - 1), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, s, -1, &out[0], n, nullptr, nullptr);
+        return out;
+    }
+
+    // UIA ControlTypeId -> 本包词汇(与 roleFromClass / widgetTreeToLayout 用同一套词)
+    std::string roleFromControlType(int typeId) {
+        switch (typeId) {
+        case UIA_ButtonControlTypeId:      return "button";
+        case UIA_EditControlTypeId:        return "edit";
+        case UIA_TextControlTypeId:        return "text";
+        case UIA_DocumentControlTypeId:    return "document";
+        case UIA_WindowControlTypeId:      return "window";
+        case UIA_PaneControlTypeId:        return "pane";
+        case UIA_GroupControlTypeId:       return "group";
+        case UIA_ListControlTypeId:        return "list";
+        case UIA_ListItemControlTypeId:    return "listitem";
+        case UIA_TreeControlTypeId:        return "tree";
+        case UIA_TreeItemControlTypeId:    return "treeitem";
+        case UIA_MenuControlTypeId:        return "menu";
+        case UIA_MenuItemControlTypeId:    return "menuitem";
+        case UIA_MenuBarControlTypeId:     return "menubar";
+        case UIA_CheckBoxControlTypeId:    return "checkbox";
+        case UIA_RadioButtonControlTypeId: return "radiobutton";
+        case UIA_ComboBoxControlTypeId:    return "combobox";
+        case UIA_TabControlTypeId:         return "tab";
+        case UIA_TabItemControlTypeId:     return "tabitem";
+        case UIA_ToolBarControlTypeId:     return "toolbar";
+        case UIA_StatusBarControlTypeId:   return "statusbar";
+        case UIA_ScrollBarControlTypeId:   return "scrollbar";
+        case UIA_SliderControlTypeId:      return "slider";
+        case UIA_SpinnerControlTypeId:     return "spinbox";
+        case UIA_ProgressBarControlTypeId: return "progressbar";
+        case UIA_ImageControlTypeId:       return "image";
+        case UIA_HyperlinkControlTypeId:   return "hyperlink";
+        case UIA_TableControlTypeId:       return "table";
+        case UIA_DataItemControlTypeId:    return "dataitem";
+        case UIA_HeaderControlTypeId:      return "header";
+        case UIA_SeparatorControlTypeId:   return "separator";
+        case UIA_ToolTipControlTypeId:     return "tooltip";
+        default:                           return "unknown";
+        }
+    }
+
+    // 一次 COM 初始化的 RAII 守卫: UIA 要 COM(STA)。与 switchToDesktop 同款"随用随初始化",
+    // 但这里用 RAII —— 中途 return 也不会漏 CoUninitialize。
+    class CuComGuard {
+    public:
+        CuComGuard() {
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            m_ok = SUCCEEDED(hr);
+            // 本线程已在别的 apartment(RPC_E_CHANGED_MODE): 照用, 但生命周期归那边管,
+            // 这里**不能** CoUninitialize。
+            m_owned = (hr == S_OK || hr == S_FALSE);
+        }
+        ~CuComGuard() { if (m_owned) CoUninitialize(); }
+        bool ok() const { return m_ok; }
+    private:
+        bool m_ok = false;
+        bool m_owned = false;
+    };
+
+    // UIA 元素 -> LayoutNode。形状与 hwndTreeToLayout 一致(role/id/text/name/rect/visible/
+    // enabled/clickable/actions/children), JS 侧那套 layout 寻址一行都不用改。
+    Json::Value uiaElementToLayout(IUIAutomationElement* e, IUIAutomationTreeWalker* walker,
+                                   const JZRect& base, int depth, int* budget) {
+        Json::Value o(Json::objectValue);
+        if (!e || *budget <= 0)
+            return o;
+        (*budget)--;
+
+        CONTROLTYPEID typeId = 0;
+        if (SUCCEEDED(e->get_CurrentControlType(&typeId)))
+            o["role"] = roleFromControlType((int)typeId);
+
+        BSTR b = nullptr;
+        if (SUCCEEDED(e->get_CurrentName(&b)) && b && *b) {
+            // 自家语义树用 name、Win32 树用 text —— 两个都写, 消费方按自己的惯例取
+            o["text"] = bstrToUtf8(b);
+            o["name"] = bstrToUtf8(b);
+            SysFreeString(b);
+            b = nullptr;
+        }
+        if (SUCCEEDED(e->get_CurrentAutomationId(&b)) && b && *b) {
+            o["id"] = bstrToUtf8(b);      // 开发给的稳定标识, 优先当路径片段
+            SysFreeString(b);
+            b = nullptr;
+        }
+        if (!o.isMember("id") && SUCCEEDED(e->get_CurrentClassName(&b)) && b && *b) {
+            o["id"] = bstrToUtf8(b);      // 没有 AutomationId 就拿类名当片段
+            SysFreeString(b);
+            b = nullptr;
+        }
+
+        RECT r = {};
+        if (SUCCEEDED(e->get_CurrentBoundingRectangle(&r)))
+            o["rect"] = normRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, base);
+
+        BOOL off = FALSE, en = FALSE;
+        if (SUCCEEDED(e->get_CurrentIsOffscreen(&off)))
+            o["visible"] = (off == FALSE);
+        if (SUCCEEDED(e->get_CurrentIsEnabled(&en)))
+            o["enabled"] = (en != FALSE);
+
+        // 别让调用方猜"这个能不能点": 把可用的模式直接列出来(与自家语义树的 actions 同用途)
+        auto hasPattern = [e](PATTERNID id) -> bool {
+            IUnknown* u = nullptr;
+            if (SUCCEEDED(e->GetCurrentPatternAs(id, IID_IUnknown, (void**)&u)) && u) {
+                u->Release();
+                return true;
+            }
+            return false;
+        };
+        Json::Value acts(Json::arrayValue);
+        if (hasPattern(UIA_InvokePatternId))         acts.append("invoke");
+        if (hasPattern(UIA_TogglePatternId))         acts.append("toggle");
+        if (hasPattern(UIA_SelectionItemPatternId))  acts.append("select");
+        if (hasPattern(UIA_ValuePatternId))          acts.append("setValue");
+        if (hasPattern(UIA_ExpandCollapsePatternId)) acts.append("expand");
+        if (!acts.empty()) {
+            o["actions"] = acts;
+            o["clickable"] = true;
+        } else {
+            o["clickable"] = false;
+        }
+
+        if (depth < kUiaMaxDepth && *budget > 0) {
+            Json::Value kids(Json::arrayValue);
+            IUIAutomationElement* c = nullptr;
+            if (SUCCEEDED(walker->GetFirstChildElement(e, &c)) && c) {
+                while (c && *budget > 0) {
+                    BOOL kidOff = FALSE;
+                    c->get_CurrentIsOffscreen(&kidOff);
+                    if (kidOff == FALSE)      // 与 Win32 树、自家语义树一致: 不可见的不进树
+                        kids.append(uiaElementToLayout(c, walker, base, depth + 1, budget));
+                    IUIAutomationElement* next = nullptr;
+                    walker->GetNextSiblingElement(c, &next);
+                    c->Release();
+                    c = next;
+                }
+            }
+            if (!kids.empty())
+                o["children"] = kids;
+        }
+        return o;
+    }
+
+    // 外部窗口的无障碍树。拿不到 ⇒ null(调用方退到 Win32 子窗口枚举)。
+    Json::Value uiaTreeToLayout(HWND hwnd, const JZRect& base) {
+        if (JZComputerUse::isVirtualDesktop())
+            return Json::Value();          // 虚拟桌面: UIA 够不到, 明确空(不假装成功)
+        if (!hwnd || !IsWindow(hwnd))
+            return Json::Value();
+
+        CuComGuard com;
+        if (!com.ok())
+            return Json::Value();
+
+        IUIAutomation* uia = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&uia))) || !uia)
+            return Json::Value();
+
+        Json::Value tree;
+        IUIAutomationElement* root = nullptr;
+        if (SUCCEEDED(uia->ElementFromHandle(hwnd, &root)) && root) {
+            IUIAutomationTreeWalker* walker = nullptr;
+            if (SUCCEEDED(uia->get_ControlViewWalker(&walker)) && walker) {
+                int budget = kUiaMaxNodes;
+                tree = uiaElementToLayout(root, walker, base, 0, &budget);
+                walker->Release();
+            }
+            root->Release();
+        }
+        uia->Release();
+
+        // 只有一层空壳(没有子节点) ⇒ 对"找到界面里的东西"没有增益, 让调用方走 Win32 枚举
+        if (tree.isNull() || !tree.isMember("children"))
+            return Json::Value();
+        return tree;
     }
 }
 
@@ -742,7 +948,19 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
         // 前台是本进程的窗口但框架拿不到活动窗口(极少见) ⇒ 退化到 Win32 枚举, 不假装成功
     }
 
-    // 外部软件: 递归枚举 Win32 子窗口(标准控件够用; 自绘控件只能靠像素兜底/UIA, 后续)
+    // 外部软件: 先试**无障碍(UI Automation)** —— 浏览器 / Electron / WPF 这类自绘界面里有什么,
+    // 只有 UIA 说得清(它们对 Win32 子窗口枚举就是一层空壳); 拿不到(COM 失败 / 目标没实现 UIA /
+    // 只有空壳)才退回递归枚举 Win32 子窗口。两条路都**标明来源**(source='uia' | 'win32'),
+    // 让调用方知道这次定位是哪来的; 两条都给不出东西 ⇒ 整体返回 null, 由 JS 侧标 degraded
+    // 退到像素族(见 docs 的"退化必须显式")。
+    Json::Value uiaTree = uiaTreeToLayout(fg, base);
+    if (!uiaTree.isNull()) {
+        Json::Value out(Json::objectValue);
+        out["source"] = "uia";
+        out["tree"] = uiaTree;
+        return out;
+    }
+
     Json::Value out(Json::objectValue);
     out["source"] = "win32";
     out["tree"] = hwndTreeToLayout(fg, base);
@@ -758,6 +976,7 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
 namespace {
 
 JZPaddleOCR* g_ocr = nullptr;   // 进程内共享: 模型加载慢, 别每次重建
+std::string  g_ocrRoot;         // 实际用上的模型目录(给 ocrInfo 看: "到底加载的哪份模型")
 
 bool jzCvFileExists(const std::string& path)
 {
@@ -847,6 +1066,7 @@ bool JZComputerUse::initOcr(const std::string& modelRoot)
         LOG_FMT_E("[CU] OCR 模型载入失败: %s", base.c_str());
         return false;
     }
+    g_ocrRoot = root;                   // 记下实际用上的目录(ocrInfo 会报给外面)
     LOG_FMT_I("[CU] OCR 就绪 (cls=%d): %s", (int)g_ocr->hasClassifier(), base.c_str());
     return true;
 #endif
@@ -866,7 +1086,34 @@ void JZComputerUse::deinitOcr()
 #if JZ_CU_OCR
     delete g_ocr;
     g_ocr = nullptr;
+    g_ocrRoot.clear();
 #endif
+}
+
+bool JZComputerUse::ocrBuilt()
+{
+#if !JZ_CU_OCR
+    return false;
+#else
+    return true;
+#endif
+}
+
+Json::Value JZComputerUse::ocrInfo()
+{
+    Json::Value v;
+    v["built"] = ocrBuilt();
+#if !JZ_CU_OCR
+    v["ready"] = false;
+    v["cls"] = false;
+    v["modelRoot"] = "";
+    v["hint"] = "本构建未编入 OCR(JZ_CU_OCR): 需要 JZCv 模块(OpenCV + ONNX Runtime)";
+#else
+    v["ready"] = ocrReady();
+    v["cls"] = (g_ocr && g_ocr->isInit()) ? g_ocr->hasClassifier() : false;
+    v["modelRoot"] = g_ocrRoot;
+#endif
+    return v;
 }
 
 Json::Value JZComputerUse::ocrTexts(const CuRect& region, double minScore)

@@ -48,6 +48,16 @@ set(CODE_AGENT_SOURCES
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
+    # OpenCV 图像处理桥（__jz.cv）：JZEngineRuntime 会挂载它 ⇒ 必须跟着一起编。
+    # ⚠ 本目标没调 jz_opencv_enable, 所以这里编出来的是"未编入 OpenCV"的退化版(__jz.cv
+    #   存在但 available() 为 false)。要给 code_agent 也开 OpenCV, 补一句
+    #   jz_opencv_enable(code_agent) 即可(会在 exe 边多拷一份 opencv_world DLL)。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.h
+    # ONNX Runtime 推理桥（__jz.onnx）：同上，JZEngineRuntime 会挂载。
+    # ⚠ 本目标既没 jz_opencv_enable 也没 jz_onnx_enable ⇒ 编出来的是退化版。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.h
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})
@@ -118,6 +128,11 @@ list(APPEND JZ_JS_DEPS ${JZ_TYPE_FILES})
 #   "改了某个包的 .ts, 但它的 dist 不在 DEPENDS 里 -> stamp 不失效 -> 部署不更新"。
 file(GLOB JZ_JS_DIST_FILES CONFIGURE_DEPENDS "${JZ_WRAP_SRC}/*/dist/index.js")
 list(APPEND JZ_JS_DEPS ${JZ_JS_DIST_FILES})
+# ⚠ 新建一个包目录(index.ts / types/)之后, 上面的 GLOB **不一定当场生效** ——
+#   实测(cv/onnx/ocr 三个包): 新包没进 DEPENDS ⇒ stamp 不失效 ⇒ exe 边根本没有那个包,
+#   而 JS 侧 `import '新包'` 会**静默退出**(code_runtime 连报错都不打, 只给退出码 1, 很难查)。
+#   遇到"新加的包没生效": 先 `cmake -S . -B build` 重新 configure; 还不行就删掉
+#   ${JZ_JS_STAMP} 强制重跑打包。同理适用于 binary/virtual_device 的那份。
 
 add_custom_command(
     OUTPUT "${JZ_JS_STAMP}"

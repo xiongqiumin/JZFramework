@@ -102,6 +102,22 @@ static const BuiltinModule builtinModules[] = {
     //   否则默认后端在第一次调用时抛异常(模块本身能 import 成功)。
     //   离线/模拟环境用 setBackend() 注入自己的后端即可, 不依赖 C++ 侧。
     { "computeruse", "computeruse/dist/index.js", "*"    },
+    // ---- computer vision(OpenCV 的传统图像处理: 滤波/颜色转换/形态学/阈值/轮廓/绘制...) ----
+    // "*" = namespace 形态(包入口有具名导出也有 default):
+    //   import { Mat, cvtColor } from 'cv';   /   import cv from 'cv';
+    // ⚠ 能不能真用取决于两件事: 宿主装没装 __jz.cv(C++ JZJSCvModule), 以及那个 exe 编没编
+    //   OpenCV(JZ_CU_OPENCV)。没编 OpenCV 时模块照样 import 得进来, 但 available() 为 false、
+    //   调用抛 notBuilt —— 刻意让"形状一致"(而不是 import 直接失败), 脚本好判定、好降级。
+    { "cv",         "cv/dist/index.js",         "*"     },
+    // ---- ONNX Runtime 推理(跑任意 .onnx 模型: 加载/看输入输出/喂张量/拿张量) ----
+    // "*" = namespace 形态。能不能用取决于宿主装没装 __jz.onnx 与该 exe 编没编 ORT(JZ_ONNX);
+    //   没编时模块照样 import 得进来, 但 available() 为 false、调用抛 notBuilt(形状一致)。
+    { "onnx",       "onnx/dist/index.js",       "*"     },
+    // ---- OCR(本地 PP-OCR: 读屏幕上的字, 不依赖外部服务) ----
+    // 底层在 __jz.computeruse 那组(initOcr/ocrTexts/match{kind:'ocr'})上 —— 本包只是它的
+    // TS 门面(built/ready 分开问、支持包含/全等/正则、返回文本与分数)。
+    // 能不能用取决于宿主装没装 __jz.computeruse 与该 exe 编没编 OCR(JZ_CU_OCR)。
+    { "ocr",        "ocr/dist/index.js",        "*"     },
 };
 
 // 剥掉 Node 的 node: 前缀('node:http' -> 'http'), 并去掉空白字符。

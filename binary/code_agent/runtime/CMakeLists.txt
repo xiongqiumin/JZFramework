@@ -25,6 +25,14 @@ set(CODE_RUNTIME_SOURCES
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.h
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.h
+    # OpenCV 图像处理桥（__jz.cv）：JZEngineRuntime 会挂载它 ⇒ 必须跟着一起编。
+    # 下面 HAS_JZCv 段里的 jz_opencv_enable 给的就是 JZ_CU_OPENCV 宏, 所以是"编入 OpenCV"的版本。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.h
+    # ONNX Runtime 推理桥（__jz.onnx）：同样由 JZEngineRuntime 挂载 ⇒ 必须跟着编。
+    # 编入 ORT 与否由下面的 jz_onnx_enable 决定（它独立于 JZCv）。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.h
 )
 
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})
@@ -41,8 +49,11 @@ if(HAS_JZCv)
     target_link_libraries(code_runtime PRIVATE JZCv)
     target_compile_definitions(code_runtime PRIVATE JZ_CU_OCR=1)
     jz_opencv_enable(code_runtime)   # 头/库 + 按配置拷 opencv_world DLL
-    jz_onnx_enable(code_runtime)     # 拷 onnxruntime DLL (JZCv 是静态库, 需要它)
 endif()
+
+# ONNX Runtime：__jz.onnx 用它跑**任意** .onnx 模型（JZ_ONNX=1 + 头/库 + 拷 onnxruntime DLL）。
+# ⚠ 独立于 JZCv 判断：只要装了 ORT 就该接上 —— OCR 需要它，但"脚本跑自己的模型"不需要 OCR。
+jz_onnx_enable(code_runtime)
 
 # 游戏模拟器控件(见 JZEmulator/)：接了之后 JS 侧才能 `new JZEmulatorView(...)`
 # （JZEngineRuntime 里有 JZ_HAS_EMULATOR 守卫的注册调用），顺带把 mgba_host.dll 与它的

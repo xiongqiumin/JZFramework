@@ -159,7 +159,7 @@ edit / combobox / checkbox / slider / label / canvas`。
 
 | 方法 | 语义 |
 | --- | --- |
-| `layoutTree()`（后端） | 导出可访问布局树（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA） |
+| `layoutTree()`（后端） | 导出可访问布局树（自家 = `dumpSemanticTree`；外部 = **UI Automation 优先**，退路 Win32 子窗口枚举） |
 | `App.attach()` | 绑定窗口 / 布局（`img` 只用于定位窗口与退化兜底） |
 | `App.at(path)` / `find(type,label)` | 取节点（按 layout 路径寻址） |
 | `read(node)` | 读状态：文本 / 勾选 / 范围值 |
@@ -185,8 +185,16 @@ edit / combobox / checkbox / slider / label / canvas`。
 
 **待补（按依赖顺序）**：
 
-1. **C++ 侧布局通道**：`JZComputerUse::layoutTree()`（自家 = `dumpSemanticTree`；外部 = Win32 / UIA / MSAA）
-   + `waitStable` + `launch`。现在 JS 侧拿不到就返回 null ⇒ 节点标 `degraded`（退到几何/像素兜底）。
+1. **C++ 侧布局通道**：`JZComputerUse::layoutTree()` + `waitStable` + `launch`。
+   - 自家窗口 = `dumpSemanticTree`（`source='semantic'`）；
+   - **外部软件 = UI Automation**（`source='uia'`，2026-10-02 接上）：应用自己暴露的名字 / 角色 /
+     值 / 可操作模式（节点里给出 `actions: invoke|toggle|select|setValue|expand`）—— 浏览器 /
+     Electron / WPF 这类自绘界面只有它说得清；拿不到（COM 失败 / 目标没实现 UIA / 只有空壳）**才**
+     退回递归枚举 Win32 子窗口（`source='win32'`）。两条都给不出东西 ⇒ 返回 null，JS 侧标
+     `degraded` 退到几何 / 像素兜底。
+   - ⚠ 虚拟桌面下 UIA 够不到（虚拟窗口没有原生 HWND）⇒ 那条腿明确返回空，不假装成功。
+   - 仍未接：MSAA（只在"老应用只实现 IAccessible"时才有增量）；"按无障碍名字直接 Invoke"
+     （现在靠 `rect` + 现有 `click` 已经够用，要更稳的动作语义再接）。
 2. ✅ `JZComputerUse` / `JZJSComputerUseModule` 已进 CMake；像素族后端：`ocr` 已接（JZCv / PP-OCR，
    ONNX Runtime），`image` / `color` 需 OpenCV（`cmake/opencv.cmake`），`yolo` 待接。
 3. 建模期的人审/标注 **UI**：`explore` 的 `review` 钩子已留（默认不传 = 行为不变），缺全屏标注窗。

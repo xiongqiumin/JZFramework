@@ -21,6 +21,9 @@
     { "path": "./modbus" },
     { "path": "./serialport" },
     { "path": "./computeruse" },
+    { "path": "./cv" },
+    { "path": "./onnx" },
+    { "path": "./ocr" },
     { "path": "./widget" }
   ]
 }

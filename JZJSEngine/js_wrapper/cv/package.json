@@ -1,0 +1,17 @@
+{
+  "name": "@jz/cv",
+  "main": "dist/index.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "jz:wrapper": {
+    "source": "index.ts",
+    "target": "dist/index.js",
+    "loader": "JZJSEngine::runModuleFile"
+  },
+  "private": true
+}

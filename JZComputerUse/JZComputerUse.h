@@ -21,10 +21,13 @@ class JZVirtualDevice;                     // 虚拟桌面后端 (见 setVirtual
 struct CuRect JZFRAMEWORK_API { double x = 0, y = 0, w = 0, h = 0; };
 
 // 外部真实桌面的 Computer Use 底层语义。
-// 只提供"基本语义"(切桌面/点击/按键/拖拽) + "查找"(模板匹配/颜色匹配) + **布局导出**;
+// 只提供"基本语义"(切桌面/点击/按键/拖拽) + **感知** + "查找";
 // 不构建控件树 —— 控件树与 UI 操作全部在 JS 侧(computeruse 包)完成。
-// ⚠ 像素族匹配(matchImage/matchColor) 已降级为**兜底**(见 docs/compute-use-design.md §4.1),
-//   默认**不编**(OpenCV 未接入构建): 要启用就定义 JZ_CU_OPENCV=1。
+// 感知的**三条腿**(见 docs/compute-use-design.md §2/§7):
+//   ① 布局(正路) = 自家窗口走框架语义树 / **外部软件先走 UI Automation**、退路 Win32 子窗口枚举;
+//   ② 像素族(兜底) = matchImage / matchColor —— 默认**不编**(要启用就定义 JZ_CU_OPENCV=1);
+//   ③ OCR   (兜底) = matchText / ocrTexts —— 默认**不编**(要启用就定义 JZ_CU_OCR=1 + JZCv);
+// ②③ 都是"显式退化"路径: 没编入 / 没识别到一律返回"空 / 未找到", 绝不假装成功。
 class JZFRAMEWORK_API JZComputerUse {
 public:
     enum class MouseBtn { Left, Right, Middle };
@@ -49,10 +52,14 @@ public:
     // —— 布局通道（运行期寻址的**正路**；像素只在建模期与退化兜底用，见 docs §4.1）——
     // 导出可访问布局树(JSON; rect 已归一化, 与 click/screenshot 同一口径):
     //   · 目标窗口属于**本进程** ⇒ 走框架语义树 `JZWidget::dumpSemanticTree`(带 viewId ⇒ 路径稳定)
-    //   · 否则 ⇒ 递归枚举 Win32 子窗口(标准控件够用; 自绘控件的细节要靠像素兜底 / UIA, 后续)
+    //   · **外部软件** ⇒ 先走**无障碍(UI Automation)**: 应用自己暴露的名字/角色/值/可操作模式 ——
+    //     浏览器、Electron、WPF 这类自绘界面里有什么, 只有它说得清(Win32 枚举看到的只是空壳);
+    //     拿不到(COM 失败 / 目标没实现 UIA / 只有空壳)才退回递归枚举 Win32 子窗口。
+    //     ⚠ 虚拟桌面下 UIA 够不到(虚拟窗口没有原生 HWND) ⇒ 那条腿明确空, 不影响上面两条。
     // 目标窗口怎么定: `titleFilter` 非空 ⇒ 按标题片段找(这就是"**指定目标**"；脚本多半跑在
     //   终端里, 前台窗口是终端而不是被测程序, 靠前台猜必然猜错)；为空 ⇒ 用前台窗口。
-    // 返回**信封** {source:'semantic'|'win32', tree:{...}}；没有目标窗口返回 null
+    // 返回**信封** {source:'semantic'|'uia'|'win32', tree:{...}}；没有目标窗口、或两条腿都给不
+    //   出东西 ⇒ null(调用方据此标 degraded 退到像素族)
     //   ⇒ JS 侧把节点标 degraded(显式退化, 不是静默兜底)。
     // ⚠ 布局路径(如 `/main/btnOutput`)由 **JS 侧**从这棵树上生成 —— C++ 只给"带 viewId 的树",
     //   路径规则只有一份实现(layout.ts), 两边各写一套必然漂移。
@@ -82,7 +89,13 @@ public:
     //                       ② 平铺布局 <root>/{det.onnx,rec.onnx,dict.txt}
     static bool initOcr(const std::string& modelRoot = std::string());
     static bool ocrReady();
-    static void deinitOcr();
+    static void deinitOcr();          // 释放模型占的内存（之后 ocrReady() 变 false）
+    // 本构建是否**编入了** OCR —— 与 ocrReady() 不同: 那个是"模型加载好了没"。
+    // 脚本先问 built() 才能区分两种情况: "这个 exe 没有 OCR 能力" vs "模型没配好"。
+    static bool ocrBuilt();
+    // 诊断信息: {built, ready, cls, modelRoot}。ready=false 时 modelRoot 往往就是问题所在
+    //（没编入时额外带一句 hint）。
+    static Json::Value ocrInfo();
     // 屏幕上所有文字: [{text,score,x,y,w,h}]（rect 归一化, 与 layoutTree/click 同口径, 便于直接点）
     static Json::Value ocrTexts(const CuRect& region = CuRect(), double minScore = 0.6);
     // 按文字找: 命中返回归一化矩形; 未找到 w==0（等价 matchImage 的文本版）

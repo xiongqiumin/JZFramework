@@ -33,6 +33,9 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "initOcr",        jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsInitOcr));
     m_engine->registFunction(ns, "ocrReady",       jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrReady));
     m_engine->registFunction(ns, "ocrTexts",       jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrTexts));
+    m_engine->registFunction(ns, "ocrBuilt",       jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrBuilt));
+    m_engine->registFunction(ns, "ocrInfo",        jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsOcrInfo));
+    m_engine->registFunction(ns, "deinitOcr",      jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsDeinitOcr));
     m_engine->setProperty(jz, "computeruse", ns);
 
     // 释放 getProperty 多 dup 的引用, 避免 engine 析构时 gc_obj_list 非空断言
@@ -163,3 +166,7 @@ Json::Value JZJSComputerUseModule::jsOcrTexts(const std::string& optsJson) {
     }
     return JZComputerUse::ocrTexts(region, minScore);
 }
+
+bool JZJSComputerUseModule::jsOcrBuilt() { return JZComputerUse::ocrBuilt(); }
+Json::Value JZJSComputerUseModule::jsOcrInfo() { return JZComputerUse::ocrInfo(); }
+void JZJSComputerUseModule::jsDeinitOcr() { JZComputerUse::deinitOcr(); }

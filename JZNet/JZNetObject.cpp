@@ -505,8 +505,14 @@ static JZNetThread *g_netThread = nullptr;
 JZNetThread *JZNetThread::instance()
 {
     if (!g_netThread)
-    {        
+    {
         g_netThread = new JZNetThread(jzApp);
+        // ⚠ 首次创建即启动独立 poll 线程（run() 里的 mg_mgr_poll 循环）。
+        // 之前漏了 start()：任何 openConn（HTTP 服务 listen / 客户端连接）都走
+        // postEvent 到 net 线程 + sem.acquire() 等结果，线程没跑就永远等 →
+        // virtual_device / agent_cli 的 listen 卡死或退出。net 线程随 g_netThread
+        // 析构（quit+wait）自然结束，不影响其它线程。
+        g_netThread->start();
     }
 
     return g_netThread;

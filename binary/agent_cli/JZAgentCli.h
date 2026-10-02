@@ -404,6 +404,7 @@ protected:
     // 当前状态快照(SSE 新连接时推过去, 让刚打开网页的人看到正在跑的任务)
     std::string m_currentPrompt;                     // 当前任务 prompt
     std::string m_accumThink;                        // 累积本轮思考(thinking)
+    bool m_thinkLogged = false;                    // 本轮 think 是否已落 Agent 日志(每单元一条)
     std::vector<JZCliToolSnap> m_toolSnaps;          // 本轮已发生的工具调用/结果
     std::string m_lastFeedbackSig;                   // 上一轮"喂回模型"的失败签名(退出码+输出)
     int m_sameFailCount = 0;                         // 连续拿到完全一致失败的次数(识别原地打转)

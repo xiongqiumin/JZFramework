@@ -33,6 +33,22 @@ static void agentLog(const std::string &msg)
 {
     JZLogManager::instance()->log(LogModule_Agent, LOG_INFO, msg);
 }
+
+// think/reply 日志: 每单元一条(一条 think / 一条 reply / 一条 tool_call / 一条 tool_result), 超长折叠头尾
+const size_t kMaxLine = 1200;   // 单条日志最大字节, 超出给总字节数 + 头 + 尾
+const size_t kHead = 500, kTail = 300;
+
+// 把一段待写缓冲格式化为单条日志: 太长则截断为"总字节数 + 头部 + 尾部"
+static std::string logChunk(const char *tag, const std::string &pending, size_t totalBytes)
+{
+    if (pending.size() <= kMaxLine)
+        return std::string(tag) + ": " + pending;
+    size_t skip = pending.size() - kHead - kTail;
+    return std::string(tag) + "[总 " + std::to_string(totalBytes) + " 字节, 本段 "
+         + std::to_string(pending.size()) + "]: " + pending.substr(0, kHead)
+         + "\n  …(省略 " + std::to_string(skip) + " 字节)…\n"
+         + pending.substr(pending.size() - kTail);
+}
 }
 
 #include "JZHttpServer.h"     // HTTP 服务(路由 / JZHttpServerClient / JZHttpRespone)
@@ -1038,9 +1054,11 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     m_loopActive = true;
     m_loopRound = 0;
     m_accumReply.clear();
+    m_thinkLogged = false;
     m_lastVerifyOutput.clear();
     m_currentPrompt = prompt;          // 记录 prompt, 供连接快照
     m_accumThink.clear();
+    m_thinkLogged = false;
     m_toolSnaps.clear();
     m_busy = true;
     m_failed = false;
@@ -1463,6 +1481,7 @@ void JZAgentCli::onVerifyDone(int exitCode, const std::string &out)
                     " 次拿到完全相同的失败输出, 说明前面的做法没有生效。这一轮请先换做法: "
                     "用 read_file 读真正相关的文件、先把问题复现出来再改, 不要重复上一轮已经做过的修改。";
     m_accumReply.clear();
+    m_thinkLogged = false;
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
@@ -1665,9 +1684,11 @@ void JZAgentCli::resetSession(bool cancelRunning)
     m_sessionStarted = false;  // 下次提交按"新会话"处理
     m_loopRound = 0;
     m_accumReply.clear();
+    m_thinkLogged = false;
     m_lastVerifyOutput.clear();
     m_currentPrompt.clear();
     m_accumThink.clear();
+    m_thinkLogged = false;
     m_toolSnaps.clear();
     m_failed = false;
     m_cancelled = false;
@@ -1846,8 +1867,14 @@ std::vector<std::string> JZAgentCli::extractImages(const Json::Value &params, st
 
 void JZAgentCli::onReply(const std::string &text)
 {
-    m_accumReply += text;   // 累积本轮最终回复(循环结束一次性回包)
-    agentLog("reply: " + logTrunc(text));
+    // 回复开始 = 思考结束: 先把整条 think 落盘(一条 think 一条, 不切块), 超长折叠头尾
+    if (!m_thinkLogged && !m_accumThink.empty())
+    {
+        agentLog(logChunk("think", m_accumThink, m_accumThink.size()));
+        m_thinkLogged = true;
+    }
+
+    m_accumReply += text;   // 累积本轮最终回复
 
     if (hasEventConsumer())
     {
@@ -1859,8 +1886,7 @@ void JZAgentCli::onReply(const std::string &text)
 
 void JZAgentCli::onThinking(const std::string &text)
 {
-    m_accumThink += text;          // 累积, 供连接快照(与回包无关)
-    agentLog("think: " + logTrunc(text));
+    m_accumThink += text;          // 累积, 供连接快照(与回包无关); 完整 think 在结束时整条落盘
 
     if (!hasEventConsumer())
         return;
@@ -1876,8 +1902,7 @@ void JZAgentCli::onToolCall(const ToolCall &call)
     snap.id = call.id;
     snap.name = call.function_name;
     snap.args = call.function_args;
-    m_toolSnaps.push_back(snap);   // 记录, 供连接快照
-    agentLog("tool_call: " + call.function_name + " args=" + logTrunc(call.function_args));
+    m_toolSnaps.push_back(snap);   // 记录, 供连接快照(与合并日志)
 
     if (!hasEventConsumer())
         return;
@@ -1891,21 +1916,22 @@ void JZAgentCli::onToolCall(const ToolCall &call)
 
 void JZAgentCli::onToolResult(const ToolCallResult &result)
 {
-    for (auto &t : m_toolSnaps)     // 回填结果, 供连接快照
+    // 一次调用合并为一条: tool_call + tool_result(结果回来时才写, 不单独刷 tool_call)
+    for (auto &t : m_toolSnaps)
     {
         if (t.id == result.id)
         {
             t.hasResult = true;
             t.ok = result.isOk;
             t.result = result.result;
+            agentLog("tool: " + t.name + " args=" + logTrunc(t.args)
+                     + " => " + std::string(t.ok ? "ok" : "fail") + " " + logTrunc(t.result));
             break;
         }
     }
 
     if (!hasEventConsumer())
         return;
-
-    agentLog("tool_result: " + std::string(result.isOk ? "ok" : "fail") + " " + logTrunc(result.result));
 
     Json::Value d;
     d["id"] = result.id;
@@ -2008,6 +2034,7 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
 
     // 半截回复作废, 重试后重新累积(与验证失败续跑同一套语义); 成败等重试结果出来再定
     m_accumReply.clear();
+    m_thinkLogged = false;
     m_failed = false;
     m_lastError.clear();
 
@@ -2077,6 +2104,15 @@ void JZAgentCli::onFinished()
     // 任务被取消 / 客户端断开时不跑验证
     if (!m_loopActive)
         return;
+
+    // 本轮 LLM 生成结束: 整条落盘(一条 think / 一条 reply; think 若已写则不重复)
+    if (!m_thinkLogged && !m_accumThink.empty())
+    {
+        agentLog(logChunk("think", m_accumThink, m_accumThink.size()));
+        m_thinkLogged = true;
+    }
+    if (!m_accumReply.empty())
+        agentLog(logChunk("reply", m_accumReply, m_accumReply.size()));
 
     // agent 报错: 在(分档的)重试预算内"接着发继续任务"/"让它改一版", 而不是直接判失败
     // (预算用完才走原流程: 有验证脚本就交给验证循环处理)

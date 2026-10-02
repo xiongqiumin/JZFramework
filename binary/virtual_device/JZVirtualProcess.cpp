@@ -147,6 +147,12 @@ bool JZVirtualProcess::initRuntime()
     m_workDir = wd;                  // 补全缺省 (run() 里按模块加载要用它当运行根)
     m_runtime.setLogHandler([this](const std::string& s) {
         jzInfo() << "[vproc:" << m_name << "] " << s;
+        // 同一行也进桌面的**环形缓冲**(最近 1000 行): 外部可以 GET /api/logs 按行取,
+        // 不用去 grep 容器的 stdout 重定向 (那是整个进程的输出, 还混着容器自己的日志)。
+        // 两处都写是有意的: stdout 那条路是既有调用方(脚本/日志文件)的现状, 不动它。
+        // ⚠ 这里跑在**进程线程**上; appendOutput 自带一把独立的锁, 不会碰桌面那把锁(否则死锁)。
+        if (m_device)
+            m_device->appendOutput("[vproc: " + m_name + "] " + s);
     });
     m_runtime.setUnhandledExceptionHandler([this](const std::string& e) {
         setError(e);

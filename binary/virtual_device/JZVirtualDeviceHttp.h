@@ -62,6 +62,12 @@ class JZHttpRequest;
 //                                                 ⚠ 程序**起来就崩** (未处理异常/初始化失败)
 //                                                    回 400 + 错误文本 —— 不是 ok + 空窗口列表
 //   GET    /api/programs                          程序表 (名字 + 它建的窗口)
+//   GET    /api/logs[?offset=<行号>][&size=<条数>]
+//                                                 程序输出 (console.log 等) 的**最近 1000 行**:
+//                                                 offset = 起始绝对行号(累计行号; 给得太早 -> 从最老的
+//                                                 还留着的那行开始), size = 要几行 (省略或 -1 = 直到末尾)。
+//                                                 返回 {ok,total,first,count,lines:[...]}; 行文本形如
+//                                                 `[vproc: <进程名>] <原始输出>`。记住 total 即可增量拉取。
 //   DELETE /api/programs/<name>                   停掉程序 (连带收走它的窗口)
 //
 // ⚠ **程序的未处理异常 = 那个程序退出** (与真系统同语义): 它从 /api/programs 消失、窗口一起
@@ -141,6 +147,7 @@ private:
                     Json::Value& out, std::string& error);
     void handlePrograms(JZHttpServerClient* client, const JZHttpRequest& req);  // GET 列表 / POST 加载
     void handleProgramStop(JZHttpServerClient* client, const JZHttpRequest& req);
+    void handleLogs(JZHttpServerClient* client, const JZHttpRequest& req);      // GET 程序输出(按行)
 
     // ---- 内部小工具 ----
     void replyJson(JZHttpServerClient* client, const JZHttpRequest& req,

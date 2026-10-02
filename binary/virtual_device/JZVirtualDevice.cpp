@@ -1028,3 +1028,47 @@ void JZVirtualDevice::endDrag()
     m_dragWin = nullptr;
     m_dragEdges = 0;
 }
+
+// ==================== 程序输出的环形缓冲 (见 JZVirtualDevice.h) ====================
+// 只保留最近 kOutputLines 行; 行号(绝对) = 一进来就 +1, 于是"被挤掉多少"能从 total 与
+// 现有条数之差算出来 (见 outputFirst) —— 消费方据此做增量拉取。
+void JZVirtualDevice::appendOutput(const std::string& line)
+{
+    std::lock_guard<std::mutex> lock(m_outputMutex);
+    m_outputs.push_back(line);
+    m_outputTotal++;
+    while ((int)m_outputs.size() > kOutputLines)
+        m_outputs.pop_front();
+}
+
+int JZVirtualDevice::outputTotal() const
+{
+    std::lock_guard<std::mutex> lock(m_outputMutex);
+    return (int)m_outputTotal;
+}
+
+int JZVirtualDevice::outputFirst() const
+{
+    std::lock_guard<std::mutex> lock(m_outputMutex);
+    return (int)(m_outputTotal - (long long)m_outputs.size());   // 已被挤掉的行数 == 现存第一行的行号
+}
+
+std::vector<std::string> JZVirtualDevice::outputLines(int offset, int size) const
+{
+    std::lock_guard<std::mutex> lock(m_outputMutex);
+    std::vector<std::string> out;
+    const long long first = m_outputTotal - (long long)m_outputs.size();
+    long long from = (offset > 0) ? offset : 0;
+    if (from < first)
+        from = first;                     // 给得太早(或默认 0): 从最老的还留着的那行开始
+    if (from >= m_outputTotal)
+        return out;                       // 给得太晚: 这些行已经滚掉了
+    size_t begin = (size_t)(from - first);
+    size_t end = m_outputs.size();
+    if (size > 0 && (size_t)size < end - begin)
+        end = begin + (size_t)size;
+    out.reserve(end - begin);
+    for (size_t i = begin; i < end; i++)
+        out.push_back(m_outputs[i]);
+    return out;
+}

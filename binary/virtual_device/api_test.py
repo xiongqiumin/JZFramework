@@ -27,6 +27,8 @@
  12. 窗口状态              w/h (客户区) / x,y (外框) / title / 最小化 / 最大化铺工作区 / 还原 / 关闭
  13. 错误路径              未知路由 404 / 坏 JSON 400 / 找不到的窗口与句柄 404 / 参数不对 400
  14. 收尾                  DELETE 程序 -> 它的窗口一起没了
+ 15. /api/logs            程序输出 (console.log 等) 的最近 1000 行: 按行取 (offset/size, -1=全部),
+                          超 1000 条从头滚动, 行号绝对 ⇒ 记住 total 就能增量拉
 
 为什么放这儿 (而不是 auto_code): 这是**容器自己**的接口测试, 跟任何 agent 任务无关;
 它是"这个接口还能用吗"的那把尺子, 改完接口应该跑一遍。
@@ -510,6 +512,36 @@ def main():
                 cli.wait(timeout=10)
             except Exception:
                 cli.kill()
+
+        print("== 15) 程序输出 (/api/logs: 按行取 + offset/size) ==")
+        # 本节自己加载程序来打日志: 先 5 行, 再 1200 行验证"只留最近 1000 条"的滚动
+        api.json("POST", "/api/programs",
+                 {"name": "logger",
+                  "script": 'for (var i = 0; i < 5; i++) console.log("line-" + i);'})
+        time.sleep(1.2)
+        a = api.json("GET", "/api/logs")
+        t.check("不带参数 = 读全部 (count == total)", a["count"] == a["total"] and a["total"] >= 5, a)
+        t.check("行文本带程序名前缀, 最后一行是本程序打的",
+                all(s.startswith("[vproc: ") for s in a["lines"])
+                and a["lines"][-1] == "[vproc: logger] line-4", a["lines"][:3])
+        part = api.json("GET", "/api/logs?offset=%d&size=1" % (a["total"] - 1))
+        t.eq("offset/size 精确取一行", part["lines"], ["[vproc: logger] line-4"])
+        t.eq("size=-1 = 一直读到末尾", api.json("GET", "/api/logs?size=-1")["count"], a["total"])
+        t.eq("offset 给得太晚 -> 空", api.json("GET", "/api/logs?offset=999999")["lines"], [])
+        api.json("POST", "/api/programs",
+                 {"name": "bulk",
+                  "script": 'for (var i = 0; i < 1200; i++) console.log("bulk-" + i);'})
+        time.sleep(3.0)
+        b = api.json("GET", "/api/logs")
+        t.eq("超 1000 条只留最近 1000", b["count"], 1000)
+        t.eq("total 是累计行数 (含已挤掉的)", b["total"], a["total"] + 1200)
+        t.eq("first = 缓冲里第一行的绝对行号", b["first"], b["total"] - 1000)
+        t.eq("first 那行就是最老还留着的那行",
+             b["lines"][0], "[vproc: bulk] bulk-%d" % (b["first"] - a["total"]))
+        t.eq("记住 total 增量拉 (此刻还没新行)",
+             api.json("GET", "/api/logs?offset=%d" % b["total"])["lines"], [])
+        api.json("DELETE", "/api/programs/logger")
+        api.json("DELETE", "/api/programs/bulk")
 
     except Fail as e:
         print("FAIL: %s" % e)

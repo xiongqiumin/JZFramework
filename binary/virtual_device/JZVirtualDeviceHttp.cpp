@@ -205,6 +205,7 @@ JZVirtualDeviceHttp::JZVirtualDeviceHttp(JZVirtualDevice* screen, JZObject* pare
     addRoute("/api/input/mouse", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleMouse(c, r); });
     addRoute("/api/input/key", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleKey(c, r); });
     addRoute("/api/programs", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handlePrograms(c, r); });
+    addRoute("/api/logs", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleLogs(c, r); });
     addRoute("/api/programs/<name>",
              [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleProgramStop(c, r); });
 }
@@ -1182,4 +1183,42 @@ void JZVirtualDeviceHttp::handleProgramStop(JZHttpServerClient* client, const JZ
         return;
     }
     replyJson(client, req, *box);
+}
+
+// GET /api/logs?offset=<行号>&size=<条数> —— 程序输出 (console.log 等) 的**最近 1000 行**, 按行取。
+//   offset = 起始**绝对**行号(累计行号): 给得太早 -> 从最老的还留着的那行开始; 超出末尾 -> 空。
+//   size   = 要几行; 省略或 < 0 = 一直到末尾 (所以"读全部"就是不带参数)。
+// 响应 {ok,total,first,count,offset,size,lines:[...]}:
+//   total = 一共产生过多少行(含已被挤掉的) —— 消费方记住它就能增量拉(下次 offset=total);
+//   first = 缓冲里第一行的绝对行号(行号小于它 = 那几行已经滚掉了)。
+// ⚠ 不走 onScreen、也不抢桌面那把锁: 环形缓冲自带一把独立的锁(见 JZVirtualDevice),
+//   在哪个线程读都行 —— 读日志不该被"桌面正在忙"挡住。
+void JZVirtualDeviceHttp::handleLogs(JZHttpServerClient* client, const JZHttpRequest& req)
+{
+    if (req.method() != JZHttpRequest::GET) {
+        replyError(client, req, 405, "只支持 GET");
+        return;
+    }
+    if (!m_screen) {
+        replyError(client, req, 500, "没有桌面");
+        return;
+    }
+    const std::string offsetText = req.queryParam("offset");
+    const std::string sizeText = req.queryParam("size");
+    const int offset = offsetText.empty() ? 0 : atoi(offsetText.c_str());
+    const int size = sizeText.empty() ? -1 : atoi(sizeText.c_str());   // 缺省/负数 = 到末尾
+
+    const std::vector<std::string> lines = m_screen->outputLines(offset, size);
+    Json::Value out(Json::objectValue);
+    out["ok"] = true;
+    out["total"] = m_screen->outputTotal();
+    out["first"] = m_screen->outputFirst();
+    out["offset"] = offset;
+    out["size"] = size;
+    out["count"] = (int)lines.size();
+    Json::Value arr(Json::arrayValue);
+    for (size_t i = 0; i < lines.size(); i++)
+        arr.append(lines[i]);
+    out["lines"] = arr;
+    replyJson(client, req, out);
 }

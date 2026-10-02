@@ -379,11 +379,15 @@ def _rel_glob(d, base):
 
 # ==================== agent_cli 的配置 ====================
 def agent_bin_path(S):
-    """agent_cli.exe 在哪：配置的 agent.bin（相对任务目录）> 默认构建位置（`build/binary/agent_cli/<cfg>/`）。"""
+    """agent_cli.exe 在哪：配置的 `agent.bin` > 默认构建位置（`build/binary/agent_cli/<cfg>/`）。
+
+    `agent.bin` 写相对路径时按 **任务目录 → 仓库根** 依次找（老配置写的是"任务目录相对"，
+    新的"仓库根相对"也认）；绝对路径原样。其它路径字段（tsc.path / dllDir / rom…）建议直接写绝对。
+    """
     v = ((S.get("agent") or {}).get("bin") or S.get("agentBin") or "")
     cands = []
     if v:
-        cands.append(resolve_from(v, HERE))
+        cands += [v] if os.path.isabs(v) else [resolve_from(v, HERE), resolve_from(v, ROOT)]
     cands.append(os.path.join(ROOT, "build", "binary", "agent_cli", "Debug", "agent_cli.exe"))
     for c in cands:
         if os.path.exists(c):

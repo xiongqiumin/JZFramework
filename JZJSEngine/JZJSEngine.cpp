@@ -103,12 +103,14 @@ static const BuiltinModule builtinModules[] = {
     //   离线/模拟环境用 setBackend() 注入自己的后端即可, 不依赖 C++ 侧。
     { "computeruse", "computeruse/dist/index.js", "*"    },
     // ---- computer vision(OpenCV 的传统图像处理: 滤波/颜色转换/形态学/阈值/轮廓/绘制...) ----
-    // "*" = namespace 形态(包入口有具名导出也有 default):
-    //   import { Mat, cvtColor } from 'cv';   /   import cv from 'cv';
+    // 常规形态(nullptr = 具名 + 包自带 default 都暴露): 入口是 OpenCV.js 形状的命名空间,
+    // 于是两种写法都成立 ——
+    //   import cv from 'cv';               // OpenCV.js 习惯: cv.cvtColor / cv.COLOR_BGR2GRAY
+    //   import { Mat, cvtColor } from 'cv'; // 只要单个成员
     // ⚠ 能不能真用取决于两件事: 宿主装没装 __jz.cv(C++ JZJSCvModule), 以及那个 exe 编没编
     //   OpenCV(JZ_CU_OPENCV)。没编 OpenCV 时模块照样 import 得进来, 但 available() 为 false、
     //   调用抛 notBuilt —— 刻意让"形状一致"(而不是 import 直接失败), 脚本好判定、好降级。
-    { "cv",         "cv/dist/index.js",         "*"     },
+    { "cv",         "cv/dist/index.js",         nullptr },
     // ---- ONNX Runtime 推理(跑任意 .onnx 模型: 加载/看输入输出/喂张量/拿张量) ----
     // "*" = namespace 形态。能不能用取决于宿主装没装 __jz.onnx 与该 exe 编没编 ORT(JZ_ONNX);
     //   没编时模块照样 import 得进来, 但 available() 为 false、调用抛 notBuilt(形状一致)。

@@ -38,6 +38,12 @@ JZJSCvModule::~JZJSCvModule() = default;
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
+// 传统算法补充(2026-10-03)用到的另外两个模块: 标定几何(RANSAC/LMEDS/findHomography)与
+// 光流(calcOpticalFlowFarneback)。链接上都是同一个 opencv_world 单库, 只是头文件要显式带进来。
+// ⚠ photo 模块在本机的 OpenCV 构建里是 **OFF**(BUILD_opencv_photo=OFF, 见 E:/libs/opencv-4.10.0),
+//   所以 fastNlMeansDenoising / inpaint 这类"修复"算法没有 —— 不是没实现, 是这个库没编进去。
+#include <opencv2/calib3d.hpp>
+#include <opencv2/video/tracking.hpp>
 
 namespace {
 
@@ -78,6 +84,22 @@ std::string normKey(const std::string& s) {
         if (t.size() > n && t.compare(0, n, pre) == 0) { t = t.substr(n); break; }
     }
     return t;
+}
+
+// 码表参数也收**OpenCV 的整型枚举**本身(如 cv::COLOR_BGR2GRAY = 6 / THRESH_BINARY|OTSU = 8):
+// TS 侧的 OpenCV.js 风格常量表(cv.COLOR_* / cv.THRESH_*)就是数字, 直接透传比再查一次名字表更省。
+bool numericKey(const std::string& s, int& out) {
+    if (s.empty()) return false;
+    for (char c : s) if (!std::isdigit((unsigned char)c)) return false;
+    out = atoi(s.c_str());
+    return true;
+}
+// 码表参数取值: 字符串(名称/前缀随意, 见 normKey) 或 数字(整型枚举) 都收
+std::string strNumOf(const Json::Value& p, const char* k, const char* def) {
+    if (!p.isMember(k)) return std::string(def);
+    if (p[k].isString()) return p[k].asString();
+    if (p[k].isNumeric()) return std::to_string(p[k].asInt());
+    return std::string(def);
 }
 
 // —— base64(自带, 不引第三方) ——
@@ -247,6 +269,8 @@ const char* typeNameOf(int t) {
 
 // —— 码表: 字符串 -> OpenCV 常量(经 normKey, 前缀/大小写不敏感) ——
 int colorCodeOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;                  // 直接给整型枚举(OpenCV.js 的 cv.COLOR_* 表)
     const std::string k = normKey(s);
     struct E { const char* k; int v; };
     static const E t[] = {
@@ -270,6 +294,8 @@ int colorCodeOf(const std::string& s) {
     throw std::runtime_error("不认识的 cvtColor 码 '" + s + "' (例: BGR2GRAY / GRAY2BGR / BGR2HSV / BGR2RGB)");
 }
 int interpOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.empty() || k == "linear" || k == "default") return cv::INTER_LINEAR;
     if (k.find("nearest") != std::string::npos) return cv::INTER_NEAREST;
@@ -279,6 +305,8 @@ int interpOf(const std::string& s) {
     return cv::INTER_LINEAR;
 }
 int borderOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.empty() || k.find("default") != std::string::npos) return cv::BORDER_DEFAULT;
     if (k.find("replicate") != std::string::npos) return cv::BORDER_REPLICATE;
@@ -290,6 +318,8 @@ int borderOf(const std::string& s) {
     return cv::BORDER_CONSTANT;              // 'constant' / 给了 value
 }
 int morphOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.find("open") != std::string::npos) return cv::MORPH_OPEN;
     if (k.find("close") != std::string::npos) return cv::MORPH_CLOSE;
@@ -302,6 +332,8 @@ int morphOf(const std::string& s) {
     throw std::runtime_error("不认识的形态学操作 '" + s + "' (例: OPEN / CLOSE / GRADIENT / TOPHAT / BLACKHAT)");
 }
 int threshOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;                  // 数值天然支持组合(THRESH_BINARY|THRESH_OTSU = 8)
     const std::string k = normKey(s);
     int t = 0;
     if (k.find("binaryinv") != std::string::npos) t |= cv::THRESH_BINARY_INV;
@@ -315,6 +347,8 @@ int threshOf(const std::string& s) {
     return t;
 }
 int cmpOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k == "gt" || k == "greater") return cv::CMP_GT;
     if (k == "ge") return cv::CMP_GE;
@@ -324,6 +358,8 @@ int cmpOf(const std::string& s) {
     return cv::CMP_EQ;                       // 'eq' / 'equal'
 }
 int normOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.empty()) return cv::NORM_L2;
     if (k == "inf") return cv::NORM_INF;
@@ -350,6 +386,8 @@ int colormapOf(const std::string& s) {
     return cv::COLORMAP_JET;
 }
 int tmOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.find("sqdiffnormed") != std::string::npos) return cv::TM_SQDIFF_NORMED;
     if (k.find("sqdiff") != std::string::npos) return cv::TM_SQDIFF;
@@ -360,6 +398,8 @@ int tmOf(const std::string& s) {
     return cv::TM_CCOEFF_NORMED;
 }
 int retrOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.empty() || k == "external") return cv::RETR_EXTERNAL;
     if (k == "list") return cv::RETR_LIST;
@@ -368,6 +408,8 @@ int retrOf(const std::string& s) {
     return cv::RETR_EXTERNAL;
 }
 int chainOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.find("none") != std::string::npos) return cv::CHAIN_APPROX_NONE;
     if (k.find("tc89kcoss") != std::string::npos) return cv::CHAIN_APPROX_TC89_KCOS;
@@ -375,6 +417,8 @@ int chainOf(const std::string& s) {
     return cv::CHAIN_APPROX_SIMPLE;          // 默认(也接 'simple' / 'approxsimple' 等)
 }
 int fontOf(const std::string& s) {
+    int n = 0;
+    if (numericKey(s, n)) return n;
     const std::string k = normKey(s);
     if (k.find("plain") != std::string::npos) return cv::FONT_HERSHEY_PLAIN;
     if (k.find("duplex") != std::string::npos) return cv::FONT_HERSHEY_DUPLEX;
@@ -425,6 +469,82 @@ struct JZJSCvModule::Impl
     void buildOps();
 };
 
+// 一份轮廓(点集) -> 派生量: 面积/周长/圆度/包围盒/中心/minAreaRect/凸包/近似多边形。
+// findContours 与 contourMetrics(给 OpenCV.js 风格的独立算子用) 共用, 免得各算一遍。
+Json::Value contourMetricsJson(const std::vector<Point>& c, double epsRatio)
+{
+    Json::Value o;
+    Json::Value pts(Json::arrayValue);
+    for (const Point& pt : c) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); pts.append(q); }
+    o["points"] = pts;
+    const double area = cv::contourArea(c);
+    const double len = cv::arcLength(c, true);
+    o["area"] = area;
+    o["length"] = len;
+    o["circularity"] = len > 0 ? (4 * CV_PI * area) / (len * len) : 0.0;   // 1.0 = 正圆
+    const Rect br = cv::boundingRect(c);
+    Json::Value rb; rb["x"] = br.x; rb["y"] = br.y; rb["w"] = br.width; rb["h"] = br.height;
+    o["boundingRect"] = rb;
+    Json::Value ctr(Json::arrayValue);
+    ctr.append(br.x + br.width / 2.0); ctr.append(br.y + br.height / 2.0);
+    o["center"] = ctr;
+    if (c.size() >= 5) {                     // minAreaRect 要 ≥5 个点
+        const cv::RotatedRect rr = cv::minAreaRect(c);
+        Json::Value mr, rc(Json::arrayValue), rs(Json::arrayValue);
+        rc.append(rr.center.x); rc.append(rr.center.y);
+        rs.append(rr.size.width); rs.append(rr.size.height);
+        mr["center"] = rc; mr["size"] = rs; mr["angle"] = rr.angle;
+        o["minAreaRect"] = mr;
+    }
+    std::vector<Point> hull;
+    cv::convexHull(c, hull);
+    Json::Value hp(Json::arrayValue);
+    for (const Point& pt : hull) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); hp.append(q); }
+    o["hull"] = hp;
+    o["hullArea"] = cv::contourArea(hull);
+    std::vector<Point> ap;
+    cv::approxPolyDP(c, ap, epsRatio * len, true);
+    Json::Value app(Json::arrayValue);
+    for (const Point& pt : ap) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); app.append(q); }
+    o["approx"] = app;
+    return o;
+}
+
+// —— 点集 <-> 轮廓 Mat(Nx1 CV_32SC2 / CV_32FC2), 与 OpenCV.js 的"轮廓就是 Mat"一致 ——
+// 直接按裸指针写: 不依赖 Vec2i/Vec4i 这些别名(有的 OpenCV 版本/包含顺序下拿不到)
+Mat pointsToMat(const std::vector<Point>& pts)
+{
+    Mat m((int)pts.size(), 1, CV_32SC2);
+    int* d = (int*)m.data;
+    for (size_t i = 0; i < pts.size(); ++i) { d[i * 2] = pts[i].x; d[i * 2 + 1] = pts[i].y; }
+    return m;
+}
+Mat indicesToMat(const std::vector<int>& idx)
+{
+    Mat m((int)idx.size(), 1, CV_32S);
+    int* d = (int*)m.data;
+    for (size_t i = 0; i < idx.size(); ++i) d[i] = idx[i];
+    return m;
+}
+// 只吃 2 通道 32S/32F(OpenCV.js 的 findContours 就是这两种); 别的类型宁可报错也不猜
+std::vector<Point> matToPoints(const Mat& m)
+{
+    std::vector<Point> out;
+    if (m.empty()) return out;
+    if (m.channels() != 2 || (m.depth() != CV_32S && m.depth() != CV_32F))
+        throw std::runtime_error("轮廓 Mat 应该是 2 通道的 32SC2/32FC2, 现在是 "
+                                 + std::to_string(m.channels()) + " 通道 depth " + std::to_string(m.depth()));
+    const int n = m.rows * m.cols;
+    if (m.depth() == CV_32S) {
+        const int* d = (const int*)m.data;
+        for (int i = 0; i < n; ++i) out.push_back(Point(d[i * 2], d[i * 2 + 1]));
+    } else {
+        const float* d = (const float*)m.data;
+        for (int i = 0; i < n; ++i) out.push_back(Point(cvRound(d[i * 2]), cvRound(d[i * 2 + 1])));
+    }
+    return out;
+}
+
 // —— 具体运算 ——
 void JZJSCvModule::Impl::buildOps()
 {
@@ -434,10 +554,24 @@ void JZJSCvModule::Impl::buildOps()
     auto M = [this](const Json::Value& p, const char* k) -> Mat& { return need(matIdOf(p, k)); };
     // 每个 op 的输出都是**新句柄**(不就地改输入): 链式处理时输入还能复用/对比。
     auto store = [this](Mat&& m) { return jOkMat(put(std::move(m))); };
+    // 核参数: 既收"核描述"(数字 n => n×n 全 1 / [[..]] / {data} / {shape,ksize}), 也收**图像句柄** ——
+    // OpenCV.js 的写法是 `k = cv.getStructuringElement(...)` 再把它当核传进来; 之前数字会被当成
+    // "n×n 全 1 核", 于是把句柄 id(如 6)当成了 6×6 核, **静默**算错(实测形态学 628ms、轮廓全没了)。
+    auto K = [this](const Json::Value& p, const char* k) -> Mat {
+        if (p.isMember(k)) {
+            const Json::Value& v = p[k];
+            const int id = v.isNumeric() ? v.asInt() : ((v.isObject() && v.isMember("id")) ? v["id"].asInt() : 0);
+            if (id > 0) {
+                Mat* m = find(id);
+                if (m && !m->empty()) return *m;
+            }
+        }
+        return kernelOf(p, k);
+    };
 
     // ———————————————— 颜色转换 / 通道 ————————————————
     ops["cvtColor"] = [M, store](const Json::Value& p) {
-        Mat dst; cv::cvtColor(M(p, "src"), dst, colorCodeOf(strOf(p, "code", "BGR2GRAY")));
+        Mat dst; cv::cvtColor(M(p, "src"), dst, colorCodeOf(strNumOf(p, "code", "BGR2GRAY")));
         return store(std::move(dst));
     };
     ops["inRange"] = [M, store](const Json::Value& p) {
@@ -478,7 +612,7 @@ void JZJSCvModule::Impl::buildOps()
         return store(std::move(dst));
     };
     ops["applyColorMap"] = [M, store](const Json::Value& p) {
-        Mat dst; cv::applyColorMap(M(p, "src"), dst, colormapOf(strOf(p, "colormap", "jet")));
+        Mat dst; cv::applyColorMap(M(p, "src"), dst, colormapOf(strNumOf(p, "colormap", "jet")));
         return store(std::move(dst));
     };
     ops["equalizeHist"] = [M, store](const Json::Value& p) {
@@ -496,7 +630,7 @@ void JZJSCvModule::Impl::buildOps()
     ops["threshold"] = [this, M](const Json::Value& p) {
         Mat dst;
         const double t = cv::threshold(M(p, "src"), dst, numOf(p, "thresh", 0), numOf(p, "maxval", 255),
-                                       threshOf(strOf(p, "type", "BINARY")));
+                                       threshOf(strNumOf(p, "type", "BINARY")));
         Json::Value v = jOkMat(put(std::move(dst)));
         v["thresh"] = t;                     // OTSU / TRIANGLE 会自己算, 把算出来的还回去
         return v;
@@ -517,19 +651,19 @@ void JZJSCvModule::Impl::buildOps()
     // ———————————————— 滤波 / 边缘 ————————————————
     ops["blur"] = [M, store](const Json::Value& p) {
         Mat dst; cv::blur(M(p, "src"), dst, sizeOf(p, "ksize", Size(3, 3)), pointOf(p, "anchor", Point(-1, -1)),
-                          borderOf(strOf(p, "borderType", "default")));
+                          borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["boxFilter"] = [M, store](const Json::Value& p) {
         Mat dst; cv::boxFilter(M(p, "src"), dst, ddepthOf(p, -1), sizeOf(p, "ksize", Size(3, 3)),
                                pointOf(p, "anchor", Point(-1, -1)), boolOf(p, "normalize", true),
-                               borderOf(strOf(p, "borderType", "default")));
+                               borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["gaussianBlur"] = [M, store](const Json::Value& p) {
         Mat dst; cv::GaussianBlur(M(p, "src"), dst, sizeOf(p, "ksize", Size(5, 5)),
                                   numOf(p, "sigmaX", 0), numOf(p, "sigmaY", 0),
-                                  borderOf(strOf(p, "borderType", "default")));
+                                  borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["medianBlur"] = [M, store](const Json::Value& p) {
@@ -540,33 +674,33 @@ void JZJSCvModule::Impl::buildOps()
     ops["bilateralFilter"] = [M, store](const Json::Value& p) {
         Mat dst; cv::bilateralFilter(M(p, "src"), dst, intOf(p, "d", 5),
                                      numOf(p, "sigmaColor", 50), numOf(p, "sigmaSpace", 50),
-                                     borderOf(strOf(p, "borderType", "default")));
+                                     borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
-    ops["filter2D"] = [M, store](const Json::Value& p) {
-        Mat k = kernelOf(p, "kernel");
+    ops["filter2D"] = [M, store, K](const Json::Value& p) {
+        Mat k = K(p, "kernel");
         if (k.empty()) throw std::runtime_error("filter2D 要传 kernel: [[..],[..]] 或 {data:[[..]]}");
         Mat dst; cv::filter2D(M(p, "src"), dst, ddepthOf(p, -1), k,
                               pointOf(p, "anchor", Point(-1, -1)), numOf(p, "delta", 0),
-                              borderOf(strOf(p, "borderType", "default")));
+                              borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["sobel"] = [M, store](const Json::Value& p) {
         Mat dst; cv::Sobel(M(p, "src"), dst, ddepthOf(p, CV_16S), intOf(p, "dx", 1), intOf(p, "dy", 0),
                            intOf(p, "ksize", 3), numOf(p, "scale", 1), numOf(p, "delta", 0),
-                           borderOf(strOf(p, "borderType", "default")));
+                           borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["scharr"] = [M, store](const Json::Value& p) {
         Mat dst; cv::Scharr(M(p, "src"), dst, ddepthOf(p, CV_16S), intOf(p, "dx", 1), intOf(p, "dy", 0),
                             numOf(p, "scale", 1), numOf(p, "delta", 0),
-                            borderOf(strOf(p, "borderType", "default")));
+                            borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["laplacian"] = [M, store](const Json::Value& p) {
         Mat dst; cv::Laplacian(M(p, "src"), dst, ddepthOf(p, CV_16S), intOf(p, "ksize", 1),
                                numOf(p, "scale", 1), numOf(p, "delta", 0),
-                               borderOf(strOf(p, "borderType", "default")));
+                               borderOf(strNumOf(p, "borderType", "default")));
         return store(std::move(dst));
     };
     ops["canny"] = [M, store](const Json::Value& p) {
@@ -583,26 +717,26 @@ void JZJSCvModule::Impl::buildOps()
         else if (s.find("cross") != std::string::npos) shape = cv::MORPH_CROSS;
         return jOkMat(put(cv::getStructuringElement(shape, sizeOf(p, "ksize", Size(3, 3)))));
     };
-    ops["erode"] = [M, store](const Json::Value& p) {
-        Mat k = kernelOf(p, "kernel");
+    ops["erode"] = [M, store, K](const Json::Value& p) {
+        Mat k = K(p, "kernel");
         if (k.empty()) k = cv::getStructuringElement(cv::MORPH_RECT, Size(3, 3));
         Mat dst; cv::erode(M(p, "src"), dst, k, pointOf(p, "anchor", Point(-1, -1)), intOf(p, "iterations", 1),
-                           borderOf(strOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
+                           borderOf(strNumOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
         return store(std::move(dst));
     };
-    ops["dilate"] = [M, store](const Json::Value& p) {
-        Mat k = kernelOf(p, "kernel");
+    ops["dilate"] = [M, store, K](const Json::Value& p) {
+        Mat k = K(p, "kernel");
         if (k.empty()) k = cv::getStructuringElement(cv::MORPH_RECT, Size(3, 3));
         Mat dst; cv::dilate(M(p, "src"), dst, k, pointOf(p, "anchor", Point(-1, -1)), intOf(p, "iterations", 1),
-                            borderOf(strOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
+                            borderOf(strNumOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
         return store(std::move(dst));
     };
-    ops["morphologyEx"] = [M, store](const Json::Value& p) {
-        Mat k = kernelOf(p, "kernel");
+    ops["morphologyEx"] = [M, store, K](const Json::Value& p) {
+        Mat k = K(p, "kernel");
         if (k.empty()) k = cv::getStructuringElement(cv::MORPH_RECT, Size(3, 3));
-        Mat dst; cv::morphologyEx(M(p, "src"), dst, morphOf(strOf(p, "op", "open")), k,
+        Mat dst; cv::morphologyEx(M(p, "src"), dst, morphOf(strNumOf(p, "op", "open")), k,
                                   pointOf(p, "anchor", Point(-1, -1)), intOf(p, "iterations", 1),
-                                  borderOf(strOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
+                                  borderOf(strNumOf(p, "borderType", "default")), scalarOf(p, "borderValue", cv::morphologyDefaultBorderValue()));
         return store(std::move(dst));
     };
     ops["connectedComponents"] = [this, M](const Json::Value& p) {
@@ -630,7 +764,7 @@ void JZJSCvModule::Impl::buildOps()
     // ———————————————— 几何变换 ————————————————
     ops["resize"] = [M, store](const Json::Value& p) {
         Mat dst, src = M(p, "src");
-        const int interp = interpOf(strOf(p, "interpolation", "linear"));
+        const int interp = interpOf(strNumOf(p, "interpolation", "linear"));
         if (p.isMember("fx") || p.isMember("fy"))
             cv::resize(src, dst, Size(), numOf(p, "fx", 1), numOf(p, "fy", 1), interp);
         else
@@ -681,7 +815,7 @@ void JZJSCvModule::Impl::buildOps()
             for (Json::Value::ArrayIndex x = 0; x < mj[y].size(); ++x)
                 Mx.at<double>((int)y, (int)x) = mj[y][x].asDouble();
         Mat src = M(p, "src"), dst;
-        cv::warpAffine(src, dst, Mx, sizeOf(p, "size", src.size()), interpOf(strOf(p, "interpolation", "linear")),
+        cv::warpAffine(src, dst, Mx, sizeOf(p, "size", src.size()), interpOf(strNumOf(p, "interpolation", "linear")),
                        borderOf(strOf(p, "borderType", "constant")), scalarOf(p, "borderValue", Scalar(0, 0, 0)));
         return store(std::move(dst));
     };
@@ -694,7 +828,7 @@ void JZJSCvModule::Impl::buildOps()
             for (Json::Value::ArrayIndex x = 0; x < hj[y].size(); ++x)
                 Hx.at<double>((int)y, (int)x) = hj[y][x].asDouble();
         Mat src = M(p, "src"), dst;
-        cv::warpPerspective(src, dst, Hx, sizeOf(p, "size", src.size()), interpOf(strOf(p, "interpolation", "linear")),
+        cv::warpPerspective(src, dst, Hx, sizeOf(p, "size", src.size()), interpOf(strNumOf(p, "interpolation", "linear")),
                             borderOf(strOf(p, "borderType", "constant")), scalarOf(p, "borderValue", Scalar(0, 0, 0)));
         return store(std::move(dst));
     };
@@ -766,7 +900,7 @@ void JZJSCvModule::Impl::buildOps()
     };
     ops["compare"] = [M, store](const Json::Value& p) {
         Mat& a = M(p, "a");
-        Mat dst; const int op = cmpOf(strOf(p, "cmpop", "eq"));
+        Mat dst; const int op = cmpOf(strNumOf(p, "cmpop", "eq"));
         if (p.isMember("value") && !p.isMember("b")) {
             // ⚠ cv::compare 没有"与标量比"的重载(Scalar 会被当成 InputArray 用错)
             //   ⇒ 铺一张同尺寸同类型的常量图再比。小图无所谓, 大图也只多一份临时内存。
@@ -779,21 +913,25 @@ void JZJSCvModule::Impl::buildOps()
     };
     ops["normalize"] = [M, store](const Json::Value& p) {
         Mat dst; cv::normalize(M(p, "src"), dst, numOf(p, "alpha", 0), numOf(p, "beta", 255),
-                               normOf(strOf(p, "normType", "minmax")), ddepthOf(p, -1));
+                               normOf(strNumOf(p, "normType", "minmax")), ddepthOf(p, -1));
         return store(std::move(dst));
     };
 
     // ———————————————— 统计 ————————————————
-    ops["meanStdDev"] = [M](const Json::Value& p) {
-        Mat mean, stddev; cv::meanStdDev(M(p, "src"), mean, stddev);
+    ops["meanStdDev"] = [this, M](const Json::Value& p) {
+        Mat mask;
+        if (p.isMember("mask") && p["mask"].isNumeric()) mask = need(p["mask"].asInt());
+        Mat mean, stddev; cv::meanStdDev(M(p, "src"), mean, stddev, mask);
         Json::Value mn(Json::arrayValue), sd(Json::arrayValue);
         for (int i = 0; i < (int)mean.total(); ++i) { mn.append(mean.at<double>(i)); sd.append(stddev.at<double>(i)); }
         Json::Value v = jOk(); v["mean"] = mn; v["stddev"] = sd;
         return v;
     };
-    ops["minMaxLoc"] = [M](const Json::Value& p) {
+    ops["minMaxLoc"] = [this, M](const Json::Value& p) {
         double lo = 0, hi = 0; Point lpt, hpt;
-        cv::minMaxLoc(M(p, "src"), &lo, &hi, &lpt, &hpt);
+        Mat mask;
+        if (p.isMember("mask") && p["mask"].isNumeric()) mask = need(p["mask"].asInt());
+        cv::minMaxLoc(M(p, "src"), &lo, &hi, &lpt, &hpt, mask);
         Json::Value v = jOk();
         v["minVal"] = lo; v["maxVal"] = hi;
         Json::Value a(Json::arrayValue); a.append(lpt.x); a.append(lpt.y); v["minLoc"] = a;
@@ -811,9 +949,33 @@ void JZJSCvModule::Impl::buildOps()
     };
     ops["norm"] = [M](const Json::Value& p) {
         Json::Value v = jOk();
-        v["value"] = p.isMember("b") ? cv::norm(M(p, "a"), M(p, "b"), normOf(strOf(p, "normType", "l2")))
-                                     : cv::norm(M(p, "a"), normOf(strOf(p, "normType", "l2")));
+        v["value"] = p.isMember("b") ? cv::norm(M(p, "a"), M(p, "b"), normOf(strNumOf(p, "normType", "l2")))
+                                     : cv::norm(M(p, "a"), normOf(strNumOf(p, "normType", "l2")));
         return v;
+    };
+    // cv.mean -> Scalar(各通道均值, 不足补 0) —— OpenCV.js 的 cv.mean(src[, mask]) 就是它
+    ops["mean"] = [this, M](const Json::Value& p) {
+        Mat mask;
+        if (p.isMember("mask") && p["mask"].isNumeric()) mask = need(p["mask"].asInt());
+        const Scalar s = cv::mean(M(p, "src"), mask);
+        Json::Value a(Json::arrayValue);
+        a.append(s[0]); a.append(s[1]); a.append(s[2]); a.append(s[3]);
+        return jOkVal(a);
+    };
+    // Mat::dot —— 两个同尺寸同类型的 Mat 按行优先当向量做点积(回一个数)
+    ops["dot"] = [M](const Json::Value& p) {
+        Json::Value v = jOk(); v["value"] = M(p, "a").dot(M(p, "b")); return v;
+    };
+    // Mat::diag(d) —— 抽一条对角线: d=0 主对角, d>0 主对角下方, d<0 主对角上方(OpenCV 的约定)
+    ops["diag"] = [M, store](const Json::Value& p) {
+        Mat dst = M(p, "src").diag(intOf(p, "d", 0));      // MatExpr -> Mat
+        return store(std::move(dst));
+    };
+    // cv::invert —— 矩阵求逆(默认 DECOMP_LU; 奇异时 OpenCV 给全 0 阵, 与 C++ 行为一致)
+    ops["invert"] = [M, store](const Json::Value& p) {
+        Mat dst;
+        cv::invert(M(p, "src"), dst, intOf(p, "method", cv::DECOMP_LU));
+        return store(std::move(dst));
     };
 
     // ———————————————— 轮廓 / 形状 ————————————————
@@ -821,48 +983,117 @@ void JZJSCvModule::Impl::buildOps()
         Mat work = toGray(M(p, "src")).clone();      // findContours 会改输入
         if (work.type() != CV_8UC1) work.convertTo(work, CV_8UC1);
         std::vector<std::vector<Point>> cs;
-        cv::findContours(work, cs, retrOf(strOf(p, "mode", "external")), chainOf(strOf(p, "method", "simple")));
+        cv::findContours(work, cs, retrOf(strNumOf(p, "mode", "external")), chainOf(strNumOf(p, "method", "simple")));
         const double eps = numOf(p, "approxEpsilon", 0.02);
         Json::Value arr(Json::arrayValue);
         for (const auto& c : cs) {
             if (c.empty()) continue;
-            Json::Value o;
-            Json::Value pts(Json::arrayValue);
-            for (const Point& pt : c) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); pts.append(q); }
-            o["points"] = pts;
-            const double area = cv::contourArea(c);
-            const double len = cv::arcLength(c, true);
-            o["area"] = area;
-            o["length"] = len;
-            o["circularity"] = len > 0 ? (4 * CV_PI * area) / (len * len) : 0.0;   // 1.0 = 正圆
-            const Rect br = cv::boundingRect(c);
-            Json::Value rb; rb["x"] = br.x; rb["y"] = br.y; rb["w"] = br.width; rb["h"] = br.height;
-            o["boundingRect"] = rb;
-            Json::Value ctr(Json::arrayValue);
-            ctr.append(br.x + br.width / 2.0); ctr.append(br.y + br.height / 2.0);
-            o["center"] = ctr;
-            if (c.size() >= 5) {                     // minAreaRect 要 ≥5 个点
-                const cv::RotatedRect rr = cv::minAreaRect(c);
-                Json::Value mr, rc(Json::arrayValue), rs(Json::arrayValue);
-                rc.append(rr.center.x); rc.append(rr.center.y);
-                rs.append(rr.size.width); rs.append(rr.size.height);
-                mr["center"] = rc; mr["size"] = rs; mr["angle"] = rr.angle;
-                o["minAreaRect"] = mr;
-            }
-            std::vector<Point> hull;
-            cv::convexHull(c, hull);
-            Json::Value hp(Json::arrayValue);
-            for (const Point& pt : hull) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); hp.append(q); }
-            o["hull"] = hp;
-            o["hullArea"] = cv::contourArea(hull);
-            std::vector<Point> ap;
-            cv::approxPolyDP(c, ap, eps * len, true);
-            Json::Value app(Json::arrayValue);
-            for (const Point& pt : ap) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); app.append(q); }
-            o["approx"] = app;
-            arr.append(o);
+            arr.append(contourMetricsJson(c, eps));
         }
         return jOkVal(arr);
+    };
+    // 独立轮廓算子: 点集 [[x,y],...] -> 与 findContours 的每一项同构的派生量。
+    // TS 侧的 contourArea / arcLength / boundingRect / minAreaRect / approxPolyDP / convexHull
+    // (OpenCV.js 形状) 都走这一条, 不在 JS 里重写一遍这些算法。
+    ops["contourMetrics"] = [](const Json::Value& p) {
+        const Json::Value& src = p.isMember("pts") ? p["pts"] : p["points"];
+        if (!src.isArray() || src.size() < 1)
+            throw std::runtime_error("contourMetrics 要传 pts: [[x,y],...]");
+        std::vector<Point> c;
+        for (const Json::Value& q : src) c.push_back(pointOf(q));
+        return jOkVal(contourMetricsJson(c, numOf(p, "approxEpsilon", 0.02)));
+    };
+
+    // 轮廓点集入口: src(轮廓 Mat 的句柄) 或 pts(点数组) —— 上面那批"按需算子"共用
+    auto PTS = [this](const Json::Value& p) -> std::vector<Point> {
+        if (p.isMember("src") && p["src"].isNumeric())
+            return matToPoints(need(p["src"].asInt()));
+        const Json::Value& src = p.isMember("pts") ? p["pts"] : p["points"];
+        if (src.isArray()) {
+            std::vector<Point> v;
+            for (const Json::Value& q : src) v.push_back(pointOf(q));
+            return v;
+        }
+        throw std::runtime_error("要传 src(轮廓 Mat 的句柄) 或 pts: [[x,y],...]");
+    };
+
+    // ———— OpenCV.js 形状的轮廓: 轮廓就是**一张 Mat**(存在句柄表里), 一个点都不序列化 ————
+    // findContoursMats: 与 findContours 同样的输入, 但把每条轮廓存成 Mat(Nx1 32SC2), 只回句柄 id;
+    // 层次结构也是句柄。于是"找轮廓"这步不再有 JSON 负担(实测 27ms → 2ms 级), 派生量按需再问
+    // (contourStat / convexHullOf / approxPolyDPOf / contourPointsOf)。
+    ops["findContoursMats"] = [this, M](const Json::Value& p) {
+        Mat work = toGray(M(p, "src")).clone();      // findContours 会改输入
+        if (work.type() != CV_8UC1) work.convertTo(work, CV_8UC1);
+        std::vector<std::vector<Point>> cs;
+        Mat hier;                                     // 层次结构直接给 Mat(OpenCV 4 的常见用法, Nx1 CV_32SC4)
+        cv::findContours(work, cs, hier, retrOf(strNumOf(p, "mode", "external")),
+                         chainOf(strNumOf(p, "method", "simple")));
+        Json::Value mats(Json::arrayValue);
+        for (const auto& c : cs) mats.append(put(pointsToMat(c)));
+        Json::Value v = jOk();
+        v["mats"] = mats;
+        v["hierarchy"] = put(std::move(hier));
+        return v;
+    };
+    // 按需取一个量: what = area|length|circularity|convex|hullarea|points|bbox|center|minarea
+    // (只回数字/小对象 —— OpenCV.js 就是这么按需算的, 不把点搬来搬去)
+    ops["contourStat"] = [PTS](const Json::Value& p) {
+        const std::vector<Point> c = PTS(p);
+        const std::string what = lower(strOf(p, "what", "area"));
+        Json::Value v = jOk();
+        if (what == "area") v["value"] = cv::contourArea(c);
+        else if (what == "length") v["value"] = cv::arcLength(c, boolOf(p, "closed", true));
+        else if (what == "points") v["value"] = (int)c.size();
+        else if (what == "convex") v["value"] = cv::isContourConvex(c);
+        else if (what == "circularity") {
+            const double a = cv::contourArea(c), l = cv::arcLength(c, true);
+            v["value"] = l > 0 ? (4 * CV_PI * a) / (l * l) : 0.0;
+        } else if (what == "hullarea") {
+            std::vector<Point> h; cv::convexHull(c, h); v["value"] = cv::contourArea(h);
+        } else if (what == "bbox") {
+            const Rect r = cv::boundingRect(c);          // 键名与 OpenCV.js 的 cv.Rect 一致
+            Json::Value o; o["x"] = r.x; o["y"] = r.y; o["width"] = r.width; o["height"] = r.height;
+            v["value"] = o;
+        } else if (what == "center") {
+            const Rect r = cv::boundingRect(c);
+            Json::Value a(Json::arrayValue);
+            a.append(r.x + r.width / 2.0); a.append(r.y + r.height / 2.0);
+            v["value"] = a;
+        } else if (what == "minarea") {
+            const cv::RotatedRect rr = cv::minAreaRect(c);
+            Json::Value o, ctr, sz;
+            ctr["x"] = rr.center.x; ctr["y"] = rr.center.y;
+            sz["width"] = rr.size.width; sz["height"] = rr.size.height;
+            o["center"] = ctr; o["size"] = sz; o["angle"] = rr.angle;   // 键名与 cv.RotatedRect 一致
+            v["value"] = o;
+        } else
+            throw std::runtime_error("contourStat 不认识的 what '" + what + "'");
+        return v;
+    };
+    // 凸包 / 多边形近似: **出参也是一张 Mat**(与 OpenCV.js 的 cv.convexHull(cnt, hull) 一致)
+    ops["convexHullOf"] = [this, PTS](const Json::Value& p) {
+        const std::vector<Point> c = PTS(p);
+        const bool returnPoints = boolOf(p, "returnPoints", true);
+        if (returnPoints) {
+            std::vector<Point> h;
+            cv::convexHull(c, h, boolOf(p, "clockwise", false), true);
+            return jOkMat(put(pointsToMat(h)));
+        }
+        std::vector<int> idx;
+        cv::convexHull(c, idx, boolOf(p, "clockwise", false), false);
+        return jOkMat(put(indicesToMat(idx)));
+    };
+    ops["approxPolyDPOf"] = [this, PTS](const Json::Value& p) {
+        std::vector<Point> ap;
+        cv::approxPolyDP(PTS(p), ap, numOf(p, "eps", 2.0), boolOf(p, "closed", true));
+        return jOkMat(put(pointsToMat(ap)));
+    };
+    // 取点集(要"看/算几何"时才走这条, 会把点序列化成 JSON —— 明确是 opt-in)
+    ops["contourPointsOf"] = [PTS](const Json::Value& p) {
+        const std::vector<Point> c = PTS(p);
+        Json::Value pts(Json::arrayValue);
+        for (const Point& pt : c) { Json::Value q(Json::arrayValue); q.append(pt.x); q.append(pt.y); pts.append(q); }
+        return jOkVal(pts);
     };
     ops["moments"] = [M](const Json::Value& p) {
         const cv::Moments m = cv::moments(M(p, "src"), boolOf(p, "binary", false));
@@ -881,7 +1112,7 @@ void JZJSCvModule::Impl::buildOps()
     };
     ops["matchTemplate"] = [this, M](const Json::Value& p) {
         Mat res;
-        cv::matchTemplate(M(p, "src"), M(p, "templ"), res, tmOf(strOf(p, "method", "ccoeff_normed")));
+        cv::matchTemplate(M(p, "src"), M(p, "templ"), res, tmOf(strNumOf(p, "method", "ccoeff_normed")));
         double lo = 0, hi = 0; Point lpt, hpt;
         cv::minMaxLoc(res, &lo, &hi, &lpt, &hpt);
         Json::Value v = jOkMat(put(std::move(res)));
@@ -950,10 +1181,349 @@ void JZJSCvModule::Impl::buildOps()
     ops["putText"] = [M, store](const Json::Value& p) {
         Mat dst = M(p, "src").clone();
         // ⚠ OpenCV 内置字体只有 ASCII: 中文会画成 '???'。要中文走 JZPainter(控件绘制那条路)。
-        cv::putText(dst, strOf(p, "text", ""), pointOf(p, "org"), fontOf(strOf(p, "fontFace", "simplex")),
+        cv::putText(dst, strOf(p, "text", ""), pointOf(p, "org"), fontOf(strNumOf(p, "fontFace", "simplex")),
                     numOf(p, "fontScale", 1), scalarOf(p, "color", Scalar(0, 255, 0)),
                     intOf(p, "thickness", 1), lineTypeOf(p), boolOf(p, "bottomLeftOrigin", false));
         return store(std::move(dst));
+    };
+
+    // ========================================================================
+    // 传统算法补充(2026-10-03): 逐元素数学 / 金字塔 / 统计 / 检测分割 / 轮廓形状 /
+    // 直方图 / 几何去噪光流。口径与上面一致: 不改输入、输出新句柄, 码表照样"名字或数字都收"。
+    // ========================================================================
+    struct Code { const char* k; int v; };
+    // 小枚举族: 先试数字直通(TS 侧给的是 cv.DIST_L2 这种整型), 再按子串匹配名字(忽略前缀大小写)
+    auto tableOf = [](const std::string& s, const Code* t, size_t n, int def) -> int {
+        if (s.empty()) return def;
+        int num = 0;
+        if (numericKey(s, num)) return num;
+        const std::string k = normKey(s);
+        for (size_t i = 0; i < n; ++i) if (k.find(t[i].k) != std::string::npos) return t[i].v;
+        return def;
+    };
+    static const Code kReduceOp[]   = {{"sum",cv::REDUCE_SUM},{"avg",cv::REDUCE_AVG},{"max",cv::REDUCE_MAX},{"min",cv::REDUCE_MIN}};
+    static const Code kDistType[]   = {{"l2",cv::DIST_L2},{"l1",cv::DIST_L1},{"c",cv::DIST_C}};   // "precise" 是 maskSize 那边的词
+    static const Code kDistMask[]   = {{"precise",cv::DIST_MASK_PRECISE},{"mask5",cv::DIST_MASK_5},{"mask3",cv::DIST_MASK_3},{"5",cv::DIST_MASK_5},{"3",cv::DIST_MASK_3}};
+    static const Code kDistLabel[]  = {{"ccomp",cv::DIST_LABEL_CCOMP},{"pixel",cv::DIST_LABEL_PIXEL}};
+    static const Code kHough[]      = {{"alt",cv::HOUGH_GRADIENT_ALT},{"multi",cv::HOUGH_MULTI_SCALE},{"prob",cv::HOUGH_PROBABILISTIC},{"standard",cv::HOUGH_STANDARD},{"gradient",cv::HOUGH_GRADIENT}};
+    static const Code kKmeans[]     = {{"pp",cv::KMEANS_PP_CENTERS},{"initial",cv::KMEANS_USE_INITIAL_LABELS},{"random",cv::KMEANS_RANDOM_CENTERS}};
+    static const Code kHistCmp[]    = {{"correl",cv::HISTCMP_CORREL},{"chisqr",cv::HISTCMP_CHISQR},{"intersect",cv::HISTCMP_INTERSECT},{"bhattacharyya",cv::HISTCMP_BHATTACHARYYA},{"hellinger",cv::HISTCMP_HELLINGER},{"kl",5}};
+    static const Code kShapeMatch[] = {{"i1",cv::CONTOURS_MATCH_I1},{"i2",cv::CONTOURS_MATCH_I2},{"i3",cv::CONTOURS_MATCH_I3}};
+    static const Code kInpaint[]    = {{"ns",1},{"telea",0}};   // photo 模块没编进来, 仅留码表给将来
+    (void)kInpaint;
+    static const Code kFitLine[]    = {{"l12",cv::DIST_L12},{"fair",cv::DIST_FAIR},{"welsch",cv::DIST_WELSCH},{"huber",cv::DIST_HUBER},{"l1",cv::DIST_L1},{"l2",cv::DIST_L2}};
+    static const Code kHomography[] = {{"lmeds",cv::LMEDS},{"rho",cv::RHO},{"ransac",cv::RANSAC}};
+    // 点集参数: {pts:[[x,y],...]} / {pts:<Mat 句柄>} / {contour:<Mat 句柄>} 都收
+    auto ptsOf = [this](const Json::Value& v) -> std::vector<Point2f> {
+        std::vector<Point2f> out;
+        if (v.isNumeric()) {
+            for (const Point& q : matToPoints(need(v.asInt()))) out.push_back(Point2f((float)q.x, (float)q.y));
+            return out;
+        }
+        if (!v.isArray()) return out;
+        for (const auto& q : v) {
+            if (q.isArray() && q.size() >= 2) out.push_back(Point2f((float)q[0u].asDouble(), (float)q[1u].asDouble()));
+        }
+        return out;
+    };
+    auto ptsF = [ptsOf](const Json::Value& p) -> std::vector<Point2f> {
+        if (p.isMember("pts")) return ptsOf(p["pts"]);
+        if (p.isMember("contour")) return ptsOf(p["contour"]);
+        return std::vector<Point2f>();
+    };
+    auto termOf = [](const Json::Value& p) {
+        // ⚠ criteria 必须是**对象**才算: 传了 null/数字(比如常量没定义 -> NaN -> JSON null)时别去 isMember,
+        //   JsonCpp 会直接抛 "requires objectValue or nullValue"
+        const Json::Value& c = (p.isMember("criteria") && p["criteria"].isObject()) ? p["criteria"] : p;
+        return cv::TermCriteria(intOf(c, "type", cv::TermCriteria::EPS | cv::TermCriteria::MAX_ITER),
+                                intOf(c, "maxCount", 10), numOf(c, "epsilon", 1.0));
+    };
+
+    // —— (1) 逐元素数学(梯度幅值/相位、幂指对: 传统流程里做增强/归一化常用) ——
+    ops["sqrt"] = [M, store](const Json::Value& p) { Mat d; cv::sqrt(M(p, "src"), d); return store(std::move(d)); };
+    ops["exp"]  = [M, store](const Json::Value& p) { Mat d; cv::exp(M(p, "src"), d); return store(std::move(d)); };
+    ops["log"]  = [M, store](const Json::Value& p) { Mat d; cv::log(M(p, "src"), d); return store(std::move(d)); };
+    ops["pow"]  = [M, store](const Json::Value& p) { Mat d; cv::pow(M(p, "src"), numOf(p, "power", 2), d); return store(std::move(d)); };
+    ops["magnitude"] = [M, store](const Json::Value& p) { Mat d; cv::magnitude(M(p, "a"), M(p, "b"), d); return store(std::move(d)); };
+    ops["phase"] = [M, store](const Json::Value& p) {
+        Mat d; cv::phase(M(p, "a"), M(p, "b"), d, boolOf(p, "degrees", false)); return store(std::move(d));
+    };
+    ops["cartToPolar"] = [M, this](const Json::Value& p) {
+        Mat mag, ang; cv::cartToPolar(M(p, "a"), M(p, "b"), mag, ang, boolOf(p, "degrees", false));
+        return jOkMats({ put(std::move(mag)), put(std::move(ang)) });
+    };
+    ops["polarToCart"] = [M, this](const Json::Value& p) {
+        Mat x, y; cv::polarToCart(M(p, "mag"), M(p, "angle"), x, y, boolOf(p, "degrees", false));
+        return jOkMats({ put(std::move(x)), put(std::move(y)) });
+    };
+
+    // —— (2) 图像金字塔 ——
+    ops["pyrDown"] = [M, store](const Json::Value& p) {
+        Mat d; cv::pyrDown(M(p, "src"), d, p.isMember("dstsize") ? sizeOf(p, "dstsize", Size()) : Size());
+        return store(std::move(d));
+    };
+    ops["pyrUp"] = [M, store](const Json::Value& p) {
+        Mat d; cv::pyrUp(M(p, "src"), d, p.isMember("dstsize") ? sizeOf(p, "dstsize", Size()) : Size());
+        return store(std::move(d));
+    };
+
+    // —— (3) 统计 / 积分图 / 仿射 ——
+    ops["reduce"] = [M, store, tableOf](const Json::Value& p) {
+        Mat d; cv::reduce(M(p, "src"), d, intOf(p, "dim", 0),
+                          tableOf(strNumOf(p, "op", "sum"), kReduceOp, sizeof(kReduceOp) / sizeof(Code), cv::REDUCE_SUM),
+                          intOf(p, "dtype", -1));
+        return store(std::move(d));
+    };
+    ops["findNonZero"] = [M, store](const Json::Value& p) {
+        Mat d; cv::findNonZero(M(p, "src"), d); return store(std::move(d));    // Nx1 CV_32SC2
+    };
+    ops["integral"] = [M, this](const Json::Value& p) {
+        const Mat& src = M(p, "src");
+        const int sd = intOf(p, "sdepth", -1);
+        std::vector<int> ids;
+        if (boolOf(p, "sqsum", false) || boolOf(p, "tilted", false)) {
+            Mat sum, sq, tilt;
+            cv::integral(src, sum, sq, tilt, sd);
+            ids.push_back(put(std::move(sum)));
+            if (boolOf(p, "sqsum", false)) ids.push_back(put(std::move(sq)));
+            if (boolOf(p, "tilted", false)) ids.push_back(put(std::move(tilt)));
+        } else {
+            Mat sum; cv::integral(src, sum, sd);
+            ids.push_back(put(std::move(sum)));
+        }
+        return jOkMats(ids);
+    };
+    ops["getAffineTransform"] = [store, ptsOf](const Json::Value& p) {
+        if (!p.isMember("src") || !p.isMember("dst")) throw std::runtime_error("getAffineTransform 要传 src/dst(各 3 个点)");
+        const std::vector<Point2f> s = ptsOf(p["src"]), d = ptsOf(p["dst"]);
+        if (s.size() != 3 || d.size() != 3) throw std::runtime_error("getAffineTransform 每组要**正好 3 个点**");
+        Mat m = cv::getAffineTransform(s, d);
+        return store(std::move(m));
+    };
+
+    // —— (4) 检测 / 分割 ——
+    ops["HoughCircles"] = [M, store, tableOf](const Json::Value& p) {
+        Mat d;
+        cv::HoughCircles(toGray(M(p, "src")), d, tableOf(strNumOf(p, "method", "gradient"), kHough, sizeof(kHough) / sizeof(Code), cv::HOUGH_GRADIENT),
+                         numOf(p, "dp", 1), numOf(p, "minDist", 10), numOf(p, "param1", 100),
+                         numOf(p, "param2", 100), intOf(p, "minRadius", 0), intOf(p, "maxRadius", 0));
+        return store(std::move(d));     // 1xN CV_32FC3: (x, y, r) —— 没找到就是空图
+    };
+    ops["HoughLinesP"] = [M, store](const Json::Value& p) {
+        Mat d;
+        cv::HoughLinesP(toGray(M(p, "src")), d, numOf(p, "rho", 1), numOf(p, "theta", CV_PI / 180),
+                        intOf(p, "threshold", 50), numOf(p, "minLineLength", 50), numOf(p, "maxLineGap", 10));
+        return store(std::move(d));     // Nx1 CV_32SC4: (x1, y1, x2, y2)
+    };
+    ops["distanceTransform"] = [M, this, tableOf](const Json::Value& p) {
+        const Mat g = toGray(M(p, "src"));
+        const int dt = tableOf(strNumOf(p, "distanceType", "l2"), kDistType, sizeof(kDistType) / sizeof(Code), cv::DIST_L2);
+        const int ms = tableOf(strNumOf(p, "maskSize", "3"), kDistMask, sizeof(kDistMask) / sizeof(Code), cv::DIST_MASK_3);
+        if (boolOf(p, "labels", false)) {
+            Mat dist, labels;
+            cv::distanceTransform(g, dist, labels, dt, ms,
+                                  tableOf(strNumOf(p, "labelType", "ccomp"), kDistLabel, sizeof(kDistLabel) / sizeof(Code), cv::DIST_LABEL_CCOMP));
+            return jOkMats({ put(std::move(dist)), put(std::move(labels)) });
+        }
+        Mat dist; cv::distanceTransform(g, dist, dt, ms);
+        return jOkMats({ put(std::move(dist)) });
+    };
+    ops["floodFill"] = [M, store, this](const Json::Value& p) {
+        Mat dst = M(p, "src").clone();      // floodFill 就地改图
+        Mat mask;                           // (rows+2)x(cols+2) 的 8U: 填过的点 = 1, 边界 = 2
+        if (p.isMember("mask") && p["mask"].isNumeric()) {
+            need(p["mask"].asInt()).convertTo(mask, CV_8UC1);   // 拷一份(别改调用方的图); 非 0 处会挡住填充
+            if (mask.rows != dst.rows + 2 || mask.cols != dst.cols + 2) mask = Mat();
+        }
+        Rect rect;
+        const int n = cv::floodFill(dst, mask, pointOf(p, "seedPoint"),
+                                    scalarOf(p, "newVal", Scalar(255, 255, 255)), &rect,
+                                    scalarOf(p, "loDiff", Scalar()), scalarOf(p, "upDiff", Scalar()),
+                                    intOf(p, "flags", 4));
+        Json::Value v = jOkMat(put(std::move(dst)));
+        v["value"] = n;                     // 填充了多少像素(OpenCV 的返回值)
+        v["mask"] = mask.empty() ? 0 : put(std::move(mask));
+        Json::Value r; r["x"] = rect.x; r["y"] = rect.y; r["w"] = rect.width; r["h"] = rect.height;
+        v["rect"] = r;
+        return v;
+    };
+    ops["watershed"] = [M, store](const Json::Value& p) {
+        Mat markers = M(p, "markers").clone();      // watershed 就地改 markers(而且要求 CV_32S)
+        if (markers.type() != CV_32SC1) markers.convertTo(markers, CV_32SC1);
+        const Mat& img = M(p, "src");
+        Mat bgr;                                    // watershed 要 CV_8UC3
+        if (img.channels() == 1) {
+            Mat g8; toGray(img).convertTo(g8, CV_8UC1);
+            cv::cvtColor(g8, bgr, cv::COLOR_GRAY2BGR);
+        } else if (img.type() == CV_8UC3) {
+            bgr = img;
+        } else {
+            img.convertTo(bgr, CV_8UC3);
+        }
+        cv::watershed(bgr, markers);
+        return store(std::move(markers));
+    };
+    ops["kmeans"] = [M, store, tableOf, termOf, this](const Json::Value& p) {
+        Mat f32; M(p, "data").convertTo(f32, CV_32F);
+        if (f32.channels() > 1) f32 = f32.reshape(1, f32.rows);      // 每行一个样本
+        Mat labels, centers;
+        const double compact = cv::kmeans(f32, intOf(p, "k", 2), labels, termOf(p), intOf(p, "attempts", 3),
+                                          tableOf(strNumOf(p, "flags", "pp"), kKmeans, sizeof(kKmeans) / sizeof(Code), cv::KMEANS_PP_CENTERS),
+                                          centers);
+        Json::Value v = jOkMats({ put(std::move(labels)), put(std::move(centers)) });
+        v["value"] = compact;               // kmeans 的紧凑度(越小越紧)
+        return v;
+    };
+    ops["cornerHarris"] = [M, store](const Json::Value& p) {
+        Mat d;
+        cv::cornerHarris(toGray(M(p, "src")), d, intOf(p, "blockSize", 2), intOf(p, "ksize", 3),
+                         numOf(p, "k", 0.04), borderOf(strNumOf(p, "borderType", "default")));
+        return store(std::move(d));         // CV_32F 响应图(自己再阈值/取极大)
+    };
+    ops["goodFeaturesToTrack"] = [M, store](const Json::Value& p) {
+        Mat d;
+        cv::goodFeaturesToTrack(toGray(M(p, "src")), d, intOf(p, "maxCorners", 100),
+                                numOf(p, "qualityLevel", 0.01), numOf(p, "minDistance", 10), cv::noArray(),
+                                intOf(p, "blockSize", 3), boolOf(p, "useHarrisDetector", false), numOf(p, "k", 0.04));
+        return store(std::move(d));         // Nx1 CV_32FC2 (x, y)
+    };
+
+    // —— (5) 轮廓 / 形状(给 findContours 的结果直接用) ——
+    ops["drawContours"] = [M, store, ptsOf, tableOf, this](const Json::Value& p) {
+        if (!p.isMember("contours") || !p["contours"].isArray()) throw std::runtime_error("drawContours 要传 contours: [轮廓Mat 或 [[x,y],...], ...]");
+        std::vector<std::vector<Point>> cs;
+        for (const auto& one : p["contours"]) {
+            std::vector<Point> v;
+            if (one.isNumeric()) v = matToPoints(need(one.asInt()));
+            else for (const Point2f& q : ptsOf(one)) v.push_back(Point(cvRound(q.x), cvRound(q.y)));
+            if (!v.empty()) cs.push_back(v);
+        }
+        Mat dst = M(p, "src").clone();
+        cv::drawContours(dst, cs, intOf(p, "contourIdx", -1), scalarOf(p, "color", Scalar(0, 255, 0)),
+                         intOf(p, "thickness", 1), lineTypeOf(p));
+        return store(std::move(dst));
+    };
+    ops["minEnclosingCircle"] = [ptsF](const Json::Value& p) {
+        const std::vector<Point2f> pts = ptsF(p);
+        if (pts.empty()) throw std::runtime_error("minEnclosingCircle 要传 pts 或 contour");
+        Point2f c; float r = 0;
+        cv::minEnclosingCircle(pts, c, r);
+        Json::Value v = jOk(), ctr(Json::arrayValue);
+        ctr.append(c.x); ctr.append(c.y);
+        v["center"] = ctr; v["radius"] = r;
+        return v;
+    };
+    ops["fitEllipse"] = [ptsF](const Json::Value& p) {
+        const std::vector<Point2f> pts = ptsF(p);
+        if (pts.size() < 5) throw std::runtime_error("fitEllipse 至少要 5 个点");
+        const cv::RotatedRect rr = cv::fitEllipse(pts);
+        Json::Value v = jOk(), c(Json::arrayValue), s(Json::arrayValue);
+        c.append(rr.center.x); c.append(rr.center.y);
+        s.append(rr.size.width); s.append(rr.size.height);
+        v["center"] = c; v["size"] = s; v["angle"] = rr.angle;
+        return v;
+    };
+    ops["fitLine"] = [ptsF, store, tableOf](const Json::Value& p) {
+        const std::vector<Point2f> pts = ptsF(p);
+        if (pts.size() < 2) throw std::runtime_error("fitLine 至少要 2 个点");
+        Mat line;
+        cv::fitLine(pts, line, tableOf(strNumOf(p, "distType", "l2"), kFitLine, sizeof(kFitLine) / sizeof(Code), cv::DIST_L2),
+                    numOf(p, "param", 0), numOf(p, "reps", 0.01), numOf(p, "aeps", 0.01));
+        return store(std::move(line));      // 4x1 CV_32F: (vx, vy, x0, y0)
+    };
+    ops["matchShapes"] = [ptsOf, tableOf](const Json::Value& p) {
+        const std::vector<Point2f> a = ptsOf(p["a"]), b = ptsOf(p["b"]);
+        if (a.size() < 3 || b.size() < 3) throw std::runtime_error("matchShapes 要两组点(每组 >=3)");
+        Json::Value v = jOk();
+        v["value"] = cv::matchShapes(a, b,
+            tableOf(strNumOf(p, "method", "i1"), kShapeMatch, sizeof(kShapeMatch) / sizeof(Code), cv::CONTOURS_MATCH_I1),
+            numOf(p, "parameter", 0));
+        return v;
+    };
+    ops["convexityDefects"] = [ptsF, this, store](const Json::Value& p) {
+        const std::vector<Point2f> pts = ptsF(p);
+        if (pts.size() < 4) throw std::runtime_error("convexityDefects 至少要 4 个点");
+        std::vector<int> hullIdx;
+        if (p.isMember("hull") && p["hull"].isNumeric()) {       // OpenCV.js 会自己传 hull(下标数组)
+            const Mat hm = need(p["hull"].asInt());
+            if (hm.type() != CV_32SC1) throw std::runtime_error("hull 要是 CV_32SC1 的凸包下标数组");
+            const int* d = (const int*)hm.data;
+            for (int i = 0; i < hm.rows * hm.cols; ++i) hullIdx.push_back(d[i]);
+        } else {
+            cv::convexHull(pts, hullIdx, true, false);           // returnPoints=false -> 下标
+        }
+        // ⚠ convexityDefects 要的"轮廓"必须是 2 通道 Mat(传 vector<Point2f> 会踩 npoints>=0 断言)
+        std::vector<Point> ipts;
+        for (const Point2f& q : pts) ipts.push_back(Point(cvRound(q.x), cvRound(q.y)));
+        Mat contourMat = pointsToMat(ipts);
+        Mat defects, hullMat = indicesToMat(hullIdx);
+        cv::convexityDefects(contourMat, hullMat, defects);
+        return store(std::move(defects));   // Nx1 CV_32SC4: (起点idx, 终点idx, 最远点idx, 深度*256)
+    };
+
+    // —— (6) 直方图比对 / 反投影 ——
+    ops["compareHist"] = [M, tableOf](const Json::Value& p) {
+        Mat a = M(p, "a"), b = M(p, "b");       // 浅拷贝: 只可能在类型不同时**各自**重新分配
+        if (a.depth() != CV_32F) a.convertTo(a, CV_32F);
+        if (b.depth() != CV_32F) b.convertTo(b, CV_32F);
+        Json::Value v = jOk();
+        v["value"] = cv::compareHist(a, b,
+            tableOf(strNumOf(p, "method", "correl"), kHistCmp, sizeof(kHistCmp) / sizeof(Code), cv::HISTCMP_CORREL));
+        return v;
+    };
+    ops["calcBackProject"] = [M, store](const Json::Value& p) {
+        const Mat src = M(p, "src"), hist = M(p, "hist");
+        int ch = intOf(p, "channel", 0);
+        float range[] = { (float)numOf(p, "lo", 0), (float)numOf(p, "hi", 256) };
+        const float* ranges[] = { range };
+        Mat dst;
+        cv::calcBackProject(&src, 1, &ch, hist, dst, ranges, numOf(p, "scale", 1));
+        return store(std::move(dst));
+    };
+
+    // —— (7) 几何 / 去噪 / 光流 ——
+    ops["findHomography"] = [ptsOf, store, tableOf, this](const Json::Value& p) {
+        const std::vector<Point2f> s = ptsOf(p["a"]), d = ptsOf(p["b"]);
+        if (s.size() < 4 || s.size() != d.size()) throw std::runtime_error("findHomography 要 >=4 对点, 且两组等长");
+        Mat mask;
+        Mat h = cv::findHomography(s, d,
+            tableOf(strNumOf(p, "method", "ransac"), kHomography, sizeof(kHomography) / sizeof(Code), cv::RANSAC),
+            numOf(p, "ransacReprojThreshold", 3), mask, intOf(p, "maxIters", 2000), numOf(p, "confidence", 0.995));
+        Json::Value v = jOkMat(put(std::move(h)));
+        v["mask"] = mask.empty() ? 0 : put(std::move(mask));   // 内点掩膜(RANSAC/LMEDS/RHO 才有)
+        return v;
+    };
+    ops["undistort"] = [M, store](const Json::Value& p) {
+        Mat d;
+        if (p.isMember("distCoeffs")) d = M(p, "distCoeffs");
+        Mat dst;
+        if (p.isMember("newCameraMatrix")) cv::undistort(M(p, "src"), dst, M(p, "cameraMatrix"), d, M(p, "newCameraMatrix"));
+        else cv::undistort(M(p, "src"), dst, M(p, "cameraMatrix"), d);
+        return store(std::move(dst));
+    };
+    ops["remap"] = [M, store](const Json::Value& p) {
+        Mat dst;
+        cv::remap(M(p, "src"), dst, M(p, "map1"), p.isMember("map2") ? M(p, "map2") : Mat(),
+                  interpOf(strNumOf(p, "interpolation", "linear")),
+                  borderOf(strNumOf(p, "borderMode", "constant")),
+                  scalarOf(p, "borderValue", Scalar()));
+        return store(std::move(dst));
+    };
+    ops["fastNlMeansDenoising"] = [](const Json::Value&) -> Json::Value {
+        throw std::runtime_error("fastNlMeansDenoising 在 photo 模块里, 而本机的 OpenCV 构建是 "
+                                 "BUILD_opencv_photo=OFF —— 这个能力没有; 去噪请用 medianBlur / bilateralFilter");
+    };
+    ops["inpaint"] = [](const Json::Value&) -> Json::Value {
+        throw std::runtime_error("inpaint 在 photo 模块里, 而本机的 OpenCV 构建是 BUILD_opencv_photo=OFF; "
+                                 "小面积修复可以自己用 inRange + morphologyEx + 邻域均值凑");
+    };
+    ops["calcOpticalFlowFarneback"] = [M, store](const Json::Value& p) {
+        const Mat prev = toGray(M(p, "prev")), next = toGray(M(p, "next"));
+        Mat flow;
+        cv::calcOpticalFlowFarneback(prev, next, flow, numOf(p, "pyrScale", 0.5), intOf(p, "levels", 3),
+                                     intOf(p, "winsize", 15), intOf(p, "iterations", 3), intOf(p, "polyN", 5),
+                                     numOf(p, "polySigma", 1.2), intOf(p, "flags", 0));
+        return store(std::move(flow));      // 与输入同尺寸的 CV_32FC2: (dx, dy)
     };
 }
 
@@ -966,7 +1536,7 @@ int JZJSCvModule::jsNew(const std::string& optsJson) {
     Json::Value p; Json::Reader reader;
     if (!optsJson.empty() && !reader.parse(optsJson, p)) return 0;
     try {
-        const int type = typeOf(strOf(p, "type", "8UC3"));
+        const int type = typeOf(strNumOf(p, "type", "8UC3"));
         const int cols = intOf(p, "cols", 0), rows = intOf(p, "rows", 0);
         if (cols <= 0 || rows <= 0) return 0;
         const std::string kind = lower(strOf(p, "kind", "zeros"));
@@ -987,8 +1557,11 @@ Json::Value JZJSCvModule::jsInfo(int id) {
     v["channels"] = m->channels(); v["depth"] = m->depth();
     v["type"] = m->type(); v["typeName"] = typeNameOf(m->type());
     v["empty"] = m->empty(); v["total"] = (Json::Int64)m->total();
-    v["elemSize"] = (int)m->elemSize();
-    v["continuous"] = m->isContinuous();
+    // ⚠ 空图(比如"没找到圆"的 HoughCircles / "没有凸缺陷"的 convexityDefects)是**正常结果**:
+    //   OpenCV.js 侧 `mat.rows/cols` 给 0, 而 `Mat::elemSize()` 对空图会直接断言(res != 0) —— 这里兜住,
+    //   否则空结果一读 rows 就 InternalError(实测踩到)。
+    v["elemSize"] = m->empty() ? 0 : (int)m->elemSize();
+    v["continuous"] = m->empty() ? true : m->isContinuous();
     return v;
 }
 
@@ -1045,8 +1618,10 @@ std::string JZJSCvModule::jsData(int id) {
     const Mat* m = m_impl->find(id);
     if (!m || m->empty()) return std::string();
     Mat t;
-    (*m).copyTo(t);                                  // 单独一份: 下面可能改类型/连续性
-    if (t.depth() != CV_8U) t.convertTo(t, CV_MAKETYPE(CV_8U, t.channels()));   // 原始字节只有 8U 讲得通
+    (*m).copyTo(t);                                  // 单独一份(下面可能要补连续)
+    // ⚠ 不做类型转换: 给的就是**原始字节**(32F 就是 4 字节/通道的 float 位模式), 与 OpenCV.js 的
+    //   mat.data / data32F 语义一致; 调用方拿着 info() 里的 type 自己解释。以前这里会把非 8U 转成
+    //   8U, 于是 data32F 只能报错。
     if (!t.isContinuous()) t = t.clone();
     return b64Encode(t.data, t.total() * t.elemSize());
 }
@@ -1057,7 +1632,7 @@ int JZJSCvModule::jsFromData(const std::string& dataB64, const std::string& opts
     std::vector<unsigned char> buf;
     if (!b64Decode(dataB64, buf)) return 0;
     try {
-        const int type = typeOf(strOf(p, "type", "8UC1"));
+        const int type = typeOf(strNumOf(p, "type", "8UC1"));
         const int cols = intOf(p, "cols", 0), rows = intOf(p, "rows", 0);
         if (cols <= 0 || rows <= 0) return 0;
         const size_t need = (size_t)cols * rows * CV_ELEM_SIZE(type);

@@ -27,4 +27,7 @@ __pycache__
 # auto_code 工作区的运行产物（每轮备份/预测/分数/截图）不入库
 auto_code/**/runs/
 
+# cv 自检会写一张对照图(输出路径 = 运行时 cwd)，属运行产物
+JZJSEngine/js_wrapper/cv/selftest/*.png
+
 

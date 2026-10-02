@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": []
   },
-  "include": ["index.ts", "types/**/*.d.ts"]
+  "include": ["index.ts", "core.ts", "units.ts", "consts.ts", "types/**/*.d.ts"]
 }

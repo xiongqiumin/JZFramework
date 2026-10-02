@@ -28,6 +28,8 @@
     // include 写 "jz_types/**/*.d.ts" 即可。
     "../../../../JZJSEngine/js_wrapper/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
+    // OpenCV.js 形状的图像处理包（13_opencv 用）: 类型 + 值 + 常量都在 cv/types/index.d.ts
+    "../../../../JZJSEngine/js_wrapper/cv/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/stream/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/worker_threads/types/**/*.d.ts",
     "../../../../JZJSEngine/js_wrapper/crypto/types/**/*.d.ts",

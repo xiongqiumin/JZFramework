@@ -1,11 +1,11 @@
-// play.ts 用到的**引擎注入面**的类型声明。
+// play.ts 用到的**引擎注入面**的类型声明（**模板**：驱动每次把它拷进工作区的 `play/`）。
 //
 // 单一来源（改这两处要一起改）：
 //   JZJSEngine/JZJSComputerUseModule.cpp 的 registFunction 列表
 //   JZComputerUse/JZComputerUse.h 的语义（归一化坐标 / 键名是 Win32 键名）
 //
 // ⚠ 这份声明刻意**窄**：脚本能用的就是 computer use 这一套（看画面 + 操作这台小电脑）；
-//   别的（控件树、程序内部状态、模拟器状态）不在这里 —— 那属于"开卷"，见 prompt.md 的红线。
+//   别的（控件树、程序内部状态、模拟器状态）不在这里 —— 那属于"开卷"，见玩法任务书 `prompt.md` 的红线。
 declare const __jz: {
     computeruse: {
         /** 截图：**整块虚拟桌面**的 PNG data URL（"看"的唯一入口） */
@@ -19,8 +19,7 @@ declare const __jz: {
         drag(x1: number, y1: number, x2: number, y2: number): boolean;
         /**
          * 按一下键（**Win32 键名**：'Z' / 'Return' / 'Shift' / 'Right'，组合写 'Ctrl+C'）。
-         * ⚠ 语义是"按下 + 立刻松开"的一瞬间（与真人点一下键盘同义）；要"按住"得按帧重复调用
-         *   （见 play.ts 的 hold()）。
+         * ⚠ 语义是"按下 + 立刻松开"的一瞬间（与真人点一下键盘同义）；要"按住"得按帧重复调用。
          */
         key(name: string): void;
         type(text: string): void;

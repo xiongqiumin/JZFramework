@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-game_play 任务 —— **旁路观察 / 中途插手**（人在环；不参与 run.py 的主循环）
+hello 玩法 —— **旁路观察 / 中途插手**（人在环；不参与 run.py 的主循环）
 
 run.py 是"机器自己跑"的驱动；本文件是**你**（人）的窗口和手柄 —— 它只连两个现成的口子：
 容器的 HTTP（看画面、数进程）与 agent_cli 的 HTTP（看它在忙什么、打断、下任务），
 **不改代码、不动驱动**。
+
+它住在玩法目录里（`game/<玩法>/watch.py`）—— **任务级现场仍是同一份**（`runs/current/live.json`，
+由驱动按"这一轮选的玩法"写），所以换玩法时**照抄/改一份**到那个玩法目录即可；某个玩法不需要旁观，
+那就**不放**这个文件。
+`TASK`（任务根）是往上找任务目录（含 `env.py`）推出来的（见文件下面的说明），所以在哪儿调用都行：
+
+  python game\hello\watch.py                # 从任务根调
+  cd game\hello && python watch.py          # 从玩法目录调
 
 看：
   python watch.py                          # 看一眼：第几轮/什么阶段、画面、agent、玩法的分、日志尾
@@ -15,7 +23,7 @@ run.py 是"机器自己跑"的驱动；本文件是**你**（人）的窗口和�
   python watch.py --no-shot                # 只看状态，不抓画面（省事）
 插手：
   python watch.py --interrupt              # 打断 agent_cli **当前**正在跑的任务（POST /reset scope=task）
-  python watch.py --ask "把脚本改成先找红球" # 给 agent 下一道**你的**活（POST /task）
+  python watch.py --ask "把脚本改成只点红球" # 给 agent 下一道**你的**活（POST /task）
   python watch.py --ask "看这张图：球在左上角" --with-screen   # 把你看到的画面一起发过去（多模态）
   python watch.py --interrupt --ask "..."  # 接管：先打断它手上的活，再让它做我的
   python watch.py --ask "..." --wait       # 等它做完再返回（默认提交完就返回）
@@ -45,14 +53,26 @@ try:
 except Exception:
     pass
 
+# 本文件**住在玩法目录里**（如 `game/hello/watch.py`），所以：
+#   HERE = 玩法目录（本文件所在层）
+#   TASK = 任务根 = 往上找到"有 env.py（任务目录的标志）的那一层"（live.json / runs/ / env.py 都在那里）
+# 这样一份 watch.py 跟着玩法走，而它看的东西仍是**任务级**的现场（驱动一次只跑一个玩法）。
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNS = os.path.join(HERE, "runs")
+TASK = HERE
+while not any(os.path.exists(os.path.join(TASK, m)) for m in ("env.py", "task.json")):
+    parent = os.path.dirname(TASK)
+    if parent == TASK:          # 到盘根还没找到（本文件没放在任务里）：退回自己所在层
+        TASK = HERE
+        break
+    TASK = parent
+
+RUNS = os.path.join(TASK, "runs")
 CUR = os.path.join(RUNS, "current")
 LIVE = os.path.join(CUR, "live.json")
 HUMAN = os.path.join(CUR, "human.json")
 WATCHDIR = os.path.join(CUR, "watch")
 
-sys.path.insert(0, HERE)
+sys.path.insert(0, TASK)        # env.py 在任务根
 import env as E  # noqa: E402
 
 
@@ -111,6 +131,10 @@ def place(args):
         "window": args.window or live.get("window") or "",
         "play": live.get("play") or "",
         "status_path": live.get("status_path") or "",
+        # 本次运行的**工作区证据目录**：run.py 每轮把它写进 live.json（`<work>/runs/current`）。
+        # 没有就跑回任务目录的 runs/current（老现场）。
+        "run_dir": live.get("run_dir") or CUR,
+        "work_dir": live.get("work_dir") or "",
         "round": live.get("round") or 0,
         "phase": live.get("phase") or "(未知)",
     }
@@ -163,21 +187,23 @@ def show(pl, args):
     print("== game_play 旁路观测  %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
     if not live:
         print("!! 没读到 %s —— run.py 大概没在跑（也可以 --container-url/--agent-url 手动指）"
-              % os.path.relpath(LIVE, HERE))
+              % os.path.relpath(LIVE, TASK))
     else:
         nat = live.get("native") or ["?", "?"]
         print("· 驱动     pid=%s  第 %s 轮  阶段=%s" % (live.get("pid", "?"), pl["round"], pl["phase"]))
         print("· 玩法     %s（进程名 %s，窗口 %s，原生 %sx%s，桌面 %s）"
               % (pl["play"] or "?", live.get("program") or "?", pl["window"] or "?",
                  nat[0], nat[1], live.get("desktop") or "?"))
+        if pl.get("work_dir"):
+            print("· 工作区   %s（证据 %s）" % (pl["work_dir"], pl["run_dir"]))
 
-    # 脚本指纹：谁改了 play.ts（agent 还是人）
-    ts = live.get("play_ts") or os.path.join(HERE, "play", "play.ts")
+    # 脚本指纹：谁改了产出（agent 还是人）—— 产出在**工作区**里
+    ts = live.get("play_ts") or os.path.join(pl.get("work_dir") or TASK, "play", "play.ts")
     if os.path.exists(ts):
         with open(ts, "rb") as f:
             sig = hashlib.sha1(f.read()).hexdigest()[:12]
         print("· 脚本     %s  指纹=%s  %dB  改于 %s"
-              % (os.path.relpath(ts, HERE), sig, os.path.getsize(ts),
+              % (os.path.relpath(ts, pl.get("work_dir") or TASK), sig, os.path.getsize(ts),
                  time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(ts)))))
 
     # 容器里的进程（证明"容器活着、程序在跑"）
@@ -207,16 +233,17 @@ def show(pl, args):
     # 玩法的分（状态文件）—— 人的眼睛最先看这个
     if pl["status_path"]:
         sp = pl["status_path"]
-        p = sp if os.path.isabs(sp) else os.path.join(HERE, sp)
+        p = sp if os.path.isabs(sp) else os.path.join(TASK, sp)
         st = E.read_json(p, None)
         if isinstance(st, dict):
             keep = {k: st[k] for k in ("score", "target", "over", "win", "hits", "misses") if k in st}
-            print("· 分数     %s -> %s" % (os.path.relpath(p, HERE), json.dumps(keep, ensure_ascii=False)))
+            print("· 分数     %s -> %s" % (os.path.relpath(p, TASK), json.dumps(keep, ensure_ascii=False)))
         else:
-            print("· 分数     %s -> (还没有)" % os.path.relpath(p, HERE))
+            print("· 分数     %s -> (还没有)" % os.path.relpath(p, TASK))
 
-    # 判分历史
-    lines = tail(os.path.join(RUNS, "scores.jsonl"), 4)
+    # 判分历史（跟着本次运行的现场目录走：scores.jsonl 在 run_dir 的上一级）
+    rd = pl["run_dir"] if isinstance(pl, dict) else CUR
+    lines = tail(os.path.join(os.path.dirname(rd), "scores.jsonl"), 4)
     if lines:
         print("· 判分     scores.jsonl 尾部:")
         for l in lines:
@@ -237,9 +264,9 @@ def show(pl, args):
             except Exception:
                 print("             " + l[:120])
 
-    # 日志尾
+    # 日志尾（同上：读本次运行的现场目录）
     for name in ("play.log", "container_stdout.txt"):
-        ls = tail(os.path.join(CUR, name), 4)
+        ls = tail(os.path.join(rd, name), 4)
         if ls:
             print("· %-18s 尾部:" % name)
             for l in ls:
@@ -248,7 +275,7 @@ def show(pl, args):
     # 画面
     if not args.no_shot:
         path, err2 = grab(pl, keep=args.keep)
-        print(("· 画面     %s" % os.path.relpath(path, HERE)) if path else ("· 画面     (抓不到) %s" % err2))
+        print(("· 画面     %s" % os.path.relpath(path, TASK)) if path else ("· 画面     (抓不到) %s" % err2))
     print()
 
 
@@ -276,7 +303,7 @@ def record_human(args, prompt, images, shot_path, code, resp):
     rec = {
         "ts": int(time.time()), "ts_text": time.strftime("%Y-%m-%d %H:%M:%S"), "by": "watch.py",
         "prompt": prompt, "with_screen": bool(images),
-        "screen": os.path.relpath(shot_path, HERE) if shot_path else "",
+        "screen": os.path.relpath(shot_path, TASK) if shot_path else "",
         "interrupted": bool(args.interrupt), "http_code": code,
         "status": (resp or {}).get("status") or (resp or {}).get("error", ""),
     }
@@ -323,7 +350,7 @@ def do_ask(pl, args):
     if images:
         body["images"] = images
     print("== 提交人类任务: %d 字%s%s"
-          % (len(prompt), ("，附 %d 张画面(%s)" % (len(images), os.path.relpath(shot_path, HERE)))
+          % (len(prompt), ("，附 %d 张画面(%s)" % (len(images), os.path.relpath(shot_path, TASK)))
              if images else "",
              ("（等回包，最多 %gs）" % args.timeout) if args.wait else "（不等回包）"))
     t0 = time.time()
@@ -380,7 +407,7 @@ def main():
         return 0 if do_interrupt(pl) else 1
     if args.shot:
         path, err = grab(pl, keep=True)
-        print(("== 画面 -> %s" % os.path.relpath(path, HERE)) if path else ("!! 抓不到: %s" % err))
+        print(("== 画面 -> %s" % os.path.relpath(path, TASK)) if path else ("!! 抓不到: %s" % err))
         return 0 if path else 1
 
     if args.watch:

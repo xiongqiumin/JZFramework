@@ -7,6 +7,10 @@
 //
 // 2026-09-18 更新: 旧的 `win.createCanvas(w, h)`(JZCanvas) 包装已从引擎移除 ——
 //   画布 = **普通 JZWidget + onPaint + JZPainter**(与 test_jswidget/test_jsshooter 同款)。
+//
+// 2026-10-02 更新: 加入电脑对手(执白), 逻辑移植自 test/agent/five_chess/FiveChess.cpp
+//   的 fiveChessBotMove(能赢就赢/能堵就堵, 只看已有棋子附近 2 格的空位)。
+//   玩家执黑, 总是先走; 玩家落子后电脑立刻回一手。
 
 const GRID = 15;            // 15x15
 const CELL = 40;            // 格距(逻辑像素)
@@ -18,10 +22,12 @@ const WIN_W = BOARD;
 const WIN_H = STATUS_H + BOARD + BTN_H;
 
 const EMPTY = 0, BLACK = 1, WHITE = 2;
+const HUMAN = BLACK;        // 玩家执黑, 总是先走
+const AI = WHITE;           // 电脑执白
 
 const board = [];
 for (let i = 0; i < GRID; i++) board.push(new Array(GRID).fill(EMPTY));
-let turn = BLACK;           // 黑先
+let turn = HUMAN;           // 玩家先走
 let winner = EMPTY;
 let over = false;
 
@@ -31,7 +37,7 @@ const win = new JZWindow(WIN_W, WIN_H, "五子棋");
 // 各自给固定尺寸, 从上到下就是: 状态栏 / 棋盘 / 按钮。
 // 顶部状态栏 (JZLabel)
 const status = new JZLabel();
-status.setText("轮到: 黑棋 (点击落子)");
+status.setText("轮到你 (黑棋, 点击落子)");
 status.setAlign(1);         // 1 = 居中
 status.setFixedSize(BOARD, STATUS_H);
 win.addWidget(status);
@@ -52,8 +58,8 @@ const boardRect = new JZRect(MARGIN, MARGIN, (GRID - 1) * CELL, (GRID - 1) * CEL
 
 function statusText()
 {
-    if (over)  return winner === BLACK ? "黑棋胜利!" : (winner === WHITE ? "白棋胜利!" : "平局");
-    return turn === BLACK ? "轮到: 黑棋 (点击落子)" : "轮到: 白棋 (点击落子)";
+    if (over)  return winner === HUMAN ? "你赢了!" : (winner === AI ? "电脑赢了!" : "平局");
+    return turn === HUMAN ? "轮到你 (黑棋, 点击落子)" : "电脑思考中...";
 }
 
 function draw(ctx)
@@ -105,12 +111,105 @@ function checkWin(r, c, who)
     return false;
 }
 
+// 落子并判定胜负/平局(不负责切换 turn, 由调用方决定)
+function place(r, c, who)
+{
+    board[r][c] = who;
+    if (checkWin(r, c, who))
+    {
+        winner = who;
+        over = true;
+        return;
+    }
+    // 平局判定: 棋盘满
+    for (let i = 0; i < GRID; i++)
+        for (let j = 0; j < GRID; j++)
+            if (board[i][j] === EMPTY)
+                return;
+    over = true;
+}
+
+// ==================== 电脑对手(白棋) ====================
+// 某空位落子后四个方向能连成几子(只算过该点的方向), 同 C++ 版 moveScore
+function moveScore(r0, c0, who)
+{
+    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    let best = 0;
+    for (const [dr, dc] of dirs)
+    {
+        let count = 1, openEnds = 0;
+        for (let s = -1; s <= 1; s += 2)
+        {
+            let rr = r0 + dr * s, cc = c0 + dc * s;
+            while (rr >= 0 && cc >= 0 && rr < GRID && cc < GRID && board[rr][cc] === who)
+            {
+                count++;
+                rr += dr * s;
+                cc += dc * s;
+            }
+            if (rr >= 0 && cc >= 0 && rr < GRID && cc < GRID && board[rr][cc] === EMPTY)
+                openEnds++;
+        }
+
+        let score = count * 10 + openEnds;
+        if (count >= 5)
+            score = 100000;
+        else if (count === 4 && openEnds >= 1)
+            score = 10000;
+        if (score > best)
+            best = score;
+    }
+    return best;
+}
+
+// 该空位附近 2 格内是否有棋子(避免全局乱下)
+function nearPiece(r0, c0)
+{
+    for (let dr = -2; dr <= 2; dr++)
+        for (let dc = -2; dc <= 2; dc++)
+        {
+            const rr = r0 + dr, cc = c0 + dc;
+            if (rr >= 0 && cc >= 0 && rr < GRID && cc < GRID && board[rr][cc] !== EMPTY)
+                return true;
+        }
+    return false;
+}
+
+function aiMove()
+{
+    let bestR = -1, bestC = -1, bestScore = -1;
+    for (let r = 0; r < GRID; r++)
+    {
+        for (let c = 0; c < GRID; c++)
+        {
+            if (board[r][c] !== EMPTY || !nearPiece(r, c)) continue;
+            const score = moveScore(r, c, AI) + moveScore(r, c, HUMAN);   // 兼顾进攻与堵截
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestR = r;
+                bestC = c;
+            }
+        }
+    }
+
+    if (bestR < 0)          // 空棋盘: 天元开局(玩家先走, 正常走不到这里)
+    {
+        const mid = (GRID - 1) / 2;
+        if (board[mid][mid] !== EMPTY) return;
+        bestR = mid;
+        bestC = mid;
+    }
+
+    place(bestR, bestC, AI);
+}
+
 function reset()
 {
     for (let i = 0; i < GRID; i++)
         for (let j = 0; j < GRID; j++)
             board[i][j] = EMPTY;
-    turn = BLACK;
+    turn = HUMAN;
     winner = EMPTY;
     over = false;
     status.setText(statusText());
@@ -127,6 +226,7 @@ canvas.onMousePress = (e) => {
     const y = e.localY();
     const button = e.button();
     if (over || button !== 1) return;            // 仅左键(JZMouseEvent: 1=Left 2=Right 3=Middle)
+    if (turn !== HUMAN) return;                  // 只有轮到玩家时才响应点击
     if (!boardRect.contains(x, y)) return;       // 用 JZRect 做边界判定
     const pt = new JZPoint(x, y);                // 用 JZPoint 取坐标
     const c = Math.round((pt.x() - MARGIN) / CELL);
@@ -134,21 +234,19 @@ canvas.onMousePress = (e) => {
     if (c < 0 || c >= GRID || r < 0 || r >= GRID) return;
     if (board[r][c] !== EMPTY) return;
 
-    board[r][c] = turn;
-    if (checkWin(r, c, turn)) {
-        winner = turn;
-        over = true;
-    } else {
-        // 平局判定: 棋盘满
-        let full = true;
-        for (let i = 0; i < GRID && full; i++)
-            for (let j = 0; j < GRID; j++)
-                if (board[i][j] === EMPTY) { full = false; break; }
-        if (full)
-            over = true;
-        else
-            turn = (turn === BLACK) ? WHITE : BLACK;
+    // 玩家一手
+    place(r, c, HUMAN);
+
+    // 电脑立刻回一手(同步, 不用定时器)
+    if (!over)
+    {
+        turn = AI;
+        status.setText("电脑思考中...");
+        canvas.update();
+        aiMove();
+        turn = HUMAN;
     }
+
     status.setText(statusText());
     canvas.update();
 };   // <- 这里是"箭头函数赋值"的收尾(原文件写成 `});`, 多一个右括号 = 语法错, 这才是它起不来的直接原因)

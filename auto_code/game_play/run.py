@@ -23,23 +23,32 @@ game_play 驱动 —— **一份 run.json 说了算**（题目 + 工作区 + 与
       tsconfig.json        编 play（rootDir=工作区 ⇒ build/play/play.js）
       tsconfig.game.json   编题目本体（rootDir=题目目录 ⇒ build/game/<本体>.js）
       agent_cli.json       agent 配置（llm 来自配置；terminal.rootDir=工作区、题目目录进 trustedDirs）
+      agent_system.md      **常驻说明**（环境简报 + 玩法任务书）→ agent_cli 启动时拼进 system prompt（只一次）
       plan.json            这次"会怎么做"（人看；--dry-run 只做这个 + 编译）
       build/               tsc 产物（容器按它装程序）
       runs/current/        本局证据：play.log / frames/ / external/ / metrics.jsonl / report.md /
                            result.json / session.json / Agent.log
       runs/round_NNN/      每轮归档；runs/scores.jsonl 一行一轮
       Agent.log            agent 回合诊断（think / tool / reply）
+      driver.log           驱动自己的 stdout 副本（阶段 / 每轮小结 / **停止原因**）
 
 `run.json` 里除两个目录以外的都是**与题目无关**的调参（llm / 轮次 / tsc / agent bin / stopWhen /
 是否编译归档…），缺哪项就用内置默认；**题目侧的一切都从 `testDir` 推**（玩法名 = 目录名）。
 
-流程（每一轮）:
-  a) 让 agent 设计/改脚本   POST /task（环境简报 + **题目任务书原文**；不给 verify_cmd）
+会话怎么搭（2026-10-02 定）:
+  · **常驻说明**（环境简报 + 玩法任务书）写进 `<work>/agent_system.md`，由 agent_cli 配置的
+    `system.extraFile` 在**启动时拼进 system prompt 一次** —— 整场不再每轮重复贴。
+  · 之后每轮 `POST /task` **只叠加增量**（这一轮的任务 + 上一局的证据）；agent_cli **不会**每轮清上下文
+    （只有 `POST /reset` 会清，驱动从不发），所以它记得自己前几轮做过什么。
+
+流程（每一轮，**每轮只有一次 LLM 回合**）:
+  a) 让 agent 设计/改脚本   POST /task（这一轮的任务 + **上一局的证据**：尺子输出 / 归档 / 编译错误）
   b) 编译                   tsc：工作区(play) + 题目本体（都出到工作区 build/）
   c) 跑一局                 卸旧程序 → 装 game + play → 外面抓帧 → 等 session.json
   d) 判分 + 归档            题目自己的 verify.py（子进程）→ runs/round_NNN
-  e) 让 agent 看证据自己决定 POST /task
-  f) 出口                   轮次/时长上限 · 连续 stallRounds 轮没进展 · `[script-ok]` · stopWhen=verify-pass
+  e) 出口                   轮次/时长上限 · 连续 stallRounds 轮没进展 · stopWhen=verify-pass
+  ⚠ 曾经把 a) 拆成"设计轮(写) + 分析轮(看证据改)"两次 POST —— 信息重叠、墙钟翻倍（27B 每回合数分钟），
+    2026-10-02 合并成一次：证据随 a) 一起给。副作用：不再认 `[script-ok]`（出口只看尺子判分/停滞/轮次）。
 
 角色（别混）:
   · `work_dir/play/play.ts` —— **最终产出**（由 agent 迭代；本文件不碰它的内容）
@@ -57,7 +66,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
 from contextlib import ExitStack
 
 try:
@@ -82,6 +90,10 @@ LIVE = ""                # <work>/runs/current/live.json（给 watch.py 看的�
 LIVE_MIRROR = ""         # <任务目录>/runs/current/live.json（watch.py 按自己的位置找那份）
 HUMAN = ""               # <任务目录>/runs/current/human.json（watch.py 写在这）
 HUMAN_WORK = ""          # <work>/runs/current/human.json（也读；两边都算数）
+DRIVER_LOG = ""          # <work>/driver.log（驱动自己的 stdout 副本；start_driver_log() 里开）
+# 常驻说明文件名（放在工作区根；agent_cli 的 system.extraFile 按 rootDir=工作区 解析它）：
+# 内容 = 环境简报 + 玩法任务书 —— agent_cli 启动时读一次, 拼进 **system prompt**（不是每轮贴）
+AGENT_SYSTEM_MD = "agent_system.md"
 
 
 # ==================== 小工具 ====================
@@ -109,6 +121,62 @@ def fresh_file(path):
             pass
     except Exception:
         pass
+
+
+class _TeeStream:
+    """stdout 双写：控制台照旧 + 追加进 `<work>/driver.log`（每次 write 都 flush）。
+
+    ⚠ 为什么要这么做：驱动打印的**阶段与停止原因**（`== 尺子 PASS，按 stopWhen=verify-pass 收工`）
+    原来只活在 stdout 上 —— 谁把驱动重定向/管到不落盘的地方（或被 IDE 吞掉），判断依据就没了，
+    只能靠 live.json + scores.jsonl 反推。日志必须是**文件**。
+    """
+
+    def __init__(self, stream, path):
+        self._stream = stream
+        self._fh = open(path, "a", encoding="utf-8", errors="replace")
+
+    def write(self, s):
+        try:
+            self._stream.write(s)
+        except Exception:       # 控制台那头断了（管道关了/没接）不影响落盘
+            pass
+        try:
+            self._fh.write(s)
+            self._fh.flush()
+        except Exception:
+            pass
+        return len(s)
+
+    def flush(self):
+        for x in (self._stream, self._fh):
+            try:
+                x.flush()
+            except Exception:
+                pass
+
+    def close(self):
+        self.flush()
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
+def start_driver_log(argv):
+    """开 `<work>/driver.log`，从这一刻起 stdout 双写（含每次运行的分隔头）。
+
+    时机：`plan_paths()` 之后（知道工作区在哪了）立刻调 —— 于是本文件后面所有 print
+    （计划、每轮小结、编译输出、agent 回包状态、停止原因）都同时进控制台与这个文件。
+    """
+    global DRIVER_LOG
+    if DRIVER_LOG:
+        return DRIVER_LOG
+    os.makedirs(WORK_DIR, exist_ok=True)
+    DRIVER_LOG = os.path.join(WORK_DIR, "driver.log")
+    sys.stdout = _TeeStream(sys.stdout, DRIVER_LOG)
+    print("\n===== %s  pid=%d  %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(),
+                                     " ".join(argv)))
+    return DRIVER_LOG
 
 
 def write_json(path, obj):
@@ -424,6 +492,9 @@ def write_agent_config(S, bin_path, test_dir):
         "verify": dict(S.get("verifyCfg") or {"maxRounds": 30, "timeoutMs": 60000}),
         "memory": {"enabled": True, "maxBytes": 8192,
                    "file": os.path.join(WORK_DIR, "agent_memory.md").replace("\\", "/")},
+        # 常驻说明(环境简报 + 玩法任务书): 由 write_agent_system() 写进 <work>/agent_system.md,
+        # agent_cli 启动时把它拼进 **system prompt 一次** —— 之后每轮 /task 只叠加新消息。
+        "system": {"extraFile": AGENT_SYSTEM_MD},
         "terminal": term,
         "http": {"bind": "127.0.0.1", "port": E.free_port(), "token": "", "dir": ""},
     }
@@ -445,39 +516,66 @@ def env_brief(ctx):
     )
 
 
-def design_prompt(ctx, taskbook, round_no, last_summary):
-    return (
-        env_brief(ctx) +
-        "\n【任务】第 %d 轮：为这个游戏设计（或**改进**）一键通关脚本。\n"
-        "%s"
-        "⚠ 这一轮**只做一件事**：把 %s 写成能通关的一版，然后**立刻停手**。\n"
-        "任务书里那套『① 探索 ② 设计脚本 ③ 运行 ④ 观测 ⑤ 调整』的循环里，除了 ② 都由**驱动**代劳：\n"
-        "  你写完就交棒 —— 驱动会编译 → 在容器里跑一局 → 跑尺子 verify.py → 归档；\n"
-        "  下一轮开头的任务里会把这一局的证据（play.log / report.md / metrics.jsonl / 尺子输出）交给你。\n"
-        "⛔ 因此：**不要**自己编译/跑局，**不要**逐条 grep 源码、逐个目录 ls 核对环境、反复自查 ——\n"
-        "  这一轮没有那么多时间预算（曾经写完脚本后还在空转核对，把整轮拖过了一小时、回包都丢了）。\n"
-        "  拿不准的地方写进脚本注释、留给下一轮的证据去判即可。写完回一句话总结。\n"
-        "⚠ 只看画面/只按键（红线见任务书）；题目目录只读，别去改它。\n"
-        "\n【任务书原文】\n%s\n"
-        % (round_no, last_summary, ctx["play_ts"], taskbook)
-    )
+def agent_system_path():
+    return os.path.join(WORK_DIR, AGENT_SYSTEM_MD)
 
 
-def analyze_prompt(ctx, round_no, verify_rc, verify_out, build_out, archive_dir, human=""):
-    extra = human          # "人类插过手"的那段话（watch.py 写下的，见 human_note()）
-    if build_out:
-        extra += "⚠ 这一轮**编译没过**（脚本有语法/类型错，先修它），tsc 输出：\n" + build_out[-4000:] + "\n"
+def write_agent_system(ctx, taskbook):
+    """写**常驻说明** `<work>/agent_system.md` —— agent_cli 启动时把它拼进 **system prompt 一次**。
+
+    内容 = 环境简报 + **玩法任务书原文**：这两样整场都不变 ⇒ 不该每轮重复贴（每轮只叠加
+    "这一轮的任务 + 上一局的证据"，见 design_prompt）。agent_cli 侧见配置 `system.extraFile`。
+    ⚠ 必须在 agent_cli 启动**之前**写好（它启动时读一次）；改内容得重拉 agent_cli。
+    """
+    text = ("本文件是**常驻说明**：下面这些从第 1 轮到最后一轮都有效，不会再每轮重复贴给你。\n\n"
+            + env_brief(ctx)
+            + "\n===== 玩法任务书原文（红线 / 判分口径 / 产出契约都在这里面）=====\n"
+            + (taskbook or "(任务书为空)") + "\n")
+    with open(agent_system_path(), "w", encoding="utf-8") as f:
+        f.write(text)
+    return agent_system_path()
+
+
+def evidence_block(ctx, prev, human=""):
+    """**上一局的证据**（拼进下一轮的设计任务里）。
+
+    每轮只有一次 LLM 回合 ⇒ "跑完 → 看证据 → 改"必须在**同一个任务**里闭环：
+    证据 = 尺子结论（退出码 + 输出尾部）+ 归档目录 + 证据目录（脚本自己看 play.log/report.md/metrics.jsonl）
+    + 编译错误（如果上一轮编译没过）。第 1 轮还没跑过局（prev=None）→ 只有 human 那段。
+    """
+    if not prev:
+        return human
+    s = ("\n【上一局证据（第 %d 轮已跑完）】尺子判分: %s（退出码 %s）\n"
+         "· 证据目录: %s（play.log 脚本每拍一行 / report.md 摘要+关键帧 / metrics.jsonl 外部帧差异 / session.json）\n"
+         "· 上一次归档: %s\n"
+         "· 尺子输出（末尾）:\n%s\n"
+         % (prev["r"], "PASS" if prev["pass"] else "FAIL", prev["rc"], CUR,
+            prev["archive"] or "(无)", (prev["out"] or "")[-4000:]))
+    if prev.get("build_out"):
+        s += ("⚠ 上一轮**编译没过**（脚本有语法/类型错，先修它）—— tsc 输出：\n%s\n"
+              % prev["build_out"][-4000:])
+    return s + human
+
+
+def design_prompt(ctx, round_no, evidence):
+    """**每轮只给增量**：这一轮要干什么 + 上一局的证据。
+
+    环境简报与玩法任务书在系统提示的**常驻说明**里（见 write_agent_system）—— 它们整场不变，
+    所以不再每轮重复贴；agent_cli 也不会每轮清上下文，历史本来就接着（见 MEMORY 的 agent_cli 上下文语义）。
+    """
     return (
-        env_brief(ctx) +
-        "\n【任务】第 %d 轮已跑完，请**自己看证据**判断：这一局正常吗？脚本该怎么改？\n"
-        "· 证据目录: %s（play.log 是脚本每拍一行；report.md 是摘要＋关键帧；metrics.jsonl 是外部帧的差异）\n"
-        "· 上一次归档: %s\n"
-        "· 尺子退出码: %s\n"
-        "· 尺子输出（末尾）：\n%s\n"
+        "【任务】第 %d 轮：把 %s 写成 / 改成**能通关的一版**。\n"
         "%s"
-        "要改就直接改 %s（用 modify_file/read_file 等工具）；这轮**不要**跑实验（驱动会跑）。\n"
-        "如果这一版你已经认为可以了，就在回复里写一句 `[script-ok]`。\n"
-        % (round_no, CUR, archive_dir, verify_rc, (verify_out or "")[-4000:], extra, ctx["play_ts"])
+        "⚠ 这一轮**只有这一件活**：先读【上一局证据】（第 1 轮没有），然后动手改脚本，改完**立刻停手**。\n"
+        "任务书那套『① 探索 ② 设计脚本 ③ 运行 ④ 观测 ⑤ 调整』里，①③④ 都由**驱动**代劳：\n"
+        "  你交棒 —— 驱动编译 → 在容器里跑一局 → 跑尺子 verify.py → 把结论与证据**带回下一轮的这个任务里**。\n"
+        "⚠ 所以**每轮只有你一次机会**：这一轮交出去的脚本，就是这一轮被评判的那一版（把它写好）。\n"
+        "⛔ **不要**自己编译/跑局，**不要**逐条 grep 源码、逐个目录 ls 核对环境、反复自查 ——\n"
+        "  时间预算不够（曾经写完脚本后还在空转核对，把整轮拖过了一小时、回包都丢了）。\n"
+        "  拿不准的地方写进脚本注释、留给下一轮的证据去判即可。写完回一句话总结；\n"
+        "  **别写 `[script-ok]`** —— 收工只看尺子判分（通关就停，没通关就下一轮带着证据继续）。\n"
+        "（玩法介绍 / 红线 / 判分口径 / 环境 在**系统提示的常驻说明**里，整场不变。）\n"
+        % (round_no, ctx["play_ts"], evidence)
     )
 
 
@@ -659,6 +757,7 @@ def main():
         print("FAIL: 题目目录不存在: %s" % test_dir)
         return 1
     plan_paths(test_dir, work_dir)
+    start_driver_log(sys.argv)     # 从这儿起 stdout 双写 <work>/driver.log（阶段/停止原因留档）
     try:
         play = E.play_config_dir(TEST_DIR, HERE)
     except Exception as ex:
@@ -815,6 +914,11 @@ def main():
                 agent_factory = make_agent
                 agent = agent_factory()
                 stack.callback(agent.stop)
+                # 常驻说明(环境简报 + 玩法任务书)必须在 agent_cli 启动**之前**写好 —— 它启动时读一次,
+                # 之后拼进 system prompt; 每轮 /task 只叠加"任务 + 上一局证据"。
+                sys_md = write_agent_system(ctx, taskbook)
+                print("== 常驻说明(system prompt): %s（%d 字）"
+                      % (rel_mix(sys_md, ROOT), len(read_text(sys_md))))
                 if not agent.start(log_path=os.path.join(CUR, "agent_cli_stdout.txt")):
                     if agent_cfg.get("required", True):
                         print("FAIL: agent_cli 没起来（agent.required=true）")
@@ -822,32 +926,32 @@ def main():
                     print("!! agent_cli 没起来 —— 只跑局，不驱动 agent")
                     agent = None
                 else:
-                    print("== agent_cli READY: %s（工作区=%s）" % (agent.url, rel_mix(WORK_DIR, ROOT)))
+                    info = agent.info() or {}
+                    print("== agent_cli READY: %s（工作区=%s；system prompt %s 字节，常驻说明 %s）"
+                          % (agent.url, rel_mix(WORK_DIR, ROOT),
+                             info.get("systemPromptBytes", "?"), info.get("systemExtraFile") or "(无)"))
                     publish_live(ctx, "agent-ready", 0, box, agent)
         else:
             print("!! agent.enabled=false：不驱动 agent（只跑局）")
 
-        # ---- ③ 循环 ----
-        stall, r, last_sig = 0, 0, None
+        # ---- ③ 循环（**每轮只有一次 LLM 回合**：设计/改脚本，上一局的证据随任务一起给）----
+        stall, r, last_sig, prev = 0, 0, None, None
+        stop_reason = ""
         while r < max_rounds and (deadline is None or time.time() < deadline):
             r += 1
             print("\n================ 第 %d 轮 ================" % r)
             publish_live(ctx, "design", r, box, agent)
 
-            # a) 生成/修改脚本
+            # a) 设计 / 改进脚本（带上一局的证据 —— 见 evidence_block）
             if agent:
-                summary = ""
-                if last_verify:
-                    summary = ("上一轮尺子判分: %s；上一次归档: %s\n"
-                               % ("PASS" if last_verify[1] else "FAIL", last_verify[2] or "(无)"))
                 # 人插过的手（watch.py 直接给这个 agent 下过任务）也带进这一轮 ——
                 # 否则它按"上一轮的认知"动手，跟被别人改过的文件现状打架。
                 hn = human_note()
                 if hn:
                     print("== 检测到人类干预（human.json），已带进这一轮上下文")
-                summary += hn
+                evidence = evidence_block(ctx, prev, hn)
                 try:
-                    resp = agent.submit_task(design_prompt(ctx, taskbook, r, summary),
+                    resp = agent.submit_task(design_prompt(ctx, r, evidence),
                                              timeout=round_timeout)
                     print("== agent(设计) 回包: status=%s error=%s reply=%dB"
                           % (resp.get("status"), resp.get("error") or "-",
@@ -863,14 +967,14 @@ def main():
                     # ⚠ /task 是"连接保持"式的：**我们这边超时断开不会杀掉 agent 手里的任务**
                     #   （JZAgentCli 的 onClientDestroyed 只把回包通道置空，任务照跑）。它这时
                     #   可能还在改产出脚本 ⇒ 编译/跑局之前先等它收尾，否则就是拿一个**还在变**的
-                    #   文件做实验（还会让下面的分析轮撞 409）。
+                    #   文件做实验（下一轮 POST 也会撞 409）。
                     if agent and agent.alive() and agent.busy():
                         print("== agent 手里还有任务在跑（本轮回包丢了），等它收尾再编译…")
                         if not agent.wait_idle(timeout=drain_sec):
                             print("!! 等 agent 收尾超时（%ds），仍然继续" % drain_sec)
                     time.sleep(retry_sec)
 
-            # b) 编译（agent 改的是 .ts；编译不过就把错误交给分析轮）
+            # b) 编译（agent 改的是 .ts；编译不过就把错误交给**下一轮的设计任务**）
             rc, build_out = compile_all()
             build_ok = (rc == 0) or (not want_build)
             if build_ok:
@@ -883,43 +987,14 @@ def main():
                 {"rc": 1, "out": "（编译没过，本轮没跑局）", "pass": False, "archive": ""}
             last_verify = (r, res["pass"], res["archive"])
 
-            # e) 分析轮（agent 自己看证据、自己决定改不改）
-            reply = ""
-            if agent:
-                try:
-                    resp = agent.submit_task(
-                        analyze_prompt(ctx, r, res["rc"], res["out"], "" if build_ok else build_out,
-                                       res["archive"], human_note()), timeout=round_timeout)
-                    reply = resp.get("agent_reply") or ""
-                    print("== agent(分析) 回包: status=%s error=%s reply=%dB"
-                          % (resp.get("status"), resp.get("error") or "-", len(reply)))
-                except urllib.error.HTTPError as ex:
-                    # 409 = agent 还在跑上一件活（多出现在设计轮超时、任务仍在后台跑的时候）。
-                    # 等它收尾再交一次 —— 别把"它还忙着"当成"分析轮失败"。
-                    if ex.code == 409 and agent.alive():
-                        print("== agent 还忙着（409），等它收尾再提交分析轮…")
-                        if agent.wait_idle(timeout=drain_sec):
-                            try:
-                                resp = agent.submit_task(
-                                    analyze_prompt(ctx, r, res["rc"], res["out"],
-                                                   "" if build_ok else build_out,
-                                                   res["archive"], human_note()),
-                                    timeout=round_timeout)
-                                reply = resp.get("agent_reply") or ""
-                                print("== agent(分析) 回包: status=%s error=%s reply=%dB"
-                                      % (resp.get("status"), resp.get("error") or "-", len(reply)))
-                            except Exception as ex2:
-                                print("!! 分析轮提交失败（重试后）: %r" % ex2)
-                        else:
-                            print("!! 等 agent 收尾超时（%ds），跳过这一轮的分析" % drain_sec)
-                    else:
-                        print("!! 分析轮提交失败: %r" % ex)
-                except Exception as ex:
-                    print("!! 分析轮提交失败: %r" % ex)
+            # 这一局的结论/证据留给下一轮的设计任务（每轮只有一次 LLM 回合 ⇒ 必须自己带着走）
+            prev = {"r": r, "rc": res["rc"], "out": res["out"], "pass": res["pass"],
+                    "archive": res["archive"], "build_out": "" if build_ok else build_out}
 
-            # f) 出口
+            # e) 出口
             if stop_when == "verify-pass" and res["pass"]:
                 print("== 尺子 PASS，按 stopWhen=verify-pass 收工")
+                stop_reason = "verify-pass（第 %d 轮通关）" % r
                 break
             sig = (file_sig(ctx["play_ts"]), res["rc"])
             if sig == last_sig:
@@ -927,17 +1002,18 @@ def main():
                 print("== 没进展（脚本没改 且 判分没变）: %d/%d" % (stall, stall_rounds))
                 if stall >= stall_rounds:
                     print("== 连续 %d 轮没进展，收工" % stall)
+                    stop_reason = "stall（连续 %d 轮没进展）" % stall
                     break
             else:
                 stall = 0
                 last_sig = sig
-            if agent and "[script-ok]" in (reply or ""):
-                print("== agent 说这一版可以了（[script-ok]），收工")
-                break
 
-        publish_live(ctx, "stopped", r, box, agent)
-        print("\n== 收工: 跑了 %d 轮；最后一次判分 %s；最终脚本 %s"
-              % (r, "PASS" if (last_verify and last_verify[1]) else "FAIL", ctx["play_ts"]))
+        if not stop_reason:      # 循环条件自然到点（没走到上面任何一个 break）
+            stop_reason = "max-minutes（到时间上限）" if (deadline is not None and time.time() >= deadline) \
+                else "rounds-max（到轮次上限 %d）" % max_rounds
+        publish_live(ctx, "stopped", r, box, agent, extra={"stop_reason": stop_reason})
+        print("\n== 收工（%s）: 跑了 %d 轮；最后一次判分 %s；最终脚本 %s"
+              % (stop_reason, r, "PASS" if (last_verify and last_verify[1]) else "FAIL", ctx["play_ts"]))
         print("== 工作区: %s（证据 runs/current，归档 runs/round_NNN，计划 plan.json）" % WORK_DIR)
     return 0
 

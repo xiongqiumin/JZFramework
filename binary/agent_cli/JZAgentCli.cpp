@@ -70,6 +70,8 @@ static std::string logChunk(const char *tag, const std::string &pending, size_t 
 #include "JZMcpClient.h"      // MCP 客户端(连外部 MCP 服务器, 把远端工具挂进本 agent)
 
 #include <iostream>
+#include <fstream>            // system.extraFile(宿主常驻说明)读文件
+#include <sstream>
 #include <thread>
 #include <chrono>             // 历史记录的起止时间戳(nowMs)
 
@@ -241,7 +243,12 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     connect(&m_agent->sigFinished, this, &JZAgentCli::onFinished);
 
     setupAgent();
-    m_agent->setSystemPrompt(buildSystemPrompt());
+    const string sysPrompt = buildSystemPrompt();
+    m_agent->setSystemPrompt(sysPrompt);
+    m_systemPromptBytes = (int)sysPrompt.size();   // 记录一份给 GET /info(核对"常驻说明有没有生效")
+    jzInfo() << "system prompt: " << sysPrompt.size() << " bytes"
+             << ((m_config.systemExtra.empty() && m_config.systemExtraFile.empty())
+                     ? "" : "（含宿主常驻说明 system.extra/extraFile）");
     return true;
 }
 
@@ -407,6 +414,32 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  (不经过本机的区域/路径审核), 出错时先看是不是那边的问题。配置的服务器:\n";
         for (const JZCliMcpServer &s : m_config.mcpServers)
             text += "    - " + (s.name.empty() ? s.transport : s.name) + "  (" + s.transport + ")\n";
+    }
+    // 宿主**常驻说明**(如"玩法任务书"): 只进 system prompt 一次 —— 之后每轮 /task 只叠加新消息,
+    // 不用把同一段介绍重复贴一遍。extraFile(相对 rootDir)在前, 内联 extra 在后(可补充/覆盖)。
+    string extra = m_config.systemExtra;
+    if (!m_config.systemExtraFile.empty())
+    {
+        string p = m_config.systemExtraFile;
+        if (!JZDir::isAbsolutePath(p))
+            p = m_config.rootDir + "/" + p;
+        p = codeNormalizePath(p);
+        ifstream ifs(p, ios::binary);
+        if (ifs)
+        {
+            stringstream ss;
+            ss << ifs.rdbuf();
+            extra = ss.str() + "\n" + extra;
+        }
+        else
+            jzWarning() << "system.extraFile 读不到: " << p;
+    }
+    if (!extra.empty())
+    {
+        text += "\n===== 常驻说明（宿主给：本任务从头到尾都适用，优先级高于上面的通用说明）=====\n";
+        text += extra;
+        if (extra[extra.size() - 1] != '\n')
+            text += "\n";
     }
     text += "\nWork through the user's request step by step using the tools. "
             "When done, give a concise summary of what you changed.\n";
@@ -806,6 +839,11 @@ Json::Value JZAgentCli::makeInfo() const
     j["modelName"] = m_config.modelName;
     j["rootDir"] = m_config.rootDir;
     j["mcpInitDone"] = m_mcpInitDone;   // false = 还在连 MCP, 此时的 POST /task 会被拒绝
+    // 宿主常驻说明(system.extra / extraFile): 拼进 system prompt 一次, 之后每轮 /task 只叠加新消息 ——
+    // 这里给出"从哪来 / 多大 / system prompt 总共多大", 便于自检(HTTP 模式默认不打 stdout)
+    j["systemExtraFile"] = m_config.systemExtraFile;
+    j["systemExtraBytes"] = (int)m_config.systemExtra.size();
+    j["systemPromptBytes"] = m_systemPromptBytes;
     // MCP: 配置里每个 server 的连接/挂载状态(没有网页面板时用 GET /info 自检)
     if (!m_mcpStates.empty())
     {

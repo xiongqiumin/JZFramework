@@ -28,11 +28,13 @@ auto_code/game_play/                      # 任务目录（驱动代码与题目
 ├─ play/jzapi.d.ts     # 脚本能用的面（从任务根模板拷）
 ├─ tsconfig.json       # 编产出 → build/play/play.js
 ├─ tsconfig.game.json  # 编题目本体 → build/game/<本体>.js（rootDir=题目目录 ⇒ 产物路径可预期）
-├─ agent_cli.json      # agent 配置（llm / terminal.rootDir=工作区 / 题目目录进 trustedDirs / logFile）
+├─ agent_cli.json      # agent 配置（llm / terminal.rootDir=工作区 / 题目目录进 trustedDirs / logFile / system.extraFile）
+├─ agent_system.md     # **常驻说明**：环境简报 + 玩法任务书 → agent_cli 启动时拼进 system prompt（只一次）
 ├─ plan.json           # 这次"会怎么做"（路径、命令、agent 设置）——`--dry-run` 主要给你看这个
 ├─ build/              # tsc 产物（容器按它装 game + play）
 ├─ runs/current/       # 本局证据（每轮被覆盖）；runs/round_NNN/ 归档；runs/scores.jsonl 一行一轮
-└─ Agent.log           # agent 回合诊断（think / tool / reply）
+├─ Agent.log           # agent 回合诊断（think / tool / reply）
+└─ driver.log          # 驱动自己的 stdout 副本（阶段 / 每轮小结 / **停止原因**；追加写）
 ```
 
 容器 `virtual_device --headless --desktop <玩法桌面>` 里只有两个进程：`<玩法程序名>`（题目侧游戏）与 `script`（产出脚本），
@@ -54,19 +56,33 @@ python auto_code\game_play\game\hello\watch.py --ask-file ask.txt --with-screen 
 ```
 
 - **相对路径一律按仓库根解析**（不是 CWD）⇒ 同一份 `run.json` 在哪儿调用都指向同一处。
+- 现有玩法（`game/<玩法>/`，自包含：任务书 + 尺子 + 配置，本体可住在别处）：`hello`（点红球/避蓝球）、
+  `shooter`（本体 = `binary/code_agent/runtime/test_jsshooter`，`jsRoot=repo`，不判通关）、
+  `gomoku`（15x15 五子棋：玩家执黑 vs 电脑白，本体 = `binary/code_agent/runtime/gomoku/main.js`；
+  **判分 = 180s(`limitSec`) 内下赢**，尺子读本体打印的 `[gomoku] RESULT=…` 事件行）。
 - 产出的"起点"**一律是空的**：工作区首次生成 `play/play.ts` 时只写一份空骨架（入口脚手架 + TODO，
   不给任何现成解法——"能不能做出来"是这道题的全部）；之后**不覆盖**它（想重来就删掉它，或换一个 `workDir`）。
 
 ## 驱动每一轮做什么（`run.py`）
 
+**会话怎么搭**（2026-10-02 定）：常驻的东西进 **system prompt**，每轮只叠加增量。
+
 ```
-① 让 agent 设计/改脚本   POST /task（环境简报 + **题目任务书原文**；不给 verify_cmd，验证由驱动做）
-② 编译                   tsc：工作区(play) + 题目本体（都出到工作区 build/）；不过就把错误带进④
+启动前：写 <work>/agent_system.md（环境简报 + **玩法任务书原文**）→ agent_cli 配置 system.extraFile
+        ⇒ agent_cli 启动时把它拼进 **system prompt 一次**（`GET /info` 的 systemPromptBytes 可自检）
+每一轮：
+① 让 agent 设计/改脚本   POST /task（**只有增量**：这一轮的任务 + **上一局的证据**：尺子输出/归档/编译错误）
+② 编译                   tsc：工作区(play) + 题目本体（都出到工作区 build/）；不过就把错误带进下一轮的①
 ③ 跑一局                 卸旧程序 → 装 game + play → 外面抓帧 → 等 session.json
 ④ 判分 + 归档            题目自己的 verify.py（子进程）→ runs/round_NNN
-⑤ 让 agent 看证据自己决定 POST /task（它自己读 play.log / report.md / metrics.jsonl / 尺子输出）
-⑥ 出口                   轮次上限 / 总时长 / 连续 stallRounds 轮没进展 / agent 回 [script-ok] / stopWhen=verify-pass
+⑤ 出口                   轮次上限 / 总时长 / 连续 stallRounds 轮没进展 / stopWhen=verify-pass
 ```
+
+- ⚠ **每轮只有一次 LLM 回合**（2026-10-02 合并）：早先拆成"设计轮(写) + 分析轮(看证据改)"两次 POST，
+  信息重叠、墙钟翻倍（27B 三元模型每回合数分钟，分析轮里它还常常自己跑 tsc 空转）⇒ 现在证据随①一起给；
+  副作用：不再认 `[script-ok]`（出口只看尺子判分/停滞/轮次/时长）。
+- ⚠ agent_cli **不会每轮清上下文**（只有 `POST /reset` 会清，驱动从不发）⇒ 每轮是在**同一份累积历史**上
+  追加一条消息；真正"跨任务"的是 `agent_memory.md`（每轮把它的内容注入任务消息，模型自己用 memory 工具写）。
 
 - agent 是主体：它自己观测、自己改工作区里的产出；驱动只负责"拉起来、别让它空转、跑局判分、归档"。
 - ⚠ `POST /task` 是**连接保持**式的：驱动侧超时断开**不会**杀 agent 手里的任务 ⇒ 设计轮回包丢了要先
@@ -95,6 +111,8 @@ python auto_code\game_play\game\hello\watch.py --ask-file ask.txt --with-screen 
 - 全在**工作区**：`runs/current/`（本局，每轮覆盖）＝ `play.log` + `frames/`（脚本自留）、
   `external/` + `metrics.jsonl`（驱动从外面抓的帧与差异）、`session.json`（脚本自报）、
   `report.md` + `result.json`（尺子结论）、`Agent.log`（agent 回合诊断）、`agent_cli_stdout.txt` / `container_stdout.txt`；
+  `driver.log` 在**工作区根**（不在 `runs/current/`）：驱动自己的 stdout 副本，**停止原因**（`verify-pass` / `stall` /
+  `rounds-max` / `max-minutes`）同时会写进 `live.json` 的 `stop_reason` 字段 —— 不用再靠猜；
   `runs/round_NNN/`（每轮归档，上面这些 + 抽样的帧 + 状态文件抄本）、`runs/scores.jsonl`（一行一轮，`pass` 取自尺子退出码）。
 - 判分失败 → 看尺子打印的结论（`cleared`/`game_over`/`running`…）；脚本报错 → `play.log` 的 `!!` 行 + `session.json.errors`；
   游戏本身 → `container_stdout.txt`；玩得好不好 → **只看画面**（`report.md` 内嵌的关键帧，或 `frames/` / `external/` 任意一张）。

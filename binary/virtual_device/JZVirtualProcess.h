@@ -5,6 +5,7 @@
 #include "JZEngineRuntime.h"      // 本进程的 JS 运行时 (内含一个 JZJSEngine)
 #include "JZThread.h"
 #include "JZMutex.h"
+#include <atomic>
 #include <string>
 
 class JZVirtualWindow;
@@ -14,12 +15,21 @@ class JZVirtualDeviceHttp;
 // ==================== 虚拟进程 (一个窗口一个线程) ====================
 // 一台虚拟机上的"进程": **一个 JZThread + 一个 JZEngineRuntime(内含 JZJSEngine)**, 里面
 // 跑一份 JS。JS 里 `new JZWindow(...)` 建出来的窗口就归这个进程 —— 于是每个窗口是独立
-// 线程、独立 JS 运行时, 一个窗口卡死不拖累别的窗口, 崩了也只崩自己 (JZVirtualDevice 的
-// 进程管理因此成立)。
+// 线程、独立 JS 运行时, 一个窗口卡死不拖累别的窗口, 崩了也只崩自己(=自己退出, 见下;
+// JZVirtualDevice 的进程管理因此成立)。
 //
 // 它**只继承 JZThread** (不搞多继承): 对桌面来说进程就是一个线程 —— 停/等/查都在
 // JZThread 上; "窗口宿主"这层需要用 JZWindowHost 接口, 由一个内部小类 WindowHost 承担
 // (见下), 转发到本进程。
+//
+// ⚠ **未处理异常 = 本进程退出** (与真系统同语义: JS 顶层错误/未决 Promise 拒绝 = 程序失败)。
+//   链路: 引擎 sigError -> JZEngineRuntime 的桥 -> initRuntime 里登记的 handler
+//        -> setError() + JZThread::quit()      (只请求退出, 不在这里碰别的线程)
+//        -> run() 从事件循环出来, destroyRuntime() 后线程结束
+//        -> finishProcess() 往主线程投一个异步事件 -> 桌面 terminateProcess (摘表 + 收窗口 + delete)
+//   于是 /api/programs 里它会消失、窗口一起收走 —— 不留"装死占着窗口"的进程。
+//   注意引擎在异常时已经 stopEngineTimer, 所以这个进程不会自己复活: 要重跑就重新加载程序。
+//   (另外: POST /api/programs 加载"起来就崩"的程序会直接报 400 + 错误文本, 见 launch)
 //
 // 线程模型 (与桌面的全部通信, 都不是新协议, 用的都是框架现成机制):
 //   · 建窗: 本线程里 JZWindow 构造的最后一步回调**本进程的窗口宿主** —— 它把窗口交给
@@ -29,7 +39,10 @@ class JZVirtualDeviceHttp;
 //   · 取帧: 不需要跨线程读别人的帧缓冲 —— 窗口画完就由本线程把帧**推**给桌面
 //     (JZVirtualWindowBackend::onPainted -> captureFrame), 桌面合成只读那份拷贝;
 //   · 停进程: quit()(协作式) + wait()(join); 引擎在本线程析构 (JSRuntime 只能在建它的
-//     线程里用, 见 destroyRuntime)。
+//     线程里用, 见 destroyRuntime);
+//   · 进程**自己**结束 (未处理异常 / 线程体跑完): 本线程往桌面投一个异步事件 -> 桌面
+//     terminateProcess 收尾 (摘表 + 收窗口), 见 finishProcess。于是桌面不需要"定期清扫
+//     死进程", 程序表里也不会留一个跑完了的进程。
 //
 // 用法 (宿主/测试):
 //     JZVirtualProcess* p = desk.createProcess("app1", "JS 源码");
@@ -67,6 +80,10 @@ public:
     // ---- 运行状态 / 错误 ----
     std::string lastError() const;
     bool ok() const { return !m_error; }
+    // run() 是否已经跑完 (线程已结束 / 正在结束)。⚠ 不能用 JZThread::isRunning() 代替:
+    // 它的判据是 std::thread 还 joinable, 而线程函数返回后**仍然 joinable**(要等 join) ——
+    // 所以"结束了没有"只能由进程自己在 run() 末尾置位 (见 run/waitWindow)。
+    bool isFinished() const { return m_finished; }
 
     // 窗口宿主把"本线程新建的窗口"转给这里 (见 WindowHost); 也是窗口归属的登记点
     void onWindowCreated(JZWindow* w);
@@ -89,6 +106,7 @@ private:
 
     bool initRuntime();                      // 在本线程里建运行时/引擎
     void destroyRuntime();                   // 在本线程里销毁 (JSRuntime 有线程亲和)
+    void finishProcess();                    // run() 收尾: 置 isFinished + 通知桌面收尾
     void setError(const std::string& text);
 
     JZVirtualDevice* m_device = nullptr;
@@ -109,10 +127,11 @@ private:
     JZVirtualWindow* m_window = nullptr;     // 客户区还活着 ⇒ 这个也还在 (同一批生命周期)
     std::string m_lastError;
     bool m_error = false;
+    std::atomic<bool> m_finished{false};     // run() 跑完了 (见 isFinished)
 };
 
 // ==================== 与 HTTP 接口对接 ====================
-// 把"加载程序 / 在它里面跑一段 / 列程序 / 停程序"装到 JZVirtualDeviceHttp 的宿主钩子上
+// 把"加载程序 / 列程序 / 停程序"装到 JZVirtualDeviceHttp 的宿主钩子上
 // (那个层不认识 JS 引擎, 见 JZVirtualDeviceHttp.h 的纪律 5)。宿主一行:
 //     JZVirtualDeviceHttp api(&desk);
 //     jzAttachVirtualProgramHost(&desk, &api);

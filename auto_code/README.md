@@ -33,6 +33,7 @@ auto_code/<task>/
 | 任务 | 目标 | 状态 |
 | --- | --- | --- |
 | `computer_use/` | 让 `js_wrapper/computeruse` 的探索实现（`App.explore`）能从屏幕像素产出语义场景树 | ✅ 全链路绿灯（出题→截图→感知→装配→判分→归档）：8 个种子五项硬门全过，数字见 `baseline.json`；感知后端 = `perceive()` 打多模态接口（地址由驱动给）；⚠ 最短板 `iou75` 无余量。屏幕已有两条路：真窗口路（默认）/ **无头容器路**（`run.py --container`，虚拟桌面当容器，已接入并实测链路通） |
+| `game_play/` | 交一个**一键通关脚本**：容器里**两个进程** —— 游戏（题目侧）+ `script`（脚本），脚本用 computer use 看画面/按键，把一个游戏**打通关**。玩法**自包含**（`game/<玩法>/` = 本体 + 它自己的尺子 + 配置）：`hello`（**默认**，点球 480x360，判通关）/ `shooter`（飞行射击 800x600，**本体直接用 `binary/code_agent/runtime/test_jsshooter`**，只判"跑起来了"）/ `gba`（模拟器 240x160，代码保留） | 🟡 链路全通、形态已定：**产出 = `play/play.ts`**（作为进程 `script` 跑在 virtual_device 里，用 `__jz.computeruse.*`：screenshot/click/key/wait）；驱动只装这两个进程、**从外面抓帧当旁证**，判分与归档**委托玩法自己的尺子**。人的插手口子 = `watch.py`（看画面 / 打断 agent_cli 当前任务 / 下自己的任务）。⚠ 判分口径按玩法自定：`hello` 要通关（`CLEAR!`），`shooter` **不判通关**（本体没有通关线，只打印 `[shooter] score=..`） |
 
 ## 怎么跑（以 computer_use 为例）
 

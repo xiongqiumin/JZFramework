@@ -19,6 +19,11 @@ if(HAS_JZCv)
     add_subdirectory(cv)
 endif()
 
+# JZEmulator(GBA 画面控件): 同样只有模块真建起来(找到 mgba_host.dll)才加这个测试
+if(HAS_JZEmulator)
+    add_subdirectory(emulator)
+endif()
+
 add_executable(test_frp test_frp.cpp net/net_test_common.cpp)
 target_link_libraries(test_frp JZFramework)
 

@@ -44,6 +44,13 @@ if(HAS_JZCv)
     jz_onnx_enable(code_runtime)     # 拷 onnxruntime DLL (JZCv 是静态库, 需要它)
 endif()
 
+# 游戏模拟器控件(见 JZEmulator/)：接了之后 JS 侧才能 `new JZEmulatorView(...)`
+# （JZEngineRuntime 里有 JZ_HAS_EMULATOR 守卫的注册调用），顺带把 mgba_host.dll 与它的
+# MinGW 运行库拷到 exe 边上。没装那个模块就不接，JS 里 new 会抛清晰错误。
+if(HAS_JZEmulator)
+    jz_emulator_enable(code_runtime)
+endif()
+
 # ASan 构建: 把 ASan 运行库拷到 exe 边上(见根 CMakeLists 的 JZ_ENABLE_ASAN)
 jz_copy_asan_runtime(code_runtime)
 

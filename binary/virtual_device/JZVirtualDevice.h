@@ -8,6 +8,7 @@
 #include "JZRect.h"
 #include <atomic>
 #include <cmath>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -33,7 +34,10 @@ class JZPainter;
 //   ② 注入输入 (点/键/滚轮): jzApp->sendEvent(clientWindow, ev) —— 跨线程会投递并**阻塞等**
 //      对方处理完 (同步 RPC), 于是点击的顺序/返回值与单线程时一样确定;
 //   ③ 取帧 (合成时读客户区帧缓冲): 让**窗口自己的线程**拷一帧 (jzRunOnThreadSync, 见
-//      JZVirtualThread.h), 桌面只拿一份拷贝, 不碰别人的帧缓冲。
+//      JZVirtualThread.h), 桌面只拿一份拷贝, 不碰别人的帧缓冲;
+//   ④ 进程**自己**结束 (未处理异常 / 线程体跑完): 进程线程投一个异步事件过来 -> 本类
+//      terminateProcess 收尾 (摘表 + 收窗口 + delete, 见 JZVirtualProcess::finishProcess)。
+//      所以桌面不需要"定期清扫死进程", 程序表里不会留跑完了的进程。
 
 // ==================== 虚拟桌面 (虚拟显示器 + 窗口管理器) ====================
 // 它就是"这台虚拟机的屏幕": 一块 desktopW × desktopH 的画布 + 其上的窗口管理器。
@@ -92,6 +96,21 @@ public:
     void terminateProcess(JZThread* p);               // 停 + 等 + 收它的窗口 + 删
     void shutdownProcesses();                         // 全部收掉 (析构时自动调)
     void addProcess(JZThread* p);                     // 由进程自己登记 (JZVirtualProcess::start)
+
+    // ---- 程序输出 (console.log 等) 的环形缓冲 ----
+    // 容器里每个进程的 console.* 都路过这里 (见 JZVirtualProcess 的 logHandler): 一份照旧打到
+    // 容器 stdout, 另一份进这个**最近 kOutputLines 行**的缓冲 —— 外部可以直接
+    //     GET /api/logs?offset=<行号>&size=<条数>       (size < 0 = 读到末尾)
+    // 按行取, 不必去 grep 容器的 stdout 重定向(那是整个进程的输出, 还混着容器自己的日志)。
+    // ⚠ 行号是**绝对**的 (累计行号, 已被挤掉的也算): outputTotal() = 一共产生过多少行,
+    //   outputFirst() = 缓冲里还留着的第一行的行号 ⇒ 消费方记住 total 就能增量拉取。
+    static const int kOutputLines = 1000;
+    void appendOutput(const std::string& line);            // 线程安全 (由进程线程调用)
+    int outputTotal() const;                               // 累计行数 (含已被挤掉的)
+    int outputFirst() const;                               // 缓冲里第一行的绝对行号
+    // 取行: offset = 起始**绝对**行号 (给得太早 -> 从最老的开始; 超出末尾 -> 空),
+    //       size <= 0 = 一直到末尾。行文本形如 `[vproc: <进程名>] <原始输出>`。
+    std::vector<std::string> outputLines(int offset, int size) const;   // 线程安全
 
     // 建并启动一个进程: 一个线程 + 一份 JZEngineRuntime(内含 JZJSEngine), 里面**加载程序**。
     // 程序里 `new JZWindow(...)` 建出来的窗口就属于该进程 (线程独立、引擎独立)。
@@ -271,6 +290,13 @@ private:
     mutable std::recursive_mutex m_mutex;
 
     std::vector<JZThread*> m_processes;               // 进程表 (就是它们各自的线程对象)
+
+    // ---- 程序输出的环形缓冲 (见 appendOutput / outputLines) ----
+    // 用**独立的一把锁**而不是 m_mutex: 进程线程写日志时绝不能去抢桌面那把锁 ——
+    // 主线程可能正拿着它等这个进程(投递输入是同步 RPC), 抢了就是死锁。
+    mutable std::mutex m_outputMutex;
+    std::deque<std::string> m_outputs;     // 最近 kOutputLines 行 (超了从头弹)
+    long long m_outputTotal = 0;           // 累计产生过的行数 (含已被挤掉的)
     // "已有回主线程刷新在途"(去抖)。⚠ 原子而非锁: 进程线程在**投递输入的那一刻**可能被
     // 主线程等 (sendEvent), 这里再去抢 m_mutex 就会死锁 —— 这条路径必须无锁。
     std::atomic<bool> m_refreshPosted{false};

@@ -27,6 +27,7 @@
 #include "JZCheckbox.h"
 #include "JZSignal.h"
 #include "JZDebug.h"   // jzWarning
+#include "JZComputerUse/JZComputerUse.h"   // 把 CU 后端指向本容器这块桌面 (见构造函数)
 
 #include <string>
 #include <cstdio>
@@ -186,6 +187,13 @@ public:
         m_view = new JZVirtualScreenView(&m_screen);   // 显示控件: 画合成图 + 转发输入
         m_view->resize(m_screen.desktopSize());
         m_area->setWidget(m_view);                     // 归滚动区所有 (成为 viewport 子控件)
+
+        // ---- 把 computer use 的后端指向**本容器这块桌面** ----
+        // 于是容器里跑的 JS 程序可以直接用 __jz.computeruse.* (screenshot/click/key/wait...)
+        // 操作同一块屏幕上的别的窗口 —— 脚本就按"像人一样操作这台小电脑"的方式写
+        // (例: auto_code/game_play/play/play.ts)。宿主侧同样受益: 宿主里调的 CU 也就是这块桌面。
+        // ⚠ 必须赶在下面的 --program / HTTP 加载程序之前接上: 程序一起来就可能调 CU API。
+        JZComputerUse::setVirtualDesktop(&m_screen);
 
         // ---- HTTP 接口 (把这块桌面当容器驱动: 加载程序 / 截图 / 鼠标 / 键盘) ----
         // 宿主这边只要两行: 建接口 + 把"程序管理"接到虚拟进程上 (见 JZVirtualDeviceHttp.h)。

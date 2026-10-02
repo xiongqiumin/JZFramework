@@ -86,13 +86,8 @@ JZImage currentFrame(JZRect* logical) {
 // (虚拟窗口 = 桌面坐标), mapToGlobal 在两个平台都正确 ⇒ 再补一次就是**重复补偿**
 // (表现为 layoutTree 给的 rect 整体偏移一个窗口位置, "能定位却点不中")。故删除。
 
-#if JZ_CU_OPENCV
-    std::string tempDir() {
-        char buf[MAX_PATH];
-        if (GetTempPathA(MAX_PATH, buf) > 0) return std::string(buf);
-        return std::string(".\\");
-    }
-#endif
+    // （曾经这里有个 tempDir(): 给"把帧存成 PNG 再 imread 读回来"当落盘目录。
+    //   matchImage 改成零拷贝包装后它没人用了 —— 见 jzCvMatOf 的说明。）
 
     void split(const std::string& s, char d, std::vector<std::string>& out) {
         std::string cur;
@@ -121,18 +116,8 @@ JZImage currentFrame(JZRect* logical) {
         return 0;
     }
 
-#if JZ_CU_OPENCV
-    // 解析 "#RRGGBB" / "RRGGBB" / "#RGB" 为 OpenCV BGR 标量
-    cv::Scalar parseHex(const std::string& h) {
-        std::string s = h;
-        if (!s.empty() && s[0] == '#') s = s.substr(1);
-        if (s.size() == 3) s = std::string(1,s[0])+s[0]+s[1]+s[1]+s[2]+s[2];
-        unsigned int v = 0;
-        std::stringstream ss; ss << std::hex << s; ss >> v;
-        int r = (v>>16)&0xFF, g = (v>>8)&0xFF, b = v&0xFF;
-        return cv::Scalar(b, g, r);
-    }
-#endif   // JZ_CU_OPENCV
+// （曾经这里有个 parseHex(): 把 "#RRGGBB" 转成 OpenCV 的 BGR 标量, 供 matchColor 用。
+//   颜色查找改成纯 C++ 实现后它没人用了 —— 见下面 matchColor 的说明。）
 
     // —— 进程 / 窗口查找与置前（供 JZComputerUse 的进程窗口管理使用）——
     struct FindCtx { const std::string* title = nullptr; DWORD pid = 0; HWND found = nullptr; };
@@ -506,6 +491,27 @@ std::string JZComputerUse::screenshot() {
     return JZScreenShot::toDataUrl(img);
 }
 
+#if JZ_CU_OPENCV || JZ_CU_OCR
+namespace {
+
+// JZImage(RGBA8888) -> cv::Mat(8UC4) —— **零拷贝**: 直接包住它的像素缓冲。
+// ⚠ 只在 img 活着时有效(cv::Mat 持的是裸指针, 不做引用计数); 要留住就自己 clone 一份。
+//   行距按 4 字节/像素紧密排列(JZImageData 的布局)。
+// 它替掉了原先"把整帧存成 PNG 落盘、再 cv::imread 读回来"的做法 —— 那又慢又脏: 每帧几 MB
+// 写盘 + PNG 编解码, 而帧本来就在内存里。
+cv::Mat jzCvMatOf(const JZImage& img)
+{
+    if (img.isNull() || !img.data())
+        return cv::Mat();
+    const uint8_t* px = img.data()->pixels();
+    if (!px)
+        return cv::Mat();
+    return cv::Mat(img.height(), img.width(), CV_8UC4, (void*)px);
+}
+
+} // namespace
+#endif
+
 CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& region) {
 #if !JZ_CU_OPENCV
     (void)templatePath; (void)region;
@@ -514,10 +520,13 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     JZRect logical;
     JZImage img = currentFrame(&logical);
     updateLogical(logical);
-    std::string shotPath = JZScreenShot::save(img, tempDir(), "cu_shot.png");
-    cv::Mat hay = cv::imread(shotPath, cv::IMREAD_COLOR);
+    // 帧: **零拷贝**包成 cv::Mat(不再落盘 PNG + imread); 模板: 它是输入, 照样从文件读
+    cv::Mat hay = jzCvMatOf(img);
     cv::Mat needle = cv::imread(templatePath, cv::IMREAD_COLOR);
     if (hay.empty() || needle.empty()) return CuRect();
+    // 通道对齐: 帧是 RGBA8888 ⇒ 把模板也转成 RGBA 再比(模板小, 转一次很便宜)。
+    // ⚠ 别反过来把**帧**转成 BGR: 那要拷整帧(大头在这儿), 而这里只需要拷模板。
+    cv::cvtColor(needle, needle, cv::COLOR_BGR2RGBA);
 
     int hw = hay.cols, hh = hay.rows;
     cv::Rect roi(0, 0, hw, hh);
@@ -551,50 +560,128 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
 #endif
 }
 
+namespace {
+
+// "#RRGGBB" / "#RGB" -> 0..255（手写解析: 不为一个兜底函数再拉 include）
+bool cuParseHexRgb(const std::string& hex, int* r, int* g, int* b) {
+    std::string s = hex;
+    if (!s.empty() && s[0] == '#')
+        s = s.substr(1);
+    if (s.size() == 3)
+        s = std::string() + s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    if (s.size() != 6)
+        return false;
+    int v[3] = { 0, 0, 0 };
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 2; k++) {
+            const char c = s[i * 2 + k];
+            int n = -1;
+            if (c >= '0' && c <= '9')      n = c - '0';
+            else if (c >= 'a' && c <= 'f') n = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') n = c - 'A' + 10;
+            if (n < 0)
+                return false;
+            v[i] = v[i] * 16 + n;
+        }
+    }
+    *r = v[0]; *g = v[1]; *b = v[2];
+    return true;
+}
+
+} // namespace
+
 CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& region) {
-#if !JZ_CU_OPENCV
-    (void)hexColor; (void)region;
-    return CuRect();        // 同上: 未接入 OpenCV ⇒ 视为未找到
-#else
+    // ---- 颜色查找: 单一实现, **不依赖 OpenCV**（有没有 OpenCV 都走这条）----
+    // 为什么不用 OpenCV: ① 它就是一次像素扫描, 而那边每次要先把整帧**存成 PNG 落盘**再
+    //   `cv::imread` 读回来(为了拿 cv::Mat), 又慢又脏; ② 取框口径也不同 —— 那边把所有命中点
+    //   并成**一个**外接矩形, 画面上有若干同色目标(红球/图标)时会被连成一片、中心落在目标
+    //   之间, 而"找画面上那个红点、点它"要的正是其中一个 ⇒ 这里取**最大连通块**的框;
+    //   ③ 于是容器版与桌面版行为一致, 不会出现"同名 API 两套结果"。
+    // 容差 60 = 三通道绝对差之和(每通道平均 ~20, 与原 OpenCV 版同一口径);
+    // 归一化(左上角 + 尺寸, 分母 = 帧的**像素**尺寸)与 matchImage 同口径。
     JZRect logical;
     JZImage img = currentFrame(&logical);
     updateLogical(logical);
-    std::string shotPath = JZScreenShot::save(img, tempDir(), "cu_shot.png");
-    cv::Mat hay = cv::imread(shotPath, cv::IMREAD_COLOR);
-    if (hay.empty()) return CuRect();
+    std::shared_ptr<JZImageData> data = img.data();
+    if (!data || data->width() <= 0 || data->height() <= 0 || !data->pixels())
+        return CuRect();
 
-    int hw = hay.cols, hh = hay.rows;
-    cv::Rect roi(0, 0, hw, hh);
+    int tr = 0, tg = 0, tb = 0;
+    if (!cuParseHexRgb(hexColor, &tr, &tg, &tb))
+        return CuRect();
+
+    const int hw = data->width(), hh = data->height();
+    const uint8_t* px = data->pixels();
+    int x0 = 0, y0 = 0, x1 = hw, y1 = hh;      // region(归一化) -> 像素窗口; 缺省整帧
     if (region.w > 0 && region.h > 0) {
-        int x0 = std::max(0, (int)(region.x * hw));
-        int y0 = std::max(0, (int)(region.y * hh));
-        int ww = std::min(hw - x0, (int)(region.w * hw));
-        int hh2 = std::min(hh - y0, (int)(region.h * hh));
-        if (ww <= 0 || hh2 <= 0) return CuRect();
-        roi = cv::Rect(x0, y0, ww, hh2);
+        x0 = std::max(0, (int)(region.x * hw));
+        y0 = std::max(0, (int)(region.y * hh));
+        x1 = std::min(hw, x0 + std::max(1, (int)(region.w * hw)));
+        y1 = std::min(hh, y0 + std::max(1, (int)(region.h * hh)));
+        if (x1 <= x0 || y1 <= y0)
+            return CuRect();
     }
-    cv::Mat sub = hay(roi);
-    cv::Scalar target = parseHex(hexColor);
-    cv::Mat diff; cv::absdiff(sub, cv::Scalar(target[0], target[1], target[2]), diff);
-    std::vector<cv::Mat> ch; cv::split(diff, ch);
-    cv::Mat d0, d1, d2;
-    ch[0].convertTo(d0, CV_32F); ch[1].convertTo(d1, CV_32F); ch[2].convertTo(d2, CV_32F);
-    cv::Mat dist = d0 + d1 + d2;            // 三通道绝对差之和
-    double tol = 60;                        // 容差(每通道平均 ~20)
-    cv::Mat mask; cv::threshold(dist, mask, tol, 255, cv::THRESH_BINARY_INV);
-    mask.convertTo(mask, CV_8U);
-    std::vector<cv::Point> pts; cv::findNonZero(mask, pts);
-    if (pts.empty()) return CuRect();
-    int minx = INT_MAX, miny = INT_MAX, maxx = 0, maxy = 0;
-    for (auto& p : pts) {
-        if (p.x < minx) minx = p.x; if (p.y < miny) miny = p.y;
-        if (p.x > maxx) maxx = p.x; if (p.y > maxy) maxy = p.y;
+
+    const int tol = 60;                        // 与 OpenCV 版同一容差
+    std::vector<uint8_t> mask((size_t)hw * (size_t)hh, 0);
+    for (int y = y0; y < y1; y++) {
+        const uint8_t* row = px + (size_t)y * (size_t)hw * 4;
+        for (int x = x0; x < x1; x++) {
+            const uint8_t* q = row + (size_t)x * 4;
+            const int d = std::abs((int)q[0] - tr) + std::abs((int)q[1] - tg)
+                        + std::abs((int)q[2] - tb);
+            if (d <= tol)
+                mask[(size_t)y * (size_t)hw + (size_t)x] = 1;
+        }
     }
+
+    // 连通块(4 邻接)取最大 —— 只要外接矩形, 不记形状
+    std::vector<uint8_t> seen((size_t)hw * (size_t)hh, 0);
+    std::vector<size_t> stack;
+    int bestArea = 0, bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            const size_t i0 = (size_t)y * (size_t)hw + (size_t)x;
+            if (!mask[i0] || seen[i0])
+                continue;
+            int area = 0, mx0 = x, my0 = y, mx1 = x, my1 = y;
+            seen[i0] = 1;
+            stack.clear();
+            stack.push_back(i0);
+            while (!stack.empty()) {
+                const size_t i = stack.back();
+                stack.pop_back();
+                const int cx = (int)(i % (size_t)hw), cy = (int)(i / (size_t)hw);
+                area++;
+                if (cx < mx0) mx0 = cx;
+                if (cx > mx1) mx1 = cx;
+                if (cy < my0) my0 = cy;
+                if (cy > my1) my1 = cy;
+                const int nb[4][2] = { { cx - 1, cy }, { cx + 1, cy }, { cx, cy - 1 }, { cx, cy + 1 } };
+                for (int k = 0; k < 4; k++) {
+                    const int nx = nb[k][0], ny = nb[k][1];
+                    if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1)
+                        continue;
+                    const size_t ni = (size_t)ny * (size_t)hw + (size_t)nx;
+                    if (mask[ni] && !seen[ni]) {
+                        seen[ni] = 1;
+                        stack.push_back(ni);
+                    }
+                }
+            }
+            if (area > bestArea) {
+                bestArea = area;
+                bx0 = mx0; by0 = my0; bx1 = mx1; by1 = my1;
+            }
+        }
+    }
+    if (bestArea <= 0)
+        return CuRect();
+
     CuRect r;
-    r.x = (double)(roi.x + minx) / hw; r.y = (double)(roi.y + miny) / hh;
-    r.w = (double)(maxx - minx + 1) / hw; r.h = (double)(maxy - miny + 1) / hh;
+    r.x = (double)bx0 / hw; r.y = (double)by0 / hh;
+    r.w = (double)(bx1 - bx0 + 1) / hw; r.h = (double)(by1 - by0 + 1) / hh;
     return r;
-#endif
 }
 
 // ————————————————————————————————————————————————
@@ -682,14 +769,11 @@ bool jzCvFileExists(const std::string& path)
 }
 
 // JZImage(RGBA8888) -> cv::Mat(8UC4)。JZPaddleOCR 内部会把 RGBA 转成 BGR。
+// ⚠ 这里 **clone 一份**: OCR 的调用方不保证在帧的生存期内用完(见 jzCvMatOf 的说明);
+//   像素布局的换算只写一份, 复用上面那个零拷贝包装。
 cv::Mat jzCvImageToMat(const JZImage& img)
 {
-    if (img.isNull() || !img.data())
-        return cv::Mat();
-    const uint8_t* px = img.data()->pixels();
-    if (!px)
-        return cv::Mat();
-    return cv::Mat(img.height(), img.width(), CV_8UC4, (void*)px).clone();
+    return jzCvMatOf(img).clone();
 }
 
 // 归一化 region(相对整屏) -> 像素裁剪矩形, 并夹到图内 (region 为空 => 整屏)

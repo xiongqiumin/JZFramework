@@ -1,0 +1,22 @@
+{
+  "play": "hello",
+  "app": "game/hello/game.ts",
+  "js": "game/hello/game.js",
+  "program": "hello",
+  "window": "HELLO",
+  "desktop": "480x360",
+  "native": [480, 360],
+  "rom": false,
+
+  "targetScore": 10,
+  "startScore": 5,
+  "statusPath": "runs/current/hello_status.json",
+
+  "verify": "game/hello/verify.py",
+
+  "steps": 120,
+  "stepMs": 300,
+  "warmupSec": 1.5,
+
+  "note": "hello 玩法（比 shooter 简单）：随机出现红球/蓝球，点红 +1、点蓝 -1；初始 5 分，到 targetScore(10) 通关，掉到 0 分 game over。玩法自包含：game.ts(本体) + verify.py(尺子) + 本配置。task.json 的 plays.hello 只登记 dir。"
+}

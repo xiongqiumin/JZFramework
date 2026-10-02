@@ -68,13 +68,13 @@ build\binary\virtual_device\bin\Debug\virtual_device.exe --headless --http-port 
     `POST /api/input/mouse|key` 走桌面（**桌面**坐标 → 命中 + 激活 + 按区域分发，等价人拿鼠标点）；
     `POST /api/windows/<w>/input` 直接给那个窗口（默认**客户区**坐标、**不激活它**，等价 SendMessage）；
   - `GET /api/health`、`POST /api/desktop {scale}`、`DELETE /api/programs/<name>`。
-    ⚠ 探针只许用 `screen` / `windows`（像素 + 窗口几何 + 句柄）；`/api/programs/<name>/eval`
-    与 `state` 是**驱动侧**的工具（改窗口状态/读内部状态），不许进探针的输入。
+    ⚠ 探针只许用 `screen` / `windows`（像素 + 窗口几何 + 句柄）；`state` 是**驱动侧**的工具
+    （改窗口状态），不许进探针的输入。
 - 两条纪律（选它就是为了这两条）：
   1. 截图给客户区 ⇒ **与真值 rect、命中测试同一个坐标系**，判分口径一个字都不用改；
   2. **容器没有"控件树"接口** ⇒ 想开卷也没有开卷的口子（`get_ui_state` 那种就是答案本身）。
-     ⚠ 容器里唯一能读到程序内部的东西是 `POST /api/programs/<name>/eval`，它**只给驱动自检用**，
-     绝不进探针通路（见 §4）。
+    ⚠ 同理不留"在跑的程序里塞一段代码"的口子（曾有 `POST /api/programs/<name>/eval`，已删）——
+     容器能读到的只有像素 + 窗口几何，读内部状态的路一律不加，这条不留给任何"自检"借口。
 
 ## 3. 一轮的八步（命令级）
 
@@ -112,8 +112,8 @@ python run.py           # 上面六步串起来，并把产物归到 runs/round_
   （它们在模块里，**改完必须重编**）。
 - ⛔ 题目与尺子：`auto_code/computer_use/scenes/**`、`verify.py`、`baseline.json`；
   ⛔ 固定入口：`probe/explore.ts`（改实现，不要改探针来"绕过"）。
-- ⛔ 感知通路只许用**像素 + 窗口几何**。容器里的 `/api/programs/<name>/eval` 与"控件树"类接口
-  一律不许出现在探针的输入里 —— 这不是"风格"问题：一旦读了内部状态，五项硬门就全成了空指标。
+- ⛔ 感知通路只许用**像素 + 窗口几何**。任何"控件树"/读程序内部状态的接口一律不许出现在探针的
+  输入里 —— 这不是"风格"问题：一旦读了内部状态，五项硬门就全成了空指标。
 - 一轮只改一处：diff 才能说清是哪一处起作用；一处改动配一次完整复跑。
 
 ## 5. 无人值守怎么接（`agent_loop.py`）

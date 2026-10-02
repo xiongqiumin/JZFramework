@@ -18,7 +18,8 @@
   6. 鼠标 + 键盘           点输入框 -> 打字 -> 点按钮 -> 窗口标题变成 "文本=hello"
   7. 拖动                  按标题栏拖 -> frame 位置真的变了 (窗口管理器那条路)
   8. /api/desktop scale=2  截图翻倍, 而坐标/几何一个都没动 (DPI 不进坐标)
-  9. 程序                  再跑一段 (eval) / 用文件加载 / 停掉 -> 窗口一起收走
+  9. 程序                  用文件加载 (ESM 模块) / 停掉 -> 窗口一起收走
+  9b. 程序异常退出        未处理异常 = 那个程序自己退出 (程序表消失 + 窗口收走); 起来就崩 -> 400
  10. 查找 / 枚举窗口       句柄 id / 下标 / 标题 三种标识, ?process= ?title= ?visible= 过滤,
                            at=x,y = WindowFromPoint (+ 客户区坐标)
  11. 直投窗口输入          给**后台窗口**发鼠标/键盘 (不激活它): 点输入框 -> 打字 -> 点按钮
@@ -26,6 +27,8 @@
  12. 窗口状态              w/h (客户区) / x,y (外框) / title / 最小化 / 最大化铺工作区 / 还原 / 关闭
  13. 错误路径              未知路由 404 / 坏 JSON 400 / 找不到的窗口与句柄 404 / 参数不对 400
  14. 收尾                  DELETE 程序 -> 它的窗口一起没了
+ 15. /api/logs            程序输出 (console.log 等) 的最近 1000 行: 按行取 (offset/size, -1=全部),
+                          超 1000 条从头滚动, 行号绝对 ⇒ 记住 total 就能增量拉
 
 为什么放这儿 (而不是 auto_code): 这是**容器自己**的接口测试, 跟任何 agent 任务无关;
 它是"这个接口还能用吗"的那把尺子, 改完接口应该跑一遍。
@@ -304,12 +307,10 @@ def main():
         api.json("POST", "/api/desktop", {"scale": 1})
         t.eq("改回 1", png_size(api.screen()), (800, 600))
 
-        print("== 9) 程序: 再跑一段 / 加载 JS 程序(模块) / 停掉 ==")
-        ev = api.json("POST", "/api/programs/prog1/eval", {"script": "1 + 1;"})
-        t.check("eval 在已跑的程序里执行成功", ev.get("ok") is True, ev)
+        print("== 9) 程序: 加载 JS 程序(模块) / 停掉 ==")
 
         # 一个**真程序**: ESM 模块 (有 import/export), 标题里带回"运行根对不对"的结论 ——
-        # 只有按模块加载才跑得起来 (`export` 在 eval 下是语法错误), 也只有模块才有入口目录。
+        # 只有按模块加载才跑得起来 (`export` 当一段文本跑是语法错误), 也只有模块才有入口目录。
         seg = os.path.basename(out_dir)
         js_path = os.path.join(out_dir, "mod_app.js")
         with open(js_path, "w", encoding="utf-8") as f:
@@ -340,6 +341,33 @@ def main():
                 [w["title"] for w in api.windows()["windows"]])
         t.eq("程序表只剩 prog1", [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
              ["prog1"])
+
+        print("== 9b) 未处理异常 = 那个程序退出 (窗口一起收走) ==")
+        # ① 起来就抛: 加载直接失败 (400 + 错误文本), 而不是 ok + 空窗口列表
+        status, raw = api.raw("POST", "/api/programs",
+                              {"name": "prog_boot", "script": "throw new Error('boot');"})
+        t.eq("起来就崩 -> 400", status, 400)
+        t.check("错误文本回到调用方", b"boot" in raw, raw[:200])
+        t.check("它没留在程序表里",
+                "prog_boot" not in [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
+                api.json("GET", "/api/programs")["programs"])
+
+        # ② 跑起来再抛: 程序自己退出 -> 从程序表消失 + 窗口一起收走 (容器不退)
+        late = ("const w = new JZWindow(220, 120, 'late_boom'); w.show();"
+                "setTimeout(() => { throw new Error('late'); }, 400);")
+        lp = api.json("POST", "/api/programs", {"name": "prog_late", "script": late})
+        t.check("先正常跑起来 (有窗口)", len(lp.get("windows", [])) == 1, lp.get("windows"))
+        gone = False
+        for _ in range(40):                      # 最多等 2 秒
+            time.sleep(0.05)
+            if not any(p["name"] == "prog_late" for p in api.json("GET", "/api/programs")["programs"]):
+                gone = True
+                break
+        t.check("异常后程序自己退出 (从程序表消失)", gone, api.json("GET", "/api/programs"))
+        t.check("它的窗口一起收走",
+                not any(w["title"] == "late_boom" for w in api.windows()["windows"]),
+                [w["title"] for w in api.windows()["windows"]])
+        t.check("容器自己活着 (没跟着退)", api.json("GET", "/api/health").get("ok") is True)
 
         print("== 10) 查找 / 枚举窗口 (Windows 风格) ==")
         live_win = api.window_by_title(live)
@@ -484,6 +512,36 @@ def main():
                 cli.wait(timeout=10)
             except Exception:
                 cli.kill()
+
+        print("== 15) 程序输出 (/api/logs: 按行取 + offset/size) ==")
+        # 本节自己加载程序来打日志: 先 5 行, 再 1200 行验证"只留最近 1000 条"的滚动
+        api.json("POST", "/api/programs",
+                 {"name": "logger",
+                  "script": 'for (var i = 0; i < 5; i++) console.log("line-" + i);'})
+        time.sleep(1.2)
+        a = api.json("GET", "/api/logs")
+        t.check("不带参数 = 读全部 (count == total)", a["count"] == a["total"] and a["total"] >= 5, a)
+        t.check("行文本带程序名前缀, 最后一行是本程序打的",
+                all(s.startswith("[vproc: ") for s in a["lines"])
+                and a["lines"][-1] == "[vproc: logger] line-4", a["lines"][:3])
+        part = api.json("GET", "/api/logs?offset=%d&size=1" % (a["total"] - 1))
+        t.eq("offset/size 精确取一行", part["lines"], ["[vproc: logger] line-4"])
+        t.eq("size=-1 = 一直读到末尾", api.json("GET", "/api/logs?size=-1")["count"], a["total"])
+        t.eq("offset 给得太晚 -> 空", api.json("GET", "/api/logs?offset=999999")["lines"], [])
+        api.json("POST", "/api/programs",
+                 {"name": "bulk",
+                  "script": 'for (var i = 0; i < 1200; i++) console.log("bulk-" + i);'})
+        time.sleep(3.0)
+        b = api.json("GET", "/api/logs")
+        t.eq("超 1000 条只留最近 1000", b["count"], 1000)
+        t.eq("total 是累计行数 (含已挤掉的)", b["total"], a["total"] + 1200)
+        t.eq("first = 缓冲里第一行的绝对行号", b["first"], b["total"] - 1000)
+        t.eq("first 那行就是最老还留着的那行",
+             b["lines"][0], "[vproc: bulk] bulk-%d" % (b["first"] - a["total"]))
+        t.eq("记住 total 增量拉 (此刻还没新行)",
+             api.json("GET", "/api/logs?offset=%d" % b["total"])["lines"], [])
+        api.json("DELETE", "/api/programs/logger")
+        api.json("DELETE", "/api/programs/bulk")
 
     except Fail as e:
         print("FAIL: %s" % e)

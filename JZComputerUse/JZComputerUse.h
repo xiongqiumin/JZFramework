@@ -67,7 +67,10 @@ public:
     // —— 截图 / 查找 ——
     static std::string screenshot();                               // 虚拟桌面截图 -> dataURL
     static CuRect    matchImage(const std::string& templatePath, const CuRect& region); // 模板匹配, 未找到 w==0
-    static CuRect    matchColor(const std::string& hexColor, const CuRect& region);    // 颜色查找, 未找到 w==0
+    // 颜色查找: 返回最**大**的一块同色区域(未找到 w==0)。
+    // ⚠ 没编 OpenCV 的构建(如 virtual_device 容器)走**纯 C++ 兜底**: 扫帧 + 连通块取最大,
+    //   容差与归一化口径与 OpenCV 版一致 ⇒ "容器里的脚本按颜色找东西"这条路是可用的。
+    static CuRect    matchColor(const std::string& hexColor, const CuRect& region);
 
     // —— OCR（像素族兜底里的"文字"那一条；对应 JS 侧 Locator{kind:'ocr',text}）——
     // 本地 PP-OCR（JZCv/JZPaddleOCR, ONNX Runtime）—— 不依赖任何外部服务, 也不碰屏幕
@@ -98,7 +101,9 @@ public:
     //   focusWindow(title)  -> 激活桌面上那个窗口
     //   waitStable()        -> 恒真 (虚拟桌面渲染是同步的, 不存在"界面还没渲染完")
     // 虚拟桌面下**不适用**的: switchToDesktop / 进程管理(start/terminate/focusProcess) /
-    //   launch / 像素族匹配 —— 一律明确返回失败, 绝不悄悄去动真实系统。
+    //   launch —— 一律明确返回失败, 绝不悄悄去动真实系统。
+    //   (像素族匹配在虚拟桌面下**可用**: 帧就是桌面合成帧, 见 currentFrame; 未编 OpenCV 时
+    //    走纯 C++ 兜底, 见 matchColor)
     static void setVirtualDesktop(JZVirtualDevice* desk);   // nullptr = 回到真实桌面
     static JZVirtualDevice* virtualDesktop();
     static bool isVirtualDesktop();

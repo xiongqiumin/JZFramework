@@ -1,0 +1,31 @@
+{
+  // game_play 任务 —— TS 编译配置（auto_code 不参与 CMake，这里只管把 TS 编成容器能跑的 JS）
+  // 编译: <tsc> -p auto_code/game_play/tsconfig.json
+  // 产物: auto_code/game_play/build/play/play.js（容器按 ESM 模块加载它）
+  //       auto_code/game_play/build/game/gba.js（题目侧游戏机 = GBA 玩法，同上）
+  // 约定: outDir=build, rootDir=. ⇒ 运行根 = build/<程序名>，脚本用 jzApp.applicationDirPath() 定位
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2025"],
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "sourceMap": false,
+    "outDir": "build",
+    "rootDir": "."
+  },
+  "include": [
+    "play/**/*.ts",
+    "play/**/*.d.ts",
+    "game/**/*.ts",
+    "game/**/*.d.ts",
+    // 类型的单一来源：仓库里的 js_wrapper 声明（引擎全局 + widget 全局类 + 各内置模块）
+    "../../JZJSEngine/js_wrapper/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/widget/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/path/types/**/*.d.ts",
+    "../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts"
+  ]
+}

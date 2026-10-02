@@ -98,6 +98,15 @@ if(JZ_OPENCV_FOUND AND JZ_ONNXRUNTIME_FOUND)
     list(APPEND JZ_SINGLE_MODULES JZCv)
 endif()
 
+# JZEmulator(GBA 画面控件) 要 JZWidget + 外部的宿主 DLL mgba_host.dll(见 JZEmulator/JZEmulator.cmake)。
+# 这里只做"那个 DLL 在不在"的粗判; 精细的探测/接线由 JZEmulator.cmake 与 jz_emulator_enable() 负责。
+# 注: 这里只能判 WIN32 —— HAS_JZWidget 要等进 jzframework_use_modules 之后才导出。
+set(JZ_MGBA_DIR "E:/work/simulator/host/build" CACHE PATH
+    "mgba_host.dll 所在目录(含它的 MinGW 运行库)")
+if(WIN32 AND EXISTS "${JZ_MGBA_DIR}/mgba_host.dll")
+    list(APPEND JZ_SINGLE_MODULES JZEmulator)
+endif()
+
 jzframework_use_modules(${JZ_MODULE_LIST} SINGLE_MODULES ${JZ_SINGLE_MODULES})
 target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 

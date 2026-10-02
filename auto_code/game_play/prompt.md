@@ -28,23 +28,28 @@ python run.py --config build\run_gba.json  # 换一份配置（玩法/拍数/是
 
 每个玩法是一个目录，自带三件东西：
 
-- `game.ts` —— **题目侧游戏**（不许改）
-- `verify.py` —— **这个玩法自己的尺子**：清容器 → 装 game → 装 play → 观察 → 判定
-- `config.json` —— 怎么跑 / 怎么判：进程名、窗口、桌面、原生尺寸、拍数、`targetScore`（通关线）
+- 玩法本体（**题目侧游戏，不许改**）—— 它**可能住在别的目录**（见下表"本体"列）
+- `verify.py` —— **这个玩法自己的尺子**：清容器 → 装本体 → 装 play → 观察 → 判定
+- `config.json` —— 怎么跑 / 怎么判：进程名、窗口、桌面、原生尺寸、拍数、**本体在哪**（`js` /
+  `jsRoot` / `prebuild`）、判分口径
 
-| 玩法 | 目录 / 入口 | 窗口 / 客户区 | 容器桌面 | 要 ROM | 通关口径 |
+| 玩法 | 本体 | 窗口 / 客户区 | 容器桌面 | 要 ROM | 判分口径 |
 | --- | --- | --- | --- | --- | --- |
-| `shooter`（默认） | `game/shooter/`（`game.ts`） | `SHOOTER` 800x600 | 800x600 | 否 | 打死敌人计分（+10），**到 `targetScore`(=300) 分算通关**：`game.ts` 判定、画面显示 `CLEAR!` |
-| `gba` | `game/gba.ts`（暂未目录化） | `GBA` 240x160 | 320x240 | 是 | 没有自动判据（整部通关太难，代码保留） |
+| `hello`（**默认**） | `game/hello/game.ts`（任务里自带） | `HELLO` 480x360 | 480x360 | 否 | 随机红/蓝球：点红 +1、点蓝 -1；初始 5 分、**到 10 分通关**（`CLEAR!`）、0 分输。本体写状态文件，尺子按 `win/over` 判 **cleared / game_over / running** |
+| `shooter` | **`binary/code_agent/runtime/test_jsshooter`**（本体住在那边；任务里只有尺子 + 配置） | `JZWidget GDI - 飞行射击` 800x600 | 800x600 | 否 | **不判通关**：本体只往 stdout 打印 `[shooter] score=..` / `alive ..` / `GAME OVER score=..`，尺子读**容器日志** → **running / game_over**（跑起来了就算过） |
+| `gba` | `game/gba.ts` | `GBA` 240x160 | 320x240 | 是 | 没有自动判据（整部通关太难，代码保留） |
 
-- 尺子**归玩法所有**：它自己清掉容器里的程序、装 game + play、从外面抓帧、读**状态文件**
-  （`score/lives/over/win` —— 游戏自己每 500ms 写的），给出 `cleared / game_over / running …`；
-  **退出码 0 = 通关**。顶层 `run.py` 只负责把它跑起来、拿退出码、归档。
-- ⚠ 状态文件是**尺子的特权**：脚本按红线**不许读**它（读了就等于开卷查答案）。
+- 尺子**归玩法所有**：它自己清掉容器里的程序、装本体 + play、从外面抓帧，再读证据给出结论；
+  **退出码 0 = 这局算跑通**（口径按玩法自定：hello 要通关，shooter 只要跑起来）。顶层 `run.py`
+  只负责把它跑起来、拿退出码、归档。
+- ⚠ 玩法的"状态出口"是**尺子的特权**（hello 是状态文件、shooter 是那几行打印）：脚本按红线
+  **不许读**它们（读了就等于开卷查答案）。
 - 桌面/原生尺寸/窗口标题/进程名都在玩法目录的 `config.json` 里；顶层配置的同名字段可覆盖。
 
-- 玩法用 `run.py --app <名>` 选（默认取 `task.json` 的 `defaultPlay`，现在是 `shooter`）；
-- 每个玩法的入口 ts / 进程名 / 窗口标题 / 桌面尺寸 / **原生尺寸** / 要不要 ROM 全在 `task.json` 的 `plays` 里；
+- 玩法用 `run.py --config <配置文件>` 里的 `run.play` 选（缺省取 `task.json` 的 `defaultPlay`，
+  现在是 `hello`；`run.play` 留空就跟随默认）；
+- 每个玩法的进程名 / 窗口标题 / 桌面尺寸 / **原生尺寸** / 要不要 ROM / 本体在哪 都在玩法目录的
+  `config.json` 里（`task.json` 的 `plays` 只登记目录）；
 - 驱动会把 `play`（玩法名）与 `app`（进程名）写进 `build/play/play.json`，脚本据此选**键位**与**策略**。
 
 ## 你要走的循环（这就是这个任务的形状）
@@ -60,12 +65,13 @@ python run.py --config build\run_gba.json  # 换一份配置（玩法/拍数/是
 
 ## 现状（2026-10-02 实测，动手前先看清楚）
 
-链路全通，**两种玩法各跑通一局**（`shooter` → `runs/round_025/`；`gba` → `runs/round_026/`）：
+链路全通，**三种玩法都能跑**（`hello` 是默认；`shooter` 直接用 runtime 那份本体；`gba` 代码保留）：
 
 ```
 容器 virtual_device --headless（`--desktop <玩法桌面>`，无头下 scale 恒 1）
   │  —— 容器里就**两个进程**，互相只见得到"屏幕 + 键盘鼠标"：
-  ├─ 进程 "shooter"（game/shooter.ts，**题目侧**）：800x600 窗口 + 自绘游戏控件（飞行射击）
+  ├─ 进程 "shooter"（**binary/code_agent/runtime/test_jsshooter/src/main.ts**，题目侧）：
+  │    800x600 窗口 + 自绘游戏控件（飞行射击）—— 本体住在 runtime 那边，任务里只有尺子+配置
   └─ 进程 "script"（play/play.ts，**产出物**）：用 __jz.computeruse.* 操作这块桌面
        · 看：screenshot() → 整块桌面的 PNG data URL（脚本自己存盘 = frames/）
        · 操作：click(x, y, btn)（归一化坐标，命中窗口会激活它）/ key('Left') / wait(ms)
@@ -78,10 +84,13 @@ python run.py --config build\run_gba.json  # 换一份配置（玩法/拍数/是
   外部帧序列**显著变化 8 次**（最大差异 99.58%）—— 游戏在跑、在响应；
 - 容器里的 CU 后端 = 这块虚拟桌面（`main.cpp` 里 `setVirtualDesktop(&m_screen)`）——
   所以脚本写起来跟真桌面上的自动化脚本一模一样；
-- 容器侧适配（`game/shooter.ts`，只动了三处、不改玩法）：① 窗口标题 → `SHOOTER`；
-  ②③ 两处定时器句柄的**类型注解**（容器 tsconfig 的 `setInterval` 返回 Node 的 `Timeout`）。
-  另外 `FixedTimer` 的**落后保护阈值 5 → 30**：容器里 JS `setInterval` 精度远低于 C++ 的
-  `JZFixedTimer`，启动瞬间就落后 11 帧 ⇒ 阈值 5 会让游戏开跑几秒内自己停机（画面定格）。
+- 容器侧适配**都做在本体那边**（`binary/code_agent/runtime/test_jsshooter/src/main.ts`，3 处，
+  不改变玩法）：① 两处定时器句柄的**类型注解**（容器 tsconfig 的 `setInterval` 返回 `Timeout`，
+  那份工程是 `strict: true`，写死 `number` 编不过）；② `FixedTimer` 的**落后保护阈值 5 → 30**
+  （容器里 JS `setInterval` 精度远低于 C++ 的 `JZFixedTimer`，启动瞬间就落后 10+ 帧 ⇒ 阈值 5
+  会让游戏开跑几秒内自己停机、画面定格）；③ 加**状态打印**
+  （`[shooter] score=.. lives=..` / `alive ..` / `GAME OVER score=..`）：本体只打印、不写状态文件。
+  窗口标题就用它自己的 `JZWidget GDI - 飞行射击`（玩法 `config.json` 的 `window` 跟着它）。
 - **当前骨架策略还不会玩**：`shooterStrategy` 只会"左右游走 + 一直开火"，不看敌机子弹 ——
   这正是要改的地方（先有"看懂画面"的手段，再谈决策）。
 
@@ -94,10 +103,13 @@ python run.py --config build\run_gba.json  # 换一份配置（玩法/拍数/是
 
 ## 禁止改哪里（红线）
 
-- ⛔ `auto_code/game_play/game/**`（**题目侧**：游戏怎么开、窗口多大、怎么喂键 ——
-  改了就不是同一道题；`shooter.ts` 是从 `test/widget/shooter`（C++）逐项对齐移植来的）
-- ⛔ `auto_code/game_play/verify.py`、`baseline.json`（**尺子**：不许为了让结果好看而改口径）
-- ⛔ **不许读游戏内部状态**：模拟器内存/存档、控件树、`/api/programs/<n>/eval` 之类内部真相。
+- ⛔ `auto_code/game_play/game/**` 与 **`binary/code_agent/runtime/test_jsshooter/**`**（**题目侧**：
+  游戏怎么开、窗口多大、怎么喂键 —— 改了就不是同一道题；后者是 `test/widget/shooter`（C++）
+  逐项对齐的 TS 移植，`shooter` 玩法直接用它的产物）
+- ⛔ 各玩法自己的尺子（`game/<玩法>/verify.py`）、`task.json`、`baseline.json`
+  （**尺子/口径**：不许为了让结果好看而改）
+- ⛔ **不许读游戏内部状态**：模拟器内存/存档、控件树、往程序里塞代码（曾有
+  `/api/programs/<n>/eval`，已删）之类内部真相。
   脚本能"看"的只有画面（`screenshot()`），能"做"的只有鼠标键盘。一旦读了内部状态，
   这就不是"视觉 agent"了，尺子也成了空指标。
 - ⛔ 不许把"第几拍按什么"写死成一张表糊弄 —— 游戏状态随游戏走，不随你走。

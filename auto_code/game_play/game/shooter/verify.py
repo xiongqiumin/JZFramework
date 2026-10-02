@@ -6,12 +6,17 @@ game/shooter/verify.py —— **shooter 玩法自己的尺子**（每个玩法�
 它自己就能跑完一局并判定，不依赖顶层驱动：
 
   ① 清空容器里**所有**程序（GET /api/programs → 逐个 DELETE）—— 保证这一局是干净的；
-  ② 装 game（game.js）→ 等它的窗口；
+  ② 装 game（本体的 JS）→ 等它的窗口；
   ③ 装 play（play.js）→ 让它自己玩；
-  ④ 一边跑一边**从外面抓帧**（客观旁证：external/ + metrics.jsonl），并读**状态文件**
-     （score/lives/over/win —— 游戏自己每 500ms 写一次，见 game.ts 的"状态上报"）；
-  ⑤ 判定：cleared(通关) / game_over(被打死) / program_gone(程序没了) / running(到点还在跑)；
-  ⑥ 落盘 result.json + report.md；**退出码 0 = 通关**（其余都是没通关）。
+  ④ 一边跑一边**从外面抓帧**（客观旁证：external/ + metrics.jsonl），并读**容器日志里本体
+     自己打印的状态行**（容器把程序 stdout 带 [vproc: "名字"] 前缀转发出来）：
+        [shooter] score=.. lives=..        分数/命变化的那一刻
+        [shooter] alive .. over=false      没变化时的心跳(2s 一行, 证明还活着)
+        [shooter] GAME OVER score=..       游戏结束
+  ⑤ 判定：running(到点还在跑) / game_over(打到死) / program_gone(程序没了) /
+     no_report(整局没打印＝没跑起来)。**本玩法不判通关** —— 本体(test_jsshooter 的移植件)
+     没有通关线，也不落状态文件；
+  ⑥ 落盘 result.json + report.md；**退出码 0 = 这局真的跑起来了**（打印过状态）。
 
 用法：
   python verify.py                                  # 自包含：自己起一个无头容器，跑完收掉
@@ -19,12 +24,13 @@ game/shooter/verify.py —— **shooter 玩法自己的尺子**（每个玩法�
   python verify.py --play-js <路径> --game-js <路径>  # 指定产物（缺省按玩法配置推）
   python verify.py --steps 200 --step-ms 200        # 观察节奏（缺省读玩法配置）
 
-⚠ 状态文件是**尺子的特权**：脚本(play.ts)按红线**不许读**它（见任务书 prompt.md）。
+⚠ 那条打印是**尺子的特权**：脚本(play.ts)按红线**不许读**它（见任务书 prompt.md）—— 脚本只能看画面。
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -41,13 +47,42 @@ def log(msg):
     print("[verify:shooter] %s" % msg)
 
 
-def read_status(path):
-    """读游戏写的状态文件（还没写/写一半都可能，所以容错）。"""
+def read_reports(conn, offset=0, prefix="[shooter]"):
+    """从**容器**拉本体的程序输出（GET /api/logs），抓里面打印的状态行。
+
+    offset: 起始**绝对行号**（累计行号）—— 同一个容器跑多轮时日志会累积，从 0 读会把上一局的
+    分数算进来，所以调用方先取一次 total 当基线（见 main 里的 log_from）。
+    返回 {seen, score, lives, over, alive, lines, total}；seen=False = 这一段里没打印过
+    （程序没跑起来，或它根本没打印）。
+    """
+    out = {"seen": False, "score": None, "lives": None, "over": False, "alive": False,
+           "lines": [], "total": None}
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        d = conn.logs(offset=offset, size=-1)
     except Exception:
-        return None
+        return out                       # 容器正好在忙/没起来: 当这一拍没读到, 下一拍再看
+    out["total"] = d.get("total")
+    for line in (d.get("lines") or []):
+        # 行文本 = "[vproc: <进程名>] <原始输出>"; 只认本体打印的那几行(带 [shooter] 前缀)
+        i = line.find(prefix)
+        if i < 0:
+            continue
+        s = line[i + len(prefix):].strip()
+        if not s:
+            continue
+        out["seen"] = True
+        out["lines"].append(s)
+        ms = re.search(r"score=(\d+)", s)
+        if ms:
+            out["score"] = int(ms.group(1))
+        ml = re.search(r"lives=(\d+)", s)
+        if ml:
+            out["lives"] = int(ml.group(1))
+        if s.startswith("GAME OVER"):
+            out["over"] = True
+        if s.startswith("alive"):
+            out["alive"] = True
+    return out
 
 
 def main():
@@ -71,11 +106,9 @@ def main():
     warmup = args.warmup if args.warmup >= 0 else float(cfg.get("warmupSec", 2.0))
     target = args.target or int(cfg.get("targetScore", 300))
     program = cfg["program"]
-    game_js = args.game_js or os.path.join(BUILD, cfg["js"])
+    # 本体可能住在任务之外（本玩法 jsRoot="repo"，直接用 test_jsshooter 的产物）：见 E.play_js_path
+    game_js = args.game_js or E.play_js_path(cfg, TASK, BUILD)
     play_js = args.play_js or os.path.join(BUILD, "play", "play.js")
-    status_path = cfg.get("statusPath") or "runs/current/shooter_status.json"
-    if not os.path.isabs(status_path):
-        status_path = os.path.join(TASK, status_path)
 
     for p, why in ((game_js, "题目侧产物(game.js)"), (play_js, "脚本产物(play.js)")):
         if not os.path.exists(p):
@@ -131,9 +164,8 @@ def main():
             time.sleep(0.5)
 
         # ---- ② 装 game（题目侧）----
-        E.write_game_config(os.path.dirname(game_js), cfg.get("dllDir", ""), cfg.get("rom", ""),
-                            status_path=status_path, extra={"targetScore": target})
-        log("装游戏: %s（进程名 %s）" % (os.path.relpath(game_js, TASK), program))
+        # 不写运行根的 game.json：本体只打印、不落状态文件、也不读它（见文件头）
+        log("装游戏: %s（进程名 %s）" % (game_js, program))
         conn.load_program(program, game_js, work_dir=os.path.dirname(game_js))
         win = conn.wait_window(program, timeout=60)
         if not win:
@@ -143,27 +175,33 @@ def main():
         log("游戏窗口: title=%s client=%s" % (win.get("title"), client))
 
         # ---- ③ 装 play（产出物）----
-        E.write_play_config(BUILD, out, window=cfg["window"], warmup_sec=warmup, steps=steps,
-                            step_ms=step_ms, max_seconds=args.seconds, app=program, play=cfg["play"])
+        # play.json 放在**脚本产物所在目录**（脚本按 jzApp.applicationDirPath() 找它）：
+        # 产出物是 build/play/play.js，玩法自带的参考脚本在 build/game/<玩法>/play.js —— 各有各的根
+        E.write_play_config(os.path.dirname(play_js), out, window=cfg["window"], warmup_sec=warmup,
+                            steps=steps, step_ms=step_ms, max_seconds=args.seconds, app=program,
+                            play=cfg["play"])
         log("装脚本: %s（预热 %ss）" % (os.path.relpath(play_js, TASK), warmup))
         conn.load_program(E.PLAY_PROGRAM, play_js, work_dir=os.path.dirname(play_js))
 
-        # ---- ④ 一边跑一边抓帧 + 读状态 ----
+        # ---- ④ 一边跑一边抓帧 + 读本体打印 ----
         session_path = os.path.join(out, "session.json")
         budget = (args.seconds if args.seconds > 0 else steps * step_ms / 1000.0) + warmup + 30.0
         t_end = time.time() + budget
         script_done_at = 0.0
         prev_img = None
-        log("观察中（最多 %.0fs；通关线 %d 分）…" % (budget, target))
+        # 容器侧的日志缓冲会**跨轮累积**（同一个容器一直在用）：先记下当前累计行号当基线，
+        # 这一局只看这之后的行（见 read_reports 的 offset）
+        try:
+            log_from = conn.logs().get("total") or 0
+        except Exception:
+            log_from = 0
+        report = read_reports(conn, log_from)
+        log("观察中（最多 %.0fs；本体不判通关，看它打印的 score）…" % budget)
         while time.time() < t_end:
-            status = read_status(status_path)
-            if status:
-                if status.get("win"):
-                    verdict, detail = "cleared", "通关：score=%s" % status.get("score")
-                    break
-                if status.get("over"):
-                    verdict, detail = "game_over", "被打死：score=%s" % status.get("score")
-                    break
+            report = read_reports(conn, log_from)
+            if report["over"]:
+                verdict, detail = "game_over", "被打死：score=%s" % report["score"]
+                break
             try:
                 progs = {p.get("name") for p in conn.programs()}
                 if program not in progs:
@@ -180,7 +218,7 @@ def main():
                      "file": os.path.relpath(p, TASK), "w": img[0], "h": img[1],
                      "colors": E.unique_colors(img), "nonblack": round(E.nonblack_ratio(img), 4),
                      "drift": round(E.diff_ratio(prev_img, img), 4) if prev_img else 0.0,
-                     "score": (status or {}).get("score")}
+                     "score": report["score"]}
                 prev_img = img
                 with open(metrics_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(m, ensure_ascii=False) + "\n")
@@ -193,20 +231,25 @@ def main():
                 script_done_at = time.time() + 8.0     # 脚本收工后再给 8s 宽限（游戏可能还在跑）
                 log("脚本已收工，再观察 8s")
             if script_done_at and time.time() > script_done_at:
-                verdict, detail = "running", "脚本已收工但还没通关"
+                verdict, detail = "running", "脚本已收工；游戏还在跑（score=%s）" % report["score"]
                 break
             time.sleep(max(0.05, step_ms / 1000.0))
         else:
-            verdict, detail = "running", "到点还在跑（没通关也没死）"
+            verdict, detail = "running", "到点还在跑（score=%s）" % report["score"]
     finally:
         if own_container and box is not None and not args.keep:
             box.__exit__(None, None, None)
             log("容器已收掉")
 
-    passed = (verdict == "cleared")
+    # 本玩法不判通关：整局没打印 = 本体没跑起来，不算跑通；打印过就把这局算"跑起来了"
+    if verdict == "running" and not report["seen"]:
+        verdict, detail = "no_report", "整局没有任何 [shooter] 打印（本体没跑起来？看容器日志: GET /api/logs）"
+    passed = bool(report["seen"]) and verdict in ("running", "game_over")
     result = {
         "play": cfg["play"], "verdict": verdict, "pass": passed, "detail": detail,
-        "target": target, "status": status or {}, "externalFrames": frames,
+        "report": {"seen": report["seen"], "score": report["score"], "lives": report["lives"],
+                   "over": report["over"], "lines": len(report["lines"])},
+        "externalFrames": frames,
         "elapsedSec": round(time.time() - started, 2),
         "container": {"program": program, "window": cfg["window"], "native": cfg["native"],
                       "desktop": cfg["desktop"], "own": own_container},
@@ -221,7 +264,8 @@ def main():
         best = os.path.relpath(os.path.join(ext_dir, "e%05d.png" % max(0, frames // 2)), TASK)
     lines = ["# shooter 一局判定", "",
              "- 结论: **%s**（%s）" % (verdict, detail),
-             "- 通关线: %d 分；状态: %s" % (target, json.dumps(status or {}, ensure_ascii=False)),
+             "- 本体打印: score=%s lives=%s over=%s（%d 行；本玩法不判通关）"
+             % (report["score"], report["lives"], report["over"], len(report["lines"])),
              "- 观察 %d 帧 / 用时 %.1fs" % (frames, result["elapsedSec"]),
              "- 容器: 进程 %s，窗口 %s，桌面 %s%s"
              % (program, cfg["window"], cfg["desktop"], "（自起）" if own_container else "（外部给）"),
@@ -231,8 +275,8 @@ def main():
     with open(os.path.join(out, "report.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    print("== shooter 判定: %s（%s）｜通关线 %d｜观察 %d 帧｜用时 %.1fs"
-          % (verdict, detail, target, frames, result["elapsedSec"]))
+    print("== shooter 判定: %s（%s）｜score=%s｜观察 %d 帧｜用时 %.1fs"
+          % (verdict, detail, report["score"], frames, result["elapsedSec"]))
     print("PASS" if passed else "FAIL")
     return 0 if passed else 1
 

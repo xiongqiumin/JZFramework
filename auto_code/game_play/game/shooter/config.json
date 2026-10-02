@@ -1,15 +1,16 @@
 {
   "play": "shooter",
-  "app": "game/shooter/game.ts",
-  "js": "game/shooter/game.js",
+  "app": "binary/code_agent/runtime/test_jsshooter/src/main.ts",
+  "js": "binary/code_agent/runtime/test_jsshooter/build/main.js",
+  "jsRoot": "repo",
+  "prebuild": ["binary/code_agent/runtime/test_jsshooter/tsconfig.json"],
   "program": "shooter",
-  "window": "SHOOTER",
+  "window": "JZWidget GDI - 飞行射击",
   "desktop": "800x600",
   "native": [800, 600],
   "rom": false,
 
-  "targetScore": 300,
-  "statusPath": "runs/current/shooter_status.json",
+  "report": "[shooter] ",
 
   "verify": "game/shooter/verify.py",
 
@@ -17,5 +18,5 @@
   "stepMs": 400,
   "warmupSec": 2.0,
 
-  "note": "shooter 玩法**自包含**：游戏本体(game.ts) + 尺子(verify.py) + 本配置(怎么跑/怎么判)。task.json 的 plays.shooter 只登记这个目录(dir)，字段都能在这里改；表项里的同名字段可覆盖本文件。targetScore = 通关线（打死敌人计分，到线算通关，见 game.ts 的状态上报）；statusPath 是 game.ts 写给**尺子**读的状态文件（脚本按红线不许读）。"
+  "note": "shooter 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/test_jsshooter（test/widget/shooter 的 TS 移植，与 C++ 版逐项对齐），所以 jsRoot=repo + prebuild 让驱动先把那个工程编出来。win 标题取它自己的 'JZWidget GDI - 飞行射击'。它只往 stdout 打印状态（[shooter] score=.. / alive .. / GAME OVER score=..），**没有状态文件、也不判通关** —— 尺子(verify.py)从容器日志读那几行来判这局跑没跑起来、打到多少分。玩法自包含的只有尺子与本配置。"
 }

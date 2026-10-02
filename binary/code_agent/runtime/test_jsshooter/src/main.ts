@@ -86,9 +86,15 @@ const COL_ENEMY_SML = col(220, 70, 160);
 
 class FixedTimer
 {
-    private id: number | null = null;
+    // setInterval 的返回类型: 浏览器里是 number, 容器里(quickjs 的 Node 风格绑定)是 Timeout。
+    // 写 ReturnType 两边都对 —— 本工程 strict: true, 写死 number 会编不过。
+    private id: ReturnType<typeof setInterval> | null = null;
     private intervalMs = 0;
-    private maxCatchUp = 5;      // 默认与 JZFixedTimer 一致
+    // 一次最多补几帧：C++ 的 JZFixedTimer 默认 5；**容器里必须放宽**。
+    // 容器侧 setInterval 的唤醒精度远低于 C++ 的高精度计时线程，启动瞬间就会落后 10+ 帧(>5)
+    // 而 stop，游戏随即定格(实测: 只打出一次 score 就再无输出)。放宽只影响"一次最多补几帧"，
+    // 逻辑步进仍按墙钟对齐，玩法不变。
+    private maxCatchUp = 30;
     private startMs = 0;
     private frames = 0;          // 已发射帧数(含补帧)
     private tick: () => void;
@@ -220,7 +226,7 @@ const keys = new Set<number>();   // 当前按下的虚拟键码
 const logicTimer = new FixedTimer(onLogic, onLogicError);
 
 let framePending = false;         // 渲染循环: 已排出一帧、还在等绘制
-let renderTimerId: number | null = null;
+let renderTimerId: ReturnType<typeof setInterval> | null = null;   // 同上: 容器里是 Timeout
 
 // ---------------------------------------------------------------------------
 // 两个循环(对照 GameWidget::onLogic / onRender)
@@ -240,6 +246,42 @@ function onLogic(): void
         booms[i].life--;
         if (booms[i].life <= 0)
             booms.splice(i, 1);
+    }
+
+    reportState();                 // 状态打印(见下): 分数变了 / 每 2s / 结束时各一行
+}
+
+// ---------------------------------------------------------------------------
+// 状态打印 —— **给外面看的出口**（容器把程序 stdout 带 [vproc: "名字"] 前缀转发出去）
+//
+// 为什么不写状态文件: 本工程是 test/widget/shooter 的 TS 移植(对拍件), 保持"只打印、
+// 不碰文件系统"更干净; 想判分的一方从容器 stdout 里读这几行就够 ——
+//   [shooter] score=.. lives=..                      分数/命变化的那一刻
+//   [shooter] alive score=.. lives=.. over=false     没变化时的心跳(2s 一行, 证明还活着)
+//   [shooter] GAME OVER score=..                     游戏结束(一次性)
+// ---------------------------------------------------------------------------
+let lastReportScore = -1;      // 上一次打印时的分数(-1 = 还没打过)
+let lastReportMs = 0;          // 上一次打印的时刻(心跳节流)
+let gameOverReported = false;  // GAME OVER 只打一次
+
+function reportState(): void
+{
+    const now = Date.now();
+    if (score !== lastReportScore)
+    {
+        console.log("[shooter] score=" + score + " lives=" + lives);
+        lastReportScore = score;
+        lastReportMs = now;
+    }
+    else if (now - lastReportMs >= 2000)
+    {
+        console.log("[shooter] alive score=" + score + " lives=" + lives + " over=" + over);
+        lastReportMs = now;
+    }
+    if (over && !gameOverReported)
+    {
+        console.log("[shooter] GAME OVER score=" + score);
+        gameOverReported = true;
     }
 }
 
@@ -315,6 +357,10 @@ function reset(): void
     ring = 0;
     over = false;
     errMsg = "";
+    // 状态打印也从这一局重新开始(见 reportState): 否则重开时分数回到 0 也不打一行
+    gameOverReported = false;
+    lastReportScore = -1;
+    lastReportMs = Date.now();
     bullets = [];
     ebullets = [];
     enemies = [];

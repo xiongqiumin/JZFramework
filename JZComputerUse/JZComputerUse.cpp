@@ -584,6 +584,8 @@ bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
     if (s_virtualDesk) {
         const int x = (int)std::lround(nx * s_virtualDesk->desktopWidth());
         const int y = (int)std::lround(ny * s_virtualDesk->desktopHeight());
+        // ⚠ 只投递, **不在这里等它处理完** (同 PostMessage): 等就是互等配方。
+        //   要"动作后的画面"由调用方自己安排 (见 waitStable / injectMouse 的说明)。
         return s_virtualDesk->injectClickAt(x, y, cuVirtualBtn(btn));
     }
     DWORD ax, ay; toAbsolute(nx, ny, ax, ay);
@@ -621,7 +623,7 @@ bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
             d->injectMouseAtScreen(JZMouseEvent::Move, JZMouseEvent::LeftButton, xi, yi);
         }
         d->injectMouseAtScreen(JZMouseEvent::Release, JZMouseEvent::LeftButton, bx, by);
-        return true;
+        return true;                      // 同上: 只投递, 不等
     }
     DWORD ax1, ay1, ax2, ay2; toAbsolute(x1, y1, ax1, ay1); toAbsolute(x2, y2, ax2, ay2);
     INPUT in[4] = {};
@@ -654,7 +656,7 @@ void JZComputerUse::key(const std::string& name) {
             return;
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, true);
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, false);
-        return;
+        return;                           // 同上: 只投递, 不等
     }
     std::vector<std::string> parts; split(name, '+', parts);
     std::vector<int> vks; vks.reserve(parts.size());
@@ -673,7 +675,7 @@ void JZComputerUse::type(const std::string& text) {
     // 虚拟桌面: 逐码点注入活动窗口 (UTF-8 原样, 不经 SendInput 的宽字符转换)
     if (s_virtualDesk) {
         s_virtualDesk->injectText(text);
-        return;
+        return;                           // 同上: 只投递, 不等
     }
     int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
@@ -1200,10 +1202,14 @@ CuRect JZComputerUse::matchText(const std::string& text, const CuRect& region, d
 }
 
 bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
-    // 虚拟桌面: 注入是**同步**的 (命令返回时那一帧已经渲染完), 不存在"界面还没渲染完" —— 恒稳。
-    // 这正是确定性回放的关键: 真桌面要靠"帧间变化收敛"去猜, 这里不用猜。
-    if (s_virtualDesk)
+    // 虚拟桌面: **不在这里等** —— 输入是投递的 (见 JZVirtualWindow::injectMouse), 而"投过去再
+    // 阻塞等它处理完"就是互等配方 (目标线程可能正回等我们这边)。虚拟桌面下要确定性, 用**回调**
+    // 那条路: HTTP 的输入/关窗接口就是把响应挂在回调上发的 (见 JZVirtualDeviceHttp 的说明),
+    // 脚本侧要"动作后的画面"也该照这个形状做 (两帧对比 / 下一个事件循环), 不要靠阻塞。
+    if (s_virtualDesk) {
+        (void)settleMs; (void)timeoutMs;
         return true;
+    }
     if (settleMs < 0) settleMs = 300;
     if (timeoutMs <= 0) timeoutMs = 10000;
     const int step = 100;

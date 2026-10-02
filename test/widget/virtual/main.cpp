@@ -382,6 +382,8 @@ int main(int argc, char* argv[])
     }
 
     // ---- 关窗 API + close() 的框架语义 ----
+    // close() == PostMessage(hwnd, WM_CLOSE): 派发 closeEvent (应用可 ignore) → 接受才 hide +
+    // **从桌面摘下来** (detachWindow; 客户区对象保留) ⇒ 它不再出现/命中/被查, 而对象还在。
     {
         JZVirtualWindow* wd = desk.createWindow(120, 80, "win-d", 400, 20);
         check(desk.windows().size() == 3, "新建 D 后三个窗口");
@@ -391,8 +393,14 @@ int main(int argc, char* argv[])
         check(!wd->isVisible(), "close() 后窗口已隐藏");
         check(desk.windowAt(wd->clientX() + 5, wd->clientY() + 5) == nullptr,
               "隐藏的窗口不再被命中 (合成按可见性跳过)");
-        desk.destroyWindow(wd);
+        check(desk.byTitle("win-d") == nullptr, "关掉的窗口不再出现在窗口表里 (已从桌面摘下来)");
+        // 对象还在 ⇒ 再 show() 就是"重建 HWND": 同一台窗口、同一个客户区挂回桌面
+        wd->show();
+        check(desk.byTitle("win-d") == wd, "关掉后 show() 又回到桌面上 (客户区是同一个对象)");
+        check(desk.windowAt(wd->clientX() + 5, wd->clientY() + 5) == wd, "回来之后又能被命中");
+        desk.destroyWindow(wd);       // 这次是**硬删** (收摊那条路)
         check(desk.windows().size() == 2, "销毁 D 后回到两个窗口");
+        check(desk.byTitle("win-d") == nullptr, "硬删之后彻查也找不到");
     }
 
     // ==================== JS 侧: 引擎里 new 出来的窗口也是虚拟的 ====================
@@ -473,6 +481,14 @@ int main(int argc, char* argv[])
         {
             check(proc->processId() > 0 && proc->name() == "app-js", "进程有 id / 名字");
             check(proc->waitWindow(8000), "进程里 JS 建的窗口出现了 (在它自己的线程上)");
+            // ⚠ waitWindow 只保证"可见" —— 出首帧/激活都排在它后面、都由**进程线程**做 (见
+            //   JZVirtualProcess.h 那段)。若主线程这时立刻跟它做跨线程同步调用 (注入输入/取帧),
+            //   两边会互等: 实测进程线程卡在 show 里的 setFocus(给主线程窗口发焦点事件)、
+            //   主线程卡在 injectMouse 的投递上, 双双不动。所以等它"show 全做完"再动手。
+            for (int i = 0; i < 800 && proc->window() && !proc->window()->isReadyForUse(); ++i)
+                JZThread::msleep(10);
+            check(proc->window() && proc->window()->isReadyForUse(),
+                  "进程窗口 show 全部做完 (可以跨线程动手了)");
 
             JZVirtualWindow* pw = proc->window();
             check(pw != nullptr && pw->process() == proc, "窗口归属这个进程");
@@ -497,6 +513,25 @@ int main(int argc, char* argv[])
                     JZThread::msleep(10);
                 check(desk.byTitle("proc-clicked") == pw,
                       "点击落到进程里的 JS 回调 (窗口标题被改)");
+            }
+
+            // ---- 点关闭按钮: 进程窗口要由**它自己的线程**收掉 ----
+            // 客户区 (那个 JZWindow) 是进程线程里的对象: 在主线程 delete 它会踩
+            // JZObject::clearGuardPointer 的线程亲和断言 (以前点这儿直接崩 + 桌面状态坏掉)。
+            // 现在 destroyWindow 把"关窗"整件事投到窗口自己的线程 -> 关得掉, 且留给它的线程
+            // (客户区由那个线程的那份引擎/桌面逻辑收尾)。
+            {
+                const JZPoint closeC = buttonCenter(pw, 2);
+                check(desk.injectClickAt(closeC.x(), closeC.y()), "点进程窗口的关闭按钮");
+                // 进程窗口的关窗是**异步**的 (整个关窗投到窗口自己的线程: 客户区只有那个线程
+                // 能销毁; 在那边同步等它就是互等), 所以这里等它被收走 —— 判据用窗口数
+                // (窗口标题刚才被 JS 改成了 proc-clicked, 不能拿 proc-win 当判据)。
+                for (int i = 0; i < 500 && desk.windows().size() > beforeProc; ++i)
+                    JZThread::msleep(10);
+                check(desk.byTitle("proc-win") == nullptr && desk.byTitle("proc-clicked") == nullptr,
+                      "进程窗口被关掉并从桌面移除 (销毁发生在它自己的线程上)");
+                check(desk.windows().size() == beforeProc, "关掉进程窗口后桌面回到起进程前的窗口数");
+                check(!desk.processes().empty(), "关窗口 ≠ 停程序 (进程还在程序表里)");
             }
 
             // 停进程: 线程结束 + 它的窗口一起从桌面收走

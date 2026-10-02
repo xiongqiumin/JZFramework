@@ -176,15 +176,23 @@ bool JZVirtualProcess::initRuntime()
 void JZVirtualProcess::destroyRuntime()
 {
     // 窗口先摘掉: 客户区对象归 JS (引擎析构时随 GC 回收), 桌面那边 prune 会收尾。
-    JZVirtualWindow* w = nullptr;
+    // ⚠ 这里只碰**守卫**, 不碰 m_window 那个外框指针 —— 外框归桌面所有, 随时可能已经被收走
+    //   (点关闭按钮 / DELETE /api/windows), 而进程这边只是**缓存**了它: 解引用就是野指针
+    //   (实测: 点进程窗口的关闭按钮 -> 关窗在进程自己的线程上完成 -> 这里 w->client() 直接 AV)。
+    //   客户区死掉时守卫自己会变空, 所以判活只需要看守卫。
+    JZObjectPointer guard;
     {
         JZMutexLocker lk(&m_lock);
-        w = m_window;
         m_window = nullptr;
+        guard = m_clientGuard;
         m_clientGuard = JZObjectPointer();
     }
-    if (w && w->client())
-        w->hide();                       // 隐藏即可 (客户区由 JS 侧回收)
+    // 客户区还活着 (它归 JS, 引擎析构时随 GC 回收): 先把它藏起来, 免得桌面上留一个空窗。
+    // 之后引擎析构 -> 客户区被回收 -> 桌面 pruneWindows 按"客户区已死"把窗口从表里摘掉。
+    if (JZObject* obj = guard.object()) {
+        if (JZWindow* client = dynamic_cast<JZWindow*>(obj))
+            client->hide();              // 隐藏即可 (客户区由 JS 侧回收)
+    }
 
     if (m_runtimeReady) {
         m_runtime.shutdownEngine();       // ⚠ 必须在本线程 (JSRuntime 线程亲和)

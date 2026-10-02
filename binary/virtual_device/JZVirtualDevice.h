@@ -31,8 +31,9 @@ class JZPainter;
 //
 // 桌面(主线程) 与 进程线程 之间的通信只有三处 (都是框架现成机制, 不是新协议):
 //   ① 建窗/关窗/改窗口状态: 进程线程直接调桌面的方法, 桌面内部**一把递归锁**罩住窗口表;
-//   ② 注入输入 (点/键/滚轮): jzApp->sendEvent(clientWindow, ev) —— 跨线程会投递并**阻塞等**
-//      对方处理完 (同步 RPC), 于是点击的顺序/返回值与单线程时一样确定;
+//   ② 注入输入 (点/键/滚轮)/关窗: 一律**投递**给客户区那个线程 (同 PostMessage; 本线程窗口
+//      直接派发), 一律不阻塞等它处理完 —— 要"处理完再干别的"就把后续挂回调 (见
+//      JZVirtualThread.h 的 jzAfterPending), 桌面自己与 HTTP 的输入/关窗接口都是这么做的;
 //   ③ 取帧 (合成时读客户区帧缓冲): 让**窗口自己的线程**拷一帧 (jzRunOnThreadSync, 见
 //      JZVirtualThread.h), 桌面只拿一份拷贝, 不碰别人的帧缓冲;
 //   ④ 进程**自己**结束 (未处理异常 / 线程体跑完): 进程线程投一个异步事件过来 -> 本类
@@ -193,8 +194,23 @@ public:
     // 建窗口 (默认居中并按已有窗口数级联偏移, 避免完全叠住); 新窗口置顶并激活。
     JZVirtualWindow* createWindow(int w, int h, const std::string& title = "Window");
     JZVirtualWindow* createWindow(int w, int h, const std::string& title, int x, int y);
-    // 关掉 (移出桌面并销毁) 一个窗口
+    // 硬删一个窗口 (外框 + 客户区都不要了): 从桌面表里摘掉并销毁。**不是"关窗"** ——
+    // "关窗"是 JZVirtualWindow::close() (= PostMessage WM_CLOSE), 点 X / DELETE /api/windows
+    // 都走那条 (它只把窗口从桌面摘下来, 客户区对象保留)。
+    // 这里只给"收摊"用: terminateProcess / shutdownProcesses / 本类析构。
+    // ⚠ 客户区在别的线程时, 删除动作会被投到它自己的线程 (跨线程 delete 会踩 JZObject 的
+    //   线程亲和断言) —— 所以那条路是**异步**的, 返回时窗口可能还在表里 (下一投消失)。
     void destroyWindow(JZVirtualWindow* w);
+
+    // ---- "销毁平台窗口" / "重新显示" (关窗那条路用它俩) ----
+    // 客户区在自己线程上 close() 成功后: 把窗口**从桌面摘下来** —— 不再合成/命中/出现在
+    // windows() 里, 但对象与客户区都留着 (客户区归 JS; 它的平台后端还指着这台外框,
+    // 所以外框不能删)。之后客户区 show() 会把同一台外框重新挂回来 (== 重建 HWND)。
+    // 摘下来的外框记在 m_detached 里, 由 pruneWindows 在客户区真被回收时收掉。
+    void detachWindow(JZVirtualWindow* w);
+    void attachWindow(JZVirtualWindow* w);      // 重新挂回桌面 (幂等; 没摘过就什么都不做)
+    // 这台窗口还在桌面上吗 (只比指针, **不解引用** —— 给"投递迟到"的调用方判活用)
+    bool hasWindow(const JZVirtualWindow* w) const;
 
     // 窗口列表 (z 序: 由下到上, 末尾最上)。
     // ⚠ 这是那张**活表**: 进程线程建窗/客户区被回收都会动它。跨线程或"先查后用"的调用方
@@ -283,7 +299,9 @@ private:
     // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
     void ensureCanvas();
     void refreshNow();                  // 合成真身 (只允许主线程)
-    void removeWindowLocked(JZVirtualWindow* w);
+    // 把 w 从窗口表 / "已关闭"表里摘下来 (锁内; 调用方负责锁) —— 返回"活动窗口没了的话,
+    // 焦点该交给谁"(锁外再调它的 setFocus); 不发生就返回 nullptr。
+    JZVirtualWindow* removeWindowLocked(JZVirtualWindow* w);
 
     // 窗口表 + 活动窗口 + 合成: 一把递归锁罩住 (进程线程建窗/取帧 vs 主线程合成)。
     // 用递归锁是因为这些方法互相调用 (adopt -> setFramePos -> refresh -> compose)。
@@ -301,7 +319,10 @@ private:
     // 主线程等 (sendEvent), 这里再去抢 m_mutex 就会死锁 —— 这条路径必须无锁。
     std::atomic<bool> m_refreshPosted{false};
 
-    std::vector<JZVirtualWindow*> m_windows;   // z 序: 末尾最上
+    std::vector<JZVirtualWindow*> m_windows;   // 桌面上的窗口, z 序: 末尾最上
+    // 已"关闭"(从桌面摘下来)但客户区还活着的外框 —— 客户区的平台后端还指着它, 所以不能删;
+    // 等客户区被 JS 回收 (守卫变空) 时由 pruneWindows 一起收掉。重新 show 会把它搬回 m_windows。
+    std::vector<JZVirtualWindow*> m_detached;
     JZVirtualWindow* m_active = nullptr;       // 当前活动窗口 (持键盘焦点)
     JZVirtualScreenView* m_view = nullptr;     // 宿主界面里的"屏幕"控件 (可选)
     // ⚠ 成员顺序即析构顺序: m_desktopPix 引用 m_canvas 的帧缓冲, 必须比它先析构。

@@ -293,8 +293,9 @@ public:
 
     void closeActiveWindow()
     {
+        // 与点标题栏的 X 同一条路: 发 close 消息 (应用可 ignore; 接受才从桌面摘下来)
         if (JZVirtualWindow* w = m_screen.activeWindow())
-            m_screen.destroyWindow(w);
+            w->close();
     }
 
     void cascade()

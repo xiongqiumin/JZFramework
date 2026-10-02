@@ -286,6 +286,36 @@ void JZVirtualDeviceHttp::replyError(JZHttpServerClient* client, const JZHttpReq
     replyJson(client, req, v, code);
 }
 
+// 见头注释: 把响应挂到"那条消息处理完"的回调上再发 —— 不阻塞任何线程。
+void JZVirtualDeviceHttp::replyAfterPending(JZHttpServerClient* client, const JZHttpRequest& req,
+                                            JZThread* pendingOn, const Json::Value& value)
+{
+    const bool crossThread = pendingOn && JZThread::currentThread() != pendingOn &&
+                             pendingOn->isRunning();
+    if (!crossThread) {
+        // 本线程窗口 (宿主自己建的) / 桌面 chrome / 窗口管理器当场做掉的: 已经落定, 直接回
+        replyJson(client, req, value);
+        return;
+    }
+
+    // ⚠ 投出去之后不定居: 捕获的东西都得活得够久 (client/接口对象用守卫判活, req/value 拷一份)
+    JZObjectPointer clientGuard = client ? client->guardPointer() : JZObjectPointer();
+    JZObjectPointer selfGuard = guardPointer();
+    auto reqCopy = std::make_shared<JZHttpRequest>(req);
+    auto box = std::make_shared<Json::Value>(value);
+    jzAfterPending(pendingOn, [pendingOn, clientGuard, selfGuard, reqCopy, box]() {
+        // ① 跑到这里 = 那条消息处理完了。再投一个: 排在它引起的重绘后面 (见头注释的 ②)
+        jzAfterPending(pendingOn, [clientGuard, selfGuard, reqCopy, box]() {
+            // ③ 回到桌面线程发响应 (服务器就在那个线程; 合成任务也排在它前面)
+            if (JZObject* self = selfGuard.object())
+                runOnObject(self, [self, clientGuard, reqCopy, box]() {
+                    if (JZHttpServerClient* c = (JZHttpServerClient*)clientGuard.object())
+                        ((JZVirtualDeviceHttp*)self)->replyJson(c, *reqCopy, *box);
+                });
+        });
+    });
+}
+
 // 窗口句柄 (与 HWND 同一个角色: 窗口生命期内唯一、稳定; 下标会随建窗/关窗变) ——
 // 给的是本对象地址的十六进制, 对调用方是**不透明**的: 只用来"原样带回来", 不要去解析它。
 std::string windowHandleOf(const JZVirtualWindow* w)
@@ -609,7 +639,8 @@ void JZVirtualDeviceHttp::handleWindow(JZHttpServerClient* client, const JZHttpR
     const std::string key = req.param("id");
     auto box = std::make_shared<Json::Value>(Json::objectValue);
     auto fail = std::make_shared<std::string>();
-    const bool ok = onScreen([this, box, fail, key, closing]() {
+    auto pendingOn = std::make_shared<JZThread*>(nullptr);
+    const bool ok = onScreen([this, box, fail, pendingOn, key, closing]() {
         JZVirtualWindow* w = findWindow(key);
         if (!w) {
             *fail = "没有这个窗口: " + key;
@@ -619,7 +650,13 @@ void JZVirtualDeviceHttp::handleWindow(JZHttpServerClient* client, const JZHttpR
             (*box)["ok"] = true;
             (*box)["id"] = windowHandleOf(w);
             (*box)["title"] = w->title();
-            m_screen->destroyWindow(w);       // ⚠ 之后 w 已失效
+            // 关窗 = **发 close 消息** (同点标题栏的 X): 应用可以在 closeEvent 里 ignore() 拒绝;
+            // 接受才 hide + 从窗口表摘下来。别的线程的窗口那条路是**投递** (同真系统的"点 X = 投
+            // 一条消息") ⇒ 这里的响应挂在它处理完的回调上再发 (见 replyAfterPending), 所以调用方
+            // 拿到 ok 时窗口已经关了。
+            (*box)["closing"] = true;
+            *pendingOn = w->process();
+            w->close();
             return;
         }
         const std::vector<JZVirtualWindow*> list = m_screen->windowList();
@@ -638,7 +675,7 @@ void JZVirtualDeviceHttp::handleWindow(JZHttpServerClient* client, const JZHttpR
         replyError(client, req, 404, *fail);
         return;
     }
-    replyJson(client, req, *box);
+    replyAfterPending(client, req, *pendingOn, *box);
 }
 
 // /api/windows/<id>/state : SetWindowPos / ShowWindow / SetWindowText 那一组。
@@ -677,8 +714,9 @@ void JZVirtualDeviceHttp::handleWindowState(JZHttpServerClient* client, const JZ
     auto box = std::make_shared<Json::Value>(Json::objectValue);
     auto fail = std::make_shared<std::string>();
     auto notFound = std::make_shared<bool>(false);     // 找不到窗口 = 404, 参数不对 = 400
-    const bool ok = onScreen([this, box, fail, notFound, key, action, hasPos, hasSize, hasTitle,
-                              x, y, cw, ch, title]() {
+    auto pendingOn = std::make_shared<JZThread*>(nullptr);
+    const bool ok = onScreen([this, box, fail, notFound, pendingOn, key, action, hasPos, hasSize,
+                              hasTitle, x, y, cw, ch, title]() {
         JZVirtualWindow* w = findWindow(key);
         if (!w) {
             *fail = "没有这个窗口: " + key;
@@ -689,7 +727,10 @@ void JZVirtualDeviceHttp::handleWindowState(JZHttpServerClient* client, const JZ
             (*box)["ok"] = true;
             (*box)["id"] = windowHandleOf(w);
             (*box)["title"] = w->title();
-            m_screen->destroyWindow(w);
+            // 同上 (DELETE /api/windows/<w>): 发 close 消息, 不是硬删。响应挂在它处理完的回调上
+            (*box)["closing"] = true;
+            *pendingOn = w->process();
+            w->close();
             return;
         }
         if (action == "activate") {
@@ -739,7 +780,8 @@ void JZVirtualDeviceHttp::handleWindowState(JZHttpServerClient* client, const JZ
         replyError(client, req, *notFound ? 404 : 400, *fail);
         return;
     }
-    replyJson(client, req, *box);
+    // 只有 close 那条会等 (pendingOn 非空); 其余状态改动桌面这边当场就落了, 直接回
+    replyAfterPending(client, req, *pendingOn, *box);
 }
 
 // ==================== 截图 ====================
@@ -856,8 +898,9 @@ void JZVirtualDeviceHttp::handleDesktop(JZHttpServerClient* client, const JZHttp
 // ⚠ 单窗口那条路只带"窗口标识"进来, 在 onScreen 里才 findWindow —— 窗口指针不能跨 handler
 //   缓存, 它可能被它自己的线程关掉。
 void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow* target,
-                                       Json::Value& out, std::string& error)
+                                       Json::Value& out, std::string& error, JZThread*& pendingOn)
 {
+    pendingOn = nullptr;
     const std::string action = body.get("action", "").asString();
     const int x = body.get("x", -1).asInt();
     const int y = body.get("y", -1).asInt();
@@ -896,6 +939,18 @@ void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow*
 
     // 命中谁 (点击**之前**算, 便于 driver 判断"点到哪个窗口了"; 点到 chrome/窗口外就是空)
     JZVirtualWindow* hit = target ? target : m_screen->windowAt(x, y);
+
+    // 这条消息最终落在**哪个线程**上处理 (给"响应等它处理完再发"用, 见 replyAfterPending):
+    //   · 单窗口那条路: 就是那个窗口的线程;
+    //   · 桌面那条路: 只有"落进客户区"与"点了关闭按钮(发 close 消息)"是投给窗口线程的 ——
+    //     其余命中区域 (标题栏/边框/三个按钮/任务栏/开始菜单) 都是窗口管理器**当场**做掉的, 不用等。
+    if (target) {
+        pendingOn = target->process();
+    } else if (hit) {
+        const JZVirtualWindow::HitRegion region = hit->hitTest(x, y);
+        if (region == JZVirtualWindow::HitClient || region == JZVirtualWindow::HitClose)
+            pendingOn = hit->process();
+    }
 
     bool handled = false;
     if (action == "move") {
@@ -940,13 +995,17 @@ void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow*
         out["client"].append(p0.x());
         out["client"].append(p0.y());
     }
-    out["handled"] = handled;                       // 有没有真的落进客户区的控件
+    // ⚠ 别的线程的窗口 (程序窗口) 那条路是**投递** (见 JZVirtualWindow::injectMouse): true 只
+    //   代表"投出去了", 不代表控件已经处理; 本线程窗口 (宿主自己建的) 是直接派发, true 才是
+    //   "真落进控件"。要断言效果 (标题变了/画面变了) 请在下一轮再查。
+    out["handled"] = handled;
     out["window"] = hit ? hit->title() : std::string();
 }
 
 void JZVirtualDeviceHttp::doKeyInput(const Json::Value& body, JZVirtualWindow* target,
-                                     Json::Value& out, std::string& error)
+                                     Json::Value& out, std::string& error, JZThread*& pendingOn)
 {
+    pendingOn = nullptr;
     uint32_t mods = JZKeyEvent::NoModifier;
     if (!modifiersFromJson(body.get("modifiers", Json::Value(Json::nullValue)), mods, error))
         return;
@@ -997,10 +1056,11 @@ void JZVirtualDeviceHttp::doKeyInput(const Json::Value& body, JZVirtualWindow* t
     }
 
     JZVirtualWindow* win = target ? target : m_screen->activeWindow();
+    pendingOn = win ? win->process() : nullptr;     // 键投给了它 ⇒ 响应等它处理完再发
     out["ok"] = true;
     out["vk"] = vk;
     out["text"] = text;
-    out["handled"] = handled;
+    out["handled"] = handled;                       // 同上: 程序窗口那条路只代表"投出去了"
     out["window"] = win ? win->title() : std::string();
 }
 
@@ -1036,7 +1096,8 @@ void JZVirtualDeviceHttp::doInput(JZHttpServerClient* client, const JZHttpReques
     auto box = std::make_shared<Json::Value>(Json::objectValue);
     auto fail = std::make_shared<std::string>();
     auto notFound = std::make_shared<bool>(false);
-    const bool ok = onScreen([this, box, fail, notFound, kind, windowKey, body]() {
+    auto pendingOn = std::make_shared<JZThread*>(nullptr);
+    const bool ok = onScreen([this, box, fail, notFound, pendingOn, kind, windowKey, body]() {
         JZVirtualWindow* target = nullptr;
         if (!windowKey.empty()) {
             target = findWindow(windowKey);
@@ -1047,9 +1108,9 @@ void JZVirtualDeviceHttp::doInput(JZHttpServerClient* client, const JZHttpReques
             }
         }
         if (kind == InputKind::Mouse)
-            doMouseInput(body, target, *box, *fail);
+            doMouseInput(body, target, *box, *fail, *pendingOn);
         else
-            doKeyInput(body, target, *box, *fail);
+            doKeyInput(body, target, *box, *fail, *pendingOn);
     });
     if (!ok) {
         replyError(client, req, 500, "桌面线程没有响应");
@@ -1059,7 +1120,8 @@ void JZVirtualDeviceHttp::doInput(JZHttpServerClient* client, const JZHttpReques
         replyError(client, req, *notFound ? 404 : 400, *fail);
         return;
     }
-    replyJson(client, req, *box);
+    // 响应挂在"那条消息处理完"的回调上 (见 replyAfterPending): 调用方拿到 ok 时它已经被处理过了
+    replyAfterPending(client, req, *pendingOn, *box);
 }
 
 void JZVirtualDeviceHttp::handleMouse(JZHttpServerClient* client, const JZHttpRequest& req)

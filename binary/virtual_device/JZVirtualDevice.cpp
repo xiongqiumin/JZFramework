@@ -76,10 +76,12 @@ JZVirtualDevice::~JZVirtualDevice()
     if (jzWindowHost() == this)
         jzSetWindowHost(nullptr);
 
-    // ③ 桌面持有窗口 (它们没有别的父对象)
+    // ③ 桌面持有窗口 (它们没有别的父对象): 桌面上的 + 已关闭(摘下来)但客户区还活着的一起收
     std::lock_guard<std::recursive_mutex> lk(m_mutex);
     std::vector<JZVirtualWindow*> list = m_windows;
+    list.insert(list.end(), m_detached.begin(), m_detached.end());
     m_windows.clear();
+    m_detached.clear();
     m_active = nullptr;
     m_pressed = nullptr;
     m_dragWin = nullptr;
@@ -119,11 +121,16 @@ void JZVirtualDevice::terminateProcess(JZThread* p)
     p->quit();          // JZThread::quit = 请求退出(协作式) + 唤醒事件循环
     p->wait();          // join
 
-    // ② 收掉它建的窗口 (客户区可能已被 JS 侧回收, destroyWindow/prune 都能处理)
+    // ② 收掉它建的窗口 (客户区可能已被 JS 侧回收, destroyWindow/prune 都能处理) ——
+    //    两张表都要扫: 它可能已经被"点关闭"摘到 m_detached 里了 (客户区还活着)。
     std::vector<JZVirtualWindow*> mine;
     {
         std::lock_guard<std::recursive_mutex> lk(m_mutex);
         for (auto* w : m_windows) {
+            if (w->process() == p)
+                mine.push_back(w);
+        }
+        for (auto* w : m_detached) {
             if (w->process() == p)
                 mine.push_back(w);
         }
@@ -342,6 +349,8 @@ JZVirtualWindow* JZVirtualDevice::createWindowImpl(int w, int h, const std::stri
 
 // 客户区被别处回收了 (JS 侧 GC / deleteLater): 这台窗口跟着从桌面消失。
 // ⚠ 必须有: 桌面的窗口表里存的是裸指针, 客户区没了就再也不能用它 (否则合成/命中要解引用野指针)。
+// 两张表都扫: 桌面上的 (m_windows) 与"已关闭但客户区还在"的 (m_detached) —— 后者等客户区死了
+// 才轮到我们把外框收掉 (它活着时不能删: 客户区的平台后端还指着它)。
 void JZVirtualDevice::pruneWindows()
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);
@@ -362,29 +371,139 @@ void JZVirtualDevice::pruneWindows()
     }
     if (!m_active && !m_windows.empty())
         m_active = m_windows.back();
+
+    for (size_t i = 0; i < m_detached.size(); ) {
+        JZVirtualWindow* w = m_detached[i];
+        if (w->isClientAlive()) {
+            ++i;
+            continue;
+        }
+        m_detached.erase(m_detached.begin() + (long)i);
+        delete w;                    // 同上: 客户区已死, 只收外框
+    }
+}
+
+// 把 w 从两张表里摘下来 (锁内) + 维护活动/按下/拖动现场。返回"焦点该交给谁"(锁外再调)。
+JZVirtualWindow* JZVirtualDevice::removeWindowLocked(JZVirtualWindow* w)
+{
+    JZVirtualWindow* focusNext = nullptr;
+    auto it = std::find(m_windows.begin(), m_windows.end(), w);
+    if (it != m_windows.end())
+        m_windows.erase(it);
+    else {
+        auto dit = std::find(m_detached.begin(), m_detached.end(), w);
+        if (dit != m_detached.end())
+            m_detached.erase(dit);
+    }
+    if (m_pressed == w)
+        m_pressed = nullptr;
+    if (m_dragWin == w)
+        endDrag();
+    if (m_active == w) {
+        // 活动窗口没了: 退到最上层那个 (等价桌面行为)
+        m_active = m_windows.empty() ? nullptr : m_windows.back();
+        focusNext = m_active;
+    }
+    return focusNext;
+}
+
+// "销毁平台窗口" (== 客户区 close() 被接受): 从桌面摘下来, **对象都留着** —— 客户区归 JS,
+// 它的平台后端指着这台外框, 所以外框不能删 (删了就是野指针)。收尾交给 pruneWindows。
+void JZVirtualDevice::detachWindow(JZVirtualWindow* w)
+{
+    if (!w)
+        return;
+    JZVirtualWindow* focusNext = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        auto it = std::find(m_windows.begin(), m_windows.end(), w);
+        if (it == m_windows.end())
+            return;                  // 已经不在桌面上了 (重复关闭/已被收走): 不重复搬
+        focusNext = removeWindowLocked(w);
+        m_detached.push_back(w);
+    }
+    // 锁外通知 (同 destroyWindow 那条纪律)
+    if (focusNext)
+        focusNext->setFocus(true);
+    refresh();
+}
+
+// "重新显示" (== 重建 HWND): 之后客户区的 show() 会走到这里, 把同一台外框挂回桌面 (幂等)。
+void JZVirtualDevice::attachWindow(JZVirtualWindow* w)
+{
+    if (!w)
+        return;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        auto dit = std::find(m_detached.begin(), m_detached.end(), w);
+        if (dit == m_detached.end())
+            return;                  // 本来就在桌面上 (或已被收走): 什么都不做
+        m_detached.erase(dit);
+        m_windows.push_back(w);      // z 序最上 (之后的 activate 会正襟危坐地置顶+聚焦)
+    }
+    refresh();
+}
+
+bool JZVirtualDevice::hasWindow(const JZVirtualWindow* w) const
+{
+    if (!w)
+        return false;
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    return std::find(m_windows.begin(), m_windows.end(), w) != m_windows.end();
 }
 
 void JZVirtualDevice::destroyWindow(JZVirtualWindow* w)
 {
     if (!w)
         return;
-    std::lock_guard<std::recursive_mutex> lk(m_mutex);
-    auto it = std::find(m_windows.begin(), m_windows.end(), w);
-    if (it == m_windows.end())
-        return;
 
-    if (m_pressed == w)
-        m_pressed = nullptr;
-    if (m_dragWin == w)
-        endDrag();
-
-    m_windows.erase(it);
-    if (m_active == w) {
-        // 活动窗口没了: 退到最上层那个 (等价桌面行为)
-        m_active = m_windows.empty() ? nullptr : m_windows.back();
-        if (m_active)
-            m_active->setFocus(true);
+    // ⚠ 先确认它还在两张表里, **之后**才解引用: 本函数也会被"迟到"的跨线程投递调到
+    //   (见下面那段), 那时 w 可能已经被收走了 —— 表里找不到就直接当"已经没了"。
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (std::find(m_windows.begin(), m_windows.end(), w) == m_windows.end() &&
+            std::find(m_detached.begin(), m_detached.end(), w) == m_detached.end())
+            return;
     }
+
+    // 窗口属于**别的线程** (虚拟进程里 JS 建出来的): 客户区是那个线程里的对象, 只有它自己的
+    // 线程能销毁它 —— 本线程 delete 会踩 JZObject::clearGuardPointer 的线程亲和断言 (实测:
+    // 主线程点进程窗口的关闭按钮, 主线程 delete 进程线程的 JZWindow -> 断言, 桌面状态跟着坏掉)。
+    // 所以把"收摊"整件事**投到窗口自己的线程**做, 而且**只投不等**:
+    //   ① 客户区的析构里还会有别的跨线程动作 (信号/焦点/布局), 在这边同步等它就是又制造一个
+    //      "两个线程互相等对方处理自己投出去的事件" 的机会 —— 这一类互等在本项目已经踩过几次
+    //      (见 activate / setFocus 上的注释);
+    //   ② 收摊是**收尾**动作, 调用方 (terminateProcess / 容器析构) 不靠它的返回值。
+    //   代价: 这条路是**异步**的 —— 返回时窗口可能还在表里, 那一投处理完才没。
+    //   同线程窗口 (宿主自己建的) 不受影响: 照旧同步销毁。
+    if (JZThread* owner = w->process()) {
+        if (owner != JZThread::currentThread() && owner->isRunning()) {
+            JZObjectPointer deskGuard = guardPointer();   // 投递后本桌面可能先没了: 判活再动
+            runOnThread(owner, [this, w, deskGuard]() {
+                if (deskGuard.object())
+                    destroyWindow(w);
+            });
+            return;
+        }
+    }
+
+    JZVirtualWindow* focusNext = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        // 摘之前再确认一次 (与上面那次检查同锁域): 已经被别的路径收走的话, 这里再 delete 就是双删。
+        const bool inMain = std::find(m_windows.begin(), m_windows.end(), w) != m_windows.end();
+        const bool inDet = !inMain &&
+            std::find(m_detached.begin(), m_detached.end(), w) != m_detached.end();
+        if (!inMain && !inDet)
+            return;
+        focusNext = removeWindowLocked(w);
+    }
+
+    // ⚠ 下面两件都在**锁外**做 (同 activate 那条纪律): 表里已经摘掉了, 没有别人能再拿到它;
+    //   而"给别的窗口设焦点"与"客户区的析构"都可能是跨线程动作 —— 握着 m_mutex 等别的线程
+    //   就是死锁配方 (那个线程回头也要用这把锁)。
+    if (focusNext)
+        focusNext->setFocus(true);
     delete w;
     refresh();
 }
@@ -414,10 +533,11 @@ void JZVirtualDevice::activate(JZVirtualWindow* w)
         m_active = w;
     }
 
-    // ⚠ 聚焦是**跨线程**的: client()->setWindowFocus -> onWindowFocus -> sendEvent 会投递到
-    //   窗口自己的线程并**等它处理** —— 所以必须锁外做。握着锁等别的线程时, 那个线程可能
-    //   正回头抢这把锁 (推帧/它自己 show 里激活), 于是双方互等: 死锁。
-    //   (实测复现: 进程窗口 show 时它自己调 activate, 同时主线程正点它 —— 必卡死。)
+    // 桌面状态的改动在锁内做完, **通知**(焦点/重画) 一律锁外 —— 同 destroyWindow 那条纪律。
+    // 焦点这条现在是安全的: JZVirtualWindow::setFocus 对**别的线程**的客户区是异步投递的
+    // (见那里的说明), 不会握着锁等在别的线程上。
+    // 历史: 它以前是同步 sendEvent, 于是"进程窗口 show 时它自己调 activate" 与 "主线程正
+    //   给这个进程注入输入" 会互等 —— 双方各等对方处理自己投出去的那一条 (实测必卡死)。
     if (old)
         old->setFocus(false);        // 旧活动窗口失焦 (派发 focusOut, 取消未上屏的编辑)
     w->setFocus(true);
@@ -816,6 +936,7 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
     JZVirtualWindow* target = nullptr;      // 要在客户区里投递的窗口 (锁外投)
     int cx = 0, cy = 0;
     JZVirtualWindow* activateTarget = nullptr;   // 需要激活的窗口: 也锁外做 (见 activate)
+    JZVirtualWindow* closeTarget = nullptr;      // 点了关闭按钮的窗口: 也锁外做 (见 destroyWindow)
     std::function<void()> chromeAction;     // 菜单项回调: 一律锁外跑 (见 handleChromePress)
     bool chromeHandled = false;             // 这次事件被桌面 chrome (任务栏/开始菜单) 吃掉
     {
@@ -860,8 +981,15 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
 
                 switch (w->hitTest(screenX, screenY)) {
                 case JZVirtualWindow::HitClose:
-                    destroyWindow(w);         // 点关闭 = 关掉这个窗口
-                    return true;
+                    // 点关闭 = **发一条 close 消息** (== PostMessage(hwnd, WM_CLOSE); 见
+                    //   JZVirtualWindow::close): 由窗口**自己**处理 —— 派发 closeEvent, 应用可
+                    //   ignore() 拒绝; 接受才 hide + 从桌面摘下来 (detachWindow, 客户区对象保留)。
+                    //   ⚠ 只记下来, **锁外**发: 客户区可能在别的线程上, 那条路是投递,
+                    //   握着 m_mutex 做事会跟"那个线程回头抢这把锁"撞上 (同 activate 那条注释)。
+                    //   点关闭不激活 (消息发完就完事, 与以前一致)。
+                    closeTarget = w;
+                    activateTarget = nullptr;
+                    break;
                 case JZVirtualWindow::HitMinimize:
                     w->setMinimized(!w->isMinimized());
                     return true;
@@ -902,8 +1030,14 @@ bool JZVirtualDevice::injectMouseAtScreen(JZMouseEvent::MouseType type,
         }
     }
 
-    // ---- 锁外这一步, 三件事的顺序与"真桌面 + 真系统"一致: 先激活, 再执行 chrome 动作,
-    //      最后把事件投给客户区。⚠ 三者**都**不能握着锁做 (见 activate / 下面的注释)。 ----
+    // ---- 锁外这一步, 四件事的顺序与"真桌面 + 真系统"一致: 先是关窗 (它把这次点击吃掉了),
+    //      再激活, 然后执行 chrome 动作, 最后把事件投给客户区。⚠ 四者**都**不能握着锁做
+    //      (见 activate / destroyWindow / 下面的注释)。 ----
+    if (closeTarget) {
+        closeTarget->close();        // 发 close 消息 (跨线程 = 投递, 不等)
+        return true;
+    }
+
     if (activateTarget)
         activate(activateTarget);
 

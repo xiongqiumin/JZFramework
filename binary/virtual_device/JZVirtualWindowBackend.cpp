@@ -58,8 +58,13 @@ float JZVirtualWindowBackend::deviceScaleOf() const
 
 void JZVirtualWindowBackend::destroy(JZWindow* w)
 {
-    (void)w;
-    m_created = false;      // 没有原生资源要释放; 之后 show 会重建帧缓冲
+    // 虚拟侧没有原生资源要释放, 但"平台窗口没了"这件事必须**通知框架** —— 这就是真窗口
+    // DestroyWindow -> WM_DESTROY -> JZWindow::nativeDestroyed 的那个契约:
+    //   m_windowCreated 归假 ⇒ 之后再 show() 会重新 create (重建帧缓冲), 我们这边顺手把它挂回
+    //   桌面 (见 show 里的 attachWindow)。不通知的话窗口会留在"已创建"状态, 再 show() 什么也不做。
+    m_created = false;
+    if (w)
+        w->nativeDestroyed();
 }
 
 void JZVirtualWindowBackend::onPlatformDestroyed(JZWindow* w)
@@ -78,6 +83,11 @@ void JZVirtualWindowBackend::show(JZWindow* w)
 {
     if (!m_created || !w || !m_vwin)
         return;
+    // "让窗口出现" = 回到桌面上。首次 show 时它已经在表里 (建窗就被收编了), 这句是幂等的;
+    // 被 close() 关掉过 (从桌面摘下来, 见 JZVirtualDevice::detachWindow) 的窗口再 show() 就是
+    // "重建 HWND" —— 靠这一句把同一台外框挂回桌面 (客户区对象从头到尾是同一个)。
+    if (JZVirtualDevice* d = m_vwin->screen())
+        d->attachWindow(m_vwin);
     m_vwin->applyAutoPosition();
     w->doPaint(w->rect());
     if (JZVirtualDevice* d = m_vwin->screen())

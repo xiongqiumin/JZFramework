@@ -123,8 +123,19 @@ public:
     //   不要去别的线程上调 isActive()/frame() —— 它们不是给跨线程读的(实测会卡死)。
     bool isReadyForUse() const { return m_readyForUse.load(); }
     void markReadyForUse() { m_readyForUse.store(true); }   // 只该在窗口自己的线程上调
-    void setFocus(bool got);         // 键盘焦点进/出 (== WM_SETFOCUS/WM_KILLFOCUS)
-    // 关窗: 走框架的 close() (派发 closeEvent, 接受才隐藏) —— 与真窗口同语义
+    // 键盘焦点进/出 (== WM_SETFOCUS/WM_KILLFOCUS; 真系统里这条消息也是**投递**的)。
+    // ⚠ 客户区在别的线程时 (虚拟进程窗口) 这一句是**异步**的: 投到那个线程就返回, 不等它 —
+    //   同步等会和"那个线程回头也投给我们"互等 (见 .cpp 的说明)。
+    void setFocus(bool got);
+    // 关窗 == PostMessage(hwnd, WM_CLOSE): 把"关"这件事交给窗口**自己** —— 点 X / DELETE
+    // /api/windows / "关闭当前窗口"菜单都走这里 (不再由窗管硬删对象)。
+    //   处理 = 客户区 JZWindow::close(): 派发 closeEvent (应用可 ignore() 拒绝) → 接受才
+    //   hide + "销毁平台窗口"; 在虚拟桌面上后一步就是把自己**从桌面摘下来**
+    //   (JZVirtualDevice::detachWindow): 不再合成/命中/出现在窗口表里, 但**客户区对象保留**
+    //   (它归 JS) —— 之后再 show() 会重新挂回桌面 (等价重建 HWND)。客户区真被回收时由
+    //   pruneWindows 把外框一并收掉。
+    // 返回: 同线程窗口 = 应用接受了吗 (同步派发, 与以前一致);
+    //       别的线程的窗口 = 消息投出去没有 (拿不到应用的答复 —— 同 PostMessage)。
     bool close();
 
     // ---- 窗口状态 (标题栏按钮 / 桌面管理器) ----
@@ -151,6 +162,14 @@ public:
     bool captureFrame();
 
     // ---- 输入注入 (坐标 = **本窗口客户区**逻辑坐标; 桌面路由时已换算好) ----
+    // 语义 == 系统投递输入消息 (PostMessage / SendInput 那一类): **投过去就返回, 不等它处理**。
+    //   · 别的线程的窗口 (虚拟进程): postEvent 异步投递 —— 同步等它就是"两个线程互相等对方"
+    //     的老问题 (实测会双方永久挂住);
+    //   · 本线程的窗口: 直接派发 (= 你就是它的事件循环, 没有可等的东西), 顺序与结果同以前。
+    // 返回 true = 投出去了/被接受了 (跨线程那条**不代表应用已处理** —— 同 PostMessage)。
+    // 要"投完再截图/再断言"就把后续动作挂**回调**上 (jzAfterPending, 见 JZVirtualThread.h):
+    // 回调被跑到 = 这条消息处理完了。⚠ 别在调用方阻塞等它 (那就是互等配方) —— HTTP 的输入/关窗
+    // 接口用的就是这个回调式收尾 (见 JZVirtualDeviceHttp::replyAfterPending)。
     bool injectMouse(JZMouseEvent::MouseType type, JZMouseEvent::Button button,
                      int x, int y, int wheelDelta = 0,
                      uint32_t modifiers = JZKeyEvent::NoModifier);
@@ -181,6 +200,11 @@ public:
 private:
     JZImage clientFrameLocal();                // 本线程直接读帧缓冲 (不加任何跨线程等待)
     void renderNowLocal();                     // 本线程直接重绘 (不跨线程)
+    bool closeLocal();                         // 本线程的"关窗"实现 (派发 closeEvent + 摘表)
+    void applyDeviceScaleLocal();              // 本线程的"设备换缩放 + 重建 + 重画"
+    // 把一条已经 new 出来的消息交给客户区 (见 injectMouse 说明): 本线程直接派发,
+    // 别的线程 postEvent。返回"接受了吗"/"投出去了吗"; 所有权: sendEvent 不接管, postEvent 接管。
+    bool postToClient(JZWindow* c, JZEvent* ev);
 
     // 标题栏里第 i 个按钮 (0=最小化 1=最大化 2=关闭) 的矩形 (桌面坐标)
     JZRect buttonRect(int index) const;

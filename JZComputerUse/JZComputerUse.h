@@ -112,7 +112,11 @@ public:
     //   click/drag          -> 注入虚拟桌面 (命中窗口 -> 激活它 -> 换算客户区 -> 投递控件)
     //   key/type            -> 投递给虚拟桌面的活动窗口
     //   focusWindow(title)  -> 激活桌面上那个窗口
-    //   waitStable()        -> 恒真 (虚拟桌面渲染是同步的, 不存在"界面还没渲染完")
+    //   waitStable()        -> 虚拟桌面下**恒真**: 这里不等 (见下)
+    // ⚠ 输入一律是**投递** (同 PostMessage: 不等应用处理完; 见 JZVirtualWindow::injectMouse):
+    //   click/drag/key/type **只投出去、不阻塞等** —— "投过去再等它"是互等配方 (目标线程可能正
+    //   回等我们这边), 所以虚拟桌面下不提供"同步等到处理完"。要"动作后的画面"用**回调**那条路:
+    //   HTTP 的输入/关窗接口就是把响应挂在回调上发的 (见 JZVirtualDeviceHttp 的说明)。
     // 虚拟桌面下**不适用**的: switchToDesktop / 进程管理(start/terminate/focusProcess) /
     //   launch —— 一律明确返回失败, 绝不悄悄去动真实系统。
     //   (像素族匹配在虚拟桌面下**可用**: 帧就是桌面合成帧, 见 currentFrame; 未编 OpenCV 时

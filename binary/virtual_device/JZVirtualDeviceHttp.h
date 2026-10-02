@@ -46,6 +46,10 @@ class JZHttpRequest;
 //   POST   /api/windows/<w>/state  {action,x,y,w,h,title}
 //                                                 SetWindowPos 那一组: 激活/最小化/最大化/还原/关闭
 //                                                 + 移动 (x,y=外框坐标) / 改客户区尺寸 (w,h) / 改标题
+//                                                 ⚠ 关闭 = **发 close 消息** (同点标题栏的 X):
+//                                                    应用可在 closeEvent 里 ignore() 拒绝; 接受才
+//                                                    窗口从表里消失。窗口在别的线程时响应会等那条
+//                                                    消息处理完再发 (见下面的投递/回调说明)。
 //   POST   /api/windows/<w>/input  {type,action,x,y,...}
 //                                                 给**这个窗口**直接发鼠标/键盘 (不激活、不过桌面命中),
 //                                                 与 /api/input/* 同一套参数, 见下面 coords 说明
@@ -84,6 +88,12 @@ class JZHttpRequest;
 // 标题片段 (按标题找最上层那个) > `#下标` / 下标 (z 序位置, 会随建窗/关窗变) ——
 // 写成"先枚举再点下标"的脚本要留意下标会变, 长期引用请用句柄。
 // ⚠ URL 里 `#` 是片段分隔符 (客户端会把它之后的部分丢掉), 要写 `%23` 或干脆只写数字。
+//
+// ⚠ 输入与关窗都是**投递**语义 (同 PostMessage; 见 JZVirtualWindow::injectMouse / close): 消息
+//   投给窗口**自己的线程**, 而**响应挂在"它处理完"的回调上再发**(见 replyAfterPending) —— 服务器
+//   这边**不阻塞任何线程** (投完阻塞等就是互等配方), 而调用方拿到响应时那条消息已经落定、画面也
+//   已经是动作后的样子。落到窗口管理器当场做掉的那些 (标题栏/边框/按钮/任务栏) 本来就不跨线程,
+//   直接回响应。
 //
 // 线程: 本对象**在哪个线程建就在哪个线程响应** (JZHttpServer 的会话会被移到它所在线程)。
 // 宿主程序建在主线程 ⇒ 回调也主线程 ⇒ 与桌面同线程, 一切直来直去 (投递只是兜底)。
@@ -140,11 +150,12 @@ private:
     void handleWindowInput(JZHttpServerClient* client, const JZHttpRequest& req); // /api/windows/<w>/input
     void doInput(JZHttpServerClient* client, const JZHttpRequest& req, InputKind kind,
                  const std::string& windowKey);
-    // 解析 + 投递 (只在主线程里跑, target 为空 = 走桌面): 结果写进 out, 失败写 error
+    // 解析 + 投递 (只在主线程里跑, target 为空 = 走桌面): 结果写进 out, 失败写 error;
+    // pendingOn 回写"这条消息落在哪个线程上处理" (为空 = 桌面/窗口管理器当场做掉了, 不用等)。
     void doMouseInput(const Json::Value& body, JZVirtualWindow* target,
-                      Json::Value& out, std::string& error);
+                      Json::Value& out, std::string& error, JZThread*& pendingOn);
     void doKeyInput(const Json::Value& body, JZVirtualWindow* target,
-                    Json::Value& out, std::string& error);
+                    Json::Value& out, std::string& error, JZThread*& pendingOn);
     void handlePrograms(JZHttpServerClient* client, const JZHttpRequest& req);  // GET 列表 / POST 加载
     void handleProgramStop(JZHttpServerClient* client, const JZHttpRequest& req);
     void handleLogs(JZHttpServerClient* client, const JZHttpRequest& req);      // GET 程序输出(按行)
@@ -152,6 +163,16 @@ private:
     // ---- 内部小工具 ----
     void replyJson(JZHttpServerClient* client, const JZHttpRequest& req,
                    const Json::Value& value, int code = 200);
+    // 异步回调式响应: 这份响应挂到"那条消息处理完"的回调上再发出去 —— **全链路不阻塞任何线程**。
+    // 输入/关窗改成投递之后 (见 JZVirtualWindow::injectMouse / close), "响应返回时那条消息到底
+    // 生效没有"就成了调用方关心的事; 这里用**投回调**回答它:
+    //   ① 往 pendingOn 投一个回调: 它被跑到 = 那条消息处理完了 (队列 FIFO);
+    //   ② 再投一个: 排在"消息引起的重绘"之后 (那一刻帧已经推给桌面);
+    //   ③ 投回桌面线程发响应 (合成任务也排在它前面) ⇒ 客户端拿到响应时画面已是动作后的样子。
+    // pendingOn 为空 (同线程窗口 / 桌面 chrome 自己处理的) = 已经落定, 直接发。
+    // ⚠ 为什么不是"在调用方投完再阻塞等": 目标线程可能正回等调用方 (互等), 见 JZVirtualThread.h。
+    void replyAfterPending(JZHttpServerClient* client, const JZHttpRequest& req,
+                           JZThread* pendingOn, const Json::Value& value);
     void replyError(JZHttpServerClient* client, const JZHttpRequest& req,
                     int code, const std::string& message);
     // 在主线程上跑一段桌面操作; 返回 false = 桌面线程没响应 (超时)

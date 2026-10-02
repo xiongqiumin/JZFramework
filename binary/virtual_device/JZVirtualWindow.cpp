@@ -12,6 +12,7 @@
 #include "JZVirtualThread.h"   // 跨线程同步调用 (jzRunOnThreadSync)
 #include "JZApplication.h"     // 跨线程: sendEvent(同步投递)
 #include "JZThread.h"
+#include "JZDebug.h"           // jzWarning (客户区不在本线程时的兜底提示)
 
 #include <algorithm>
 #include <memory>
@@ -37,10 +38,26 @@ JZVirtualWindow::JZVirtualWindow(JZVirtualDevice* screen, JZWindow* client)
 
 JZVirtualWindow::~JZVirtualWindow()
 {
-    // 客户区由本类持有 (桌面收摊时一起收掉)。⚠ 它可能已经被别处删掉了(JS 侧的 GC /
-    // deleteLater), 守卫能分辨 —— 那种情况下不能再 delete 一次。
+    // 客户区由本类持有 (桌面收摊时一起收掉)。但"这一句能不能删它"有两个前提:
+    //   ① 它可能已经被别处删掉了 (JS 侧的 GC / deleteLater): 守卫能分辨, 那种情况不能再删一次
+    //      (守卫空 = 那个对象已经析构过)。
+    //   ② 它可能**活在别的线程**上 (虚拟进程里 JS 建出来的窗口): 对象的销毁只能在它自己的线程上
+    //      做 —— JZObject::clearGuardPointer 会断言 "m_thread->id() == 当前线程", 跨线程 delete
+    //      直接踩断言 (实测: 在主线程点进程窗口的关闭按钮, 主线程 delete 进程线程的 JZWindow)。
+    //      这种客户区交给它的线程收尾: 点关闭走 JZVirtualDevice::destroyWindow 的**投递**,
+    //      进程退出时由那份引擎的 GC 在自己的线程上回收 —— 那时这里(别处)先删也已经安全,
+    //      因为守卫分辨得出来 (见 ①)。
     if (m_clientGuard && m_client)
-        delete m_client;
+    {
+        // 判据与 JZObject::clearGuardPointer 的断言同源: 记了线程归属就得是它自己的线程
+        // (没记 = 无亲和, 同"主线程初始化"那类对象, 可以删)。
+        JZThread* clientThread = m_client->thread();
+        if (!clientThread || clientThread == JZThread::currentThread())
+            delete m_client;
+        else
+            jzWarning() << "[vdesk] 客户区不在本线程, 留给它的线程回收 (客户区句柄: "
+                        << (void*)m_client << ")";
+    }
     m_client = nullptr;
 }
 
@@ -197,14 +214,66 @@ void JZVirtualWindow::activate()
 void JZVirtualWindow::setFocus(bool got)
 {
     if (JZWindow* c = client())
-        c->setWindowFocus(got);   // 与 WM_SETFOCUS/WM_KILLFOCUS 同一条路
+    {
+        // 客户区在**本线程**: 直接派发 (与以前一样, 顺序确定)。
+        // 客户区在**别的线程** (虚拟进程建的窗口): 异步投过去, **不等** ——
+        //   · "设焦点"是**通知**不是同步请求 (真系统里 WM_SETFOCUS 也是投递的, 不是 SendMessage);
+        //   · 同步等它就是互等: 实测(用例从 2 秒变成永久挂住) 进程窗口 show 里给旧窗口发焦点
+        //     事件(旧窗口在主线程) 同时主线程正给这个进程注入输入 -> 两个线程互相等对方处理
+        //     自己投出去的那一条 (JZApplication::sendEvent 跨线程是 postEventAndWait)。
+        //   顺序仍然对: 同一目标线程的事件队列是 FIFO, 这条焦点事件先于之后投给同一个窗口的
+        //   输入事件被处理。
+        JZThread* ct = c->thread();
+        if (!ct || ct == JZThread::currentThread()) {
+            c->setWindowFocus(got);   // 与 WM_SETFOCUS/WM_KILLFOCUS 同一条路
+        } else {
+            JZObjectPointer guard = c->guardPointer();     // 异步跑时客户区可能已经没了
+            runOnObject(guard, [guard, got]() {
+                if (JZWindow* win = (JZWindow*)guard.object())
+                    win->setWindowFocus(got);
+            });
+        }
+    }
     notifyScreen();               // 活动/非活动标题栏配色不同
 }
 
+// == PostMessage(hwnd, WM_CLOSE): 把"关"交给窗口自己 (见头注释)。
 bool JZVirtualWindow::close()
 {
     JZWindow* c = client();
-    return c ? c->close() : false;
+    if (!c)
+        return false;
+    if (c->thread() == JZThread::currentThread())
+        return closeLocal();          // 本线程: 直接派发, 返回"应用接受了吗"
+
+    // 别的线程: 投过去, 不等 (同 PostMessage 拿不到答复)。
+    // 判活: 客户区守卫 (它没了就没得关) + 桌面那边"窗口还在表里吗" (可能已被收走)。
+    JZObjectPointer clientGuard = c->guardPointer();
+    JZObjectPointer deskGuard = m_screen ? m_screen->guardPointer() : JZObjectPointer();
+    JZVirtualWindow* self = this;
+    runOnThread(m_process, [self, clientGuard, deskGuard]() {
+        JZVirtualDevice* desk = (JZVirtualDevice*)deskGuard.object();
+        if (!desk || !clientGuard.object())
+            return;
+        if (!desk->hasWindow(self))     // 已经不在桌面上了 (被收走/已关过): 不再动它
+            return;
+        self->closeLocal();
+    });
+    return true;
+}
+
+// 本线程的关窗: 派发 closeEvent (应用可 ignore) -> 接受才 hide + 从桌面摘下来。
+// 客户区对象**保留** (它归 JS; 之后 show() 会把它重新挂回桌面)。
+bool JZVirtualWindow::closeLocal()
+{
+    JZWindow* c = client();
+    if (!c)
+        return false;
+    if (!c->close())                  // 应用 ignore() 拒绝了: 窗口留在原处
+        return false;
+    if (m_screen)
+        m_screen->detachWindow(this); // "销毁平台窗口" 在虚拟桌面上 = 从桌面摘掉
+    return true;
 }
 
 // ==================== 窗口状态 ====================
@@ -318,16 +387,9 @@ bool JZVirtualWindow::injectMouse(JZMouseEvent::MouseType type, JZMouseEvent::Bu
     if (!c)
         return false;
     const JZPoint global = clientToScreen(JZPoint(x, y));
-    JZMouseEvent ev(type, button, global, JZPoint(), wheelDelta, modifiers);
-    ev.setProgrammatic(true);        // 与 AI 合成点击同义: 不受输入蒙版屏蔽
-    // ⚠ 走 jzApp->sendEvent 而不是直接 onWindowProcess: 窗口可能属于**别的线程**
-    //   (JZVirtualProcess), sendEvent 会投递到那个线程并**阻塞等它处理完** ——
-    //   同一线程时就是直接派发, 两条路语义一致 (同步、按顺序)。
-    jzApp->sendEvent(c, &ev);
-    // ⚠ 返回只代表"事件被处理了", **不代表帧已刷新**: 控件改状态时发出的脏区是排给
-    //   "窗口自己的线程"由它的循环画的 (见 JZVirtualWindowBackend::onInvalidate),
-    //   要拿最新帧请 clientFrame()/renderNow() (它们会等那个线程画完)。
-    return ev.isAccepted();
+    JZMouseEvent* ev = new JZMouseEvent(type, button, global, JZPoint(), wheelDelta, modifiers);
+    ev->setProgrammatic(true);       // 与 AI 合成点击同义: 不受输入蒙版屏蔽
+    return postToClient(c, ev);       // 投递 (== PostMessage; 见头注释)
 }
 
 bool JZVirtualWindow::injectClick(int x, int y, JZMouseEvent::Button button)
@@ -343,10 +405,25 @@ bool JZVirtualWindow::injectKey(uint32_t key, const std::string& text,
     JZWindow* c = client();
     if (!c)
         return false;
-    JZKeyEvent ev(key, modifiers, text);
-    ev.setPress(press);
-    jzApp->sendEvent(c, &ev);    // 同上: 跨线程同步投递到窗口自己的线程
-    return ev.isAccepted();
+    JZKeyEvent* ev = new JZKeyEvent(key, modifiers, text);
+    ev->setPress(press);
+    return postToClient(c, ev);   // 投递 (== PostMessage; 见头注释)
+}
+
+// 一条消息的去向: 本线程直接派发 (你就是它的事件循环), 别的线程 postEvent 异步投递。
+// ⚠ sendEvent 不接管所有权 / postEvent 接管 (目标线程派发完自己删) —— 差异只在这里。
+bool JZVirtualWindow::postToClient(JZWindow* c, JZEvent* ev)
+{
+    if (!c || !ev)
+        return false;
+    if (c->thread() == JZThread::currentThread()) {
+        jzApp->sendEvent(c, ev);
+        const bool accepted = ev->isAccepted();
+        delete ev;
+        return accepted;              // 本线程: 返回"应用接受/处理了吗"
+    }
+    jzApp->postEvent(c, ev);          // 跨线程: 投出去就返回 (同 PostMessage)
+    return true;
 }
 
 // 按 UTF-8 逐字符输入: 每个字符拆成 press + release 两次键事件 (与真键盘同序, 控件侧
@@ -488,9 +565,26 @@ void JZVirtualWindow::notifyScreen()
 
 // 桌面 DPI 缩放变了 (JZVirtualDevice::setScale 逐个窗口调):
 // 客户区的设备换缩放到新 DPI, 帧缓冲按"客户区逻辑尺寸 * scale"重建, 再重画一帧。
-// ⚠ 下面 renderNow() 会做**跨线程**同步 (窗口属于虚拟进程时让那个线程画) —— 所以
-//   调用方(桌面)必须先松开 m_mutex, 否则可能和"窗口线程回头调桌面"撞成死锁。
+// ⚠ 帧缓冲(设备)属于**窗口自己的线程**: "换缩放 + 重建 + 重画"三件事都必须在那一个线程上做 ——
+//   在别的线程上 resize, 会和那个线程正在跑的绘制/取帧撞上 (实测: 主线程 resize 的同时进程
+//   线程 snapshot -> 读已经重建掉的位图数据, AV; 这个竞态在输入还是同步投递时就偶发, 输入改成
+//   投递之后几乎必现)。所以这里跨线程时**投过去并等它做完** (那个 lambda 不回等调用方 ⇒ 不互等)。
+// ⚠ 调用方(桌面)必须先松开 m_mutex —— 这一句会等窗口线程, 而它可能正回头调桌面。
 void JZVirtualWindow::applyDeviceScale()
+{
+    if (m_process && JZThread::currentThread() != m_process) {
+        JZObjectPointer guard = m_clientGuard;    // 投递期间客户区(乃至外框)可能没了: 判活
+        jzRunOnThreadSync(m_process, [this, guard]() {
+            if (guard.object())
+                applyDeviceScaleLocal();
+        }, 2000);
+        return;
+    }
+    applyDeviceScaleLocal();
+}
+
+// 本线程的那一半 (调用方保证: 要么就是窗口自己的线程, 要么它是同线程窗口)
+void JZVirtualWindow::applyDeviceScaleLocal()
 {
     JZWindow* c = client();
     if (!m_screen || !c || !c->device() || !c->isWindowCreated())
@@ -498,5 +592,5 @@ void JZVirtualWindow::applyDeviceScale()
     const float s = m_screen->scale();
     c->device()->setScale(s);
     c->device()->resize(m_screen->toPhysical(c->width()), m_screen->toPhysical(c->height()));
-    renderNow();                    // 重画 (帧缓冲的主人只有一个线程, 见 renderNow)
+    renderNowLocal();               // 重画 (帧缓冲的主人只有一个线程, 见 renderNow)
 }

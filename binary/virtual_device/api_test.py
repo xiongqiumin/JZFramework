@@ -25,6 +25,9 @@
  11. 直投窗口输入          给**后台窗口**发鼠标/键盘 (不激活它): 点输入框 -> 打字 -> 点按钮
                            -> 窗口标题变了, 而活动窗口全程没变; coords=screen 会内部换算
  12. 窗口状态              w/h (客户区) / x,y (外框) / title / 最小化 / 最大化铺工作区 / 还原 / 关闭
+ 12b. 关程序窗口           点**程序**窗口的关闭按钮 / DELETE /api/windows/<程序窗口>: 窗口关掉、
+                          容器不退、程序还在; 之后停那个程序也不踩它缓存的野窗口指针
+                          (这条以前直接把容器打崩: 主线程跨线程 delete 客户区)
  13. 错误路径              未知路由 404 / 坏 JSON 400 / 找不到的窗口与句柄 404 / 参数不对 400
  14. 收尾                  DELETE 程序 -> 它的窗口一起没了
  15. /api/logs            程序输出 (console.log 等) 的最近 1000 行: 按行取 (offset/size, -1=全部),
@@ -32,6 +35,12 @@
 
 为什么放这儿 (而不是 auto_code): 这是**容器自己**的接口测试, 跟任何 agent 任务无关;
 它是"这个接口还能用吗"的那把尺子, 改完接口应该跑一遍。
+
+⚠ 输入/关窗都是**投递**语义 (同 PostMessage, 见 JZVirtualWindow::injectMouse / close):
+  · 给**程序窗口**发东西 = 投到那个程序自己的线程; 而 HTTP 的**响应挂在"它处理完"的回调上再发**
+    (见 JZVirtualDeviceHttp::replyAfterPending) —— 服务器不阻塞任何线程, 调用方也不用自己轮询:
+    响应到手即"那条消息已经落定、画面也已经是动作后的样子"。
+  · 所以本脚本的断言都在响应之后直接做 (不需要 sleep / 轮询)。
 """
 import argparse
 import json
@@ -274,9 +283,12 @@ def main():
         t.check("打字被处理了", r.get("ok") is True and r.get("text") == "hello", r)
         r = api.click(cx + 60, cy + 94)          # 按钮 (10,80,100,28) 里
         t.check("点按钮被处理了", r.get("ok") is True, r)
-        after = api.window_by_title("文本=hello")
+        # ⚠ 输入是**投递**的 (同 PostMessage: 投到这个程序自己的线程), 但 HTTP 的响应挂在"那条消息
+        #   处理完"的回调上再发 (见 JZVirtualDeviceHttp::replyAfterPending) ⇒ 这里**不用等**:
+        #   响应到手就说明那个程序已经处理过这条消息了 (画面也已经是动作后的样子)。
         t.check("按钮回调读到输入框内容 (标题 = 文本=hello) —— 鼠标/键盘/合成/JS 一条链都通",
-                after is not None, [w["title"] for w in api.windows()["windows"]])
+                api.window_by_title("文本=hello") is not None,
+                [w["title"] for w in api.windows()["windows"]])
 
         print("== 7) 拖动窗口 (窗口管理器那条路) ==")
         # ⚠ 窗口标题刚被按钮回调改成 "文本=hello" 了 —— 后面的按标题找窗口都用这个新标题
@@ -417,7 +429,7 @@ def main():
         # 输入框里上一轮留下的 "hello" 还在, 直投的 "world" 接在后面 ⇒ 是插到光标处 (没覆盖)
         live = "文本=helloworld"
         t.check("后台窗口也能被操作 (标题 = 文本=helloworld)",
-                api.window_by_title(live) is not None,
+                api.window_by_title(live) is not None,      # 同上: 响应即"已处理完"
                 [w["title"] for w in api.windows()["windows"]])
         t.eq("它全程没被激活", api.windows()["windows"][api.windows()["active"]]["title"],
              "手建窗口")
@@ -456,6 +468,46 @@ def main():
         t.check("关掉后查不到了",
                 api.json("GET", "/api/windows/" + throwaway["id"], expect=404)["ok"] is False)
         t.eq("关掉后从窗口表消失", api.window_by_title("待关窗口"), None)
+
+        print("== 12b) 关掉**程序**的窗口 (点标题栏关闭按钮那条路) ==")
+        # 程序窗口的客户区住在**那个程序的线程**里: 关它必须回到它的线程做 (桌面把"关窗"投过去)。
+        # 这一条曾经把容器直接打崩 (主线程跨线程 delete 客户区 -> JZObject 的线程亲和断言),
+        # 所以这里连"点关闭按钮"与"关掉窗口后再停程序"两条都验一遍。
+        pc = api.json("POST", "/api/programs",
+                      {"name": "prog_close",
+                       "script": "const w = new JZWindow(260, 140, 'pc-win'); w.show();"})
+        t.check("加载一个待关的程序", pc.get("ok") is True, pc)
+        pwin = api.window_by_title("pc-win")
+        t.check("它的窗口在窗口表里", pwin is not None,
+                [w["title"] for w in api.windows()["windows"]])
+        # 关闭按钮中心: 外框右上角往里 (右边框 2 + 4 起算, 按钮 12x12, 标题栏高 22 取半)
+        bx = pwin["frame"][0] + pwin["frame"][2] - 12
+        by = pwin["frame"][1] + 11
+        r = api.click(bx, by)
+        t.check("点程序窗口的关闭按钮被处理", r.get("ok") is True, r)
+        # 关窗那条响应也是挂在"close 消息处理完"的回调上发的 ⇒ 拿到响应时窗口已经关了
+        t.check("程序窗口关了 (从窗口表消失)", api.window_by_title("pc-win") is None,
+                [w["title"] for w in api.windows()["windows"]])
+        t.check("关窗口 ≠ 停程序 (它还在程序表里)",
+                "prog_close" in [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
+                api.json("GET", "/api/programs"))
+        t.check("别的窗口不受影响", api.window_by_title("改过名了") is not None,
+                [w["title"] for w in api.windows()["windows"]])
+        st = api.json("DELETE", "/api/programs/prog_close")
+        t.check("窗口已被关掉的程序也停得掉 (不再踩它缓存的野窗口指针)", st.get("ok") is True, st)
+
+        pc2 = api.json("POST", "/api/programs",
+                       {"name": "prog_close2",
+                        "script": "const w = new JZWindow(200, 120, 'pc2-win'); w.show();"})
+        t.check("再加载一个待关的程序", pc2.get("ok") is True, pc2)
+        st = api.json("DELETE", "/api/windows/" + q("pc2-win"))
+        t.check("DELETE /api/windows/<程序窗口> 也关得掉", st.get("ok") is True, st)
+        t.check("它也从窗口表消失 (响应 = 那条 close 消息已处理完)",
+                api.window_by_title("pc2-win") is None,
+                [w["title"] for w in api.windows()["windows"]])
+        t.check("两条路走完容器仍然活着 (关程序窗口不把容器带走)",
+                api.health().get("ok") is True, api.health())
+        api.json("DELETE", "/api/programs/prog_close2")
 
         print("== 13) 错误路径 ==")
         status, raw = api.raw("GET", "/api/nope")

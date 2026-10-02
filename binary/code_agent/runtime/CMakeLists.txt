@@ -33,6 +33,9 @@ set(CODE_RUNTIME_SOURCES
     # 编入 ORT 与否由下面的 jz_onnx_enable 决定（它独立于 JZCv）。
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.h
+    # 音频录放桥（__jz.audio）：JZEngineRuntime 会挂载 ⇒ 必须跟着编(JZAudio 本体在 JZFramework 库里)。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.h
 )
 
 add_executable(code_runtime ${CODE_RUNTIME_SOURCES})

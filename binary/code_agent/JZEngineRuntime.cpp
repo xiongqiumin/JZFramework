@@ -12,6 +12,7 @@
 #include "JZJSComputerUseModule.h"
 #include "JZJSCvModule.h"
 #include "JZJSOnnxModule.h"
+#include "JZJSAudioModule.h"
 #ifdef JZ_HAS_EMULATOR
 #  include "JZEmulatorViewJs.h"   // 游戏模拟器控件挂到 JS 类层（见该文件头的"依赖方向"说明）
 #endif
@@ -220,6 +221,12 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     m_onnxModule = std::make_unique<JZJSOnnxModule>();
     m_onnxModule->initEngine(engine);
 
+    // 音频：__jz.audio.*（录/放/设备/WAV/重采样，见 JZJSAudioModule.h）。
+    // 同样"没编也照样装"：HAS_JZAudio 未定义时退化成 available()=false，脚本能明确问出来。
+    // JS 侧适配层在 js_wrapper/audio（拉模式：C++ 侧排队，JS 用 readInput 取，事件式由包装层轮询提供）。
+    m_audioModule = std::make_unique<JZJSAudioModule>();
+    m_audioModule->initEngine(engine);
+
     // worker：__jz.worker.* + 全局 Worker 类（每个 worker 一个独立引擎 + 消息通信）。
     // 【必须最后装】JZJSNetModule::initEngine 会无条件新建并覆盖全局 __jz，而本模块
     // 往 __jz 里塞 worker 子命名空间 —— 排在 net 之前会被覆盖掉。
@@ -298,6 +305,11 @@ void JZEngineRuntime::shutdownEngine()
     {
         m_onnxModule->deinitEngine();   // 会 Release 掉所有已加载的 OrtSession
         m_onnxModule.reset();
+    }
+    if (m_audioModule)
+    {
+        m_audioModule->deinitEngine();  // 会关掉所有打开的输入/输出设备
+        m_audioModule.reset();
     }
 if (m_widgetModule)
 {

@@ -23,9 +23,9 @@
  * 于是"名字 → 类型文件 → 运行期入口"三者同名: 想查 http 有哪些成员, 就看
  * jz_types/http/types/index.d.ts(目录名就是 import 的名字, 不用再记"http 藏在 net 包里")。
  *
- * 20 个内置名(与 JZJSEngine.cpp 的 builtinModules 一一对应):
+ * 21 个内置名(与 JZJSEngine.cpp 的 builtinModules 一一对应):
  *   net / dgram / http / mqtt / ws / url / events / fs / path / process / crypto /
- *   buffer / stream / worker_threads / os / serialport / modbus / sqlite
+ *   buffer / stream / worker_threads / os / serialport / modbus / sqlite / audio
  *   (控件族另有 widget; computer use 另有 computeruse —— 这两个是 namespace 形态,
  *    只有具名导出、没有 default: `import { JZWindow } from 'widget'` /
  *    `import { App, setBackend } from 'computeruse'`; 这些名字都是"包目录名")

@@ -53,7 +53,9 @@ set(JZVirtualProcess_SOURCES
     # ONNX Runtime 推理桥（__jz.onnx）：让容器里的脚本也能跑 .onnx 模型。
     # 与 cv 一样"谁需要谁编"; 编入 ORT 与否由下面的 jz_onnx_enable 决定。
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
-)
+    # 音频录放桥（__jz.audio）：让容器里的脚本也能录音/放音。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.cpp
+    )
 add_library(jz_virtual_process STATIC ${JZVirtualProcess_SOURCES})
 target_link_libraries(jz_virtual_process PUBLIC jz_virtual_device)
 target_include_directories(jz_virtual_process PUBLIC

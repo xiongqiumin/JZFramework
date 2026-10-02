@@ -58,6 +58,10 @@ set(CODE_AGENT_SOURCES
     # ⚠ 本目标既没 jz_opencv_enable 也没 jz_onnx_enable ⇒ 编出来的是退化版。
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.h
+    # 音频录放桥（__jz.audio）：同上，JZEngineRuntime 会挂载。
+    # JZAudio 本体在 JZFramework 库里(JZ_MODULE_LIST 里有它, HAS_JZAudio=ON), 这里只编这层 JS 桥。
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.h
 )
 
 add_executable(code_agent ${CODE_AGENT_SOURCES})

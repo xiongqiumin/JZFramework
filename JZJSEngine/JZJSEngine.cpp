@@ -111,6 +111,10 @@ static const BuiltinModule builtinModules[] = {
     //   OpenCV(JZ_CU_OPENCV)。没编 OpenCV 时模块照样 import 得进来, 但 available() 为 false、
     //   调用抛 notBuilt —— 刻意让"形状一致"(而不是 import 直接失败), 脚本好判定、好降级。
     { "cv",         "cv/dist/index.js",         nullptr },
+    // ---- 音频(录音/放音/设备/WAV/重采样): __jz.audio, 由宿主的 JZJSAudioModule 挂载 ----
+    // 能不能真用取决于宿主装没装 __jz.audio(JZJSAudioModule) 与该 exe 编没编 JZAudio(HAS_JZAudio)。
+    // 没编时模块照样 import 得进来, 但 available() 为 false、调用抛 notBuilt(形状一致, 脚本好降级)。
+    { "audio",      "audio/dist/index.js",      nullptr },
     // ---- ONNX Runtime 推理(跑任意 .onnx 模型: 加载/看输入输出/喂张量/拿张量) ----
     // "*" = namespace 形态。能不能用取决于宿主装没装 __jz.onnx 与该 exe 编没编 ORT(JZ_ONNX);
     //   没编时模块照样 import 得进来, 但 available() 为 false、调用抛 notBuilt(形状一致)。

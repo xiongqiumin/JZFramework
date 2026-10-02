@@ -120,7 +120,9 @@ bool JZAudioOutputWindows::write(const JZByteArray& data)
     }
 
     if (m_bufferQueue.size() >= MAX_BUFFER_COUNT) {
-        std::cerr << "Buffer queue full, drop data (current: " << m_bufferQueue.size() << ")" << std::endl;
+        // 队列满: 直接失败, **不丢数据**(调用方稍后重试)。
+        // ⚠ 这里以前会打一行 "Buffer queue full, drop data" —— 但那是正常流控(没丢),
+        //   打成错误反而误导; 上层看返回值 false 就够了。
         return false;
     }
 
@@ -150,7 +152,7 @@ bool JZAudioOutputWindows::write(const JZByteArray& data)
         // 阻塞本线程(通常是主线程/网络线程)导致界面卡死, 也避免与 waveOutProc 回调死锁。
         m_bufferQueue.push_back(pHeader);
     }
-    jzDebug() << "waveOutWrite";
+    // ⚠ 这儿以前有 `jzDebug() << "waveOutWrite";` —— 每喂一块就喷一行, 把脚本的 stdout 搅乱(实测)。
     MMRESULT result = waveOutWrite(m_hWaveOut, pHeader, sizeof(WAVEHDR));
     if (result != MMSYSERR_NOERROR) {
         {

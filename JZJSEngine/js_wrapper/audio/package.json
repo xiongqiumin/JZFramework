@@ -1,0 +1,9 @@
+{
+  "name": "@jz/audio",
+  "version": "1.0.0",
+  "description": "JZ framework audio module (record / play / devices / wav / resample)",
+  "main": "dist/index.js",
+  "types": "types/index.d.ts",
+  "exports": { ".": { "types": "./types/index.d.ts", "default": "./dist/index.js" } },
+  "license": "MIT"
+}

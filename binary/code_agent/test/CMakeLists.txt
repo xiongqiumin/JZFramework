@@ -26,7 +26,9 @@ set(CODE_AGENT_TEST_SOURCES
     # 同上: __jz.cv / __jz.onnx 也由 JZEngineRuntime 挂载(本目标没开 OpenCV/ORT ⇒ 退化版)
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSCvModule.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSOnnxModule.cpp
-)
+    # __jz.audio 同理(JZEngineRuntime 挂载它)
+    ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSAudioModule.cpp
+    )
 
 add_executable(code_agent_test ${CODE_AGENT_TEST_SOURCES})
 target_include_directories(code_agent_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)

@@ -23,6 +23,7 @@
     { "path": "./computeruse" },
     { "path": "./cv" },
     { "path": "./onnx" },
+    { "path": "./audio" },
     { "path": "./ocr" },
     { "path": "./widget" }
   ]

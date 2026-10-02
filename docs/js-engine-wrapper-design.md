@@ -146,6 +146,7 @@ C++ 只往 `globalThis.__jz` 上挂"原子能力"，形状**不迁就 Node**：
 declare const __jz: any;
 // __jz.core.* / __jz.net.* / __jz.http.createServer / __jz.ws.connect
 // __jz.bytes.* / __jz.sqlite.* / __jz.serialport.* / __jz.modbus.* / __jz.worker.* / __jz.os.networkInterfaces
+// 宿主能力(由 exe 侧的模块挂载, 没编时 available() 为 false): __jz.cv.* / __jz.onnx.* / __jz.audio.* / __jz.computeruse.*
 ```
 
 Node 语义由**包内 `index.ts`** 抹平，原则是"**只翻译，不实现**"：
@@ -290,7 +291,7 @@ import fs from 'node:fs';            // 值位置 ⇒ 真正加载模块
 | 2 | 模板 `moduleResolution: bundler` ⇒ `allowSyntheticDefaultImports` 默认 true（"少 default"抓不到）—— 现在所有名字都有 default，实际影响已消失 | 小 | 待办（可选：`allowSyntheticDefaultImports: false`） |
 | 3 | 裸名默认导入的类型依赖各包 default 声明（已补），但 strict 下仍需 `import type {...}` 拿具名类型 | 小 | 未修 |
 | 4 | 没有"真全局 process"（`import process from 'process'` 才是模块；遗留全局 `process` 只有 `cwd`，且封装里**没有 `exit`**；`platform` 是属性不是函数） | 习惯写法必踩 | 未修（文档/提示词标注） |
-| 5 | `serialport` 在 `code_runtime` 里不可用（`initEngine` 只注册 net/core/sqlite/modbus/widget/worker） | 运行期 TypeError | 评测集不含 serialport |
+| 5 | `serialport` 在 `code_runtime` 里不可用（`initEngine` 只注册 net/core/sqlite/modbus/widget/worker + 宿主能力 cv/onnx/audio/computeruse） | 运行期 TypeError | 评测集不含 serialport |
 | 6 | `URL` 的 fragment 会并进 `search` 且最后一个参数不 percent-decode | 用到 `#` 就错 | 未修（规避） |
 | 7 | `dgram` 类型缺 `setEncoding` ⇒ UDP 只能 `toHex()` | 形状不一致 | 未修 |
 | 8 | tsgo(TS7) 不吃 ambient 里的通配再导出 | 部署侧靠 `package.py` 补丁兜住 | 已兜住（生成物） |

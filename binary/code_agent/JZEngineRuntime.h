@@ -17,6 +17,7 @@ class JZJSWorkerModule;
 class JZJSComputerUseModule;
 class JZJSCvModule;
 class JZJSOnnxModule;
+class JZJSAudioModule;
 
 // ------------------------------------------------------------------
 // 运行期层：内嵌 JS 引擎会话的"运行"封装
@@ -183,6 +184,7 @@ private:
     std::unique_ptr<JZJSComputerUseModule> m_computerUseModule; // computer use（__jz.computeruse）
     std::unique_ptr<JZJSCvModule> m_cvModule;                  // OpenCV 图像处理（__jz.cv；缺 OpenCV 时是"未编入"的退化版）
     std::unique_ptr<JZJSOnnxModule> m_onnxModule;              // ONNX Runtime 推理（__jz.onnx；缺 ORT 时同样是退化版）
+    std::unique_ptr<JZJSAudioModule> m_audioModule;            // 音频录放（__jz.audio；缺 JZAudio 时是"未编入"的退化版）
     std::unique_ptr<JZJSWorkerModule> m_workerModule; // 内置 worker 模块（__jz.worker + Worker 类）
     std::string m_engineWorkDir;               // 当前会话的工作目录（引擎落点）
     bool m_engineRunning = false;

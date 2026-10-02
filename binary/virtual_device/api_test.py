@@ -36,11 +36,11 @@
 为什么放这儿 (而不是 auto_code): 这是**容器自己**的接口测试, 跟任何 agent 任务无关;
 它是"这个接口还能用吗"的那把尺子, 改完接口应该跑一遍。
 
-⚠ 输入/关窗都是**投递**语义 (同 PostMessage, 见 JZVirtualWindow::injectMouse / close):
-  · 给**程序窗口**发东西 = 投到那个程序自己的线程; 而 HTTP 的**响应挂在"它处理完"的回调上再发**
-    (见 JZVirtualDeviceHttp::replyAfterPending) —— 服务器不阻塞任何线程, 调用方也不用自己轮询:
-    响应到手即"那条消息已经落定、画面也已经是动作后的样子"。
-  · 所以本脚本的断言都在响应之后直接做 (不需要 sleep / 轮询)。
+⚠ 输入/关窗都是**投递**语义 (见 JZVirtualWindow::injectMouse / close):
+  · 给**程序窗口**发东西 = 投到那个程序自己的线程, 接口**投出去就返回** —— 与真桌面的形状一致
+    (SendInput 送出去就返回 / 点 X = 投一条 WM_CLOSE)。所以响应只说明"消息已发出"。
+  · "标题变了 / 窗口没了"这类效果断言要自己等一下: 本脚本用 wait_for(); 真桌面上的脚本用
+    waitStable() 看画面收敛 —— 两边同一个形状 (这样虚拟桌面里跑通的脚本才能拿到真机复验)。
 """
 import argparse
 import json
@@ -168,6 +168,21 @@ def find_exe(cfg):
     return None
 
 
+def wait_for(pred, secs=3.0, step=0.05):
+    """等一个"窗口那一侧已经把这条消息处理完"的观察点。
+
+    ⚠ 输入/关窗都是**投递**语义 (同真桌面: SendInput 送出去就返回 / 点 X = 投一条 WM_CLOSE),
+      接口响应只说明"消息已发出" ⇒ "标题变了 / 窗口没了"这类断言得自己等一下 ——
+      与真桌面上的脚本同一个形状 (那边靠 waitStable 看画面收敛, 这里直接查窗口表更干脆)。
+    """
+    end = time.time() + secs
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(step)
+    return pred()
+
+
 class Test:
     def __init__(self):
         self.passed = 0
@@ -283,11 +298,10 @@ def main():
         t.check("打字被处理了", r.get("ok") is True and r.get("text") == "hello", r)
         r = api.click(cx + 60, cy + 94)          # 按钮 (10,80,100,28) 里
         t.check("点按钮被处理了", r.get("ok") is True, r)
-        # ⚠ 输入是**投递**的 (同 PostMessage: 投到这个程序自己的线程), 但 HTTP 的响应挂在"那条消息
-        #   处理完"的回调上再发 (见 JZVirtualDeviceHttp::replyAfterPending) ⇒ 这里**不用等**:
-        #   响应到手就说明那个程序已经处理过这条消息了 (画面也已经是动作后的样子)。
+        # ⚠ 输入是**投递**的 (同 PostMessage/同真桌面 SendInput): 点击/打字投到这个程序自己的线程,
+        #   响应只说明"发出去了" ⇒ 效果断言要自己等一下 (见 wait_for)
         t.check("按钮回调读到输入框内容 (标题 = 文本=hello) —— 鼠标/键盘/合成/JS 一条链都通",
-                api.window_by_title("文本=hello") is not None,
+                wait_for(lambda: api.window_by_title("文本=hello") is not None),
                 [w["title"] for w in api.windows()["windows"]])
 
         print("== 7) 拖动窗口 (窗口管理器那条路) ==")
@@ -429,7 +443,7 @@ def main():
         # 输入框里上一轮留下的 "hello" 还在, 直投的 "world" 接在后面 ⇒ 是插到光标处 (没覆盖)
         live = "文本=helloworld"
         t.check("后台窗口也能被操作 (标题 = 文本=helloworld)",
-                api.window_by_title(live) is not None,      # 同上: 响应即"已处理完"
+                wait_for(lambda: api.window_by_title(live) is not None),   # 同上: 投递, 等它处理
                 [w["title"] for w in api.windows()["windows"]])
         t.eq("它全程没被激活", api.windows()["windows"][api.windows()["active"]]["title"],
              "手建窗口")
@@ -485,8 +499,9 @@ def main():
         by = pwin["frame"][1] + 11
         r = api.click(bx, by)
         t.check("点程序窗口的关闭按钮被处理", r.get("ok") is True, r)
-        # 关窗那条响应也是挂在"close 消息处理完"的回调上发的 ⇒ 拿到响应时窗口已经关了
-        t.check("程序窗口关了 (从窗口表消失)", api.window_by_title("pc-win") is None,
+        # 关窗 = 投一条 close 消息 (同真桌面点 X = WM_CLOSE), 响应时窗口可能还在表里一下 ⇒ 等它落地
+        t.check("程序窗口关了 (从窗口表消失)",
+                wait_for(lambda: api.window_by_title("pc-win") is None),
                 [w["title"] for w in api.windows()["windows"]])
         t.check("关窗口 ≠ 停程序 (它还在程序表里)",
                 "prog_close" in [p["name"] for p in api.json("GET", "/api/programs")["programs"]],
@@ -502,8 +517,8 @@ def main():
         t.check("再加载一个待关的程序", pc2.get("ok") is True, pc2)
         st = api.json("DELETE", "/api/windows/" + q("pc2-win"))
         t.check("DELETE /api/windows/<程序窗口> 也关得掉", st.get("ok") is True, st)
-        t.check("它也从窗口表消失 (响应 = 那条 close 消息已处理完)",
-                api.window_by_title("pc2-win") is None,
+        t.check("它也从窗口表消失 (等 close 消息被那个程序处理完)",
+                wait_for(lambda: api.window_by_title("pc2-win") is None),
                 [w["title"] for w in api.windows()["windows"]])
         t.check("两条路走完容器仍然活着 (关程序窗口不把容器带走)",
                 api.health().get("ok") is True, api.health())

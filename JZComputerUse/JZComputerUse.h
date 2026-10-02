@@ -66,6 +66,8 @@ public:
     static Json::Value layoutTree(const std::string& titleFilter = std::string());
     // 等界面稳定: 连续两帧画面相同且保持 settleMs ⇒ 稳定(超时返回 false)。
     // **像素在这里只当信号**(帧间变化收敛), 不参与寻址。
+    // ⚠ 它在**两个后端是同一套** (真桌面抓屏 / 虚拟桌面读合成帧): 输入都是"送出去就返回",
+    //   所以"动作生效了没"只能靠这一句观察 —— 动画/游戏这类一直在变的窗口会一直不收敛(超时)。
     static bool waitStable(int settleMs, int timeoutMs);
     // 启动 / 激活目标窗口: exe 非空则先启动(args 可选), 再按 title 片段等窗口出现并置前。
     static bool launch(const std::string& exe, const std::string& args,
@@ -111,12 +113,13 @@ public:
     //   layoutTree(title)   -> 桌面里那个窗口的语义树, rect 归一化到**整块桌面**(与 click 同口径)
     //   click/drag          -> 注入虚拟桌面 (命中窗口 -> 激活它 -> 换算客户区 -> 投递控件)
     //   key/type            -> 投递给虚拟桌面的活动窗口
-    //   focusWindow(title)  -> 激活桌面上那个窗口
-    //   waitStable()        -> 虚拟桌面下**恒真**: 这里不等 (见下)
-    // ⚠ 输入一律是**投递** (同 PostMessage: 不等应用处理完; 见 JZVirtualWindow::injectMouse):
-    //   click/drag/key/type **只投出去、不阻塞等** —— "投过去再等它"是互等配方 (目标线程可能正
-    //   回等我们这边), 所以虚拟桌面下不提供"同步等到处理完"。要"动作后的画面"用**回调**那条路:
-    //   HTTP 的输入/关窗接口就是把响应挂在回调上发的 (见 JZVirtualDeviceHttp 的说明)。
+    //   focusWindow(title)  -> 激活桌面上那个窗口 (最小化先还原; 返回"它真是活动窗口吗")
+    //   waitStable()        -> **两个后端同一套**: 看画面收敛 (连续帧相同并保持 settleMs)
+    // ⚠ 输入在两个后端是**同一个形状**: "送出去就返回, 由后端自己调度" ——
+    //   真桌面 = SendInput 交给系统; 虚拟桌面 = 投递给那个窗口的线程 (见 JZVirtualWindow::injectMouse)。
+    //   所以 click/drag/key/type 返回后动作可能还没被应用处理完 (真桌面那边也一样) ⇒ 要"动作后的
+    //   画面/状态"就自己观察: waitStable 看画面收敛、或查窗口表/窗口标题。**脚本在两个后端行为一致**
+    //   (这是"虚拟桌面里跑通的脚本要能在真机复验"的前提)。
     // 虚拟桌面下**不适用**的: switchToDesktop / 进程管理(start/terminate/focusProcess) /
     //   launch —— 一律明确返回失败, 绝不悄悄去动真实系统。
     //   (像素族匹配在虚拟桌面下**可用**: 帧就是桌面合成帧, 见 currentFrame; 未编 OpenCV 时

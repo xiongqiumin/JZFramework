@@ -166,10 +166,10 @@ public:
     //   · 别的线程的窗口 (虚拟进程): postEvent 异步投递 —— 同步等它就是"两个线程互相等对方"
     //     的老问题 (实测会双方永久挂住);
     //   · 本线程的窗口: 直接派发 (= 你就是它的事件循环, 没有可等的东西), 顺序与结果同以前。
-    // 返回 true = 投出去了/被接受了 (跨线程那条**不代表应用已处理** —— 同 PostMessage)。
-    // 要"投完再截图/再断言"就把后续动作挂**回调**上 (jzAfterPending, 见 JZVirtualThread.h):
-    // 回调被跑到 = 这条消息处理完了。⚠ 别在调用方阻塞等它 (那就是互等配方) —— HTTP 的输入/关窗
-    // 接口用的就是这个回调式收尾 (见 JZVirtualDeviceHttp::replyAfterPending)。
+    // 返回 true = 发出去了/被接受了 (跨线程那条**不代表应用已处理** —— 同 PostMessage, 也同真桌面
+    // 的 SendInput: 送出去就返回, 由后端自己调度)。
+    // 要"投完再截图/再断言"就**自己观察** (等画面收敛 / 查窗口表/标题, 见 JZComputerUse::waitStable);
+    // ⚠ 别在调用方阻塞等它、也别挂回调等它 —— 这里就是要保持"1 条消息 = 1 次投递"这么简单。
     bool injectMouse(JZMouseEvent::MouseType type, JZMouseEvent::Button button,
                      int x, int y, int wheelDelta = 0,
                      uint32_t modifiers = JZKeyEvent::NoModifier);

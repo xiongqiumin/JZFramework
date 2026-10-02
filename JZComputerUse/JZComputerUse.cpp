@@ -584,8 +584,8 @@ bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
     if (s_virtualDesk) {
         const int x = (int)std::lround(nx * s_virtualDesk->desktopWidth());
         const int y = (int)std::lround(ny * s_virtualDesk->desktopHeight());
-        // ⚠ 只投递, **不在这里等它处理完** (同 PostMessage): 等就是互等配方。
-        //   要"动作后的画面"由调用方自己安排 (见 waitStable / injectMouse 的说明)。
+        // 与真桌面那条路 (SendInput) **同一个形状**: 送出去就返回, 由虚拟桌面自己调度 ——
+        // 这里不等、也不挂回调。要"动作后的画面"用 waitStable (两个后端同一套, 见它的说明)。
         return s_virtualDesk->injectClickAt(x, y, cuVirtualBtn(btn));
     }
     DWORD ax, ay; toAbsolute(nx, ny, ax, ay);
@@ -623,7 +623,7 @@ bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
             d->injectMouseAtScreen(JZMouseEvent::Move, JZMouseEvent::LeftButton, xi, yi);
         }
         d->injectMouseAtScreen(JZMouseEvent::Release, JZMouseEvent::LeftButton, bx, by);
-        return true;                      // 同上: 只投递, 不等
+        return true;                      // 同上: 送出去就返回 (同真桌面 SendInput)
     }
     DWORD ax1, ay1, ax2, ay2; toAbsolute(x1, y1, ax1, ay1); toAbsolute(x2, y2, ax2, ay2);
     INPUT in[4] = {};
@@ -656,7 +656,7 @@ void JZComputerUse::key(const std::string& name) {
             return;
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, true);
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, false);
-        return;                           // 同上: 只投递, 不等
+        return;                           // 同上: 送出去就返回 (同真桌面 SendInput)
     }
     std::vector<std::string> parts; split(name, '+', parts);
     std::vector<int> vks; vks.reserve(parts.size());
@@ -675,7 +675,7 @@ void JZComputerUse::type(const std::string& text) {
     // 虚拟桌面: 逐码点注入活动窗口 (UTF-8 原样, 不经 SendInput 的宽字符转换)
     if (s_virtualDesk) {
         s_virtualDesk->injectText(text);
-        return;                           // 同上: 只投递, 不等
+        return;                           // 同上: 送出去就返回 (同真桌面 SendInput)
     }
     int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
@@ -1202,14 +1202,11 @@ CuRect JZComputerUse::matchText(const std::string& text, const CuRect& region, d
 }
 
 bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
-    // 虚拟桌面: **不在这里等** —— 输入是投递的 (见 JZVirtualWindow::injectMouse), 而"投过去再
-    // 阻塞等它处理完"就是互等配方 (目标线程可能正回等我们这边)。虚拟桌面下要确定性, 用**回调**
-    // 那条路: HTTP 的输入/关窗接口就是把响应挂在回调上发的 (见 JZVirtualDeviceHttp 的说明),
-    // 脚本侧要"动作后的画面"也该照这个形状做 (两帧对比 / 下一个事件循环), 不要靠阻塞。
-    if (s_virtualDesk) {
-        (void)settleMs; (void)timeoutMs;
-        return true;
-    }
+    // ⚠ 两个后端**同一套**: 输入都是"送出去就返回、由后端自己调度"(真桌面 SendInput / 虚拟桌面
+    //   投递 —— 见 JZVirtualWindow::injectMouse), 所以"动作生效了没"只能靠**看画面**判断:
+    //   连续两帧(缩略图)相同并保持 settleMs 就算稳。
+    //   (原来虚拟桌面这里直接 return true —— 那是"输入同步注入"年代的遗留; 输入改成投递之后
+    //    它就成了假话, 而且脚本在两个后端行为不一致。要做"真桌面也能跑"的脚本, 语义就得一样。)
     if (settleMs < 0) settleMs = 300;
     if (timeoutMs <= 0) timeoutMs = 10000;
     const int step = 100;
@@ -1218,7 +1215,7 @@ bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
     // 比对用缩略图的 PNG 字节(不引图像比较 API, 也不用 OpenCV)。
     auto fingerprint = [](std::string& out) -> bool {
         JZRect rc;
-        JZImage img = currentFrame(&rc);      // 同上: 帧来源统一(虚拟桌面下本函数已提前返回)
+        JZImage img = currentFrame(&rc);      // 帧来源按后端取: 虚拟桌面 = 桌面合成帧, 真桌面 = 抓屏
         if (img.isNull()) return false;
         updateLogical(rc);
         JZByteArray png = JZScreenShot::toPng(JZScreenShot::fit(img, 96));   // 缩到 96px 长边再编码
@@ -1318,13 +1315,17 @@ bool JZComputerUse::focusProcess(const std::string& name) {
 }
 
 bool JZComputerUse::focusWindow(const std::string& title) {
-    // 虚拟桌面: 激活桌面上标题匹配的那个窗口 (置顶 + 键盘焦点)
+    // 虚拟桌面: 激活桌面上标题匹配的那个窗口 —— 与真桌面那条路**同一套语义**:
+    //   · 最小化先还原 (真桌面 bringToFront 里的 ShowWindow(SW_RESTORE) 干的就是这件事);
+    //   · 返回值 = "它现在真是活动窗口吗" (真桌面返回的是"真成了前台没有"), 而不是"找到了"。
     if (s_virtualDesk) {
         JZVirtualWindow* w = s_virtualDesk->byTitle(title);
         if (!w)
             return false;
+        if (w->isMinimized())
+            w->setMinimized(false);
         s_virtualDesk->activate(w);
-        return true;
+        return s_virtualDesk->activeWindow() == w;
     }
     FindCtx c; c.title = &title;
     EnumWindows(EnumFindTitle, (LPARAM)&c);

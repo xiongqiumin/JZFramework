@@ -36,22 +36,4 @@ inline bool jzRunOnThreadSync(JZThread* thread, const std::function<void()>& fun
     return done->tryAcquire(1, timeoutMs);
 }
 
-// 异步收尾 (回调版队列屏障): **投一个回调**过去 —— 它被跑到就说明"在这之前投给这个线程的
-// 东西都处理完了" (队列 FIFO)。**调用方不等**。
-//   · 要"等"的东西 (点完就截图、响应里报告"已处理") 一律挂在这个回调上, 不要在调用方阻塞:
-//     "投过去再阻塞等"就是互等配方 (目标线程可能正回等我们这边, 实测踩过几次);
-//   · done 在**目标线程**上跑。要回到调用方线程就在 done 里再投一次 (runOnObject/runOnThread)。
-inline void jzAfterPending(JZThread* thread, const std::function<void()>& done)
-{
-    if (!thread || !done)
-        return;
-    if (JZThread::currentThread() == thread) {
-        done();                       // 本线程: 没有"投出去还没跑"的东西
-        return;
-    }
-    if (!thread->isRunning())
-        return;
-    runOnThread(thread, done);
-}
-
 #endif // JZ_VIRTUAL_THREAD_H_

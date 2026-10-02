@@ -128,33 +128,42 @@ def key_of(name):
                      "或 Win32 键名如 Return/Shift/Z）" % name)
 
 
-# ==================== 玩法（见 task.json 的 plays 表） ====================
-def load_task():
-    """读任务定义 task.json（玩法表 plays / 默认玩法 defaultPlay 都在里面）。"""
-    with open(os.path.join(HERE, "task.json"), encoding="utf-8") as f:
-        return json.load(f)
+# ==================== 玩法（题目自包含：`game/<玩法>/config.json`） ====================
+def load_task(base_dir=None):
+    """读任务定义 task.json（玩法表 plays / 默认玩法 defaultPlay）—— **老任务可能没有这个文件**，
+    没有就返回 {}（`play_config()` 会回落到 `game/<玩法>/config.json`）。"""
+    return read_json(os.path.join(base_dir or HERE, "task.json"), {}) or {}
 
 
 def play_config(play=None, cfg=None, base_dir=None):
-    """取一个玩法的运行参数（配置里 plays.<名>；cfg 为空则读本目录 task.json）。
+    """取一个玩法的运行参数。
 
-    玩法有两种写法：
+    两条路（**都不需要 task.json**）：
+      · 直接读玩法目录：`play_config_dir(<test_dir>)`（新接口走的这条）；
+      · 这条路：`play` = 玩法名 ⇒ 先查 task.json 的 `plays.<名>`（老任务/老写法），
+        **查不到就回落 `<base_dir>/game/<名>/config.json`**（题目自包含；尺子只传 `--play <名>` 也照样能跑）。
+
+    玩法表项有两种写法：
       · **目录式（推荐）** `{"dir": "game/shooter"}` —— 读该目录下的 `config.json` 当主体，
         表项里的其它字段再覆盖它。**玩法自包含**：游戏本体 / 尺子(verify.py) / 配置 都在那个目录里；
       · 内联式（老写法）`{"app": "...", "js": "...", "program": "...", ...}`。
 
-    返回的字段：app(题目侧入口 ts) / js(编译产物, 相对 build) / program(进程名) /
-    window(窗口标题) / desktop(容器桌面) / native(原生客户区尺寸) / rom(要不要 ROM) /
-    verify(玩法自己的尺子) / 以及玩法自己的其它字段（如 targetScore）。
-    play 为空 = 用 defaultPlay；名字不认识直接抛错（别静默跑成另一个玩法）。
+    返回的字段：app(题目侧入口 ts) / js(编译产物) / program(进程名) / window(窗口标题) /
+    desktop(容器桌面) / native(原生客户区尺寸) / rom(要不要 ROM) / verify(玩法自己的尺子) /
+    以及玩法自己的其它字段（如 targetScore）。名字不认识直接抛错（别静默跑成另一个玩法）。
     """
-    task = cfg if isinstance(cfg, dict) else load_task()
     root = base_dir or HERE
+    task = cfg if isinstance(cfg, dict) else load_task(root)
     plays = task.get("plays") or {}
-    name = play or task.get("defaultPlay") or "gba"
+    name = play or task.get("defaultPlay") or ""
     entry = plays.get(name)
+    if not isinstance(entry, dict) and name and os.path.isdir(os.path.join(root, "game", name)):
+        entry = {"dir": os.path.join("game", name)}     # 回落：题目自包含（没有 task.json 也认）
     if not isinstance(entry, dict):
-        raise RuntimeError("不认识的玩法: %r（配置里有: %s）" % (name, ", ".join(sorted(plays))))
+        have = sorted(os.listdir(os.path.join(root, "game"))) if os.path.isdir(os.path.join(root, "game")) else []
+        raise RuntimeError("不认识的玩法: %r（task.json 里有: %s；game/ 下有: %s）"
+                           % (name, ", ".join(sorted(plays)) or "(没有 task.json)",
+                              ", ".join(have) or "(没有 game/)"))
     out = {}
     if entry.get("dir"):
         pdir = entry["dir"] if os.path.isabs(entry["dir"]) else os.path.join(root, entry["dir"])
@@ -164,6 +173,63 @@ def play_config(play=None, cfg=None, base_dir=None):
     out.update({k: v for k, v in entry.items() if k != "dir"})
     out["play"] = name
     return out
+
+
+def play_config_dir(test_dir, task_dir=None):
+    """直接读一个**玩法目录**的 config.json —— 题目自包含时的入口（不再需要 task.json 的 plays 表）。
+
+    返回与 `play_config()` 同形状的 dict，并补三个只有这里能给的字段：
+      · `play`     = 玩法名（config.json 里写了就用它，否则取目录名）
+      · `dir_abs`  = 玩法目录的绝对路径
+      · `test_dir` = 同上（新接口里"题目目录"的名字）
+
+    ⚠ 路径字段（`app` / `verify` / `js`）该目录里可能还是**任务根相对**的写法（如
+      `game/hello/game.ts`），定位它们用 `play_file()`；`js` 是"产物相对路径"的提示，见
+      `play_js_name()`。
+    """
+    d = os.path.abspath(test_dir)
+    cfg = read_json(os.path.join(d, "config.json"), None)
+    if not isinstance(cfg, dict):
+        raise RuntimeError("玩法目录里没有 config.json（或不是 JSON 对象）: %s" % d)
+    out = dict(cfg)
+    out["play"] = out.get("play") or os.path.basename(d.rstrip("/\\"))
+    out["dir_abs"] = d
+    out["test_dir"] = d
+    return out
+
+
+def play_file(test_dir, value, task_dir=""):
+    """题目目录里的一个文件在哪 —— `value` 可能是绝对路径、相对**题目目录**、或旧写法相对**任务根**。
+
+    依次试：值本身（绝对）→ 题目目录/值 → 题目目录/basename(值) → 任务根/值。
+    都不存在就返回"题目目录/值"（让调用方拿着这个不存在路径去报错，别静默换成别的题）。
+    """
+    if not value:
+        return ""
+    v = str(value).replace("\\", "/")
+    if os.path.isabs(v):
+        return os.path.normpath(v)
+    cands = [os.path.join(test_dir, v), os.path.join(test_dir, os.path.basename(v))]
+    if task_dir:
+        cands.append(os.path.join(task_dir, v))
+    for c in cands:
+        if os.path.exists(c):
+            return os.path.normpath(c)
+    return os.path.normpath(cands[0])
+
+
+def play_js_name(cfg, app_ts=""):
+    """玩法本体的 JS **产物文件名**（新接口下产物落在工作区，布局自己说了算）。
+
+    规则：config.json 的 `js` 是"产物相对路径"，取它的 basename；没写就 `basename(app).js`。
+    （`jsRoot="repo"` 的玩法不走这里：产物在题目自己的工程里，路径由 `play_js_path()` 给。）
+    """
+    js = str(cfg.get("js") or "")
+    if js:
+        return os.path.basename(js.replace("\\", "/"))
+    if app_ts:
+        return os.path.splitext(os.path.basename(str(app_ts).replace("\\", "/")))[0] + ".js"
+    return "game.js"
 
 
 def play_js_path(cfg, task_dir=None, build_dir=None):
@@ -413,7 +479,7 @@ class AgentCliProc:
     """拉起/收尾一个 **agent_cli** 进程（它对外是 HTTP 服务：POST /task）。
 
     只做三件事 —— 起进程、等它 HTTP 就绪、退出时收掉；**提交任务与循环结构不在这里**
-    （那是上层的事，见 task.json 的 run.agent）。
+    （那是上层的事，见 run.json 的 `agent` 段 / run.py）。
 
     就绪判定与 binary/agent_cli/tools/agent_loop.py 一致：轮询 GET /info，2xx 或
     "非 401 的 4xx" 即算起来；401 = token 不对，直接算失败（别把鉴权错当成没起来）。
@@ -527,6 +593,38 @@ class AgentCliProc:
     def alive(self):
         """进程还在不在（进程在、但 HTTP 不通 = 卡住，由调用方判）。"""
         return bool(self.proc) and self.proc.poll() is None
+
+    def info(self, timeout=5):
+        """GET /info → dict（读 busy / round / mcp 等；连不上或鉴权错 → {}）。"""
+        req = urllib.request.Request(self.url + "/info")
+        if self.token:
+            req.add_header("Authorization", "Bearer " + self.token)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads((r.read() or b"{}").decode("utf-8", "replace"))
+        except Exception:
+            return {}
+
+    def busy(self):
+        """agent 手头还有任务在跑吗（/info 的 busy 字段）。"""
+        return bool(self.info().get("busy"))
+
+    def wait_idle(self, timeout=1800.0, interval=5.0):
+        """等 agent 把手头的任务跑完（busy=False）。
+
+        为什么要等：`POST /task` 是**连接保持**式的 —— 提交方（我们）超时断开**不会**杀掉
+        agent 手里的任务（JZAgentCli::onClientDestroyed 只把回包通道置空，任务照跑）。这时它
+        可能还在改 play/play.ts；直接编译/跑局就是拿一个**还在变**的文件做实验。
+        返回 True = 已空闲（或进程已不在），False = 等到超时。
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if not self.alive():
+                return True
+            if not self.busy():
+                return True
+            time.sleep(interval)
+        return False
 
     def stop(self):
         if self.proc:

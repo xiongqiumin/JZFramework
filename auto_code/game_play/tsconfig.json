@@ -1,9 +1,11 @@
 {
-  // game_play 任务 —— TS 编译配置（auto_code 不参与 CMake，这里只管把 TS 编成容器能跑的 JS）
-  // 编译: <tsc> -p auto_code/game_play/tsconfig.json
-  // 产物: auto_code/game_play/build/play/play.js（容器按 ESM 模块加载它）
-  //       auto_code/game_play/build/game/gba.js（题目侧游戏机 = GBA 玩法，同上）
-  // 约定: outDir=build, rootDir=. ⇒ 运行根 = build/<程序名>，脚本用 jzApp.applicationDirPath() 定位
+  // game_play —— **编译口径**（不是一份能单独 `tsc -p` 的工程！）
+  // 工作区里那两份 tsconfig（产出 / 题目本体）由 run.py 从**本文件派生**：
+  //   · compilerOptions —— 原样拷过去（派生的那份再补自己的 outDir / rootDir）
+  //   · include 里 **`../` 开头**的那几条 —— 引擎类型 glob，重锚到工作区后拷过去
+  //   其余条目（相对本目录的源码 glob、outDir/rootDir 之类）**不生效**，别往里加。
+  // 缺了本文件的后果：派生出的 tsconfig 没 compilerOptions ⇒ tsc 退回默认（target ES5 / module CommonJS）
+  //   ⇒ 产物不是 ESM、容器加载不起来，而且 lib 退回 es5 会一片类型错。
   "compilerOptions": {
     "target": "ES2022",
     "module": "esnext",
@@ -12,15 +14,9 @@
     "strict": false,
     "skipLibCheck": true,
     "noEmitOnError": true,
-    "sourceMap": false,
-    "outDir": "build",
-    "rootDir": "."
+    "sourceMap": false
   },
   "include": [
-    "play/**/*.ts",
-    "play/**/*.d.ts",
-    "game/**/*.ts",
-    "game/**/*.d.ts",
     // 类型的单一来源：仓库里的 js_wrapper 声明（引擎全局 + widget 全局类 + 各内置模块）
     "../../JZJSEngine/js_wrapper/types/**/*.d.ts",
     "../../JZJSEngine/js_wrapper/widget/types/**/*.d.ts",

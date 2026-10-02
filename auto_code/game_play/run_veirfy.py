@@ -1,128 +1,127 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-game_play 任务 —— **单独跑一个玩法的尺子**（不起 agent、不跑编排循环）
+game_play —— **只跑一局 + 尺子**（调脚本用；不起 agent、不进轮次循环）
 
-用法:
-  python run_veirfy.py                                 # 默认玩法（task.json 的 defaultPlay）
-  python run_veirfy.py --play hello                    # 指定玩法
-  python run_veirfy.py --script game/hello/play.ts     # 指定要装的脚本（缺省见下）
-  python run_veirfy.py --no-build                      # 不编译（用已有产物）
-  python run_veirfy.py --steps 60 --step-ms 200        # 覆盖观察节奏（缺省取玩法配置）
-  python run_veirfy.py --keep                          # 尺子自起的容器测完不杀（接着手工看）
+用法（输入就两样）:
+  python run_veirfy.py <run.json> <play.ts>     # 用这份运行配置，把这份脚本装进去跑一局
+  python run_veirfy.py <run.json>              # 不给脚本 = 用工作区里的产出 <work>/play/play.ts
 
-它做的三步:
-  ① 编译: 任务工程(tsconfig.json) + 玩法 config.json 里 `prebuild` 列的**别的工程**
-     （比如 shooter 的本体住在 binary/code_agent/runtime/test_jsshooter）
-  ② 挑脚本: `game/<玩法>/play.ts` 有就用它（**玩法自带的参考脚本**），
-     否则用产出物 `play/play.ts`
-  ③ 调该玩法自己的 `verify.py` —— 它自己起容器 → 装本体 + 脚本 → 观察 → 判定，
-     本文件只把它的结论与退出码原样透出来
+  python auto_code/game_play/run_veirfy.py auto_code/game_play/run.json my_play.ts
 
-⚠ 它**不做**: 不拉 agent_cli、不改脚本、不归档 runs/round_NNN —— 那些是 `run.py` 的活。
-⚠ 判定口径按玩法自定（hello 要通关才算过；shooter 只要跑起来）—— 见各玩法 verify.py 的说明。
+跟 `run.py` 吃**同一份 run.json**（同一套解析：相对路径按仓库根），所以"题目 / 工作区 / 调参"
+完全一致 —— 区别只有三件事：不起 agent、只跑一轮、证据落在 `<work>/runs/verify/`（不覆盖驱动那份）。
+
+它做什么:
+  ① 复验区 `<work>/verify/`：拷入那份脚本（**不动**工作区里的产出）+ 类型模板 + 一份 tsconfig
+  ② 编译：题目本体 → `<work>/build/game/`；复验脚本 → `<work>/build/verify/play/play.js`
+  ③ 起容器 → 交给**题目自己的** `verify.py` 跑一局并判定（它自己装 game + play、外面抓帧、读状态）
+  ④ 退出码 = 尺子的退出码（0 = 这道题算过）
 """
+
 import argparse
 import os
-import subprocess
+import shutil
 import sys
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-BUILD = os.path.join(HERE, "build")
-CUR = os.path.join(HERE, "runs", "current")
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
-import env as E  # noqa: E402
+import env as E       # noqa: E402
+import run as R       # noqa: E402  （共用：路径解析 / ctx / 一局 / 工作区脚手架）
 
 
-def run(cmd, cwd=None):
-    """跑一条命令并把它的输出原样透出来；返回退出码。"""
-    print("+ " + " ".join(cmd))
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True)
-    out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
-    if out.strip():
-        print(out.rstrip())
-    return p.returncode
-
-
-def pick_script(play_name, given):
-    """要装的脚本：命令行 > `game/<玩法>/play.ts`（玩法自带的参考脚本）> 产出物 `play/play.ts`。"""
-    if given:
-        return given, "命令行指定"
-    local = "game/%s/play.ts" % play_name
-    if os.path.exists(os.path.join(HERE, local)):
-        return local, "玩法目录自带"
-    return "play/play.ts", "产出物"
+def write_verify_project(verify_dir, play_ts_src, notes):
+    """复验区：`play/play.ts`（拷进来）+ `play/jzapi.d.ts` + 一份 tsconfig（产出 → build/verify）。"""
+    pdir = os.path.join(verify_dir, "play")
+    os.makedirs(pdir, exist_ok=True)
+    shutil.copy2(play_ts_src, os.path.join(pdir, "play.ts"))
+    tpl = os.path.join(HERE, "jzapi.d.ts")
+    if os.path.exists(tpl):
+        shutil.copy2(tpl, os.path.join(pdir, "jzapi.d.ts"))
+    else:
+        notes.append("!! 找不到类型模板 %s（脚本会缺 __jz 声明）" % tpl)
+    task_ts = R.task_tsconfig()
+    co = dict(task_ts.get("compilerOptions") or {})
+    co.update({"outDir": "../build/verify", "rootDir": ".", "noEmitOnError": True, "sourceMap": False})
+    R.write_json(os.path.join(verify_dir, "tsconfig.json"), {
+        "compilerOptions": co,
+        "include": ["play/**/*.ts", "play/**/*.d.ts"] + R._type_globs(task_ts, verify_dir),
+    })
+    return os.path.join(verify_dir, "tsconfig.json")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="单独跑一个玩法的尺子（见文件头）")
-    ap.add_argument("--play", default="", help="玩法名（缺省取 task.json 的 defaultPlay）")
-    ap.add_argument("--script", default="", help="要装的脚本（任务目录内相对路径）")
-    ap.add_argument("--cfg", default="Debug", help="构建配置（找 tsc 用）")
-    ap.add_argument("--no-build", action="store_true", help="跳过编译")
-    ap.add_argument("--steps", type=int, default=0, help="观察拍数（0 = 玩法配置）")
-    ap.add_argument("--step-ms", type=int, default=0, help="每拍间隔（0 = 玩法配置）")
-    ap.add_argument("--warmup", type=float, default=-1.0, help="装脚本后等多久（-1 = 玩法配置）")
-    ap.add_argument("--keep", action="store_true", help="尺子自起的容器测完不杀")
+    ap = argparse.ArgumentParser(description="game_play 只跑一局 + 尺子（见文件头注释）")
+    ap.add_argument("run", nargs="?", default=os.path.join(HERE, "run.json"),
+                    help="这次的运行配置（默认：本目录的 run.json）")
+    ap.add_argument("play_ts", nargs="?", default="",
+                    help="要复验的脚本（默认：工作区里的产出 <work>/play/play.ts）")
     args = ap.parse_args()
 
-    try:
-        play = E.play_config(args.play or "", base_dir=HERE)
-    except Exception as ex:
-        print("FAIL: %s" % ex)
+    # ---- ① 运行配置（跟 run.py 同一份）----
+    cfg_path = R.resolve_from(args.run, os.getcwd())
+    cfg = E.read_json(cfg_path, None)
+    if not isinstance(cfg, dict):
+        print("FAIL: 读不到运行配置、或它不是 JSON 对象: %s" % cfg_path)
         return 1
-    name = play["play"]
-    print("== 玩法: %s（本体 %s）" % (name, play.get("app") or "?"))
-
-    # ---- ① 编译: 任务工程 + 玩法声明的"别的工程" ----
-    if not args.no_build:
-        tsc = E.tsc_exe(args.cfg)
-        if not os.path.exists(tsc):
-            print("FAIL: 找不到 tsc: %s" % tsc)
-            return 1
-        rc = run([tsc, "-p", os.path.join(HERE, "tsconfig.json")], cwd=HERE)
-        for proj in E.play_prebuild(play):
-            rc2 = run([tsc, "-p", proj], cwd=os.path.dirname(proj))
-            if rc2 != 0:
-                rc = rc2
-        if rc != 0:
-            print("FAIL: 编译没过（先修 TS 再跑）")
-            return rc
-
-    # ---- ② 挑脚本 ----
-    script, why = pick_script(name, args.script)
-    script_abs = script if os.path.isabs(script) else os.path.join(HERE, script)
-    if not os.path.exists(script_abs):
-        print("FAIL: 找不到脚本: %s" % script_abs)
+    S = R.normalize_settings(cfg)
+    test_dir = R.resolve_from(S.get("testDir") or "", ROOT)
+    work_dir = R.resolve_from(S.get("workDir") or "", ROOT)
+    if not test_dir or not work_dir or not os.path.isdir(test_dir):
+        print("FAIL: run.json 里的 testDir/workDir 不对: %s" % cfg_path)
         return 1
-    rel = os.path.relpath(script_abs, HERE).replace("\\", "/")
-    play_js = os.path.join(BUILD, os.path.splitext(rel)[0] + ".js")   # outDir=build, rootDir=. ⇒ 结构照搬
-    if not os.path.exists(play_js):
-        print("FAIL: 脚本产物不在: %s（先编译；或 tsconfig 的 include 没覆盖它）" % play_js)
-        return 1
-    print("== 脚本: %s（%s）→ %s" % (rel, why, os.path.relpath(play_js, HERE)))
+    R.plan_paths(test_dir, work_dir)
+    play = E.play_config_dir(R.TEST_DIR, HERE)
+    ctx, meta = R.resolve_ctx(play, S)
+    print("== 运行配置: %s" % R.rel_mix(cfg_path, ROOT))
+    print("== 题目: %s（玩法 %s）" % (R.rel_mix(R.TEST_DIR, ROOT), play["play"]))
+    print("== 工作区: %s" % R.rel_mix(R.WORK_DIR, ROOT))
 
-    # ---- ③ 交给玩法自己的尺子（它自起容器、自己装、自己判）----
-    verify = play.get("verify") or ""
-    verify_abs = verify if os.path.isabs(verify) else os.path.join(HERE, verify)
-    if not os.path.exists(verify_abs):
-        print("FAIL: 这个玩法没有尺子: %s" % (verify_abs or "(没配)"))
+    # ---- ② 复验区 + 工作区脚手架（题目本体的编译口径从这里来）----
+    game_tsconfig, notes = R.prepare_work_dir(play, meta["app_ts_for_build"])
+    verify_dir = os.path.join(R.WORK_DIR, "verify")
+    play_ts_src = R.resolve_from(args.play_ts, os.getcwd()) if args.play_ts else ctx["play_ts"]
+    if not os.path.exists(play_ts_src):
+        print("FAIL: 找不到要复验的脚本: %s" % play_ts_src)
         return 1
+    verify_tsconfig = write_verify_project(verify_dir, play_ts_src, notes)
+    play_js = os.path.join(R.BUILD, "verify", "play", "play.js")
+    print("== 复验脚本: %s（照抄进 %s）" % (R.rel_mix(play_ts_src, ROOT), R.rel_mix(verify_dir, ROOT)))
 
-    cmd = [sys.executable, verify_abs, "--play", name, "--out", CUR,
-           "--game-js", E.play_js_path(play, HERE, BUILD), "--play-js", play_js]
-    if args.steps:
-        cmd += ["--steps", str(args.steps)]
-    if args.step_ms:
-        cmd += ["--step-ms", str(args.step_ms)]
-    if args.warmup >= 0:
-        cmd += ["--warmup", str(args.warmup)]
-    if args.keep:
-        cmd += ["--keep"]
-    print("== 跑尺子: %s" % os.path.relpath(verify_abs, HERE))
-    rc = run(cmd, cwd=HERE)
-    print("== 尺子退出码 %d（判定口径见该玩法的 verify.py）" % rc)
-    return rc
+    # ---- ③ 编译：题目本体 + 复验脚本 ----
+    rc = 0
+    for proj in E.play_prebuild(play):
+        r2, _ = R.run([meta["tsc"], "-p", proj], cwd=os.path.dirname(proj), check=False)
+        rc = rc or r2
+    for proj in (game_tsconfig, verify_tsconfig):
+        if proj:
+            r2, _ = R.run([meta["tsc"], "-p", proj], cwd=R.WORK_DIR, check=False)
+            rc = rc or r2
+    if rc != 0 or not os.path.exists(play_js) or not os.path.exists(ctx["game_js"]):
+        print("FAIL: 编译没过（或产物缺失）—— 先修 TS 再来")
+        return rc or 1
+
+    # ---- ④ 起容器 → 题目自己的 verify.py 跑一局并判定 ----
+    R.CUR = os.path.join(R.RUNS, "verify")        # 证据落这儿，不动驱动那份 runs/current
+    os.makedirs(R.CUR, exist_ok=True)
+    if ctx["status_path"]:
+        os.makedirs(os.path.dirname(ctx["status_path"]), exist_ok=True)
+    ctx["archive"] = False                        # 复验不归档
+    ctx["play_js"] = play_js
+    with E.HeadlessContainer(cfg=meta["cfgname"], desktop=ctx["desktop"], exe=meta["exe"],
+                             log_path=os.path.join(R.CUR, "container_stdout.txt")) as box:
+        ctx["container_url"] = box.c.base
+        print("== 容器: %s（桌面 %s）" % (box.c.base, ctx["desktop"]))
+        res = R.one_round(box, ctx, 1)
+    print("== 复验结束: 尺子退出码 %s（证据 %s）"
+          % (res["rc"], R.rel_mix(R.CUR, ROOT)))
+    return res["rc"]
 
 
 if __name__ == "__main__":

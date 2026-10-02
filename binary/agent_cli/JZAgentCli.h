@@ -20,6 +20,7 @@ class JZHttpServerClient;
 class JZHttpRequest;
 class JZProcess;
 class JZFrpClient;
+class JZMcpClient;
 
 // ---------------------------------------------------------------------------
 // FRP 内网穿透配置(client 角色 = frpc)
@@ -48,6 +49,33 @@ struct JZCliFrpClientConfig   // frpc: 本端连到远端 frps, 暴露本地服�
 struct JZCliFrpConfig
 {
     JZCliFrpClientConfig client;   // 客户端(frpc); 服务端(frps)在 JZAgentCliServer
+};
+
+// ---------------------------------------------------------------------------
+// MCP 客户端配置: 连一个外部 MCP 服务器, 把它的远端工具挂进本 agent 的工具表。
+//
+//   "动态增加" = **只改配置(不重编译/不改代码)** —— 在 config.json 的 mcp.servers
+//   里加减一条, 重启进程即可; 启动时逐个异步连接, 连上才登记工具, 连不上只记日志。
+//
+//   ⚠ 三条必须知道的约束:
+//     ① 连接时机: JZAgent 只允许在 Inactive(**首个任务之前**)改工具表与系统提示词
+//        (改工具表会破坏会话的 KV 前缀缓存, 见 JZAgent::rejectWhileActive), 所以
+//        MCP 是"启动时挂一次"的: 任务已经开跑之后再连上也挂不进去(只记警告);
+//     ② 执行位置: 远端工具在**对端**执行, 不经过本机 terminal 的区域/路径审核
+//        (那套只约束本地工具), 等于把对端的能力引进来 —— 所以有总开关 mcp.enabled;
+//     ③ 命名: 本地工具名默认 "<serverName>__<工具名>"(serverName 由对端 serverInfo
+//        给), 与本地工具重名的会被跳过(JZAgent::addMcp 只打 warning)。
+// ---------------------------------------------------------------------------
+struct JZCliMcpServer
+{
+    std::string name;                 // 标识(日志用); 也作为没配 toolPrefix 时的提示名
+    std::string transport = "stdio";  // stdio(起子进程, stdin/stdout 一行一条 JSON-RPC) / http(Streamable HTTP)
+    std::string command;              // stdio: 可执行文件(按 PATH 查找)
+    std::vector<std::string> args;    // stdio: 命令行参数
+    std::string url;                  // http: MCP 端点, 如 http://127.0.0.1:39000/mcp
+    std::string toolPrefix;           // 工具名前缀; 空 = 用对端 serverName 的 "<serverName>__"
+    int timeoutMs = 10000;            // 连接(server/discover + tools/list)超时(ms)
+    int callTimeoutMs = 120000;       // 单次 tools/call 超时(ms)
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +161,11 @@ struct JZCliConfig
     std::string proxyUser;
     std::string proxyPassword;
 
+    // ---- MCP 客户端(连外部 MCP 服务器, 把远端工具挂进本 agent) ----
+    //   见 JZCliMcpServer: 加减 server 只改配置, 不用重编译; 启动时连一次, 之后不再变。
+    bool mcpEnabled = true;
+    std::vector<JZCliMcpServer> mcpServers;
+
     std::string shellProgram;
     int recycleSec = 15 * 60;
     std::string logFile;
@@ -174,6 +207,18 @@ public:
 private:
     const JZCliConfig *m_config = nullptr;
     JZVirtualTerminalConfig m_terminalConfig;
+};
+
+// 一个 MCP 服务器在本进程里的状态: 配置里配了几个就有几条(按配置顺序)。
+// 连接是异步的, 所以它反映的是"当前"而不是"配置" —— 供 /info 与日志自检。
+struct JZCliMcpState
+{
+    std::string name;
+    std::string transport;   // stdio / http
+    std::string target;      // stdio: 命令行; http: url(只作展示)
+    bool ready = false;      // 连接成功且远端工具已登记进 agent
+    int tools = 0;           // 登记到的远端工具数
+    std::string error;       // 失败原因(连不上 / 挂载被拒); 空 = 没出错
 };
 
 // 本轮已发生的工具调用(供 SSE 连接时做当前状态快照)
@@ -237,6 +282,12 @@ public:
     // ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担, 本类只做客户端。
     void startFrpc();
 
+    // 起 MCP 客户端: 按配置(mcp.servers)逐个**异步**连接外部 MCP 服务器, 连上后把
+    // 远端工具登记进 agent(见 JZMcpClient / JZAgent::addMcp)。
+    // 要在事件循环起来前调用(越早发起越好), 连接结果异步到达: 失败只记日志, 不影响启动;
+    // 连接晚于首个任务则挂不上(JZAgent 只在 Inactive 允许改工具表), 只记一条警告。
+    void startMcp();
+
     // /task 请求入口(由内部 TaskHandler 调用)
     void onTaskSubmit(JZHttpServerClient *client, const JZHttpRequest &req);
 
@@ -244,7 +295,9 @@ public:
     void onListScripts(JZHttpServerClient *client, const JZHttpRequest &req);
 
     // 网页控制台: 运行信息(GET /info) —— 顶栏显示模型地址等; SSE hello 帧带同一份数据
-    //   {agent, version, modelUrl, modelName, rootDir, busy, round}。刻意不含 modelToken。
+    //   {agent, version, modelUrl, modelName, rootDir, busy, round, mcp[]}。刻意不含 modelToken。
+    //   mcp[] = 每个配置的 MCP 服务器当前状态(挂上了没有/几个工具/什么错), 没网页面板时
+    //   可以用它自检(curl /info)。
     Json::Value makeInfo() const;
     void onInfo(JZHttpServerClient *client, const JZHttpRequest &req);
 
@@ -287,6 +340,13 @@ public:
 protected:
     void setupAgent();
     std::string buildSystemPrompt() const;
+
+    // 一次 MCP 连接结束(成功/失败都到这儿): 就绪则把它挂进 agent(登记远端工具),
+    // 失败/挂不上则记日志并销毁这个 client。index = 它在 m_config.mcpServers 里的位置
+    // (用来回填 m_mcpStates)。末尾会调 finishMcpPending() 记账。
+    void onMcpFinished(JZMcpClient *client, int index);
+    // 一个 MCP 连接流程结束了: 未结束数 -1, 减到 0 表示"MCP 初始化完毕"(放行新任务)。
+    void finishMcpPending();
 
     // ---- 长期记忆(跨任务) ----
     // 记忆文件全路径: 配置 memory.file 优先(相对路径按 rootDir 解析), 空则 <rootDir>/.agent_memory.md
@@ -348,6 +408,11 @@ protected:
 
     JZCliConfig m_config;
     JZCliToolHost m_host;
+    std::vector<JZCliMcpState> m_mcpStates;   // 每个 MCP server 的连接/挂载状态(见 startMcp)
+    // MCP 初始化闸门: 配置里的 server **全部有结果**(连上 / 连不上)之前拒绝新任务 ——
+    // 否则任务先跑起来, 稍后连上的远端工具就挂不进 agent 了(只能重启进程, 见 onMcpFinished)。
+    bool m_mcpInitDone = true;   // 没配 MCP(或没启用)时恒为 true
+    int m_mcpPending = 0;        // 还在连接中的 server 数(发起就失败的算已结束, 不计数)
     JZVirtualTerminal *m_terminal = nullptr;
     // 联网工具(web_search / web_fetch)共享的访问管理器 —— 代理只在它上面设一次。
     // 是本对象的子对象; 没挂网络工具时为空。

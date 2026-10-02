@@ -41,6 +41,12 @@ using namespace std;
 //   层次化: 顶层只放标识, 其余按 JZCliConfig 的主题归入子对象 —— llm / workspace /
 //   tools / runtime / http。子对象内省掉前缀(如 http.bind, 而不是 http.httpBind)。
 //   旧配置(全部平铺在顶层, 如 "httpBind")依然可读: 见 loadConfig 里的回落查找。
+//   mcp.servers[] 一条 = 一个外部 MCP 服务器(见 JZAgentCli.h 的 JZCliMcpServer):
+//     stdio: { "name":"fs", "transport":"stdio", "command":"npx",
+//              "args":["-y","@modelcontextprotocol/server-filesystem","E:/work"] }
+//     http : { "name":"node1", "transport":"http", "url":"http://127.0.0.1:39000/mcp" }
+//   可选字段: toolPrefix(工具名前缀; 空 = 对端 serverName + "__") / timeoutMs / callTimeoutMs。
+//   远端工具在启动时挂进 agent(任务开跑后再连上的挂不进去, 要重启进程)。
 // ===========================================================================
 static const char *kDefaultConfigJson = R"json({
     "agentName":            "agent_cli",
@@ -105,6 +111,11 @@ static const char *kDefaultConfigJson = R"json({
         "proxyPort":        0,
         "proxyUser":        "",
         "proxyPassword":    ""
+    },
+
+    "mcp": {
+        "enabled":          true,
+        "servers":          []
     },
 
     "http": {
@@ -346,6 +357,69 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigString(root, "network", "proxyUser", "proxyUser", config.proxyUser);
     readConfigString(root, "network", "proxyPassword", "proxyPassword", config.proxyPassword);
 
+    // mcp(连外部 MCP 服务器: 远端工具挂进本 agent; 字段说明见 JZAgentCli.h 的 JZCliMcpServer)
+    //   格式: {"enabled":true, "servers":[{"name":"fs","transport":"stdio",
+    //          "command":"npx","args":[...]}, {"name":"n1","transport":"http","url":"..."}]}
+    readConfigBool(root, "mcp", "enabled", "mcpEnabled", config.mcpEnabled);
+    const Json::Value *mcpServers = findConfigMember(root, "mcp", "servers", "mcpServers");
+    if (mcpServers && !mcpServers->isNull())
+    {
+        if (!mcpServers->isArray())
+        {
+            error = "mcp.servers 必须是数组";
+            return false;
+        }
+        for (Json::ArrayIndex i = 0; i < mcpServers->size(); ++i)
+        {
+            const Json::Value &v = (*mcpServers)[i];
+            if (!v.isObject())
+            {
+                error = "mcp.servers[" + to_string(i) + "] 必须是对象";
+                return false;
+            }
+            JZCliMcpServer server;
+            JZJsonStream ms(&v);
+            ms.readMemberDefault("name", server.name, std::string());
+            ms.readMemberDefault("transport", server.transport, std::string("stdio"));
+            ms.readMemberDefault("command", server.command, std::string());
+            ms.readMemberDefault("url", server.url, std::string());
+            ms.readMemberDefault("toolPrefix", server.toolPrefix, std::string());
+            ms.readMemberDefault("timeoutMs", server.timeoutMs, 10000);
+            ms.readMemberDefault("callTimeoutMs", server.callTimeoutMs, 120000);
+
+            if (v.isMember("args"))
+            {
+                if (!v["args"].isArray())
+                {
+                    error = "mcp.servers[" + to_string(i) + "].args 必须是数组";
+                    return false;
+                }
+                for (Json::ArrayIndex k = 0; k < v["args"].size(); ++k)
+                    server.args.push_back(v["args"][k].asString());
+            }
+
+            server.transport = str_toLower(server.transport);
+            if (server.name.empty())
+                server.name = server.transport;
+            if (server.transport != "stdio" && server.transport != "http")
+            {
+                error = "mcp.servers[" + to_string(i) + "].transport 必须是 stdio 或 http";
+                return false;
+            }
+            if (server.transport == "stdio" && server.command.empty())
+            {
+                error = "mcp.servers[" + to_string(i) + "](stdio) 缺 command";
+                return false;
+            }
+            if (server.transport == "http" && server.url.empty())
+            {
+                error = "mcp.servers[" + to_string(i) + "](http) 缺 url";
+                return false;
+            }
+            config.mcpServers.push_back(server);
+        }
+    }
+
     // 日志(全局项, 不归终端)
     readConfigString(root, "", "logFile", "logFile", config.logFile);
 
@@ -496,6 +570,29 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
                 config.webSearchUrl.empty() ? "内置(Bing RSS)" : config.webSearchUrl.c_str());
         fprintf(stderr, "  网络代理  %s\n", proxy.empty() ? "(不用)" : proxy.c_str());
     }
+    // MCP(连外部 MCP 服务器: 远端工具在启动时挂进 agent; 任务开跑之后再连上的挂不进去)
+    if (!config.mcpEnabled)
+        fprintf(stderr, "  MCP       关\n");
+    else if (config.mcpServers.empty())
+        fprintf(stderr, "  MCP       开(未配置 server; 在 mcp.servers[] 里加一条即挂远端工具)\n");
+    else
+    {
+        for (const JZCliMcpServer &s : config.mcpServers)
+        {
+            string target;
+            if (s.transport == "http")
+                target = s.url;
+            else
+            {
+                target = s.command;
+                for (size_t i = 0; i < s.args.size(); i++)
+                    target += " " + s.args[i];
+            }
+            string prefix = s.toolPrefix.empty() ? string() : ("  prefix=" + s.toolPrefix);
+            fprintf(stderr, "  MCP       %s (%s) %s%s\n", s.name.c_str(), s.transport.c_str(),
+                    target.c_str(), prefix.c_str());
+        }
+    }
     fprintf(stderr, "  命令策略  包管理=%s  联网命令=%s  权限=%s\n",
             config.allowPackageManager ? "开" : "关",
             config.allowNetwork ? "开" : "关",
@@ -625,6 +722,10 @@ int main(int argc, char *argv[])
     jzDebug("agent_cli 就绪(HTTP): http://%s:%d  token=%s",
             config.httpBind.c_str(), config.httpPort,
             config.httpToken.empty() ? "(无)" : "(已启用)");
+    // MCP: 尽早发起 —— 远端工具只能在"首个任务之前"挂进 agent(见 JZAgentCli::startMcp),
+    // 放 startHttp 前面, 让连接流程(起子进程 / HTTP 往返)早一点跑完。
+    cli.startMcp();
+
     cli.startHttp();
     cli.startFrpc();     // client 角色 = frpc: 连到远端 frps 暴露本地服务(关着就不连)
 

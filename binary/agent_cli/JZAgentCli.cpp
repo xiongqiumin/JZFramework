@@ -51,6 +51,7 @@ static void agentLog(const std::string &msg)
 #include "JZTimer.h"          // 重试前的延时(JZTimer::singleShot)
 
 #include "JZTerminalTools.h"  // 本地终端工具(JZTerminalRunTool 等)
+#include "JZMcpClient.h"      // MCP 客户端(连外部 MCP 服务器, 把远端工具挂进本 agent)
 
 #include <iostream>
 #include <thread>
@@ -380,6 +381,17 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  - 记忆可能过期: 与当前代码/文件冲突时以实际文件为准, 并把更正后的结论写回记忆"
                 "(用 replace 精简, 别只往上堆)。\n";
     }
+    // MCP 远端工具: 工具本身由 JZAgent 的 tools 参数带给模型, 这里只说清"名字带前缀的那些
+    // 是什么、在哪执行"—— 配置里声明了但没连上时函数列表里就没有, 故措辞不写成"一定存在"。
+    if (m_config.mcpEnabled && !m_config.mcpServers.empty())
+    {
+        text += "\nMCP remote tools:\n";
+        text += "  本端还配置了若干个外部 MCP 服务器; 若函数列表里出现名字形如 <server>__<tool> 的工具,\n";
+        text += "  那些就是它们提供的远端工具 —— 用法与本地工具完全一样, 但**在对方那台机器上执行**\n";
+        text += "  (不经过本机的区域/路径审核), 出错时先看是不是那边的问题。配置的服务器:\n";
+        for (const JZCliMcpServer &s : m_config.mcpServers)
+            text += "    - " + (s.name.empty() ? s.transport : s.name) + "  (" + s.transport + ")\n";
+    }
     text += "\nWork through the user's request step by step using the tools. "
             "When done, give a concise summary of what you changed.\n";
     return text;
@@ -610,6 +622,165 @@ void JZAgentCli::startFrpc()
              << "  代理数:" << cc.proxyList.size();
 }
 
+// ==========================================================================
+// MCP 客户端(把外部 MCP 服务器的工具挂进本 agent)
+//   配置驱动: 加减 server 只改 config.json(不用重编译); 启动时逐个连, 连上才登记工具。
+//   两条必须知道的约束(详见 JZAgentCli.h 的 JZCliMcpServer):
+//     ① 挂载只能在 Inactive(首个任务之前): JZAgent 拒绝在会话开始后改工具表
+//        (会破坏 KV 前缀缓存, 见 rejectWhileActive) —— 晚到的连接只记警告;
+//     ② 远端工具在对端执行, 不受本机 terminal 的区域/路径审核约束。
+// ==========================================================================
+void JZAgentCli::startMcp()
+{
+    if (!m_config.mcpEnabled || m_config.mcpServers.empty())
+    {
+        m_mcpInitDone = true;   // 没配 MCP: 不挡任务
+        return;
+    }
+
+    m_mcpStates.clear();
+    m_mcpStates.reserve(m_config.mcpServers.size());
+
+    // 闸门: 从这一刻起新的 POST /task 先等着 —— 等下面每个连接都有结果(连上 / 连不上)。
+    // 为什么必须等: JZAgent 只允许在 Inactive(首个任务之前)改工具表, 任务先跑起来以后
+    // 连上的远端工具就挂不进去了(只能重启进程), 那还不如让提交方稍等几秒。
+    m_mcpInitDone = false;
+    m_mcpPending = 0;
+
+    for (size_t i = 0; i < m_config.mcpServers.size(); i++)
+    {
+        const JZCliMcpServer &cfg = m_config.mcpServers[i];
+        const std::string transport = str_toLower(cfg.transport);
+
+        // 每条配置都先记一条状态(哪怕连不起来), 好让 /info 与日志能对账
+        JZCliMcpState st;
+        st.name = cfg.name.empty() ? transport : cfg.name;
+        st.transport = transport;
+        if (transport == "http")
+            st.target = cfg.url;
+        else
+        {
+            st.target = cfg.command;
+            for (size_t k = 0; k < cfg.args.size(); k++)
+                st.target += " " + cfg.args[k];
+        }
+        m_mcpStates.push_back(st);
+        JZCliMcpState &state = m_mcpStates.back();
+
+        // 配置校验在 loadConfig 已做过一遍, 这里再挡一次(防别的入口塞进来的配置)
+        if (transport != "stdio" && transport != "http")
+        {
+            state.error = "transport 不支持(要用 stdio 或 http): " + cfg.transport;
+            jzWarning() << "MCP server" << state.name << state.error;
+            continue;
+        }
+        if (transport == "stdio" && cfg.command.empty())
+        {
+            state.error = "stdio 缺 command";
+            jzWarning() << "MCP server" << state.name << state.error;
+            continue;
+        }
+        if (transport == "http" && cfg.url.empty())
+        {
+            state.error = "http 缺 url";
+            jzWarning() << "MCP server" << state.name << state.error;
+            continue;
+        }
+
+        // 不给 parent: addMcp 要求接管时 client 还没有 parent(见 JZAgent::addMcp)。
+        auto *client = new JZMcpClient();
+        if (!cfg.toolPrefix.empty())
+            client->setToolPrefix(cfg.toolPrefix);
+        if (cfg.callTimeoutMs > 0)
+            client->setCallTimeout(cfg.callTimeoutMs);
+
+        // 先接好信号再发起连接(连接是异步的, 结束统一走 sigFinished)
+        const int index = (int)i;
+        connect(&client->sigFinished, [this, client, index]() { onMcpFinished(client, index); });
+
+        const bool started = (transport == "http")
+            ? client->startHttp(cfg.url, cfg.timeoutMs)
+            : client->startProcess(cfg.command, cfg.args, cfg.timeoutMs);
+        if (!started)
+        {
+            state.error = "发起连接失败: " + client->errorString();
+            jzWarning() << "MCP" << state.name << state.error;
+            client->deleteLater();
+            continue;
+        }
+        m_mcpPending++;
+        jzInfo() << "MCP 连接中:" << state.name
+                 << (transport == "http" ? cfg.url : state.target);
+    }
+
+    // 一条都没发起成功(纯配置错误): 没有在途连接, 立刻放行, 别把任务卡死
+    if (m_mcpPending == 0)
+        m_mcpInitDone = true;
+    else
+        jzInfo() << "MCP 初始化中:" << m_mcpPending << " 个连接 —— 完成前提交任务会被拒绝";
+}
+
+void JZAgentCli::onMcpFinished(JZMcpClient *client, int index)
+{
+    // ⚠ 本函数**每个出口**都要走 finishMcpPending() 记账 —— 漏一个, 闸门就永远开不了。
+    JZCliMcpState *state = (index >= 0 && index < (int)m_mcpStates.size())
+                               ? &m_mcpStates[index] : nullptr;
+    const std::string name = (state && !state->name.empty()) ? state->name : std::string("?");
+
+    if (!client->isReady())
+    {
+        if (state)
+            state->error = "连接失败: " + client->errorString();
+        jzWarning() << "MCP 连接失败:" << name << client->errorString();
+        client->deleteLater();
+        finishMcpPending();
+        return;
+    }
+
+    // addMcp 在 agent 非 Inactive 时会直接拒绝(只打 warning), 用 parent 判断是否真的接管了。
+    m_agent->addMcp(client);
+    if (client->parent() != m_agent)
+    {
+        if (state)
+            state->error = "挂载被拒: agent 已经有会话在跑(改工具表会作废 KV 前缀缓存), 需重启进程";
+        jzWarning() << "MCP 工具挂载被拒:" << name
+                    << " —— agent 已有会话在跑, 这个 server 的工具要重启进程才会生效";
+        client->deleteLater();
+        finishMcpPending();
+        return;
+    }
+
+    std::string tools;
+    for (const JZAgentTool *tool : client->tools())
+    {
+        if (!tools.empty())
+            tools += ", ";
+        tools += tool->toolName();
+    }
+    if (state)
+    {
+        state->ready = true;
+        state->tools = (int)client->tools().size();
+    }
+    jzInfo() << "MCP 已挂载:" << client->serverName() << client->serverVersion()
+             << "  工具数:" << (int)client->tools().size()
+             << (tools.empty() ? std::string() : ("  [" + tools + "]"));
+    finishMcpPending();
+}
+
+// 一个 MCP 连接流程结束了: 未结束数 -1; 减到 0 = 配置里的 server 全部有结果(连上或连不上),
+// 此时放行新任务(见 submitTask 的 m_mcpInitDone 检查)。
+void JZAgentCli::finishMcpPending()
+{
+    if (m_mcpPending > 0)
+        m_mcpPending--;
+    if (m_mcpPending == 0 && !m_mcpInitDone)
+    {
+        m_mcpInitDone = true;
+        jzInfo() << "MCP 初始化完毕 —— 现在可以提交任务了";
+    }
+}
+
 Json::Value JZAgentCli::makeInfo() const
 {
     Json::Value j;
@@ -618,6 +789,24 @@ Json::Value JZAgentCli::makeInfo() const
     j["modelUrl"] = m_config.modelUrl;
     j["modelName"] = m_config.modelName;
     j["rootDir"] = m_config.rootDir;
+    j["mcpInitDone"] = m_mcpInitDone;   // false = 还在连 MCP, 此时的 POST /task 会被拒绝
+    // MCP: 配置里每个 server 的连接/挂载状态(没有网页面板时用 GET /info 自检)
+    if (!m_mcpStates.empty())
+    {
+        Json::Value mcp(Json::arrayValue);
+        for (const JZCliMcpState &s : m_mcpStates)
+        {
+            Json::Value item(Json::objectValue);
+            item["name"] = s.name;
+            item["transport"] = s.transport;
+            item["target"] = s.target;
+            item["ready"] = s.ready;
+            item["tools"] = s.tools;
+            item["error"] = s.error;
+            mcp.append(item);
+        }
+        j["mcp"] = mcp;
+    }
     return j;   // 注意: 不含 modelToken, 别把凭据吐给网页
 }
 
@@ -991,6 +1180,27 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     if (m_busy)
     {
         Json::Value e; e["error"] = "a task is already running";
+        if (respond) respond(e);
+        return;
+    }
+    // MCP 还没初始化完(有 server 没连出结果): 先拒绝 —— 任务一旦开跑, 稍后连上的远端工具
+    // 就挂不进 agent 了(JZAgent 只允许在 Inactive 改工具表), 那还不如让提交方等几秒再来。
+    if (!m_mcpInitDone)
+    {
+        std::string waiting;
+        for (const JZCliMcpState &s : m_mcpStates)
+        {
+            if (s.ready || !s.error.empty())
+                continue;   // 已就绪 / 已有结论(失败) 的都不算在等
+            if (!waiting.empty())
+                waiting += ", ";
+            waiting += s.name;
+        }
+        Json::Value e;
+        e["error"] = "MCP 初始化中("
+                     + (waiting.empty() ? (to_string(m_mcpPending) + " 个连接") : waiting)
+                     + "), 稍后再提交 —— 连不上也没关系, 全部有结果后就会放行";
+        e["mcp_pending"] = m_mcpPending;
         if (respond) respond(e);
         return;
     }

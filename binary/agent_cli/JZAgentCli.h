@@ -140,6 +140,13 @@ struct JZCliConfig
     std::string memoryFile;        // 记忆文件; 空 = <rootDir>/.agent_memory.md (相对路径按 rootDir 解析)
     int memoryMaxBytes = 8192;     // 注入/读取上限(超出只给最近的; 追加的硬上限是它的 4 倍)
 
+    // ---- 宿主常驻说明(拼进 system prompt 一次) ----
+    //   典型用途: 玩法任务书 / 项目约定这类**整个会话都该在场**的约束。它只进 system prompt 一次,
+    //   之后每轮 /task 只叠加新消息 —— 不用把同一段介绍每轮重复贴一遍, 也不靠"模型还记得"。
+    //   extraFile 的相对路径按 rootDir 解析; 两个都给时 = 文件内容 + 内联文本(内联在后)。
+    std::string systemExtra;
+    std::string systemExtraFile;
+
     // ---- 工作区 / 工具 ----
     std::string rootDir;
     std::vector<TrustedDir> trustedDirs;
@@ -420,6 +427,7 @@ protected:
     JZAgent *m_agent = nullptr;
     std::vector<JZAgentTool *> m_tools;
     JZMemoryTool *m_memory = nullptr;    // 非拥有(m_tools 持有); 未启用记忆时为空
+    int m_systemPromptBytes = 0;         // 启动时算一次的 system prompt 大小(GET /info 自检用)
 
     std::atomic<bool> m_busy{false};
     std::atomic<bool> m_failed{false};

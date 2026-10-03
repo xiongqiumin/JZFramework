@@ -30,6 +30,23 @@ for (let i = 0; i < GRID; i++) board.push(new Array(GRID).fill(EMPTY));
 let turn = HUMAN;           // 玩家先走
 let winner = EMPTY;
 let over = false;
+let moveNo = 0;             // 已落子手数
+
+// 2026-10-02: 打日志 —— 外面(runs/current 的证据 / 玩法的尺子 verify.py)靠这些行判这局的结果。
+//   标记**一律 ASCII**(容器转发程序 stdout 时中文可能坏码; 判定只认 ASCII)。
+function log(s) { console.log("[gomoku] " + s); }
+
+/** 整盘棋的文本快照(日志里看一眼就知道发生了什么) */
+function boardDump()
+{
+    for (let r = 0; r < GRID; r++)
+    {
+        let s = "";
+        for (let c = 0; c < GRID; c++)
+            s += (board[r][c] === EMPTY ? "." : (board[r][c] === BLACK ? "X" : "O"));
+        log("board " + (r < 10 ? "0" : "") + r + " " + s);
+    }
+}
 
 const win = new JZWindow(WIN_W, WIN_H, "五子棋");
 
@@ -115,10 +132,15 @@ function checkWin(r, c, who)
 function place(r, c, who)
 {
     board[r][c] = who;
+    moveNo++;
+    log((who === HUMAN ? "human" : "ai") + " move r=" + r + " c=" + c + " no=" + moveNo);
     if (checkWin(r, c, who))
     {
         winner = who;
         over = true;
+        log("RESULT=" + (who === HUMAN ? "human_win" : "ai_win")
+            + " winner=" + (who === HUMAN ? "human" : "ai") + " moves=" + moveNo);
+        boardDump();
         return;
     }
     // 平局判定: 棋盘满
@@ -127,6 +149,8 @@ function place(r, c, who)
             if (board[i][j] === EMPTY)
                 return;
     over = true;
+    log("RESULT=draw over=1 moves=" + moveNo);
+    boardDump();
 }
 
 // ==================== 电脑对手(白棋) ====================
@@ -212,6 +236,8 @@ function reset()
     turn = HUMAN;
     winner = EMPTY;
     over = false;
+    moveNo = 0;
+    log("restart");
     status.setText(statusText());
     canvas.update();
 }
@@ -254,3 +280,5 @@ canvas.onMousePress = (e) => {
 restart.onClicked = () => reset();   // 信号是属性
 
 win.show();
+log("start grid=" + GRID + " cell=" + CELL + " margin=" + MARGIN + " statusH=" + STATUS_H
+    + " board=" + BOARD + "x" + BOARD + " win=" + WIN_W + "x" + WIN_H + " human=black ai=white");

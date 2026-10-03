@@ -47,6 +47,9 @@ using namespace std;
 //     http : { "name":"node1", "transport":"http", "url":"http://127.0.0.1:39000/mcp" }
 //   可选字段: toolPrefix(工具名前缀; 空 = 对端 serverName + "__") / timeoutMs / callTimeoutMs。
 //   远端工具在启动时挂进 agent(任务开跑后再连上的挂不进去, 要重启进程)。
+//   system.extra / system.extraFile = 宿主给的**常驻说明**(拼进 system prompt **一次**; 典型是"玩法任务书"
+//   这类整个会话都在场的约束) —— 之后每轮 /task 只叠加新消息, 不用把同一段介绍重复贴; extraFile 相对
+//   terminal.rootDir 解析。
 // ===========================================================================
 static const char *kDefaultConfigJson = R"json({
     "agentName":            "agent_cli",
@@ -89,6 +92,11 @@ static const char *kDefaultConfigJson = R"json({
         "enabled":          true,
         "file":             "",
         "maxBytes":         8192
+    },
+
+    "system": {
+        "extra":            "",
+        "extraFile":        ""
     },
 
     "terminal": {
@@ -323,6 +331,11 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigBool(root, "memory", "enabled", "memoryEnabled", config.memoryEnabled);
     readConfigString(root, "memory", "file", "memoryFile", config.memoryFile);
     readConfigInt(root, "memory", "maxBytes", "memoryMaxBytes", config.memoryMaxBytes);
+
+    // system(宿主常驻说明: 拼进 system prompt **一次** —— 之后每轮 /task 只叠加新消息, 不再重复贴。
+    //   典型是"玩法任务书"这类整个会话都在场的约束; extraFile 相对路径按 rootDir 解析)
+    readConfigString(root, "system", "extra", "systemExtra", config.systemExtra);
+    readConfigString(root, "system", "extraFile", "systemExtraFile", config.systemExtraFile);
 
     // terminal(工作区 / shell / 会话回收 / 工具与命令策略: 都是本地终端这一摊)
     readConfigString(root, "terminal", "rootDir", "rootDir", config.rootDir);

@@ -1,0 +1,24 @@
+{
+  "play": "gomoku",
+  "app": "binary/code_agent/runtime/gomoku/main.js",
+  "js": "binary/code_agent/runtime/gomoku/main.js",
+  "jsRoot": "repo",
+  "program": "gomoku",
+  "window": "五子棋",
+  "desktop": "600x676",
+  "native": [600, 676],
+  "rom": false,
+
+  "report": "[gomoku]",
+
+  "scriptColor": "black",
+  "limitSec": 180,
+
+  "verify": "game/gomoku/verify.py",
+
+  "steps": 900,
+  "stepMs": 1000,
+  "warmupSec": 1.5,
+
+  "note": "gomoku 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/gomoku/main.js（15x15 五子棋窗口 + 电脑对手(白)；对手逻辑移植自 test/agent/five_chess 的 fiveChessBotMove）。玩家执黑先走，由脚本 play.ts 用鼠标点棋盘落子；玩家落一子电脑立刻回一手。本体往 stdout 打 ASCII 事件行：[gomoku] start / human move r=.. c=.. / ai move r=.. c=.. / RESULT=human_win|ai_win|draw + 终局棋盘。**没有状态文件** —— 尺子(verify.py)从容器日志读这些行判这局：玩家在 limitSec(=180s) 内连成五子 = cleared(退出码 0)。玩法自包含的只有尺子与本配置。"
+}

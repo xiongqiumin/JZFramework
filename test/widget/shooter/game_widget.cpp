@@ -498,8 +498,8 @@ void GameWidget::drawHud(JZPainter* p)
 {
     m_frameDraws += 3 + m_lives;   // 2 行文字 + 生命图标 + 提示行
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "SCORE:%d  LIVES:%d  x%d  RING:%d",
-                  m_score, m_lives, m_multi, m_ring);
+    std::snprintf(buf, sizeof(buf), "SCORE:%d/%d  LIVES:%d  x%d  RING:%d",
+                  m_score, kTargetScore, m_lives, m_multi, m_ring);
     p->setPen(JZPen(JZColor::White));
     p->drawText(12, 14, buf);
 

@@ -76,6 +76,10 @@ JZVirtualDevice::JZVirtualDevice(int desktopW, int desktopH)
     m_desktopW = desktopW > 0 ? desktopW : 800;
     m_desktopH = desktopH > 0 ? desktopH : 600;
     ensureCanvas();      // 画布 = 桌面自己的离屏设备 (scale 默认 1 = 逻辑尺寸)
+    // 定时合成: 桌面那一帧必须"一直在动"(见 timerEvent)。50ms ≈ 20 帧/秒, 与 refresh 的
+    // 节流同一个量级; 定时器跑在**本对象所属线程**(= 主线程), 于是合成不再指望
+    // "别的线程投递过来的任务会落地"。
+    startTimer(50);
 }
 
 JZVirtualDevice::~JZVirtualDevice()
@@ -318,6 +322,23 @@ void JZVirtualDevice::refreshNow()
         m_view->paintNow();
     else
         m_view->update();
+}
+
+// 定时合成 (主线程; 见构造函数里的 startTimer): 桌面那一帧得**一直在动**。
+// ⚠ 为什么不能只靠"窗口推帧 -> refresh -> 投递回主线程"那条链: 实测它不可靠 —— 窗口在
+//   60+ 帧地画, 桌面缓存却能冻在好几秒前, 取图方(虚拟进程里跑的脚本 / CU 的颜色匹配)
+//   于是"看不见自己在哪、也看不见敌机", 整局瞎打(帧里 SCORE:0 且 ENM:0, 明显是启动那一帧)。
+//   这里由主线程自己按时敲一次, 与投递那条链无关 —— 有窗口就保证画面一直在刷新。
+void JZVirtualDevice::timerEvent(JZTimerEvent* event)
+{
+    JZObject::timerEvent(event);
+    if (m_composing || m_windows.empty())
+        return;                          // 正在合成 / 桌面上没窗口: 这一拍不用做
+    const int64_t now = JZDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastTimerComposeMs < 50)
+        return;                          // 同一个 50ms 窗口里已经合过了 (节流)
+    m_lastTimerComposeMs = now;
+    refreshNow();
 }
 
 // ==================== 窗口宿主: 新窗口落到这块桌面上 ====================

@@ -330,6 +330,9 @@ private:
     // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
     void ensureCanvas();
     void refreshNow();                  // 合成真身 (只允许主线程)
+    // 定时合成 (主线程, 50ms 一次; 见 .cpp 里的说明): 保证桌面画面一直在刷新 ——
+    // 不能只靠"窗口推帧 -> 投递回主线程"那条链(实测不可靠, 会让取图方看到好几秒前的画面)。
+    void timerEvent(JZTimerEvent* event) override;
     void setScaleValue(float scale);    // setScale / setHostScale 的共同真身 (不做"谁设的"判断)
     // 把 w 从窗口表 / "已关闭"表里摘下来 (锁内; 调用方负责锁) —— 返回"活动窗口没了的话,
     // 焦点该交给谁"(锁外再调它的 setFocus); 不发生就返回 nullptr。
@@ -350,6 +353,8 @@ private:
     // 上次**从别的线程**排合成请求的时刻(节流用, 见 refresh)。⚠ 原子而非锁: 这条路径必须
     // 无锁(进程线程推帧时主线程可能正等它); 竞态最坏只是多排一次合成, 无害。
     std::atomic<int64_t> m_lastRefreshReqMs{ 0 };
+    // 上次**定时合成**的时刻(见 timerEvent)。只在主线程读写, 不需要原子。
+    int64_t m_lastTimerComposeMs = 0;
 
     std::vector<JZVirtualWindow*> m_windows;   // 桌面上的窗口, z 序: 末尾最上
     // 已"关闭"(从桌面摘下来)但客户区还活着的外框 —— 客户区的平台后端还指着它, 所以不能删;

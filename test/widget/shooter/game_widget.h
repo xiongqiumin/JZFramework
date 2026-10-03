@@ -96,6 +96,9 @@ private:
     std::set<uint32_t>   m_keys;   // 当前按下的虚拟键码
 
     static constexpr int kLogicMs   = 16;   // 逻辑步长 (~60Hz), 仿真速度稳定
+    // 通关线: 打到这个分数算通关(一架敌机 +10 ⇒ 30 架)。与 TS 版(test_jsshooter)的
+    // kTargetScore 及玩法侧的 game/shooter/config.json 的 targetScore 保持一致。
+    static constexpr int kTargetScore = 300;
     static constexpr int kRenderMs  = 0;    // 渲染: 0 = 尽可能快, 用于压测 FPS 上限
     static constexpr int kPlayerSpd = 6;
     static constexpr int kBulletSpd = 11;

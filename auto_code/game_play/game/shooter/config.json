@@ -18,5 +18,7 @@
   "stepMs": 400,
   "warmupSec": 2.0,
 
-  "note": "shooter 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/test_jsshooter（test/widget/shooter 的 TS 移植，与 C++ 版逐项对齐），所以 jsRoot=repo + prebuild 让驱动先把那个工程编出来。win 标题取它自己的 'JZWidget GDI - 飞行射击'。它只往 stdout 打印状态（[shooter] score=.. / alive .. / GAME OVER score=..），**没有状态文件、也不判通关** —— 尺子(verify.py)从容器日志读那几行来判这局跑没跑起来、打到多少分。玩法自包含的只有尺子与本配置。"
+  "targetScore": 300,
+
+  "note": "shooter 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/test_jsshooter（test/widget/shooter 的 TS 移植，与 C++ 版逐项对齐），所以 jsRoot=repo + prebuild 让驱动先把那个工程编出来。win 标题取它自己的 'JZWidget GDI - 飞行射击'。它只往 stdout 打印状态（[shooter] score=.. / alive .. / CLEAR score=.. / GAME OVER score=..），**不落状态文件** —— 尺子(verify.py)从容器日志读那几行来判。**通关线 = targetScore（300 分）**：一架敌机 +10 分（大小一样）⇒ 30 架；分数越高刷怪越快（spawnGap = max(10, 46 - score/40)）、敌机也越快（eSpdBase = 2 + score/160），死了按 R 重开会**清分**（reset() 里 score=0），所以必须**一局之内**打到 300。敌机 22% 概率掉道具（P=多发 / R=环射 / +=回血，回血最多 5 命）。玩法自包含的只有尺子与本配置。"
 }

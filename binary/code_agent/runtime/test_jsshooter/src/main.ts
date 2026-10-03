@@ -30,6 +30,9 @@
 // ---------------------------------------------------------------------------
 
 const kLogicMs = 16;        // 逻辑步长(~60Hz), 仿真速度稳定
+// 通关线: 打到这个分数算**通关**(一架 +10 ⇒ 30 架)。与 game/shooter/config.json 的
+// targetScore 保持一致 —— 玩法那边按它判分, 这里只负责"到点了在日志/HUD 里说一声"。
+const kTargetScore = 300;
 const kRenderMs = 1;        // 渲染排帧间隔(C++ 是 0; setInterval 不接受 0)
 const kPlayerSpd = 6;
 const kBulletSpd = 11;
@@ -263,6 +266,7 @@ function onLogic(): void
 let lastReportScore = -1;      // 上一次打印时的分数(-1 = 还没打过)
 let lastReportMs = 0;          // 上一次打印的时刻(心跳节流)
 let gameOverReported = false;  // GAME OVER 只打一次
+let clearReported = false;     // CLEAR 只打一次
 
 function reportState(): void
 {
@@ -277,6 +281,14 @@ function reportState(): void
     {
         console.log("[shooter] alive score=" + score + " lives=" + lives + " over=" + over);
         lastReportMs = now;
+    }
+    // 通关: 打到目标分(game/shooter/config.json 的 targetScore = 300 ⇒ 30 架)。只报一次。
+    // ⚠ 通关后游戏**继续跑**(玩家可以接着刷、也可能接着死) —— 判分的尺子看到这一行就收工,
+    //   不需要本体停下来(它也停不下来: 本体的"结束"只有 GAME OVER 一种)。
+    if (!clearReported && score >= kTargetScore)
+    {
+        clearReported = true;
+        console.log("[shooter] CLEAR score=" + score + " target=" + kTargetScore);
     }
     if (over && !gameOverReported)
     {
@@ -359,6 +371,7 @@ function reset(): void
     errMsg = "";
     // 状态打印也从这一局重新开始(见 reportState): 否则重开时分数回到 0 也不打一行
     gameOverReported = false;
+    clearReported = false;
     lastReportScore = -1;
     lastReportMs = Date.now();
     bullets = [];
@@ -800,7 +813,8 @@ function drawHud(p: JZPainter, w: number, h: number): void
 {
     frameDraws += 3 + lives;   // 2 行文字 + 生命图标 + 提示行
     p.setPen(COL_WHITE);
-    p.drawText(12, 14, "SCORE:" + score + "  LIVES:" + lives + "  x" + multi + "  RING:" + ring);
+    p.drawText(12, 14, "SCORE:" + score + "/" + kTargetScore
+        + "  LIVES:" + lives + "  x" + multi + "  RING:" + ring);
 
     // 性能信息: FPS(峰值) / 每帧绘制请求数(峰值) / 实体数
     p.setPen(COL_HUD_INFO);

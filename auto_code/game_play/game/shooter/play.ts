@@ -53,7 +53,7 @@ fs.mkdirSync(framesDir, { recursive: true });
 
 const t0 = Date.now();
 const state = {
-    steps: 0, slices: 0, moves: 0, shots: 0, sawSelf: 0, sawEnemy: 0, sawBullet: 0,
+    steps: 0, slices: 0, moves: 0, shots: 0, sawSelf: 0, sawEnemy: 0, sawBullet: 0, sawPw: 0,
     revives: 0, saved: 0, slowSteps: 0, matchMs: 0, actMs: 0, errors: [] as string[],
 };
 
@@ -72,6 +72,7 @@ const C_ENEMY_BIG = '#e65a5a';   // 大敌机 46x40（3 枪才死，+10 分）
 const C_ENEMY_SML = '#dc46a0';   // 小敌机 30x26（1 枪，+10 分）
 const C_SHIP      = '#78dcff';   // 自己的飞船（受击无敌时整帧隐藏 ⇒ 那一刻找不到）
 const C_EBULLET   = '#ff783c';   // 敌方子弹（朝我飞来的那颗要躲）
+const C_PW_LIFE   = '#ffdc5a';   // 回血道具(+)：打满 300 分要 30 架，光靠 3 条命撑不住 —— 优先去吃
 const ENEMY_KINDS = [C_ENEMY_BIG, C_ENEMY_SML];
 
 interface Box { x: number; y: number; w: number; h: number; }
@@ -209,8 +210,8 @@ function main(): void {
     let deadSlices = 0;                // 连着多少小节看不到自己（判定阵亡）
     let reason = 'steps';
     const wander = { dir: 'Left', tick: 0 };
-    let cachedTgt: Box | null = null;  // 敌机（隔小节查一次，中间沿用）
-    let missTgt = 0;
+    let cachedTgt: Box | null = null;  // 上一小节看到的敌机（只为日志/调试留一份）
+    let cachedPu: Box | null = null;   // 回血道具（每 4 小节查一次；道具落得慢，够用）
 
     // ⚠ 移动**必须顺手更新 selfX**：颜色查找一小节只做一两次，而移动发生在它之后 ——
     //   不自己记账的话，"我在哪"永远停留在"移动前"，对准判断（|dx| ≤ 容差）就永远不成立，
@@ -242,26 +243,34 @@ function main(): void {
         //   反应速度翻倍。窗口尺寸/分区每次小节重算 —— board 会随校准变。
         while (Date.now() - tStep < cfg.stepMs) {
             const tSlice = Date.now();
-            const low = band(0.45, 0.55), upper = band(0.0, 0.9), myBand = band(0.6, 0.4);
+            // 下半场（威胁和够得着的目标都在这儿）；飞船自己那条带单独切（见 myBand）
+            const low = band(0.30, 0.70), myBand = band(0.6, 0.4);
 
             // 看：自己（每小节必查 —— 它是"我在哪"的基准，也是阵亡判据）
             const me = matchBig(C_SHIP, myBand, 8, 8, '自己');
             if (me) { selfX = boxCx(me); sawSelfOnce = true; state.sawSelf++; deadSlices = 0; lastMe = me; }
             else deadSlices++;
 
-            // 看：敌机 —— **隔一小节查一次**（用省下的时间按键：每次 key 要花一个逻辑帧，
-            //     查画面多了就挪不动了）。两种颜色 + 两个区域轮着来，兼顾"下方优先"。
-            //     连查两次都没有才当它没了（别拿一个早就消失的目标骗自己）。
-            if ((slices % 2) === 0) {
-                const kind = ENEMY_KINDS[Math.floor(slices / 2) % ENEMY_KINDS.length];
-                const near = (slices % 4) < 2;
-                const t = matchBig(kind, near ? low : upper, 18, 18, '敌机');
-                if (t) { cachedTgt = t; missTgt = 0; state.sawEnemy++; }
-                else if (++missTgt >= 2) cachedTgt = null;
+            // 看：敌机 —— **只看下半场**，而且每小节都查一遍。
+            //   · 只看下半场：威胁和"打得着"的目标都在那儿；上半场那些够不着的，追也追不上，
+            //     追过去反而挨别的撞（实测"够不着就放弃"的那版，一堆拍啥也没干）。
+            //   · 每小节都查：看得见比多按几次键重要（每次 key 只挪 6px，而看不见就是瞎打）。
+            //   · 同色小碎块多，所以两种敌机色轮着问 + 尺寸下限过滤（见 matchBig）。
+            // ⚠ 查**整个游戏区**（不是只查下半场）：敌机是从上方落下来的，只盯下半场等于大半
+            //   个屏幕瞎着 —— 实测那样 60~90% 的拍"没有目标"，脚本只能一直在摆动。
+            let tgt = matchBig(ENEMY_KINDS[slices % ENEMY_KINDS.length], board, 18, 18, '敌机');
+            if (!tgt)
+                tgt = matchBig(ENEMY_KINDS[(slices + 1) % ENEMY_KINDS.length], board, 18, 18, '敌机');
+            cachedTgt = tgt;
+            if (tgt) { state.sawEnemy++; lastTgt = tgt; }
+
+            // 看：回血道具（每 4 小节问一次 —— 它落得很慢(vy=2)，不用盯着）
+            if ((slices % 4) === 1) {
+                const u = matchBig(C_PW_LIFE, low, 8, 8, '回血');
+                cachedPu = u;
+                if (u) state.sawPw++;
             }
-            const tgt = cachedTgt;
-            if (tgt)
-                lastTgt = tgt;
+            const pu = cachedPu;
 
             // 看：敌弹（每 3 小节问一次就够 —— 它飞得快但来得直）
             let eb: Box | null = null;
@@ -277,15 +286,24 @@ function main(): void {
 
             // 决策：躲弹 > 让开撞机 > 对准(对准了才开火) > 游走
             const dodge = eb && boxCy(eb) > selfY - 220 && Math.abs(boxCx(eb) - selfX) < 60;
-            const ram = tgt && Math.abs(boxCy(tgt) - selfY) < 130 && Math.abs(boxCx(tgt) - selfX) < 75;
+            // ⚠ 让开的门槛放宽（200px 之内就算"要撞上来了"）：脚本一小节 ~200ms，敌机每秒下
+            //   187px ⇒ 200ms 就掉 37px。阈值太窄（原来 130）时，等判断到"要撞"已经贴脸了。
+            const ram = tgt && Math.abs(boxCy(tgt) - selfY) < 200 && Math.abs(boxCx(tgt) - selfX) < 105;
             if (dodge && eb) {
                 const dirKey = boxCx(eb) < selfX ? 'Right' : 'Left';
                 moveSelf(dirKey, 5);
                 act = '躲弹(' + dirKey + ')';
             } else if (ram && tgt) {
                 const dirKey = boxCx(tgt) > selfX ? 'Left' : 'Right';
-                moveSelf(dirKey, 6);
+                moveSelf(dirKey, 8);
                 act = '让开(' + dirKey + ')';
+            } else if (pu && Math.abs(boxCx(pu) - selfX) <= 130 && boxCy(pu) > selfY - 260) {
+                // 吃回血道具（+1 命，最多 5 命）：它落得慢，够得着就横过去接。
+                // 放在"对准"之前 —— 多打一架值 10 分，多一条命值好几次机会。
+                const dx = boxCx(pu) - selfX;
+                moveSelf(dx > 0 ? 'Right' : 'Left',
+                         Math.max(1, Math.min(6, Math.round(Math.abs(dx) / 6))));
+                act = '吃道具';
             } else if (tgt && Math.abs(boxCx(tgt) - selfX) <= 150) {
                 // ⚠ 只打"够得着"的目标：按键速率有上限（一次调用 ≈ 一帧），横穿半个屏幕要好几秒，
                 //   而敌机 400ms 就下降 75px —— 硬追一个很远的敌机，结果是一路追到被它撞死。
@@ -303,11 +321,13 @@ function main(): void {
                     act = '对准·摆动';
                 }
             } else {
-                // 没目标（或目标够不着）也别杵着：游走 + 开火，顺手蹭掉送上门的
-                if ((wander.tick++ % 4) === 0)
+                // ⚠ 没目标时**大幅摆动**（不是小步挪）：敌机是随机位置落下来的，脚本看不见它们
+                //   的时候，"一直在动 + 一直在扫"比"站在原地"安全得多 —— 实测死因多半是撞机，
+                //   而挨打次数和"摆动幅度"直接相关（原来一小节只挪 2 次 = 12px，等于站桩）。
+                if ((wander.tick++ % 3) === 0)
                     wander.dir = (wander.dir === 'Left') ? 'Right' : 'Left';
-                moveSelf(wander.dir, 2);
-                act = '游走(' + wander.dir + ')';
+                moveSelf(wander.dir, 6);
+                act = '摆动(' + wander.dir + ')';
             }
 
             // ⚠ 开火**不挑时机**（一直打）：脚本的按键带宽有限（一次调用 ≈ 一个逻辑帧），能"稳稳

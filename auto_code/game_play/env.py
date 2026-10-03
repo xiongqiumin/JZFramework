@@ -285,7 +285,8 @@ def write_game_config(game_dir, dll_dir, rom, status_path=None, extra=None):
     build/game/shooter）下的 `game.json`，由题目侧程序自己读：
 
       · gba 玩法：dllDir / rom / statusPath（开窗 + 开 ROM + 状态上报）
-      · shooter 玩法：statusPath / targetScore（状态上报 + 通关线）
+      · shooter 玩法：只往 stdout 打印状态行、**不落状态文件**；通关线由玩法配置的
+        `targetScore` 给（尺子自己判 score >= target，不必写进这里）
 
     extra 里的字段原样并进去（玩法自己的参数）。
     """

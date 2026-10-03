@@ -57,7 +57,8 @@ python auto_code\game_play\game\hello\watch.py --ask-file ask.txt --with-screen 
 
 - **相对路径一律按仓库根解析**（不是 CWD）⇒ 同一份 `run.json` 在哪儿调用都指向同一处。
 - 现有玩法（`game/<玩法>/`，自包含：任务书 + 尺子 + 配置，本体可住在别处）：`hello`（点红球/避蓝球）、
-  `shooter`（本体 = `binary/code_agent/runtime/test_jsshooter`，`jsRoot=repo`，不判通关）、
+  `shooter`（本体 = `binary/code_agent/runtime/test_jsshooter`，`jsRoot=repo`，**通关线 = 300 分**：
+  一架敌机 +10 分 ⇒ 30 架；死了重开会清分，必须一局内打到）、
   `gomoku`（15x15 五子棋：玩家执黑 vs 电脑白，本体 = `binary/code_agent/runtime/gomoku/main.js`；
   **判分 = 180s(`limitSec`) 内下赢**，尺子读本体打印的 `[gomoku] RESULT=…` 事件行）。
 - 产出的"起点"**一律是空的**：工作区首次生成 `play/play.ts` 时只写一份空骨架（入口脚手架 + TODO，

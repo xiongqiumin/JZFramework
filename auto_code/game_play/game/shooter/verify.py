@@ -13,10 +13,12 @@ game/shooter/verify.py —— **shooter 玩法自己的尺子**（每个玩法�
         [shooter] score=.. lives=..        分数/命变化的那一刻
         [shooter] alive .. over=false      没变化时的心跳(2s 一行, 证明还活着)
         [shooter] GAME OVER score=..       游戏结束
-  ⑤ 判定：running(到点还在跑) / game_over(打到死) / program_gone(程序没了) /
-     no_report(整局没打印＝没跑起来)。**本玩法不判通关** —— 本体(test_jsshooter 的移植件)
-     没有通关线，也不落状态文件；
-  ⑥ 落盘 result.json + report.md；**退出码 0 = 这局真的跑起来了**（打印过状态）。
+  ⑤ 判定：cleared(打到 targetScore = 通关) / running(到点还在跑) / game_over(打到死) /
+     program_gone(程序没了) / no_report(整局没打印＝没跑起来)。
+     **通关线 = targetScore（默认 300 分；一架敌机 +10 ⇒ 30 架）**：本体打到目标分时会打
+     "[shooter] CLEAR score=.. target=.."，尺子也认 score >= target（双保险）。本体不落
+     状态文件，状态全靠它自己打印的那几行（见 ④）。
+  ⑥ 落盘 result.json + report.md；**退出码 0 = 这局算过**（通关，或至少真的跑起来了）。
 
 用法：
   python verify.py                                  # 自包含：自己起一个无头容器，跑完收掉
@@ -56,7 +58,7 @@ def read_reports(conn, offset=0, prefix="[shooter]"):
     （程序没跑起来，或它根本没打印）。
     """
     out = {"seen": False, "score": None, "lives": None, "over": False, "alive": False,
-           "lines": [], "total": None}
+           "clear": False, "lines": [], "total": None}
     try:
         d = conn.logs(offset=offset, size=-1)
     except Exception:
@@ -82,6 +84,8 @@ def read_reports(conn, offset=0, prefix="[shooter]"):
             out["over"] = True
         if s.startswith("alive"):
             out["alive"] = True
+        if s.startswith("CLEAR"):
+            out["clear"] = True
     return out
 
 
@@ -96,7 +100,7 @@ def main():
     ap.add_argument("--step-ms", type=int, default=0, help="每拍间隔（0 = 读玩法配置）")
     ap.add_argument("--warmup", type=float, default=-1.0, help="装完脚本后先等多久（-1 = 读配置）")
     ap.add_argument("--seconds", type=float, default=0.0, help="按时间收工（脚本参数）")
-    ap.add_argument("--target", type=int, default=0, help="通关线（0 = 读玩法配置）")
+    ap.add_argument("--target", type=int, default=0, help="通关线（0 = 读玩法配置的 targetScore）")
     ap.add_argument("--keep", action="store_true", help="自己起的容器测完不杀（手工接着看）")
     args = ap.parse_args()
 
@@ -196,9 +200,15 @@ def main():
         except Exception:
             log_from = 0
         report = read_reports(conn, log_from)
-        log("观察中（最多 %.0fs；本体不判通关，看它打印的 score）…" % budget)
+        log("观察中（最多 %.0fs；通关线 %s 分，看它打印的 score）…" % (budget, target))
         while time.time() < t_end:
             report = read_reports(conn, log_from)
+            # 通关判定优先于"被打死"：本体打到目标分时打 "[shooter] CLEAR score=.. target=.."
+            # （双保险：也认 score >= target —— 万一那一行没被读到）
+            if report["clear"] or (report["score"] is not None and target > 0
+                                   and report["score"] >= target):
+                verdict, detail = "cleared", "通关：score=%s（目标 %s）" % (report["score"], target)
+                break
             if report["over"]:
                 verdict, detail = "game_over", "被打死：score=%s" % report["score"]
                 break
@@ -241,14 +251,15 @@ def main():
             box.__exit__(None, None, None)
             log("容器已收掉")
 
-    # 本玩法不判通关：整局没打印 = 本体没跑起来，不算跑通；打印过就把这局算"跑起来了"
+    # 中途 break 出来的 cleared/game_over 都算"这局真跑起来了"；整局没打印 = 本体没跑起来
     if verdict == "running" and not report["seen"]:
         verdict, detail = "no_report", "整局没有任何 [shooter] 打印（本体没跑起来？看容器日志: GET /api/logs）"
-    passed = bool(report["seen"]) and verdict in ("running", "game_over")
+    passed = bool(report["seen"]) and verdict in ("running", "game_over", "cleared")
     result = {
         "play": cfg["play"], "verdict": verdict, "pass": passed, "detail": detail,
         "report": {"seen": report["seen"], "score": report["score"], "lives": report["lives"],
-                   "over": report["over"], "lines": len(report["lines"])},
+                   "over": report["over"], "clear": report["clear"], "target": target,
+                   "lines": len(report["lines"])},
         "externalFrames": frames,
         "elapsedSec": round(time.time() - started, 2),
         "container": {"program": program, "window": cfg["window"], "native": cfg["native"],
@@ -264,8 +275,9 @@ def main():
         best = os.path.relpath(os.path.join(ext_dir, "e%05d.png" % max(0, frames // 2)), TASK)
     lines = ["# shooter 一局判定", "",
              "- 结论: **%s**（%s）" % (verdict, detail),
-             "- 本体打印: score=%s lives=%s over=%s（%d 行；本玩法不判通关）"
-             % (report["score"], report["lives"], report["over"], len(report["lines"])),
+             "- 本体打印: score=%s/%s lives=%s over=%s clear=%s（%d 行）"
+             % (report["score"], target, report["lives"], report["over"], report["clear"],
+                len(report["lines"])),
              "- 观察 %d 帧 / 用时 %.1fs" % (frames, result["elapsedSec"]),
              "- 容器: 进程 %s，窗口 %s，桌面 %s%s"
              % (program, cfg["window"], cfg["desktop"], "（自起）" if own_container else "（外部给）"),

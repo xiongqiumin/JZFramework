@@ -6,7 +6,7 @@
   "prebuild": ["binary/code_agent/runtime/test_jsshooter/tsconfig.json"],
   "program": "shooter",
   "window": "JZWidget GDI - 飞行射击",
-  "desktop": "800x600",
+  "desktop": "900x700",
   "native": [800, 600],
   "rom": false,
 
@@ -20,5 +20,5 @@
 
   "targetScore": 300,
 
-  "note": "shooter 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/test_jsshooter（test/widget/shooter 的 TS 移植，与 C++ 版逐项对齐），所以 jsRoot=repo + prebuild 让驱动先把那个工程编出来。win 标题取它自己的 'JZWidget GDI - 飞行射击'。它只往 stdout 打印状态（[shooter] score=.. / alive .. / CLEAR score=.. / GAME OVER score=..），**不落状态文件** —— 尺子(verify.py)从容器日志读那几行来判。**通关线 = targetScore（300 分）**：一架敌机 +10 分（大小一样）⇒ 30 架；分数越高刷怪越快（spawnGap = max(10, 46 - score/40)）、敌机也越快（eSpdBase = 2 + score/160），死了按 R 重开会**清分**（reset() 里 score=0），所以必须**一局之内**打到 300。敌机 22% 概率掉道具（P=多发 / R=环射 / +=回血，回血最多 5 命）。玩法自包含的只有尺子与本配置。"
+  "note": "shooter 玩法 —— **本体不在任务里**：直接用 binary/code_agent/runtime/test_jsshooter（test/widget/shooter 的 TS 移植，与 C++ 版逐项对齐），所以 jsRoot=repo + prebuild 让驱动先把那个工程编出来。win 标题取它自己的 'JZWidget GDI - 飞行射击'。它只往 stdout 打印状态（[shooter] score=.. / alive .. / CLEAR score=.. / GAME OVER score=..），**不落状态文件** —— 尺子(verify.py)从容器日志读那几行来判。**通关线 = targetScore（300 分）**：一架敌机 +10 分（大小一样）⇒ 30 架；分数越高刷怪越快（spawnGap = max(10, 46 - score/40)）、敌机也越快（eSpdBase = 2 + score/160），死了按 R 重开会**清分**（reset() 里 score=0），所以必须**一局之内**打到 300。**通关后本体自己把这一局停住**（世界定格、不再刷怪/移动，画面上盖“恭喜过关”），只剩 R/回车 能重开 —— 脚本通关后若继续抓帧，会发现画面几乎逐像素不变，那不是卡住。敌机 22% 概率掉道具（P=多发 / R=环射 / +=回血，回血最多 5 命）。玩法自包含的只有尺子与本配置。⚠ 桌面（desktop）必须比**客户区 + 标题栏/边框**大：本体的客户区是 800x600 逻辑，所以这里给 900x700 —— 给成 800x600 时窗口摆不下（见 JZVirtualDevice::defaultWindowPos），右下会被桌面裁掉，而脚本的眼睛是**整块桌面**（`cu.screenshot()`），被裁的那块它就看不见（自己的飞船走到最右会“消失”）。另：可见容器（不带 --headless）启动时宿主会建两个示范窗口，它们会把新窗口按 n*24 逻辑像素级联推开，装游戏前应先关掉（启动器里做了）。"
 }

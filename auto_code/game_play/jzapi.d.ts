@@ -37,6 +37,34 @@ declare const __jz: {
         };
         /** 目标窗口的可访问布局（信封 {source,tree} 或树；找不到窗口 → null）。可当"窗口在不在"用 */
         layoutTree(optsJson: string): unknown;
+        /**
+         * **把窗口带到前台**（最小化先还原）。返回"它现在真是活动窗口吗"（不是"找到了"）。
+         * ⚠ 窗口在前台是"注入点击落在它身上"的前提；不在前台时点击会落到上层窗口上。
+         */
+        focusWindow(title: string): boolean;
+        /** 按**进程名**把它的窗口带到前台（容器里就是那个程序的名字，如 "shooter"） */
+        focusProcess(name: string): boolean;
+        /** 按**进程名**停掉那个程序（它的窗口一起收走）。虚拟桌面下 = 停掉那个 JS 进程 */
+        terminateProcess(name: string): boolean;
+        /**
+         * **窗口表**（z 序：从下到上，末尾最上）。坐标一律**物理像素**（与 screenshot/click 同口径）。
+         * opts: `{title?: string}` —— 按标题片段过滤（不给 = 全部）。
+         * 返回 `[{handle,index,title,frame,client,visible,active,minimized,maximized}]`；
+         * `handle` 是不透明的稳定标识（原样带给 windowState；index 会随建窗/关窗变）。
+         * ⚠ 参数**不能省**（绑定是全参，同 click）：不筛就传 `'{}'`。
+         */
+        windows(optsJson: string): unknown[];
+        /**
+         * **改窗口状态 / 几何**（SetWindowPos / ShowWindow / SetWindowText 那一组）。
+         * opts: `{key, action?, x?, y?, w?, h?, title?}`
+         *   · `key`    = `handle`（原样带回）| 标题片段 | 下标（"#2" / "2"）
+         *   · `action` = `activate` / `minimize` / `maximize` / `restore` / `close`（缺省 = 只改几何/标题）
+         *   · `x,y`    = **外框**位置（物理像素）;  `w,h` = **客户区**尺寸（物理像素）
+         *   · `title`  = 改标题
+         * 返回改完的那个窗口对象（同 windows() 的一项）；找不到窗口 / 参数不对 → null。
+         * ⚠ `close` 是**投递**语义（同点标题栏的 X）: 响应时它可能还在表里，要确认就再查一次。
+         */
+        windowState(optsJson: string): unknown;
         waitStable(optsJson: string): boolean;
         launch(optsJson: string): boolean;
         ocrReady(): boolean;

@@ -64,6 +64,24 @@ public:
     static bool  focusProcess(const std::string& name);             // 按进程名提前台
     static bool  focusWindow(const std::string& title);             // 按标题片段提前台(切换窗口)
 
+    // —— 窗口表 / 窗口状态（"EnumWindows / SetWindowPos / ShowWindow / SetWindowText" 那一组）——
+    // 两个后端**同一套语义**（这是"虚拟桌面里跑通的脚本要能在真机复验"的前提）:
+    //   真桌面   = EnumWindows / SetWindowPos / ShowWindow / PostMessage(WM_CLOSE)
+    //   虚拟桌面 = JZVirtualDevice::windowList / moveWindow / setClientSize / setMinimized ...
+    // 坐标/尺寸一律**物理像素**（与 click/screenshot/screenInfo 同口径）。
+    //
+    // windows({title?}) -> 窗口表（z 序: 从下到上）
+    //   [{handle, index, title, frame:[x,y,w,h], client:[x,y,w,h],
+    //     visible, active, minimized, maximized}]
+    //   handle = 不透明稳定标识（原样带回来给 windowState 用；下标会随建窗/关窗变）
+    static Json::Value windows(const std::string& optsJson = std::string());
+    // windowState({key, action?, x?, y?, w?, h?, title?}) -> 改完的那个窗口对象（同 windows 里的一项）
+    //   key    = 句柄("0x…") | 标题片段 | 下标（字符串化; 虚拟桌面还认 "#下标"）
+    //   action = "activate" | "minimize" | "maximize" | "restore" | "close"（缺省 = 只改几何/标题）
+    //   x,y    = **外框**位置（物理）;  w,h = **客户区**尺寸（物理）;  title = 改标题
+    //   找不到窗口 / 参数不对 -> null（不假装成功）
+    static Json::Value windowState(const std::string& optsJson);
+
     // —— 布局通道（运行期寻址的**正路**；像素只在建模期与退化兜底用，见 docs §4.1）——
     // 导出可访问布局树(JSON; rect 是**物理像素**, 与 click/screenshot 同一口径):
     //   · 目标窗口属于**本进程** ⇒ 走框架语义树 `JZWidget::dumpSemanticTree`(带 viewId ⇒ 路径稳定)
@@ -149,8 +167,18 @@ public:
     //   所以 click/drag/key/type 返回后动作可能还没被应用处理完 (真桌面那边也一样) ⇒ 要"动作后的
     //   画面/状态"就自己观察: waitStable 看画面收敛、或查窗口表/窗口标题。**脚本在两个后端行为一致**
     //   (这是"虚拟桌面里跑通的脚本要能在真机复验"的前提)。
-    // 虚拟桌面下**不适用**的: switchToDesktop / 进程管理(start/terminate/focusProcess) /
-    //   launch —— 一律明确返回失败, 绝不悄悄去动真实系统。
+    // 虚拟桌面下"进程/窗口管理"也走**同一套语义**(落在 JZVirtualDevice 上, 不碰真实系统):
+    //   · switchToDesktop          -> 最小化桌面上所有窗口（同 IShellDispatch4::MinimizeAll 的语义）;
+    //   · focusWindow(title)       -> 激活标题匹配的窗口（最小化先还原）;
+    //   · focusProcess(name)       -> 激活那个进程的窗口（名字 = 程序名）;
+    //   · terminateProcess(name)   -> 停掉那个进程（它建的窗口一起收走）;
+    //   · windows()/windowState()  -> 窗口表 / SetWindowPos 那一组（move·resize·min·max·restore·close·title）。
+    //   ⚠ 这些都**转投到桌面线程**执行（窗口表要抢桌面的锁, terminateProcess 还要 join 目标线程;
+    //     在进程线程里直接做会踩线程亲和断言 —— 实测 FATAL 崩容器, 见 .cpp 里的 cuOnDesktopThread）。
+    // 仍**明确失败**的两类:
+    //   · 按**系统 pid** 的 terminateProcess(DWORD) / focusProcess(DWORD) —— 虚拟进程没有系统 pid, 按名字走;
+    //   · startProcess / launch —— "起一个 JS 程序"的能力要 JS 引擎(jz_virtual_process 层), 而本文件
+    //     会编进不同的目标(真桌面那条链里没有那个库) ⇒ 只能由宿主注入; 没注入就失败, 绝不假装成功。
     //   (像素族匹配在虚拟桌面下**可用**: 帧就是桌面合成帧, 见 currentFrame; 未编 OpenCV 时
     //    走纯 C++ 兜底, 见 matchColor)
     static void setVirtualDesktop(JZVirtualDevice* desk);   // nullptr = 回到真实桌面

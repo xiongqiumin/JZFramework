@@ -31,7 +31,8 @@
 
 const kLogicMs = 16;        // 逻辑步长(~60Hz), 仿真速度稳定
 // 通关线: 打到这个分数算**通关**(一架 +10 ⇒ 30 架)。与 game/shooter/config.json 的
-// targetScore 保持一致 —— 玩法那边按它判分, 这里只负责"到点了在日志/HUD 里说一声"。
+// targetScore 保持一致 —— 玩法那边按它判分; 本体这边到点了做三件事: 报一行 CLEAR、
+// **把这一局停住**(世界定格, 见 onLogic)、画面上盖"恭喜过关"(见 drawClearOverlay)。
 const kTargetScore = 300;
 const kRenderMs = 1;        // 渲染排帧间隔(C++ 是 0; setInterval 不接受 0)
 const kPlayerSpd = 6;
@@ -207,6 +208,7 @@ let lives = 3;
 let multi = 1;         // 并行弹数量(1..5)
 let ring = 0;          // 环射等级(0 关闭, 每级 +4 弹)
 let over = false;
+let cleared = false;   // 已通关(到达目标分): 世界定格 + 画面上盖"恭喜过关"(见 reportState)
 let errMsg = "";       // 非空时表示逻辑落后过多, 游戏已停止
 
 let fps = 0;
@@ -239,8 +241,11 @@ let renderTimerId: ReturnType<typeof setInterval> | null = null;   // 同上: �
 // 落后过多(补不过来)时 JZFixedTimer 会先 stop 再发 sigError -> onLogicError。
 function onLogic(): void
 {
-    updateStars();                 // 背景滚动(放逻辑里, 帧率无关)
-    if (!over)
+    // 通关后**整幅定格**(见 reportState 的 CLEAR): 背景也不再滚、逻辑步也不再推进 ——
+    // 只剩下面"把已有的爆炸播完"和状态打印。重开(R/回车)会把 cleared 清掉、世界重新跑。
+    if (!cleared)
+        updateStars();             // 背景滚动(放逻辑里, 帧率无关)
+    if (!over && !cleared)
         updateGame();
 
     // 爆炸特效即便 game over 也继续播放完
@@ -282,12 +287,14 @@ function reportState(): void
         console.log("[shooter] alive score=" + score + " lives=" + lives + " over=" + over);
         lastReportMs = now;
     }
-    // 通关: 打到目标分(game/shooter/config.json 的 targetScore = 300 ⇒ 30 架)。只报一次。
-    // ⚠ 通关后游戏**继续跑**(玩家可以接着刷、也可能接着死) —— 判分的尺子看到这一行就收工,
-    //   不需要本体停下来(它也停不下来: 本体的"结束"只有 GAME OVER 一种)。
+    // 通关: 打到目标分(kTargetScore = 300 ⇒ 30 架, 与 game/shooter/config.json 的 targetScore
+    //   保持一致)。只报一次。
+    // 通关即**停住这一局**: 置 cleared 后 onLogic 不再推进世界(背景也不滚), 玩家/敌机/子弹全
+    //   定格在那一刻, paint 那头改画"恭喜过关"; 只有按 R / 回车才会 reset 重开。
     if (!clearReported && score >= kTargetScore)
     {
         clearReported = true;
+        cleared = true;        // ⚠ 先定格、再打印: 尺子读到 CLEAR 那行时画面已经是"过关"那一帧
         console.log("[shooter] CLEAR score=" + score + " target=" + kTargetScore);
     }
     if (over && !gameOverReported)
@@ -322,10 +329,13 @@ function updateFps(): void
     const ms = now - lastFrameMs;
     lastFrameMs = now;
 
-    // 动画时钟(驱动旋转/缩放)
+    // 动画时钟(驱动旋转/缩放)。⚠ 通关后**不再推进**: 世界已经定格, 再让飞船/敌机自己转下去,
+    // 看着就像"游戏还在跑"(实测第一版就是这样) —— 通关那刻的画面要彻底静下来,
+    // 只留 HUD 上那几个统计数字还在变(见 onLogic 的 cleared 说明)。
     const dt = (animTickMs > 0) ? (now - animTickMs) / 1000.0 : 0;
     animTickMs = now;
-    animT += dt;
+    if (!cleared)
+        animT += dt;
 
     if (ms > 0)
     {
@@ -368,6 +378,7 @@ function reset(): void
     multi = 1;
     ring = 0;
     over = false;
+    cleared = false;
     errMsg = "";
     // 状态打印也从这一局重新开始(见 reportState): 否则重开时分数回到 0 也不打一行
     gameOverReported = false;
@@ -607,7 +618,7 @@ function onKeyPress(e: JZKeyEvent): void
     keys.add(k);
     if (k === VK_R || k === VK_RETURN)
     {
-        const needRecover = over || !logicTimer.isActive();
+        const needRecover = over || cleared || !logicTimer.isActive();
         if (needRecover)
         {
             reset();
@@ -667,7 +678,8 @@ function paint(e: JZPainterEvent): void
     if (frameDraws > peakDraws) peakDraws = frameDraws;
 
     drawHud(p, w, h);
-    if (over) drawOverlay(p, w, h);
+    if (cleared) drawClearOverlay(p, w, h);
+    else if (over) drawOverlay(p, w, h);
     else if (errMsg.length > 0) drawErrorOverlay(p, w, h);
 
     if (frameDraws > peakDraws) peakDraws = frameDraws;
@@ -843,6 +855,23 @@ function drawOverlay(p: JZPainter, w: number, h: number): void
     p.setFont('', 20);
     p.drawText((w / 2 - 110) | 0, (h / 2 + 20) | 0, "分数: " + score);
     p.drawText((w / 2 - 110) | 0, (h / 2 + 50) | 0, "按 R / 回车 重新开始");
+}
+
+// 通关遮罩: 世界此刻已经定格(见 onLogic / reportState), 这里只把"恭喜过关"盖上去。
+// 通关不写文件、不额外发事件 —— 日志里还是那行 `[shooter] CLEAR score=.. target=..`(见 reportState)。
+function drawClearOverlay(p: JZPainter, w: number, h: number): void
+{
+    frameDraws += 4;   // 遮罩 + 3 行文字
+    p.fillRect(0, 0, w, h, col(0, 0, 0, 160));
+    p.setPen(col(120, 255, 120), 3);          // 亮绿: 一眼区别于 GAME OVER 的红
+    p.setFont('', 56);
+    p.drawText((w / 2 - 112) | 0, (h / 2 - 40) | 0, "恭喜过关");
+    p.setPen(COL_WHITE, 1);
+    p.setFont('', 22);
+    p.drawText((w / 2 - 80) | 0, (h / 2 + 20) | 0, "最终分数: " + score);
+    p.setPen(COL_HINT);
+    p.setFont('', 18);
+    p.drawText((w / 2 - 170) | 0, (h / 2 + 60) | 0, "游戏已停止 —— 按 R / 回车 重新开始");
 }
 
 function drawErrorOverlay(p: JZPainter, w: number, h: number): void

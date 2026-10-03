@@ -26,6 +26,13 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "screenshot",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenshot));
     m_engine->registFunction(ns, "screenInfo",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenInfo));
     m_engine->registFunction(ns, "match",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatch));
+    // 进程 / 窗口管理（两个后端同一套语义: 真桌面 = EnumWindows/SetWindowPos, 虚拟桌面 = JZVirtualDevice）——
+    // 脚本"像人一样操作这台小电脑"要用的就是这些: 把目标窗口带到前台、看窗口在哪多大、摆窗口。
+    m_engine->registFunction(ns, "focusWindow",      jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsFocusWindow));
+    m_engine->registFunction(ns, "focusProcess",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsFocusProcess));
+    m_engine->registFunction(ns, "terminateProcess", jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsTerminateProcess));
+    m_engine->registFunction(ns, "windows",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWindows));
+    m_engine->registFunction(ns, "windowState",      jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWindowState));
     // 布局通道(运行期寻址的正路): 导出可访问布局树 / 等界面稳定 / 启动激活目标窗口
     m_engine->registFunction(ns, "layoutTree",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsLayoutTree));
     m_engine->registFunction(ns, "waitStable",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWaitStable));
@@ -135,6 +142,25 @@ bool JZJSComputerUseModule::jsLaunch(const std::string& optsJson) {
         }
     }
     return JZComputerUse::launch(exe, args, title, timeout);
+}
+
+// ————————————————————————————————————————————————
+// 进程 / 窗口管理（薄封装；语义与判据都在 JZComputerUse 那一层）
+// ————————————————————————————————————————————————
+bool JZJSComputerUseModule::jsFocusWindow(const std::string& title) {
+    return JZComputerUse::focusWindow(title);
+}
+bool JZJSComputerUseModule::jsFocusProcess(const std::string& name) {
+    return JZComputerUse::focusProcess(name);
+}
+bool JZJSComputerUseModule::jsTerminateProcess(const std::string& name) {
+    return JZComputerUse::terminateProcess(name);
+}
+Json::Value JZJSComputerUseModule::jsWindows(const std::string& optsJson) {
+    return JZComputerUse::windows(optsJson);
+}
+Json::Value JZJSComputerUseModule::jsWindowState(const std::string& optsJson) {
+    return JZComputerUse::windowState(optsJson);
 }
 
 // ————————————————————————————————————————————————

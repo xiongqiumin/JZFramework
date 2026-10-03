@@ -15,7 +15,10 @@
 //   ② 布局树给的 rect 与 click 收的坐标**就是同一套物理像素** —— 这是"能定位就能点中"的根;
 //   ③ 读状态走布局 (checked/text), 不碰像素;
 //   ④ 命中按 z 序, focusWindow 能切目标;
-//   ⑤ 虚拟模式下"启动进程/杀进程/切前台"一律明确失败 —— 绝不误动真实系统。
+//   ⑤ 虚拟模式下"进程/窗口管理"走**同一套语义**(落在 JZVirtualDevice 上, 不碰真实系统):
+//      切前台(focusWindow/focusProcess)·停进程(terminateProcess(名字))·窗口表/摆位(windows/windowState)
+//      都真能干活; 仍明确失败的只有"起真实进程/按系统 pid 那两条"(startProcess / launch /
+//      terminateProcess(pid) / focusProcess(pid))。
 //
 // 本测试不建任何真实窗口 => 可无头跑, 已进 ctest。
 #include <cstdio>
@@ -226,11 +229,41 @@ int main(int argc, char* argv[])
     check(JZComputerUse::focusWindow("PowerPanel"), "focusWindow 命中已存在的窗口");
     check(!JZComputerUse::focusWindow("NoSuchWindow"), "focusWindow 找不到时返回 false");
 
-    // ⑨ 虚拟模式下**不适用**的能力必须明确失败 (绝不误动真实系统)
+    // ⑨ 虚拟模式下**真的会去动真实系统**的那几条必须明确失败
     check(JZComputerUse::startProcess("cmd.exe") == 0, "startProcess 在虚拟桌面下不启动真实进程");
-    check(!JZComputerUse::terminateProcess("explorer"), "terminateProcess 不去杀真实进程");
-    check(!JZComputerUse::focusProcess("explorer"), "focusProcess 无进程语义");
     check(!JZComputerUse::launch("cmd.exe", "", "PowerPanel", 100), "launch 不启动真实程序");
+    check(!JZComputerUse::focusProcess("explorer"), "focusProcess(名字)找不到该虚拟进程 -> false");
+    check(!JZComputerUse::terminateProcess("explorer"), "terminateProcess(名字)找不到该虚拟进程 -> false");
+
+    // ⑨b 窗口/进程管理走**同一套语义**: 真能切前台、能摆窗口、能停桌面上的进程
+    {
+        JZVirtualWindow* tgt = desk.createWindow(200, 120, "FocusMe", 40, 40);
+        desk.refresh();
+
+        Json::Value wins = JZComputerUse::windows("{}");
+        check(wins.isArray() && wins.size() >= 2, "windows() 拿得到桌面窗口表");
+        Json::Value one = JZComputerUse::windows("{\"title\":\"FocusMe\"}");
+        check(one.isArray() && one.size() == 1 && one[0]["title"].asString() == "FocusMe",
+              "windows({title}) 按标题片段过滤");
+
+        check(JZComputerUse::focusWindow("FocusMe"), "focusWindow 激活桌面上那个窗口");
+
+        Json::Value st = JZComputerUse::windowState("{\"key\":\"FocusMe\",\"x\":123,\"y\":77}");
+        check(st.isObject() && st["frame"][0].asInt() == 123 && st["frame"][1].asInt() == 77,
+              "windowState 按**外框**坐标移动窗口");
+        st = JZComputerUse::windowState("{\"key\":\"FocusMe\",\"w\":300,\"h\":200}");
+        check(st.isObject() && st["client"][2].asInt() == 300 && st["client"][3].asInt() == 200,
+              "windowState 按**客户区**尺寸改大小");
+        st = JZComputerUse::windowState("{\"key\":\"FocusMe\",\"action\":\"minimize\"}");
+        check(st["minimized"].asBool(), "windowState 最小化");
+        st = JZComputerUse::windowState("{\"key\":\"FocusMe\",\"action\":\"restore\"}");
+        check(!st["minimized"].asBool(), "windowState 还原");
+        check(JZComputerUse::windowState("{\"key\":\"NoSuchWin\"}").isNull(),
+              "windowState 找不到窗口 -> null（不假装成功）");
+        check(JZComputerUse::windowState("{\"key\":\"FocusMe\",\"action\":\"爆炸\"}").isNull(),
+              "windowState 不认识的 action -> null");
+        (void)tgt;
+    }
 
     printf("[链路] 多窗口: 命中按 z 序\n");
 

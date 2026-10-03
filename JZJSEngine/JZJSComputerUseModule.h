@@ -30,6 +30,12 @@ private:
     Json::Value jsLayoutTree(const std::string& optsJson); // 可访问布局树(**物理像素** rect); 可指定目标 title
     bool        jsWaitStable(const std::string& optsJson); // 等界面稳定(像素只当信号)
     bool        jsLaunch(const std::string& optsJson);     // 启动 / 激活目标窗口
+    // —— 进程 / 窗口管理（两个后端同一套语义; 见 JZComputerUse.h 的同名接口）——
+    bool        jsFocusWindow(const std::string& title);        // 按标题片段提前台
+    bool        jsFocusProcess(const std::string& name);        // 按进程名提前台
+    bool        jsTerminateProcess(const std::string& name);    // 按进程名停掉它
+    Json::Value jsWindows(const std::string& optsJson);         // 窗口表（物理像素几何）
+    Json::Value jsWindowState(const std::string& optsJson);      // SetWindowPos / ShowWindow 那一组
 
     // —— OCR 兜底(像素族里的"文字"那条; 见 docs/compute-use-design.md §4.1) ——
     bool        jsInitOcr(const std::string& optsJson);    // { modelRoot? } -> 是否就绪

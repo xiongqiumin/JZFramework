@@ -8,6 +8,8 @@
 #include <objbase.h>     // CoInitializeEx / CoCreateInstance / IID_PPV_ARGS
 #include <tlhelp32.h>    // 进程快照
 #include <cstring>       // strstr
+#include <cstdio>        // snprintf (窗口句柄字符串)
+#include <cctype>        // isdigit (窗口标识解析)
 #include <cmath>         // lround (归一化坐标 -> 桌面像素)
 #include <cstdlib>       // getenv (OCR 模型目录)
 #include <uiautomation.h>   // 无障碍(UI Automation): 外部软件的结构化控件树, 见 layoutTree
@@ -30,11 +32,15 @@
 
 // 框架侧(布局通道要用): 语义树 / 活动窗口 / 显示器几何 / 虚拟桌面后端
 #include "JZApplication.h"
+#include "JZThread.h"       // 虚拟桌面里"进程" = JZThread; 进程名 = objectName (见 createProcess)
 #include "JZLog.h"
 #include "JZWidget/JZWidget.h"
 #include "JZWidget/JZWindow.h"
 #include "binary/virtual_device/JZVirtualDevice.h"    // 虚拟桌面 (setVirtualDesktop)
 #include "binary/virtual_device/JZVirtualWindow.h"
+#include "binary/virtual_device/JZVirtualThread.h"    // jzRunOnThreadSync: 桌面操作要转投主线程
+#include <functional>
+#include <memory>
 
 // OpenCV 只在"像素族匹配"(matchImage/matchColor)里用，而像素族已降级为**兜底**
 // (见 docs/compute-use-design.md §4.1) ⇒ 默认不编，避免为一个兜底能力背整条 OpenCV 依赖。
@@ -156,6 +162,56 @@ JZImage currentFrame() {
         std::string s(n - 1, 0);
         WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
         return s;
+    }
+
+    // 虚拟桌面: 按名字找那个"进程"(= 一个 JZThread + 一份 JS 运行时)。
+    //   ⚠ 名字的来源: JZVirtualProcess 构造时 `setObjectName(name)`（见 JZVirtualProcess.cpp）——
+    //     所以 CU 只认 JZThread 这一层就够, 不需要认识 JS 引擎那个类。
+    //   带/不带 ".exe" 都认（与真桌面那条路的 pidByName 同一套规则）。
+    JZThread* cuVirtualProcessByName(JZVirtualDevice* d, const std::string& name) {
+        if (!d || name.empty())
+            return nullptr;
+        for (JZThread* p : d->processes()) {
+            if (!p)
+                continue;
+            const std::string n = p->objectName();
+            if (n == name || n + ".exe" == name)
+                return p;
+            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".exe") == 0
+                && n == name.substr(0, name.size() - 4))
+                return p;
+        }
+        return nullptr;
+    }
+
+    // 虚拟后端: 所有"桌面操作"都必须在**桌面所属线程**（主线程）上做 ——
+    //   · 窗口表 / 激活 / 摆位要抢桌面的锁, 而进程线程做这些时主线程可能正卡在 sendEvent 等它(互等);
+    //   · terminateProcess 还要 join + 删**另一个线程**, 在错的线程里做会直接踩 JZObject 的线程
+    //     亲和断言 —— 实测是 `FATAL JZThread.cpp(422): jzApp->currentThread() == this`, 容器当场被带走。
+    // 所以统一转投主线程（jzRunOnThreadSync 自带"已经在本线程就直接跑"）。
+    // ⚠ 纪律(见 JZVirtualThread.h): func 里别再回等调用方线程; 捕获用值/shared_ptr(超时后仍可能执行)。
+    // ⚠ 别用现成的 jzRunOnThreadSync 来做这件事: 它对目标线程有个 `isRunning()` 前置检查,
+    //   而**主线程**的 JZThread 不是 std::thread 起的(没有 joinable 的 thread) ⇒ 那个检查会把
+    //   转投整个挡掉, 调用方拿到"什么都没做"(实测: windows() 一律返回空表)。
+    //   这里只做"投递 + 信号量等", 形状与它一致; 已经在桌面线程上就直接跑(别自投递)。
+    bool cuOnDesktopThread(const std::function<void()>& fn, int timeoutMs = 8000) {
+        JZObject* desk = JZComputerUse::virtualDesktop();
+        if (!desk)
+            return false;
+        JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
+        // 没有应用 / 没有主线程(如独立的测试 exe, 没有一个在跑事件循环的宿主) ⇒ 没得转投,
+        // 就在当前线程上跑: 那种场景下"桌面所属线程"本来就是调用方自己。
+        if (!main || JZThread::currentThread() == main) {
+            fn();
+            return true;
+        }
+        auto done = std::make_shared<JZSemaphore>();
+        const std::function<void()> f = fn;      // 拷一份 (超时后 lambda 仍可能执行)
+        runOnObject(desk, [f, done]() {
+            try { f(); } catch (...) { }
+            done->release();
+        });
+        return done->tryAcquire(1, timeoutMs);
     }
 
     DWORD pidByName(const std::string& name) {
@@ -546,9 +602,20 @@ DWORD JZComputerUse::btnUp(MouseBtn b) {
 }
 
 void JZComputerUse::switchToDesktop() {
-    // 虚拟桌面下没有"显示桌面"这回事 (桌面永远是它自己那块) —— 明确 no-op, 不碰真实系统
-    if (s_virtualDesk)
+    // 虚拟桌面: 与真桌面那条路**同一套语义** —— 真桌面是 IShellDispatch4::MinimizeAll,
+    //   这里就是把桌面上所有窗口最小化 (露出"它自己那块桌面"), 不碰真实系统。
+    //   ⚠ 别改成 no-op: 脚本在两个后端要能复用同一句 (这是"虚拟里跑通能上真机"的前提)。
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        cuOnDesktopThread([d]() {
+            for (JZVirtualWindow* w : d->windowList()) {
+                if (w && w->isVisible() && !w->isMinimized())
+                    w->setMinimized(true);
+            }
+            d->refresh();
+        });
         return;
+    }
     // 不用 Win+D 按键模拟(它是 toggle, 状态不可控); 改调 Explorer 真正的"显示桌面" COM 语义。
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     IShellDispatch4* pShell = nullptr;
@@ -1300,7 +1367,9 @@ DWORD JZComputerUse::startProcess(const std::string& path, const std::string& ar
 }
 
 bool JZComputerUse::terminateProcess(DWORD pid) {
-    // 虚拟桌面: 绝不去杀真实进程 (要"关掉桌面上那个窗口"用 JZVirtualDevice::destroyWindow)
+    // 虚拟桌面: 不做"按 pid 杀" —— 虚拟进程没有系统 pid（JZVirtualProcess::processId 只是它
+    //   自己的序号, CU 这一层认不到那个类）。按**名字**停请走 terminateProcess(name)。
+    //   这里明确失败, 不假装成功。
     if (s_virtualDesk)
         return false;
     HANDLE h = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, FALSE, pid);
@@ -1311,13 +1380,33 @@ bool JZComputerUse::terminateProcess(DWORD pid) {
 }
 
 bool JZComputerUse::terminateProcess(const std::string& name) {
+    // 虚拟桌面: 停掉桌面上那个进程 (= 一个线程 + 一份 JS 运行时; 它建的窗口一起收走)。
+    //   ⚠ 与真桌面那条路**同一套语义**（按名字停), 只是实现落在 JZVirtualDevice::terminateProcess。
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        // ⚠ "停自己"必须拦掉: 转投主线程后主线程会 join 当前这个线程, 而它正阻塞等这次 RPC 返回 ⇒ 死锁
+        if (JZThread* self = cuVirtualProcessByName(d, name)) {
+            if (self == JZThread::currentThread())
+                return false;
+        }
+        auto ok = std::make_shared<bool>(false);
+        const bool ran = cuOnDesktopThread([d, name, ok]() {
+            JZThread* p = cuVirtualProcessByName(d, name);
+            if (!p)
+                return;
+            d->terminateProcess(p);                 // 停 + 等 + 收它的窗口 + 删
+            *ok = true;
+        }, 20000);                                  // 它要 join 目标线程, 给足时间
+        return ran && *ok;
+    }
     DWORD pid = pidByName(name);
     if (!pid) return false;
     return terminateProcess(pid);
 }
 
 bool JZComputerUse::focusProcess(DWORD pid) {
-    // 虚拟桌面: 没有"进程"这一层 —— 切目标请用 focusWindow
+    // 虚拟桌面: 没有"系统 pid"这一层 —— 按名字切请走 focusProcess(name) / focusWindow(title)。
+    //   这里明确失败, 不假装成功。
     if (s_virtualDesk)
         return false;
     FindCtx c; c.pid = pid;
@@ -1328,6 +1417,27 @@ bool JZComputerUse::focusProcess(DWORD pid) {
 }
 
 bool JZComputerUse::focusProcess(const std::string& name) {
+    // 虚拟桌面: 激活那个进程的窗口（z 序最上那个 = "它的主窗口"）—— 与真桌面那条路同一套语义:
+    //   最小化先还原; 返回值 = "它现在真是活动窗口吗"（不是"找到了"）。
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        auto ok = std::make_shared<bool>(false);
+        const bool ran = cuOnDesktopThread([d, name, ok]() {
+            JZThread* p = cuVirtualProcessByName(d, name);
+            if (!p)
+                return;
+            const std::vector<JZVirtualWindow*> wins = d->windowsOfProcess(p);
+            if (wins.empty())
+                return;
+            JZVirtualWindow* w = wins.back();          // z 序末尾最上
+            if (w->isMinimized())
+                w->setMinimized(false);
+            d->activate(w);
+            d->refresh();
+            *ok = (d->activeWindow() == w);
+        });
+        return ran && *ok;
+    }
     DWORD pid = pidByName(name);
     if (!pid) return false;
     return focusProcess(pid);
@@ -1338,13 +1448,19 @@ bool JZComputerUse::focusWindow(const std::string& title) {
     //   · 最小化先还原 (真桌面 bringToFront 里的 ShowWindow(SW_RESTORE) 干的就是这件事);
     //   · 返回值 = "它现在真是活动窗口吗" (真桌面返回的是"真成了前台没有"), 而不是"找到了"。
     if (s_virtualDesk) {
-        JZVirtualWindow* w = s_virtualDesk->byTitle(title);
-        if (!w)
-            return false;
-        if (w->isMinimized())
-            w->setMinimized(false);
-        s_virtualDesk->activate(w);
-        return s_virtualDesk->activeWindow() == w;
+        JZVirtualDevice* d = s_virtualDesk;
+        auto ok = std::make_shared<bool>(false);
+        const bool ran = cuOnDesktopThread([d, title, ok]() {
+            JZVirtualWindow* w = d->byTitle(title);
+            if (!w)
+                return;
+            if (w->isMinimized())
+                w->setMinimized(false);
+            d->activate(w);
+            d->refresh();
+            *ok = (d->activeWindow() == w);
+        });
+        return ran && *ok;
     }
     FindCtx c; c.title = &title;
     EnumWindows(EnumFindTitle, (LPARAM)&c);
@@ -1357,4 +1473,308 @@ bool JZComputerUse::focusWindow(const std::string& title) {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
     return GetAncestor(fg, GA_ROOT) == GetAncestor(c.found, GA_ROOT);
+}
+
+// ————————————————————————————————————————————————
+// 窗口表 / 窗口状态（"EnumWindows / SetWindowPos / ShowWindow / SetWindowText" 那一组）
+// 两个后端同一套语义、同一套坐标口径（**物理像素**）—— 见头文件的说明。
+// ————————————————————————————————————————————————
+namespace {
+
+// 窗口句柄字符串: 与 JZVirtualDeviceHttp::windowHandleOf **同一套写法**（"指针的十六进制"）。
+// 于是同一台桌面上, CU 与 HTTP 报出来的句柄是同一个字符串, 两边对照调试不会打架。
+// 对调用方是**不透明**的: 只用来原样带回来。
+std::string cuHandleStr(const void* p) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uintptr_t)p);
+    return std::string(buf);
+}
+
+Json::Value cuRectArr(int x, int y, int w, int h) {
+    Json::Value v(Json::arrayValue);
+    v.append(x); v.append(y); v.append(w); v.append(h);
+    return v;
+}
+
+// 虚拟桌面: 窗口 -> 对外 JSON（乘 scale: 对外一律物理像素, 与 click/screenshot 同空间）
+Json::Value cuVirtualWindowJson(JZVirtualDevice* d, JZVirtualWindow* w, int index) {
+    Json::Value o(Json::objectValue);
+    o["handle"] = cuHandleStr(w);
+    o["index"] = index;
+    o["title"] = w->title();
+    const JZRect f = w->frameGeometry();
+    const JZRect c = w->clientGeometry();
+    o["frame"] = cuRectArr(d->toPhysical(f.left()), d->toPhysical(f.top()),
+                           d->toPhysical(f.width()), d->toPhysical(f.height()));
+    o["client"] = cuRectArr(d->toPhysical(c.left()), d->toPhysical(c.top()),
+                            d->toPhysical(c.width()), d->toPhysical(c.height()));
+    o["visible"] = w->isVisible();
+    o["active"] = (w == d->activeWindow());
+    o["minimized"] = w->isMinimized();
+    o["maximized"] = w->isMaximized();
+    return o;
+}
+
+// 下标写法: "#3" / "3" -> 3（不是纯数字返回 -1; 句柄/标题走别的分支）
+int cuParseIndex(const std::string& key) {
+    std::string n = key;
+    if (!n.empty() && n[0] == '#')
+        n = n.substr(1);
+    if (n.empty())
+        return -1;
+    for (char ch : n)
+        if (!isdigit((unsigned char)ch))
+            return -1;
+    return atoi(n.c_str());
+}
+
+// 虚拟桌面: 窗口标识 -> 窗口（与 HTTP 的 findWindow 同一套认法: 句柄 > 下标 > 标题片段[最上层优先]）
+JZVirtualWindow* cuVirtualFind(JZVirtualDevice* d, const std::string& key) {
+    if (key.empty())
+        return nullptr;
+    const std::vector<JZVirtualWindow*> list = d->windowList();
+    if (key.size() > 2 && key[0] == '0' && (key[1] == 'x' || key[1] == 'X')) {
+        for (JZVirtualWindow* w : list)
+            if (w && cuHandleStr(w) == key)
+                return w;
+        return nullptr;
+    }
+    const int idx = cuParseIndex(key);
+    if (idx >= 0)
+        return (idx < (int)list.size()) ? list[idx] : nullptr;
+    for (size_t i = list.size(); i-- > 0;)          // z 序末尾最上 ⇒ 从后往前 = 最上层优先
+        if (list[i] && list[i]->title().find(key) != std::string::npos)
+            return list[i];
+    return nullptr;
+}
+
+// ---- 真桌面那一套 ----
+BOOL CALLBACK cuEnumVisibleTop(HWND w, LPARAM l) {
+    auto* out = (std::vector<HWND>*)l;
+    if (!IsWindowVisible(w))
+        return TRUE;
+    if (GetWindow(w, GW_OWNER) != nullptr)          // 只要顶层窗口（跳过被拥有的工具窗）
+        return TRUE;
+    out->push_back(w);
+    return TRUE;
+}
+
+std::vector<HWND> cuTopWindows() {
+    std::vector<HWND> out;
+    EnumWindows(cuEnumVisibleTop, (LPARAM)&out);
+    return out;
+}
+
+std::string cuWinTitle(HWND w) {
+    wchar_t buf[512] = {};
+    GetWindowTextW(w, buf, (int)(sizeof(buf) / sizeof(buf[0])));
+    return narrow(buf);                             // UTF-8（与进程名同一个口径）
+}
+
+Json::Value cuWin32WindowJson(HWND w, int index) {
+    Json::Value o(Json::objectValue);
+    o["handle"] = cuHandleStr(w);
+    o["index"] = index;
+    o["title"] = cuWinTitle(w);
+    RECT fr = {};
+    GetWindowRect(w, &fr);
+    o["frame"] = cuRectArr((int)fr.left, (int)fr.top,
+                           (int)(fr.right - fr.left), (int)(fr.bottom - fr.top));
+    RECT cr = {};
+    GetClientRect(w, &cr);
+    POINT tl = { 0, 0 };
+    ClientToScreen(w, &tl);
+    o["client"] = cuRectArr((int)tl.x, (int)tl.y,
+                            (int)(cr.right - cr.left), (int)(cr.bottom - cr.top));
+    o["visible"] = IsWindowVisible(w) != 0;
+    o["active"] = (w == GetForegroundWindow());
+    o["minimized"] = IsIconic(w) != 0;
+    o["maximized"] = IsZoomed(w) != 0;
+    return o;
+}
+
+HWND cuWin32Find(const std::string& key) {
+    if (key.empty())
+        return nullptr;
+    if (key.size() > 2 && key[0] == '0' && (key[1] == 'x' || key[1] == 'X'))
+        return (HWND)(uintptr_t)strtoull(key.c_str(), nullptr, 16);
+    const std::vector<HWND> list = cuTopWindows();
+    const int idx = cuParseIndex(key);
+    if (idx >= 0)
+        return (idx < (int)list.size()) ? list[idx] : nullptr;
+    for (HWND w : list)
+        if (cuWinTitle(w).find(key) != std::string::npos)
+            return w;
+    return nullptr;
+}
+
+int cuWin32IndexOf(HWND h) {
+    const std::vector<HWND> list = cuTopWindows();
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i] == h)
+            return (int)i;
+    return -1;
+}
+
+// UTF-8 -> 宽字符（SetWindowTextW 用）
+std::wstring cuWide(const std::string& s) {
+    if (s.empty())
+        return std::wstring();
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+} // namespace
+
+Json::Value JZComputerUse::windows(const std::string& optsJson) {
+    std::string titleFilter;
+    if (!optsJson.empty()) {
+        Json::Value root;
+        Json::Reader reader;
+        if (reader.parse(optsJson, root) && root.isMember("title"))
+            titleFilter = root["title"].asString();
+    }
+
+    Json::Value arr(Json::arrayValue);
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        auto out = std::make_shared<Json::Value>(Json::arrayValue);
+        const bool ran = cuOnDesktopThread([d, titleFilter, out]() {
+            const std::vector<JZVirtualWindow*> list = d->windowList();
+            for (size_t i = 0; i < list.size(); ++i) {
+                JZVirtualWindow* w = list[i];
+                if (!w)
+                    continue;
+                if (!titleFilter.empty() && w->title().find(titleFilter) == std::string::npos)
+                    continue;
+                out->append(cuVirtualWindowJson(d, w, (int)i));
+            }
+        });
+        return ran ? *out : Json::Value(Json::nullValue);   // 超时给 null(不是空表): 调用方别把"没拿到"当成"没有窗口"
+    }
+    const std::vector<HWND> list = cuTopWindows();
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (!titleFilter.empty() && cuWinTitle(list[i]).find(titleFilter) == std::string::npos)
+            continue;
+        arr.append(cuWin32WindowJson(list[i], (int)i));
+    }
+    return arr;
+}
+
+Json::Value JZComputerUse::windowState(const std::string& optsJson) {
+    Json::Value root;
+    Json::Reader reader;
+    if (optsJson.empty() || !reader.parse(optsJson, root) || !root.isObject())
+        return Json::Value();
+
+    const std::string key = root.isMember("key") ? root["key"].asString() : "";
+    if (key.empty())
+        return Json::Value();
+    const std::string action = root.isMember("action") ? root["action"].asString() : "";
+    const bool hasPos = root.isMember("x") && root.isMember("y");
+    const bool hasSize = root.isMember("w") && root.isMember("h");
+    const bool hasTitle = root.isMember("title");
+    const double px = hasPos ? root["x"].asDouble() : 0.0;
+    const double py = hasPos ? root["y"].asDouble() : 0.0;
+    const double pw = hasSize ? root["w"].asDouble() : 0.0;
+    const double ph = hasSize ? root["h"].asDouble() : 0.0;
+    if (hasSize && (pw <= 0 || ph <= 0))
+        return Json::Value();                       // w/h = **客户区**尺寸, 必须 > 0
+    static const char* kActions[] = { "", "activate", "minimize", "maximize", "restore", "close" };
+    bool known = false;
+    for (const char* a : kActions)
+        if (action == a) { known = true; break; }
+    if (!known)
+        return Json::Value();                       // 不认识的 action: 不假装成功
+
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        const std::string newTitle = hasTitle ? root["title"].asString() : std::string();
+        auto out = std::make_shared<Json::Value>(Json::nullValue);
+        const bool ran = cuOnDesktopThread([d, key, action, hasPos, hasSize, hasTitle,
+                                            px, py, pw, ph, newTitle, out]() {
+            JZVirtualWindow* w = cuVirtualFind(d, key);
+            if (!w)
+                return;
+            if (action == "close") {
+                // 同真系统点 X / HTTP 的 DELETE: 发 close 消息（应用可拒绝）, **不等它处理完**
+                Json::Value o(Json::objectValue);
+                o["handle"] = cuHandleStr(w);
+                o["title"] = w->title();
+                o["closing"] = true;
+                w->close();
+                *out = o;
+                return;
+            }
+            if (action == "activate") {
+                if (w->isMinimized())
+                    w->setMinimized(false);         // 激活一个最小化的窗口顺手还原（窗口管理器同语义）
+                d->activate(w);
+            } else if (action == "minimize") {
+                w->setMinimized(true);
+            } else if (action == "maximize") {
+                if (w->isMinimized())
+                    w->setMinimized(false);
+                w->setMaximized(true);
+            } else if (action == "restore") {
+                if (w->isMinimized())
+                    w->setMinimized(false);
+                if (w->isMaximized())
+                    w->setMaximized(false);
+            }
+            // x,y = **外框**位置; w,h = **客户区**尺寸 —— 对外物理像素 ⇒ 进来先换逻辑
+            if (hasSize)
+                w->setClientSize(d->toLogical((int)lround(pw)), d->toLogical((int)lround(ph)));
+            if (hasPos)
+                w->setFramePos(d->toLogical((int)lround(px)), d->toLogical((int)lround(py)));
+            if (hasTitle)
+                w->setTitle(newTitle);
+            d->refresh();
+            const std::vector<JZVirtualWindow*> list = d->windowList();
+            int idx = -1;
+            for (size_t i = 0; i < list.size(); ++i)
+                if (list[i] == w)
+                    idx = (int)i;
+            *out = cuVirtualWindowJson(d, w, idx);
+        });
+        return ran ? *out : Json::Value();
+    }
+
+    // 真桌面: SetWindowPos / ShowWindow / WM_CLOSE / SetWindowTextW
+    HWND h = cuWin32Find(key);
+    if (!h)
+        return Json::Value();
+    if (action == "activate")
+        bringToFront(h);
+    else if (action == "minimize")
+        ShowWindow(h, SW_MINIMIZE);
+    else if (action == "maximize")
+        ShowWindow(h, SW_MAXIMIZE);
+    else if (action == "restore")
+        ShowWindow(h, SW_RESTORE);
+    else if (action == "close")
+        PostMessageW(h, WM_CLOSE, 0, 0);            // 与真系统点 X 同语义（投出去就返回）
+    if (hasPos || hasSize) {
+        RECT cur = {};
+        GetWindowRect(h, &cur);
+        int nx = hasPos ? (int)lround(px) : (int)cur.left;
+        int ny = hasPos ? (int)lround(py) : (int)cur.top;
+        int nw = (int)(cur.right - cur.left);
+        int nh = (int)(cur.bottom - cur.top);
+        if (hasSize) {
+            // 客户区尺寸 -> 外框尺寸: 装饰差随该窗口的 style/exstyle 走（不抄常量）
+            RECT r = { 0, 0, (LONG)lround(pw), (LONG)lround(ph) };
+            AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtrW(h, GWL_STYLE),
+                               GetMenu(h) != nullptr,
+                               (DWORD)GetWindowLongPtrW(h, GWL_EXSTYLE));
+            nw = (int)(r.right - r.left);
+            nh = (int)(r.bottom - r.top);
+        }
+        SetWindowPos(h, nullptr, nx, ny, nw, nh, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (hasTitle)
+        SetWindowTextW(h, cuWide(root["title"].asString()).c_str());
+    return cuWin32WindowJson(h, cuWin32IndexOf(h));
 }

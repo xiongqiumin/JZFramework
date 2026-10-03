@@ -100,7 +100,12 @@ JZImage currentFrame() {
     JZVirtualDevice* d = JZComputerUse::virtualDesktop();
     if (d)
         return d->screenshot();
-    return JZScreenShot::captureVirtualDesktop(nullptr);
+    // ⚠ 必须传 deviceScale: 缺省是 1.0f ⇒ captureVirtualDesktop 按**逻辑像素**拼图
+    //   (见 JZScreenShot.h: "传 <=0 视为 1 (按逻辑像素拼, 会损失高 DPI 细节)"), 于是帧只有逻辑
+    //   尺寸 —— 而 matchImage/matchColorEx/ocrTexts 返回的框、click 的入参都声明是**物理像素**,
+    //   直接从帧里量出来去点就差一个 scale(125% 屏上实测 1536x864 vs 1920x1080)。
+    //   帧与坐标同源(见上面"必须都从这里取") ⇒ 帧也必须是物理的。
+    return JZScreenShot::captureVirtualDesktop(nullptr, (float)JZComputerUse::desktopScale());
 }
 
 // ⚠ 这里曾经有一个 shiftBoundsInScreen(): 给语义树的 boundsInScreen 补上窗口的桌面偏移,
@@ -721,52 +726,82 @@ bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
     return true;
 }
 
-void JZComputerUse::key(const std::string& name) {
-    // 虚拟桌面: "Ctrl+C" 拆成修饰键 + 主键 -> 注入活动窗口 (不走 SendInput)
-    if (s_virtualDesk) {
-        std::vector<std::string> parts; split(name, '+', parts);
-        uint32_t mods = JZKeyEvent::NoModifier;
-        int vk = 0;
-        for (size_t i = 0; i < parts.size(); ++i) {
-            std::string low = parts[i];
-            for (auto& c : low) c = (char)tolower((unsigned char)c);
-            if (i + 1 < parts.size()) {                 // 前缀都是修饰键
-                if (low == "ctrl" || low == "control") mods |= JZKeyEvent::CtrlModifier;
-                else if (low == "shift")               mods |= JZKeyEvent::ShiftModifier;
-                else if (low == "alt")                 mods |= JZKeyEvent::AltModifier;
-            } else {
-                vk = vkFromName(parts[i]);              // 最后一个是主键
-            }
+namespace {
+
+// 解析按键名: "Ctrl+C" -> {修饰键…, 主键} (vks) + 修饰位 (mods)。
+// 返回 false = 有不认识的键 —— **不假装按成功** (静默丢弃会让脚本"按了没反应"而无从判断)。
+// 为什么两样都要: 虚拟桌面那条路把修饰键**挂在主键事件上**(mods, 与应用从真键盘收到的形状
+// 一致); 真桌面那条路得**物理按下修饰键**(SendInput), 所以两种信息都得留着。
+bool parseKeyName(const std::string& name, std::vector<int>& vks, uint32_t& mods)
+{
+    mods = JZKeyEvent::NoModifier;
+    vks.clear();
+    std::vector<std::string> parts;
+    split(name, '+', parts);
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        std::string low = parts[i];
+        for (auto& c : low) c = (char)tolower((unsigned char)c);
+        if (i + 1 < parts.size())                    // 非末位 = 修饰键
+        {
+            if (low == "ctrl" || low == "control") mods |= JZKeyEvent::CtrlModifier;
+            else if (low == "shift")               mods |= JZKeyEvent::ShiftModifier;
+            else if (low == "alt")                 mods |= JZKeyEvent::AltModifier;
         }
+        const int vk = vkFromName(parts[i]);
         if (vk == 0)
-            return;
-        s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, true);
-        // ⚠ press 与 release 之间**必须隔开一拍**: 应用是在自己的"逻辑帧"里读"当前按着谁"
-        //   (游戏循环/时间线定时器), 而这两个事件会在同一轮事件处理里被一起吃掉 ——
-        //   那一帧应用读到的永远是"没按下", 于是按方向键纹丝不动、按空格不开火
-        //   (实测: shooter 里脚本对准了也打不出分, 玩家坐标全程没变)。
-        //   真桌面那条路本来就是 SendInput(press) -> Sleep(20) -> SendInput(release),
-        //   这里与它对齐, 但取**一个逻辑帧(16ms)**而不是 20ms: 这个间隔就是脚本的"按键速率
-        //   上限"(一次调用 ≈ 一次按键), 20ms 时只有 50 次/秒, 追不上 60 帧的游戏里"按住"
-        //   能跑出来的速度(实测给 shooter 的脚本每帧只挪 6px、横穿屏幕要 4 秒, 而游戏里
-        //   按住同一方向 2 秒就够 —— 脚本永远追不上敌机)。
-        //   "按下 + 立刻松开"的语义不变: 松开依旧是注入后立刻发生, 只是给应用留出一个
-        //   能看见"按下"的逻辑帧。
-        Sleep(16);
-        s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, false);
-        return;                           // 同上: 送出去就返回 (同真桌面 SendInput)
+            return false;
+        vks.push_back(vk);
     }
-    std::vector<std::string> parts; split(name, '+', parts);
-    std::vector<int> vks; vks.reserve(parts.size());
-    for (auto& p : parts) vks.push_back(vkFromName(p));
+    return !vks.empty();
+}
+
+} // namespace
+
+// 键盘**状态**: 按下 / 抬起 —— **投递即返回**, 不在调用方线程上睡 (见头文件的说明)。
+// 为什么拆成 down/up 而不是"tap + Sleep(16)": 应用(游戏循环/时间线定时器)是**每个逻辑帧
+//   读一次"当前按着谁"** 的 ⇒ "按住多久"本该由调用方决定。以前那句 Sleep 把目标的节拍
+//   写死在 API 里, 结果是: 跨线程时白占调用方 16ms/次(脚本一小节 6.6 次按键 = 208ms,
+//   决策频率因此卡在 4.5 次/秒), 同线程时更糟 —— 它卡住的正是目标自己的循环, 而那一帧
+//   因为循环没跑, 还是看不见"按下", 睡了也白睡。
+void JZComputerUse::keyDown(const std::string& name) {
+    std::vector<int> vks; uint32_t mods = JZKeyEvent::NoModifier;
+    if (!parseKeyName(name, vks, mods))
+        return;
+    // 虚拟桌面: 走注入 (投给活动窗口的控件树), 不走 SendInput
+    if (s_virtualDesk) {
+        s_virtualDesk->injectKey((uint32_t)vks.back(), std::string(), mods, true);
+        return;                                  // 送出去就返回 (同真桌面 SendInput)
+    }
     INPUT in[16] = {}; int k = 0;
     for (int v : vks) { in[k].type = INPUT_KEYBOARD; in[k].ki.wVk = (WORD)v; k++; }
     if (k) SendInput(k, in, sizeof(INPUT));
-    Sleep(20);
-    for (int i = (int)vks.size() - 1; i >= 0; i--) {
-        in[i].type = INPUT_KEYBOARD; in[i].ki.wVk = (WORD)vks[i]; in[i].ki.dwFlags = KEYEVENTF_KEYUP;
+}
+
+void JZComputerUse::keyUp(const std::string& name) {
+    std::vector<int> vks; uint32_t mods = JZKeyEvent::NoModifier;
+    if (!parseKeyName(name, vks, mods))
+        return;
+    if (s_virtualDesk) {
+        s_virtualDesk->injectKey((uint32_t)vks.back(), std::string(), mods, false);
+        return;
+    }
+    INPUT in[16] = {}; int k = 0;
+    for (size_t i = 0; i < vks.size(); ++i) {     // 抬起顺序与按下相反 (同真键盘)
+        in[k].type = INPUT_KEYBOARD; in[k].ki.wVk = (WORD)vks[vks.size() - 1 - i];
+        in[k].ki.dwFlags = KEYEVENTF_KEYUP; k++;
     }
     if (k) SendInput(k, in, sizeof(INPUT));
+}
+
+// 敲一下 = 按下 + 抬起 (两次投递, **不阻塞调用方**)。
+// 够用于**事件驱动**的消费者(输入框/菜单/按钮: 它们在自己的 keyPress/keyRelease 里就处理完) —
+//   与 type() 同形(type 也是逐字符 press+release 背靠背投)。
+// ⚠ 对"按逻辑帧轮询按键"的应用(游戏), 一次敲击**不保证被看见**(两个事件可能落在同一个逻辑帧
+//   之前) ⇒ 要"按住几个逻辑帧"请用 keyDown + keyUp 自己控制时长。
+void JZComputerUse::key(const std::string& name) {
+    keyDown(name);
+    keyUp(name);
 }
 
 void JZComputerUse::type(const std::string& text) {
@@ -794,6 +829,12 @@ std::string JZComputerUse::screenshot() {
     // 从图里量出来的像素可以直接拿去点 (虚拟桌面 = 桌面逻辑 × scale; 真桌面 = 抓屏)。
     JZImage img = currentFrame();
     return JZScreenShot::toDataUrl(img);
+}
+
+JZImage JZComputerUse::screenshotImage() {
+    // 同一帧, 但**不编码**: 直接把 JZImage 交出去(给 cv.fromImage 这类"要自己处理像素"的用)。
+    // 帧本来就是内存里的一块 RGBA8888 —— 编码成 PNG 再让脚本解回来, 白干两遍。
+    return currentFrame();
 }
 
 #if JZ_CU_OPENCV || JZ_CU_OCR
@@ -1205,6 +1246,17 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
     return out;
 }
 
+// 真桌面的 device scale (= 物理 / 逻辑)。
+// ⚠ 判据与下面 screenInfo() 里那两行**完全一致** —— 帧源(currentFrame)与坐标口径都读它; 两处一旦
+//   各算各的, "从帧里量出来的坐标"与"click 怎么解释它"就会差一个比例(2026-10-03 在 125% 缩放的
+//   屏上暴露: 帧 1536x864(逻辑) vs physical 1920x1080, 差 1.25)。
+double JZComputerUse::desktopScale()
+{
+    const JZRect lg = virtualLogicalRect();
+    const int ph = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    return (lg.height() > 0) ? (double)ph / (double)lg.height() : 1.0;
+}
+
 // 尺寸/缩放: "图上的像素 ↔ 物理像素"换算的唯一依据 (见头文件)
 Json::Value JZComputerUse::screenInfo()
 {
@@ -1233,7 +1285,7 @@ Json::Value JZComputerUse::screenInfo()
     const int ph = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
     o["logical"] = two(lg.width(), lg.height());
     o["physical"] = two(pw, ph);
-    const double sc = (lg.height() > 0) ? (double)ph / (double)lg.height() : 1.0;
+    const double sc = desktopScale();      // 与帧源同一份计算(见 desktopScale 的说明: 别再各算一遍)
     o["scale"] = sc;
     o["dpi"] = (int)std::lround(96.0 * sc);
     o["explicit"] = false;

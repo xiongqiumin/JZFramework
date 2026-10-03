@@ -20,10 +20,15 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "click",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsClick));
     m_engine->registFunction(ns, "doubleClick",    jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsDoubleClick));
     m_engine->registFunction(ns, "drag",           jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsDrag));
+    // 键盘状态(按住/抬起): 脚本自己决定按住多久 —— 投递即返回, 不阻塞脚本的循环
+    m_engine->registFunction(ns, "keyDown",        jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsKeyDown));
+    m_engine->registFunction(ns, "keyUp",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsKeyUp));
     m_engine->registFunction(ns, "key",            jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsKey));
     m_engine->registFunction(ns, "type",           jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsType));
     m_engine->registFunction(ns, "wait",           jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWait));
     m_engine->registFunction(ns, "screenshot",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenshot));
+    // 原始帧(不编码): 给 cv.fromImage 用 —— 省掉 "PNG 编码 + 脚本再解码" 那两遍
+    m_engine->registFunction(ns, "screenshotImage", jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenshotImage));
     m_engine->registFunction(ns, "screenInfo",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenInfo));
     m_engine->registFunction(ns, "match",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatch));
     // 颜色查找的"多色 / 多块"版（一次取帧、一遍扫描同时判多个颜色, 收所有连通块）:
@@ -68,10 +73,13 @@ void JZJSComputerUseModule::jsSwitchToDesktop() { JZComputerUse::switchToDesktop
 bool JZJSComputerUseModule::jsClick(double x, double y, const std::string& btn) { return JZComputerUse::click(x, y, btnFromStr(btn)); }
 bool JZJSComputerUseModule::jsDoubleClick(double x, double y, const std::string& btn) { return JZComputerUse::doubleClick(x, y, btnFromStr(btn)); }
 bool JZJSComputerUseModule::jsDrag(double x1, double y1, double x2, double y2) { return JZComputerUse::drag(x1, y1, x2, y2); }
+void JZJSComputerUseModule::jsKeyDown(const std::string& name) { JZComputerUse::keyDown(name); }
+void JZJSComputerUseModule::jsKeyUp(const std::string& name) { JZComputerUse::keyUp(name); }
 void JZJSComputerUseModule::jsKey(const std::string& name) { JZComputerUse::key(name); }
 void JZJSComputerUseModule::jsType(const std::string& text) { JZComputerUse::type(text); }
 void JZJSComputerUseModule::jsWait(int ms) { JZComputerUse::wait(ms); }
 std::string JZJSComputerUseModule::jsScreenshot() { return JZComputerUse::screenshot(); }
+JZImage JZJSComputerUseModule::jsScreenshotImage() { return JZComputerUse::screenshotImage(); }
 Json::Value JZJSComputerUseModule::jsScreenInfo() { return JZComputerUse::screenInfo(); }
 
 Json::Value JZJSComputerUseModule::jsMatch(const std::string& locatorJson) {

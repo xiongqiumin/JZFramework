@@ -16,6 +16,15 @@ export interface Rect { x: number; y: number; w: number; h: number; }
 /** **物理像素**点。 */
 export type Point = { x: number; y: number };
 
+/** 一个 **JZImage**（widget 包的全局类，`screenshotImage()` 给的就是它）。
+ *  本包与 cv 包一样刻意**不 import** widget 的类型（自包含），只声明用得上的那几个方法；
+ *  运行期由 C++ 侧按真实类型校验。配合 `cv.fromImage(img)` 使用。 */
+export interface JZImageLike {
+  width(): number;
+  height(): number;
+  isNull(): boolean;
+}
+
 /**
  * 屏幕尺寸/缩放（`backend.screenInfo()`）—— 脚本要"屏有多大 / 缩放多少"时问它
  * （例如点在正中：`physical[0]/2`；或按逻辑尺寸换算界面比例）。
@@ -392,14 +401,28 @@ export interface ComputerUseBackend {
   click(rect: Rect, btn?: MouseBtn): Promise<boolean>;
   /** 在**物理像素**坐标 from→to 之间拖拽。 */
   drag(from: Point, to: Point): Promise<boolean>;
-  /** 按名称按一个键（如 'Return' / 'Tab' / 'LWin' / 'Ctrl+A'）。 */
+  /** **敲一下**（按下 + 抬起），如 'Return' / 'Tab' / 'LWin' / 'Ctrl+A'。
+   *  够用于**事件驱动**的消费者（输入框/菜单/按钮：它们在自己的 keyPress/keyRelease 里就处理完）。
+   *  ⚠ 对"每个逻辑帧读一次当前按着谁"的应用（游戏循环/时间线定时器），一次敲击**不保证被看见**
+   *  （两个事件可能落在同一个逻辑帧之前）—— 那种场景用 keyDown/keyUp 自己控制按住时长。 */
   key(name: string): Promise<void>;
+  /** **按住**（键盘状态：按下后一直保持，直到 keyUp）。
+   *  应用是按逻辑帧轮询按键的 ⇒ "按住多久"由**调用方**决定，这正是真实键盘的形状（按住就走 / 按住就打）。
+   *  ⚠ 与 keyUp 成对使用；收尾时要把按下的键抬起，否则应用会一直以为键还按着（下一个脚本也继承）。
+   *  两个都是**投递即返回**（不阻塞调用方的循环）。 */
+  keyDown(name: string): Promise<void>;
+  /** **抬起**（与 keyDown 成对）。 */
+  keyUp(name: string): Promise<void>;
   /** 输入一段文本。 */
   type(text: string): Promise<void>;
   /** 等待毫秒。 */
   wait(ms: number): Promise<void>;
   /** 截图 → dataURL。尺寸 = 该后端的**物理像素**（与上面那些坐标同一空间）。 */
   screenshot(): Promise<string>;
+  /** 截图 → **原始帧**（JZImage，不编码）。给"要自己处理像素"的用 ——
+   *  例如 `cv.fromImage(img)` 走 OpenCV，省掉 dataURL 那条路的 "PNG 编码 + 再解码" 两遍。
+   *  要给人看 / 送模型的**图片**仍用上面那个 screenshot()；两者尺寸口径完全一致。 */
+  screenshotImage(): Promise<JZImageLike>;
   /** 屏幕尺寸/缩放：把"图上的像素"换算成物理坐标的依据（见 ScreenInfo）。后端没实现时缺省。 */
   screenInfo?(): Promise<ScreenInfo>;
 

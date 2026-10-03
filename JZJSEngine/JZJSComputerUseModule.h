@@ -20,10 +20,15 @@ private:
     bool        jsClick(double x, double y, const std::string& btn);
     bool        jsDoubleClick(double x, double y, const std::string& btn);
     bool        jsDrag(double x1, double y1, double x2, double y2);
+    // 键盘: keyDown/keyUp = **状态**(按住多久由脚本决定, 投递即返回, 不阻塞);
+    //        key = 敲一下(= down+up), 给事件驱动的消费者用(见 JZComputerUse.h 的说明)
+    void        jsKeyDown(const std::string& name);
+    void        jsKeyUp(const std::string& name);
     void        jsKey(const std::string& name);
     void        jsType(const std::string& text);
     void        jsWait(int ms);
     std::string jsScreenshot();
+    JZImage     jsScreenshotImage();   // 原始帧(不编码): 交给 cv.fromImage 用(见 JZComputerUse::screenshotImage)
     Json::Value jsMatch(const std::string& locatorJson);
     Json::Value jsMatchAll(const std::string& optsJson);       // 一次多色/多块的颜色查找
     // —— 布局通道（运行期寻址的正路；见 docs/compute-use-design.md §4.1）——

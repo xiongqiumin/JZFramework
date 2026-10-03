@@ -30,7 +30,7 @@ declare module 'computeruse' {
         backend, setBackend, CuError, layoutSource,
         CuNode, Button, Link, Tab, Menu, Toolbar, Group, Window, Label,
         Canvas, Edit, ComboBox, CheckBox, Slider, App,
-        key, type, wait,
+        key, keyDown, keyUp, type, wait,
         perceive, buildPrompt, setVlmConfig, vlmConfig,
         flatten, nodeAt, parentPath, fingerprintOf, fingerprintMatch, samePage, extraTopPaths,
         claimLayout, layoutCoverRatio,

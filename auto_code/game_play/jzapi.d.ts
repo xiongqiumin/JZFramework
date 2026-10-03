@@ -18,10 +18,23 @@ declare const __jz: {
         doubleClick(x: number, y: number, btn: 'left' | 'right' | 'middle'): boolean;
         drag(x1: number, y1: number, x2: number, y2: number): boolean;
         /**
-         * 按一下键（**Win32 键名**：'Z' / 'Return' / 'Shift' / 'Right'，组合写 'Ctrl+C'）。
-         * ⚠ 语义是"按下 + 立刻松开"的一瞬间（与真人点一下键盘同义）；要"按住"得按帧重复调用。
+         * **敲一下**（按下 + 抬起），**Win32 键名**：'Z' / 'Return' / 'Shift' / 'Right'，组合写 'Ctrl+C'。
+         * 两次事件**投递即返回，不阻塞脚本**；够用于**事件驱动**的消费者（重开键 `R`/回车、输入框、
+         * 菜单 —— 它们在自己的 keyPress/keyRelease 里就处理完了）。
+         * ⚠ 对"每个逻辑帧读一次当前按着谁"的应用（游戏循环/时间线定时器），一次敲击**不保证被看见**
+         *   （两个事件可能落在同一个逻辑帧之前）—— 要"按住"请用 keyDown / keyUp。
          */
         key(name: string): void;
+        /**
+         * **按住**（键盘状态：按下后一直保持，直到 `keyUp`）。**投递即返回，不阻塞脚本的循环**。
+         * 应用是按逻辑帧轮询按键的 ⇒ "按住多久"由**脚本**决定 —— 这正是真实键盘的形状：
+         * 按住方向键就一直走、按住空格就一直打（都是应用自己的原生速度）。
+         * ⚠ 与 keyUp 成对使用；脚本收尾 / 重开前要把按下的键抬起（否则应用会一直以为键还按着，
+         *   下一个脚本也会继承这个状态）。
+         */
+        keyDown(name: string): void;
+        /** **抬起**（与 keyDown 成对）。 */
+        keyUp(name: string): void;
         type(text: string): void;
         /** 阻塞等（毫秒）—— 在脚本自己的线程上睡，游戏机在另一个线程照跑 */
         wait(ms: number): void;

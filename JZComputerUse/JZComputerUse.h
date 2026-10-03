@@ -54,7 +54,22 @@ public:
     static bool click(double x, double y, MouseBtn btn = MouseBtn::Left);
     static bool doubleClick(double x, double y, MouseBtn btn = MouseBtn::Left);
     static bool drag(double x1, double y1, double x2, double y2);
-    static void key(const std::string& name);                      // 单键或组合, 如 "Ctrl+C" / "Return"
+
+    // —— 键盘 (三个都是**投递即返回**) ——
+    // ⚠ 与 click/type 同一条纪律: 送出去就回, 不在这儿等应用处理, **更不在调用方线程上睡**
+    //   (见 JZVirtualWindow.h 的注入契约; 以前 key() 里那个 Sleep(16) 已删 —— 它把"按住多久"
+    //   这个目标的节拍, 变成了调用方的阻塞)。
+    // keyDown/keyUp = 键盘**状态**(按下 / 抬起)。应用如果是"每个逻辑帧读一次当前按着谁"
+    //   (游戏循环/时间线定时器), 那"按住多久"就该由**调用方**决定 —— 这正是真实键盘的形状:
+    //   按住方向键就一直走、按住空格就一直打。⚠ 成对使用; 调用方收尾时要把按下的键抬起
+    //   (否则应用会一直以为键还按着, 下一个脚本也继承这个状态)。
+    // key(name) = 一次**敲击**(= keyDown + keyUp)。够用于**事件驱动**的消费者: 输入框/菜单/
+    //   按钮在自己的 keyPress/keyRelease 里就处理完了(与 type() 同形)。⚠ 对"按帧轮询按键"的
+    //   应用, 一次敲击**不保证被看见**(两个事件可能落在同一个逻辑帧之前) —— 那种场景用
+    //   keyDown + keyUp 自己控制按住时长。
+    static void keyDown(const std::string& name);                  // 按下(组合键 "Ctrl+C" 也可)
+    static void keyUp(const std::string& name);                    // 抬起(与 keyDown 成对)
+    static void key(const std::string& name);                      // 敲一下 = 按下 + 抬起(不阻塞)
     static void type(const std::string& text);                     // 任意文本(含中文), 按字符 SendInput
     static void wait(int ms);
 
@@ -116,10 +131,23 @@ public:
     // ⚠ 对外坐标本来就是物理像素 ⇒ 从截图里量出的数直接就能点, 不需要先"换算"一次。
     static Json::Value screenInfo();
 
+    // 真桌面的 device scale (= 物理 / 逻辑)。⚠ 与 screenInfo() 的 physical/logical **同一条判据**,
+    // 帧源(currentFrame)与坐标口径都用它 —— 两处必须是同一个值, 否则"从帧里量出来的"和
+    // "点下去的"就相差一个比例(2026-10-03 实测: 帧 1536x864 vs physical 1920x1080, scale=1.25)。
+    // 虚拟桌面后端不用它(那边的帧与坐标都由 JZVirtualDevice 自己按 scale 给)。
+    static double desktopScale();
+
     // —— 截图 / 查找 ——
-    // 截图: dataURL(PNG)。尺寸 = 该后端的**物理像素** (真桌面 = 屏幕物理; 虚拟桌面 =
-    //   桌面逻辑 × scale) —— 与上面那些坐标同一个空间, 从图里读出的像素可以直接拿去点。
+    // 截图: dataURL(PNG)。帧本身是**物理像素**(与上面那些坐标同源, 见 currentFrame),
+    //   但为了"发给大模型时的请求体大小", 长边会被等比压到 ≤ JZScreenShot::kMaxDim(1280)。
+    // ⚠ 所以**别拿它的像素当坐标**去点(缩过的): 要坐标就用上面那些函数的返回值(物理像素),
+    //   或走 screenshotImage() 拿 1:1 的原始帧。给人看/送模型用这个, 计算用那个。
     static std::string screenshot();
+    // 截图·**原始帧**(不编码): 直接给那一帧 JZImage(RGBA8888)。给"要在脚本里自己处理像素"的场景
+    //   用 —— 例如喂给 cv.fromImage() 走 OpenCV, 省掉"编码成 PNG、脚本再解码回来"那两遍(帧本来
+    //   就在内存里)。要给人看 / 存盘 / 送 VLM 的**图片**仍用上面那个 screenshot(): 编码归它管。
+    // ⚠ 与 screenshot() 同一个帧源(见 .cpp 的 currentFrame()), 所以尺寸/坐标口径完全一致。
+    static JZImage screenshotImage();
     // 下面几个的 region 都是**物理像素** (可选的小搜索区; 缺省 = 整屏), 返回的 CuRect 也是
     // 物理像素 (x,y = 命中框左上角, w,h = 框尺寸); 未找到 ⇒ w == 0。
     static CuRect    matchImage(const std::string& templatePath, const CuRect& region); // 模板匹配(单尺度)

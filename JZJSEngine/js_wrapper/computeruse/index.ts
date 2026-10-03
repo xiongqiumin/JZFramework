@@ -54,9 +54,17 @@ export let backend: ComputerUseBackend = {
   click: async (rect, btn) => cu().click(rect.x + rect.w / 2, rect.y + rect.h / 2, btn ?? 'left'),
   drag: async (from, to) => cu().drag(from.x, from.y, to.x, to.y),
   key: async (name) => cu().key(name),
+  // 键盘状态(按住/抬起): 按住多久由**调用方**决定 —— 投递即返回, 不阻塞脚本的循环。
+  // (以前只有 key(): 它内部是"按下 → 睡 16ms → 抬起", 那个 Sleep 落在调用方线程上 ⇒ 按键带宽
+  //  直接把脚本的循环卡住; 见 JZComputerUse::keyDown 的说明。)
+  keyDown: async (name) => cu().keyDown(name),
+  keyUp: async (name) => cu().keyUp(name),
   type: async (text) => cu().type(text),
   wait: async (ms) => cu().wait(ms),
   screenshot: async () => cu().screenshot(),
+  // 原始帧(不编码): 给"要自己处理像素"的用 —— 例如 cv.fromImage(img) 走 OpenCV,
+  // 省掉 dataURL 那条路的 "PNG 编码 + 再解码" 两遍(见 JZComputerUse::screenshotImage)
+  screenshotImage: async () => cu().screenshotImage(),
   // 尺寸/缩放: 把"图上的像素"换算成物理坐标的依据 (perceive 用它; 截图没缩放时 = 图尺寸)
   screenInfo: async (): Promise<ScreenInfo> => {
     const fn = __jz && __jz.computeruse ? __jz.computeruse.screenInfo : undefined;
@@ -536,6 +544,10 @@ export class App extends CuNode implements IApp {
 // 底层 primitive（通用 OS 动作，非树内控件）
 // ————————————————————————————————————————————————
 export async function key(name: string): Promise<void> { return backend.key(name); }
+// 键盘**状态**: 要"按住"就用这两个（按住多久由脚本决定）—— 游戏的移动/开火都是按帧轮询按键的，
+// 一次 key() 敲击未必被看见，而 keyDown + 稍后 keyUp 一定被看见，且不占调用方的循环。
+export async function keyDown(name: string): Promise<void> { return backend.keyDown(name); }
+export async function keyUp(name: string): Promise<void> { return backend.keyUp(name); }
 export async function type(text: string): Promise<void> { return backend.type(text); }
 export async function wait(ms: number): Promise<void> { return backend.wait(ms); }
 

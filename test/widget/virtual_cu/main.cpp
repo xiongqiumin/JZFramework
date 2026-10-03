@@ -24,6 +24,7 @@
 #include <string>
 
 #include "JZApplication.h"
+#include "JZDir.h"         // outFile(): 产物落 exe 边的目录, 不落当前工作目录
 #include "JZVirtualDevice.h"
 #include "JZVirtualWindow.h"
 #include "JZCheckbox.h"
@@ -54,6 +55,16 @@
 #endif
 
 static int g_fail = 0;
+
+// 测试产物(模板 PNG / 整屏帧)落在 **exe 边的 <名>_out/**: 不能写裸文件名 —— 那是"当前工作
+// 目录", 手动跑时常常是仓库根 (ctest 跑时是构建目录), 于是同一个测试两种地方落图, 仓库还会被弄脏。
+static std::string outFile(const char* name)
+{
+    const std::string dir = jzApp->applicationDirPath() + "/virtual_cu_out";
+    JZDir d;
+    d.mkpath(dir);
+    return dir + "/" + name;
+}
 
 static void check(bool ok, const char* msg)
 {
@@ -314,7 +325,7 @@ int main(int argc, char* argv[])
         cv::line(icon, cv::Point(IW / 2 - 34, IH / 2), cv::Point(IW / 2 + 34, IH / 2), cv::Scalar(0, 0, 0), 6);
 
         // matchImage 的入参是**文件路径** ⇒ 这才是它的真实调用形态(模板由建模期/人工准备)
-        const std::string tplPath = "cu_template_icon.png";
+        const std::string tplPath = outFile("cu_template_icon.png");
         check(cv::imwrite(tplPath, icon), "模板文件已写出 (matchImage 的入参是文件路径)");
 
         JZVirtualWindow* pixelWin = desk.createWindow(200, 120, "PixelPanel", 430, 30);
@@ -423,8 +434,9 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (desk.screenshot().save("cu_virtual_frame.png"))
-        printf("  [info] 已保存整屏帧: cu_virtual_frame.png\n");
+    const std::string framePath = outFile("cu_virtual_frame.png");
+    if (desk.screenshot().save(framePath))
+        printf("  [info] 已保存整屏帧: %s\n", framePath.c_str());
 
     printf(g_fail == 0 ? "[链路] 全部通过\n" : "[链路] 失败 %d 项\n", g_fail);
     return g_fail == 0 ? 0 : 1;

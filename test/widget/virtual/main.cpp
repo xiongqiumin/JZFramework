@@ -8,7 +8,8 @@
 //   5) 坐标系成立: 客户区 <-> 桌面可逆; mapToGlobal 与桌面坐标同口径;
 //   6) 注入: 给**桌面坐标**, 自动命中窗口(按 z 序) + 换算客户区 + 投递控件;
 //   7) 取帧: 整屏 screenshot() (底色 + 各窗口按 z 序合成) 与 screenshotWindow();
-//   8) 帧可存盘供肉眼确认 (virtual_desktop_frame.png)。
+//   8) 帧可存盘供肉眼确认 (落 exe 边的 virtual_device_out/virtual_desktop_frame.png ——
+//      不落当前工作目录: 手动跑时 CWD 常常是仓库根, 会把图丢进仓库)。
 //
 // 注意: 本测试**不显示宿主窗口** (不建真窗口), 因此可以进 ctest。
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <string>
 
 #include "JZApplication.h"
+#include "JZDir.h"             // 存帧的产物目录 (exe 边)
 #include "JZVirtualDevice.h"
 #include "JZVirtualWindow.h"
 #include "JZWindow.h"
@@ -672,9 +674,16 @@ int main(int argc, char* argv[])
     }
 
     // ---- 存帧 (肉眼确认; 失败不算错) ----
-
-    if (desk.screenshot().save("virtual_desktop_frame.png"))
-        printf("  [info] 已保存整屏帧: virtual_desktop_frame.png\n");
+    // 落 **exe 边的 virtual_device_out/**: 裸文件名是"当前工作目录"(手动跑时常常是仓库根),
+    // 会把图丢进仓库。
+    {
+        const std::string dir = jzApp->applicationDirPath() + "/virtual_device_out";
+        JZDir d;
+        d.mkpath(dir);
+        const std::string framePath = dir + "/virtual_desktop_frame.png";
+        if (desk.screenshot().save(framePath))
+            printf("  [info] 已保存整屏帧: %s\n", framePath.c_str());
+    }
 
     printf(g_fail == 0 ? "[虚拟桌面] 全部通过\n" : "[虚拟桌面] 失败 %d 项\n", g_fail);
     return g_fail == 0 ? 0 : 1;

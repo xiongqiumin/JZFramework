@@ -28,6 +28,17 @@ declare const __jz: {
         /** 像素/文字兜底查找（模板匹配要 OpenCV、OCR 要模型；没接后端时返回 null，不假装成功） */
         match(locatorJson: string): { x: number; y: number; w: number; h: number } | null;
         /**
+         * **颜色查找·一次多色 + 一次多块**（一帧要同时看几样东西时用它，省往返——贵的是取帧）。
+         * opts: `{colors?: string[] | color?: string, region?: {x,y,w,h},
+         *         all?: boolean, minW?: number, minH?: number, limit?: number, tol?: number}`
+         *   · `colors` 多个颜色**一遍扫描同时判**（成本与单色几乎一样）；
+         *   · `all: true` 返回**所有**连通块（面积降序），否则只回最大的那一块；
+         *   · `minW/minH` 尺寸下限（小碎块当噪声丢掉，不必再让脚本自己筛）；`limit` 限量；
+         *   · 坐标/尺寸一律**物理像素**（与 screenshot/click 同口径）。
+         * 返回：`all` 时 `[{x,y,w,h,area,color}, …]`（无命中 = 空数组）；否则单个对象或 `null`。
+         */
+        matchAll(optsJson: string): unknown;
+        /**
          * 屏有多大 / 缩放多少（**物理像素** = logical × scale）。脚本要"点在正中"这类算术时用它
          * （如 `physical[0]/2`）；坐标本身就已是物理像素，**不需要换算**。
          */

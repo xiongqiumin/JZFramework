@@ -123,6 +123,15 @@ public:
     // 下面几个的 region 都是**物理像素** (可选的小搜索区; 缺省 = 整屏), 返回的 CuRect 也是
     // 物理像素 (x,y = 命中框左上角, w,h = 框尺寸); 未找到 ⇒ w == 0。
     static CuRect    matchImage(const std::string& templatePath, const CuRect& region); // 模板匹配(单尺度)
+    // 颜色查找·**一次多色 + 一次多块**（给"一帧要看好几样东西"的脚本用）:
+    //   opts(JSON): { colors:["#e65a5a","#dc46a0"] | color:"#..", region:{x,y,w,h}?,
+    //                 all?:bool, minW?, minH?, limit?, tol? }
+    //   返回(**物理像素**): all -> [{x,y,w,h,area,color},...]（面积降序, 无命中 = 空数组）;
+    //                       否则 -> {x,y,w,h,area,color}（最大的那块, 无命中 = null）。
+    //   ⚠ 多色是**一遍遍历**同时判（成本与单色几乎一样）; 尺寸下限在 C++ 里做 ——
+    //     脚本不必再为"丢噪声"多往返一次。⚠ 贵的是取帧, 所以"一次取帧多带信息"才是正解。
+    static Json::Value matchColorEx(const std::string& optsJson);
+
     // 颜色查找: 返回最**大**的一块同色区域(未找到 w==0)。
     // ⚠ 没编 OpenCV 的构建(如 virtual_device 容器)走**纯 C++ 兜底**: 扫帧 + 连通块取最大,
     //   容差与框口径与 OpenCV 版一致 ⇒ "容器里的脚本按颜色找东西"这条路是可用的。

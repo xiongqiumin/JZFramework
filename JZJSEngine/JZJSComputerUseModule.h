@@ -25,6 +25,7 @@ private:
     void        jsWait(int ms);
     std::string jsScreenshot();
     Json::Value jsMatch(const std::string& locatorJson);
+    Json::Value jsMatchAll(const std::string& optsJson);       // 一次多色/多块的颜色查找
     // —— 布局通道（运行期寻址的正路；见 docs/compute-use-design.md §4.1）——
     Json::Value jsScreenInfo();                            // {virtual,logical,physical,scale,dpi}: 图坐标<->物理
     Json::Value jsLayoutTree(const std::string& optsJson); // 可访问布局树(**物理像素** rect); 可指定目标 title

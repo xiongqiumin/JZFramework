@@ -26,6 +26,9 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "screenshot",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenshot));
     m_engine->registFunction(ns, "screenInfo",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenInfo));
     m_engine->registFunction(ns, "match",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatch));
+    // 颜色查找的"多色 / 多块"版（一次取帧、一遍扫描同时判多个颜色, 收所有连通块）:
+    // 一帧要同时看几样东西时用这个, 别一个颜色一次往返 —— 贵的是取帧。
+    m_engine->registFunction(ns, "matchAll",      jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatchAll));
     // 进程 / 窗口管理（两个后端同一套语义: 真桌面 = EnumWindows/SetWindowPos, 虚拟桌面 = JZVirtualDevice）——
     // 脚本"像人一样操作这台小电脑"要用的就是这些: 把目标窗口带到前台、看窗口在哪多大、摆窗口。
     m_engine->registFunction(ns, "startProcess",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsStartProcess));
@@ -151,6 +154,10 @@ bool JZJSComputerUseModule::jsLaunch(const std::string& optsJson) {
 // ————————————————————————————————————————————————
 // 进程 / 窗口管理（薄封装；语义与判据都在 JZComputerUse 那一层）
 // ————————————————————————————————————————————————
+Json::Value JZJSComputerUseModule::jsMatchAll(const std::string& optsJson) {
+    // 一次多色 + 一次多块（见 JZComputerUse::matchColorEx）。参数/返回都是纯 JSON，直接透传。
+    return JZComputerUse::matchColorEx(optsJson);
+}
 bool JZJSComputerUseModule::jsStartProcess(const std::string& path) {
     // 虚拟桌面下返回的 pid 只是个"起来了"的标志(没有系统 pid), 所以脚本这一层只暴露成功与否。
     return JZComputerUse::startProcess(path) != 0;

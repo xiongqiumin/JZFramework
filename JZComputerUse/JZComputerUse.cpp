@@ -987,6 +987,151 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
     return r;
 }
 
+Json::Value JZComputerUse::matchColorEx(const std::string& optsJson)
+{
+    // 与 matchColor 同一套扫描/连通块的做法（**同样不依赖 OpenCV**），区别只有三点:
+    //   · 可以给**多个颜色**：一遍遍历同时判（一个像素只算最先命中的那个色）;
+    //   · 收**所有**连通块（按面积降序）而不是只留最大的那个 —— 这是"一帧里好几个目标"要的;
+    //   · 尺寸下限 / 限量在 C++ 里做，脚本不必再为"丢噪声"多跑一次往返。
+    // ⚠ 贵的是取帧(currentFrame)，扫描只占小头 ⇒ "一次取帧尽量多带信息回来"才划算。
+    struct Rgb { int r, g, b; };
+    struct Blob { int area, x0, y0, x1, y1, color; };
+
+    Json::Value root;
+    Json::Reader reader;
+    if (optsJson.empty() || !reader.parse(optsJson, root) || !root.isObject())
+        return Json::Value();
+
+    std::vector<std::string> colorHex;
+    std::vector<Rgb> wants;
+    if (root.isMember("colors") && root["colors"].isArray()) {
+        for (const auto& c : root["colors"])
+            colorHex.push_back(c.asString());
+    } else if (root.isMember("color")) {
+        colorHex.push_back(root["color"].asString());
+    }
+    for (const std::string& hex : colorHex) {
+        int r = 0, g = 0, b = 0;
+        if (cuParseHexRgb(hex, &r, &g, &b))
+            wants.push_back(Rgb{ r, g, b });
+    }
+    if (wants.empty())
+        return Json::Value();
+
+    const bool all = root.get("all", false).asBool();
+    const int minW = root.get("minW", 0).asInt();
+    const int minH = root.get("minH", 0).asInt();
+    const int limit = root.get("limit", 0).asInt();
+    const int tol = root.get("tol", 60).asInt();          // 与 matchColor 同一容差口径
+
+    JZImage img = currentFrame();
+    std::shared_ptr<JZImageData> data = img.data();
+    if (!data || data->width() <= 0 || data->height() <= 0 || !data->pixels())
+        return Json::Value();
+    const int hw = data->width(), hh = data->height();
+    const uint8_t* px = data->pixels();
+
+    int x0 = 0, y0 = 0, x1 = hw, y1 = hh;                 // region(**物理像素**) -> 像素窗口
+    if (root.isMember("region") && root["region"].isObject()) {
+        const Json::Value& rg = root["region"];
+        const int rw = rg.get("w", 0).asInt(), rh = rg.get("h", 0).asInt();
+        if (rw > 0 && rh > 0) {
+            x0 = std::max(0, rg.get("x", 0).asInt());
+            y0 = std::max(0, rg.get("y", 0).asInt());
+            x1 = std::min(hw, x0 + rw);
+            y1 = std::min(hh, y0 + rh);
+            if (x1 <= x0 || y1 <= y0)
+                return all ? Json::Value(Json::arrayValue) : Json::Value();
+        }
+    }
+
+    // 一遍扫描: mask 存**色号**(1..N; 0 = 没命中)
+    std::vector<uint8_t> mask((size_t)hw * (size_t)hh, 0);
+    for (int y = y0; y < y1; y++) {
+        const uint8_t* row = px + (size_t)y * (size_t)hw * 4;
+        for (int x = x0; x < x1; x++) {
+            const uint8_t* q = row + (size_t)x * 4;
+            for (size_t k = 0; k < wants.size(); k++) {
+                const int d = std::abs((int)q[0] - wants[k].r) + std::abs((int)q[1] - wants[k].g)
+                            + std::abs((int)q[2] - wants[k].b);
+                if (d <= tol) {
+                    mask[(size_t)y * (size_t)hw + (size_t)x] = (uint8_t)(k + 1);
+                    break;                                 // 一个像素只算最先命中的色
+                }
+            }
+        }
+    }
+
+    // 连通块(4 邻接, **同色**才算同一块): 收所有块
+    std::vector<Blob> blobs;
+    std::vector<uint8_t> seen((size_t)hw * (size_t)hh, 0);
+    std::vector<size_t> stack;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            const size_t i0 = (size_t)y * (size_t)hw + (size_t)x;
+            if (!mask[i0] || seen[i0])
+                continue;
+            const int myColor = (int)mask[i0];
+            Blob bl{ 0, x, y, x, y, myColor };
+            seen[i0] = 1;
+            stack.clear();
+            stack.push_back(i0);
+            while (!stack.empty()) {
+                const size_t i = stack.back();
+                stack.pop_back();
+                const int cx = (int)(i % (size_t)hw), cy = (int)(i / (size_t)hw);
+                bl.area++;
+                if (cx < bl.x0) bl.x0 = cx;
+                if (cx > bl.x1) bl.x1 = cx;
+                if (cy < bl.y0) bl.y0 = cy;
+                if (cy > bl.y1) bl.y1 = cy;
+                const int nb[4][2] = { { cx - 1, cy }, { cx + 1, cy }, { cx, cy - 1 }, { cx, cy + 1 } };
+                for (int k = 0; k < 4; k++) {
+                    const int nx = nb[k][0], ny = nb[k][1];
+                    if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1)
+                        continue;
+                    const size_t ni = (size_t)ny * (size_t)hw + (size_t)nx;
+                    if ((int)mask[ni] == myColor && !seen[ni]) {
+                        seen[ni] = 1;
+                        stack.push_back(ni);
+                    }
+                }
+            }
+            const int w = bl.x1 - bl.x0 + 1, h = bl.y1 - bl.y0 + 1;
+            if (minW > 0 && w < minW) continue;            // 尺寸下限: 噪声块丢掉
+            if (minH > 0 && h < minH) continue;
+            blobs.push_back(bl);
+        }
+    }
+
+    std::sort(blobs.begin(), blobs.end(), [](const Blob& a, const Blob& b) {
+        if (a.area != b.area) return a.area > b.area;      // 面积降序: "最大那块"就是第一个
+        if (a.y0 != b.y0)     return a.y0 < b.y0;
+        return a.x0 < b.x0;
+    });
+
+    auto toJson = [&](const Blob& b) {
+        Json::Value o(Json::objectValue);
+        o["x"] = b.x0; o["y"] = b.y0;
+        o["w"] = b.x1 - b.x0 + 1; o["h"] = b.y1 - b.y0 + 1;
+        o["area"] = b.area;
+        const size_t ci = (b.color > 0) ? (size_t)(b.color - 1) : 0;
+        o["color"] = (ci < colorHex.size()) ? colorHex[ci] : std::string();
+        return o;
+    };
+
+    if (!all) {
+        if (blobs.empty())
+            return Json::Value();
+        return toJson(blobs[0]);                           // 缺省 = 最大那块（与 matchColor 同结果）
+    }
+    Json::Value arr(Json::arrayValue);
+    const size_t n = (limit > 0 && (size_t)limit < blobs.size()) ? (size_t)limit : blobs.size();
+    for (size_t i = 0; i < n; i++)
+        arr.append(toJson(blobs[i]));
+    return arr;
+}
+
 // ————————————————————————————————————————————————
 // 布局通道（运行期寻址的**正路**）
 // ————————————————————————————————————————————————

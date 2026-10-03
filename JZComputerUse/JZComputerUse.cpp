@@ -34,6 +34,7 @@
 #include "JZApplication.h"
 #include "JZThread.h"       // 虚拟桌面里"进程" = JZThread; 进程名 = objectName (见 createProcess)
 #include "JZLog.h"
+#include "JZDebug.h"        // jzWarning (起程序失败时报一行)
 #include "JZWidget/JZWidget.h"
 #include "JZWidget/JZWindow.h"
 #include "binary/virtual_device/JZVirtualDevice.h"    // 虚拟桌面 (setVirtualDesktop)
@@ -53,6 +54,21 @@
 #endif
 
 JZVirtualDevice* JZComputerUse::s_virtualDesk = nullptr;
+
+namespace {
+// 宿主注入的"程序管理"(虚拟后端下 startProcess/launch 用它; 见 JZComputerUse.h)
+JZComputerUse::VirtualProgramHost g_virtualProgramHost;
+} // namespace
+
+void JZComputerUse::setVirtualProgramHost(const VirtualProgramHost& host)
+{
+    g_virtualProgramHost = host;
+}
+
+const JZComputerUse::VirtualProgramHost& JZComputerUse::virtualProgramHost()
+{
+    return g_virtualProgramHost;
+}
 
 // —— 后端选择 ——
 void JZComputerUse::setVirtualDesktop(JZVirtualDevice* desk) {
@@ -194,6 +210,27 @@ JZImage currentFrame() {
     //   而**主线程**的 JZThread 不是 std::thread 起的(没有 joinable 的 thread) ⇒ 那个检查会把
     //   转投整个挡掉, 调用方拿到"什么都没做"(实测: windows() 一律返回空表)。
     //   这里只做"投递 + 信号量等", 形状与它一致; 已经在桌面线程上就直接跑(别自投递)。
+    // 路径 -> (目录, 程序名): 目录 = 运行根, 程序名 = 文件名去最后一个扩展名。
+    // 与 HTTP 侧的程序命名同一套规则（那样 startProcess(".../main.js") 起的程序就叫 "main"）。
+    std::string cuDirOfPath(const std::string& p) {
+        const size_t k = p.find_last_of("/\\");
+        return (k == std::string::npos) ? std::string() : p.substr(0, k);
+    }
+    std::string cuProgramNameOfPath(const std::string& p) {
+        const size_t k = p.find_last_of("/\\");
+        std::string base = (k == std::string::npos) ? p : p.substr(k + 1);
+        const size_t dot = base.find_last_of('.');
+        if (dot != std::string::npos && dot > 0)
+            base = base.substr(0, dot);
+        return base;
+    }
+    // 文件名（**带扩展名**）—— 给"按模块加载"用的 moduleRel（与 main.cpp 的 --program 同一口径：
+    // 那边传的就是 main.js 这种带扩展名的名字）。
+    std::string cuBaseNameOfPath(const std::string& p) {
+        const size_t k = p.find_last_of("/\\");
+        return (k == std::string::npos) ? p : p.substr(k + 1);
+    }
+
     bool cuOnDesktopThread(const std::function<void()>& fn, int timeoutMs = 8000) {
         JZObject* desk = JZComputerUse::virtualDesktop();
         if (!desk)
@@ -1323,9 +1360,28 @@ bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
 
 bool JZComputerUse::launch(const std::string& exe, const std::string& args,
                            const std::string& title, int timeoutMs) {
-    // 虚拟桌面: 不启动真实进程 —— 桌面上的窗口由宿主创建 (切目标用 focusWindow)
-    if (s_virtualDesk)
+    // 虚拟桌面: 与真桌面那条路**同一套语义** —— 先"起"(加载 JS 程序), 再等那个窗口出现并置前。
+    //   exe = JS 文件路径(见 startProcess); title 为空 = 只起不等窗口; 等不到窗口 ⇒ false。
+    if (s_virtualDesk) {
+        if (!exe.empty() && startProcess(exe, args) == 0)
+            return false;
+        if (title.empty()) {
+            if (!exe.empty()) {
+                wait(300);                   // 只起: 给它一点时间建窗口 (与真桌面那条路同款)
+                return true;
+            }
+            return false;                    // 既没文件又没标题 ⇒ 没目标可做
+        }
+        const int limit = timeoutMs > 0 ? timeoutMs : 8000;
+        int waited = 0;
+        while (waited <= limit) {
+            if (focusWindow(title))          // 窗口出现并置前 = 目标就绪
+                return true;
+            wait(200);
+            waited += 200;
+        }
         return false;
+    }
     if (!exe.empty() && startProcess(exe, args) == 0)
         return false;
 
@@ -1348,9 +1404,32 @@ bool JZComputerUse::launch(const std::string& exe, const std::string& args,
 // 进程与窗口管理（不使用按键模拟）
 // ————————————————————————————————————————————————
 DWORD JZComputerUse::startProcess(const std::string& path, const std::string& args) {
-    // 虚拟桌面: 绝不启动真实进程
-    if (s_virtualDesk)
-        return 0;
+    // 虚拟桌面: "起程序" = 在桌面上**加载一个 JS 程序**（能力由宿主注入, 见 setVirtualProgramHost）。
+    //   · path 当 **JS 文件路径**: 目录 = 运行根, 文件名(去扩展名) = 程序名;
+    //   · args 虚拟侧没有对应(JS 程序不吃命令行参数) ⇒ 忽略;
+    //   · 返回值**只表示"起来了"**(虚拟进程没有系统 pid, 别当 pid 用)。
+    //   没注入 / 起不来 ⇒ 返回 0, 绝不假装成功。
+    if (s_virtualDesk) {
+        if (!g_virtualProgramHost.launch)
+            return 0;
+        const std::string name = cuProgramNameOfPath(path);      // 程序名(去扩展名)
+        const std::string base = cuBaseNameOfPath(path);         // moduleRel 要**带扩展名**的文件名
+        if (name.empty() || base.empty())
+            return 0;
+        auto ok = std::make_shared<bool>(false);
+        auto err = std::make_shared<std::string>();
+        const std::string dir = cuDirOfPath(path);
+        // ⚠ host.launch 内部会等它第一个窗口(最多 5 秒) ⇒ 这里给足时间, 别把正常启动当超时
+        cuOnDesktopThread([name, base, dir, ok, err]() {
+            *ok = g_virtualProgramHost.launch(name, std::string(), dir, base, *err);
+        }, 20000);
+        if (!*ok) {
+            jzWarning() << "[cu.program] 起程序失败: " << path
+                        << "（" << (err->empty() ? "没有更多信息" : *err) << "）";
+            return 0;
+        }
+        return 1;
+    }
     STARTUPINFOA si = {}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
     std::string cmd = path;

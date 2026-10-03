@@ -28,6 +28,7 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "match",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatch));
     // 进程 / 窗口管理（两个后端同一套语义: 真桌面 = EnumWindows/SetWindowPos, 虚拟桌面 = JZVirtualDevice）——
     // 脚本"像人一样操作这台小电脑"要用的就是这些: 把目标窗口带到前台、看窗口在哪多大、摆窗口。
+    m_engine->registFunction(ns, "startProcess",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsStartProcess));
     m_engine->registFunction(ns, "focusWindow",      jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsFocusWindow));
     m_engine->registFunction(ns, "focusProcess",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsFocusProcess));
     m_engine->registFunction(ns, "terminateProcess", jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsTerminateProcess));
@@ -131,7 +132,10 @@ bool JZJSComputerUseModule::jsWaitStable(const std::string& optsJson) {
 bool JZJSComputerUseModule::jsLaunch(const std::string& optsJson) {
     Json::Value root; Json::Reader reader;
     if (optsJson.empty() || !reader.parse(optsJson, root)) return false;
-    std::string exe   = root.isMember("exe")   ? root["exe"].asString()   : "";
+    // 要启动的东西: 真桌面写 exe（外部程序）; 虚拟桌面写 file（桌面上要加载的 JS 文件）——
+    // 两个名字都认（file 优先），脚本侧就不必为"在哪种后端"改参数名。
+    std::string exe = root.isMember("file") ? root["file"].asString()
+                    : (root.isMember("exe") ? root["exe"].asString() : "");
     std::string title = root.isMember("title") ? root["title"].asString() : "";
     int timeout = root.isMember("timeoutMs") ? root["timeoutMs"].asInt() : 8000;
     std::string args;
@@ -147,6 +151,10 @@ bool JZJSComputerUseModule::jsLaunch(const std::string& optsJson) {
 // ————————————————————————————————————————————————
 // 进程 / 窗口管理（薄封装；语义与判据都在 JZComputerUse 那一层）
 // ————————————————————————————————————————————————
+bool JZJSComputerUseModule::jsStartProcess(const std::string& path) {
+    // 虚拟桌面下返回的 pid 只是个"起来了"的标志(没有系统 pid), 所以脚本这一层只暴露成功与否。
+    return JZComputerUse::startProcess(path) != 0;
+}
 bool JZJSComputerUseModule::jsFocusWindow(const std::string& title) {
     return JZComputerUse::focusWindow(title);
 }

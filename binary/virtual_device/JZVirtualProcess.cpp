@@ -10,6 +10,7 @@
 #include "JZVirtualWindow.h"
 #include "JZVirtualDeviceHttp.h"   // 接上 HTTP 接口的"程序管理" (见文件末尾 jzAttachVirtualProgramHost)
 #include "JZVirtualThread.h"   // 跨线程同步调用 (jzRunOnThreadSync)
+#include "JZComputerUse/JZComputerUse.h"   // 把"程序管理"也接给 CU (见文件末尾)
 #include "JZWindow.h"
 #include "JZApplication.h"
 #include "JZDir.h"
@@ -319,6 +320,64 @@ JZVirtualProcess* jzFindVirtualProcess(JZVirtualDevice* desk, const std::string&
 }
 
 } // namespace
+
+// 与 jzAttachVirtualProgramHost 同一套实现, 只是接给 computer use (容器里跑的脚本能用):
+//   cu.startProcess('.../main.js')            -> 起一个程序
+//   cu.launch({file:'.../main.js', title:'..'}) -> 起 + 等窗口 + 置前
+// ⚠ 回调只在主线程被调 (CU 那一层会转投, 见 JZComputerUse::cuOnDesktopThread)。
+void jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk)
+{
+    if (!desk)
+        return;
+
+    JZComputerUse::VirtualProgramHost host;
+
+    // 起程序 = 起一个虚拟进程 (一个线程 + 一份 JS 运行时):
+    //   moduleRel 非空 = 以 ESM 模块加载 (相对 workDir); script 非空 = 一段代码。
+    // 起来后**等它第一个窗口** (最多 5 秒): 等不到不算失败(纯脚本合法), 但"起来就结束了"要如实报错
+    // (否则调用方拿到"成功 + 空窗口", 而进程其实已经退出)。
+    host.launch = [desk](const std::string& name, const std::string& script,
+                         const std::string& workDir, const std::string& moduleRel,
+                         std::string& error) -> bool {
+        if (name.empty()) {
+            error = "程序名不能为空";
+            return false;
+        }
+        if (jzFindVirtualProcess(desk, name)) {
+            error = "同名程序已在跑: " + name;
+            return false;
+        }
+        JZVirtualProcess* p = desk->createProcess(name, script, workDir, moduleRel);
+        if (!p) {
+            error = "起进程失败 (线程没起来): " + name;
+            return false;
+        }
+        if (!p->waitWindow(5000) && (p->isFinished() || !p->ok())) {
+            error = "程序起来就结束了: " + (p->lastError().empty() ? name : p->lastError());
+            return false;
+        }
+        return true;
+    };
+
+    host.list = [desk]() -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (JZThread* t : desk->processes())
+            if (JZVirtualProcess* p = dynamic_cast<JZVirtualProcess*>(t))
+                out.push_back(p->name());
+        return out;
+    };
+
+    // 停程序: 走桌面的 terminateProcess (停 + 等 + 收它的窗口 + 删), 与 HTTP 的 stop 同一条路
+    host.stop = [desk](const std::string& name) -> bool {
+        JZVirtualProcess* p = jzFindVirtualProcess(desk, name);
+        if (!p)
+            return false;
+        desk->terminateProcess(p);
+        return true;
+    };
+
+    JZComputerUse::setVirtualProgramHost(host);
+}
 
 void jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api)
 {

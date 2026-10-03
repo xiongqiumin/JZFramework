@@ -42,6 +42,13 @@ declare const __jz: {
          * ⚠ 窗口在前台是"注入点击落在它身上"的前提；不在前台时点击会落到上层窗口上。
          */
         focusWindow(title: string): boolean;
+        /**
+         * **启动一个程序**。真桌面 = 起一个外部进程（path 是 exe）；虚拟桌面（容器）里 =
+         * 在桌面上**加载一个 JS 程序**（path = JS 文件路径，程序名 = 文件名去扩展名）。
+         * 返回"起来了没有"（⚠ 虚拟桌面下没有系统 pid，所以只回 true/false，别当 pid 用）。
+         * 想"起来 + 等它的窗口出现并置前"就直接用 `launch({file, title})`。
+         */
+        startProcess(path: string): boolean;
         /** 按**进程名**把它的窗口带到前台（容器里就是那个程序的名字，如 "shooter"） */
         focusProcess(name: string): boolean;
         /** 按**进程名**停掉那个程序（它的窗口一起收走）。虚拟桌面下 = 停掉那个 JS 进程 */
@@ -66,6 +73,13 @@ declare const __jz: {
          */
         windowState(optsJson: string): unknown;
         waitStable(optsJson: string): boolean;
+        /**
+         * **启动 / 激活目标窗口**：先启动，再等窗口出现并置前（等不到 → false）。
+         * opts: `{file?|exe?, args?, title?, timeoutMs?}`
+         *   · 真桌面：`exe` = 外部程序路径；
+         *   · 虚拟桌面（容器）：`file` = 桌面上要**加载的 JS 文件**（程序名 = 文件名去扩展名）；
+         *   · `title` 空 = 只启动、不等窗口。
+         */
         launch(optsJson: string): boolean;
         ocrReady(): boolean;
         ocrTexts(): unknown;

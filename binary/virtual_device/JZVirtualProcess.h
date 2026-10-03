@@ -142,4 +142,10 @@ private:
 //   不接 = 那些接口回 501, 容器其余部分 (截图/输入/窗口) 照常可用。
 void JZFRAMEWORK_API jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api);
 
+// 把"程序管理"也接给 computer use（CU 那一层不认识引擎, 见 JZComputerUse::setVirtualProgramHost）：
+// 于是容器里跑的脚本调 `cu.startProcess(path)` / `cu.launch({file,...})` 就能**再起一个程序** ——
+// 与 HTTP 的 /api/programs 是同一件事（同一套实现），只是入口在脚本里。
+// ⚠ 只在主线程调用; 不接 = 虚拟后端下 startProcess/launch 明确失败（其余照常）。
+void JZFRAMEWORK_API jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk);
+
 #endif // JZ_VIRTUAL_PROCESS_H_

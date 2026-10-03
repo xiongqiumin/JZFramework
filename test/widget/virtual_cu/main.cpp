@@ -17,8 +17,9 @@
 //   ④ 命中按 z 序, focusWindow 能切目标;
 //   ⑤ 虚拟模式下"进程/窗口管理"走**同一套语义**(落在 JZVirtualDevice 上, 不碰真实系统):
 //      切前台(focusWindow/focusProcess)·停进程(terminateProcess(名字))·窗口表/摆位(windows/windowState)
-//      都真能干活; 仍明确失败的只有"起真实进程/按系统 pid 那两条"(startProcess / launch /
-//      terminateProcess(pid) / focusProcess(pid))。
+//      都真能干活; 而 startProcess / launch 这里**明确失败**, 因为本用例没有注入"程序管理"宿主
+//      (容器里由 jzAttachVirtualProgramHostToCu 接上, 那时它们能起 JS 程序);
+//      terminateProcess(pid) / focusProcess(pid) 永远失败(虚拟进程没有系统 pid)。
 //
 // 本测试不建任何真实窗口 => 可无头跑, 已进 ctest。
 #include <cstdio>

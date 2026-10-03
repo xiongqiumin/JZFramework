@@ -11,6 +11,8 @@
 #include <windows.h>
 
 #include <string>
+#include <vector>
+#include <functional>
 #include "JZWidget/JZScreen.h"             // JZRect / JZImage
 #include "binary/code_agent/JZScreenShot.h"  // captureVirtualDesktop / toDataUrl / save
 #include "json/json.h"                     // layoutTree 的返回(Json::Value 由 jsbind 自动转 JS 对象)
@@ -175,15 +177,35 @@ public:
     //   · windows()/windowState()  -> 窗口表 / SetWindowPos 那一组（move·resize·min·max·restore·close·title）。
     //   ⚠ 这些都**转投到桌面线程**执行（窗口表要抢桌面的锁, terminateProcess 还要 join 目标线程;
     //     在进程线程里直接做会踩线程亲和断言 —— 实测 FATAL 崩容器, 见 .cpp 里的 cuOnDesktopThread）。
-    // 仍**明确失败**的两类:
-    //   · 按**系统 pid** 的 terminateProcess(DWORD) / focusProcess(DWORD) —— 虚拟进程没有系统 pid, 按名字走;
-    //   · startProcess / launch —— "起一个 JS 程序"的能力要 JS 引擎(jz_virtual_process 层), 而本文件
-    //     会编进不同的目标(真桌面那条链里没有那个库) ⇒ 只能由宿主注入; 没注入就失败, 绝不假装成功。
+    //   · startProcess(path) / launch({file,title}) —— "起一个程序"在虚拟桌面下也真的干活:
+    //     path 当 **JS 文件路径**(目录 = 运行根, 文件名的扩展名可省), 起的程序名 = 文件名去扩展名。
+    //     这要 JS 引擎(jz_virtual_process 层), 而本文件会编进不同的目标(真桌面那条链里没有那个库)
+    //     ⇒ 能力由**宿主注入**(setVirtualProgramHost; 容器里 jzAttachVirtualProgramHostToCu 一行接上)。
+    //     **没注入** ⇒ 明确失败, 绝不假装成功。
+    // 仍**明确失败**的只剩一类: 按**系统 pid** 的 terminateProcess(DWORD) / focusProcess(DWORD)
+    //   —— 虚拟进程没有系统 pid, 按名字走。
     //   (像素族匹配在虚拟桌面下**可用**: 帧就是桌面合成帧, 见 currentFrame; 未编 OpenCV 时
     //    走纯 C++ 兜底, 见 matchColor)
     static void setVirtualDesktop(JZVirtualDevice* desk);   // nullptr = 回到真实桌面
     static JZVirtualDevice* virtualDesktop();
     static bool isVirtualDesktop();
+
+    // —— 虚拟后端下的"起/停程序": 由**宿主注入** ——
+    // 本文件会编进不同的目标(真桌面那条链里没有 jz_virtual_process) ⇒ "起一个 JS 程序"这种
+    // 要引擎的能力只能由宿主登记(与 HTTP 的 JZVirtualProgramHost 同一套)。**没注入** ⇒
+    // startProcess / launch 在虚拟后端下明确失败, 绝不假装成功。
+    // ⚠ 注入后的回调**只在桌面线程(主线程)上被调用**。
+    struct VirtualProgramHost
+    {
+        // 起一个程序: moduleRel 非空 = 以 ESM 模块加载(相对 workDir); script 非空 = 一段代码
+        std::function<bool(const std::string& name, const std::string& script,
+                           const std::string& workDir, const std::string& moduleRel,
+                           std::string& error)> launch;
+        std::function<std::vector<std::string>()> list;    // 桌面上的程序名
+        std::function<bool(const std::string& name)> stop; // 停掉它(连带收窗口)
+    };
+    static void setVirtualProgramHost(const VirtualProgramHost& host);
+    static const VirtualProgramHost& virtualProgramHost();
 
 private:
     static CuRect s_lastLogical;                                   // 最近截图对应的虚拟桌面逻辑矩形(坐标换算用)

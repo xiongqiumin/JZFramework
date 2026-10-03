@@ -31,6 +31,7 @@ private:
     bool        jsWaitStable(const std::string& optsJson); // 等界面稳定(像素只当信号)
     bool        jsLaunch(const std::string& optsJson);     // 启动 / 激活目标窗口
     // —— 进程 / 窗口管理（两个后端同一套语义; 见 JZComputerUse.h 的同名接口）——
+    bool        jsStartProcess(const std::string& path);        // 起一个程序(真桌面=exe; 虚拟=JS 文件)
     bool        jsFocusWindow(const std::string& title);        // 按标题片段提前台
     bool        jsFocusProcess(const std::string& name);        // 按进程名提前台
     bool        jsTerminateProcess(const std::string& name);    // 按进程名停掉它

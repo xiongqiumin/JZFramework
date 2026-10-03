@@ -222,6 +222,10 @@ public:
         // (例: auto_code/game_play/play/play.ts)。宿主侧同样受益: 宿主里调的 CU 也就是这块桌面。
         // ⚠ 必须赶在下面的 --program / HTTP 加载程序之前接上: 程序一起来就可能调 CU API。
         JZComputerUse::setVirtualDesktop(&m_screen);
+        // 容器里跑的脚本要"自己再起一个程序"就走这条（CU 那层不认识引擎, 能力由本层给）:
+        //   cu.startProcess('.../main.js') / cu.launch({file:'.../main.js', title:'...'})
+        // 与 HTTP 的 /api/programs 是同一套实现, 只是入口在脚本里。
+        jzAttachVirtualProgramHostToCu(&m_screen);
 
         // ---- HTTP 接口 (把这块桌面当容器驱动: 加载程序 / 截图 / 鼠标 / 键盘) ----
         // 宿主这边只要两行: 建接口 + 把"程序管理"接到虚拟进程上 (见 JZVirtualDeviceHttp.h)。

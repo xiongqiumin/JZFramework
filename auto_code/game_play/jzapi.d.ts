@@ -27,6 +27,14 @@ declare const __jz: {
         wait(ms: number): void;
         /** 像素/文字兜底查找（模板匹配要 OpenCV、OCR 要模型；没接后端时返回 null，不假装成功） */
         match(locatorJson: string): { x: number; y: number; w: number; h: number } | null;
+        /**
+         * 屏有多大 / 缩放多少（**物理像素** = logical × scale）。脚本要"点在正中"这类算术时用它
+         * （如 `physical[0]/2`）；坐标本身就已是物理像素，**不需要换算**。
+         */
+        screenInfo(): {
+            virtual: boolean; logical: number[]; physical: number[];
+            scale: number; dpi: number; explicit: boolean;
+        };
         /** 目标窗口的可访问布局（信封 {source,tree} 或树；找不到窗口 → null）。可当"窗口在不在"用 */
         layoutTree(optsJson: string): unknown;
         waitStable(optsJson: string): boolean;

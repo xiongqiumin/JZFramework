@@ -558,14 +558,21 @@ bool JZGdiBackend::snapshot(JZImage& out)
     if (!m_bits || m_physW == 0 || m_physH == 0)
         return false;
 
+    // ⚠ 这是**每帧**都要跑的一步(虚拟桌面靠它把窗口帧交给桌面合成、再由合成交出整屏),
+    //   所以它必须便宜 —— 逐字节写四次的写法在 Debug 下一次要 ~145ms, 直接把虚拟桌面里
+    //   的窗口帧率从 150 拖到 6(实测: 帧间隔 170ms 里 145ms 全花在这), 连带输入注入都要
+    //   排在重绘后面、合成缓存跟着"滞后好几秒"。
+    //   DIB 是 top-down BGRA, 目标 RGBA8888 —— 差别只有 R/B 互换 ⇒ 按 32 位一次做掉:
+    //   小端下 BGRA 是 0xAARRGGBB、RGBA 是 0xAABBGGRR, 于是"保留 A,G + 交换 R,B"。
     const size_t count = (size_t)m_physW * m_physH;
     std::vector<unsigned char> rgba(count * 4);
-    const unsigned char* src = (const unsigned char*)m_bits;
+    const uint32_t* src32 = reinterpret_cast<const uint32_t*>(m_bits);
+    uint32_t* dst32 = reinterpret_cast<uint32_t*>(rgba.data());
     for (size_t i = 0; i < count; ++i) {
-        rgba[i * 4 + 0] = src[i * 4 + 2];   // R <- B
-        rgba[i * 4 + 1] = src[i * 4 + 1];   // G
-        rgba[i * 4 + 2] = src[i * 4 + 0];   // B <- R
-        rgba[i * 4 + 3] = src[i * 4 + 3];   // A
+        const uint32_t v = src32[i];
+        dst32[i] = (v & 0xFF00FF00u)              // A, G 原样
+                 | ((v & 0x00FF0000u) >> 16)      // R: 16..23 -> 0..7
+                 | ((v & 0x000000FFu) << 16);     // B: 0..7   -> 16..23
     }
     out = JZImage::fromRGBA(rgba.data(), (int)m_physW, (int)m_physH);
     return !out.isNull();

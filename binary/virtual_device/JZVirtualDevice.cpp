@@ -15,6 +15,7 @@
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
 #include "JZApplication.h"   // refresh 转投主线程 / 判断当前线程
+#include "JZDateTime.h"      // 刷新节流 (见 refresh)
 #include "JZThread.h"
 #include "JZLog.h"
 
@@ -261,7 +262,7 @@ void JZVirtualDevice::setScaleValue(float scale)
 }
 
 // 合成只允许在**主线程**跑 (帧的读取要稳定, 也不能在别的线程上碰显示控件)。
-// 别的线程(进程线程)改了桌面时, 把刷新**转投**回主线程 —— 去抖: 一批改动只合一次。
+// 别的线程(进程线程)改了桌面时, 把刷新**转投**回主线程。
 void JZVirtualDevice::refresh()
 {
     JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
@@ -269,11 +270,23 @@ void JZVirtualDevice::refresh()
     {
         // ⚠ 这条路径**必须无锁**: 进程线程推帧/改窗口状态时, 主线程可能正卡在
         //   sendEvent 等它 (输入投递) —— 再去抢 m_mutex 就是死锁。
-        if (!m_refreshPosted.exchange(true))
-            runOnObject(this, [this]() {          // 对象没了就不会跑 (守卫)
-                m_refreshPosted = false;
-                refreshNow();
-            });
+        // ⚠ 这里按**时间节流**, 而不是"已排了一帧"那种**永久**去重:
+        //   · 永久去重只要漏掉一次投递, 就把之后**所有**刷新吞掉 —— 窗口帧一直在变、合成却
+        //     再也不跑, 桌面缓存冻在最初那一帧(实测: 虚拟进程里的脚本一直看到启动那幅空客户区);
+        //   · 完全不合并又会把主线程压垮 —— 合成是 O(像素) 的重活, 而窗口帧变化/取图请求会很密
+        //     (实测: 脚本一拍问几次颜色, 合成队列越积越长, 一拍从 0.6s 涨到 6s、画面还冻着)。
+        //   50ms ≈ 20 帧/秒: 桌面对外那一帧不需要跟上窗口自己的 60+ 帧 —— 合成本身是
+        //   O(像素) 的重活(GDI+ 重放所有窗口 + 任务栏 ~18ms), 频率给高了主线程就饱和:
+        //   实测 30 次/秒时占用过半, 合成排队 ⇒ 取图方(虚拟进程里的脚本)反而"好几分钟里
+        //   有 8 拍看不见自己", 一局白打(score=0)。20 帧对"看得见、判得准"绰绰有余。
+        //   ⚠ 拖动/缩放窗口走的是 refreshNow 的 paintNow 那条路, 不受这里的节流影响。
+        const int64_t now = JZDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastRefreshReqMs < 50)
+            return;
+        m_lastRefreshReqMs = now;
+        runOnObject(this, [this]() {              // 对象没了就不会跑 (守卫)
+            refreshNow();
+        });
         return;
     }
     refreshNow();
@@ -282,8 +295,20 @@ void JZVirtualDevice::refresh()
 void JZVirtualDevice::refreshNow()
 {
     compose();
+    // 合成完**顺手把对外那一帧(RGBA)也快照好** —— 快照必须由画布的主人(就是这里)做:
+    // 让"谁调用谁顺手做"的话, 非主人的线程(虚拟进程里的应用)做这件事会失败并留下一张
+    // **空图**, 还把 serial 对齐(见 desktopImage 的说明) ⇒ 对外那帧被钉死, 那些应用
+    // 在画面明明已经画出来之后还"什么都看不见"(实测: 脚本前 5 秒一片空白, 直到某次
+    // 主线程取图才把缓存救回来 —— 表现为画面滞后好几秒)。
+    // 代价: 一次 O(像素) 的转换 (800x600 ≈ 1.9MB); 有显示控件时贴的是 desktopPixmap()
+    //       的零拷贝位图, 本来就不走这条路。
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (m_canvas.snapshot(m_desktopImage))
+            m_imageSerial = m_frameSerial;
+    }
     if (!m_view)
-        return;               // 纯无头: 合成完就够 (取帧见 desktopImage()/screenshot())
+        return;               // 纯无头: 合成 + 对外那帧都好了 (取帧见 desktopImage()/screenshot())
     // 视图绘制时读 desktopPixmap(), 所以这里只需让它重绘 —— 但**怎么重绘**分两种:
     //   · 拖动/缩放窗口进行中: 同步重绘 (paintNow)。窗口管理器此刻就是鼠标的主人,
     //     用户要的是"窗口粘在光标上"; 而 update() 只是排个脏区, 要等消息循环下一轮
@@ -949,29 +974,59 @@ void JZVirtualDevice::compose()
 }
 
 // 整屏一帧 (RGBA8888; **物理像素**: 桌面逻辑尺寸 * scale; 无头默认 scale=1 即逻辑尺寸)。
-// ⚠ 这是"画布 -> RGBA"的一次按需转换 (O(像素)), 只在截图/CU/测试这条路上发生;
-//   显示控件走的是 desktopPixmap() 的零拷贝位图, 拖动时不会碰这里。
+// 缓存由**合成之后**的 refreshNow 刷新 (画布主人做快照), 这里只读 —— 与"窗口帧缓存"
+// (JZVirtualWindow::m_frame, 由窗口线程画完后拷好) 同一套形状: 谁的东西谁维护, 别人只读。
+// ⚠ 别让"调用 desktopImage 的线程"顺手做快照: 非画布主人的线程做会失败并留下一张**空图**,
+//   还把 serial 对齐(m_imageSerial = m_frameSerial) ⇒ 这一帧被钉死, 之后谁都拿不到新画布。
+//   实测就是虚拟进程里的脚本"画面明明有了却看不见", 要等某次主线程取图才恢复。
 const JZImage& JZVirtualDevice::desktopImage()
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);
-    if (m_imageSerial != m_frameSerial || m_desktopImage.isNull()) {
-        ensureCanvas();
-        if (!m_canvas.snapshot(m_desktopImage))
-            m_desktopImage = JZImage();
-        m_imageSerial = m_frameSerial;
+    if (m_desktopImage.isNull() || m_imageSerial != m_frameSerial) {
+        // 正常路径走不到这儿 (合成时会一起快照好)。只有两种情况:
+        //   · 还从没合成过 (缓存空) —— 那就等下一次合成;
+        //   · 调用方**就是**画布主人 (宿主里的显示控件/主线程) —— 补一次也无妨。
+        JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
+        if (!main || JZThread::currentThread() == main) {
+            ensureCanvas();
+            if (!m_canvas.snapshot(m_desktopImage))
+                m_desktopImage = JZImage();
+            m_imageSerial = m_frameSerial;
+        }
     }
     return m_desktopImage;
 }
 
 JZImage JZVirtualDevice::screenshot()
 {
-    refresh();
-    return desktopImage();               // 拷贝很轻 (像素缓冲共享)
+    // ⚠ 这里**不跨线程等**主线程合成: 窗口线程(虚拟进程)调进来时如果同步等主线程,
+    //   而主线程此刻可能正等着这个窗口线程(抓窗口帧 / 输入投递), 就成了互相等 ——
+    //   实测两边各超时、脚本拿到的全是空图。
+    // ⚠ 这里要**顺带推一次合成**(refresh 自带 33ms 节流):
+    //   · 只靠"窗口推帧 -> 投递 -> 主线程合成"那条链的话, 取图方在链路没跟上时会一直读到旧帧
+    //     —— 实测虚拟进程里的脚本开局好几秒"只看到窗口刚 show 时的客户区"(背景色在、飞船和
+    //     敌机都不在), 颜色匹配全落空;
+    //   · 但也不能每次取图都无脑合成: 合成是 O(像素) 的重活, 一拍问几次颜色就把主线程压垮
+    //     (实测一拍从 0.6s 涨到 6s)。refresh 里的 33ms 节流正好卡住这个量级: 最多 30 次/秒,
+    //     既保证"取到的不超过 33ms 旧", 又不会积压。
+        refresh();
+        return desktopImage();               // 拷贝很轻 (像素缓冲共享)
 }
 
 JZImage JZVirtualDevice::screenshotWindow(JZVirtualWindow* w)
 {
-    return w ? w->snapshot(true) : JZImage();
+    if (!w)
+        return JZImage();
+    // ⚠ 优先用窗口**已经推上来的那一帧**(m_frame): 那是窗口线程画完自己拷好的, 读它
+    //   **不用打扰窗口线程**。以前这里无条件 snapshot(true) —— 那会让窗口线程"额外渲染一帧"
+    //   再跨线程拷一份(两次投递, 各最多等 2 秒), 与游戏自己的绘制 / 注入的按键挤在同一个
+    //   线程的队列里: 外面每 400ms 抓一次就把队列压住, 连按键都要排队(实测: 虚拟进程里的
+    //   脚本一拍卡 3.7 秒 —— 那几拍它什么都做不了, 只能挨打)。
+    //   只有"这个窗口还从没画过"(缓存空, 比如刚建好/还没出首帧)时才退化到现场渲染一次。
+    const JZImage& f = w->frame();
+    if (!f.isNull() && f.data())
+        return f;                        // 拷贝很轻 (像素缓冲共享)
+    return w->snapshot(true);
 }
 
 void JZVirtualDevice::onWindowFrameChanged(JZVirtualWindow*)

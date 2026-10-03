@@ -637,6 +637,18 @@ void JZComputerUse::key(const std::string& name) {
         if (vk == 0)
             return;
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, true);
+        // ⚠ press 与 release 之间**必须隔开一拍**: 应用是在自己的"逻辑帧"里读"当前按着谁"
+        //   (游戏循环/时间线定时器), 而这两个事件会在同一轮事件处理里被一起吃掉 ——
+        //   那一帧应用读到的永远是"没按下", 于是按方向键纹丝不动、按空格不开火
+        //   (实测: shooter 里脚本对准了也打不出分, 玩家坐标全程没变)。
+        //   真桌面那条路本来就是 SendInput(press) -> Sleep(20) -> SendInput(release),
+        //   这里与它对齐, 但取**一个逻辑帧(16ms)**而不是 20ms: 这个间隔就是脚本的"按键速率
+        //   上限"(一次调用 ≈ 一次按键), 20ms 时只有 50 次/秒, 追不上 60 帧的游戏里"按住"
+        //   能跑出来的速度(实测给 shooter 的脚本每帧只挪 6px、横穿屏幕要 4 秒, 而游戏里
+        //   按住同一方向 2 秒就够 —— 脚本永远追不上敌机)。
+        //   "按下 + 立刻松开"的语义不变: 松开依旧是注入后立刻发生, 只是给应用留出一个
+        //   能看见"按下"的逻辑帧。
+        Sleep(16);
         s_virtualDesk->injectKey((uint32_t)vk, std::string(), mods, false);
         return;                           // 同上: 送出去就返回 (同真桌面 SendInput)
     }

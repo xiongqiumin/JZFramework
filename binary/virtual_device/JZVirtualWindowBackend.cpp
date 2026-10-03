@@ -11,6 +11,7 @@
 #include "JZVirtualDevice.h"
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
+#include "JZDateTime.h"  // 脏区合并的超时判定 (见 onInvalidate)
 #include "JZThread.h"    // runOnObject: 把脏区投到窗口自己的线程
 
 JZVirtualWindowBackend::JZVirtualWindowBackend(JZVirtualWindow* vwin)
@@ -117,8 +118,20 @@ void JZVirtualWindowBackend::onInvalidate(JZWindow* w, const JZRect& rc)
         JZWindowBackend::onInvalidate(w, rc);      // 同线程: 主线程的 paint task
         return;
     }
-    if (m_paintPending.exchange(true))
-        return;                                    // 已经有一帧排在它线程上了: 合并
+    // ⚠ 合并要**带超时**, 不能只用一个"已排了一帧"的布尔量:
+    //   那个量只要有一次投递没落地(事件被丢 / 目标线程当时没在排空队列), 就永远停在
+    //   "已排"上 —— 之后这个窗口**再也不重绘**: 画面冻在最后一帧, 只有外部强制取帧
+    //   (snapshot(renderFirst=true), 如抓窗口截图)才动一下。实测: 虚拟进程里的游戏窗口
+    //   FPS 掉到 5-6、脚本连着好几拍看到同一幅画, 桌面合成缓存因此"滞后好几秒"。
+    // ⚠ 这个超时**必须比"窗口画一帧"宽**: 实测游戏窗口一帧要 ~170ms, 若阈值取 100ms,
+    //   每 100ms 就再排一次重绘 ⇒ 窗口线程的重绘任务越积越多, 它的队列被自己那堆重绘
+    //   堵死, 连"拷帧 / 输入注入"都要排在后面(表现为一拍突然卡好几秒)。
+    //   500ms: 正常(一帧 170ms)绝不会误触发 ⇒ 零积压; 真丢了最多 500ms 自愈。
+    const int64_t now = JZDateTime::currentMSecsSinceEpoch();
+    if (m_paintPending.load() && (now - m_paintReqMs.load()) < 500)
+        return;                                    // 已经有一帧排在它线程上、且还新鲜: 合并
+    m_paintPending = true;
+    m_paintReqMs = now;
     // ⚠ 用 runOnObject 而不是 runOnThread: 窗口(客户区)在 lambda 跑之前被销毁的话,
     //   这次投递直接作废, 不会拿着悬垂指针去画 (见 JZThread.h 里 runOnObject 的约定)。
     runOnObject(w, [this, w]() {

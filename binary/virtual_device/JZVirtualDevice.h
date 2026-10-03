@@ -347,9 +347,9 @@ private:
     mutable std::mutex m_outputMutex;
     std::deque<std::string> m_outputs;     // 最近 kOutputLines 行 (超了从头弹)
     long long m_outputTotal = 0;           // 累计产生过的行数 (含已被挤掉的)
-    // "已有回主线程刷新在途"(去抖)。⚠ 原子而非锁: 进程线程在**投递输入的那一刻**可能被
-    // 主线程等 (sendEvent), 这里再去抢 m_mutex 就会死锁 —— 这条路径必须无锁。
-    std::atomic<bool> m_refreshPosted{false};
+    // 上次**从别的线程**排合成请求的时刻(节流用, 见 refresh)。⚠ 原子而非锁: 这条路径必须
+    // 无锁(进程线程推帧时主线程可能正等它); 竞态最坏只是多排一次合成, 无害。
+    std::atomic<int64_t> m_lastRefreshReqMs{ 0 };
 
     std::vector<JZVirtualWindow*> m_windows;   // 桌面上的窗口, z 序: 末尾最上
     // 已"关闭"(从桌面摘下来)但客户区还活着的外框 —— 客户区的平台后端还指着它, 所以不能删;

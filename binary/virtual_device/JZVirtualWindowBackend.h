@@ -73,7 +73,12 @@ private:
 
     JZVirtualWindow* m_vwin = nullptr;
     bool m_created = false;              // 离屏帧缓冲是否已建
-    std::atomic<bool> m_paintPending{false};   // 已有一帧排在窗口线程上了 (脏区合并)
+    // 脏区合并 (见 onInvalidate): "已有一帧排在窗口线程上" + 排它的时刻。
+    // ⚠ 光有布尔量不行 —— 它只要有一次投递没落地就会**永远**停在"已排"上, 窗口之后再也
+    //   不重绘(实测: 游戏窗口 FPS 掉到 5-6、画面冻在最后一帧, 桌面合成缓存跟着滞后数秒)。
+    //   所以配一个时刻: 排出去太久还没画完就认为那一次丢了, 允许再排(自愈)。
+    std::atomic<bool> m_paintPending{ false };
+    std::atomic<int64_t> m_paintReqMs{ 0 };
 };
 
 #endif // JZ_VIRTUAL_WINDOW_BACKEND_H_

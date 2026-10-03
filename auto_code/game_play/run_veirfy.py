@@ -110,6 +110,9 @@ def main():
     # ---- ④ 起容器 → 题目自己的 verify.py 跑一局并判定 ----
     R.CUR = os.path.join(R.RUNS, "verify")        # 证据落这儿，不动驱动那份 runs/current
     os.makedirs(R.CUR, exist_ok=True)
+    # ⚠ 脚本自己留帧的地方（cfg.out == R.CUR）：驱动跑时会建它，复验这条路以前没建 ——
+    #   于是 shot() 全报 EACCES（判定不受影响，但"看画面"的证据全丢）。
+    os.makedirs(os.path.join(R.CUR, "frames"), exist_ok=True)
     if ctx["status_path"]:
         os.makedirs(os.path.dirname(ctx["status_path"]), exist_ok=True)
     ctx["archive"] = False                        # 复验不归档

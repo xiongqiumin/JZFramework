@@ -320,6 +320,17 @@ JZImage JZScreen::grabScreen() const
     DibTarget t = jzCreateDib(sdc, w, h);
     JZImage img;
     // CAPTUREBLT: 否则抓不到分层/半透明窗口
+    // (2026-10-03 用 Release + 分段计时实测过一遍 1920x1080: getdc 0.0 / createDib 0.1 /
+    //  **bitblt 22~30ms** / toImage 6~8ms / release 0.6 ⇒ 抓一帧 ≈ 40ms。
+    //  ① 去掉 CAPTUREBLT: 22 vs 28ms, 落在噪声里 ⇒ 它**不是**瓶颈(前提是 Release 下量;
+    //     Debug 里 toImage 要 600~730ms, 会把这类小差别整个淹掉);
+    //  ② 瓶颈就是**每次那一遍整屏 BitBlt**。想再往下(几 ms)只能上 DXGI Desktop Duplication
+    //     —— 后台线程持续 AcquireNextFrame、只搬脏矩形到常驻帧缓冲, 取帧不再做整屏 blit
+    //     (参考归档 D:\已完成\2019\7500_tvn\...\tightvnc-2.8.11-gpl\desktop\Win8DeskDuplicationThread.cpp);
+    //  ③ "缓存 DC/DIB 免得每次重建"那条路**没有收益**: getdc 0.0ms / createDib 0.1ms。
+    //  ④ BitBlt 的成本**大头是固定值**: 320x240=15ms / 640x480=19 / 1280x720=24 / 1920x1080=28
+    //     ⇒ ≈15ms 固定(每次调用的握手/读回) + ≈13ms 与面积相关 ⇒ **"只抓需要的那块"省不了多少**
+    //       (640x480 也要 19ms), 别一条条去抠分区域抓; 再往上抠就是 DXGI 那条路。)   
     if (t.ok() && BitBlt(t.mem, 0, 0, w, h, sdc, x, y, SRCCOPY | CAPTUREBLT))
         img = t.toImage();
 

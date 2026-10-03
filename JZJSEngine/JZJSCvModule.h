@@ -23,6 +23,7 @@
 //
 // 接入方式(构建时补, 见 binary/code_agent/runtime 与 binary/virtual_device 的 CMakeLists):
 //   m_cvModule = std::make_unique<JZJSCvModule>(); m_cvModule->initEngine(engine);
+class JZImage;                                // JZWidget 的 RGBA8888 图像(见 jsFromImage; 只此一处用它)
 class JZFRAMEWORK_API JZJSCvModule : public JZObject
 {
 public:
@@ -57,6 +58,16 @@ private:
     std::string jsImencode(int id, const std::string& ext);   // id -> dataURL(PNG/JPEG/...)
     std::string jsData(int id);                         // 原始像素字节(8U) -> base64
     int         jsFromData(const std::string& dataB64, const std::string& optsJson);  // {cols,rows,type}
+
+    // 外部图像(框架自己的 JZImage; 例如 computeruse.screenshotImage() 给的那一帧)
+    //   JZImage(RGBA8888, 行距紧凑) -> **拷一份**成 cv::Mat(8UC4) -> id(0 = 空图/失败)
+    // ⚠ 两个"故意的"决定:
+    //   ① **拷一份**, 不做零拷贝视图 —— 拷完就与那个 JZImage 无关, 没有"原图先释放 ⇒ Mat 悬垂"
+    //      的问题(JZComputerUse.cpp 里那个零拷贝的 jzCvMatOf 只在一次调用内部活着)。
+    //      一帧几 MB 的 memcpy 是亚毫秒级, 比"编码成 PNG 再解码回来"便宜两个数量级。
+    //   ② **只搬不转**: 通道序照原样(R,G,B,A)。要 BGR/灰度请接着 op('cvtColor', {code:'RGBA2BGR'})
+    //      —— "搬"和"转"分开, 一眼能看出手上这张图是什么通道(见 .channels())。
+    int         jsFromImage(const JZImage& img);
 
     // 逐像素(脚本里做少量采样/验证用; 大批量请用 op + 掩膜)
     Json::Value jsPixel(int id, int x, int y);          // [v0,v1,...] / null

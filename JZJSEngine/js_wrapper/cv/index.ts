@@ -33,7 +33,7 @@ import * as K from './consts';
 import {
   Mat, CvError, MatVector, CLAHE, createCLAHE,
   Size, Point, Rect, Scalar, Circle, RotatedRect, TermCriteria,
-  available, count, releaseAll, ops, op, zeros, ones, full, fromData, imwrite,
+  available, count, releaseAll, ops, op, zeros, ones, full, fromData, fromImage, imwrite,
   imread as coreImread, imdecode, imencode as coreImencode,
   matFromArray, matFromImageData, CV_MAKETYPE,
   CV_8UC, CV_8SC, CV_16UC, CV_16SC, CV_32SC, CV_32FC, CV_64FC,
@@ -1004,7 +1004,7 @@ const cv = {
   CvError, Mat, MatVector, CLAHE, createCLAHE,
   Size, Point, Rect, Scalar, Circle, RotatedRect,
   available, count, releaseAll, ops, op,
-  zeros, ones, full, fromData, imread, imdecode, imencode, imwrite,
+  zeros, ones, full, fromData, fromImage, imread, imdecode, imencode, imwrite,
   matFromArray, matFromImageData, CV_MAKETYPE,
   CV_8UC, CV_8SC, CV_16UC, CV_16SC, CV_32SC, CV_32FC, CV_64FC,
   cvtColor, inRange, convertTo, split, merge, LUT, applyColorMap, equalizeHist, clahe,

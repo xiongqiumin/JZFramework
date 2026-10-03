@@ -9,6 +9,16 @@
 /** 图像句柄的公共形状（真正的 Mat 类由 ../index.ts 提供） */
 export interface MatLike { readonly id: number; }
 
+/** 一个 **JZImage**（widget 包的全局类；例如 `computeruse.screenshotImage()` 给的那一帧）。
+ *  本包刻意**不 import** widget 的类型：cv 是自包含包，"只装了 cv"的工程也得能解析。
+ *  所以这里只声明要用到的那三个方法 —— 运行期由 C++ 侧按**真实类型**校验（传普通对象会抛）。
+ *  用法：`const m = cv.fromImage(img); cv.cvtColor(m, cv.COLOR_RGBA2BGR)` */
+export interface JZImageLike {
+  width(): number;
+  height(): number;
+  isNull(): boolean;
+}
+
 /** 尺寸：数字（正方形）/ [宽,高] / {w,h} */
 export type Size2 = number | readonly [number, number] | { w: number; h: number };
 /** 点：[x,y] / {x,y} */
@@ -147,6 +157,8 @@ export interface CvBackend {
   imencode(id: number, ext: string): string;
   data(id: number): string;
   fromData(dataB64: string, optsJson: string): number;
+  /** 把一个 JZImage 的像素**拷**成新 Mat(8UC4 RGBA) -> id（0 = 空图 / 给的不是 JZImage） */
+  fromImage(img: JZImageLike): number;
   pixel(id: number, x: number, y: number): number[] | null;
   setPixel(id: number, x: number, y: number, valuesJson: string): boolean;
   /** 通用运算口：{ok:true, mat|mats|value|...} 或 {ok:false, error} */
@@ -362,6 +374,13 @@ export declare function fromData(dataB64: string, opts: {
     rows: number;
     type?: MatType;
 }): Mat;
+/** 把一个 **JZImage**（全局类；例如 `computeruse.screenshotImage()` 那一帧）的像素**拷进**一张新 Mat。
+ *  产出 **8UC4**，通道序**保持原样 (R,G,B,A)** —— 本函数只"搬"、不"转"：
+ *    要 BGR / 灰度就接着 `cvtColor(m, cv.COLOR_RGBA2BGR / cv.COLOR_RGBA2GRAY)`。
+ *  为什么不用 `imdecode(await cu.screenshot())`：帧本来就在内存里，dataURL 那条路要
+ *    "PNG 编码 + 再解码"两遍（帧越大越贵），而这里只是 memcpy。
+ *  ⚠ 是**拷贝**、不是零拷贝视图：拿到的 Mat 与那个 JZImage 再无关系，不必操心谁先释放。 */
+export declare function fromImage(img: JZImageLike): Mat;
 /** 从 base64 / dataURL（PNG/JPEG/...）解出一张图 —— 容器里拿截图的第一站 */
 export declare function imdecode(data: string): Mat;
 /** 现在挂着几个句柄（看看有没有忘了 free） */
@@ -1909,6 +1928,7 @@ declare const cv: {
     ones: typeof ones;
     full: typeof full;
     fromData: typeof fromData;
+    fromImage: typeof fromImage;
     imread: typeof imread;
     imdecode: typeof imdecode;
     imencode: typeof imencode;

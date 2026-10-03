@@ -21,7 +21,7 @@
 //     releaseAll();
 
 import type {
-  MatLike, MatInfo, Size2, Point2, RectArg, ColorArg, KernelArg, MatType,
+  MatLike, MatInfo, JZImageLike, Size2, Point2, RectArg, ColorArg, KernelArg, MatType,
   ColorCode, Interp, BorderType, ThreshType, MorphOp, Colormap, RetrMode, ChainMethod,
   TmMethod, NormType, CmpOp, FlipHow, RotateCode,
   Contour, ComponentsResult, MinMaxLocResult, MeanStdDevResult, MomentsResult,
@@ -351,6 +351,20 @@ export function fromData(dataB64: string, opts: { cols: number; rows: number; ty
 /** 读磁盘图片 */
 export function imread(path: string): Mat {
   return matOf({ mat: reqHandle(cvb().imread(path)) });
+}
+
+/** 把一个 **JZImage**（全局类；例如 `computeruse.screenshotImage()` 那一帧）的像素**拷进**一张新 Mat。
+ *  产出 **8UC4**，通道序**保持原样 (R,G,B,A)** —— 本函数只"搬"、不"转"：
+ *    要 BGR / 灰度就接着 `cvtColor(m, cv.COLOR_RGBA2BGR / cv.COLOR_RGBA2GRAY)`。
+ *  为什么不用 `imdecode(await cu.screenshot())`：帧本来就在内存里，dataURL 那条路要
+ *    "PNG 编码 + 再解码"两遍（帧越大越贵），而这里只是 memcpy。
+ *  ⚠ 是**拷贝**、不是零拷贝视图：拿到的 Mat 与那个 JZImage 再无关系，不必操心谁先释放。 */
+export function fromImage(img: JZImageLike): Mat {
+  if (!available())
+    throw new CvError('notBuilt', '[cv] 本构建未编入 OpenCV，fromImage 不可用');
+  const id = cvb().fromImage(img);
+  if (!id) throw new CvError('invalid', '[cv] fromImage 失败：给的不是 JZImage，或那张图没有像素');
+  return matOf({ mat: id });
 }
 /** 从 base64 / dataURL（PNG/JPEG/...）解出一张图 —— 容器里拿截图的第一站 */
 export function imdecode(data: string): Mat {

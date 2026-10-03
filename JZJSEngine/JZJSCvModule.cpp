@@ -38,6 +38,8 @@ JZJSCvModule::~JZJSCvModule() = default;
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include "JZImage.h"                         // 外部图像入口(jsFromImage): JZWidget 的 RGBA8888 图像
+                                         // (JZJSWidgetModule.cpp 同样这么引; JZWidget 的头是 PUBLIC 导出的)
 // 传统算法补充(2026-10-03)用到的另外两个模块: 标定几何(RANSAC/LMEDS/findHomography)与
 // 光流(calcOpticalFlowFarneback)。链接上都是同一个 opencv_world 单库, 只是头文件要显式带进来。
 // ⚠ photo 模块在本机的 OpenCV 构建里是 **OFF**(BUILD_opencv_photo=OFF, 见 E:/libs/opencv-4.10.0),
@@ -1643,6 +1645,24 @@ int JZJSCvModule::jsFromData(const std::string& dataB64, const std::string& opts
     } catch (const std::exception&) { return 0; }
 }
 
+// JZImage(RGBA8888, 行距紧凑 = 4 字节/像素) -> cv::Mat(8UC4) —— **拷一份**。
+// 为什么不做零拷贝视图: 见头文件 jsFromImage 的说明 ① —— 视图要挂寿命守卫, 而一帧 memcpy
+// 是亚毫秒级, 不值得为它引入悬垂风险。为什么要检查 w/h/px: JZImage 允许是"空图"(构造失败、
+// 无像素), 那种情况返回 0(与 imread/imdecode 同一套"0 = 失败"的约定)。
+int JZJSCvModule::jsFromImage(const JZImage& img) {
+    if (!m_impl) return 0;
+    if (img.isNull() || !img.data()) return 0;
+    const std::shared_ptr<JZImageData> src = img.data();
+    const int w = src->width(), h = src->height();
+    const uint8_t* px = src->pixels();
+    if (!px || w <= 0 || h <= 0) return 0;
+    try {
+        Mat m(h, w, CV_8UC4);                       // 自己分配 ⇒ Mat 拥有像素, 与那个 JZImage 无关
+        std::memcpy(m.data, px, (size_t)w * (size_t)h * 4);
+        return m_impl->put(std::move(m));
+    } catch (const std::exception&) { return 0; }
+}
+
 Json::Value JZJSCvModule::jsPixel(int id, int x, int y) {
     const Mat* m = m_impl->find(id);
     if (!m || x < 0 || y < 0 || x >= m->cols || y >= m->rows) return Json::Value();
@@ -1735,6 +1755,7 @@ int JZJSCvModule::jsImdecode(const std::string&) { return 0; }
 std::string JZJSCvModule::jsImencode(int, const std::string&) { return std::string(); }
 std::string JZJSCvModule::jsData(int) { return std::string(); }
 int JZJSCvModule::jsFromData(const std::string&, const std::string&) { return 0; }
+int JZJSCvModule::jsFromImage(const JZImage&) { return 0; }        // 没编 OpenCV ⇒ 0(见文件头"缺 OpenCV")
 Json::Value JZJSCvModule::jsPixel(int, int, int) { return Json::Value(); }
 bool JZJSCvModule::jsSetPixel(int, int, int, const std::string&) { return false; }
 Json::Value JZJSCvModule::jsOp(const std::string&, const std::string&) { return jFail(kNoCv); }
@@ -1775,6 +1796,9 @@ void JZJSCvModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "imencode",   jsbind::createSelfFunction(this, &JZJSCvModule::jsImencode));
     m_engine->registFunction(ns, "data",       jsbind::createSelfFunction(this, &JZJSCvModule::jsData));
     m_engine->registFunction(ns, "fromData",   jsbind::createSelfFunction(this, &JZJSCvModule::jsFromData));
+    // 外部图像(框架自己的 JZImage, 例如 computeruse.screenshotImage() 那一帧) -> 句柄
+    // ⚠ 收的是 JZImage **对象本身**(不是 id): jsbind 按签名自动解, 见头文件 jsFromImage
+    m_engine->registFunction(ns, "fromImage",  jsbind::createSelfFunction(this, &JZJSCvModule::jsFromImage));
     // 逐像素
     m_engine->registFunction(ns, "pixel",      jsbind::createSelfFunction(this, &JZJSCvModule::jsPixel));
     m_engine->registFunction(ns, "setPixel",   jsbind::createSelfFunction(this, &JZJSCvModule::jsSetPixel));

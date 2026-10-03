@@ -102,6 +102,26 @@ def main():
     ap.add_argument("--step-ms", type=int, default=0, help="每拍间隔（0 = 读玩法配置）")
     ap.add_argument("--warmup", type=float, default=-1.0, help="装完脚本后先等多久（-1 = 读配置）")
     ap.add_argument("--seconds", type=float, default=0.0, help="按时间收工（脚本参数）")
+    # ⚠ 自起容器**缺省用 Release** —— 这是"能不能量脚本"的问题，不是偏好:
+    #   同一份脚本、同一台机器, 桌面合成在 Debug 下慢到脚本一次 matchAll 要 **1550ms**
+    #   （Release 是 3~6ms, 差 300 倍）: 合成跟不上 ⇒ 脚本读到的是**过期画布** ⇒
+    #   "看不见自己", 一局 0~10 分 —— 那条路上的分数量的是环境, 不是脚本。
+    #   要复现某个评测环境就显式给 `--cfg Debug`（例: run.json 只是个示例, 别当权威）。
+    ap.add_argument("--cfg", default="Release", help="自起容器用哪个构建（默认 Release；"
+                                                     "Debug 下看屏脚本会瞎, 见上面的说明）")
+    ap.add_argument("--poll-ms", type=int, default=0, dest="poll_ms",
+                    help="尺子**自己**的轮询间隔（毫秒；0 = 跟脚本的 stepMs 一样）。"
+                         "⚠ 轮询 = 容器侧的 HTTP（/api/logs、/api/programs），它们在容器里是"
+                         "**同步跑在桌面主线程**上的一段活；而脚本的\"看一眼\"（matchAll）要的正是"
+                         "同一个主线程 ⇒ 轮得越密，脚本越看不见。判分只需要读到本体打印的 "
+                         "score 行（2s 一行的心跳足够），没必要 400ms 一次。")
+    ap.add_argument("--ext-every-ms", type=int, default=0, dest="ext_every_ms",
+                    help="外部旁证帧的间隔（毫秒；**默认 0 = 只在开局与判定时刻各抓一张**）。"
+                         "⚠ 运行期连抓会把**被测对象**压住：抓一张 = 容器侧整窗合成/编码 + 跨线程"
+                         "取帧，实测开着抓时画面从 ~10s 起**完全冻结**（帧字节逐一相同）、脚本变成"
+                         "瞎子，同一份脚本同一容器 10~60 分 vs 关掉时 110 分。判分只读本体打印的 "
+                         "score 行，旁证帧是给人看的 —— 所以默认只留关键帧；要更密的证据自己调小"
+                         "（并接受那是在'压住脚本'的条件下测的）。")
     ap.add_argument("--target", type=int, default=0, help="通关线（0 = 读玩法配置的 targetScore）")
     ap.add_argument("--keep", action="store_true", help="自己起的容器测完不杀（手工接着看）")
     args = ap.parse_args()
@@ -145,11 +165,15 @@ def main():
     try:
         # ---- 0) 容器：外部给的 or 自己起一个 ----
         if own_container:
-            box = E.HeadlessContainer(cfg="Debug", desktop=cfg["desktop"],
+            cfgname = args.cfg
+            box = E.HeadlessContainer(cfg=cfgname, desktop=cfg["desktop"],
                                       log_path=os.path.join(out, "container_stdout.txt"))
             box.__enter__()
             conn = box.c
-            log("自起容器: %s（桌面 %s）" % (conn.base, cfg["desktop"]))
+            log("自起容器(%s): %s（桌面 %s）" % (cfgname, conn.base, cfg["desktop"]))
+            if cfgname.lower() == "debug":
+                log("⚠⚠ 容器是 **Debug** 构建：桌面合成慢到看屏脚本看不见画面（实测一次 matchAll "
+                    "1550ms vs Release 3~6ms）—— 这一局的分数**量的是环境，不是脚本**。")
         else:
             conn = E.Container(args.port)
             log("用已有容器: %s" % conn.base)
@@ -195,6 +219,30 @@ def main():
         t_end = time.time() + budget
         script_done_at = 0.0
         prev_img = None
+        last_ext_ms = 0.0            # 上一次抓旁证帧的时刻（见 --ext-every-ms）
+
+        def grab_ext(score):
+            """抓一张**旁证帧**（客户区 PNG）+ 记一行 metrics.jsonl。
+
+            ⚠ 只在**关键帧**调用（开局 / 判定），别塞进轮询里：抓一张 = 容器侧的合成/编码 +
+              跨线程取帧，实测**运行期**连抓会把目标窗口的渲染压停（画面从 ~10s 起完全冻结、
+              脚本变成瞎子）——同一份脚本、同一个容器：开着抓 10~60 分，关掉 110 分。
+            """
+            nonlocal frames, prev_img, last_ext_ms
+            last_ext_ms = time.time() * 1000.0
+            p = os.path.join(ext_dir, "e%05d.png" % frames)
+            with open(p, "wb") as f:
+                f.write(conn.screen_png(win.get("id")))
+            img = E.read_png(p)
+            m = {"i": frames, "tMs": int((time.time() - started) * 1000),
+                 "file": os.path.relpath(p, TASK), "w": img[0], "h": img[1],
+                 "colors": E.unique_colors(img), "nonblack": round(E.nonblack_ratio(img), 4),
+                 "drift": round(E.diff_ratio(prev_img, img), 4) if prev_img else 0.0,
+                 "score": score}
+            prev_img = img
+            with open(metrics_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(m, ensure_ascii=False) + "\n")
+            frames += 1
         # 容器侧的日志缓冲会**跨轮累积**（同一个容器一直在用）：先记下当前累计行号当基线，
         # 这一局只看这之后的行（见 read_reports 的 offset）
         try:
@@ -222,19 +270,12 @@ def main():
                 if E.PLAY_PROGRAM not in progs:
                     verdict, detail = "script_gone", "脚本进程退出了"
                     break
-                p = os.path.join(ext_dir, "e%05d.png" % frames)
-                with open(p, "wb") as f:
-                    f.write(conn.screen_png(win.get("id")))
-                img = E.read_png(p)
-                m = {"i": frames, "tMs": int((time.time() - started) * 1000),
-                     "file": os.path.relpath(p, TASK), "w": img[0], "h": img[1],
-                     "colors": E.unique_colors(img), "nonblack": round(E.nonblack_ratio(img), 4),
-                     "drift": round(E.diff_ratio(prev_img, img), 4) if prev_img else 0.0,
-                     "score": report["score"]}
-                prev_img = img
-                with open(metrics_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
-                frames += 1
+                # ⚠ 旁证帧：默认**只在关键帧**抓（见 --ext-every-ms 的说明）。
+                if args.ext_every_ms > 0:
+                    if (time.time() * 1000.0 - last_ext_ms) >= args.ext_every_ms:
+                        grab_ext(report["score"])
+                elif frames == 0:
+                    grab_ext(report["score"])           # 0 = 只要关键帧：开局这一张
             except Exception as ex:
                 log("抓帧失败: %r" % ex)
                 time.sleep(0.5)
@@ -245,9 +286,15 @@ def main():
             if script_done_at and time.time() > script_done_at:
                 verdict, detail = "running", "脚本已收工；游戏还在跑（score=%s）" % report["score"]
                 break
-            time.sleep(max(0.05, step_ms / 1000.0))
+            time.sleep(max(0.05, (args.poll_ms or step_ms) / 1000.0))
         else:
             verdict, detail = "running", "到点还在跑（score=%s）" % report["score"]
+        # 判定时刻再补一张旁证（打在结论上）；失败不影响判定
+        if args.ext_every_ms <= 0:
+            try:
+                grab_ext(report["score"])
+            except Exception as ex:
+                log("末尾抓帧失败: %r" % ex)
     finally:
         if own_container and box is not None and not args.keep:
             box.__exit__(None, None, None)

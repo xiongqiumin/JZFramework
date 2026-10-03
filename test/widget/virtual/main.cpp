@@ -11,6 +11,7 @@
 //   8) 帧可存盘供肉眼确认 (virtual_desktop_frame.png)。
 //
 // 注意: 本测试**不显示宿主窗口** (不建真窗口), 因此可以进 ctest。
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -250,14 +251,40 @@ int main(int argc, char* argv[])
         check(wa->client()->width() == cw0 + 40, "拖右边框 -> 客户区变宽 40");
     }
 
+    // 任务栏按钮: 顺序 = 窗口**诞生顺序** (JZVirtualWindow::creationSeq), 与 z 序无关 ——
+    // 激活/置顶一个窗口**不会**让按钮换位置 (2026-10-03 改; 以前按 z 序, 点一下按钮整排就换位)。
+    // 两段用例(最小化还原 / 点按钮激活)都用它算某个窗口的按钮下标。
+    auto taskButtonIndexOf = [&](JZVirtualWindow* target) {
+        std::vector<JZVirtualWindow*> v;
+        for (auto* x : desk.windows()) {
+            if (x->isVisible())
+                v.push_back(x);
+        }
+        std::sort(v.begin(), v.end(), [](JZVirtualWindow* a, JZVirtualWindow* b) {
+            return a->creationSeq() < b->creationSeq();
+        });
+        for (int i = 0; i < (int)v.size(); ++i) {
+            if (v[i] == target)
+                return i;
+        }
+        return -1;
+    };
+
     // ---- 窗口管理器: 最小化 / 最大化 / 关闭 ----
     {
         const JZPoint minC = buttonCenter(wa, 0);
         desk.injectClickAt(minC.x(), minC.y());
-        check(wa->isMinimized(), "点最小化按钮 -> 窗口最小化 (只剩标题栏)");
+        check(wa->isMinimized(), "点最小化按钮 -> 窗口最小化");
         check(wa->frameHeight() == JZVirtualWindow::kTitleBar, "最小化后外框只剩标题栏");
-        desk.injectClickAt(minC.x(), minC.y());
-        check(!wa->isMinimized(), "再点一次恢复");
+        // ⚠ 最小化 = 桌面上**没有它** (不合成、不命中) —— 同真实 Windows: 只剩任务栏那颗按钮
+        const int idx = taskButtonIndexOf(wa);
+        check(idx >= 0, "任务栏上有它的按钮");
+        check(desk.windowAt(minC.x(), minC.y()) == nullptr,
+              "最小化后在原位点不到它 (桌面不留标题栏)");
+        const JZRect tb0 = desk.taskButtonRect(idx);
+        desk.injectClickAt(tb0.left() + 4, tb0.top() + 4);
+        check(!wa->isMinimized(), "点任务栏按钮 -> 还原它");
+        check(desk.windowAt(minC.x(), minC.y()) == wa, "还原后原位又能点中它");
 
         const JZRect before = wa->frameGeometry();
         const JZPoint maxC = buttonCenter(wa, 1);
@@ -303,23 +330,18 @@ int main(int argc, char* argv[])
                 break;
             }
         }
-        // ⚠ 按钮顺序 = z 序, 点一下会激活并把它置顶 -> 顺序跟着变, 所以每次都**重新取**
+        // 按钮顺序 = 窗口诞生顺序 (见上面的 taskButtonIndexOf) ⇒ 激活**不会**让按钮换位置
         auto buttonRectOf = [&](JZVirtualWindow* target) {
-            std::vector<JZVirtualWindow*> v;
-            for (auto* x : desk.windows()) {
-                if (x->isVisible())
-                    v.push_back(x);
-            }
-            for (int i = 0; i < (int)v.size(); ++i) {
-                if (v[i] == target)
-                    return desk.taskButtonRect(i);
-            }
-            return JZRect(0, 0, 0, 0);
+            const int i = taskButtonIndexOf(target);
+            return i >= 0 ? desk.taskButtonRect(i) : JZRect(0, 0, 0, 0);
         };
         const JZRect tb = buttonRectOf(other);
         check(!tb.isEmpty() && tb.top() >= desk.taskbarTop(), "窗口按钮排在任务栏里");
         desk.injectClickAt(tb.left() + 4, tb.top() + 4);
         check(desk.activeWindow() == other, "点任务栏上的窗口按钮 -> 激活那个窗口");
+        // ⚠ 再点**同一个位置**: 顺序稳定 ⇒ 还是它 (以前按 z 序排按钮, 这一下会点到别的窗口)
+        desk.injectClickAt(tb.left() + 4, tb.top() + 4);
+        check(desk.activeWindow() == other, "再点同一位置仍是它 (按钮顺序不随激活重排)");
 
         // 最小化后点它的按钮 = 还原 (同真实任务栏)
         other->setMinimized(true);

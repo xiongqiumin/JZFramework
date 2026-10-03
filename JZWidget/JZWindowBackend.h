@@ -95,6 +95,13 @@ public:
     virtual void imePrepare(JZWindow* w, int fontPixelSize) {}  // 组字窗/候选窗字体
     virtual void imeCancel(JZWindow* w) {}                      // 放弃未上屏的组字
     virtual void imeUpdateUi(JZWindow* w, bool show) {}          // 重发 WM_IME_SETCONTEXT
+    // 组字窗/候选窗的位置 (屏幕逻辑坐标, 由焦点控件算出, 见 JZWidget::imeWindowRect)。
+    // 真窗口不需要它: 文本控件自己用 IMM 接口设ImmSetCompositionWindow/CandidateWindow。
+    // 虚拟桌面用它: 那边的文本控件没有 HWND, 只能把位置交给后端转给**真正拿着 IMC 的
+    // 宿主窗口** —— 否则候选框停在 IME 的默认位置, 不跟虚拟桌面里的输入行走。
+    virtual void imeSetPosition(JZWindow* w, const JZRect& lineRect, const JZPoint& candPos) {
+        (void)w; (void)lineRect; (void)candPos;
+    }
 
     // ---- 拖放 (OLE IDropTarget; 只有真窗口能接收外部拖放) ----
     // 窗口创建后登记成系统拖放目标, 销毁前必须注销。虚拟桌面没有原生窗口,

@@ -46,16 +46,13 @@
 #include <opencv2/opencv.hpp>
 #endif
 
-CuRect JZComputerUse::s_lastLogical;
 JZVirtualDevice* JZComputerUse::s_virtualDesk = nullptr;
 
 // —— 后端选择 ——
 void JZComputerUse::setVirtualDesktop(JZVirtualDevice* desk) {
     s_virtualDesk = desk;
-    // 归一化基准 = **整块桌面**: layoutTree 的归一化与 click 的反算用的是同一个
-    // s_lastLogical, 这样"布局给的 rect"和"点击落点"必然同口径 (与真桌面路径同一条规矩)。
-    if (desk)
-        updateLogical(JZRect(0, 0, desk->desktopWidth(), desk->desktopHeight()));
+    // 口径 (2026-10-03): 对外一律**物理像素**, 内部恒逻辑 —— click 进来除 scale 再注入,
+    // layoutTree 出去乘 scale; 所以这里不再需要"归一化基准"这类共享状态了。
 }
 
 JZVirtualDevice* JZComputerUse::virtualDesktop() { return s_virtualDesk; }
@@ -70,20 +67,18 @@ JZMouseEvent::Button cuVirtualBtn(JZComputerUse::MouseBtn b) {
     return JZMouseEvent::LeftButton;
 }
 
-// 当前后端的**一帧**(JZImage)。screenshot / matchImage / matchColor 必须都从这里取 ——
-// 否则归一化坐标会串台(在某个来源上定位, 却按另一个来源的尺寸归一化)。
+// 当前后端的**一帧**(JZImage)。screenshot / matchImage / matchColor / ocrTexts 必须都从
+// 这里取 —— 否则坐标会串台(在某个来源上定位, 却按另一个来源的尺寸算)。
+// 这一帧的像素空间就是本类对外说的"物理像素" (见头注释"坐标口径")。
 //   · 虚拟桌面 => 桌面合成帧(不抓屏, 不受遮挡/z 序/前台/多屏影响);
 //   · 真桌面   => 各屏拼接抓屏(captureVirtualDesktop 指**多显示器虚拟屏**, 不是本框架的虚拟桌面)。
 // ⚠ 曾经 matchImage/matchColor 直接调 captureVirtualDesktop: 虚拟模式下它们抓的是**本机真屏**,
 //   于是桌面上明明摆着目标也永远找不到(2026-09-30 由 test_cu_virtual 的像素族用例暴露)。
-JZImage currentFrame(JZRect* logical) {
+JZImage currentFrame() {
     JZVirtualDevice* d = JZComputerUse::virtualDesktop();
-    if (d) {
-        if (logical)
-            *logical = JZRect(0, 0, d->desktopWidth(), d->desktopHeight());
+    if (d)
         return d->screenshot();
-    }
-    return JZScreenShot::captureVirtualDesktop(logical);
+    return JZScreenShot::captureVirtualDesktop(nullptr);
 }
 
 // ⚠ 这里曾经有一个 shiftBoundsInScreen(): 给语义树的 boundsInScreen 补上窗口的桌面偏移,
@@ -205,26 +200,24 @@ JZImage currentFrame(JZRect* logical) {
         return JZRect(l, t, r - l, b - t);
     }
 
-    // 屏幕逻辑矩形 → 归一化 [0,1]（相对虚拟桌面逻辑矩形；与 click() 同口径）
-    Json::Value normRectJson(int x, int y, int w, int h, const JZRect& base) {
-        const double bw = base.width() > 0 ? (double)base.width() : 1.0;
-        const double bh = base.height() > 0 ? (double)base.height() : 1.0;
-        double nx = (x - base.left()) / bw, ny = (y - base.top()) / bh;
-        double nw = w / bw, nh = h / bh;
-        if (nx < 0) { nw += nx; nx = 0; }
-        if (ny < 0) { nh += ny; ny = 0; }
-        if (nx + nw > 1) nw = 1 - nx;
-        if (ny + nh > 1) nh = 1 - ny;
-        if (nw < 0) nw = 0; if (nh < 0) nh = 0;
+    // 矩形 -> JSON。⚠ 对外口径是**物理像素**, 而语义树给的 boundsInScreen 是**逻辑**坐标,
+    // 所以这里要按传入的 scale 换算 (自家窗口走这条; UIA/Win32 本来就是物理 ⇒ scale = 1)。
+    Json::Value physRectJson(int x, int y, int w, int h, double scale) {
+        if (!(scale > 0.0))
+            scale = 1.0;
         Json::Value r(Json::objectValue);
-        r["x"] = nx; r["y"] = ny; r["w"] = nw; r["h"] = nh;
+        r["x"] = std::lround((double)x * scale);
+        r["y"] = std::lround((double)y * scale);
+        r["w"] = std::lround((double)w * scale);
+        r["h"] = std::lround((double)h * scale);
         return r;
     }
 
     // JZWidget 语义树(dumpSemanticTree 的无障碍树) → 本包 LayoutNode 形态。
     // 字段一一对应: className→role / viewId→id / text→text / contentDesc→name /
-    //              boundsInScreen→rect(归一化) / visible·enabled·clickable·checked·range·items·actions 直传。
-    Json::Value widgetTreeToLayout(const Json::Value& n, const JZRect& base) {
+    //              boundsInScreen→rect(**物理像素**: 框架给的是逻辑坐标, 这里 ×scale) /
+    //              visible·enabled·clickable·checked·range·items·actions 直传。
+    Json::Value widgetTreeToLayout(const Json::Value& n, double scale) {
         Json::Value o(Json::objectValue);
         o["role"] = n.isMember("className") ? n["className"].asString() : std::string("unknown");
         if (n.isMember("viewId")) o["id"] = n["viewId"];            // = objectName()（路径的稳定片段）
@@ -232,7 +225,7 @@ JZImage currentFrame(JZRect* logical) {
         if (n.isMember("contentDesc")) o["name"] = n["contentDesc"];
         const Json::Value& b = n["boundsInScreen"];
         if (b.isArray() && b.size() >= 4)
-            o["rect"] = normRectJson(b[0].asInt(), b[1].asInt(), b[2].asInt(), b[3].asInt(), base);
+            o["rect"] = physRectJson(b[0].asInt(), b[1].asInt(), b[2].asInt(), b[3].asInt(), scale);
         if (n.isMember("visible"))   o["visible"]   = n["visible"].asBool();
         if (n.isMember("enabled"))   o["enabled"]   = n["enabled"].asBool();
         if (n.isMember("clickable")) o["clickable"] = n["clickable"].asBool();
@@ -243,7 +236,7 @@ JZImage currentFrame(JZRect* logical) {
         const Json::Value& kids = n["children"];
         if (kids.isArray() && !kids.empty()) {
             Json::Value arr(Json::arrayValue);
-            for (const auto& c : kids) arr.append(widgetTreeToLayout(c, base));
+            for (const auto& c : kids) arr.append(widgetTreeToLayout(c, scale));
             o["children"] = arr;
         }
         return o;
@@ -272,7 +265,8 @@ JZImage currentFrame(JZRect* logical) {
     // 外部窗口: 递归枚举 Win32 子窗口 → LayoutNode。
     // ⚠ 只对"标准控件"有效(按钮/编辑框/静态文本/列表…); 自绘界面拿不到内部结构 ⇒
     //   那些节点的细节只能靠像素族兜底(或后续接 UIA)。
-    Json::Value hwndTreeToLayout(HWND w, const JZRect& base) {
+    // ⚠ GetWindowRect 在 DPI-aware 进程里给的就是**物理**像素 (与对外口径一致) ⇒ scale = 1
+    Json::Value hwndTreeToLayout(HWND w) {
         Json::Value o(Json::objectValue);
         char cls[256] = {};
         GetClassNameA(w, cls, (int)sizeof(cls));
@@ -290,7 +284,7 @@ JZImage currentFrame(JZRect* logical) {
         if (txt[0]) o["text"] = std::string(txt);
         RECT r = {};
         if (GetWindowRect(w, &r))
-            o["rect"] = normRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, base);
+            o["rect"] = physRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, 1.0);
         o["visible"]   = IsWindowVisible(w) != 0;
         o["enabled"]   = IsWindowEnabled(w) != 0;
         o["clickable"] = true;
@@ -298,7 +292,7 @@ JZImage currentFrame(JZRect* logical) {
         Json::Value arr(Json::arrayValue);
         for (HWND c = GetWindow(w, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
             if (!IsWindowVisible(c)) continue;                    // 不可见的子窗口不进树(与自家语义树一致)
-            arr.append(hwndTreeToLayout(c, base));
+            arr.append(hwndTreeToLayout(c));
         }
         if (!arr.empty()) o["children"] = arr;
         return o;
@@ -386,8 +380,10 @@ JZImage currentFrame(JZRect* logical) {
 
     // UIA 元素 -> LayoutNode。形状与 hwndTreeToLayout 一致(role/id/text/name/rect/visible/
     // enabled/clickable/actions/children), JS 侧那套 layout 寻址一行都不用改。
+    // ⚠ UIA 的 BoundingRectangle 就是**物理**屏幕坐标 (DPI-aware 客户端不做虚拟化)
+    //   ⇒ scale = 1, 与对外口径天然一致。
     Json::Value uiaElementToLayout(IUIAutomationElement* e, IUIAutomationTreeWalker* walker,
-                                   const JZRect& base, int depth, int* budget) {
+                                   int depth, int* budget) {
         Json::Value o(Json::objectValue);
         if (!e || *budget <= 0)
             return o;
@@ -418,7 +414,7 @@ JZImage currentFrame(JZRect* logical) {
 
         RECT r = {};
         if (SUCCEEDED(e->get_CurrentBoundingRectangle(&r)))
-            o["rect"] = normRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, base);
+            o["rect"] = physRectJson(r.left, r.top, r.right - r.left, r.bottom - r.top, 1.0);
 
         BOOL off = FALSE, en = FALSE;
         if (SUCCEEDED(e->get_CurrentIsOffscreen(&off)))
@@ -456,7 +452,7 @@ JZImage currentFrame(JZRect* logical) {
                     BOOL kidOff = FALSE;
                     c->get_CurrentIsOffscreen(&kidOff);
                     if (kidOff == FALSE)      // 与 Win32 树、自家语义树一致: 不可见的不进树
-                        kids.append(uiaElementToLayout(c, walker, base, depth + 1, budget));
+                        kids.append(uiaElementToLayout(c, walker, depth + 1, budget));
                     IUIAutomationElement* next = nullptr;
                     walker->GetNextSiblingElement(c, &next);
                     c->Release();
@@ -470,7 +466,7 @@ JZImage currentFrame(JZRect* logical) {
     }
 
     // 外部窗口的无障碍树。拿不到 ⇒ null(调用方退到 Win32 子窗口枚举)。
-    Json::Value uiaTreeToLayout(HWND hwnd, const JZRect& base) {
+    Json::Value uiaTreeToLayout(HWND hwnd) {
         if (JZComputerUse::isVirtualDesktop())
             return Json::Value();          // 虚拟桌面: UIA 够不到, 明确空(不假装成功)
         if (!hwnd || !IsWindow(hwnd))
@@ -491,7 +487,7 @@ JZImage currentFrame(JZRect* logical) {
             IUIAutomationTreeWalker* walker = nullptr;
             if (SUCCEEDED(uia->get_ControlViewWalker(&walker)) && walker) {
                 int budget = kUiaMaxNodes;
-                tree = uiaElementToLayout(root, walker, base, 0, &budget);
+                tree = uiaElementToLayout(root, walker, 0, &budget);
                 walker->Release();
             }
             root->Release();
@@ -505,50 +501,35 @@ JZImage currentFrame(JZRect* logical) {
     }
 }
 
-void JZComputerUse::updateLogical(const JZRect& r) {
-    s_lastLogical.x = (double)r.x();
-    s_lastLogical.y = (double)r.y();
-    s_lastLogical.w = (double)r.width();
-    s_lastLogical.h = (double)r.height();
-}
-
-// 归一化(相对虚拟桌面逻辑矩形) -> 虚拟屏幕绝对坐标(0..65535, SendInput 用)
+// 物理像素 -> 虚拟屏幕绝对坐标(0..65535, SendInput 用)
 //
-// ⚠ 坐标系必须统一：`s_lastLogical` 是**逻辑**虚拟桌面（JZScreen::geometry()），
-//   而 DPI-aware 进程里 GetSystemMetrics(SM_*) 给的是**物理**像素 ⇒ 中间得乘 deviceScale。
-//   不乘的后果（实机自检踩到）：200% 缩放下 rect 完全正确，但点击只落到目标的一半位置，
-//   表现成"能定位、点不中" —— 这类 bug 只有真点一次才看得出来。
+// ⚠ 输入已经是**物理像素** (与本类对外的口径一致), 而 DPI-aware 进程里
+//   GetSystemMetrics(SM_*) 给的就是物理像素 ⇒ 正常情况下直接映射, **不再乘 devicePixelRatio**。
+//   唯一要补偿的是"进程不是 DPI-aware": 那时系统把整个进程的坐标虚拟化了, 抓屏/调用方看到的
+//   "物理像素"其实被缩过一遍, 得乘回去。判据仍是那个自校准:
+//   主屏的 SM_CXSCREEN 比它的逻辑宽大 ⇒ 进程是 DPI-aware。
 //   `MOUSEEVENTF_VIRTUALDESK` 让 0..65535 覆盖**整个虚拟桌面**（与 vsX/vsW 同口径），
 //   多显示器下不设它会按主屏算，副屏上的坐标就偏了。
-void JZComputerUse::toAbsolute(double nx, double ny, DWORD& ax, DWORD& ay) {
+void JZComputerUse::toAbsolute(double x, double y, DWORD& ax, DWORD& ay) {
     int vsX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vsY = GetSystemMetrics(SM_YVIRTUALSCREEN);
     int vsW = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
     int vsH = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
-    // 归一化 → **逻辑**屏幕坐标（与 layoutTree 归一化用同一个 s_lastLogical ⇒ 能原路返回）
-    double lx = s_lastLogical.x + nx * s_lastLogical.w;
-    double ly = s_lastLogical.y + ny * s_lastLogical.h;
-
-    // 逻辑 → 物理：按**该点所在显示器**的缩放。
-    // ⚠ 别用 "物理虚拟屏 / 逻辑虚拟桌面" 当比例：`JZScreen::geometry()` 在多屏下会把副屏
-    //   原点按物理值报(实测: 主屏 1440x900@2x + 副屏原点 2880 ⇒ 并集 4800x1080 是脏的)，
-    //   拿它算出来的比例会是 1，于是 200% 屏上的点击只走一半 ⇒ "能定位、点不中"。
-    //   改用该点所在屏的 devicePixelRatio；并用 "SM_CXSCREEN 是否大于主屏逻辑宽" 自校准
-    //   进程是否 DPI-aware（非 DPI-aware 时系统已把坐标虚拟化，再乘就重复了）。
+    // 非 DPI-aware 进程: 它看到的坐标是虚拟化过的 ⇒ 乘回该点所在屏的 devicePixelRatio
     double k = 1.0;
     JZScreen pri = JZScreen::primaryScreen();
     if (pri.isValid()) {
         JZRect pg = pri.geometry();
         const bool dpiAware = (GetSystemMetrics(SM_CXSCREEN) > pg.width() + 1);
-        if (dpiAware) {
-            JZScreen sc = JZScreen::screenAt(JZPoint((int)lx, (int)ly));
+        if (!dpiAware) {
+            JZScreen sc = JZScreen::screenAt(JZPoint((int)x, (int)y));
             if (sc.isValid() && sc.devicePixelRatio() > 0)
                 k = sc.devicePixelRatio();
         }
     }
 
-    double px = lx * k, py = ly * k;
+    double px = x * k, py = y * k;
     ax = (DWORD)(((px - vsX) / (double)vsW) * 65535.0);
     ay = (DWORD)(((py - vsY) / (double)vsH) * 65535.0);
 }
@@ -579,16 +560,17 @@ void JZComputerUse::switchToDesktop() {
     if (SUCCEEDED(hr)) CoUninitialize();
 }
 
-bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
-    // 虚拟桌面: 归一化 -> 桌面像素 -> 命中窗口(并激活它) -> 换算客户区 -> 投递控件
+bool JZComputerUse::click(double x, double y, MouseBtn btn) {
+    // 虚拟桌面: **物理像素 ÷ 桌面 scale = 桌面逻辑坐标** -> 命中窗口(并激活它) ->
+    //           换算客户区 -> 投递控件
     if (s_virtualDesk) {
-        const int x = (int)std::lround(nx * s_virtualDesk->desktopWidth());
-        const int y = (int)std::lround(ny * s_virtualDesk->desktopHeight());
+        const int lx = s_virtualDesk->toLogical((int)std::lround(x));
+        const int ly = s_virtualDesk->toLogical((int)std::lround(y));
         // 与真桌面那条路 (SendInput) **同一个形状**: 送出去就返回, 由虚拟桌面自己调度 ——
         // 这里不等、也不挂回调。要"动作后的画面"用 waitStable (两个后端同一套, 见它的说明)。
-        return s_virtualDesk->injectClickAt(x, y, cuVirtualBtn(btn));
+        return s_virtualDesk->injectClickAt(lx, ly, cuVirtualBtn(btn));
     }
-    DWORD ax, ay; toAbsolute(nx, ny, ax, ay);
+    DWORD ax, ay; toAbsolute(x, y, ax, ay);
     INPUT in[2] = {};
     in[0].type = INPUT_MOUSE; in[0].mi.dx = ax; in[0].mi.dy = ay; in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     in[1].type = INPUT_MOUSE; in[1].mi.dx = ax; in[1].mi.dy = ay; in[1].mi.dwFlags = btnDown(btn) | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
@@ -604,17 +586,17 @@ bool JZComputerUse::click(double nx, double ny, MouseBtn btn) {
     return true;
 }
 
-bool JZComputerUse::doubleClick(double nx, double ny, MouseBtn btn) {
-    click(nx, ny, btn); Sleep(20); click(nx, ny, btn); return true;
+bool JZComputerUse::doubleClick(double x, double y, MouseBtn btn) {
+    click(x, y, btn); Sleep(20); click(x, y, btn); return true;
 }
 
 bool JZComputerUse::drag(double x1, double y1, double x2, double y2) {
     // 虚拟桌面: 按下 -> 中间位移若干步 (控件靠 move 判拖拽) -> 抬起
+    // (四个坐标都是**物理像素** => 先换成桌面逻辑再注入)
     if (s_virtualDesk) {
         JZVirtualDevice* d = s_virtualDesk;
-        const int W = d->desktopWidth(), H = d->desktopHeight();
-        const int ax = (int)std::lround(x1 * W), ay = (int)std::lround(y1 * H);
-        const int bx = (int)std::lround(x2 * W), by = (int)std::lround(y2 * H);
+        const int ax = d->toLogical((int)std::lround(x1)), ay = d->toLogical((int)std::lround(y1));
+        const int bx = d->toLogical((int)std::lround(x2)), by = d->toLogical((int)std::lround(y2));
         d->injectMouseAtScreen(JZMouseEvent::Press, JZMouseEvent::LeftButton, ax, ay);
         // 抓取由控件接管 (grabMouse/m_mouseGrabber), 后续 move 会直发它 —— 与真实拖拽同一条路
         for (int i = 1; i <= 5; ++i) {
@@ -692,10 +674,9 @@ void JZComputerUse::type(const std::string& text) {
 void JZComputerUse::wait(int ms) { if (ms > 0) Sleep(ms); }
 
 std::string JZComputerUse::screenshot() {
-    // 虚拟桌面: 直接拿桌面合成帧 (不抓屏) —— 不受遮挡/z 序/前台/多屏影响, 也不用拷屏
-    JZRect logical;
-    JZImage img = currentFrame(&logical);
-    updateLogical(logical);
+    // 一帧 dataURL(PNG): 尺寸 = 该后端的**物理像素** —— 与 click/match 的坐标同一个空间,
+    // 从图里量出来的像素可以直接拿去点 (虚拟桌面 = 桌面逻辑 × scale; 真桌面 = 抓屏)。
+    JZImage img = currentFrame();
     return JZScreenShot::toDataUrl(img);
 }
 
@@ -725,9 +706,7 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     (void)templatePath; (void)region;
     return CuRect();        // OpenCV 未接入(像素族已降级为兜底, 见文件头) ⇒ 视为未找到
 #else
-    JZRect logical;
-    JZImage img = currentFrame(&logical);
-    updateLogical(logical);
+    JZImage img = currentFrame();
     // 帧: **零拷贝**包成 cv::Mat(不再落盘 PNG + imread); 模板: 它是输入, 照样从文件读
     cv::Mat hay = jzCvMatOf(img);
     cv::Mat needle = cv::imread(templatePath, cv::IMREAD_COLOR);
@@ -739,10 +718,11 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     int hw = hay.cols, hh = hay.rows;
     cv::Rect roi(0, 0, hw, hh);
     if (region.w > 0 && region.h > 0) {
-        int x0 = std::max(0, (int)(region.x * hw));
-        int y0 = std::max(0, (int)(region.y * hh));
-        int ww = std::min(hw - x0, (int)(region.w * hw));
-        int hh2 = std::min(hh - y0, (int)(region.h * hh));
+        // region 是**物理像素** (与帧同一空间) ⇒ 直接当 roi, 不再乘帧尺寸
+        int x0 = std::max(0, (int)region.x);
+        int y0 = std::max(0, (int)region.y);
+        int ww = std::min(hw - x0, (int)region.w);
+        int hh2 = std::min(hh - y0, (int)region.h);
         if (ww <= 0 || hh2 <= 0) return CuRect();
         roi = cv::Rect(x0, y0, ww, hh2);
     }
@@ -756,14 +736,15 @@ CuRect JZComputerUse::matchImage(const std::string& templatePath, const CuRect& 
     const double kThresh = 0.8;            // 单尺度, 阈值偏高以抑制误命
     if (maxv < kThresh) return CuRect();
 
-    // 与 matchColor / matchText / ocrTexts / layoutTree 同一口径: x,y = 命中框**左上角**, w,h = 框尺寸。
+    // 与 matchColor / matchText / ocrTexts / layoutTree 同一口径: x,y = 命中框**左上角**,
+    // w,h = 框尺寸, **单位物理像素** (帧像素就是物理像素)。
     // ⚠ 这里曾经返回的是"命中**中心** + 模板尺寸" ⇒ 调用方按 `x + w/2` 反算落点就会偏掉半个模板
     //   ("能定位点不中"), 按 rect 去认领布局节点也会认到错的那个。2026-09-30 由 test_cu_virtual
     //   的像素族用例(拿 matchImage 与 matchColor 的同一目标互校)暴露。
     CuRect r;
-    r.x = (double)(roi.x + maxLoc.x) / hw;
-    r.y = (double)(roi.y + maxLoc.y) / hh;
-    r.w = (double)needle.cols / hw; r.h = (double)needle.rows / hh;
+    r.x = (double)(roi.x + maxLoc.x);
+    r.y = (double)(roi.y + maxLoc.y);
+    r.w = (double)needle.cols; r.h = (double)needle.rows;
     return r;
 #endif
 }
@@ -806,10 +787,8 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
     //   之间, 而"找画面上那个红点、点它"要的正是其中一个 ⇒ 这里取**最大连通块**的框;
     //   ③ 于是容器版与桌面版行为一致, 不会出现"同名 API 两套结果"。
     // 容差 60 = 三通道绝对差之和(每通道平均 ~20, 与原 OpenCV 版同一口径);
-    // 归一化(左上角 + 尺寸, 分母 = 帧的**像素**尺寸)与 matchImage 同口径。
-    JZRect logical;
-    JZImage img = currentFrame(&logical);
-    updateLogical(logical);
+    // 返回 (左上角 + 尺寸, 单位**物理像素**) 与 matchImage 同口径。
+    JZImage img = currentFrame();
     std::shared_ptr<JZImageData> data = img.data();
     if (!data || data->width() <= 0 || data->height() <= 0 || !data->pixels())
         return CuRect();
@@ -820,12 +799,12 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
 
     const int hw = data->width(), hh = data->height();
     const uint8_t* px = data->pixels();
-    int x0 = 0, y0 = 0, x1 = hw, y1 = hh;      // region(归一化) -> 像素窗口; 缺省整帧
+    int x0 = 0, y0 = 0, x1 = hw, y1 = hh;      // region(**物理像素**) -> 像素窗口; 缺省整帧
     if (region.w > 0 && region.h > 0) {
-        x0 = std::max(0, (int)(region.x * hw));
-        y0 = std::max(0, (int)(region.y * hh));
-        x1 = std::min(hw, x0 + std::max(1, (int)(region.w * hw)));
-        y1 = std::min(hh, y0 + std::max(1, (int)(region.h * hh)));
+        x0 = std::max(0, (int)region.x);
+        y0 = std::max(0, (int)region.y);
+        x1 = std::min(hw, x0 + std::max(1, (int)region.w));
+        y1 = std::min(hh, y0 + std::max(1, (int)region.h));
         if (x1 <= x0 || y1 <= y0)
             return CuRect();
     }
@@ -887,8 +866,8 @@ CuRect JZComputerUse::matchColor(const std::string& hexColor, const CuRect& regi
         return CuRect();
 
     CuRect r;
-    r.x = (double)bx0 / hw; r.y = (double)by0 / hh;
-    r.w = (double)(bx1 - bx0 + 1) / hw; r.h = (double)(by1 - by0 + 1) / hh;
+    r.x = (double)bx0; r.y = (double)by0;          // **物理像素** (帧像素就是物理像素)
+    r.w = (double)(bx1 - bx0 + 1); r.h = (double)(by1 - by0 + 1);
     return r;
 }
 
@@ -903,19 +882,16 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
         if (!w)
             return Json::Value();          // 没有目标窗口 => null (JS 侧据此标 degraded)
 
-        const JZRect base(0, 0, d->desktopWidth(), d->desktopHeight());
-        updateLogical(base);               // 归一化基准 = 整块桌面 (与 click 同口径)
-
         // 语义树走窗口的**客户区** (客户区那个真 JZWindow 才是控件树的根:
         // 外框/标题栏是窗口管理器的, 不属于任何控件)。
         Json::Value tree = w->client()->dumpSemanticTree(-1);
-        // boundsInScreen 已是**桌面坐标** (dumpSemanticTree 走 mapToGlobal, 虚拟窗口的
+        // boundsInScreen 已是**桌面逻辑坐标** (dumpSemanticTree 走 mapToGlobal, 虚拟窗口的
         // mapToGlobal = 客户区坐标 + 窗口客户区在桌面上的原点, 见 JZVirtualWindow::clientToScreen)
-        // ⇒ 这里**不再**补窗口偏移 (补了就是重复补偿, rect 会整体偏一个窗口位置)。
-
+        // ⇒ 这里**不再**补窗口偏移 (补了就是重复补偿, rect 会整体偏一个窗口位置);
+        //   只按桌面的 scale 换成**物理像素** (对外口径)。
         Json::Value out(Json::objectValue);
         out["source"] = "semantic";
-        out["tree"] = widgetTreeToLayout(tree, base);
+        out["tree"] = widgetTreeToLayout(tree, (double)d->scale());
         return out;
     }
 
@@ -931,10 +907,6 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
     HWND fg = target;
     if (!fg || !IsWindow(fg)) return Json::Value();      // 没有目标窗口 ⇒ null(JS 侧据此标 degraded)
 
-    const JZRect base = virtualLogicalRect();
-    updateLogical(base);        // ⚠ 顺手把归一化基准对齐到"当前"虚拟桌面 —— click() 用的就是它，
-                                //   否则布局给的 rect 与点击落点会差一个桌面偏移(多屏时尤其明显)。
-
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
     if (pid == GetCurrentProcessId()) {
@@ -942,9 +914,12 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
         JZApplication* app = JZApplication::instance();
         JZWindow* w = app ? app->activeWindow() : nullptr;
         if (w) {
+            // 语义树是**逻辑**坐标 ⇒ 按这个窗口的设备缩放换成物理 (对外口径)
+            const double sc = (w->device() && w->device()->scale() > 0.0f)
+                                  ? (double)w->device()->scale() : 1.0;
             Json::Value out(Json::objectValue);
             out["source"] = "semantic";
-            out["tree"] = widgetTreeToLayout(w->dumpSemanticTree(-1), base);
+            out["tree"] = widgetTreeToLayout(w->dumpSemanticTree(-1), sc);
             return out;
         }
         // 前台是本进程的窗口但框架拿不到活动窗口(极少见) ⇒ 退化到 Win32 枚举, 不假装成功
@@ -955,7 +930,7 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
     // 只有空壳)才退回递归枚举 Win32 子窗口。两条路都**标明来源**(source='uia' | 'win32'),
     // 让调用方知道这次定位是哪来的; 两条都给不出东西 ⇒ 整体返回 null, 由 JS 侧标 degraded
     // 退到像素族(见 docs 的"退化必须显式")。
-    Json::Value uiaTree = uiaTreeToLayout(fg, base);
+    Json::Value uiaTree = uiaTreeToLayout(fg);
     if (!uiaTree.isNull()) {
         Json::Value out(Json::objectValue);
         out["source"] = "uia";
@@ -965,8 +940,43 @@ Json::Value JZComputerUse::layoutTree(const std::string& titleFilter) {
 
     Json::Value out(Json::objectValue);
     out["source"] = "win32";
-    out["tree"] = hwndTreeToLayout(fg, base);
+    out["tree"] = hwndTreeToLayout(fg);
     return out;
+}
+
+// 尺寸/缩放: "图上的像素 ↔ 物理像素"换算的唯一依据 (见头文件)
+Json::Value JZComputerUse::screenInfo()
+{
+    auto two = [](double a, double b) -> Json::Value {
+        Json::Value v(Json::arrayValue);
+        v.append(a);
+        v.append(b);
+        return v;
+    };
+    Json::Value o(Json::objectValue);
+    o["virtual"] = isVirtualDesktop();
+    if (s_virtualDesk) {
+        JZVirtualDevice* d = s_virtualDesk;
+        o["logical"] = two(d->desktopWidth(), d->desktopHeight());
+        o["physical"] = two(d->physicalWidth(), d->physicalHeight());
+        o["scale"] = (double)d->scale();          // 桌面逻辑 -> 物理 (默认 = 宿主 DPI 缩放)
+        o["dpi"] = (int)std::lround(96.0 * (double)d->scale());
+        o["explicit"] = d->isScaleExplicit();
+        return o;
+    }
+    // 真桌面: 逻辑 = 逻辑虚拟屏并集 (JZScreen::geometry), 物理 = Win32 的物理虚拟屏并集。
+    // ⚠ 进程不是 DPI-aware 时 GetSystemMetrics 给的是被系统虚拟化过的值 ⇒ scale 会 ≈1
+    //   (与"调用方看到的世界"一致; toAbsolute 里那次补偿用的就是同一条判据)。
+    const JZRect lg = virtualLogicalRect();
+    const int pw = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const int ph = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    o["logical"] = two(lg.width(), lg.height());
+    o["physical"] = two(pw, ph);
+    const double sc = (lg.height() > 0) ? (double)ph / (double)lg.height() : 1.0;
+    o["scale"] = sc;
+    o["dpi"] = (int)std::lround(96.0 * sc);
+    o["explicit"] = false;
+    return o;
 }
 
 // ————————————————————————————————————————————————
@@ -997,15 +1007,16 @@ cv::Mat jzCvImageToMat(const JZImage& img)
     return jzCvMatOf(img).clone();
 }
 
-// 归一化 region(相对整屏) -> 像素裁剪矩形, 并夹到图内 (region 为空 => 整屏)
+// region(**物理像素**, 相对整屏) -> 像素裁剪矩形, 并夹到图内 (region 为空 => 整屏)
+// 帧像素就是物理像素 ⇒ 直接用, 不再乘帧尺寸。
 cv::Rect jzCvRoiOf(const CuRect& region, int w, int h)
 {
     if (region.w <= 0 || region.h <= 0)
         return cv::Rect(0, 0, w, h);
-    int x0 = (int)std::lround(region.x * w);
-    int y0 = (int)std::lround(region.y * h);
-    int x1 = (int)std::lround((region.x + region.w) * w);
-    int y1 = (int)std::lround((region.y + region.h) * h);
+    int x0 = (int)std::lround(region.x);
+    int y0 = (int)std::lround(region.y);
+    int x1 = (int)std::lround(region.x + region.w);
+    int y1 = (int)std::lround(region.y + region.h);
     x0 = std::max(0, std::min(x0, w - 1));
     y0 = std::max(0, std::min(y0, h - 1));
     x1 = std::max(x0 + 1, std::min(x1, w));
@@ -1128,10 +1139,8 @@ Json::Value JZComputerUse::ocrTexts(const CuRect& region, double minScore)
     if (!ocrReady())
         return arr;
 
-    // 取图 + 归一化基准(与 click/layoutTree 同一条口径): 虚拟桌面走合成帧, 真桌面走抓屏
-    JZRect base;
-    JZImage img = currentFrame(&base);      // 与 screenshot/match 同源(虚拟桌面 => 桌面合成帧)
-    updateLogical(base);
+    // 取一帧 (与 screenshot/match 同源): 虚拟桌面走合成帧, 真桌面走抓屏
+    JZImage img = currentFrame();
     if (img.isNull())
         return arr;
 
@@ -1147,11 +1156,11 @@ Json::Value JZComputerUse::ocrTexts(const CuRect& region, double minScore)
         Json::Value o(Json::objectValue);
         o["text"]  = r.text;
         o["score"] = r.score;
-        // ROI 内像素 -> 整屏归一化(与 layoutTree 的 rect 同口径 => 可以直接拿去 click)
-        o["x"] = (double)(roi.x + r.rect.x) / (double)mat.cols;
-        o["y"] = (double)(roi.y + r.rect.y) / (double)mat.rows;
-        o["w"] = (double)r.rect.width  / (double)mat.cols;
-        o["h"] = (double)r.rect.height / (double)mat.rows;
+        // ROI 内像素 + ROI 原点 = 整帧**物理像素** (与 layoutTree/click 同口径 => 直接能点)
+        o["x"] = (double)(roi.x + r.rect.x);
+        o["y"] = (double)(roi.y + r.rect.y);
+        o["w"] = (double)r.rect.width;
+        o["h"] = (double)r.rect.height;
         arr.append(o);
     }
     return arr;
@@ -1214,10 +1223,8 @@ bool JZComputerUse::waitStable(int settleMs, int timeoutMs) {
     // 像素在这里**只当信号**: 连续两帧"缩略图相同"就认为画面没在变。
     // 比对用缩略图的 PNG 字节(不引图像比较 API, 也不用 OpenCV)。
     auto fingerprint = [](std::string& out) -> bool {
-        JZRect rc;
-        JZImage img = currentFrame(&rc);      // 帧来源按后端取: 虚拟桌面 = 桌面合成帧, 真桌面 = 抓屏
+        JZImage img = currentFrame();         // 帧来源按后端取: 虚拟桌面 = 桌面合成帧, 真桌面 = 抓屏
         if (img.isNull()) return false;
-        updateLogical(rc);
         JZByteArray png = JZScreenShot::toPng(JZScreenShot::fit(img, 96));   // 缩到 96px 长边再编码
         out.assign(png.data(), png.size());
         return true;

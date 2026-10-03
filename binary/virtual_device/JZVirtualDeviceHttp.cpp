@@ -334,6 +334,29 @@ JZVirtualWindow* JZVirtualDeviceHttp::findWindow(const std::string& key) const
     return m_screen->byTitle(k);      // 其余: 标题片段 (最上层那个)
 }
 
+// ---- 坐标口径: 对外物理 / 内部逻辑 (换算只在这四个函数里, 见头文件) ----
+int JZVirtualDeviceHttp::physToLogical(int v) const
+{
+    return m_screen ? m_screen->toLogical(v) : v;
+}
+
+int JZVirtualDeviceHttp::logicalToPhys(int v) const
+{
+    return m_screen ? m_screen->toPhysical(v) : v;
+}
+
+JZRect JZVirtualDeviceHttp::physRectToLogical(const JZRect& r) const
+{
+    return JZRect(physToLogical(r.left()), physToLogical(r.top()),
+                  physToLogical(r.width()), physToLogical(r.height()));
+}
+
+JZRect JZVirtualDeviceHttp::logicalRectToPhys(const JZRect& r) const
+{
+    return JZRect(logicalToPhys(r.left()), logicalToPhys(r.top()),
+                  logicalToPhys(r.width()), logicalToPhys(r.height()));
+}
+
 Json::Value JZVirtualDeviceHttp::windowJson(JZVirtualWindow* w, int index) const
 {
     Json::Value o(Json::objectValue);
@@ -342,8 +365,9 @@ Json::Value JZVirtualDeviceHttp::windowJson(JZVirtualWindow* w, int index) const
     o["id"] = windowHandleOf(w);                     // 稳定标识 (见 findWindow)
     o["index"] = index;                              // 本次枚举里的 z 序下标 (会变)
     o["title"] = w->title();
-    o["frame"] = rectToJson(w->frameGeometry());     // 外框 (含标题栏/边框), 桌面逻辑坐标
-    o["client"] = rectToJson(w->clientGeometry());   // 客户区 (截 ?window= 与控件几何同口径)
+    // 外框/客户区: **物理像素** (与 /api/screen 的图、/api/input/mouse 的坐标同一空间)
+    o["frame"] = rectToJson(logicalRectToPhys(w->frameGeometry()));
+    o["client"] = rectToJson(logicalRectToPhys(w->clientGeometry()));
     o["visible"] = w->isVisible();
     o["active"] = (w == m_screen->activeWindow());
     o["minimized"] = w->isMinimized();
@@ -428,9 +452,18 @@ void JZVirtualDeviceHttp::handleHealth(JZHttpServerClient* client, const JZHttpR
     auto box = std::make_shared<Json::Value>(Json::objectValue);
     const bool ok = onScreen([this, box]() {
         Json::Value d(Json::objectValue);
-        d["w"] = m_screen->desktopWidth();
-        d["h"] = m_screen->desktopHeight();
+        // 三个尺寸都给: 驱动永远能自己换算 (以后虚拟屏可以有自己的 DPI, 见 setScale)
+        d["w"] = m_screen->physicalWidth();          // ⚠ = 物理像素 (对外唯一口径)
+        d["h"] = m_screen->physicalHeight();
+        d["logical"] = Json::Value(Json::arrayValue);
+        d["logical"].append(m_screen->desktopWidth());
+        d["logical"].append(m_screen->desktopHeight());
+        d["physical"] = Json::Value(Json::arrayValue);
+        d["physical"].append(m_screen->physicalWidth());
+        d["physical"].append(m_screen->physicalHeight());
         d["scale"] = m_screen->scale();
+        d["dpi"] = (int)std::lround(96.0 * (double)m_screen->scale());
+        d["explicit"] = m_screen->isScaleExplicit();  // scale 是显式设的还是跟宿主走
         (*box)["ok"] = true;
         (*box)["desktop"] = d;
         (*box)["windows"] = (int)m_screen->windowList().size();
@@ -474,7 +507,10 @@ void JZVirtualDeviceHttp::handleWindows(JZHttpServerClient* client, const JZHttp
         const bool ok = onScreen([this, box, fProcess, fTitle, fVisible, hasAt, atX, atY]() {
             const std::vector<JZVirtualWindow*> list = m_screen->windowList();
             JZVirtualWindow* active = m_screen->activeWindow();
-            JZVirtualWindow* hit = hasAt ? m_screen->windowAt(atX, atY) : nullptr;
+            // at=x,y 是**物理**坐标 (与输入/截图同口径) ⇒ 换算成桌面逻辑再命中
+            const int lx = hasAt ? physToLogical(atX) : 0;
+            const int ly = hasAt ? physToLogical(atY) : 0;
+            JZVirtualWindow* hit = hasAt ? m_screen->windowAt(lx, ly) : nullptr;
             bool visibleOnly = false;
             if (fVisible == "1" || fVisible == "true" || fVisible == "yes")
                 visibleOnly = true;
@@ -504,15 +540,16 @@ void JZVirtualDeviceHttp::handleWindows(JZHttpServerClient* client, const JZHttp
             (*box)["active"] = activeIdx;
             (*box)["windows"] = arr;
             if (hasAt) {
-                // 点在哪: 顺带把"那个点测到谁"和"它在客户区里的坐标"给出来 (省得调用方再算)
+                // 点在哪: 顺带把"那个点测到谁"和"它在客户区里的坐标"给出来 (省得调用方再算)。
+                // ⚠ 两者都按**物理**回报 (at 就是请求里那个值; clientAt 换算回物理)。
                 (*box)["at"] = Json::Value(Json::arrayValue);
                 (*box)["at"].append(atX);
                 (*box)["at"].append(atY);
                 if (hit) {
-                    const JZPoint c = hit->screenToClient(JZPoint(atX, atY));
+                    const JZPoint c = hit->screenToClient(JZPoint(lx, ly));
                     (*box)["clientAt"] = Json::Value(Json::arrayValue);
-                    (*box)["clientAt"].append(c.x());
-                    (*box)["clientAt"].append(c.y());
+                    (*box)["clientAt"].append(logicalToPhys(c.x()));
+                    (*box)["clientAt"].append(logicalToPhys(c.y()));
                 }
             }
         });
@@ -533,6 +570,7 @@ void JZVirtualDeviceHttp::handleWindows(JZHttpServerClient* client, const JZHttp
     if (!takeBody(client, req, body))
         return;
 
+    // w/h = 客户区尺寸, x/y = 外框位置 —— 都是**物理像素** (对外唯一口径), 里面换逻辑
     const int w = body.get("w", 320).asInt();
     const int h = body.get("h", 240).asInt();
     const std::string title = body.get("title", "窗口").asString();
@@ -543,8 +581,10 @@ void JZVirtualDeviceHttp::handleWindows(JZHttpServerClient* client, const JZHttp
     auto box = std::make_shared<Json::Value>(Json::objectValue);
     auto fail = std::make_shared<std::string>();
     const bool ok = onScreen([this, box, fail, w, h, title, hasPos, x, y]() {
-        JZVirtualWindow* win = hasPos ? m_screen->createWindow(w, h, title, x, y)
-                                      : m_screen->createWindow(w, h, title);
+        const int lw = physToLogical(w), lh = physToLogical(h);
+        const int lx = physToLogical(x), ly = physToLogical(y);
+        JZVirtualWindow* win = hasPos ? m_screen->createWindow(lw, lh, title, lx, ly)
+                                      : m_screen->createWindow(lw, lh, title);
         if (!win) {
             *fail = "建窗口失败";
             return;
@@ -720,15 +760,16 @@ void JZVirtualDeviceHttp::handleWindowState(JZHttpServerClient* client, const JZ
         }
         // 位置 = 外框坐标 (与 frame[0..1] 同口径); 尺寸 = **客户区** (与 client[2..3] 同口径),
         // 装饰的换算是 JZVirtualWindow::setClientSize 的事 —— 脚本里不出现 kBorder/kTitleBar。
+        // x/y = 外框位置, w/h = 客户区尺寸, 单位都是**物理像素** (对外口径; 里面换逻辑)
         if (hasSize) {
             if (cw <= 0 || ch <= 0) {
                 *fail = "w/h 要 > 0 (它们 = 客户区尺寸)";
                 return;
             }
-            w->setClientSize(cw, ch);
+            w->setClientSize(physToLogical(cw), physToLogical(ch));
         }
         if (hasPos)
-            w->setFramePos(x, y);
+            w->setFramePos(physToLogical(x), physToLogical(y));
         if (hasTitle)
             w->setTitle(title);
         m_screen->refresh();
@@ -786,6 +827,10 @@ void JZVirtualDeviceHttp::handleScreen(JZHttpServerClient* client, const JZHttpR
             (*meta)["window"] = std::string();
         }
         (*meta)["scale"] = m_screen->scale();
+        // 图的**物理**尺寸 (dataURL 里那张 PNG 就是它; 与 /api/input 收的坐标同一空间)
+        (*meta)["physical"] = Json::Value(Json::arrayValue);
+        (*meta)["physical"].append(img->width());
+        (*meta)["physical"].append(img->height());
     });
     if (!ok) {
         replyError(client, req, 500, "桌面线程没有响应");
@@ -834,20 +879,49 @@ void JZVirtualDeviceHttp::handleDesktop(JZHttpServerClient* client, const JZHttp
     Json::Value body;
     if (!takeBody(client, req, body))
         return;
-    if (!body.isMember("scale")) {
-        replyError(client, req, 400, "要给 scale (例如 1 或 2)");
+    // 三种写法 (给 one of them):
+    //   {"scale": 1.25}      直接给缩放
+    //   {"dpi": 120}         给虚拟屏自己的 DPI (96 = 100%, 120 = 125%, 144 = 150%…)
+    //   {"followHost": true} 清掉显式设置, 恢复"跟主机同 DPI"
+    const bool follow = body.get("followHost", false).asBool();
+    if (!follow && !body.isMember("scale") && !body.isMember("dpi")) {
+        replyError(client, req, 400, "要给 scale (如 1.25) 或 dpi (如 120) 或 followHost:true");
         return;
     }
-    const double s = body["scale"].asDouble();
-    if (!(s > 0.0)) {
-        replyError(client, req, 400, "scale 必须 > 0");
-        return;
+    double s = 1.0;
+    if (body.isMember("dpi")) {
+        const double dpi = body["dpi"].asDouble();
+        if (!(dpi > 0.0)) {
+            replyError(client, req, 400, "dpi 必须 > 0 (96 = 100%)");
+            return;
+        }
+        s = dpi / 96.0;
+    } else if (body.isMember("scale")) {
+        s = body["scale"].asDouble();
+        if (!(s > 0.0)) {
+            replyError(client, req, 400, "scale 必须 > 0");
+            return;
+        }
     }
     auto box = std::make_shared<Json::Value>(Json::objectValue);
-    const bool ok = onScreen([this, box, s]() {
-        m_screen->setScale((float)s);          // 纪律 1: 只改截图分辨率, 坐标一个都不动
+    const bool ok = onScreen([this, box, s, follow]() {
+        // ⚠ 语义变了 (2026-10-03): 以前 scale "只改截图分辨率, 坐标一个都不动";
+        //   现在**物理像素**才是对外口径 ⇒ 改了 scale, 所有对外坐标/截图尺寸一起变
+        //   (桌面逻辑尺寸不变, 同真机改显示器缩放)。显式设过之后不再跟随宿主。
+        if (follow)
+            m_screen->followHostScale();
+        else
+            m_screen->setScale((float)s);
         (*box)["ok"] = true;
         (*box)["scale"] = m_screen->scale();
+        (*box)["dpi"] = (int)std::lround(96.0 * (double)m_screen->scale());
+        (*box)["explicit"] = m_screen->isScaleExplicit();
+        (*box)["logical"] = Json::Value(Json::arrayValue);
+        (*box)["logical"].append(m_screen->desktopWidth());
+        (*box)["logical"].append(m_screen->desktopHeight());
+        (*box)["physical"] = Json::Value(Json::arrayValue);
+        (*box)["physical"].append(m_screen->physicalWidth());
+        (*box)["physical"].append(m_screen->physicalHeight());
     });
     if (!ok) {
         replyError(client, req, 500, "桌面线程没有响应");
@@ -861,16 +935,20 @@ void JZVirtualDeviceHttp::handleDesktop(JZHttpServerClient* client, const JZHttp
 //   ① 参数解析与"投给谁"无关 —— 桌面那条路与单窗口那条路共用同一套 action/x/y/...;
 //   ② 差异只在**投递口**: 桌面 = 命中测试 + 激活 + 按命中区域分发 (标题栏拖动/边框缩放/
 //      客户区投控件); 单窗口 = 直接投给它的控件树, **不激活它** (等价 SendMessage);
-//   ③ 坐标: 桌面那条路恒为**桌面**逻辑坐标; 单窗口那条路默认**客户区**坐标 (与 PostMessage
-//      的 lParam 同口径), 写 "coords":"screen" 就是桌面坐标, 内部换算成客户区再投。
+//   ③ 坐标: **对外的 x/y (含 toX/toY) 一律物理像素** (与 /api/screen 的图同口径) ——
+//      桌面那条路 = 桌面物理; 单窗口那条路默认 = 该窗口**客户区**物理 (写 "coords":"screen"
+//      就是桌面物理)。进来先 ÷scale 成桌面逻辑, 再按需要 screenToClient 成客户区逻辑。
 // ⚠ 单窗口那条路只带"窗口标识"进来, 在 onScreen 里才 findWindow —— 窗口指针不能跨 handler
 //   缓存, 它可能被它自己的线程关掉。
 void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow* target,
                                        Json::Value& out, std::string& error)
 {
     const std::string action = body.get("action", "").asString();
-    const int x = body.get("x", -1).asInt();
-    const int y = body.get("y", -1).asInt();
+    // 进来的坐标一律**物理像素** (对外口径), 内部一律桌面逻辑 —— 换算只此一处
+    const int physX = body.get("x", -1).asInt();
+    const int physY = body.get("y", -1).asInt();
+    const int x = physToLogical(physX);
+    const int y = physToLogical(physY);
     const JZMouseEvent::Button button = buttonFromName(body.get("button", "left").asString());
     const int steps = body.get("steps", 5).asInt();
     const int delta = body.get("delta", 1).asInt();
@@ -881,12 +959,13 @@ void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow*
         error = "要给 action (move/down/up/click/double/drag/wheel)";
         return;
     }
-    if (action != "wheel" && (x < 0 || y < 0)) {
-        error = target ? "要给客户区坐标 x/y (逻辑像素)" : "要给桌面坐标 x/y (逻辑像素)";
+    if (action != "wheel" && (physX < 0 || physY < 0)) {
+        error = target ? "要给客户区坐标 x/y (物理像素)" : "要给桌面坐标 x/y (物理像素)";
         return;
     }
 
-    // 坐标统一成"投递口要的那一套": 单窗口 = 客户区; 桌面 = 桌面坐标 (不换算)
+    // 坐标统一成"投递口要的那一套": 单窗口 = 客户区逻辑; 桌面 = 桌面逻辑
+    // (手机已经 ÷scale 变成逻辑; coords=screen 时再 screenToClient 一道)
     const std::string coords = body.get("coords", "client").asString();
     const bool needConvert = target && coords != "client";
     auto conv = [target, needConvert](int px, int py) {
@@ -895,7 +974,8 @@ void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow*
         return target->screenToClient(JZPoint(px, py));
     };
     const JZPoint p0 = conv(x, y);
-    const JZPoint p1 = conv(body.get("toX", x).asInt(), body.get("toY", y).asInt());
+    const JZPoint p1 = conv(physToLogical(body.get("toX", physX).asInt()),
+                            physToLogical(body.get("toY", physY).asInt()));
 
     // 两个投递口收成一个: 桌面 (px/py = 桌面坐标) / 单窗口 (px/py = 客户区坐标)
     auto send = [&](JZMouseEvent::MouseType type, const JZPoint& p, int wheel) -> bool {
@@ -941,14 +1021,14 @@ void JZVirtualDeviceHttp::doMouseInput(const Json::Value& body, JZVirtualWindow*
 
     out["ok"] = true;
     out["action"] = action;
-    out["x"] = x;
-    out["y"] = y;
+    out["x"] = physX;                     // 回报一律物理 (与请求同口径)
+    out["y"] = physY;
     out["coords"] = target ? (needConvert ? "screen" : "client") : "screen";
     if (target) {
-        // 实际投进去的客户区坐标 (给了 screen 坐标时这里就是换算结果)
+        // 实际投进去的客户区坐标 (给了 screen 坐标时这里就是换算结果) —— 同样按物理回报
         out["client"] = Json::Value(Json::arrayValue);
-        out["client"].append(p0.x());
-        out["client"].append(p0.y());
+        out["client"].append(logicalToPhys(p0.x()));
+        out["client"].append(logicalToPhys(p0.y()));
     }
     // ⚠ 别的线程的窗口 (程序窗口) 那条路是**投递** (同 PostMessage/同真桌面 SendInput): true 只
     //   代表"发出去了", 不代表控件已经处理; 本线程窗口 (宿主自己建的) 是直接派发, true 才是

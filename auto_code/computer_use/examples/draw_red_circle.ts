@@ -20,9 +20,12 @@ async function main(): Promise<void> {
   await paint.btnRed.click();
   //    想要实心红圆可再设填充色：paint.btnColor2.click(); paint.btnRed.click();
 
-  // 4) 在画布上拖出一个圆（from→to 为归一化坐标 [0,1]，画布中央 r=0.15）
-  const r = 0.15;
-  await paint.canvasMain.drag({ x: 0.5 - r, y: 0.5 - r }, { x: 0.5 + r, y: 0.5 + r });
+  // 4) 在画布上拖出一个圆（坐标是**物理像素** ⇒ 按画布控件当前几何取中心，半径 = 短边 15%）
+  const c = await paint.canvasMain.locate();
+  if (!c) throw new Error('[CU] 找不到画布控件');
+  const r = Math.min(c.w, c.h) * 0.15;
+  await paint.canvasMain.drag({ x: c.x + c.w / 2 - r, y: c.y + c.h / 2 - r },
+                              { x: c.x + c.w / 2 + r, y: c.y + c.h / 2 + r });
 
   console.log('[draw_red_circle] done');
 }

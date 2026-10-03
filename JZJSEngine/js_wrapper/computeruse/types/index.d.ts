@@ -4,7 +4,7 @@
  * 裸名用法(具名导入, **没有 default**):
  *   import { App, setBackend, diagnose } from 'computeruse';
  *
- * 坐标一律**归一化 [0,1]**(相对截图/虚拟桌面); 只有 `rect` 是屏幕/窗口逻辑像素。
+ * 坐标一律**物理像素**(相对整屏/虚拟桌面; = 截图那张图的像素空间)。不再是归一化 [0,1]。
  * C++ 后端(JZJSComputerUseModule)只提供底层语义; 控件树与 UI 操作全在本包(JS) 里。
  *
  * ⭐ 两条铁律(见 docs/compute-use-design.md):
@@ -17,10 +17,18 @@
 // 基础类型
 // ————————————————————————————————————————————————
 
-/** 归一化矩形（相对截图，[0,1]）。 */
+/** **物理像素**矩形（相对整屏/虚拟桌面；x,y = 左上角）。 */
 export interface Rect { x: number; y: number; w: number; h: number; }
-/** 归一化点。 */
+/** **物理像素**点。 */
 export type Point = { x: number; y: number };
+/** 屏幕尺寸/缩放（`backend.screenInfo()`）：脚本查"屏多大/缩放多少"用（不是换算步骤）。 */
+export interface ScreenInfo {
+  virtual: boolean;
+  logical: [number, number];
+  physical: [number, number];
+  scale: number;
+  dpi?: number;
+}
 /** 鼠标按键。 */
 export type MouseBtn = 'left' | 'right' | 'middle';
 
@@ -36,7 +44,7 @@ export type LayoutPath = string;
  * 定位策略(建模期决定"这个控件靠什么被找到"):
  *   layout ⭐ 运行期正路(按布局路径问当前几何, 不涉像素);
  *   ocr / image / color / yolo 是**像素族**，只用于建模期辅助与无布局时的显式兜底。
- * region 为可选的小搜索区域(归一化); 不传则搜整屏。
+ * region 为可选的小搜索区域(**物理像素**); 不传则搜整屏。
  */
 export type Locator =
   | { kind: 'layout'; path: LayoutPath; region?: Rect }
@@ -51,7 +59,7 @@ export interface LayoutNode {
   id?: string;
   text?: string;
   name?: string;
-  /** 归一化矩形。 */
+  /** **物理像素**矩形。 */
   rect?: Rect;
   visible?: boolean;
   enabled?: boolean;
@@ -207,12 +215,12 @@ export interface VlmOptions {
   apiKey?: string;
   timeoutMs?: number;
   maxTokens?: number;
-  /** 整段替换内置提示词（坐标口径必须是归一化 [x,y,w,h]）。 */
+  /** 整段替换内置提示词（要求模型按**像素**给框，相对送出去的图 = 物理像素；不做比例换算）。 */
   prompt?: string;
   extraBody?: Record<string, unknown>;
 }
 
-/** 感知到的单个元素（rect 是**归一化**坐标，相对整图）。 */
+/** 感知到的单个元素（rect 已换算成**物理像素**，与 click/布局同一口径）。 */
 export interface PerceptionElement {
   type: string;
   text: string;
@@ -254,7 +262,10 @@ export interface ComputerUseBackend {
   key(name: string): Promise<void>;
   type(text: string): Promise<void>;
   wait(ms: number): Promise<void>;
+  /** 截图 → dataURL。尺寸 = 该后端的**物理像素**（与上面的坐标同一空间）。 */
   screenshot(): Promise<string>;
+  /** 屏幕尺寸/缩放：把"图上的像素"换算成物理坐标的依据。后端没实现时缺省。 */
+  screenInfo?(): Promise<ScreenInfo>;
   /** 导出可访问布局树（可指定目标窗口）；没有目标窗口 / 没有可访问布局返回 null。 */
   layoutTree?(opts?: LayoutTreeOptions): Promise<LayoutNode | null>;
   /** 等界面稳定（像素只当信号）；缺省退化为 wait(settle)。 */

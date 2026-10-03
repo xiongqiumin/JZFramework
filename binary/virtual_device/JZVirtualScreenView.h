@@ -26,6 +26,11 @@ public:
 
     JZSize sizeHint() const override;
 
+    // ---- 输入法: 虚拟侧填给宿主的两样东西 (都由 runOnView 在本控件的线程上调) ----
+    // 组字窗矩形 / 候选窗锚点, **桌面坐标** (虚拟侧的文本控件就是这么算的 —— 它自己的
+    // mapToGlobal 落在桌面坐标系里)。宿主应答 WM_IME_REQUEST 时由本类换算成宿主屏幕坐标。
+    void setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos);
+
     // 立即重绘 (同步 paintEvent + 上屏): 拖动/缩放窗口**进行中**由桌面调 (见
     // JZVirtualDevice::refreshNow)。常规 update() 只排一个脏区, 要等消息循环下一轮 ——
     // 快速拖动时那就是"窗口慢半拍"。
@@ -39,6 +44,14 @@ protected:
     void wheelEvent(JZMouseEvent* event) override;
     void keyPressEvent(JZKeyEvent* event) override;
     void keyReleaseEvent(JZKeyEvent* event) override;
+    void imeEvent(JZImeEvent* event) override;
+
+    // 这块"显示器"自己不接输入法, 但它替桌面上**真正该组字的那个控件**举手:
+    // 返回 true 时宿主窗口 (真 HWND) 才会给 IME 打开组字窗/候选窗, 之后的 WM_IME_*
+    // 经上面的 imeEvent 转投到虚拟桌面 (少了这一步, 虚拟桌面里打字输入法是被关着的 ——
+    // 表现为"选中输入框也没反应")。
+    bool imeEnabled() const override;
+    bool imeWindowRect(JZRect& lineRect, JZPoint& candPos) const override;
 
 private:
     // 视图坐标 -> 桌面坐标 (1:1 显示时就是同一个数, 换算只在这一处)
@@ -48,6 +61,10 @@ private:
     void syncHostScale();
 
     JZVirtualDevice* m_screen = nullptr;
+    // 组字/候选窗的位置 (**桌面坐标**; 由虚拟侧的文本控件算出并转过来) 与"有没有这份位置"
+    JZRect m_imeLine;
+    JZPoint m_imeCand;
+    bool m_imeHasPos = false;
 };
 
 #endif // JZ_VIRTUAL_SCREEN_VIEW_H_

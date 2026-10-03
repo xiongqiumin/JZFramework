@@ -57,6 +57,14 @@ public:
     void updateCursor(JZWindow* w) override;         // 没有系统光标
     void setCapture(JZWindow* w, bool on) override;  // 桌面不做系统抓取
 
+    // 输入法: 虚拟窗口没有 IMC (组不了字), 但"要不要输入法"要**回给桌面** ——
+    // 宿主那扇真窗口据此给 IME 开关 UI, 并把组字消息转投进来 (见 JZVirtualScreenView)。
+    // 判断本身不自造: 这两个钩子就是 JZWindow::updateImeContext 的结论。
+    void imeAssociate(JZWindow* w) override;
+    void imeUpdateUi(JZWindow* w, bool show) override;
+    void imePrepare(JZWindow* w, int fontPixelSize) override;   // 组字窗字体: 虚拟侧无事可做
+    void imeSetPosition(JZWindow* w, const JZRect& lineRect, const JZPoint& candPos) override;
+
     int    execModal(JZWindow* w, bool disableOwner) override;   // 没有平台模态循环
     JZImage grabClient(JZWindow* w) override;        // 读它自己的帧缓冲
 

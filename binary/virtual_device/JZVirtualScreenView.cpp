@@ -47,7 +47,10 @@ JZPoint JZVirtualScreenView::toScreen(const JZPoint& local) const
 }
 
 // 与主机共享 DPI: 宿主窗口当前的设备缩放 -> 桌面 (桌面据此渲染物理帧缓冲)。
-// ⚠ 宿主 DPI 变了才动 (setScale 内部还有一道等值判断), 平时就是两次浮点比较。
+// ⚠ 走 setHostScale 而不是 setScale: 桌面若被**显式**设过 DPI (--dpi / POST /api/desktop),
+//   它就该保持自己的缩放, 宿主怎么变都不覆盖 —— 那时本控件的贴图会按
+//   宿主scale/桌面scale 自动重采样 (见 paintEvent), 这是"虚拟屏有自己的 DPI"的固有代价。
+// 等值判断在 setHostScale/setScaleValue 里, 这里不再重复。
 void JZVirtualScreenView::syncHostScale()
 {
     if (!m_screen)
@@ -55,9 +58,7 @@ void JZVirtualScreenView::syncHostScale()
     JZWindow* w = window();
     if (!w || !w->device())
         return;
-    const float s = w->device()->scale();
-    if (std::fabs(s - m_screen->scale()) > 0.001f)
-        m_screen->setScale(s);
+    m_screen->setHostScale(w->device()->scale());
 }
 
 // 立即重绘 (同步出帧): 拖动/缩放窗口时用 —— 见 JZVirtualDevice::refreshNow。
@@ -82,8 +83,10 @@ void JZVirtualScreenView::paintEvent(JZPainterEvent* event)
         return;
 
     JZPainter p(this);
-    // 目标矩形用**逻辑**尺寸 (控件尺寸), 位图是**物理**像素 (desktopSize * 缩放):
-    // 宿主的世界变换 (Scale(hostScale)) 把它 1:1 映射到屏幕像素 —— 不重采样, 文字清晰。
+    // 目标矩形用**逻辑**尺寸 (控件尺寸), 位图是**物理**像素 (desktopSize * 桌面缩放):
+    //   · 默认 (桌面缩放 == 宿主缩放, 即"跟主机同 DPI"): 1:1 映射, 不重采样, 文字最清晰;
+    //   · 桌面被显式设了自己的 DPI 时: 两个缩放不等 ⇒ 这里就是一次重采样
+    //     (桌面 scale 小于宿主时会糊 —— 那是"虚拟屏自己选 DPI"的代价, 见 setScale)。
     p.drawPixmap(pm, 0, 0, m_screen->desktopWidth(), m_screen->desktopHeight());
 }
 
@@ -174,4 +177,43 @@ void JZVirtualScreenView::keyReleaseEvent(JZKeyEvent* event)
         event->accept();
     else
         event->ignore();
+}
+
+// ==================== 输入法: 转投给桌面上"真正该组字的那个控件" ====================
+// 中文/日文输入的上屏内容**不走** keyPress (真系统里 WM_IME_COMPOSITION 也不是 WM_CHAR):
+// 宿主的 IMM 把组字/上屏送到本控件 (宿主的焦点控件), 这里把它投递给虚拟活动窗口的客户区,
+// 由里面的焦点控件 (JZLineEdit 之类) 自绘组字串并上屏 —— 组字的样子留在桌面那一侧。
+void JZVirtualScreenView::imeEvent(JZImeEvent* event)
+{
+    if (!m_screen) {
+        JZWidget::imeEvent(event);
+        return;
+    }
+    if (m_screen->injectIme(*event))
+        event->accept();
+    else
+        event->ignore();
+}
+
+bool JZVirtualScreenView::imeEnabled() const
+{
+    return m_screen && m_screen->imeWanted();
+}
+
+void JZVirtualScreenView::setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos)
+{
+    m_imeLine = lineRect;
+    m_imeCand = candPos;
+    m_imeHasPos = true;
+}
+
+// 宿主应答 WM_IME_REQUEST (组字窗/候选窗该落在哪) 时问的是本控件 —— 答案从虚拟侧来。
+// 换算只此一处: 视图坐标 == 桌面坐标 (1:1), 所以 mapToGlobal 就够了 (DPI 不进这里)。
+bool JZVirtualScreenView::imeWindowRect(JZRect& lineRect, JZPoint& candPos) const
+{
+    if (!m_imeHasPos)
+        return false;
+    lineRect = mapToGlobal(m_imeLine);
+    candPos = mapToGlobal(m_imeCand);
+    return true;
 }

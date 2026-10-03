@@ -255,6 +255,47 @@ void JZVirtualWindowBackend::activate(JZWindow* w)
 void JZVirtualWindowBackend::updateCursor(JZWindow* w) { (void)w; }
 void JZVirtualWindowBackend::setCapture(JZWindow* w, bool on) { (void)w; (void)on; }
 
+// 输入法: 虚拟窗口组不了字 (没有 HWND / IMC), 但它**知不知道该不该有输入法**必须流出去 ——
+// 真正有权开关 IME UI 的是宿主那扇真窗口 (见 JZVirtualDevice::notifyImeChanged) 与它转投
+// 过来的组字消息 (见 JZVirtualScreenView::imeEvent)。少了这一步, 用户在虚拟桌面里敲字时
+// 输入法压根不打开 (焦点根本不 == 一个"要输入法"的控件), 表现为"按键没反应"。
+void JZVirtualWindowBackend::imeAssociate(JZWindow* w)
+{
+    // imeAssociate 在 updateImeContext 的**开头**被调 (那时本窗口的新结论还没算出来),
+    // 这里读到的是上一次的状态; 结论变了时紧跟的 imeUpdateUi 会再更正一次。
+    if (m_vwin)
+        m_vwin->setImeWanted(w && w->imeActive());
+}
+
+void JZVirtualWindowBackend::imeUpdateUi(JZWindow* w, bool show)
+{
+    (void)w;
+    if (!m_vwin)
+        return;
+    m_vwin->setImeWanted(show);
+    // 不再需要输入法 (焦点离开输入框 / 窗口失焦): 把**宿主 IMC** 里没上屏的组字丢掉。
+    // IMC 在宿主那边, 虚拟侧没有 HWND 动不了它, 所以这一步得由这边牵头 —— 否则换了个
+    // 虚拟窗口却还组着上一段字, 下一下按键就把那段字塞进新窗口里。
+    if (!show)
+        m_vwin->cancelHostIme();
+}
+
+void JZVirtualWindowBackend::imePrepare(JZWindow* w, int fontPixelSize)
+{
+    (void)w; (void)fontPixelSize;      // 组字窗/候选窗的定位与字体是宿主 IMC 的事
+}
+
+// 组字窗/候选窗的位置: 虚拟侧的文本控件算好了 (桌面坐标系 —— 它自己的 mapToGlobal 就是
+// 落到桌面坐标), 但没有 HWND 去调 IMM ⇒ 转给桌面, 由它告诉宿主窗口 —— 宿主应答
+// WM_IME_REQUEST 时用的就是这份坐标 (见 JZVirtualScreenView::imeWindowRect)。
+void JZVirtualWindowBackend::imeSetPosition(JZWindow* w, const JZRect& lineRect,
+                                            const JZPoint& candPos)
+{
+    (void)w;
+    if (m_vwin)
+        m_vwin->setImeWindowPos(lineRect, candPos);
+}
+
 // 虚拟桌面下没有平台模态循环: 窗口的"模态"由调用方自己控制流程
 int JZVirtualWindowBackend::execModal(JZWindow* w, bool disableOwner)
 {

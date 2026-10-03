@@ -115,10 +115,10 @@ async function main(): Promise<void> {
 
     // ———— ② 建模：感知框(这里直接取自实测几何) + 布局树 ⇒ 认领 ————
     const bBtn = rectOf(byId(tree, 'btnOutput')), bLbl = rectOf(byId(tree, 'lblState'));
-    console.log('[repair_live] 归一化几何: btn=' + JSON.stringify(bBtn) + ' lbl=' + JSON.stringify(bLbl));
+    console.log('[repair_live] 物理像素几何: btn=' + JSON.stringify(bBtn) + ' lbl=' + JSON.stringify(bLbl));
     await new Promise<void>((r) => setTimeout(r, 300));
     const abs0 = await (backend as any).match({ kind: 'layout', path: '/main/btnOutput' });
-    console.log('[repair_live] 按钮归一化命中=' + JSON.stringify(abs0));
+    console.log('[repair_live] 按钮命中=' + JSON.stringify(abs0));
     const per: Perception = {
         title: '',
         elements: [

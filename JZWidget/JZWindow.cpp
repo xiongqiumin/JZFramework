@@ -879,6 +879,14 @@ void JZWindow::cancelImeComposition()
         m_backend->imeCancel(this);
 }
 
+// 组字窗/候选窗位置: 真不着 MIME 的那条路由控件自己做, 这里只给"没有原生窗口的窗口"
+// 兜底 —— 位置能不能落到 IME 上, 全看后端把它转给了谁 (虚拟桌面上就是宿主那扇真窗口)。
+void JZWindow::setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos)
+{
+    if (m_backend)
+        m_backend->imeSetPosition(this, lineRect, candPos);
+}
+
 // 让输入法的组字窗/候选窗字体与本窗口一致, 并保证输入法处于打开状态。
 // 平台细节在后端; "是否强制中文模式"是框架设置 (setImeForceNativeMode)。
 void JZWindow::prepareIme(int fontPixelSize)

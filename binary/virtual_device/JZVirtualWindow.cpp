@@ -4,6 +4,7 @@
 // 于是"虚拟窗口与真实窗口行为一致"是结构上保证的, 不是两边各写一遍去对齐。
 #include "JZVirtualWindow.h"
 #include "JZVirtualDevice.h"
+#include "JZVirtualScreenView.h"   // 输入法: 位置/组字取消要转给宿主那块屏幕控件
 #include "JZVirtualWindowBackend.h"
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
@@ -28,9 +29,13 @@ const JZColor kBorderInactive(0xb0, 0xb0, 0xb0, 255);
 
 } // namespace
 
+// 全局诞生序号: 窗口可能由**不同线程**(虚拟进程)建出来, 所以用原子自增 —— 它只决定
+// 任务栏按钮的稳定顺序 (见 creationSeq), 与 z 序无关。
+std::atomic<int> JZVirtualWindow::s_nextSeq{ 0 };
+
 // 接管客户区: 它就是"这台虚拟窗口"里跑应用的那半边 (控件树/事件/渲染全在它身上)。
 JZVirtualWindow::JZVirtualWindow(JZVirtualDevice* screen, JZWindow* client)
-    : m_screen(screen), m_client(client)
+    : m_screen(screen), m_client(client), m_seq(s_nextSeq.fetch_add(1))
 {
     if (m_client)
         m_clientGuard = m_client->guardPointer();   // 弱引用: 它被回收后 client() 返回 nullptr
@@ -96,7 +101,7 @@ int JZVirtualWindow::frameWidth() const
 int JZVirtualWindow::frameHeight() const
 {
     if (m_minimized)
-        return kTitleBar;      // 最小化: 只剩标题栏 (客户区不参与合成)
+        return kTitleBar;      // 最小化: 桌面上不画它, 几何仍记着"标题栏那么大"的落点
     JZWindow* c = client();
     return kTitleBar + (c ? c->height() : 0) + kBorder;
 }
@@ -454,6 +459,50 @@ bool JZVirtualWindow::injectText(const std::string& utf8)
     return any;
 }
 
+// 输入法事件: 与字符输入分开走 (真窗口里 WM_IME_COMPOSITION 也不是 WM_CHAR)。
+// 目标 = 客户区的焦点控件 (JZWindow::dispatchIme), 由它自绘组字串并上屏。
+bool JZVirtualWindow::injectIme(const JZImeEvent& src)
+{
+    JZWindow* c = client();
+    if (!c)
+        return false;
+    // 拷一份再投: 源那条消息是平台层给的栈上对象而 postEvent 那条路会接管所有权并删除
+    JZImeEvent* ev = new JZImeEvent(src);
+    ev->ignore();                  // 键盘/IME 的规矩: 默认未处理, 被 accept 才算消费
+    return postToClient(c, ev);
+}
+
+// 是否还需要输入法: 突变了才通知宿主重算 IMC (见 setImeWanted 的说明)
+void JZVirtualWindow::setImeWanted(bool on)
+{
+    if (m_imeWanted.exchange(on) == on)
+        return;
+    if (m_screen)
+        m_screen->notifyImeChanged();
+}
+
+// 组字窗/候选窗位置 (桌面坐标) -> 桌面 -> 宿主那块显示控件 (跨线程: 转投到它的线程上)
+void JZVirtualWindow::setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos)
+{
+    if (!m_screen)
+        return;
+    m_screen->runOnView([lineRect, candPos](JZVirtualScreenView* v) {
+        v->setImeWindowPos(lineRect, candPos);
+    });
+}
+
+// 不再需要输入法 (焦点离开文本控件 / 窗口失焦): 把宿主 IMC 里没上屏的组字丢掉,
+// 免得换了个虚拟窗口却还在组上一段字。
+void JZVirtualWindow::cancelHostIme()
+{
+    if (!m_screen)
+        return;
+    m_screen->runOnView([](JZVirtualScreenView* v) {
+        if (JZWindow* host = v->window())
+            host->cancelImeComposition();
+    });
+}
+
 // ==================== 窗口管理 (JZVirtualDevice 用) ====================
 JZRect JZVirtualWindow::buttonRect(int index) const
 {
@@ -467,6 +516,10 @@ JZRect JZVirtualWindow::buttonRect(int index) const
 JZVirtualWindow::HitRegion JZVirtualWindow::hitTest(int screenX, int screenY) const
 {
     if (!isVisible())
+        return HitNone;
+    // 最小化: 桌面上没有它 (不合成/不画), 也不可能被点到 —— 还原只能走任务栏按钮或
+    // 平台 API (与真实系统一致: 最小化窗口不占屏幕、不参与命中)。
+    if (m_minimized)
         return HitNone;
     const JZRect f = frameGeometry();
     if (screenX < f.left() || screenX > f.right() ||
@@ -495,8 +548,6 @@ JZVirtualWindow::HitRegion JZVirtualWindow::hitTest(int screenX, int screenY) co
 
     if (screenY < f.top() + kTitleBar)
         return HitTitle;                  // 标题栏 (拖动窗口)
-    if (m_minimized)
-        return HitNone;
 
     const JZRect c = clientGeometry();
     if (c.contains(screenX, screenY))

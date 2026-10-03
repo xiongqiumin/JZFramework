@@ -61,7 +61,8 @@ function dataUrlOf(path: string): string {
     return 'data:image/png;base64,' + b64;
 }
 
-// —— CU 节点（归一化 rect）→ 判分契约（逻辑像素 rect + parent id）——
+// —— CU 节点（**物理像素** rect）→ 判分契约（同口径 rect + parent id）——
+// ⚠ 2026-10-03 起 CU 的 rect 就是物理像素（与截图像素同一空间）⇒ 这里不再乘窗尺寸。
 function toContract(app: any, win: [number, number]): any {
     const W = win[0] || 0, H = win[1] || 0;
     const nodes: any[] = [];
@@ -69,7 +70,7 @@ function toContract(app: any, win: [number, number]): any {
     const rectOf = (n: any, isRoot: boolean): number[] => {
         const r = n && n.rect;
         if (!r) return isRoot ? [0, 0, W, H] : [0, 0, 0, 0];   // 根没给就按整窗
-        return [Math.round(r.x * W), Math.round(r.y * H), Math.round(r.w * W), Math.round(r.h * H)];
+        return [Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h)];
     };
     const walk = (n: any, parentId: string | null): void => {
         const id = 'n' + (seq++);

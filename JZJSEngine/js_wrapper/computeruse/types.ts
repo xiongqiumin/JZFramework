@@ -1,6 +1,8 @@
 // computeruse 包 —— 类型契约（与实现解耦）。
 //
-// 坐标一律归一化 [0,1]，相对"截图 / 虚拟桌面"。
+// 坐标一律**物理像素**，相对整屏 / 整块虚拟桌面（= `screenshot()` 那张图的像素空间；
+// 真桌面 = 屏幕物理像素，虚拟桌面 = 桌面逻辑 × 桌面 scale）。**不再是归一化 [0,1]**
+// （2026-10-03 统一口径：外面那一圈 —— 抓屏 / SendInput / UIA / GetWindowRect —— 全是物理）。
 // C++ 后端(JZJSComputerUseModule)只提供底层语义; 控件树与 UI 操作全在 JS 侧。
 //
 // ⭐ 两条铁律（见 docs/compute-use-design.md）：
@@ -8,11 +10,28 @@
 //      （`Locator.kind='layout'`；像素族 ocr/image/color/yolo 只在建模期辅助与无布局兜底时用）。
 //   ② 界面不匹配先**本地分级**（偶发 = 重试后不再复现），稳定复现才升级大模型。
 
-/** 归一化矩形（相对截图，[0,1]）。 */
+/** **物理像素**矩形（相对整屏/虚拟桌面；x,y = 左上角）。 */
 export interface Rect { x: number; y: number; w: number; h: number; }
 
-/** 归一化点。 */
+/** **物理像素**点。 */
 export type Point = { x: number; y: number };
+
+/**
+ * 屏幕尺寸/缩放（`backend.screenInfo()`）—— 脚本要"屏有多大 / 缩放多少"时问它
+ * （例如点在正中：`physical[0]/2`；或按逻辑尺寸换算界面比例）。
+ * ⚠ 它**不是**用来做坐标换算的：对外坐标本来就是物理像素（= `screenshot()` 那张图），
+ *   从图里量出来的数直接就能点。
+ */
+export interface ScreenInfo {
+  virtual: boolean;
+  /** 框架逻辑尺寸（虚拟桌面 = desktopW/H；真桌面 = 逻辑虚拟屏）。 */
+  logical: [number, number];
+  /** 物理像素尺寸（= 截图尺寸）。 */
+  physical: [number, number];
+  /** physical / logical（真桌面 = 屏的 devicePixelRatio）。 */
+  scale: number;
+  dpi?: number;
+}
 
 /** 鼠标按键。 */
 export type MouseBtn = 'left' | 'right' | 'middle';
@@ -43,7 +62,7 @@ export type LayoutPath = string;
  * ⚠ `ocr / image / color / yolo` 是**像素族**：只用于①建模期把像素认领到布局节点、
  *   ②目标没有可访问布局时的**显式兜底**（此时模型节点带 `degraded: true`）。
  *
- * region 为可选的小搜索区域（归一化）；不传则搜整屏。
+ * region 为可选的小搜索区域（**物理像素**）；不传则搜整屏。
  */
 export type Locator =
   | { kind: 'layout'; path: LayoutPath; region?: Rect }
@@ -59,7 +78,7 @@ export type Locator =
 /**
  * 可访问布局树节点（无障碍树形态）。
  * 自家界面 = `JZWidget::dumpSemanticTree`；外部软件 = Win32 子窗口 / UI Automation / MSAA。
- * 后端负责把屏幕坐标换算成**归一化** rect（与本包口径一致）。
+ * rect 一律**物理像素**（自家语义树是逻辑坐标，由 C++ 侧按窗口缩放换算成物理后给出）。
  */
 export interface LayoutNode {
   /** className 槽位："window" / "group" / "button" / "textbox" ... */
@@ -70,7 +89,7 @@ export interface LayoutNode {
   text?: string;
   /** contentDesc：人类可读名（objectName 优先）。 */
   name?: string;
-  /** 归一化矩形（相对整屏/虚拟桌面）。 */
+  /** **物理像素**矩形（相对整屏/虚拟桌面）。 */
   rect?: Rect;
   visible?: boolean;
   enabled?: boolean;
@@ -308,13 +327,14 @@ export interface VlmOptions {
   /** 单次请求超时（ms，默认 600000 —— 本机大模型很慢）。 */
   timeoutMs?: number;
   maxTokens?: number;
-  /** 整段替换内置提示词（坐标口径必须是归一化 [x,y,w,h]）。 */
+  /** 整段替换内置提示词。要求模型按**像素**给框（相对送出去的那张图 = 物理像素）；
+   *  别再让它给 0..1 比例 —— 本包不做比例换算（见 perceive 的契约）。 */
   prompt?: string;
   /** 追加/覆盖请求体字段（如 { chat_template_kwargs: { enable_thinking: false } }）。 */
   extraBody?: Record<string, unknown>;
 }
 
-/** 感知到的单个元素（rect 是**归一化**坐标，相对整图）。 */
+/** 感知到的单个元素（rect 已换算成**物理像素**，与 click/布局同一口径）。 */
 export interface PerceptionElement {
   /** 已映射到本包词汇（button/label/edit/checkbox/...）。 */
   type: string;
@@ -368,9 +388,9 @@ export interface ComputerUseBackend {
    *   像素族（ocr/image/color/yolo）只用于建模期与退化兜底。单尺度。
    */
   match(locator: Locator): Promise<Rect | null>;
-  /** 在 rect 中心注入一次鼠标点击；返回是否成功。 */
+  /** 在 rect 中心注入一次鼠标点击（rect 是**物理像素**）；返回是否成功。 */
   click(rect: Rect, btn?: MouseBtn): Promise<boolean>;
-  /** 在归一化坐标 from→to 之间拖拽。 */
+  /** 在**物理像素**坐标 from→to 之间拖拽。 */
   drag(from: Point, to: Point): Promise<boolean>;
   /** 按名称按一个键（如 'Return' / 'Tab' / 'LWin' / 'Ctrl+A'）。 */
   key(name: string): Promise<void>;
@@ -378,8 +398,10 @@ export interface ComputerUseBackend {
   type(text: string): Promise<void>;
   /** 等待毫秒。 */
   wait(ms: number): Promise<void>;
-  /** 虚拟桌面截图 → dataURL（建模期为主；运行期作同步信号/证据）。 */
+  /** 截图 → dataURL。尺寸 = 该后端的**物理像素**（与上面那些坐标同一空间）。 */
   screenshot(): Promise<string>;
+  /** 屏幕尺寸/缩放：把"图上的像素"换算成物理坐标的依据（见 ScreenInfo）。后端没实现时缺省。 */
+  screenInfo?(): Promise<ScreenInfo>;
 
   /** 导出可访问布局树（可指定目标窗口）；没有目标窗口 / 没有可访问布局时返回 null。 */
   layoutTree?(opts?: LayoutTreeOptions): Promise<LayoutNode | null>;

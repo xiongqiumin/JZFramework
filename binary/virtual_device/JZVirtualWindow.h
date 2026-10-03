@@ -26,7 +26,8 @@ class JZPainter;
 class JZVirtualWindow
 {
 public:
-    // 装饰尺寸 (逻辑像素 —— 桌面坐标恒为逻辑坐标, 与桌面缩放无关, 见 JZVirtualDevice::scale)
+    // 装饰尺寸 (逻辑像素 —— **框架内部**桌面坐标恒为逻辑, 与桌面缩放无关;
+    // 对外接口 HTTP/CU 给的是物理像素, 换算在各自的边界层做, 见 JZVirtualDevice::toPhysical)
     enum {
         kBorder = 2,      // 四周边框宽
         kTitleBar = 22,   // 标题栏高 (含上边框)
@@ -81,6 +82,10 @@ public:
 
     // 虚拟侧的平台句柄 (== client()->nativeHandle(), 也就是本对象)。
     void* nativeHandle() const;
+
+    // 诞生序号: 全局自增, **与 z 序无关** —— 任务栏按钮按它排 (真 Windows 的按钮顺序是稳的,
+    // 不该因为某窗口被激活/置顶而重排, 见 JZVirtualDevice 里的 taskbarWindows)。
+    int creationSeq() const { return m_seq; }
 
     // 标题: **客户区窗口的标题** (单一来源 —— 它也是画标题栏时读的那个)
     std::string title() const;
@@ -180,6 +185,27 @@ public:
     // 桌面的 injectText 与 HTTP 的 "/api/windows/<id>/input {type:key,text}" 都落到这里 ——
     // 于是"给某个窗口直接发键盘"与"发给活动窗口"是同一条实现, 没有第二套。
     bool injectText(const std::string& utf8);
+    // 输入法事件 (组字/上屏/候选定位): 与 injectKey 同形状 —— 投给活动窗口的客户区,
+    // 由里面的**焦点控件**去组字/上屏。
+    // ⚠ 中文/Linux 输入法那条路**只走这里**: 组字内容从不经过 injectKey/text
+    //   (对照真窗口: WM_IME_COMPOSITION 也不是 WM_CHAR)。宿主界面里是由
+    //   JZVirtualScreenView::imeEvent 把宿主的 IME 消息转到这里来的。
+    bool injectIme(const JZImeEvent& ev);
+
+    // ---- 输入法状态 (见 JZVirtualWindowBackend::imeAssociate/imeUpdateUi) ----
+    // 虚拟窗口自己没有 IMC (没有 HWND, 组不了字), 但**这块桌面上要不要输入法**要由它说了算:
+    // 由后端把 JZWindow::updateImeContext 的结论回报到这里, 桌面再告诉宿主那扇真窗口
+    // (JZVirtualDevice::notifyImeChanged) —— 只有它给 IME 开了 UI, 组字消息才有去处。
+    // ⚠ 别在别处另判一次: 焦点是不是输入框 / 窗口有没有焦点, 框架那边的语义已经完整。
+    void setImeWanted(bool on);
+    bool imeWanted() const { return m_imeWanted.load(); }
+
+    // 组字窗/候选窗该落的位置 (**桌面坐标**, 由虚拟侧的文本控件算出并由它的后端转过来,
+    // 见 JZVirtualWindowBackend::imeSetPosition)。虚拟侧没有 HWND, 只能交给桌面, 由桌面
+    // 交给宿主那扇真窗口去应答 WM_IME_REQUEST。
+    void setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos);
+    // 让宿主放弃还没上屏的组字 (切换窗口/焦点离开输入框时用 —— IMC 在宿主那边)。
+    void cancelHostIme();
 
     // ---- 窗口管理器 (JZVirtualDevice 合成/命中的那半边) ----
     // 画外框 (标题栏底色+标题+按钮+边框), 坐标 = 桌面坐标; active 决定配色。
@@ -213,11 +239,15 @@ private:
     JZThread* m_process = nullptr;     // 空 = 同线程窗口 (见 setProcess)
     JZWindow* m_client = nullptr;      // 客户区 (真 JZWindow; 本类持有其所有权)
     JZObjectPointer m_clientGuard;     // 客户区存活守卫: 它被别处销毁后这里自动变空
+    const int m_seq;                   // 诞生序号 (见 creationSeq)
+    static std::atomic<int> s_nextSeq; // 自增源 (跨线程建窗, 所以是原子的)
     JZImage m_frame;                   // 客户区最近一帧的拷贝 (见 captureFrame)
     bool m_frameDirty = false;         // 帧缓冲变过但还没拷 (别的线程改过状态)
     // "可用"标志(见 isReadyForUse): 窗口线程在平台 show 末尾置真。用原子量是因为读它的
     // 一定是**别的线程**(跨线程等窗口建成可用) —— 这里必须无锁, 免得与其线程互等。
     std::atomic<bool> m_readyForUse{ false };
+    // 这块桌面上"当前要不要输入法"(见 setImeWanted); 读写跨线程, 所以是原子的。
+    std::atomic<bool> m_imeWanted{ false };
     bool m_autoPosition = false;       // 见 setAutoPosition
 
     int m_x = 0;                       // 外框左上角 (桌面坐标)

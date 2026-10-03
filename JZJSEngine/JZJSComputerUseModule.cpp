@@ -24,6 +24,7 @@ void JZJSComputerUseModule::initEngine(JZJSEngine* engine) {
     m_engine->registFunction(ns, "type",           jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsType));
     m_engine->registFunction(ns, "wait",           jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsWait));
     m_engine->registFunction(ns, "screenshot",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenshot));
+    m_engine->registFunction(ns, "screenInfo",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsScreenInfo));
     m_engine->registFunction(ns, "match",          jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsMatch));
     // 布局通道(运行期寻址的正路): 导出可访问布局树 / 等界面稳定 / 启动激活目标窗口
     m_engine->registFunction(ns, "layoutTree",     jsbind::createSelfFunction(this, &JZJSComputerUseModule::jsLayoutTree));
@@ -60,6 +61,7 @@ void JZJSComputerUseModule::jsKey(const std::string& name) { JZComputerUse::key(
 void JZJSComputerUseModule::jsType(const std::string& text) { JZComputerUse::type(text); }
 void JZJSComputerUseModule::jsWait(int ms) { JZComputerUse::wait(ms); }
 std::string JZJSComputerUseModule::jsScreenshot() { return JZComputerUse::screenshot(); }
+Json::Value JZJSComputerUseModule::jsScreenInfo() { return JZComputerUse::screenInfo(); }
 
 Json::Value JZJSComputerUseModule::jsMatch(const std::string& locatorJson) {
     Json::Value root; Json::Reader reader;

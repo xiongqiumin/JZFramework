@@ -13,7 +13,7 @@ import type {
   Rect, Point, MouseBtn, Presence, Locator, ExploreOptions,
   ComputerUseBackend, ICuNode, IButton, ITab, IMenu, IToolbar, IGroup, IWindow,
   ICanvas, ILabel, IEdit, IComboBox, ICheckBox, ISlider, ILink, IApp,
-  Perception, PerceptionElement,
+  Perception, PerceptionElement, ScreenInfo,
   LayoutPath, LayoutNode, PageFingerprint, AttachResult, NodeState, ExpectMatcher,
   LayoutTreeOptions, SyncOptions, LaunchOptions, Diagnosis, DiagnoseContext, CuErrorCode,
 } from './types';
@@ -57,6 +57,21 @@ export let backend: ComputerUseBackend = {
   type: async (text) => cu().type(text),
   wait: async (ms) => cu().wait(ms),
   screenshot: async () => cu().screenshot(),
+  // 尺寸/缩放: 把"图上的像素"换算成物理坐标的依据 (perceive 用它; 截图没缩放时 = 图尺寸)
+  screenInfo: async (): Promise<ScreenInfo> => {
+    const fn = __jz && __jz.computeruse ? __jz.computeruse.screenInfo : undefined;
+    if (!fn)                    // 老后端没有这个函数: 报"不知道", 别编一个错的
+      return { virtual: false, logical: [0, 0], physical: [0, 0], scale: 1 };
+    const raw = fn();
+    const o: any = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return {
+      virtual: !!o.virtual,
+      logical: [Number((o.logical || [])[0] || 0), Number((o.logical || [])[1] || 0)],
+      physical: [Number((o.physical || [])[0] || 0), Number((o.physical || [])[1] || 0)],
+      scale: Number(o.scale || 1),
+      dpi: o.dpi !== undefined ? Number(o.dpi) : undefined,
+    };
+  },
   // —— 布局通道（运行期寻址的**正路**，见 docs/compute-use-design.md §4.1）——
   // C++ 侧还没实现 `layoutTree` 时**返回 null**（而不是抛错）："没有可访问布局"是个可判定的
   // 状态 —— 调用方会把节点标成 degraded（显式退化到像素），绝不让它悄悄变成默认行为。
@@ -104,6 +119,7 @@ export let backend: ComputerUseBackend = {
   //              ③ 人审/标注(可选 review) ④ **认领布局** ⇒ 生成"像素 ↔ 布局映射" ⑤ 装配成树。
   // ⭐ 像素只出现在 ①②；从 ④ 起全部走布局 —— 这就是"建模期 / 运行期"的分界。
   explore: async (opts: ExploreOptions): Promise<IApp> => {
+    // 送模型的就是原截图(**物理像素**) ⇒ perceive 一进一出同口径, 不做任何比例换算
     const shot = await backend.screenshot();
     let p: Perception | null = await perceive(shot, opts ? { vlm: opts.vlm } : undefined);
     if (opts && opts.review && p) p = await opts.review(p);          // 人审/标注（默认不启用）

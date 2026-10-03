@@ -2,17 +2,17 @@
 // 这里调的 **就是一份 CU 脚本会走的那批底层 API**(JZComputerUse 的静态接口 = JS 侧
 // `__jz.computeruse.*` 的底层实现), 只是用 C++ 调:
 //
-//   截图 -> layoutTree 找控件 -> 用**归一化坐标** click -> 读状态 -> 再截图
+//   截图 -> layoutTree 找控件 -> 用**物理像素坐标** click -> 读状态 -> 再截图
 //
 // 链路形状:
-//   JZComputerUse            (归一化坐标 / 语义树 / 稳定判定 —— 脚本看到的那层)
+//   JZComputerUse            (**物理像素**坐标 / 语义树 / 稳定判定 —— 脚本看到的那层)
 //     └─ JZVirtualDevice     (桌面坐标系 + 命中窗口 + 注入; 由 setVirtualDesktop 挂上)
 //          └─ JZVirtualWindow (无原生窗口的顶层窗口, 有桌面坐标与 z 序)
 //               └─ 控件        (JZCheckbox / JZLineEdit / JZLabel)
 //
 // 验证的重点:
-//   ① 布局树就是"给脚本看的可访问树"(source=semantic, rect 归一化到整块桌面);
-//   ② 归一化 rect 与 click 反算到**同一个桌面像素** —— 这是"能定位就能点中"的根;
+//   ① 布局树就是"给脚本看的可访问树"(source=semantic, rect 是**物理像素**);
+//   ② 布局树给的 rect 与 click 收的坐标**就是同一套物理像素** —— 这是"能定位就能点中"的根;
 //   ③ 读状态走布局 (checked/text), 不碰像素;
 //   ④ 命中按 z 序, focusWindow 能切目标;
 //   ⑤ 虚拟模式下"启动进程/杀进程/切前台"一律明确失败 —— 绝不误动真实系统。
@@ -84,25 +84,25 @@ static bool findById(const Json::Value& n, const std::string& id, Json::Value& o
     return false;
 }
 
-// 节点归一化 rect 的中心 (click 用它)
-static bool rectCenter(const Json::Value& node, double& nx, double& ny)
+// 节点 rect 的中心 (**物理像素**, 可直接喂 click)
+static bool rectCenter(const Json::Value& node, double& x, double& y)
 {
     const Json::Value& r = node["rect"];
     if (!r.isObject() || r["w"].asDouble() <= 0)
         return false;
-    nx = r["x"].asDouble() + r["w"].asDouble() * 0.5;
-    ny = r["y"].asDouble() + r["h"].asDouble() * 0.5;
+    x = r["x"].asDouble() + r["w"].asDouble() * 0.5;
+    y = r["y"].asDouble() + r["h"].asDouble() * 0.5;
     return true;
 }
 
-// 找控件 + 给出它的归一化中心 (脚本里就是这两步: 定位 -> 点击)
-static bool locate(const std::string& title, const std::string& id, double& nx, double& ny)
+// 找控件 + 给出它的中心 (脚本里就是这两步: 定位 -> 点击)
+static bool locate(const std::string& title, const std::string& id, double& x, double& y)
 {
     Json::Value env = JZComputerUse::layoutTree(title);
     Json::Value node;
     if (!findById(env["tree"], id, node))
         return false;
-    return rectCenter(node, nx, ny);
+    return rectCenter(node, x, y);
 }
 
 int main(int argc, char* argv[])
@@ -164,24 +164,23 @@ int main(int argc, char* argv[])
     Json::Value btn;
     check(findById(env["tree"], "btnPower", btn), "布局树里按 id 找到按钮 (viewId 稳定)");
     check(btn.isMember("checked") && btn["checked"].asBool() == false, "布局树里能读到状态 (checked=false)");
-    check(btn["rect"].isObject() && btn["rect"]["w"].asDouble() > 0, "节点带归一化 rect");
+    check(btn["rect"].isObject() && btn["rect"]["w"].asDouble() > 0, "节点带物理像素 rect");
 
-    // 归一化 rect 属于"整块桌面"口径: 反算回桌面像素应落在窗口内
+    // rect 是**物理像素** (= 桌面逻辑 × 桌面 scale; 本测无头 ⇒ scale=1, 与桌面像素同值)
     {
-        const double nx = btn["rect"]["x"].asDouble();
-        const double ny = btn["rect"]["y"].asDouble();
-        const int dx = (int)(nx * desk.desktopWidth());
-        const int dy = (int)(ny * desk.desktopHeight());
-        check(desk.windowAt(dx, dy) == panel, "归一化 rect 反算到桌面像素后, 命中目标窗口");
+        const int dx = (int)btn["rect"]["x"].asDouble();
+        const int dy = (int)btn["rect"]["y"].asDouble();
+        check(desk.windowAt(desk.toLogical(dx), desk.toLogical(dy)) == panel,
+              "rect 直接当桌面坐标用, 命中目标窗口");
     }
 
     printf("[链路] 点击 / 读状态\n");
 
-    // ③ 点击: 归一化中心 -> 桌面像素 -> 命中窗口 -> 投递控件
+    // ③ 点击: rect 中心(物理) -> 注入 -> 命中窗口 -> 投递控件
     double nx = 0, ny = 0;
     check(locate("PowerPanel", "btnPower", nx, ny), "定位到按钮中心 (布局树)");
     check(!power->isChecked(), "点击前未勾选");
-    check(JZComputerUse::click(nx, ny), "click(归一化坐标) 成功");
+    check(JZComputerUse::click(nx, ny), "click(物理像素坐标) 成功");
     check(power->isChecked(), "点击后控件状态变化 (能定位就能点中)");
 
     // ④ 读状态: 再取一次布局树 (走布局, 不碰像素)
@@ -281,14 +280,12 @@ int main(int argc, char* argv[])
             }
             check(sawPower, "ocrTexts() 在虚拟桌面上读出 \"POWER\"");
 
-            // ② 按文字定位 -> 归一化 rect (与 layoutTree/click 同口径)
+            // ② 按文字定位 -> **物理像素** rect (与 layoutTree/click 同口径)
             const CuRect hit = JZComputerUse::matchText("POWER");
             check(hit.w > 0 && hit.h > 0, "matchText(\"POWER\") 命中");
 
-            const int hx = (int)(hit.x * desk.desktopWidth());
-            const int hy = (int)(hit.y * desk.desktopHeight());
-            check(desk.windowAt(hx, hy) == ocrWin,
-                  "命中的归一化 rect 反算到桌面像素后落在 OCR 窗口上 (口径一致)");
+            check(desk.windowAt(desk.toLogical((int)hit.x), desk.toLogical((int)hit.y)) == ocrWin,
+                  "命中的 rect 直接当桌面坐标用, 落在 OCR 窗口上 (口径一致)");
 
             // ③ 用这个 rect 直接点 —— 退化路径同样能"定位 -> 操作"
             check(JZComputerUse::click(hit.x + hit.w * 0.5, hit.y + hit.h * 0.5),
@@ -306,7 +303,7 @@ int main(int argc, char* argv[])
     printf("[链路] 退化兜底: 像素族(模板匹配 / 颜色)\n");
     // 目标**没有可访问布局**时只能靠像素定位。这一节验证两件事:
     //   ① 像素族在虚拟桌面上真能找着东西(不是"编译过但从没跑过");
-    //   ② 它给的是**与布局/点击同一口径**的归一化矩形 —— 这是"建模期像素能认领到布局节点"的前提。
+    //   ② 它给的是**与布局/点击同一口径**的物理像素矩形 —— 这是"建模期像素能认领到布局节点"的前提。
     {
         const int IW = 120, IH = 80;
         // 图案刻意做成"翻转不变"的对称标, 底色用**品红**(R==B): 对 R/B 互换免疫 ⇒
@@ -331,45 +328,47 @@ int main(int argc, char* argv[])
         pixelWin->renderNow();
         desk.activate(pixelWin);        // 置顶: 保证这块图案在合成帧里不被别的窗口压住
 
-        // 期望位置 = 控件在**虚拟桌面**上的坐标。客户端原点与窗口原点重合(见
-        // JZVirtualDevice::clientToScreen), 所以 = 窗口桌面坐标 + 控件客户区坐标;
-        // layoutTree 也是这么把客户区坐标搬上桌面的(见 shiftBoundsInScreen)。
+        // 期望位置 = 控件在**虚拟桌面**上的坐标 (**物理像素**: 桌面逻辑 × 桌面 scale)。
+        // 客户端原点与窗口原点重合(见 JZVirtualDevice::clientToScreen), 所以 = 窗口桌面坐标 +
+        // 控件客户区坐标; layoutTree 也是这么把客户区坐标搬上桌面的。
         // ⚠ 不用 mapToGlobal: 虚拟窗口没有平台窗口, 它的"global"不是桌面坐标 —— 坐标系归桌面所有。
         const JZPoint origin = desk.clientToScreen(pixelWin, 40, 20);
         const JZPoint viaMap = iconLabel->mapToGlobal(JZPoint(0, 0));
         printf("  [info] 期望原点: clientToScreen=(%d,%d) mapToGlobal=(%d,%d)\n",
                origin.x(), origin.y(), viaMap.x(), viaMap.y());
-        const double ex = (origin.x() + IW * 0.5) / desk.desktopWidth();
-        const double ey = (origin.y() + IH * 0.5) / desk.desktopHeight();
+        const double ex = desk.toPhysical(origin.x()) + IW * desk.scale() * 0.5;
+        const double ey = desk.toPhysical(origin.y()) + IH * desk.scale() * 0.5;
 
+        // region 也是**物理像素** (整块桌面 800x600, scale=1 ⇒ 与逻辑同值)
         auto rectAt = [](double x, double y, double w, double h) { CuRect r; r.x = x; r.y = y; r.w = w; r.h = h; return r; };
         const double tolPx = 2.0;
 
         // ① 模板匹配: 全屏找
         const CuRect hit = JZComputerUse::matchImage(tplPath, CuRect());
-        printf("  [info] matchImage -> (%.4f, %.4f, %.4f, %.4f)\n", hit.x, hit.y, hit.w, hit.h);
+        printf("  [info] matchImage -> (%.2f, %.2f, %.2f, %.2f)\n", hit.x, hit.y, hit.w, hit.h);
         check(hit.w > 0 && hit.h > 0, "matchImage(模板文件) 命中");
-        check(std::fabs((hit.x + hit.w * 0.5) - ex) * desk.desktopWidth() <= tolPx &&
-              std::fabs((hit.y + hit.h * 0.5) - ey) * desk.desktopHeight() <= tolPx,
+        check(std::fabs((hit.x + hit.w * 0.5) - ex) <= tolPx &&
+              std::fabs((hit.y + hit.h * 0.5) - ey) <= tolPx,
               "命中中心 == 控件桌面坐标 (像素族与布局/点击同口径)");
-        check(std::fabs(hit.w * desk.desktopWidth() - IW) <= tolPx &&
-              std::fabs(hit.h * desk.desktopHeight() - IH) <= tolPx,
-              "命中尺寸 == 模板尺寸 (单尺度匹配)");
+        check(std::fabs(hit.w - IW * desk.scale()) <= tolPx &&
+              std::fabs(hit.h - IH * desk.scale()) <= tolPx,
+              "命中尺寸 == 模板尺寸 x 桌面缩放 (单尺度匹配)");
 
-        // ② region 限定: 目标在左上 1/4 之外 ⇒ 该区域里必须找不到(region 换算真生效)
-        // ⚠ region 是"搜索窗口", 模板必须**整个**落在里面 (matchTemplate 的语义) ——
+        // ② region 限定: 目标在左上 1/4 之外 ⇒ 该区域里必须找不到(region 真生效)
+        // ⚠ region 是"搜索窗口"(**物理像素**), 模板必须**整个**落在里面 (matchTemplate 的语义) ——
         //   窗口有外框之后图案整体下移了一格标题栏, 所以这里的 region 要够高。
-        check(JZComputerUse::matchImage(tplPath, rectAt(0.0, 0.0, 0.25, 0.25)).w <= 0,
+        const double qx = desk.physicalWidth() * 0.25, qy = desk.physicalHeight() * 0.25;
+        check(JZComputerUse::matchImage(tplPath, rectAt(0.0, 0.0, qx, qy)).w <= 0,
               "matchImage 受 region 限制: 区域外找不到");
-        check(JZComputerUse::matchImage(tplPath, rectAt(0.5, 0.0, 0.25, 0.4)).w > 0,
+        check(JZComputerUse::matchImage(tplPath, rectAt(qx * 2, 0.0, qx, qy * 1.6)).w > 0,
               "matchImage 在给定 region 内仍命中");
 
         // ③ 颜色查找: 品红在全屏唯一
         const CuRect col = JZComputerUse::matchColor("#FF00FF", CuRect());
-        printf("  [info] matchColor  -> (%.4f, %.4f, %.4f, %.4f)\n", col.x, col.y, col.w, col.h);
+        printf("  [info] matchColor  -> (%.2f, %.2f, %.2f, %.2f)\n", col.x, col.y, col.w, col.h);
         check(col.w > 0 && col.h > 0, "matchColor 命中唯一的颜色块");
-        check(std::fabs((col.x + col.w * 0.5) - ex) * desk.desktopWidth() <= tolPx &&
-              std::fabs((col.y + col.h * 0.5) - ey) * desk.desktopHeight() <= tolPx,
+        check(std::fabs((col.x + col.w * 0.5) - ex) <= tolPx &&
+              std::fabs((col.y + col.h * 0.5) - ey) <= tolPx,
               "颜色命中中心 == 控件桌面坐标");
 
         // ④ 用像素族命中的矩形直接点 —— 退化路径同样能"定位 -> 操作"

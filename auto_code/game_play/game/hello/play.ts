@@ -52,7 +52,7 @@ const BLUE = '#2050e0';
 
 interface Box { x: number; y: number; w: number; h: number; }
 
-/** 在**整块桌面**上找这个颜色，返回归一化框（找不到 → null）。 */
+/** 在**整块桌面**上找这个颜色，返回**物理像素**框（找不到 → null）。 */
 function findColor(color: string): Box | null {
     try {
         const r = cu.match(JSON.stringify({ kind: 'color', color: color }));
@@ -106,10 +106,14 @@ function main(): void {
     log('[hello-play] 目标窗口 "' + cfg.window + '"，产物目录 ' + OUT);
 
     // 等窗口出现，再点一下正中把它**激活**（CU 的单击命中窗口会激活它；之后点击才算落在游戏上）
+    // ⚠ 坐标是**物理像素** ⇒ 先问一下屏尺寸（scale≠1 时与逻辑尺寸不同）
     const end = Date.now() + 15000;
     while (Date.now() < end && !windowReady(cfg.window))
         sleep(300);
-    cu.click(0.5, 0.5, 'left');
+    const si = cu.screenInfo ? cu.screenInfo() : null;
+    const sw = (si && si.physical ? si.physical[0] : 800) || 800;
+    const sh = (si && si.physical ? si.physical[1] : 600) || 600;
+    cu.click(sw / 2, sh / 2, 'left');
     if (cfg.warmupSec > 0)
         sleep(cfg.warmupSec * 1000);
 
@@ -121,7 +125,7 @@ function main(): void {
         const red = findColor(RED);
         const blue = findColor(BLUE);      // 只为日志：蓝球是"不该点"的那个
         if (red) {
-            // 点它的**中心**：match 与 click 都是"整块桌面"的归一化坐标，直接对得上
+            // 点它的**中心**：match 与 click 都是"整块桌面"的**物理像素**坐标，直接对得上
             cu.click(red.x + red.w / 2, red.y + red.h / 2, 'left');
             state.hits++;
         } else {

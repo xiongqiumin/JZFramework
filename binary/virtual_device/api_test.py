@@ -17,7 +17,8 @@
   5. /api/screen?window=   窗口客户区截图: PNG 尺寸 == 客户区逻辑尺寸
   6. 鼠标 + 键盘           点输入框 -> 打字 -> 点按钮 -> 窗口标题变成 "文本=hello"
   7. 拖动                  按标题栏拖 -> frame 位置真的变了 (窗口管理器那条路)
-  8. /api/desktop scale=2  截图翻倍, 而坐标/几何一个都没动 (DPI 不进坐标)
+  8. /api/desktop scale=2  截图/几何/命中一起翻倍 (对外一律**物理像素**; 逻辑尺寸不变),
+                           dpi 是等价写法, followHost 恢复跟随宿主
   9. 程序                  用文件加载 (ESM 模块) / 停掉 -> 窗口一起收走
   9b. 程序异常退出        未处理异常 = 那个程序自己退出 (程序表消失 + 窗口收走); 起来就崩 -> 400
  10. 查找 / 枚举窗口       句柄 id / 下标 / 标题 三种标识, ?process= ?title= ?visible= 过滤,
@@ -320,18 +321,22 @@ def main():
                  {"action": "drag", "x": moved["frame"][0] + moved["frame"][2] - 60,
                   "y": moved["frame"][1] + 11, "toX": fx + fw - 60, "toY": fy + 11, "steps": 6})
 
-        print("== 8) DPI: scale 只改截图分辨率, 不进坐标 ==")
+        print("== 8) DPI: 对外一律物理像素 (scale=2 -> 几何/命中一起翻倍) ==")
         s2 = api.json("POST", "/api/desktop", {"scale": 2})
         t.eq("setScale(2) 生效", s2.get("scale"), 2.0)
+        t.eq("dpi 是等价写法 (192 = 200%)", s2.get("dpi"), 192)
+        t.eq("物理尺寸也报出来", s2.get("physical"), [1600, 1200])
         t.eq("整屏截图 = 逻辑尺寸 x 2", png_size(api.screen()), (1600, 1200))
         t.eq("窗口截图也 x 2", png_size(api.screen("?window=" + q(live))), (cw * 2, ch * 2))
         still = api.window_by_title(live)
-        t.eq("窗口几何仍然是逻辑像素 (坐标与缩放无关)", still["frame"], before["frame"])
-        t.eq("命中测试也仍然按逻辑坐标: 点窗口里 -> 是它",
-             api.click(still["client"][0] + 100, still["client"][1] + 52).get("window"),
+        t.eq("窗口几何按物理像素回报 (scale=2 时翻倍)",
+             still["frame"], [v * 2 for v in before["frame"]])
+        t.eq("客户区尺寸同样翻倍", still["client"][2:], [v * 2 for v in before["client"][2:]])
+        t.eq("命中测试也按物理坐标: 点窗口里 -> 是它",
+             api.click(still["client"][0] + 200, still["client"][1] + 104).get("window"),
              still["title"])
-        api.json("POST", "/api/desktop", {"scale": 1})
-        t.eq("改回 1", png_size(api.screen()), (800, 600))
+        api.json("POST", "/api/desktop", {"followHost": True})
+        t.eq("followHost 后回到宿主缩放 (无头 = 1)", png_size(api.screen()), (800, 600))
 
         print("== 9) 程序: 加载 JS 程序(模块) / 停掉 ==")
 

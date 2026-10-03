@@ -1,6 +1,7 @@
 #ifndef JZ_VIRTUAL_DEVICE_HTTP_H_
 #define JZ_VIRTUAL_DEVICE_HTTP_H_
 #include "JZObject.h"
+#include "JZWidget/JZRect.h"   // 坐标换算 (物理 <-> 逻辑) 要用 JZRect
 #include "json/json.h"      // 请求/响应都是 JSON (与框架其它 HTTP/MCP 面同一套: jsoncpp)
 #include <functional>
 #include <string>
@@ -23,8 +24,10 @@ class JZHttpRequest;
 //     那条链最需要的一步: 被测程序在容器里跑, 观察与操作从外面来。
 //
 // 五条纪律 (都是踩过的坑, 改之前先读):
-//   1. **坐标恒为桌面逻辑像素** (与 JZVirtualDevice 同一口径): `scale` 只决定截图有多少像素,
-//      不进坐标 ⇒ "点 (100,80)" 在任何 DPI 下都是同一件事, 脚本可复现;
+//   1. **对外坐标一律物理像素** (= 桌面逻辑 × scale): 截图给的是物理像素, 输入收的也是
+//      物理像素 ⇒ "截图上的 (100,80)" 直接就是"发过去的 (100,80)", 脚本照图写坐标即可
+//      (与 JZComputerUse 同口径: 外面看到的世界都是物理的)。框架内部恒用桌面逻辑坐标,
+//      换算只在下面那四个 helper 一处做 (见其说明);
 //   2. **截图能给窗口客户区** (`?window=`): 客户区坐标系才与控件几何/命中一致 (标题栏/边框
 //      属于窗口管理器, 不是被测程序的东西) —— 与 computer_use 的截图口径一致;
 //   3. **不提供"控件树"接口**: 语义树就是视觉评测的答案本身 (`get_ui_state`) —— 给了就等于
@@ -55,7 +58,8 @@ class JZHttpRequest;
 //                                                 与 /api/input/* 同一套参数, 见下面 coords 说明
 //   DELETE /api/windows/<w>                       关掉它 (== /state {"action":"close"})
 //   GET    /api/screen[?window=<w>][&format=png|json]  截图: 默认整屏 PNG; window 给**客户区**
-//   POST   /api/desktop         {scale}           改渲染缩放 (只影响截图分辨率, 不进坐标)
+//   POST   /api/desktop         {scale|dpi|followHost}  设这块虚拟屏自己的 DPI (物理像素
+//                               = 逻辑 × dpi/96; 显式设过就不再跟宿主; followHost 恢复跟随)
 //   POST   /api/input/mouse     {action,x,y,...}  鼠标: move/down/up/click/double/drag/wheel
 //   POST   /api/input/key       {key|text,...}    键盘: 单键/组合 ("Ctrl+C") 或整段文本
 //   POST   /api/programs        {name,file|script,workDir?}  加载程序 (一个线程 + 一份 JS 运行时):
@@ -162,6 +166,17 @@ private:
     void handleLogs(JZHttpServerClient* client, const JZHttpRequest& req);      // GET 程序输出(按行)
 
     // ---- 内部小工具 ----
+    // ---- 坐标口径: 对外一律**物理像素**, 内部一律桌面逻辑 ----
+    // 两个空间的关系见 JZVirtualDevice::setScale:
+    //   物理像素 = 桌面逻辑 × scale (scale 默认 = 宿主 DPI 缩放, 无头恒 1)。
+    // 规则: 请求里进来的坐标/尺寸 (输入 x,y / at=x,y / 建窗与移位 / 客户区尺寸) 先 /scale;
+    //       响应里出去的 (窗口 frame/client) 再 *scale。
+    // ⚠ 这四个是 HTTP 边界上**唯一**的换算点 —— 别在别处再乘除一次, 否则又变成
+    //   "有的接口物理、有的接口逻辑"。**框架内部一行都不改** (它恒用桌面逻辑坐标)。
+    int physToLogical(int v) const;                    // 物理 -> 逻辑 (实现见 .cpp: 要 JZVirtualDevice)
+    int logicalToPhys(int v) const;                    // 逻辑 -> 物理
+    JZRect physRectToLogical(const JZRect& r) const;   // 矩形: 位置+尺寸一起换
+    JZRect logicalRectToPhys(const JZRect& r) const;
     void replyJson(JZHttpServerClient* client, const JZHttpRequest& req,
                    const Json::Value& value, int code = 200);
     void replyError(JZHttpServerClient* client, const JZHttpRequest& req,

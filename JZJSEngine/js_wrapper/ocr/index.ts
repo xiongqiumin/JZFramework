@@ -3,7 +3,7 @@
 //
 // 真干活的全在 C++ 侧（JZComputerUse 的 OCR 那组，经 __jz.computeruse 暴露）：
 //   · 它读的是**当前屏幕**（虚拟桌面下就是桌面合成帧），不碰文件；
-//   · 识别结果是归一化矩形 —— 与 layoutTree / click 同一口径 ⇒ 拿到就能点。
+//   · 识别结果是**物理像素**矩形 —— 与 layoutTree / click 同一口径 ⇒ 拿到就能点。
 //
 // 这一层只做三件事：把 `built`（有没有这个能力）与 `ready`（模型好没好）分开问清楚、
 // 把"按文字找"做得比 C++ 的 matchText 更好用（支持包含/全等/正则、返回命中的文本与分数）、
@@ -13,7 +13,7 @@
 //     import { ensure, texts, find, center } from 'ocr';
 //     ensure();                                   // 没 init 就 init（模型目录走 JZ_CU_OCR_MODEL）
 //     const hit = find('开始');                    // 包含匹配，不区分大小写
-//     if (hit) clickTo(center(hit));              // 归一化中心，直接点
+//     if (hit) clickTo(center(hit));              // 物理像素中心，直接点
 //
 // 模型目录：init({modelRoot}) > 环境变量 JZ_CU_OCR_MODEL > <exe目录>/model/paddle_ocr
 // （本机模型在 E:\models\paddle_ocr，目录布局见 JZPaddleOCR::initFromDir 认的两套）
@@ -119,7 +119,7 @@ export function find(text: string, opts?: FindOptions): TextHit | null {
   return hits.length ? hits[0] : null;
 }
 
-/** 归一化中心 —— 直接可以喂给 computeruse 的 click/drag（同一口径） */
+/** **物理像素**中心 —— 直接可以喂给 computeruse 的 click/drag（同一口径） */
 export function center(hit: TextHit): { x: number; y: number } {
   return { x: hit.x + hit.w / 2, y: hit.y + hit.h / 2 };
 }

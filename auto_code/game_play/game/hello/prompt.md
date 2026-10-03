@@ -31,7 +31,7 @@
 | 成员 | 说明 |
 | --- | --- |
 | `screenshot()` | 整块桌面的 PNG data URL ——"看"的唯一入口 |
-| `click(x, y, btn)` / `doubleClick` / `drag(...)` | 归一化坐标（0~1）；**三个参数都不能省**（`btn` 给 `'left'/'right'/'middle'`）；命中窗口会激活它 |
+| `click(x, y, btn)` / `doubleClick` / `drag(...)` | **物理像素**坐标（相对整块桌面 = 截图像素；屏尺寸问 `screenInfo()`）；**三个参数都不能省**（`btn` 给 `'left'/'right'/'middle'`）；命中窗口会激活它 |
 | `key(name)` | 按一下键（**Win32 键名**：`Space` / `Return` / `R` / `Left` …） |
 | `type(text)` | 打字；`wait(ms)` 阻塞等（在脚本自己的线程上睡，游戏照跑） |
 | `layoutTree(json)` | 目标窗口的可访问布局；找不到窗口返回 null（可当"窗口在不在"用） |

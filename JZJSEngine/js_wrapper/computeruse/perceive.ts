@@ -7,7 +7,11 @@
 //   打哪台服务由 `ExploreOptions.vlm` / `setVlmConfig()` 决定(本包**不内置地址**)。
 //   以后换 OCR/YOLO/OmniParser 之类, 换的就是这一个文件 —— 上面的树模型与动作逻辑不动。
 //
-// 契约: 返回的 `rect` 一律**归一化 [0,1]**(相对整图左上角), 与 types.ts 的 Rect 一致;
+// 契约: 返回的 `rect` 一律**物理像素**(相对整屏/虚拟桌面, 与 types.ts 的 Rect 一致) ——
+//       **不经过任何比例/归一化**: 送模型的就是原截图(物理像素), 所以提示词直接要"像素坐标",
+//       回来的数就是物理坐标, 本层只做清洗(裁到图内 / 丢退化框 / 类型映射)。
+//       ⚠ 若将来为了省 token 把图缩了再送, 那"缩放 + 还原"必须在**送图那一层**成对做完
+//         (别在这里留 0..1 兼容分支: 那就是两套口径了)。
 //       换后端时这条契约不变, 所以上层(explore/树/判分)不用跟着改。
 import type { Perception, PerceptionElement, Rect, VlmOptions } from './types';
 
@@ -33,18 +37,15 @@ function resolveVlm(cfg?: VlmOptions | null): VlmOptions {
 }
 
 // ————————————————————————————————————————————————
-// 提示词(坐标口径写死在这里: 归一化 [x,y,w,h])
+// 提示词(坐标口径写死在这里: **像素** [x,y,w,h], 相对这张图左上角)
 // ————————————————————————————————————————————————
 
 const TYPES = 'button / label / edit / checkbox / radio / combobox / slider / tab / menu / icon / image / panel / other';
 
-function r3(v: number): string { return (Math.round(v * 1000) / 1000).toFixed(3); }
-
-/** 提示词里带上真实图片尺寸与一个"算好的例子" —— 比空口说"归一化"有效得多。 */
+/** 提示词里带上真实图片尺寸与一个"算好的例子" —— 比空口说"像素"有效得多。 */
 export function buildPrompt(imgW: number, imgH: number): string {
-    const ex = (px: number, py: number, pw: number, ph: number): string => '[' + [
-        r3(px / imgW), r3(py / imgH), r3(pw / imgW), r3(ph / imgH),
-    ].join(', ') + ']';
+    const ex = (px: number, py: number, pw: number, ph: number): string => '[' +
+        [px, py, pw, ph].join(', ') + ']';
     return [
         '你是界面感知模块: 看这张截图, 列出里面所有可见控件。',
         '这张图就是**窗口客户区**(不含标题栏/边框), 坐标以它为准。',
@@ -55,8 +56,8 @@ export function buildPrompt(imgW: number, imgH: number): string {
         '  button=按钮 | label=静态文字 | edit=输入框 | checkbox=复选框 | radio=单选按钮',
         '  combobox=下拉框 | slider=滑块 | tab=选项卡 | menu=菜单项 | icon=只有图标的按钮 | panel=容器/分组',
         '',
-        'bbox = [x, y, w, h], 四个数都是**归一化浮点数**(0~1, 保留 3 位小数), 相对整张图片左上角 —— 不是像素!',
-        '图片尺寸 ' + imgW + 'x' + imgH + ' 像素。例如一个框像素坐标 (200, 100)、宽 300、高 50, 就写 ' + ex(200, 100, 300, 50),
+        'bbox = [x, y, w, h], 四个数都是**像素坐标**(整数, 相对整张图片左上角) —— 不是 0~1 的比例!',
+        '这张图是 ' + imgW + 'x' + imgH + ' 像素。例如一个框在像素 (200, 100)、宽 300、高 50, 就写 ' + ex(200, 100, 300, 50),
         'bbox 要框住控件的**整个可见区域**(按钮含内边距、输入框含边框), 不要只框住文字。',
         'text 原样抄写控件上的可读文字(不要翻译、不要改写); 没有文字就写空串。',
         '窗口标题栏/边框上的系统按钮(最小化/最大化/关闭)、任务栏与桌面内容都不用列。',
@@ -104,16 +105,11 @@ function num(v: any): number {
     return isFinite(n) ? n : NaN;
 }
 
-function clamp01(v: number): number { return v < 0 ? 0 : (v > 1 ? 1 : v); }
-
-/** 模型常把**像素**与**归一化**混着给(实测出现过 [731, 0, 0.08, 0.12]) ⇒ 逐值看: >1 的按像素换算。 */
-function toNorm(v: number, dim: number): number {
-    if (!isFinite(v)) return NaN;
-    if (v > 1.0001) return dim > 0 ? v / dim : NaN;
-    return v;
-}
-
-/** bbox 清洗: 收数组/对象两种形状, 逐值归一化, 裁进 [0,1]; 无效返回 null。 */
+/**
+ * bbox 清洗: 收数组/对象两种形状, 逐值取**像素坐标** (相对送出去的那张图 = 物理像素),
+ * 裁到图内; 无效返回 null。**没有任何比例换算** —— 图就是屏(物理像素), 一进一出同口径。
+ * @param imgW,imgH 送模型那张图的尺寸 (dataURL 解出来的; 也是物理屏尺寸)
+ */
 export function fixRect(raw: any, imgW: number, imgH: number): Rect | null {
     let v: number[] | null = null;
     if (Array.isArray(raw) && raw.length >= 4) {
@@ -125,17 +121,19 @@ export function fixRect(raw: any, imgW: number, imgH: number): Rect | null {
     }
     if (!v) return null;
 
-    let x = toNorm(v[0], imgW), y = toNorm(v[1], imgH);
-    let w = toNorm(v[2], imgW), h = toNorm(v[3], imgH);
+    let x = v[0], y = v[1], w = v[2], h = v[3];
     if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h)) {
-        console.warn('[CU] bbox 无法归一化(图片尺寸未知?): ' + JSON.stringify(raw));
+        console.warn('[CU] bbox 不是有效像素坐标: ' + JSON.stringify(raw));
         return null;
     }
-    x = clamp01(x); y = clamp01(y);
-    if (x + w > 1) w = 1 - x;                      // 越界就裁到图内
-    if (y + h > 1) h = 1 - y;
-    if (w <= 0.002 || h <= 0.002) return null;     // 退化框丢掉
-    return { x, y, w, h };
+    if (imgW > 0 && imgH > 0) {
+        if (x < 0) { w += x; x = 0; }              // 越界就裁到图内
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > imgW) w = imgW - x;
+        if (y + h > imgH) h = imgH - y;
+    }
+    if (w <= 1 || h <= 1) return null;             // 退化框丢掉 (像素: <=1px 没意义)
+    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
 }
 
 /** 模型给的"视觉类" → 本包词汇(与判分的 TYPE_FAMILY 对齐)。加词汇只改这张表。 */

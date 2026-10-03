@@ -1,12 +1,12 @@
 // ocr —— 权威类型定义（运行期实现在 ../index.ts）
 //
 // 语义与 __jz.computeruse 的 OCR 那一组（C++ 侧 JZComputerUse::initOcr/ocrTexts/...）一一对应：
-//   · 矩形都是**归一化**的（相对整块屏幕/虚拟桌面，[0,1]），与 layoutTree / click 同一口径
+//   · 矩形都是**物理像素**（相对整块屏幕/虚拟桌面），与 layoutTree / click 同一口径
 //     ⇒ 拿到的 rect 可以直接喂给 computeruse 的 click；
 //   · "有没有 OCR 能力"(built) 与 "模型加载好没"(ready) 是**两件事**，别混；
 //   · 没编入 / 没 init / 没识别到，一律返回空数组或 null —— 不会假装成功。
 
-/** 归一化矩形（相对整屏/整块虚拟桌面） */
+/** **物理像素**矩形（相对整屏/整块虚拟桌面） */
 export interface Rect { x: number; y: number; w: number; h: number }
 
 /** 识别到的一段文字 */
@@ -36,7 +36,7 @@ export interface OcrInfo {
 
 /** find / findAll 的匹配选项 */
 export interface FindOptions {
-  /** 只在某个区域内找（归一化） */
+  /** 只在某个区域内找（**物理像素**） */
   region?: Rect;
   /** 识别置信度下限，默认 0.6 */
   minScore?: number;

@@ -52,6 +52,10 @@ struct Options
     bool headless = false;      // 容器模式: 不显示宿主界面 + 不预建示范窗口
     std::string program;        // --program: 开机就加载的 JS 程序 (文件路径)
     std::string programName;    // --program-name: 它的程序名 (缺省 = 文件名去扩展名)
+    // 这块虚拟屏**自己的** DPI: 0 = 跟随宿主窗口 (默认, 与主机同 DPI);
+    // 设了就是"容器模拟一台 125%/150% 的机器" (物理像素 = 逻辑 × dpi/96), 不再跟宿主变。
+    int dpi = 0;                // --dpi 120
+    float scale = 0.0f;         // --scale 1.25 (与 --dpi 等价, 二选一)
 };
 
 void printUsage()
@@ -60,6 +64,8 @@ void printUsage()
            "  --http-port <n>     HTTP 接口端口 (0 = 关掉; 默认 %d)\n"
            "  --headless          容器模式: 不显示宿主界面, 桌面保持干净 (无示范窗口)\n"
            "  --desktop <WxH>     虚拟显示器尺寸 (默认 %dx%d)\n"
+           "  --dpi <n>           这块虚拟屏自己的 DPI (96=100%%, 120=125%%; 缺省跟随宿主)\n"
+           "  --scale <f>         同上, 直接给缩放 (如 1.25)\n"
            "  --program <file>    开机加载一个 JS 程序 (按 ESM 模块加载, 运行根 = 它所在目录)\n"
            "  --program-name <名> 上面那个程序的程序名 (缺省 = 文件名去扩展名)\n"
            "  例: virtual_device.exe --headless --http-port 8720 --program app.js\n"
@@ -80,6 +86,18 @@ int parseArgs(int argc, char* argv[], Options& opt)
             opt.program = argv[++i];
         } else if (a == "--program-name" && i + 1 < argc) {
             opt.programName = argv[++i];
+        } else if (a == "--dpi" && i + 1 < argc) {
+            opt.dpi = atoi(argv[++i]);
+            if (opt.dpi <= 0) {
+                printf("--dpi 要 > 0 (96 = 100%%, 120 = 125%%, 144 = 150%%)\n");
+                return 1;
+            }
+        } else if (a == "--scale" && i + 1 < argc) {
+            opt.scale = (float)atof(argv[++i]);
+            if (!(opt.scale > 0.0f)) {
+                printf("--scale 要 > 0 (如 1 或 1.25)\n");
+                return 1;
+            }
         } else if (a == "--desktop" && i + 1 < argc) {
             int w = 0, h = 0;
             if (sscanf(argv[++i], "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
@@ -175,6 +193,16 @@ public:
             m_screen.shutdownProcesses();   // 先收掉跑着的进程 (线程里的 JS 收干净再关)
             close();                        // = "关掉这台虚拟机" (宿主窗口关闭 -> 应用退出)
         });
+
+        // ---- 这块虚拟屏自己的 DPI (可选) ----
+        // 不设 (默认) = 跟随宿主窗口的设备缩放 (与主机同 DPI, 贴图 1:1 不重采样);
+        // 设了 (--dpi/--scale) 就固定下来, 之后宿主怎么变都不覆盖 —— 这是"容器模拟一台
+        // 125%/150% 的机器"那条路 (容器无头跑时最有用: 物理像素 = 逻辑 × dpi/96)。
+        // ⚠ 对外 (HTTP / CU / 截图) 一律物理像素 = 逻辑 × 这个缩放。
+        if (m_opt.dpi > 0)
+            m_screen.setScale((float)m_opt.dpi / 96.0f);
+        else if (m_opt.scale > 0.0f)
+            m_screen.setScale(m_opt.scale);
 
         // ---- 中间: 滚动区 + 那块"屏幕" ----
         // 屏幕是 800x600, 宿主窗口更小的时候滚动区自己出滚动条 (真实分辨率语义);

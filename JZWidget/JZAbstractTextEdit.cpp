@@ -2080,23 +2080,26 @@ bool JZAbstractTextEdit::imeQueryCharPosition(int charPos, JZPoint& pt, int& out
 
 void JZAbstractTextEdit::updateIMEWindowPos()
 {
-    HWND hwnd = nativeHwndOf(this);
-    if (!hwnd)
+    JZRect lineRect;
+    JZPoint candPos;
+    if (!imeWindowRect(lineRect, candPos))
         return;
 
-    HIMC hIMC = ImmGetContext(hwnd);
-    if (!hIMC)
+    // ⚠ 判据是"能不能拿到 IMC", 不是"有没有 nativeHandle": 虚拟桌面上的窗口也有句柄
+    //   (那是 JZVirtualWindow 对象指针), 但它背后没有真 HWND, ImmGetContext 照样拿不到
+    //   输入上下文 —— 那时这一份位置也得送出去, 否则候选框不跟虚拟桌面里的输入行走。
+    HWND hwnd = nativeHwndOf(this);
+    HIMC hIMC = hwnd ? ImmGetContext(hwnd) : nullptr;
+    if (!hIMC) {
+        // 自己动不了 IMM == 跑在虚拟桌面上: 把位置交给所属窗口的**后端**, 由它转给真正
+        // 拿着 IMC 的那扇宿主窗口 (见 JZVirtualWindowBackend::imeSetPosition)。
+        if (JZWindow* win = window())
+            win->setImeWindowPos(lineRect, candPos);
         return;
+    }
 
     JZWindow* win = window();
     const float scale = (win && win->device()) ? win->device()->scale() : 1.0f;
-
-    JZRect lineRect;
-    JZPoint candPos;
-    if (!imeWindowRect(lineRect, candPos)) {
-        ImmReleaseContext(hwnd, hIMC);
-        return;
-    }
 
     // 组字窗: 用 CFS_RECT 同时给 TSF 输入法提供"候选框定位矩形"。
     // —— 关键修复 (一) ——

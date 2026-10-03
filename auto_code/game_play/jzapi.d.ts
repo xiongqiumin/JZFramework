@@ -2,7 +2,7 @@
 //
 // 单一来源（改这两处要一起改）：
 //   JZJSEngine/JZJSComputerUseModule.cpp 的 registFunction 列表
-//   JZComputerUse/JZComputerUse.h 的语义（归一化坐标 / 键名是 Win32 键名）
+//   JZComputerUse/JZComputerUse.h 的语义（**物理像素**坐标 / 键名是 Win32 键名）
 //
 // ⚠ 这份声明刻意**窄**：脚本能用的就是 computer use 这一套（看画面 + 操作这台小电脑）；
 //   别的（控件树、程序内部状态、模拟器状态）不在这里 —— 那属于"开卷"，见玩法任务书 `prompt.md` 的红线。
@@ -11,7 +11,7 @@ declare const __jz: {
         /** 截图：**整块虚拟桌面**的 PNG data URL（"看"的唯一入口） */
         screenshot(): string;
         /**
-         * 归一化坐标（0~1，相对整块桌面）单击；命中窗口会把它**激活**。
+         * **物理像素**坐标（相对整块桌面，= 截图那张图的像素空间）单击；命中窗口会把它**激活**。
          * ⚠ 参数**不能省**（绑定是全参）：少了 btn 会抛 "参数错误:需要3个参数"。
          */
         click(x: number, y: number, btn: 'left' | 'right' | 'middle'): boolean;

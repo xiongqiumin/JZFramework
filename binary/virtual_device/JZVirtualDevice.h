@@ -48,7 +48,8 @@ class JZPainter;
 //   · 窗口 = JZVirtualWindow (外框) + 它里面那个真 JZWindow (客户区, 渲染/输入走框架同一条链);
 //   · 坐标: 桌面坐标 == 屏幕**逻辑**坐标 (左上角原点) ⇒ 与真桌面同构,
 //     screenToClient / clientToScreen / "点击落在哪个窗口" / 归一化 rect 全部成立;
-//     ⚠ 缩放 (scale, 见 setScale) 只决定"渲染成多少物理像素", **不进坐标** ——
+//     ⚠ 缩放 (scale, 见 setScale) 只决定"渲染成多少物理像素"; **框架内部的坐标恒为逻辑**
+//        (命中/注入/几何都是), 但**对外接口 (HTTP / CU / 截图) 一律物理像素** ——
 //       坐标/命中/注入/归一化 rect 在任何 DPI 下都一模一样;
 //   · 输入: 给**桌面坐标**, 自动命中窗口 + 激活 + 按命中区域分发 ——
 //     标题栏=拖动窗口 / 边框=缩放 / 关闭=关窗 / 最小化·最大化=改窗口状态 /
@@ -154,23 +155,37 @@ public:
     JZRect startMenuRect() const;
     JZRect startMenuItemRect(int item) const;
 
-    // ---- DPI: 与主机共享缩放 ----
-    // 桌面坐标恒为**逻辑**的 (desktopWidth × desktopHeight) —— 坐标/命中/注入/归一化 rect
-    // 都与缩放无关; scale 只决定"渲染成多少物理像素", 与真桌面"逻辑坐标 + 显示器缩放"
-    // 同一套语义 (对照 JZDisplayDevice::scale / JZWindowBackend::deviceScale):
-    //   · 合成图 desktopImage() 尺寸 = desktopSize * scale (物理像素, 同 JZWidget::grab 约定);
-    //   · 每个虚拟窗口的客户区也按同一 scale 渲染 (帧缓冲 = 客户区逻辑尺寸 * scale)
-    //     ⇒ 宿主界面里按宿主的物理分辨率出图, 文字/图形不糊。
-    // 默认 1.0 = 纯逻辑桌面: 无头 / CU / ctest 下截图就是逻辑尺寸, 与宿主显示器无关,
-    // 脚本回放才可复现。宿主界面里由 JZVirtualScreenView 把它同步成**宿主窗口**的设备
-    // 缩放 (见该类的 syncHostScale) —— "和主机共享 DPI"就落在这一句上。
-    void setScale(float scale);
+    // ---- DPI / 缩放: 这块桌面"有多少物理像素" ----
+    // 两个空间, 与真机同构 (真机 = "逻辑分辨率 + 显示器缩放"):
+    //   · **逻辑空间** = desktopWidth × desktopHeight (默认 800×600) —— 框架内部坐标:
+    //     窗口几何 / 命中 / 事件 / 注入 / 布局, 恒为逻辑, **与 DPI 完全无关**;
+    //   · **物理空间** = 逻辑 × scale —— 宿主界面看到的、截图返回的、HTTP/CU 收发的
+    //     (对外一律物理, 见 JZVirtualDeviceHttp 与 JZComputerUse 的注释)。
+    // scale 的来源有两个 (这就是"虚拟机 DPI 以后可以和主机不一样"那个口子):
+    //   · **跟随宿主** (默认, 未显式设置): 由显示控件把宿主窗口的设备缩放同步进来
+    //     (JZVirtualScreenView::syncHostScale -> setHostScale) ⇒ 与主机共享 DPI,
+    //     贴图 1:1 不重采样, 文字最清晰;
+    //   · **显式设置**: `--dpi/--scale` 或 `POST /api/desktop` (setScale) ⇒ 固定下来,
+    //     宿主再变也不覆盖 (这块虚拟屏有自己的 DPI); 此时显示控件会按
+    //     宿主scale/桌面scale 缩放贴图 (桌面 scale 小于宿主时会重采样, 是固有代价)。
+    // 默认 1.0 = 纯逻辑桌面: 无头 / ctest 下物理 == 逻辑, 与宿主显示器无关, 回放可复现。
+    void setScale(float scale);            // 显式设置 (此后不再跟随宿主)
+    void setHostScale(float scale);        // 宿主同步 (仅未显式时生效)
+    void followHostScale();                // 清除显式设置, 恢复跟随宿主
+    bool isScaleExplicit() const { return m_scaleExplicit; }
     float scale() const { return m_scale; }
     // 逻辑像素 -> 物理像素 (帧缓冲/合成图尺寸都用它)
     int toPhysical(int logical) const
     {
         return (int)std::lround((double)logical * (double)m_scale);
     }
+    // 物理像素 -> 逻辑像素 (对外接口换算用: HTTP/CU 收物理, 内部要逻辑)
+    int toLogical(int physical) const
+    {
+        return (int)std::lround((double)physical / (double)(m_scale > 0.0f ? m_scale : 1.0f));
+    }
+    int physicalWidth() const { return toPhysical(m_desktopW); }
+    int physicalHeight() const { return toPhysical(m_desktopH); }
 
     // 合成序号: 每合成一帧 +1。画布是"同一块缓冲、每帧重画"的可变目标 —— 需要 RGBA
     // 快照的消费方 (截图/CU) 据此判断自己缓存的那份是否过期 (见 desktopImage)。
@@ -261,6 +276,22 @@ public:
                    uint32_t modifiers = JZKeyEvent::NoModifier, bool press = true);
     // 按 UTF-8 逐字符输入 (可打印字符; 组合键/IME 走 injectKey / ImeEvent)
     bool injectText(const std::string& utf8);
+    // 输入法事件 (组字/上屏/候选定位): 发给当前活动窗口 (见 JZVirtualWindow::injectIme)。
+    // 宿主界面里它就是"把宿主窗口收到的 WM_IME_* 转投到虚拟桌面上"。
+    bool injectIme(const JZImeEvent& ev);
+    // ---- 输入法 (IME) 与宿主窗口之间的一条桥 ----
+    // 桌面上"现在该不该有输入法" (由虚拟侧焦点控件的 imeEnabled 决定, 见 setImeWanted)。
+    // JZVirtualScreenView::imeEnabled() 用它回答宿主窗口: 只有这时宿主才会给 IME 打开 UI,
+    // 组字消息也才有去处 —— 否则用户在虚拟桌面里敲字时输入法是被"关"着的。
+    bool imeWanted() const;
+    // 上面那个结论变了时由虚拟窗口调用: 让**宿主那扇真窗口**重算一次 IMC
+    // (跨线程时转投到主线程 —— 宿主窗口只能由它自己的线程碰)。
+    void notifyImeChanged();
+    // 在**显示控件自己的线程**上跑一段动作 (宿主相关的一切都归它; 无头时什么也不做)。
+    // 虚拟侧(可能跑在任意虚拟窗口线程上)要推动宿主状态时走这一条, 别直接跨线程摸。
+    void runOnView(std::function<void(JZVirtualScreenView*)> fn);
+    // notifyImeChanged 的真身: 让宿主窗口按最新的 imeEnabled 重算 IMC
+    static void updateHostImeContextOf(JZVirtualScreenView* v);
 
     // 桌面上该点应有的光标 (边框 = 缩放箭头, 其余 = 箭头) —— 宿主视图据此设光标
     JZCursorShape cursorAt(int screenX, int screenY) const;
@@ -299,6 +330,7 @@ private:
     // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
     void ensureCanvas();
     void refreshNow();                  // 合成真身 (只允许主线程)
+    void setScaleValue(float scale);    // setScale / setHostScale 的共同真身 (不做"谁设的"判断)
     // 把 w 从窗口表 / "已关闭"表里摘下来 (锁内; 调用方负责锁) —— 返回"活动窗口没了的话,
     // 焦点该交给谁"(锁外再调它的 setFocus); 不发生就返回 nullptr。
     JZVirtualWindow* removeWindowLocked(JZVirtualWindow* w);
@@ -344,6 +376,7 @@ private:
     int m_hoverTask = -2;                      // -2 = 无, -1 = 开始按钮, >=0 = 窗口按钮下标
 
     float m_scale = 1.0f;                      // 渲染缩放 (逻辑 -> 物理; 见 setScale)
+    bool m_scaleExplicit = false;              // scale 是显式设的 (true) 还是跟随宿主 (false)
     unsigned m_frameSerial = 0;                // 合成序号 (见 frameSerial)
     int m_desktopW = 0;
     int m_desktopH = 0;

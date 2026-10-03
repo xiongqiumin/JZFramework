@@ -4,7 +4,7 @@
 //               └─ 真 JZWindow (客户区: 控件树/渲染/输入)
 //
 // 坐标: 桌面坐标 == 屏幕**逻辑**坐标 (左上角原点; 缩放见 setScale, 它只决定渲染成多少
-// 物理像素, 不进坐标)。窗口有自己的桌面坐标, 所以 screenToClient / clientToScreen /
+// 物理像素; 对外接口 (HTTP/CU/截图) 一律物理)。窗口有自己的桌面坐标, 所以 screenToClient / clientToScreen /
 // 命中测试 / 归一化 rect 全都有意义 —— 与真实桌面同构, CU 的"屏幕坐标 + 窗口"语义
 // 可以直接落在这块虚拟桌面上。
 #include "JZVirtualDevice.h"
@@ -45,7 +45,7 @@ const JZColor kBarText(24, 24, 24, 255);
 const JZColor kBarWhite(255, 255, 255, 255);
 const JZColor kBarActive(0x2b, 0x57, 0x9a, 255);   // 激活窗口按钮: 与标题栏同色
 
-// 任务栏上"按 z 序可见的窗口" (按钮顺序、命中、激活都用它, 三处口径一致)
+// 任务栏上"按 z 序可见的窗口" (命中/枚举都用它)
 void visibleWindows(const std::vector<JZVirtualWindow*>& all, std::vector<JZVirtualWindow*>& out)
 {
     out.clear();
@@ -53,6 +53,18 @@ void visibleWindows(const std::vector<JZVirtualWindow*>& all, std::vector<JZVirt
         if (w && w->isVisible())
             out.push_back(w);
     }
+}
+
+// 任务栏**按钮的排列顺序** = 窗口诞生顺序 (== 真实 Windows 的任务栏: 按钮顺序是稳的)。
+// ⚠ 不能拿 z 序 (visibleWindows 的天然顺序) 排按钮: activate 会把窗口挪到 z 序最上
+//   (见 raise), 于是点一下按钮 -> 这个按钮连同后面的全换位置 -> 再点就点到别的窗口了
+//   ("窗口排序会切换" 的根因)。z 序是"谁盖谁", 按钮顺序是"谁先来的", 两件事。
+void taskbarWindows(const std::vector<JZVirtualWindow*>& all, std::vector<JZVirtualWindow*>& out)
+{
+    visibleWindows(all, out);
+    std::stable_sort(out.begin(), out.end(), [](JZVirtualWindow* a, JZVirtualWindow* b) {
+        return a->creationSeq() < b->creationSeq();
+    });
 }
 
 } // namespace
@@ -178,7 +190,52 @@ void JZVirtualDevice::setView(JZVirtualScreenView* view)
 // ==================== DPI (与主机共享缩放) ====================
 // 只改"渲染成多少物理像素": 坐标仍是逻辑的, 命中/注入/归一化 rect 一个都不动。
 // 窗口的帧缓冲尺寸与内容随缩放重建 => 这**是**一次全桌面重渲染, 只在 DPI 真变了时做。
+// 显式设置 (用户/接口): 这块虚拟屏的 DPI 从此不跟宿主走 (见头文件)
 void JZVirtualDevice::setScale(float scale)
+{
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (m_scaleExplicit && std::fabs(scale - m_scale) <= 0.001f) {
+            m_scaleExplicit = true;      // 同值也是"显式"(可能刚从跟随切过来): 标志要立起来
+            return;
+        }
+        // ⚠ 标志必须在 early-return 之前定, 否则"显式设了和当前一样的值"会被当成跟随。
+        m_scaleExplicit = true;
+    }
+    setScaleValue(scale);
+}
+
+// 宿主同步 (显示控件调): 只有没被显式设置时才生效 —— "默认与主机同 DPI"就落在这两句上
+void JZVirtualDevice::setHostScale(float scale)
+{
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (m_scaleExplicit)
+            return;
+    }
+    setScaleValue(scale);
+}
+
+// 恢复"跟主机同 DPI": 清掉显式标志, 并**立刻**回到宿主当前的缩放
+// (无头没有宿主窗口 ⇒ 1.0 = 纯逻辑桌面)。这一步不能只清标志 —— 那样 scale 会停在
+// 上一个显式值上, 直到宿主 DPI 恰好变一次才纠正 (实测: 无头下永远停在旧值)。
+void JZVirtualDevice::followHostScale()
+{
+    float host = 1.0f;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        m_scaleExplicit = false;
+        if (m_view) {
+            JZWindow* hw = m_view->window();
+            if (hw && hw->device())
+                host = hw->device()->scale();
+        }
+    }
+    setScaleValue(host);       // 锁外: 它会同步等各窗口自己的线程重画
+}
+
+// 真正换缩放: 画布与每个窗口客户区都按新缩放重建帧缓冲并重画
+void JZVirtualDevice::setScaleValue(float scale)
 {
     if (!(scale > 0.0f))
         scale = 1.0f;
@@ -651,7 +708,7 @@ int JZVirtualDevice::taskButtonAt(int x, int y) const
     if (y < taskbarTop())
         return -1;
     std::vector<JZVirtualWindow*> list;
-    visibleWindows(m_windows, list);
+    taskbarWindows(m_windows, list);
     for (int i = 0; i < (int)list.size(); ++i) {
         if (taskButtonRect(i).contains(x, y))
             return i;
@@ -746,7 +803,7 @@ bool JZVirtualDevice::updateChromeHover(int x, int y)
 void JZVirtualDevice::activateTaskButton(int index)
 {
     std::vector<JZVirtualWindow*> list;
-    visibleWindows(m_windows, list);
+    taskbarWindows(m_windows, list);
     if (index < 0 || index >= (int)list.size())
         return;
     JZVirtualWindow* w = list[index];
@@ -773,9 +830,9 @@ void JZVirtualDevice::paintTaskbar(JZPainter& p)
         p.drawText(r.left() + 14, r.top() + 5, "开始");
     }
 
-    // 每个可见窗口一个按钮 (点它 = 激活; 活动窗口那个是"按住"的样子)
+    // 每个可见窗口一个按钮 (点它 = 激活; 活动窗口那个是"按住"的样子; 顺序见 taskbarWindows)
     std::vector<JZVirtualWindow*> list;
-    visibleWindows(m_windows, list);
+    taskbarWindows(m_windows, list);
     p.setFont(JZFont(12));
     for (int i = 0; i < (int)list.size(); ++i) {
         const JZRect r = taskButtonRect(i);
@@ -864,10 +921,12 @@ void JZVirtualDevice::compose()
         for (auto* w : m_windows) {
             if (!w->isVisible())
                 continue;
+            // 最小化: 桌面上什么都不画 —— 它只剩任务栏那颗按钮 (底下的标题栏按钮/任务栏
+            // 里点它都能还原; 同真实 Windows, 最小化不是"缩小成一个标题栏")。
+            if (w->isMinimized())
+                continue;
             // 外框 (标题栏/边框/按钮) —— 窗口管理器那半边
             w->paintDecoration(p, w == m_active);
-            if (w->isMinimized())
-                continue;                     // 最小化: 只剩标题栏
             // 客户区: 用窗口**推上来的帧缓存** (它自己的线程在内容变化时拷好, 见
             // JZVirtualWindow::captureFrame) —— 合成因此**不会**跨线程去读别人的帧缓冲,
             // 也就永远不会阻塞在某个进程线程上 (多线程下这一点很要紧)。
@@ -1081,6 +1140,62 @@ bool JZVirtualDevice::injectText(const std::string& utf8)
     }
     // 逐字符那套实现只有一份, 在窗口上 (JZVirtualWindow::injectText) —— 锁外调用
     return w ? w->injectText(utf8) : false;
+}
+
+// 输入法 (组字/上屏/候选定位): 与键盘同一套投递纪律 (锁外投给活动窗口的客户区)。
+// ⚠ 中文那条路只走这里 —— IME 的上屏内容**不**产生 key 事件 (真窗口同形状:
+//   WM_IME_COMPOSITION 与 WM_CHAR 是两条消息)。漏了这一步就是"能打字母, 打不了中文"。
+bool JZVirtualDevice::injectIme(const JZImeEvent& ev)
+{
+    JZVirtualWindow* w = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        w = m_active;
+    }
+    return w ? w->injectIme(ev) : false;
+}
+
+bool JZVirtualDevice::imeWanted() const
+{
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
+    return m_active && m_active->imeWanted();
+}
+
+void JZVirtualDevice::notifyImeChanged()
+{
+    runOnView([](JZVirtualScreenView* v) { updateHostImeContextOf(v); });
+}
+
+// 显示控件活在**宿主窗口的线程**上, 而调用方常常是某个虚拟窗口自己的线程 (要不要输入法、
+// 候选窗位置都由那边的焦点控件说了算) ⇒ 一律转投过去, 不直接跨线程摸宿主的控件。
+// ⚠ 因此 fn 不能握有任何锁, 也不能回等调用方线程 (这条与 refresh() 同一套纪律)。
+void JZVirtualDevice::runOnView(std::function<void(JZVirtualScreenView*)> fn)
+{
+    JZVirtualScreenView* v = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        v = m_view;
+    }
+    if (!v)
+        return;                                   // 无头: 没有宿主可谈
+    JZThread* owner = v->thread();
+    if (owner && JZThread::currentThread() != owner) {
+        // fn 要比这次调用活得久 (lambda 稍后才跑): 装进 shared_ptr 带着走。
+        auto body = std::make_shared<std::function<void(JZVirtualScreenView*)>>(std::move(fn));
+        JZObjectPointer guard = v->guardPointer();        // 控件没了这次自动作废
+        runOnObject(guard, [guard, body]() {
+            if (JZVirtualScreenView* vv = (JZVirtualScreenView*)guard.object())
+                (*body)(vv);
+        });
+        return;
+    }
+    fn(v);
+}
+
+void JZVirtualDevice::updateHostImeContextOf(JZVirtualScreenView* v)
+{
+    if (JZWindow* host = v->window())
+        host->updateImeContext();   // 重算: 内部读 JZVirtualScreenView::imeEnabled()
 }
 
 JZCursorShape JZVirtualDevice::cursorAt(int screenX, int screenY) const

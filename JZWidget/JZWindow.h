@@ -223,6 +223,11 @@ public:
     // 放弃当前未上屏的组字 (ImmNotifyIME CPS_CANCEL); imeActive() 转 false 时调用
     void cancelImeComposition();
 
+    // 把"组字窗/候选窗该落在哪"交给后端 (见 JZWindowBackend::imeSetPosition)。
+    // 只用于**没有原生窗口**的情形: 文本控件那时没法自己调 IMM, 得让后端转交给真正
+    // 拿着 IMC 的那扇窗口 (虚拟桌面上就是宿主)。有 HWND 的文本控件走自己的路。
+    void setImeWindowPos(const JZRect& lineRect, const JZPoint& candPos);
+
     // 主动通知 IME 更新 UI 显示状态 (重发一次 WM_IME_SETCONTEXT)。
     // 必须显式发: 这条消息通常只在窗口获得/失去焦点时由系统发一次, 而那一刻焦点
     // 控件往往还不存在 (imeActive() 为 false), IME 就记住了"本窗口不显示任何 UI",

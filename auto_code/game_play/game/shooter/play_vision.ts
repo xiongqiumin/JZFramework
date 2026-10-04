@@ -133,8 +133,11 @@ const boxStr = (b: Box | null): string => b
     ? '(' + b.x.toFixed(0) + ',' + b.y.toFixed(0) + ' ' + b.w.toFixed(0) + 'x' + b.h.toFixed(0) + ')'
     : '(没看到)';
 
-/** 一次取帧、一遍扫描同时判全部关注色（贵的是取帧，所以别一个颜色一次往返）。 */
-function lookAll(): Blk[] {
+/** 一次取帧、一遍扫描同时判全部关注色（贵的是取帧，所以别一个颜色一次往返）。
+ *  ⚠ region = **目标窗口的客户区**（物理像素）。真桌面上这一步是必须的：任务栏图标、
+ *     别的程序的深色主题里就有我们要找的颜色（实测 #78dcff 出现在 IDE 的目录树里、
+ *     #50a0ff/#78e678 出现在任务栏图标上）—— 不限定搜索区,"我/敌机/道具"全会认错。 */
+function lookAll(region: Box | null): Blk[] {
     try {
         const r = cu.matchAll(JSON.stringify({
             colors: [C_SHIP, C_ENEMY_BIG, C_ENEMY_SML, C_PW_RING, C_PW_MULTI, C_PW_LIFE, C_EBULLET],
@@ -142,6 +145,7 @@ function lookAll(): Blk[] {
             //   3x3 的下限会把它整条丢掉 ⇒ 并集少一块, "我在哪"就会跳几十像素(实测 ±25px,
             //   已经超过飞船一拍能走的最大位移 ⇒ 那是估计噪声, 不是真位移)。
             //   真正的噪声靠后面的面积判据挡(见 pickSelf)。
+            region: region ? { x: region.x, y: region.y, w: region.w, h: region.h } : undefined,
             all: true, minW: 2, minH: 2, limit: 120,
         }));
         state.looks++;
@@ -201,11 +205,36 @@ function releaseAll(): void {
 }
 
 function windowReady(title: string): boolean {
+    // ⚠ 先查**窗口表**(cu.windows)：真桌面下目标通常是**别的进程**的窗口, 而它多半没有可访问的
+    //   布局(UIA 拿不到、Win32 子窗口枚举也是空的) ⇒ 只问 layoutTree 的话"窗口明明在"也判成没到,
+    //   于是白等满 15 秒(容器里自家窗口语义树齐全, 这个问题看不出来)。
+    try {
+        const ws = cu.windows(JSON.stringify({ title: title }));
+        if (Array.isArray(ws) && ws.length > 0)
+            return true;
+    } catch (e) { /* 窗口表这条腿不行就退到布局树 */ }
     try {
         return !!cu.layoutTree(JSON.stringify({ title: title }));
     } catch (e) {
         return false;
     }
+}
+
+/** 窗口表里目标窗口那一条（client/frame 都是**物理像素**，与截图/点击同一口径）。 */
+interface WinRow { client?: number[]; frame?: number[]; active?: boolean; visible?: boolean; minimized?: boolean; }
+function findWindow(title: string): WinRow | null {
+    try {
+        const ws = cu.windows(JSON.stringify({ title: title })) as WinRow[];
+        if (Array.isArray(ws) && ws.length > 0)
+            return ws[ws.length - 1];
+    } catch (e) { /* 下面返回 null */ }
+    return null;
+}
+/** [x,y,w,h] → Box（顺带挡掉退化值）。 */
+function boxOf(a: number[] | undefined): Box | null {
+    if (!a || a.length < 4 || !(a[2] > 10) || !(a[3] > 10))
+        return null;
+    return { x: a[0], y: a[1], w: a[2], h: a[3] };
 }
 
 function finish(reason: string): void {
@@ -222,6 +251,7 @@ function finish(reason: string): void {
     try {
         fs.writeFileSync(OUT + '/session.json', JSON.stringify(session, null, 2) + '\n', 'utf8');
     } catch (e) { /* 写不进去就算了，别把脚本带崩 */ }
+    shot('end');                     // 收工那一帧(诊断: 分数/命数都在 HUD 上, 一眼能对)
     releaseAll();
     log('[shooter-vision] 收工: reason=' + reason + ' 拍=' + state.steps + ' 小节=' + state.slices
         + ' 看=' + state.looks + ' 换向=' + state.moves + ' 按键=' + state.keys
@@ -298,7 +328,19 @@ function main(): void {
     const si = cu.screenInfo ? cu.screenInfo() : null;
     const sw = (si && si.physical ? si.physical[0] : 800) || 800;
     const sh = (si && si.physical ? si.physical[1] : 600) || 600;
-    cu.click(sw / 2, sh / 2, 'left');       // 激活窗口（这个玩法不吃鼠标，没有副作用）
+    // 目标窗口那一条（都在**物理像素**口径上，与截图/点击一致）。后面三处要用它：
+    //   ① 激活窗口时点它客户区中心；② 当"游戏区"框（画面就是客户区）；③ 兜底校准时限定搜索区。
+    const win0 = findWindow(cfg.window);
+    // 激活窗口（这个玩法不吃鼠标，没有副作用）：
+    //   ① 先按标题置前（focusWindow 返回"它真是前台吗"）；
+    //   ② 再点它**客户区的中心** —— 真桌面下窗口不一定在屏幕中间, 点屏幕正中心可能点到别人的
+    //      窗口上(顺手把前台抢走 ⇒ 后面所有按键都打到别处)；查不到窗口才退回"点屏幕中心"。
+    try { cu.focusWindow(cfg.window); } catch (e) { /* 置前失败就靠下面那一击 */ }
+    const cliBox0 = boxOf(win0 ? win0.client : undefined);
+    if (cliBox0)
+        cu.click(cliBox0.x + cliBox0.w / 2, cliBox0.y + cliBox0.h / 2, 'left');
+    else
+        cu.click(sw / 2, sh / 2, 'left');
     // 先按一下 R：局已经结束就重开、局还活着时是空操作 ⇒ 两个方向都安全，还省掉开局白等的那几秒。
     cu.key('R');
     sleep(60);
@@ -306,20 +348,37 @@ function main(): void {
     sleep(200);
     fireOn();
 
-    // 游戏区：用整块背景色块校准（窗口刚 show 时客户区还没画完 ⇒ 先用整块桌面兜底）
+    // 游戏区（屏幕物理像素 → 游戏逻辑像素的原点与缩放都从它来）：
+    //   ⭐ **优先用目标窗口的客户区**。容器里"按背景色找整块区域"够用（整块桌面上只有这个游戏），
+    //      真桌面不行 —— 任务栏/别的程序的深色主题里就有那个背景色，实测 `cu.match` 返回
+    //      (0,0,1920x1020) 的整块屏，于是 SC/原点全错、坐标整体错位。
+    //   退路（拿不到窗口表）= 原来的"背景色块"校准，但**搜索区限定在目标窗口的外框里**，并且
+    //      要求量出来的长宽比也像游戏区（否则又是"别的窗口的深色"）。
     const board: Box = { x: 0, y: 0, w: sw, h: sh };
+    const frameBox0 = boxOf(win0 ? win0.frame : undefined);
+    let calibrated = false;
+    if (cliBox0 && Math.abs(cliBox0.w / cliBox0.h - GW / GH) < 0.15) {
+        board.x = cliBox0.x; board.y = cliBox0.y; board.w = cliBox0.w; board.h = cliBox0.h;
+        calibrated = true;
+    }
     const calibrate = (): boolean => {
         let bg: Box | null = null;
         try {
-            const r = cu.match(JSON.stringify({ kind: 'color', color: C_BG }));
+            const opts: { kind: string; color: string; region?: Box } = { kind: 'color', color: C_BG };
+            if (frameBox0)
+                opts.region = frameBox0;
+            const r = cu.match(JSON.stringify(opts));
             bg = (r as Box) || null;
         } catch (e) { bg = null; }
         if (!bg || bg.w * bg.h < 100000)
             return false;
+        if (Math.abs(bg.w / bg.h - GW / GH) > 0.15)
+            return false;
         board.x = bg.x; board.y = bg.y; board.w = bg.w; board.h = bg.h;
         return true;
     };
-    let calibrated = calibrate();
+    if (!calibrated)
+        calibrated = calibrate();
     // 屏幕物理像素 → 游戏逻辑像素
     let SC = board.w / GW;
     if (!(SC > 0.2 && SC < 5)) SC = 1;
@@ -550,7 +609,7 @@ function main(): void {
 
             // ---- 看一眼 ----
             const tLook = Date.now();
-            const bs = lookAll();
+            const bs = lookAll(board);       // 搜索区 = 目标窗口客户区（见 lookAll 的说明）
             const lookMs = Date.now() - tLook;
             state.slices++; slices++;
             state.lookMs += lookMs;
@@ -700,6 +759,10 @@ function main(): void {
             + ' 威胁=' + ths.length + ' → ' + act + ' 开火=' + state.shots);
 
         state.steps++;
+        // ⚠ **循环变量要自己走**: 只加 state.steps 的话 `step >= cfg.steps` 永远不成立 ⇒ 脚本永远不
+        //   收工, 只会被外部超时杀掉 —— 容器版一直如此(尺子按预算杀它, 所以没人注意), 原生这边很
+        //   刺眼: 收工行不出现、按住的键也留在了游戏里(脚本被强杀时不走 releaseAll)。
+        step++;
         const used = Date.now() - tStep;
         if (used > cfg.stepMs)
             state.slowSteps++;

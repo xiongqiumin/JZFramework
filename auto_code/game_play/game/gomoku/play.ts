@@ -47,7 +47,7 @@ function log(line: string): void {
 const sleep = (ms: number): void => { if (ms > 0) cu.wait(ms); };
 
 // ---------------------------------------------------------------------------
-// 题目侧的几何与颜色（与本体 binary/code_agent/runtime/gomoku/main.js 一致，见 prompt.md）
+// 题目侧的几何与颜色（与本体 binary/code_agent/runtime/gomoku/src/main.ts 一致，见 prompt.md）
 // ---------------------------------------------------------------------------
 const GRID = 15, CELL = 40, MARGIN = 20;
 const BOARD = MARGIN * 2 + (GRID - 1) * CELL;          // 600

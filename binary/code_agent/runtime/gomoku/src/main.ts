@@ -1,16 +1,23 @@
-// 五子棋 (Gomoku) — 使用 JZJSWidgetModule 注册的 widget 类
+// 五子棋 (Gomoku) —— 用 JZJSWidgetModule 注册的 widget 全局类：
 //   JZWindow / JZWidget(画布) / JZLabel / JZPushButton / JZRect / JZPoint / JZPainter
-// 运行: code_runtime --entry <本目录>/main.js
+//
+// 编译: <tsc> -p tsconfig.json          (tsgo: <bin>/ts_compiler/tsc/tsc.exe)
+// 运行: code_runtime --entry <本目录>/build/main.js
 //
 // 注意: win / canvas / status / restart 必须处于模块顶层作用域 (ESM 模块对象会被引擎保留),
-// 不能被 GC 回收, 否则会销毁底层窗口。
+// 不能被 GC 回收, 否则会销毁底层窗口 (见 js_wrapper/widget/types/index.d.ts 的"生命周期"段)。
 //
-// 2026-09-18 更新: 旧的 `win.createCanvas(w, h)`(JZCanvas) 包装已从引擎移除 ——
+// 2026-09-18: 旧的 `win.createCanvas(w, h)`(JZCanvas) 包装已从引擎移除 ——
 //   画布 = **普通 JZWidget + onPaint + JZPainter**(与 test_jswidget/test_jsshooter 同款)。
 //
-// 2026-10-02 更新: 加入电脑对手(执白), 逻辑移植自 test/agent/five_chess/FiveChess.cpp
+// 2026-10-02: 加入电脑对手(执白), 逻辑移植自 test/agent/five_chess/FiveChess.cpp
 //   的 fiveChessBotMove(能赢就赢/能堵就堵, 只看已有棋子附近 2 格的空位)。
 //   玩家执黑, 总是先走; 玩家落子后电脑立刻回一手。
+//
+// 2026-10-04: 从单文件 main.js 改成 TypeScript 工程(src/main.ts -> build/main.js), 与
+//   runtime 下其它示例(test_jswidget / test_jsshooter / jsapi_example)同一套骨架。
+//   几何/颜色/日志格式**一字未改** —— auto_code/game_play 的 gomoku 玩法(尺子 verify.py +
+//   参考脚本 play.ts)按这些常量与事件行判定, 见 game/gomoku/prompt.md。
 
 const GRID = 15;            // 15x15
 const CELL = 40;            // 格距(逻辑像素)
@@ -25,19 +32,20 @@ const EMPTY = 0, BLACK = 1, WHITE = 2;
 const HUMAN = BLACK;        // 玩家执黑, 总是先走
 const AI = WHITE;           // 电脑执白
 
-const board = [];
-for (let i = 0; i < GRID; i++) board.push(new Array(GRID).fill(EMPTY));
-let turn = HUMAN;           // 玩家先走
-let winner = EMPTY;
+const board: number[][] = [];
+for (let i = 0; i < GRID; i++)
+    board.push(new Array<number>(GRID).fill(EMPTY));
+let turn: number = HUMAN;   // 玩家先走
+let winner: number = EMPTY;
 let over = false;
 let moveNo = 0;             // 已落子手数
 
 // 2026-10-02: 打日志 —— 外面(runs/current 的证据 / 玩法的尺子 verify.py)靠这些行判这局的结果。
 //   标记**一律 ASCII**(容器转发程序 stdout 时中文可能坏码; 判定只认 ASCII)。
-function log(s) { console.log("[gomoku] " + s); }
+function log(s: string): void { console.log("[gomoku] " + s); }
 
 /** 整盘棋的文本快照(日志里看一眼就知道发生了什么) */
-function boardDump()
+function boardDump(): void
 {
     for (let r = 0; r < GRID; r++)
     {
@@ -73,13 +81,13 @@ win.addWidget(restart);
 // 用几何类做命中测试
 const boardRect = new JZRect(MARGIN, MARGIN, (GRID - 1) * CELL, (GRID - 1) * CELL);
 
-function statusText()
+function statusText(): string
 {
     if (over)  return winner === HUMAN ? "你赢了!" : (winner === AI ? "电脑赢了!" : "平局");
     return turn === HUMAN ? "轮到你 (黑棋, 点击落子)" : "电脑思考中...";
 }
 
-function draw(ctx)
+function draw(ctx: JZPainter): void
 {
     // 背景
     ctx.fillRect(0, 0, BOARD, BOARD, "#e3b572");
@@ -94,7 +102,8 @@ function draw(ctx)
     }
 
     // 星位
-    const stars = [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]];
+    const stars: Array<[number, number]> =
+        [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]];
     for (const [sr, sc] of stars)
         ctx.fillEllipse(MARGIN + sc * CELL - 3, MARGIN + sr * CELL - 3, 6, 6, "#3a2a12");
 
@@ -115,9 +124,9 @@ function draw(ctx)
     }
 }
 
-function checkWin(r, c, who)
+function checkWin(r: number, c: number, who: number): boolean
 {
-    const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+    const dirs: Array<[number, number]> = [[1,0],[0,1],[1,1],[1,-1]];
     for (const [dr, dc] of dirs)
     {
         let cnt = 1;
@@ -129,7 +138,7 @@ function checkWin(r, c, who)
 }
 
 // 落子并判定胜负/平局(不负责切换 turn, 由调用方决定)
-function place(r, c, who)
+function place(r: number, c: number, who: number): void
 {
     board[r][c] = who;
     moveNo++;
@@ -155,9 +164,9 @@ function place(r, c, who)
 
 // ==================== 电脑对手(白棋) ====================
 // 某空位落子后四个方向能连成几子(只算过该点的方向), 同 C++ 版 moveScore
-function moveScore(r0, c0, who)
+function moveScore(r0: number, c0: number, who: number): number
 {
-    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    const dirs: Array<[number, number]> = [[1, 0], [0, 1], [1, 1], [1, -1]];
     let best = 0;
     for (const [dr, dc] of dirs)
     {
@@ -187,7 +196,7 @@ function moveScore(r0, c0, who)
 }
 
 // 该空位附近 2 格内是否有棋子(避免全局乱下)
-function nearPiece(r0, c0)
+function nearPiece(r0: number, c0: number): boolean
 {
     for (let dr = -2; dr <= 2; dr++)
         for (let dc = -2; dc <= 2; dc++)
@@ -199,7 +208,7 @@ function nearPiece(r0, c0)
     return false;
 }
 
-function aiMove()
+function aiMove(): void
 {
     let bestR = -1, bestC = -1, bestScore = -1;
     for (let r = 0; r < GRID; r++)
@@ -228,7 +237,7 @@ function aiMove()
     place(bestR, bestC, AI);
 }
 
-function reset()
+function reset(): void
 {
     for (let i = 0; i < GRID; i++)
         for (let j = 0; j < GRID; j++)
@@ -242,15 +251,16 @@ function reset()
     canvas.update();
 }
 
-canvas.onPaint = (e) => {
+canvas.onPaint = (event) => {
     const ctx = new JZPainter(canvas);   // 与 C++ 一样: 在绘制回调里自建画笔(本次绘制内有效)
     draw(ctx);
 };
 
-canvas.onMousePress = (e) => {
-    const x = e.localX();
-    const y = e.localY();
-    const button = e.button();
+// 事件回调是**实例上的属性**(赋值即设, 覆盖旧的见 widgets.d.ts): 这里就是"箭头函数赋值"。
+canvas.onMousePress = (event) => {
+    const x = event.localX();
+    const y = event.localY();
+    const button = event.button();
     if (over || button !== 1) return;            // 仅左键(JZMouseEvent: 1=Left 2=Right 3=Middle)
     if (turn !== HUMAN) return;                  // 只有轮到玩家时才响应点击
     if (!boardRect.contains(x, y)) return;       // 用 JZRect 做边界判定
@@ -275,9 +285,9 @@ canvas.onMousePress = (e) => {
 
     status.setText(statusText());
     canvas.update();
-};   // <- 这里是"箭头函数赋值"的收尾(原文件写成 `});`, 多一个右括号 = 语法错, 这才是它起不来的直接原因)
+};
 
-restart.onClicked = () => reset();   // 信号是属性
+restart.onClicked = () => reset();   // 信号也是属性(赋函数即设)
 
 win.show();
 log("start grid=" + GRID + " cell=" + CELL + " margin=" + MARGIN + " statusH=" + STATUS_H

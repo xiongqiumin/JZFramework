@@ -6,7 +6,8 @@ game/gomoku/verify.py —— **gomoku 玩法自己的尺子**（每个玩法一�
 它自己就能跑完一局并判定，不依赖顶层驱动：
 
   ① 清空容器里**所有**程序（GET /api/programs → 逐个 DELETE）—— 保证这一局是干净的；
-  ② 装 game（本体 = binary/code_agent/runtime/gomoku/main.js，jsRoot=repo）→ 等它的窗口；
+  ② 装 game（本体 = binary/code_agent/runtime/gomoku 的 TS 工程产物 build/main.js，jsRoot=repo
+     并在配置的 prebuild 里编译）→ 等它的窗口；
   ③ 装 play（play.js）→ 让它自己下；
   ④ 一边跑一边**从外面抓帧**（客观旁证：external/ + metrics.jsonl），并读**容器日志里本体
      自己打印的事件行**（容器把程序 stdout 带 [vproc: "gomoku"] 前缀转发出来）：

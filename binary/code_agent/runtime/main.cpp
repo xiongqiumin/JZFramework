@@ -3,6 +3,9 @@
 // 用法:
 //   code_runtime --entry <file.js>   入口 = 那一份 JS；以它**所在的目录**为运行根
 //                                    （同时切成进程工作目录，脚本里的相对路径都以它为基准）
+//   code_runtime --entry <file.js> -- <arg>...
+//                                    `--` 之后的一切原样交给**脚本**：脚本里 process.argv =
+//                                    [本 exe, 入口模块, ...这些]（同 `node app.js a b` 的约定）
 //   code_runtime                      （不带参数，旧用法）
 //     运行根 = 当前工作目录（jzApp->workingDirPath()，等价 Qt 的 QDir::currentPath()），
 //     即 main.js 所在的产物目录（如 <工程根>/build）。双击 exe / run.bat 时 cwd 就是
@@ -74,6 +77,7 @@ int main(int argc, char *argv[])
         "code_runtime - 运行一份 JS（隔离进程）\n"
         "--entry <file.js> 指定入口，以该文件所在目录为运行根；\n"
         "不给 --entry 时按老规矩：以当前工作目录为运行根，跑下面的 main.js；\n"
+        "`--` 之后的一切原样交给脚本（脚本里读 process.argv，见下）；\n"
         "入口缺失时报错退出；存在可见顶层窗口时不自动退出");
 
     JZCommandLineArgument arg;
@@ -100,7 +104,25 @@ int main(int argc, char *argv[])
     string cmdEntry;
     parser.addOption("--entry", &cmdEntry);
 
-    if (!parser.parse(argc, argv))
+    // ---- 脚本自己的参数：`--` 之后的一切 ----
+    // 约定同 `node app.js a b` / `cargo run -- a b`: 分隔符之后是**被跑的东西**的参数, 不是宿主的。
+    // 好处: 脚本要什么形状的参数由脚本定(可能带 -x 这种), 宿主不必替它声明一堆 --xxx。
+    // ⚠ JZCommandLineParser 不认 "--"(会被当成未识别选项直接报错) ⇒ 先找到分隔符, 只用它**前面**
+    //   那一段去 parse(parse 就是按 argc 从 argv[1] 起扫, 少传一截即等于"看不见后面")。
+    // ⚠ 脚本侧拿到的是 [本 exe, 入口模块, ...这里收的] (见 JZJSEngine::setArgs / 全局 process.argv)。
+    std::vector<std::string> scriptArgs;
+    int hostArgc = argc;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--")
+            continue;
+        hostArgc = i;                       // "--" 自己不参与 host 参数解析
+        for (int j = i + 1; j < argc; ++j)
+            scriptArgs.push_back(argv[j]);
+        break;
+    }
+
+    if (!parser.parse(hostArgc, argv))
         return 1;   // 防御：真走到这里说明用法不合法
 
     // 运行根 + 入口：
@@ -313,6 +335,10 @@ int main(int argc, char *argv[])
         }
     };
     rt.setUnhandledExceptionHandler(onUnhandledException);
+
+    // 脚本自己的参数(`--` 之后收的那些): 交给引擎 ⇒ 脚本里 process.argv = [本 exe, 入口, ...这些]。
+    // ⚠ 必须在 init 之前: 引擎是建会话时把它交给 JS 的(oninit 之后也能"就地补齐", 但那是补丁路径)。
+    rt.setArgs(scriptArgs);
 
     bool ok = absEntry.empty() ? rt.init(absRoot) : rt.init(absRoot, absEntry);
     if (!ok)

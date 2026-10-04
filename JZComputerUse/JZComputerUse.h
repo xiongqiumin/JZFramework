@@ -235,8 +235,11 @@ public:
     struct VirtualProgramHost
     {
         // 起一个程序: moduleRel 非空 = 以 ESM 模块加载(相对 workDir); script 非空 = 一段代码
+        //   args = 程序自己的启动参数(argv): 程序里读 process.argv(见 JZJSEngine::setArgs)。
+        //          来源是 startProcess/launch 的 args 字符串按空白切开(见 .cpp 里的说明)。
         std::function<bool(const std::string& name, const std::string& script,
                            const std::string& workDir, const std::string& moduleRel,
+                           const std::vector<std::string>& args,
                            std::string& error)> launch;
         std::function<std::vector<std::string>()> list;    // 桌面上的程序名
         std::function<bool(const std::string& name)> stop; // 停掉它(连带收窗口)

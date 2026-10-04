@@ -128,6 +128,7 @@ export interface SyncOptions { settle?: number; timeoutMs?: number; }
 /** `launch()` 参数。 */
 export interface LaunchOptions {
   exe?: string;
+  /** 传给被启动程序的启动参数(程序里读 process.argv)。虚拟桌面下按空白切, 参数里不能带空格。 */
   args?: string[];
   cwd?: string;
   title?: string | RegExp;

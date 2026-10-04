@@ -70,7 +70,8 @@ declare const __jz: {
          * **启动一个程序**。真桌面 = 起一个外部进程（path 是 exe）；虚拟桌面（容器）里 =
          * 在桌面上**加载一个 JS 程序**（path = JS 文件路径，程序名 = 文件名去扩展名）。
          * 返回"起来了没有"（⚠ 虚拟桌面下没有系统 pid，所以只回 true/false，别当 pid 用）。
-         * 想"起来 + 等它的窗口出现并置前"就直接用 `launch({file, title})`。
+         * 想"起来 + 等它的窗口出现并置前"就直接用 `launch({file, title})`；
+         * 想给它**传启动参数**也用 `launch({file, args})`（本接口是固定 1 参的，不收 args）。
          */
         startProcess(path: string): boolean;
         /** 按**进程名**把它的窗口带到前台（容器里就是那个程序的名字，如 "shooter"） */
@@ -102,6 +103,10 @@ declare const __jz: {
          * opts: `{file?|exe?, args?, title?, timeoutMs?}`
          *   · 真桌面：`exe` = 外部程序路径；
          *   · 虚拟桌面（容器）：`file` = 桌面上要**加载的 JS 文件**（程序名 = 文件名去扩展名）；
+         *   · `args` = **给被启动程序自己的启动参数**（程序里读 `process.argv`），例如
+         *     `launch({file:'.../bot.js', args:['--fast','8']})` → 程序里
+         *     `process.argv = [宿主 exe, bot.js, '--fast', '8']`；
+         *     ⚠ 容器下按**空白**切开（不做引号转义）⇒ 参数里别带空格；
          *   · `title` 空 = 只启动、不等窗口。
          */
         launch(optsJson: string): boolean;

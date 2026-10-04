@@ -61,9 +61,13 @@ public:
     //              `import` 能用, 而且入口模块会被登记成 appFile ⇒ `jzApp.applicationDirPath()`
     //              就是**程序所在目录** (脚本按入口目录找随它走的资源, 这条约定才成立)。
     //   script   : 非空 = 当一段 JS 跑 (全局空间执行, 适合片段/脚本体; 没有模块语义、也没有入口目录)
+    //   args     : 传给**程序自己**的启动参数(argv), 程序里读 process.argv —— 形状与 Node 同形:
+    //              [宿主 exe, 入口模块, ...这里给的]; 与 `code_runtime --entry x.js -- a b` 同一套
+    //              (见 JZJSEngine::setArgs)。空 = 没有参数。
     // 两个都为空 = 只建会话不跑。返回 false = 线程没起来; 程序本身的错误见 lastError()。
     bool start(const std::string& workDir, const std::string& script,
-               const std::string& moduleRel = std::string());
+               const std::string& moduleRel = std::string(),
+               const std::vector<std::string>& args = std::vector<std::string>());
     // 在本进程线程上执行一段 JS (同步等它跑完); 失败见 lastError()
     bool runScript(const std::string& script);
 
@@ -117,6 +121,7 @@ private:
     std::string m_workDir;
     std::string m_script;                    // 当脚本文本跑 (见 start)
     std::string m_module;                    // 以模块加载 (见 start); 非空则优先
+    std::vector<std::string> m_args;         // 传给程序的启动参数(见 start; 交给引擎做 process.argv)
     int m_pid = 0;
     WindowHost m_host{this};                 // 只在本线程里被用 (见 initRuntime)
 

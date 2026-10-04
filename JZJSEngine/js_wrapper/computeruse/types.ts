@@ -185,6 +185,11 @@ export interface SyncOptions {
 export interface LaunchOptions {
   /** 可执行文件路径（不给则只做"激活已存在的窗口"）。 */
   exe?: string;
+  /**
+   * 传给被启动程序的启动参数(程序里读 `process.argv`)。
+   * ⚠ 虚拟桌面(容器)下按**空白**切开交给 JS 程序 —— 参数里不能带空格/不做引号转义,
+   *   要带空格的参数请让程序自己从文件或环境读。
+   */
   args?: string[];
   cwd?: string;
   /** 目标窗口标题（字符串=包含匹配；正则=test）。 */

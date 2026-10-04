@@ -63,13 +63,14 @@ void JZVirtualProcess::setError(const std::string& text)
 // ⚠ 停/等/查都在 JZThread 上 (quit = 请求退出, wait = join, isRunning) —— 桌面那边也只用
 //   这几个, 所以进程不需要任何基类。
 bool JZVirtualProcess::start(const std::string& workDir, const std::string& script,
-                             const std::string& moduleRel)
+                             const std::string& moduleRel, const std::vector<std::string>& args)
 {
     if (JZThread::isRunning())
         return false;
     m_workDir = workDir;
     m_script = script;
     m_module = moduleRel;
+    m_args = args;
     if (m_device)
         m_device->addProcess(this);      // 桌面登记 (进程管理)
     JZThread::start();                   // 线程体 = run()
@@ -163,6 +164,10 @@ bool JZVirtualProcess::initRuntime()
         //   再由 finishProcess() 通知桌面摘表 + 收窗口。这里**不**直接碰别的线程。
         JZThread::quit();
     });
+    // 程序自己的启动参数(argv): 交给运行时 ⇒ 程序里 process.argv = [宿主 exe, 入口模块, ...这些]。
+    // 两条路(模块 / 脚本文本)都从这里过, 所以放在建会话**之前**一次就够。
+    m_runtime.setArgs(m_args);
+
     // ⚠ 走模块那条路 (真程序) 时**不在这里建会话**: 交给一站式 init(运行根, 入口) ——
     //   它会把运行根/入口登记对, 而"程序按入口目录找随它走的资源"这条约定就落在那上面
     //   (见 run())。这里只负责把脚本文本那条路的会话建好。
@@ -289,10 +294,11 @@ bool JZVirtualProcess::runScript(const std::string& script)
 JZVirtualProcess* JZVirtualDevice::createProcess(const std::string& name,
                                                  const std::string& script,
                                                  const std::string& workDir,
-                                                 const std::string& moduleRel)
+                                                 const std::string& moduleRel,
+                                                 const std::vector<std::string>& args)
 {
     JZVirtualProcess* p = new JZVirtualProcess(this, name);
-    if (!p->start(workDir, script, moduleRel)) {
+    if (!p->start(workDir, script, moduleRel, args)) {
         delete p;
         return nullptr;
     }
@@ -338,6 +344,7 @@ void jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk)
     // (否则调用方拿到"成功 + 空窗口", 而进程其实已经退出)。
     host.launch = [desk](const std::string& name, const std::string& script,
                          const std::string& workDir, const std::string& moduleRel,
+                         const std::vector<std::string>& args,
                          std::string& error) -> bool {
         if (name.empty()) {
             error = "程序名不能为空";
@@ -347,7 +354,7 @@ void jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk)
             error = "同名程序已在跑: " + name;
             return false;
         }
-        JZVirtualProcess* p = desk->createProcess(name, script, workDir, moduleRel);
+        JZVirtualProcess* p = desk->createProcess(name, script, workDir, moduleRel, args);
         if (!p) {
             error = "起进程失败 (线程没起来): " + name;
             return false;
@@ -393,6 +400,7 @@ void jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api)
     // ⚠ 不建窗口的程序是合法的 (纯脚本) ⇒ 等不到窗口不算失败, 由调用方看 windows 列表。
     host.launch = [desk](const std::string& name, const std::string& script,
                          const std::string& workDir, const std::string& moduleRel,
+                         const std::vector<std::string>& args,
                          std::string& error) -> bool {
         if (name.empty()) {
             error = "程序名不能为空";
@@ -402,7 +410,7 @@ void jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api)
             error = "同名程序已在跑: " + name;
             return false;
         }
-        JZVirtualProcess* p = desk->createProcess(name, script, workDir, moduleRel);
+        JZVirtualProcess* p = desk->createProcess(name, script, workDir, moduleRel, args);
         if (!p) {
             error = "起进程失败 (线程没起来): " + name;
             return false;

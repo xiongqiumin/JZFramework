@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "JZSourceMap.h"
 
@@ -102,6 +103,13 @@ public:
     // 找不到入口文件同样报错返回 false，不回退默认入口。
     bool init(const std::string &work_dir, const std::string &entry);
 
+    // 传给**脚本**的启动参数(argv; 见 JZJSEngine::setArgs)。脚本侧从全局 `process.argv` 或
+    // `import process from 'process'` 读, 形状 = [本 exe, 入口模块, ...这里给的这些]。
+    // ⚠ 要在 init()/initEngine() **之前**设(它只在建会话时交给引擎; 之后设也能生效, 但那是
+    //   引擎侧的"就地更新"路径, 别依赖)。
+    void setArgs(const std::vector<std::string> &args);
+    const std::vector<std::string> &args() const { return m_args; }
+
     // 运行根（上次 init() 设置的目录，即 main.js 所在目录）。栈里的相对模块名按它解析。
     const std::string &root() const;
 
@@ -193,6 +201,7 @@ private:
     UnhandledHandler m_unhandledHandler;       // 未处理 JS 异常回调（默认空）
 
     std::string m_root;
+    std::vector<std::string> m_args;   // 传给脚本的启动参数(见 setArgs); 每次 initEngine 交给引擎
     ProjectInfo m_projectInfo;     // 运行根下 project.json 的补充信息（可缺省）
     // 位置翻译器（JS 产物位置 -> TS 源码位置）：只在出错时把原始栈翻成人能看的
     // 位置，解析 / 反查的实现全在 JZSourceMap 里，不在本类。

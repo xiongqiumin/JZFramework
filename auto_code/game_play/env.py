@@ -416,10 +416,12 @@ class Container:
         return {"press": a, "release": b}
 
     # ---- 程序 ----
-    def load_program(self, name, path, work_dir=None):
+    def load_program(self, name, path, work_dir=None, args=None):
         body = {"name": name, "file": path}
         if work_dir:
             body["workDir"] = work_dir
+        if args:
+            body["args"] = list(args)      # 程序自己的启动参数(字符串数组) -> 程序里 process.argv[2..]
         return self._json("POST", "/api/programs", body)
 
     def load_script(self, name, script):
@@ -704,8 +706,8 @@ class HeadlessContainer:
         for raw in self.proc.stdout:
             self._on_log(raw.decode("utf-8", "replace").rstrip())
 
-    def load(self, name, js, work_dir=None):
-        r = self.c.load_program(name, js, work_dir or os.path.dirname(js))
+    def load(self, name, js, work_dir=None, args=None):
+        r = self.c.load_program(name, js, work_dir or os.path.dirname(js), args)
         if name not in self.programs:
             self.programs.append(name)
         return r

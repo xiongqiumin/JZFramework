@@ -185,6 +185,17 @@ public:
     void setWorkDir(const std::string& dir);
     void setLibraryDir(const std::vector<std::string>& dirs);  // 模块加载额外查找目录(优先级低于 workDir)
 
+    // ---- 启动参数(argv) ----
+    // 宿主传给**被跑的脚本**的那一段参数: code_runtime 命令行 `--` 之后的一切、容器
+    // POST /api/programs 的 args(见各自的入口)。脚本侧两处都能读, 是同一份数据:
+    //   · 全局 `process.argv`(不 import 也能用)
+    //   · `import process from 'process'` 的 argv(js_wrapper/process)
+    // 形状与 Node 一致: [宿主可执行文件, 入口模块绝对路径, ...宿主给的参数]。
+    // ⚠ 入口路径要到"加载入口模块"那一刻才确定(宿主也可 setAppFile 显式指定), 所以是每次加载
+    //   入口时按当时的值重算(见 syncProcessArgv) —— 在脚本顶层读 argv 也是对的。
+    void setArgs(const std::vector<std::string>& args) { m_args = args; syncProcessArgv(); }
+    const std::vector<std::string>& args() const { return m_args; }
+
     // ---- worker 支持 ----
     // 运行根 / 模块查找目录(只读)。worker 引擎继承同一套"运行环境",
     // 但**不继承任何 JS 状态**(全局变量/模块缓存各自一份)。
@@ -619,6 +630,9 @@ protected:
 
     void registInternal();
     void registConsole();
+    // 按 [execPath, 入口模块, ...m_args] 重算全局 process.argv —— **就地**改那个数组(不换对象),
+    // 所以脚本/wrapper 早先取到的引用照样有效(见 registConsole 里建它的地方)。
+    void syncProcessArgv();
 
     std::string getPropertyStr(JSValue var, std::string prop);
     // JS 值 -> 可读文本; 转不了(symbol 等)时吞掉残留异常并返回空串
@@ -661,6 +675,8 @@ protected:
     std::string m_workDir;
     std::string m_appFile;    // 入口脚本绝对路径(见 appFilePath); 空 = 没加载过脚本
     std::vector<std::string> m_libraryDirs;   // 模块加载时额外查找的根目录列表
+    std::vector<std::string> m_args;          // 宿主给的启动参数 = argv[2..](见 setArgs)
+    JSValue m_processArgv;                    // 全局 process.argv 那个数组(就地改, 保 identity)
 
     // ---- 事件驱动调度 ----
     // 引擎不再常驻 10ms 周期定时器, 而是:

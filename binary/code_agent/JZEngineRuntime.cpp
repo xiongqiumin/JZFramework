@@ -144,6 +144,11 @@ JZEngineRuntime::~JZEngineRuntime()
 
 // ---- 内嵌 JZJSEngine 会话 ----
 
+void JZEngineRuntime::setArgs(const std::vector<std::string> &args)
+{
+    m_args = args;
+}
+
 bool JZEngineRuntime::initEngine(const string &workDir)
 {
     shutdownEngine();   // 每次 initEngine 都是全新的干净会话
@@ -153,6 +158,9 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     JZJSEngine *engine = new JZJSEngine();
     engine->init();
     engine->setWorkDir(wd);
+    // 宿主给的启动参数: 交给引擎 ⇒ 全局 process.argv(及 '@jz/process' 的 argv)。
+    // 在 start()/runModule() 之前设, 脚本在模块顶层读到的就是最后的值。
+    engine->setArgs(m_args);
     engine->start();
 
     // 供 core 等包以裸模块名(如 'net/dist/index.js')被动 import 兄弟包时, 按运行根与 exe 部署

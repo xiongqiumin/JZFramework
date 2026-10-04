@@ -543,6 +543,7 @@ JZJSEngine::JZJSEngine(JZObject* parent)
     m_ctx = nullptr;
     m_rt = nullptr;
     m_global = JS_UNDEFINED;
+    m_processArgv = JS_UNDEFINED;
 
     m_timeTaskId = 0;
     m_promiseTaskId = 0;
@@ -708,10 +709,12 @@ void JZJSEngine::deinitJSEnv()
         m_promiseTask.clear();
 
         JS_FreeValue(m_ctx, m_global);
+        JS_FreeValue(m_ctx, m_processArgv);      // 全局 process.argv 那个数组(属性里那份自己释放)
         JS_FreeContext(m_ctx);
         JS_FreeRuntime(m_rt);
         setStatus(Engine_none);
     }
+    m_processArgv = JS_UNDEFINED;
     m_cbRoot = JS_UNDEFINED;
     m_cbId = 0;
 
@@ -1127,6 +1130,26 @@ function __consoleAssert__(value, ...args) {
 
 }
 
+// 全局 process.argv = [宿主可执行文件, 入口模块(绝对路径; 还没加载 = 空串), ...宿主给的启动参数]。
+// 与 Node 同形(Node 是 [node 路径, 脚本路径, ...]); argv[0] 与 __jz.core.execPath() 同一份来源。
+// ⚠ **就地**改那个数组(见下面 registConsole 里建它的说明): 不换对象, 早先取到的引用照样看到新值。
+void JZJSEngine::syncProcessArgv()
+{
+    if (!m_ctx || JS_IsUndefined(m_processArgv))
+        return;
+
+    std::vector<std::string> full;
+    full.reserve(2 + m_args.size());
+    full.push_back(JZPlatform::applicationFilePath());   // argv[0]: 跑我的宿主(exe), 与 execPath 一致
+    full.push_back(m_appFile);                           // argv[1]: 入口模块(宿主 setAppFile 也可指定)
+    for (size_t i = 0; i < m_args.size(); ++i)
+        full.push_back(m_args[i]);
+
+    JS_SetPropertyStr(m_ctx, m_processArgv, "length", JS_NewInt32(m_ctx, (int)full.size()));
+    for (size_t i = 0; i < full.size(); ++i)
+        JS_SetPropertyUint32(m_ctx, m_processArgv, (uint32_t)i, JS_NewString(m_ctx, full[i].c_str()));
+}
+
 void JZJSEngine::registConsole()
 {
     JSValue console = JS_NewObject(m_ctx);
@@ -1152,6 +1175,12 @@ void JZJSEngine::registConsole()
     // process
     JSValue process = JS_NewObject(m_ctx);
     registFunction(process, "cwd", jsbind::createFunction([this]() -> string { return m_workDir; }));
+    // process.argv: [宿主 exe, 入口模块, ...宿主给的参数] —— 与 Node 同形(见 syncProcessArgv)。
+    // ⚠ 这里就把它建出来、之后**只原地改内容**: 入口模块是在 init 之后才加载的, 而脚本常在模块顶层
+    //   就读 argv; 换对象的话, 那之前取到引用的脚本(wrapper 里的 argv 就是取一次)会永远看到旧值。
+    m_processArgv = JS_NewArray(m_ctx);          // 本引擎自己持一份引用(deinit 里释放)
+    syncProcessArgv();                           // 此刻 m_appFile 可能还空着, 加载入口时再补(见 runModuleFileImpl)
+    JS_SetPropertyStr(m_ctx, process, "argv", JS_DupValue(m_ctx, m_processArgv));   // 属性自己持一份
     JS_SetPropertyStr(m_ctx, m_global, "process", process);
 
     // ---- process.exit / process.exitCode(对齐 Node) ----
@@ -1211,6 +1240,9 @@ void JZJSEngine::registConsole()
     }
 
     const api = {
+        // argv: 与 Node 同形([宿主 exe, 入口模块, ...宿主给的参数]); 数组本体由 C++ 侧建/维护,
+        // 这里只是转发(见 js_wrapper/process 的 argv —— 两个入口拿到的是**同一个数组对象**)。
+        argv: function () { return globalThis.process.argv; },
         // exit(): 省略/null 时用 exitCode(设过)否则 0 —— 与 Node 一致
         exit: function (code) {
             let n;
@@ -3383,6 +3415,11 @@ bool JZJSEngine::runModuleFileImpl(const std::string& filepath, std::string* err
     // 所以宿主应用 setAppFile 显式指定真正的用户入口(见 JZEngineRuntime::runModule)。
     if (m_appFile.empty() && !resolved.empty())
         m_appFile = resolved;
+
+    // 入口路径此刻(终于)确定了 ⇒ 把全局 process.argv 补齐(见 syncProcessArgv / registConsole)。
+    // 放在**求值之前**: 脚本常常在模块顶层就读 argv, 而且它 import 的包(如 process 包)也会在那时
+    // 取一次 argv, 所以必须赶在 JS_EvalFunction 之前。
+    syncProcessArgv();
 
     // COMPILE_ONLY: 只编译, 拿到模块定义(JS_TAG_MODULE -> JSModuleDef*)
     JSValue module_val = JS_Eval(m_ctx, code.data(), code.size(), module_name.c_str(),

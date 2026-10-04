@@ -23,8 +23,13 @@ export function cwd(): string { return __jz.core.cwd(); }
 export const execPath: string = __jz.core.execPath();
 /** "windows" -> "win32"(与 Node 同形); 是**属性**不是函数 */
 export const platform: string = __jz.core.platform();
-/** 本框架不解析命令行参数, 恒为空数组(宿主可自行填充) */
-export const argv: string[] = [];
+/**
+ * 启动参数, 与 Node 同形: `[宿主可执行文件, 入口模块绝对路径, ...宿主给的参数]`。
+ * 宿主给参数的两条路: `code_runtime --entry x.js -- a b`(`--` 之后的一切) 与容器
+ * `POST /api/programs {file, args:['a','b']}`(见 JZJSEngine::setArgs)。
+ * ⚠ 与全局 `process.argv` 是**同一个数组对象**(引擎侧就地更新), 两处读到的永远一致。
+ */
+export const argv: string[] = __jz.process.argv();
 
 /** 见文件头: 参数与退出码规则对齐 Node(校验在引擎侧同一份实现里) */
 export function exit(code?: number | string | null): void { __jz.process.exit(code); }

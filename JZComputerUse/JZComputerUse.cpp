@@ -236,6 +236,23 @@ JZImage currentFrame() {
         return (k == std::string::npos) ? p : p.substr(k + 1);
     }
 
+    // startProcess/launch 的 args(一条命令行样的字符串) -> argv 数组: **按空白切**, 空段丢掉。
+    // ⚠ 不认引号/转义 —— 现状就是这么用的(与真桌面那条路的 `cmd += " " + args` 同口径: 一个字符串);
+    //   参数里真要带空格, 请让程序自己从文件/环境读, 别塞进命令行(免得两边规则不一致)。
+    void cuSplitArgs(const std::string& args, std::vector<std::string>& out) {
+        out.clear();
+        std::string cur;
+        for (char c : args) {
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            } else {
+                cur.push_back(c);
+            }
+        }
+        if (!cur.empty())
+            out.push_back(cur);
+    }
+
     bool cuOnDesktopThread(const std::function<void()>& fn, int timeoutMs = 8000) {
         JZObject* desk = JZComputerUse::virtualDesktop();
         if (!desk)
@@ -1603,7 +1620,8 @@ bool JZComputerUse::launch(const std::string& exe, const std::string& args,
 DWORD JZComputerUse::startProcess(const std::string& path, const std::string& args) {
     // 虚拟桌面: "起程序" = 在桌面上**加载一个 JS 程序**（能力由宿主注入, 见 setVirtualProgramHost）。
     //   · path 当 **JS 文件路径**: 目录 = 运行根, 文件名(去扩展名) = 程序名;
-    //   · args 虚拟侧没有对应(JS 程序不吃命令行参数) ⇒ 忽略;
+    //   · args 当**程序自己的启动参数**(argv): 按空白切成数组, 程序里读 process.argv
+    //     (形状同 Node: [宿主 exe, 入口模块, ...这些]); 见 cuSplitArgs 的说明;
     //   · 返回值**只表示"起来了"**(虚拟进程没有系统 pid, 别当 pid 用)。
     //   没注入 / 起不来 ⇒ 返回 0, 绝不假装成功。
     if (s_virtualDesk) {
@@ -1613,12 +1631,14 @@ DWORD JZComputerUse::startProcess(const std::string& path, const std::string& ar
         const std::string base = cuBaseNameOfPath(path);         // moduleRel 要**带扩展名**的文件名
         if (name.empty() || base.empty())
             return 0;
+        std::vector<std::string> argv;
+        cuSplitArgs(args, argv);
         auto ok = std::make_shared<bool>(false);
         auto err = std::make_shared<std::string>();
         const std::string dir = cuDirOfPath(path);
         // ⚠ host.launch 内部会等它第一个窗口(最多 5 秒) ⇒ 这里给足时间, 别把正常启动当超时
-        cuOnDesktopThread([name, base, dir, ok, err]() {
-            *ok = g_virtualProgramHost.launch(name, std::string(), dir, base, *err);
+        cuOnDesktopThread([name, base, dir, argv, ok, err]() {
+            *ok = g_virtualProgramHost.launch(name, std::string(), dir, base, argv, *err);
         }, 20000);
         if (!*ok) {
             jzWarning() << "[cu.program] 起程序失败: " << path

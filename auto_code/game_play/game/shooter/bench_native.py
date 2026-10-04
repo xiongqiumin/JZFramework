@@ -5,13 +5,13 @@
 与容器那条路（verify.py = 尺子；build/live_shooter/bench_play.py = 多局基准）的对应关系：
   · 容器版 = 虚拟桌面 + JS 版游戏(容器里的程序) + 尺子读游戏 stdout；
   · 本脚本 = **原生桌面**(computeruse 的默认后端) + C++ 版 `test_shooter.exe` + **没有尺子** ——
-    两个进程就是全部：一个应用、一个 `code_runtime --entry play_vision.js`。
+    两个进程就是全部：一个应用、一个 `code_runtime --entry play.js`。
     分数从**游戏自己**打的 `[shooter] score=..` / `CLEAR` / `GAME OVER` 行里读（那是给尺子的通道；
     脚本按红线不许读它，它只看画面）。C++ 版与 TS 版的行格式是同一套（见 game_widget.cpp 的 reportState）。
 
 ⚠ 这不是"考试"：它是**真机复验**那件事的脚手架 —— computeruse 的设计承诺是"虚拟桌面里跑通的脚本
   能在真机上复验"（见 JZComputerUse.h 的类注释），这个脚本就是执行那句承诺、并给出可比数字的地方。
-  ⚠ 真桌面与虚拟桌面有**硬差别**，脚本侧必须自己适配（这一轮实测踩到的三处已写进 play_vision.ts）：
+  ⚠ 真桌面与虚拟桌面有**硬差别**，脚本侧必须自己适配（这一轮实测踩到的三处已写进 play.ts）：
     ① 别处也有同色像素（任务栏/IDE）⇒ 搜索区必须收进目标窗口客户区；
     ② 目标在别的进程、没有可访问布局 ⇒ "窗口在不在"要查窗口表, 不能只问 layoutTree；
     ③ 窗口不一定在屏幕中间 ⇒ 激活要点它客户区中心, 不能点屏幕正中心。
@@ -45,7 +45,7 @@ OUT_ROOT = os.path.join(ROOT, 'build', 'live_shooter', 'bench_native')
 DEFAULT_APP = os.path.join(ROOT, 'build', 'test', 'widget', 'shooter', 'Release', 'test_shooter.exe')
 DEFAULT_RUNTIME = os.path.join(ROOT, 'build', 'binary', 'code_agent', 'bin', 'Release', 'code_runtime.exe')
 DEFAULT_PLAY_JS = os.path.join(ROOT, 'build', 'auto_code', 'game_play', 'shooter',
-                               'build', 'verify', 'play', 'play_vision.js')
+                               'build', 'verify', 'play', 'play.js')
 APP_NAME = 'test_shooter.exe'
 
 # 窗口标题与玩法配置(config.json)一致 —— C++ 样例的标题就是这个。
@@ -146,7 +146,7 @@ def main():
     ap.add_argument('n', nargs='?', type=int, default=1, help='跑多少局')
     ap.add_argument('--app', default=DEFAULT_APP, help='C++ 版应用(默认 Release test_shooter.exe)')
     ap.add_argument('--runtime', default=DEFAULT_RUNTIME, help='code_runtime(默认 Release)')
-    ap.add_argument('--play-js', default=DEFAULT_PLAY_JS, help='脚本产物(默认复验区的 play_vision.js)')
+    ap.add_argument('--play-js', default=DEFAULT_PLAY_JS, help='脚本产物(默认复验区的 play.js)')
     ap.add_argument('--steps', type=int, default=120, help='脚本跑多少拍(与玩法配置一致)')
     ap.add_argument('--step-ms', type=int, default=400, help='每拍多少毫秒')
     ap.add_argument('--warmup', type=float, default=2.5, help='起应用后先等多久(秒)')

@@ -39,33 +39,67 @@ JZSize JZSpinBox::minimumSizeHint() const
 void JZSpinBox::setRange(int min, int max)
 {
     m_min = min; m_max = max;
-    setValue(m_value);
+    setValueInternal(m_value);   // 新范围可能夹住当前值
 }
 
-void JZSpinBox::setMinimum(int min) { setRange(min, m_max); }
-int  JZSpinBox::minimum() const { return m_min; }
-void JZSpinBox::setMaximum(int max) { setRange(m_min, max); }
-int  JZSpinBox::maximum() const { return m_max; }
+void JZSpinBox::setMinimum(int min) { setRange(min, (int)m_max); }
+int  JZSpinBox::minimum() const { return (int)m_min; }
+void JZSpinBox::setMaximum(int max) { setRange((int)m_min, max); }
+int  JZSpinBox::maximum() const { return (int)m_max; }
 
 void JZSpinBox::setStep(int step) { m_step = std::max(1, step); }
-int  JZSpinBox::step() const { return m_step; }
+int  JZSpinBox::step() const { return (int)m_step; }
 
-void JZSpinBox::setValue(int v)
-{
-    int nv = std::max(m_min, std::min(v, m_max));
-    if (nv == m_value) return;
-    m_value = nv;
-    sigValueChanged.emit(m_value);
-    update();
-}
+void JZSpinBox::setValue(int v) { setValueInternal(v); }
 
-int JZSpinBox::value() const { return m_value; }
+int JZSpinBox::value() const { return (int)m_value; }
 
 void JZSpinBox::setSuffix(const std::string& s) { m_suffix = s; update(); }
 std::string JZSpinBox::suffix() const { return m_suffix; }
 
+void JZSpinBox::setSpecialValueText(const std::string& s) { m_special = s; update(); }
+std::string JZSpinBox::specialValueText() const { return m_special; }
+
 void JZSpinBox::setReadOnly(bool ro) { m_readOnly = ro; update(); }
 bool JZSpinBox::isReadOnly() const { return m_readOnly; }
+
+// ==================== 交给派生类覆盖的钩子 ====================
+std::string JZSpinBox::valueText() const
+{
+    // Qt 语义: 值 == 最小值 且设了 specialValueText 时, 显示那段文本(不含后缀)
+    if (!m_special.empty() && m_value == m_min)
+        return m_special;
+    return std::to_string((int)m_value) + m_suffix;
+}
+
+bool JZSpinBox::parseEditText(const std::string& buf, double& out) const
+{
+    try {
+        out = (double)std::stoi(buf);
+        return true;
+    } catch (...) {
+        return false;   // 解析失败: 调用方丢弃缓冲, 回退到当前值
+    }
+}
+
+bool JZSpinBox::isEditableChar(char c) const
+{
+    return std::isdigit((unsigned char)c) != 0;
+}
+
+void JZSpinBox::emitValueChanged()
+{
+    sigValueChanged.emit((int)m_value);
+}
+
+void JZSpinBox::setValueInternal(double v)
+{
+    const double nv = std::max(m_min, std::min(v, m_max));
+    if (nv == m_value) return;
+    m_value = nv;
+    emitValueChanged();
+    update();
+}
 
 // ==================== 编辑缓冲 ====================
 void JZSpinBox::commitEdit()
@@ -73,12 +107,10 @@ void JZSpinBox::commitEdit()
     if (!m_editing) return;
     m_editing = false;
     if (!m_editBuffer.empty()) {
-        try {
-            int v = std::stoi(m_editBuffer);
-            setValue(v);
-        } catch (...) {
-            // 解析失败: 丢弃缓冲, 回退到当前值
-        }
+        double v = 0;
+        if (parseEditText(m_editBuffer, v))
+            setValueInternal(v);
+        // 解析失败: 丢弃缓冲, 回退到当前值
     }
     m_editBuffer.clear();
     update();
@@ -105,10 +137,10 @@ void JZSpinBox::paintEvent(JZPainterEvent*)
                    focused ? 2 : 1));
     p.drawRoundRect(0, 0, w, h, 3);
 
-    // 文本 (编辑时显示缓冲; 否则显示 值+后缀), 右对齐在编辑区
+    // 文本 (编辑时显示缓冲; 否则显示值文本), 右对齐在编辑区
     JZFont font(14);
     p.setFont(font);
-    std::string txt = m_editing ? m_editBuffer : (std::to_string(m_value) + m_suffix);
+    std::string txt = m_editing ? m_editBuffer : valueText();
     int tw = JZFontMetrics::textWidth(txt, font);
     int textRight = w - btnW - 6;
     int tx = std::max(6, textRight - tw);
@@ -149,8 +181,8 @@ void JZSpinBox::mousePressEvent(JZMouseEvent* event)
     if (m_readOnly)
         return;
     int b = hitButton(event->localPos());
-    if (b == 0) { m_pressUp = true; setValue(m_value + m_step); update(); }
-    else if (b == 1) { m_pressDown = true; setValue(m_value - m_step); update(); }
+    if (b == 0) { m_pressUp = true; setValueInternal(m_value + m_step); update(); }
+    else if (b == 1) { m_pressDown = true; setValueInternal(m_value - m_step); update(); }
 }
 
 void JZSpinBox::mouseReleaseEvent(JZMouseEvent* event)
@@ -163,7 +195,7 @@ void JZSpinBox::wheelEvent(JZMouseEvent* event)
 {
     if (m_readOnly) { JZWidget::wheelEvent(event); return; }
     if (event->wheelDelta() != 0) {
-        setValue(m_value + (event->wheelDelta() > 0 ? m_step : -m_step));
+        setValueInternal(m_value + (event->wheelDelta() > 0 ? m_step : -m_step));
         event->accept();   // 已消费, 不向父链冒泡
         return;
     }
@@ -182,14 +214,13 @@ void JZSpinBox::keyPressEvent(JZKeyEvent* event)
     }
 
     const std::string& t = event->text();
-    if (t.size() == 1 && std::isdigit((unsigned char)t[0])) {
+    if (t.size() == 1 && isEditableChar(t[0])) {
+        // '-' 只允许出现在开头(否则会拼出 "--1" 这种)
+        if (t[0] == '-' && !m_editBuffer.empty())
+            return;
         m_editing = true;
         m_editBuffer += t;
         update();
-        return;
-    }
-    if (t == "-") {
-        if (m_editBuffer.empty()) { m_editing = true; m_editBuffer = "-"; update(); }
         return;
     }
 
@@ -209,17 +240,17 @@ void JZSpinBox::keyPressEvent(JZKeyEvent* event)
         return;
     case JZKey::Key_Up:
         if (m_editing) commitEdit();
-        setValue(m_value + m_step);
+        setValueInternal(m_value + m_step);
         return;
     case JZKey::Key_Down:
         if (m_editing) commitEdit();
-        setValue(m_value - m_step);
+        setValueInternal(m_value - m_step);
         return;
     case JZKey::Key_Home:
-        setValue(m_min);
+        setValueInternal(m_min);
         return;
     case JZKey::Key_End:
-        setValue(m_max);
+        setValueInternal(m_max);
         return;
     default:
         JZWidget::keyPressEvent(event);

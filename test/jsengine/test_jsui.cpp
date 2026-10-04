@@ -1381,6 +1381,37 @@ int main()
             check("字体度量: 画笔字体往返(字号 20 / 字体族 / 度量可用)",
                   evalStr(engine, "globalThis.__fontProbe") == "20/微软雅黑/true");
         }
+
+        // 18) 小数步进框 / 日期框(2026-10-04 新增): JS 侧按 Qt 形状用
+    {
+        check("JZDoubleSpinBox: 小数 值/范围/步长/精度/前后缀 + onValueChanged 回调带 number",
+              evalStr(engine,
+                      "var dsp = new JZDoubleSpinBox();"
+                      "dsp.setRange(0.1, 9.9); dsp.setSingleStep(0.5); dsp.setDecimals(2);"
+                      "dsp.setPrefix('>'); dsp.setSuffix(' mm');"
+                      "dsp.setValue(1.5);"
+                      "var gotNum = null; dsp.onValueChanged = (v) => { gotNum = v; };"
+                      "dsp.setValue(2.25);"
+                      "dsp.value() + '|' + dsp.minimum() + '|' + dsp.maximum() + '|' + dsp.singleStep()"
+                      " + '|' + dsp.decimals() + '|' + dsp.prefix() + '|' + dsp.suffix() + '|' + gotNum")
+                  == "2.25|0.1|9.9|0.5|2|>| mm|2.25");
+
+        check("JZDoubleSpinBox: 超范围按小数夹取(没被截成整数)",
+              evalStr(engine, "dsp.setValue(100); dsp.value()") == "9.9");
+
+        check("JZDateEdit: setDate(Date)/dateTime() 往返 + onDateChanged 回调带 Date",
+              evalStr(engine,
+                      "var ded = new JZDateEdit();"
+                      "var m0 = new Date(2026, 9, 4, 12, 30, 0).getTime();"
+                      "ded.setDate(new Date(m0));"
+                      "var round = (ded.dateTime().getTime() === m0) && (ded.date().getTime() === m0);"
+                      "var gotDate = null; ded.onDateChanged = (v) => { gotDate = v; };"
+                      "ded.setDate(m0 + 86400000);"
+                      "var sigOk = (gotDate instanceof Date) && gotDate.getTime() === m0 + 86400000;"
+                      "ded.setDisplayFormat('yyyy-MM-dd');"
+                      "round + '|' + sigOk + '|' + ded.text() + '|' + ded.displayFormat()")
+                  == "true|true|2026-10-05|yyyy-MM-dd");
+        }
     }
 
     jzDebug() << (g_fail == 0 ? "[ALL PASS]" : "[HAS FAIL]");

@@ -193,8 +193,10 @@ public:
     bool acceptDrops() const { return m_acceptDrops; }
 
     // 子控件裁剪 (Qt WA_ClipChildren 语义): 开启后本控件所有子孙的绘制被裁剪到
-    // 本控件的显示区域 (用于滚动区 viewport 把越界的内容控件裁掉)。
-    // 绘制裁剪实现见 JZPainter::clippedToAncestors。
+    // 本控件的显示区域。**默认就是开的** —— 与 Qt 一致: 子控件永远画不出父控件
+    // (早期默认是关的, 于是布局一旦把子控件摆到父外, 它就真的画到父外/盖住邻栏了)。
+    // 只有确实要让子控件画到本控件之外时才 setClipChildren(false)。
+    // 绘制裁剪实现见 JZPainter::applyAncestorClips。
     void setClipChildren(bool on)
     {
         if (m_clipChildren == on)
@@ -495,7 +497,9 @@ protected:
     bool m_visible;
     bool m_enabled = true;         // 自身使能位 (祖先禁用经 isEnabled 沿父链体现)
     bool m_passThrough = false;
-    bool m_clipChildren = false;
+    // 默认 true: 子孙的绘制被裁剪到本控件矩形内(Qt 语义 —— 子控件画不到父控件外面)。
+    // 需要画到父外的控件把本位置 false(见 setClipChildren)。
+    bool m_clipChildren = true;
     bool m_acceptDrops = false;    // 是否接收拖放 (setAcceptDrops; 见 dragEnterEvent)
     int m_opaque = 255;    // 是否向身后的兄弟控件贡献"不透明覆盖"(重绘剔除; 0=透明覆盖层)
 

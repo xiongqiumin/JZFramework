@@ -73,6 +73,26 @@ std::vector<int> distributeAxis(int avail,
         distribute((long long)delta, true);
     else if (delta < 0)
         distribute(-(long long)delta, false);
+
+    // 硬上限: **容器是硬边界**。上面那轮收缩只动"弹性项且 size>min"的项 —— 固定项、以及
+    // 已经贴到最小尺寸的项, 会把合计顶出容器(表现就是子控件画到父控件外面/盖住邻栏)。
+    // 这里兜底: 合计超出 avail 就按当前尺寸等比削到 avail(削到 0 也认), 保证加起来不超。
+    long long total = 0;
+    for (int i = 0; i < n; ++i)
+        total += size[i];
+    if (total > avail && total > 0) {
+        int used = 0;
+        for (int i = 0; i < n; ++i) {
+            size[i] = (int)((long long)size[i] * avail / total);
+            used += size[i];
+        }
+        // 等比取整剩下的零星像素: 逐个补回(rest < n), 让合计恰好落在 avail 内
+        int rest = avail - used;
+        for (int i = 0; rest > 0 && i < n; ++i) {
+            ++size[i];
+            --rest;
+        }
+    }
     return size;
 }
 
@@ -404,9 +424,11 @@ void JZBoxLayout::updateLayout()
             // 交叉轴: 除 Fixed 外一律填满 (HBox 子项填满高度 / VBox 子项填满宽度)
             bool fillCross = it.stretch > 0 || cp != JZWidget::SizePolicy::Fixed;
             int desired = fillCross ? crossAvail : hintCross;
-            // clamp 到交叉可用空间, 防止 hint 大于容器时溢出
-            int crossSize = std::max(cmn, std::min(desired, std::min(cmx, crossAvail)));
-            int crossPos = crossOrigin + (crossAvail - crossSize) / 2;
+            // 先按 hint/max 求期望尺寸, 再**用容器可用空间兜底** —— 子控件的最小尺寸比容器还大时
+            // 取容器可用空间(而不是 min), 否则它会顶出容器两端(居中摆放时左边还会盖住邻栏)。
+            int crossSize = std::max(0, std::min(crossAvail,
+                                    std::max(cmn, std::min(desired, cmx))));
+            int crossPos = crossOrigin + (crossAvail - crossSize) / 2;   // crossSize<=crossAvail ⇒ 不会越界
             int x = horiz ? cursor     : crossPos;
             int y = horiz ? crossPos   : cursor;
             int w = horiz ? mainSize[i] : crossSize;
@@ -714,6 +736,9 @@ void JZGridLayout::updateLayout()
         int h = vFill ? cellH : it.widget->sizeHint().height();
         w = std::max(it.widget->minimumWidth(),  std::min(w, it.widget->maximumWidth()));
         h = std::max(it.widget->minimumHeight(), std::min(h, it.widget->maximumHeight()));
+        // **单元格是硬边界**: 控件的最小尺寸再大也不能越过自己的格子(否则会画到容器外)
+        w = std::min(w, cellW);
+        h = std::min(h, cellH);
         int gx = cellX + (cellW - w) / 2;
         int gy = cellY + (cellH - h) / 2;
         it.widget->setGeometry(gx, gy, w, h);

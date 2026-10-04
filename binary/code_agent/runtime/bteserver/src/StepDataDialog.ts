@@ -13,7 +13,7 @@ import { tr, emit, sprintf } from './BTEServer.js';
 import { stru_BTS_CMD_SEND_DFDATA76, aTimeToMSec, aTimeToISO } from './structs.js';
 import { PackDefine, STEP_CHARGE, STEP_CHARGE_OTHER, STEP_DISCHARGE, STEP_TYPE_NULL, STEP_TYPE_STOP } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
-import { STEPDATADIALOG_UI_XML } from './ui/STEPDATADIALOG_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 // Qt 枚举/具名颜色里本文件用到的那几项(值与原 Qt 一致): 原来由 qtcompat 提供。
 // 注: qcustomplot 是第三方 Qt 库(不参与 JS 移植), 这里的画笔/角色值只是喂给它的替身。
@@ -58,7 +58,7 @@ export class StepDataDialog
         this.sigChannelChanged = [];   // signals: void sigChannelChanged(int idx);
 
         // 真 UI: 原版 StepDataDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
-        this.ui = uiLoader.load(STEPDATADIALOG_UI_XML);
+        this.ui = loadUiFile('StepDataDialog.ui');
         // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
         this.m_index = 0;

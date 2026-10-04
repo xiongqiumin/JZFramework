@@ -255,6 +255,16 @@ export const ERR_CONFIG_RETRIVE = 0x80000200;  // 上电取配置信息失败;
 // ---------------------------------------------------------------------------
 export class PackDefine
 {
+    // ---- static 成员(原 PackDefine.h 里声明、PackDefine.cpp 里定义) ----
+    // ⚠ TS 里必须在**类体里声明**: 类只有一个静态侧类型, 类外写 `PackDefine.Xxx = ...`
+    //   只做赋值、不会给类补上这个属性 ⇒ 所有 `PackDefine.StepNameList[...]` 都会报
+    //   TS2339 "Property 'StepNameList' does not exist on type 'typeof PackDefine'"
+    //   (本文件 ErrorText 里的 ErrorList、BTEItemWidget / StepDataDialog / StepEditDialog /
+    //    BTEServer / netPackDefine 里的引用都吃这一条)。
+    static StepNameList: string[] = [];                    // QStringList
+    static StepTypeMustHave: number[][] = [];              // QVector<QVector<int>>
+    static ErrorList: Map<number, string> = new Map();     // QMap<int,QString>
+
     // QString PackDefine::ErrorText(int type)
     static ErrorText(type)
     {
@@ -275,10 +285,3 @@ export class PackDefine
         return STEP_CHARGE_OTHER;
     }
 }
-
-// static QStringList  StepNameList;
-// static QVector<QVector<int>> StepTypeMustHave;
-// static QMap<int,QString>  ErrorList;
-PackDefine.StepNameList = [];
-PackDefine.StepTypeMustHave = [];
-PackDefine.ErrorList = new Map();

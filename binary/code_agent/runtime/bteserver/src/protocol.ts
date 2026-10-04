@@ -265,7 +265,9 @@ export function decodeFrame(u8) {
 // ---------------------------------------------------------------------------
 export class FrameParser {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
-    constructor(opts) {
+    // opts 可省(C++ 侧 FrameParser 的构造参数有默认值) —— 原来写成必填, 所有
+    // `new FrameParser()` 都报 TS2554。
+    constructor(opts: any = {}) {
         opts = opts || {};
         this.buf = new Uint8Array(0);
         this.maxBuffer = opts.maxBuffer || (1024 * 1024);
@@ -374,7 +376,7 @@ export class FrameParser {
             }
 
             const whole = this.buf.slice(0, length);
-            const frame = decodeFrame(whole);
+            const frame: any = decodeFrame(whole);   // 下面要补 raw 字段(原始字节), 不在 decodeFrame 的返回类型里
             frame.raw = whole;
             out.push(frame);
             this.stats.frames++;

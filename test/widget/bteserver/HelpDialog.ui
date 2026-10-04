@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HelpDialog.ui —— 对应原版 bteserver/BTEServer/HelpDialog.ui(菜单"帮助-关于"打开的框)。
+  原版是一个 QTextBrowser(textHelp) 放在 GroupBox 里; 引擎没有 QTextBrowser, 用只读的
+  JZTextEdit 顶替(锚点跳转 on_textHelp_anchorClicked 是富文本能力, 引擎没有, 不搬)。
+-->
+<ui version="1.0">
+  <widget class="Dialog" name="HelpDialog">
+    <property name="geometry">0 0 360 240</property>
+    <property name="title">关于</property>
+    <widget class="VBoxLayout" name="mainLayout">
+      <widget class="GroupBox" name="groupHelp" stretch="1">
+        <property name="title">帮助文档</property>
+        <widget class="VBoxLayout" name="helpLayout">
+          <widget class="TextEdit" name="textHelp" stretch="1">
+            <property name="readOnly">true</property>
+          </widget>
+        </widget>
+      </widget>
+      <widget class="Widget" name="btnRow">
+        <widget class="HBoxLayout" name="btnLayout">
+          <widget class="PushButton" name="btnOk">
+            <property name="text">关闭</property>
+          </widget>
+        </widget>
+      </widget>
+    </widget>
+  </widget>
+</ui>

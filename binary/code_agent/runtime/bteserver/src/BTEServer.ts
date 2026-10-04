@@ -101,6 +101,38 @@ export const LST_END_CHARGE_CAP = 13; // 终止充电容量
 export const LST_END_DIS_CAP = 14;  // 终止容量
 
 // ---------------------------------------------------------------------------
+// 日期选择控件的兼容层(ui/BTEServer.ui.xml 里 dateFrom/dateTo 原是 QDateEdit)
+// 引擎**没有日期控件**, 转换器把它降级成 LineEdit(只有 setText/text, 见 ui/BTEServer.ui.report.txt
+// 的"QDateEdit -> LineEdit: 引擎没有日期控件, 只作只读文本展示")。
+// ⚠ 直接按 Qt 的写法调 setDate()/dateTime() 会在 LineEdit 上抛
+//   `TypeError: not a function` —— 切到"历史数据"页就崩正是这个原因。
+// 这两支按"控件有日期接口就用真接口, 没有就退化成文本展示"走: 引擎补了日期控件后,
+// 调用点一行都不用改(自动走上分支), 读取也随即可用。
+// ---------------------------------------------------------------------------
+const UI_DATE_FMT = "yyyy-MM-dd";
+
+function uiSetDate(edit, date)
+{
+    if (edit && typeof edit.setDate === "function")
+    {
+        edit.setDate(date);                             // 真日期控件
+        return;
+    }
+    if (edit && typeof edit.setText === "function")
+        edit.setText(formatDateTime(date, UI_DATE_FMT)); // 降级: 只作文本展示
+}
+
+// 读回日期: 真日期控件走 dateTime(); LineEdit 这条**当前返回 null**
+// (= 未设置, 查询不按日期筛选 —— 与迁移前 asDate(空壳) 的行为一致;
+//  要让手输文本也生效, 就在这里解析 edit.text(), 见文件里的 TODO)。
+function uiDate(edit)
+{
+    if (edit && typeof edit.dateTime === "function")
+        return asDate(edit.dateTime());
+    return null;
+}
+
+// ---------------------------------------------------------------------------
 // struct DeviceInfo
 // ---------------------------------------------------------------------------
 export class DeviceInfo
@@ -556,7 +588,10 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void send(int netId, ushort cmd, const QByteArray &data, uchar SubDevID = INVAILD_SUB_ID);
     // void send(int netId, StepRequestPtr pack);
     //   C++ 的两个重载合成一个: 第 2 个参数是 StepRequest 时走工步分支。
-    send(netId, cmdOrPack, data, SubDevID)
+    // 后两个参数按 C++ 的默认值给默认实参(否则 2/3 参的调用点全报 TS2554):
+    //   data 缺省 = 空 body(2 参调用走的是上面的 pack 分支, 用不到它);
+    //   SubDevID 缺省 = INVAILD_SUB_ID(与 C++ 同)。
+    send(netId, cmdOrPack, data = new Uint8Array(0), SubDevID = INVAILD_SUB_ID)
     {
         if (cmdOrPack instanceof stru_BTS_CMD_STEP_REQUEST)
         {
@@ -639,7 +674,8 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
     // void response(int netId, ushort cmd, uchar result, uchar SubDevID = INVAILD_SUB_ID, QByteArray body = QByteArray());
     // void response(int netId, const stru_BTS_CMD_SEND_DFDATA_RESP76 &pack);
     //   C++ 的两个重载合成一个: 第 2 个参数是 DFData 回应包时走那条分支。
-    response(netId, cmdOrPack, result, SubDevID, data)
+    // 同 send: 后三个参数按 C++ 的默认值(SubDevID = INVAILD_SUB_ID, body = 空)给默认实参。
+    response(netId, cmdOrPack, result = 0, SubDevID = INVAILD_SUB_ID, data = new Uint8Array(0))
     {
         if (cmdOrPack instanceof stru_BTS_CMD_SEND_DFDATA_RESP76)
         {
@@ -1183,8 +1219,11 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             line.setText(ip);
 
             vlayout.addWidget(new JZLabel(tr("请输入IP")), 0);
-            vlayout.addWidget(hlayout, 0);
-            vlayout.addWidget(layout, 0);
+            // ⚠ 引擎的布局**不支持嵌套**(C++ JZBoxLayout 只有 addWidget(JZWidget*), 没有
+            //    Qt 的 addLayout) —— 这里按原样传布局, 类型上用 as any 放行, 运行期行为待定。
+            //    TODO: 要么给引擎绑 addLayout, 要么改成"套一个普通控件当容器"(见 MEMORY)。
+            vlayout.addWidget(hlayout as any, 0);
+            vlayout.addWidget(layout as any, 0);
             dlg.setLayout(vlayout);
             if (dlg.exec() !== 1)      // JZDialog.exec(): 1 = accept(原 QDialog.Accepted)
                 return "";
@@ -2114,6 +2153,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         // 的"没有信号"检查报出来(见 bteserverUi.ts)
         wire('actionChn', 'onTriggered', () => this.on_actionChn_triggered());
         wire('actionEng', 'onTriggered', () => this.on_actionEng_triggered());
+        // 文件→退出 / 帮助→关于: 原来**漏接**了(菜单里点了没反应), 见 bteserverUi.ts 的 findAction
+        wire('actionExit', 'onTriggered', () => this.on_actionExit_triggered());
+        wire('actionAbout', 'onTriggered', () => this.on_actionAbout_triggered());
     }
 
     // void initDevice();
@@ -2275,8 +2317,9 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
             this.ui.boxDevice.clear();
             this.ui.boxDevice.addItems(this.m_project.deviceList());
 
-            this.ui.dateFrom.setDate(new Date());   // 原 QDate::currentDate()
-            this.ui.dateTo.setDate(new Date());
+            // 原 QDate::currentDate(); 引擎里 dateFrom/dateTo 是 LineEdit(见上面的兼容层)
+            uiSetDate(this.ui.dateFrom, new Date());
+            uiSetDate(this.ui.dateTo, new Date());
 
             this.ui.stackedWidget.setCurrentWidget(this.ui.pageHistory);
         }
@@ -2370,10 +2413,10 @@ export class BTEServer        // 继承自 QMainWindow: JS 侧先只保留类本
         let unit_ok = false, chn_ok = false;
 
         const dayNear = this.ui.lineNearDay.value();
-        // 日期选择控件(QDateTimeEdit)尚未移植: 其 dateTime() 现在返回空壳 -> asDate 归一成 null
-        // (= 未设置, 不筛选); 控件就绪后返回 Date 即直接生效。原: to = to.addDays(1)
-        const from = asDate(this.ui.dateFrom.dateTime());
-        let to = asDate(this.ui.dateTo.dateTime());
+        // 日期选择控件(QDateEdit)尚未移植 -> uiDate() 拿不到有效时间, 归一成 null
+        // (= 未设置, 不筛选); 控件/解析就绪后返回 Date 即直接生效。原: to = to.addDays(1)
+        const from = uiDate(this.ui.dateFrom);
+        let to = uiDate(this.ui.dateTo);
         if (to)
             to = addDays(to, 1);
         const cur = new Date();   // 原 QDateTime::currentDateTime()

@@ -247,8 +247,11 @@ int main(int argc, char *argv[])
 #endif
 
     JZEngineRuntime rt;
+    // ⚠ 结尾**不要**再加 "\n": 引擎只发内容(console.log 在 node 里是自己补换行的, 到了我们
+    //   这套引擎里那个换行由宿主负责), 而 jzDebug/JZLog 输出时会在结尾补一个 —— 这里再加就
+    //   变成"每条日志多一个空行"(2026-09-10 从 printf 换成 jzDebug 时留下的)。
     rt.setLogHandler([](const string &text) {
-        jzDebug("%s\n", text.c_str());
+        jzDebug("%s", text.c_str());
         fflush(stdout);
     });
 

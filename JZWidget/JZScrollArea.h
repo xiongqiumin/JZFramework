@@ -51,6 +51,14 @@ public:
     // width()/height(), 请自行 resize (未定尺寸时按 sizeHint() 初始化)。
     void setWidget(JZWidget* content);
     JZWidget* widget() const;
+
+    // ---- 内容自适应 (Qt QScrollArea::setWidgetResizable 语义) ----
+    // 开启后由滚动区负责给内容控件定尺寸: 每个轴取 max(内容的 minimumSizeHint,
+    // 内容的 sizeHint, 视口尺寸)。内容"最小尺寸"比视口大时保持内容尺寸, 于是出现
+    // 滚动条 —— 这正是"固定尺寸卡片 + 网格"想要的(bteserver 原版 QScrollArea 就是
+    // widgetResizable=true)。关闭(默认)时沿用旧契约: 调用方自己 resize 内容控件。
+    void setWidgetResizable(bool on);
+    bool widgetResizable() const { return m_widgetResizable; }
     // 内部视口子控件 (内容控件的父), 调用 setWidget 前为 nullptr
     JZWidget* viewport() const;
 
@@ -122,6 +130,8 @@ protected:
     JZScrollBar* m_hbar = nullptr;
     JZWidget* m_viewport = nullptr;       // setWidget 模式: 内部视口 (懒创建)
     JZWidget* m_widgetContent = nullptr;  // setWidget 模式: 内容控件
+    bool m_widgetResizable = false;       // 内容控件由滚动区定尺寸 (Qt widgetResizable)
+    bool m_inResizeContent = false;       // 给内容 resize 时防重入 (内容布局可能再触发本函数)
 };
 
 #endif // JZ_SCROLL_AREA_H_

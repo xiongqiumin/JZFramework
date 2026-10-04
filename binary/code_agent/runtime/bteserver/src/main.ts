@@ -47,7 +47,8 @@ export function protocolSelfTest()
 {
     // ---- 迷你断言 ----
     let g_pass = 0, g_fail = 0;
-    function check(cond, name, extra) {
+    // extra 是可选补充信息 ⇒ 给默认值(否则两参调用报 TS2554)。
+    function check(cond, name, extra = '') {
         if (cond) {
             g_pass++;
             console.log('  PASS  ' + name);
@@ -56,7 +57,7 @@ export function protocolSelfTest()
             console.log('  FAIL  ' + name + (extra ? ('\n        ' + extra) : ''));
         }
     }
-    function checkEq(actual, expected, name) {
+    function checkEq(actual, expected, name = '') {
         const ok = actual === expected;
         check(ok, name, ok ? '' : ('期望: ' + expected + '\n        实际: ' + actual));
     }

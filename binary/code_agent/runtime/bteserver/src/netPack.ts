@@ -25,6 +25,10 @@ import {
 export class PackInfo
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+
+    // static 常量必须在类体里声明(类外赋值不给类补类型, 见 globals.d.ts 的说明)。
+    static LittleEndian: number = 0;   // QDataStream::LittleEndian
+
     // PackInfo();
     constructor()
     {
@@ -115,7 +119,7 @@ export class PackInfo
         return true;
     }
 }
-PackInfo.LittleEndian = 0;   // QDataStream::LittleEndian
+// PackInfo.LittleEndian 已挪进类体(见 PackInfo 类开头)。
 
 // ---------------------------------------------------------------------------
 // class NetPack
@@ -156,6 +160,10 @@ export function netPackCreate(Class)
 export class NetPackManager
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+
+    // static NetPackManager *m_inst(单例); 类外的赋值不给类补类型, 所以声明在类体里。
+    static _inst: any = null;
+
     // static NetPackManager *instance();
     static instance()
     {
@@ -198,4 +206,4 @@ export class NetPackManager
         return null;
     }
 }
-NetPackManager._inst = null;
+// NetPackManager._inst 已挪进类体(见 NetPackManager 类开头)。

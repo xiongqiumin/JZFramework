@@ -24,8 +24,6 @@
 	JZJSqliteModule.cpp
 	JZJSModbusModule.h
 	JZJSModbusModule.cpp
-	JZJSUiLoader.h
-	JZJSUiLoader.cpp
 )
 
 # JS 侧的界面能力建立在自绘 UI(JZWidget)之上: 没启用 JZWidget 时不参与编译,
@@ -35,6 +33,10 @@ if(HAS_JZWidget)
 		JSWidget/JZJSWidgetModule.cpp
 		JSWidget/JZJSWidget.h
 		JSWidget/JZJSWidget.cpp)
+    # JS 侧 UI 加载器(只做"生成": 解析/方言在 JZWidget/JZUiParser, C++ 后端是 JZWidget/JZUiLoader)。
+    # UI 加载器离不开控件族, 所以跟着 JZWidget 一起门控。
+    list(APPEND JZJSENGINE_SOURCES JZJSUiLoader.h
+		JZJSUiLoader.cpp)
 endif()
 
 convert_to_abs_paths(JZJSENGINE_SOURCES)

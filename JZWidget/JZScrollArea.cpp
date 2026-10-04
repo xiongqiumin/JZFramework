@@ -295,11 +295,38 @@ JZSize JZScrollArea::sizeHint() const
 // ----------------------------------------------------------------------------
 // 布局滚动条 / 视口 / 内容控件
 // ----------------------------------------------------------------------------
+void JZScrollArea::setWidgetResizable(bool on)
+{
+    if (m_widgetResizable == on)
+        return;
+    m_widgetResizable = on;
+    layoutScrollBars();
+    update();
+}
+
 void JZScrollArea::layoutScrollBars()
 {
     const int t = kBarThickness;
     const int w = std::max(0, width());
     const int h = std::max(0, height());
+
+    // widgetResizable: 内容控件由滚动区定尺寸 —— 每轴取 max(内容 minimumSizeHint,
+    // sizeHint, 视口估计)。视口估计 = 本控件尺寸扣掉"当前可见的滚动条"厚度, 免得内容
+    // 刚好等于本控件宽时又凭空多出一条滚动条。内容最小尺寸比视口大 ⇒ 保持内容尺寸
+    // ⇒ 出滚动条(固定宽卡片的网格就靠这条)。这里在读取 cw/ch 之前做, 后面的
+    // 滚动条显隐/范围计算就能看到新尺寸。
+    if (m_widgetContent && m_widgetResizable && !m_inResizeContent) {
+        m_inResizeContent = true;
+        const JZSize mn = m_widgetContent->minimumSizeHint();
+        const JZSize sh = m_widgetContent->sizeHint();
+        const int vwEst = std::max(0, w - ((m_vbar && m_vbar->isVisible()) ? t : 0));
+        const int vhEst = std::max(0, h - ((m_hbar && m_hbar->isVisible()) ? t : 0));
+        const int newW = std::max(std::max(mn.width(), sh.width()), vwEst);
+        const int newH = std::max(std::max(mn.height(), sh.height()), vhEst);
+        if (m_widgetContent->width() != newW || m_widgetContent->height() != newH)
+            m_widgetContent->resize(newW, newH);
+        m_inResizeContent = false;
+    }
 
     // 内容原始尺寸 (模型 A 取内容控件几何, 模型 B 取上报内容尺寸)
     const bool widgetMode = (m_widgetContent != nullptr);

@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // bteserverUi —— BTEServer 主窗口的 UI 定义
 //
-// XML 的来源: `ui/BTEServer.ui`(原版 Qt Designer 文件) 经 `tools/ui2jz.py` 转成 uiLoader 的
-// 方言, 生成的内联字符串在 `./ui/BTESERVER_UI_XML.ts`(随 tsc 产物走, 不依赖运行期数据文件)。
-// 保真度报告: `ui/BTEServer.ui.report.txt`(哪些类被替换、哪些属性/元素被丢弃)。
-// 改原 .ui 或改转换器后重跑: `python tools/ui2jz.py ui --out src/ui`。
+// XML 的来源: `ui/BTEServer.ui` —— 引擎方言的界面 XML(原版 Qt Designer 的 BTEServer.ui 经
+// `tools/ui2jz.py` 转出; 该转换器已不在仓库里, 所以**这份 .ui 就是现在的源头**)。
+// 运行期由 `loadUiFile()`(见 uiFile.ts)加载这一份, 不再有"内联字符串"副本;
+// 改界面就改 `ui/BTEServer.ui`(加载时会按 build/ui -> ../src/ui 顺序找它)。
 //
 // createUi() 返回的对象**本身是窗口**(MainWindow -> JZMainWindow), 同时通过 `ui.<id>` 暴露全部
 // 命名控件 —— 调用方照 Qt 的 setupUi 习惯写 `this.ui.listWidget` 就行。与 uic 的差异:
@@ -17,11 +17,10 @@
 //   * retranslateUi 留空实现(XML 里文本已给定)。
 // ---------------------------------------------------------------------------
 
-declare const uiLoader: any;
 
 import { SplitSettingWidget } from './SplitSettingWidget.js';
 import { SplitResultWidget } from './SplitResultWidget.js';
-import { BTESERVER_UI_XML } from './ui/BTESERVER_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 // 按文本在菜单树里找一个 action —— 见文件头"菜单动作没有 id"。
 function findAction(menuBar: any, text: string): any
@@ -56,15 +55,22 @@ function fillPlaceholder(holder: any, child: any): void
 // 造主窗口: 返回的对象**本身是窗口**, 同时带全部命名子控件(ui.<id>)。
 export function createUi(): any
 {
-    const ui = uiLoader.load(BTESERVER_UI_XML);
+    const ui = loadUiFile('BTEServer.ui');
     if (!ui)
-        throw new Error("bteserverUi: uiLoader.load 返回空(UI XML 解析或建控件失败, 见引擎日志)");
+        throw new Error("bteserverUi: loadUiFile 返回空(ui/BTEServer.ui 解析或建控件失败, 见引擎日志)");
 
     // 菜单动作: 引擎已绑定真 JZAction(JZMenu/JZMenuBar 都在), 按文本取回后挂成 ui.<id>。
     ui.actionChn = findAction(ui.menuBar, "中文");
     ui.actionEng = findAction(ui.menuBar, "英语");
     if (!ui.actionChn || !ui.actionEng)
         console.log("[bteserverUi] 菜单里没找到 中文/英语 动作 —— 语言切换会空转");
+
+    // 文件→退出 / 帮助→关于: 同样按文本取回(Qt 的 ui.actionExit / ui.actionAbout 在方言里没有 name)
+    // ⚠ 取回来必须在 connectUi() 里接 onTriggered 才有反应 —— 以前没接, "文件→退出"点了没反应。
+    ui.actionExit = findAction(ui.menuBar, "退出");
+    ui.actionAbout = findAction(ui.menuBar, "关于");
+    if (!ui.actionExit)
+        console.log("[bteserverUi] 菜单里没找到 退出 动作 —— 文件→退出 会没反应");
 
     // uic 的 retranslateUi(): XML 路径下文本已给定, 留空实现对齐原调用点
     ui.retranslateUi = function (_w: any) { };

@@ -22,7 +22,7 @@ import { g_project } from './BTEProject.js';
 import { BTEStepInfo } from './BTERecordDataBase.js';
 import { StepEditDialog } from './StepEditDialog.js';
 import fs from 'fs';
-import { STEPSETTINGDIALOG_UI_XML } from './ui/STEPSETTINGDIALOG_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 // Qt 枚举里本文件用到的那一项(值与原 Qt 一致): 原来由 qtcompat 提供。
 const Qt = {
@@ -124,7 +124,7 @@ export class StepSettingDialog
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     // StepSettingDialog(QWidget *parent = Q_NULLPTR);
-    constructor(parent)
+    constructor(parent = null)
     {
         // 原 `QDialog.call(this, parent)`(: QDialog(parent)) 已去掉 —— 本类不再"继承 Qt 对话框",
         // 而是**持一个真窗口**(this.ui, 见下), 窗口方法都转发到它。
@@ -134,7 +134,7 @@ export class StepSettingDialog
         this.stepInfo = null;     // BTEStepInfo stepInfo;
 
         // 真 UI: 原版 StepSettingDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
-        this.ui = uiLoader.load(STEPSETTINGDIALOG_UI_XML);
+        this.ui = loadUiFile('StepSettingDialog.ui');
         // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
 

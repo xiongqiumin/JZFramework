@@ -1,403 +1,45 @@
+﻿// JZSUiLoader - JS side UI code generator (parse + dialect moved to JZWidget/JZUiParser).
 #include "JZJSUiLoader.h"
+
 #include "JZJSEngine.h"
 #include "JZXml/JZXml.h"
 
 #include <cctype>
 #include <cmath>
-#include <map>
-#include <set>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <iomanip>
+#include <map>
 #include <set>
 #include <sstream>
+#include <string>
+#include <vector>
+
+// Dialect helpers below keep the generator body unchanged: the tables themselves now live in
+// JZUiParser (JZWidget/JZUiParser.cpp); these forwarders are internal to this file.
+namespace {
+bool uiIsLayout(const std::string& t) { return JZUiParser::isLayoutType(t); }
+UiMount uiMountMode(const std::string& t) { return JZUiParser::mountMode(t); }
+bool uiAcceptsLayout(const std::string& t) { return JZUiParser::acceptsLayout(t); }
+bool uiIsItemHost(const std::string& t) { return JZUiParser::isItemHost(t); }
+bool uiIsWindow(const std::string& t) { return JZUiParser::isWindowType(t); }
+bool uiIsMenuStructure(const std::string& t) { return JZUiParser::isMenuStructure(t); }
+std::string uiTabLabel(const JZUiNode& c) { return JZUiParser::tabLabel(c); }
+bool uiHasText(const std::string& t) { return JZUiParser::hasText(t); }
+bool uiHasTitle(const std::string& t) { return JZUiParser::hasTitle(t); }
+bool uiHasCurrentIndex(const std::string& t) { return JZUiParser::hasCurrentIndex(t); }
+bool uiHasChecked(const std::string& t) { return JZUiParser::hasChecked(t); }
+bool uiHasReadOnly(const std::string& t) { return JZUiParser::hasReadOnly(t); }
+bool uiHasPlaceholder(const std::string& t) { return JZUiParser::hasPlaceholder(t); }
+bool uiHasRange(const std::string& t) { return JZUiParser::hasRange(t); }
+bool uiIsDoubleSpin(const std::string& t) { return JZUiParser::isDoubleSpin(t); }
+bool uiIsDateEdit(const std::string& t) { return JZUiParser::isDateEdit(t); }
+int uiLayoutMarginIndex(const std::string& k) { return JZUiParser::layoutMarginIndex(k); }
+std::string uiPropText(const Json::Value& v) { return JZUiParser::propText(v); }
+const std::map<std::string, std::string>& uiClassMap() { return JZUiParser::typeMap(); }
+}
 
 JZJSUiLoader::JZJSUiLoader() {}
-
-// 已知控件类型表：覆盖 JZWidget 现有可创建控件。loader 默认不强制校验,
-// 仅作为参考清单; 扩展新控件时在此追加即可。
-static const std::vector<std::string>& builtinKnownTypes()
-{
-    static const std::vector<std::string> types = {
-        "Window", "MainWindow", "Dialog", "Canvas",
-        "PushButton", "Label", "ImageLabel", "Chart",
-        "LineEdit", "TextEdit", "AbstractTextEdit",
-        "CheckBox", "RadioButton", "Switch", "ComboBox",
-        "ListWidget", "TreeWidget", "TableWidget",
-        "Slider", "ScrollBar", "ProgressBar", "SpinBox",
-        "GroupBox", "TabWidget", "StackedWidget", "ScrollArea",
-        "MenuBar", "Menu",
-        "Layout", "HBoxLayout", "VBoxLayout", "GridLayout",
-    };
-    return types;
-}
-
-const std::vector<std::string>& JZJSUiLoader::knownTypes()
-{
-    return builtinKnownTypes();
-}
-
-// ---------------------------------------------------------------------------
-// 文本工具
-// ---------------------------------------------------------------------------
-
-static std::string trim(const std::string& s)
-{
-    size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return "";
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
-// 尝试把整串解析为数值(整数优先, 否则 double)。成功返回 true。
-static bool parseNumber(const std::string& s, Json::Value& out)
-{
-    if (s.empty())
-        return false;
-    const char* c = s.c_str();
-    char* end = nullptr;
-    errno = 0;
-    double d = std::strtod(c, &end);
-    if (end == c || *end != '\0')
-        return false;                 // 非纯数值
-    if (!std::isfinite(d))
-        return false;
-    if (s.find_first_of(".eE") == std::string::npos) {
-        out = Json::Value((Json::Int64)std::strtoll(c, nullptr, 10));
-    } else {
-        out = Json::Value(d);
-    }
-    return true;
-}
-
-// XML 属性文本 -> Json::Value: 布尔 / 数字 / 数字数组 / 字符串。
-static Json::Value xmlPropToJson(const std::string& raw)
-{
-    std::string s = trim(raw);
-    if (s.empty())
-        return Json::Value("");
-    if (s == "true" || s == "false")
-        return Json::Value(s == "true");
-
-    Json::Value num;
-    if (parseNumber(s, num))
-        return num;
-
-    // 逗号分隔的数字列表 -> 数组(>=2 个元素才视为数组)
-    if (s.find(',') != std::string::npos) {
-        Json::Value arr(Json::arrayValue);
-        size_t start = 0;
-        bool allNum = true;
-        while (true) {
-            size_t comma = s.find(',', start);
-            std::string part = trim(s.substr(start, comma - start));
-            Json::Value v;
-            if (parseNumber(part, v))
-                arr.append(v);
-            else {
-                allNum = false;
-                break;
-            }
-            if (comma == std::string::npos)
-                break;
-            start = comma + 1;
-        }
-        if (allNum && arr.size() >= 2)
-            return arr;
-    }
-    return Json::Value(s);
-}
-
-// ---------------------------------------------------------------------------
-// XML 解析
-// ---------------------------------------------------------------------------
-
-bool JZJSUiLoader::load(const std::string& xmlText)
-{
-    m_error.clear();
-    m_ok = false;
-    m_root = JZUiNode();
-    m_className = "Ui";
-
-    JZDomDocument doc;
-    std::string err;
-    if (!doc.setContent(xmlText, &err)) {
-        m_error = "XML 解析失败: " + err;
-        return false;
-    }
-
-    JZDomElement ui = doc.documentElement();
-    if (ui.isNull() || ui.tagName() != "ui") {
-        m_error = "根元素必须是 <ui>";
-        return false;
-    }
-
-    // 生成类名: <class> 元素文本
-    JZDomNode classNode = ui.namedItem("class");
-    if (!classNode.isNull() && classNode.isElement()) {
-        std::string cn = trim(classNode.toElement().text());
-        if (!cn.empty())
-            m_className = cn;
-    }
-
-    // 根 widget: <ui> 下第一个直接 <widget> 子元素
-    JZDomNodeList children = ui.childNodes();
-    JZDomElement rootWidget;
-    for (int i = 0; i < children.count(); ++i) {
-        JZDomNode n = children.item(i);
-        if (n.isElement() && n.toElement().tagName() == "widget") {
-            rootWidget = n.toElement();
-            break;
-        }
-    }
-    if (rootWidget.isNull()) {
-        m_error = "<ui> 缺少根 <widget>";
-        return false;
-    }
-
-    if (!parseWidget(rootWidget, m_root, "ui/widget"))
-        return false;
-
-    m_ok = true;
-    return true;
-}
-
-// ---- 菜单结构解析: <menubar> -> <menu title> -> <action>/<separator>/<menu> ----
-// 这些不是渲染树控件(JZMenu/JZAction 是 JZObject 数据模型), 用专属标签与 <widget>
-// 同层级挂在窗口下; 构造时由 addMenu/addAction/addSeparator 建立, 不进 __types。
-static bool parseActionNode(const JZDomElement& el, JZUiNode& out, std::string& err)
-{
-    out.type = "Action";
-    out.props = Json::Value(Json::objectValue);
-    std::string text = trim(el.attribute("text"));
-    if (text.empty())
-        text = trim(el.text());
-    if (!text.empty())
-        out.props["text"] = text;
-    if (el.hasAttribute("shortcut"))
-        out.props["shortcut"] = trim(el.attribute("shortcut"));
-    if (el.hasAttribute("checkable"))
-        out.props["checkable"] = (trim(el.attribute("checkable")) == "true");
-    if (el.hasAttribute("checked"))
-        out.props["checked"] = (trim(el.attribute("checked")) == "true");
-    if (el.hasAttribute("enabled"))
-        out.props["enabled"] = (trim(el.attribute("enabled")) == "true");
-    return true;
-}
-
-static bool parseMenuNode(const JZDomElement& el, JZUiNode& out, std::string& err, const std::string& path)
-{
-    out.type = "Menu";
-    out.props = Json::Value(Json::objectValue);
-    if (el.hasAttribute("title"))
-        out.props["title"] = trim(el.attribute("title"));
-    std::string id = el.attribute("name");
-    if (id.empty())
-        id = el.attribute("id");
-    out.id = id;
-
-    JZDomNodeList kids = el.childNodes();
-    for (int i = 0; i < kids.count(); ++i) {
-        JZDomNode n = kids.item(i);
-        if (!n.isElement())
-            continue;
-        JZDomElement e = n.toElement();
-        std::string tag = e.tagName();
-        if (tag == "action") {
-            JZUiNode child;
-            if (!parseActionNode(e, child, err))
-                return false;
-            out.children.push_back(std::move(child));
-        } else if (tag == "separator") {
-            JZUiNode child;
-            child.type = "Separator";
-            out.children.push_back(std::move(child));
-        } else if (tag == "menu") {
-            JZUiNode child;
-            if (!parseMenuNode(e, child, err, path + "/menu"))
-                return false;
-            out.children.push_back(std::move(child));
-        }
-    }
-    return true;
-}
-
-static bool parseMenubarNode(const JZDomElement& el, JZUiNode& out, std::string& err, const std::string& path)
-{
-    out.type = "MenuBar";
-    out.props = Json::Value(Json::objectValue);
-    std::string id = el.attribute("name");
-    if (id.empty())
-        id = el.attribute("id");
-    out.id = id;
-
-    JZDomNodeList kids = el.childNodes();
-    for (int i = 0; i < kids.count(); ++i) {
-        JZDomNode n = kids.item(i);
-        if (!n.isElement())
-            continue;
-        JZDomElement e = n.toElement();
-        if (e.tagName() == "menu") {
-            JZUiNode child;
-            if (!parseMenuNode(e, child, err, path + "/MenuBar"))
-                return false;
-            out.children.push_back(std::move(child));
-        }
-    }
-    return true;
-}
-
-bool JZJSUiLoader::parseWidget(const JZDomElement& el, JZUiNode& out, const std::string& path)
-{
-    std::string type = el.attribute("class");
-    if (type.empty())
-        type = el.attribute("type");
-    if (type.empty()) {
-        m_error = path + ": <widget> 缺少 class 属性";
-        return false;
-    }
-    out.type = type;
-
-    // id: 优先 name(Qt 习惯), 兼容 id
-    std::string id = el.attribute("name");
-    if (id.empty())
-        id = el.attribute("id");
-    out.id = id;
-
-    out.props = Json::Value(Json::objectValue);
-
-    JZDomNodeList kids = el.childNodes();
-    for (int i = 0; i < kids.count(); ++i) {
-        JZDomNode n = kids.item(i);
-        if (!n.isElement())
-            continue;
-        JZDomElement e = n.toElement();
-        std::string tag = e.tagName();
-
-        if (tag == "property") {
-            std::string pname = e.attribute("name");
-            if (pname.empty()) {
-                m_error = path + ": <property> 缺少 name 属性";
-                return false;
-            }
-            std::string val;
-            if (e.hasAttribute("value"))
-                val = e.attribute("value");
-            else
-                val = e.text();
-            out.props[pname] = xmlPropToJson(val);
-        } else if (tag == "widget") {
-            JZUiNode child;
-            if (!parseWidget(e, child, path + "/" + type))
-                return false;
-            out.children.push_back(std::move(child));
-        } else if (tag == "menubar") {
-            // 菜单栏: 专属标签, 与 <widget> 同层级挂在窗口下; 内部用 <menu>/<action>/<separator>
-            JZUiNode child;
-            if (!parseMenubarNode(e, child, m_error, path + "/MenuBar"))
-                return false;
-            out.children.push_back(std::move(child));
-        } else if (tag == "item") {
-            // 列表型子项(ComboBox / ListWidget 用 addItem 添加):
-            //   <item>foo</item> / <item text="foo"/> / <item><property name="text">foo</property></item>
-            std::string text;
-            if (e.hasAttribute("text")) {
-                text = trim(e.attribute("text"));
-            } else {
-                bool found = false;
-                JZDomNodeList ik = e.childNodes();
-                for (int k = 0; k < ik.count(); ++k) {
-                    JZDomNode nn = ik.item(k);
-                    if (nn.isElement() && nn.toElement().tagName() == "property"
-                        && nn.toElement().attribute("name") == "text") {
-                        text = trim(nn.toElement().text());
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found)
-                    text = trim(e.text());
-            }
-            out.items.push_back(text);
-        }
-        // 其它子元素(layout/等等)目前忽略
-    }
-    return true;
-}
-
-bool JZJSUiLoader::loadFromFile(const std::string& path)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        m_ok = false;
-        m_error = "无法打开文件: " + path;
-        return false;
-    }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return load(ss.str());
-}
-
-// ---------------------------------------------------------------------------
-// 遍历 / 查询 / 序列化
-// ---------------------------------------------------------------------------
-
-void JZJSUiLoader::traverse(const VisitFn& fn) const
-{
-    if (m_ok)
-        traverseNode(m_root, nullptr, fn);
-}
-
-void JZJSUiLoader::traverseNode(const JZUiNode& node, const JZUiNode* parent, const VisitFn& fn) const
-{
-    fn(node, parent);
-    for (const auto& c : node.children)
-        traverseNode(c, &node, fn);
-}
-
-std::vector<const JZUiNode*> JZJSUiLoader::nodesById(const std::string& id) const
-{
-    std::vector<const JZUiNode*> res;
-    traverse([&](const JZUiNode& n, const JZUiNode*) {
-        if (n.id == id)
-            res.push_back(&n);
-    });
-    return res;
-}
-
-void JZJSUiLoader::toJson(Json::Value& out) const
-{
-    out = Json::Value(Json::objectValue);
-    writeNode(m_root, out);
-}
-
-void JZJSUiLoader::writeNode(const JZUiNode& node, Json::Value& out) const
-{
-    out["type"] = node.type;
-    if (!node.id.empty())
-        out["id"] = node.id;
-    if (!node.props.isNull())
-        out["props"] = node.props;
-    if (!node.children.empty()) {
-        Json::Value arr(Json::arrayValue);
-        for (const auto& c : node.children) {
-            Json::Value item(Json::objectValue);
-            writeNode(c, item);
-            arr.append(item);
-        }
-        out["children"] = arr;
-    }
-    if (!node.items.empty()) {
-        Json::Value arr(Json::arrayValue);
-        for (const auto& it : node.items)
-            arr.append(it);
-        out["items"] = arr;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 生成 @jz/widget 风格的 TypeScript 类(Qt uic 风格)
 // ---------------------------------------------------------------------------
 
@@ -490,23 +132,12 @@ std::string sanitizeId(const std::string& id)
     return s;
 }
 
-// 子控件挂载方式 —— **定义必须放在这里**(TsGen 在文件前面, 两个 generator 都要用它的枚举值,
-// 而 switch 的 case 标签要求完整类型, 光前向声明是不够的)。
+// 子控件挂载方式: UiMount 枚举已提到头文件(JZJSUiLoader.h) —— C++ 侧 JZUiLoader 也要用它。
 // 按父控件类型决定挂载方式:
-//   Window/Dialog -> addWidget(自动补 VBox)      MainWindow -> setCentralWidget
-//   StackedWidget -> addWidget(每页一个)         Splitter   -> addWidget(每子项一个)
-//   TabWidget     -> addTab(每页 + label)         ScrollArea -> setWidget(单一内容控件)
-//   通用容器      -> setParentWidget             非容器(ComboBox/ListWidget/TableWidget) -> 不接受
-enum class UiMount {
-    WindowAdd,   // Window/Dialog: addWidget(自动补 VBox)
-    Central,     // MainWindow: 单 widget -> setCentralWidget
-    Stack,       // StackedWidget: addWidget(page)
-    Splitter,    // Splitter: addWidget
-    Tab,         // TabWidget: addTab(page, label)
-    Scroll,      // ScrollArea: setWidget(单一内容控件)
-    Parent,      // 通用容器(JZWidget / GroupBox / Canvas / ...): setParentWidget
-    None         // 非容器(ComboBox / ListWidget / TableWidget): 不能挂 widget 子控件
-};
+//   Window/Dialog -> setParentWidget          MainWindow -> setCentralWidget(菜单栏 addMenuBar)
+//   StackedWidget -> addWidget(每页一个)       Splitter   -> addWidget(每子项一个)
+//   TabWidget     -> addTab(每页 + label)      ScrollArea -> setWidget(单一内容控件)
+//   通用容器      -> setParentWidget          非容器(ComboBox/ListWidget/TableWidget) -> 不接受
 
 bool uiIsLayout(const std::string& t);
 UiMount uiMountMode(const std::string& t);
@@ -728,159 +359,6 @@ std::string JZJSUiLoader::toTsClass(const std::string& className,
 
 namespace {
 
-// UI 短类型名 -> 引擎已注册的 JS 构造器名(JZJSWidgetModule 注册的 C++ 类)。
-// 仅覆盖已注册控件; 含未注册类型时 createUi 直接失败(见下方校验)。
-const std::map<std::string, std::string>& uiClassMap()
-{
-    static const std::map<std::string, std::string> m = {
-        { "Window",       "JZWindow" },
-        { "MainWindow",   "JZMainWindow" },
-        // Qt 的 QDialog -> JZDialog(有 exec/accept/reject; JZDialog 派生自 JZWindow, 所以
-        // setTitle/setGeometry 这些照样有)。原来映射到 JZWindow, 转换出来的对话框没有模态能力。
-        { "Dialog",       "JZDialog" },
-        { "Canvas",       "JZCanvas" },
-        { "Label",        "JZLabel" },
-        { "ImageLabel",   "JZLabel" },
-        { "PushButton",   "JZPushButton" },
-        { "LineEdit",     "JZLineEdit" },
-        { "CheckBox",     "JZCheckbox" },
-        { "RadioButton",  "JZRadioButton" },
-        { "ComboBox",     "JZComboBox" },
-        { "Slider",       "JZSlider" },
-        { "ProgressBar",  "JZProgressBar" },
-        { "SpinBox",      "JZSpinBox" },
-        { "GroupBox",     "JZGroupBox" },
-        { "Chart",        "JZChart" },
-        { "Layout",       "JZLayout" },
-        { "VBoxLayout",   "JZVBoxLayout" },
-        { "HBoxLayout",   "JZHBoxLayout" },
-        { "GridLayout",   "JZGridLayout" },
-        // ---- 补齐(2026-09-14): 原表只覆盖了一部分已注册控件, 缺的会让 createUi 直接失败
-        //      ("未知控件类型: xxx(引擎未注册该类)"), 而它们在 JZJSWidgetModule 里其实都注册了。
-        //      注1: 只有**树里实际用到**的类型才会写进生成脚本, 所以给全没有副作用(未用到的映射是惰性的);
-        //      注2: 映射目标必须是真正注册过的类, 否则用到时会 undefined —— 下表均为已注册控件。
-        { "Widget",        "JZWidget" },
-        { "Switch",        "JZSwitch" },
-        { "ListWidget",    "JZListWidget" },
-        { "TableWidget",   "JZTableWidget" },
-        { "StackedWidget", "JZStackedWidget" },
-        { "TabWidget",     "JZTabWidget" },
-        { "TextEdit",      "JZTextEdit" },
-        { "ScrollArea",    "JZScrollArea" },
-        { "ScrollBar",     "JZScrollBar" },
-        { "Splitter",      "JZSplitter" },
-        { "MenuBar",       "JZMenuBar" },
-        { "Menu",          "JZMenu" },
-        { "Action",        "JZAction" },
-        // 未注册/暂无对应(用到会 undefined): TreeWidget(JZTreeWidget 尚未绑定到 JS)。
-    };
-    return m;
-}
-
-bool uiIsWindow(const std::string& t) {
-    return t == "Window" || t == "MainWindow" || t == "Dialog";
-}
-bool uiIsLayout(const std::string& t) {
-    return t == "Layout" || t == "VBoxLayout" || t == "HBoxLayout" || t == "GridLayout";
-}
-bool uiHasText(const std::string& t) {
-    return t == "Label" || t == "ImageLabel" || t == "PushButton" ||
-           t == "LineEdit" || t == "CheckBox" || t == "RadioButton";
-}
-bool uiHasTitle(const std::string& t) {
-    return uiIsWindow(t) || t == "GroupBox" || t == "Chart";
-}
-// 下面几个白名单, 逐个对应 JZJSWidgetModule 里**真实绑定了 setter** 的控件类型。
-// 没绑定的一律不放行(否则生成的脚本一跑就抛"方法不存在"), 所以白名单必须与那边保持一致:
-//   setCurrentIndex: ComboBox / TabWidget / StackedWidget / ListWidget
-//   setChecked:      CheckBox / RadioButton
-//   setReadOnly:     LineEdit / TextEdit / SpinBox
-//   setPlaceholderText: LineEdit / TextEdit
-//   setMinimum/setMaximum: 目前只有 SpinBox
-bool uiHasCurrentIndex(const std::string& t) {
-    return t == "ComboBox" || t == "TabWidget" ||
-           t == "StackedWidget" || t == "ListWidget";
-}
-// 注: ComboBox 也支持 setCurrentIndex(已并入上面的白名单), 这样 <property name="currentIndex">
-//     能在生成脚本里正确落到 addItem 之后(项齐了再选, 否则索引被夹成 -1)。
-bool uiHasChecked(const std::string& t) {
-    return t == "CheckBox" || t == "RadioButton";
-}
-bool uiHasReadOnly(const std::string& t) {
-    return t == "LineEdit" || t == "TextEdit" || t == "SpinBox";
-}
-bool uiHasPlaceholder(const std::string& t) {
-    return t == "LineEdit" || t == "TextEdit";
-}
-bool uiHasRange(const std::string& t) {
-    return t == "SpinBox";
-}
-
-// 子控件挂载方式: 按**父控件类型**决定一个 <widget> 子节点如何挂上去。
-// 通用容器(JZWidget / GroupBox 等)用 setParentWidget; 窗口用 addWidget;
-// 下面这些控件有**专属**接口, 不能用通用布局/setParentWidget:
-//   MainWindow    -> 单中央控件 setCentralWidget(菜单栏用 addMenuBar)
-// 注: UiMount 的枚举定义已上移到 TsGen 之前(两个 generator 都要在文件前部看到它)。
-
-
-UiMount uiMountMode(const std::string& t)
-{
-    if (t == "MainWindow")    return UiMount::Central;
-    if (t == "StackedWidget") return UiMount::Stack;
-    if (t == "Splitter")      return UiMount::Splitter;
-    if (t == "TabWidget")     return UiMount::Tab;
-    if (t == "ScrollArea")    return UiMount::Scroll;
-    if (t == "ComboBox" || t == "ListWidget" || t == "TableWidget")
-        return UiMount::None;
-    if (uiIsWindow(t))        return UiMount::WindowAdd;   // Window / Dialog(不含 MainWindow)
-    return UiMount::Parent;                           // JZWidget / GroupBox / ...
-}
-
-// 接受 <layout> 子控件的父控件: 只有"通用布局宿主"(Window/Dialog/Widget/GroupBox)。
-// MainWindow/Stacked/Splitter/Tab/Scroll/非容器都不接受 setLayout(各自有固定内部布局)。
-bool uiAcceptsLayout(const std::string& t)
-{
-    UiMount m = uiMountMode(t);
-    return m == UiMount::Parent || m == UiMount::WindowAdd;
-}
-
-// 列表型控件(用 <item> 子元素而非 widget 子控件): ComboBox / ListWidget
-bool uiIsItemHost(const std::string& t)
-{
-    return t == "ComboBox" || t == "ListWidget";
-}
-
-// 菜单结构节点(Menu/Action/Separator)由 addMenu/addAction/addSeparator 构造,
-// 不是经 __mk 创建的控件类, 不进 __types, 也不参与"未知类型"校验。
-bool uiIsMenuStructure(const std::string& t)
-{
-    return t == "Menu" || t == "Action" || t == "Separator";
-}
-
-// TabWidget.addTab 的标签: 取子控件的 title 属性, 否则 id, 否则空串
-std::string uiTabLabel(const JZUiNode& child)
-{
-    if (child.props.isObject() && child.props.isMember("title")
-        && child.props["title"].isString())
-        return child.props["title"].asString();
-    return child.id;
-}
-
-// 文本类属性(text/title/placeholderText)要**强制按字符串**取值:
-// xmlPropToJson 会把纯数字文本("1000")推断成整数, 若直接字面量化就成了 setText(1000),
-// 而 setText/setTitle 只收 string —— 会抛"参数类型"错误。这里统一转成字符串。
-std::string uiPropText(const Json::Value& v) {
-    if (v.isString())
-        return v.asString();
-    if (v.isInt())
-        return std::to_string(v.asInt());
-    if (v.isDouble())
-        return std::to_string(v.asDouble());
-    if (v.isBool())
-        return v.asBool() ? std::string("true") : std::string("false");
-    return std::string();
-}
-
 // 生成脚本片段: 创建节点 + 属性 + 挂载子节点, 返回该节点的局部变量名。
 struct UiScriptGen {
     std::string out;
@@ -937,6 +415,7 @@ struct UiScriptGen {
         out += indent + "var " + var + " = __mk(" + tsLiteral(node.type) + ");\n";
 
         const Json::Value& props = node.props;
+        bool marginsDone = false;   // 四边 margin 只发一次 setContentsMargins(见下)
         if (props.isObject()) {
             for (auto it = props.begin(); it != props.end(); ++it) {
                 std::string key = it.name();
@@ -951,6 +430,12 @@ struct UiScriptGen {
                     out += indent + var + ".setText(" + tsLiteral(uiPropText(val)) + ");\n";
                 } else if (key == "title" && uiHasTitle(node.type)) {
                     out += indent + var + ".setTitle(" + tsLiteral(uiPropText(val)) + ");\n";
+                } else if (key == "styleSheet") {
+                    // 贴 Qt 的写法: 规则表与裸声明都收(裸声明包成规则; 与 C++ 侧同口径)
+                    out += indent + var + ".setStyleSheet("
+                        + tsLiteral(JZUiParser::styleSheetText(uiPropText(val),
+                                                               uiClassMap().at(node.type), node.id))
+                        + ");\n";
                 } else if (key == "style" && val.isObject()) {
                     out += indent + var + ".setStyleSheet(__css(" + tsLiteral(val) + "));\n";
                 }
@@ -966,10 +451,53 @@ struct UiScriptGen {
                 } else if (key == "placeholderText" && uiHasPlaceholder(node.type)
                            && (val.isString() || val.isInt())) {
                     out += indent + var + ".setPlaceholderText(" + tsLiteral(uiPropText(val)) + ");\n";
-                } else if (key == "minimum" && uiHasRange(node.type) && val.isInt()) {
+                } else if (key == "minimum" && uiHasRange(node.type) && (val.isInt() || val.isDouble())) {
                     out += indent + var + ".setMinimum(" + tsLiteral(val) + ");\n";
-                } else if (key == "maximum" && uiHasRange(node.type) && val.isInt()) {
+                } else if (key == "maximum" && uiHasRange(node.type) && (val.isInt() || val.isDouble())) {
                     out += indent + var + ".setMaximum(" + tsLiteral(val) + ");\n";
+                }
+                // 步进框通用: 值 / 后缀(整数框与小数框都有这两个 setter)
+                else if (key == "value" && uiHasRange(node.type) && (val.isInt() || val.isDouble())) {
+                    out += indent + var + ".setValue(" + tsLiteral(val) + ");\n";
+                } else if (key == "suffix" && uiHasRange(node.type)) {
+                    out += indent + var + ".setSuffix(" + tsLiteral(uiPropText(val)) + ");\n";
+                }
+                // 小数步进框专属
+                else if (key == "singleStep" && uiIsDoubleSpin(node.type) && (val.isInt() || val.isDouble())) {
+                    out += indent + var + ".setSingleStep(" + tsLiteral(val) + ");\n";
+                } else if (key == "decimals" && uiIsDoubleSpin(node.type) && val.isInt()) {
+                    out += indent + var + ".setDecimals(" + tsLiteral(val) + ");\n";
+                } else if (key == "prefix" && uiIsDoubleSpin(node.type)) {
+                    out += indent + var + ".setPrefix(" + tsLiteral(uiPropText(val)) + ");\n";
+                }
+                // 日期框: 方言里的日期就是**毫秒时间戳**(Qt 的 <date><year>..</year></date> 结构在转换
+                // 阶段折算成它), 这样两个后端共用一份口径, 各自不用再写日期解析。
+                else if (key == "dateMsecs" && uiIsDateEdit(node.type) && (val.isInt() || val.isDouble())) {
+                    out += indent + var + ".setDateMsecs(" + tsLiteral(val) + ");\n";
+                } else if (key == "displayFormat" && uiIsDateEdit(node.type)) {
+                    out += indent + var + ".setDisplayFormat(" + tsLiteral(uiPropText(val)) + ");\n";
+                } else if (key == "calendarPopup" && uiIsDateEdit(node.type) && val.isBool()) {
+                    out += indent + var + ".setCalendarPopup(" + tsLiteral(val) + ");\n";
+                }
+                // 布局的间距/边距: Qt 的 <property name="spacing"> / leftMargin... 这四个。
+                // 不处理的话网格排出来是"贴在一起"的 —— 引擎布局默认 gap=0, 而 Qt 用的是 style 默认
+                // 间距(Windows 上 6 左右), 所以转换后的界面普遍比原版"紧"。
+                else if (uiIsLayout(node.type) && key == "spacing" && val.isInt()) {
+                    out += indent + var + ".setSpacing(" + tsLiteral(val) + ");\n";
+                } else if (uiIsLayout(node.type) && uiLayoutMarginIndex(key) >= 0) {
+                    // 四边 margin: Qt 分四个独立属性, 引擎是一次性 setContentsMargins(l,t,r,b) ⇒
+                    // 遇到第一个就把整组发掉(缺的按 0), 其余三个不再重复发。
+                    if (!marginsDone) {
+                        marginsDone = true;
+                        int m[4] = {0, 0, 0, 0};
+                        const char* mn[4] = {"leftMargin", "topMargin", "rightMargin", "bottomMargin"};
+                        for (int k = 0; k < 4; k++)
+                            if (props.isMember(mn[k]) && props[mn[k]].isInt())
+                                m[k] = props[mn[k]].asInt();
+                        out += indent + var + ".setContentsMargins(" + std::to_string(m[0]) + ", "
+                            + std::to_string(m[1]) + ", " + std::to_string(m[2]) + ", "
+                            + std::to_string(m[3]) + ");\n";
+                    }
                 }
                 // 其余属性仍然不处理(避免调用不存在的 setter 抛异常) —— 引擎侧没绑的能用清单见
                 // 各 .ui 转换出来的 report.txt("被忽略的属性"一节)。
@@ -1008,10 +536,21 @@ struct UiScriptGen {
                 // 父是布局: 先登记进布局, 再把父子关系立起来 ——
                 // **不能**用 setParentWidget(布局): 布局不是控件, 那里会抛"需要 JZWidget"。
                 // 布局 addWidget 的真实形参: 箱式 (控件, stretch); 网格 (控件, row, col)。
-                // 这里按箱式给 stretch=0 —— 网格布局请让转换器映射成箱式
-                // (ui2jz.py 的 CLASS_MAP: QGridLayout -> VBoxLayout, 语义损失记在 report),
-                // 否则手写 <widget class="GridLayout"> 会因为形参个数不对而报错。
-                out += indent + var + ".addWidget(" + childExpr + ", 0);\n";
+                if (node.type == "GridLayout") {
+                    if (c.row < 0 || c.col < 0) {
+                        // 网格必须给位置: 按声明顺序静默竖排会得到一个"错得看不出来"的界面
+                        // (历史数据页的 QGridLayout 以前就是这样被降级成 VBoxLayout 的)。
+                        out += indent + "throw new Error(\"uiLoader: GridLayout \\\"" + node.id
+                            + "\\\" 的子控件 \\\"" + c.id + "\\\" 缺 row/column 属性\");\n";
+                        continue;
+                    }
+                    out += indent + var + ".addWidget(" + childExpr + ", "
+                        + std::to_string(c.row) + ", " + std::to_string(c.col) + ");\n";
+                } else {
+                    // 伸缩因子来自 <widget ... stretch="1">(Qt 的 <stretch>; 与 C++ 侧同口径)
+                    out += indent + var + ".addWidget(" + childExpr + ", "
+                        + std::to_string(c.stretch) + ");\n";
+                }
                 if (!ownerVar.empty())
                     out += indent + childExpr + ".setParentWidget(" + ownerVar + ");\n";
                 continue;
@@ -1092,7 +631,7 @@ struct UiScriptGen {
     }
 };
 
-} // namespace
+}  // namespace
 
 JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
 {
@@ -1178,3 +717,4 @@ JSValue JZJSUiLoader::createUi(JZJSEngine* engine) const
     }
     return JS_DupValue(engine->context(), res.get());
 }
+

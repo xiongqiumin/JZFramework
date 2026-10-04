@@ -670,6 +670,22 @@ void JZJSEngine::initJSEnv()
     m_processExitRequested = false;
 
     m_rt = JS_NewRuntime();
+
+    // Debug 下的泄漏转储: 设环境变量 JZ_JS_LEAK_DUMP=1 时, JS_FreeRuntime 在**释放前/断言前**
+    // 会把"引用计数仍不为 0(即被 JS 堆之外持有)的对象"按类名+引用计数打出来
+    // (quickjs.c 的 `Object leaks:`, 需要 ENABLE_DUMPS —— 它在 !NDEBUG 下自动定义, 见 quickjs.c:84-86;
+    //  Release 里 JS_SetDumpFlags 是空实现, 所以这里也用 #if 兜一层省得白调)。
+    // 用途: 定位 `list_empty(&rt->gc_obj_list)` 断言里"退出时谁还抱着 JS 值"。
+#if !defined(NDEBUG)
+    if (getenv("JZ_JS_LEAK_DUMP"))
+    {
+        JS_SetDumpFlags(m_rt, JS_DUMP_LEAKS);
+        // 那份清单是 quickjs 用 printf 打的, 而它后面紧跟的 assert 会弹框/abort ——
+        // stdout 一旦是块缓冲(重定向到文件/管道时就是), 清单会连同缓冲区一起丢掉。这里改无缓冲。
+        setvbuf(stdout, NULL, _IONBF, 0);
+    }
+#endif
+
     m_ctx = JS_NewContext(m_rt);
     m_global = JS_GetGlobalObject(m_ctx);
 
@@ -710,6 +726,10 @@ void JZJSEngine::deinitJSEnv()
 
         JS_FreeValue(m_ctx, m_global);
         JS_FreeValue(m_ctx, m_processArgv);      // 全局 process.argv 那个数组(属性里那份自己释放)
+        // 注: 曾经想过在这里先 JS_RunGC 一遍、指望"归 JS 所有的 C++ 对象(控件/列表项)提前析构从而
+        // 释放它们槽里的 JS 值" —— **没用**: 那些 wrapper 此刻仍被 JS 侧引用(模块作用域/控件树),
+        // GC 收不掉。真正的解法是别把 JS 值留在 C++ 侧(列表业务数据槽已改存 JS 侧, 见
+        // JZJSWidgetModule::setItemData)。
         JS_FreeContext(m_ctx);
         JS_FreeRuntime(m_rt);
         setStatus(Engine_none);

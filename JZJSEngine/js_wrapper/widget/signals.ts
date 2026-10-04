@@ -25,6 +25,8 @@ declare const JZRadioButton: any;
 declare const JZSlider: any;
 declare const JZComboBox: any;
 declare const JZSpinBox: any;
+declare const JZDoubleSpinBox: any;
+declare const JZDateEdit: any;
 declare const JZSwitch: any;
 declare const JZTextEdit: any;
 declare const JZListWidget: any;
@@ -87,6 +89,10 @@ defProps(typeof JZRadioButton !== 'undefined' ? JZRadioButton : undefined, ['onT
 defProps(typeof JZSlider !== 'undefined' ? JZSlider : undefined, ['onValueChanged']);
 defProps(typeof JZComboBox !== 'undefined' ? JZComboBox : undefined, ['onCurrentIndexChanged', 'onCurrentTextChanged']);
 defProps(typeof JZSpinBox !== 'undefined' ? JZSpinBox : undefined, ['onValueChanged']);
+// 小数步进框: onValueChanged 与 JZSpinBox 同名(原型链上本来也有), 这里显式装一遍保持"每类都声明"的惯例
+defProps(typeof JZDoubleSpinBox !== 'undefined' ? JZDoubleSpinBox : undefined, ['onValueChanged']);
+// 日期框: 日期变化回调带一个 Date(见 C++ 侧 ensureConnected(JZSigDateTime)); 文本类信号继承 JZLineEdit
+defProps(typeof JZDateEdit !== 'undefined' ? JZDateEdit : undefined, ['onDateChanged']);
 defProps(typeof JZSwitch !== 'undefined' ? JZSwitch : undefined, ['onToggled']);
 defProps(typeof JZTextEdit !== 'undefined' ? JZTextEdit : undefined, ['onTextChanged']);
 defProps(typeof JZListWidget !== 'undefined' ? JZListWidget : undefined, ['onCurrentIndexChanged', 'onActivated', 'onDataChanged']);

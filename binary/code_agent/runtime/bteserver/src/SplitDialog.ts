@@ -10,7 +10,7 @@
 import { tr, sprintf } from './BTEServer.js';
 import { UiHelper } from './Common.js';
 import { SplitSettingWidget, ExportSplitResult } from './SplitSettingWidget.js';
-import { SPLITDIALOG_UI_XML } from './ui/SPLITDIALOG_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 // ---------------------------------------------------------------------------
 // class SplitDialog : public QDialog
@@ -27,7 +27,7 @@ export class SplitDialog
         this.recordList = [];   // QVector<BTERecordPtr> recordList;
 
         // 真 UI: 原版 SplitDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
-        this.ui = uiLoader.load(SPLITDIALOG_UI_XML);
+        this.ui = loadUiFile('SplitDialog.ui');
         // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
 

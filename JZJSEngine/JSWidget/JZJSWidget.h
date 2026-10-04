@@ -73,6 +73,8 @@ void *js_JZSlider_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZProgressBar_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZComboBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZSpinBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZDoubleSpinBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
+void *js_JZDateEdit_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZGroupBox_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZChart_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);
 void *js_JZImageLabel_ctor(JZJSEngine *engine, int argc, JSValueConst *argv);

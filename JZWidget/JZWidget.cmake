@@ -205,3 +205,38 @@ else()
     # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
     message(STATUS "[JZWidget] No render backend on this platform (logic only)")
 endif()
+
+# ---- UI 定义加载器: 解析/方言(JZUiParser) + C++ 侧建控件(JZUiLoader) ----
+# 与 JS 侧 JZJSEngine/JZJSUiLoader 共用同一份解析与方言(见 JZUiParser.h), 只把"生成控件"分开。
+set(JZ_UI_LOADER_SOURCES
+    JZUiParser.h
+    JZUiParser.cpp
+    JZUiLoader.h
+    JZUiLoader.cpp
+)
+convert_to_abs_paths(JZ_UI_LOADER_SOURCES)
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_UI_LOADER_SOURCES})
+
+# ---- .ui -> C++ 代码生成器(与 JZUiParser 同一套方言; 构建期由 tools/jz_uic 驱动) ----
+set(JZ_UI_CPP_GEN_SOURCES
+    JZUiCppGen.h
+    JZUiCppGen.cpp
+)
+convert_to_abs_paths(JZ_UI_CPP_GEN_SOURCES)
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_UI_CPP_GEN_SOURCES})
+
+# ---- 日期编辑框: 接口先落地, 实现留空(见 JZDateEdit.h) ----
+set(JZ_DATE_EDIT_SOURCES
+    JZDateEdit.h
+    JZDateEdit.cpp
+)
+convert_to_abs_paths(JZ_DATE_EDIT_SOURCES)
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_DATE_EDIT_SOURCES})
+
+# ---- 小数步进框(对齐 Qt QDoubleSpinBox; 见 JZDoubleSpinBox.h) ----
+set(JZ_DOUBLE_SPIN_BOX_SOURCES
+    JZDoubleSpinBox.h
+    JZDoubleSpinBox.cpp
+)
+convert_to_abs_paths(JZ_DOUBLE_SPIN_BOX_SOURCES)
+target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZ_DOUBLE_SPIN_BOX_SOURCES})

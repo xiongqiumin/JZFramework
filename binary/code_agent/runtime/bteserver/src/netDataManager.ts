@@ -53,6 +53,10 @@ export class NetDataManager
         // struct SessionInfo { QTcpSocket *socket; QVector<NetPackPtr> packList; QByteArray buffer; };
         this.SessionInfo = class SessionInfo
         {
+            // 原 C++: struct SessionInfo { QTcpSocket *socket; QVector<NetPackPtr> packList;
+            //          QByteArray buffer; }; —— 动态成员, 与本工程其它类同一套写法。
+            [key: string]: any;
+
             constructor()
             {
                 this.socket = null;
@@ -277,7 +281,8 @@ export class NetDataManager
             }
             pack_buffer = buffer.data.slice(start, start + bodySize);
 
-            const pack = NetPackManager.instance().createPack(NETPACK_VARIANT);
+            // let(不是 const): unPack 失败时下面要把它置 null(对应 C++ 的 delete pack)
+            let pack = NetPackManager.instance().createPack(NETPACK_VARIANT);
             pack.info = head;
             if (pack.unPack(pack_buffer))
                 this.m_sessionInfo.get(sessionId).packList.push(pack);

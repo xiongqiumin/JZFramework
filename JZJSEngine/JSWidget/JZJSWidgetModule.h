@@ -10,6 +10,7 @@
 #include <typeinfo>
 
 #include "JZJSEngine.h"
+#include "JZObjectPointer.h"
 #include "JZColor.h"
 #include "JZSignal.h"
 #include "quickjs/quickjs.h"
@@ -27,6 +28,7 @@ class JZWidget;
 class JZVBoxLayout;
 class JZCanvas;
 class JZPainter;
+class JZListWidget;
 
 // jsbind::ClassBind<C>(defSignalProperty 的形参类型; 定义在 JZJSBind.h, 这里只要前向声明)
 namespace jsbind { template <class T> class ClassBind; }
@@ -289,6 +291,15 @@ private:
     // 底层对象由模块 delete, 这份视图要 disarmOpaque 作废, 否则 JS 侧会读到悬垂指针、或在 GC 时重复 delete。
     JSValue m_paintView = JS_UNDEFINED;
 
+    // 列表业务数据槽(jz_list.setItemData/itemData)的数据存 **JS 侧** —— 挂在列表自己的 JS 包装
+    // 对象的动态属性上(属性名见 .cpp 的 JZ_ITEM_DATA_PROP)。C++ 侧不长期持有 JS 值:
+    // 以前存在 C++(JZListWidgetItem 的 JZVariant 里包 JZJSValuePtr), 而列表归 JS 所有、要等
+    // JS_FreeRuntime 里那次 GC 才析构 —— 那时 ctx 已释放, guard 的 JS_FreeValue 放不动, 引用计数
+    // 停在 1 -> gc_obj_list 非空 -> quickjs.c:2350 断言(2026-10-04 踩过)。数据放 JS 堆就没这问题,
+    // 生命周期随列表的 JS 对象(GC)天然正确, 也省掉 JZVariant 往返。
+    JSValue itemDataArray(JZListWidget* l, bool create);     // 拿不到 JS 包装返回 undefined; 否则**新引用**
+    void syncItemData(JZListWidget* l, int kind, int index); // 项增删时同步: 0=插入 1=删除 2=清空
+
     // ---- JS 事件转发的内部实现 ----
     // 该槽设了回调就转发并返回 true(事件被拦下), 否则返回 false(放行走原生实现)
     template <class E>
@@ -333,6 +344,9 @@ public:
     void ensureConnected(JZObject* owner, JZSigBool& sig, const char* name);
     void ensureConnected(JZObject* owner, JZSigInt& sig, const char* name);
     void ensureConnected(JZObject* owner, JZSigString& sig, const char* name);
+    void ensureConnected(JZObject* owner, JZSigDouble& sig, const char* name);
+    // 日期类信号: 递给 JS 的实参转成内建 Date(与 JS 侧 Date 直接对齐, getTime/asDate 都能吃)
+    void ensureConnected(JZObject* owner, JZSigDateTime& sig, const char* name);
     void ensureConnected(JZObject* owner, JZSignal<int, int>& sig, const char* name);
 
     // 注册一个信号(各控件注册处一行):

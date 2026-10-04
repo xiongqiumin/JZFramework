@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import { tr } from './BTEServer.js';
-import { DEVICEMACDIALOG_UI_XML } from './ui/DEVICEMACDIALOG_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 // ---------------------------------------------------------------------------
 // class DeviceMacDialog : public QDialog
@@ -21,7 +21,7 @@ export class DeviceMacDialog
 
         // 真 UI: 原版 DeviceMacDialog.ui 转换出的 XML。root 是**新窗口**(JZDialog), 不是 this
         // —— 与 uic 的 `setupUi(this)` 不同, 下面统一用 this.ui.<控件> / this.ui.<窗口方法>。
-        this.ui = uiLoader.load(DEVICEMACDIALOG_UI_XML);
+        this.ui = loadUiFile('DeviceMacDialog.ui');
         // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
         this.dev = this.mac = 0;

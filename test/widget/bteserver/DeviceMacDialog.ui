@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DeviceMacDialog.ui —— 对应原版 bteserver/BTEServer/DeviceMacDialog.ui
+  (设备列表右键菜单"更改中位机IP"打开的框: 两个 1..255 的数字)。
+  原版给两个 LineEdit 挂了 QIntValidator(1..255); 引擎的 JZLineEdit 没有 validator ⇒
+  在对话框代码里自己夹一下范围(见 DeviceMacDialog.cpp)。
+-->
+<ui version="1.0">
+  <widget class="Dialog" name="DeviceMacDialog">
+    <property name="geometry">0 0 300 140</property>
+    <property name="title">更改中位机IP</property>
+    <widget class="VBoxLayout" name="mainLayout">
+      <widget class="Widget" name="formRow">
+        <widget class="HBoxLayout" name="formLayout">
+          <widget class="Label" name="lblDevice">
+            <property name="text">设备号</property>
+          </widget>
+          <widget class="LineEdit" name="lineDevice"/>
+        </widget>
+      </widget>
+      <widget class="Widget" name="formRow2">
+        <widget class="HBoxLayout" name="formLayout2">
+          <widget class="Label" name="lblMac">
+            <property name="text">中位机号</property>
+          </widget>
+          <widget class="LineEdit" name="lineMac"/>
+        </widget>
+      </widget>
+      <widget class="Widget" name="btnRow">
+        <widget class="HBoxLayout" name="btnLayout">
+          <widget class="PushButton" name="btnOk">
+            <property name="text">确定</property>
+          </widget>
+          <widget class="PushButton" name="btnCancel">
+            <property name="text">取消</property>
+          </widget>
+        </widget>
+      </widget>
+    </widget>
+  </widget>
+</ui>

@@ -377,3 +377,58 @@ function(jz_add_proto_json TARGET_NAME)
     target_include_directories(${TARGET_NAME} PUBLIC "${JZFRAMEWORK_ROOT_DIR}/JZJson")
     target_include_directories(${TARGET_NAME} PUBLIC "${JZFRAMEWORK_ROOT_DIR}/JZJson/json/include")
 endfunction()
+
+# ==================== .ui -> C++ 代码生成 (uic 风格) ====================
+# 用法: jz_add_ui(<target> <a.ui> [<b.ui> ...])
+#   每个 .ui(uiLoader 方言)在构建期生成 <build>/generated/<target>/ui_<name>.h, 内容是
+#       namespace Ui { class <name>Ui { ...控件成员... std::map<std::string,JZWidget*> byId;
+#                                        void setupUi(); }; }
+#   并把该目录加进 <target> 的包含路径 —— 调用方 #include "ui_<name>.h" 后:
+#       Ui::<name>Ui ui;  ui.setupUi();  ui.listWidget->appendItem(...);
+#
+#   与 jz_add_resources 的分工: 那个是"资源 -> 静态库"; 这个是"界面 -> 头文件(编译进 <target>)",
+#   所以不另建库、只往 <target> 挂生成头 + 包含目录(风格与 Qt 的 qt5_wrap_ui 类似)。
+#   .ui 文件**保留**在源码树里当源头(改它重新构建即重新生成), 生成物在 build 目录里, 不要手改。
+#   生成器: tools/jz_uic(C++; 方言逻辑复用 JZUiParser, 与运行期 JZUiLoader / JS 生成器同源)
+function(jz_add_ui TARGET_NAME)
+    if(NOT TARGET jz_uic)
+        message(FATAL_ERROR "JZFramework: jz_add_ui 需要 jz_uic 目标(见 tools/jz_uic); 构建顺序有问题?")
+    endif()
+
+    set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/${TARGET_NAME}")
+    file(MAKE_DIRECTORY "${GEN_DIR}")
+
+    set(OUT_HS "")
+    foreach(UI_FILE ${ARGN})
+        # 名字: BTEServer.ui / BTEServer.ui.xml 都取 "BTEServer"
+        get_filename_component(UI_NAME "${UI_FILE}" NAME_WE)
+        if(UI_NAME MATCHES "\\.ui$")
+            string(REGEX REPLACE "\\.ui$" "" UI_NAME "${UI_NAME}")
+        endif()
+
+        set(OUT_H "${GEN_DIR}/ui_${UI_NAME}.h")
+
+        if(NOT IS_ABSOLUTE "${UI_FILE}")
+            set(UI_ABS "${CMAKE_CURRENT_SOURCE_DIR}/${UI_FILE}")
+        else()
+            set(UI_ABS "${UI_FILE}")
+        endif()
+        if(NOT EXISTS "${UI_ABS}")
+            message(FATAL_ERROR "JZFramework: .ui 文件不存在: ${UI_ABS}")
+        endif()
+
+        add_custom_command(
+            OUTPUT "${OUT_H}"
+            COMMAND "$<TARGET_FILE:jz_uic>" "${UI_ABS}" -o "${OUT_H}"
+            DEPENDS "${UI_ABS}" jz_uic
+            COMMENT "Generating UI C++ code: ${UI_FILE} -> ${OUT_H}"
+            VERBATIM)
+
+        list(APPEND OUT_HS "${OUT_H}")
+        message(STATUS "[JZFramework] UI: ${UI_FILE} -> ${OUT_H}")
+    endforeach()
+
+    # 生成头作为 <target> 的源之一: 生成规则随目标走(改 .ui 会重新生成并重新编译)
+    target_sources(${TARGET_NAME} PRIVATE ${OUT_HS})
+    target_include_directories(${TARGET_NAME} PUBLIC "${GEN_DIR}")
+endfunction()

@@ -23,6 +23,8 @@
 #include "JZProgressBar.h"
 #include "JZComboBox.h"
 #include "JZSpinBox.h"
+#include "JZDoubleSpinBox.h"
+#include "JZDateEdit.h"
 #include "JZGroupBox.h"
 #include "JZChart.h"
 #include "JZImageLabel.h"
@@ -332,6 +334,8 @@ JZ_WIDGET_CTOR_PARENT_ONLY(js_JZSlider_ctor,      JZSlider,      "JZSlider")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZProgressBar_ctor, JZProgressBar, "JZProgressBar")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZComboBox_ctor,    JZComboBox,    "JZComboBox")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZSpinBox_ctor,     JZSpinBox,     "JZSpinBox")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZDoubleSpinBox_ctor, JZDoubleSpinBox, "JZDoubleSpinBox")
+JZ_WIDGET_CTOR_PARENT_ONLY(js_JZDateEdit_ctor,     JZDateEdit,    "JZDateEdit")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZChart_ctor,       JZChart,       "JZChart")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZImageLabel_ctor,  JZImageLabel,  "JZImageLabel")
 JZ_WIDGET_CTOR_PARENT_ONLY(js_JZListWidget_ctor,  JZListWidget,  "JZListWidget")

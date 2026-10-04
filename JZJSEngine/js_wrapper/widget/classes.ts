@@ -34,6 +34,8 @@ declare function init_c_slider(self: any, ...args: any[]): void;
 declare function init_c_progress_bar(self: any, ...args: any[]): void;
 declare function init_c_combo_box(self: any, ...args: any[]): void;
 declare function init_c_spin_box(self: any, ...args: any[]): void;
+declare function init_c_double_spin_box(self: any, ...args: any[]): void;
+declare function init_c_date_edit(self: any, ...args: any[]): void;
 declare function init_c_group_box(self: any, ...args: any[]): void;
 declare function init_c_switch(self: any, ...args: any[]): void;
 declare function init_c_text_edit(self: any, ...args: any[]): void;
@@ -123,6 +125,13 @@ const JZSlider      = defWidgetClass('JZSlider',      JZWidget, 'init_c_slider')
 const JZProgressBar = defWidgetClass('JZProgressBar', JZWidget, 'init_c_progress_bar');
 const JZComboBox    = defWidgetClass('JZComboBox',    JZWidget, 'init_c_combo_box');
 const JZSpinBox     = defWidgetClass('JZSpinBox',     JZWidget, 'init_c_spin_box');
+// 小数步进框(对齐 Qt QDoubleSpinBox): 与 JZSpinBox 同一形状, 只是值/范围/步长走 double 口径。
+// ⚠ JS 侧继承链必须与 C++ 一致(JZDoubleSpinBox : JZSpinBox) —— 同名方法在子类原型上遮蔽父类那份。
+const JZDoubleSpinBox = defWidgetClass('JZDoubleSpinBox', JZSpinBox, 'init_c_double_spin_box');
+// 日期编辑框(对齐 Qt QDateEdit; C++ 侧实现仍是骨架, 见 JZWidget/JZDateEdit.h):
+// C++ 只给 setDateMsecs/dateMsecs 这类"原始口径", Qt 形状的 setDate(Date)/dateTime()
+// 由 ./dates.ts 装到本类原型上。
+const JZDateEdit    = defWidgetClass('JZDateEdit',    JZLineEdit, 'init_c_date_edit');
 const JZGroupBox    = defWidgetClass('JZGroupBox',    JZWidget, 'init_c_group_box');
 const JZSwitch      = defWidgetClass('JZSwitch',      JZWidget, 'init_c_switch');
 const JZTextEdit    = defWidgetClass('JZTextEdit',    JZWidget, 'init_c_text_edit');
@@ -141,12 +150,14 @@ const JZScrollBar   = defWidgetClass('JZScrollBar',   JZWidget, 'init_c_scroll_b
 // 重建类会换掉原型, 而 C++ 挂上去的方法在旧原型上(new 出来的对象就"没有方法"了)。
 (globalThis as any).__jzWidgetClasses = __installed || {
     JZWidget, JZWindow, JZMainWindow, JZDialog, JZMenuBar, JZLabel, JZPushButton, JZLineEdit,
+    JZDateEdit, JZDoubleSpinBox,
     JZCheckbox, JZRadioButton, JZSlider, JZProgressBar, JZComboBox, JZSpinBox, JZGroupBox,
     JZSwitch, JZTextEdit, JZChart, JZImageLabel, JZListWidget, JZTableWidget, JZStackedWidget,
     JZTabWidget, JZSplitter, JZScrollArea, JZScrollBar,
 };
 
 export { JZWidget, JZWindow, JZMainWindow, JZDialog, JZMenuBar, JZLabel, JZPushButton, JZLineEdit,
+         JZDateEdit, JZDoubleSpinBox,
          JZCheckbox, JZRadioButton, JZSlider, JZProgressBar, JZComboBox, JZSpinBox, JZGroupBox,
          JZSwitch, JZTextEdit, JZChart, JZImageLabel, JZListWidget, JZTableWidget, JZStackedWidget,
          JZTabWidget, JZSplitter, JZScrollArea, JZScrollBar };

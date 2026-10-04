@@ -93,7 +93,7 @@ export function crc32(buf)
 // ---------------------------------------------------------------------------
 export function unpackSendInfo(body) {
     const r = new ByteReader(body);
-    const o = {};
+    const o: any = {};
     o.version = r.u16();
     o.fixed = r.bytes(6);
     o.type = r.u8v();
@@ -124,7 +124,7 @@ export function unpackSendInfo(body) {
 // ---------------------------------------------------------------------------
 export function unpackRTData76(body) {
     const r = new ByteReader(body);
-    const o = {};
+    const o: any = {};
     o.dfDataPointer = r.i32();
     o.rtDataCount = r.u8v();
     o.dataFlag = r.u8v();
@@ -166,7 +166,7 @@ export function isChannelFault(rt) {
 // 记录点数据 (0x7D): DFDataNumber u8 | DFDataPointer i32 | n × Data(83)
 // ---------------------------------------------------------------------------
 export function unpackDFDataData(r) {
-    const d = {};
+    const d: any = {};
     d.dataFlag = r.u8v();          // 0x55 平台点容量 / 0x56 / 0x57 / 0x58 工步终止 / 0x59 工步起始 / 0xAA LOG / 0x6A 上传完成 / 0xBB DCR
     d.subDevId = r.u8v();
     d.channelIdByNum = r.u8v();
@@ -201,7 +201,7 @@ export function unpackDFDataData(r) {
 
 export function unpackDFData76(body) {
     const r = new ByteReader(body);
-    const o = {};
+    const o: any = {};
     o.dfDataNumber = r.u8v();
     o.dfDataPointer = r.i32();
     o.dataList = [];
@@ -239,7 +239,7 @@ export function aTimeToMSec(a) {
 // 中位机日志 (0x0F)
 export function unpackSendLog(body) {
     const r = new ByteReader(body);
-    const o = {};
+    const o: any = {};
     o.logNumber = r.u8v();
     o.logIndex = r.u16();
     o.logSerial = r.u16();
@@ -287,7 +287,7 @@ export function unpackStepExResp76(body) {
 // 启动回应 (0xEE): Guid(16) + ChannelCount(1) + n × (ChannelIDByNum u8 + TestID i32)
 export function unpackStartResp70(body) {
     const r = new ByteReader(body);
-    const o = {};
+    const o: any = {};
     o.guid = r.bytes(16);
     o.channelCount = r.u8v();
     o.channelInfo = [];
@@ -813,7 +813,9 @@ export class stru_BTS_CMD_START70 extends stru_ChannelPackBase
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
     type() { return BTS_CMD_START70; }
-    constructor(src)
+    // C++ 侧是两个构造(无参 + 拷贝语义的 const stru_BTS_CMD_START70 &src) ⇒ JS 侧合成一个:
+    // src 省略时就等价于 C++ 的无参构造(下面 if (src) 整段跳过)。
+    constructor(src = null)
     {
         super();
         this.Guid = new Uint8Array(16);
@@ -1010,6 +1012,20 @@ export class stru_BTS_CMD_STEP_JUMP_RESP extends stru_BTS_CMD_CHANNEL_RESP { }
 export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+
+    // ---- static 成员(原 PackDefine.h 的 enum ParamType + static 表) ----
+    // ⚠ 必须在**类体里**声明: 类外的 `X.ParamInfo = ...` 只做赋值、不给类补类型(TS2339)。
+    // enum ParamType { TYPE_NONE, TYPE_BITMAP, TYPE_PARAM, TYPE_RANGE, TYPE_ENUM };
+    static ParamInfo = {
+        TYPE_NONE: 0,
+        TYPE_BITMAP: 1,
+        TYPE_PARAM: 2,
+        TYPE_RANGE: 3,
+        TYPE_ENUM: 4,
+    };
+    // 64 项参数类型表(netPackDefine 初始化时按工步参数个数填 TYPE_PARAM, 首尾为 TYPE_NONE)
+    static typeList: number[] = new Array(64).fill(2);
+
     constructor()
     {
         this.StepLine = new Uint8Array(8);      // 参数位图: 两个 32 位(低 4 字节 + 高 4 字节)
@@ -1032,7 +1048,7 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
     // ---- 参数的统一读写 ----
     //   C++ 里"设置一个工步参数"同时做三件事: 记值 / 记比较符 / 置位图。这里同形收口。
     _get(i) { const v = this.paramList[i]; return (v === undefined) ? 0 : v; }
-    _set(i, v, op)
+    _set(i, v, op = null)
     {
         this.paramList[i] = v;
         if (op !== undefined && op !== null)
@@ -1332,18 +1348,9 @@ export class stru_BTS_CMD_SET_STEP76_Ex_StepInfo
     }
 }
 
-// enum ParamType { TYPE_NONE, TYPE_BITMAP, TYPE_PARAM, TYPE_RANGE, TYPE_ENUM };
-// (写成"类静态成员赋值"而不是 static class field: 与 PackDefine.js 的写法一致,
-//  也避免依赖引擎对 ES2022 静态字段的支持)
-stru_BTS_CMD_SET_STEP76_Ex_StepInfo.ParamInfo = {
-    TYPE_NONE: 0,
-    TYPE_BITMAP: 1,
-    TYPE_PARAM: 2,
-    TYPE_RANGE: 3,
-    TYPE_ENUM: 4,
-};
-// 64 项参数类型表(netPackDefine 初始化时按工步参数个数填 TYPE_PARAM, 首尾为 TYPE_NONE)
-stru_BTS_CMD_SET_STEP76_Ex_StepInfo.typeList = new Array(64).fill(2);
+// ParamInfo / typeList 已挪进类体(见 stru_BTS_CMD_SET_STEP76_Ex_StepInfo 开头)。
+// 注: 原来写成"类静态成员赋值"(类外) —— 那样 TS 不认(TS2339 "does not exist on type
+//     'typeof ...'"), 而实测引擎支持 ES2022 静态字段(2026-10-04 探针确认), 所以改成类体内声明。
 
 // C++: `struct stru_BTS_CMD_SET_STEP76_Ex : stru_BTS_CMD_STEP_REQUEST`(PackDefine.h:435)
 // —— 继承是必需的: BTEServer.send(netId, pack) 靠 `instanceof stru_BTS_CMD_STEP_REQUEST`

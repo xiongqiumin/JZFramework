@@ -43,12 +43,14 @@
 #include "JZLabel.h"
 #include "JZPushButton.h"
 #include "JZLineEdit.h"
+#include "JZDateEdit.h"
 #include "JZCheckBox.h"
 #include "JZRadioButton.h"
 #include "JZSlider.h"
 #include "JZProgressBar.h"
 #include "JZComboBox.h"
 #include "JZSpinBox.h"
+#include "JZDoubleSpinBox.h"
 #include "JZGroupBox.h"
 #include "JZChart.h"
 #include "JZSwitch.h"
@@ -729,6 +731,82 @@ JSValue JZJSWidgetModule::widgetJsView(JZWidget* widget)
     return JS_DupValue(m_engine->context(), js);
 }
 
+// ---------- 列表业务数据槽: 数据存 JS 侧(见 setItemData 的说明) ----------
+
+// 属性名(挂在列表的 JS 包装对象上)。用 __jz 前缀, 避开应用自己的动态属性。
+static const char* JZ_ITEM_DATA_PROP = "__jzItemData";
+
+// 取业务数据数组。create=true 时没有就造一个挂上去。
+// 返回**新引用**(调用方负责 JS_FreeValue); 拿不到列表的 JS 包装时返回 JS_UNDEFINED(借用常量)。
+JSValue JZJSWidgetModule::itemDataArray(JZListWidget* l, bool create)
+{
+    JSContext* ctx = m_engine ? m_engine->context() : nullptr;
+    if (!ctx || !l)
+        return JS_UNDEFINED;
+
+    JSValue obj = jsValueOf(l);   // 借用
+    if (JS_IsUndefined(obj))
+        return JS_UNDEFINED;
+
+    JSValue arr = JS_GetPropertyStr(ctx, obj, JZ_ITEM_DATA_PROP);
+    if (JS_IsUndefined(arr) && create)
+    {
+        JS_FreeValue(ctx, arr);
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyStr(ctx, obj, JZ_ITEM_DATA_PROP, JS_DupValue(ctx, arr));   // 属性自带一份
+    }
+    return arr;
+}
+
+// 项增删时同步数据数组, 保持"槽跟着项走"的语义(与以前"数据挂在 C++ 项上"一致):
+//   kind 0 = 在第 index 项前插入  -> splice(index, 0, undefined)(后面整体后移, 新项无数据)
+//   kind 1 = 摘掉第 index 项      -> splice(index, 1)
+//   kind 2 = 清空                 -> length = 0
+void JZJSWidgetModule::syncItemData(JZListWidget* l, int kind, int index)
+{
+    JSContext* ctx = m_engine ? m_engine->context() : nullptr;
+    if (!ctx || !l)
+        return;
+
+    JSValue arr = itemDataArray(l, false);
+    if (JS_IsUndefined(arr))
+        return;   // 从没存过业务数据: 没什么可同步的
+
+    if (kind == 2)
+    {
+        JS_SetPropertyStr(ctx, arr, "length", JS_NewInt32(ctx, 0));
+    }
+    else
+    {
+        JSValue splice = JS_GetPropertyStr(ctx, arr, "splice");
+        if (JS_IsFunction(ctx, splice))
+        {
+            JSValue args[3];
+            int argc = 2;
+            args[0] = JS_NewInt32(ctx, index);
+            args[1] = JS_NewInt32(ctx, (kind == 0) ? 0 : 1);
+            if (kind == 0)
+            {
+                args[2] = JS_UNDEFINED;
+                argc = 3;
+            }
+
+            JSValue ret = JS_Call(ctx, splice, arr, argc, args);
+            if (JS_IsException(ret))
+            {
+                // 内部同步失败不该影响调用方: 把挂起异常取走丢掉
+                JSValue e = JS_GetException(ctx);
+                JS_FreeValue(ctx, e);
+            }
+            JS_FreeValue(ctx, ret);
+            for (int i = 0; i < argc; i++)
+                JS_FreeValue(ctx, args[i]);
+        }
+        JS_FreeValue(ctx, splice);
+    }
+    JS_FreeValue(ctx, arr);
+}
+
 void JZJSWidgetModule::bindJsEventFilter(JZWidget* widget, JSValueConst value)
 {
     if (!m_engine || !widget)
@@ -1026,6 +1104,42 @@ void JZJSWidgetModule::ensureConnected(JZObject* owner, JZSigString& sig, const 
         if (JS_IsFunction(m_engine->context(), cb))
         {
             JSValue a = toJSValue(m_engine->context(), v);
+            callJsCallback(cb, owner, 1, &a);
+            JS_FreeValue(m_engine->context(), a);
+        }
+        JS_FreeValue(m_engine->context(), cb);
+    });
+}
+
+void JZJSWidgetModule::ensureConnected(JZObject* owner, JZSigDouble& sig, const char* name)
+{
+    if (!m_engine || !owner || !name)
+        return;
+
+    connect(&sig, this, [this, owner, name](double v) {
+        JSValue cb = slotValue(jsValueOf(owner), name);
+        if (JS_IsFunction(m_engine->context(), cb))
+        {
+            JSValue a = toJSValue(m_engine->context(), v);
+            callJsCallback(cb, owner, 1, &a);
+            JS_FreeValue(m_engine->context(), a);
+        }
+        JS_FreeValue(m_engine->context(), cb);
+    });
+}
+
+void JZJSWidgetModule::ensureConnected(JZObject* owner, JZSigDateTime& sig, const char* name)
+{
+    if (!m_engine || !owner || !name)
+        return;
+
+    // 日期直接给内建 Date(不是 C++ 值类型包装): JS 侧 `d.getTime()` / `d instanceof Date` /
+    // 兼容层的 asDate() 都按这个形状认, 与移植过来的 Qt 代码写法一致。
+    connect(&sig, this, [this, owner, name](const JZDateTime& v) {
+        JSValue cb = slotValue(jsValueOf(owner), name);
+        if (JS_IsFunction(m_engine->context(), cb))
+        {
+            JSValue a = JS_NewDate(m_engine->context(), (double)v.toMSecsSinceEpoch());
             callJsCallback(cb, owner, 1, &a);
             JS_FreeValue(m_engine->context(), a);
         }
@@ -2248,6 +2362,45 @@ void JZJSWidgetModule::registWidgets()
     bind_edit.setCreate(js_JZLineEdit_ctor);
     mountTransparentClass(bind_edit.classDefine());
 
+    // JZDateEdit —— 日期编辑框(2026-10-04; C++ 侧解析/微调/日历仍是 TODO, 见 JZDateEdit.h)。
+    // JS 侧这里只给"原始口径"两个方法(setDateMsecs/dateMsecs, 毫秒时间戳)：Qt 形状的
+    // setDate(Date)/dateTime()/date() 由 TS 包装层补(js_wrapper/widget/dates.ts) —— 与内建 Date
+    // 的换算只做一次, 而且 C++ 侧不用认识 JS 的 Date 对象。
+    // 文本接口(setText/text/placeholder/文本信号)继承 JZLineEdit 那份(本类在 C++ 侧派生于它,
+    // JS 侧也 extends JZLineEdit ⇒ 原型链上有; 那些方法内部 dynamic_cast<JZLineEdit*> 对本类成立)。
+    jsbind::ClassBind<JZDateEdit> bind_date("JZDateEdit", bind_edit);
+    bind_date.def("setDateMsecs", [this](JZObjectPointer* w, double ms) {
+        if (JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "setDateMsecs"))
+            d->setDate(JZDateTime::fromMSecsSinceEpoch((int64_t)ms));
+    });
+    bind_date.def("dateMsecs", [this](JZObjectPointer* w) {
+        JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "dateMsecs");
+        return d ? (double)d->date().toMSecsSinceEpoch() : 0.0;
+    });
+    bind_date.def("setDisplayFormat", [this](JZObjectPointer* w, const std::string& f) {
+        if (JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "setDisplayFormat"))
+            d->setDisplayFormat(f);
+    });
+    bind_date.def("displayFormat", [this](JZObjectPointer* w) {
+        JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "displayFormat");
+        return d ? d->displayFormat() : std::string();
+    });
+    bind_date.def("setCalendarPopup", [this](JZObjectPointer* w, bool on) {
+        if (JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "setCalendarPopup"))
+            d->setCalendarPopup(on);
+    });
+    bind_date.def("calendarPopup", [this](JZObjectPointer* w) {
+        JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "calendarPopup");
+        return d && d->calendarPopup();
+    });
+    bind_date.def("stepBy", [this](JZObjectPointer* w, int days) {
+        if (JZDateEdit* d = widgetFromThis<JZDateEdit>(w, "stepBy"))
+            d->stepBy(days);
+    });
+    defSignalProperty(bind_date, "onDateChanged", &JZDateEdit::dateChanged);   // 回调带 (Date)
+    bind_date.setCreate(js_JZDateEdit_ctor);
+    mountTransparentClass(bind_date.classDefine());
+
     // JZCheckBox
     jsbind::ClassBind<JZCheckbox> bind_check("JZCheckbox", bind_w);
     bind_check.def("setText", [this](JZObjectPointer* w, const std::string& t) {
@@ -2422,6 +2575,14 @@ void JZJSWidgetModule::registWidgets()
         JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "suffix");
         return s ? s->suffix() : std::string();
     });
+    bind_spin.def("setSpecialValueText", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZSpinBox* p = widgetFromThis<JZSpinBox>(w, "setSpecialValueText"))
+            p->setSpecialValueText(s);
+    });
+    bind_spin.def("specialValueText", [this](JZObjectPointer* w) {
+        JZSpinBox* p = widgetFromThis<JZSpinBox>(w, "specialValueText");
+        return p ? p->specialValueText() : std::string();
+    });
     bind_spin.def("setReadOnly", [this](JZObjectPointer* w, bool on) {
         if (JZSpinBox* s = widgetFromThis<JZSpinBox>(w, "setReadOnly"))
             s->setReadOnly(on);
@@ -2433,6 +2594,66 @@ void JZJSWidgetModule::registWidgets()
     defSignalProperty(bind_spin, "onValueChanged", &JZSpinBox::sigValueChanged);   // 回调带 (int)    
     bind_spin.setCreate(js_JZSpinBox_ctor);
     mountTransparentClass(bind_spin.classDefine());
+
+    // JZDoubleSpinBox —— 小数步进框(2026-10-04): 同名方法挂在自己的原型上, 于是 setValue/minimum/
+    // maximum 这些在小数框上走 double 口径(遮蔽父原型上那份); suffix/readOnly/setText 之类照样继承。
+    // 注: 基类的 setStep/step 是整数口径, 小数步长用 setSingleStep/singleStep。
+    jsbind::ClassBind<JZDoubleSpinBox> bind_dspin("JZDoubleSpinBox", bind_spin);
+    bind_dspin.def("setRange", [this](JZObjectPointer* w, double min, double max) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setRange"))
+            s->setRange(min, max);
+    });
+    bind_dspin.def("setMinimum", [this](JZObjectPointer* w, double v) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setMinimum"))
+            s->setMinimum(v);
+    });
+    bind_dspin.def("minimum", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "minimum");
+        return s ? s->minimum() : 0.0;
+    });
+    bind_dspin.def("setMaximum", [this](JZObjectPointer* w, double v) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setMaximum"))
+            s->setMaximum(v);
+    });
+    bind_dspin.def("maximum", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "maximum");
+        return s ? s->maximum() : 0.0;
+    });
+    bind_dspin.def("setSingleStep", [this](JZObjectPointer* w, double v) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setSingleStep"))
+            s->setSingleStep(v);
+    });
+    bind_dspin.def("singleStep", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "singleStep");
+        return s ? s->singleStep() : 0.0;
+    });
+    bind_dspin.def("setValue", [this](JZObjectPointer* w, double v) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setValue"))
+            s->setValue(v);
+    });
+    bind_dspin.def("value", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "value");
+        return s ? s->value() : 0.0;
+    });
+    bind_dspin.def("setDecimals", [this](JZObjectPointer* w, int n) {
+        if (JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "setDecimals"))
+            s->setDecimals(n);
+    });
+    bind_dspin.def("decimals", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "decimals");
+        return s ? s->decimals() : 0;
+    });
+    bind_dspin.def("setPrefix", [this](JZObjectPointer* w, const std::string& s) {
+        if (JZDoubleSpinBox* p = widgetFromThis<JZDoubleSpinBox>(w, "setPrefix"))
+            p->setPrefix(s);
+    });
+    bind_dspin.def("prefix", [this](JZObjectPointer* w) {
+        JZDoubleSpinBox* s = widgetFromThis<JZDoubleSpinBox>(w, "prefix");
+        return s ? s->prefix() : std::string();
+    });
+    defSignalProperty(bind_dspin, "onValueChanged", &JZDoubleSpinBox::sigValueChanged);   // 回调带 (number)
+    bind_dspin.setCreate(js_JZDoubleSpinBox_ctor);
+    mountTransparentClass(bind_dspin.classDefine());
 
     // JZGroupBox
     jsbind::ClassBind<JZGroupBox> bind_group("JZGroupBox", bind_w);
@@ -2737,11 +2958,17 @@ void JZJSWidgetModule::registViews()
     });
     bind_list.def("insertItem", [this](JZObjectPointer* w, int i, const std::string& t) {
         if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "insertItem"))
+        {
             l->insertItem(i, t);
+            syncItemData(l, 0, i);   // 业务数据数组跟着后移(新项无数据)
+        }
     });
     bind_list.def("clear", [this](JZObjectPointer* w) {
         if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "clear"))
+        {
             l->clear();
+            syncItemData(l, 2, 0);
+        }
     });
     bind_list.def("count", [this](JZObjectPointer* w) {
         JZListWidget* l = widgetFromThis<JZListWidget>(w, "count");
@@ -2776,6 +3003,7 @@ void JZJSWidgetModule::registViews()
         {
             l->clear();
             l->appendItems(jzJsToStringArray(m_engine->context(), texts, "JZListWidget.setItems"));
+            syncItemData(l, 2, 0);   // 整块重建: 业务数据也重来
         }
     });
     bind_list.def("items", [this](JZObjectPointer* w) {
@@ -2790,7 +3018,10 @@ void JZJSWidgetModule::registViews()
     });
     bind_list.def("removeItem", [this](JZObjectPointer* w, int i) {
         if (JZListWidget* l = widgetFromThis<JZListWidget>(w, "removeItem"))
+        {
             delete l->takeItem(i);   // 摘除并真删
+            syncItemData(l, 1, i);   // 业务数据数组同步摘掉
+        }
     });
     bind_list.def("setItemText", [this](JZObjectPointer* w, int i, const std::string& s) {
         JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItemText");
@@ -2799,30 +3030,52 @@ void JZJSWidgetModule::registViews()
     });
     // 项的业务数据槽: 原样持有 JS 值(取回来还是同一个对象), 与文本分开 —— 老代码用 item.setData(...)
     // 挂 [netId, DeviceString] 这类负载, 迁到值级接口后用这两个口子(不回到 item 句柄)。
+    //
+    // ⚠ 数据存在 **JS 侧**: 挂在列表自己的 JS 包装对象的动态属性上(见 itemDataArray)。
+    //   为什么不在 C++ 侧存: 以前是存进 JZListWidgetItem 的 JZVariant(包 JZJSValuePtr), 而列表归
+    //   JS 所有、要等 JS_FreeRuntime 里那次 GC 才析构 —— 那时 ctx 已释放, guard 的 JS_FreeValue
+    //   放不动, 引用计数停在 1 -> gc_obj_list 非空 -> quickjs.c:2350 断言(2026-10-04 踩过)。
+    //   数据放 JS 堆里则随列表的 JS 对象一起被 GC, 生命周期天然正确, 也省掉 JZVariant 往返。
+    //   (项增删时数组要同步, 见 syncItemData —— 保持"槽跟着项走"的语义。)
     bind_list.def("setItemData", [this](JZObjectPointer* w, int i, JSValue v) {
         JZListWidget* l = widgetFromThis<JZListWidget>(w, "setItemData");
         if (!l)
             return;
-        JZListWidgetItem* it = l->item(i);
-        if (!it)
+        if (!l->item(i))
             throw std::runtime_error("JZListWidget.setItemData: 下标越界");
-        it->setData(JZVariant::fromValue(m_engine->makeValuePtr(JS_DupValue(m_engine->context(), v))));
+
+        JSContext* ctx = m_engine->context();
+        JSValue arr = itemDataArray(l, true);
+        if (JS_IsUndefined(arr))
+            return;   // 拿不到 JS 包装(理论上不会: 本调用就是从它的 JS 对象发出的)
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, JS_DupValue(ctx, v));   // 属性持一份
+        JS_FreeValue(ctx, arr);
     });
     bind_list.def("itemData", [this](JZObjectPointer* w, int i) -> JSValue {
-        // 直接交回 JS 值本身(同一对象), 不走 JZVariant 的通用转换 —— 通用转换不认 JZJSValuePtr,
-        // 拿回来会是个空值。C++ 侧塞的原生值(字符串/整数/浮点/布尔)顺手转一下, 其余给 undefined。
         JZListWidget* l = widgetFromThis<JZListWidget>(w, "itemData");
         if (!l)
             return JS_EXCEPTION;
+
         JZListWidgetItem* it = l->item(i);
         if (!it)
             return JS_UNDEFINED;
 
         JSContext* ctx = m_engine->context();
+
+        // JS 侧那份(交回同一个对象, 不走任何转换)
+        JSValue arr = itemDataArray(l, false);
+        if (!JS_IsUndefined(arr))
+        {
+            JSValue v = JS_GetPropertyUint32(ctx, arr, (uint32_t)i);
+            JS_FreeValue(ctx, arr);
+            if (!JS_IsUndefined(v))
+                return v;   // 新引用, 交给 JS
+            JS_FreeValue(ctx, v);
+        }
+
+        // 回退: C++ 侧直接塞过的原生值(字符串/整数/浮点/布尔)顺手转一下, 其余给 undefined。
         const JZVariant& d = it->data();
         const int t = d.typeId();
-        if (t == jzMetaTypeId<JZJSValuePtr>())
-            return JS_DupValue(ctx, d.valueRef<JZJSValuePtr>().get());
         if (t == jzMetaTypeId<bool>())
             return JS_NewBool(ctx, d.toBool());
         if (t == jzMetaTypeId<int>())

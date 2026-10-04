@@ -13,7 +13,7 @@ import { UiHelper, MAX_SPLIT_LEVEL } from './Common.js';
 import { formatDateTime } from './datetime.js';
 import { DataTrans } from './DataTrans.js';
 import { BTEProject, SplitInfo, g_project } from './BTEProject.js';
-import { SPLITSETTINGWIDGET_UI_XML } from './ui/SPLITSETTINGWIDGET_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 // 迁移: 弹窗/文件对话框改用引擎的真实现(JZMessageBox / JZFileDialog, 都是全局)。
 // 2026-09-14 去 Qt 兼容层: 原来的 QInputDialog 引擎还没绑定(JZInputDialog) ——
 // 见 on_btnSaveSplit_clicked 里的 TODO, 那一步先停用。
@@ -106,11 +106,11 @@ export class SplitSettingWidget
         // 2026-09-22 变更: 原来是手搓 6 个控件(2 表格 + 下拉 + 3 SpinBox), **漏了 4 个按钮**
         // (保存模版 / 删除模版 / 分选 / 等分) —— 于是下面那些 on_btnXxx_clicked 槽从来没有连接点,
         // 主窗口那边 wire('btnSaveSplit') 也找不到控件(一直打 "[connectUi] UI 里没有控件")。
-        // 现在改为吃 SPLITSETTINGWIDGET_UI_XML(由原 SplitSettingWidget.ui 转出, 控件名与 C++ 的
+        // 现在改为吃 ui/SplitSettingWidget.ui(由原 SplitSettingWidget.ui 转出, 控件名与 C++ 的
         // ui_* 一致): 控件齐、布局由 XML 给, 不再手写。
-        this.ui = uiLoader.load(SPLITSETTINGWIDGET_UI_XML);
+        this.ui = loadUiFile('SplitSettingWidget.ui');
         if (!this.ui)
-            throw new Error("SplitSettingWidget: uiLoader.load 返回空(XML 解析/建控件失败, 见引擎日志)");
+            throw new Error("SplitSettingWidget: loadUiFile 返回空(ui/SplitSettingWidget.ui 解析/建控件失败, 见引擎日志)");
         this.root = this.ui;                 // 载入对象本身就是控件本体(与 bteserverUi 的 createUi 同套路)
         if (parent)
             this.root.setParentWidget(parent);

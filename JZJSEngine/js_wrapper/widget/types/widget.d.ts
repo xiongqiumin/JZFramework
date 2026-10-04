@@ -70,6 +70,8 @@ export const JZSlider:        typeof globalThis.JZSlider;
 export const JZProgressBar:   typeof globalThis.JZProgressBar;
 export const JZComboBox:      typeof globalThis.JZComboBox;
 export const JZSpinBox:       typeof globalThis.JZSpinBox;
+export const JZDoubleSpinBox: typeof globalThis.JZDoubleSpinBox;
+export const JZDateEdit:      typeof globalThis.JZDateEdit;
 export const JZGroupBox:      typeof globalThis.JZGroupBox;
 export const JZSwitch:        typeof globalThis.JZSwitch;
 export const JZTextEdit:      typeof globalThis.JZTextEdit;

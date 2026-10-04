@@ -36,6 +36,11 @@ export const NETPACK_VARIANT = 1;
 export class NetPackVariant extends NetPack
 {
   [key: string]: any;   // 从 Qt/C++ 逐行翻译过来的动态成员, 见 globals.d.ts 的说明
+
+    // DECLAR_PACK 里的 `static const int NetType = ClassType` —— 必须在类体里声明
+    // (类外赋值不给类补类型; 下面 type() 与本类的注册都读它)。
+    static NetType: number = NETPACK_VARIANT;
+
     // DECLAR_PACK(NetPackVariant, NETPACK_VARIANT);  -> 静态成员 + type() 覆写
     static netPackCreate() { return new NetPackVariant(); }
     type() { return NetPackVariant.NetType; }
@@ -65,7 +70,7 @@ export class NetPackVariant extends NetPack
         return true;
     }
 }
-NetPackVariant.NetType = NETPACK_VARIANT;
+// NetPackVariant.NetType 已挪进类体(见 NetPackVariant 类开头)。
 
 // ---------------------------------------------------------------------------
 // void NetPackRegist();

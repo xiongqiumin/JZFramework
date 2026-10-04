@@ -44,6 +44,9 @@ export * from './props';
 // 菜单句柄保活(JZMenu/JZMenuBar 交回的是借用句柄, 见 ./menus.ts)
 export * from './menus';
 
+// 日期控件的 Qt 形状方法(setDate(Date) / dateTime(), 见 ./dates.ts)
+export * from './dates';
+
 // 信号/事件装成原型属性(默认 null) —— 见 ./signals.ts
 export * from './signals';
 

@@ -572,6 +572,10 @@ typedef JZSignal<double> JZSigDouble;
 typedef JZSignal<const std::string&> JZSigString;
 typedef JZSignal<const JZByteArray&> JZSigByteArray;
 
+// 日期类信号(JZDateEdit 等用)。信号按 const& 传参, 所以这里前置声明就够, 不必拖进 JZDateTime.h。
+class JZDateTime;
+typedef JZSignal<const JZDateTime&> JZSigDateTime;
+
 // 连接函数
 template<typename... SignalArgs, typename Func>
 int connect(JZSignal<SignalArgs...>* signal, Func slot, JZ::ConnectType type = JZ::AutoConnection)

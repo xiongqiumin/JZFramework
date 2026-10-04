@@ -471,10 +471,66 @@ declare class JZSpinBox extends JZWidget {
   value(): number;
   setSuffix(suffix: string): void;
   suffix(): string;
+  /** 值等于最小值时显示的文本(Qt: specialValueText); 空串 = 不启用 */
+  setSpecialValueText(s: string): void;
+  specialValueText(): string;
   setReadOnly(on: boolean): void;
   isReadOnly(): boolean;
   /** 值变化(属性形); 回调带 (value: number) */
   onValueChanged: ((value: number) => void) | null;
+}
+
+// 小数步进框(对齐 Qt QDoubleSpinBox): 值/范围/步长都是小数, 可设显示精度与前后缀。
+/** @final */
+declare class JZDoubleSpinBox extends JZSpinBox {
+  constructor(parent?: JZWidget | null);
+
+  setRange(min: number, max: number): void;
+  setMinimum(v: number): void;
+  minimum(): number;
+  setMaximum(v: number): void;
+  maximum(): number;
+  /** 小数步长(Qt: singleStep); 基类的 setStep/step 是整数口径, 别用它设小数 */
+  setSingleStep(v: number): void;
+  singleStep(): number;
+  setValue(v: number): void;
+  value(): number;
+  /** 显示小数位(0..6, 默认 2) */
+  setDecimals(n: number): void;
+  decimals(): number;
+  setPrefix(s: string): void;
+  prefix(): string;
+  /** 值变化(属性形); 回调带 (value: number) */
+  onValueChanged: ((value: number) => void) | null;
+}
+
+// 日期编辑框(对齐 Qt QDateEdit)。C++ 侧实现仍是骨架(解析/微调/弹出日历是 TODO), 但
+// setDate/dateTime/date 这层"Date 形状"已经可用(见 ./dates.ts), 日期变化回调带 Date。
+/** @final */
+declare class JZDateEdit extends JZLineEdit {
+  constructor(parent?: JZWidget | null);
+
+  /** 接受 Date 或毫秒时间戳 */
+  setDate(v: Date | number): void;
+  /** -> Date */
+  dateTime(): Date;
+  /** -> Date(同 dateTime; Qt 的 QDateEdit::date) */
+  date(): Date;
+  /** 显示格式, 如 "yyyy-MM-dd"(字母口径同 JZDateTime::toString) */
+  setDisplayFormat(fmt: string): void;
+  displayFormat(): string;
+  /** 需 JZCalendarWidget, 暂只记状态 */
+  setCalendarPopup(on: boolean): void;
+  calendarPopup(): boolean;
+  /** 前后微调: 正数往后, 负数往前 */
+  stepBy(days: number): void;
+
+  /** 日期变化(属性形); 回调带 (date: Date) */
+  onDateChanged: ((date: Date) => void) | null;
+  /** 文本类信号(继承 JZLineEdit) */
+  onTextChanged: ((text: string) => void) | null;
+  onReturnPressed: (() => void) | null;
+  onEditingFinished: (() => void) | null;
 }
 
 /** @final */

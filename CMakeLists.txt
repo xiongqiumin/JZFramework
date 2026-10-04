@@ -112,9 +112,12 @@ target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)
 
+# tools 要在 test/binary 之前: 构建期工具(如 jz_uic —— jz_add_ui 生成 C++ 代码用)得先存在,
+# 后面那些目录里的 jz_add_ui(...) 才拿得到它的目标(JZFramework.cmake 里会检查)。
+add_subdirectory(tools)
+
 if(BUILD_TEST)
     enable_testing()
     add_subdirectory(test)
 endif()
-add_subdirectory(tools)
 add_subdirectory(binary)

@@ -12,7 +12,7 @@ import { tr, sprintf } from './BTEServer.js';
 import { PackDefine, STEP_TYPE_1, STEP_TYPE_2, STEP_TYPE_3, STEP_TYPE_7, STEP_TYPE_IDLE, STEP_TYPE_LOOP, STEP_TYPE_STOP, PARAM_Current, PARAM_Voltage, PARAM_StopCurrent, PARAM_StopVoltage, PARAM_Time, PARAM_Capacity, PARAM_Tempature, PARAM_CountLoop, PARAM_BeginStepID, OP_EQU, OP_BIG_EQU, OP_SMALL_EQU } from './PackDefine.js';
 import { DataTrans } from './DataTrans.js';
 import { g_project } from './BTEProject.js';
-import { STEPEDITDIALOG_UI_XML } from './ui/STEPEDITDIALOG_UI_XML.js';
+import { loadUiFile } from './uiFile.js';
 
 //工步容量设定上限(Ah),精度百分之一
 const MAX_STEP_CAPACITY = 10000.0;
@@ -38,7 +38,7 @@ export class StepEditDialog
         this.m_paramWidgets = [];     // QVector<QWidget*> m_paramWidgets;
 
         // 真 UI: 原版 StepEditDialog.ui 转换出的 XML; root 是**新窗口**(JZDialog), 不是 this。
-        this.ui = uiLoader.load(STEPEDITDIALOG_UI_XML);
+        this.ui = loadUiFile('StepEditDialog.ui');
         // parent 传进来的是"持真窗口的 JS 对象"(如 BTEServer), 真控件在它的 .ui 上; 取对了再挂。
         if (parent) { const pw = parent.ui ? parent.ui : parent; if (pw) this.ui.setParentWidget(pw); }
 

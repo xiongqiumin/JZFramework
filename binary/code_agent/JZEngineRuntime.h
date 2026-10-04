@@ -170,6 +170,9 @@ public:
 
     // 引擎 console.* / 顶层日志转发回调（可选）。未捕获异常的原文不会转发，
     // 它以翻译回 TS 的版本出现在 lastError() 里。
+    // ⚠ 收到的 text **不含换行**（node 的 console.log 是自己补换行的，我们这套引擎把那个换行
+    //   交给调用方）⇒ 转发到控制台时**自己补一个**、不要多补（JZLog 输出时也会补一个，
+    //   用 jzDebug 转发就别再写 "\n"，否则一行日志后面多一个空行）。
     void setLogHandler(const LogHandler &handler);
 
     // 设置未处理 JS 异常回调（引擎 sigError 上报时触发，参数为翻译回 TS 的错误文本）。

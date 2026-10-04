@@ -1,5 +1,6 @@
 #include "JZCodeAgent.h"
 
+#include "JZBundlePaths.h"
 #include "JZTerminalTools.h"
 #include "JZVirtualTerminal.h"
 
@@ -586,45 +587,38 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // project.json 不是骨架文件：它由打包/发布(buildProject)写在产物目录（main.js
     // 所在目录）里，作为补充信息（编译时间 / 原路径地址 ...）。
     // 生成的工程 lib 用 ES2025：对齐 quickjs 实际支持的范围（ES2022~ES2025 全部，
-    // 另加部分 esnext 提案）；显式写 lib 同时关掉默认带进来的 DOM，jz_types 里声明的
+    // 另加部分 esnext 提案）；显式写 lib 同时关掉默认带进来的 DOM，js_wrapper 里声明的
     // 全局 fetch/WebSocket/URL 等才不会被 lib.dom.d.ts 撞成 duplicate identifier。
     // 不写 "ESNext"：那会放行 quickjs 根本没有的 Temporal 等 API（编译通过、运行时
     // undefined）。已知唯一假阳性：Atomics.waitAsync（lib.es2024.sharedmemory 有声明，
     // quickjs 未实现）。target 保持 ES2022：quickjs 对 ES2022 语法完整支持，且
     // ES2023~ES2025 没有新增语法，不会发生降级。
     //
-    // jz_types / jz_js 各从 exe 目录**拷一份到工程里**（<工程根>/jz_types、<工程根>/jz_js）：
+    // 把**随包产物的 js_wrapper 树**整棵拷进工程（<工程根>/js_wrapper）：
     // 工程因此自包含，tsconfig 只写相对路径，换机器 / 换 exe 目录 / 拷给别人都不会丢。
-    // 新部署把两者统一放在 exe 同目录的 jz_engine/ 下（jz_engine/jz_types、jz_engine/jz_js），
-    // 旧部署仍可能直接平铺在 exe 目录（jz_types/、jz_js/），这里两种布局都兼容。
-    // - jz_types：类型声明，include 收 jz_types 下的 .d.ts；编译期类型检查用。
-    // - jz_js：运行时 JS（core/net/serialport 的 dist），用户入口可
-    //   import '../jz_js/<pkg>/dist/index.js' 被动加载运行期全局（纯 import 模型）。
-    // 源目录不存在时仅收 src，不报错（jz_js 缺失仅代表工程不引用运行时，仍可编译运行）。
-    auto copyIfPresent = [&](const string &srcRel, const string &dstRel,
-                             const string &label, bool &flag) {
-        string appDir = JZPlatform::applicationDirPath();
-        string src = appDir + "/jz_engine/" + srcRel;
-        if (!JZFileInfo(src).isDir())
-            src = appDir + "/" + srcRel;          // 兼容旧部署（平铺在 exe 目录）
-        if (!JZFileInfo(src).isDir())
-            return;                                // 源不存在：保持 flag=false，不报错
-        string copyErr;
-        if (!JZDir::copyRecursively(src, root + "/" + dstRel, false, &copyErr))
-            error = "复制 " + label + " 失败: " + copyErr;    // 真实失败：记 error
-        else
-            flag = true;
-    };
-
-    bool hasJzTypes = false;
-    copyIfPresent("jz_types", "jz_types", "jz_types", hasJzTypes);
-    bool hasJzJs = false;
-    copyIfPresent("jz_js", "jz_js", "jz_js", hasJzJs);
+    // 部署树与源码 JZJSEngine/js_wrapper **同构**（types/ + <包>/types/ + <包>/dist/，见
+    // package.py），所以同一棵树上同时有：
+    // - 类型：include 收 js_wrapper 下的 .d.ts（共享/全局声明 + 各包模块类型 + ambient 裸名声明）；
+    // - 运行时：用户入口可 import '../js_wrapper/<包>/dist/index.js' 被动加载运行期全局
+    //   （纯 import 模型）；引擎找裸名包时也会优先用工程里的 js_wrapper/（见 JZEngineRuntime）。
+    // 源目录不存在时仅收 src，不报错（没拷进来只代表工程不引用类型/运行时，仍可编译运行）。
+    bool hasJsWrapper = false;
+    {
+        string src = jzFindBundleAsset("js_wrapper", true);
+        if (!src.empty())                          // 源不存在：保持 flag=false，不报错
+        {
+            string copyErr;
+            if (!JZDir::copyRecursively(src, root + "/js_wrapper", false, &copyErr))
+                error = "复制 js_wrapper 失败: " + copyErr;   // 真实失败：记 error
+            else
+                hasJsWrapper = true;
+        }
+    }
     if (!error.empty())
         return false;
-    string jzTypesInclude = "\"src/**/*.ts\"";
-    if (hasJzTypes)
-        jzTypesInclude += ", \"jz_types/**/*.d.ts\"";
+    string jsWrapperInclude = "\"src/**/*.ts\"";
+    if (hasJsWrapper)
+        jsWrapperInclude += ", \"js_wrapper/**/*.d.ts\"";
 
     string tsconfig =
         "{\n"
@@ -641,7 +635,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"outDir\": \"build\",\n"
         "    \"rootDir\": \"src\"\n"
         "  },\n"
-        "  \"include\": [" + jzTypesInclude + "],\n"
+        "  \"include\": [" + jsWrapperInclude + "],\n"
         "  \"jzCompilerOptions\": {}\n"
         "}\n";
     string gitignore =
@@ -1206,12 +1200,13 @@ bool JZCodeAgent::exportProject(string &outDir, string &error, ExportConfig conf
     if (!JZDir::copyRecursively(buildAbs, outDir, false, &error))
         return false;
 
-    // 4) 复制内嵌 JZEngineRuntime 的 code_runtime.exe（与 code_agent 同目录安装），
+    // 4) 复制内嵌 JZEngineRuntime 的 code_runtime.exe（随 code_agent 一起安装到**随包产物目录**），
     //    并按需改名 / 替换图标，让连接后的 code_runtime 看起来是独立程序。
-    string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
-    if (!JZFileInfo::exists(runtimeExe))
+    string runtimeExe = jzFindBundleAsset("code_runtime.exe");
+    if (runtimeExe.empty())
     {
-        error = "找不到 code_runtime.exe（应随 code_agent 一起安装到 exe 目录）: " + runtimeExe;
+        error = "找不到 code_runtime.exe（应随 code_agent 一起安装到 exe 目录）: "
+                + codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
         return false;
     }
     // 目标运行时文件名：去扩展名后拼接 .exe（缺省 = code_runtime）
@@ -1463,18 +1458,24 @@ void JZCodeAgent::buildAgent()
     addTool(new JZSearchContextTool());   // 搜文本/正则(原 search_file, 已改名)
     addTool(new JZGetDateTimeTool());
 
+    // 让 shell 里能直接敲 tsc：把随包编译器所在目录加进 exe 搜索路径
+    // （它不一定在 exe 同目录，见 JZBundlePaths.h）。
+    string tscDir = jzFindBundleAsset("ts_compiler/tsc", true);
+    if (tscDir.empty())
+        tscDir = codeNormalizePath(jzApp->applicationDirPath()) + "/ts_compiler/tsc";
     auto shell_tool = new JZShellTool();
-    shell_tool->setExeSearchPaths({ jzApp->applicationDirPath() + "/ts_compiler/tsc" });
+    shell_tool->setExeSearchPaths({ tscDir });
     addTool(shell_tool);
 
     // build_project：打包/发布当前工作区（异步 tsc + main.js 入口校验 + project.json），
     // 是 run_tool 的前置步骤；编译错误直接回给模型自修。
     addTool(new JZBuildProjectTool());
 
-    // run_js：用随包安装的 code_runtime 运行编译产物（exe 与 code_agent 同目录，
-    // 见 exportProject 的同款定位）；args 透传给运行时（如工程根目录、--debug）。
-    // 未编译的工程应先用 build_project 打包。
-    string runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
+    // run_js：用随包安装的 code_runtime 运行编译产物（与 exportProject 同款定位）；args
+    // 透传给运行时（如工程根目录、--debug）。未编译的工程应先用 build_project 打包。
+    string runtimeExe = jzFindBundleAsset("code_runtime.exe");
+    if (runtimeExe.empty())
+        runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
     // 运行根 = 产物目录（main.js 所在目录），按 tsconfig 的 outDir 定位
     string run_work_dir = tsBuildAbsOf(codeNormalizePath(m_codeConfig.workspace));
     auto run_tool = new JZCommandTool();

@@ -43,7 +43,7 @@ import time
 ROOT = r'E:\JZFramework'
 OUT_ROOT = os.path.join(ROOT, 'build', 'live_shooter', 'bench_native')
 DEFAULT_APP = os.path.join(ROOT, 'build', 'test', 'widget', 'shooter', 'Release', 'test_shooter.exe')
-DEFAULT_RUNTIME = os.path.join(ROOT, 'build', 'binary', 'code_agent', 'bin', 'Release', 'code_runtime.exe')
+DEFAULT_RUNTIME = os.path.join(ROOT, 'build', 'binary', 'bin', 'Release', 'code_runtime.exe')
 DEFAULT_PLAY_JS = os.path.join(ROOT, 'build', 'auto_code', 'game_play', 'shooter',
                                'build', 'verify', 'play', 'play.js')
 APP_NAME = 'test_shooter.exe'

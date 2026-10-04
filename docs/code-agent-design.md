@@ -62,7 +62,7 @@
 - **观众分离**：Agent 的对话框、任务列表、设置是**内部**的；客户看的是 `code_runtime.exe` 的窗口。
   Agent 提供"仅渲染"模式（隐藏自己的主窗口），演示时桌面上只剩成品 UI。
 - **崩溃隔离**：渲染进程挂掉不影响 Agent；退出码 + 异常文本回传即可定位。
-- **发布即自包含**：导出目录里 `exe + build/ + jz_engine/`，双击即运行，与 Agent 无关。
+- **发布即自包含**：导出目录里 `exe + build/ + js_wrapper/`，双击即运行，与 Agent 无关。
   图标/改名/调试开关已由 `JZExeResource`（`JZRT_CFG/DEBUG` 资源）支持，发布时写 `debug=false`。
 
 ---
@@ -187,7 +187,7 @@ run_js → 收集输出 → （日志过长则头尾截断 + 落盘给路径）�
 MyApp/
   MyApp.exe        （由 code_runtime.exe 改名换图标而来，JZRT_CFG/DEBUG=false）
   build/           （tsc 产物 + .js.map）
-  jz_engine/       （jz_js 运行时包 + jz_types）
+  js_wrapper/      （与源码同构的一棵树：types/ + <包>/types/ + <包>/dist/）
   project.json     （entry / projectRoot / srcRoot / outDir / buildTime）
 ```
 

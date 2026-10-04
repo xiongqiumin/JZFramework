@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "JZApplication.h"
+#include "JZBundlePaths.h"
 #include "JZByteArray.h"
 #include "JZCodeAgent.h"
 #include "JZDebug.h"
@@ -78,17 +79,6 @@ static string normalize(const string &path)
     while (p.size() > 1 && p.back() == '/')
         p.pop_back();
     return p;
-}
-
-static string parentOf(const string &path)
-{
-    string p = normalize(path);
-    size_t pos = p.find_last_of('/');
-    if (pos == string::npos)
-        return string();
-    if (pos == 0)
-        return "/";
-    return p.substr(0, pos);
 }
 
 static bool fileExists(const string &path)
@@ -268,11 +258,12 @@ static TsRunner resolveTsCompiler()
         r.ok = true;
         return r;
     }
-    // 随包编译器：<exe 目录>/ts_compiler/tsc/tsc.exe（与 code_agent / benchmark 的
-    // 默认 --tsc 同一约定）。开发机上可能没有 E:/libs 那份，优先用随包的。
-    string appDir = normalize(JZPlatform::applicationDirPath());
-    string cand = appDir + "/ts_compiler/tsc/tsc.exe";
-    if (fileExists(cand))
+    // 随包编译器：<随包产物目录>/ts_compiler/tsc/tsc.exe（与 code_agent / benchmark 的
+    // 默认 --tsc 同一约定）。它与 code_runtime 同在 binary/bin/<配置>/，不在本测试 exe
+    // 旁边 ⇒ 由 jzFindBundleAsset 一次找出来（见 JZBundlePaths.h）。
+    // 开发机上可能没有 E:/libs 那份，优先用随包的。
+    string cand = jzFindBundleAsset("ts_compiler/tsc/tsc.exe");
+    if (!cand.empty())
     {
         r.exe = cand;
         r.ok = true;
@@ -338,45 +329,9 @@ static int compileProject(const string &root, const TsRunner &runner,
 
 static string findRuntimeExe()
 {
-    string appDir = normalize(JZPlatform::applicationDirPath());
-
-    // 新布局：code_agent 下所有 exe 统一输出到同一 bin 目录，
-    // code_runtime 与测试 exe 同级，直接取同目录即可。
-    string cand = appDir + "/code_runtime.exe";
-    if (fileExists(cand))
-        return cand;
-
-    // 兼容旧布局 / 兜底
-    const string tag = "/code_agent/test/";
-    size_t pos = appDir.find(tag);
-    if (pos != string::npos)
-    {
-        string head = appDir.substr(0, pos);
-        string cfg = appDir.substr(pos + tag.size());
-        cand = head + "/code_agent/runtime/" + cfg + "/code_runtime.exe";
-        if (fileExists(cand))
-            return cand;
-        cand = head + "/code_agent/runtime/code_runtime.exe"; // 单配置
-        if (fileExists(cand))
-            return cand;
-    }
-
-    // 兜底：沿上级目录查找 code_runtime.exe / runtime/code_runtime.exe
-    string p = appDir;
-    for (int depth = 0; depth < 10 && !p.empty(); depth++)
-    {
-        string a = p + "/code_runtime.exe";
-        if (fileExists(a))
-            return a;
-        string b = p + "/runtime/code_runtime.exe";
-        if (fileExists(b))
-            return b;
-        string c = p + "/runtime/Debug/code_runtime.exe";
-        if (fileExists(c))
-            return c;
-        p = parentOf(p);
-    }
-    return string();
+    // code_runtime 在 binary/ 的统一目录里（binary/bin/<配置>/），而本测试 exe 在自己
+    // 的 test/<配置>/ —— jzFindBundleAsset 会把两处都试一遍（见 JZBundlePaths.h）。
+    return jzFindBundleAsset("code_runtime.exe");
 }
 
 // ---------------------------------------------------------------- 多文件 TS 样例
@@ -838,29 +793,29 @@ int main()
 
         string err2;
         bool ok7 = agent2.initProject(typesRoot, err2);
-        check(ok7, "initProject 创建挂 jz_types 的 ES2025 工程", err2);
+        check(ok7, "initProject 创建挂 js_wrapper 类型的 ES2025 工程", err2);
         if (ok7)
         {
-            // 生成的 tsconfig 应为「ES2025(lib 不含 DOM) + 挂 jz_types 完整类型」：
+            // 生成的 tsconfig 应为「ES2025(lib 不含 DOM) + 挂 js_wrapper 类型」：
             // 含 "lib": ["ES2025"]（对齐 quickjs 实际支持范围），且 include 应包含随
-            // exe 安装的 jz_types 目录。
+            // exe 部署的 js_wrapper 树。
             string tsText2;
             readText(typesRoot + "/tsconfig.json", tsText2);
             check(tsText2.find("\"lib\": [\"ES2025\"]") != string::npos,
                   "initProject 生成的 tsconfig 设为 ES2025(无 DOM)", tsText2);
-            check(tsText2.find("jz_types") != string::npos,
-                  "initProject 生成的 tsconfig 包含 jz_types 类型", tsText2);
-            // 新结构: initProject 同时把运行时 jz_js 拷进工程(供入口被动 import)
+            check(tsText2.find("js_wrapper") != string::npos,
+                  "initProject 生成的 tsconfig 包含 js_wrapper 类型", tsText2);
+            // 一棵与源码同构的树: 类型与运行时(各包 dist)在同一棵 js_wrapper 里。
             // ⭐ 一个名字一个包目录(目录名 = 名字), 所以这里按名字取路径
-            check(fileExists(typesRoot + "/jz_js/http/dist/index.js") &&
-                  fileExists(typesRoot + "/jz_js/fs/dist/index.js"),
-                  "initProject 把运行时 jz_js 一同拷进工程(jz_js/<名字>/dist)",
-                  typesRoot + "/jz_js");
+            check(fileExists(typesRoot + "/js_wrapper/http/dist/index.js") &&
+                  fileExists(typesRoot + "/js_wrapper/fs/dist/index.js"),
+                  "initProject 把运行时 js_wrapper/<名字>/dist 一同拷进工程",
+                  typesRoot + "/js_wrapper");
 
-            // 该 TS 直接引用 jz_types 的 fs/path/os/process（框架自定义模块），
+            // 该 TS 直接引用 js_wrapper 的 fs/path/os/process（框架自定义模块），
             // 只要类型被安装并挂进 include，tsc 即可解析且类型检查通过。
             string mainTs =
-                "// types_use/main.ts - 引用 jz_types(fs/path/os/process)\n"
+                "// types_use/main.ts - 引用 js_wrapper 的类型(fs/path/os/process)\n"
                 "import type { Stats } from 'fs';\n"
                 "const sep: string = path.sep;\n"
                 "const p: string = path.join('a', 'b', 'c');\n"
@@ -900,11 +855,11 @@ int main()
             }
             else
             {
-                check(true, "跳过 jz_types 编译验证(node 前缀方案无宿主 tsc)",
+                check(true, "跳过 js_wrapper 类型编译验证(node 前缀方案无宿主 tsc)",
                       "(node 前缀方案无宿主 tsc，跳过)");
                 built = true;
             }
-            check(built, "挂 jz_types 的 ES2025 工程编译通过(类型可解析且类型正确)",
+            check(built, "挂 js_wrapper 类型的 ES2025 工程编译通过(类型可解析且类型正确)",
                   out2.empty() ? "(无输出)" : out2);
         }
     }
@@ -972,8 +927,9 @@ int main()
     // Stage 9: JZExeResource 通用资源读写 + 图标替换（隔离验证）
     // ================================================================
     {
-        string runtimeExe = normalize(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
-        check(fileExists(runtimeExe), "code_runtime.exe 存在于 exe 目录（图标替换前置）", "");
+        // code_runtime 在 binary/ 的统一目录里，不在测试 exe 旁边 ⇒ 用同一个探测
+        string runtimeExe = findRuntimeExe();
+        check(fileExists(runtimeExe), "找到 code_runtime.exe（图标替换前置）", "");
         if (fileExists(runtimeExe))
         {
             string tmpExe = base + "/icon_stage9_runtime.exe";
@@ -1005,11 +961,11 @@ int main()
     }
 
     // ================================================================
-    // Stage 10: 新结构 - 用户工程被动 import 随附的 jz_js 运行时(dist),
+    // Stage 10: 新结构 - 用户工程被动 import 随附的 js_wrapper 运行时(dist),
     //   运行期由入口 ESM 触发(纯 import 模型, 无 require / 全局绑定桥)
     // ================================================================
     {
-        string jsRoot = base + "/jz_js_use";
+        string jsRoot = base + "/js_wrapper_use";
         rmRecursive(jsRoot);
         ensureDir(jsRoot + "/src");
 
@@ -1021,19 +977,19 @@ int main()
         agentJs.init(codeJs);
 
         string eJs;
-        check(agentJs.initProject(jsRoot, eJs), "initProject 创建挂 jz_js 运行时的工程", eJs);
-        check(fileExists(jsRoot + "/jz_js/http/dist/index.js") &&
-              fileExists(jsRoot + "/jz_js/fs/dist/index.js"),
-              "initProject 把运行时 jz_js 拷进工程(jz_js/<名字>/dist)", jsRoot + "/jz_js");
+        check(agentJs.initProject(jsRoot, eJs), "initProject 创建挂 js_wrapper 运行时的工程", eJs);
+        check(fileExists(jsRoot + "/js_wrapper/http/dist/index.js") &&
+              fileExists(jsRoot + "/js_wrapper/fs/dist/index.js"),
+              "initProject 把运行时 js_wrapper/<名字>/dist 拷进工程", jsRoot + "/js_wrapper");
 
         // 入口被动 import 运行期模块(http/fs/path), 顶层自执行并 console.log 结果。
-        // 相对路径 '../jz_js/...' 由引擎按运行根(build/)的 '../' 解析回工程根的 jz_js;
-        // 一个名字一个包目录 ⇒ 每条 import 都是 '<名字>/dist/index.js'。
+        // 相对路径 '../js_wrapper/...' 由引擎按运行根(build/)的 '../' 解析回工程根的
+        // js_wrapper; 一个名字一个包目录 ⇒ 每条 import 都是 '<名字>/dist/index.js'。
         string mainJs =
-            "// jz_js_use/main.ts - 被动 import 随附 jz_js 运行时(纯 import 模型)\n"
-            "import http from '../jz_js/http/dist/index.js';\n"
-            "import fs from '../jz_js/fs/dist/index.js';\n"
-            "import path from '../jz_js/path/dist/index.js';\n"
+            "// js_wrapper_use/main.ts - 被动 import 随附 js_wrapper 运行时(纯 import 模型)\n"
+            "import http from '../js_wrapper/http/dist/index.js';\n"
+            "import fs from '../js_wrapper/fs/dist/index.js';\n"
+            "import path from '../js_wrapper/path/dist/index.js';\n"
             "export function main(): string\n"
             "{\n"
             "    const sep: string = path.sep;\n"
@@ -1060,7 +1016,7 @@ int main()
                 eJs = agentJs.lastBuildError();
             }
             outJs = eJs;
-            check(built, "挂 jz_js 被动 import 的工程编译通过(运行时模块可解析且类型正确)",
+            check(built, "挂 js_wrapper 被动 import 的工程编译通过(运行时模块可解析且类型正确)",
                   outJs.empty() ? "(无输出)" : outJs);
 
             if (built)
@@ -1074,7 +1030,7 @@ int main()
                     jzDebug("  [engine] %s", t.c_str());
                 });
                 bool ran = rt.init(absJs + "/build");
-                check(ran, "jz_js 运行时经被动 import 启动成功(init)", rt.lastError());
+                check(ran, "js_wrapper 运行时经被动 import 启动成功(init)", rt.lastError());
                 check(engineOut.find("JZJS-OK") != string::npos &&
                       engineOut.find("jzjs-ok") != string::npos,
                       "被动 import 的 net/fs/path 运行期全局可用(顶层自执行)", engineOut);
@@ -1082,7 +1038,7 @@ int main()
         }
         else
         {
-            check(true, "跳过 jz_js 运行时验证(node 前缀方案无宿主 tsc)", "(skipped)");
+            check(true, "跳过 js_wrapper 运行时验证(node 前缀方案无宿主 tsc)", "(skipped)");
         }
     }
 

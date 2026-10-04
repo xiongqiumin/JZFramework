@@ -24,8 +24,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TASK = os.path.dirname(HERE)                       # auto_code/computer_use
 ROOT = os.path.dirname(os.path.dirname(TASK))      # 仓库根
 RUNS = os.path.join(TASK, "runs", "current")
-RUNTIME = os.path.join(ROOT, "build", "binary", "code_agent", "bin", "Debug", "code_runtime.exe")
-TSC = os.path.join(ROOT, "build", "binary", "code_agent", "bin", "Debug", "ts_compiler", "tsc", "tsc.exe")
+RUNTIME = os.path.join(ROOT, "build", "binary", "bin", "Debug", "code_runtime.exe")
+TSC = os.path.join(ROOT, "build", "binary", "bin", "Debug", "ts_compiler", "tsc", "tsc.exe")
 ENTRY = os.path.join(TASK, "build", "checks", "repair_live.js")
 FAKE_PORT = 8731
 

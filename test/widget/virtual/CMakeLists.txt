@@ -21,13 +21,15 @@ endif()
 set(JZ_JS_WRAPPER_DIR "${CMAKE_SOURCE_DIR}/JZJSEngine/js_wrapper")
 target_compile_definitions(test_virtual_device PRIVATE JZ_JS_WRAPPER_DIR="${JZ_JS_WRAPPER_DIR}")
 
-# 虚拟进程里的引擎是**按 exe 目录**找 JS 包 (JZEngineRuntime: <appDir>/jz_js/...),
-# 所以把控件类层部署到测试 exe 边上 —— 与 code_agent 的 jz_engine/jz_js 同一套约定。
+# 虚拟进程里的引擎是**按 exe 目录**找 JS 包 (JZEngineRuntime: <appDir>/js_wrapper/...),
+# 所以把控件类层按**与源码同构的位置**部署到测试 exe 边上(<exe>/js_wrapper/widget/dist)——
+# 与 code_agent 那边 copy_jz_js 铺的 js_wrapper 树同一套约定(本测试没有 jz_engine/部署树,
+# 所以自带自己需要的那一个包)。
 add_custom_command(TARGET test_virtual_device POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${JZ_JS_WRAPPER_DIR}/widget/dist"
-            "$<TARGET_FILE_DIR:test_virtual_device>/jz_js/widget/dist"
-    COMMENT "Deploy widget JS class layer next to test_virtual_device.exe")
+            "$<TARGET_FILE_DIR:test_virtual_device>/js_wrapper/widget/dist"
+    COMMENT "Deploy widget JS class layer next to test_virtual_device.exe (js_wrapper/widget/dist)")
 
 # 不创建真实窗口 => 可以进 ctest
 add_test(NAME virtual_device COMMAND test_virtual_device)

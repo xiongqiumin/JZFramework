@@ -2,7 +2,7 @@
  * 14_audio —— 音频包 `@jz/audio`（录音 / 放音 / 设备 / WAV / 重采样）。
  *
  * 跑法（与其它例子相同）:
- *   <build>/binary/code_agent/bin/<CONFIG>/code_runtime.exe --entry <build>/jsapi_example/build/14_audio.js
+ *   <build>/binary/bin/<CONFIG>/code_runtime.exe --entry <build>/jsapi_example/build/14_audio.js
  *   ctest -C <CONFIG> -R jsapi_example.14_audio
  *
  * 设备无关的部分（WAV 往返 / 重采样 / 波形工具）无条件断言; 真录/真放要看机器有没有设备,

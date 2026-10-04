@@ -4,7 +4,7 @@
  * 把引擎注入的 __jz.sqlite 原子 API 包装成 Node.js 内置模块 `node:sqlite` 风格的
  * 同步 SQLite 封装:
  *
- *   import { DatabaseSync } from '../jz_js/sqlite/dist/index.js';
+ *   import { DatabaseSync } from '../js_wrapper/sqlite/dist/index.js';
  *   const db = new DatabaseSync('app.db');
  *   db.exec('CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, name TEXT)');
  *   db.prepare('INSERT INTO t(name) VALUES (?)').run('hello');

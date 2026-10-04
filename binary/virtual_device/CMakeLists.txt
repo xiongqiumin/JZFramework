@@ -92,8 +92,8 @@ endif()
 # 菜单里可以"新建进程窗口"(起一个线程 + 一份 JS 运行时, 里面建窗口)
 add_executable(virtual_device main.cpp)
 target_link_libraries(virtual_device PRIVATE jz_virtual_process)
-set_target_properties(virtual_device PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin/$<CONFIG>")
+# 输出目录不在这里定: virtual_device 是**发布** exe, 名字在 binary/CMakeLists.txt 末尾那张
+# 发布清单里 —— 统一输出到 <build>/binary/bin/<CONFIG>, 与 code_agent 那几个 exe 同目录。
 
 # 游戏模拟器控件：exe 这边负责把 mgba_host.dll 与它的 MinGW 运行库拷到边上
 # （静态库那边只接线，见上面 jz_virtual_process 的说明）
@@ -107,42 +107,17 @@ jz_opencv_enable(virtual_device)
 # ONNX Runtime 的运行库同理（宏/头在上面 jz_virtual_process 那侧）
 jz_onnx_enable(virtual_device)
 
-# 进程里的引擎按 **exe 目录** 找 JS 包 (JZEngineRuntime: <appDir>/jz_js/<pkg>/dist/...) ——
-# 把控件类层部署到 exe 边上, 于是 JS 里 new JZWindow/JZPushButton 才有类可用
-# (与 code_agent 的 jz_engine/jz_js 同一套约定, 这里只拷需要的那个包)。
-add_custom_command(TARGET virtual_device POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/widget/dist"
-            "$<TARGET_FILE_DIR:virtual_device>/jz_js/widget/dist"
-    COMMENT "Deploy widget JS class layer next to virtual_device.exe")
+# 控件类层(widget/dist/index.js)由 **copy_jz_js** 一起部署: 进程里的引擎按
+# JZEngineRuntime 的 libraryDir 找包, 其中 <appDir>/js_wrapper 就是那棵部署树
+# (见 binary/CMakeLists.txt), 里面每个包一份 —— 所以这里**不再**单独往 exe 边平铺一份
+# widget/dist(那会和 js_wrapper/widget/dist 逐字节重复; 2026-10-04 去掉)。
+# ⚠ 只有"旁边没有部署树的测试 exe"才需要自带一份, 见 test/widget/virtual/CMakeLists.txt。
 
 # 但它**能加载真程序**: `--program app.js` / `POST /api/programs {file}` 是按 ESM 模块加载的,
-# 程序里会 import 运行期包 (fs/path/http...)。所以这里跟 code_agent 一样, 用 js_wrapper/package.py
-# 把整套 jz_engine/{jz_types,jz_js} 部署到 exe 边上 —— 少了它, 程序只能 import 到 widget,
-# 一 import fs 就静默失败 (报 "unknown error", 很难查)。见 binary/code_agent/CMakeLists.txt 的详解。
-set(JZ_VD_WRAP_PY "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper/package.py")
-# ⚠ 不能写 $<TARGET_FILE_DIR:virtual_device>: 那会让"这个自定义命令"与目标互相依赖 (CMake 报循环)。
-#   直接写 exe 的输出目录 (与上面的 RUNTIME_OUTPUT_DIRECTORY 同一处), 与 code_agent 的做法一致。
-set(JZ_VD_JS_OUT "${CMAKE_CURRENT_BINARY_DIR}/bin/$<CONFIG>")
-set(JZ_VD_WRAP_SRC "${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/js_wrapper")
-set(JZ_VD_JS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/jz_js_packaged.stamp")
-
-set(JZ_VD_JS_DEPS "${JZ_VD_WRAP_PY}")
-file(GLOB JZ_VD_TYPE_FILES CONFIGURE_DEPENDS
-     "${JZ_VD_WRAP_SRC}/types/*.d.ts" "${JZ_VD_WRAP_SRC}/types/*.ts"
-     "${JZ_VD_WRAP_SRC}/*/types/*.d.ts")
-list(APPEND JZ_VD_JS_DEPS ${JZ_VD_TYPE_FILES})
-file(GLOB JZ_VD_JS_DIST_FILES CONFIGURE_DEPENDS "${JZ_VD_WRAP_SRC}/*/dist/index.js")
-list(APPEND JZ_VD_JS_DEPS ${JZ_VD_JS_DIST_FILES})
-# ⚠ 新加包目录后这个 GLOB 不一定当场生效 ⇒ exe 边没有那个包, JS 里 import 会静默退出。
-#   处理办法(重新 configure / 删 stamp)见 binary/code_agent/CMakeLists.txt 同一处的详解。
-
-add_custom_command(
-    OUTPUT "${JZ_VD_JS_STAMP}"
-    COMMAND ${JZ_PYTHON_EXECUTABLE} "${JZ_VD_WRAP_PY}"
-            --out "${JZ_VD_JS_OUT}" --js-wrapper "${JZ_VD_WRAP_SRC}"
-    COMMAND ${CMAKE_COMMAND} -E touch "${JZ_VD_JS_STAMP}"
-    DEPENDS ${JZ_VD_JS_DEPS}
-    COMMENT "Package JZ JS engine (types + runtime dist) next to virtual_device.exe")
-add_custom_target(copy_jz_js_virtual_device ALL DEPENDS "${JZ_VD_JS_STAMP}")
-add_dependencies(virtual_device copy_jz_js_virtual_device)
+# 程序里会 import 运行期包 (fs/path/http...)。所以这里跟 code_agent 一样, 要 exe 边有整套
+# js_wrapper 树 —— 少了它, 程序只能 import 到 widget, 一 import fs 就静默失败
+# (报 "unknown error", 很难查)。
+# ⚠ 部署命令不在这里: 本 exe 与 code_agent 那几个现在输出到**同一个**目录, 两处各写一份
+#   js_wrapper 会互相拆台(package.py 每次整棵删掉再重铺)。整个 binary/ 只留一处 ——
+#   见 binary/CMakeLists.txt 的 copy_jz_js(含 "dist 要先 tsc -b js_wrapper" 等注意事项)。
+add_dependencies(virtual_device copy_jz_js)

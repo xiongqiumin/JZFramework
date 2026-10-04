@@ -12,7 +12,7 @@
 //   引擎里没有这些全局(见 globals.d.ts 的说明), 于是 open() 只会打印
 //   "sqlite3 未移植, 记录库不可用" 并返回 false —— 历史记录彻底没存。
 //   现在改用**引擎内置的 `sqlite` 模块**(node:sqlite 风格的同步封装, 见
-//   jz_types/sqlite/types/index.d.ts, 由 JZJSqliteModule 提供):
+//   js_wrapper/sqlite/types/index.d.ts, 由 JZJSqliteModule 提供):
 //
 //     const db = new DatabaseSync(path);      // 打开(不存在则新建)
 //     db.exec(sql);                           // 建表/事务/无结果语句
@@ -35,7 +35,7 @@ import { stru_BTS_CMD_SEND_DFDATA76, stru_BTS_CMD_SET_STEP76_Ex, stru_BTS_CMD_SE
 // 记录库后端: 引擎内置 sqlite 模块(node:sqlite 风格; 由用户入口被动加载同包 dist)。
 // ⚠ 用**默认导入**取成员, 不写 `import { DatabaseSync } from 'sqlite'`: 随工程分发的
 //   TS 7.0.2(tsgo) 不解析 ambient 里的相对通配再导出(仓库源码这份), 具名导入会 TS2614;
-//   部署后的 jz_types 由 package.py 补了显式具名再导出, 两种写法都行 —— 默认导入最稳。
+//   部署后的 js_wrapper 由 package.py 补了显式具名再导出, 两种写法都行 —— 默认导入最稳。
 import sqlite from 'sqlite';
 const DatabaseSync = sqlite.DatabaseSync;
 // 存档(记录库 blob)的 JSON 编解码 —— 取代原来的 QDataStream + recordMagic 魔数

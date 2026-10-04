@@ -61,7 +61,9 @@ from datetime import datetime
 # 所有路径都以 work 目录(本脚本所在目录)为基准, 用相对写法 ——
 # 宿主机 /home/nas/xiongqiumin/docker/work 与容器内 /home/nas/work 都能直接跑。
 # ⚠ 分隔符一律用 '/': 这条相对路径要经过 shlex 拆词(见 split_cmd), 反斜杠会被当转义符吃掉
-AGENT_BIN_REL = "JZFramework/build/binary/agent_cli/agent_cli"
+# ⚠ 构建产物位置: 整个 binary/ 下的 exe 统一在 <build>/binary/bin/<配置>/(见 binary/CMakeLists.txt),
+#   单配置生成器(Linux)没有配置子目录 ⇒ build/binary/bin/agent_cli。
+AGENT_BIN_REL = "JZFramework/build/binary/bin/agent_cli"
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CWD = WORK_DIR                                     # agent_cli 的工作目录 = work 目录
 PROMPT_FILE = os.path.join(WORK_DIR, "prompt.txt")

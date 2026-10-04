@@ -85,9 +85,9 @@ public:
         makeFile("src/a.ts", "const a = 1; // NEEDLE_A\n");
         makeFile("src/sub/b.ts", "// NEEDLE_B\nconst b = 2;\n");
         makeFile("other/c.ts", "// needle_c(小写)\n");
-        // 类型声明(真实工程里的布局: jz_types/<包>/types/*.d.ts)
-        makeFile("jz_types/net/types/http.d.ts", "export function createServer(): void;\n");
-        makeFile("jz_types/core/types/bytes.d.ts", "export class ByteReader {}\n");
+        // 类型声明(真实工程里的布局: js_wrapper/<包>/types/*.d.ts)
+        makeFile("js_wrapper/net/types/http.d.ts", "export function createServer(): void;\n");
+        makeFile("js_wrapper/core/types/bytes.d.ts", "export class ByteReader {}\n");
         // 生成目录里的同名文件: 默认必须被跳过, 且要在回包里说明
         makeFile("build/gen/skip.d.ts", "export const generated: number;\n");
 
@@ -164,9 +164,9 @@ private:
         printf("search_file: 按文件名\n");
         runFile("{\"pattern\":\"*.d.ts\"}");
         check(m_fileRes.ok && m_fileRes.count == 1, "调用成功且只回一次包");
-        check(contains(m_fileRes.text, "jz_types/net/types/http.d.ts"), "命中 jz_types/net/types/http.d.ts");
-        check(contains(m_fileRes.text, "jz_types/core/types/bytes.d.ts"), "命中整棵树里的同类文件(递归)");
-        check(contains(m_fileRes.text, "共 2 项"), "只回 jz_types 下那两个, 不含其它扩展名");
+        check(contains(m_fileRes.text, "js_wrapper/net/types/http.d.ts"), "命中 js_wrapper/net/types/http.d.ts");
+        check(contains(m_fileRes.text, "js_wrapper/core/types/bytes.d.ts"), "命中整棵树里的同类文件(递归)");
+        check(contains(m_fileRes.text, "共 2 项"), "只回 js_wrapper 下那两个, 不含其它扩展名");
         check(m_fileRes.text.find("build/gen/skip.d.ts") == string::npos, "生成目录 build 里的文件没被扫到");
         check(contains(m_fileRes.text, "已跳过这些生成/隐藏目录") && contains(m_fileRes.text, "build"),
               "回包里说明了被跳过的目录(build)");
@@ -175,7 +175,7 @@ private:
         check(contains(m_fileRes.text, "src/sub/b.ts"), "按精确文件名命中(含子目录)");
 
         runFile("{\"pattern\":\"*.D.TS\"}");
-        check(contains(m_fileRes.text, "jz_types/net/types/http.d.ts"), "默认不区分大小写(*.D.TS 也能命中)");
+        check(contains(m_fileRes.text, "js_wrapper/net/types/http.d.ts"), "默认不区分大小写(*.D.TS 也能命中)");
         runFile("{\"pattern\":\"*.D.TS\",\"case_sensitive\":true}");
         check(contains(m_fileRes.text, "没有匹配"), "case_sensitive=true 时不命中");
     }
@@ -183,17 +183,17 @@ private:
     void testFindByPathPattern()
     {
         printf("search_file: 按路径通配\n");
-        runFile("{\"pattern\":\"jz_types/*/types/*.d.ts\"}");
+        runFile("{\"pattern\":\"js_wrapper/*/types/*.d.ts\"}");
         check(m_fileRes.ok && contains(m_fileRes.text, "共 2 项"),
               "路径式通配命中 2 个(靠相对路径匹配, 不是文件名)");
-        check(contains(m_fileRes.text, "jz_types/net/types/http.d.ts") &&
-                  contains(m_fileRes.text, "jz_types/core/types/bytes.d.ts"),
+        check(contains(m_fileRes.text, "js_wrapper/net/types/http.d.ts") &&
+                  contains(m_fileRes.text, "js_wrapper/core/types/bytes.d.ts"),
               "两个包目录都在结果里");
 
-        runFile("{\"pattern\":\"src,jz_types/core\"}");
+        runFile("{\"pattern\":\"src,js_wrapper/core\"}");
         check(contains(m_fileRes.text, "src/a.ts") || contains(m_fileRes.text, "src/"),
               "逗号分隔多个模式的第一个生效");
-        check(contains(m_fileRes.text, "jz_types/core"), "逗号分隔多个模式的第二个也生效");
+        check(contains(m_fileRes.text, "js_wrapper/core"), "逗号分隔多个模式的第二个也生效");
     }
 
     void testFindScopeAndOptions()
@@ -255,10 +255,10 @@ private:
         runContext("{\"pattern\":\"needle_b\",\"case_sensitive\":true}");
         check(contains(m_contextRes.text, "没有找到匹配"), "case_sensitive=true 时不命中");
 
-        runContext("{\"pattern\":\"export\",\"path\":\"jz_types\",\"regex\":true}");
-        check(contains(m_contextRes.text, "jz_types/net/types/http.d.ts:1:") &&
-                  contains(m_contextRes.text, "jz_types/core/types/bytes.d.ts:1:"),
-              "regex=true + path=jz_types 命中两份声明");
+        runContext("{\"pattern\":\"export\",\"path\":\"js_wrapper\",\"regex\":true}");
+        check(contains(m_contextRes.text, "js_wrapper/net/types/http.d.ts:1:") &&
+                  contains(m_contextRes.text, "js_wrapper/core/types/bytes.d.ts:1:"),
+              "regex=true + path=js_wrapper 命中两份声明");
 
         runContext("{\"pattern\":\"NEEDLE_[AB]\",\"regex\":true}");
         check(contains(m_contextRes.text, "共 2 处"), "正则命中两处");

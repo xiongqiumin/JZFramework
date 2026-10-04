@@ -4,7 +4,7 @@
  * 宿主侧:
  *   JZJSModbusModule（JZJSEngine/JZJSModbusModule.{h,cpp}）注册 `__jz.modbus.*` 原子 API，
  *   底层是 JZModbus 的 JZModbusClient（m_ctx = rtuClient / tcpClient）。
- *   本文件是被动加载的 Node 风格适配层（用户 `import './jz_js/modbus/dist/index.js'` 时载入），
+ *   本文件是被动加载的 Node 风格适配层（用户 `import './js_wrapper/modbus/dist/index.js'` 时载入），
  *   只做接口塑形：Promise 化、事件、请求排队、结果对象形状。
  *
  * 用法（与 modbus-serial 一致）:

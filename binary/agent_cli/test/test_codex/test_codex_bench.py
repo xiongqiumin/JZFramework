@@ -7,7 +7,7 @@
 ------------------------------------------------------------
 - **用例、工程骨架、验证命令**都取自同一份 benchmark(`binary/code_agent/benchmark/data`: cases.jsonl
   + 各 case 的 prompt / setup / verify / expect.contains), 工程骨架(tsconfig + src/main.ts +
-  jz_types/jz_js)与 `agent_cli_test` 的 `initProject` 逐字一致, 验证命令的占位符
+  js_wrapper/)与 `agent_cli_test` 的 `initProject` 逐字一致, 验证命令的占位符
   (`${root} ${build} ${runtime} ${port} ${bench} ${data}`)与 `expandVerifyCmd` 同语义;
   ⇒ 两个 harness 的差别只剩"**谁来写代码**"(agent_cli 的 JZAgent vs Codex), 效果才可比。
 - **判分不在本脚本手里**: status 只看**验证命令的退出码**(与 agent_cli 的 verify 门控同口径);
@@ -82,7 +82,7 @@ FALLBACK_RUNTIME_NOTES = (
     "modbus / sqlite / stream / worker_threads。\n"
     "  - Web 标准全局与 Node 一致且不用 import: fetch / Headers / Response / WebSocket / URL / "
     "EventEmitter / Buffer / TextEncoder / atob / btoa。\n"
-    "  - 想查某个名字有哪些成员: 读工程里的 jz_types/<名字>/types/index.d.ts。\n"
+    "  - 想查某个名字有哪些成员: 读工程里的 js_wrapper/<名字>/types/index.d.ts。\n"
     "  - 退出/保活: 打开的套接字/服务端、ref 着的定时器、跑着的 worker、在途的异步请求都算"
     "「有事要等」, 进程不会退出; 用完记得 close()/terminate(), 想不吊住进程就 unref()。\n"
     "  - 起服务这类不自己退出的命令用 terminal_run 的 background=true + terminal_query 查日志。\n"
@@ -145,8 +145,7 @@ def detect_program(name_no_ext: str, build: str) -> str:
 
     产物可能落在 Release / Debug 两个配置目录里, 逐个试 —— 与 agent_cli_test 的 findUnder 一致。
     """
-    bases = [os.path.join(build, "binary", "code_agent", "bin", cfg) for cfg in ("Release", "Debug")]
-    bases += [os.path.join(build, "binary", "code_agent", cfg) for cfg in ("Release", "Debug")]
+    bases = [os.path.join(build, "binary", "bin", cfg) for cfg in ("Release", "Debug")]
     for base in bases:
         for suffix in (".exe", ""):
             p = os.path.join(base, name_no_ext + suffix)
@@ -312,26 +311,20 @@ def init_project(root: str, code_bin_dir: str) -> str:
     os.makedirs(root, exist_ok=True)
 
     has_types = False
-    has_js = False
-    for rel in ("jz_types", "jz_js"):
-        src = os.path.join(code_bin_dir, "jz_engine", rel)
-        if not os.path.isdir(src):
-            src = os.path.join(code_bin_dir, rel)       # 旧部署: 平铺在 bin 目录
-        if not os.path.isdir(src):
-            continue                                    # 源不存在不算错(工程只是不引用运行时类型)
-        dst = os.path.join(root, rel)
+    # 部署树 = 一棵与源码同构的 js_wrapper/(types/ + <包>/types/ + <包>/dist/), 整棵拷进工程。
+    src = os.path.join(code_bin_dir, "js_wrapper")
+    if not os.path.isdir(src):
+        src = os.path.join(code_bin_dir, "js_wrapper")   # 旧部署: 平铺在 bin 目录(同名)
+    if os.path.isdir(src):
+        dst = os.path.join(root, "js_wrapper")
         if os.path.isdir(dst):
             shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(src, dst)
-        if rel == "jz_types":
-            has_types = True
-        else:
-            has_js = True
-    del has_js
+        has_types = True
 
     include = '"src/**/*.ts"'
     if has_types:
-        include += ', "jz_types/**/*.d.ts"'
+        include += ', "js_wrapper/**/*.d.ts"'
     tsconfig = (
         "{\n"
         '  "compilerOptions": {\n'
@@ -766,8 +759,8 @@ def main(argv=None) -> int:
             pass
 
     ap = argparse.ArgumentParser(description="用 Codex SDK 跑 benchmark 用例(与 agent_cli_test 同口径)")
-    ap.add_argument("--data", default="", help="评测集目录(默认 <build>/binary/code_agent/bin/<cfg>/data/agent_cli_test, "
-                                               "回退仓库里的 binary/code_agent/benchmark/data)")
+    ap.add_argument("--data", default="", help="评测集目录(默认 <build>/binary/agent_cli/agent_cli_test/<cfg>/"
+                                               "data/agent_cli_test, 回退仓库里的 binary/code_agent/benchmark/data)")
     ap.add_argument("--cases", default="", help="逗号分隔的用例名/通配符(* ? .), 只跑匹配的")
     ap.add_argument("--work", default="", help="工作目录(默认 <build>/_codex_bench/<时间戳>; ⚠ 别用 %%TEMP%%, "
                                                "CODEX_HOME 在临时目录下会被 Codex 拒绝)")
@@ -804,7 +797,8 @@ def main(argv=None) -> int:
 
     data_dir = args.data
     if not data_dir:
-        cands = [os.path.join(build, "binary", "code_agent", "bin", cfg, "data", "agent_cli_test")
+        cands = [os.path.join(build, "binary", "agent_cli", "agent_cli_test", cfg,
+                              "data", "agent_cli_test")
                  for cfg in ("Release", "Debug")]
         cands += [os.path.join(REPO_ROOT, "binary", "code_agent", "benchmark", "data")]
         for c in cands:

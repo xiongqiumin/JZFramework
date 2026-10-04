@@ -16,12 +16,12 @@
  *   内置模块写裸名即可：import http from 'http'（'node:http' 也认）；
  *   一个名字 = 一个包目录，**默认导入与具名导入都成立**：
  *     import http from 'http' 与 import { createServer } from 'http' 都可以。
- *   也可以按工程内相对路径 import（jz_js/<名字>/dist/index.js，默认导出 = 模块对象）。
- *   工程根下的 jz_js/ 由 initProject 从 <exe>/jz_engine/jz_js 拷入（打包/发布产物里同目录）。
+ *   也可以按工程内相对路径 import（js_wrapper/<名字>/dist/index.js，默认导出 = 模块对象）。
+ *   工程根下的 js_wrapper/ 由 initProject 从 <exe>/js_wrapper 整棵拷入（打包/发布产物里同目录）。
  *   另外：退出/保活是 Node 的 handle ref 语义（2026-09-24 对齐）——**监听中的 server 自己就把
  *   进程留住**，所以这个常驻服务不需要任何心跳定时器；反过来，想让某个句柄不吊住进程就 unref()。
  *
- * 自测（工程根执行；jz_types、jz_js 需先按 initProject 的布局就位）：
+ * 自测（工程根执行；js_wrapper/ 需先按 initProject 的布局就位）：
  *   copy <本文件> <工程根>/src/main.ts
  *   <exe>/ts_compiler/tsc/tsc.exe -p tsconfig.json              # 产物 -> build/main.js
  *   python <data>/five_chess_server/five_chess_server_verify.py \
@@ -50,7 +50,7 @@ const PORT = 3900;
 
 // ============================================================================
 // 引擎 http 适配层的入参/出参（运行期包声明为 any，这里只声明用到的字段，
-// 拿到 tsconfig 的 strict 检查；类型来自 jz_types：import type { ... } from 'http'）
+// 拿到 tsconfig 的 strict 检查；类型来自 js_wrapper：import type { ... } from 'http'）
 // ============================================================================
 interface HttpReq {
     method?: string;

@@ -92,8 +92,9 @@ if(BUILD_TEST)
 
     # 编译用的 tsc(tsgo): 就用 **code_runtime.exe 同目录**下的 ts_compiler/tsc/tsc.exe
     # —— 与 code_agent / MainWindow 的默认同源(applicationDirPath()/ts_compiler/tsc/tsc.exe),
-    # 目录由父目录定死的 CODE_AGENT_BIN_DIR 得到: ${CODE_AGENT_BIN_DIR}/<配置>/ts_compiler/tsc/
-    # (见 code_agent/CMakeLists.txt; 变量在 add_subdirectory 之前定义, 所以这里可见)。
+    # 目录由 CODE_AGENT_BIN_DIR 得到(= <build>/binary/bin, 整个 binary/ 的 exe 统一在这里,
+    # 见 binary/CMakeLists.txt): ${CODE_AGENT_BIN_DIR}/<配置>/ts_compiler/tsc/
+    # (变量在 add_subdirectory 之前定义, 所以这里可见)。
     # 要换别的编译器: -DJZ_TS_TSC=<全路径> 或同名环境变量。
     set(JZ_TS_TSC "$ENV{JZ_TS_TSC}" CACHE FILEPATH "jsapi_example 编译用的 tsc/tsgo 全路径(留空 = 取 code_runtime.exe 旁的 ts_compiler/tsc/)")
     set(_jz_tsc "${JZ_TS_TSC}")
@@ -155,7 +156,7 @@ if(BUILD_TEST)
         endforeach()
     else()
         message(STATUS "jsapi_example: code_runtime.exe 旁没有 ts_compiler/tsc/tsc.exe "
-                       "(按 bin/<配置>/ts_compiler/tsc/ 找的), 跳过 TS 例子的编译与用例; "
+                       "(按 binary/bin/<配置>/ts_compiler/tsc/ 找的), 跳过 TS 例子的编译与用例; "
                        "用 -DJZ_TS_TSC=<tsc.exe 全路径> 指定编译器即可恢复")
     endif()
 endif()

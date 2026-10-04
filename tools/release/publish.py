@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-把 code_agent 的构建产物(自包含目录 bin/<CONFIG>)打包成 zip, 并通过系统
+把 code_agent 的构建产物(自包含目录 <build>/binary/bin/<CONFIG>)打包成 zip, 并通过系统
 OpenSSH(scp/ssh) 推送到远端主机, 再在远端解压(可选执行部署命令)。
 
 本机前提:
@@ -76,7 +76,7 @@ def find_pscp():
 def resolve_src(args):
     if args.src:
         return os.path.abspath(args.src)
-    return os.path.join(REPO_ROOT, "build", "binary", "code_agent", "bin", args.config)
+    return os.path.join(REPO_ROOT, "build", "binary", "bin", args.config)
 
 
 def find_cmake():
@@ -94,7 +94,7 @@ def find_tsc(build_dir):
 
 
 def run_tsc(build_dir):
-    """tsc -b js_wrapper, 生成各包 dist(供 copy_jz_js 打包进 jz_engine)。"""
+    """tsc -b js_wrapper, 生成各包 dist(供 copy_jz_js 打包成部署的 js_wrapper 树)。"""
     tsc = find_tsc(build_dir)
     if not tsc:
         print("[publish] ERROR: tsc not found (no bundled ts_compiler under "
@@ -138,8 +138,7 @@ def bundle_ts_compiler(src):
         return True
     candidates = [
         "E:/libs/ts_compiler",
-        os.path.join(REPO_ROOT, "build", "binary", "code_agent",
-                     "bin", "Debug", "ts_compiler"),
+        os.path.join(REPO_ROOT, "build", "binary", "bin", "Debug", "ts_compiler"),
     ]
     for c in candidates:
         if os.path.isdir(c):
@@ -233,7 +232,7 @@ def parse_args():
     """
     ns = argparse.Namespace()
     ns.config = "Release"
-    ns.src = None                       # None -> <repo>/build/binary/code_agent/bin/<config>
+    ns.src = None                       # None -> <repo>/build/binary/bin/<config>
     ns.host = DEFAULT_HOST              # 120.77.183.99
     ns.port = DEFAULT_PORT              # 22
     ns.user = DEFAULT_USER              # root

@@ -23,13 +23,19 @@ add_executable(agent_cli_test ${AGENT_CLI_TEST_SOURCES})
 target_include_directories(agent_cli_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(agent_cli_test PRIVATE JZFramework agent_tool)
 
+# 输出目录：本目标**刻意不指定** —— 它是评测 exe，不进发布目录
+# (<build>/binary/bin/<配置>/，见 binary/CMakeLists.txt 末尾那张发布清单)，
+# 就落在默认位置 <build>/binary/agent_cli/agent_cli_test/<配置>/。
+# 它要的 code_runtime / tsc 在发布目录里 ⇒ main.cpp 的 detectProgram 会沿上级目录找回
+# binary/bin/<配置>；评测集与 test_llm.json 由下面的 POST_BUILD 拷到它自己旁边。
+
 # 复用 code_agent/benchmark 的评测集(data/*.json), 随构建拷贝到 exe 同目录的 data/agent_cli_test
 # （运行期由 applicationDirPath()+"/data/agent_cli_test" 读取；可用 --data 覆盖）。
 add_custom_command(TARGET agent_cli_test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/../../code_agent/benchmark/data"
             "$<TARGET_FILE_DIR:agent_cli_test>/data/agent_cli_test"
-    COMMENT "Copy benchmark evaluation set into bin/<CONFIG>/data/agent_cli_test")
+    COMMENT "Copy benchmark evaluation set next to agent_cli_test (data/agent_cli_test)")
 
 # 大模型接入配置: 测试**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
 # 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake) —— 已经存在的**不覆盖**,

@@ -9,7 +9,7 @@
 //   <tsc> -p tsconfig.json          (tsgo: <code_runtime 同目录>/ts_compiler/tsc/tsc.exe)
 //   code_runtime --entry <本目录>/build/main.js  (存在可见顶层窗口, 关窗才退出)
 //   类型来自仓库里的 js_wrapper 声明(见 tsconfig.json 的 include); 用户工程里则是
-//   由 initProject 拷进工程的 jz_types/**/*.d.ts。
+//   由 initProject 拷进工程的 js_wrapper/**/*.d.ts。
 //
 // 控件都是**引擎注册的全局类**(JZJSWidgetModule), 直接用全局名, 不需要 import。
 //

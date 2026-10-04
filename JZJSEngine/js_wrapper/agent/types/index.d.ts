@@ -15,7 +15,7 @@
  *   - 同一时刻只有一轮对话在跑(Idle 之后才能 reset 重开)。
  *
  * 运行期按工程内的相对路径 import 运行时 JS:
- *   import { Agent, McpClient } from '../jz_js/agent/dist/index.js';
+ *   import { Agent, McpClient } from '../js_wrapper/agent/dist/index.js';
  * 类型按包名引用:
  *   import type { Agent, AgentConfig, LLMContext } from '@jz/agent';
  */

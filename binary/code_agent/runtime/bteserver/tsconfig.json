@@ -5,7 +5,7 @@
   "compilerOptions": {
     // 与 code_agent 工程骨架(initProject 生成的 tsconfig)一致:
     // target ES2022 + lib ES2025 = quickjs 实际支持的范围; 不写 DOM, 否则
-    // jz_types 里的全局 fetch/WebSocket/URL 会与 lib.dom.d.ts 撞成 duplicate identifier。
+    // js_wrapper 里的全局 fetch/WebSocket/URL 会与 lib.dom.d.ts 撞成 duplicate identifier。
     "target": "ES2022",
     "module": "esnext",
     "moduleResolution": "bundler",
@@ -32,7 +32,7 @@
   "include": [
     "src/**/*.ts",
     // 类型来源: 仓库里的 js_wrapper 声明(引擎全局 + widget 全局类 + core/net 模块)。
-    // 用户工程不用写这些相对路径 —— initProject 会把部署的 jz_types 拷进工程, include "jz_types/**/*.d.ts" 即可。
+    // 用户工程不用写这些相对路径 —— initProject 会把部署的 js_wrapper 整棵拷进工程, include "js_wrapper/**/*.d.ts" 即可。
     "../../../../JZJSEngine/js_wrapper/**/*.d.ts"
   ]
 }

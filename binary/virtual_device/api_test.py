@@ -159,9 +159,9 @@ def free_port():
 
 
 def find_exe(cfg):
+    # 整个 binary/ 的 exe 统一在 <build>/binary/bin/<cfg> 里(见 binary/CMakeLists.txt)。
     cands = [
-        os.path.join(ROOT, "build", "binary", "virtual_device", "bin", cfg, "virtual_device.exe"),
-        os.path.join(ROOT, "build", "binary", "virtual_device", cfg, "virtual_device.exe"),
+        os.path.join(ROOT, "build", "binary", "bin", cfg, "virtual_device.exe"),
     ]
     for c in cands:
         if os.path.exists(c):

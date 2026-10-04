@@ -164,24 +164,23 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     engine->start();
 
     // 供 core 等包以裸模块名(如 'net/dist/index.js')被动 import 兄弟包时, 按运行根与 exe 部署
-    // 两处 jz_js 目录定位(与 bootstrapWebGlobals 的 net 候选路径一致)。相对 import 由 QuickJS
+    // 两处 js_wrapper 目录定位(与 bootstrapWebGlobals 的 net 候选路径一致)。相对 import 由 QuickJS
     // 归一化为绝对路径, 不经 libraryDirs; 仅裸模块名经此解析。
+    // 顺序即优先级: ① 运行根(工程自带的 js_wrapper —— initProject 会拷一份进工程) ② exe 边的
+    //   部署树 <appDir>/js_wrapper(copy_jz_js 铺的那棵；测试 exe 自己摆的那份也是这个路径)。
     {
         std::vector<std::string> libDirs;
-        libDirs.push_back(rtAbsPath(wd + "/jz_js"));
-        libDirs.push_back(rtAbsPath(wd + "/../jz_js"));
+        libDirs.push_back(rtAbsPath(wd + "/js_wrapper"));
+        libDirs.push_back(rtAbsPath(wd + "/../js_wrapper"));
         std::string appDir = JZPlatform::applicationDirPath();
         if (!appDir.empty())
-        {
-            libDirs.push_back(rtAbsPath(appDir + "/jz_engine/jz_js"));
-            libDirs.push_back(rtAbsPath(appDir + "/jz_js"));
-        }
+            libDirs.push_back(rtAbsPath(appDir + "/js_wrapper"));
         engine->setLibraryDir(libDirs);
     }
 
     // 挂载内置模块：net（fetch/http/net/ws...）必须先于 core，core 会复用 net 建好的
     // __jz 命名空间（见 JZJSCoreModule::initEngine），顺序反了会丢失 fetch 等网络全局。
-    // 二者共同提供 jz_types 声明的运行期全局（fs/path/process/os/fetch/http/...）。
+    // 二者共同提供 js_wrapper 声明的运行期全局（fs/path/process/os/fetch/http/...）。
     m_netModule = std::make_unique<JZJSNetModule>();
     m_netModule->initEngine(engine);
     m_coreModule = std::make_unique<JZJSCoreModule>();
@@ -262,9 +261,9 @@ bool JZEngineRuntime::initEngine(const string &workDir)
     return true;
 }
 
-// 注(2026-09-23): 原来这里有 bootstrapWebGlobals() —— 宿主按绝对路径探测 jz_js/{events,url,ws,http}
+// 注(2026-09-23): 原来这里有 bootstrapWebGlobals() —— 宿主按绝对路径探测 js_wrapper/{events,url,ws,http}/dist
 // 再 runModuleFile。它有三个问题: ① 只在 code_runtime 侧跑, 别的宿主/worker 引擎没有;
-// ② 依赖磁盘布局(产物没重编或 jz_js 没部署 → 漏装 fetch, 只报 "fetch is not defined");
+// ② 依赖磁盘布局(产物没重编或 js_wrapper 没部署 → 漏装 fetch, 只报 "fetch is not defined");
 // ③ 按**绝对路径**加载 ⇒ 模块缓存键与 import 链路('events/dist/index.js')不同, 每个包被求值两份
 //    (globalThis.Headers/WebSocket 被后加载的那份覆盖, 跨份 instanceof 失败; 已实测复现)。
 // 现在改由 JZJSNetModule::loadWebGlobalModules() 在**注册时**按契约相对名装载(与 Node 启动装

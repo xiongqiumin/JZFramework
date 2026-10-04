@@ -123,11 +123,11 @@ def find_agent_cli(explicit: str) -> str:
             raise SystemExit("agent_cli 不存在: " + explicit)
         return fwd(explicit)
     # 从脚本位置往上找 build/, 再在 build 里按部署路径找(与 agent_cli_test 的探测同思路)
+    # 部署路径 = <build>/binary/bin/<配置>/agent_cli.exe(binary/ 下的 exe 都在这一个目录)。
     d = HERE
     for _ in range(12):
-        cand_dirs = [os.path.join(d, "build", "binary", "agent_cli", "bin", cfg)
+        cand_dirs = [os.path.join(d, "build", "binary", "bin", cfg)
                      for cfg in ("Release", "Debug")]
-        cand_dirs += [os.path.join(d, "build", "binary", "agent_cli", cfg) for cfg in ("Release", "Debug")]
         for c in cand_dirs:
             for name in ("agent_cli.exe", "agent_cli"):
                 p = os.path.join(c, name)

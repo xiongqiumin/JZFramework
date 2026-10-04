@@ -54,6 +54,7 @@
 #include "JZUuid.h"
 #include "JZStd.h"
 
+#include "JZBundlePaths.h"
 #include "JZCodeAgent.h"
 
 // ---------------------------------------------------------------------------
@@ -1541,7 +1542,12 @@ int main(int argc, char *argv[])
 
     // 编译器 / LSP 路径
     // 缺省：环境变量 JZ_TS_LSP -> 否则同目录下的 tsc_shim.exe（本机 node 版 tsc 的包装）。
-    std::string tscPath = jzApp->applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
+    // 宿主 tsc 在 binary/ 的统一产物目录里（<build>/binary/bin/<配置>/ts_compiler/…），不在本
+    // exe 旁边 ⇒ 由 jzFindBundleAsset 找（见 JZBundlePaths.h）；找不到时给个明确路径好让人
+    // 看出期望位置（--tsc 仍可显式覆盖）。
+    std::string tscPath = jzFindBundleAsset("ts_compiler/tsc/tsc.exe");
+    if (tscPath.empty())
+        tscPath = JZPlatform::applicationDirPath() + "/ts_compiler/tsc/tsc.exe";
     std::string tsgoPath = tscPath;   // 原生 tsc 也经同一 shim（支持 --lsp --stdio）
     std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
     std::string casesFilter;   // --cases：逗号分隔的用例名/通配符，仅跑匹配的（可多个）
@@ -1576,15 +1582,12 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    std::string codeRuntime = JZPlatform::applicationDirPath();
-    for (size_t i = 0; i < codeRuntime.size(); i++)
-        if (codeRuntime[i] == '\\')
-            codeRuntime[i] = '/';
-    codeRuntime += "/code_runtime.exe";
-    if (!JZFileInfo::exists(codeRuntime))
+    // code_runtime 同样在 binary/ 的统一产物目录里（exe 旁边没有）
+    std::string codeRuntime = jzFindBundleAsset("code_runtime.exe");
+    if (codeRuntime.empty())
     {
-        jzError().nospace() << "未找到 code_runtime.exe: " << codeRuntime
-                            << "（请先构建 code_runtime 目标）";
+        jzError().nospace() << "未找到 code_runtime.exe（找过 exe 同目录、<build>/binary/bin/<配置>/；"
+                            << "请先构建 code_runtime 目标）";
         return 2;
     }
 

@@ -21,7 +21,7 @@
   },
   "agent": {
     "enabled": true,
-    "bin": "../../build/binary/agent_cli/Debug/agent_cli.exe",
+    "bin": "../../build/binary/bin/Debug/agent_cli.exe",
     "readySec": 120,
     "required": true,
     "restart": true

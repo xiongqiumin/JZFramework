@@ -390,7 +390,7 @@ string jzTsRuntimeNotes()
     s += "  - Web 标准全局与 Node 一致, 运行时启动即有(**不用 import**): fetch / Headers / Response / "
          "WebSocket / URL / URLSearchParams / EventEmitter / Buffer / TextEncoder / TextDecoder / "
          "atob / btoa(EventEmitter/Buffer 是 Node 的, 本运行时也挂全局; 编码靠 Uint8Array.toHex/toBase64)。\n";
-    s += "  - 想查某个名字有哪些成员: 直接读工程里的 jz_types/<名字>/types/index.d.ts"
+    s += "  - 想查某个名字有哪些成员: 直接读工程里的 js_wrapper/<名字>/types/index.d.ts"
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
     s += "  - 退出/保活(Node 的 handle ref 语义, 与 Node 一致): 打开着的套接字/服务端(监听中、连接中)、"
@@ -789,7 +789,7 @@ JZSearchFileTool::JZSearchFileTool()
     def.name = "search_file";
     def.description = "按**文件名 / 相对路径**在工作区里找文件，返回相对工作区路径列表(目录带尾 \"/\")。" \
                       "pattern 用通配符 * ?，可逗号分隔多个(如 \"*.d.ts,tsconfig.json\")；命中规则 = 文件名或相对工作区路径任一匹配" \
-                      "(所以既能写 \"*.d.ts\"，也能写 \"jz_types/*/types/*.d.ts\")。" \
+                      "(所以既能写 \"*.d.ts\"，也能写 \"js_wrapper/*/types/*.d.ts\")。" \
                       "本工具只回路径、不回内容: 找内容用 search_context，看内容用 read_file。" \
                       "默认跳过隐藏目录和 build/out/bin 等生成目录，跳过与触顶都会在结果末尾注明。";
     def.parameters.push_back(makeParam("pattern", ParamType::String, "文件名/路径通配符(* ?)，逗号分隔多个，如 \"*.d.ts,tsconfig.json\""));

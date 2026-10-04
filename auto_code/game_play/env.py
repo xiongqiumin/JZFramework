@@ -261,13 +261,15 @@ def play_prebuild(cfg):
 
 # ==================== 路径推导 ====================
 def container_exe(cfg="Debug"):
-    return os.path.join(ROOT, "build", "binary", "virtual_device", "bin", cfg, "virtual_device.exe")
+    return os.path.join(ROOT, "build", "binary", "bin", cfg, "virtual_device.exe")
 
 
 def runtime_bin_dir(cfg="Debug"):
-    """code_runtime 那一堆产物所在目录：ts_compiler / jz_engine / **mgba_host.dll 与它的
-    MinGW 运行库**都在这儿（JZEmulator 模块的 POST_BUILD 把它们拷到 exe 边上）。"""
-    return os.path.join(ROOT, "build", "binary", "code_agent", "bin", cfg)
+    """code_runtime 那一堆产物所在目录：ts_compiler / js_wrapper / **mgba_host.dll 与它的
+    MinGW 运行库**都在这儿（JZEmulator 模块的 POST_BUILD 把它们拷到 exe 边上）。
+
+    = <build>/binary/bin/<cfg> —— binary/ 下的 exe 全在这一个目录里（见 binary/CMakeLists.txt）。"""
+    return os.path.join(ROOT, "build", "binary", "bin", cfg)
 
 
 def emulator_dll_dir(cfg="Debug"):

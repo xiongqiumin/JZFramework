@@ -62,7 +62,9 @@ VLM_MODEL = os.environ.get("JZ_VLM_MODEL", "my_model")
 
 
 def bin_dir(cfg):
-    return os.path.join(ROOT, "build", "binary", "code_agent", "bin", cfg)
+    # binary/ 下的 exe(code_agent / code_runtime / agent_cli / virtual_device ...)统一在这儿
+    # (见 binary/CMakeLists.txt 的 CMAKE_RUNTIME_OUTPUT_DIRECTORY)。
+    return os.path.join(ROOT, "build", "binary", "bin", cfg)
 
 
 def run(cmd, cwd=None, check=True, timeout=600):
@@ -132,7 +134,7 @@ DESKTOP_DEFAULT = "1024x768"   # 场景窗口 420x320 上下, 给足空间（窗
 
 
 def container_exe(cfg):
-    return os.path.join(ROOT, "build", "binary", "virtual_device", "bin", cfg, "virtual_device.exe")
+    return os.path.join(ROOT, "build", "binary", "bin", cfg, "virtual_device.exe")
 
 
 def task_meta():
@@ -270,7 +272,7 @@ def main():
     ap.add_argument("--container", action="store_true",
                     help="屏幕改用虚拟桌面容器（virtual_device --headless: 无头, 不需要真桌面）")
     ap.add_argument("--container-exe", default="",
-                    help="容器 exe 路径（默认 build/binary/virtual_device/bin/<cfg>/virtual_device.exe）")
+                    help="容器 exe 路径（默认 build/binary/bin/<cfg>/virtual_device.exe）")
     ap.add_argument("--desktop", default="",
                     help="容器桌面尺寸 WxH（默认取 task.json 的 container.desktop, 其次 %s）" % DESKTOP_DEFAULT)
     ap.add_argument("--ui-port", type=int, default=0,

@@ -222,14 +222,15 @@ import fs from 'node:fs';            // 值位置 ⇒ 真正加载模块
 ### 7.3 部署布局（`package.py`）
 
 ```
-<exe>/jz_engine/jz_types/types/**        <- js_wrapper/types          （共享声明）
-<exe>/jz_engine/jz_types/<pkg>/types/**  <- js_wrapper/<pkg>/types    （模块类型 + ambient）
-<exe>/jz_engine/jz_js/<pkg>/dist/**      <- js_wrapper/<pkg>/dist     （运行时 JS）
+<exe>/js_wrapper/types/**         <- js_wrapper/types          （共享声明）
+<exe>/js_wrapper/<pkg>/types/**   <- js_wrapper/<pkg>/types    （模块类型 + ambient）
+<exe>/js_wrapper/<pkg>/dist/**    <- js_wrapper/<pkg>/dist     （运行时 JS）
 ```
 
-- **与源码目录同构**是刻意设计：包内 `../../types/`、ambient 的 `./fs` 等相对引用
-  原样可解析，**不需要**在源码与产物之间改写路径；
-- `initProject` 再把 `jz_types/`、`jz_js/` 拷进用户工程（相对引用继续成立）；
+- **与源码目录 1:1 同构**是刻意设计：源码只有一个 `js_wrapper/`，部署也只有一棵同名树，
+  包内 `../../types/`、ambient 的 `./fs` 等相对引用原样可解析，**不需要**在源码与产物之间
+  改写路径（源码专属的 `index.ts` / `package.json` / `tsconfig.json` 不进部署）；
+- `initProject` 再把整棵 `js_wrapper/` 拷进用户工程（相对引用继续成立）；
 - ⚠ TS7(tsgo) 在 `declare module` 内**不支持相对路径的通配再导出**（会静默不导出任何成员）
   ⇒ `package.py` 在部署副本里给每个 ambient 块追加一行**显式具名再导出**
   （源码保持标准写法，TS5/TS7 都可用）；这行是生成物，别去源码里手写。

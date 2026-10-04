@@ -50,7 +50,7 @@
 ## 2. 容器：怎么起、给什么
 
 ```powershell
-build\binary\virtual_device\bin\Debug\virtual_device.exe --headless --http-port 8720 --desktop 800x600
+build\binary\bin\Debug\virtual_device.exe --headless --http-port 8720 --desktop 800x600
 ```
 
 - `--headless`：不显示宿主界面、桌面干净、**没有窗口了也不退出**（容器的生命周期由驱动决定）。
@@ -120,7 +120,7 @@ python run.py           # 上面六步串起来，并把产物归到 runs/round_
 
 ```bash
 python3 agent_loop.py \
-  --agent-cmd  "build/binary/agent_cli/Release/agent_cli.exe -c <config.json>" \
+  --agent-cmd  "build/binary/bin/Release/agent_cli.exe -c <config.json>" \
   --prompt-file auto_code/computer_use/prompt.md \
   --verify-cmd  "python run.py" \                # 每轮：编译→出题→截图→探索→判分→归档
   --stop-tag    "[loop-stop]" \                  # verify.py 五项硬门齐过时才打
@@ -149,7 +149,7 @@ python3 agent_loop.py \
    （`POST /api/programs {file}` / `--program`）—— 走引擎的一站式 `init(运行根, 入口)`，
    于是 `import` 能用，且 `jzApp.applicationDirPath()` = **程序所在目录**、`applicationFilePath()`
    就是那份 js（脚本按入口目录找随它走的资源，这条约定成立）。用 `{script}` 才是 eval 一段代码
-   （片段用，没有入口目录）。运行期包（fs/path/http…）按 `jz_engine/jz_js` 部署在 exe 边上。
+   （片段用，没有入口目录）。运行期包（fs/path/http…）按 `js_wrapper/<包>/dist` 部署在 exe 边上。
 2. ~~`run.py` 加 `--container` 模式~~ ✅ **已做**：起容器 → `POST /api/programs`（场景按 JS 程序加载）
    → `GET /api/windows?process=scene`（等窗口出现, 取 `client` 客户区几何）→
    `GET /api/screen?window=<句柄>` 存 `runs/current/shot.png`；探针/判分/归档那几步一行没改。
@@ -158,7 +158,7 @@ python3 agent_loop.py \
    再 `kill_tree` 收容器进程（无头下它不会自己退 —— 见 `main.cpp` 的 `setQuitOnLastWindowClosed(false)`）。
 4. ~~`task.json` 补几个字段~~ ✅ **已做**：新增 `container { desktop, program }`，`run.py` 从它读
    （缺省 `1024x768` / `scene`）；容器 exe 按 `--cfg` 推导为
-   `build/binary/virtual_device/bin/<cfg>/virtual_device.exe`（`--container-exe` 可覆盖）。
+   `build/binary/bin/<cfg>/virtual_device.exe`（`--container-exe` 可覆盖）。
 5. ~~判分口径**不用改**~~ ✅ **已确认**（真值与预测都是逻辑像素）—— 这就是选容器的主要理由。
 
 ### 实测（Debug, seed=0 level=0, verify 用 --no-vlm ⇒ 预期红灯）

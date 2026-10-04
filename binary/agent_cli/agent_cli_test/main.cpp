@@ -7,7 +7,7 @@
 //
 // 与 code_agent_benchmark 的关键差异:
 //   - 宿主只负责"铺工程骨架"(initProject: tsconfig outDir=build / rootDir=src + src/main.ts +
-//     jz_types/jz_js), 之后编译/运行都由 agent 自己用 terminal/file 工具干, 或由验证脚本复核
+//     js_wrapper/), 之后编译/运行都由 agent 自己用 terminal/file 工具干, 或由验证脚本复核
 //     (所以 tsc / code_runtime 要对 agent 可用, 靠下面的"程序映射"登记, 而不是宿主代跑)。
 //   - 用例加载逻辑完全一致(同 parseCaseObject/loadCases), benchmark/data 里的用例直接作输入。
 //     - 带 verify 字段的用例 -> submitTask 的 verify_cmd(benchmark 原样搬过来);
@@ -27,7 +27,7 @@
 //
 // 配置(命令行 / 环境变量):
 //   --modelUrl / --modelName / --modelToken   大模型接入(缺省读 exe 同目录的 test_llm.json)
-//   --data    评测集目录(缺省 bin/<CONFIG>/data/agent_cli_test)
+//   --data    评测集目录(缺省 <本 exe 同目录>/data/agent_cli_test)
 //   --cases   逗号分隔的用例名/通配符, 仅跑匹配的（可多个；支持 * ? .）
 //   --http-port   输入 HTTP 服务监听端口(JS/agent 用 fetch 读输入)
 //   --cli-http-port 每个用例的 JZAgentCli 网页服务起始端口(默认 19090, 逐用例 +1)
@@ -293,11 +293,11 @@ static void splitInterpreter(const std::string &interp, std::string &program,
 
 // ---------------------------------------------------------------------------
 // 工程骨架: 对齐 JZCodeAgent::initProject 的"标准 TS 工程"
-//   每个用例先在固定位置铺好骨架(tsconfig.json + src/main.ts + jz_types/jz_js),
+//   每个用例先在固定位置铺好骨架(tsconfig.json + src/main.ts + js_wrapper/),
 //   agent 只负责往 src/ 里写代码 —— 产物目录由 tsconfig 的 outDir 定死(<用例根>/build),
 //   验证脚本据此去跑, 不需要在文件系统里搜 main.js。
-//   jz_types / jz_js 从 code_agent 的 bin 目录(code_runtime 所在目录)各拷一份, 使工程自包含
-//   (fetch/WebSocket 等全局声明来自 jz_types, 缺了连编译都过不去)。
+//   js_wrapper 从 code_agent 的 bin 目录(code_runtime 所在目录)整棵拷一份, 使工程自包含
+//   (fetch/WebSocket 等全局声明来自 js_wrapper/types, 缺了连编译都过不去)。
 // ---------------------------------------------------------------------------
 static bool writeTextIfAbsent(const std::string &path, const std::string &text)
 {
@@ -321,29 +321,26 @@ static bool initProject(const std::string &root, const std::string &codeBinDir, 
         return false;
     }
 
-    // jz_types / jz_js 各拷一份进工程(新部署在 jz_engine/ 下, 旧部署平铺在 bin 目录)
-    auto copyIfPresent = [&](const std::string &rel, bool &flag) {
-        std::string src = codeBinDir + "/jz_engine/" + rel;
-        if (!JZFileInfo(src).isDir())
-            src = codeBinDir + "/" + rel;
-        if (!JZFileInfo(src).isDir())
-            return;                        // 源不存在: 不报错(工程只是不引用运行时类型)
-        std::string copyErr;
-        if (!JZDir::copyRecursively(src, root + "/" + rel, false, &copyErr))
-            error = "复制 " + rel + " 失败: " + copyErr;
-        else
-            flag = true;
-    };
-    bool hasJzTypes = false;
-    bool hasJzJs = false;
-    copyIfPresent("jz_types", hasJzTypes);
-    copyIfPresent("jz_js", hasJzJs);
+    // js_wrapper 整棵拷一份进工程(部署树与源码同构: types/ + <包>/types/ + <包>/dist/)。
+    bool hasJsWrapper = false;
+    {
+        std::string src = codeBinDir + "/js_wrapper";
+        if (JZFileInfo(src).isDir())
+        {
+            std::string copyErr;
+            if (!JZDir::copyRecursively(src, root + "/js_wrapper", false, &copyErr))
+                error = "复制 js_wrapper 失败: " + copyErr;
+            else
+                hasJsWrapper = true;
+        }
+        // 源不存在: 不报错(工程只是不引用类型/运行时)
+    }
     if (!error.empty())
         return false;
 
     std::string include = "\"src/**/*.ts\"";
-    if (hasJzTypes)
-        include += ", \"jz_types/**/*.d.ts\"";
+    if (hasJsWrapper)
+        include += ", \"js_wrapper/**/*.d.ts\"";
 
     // outDir=build 就是"固定的产物目录"; sourceMap 是运行期把 JS 栈翻译回 TS 源码的必备项。
     std::string tsconfig =
@@ -406,7 +403,7 @@ class CliTest : public JZObject
 {
 public:
     // codeBinDir = code_runtime / tsc 所在的部署目录(bin/<CONFIG>): 工程骨架的
-    // jz_types / jz_js 从这里拷进每个用例工程。
+    // js_wrapper 从这里拷进每个用例工程(一棵与源码同构的树)。
     CliTest(JZEventLoop *loop, const JZCliConfig &cfg, const std::string &codeRuntime,
             const std::string &codeBinDir, const std::string &dataDir)
         : m_loop(loop), m_config(cfg), m_codeRuntime(codeRuntime),
@@ -487,7 +484,7 @@ protected:
         std::string root = m_baseRoot + "/case_" + std::to_string(i);
 
         // 先铺好标准 TS 工程骨架(tsconfig outDir=build / rootDir=src), agent 只往 src/ 里写代码。
-        // 骨架铺不成(拷 jz_types 失败等)就没什么可评测的, 直接判该用例失败。
+        // 骨架铺不成(拷 js_wrapper 失败等)就没什么可评测的, 直接判该用例失败。
         {
             std::string perr;
             if (!initProject(root, m_codeBinDir, perr))
@@ -1124,7 +1121,7 @@ protected:
     JZEventLoop *m_loop;
     JZCliConfig m_config;
     std::string m_codeRuntime;
-    std::string m_codeBinDir;      // code_runtime / tsc 所在目录(工程骨架取 jz_types/jz_js)
+    std::string m_codeBinDir;      // code_runtime / tsc 所在目录(工程骨架取 js_wrapper/)
     std::string m_dataDir;
 
     JZAgentCli *m_cli = nullptr;
@@ -1414,7 +1411,9 @@ static std::string lastDirName(const std::string &path)
 // 在某个基目录下按相对路径找程序: 产物可能在 Debug / Release 两个子目录里, 逐个试。
 static std::string findUnder(const std::string &baseDir, const std::vector<std::string> &names)
 {
-    static const char *kSubs[] = { "/binary/code_agent/bin/Release", "/binary/code_agent/bin/Debug",
+    // binary/ 下的 exe 统一在 <build>/binary/bin/<配置>/(见 binary/CMakeLists.txt),
+    // 后面几项是历史布局的兜底。
+    static const char *kSubs[] = { "/binary/bin/Release", "/binary/bin/Debug",
                                    "/bin/Release", "/bin/Debug", "" };
 
     std::string base = baseDir;
@@ -1436,7 +1435,7 @@ static std::string findUnder(const std::string &baseDir, const std::vector<std::
 }
 
 // 定位程序(tsc / code_runtime 随部署走, 路径不固定): 从 exe 目录逐级**向上找到 build 目录**,
-// 再在 build 里按名字找 —— 仓库内构建就是 <build>/binary/code_agent/bin/<CONFIG>/xxx.exe。
+// 再在 build 里按名字找 —— 仓库内构建就是 <build>/binary/bin/<CONFIG>/xxx.exe。
 // 找不到返回空串(那就没得用: 不填进配置)。
 static std::string detectProgram(const std::string &nameNoExt)
 {
@@ -1602,8 +1601,8 @@ int main(int argc, char *argv[])
     if (!JZFileInfo::exists(codeRuntime))
         codeRuntime.clear();
 
-    // code_agent 的部署目录(bin/<CONFIG>): code_runtime / tsc / jz_engine 都在这儿。
-    // 工程骨架的 jz_types / jz_js 从这里拷, 所以要求能定位到。
+    // code_agent 的部署目录(bin/<CONFIG>): code_runtime / tsc / js_wrapper 都在这儿。
+    // 工程骨架的 js_wrapper 从这里拷, 所以要求能定位到。
     std::string codeBinDir;
     if (!codeRuntime.empty())
         codeBinDir = parentDirOf(codeRuntime);

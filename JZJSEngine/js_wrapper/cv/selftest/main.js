@@ -2,10 +2,10 @@
 //
 // 跑法（2026-10-02 实测 63 pass / 0 fail）:
 //   1) 先出 dist:  <ts_compiler>/tsc/tsc.exe -b JZJSEngine/js_wrapper/cv/tsconfig.json
-//   2) 部署:       python JZJSEngine/js_wrapper/package.py --out <build>/binary/code_agent/bin/<CFG> \
+//   2) 部署:       python JZJSEngine/js_wrapper/package.py --out <build>/binary/bin/<CFG> \
 //                        --js-wrapper JZJSEngine/js_wrapper
-//                  (或让 cmake 重编 code_runtime —— 它的 POST_BUILD copy_jz_js 会顺手部署)
-//   3) 跑:         <build>/binary/code_agent/bin/<CFG>/code_runtime.exe --entry <本文件绝对路径>
+//                  (或让 cmake 重编 code_runtime —— 它会带着 copy_jz_js 顺手部署, 见 binary/CMakeLists.txt)
+//   3) 跑:         <build>/binary/bin/<CFG>/code_runtime.exe --entry <本文件绝对路径>
 //   退出码 0 = 全过; 有 FAIL 会打印并把 exitCode 置 1。会在**入口所在目录**写一张 cv_selftest.png。
 // ⚠ 需要那个 exe 编了 OpenCV(JZ_CU_OPENCV), 否则 available() 为 false, 大部分断言会失败。
 import cv, { available, ops, matFromArray, contourArea, CV_8UC3 } from 'cv';

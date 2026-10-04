@@ -46,10 +46,10 @@
  *       import http from 'http';
  *       import fs from 'node:fs';
  *
- *   (2) 相对路径(jz_types / jz_js 由 initProject 一起拷进用户工程, 按工程内相对路径 import)
- *       import http from '../jz_js/http/dist/index.js';
- *       import fs from '../jz_js/fs/dist/index.js';
- *       import { SerialPort } from '../jz_js/serialport/dist/index.js';
+ *   (2) 相对路径(js_wrapper 树由 initProject 整棵拷进用户工程, 按工程内相对路径 import)
+ *       import http from '../js_wrapper/http/dist/index.js';
+ *       import fs from '../js_wrapper/fs/dist/index.js';
+ *       import { SerialPort } from '../js_wrapper/serialport/dist/index.js';
  *
  * ⭐ 名字 = 契约: 每个名字都必须在**该包的** types/ambient.d.ts 里有 `declare module '<名字>'`,
  *   类型与运行按同一个名字对齐(与 @types/node 按同名给类型是一回事); 缺 ambient 的症状是
@@ -57,15 +57,16 @@
  *
  * ⚠ 不支持 CommonJS: 没有 require, 也不认 module.exports / exports。
  *
- * 部署产物布局(package.py 打包; 与源码 js_wrapper/ 同构 => 相对引用原样可解析):
- *   <exe>/jz_engine/jz_types/types/**         <- js_wrapper/types(本目录, 只有共享/全局声明)
- *   <exe>/jz_engine/jz_types/<名字>/types/**  <- js_wrapper/<名字>/types(模块类型 + ambient.d.ts)
- *   <exe>/jz_engine/jz_js/<名字>/dist/**      <- js_wrapper/<名字>/dist
+ * 部署产物布局(package.py 打包; 与源码 js_wrapper/ **1:1 同构** => 相对引用原样可解析):
+ *   <exe>/js_wrapper/types/**         <- js_wrapper/types(本目录, 只有共享/全局声明)
+ *   <exe>/js_wrapper/<名字>/types/**  <- js_wrapper/<名字>/types(模块类型 + ambient.d.ts)
+ *   <exe>/js_wrapper/<名字>/dist/**   <- js_wrapper/<名字>/dist(运行期 JS)
+ *   (源码专属的 index.ts / package.json / tsconfig.json 不进部署)
  *
  * Usage in a TS project:
- *   1. copy the deployed jz_types/ folder to <project>/jz_types/
+ *   1. copy the deployed js_wrapper/ tree to <project>/js_wrapper/
  *   2. include it in tsconfig.json:
- *        "include": ["src/**\/*.ts", "jz_types/**\*.d.ts"]
+ *        "include": ["src/**\/*.ts", "js_wrapper/**\*.d.ts"]
  *   3. set "lib": ["ES2022"] (without DOM), otherwise the global WebSocket,
  *      fetch, Response, Headers, URL and URLSearchParams declared here collide
  *      with lib.dom.d.ts and TS reports duplicate identifier errors.

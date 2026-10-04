@@ -1,7 +1,7 @@
 {
   "_note": [
     "agent_cli 测试用的大模型接入配置 —— 本文件是**模板**, 构建时会拷到各个 exe 同目录",
-    "(agent_cli/Release/test_llm.json 与 agent_cli_test/<CONFIG>/test_llm.json), 测试一律读",
+    "(发布目录 binary/bin/<CONFIG>/test_llm.json 与 agent_cli_test/<CONFIG>/test_llm.json), 测试一律读",
     "exe 同目录那一份。所以: 换机器/换端点就改 exe 目录里的那份 (构建不会覆盖它);",
     "改了这份模板想让它生效, 删掉 exe 目录里那份再构建即可。",
     "取值规则: llm.<key> 优先, 没有就回落顶层 <key> (与 agent_cli 的 config.json 同一套规则)。",

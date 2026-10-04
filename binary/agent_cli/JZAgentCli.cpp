@@ -352,7 +352,7 @@ string JZAgentCli::buildSystemPrompt() const
     if (m_config.allowFileTools)
     {
         text += "  read_file / write_file / modify_file   按行读(带行号)/整文件写/局部精确替换。\n";
-        text += "  search_file    按文件名/路径找文件(通配符 * ?，如 \"*.d.ts\"、\"jz_types/*/types/*.d.ts\")，只回路径。\n";
+        text += "  search_file    按文件名/路径找文件(通配符 * ?，如 \"*.d.ts\"、\"js_wrapper/*/types/*.d.ts\")，只回路径。\n";
         text += "  search_context 在工作区内搜索文本/正则(找某个串在哪些文件哪些行出现过)。\n";
         text += "  get_datetime   获取当前日期时间(需要\"今天\"这类信息时优先用)。\n";
     }

@@ -12,9 +12,9 @@
 //     root.addWidget(btn, 0);
 //     win.show();
 //
-// 所以本包**不需要 import**, 也不需要 tsc 编译产物; 用户工程只要把部署的 jz_types 收进
+// 所以本包**不需要 import**, 也不需要 tsc 编译产物; 用户工程只要把部署的 js_wrapper 收进
 // include 即可(见 js_wrapper/types/index.d.ts 的用法说明):
-//     "include": ["src/**/*.ts", "jz_types/**/*.d.ts"]
+//     "include": ["src/**/*.ts", "js_wrapper/**/*.d.ts"]
 //
 // ============================ 文件划分 ============================
 // 与 JZJSWidgetModule 的 registXxx() 一一对应(改绑定就改对应文件, 别新开一套):

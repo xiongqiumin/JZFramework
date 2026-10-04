@@ -912,12 +912,11 @@ void MainWindow::applyConfig()
     code.trustedDirs = dirs;
     code.trustedPrograms = progs;
 
-    // 随 exe 部署的类型定义: 新部署在 jz_engine/jz_types(见 package.py), 旧平铺布局兼容保留
-    TrustedDir jz_types_dir;
-    jz_types_dir.path = jzApp->applicationDirPath() + "/jz_engine/jz_types";
-    code.trustedDirs.push_back(jz_types_dir);
-    jz_types_dir.path = jzApp->applicationDirPath() + "/jz_types";
-    code.trustedDirs.push_back(jz_types_dir);
+    // 随 exe 部署的类型/运行时: <exe>/js_wrapper —— 一棵与源码 JZJSEngine/js_wrapper
+    // 同构的树(types/ + <包>/types/ + <包>/dist/, 见 package.py), 给 TS 工具当授信目录。
+    TrustedDir wrapper_dir;
+    wrapper_dir.path = jzApp->applicationDirPath() + "/js_wrapper";
+    code.trustedDirs.push_back(wrapper_dir);
     
     code.webSearchUrl = m_cfg.webSearchUrl;
     code.proxyHost = m_cfg.proxyHost;

@@ -2,7 +2,7 @@
 //
 //   · ./index = cv/types/index.d.ts = **本包对外的单一权威**: 类型(MatInfo/Contour/...)与
 //     值(Mat/MatVector/CLAHE/各函数/常量)都在那里。它由 gen_types.py 从 dist/*.d.ts + 手改的
-//     类型段合并而来 —— 因为部署到 jz_types 的只有 types/**, 实现 .ts 不在那儿, ambient 若把值
+//     类型段合并而来 —— 因为部署到 js_wrapper/<包>/types 的只有 types/**, 实现 .ts 不在那儿, ambient 若把值
 //     指向 '../core' 用户工程就解析不了。
 //   · default 也是 './index'(= `import cv from 'cv'` 拿到的 OpenCV.js 形状命名空间)。
 //

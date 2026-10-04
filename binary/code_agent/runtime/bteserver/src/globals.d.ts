@@ -22,11 +22,11 @@
 //      * `QTreeWidgetItem`(StepDataDialog.ts 的工步树) —— 引擎的 JZTreeWidget 在 C++ 侧是
 //        **指针式 item**, JS 侧还没有对应接口(要有 value 级的树接口才能迁)。
 //
-// B) 引擎的真实全局(见 JZJSEngine/js_wrapper 里部署的 jz_types) ——
+// B) 引擎的真实全局(见 JZJSEngine/js_wrapper 部署出来的同名 js_wrapper 树) ——
 //    JZ* 控件/画笔/几何类型、jzApp/jzWidget/uiLoader、各 netPack 的 stru_* 包类、
 //    workbook_*/worksheet_*(libxlsxwriter)等原生库函数。这些是**真东西**, 大多数已经在
-//    js_wrapper 的 .d.ts 里(user 工程把它拷成 jz_types/ 后 include 即可);
-//    这里只补本工程还引用的少数几个(或与 jz_types 重复但被 skipLibCheck 放过的)。
+//    js_wrapper 的 .d.ts 里(user 工程把它整棵拷成 js_wrapper/ 后 include 即可);
+//    这里只补本工程还引用的少数几个(或与 js_wrapper 重复但被 skipLibCheck 放过的)。
 // ---------------------------------------------------------------------------
 
 // ---- A) 待迁移的 Qt 名字(运行期已无实现; 迁完即删) ----

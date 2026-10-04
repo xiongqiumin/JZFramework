@@ -2,7 +2,7 @@
 # 发布 exe 的输出目录：统一在 <build>/binary/bin/<CONFIG>
 #
 # 只有**要发布的那些** exe 列在文件末尾那张清单里（它们 + 随附的 js_wrapper / ts_compiler /
-# OpenCV 等 DLL 就是发版、拷机器要打包的一整套，见 tools/release/publish.py）。
+# example / OpenCV 等 DLL 就是发版、拷机器要打包的一整套，见 tools/release/publish.py）。
 # 测试 / 评测 exe（binary/code_agent/test/、binary/code_agent/benchmark/、
 # binary/agent_cli/agent_cli_test/）**一概不做指定**：它们落在各自 CMakeLists 所在目录的
 # 默认位置（<build>/binary/<子目录>/<配置>/），既不混进发布目录，也不必为它们写"输出到哪"。
@@ -68,6 +68,40 @@ add_custom_command(
     DEPENDS ${JZ_JS_DEPS}
     COMMENT "Package JZ JS engine (js_wrapper/ tree) into the shared binary bin dir (per-config)")
 add_custom_target(copy_jz_js ALL DEPENDS "${JZ_JS_STAMP}")
+
+# ---------------------------------------------------------------------------
+# 示例工程：随发布铺到 <exe>/example/ —— 拿到发布目录的人有能直接读、也能直接编译运行的
+# 示例（类型/运行时用同级的 ../js_wrapper，编译器用同目录的 ts_compiler）。
+# 源 = binary/code_agent/runtime/<示例>（就是 code_runtime 的那几个示例/测试工程）。
+# ⚠ 只铺**源码**：每个工程自己编译出来的 build/（tsconfig 的 outDir）不随发布走，
+#   由 copy_examples.py 过滤掉；它顺带把 tsconfig 里那条"仓库相对的类型来源"
+#   改写成部署布局的 ../../js_wrapper/...（仓库里那份源码不动）。
+# 用 stamp 做增量：示例源码变了才重拷（依赖用 GLOB_RECURSE 收，排除 build/ 那类产物）。
+# ---------------------------------------------------------------------------
+set(JZ_EG_SRC "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/runtime")
+set(JZ_EG_PY "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/copy_examples.py")
+set(JZ_EG_OUT "${JZ_BINARY_BIN_DIR}/$<CONFIG>/example")
+set(JZ_EG_STAMP "${CMAKE_CURRENT_BINARY_DIR}/examples_packaged.stamp")
+
+set(JZ_EG_NAMES jsapi_example test_jswidget test_jsshooter bteserver gomoku)
+set(JZ_EG_DEPS "${JZ_EG_PY}")
+foreach(_eg ${JZ_EG_NAMES})
+    file(GLOB_RECURSE _eg_files CONFIGURE_DEPENDS "${JZ_EG_SRC}/${_eg}/*")
+    list(FILTER _eg_files EXCLUDE REGEX "[/\\\\](build|node_modules)[/\\\\]")
+    list(APPEND JZ_EG_DEPS ${_eg_files})
+endforeach()
+
+add_custom_command(
+    OUTPUT "${JZ_EG_STAMP}"
+    COMMAND ${JZ_PYTHON_EXECUTABLE} "${JZ_EG_PY}" --src "${JZ_EG_SRC}" --dst "${JZ_EG_OUT}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${JZ_EG_STAMP}"
+    DEPENDS ${JZ_EG_DEPS}
+    COMMENT "Copy example projects (source only) into the publish dir (per-config)")
+add_custom_target(copy_examples ALL DEPENDS "${JZ_EG_STAMP}")
+
+# 示例与 js_wrapper 同属"随发布内容"：谁要后者就把它也带上 ——
+# publish.py 只编 code_agent / code_runtime 两个目标（不走 ALL），靠这条才能带出来。
+add_dependencies(copy_jz_js copy_examples)
 
 add_subdirectory(updater)
 # virtual_device: 虚拟桌面(虚拟显示器 + 窗口管理器) + 它的宿主程序。

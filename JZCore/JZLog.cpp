@@ -5,6 +5,10 @@
 #include "JZApplication.h"
 #include "JZTimer.h"
 
+#if defined(_WIN32)
+#include <windows.h>   // GetConsoleMode / GetConsoleOutputCP: 控制台输出编码判定, 见 toConsoleBytes
+#endif
+
 #ifdef __ANDROID__
 #include <android/log.h>
 
@@ -226,6 +230,79 @@ const char* JZLogManager::getLevelPrefix(int level)
     }
 }
 
+// ======================== 控制台输出的字节 ========================
+// printf 到 stdout 的字节按 **stdout 的实际状态**决定 —— 不能用 CP_ACP:
+//   · 真控制台(GetConsoleMode 成功)且控制台 CP 不是 UTF-8(cmd 默认 936)
+//     ⇒ 转成那个 CP 再打(不转就是乱码)
+//   · 真控制台 + CP = 65001(chcp 65001 / PowerShell 7 / Windows Terminal)
+//     ⇒ 原样 UTF-8(再按 CP_ACP 转反而把中文写坏)
+//   · stdout 被重定向/是管道(python 抓日志、`>`、mintty/Git-Bash) ⇒ 原样 UTF-8
+//     (接收方按 UTF-8 解; CP_ACP 是系统 ANSI 代码页, 跟控制台/管道状态无关, chcp 也改不动它
+//      —— 老代码在这里无脑转 CP_ACP, 于是"管道/UTF-8 终端里的中文变乱码")
+//   · 没有控制台(GUI 程序, 未 AttachConsole) ⇒ 原样(写了也没人看)
+// 状态**只探测一次**(第一次日志调用时): 句柄/控制台 CP 在一次进程生命周期内基本不变, 而
+// log() 是高频路径。⚠ 运行中途 chcp 换编码不会跟着变(要跟就得去掉 static)。
+//
+// 注: 与 str_utf8_to_local(CP_ACP) 不是一回事 —— 那个是给 ANSI **文件** API(JZFile/JZDir)
+//     用的, 那边必须转, 别混。
+#if defined(_WIN32)
+// UTF-8 -> 指定代码页(cp 用控制台自己的 CP, 而不是 CP_ACP)
+static std::string utf8ToCodepage(const std::string &utf8, UINT cp)
+{
+    if (utf8.empty())
+        return utf8;
+
+    int wcsLen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wcsLen <= 1)
+        return utf8;
+
+    std::wstring wstr(wcsLen - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wcsLen);
+
+    int len = WideCharToMultiByte(cp, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)
+        return utf8;
+
+    std::string out(len - 1, '\0');
+    WideCharToMultiByte(cp, 0, wstr.c_str(), -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+#endif
+
+static std::string toConsoleBytes(const std::string &utf8)
+{
+#if defined(_WIN32)
+    struct ConsoleState
+    {
+        bool isConsole;
+        UINT cp;
+    };
+
+    static const ConsoleState st = []() -> ConsoleState
+    {
+        ConsoleState s;
+        s.isConsole = false;
+        s.cp = CP_UTF8;
+
+        HANDLE h = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (h != nullptr && h != INVALID_HANDLE_VALUE && ::GetConsoleMode(h, &mode))
+        {
+            s.isConsole = true;
+            s.cp = ::GetConsoleOutputCP();
+        }
+        return s;
+    }();
+
+    if (!st.isConsole || st.cp == CP_UTF8 || st.cp == 0)
+        return utf8;
+    return utf8ToCodepage(utf8, st.cp);
+#else
+    // 非 Windows: 本地编码就是 UTF-8(JZStd.cpp 里 str_utf8_to_local 也是透传), 原样输出
+    return utf8;
+#endif
+}
+
 void JZLogManager::log(int module_id, int level, const std::string &message)
 {
     JZMutexLocker locker(&m_lock);
@@ -262,11 +339,7 @@ void JZLogManager::log(int module_id, int level, const std::string &message)
     if(pre)
         printf("%s ",pre);
 
-#if WIN32
-    printf("%s\n", str_utf8_to_local(message).c_str());
-#else
-    printf("%s\n", message.c_str());
-#endif
+    printf("%s\n", toConsoleBytes(message).c_str());
 
 #endif
     }

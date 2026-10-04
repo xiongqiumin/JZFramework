@@ -1,9 +1,11 @@
 ﻿#include <cstdlib>
+#include <cstdio>
 #include <sstream>
 #include <vector>
 #include <string>
 #include <iomanip> 
 #include "JZCommandLineParser.h"
+#include "JZDebug.h"
 #include "JZFileInfo.h"
 #include "JZStd.h"
 
@@ -302,11 +304,27 @@ bool JZCommandLineParser::parse(const std::string& commandLine)
     return parse(argvPtrs.size(), argvPtrs.data());
 }
 
+// 帮助/用法/报错这类"给人看的输出"统一走 JZLog(jzInfo): 控制台编码由 JZLog 按 stdout 的
+// 实际状态决定(真控制台按控制台 CP 转字节, 管道/UTF-8 终端原样 UTF-8 —— 见 JZLog.cpp 里
+// toConsoleBytes 的说明)。于是"整段裸 UTF-8 在 GBK 控制台乱码"与"只给某一行转 local 在
+// UTF-8 终端乱码"两种毛病都不再存在: 整段输出走同一处, 编码只判一次。
+// ⚠ noquote(): JZDebug 的 operator<<(std::string) 默认会给字符串加引号并转义;
+// ⚠ fflush(stdout): JZLog 的控制台分支是 printf, 输出被重定向/走管道时是**块缓冲**。
+//   这页文本很可能是"打完还继续跑"(如 test_agent 解析失败后继续用默认配置), 主动 flush
+//   保证它立刻出去(换成 jzInfo 之前是逐行 std::endl, 本来就是即时的)。
+//   末尾那个多出来的 '\n' 去掉: JZLog 输出时会自己补一个, 免得帮助结尾多一行空白。
+static void printToLog(std::string text)
+{
+    if (!text.empty() && text[text.size() - 1] == '\n')
+        text.erase(text.size() - 1);
+    jzInfo().noquote() << text.c_str();
+    fflush(stdout);
+}
+
 void JZCommandLineParser::reportError(const std::string& error)
 {
     m_errorMsg = error;
-    std::cout << usage() << "\n";
-    std::cout << m_errorMsg << std::endl;
+    printToLog(usage() + "\n" + m_errorMsg);
     std::exit(1);
 }
 
@@ -747,17 +765,21 @@ void JZCommandLineParser::printHelp() const
         return result;
     };
 
+    // 整段攒进 oss, 最后一次交给 JZLog 输出(见 printToLog: 编码判定在 JZLog 里统一做)
+    std::ostringstream oss;
+
     if(!m_description.empty())
     {
-        // 与其他行一致: 直接输出 UTF-8(原来这里多转了一次 local, 中文描述会变乱码)
-        std::cout << m_programName << " - " << m_description << "\n\n";
+        // 直接给 UTF-8 —— JZLog 会按控制台/管道状态决定要不要转字节。
+        // (以前这里单独多转了一次 local: 在 UTF-8 终端/管道里, 整页帮助里就这行是乱码)
+        oss << m_programName << " - " << m_description << "\n\n";
     }
 
-    std::cout << usage() << "\n\n";
+    oss << usage() << "\n\n";
 
     if (m_commands.size() > 0)
     {
-        std::cout << "options:\n";
+        oss << "options:\n";
 
         // 先遍历一遍，找到最长的参数名，用于对齐
         size_t maxNameLen = 0;
@@ -767,32 +789,32 @@ void JZCommandLineParser::printHelp() const
             maxNameLen = std::max(maxNameLen, name.size());
         }
 
-        std::cout << "  " << std::left << std::setw(maxNameLen) << "-h, --help"
-                  << ": show this help message and exit\n";
+        oss << "  " << std::left << std::setw(maxNameLen) << "-h, --help"
+            << ": show this help message and exit\n";
 
         for (const auto& cv : m_commands)
         {
             std::string name = optionName(cv);
 
             // 输出参数名，固定宽度右对齐冒号
-            std::cout << "  " << std::left << std::setw(maxNameLen) << name << ": ";
+            oss << "  " << std::left << std::setw(maxNameLen) << name << ": ";
 
             // 输出描述
             if (cv.description.empty())
-                std::cout << cv.name;
+                oss << cv.name;
             else
-                std::cout << cv.description;
+                oss << cv.description;
 
-            std::cout << value_str(cv) << std::endl;
+            oss << value_str(cv) << "\n";
         }
     }
 
     if (m_posCommands.size() > 0)
     {
         if (m_commands.size() > 0)
-            std::cout << "\n";
+            oss << "\n";
 
-        std::cout << "position arguments:\n";
+        oss << "position arguments:\n";
         for (const auto& cv : m_posCommands)
         {
             std::string name;
@@ -801,15 +823,17 @@ void JZCommandLineParser::printHelp() const
             else
                 name = "  [" + cv.name + "]";  // 可选
 
-            std::cout << name << ": ";
+            oss << name << ": ";
 
             // 输出描述
             if (cv.description.empty())
-                std::cout << cv.name;
+                oss << cv.name;
             else
-                std::cout << cv.description;
+                oss << cv.description;
 
-            std::cout << value_str(cv) << std::endl;
+            oss << value_str(cv) << "\n";
         }
     }
+
+    printToLog(oss.str());
 }

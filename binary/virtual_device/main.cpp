@@ -52,6 +52,9 @@ struct Options
     bool headless = false;      // 容器模式: 不显示宿主界面 + 不预建示范窗口
     std::string program;        // --program: 开机就加载的 JS 程序 (文件路径)
     std::string programName;    // --program-name: 它的程序名 (缺省 = 文件名去扩展名)
+    // --program-arg: 传给那个程序自己的启动参数(argv), **可重复** —— 程序里读 process.argv
+    // (与 HTTP 的 POST /api/programs {args:[...]} 、code_runtime 的 `-- a b` 同一套)
+    std::vector<std::string> programArgs;
     // 这块虚拟屏**自己的** DPI: 0 = 跟随宿主窗口 (默认, 与主机同 DPI);
     // 设了就是"容器模拟一台 125%/150% 的机器" (物理像素 = 逻辑 × dpi/96), 不再跟宿主变。
     int dpi = 0;                // --dpi 120
@@ -68,8 +71,10 @@ void printUsage()
            "  --scale <f>         同上, 直接给缩放 (如 1.25)\n"
            "  --program <file>    开机加载一个 JS 程序 (按 ESM 模块加载, 运行根 = 它所在目录)\n"
            "  --program-name <名> 上面那个程序的程序名 (缺省 = 文件名去扩展名)\n"
+           "  --program-arg <值>  传给那个程序自己的启动参数 (可重复; 程序里读 process.argv)\n"
            "  例: virtual_device.exe --headless --http-port 8720 --program app.js\n"
-           "      virtual_device.exe --headless --program scenes/gen.js --program-name scene\n",
+           "      virtual_device.exe --headless --program scenes/gen.js --program-name scene\n"
+           "      virtual_device.exe --headless --program bot.js --program-arg fast --program-arg 8\n",
            kDefaultHttpPort, kDesktopW, kDesktopH);
 }
 
@@ -86,6 +91,8 @@ int parseArgs(int argc, char* argv[], Options& opt)
             opt.program = argv[++i];
         } else if (a == "--program-name" && i + 1 < argc) {
             opt.programName = argv[++i];
+        } else if (a == "--program-arg" && i + 1 < argc) {
+            opt.programArgs.push_back(argv[++i]);      // 可重复: 一个 --program-arg 一个参数
         } else if (a == "--dpi" && i + 1 < argc) {
             opt.dpi = atoi(argv[++i]);
             if (opt.dpi <= 0) {
@@ -250,7 +257,8 @@ public:
                                                                : m_opt.programName;
             std::string dir, base;
             splitPath(m_opt.program, dir, base);
-            JZVirtualProcess* p = m_screen.createProcess(name, std::string(), dir, base);
+            JZVirtualProcess* p = m_screen.createProcess(name, std::string(), dir, base,
+                                                         m_opt.programArgs);
             if (!p) {
                 jzWarning() << "[program] 起进程失败: " << m_opt.program;
             } else if (!p->waitWindow(8000)) {

@@ -15,11 +15,12 @@
 #include "JZWindow.h"
 #include "JZDisplayDevice.h"
 #include "JZApplication.h"   // refresh 转投主线程 / 判断当前线程
-#include "JZDateTime.h"      // 刷新节流 (见 refresh)
+#include "JZDateTime.h"      // 帧时钟的节拍 (见 timerEvent)
 #include "JZThread.h"
 #include "JZLog.h"
 
 #include <algorithm>
+#include <chrono>            // 合成/快照耗时 (steady_clock; 见 compose/snapshotDesktopImage)
 
 namespace {
 
@@ -76,10 +77,9 @@ JZVirtualDevice::JZVirtualDevice(int desktopW, int desktopH)
     m_desktopW = desktopW > 0 ? desktopW : 800;
     m_desktopH = desktopH > 0 ? desktopH : 600;
     ensureCanvas();      // 画布 = 桌面自己的离屏设备 (scale 默认 1 = 逻辑尺寸)
-    // 定时合成: 桌面那一帧必须"一直在动"(见 timerEvent)。50ms ≈ 20 帧/秒, 与 refresh 的
-    // 节流同一个量级; 定时器跑在**本对象所属线程**(= 主线程), 于是合成不再指望
-    // "别的线程投递过来的任务会落地"。
-    startTimer(50);
+    // 定时合成 = 这块桌面的**帧时钟**(见 timerEvent): 桌面那一帧必须"一直在动"。
+    // 定时器跑在**本对象所属线程**(= 主线程), 于是合成不再指望"别的线程投递过来的任务会落地"。
+    startTimer(kComposeMs);
 }
 
 JZVirtualDevice::~JZVirtualDevice()
@@ -183,6 +183,7 @@ void JZVirtualDevice::setDesktopBackground(const JZColor& c)
         // 桌面就是"屏幕": 底色必须不透明 —— 画布是后端原生缓冲, 每帧靠"铺底色"覆盖
         // 上一帧 (半透明底色会变成"叠在上一帧上", 越叠越脏)。
         m_desktopBg = JZColor(c.red(), c.green(), c.blue(), 255);
+        m_dirtyAll = true;      // 底色是全屏可见的: 增量合成这边必须整屏重放
     }
     refresh();
 }
@@ -266,29 +267,36 @@ void JZVirtualDevice::setScaleValue(float scale)
 }
 
 // 合成只允许在**主线程**跑 (帧的读取要稳定, 也不能在别的线程上碰显示控件)。
-// 别的线程(进程线程)改了桌面时, 把刷新**转投**回主线程。
+// 别的线程(进程线程)改了桌面时, 把刷新**转投**回主线程 —— 但**合并成至多一个在途请求**:
+//   · ⚠ 这条路径**必须无锁**: 进程线程推帧/改窗口状态时, 主线程可能正卡在 sendEvent 等它
+//     (输入投递) —— 再去抢 m_mutex 就是死锁。所以这里只有一次原子交换。
+//   · 为什么是"合并"而不是以前的"按时间丢弃(50ms 节流)": 被丢掉的那个请求方(正在看画面的脚本)
+//     **不知道自己被丢了**, 只能拿旧帧接着决策 —— 那不是"慢一点", 而是"拿错的信息做决策"
+//     (实测: 脚本按几十毫秒前的画面躲弹, 而且完全没有办法察觉)。合并是无损的: 真正跑的那次
+//     合成读的是各窗口**当前**的帧, 它天然代表了被并掉的那些请求。
+//   · 为什么还得有个上限: 完全不合并且成队列会积压(实测一拍从 0.6s 涨到 6s)。现在合成已经
+//     便宜了(只重放脏区 + 按需快照, 见 compose), 加上帧时钟兜底, "至多一个在途"足够。
+//   ⚠ 拖动/缩放窗口走的是 refreshNow 的 paintNow 那条路, 不受这里影响。
 void JZVirtualDevice::refresh()
 {
     JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
     if (main && JZThread::currentThread() != main)
     {
-        // ⚠ 这条路径**必须无锁**: 进程线程推帧/改窗口状态时, 主线程可能正卡在
-        //   sendEvent 等它 (输入投递) —— 再去抢 m_mutex 就是死锁。
-        // ⚠ 这里按**时间节流**, 而不是"已排了一帧"那种**永久**去重:
-        //   · 永久去重只要漏掉一次投递, 就把之后**所有**刷新吞掉 —— 窗口帧一直在变、合成却
-        //     再也不跑, 桌面缓存冻在最初那一帧(实测: 虚拟进程里的脚本一直看到启动那幅空客户区);
-        //   · 完全不合并又会把主线程压垮 —— 合成是 O(像素) 的重活, 而窗口帧变化/取图请求会很密
-        //     (实测: 脚本一拍问几次颜色, 合成队列越积越长, 一拍从 0.6s 涨到 6s、画面还冻着)。
-        //   50ms ≈ 20 帧/秒: 桌面对外那一帧不需要跟上窗口自己的 60+ 帧 —— 合成本身是
-        //   O(像素) 的重活(GDI+ 重放所有窗口 + 任务栏 ~18ms), 频率给高了主线程就饱和:
-        //   实测 30 次/秒时占用过半, 合成排队 ⇒ 取图方(虚拟进程里的脚本)反而"好几分钟里
-        //   有 8 拍看不见自己", 一局白打(score=0)。20 帧对"看得见、判得准"绰绰有余。
-        //   ⚠ 拖动/缩放窗口走的是 refreshNow 的 paintNow 那条路, 不受这里的节流影响。
+        // 别的线程改了桌面 ⇒ **唤醒帧时钟**(让它早点敲这一拍), 而不是"自己合成一次":
+        //   · ⚠ 不能完全不投递(实测过): 那样新鲜度就只剩 tick 的节拍兜着, 取图方会吃到更旧的帧
+        //     —— 同一份看画面的脚本, 端到端通关率从 3/6 掉到 0/6。
+        //   · ⚠ 也不能每次都投递: 窗口自己的绘制节拍可以很高(游戏 renderTimer 1ms ⇒ 实测 150
+        //     帧/秒), 每帧都投一次 ⇒ 与 tick 叠加成 150 拍/秒、每拍重放整个窗口(4~6ms) =
+        //     主线程被吃一半, 比旧的 50ms 节流还差。
+        //   ⇒ 节流窗口取 **kComposeMs(= 帧时钟自己的周期)**: 一拍最多补一次, 于是"变化到被看到"
+        //     的延迟 ≤ min(下一拍, 我的这次唤醒) ≈ 16ms; 而且这次唤醒**有兜底**(tick 一定会来),
+        //     所以"窗口内被并掉的请求"不再等于旧代码那种"静默丢帧、还以为拿到了新的"。
+        //   ⚠ 主线程那条路(宿主 UI / 测试)保持**同步合成**, 语义不变。
         const int64_t now = JZDateTime::currentMSecsSinceEpoch();
-        if (now - m_lastRefreshReqMs < 50)
-            return;
-        m_lastRefreshReqMs = now;
-        runOnObject(this, [this]() {              // 对象没了就不会跑 (守卫)
+        if (now - m_lastBeatMs < kComposeMs)
+            return;                                   // 这一拍刚合成过: 下一次 tick 会兜住 (≤16ms)
+        m_lastBeatMs = now;
+        runOnObject(this, [this]() {                  // 对象没了就不会跑 (守卫)
             refreshNow();
         });
         return;
@@ -299,20 +307,23 @@ void JZVirtualDevice::refresh()
 void JZVirtualDevice::refreshNow()
 {
     compose();
-    // 合成完**顺手把对外那一帧(RGBA)也快照好** —— 快照必须由画布的主人(就是这里)做:
-    // 让"谁调用谁顺手做"的话, 非主人的线程(虚拟进程里的应用)做这件事会失败并留下一张
-    // **空图**, 还把 serial 对齐(见 desktopImage 的说明) ⇒ 对外那帧被钉死, 那些应用
-    // 在画面明明已经画出来之后还"什么都看不见"(实测: 脚本前 5 秒一片空白, 直到某次
-    // 主线程取图才把缓存救回来 —— 表现为画面滞后好几秒)。
-    // 代价: 一次 O(像素) 的转换 (800x600 ≈ 1.9MB); 有显示控件时贴的是 desktopPixmap()
-    //       的零拷贝位图, 本来就不走这条路。
-    {
-        std::lock_guard<std::recursive_mutex> lk(m_mutex);
-        if (m_canvas.snapshot(m_desktopImage))
-            m_imageSerial = m_frameSerial;
-    }
+    // 对外那一帧(RGBA)按需快照: 只有消费方(截图/CU/测试)要过、而它确实过期时才转一次。
+    // 快照必须由**画布的主人**(这里 = 主线程)做: 非主人线程做会失败并留下一张**空图**, 还把
+    // serial 对齐(见 desktopImage 的说明) ⇒ 对外那帧被钉死, 那些应用在画面明明画出来了之后
+    // 还"什么都看不见"(实测: 脚本前 5 秒一片空白, 直到某次主线程取图才把缓存救回来)。
+    // ⚠ 以前这里每拍都做: 900x700 一次 ≈ 2.5MB 转换, 60Hz 光拷贝就几毫秒 —— 而桌面对外的
+    //   显示走的是画布的**零拷贝位图**(desktopPixmap), 根本不需要它 ⇒ 那是纯白烧。
+    m_lastSnapshotMs = 0.0;              // 这一拍没做快照就是 0 (别把上一拍的读数当"这一拍的开销")
+    // ⚠ 这里**每拍都做**(试过"没人要就不转", 又退回来了): 那样虚拟进程里的脚本开局拿到的是
+    //   **空图/很久以前的图** —— 缓存里根本没有过一帧 —— 表现成"开局一秒什么都看不见、站桩挨打"
+    //   (同一份脚本端到端通关率 3/6 → 1/6, 实测日志里前 10 个小节 `我=- 威胁=0`)。
+    //   一帧 900x700 的转换实测 ≈1.4ms; 换"消费方永远拿得到一帧新的"值这个钱。
+    //   真想再省, 该把这次转换本身做便宜、或者让消费方显式"等一帧"(带超时的垂直同步),
+    //   而不是靠"猜有没有人要"—— 猜错的代价是取图方拿着空图/旧图做决策。
+    if (m_imageSerial != m_frameSerial)
+        snapshotDesktopImage();
     if (!m_view)
-        return;               // 纯无头: 合成 + 对外那帧都好了 (取帧见 desktopImage()/screenshot())
+        return;               // 纯无头: 合成 + (按需的)对外那帧都好了 (取帧见 desktopImage()/screenshot())
     // 视图绘制时读 desktopPixmap(), 所以这里只需让它重绘 —— 但**怎么重绘**分两种:
     //   · 拖动/缩放窗口进行中: 同步重绘 (paintNow)。窗口管理器此刻就是鼠标的主人,
     //     用户要的是"窗口粘在光标上"; 而 update() 只是排个脏区, 要等消息循环下一轮
@@ -324,20 +335,154 @@ void JZVirtualDevice::refreshNow()
         m_view->update();
 }
 
-// 定时合成 (主线程; 见构造函数里的 startTimer): 桌面那一帧得**一直在动**。
-// ⚠ 为什么不能只靠"窗口推帧 -> refresh -> 投递回主线程"那条链: 实测它不可靠 —— 窗口在
-//   60+ 帧地画, 桌面缓存却能冻在好几秒前, 取图方(虚拟进程里跑的脚本 / CU 的颜色匹配)
+// 画布 -> 对外那一帧 (RGBA8888, 物理像素)。**只主线程**能调 (见 refreshNow 的说明)。
+void JZVirtualDevice::snapshotDesktopImage()
+{
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0 = Clock::now();
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        ensureCanvas();
+        if (!m_canvas.snapshot(m_desktopImage))
+            m_desktopImage = JZImage();
+        m_imageSerial = m_frameSerial;
+    }
+    m_lastSnapshotMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+}
+
+// 自检用摘要: 脏区判据读到的全部输入 (见 takeDirtyRects)。⚠ 这里只收**输入**, 不收合成自己
+//   维护的 paint* 记忆 —— 那些在整屏重放里会被改掉, 收进来就永远"世界动了"。
+std::vector<long long> JZVirtualDevice::stateSignature() const
+{
+    auto hashStr = [](const std::string& s) -> long long {
+        // FNV-1a 32: 只当"变没变"的指纹用, 不要求抗碰撞
+        unsigned h = 2166136261u;
+        for (size_t i = 0; i < s.size(); ++i) {
+            h ^= (unsigned char)s[i];
+            h *= 16777619u;
+        }
+        return (long long)h;
+    };
+    std::vector<long long> s;
+    s.push_back((long long)m_desktopW);
+    s.push_back((long long)m_desktopH);
+    s.push_back((long long)(intptr_t)m_active);
+    s.push_back((long long)m_startMenuOpen);
+    s.push_back((long long)m_hoverTask);
+    s.push_back((long long)m_hoverStartItem);
+    s.push_back((long long)m_startItems.size());
+    s.push_back((long long)m_windows.size());
+    for (size_t i = 0; i < m_windows.size(); ++i) {
+        JZVirtualWindow* w = m_windows[i];
+        const JZRect f = w->frameGeometry();
+        s.push_back((long long)(intptr_t)w);        // 顺序(层序)也进摘要
+        s.push_back((long long)w->frameSeq());      // 内容版本
+        s.push_back(w->isVisible() ? 1 : 0);
+        s.push_back(w->isMinimized() ? 1 : 0);
+        s.push_back((long long)f.x()); s.push_back((long long)f.y());
+        s.push_back((long long)f.width()); s.push_back((long long)f.height());
+        s.push_back(hashStr(w->title()));
+    }
+    return s;
+}
+
+// 【自检】见头文件说明: 整屏重放一次, 与刚增量出来的那份逐像素比 (只比 RGB —— 底色不透明,
+//   alpha 没有语义差)。
+//   ⚠ **竞态**: 两次快照之间目标程序还在自己画(60Hz)、鼠标可能正扫过 chrome、最小化可能刚落
+//     地 —— 那两份快照就是两个不同的世界, 差值会被误算成"漏画"。所以拿 stateSignature()
+//     (= 脏区判据读到的**全部输入**)当守卫: 它没变才给结论, 变了就是 kVerifyInconclusive。
+int JZVirtualDevice::verifyCompose()
+{
+    JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
+    if (main && JZThread::currentThread() != main)
+        return kVerifyBadEnv;                        // 合成只能在主线程跑
+
+    // ① 世界的样子 + 画布现状
+    //   ⚠ 画布可能还停在**上一拍**(比如刚刚改过窗口状态、那一拍的合成还没跑) ⇒ 不能拿它当基准,
+    //     否则"世界动过"会被误算成"漏画"。所以先跑一次**普通(增量)**合成把画布追平。
+    std::vector<long long> sig0;
+    JZImage mid, after;
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        ensureCanvas();
+        pruneWindows();
+        sig0 = stateSignature();
+    }
+
+    // ② 普通路径(增量): 它按当前状态算脏区并补齐 —— 这才是被测对象
+    compose();
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (!m_canvas.snapshot(mid))
+            return kVerifyBadEnv;
+        if (stateSignature() != sig0)
+            return kVerifyInconclusive;          // 这期间世界动过: 基准不成立
+    }
+
+    // ③ 强制整屏重放 (与增量那条走同一段 paintRegion, 只是裁剪框是整屏)
+    m_dirtyAll = true;
+    compose();
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_mutex);
+        if (!m_canvas.snapshot(after))
+            return kVerifyBadEnv;
+        if (stateSignature() != sig0)
+            return kVerifyInconclusive;
+    }
+
+    const std::shared_ptr<JZImageData> a = mid.data(), b = after.data();
+    if (!a || !b || a->width() != b->width() || a->height() != b->height())
+        return kVerifyBadEnv;
+    const int w = a->width(), h = a->height();
+    const uint8_t* pa = a->pixels();
+    const uint8_t* pb = b->pixels();
+    if (!pa || !pb)
+        return kVerifyBadEnv;
+    int diff = 0;
+    int bx0 = 1 << 30, by0 = 1 << 30, bx1 = -1, by1 = -1;
+    m_verifySamples.clear();
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t i = (size_t)y * (size_t)w + (size_t)x;
+            if (pa[i * 4 + 0] == pb[i * 4 + 0] && pa[i * 4 + 1] == pb[i * 4 + 1]
+                && pa[i * 4 + 2] == pb[i * 4 + 2])
+                continue;
+            ++diff;
+            if (x < bx0) bx0 = x;
+            if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y;
+            if (y > by1) by1 = y;
+            // 前几个差异像素连颜色一起记下来(最多 4 个): "差在哪、差成什么"是排查的起点
+            if (m_verifySamples.size() < 4) {
+                char buf[96];
+                snprintf(buf, sizeof(buf), "(%d,%d) %02x%02x%02x->%02x%02x%02x",
+                         x, y, pa[i * 4 + 0], pa[i * 4 + 1], pa[i * 4 + 2],
+                         pb[i * 4 + 0], pb[i * 4 + 1], pb[i * 4 + 2]);
+                m_verifySamples.push_back(std::string(buf));
+            }
+        }
+    }
+    // 差异的包围盒 (**物理像素**): 有差时它就是"哪一块没画对"的直接线索
+    m_verifyDiffRect = diff ? JZRect(bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1) : JZRect();
+    return diff;
+}
+
+// 帧时钟 (主线程; 见构造函数里的 startTimer): 桌面那一帧的产出节拍。
+// ⚠ 为什么必须有它、而不能只靠"窗口推帧 -> refresh -> 投递回主线程"那条链: 实测那条链不可靠
+//   —— 窗口在 60+ 帧地画, 桌面缓存却能冻在好几秒前, 取图方(虚拟进程里跑的脚本 / CU 的颜色匹配)
 //   于是"看不见自己在哪、也看不见敌机", 整局瞎打(帧里 SCORE:0 且 ENM:0, 明显是启动那一帧)。
 //   这里由主线程自己按时敲一次, 与投递那条链无关 —— 有窗口就保证画面一直在刷新。
+//   ⚠ 反过来也要有节制: 合成**只重放脏区**(见 compose), 什么都没变时它自己不干活、也不推进
+//     frameSerial, 所以"敲得密"不等于"干活多"。真正决定成本的是脏区面积与快照(按需)。
 void JZVirtualDevice::timerEvent(JZTimerEvent* event)
 {
     JZObject::timerEvent(event);
     if (m_composing || m_windows.empty())
         return;                          // 正在合成 / 桌面上没窗口: 这一拍不用做
     const int64_t now = JZDateTime::currentMSecsSinceEpoch();
-    if (now - m_lastTimerComposeMs < 50)
-        return;                          // 同一个 50ms 窗口里已经合过了 (节流)
-    m_lastTimerComposeMs = now;
+    if (now - m_lastBeatMs < kComposeMs)
+        return;                          // 这一拍已经合过 (别的线程刚唤醒过, 或上一拍还没走完)
+    m_lastBeatMs = now;
     refreshNow();
 }
 
@@ -858,7 +1003,7 @@ void JZVirtualDevice::activateTaskButton(int index)
     activate(w);
 }
 
-void JZVirtualDevice::paintTaskbar(JZPainter& p)
+void JZVirtualDevice::paintTaskbar(JZPainter& p, const JZRect& clip)
 {
     const int top = taskbarTop();
     p.fillRect(0, top, m_desktopW, kTaskbarHeight, kBarFace);
@@ -891,16 +1036,19 @@ void JZVirtualDevice::paintTaskbar(JZPainter& p)
         p.fillRect(r.left(), r.bottom(), r.width(), 1, down ? kBarLight : kBarShadow);
         p.setPen(JZPen(active ? kBarWhite : kBarText, 1));
         // ⚠ 本框架的 save/restore 只管 pen/brush/font/matrix, **不含裁剪** (见 JZPainter 注释):
-        //   这里为了截断标题临时收窄裁剪, 画完必须显式还原成整块画布, 否则后面的开始菜单
-        //   会被裁在这颗按钮里 (踩过)。
+        //   这里为了截断标题临时收窄裁剪, 画完必须显式还原 —— ⚠ 还原成**传进来的 clip**
+        //   (不是整块画布), 否则增量合成时笔迹会漏到脏区外面。
         p.setClip(JZRect(r.left() + 1, r.top() + 1, r.width() - 2, r.height() - 2));
         p.drawText(r.left() + 6, r.top() + 5, list[i]->title().c_str());
-        p.setClip(JZRect(0, 0, m_desktopW, m_desktopH));
+        p.setClip(clip);
     }
 }
 
-void JZVirtualDevice::paintStartMenu(JZPainter& p)
+void JZVirtualDevice::paintStartMenu(JZPainter& p, const JZRect& clip)
 {
+    // ⚠ clip 只是"这次重放的边界"(调用方保证这块脏区与菜单相交): 里面的绘制照旧按整块菜单来,
+    //   裁剪由 painter 负责。参数留着是为了与 paintTaskbar 同一个口径, 也方便将来只画受影响的那条。
+    (void)clip;
     if (m_startItems.empty())
         return;
     const JZRect m = startMenuRect();
@@ -937,6 +1085,14 @@ void JZVirtualDevice::ensureCanvas()
     } else {
         m_canvas.resize(iw, ih);         // 尺寸没变时后端内部直接返回 (零开销)
     }
+    // ⚠ 缓冲换了(物理尺寸变了) = 画布内容全没了 ⇒ 下一拍必须**整屏**重放。
+    //   (resize 是 void, 判不出"有没有真重建"; 按物理尺寸变没变判足够且无歧义 —— 它一变后端
+    //    必然是重建缓冲那条路。)
+    if (iw != m_canvasW || ih != m_canvasH) {
+        m_canvasW = iw;
+        m_canvasH = ih;
+        m_dirtyAll = true;
+    }
 
     // 画布缓冲的零拷贝显示位图 (缓冲重建后要重新取一次; 同一缓冲时原样复用)
     JZPixmap pm;
@@ -944,54 +1100,193 @@ void JZVirtualDevice::ensureCanvas()
         m_desktopPix = pm;
 }
 
+// 【增量合成】"合成" = 把桌面现在的样子重放一遍。整屏重放 + 每拍 2.5MB 快照是 O(像素) 的重活
+//   (实测 ~18ms/次), 20Hz 就能把主线程吃满、合成开始排队, 取图方反而看到好几秒前的画面。
+//   所以这里只重放**变过的那几块**:
+//     ① 脏区判据 = "现在 vs 上次画它的时候"(见 takeDirtyRects) —— 不给每个改状态的入口挂钩子,
+//        因为钩子漏一个就是"界面不更新"这类最难查的 bug;
+//     ② 一块脏区里的重放顺序与整屏完全一致(底色 -> 窗口由下到上 -> chrome), 只是多一层裁剪;
+//     ③ 与脏区不相交的窗口**整块跳掉**(连标题栏文字都不画) —— 那才是真正省下来的部分;
+//     ④ 任务栏/开始菜单只在"它读的东西变了"时才画 (见 takeDirtyRects 里的 chrome 摘要)。
+//   ⚠ 正确性的判据是"增量结果与整屏结果逐像素一致": 想核对就整屏跑一次(m_dirtyAll = true),
+//     两次画的是同一段 paintRegion 代码, 差别只在裁剪框的多少。
 void JZVirtualDevice::compose()
 {
     std::lock_guard<std::recursive_mutex> lk(m_mutex);   // 与进程线程的建窗/推帧互斥
     if (m_composing)
         return;
     m_composing = true;
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0 = Clock::now();
 
     pruneWindows();     // 客户区已被回收的窗口先从表里摘掉 (之后再遍历才安全)
     ensureCanvas();     // 画布缓冲 (尺寸/缩放变了才重建)
 
+    std::vector<JZRect> rects;
+    bool full = false;
+    if (!takeDirtyRects(rects, full)) {
+        m_composing = false;                     // 什么都没变: 不重放、也不推进 frameSerial
+        m_lastComposeMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        m_lastDirtyRects = 0;
+        return;
+    }
+
     {
-        // 一块画布一个 painter: 底色 + 外框 + 客户区帧按 z 序由下到上叠, 析构时一次性
-        // 回放到画布的帧缓冲 (原生布局, 不做 RGBA 往返)。
+        // 一块画布一个 painter: 所有脏区按顺序画, 析构时一次性回放到画布的帧缓冲
+        // (原生布局, 不做 RGBA 往返)。
         // ⚠ 坐标是**逻辑**的 (桌面坐标), 物理换算由画布设备的缩放施加 ——
         //   "坐标与 DPI 无关, 只有渲染分辨率随 DPI 变"这条规矩就落在这一句上。
         JZPainter p(&m_canvas, JZRect(0, 0, m_desktopW, m_desktopH));
-        // 每帧先铺底色 (窗口可能被移走/关掉了, 旧像素必须被盖掉)。底色必须不透明,
-        // 否则这里是"叠"上一帧而不是覆盖它 (见 setDesktopBackground)。
-        p.fillRect(0, 0, m_desktopW, m_desktopH, m_desktopBg);
-
-        for (auto* w : m_windows) {
-            if (!w->isVisible())
-                continue;
-            // 最小化: 桌面上什么都不画 —— 它只剩任务栏那颗按钮 (底下的标题栏按钮/任务栏
-            // 里点它都能还原; 同真实 Windows, 最小化不是"缩小成一个标题栏")。
-            if (w->isMinimized())
-                continue;
-            // 外框 (标题栏/边框/按钮) —— 窗口管理器那半边
-            w->paintDecoration(p, w == m_active);
-            // 客户区: 用窗口**推上来的帧缓存** (它自己的线程在内容变化时拷好, 见
-            // JZVirtualWindow::captureFrame) —— 合成因此**不会**跨线程去读别人的帧缓冲,
-            // 也就永远不会阻塞在某个进程线程上 (多线程下这一点很要紧)。
-            // 帧是物理像素 (客户区逻辑尺寸 * scale), 这里给的是**逻辑**矩形 ⇒ 1:1 落上去。
-            const JZImage& f = w->frame();
-            if (f.isNull() || !f.data())
-                continue;
-            const JZRect c = w->clientGeometry();
-            p.drawImage(f, c.left(), c.top(), c.width(), c.height());
-        }
-
-        // 桌面 chrome: 任务栏 + (已弹出的话) 开始菜单 —— 最后画, 所以恒在窗口之上
-        paintTaskbar(p);
-        if (m_startMenuOpen)
-            paintStartMenu(p);
+        for (size_t i = 0; i < rects.size(); ++i)
+            paintRegion(p, rects[i]);
     }
 
     ++m_frameSerial;      // 合成图变了 (见 frameSerial)
+    m_lastComposeMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    m_lastDirtyRects = (int)rects.size();
+    ++m_composeCount;
+    if (full)
+        ++m_fullComposeCount;
     m_composing = false;
+}
+
+// 把"桌面底色 + 各窗口(由下到上) + chrome"在 clip 这块脏区里重放一遍 (逻辑坐标)。
+//   ⚠ 顺序与整屏合成**完全一致** —— 这就是"增量结果 == 整屏结果"的全部理由; 相对整屏只多了两件事:
+//     · 与 clip 不相交的窗口整块跳过 (那才是省下来的部分);
+//     · chrome 只在它与 clip 相交时才画。
+void JZVirtualDevice::paintRegion(JZPainter& p, const JZRect& clip)
+{
+    p.setClip(clip);
+    // 先在这块脏区里铺底色: 窗口被移走/藏起来/关掉之后的旧像素就靠它盖掉。底色必须不透明,
+    // 否则这里是"叠"上一帧而不是覆盖它 (见 setDesktopBackground)。
+    // ⚠ **往外多铺 2px**, 真正的边界交给 clip 收: 填充是**抗锯齿**的 —— 如果让它的边正好压在
+    //   脏区边界上, 那一圈像素只被覆盖 ~90% ⇒ "擦不干净", 旧内容的残影会留在每个脏区边界上
+    //   (实测静态画面下每次整屏重放都在 (0,0) 与窗口边框处留下几十个单位的色差, 一路几何式
+    //    逼近底色; 自检 /api/desktop/verify 就是靠这个把它抓出来的)。
+    //   往外铺之后 AA 边落在 clip 外被裁掉, 脏区内部是**完全覆盖**。
+    p.fillRect(clip.x() - 2, clip.y() - 2, clip.width() + 4, clip.height() + 4, m_desktopBg);
+
+    for (auto* w : m_windows) {
+        if (!w->isVisible())
+            continue;
+        // 最小化: 桌面上什么都不画 —— 它只剩任务栏那颗按钮 (同真实 Windows, 最小化不是
+        // "缩小成一个标题栏")。
+        if (w->isMinimized())
+            continue;
+        if (!w->frameGeometry().intersects(clip))
+            continue;                                    // 与这块脏区无关: 整块跳掉
+        // 外框 (标题栏/边框/按钮) —— 窗口管理器那半边
+        w->paintDecoration(p, w == m_active);
+        // 客户区: 用窗口**推上来的帧缓存** (它自己的线程在内容变化时拷好, 见
+        // JZVirtualWindow::captureFrame) —— 合成因此**不会**跨线程去读别人的帧缓冲,
+        // 也就永远不会阻塞在某个进程线程上 (多线程下这一点很要紧)。
+        // 帧是物理像素 (客户区逻辑尺寸 * scale), 这里给的是**逻辑**矩形 ⇒ 1:1 落上去。
+        const JZImage& f = w->frame();
+        if (f.isNull() || !f.data())
+            continue;
+        const JZRect c = w->clientGeometry();
+        p.drawImage(f, c.left(), c.top(), c.width(), c.height());
+    }
+
+    // 桌面 chrome: 任务栏 + (已弹出的话) 开始菜单 —— 最后画, 所以恒在窗口之上
+    if (JZRect(0, taskbarTop(), m_desktopW, kTaskbarHeight).intersects(clip))
+        paintTaskbar(p, clip);
+    if (m_startMenuOpen && startMenuRect().intersects(clip))
+        paintStartMenu(p, clip);
+    p.setClip(JZRect(0, 0, m_desktopW, m_desktopH));      // 复原 (setClip 是绘制流状态)
+}
+
+// 这一拍要重画哪些块 (逻辑坐标)。判据全是"现在 vs 上次画它的时候", 见 compose 的说明。
+//   full = true 表示整屏重放: 首次 / 底色或画布变过 / 层序或活动窗口变了 / 脏块太多。
+bool JZVirtualDevice::takeDirtyRects(std::vector<JZRect>& out, bool& full)
+{
+    const JZRect whole(0, 0, m_desktopW, m_desktopH);
+    full = false;
+    out.clear();
+
+    // ① 层序 / 活动窗口 / 窗口表本身变了: 遮挡关系全变, 而且这些事不常发生(点一下窗口、切前台、
+    //    开/关一个窗口) ⇒ 整屏最省心。逐块去求"谁盖了谁"的新老差异要按两份 z 序算, 收益却只有
+    //    一次点击那么多, 不值。(活动窗口还决定标题栏配色, 也落在这一条里。)
+    if (m_dirtyAll || m_windows != m_painted || m_active != m_paintedActive) {
+        full = true;
+        m_dirtyAll = false;
+        m_painted = m_windows;
+        m_paintedActive = m_active;
+    }
+
+    // ⚠ 脏区一律**外扩 2px**: 绘制是**抗锯齿**的 —— 一个矩形"影响的像素"比它自己多一圈
+    //   (外缘那 1~2px 会被部分覆盖/混出颜色)。不外扩就会留下"总是差一点点"的残影:
+    //   实测移动窗口后, 旧位置外侧 1px 那一列边框色怎么都擦不掉 (自检 diff=469/914, 采样点
+    //   正好落在 frame 矩形的右外一列上)。外扩之后这些"外圈"也进了重画范围。
+    //   代价: 每块多画一圈(几百像素), 与"整屏 63 万像素"不是一个量级。
+    auto push = [&out](const JZRect& r) {
+        out.push_back(JZRect(r.x() - 2, r.y() - 2, r.width() + 4, r.height() + 4));
+    };
+
+    // ② 逐窗口比"它现在的样子" vs "上次画它时的样子"
+    bool chromeDirty = full;
+    for (size_t i = 0; i < m_windows.size(); ++i) {
+        JZVirtualWindow* w = m_windows[i];
+        const bool shown = w->isVisible() && !w->isMinimized();   // 只有这种状态才真的画它
+        const JZRect now = w->frameGeometry();                   // 外框(装饰 + 客户区)
+        const unsigned seq = w->frameSeq();
+        const bool titleChanged = (w->title() != w->paintTitle());
+        const bool moved = (now != w->paintRect());
+        const bool contentChanged = (seq != w->paintSeq());
+        const bool wasShown = w->paintVisible();
+        if (titleChanged)
+            chromeDirty = true;                                  // 任务栏按钮上也写着标题
+
+        if (shown || wasShown) {
+            if (!shown || !wasShown || moved || titleChanged) {
+                // 这几种情况都得连**它上次占的那块**一起重画: 否则旧像素(移动前的边框、藏起来
+                // 之前的整窗画面)会留在画布上 —— 增量合成最典型的错法就是"漏擦旧位置"。
+                if (wasShown)
+                    push(w->paintRect());
+                if (shown)
+                    push(now);
+            } else if (contentChanged) {
+                push(now);                                       // 最常见的一种: 客户区内容变了
+            }
+        }
+
+        // 记下"这一次画完之后它是什么样"
+        w->setPaintSeq(seq);
+        w->setPaintRect(now);
+        w->setPaintVisible(shown);
+        w->setPaintTitle(w->title());
+    }
+
+    // ③ 任务栏/开始菜单: 只列它们**真正读到**、又不会被 ① 覆盖的那些输入(悬停、菜单项数)。
+    //    ⚠ 用"输入摘要"而不是"给每个改 chrome 的入口挂个 dirty 钩子": 摘要能自我证明 ——
+    //      它列的就是 paintTaskbar/paintStartMenu 读的东西; 钩子则要人去把调用点找全。
+    std::vector<long long> sig;
+    sig.push_back((long long)m_startMenuOpen);
+    sig.push_back((long long)m_hoverTask);
+    sig.push_back((long long)m_hoverStartItem);
+    sig.push_back((long long)m_startItems.size());
+    if (sig != m_chromeSig) {
+        m_chromeSig = sig;
+        chromeDirty = true;
+    }
+    if (chromeDirty)
+        out.push_back(whole);             // 任务栏那一条: 整条重画(便宜, 而且换 z/标题时逻辑最简单)
+
+    if (full) {
+        out.clear();
+        out.push_back(whole);
+        return true;
+    }
+    if (out.empty())
+        return false;
+    if (out.size() > 8) {
+        // 脏块太多: 与其一块块重放(每块都要走一遍 painter 的裁剪切换与 chrome 判定), 不如整屏
+        // 一次 —— 反正面积加起来也接近整屏了。
+        full = true;
+        out.clear();
+        out.push_back(whole);
+    }
+    return true;
 }
 
 // 整屏一帧 (RGBA8888; **物理像素**: 桌面逻辑尺寸 * scale; 无头默认 scale=1 即逻辑尺寸)。
@@ -1002,18 +1297,18 @@ void JZVirtualDevice::compose()
 //   实测就是虚拟进程里的脚本"画面明明有了却看不见", 要等某次主线程取图才恢复。
 const JZImage& JZVirtualDevice::desktopImage()
 {
+    // ⚠ 先举手"有人要看对外那一帧": 接下来的合成会把那次 2.5MB 转换一并做掉(见 refreshNow)。
+    //   快照现在是**按需**的, 不举手就只能读到上一次的快照 —— 它可能已经好几拍没更新了。
+    m_imageWanted = true;
     std::lock_guard<std::recursive_mutex> lk(m_mutex);
     if (m_desktopImage.isNull() || m_imageSerial != m_frameSerial) {
-        // 正常路径走不到这儿 (合成时会一起快照好)。只有两种情况:
+        // 正常路径走不到这儿 (合成时会一并快照好)。只有两种情况:
         //   · 还从没合成过 (缓存空) —— 那就等下一次合成;
-        //   · 调用方**就是**画布主人 (宿主里的显示控件/主线程) —— 补一次也无妨。
+        //   · 调用方**就是**画布主人 (主线程) —— 补一次也无妨。
+        //   (非主人做会失败并留下一张空图 + 把 serial 对齐, 那一帧就被钉死了 —— 见下面的说明。)
         JZThread* main = jzApp ? jzApp->mainThread() : nullptr;
-        if (!main || JZThread::currentThread() == main) {
-            ensureCanvas();
-            if (!m_canvas.snapshot(m_desktopImage))
-                m_desktopImage = JZImage();
-            m_imageSerial = m_frameSerial;
-        }
+        if (!main || JZThread::currentThread() == main)
+            snapshotDesktopImage();
     }
     return m_desktopImage;
 }
@@ -1023,13 +1318,13 @@ JZImage JZVirtualDevice::screenshot()
     // ⚠ 这里**不跨线程等**主线程合成: 窗口线程(虚拟进程)调进来时如果同步等主线程,
     //   而主线程此刻可能正等着这个窗口线程(抓窗口帧 / 输入投递), 就成了互相等 ——
     //   实测两边各超时、脚本拿到的全是空图。
-    // ⚠ 这里要**顺带推一次合成**(refresh 自带 33ms 节流):
+    // ⚠ 这里要**顺带推一次合成**(refresh 现在只做"合并成至多一个在途请求", 见它的说明):
     //   · 只靠"窗口推帧 -> 投递 -> 主线程合成"那条链的话, 取图方在链路没跟上时会一直读到旧帧
     //     —— 实测虚拟进程里的脚本开局好几秒"只看到窗口刚 show 时的客户区"(背景色在、飞船和
     //     敌机都不在), 颜色匹配全落空;
     //   · 但也不能每次取图都无脑合成: 合成是 O(像素) 的重活, 一拍问几次颜色就把主线程压垮
-    //     (实测一拍从 0.6s 涨到 6s)。refresh 里的 33ms 节流正好卡住这个量级: 最多 30 次/秒,
-    //     既保证"取到的不超过 33ms 旧", 又不会积压。
+    //     (实测一拍从 0.6s 涨到 6s)。所以请求是**合并**的, 而且合成现在只重放脏区(见 compose)。
+        m_imageWanted = true;                // 让接下来那次合成把对外那一帧也快照掉
         refresh();
         return desktopImage();               // 拷贝很轻 (像素缓冲共享)
 }

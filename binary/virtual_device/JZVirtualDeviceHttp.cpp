@@ -202,6 +202,8 @@ JZVirtualDeviceHttp::JZVirtualDeviceHttp(JZVirtualDevice* screen, JZObject* pare
              [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleWindow(c, r); });
     addRoute("/api/screen", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleScreen(c, r); });
     addRoute("/api/desktop", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleDesktop(c, r); });
+    addRoute("/api/desktop/verify",
+             [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleDesktopVerify(c, r); });
     addRoute("/api/input/mouse", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleMouse(c, r); });
     addRoute("/api/input/key", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handleKey(c, r); });
     addRoute("/api/programs", [this](JZHttpServerClient* c, const JZHttpRequest& r) { handlePrograms(c, r); });
@@ -411,11 +413,25 @@ Json::Value JZVirtualDeviceHttp::windowsOfProgram(const std::string& name) const
 // `jzApp.applicationDirPath()` = 程序所在目录 (程序按入口目录找随它走的资源, 这条约定才成立)。
 bool JZVirtualDeviceHttp::resolveProgram(const Json::Value& body, std::string& script,
                                          std::string& workDir, std::string& moduleRel,
+                                         std::vector<std::string>& args,
                                          std::string& error) const
 {
     script.clear();
     workDir.clear();
     moduleRel.clear();
+    args.clear();
+
+    // 程序自己的启动参数: 字符串数组(顺序原样)。形状不做限制 —— 参数怎么解释是**程序**的事
+    // (与 `code_runtime --entry x.js -- a b` 同一个约定, 见 JZJSEngine::setArgs)。
+    if (body.isMember("args")) {
+        const Json::Value& a = body["args"];
+        if (!a.isArray()) {
+            error = "args 要是字符串数组 (程序自己的启动参数)";
+            return false;
+        }
+        for (Json::Value::ArrayIndex i = 0; i < a.size(); ++i)
+            args.push_back(a[i].asString());
+    }
 
     if (body.isMember("file")) {
         const std::string path = body["file"].asString();
@@ -470,6 +486,12 @@ void JZVirtualDeviceHttp::handleHealth(JZHttpServerClient* client, const JZHttpR
         JZVirtualWindow* a = m_screen->activeWindow();
         (*box)["active"] = a ? a->title() : std::string();
         (*box)["frame"] = (Json::UInt)m_screen->frameSerial();      // 合成序号: 变了 = 画面变了
+        // 合成开销 (只重放脏区之后应该很小): 用来核"便宜了没有", 别凭感觉
+        (*box)["composeMs"] = m_screen->lastComposeMs();
+        (*box)["snapshotMs"] = m_screen->lastSnapshotMs();
+        (*box)["dirtyRects"] = m_screen->lastDirtyRects();
+        (*box)["composes"] = (Json::UInt)m_screen->composeCount();
+        (*box)["fullComposes"] = (Json::UInt)m_screen->fullComposeCount();
         (*box)["programs"] = m_screen->processCount();
         (*box)["host"] = m_host.launch ? "ready" : "none";          // 程序接口能不能用
     });
@@ -478,6 +500,54 @@ void JZVirtualDeviceHttp::handleHealth(JZHttpServerClient* client, const JZHttpR
         return;
     }
     replyJson(client, req, *box);
+}
+
+// 【自检】整屏重放一次, 与增量合成那份逐像素比: {"ok":true,"diffPixels":0} 才算"只重放脏区"没画错。
+//   ⚠ 只给"改合成/调脏区"时用: 它会把画面整屏刷一遍(内容不变, 语义无副作用), 所以别塞进正常轮询里。
+//   典型用法: 让它一边跑着目标程序(它在不停地画)一边打, 打十几次都应当是 0 —— 那样才敢说
+//   "增量合成 == 整屏合成"。
+void JZVirtualDeviceHttp::handleDesktopVerify(JZHttpServerClient* client, const JZHttpRequest& req)
+{
+    if (req.method() != JZHttpRequest::POST) {
+        replyError(client, req, 405, "只支持 POST");
+        return;
+    }
+    auto diff = std::make_shared<int>(-2);
+    const bool ok = onScreen([this, diff]() { *diff = m_screen->verifyCompose(); });
+    if (!ok) {
+        replyError(client, req, 500, "桌面线程没有响应");
+        return;
+    }
+    Json::Value out(Json::objectValue);
+    out["diffPixels"] = *diff;                       // 0 = 增量结果与整屏结果逐像素一致
+    // 顺带把这次**整屏**重放的耗时带回来: 它就是"没做增量合成时每拍要花多少"的实测值 ——
+    // 和 /api/health 里的 composeMs(最近一拍, 增量) 一对比就是干净的 A/B。
+    auto ms = std::make_shared<double>(0.0);
+    if (onScreen([this, ms]() { *ms = m_screen->lastComposeMs(); }))
+        out["fullComposeMs"] = *ms;
+    if (*diff >= 0) {
+        out["ok"] = true;
+        if (*diff > 0) {
+            // 有差就把"差在哪一块"一起给出来: 只报个数字, 排查就只能靠猜
+            const JZRect r = m_screen->verifyDiffRect();
+            Json::Value rr(Json::arrayValue);
+            rr.append(r.x()); rr.append(r.y()); rr.append(r.width()); rr.append(r.height());
+            out["diffRect"] = rr;                 // 物理像素 [x,y,w,h]
+            out["diffSamples"] = Json::Value(Json::arrayValue);
+            for (const std::string& s : m_screen->verifySamples())
+                out["diffSamples"].append(s);
+        }
+    } else if (*diff == JZVirtualDevice::kVerifyInconclusive) {
+        // ⚠ 不是错: 目标程序在这两次快照之间自己画了一帧(60Hz 常态) ⇒ 两份快照不是同一个世界。
+        //   多打几次, 碰到"一拍之内没动"的干净窗口就有效了。
+        out["ok"] = false;
+        out["inconclusive"] = true;
+        out["error"] = "检查期间目标内容变过 (60Hz 在画), 结论不可用 —— 请重试";
+    } else {
+        out["ok"] = false;
+        out["error"] = "环境不满足 (不在主线程 / 没有画布)";
+    }
+    replyJson(client, req, out);
 }
 
 void JZVirtualDeviceHttp::handleWindows(JZHttpServerClient* client, const JZHttpRequest& req)
@@ -1223,25 +1293,29 @@ void JZVirtualDeviceHttp::handlePrograms(JZHttpServerClient* client, const JZHtt
         return;
     }
     std::string script, workDir, moduleRel, error;
-    if (!resolveProgram(body, script, workDir, moduleRel, error)) {
+    std::vector<std::string> args;
+    if (!resolveProgram(body, script, workDir, moduleRel, args, error)) {
         replyError(client, req, 400, error);
         return;
     }
 
     // ⚠ 这一句会起线程、并可能等到它的第一个窗口出现 (见 jzAttachVirtualProgramHost) ——
     //   所以放在**主线程**上直接跑 (onScreen 只保证线程归属, 不额外加锁)。
-    if (!m_host.launch(name, script, workDir, moduleRel, error)) {
+    if (!m_host.launch(name, script, workDir, moduleRel, args, error)) {
         replyError(client, req, 400, error.empty() ? "加载程序失败" : error);
         return;
     }
 
     auto box = std::make_shared<Json::Value>(Json::objectValue);
-    const bool ok = onScreen([this, box, name, moduleRel, workDir]() {
+    const bool ok = onScreen([this, box, name, moduleRel, workDir, args]() {
         m_screen->refresh();
         (*box)["ok"] = true;
         (*box)["name"] = name;
         (*box)["module"] = moduleRel;                  // 空的 = 跑的是脚本文本
         (*box)["workDir"] = workDir;
+        (*box)["args"] = Json::Value(Json::arrayValue);   // 回显: 程序实际拿到的启动参数
+        for (const std::string& a : args)
+            (*box)["args"].append(a);
         (*box)["windows"] = windowsOfProgram(name);     // 拿到响应就能截图/点击, 不用自己轮询
     });
     if (!ok) {

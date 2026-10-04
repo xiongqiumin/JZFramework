@@ -372,6 +372,7 @@ bool JZVirtualWindow::captureFrame()
     }
     m_frame = clientFrameLocal();
     m_frameDirty = false;
+    m_frameSeq.fetch_add(1, std::memory_order_relaxed);   // 合成侧据此判"内容变了" (见 frameSeq)
     return true;
 }
 

@@ -119,12 +119,14 @@ public:
     //   moduleRel: 非空 = 以一个 **JS 程序 (ESM 模块)** 加载 (相对 workDir) —— 推荐这条路:
     //              import 能用, 且 jzApp.applicationDirPath() = 程序所在目录;
     //   script   : 只给 script = 当一段 JS 跑 (片段/脚本体, 无模块语义)。
+    //   args     : 传给程序自己的启动参数(argv), 程序里读 process.argv(见 JZVirtualProcess::start)。
     //   ⚠ 实现见 JZVirtualProcess.cpp (jz_virtual_process 库) —— 桌面库不依赖 JS 引擎。
     //   ⚠ 新建的窗口由**那个进程的线程**创建, 所以本函数只负责"起线程", 窗口稍后出现
     //     (要等就 JZVirtualProcess::waitWindow)。
     JZVirtualProcess* createProcess(const std::string& name, const std::string& script,
                                     const std::string& workDir = std::string(),
-                                    const std::string& moduleRel = std::string());
+                                    const std::string& moduleRel = std::string(),
+                                    const std::vector<std::string>& args = std::vector<std::string>());
 
     // 新窗口的默认位置 (居中级联; 由 JZVirtualWindow 首次 show 时按最终尺寸取用)
     JZPoint defaultWindowPos(int clientW, int clientH) const;
@@ -139,6 +141,11 @@ public:
     //   · 最大化只铺到 workArea() (桌面减掉任务栏) —— 盖不住任务栏/开始菜单;
     //   · 任务栏那一条不参与窗口命中 (windowAt 返回 nullptr), 点它也不会漏到下面的窗口。
     static const int kTaskbarHeight = 28;      // 逻辑像素 (随桌面缩放按物理分辨率渲染)
+    // 合成帧时钟的节拍(毫秒): 桌面那一帧的产出频率。16 ≈ 60Hz —— 与真窗口的刷新同一量级,
+    //   取图方(脚本/CU)看到的画面最多比世界晚一拍。
+    //   ⚠ 这个数字能取到 16 的前提是"只重放脏区 + 按需快照"(见 compose/refreshNow):
+    //     整屏重放 + 每拍 2.5MB 快照时, 20Hz 就能把主线程吃满(实测合成 ~18ms/次)。
+    static const int kComposeMs = 16;
     int taskbarTop() const { return m_desktopH - kTaskbarHeight; }
     // 窗口可摆/可最大化的范围 (同真实系统的 workArea; 坐标系不变, 只是少了一条任务栏)
     JZRect workArea() const { return JZRect(0, 0, m_desktopW, taskbarTop()); }
@@ -187,9 +194,34 @@ public:
     int physicalWidth() const { return toPhysical(m_desktopW); }
     int physicalHeight() const { return toPhysical(m_desktopH); }
 
-    // 合成序号: 每合成一帧 +1。画布是"同一块缓冲、每帧重画"的可变目标 —— 需要 RGBA
-    // 快照的消费方 (截图/CU) 据此判断自己缓存的那份是否过期 (见 desktopImage)。
+    // 合成序号: 每合成一帧 +1 (⚠ 什么都没变的那些拍不推进它: 内容真没变, 消费方读到同一帧是
+    // 正确行为, 也是"增量合成"能省下工作的前提)。需要 RGBA 快照的消费方 (截图/CU) 据此判断
+    // 自己缓存的那份是否过期 (见 desktopImage)。
     unsigned frameSerial() const { return m_frameSerial; }
+    // 合成统计 (诊断/调优; /api/desktop 也报): 最近一拍合成/快照花了多少毫秒、重放了几块脏区、
+    //   一共合了多少拍、其中几次是整屏。用来核"只重放脏区"到底省了多少, 而不是凭感觉说便宜了。
+    double lastComposeMs() const { return m_lastComposeMs; }
+    double lastSnapshotMs() const { return m_lastSnapshotMs; }
+    int lastDirtyRects() const { return m_lastDirtyRects; }
+    unsigned composeCount() const { return m_composeCount; }
+    unsigned fullComposeCount() const { return m_fullComposeCount; }
+    // verifyCompose 的两个特殊返回值 (>= 0 = 不一致的像素数)
+    static const int kVerifyBadEnv = -1;          // 环境不满足 (不在主线程 / 没有画布)
+    static const int kVerifyInconclusive = -2;    // 检查期间目标内容变过 ⇒ 两份快照不可比, 重试
+    // 【自检】把当前画面**整屏重放**一次, 与增量合成出来的那份逐像素比, 返回不同的像素数。
+    //   **只给测试与 /api/desktop/verify 用**。
+    //   ⚠ 这是"只重放脏区"唯一站得住脚的正确性判据: 增量合成与整屏合成走的是同一段 paintRegion
+    //     代码, 差别只在裁剪框 —— 所以两者结果必须**完全相同**; 一旦有差, 就是"漏擦旧位置"或
+    //     "算漏了哪块该重画"。(它会顺带把 m_dirtyAll 置真, 也就是把画面整屏刷一遍, 无副作用。)
+    //   ⚠ 两次快照之间目标程序还在自己画(60Hz) ⇒ 正常情况下经常是 kVerifyInconclusive, 多试几次
+    //     就能碰到"一拍之内没动"的干净窗口 —— 那是唯一能给出结论的时刻 (见 .cpp 里的守卫)。
+    int verifyCompose();
+    // 最近一次 verifyCompose 里"不一致像素"的包围盒 (**物理像素**; 全一致时为空矩形)。
+    //   它是"哪一块没画对"最直接的线索: 有差却不知道差在哪, 就只能靠猜。
+    JZRect verifyDiffRect() const { return m_verifyDiffRect; }
+    // 最近一次自检的前几个差异像素 "(x,y) rrggbb->rrggbb" (最多 4 个): 连"差成什么颜色"一起给,
+    //   一眼能看出是"某个窗口没重画"(整块旧内容) 还是"边缘一个像素"(舍入/抗锯齿)。
+    const std::vector<std::string>& verifySamples() const { return m_verifySamples; }
 
     // 桌面底色 (默认**白屏**)。换成灰之类便于肉眼区分"桌面"与"窗口" —— 两者都是白的话
     // 窗口在整屏帧里看不出来。只影响底色, 不影响任何坐标/语义。
@@ -317,8 +349,10 @@ private:
     // ---- 任务栏 / 开始菜单的命中与绘制 ----
     int taskButtonAt(int x, int y) const;        // 命中任务栏按钮 -> 下标, 否则 -1
     int startMenuItemAt(int x, int y) const;     // 命中开始菜单项 -> 下标, 否则 -1
-    void paintTaskbar(JZPainter& p);
-    void paintStartMenu(JZPainter& p);
+    // ⚠ 两张 chrome 都**只画到 clip 里**, 并且内部临时收窄裁剪后**必须还原成传进来的 clip**
+    //   (不是整块桌面): 否则增量合成时会把笔迹漏到脏区外面 (见 JZPainter 的 save/restore 不含裁剪)。
+    void paintTaskbar(JZPainter& p, const JZRect& clip);
+    void paintStartMenu(JZPainter& p, const JZRect& clip);
     // 点在 chrome 上 (锁内调用): 返回 true = 这次点击归桌面, 不再往下投给窗口;
     // pending = 需要在**锁外**执行的动作 (菜单项回调, 里面可能建窗/起进程)
     bool handleChromePress(int x, int y, std::function<void()>& pending);
@@ -330,9 +364,21 @@ private:
     // 画布尺寸/缩放变了就同步后端帧缓冲, 并刷新它的零拷贝显示位图 (见 m_canvas)
     void ensureCanvas();
     void refreshNow();                  // 合成真身 (只允许主线程)
-    // 定时合成 (主线程, 50ms 一次; 见 .cpp 里的说明): 保证桌面画面一直在刷新 ——
-    // 不能只靠"窗口推帧 -> 投递回主线程"那条链(实测不可靠, 会让取图方看到好几秒前的画面)。
+    // 定时合成 (主线程, 每 kComposeMs 一次): 桌面那一帧的**帧时钟** —— 取图方与窗口推帧都
+    // 只是"标脏 + 请求", 真正什么时候合这张桌子由它决定 (见 .cpp 里 timerEvent 的说明)。
     void timerEvent(JZTimerEvent* event) override;
+    // 把"桌面底色 + 各窗口(按 z 序) + chrome"在**一块脏区**里重放一遍 (逻辑坐标; 越界部分被 clip 掉)。
+    void paintRegion(JZPainter& p, const JZRect& clip);
+    // 算这一拍要重画哪些块 (与"上次画的时候"对比得出; full = 整屏重放)。
+    // 返回 false = 什么都没变, 这一拍不必合成、也不推进 frameSerial。
+    bool takeDirtyRects(std::vector<JZRect>& out, bool& full);
+    // 自检用: 把**脏区判据真正读到的那些输入**打成一个摘要 (见 takeDirtyRects)。两次快照之间
+    // 这个摘要没变 ⇒ "世界没动" ⇒ 增量结果与整屏结果必须逐像素一致 (否则就是漏画)。
+    // ⚠ 它必须与 takeDirtyRects 读的输入保持一致: 少列一样, verifyCompose 就会把"世界动了"
+    //   误判成"没动"、把正常差异报成 bug (反之多列只让它更保守 ⇒ 更容易判"不可判")。
+    std::vector<long long> stateSignature() const;
+    // 画布 -> 对外那一帧 (RGBA8888, 物理像素)。**只主线程**能做 (画布的主人; 别人做会失败并留下空图)。
+    void snapshotDesktopImage();
     void setScaleValue(float scale);    // setScale / setHostScale 的共同真身 (不做"谁设的"判断)
     // 把 w 从窗口表 / "已关闭"表里摘下来 (锁内; 调用方负责锁) —— 返回"活动窗口没了的话,
     // 焦点该交给谁"(锁外再调它的 setFocus); 不发生就返回 nullptr。
@@ -350,11 +396,28 @@ private:
     mutable std::mutex m_outputMutex;
     std::deque<std::string> m_outputs;     // 最近 kOutputLines 行 (超了从头弹)
     long long m_outputTotal = 0;           // 累计产生过的行数 (含已被挤掉的)
-    // 上次**从别的线程**排合成请求的时刻(节流用, 见 refresh)。⚠ 原子而非锁: 这条路径必须
-    // 无锁(进程线程推帧时主线程可能正等它); 竞态最坏只是多排一次合成, 无害。
-    std::atomic<int64_t> m_lastRefreshReqMs{ 0 };
-    // 上次**定时合成**的时刻(见 timerEvent)。只在主线程读写, 不需要原子。
-    int64_t m_lastTimerComposeMs = 0;
+    // **一个节拍预算**: 上一次合成的时刻(帧时钟与"别的线程唤醒"共用)。
+    //   谁先到都记同一笔 ⇒ 两个来源叠加也超不过 ~1000/kComposeMs 拍/秒(不会像各管各的那样翻倍)。
+    //   ⚠ 原子而非锁: 唤醒那条路径必须无锁(进程线程推帧时主线程可能正等它)。
+    std::atomic<int64_t> m_lastBeatMs{ 0 };
+    // 有消费方在等"对外那一帧"(RGBA 快照; 900x700 ≈ 2.5MB 的一次转换) ⇒ refreshNow 才做。
+    //   ⚠ 桌面对外的显示走的是画布的**零拷贝位图**(desktopPixmap), 不需要它; 无头容器里没人要
+    //   的时候每拍拷这 2.5MB 纯属白烧 —— 而那正是 60Hz 跑不动的第二个大头(第一个是重放)。
+    std::atomic<bool> m_imageWanted{ true };
+
+    // ---- 增量合成 (只重放脏区) 的现场 ----
+    bool m_dirtyAll = true;                    // 首次 / 底色 / 画布重建: 整屏重画
+    std::vector<JZVirtualWindow*> m_painted;   // 上次合成时画的窗口表(z 序; 判增删/层序变化)
+    JZVirtualWindow* m_paintedActive = nullptr; // 上次合成时的活动窗口 (标题栏配色随它变)
+    std::vector<long long> m_chromeSig;        // 任务栏/开始菜单的输入摘要 (悬停/菜单项数; 标题另算)
+    // 合成/快照耗时与脏块数: 给 /api/desktop 看 —— 用来核"合成真的便宜了没有", 别凭感觉。
+    double m_lastComposeMs = 0.0;
+    double m_lastSnapshotMs = 0.0;
+    int m_lastDirtyRects = 0;
+    unsigned m_composeCount = 0;
+    unsigned m_fullComposeCount = 0;
+    JZRect m_verifyDiffRect;                   // 最近一次自检的差异包围盒 (见 verifyDiffRect)
+    std::vector<std::string> m_verifySamples;  // 最近一次自检的前几个差异像素 (坐标 + 两侧颜色)
 
     std::vector<JZVirtualWindow*> m_windows;   // 桌面上的窗口, z 序: 末尾最上
     // 已"关闭"(从桌面摘下来)但客户区还活着的外框 —— 客户区的平台后端还指着它, 所以不能删;
@@ -365,6 +428,7 @@ private:
     // ⚠ 成员顺序即析构顺序: m_desktopPix 引用 m_canvas 的帧缓冲, 必须比它先析构。
     JZDisplayDevice m_canvas;                  // 合成画布 (离屏设备; 它的帧缓冲就是"屏幕")
     bool m_canvasReady = false;                // 画布已 initOffscreen (首次之后只 resize)
+    int m_canvasW = 0, m_canvasH = 0;          // 画布当前物理尺寸 (变了 = 缓冲重建 ⇒ 整屏重放)
     JZPixmap m_desktopPix;                     // 画布的零拷贝显示位图 (随画布重建刷新)
     JZImage m_desktopImage;                    // 整屏 RGBA 快照 (按需转, 见 desktopImage)
     unsigned m_imageSerial = ~0u;              // 上面那份快照对应的合成序号

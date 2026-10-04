@@ -60,13 +60,21 @@ class JZHttpRequest;
 //   GET    /api/screen[?window=<w>][&format=png|json]  截图: 默认整屏 PNG; window 给**客户区**
 //   POST   /api/desktop         {scale|dpi|followHost}  设这块虚拟屏自己的 DPI (物理像素
 //                               = 逻辑 × dpi/96; 显式设过就不再跟宿主; followHost 恢复跟随)
+//   POST   /api/desktop/verify  【自检】把当前画面**整屏重放**一次, 与"只重放脏区"那份逐像素比:
+//                               {"ok":..,"diffPixels":0,"fullComposeMs":..,"diffRect?":[x,y,w,h]}
+//                               0 = 增量合成与整屏一致; 若目标程序在两次快照之间画了一帧, 回
+//                               {"ok":false,"inconclusive":true} (不是错, 重试即可)。
+//                               ⚠ 会顺带把画面整屏刷一遍(内容不变), 别塞进正常轮询。
 //   POST   /api/input/mouse     {action,x,y,...}  鼠标: move/down/up/click/double/drag/wheel
 //   POST   /api/input/key       {key|text,...}    键盘: 单键/组合 ("Ctrl+C") 或整段文本
-//   POST   /api/programs        {name,file|script,workDir?}  加载程序 (一个线程 + 一份 JS 运行时):
+//   POST   /api/programs        {name,file|script,workDir?,args?}  加载程序 (一个线程 + 一份 JS 运行时):
 //                                                 file   = 一个 **JS 程序** (按 ESM 模块加载:
 //                                                          import 可用, 运行根 = 它所在目录,
 //                                                          workDir 缺省也取它所在目录)
 //                                                 script = 一段脚本 (直接跑, 无模块语义)
+//                                                 args   = **程序自己的启动参数** (字符串数组):
+//                                                          程序里读 process.argv, 形状同 Node
+//                                                          [宿主 exe, 入口模块, ...这些]
 //                                                 ⚠ 程序**起来就崩** (未处理异常/初始化失败)
 //                                                    回 400 + 错误文本 —— 不是 ok + 空窗口列表
 //   GET    /api/programs                          程序表 (名字 + 它建的窗口)
@@ -111,8 +119,10 @@ struct JZVirtualProgramHost
     // 加载程序: 起一个"程序" (name 已存在时应返回 false + error)
     //   moduleRel 非空 = 以 **ESM 模块**加载 (相对 workDir): 真程序走这条 (import 可用,
     //   jzApp.applicationDirPath() = 程序所在目录); 否则 script 当一段 JS 跑。
+    //   args = 程序自己的启动参数(argv; 见 POST /api/programs 的 args), 程序里读 process.argv。
     std::function<bool(const std::string& name, const std::string& script,
                        const std::string& workDir, const std::string& moduleRel,
+                       const std::vector<std::string>& args,
                        std::string& error)> launch;
     // 程序名列表 (GET /api/programs)
     std::function<std::vector<std::string>()> list;
@@ -148,6 +158,8 @@ private:
     void handleWindowState(JZHttpServerClient* client, const JZHttpRequest& req);
     void handleScreen(JZHttpServerClient* client, const JZHttpRequest& req);
     void handleDesktop(JZHttpServerClient* client, const JZHttpRequest& req);
+    // 【自检】POST /api/desktop/verify: 整屏重放一次, 与增量合成那份逐像素比 (见 verifyCompose)
+    void handleDesktopVerify(JZHttpServerClient* client, const JZHttpRequest& req);
     // 鼠标/键盘: 一套解析两处用 —— target 为空 = 走桌面 (命中+激活), 非空 = 直接给那个窗口。
     // 见头注释"两套输入的区别"; windowKey 是路由参数里的窗口标识 (在 onScreen 里才解析)。
     enum class InputKind { Mouse, Key };
@@ -193,8 +205,10 @@ private:
     // "加载什么" 的两种写法 (见 /api/programs 的说明):
     //   file   -> moduleRel = 文件名 (相对 workDir) + workDir 缺省 = 文件所在目录 (按模块加载)
     //   script -> script = 那段代码 (直接跑)
+    // args = 程序自己的启动参数(argv; 可省, 见 JZVirtualProgramHost::launch)。
     bool resolveProgram(const Json::Value& body, std::string& script, std::string& workDir,
-                        std::string& moduleRel, std::string& error) const;
+                        std::string& moduleRel, std::vector<std::string>& args,
+                        std::string& error) const;
 
     JZVirtualDevice* m_screen = nullptr;
     JZHttpServer* m_http = nullptr;      // 监听 + 路由 (handler 挂它名下, 随本对象析构)

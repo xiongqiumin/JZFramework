@@ -166,6 +166,21 @@ public:
     // 在**窗口自己的线程**上把当前帧缓冲拷进 m_frame; 不在本线程时只记脏(等它自己刷)。
     bool captureFrame();
 
+    // ---- 合成侧的"上次画它时它是什么样" (只由 JZVirtualDevice 的合成代码读写) ----
+    //   脏区判据 = "现在 vs 上次画的时候"对比, 而不是给每个改状态的入口挂钩子:
+    //   漏挂一个钩子就是"界面不更新"这类最难查的 bug; 对比只要把"绘制真正读到的东西"列全即可
+    //   (见 JZVirtualDevice::takeDirtyRects 与 paintDecoration/paintTaskbar 读的那些)。
+    //   frameSeq 由窗口线程在帧拷贝后自增(合成线程要读, 所以原子); 其余几个只有合成线程碰。
+    unsigned frameSeq() const { return m_frameSeq.load(std::memory_order_relaxed); }
+    unsigned paintSeq() const { return m_paintSeq; }
+    void setPaintSeq(unsigned s) { m_paintSeq = s; }
+    JZRect paintRect() const { return m_paintRect; }
+    void setPaintRect(const JZRect& r) { m_paintRect = r; }
+    bool paintVisible() const { return m_paintVisible; }    // 上次合成时"参与了绘制"(可见且未最小化)
+    void setPaintVisible(bool v) { m_paintVisible = v; }
+    const std::string& paintTitle() const { return m_paintTitle; }
+    void setPaintTitle(const std::string& t) { m_paintTitle = t; }
+
     // ---- 输入注入 (坐标 = **本窗口客户区**逻辑坐标; 桌面路由时已换算好) ----
     // 语义 == 系统投递输入消息 (PostMessage / SendInput 那一类): **投过去就返回, 不等它处理**。
     //   · 别的线程的窗口 (虚拟进程): postEvent 异步投递 —— 同步等它就是"两个线程互相等对方"
@@ -243,6 +258,12 @@ private:
     static std::atomic<int> s_nextSeq; // 自增源 (跨线程建窗, 所以是原子的)
     JZImage m_frame;                   // 客户区最近一帧的拷贝 (见 captureFrame)
     bool m_frameDirty = false;         // 帧缓冲变过但还没拷 (别的线程改过状态)
+    // 合成的脏区记忆 (见上面那组访问器): 帧序号(原子) + 上次画时的外框/可见/标题
+    std::atomic<unsigned> m_frameSeq{ 0 };
+    unsigned m_paintSeq = 0;
+    JZRect   m_paintRect;
+    bool     m_paintVisible = false;
+    std::string m_paintTitle;
     // "可用"标志(见 isReadyForUse): 窗口线程在平台 show 末尾置真。用原子量是因为读它的
     // 一定是**别的线程**(跨线程等窗口建成可用) —— 这里必须无锁, 免得与其线程互等。
     std::atomic<bool> m_readyForUse{ false };

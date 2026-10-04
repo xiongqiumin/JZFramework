@@ -47,8 +47,8 @@ void GameWidget::showEvent(JZShowEvent* event)
     setFocus();              // 抢占焦点以接收键盘事件
     m_lastTick = std::chrono::steady_clock::now();
     m_animTick = m_lastTick;
-    m_logicTimer->start(kLogicMs);    // 逻辑: 固定步长
-    m_renderTimer->start(kRenderMs);  // 渲染: 尽可能快(压测 FPS)
+    m_logicTimer->start(kLogicMs, kMaxCatchUp);   // 逻辑: 固定步长(后补上限见 kMaxCatchUp 的说明)
+    m_renderTimer->start(kRenderMs);              // 渲染: 尽可能快(压测 FPS)
 }
 
 void GameWidget::reset()
@@ -94,6 +94,44 @@ void GameWidget::onLogic()
     for (auto& b : m_booms) b.life--;
     m_booms.erase(std::remove_if(m_booms.begin(), m_booms.end(),
         [](const Boom& b) { return b.life <= 0; }), m_booms.end());
+
+    reportState();
+}
+
+// ---------------------------------------------------------------------------
+// 裁判输出
+// ---------------------------------------------------------------------------
+// 与 TS 版(test_jsshooter 的 reportState)同一套行格式, **只有 stdout 这一个出口**:
+//   [shooter] score=.. lives=..                  分数一变就打一行(尺子据此取"最高分")
+//   [shooter] alive score=.. lives=.. over=0|1   分数不变时每 2s 一行心跳
+//   [shooter] CLEAR score=.. target=300          首次到线打一行
+//   [shooter] GAME OVER score=..                 三条命打光时一次
+//   [hit] 敌弹/撞机 ...                          每次挨打一行(带我的 x/y 与那颗弹/那架机的速度)
+// ⚠ 这几行是**给尺子看的**: 脚本按红线不许读它(它只看画面)。
+// ⚠ 与 TS 版的唯一差别: 那边到 300 分会把这一局**定格**(世界停住 + 盖"恭喜过关"), 这边只报
+//   事件、不改玩法 —— C++ 样例本来就没有定格逻辑(kTargetScore 只用于 HUD 与这一行)。
+void GameWidget::reportState()
+{
+    auto now = std::chrono::steady_clock::now();
+    if (m_score != m_lastReportScore) {
+        std::printf("[shooter] score=%d lives=%d\n", m_score, m_lives);
+        m_lastReportScore = m_score;
+        m_lastReportAt = now;
+    } else if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastReportAt).count() >= 2000) {
+        std::printf("[shooter] alive score=%d lives=%d over=%d\n", m_score, m_lives, m_over ? 1 : 0);
+        m_lastReportAt = now;
+    }
+    if (!m_clearReported && m_score >= kTargetScore) {
+        m_clearReported = true;
+        std::printf("[shooter] CLEAR score=%d target=%d\n", m_score, kTargetScore);
+    }
+    if (m_over && !m_gameOverReported) {
+        std::printf("[shooter] GAME OVER score=%d\n", m_score);
+        m_gameOverReported = true;
+    }
+    // ⚠ 刷新: 这个 exe 的 stdout 在我们这儿是**管道**(被基准脚本读), 不刷就攒在缓冲区里,
+    //   轻则"分数晚几秒才到", 重则整局读不到(Python 那侧只在结束时收尾)。
+    std::fflush(stdout);
 }
 
 // 逻辑落后过多(补不过来): 停止游戏并上报错误, 不再尝试追帧.
@@ -225,6 +263,8 @@ void GameWidget::updateGame()
     for (auto it = m_ebullets.begin(); it != m_ebullets.end();) {
         if (m_invuln == 0 && std::abs(it->x - m_playerX) < 16 &&
             std::abs(it->y - m_playerY) < 18) {
+            std::printf("[hit] 敌弹 x=%d y=%d vx=%d vy=%d 我x=%d 我y=%d\n",
+                        it->x, it->y, it->vx, it->vy, m_playerX, m_playerY);
             hitPlayer();
             it = m_ebullets.erase(it);
         } else {
@@ -238,6 +278,8 @@ void GameWidget::updateGame()
         if (m_invuln == 0 &&
             std::abs(it->x - m_playerX) < it->w / 2 + 14 &&
             std::abs(it->y - m_playerY) < it->h / 2 + 14) {   // 撞机: 扣血
+            std::printf("[hit] 撞机 x=%d y=%d w=%d h=%d spd=%d 我x=%d 我y=%d\n",
+                        it->x, it->y, it->w, it->h, it->spd + eSpdBase, m_playerX, m_playerY);
             hitPlayer();
             gone = true;
         } else if (it->y - it->h / 2 > h) {                   // 漏底: 仅移除, 不扣血
@@ -321,7 +363,7 @@ void GameWidget::keyPressEvent(JZKeyEvent* event)
         if (needRecover) {
             reset();
             if (m_logicTimer && !m_logicTimer->isActive())
-                m_logicTimer->start(kLogicMs);   // 从落后停止状态恢复
+                m_logicTimer->start(kLogicMs, kMaxCatchUp);   // 从落后停止状态恢复
         }
     }
     event->accept();

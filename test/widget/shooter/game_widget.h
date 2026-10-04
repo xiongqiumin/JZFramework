@@ -43,6 +43,7 @@ private:
     void hitPlayer();       // 玩家受击 (扣血 + 无敌帧 + 爆炸)
     void updateGame();
     void updateFps();
+    void reportState();     // 裁判输出(与 TS 版同一套行格式, 见 .cpp)
 
     // 绘制
     void drawBackground(JZPainter* p);
@@ -77,6 +78,12 @@ private:
     bool m_over = false;
     std::string m_errMsg;   // 非空时表示逻辑落后过多, 游戏已停止
 
+    // 裁判输出(reportState)的状态: 分数一变就打一行 + 分数不变时的心跳节流 + 两个"只打一次"
+    int m_lastReportScore = -1;      // 上一次打印时的分数(-1 = 还没打过)
+    std::chrono::steady_clock::time_point m_lastReportAt;
+    bool m_gameOverReported = false;
+    bool m_clearReported = false;
+
     float m_fps = 0;
     float m_peakFps = 0;
     int   m_frameDraws = 0;   // 本帧绘制的图元(绘制请求)数
@@ -99,6 +106,11 @@ private:
     // 通关线: 打到这个分数算通关(一架敌机 +10 ⇒ 30 架)。与 TS 版(test_jsshooter)的
     // kTargetScore 及玩法侧的 game/shooter/config.json 的 targetScore 保持一致。
     static constexpr int kTargetScore = 300;
+    // 单次最多补帧数(默认 5 太紧): 窗口创建 + 首帧那一段很容易掉 6~10 帧, 默认值下 JZFixedTimer 会
+    // 直接 stop 并报 "too many frames to catch up" —— 游戏**自己把自己停了**。在"人看"的场景里那只是
+    // 屏幕上一句错误; 在"脚本看画面"的场景里它等于**卡住**(脚本看到的是一张不动的帧, 也分不清是
+    // 停住还是自己没看见)。与 TS 版(test_jsshooter 的 FixedTimer.maxCatchUp = 30)保持一致。
+    static constexpr int kMaxCatchUp = 30;
     static constexpr int kRenderMs  = 0;    // 渲染: 0 = 尽可能快, 用于压测 FPS 上限
     static constexpr int kPlayerSpd = 6;
     static constexpr int kBulletSpd = 11;

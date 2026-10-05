@@ -34,6 +34,84 @@ void readString(ByteReader& r, std::string& s)
     s.assign(bytes.data(), (size_t)len);
 }
 
+// ---- 工步内容(stru_BTS_CMD_SET_STEP76_Ex 的 blob 形式) ----
+// 存放位置: **writeRecordInfo 的末尾**(不是 writeStepInfo 里) —— 原版顺序中 stepInfo 之后还有
+// dataCache, 塞在中间会让旧数据读不出来。参数按原版思路只存"有效的", 用 64 位位图标记。
+void writeStep76Ex(ByteWriter& w, const StruSetStep76Ex& step)
+{
+    w.raw(step.Guid, 16);
+    w.raw(step.ChannelID, 8);
+    w.i32((int32_t)step.stepList.size());
+
+    for (size_t i = 0; i < step.stepList.size(); ++i)
+    {
+        const StruSetStepInfo& st = step.stepList[i];
+
+        w.u16(st.StepLine);
+        w.u8(st.StepID);
+        w.u8(st.StepType);
+
+        uint64_t map = 0;
+        for (int k = 0; k < (int)st.paramList.size() && k < 64; ++k)
+        {
+            if (st.paramList[k].vaild)
+                map |= (1ull << k);
+        }
+        w.i64((int64_t)map);
+
+        for (int k = 0; k < (int)st.paramList.size() && k < 64; ++k)
+        {
+            if (!st.paramList[k].vaild)
+                continue;
+            w.u8(st.paramList[k].op);
+            w.f64(st.paramList[k].num);
+            w.i64(st.paramList[k].i64);
+        }
+    }
+}
+
+void readStep76Ex(ByteReader& r, StruSetStep76Ex& step)
+{
+    const JZByteArray guid = r.raw(16);
+    const JZByteArray ch = r.raw(8);
+
+    memset(step.Guid, 0, sizeof(step.Guid));
+    memset(step.ChannelID, 0, sizeof(step.ChannelID));
+    if (guid.size() == 16)
+        memcpy(step.Guid, guid.data(), 16);
+    if (ch.size() == 8)
+        memcpy(step.ChannelID, ch.data(), 8);
+
+    const int count = r.i32();
+    step.stepList.clear();
+    if (count < 0 || count > 4096)
+        return;
+
+    for (int i = 0; i < count && r.ok(); ++i)
+    {
+        StruSetStepInfo st;
+        st.StepLine = r.u16();
+        st.StepID   = r.u8();
+        st.StepType = r.u8();
+
+        const uint64_t map = (uint64_t)r.i64();
+        st.clearParams();
+
+        for (int k = 0; k < (int)st.paramList.size() && k < 64; ++k)
+        {
+            if ((map & (1ull << k)) == 0)
+                continue;
+
+            st.paramList[k].vaild = true;
+            st.paramList[k].op  = r.u8();
+            st.paramList[k].num = r.f64();
+            st.paramList[k].i64 = r.i64();
+        }
+
+        step.stepList.push_back(st);
+    }
+}
+
 // BTEStepInfo
 void writeStepInfo(ByteWriter& w, const BTEStepInfo& p)
 {
@@ -42,8 +120,8 @@ void writeStepInfo(ByteWriter& w, const BTEStepInfo& p)
     writeString(w, p.cellBatch);
     writeString(w, p.cellNo);
     writeString(w, p.memo);
-    // TODO(工步): 原版这里还有 s << param.step (stru_BTS_CMD_SET_STEP76_Ex),
-    //             等工步下发报文搬过来再补(补的时候是**追加在末尾**, 兼容旧数据)。
+    // 注: 工步内容(p.step)不在这里写 —— 它追加在 writeRecordInfo 的**整个末尾**(见那边),
+    //     这样旧库文件(没有这段)照样能读。
 }
 
 void readStepInfo(ByteReader& r, BTEStepInfo& p)
@@ -146,6 +224,9 @@ void writeRecordInfo(ByteWriter& w, const BTERecordInfo& info)
     w.i32(info.dataCache.beginChg);
     w.i32(info.dataCache.endChg);
     w.f64(info.dataCache.ccRatio);
+
+    // 工步内容: 追加在**整个记录信息的末尾** —— 旧库文件没有这一段, 读的时候用 left() 判
+    writeStep76Ex(w, info.stepInfo.step);
 }
 
 void readRecordInfo(ByteReader& r, BTERecordInfo& info)
@@ -168,6 +249,10 @@ void readRecordInfo(ByteReader& r, BTERecordInfo& info)
     info.dataCache.beginChg = r.i32();
     info.dataCache.endChg = r.i32();
     info.dataCache.ccRatio = r.f64();
+
+    // 工步内容(后加的字段): 旧数据读到这儿就没了 ⇒ left()==0 时跳过, 保持向后兼容
+    if (r.left() > 0)
+        readStep76Ex(r, info.stepInfo.step);
 }
 
 } // namespace

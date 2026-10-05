@@ -4,6 +4,9 @@
 #include "JZByteArray.h"
 
 #include <cstdint>
+#include <vector>
+
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -451,5 +454,166 @@ public:
     static std::string ErrorText(int type);           // 查不到 -> "未知错误"(与原版一致)
     static int         StepChargeType(int type);
 };
+
+// ---------------------------------------------------------------------------
+// 工步下发 SET_STEP76_Ex
+//   对应原版 common/PackDefine.h 的 stru_BTS_CMD_SET_STEP76_Ex + common/PackDefine.cpp
+//   里的 pack/unpack/genDefaultStep。前端就是"工步设置对话框"填出来的东西。
+//
+// 移植口径(与原版的差异, 都写在明处):
+//   · 原版是"结构体 + 虚 pack() + QDataStream/QUuid + PARAM_FUNC 宏"; 这里换成同一份二进制
+//     布局 + JZByteArray/ByteWriter 直写(骨架协议层一贯的写法, 见 packFrame/packStart70)。
+//   · **参数不用 60 个 PARAM_FUNC 宏**, 改成通用 setParam(PARAM_xxx, op, value) —— 语义等价,
+//     调用处照样能一眼看出是哪个参数。
+//   · 参数值用"double + int64 两个槽"代替 QVariant: 数值类(电压/电流/温度/容量/…/整型以外的)
+//     走 num, 时间(64 位)与整型走 i64 —— 打包时按参数类型取对应槽。这是唯一的表示差异。
+// ---------------------------------------------------------------------------
+
+// 参数运算符(原版同名同值)
+enum {
+    OP_EQU       = 0x01,   // ==
+    OP_NEQ       = 0x02,   // !=
+    OP_BIG       = 0x03,   // >
+    OP_BIG_EQU   = 0x04,   // >=
+    OP_SMALL     = 0x05,   // <
+    OP_SMALL_EQU = 0x06,   // <=
+};
+
+// 工步参数下标(原版同名同值): bitmap1 = 0..31, bitmap2 = 32..63
+enum {
+    // ---- bitmap1 ----
+    PARAM_Current = 0,          // 电流运算符(A)
+    PARAM_Voltage,              // 电压运算符(V)
+    PARAM_Time,                 // 时间运算符(ms)
+    PARAM_Capacity,             // 容量运算符
+    PARAM_Tempature,            // 温度运算符
+    PARAM_Power,                // 功率运算符
+    PARAM_Resistance,           // 电阻运算符
+    PARAM_StopCurrent,          // 截止电流运算符
+    PARAM_StopVoltage,          // 截止电压运算符
+    PARAM_VoltageChange,        // -ΔV 运算符
+    PARAM_BeginStepID,          // 起始工步号
+    PARAM_CountLoop,            // 循环次数
+    PARAM_JumpLine,             // 跳转行号
+    PARAM_ReservedParam1,       // 保留参数1
+    PARAM_ReservedParam2,       // 保留参数2
+    PARAM_ProtectVoltageUpper = 15, // 电压安全保护上限
+    PARAM_ProtectVoltageLower,      // 电压安全保护下限
+    PARAM_ProtectCurrentUpper,      // 电流安全保护上限
+    PARAM_ProtectCurrentLower,      // 电流安全保护下限
+    PARAM_ProtectTempatureUpper,    // 温度安全保护上限
+    PARAM_ProtectTempatureLower,    // 温度安全保护下限
+    PARAM_ProtectDelayTime,         // 延迟保护时间
+    PARAM_ProtectDetalVolTime,      // 化成变化率检测时间
+    PARAM_ProtectDetalVol,          // 化成变化率电压
+    PARAM_RecordTimeInterval,       // 时间间隔记录条件
+    PARAM_RecordCurrentChange,      // 电流突变记录条件
+    PARAM_RecordVoltageChange,      // 电压突变记录条件
+    PARAM_RecordTempatureChange,    // 温度突变记录条件
+    PARAM_PlatVoltage1,             // 平台点监测电压1
+    PARAM_PlatVoltage2,             // 平台点监测电压2
+    PARAM_PlatVoltage3,             // 平台点监测电压3
+
+    // ---- bitmap2 ----
+    PARAM_AuxChannelMap = 32,       // 映射辅助通道号
+    PARAM_AuxChannel,               // 实际辅助通道号
+    PARAM_AuxCndTempatureUpper,     // 辅助通道温度限制上限值
+    PARAM_AuxCndTempatureLower,     // 辅助通道温度限制下限值
+    PARAM_AuxCndVolUpper,           // 辅助通道电压限制上限值
+    PARAM_AuxCndVolLower,           // 辅助通道电压限制下限值
+    PARAM_AuxCndCurUpper,           // 辅助通道电流限制上限值
+    PARAM_AuxCndCurLower,           // 辅助通道电流限制下限值
+    PARAM_AuxPrtTempatureUpper,     // 辅助通道温度保护上限值
+    PARAM_AuxPrtTempatureLower,     // 辅助通道温度保护下限值
+    PARAM_AuxPrtVolUpper,           // 辅助通道电压保护上限值
+    PARAM_AuxPrtVolLower,           // 辅助通道电压保护下限值
+    PARAM_AuxPrtCurUpper,           // 辅助通道电流保护上限值
+    PARAM_AuxPrtCurLower,           // 辅助通道电流保护下限值
+    PARAM_AuxRecordTimeInterval,    // 辅助通道时间间隔记录条件
+    PARAM_AuxRecordCurrentChange,   // 辅助通道电流记录条件
+    PARAM_AuxRecordVoltageChange,   // 辅助通道电压记录条件
+    PARAM_AuxRecordTempatureChange, // 辅助通道温度记录条件
+    PARAM_AuxConditionTime,         // 辅助通道时间限制条件
+    PARAM_AuxConditionBeginStepID,  // 起始工步号
+    PARAM_AuxConditionCountLoop,    // 循环次数
+    PARAM_IRDCScanTime,             // 红外扫描工步拍照时间
+    PARAM_IRDCTempUpper,            // 红外扫描上限温度
+    PARAM_IRDCTempLower,            // 红外扫描下限温度
+    PARAM_AuxPrtDelayTime,          // 辅助通道延时时间保护条件
+    PARAM_ProtectCapacityUpper,     // 容量安全保护上限
+    PARAM_ConditionEng,             // 能量限制条件
+    PARAM_ConditionSingleVol,       // 单体电压限制条件
+    PARAM_AuxPtrMaxDiffVlot,        // 辅助通道电压差保护条件
+
+    PARAM_COUNT = 64,               // 骨架便利: paramList 固定 64 项(与原版 resize(64) 一致)
+};
+
+// 一个参数: 是否有效 + 运算符 + 值
+struct StruSetStepParam
+{
+    bool    vaild = false;
+    uint8_t op = OP_EQU;
+    double  num = 0.0;      // 数值类参数(电压/电流/温度/容量/功率/…)
+    int64_t i64 = 0;        // 时间(ms, 64 位) / 整型(32 位) 参数
+};
+
+// 一个工步
+struct StruSetStepInfo
+{
+    StruSetStepInfo();
+
+    void clearParams();
+
+    // 设参数(通用入口; 原版是 60 个 PARAM_FUNC 宏生成的 setXxx)
+    void setParam(int idx, uint8_t op, double value);        // 数值类
+    void setParamI64(int idx, uint8_t op, int64_t value);    // 时间/整型类
+
+    bool isVaild(int idx) const { return idx >= 0 && idx < (int)paramList.size() && paramList[idx].vaild; }
+
+    // 参数分类(照原版; 决定打包时写几个字节、怎么换算)
+    bool isReserved(int type) const;
+    bool isVolt(int type) const;
+    bool isCurrent(int type) const;
+    bool isTemp(int type) const;
+    bool isCapacity(int type) const;
+    bool isTime64(int type) const;
+    bool isInt32(int type) const;
+
+    uint32_t getBitmap(int index) const;            // 32 位一组: 哪些参数有效
+    void     setBitmap(int index, uint32_t bitmap);
+
+    JZByteArray pack() const;                       // 单工步包(长度 + 头 + body + crc32)
+    bool unpack(const JZByteArray& stepPack);       // 与 pack 对称
+
+    uint16_t StepLine = 0;                          // 工步行号
+    uint8_t  StepID   = 0;                          // 工步号
+    uint8_t  StepType = STEP_TYPE_NULL;             // 工步类型
+    std::vector<StruSetStepParam> paramList;        // 固定 PARAM_COUNT 项(下标 = PARAM_xxx)
+};
+
+// 整包(工步文件)
+struct StruSetStep76Ex
+{
+    StruSetStep76Ex();
+
+    void setChannel(int idx);        // 置位第 idx 路通道(0 基; 与原版同口径: 低位起)
+    void clearChannel();
+
+    void genDefaultStep();           // 默认工步模板(照原版 PackDefine::genDefaultStep)
+    void updateStepLine();           // 重排 StepLine / StepID(从 1 开始)
+
+    JZByteArray pack() const;        // 包体(Guid + ChannelID + 长度 + 工步数 + 标志 + 各工步包)
+    bool unpack(const JZByteArray& body);
+
+    uint8_t Guid[16];                // 客户端标识
+    uint8_t ChannelID[8];            // 通道位图(64 位, 低位起)
+    std::vector<StruSetStepInfo> stepList;
+};
+
+// 直接组出可发送的整帧(命令码 BTS_CMD_SET_STEP76_Ex; deviceId/subDevId 由调用方按通道给)
+JZByteArray packSetStep76Ex(const StruSetStep76Ex& step, uint8_t deviceId = 0, uint8_t subDevId = 0);
+
+// 标准 CRC-32(与设备端一致: 初值 0 / 反射多项式 0xEDB88320 / 末取反; 长度<1 返回 0xFFFFFFFF)
+uint32_t crc32(const uint8_t* data, int len);
 
 #endif // BTE_PACK_DEFINE_H_

@@ -16,8 +16,9 @@ public:
     void setText(const std::string& text);
     std::string text() const;
 
-    bool isChecked() const;
-    void setChecked(bool on);
+    bool isChecked() const override;
+    void setChecked(bool on) override;
+    bool isCheckable() const override { return true; }
 
     // ---- AI 语义 ----
     std::string aiText() const override { return m_text; }

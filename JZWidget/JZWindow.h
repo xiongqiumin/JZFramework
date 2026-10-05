@@ -137,6 +137,11 @@ public:
     // 由 WndProc 的 WM_MOUSELEAVE 与 dispatchMouse 调用, 故为 public。
     void updateHover(JZWidget* newHover);
 
+    // ---- 动作快捷键 (见 dispatchShortcut / JZKeySequence) ----
+    // 窗口级动作: **不在控件父子链上**的 action 从这里交出来参与分发。典型是菜单栏里的菜单项
+    // (它们挂在 JZMenu 上) —— 由 JZMainWindow override 提供; 普通窗口默认没有。
+    virtual std::vector<JZObjectPointer> extraActions() const;
+
     // ---- 输入屏蔽 (全屏蒙版, AI 操作期间) ----
     // 设置 gate 后, gate 可见期间本窗口丢弃真实用户的鼠标/键盘/IME 输入, 只放行
     // gate 自身子树 (如蒙版上的"取消"按钮); Esc 会交给 gate 处理 (= 取消)。
@@ -284,6 +289,9 @@ protected:
     bool dispatchMouse(JZMouseEvent* ev);   // 命中测试定位控件, 回填 localPos 后投递
     bool dispatchKey(JZKeyEvent* ev);       // 键盘: 从焦点控件起, 未处理的键逐级向上传播
     bool dispatchIme(JZImeEvent* ev);       // IME: 投递给焦点控件; 无焦点控件返回 false
+    // 动作快捷键分发: 焦点链没人要的按键, 拿去匹配各控件/窗口登记的 action 的 shortcut。
+    // 由 dispatchKey 在链尾调用 (见 .cpp 里的顺序说明)。
+    bool dispatchShortcut(JZKeyEvent* ev);
     void onWindowFocus(bool got);           // 窗口获/失焦: 管理 IMC + 派发焦点进/出事件
 
 protected:

@@ -6,6 +6,7 @@
 #include "PackDefine.h"
 
 #include "JZDateTime.h"
+#include "DataTrans.h"     // 工步下发: toVoltageUnit/ElectricUnit/toTempUnit/toCapUnit
 
 #include <algorithm>
 #include <cstdio>
@@ -797,4 +798,449 @@ int PackDefine::StepChargeType(int type)
     if (type == STEP_TYPE_2)
         return STEP_DISCHARGE;
     return STEP_CHARGE_OTHER;
+}
+
+// ===========================================================================
+// 工步下发 SET_STEP76_Ex (结构/口径见 PackDefine.h 的说明; 与设备端逐字节对齐)
+// ===========================================================================
+
+uint32_t crc32(const uint8_t* data, int len)
+{
+    // 标准 CRC-32: 初值 0 / 反射多项式 0xEDB88320 / 结尾取反。
+    // 与原版 PackDefine.cpp 的 getCRC32() 查表法逐位等价(那张 256 项表就是本多项式生成的),
+    // 这里用逐位算法省掉常量表 —— 工步包不大, 速度无所谓。
+    if (len < 1)
+        return 0xFFFFFFFFu;
+
+    uint32_t crc = 0;
+    for (int i = 0; i < len; ++i)
+    {
+        crc ^= (uint32_t)data[i];
+        for (int b = 0; b < 8; ++b)
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+// ---- StruSetStepInfo ----
+
+StruSetStepInfo::StruSetStepInfo()
+{
+    paramList.resize(PARAM_COUNT);
+    clearParams();
+    StepLine = 0;
+    StepID = 0;
+    StepType = STEP_TYPE_NULL;
+}
+
+void StruSetStepInfo::clearParams()
+{
+    StruSetStepParam empty;                 // vaild=false / op=OP_EQU / 值清零
+    for (size_t i = 0; i < paramList.size(); ++i)
+        paramList[i] = empty;
+}
+
+void StruSetStepInfo::setParam(int idx, uint8_t op, double value)
+{
+    if (idx < 0 || idx >= (int)paramList.size())
+        return;
+
+    StruSetStepParam& p = paramList[idx];
+    p.vaild = true;
+    p.op = op;
+    p.num = value;
+}
+
+void StruSetStepInfo::setParamI64(int idx, uint8_t op, int64_t value)
+{
+    if (idx < 0 || idx >= (int)paramList.size())
+        return;
+
+    StruSetStepParam& p = paramList[idx];
+    p.vaild = true;
+    p.op = op;
+    p.i64 = value;
+}
+
+bool StruSetStepInfo::isReserved(int type) const
+{
+    return type == PARAM_ReservedParam1 || type == PARAM_ReservedParam2;
+}
+
+bool StruSetStepInfo::isVolt(int type) const
+{
+    return type == PARAM_Voltage
+        || type == PARAM_StopVoltage
+        || type == PARAM_VoltageChange
+        || type == PARAM_ProtectVoltageLower
+        || type == PARAM_ProtectVoltageUpper
+        || type == PARAM_RecordVoltageChange
+        || type == PARAM_ProtectDetalVol;
+}
+
+bool StruSetStepInfo::isCurrent(int type) const
+{
+    return type == PARAM_Current
+        || type == PARAM_StopCurrent
+        || type == PARAM_ProtectCurrentUpper
+        || type == PARAM_ProtectCurrentLower
+        || type == PARAM_RecordCurrentChange;
+}
+
+bool StruSetStepInfo::isTemp(int type) const
+{
+    return type == PARAM_Tempature
+        || type == PARAM_ProtectTempatureUpper
+        || type == PARAM_ProtectTempatureLower
+        || type == PARAM_RecordTempatureChange;
+}
+
+bool StruSetStepInfo::isCapacity(int type) const
+{
+    return type == PARAM_Capacity;          // 协议里容量是 8 字节
+}
+
+bool StruSetStepInfo::isTime64(int type) const
+{
+    return type == PARAM_Time || type == PARAM_RecordTimeInterval;
+}
+
+bool StruSetStepInfo::isInt32(int type) const
+{
+    return type == PARAM_BeginStepID
+        || type == PARAM_CountLoop
+        || type == PARAM_JumpLine
+        || type == PARAM_ProtectDelayTime
+        || type == PARAM_ProtectDetalVolTime;
+}
+
+uint32_t StruSetStepInfo::getBitmap(int index) const
+{
+    const int s = index * 32;
+    if (s < 0 || s >= (int)paramList.size())
+        return 0;
+
+    uint32_t var = 0;
+    for (int i = s; i < s + 32 && i < (int)paramList.size(); ++i)   // 原版这一步没夹边界, 这里补上
+    {
+        if (paramList[i].vaild)
+            var |= (1u << (i - s));
+    }
+
+    if (var != 0)
+        var |= (1u << 31);                  // bit31 = "后面还有 bitMap"
+    return var;
+}
+
+void StruSetStepInfo::setBitmap(int index, uint32_t bitmap)
+{
+    const int s = index * 32;
+    for (int i = s; i < s + 31 && i < (int)paramList.size(); ++i)   // 只取低 31 位(bit31 是标志)
+        paramList[i].vaild = ((bitmap & (1u << (i - s))) != 0);
+}
+
+JZByteArray StruSetStepInfo::pack() const
+{
+    // ---- body: bitMap[..] + 按位序排的有效参数 ----
+    ByteWriter body;
+
+    uint32_t bit_map[12] = { 0 };
+    int max_idx = 0;
+    for (int i = 0; i < 12; ++i)
+    {
+        bit_map[i] = getBitmap(i);
+        ++max_idx;
+        if (bit_map[i] == 0)
+            break;                          // 遇到 0 结束(与 unpack 对称)
+    }
+    for (int i = 0; i < max_idx; ++i)
+        body.u32(bit_map[i]);
+
+    const int param_count = ((int)paramList.size() < max_idx * 32) ? (int)paramList.size() : max_idx * 32;
+    for (int i = 0; i < param_count; ++i)
+    {
+        if (i % 32 == 31)
+            continue;                       // bit31 是标志位, 不携带数据
+        if (!paramList[i].vaild)
+            continue;
+
+        const StruSetStepParam& p = paramList[i];
+        if (isReserved(i))
+        {
+            body.i32((int32_t)p.i64);       // 预留参数: 4 字节整数, **没有**运算符
+            continue;
+        }
+
+        body.u8(p.op);                      // 其它参数: 运算符 + 值
+        if (isVolt(i))
+            body.u32(DataTrans::toVoltageUnit(p.num));
+        else if (isCurrent(i))
+            body.u32(DataTrans::ElectricUnit(p.num));
+        else if (isTemp(i))
+            body.u32(DataTrans::toTempUnit(p.num));
+        else if (isCapacity(i))
+            body.i64(DataTrans::toCapUnit(p.num));
+        else if (isTime64(i))
+            body.i64(p.i64);
+        else if (isInt32(i))
+            body.i32((int32_t)p.i64);
+        else
+            body.u32(0);                    // 未分类参数: 占位(原版这里 Q_ASSERT(0); 骨架还没用到)
+    }
+
+    // ---- 包头 + body + crc32 ----
+    const JZByteArray b = body.data();
+
+    ByteWriter out;
+    out.u16((uint16_t)(b.size() + 10));     // 长度: 6 字节包头 + 4 字节 crc
+    out.u16(StepLine);
+    out.u8(StepID);
+    out.u8(StepType);
+    out.raw(b.data(), b.size());
+
+    out.u32(crc32((const uint8_t*)out.data().data(), out.data().size()));   // crc 覆盖包头 + body
+    return out.data();
+}
+
+bool StruSetStepInfo::unpack(const JZByteArray& stepPack)
+{
+    const int head_size = 6;                // 长度 + 工步行号 + 工步号 + 工步类型
+    const int crc_size = 4;
+    if (stepPack.size() < head_size + crc_size)
+        return false;
+
+    uint32_t crc = 0;
+    memcpy(&crc, stepPack.data() + stepPack.size() - crc_size, crc_size);
+    if (crc != crc32((const uint8_t*)stepPack.data(), stepPack.size() - crc_size))
+        return false;
+
+    ByteReader in(stepPack);
+    const uint16_t packLen = in.u16();
+    if (packLen != (uint16_t)stepPack.size())
+        return false;
+
+    StepLine = in.u16();
+    StepID   = in.u8();
+    StepType = in.u8();
+
+    clearParams();
+
+    uint32_t bit_map[12] = { 0 };
+    int max_idx = 0;
+    for (int i = 0; i < 12; ++i)
+    {
+        bit_map[i] = in.u32();
+        ++max_idx;
+        if (bit_map[i] == 0)
+            break;
+    }
+    for (int i = 0; i < max_idx; ++i)
+        setBitmap(i, bit_map[i]);
+
+    const int param_count = ((int)paramList.size() < max_idx * 32) ? (int)paramList.size() : max_idx * 32;
+    for (int i = 0; i < param_count; ++i)
+    {
+        if (i % 32 == 31)
+            continue;
+        if (!paramList[i].vaild)
+            continue;
+
+        StruSetStepParam& p = paramList[i];
+        if (isReserved(i))
+        {
+            p.i64 = in.i32();
+            continue;
+        }
+
+        p.op = in.u8();
+        if (isVolt(i))
+            p.num = DataTrans::fromVoltageUnit(in.i32());
+        else if (isCurrent(i))
+            p.num = DataTrans::fromElectricUnit(in.i32());
+        else if (isTemp(i))
+            p.num = DataTrans::fromTempUnit((int16_t)in.i32());
+        else if (isCapacity(i))
+            p.num = DataTrans::fromCapUnit(in.i64());
+        else if (isTime64(i))
+            p.i64 = in.i64();
+        else if (isInt32(i))
+            p.i64 = in.i32();
+        else
+            in.u32();
+    }
+
+    return in.ok();
+}
+
+// ---- StruSetStep76Ex ----
+
+StruSetStep76Ex::StruSetStep76Ex()
+{
+    memset(Guid, 0, sizeof(Guid));
+    memset(ChannelID, 0, sizeof(ChannelID));
+}
+
+void StruSetStep76Ex::setChannel(int idx)
+{
+    if (idx < 0 || idx >= 64)
+        return;
+    ChannelID[idx / 8] |= (uint8_t)(1u << (idx % 8));    // 低位起(与 packChannelMask 同口径)
+}
+
+void StruSetStep76Ex::clearChannel()
+{
+    memset(ChannelID, 0, sizeof(ChannelID));
+}
+
+void StruSetStep76Ex::updateStepLine()
+{
+    for (size_t i = 0; i < stepList.size(); ++i)
+    {
+        stepList[i].StepLine = (uint16_t)(i + 1);
+        stepList[i].StepID   = (uint8_t)(i + 1);
+    }
+}
+
+void StruSetStep76Ex::genDefaultStep()
+{
+    // 照原版 PackDefine::genDefaultStep(): 6 个工步
+    // 恒流恒压充电 -> 静置 -> 恒流放电 -> 静置 -> 补电(恒流恒压) -> 停止
+    stepList.clear();
+
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_7;                            // 恒流恒压充电
+        step.setParam(PARAM_Current, OP_SMALL_EQU, 3);
+        step.setParam(PARAM_StopCurrent, OP_BIG_EQU, 0.5);
+        step.setParam(PARAM_Voltage, OP_SMALL_EQU, 4.2);
+        step.setParamI64(PARAM_ReservedParam1, OP_EQU, 0x41);
+        step.setParam(PARAM_ProtectVoltageLower, OP_BIG_EQU, 2.4);
+        step.setParam(PARAM_ProtectVoltageUpper, OP_SMALL_EQU, 4.3);
+        stepList.push_back(step);
+    }
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_IDLE;                         // 静置
+        step.setParamI64(PARAM_Time, OP_BIG_EQU, 3 * 60 * 1000);
+        step.setParamI64(PARAM_ReservedParam1, OP_EQU, 0x41);
+        stepList.push_back(step);
+    }
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_2;                            // 恒流放电
+        step.setParam(PARAM_Current, OP_SMALL_EQU, 10);
+        step.setParam(PARAM_StopVoltage, OP_BIG_EQU, 3);
+        step.setParamI64(PARAM_ReservedParam1, OP_EQU, 0x41);
+        stepList.push_back(step);
+    }
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_IDLE;                         // 静置
+        step.setParamI64(PARAM_Time, OP_BIG_EQU, 3 * 60 * 1000);
+        step.setParamI64(PARAM_ReservedParam1, OP_EQU, 0x41);
+        stepList.push_back(step);
+    }
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_7;                            // 补电(恒流恒压)
+        step.setParam(PARAM_Current, OP_SMALL_EQU, 3);
+        step.setParam(PARAM_StopCurrent, OP_BIG_EQU, 0.5);
+        step.setParam(PARAM_Voltage, OP_SMALL_EQU, 3.7);
+        step.setParamI64(PARAM_ReservedParam1, OP_EQU, 0x41);
+        stepList.push_back(step);
+    }
+    {
+        StruSetStepInfo step;
+        step.StepType = STEP_TYPE_STOP;                         // 停止
+        stepList.push_back(step);
+    }
+
+    updateStepLine();
+}
+
+JZByteArray StruSetStep76Ex::pack() const
+{
+    ByteWriter out;
+    out.raw(Guid, 16);
+    out.raw(ChannelID, 8);
+
+    // 先各工步单独打包, 顺便累计"工步文件总长"(原版 StepFileLen)
+    int stepFileLen = 0;
+    std::vector<JZByteArray> packs;
+    for (size_t i = 0; i < stepList.size(); ++i)
+    {
+        const JZByteArray one = stepList[i].pack();
+        stepFileLen += one.size();
+        packs.push_back(one);
+    }
+
+    out.i32(stepFileLen);
+    out.u16((uint16_t)stepList.size());
+    out.u8(0x02);        // DataEndFlag: 0x02 = 后面没有了(传输完毕)
+    out.u16(0x1);        // DataIndex: 分包索引号, 第一包 = 1
+
+    for (size_t i = 0; i < packs.size(); ++i)
+        out.raw(packs[i].data(), packs[i].size());
+
+    return out.data();
+}
+
+bool StruSetStep76Ex::unpack(const JZByteArray& body)
+{
+    const int head_size = 16 + 8 + 4 + 2 + 1 + 2;
+    if (body.size() < head_size)
+        return false;
+
+    ByteReader in(body);
+
+    const JZByteArray guid = in.raw(16);
+    const JZByteArray ch = in.raw(8);
+    if (guid.size() < 16 || ch.size() < 8)
+        return false;
+    memcpy(Guid, guid.data(), 16);
+    memcpy(ChannelID, ch.data(), 8);
+
+    in.i32();               // StepFileLen: 不是解析必需(每个工步包自己带长度), 跳过
+    const uint16_t stepCount = in.u16();
+    in.u8();                // DataEndFlag
+    in.u16();               // DataIndex
+
+    stepList.clear();
+    for (int i = 0; i < stepCount && in.ok(); ++i)
+    {
+        // 单工步包自带长度(前 2 字节, 小端), 先读它再取整包 —— ByteReader 没有 peek, 只能这样
+        const JZByteArray head = in.raw(2);
+        if (head.size() < 2)
+            break;
+
+        const uint16_t len = (uint16_t)(uint8_t(head.data()[0])
+                                        | ((uint16_t)uint8_t(head.data()[1]) << 8));
+        if (len < 10 || len > (uint16_t)in.left() + 2)
+            break;
+
+        const JZByteArray rest = in.raw(len - 2);
+        if (rest.size() != len - 2)
+            break;
+
+        JZByteArray one = head;
+        one.append(rest.data(), rest.size());
+
+        StruSetStepInfo st;
+        if (!st.unpack(one))
+            break;
+        stepList.push_back(st);
+    }
+
+    return in.ok();
+}
+
+JZByteArray packSetStep76Ex(const StruSetStep76Ex& step, uint8_t deviceId, uint8_t subDevId)
+{
+    PackInfo info;
+    info.DeviceID = deviceId;
+    info.SubDevID = subDevId;
+    info.CmdID    = BTS_CMD_SET_STEP76_Ex;
+    info.Result   = 0;
+
+    return packFrame(info, step.pack());
 }

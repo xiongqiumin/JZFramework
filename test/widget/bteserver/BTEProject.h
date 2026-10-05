@@ -7,8 +7,9 @@
 // 原版 BTEProject 管四样东西: ① 每台设备的配置(DeviceData: 量程/并联/工步/显示设置)
 // ② 每台设备一个记录库(BTERecordDataBase) ③ 分选模板(SplitInfo) ④ 工程落盘(save/load)。
 // 这里照搬这个形状, 差异:
-//   * BTEStepInfo 里的工步报文(stru_BTS_CMD_SET_STEP76_Ex)还没搬 ⇒ stepList 只留"谁建的/
-//     电池编号/批号/备注"这些元信息;
+//   * BTEStepInfo 的工步报文(stru_BTS_CMD_SET_STEP76_Ex)已搬: 记录库把工步一起序列化了
+//     (见 BTERecordDataBase 的 writeStep76Ex); 但本类落盘的 project.dat 里**还没写**它
+//     —— 工程文件目前只存元信息 + 设备清单, 要补时照记录库那段追加到末尾即可;
 //   * 工程落盘用 ByteWriter 写一份简单的 project.dat(原版用 QDataStream + 备份/恢复机制);
 //   * startRecords/pauseRecords/resumeRecord 这些"记录生命周期"接口保留, 但内部只做
 //     "归档 + 清实时表"两步(原版还负责断电续跑的 restore/backup, 那部分等工步一起补)。
@@ -115,7 +116,9 @@ public:
     // 载入记录的数据点(默认只有 info, 数据是懒加载的)
     bool loadRecordData(const std::string& deviceId, BTERecordPtr record);
 
-    // 恒流比 Qcc/(Qcc+Qcv)*100%(原版 calcCCRatio): 要整段充电工步的数据, 工步还没搬 ⇒ 返回 0
+    // 恒流比 Qcc/(Qcc+Qcv)*100%(原版 calcCCRatio)。
+    // ⚠ 现在返回 0: 工步报文与类型表(PackDefine::StepChargeType)都已经有了, 缺的是
+    //   "记录级工步 -> 充电段区间"这条接入(原版取最后一段充电工步, 按充/恒压分段算容量)。
     static double calcCCRatio(const BTERecord& record);
 
 private:

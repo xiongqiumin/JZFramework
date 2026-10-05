@@ -30,6 +30,27 @@ double fromEngUnit(int64_t var)
     return var / 3600.0 / 10000.0;
 }
 
+// ---- 下发用(工步): 与上面 from* 严格互逆; 取整照原版(截断) ----
+uint32_t toVoltageUnit(double var)
+{
+    return (uint32_t)(var * 10000.0);
+}
+
+uint32_t ElectricUnit(double var)
+{
+    return (uint32_t)(var * 10000.0);
+}
+
+uint32_t toTempUnit(double var)
+{
+    return (uint32_t)(var * 10.0);
+}
+
+int64_t toCapUnit(double var)
+{
+    return (int64_t)(var * 3600.0 * 10000.0);
+}
+
 std::string fromTimeUnitSec(int64_t var)
 {
     if (var < 0)

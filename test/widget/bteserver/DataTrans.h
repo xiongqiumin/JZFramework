@@ -23,6 +23,13 @@ double fromTempUnit(int16_t var);       // 0.1℃ -> ℃
 double fromCapUnit(int64_t var);        // -> Ah
 double fromEngUnit(int64_t var);        // -> Wh
 
+// ---- 下发用(工步 SET_STEP76_Ex): 工程值 -> 协议里的"扩倍整数" ----
+// 命名照原版(电流那个原版就没有 to 前缀); 取整方式也照原版 = **截断**(不是四舍五入)。
+uint32_t toVoltageUnit(double var);     // V  -> ×10000
+uint32_t ElectricUnit(double var);      // A  -> ×10000
+uint32_t toTempUnit(double var);        // ℃ -> ×10
+int64_t  toCapUnit(double var);         // Ah -> ×3600×10000
+
 // 原版 fromTimeUnitSec(uint32_t var): ms -> "HH:MM:SS"(小时可以超过 24, 不拆成天数)
 std::string fromTimeUnitSec(int64_t var);
 

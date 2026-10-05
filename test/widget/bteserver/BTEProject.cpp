@@ -305,8 +305,9 @@ int BTEProject::record(const std::string& deviceId, int itemIndex,
     rec->info.recordTimeEnd = data.timeMSec();
 
     // 派生量(原版在 dataCache 里维护, 分选/导出要用):
-    //   ⚠ 原版按"充/放电工步"区分(PackDefine::StepChargeType), 工步类型表还没搬 ⇒
-    //     这里一律按放电记, 等工步表补上再改成按工步判。
+    //   ⚠ 原版按"充/放电工步"区分(PackDefine::StepChargeType —— 这张表骨架早就有);
+    //     这里一律按放电记, 缺的是"通道当前处于哪个工步"这条数据(要等记录级工步接入,
+    //     见 calcCCRatio 的说明)。
     rec->info.dataCache.endDisCap = DataTrans::fromCapUnit(data.DisChargeCap);
     rec->info.dataCache.endDisEng = DataTrans::fromEngUnit(data.DisChargeEng);
     rec->info.dataCache.midDisVoltage = DataTrans::fromVoltageUnit(data.Voltage);
@@ -397,8 +398,9 @@ void BTEProject::deleteRecords(const std::string& deviceId, const std::vector<in
 
 double BTEProject::calcCCRatio(const BTERecord& record)
 {
-    // 原版: 取最后一段充电工步的数据, 恒流段容量 / (恒流+恒压)容量 * 100
-    // 工步类型表(StepChargeType)还没搬 ⇒ 先返回 0(见头文件注释)
+    // 原版: 取最后一段充电工步的数据, 恒流段容量 / (恒流+恒压)容量 * 100。
+    // 工步报文(记录里已有 stepInfo.step)与类型表(PackDefine::StepChargeType, 骨架早就搬了)
+    // 都齐了; 还没接的是"按充电段切 dataCache/dataList"这一步 ⇒ 先返回 0(见头文件注释)。
     (void)record;
     return 0.0;
 }

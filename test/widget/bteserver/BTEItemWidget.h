@@ -5,6 +5,7 @@
 #include "JZSignal.h"
 #include "JZFont.h"
 #include "JZColor.h"
+#include "JZPoint.h"
 #include "PackDefine.h"    // stru_BTS_CMD_SEND_RTDATA76(卡片吃实时帧)
 
 #include <string>
@@ -71,9 +72,16 @@ jz_signals:
     JZSigVoid sigClicked;      // 左键点卡片(骨架用于右键菜单定位, 原版没有)
     JZSigBool sigToggled;      // 勾选态变化(带新值)
 
+    // 按下后拖出自身超过 40px(原版 BTEServer::mouseMoveEvent 的阈值)= 用户想框选。
+    // 参数是**按下点的屏幕坐标**(选择框起点要用, 见 BTERubberBand::begin)。
+    // 原版靠事件冒泡把拖拽交给主窗口; 引擎的鼠标事件不冒泡(单一命中控件直投),
+    // 所以卡片主动报出来, 由窗口开始框选(见 BTEServer::initRubberBand)。
+    JZSignal<JZPoint> sigRubberStart;
+
 protected:
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
+    void mouseMoveEvent(JZMouseEvent* event) override;
     void mouseReleaseEvent(JZMouseEvent* event) override;
 
 private:
@@ -93,6 +101,11 @@ private:
 
     bool m_mouseDown = false;
     bool m_checked = false;
+
+    // ---- 框选拖拽 (见 sigRubberStart) ----
+    JZPoint m_pressGlobal;          // 按下点(屏幕坐标): 判"拖出 40px"用
+    int     m_pressButton = 0;      // 按下的键(JZMouseEvent::Button): 只有左键能起框选
+    bool    m_dragged = false;      // 本次按下是否已判为拖拽(拖过就不当点击处理)
     int  m_scale = 1;
     int  m_baseWidth = 170;
     int  m_baseHeight = 272;

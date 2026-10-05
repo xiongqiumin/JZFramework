@@ -26,7 +26,11 @@ bool JZCheckbox::isChecked() const
 
 void JZCheckbox::setChecked(bool on)
 {
+    if (m_checked == on)
+        return;
     m_checked = on;
+    update();
+    notifyButtonGroupChecked();
 }
 
 JZSize JZCheckbox::sizeHint() const
@@ -81,7 +85,9 @@ void JZCheckbox::mouseReleaseEvent(JZMouseEvent* event)
     m_pressed = false;
     if (!wasPressed)
         return;
+    notifyButtonGroupClicked();
+    if (m_checked && buttonGroupExclusive())
+        return;                   // 互斥组内不能由用户取消当前选中项 (Qt 语义)
     setChecked(!m_checked);
-    update();
     sigToggled.emit(m_checked);
 }

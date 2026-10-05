@@ -6,6 +6,7 @@
 #include "JZDebug.h"
 #include "JZLayout.h"
 #include "JZLineEdit.h"
+#include "JZButtonGroup.h"
 
 // 主窗口尺寸 (原 lv_obj 百分比由固定像素近似)
 static constexpr int kW = 800;
@@ -622,15 +623,25 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
-    // ---- RadioButton ----
+    // ---- RadioButton (+ JZButtonGroup 互斥) ----
     {
         JZWidget* page = makePage();
         JZRadioButton* r1 = new JZRadioButton("Option A", page);
         JZRadioButton* r2 = new JZRadioButton("Option B", page);
+        JZRadioButton* r3 = new JZRadioButton("Option C", page);
         connect(&r1->sigToggled, this, &MainWindow::onLogVoid);
         connect(&r2->sigToggled, this, &MainWindow::onLogVoid);
+
+        // 三个单选钮编成一组: 组内互斥 —— 选任一项自动取消其余 (JZButtonGroup)
+        JZButtonGroup* group = new JZButtonGroup(page);
+        group->addButton(r1, 0);
+        group->addButton(r2, 1);
+        group->addButton(r3, 2);
+        connect(&group->sigIdClicked, this, &MainWindow::onLogInt);
+
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(r1);
         static_cast<JZVBoxLayout*>(page->layout())->addWidget(r2);
+        static_cast<JZVBoxLayout*>(page->layout())->addWidget(r3);
         m_preview->addWidget(page);
     }
 

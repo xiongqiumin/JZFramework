@@ -10,8 +10,9 @@
 // (record_real_table_%d) 给正在跑的通道用。这里照搬**这套表结构与接口**, 差异:
 //   * QDataStream -> ByteWriter/ByteReader(PackDefine.h 里那对小游标);
 //   * 压缩(zip_mem/unzip_mem, 原版来自 zlib)先不做 —— blob 直接存, 注释里记着;
-//   * BTEStepInfo 原版还带 stru_BTS_CMD_SET_STEP76_Ex step(下发的工步内容),
-//     工步报文还没搬 ⇒ 先不进序列化, 只在注释里记"这一段等工步一起补"。
+//   * BTEStepInfo 的 step(下发的工步内容, stru_BTS_CMD_SET_STEP76_Ex)已经搬过来了,
+//     序列化方式见 .cpp 的 writeStep76Ex/readStep76Ex(只存有效参数 + 64 位位图,
+//     与原版"节省空间只保存有效数据"同一思路; 追加在 writeRecordInfo 末尾以兼容旧数据)。
 //   * sqlite3 用的是引擎自带的 amalgamation(JZDatabase/sqlite3.c, 已编进 JZFramework)。
 // ---------------------------------------------------------------------------
 
@@ -35,8 +36,10 @@ struct BTEStepInfo
     std::string cellNo;               // 电池编号
     std::string memo;                 // 备注
 
-    // ⚠ 原版这里还有 stru_BTS_CMD_SET_STEP76_Ex step(真正下发的工步内容);
-    //   SET_STEP76_Ex 是变长结构、还没搬 ⇒ 现在不序列化它(见 .cpp 的 TODO)。
+    // 真正下发的工步内容(原版同名字段)。
+    // 序列化: **追加在 writeRecordInfo 的末尾**(它后面还有 dataCache, 放这里会插到中间);
+    // 读的时候用 ByteReader::left() 判断有没有这一段 —— 旧库文件没有, 照样能读。
+    StruSetStep76Ex step;
 };
 
 // BTERecordInfo(一条测试记录的信息; 不含数据点)

@@ -18,7 +18,9 @@
 #include "HelpDialog.h"      // 菜单"关于"(原版同款; DeviceMacDialog 那条件在源码里是注释掉的, 没挂)
 #include "JZMenu.h"
 #include "JZAction.h"
+#include "JZApplication.h"   // jzApp->applicationDirPath(): 工程目录默认放 exe 同级
 #include "JZDialog.h"
+#include "StepSettingDialog.h"   // 工步设置(原版同名对话框)
 #include "JZCheckbox.h"
 #include "JZComboBox.h"
 #include "JZDateTime.h"
@@ -29,6 +31,8 @@
 #include "JZTimer.h"
 #include "JZTcpServer.h"
 #include "JZTcpSocket.h"
+#include "BTERubberBand.h"   // 框选选择层(原版 m_selectWidget 的等价物)
+#include "JZKeyEvent.h"      // CtrlModifier: 框选按 Ctrl = 追加
 
 #include <algorithm>
 #include <cstdlib>
@@ -55,10 +59,65 @@ void logLine(const std::string& line)
 
 // 取当前设备项的 netId(定义在下面, 这里先声明: 右键菜单要用)
 int curNetId(JZListWidget* list);
+// 按 netId 取设备(定义在网络段; 快捷键/清除报警等更早的地方也要用)
+DeviceInfo* deviceOf(BTEServer& ui, int netId);
+// 框选: 卡片报"被拖出自身"后由它铺开选择层 + 抓鼠标(定义在 initChannelGrid 之后)
+void beginRubberSelect(BTEServer& ui, const JZPoint& originGlobal);
+// 工步下发(卡片右键"工步设置..." -> StepSettingDialog -> 按子设备组包下发)
+void openStepSetting(BTEServer& ui);
+int  submitStepSetting(BTEServer& ui, DeviceInfo& dev, const std::vector<int>& channels);
 // 设备列表重建(定义在下面; 网络回调要在建会话时就刷一次列表)
 void rebuildDeviceList(BTEServer& ui);
 // 下面三个在网络段(定义在右键菜单之后, 这里先声明: 菜单里的"改 IP"要发包)
 DeviceInfo*  deviceOf(BTEServer& ui, int netId);
+
+// ---------------------------------------------------------------------------
+// 报警状态 / 卡片可见性 (定义放这里: rebuildDeviceList 与刷新报警都要用)
+// ---------------------------------------------------------------------------
+
+// 有没有"未确认的报警"(原版 hasAlarm): 任一**在线**设备上存在 alarmFlag 置位且未被确认的通道
+bool anyAlarm(const BTEServer& ui)
+{
+    for (size_t i = 0; i < ui.devices.size(); ++i)
+    {
+        const DeviceInfo& d = ui.devices[i];
+        if (!d.online)
+            continue;
+
+        for (int k = 0; k < MAX_DEVICE_ITEM; ++k)
+        {
+            if (d.alarmFlag[k] && !d.alarmClearFlag[k])
+                return true;
+        }
+    }
+    return false;
+}
+
+// "清除报警"按钮只在真有报警时露出来(没报警时它没意义, 底行按钮也够挤了)
+void updateClearAlarmButton(BTEServer& ui)
+{
+    if (ui.btnClearAlarm)
+        ui.btnClearAlarm->setVisible(anyAlarm(ui));
+}
+
+// 通道卡片的可见数量 —— 按**当前选中设备**的启用通道数(原版 DeviceData::enableItem)。
+//   · 没设备 / 选中的是离线项 ⇒ 一张都不显示。原版构造里所有卡片就是 setVisible(false),
+//     设备连上以后才按数量挨个显示 —— 骨架原先写死"先亮第一组", 于是没设备也满屏卡片。
+//   · 设备在但没报通道数 ⇒ 按一组(MAX_CHANNEL_NUM)显示, 与 applyDeviceInfo 同一口径。
+void updateChannelCardVisibility(BTEServer& ui)
+{
+    int show = 0;
+
+    const DeviceInfo* d = deviceOf(ui, curNetId(ui.listWidget));
+    if (d && d->online)
+    {
+        show = (d->channelNum > 0 && d->channelNum <= MAX_DEVICE_ITEM)
+               ? d->channelNum : MAX_CHANNEL_NUM;
+    }
+
+    for (int i = 0; i < (int)ui.channelCards.size(); ++i)
+        ui.channelCards[i]->setVisible(i < show);
+}
 JZTcpSocket* socketOf(BTEServer& ui, int netId);
 void sendFrame(BTEServer& ui, JZTcpSocket* sock, const PackInfo& info,
                const JZByteArray& body);
@@ -345,6 +404,8 @@ void initChannelCardMenu(BTEServer& ui, BTEItemWidget* card)
     menu->addAction("停止", [runCmd]() { runCmd(BTS_CMD_STOP, "停止"); });
     menu->addAction("接续", [runCmd]() { runCmd(BTS_CMD_RESUME, "接续"); });
     menu->addAction("工步跳转", [runCmd]() { runCmd(BTS_CMD_STEP_JUMP, "工步跳转"); });
+    // 原版 onBTEItemMenu 里的"工步设置": 弹 StepSettingDialog, 确定后按选中通道下发
+    menu->addAction("工步设置...", [&ui]() { openStepSetting(ui); });
     menu->addAction("清除报警", [&ui]() {
         const int n = clearAlarmAll(ui);
         logLine("[报警] 一键清除 " + std::to_string(n) + " 条");
@@ -370,6 +431,131 @@ void initChannelCardMenu(BTEServer& ui, BTEItemWidget* card)
 // 骨架差异(明说): 原版一开始把所有卡片藏起来, 等设备连上按 enableItem 逐个显示; 这里先亮
 // 第一组(一行 8 张)好让界面能看。卡片上的数值由实时帧(RTDATA76)填, 见 applyRtData()。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 工步下发(原版 onBTEItemMenu 里"工步设置"那一段: StepSettingDialog -> createPackList ->
+// sendStepPack 入队发送)
+//
+// 与原版的差异(明说):
+//   · 原版工步存在**工程**的 DeviceData 里(stepList / startStepIndex), 骨架先挂在 DeviceInfo
+//     上(见 BTEServer.h), 语义一样: 每台设备一份, 改过之后下次打开还是它;
+//   · 原版按子设备组包后**入队 + 节流串行发**(stepPackList / sendStepPack, 靠回执出队);
+//     骨架直接按子设备各发一帧 —— 工步包才几百字节, 不需要节流。
+// 分组口径与原版 createPackList 一致: 每 MAX_CHANNEL_NUM(8) 路是一个子设备,
+// 组内在包里的通道位图 = idx % 8(低位起)。
+// ---------------------------------------------------------------------------
+// 内部实现(匿名命名空间里: 只在本 TU 用); 对外的 submitStepSetting 是文件后半段的薄壳,
+// 方便自检跨 TU 调 —— 见 BTEServer.h 的声明。
+int submitStepSettingInternal(BTEServer& ui, DeviceInfo& dev, const std::vector<int>& channels)
+{
+    std::vector<int> bySub[MAX_SUB_DEVICE];
+    for (size_t i = 0; i < channels.size(); ++i)
+    {
+        const int idx = channels[i];
+        if (idx < 0 || idx >= MAX_DEVICE_ITEM)
+            continue;
+        bySub[idx / MAX_CHANNEL_NUM].push_back(idx);
+    }
+
+    JZTcpSocket* sock = socketOf(ui, dev.netId);
+    int sent = 0;
+
+    for (int sub = 0; sub < MAX_SUB_DEVICE; ++sub)
+    {
+        if (bySub[sub].empty())
+            continue;
+
+        StruSetStep76Ex one = dev.stepTemplate;      // 同一份工步, 只换通道位图
+        one.clearChannel();
+        for (size_t k = 0; k < bySub[sub].size(); ++k)
+            one.setChannel(bySub[sub][k] % MAX_CHANNEL_NUM);
+
+        PackInfo info;
+        info.DeviceID = dev.deviceId;
+        info.SubDevID = (uint8_t)sub;
+        info.CmdID    = BTS_CMD_SET_STEP76_Ex;
+        info.Result   = 0;
+
+        sendFrame(ui, sock, info, one.pack());       // sendFrame 里自带记录 + 日志
+        ++sent;
+    }
+
+    // 下发工步 = 新一轮测试: 报警确认标志复位(原版下发后同样要复位, 否则上一轮的"已确认"会带过来)
+    for (int k = 0; k < MAX_DEVICE_ITEM; ++k)
+        dev.alarmClearFlag[k] = 0;
+
+    return sent;
+}
+
+void openStepSetting(BTEServer& ui)
+{
+    const std::vector<int> channels = checkedChannels(ui);
+    if (channels.empty())
+    {
+        logLine("[工步] 没选中通道(先点选或框选卡片)");
+        return;
+    }
+
+    DeviceInfo* dev = deviceOf(ui, curNetId(ui.listWidget));
+    if (!dev || !dev->online)
+    {
+        logLine("[工步] 设备不在线, 不能下发");
+        return;
+    }
+
+    if (dev->stepTemplate.stepList.empty())
+        dev->stepTemplate.genDefaultStep();          // 还没有工步 ⇒ 默认模板(原版取工程里的 stepList)
+
+    StepSettingDialog dlg(ui.main);
+    dlg.startStepIndex = dev->startStepIndex;
+    dlg.setStep(dev->stepTemplate);                  // 回填界面
+    if (dlg.exec() != JZDialog::Accepted)
+        return;                                      // 取消: 什么都不改
+
+    // 界面值 -> 工步(uiToStep 在 accept 之前已经跑过), 记回设备
+    dev->stepTemplate = dlg.step();
+    dev->startStepIndex = dlg.startStepIndex;
+
+    const int n = submitStepSettingInternal(ui, *dev, channels);
+
+    logLine("[工步] 已下发 " + std::to_string(n) + " 个子设备包; 通道 "
+            + std::to_string(channels.size()) + " 个, 起始工步 "
+            + std::to_string(dlg.startStepIndex) + ", 创建者 " + dlg.creator
+            + ", 批号 " + dlg.cellBatch);
+}
+
+// ---------------------------------------------------------------------------
+// 快捷键(原版 BTEServer::initShortCuts, 构造函数 :142 调用):
+//     QShortcut *selectAll = new QShortcut(QKeySequence("Ctrl+A"), this);
+//     connect(selectAll, SIGNAL(activated()), this, SLOT(onBTEItemSelectAll()));
+// 引擎的等价物 = **动作快捷键分发**: JZAction 设 shortcut + addAction 到窗口, 按键时由
+// JZWindow::dispatchShortcut 匹配并 trigger()(见 JZWindow.cpp / JZKeySequence)。
+// 它排在"焦点控件链上没人处理该按键"之后, 所以输入框里的 Ctrl+A(全选文本)照旧归输入框
+// —— 与 Qt 用 ShortcutOverride 达到的效果一致。
+// ---------------------------------------------------------------------------
+void initShortCuts(BTEServer& ui)
+{
+    if (!ui.main)
+        return;
+
+    JZAction* selectAll = new JZAction(ui.main);     // 挂在窗口下: 随窗口一起析构
+    selectAll->setObjectName("actSelectAllCards");   // 自动化(MCP ui_invoke 按 #viewId 找)用
+    selectAll->setShortcut("Ctrl+A");
+
+    connect(&selectAll->triggered, [&ui]() {
+        // 原版 onBTEItemSelectAll(): 该设备**启用的通道**全选, 其余取消勾选
+        const DeviceInfo* d = deviceOf(ui, curNetId(ui.listWidget));
+        const int enable = (d && d->channelNum > 0 && d->channelNum <= MAX_DEVICE_ITEM)
+            ? d->channelNum : MAX_CHANNEL_NUM;
+
+        for (int i = 0; i < (int)ui.channelCards.size(); ++i)
+            ui.channelCards[i]->setCheck(i < enable);
+
+        logLine("[快捷键] Ctrl+A: 已全选 " + std::to_string(enable) + " 个通道");
+    });
+
+    ui.main->addAction(selectAll);
+}
+
 void initChannelGrid(BTEServer& ui)
 {
     if (!ui.itemWidgets)
@@ -396,20 +582,126 @@ void initChannelGrid(BTEServer& ui)
         char chbuf[16];
         snprintf(chbuf, sizeof(chbuf), "%d - %d", row + 1, col + 1);
         card->setChannelText(chbuf);
-        card->setVisible(i < MAX_CHANNEL_NUM);   // 骨架: 先显示第一组(原版是按设备在线情况显示)
+        // 原版构造: 先全部藏起来, 等设备连上按它的通道数逐个显示(见 updateChannelCardVisibility)。
+        // 骨架原来写死"先亮第一组", 于是没设备也满屏卡片 —— 那是假的。
+        card->setVisible(false);
 
         grid->addWidget(card, row, col);
 
-        connect(&card->sigToggled, [card](bool on) {
-            logLine("[卡片] " + card->channelText() + (on ? " 选中" : " 取消选中"));
+        // 单击 = **单选**(原版 onBTEItemChecked: 只在"变选中"时清掉其它卡片)。
+        // 带 Ctrl 时卡片自己取反、不发信号, 所以不会走到这里; 框选也不发信号(见
+        // selectCardsInRect), 于是框选出来的多选不会被这里冲掉 —— 与原版同一套分工。
+        connect(&card->sigToggled, [&ui, card](bool on) {
+            if (on)
+            {
+                for (size_t i = 0; i < ui.channelCards.size(); ++i)
+                {
+                    if (ui.channelCards[i] != card)
+                        ui.channelCards[i]->setCheck(false);
+                }
+            }
+
+            logLine("[卡片] " + card->channelText() + (on ? " 选中(单选, 已清其它)" : " 取消选中"));
         });
 
         initChannelCardMenu(ui, card);      // 原版: onBTEItemMenu(启动/停止/接续/跳步...)
+
+        // 框选: 卡片被拖出自身 40px 就交给选择层(原版是主窗口的 mouseMove 干的; 引擎里
+        // 鼠标事件不冒泡, 所以改由卡片上报按下点 —— 见 BTEItemWidget::sigRubberStart)
+        connect(&card->sigRubberStart, [&ui](JZPoint originGlobal) {
+            beginRubberSelect(ui, originGlobal);
+        });
 
         ui.channelCards.push_back(card);
     }
 
     ui.itemWidgets->setLayout(grid);
+
+    updateChannelCardVisibility(ui);   // 建完先按当前设备刷一遍(没设备 ⇒ 全隐藏)
+}
+
+// ---------------------------------------------------------------------------
+// 框选 (原版 BTEServer::mousePress/Move/ReleaseEvent 里的 m_selectWidget 那套)
+//
+// 引擎的鼠标事件**不沿父链冒泡**, 也没有"父窗口接管子控件拖拽"的机制, 所以链路改成:
+//   卡片被拖出 40px → sigRubberStart(按下点屏幕坐标)
+//     → beginRubberSelect(): 选择层铺满卡片区域 + 显示 + **窗口 grabMouse**
+//       → BTERubberBand 自绘选择框(2px 浅黄边, 原版样式)
+//         → 松开 → sigSelected(modifiers) → selectCardsInRect() 判命中 → 解除抓取
+// 命中判定与原版一致(卡片 mapTo 主窗口后 intersects), Ctrl = 追加, 不按 = 先清空其它。
+// ---------------------------------------------------------------------------
+
+// 把选择框内的可见卡片勾上(原版 mouseReleaseEvent 里的循环)。append = 松开时按着 Ctrl。
+void selectCardsInRect(BTEServer& ui, const JZRect& sel, bool append)
+{
+    if (!ui.main)
+        return;
+
+    bool first = true;
+    int  hits = 0;
+
+    for (size_t i = 0; i < ui.channelCards.size(); ++i)
+    {
+        BTEItemWidget* card = ui.channelCards[i];
+        if (!card || !card->isVisible())
+            continue;                          // 原版: 跳过隐藏的卡片
+
+        const JZRect r = card->mapTo(ui.main, JZRect(0, 0, card->rect().width(), card->rect().height()));
+        if (!sel.intersects(r))
+            continue;
+
+        if (first && !append)
+        {
+            // 不按 Ctrl = 替换语义: 先清掉其它卡片(原版把 m_itemList 里别的全 setCheck(false))
+            for (size_t j = 0; j < ui.channelCards.size(); ++j)
+            {
+                if (ui.channelCards[j] != card)
+                    ui.channelCards[j]->setCheck(false);
+            }
+        }
+
+        card->setCheck(true);   // 与原版一样**不发 sigToggled** —— 框选只改多选状态, 不触发单选逻辑
+        ++hits;
+        first = false;
+    }
+
+    logLine("[框选] 命中 " + std::to_string(hits) + " 张卡片" + (append ? " (Ctrl 追加)" : " (替换)"));
+}
+
+// 开始一次框选(卡片报告"被拖出自身"时调用)
+void beginRubberSelect(BTEServer& ui, const JZPoint& originGlobal)
+{
+    if (!ui.rubber || !ui.main || !ui.itemWidgets || ui.rubber->isVisible())
+        return;                                // 已在框选中: 忽略重复触发
+
+    // 选择层挂主窗口(保证画在所有子控件之上), 几何 = 卡片容器在主窗口里的矩形
+    const JZRect box = ui.itemWidgets->mapTo(
+        ui.main, JZRect(0, 0, ui.itemWidgets->rect().width(), ui.itemWidgets->rect().height()));
+
+    ui.rubber->setGeometry(box);
+    ui.rubber->begin(originGlobal);
+    ui.rubber->setVisible(true);
+
+    // 关键一步: 把后续鼠标事件(含移出卡片、移出窗口)直发选择层 —— 引擎里这是"事件冒泡"的替代
+    ui.main->grabMouse(ui.rubber);
+}
+
+// 建选择层并接线(buildBTEServerUi 里、initChannelGrid 之后调用)
+void initRubberBand(BTEServer& ui)
+{
+    if (!ui.main || !ui.itemWidgets)
+        return;
+
+    ui.rubber = new BTERubberBand(ui.main);   // 挂主窗口: 画在其它子控件之上
+    ui.rubber->setObjectName("rubberBand");
+
+    connect(&ui.rubber->sigSelected, [&ui](uint32_t modifiers) {
+        const JZRect sel = ui.rubber->mapTo(ui.main, ui.rubber->selection());
+        selectCardsInRect(ui, sel, (modifiers & JZKeyEvent::CtrlModifier) != 0);
+
+        if (ui.main)
+            ui.main->releaseMouse(ui.rubber);   // 松手才解除抓取(见 beginRubberSelect)
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +969,27 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         return;
     }
 
+    if (cmd == BTS_CMD_SET_STEP_EX_RESP76)
+    {
+        // 工步下发回执。原版: 收到一个回执就从 stepPackList 出队继续发下一个;
+        // 骨架是"按子设备直接各发一帧"(见 submitStepSetting), 所以这里只记一条。
+        // body = Guid[16] + ChannelID[8] + DataEndFlag(1) + DataIndex(2) —— 与原版结构同名同序。
+        int chn = 0;
+        if (pack.data.size() >= 16 + 8)
+        {
+            const uint8_t* p = (const uint8_t*)pack.data.data() + 16;   // 跳过 Guid
+            for (int i = 0; i < 8; ++i)
+            {
+                uint8_t b = p[i];
+                while (b) { chn += (b & 1); b >>= 1; }                  // 数一下置了几路
+            }
+        }
+
+        logLine("[工步] 下发回执: " + std::to_string(chn) + " 路通道 (SubDevID="
+                + std::to_string((int)pack.info.SubDevID) + ")");
+        return;
+    }
+
     logLine("[协议] " + cmdName(cmd) + " 的业务还没搬(TODO: 报文结构 + 处理)");
 }
 
@@ -843,6 +1156,9 @@ void rebuildDeviceList(BTEServer& ui)
         if (ui.boxDevice->currentIndex() < 0 && ui.boxDevice->count() > 0)
             ui.boxDevice->setCurrentIndex(0);
     }
+
+    // 设备列表变了(连上/断开/增删) ⇒ 卡片的显示数量跟着刷(原版 rebuildDeviceList 后同样要刷)
+    updateChannelCardVisibility(ui);
 }
 
 // 原版本的 curNetId(): 取当前项的 data[0]
@@ -897,26 +1213,12 @@ void stopAlarm(BTEServer& ui)
 // 扫一遍全部在线设备的报警标志: 还有没确认的就响, 否则停(原版 refreshAlarmState)
 void refreshAlarmState(BTEServer& ui)
 {
-    bool hasAlarm = false;
-    for (size_t i = 0; i < ui.devices.size() && !hasAlarm; ++i)
-    {
-        const DeviceInfo& d = ui.devices[i];
-        if (!d.online)
-            continue;
-        for (int k = 0; k < MAX_DEVICE_ITEM; ++k)
-        {
-            if (d.alarmFlag[k] && !d.alarmClearFlag[k])
-            {
-                hasAlarm = true;
-                break;
-            }
-        }
-    }
-
-    if (hasAlarm)
+    if (anyAlarm(ui))
         startAlarm(ui);
     else
         stopAlarm(ui);
+
+    updateClearAlarmButton(ui);   // 按钮的可见性跟着报警状态走
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,11 +1830,14 @@ void wire(BTEServer& ui)
 
     // ---- 设备列表(原版 initDeviceList + on_listWidget_currentRowChanged) ----
     if (list)
-        connect(&list->currentIndexChanged, [list, stack](int idx) {
+        connect(&list->currentIndexChanged, [&ui, list, stack](int idx) {
             logLine("[设备] 选中 idx=" + std::to_string(idx)
                          + " netId=" + std::to_string(curNetId(list)));
             if (stack)
                 stack->setCurrentIndex(BTEServer::PageNormal);
+
+            // 换设备 ⇒ 卡片显示数量跟着换(原版 on_listWidget_currentRowChanged 里做的)
+            updateChannelCardVisibility(ui);
         });
 
     // ---- 页切换按钮(原版工具栏: btnShowNormal/List/SplitSetting/Test) ----
@@ -1747,6 +2052,13 @@ void wire(BTEServer& ui)
 // ===========================================================================
 // 对外: 建界面(生成代码) + 归类 + 接线
 // ===========================================================================
+// 对外的工步下发(薄壳): 实现在匿名命名空间里(submitStepSettingInternal) —— 导出这一层
+// 是为了让自检能跨 TU 直接调它, 不必弹对话框。见 BTEServer.h 的声明。
+int submitStepSetting(BTEServer& ui, DeviceInfo& dev, const std::vector<int>& channels)
+{
+    return submitStepSettingInternal(ui, dev, channels);
+}
+
 void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir)
 {
     ui.gen.setupUi();          // ← BTEServer.ui 生成的代码: 建整棵树(含菜单/属性)
@@ -1818,6 +2130,8 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     initTable(ui);                                         // 原版: :88 initTable()
     initDeviceListMenu(ui);                                // 原版: :115 listWidget 右键菜单
     initChannelGrid(ui);                                   // 原版: :119 通道卡片网格
+    initShortCuts(ui);                                     // 原版: :142 initShortCuts()
+    initRubberBand(ui);                                    // 框选选择层(原版: m_selectWidget)
     rebuildDeviceList(ui);                                 // 原版: :166 initDeviceList()(此时还没设备)
     if (ui.tabWidget)
         ui.tabWidget->setCurrentIndex(0);                  // 原版: tabWidget->setCurrentIndex(0)("当前"页)
@@ -1837,8 +2151,13 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     initHeartTimer(ui);                                    // 原版: :171 m_heartTimer.start(1000)
 
     // 原版构造: :82-84 g_project = &m_project; m_project.init(); loadProject();
-    // 工程目录放当前目录下(projectDir), 里面有 project.dat + record/<设备>.db
-    ui.project.init(projectDir);
+    // 目录口径按原版 BTEProject::init(): **exe 同目录**下的 Data/(applicationDirPath),
+    // 不是工作目录 —— 否则从别处启动会把工程数据撒在源码树里。
+    // 里面放 project.dat + record/<设备>.db。显式传了 projectDir 就按传的来。
+    std::string dir = projectDir;
+    if (dir.empty())
+        dir = jzApp->applicationDirPath() + "/Data";
+    ui.project.init(dir);
     g_project = &ui.project;
 
     // 原版 :159 m_alarm = new AlarmPlayer();
@@ -1847,11 +2166,16 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     logLine("[骨架] BTEServer 界面已建(由 BTEServer.ui 生成: 设备列表/页签/堆叠页/菜单/表格/通道卡片)");
     logLine("[骨架] 已接: 实时帧/记录点/日志 + 通道启停接续跳步 + 查询·删除·分选 + 测试页收发");
     logLine("[骨架] 已接: 记录库(sqlite)/工程(BTEProject)、报警音(AlarmPlayer)、帮助/改IP 对话框");
-    logLine("[骨架] TODO: 工步下发(SET_STEP76_Ex)与工步设置界面、分选模板界面、多语言、框选");
-    // 原版 :142 initShortCuts() 是 Ctrl+A -> onBTEItemSelectAll(): **框架还没有快捷键分发**
-    // (JZAction::setShortcut 目前只用于菜单里显示, 没有任何按键匹配代码), 所以这条先记着不假做。
-    // 卡片右键菜单里的"全选"就是它现在的可点替代品。
-    logLine("[骨架] 缺口: 快捷键(Ctrl+A 全选)需要框架先加「动作快捷键分发」");
+    logLine("[骨架] 已接: 快捷键 Ctrl+A 全选通道(原版 initShortCuts; 用 JZAction::setShortcut + 窗口分发)");
+    logLine("[骨架] 已接: 框选(拖拽卡片画框多选; 原版 m_selectWidget, 引擎里靠 grabMouse 实现)");
+    logLine("[骨架] TODO: 工步下发(SET_STEP76_Ex)与工步设置界面、分选模板界面、多语言");
+
+    // 原版 `#define HIDE_TEST_PAGE 1` ⇒ ui.btnShowTest->hide(): 测试页按钮默认不露(开发调试用)
+    if (ui.btnShowTest)
+        ui.btnShowTest->setVisible(false);
+
+    // 初始没设备/没报警 ⇒ "清除报警"先收起来(真有报警时 refreshAlarmState 会放出来)
+    updateClearAlarmButton(ui);
 }
 
 // ---------------------------------------------------------------------------
@@ -1895,11 +2219,8 @@ void applyDeviceInfo(BTEServer& ui, int netId, uint8_t deviceId, const stru_BTS_
     dev->info = info;
     dev->channelNum = info.channelNum();
 
-    // 原版 initDevice(): 按设备的通道数决定亮几张卡片
-    const int show = (dev->channelNum > 0 && dev->channelNum <= MAX_DEVICE_ITEM)
-                     ? dev->channelNum : MAX_CHANNEL_NUM;
-    for (int i = 0; i < (int)ui.channelCards.size(); ++i)
-        ui.channelCards[i]->setVisible(i < show);
+    // 原版 initDevice(): 按设备的通道数决定亮几张卡片(上面已置 online, 口径与它一致)
+    updateChannelCardVisibility(ui);
 
     rebuildDeviceList(ui);
 

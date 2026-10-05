@@ -6,6 +6,8 @@
 // 悬停跟踪、输入蒙版、焦点与 IMC 语义、关闭流程、绘制调度 —— 两个平台共用同一份,
 // 于是"虚拟窗口与真实窗口行为一致"是结构上保证的, 不是两边各写一遍去对齐。
 #include "JZWindow.h"
+#include "JZAction.h"        // 动作快捷键分发(见 dispatchShortcut)
+#include "JZKeySequence.h"   // 快捷键文本 <-> (键码, 修饰键)
 #include "JZWindowBackend.h"
 #include "JZWindowHost.h"
 #include "JZDisplayDevice.h"
@@ -623,7 +625,61 @@ bool JZWindow::dispatchKey(JZKeyEvent* ev)
         if (ev->isAccepted())
             return true;
     }
+
+    // 焦点控件链上没人要这个按键 —— 再看窗口里的"动作快捷键"(QAction::shortcut / QShortcut 的等价物)。
+    // 顺序**有意**放在冒泡之后: 文本控件会先吃掉 Ctrl+A/C/V 这类编辑键(JZAbstractTextEdit 里
+    // accept 掉), 与 Qt 用 ShortcutOverride 达到的效果一致; 只有"谁都没处理"的按键才落到动作上。
+    if (dispatchShortcut(ev))
+        return true;
+
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// 动作快捷键 (等价 Qt 的 QAction::shortcut / QShortcut + 窗口级分发)
+//   来源两处: ① 焦点控件沿父链(链尾是窗口自己)各控件 addAction 登记的动作;
+//             ② 窗口级动作 extraActions() —— 菜单栏里的菜单项走这条(它们挂在 JZMenu 上,
+//                不在控件父子链里; 由 JZMainWindow override 提供)。
+//   命中条件见 JZKeySequence::matches(按下 + 主键相同 + Ctrl/Shift/Alt 完全一致)。
+// ---------------------------------------------------------------------------
+namespace {
+
+bool tryActions(const std::vector<JZObjectPointer>& list, JZKeyEvent* ev)
+{
+    for (size_t i = 0; i < list.size(); ++i)
+    {
+        JZAction* a = jzobject_cast<JZAction*>(list[i].object());
+        if (!a || !a->isEnabled() || !a->isVisible())
+            continue;                       // 禁用/隐藏的项不响应快捷键(Qt 同款)
+        const std::string sc = a->shortcut();
+        if (sc.empty() || !JZKeySequence::matches(sc, ev))
+            continue;
+
+        a->trigger();
+        ev->accept();
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<JZObjectPointer> JZWindow::extraActions() const
+{
+    // 普通窗口没有"不在控件链上"的动作; JZMainWindow 会交出菜单栏里的那些
+    return std::vector<JZObjectPointer>();
+}
+
+bool JZWindow::dispatchShortcut(JZKeyEvent* ev)
+{
+    JZWidget* start = m_focusWidget ? m_focusWidget : static_cast<JZWidget*>(this);
+    for (JZWidget* w = start; w; w = w->parentWidget())
+    {
+        if (tryActions(w->actions(), ev))
+            return true;
+    }
+
+    return tryActions(extraActions(), ev);
 }
 
 // IME: 组字/上屏/候选事件只投递给焦点控件; 无焦点控件返回 false (交回系统)。

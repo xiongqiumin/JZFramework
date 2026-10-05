@@ -67,6 +67,8 @@ private:
 class JZTimer;   // 悬浮提示延时收起 (见 .cpp)
 class JZStyleSheetParser;   // 样式表解析器 (控件级 setStyleSheet 持有, 见 JZStyleSheetParser.h)
 class JZMenu;    // 上下文菜单 (右键菜单; 见 setContextMenu / setContextMenuPolicy)
+class JZAction;  // 动作 (菜单项/工具栏按钮的数据模型; 见 addAction)
+class JZButtonGroup;  // 按钮组 (互斥管理; 见 isCheckable / buttonGroup)
 
 class JZFRAMEWORK_API JZWidget : public JZObject
 {
@@ -250,6 +252,28 @@ public:
     // 走一遍上下文菜单流程 (pos = 本控件局部坐标): 策略处理 + 向上递交。
     // 也是程序/AI 合成的触发入口 (`w->requestContextMenu(w->rect().center())`)。
     void requestContextMenu(const JZPoint& pos);
+
+    // ---- 动作 (Qt 语义, 对齐 QWidget::addAction / QAction::shortcut) ----
+    // 挂上来的 action 参与**窗口级快捷键分发**: 按键在"焦点控件链上没人处理"之后, 窗口会拿
+    // 各控件(以及菜单栏)登记的 action 去匹配 shortcut, 命中就 trigger() —— 见
+    // JZWindow::dispatchShortcut / JZKeySequence。
+    // ⚠ 只登记不拥有: action 的生命周期仍归创建者(菜单或调用方), 这里用 JZObjectPointer 跟踪,
+    //    action 先销毁时自动失效(不会留悬垂)。
+    void addAction(JZAction* action);
+    void removeAction(JZAction* action);
+    const std::vector<JZObjectPointer>& actions() const { return m_actions; }
+
+    // ---- 可选中控件协议 (等价 Qt QAbstractButton 的 checkable / checked) ----
+    // JZFramework 没有 QAbstractButton 那层中间基类, 故把这组语义直接落在 JZWidget:
+    // 可选中控件 (JZCheckbox / JZRadioButton / JZSwitch) 重写并返回真值, 其余控件保持默认
+    // (不可选中 / 恒未选中 / setChecked 空操作)。JZButtonGroup 依此统一驱动互斥, 与具体类型无关。
+    virtual bool isCheckable() const { return false; }
+    virtual bool isChecked() const { return false; }
+    virtual void setChecked(bool checked);
+
+    // 所属按钮组 (等价 Qt QAbstractButton::group): 由 JZButtonGroup 维护, 业务代码勿直接设置。
+    // 只借用组指针 —— 组析构时会把成员的此指针置空, 不会留悬垂。
+    JZButtonGroup* buttonGroup() const { return m_buttonGroup; }
 
 jz_signals:
     JZSignal<int, int> sigCustomContextMenuRequested;   // (x, y) 发起者控件的局部坐标
@@ -471,6 +495,20 @@ protected:
     void setLayoutImpl(JZLayout* layout, bool fromJs);
     JZSelfLayout* m_selfLayout = nullptr;   // 控件自身挂的自布局(父 resize 时重摆)
 
+    // 本控件登记的动作(见 addAction): 只跟踪存活, 不拥有
+    std::vector<JZObjectPointer> m_actions;
+
+    // ---- 按钮组回调 (见上方可选中控件协议 / JZButtonGroup) ----
+    // 可选中控件在选中态变化后 / 被点击时调用: 转发给所属组 (互斥联动 + 发信号); 无组则空操作。
+    void notifyButtonGroupChecked();
+    void notifyButtonGroupClicked();
+    // 是否处于"互斥按钮组"中 (等价 Qt exclusive QButtonGroup): 可选中控件据此决定
+    // "用户点击已选中项时是否允许取消选中" (互斥组内不允许, Qt 同款)。
+    bool buttonGroupExclusive() const;
+
+    // 所属按钮组(见 buttonGroup()): 只借用, 不拥有
+    JZButtonGroup* m_buttonGroup = nullptr;
+
     JZStyleSet m_style;
 
     // ---- 样式表素材 (见上方 setStyleClass/setStyleSheet) ----
@@ -508,6 +546,7 @@ protected:
 
     // ---- 布局内部登记 (由 JZLayout 统一管理, 业务代码勿直接调用) ----
     friend class JZLayout;
+    friend class JZButtonGroup;   // 直接读写成员的 m_buttonGroup (见 buttonGroup)
     void _layoutAttach(JZLayout* layout);
     void _layoutDetach(JZLayout* layout);
     // 布局被销毁 / 换了宿主时由 JZLayout 回调: 本控件持有的正是它就把指针清空

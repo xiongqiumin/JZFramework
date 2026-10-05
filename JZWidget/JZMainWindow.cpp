@@ -1,6 +1,8 @@
 #include "JZMainWindow.h"
+#include "JZAction.h"
 #include "JZColor.h"
 #include "JZLayout.h"
+#include "JZMenu.h"
 #include "JZMenuBar.h"
 #include "JZPainter.h"
 
@@ -40,6 +42,47 @@ void JZMainWindow::setCentralWidget(JZWidget* widget)
 
 void JZMainWindow::paintEvent(JZPainterEvent* event)
 {
-    JZPainter p(this);
-    p.fillRect(rect(), JZColor::White);
+    // ⚠ 底色别在这里写死: 窗口默认色(浅灰 #F0F0F0, 见 JZWindow.cpp 的 kDefaultWindowBackground)
+    // 与样式表的解析都在 JZWindow::paintEvent 里, 这里曾经无条件填白, 把默认色盖回去了。
+    JZWindow::paintEvent(event);
+}
+
+// ---------------------------------------------------------------------------
+// 菜单栏里的菜单项不在控件父子链里, 快捷键分发拿不到 —— 把配了 shortcut 的交出去
+// (见 JZWindow::dispatchShortcut; 每次分发时现收集, 所以挂栏之后再 setShortcut 也有效)
+// ---------------------------------------------------------------------------
+namespace {
+
+void collectMenuActions(JZMenu* menu, std::vector<JZObjectPointer>& out)
+{
+    if (!menu)
+        return;
+
+    const std::vector<JZAction*>& acts = menu->actions();
+    for (size_t i = 0; i < acts.size(); ++i)
+    {
+        JZAction* a = acts[i];
+        if (!a)
+            continue;
+
+        if (!a->shortcut().empty())
+            out.push_back(a->guardPointer());   // 只交配了快捷键的: 其余不参与按键匹配
+
+        if (JZMenu* sub = a->subMenu())         // 子菜单递归
+            collectMenuActions(sub, out);
+    }
+}
+
+} // namespace
+
+std::vector<JZObjectPointer> JZMainWindow::extraActions() const
+{
+    std::vector<JZObjectPointer> out;
+    if (!m_menuBar)
+        return out;
+
+    for (int i = 0; i < m_menuBar->menuCount(); ++i)
+        collectMenuActions(m_menuBar->menuAt(i), out);
+
+    return out;
 }

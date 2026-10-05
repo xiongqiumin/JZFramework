@@ -15,6 +15,11 @@ public:
     void setState(bool on);
     bool isOn() const;
 
+    // 可选中控件协议 (见 JZWidget / JZButtonGroup): 开关以 setState/isOn 表达"选中"
+    bool isCheckable() const override { return true; }
+    bool isChecked() const override { return m_on; }
+    void setChecked(bool on) override;
+
     // ---- AI 语义 ----
     bool aiChecked() const override { return m_on; }
     std::vector<JZAiAction> aiActions() const override { return {{"click", ""}}; }

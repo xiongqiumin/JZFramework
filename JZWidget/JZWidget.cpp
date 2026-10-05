@@ -12,6 +12,8 @@
 
 #include "JZWidget.h"
 #include "JZMenu.h"
+#include "JZAction.h"   // addAction/removeAction
+#include "JZButtonGroup.h"   // 可选中控件协议 / buttonGroup 回调
 #include "JZDebug.h"
 #include "JZApplication.h"
 #include "JZDisplayDevice.h"
@@ -1240,6 +1242,55 @@ JZMenu* JZWidget::contextMenu() const
 {
     JZObject* obj = m_contextMenu.object();
     return obj ? static_cast<JZMenu*>(obj) : nullptr;
+}
+
+// ---- 动作 (见 JZWidget.h 的 addAction 说明) ----
+void JZWidget::addAction(JZAction* action)
+{
+    if (!action)
+        return;
+
+    for (size_t i = 0; i < m_actions.size(); ++i)
+    {
+        if (m_actions[i].object() == action)
+            return;                     // 重复 add 幂等(Qt 同款: 一个控件里同一个 action 只登记一次)
+    }
+    m_actions.push_back(action->guardPointer());
+}
+
+void JZWidget::removeAction(JZAction* action)
+{
+    for (std::vector<JZObjectPointer>::iterator it = m_actions.begin(); it != m_actions.end(); ++it)
+    {
+        if (it->object() == action)
+        {
+            m_actions.erase(it);
+            return;
+        }
+    }
+}
+
+// ---- 可选中控件协议 / 按钮组 (见 JZWidget.h 与 JZButtonGroup) ----
+void JZWidget::setChecked(bool checked)
+{
+    (void)checked;   // 默认: 非可选中控件, 无操作 (可选中控件重写)
+}
+
+void JZWidget::notifyButtonGroupChecked()
+{
+    if (m_buttonGroup)
+        m_buttonGroup->onButtonChecked(this);
+}
+
+void JZWidget::notifyButtonGroupClicked()
+{
+    if (m_buttonGroup)
+        m_buttonGroup->onButtonClicked(this);
+}
+
+bool JZWidget::buttonGroupExclusive() const
+{
+    return m_buttonGroup && m_buttonGroup->isExclusive();
 }
 
 void JZWidget::requestContextMenu(const JZPoint& pos)

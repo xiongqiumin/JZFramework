@@ -24,6 +24,10 @@ public:
     void setCentralWidget(JZWidget* widget);
     JZWidget* centralWidget() const { return m_centralWidget; }
 
+    // 菜单栏里的菜单项挂在 JZMenu 上, **不在控件父子链里** —— 快捷键分发(见
+    // JZWindow::dispatchShortcut)拿不到它们, 这里把配了 shortcut 的都交出去。
+    std::vector<JZObjectPointer> extraActions() const override;
+
 protected:
     void paintEvent(JZPainterEvent* event) override;
 

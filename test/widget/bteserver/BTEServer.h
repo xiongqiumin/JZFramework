@@ -72,6 +72,11 @@ struct DeviceInfo
     std::vector<int> alarmFlag;        // 实时帧维护: 故障置位, 恢复复位(原版同名同义)
     std::vector<int> alarmClearFlag;   // "清除报警"确认: 确认后置位, 下发工步后复位(原版同名同义)
 
+    // 工步(原版存在工程的 DeviceData 里: stepList + startStepIndex; 骨架先挂在设备上,
+    // 等工程层搬完再挪 —— 语义一样: 每台设备一份, 改过一次下次打开就是它)
+    StruSetStep76Ex stepTemplate;
+    int             startStepIndex = 1;
+
     DeviceInfo() : status(MAX_DEVICE_ITEM, Status_Complete),
                    alarmFlag(MAX_DEVICE_ITEM, 0), alarmClearFlag(MAX_DEVICE_ITEM, 0) {}
 };
@@ -95,8 +100,11 @@ struct NetSession
 // 只是给常用句柄起个别名(少写一层 gen.), 方便后面照原版 BTEServer.cpp 一段段搬逻辑。
 //
 // 骨架里明确留 TODO 的地方: 语言切换的完整实现(多语言表)、HelpDialog、工步下发与工程
-// (BTEProject / StepSettingDialog)、报警音、框选。
+// (BTEProject / StepSettingDialog)、分选模板界面、报警音。
+// (框选已搬: 见 BTERubberBand.h + BTEServer.cpp 的 initRubberBand / selectCardsInRect)
 // ---------------------------------------------------------------------------
+class BTERubberBand;   // 框选选择层(BTERubberBand.h)
+
 struct BTEServer
 {
     Ui::BTEServerUi gen;                 // 生成代码: root + 类型化成员 + byId
@@ -158,6 +166,9 @@ struct BTEServer
     JZWidget*                   itemWidgets = nullptr;
     std::vector<BTEItemWidget*> channelCards;   // 4x8 = MAX_DEVICE_ITEM 张
 
+    // 框选选择层(原版: QWidget* m_selectWidget)。挂在哪、什么时候抓鼠标见 initRubberBand
+    BTERubberBand*              rubber = nullptr;
+
     // 网络服务(原版: BTEServer 里的 m_server(ServerThread) + init(8001); 这里用引擎的 JZTcpServer)
     // 注: 堆上持有 —— 本结构会被返回/搬移, 而 JZObject 不可拷贝。
     JZTcpServer*     server = nullptr;
@@ -192,9 +203,18 @@ struct BTEServer
 //
 // serverPort: 监听端口, 默认就是原版的 8001。
 // ⚠ 引擎的 JZTcpServer::listen() **不接受 0**(想"让系统挑端口"没有实现), 传 0 会监听失败。
-// projectDir: 工程目录(里面放 project.dat + record/<设备>.db), 默认当前目录下的 bte_project。
+// projectDir: 工程目录(里面放 project.dat + record/<设备>.db)。
+//   默认**空** = exe 同目录下的 Data —— 对齐原版 BTEProject::init 的
+//   `QApplication::applicationDirPath() + "/Data"`; 传值就按传的来。
+//   ⚠ 默认值别写成相对路径: 相对路径是**当前工作目录**, 从别处敲命令行会把工程目录撒在
+//     源码树里(踩过: 从仓库根启动时生成 <repo>/bte_project)。
 void buildBTEServer(BTEServer& ui, int serverPort = 8001,
-                    const std::string& projectDir = "bte_project");
+                    const std::string& projectDir = std::string());
+
+// 工步下发: 按子设备分组组包下发(原版 createPackList 的骨架版), 返回发出的包数。
+// 导出这个是给自检用的 —— 不弹对话框就能验证"分组 + 组包"这条链路。
+// (弹对话框的入口 openStepSetting 只在 BTEServer.cpp 内部用, 不导出。)
+int  submitStepSetting(BTEServer& ui, DeviceInfo& dev, const std::vector<int>& channels);
 
 // 设备信息(SEND_INFO)到达: 建/更新设备条目 + 刷新设备列表 + 打日志。
 // 与 socket 无关的那半单独拿出来, 自检可以直接调它验证"报文 -> 设备名 -> 列表"这条链路。

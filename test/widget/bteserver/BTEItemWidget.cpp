@@ -8,12 +8,16 @@
 #include "JZFontMetrics.h"
 #include "JZKeyEvent.h"    // CtrlModifier(Ctrl + 左键多选)
 #include "JZMouseEvent.h"
+#include "JZWindow.h"       // window()->mouseGrabber(): 框选残留状态的兜底判断
 #include "JZPainter.h"
 
 #include <algorithm>
 #include <cstdio>
 
 JZ_OBJECT_IMPL(BTEItemWidget, JZWidget)
+
+// 框选触发阈值(曼哈顿距离): 原版 BTEServer::mouseMoveEvent 里就是 40, 照搬
+static const int kRubberThreshold = 40;
 
 // 故障卡片配色: 未清除为红色, 已清除(报警确认)后为橙色(原版)
 static const JZColor kFaultBgColor(180, 40, 80);
@@ -31,6 +35,7 @@ BTEItemWidget::BTEItemWidget(JZWidget* parent)
     : JZWidget(parent)
     , sigClicked(this)
     , sigToggled(this)
+    , sigRubberStart(this)
 {
     setContextMenuPolicy(JZWidget::CustomContextMenu);   // 原版: setContextMenuPolicy(Qt::CustomContextMenu)
 
@@ -393,17 +398,70 @@ void BTEItemWidget::paintEvent(JZPainterEvent*)
 // 交互(原版 mousePress/Release): 左右键都算按下; 松开时若落回卡片内则勾选
 //   · 不带 Ctrl: 变选中 + 发 toggled(true)(原版对"右键点未选中卡"也会选中)
 //   · 带 Ctrl : 单纯取反(原版不发信号 —— 多选由上层处理)
+//   · 拖出自身 >40px: 当框选处理(见 mouseMoveEvent), 松开不再当点击
 // ---------------------------------------------------------------------------
 void BTEItemWidget::mousePressEvent(JZMouseEvent* event)
 {
     if (event->button() == JZMouseEvent::LeftButton || event->button() == JZMouseEvent::RightButton)
+    {
         m_mouseDown = true;
+        // ⚠ 用事件自带的 globalPos(消息层从 lParam 填的真实屏幕坐标), **不要**拿 localPos 走
+        //    mapToGlobal 自己反算 —— 见 mouseMoveEvent 里那段说明(那个坑就是"一点就框选")。
+        m_pressGlobal = event->globalPos();
+        m_pressButton = (int)event->button();
+        m_dragged = false;
+    }
 
     JZWidget::mousePressEvent(event);
 }
 
+// 原版是主窗口 BTEServer::mouseMoveEvent 里的"拖出 40px 才开始框选", 这里搬到卡片上:
+// 引擎的鼠标事件**不沿父链冒泡**(JZWindow::dispatchMouse 直投命中的那一个控件), 主窗口
+// 根本收不到"在卡片上拖拽" —— 卡片是唯一的接收者, 所以由它上报(见 sigRubberStart)。
+void BTEItemWidget::mouseMoveEvent(JZMouseEvent* event)
+{
+    // 兜底: 框选期间鼠标被选择层抓走(见 beginRubberSelect), 卡片收不到 release, m_mouseDown
+    // 会残留 —— 那之后鼠标只是"划过"卡片也会被判成拖拽。发现正被别的控件抓着就复位状态。
+    JZWindow* win = window();
+    if (m_mouseDown && win && win->mouseGrabber() != nullptr)
+    {
+        m_mouseDown = false;
+        m_dragged = false;
+    }
+
+    if (m_mouseDown && !m_dragged && m_pressButton == (int)JZMouseEvent::LeftButton)
+    {
+        // ⚠ 距离必须用**事件自带的 globalPos**(消息层从 lParam 填的真实屏幕坐标)算。
+        //    踩过的坑: 拿 event->localPos() 再走 mapToGlobal() 反算 —— localPos 是"命中分发
+        //    时回填"的, 某次没回填(或为 (0,0)) 时差值就退化成"卡片内点击点到卡片左上角的
+        //    距离", 点卡片中心就有 200 多, 远超 40 的阈值 ⇒ **一按下一微动就框选**。
+        const JZPoint g = event->globalPos();
+        const int dx = g.x() - m_pressGlobal.x();
+        const int dy = g.y() - m_pressGlobal.y();
+        const int manhattan = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+
+        if (manhattan > kRubberThreshold)        // 原版: (cur - down).manhattanLength() > 40
+        {
+            m_dragged = true;                    // 判为拖拽: 松开时不当点击
+            sigRubberStart.emit(m_pressGlobal);  // 交给窗口开始框选
+        }
+    }
+
+    JZWidget::mouseMoveEvent(event);
+}
+
 void BTEItemWidget::mouseReleaseEvent(JZMouseEvent* event)
 {
+    // 拖拽过 ⇒ 这次是框选, 不当点击。原版靠"松开点落在卡片 rect 之外"自然跳过;
+    // 引擎里拖拽已被选择层抓走(卡片可能什么事件都收不到), 这条是兜底。
+    if (m_dragged)
+    {
+        m_mouseDown = false;
+        m_dragged = false;
+        JZWidget::mouseReleaseEvent(event);
+        return;
+    }
+
     const bool inside = rect().contains(event->localPos());
     if (m_mouseDown && inside)
     {

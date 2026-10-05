@@ -36,8 +36,9 @@ void JZRadioButton::setChecked(bool on)
 {
     if (m_checked == on) return;
     m_checked = on;
-    // 同一父级下的兄弟单选钮自动互斥 (Qt autoExclusive 风格)
-    if (on && parentWidget()) {
+    // 未入组时: 同一父级下的兄弟单选钮自动互斥 (Qt autoExclusive 风格)。
+    // 入了 JZButtonGroup 则由组统一互斥 (见 notifyButtonGroupChecked), 不再看兄弟。
+    if (on && !buttonGroup() && parentWidget()) {
         const auto& ch = parentWidget()->children();
         for (auto* obj : ch) {
             auto* r = jzobject_cast<JZRadioButton*>(obj);
@@ -48,6 +49,7 @@ void JZRadioButton::setChecked(bool on)
         }
     }
     update();
+    notifyButtonGroupChecked();
 }
 
 void JZRadioButton::paintEvent(JZPainterEvent* event)
@@ -108,8 +110,11 @@ void JZRadioButton::mouseReleaseEvent(JZMouseEvent* event)
     }
     bool wasPressed = m_pressed;
     m_pressed = false;
-    if (!wasPressed || m_checked)
+    if (!wasPressed)
         return;
+    notifyButtonGroupClicked();
+    if (m_checked)
+        return;                   // 互斥组内点击已选中项: 保持选中 (Qt 语义)
     setChecked(true);
     sigToggled.emit();
 }

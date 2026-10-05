@@ -10,7 +10,16 @@ JZSwitch::JZSwitch(JZWidget* parent)
 
 void JZSwitch::setState(bool on)
 {
+    if (m_on == on)
+        return;
     m_on = on;
+    update();
+    notifyButtonGroupChecked();
+}
+
+void JZSwitch::setChecked(bool on)
+{
+    setState(on);
 }
 
 bool JZSwitch::isOn() const
@@ -62,7 +71,9 @@ void JZSwitch::mouseReleaseEvent(JZMouseEvent* event)
     m_pressed = false;
     if (!wasPressed)
         return;   // 释放前不是本控件按下 (如别处拖入), 不切换
-    m_on = !m_on;
-    update();
+    notifyButtonGroupClicked();
+    if (m_on && buttonGroupExclusive())
+        return;   // 互斥组内不能由用户取消当前选中项 (Qt 语义)
+    setState(!m_on);
     sigToggled.emit(m_on);
 }

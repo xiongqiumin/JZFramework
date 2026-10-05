@@ -19,6 +19,8 @@ set(JZ_SOURCES
     JZRect.cpp
     JZKeyEvent.h
     JZKeyEvent.cpp
+    JZKeySequence.h
+    JZKeySequence.cpp
     JZImeEvent.h
     JZImeEvent.cpp
     JZPen.h
@@ -135,6 +137,8 @@ set(JZ_SOURCES
     JZCheckbox.cpp
     JZRadioButton.h
     JZRadioButton.cpp
+    JZButtonGroup.h
+    JZButtonGroup.cpp
     JZComboBox.h
     JZComboBox.cpp    
     JZUndoStack.h

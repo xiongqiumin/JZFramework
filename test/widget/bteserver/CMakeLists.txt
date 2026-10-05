@@ -21,6 +21,7 @@ add_executable(test_bteserver
     main.cpp
     BTEServer.cpp
     BTEItemWidget.cpp
+    BTERubberBand.cpp
     PackDefine.cpp
     DataTrans.cpp
     Common.cpp
@@ -28,6 +29,8 @@ add_executable(test_bteserver
     BTERecordDataBase.cpp
     AlarmPlayer.cpp
     HelpDialog.cpp
+    StepSettingDialog.cpp
+    StepEditDialog.cpp
     DeviceMacDialog.cpp
 )
 target_link_libraries(test_bteserver JZFramework)

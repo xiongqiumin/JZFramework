@@ -25,6 +25,7 @@
 #include "JZFile.h"
 #include "JZFileDialog.h"
 #include "JZMessageBox.h"
+#include "JZStd.h"
 #include "JZTimer.h"
 #include "JZTcpServer.h"
 #include "JZTcpSocket.h"
@@ -40,16 +41,16 @@ namespace {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
-// 原版 LogInfo(...) 的去处: 右栏"通道"页里的只读文本区。
-// 另外同步打到 stdout —— 骨架常要跑无人值守的验证(起窗口 + 抓输出), 只看控件里那份
-// 会被可视区截断(新行在下面看不见), 抓 stdout 最省事。
-void logLine(JZTextEdit* view, const std::string& line)
+// 原版 LogInfo(...) 的去处: **只打 stdout**(骨架常要跑无人值守的验证: 起窗口 + 抓输出)。
+// ⚠ 原版主界面里没有日志框(那个 QTextEdit textLog 是 pageTest 里的 "Recv Log"), 所以这里不再
+// 往某个界面控件里塞文本 —— 见 BTEServer.ui 开头的"与原版对齐"说明。
+void logLine(const std::string& line)
 {
-    printf("%s\n", line.c_str());
+    // ⚠ 不能裸 printf: 源码字面量是 UTF-8(CMake 设了 /source-charset:utf-8), 而中文 Windows 的
+    // 控制台默认是 936(GBK) —— 直接打就是"缃戠粶"这种乱码。str_utf8_to_console() 按 stdout 的
+    // 实际状态转(真控制台转 GBK / 重定向·管道·UTF-8 控制台原样), 与 JZLog 打印日志同一条规则。
+    printf("%s\n", str_utf8_to_console(line).c_str());
     fflush(stdout);
-    if (!view)
-        return;
-    view->setText(view->text() + line + "\n");
 }
 
 // 取当前设备项的 netId(定义在下面, 这里先声明: 右键菜单要用)
@@ -60,7 +61,7 @@ void rebuildDeviceList(BTEServer& ui);
 DeviceInfo*  deviceOf(BTEServer& ui, int netId);
 JZTcpSocket* socketOf(BTEServer& ui, int netId);
 void sendFrame(BTEServer& ui, JZTcpSocket* sock, const PackInfo& info,
-               const JZByteArray& body, JZTextEdit* log);
+               const JZByteArray& body);
 
 // ---- 小工具 ----
 int64_t nowMs()
@@ -138,18 +139,6 @@ void initTable(BTEServer& ui)
         header.push_back("电池编号"); header.push_back("批号/电池型号");
         header.push_back("创建者");   header.push_back("备注");
         UiHelper::SetTable(ui.tableQuery, header);
-    }
-
-    // pageHistory 里的占位表: 原版历史上是复用查询结果, 骨架给同一套列头
-    if (ui.tableHistory)
-    {
-        std::vector<std::string> header;
-        header.push_back("记录号");   header.push_back("通道号");
-        header.push_back("分选");     header.push_back("启动时间");
-        header.push_back("结束时间"); header.push_back("记录条数");
-        header.push_back("电池编号"); header.push_back("批号/电池型号");
-        header.push_back("创建者");   header.push_back("备注");
-        UiHelper::SetTable(ui.tableHistory, header);
     }
 
     if (ui.tableList)
@@ -246,7 +235,7 @@ void sendDevicePack(BTEServer& ui, int netId, uint16_t cmd, const JZByteArray& b
     info.DeviceID = dev->deviceId;
     info.SubDevID = (uint8_t)INVAILD_SUB_ID;   // 原版: 默认子设备号原样发(0xFE)
     info.CmdID = cmd;
-    sendFrame(ui, sock, info, body, ui.textLog);
+    sendFrame(ui, sock, info, body);
 }
 
 void initDeviceListMenu(BTEServer& ui)
@@ -299,7 +288,7 @@ void initDeviceListMenu(BTEServer& ui)
         w.u8((uint8_t)atoi(parts[2].c_str()));
         w.u8((uint8_t)atoi(parts[3].c_str()));
         sendDevicePack(ui, netId, WRITE_DEVICE_IP, w.data());
-        logLine(ui.textLog, "[右键] 更改中位机IP -> " + text + "(已发 WRITE_DEVICE_IP)");
+        logLine("[右键] 更改中位机IP -> " + text + "(已发 WRITE_DEVICE_IP)");
     });
 
     ui.listWidget->setContextMenuPolicy(JZWidget::CustomContextMenu);
@@ -338,17 +327,17 @@ void initChannelCardMenu(BTEServer& ui, BTEItemWidget* card)
         const int netId = curNetId(ui.listWidget);
         if (netId < 0)
         {
-            logLine(ui.textLog, std::string("[通道] ") + what + ": 没有选中设备");
+            logLine(std::string("[通道] ") + what + ": 没有选中设备");
             return;
         }
         const std::vector<int> chn = targets();
         if (chn.empty())
         {
-            logLine(ui.textLog, "[通道] 没有目标通道");
+            logLine("[通道] 没有目标通道");
             return;
         }
         const int n = sendChannelCommand(ui, netId, cmd, chn);
-        logLine(ui.textLog, std::string("[通道] ") + what + " -> " + std::to_string(n) + " 包(通道 "
+        logLine(std::string("[通道] ") + what + " -> " + std::to_string(n) + " 包(通道 "
                              + std::to_string(chn.size()) + " 个)");
     };
 
@@ -358,7 +347,7 @@ void initChannelCardMenu(BTEServer& ui, BTEItemWidget* card)
     menu->addAction("工步跳转", [runCmd]() { runCmd(BTS_CMD_STEP_JUMP, "工步跳转"); });
     menu->addAction("清除报警", [&ui]() {
         const int n = clearAlarmAll(ui);
-        logLine(ui.textLog, "[报警] 一键清除 " + std::to_string(n) + " 条");
+        logLine("[报警] 一键清除 " + std::to_string(n) + " 条");
     });
     menu->addAction("全选", [&ui]() {
         for (size_t i = 0; i < ui.channelCards.size(); ++i)
@@ -386,24 +375,33 @@ void initChannelGrid(BTEServer& ui)
     if (!ui.itemWidgets)
         return;
 
-    JZTextEdit* log = ui.textLog;
     JZGridLayout* grid = new JZGridLayout();
-    grid->setSpacing(4);
+    grid->setSpacing(3);                        // 原版: layout->setSpacing(3)
+    grid->setContentsMargins(3, 3, 3, 3);       // 原版: layout->setMargin(3)
+    // 原版: setColumnStretch(8,1)/setRowStretch(8,1) —— 网格右下角的富余空间归第 8 行/列,
+    // 卡片本身是固定尺寸, 不会被拉伸。
+    grid->setColumnStretch(MAX_CHANNEL_NUM, 1);
+    grid->setRowStretch(MAX_SUB_DEVICE, 1);
 
     ui.channelCards.reserve(MAX_DEVICE_ITEM);
     for (int i = 0; i < MAX_DEVICE_ITEM; ++i)
     {
         BTEItemWidget* card = new BTEItemWidget();
 
+        const int row = i / MAX_CHANNEL_NUM;
+        const int col = i % MAX_CHANNEL_NUM;
+
         card->setItemIndex(i);
-        card->setChannelText(channelTextOf(i));
-        card->setValueLines({ "电流: -- A", "温度: -- ℃", "容量: -- Ah", "能量: -- Wh" });
+        // 原版: setChannelText(QString::asprintf("%d - %d", row + 1, col + 1))
+        char chbuf[16];
+        snprintf(chbuf, sizeof(chbuf), "%d - %d", row + 1, col + 1);
+        card->setChannelText(chbuf);
         card->setVisible(i < MAX_CHANNEL_NUM);   // 骨架: 先显示第一组(原版是按设备在线情况显示)
 
-        grid->addWidget(card, i / MAX_CHANNEL_NUM, i % MAX_CHANNEL_NUM);
+        grid->addWidget(card, row, col);
 
-        connect(&card->sigToggled, [card, log](bool on) {
-            logLine(log, "[卡片] " + card->getTitle() + (on ? " 选中" : " 取消选中"));
+        connect(&card->sigToggled, [card](bool on) {
+            logLine("[卡片] " + card->channelText() + (on ? " 选中" : " 取消选中"));
         });
 
         initChannelCardMenu(ui, card);      // 原版: onBTEItemMenu(启动/停止/接续/跳步...)
@@ -480,32 +478,31 @@ std::string peerIpOf(int netId)
 }
 
 void sendFrame(BTEServer& ui, JZTcpSocket* sock, const PackInfo& info,
-               const JZByteArray& body, JZTextEdit* log)
+               const JZByteArray& body)
 {
     const JZByteArray frame = packFrame(info, body);
     if (sock)
         sock->write((const char*)frame.data(), frame.size());
-    else if (log)
-        logLine(log, "[发] 没有可用的连接(netId 已断?), cmd = " + cmdName(info.CmdID));
+    else
+        logLine("[发] 没有可用的连接(netId 已断?), cmd = " + cmdName(info.CmdID));
 
     ++ui.dispIndex;
     recordPack(ui, true, info, frame);
 
-    if (log)
-        logLine(log, "[发] cmd = " + cmdName(info.CmdID)
-                     + ", " + std::to_string(frame.size()) + " 字节\n" + hexDump(frame));
+    logLine("[发] cmd = " + cmdName(info.CmdID)
+            + ", " + std::to_string(frame.size()) + " 字节\n" + hexDump(frame));
 }
 
 // 回一个"响应类"包(原版 BTEServer::response(netId, cmd, result))
 void sendResponse(BTEServer& ui, JZTcpSocket* sock, const NetSession& s,
-                  uint16_t cmd, uint8_t result, JZTextEdit* log)
+                  uint16_t cmd, uint8_t result)
 {
     PackInfo info;
     info.DeviceID = s.deviceId;
     info.SubDevID = 0;
     info.CmdID = cmd;
     info.Result = result;
-    sendFrame(ui, sock, info, JZByteArray(), log);
+    sendFrame(ui, sock, info, JZByteArray());
 }
 
 // 一帧怎么处理(原版 BTEServer::onDataRecv 的分发)
@@ -518,7 +515,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
     ++ui.dispIndex;
     recordPack(ui, false, pack.info, pack.data);
 
-    logLine(ui.textLog, "[收] cmd = " + cmdName(cmd)
+    logLine("[收] cmd = " + cmdName(cmd)
                          + ", dev = " + std::to_string(pack.info.DeviceID)
                          + ", body = " + std::to_string(pack.data.size()) + " 字节");
 
@@ -527,7 +524,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         stru_BTS_CMD_CONNECT c;
         if (c.unpack(pack.data))
             s.deviceId = pack.info.DeviceID;
-        sendResponse(ui, sock, s, BTS_CMD_CONNECT_RESP, 0, ui.textLog);   // 原版: response(..., 0)
+        sendResponse(ui, sock, s, BTS_CMD_CONNECT_RESP, 0);   // 原版: response(..., 0)
         return;
     }
 
@@ -536,9 +533,9 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         stru_BTS_CMD_SEND_INFO info;
         if (!info.unpack(pack.data))
         {
-            logLine(ui.textLog, "[协议] SEND_INFO 解包失败(body " + std::to_string(pack.data.size())
+            logLine("[协议] SEND_INFO 解包失败(body " + std::to_string(pack.data.size())
                                 + " 字节, 期望 108)");
-            sendResponse(ui, sock, s, BTS_CMD_SEND_INFO_RESP, 1, ui.textLog);
+            sendResponse(ui, sock, s, BTS_CMD_SEND_INFO_RESP, 1);
             return;
         }
 
@@ -547,7 +544,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         s.deviceString = info.deviceString(peerIpOf(s.netId));
         applyDeviceInfo(ui, s.netId, s.deviceId, info, peerIpOf(s.netId));
 
-        sendResponse(ui, sock, s, BTS_CMD_SEND_INFO_RESP, 0, ui.textLog);  // 原版: 回 RESP, result 0
+        sendResponse(ui, sock, s, BTS_CMD_SEND_INFO_RESP, 0);  // 原版: 回 RESP, result 0
 
         // 原版紧接着下发两条: SET_RTC(对时) + SET_RT_INTERVAL(实时帧间隔, 1 秒)
         JZDateTime t = JZDateTime::currentDateTime();
@@ -556,13 +553,13 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
             si.DeviceID = s.deviceId;
             si.CmdID = BTS_CMD_SET_RTC;
             sendFrame(ui, sock, si, packSetRtc(t.year(), t.month(), t.day(),
-                                                  t.hour(), t.minute(), t.second()), ui.textLog);
+                                                  t.hour(), t.minute(), t.second()));
         }
         {
             PackInfo si;
             si.DeviceID = s.deviceId;
             si.CmdID = BGS66_CMD_SET_RT_INTERVAL;
-            sendFrame(ui, sock, si, packRtInterval(1), ui.textLog);
+            sendFrame(ui, sock, si, packRtInterval(1));
         }
         return;
     }
@@ -579,7 +576,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         stru_BTS_CMD_SEND_RTDATA76 rt;
         if (!rt.unpack(pack.data))
         {
-            logLine(ui.textLog, "[协议] RTDATA76 解包失败(body " + std::to_string(pack.data.size())
+            logLine("[协议] RTDATA76 解包失败(body " + std::to_string(pack.data.size())
                                 + " 字节, 期望 75)");
             return;
         }
@@ -589,7 +586,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         const int itemIndex = subIdx * MAX_CHANNEL_NUM + (int)rt.ChannelIDByNum - 1;
         if (itemIndex < 0 || itemIndex >= MAX_DEVICE_ITEM)
         {
-            logLine(ui.textLog, "[协议] RTDATA76 通道越界(sub=" + std::to_string(pack.info.SubDevID)
+            logLine("[协议] RTDATA76 通道越界(sub=" + std::to_string(pack.info.SubDevID)
                                 + ", chn=" + std::to_string(rt.ChannelIDByNum) + ")");
             return;
         }
@@ -602,7 +599,7 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         stru_BTS_CMD_SEND_DFDATA76 df;
         if (!df.unpack(pack.data))
         {
-            logLine(ui.textLog, "[协议] DFDATA76 解包失败(body " + std::to_string(pack.data.size())
+            logLine("[协议] DFDATA76 解包失败(body " + std::to_string(pack.data.size())
                                 + " 字节)");
             return;
         }
@@ -619,9 +616,9 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
         ri.SubDevID = (uint8_t)pack.info.SubDevID;
         ri.CmdID = BTS_CMD_SEND_DFDATA_RESP76;
         ri.Result = 0;
-        sendFrame(ui, sock, ri, resp.packBody(), nullptr);
+        sendFrame(ui, sock, ri, resp.packBody());
         if (n > 0)
-            logLine(ui.textLog, "[记录] " + devId + " 入库 " + std::to_string(n) + " 点");
+            logLine("[记录] " + devId + " 入库 " + std::to_string(n) + " 点");
         return;
     }
 
@@ -634,9 +631,9 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
             snprintf(buf, sizeof(buf), "[日志] 单元%d 通道%d 时间=%s 类型=%u 信息=%d",
                      (int)log.UnitID, (int)log.ChannelIDByNum, log.timeText().c_str(),
                      (unsigned)log.LogID, (int)log.LogInfo);
-            logLine(ui.textLog, buf);
+            logLine(buf);
         }
-        sendResponse(ui, sock, s, BTS_CMD_SEND_LOG_RESP, 0, nullptr);
+        sendResponse(ui, sock, s, BTS_CMD_SEND_LOG_RESP, 0);
         return;
     }
 
@@ -653,8 +650,8 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
                 const int itemIndex = subIdx * MAX_CHANNEL_NUM
                                       + (int)resp.channelInfo[i].ChannelIDByNum - 1;
                 if (itemIndex >= 0 && itemIndex < MAX_DEVICE_ITEM
-                    && dev->status[itemIndex] == DeviceInfo::Status_WaitStart)
-                    dev->status[itemIndex] = DeviceInfo::Status_Run;
+                    && dev->status[itemIndex] == Status_WaitStart)
+                    dev->status[itemIndex] = Status_Run;
             }
         }
         return;
@@ -672,15 +669,15 @@ void dispatchPacket(BTEServer& ui, JZTcpSocket* sock, NetSession& s,
             if (itemIndex < 0 || itemIndex >= MAX_DEVICE_ITEM)
                 continue;
             if (cmd == BTS_CMD_STOP_RESP)
-                dev->status[itemIndex] = DeviceInfo::Status_Stop;
-            else if (dev->status[itemIndex] == DeviceInfo::Status_WaitStart
-                     || dev->status[itemIndex] == DeviceInfo::Status_WaitJump)
-                dev->status[itemIndex] = DeviceInfo::Status_Run;
+                dev->status[itemIndex] = Status_Stop;
+            else if (dev->status[itemIndex] == Status_WaitStart
+                     || dev->status[itemIndex] == Status_WaitJump)
+                dev->status[itemIndex] = Status_Run;
         }
         return;
     }
 
-    logLine(ui.textLog, "[协议] " + cmdName(cmd) + " 的业务还没搬(TODO: 报文结构 + 处理)");
+    logLine("[协议] " + cmdName(cmd) + " 的业务还没搬(TODO: 报文结构 + 处理)");
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +697,7 @@ void initHeartTimer(BTEServer& ui)
                 continue;
             if (now - d.heartMs > (int64_t)HEART_TIMEOUT_SEC * 1000)
             {
-                logLine(ui.textLog, "[网络] netId=" + std::to_string(d.netId)
+                logLine("[网络] netId=" + std::to_string(d.netId)
                                      + " 心跳超时(" + std::to_string((int)((now - d.heartMs) / 1000))
                                      + "s; now=" + std::to_string((long long)now)
                                      + " heart=" + std::to_string((long long)d.heartMs)
@@ -717,14 +714,13 @@ void initHeartTimer(BTEServer& ui)
 
 void initServer(BTEServer& ui, int port)
 {
-    JZTextEdit* log = ui.textLog;
 
     ui.server = new JZTcpServer();
 
     JZTcpServer* srv = ui.server;                 // 回调只捕获指针(活得比信号长)
 
     // ui 由调用方持有(见头文件说明) ⇒ 回调捕获它的地址是安全的
-    connect(&srv->sigAccept, [srv, log, &ui]() {
+    connect(&srv->sigAccept, [srv, &ui]() {
         JZTcpSocket* sock = srv->nextPendingConnection();
         if (!sock)
             return;
@@ -732,7 +728,7 @@ void initServer(BTEServer& ui, int port)
         NetSession& s = ui.sessions[sock];
         s.netId = (int)ui.sessions.size();       // 原版 netId 由 NetServer 分配
         ui.byNetId[s.netId] = sock;              // 下发命令要按 netId 找 socket
-        logLine(log, "[网络] 客户端接入(netId=" + std::to_string(s.netId) + ")");
+        logLine("[网络] 客户端接入(netId=" + std::to_string(s.netId) + ")");
 
         // 原版 onNewConnect: 先插一个空设备条目(等 SEND_INFO 才知道它是谁)
         {
@@ -743,7 +739,7 @@ void initServer(BTEServer& ui, int port)
             rebuildDeviceList(ui);
         }
 
-        connect(&sock->sigReadyRead, [sock, log, &ui]() {
+        connect(&sock->sigReadyRead, [sock, &ui]() {
             NetSession& session = ui.sessions[sock];
             session.buffer.append(sock->readAll());
 
@@ -751,18 +747,18 @@ void initServer(BTEServer& ui, int port)
             std::string err;
             takePackets(session.buffer, packs, &err);
             if (!err.empty())
-                logLine(log, "[协议] 分帧: " + err);
+                logLine("[协议] 分帧: " + err);
 
             for (size_t i = 0; i < packs.size(); ++i)
                 dispatchPacket(ui, sock, session, packs[i]);   // 里面记 "[收] ..." 并计数
         });
 
-        connect(&sock->sigDisconnected, [sock, log, &ui]() {
+        connect(&sock->sigDisconnected, [sock, &ui]() {
             std::map<JZTcpSocket*, NetSession>::iterator it = ui.sessions.find(sock);
             if (it == ui.sessions.end())
                 return;
 
-            logLine(log, "[网络] 连接断开(netId=" + std::to_string(it->second.netId)
+            logLine("[网络] 连接断开(netId=" + std::to_string(it->second.netId)
                          + ", 收过 " + std::to_string(it->second.packCount) + " 帧)");
             const int netId = it->second.netId;
             ui.sessions.erase(it);
@@ -784,13 +780,13 @@ void initServer(BTEServer& ui, int port)
     if (srv->listen(port))
     {
         ui.serverPort = srv->port();
-        logLine(log, "[网络] 监听中, 端口 = " + std::to_string(ui.serverPort)
+        logLine("[网络] 监听中, 端口 = " + std::to_string(ui.serverPort)
                      + (port == kBteServerPort ? "(与原版一致)" : ""));
     }
     else
     {
         // 注: 传 0 一定会走到这里 —— 引擎的 listen() 不接受 0(没有"让系统挑端口"这条)
-        logLine(log, "[网络] 监听端口 " + std::to_string(port)
+        logLine("[网络] 监听端口 " + std::to_string(port)
                      + " 失败(被占用? 或传了 0, 引擎不支持 0)");
     }
 }
@@ -885,7 +881,7 @@ void startAlarm(BTEServer& ui)
         if (!warned)
         {
             warned = true;
-            logLine(ui.textLog, std::string("[报警] 找不到 ") + kAlarmWav + "(原版: 程序目录下 wav/alarm.wav)");
+            logLine(std::string("[报警] 找不到 ") + kAlarmWav + "(原版: 程序目录下 wav/alarm.wav)");
         }
         return;
     }
@@ -947,13 +943,13 @@ void applyRtData(BTEServer& ui, int netId, int itemIndex, const stru_BTS_CMD_SEN
 
     dev->heartMs = nowMs();
 
-    // 状态: 运行/完成/停止(原版 WORK_* -> DeviceInfo::Status_*)
+    // 状态: 运行/完成/停止(原版 WORK_* -> Status_*)
     const int st = rt.workStatus();
     dev->status[itemIndex] = (st == stru_BTS_CMD_SEND_RTDATA76::WORK_RUN)
-                             ? DeviceInfo::Status_Run
+                             ? Status_Run
                              : (st == stru_BTS_CMD_SEND_RTDATA76::WORK_COMPLETE
-                                ? DeviceInfo::Status_Complete
-                                : DeviceInfo::Status_Stop);
+                                ? Status_Complete
+                                : Status_Stop);
 
     // 报警标志: 故障置位 / 恢复复位(原版 alarmFlag 由实时帧维护, 与"清除确认"是两回事)
     const bool fault = rt.isFault();
@@ -962,7 +958,7 @@ void applyRtData(BTEServer& ui, int netId, int itemIndex, const stru_BTS_CMD_SEN
         dev->alarmFlag[itemIndex] = fault ? 1 : 0;
         if (fault)
         {
-            logLine(ui.textLog, "[报警] " + dev->deviceString + " "
+            logLine("[报警] " + dev->deviceString + " "
                                 + channelTextOf(itemIndex) + " 故障, 保护码 = "
                                 + std::to_string(rt.PrtCode));
             // 新报警 = 未确认 ⇒ 重新判定要不要响铃(原版 refreshAlarmState)
@@ -984,13 +980,10 @@ void applyRtData(BTEServer& ui, int netId, int itemIndex, const stru_BTS_CMD_SEN
     if (itemIndex >= 0 && itemIndex < (int)ui.channelCards.size())
     {
         BTEItemWidget* card = ui.channelCards[itemIndex];
-        std::vector<std::string> lines;
-        lines.push_back("电压: " + fmtV(DataTrans::fromVoltageUnit(rt.Voltage)) + " V");
-        lines.push_back("电流: " + fmtA(DataTrans::fromElectricUnit(rt.Current)) + " A");
-        lines.push_back("温度: " + fmtTemp(DataTrans::fromTempUnit(rt.Tempature)) + " ℃");
-        lines.push_back("容量: " + fmtAh(DataTrans::fromCapUnit(rt.ChargeCap)) + " Ah");
-        card->setValueLines(lines);
-        card->setAlarm(dev->alarmFlag[itemIndex] != 0);
+        // 原版 setItemData(): 整帧交给卡片, 由卡片自己按 status/PrtCode/StepType 决定
+        // 底色与 9 行文案(见 BTEItemWidget::bgColor/getDispInfo)。
+        card->setData(rt);
+        card->setStatus(dev->status[itemIndex]);
         card->setAlarmCleared(dev->alarmClearFlag[itemIndex] != 0);
         card->setVisible(true);      // 有实时数据的通道一定是亮着的
     }
@@ -1097,13 +1090,13 @@ int sendChannelCommand(BTEServer& ui, int netId, uint16_t cmd,
         info.DeviceID = dev->deviceId;
         info.SubDevID = (uint8_t)(sub + 1);        // 原版 send(): SubDevID + 1
         info.CmdID = cmd;
-        sendFrame(ui, sock, info, body, ui.textLog);
+        sendFrame(ui, sock, info, body);
 
         // 置"等待回应"状态(原版 Status_WaitStart/WaitStop/WaitJump)
-        const int wait = (cmd == BTS_CMD_START70) ? DeviceInfo::Status_WaitStart
-                       : (cmd == BTS_CMD_STOP)    ? DeviceInfo::Status_WaitStop
-                       : (cmd == BTS_CMD_STEP_JUMP) ? DeviceInfo::Status_WaitJump
-                       : DeviceInfo::Status_Run;
+        const int wait = (cmd == BTS_CMD_START70) ? Status_WaitStart
+                       : (cmd == BTS_CMD_STOP)    ? Status_WaitStop
+                       : (cmd == BTS_CMD_STEP_JUMP) ? Status_WaitJump
+                       : Status_Run;
         for (size_t k = 0; k < chns.size(); ++k)
         {
             const int itemIndex = sub * MAX_CHANNEL_NUM + chns[k];
@@ -1141,7 +1134,8 @@ int clearAlarmAll(BTEServer& ui)
         const DeviceInfo* d = deviceOf(ui, curNetId(ui.listWidget));
         if (!d)
             break;
-        card->setAlarm(d->alarmFlag[k] != 0);
+        // 原版 updateItemAlarmClearFlags 只写"已确认"标志 —— 卡片的红/橙由它 + PrtCode 决定,
+        // 不需要(也没有)单独的"报警"开关。
         card->setAlarmCleared(d->alarmClearFlag[k] != 0);
     }
 
@@ -1151,7 +1145,7 @@ int clearAlarmAll(BTEServer& ui)
 }
 
 // ---------------------------------------------------------------------------
-// 查询(原版 on_btnQuery_clicked): 左栏条件 -> tableQuery(并同步 pageHistory 的 tableHistory)
+// 查询(原版 on_btnQuery_clicked): 左栏条件 -> pageHistory 里的 tableQuery(原版同名)
 //   条件: 设备(下拉) / 单元 / 通道 / 电池编号(包含) / 批号(包含) / 创建者(包含)
 //         + 时间(不限 / 最近 N 天 / 指定 从..至..)
 //   ⚠ 原版第 3 列"分选"是 setCellWidget(QCheckBox) —— 骨架没有 setCellWidget, 用 "√/空" 文本
@@ -1237,11 +1231,9 @@ int queryRecords(BTEServer& ui)
         ui.queryHits.push_back(r.recordId);
     }
 
-    // ---- 结果进表(tableQuery 与 tableHistory 同一份) ----
+    // ---- 结果进表(pageHistory 里那张 tableQuery; 原版查询结果就填这一张) ----
     const int rows = (int)ui.queryHits.size();
     ui.tableQuery->setRowCount(rows);
-    if (ui.tableHistory)
-        ui.tableHistory->setRowCount(rows);
 
     for (int i = 0; i < rows; ++i)
     {
@@ -1264,11 +1256,7 @@ int queryRecords(BTEServer& ui)
             r.stepInfo.cellNo, r.stepInfo.cellBatch, r.stepInfo.creator, r.stepInfo.memo
         };
         for (int c = 0; c < 10; ++c)
-        {
             ui.tableQuery->setItemText(i, c, cells[c]);
-            if (ui.tableHistory)
-                ui.tableHistory->setItemText(i, c, cells[c]);
-        }
     }
 
     if (ui.stackedWidget && rows > 0)
@@ -1470,7 +1458,6 @@ bool deleteWarning(BTEServer& ui, const std::string& what)
 void wire(BTEServer& ui)
 {
     JZMainWindow*    main = ui.main;
-    JZTextEdit*      log = ui.textLog;
     JZStackedWidget* stack = ui.stackedWidget;
     JZListWidget*    list = ui.listWidget;
     JZSpinBox*       nearDay = ui.lineNearDay;
@@ -1489,8 +1476,8 @@ void wire(BTEServer& ui)
                     continue;
                 for (int k = 0; k < MAX_DEVICE_ITEM; ++k)
                 {
-                    if (d.status[k] != DeviceInfo::Status_Complete
-                        && d.status[k] != DeviceInfo::Status_Stop)
+                    if (d.status[k] != Status_Complete
+                        && d.status[k] != Status_Stop)
                     {
                         running = true;
                         break;
@@ -1519,30 +1506,30 @@ void wire(BTEServer& ui)
     // 语言切换(原版 switchLang): 现在只改标题与"通道列表"标签 + 打日志, 多语言表待补
     JZLabel* channelLabel = ui.labelChannel;
     if (JZAction* act = findAction(ui.menuBar, "中文"))
-        connect(&act->triggered, [main, channelLabel, log]() {
+        connect(&act->triggered, [main, channelLabel]() {
             if (main) main->setTitle("BTEServer");
             if (channelLabel) channelLabel->setText("通道列表");
-            logLine(log, "[语言] 切换为中文");
+            logLine("[语言] 切换为中文");
         });
     if (JZAction* act = findAction(ui.menuBar, "英语"))
-        connect(&act->triggered, [main, channelLabel, log]() {
+        connect(&act->triggered, [main, channelLabel]() {
             if (main) main->setTitle("BTEServer (EN)");
             if (channelLabel) channelLabel->setText("Channel List");
-            logLine(log, "[语言] switch to English");
+            logLine("[语言] switch to English");
         });
 
     // ---- 左页签联动(原版 on_tabWidget_currentChanged: 切"历史数据"页把右栏切到历史页) ----
     if (ui.tabWidget)
-        connect(&ui.tabWidget->currentChanged, [stack, log](int idx) {
-            logLine(log, "[页签] 左栏 = " + std::to_string(idx));
+        connect(&ui.tabWidget->currentChanged, [stack](int idx) {
+            logLine("[页签] 左栏 = " + std::to_string(idx));
             if (stack)
                 stack->setCurrentIndex(idx == 1 ? BTEServer::PageHistory : BTEServer::PageNormal);
         });
 
     // ---- 设备列表(原版 initDeviceList + on_listWidget_currentRowChanged) ----
     if (list)
-        connect(&list->currentIndexChanged, [list, stack, log](int idx) {
-            logLine(log, "[设备] 选中 idx=" + std::to_string(idx)
+        connect(&list->currentIndexChanged, [list, stack](int idx) {
+            logLine("[设备] 选中 idx=" + std::to_string(idx)
                          + " netId=" + std::to_string(curNetId(list)));
             if (stack)
                 stack->setCurrentIndex(BTEServer::PageNormal);
@@ -1552,7 +1539,7 @@ void wire(BTEServer& ui)
     auto gotoPage = [&ui](BTEServer::Page page, const char* what) {
         if (ui.stackedWidget)
             ui.stackedWidget->setCurrentIndex(page);
-        logLine(ui.textLog, std::string("[页面] ") + what);
+        logLine(std::string("[页面] ") + what);
     };
     if (ui.btnShowNormal)
         connect(&ui.btnShowNormal->sigClicked, [gotoPage]() { gotoPage(BTEServer::PageNormal, "通道"); });
@@ -1567,7 +1554,7 @@ void wire(BTEServer& ui)
     if (ui.btnClearAlarm)
         connect(&ui.btnClearAlarm->sigClicked, [&ui]() {
             const int n = clearAlarmAll(ui);
-            logLine(ui.textLog, "[报警] 一键清除: 确认了 " + std::to_string(n) + " 条报警");
+            logLine("[报警] 一键清除: 确认了 " + std::to_string(n) + " 条报警");
         });
 
     // ---- 查询(原版 on_btnQuery_clicked: 条件查记录库 -> tableQuery) ----
@@ -1581,7 +1568,7 @@ void wire(BTEServer& ui)
                 box->deleteLater();
                 return;
             }
-            logLine(ui.textLog, "[查询] 命中 " + std::to_string(n) + " 条");
+            logLine("[查询] 命中 " + std::to_string(n) + " 条");
             if (n == 0)
             {
                 JZMessageBox* box = JZMessageBox::information(ui.main, "", "未找到相关数据");
@@ -1597,7 +1584,7 @@ void wire(BTEServer& ui)
             if (dir.empty())
                 return;
             const int n = exportRecords(ui, dir);
-            logLine(ui.textLog, "[导出] " + dir + (n > 0 ? " 已写出 bte_records.csv"
+            logLine("[导出] " + dir + (n > 0 ? " 已写出 bte_records.csv"
                                                         : " 没有可导出的记录(先查询)"));
         });
 
@@ -1617,9 +1604,7 @@ void wire(BTEServer& ui)
             ui.splitLevels.clear();
             if (ui.tableQuery)
                 ui.tableQuery->setRowCount(0);
-            if (ui.tableHistory)
-                ui.tableHistory->setRowCount(0);
-            logLine(ui.textLog, "[删除] 选中记录 " + std::to_string(removed) + " 条");
+            logLine("[删除] 选中记录 " + std::to_string(removed) + " 条");
         });
 
     // ---- 按时间整批删(原版 btnDeleteWeek/Month/Year) ----
@@ -1629,9 +1614,7 @@ void wire(BTEServer& ui)
         const int n = deleteRecords(ui, days, std::string());
         if (ui.tableQuery)
             ui.tableQuery->setRowCount(0);
-        if (ui.tableHistory)
-            ui.tableHistory->setRowCount(0);
-        logLine(ui.textLog, "[删除] " + std::string(what) + " -> " + std::to_string(n) + " 条");
+        logLine("[删除] " + std::string(what) + " -> " + std::to_string(n) + " 条");
     };
     if (ui.btnDeleteWeek)
         connect(&ui.btnDeleteWeek->sigClicked, [deleteByDay]() { deleteByDay(7, "一周前的记录"); });
@@ -1663,46 +1646,34 @@ void wire(BTEServer& ui)
             if (!deleteWarning(ui, "设备 " + deviceId + " 的全部记录"))
                 return;
             const int n = deleteRecords(ui, 0, deviceId);
-            logLine(ui.textLog, "[删除] 设备 " + deviceId + " -> " + std::to_string(n) + " 条记录");
+            logLine("[删除] 设备 " + deviceId + " -> " + std::to_string(n) + " 条记录");
         });
 
     // ---- 时间范围单选(原版: 三个 radio 决定查询的时间条件; "不限"时天数框置灰) ----
     if (ui.btnNone)
-        connect(&ui.btnNone->sigToggled, [nearDay, log]() {
+        connect(&ui.btnNone->sigToggled, [nearDay]() {
             if (nearDay) nearDay->setEnabled(false);
-            logLine(log, "[时间] 不限");
+            logLine("[时间] 不限");
         });
     if (ui.btnNear)
-        connect(&ui.btnNear->sigToggled, [nearDay, log]() {
+        connect(&ui.btnNear->sigToggled, [nearDay]() {
             if (nearDay) nearDay->setEnabled(true);
-            logLine(log, "[时间] 最近 N 天");
+            logLine("[时间] 最近 N 天");
         });
     if (ui.btnFrom)
         connect(&ui.btnFrom->sigToggled, [&ui]() {
             if (ui.dateFrom) ui.dateFrom->setEnabled(true);
             if (ui.dateTo)   ui.dateTo->setEnabled(true);
-            logLine(ui.textLog, "[时间] 指定 从..至..");
+            logLine("[时间] 指定 从..至..");
         });
 
-    // ---- 分选(原版 btnSplitQuery / btnSaveSplit / btnCopySplitList) ----
+    // ---- 分选(原版 btnSplitQuery / btnCopySplitList) ----
     if (ui.btnSplitQuery)
         connect(&ui.btnSplitQuery->sigClicked, [&ui]() {
             const int levels = splitRecords(ui);
-            logLine(ui.textLog, levels > 0
+            logLine(levels > 0
                                 ? "[分选] 分成 " + std::to_string(levels) + " 级"
                                 : "[分选] 没有可分选的记录(先查询)");
-        });
-    if (ui.btnSaveSplit)
-        connect(&ui.btnSaveSplit->sigClicked, [&ui]() {
-            const int levels = splitRecords(ui);
-            if (levels <= 0)
-                return;
-            const std::string dir = JZFileDialog::getExistingDirectory(ui.main, "保存分选结果");
-            if (dir.empty())
-                return;
-            const int n = exportRecords(ui, dir);
-            logLine(ui.textLog, "[分选] 保存 " + std::to_string(levels) + " 级 -> "
-                                + (n > 0 ? dir + "\\bte_records.csv" : "写文件失败"));
         });
     if (ui.btnCopySplitList)
         connect(&ui.btnCopySplitList->sigClicked, [&ui]() {
@@ -1732,16 +1703,16 @@ void wire(BTEServer& ui)
             {
                 f.write(csv.data(), (int)csv.size());
                 f.close();
-                logLine(ui.textLog, "[分选] 明细已导出 " + dir + "split_list.csv");
+                logLine("[分选] 明细已导出 " + dir + "split_list.csv");
             }
         });
 
     // ---- 分选阈值(原版 QDoubleSpinBox -> 引擎的 JZDoubleSpinBox): 证明小数信号通 ----
     if (ui.spinSplitThreshold)
-        connect(&ui.spinSplitThreshold->sigValueChanged, [log](double v) {
+        connect(&ui.spinSplitThreshold->sigValueChanged, [](double v) {
             char buf[64];
             snprintf(buf, sizeof(buf), "[分选] 阈值 = %.1f", v);
-            logLine(log, buf);
+            logLine(buf);
         });
 
     // ---- 测试页: 端口重开 + 收发清空(原版 btnResetServer / btnClearSend / btnClearRecv) ----
@@ -1750,7 +1721,7 @@ void wire(BTEServer& ui)
             const int port = ui.linePort ? atoi(ui.linePort->text().c_str()) : 0;
             if (port <= 0)
             {
-                logLine(ui.textLog, "[网络] 端口不合法: " + (ui.linePort ? ui.linePort->text() : std::string()));
+                logLine("[网络] 端口不合法: " + (ui.linePort ? ui.linePort->text() : std::string()));
                 return;
             }
             if (ui.server)
@@ -1758,11 +1729,11 @@ void wire(BTEServer& ui)
             if (ui.server->listen(port))
             {
                 ui.serverPort = ui.server->port();
-                logLine(ui.textLog, "[网络] 已重新监听, 端口 = " + std::to_string(ui.serverPort));
+                logLine("[网络] 已重新监听, 端口 = " + std::to_string(ui.serverPort));
             }
             else
             {
-                logLine(ui.textLog, "[网络] 监听 " + std::to_string(port) + " 失败");
+                logLine("[网络] 监听 " + std::to_string(port) + " 失败");
             }
         });
     if (ui.btnClearSend)
@@ -1787,7 +1758,6 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
 
     // ---- 归一下类(生成的成员本身就是类型化的, 这里只是省掉 gen. 那一层) ----
     ui.main = ui.gen.main;
-    ui.textLog = ui.gen.textLog;                       // 先拿日志口(后面接线要打日志)
     ui.menuBar = ui.main ? ui.main->menuBar() : nullptr;
     ui.listWidget = ui.gen.listWidget;
     ui.tabWidget = ui.gen.tabWidget;
@@ -1802,7 +1772,6 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     ui.btnNear = ui.gen.btnNear;
     ui.lineNearDay = ui.gen.lineNearDay;
     ui.tableQuery = ui.gen.tableQuery;
-    ui.tableHistory = ui.gen.tableHistory;
     ui.tableList = ui.gen.tableList;
     ui.tableSplitLevel = ui.gen.tableSplitLevel;
     ui.tableSplitList = ui.gen.tableSplitList;
@@ -1820,7 +1789,6 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     ui.lineCreator = ui.gen.lineCreator;
     ui.spinSplitThreshold = ui.gen.spinSplitThreshold;
     ui.btnSplitQuery = ui.gen.btnSplitQuery;
-    ui.btnSaveSplit = ui.gen.btnSaveSplit;
     ui.btnCopySplitList = ui.gen.btnCopySplitList;
     ui.btnShowNormal = ui.gen.btnShowNormal;
     ui.btnShowList = ui.gen.btnShowList;
@@ -1838,13 +1806,21 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     ui.btnClearRecv = ui.gen.btnClearRecv;
     ui.itemWidgets = ui.gen.itemWidgets;
 
+    // 原版左栏是 maximumSize.width = 240(原版 .ui 里那个匿名 widget 的 maximumSize);
+    // 方言还没有 maximumSize 属性, 在代码里设(等价)。
+    if (ui.gen.widgetLeft)
+        ui.gen.widgetLeft->setMaximumWidth(240);
+
+    // 工步名表/保护码文案(原版在 net/netPackDefine.cpp 的 NetPackRegist() 里初始化, 启动时一次)
+    PackDefine::init();
+
     // ---- 原版构造函数的骨干序列(能做的部分; 行号对应 BTEServer.cpp) ----
     initTable(ui);                                         // 原版: :88 initTable()
     initDeviceListMenu(ui);                                // 原版: :115 listWidget 右键菜单
     initChannelGrid(ui);                                   // 原版: :119 通道卡片网格
     rebuildDeviceList(ui);                                 // 原版: :166 initDeviceList()(此时还没设备)
     if (ui.tabWidget)
-        ui.tabWidget->setCurrentIndex(1);                  // UI 里是"当前"(0), 原版随后被配置改成历史页
+        ui.tabWidget->setCurrentIndex(0);                  // 原版: tabWidget->setCurrentIndex(0)("当前"页)
     if (ui.stackedWidget)
         ui.stackedWidget->setCurrentIndex(BTEServer::PageNormal);
 
@@ -1868,14 +1844,14 @@ void buildBTEServer(BTEServer& ui, int serverPort, const std::string& projectDir
     // 原版 :159 m_alarm = new AlarmPlayer();
     ui.alarm = new AlarmPlayer();
 
-    logLine(ui.textLog, "[骨架] BTEServer 界面已建(由 BTEServer.ui 生成: 设备列表/页签/堆叠页/菜单/表格/通道卡片)");
-    logLine(ui.textLog, "[骨架] 已接: 实时帧/记录点/日志 + 通道启停接续跳步 + 查询·删除·分选 + 测试页收发");
-    logLine(ui.textLog, "[骨架] 已接: 记录库(sqlite)/工程(BTEProject)、报警音(AlarmPlayer)、帮助/改IP 对话框");
-    logLine(ui.textLog, "[骨架] TODO: 工步下发(SET_STEP76_Ex)与工步设置界面、分选模板界面、多语言、框选");
+    logLine("[骨架] BTEServer 界面已建(由 BTEServer.ui 生成: 设备列表/页签/堆叠页/菜单/表格/通道卡片)");
+    logLine("[骨架] 已接: 实时帧/记录点/日志 + 通道启停接续跳步 + 查询·删除·分选 + 测试页收发");
+    logLine("[骨架] 已接: 记录库(sqlite)/工程(BTEProject)、报警音(AlarmPlayer)、帮助/改IP 对话框");
+    logLine("[骨架] TODO: 工步下发(SET_STEP76_Ex)与工步设置界面、分选模板界面、多语言、框选");
     // 原版 :142 initShortCuts() 是 Ctrl+A -> onBTEItemSelectAll(): **框架还没有快捷键分发**
     // (JZAction::setShortcut 目前只用于菜单里显示, 没有任何按键匹配代码), 所以这条先记着不假做。
     // 卡片右键菜单里的"全选"就是它现在的可点替代品。
-    logLine(ui.textLog, "[骨架] 缺口: 快捷键(Ctrl+A 全选)需要框架先加「动作快捷键分发」");
+    logLine("[骨架] 缺口: 快捷键(Ctrl+A 全选)需要框架先加「动作快捷键分发」");
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,7 +1870,7 @@ void applyDeviceInfo(BTEServer& ui, int netId, uint8_t deviceId, const stru_BTS_
         if (old.netId != netId && old.deviceString == name && old.online)
         {
             old.online = false;
-            logLine(ui.textLog, "[网络] 设备重连, 旧连接 netId=" + std::to_string(old.netId) + " 置离线");
+            logLine("[网络] 设备重连, 旧连接 netId=" + std::to_string(old.netId) + " 置离线");
         }
     }
 
@@ -1931,5 +1907,5 @@ void applyDeviceInfo(BTEServer& ui, int netId, uint8_t deviceId, const stru_BTS_
     snprintf(buf, sizeof(buf), "[协议] 设备信息: %s (版本 %u, 充电量程 %u mA, 电压量程 %u, 通道 %d)",
              name.c_str(), (unsigned)info.Version, (unsigned)info.ChargeMax,
              (unsigned)info.VoltageMax, (int)dev->channelNum);
-    logLine(ui.textLog, buf);
+    logLine(buf);
 }

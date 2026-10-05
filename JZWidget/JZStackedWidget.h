@@ -25,8 +25,11 @@ public:
     void setCurrentWidget(JZWidget* w);
 
     // 页面铺满本控件; sizeHint 取所有页面的最大期望尺寸
-    void setGeometry(int x, int y, int w, int h) override;
     JZSize sizeHint() const override;
+    // 尺寸变化统一在这里处理(框架给子类的钩子, 见 JZWidget::resize 的派发)。
+    // 不需要 override setGeometry/resize: setGeometry 内部就是 resize + move,
+    // 而 resize 会派发本事件 —— 一个钩子覆盖两条路径。
+    void resizeEvent(JZResizeEvent* event) override;
     void paintEvent(JZPainterEvent* event) override;
 
 private:

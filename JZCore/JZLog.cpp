@@ -4,10 +4,7 @@
 #include "JZDateTime.h"
 #include "JZApplication.h"
 #include "JZTimer.h"
-
-#if defined(_WIN32)
-#include <windows.h>   // GetConsoleMode / GetConsoleOutputCP: 控制台输出编码判定, 见 toConsoleBytes
-#endif
+#include "JZStd.h"      // str_utf8_to_console(): 控制台输出编码, 见下面 toConsoleBytes
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -245,62 +242,12 @@ const char* JZLogManager::getLevelPrefix(int level)
 //
 // 注: 与 str_utf8_to_local(CP_ACP) 不是一回事 —— 那个是给 ANSI **文件** API(JZFile/JZDir)
 //     用的, 那边必须转, 别混。
-#if defined(_WIN32)
-// UTF-8 -> 指定代码页(cp 用控制台自己的 CP, 而不是 CP_ACP)
-static std::string utf8ToCodepage(const std::string &utf8, UINT cp)
-{
-    if (utf8.empty())
-        return utf8;
-
-    int wcsLen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (wcsLen <= 1)
-        return utf8;
-
-    std::wstring wstr(wcsLen - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wcsLen);
-
-    int len = WideCharToMultiByte(cp, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 1)
-        return utf8;
-
-    std::string out(len - 1, '\0');
-    WideCharToMultiByte(cp, 0, wstr.c_str(), -1, &out[0], len, nullptr, nullptr);
-    return out;
-}
-#endif
-
+//
+// ⚠ 这套规则已经提到 JZCore/JZStd.cpp 的 str_utf8_to_console()(声明在 JZStd.h), 这里直接调用:
+//   示例/test 自己往控制台 printf 中文时用同一个函数即可, 不要再抄一份。
 static std::string toConsoleBytes(const std::string &utf8)
 {
-#if defined(_WIN32)
-    struct ConsoleState
-    {
-        bool isConsole;
-        UINT cp;
-    };
-
-    static const ConsoleState st = []() -> ConsoleState
-    {
-        ConsoleState s;
-        s.isConsole = false;
-        s.cp = CP_UTF8;
-
-        HANDLE h = ::GetStdHandle(STD_OUTPUT_HANDLE);
-        DWORD mode = 0;
-        if (h != nullptr && h != INVALID_HANDLE_VALUE && ::GetConsoleMode(h, &mode))
-        {
-            s.isConsole = true;
-            s.cp = ::GetConsoleOutputCP();
-        }
-        return s;
-    }();
-
-    if (!st.isConsole || st.cp == CP_UTF8 || st.cp == 0)
-        return utf8;
-    return utf8ToCodepage(utf8, st.cp);
-#else
-    // 非 Windows: 本地编码就是 UTF-8(JZStd.cpp 里 str_utf8_to_local 也是透传), 原样输出
-    return utf8;
-#endif
+    return str_utf8_to_console(utf8);
 }
 
 void JZLogManager::log(int module_id, int level, const std::string &message)

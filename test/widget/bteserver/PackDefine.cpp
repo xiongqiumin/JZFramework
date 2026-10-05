@@ -755,3 +755,46 @@ bool stru_BTS_CMD_START_RESP70::unpack(const JZByteArray& body)
     }
     return r.ok();
 }
+
+// ---------------------------------------------------------------------------
+// PackDefine(工步名表 / 保护码文案) —— 原版在 net/netPackDefine.cpp 的 NetPackRegist() 里初始化
+// ---------------------------------------------------------------------------
+std::vector<std::string>   PackDefine::StepNameList;
+std::map<int, std::string> PackDefine::ErrorList;
+
+void PackDefine::init()
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+
+    // 工步名(原版 NetPackRegist 里内嵌的那份中文表, 顺序与 STEP_TYPE_* 一一对应)
+    StepNameList = {
+        "未定义", "恒流充电", "恒流放电", "恒压充电",
+        "静    置", "循    环", "结    束", "恒流恒压充电",
+        "恒功率放电", "恒功率充电", "恒阻放电", "恒阻充电",
+        "测量内阻", "挂起工步", "N闭环恒压充电", "N闭环恒流恒压充电",
+        "脉冲工步", "模拟工步", "电池组恒流恒压", "恒压放电",
+        "恒流恒压放电", "控制工步"
+    };
+
+    // 保护码文案: 原版从 exe 目录的 Modules/BTELogCode.txt 逐行读("码-十六进制-描述")。
+    // 骨架不带这个文件 —— ErrorList 留空, ErrorText() 就返回 "未知错误"(与原版缺该文件时一致)。
+    // 真要恢复: 在这里按同样格式读文件填 ErrorList 即可。
+}
+
+std::string PackDefine::ErrorText(int type)
+{
+    std::map<int, std::string>::const_iterator it = ErrorList.find(type);
+    return (it == ErrorList.end()) ? std::string("未知错误") : it->second;
+}
+
+int PackDefine::StepChargeType(int type)
+{
+    if (type == STEP_TYPE_7 || type == STEP_TYPE_3 || type == STEP_TYPE_1)
+        return STEP_CHARGE;
+    if (type == STEP_TYPE_2)
+        return STEP_DISCHARGE;
+    return STEP_CHARGE_OTHER;
+}

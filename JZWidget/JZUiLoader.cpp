@@ -157,6 +157,16 @@ void JZUiLoader::applyProps(const JZUiNode& node, JZWidget* w)
             else if (JZStackedWidget* p = dynamic_cast<JZStackedWidget*>(w))  p->setCurrentIndex(i);
             else if (JZListWidget* p = dynamic_cast<JZListWidget*>(w))        p->setCurrentIndex(i);
         }
+        else if (key == "tabPosition" && JZUiParser::hasTabPosition(t) && val.isString())
+        {
+            // Qt 的 .ui: <property name="tabPosition"><enum>QTabWidget::West</enum></property>
+            // ⇒ props 里是字符串 "QTabWidget::West"(枚举前缀靠 parseTabPosition 剥掉)。
+            const int pos = JZUiParser::parseTabPosition(val.asString());
+            if (pos >= 0) {
+                if (JZTabWidget* p = dynamic_cast<JZTabWidget*>(w))
+                    p->setTabPosition((JZTabWidget::TabPosition)pos);
+            }
+        }
         else if (key == "checked" && JZUiParser::hasChecked(t) && val.isBool())
         {
             const bool on = val.asBool();

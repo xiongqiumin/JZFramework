@@ -114,6 +114,11 @@ public:
     static bool hasText(const std::string& t);
     static bool hasTitle(const std::string& t);
     static bool hasCurrentIndex(const std::string& t);
+    static bool hasTabPosition(const std::string& t);             // TabWidget 专属: 标签条方向
+    // .ui 里的枚举串 -> 序号: 认 "West" / "QTabWidget::West" / "QTabWidget::TabPosition::West"
+    // (Qt 的 .ui 写的是最后一种)。认不出返回 -1; 序号与 JZTabWidget::TabPosition 同值。
+    static int         parseTabPosition(const std::string& value);
+    static std::string tabPositionName(int pos);                  // 0 -> "North", 越界 -> ""
     static bool hasChecked(const std::string& t);
     static bool hasReadOnly(const std::string& t);
     static bool hasPlaceholder(const std::string& t);

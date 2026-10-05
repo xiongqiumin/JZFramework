@@ -518,6 +518,40 @@ bool uiHasCurrentIndex(const std::string& t) {
     return t == "ComboBox" || t == "TabWidget" ||
            t == "StackedWidget" || t == "ListWidget";
 }
+// TabWidget 的标签条方向(对齐 Qt QTabWidget::TabPosition)。
+// 值在 Qt 的 .ui 里是 <enum>QTabWidget::West</enum> —— 这里把前缀和空白都剥掉再比。
+bool uiHasTabPosition(const std::string& t) {
+    return t == "TabWidget";
+}
+int uiTabPositionFromText(const std::string& value) {
+    std::string s = value;
+    const size_t p = s.rfind("::");          // "QTabWidget::TabPosition::West" -> "West"
+    if (p != std::string::npos)
+        s = s.substr(p + 2);
+
+    std::string key;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+            continue;
+        key += (char)tolower((unsigned char)c);
+    }
+
+    if (key == "north") return 0;
+    if (key == "south") return 1;
+    if (key == "west")  return 2;
+    if (key == "east")  return 3;
+    return -1;
+}
+std::string uiTabPositionName(int pos) {
+    switch (pos) {
+    case 0: return "North";
+    case 1: return "South";
+    case 2: return "West";
+    case 3: return "East";
+    default: return std::string();
+    }
+}
 // 注: ComboBox 也支持 setCurrentIndex(已并入上面的白名单), 这样 <property name="currentIndex">
 //     能在生成脚本里正确落到 addItem 之后(项齐了再选, 否则索引被夹成 -1)。
 bool uiHasChecked(const std::string& t) {
@@ -632,6 +666,9 @@ std::string JZUiParser::tabLabel(const JZUiNode& child) { return uiTabLabel(chil
 bool JZUiParser::hasText(const std::string& t) { return uiHasText(t); }
 bool JZUiParser::hasTitle(const std::string& t) { return uiHasTitle(t); }
 bool JZUiParser::hasCurrentIndex(const std::string& t) { return uiHasCurrentIndex(t); }
+bool JZUiParser::hasTabPosition(const std::string& t) { return uiHasTabPosition(t); }
+int  JZUiParser::parseTabPosition(const std::string& value) { return uiTabPositionFromText(value); }
+std::string JZUiParser::tabPositionName(int pos) { return uiTabPositionName(pos); }
 bool JZUiParser::hasChecked(const std::string& t) { return uiHasChecked(t); }
 bool JZUiParser::hasReadOnly(const std::string& t) { return uiHasReadOnly(t); }
 bool JZUiParser::hasPlaceholder(const std::string& t) { return uiHasPlaceholder(t); }

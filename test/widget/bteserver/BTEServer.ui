@@ -3,41 +3,74 @@
   BTEServer 主窗口 —— C++ 版 bteserver 骨架的界面定义(uiLoader 方言)。
 
   这是**源头**: 构建期由 jz_uic 生成 C++ 头(build/.../generated/test_bteserver/ui_BTEServer.h),
-  宿主只写逻辑(见 bteserver_ui.cpp / main.cpp)。改界面就改这里, 重新构建即生效。
-  结构与原版 Qt 的 BTEServer.ui 对齐(左: 设备列表页签 / 右: 通道列表 + 堆叠页 / 菜单 文件·翻译·帮助),
-  控件命名也贴原版(listWidget / tabWidget / stackedWidget / tableQuery / dateFrom ...)。
+  宿主只写逻辑(见 BTEServer.cpp / main.cpp)。改界面就改这里, 重新构建即生效。
+
+  结构**逐项对齐原版 Qt 的 BTEServer.ui**(原版 .ui 里的控件树):
+    centralWidget
+      QSplitter splitter (Horizontal)
+        QWidget widgetLeft        左栏(原版 maximumSize.width = 240, 见 buildBTEServerUi 里设)
+          QLabel "设备列表"
+          QTabWidget tabWidget (tabPosition = South, currentIndex = 1)
+            tabDevice "当前"      -> QListWidget listWidget
+            tabQuery  "历史数据"   -> QLabel "查询"
+                                     QGroupBox "设备"(设备号/单元号/通道号)
+                                     QGroupBox "时间"(不记得 / 最近+天数 / 从+日期 / 至+日期)
+                                     批号·创建者·电池编号(各一行 Label + LineEdit)
+                                     7 个按钮(竖排): 查询/导出当前数据/删除当前数据/
+                                       删除一周前数据/删除一月前数据/删除一年前数据/删除当前设备
+        QWidget widgetMain        右栏
+          QLabel "通道列表"
+          QStackedWidget stackedWidget
+            pageNormal  -> QScrollArea cardScroll > QWidget itemWidgets(卡片由代码 addWidget)
+            pageList    -> QTableWidget tableList
+            pageHistory -> QTableWidget tableQuery(查询结果就填这张, 原版同名)
+            pageSplit   -> QTabWidget tabWidgetSplit
+                             tabSplitSetting "分选条件设置"
+                             tabSplitResult  "分选结果"(QGroupBox "结果列表显示" + 导出按钮)
+            pageTest    -> 端口行 / 数据过滤行 / send·recv 两栏
+          QWidget bottomRow       原版 widget_3: QLabel "欢迎使用软件" + 6 个页切换按钮(一行)
+
+  与原版的**已知差异**(方言或骨架能力所限, 见各自的 TODO):
+    - 原版分选条件是自定义控件 SplitSettingWidget / 结果是 SplitResultWidget+SplitPieChart,
+      骨架只有阈值框 + 两张表; 原版 pageTest 末尾的 "Recv Log" 文本框没做(用户要求不加多余框)。
+    - 方言不支持 spacer / maximumSize, 所以底行的"弹簧"用 Label stretch 代替, 左栏 240 上限在
+      代码里设(buildBTEServerUi)。
 -->
 <ui version="4.0">
   <class>BTEServerClass</class>
   <widget class="MainWindow" name="main">
     <property name="geometry">0,0,794,757</property>
     <property name="title">BTEServer</property>
+    <!-- 原版窗口样式表(逐条照抄, 只把 rgb() 写成 #hex): 通道卡片容器深灰底 + 左页签/分选页浅灰底 -->
+    <property name="styleSheet">
+#itemWidgets { background-color: #818181; }
+#tabQuery, #tabSplitSetting, #tabSplitResult { background-color: #f0f0f0; }
+    </property>
     <menubar id="menuBar">
       <menu title="文件">
         <action text="退出"/>
       </menu>
+      <menu title="帮助">
+        <action text="关于"/>
+      </menu>
       <menu title="翻译">
         <action text="中文" checkable="true" checked="true"/>
         <action text="英语" checkable="true"/>
-      </menu>
-      <menu title="帮助">
-        <action text="关于"/>
       </menu>
     </menubar>
     <widget class="Widget" name="centralWidget">
       <widget class="HBoxLayout" name="mainLayout">
         <!-- stretch="1": 盒子布局里的伸缩因子(Qt 的 <stretch>), 让这个子控件吃掉多余空间 -->
         <widget class="Splitter" name="splitter" stretch="1">
-          <!-- ---- 左栏: 设备列表 + 左页签 ---- -->
+          <!-- ==== 左栏: 设备列表 + 左页签(页签在原版是**下方**) ==== -->
           <widget class="Widget" name="widgetLeft">
             <widget class="VBoxLayout" name="leftLayout">
               <widget class="Label" name="labelDevice">
                 <property name="text">设备列表</property>
-                <!-- 贴 Qt 的写法: 直接给 CSS 串(三个后端都收; 见 JZUiParser::styleToCss 的说明) -->
-                <property name="styleSheet">color:#334455; font-weight:bold;</property>
               </widget>
               <widget class="TabWidget" name="tabWidget" stretch="1">
                 <property name="currentIndex">1</property>
+                <property name="tabPosition">South</property>
                 <widget class="Widget" name="tabDevice">
                   <property name="title">当前</property>
                   <widget class="VBoxLayout" name="tabDeviceLayout">
@@ -47,128 +80,121 @@
                 <widget class="Widget" name="tabQuery">
                   <property name="title">历史数据</property>
                   <widget class="VBoxLayout" name="tabQueryLayout">
+                    <!-- 原版没写 spacing(用 Qt 默认); 这里收紧到 2: 本框架的盒子布局**不压缩**
+                         weight=0 的项(严格保持 sizeHint, 见 JZLayout::distributeAxis), 按默认间距
+                         排下来会比 741px 的页面区高 ~90px, 溢出的部分会盖住下方页签(裁剪只在
+                         滚动区视口做)。 -->
+                    <property name="spacing">2</property>
+                    <widget class="Label" name="labelQuery">
+                      <property name="text">查询</property>
+                    </widget>
+                    <!-- 原版 groupBox: 设备号 / 单元号 / 通道号 -->
                     <widget class="GroupBox" name="groupDevice">
                       <property name="title">设备</property>
                       <widget class="GridLayout" name="queryGrid">
                         <property name="spacing">6</property>
                         <widget class="Label" name="lblDev" row="0" column="0">
-                          <property name="text">设备</property>
+                          <property name="text">设备号</property>
                         </widget>
                         <widget class="ComboBox" name="boxDevice" row="0" column="1">
                           <item>127.0.0.1</item>
                         </widget>
                         <widget class="Label" name="lblUnit" row="1" column="0">
-                          <property name="text">单元</property>
+                          <property name="text">单元号</property>
                         </widget>
                         <widget class="LineEdit" name="lineQueryUnit" row="1" column="1"/>
                         <widget class="Label" name="lblChan" row="2" column="0">
-                          <property name="text">通道</property>
+                          <property name="text">通道号</property>
                         </widget>
                         <widget class="LineEdit" name="lineQueryChannel" row="2" column="1"/>
-                        <widget class="Label" name="lblFrom" row="3" column="0">
-                          <property name="text">从</property>
-                        </widget>
-                        <widget class="DateEdit" name="dateFrom" row="3" column="1">
-                          <property name="displayFormat">yyyy-MM-dd</property>
-                        </widget>
-                        <widget class="Label" name="lblTo" row="4" column="0">
-                          <property name="text">至</property>
-                        </widget>
-                        <widget class="DateEdit" name="dateTo" row="4" column="1">
-                          <property name="displayFormat">yyyy-MM-dd</property>
-                        </widget>
-                        <widget class="Label" name="lblCellNum" row="5" column="0">
-                          <property name="text">电池编号</property>
-                        </widget>
-                        <widget class="LineEdit" name="lineCellNum" row="5" column="1"/>
-                        <widget class="Label" name="lblCellPatch" row="6" column="0">
-                          <property name="text">批号/型号</property>
-                        </widget>
-                        <widget class="LineEdit" name="lineCellPatch" row="6" column="1"/>
-                        <widget class="Label" name="lblCreator" row="7" column="0">
-                          <property name="text">创建者</property>
-                        </widget>
-                        <widget class="LineEdit" name="lineCreator" row="7" column="1"/>
                       </widget>
                     </widget>
-                    <widget class="RadioButton" name="btnNone">
-                      <property name="text">不限</property>
-                    </widget>
-                    <widget class="RadioButton" name="btnNear">
-                      <property name="text">最近</property>
-                      <property name="checked">true</property>
-                    </widget>
-                    <widget class="SpinBox" name="lineNearDay">
-                      <property name="minimum">1</property>
-                      <property name="maximum">365</property>
-                      <property name="value">7</property>
-                    </widget>
-                    <!-- "指定" = 按 从/至 两个日期查(原版 btnFrom) -->
-                    <widget class="RadioButton" name="btnFrom">
-                      <property name="text">指定</property>
-                    </widget>
-                    <widget class="TableWidget" name="tableQuery" stretch="1"/>
-                    <!-- 按钮行: 方言不支持"布局嵌布局", 所以用 Widget 包一层(原 .ui 里是 HBox 直接嵌 VBox) -->
-                    <widget class="Widget" name="queryBtnRow">
-                      <widget class="HBoxLayout" name="queryBtnLayout">
-                        <widget class="PushButton" name="btnQuery">
-                          <property name="text">查询</property>
+                    <!-- 原版 groupBox_2: 不记得 / 最近+N天 / 从·至 -->
+                    <widget class="GroupBox" name="groupTime">
+                      <property name="title">时间</property>
+                      <widget class="VBoxLayout" name="timeLayout">
+                        <widget class="RadioButton" name="btnNone">
+                          <property name="text">不记得</property>
                         </widget>
-                        <widget class="PushButton" name="btnExportAll">
-                          <property name="text">导出全部</property>
+                        <widget class="Widget" name="rowNear">
+                          <widget class="HBoxLayout" name="rowNearLayout">
+                            <widget class="RadioButton" name="btnNear">
+                              <property name="text">最近</property>
+                              <property name="checked">true</property>
+                            </widget>
+                            <widget class="SpinBox" name="lineNearDay">
+                              <property name="minimum">1</property>
+                              <property name="maximum">365</property>
+                              <property name="value">7</property>
+                            </widget>
+                          </widget>
                         </widget>
-                        <widget class="PushButton" name="btnDeleteSelect">
-                          <property name="text">删除选中</property>
+                        <widget class="Widget" name="rowFrom">
+                          <widget class="HBoxLayout" name="rowFromLayout">
+                            <widget class="RadioButton" name="btnFrom">
+                              <property name="text">从</property>
+                            </widget>
+                            <widget class="DateEdit" name="dateFrom">
+                              <property name="displayFormat">yyyy-MM-dd</property>
+                            </widget>
+                          </widget>
+                        </widget>
+                        <widget class="Widget" name="rowTo">
+                          <widget class="HBoxLayout" name="rowToLayout">
+                            <widget class="Label" name="lblTo">
+                              <property name="text">至</property>
+                            </widget>
+                            <widget class="DateEdit" name="dateTo">
+                              <property name="displayFormat">yyyy-MM-dd</property>
+                            </widget>
+                          </widget>
                         </widget>
                       </widget>
                     </widget>
-                    <!-- 按时间/设备整批删(原版 btnDeleteWeek/Month/Year/Device) -->
-                    <widget class="Widget" name="delBtnRow">
-                      <widget class="HBoxLayout" name="delBtnLayout">
-                        <widget class="PushButton" name="btnDeleteWeek">
-                          <property name="text">删一周前</property>
-                        </widget>
-                        <widget class="PushButton" name="btnDeleteMonth">
-                          <property name="text">删一月前</property>
-                        </widget>
-                        <widget class="PushButton" name="btnDeleteYear">
-                          <property name="text">删一年前</property>
-                        </widget>
-                        <widget class="PushButton" name="btnDeleteDevice">
-                          <property name="text">删设备</property>
-                        </widget>
-                      </widget>
+                    <widget class="Label" name="lblCellPatch">
+                      <property name="text">批号/电池型号</property>
+                    </widget>
+                    <widget class="LineEdit" name="lineCellPatch"/>
+                    <widget class="Label" name="lblCreator">
+                      <property name="text">创建者</property>
+                    </widget>
+                    <widget class="LineEdit" name="lineCreator"/>
+                    <widget class="Label" name="lblCellNum">
+                      <property name="text">电池编号</property>
+                    </widget>
+                    <widget class="LineEdit" name="lineCellNum"/>
+                    <!-- 原版这 7 个按钮是竖排(直接挂在 VBox 上) -->
+                    <widget class="PushButton" name="btnQuery">
+                      <property name="text">查询</property>
+                    </widget>
+                    <widget class="PushButton" name="btnExportAll">
+                      <property name="text">导出当前数据</property>
+                    </widget>
+                    <widget class="PushButton" name="btnDeleteSelect">
+                      <property name="text">删除当前数据</property>
+                    </widget>
+                    <widget class="PushButton" name="btnDeleteWeek">
+                      <property name="text">删除一周前数据</property>
+                    </widget>
+                    <widget class="PushButton" name="btnDeleteMonth">
+                      <property name="text">删除一月前数据</property>
+                    </widget>
+                    <widget class="PushButton" name="btnDeleteYear">
+                      <property name="text">删除一年前数据</property>
+                    </widget>
+                    <widget class="PushButton" name="btnDeleteDevice">
+                      <property name="text">删除当前设备</property>
                     </widget>
                   </widget>
                 </widget>
               </widget>
             </widget>
           </widget>
-          <!-- ---- 右栏: 通道列表 + 堆叠页 ---- -->
+          <!-- ==== 右栏: 通道列表 + 堆叠页 + 底部一行按钮 ==== -->
           <widget class="Widget" name="widgetMain">
             <widget class="VBoxLayout" name="rightLayout">
               <widget class="Label" name="labelChannel">
                 <property name="text">通道列表</property>
-              </widget>
-              <!-- 原版是工具栏上的 5 个按钮: 页切换 + 一键清除报警 -->
-              <widget class="Widget" name="toolRow">
-                <widget class="HBoxLayout" name="toolLayout">
-                  <widget class="PushButton" name="btnShowNormal">
-                    <property name="text">通道</property>
-                  </widget>
-                  <widget class="PushButton" name="btnShowList">
-                    <property name="text">列表</property>
-                  </widget>
-                  <widget class="PushButton" name="btnShowSplitSetting">
-                    <property name="text">分选</property>
-                  </widget>
-                  <widget class="PushButton" name="btnShowTest">
-                    <property name="text">测试</property>
-                  </widget>
-                  <widget class="PushButton" name="btnClearAlarm">
-                    <property name="text">清除报警</property>
-                  </widget>
-                </widget>
               </widget>
               <widget class="StackedWidget" name="stackedWidget" stretch="1">
                 <widget class="Widget" name="pageNormal">
@@ -176,13 +202,9 @@
                     <!-- 通道卡片: 原版是 QScrollArea(widgetResizable=true) > QWidget(itemWidgets)
                          (原 .ui 452/456 行), 卡片是**代码建的控件**(固定尺寸, JZGridLayout 排 4x8);
                          8 列固定宽卡片合计比视口宽, 靠滚动区出横向滚动条 —— 不是压缩卡片。
-                         方言里照原版保留这一层: ScrollArea 的子控件由滚动区定尺寸
-                         (见 JZScrollArea::setWidgetResizable), 网格格子仍由代码 addWidget 声明。 -->
-                    <widget class="ScrollArea" name="cardScroll" stretch="2">
+                         原版这页**只有**滚动区(没有日志框), 所以下面不加东西。 -->
+                    <widget class="ScrollArea" name="cardScroll" stretch="1">
                       <widget class="Widget" name="itemWidgets"/>
-                    </widget>
-                    <widget class="TextEdit" name="textLog" stretch="1">
-                      <property name="readOnly">true</property>
                     </widget>
                   </widget>
                 </widget>
@@ -193,14 +215,15 @@
                 </widget>
                 <widget class="Widget" name="pageHistory">
                   <widget class="VBoxLayout" name="pageHistoryLayout">
-                    <widget class="TableWidget" name="tableHistory" stretch="1"/>
+                    <!-- 查询结果表(原版 pageHistory 里的 tableQuery, 名字照原版) -->
+                    <widget class="TableWidget" name="tableQuery" stretch="1"/>
                   </widget>
                 </widget>
                 <widget class="Widget" name="pageSplit">
                   <widget class="VBoxLayout" name="pageSplitLayout">
                     <widget class="TabWidget" name="tabWidgetSplit" stretch="1">
                       <widget class="Widget" name="tabSplitSetting">
-                        <property name="title">分选设置</property>
+                        <property name="title">分选条件设置</property>
                         <widget class="VBoxLayout" name="splitSettingLayout">
                           <widget class="DoubleSpinBox" name="spinSplitThreshold">
                             <property name="minimum">0.1</property>
@@ -209,28 +232,26 @@
                             <property name="singleStep">0.1</property>
                             <property name="decimals">1</property>
                           </widget>
-                          <!-- 分选: 按阈值给查询结果分档(原版 btnSplitQuery / btnSaveSplit / btnCopySplitList) -->
-                          <widget class="Widget" name="splitBtnRow">
-                            <widget class="HBoxLayout" name="splitBtnLayout">
-                              <widget class="PushButton" name="btnSplitQuery">
-                                <property name="text">分选</property>
-                              </widget>
-                              <widget class="PushButton" name="btnSaveSplit">
-                                <property name="text">保存分选</property>
-                              </widget>
-                              <widget class="PushButton" name="btnCopySplitList">
-                                <property name="text">导出明细</property>
-                              </widget>
-                            </widget>
-                          </widget>
                         </widget>
                       </widget>
                       <widget class="Widget" name="tabSplitResult">
                         <property name="title">分选结果</property>
                         <widget class="VBoxLayout" name="splitResultLayout">
-                          <widget class="TableWidget" name="tableSplitLevel" stretch="1"/>
-                          <widget class="TableWidget" name="tableSplitList" stretch="2"/>
-                          <widget class="TreeWidget" name="treeSplit" stretch="1"/>
+                          <!-- 原版 groupBox_5 "结果列表显示" 包着两张表 -->
+                          <widget class="GroupBox" name="groupSplitList" stretch="1">
+                            <property name="title">结果列表显示</property>
+                            <widget class="VBoxLayout" name="splitListLayout">
+                              <widget class="TableWidget" name="tableSplitLevel" stretch="1"/>
+                              <widget class="TableWidget" name="tableSplitList" stretch="2"/>
+                            </widget>
+                          </widget>
+                          <widget class="Widget" name="splitResultBtnRow">
+                            <widget class="HBoxLayout" name="splitResultBtnLayout">
+                              <widget class="PushButton" name="btnCopySplitList">
+                                <property name="text">导出分选结果</property>
+                              </widget>
+                            </widget>
+                          </widget>
                         </widget>
                       </widget>
                     </widget>
@@ -238,10 +259,7 @@
                 </widget>
                 <widget class="Widget" name="pageTest">
                   <widget class="VBoxLayout" name="pageTestLayout">
-                    <widget class="Label" name="labelTest">
-                      <property name="text">测试页(原版 pageTest)</property>
-                    </widget>
-                    <!-- 端口 + 重开监听 + 收发记录开关(原版 linePort/btnResetServer/boxRecordPack) -->
+                    <!-- 原版 widget_4: 端口行 -->
                     <widget class="Widget" name="testTopRow">
                       <widget class="HBoxLayout" name="testTopLayout">
                         <widget class="Label" name="labelPort">
@@ -251,27 +269,36 @@
                           <property name="text">8001</property>
                         </widget>
                         <widget class="PushButton" name="btnResetServer">
-                          <property name="text">重开服务</property>
+                          <property name="text">重启端口</property>
                         </widget>
                         <widget class="CheckBox" name="boxRecordPack">
-                          <property name="text">记录报文</property>
+                          <property name="text">记录数据</property>
                           <property name="checked">true</property>
-                        </widget>
-                        <widget class="CheckBox" name="boxShowRT">
-                          <property name="text">隐藏实时帧</property>
-                        </widget>
-                        <widget class="CheckBox" name="boxShowDF">
-                          <property name="text">隐藏DF帧</property>
                         </widget>
                       </widget>
                     </widget>
+                    <!-- 原版 widget_10: 数据过滤行 -->
+                    <widget class="Widget" name="testFilterRow">
+                      <widget class="HBoxLayout" name="testFilterLayout">
+                        <widget class="Label" name="labelFilter">
+                          <property name="text">数据过滤:</property>
+                        </widget>
+                        <widget class="CheckBox" name="boxShowDF">
+                          <property name="text">不显示DF</property>
+                        </widget>
+                        <widget class="CheckBox" name="boxShowRT">
+                          <property name="text">不显示RT</property>
+                        </widget>
+                      </widget>
+                    </widget>
+                    <!-- 原版 widget_9: send / recv 两栏(骨架竖着摆, 与 side-by-side 观感一致) -->
                     <widget class="Widget" name="sendRow">
                       <widget class="HBoxLayout" name="sendLayout">
                         <widget class="Label" name="labelSend">
-                          <property name="text">发送</property>
+                          <property name="text">send</property>
                         </widget>
                         <widget class="PushButton" name="btnClearSend">
-                          <property name="text">清空</property>
+                          <property name="text">清除发送</property>
                         </widget>
                       </widget>
                     </widget>
@@ -281,16 +308,44 @@
                     <widget class="Widget" name="recvRow">
                       <widget class="HBoxLayout" name="recvLayout">
                         <widget class="Label" name="labelRecv">
-                          <property name="text">接收</property>
+                          <property name="text">recv</property>
                         </widget>
                         <widget class="PushButton" name="btnClearRecv">
-                          <property name="text">清空</property>
+                          <property name="text">清除接收</property>
                         </widget>
                       </widget>
                     </widget>
                     <widget class="TextEdit" name="textRecv" stretch="1">
                       <property name="readOnly">true</property>
                     </widget>
+                  </widget>
+                </widget>
+              </widget>
+              <!-- 原版 widget_3: 一行 —— "欢迎使用软件" + 6 个页切换/操作按钮
+                   (原版是 QHBoxLayout + spacer; 方言没有 spacer, 用 Label stretch 顶替弹簧。
+                    位置也照原版: 排在堆叠页之后, 即右栏最底部。) -->
+              <widget class="Widget" name="bottomRow">
+                <widget class="HBoxLayout" name="bottomLayout">
+                  <widget class="Label" name="labelWelcome" stretch="1">
+                    <property name="text">欢迎使用软件</property>
+                  </widget>
+                  <widget class="PushButton" name="btnShowNormal">
+                    <property name="text">常规显示</property>
+                  </widget>
+                  <widget class="PushButton" name="btnShowList">
+                    <property name="text">列表显示</property>
+                  </widget>
+                  <widget class="PushButton" name="btnShowSplitSetting">
+                    <property name="text">分选设置</property>
+                  </widget>
+                  <widget class="PushButton" name="btnShowTest">
+                    <property name="text">测试页面</property>
+                  </widget>
+                  <widget class="PushButton" name="btnSplitQuery">
+                    <property name="text">分选</property>
+                  </widget>
+                  <widget class="PushButton" name="btnClearAlarm">
+                    <property name="text">清除报警</property>
                   </widget>
                 </widget>
               </widget>

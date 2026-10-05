@@ -138,12 +138,15 @@ void JZStackedWidget::updateVisibility()
         m_pages[i]->setVisible(i == m_current);
 }
 
-void JZStackedWidget::setGeometry(int x, int y, int w, int h)
+void JZStackedWidget::resizeEvent(JZResizeEvent* event)
 {
-    JZWidget::setGeometry(x, y, w, h);
-    // 所有页面叠放在本控件区域内, 随本控件尺寸同步缩放
+    JZWidget::resizeEvent(event);
+
+    // 页面叠放在本控件区域内, 随本控件尺寸同步缩放。
+    // 这是"叠放"语义(所有页面同几何), 现有的 VBox/HBox/Grid 表达不了, 只能自己搬;
+    // 但挂钩点用 resizeEvent 就够 —— setGeometry 内部就是 resize + move, 会走到这里。
     for (auto* p : m_pages)
-        p->setGeometry(0, 0, w, h);
+        p->setGeometry(0, 0, width(), height());
 }
 
 JZSize JZStackedWidget::sizeHint() const

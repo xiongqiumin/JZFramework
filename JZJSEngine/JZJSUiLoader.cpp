@@ -28,6 +28,7 @@ std::string uiTabLabel(const JZUiNode& c) { return JZUiParser::tabLabel(c); }
 bool uiHasText(const std::string& t) { return JZUiParser::hasText(t); }
 bool uiHasTitle(const std::string& t) { return JZUiParser::hasTitle(t); }
 bool uiHasCurrentIndex(const std::string& t) { return JZUiParser::hasCurrentIndex(t); }
+bool uiHasTabPosition(const std::string& t) { return JZUiParser::hasTabPosition(t); }
 bool uiHasChecked(const std::string& t) { return JZUiParser::hasChecked(t); }
 bool uiHasReadOnly(const std::string& t) { return JZUiParser::hasReadOnly(t); }
 bool uiHasPlaceholder(const std::string& t) { return JZUiParser::hasPlaceholder(t); }
@@ -444,6 +445,12 @@ struct UiScriptGen {
                 // 所以 placeholderText 既要收字符串、也要收纯数字文本("0" 这种)。
                 else if (key == "currentIndex" && uiHasCurrentIndex(node.type) && val.isInt()) {
                     out += indent + var + ".setCurrentIndex(" + tsLiteral(val) + ");\n";
+                } else if (key == "tabPosition" && uiHasTabPosition(node.type) && val.isString()) {
+                    // Qt 的 <enum>QTabWidget::West</enum> -> 生成 JZTabWidget.West(常量在 JS 侧已挂到构造器上)
+                    const int pos = JZUiParser::parseTabPosition(val.asString());
+                    const std::string name = JZUiParser::tabPositionName(pos);
+                    if (!name.empty())
+                        out += indent + var + ".setTabPosition(JZTabWidget." + name + ");\n";
                 } else if (key == "checked" && uiHasChecked(node.type) && val.isBool()) {
                     out += indent + var + ".setChecked(" + tsLiteral(val) + ");\n";
                 } else if (key == "readOnly" && uiHasReadOnly(node.type) && val.isBool()) {

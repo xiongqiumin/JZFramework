@@ -177,9 +177,9 @@ JZSize JZSplitter::sizeHint() const
 }
 
 // ==================== 布局 ====================
-void JZSplitter::resize(int w, int h)
+void JZSplitter::resizeEvent(JZResizeEvent* event)
 {
-    JZWidget::resize(w, h);   // 设定自身尺寸并并入脏区
+    JZWidget::resizeEvent(event);
     relayout();               // 按新尺寸重排子控件
 }
 
@@ -233,6 +233,17 @@ int JZSplitter::minOf(int index) const
     if (!m_items[index].collapsible && m <= 0)
         m = 20;
     return std::max(0, m);
+}
+
+int JZSplitter::maxOf(int index) const
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return INT_MAX;
+    if (!isItemVisible(index))
+        return 0;                      // 隐藏项不占空间
+    return (m_orientation == Horizontal)
+        ? m_items[index].widget->maximumWidth()
+        : m_items[index].widget->maximumHeight();
 }
 
 void JZSplitter::relayout()
@@ -305,6 +316,18 @@ void JZSplitter::relayout()
         }
     }
 
+    // 分配要尊重各控件自身的 maximumSize: 被夹小出来的余量转给最后一项(通常是主区)。
+    // 少了这一步, 摆放时按"名义尺寸"推进 —— 控件实际被自己的上限夹窄了, 下一项却从名义位置
+    // 开始摆, 中间就空出一段(左栏 setMaximumWidth(240) 时最明显: 左边 240 宽, 右边却从 400 起)。
+    for (int k = 0; k + 1 < vn; ++k) {
+        int i = vis[k];
+        int mx = maxOf(i);
+        if (m_sizes[i] > mx) {
+            m_sizes[vis.back()] += m_sizes[i] - mx;
+            m_sizes[i] = mx;
+        }
+    }
+
     // 摆放子控件: 只有可见项占位置, 分隔条只出现在相邻可见项之间
     int pos = 0;
     for (int k = 0; k < vn; ++k) {
@@ -314,6 +337,14 @@ void JZSplitter::relayout()
             m_items[i].widget->setGeometry(pos, 0, s, height());
         else
             m_items[i].widget->setGeometry(0, pos, width(), s);
+
+        // 回读实际尺寸: setGeometry 会走 resize(), 控件自身的 min/max 约束可能又把它夹了一次。
+        // 记下真实值, 免得本项"名义尺寸"与实际脱节, 把后面各项都推错位置。
+        int actual = (m_orientation == Horizontal) ? m_items[i].widget->width()
+                                                   : m_items[i].widget->height();
+        if (actual != s)
+            s = actual;
+
         pos += s;
         if (k < vn - 1)
             pos += m_handleWidth;

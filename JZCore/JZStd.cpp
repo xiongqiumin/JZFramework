@@ -682,6 +682,60 @@ bool str_is_utf8(const string& str)
                                nullptr, 0) > 0;
 }
 
+// UTF-8 -> 指定代码页(cp 用控制台自己的 CP, 而不是 CP_ACP —— 后者是系统 ANSI 代码页,
+// 跟"stdout 到底连到控制台还是管道"无关, chcp 也改不动它)
+static string utf8ToCodepage(const string& utf8, UINT cp)
+{
+    if (utf8.empty())
+        return utf8;
+
+    int wcsLen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wcsLen <= 1)
+        return utf8;
+
+    wstring wstr(wcsLen - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wcsLen);
+
+    int len = WideCharToMultiByte(cp, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)
+        return utf8;
+
+    string out(len - 1, '\0');
+    WideCharToMultiByte(cp, 0, wstr.c_str(), -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+
+string str_utf8_to_console(const string& utf8)
+{
+    struct ConsoleState
+    {
+        bool isConsole;
+        UINT cp;
+    };
+
+    // 状态**只探测一次**(第一次调用时): 句柄/控制台 CP 在一次进程生命周期内基本不变, 而
+    // 这函数在日志高频路径上。⚠ 运行中途 chcp 换编码不会跟着变(要跟就得去掉 static)。
+    static const ConsoleState st = []() -> ConsoleState
+    {
+        ConsoleState s;
+        s.isConsole = false;
+        s.cp = CP_UTF8;
+
+        HANDLE h = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (h != nullptr && h != INVALID_HANDLE_VALUE && ::GetConsoleMode(h, &mode))
+        {
+            s.isConsole = true;
+            s.cp = ::GetConsoleOutputCP();
+        }
+        return s;
+    }();
+
+    if (!st.isConsole || st.cp == CP_UTF8 || st.cp == 0)
+        return utf8;
+    return utf8ToCodepage(utf8, st.cp);
+}
+
 string str_ensure_utf8(const string& str)
 {
     if (str.empty() || str_is_utf8(str))

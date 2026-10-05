@@ -55,8 +55,8 @@ class JZCheckbox;
 // ---------------------------------------------------------------------------
 struct DeviceInfo
 {
-    enum { Status_Complete = 0, Status_WaitStart, Status_Run, Status_WaitStop,
-           Status_Stop, Status_WaitJump, Status_Error };
+    // 通道状态值(Status_*)在 Common.h 的 DeviceStatus 里 —— 卡片(BTEItemWidget)也要按它配色,
+    // 所以只留一份, 取值与原版 BTEServer.h 的 Status_* 完全一致。
 
     int         netId = 0;
     uint8_t     deviceId = 0;          // 原版 DeviceID
@@ -107,7 +107,6 @@ struct BTEServer
     JZTabWidget*     tabWidget = nullptr;
     JZStackedWidget* stackedWidget = nullptr;
     JZLabel*         labelChannel = nullptr;
-    JZTextEdit*      textLog = nullptr;
 
     JZComboBox*      boxDevice = nullptr;
     JZLineEdit*      lineQueryUnit = nullptr;
@@ -116,8 +115,7 @@ struct BTEServer
     JZRadioButton*   btnNone = nullptr;
     JZRadioButton*   btnNear = nullptr;
     JZSpinBox*       lineNearDay = nullptr;
-    JZTableWidget*   tableQuery = nullptr;
-    JZTableWidget*   tableHistory = nullptr;
+    JZTableWidget*   tableQuery = nullptr;      // pageHistory 里那张(原版同名)
     JZTableWidget*   tableList = nullptr;
     JZTableWidget*   tableSplitLevel = nullptr;
     JZTableWidget*   tableSplitList = nullptr;
@@ -136,10 +134,9 @@ struct BTEServer
 
     JZDoubleSpinBox* spinSplitThreshold = nullptr;
     JZPushButton*    btnSplitQuery = nullptr;
-    JZPushButton*    btnSaveSplit = nullptr;
     JZPushButton*    btnCopySplitList = nullptr;
 
-    // 右栏页切换按钮 + 一键清除报警(原版是工具栏按钮)
+    // 右栏底部的页切换按钮 + 一键清除报警(原版 widget_3 那一行)
     JZPushButton*    btnShowNormal = nullptr;
     JZPushButton*    btnShowList = nullptr;
     JZPushButton*    btnShowSplitSetting = nullptr;
@@ -225,7 +222,7 @@ int sendChannelCommand(BTEServer& ui, int netId, uint16_t cmd,
 // 一键清除报警(原版 clearAlarmAll): 全部设备未确认的报警都置为"已确认"(卡片转橙)。
 int clearAlarmAll(BTEServer& ui);
 
-// 查询(原版 on_btnQuery_clicked): 按左栏条件查内存记录库, 结果进 tableQuery(同步 tableHistory)。
+// 查询(原版 on_btnQuery_clicked): 按左栏条件查内存记录库, 结果进 pageHistory 里的 tableQuery。
 // 返回命中条数; 条件不合法返回 -1。
 int queryRecords(BTEServer& ui);
 

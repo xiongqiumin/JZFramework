@@ -28,6 +28,10 @@ JZ_OBJECT_IMPL(JZWindow, JZWidget)
 static const int kDefaultWindowW = 800;
 static const int kDefaultWindowH = 600;
 
+// 窗口默认底色: 浅灰 #F0F0F0 —— 与 Qt 的 QPalette::Window 取值一致。
+// (原来是纯白: 白底上那些默认白/浅色控件分不出边界, 像"一整块白"。)
+static const JZColor kDefaultWindowBackground(0xf0, 0xf0, 0xf0);
+
 // ---- 后端接口的默认实现 (与平台无关的那部分) ----
 // 默认按**客户区**判定: 客户区左上角(clientToScreen(0,0)) + 窗口尺寸。
 // 真窗口可重写成"窗口外框"的口径 (见 JZWin32WindowBackend::containsScreenPoint)。
@@ -316,15 +320,17 @@ void JZWindow::applyMouseCursor()
 
 void JZWindow::paintEvent(JZPainterEvent* event)
 {
-    // 窗口底色 (内容控件可覆盖)
+    // 窗口底色 (内容控件可覆盖)。没样式时是浅灰 kDefaultWindowBackground(见上),
+    // 显式设成透明/无背景(*background: none*)也退回它 —— 窗口总得有块底, 不然是花屏。
     JZPainter p(this);
-    p.fillRect(rect(), style().background.valueOr(JZColor::White));
+    p.fillRect(rect(), style().background.valueOr(kDefaultWindowBackground));
 }
 
 JZStyleSet JZWindow::uaStyle() const
 {
+    // 默认外观(无样式表时): 浅灰底 + 深色字 —— 与 Qt 的默认调色板一致, 见 kDefaultWindowBackground。
     JZStyleSet s;
-    s.background = JZOptional<JZColor>::Some(JZColor::White);
+    s.background = JZOptional<JZColor>::Some(kDefaultWindowBackground);
     return s;
 }
 

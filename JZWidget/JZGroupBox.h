@@ -32,7 +32,8 @@ public:
 
 protected:
     void paintEvent(JZPainterEvent* event) override;
-    void resize(int w, int h) override;
+    // 内部内容区跟着自身尺寸走: 挂 resizeEvent(框架钩子), 不重写 resize/setGeometry。
+    void resizeEvent(JZResizeEvent* event) override;
 
 private:
     std::string m_title;

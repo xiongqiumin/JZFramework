@@ -38,6 +38,14 @@ double str_toDouble(const std::string& str, bool* ok = nullptr);
 
 std::string str_local_to_utf8(const std::string& local);
 std::string str_utf8_to_local(const std::string& local);
+// UTF-8 -> 控制台能正确显示的字节(与 JZLog 打印日志用的是同一条规则):
+//   · stdout 是真控制台 ⇒ 转成控制台的**输出代码页**(GetConsoleOutputCP; 中文 Windows 通常是 936/GBK)
+//   · stdout 被重定向/接管道(`>`、python 抓日志、mintty/Git-Bash) ⇒ 原样 UTF-8(接收方按 UTF-8 解)
+//   · 没有控制台(GUI 程序没 AttachConsole) ⇒ 原样
+// ⚠ 自己往控制台 printf 中文时**必须**用它包一层: 源码字面量是 UTF-8(见 CMake 的
+//   /source-charset:utf-8), 直接 printf 到 GBK 控制台就是"缃戠粶"这种乱码。
+//   注意与 str_utf8_to_local 不是一回事(那个固定转 CP_ACP, 是给 JZFile/JZDir 的 ANSI 文件 API 用的)。
+std::string str_utf8_to_console(const std::string& utf8);
 // 这段字节是不是合法 UTF-8(空串算合法)
 bool str_is_utf8(const std::string& str);
 // 保证是 UTF-8: 已经是合法 UTF-8 就原样返回, 否则按本地编码转。

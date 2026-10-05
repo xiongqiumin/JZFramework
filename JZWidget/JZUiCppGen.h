@@ -1,6 +1,7 @@
 #ifndef JZ_UI_CPP_GEN_H_
 #define JZ_UI_CPP_GEN_H_
 
+#include <set>
 #include <string>
 #include <vector>
 #include "JZUiParser.h"
@@ -61,6 +62,8 @@ private:
     void        genLayoutProps(const JZUiNode& node, const std::string& layVar);
 
     void        collectMembers(const JZUiNode& node);     // 预扫: 成员表 + 需要的头文件 + 结构校验
+    // 预扫: 同名控件改名 + 告警(见 .cpp 里的说明)。生成前对内部副本做, 不影响调用方的树。
+    void        dedupNames(JZUiNode& node, std::set<std::string>& used);
 
     void        line(const std::string& s);               // 写一行(带缩进)
     std::string newVar();
@@ -69,7 +72,8 @@ private:
     void        setError(const std::string& msg) { if (m_error.empty()) m_error = msg; }
 
 private:
-    const JZUiNode& m_root;
+    // 存值(不是引用): generate() 会先对树做一遍"重名改名", 副本才敢改。
+    JZUiNode        m_root;
     std::string     m_uiClass;
     std::string     m_error;
     std::vector<std::string> m_warnings;

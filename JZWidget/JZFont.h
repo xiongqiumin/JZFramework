@@ -43,7 +43,7 @@ public:
 
 private:
     std::string m_family;   // 空 = 默认字体 (由渲染后端决定, 当前为微软雅黑)
-    int m_size = 14;        // 像素字号
+    int m_size = 12;        // 像素字号(默认 12 ≈ Qt 在 96DPI 下的 9pt)
     int m_style = Normal;   // Style 位或
 };
 

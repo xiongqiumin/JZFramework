@@ -3376,6 +3376,19 @@ void JZJSWidgetModule::registViews()
         if (JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "setCurrentIndex"))
             tab->setCurrentIndex(i);
     });
+    // 标签条方向(对齐 Qt QTabWidget::TabPosition): 常量见下面挂到 JZTabWidget 上的 North/South/West/East
+    bind_tab.def("tabPosition", [this](JZObjectPointer* t) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "tabPosition");
+        return tab ? (int)tab->tabPosition() : 0;
+    });
+    bind_tab.def("setTabPosition", [this](JZObjectPointer* t, int pos) {
+        JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "setTabPosition");
+        if (!tab)
+            return;
+        if (pos < (int)JZTabWidget::North || pos > (int)JZTabWidget::East)
+            throw std::runtime_error("JZTabWidget.setTabPosition: 需要 JZTabWidget.North/South/West/East");
+        tab->setTabPosition((JZTabWidget::TabPosition)pos);
+    });
     bind_tab.def("tabText", [this](JZObjectPointer* t, int i) {
         JZTabWidget* tab = widgetFromThis<JZTabWidget>(t, "tabText");
         return tab ? tab->tabText(i) : std::string();
@@ -3401,6 +3414,20 @@ void JZJSWidgetModule::registViews()
     defSignalProperty(bind_tab, "onCurrentChanged", &JZTabWidget::currentChanged);
     bind_tab.setCreate(js_JZTabWidget_ctor);
     mountTransparentClass(bind_tab.classDefine());
+
+    // 方向常量挂到构造器上, JS 侧写 JZTabWidget.West(与 C++ 枚举同值; 同 JZChart 的做法)
+    {
+        JSContext* ctx = m_engine->context();
+        JSValue js_class = JS_GetPropertyStr(ctx, m_engine->globalObject(), "JZTabWidget");
+        if (JS_IsFunction(ctx, js_class))
+        {
+            JS_SetPropertyStr(ctx, js_class, "North", JS_NewInt32(ctx, (int)JZTabWidget::North));
+            JS_SetPropertyStr(ctx, js_class, "South", JS_NewInt32(ctx, (int)JZTabWidget::South));
+            JS_SetPropertyStr(ctx, js_class, "West", JS_NewInt32(ctx, (int)JZTabWidget::West));
+            JS_SetPropertyStr(ctx, js_class, "East", JS_NewInt32(ctx, (int)JZTabWidget::East));
+        }
+        JS_FreeValue(ctx, js_class);
+    }
 
     // ---- JZSplitter: 可拖动分隔 ----
     jsbind::ClassBind<JZSplitter> bind_split("JZSplitter", bind_w);

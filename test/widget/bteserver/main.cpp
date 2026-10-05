@@ -17,24 +17,50 @@
 #include "JZScrollArea.h"
 #include "JZScrollBar.h"
 #include "JZListWidget.h"
+#include "JZStd.h"
 
+#ifdef HAS_JZMcpServer
+#include "JZUiMcpTools.h"   // AI-Native: MCP 桥(ui_screenshot/ui_invoke 等), 见 app_main 末尾
+#include "JZMcpCore.h"
+#endif
+
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
 
+// ---------------------------------------------------------------------------
+// 控制台打印(本文件里所有中文输出都走它)
+//   ⚠ 不能裸 printf: 源码字面量是 UTF-8(CMake 设了 /source-charset:utf-8), 而中文 Windows 的
+//   控制台默认代码页是 936(GBK) —— 直接打就是"缃戠粶"这种乱码。str_utf8_to_console() 按 stdout
+//   的实际状态决定转不转(真控制台转控制台 CP / 重定向·管道·UTF-8 控制台原样 UTF-8),
+//   与 JZLog 打印日志用的是同一条规则(见 JZStd.h)。
+// ---------------------------------------------------------------------------
+static void P(const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    const std::string s = str_vasprintf(fmt, ap);
+    va_end(ap);
+
+    const std::string out = str_utf8_to_console(s);
+    fwrite(out.data(), 1, out.size(), stdout);
+    fflush(stdout);
+}
+
 // 控件几何(窗口坐标)诊断: --dump 用。定位"越界/错位"这类布局问题就靠它。
 static void dumpGeometry(BTEServer& ui)
 {
-    printf("\n=== 控件几何(窗口坐标) ===\n");
+    P("\n=== 控件几何(窗口坐标) ===\n");
     auto dump = [](const char* what, JZWidget* w) {
         if (!w)
         {
-            printf("  %-20s (null)\n", what);
+            P("  %-20s (null)\n", what);
             return;
         }
         const JZPoint at = w->mapTo(nullptr, JZPoint(0, 0));
         const JZSize sz = w->size();
-        printf("  %-20s x=%-5d y=%-5d w=%-5d h=%-5d%s\n", what, at.x(), at.y(),
+        P("  %-20s x=%-5d y=%-5d w=%-5d h=%-5d%s\n", what, at.x(), at.y(),
                sz.width(), sz.height(), w->isVisible() ? "" : "  [隐藏]");
     };
 
@@ -49,12 +75,16 @@ static void dumpGeometry(BTEServer& ui)
     dump("tabDevice(页)", ui.gen.tabDevice);
     dump("listWidget", ui.gen.listWidget);
     if (ui.listWidget)
-        printf("    -> count=%d sizeHint=%dx%d viewport=%dx%d content=%dx%d\n",
+        P("    -> count=%d sizeHint=%dx%d viewport=%dx%d content=%dx%d\n",
                ui.listWidget->count(),
                ui.listWidget->sizeHint().width(), ui.listWidget->sizeHint().height(),
                ui.listWidget->viewportWidth(), ui.listWidget->viewportHeight(),
                ui.listWidget->contentWidth(), ui.listWidget->contentHeight());
     dump("stackedWidget", ui.gen.stackedWidget);
+    dump("bottomRow", ui.gen.bottomRow);
+    dump("labelWelcome", ui.gen.labelWelcome);
+    dump("btnShowNormal", ui.gen.btnShowNormal);
+    dump("groupSplitList", ui.gen.groupSplitList);
     dump("pageNormal", ui.gen.pageNormal);
     dump("cardScroll", ui.gen.cardScroll);
     if (ui.gen.cardScroll)
@@ -62,19 +92,18 @@ static void dumpGeometry(BTEServer& ui)
         JZScrollArea* sa = ui.gen.cardScroll;
         const JZSize mn = ui.gen.itemWidgets ? ui.gen.itemWidgets->minimumSizeHint() : JZSize();
         const JZSize sh = ui.gen.itemWidgets ? ui.gen.itemWidgets->sizeHint() : JZSize();
-        printf("    -> widgetResizable=%d content=%dx%d viewport=%dx%d 横条=%d 纵条=%d maxX=%d\n",
+        P("    -> widgetResizable=%d content=%dx%d viewport=%dx%d 横条=%d 纵条=%d maxX=%d\n",
                (int)sa->widgetResizable(), sa->contentWidth(), sa->contentHeight(),
                sa->viewportWidth(), sa->viewportHeight(),
                sa->horizontalScrollBar() ? (int)sa->horizontalScrollBar()->isVisible() : -1,
                sa->verticalScrollBar() ? (int)sa->verticalScrollBar()->isVisible() : -1,
                sa->maxScrollX());
-        printf("    -> sa->widget()=%p, gen.itemWidgets=%p, 同一个=%d, 它的 sizeHint/minsize=%dx%d / %dx%d\n",
+        P("    -> sa->widget()=%p, gen.itemWidgets=%p, 同一个=%d, 它的 sizeHint/minsize=%dx%d / %dx%d\n",
                (void*)sa->widget(), (void*)ui.gen.itemWidgets,
                (int)(sa->widget() == ui.gen.itemWidgets),
                sh.width(), sh.height(), mn.width(), mn.height());
     }
     dump("itemWidgets(内容)", ui.gen.itemWidgets);
-    dump("textLog", ui.gen.textLog);
     dump("groupDevice", ui.gen.groupDevice);
     dump("  lblDev", ui.gen.lblDev);
     dump("  boxDevice", ui.gen.boxDevice);
@@ -86,18 +115,18 @@ static void dumpGeometry(BTEServer& ui)
     dump("lineNearDay", ui.gen.lineNearDay);
     dump("tableQuery", ui.gen.tableQuery);
 
-    printf("  --- 通道卡片(前 10 张 + 可见性) ---\n");
+    P("  --- 通道卡片(前 10 张 + 可见性) ---\n");
     for (size_t i = 0; i < ui.channelCards.size() && i < 10; ++i)
         dump(("card[" + std::to_string(i) + "]").c_str(), ui.channelCards[i]);
     if (ui.gen.itemWidgets)
     {
         if (JZGridLayout* g = dynamic_cast<JZGridLayout*>(ui.gen.itemWidgets->layout()))
-            printf("    -> itemWidgets grid: count=%d spacing=%d 行=%d 列=%d\n",
+            P("    -> itemWidgets grid: count=%d spacing=%d 行=%d 列=%d\n",
                    g->count(), g->spacing(), g->rowCount(), g->columnCount());
         else
-            printf("    -> itemWidgets 没挂 JZGridLayout!\n");
+            P("    -> itemWidgets 没挂 JZGridLayout!\n");
     }
-    printf("\n");
+    P("\n");
 }
 
 int app_main(int argc, char* argv[])
@@ -122,7 +151,7 @@ int app_main(int argc, char* argv[])
     buildBTEServer(ui, port);      // 工程目录默认当前目录下的 bte_project
     if (!ui.main)
     {
-        printf("[FAIL] 建界面失败: %s\n", ui.error.c_str());
+        P("[FAIL] 建界面失败: %s\n", ui.error.c_str());
         return 1;
     }
 
@@ -138,7 +167,7 @@ int app_main(int argc, char* argv[])
             // 父控件默认就裁剪子控件 ⇒ 左栏应该完全看不到卡片。
             if (JZWidget* iw = ui.gen.itemWidgets)
                 iw->setGeometry(-300, 52, 1400, 400);
-            printf("[裁剪验证] 已把 itemWidgets 故意摆到父控件外: x=-300 w=1400(父宽 1136)\n");
+            P("[裁剪验证] 已把 itemWidgets 故意摆到父控件外: x=-300 w=1400(父宽 1136)\n");
         }
 
         for (int i = 0; i < 6; ++i)
@@ -157,6 +186,18 @@ int app_main(int argc, char* argv[])
     // 已经建出来(它们是直接 ShowWindow), 所以先 show() 再 showMaximized()。
     ui.main->show();
     ui.main->showMaximized();
+
+#ifdef HAS_JZMcpServer
+    // AI-Native: 起 MCP server(读 get_ui_state/ui_screenshot + 写 ui_invoke), 供外部自动化驱动。
+    // ⚠ 端口与 test_widget(9602)错开: 两个示例可能同时开着。
+    JZUiMcpBridge mcp(ui.main);
+    mcp.core()->setInstructions(
+        "BTEServer 界面骨架的自动化工具。先 ui_windows/get_ui_state 看控件树(className/viewId/"
+        "boundsInScreen/能力位), 再 ui_invoke 驱动交互, ui_screenshot 截图核对。");
+    if (!mcp.listenHttp("127.0.0.1", 9603))
+        return 1;
+#endif
+
     const int rc = app.exec();
     delete ui.gen.root;
     return rc;

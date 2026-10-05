@@ -1,72 +1,129 @@
-// BTEItemWidget —— 通道卡片(自绘; 见头文件说明)。原版的 500 行自绘这里按"骨架够用"实现:
-// 背景/边框/标题行/数值行/勾选标记/报警配色 + 左键勾选。
+// BTEItemWidget —— 通道卡片(自绘)。绘制/配色/文案全部照原版 BTEServer/BTEItemWidget.cpp:
+//   paintEvent / bgColor / getTitle / getDispInfo / setSize / setScale / clear / mouseReleaseEvent
+// 只有 Qt -> 引擎的 API 替换(见头文件说明), 几何与颜色取值与原版逐一对齐。
 #include "BTEItemWidget.h"
 
-#include "JZPainter.h"
+#include "Common.h"        // DeviceStatus
+#include "DataTrans.h"     // fromVoltageUnit / fromElectricUnit / fromTempUnit / fromCapUnit / fromEngUnit / fromTimeUnitSec
 #include "JZFontMetrics.h"
+#include "JZKeyEvent.h"    // CtrlModifier(Ctrl + 左键多选)
 #include "JZMouseEvent.h"
+#include "JZPainter.h"
 
 #include <algorithm>
+#include <cstdio>
 
 JZ_OBJECT_IMPL(BTEItemWidget, JZWidget)
 
-// 原版的报警配色(BTEItemWidget.cpp)
-static const JZColor kFaultBg(180, 40, 80);        // 故障未清除: 红
-static const JZColor kFaultClearedBg(255, 140, 0); // 已确认: 橙
-static const JZColor kNormalBg(0xff, 0xff, 0xff);
-static const JZColor kCheckedBg(0xe8, 0xf2, 0xff);
-static const JZColor kBorderIdle(0xC0, 0xC4, 0xCC);
-static const JZColor kBorderChecked(0x2A, 0x7F, 0xFF);
-static const JZColor kBorderHover(0x8a, 0x9b, 0xb5);
-static const JZColor kText(0x20, 0x20, 0x20);
-static const JZColor kTextOnFault(0xff, 0xff, 0xff);
+// 故障卡片配色: 未清除为红色, 已清除(报警确认)后为橙色(原版)
+static const JZColor kFaultBgColor(180, 40, 80);
+static const JZColor kFaultClearedBgColor(255, 140, 0);
+
+namespace {
+
+// 4 位 / 1 位小数(QString::number(v, 'f', 4) 的等价物)
+std::string num4(double v) { char b[32]; snprintf(b, sizeof(b), "%.4f", v); return b; }
+std::string num1(double v) { char b[32]; snprintf(b, sizeof(b), "%.1f", v); return b; }
+
+} // namespace
 
 BTEItemWidget::BTEItemWidget(JZWidget* parent)
     : JZWidget(parent)
     , sigClicked(this)
     , sigToggled(this)
 {
-    setScale(1);   // 原版构造尾: setSize(Item_Normal) 里会 setScale(m_scale) -> setFixedSize
+    setContextMenuPolicy(JZWidget::CustomContextMenu);   // 原版: setContextMenuPolicy(Qt::CustomContextMenu)
+
+    m_labels = { "状态", "工步序号", "循环序号", "工步时间", "电压(V)",
+                 "电流(A)", "温度(℃)", "充电容量(Ah)", "充电能量(Wh)" };
+
+    m_scale = 1;
+    m_fontTitle.setSize(14);     // 原版: m_fontTitle.setPixelSize(14)
+
+    setSize(Item_Normal);        // 原版构造尾
+    updateToolTip();
 }
 
 // ---------------------------------------------------------------------------
-// 尺寸: **固定尺寸**(照原版 setScale: setFixedSize(baseW*scale + (scale-1)*gap, baseH))。
-// 于是布局压不动它 —— 8 列放不下时由外层 scrollArea 出滚动条, 而不是把卡片挤小。
+// 尺寸: 照原版 setSize/setScale —— 固定尺寸, 与窗口宽度无关(8 列放不下时由外层滚动区出滚动条)
+//   Item_Normal: baseWidth 170 × baseHeight 272, 字体 12px
+//   Item_Small : baseWidth 120 × baseHeight 218, 字体 9px
+//   setFixedSize(baseWidth*scale + (scale-1)*gap, baseHeight), gap = 3
 // ---------------------------------------------------------------------------
-JZSize BTEItemWidget::fixedSize() const
+void BTEItemWidget::setSize(int itemSize)
 {
-    const int gap = 3;                                  // 原版 setScale 里的 gap
-    const int baseW = (m_size == Item_Small) ? 120 : 170;
-    const int baseH = (m_size == Item_Small) ? 218 : 272;
-    return JZSize(baseW * m_scale + (m_scale - 1) * gap, baseH);
+    m_itemSize = itemSize;
+
+    if (itemSize == Item_Normal)
+    {
+        m_font.setSize(12);
+        m_baseWidth = 170;
+        m_baseHeight = 272;   // 原版注释: "增加温度显示"
+    }
+    else
+    {
+        m_font.setSize(9);
+        m_baseWidth = 120;
+        m_baseHeight = 218;
+    }
+    setScale(m_scale);
+}
+
+void BTEItemWidget::setScale(int scale)
+{
+    if (scale < 1)
+        scale = 1;
+    const int gap = 3;
+
+    m_scale = scale;
+    setFixedSize(m_baseWidth * scale + (scale - 1) * gap, m_baseHeight);
 }
 
 JZSize BTEItemWidget::sizeHint() const
 {
-    return fixedSize();
+    // ⚠ 必须是"固定尺寸"本身, 不能返回当前 width(): 那样一旦被压窄, 期望值跟着变小,
+    // 布局下一轮会继续压(自反馈)。原版是 setFixedSize, sizeHint 由它推导 —— 等价于此。
+    const int gap = 3;
+    return JZSize(m_baseWidth * m_scale + (m_scale - 1) * gap, m_baseHeight);
 }
 
 JZSize BTEItemWidget::minimumSizeHint() const
 {
-    return fixedSize();   // 固定尺寸: 最小 == 期望 (原版 setFixedSize 就是这个语义)
+    return sizeHint();      // 固定尺寸: 最小 == 期望(原版 setFixedSize 的语义)
 }
 
 // ---------------------------------------------------------------------------
-// 数据/状态
+// 数据 / 状态
 // ---------------------------------------------------------------------------
 void BTEItemWidget::setItemIndex(int idx)
 {
-    if (m_itemIndex == idx)
-        return;
     m_itemIndex = idx;
+}
+
+void BTEItemWidget::setChannelText(const std::string& ch)
+{
+    m_channel = ch;
     update();
 }
 
-void BTEItemWidget::setChannelText(const std::string& text)
+void BTEItemWidget::setData(const stru_BTS_CMD_SEND_RTDATA76& pack)
 {
-    if (m_channelText == text)
+    m_rtdata = pack;
+    updateToolTip();
+    update();
+}
+
+void BTEItemWidget::setStatus(int status)
+{
+    m_status = status;
+    update();
+}
+
+void BTEItemWidget::setAlarmCleared(bool flag)
+{
+    if (m_alarmCleared == flag)
         return;
-    m_channelText = text;
+    m_alarmCleared = flag;
     update();
 }
 
@@ -76,194 +133,304 @@ void BTEItemWidget::setCheck(bool flag)
         return;
     m_checked = flag;
     update();
-    sigToggled.emit(m_checked);   // 与 Qt 的 toggled(bool) 同口径: 只在真的变化时发
-}
-
-void BTEItemWidget::setAlarm(bool on)
-{
-    if (m_alarm == on)
-        return;
-    m_alarm = on;
-    update();
-}
-
-void BTEItemWidget::setAlarmCleared(bool on)
-{
-    if (m_alarmCleared == on)
-        return;
-    m_alarmCleared = on;
-    update();
-}
-
-void BTEItemWidget::setSize(ItemSize s)
-{
-    if (m_size == s)
-    {
-        setScale(m_scale);   // 原版 setSize 尾也会走一次 setScale(尺寸可能变)
-        return;
-    }
-    m_size = s;
-    setScale(m_scale);      // 原版: setSize 里按新 base 重新 setFixedSize
-    update();
-    updateGeometry();       // 尺寸提示变了: 让父布局重排
-}
-
-void BTEItemWidget::setScale(int scale)
-{
-    if (scale < 1)
-        scale = 1;
-    m_scale = scale;
-
-    // 原版 setScale 的全部内容: 固定尺寸(宽度 = 占用列数 * 基准宽 + 间隔)
-    const JZSize s = fixedSize();
-    setFixedSize(s.width(), s.height());
-
-    update();
-    updateGeometry();
-}
-
-void BTEItemWidget::setValueLines(const std::vector<std::string>& lines)
-{
-    m_lines = lines;
-    update();
 }
 
 void BTEItemWidget::clear()
 {
-    m_itemIndex = -1;
-    m_channelText.clear();
-    m_lines.clear();
-    m_alarm = false;
+    m_rtdata = stru_BTS_CMD_SEND_RTDATA76();   // 原版: memset(&m_rtdata, 0, ...)
     m_alarmCleared = false;
-    setCheck(false);
     update();
 }
 
-std::string BTEItemWidget::getTitle() const
+// ---------------------------------------------------------------------------
+// 文案(原版 getDispInfo): 9 项, 第 7/8 项按 StepType 在"充/放电容量·能量"之间切换
+// ---------------------------------------------------------------------------
+void BTEItemWidget::getDispInfo(std::vector<std::string>& vars)
 {
-    // 原版: 标题 = 通道文本(没有就退化成序号)
-    if (!m_channelText.empty())
-        return m_channelText;
-    return (m_itemIndex >= 0) ? ("#" + std::to_string(m_itemIndex + 1)) : std::string("#");
+    std::string status = "正常";
+    if (m_rtdata.workStatus() == stru_BTS_CMD_SEND_RTDATA76::WORK_ERROR_STOP || m_rtdata.PrtCode != 0)
+        status = PackDefine::ErrorText(m_rtdata.PrtCode);
+
+    vars.assign(m_labels.size(), std::string());
+
+    vars[0] = status;
+    vars[1] = std::to_string((int)m_rtdata.StepID);
+    vars[2] = std::to_string((int)m_rtdata.CycleStatus);
+    vars[3] = DataTrans::fromTimeUnitSec(m_rtdata.TestTime);
+    vars[4] = num4(DataTrans::fromVoltageUnit(m_rtdata.Voltage));
+    vars[5] = num4(DataTrans::fromElectricUnit(m_rtdata.Current));
+    vars[6] = num1(DataTrans::fromTempUnit(m_rtdata.Tempature));
+
+    if (m_rtdata.StepType == STEP_TYPE_2)
+    {
+        m_labels[7] = "放电容量(Ah)";
+        m_labels[8] = "放电能量(Wh)";
+        vars[7] = num4(DataTrans::fromCapUnit(m_rtdata.DisChargeCap));
+        vars[8] = num4(DataTrans::fromEngUnit(m_rtdata.DisChargeEng));
+    }
+    else
+    {
+        m_labels[7] = "充电容量(Ah)";
+        m_labels[8] = "充电能量(Wh)";
+        vars[7] = num4(DataTrans::fromCapUnit(m_rtdata.ChargeCap));
+        vars[8] = num4(DataTrans::fromEngUnit(m_rtdata.ChargeEng));
+    }
+}
+
+// 原版把 9 行汇总成 tooltip(setToolTip)。引擎还没有 tooltip 支持 —— 这里留空,
+// 等引擎有了 tooltip 再把上面 getDispInfo 的结果拼进去即可。
+void BTEItemWidget::updateToolTip()
+{
 }
 
 // ---------------------------------------------------------------------------
-// 绘制
+// 标题(原版 getTitle): 按 status 给文字; 运行中显示工步名(StepNameList)
+// ---------------------------------------------------------------------------
+void BTEItemWidget::getTitle(std::string& title, JZColor& color) const
+{
+    color = JZColor(0, 0, 0);
+
+    const int stepType = m_rtdata.StepType;
+    switch (m_status)
+    {
+    case Status_Complete:  title = "完成";     break;
+    case Status_WaitStart: title = "正在启动"; break;
+    case Status_Run:
+        if (stepType == STEP_TYPE_NULL)
+            title = "正在启动";
+        else if (stepType >= 0 && stepType < (int)PackDefine::StepNameList.size())
+            title = PackDefine::StepNameList[stepType];
+        else
+            title = "未定义";
+        break;
+    case Status_WaitStop:  title = "正在停止"; break;
+    case Status_Stop:      title = "暂停";     break;
+    case Status_WaitJump:  title = "正在跳转"; break;
+    case Status_Error:     title = "内部错误"; break;
+    case Status_OffLine:   title = "离线";     break;
+    default:               title.clear();      break;   // 原版这里是 Q_ASSERT(0): 未知状态不画标题
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 底色(原版 bgColor)
+// ---------------------------------------------------------------------------
+JZColor BTEItemWidget::bgColor() const
+{
+    if (!isEnabled())
+        return JZColor(170, 175, 186);
+
+    if (m_status == Status_Complete)
+        return JZColor(192, 192, 192);
+
+    if (m_status == Status_Stop)
+    {
+        if (m_rtdata.PrtCode != 0)
+            return m_alarmCleared ? kFaultClearedBgColor : kFaultBgColor;
+        return JZColor(240, 240, 240);
+    }
+
+    if (m_status == Status_OffLine && m_rtdata.PrtCode != 0)
+        return m_alarmCleared ? kFaultClearedBgColor : kFaultBgColor;
+
+    // 运行中: 按工步类型给底色
+    if (m_rtdata.StepType == STEP_TYPE_1 || m_rtdata.StepType == STEP_TYPE_3
+        || m_rtdata.StepType == STEP_TYPE_7)
+        return JZColor(15, 175, 0);        // 充电: 绿
+    if (m_rtdata.StepType == STEP_TYPE_2)
+        return JZColor(180, 180, 20);      // 放电: 黄
+    if (m_rtdata.StepType == STEP_TYPE_STOP)
+        return JZColor(192, 192, 192);
+    return JZColor(204, 255, 255);         // 其它: 淡青
+}
+
+// ---------------------------------------------------------------------------
+// 绘制(原版 paintEvent 逐段对齐)
 // ---------------------------------------------------------------------------
 void BTEItemWidget::paintEvent(JZPainterEvent*)
 {
     JZPainter p(this);
+
     const int w = width();
     const int h = height();
 
-    // ---- 底色 / 边框: 报警(红/橙) > 勾选(浅蓝) > 常态(白) ----
-    JZColor bg = kNormalBg;
-    JZColor fg = kText;
-    if (m_alarm)
+    JZColor bg_color(192, 192, 192);                  // 原版: 常态灰底
+    if (!isEnabled())
+        bg_color = JZColor(170, 175, 186);
+
+    JZColor ch_color(128, 64, 0);                     // 通道号颜色
+    JZColor status_color(0, 0, 0);
+
+    p.fillRect(0, 0, w, h, bg_color);
+
+    // 边框几何: 四边内缩 6; 顶部中间 80×16 是"凹口"(画通道号)
+    const int border_gap = 6;
+    const int border_top = border_gap + 1;
+    const int border_topw = 80;
+    const int border_toph = 16;
+    const int border_top2 = border_top + border_toph;
+    const int border_top_x1 = (w - border_topw) / 2;
+    const int border_top_x2 = border_top_x1 + border_topw;
+    const int border_left = border_gap;
+    const int border_right = w - border_gap;
+    const int border_bottom = h - border_gap;
+
+    // 状态底色: 只填"凹口 + 内容区"(原版 cellColor != bg_color 时)
+    const JZColor cell_color = bgColor();
+    if (!(cell_color == bg_color))
     {
-        bg = m_alarmCleared ? kFaultClearedBg : kFaultBg;
-        fg = kTextOnFault;
-    }
-    else if (m_checked)
-    {
-        bg = kCheckedBg;
+        p.fillRect(border_top_x1, border_top, border_topw, border_toph, cell_color);
+        p.fillRect(border_left, border_top2,
+                   border_right - border_left, border_bottom - border_top2, cell_color);
     }
 
-    JZColor border = kBorderIdle;
+    // 凹陷边框: 上/左深灰, 右/下白(原版两条 setPen)
+    p.setPen(JZPen(JZColor(129, 129, 129), 2));
+    p.drawLine(border_top_x1, border_top, border_top_x2, border_top);      // 凹口上边
+    p.drawLine(border_top_x1, border_top, border_top_x1, border_top2);     // 凹口左竖
+    p.drawLine(border_left, border_top2, border_top_x1, border_top2);      // 左边到凹口
+    p.drawLine(border_top_x2, border_top2, border_right, border_top2);     // 凹口到右边
+    p.drawLine(border_left, border_top2, border_left, border_bottom);      // 左边
+
+    p.setPen(JZPen(JZColor(255, 255, 255), 2));
+    p.drawLine(border_top_x2, border_top, border_top_x2, border_top2);     // 凹口右竖
+    p.drawLine(border_right, border_top2, border_right, border_bottom);    // 右边
+    p.drawLine(border_left, border_bottom, border_right, border_bottom);   // 底边
+
+    // 勾选: 黄色 2px 外框(原版 border.adjust(-2,-2,1,1))
     if (m_checked)
-        border = kBorderChecked;
-    else if (m_hover)
-        border = kBorderHover;
-
-    p.setBrush(JZBrush(bg));
-    p.setPen(JZPen(border, m_checked ? 2 : 1));
-    p.drawRoundRect(0, 0, w, h, 4);
-
-    // ---- 标题行: [x] 通道文本 …… 右端序号 ----
-    const int headerH = (m_size == Item_Small) ? 18 : 22;
-    JZFont titleFont((m_size == Item_Small) ? 11 : 13);
-    titleFont.setBold(true);
-    p.setFont(titleFont);
-    p.setPen(JZPen(fg, 1));
-
-    const std::string mark = m_checked ? "[x] " : "[ ] ";
-    const int ty = JZFontMetrics::centerY(titleFont, headerH);
-    p.drawText(6, ty, (mark + getTitle()).c_str());
-
-    if (m_itemIndex >= 0)
     {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "#%d", m_itemIndex + 1);
-        const int tw = JZFontMetrics::textWidth(buf, titleFont);
-        p.drawText(w - 6 - tw, ty, buf);
+        p.setPen(JZPen(JZColor(255, 255, 0), 2));
+        p.drawRect(border_left - 2, border_top - 2,
+                   (border_right + 1) - (border_left - 2),
+                   (border_bottom + 1) - (border_top - 2));
     }
 
-    // 标题下的分隔线
-    p.setPen(JZPen(m_alarm ? JZColor(0xff, 0xff, 0xff) : kBorderIdle, 1));
-    p.drawLine(4, headerH, w - 4, headerH);
-
-    // ---- 数值行(最多画到装得下) ----
-    JZFont lineFont((m_size == Item_Small) ? 10 : 12);
-    p.setFont(lineFont);
-    p.setPen(JZPen(fg, 1));
-
-    const int lineH = (m_size == Item_Small) ? 13 : 17;
-    int y = headerH + 4;
-    for (size_t i = 0; i < m_lines.size(); ++i)
+    // 状态列(报警时红字), 报警/已确认底色上通道号与状态都反成黑色
+    std::string status = "正常";
+    if (m_rtdata.workStatus() == stru_BTS_CMD_SEND_RTDATA76::WORK_ERROR_STOP || m_rtdata.PrtCode != 0)
     {
-        if (y + lineH > h - 2)
+        status_color = JZColor(200, 0, 0);
+        status = PackDefine::ErrorText(m_rtdata.PrtCode);
+    }
+    if (cell_color == kFaultBgColor || cell_color == kFaultClearedBgColor)
+    {
+        status_color = JZColor(0, 0, 0);
+        ch_color = JZColor(0, 0, 0);
+    }
+
+    std::vector<std::string> vars;
+    getDispInfo(vars);
+
+    const int title_y = border_top2 + 24;
+
+    // 通道号: 凹口里居中(14px)
+    p.setFont(m_fontTitle);
+    p.setPen(JZPen(ch_color, 1));
+    {
+        const int tw = JZFontMetrics::textWidth(m_channel, m_fontTitle);
+        p.drawText(border_top_x1 + (border_topw - tw) / 2,
+                   border_top + JZFontMetrics::centerY(m_fontTitle, border_toph),
+                   m_channel.c_str());
+    }
+
+    // 状态标题: 凹口下方一行, 右对齐(原版 drawText(title_rc, title, AlignBottom|AlignRight))
+    {
+        std::string title;
+        JZColor title_color(0, 0, 0);
+        getTitle(title, title_color);
+        if (!title.empty())
         {
-            if (y + lineH > h)
-                break;
+            const int lineH = title_y - border_top2;
+            const int tw = JZFontMetrics::textWidth(title, m_font);
+            p.setFont(m_font);
+            p.setPen(JZPen(title_color, 1));
+            p.drawText(border_right - 20 - tw,
+                       border_top2 + JZFontMetrics::centerY(m_font, lineH), title.c_str());
         }
-        p.drawText(6, y + JZFontMetrics::centerY(lineFont, lineH), m_lines[i].c_str());
-        y += lineH;
-        if (y > h)
-            break;
+    }
+
+    // 9 行 "标签 + 值"
+    int text_x = border_left + 4;
+    int text_len = w - text_x - 4;
+    if (m_scale != 1)
+    {
+        text_x = w / 4;
+        text_len = w - 2 * text_x;
+    }
+
+    const int text_gap = (m_itemSize == Item_Normal)
+        ? (text_len / 2 + (text_len / 2 - 60))
+        : (text_len / 2 + (text_len / 2 - 45));
+
+    int text_y = title_y + 24;
+    p.setFont(m_font);
+    for (size_t i = 0; i < m_labels.size(); ++i)
+    {
+        p.setPen(JZPen(JZColor(0, 0, 0), 1));
+        p.drawText(text_x, text_y, m_labels[i].c_str());
+
+        if (i == 0)
+        {
+            // 第一行(状态)用红字, 放不下就贴右边
+            const int vw = JZFontMetrics::textWidth(status, m_font);
+            p.setPen(JZPen(status_color, 1));
+            if (text_x + text_gap + vw > w)
+                p.drawText(w - vw - 8, text_y, status.c_str());
+            else
+                p.drawText(text_x + text_gap, text_y, status.c_str());
+        }
+        else
+        {
+            p.drawText(text_x + text_gap, text_y, vars[i].c_str());
+        }
+
+        text_y += (m_itemSize == Item_Normal) ? 22 : 16;   // 原版行距
     }
 }
 
 // ---------------------------------------------------------------------------
-// 交互: 左键切换勾选(原版: 点击切换 + 发 toggled; Ctrl 多选在上层处理)
+// 交互(原版 mousePress/Release): 左右键都算按下; 松开时若落回卡片内则勾选
+//   · 不带 Ctrl: 变选中 + 发 toggled(true)(原版对"右键点未选中卡"也会选中)
+//   · 带 Ctrl : 单纯取反(原版不发信号 —— 多选由上层处理)
 // ---------------------------------------------------------------------------
 void BTEItemWidget::mousePressEvent(JZMouseEvent* event)
 {
-    if (event->button() != JZMouseEvent::LeftButton)
-    {
-        JZWidget::mousePressEvent(event);   // 右键走框架的上下文菜单流程
-        return;
-    }
+    if (event->button() == JZMouseEvent::LeftButton || event->button() == JZMouseEvent::RightButton)
+        m_mouseDown = true;
 
-    setFocus();
-    if (!isEnabled())
-        return;
-
-    m_pressed = true;
-    update();
+    JZWidget::mousePressEvent(event);
 }
 
 void BTEItemWidget::mouseReleaseEvent(JZMouseEvent* event)
 {
-    if (event->button() == JZMouseEvent::LeftButton && m_pressed)
+    const bool inside = rect().contains(event->localPos());
+    if (m_mouseDown && inside)
     {
-        m_pressed = false;
-        setCheck(!m_checked);      // 内部发 sigToggled
-        sigClicked.emit();
-        return;
+        const bool old_check = m_checked;
+        if ((event->modifiers() & JZKeyEvent::CtrlModifier) == 0)
+        {
+            if (!m_checked)
+            {
+                m_checked = true;
+                update();
+            }
+
+            if (event->button() == JZMouseEvent::LeftButton
+                || (event->button() == JZMouseEvent::RightButton && !old_check))
+                sigToggled.emit(true);
+        }
+        else
+        {
+            m_checked = !m_checked;
+            update();
+        }
     }
+
+    m_mouseDown = false;
+
+    if (event->button() == JZMouseEvent::LeftButton)
+        sigClicked.emit();      // 骨架的右键菜单定位用(原版没有这个信号)
+
     JZWidget::mouseReleaseEvent(event);
-}
-
-void BTEItemWidget::enterEvent(JZEvent* event)
-{
-    m_hover = true;
-    update();
-    JZWidget::enterEvent(event);
-}
-
-void BTEItemWidget::leaveEvent(JZEvent* event)
-{
-    m_hover = false;
-    update();
-    JZWidget::leaveEvent(event);
 }

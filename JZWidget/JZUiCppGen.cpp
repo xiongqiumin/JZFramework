@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
 #include <sstream>
 
 namespace {
@@ -276,6 +277,14 @@ void JZUiCppGen::genProps(const JZUiNode& node, const std::string& var)
         else if (key == "currentIndex" && JZUiParser::hasCurrentIndex(t) && val.isInt() && !itemHost)
         {
             line(var + "->setCurrentIndex(" + litInt(val.asInt()) + ");");
+        }
+        else if (key == "tabPosition" && JZUiParser::hasTabPosition(t) && val.isString())
+        {
+            // Qt 的 <enum>QTabWidget::West</enum> -> props 里是字符串; 生成 JZTabWidget::West
+            const int pos = JZUiParser::parseTabPosition(val.asString());
+            const std::string name = JZUiParser::tabPositionName(pos);
+            if (!name.empty())
+                line(var + "->setTabPosition(JZTabWidget::" + name + ");");
         }
         else if (key == "checked" && JZUiParser::hasChecked(t) && val.isBool())
         {
@@ -618,8 +627,44 @@ std::string JZUiCppGen::genWidget(const JZUiNode& node)
 // ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
+// 同一份 .ui 里两个控件同名时, 生成代码会出现两个同名对象: `this->name` 与 `byId["name"]`
+// 被后一个静默覆盖 —— 代码里看不出问题, 只有界面上"多出一份"才发现(bteserver 的 bottomRow 就
+// 踩过这个坑)。这里统一改名: 第二个起叫 name_2 / name_3 ..., 并记一条警告 —— 代码里对该控件的
+// 引用要跟着改, 所以是"警告 + 改名"而不是静默放过, 但也不至于让整个构建挂掉。
+void JZUiCppGen::dedupNames(JZUiNode& node, std::set<std::string>& used)
+{
+    if (!node.id.empty())
+    {
+        if (used.find(node.id) != used.end())
+        {
+            const std::string original = node.id;
+            std::string candidate;
+            for (int n = 2; ; ++n)
+            {
+                candidate = original + "_" + std::to_string(n);
+                if (used.find(candidate) == used.end())
+                    break;
+            }
+            node.id = candidate;   // 成员名/byId/setObjectName 都跟着用新名
+
+            m_warnings.push_back("控件重名: \"" + original + "\" 重复出现, 后一个已改名为 \""
+                                 + candidate + "\"; 代码里引用 \"" + original + "\" 的地方请一并确认");
+        }
+        used.insert(node.id);
+    }
+
+    for (size_t i = 0; i < node.children.size(); ++i)
+        dedupNames(node.children[i], used);
+}
+
 std::string JZUiCppGen::generate()
 {
+    // 先处理重名(只改内部副本 m_root, 调用方拿到的树不动)
+    {
+        std::set<std::string> used;
+        dedupNames(m_root, used);
+    }
+
     if (m_error.empty())
         collectMembers(m_root);
     if (!m_error.empty())

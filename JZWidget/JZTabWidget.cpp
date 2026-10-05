@@ -2,9 +2,24 @@
 #include "JZPainter.h"
 #include "JZPainterEvent.h"
 #include "JZFontMetrics.h"
+#include "JZMouseEvent.h"
+#include "JZPen.h"
+#include "JZColor.h"
 #include <algorithm>
 
 JZ_OBJECT_IMPL(JZTabWidget, JZWidget)
+
+namespace {
+// 选中标签那条主题色边(贴页面区的一侧)的粗细与配色
+const int kAccentThickness = 3;
+const JZColor kAccentColor(0x33, 0x66, 0xcc);
+const JZColor kTabBarBg(0xf0, 0xf0, 0xf0);
+const JZColor kPageBg(0xe8, 0xe8, 0xe8);
+const JZColor kSeparator(0xdd, 0xdd, 0xdd);
+const JZColor kTextOn(0x20, 0x20, 0x20);
+const JZColor kTextOff(0x66, 0x66, 0x66);
+const int kLabelPadding = 12;   // 标签文本两端留白
+}
 
 JZTabWidget::JZTabWidget(JZWidget* parent)
     : JZWidget(parent)
@@ -122,29 +137,95 @@ void JZTabWidget::showCurrentPage()
         m_pages[i]->setVisible(i == m_current);
 }
 
+// ==================== 标签条方向 ====================
+
+void JZTabWidget::setTabPosition(TabPosition pos)
+{
+    if (m_tabPosition == pos)
+        return;
+    m_tabPosition = pos;
+    relayout();          // 页面区换到另一侧
+    update();
+    updateGeometry();    // sizeHint 随方向变(条厚算在宽还是高上)
+}
+
 // ==================== 几何 ====================
+
+int JZTabWidget::tabThickness() const
+{
+    return kTabBarThickness;
+}
+
+int JZTabWidget::tabLength(int index) const
+{
+    JZFont font(14);
+    return std::max(kTabMinLength, JZFontMetrics::textWidth(m_labels[index], font) + 2 * kLabelPadding);
+}
+
+JZRect JZTabWidget::tabBarRect() const
+{
+    const int w = width();
+    const int h = height();
+    const int th = tabThickness();
+
+    switch (m_tabPosition) {
+    case North: return JZRect(0, 0, w, th);
+    case South: return JZRect(0, std::max(0, h - th), w, th);
+    case West:  return JZRect(0, 0, th, h);
+    default:    return JZRect(std::max(0, w - th), 0, th, h);   // East
+    }
+}
+
+JZRect JZTabWidget::tabRect(int index) const
+{
+    // 沿标签条方向累加前面每个标签的长度
+    int pos = 0;
+    for (int i = 0; i < index && i < (int)m_labels.size(); ++i)
+        pos += tabLength(i);
+
+    const int len = (index >= 0 && index < (int)m_labels.size()) ? tabLength(index) : 0;
+    const int th = tabThickness();
+    const int w = width();
+    const int h = height();
+
+    switch (m_tabPosition) {
+    case North: return JZRect(pos, 0, len, th);
+    case South: return JZRect(pos, h - th, len, th);
+    case West:  return JZRect(0, pos, th, len);
+    default:    return JZRect(w - th, pos, th, len);   // East
+    }
+}
+
+JZRect JZTabWidget::contentRect() const
+{
+    const int w = width();
+    const int h = height();
+    const int th = tabThickness();
+
+    switch (m_tabPosition) {
+    case North: return JZRect(0, th, w, std::max(0, h - th));
+    case South: return JZRect(0, 0, w, std::max(0, h - th));
+    case West:  return JZRect(th, 0, std::max(0, w - th), h);
+    default:    return JZRect(0, 0, std::max(0, w - th), h);   // East
+    }
+}
 
 void JZTabWidget::relayout()
 {
     if (!m_pageArea)
         return;
-    m_pageArea->setGeometry(0, kTabBarH, std::max(0, width()),
-                            std::max(0, height() - kTabBarH));
+
+    const JZRect c = contentRect();
+    m_pageArea->setGeometry(c.x(), c.y(), c.width(), c.height());
     for (JZWidget* page : m_pages) {
         page->setGeometry(0, 0, m_pageArea->width(), m_pageArea->height());
     }
 }
 
-void JZTabWidget::resize(int w, int h)
+void JZTabWidget::resizeEvent(JZResizeEvent* event)
 {
-    JZWidget::resize(w, h);
-    relayout();
-}
-
-void JZTabWidget::setGeometry(int x, int y, int w, int h)
-{
-    JZWidget::setGeometry(x, y, w, h);
-    relayout();
+    JZWidget::resizeEvent(event);
+    relayout();   // 页面区/标签条按新尺寸重算(页签占位只有它自己算得出)
 }
 
 JZSize JZTabWidget::sizeHint() const
@@ -155,43 +236,92 @@ JZSize JZTabWidget::sizeHint() const
         w = std::max(w, s.width());
         h = std::max(h, s.height());
     }
-    return JZSize(w, h + kTabBarH);
+
+    // 标签条占的那一侧算进期望尺寸
+    const int th = tabThickness();
+    if (m_tabPosition == North || m_tabPosition == South)
+        return JZSize(w, h + th);
+    return JZSize(w + th, h);
 }
 
 // ==================== 绘制 ====================
 
-int JZTabWidget::tabWidth(int index) const
+// 画一个标签的文字: North/South 横排; West/East 用画布矩阵转 90° 竖排。
+void JZTabWidget::paintTabText(JZPainter& p, const JZRect& r, const std::string& text, bool sel)
 {
     JZFont font(14);
-    return std::max(48, JZFontMetrics::textWidth(m_labels[index], font) + 24);
+    p.setPen(JZPen(sel ? kTextOn : kTextOff, 1));
+
+    if (m_tabPosition == North || m_tabPosition == South) {
+        p.drawText(r.x() + kLabelPadding,
+                   r.y() + JZFontMetrics::centerY(font, r.height()), text.c_str());
+        return;
+    }
+
+    // 竖排: 把画布转 90° 再按横排的方式画(矩阵会下发到后端, 字形跟着转)。
+    //   West(左): 转 -90°(屏幕逆时针) ⇒ 文字从下往上读, 起点在标签左下
+    //   East(右): 转 +90°(屏幕顺时针) ⇒ 文字从上往下读, 起点在标签左上
+    // 基线沿条厚方向居中: 用 centerY(font, 条厚) 得到"在厚度里居中"的基线位置。
+    const int thickness = tabThickness();
+    const int baseline = JZFontMetrics::centerY(font, thickness);
+
+    p.save();
+    if (m_tabPosition == West) {
+        p.translate(r.x() + baseline, r.y() + r.height() - kLabelPadding);
+        p.rotate(-90);
+    } else {
+        p.translate(r.x() + thickness - baseline, r.y() + kLabelPadding);
+        p.rotate(90);
+    }
+    p.drawText(0, 0, text.c_str());
+    p.restore();
 }
 
 void JZTabWidget::paintEvent(JZPainterEvent* event)
 {
     JZPainter p(this);
-    int w = width();
+    const int w = width();
+    const int h = height();
+    const int th = tabThickness();
+    const JZRect bar = tabBarRect();
 
-    // 标签条背景 + 底部分隔线 (页面区背景见 eventFilter 对 m_pageArea 的绘制)
-    p.fillRect(0, 0, w, kTabBarH, JZColor(0xf0, 0xf0, 0xf0));
-    p.setPen(JZPen(JZColor(0xdd, 0xdd, 0xdd), 1));
-    p.drawLine(0, kTabBarH - 1, w, kTabBarH - 1);
+    // 标签条背景 + 与页面区之间的分隔线 (页面区背景见 eventFilter 对 m_pageArea 的绘制)
+    p.fillRect(bar, kTabBarBg);
+    p.setPen(JZPen(kSeparator, 1));
+    switch (m_tabPosition) {
+    case North: p.drawLine(0, th - 1, w, th - 1); break;
+    case South: p.drawLine(0, h - th, w, h - th); break;
+    case West:  p.drawLine(th - 1, 0, th - 1, h); break;
+    default:    p.drawLine(w - th, 0, w - th, h); break;   // East
+    }
 
     JZFont font(14);
     p.setFont(font);
-    int x = 0;
+
     for (int i = 0; i < (int)m_labels.size(); ++i) {
-        int tw = tabWidth(i);
-        bool sel = (i == m_current);
+        const JZRect r = tabRect(i);
+        const bool sel = (i == m_current);
 
         if (sel) {
-            // 选中标签: 白底 + 底部主题色下划线 (盖过分隔线)
-            p.fillRect(x, 0, tw, kTabBarH - 1, JZColor(0xff, 0xff, 0xff));
-            p.fillRect(x, kTabBarH - 3, tw, 3, JZColor(0x33, 0x66, 0xcc));
+            // 选中标签: 白底 + 贴页面区那一侧的主题色边
+            p.fillRect(r, JZColor(0xff, 0xff, 0xff));
+            switch (m_tabPosition) {
+            case North:
+                p.fillRect(r.x(), r.y() + r.height() - kAccentThickness, r.width(), kAccentThickness, kAccentColor);
+                break;
+            case South:
+                p.fillRect(r.x(), r.y(), r.width(), kAccentThickness, kAccentColor);
+                break;
+            case West:
+                p.fillRect(r.x() + r.width() - kAccentThickness, r.y(), kAccentThickness, r.height(), kAccentColor);
+                break;
+            default:   // East
+                p.fillRect(r.x(), r.y(), kAccentThickness, r.height(), kAccentColor);
+                break;
+            }
         }
 
-        p.setPen(JZPen(sel ? JZColor(0x20, 0x20, 0x20) : JZColor(0x66, 0x66, 0x66), 1));
-        p.drawText(x + 12, JZFontMetrics::centerY(font, kTabBarH), m_labels[i].c_str());
-        x += tw;
+        paintTabText(p, r, m_labels[i], sel);
     }
 }
 
@@ -201,8 +331,7 @@ bool JZTabWidget::eventFilter(JZObject* watched, JZEvent* event)
     if (watched == m_pageArea && event->type() == JZEvent_paint) {
         // 自建 painter: 与控件 paintEvent 同一约定(裁剪由 painter 构造设定)
         JZPainter p(m_pageArea);
-        p.fillRect(0, 0, m_pageArea->width(), m_pageArea->height(),
-                   JZColor(0xe8, 0xe8, 0xe8));
+        p.fillRect(0, 0, m_pageArea->width(), m_pageArea->height(), kPageBg);
         return false;   // 继续默认派发 (默认 paintEvent 为空, 无副作用)
     }
     return JZWidget::eventFilter(watched, event);
@@ -210,26 +339,34 @@ bool JZTabWidget::eventFilter(JZObject* watched, JZEvent* event)
 
 // ==================== 交互 ====================
 
-int JZTabWidget::tabAt(int x) const
+bool JZTabWidget::inTabBar(const JZPoint& pt) const
+{
+    return tabBarRect().contains(pt);
+}
+
+int JZTabWidget::tabAt(int pos) const
 {
     int cursor = 0;
     for (int i = 0; i < (int)m_labels.size(); ++i) {
-        int tw = tabWidth(i);
-        if (x >= cursor && x < cursor + tw)
+        int len = tabLength(i);
+        if (pos >= cursor && pos < cursor + len)
             return i;
-        cursor += tw;
+        cursor += len;
     }
     return -1;
 }
 
 void JZTabWidget::mousePressEvent(JZMouseEvent* event)
 {
-    if (event->button() != JZMouseEvent::LeftButton ||
-        event->localPos().y() >= kTabBarH) {
+    const JZPoint pt = event->localPos();
+    if (event->button() != JZMouseEvent::LeftButton || !inTabBar(pt)) {
         JZWidget::mousePressEvent(event);
         return;
     }
-    int idx = tabAt(event->localPos().x());
+
+    // North/South 沿 x 找; West/East 沿 y 找
+    const int pos = (m_tabPosition == North || m_tabPosition == South) ? pt.x() : pt.y();
+    int idx = tabAt(pos);
     if (idx >= 0)
         setCurrentIndex(idx);
 }

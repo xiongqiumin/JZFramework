@@ -4,6 +4,7 @@
 #include "JZByteArray.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -400,4 +401,55 @@ struct stru_BTS_CMD_START_RESP70
     bool unpack(const JZByteArray& body);
 };
 
-#endif // BTE_PROTOCOL_H_
+// ---------------------------------------------------------------------------
+// 工步类型 / 充放电归类 / 工步名表(原版 common/PackDefine.h + net/netPackDefine.cpp)
+//   卡片(BTEItemWidget)要靠它: 标题文字(StepNameList)、底色(充电绿/放电黄/其它淡青)
+// ---------------------------------------------------------------------------
+enum
+{
+    STEP_TYPE_NULL = 0,     // 未定义
+    STEP_TYPE_1 = 1,        // 恒流充电
+    STEP_TYPE_2 = 2,        // 恒流放电
+    STEP_TYPE_3 = 3,        // 恒压充电
+    STEP_TYPE_IDLE = 4,     // 静    置
+    STEP_TYPE_LOOP = 5,     // 循    环
+    STEP_TYPE_STOP = 6,     // 停    止
+    STEP_TYPE_7 = 7,        // 恒流恒压充电
+    STEP_TYPE_8 = 8,        // 恒功率放电
+    STEP_TYPE_9 = 9,        // 恒功率充电
+    STEP_TYPE_10 = 10,      // 恒阻放电
+    STEP_TYPE_11 = 11,      // 恒阻充电
+    STEP_TYPE_12 = 12,      // 测量内阻
+    STEP_TYPE_13 = 13,      // 挂起工步
+    STEP_TYPE_14 = 14,      // N 闭环恒压充电
+    STEP_TYPE_15 = 15,      // N 闭环恒流恒压充电
+    STEP_TYPE_16 = 16,      // 脉冲工步
+    STEP_TYPE_17 = 17,      // 模拟工步
+    STEP_TYPE_18 = 18,      // 电池组恒流恒压
+    STEP_TYPE_19 = 19,      // 恒压放电
+    STEP_TYPE_20 = 20,      // 恒流恒压放电
+    STEP_TYPE_21 = 21,      // 控制工步
+    STEP_TYPE_PARAM = 0xFE, // 参数设置
+};
+
+enum
+{
+    STEP_CHARGE = 0,
+    STEP_DISCHARGE = 1,
+    STEP_CHARGE_OTHER = 2,
+};
+
+class PackDefine
+{
+public:
+    static std::vector<std::string>   StepNameList;   // 工步名; 下标 = STEP_TYPE_*
+    static std::map<int, std::string> ErrorList;      // 保护码 -> 文案
+
+    // 填 StepNameList(原版在 net/netPackDefine.cpp 的 NetPackRegist() 里做, 程序启动时调一次)
+    static void init();
+
+    static std::string ErrorText(int type);           // 查不到 -> "未知错误"(与原版一致)
+    static int         StepChargeType(int type);
+};
+
+#endif // BTE_PACK_DEFINE_H_

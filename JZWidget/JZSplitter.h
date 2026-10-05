@@ -6,7 +6,7 @@
 
 // 类似 Qt QSplitter 的可拖拽分隔容器: 沿一个方向排布若干子控件,
 // 控件之间用可拖动的分隔条 (handle) 调整各自占比。本控件自行管理子控件几何
-// (不依赖 m_layout), 通过重写 resize() 在容器尺寸变化时重排子控件。
+// (不依赖 m_layout), 在 resizeEvent 里按新尺寸重排子控件。
 class JZFRAMEWORK_API JZSplitter : public JZWidget
 {
     JZ_OBJECT_DECLARE(JZSplitter)
@@ -55,7 +55,8 @@ jz_signals:
     JZSignal<int, int> sigSplitterMoved;   // (pos, handleIndex) 拖动结束后/过程中发出
 
 protected:
-    void resize(int w, int h) override;
+    // 容器尺寸变化时重排子控件: 用 resizeEvent(框架钩子), 不重写 resize/setGeometry。
+    void resizeEvent(JZResizeEvent* event) override;
     void paintEvent(JZPainterEvent* event) override;
     void mousePressEvent(JZMouseEvent* event) override;
     void mouseMoveEvent(JZMouseEvent* event) override;
@@ -69,6 +70,7 @@ protected:
     void relayout();
     int totalStretch() const;
     int minOf(int index) const;                      // 子控件沿排布方向的最小尺寸
+    int maxOf(int index) const;                      // ... 以及最大尺寸(未设上限 = INT_MAX)
     int handleIndexAt(const JZPoint& p) const;       // 点 p 落在哪条分隔条上 (-1 表示无)
 
     // ---- 可见性 ----

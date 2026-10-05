@@ -173,8 +173,21 @@ declare class JZTabWidget extends JZWidget {
   currentIndex(): number;
   setCurrentIndex(index: number): void;
 
+  /** 标签条方向: 见构造器上的常量 JZTabWidget.North/South/West/East(与 C++ 枚举同值) */
+  tabPosition(): number;
+  /** 设标签条方向(上/下/左/右); 传常量 JZTabWidget.West 这种 */
+  setTabPosition(position: number): void;
+
   /** 当前页索引变化(属性形) */
   onCurrentChanged: ((index: number) => void) | null;
+}
+
+// 标签条方向的常量(挂在 JZTabWidget 构造器上; 值 = C++ JZTabWidget::TabPosition)
+declare namespace JZTabWidget {
+  const North: number;
+  const South: number;
+  const West: number;
+  const East: number;
 }
 
 // 可拖分隔容器(方向: 0=Horizontal 横排 1=Vertical 纵排)

@@ -26,7 +26,7 @@
 
 namespace {
 
-const int kFontPixelSize = 14;      // 默认字号 (逻辑像素)
+const int kFontPixelSize = 12;      // 默认字号 (逻辑像素; 与 JZFont 的默认值一致)
 const int kLineGap       = 2;       // 行间距 (多行)
 
 // 内联图片行高下限: 太小的图不压缩行高

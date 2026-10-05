@@ -447,8 +447,11 @@ void MainWindow::setupUi()
 // 组件规则 (kThemeRules) 一字不改 —— 即"仅覆盖令牌, 组件规则零改动"。
 static const char* kThemeRootLight =
 ":root {\n"
-"    --bg: #ffffff;\n"
-"    --panel: #f5f7fa;\n"
+// --bg = 窗口底色: 浅灰 #f0f0f0, 与框架默认窗口底色(见 JZWindow.cpp 的 kDefaultWindowBackground)
+// 以及 Qt 的 QPalette::Window 一致。原来是纯白, 白色控件(输入框/表格/列表框)在那上面分不出边界。
+"    --bg: #f0f0f0;\n"
+// --panel = 顶部换肤工具条: 比底色略深(原来比底色略浅, 底色变灰后层次会反过来)
+"    --panel: #e6e8ec;\n"
 "    --text: #202020;\n"
 "    --border: #d4dbe6;\n"
 "    --btn: #e0e0e0;\n"
@@ -866,36 +869,56 @@ void MainWindow::buildPages()
         m_preview->addWidget(page);
     }
 
-    // ---- TabWidget ----
+    // ---- TabWidget: 标签条方向可切换 (Qt QTabWidget::TabPosition) ----
+    // 一个 TabWidget + 四个按钮换方向: 点"左"/"右"能看到标签文字竖排、页面区跟着挪。
     {
         JZWidget* page = makePage();
+        JZVBoxLayout* vlay = static_cast<JZVBoxLayout*>(page->layout());
+
         JZTabWidget* tabs = new JZTabWidget(page);
-        static_cast<JZVBoxLayout*>(page->layout())->addWidget(tabs, 1);
-
-        JZWidget* tabA = new JZWidget();
-        tabA->setLayout(new JZVBoxLayout(10, 10));
-        JZLabel* la = new JZLabel(tabA);
-        la->setText("Tab A content");
-        la->setAlign(JZAlignCenter);
-        static_cast<JZVBoxLayout*>(tabA->layout())->addWidget(la);
-
-        JZWidget* tabB = new JZWidget();
-        tabB->setLayout(new JZVBoxLayout(10, 10));
-        JZPushButton* bb = new JZPushButton("Btn in Tab B");
-        connect(&bb->sigClicked, this, &MainWindow::onLogVoid);
-        static_cast<JZVBoxLayout*>(tabB->layout())->addWidget(bb);
-
-        JZWidget* tabC = new JZWidget();
-        tabC->setLayout(new JZVBoxLayout(10, 10));
-        JZCheckbox* cc = new JZCheckbox(tabC);
-        cc->setText("Checkbox in Tab C");
-        connect(&cc->sigToggled, this, &MainWindow::onLogBool);
-        static_cast<JZVBoxLayout*>(tabC->layout())->addWidget(cc);
-
-        tabs->addTab(tabA, "A");
-        tabs->addTab(tabB, "B");
-        tabs->addTab(tabC, "C");
+        for (int i = 0; i < 3; ++i) {
+            JZWidget* content = new JZWidget();
+            content->setLayout(new JZVBoxLayout(8, 8));
+            JZLabel* lb = new JZLabel(content);
+            std::string name(1, (char)('A' + i));
+            lb->setText("tab " + name + " content");
+            lb->setAlign(JZAlignCenter);
+            static_cast<JZVBoxLayout*>(content->layout())->addWidget(lb);
+            tabs->addTab(content, name);
+        }
         connect(&tabs->currentChanged, this, &MainWindow::onLogInt);
+        vlay->addWidget(tabs, 1);
+
+        // 方向切换按钮: 上/下/左/右 = North/South/West/East
+        static const char* kBtnText[4] = { "上", "下", "左", "右" };
+        static const char* kPosText[4] = { "North(上)", "South(下)", "West(左)", "East(右)" };
+        static const JZTabWidget::TabPosition kPos[4] = {
+            JZTabWidget::North, JZTabWidget::South, JZTabWidget::West, JZTabWidget::East };
+
+        JZWidget* row = new JZWidget(page);
+        JZHBoxLayout* hbox = new JZHBoxLayout(8, 8);
+
+        JZLabel* tip = new JZLabel(row);
+        tip->setText("标签条方向:");
+        hbox->addWidget(tip, 0);
+
+        static const char* kBtnId[4] = { "btnTabNorth", "btnTabSouth", "btnTabWest", "btnTabEast" };
+
+        for (int i = 0; i < 4; ++i) {
+            JZPushButton* btn = new JZPushButton(kBtnText[i], row);
+            btn->setObjectName(kBtnId[i]);      // 给自动化(MCP ui_invoke 按 #viewId 找)用
+            const JZTabWidget::TabPosition pos = kPos[i];
+            const std::string what = kPosText[i];
+            connect(&btn->sigClicked, [this, tabs, pos, what]() {
+                tabs->setTabPosition(pos);
+                log("tabPosition: " + what);
+            });
+            hbox->addWidget(btn, 0);
+        }
+
+        row->setLayout(hbox);
+        vlay->addWidget(row, 0);
+
         m_preview->addWidget(page);
     }
 

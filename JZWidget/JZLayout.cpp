@@ -8,6 +8,29 @@ JZ_OBJECT_IMPL(JZLayout, JZObject)
 
 namespace {
 
+// a 是不是 b 的祖先(沿 b 的父链往上找)。用来区分"真把控件放错了容器"与"容器是布局宿主
+// 转发的内部子控件"这两种情况, 见下面 reparent 处的判定。
+bool isAncestorOf(JZWidget* a, JZWidget* b)
+{
+    for (JZWidget* p = b; p != nullptr; p = p->parentWidget())
+    {
+        if (p == a)
+            return true;
+    }
+    return false;
+}
+
+// 控件的父 p 与布局容器 container 的关系是否"正常"(不需要告警):
+//   p == container                  —— 本来就挂在容器下(常态);
+//   p 是 container 的祖先            —— 典型: GroupBox 的布局被转发到内部 contentWidget,
+//                                      uic 把控件父设成了 GroupBox 本身(见 JZGroupBox::setLayout);
+//   container 是 p 的祖先            —— 控件已在容器这棵子树里, 只是层级更深(提升到容器直接子级);
+// 只有互不为祖先(控件挂在另一棵子树上)才是真误用, 那时才值得告警。
+bool isReparentNormal(JZWidget* p, JZWidget* container)
+{
+    return !p || p == container || isAncestorOf(p, container) || isAncestorOf(container, p);
+}
+
 // 在单条轴上, 依据 min/max/weight 把可用空间分配给各单元。
 // hint/min/max/weight 长度均为 n; weight>0 表示该项参与增长(也会参与收缩),
 // weight==0 的项严格保持 sizeHint (不会被压, 也不会被拉伸)。
@@ -138,7 +161,7 @@ void JZLayout::addManaged(JZWidget* widget)
     if (m_container)
     {
         JZWidget* p = widget->parentWidget();
-        if (p && p != m_container)
+        if (!isReparentNormal(p, m_container))
         {
             LOG_W("JZLayout::addWidget: 控件\"" + widget->objectName() + "\"已被父控件\"" +
                   p->objectName() + "\"持有, 但被加入布局容器\"" +
@@ -183,9 +206,9 @@ void JZLayout::apply(JZWidget* container)
         if (!w)
             continue;
         JZWidget* p = w->parentWidget();
-        // addWidget 的控件若已被其它父控件持有 (且不是本容器), 属于误用:
-        // 布局会强制 reparent 到本容器, 此处给出告警便于定位。
-        if (p && p != container)
+        // addWidget 的控件若被**无关**的父控件持有(互不为祖先), 属于误用: 布局会强制 reparent
+        // 到本容器, 此处给出告警便于定位。父子互为祖先不算误用(见 isReparentNormal 的说明)。
+        if (!isReparentNormal(p, container))
         {
             LOG_W("JZLayout::apply: 控件\"" + w->objectName() + "\"已被父控件\"" +
                   p->objectName() + "\"持有, 但被加入布局容器\"" +

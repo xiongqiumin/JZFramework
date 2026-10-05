@@ -57,13 +57,13 @@ void JZGroupBox::clearLayout()
         m_content->clearLayout();
 }
 
-void JZGroupBox::resize(int w, int h)
+void JZGroupBox::resizeEvent(JZResizeEvent* event)
 {
-    JZWidget::resize(w, h);   // 基类设尺寸 + 重绘 (GroupBox 自身无布局)
+    JZWidget::resizeEvent(event);
     if (m_content)
         m_content->setGeometry(m_pad, m_titleH,
-                               std::max(0, w - m_pad * 2),
-                               std::max(0, h - m_titleH - m_pad));
+                               std::max(0, width() - m_pad * 2),
+                               std::max(0, height() - m_titleH - m_pad));
 }
 
 void JZGroupBox::paintEvent(JZPainterEvent*)

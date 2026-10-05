@@ -23,6 +23,23 @@ const int MAX_SPLIT_LEVEL = 15;                                   // 分选级�
 const int HEART_TIMEOUT_SEC = 60;
 
 // ---------------------------------------------------------------------------
+// 设备/通道状态(原版 BTEServer/BTEServer.h 里 DeviceInfo::Status_*)。
+// 骨架把 DeviceInfo 叫 BteDevice(见 BTEServer.h), 但卡片(BTEItemWidget)也要用这套值,
+// 所以常量提到这里 —— 取值与原版完全一致, 两处共用同一个 int。
+// ---------------------------------------------------------------------------
+enum DeviceStatus
+{
+    Status_Complete = 0,
+    Status_WaitStart,
+    Status_Run,
+    Status_WaitStop,
+    Status_Stop,
+    Status_WaitJump,
+    Status_Error,
+    Status_OffLine,
+};
+
+// ---------------------------------------------------------------------------
 // UiHelper —— 对应原版 common/Common.h 里的同名类(目前只有 SetTable)。
 // 原版 SetTable 一口气设了 6 项(列数/表头/单选/整行选中/禁止编辑/末列拉伸/隐藏行号),
 // 引擎的 JZTableWidget 目前只有"整行选中(setSelectionBehavior)"这一项对得上,

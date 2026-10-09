@@ -1,10 +1,11 @@
 // JZLoopDetect 单测(纯逻辑: 不需要模型 / 网络 / 事件循环)
 //
 // 覆盖:
-//   工具循环 —— 签名归一化(键序/嵌套/坏 JSON) / 同参数同结果(更早命中) /
-//               同参数不同结果(攒够主阈值才判) / 轮询类工具单独放宽 / 参数一直变(永不命中) /
-//               窗口滑动 / reset / 开关
-//   输出循环 —— 同一行刷屏 / 同一段反复 / 周期串复读 / 分隔线不误判 / 正常文本不误判 / 检查频率
+//   工具循环 —— 签名归一化(键序/嵌套/坏 JSON) / 同参数同结果(连续攒够阈值才判) /
+//               同参数不同结果 / 轮询类工具单独放宽 / 参数一直变(永不命中) /
+//               只认连续重复(夹杂别的调用即断链, 含 build 误报回归) / window 内存上限 / reset / 开关
+//   输出循环 —— 同一行刷屏 / 同一段反复 / 周期串复读 / n-gram 重复率(长单元 & 改写型) /
+//               分隔线不误判 / 正常文本不误判 / 检查频率
 // 期望输出: ALL PASS
 //
 // 注: 本文件只测判定逻辑 —— 判定结果如何被用(报 LoopError、丢弃半截回复)在 JZAgent 里,
@@ -71,8 +72,10 @@ int main()
     check(JZToolLoopDetector::argsPreview(string(300, 'x'), 10) == string(10, 'x') + "…",
           "参数简写: 超长截断");
 
-    // ---- 2) 同参数 + 同结果: 第 2 次即判定(强信号) ----
-    printf("\n同参数同结果(强信号):\n");
+    // ---- 2) 同参数 + 同结果: 连续攒够主阈值(默认 5)才判 ----
+    //   ⚠ 曾经是"第 2 次即判"的强信号, 但那会误伤无参数 + 结果恒定的工具(如 build) ——
+    //     见下面 6b) 的回归用例。现在 sameResult 默认与 repeat 同值(5)。
+    printf("\n同参数同结果(连续重复):\n");
     {
         JZToolLoopDetector det;
         const string args = "{\"path\":\"src/main.ts\"}";
@@ -81,15 +84,20 @@ int main()
         JZToolLoopEvent e1 = det.step("read_file", args, out);
         JZToolLoopEvent e2 = det.step("read_file", args, out);
         JZToolLoopEvent e3 = det.step("read_file", args, out);
+        JZToolLoopEvent e4 = det.step("read_file", args, out);
+        JZToolLoopEvent e5 = det.step("read_file", args, out);
+        JZToolLoopEvent e6 = det.step("read_file", args, out);
 
-        check(!e1.loop, "第 1 次: 不判定");
-        check(e2.loop && e2.repeat == 2 && e2.sameResult == 2,
-              "第 2 次: 命中(窗口内重复 2 次且结果相同)");
-        check(e3.loop == false, "命中过之后不再重复判定");
-        check(e2.message.find("read_file") != string::npos &&
-              e2.message.find("src/main.ts") != string::npos,
+        check(!e1.loop && !e2.loop && !e3.loop && !e4.loop,
+              "第 1~4 次: 不判定(阈值 5)");
+        check(e5.loop && e5.repeat == 5 && e5.sameResult == 5,
+              "第 5 次: 命中(连续 5 次同签名且结果相同)");
+        check(e6.loop == false, "命中过之后不再重复判定");
+        check(e5.message.find("read_file") != string::npos &&
+              e5.message.find("src/main.ts") != string::npos,
               "错误文案带工具名与参数");
-        check(e2.message.find("\n") == string::npos, "错误文案是单行");
+        check(e5.message.find("\n") == string::npos, "错误文案是单行");
+        check(e5.message.find("连续") != string::npos, "错误文案标明是连续调用");
     }
 
     // ---- 3) 同参数 + 结果不同: 普通工具攒够主阈值(默认 5)才判 ----
@@ -162,35 +170,68 @@ int main()
         check(!any, "30 次不同参数: 一次都不判定");
     }
 
-    // ---- 6) 窗口滑动 ----
-    printf("\n窗口滑动:\n");
+    // ---- 6) 只认"连续重复": 中间夹了别的工具调用就断链 ----
+    printf("\n只认连续重复(夹杂别的调用即断链):\n");
     {
-        // 序列 A X1 X2 A X3 A (每步结果都不同, 免得"结果相同"那条更强的规则先命中):
-        //   不限窗口 -> 第 6 步时 A 出现 3 次 => 命中
-        //   窗口=4   -> 第 6 步时窗口里只剩 2 次 A => 不判定
-        // 这里把阈值显式定成 3, 免得默认值一改这条测试就跟着飘。
-        JZToolLoopDetector limited;
-        JZLoopConfig lc;
-        lc.window = 4;
-        lc.repeat = 3;
-        limited.setConfig(lc);
+        // 阈值显式定成 3, 免得默认值一改这条测试就跟着飘。
+        JZLoopConfig c3;
+        c3.repeat = 3;
+        c3.sameResult = 3;
 
-        JZToolLoopDetector unlimited;
-        JZLoopConfig uc;
-        uc.window = 0;   // 不限窗口
-        uc.repeat = 3;
-        unlimited.setConfig(uc);
-
+        // 序列 A X1 X2 A X3 A: 尾部连续段只有 1 次 A => 永不命中
+        JZToolLoopDetector det;
+        det.setConfig(c3);
         const char *names[6] = { "A", "X1", "X2", "A", "X3", "A" };
-        JZToolLoopEvent el, eu;
+        bool any = false;
         for (int i = 0; i < 6; i++)
+            any = det.step(names[i], "{}", "output-" + to_string(i)).loop || any;
+        check(!any, "非连续的同名调用(夹杂别的工具): 一次都不判定");
+
+        // 真连续: A A A => 第 3 次命中
+        JZToolLoopDetector run;
+        run.setConfig(c3);
+        check(!run.step("A", "{}", "x").loop &&
+              !run.step("A", "{}", "x").loop &&
+              run.step("A", "{}", "x").loop,
+              "连续 3 次同签名: 第 3 次命中");
+
+        // window 现在只是内存上限: 保留的步数不超过 window
+        JZToolLoopDetector cap;
+        JZLoopConfig cc;
+        cc.window = 4;
+        cap.setConfig(cc);
+        for (int i = 0; i < 10; i++)
+            cap.step("t" + to_string(i), "{}", "o" + to_string(i));
+        check(cap.stepCount() == 4, "window=4: 只保留最近 4 步(内存上限)");
+    }
+
+    // ---- 6b) 回归: 无参数 + 结果恒定的工具(如 build)不该被误判 ----
+    //   实测(2026-10-08): `build` **无参数**(签名恒为 build|{}) + 成功文案是**常量**
+    //   ⇒ 老实现里"同签名同结果 >= 2"必然成立, 于是 "build → 改文件 → build" 第 2 次就被判死,
+    //     把"改代码→重编→再跑"这个正常迭代闭环误杀(aime25_02/03 因此 FAIL)。
+    printf("\n回归: build 这类无参数/结果恒定的工具:\n");
+    {
+        const string ok = "编译通过，现在可以用 run_js 运行程序。";
+        const char *seq[11] = { "build", "run_js", "terminal_run", "terminal_run", "run_js",
+                                "terminal_run", "modify_file", "build", "run_js", "modify_file", "build" };
+        JZToolLoopDetector det;
+        bool any = false;
+        for (int i = 0; i < 11; i++)
+            any = det.step(seq[i], "{}", (i == 6) ? "已改写文件" : ok).loop || any;
+        check(!any, "夹杂改文件/运行/查日志的 3 次 build: 一次都不判定(实测误报场景)");
+
+        // 反过来: 真的连着 build 5 次(什么都没干) => 第 5 次命中
+        JZToolLoopDetector stuck;
+        int hitAt = 0;
+        for (int i = 1; i <= 6; i++)
         {
-            string out = "output-" + to_string(i);
-            el = limited.step(names[i], "{}", out);
-            eu = unlimited.step(names[i], "{}", out);
+            if (stuck.step("build", "{}", ok).loop)
+            {
+                hitAt = i;
+                break;
+            }
         }
-        check(!el.loop && el.repeat == 2, "窗口=4: 最早的 A 已被挤出, 只数到 2 次");
-        check(eu.loop && eu.repeat == 3, "不限窗口: 数到 3 次 A => 命中");
+        check(hitAt == 5, "真的连着 build 5 次: 第 5 次命中, 实际 " + to_string(hitAt));
     }
 
     // ---- 7) 开关 / 阈值 / reset ----
@@ -290,6 +331,50 @@ int main()
         check(e.loop, "补够长度后: 命中");
         det.reset();
         check(det.lastCheckedLen() == 0, "reset 后: 长度计数清零");
+    }
+
+    // ---- 12) 后缀重复率(n-gram): 补 ①②③ 漏掉的两类 ----
+    //   ①②③ 都要求**逐字节完全相等**, 这里两种情形它们都不认:
+    //     · 单元 500 字 > 周期上限(256) 且没有空行分隔 => ② 不认(不是独立段)、③ 不认(超周期)、① 只看单行;
+    //     · 每遍稍微改几个字 => 连"完全相等"都不成立。
+    printf("后缀重复率(n-gram):\n");
+    {
+        // ⚠ 这里**不用** pad(): pad 会掺进一段各不相同的长前缀, 把重复率稀释掉。
+        //    check() 只要求累计 >= textCheckMinChars(128), 下面这段本身就有两千多字符。
+        string unit;
+        while (unit.size() < 500)
+            unit += "把已知条件代入并逐项核对系数, 确认每一步的符号与单位都正确。";
+
+        string text;
+        for (int i = 0; i < 4; i++)
+            text += unit + "\n";
+        JZTextLoopDetector det;
+        JZTextLoopEvent e = det.check(text, "思考");
+        check(e.loop, "同一段(500 字)连贴 4 次(无空行/超周期上限): 命中");
+        check(e.message.find("重复率") != string::npos, "文案说明是重复率过高");
+        check(!e.sample.empty(), "文案带重复片语样本");
+        check(e.message.find("\n") == string::npos, "错误文案是单行");
+
+        JZTextLoopDetector det2;
+        string rewritten;
+        for (int i = 0; i < 4; i++)
+        {
+            string u = unit;
+            u.replace(0, 4, "先把第" + to_string(i) + "种");
+            rewritten += u + "\n";
+        }
+        check(det2.check(rewritten, "思考").loop, "同一段每遍只改几个字(不再逐字节相等): 命中");
+
+        JZTextLoopDetector det3;
+        string normal;
+        for (int i = 0; i < 60; i++)
+            normal += "第 " + to_string(i) + " 项核对的是 " + to_string(i * 137 % 977) + " 与 "
+                      + to_string(i * 61 % 419) + " 的换算关系, 结论各不相同。\n";
+        check(!det3.check(normal, "思考").loop, "正常长文(每句都不同): 不判定");
+
+        JZTextLoopDetector det4;
+        check(!det4.check(rep("只有一句重复的话。", 3), "思考").loop,
+              "总量不足一次检查量/gram 下限: 不判定");
     }
 
     printf("\n%s (fail=%d)\n", g_fail == 0 ? "ALL PASS" : "FAILED", g_fail);

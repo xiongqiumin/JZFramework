@@ -1,0 +1,11 @@
+{
+  "name": "aime25_22",
+  "purpose": "AIME 2025 数学题（源 doc_id=22）。",
+  "prompt": "用 TypeScript 解一道数学竞赛题（AIME）。\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js）；tsconfig.json 已配好，不要改它、也不要另建工程。\n\n要求：\n1) 在 src/main.ts 里写代码（只用 TS），把下面这道题的答案算出来；\n2) 程序结束前把答案打印出来：一个 0~999 的整数，**只要这个数字本身**：\n   不要任何其它内容（过程、中间量、调试、自检都不要）\n   例如答案是 70，程序的标准输出就只能是 70 这一行。\n   判定是【产物整段输出与这个数字完全相等】，多打印任何内容都会被判为未通过。\n\n题目：\nFrom an unlimited supply of 1-cent coins, 10-cent coins, and 25-cent coins, Silas wants to find a collection of coins that has a total value of $N$ cents, where $N$ is a positive integer. He uses the so-called greedy algorithm, successively choosing the coin of greatest value that does not cause the value of his collection to exceed $N.$ For example, to get 42 cents, Silas will choose a 25-cent coin, then a 10-cent coin, then 7 1-cent coins. However, this collection of 9 coins uses more coins than necessary to get a total of 42 cents; indeed, choosing 4 10-cent coins and 2 1-cent coins achieves the same total value with only 6 coins. In general, the greedy algorithm succeeds for a given $N$ if no other collection of 1-cent, 10-cent, and 25-cent coins gives a total value of $N$ cents using strictly fewer coins than the collection given by the greedy algorithm. Find the number of values of $N$ between $1$ and $1000$ inclusive for which the greedy algorithm succeeds.",
+  "maxAttempts": 1,
+  "timeout": 60,
+  "expect": {
+    "equals": "610"
+  },
+  "retryHint": "上一次运行未通过：程序的标准输出不是恰好那一个答案整数。请确认：①在 src/main.ts 用 TS 实现解题，算出题目要的具体数值；②程序结束时**只**打印这个整数（例如 70），不要打印任何其它内容，也不要用 \\boxed{} 等格式符号。"
+}

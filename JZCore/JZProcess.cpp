@@ -100,6 +100,26 @@ static bool startDetachedProcess(const string &program, const vector<string> &ar
     return true;
 }
 
+// 把 CreateProcess 的失败码翻成"能指导下一步"的中文。
+// ⚠ 以前调用方只拿到 bool，就把所有失败都读成"程序不存在"；实测最常见的是工作目录不存在
+// （ERROR_DIRECTORY 267 —— 如 run_js 在还没编译、build/ 尚未生成时启动）。
+static string describeStartError(DWORD err, const string &program, const string &workingDirectory)
+{
+    switch (err)
+    {
+    case ERROR_DIRECTORY:          // 267: 目录名无效（工作目录不存在 / 不是目录）
+        return "工作目录不存在或不是目录: " + workingDirectory;
+    case ERROR_FILE_NOT_FOUND:     // 2
+    case ERROR_PATH_NOT_FOUND:     // 3
+        return "找不到程序: " + program;
+    case ERROR_ACCESS_DENIED:      // 5
+        return "拒绝访问（无执行权限 / 被安全策略或杀软拦截）: " + program;
+    default:
+        return "CreateProcess 失败（错误码 " + to_string((int)err) + "）: " + program
+               + (workingDirectory.empty() ? string() : ("  wd=" + workingDirectory));
+    }
+}
+
 class JZProcessPrivate
 {
 public:
@@ -128,6 +148,8 @@ public:
     int exitCode;
     JZProcess::ExitStatus exitStatus;
     bool m_terminateRequested;
+    // start() 失败原因（由 describeStartError 归类），供 JZProcess::lastStartError() 取用
+    string startError;
 
     HANDLE hProcess;
     HANDLE hThread;
@@ -216,6 +238,7 @@ bool JZProcessPrivate::createProcess()
 
     if (!CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0) || !CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0))
     {
+        startError = "创建管道失败（错误码 " + to_string((int)GetLastError()) + "）";
         return false;
     }
 
@@ -228,6 +251,7 @@ bool JZProcessPrivate::createProcess()
             CloseHandle(hStdoutRead);
             CloseHandle(hStdoutWrite);
             hStdinRead = hStdinWrite = hStdoutRead = hStdoutWrite = INVALID_HANDLE_VALUE;
+            startError = "创建 stderr 管道失败（错误码 " + to_string((int)GetLastError()) + "）";
             return false;
         }
     }
@@ -321,6 +345,7 @@ bool JZProcessPrivate::createProcess()
     if (!success)
     {
         DWORD err = GetLastError();
+        startError = describeStartError(err, program, workingDirectory);
         jzError() << "CreateProcess failed. program:" << program << " wd:" << workingDirectory << " err:" << (int)err;
         CloseHandle(hStdinWrite);
         CloseHandle(hStdoutRead);
@@ -556,6 +581,7 @@ void JZProcessPrivate::closeWriteChannel()
 #include <sys/wait.h>
 #include <errno.h>
 #include <poll.h>
+#include <string.h>     // strerror
 
 static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
 {
@@ -621,6 +647,8 @@ public:
     int exitCode;
     JZProcess::ExitStatus exitStatus;
     bool m_terminateRequested;
+    // start() 失败原因（见 JZProcess::lastStartError）
+    string startError;
 
     pid_t pid;
     int stdinWrite;
@@ -888,6 +916,15 @@ cleanup_error:
     if (errorPipe[1] >= 0) ::close(errorPipe[1]);
     if (stderrPipe[0] >= 0) ::close(stderrPipe[0]);
     if (stderrPipe[1] >= 0) ::close(stderrPipe[1]);
+
+    // 失败原因给调用方：以前只回 bool，上层只能猜"程序不存在"；"工作目录不存在"这种就误导。
+    // ENOENT 既可能是 chdir(工作目录)失败、也可能是 exec(程序)找不到 ⇒ 用目录是否存在区分。
+    if (!workingDirectory.empty() && !JZFileInfo(workingDirectory).isDir())
+        startError = "工作目录不存在或不是目录: " + workingDirectory;
+    else if (errno != 0)
+        startError = "无法启动 " + program + ": " + strerror(errno);
+    else
+        startError = "无法启动: " + program;
 
     return false;
 }
@@ -1185,6 +1222,8 @@ public:
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
+    // 该平台不支持启动进程：留个字段让公共代码统一读（见 JZProcess::lastStartError）
+    string startError;
 
     JZByteArray stdoutBuffer;
     JZByteArray stderrBuffer;
@@ -1219,6 +1258,11 @@ bool JZProcess::startDetached(const string &program, const vector<string> &argum
     return startDetachedProcess(program, arguments, workingDirectory);
 }
 
+std::string JZProcess::lastStartError() const
+{
+    return m_startError;
+}
+
 bool JZProcess::start(const string &program, const vector<string> &arguments)
 {
     if (d_ptr->state != NotRunning)
@@ -1235,9 +1279,26 @@ bool JZProcess::start(const string &program, const vector<string> &arguments)
     d_ptr->m_terminateRequested = false;
     d_ptr->stdoutBuffer.clear();
     d_ptr->stderrBuffer.clear();
+    m_startError.clear();
+
+    // 启动前先判工作目录：CreateProcess 对不存在的目录只回 ERROR_DIRECTORY(267)，而调用方常把它
+    // 读成"程序不存在"（实测 agent_tool 的 run_js：还没编译、build/ 尚未生成就先跑）。这里提前判掉，
+    // 给一条能指导下一步的准确原因；也顺带覆盖"工作目录指向一个文件"这种非法情况。
+    if (!d_ptr->workingDirectory.empty() && !JZFileInfo(d_ptr->workingDirectory).isDir())
+    {
+        m_startError = "工作目录不存在或不是目录: " + d_ptr->workingDirectory
+                       + "（先创建/编译出该目录，再运行）";
+        jzError() << m_startError.c_str();
+        d_ptr->state = NotRunning;
+        sigErrorOccurred.emit(FailedToStart);
+        return false;
+    }
 
     if (!d_ptr->createProcess())
     {
+        m_startError = d_ptr->startError.empty()
+                           ? ("无法启动 " + program + "（程序不存在 / 无执行权限 / 被占用）")
+                           : d_ptr->startError;
         d_ptr->state = NotRunning;
         sigErrorOccurred.emit(FailedToStart);
         return false;

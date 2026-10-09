@@ -285,6 +285,8 @@ def load_cases(data_dir: str) -> tuple:
             "daemon": root.get("daemon", "") if isinstance(root.get("daemon"), str) else "",
             "daemonReadyMs": int(root.get("daemonReadyMs", 3000)),
             "expectContains": exp.get("contains", "") if isinstance(exp.get("contains"), str) else "",
+            # expect.equals = 规范化后整段完全相等(严格; 与 contains 互斥, 优先级 equals > contains)
+            "expectEquals": exp.get("equals", "") if isinstance(exp.get("equals"), str) else "",
             "expectCI": bool(exp.get("caseInsensitive", False)),
             "retryHint": root.get("retryHint", "") if isinstance(root.get("retryHint"), str) else "",
             "sourceDir": os.path.dirname(path),
@@ -367,9 +369,14 @@ def init_project(root: str, code_bin_dir: str) -> str:
 
 
 def build_stdout_verify_cmd(case: dict, tsc: str, python_exe: str, data_dir: str) -> str:
-    """没有 verify 但有 expect.contains 时, 组织"通用 stdout 验证"(与 agent_cli_test 同款)。"""
+    """没有 verify 但有 expect.contains / expect.equals 时, 组织"通用 stdout 验证"(与 agent_cli_test 同款)。"""
     cmd = ('"%s" "${data}/stdout_verify.py" --tsc "%s" --runtime "${runtime}" --root "${root}"'
-           ' --contains "%s"' % (fwd(python_exe), fwd(tsc), case["expectContains"].replace('"', '\\"')))
+           % (fwd(python_exe), fwd(tsc)))
+    # contains / equals 各自非空才下发(equals 型用例可以没有 contains)
+    if case["expectContains"]:
+        cmd += ' --contains "%s"' % case["expectContains"].replace('"', '\\"')
+    if case.get("expectEquals"):
+        cmd += ' --equals "%s"' % case["expectEquals"].replace('"', '\\"')
     if case["expectCI"]:
         cmd += " --case-insensitive"
     secs = max(5, case["timeout"] - 10)
@@ -615,9 +622,9 @@ def run_case(case: dict, idx: int, ctx: dict) -> dict:
         return result
 
     try:
-        # 验证命令: 用例给了就用它; 没有但有 expect.contains 就挂通用 stdout 验证
+        # 验证命令: 用例给了就用它; 没有但有 expect.contains/equals 就挂通用 stdout 验证
         verify_tpl = case["verify"]
-        if not verify_tpl and case["expectContains"]:
+        if not verify_tpl and (case["expectContains"] or case.get("expectEquals")):
             verify_tpl = build_stdout_verify_cmd(case, ctx["tsc"], ctx["python"], ctx["data"])
         result["verify_cmd"] = expand_verify(verify_tpl, root, ctx["runtime"], case["verifyPort"], ctx["data"]) if verify_tpl else ""
 
@@ -845,8 +852,14 @@ def main(argv=None) -> int:
     if args.dry_run:
         log("用例 %d 个:" % len(cases))
         for i, c in enumerate(cases):
-            tpl = c["verify"] or ("<通用 stdout 验证: 期望输出含 %r>" % c["expectContains"]
-                                  if c["expectContains"] else "")
+            if c["verify"]:
+                tpl = c["verify"]
+            elif c.get("expectEquals"):
+                tpl = "<通用 stdout 验证: 期望输出完全等于 %r>" % c["expectEquals"]
+            elif c["expectContains"]:
+                tpl = "<通用 stdout 验证: 期望输出含 %r>" % c["expectContains"]
+            else:
+                tpl = ""
             log("  [%d] %-22s maxAttempts=%d timeout=%ds setup=%s input=%s"
                 % (i, c["name"], c["maxAttempts"], c["timeout"], c["setup"] or "-",
                    ("有" if c["input"] else "-")))

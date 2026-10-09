@@ -1,0 +1,11 @@
+{
+  "name": "aime25_10",
+  "purpose": "AIME 2025 数学题（源 doc_id=10）。",
+  "prompt": "用 TypeScript 解一道数学竞赛题（AIME）。\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js）；tsconfig.json 已配好，不要改它、也不要另建工程。\n\n要求：\n1) 在 src/main.ts 里写代码（只用 TS），把下面这道题的答案算出来；\n2) 程序结束前把答案打印出来：一个 0~999 的整数，**只要这个数字本身**：\n   不要任何其它内容（过程、中间量、调试、自检都不要）\n   例如答案是 70，程序的标准输出就只能是 70 这一行。\n   判定是【产物整段输出与这个数字完全相等】，多打印任何内容都会被判为未通过。\n\n题目：\nA piecewise linear function is defined by\\[f(x) = \\begin{cases} x & \\operatorname{if} ~ -1 \\leq x < 1 \\ 2 - x & \\operatorname{if} ~ 1 \\leq x < 3\\end{cases}\\]and $f(x + 4) = f(x)$ for all real numbers $x$. The graph of $f(x)$ has the sawtooth pattern depicted below. The parabola $x = 34y^{2}$ intersects the graph of $f(x)$ at finitely many points. The sum of the $y$-coordinates of all these intersection points can be expressed in the form $\\tfrac{a + b\\sqrt{c}}{d}$, where $a$, $b$, $c$, and $d$ are positive integers such that $a$, $b$, $d$ have greatest common divisor equal to $1$, and $c$ is not divisible by the square of any prime. Find $a + b + c + d$. Graph [asy] import graph;  size(300);  Label f;  f.p=fontsize(6);  yaxis(-2,2,Ticks(f, 2.0));  xaxis(-6.5,6.5,Ticks(f, 2.0)); draw((0, 0)..(1/4,sqrt(1/136))..(1/2,sqrt(1/68))..(0.75,sqrt(0.75/34))..(1, sqrt(1/34))..(2, sqrt(2/34))..(3, sqrt(3/34))..(4, sqrt(4/34))..(5, sqrt(5/34))..(6, sqrt(6/34))..(7, sqrt(7/34))..(8, sqrt(8/34)), red); draw((0, 0)..(1/4,-sqrt(1/136))..(0.5,-sqrt(1/68))..(0.75,-sqrt(0.75/34))..(1, -sqrt(1/34))..(2, -sqrt(2/34))..(3, -sqrt(3/34))..(4, -sqrt(4/34))..(5, -sqrt(5/34))..(6, -sqrt(6/34))..(7, -sqrt(7/34))..(8, -sqrt(8/34)), red); draw((-7,0)--(7,0), black+0.8bp); draw((0,-2.2)--(0,2.2), black+0.8bp);  draw((-6,-0.1)--(-6,0.1), black); draw((-4,-0.1)--(-4,0.1), black); draw((-2,-0.1)--(-2,0.1), black); draw((0,-0.1)--(0,0.1), black); draw((2,-0.1)--(2,0.1), black); draw((4,-0.1)--(4,0.1), black); draw((6,-0.1)--(6,0.1), black);  draw((-7,1)..(-5,-1), blue); draw((-5,-1)--(-3,1), blue); draw((-3,1)--(-1,-1), blue); draw((-1,-1)--(1,1), blue); draw((1,1)--(3,-1), blue); draw((3,-1)--(5,1), blue); draw((5,1)--(7,-1), blue); [/asy]",
+  "maxAttempts": 1,
+  "timeout": 60,
+  "expect": {
+    "equals": "259"
+  },
+  "retryHint": "上一次运行未通过：程序的标准输出不是恰好那一个答案整数。请确认：①在 src/main.ts 用 TS 实现解题，算出题目要的具体数值；②程序结束时**只**打印这个整数（例如 70），不要打印任何其它内容，也不要用 \\boxed{} 等格式符号。"
+}

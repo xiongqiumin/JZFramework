@@ -154,10 +154,12 @@ struct BenchmarkCase
     std::string daemon;
     int daemonReadyMs = 3000;   // 启动后轮询等待其就绪的上限(毫秒); 超时不判失败
 
-    // 输出预期(benchmark 的 expect.contains / caseInsensitive):
+    // 输出预期(benchmark 的 expect.* : contains / equals / caseInsensitive):
     //   没有 verify 命令时, 由本程序自动组织成"通用 stdout 验证"(data/stdout_verify.py:
     //   跑 code_runtime 比对产物输出), 等价于 benchmark 宿主原本内联的 check()。
+    //   contains = 子串命中(宽松); equals = 规范化后整段完全相等(严格, 见 normalizeForEquals)。
     std::string expectContains;
+    std::string expectEquals;
     bool expectCaseInsensitive = false;
 };
 
@@ -560,11 +562,11 @@ protected:
         if (!m_case.input.empty() && !m_httpPromptExtra.empty() && m_case.setup.empty())
             prompt += m_httpPromptExtra;
 
-        // 验证命令: 用例给了 verify 就用它(benchmark 原样搬过来); 没给但有 expect.contains,
+        // 验证命令: 用例给了 verify 就用它(benchmark 原样搬过来); 没给但有 expect.contains/equals,
         // 就挂通用 stdout 验证(data/stdout_verify.py: 先 tsc 编译 -> 按 tsconfig 定位产物
         // -> 跑 code_runtime -> 比对输出), 即 benchmark 宿主原本内联的那段判定。
         std::string verifyCmd = m_case.verifyCmd;
-        if (verifyCmd.empty() && !m_case.expectContains.empty())
+        if (verifyCmd.empty() && (!m_case.expectContains.empty() || !m_case.expectEquals.empty()))
             verifyCmd = buildStdoutVerifyCmd(cfg, root, m_case);
 
         Json::Value req;
@@ -1076,7 +1078,8 @@ protected:
 
     // 通用 stdout 验证命令(等价于 benchmark 宿主内联的 check):
     //   <python> "${data}/stdout_verify.py" --tsc "<tsc 全路径>" --runtime "${runtime}" \
-    //       --root "${root}" --contains "<expect.contains>" [--case-insensitive] --timeout <秒>
+    //       --root "${root}" [--contains "<expect.contains>"] [--equals "<expect.equals>"] \
+    //       [--case-insensitive] --timeout <秒>
     // 脚本按传入的这几个路径干活(不搜索): 先 tsc -p <root>/tsconfig.json 编译, 再按 tsconfig 的
     // compilerOptions.outDir 定位产物目录(骨架里是 build), 检查 main.js 是否真的生成了,
     // 最后跑 code_runtime 比对 stdout。退出码 0=通过 / 1=未通过(输出喂回模型重试)。
@@ -1094,8 +1097,12 @@ protected:
                           + " \"${data}/stdout_verify.py\""
                           + " --tsc \"" + escapeCmdArg(tsc) + "\""
                           + " --runtime \"${runtime}\""
-                          + " --root \"${root}\""
-                          + " --contains \"" + escapeCmdArg(c.expectContains) + "\"";
+                          + " --root \"${root}\"";
+        // contains / equals 各自非空才下发(equals 型用例可以没有 contains)
+        if (!c.expectContains.empty())
+            cmd += " --contains \"" + escapeCmdArg(c.expectContains) + "\"";
+        if (!c.expectEquals.empty())
+            cmd += " --equals \"" + escapeCmdArg(c.expectEquals) + "\"";
         if (c.expectCaseInsensitive)
             cmd += " --case-insensitive";
 
@@ -1254,11 +1261,14 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     }
 
     // 输出预期(与 benchmark 的 expect 同解析): 没有 verify 时用它组织通用 stdout 验证
+    // 互斥优先级: equals > contains(与 benchmark 宿主一致)
     if (root.isMember("expect") && root["expect"].isObject())
     {
         const Json::Value &exp = root["expect"];
         if (exp.isMember("contains") && exp["contains"].isString())
             c.expectContains = exp["contains"].asString();
+        if (exp.isMember("equals") && exp["equals"].isString())
+            c.expectEquals = exp["equals"].asString();
         if (exp.isMember("caseInsensitive"))
             c.expectCaseInsensitive = exp["caseInsensitive"].asBool();
     }
@@ -1674,7 +1684,7 @@ int main(int argc, char *argv[])
     {
         bool needRuntime = false;
         for (const auto &c : cases)
-            if (c.verifyCmd.empty() && !c.expectContains.empty())
+            if (c.verifyCmd.empty() && (!c.expectContains.empty() || !c.expectEquals.empty()))
                 needRuntime = true;
         if (needRuntime && (codeRuntime.empty() || tscPath.empty()))
         {

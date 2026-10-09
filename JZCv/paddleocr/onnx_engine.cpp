@@ -23,9 +23,13 @@
 //   2. 标准头里大量出现 `noexcept(expr)` 形式, 被清掉会变成语法错误, 所以那些头必须先
 //      包含完(上面的 onnx_engine.h 已带 <string>/<vector>/<memory>/<opencv2/core.hpp>),
 //      靠 include guard 让 ORT 头(只包含 C 头)在 hack 期间包含不了它们。
-// 只在 v140 上生效; 换成 VS2019+ 后这段自动不参与(#if 为假), 无需删。
+// ⚠ 判据必须按**语言标准**，不能按工具集版本(_MSC_VER)：
+//   本工程是 CMAKE_CXX_STANDARD 14 —— 用 VS2022 编也还是 /std:c++14，ORT 头的
+//   NO_EXCEPTION(=noexcept) 照样落在函数指针 typedef 上，照样 C2279。旧判据
+//   `_MSC_VER < 1910`（只有 v140 命中）在 VS2022 下为假 ⇒ 补丁不生效（2026-10-08 实测）。
+//   _MSVC_LANG 是 MSVC 自报的**实际标准**(c++14 = 201402L)；VS2015 早期版本没有该宏，回落按 _MSC_VER 判。
 // ---------------------------------------------------------------------------
-#if defined(_MSC_VER) && _MSC_VER < 1910
+#if defined(_MSC_VER) && (!defined(_MSVC_LANG) ? (_MSC_VER < 1910) : (_MSVC_LANG < 201703L))
 #  define noexcept
 #  define JZ_ORT_V140_COMPAT 1
 #endif

@@ -5,8 +5,8 @@
 -> 比对它的输出是否符合预期。
 
 它是 benchmark 宿主里"原本内联在 main.cpp"的那段判定（tsc 编译 + 跑 code_runtime +
-check(output)，判定条件来自用例 JSON 的 expect.contains）拆出来的独立脚本，好处是别的
-驱动端（agent_cli_test 等）也能用同一条判定链路，不必各写一套。
+check(output)，判定条件来自用例 JSON 的 expect.contains / expect.equals / expect.answer）
+拆出来的独立脚本，好处是别的驱动端（agent_cli_test 等）也能用同一条判定链路，不必各写一套。
 
 所有路径都由外部传入，脚本自己**不做任何目录搜索**：
   --root  工程根（固定），tsconfig.json 必须在这里；
@@ -18,7 +18,8 @@ check(output)，判定条件来自用例 JSON 的 expect.contains）拆出来的
 用法：
   python stdout_verify.py --tsc <tsc> --runtime <code_runtime> --root <工程根> \
       --contains "hello world" [--contains ...] [--case-insensitive] \
-      [--not-contains ...] [--timeout 30] [--build-timeout 120] [--build <产物目录>]
+      [--equals "整段期望输出"] [--not-contains ...] \
+      [--timeout 30] [--build-timeout 120] [--build <产物目录>]
 
 步骤（每一步失败都直接退 1，并把实际输出打出来当重试反馈）：
   1) 编译：`tsc -p <root>/tsconfig.json`（cwd = 工程根），非 0 退出/超时 -> 未通过；
@@ -69,6 +70,14 @@ def decode(data):
         except Exception:
             pass
     return data.decode("utf-8", "replace")
+
+
+def norm_text(s):
+    """expect.equals 用的规范化: CRLF / CR -> LF, 去首尾空白(大小写由调用方决定)。
+
+    产物输出的结尾换行、Windows 的 CRLF、行尾空白都不该让"完全相等"误判。
+    """
+    return s.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def run_cmd(argv, cwd, timeout):
@@ -205,8 +214,11 @@ def main():
                     help="输出里必须出现的文本(可给多次, 全部命中才算通过)")
     ap.add_argument("--not-contains", action="append", default=[],
                     help="输出里不允许出现的文本(可给多次)")
+    ap.add_argument("--equals", default="",
+                    help="产物输出的\"规范化文本\"(去首尾空白、CRLF->LF)必须与之完全相等; "
+                         "与 --contains/--not-contains 一起时是 AND 关系")
     ap.add_argument("--case-insensitive", action="store_true",
-                    help="contains / not-contains 比较忽略大小写")
+                    help="contains / not-contains / equals 比较忽略大小写")
     ap.add_argument("--timeout", type=int, default=30,
                     help="产物运行上限(秒), 0=不限; 超时强制结束并按已捕获输出判定")
     ap.add_argument("--build-timeout", type=int, default=120, help="编译上限(秒)")
@@ -308,6 +320,12 @@ def main():
     for c in args.not_contains:
         checks.append(("输出不包含 \"%s\"" % c,
                        (c.lower() if args.case_insensitive else c) not in hay))
+    if args.equals:
+        want, got = norm_text(args.equals), norm_text(output)
+        if args.case_insensitive:
+            want, got = want.lower(), got.lower()
+        checks.append(("输出完全等于 \"%s\"" % args.equals, got == want))
+        note.append("完全相等按\"规范化\"比较: 去首尾空白、CRLF->LF(结尾空行/行尾空白不敏感)")
     if not checks and not hard_fail and timed_out:
         hard_fail.append("产物既没退出、也没有可判定的断言: 无法确认产物是否正常")
 

@@ -7,7 +7,7 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// JZShell —— 受限 shell 语法解析器(只做静态分析, 不执行任何东西)
+// JZShell —— shell 语法解析器(只做静态分析, 不执行任何东西)
 //
 // 为什么要有它: JZVirtualTerminal::run() 最终是把整条命令交给 `sh -c` 跑的,
 // 所以"能不能跑"必须在交给 shell 之前判完。以前是靠字符串扫描 + 各种特判
@@ -18,14 +18,21 @@
 //   逻辑链  cmd && cmd || cmd ; cmd
 //   管道    cmd | cmd
 //   重定向  > >> < 、带 fd 前缀(2> / 2>>)、fd 复制(2>&1 / >&-)、合并(&>file)
+//   heredoc << / <<- / <<<(body 当数据跳过, 见下面口径)
 //   赋值前缀 FOO=bar cmd
 //   引号/转义  '...' "..." \x 、# 行注释
 //
-// ⚠ 只识别结构, 不做变量/通配符展开(那是 sh 的事)。凡是"静态看不出值"的
-//   地方, 都通过 Command::programExpanded / 报错暴露给审核层去拒。
-// ⚠ 明确不支持(解析阶段直接报错, 不让它混过去):
-//   命令替换 $( ) 与反引号、进程替换 <( ) >( )、heredoc <<、子shell ( )、
-//   brace group { }。后台 & 会被解析成 Line::background 交给调用方拒绝。
+// ⭐ 审核口径 = "看得见才审, 看不见按可信处理"(默认 trustUnknown = true):
+//   命令替换 $( ) 与反引号、进程替换 <( ) >( )、子 shell ( )、heredoc body
+//   —— 这些"内容"一律**整段跳过、不进 AST、不报错**; 审核层只会看到能静态
+//   解析出来的命令(顶层 / 管道 / 逻辑链, 以及 heredoc 之后同一行里的部分)。
+//   ⇒ 代价: 藏在 $( ) / heredoc body 里的命令审不到(**已知盲区**, 真正的边界
+//   只能是沙箱/容器); 换来的好处是不再把模型常写的这类结构整条拒掉、白烧轮次。
+//   ⇒ 传 trustUnknown = false 才是老口径(碰到这些结构直接报错, 整条命令被拒)。
+// ⚠ 只识别结构, 不做变量/通配符展开(那是 sh 的事)。凡是"静态看不出**值**"的
+//   地方, 都通过 Command::programExpanded / 报错暴露给审核层去拒 ——
+//   这一类(程序名、重定向目标里带 $ ~ * ?)**不**按可信放过, 见 parse() 注释。
+// ⚠ 后台 & 会被解析成 Line::background 交给调用方拒绝。
 //   for / while / if 等复合语句: 词法上就是普通 word, 由调用方按程序名拒。
 // ---------------------------------------------------------------------------
 namespace JZShell
@@ -78,16 +85,19 @@ struct Line
 // 名字在串里硬找 —— 所以 `echo tsc` 里出现在**参数位置**的 tsc 不会被误换。
 //
 // ⚠ 是"按 AST 定位, 在原文上打补丁", 不是"从 AST 重新生成命令串": 注释、多余空格,
-//   以及 allowUnsafe 下整段跳过的 $( ) / heredoc / 子shell 内容都不在 AST 里,
+//   以及整段跳过的 $( ) / heredoc body / 子 shell 内容都不在 AST 里,
 //   重建会把它们弄丢(命令被悄悄改掉)。打补丁则只动程序名那几个字符。
 std::string rewritePrograms(const std::string &text, const Line &line,
                             const std::function<std::string(const Command &cmd)> &resolver);
 
 // 解析失败时 error 是能直接给人/模型看的中文原因。
-// allowUnsafe: true 时不再把 heredoc/命令替换/进程替换/子shell 当成错误,
-//   而是把它们的"内容"整段跳过(子shell/$( ) 内部的命令不会被抽出, 这是已知取舍)。
-//   供"全部不检查(Unrestricted)"档用: 仍要解析出结构来跑安全底线, 但信任整条命令。
-bool parse(const std::string &text, Line &out, std::string &error, bool allowUnsafe = false);
+// trustUnknown(默认 true): 遇到"内容审不到"的结构(heredoc body、$( )、反引号、
+//   进程替换、子 shell)时**跳过内容**而不是报错 —— 审核层只审能解析出来的命令。
+//   传 false = 老口径: 此类结构一律报错(整条命令被拒)。
+// ⚠ 两种模式下都仍然报错的只有两类(它们不是"内容审不到", 而是"值不可知"):
+//   ① 程序名带展开字符($ ~ * ?): 审不出要跑哪个程序, 放过等于白名单失效;
+//   ② 重定向目标带展开字符: 审不出写/读哪个路径, 放过等于区域权限失效。
+bool parse(const std::string &text, Line &out, std::string &error, bool trustUnknown = true);
 
 }  // namespace JZShell
 

@@ -1,7 +1,8 @@
 // 极简 ONNX Runtime 推理封装（替换原来的 cv::dnn / JZModelEngineOnnx）
 //
 // ⚠ 这里**只用 ONNX Runtime 的 C API**(onnxruntime_c_api.h), 不用 C++ API(Ort::Session)。
-//   原因: 本工程当前工具集是 VS2015(MSVC v140 / C++14), 而 ORT 1.30 的 C++ 头是 C++17:
+//   原因: 本工程是 C++14(CMAKE_CXX_STANDARD 14; 工具集已升 VS2022, 但仍编 /std:c++14),
+//   而 ORT 1.30 的 C++ 头是 C++17:
 //     * onnxruntime_cxx_api.h 无条件 #include <variant>, 且用了 `if constexpr`;
 //     * onnxruntime_float16.h 也用了 `if constexpr`;
 //   这些是语言级依赖, 用宏补不回来。C API 头则是一份纯 C 头, 唯一障碍是它把 NO_EXCEPTION

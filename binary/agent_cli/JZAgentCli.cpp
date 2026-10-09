@@ -378,7 +378,9 @@ string JZAgentCli::buildSystemPrompt() const
     }
     text += "  - 每条命令都是一个新 shell: 要进目录执行写 `cd <dir> && <cmd>`; "
             "单独的 `cd` 会被拒绝。cd/export 不跨命令保留。\n";
-    text += "  - 不支持后台 `&`、heredoc、进程替换、for/while/if 复合语句。\n";
+    text += "  - heredoc、管道、`$( )`/反引号、进程替换都能用; 但审核只看**能静态解析出来的命令**"
+            "(白名单 / 区域权限 / 危险指令), 藏在 `$( )` 或 heredoc body 里的命令不审、按可信处理。\n";
+    text += "  - 不支持后台 `&`、nohup/setsid、for/while/if 复合语句。\n";
     // "起服务再测"怎么跑必须说清楚: 模型容易给服务器那条一个很长的 timeout_ms 然后前台干等 ——
     // 那条要挂满超时才回(中途取不到输出), 而且超时那一刻服务就被杀掉了。正确做法是 background=true。
     text += jzTerminalRunNotes();

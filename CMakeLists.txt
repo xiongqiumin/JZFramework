@@ -108,7 +108,14 @@ if(WIN32 AND EXISTS "${JZ_MGBA_DIR}/mgba_host.dll")
 endif()
 
 jzframework_use_modules(${JZ_MODULE_LIST} SINGLE_MODULES ${JZ_SINGLE_MODULES})
-target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_BUILTIN)
+# TLS 后端: 用系统 OpenSSL(mongoose 的 MG_TLS_OPENSSL 分支)而不是内置实现。
+# 内置实现只支持 P-256 与 RSA —— 证书链里出现 P-384 会直接 "reject secp386 for now"
+# 导致握手失败(而且那段链校验不看 skip_verification), 表现为 web_fetch 报 ConnectError。
+# OpenSSL 已由 cmake/openssl.cmake 链接到 JZFramework(PUBLIC), 改这一行即可切换。
+# ⚠ 影响框架内所有 TLS(HTTPS 服务端 / WSS / MQTTS / TCP+TLS / HTTP 客户端), 改后请跑
+#   test_https / test_net_* 回归; 运行期需要 libssl-3-x64.dll / libcrypto-3-x64.dll(已在 PATH)。
+target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_OPENSSL)
+
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)
 

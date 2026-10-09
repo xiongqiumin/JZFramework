@@ -871,12 +871,13 @@ bool JZVirtualTerminal::isOwnProcess(int pid) const
 }
 
 // ==========================================================================
-// 安全底线: 即便 Unrestricted(全部不检查)也始终生效
+// 安全底线: 不论哪个权限等级都始终生效
 //   1) 特别危险的指令(关机 / 格式化 / 往块设备写 ...)
 //   2) 删除工作区外的文件(rm / rmdir 的目标不在工作区树内)
-// 设计取舍: 子shell ( ) / 命令替换 $( ) 内部藏的 rm 不会被抽出(allowUnsafe 把它们
-//   整段跳过), 所以底线只覆盖"顶层 / 管道"里的命令; 这正是 Unrestricted 信任档的语义
-//   —— 真正的安全边界仍然是沙箱/容器, 这里只是最后一道明显自杀动作的闸。
+// ⚠ 只覆盖"能静态解析出来的命令"(顶层 / 管道 / 逻辑链, 以及 heredoc 之后同一行里的部分):
+//   藏在 $( ) / 反引号 / 进程替换 / 子 shell / heredoc body 里的 rm 抽不出来 ——
+//   这是"看不见按可信处理"的**已知盲区**(口径见 JZShellParser.h 顶部注释)。
+//   真正的安全边界仍然是沙箱/容器, 这里只是最后一道"明显自杀动作"的闸。
 // ==========================================================================
 
 const char *JZVirtualTerminal::criticalDangerReason(const string &program,
@@ -1507,26 +1508,19 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     // ---- 审核: 解析成语法树 -> 逐条审 ----
     // 以前是字符串扫描 + 各种特判(& 是不是后台、2>&1 是不是重定向), 现在统一由
     // JZShell 出结构, 这里只负责按结构过策略。
-    // 权限等级 = Unrestricted(见 JZVirtualTerminalConfig::level): 仍解析(allowUnsafe)
-    // 以跑安全底线, 但跳过白名单/区域/危险参数等全部检查; 后台(&) 也放行(信任档)。
+    // 解析口径 = "看得见才审, 看不见按可信处理"(见 JZShell::parse 的 trustUnknown):
+    // heredoc body / $( ) / 反引号 / 进程替换 / 子 shell 的**内容**整段跳过(已知盲区),
+    // 审核层只会看到能解析出来的命令 —— 下面这些检查(白名单 / 区域 / 危险参数 / 底线)
+    // 因此都只管"看得见的那部分"。
+    // 两个等级的区别只在**检查项多少**(Unrestricted 跳过全部检查), 不在解析口径 ——
+    // 所以这里只有一次 parse(以前按等级分两套调用, 现在统一)。
     JZShell::Line parsed;
     string perr;
-    if (m_config.unrestricted())
+    if (!JZShell::parse(command, parsed, perr))
     {
-        if (!JZShell::parse(command, parsed, perr, /*allowUnsafe=*/true))
-        {
-            // allowUnsafe 下解析只做结构跳过, 理论上不该失败; 万一还是失败, 保守拒绝。
-            Verdict v;
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::CommandDenied;
-            v.detail = perr;
-            audit("exec", v, command);
-            error = perr;
-            return false;
-        }
-    }
-    else if (!JZShell::parse(command, parsed, perr))
-    {
+        // 剩下的失败只有两类: ① "值不可知"(程序名 / 重定向目标带 $ ~ * ?);
+        // ② 语法本身不完整(重定向没目标、引号不配对)。交给 shell 也只会报一句
+        // 更难懂的错, 所以保守拒绝 + 给可读原因。
         Verdict v;
         v.decision = Decision::Deny;
         v.reason = DenyReason::CommandDenied;

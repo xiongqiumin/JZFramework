@@ -1640,7 +1640,12 @@ bool JZProcessRunner::runProcess(const ToolCall &call, const string &program,
     if (!proc->start(program, args))
     {
         proc->deleteLater();
-        finish(call, false, "启动进程失败: " + logText + "\n请确认程序存在且可运行。",
+        // 失败原因由 JZProcess 归类后给出（工作目录不存在 / 找不到程序 / 拒绝访问 / 错误码…）。
+        // ⚠ 以前一律回"请确认程序存在且可运行"，把"工作目录还没生成"（典型：run_js 在编译前先跑，
+        //   build/ 还不存在）也说成"程序缺失"，模型据此会去怀疑运行时丢了 —— 属于误导性反馈。
+        string why = proc->lastStartError();
+        finish(call, false,
+               "启动进程失败: " + logText + (why.empty() ? "\n请确认程序存在且可运行。" : "\n" + why),
                DenyReason::NotFound);
         return false;
     }
@@ -2349,6 +2354,13 @@ void JZWebSearchTool::runNextSearch(const ToolCall &call)
 
     // 单源 15s 超时：超时按失败处理，自动切到下一个候选源
     JZNetworkReply *reply = m_reply;
+    // 重定向策略必须显式放宽：必应对 www.bing.com 的搜索请求会 **302 到 cn.bing.com(跨主机)**，
+    // 默认策略是 SameOrigin(JZNetworkReply 构造)，**不会跟随** ⇒ 拿到的只是 302 的 HTML 占位页，
+    // 而 parseSearch 只认 JSON / RSS ⇒ 一律判"返回内容无法识别" ⇒ 队列里只剩这一个源就报
+    // "候选搜索源均不可用"。这里与 web_fetch(下面同类位置) 对齐：允许跨主机跳转，上限 5 跳。
+    reply->setFollowRedirects(true);
+    reply->setRedirectPolicy(JZNetworkReply::AllAllowed);
+    reply->setMaxRedirects(5);
     reply->setTimeOut(15000);
     connect(&reply->sigFinished, this, [this, reply, call]()
     {

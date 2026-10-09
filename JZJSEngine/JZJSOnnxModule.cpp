@@ -47,7 +47,11 @@ JZJSOnnxModule::~JZJSOnnxModule() = default;
 #include <functional>                        // MSVC 的 <numeric> 不保证带到 std::multiplies
 #include <numeric>
 
-#if defined(_MSC_VER) && _MSC_VER < 1910
+// ⚠ 判据按**语言标准**而非工具集版本：本工程 CMAKE_CXX_STANDARD 14，用 VS2022 编也仍是
+//   /std:c++14 ⇒ ORT 头把 NO_EXCEPTION(=noexcept) 用在函数指针 typedef 上仍报 C2279；
+//   旧判据 `_MSC_VER < 1910`（只有 v140 命中）在 VS2022 下为假 ⇒ 补丁失效（2026-10-08 实测）。
+//   完整来龙去脉见 JZCv/paddleocr/onnx_engine.cpp 顶部。
+#if defined(_MSC_VER) && (!defined(_MSVC_LANG) ? (_MSC_VER < 1910) : (_MSVC_LANG < 201703L))
 #  define noexcept
 #  define JZ_ORT_V140_COMPAT 1
 #endif

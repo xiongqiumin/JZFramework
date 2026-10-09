@@ -61,6 +61,11 @@ public:
     void setWorkingDirectory(const std::string &dir);
     std::string workingDirectory() const;
 
+    // 上一次 start() 失败的原因（已按失败类型归类：工作目录不存在 / 找不到程序 / 拒绝访问 / 错误码 …）。
+    // start() 成功时清空。⚠ 以前只回 bool，调用方只能猜，于是把"工作目录不存在"误报成"程序不存在"
+    // （实测：run_js 在还没编译、build/ 尚未生成时启动，CreateProcess 回 ERROR_DIRECTORY 267）。
+    std::string lastStartError() const;
+
     void setProcessChannelMode(ProcessChannelMode mode);
     ProcessChannelMode processChannelMode() const;
 
@@ -92,6 +97,7 @@ private:
 
     JZProcessPrivate *d_ptr;
     int m_timerId;
+    std::string m_startError;   // 见 lastStartError()
 };
 
 #endif

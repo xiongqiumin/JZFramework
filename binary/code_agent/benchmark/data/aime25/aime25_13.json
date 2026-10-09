@@ -1,0 +1,11 @@
+{
+  "name": "aime25_13",
+  "purpose": "AIME 2025 数学题（源 doc_id=13）。",
+  "prompt": "用 TypeScript 解一道数学竞赛题（AIME）。\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js）；tsconfig.json 已配好，不要改它、也不要另建工程。\n\n要求：\n1) 在 src/main.ts 里写代码（只用 TS），把下面这道题的答案算出来；\n2) 程序结束前把答案打印出来：一个 0~999 的整数，**只要这个数字本身**：\n   不要任何其它内容（过程、中间量、调试、自检都不要）\n   例如答案是 70，程序的标准输出就只能是 70 这一行。\n   判定是【产物整段输出与这个数字完全相等】，多打印任何内容都会被判为未通过。\n\n题目：\nLet $ABCDE$ be a convex pentagon with $AB=14,$ $BC=7,$ $CD=24,$ $DE=13,$ $EA=26,$ and $\\angle B=\\angle E=60^{\\circ}.$ For each point $X$ in the plane, define $f(X)=AX+BX+CX+DX+EX.$ The least possible value of $f(X)$ can be expressed as $m+n\\sqrt{p},$ where $m$ and $n$ are positive integers and $p$ is not divisible by the square of any prime. Find $m+n+p.$",
+  "maxAttempts": 1,
+  "timeout": 60,
+  "expect": {
+    "equals": "60"
+  },
+  "retryHint": "上一次运行未通过：程序的标准输出不是恰好那一个答案整数。请确认：①在 src/main.ts 用 TS 实现解题，算出题目要的具体数值；②程序结束时**只**打印这个整数（例如 70），不要打印任何其它内容，也不要用 \\boxed{} 等格式符号。"
+}

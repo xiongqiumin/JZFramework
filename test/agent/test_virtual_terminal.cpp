@@ -570,7 +570,9 @@ private:
             stepRunAuditDeny();
     }
 
-    // 审查: "脱离进程管理"与"审不下去"的写法一律**先拒后起**
+    // 审查: "脱离进程管理"的写法一律**先拒后起**
+    // (以前这里还有 $( ) / 反引号 / heredoc / 进程替换 —— 那些"内容审不到"的结构
+    //  已改成放行, 见下一步 stepRunTrustedSyntax)
     void stepRunAuditDeny()
     {
         string error;
@@ -584,11 +586,6 @@ private:
             { "setsid cmake ..",        "setsid(脱离管理)" },
             { "cmake .. &",             "结尾的后台 `&`" },
             { "echo hi & echo bye",     "中间的后台 `&`" },
-            { "echo $(whoami)",         "$( ) 命令替换" },
-            { "echo `whoami`",          "反引号命令替换" },
-            { "cat <<EOF",              "heredoc(<<)" },
-            { "diff <(ls) <(ls)",       "进程替换 <( )" },
-            { "echo \"a $(whoami) b\"", "双引号里的 $( ) (仍会展开)" },
         };
 
         for (const Case &c : cases)
@@ -606,10 +603,141 @@ private:
                                     check(ok, "&& 那条命令本身正常: " + err);
                                     check(contains(out, "a") && contains(out, "b"),
                                           "&& 两边都跑了: " + out);
-                                    stepRunSingleQuoteLiteral();
+                                    stepRunTrustedSyntax();
                                 }, error);
         check(andOk, "run 允许 &&" + (andOk ? string() : ": " + error));
         if (!andOk)
+            stepRunTrustedSyntax();
+    }
+
+    // ⭐ 新口径("看得见才审, 看不见按可信处理", 见 JZShellParser.h): 这些"内容审不到"的
+    //    结构以前**整条被拒**, 现在放行 —— 内容不进 AST、不审, 但同一串里看得见的命令照常审。
+    void stepRunTrustedSyntax()
+    {
+        string error;
+        // $( ) / 反引号 / 双引号里的 $( ): 三种都过审, 而且真被 shell 展开了
+        bool started = runCmd("echo $(echo sub) `echo tick` \"dq $(echo inner) dq\"", 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(ok, "命令替换不再被拒(内容按可信处理): " + err);
+                                  check(contains(out, "sub") && contains(out, "tick") &&
+                                            contains(out, "dq inner dq"),
+                                        "三种命令替换都真的展开了: " + out);
+                                  stepRunProcessSubstitution();
+                              }, error);
+        check(started, "run 命令替换过审: " + error);
+        if (!started)
+            stepRunProcessSubstitution();
+    }
+
+    // 进程替换 <( ): 审核不再拦(内容审不到)。能不能真跑由 shell 决定(bash 有, dash 没有),
+    // 所以只断言"不是被审核拒的" —— 与 `[[ ]]` 那条同一个套路。
+    void stepRunProcessSubstitution()
+    {
+        string error;
+        bool started = runCmd("diff <(echo a) <(echo a)", 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(err.empty() || !contains(err, "审核不到"),
+                                        "进程替换不是被审核拒的: " + err);
+                                  stepRunHeredoc();
+                              }, error);
+        check(started, "run 进程替换过审: " + error);
+        if (!started)
+            stepRunHeredoc();
+    }
+
+    // heredoc: body 是**数据**(不进 AST、不审), 但 `<<'EOF' ... EOF` 那一行里 `&&` 后面的
+    // 命令必须照常进 AST 去审 —— 这正是本轮修掉的盲区(以前"从 << 一路跳到终止符行"
+    // 会把整条 `&& <命令>` 吞掉: 明明看得见, 却是审核盲区)。
+    void stepRunHeredoc()
+    {
+        string error;
+        string cmd = "cat <<'EOF' && echo after_heredoc\n"
+                     "body $(echo not_expanded) end\n"
+                     "EOF\n";
+        bool started = runCmd(cmd, 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(ok, "heredoc 能跑: " + err);
+                                  check(contains(out, "after_heredoc"),
+                                        "heredoc 同一行后面的命令照常执行(没被吞掉): " + out);
+                                  check(contains(out, "$(echo not_expanded)"),
+                                        "带引号定界符的 body 是字面量(没被展开): " + out);
+                                  stepRunHeredocFile();
+                              }, error);
+        check(started, "run heredoc 过审: " + error);
+        if (!started)
+            stepRunHeredocFile();
+    }
+
+    // heredoc 写文件(模型最常用的用法: 省掉 write_file 那一轮)
+    void stepRunHeredocFile()
+    {
+        string error;
+        string cmd = "cat <<'EOF' > " + m_ws + "/hdoc.txt\n"
+                     "heredoc_written\n"
+                     "EOF\n";
+        bool started = runCmd(cmd, 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(ok, "heredoc 写文件能跑: " + err);
+                                  check(JZFileInfo(m_ws + "/hdoc.txt").isFile(),
+                                        "heredoc body 落到了文件里");
+                                  stepRunHeredocDanger();
+                              }, error);
+        check(started, "run heredoc 写文件过审: " + error);
+        if (!started)
+            stepRunHeredocDanger();
+    }
+
+    // ⭐ "看得见才审, 看不见按可信"的两条边 —— 这里把语义钉死:
+    //   ① 看得见 ⇒ 拦: `<<'EOF' && shutdown` 里 shutdown 是本行的命令
+    //   ② 看得见 ⇒ 拦: 终止符行**之后**的 shutdown 也是命令
+    //   ③ 看不见 ⇒ 放: body 里的 shutdown 只是喂给程序的数据(已知盲区, 有意为之)
+    void stepRunHeredocDanger()
+    {
+        string error;
+        // ① 同一行 —— 老写法"从 << 跳到终止符"会把本行整条吞掉, 这条就查不出来
+        string sameLine = "cat <<'EOF' && shutdown -h now\nx\nEOF\n";
+        check(!runCmd(sameLine, 20000, [](bool, const string &, const string &) {}, error),
+              "heredoc 同一行里看得见的危险命令仍被拒: " + error);
+        check(contains(error, "shutdown"), "拒绝原因指向那个危险命令(不是解析报错): " + error);
+
+        // ② 终止符行之后 —— 验证 body 消费完能正确回到"后续命令"上
+        string afterDone = "cat <<'EOF' > " + m_ws + "/hdoc2.txt\nx\nEOF\nshutdown -h now\n";
+        check(!runCmd(afterDone, 20000, [](bool, const string &, const string &) {}, error),
+              "终止符行之后的危险命令被拒: " + error);
+        check(contains(error, "shutdown"), "拒绝原因指向终止符之后的危险命令: " + error);
+
+        // ③ body 里同字样只是数据(不审) —— 语义如此, 不是漏判
+        string inBody = "cat <<'EOF'\nshutdown -h now\nEOF\n";
+        bool started = runCmd(inBody, 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(ok, "body 里的 shutdown 只是数据(不审): " + err);
+                                  check(contains(out, "shutdown"), "body 原样喂给了程序: " + out);
+                                  stepRunTrailingNewline();
+                              }, error);
+        check(started, "run body 带危险字样的 heredoc 过审: " + error);
+        if (!started)
+            stepRunTrailingNewline();
+    }
+
+    // 回归: 命令串末尾带换行(模型很常写)以前会撞 "`;` 后面没有命令" —— 已修
+    // (末尾的 `;` 与真 shell 一样合法: `echo a;` 也是合法的)
+    void stepRunTrailingNewline()
+    {
+        string error;
+        bool started = runCmd("echo trailing_newline_ok\n", 20000,
+                              [this](bool ok, const string &out, const string &err)
+                              {
+                                  check(ok, "命令串末尾带换行能跑: " + err);
+                                  check(contains(out, "trailing_newline_ok"), "输出正常: " + out);
+                                  stepRunSingleQuoteLiteral();
+                              }, error);
+        check(started, "run 末尾换行过审: " + error);
+        if (!started)
             stepRunSingleQuoteLiteral();
     }
 

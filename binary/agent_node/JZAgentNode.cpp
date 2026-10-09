@@ -240,8 +240,9 @@ string JZAgentNode::buildInstructions() const
     text += "    相对路径一律以工作区根为基准: terminal_run 结果末尾那行 `[cwd]` 就是它,"
             "不确定就看它(单独的 `pwd` 也返回它)。\n";
     text += "  - 环境变量不跨命令保留, 要用就内联写: `FOO=bar <命令>`。\n";
-    text += "  - 不支持: 后台 `&`、nohup/setsid/screen、`$( )`、反引号、heredoc、进程替换, "
-            "以及 for/while/if 等复合语句(内部命令审不到)。\n";
+    text += "  - heredoc、`$( )`/反引号、进程替换都能用; 审核只看**能静态解析出来的命令**"
+            "(白名单 / 区域权限 / 危险指令), 藏在 `$( )` 或 heredoc body 里的命令不审、按可信处理。\n";
+    text += "  - 不支持: 后台 `&`、nohup/setsid/screen, 以及 for/while/if 等复合语句。\n";
     text += "  - 交互式程序(vim / top / REPL)跑不了 —— 子进程的 stdin/stdout 是管道, 不是 tty。\n";
     return text;
 }

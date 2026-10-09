@@ -41,7 +41,8 @@ bool isDelim(char c)
 class Tokenizer
 {
 public:
-    Tokenizer(const std::string &text, bool unsafe = false) : m_s(text), m_unsafe(unsafe) {}
+    Tokenizer(const std::string &text, bool trustUnknown = true)
+        : m_s(text), m_trust(trustUnknown) {}
 
     bool run(std::vector<Token> &out, std::string &error)
     {
@@ -56,6 +57,19 @@ public:
             }
             if (isBreak(c))
             {
+                if (!m_heredocs.empty())
+                {
+                    // 本行有 heredoc: 本行的换行 = 这条命令的结束(相当于一个 `;`),
+                    // 之后才是 body(body 是数据, 不能当命令解析);
+                    // 终止符行**尾**的换行不算分隔符, 一起吃掉 —— 否则会多出一个
+                    // 空的命令段(`; ;`), 语法层会报"缺程序名"。
+                    m_i++;
+                    consumeHeredocBodies();
+                    while (m_i < m_s.size() && isBreak(m_s[m_i]))
+                        m_i++;
+                    pushOp(out, ";");
+                    continue;
+                }
                 // 多行命令当成分号串起来
                 while (m_i < m_s.size() && isBreak(m_s[m_i]))
                     m_i++;
@@ -136,9 +150,9 @@ public:
 
             if (c == '`')
             {
-                if (m_unsafe)
+                if (m_trust)
                 {
-                    skipBacktick();
+                    skipBacktick();      // 内容审不到: 整段跳过, 不进 AST
                     continue;
                 }
                 error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
@@ -146,7 +160,7 @@ public:
             }
             if (c == '(' || c == ')')
             {
-                if (m_unsafe)
+                if (m_trust)
                 {
                     if (c == '(')
                         skipToCloseParen();
@@ -184,7 +198,7 @@ private:
         out.push_back(t);
     }
 
-    // ---- allowUnsafe 下的"跳过"辅助: 把不被支持的结构整段吃掉, 不报错 ----
+    // ---- "内容审不到"的跳过辅助: 整段吃掉、不进 AST、不报错(trustUnknown 口径) ----
     // 跳到下一个反引号(含闭合的反引号), 找不到就跳到串尾
     void skipBacktick()
     {
@@ -237,41 +251,93 @@ private:
             m_i++;
         }
     }
-    // 从 '<<'(或 '<<-') 起, 跳到终止符所在行(整行等于终止符才结束)。
-    // 调用前 m_i 必须指向第一个 '<' 且 m_s[m_i+1] == '<'。
-    void skipHeredoc()
+    void skipSpaces()
     {
-        m_i += 2;                       // 吃掉 <<
-        if (m_i < m_s.size() && m_s[m_i] == '-')
-            m_i++;                      // <<- 去过行首 tab
         while (m_i < m_s.size() && isSpace(m_s[m_i]))
             m_i++;
-        std::string delim;
+    }
+
+    // 阅读顺序提醒: heredoc 的 body 不在 '<<' 后面, 而在**本行结束之后** ——
+    //   `cat <<'EOF' && rm x` 里 `&& rm x` 是本行的命令(必须照常进 AST 去审),
+    //   body 从下一行才开头, 且多个 heredoc 的 body 按登记顺序排队。
+    //   ⇒ 这里只登记(吃掉 << 与定界符), body 由 consumeHeredocBodies() 在本行
+    //     遇到换行时统一消费。以前是"从 << 一路跳到终止符行", 会把 `&& rm x`
+    //     这种同行的命令整条吞掉(变成审核盲区)。
+    struct Heredoc
+    {
+        std::string delim;       // 定界符(引号已去掉)
+        bool stripTabs = false;  // <<-: 终止符行允许带前导 tab
+    };
+
+    // 从 '<<' 起读一个 heredoc 开头(<<、<<-、<<<)。调用前 m_i 指向第一个 '<' 且
+    // m_s[m_i+1] == '<'。只消费"操作符 + 定界符", 不碰 body。
+    void readHeredocOpener(std::string &error)
+    {
+        m_i += 2;                                   // 吃掉 <<
+        if (m_i < m_s.size() && m_s[m_i] == '<')
+        {
+            // <<< here-string(bash 独有): 一个词直接当 stdin, 没有 body, 吃掉就走
+            m_i++;
+            skipSpaces();
+            Token w;
+            if (m_i < m_s.size() && !isBreak(m_s[m_i]))
+                readWord(w, error);                 // 只消费, 不看它是什么
+            return;
+        }
+
+        Heredoc h;
+        if (m_i < m_s.size() && m_s[m_i] == '-')
+        {
+            h.stripTabs = true;
+            m_i++;                                  // <<-: 终止符行允许前导 tab
+        }
+        skipSpaces();
         if (m_i < m_s.size() && (m_s[m_i] == '\'' || m_s[m_i] == '"'))
         {
             char q = m_s[m_i++];
             while (m_i < m_s.size() && m_s[m_i] != q)
-                delim.push_back(m_s[m_i++]);
+                h.delim.push_back(m_s[m_i++]);
             if (m_i < m_s.size())
-                m_i++;                  // 闭引号
+                m_i++;                              // 闭引号
         }
         else
         {
             while (m_i < m_s.size() && !isSpace(m_s[m_i]) && !isBreak(m_s[m_i]))
-                delim.push_back(m_s[m_i++]);
+                h.delim.push_back(m_s[m_i++]);
         }
-        while (m_i < m_s.size())
+
+        // 定界符缺失(如结尾的 `cat <<`)不登记: 没有 body 可消费
+        if (!h.delim.empty())
+            m_heredocs.push_back(h);
+    }
+
+    // 消费本行登记的全部 heredoc body: 每个都读到"整行 == 定界符"为止。
+    // 匹配比真实 shell **更宽松**(忽略行尾空格/tab; <<- 时忽略行首 tab; 把 \r 当换行),
+    // 所以"我们认为的 body"永远不比 shell 认为的小 ⇒ 我们审的命令是 shell 实际会执行的
+    // 命令的**超集**(只会多审, 不会漏审)。
+    void consumeHeredocBodies()
+    {
+        for (const Heredoc &h : m_heredocs)
         {
-            std::string line;
-            while (m_i < m_s.size() && !isBreak(m_s[m_i]))
-                line.push_back(m_s[m_i++]);
-            while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
-                line.pop_back();
-            if (line == delim)
-                break;
-            while (m_i < m_s.size() && isBreak(m_s[m_i]))
-                m_i++;
+            while (m_i < m_s.size())
+            {
+                std::string line;
+                while (m_i < m_s.size() && !isBreak(m_s[m_i]))
+                    line.push_back(m_s[m_i++]);
+                if (h.stripTabs)
+                {
+                    size_t p = line.find_first_not_of('\t');
+                    line = (p == std::string::npos) ? std::string() : line.substr(p);
+                }
+                while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
+                    line.pop_back();
+                if (line == h.delim)
+                    break;
+                while (m_i < m_s.size() && isBreak(m_s[m_i]))
+                    m_i++;
+            }
         }
+        m_heredocs.clear();
     }
 
     // 读一个词(可能由多段拼起来: a"b c"d)。遇到分隔符就停, 让主循环处理
@@ -306,16 +372,29 @@ private:
                 while (m_i < m_s.size())
                 {
                     char d = m_s[m_i];
-                    // 双引号里同样不允命令替换: 里面的命令审核不到(单引号里才是字面量)
+                    // 双引号里会真展开(单引号里是字面量): 内容审不到 ⇒ 整段跳过、只标 expand
                     if (q == '"' && d == '$' && m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
                     {
-                        error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
-                        return false;
+                        if (!m_trust)
+                        {
+                            error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
+                            return false;
+                        }
+                        m_i++;                  // 指向 '('
+                        skipToCloseParen();
+                        expand = true;          // 展开结果是啥静态看不出
+                        continue;
                     }
                     if (q == '"' && d == '`')
                     {
-                        error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
-                        return false;
+                        if (!m_trust)
+                        {
+                            error = "不支持反引号命令替换: 里面的命令审核不到。请拆成多条命令";
+                            return false;
+                        }
+                        skipBacktick();
+                        expand = true;
+                        continue;
                     }
                     if (q == '"' && d == '\\' && m_i + 1 < m_s.size())
                     {
@@ -348,10 +427,11 @@ private:
             {
                 if (m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
                 {
-                    if (m_unsafe)
+                    if (m_trust)
                     {
                         m_i++;               // 指向 '('
                         skipToCloseParen();
+                        expand = true;       // 展开结果是啥静态看不出(当程序名时会被拒)
                         continue;
                     }
                     error = "不支持 $( ) 命令替换: 里面的命令审核不到。请拆成多条命令";
@@ -385,17 +465,18 @@ private:
 
         if (first == '<' && m_i + 1 < m_s.size() && m_s[m_i + 1] == '<')
         {
-            if (m_unsafe)
+            if (!m_trust)
             {
-                skipHeredoc();
-                return true;
+                error = "不支持 heredoc(<<): 内容不在参数位置上, 审核不到";
+                return false;
             }
-            error = "不支持 heredoc(<<): 内容不在参数位置上, 审核不到";
-            return false;
+            // 只登记(吃掉 << 与定界符), body 等本行结束再消费 —— 本行剩下的命令照常进 AST
+            readHeredocOpener(error);
+            return true;
         }
         if (m_i + 1 < m_s.size() && m_s[m_i + 1] == '(')
         {
-            if (m_unsafe)
+            if (m_trust)
             {
                 m_i++;               // 指向 '('
                 skipToCloseParen();
@@ -493,7 +574,8 @@ private:
     size_t m_i = 0;
     int m_fd = -1;
     bool m_ampRedirect = false;
-    bool m_unsafe = false;   // allowUnsafe: 跳过不支持的结构而不是报错
+    bool m_trust = true;                 // trustUnknown: "内容审不到"就跳过而不是报错
+    std::vector<Heredoc> m_heredocs;     // 本行登记的 heredoc, 换行时消费 body
 };
 
 // ==================== 语法 ====================
@@ -546,7 +628,8 @@ bool parseCommand(const std::vector<Token> &toks, size_t &i, Command &cmd, std::
                 r.target = target;
                 if (toks[i].expand)
                 {
-                    error = "重定向目标带了展开字符($ ~ * ?), 审不出具体路径: " + target;
+                    error = "重定向目标带了展开字符($ ~ * ?), 审不出具体路径: " + target +
+                            " —— 请直接写具体路径(或用文件工具 write_file)";
                     return false;
                 }
             }
@@ -580,10 +663,10 @@ bool parseCommand(const std::vector<Token> &toks, size_t &i, Command &cmd, std::
 
 } // namespace
 
-bool parse(const std::string &text, Line &out, std::string &error, bool allowUnsafe)
+bool parse(const std::string &text, Line &out, std::string &error, bool trustUnknown)
 {
     std::vector<Token> toks;
-    Tokenizer tz(text, allowUnsafe);
+    Tokenizer tz(text, trustUnknown);
     if (!tz.run(toks, error))
         return false;
 
@@ -625,6 +708,10 @@ bool parse(const std::string &text, Line &out, std::string &error, bool allowUns
             out.ops.push_back(op);
             if (i >= toks.size())
             {
+                // 结尾的分号是合法的(`echo a;`、以及"命令串末尾带换行"都会产生它);
+                // 其它操作符结尾都是残缺命令(如 `echo a &&`)。
+                if (op == ";")
+                    break;
                 error = "命令不完整: `" + op + "` 后面没有命令";
                 return false;
             }

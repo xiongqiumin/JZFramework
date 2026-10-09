@@ -1,0 +1,11 @@
+{
+  "name": "aime25_20",
+  "purpose": "AIME 2025 数学题（源 doc_id=20）。",
+  "prompt": "用 TypeScript 解一道数学竞赛题（AIME）。\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js）；tsconfig.json 已配好，不要改它、也不要另建工程。\n\n要求：\n1) 在 src/main.ts 里写代码（只用 TS），把下面这道题的答案算出来；\n2) 程序结束前把答案打印出来：一个 0~999 的整数，**只要这个数字本身**：\n   不要任何其它内容（过程、中间量、调试、自检都不要）\n   例如答案是 70，程序的标准输出就只能是 70 这一行。\n   判定是【产物整段输出与这个数字完全相等】，多打印任何内容都会被判为未通过。\n\n题目：\nCircle $\\omega_1$ with radius $6$ centered at point $A$ is internally tangent at point $B$ to circle $\\omega_2$ with radius $15$. Points $C$ and $D$ lie on $\\omega_2$ such that $\\overline{BC}$ is a diameter of $\\omega_2$ and ${\\overline{BC} \\perp \\overline{AD}}$. The rectangle $EFGH$ is inscribed in $\\omega_1$ such that $\\overline{EF} \\perp \\overline{BC}$, $C$ is closer to $\\overline{GH}$ than to $\\overline{EF}$, and $D$ is closer to $\\overline{FG}$ than to $\\overline{EH}$, as shown. Triangles $\\triangle {DGF}$ and $\\triangle {CHG}$ have equal areas. The area of rectangle $EFGH$ is $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. Find $m+n$. [asy] size(5cm); defaultpen(fontsize(10pt)); pair A = (9, 0), B = (15, 0), C = (-15, 0), D = (9, 12), E = (9+12/sqrt(5), -6/sqrt(5)), F = (9+12/sqrt(5), 6/sqrt(5)), G = (9-12/sqrt(5), 6/sqrt(5)), H = (9-12/sqrt(5), -6/sqrt(5)); filldraw(G--H--C--cycle, lightgray); filldraw(D--G--F--cycle, lightgray);  draw(B--C); draw(A--D);  draw(E--F--G--H--cycle);         draw(circle((0,0), 15)); draw(circle(A, 6)); dot(A);  dot(B); dot(C); dot(D);dot(E); dot(F); dot(G); dot(H); label(\"$A$\", A, (.8, -.8)); label(\"$B$\", B, (.8, 0)); label(\"$C$\", C, (-.8, 0)); label(\"$D$\", D, (.4, .8));  label(\"$E$\", E, (.8, -.8));  label(\"$F$\", F, (.8, .8)); label(\"$G$\", G, (-.8, .8)); label(\"$H$\", H, (-.8, -.8)); label(\"$\\omega_1$\", (9, -5)); label(\"$\\omega_2$\", (-1, -13.5)); [/asy]",
+  "maxAttempts": 1,
+  "timeout": 60,
+  "expect": {
+    "equals": "293"
+  },
+  "retryHint": "上一次运行未通过：程序的标准输出不是恰好那一个答案整数。请确认：①在 src/main.ts 用 TS 实现解题，算出题目要的具体数值；②程序结束时**只**打印这个整数（例如 70），不要打印任何其它内容，也不要用 \\boxed{} 等格式符号。"
+}

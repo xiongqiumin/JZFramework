@@ -1,6 +1,7 @@
 #include "JZLoopDetect.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 #include "json/json.h"
@@ -205,6 +206,18 @@ uint64_t resultDigest(const std::string &result, int compareBytes)
     return hash;
 }
 
+// 给一段子串算指纹(同一套 FNV-1a, 但不混长度) —— 文本重复率统计用
+uint64_t textHash(const std::string &text, size_t pos, size_t len)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++)
+    {
+        hash ^= (unsigned char)text[pos + i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 }   // namespace
 
 // ---------------------------------------------------------------------------
@@ -258,16 +271,24 @@ JZToolLoopEvent JZToolLoopDetector::step(const std::string &toolName, const std:
             m_steps.pop_front();
     }
 
-    // 本次也算在内: 窗口里"有多少步和这一步同签名 / 同签名同结果"
+    // 本次也算在内: 从尾部往前数**连续**的同签名步(夹了别的工具调用就断链)。
+    // ⚠ 不能按滑窗计数: `build` 无参数 + 成功文案恒定 ⇒ "同签名同结果"必然成立, 于是
+    //   "build → 改文件 → build" 这种正常迭代会在第 2 次被判死(2026-10-08 实测误报)。
     int repeat = 0;
-    int sameResult = 0;
-    for (size_t i = 0; i < m_steps.size(); i++)
+    for (size_t i = m_steps.size(); i > 0; i--)
     {
-        if (m_steps[i].sig != step.sig)
-            continue;
+        if (m_steps[i - 1].sig != step.sig)
+            break;
         repeat++;
-        if (m_steps[i].digest == step.digest)
-            sameResult++;
+    }
+
+    // "结果也相同"同样要求连续: 只数尾部那段"签名与结果都一致"的长度
+    int sameResult = 0;
+    for (size_t i = m_steps.size(); i > 0; i--)
+    {
+        if (m_steps[i - 1].sig != step.sig || m_steps[i - 1].digest != step.digest)
+            break;
+        sameResult++;
     }
 
     ev.repeat = repeat;
@@ -286,7 +307,7 @@ JZToolLoopEvent JZToolLoopDetector::step(const std::string &toolName, const std:
     ev.loop = true;
 
     std::string text = "循环检测: " + std::string(pollTool ? "轮询类工具 " : "工具 ") + toolName
-                     + " 已被用完全相同的参数调用 " + std::to_string(repeat) + " 次";
+                     + " 已被连续 " + std::to_string(repeat) + " 次用完全相同的参数调用";
     if (sameResult >= 2)
         text += "(其中 " + std::to_string(sameResult) + " 次返回结果也相同)";
     text += ", 判定为原地打转, 本轮已中止。参数: " + ev.argsPreview;
@@ -412,11 +433,69 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
         }
     }
 
+    // ④ 后缀重复率(n-gram): 补 ①②③ 的漏洞 —— 那三条都要求**逐字节完全相等**,
+    //    对"长单元少次重复"(超过 ③ 的周期上限、又没有空行分隔)和"改写型重复"都认不出来。
+    //    这里统计尾部里"重复出现过的 n 字片语"占比:
+    //      单元重复 k 遍 => 占比 ≈ 1-1/k(3 遍 0.67 / 4 遍 0.75); 正常文本各句不同, 远低于阈值。
+    //    先折叠空白再切 n-gram(换行/缩进差异不该把"同一段"拆散), 且只用尾部窗口。
+    if (!ev.loop && m_config.textGramN >= 4 && m_config.textGramMin > 0
+        && m_config.textGramRepeat > 0.0)
+    {
+        std::string flat = collapseSpaces(norm);
+        const size_t n = (size_t)m_config.textGramN;
+        if (flat.size() >= n + 1)
+        {
+            std::unordered_map<uint64_t, int> counts;
+            int total = 0;
+            for (size_t i = 0; i + n <= flat.size(); i++)
+            {
+                counts[textHash(flat, i, n)]++;
+                total++;
+            }
+
+            const int dup = total - (int)counts.size();   // 重复出现过的 gram 个数
+            const double rate = (total > 0) ? ((double)dup / (double)total) : 0.0;
+            if (total >= m_config.textGramMin && rate >= m_config.textGramRepeat)
+            {
+                // 取样 = 出现次数最多的那个片语(让模型一眼看出自己在复读什么)
+                int best = 0;
+                uint64_t bestHash = 0;
+                for (std::unordered_map<uint64_t, int>::const_iterator it = counts.begin();
+                     it != counts.end(); ++it)
+                {
+                    if (it->second > best)
+                    {
+                        best = it->second;
+                        bestHash = it->first;
+                    }
+                }
+                std::string sample;
+                for (size_t i = 0; i + n <= flat.size(); i++)
+                {
+                    if (textHash(flat, i, n) == bestHash)
+                    {
+                        sample = flat.substr(i, n);
+                        break;
+                    }
+                }
+
+                ev.loop = true;
+                ev.period = (int)n;
+                ev.repeat = 0;
+                ev.detail = std::to_string((int)n) + " 字片语重复率 "
+                            + std::to_string((int)(rate * 100.0 + 0.5)) + "%";
+                ev.sample = truncateText(sample, 80);
+            }
+        }
+    }
+
     if (!ev.loop)
         return ev;
 
     ev.message = "循环检测(" + where + "): 输出在尾部原地打转(";
-    if (ev.period > 0 && ev.repeat > 0)
+    if (!ev.detail.empty())
+        ev.message += ev.detail + ", ";
+    else if (ev.period > 0 && ev.repeat > 0)
         ev.message += "重复单元 " + std::to_string(ev.period) + " 字符 x " + std::to_string(ev.repeat) + " 次, ";
     ev.message += "片段: " + ev.sample + "), 已中止本轮。"
                   "不要再重复同样的内容: 换个说法/推进下一步, 或者直接给出最终结论。";

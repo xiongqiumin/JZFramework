@@ -1249,6 +1249,33 @@ bool containsIC(const std::string &hay, const std::string &needle)
     return h.find(n) != std::string::npos;
 }
 
+// expect.equals 的规范化：CRLF / CR 统一成 LF、去掉首尾空白；ci=true 时同时转小写。
+// 目的：让"整段输出完全相等"不受结尾换行、Windows CRLF、行尾空白影响（否则判据太脆）。
+std::string normalizeForEquals(const std::string &s, bool ci)
+{
+    std::string t;
+    t.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        char c = s[i];
+        if (c == '\r')
+        {
+            if (i + 1 < s.size() && s[i + 1] == '\n')
+                continue;                 // CRLF：跳过 '\r'，'\n' 下一步补上
+            t.push_back('\n');            // 单个 CR -> LF
+        }
+        else
+        {
+            t.push_back(ci ? (char)std::tolower((unsigned char)c) : c);
+        }
+    }
+    size_t a = t.find_first_not_of(" \t\n\v\f");
+    if (a == std::string::npos)
+        return std::string();
+    size_t b = t.find_last_not_of(" \t\n\v\f");
+    return t.substr(a, b - a + 1);
+}
+
 // 从评测集加载用例，支持两种形态：
 //   - 单个 .jsonl 文件：每行一个 JSON 对象（用例），空行忽略；
 //   - 目录：扫描 *.json（每文件一用例），若存在 cases.jsonl 也一并解析。
@@ -1299,17 +1326,31 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
         c.sourceDir = (p == std::string::npos) ? std::string(".") : s.substr(0, p);
     }
 
+    // expect 判定策略（互斥优先级：equals > contains）：
+    //   expect.contains : 输出里包含该子串（宽松，适合"规定输出格式 + 判标志串"，如 jsapi / aime25 用例）
+    //   expect.equals   : 输出的规范化文本与之完全相等（严格；见 normalizeForEquals）
+    //   expect.caseInsensitive : 二者都适用
+    // 两个都没给 = 无断言（判 true，与既有行为一致）。
     std::string contains;
+    std::string equals;
+    bool hasEquals = false;
     bool ci = false;
     if (root.isMember("expect") && root["expect"].isObject())
     {
         const Json::Value &exp = root["expect"];
         if (exp.isMember("contains") && exp["contains"].isString())
             contains = exp["contains"].asString();
+        if (exp.isMember("equals") && exp["equals"].isString())
+        {
+            equals = exp["equals"].asString();
+            hasEquals = true;
+        }
         if (exp.isMember("caseInsensitive"))
             ci = exp["caseInsensitive"].asBool();
     }
-    c.check = [contains, ci](const std::string &output) {
+    c.check = [contains, equals, hasEquals, ci](const std::string &output) {
+        if (hasEquals)
+            return normalizeForEquals(output, ci) == normalizeForEquals(equals, ci);
         if (contains.empty())
             return true;
         return ci ? containsIC(output, contains)

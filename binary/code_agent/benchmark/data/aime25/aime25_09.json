@@ -1,0 +1,11 @@
+{
+  "name": "aime25_09",
+  "purpose": "AIME 2025 数学题（源 doc_id=9）。",
+  "prompt": "用 TypeScript 解一道数学竞赛题（AIME）。\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js）；tsconfig.json 已配好，不要改它、也不要另建工程。\n\n要求：\n1) 在 src/main.ts 里写代码（只用 TS），把下面这道题的答案算出来；\n2) 程序结束前把答案打印出来：一个 0~999 的整数，**只要这个数字本身**：\n   不要任何其它内容（过程、中间量、调试、自检都不要）\n   例如答案是 70，程序的标准输出就只能是 70 这一行。\n   判定是【产物整段输出与这个数字完全相等】，多打印任何内容都会被判为未通过。\n\n题目：\nThe $27$ cells of a $3 \\times 9$ grid are filled in using the numbers $1$ through $9$ so that each row contains $9$ different numbers, and each of the three $3 \\times 3$ blocks heavily outlined in the example below contains $9$ different numbers, as in the first three rows of a Sudoku puzzle. [asy] unitsize(20);  add(grid(9,3));  draw((0,0)--(9,0)--(9,3)--(0,3)--cycle, linewidth(2)); draw((3,0)--(3,3), linewidth(2)); draw((6,0)--(6,3), linewidth(2));  real a = 0.5;  label(\"5\",(a,a)); label(\"6\",(1+a,a)); label(\"1\",(2+a,a)); label(\"8\",(3+a,a)); label(\"4\",(4+a,a)); label(\"7\",(5+a,a)); label(\"9\",(6+a,a)); label(\"2\",(7+a,a)); label(\"3\",(8+a,a));  label(\"3\",(a,1+a)); label(\"7\",(1+a,1+a)); label(\"9\",(2+a,1+a)); label(\"5\",(3+a,1+a)); label(\"2\",(4+a,1+a)); label(\"1\",(5+a,1+a)); label(\"6\",(6+a,1+a)); label(\"8\",(7+a,1+a)); label(\"4\",(8+a,1+a));  label(\"4\",(a,2+a)); label(\"2\",(1+a,2+a)); label(\"8\",(2+a,2+a)); label(\"9\",(3+a,2+a)); label(\"6\",(4+a,2+a)); label(\"3\",(5+a,2+a)); label(\"1\",(6+a,2+a)); label(\"7\",(7+a,2+a)); label(\"5\",(8+a,2+a));  [/asy] The number of different ways to fill such a grid can be written as $p^a \\cdot q^b \\cdot r^c \\cdot s^d$ where $p$, $q$, $r$, and $s$ are distinct prime numbers and $a$, $b$, $c$, $d$ are positive integers. Find $p \\cdot a + q \\cdot b + r \\cdot c + s \\cdot d$.",
+  "maxAttempts": 1,
+  "timeout": 60,
+  "expect": {
+    "equals": "81"
+  },
+  "retryHint": "上一次运行未通过：程序的标准输出不是恰好那一个答案整数。请确认：①在 src/main.ts 用 TS 实现解题，算出题目要的具体数值；②程序结束时**只**打印这个整数（例如 70），不要打印任何其它内容，也不要用 \\boxed{} 等格式符号。"
+}

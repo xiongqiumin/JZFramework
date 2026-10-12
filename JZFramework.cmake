@@ -43,6 +43,8 @@ set(MODULE_DEPENDS_JZAgent "JZCore;JZNet;JZJson")
 set(MODULE_DEPENDS_JZWebView "JZCore")
 set(MODULE_DEPENDS_JZMcpServer "JZCore;JZJson;JZHttpServer;JZNet")
 set(MODULE_DEPENDS_JZWidget "JZCore;JZJson")
+# JZGame 暂不进默认构建 (见根 CMakeLists 的同名注释); 启用模块时这行也要取消注释
+# set(MODULE_DEPENDS_JZGame "JZWidget")
 set(MODULE_DEPENDS_JZSimulator "JZBle;JZHttpServer;JZJson;JZGpio")
 set(MODULE_DEPENDS_JZCamera "JZCore")
 set(MODULE_DEPENDS_JZCrashReport "JZCore;JZNet")

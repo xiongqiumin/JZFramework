@@ -1,0 +1,2 @@
+add_executable(test_game_danmaku main.cpp main_window.cpp danmaku_widget.cpp)
+target_link_libraries(test_game_danmaku JZFramework)

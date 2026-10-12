@@ -1,0 +1,2 @@
+add_executable(test_game_shooter main.cpp main_window.cpp shooter_widget.cpp)
+target_link_libraries(test_game_shooter JZFramework)

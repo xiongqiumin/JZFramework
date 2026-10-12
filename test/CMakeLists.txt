@@ -14,6 +14,12 @@ if(WIN32)
 add_subdirectory(widget)
 endif()
 
+# JZGame(2D 游戏控件)测试: 暂不进默认构建 (见根 CMakeLists 的 JZGame 注释);
+# 启用模块后取消下面注释:
+# if(HAS_JZGame)
+# add_subdirectory(game)
+# endif()
+
 # JZCv(视觉/OCR): 只有模块真建起来(OpenCV + ONNX Runtime 都在)才加这个测试
 if(HAS_JZCv)
     add_subdirectory(cv)

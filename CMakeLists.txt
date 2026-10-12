@@ -87,6 +87,10 @@ set(JZ_MODULE_LIST JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashRepo
 if(WIN32)
     list(APPEND JZ_MODULE_LIST JZJSEngine)
     list(APPEND JZ_MODULE_LIST JZWidget)
+    # JZGame(2D 游戏控件, 基于 JZWidget): 2026-10-12 首版落地, 按需求**暂不进默认构建**
+    # (源码在 JZGame/, 示例在 test/game/; 容量基准见 test/game/bench/sprite_bench)。
+    # 需要时取消下一行注释, 并同步打开 JZFramework.cmake 的 MODULE_DEPENDS_JZGame:
+    # list(APPEND JZ_MODULE_LIST JZGame)
 endif()
 
 include(JZFramework.cmake)

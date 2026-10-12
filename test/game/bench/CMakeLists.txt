@@ -1,0 +1,2 @@
+add_executable(sprite_bench sprite_bench.cpp)
+target_link_libraries(sprite_bench JZFramework)

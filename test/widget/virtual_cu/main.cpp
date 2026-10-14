@@ -208,6 +208,12 @@ int main(int argc, char* argv[])
 
     // ⑤ 帧跟着状态变
     {
+        // ⚠ 注入是**同步**的(控件状态立刻变), 但像素是**异步**的: setChecked -> update() ->
+        //   JZWidget::invalidate() 走的是 `jzApp->postEvent(JZInvalidateEvent)`, 重绘要由窗口所在
+        //   线程的**消息循环**那一轮 dealPaint 提交 (见 JZWin32Thread::processAndPaint)。
+        //   本用例没有 exec 循环, 所以这里显式重绘一帧 —— 生产里脚本两条语句之间那一轮循环会做掉。
+        //   (不补这一下, 取到的就是**点击前**那一帧, 断言假失败。)
+        panel->renderNow();
         const std::string shot1 = JZComputerUse::screenshot();
         check(shot0 != shot1, "CU 截图跟着界面状态变化");
     }

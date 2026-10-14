@@ -310,8 +310,10 @@ private:
 // ------------------------------------------------------------------
 // 固定命令工具: 执行 setup 时给定的命令（模型不能改命令本身）
 //   args 为 true 时，工具带一个可选 args 参数，其内容会追加到命令之后
-//   （"程序 + 参数"形态，如 run_js 运行 code_runtime）；args 为空则原样执行命令。
+//   （"程序 + 参数"形态）；args 为空则原样执行命令。
 //   args 为 false 的工具不接受任何追加，行为与原版完全一致。
+//   ⚠ 2026-10-14: code_agent 侧已不再注册用它包出来的 run_js 工具（编译/运行统一收敛到终端里
+//     的 `tsc -p tsconfig.json` / `code_runtime`）；类本身保留给其它宿主按需使用。
 // ------------------------------------------------------------------
 class JZCommandTool : public JZProcessRunner
 {
@@ -335,8 +337,10 @@ private:
 // build_project: 打包/发布当前工作区的 TS 工程
 //   走宿主可选能力 ICodeToolHost::toolBuildProject（本地实现=JZCodeAgent::buildProject，
 //   异步 tsc 全量编译），编译结束后自动校验入口产物 main.js 并生成/刷新 project.json；
-//   编译错误回传给模型自修。打包完成后才能用 run_js（code_runtime）运行。
+//   编译错误回传给模型自修。打包完成后在产物目录跑 code_runtime 即可运行。
 //   不提供 toolBuildFinished() 的宿主(远端节点)用不了本工具。
+//   ⚠ 2026-10-14: code_agent 侧**不再把它注册给模型**（编译由模型自己在终端跑 `tsc -p tsconfig.json`）；
+//     宿主侧 API buildProject() 仍在用（评测宿主打包判定 / 面板"编译"按钮 / exportProject）。
 // ------------------------------------------------------------------
 class JZBuildProjectTool : public JZCodeTool
 {

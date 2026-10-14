@@ -269,6 +269,11 @@ protected:
     void abortTools();
     // 把当前配置转成虚拟终端的区域配置（工作区 + 授信目录）
     void applyZoneConfig();
+
+    // 终端里的"短名 -> 全路径"映射（编译器/运行时由宿主提供）: 一处生成、两处用 ——
+    // applyZoneConfig() 登记给终端(执行时把命令里的短名换成全路径)，
+    // buildSystemPrompt() 把它列给模型(否则模型不知道 tsc/code_runtime 是可用的命令)。
+    std::map<std::string, std::string> programPaths() const;
     void addLog(const std::string &type, const std::string &text, const std::string &name = std::string(),
                 const std::vector<std::string> &images = std::vector<std::string>());
     std::string buildSystemPrompt() const;

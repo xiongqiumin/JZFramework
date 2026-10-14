@@ -1,0 +1,13 @@
+{
+  "name": "net_sales_yoy_search",
+  "purpose": "联网调研链路：web_search 找来源 -> web_fetch 抓官方报告 -> 读出两年销量 -> 算同比 -> 写 TS 程序打印结论。搜索服务与两个数据页由 daemon 起在本机（销量每轮随机，只有 daemon 知道），判据由 verify 比对 daemon.json；hits.jsonl 还用来证明'搜索接口被打过、两个报告页被抓过'—— 报告页 URL 只存在于搜索结果里，所以这条留痕等价于'web_search 真的生效了'。⚠ 运行前提：宿主把本用例的 webSearchUrl 传给 agent（见 benchmark/main.cpp 的 BenchmarkCase::webSearchUrl），否则 web_search 会去打真 Bing，本用例必然失败。⚠ 真值/URL 一律落**工作区之外**（${root}/../net_truth/）：早期版本写在 ${root} 里，模型一个 ls 就能看见 daemon.json（真值 + 全部 report_urls 都在里面）⇒ 可以直接抄；报告页路径另带**随机前缀**（/d<6hex>/report/2026），防止模型绕过搜索直接拼 URL。",
+  "prompt": "你是调研助手。任务：查「星河 X1 智能手表」的年度销量，并给出**同比增长率**。\n\n## 数据来源（必须联网取，工作区里没有）\n1) 用 web_search 工具搜索这个产品的年度销售报告（关键词自己组织，例如「星河 X1 智能手表 销售报告」）；\n2) 搜索结果里会有若干条：**只认「星河官方数据中心」发布的那两条官方报告**（本年度与上一年度）。用 web_fetch 抓它们正文，读出各自的「年度总销量」（单位：台）。\n   ⚠ 论坛爆料帖、历史归档的旧报告、第三方汇总页都不是官方口径，照抄它们的数据会算错；打不开的链接换一个来源，别卡住；\n3) 算同比增长率：同比 = (今年销量 - 去年销量) / 去年销量 × 100，保留**一位小数**（可能为负）。\n\n## 输出（写程序，不是聊天回答）\n工程骨架已就位：入口 src/main.ts（编译产物 build/main.js），tsconfig.json 已配好，不要改它、也不要另建工程。\n程序结束前打印一行，格式写死为：\n\n    YOY=<同比数值>\n\n例如同比 12.3% 就打印 `YOY=12.3`；负数直接带负号（如 `YOY=-4.5`）。\n不要带 % 号、不要带 + 号。判定是「从程序输出里抽取这一行并比对数值」——前面打印别的行不影响判定，但这一行必须有且只有一个。\n注意：不要在程序里再联网取数（数据你已经拿到了，程序只负责把结论打印出来）。\n\n## 环境说明（别在这上面花时间）\n- 工具链已就位，**就在终端里**：编译用 `tsc -p tsconfig.json`（产物写到 build/），运行用 `cd build && code_runtime`。\n- 不要在终端里找/装编译器或运行时（`which tsc`、`find / -name tsc`、`npm i typescript` 都是白费力气）。\n- 你只要改 src/main.ts；不用把网页内容存成文件，也不用写测试脚本。",
+  "maxAttempts": 1,
+  "timeout": 120,
+  "maxRounds": 200,
+  "verifyPort": 3910,
+  "daemon": "python ${data}/net/daemon_net_search.py --base-port ${port} --out ${root}/../net_truth/daemon.json",
+  "daemonReadyMs": 3000,
+  "webSearchUrl": "http://127.0.0.1:${port}/search?q={q}",
+  "verify": "python ${data}/net/verify_net_search.py --runtime ${runtime} --build ${build} --root ${root} --daemon-file ${root}/../net_truth/daemon.json"
+}

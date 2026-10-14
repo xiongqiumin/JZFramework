@@ -76,8 +76,9 @@
 | `ts_source` / `ts_quickinfo` / `ts_outline` / `ts_members` / `ts_symbols` / `ts_references` / `ts_definition`（7 个查询） | **删** | `read_file`（整文件）+ `search_context`（grep） |
 | `ts_summary`（工程总览） | **改造**（不再走 LSP） | 新增 `project_tree`：文件树 + 每文件行数 / 摘要首行，纯文件系统扫描 |
 | `ts_add_class` / `ts_add_function` / `ts_rename_class` / `ts_rename_function` / `ts_replace_function` / `ts_delete_class` / `ts_delete_function`（7 个符号级编辑） | **删** | `write_file`（整文件重写，主力）/ `modify_file`（old_str→new_str，精确块替换）/ 可选 `replace_all` |
-| `build_project` | **保留并升级** | 拆出 `tsc_check`（`--noEmit`）作为**每轮必跑的语义闸门** |
-| `read_file` / `write_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `run_js` / `web_*` / `get_date_time` | **保留** | — |
+| `build_project` | **不给模型**（2026-10-14 定） | 编译由模型**在终端里跑** `tsc -p tsconfig.json`；宿主侧 API `buildProject()` 保留给评测宿主/面板编译按钮 |
+| `run_js` | **删**（同一日） | 运行由模型在终端里跑 `code_runtime`（产物目录，缺省入口 `main.js`）；`tsc`/`code_runtime` 以**短名**注册进终端（见 §3.5） |
+| `read_file` / `write_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `web_*` / `get_date_time` | **保留** | `terminal_*` 是**唯一执行面**；原来并存的 `command`（cmd.exe 那条）与终端规则不一致，待删（见 §3.5 待定） |
 | 路径权限校验（`DenyReason` / 可信目录） | **保留并抽出** | 这块实现值得留在工具库，不随 LSP 一起删 |
 
 ### 3.2 三条替代原则
@@ -100,7 +101,7 @@
 模型改码 → write_file/modify_file
         → tsc_check（--noEmit，诊断裁剪后回传）
         → 有错：诊断喂回模型，重改（上限 N 轮）
-        → 无错：build_project → run_js
+        → 无错：终端里 `tsc -p tsconfig.json` → `cd build && code_runtime`
         → 收集 stdout + console 日志 + 异常栈（已翻译回 TS）
         → 需要就截图 → 回模型 → 下一轮
 ```
@@ -115,6 +116,63 @@
 | 没有语义重命名事务 | 搜索列清单 → 批量替换 → tsc 兜底校验 |
 | 没有补全/悬停 | 不需要：写代码的是模型，不是人 |
 | 改错了难回退 | 每轮改动前做**工程快照**（`.jz/history/<轮次>/`），替代 LSP 时代的 rename 回滚 |
+
+### 3.5 终端工具（terminal_run / terminal_query / terminal_cancel）—— 契约"不加工"
+
+**职责边界**：终端是**执行面 + 回传面**，不是"信息提炼器"。它只保证三件事：命令照原样跑（白名单/区域审核之外不动手脚）、
+输出照原样回、失败可归因。**"哪几行重要"该由模型自己用 `| tail` / `| grep` 决定** —— 工具替它猜，实测只会让它以为输出丢了。
+
+**为什么定成"不加工"（2026-10-14 实测证据）**
+
+| 旧行为 | 实际后果 |
+| --- | --- |
+| 按"编译/通用"规则**重渲染**输出：每行加 `stdout: ` / `stderr: ` 标签；编译成功**只给尾部 20 行**（且无省略标记）；失败只挑错误行 | 模型看不到预期的那几行 ⇒ 以为命令没跑完/输出丢了 ⇒ **同一条命令重跑 19 次 + `terminal_query` 64 次** ⇒ 撞轮次上限（`MaxRoundError`）判失败 |
+| 前台回包尾巴写 `[run_id] …（完整/历史日志用 terminal_query 取）` | 变成"每条命令都去 query 一次"的**钩子**；而 query 的增量语义第二次回"日志 0 条"，模型看不懂 ⇒ 再跑再查 |
+| `terminal_query` 标了 `isPollTool()` ⇒ 循环检测**放宽** | 上面那 64 次空转**不会被拦**（放宽本意是"查长任务进度是正常用法"，但"同参数 + 回包完全相同"应当按绕圈计） |
+
+**回包契约**
+
+```
+terminal_run  前台:  <stdout/stderr 按到达顺序合并的原始字节>
+                     [错误] <原因>       ← 仅当非正常结束（非 0 退出码 / 超时被杀）
+                     [提示] <参数被改写> ← 仅当 timeout_ms 被钳到上限 / background 忽略 timeout_ms
+terminal_run  后台:  已后台启动(不等它结束, 不设超时) / [run_id] <id> / 用法一行
+terminal_run  被拒:  一行原因（没有进程、没有回包体）
+terminal_query:      [run_id] <id>  [running|done]  exit=…  pid=…  [后台]  已运行 Ns
+                     [command] <命令原文>
+                     [日志 N 行(第 a..b 行, 累计 M 行)]      ← 带 grep 时标 grep=…
+                     stdout| <行> / stderr| <行>            ← 这里是"看日志"，保留流标签（它不是命令输出本身）
+terminal_cancel:     ok / 一行原因（没这条 / 已结束）
+```
+
+- `[错误]` 这行**不能省**：`isOk` **不进模型上下文**（`JZAgent` 的 Tool 消息只发 `content`，见 `JZAgent.cpp:1620-1624`），
+  不写它模型就无从知道命令失败了（只会看到一段或空白的输出）。
+- 前台**不回** `run_id` / `cwd`：后台才有 `run_id`（它是 `terminal_query` / `terminal_cancel` 的唯一凭据）。
+
+**上限：只留"防爆阀"，不留"挑拣器"**（待定，见下）
+
+- 现状只有**内存阀** `kMaxRunOutputBytes = 8MB`（保留末尾、从头部裁、置截断标记）—— 那是防 OOM，**不是上下文阀**。
+- ⚠ 框架**不对工具结果做二次限流**（`JZAgent::onToolCallResult` 原样进 history）；超了会触发 `compressHistory()`
+  （额外一次 LLM 调用 + 有损摘要 + 10 分钟超时）⇒ "8MB 直接进 prompt"的代价**远大于**"截断 + 显式告知"。
+- 建议：**行数为主、字节兜底**（默认 `末尾 500 行 / 32KB，取先到者`，可配 `max_lines` / `max_bytes`）；
+  触发时在回包**开头**加一行 `[… 输出过长: 只回末尾 N 行/…B; 完整日志用 terminal_query(run_id, tail=/grep=) 取 …]`，
+  内容仍**原样、不重排、不加流标签**。保留**末尾**（错误与结果通常在尾部）；要头部模型可显式 `| head`。
+
+**不做的事**
+
+- 不做流标签重渲染；不做"编译错误上下文"这类重要性挑拣；不替模型判断留头还是留尾；
+- 不提供 `error_context` 这种"加工开关"（已下线）；要少输出，模型自己 `| tail`；
+- 不把 `cwd` / `run_id` 塞进前台回包。
+
+**待定决策**（写完 §3.5 时的开放项）
+
+1. **防爆阀默认值**：`500 行 / 32KB` 是否合适？还是干脆不设上下文阀、只留 8MB 内存阀（接受 `compressHistory()` 兜底）？
+2. **`terminal_query` 默认语义**：现在默认 `from_last=true`（增量）。建议改成默认**回最近 `tail=200` 行**（回答"现在怎么样了"），
+   增量降级为显式选项；并把"同参数 + 回包完全相同"的重复查询**取消** `isPollTool` 放宽。
+3. **`command` 工具（cmd.exe 那条）**：与终端两套规则（不认 `tsc`/`code_runtime` 短名，实测模型在它里面
+   `'tsc' is not recognized` 连试 18+ 次）⇒ 删掉它、只留 `terminal_run`，还是给它接同一套短名解析？
+4. **stdout/stderr 是否默认分开**：现在按到达顺序合并（"原样"）。若确实需要区分（如"程序 stdout 只允许有答案"的用例），
+   再加 `separate=true` 分两段返回（明确分段，而不是逐行标签）？
 
 ---
 
@@ -143,13 +201,13 @@
 ### 4.3 `log → run → read` 循环
 
 ```
-run_js → 收集输出 → （日志过长则头尾截断 + 落盘给路径）→ 喂模型
+终端跑 `cd build && code_runtime` → 收集输出 →（超长只由"防爆阀"兜底, 且带显式标记, 见 §3.5）→ 喂模型
       → 模型判断：信息不够就"加日志"，有 bug 就"改代码"
-      → 再 run（上限 3~5 轮，每轮只回传增量日志，避免上下文膨胀）
+      → 再跑（上限 3~5 轮；要看增量日志用 terminal_query 的 from_last/tail，避免上下文膨胀）
 ```
 
-配套：`run_js` 需要有**超时**与**输出上限**（现有 8000/12000 截断值改为可配置），
-超时即杀进程并明确回报 `TIMEOUT`，让模型知道"卡住了"而不是"没输出"。
+配套：终端跑程序要有**超时**与**输出上限**（上限只是防爆阀，默认值见 §3.5 待定 1），
+超时即杀进程并明确回报（`[错误] 命令超时, 已被强制终止`），让模型知道"卡住了"而不是"没输出"。
 
 ### 4.4 明确不补的东西
 

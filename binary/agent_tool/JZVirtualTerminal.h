@@ -235,10 +235,12 @@ public:
     std::string takeOutput(const std::string &runId);   // 取指定运行的累积输出并清空
 
     // ==================== 输出过滤 ====================
-    // 开关开(默认开)时所有命令的输出都做截断: 编译命令(build set 见 cpp isBuildCommand)
-    // 走"错误上下文"特殊处理(成功尾部 20 行 / 失败开头约 100 行错误且错误块完整);
-    // 其它命令超长时保留头 50 + 尾 50 行、中间省略。完整日志仍可由 terminal_query 取。
-    // 模型可在 terminal_run 用 error_context=false 关掉。
+    // ⚠ **默认关**(2026-10-14 按用户要求改成"原样返回, 不加工"): 命令回包直接给本次运行的原始
+    //   合并输出, 不再从运行日志重渲染(那条路会给每行加 stdout:/stderr: 标签, 还按"编译/通用"
+    //   规则头尾截断)。打开时才做截断: 编译命令(build set 见 cpp isBuildCommand)走"错误上下文"
+    //   特殊处理(成功尾部 20 行 / 失败开头约 100 行错误且错误块完整); 其它命令超长保留头 50 +
+    //   尾 50 行、中间省略。完整日志仍可由 terminal_query 取。
+    // 模型可在 terminal_run 用 error_context=true 显式打开(默认 false = 原样全量)。
     // 这是**终端级默认值**: 单次运行可以用 run() 的 filter 参数覆盖(见 OutputFilter)。
     void setFilterOutput(bool on) { m_filterOutput = on; }
     bool filterOutput() const { return m_filterOutput; }
@@ -391,7 +393,7 @@ protected:
     std::string m_shell;                // 见 shellProgram(): 构造时自动探测
     int m_recycleMs = 15 * 60 * 1000;
     int m_runIdGen = 0;
-    bool m_filterOutput = true;         // 编译输出错误截取(默认开, 见 setFilterOutput)
+    bool m_filterOutput = false;        // 输出截断/错误上下文截取(默认**关**=原样返回, 见 setFilterOutput)
 
     // 运行记录(后台/流式): runId -> 记录, 发生顺序另用 m_runOrder 保序
     std::map<std::string, RunRecord> m_runs;

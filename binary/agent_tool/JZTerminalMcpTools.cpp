@@ -88,10 +88,9 @@ JZTerminalRunMcpTool::JZTerminalRunMcpTool(JZTerminalRegistry *reg)
         "  - background=true : 后台运行, 立即返回 run_id(不流式), 之后用 terminal_query 取日志。\n"
         "  - stream_filter  : \"stdout\"/\"stderr\"/\"all\", 过滤推送/查询的流(默认 all)。\n"
         "  - grep          : 只保留含该关键字的行(流式为子串匹配, 查询为整行匹配)。\n"
-        "  - error_context : 输出过滤开关(默认 true, 所有命令都截断, 编译命令特殊处理)。"
+        "  - error_context : 输出过滤开关(**默认 false = 原样回传全量**)。设 true 才截断: "
         "非编译命令超长时保留头 50 + 尾 50 行、中间省略; 编译命令成功取尾部 20 行、"
-        "失败取开头约 100 行错误(错误块完整); 完整日志仍可用 terminal_query 取。"
-        "设 false 则原样回传全量。\n"
+        "失败取开头约 100 行错误(错误块完整); 完整日志仍可用 terminal_query 取。\n"
         "超时后输出已产出的部分并报告超时原因。");
     Json::Value p(Json::objectValue);
     p["type"] = "object";
@@ -119,7 +118,7 @@ JZTerminalRunMcpTool::JZTerminalRunMcpTool(JZTerminalRegistry *reg)
     props["grep"]["description"] = "关键字过滤(见说明)";
     props["error_context"] = Json::objectValue;
     props["error_context"]["type"] = "boolean";
-    props["error_context"]["description"] = "构建命令输出做错误截取(默认 true; false=原样全量)";
+    props["error_context"]["description"] = "输出过滤开关(默认 false=原样全量返回; true=做截断/编译错误截取)";
     p["properties"] = props;
     p["required"] = Json::arrayValue;
     p["required"].append("command");
@@ -155,8 +154,8 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
         sigFinished.emit(id, mcpTextResult(error, true));
         return;
     }
-    // 输出过滤开关(默认开): 按次给(终端能同时跑多条, 用终端级开关会互相串)
-    JZVirtualTerminal::OutputFilter filter = args.get("error_context", true).asBool()
+    // 输出过滤开关(默认**关**=原样返回): 按次给(终端能同时跑多条, 用终端级开关会互相串)
+    JZVirtualTerminal::OutputFilter filter = args.get("error_context", false).asBool()
                                                  ? JZVirtualTerminal::OutputFilter::On
                                                  : JZVirtualTerminal::OutputFilter::Off;
 

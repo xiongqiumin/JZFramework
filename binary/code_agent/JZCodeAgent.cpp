@@ -604,7 +604,35 @@ bool JZCodeAgent::initProject(const string &path, string &error)
     // 源目录不存在时仅收 src，不报错（没拷进来只代表工程不引用类型/运行时，仍可编译运行）。
     bool hasJsWrapper = false;
     {
-        string src = jzFindBundleAsset("js_wrapper", true);
+        // ⚠ 必须是"与运行时配套的**完整**那棵 js_wrapper"，不能只信 jzFindBundleAsset 的
+        //   "exe 同目录优先"：同一个 exe 目录里可能有**别的 target 铺的半棵树**——例如
+        //   test/widget/virtual 为虚拟进程把控件类层铺成 <exe>/js_wrapper/widget/dist
+        //   (见它的 CMakeLists；exe 落点统一后 code_agent_benchmark 与它同目录)。
+        //   取到半棵树 ⇒ 工程里没有 js_wrapper/types/console.d.ts ⇒ 第一次 build 必报
+        //   TS2584 "Cannot find name 'console'"，模型会误判"环境缺工具链"而去满盘找 tsc
+        //   (实测烧掉 70~88 轮后被 MaxRoundError 判失败)。
+        //   ⇒ 先按 **code_runtime 所在目录**(发布目录，copy_jz_js 铺的完整树)定位，且要求带 types/；
+        //      取不到才退回原来的查找(并把"是否含 types/"如实记进 hasJsWrapper)。
+        auto dirOf = [](const string &p) {
+            size_t i = p.find_last_of("/\\");
+            return (i == string::npos) ? string() : p.substr(0, i);
+        };
+        auto hasTypes = [](const string &dir) {
+            return !dir.empty() && JZFileInfo(dir + "/types").isDir();
+        };
+        string src;
+        {
+            string rt = jzFindBundleAsset("code_runtime.exe");
+            string cand = rt.empty() ? string() : (dirOf(rt) + "/js_wrapper");
+            if (hasTypes(cand))
+                src = cand;
+        }
+        if (src.empty())
+        {
+            string cand = jzFindBundleAsset("js_wrapper", true);
+            if (hasTypes(cand))
+                src = cand;
+        }
         if (!src.empty())                          // 源不存在：保持 flag=false，不报错
         {
             string copyErr;
@@ -675,7 +703,7 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         string mainTs =
             "// " + name + " 工程入口示例（可自行删改，跨文件用 import/export）\n"
             "// 打包/发布: tsc -p tsconfig.json（产物为原生 ESM 输出到 build/，主入口 main.js）\n"
-            "// 运行: run_js 加载 main.js 并执行\n"
+            "// 运行: cd build && code_runtime（在产物目录跑，缺省入口 main.js）\n"
             "export function main(): void\n"
             "{\n"
             "    console.log(\"Hello from " + name + "!\");\n"
@@ -1371,12 +1399,32 @@ JZSignal<bool, const std::string &> *JZCodeAgentToolHost::toolBuildFinished()
     return m_agent ? &m_agent->sigBuildFinished : nullptr;
 }
 
+std::map<std::string, std::string> JZCodeAgent::programPaths() const
+{
+    std::map<std::string, std::string> out;
+    if (!m_codeConfig.tscPath.empty())
+        out["tsc"] = m_codeConfig.tscPath;
+    {
+        // code_runtime 是随发布走的，通常在发布目录里(exe 旁边可能没有)：找不到就不登记，不报错。
+        string rt = jzFindBundleAsset("code_runtime.exe");
+        if (!rt.empty() && JZFileInfo::exists(rt))
+            out["code_runtime"] = rt;
+    }
+    return out;
+}
+
 void JZCodeAgent::applyZoneConfig()
 {
     // 默认策略(工作区读+写+执行 / 授信目录读+执行 / 区外只读) + 本工程的目录边界
     JZVirtualTerminalConfig config;
     config.zone.workspace = m_codeConfig.workspace;
     config.zone.trustedDirs = m_codeConfig.trustedDirs;
+
+    // 把宿主侧的编译器/运行时登记成**终端里的短名**(见 JZVirtualTerminalConfig::programPaths)：
+    // `tsc -p tsconfig.json` / `code_runtime` 在终端里能真的找到它们 —— 否则模型 `which tsc`
+    // 一路找不到，就会开始 `find /usr /tmp /c /d /e -name tsc` 这种满盘搜(实测一次直接跑超时被杀)。
+    // 这条与 agent_cli 侧保持一致(见 agent_cli_test/main.cpp 里填 cfg.programPaths["tsc"/"code_runtime"])。
+    config.programPaths = programPaths();
 
     // 注意: 这一份是**给工具看的**区域视图, 必须与 CodeAgentConfig 保持同步 ——
     // JZCodeTool::checkPathPermission 拿的就是它, 漏刷新等于权限误判。
@@ -1467,20 +1515,15 @@ void JZCodeAgent::buildAgent()
     shell_tool->setExeSearchPaths({ tscDir });
     addTool(shell_tool);
 
-    // build_project：打包/发布当前工作区（异步 tsc + main.js 入口校验 + project.json），
-    // 是 run_tool 的前置步骤；编译错误直接回给模型自修。
-    addTool(new JZBuildProjectTool());
-
-    // run_js：用随包安装的 code_runtime 运行编译产物（与 exportProject 同款定位）；args
-    // 透传给运行时（如工程根目录、--debug）。未编译的工程应先用 build_project 打包。
-    string runtimeExe = jzFindBundleAsset("code_runtime.exe");
-    if (runtimeExe.empty())
-        runtimeExe = codeNormalizePath(JZPlatform::applicationDirPath()) + "/code_runtime.exe";
-    // 运行根 = 产物目录（main.js 所在目录），按 tsconfig 的 outDir 定位
-    string run_work_dir = tsBuildAbsOf(codeNormalizePath(m_codeConfig.workspace));
-    auto run_tool = new JZCommandTool();
-    run_tool->setup("run_js", "run_js 加载 main.js 并执行, --debug 开启调试模式", runtimeExe, true, run_work_dir);
-    addTool(run_tool);
+    // ⚠ 不再给模型 build / run_js 工具（JZBuildProjectTool 与 JZCommandTool 的包装都保留但未注册）：
+    //   编译与运行一律由模型**自己在终端里**做 —— 这正是 agent_cli 那条链一直以来的做法：
+    //     编译: `tsc -p tsconfig.json`（tsc 是终端短名，见 programPaths()/applyZoneConfig；产物到 outDir，缺省 build/）
+    //     运行: `cd build && code_runtime`（code_runtime 也是短名；缺省入口 main.js，--debug 开调试）
+    //   为什么不留工具: 工具描述里写着 tsc（"build = 等于在工作区执行 tsc"）会诱导模型"那我去终端找 tsc"，
+    //   一旦编译失败它就转而满盘找编译器/装工具链（实测烧到轮次上限）；把编译/运行统一收敛到终端，
+    //   配合系统提示里的短名清单与"不要去找/装工具链"口径，模型才走一条确定的路。
+    //   宿主侧 API 照旧: 评测宿主在模型跑完后自己 buildProject() 打包、再由 code_runtime 子进程判定
+    //   （见 benchmark/main.cpp 的 afterAgent()/runCodeRuntime()），面板上的"编译/运行"按钮也用它。
 
     // 所有网络工具共享同一个访问管理器，代理只在此统一设置一次
     if (!m_netMan)
@@ -1560,9 +1603,30 @@ std::string JZCodeAgent::buildSystemPrompt() const
 {
     std::ostringstream text;
     text << "你是一个运行在本地的代码助手 JZCodeAgent，用于 TypeScript 项目："
-            "可查看、搜索、修改、用 tsc 编译并运行工作区中的代码。\n";
+            "可查看、搜索、修改、编译并运行工作区中的代码。\n";
     text << "工作区:" + m_codeConfig.workspace + "\n";
     text << "这是标准 TypeScript 工程：根目录有 tsconfig.json，编译产物统一输出到 build/。\n";
+    // 编译/运行怎么做 + 可用的程序短名(与 agent_cli 同一套口径: 直接写命令名, 不要去找/装工具链)。
+    // 不写这段的实测后果: 模型第一次编译失败就去终端里 `which tsc`、`find / -name tsc` 满盘找编译器,
+    // 一路烧到轮次上限(MaxRoundError) —— 因为系统提示里既没告诉它"工具链已就位", 也没告诉它"就在终端里"。
+    {
+        std::map<std::string, std::string> progs = programPaths();
+        if (!progs.empty())
+        {
+            text << "\n本机程序(命令名 -> 全路径): 在终端里**直接写命令名**(执行时会把它换成全路径; "
+                    "写全路径反而会被路径审核拒):\n";
+            for (const auto &kv : progs)
+                text << "  " << kv.first << "    " << kv.second << "\n";
+            text << "  · 编译: 终端里 `tsc -p tsconfig.json`(产物写到 tsconfig 的 outDir, 缺省 build/)\n";
+            text << "  · 运行: 终端里 `cd build && code_runtime`(在产物目录跑, 缺省入口 main.js; --debug 开调试)\n";
+            text << "  ⚠ 编译/运行**也由宿主把关**(评测侧会自己编译并跑一遍)，但你自己能跑就跑一次 —— "
+                    "工具链已由宿主提供: **不要**去找/装编译器或运行时(which/find tsc、npm i typescript 都是白费), "
+                    "编译失败时先看报错指向的代码/声明问题。\n";
+            text << "  ⚠ 收尾口径: 改好代码 → `tsc -p tsconfig.json` 通过 → 跑一次 `cd build && code_runtime` 看到输出, "
+                    "就可以**结束本轮**(把结论说清即可)。不要再重跑同一条命令、也不要反复 terminal_query 去「确认」——"
+                    "命令的 stdout 就在 terminal_run 的回包里, 判定由宿主自己做。\n";
+        }
+    }
     text << "编辑/查定义/引用/类型/诊断等语言信息时，优先调用 ts_* 系列工具（直连 tsc 语言服务）；"
             "改代码前用 ts_summary / ts_source / ts_outline 了解结构，而不是盲目翻文件。\n";
     text << "修改 TS 代码优先使用结构化编辑工具：新增用 ts_add_class / ts_add_function，"

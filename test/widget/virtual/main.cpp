@@ -59,7 +59,9 @@ static bool pixelIs(const JZImage& img, int x, int y, int r, int g, int b)
     return p[0] == (uint8_t)r && p[1] == (uint8_t)g && p[2] == (uint8_t)b;
 }
 
-// 帧里是否有非白像素 (窗口底色是白 => 非白即"有控件被画出来")
+// 帧里是否有"非窗口底色"的像素 (窗口底色是浅灰 #f0f0f0 => 非底色即"有控件被画出来")。
+// ⚠ 别拿纯白当"空": 窗口默认底色在 2026-10-05 由纯白改成了 #f0f0f0
+//   (见 JZWidget/JZWindow.cpp 的 kDefaultWindowBackground), 用 255 判"有墨"会**恒真** = 空断言。
 static bool hasInk(const JZImage& img)
 {
     if (img.isNull() || !img.data())
@@ -69,7 +71,7 @@ static bool hasInk(const JZImage& img)
         return false;
     const int n = img.width() * img.height();
     for (int i = 0; i < n; ++i) {
-        if (!(px[i * 4] == 255 && px[i * 4 + 1] == 255 && px[i * 4 + 2] == 255))
+        if (!(px[i * 4] == 0xf0 && px[i * 4 + 1] == 0xf0 && px[i * 4 + 2] == 0xf0))
             return true;
     }
     return false;
@@ -169,7 +171,9 @@ int main(int argc, char* argv[])
     const JZImage full = desk.screenshot();
     check(full.width() == 640 && full.height() == 480, "整屏截图 = 桌面尺寸");
     check(pixelIs(full, 10, 10, 232, 232, 232), "桌面空白处 = 桌面底色");
-    check(pixelIs(full, 200, 200, 255, 255, 255), "窗口客户区被合成在它自己的桌面位置上");
+    // 客户区空白处 = 窗口默认底色 (**浅灰 #f0f0f0**, 不是纯白 —— 见 JZWindow 的 kDefaultWindowBackground;
+    // 该坐标 (200,200) 落在客户区里、且在 checkbox (客户区 20,20 200x40) 之外 ⇒ 应当是干净底色)
+    check(pixelIs(full, 200, 200, 240, 240, 240), "窗口客户区被合成在它自己的桌面位置上");
     check(!pixelIs(full, 40 + 100, 60 + 10, 232, 232, 232), "标题栏画出来了 (不是桌面底色)");
     check(hasInk(desk.screenshotWindow(wa)), "单窗口帧里有控件");
     check(desk.screenshotWindow(wa).width() == 240, "单窗口截图 = 客户区尺寸");
@@ -184,7 +188,7 @@ int main(int argc, char* argv[])
         check(hi.width() == 1280 && hi.height() == 960,
               "整屏帧 = 桌面逻辑尺寸 × 缩放 (物理像素, 同 JZWidget::grab 约定)");
         check(pixelIs(hi, 20, 20, 232, 232, 232), "缩放后桌面底色照旧");
-        check(pixelIs(hi, 400, 400, 255, 255, 255),
+        check(pixelIs(hi, 400, 400, 240, 240, 240),
               "窗口客户区仍合成在自己的桌面上 (同一坐标 × 缩放)");
         check(desk.screenshotWindow(wa).width() == 480, "单窗口帧 = 客户区逻辑尺寸 × 缩放");
         check(wa->frame().width() == 480 && wa->client()->device()->scale() == 2.0f,

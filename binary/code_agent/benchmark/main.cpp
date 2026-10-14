@@ -168,6 +168,18 @@ struct BenchmarkCase
     //   (JZProcess 在 Windows 下建了 Job Object, 能带走 python 拉起的子进程)。
     std::string daemon;
     int daemonReadyMs = 3000;   // 启动后轮询等待其就绪的上限(毫秒); 超时不判失败(daemon 可能本就无输出)
+
+    // 本用例的网络搜索源(可选): 非空时覆盖 CodeAgentConfig::webSearchUrl, 让 web_search 打
+    // **本用例自己起的搜索服务**(见 daemon), 于是"搜索类"用例可以完全离线、内容可控、判据可硬
+    // (真网搜索的内容每分钟在变, 判不了)。占位符与 verify 相同(${port} 最常用 —— 搜索服务由
+    // 每个用例自己的 daemon 起在那个端口上); 模板里的 {q} 留给工具替换成 URL 编码后的查询词。
+    // 空 = 不覆盖(用宿主默认, 即内置 Bing RSS —— 那种用例会真的依赖外网)。
+    std::string webSearchUrl;
+
+    // 本用例的 agent 轮次上限(可选): 0 = 用宿主默认(JZAgentConfig::maxRounds)。
+    // 联网调研类用例的轮次天然比"写个算法"多(搜索 + 逐页抓取 + 试错), 用默认上限会出现
+    // "模型其实已经写对、只是轮次用满"而被判失败(agent 报 MaxRoundError "执行任务超时")。
+    int maxRounds = 0;
 };
 
 // 全局输入 HTTP 服务用的 handler：模型生成的 JS 通过 fetch('http://127.0.0.1:<port>/input')
@@ -383,6 +395,18 @@ protected:
 
         // 每个用例一个独立临时工程，避免互相污染
         std::string root = JZPlatform::applicationTmpPath() + "/" + JZUuid::createUuid().toString() +"/bench_" + m_case.name;
+        m_root = root;   // 提前设好: 下面的 webSearchUrl 模板要用 ${root}/${port}/${data} 展开
+
+        // 本用例的网络搜索源(可选): 覆盖 CodeAgentConfig::webSearchUrl, 让 web_search 打本用例
+        // 自己起的搜索服务(见 BenchmarkCase::webSearchUrl)。没给就置空 —— m_codeConfig 是跨用例
+        // 复用的成员, 不清会把上一个用例的搜索源漏给下一个。
+        m_codeConfig.webSearchUrl = m_case.webSearchUrl.empty()
+                                        ? std::string()
+                                        : expandVerifyCmd(m_case.webSearchUrl);
+
+        // 本用例的轮次上限(可选): 0/未给 = 回到宿主默认(基准是 llmConfig=JZAgentConfig, 同样复用,
+        // 所以每轮都必须显式复位, 否则上一个用例的轮次会漏给下一个)。
+        m_codeConfig.llmConfig.maxRounds = (m_case.maxRounds > 0) ? m_case.maxRounds : m_llm.maxRounds;
 
         m_agent = new JZCodeAgent();
         m_agent->init(m_codeConfig);
@@ -402,7 +426,6 @@ protected:
             finishCase();
             return;
         }
-        m_root = root;
 
         // setup 脚本: initProject 之后、agent 开始前同步执行的 python 准备脚本(如把输入写成文件);
         // 非零退出视为该用例 setup 失败(与 initProject 失败同样处理)。
@@ -1297,6 +1320,10 @@ std::string normalizeForEquals(const std::string &s, bool ci)
 //                     setup 之后、agent 之前拉起，用例结束（含失败）时连子孙进程一起杀掉。
 //                     端口等参数由各脚本自己约定不强加（宿主只透传占位符）。
 //   daemonReadyMs   : daemon 启动后轮询等待其就绪的上限毫秒（缺省 3000）；超时不判失败
+//   webSearchUrl    : 本用例 web_search 用的搜索源模板（可选；占位符同上，{q} 留给工具替换查询词）。
+//                     给了它就完全离线：搜索服务由本用例的 daemon 提供，内容每轮随机、判据可硬。
+//   maxRounds       : 本用例的 agent 轮次上限（可选，0/缺省 = 宿主默认）。联网调研类要放大 ——
+//                     否则会出现"答案已经写对、只是轮次用满"被 MaxRoundError 判失败。
 static bool parseCaseObject(const Json::Value &root, const std::string &src, BenchmarkCase &c)
 {
     if (!root.isObject())
@@ -1320,6 +1347,9 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
     c.daemon = (root.isMember("daemon") && root["daemon"].isString())
                 ? root["daemon"].asString() : "";
     c.daemonReadyMs = root.isMember("daemonReadyMs") ? root["daemonReadyMs"].asInt() : 3000;
+    c.webSearchUrl = (root.isMember("webSearchUrl") && root["webSearchUrl"].isString())
+                         ? root["webSearchUrl"].asString() : "";
+    c.maxRounds = root.isMember("maxRounds") ? root["maxRounds"].asInt() : 0;
     {
         std::string s = src;
         size_t p = s.find_last_of("/\\");

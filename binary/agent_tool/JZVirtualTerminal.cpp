@@ -2060,7 +2060,7 @@ void JZVirtualTerminal::onRunFinished(const string &runId, JZProcess *proc, int 
     string out = t->output;
     RunCallback finished = t->cb;
 
-    // 输出过滤开关开(默认开): 编译命令特殊处理, 其它命令超长保留头 50 + 尾 50 行。
+    // 输出过滤开关(默认**关**, 见 m_filterOutput): 打开时编译命令特殊处理, 其它命令超长保留头 50 + 尾 50 行。
     //  - 编译命令: 成功取尾部 20 行, 失败取开头 ~100 行错误(错误块完整)
     // 完整日志仍可用 terminal_query 取。用逐行 RunRecord.log, 不受 output 头截断影响。
     if (filterOn)

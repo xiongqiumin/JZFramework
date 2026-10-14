@@ -66,9 +66,9 @@ JZTerminalRunTool::JZTerminalRunTool(JZVirtualTerminal *term)
                                            "也不设超时 —— 起服务/常驻进程这类自己不退出的命令用它, "
                                            "之后用 terminal_query 查状态与日志、terminal_cancel 停掉"));
     params.push_back(JZCodeTool::makeParam("error_context", ParamType::Boolean,
-                                           "输出过滤开关(默认 true, 所有命令都截断, 编译命令特殊处理): "
-                                           "非编译超长保留头50+尾50行; 编译成功取尾部20行、失败取开头约100行错误"
-                                           "(默认 true; false=原样全量)"));
+                                           "输出过滤开关(**默认 false = 原样全量返回**)。"
+                                           "true 才做截断: 非编译命令超长保留头50+尾50行; "
+                                           "编译命令成功取尾部20行、失败取开头约100行错误(错误块完整)"));
     setToolDefine(makeDef("terminal_run",
                           "在沙箱终端执行一条 shell 命令(本地 code_agent 单用户终端)。"
                           "可以同时跑多条: 一条长任务不会堵住别的命令(每条各自一个 run_id)。\n"
@@ -105,7 +105,7 @@ void JZTerminalRunTool::call(const ToolCall &params)
     }
 
     // 输出过滤开关(默认开): 按次给(终端能同时跑多条, 用终端级开关会互相串)
-    JZVirtualTerminal::OutputFilter filter = p.get("error_context", true).asBool()
+    JZVirtualTerminal::OutputFilter filter = p.get("error_context", false).asBool()
                                                  ? JZVirtualTerminal::OutputFilter::On
                                                  : JZVirtualTerminal::OutputFilter::Off;
 
@@ -130,11 +130,10 @@ void JZTerminalRunTool::call(const ToolCall &params)
         }
         if (text.empty())
             text = ok ? "(无输出)" : err;
-        string cwd = cwdOf(m_term);
-        if (!cwd.empty())
-            text += "\n[cwd] " + cwd;
-        if (!ridPtr->empty())
-            text += "\n[run_id] " + *ridPtr + "   (完整/历史日志用 terminal_query 取)";
+        // ⚠ 回包**就是命令的原样输出**: 不再追加 [cwd] / [run_id] 之类的位置与提示
+        //   (2026-10-14 按用户要求改成"不加工": 那些尾巴对读输出没帮助, 反而把噪音喂进上下文)。
+        //   唯一保留的附加信息是上面那条失败原因(非 0 退出码 / 超时被杀) —— isOk 不进模型上下文
+        //   (见 JZAgent 只发 tool 消息的 content), 不写这一行模型就无从知道命令失败了。
         text += paramNote;
         finish(params, ok, text);
     };
@@ -156,9 +155,6 @@ void JZTerminalRunTool::call(const ToolCall &params)
     {
         string text = "已后台启动(不等它结束, 不设超时)\n[run_id] " + started.value() +
                       "\n用 terminal_query 查状态与日志(默认只回新增行), 用 terminal_cancel 停掉它";
-        string cwd = cwdOf(m_term);
-        if (!cwd.empty())
-            text += "\n[cwd] " + cwd;
         text += paramNote;
         finish(params, true, text);
         return;

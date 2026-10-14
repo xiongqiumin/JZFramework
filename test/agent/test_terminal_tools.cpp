@@ -306,14 +306,15 @@ private:
         check(m_runRes.count == 1, "前台跑: 跑完只回一次包");
         check(m_runRes.ok, "前台跑: 成功: " + m_runRes.text);
         check(contains(m_runRes.text, "fg_ok"), "前台跑: 回包带输出");
-        check(contains(m_runRes.text, "[cwd]"), "前台跑: 回包带 cwd");
+        // 2026-10-14: 回包**不再加工** —— 就是命令的原样输出, 不带 [cwd] / [run_id] 那些尾巴
+        check(!contains(m_runRes.text, "[cwd]") && !contains(m_runRes.text, "[run_id]"),
+              "前台跑: 回包是原样输出(无 [cwd]/[run_id] 等附加内容): " + m_runRes.text);
 
-        string rid = extractRunId(m_runRes.text);
-        check(!rid.empty(), "前台跑: 回包也带 run_id(供之后 query): " + m_runRes.text);
-
+        // 前台不再回 run_id(要查日志就用「省略 run_id = 查最近一次运行」)
         m_queryRes = LastResult();
-        m_query.call(makeCall("q7", "{\"run_id\":\"" + rid + "\"}"));
-        check(m_queryRes.count == 1 && m_queryRes.ok, "query(前台跑完的 run_id): 成功: " + m_queryRes.text);
+        m_query.call(makeCall("q7", R"({})"));
+        check(m_queryRes.count == 1 && m_queryRes.ok,
+              "query(省略 run_id = 最近一次, 即前台刚跑完那条): 成功: " + m_queryRes.text);
         check(contains(m_queryRes.text, "fg_ok"), "query: 取到完整日志");
         check(contains(m_queryRes.text, "[done]"), "query: 状态 done");
 

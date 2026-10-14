@@ -407,11 +407,16 @@ string jzTerminalRunNotes()
     string s;
     s += "terminal_run 两种模式: 默认**前台**(结果要等命令自己退出才回, 到 timeout_ms 强杀, 中途取不到输出); "
          "background=true 时**后台**(启动成功就返回 run_id, 不等它结束、也不设超时)。\n";
+    s += "  - ⭐ 跑一个**会自己退出**的程序(如 `cd build && code_runtime`)只需一次前台 terminal_run: "
+         "它的 stdout/stderr **就在这次回包里**。不要重跑同一条命令, 也不要为它开 background。\n";
+    s += "  - terminal_query 是给「还要看更完整日志」用的, 不是「再取一次输出」: 同一个 run_id 反复查, "
+         "第二次起默认只回**上次查询之后的增量** —— 看到「日志 0 条 / 只返回上次查询之后的增量」就说明你已经拿到过了, "
+         "不要为此重跑命令或换 run_id 再查。\n";
     s += "  - 起服务/常驻进程这类**自己不退出**的命令: 用 background=true 起, 拿返回的 run_id, "
          "之后用 terminal_query 反复查状态与日志(可给 tail / grep); 用完了用 terminal_cancel 停掉。\n";
     s += "  - 别再给服务器那条设一个很长的 timeout_ms 前台干等: 它必然以「命令超时, 已被强制终止」收尾, "
          "而且超时那一刻服务就被杀掉了。\n";
-    s += "  - 前台跑完的命令同样能用 terminal_query 查: 那里是**完整日志**, 不受回包时的截断影响。\n";
+    s += "  - 前台跑完的命令, 回包被截断时才用 terminal_query 查完整日志(正常一眼就够, 别养成习惯)。\n";
     s += "  - 要并发就在**同一条消息里发多个工具调用**; 分成两条消息发的话, 后一条要等前一条返回"
          "(前台那条不结束就不回) —— 那就等于串行了。\n";
     return s;
@@ -1967,7 +1972,7 @@ void JZBuildProjectTool::onBuildDone(bool ok, const std::string &error)
     ToolCall call = m_pending;
     m_pending = ToolCall();
     if (ok)
-        finish(call, true, "编译通过，现在可以用 run_js 运行程序。");
+        finish(call, true, "编译通过，运行: 在产物目录跑 `code_runtime`（缺省入口 main.js）。");
     else
         finish(call, false, error);
 }

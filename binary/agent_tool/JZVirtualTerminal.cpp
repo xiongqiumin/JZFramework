@@ -56,131 +56,10 @@ static void pushRunLogLine(std::deque<JZVirtualTerminal::RunLogLine> &log, int64
 static const int kMaxConcurrentRuns = 32;
 static const size_t kMaxRunOutputBytes = 8 * 1024 * 1024;   // 累积输出字节上限(防 OOM)
 
-// ---- 编译输出错误截取 ----
-// 编译/构建类的首 token: 命中才走"错误上下文"过滤(其它命令原样回传, 不误伤)。
-static const char *kBuildCmds[] = {
-    "make", "gmake", "cmake", "ninja", "gcc", "g++", "clang", "clang++",
-    "cc", "c++", "cxx", "ld", "ar", "mingw32-make", "nmake", "msbuild",
-};
-static bool isBuildCommand(const string &command)
-{
-    // 取首个非空白 token(命令可能带 cd x && / 管道前缀, 但构建命令一般打头)
-    size_t i = 0, n = command.size();
-    while (i < n && isspace((unsigned char)command[i]))
-        i++;
-    size_t s = i;
-    while (i < n && !isspace((unsigned char)command[i]))
-        i++;
-    if (i == s)
-        return false;
-    string head = command.substr(s, i - s);
-    // 去掉可能的 ./ 前缀(如 ./build.sh 不算构建命令, 仅认白名单里的)
-    if (head.size() >= 2 && head[0] == '.' && head[1] == '/')
-        head = head.substr(2);
-    for (const char *c : kBuildCmds)
-    {
-        if (head == c)
-            return true;
-    }
-    return false;
-}
-
-// 一行是否算"错误/致命"(保守: 命中任一即算)
-static bool isErrorLine(const string &line)
-{
-    string low = str_toLower(line);
-    if (low.find("error:") != string::npos)   return true;   // gcc/clang/ninja
-    if (low.find("fatal") != string::npos)    return true;   // fatal error
-    if (low.find("undefined reference") != string::npos) return true;
-    if (low.find("failed:") != string::npos)  return true;   // ninja: FAILED:
-    if (low.find("ld: ") != string::npos)     return true;   // GNU ld 错误
-    if (low.find("make: ***") != string::npos) return true;  // make: *** [t] Error N
-    if (low.find("cmake error") != string::npos) return true; // CMake Error at ...
-    return false;
-}
-
-// 编译输出过滤: 成功取尾部 kTailOnSuccess 行; 失败从开头取约 kHeadErrorCap 行错误,
-// 错误块(错误行 + 其缩进续行)完整保留, 不被截断在半截。
-static const int kTailOnSuccess = 20;
-static const int kHeadErrorCap = 100;
-string filterBuildOutput(const deque<JZVirtualTerminal::RunLogLine> &log, bool success)
-{
-    string out;
-    if (success)
-    {
-        int n = (int)log.size();
-        int from = (n > kTailOnSuccess) ? n - kTailOnSuccess : 0;
-        for (int i = from; i < n; i++)
-            out += log[i].stream + ": " + log[i].text + "\n";
-        return out;
-    }
-
-    int kept = 0;
-    bool inBlock = false;   // 正处于多行错误块内(错误行后的缩进续行)
-    for (size_t i = 0; i < log.size(); i++)
-    {
-        const JZVirtualTerminal::RunLogLine &l = log[i];
-        bool err = isErrorLine(l.text);
-        bool keep;
-        if (err)
-        {
-            keep = true;
-            inBlock = true;
-        }
-        else if (inBlock)
-        {
-            // 错误块续行: 空行或缩进行(源片段 / `^~~` 指示符都缩进)
-            if (l.text.empty() || (l.text[0] == ' ' || l.text[0] == '\t'))
-                keep = true;
-            else
-            {
-                inBlock = false;
-                keep = false;
-            }
-        }
-        else
-        {
-            keep = false;
-        }
-        // 错误前一行的上下文(通常是 make 的目标行 / 编译器调用行)
-        if (!keep && i + 1 < log.size() && isErrorLine(log[i + 1].text))
-            keep = true;
-
-        if (keep)
-        {
-            out += l.stream + ": " + l.text + "\n";
-            kept++;
-            bool nextErr = (i + 1 < log.size() && isErrorLine(log[i + 1].text));
-            // 到上限就停, 但不切断正在输出的错误块 / 错误前一行 / 紧邻的下一个错误
-            if (kept >= kHeadErrorCap && !err && !inBlock && !nextErr)
-                break;
-        }
-    }
-    return out;
-}
-
-// 通用截断(非编译命令): 超过上限时保留头部 kGenericHead 行 + 尾部 kGenericTail 行,
-// 中间省略, 避免长输出(git log / cat 大文件 / 海量 ls 等)撑爆上下文。
-static const int kGenericHead = 50;
-static const int kGenericTail = 50;
-string truncateGeneric(const deque<JZVirtualTerminal::RunLogLine> &log)
-{
-    int n = (int)log.size();
-    if (n <= kGenericHead + kGenericTail)
-    {
-        string out;
-        for (int i = 0; i < n; i++)
-            out += log[i].stream + ": " + log[i].text + "\n";
-        return out;
-    }
-    string out;
-    for (int i = 0; i < kGenericHead; i++)
-        out += log[i].stream + ": " + log[i].text + "\n";
-    out += "[... 省略 " + std::to_string(n - kGenericHead - kGenericTail) + " 行 ...]\n";
-    for (int i = n - kGenericTail; i < n; i++)
-        out += log[i].stream + ": " + log[i].text + "\n";
-    return out;
-}
+// 输出**不做过滤**(2026-10-14 起, 过滤整套删除: isBuildCommand / isErrorLine /
+// filterBuildOutput / truncateGeneric 都去掉了)。命令回包就是原始合并输出, 模型自己用
+// grep/head/tail/sort/uniq... 去过滤(这些都在程序白名单里, 见 buildDefaultPrograms)。
+// 这里只剩一个防 OOM 的字节阀 kMaxRunOutputBytes(见 appendRunOutput)。
 
 // JZByteArray -> std::string
 std::string bytesToString(const JZByteArray &data)
@@ -1447,8 +1326,7 @@ bool JZVirtualTerminal::printDir(string &cwd) const
 // "填 error + return false" 的老写法, 包一层比逐处改成 JZResult 干净。
 JZResult<string> JZVirtualTerminal::run(const string &command, int timeoutMs, const RunCallback &cb,
                                         const std::function<void(const string &, const string &)> &onChunk,
-                                        bool background,
-                                        OutputFilter filter)
+                                        bool background)
 {
     // 前台任务硬上限 15 分钟: 防止调用方传过大的 timeout 让前台命令卡死太久;
     // 前台传 <=0(不设时)也归到这个上限, 不允许无限前台。
@@ -1458,24 +1336,22 @@ JZResult<string> JZVirtualTerminal::run(const string &command, int timeoutMs, co
         timeoutMs = kMaxForegroundTimeoutMs;
     string error;
     string runId;
-    if (!startRun(command, timeoutMs, cb, error, &runId, onChunk, background, filter))
+    if (!startRun(command, timeoutMs, cb, error, &runId, onChunk, background))
         return JZResult<string>::Error(error);
     return JZResult<string>::Ok(runId);
 }
 
-JZResult<string> JZVirtualTerminal::runBackground(const string &command, const RunCallback &cb,
-                                                  OutputFilter filter)
+JZResult<string> JZVirtualTerminal::runBackground(const string &command, const RunCallback &cb)
 {
     // 后台 = 同一条执行路径, 只是 timeoutMs = 0(不设定时器, 见 startRun 里 timeoutMs > 0 的分支)
     // + background 标记(运行记录里标出来, 淘汰时区别对待)。审核/起进程/收输出完全一样。
-    return run(command, /*timeoutMs=*/0, cb, nullptr, /*background=*/true, filter);
+    return run(command, /*timeoutMs=*/0, cb, nullptr, /*background=*/true);
 }
 
 bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const RunCallback &cb, string &error,
                                  string *runId,
                                  const std::function<void(const string &, const string &)> &onChunk,
-                                 bool background,
-                                 OutputFilter filter)
+                                 bool background)
 {
     // background 不是"起完就不管": 它只决定 **没有超时定时器**(前台那条到点会被强杀)。
     // 进程/输出/收尾前后台走完全同一套, 所以后台命令照样可查(runSnapshot)可停(cancel)。
@@ -1745,19 +1621,11 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     if (runId)
         *runId = rid;
 
-    // 本次运行的输出过滤开关(默认取终端设置; 上层可按次覆盖, 见 OutputFilter)
-    bool useFilter = m_filterOutput;
-    if (filter == OutputFilter::On)
-        useFilter = true;
-    else if (filter == OutputFilter::Off)
-        useFilter = false;
-
     // ---- 一条在途运行 = 一个进程 + 一个超时定时器 ----
     // 进程**每条命令新建**、不再复用同一个: 一个 JZProcess 只能跑一条命令, 并发下必须各起各的。
     RunTask task;
     task.runId = rid;
     task.command = command;
-    task.filterOutput = useFilter;
     task.startTime = JZPlatform::getTickCountMs();
     task.cb = cb;
     task.onChunk = onChunk;
@@ -2056,28 +1924,21 @@ void JZVirtualTerminal::onRunFinished(const string &runId, JZProcess *proc, int 
 
     // 先把这条任务上要用的东西取出来(下面 eraseTask 之后 t 就失效了)
     const bool timedOut = t->timedOut;
-    const bool filterOn = t->filterOutput;
     string out = t->output;
     RunCallback finished = t->cb;
 
-    // 输出过滤开关(默认**关**, 见 m_filterOutput): 打开时编译命令特殊处理, 其它命令超长保留头 50 + 尾 50 行。
-    //  - 编译命令: 成功取尾部 20 行, 失败取开头 ~100 行错误(错误块完整)
-    // 完整日志仍可用 terminal_query 取。用逐行 RunRecord.log, 不受 output 头截断影响。
-    if (filterOn)
+    // ---- 上下文阀(见 setReplyMaxBytes): 只保留**末尾**, 开头一行显式标记 ----
+    // 为什么留末尾: 错误/结果通常都在尾部("编译失败"在最后, "程序打印"在最后)。
+    // 为什么带 run_id: 前台回包平时不带 run_id(见 JZTerminalTools), 但**这一条**是"去哪儿拿全量"的
+    //   指路, 不带就等于让模型去重跑命令 —— 正是我们要掐掉的环路(实测重跑 19 次)。
+    // 完整日志一直在运行记录里 ⇒ 这条截断可恢复, 不是丢内容。
+    if (m_replyMaxBytes > 0 && out.size() > m_replyMaxBytes)
     {
-        auto fit = m_runs.find(runId);
-        if (fit != m_runs.end())
-        {
-            if (isBuildCommand(command))
-            {
-                bool success = (exitCode == 0 && status == JZProcess::NormalExit && !timedOut);
-                out = filterBuildOutput(fit->second.log, success);
-            }
-            else
-            {
-                out = truncateGeneric(fit->second.log);
-            }
-        }
+        size_t dropped = out.size() - m_replyMaxBytes;
+        out = "[输出过长: 只回末尾 " + to_string(m_replyMaxBytes) + "B(本次共 " + to_string(out.size()) +
+              "B, 省略开头 " + to_string(dropped) +
+              "B); 完整日志: terminal_query(run_id=" + runId + ", tail=0), 或自己在命令里加过滤(如 `| tail`)]\n" +
+              out.substr(dropped);
     }
 
     auto it = m_runs.find(runId);

@@ -416,7 +416,6 @@ string jzTerminalRunNotes()
          "之后用 terminal_query 反复查状态与日志(可给 tail / grep); 用完了用 terminal_cancel 停掉。\n";
     s += "  - 别再给服务器那条设一个很长的 timeout_ms 前台干等: 它必然以「命令超时, 已被强制终止」收尾, "
          "而且超时那一刻服务就被杀掉了。\n";
-    s += "  - 前台跑完的命令, 回包被截断时才用 terminal_query 查完整日志(正常一眼就够, 别养成习惯)。\n";
     s += "  - 要并发就在**同一条消息里发多个工具调用**; 分成两条消息发的话, 后一条要等前一条返回"
          "(前台那条不结束就不回) —— 那就等于串行了。\n";
     return s;
@@ -1013,6 +1012,17 @@ void JZReadFileTool::call(const ToolCall &params)
     }
 
     JZFileInfo info(abs);
+    if (info.isDir())
+    {
+        // ⚠ 别把"这是个目录"说成"文件不存在": 实测模型 read_file 一个**目录**路径
+        //   (js_wrapper/bytes/types) 拿到"文件不存在"后就认定"类型声明不存在", 转头用
+        //   65 轮 `cat > /tmp/pN.js` + code_runtime 试错(那 65 轮直接烧掉一个用例)。
+        //   把真实情况和下一步都写出来, 它就会去 `ls` 那个目录 —— 这才是它想干的事。
+        finish(params, false, "这是个**目录**, 不是文件: " + rel +
+                                  "   (列内容: terminal_run 里 `ls " + rel + "`, 或 search_file)",
+               DenyReason::NotFound);
+        return;
+    }
     if (!info.exists() || !info.isFile())
     {
         finish(params, false, "文件不存在: " + rel, DenyReason::NotFound);
@@ -1237,6 +1247,13 @@ void JZModifyFileTool::call(const ToolCall &params)
     }
 
     // ---- 精确替换 ----
+    if (info.isDir())
+    {
+        finish(params, false, "这是个**目录**, 不是文件: " + rel +
+                                  "   (列内容: terminal_run 里 `ls " + rel + "`)",
+               DenyReason::NotFound);
+        return;
+    }
     if (!info.exists())
     {
         finish(params, false, "文件不存在: " + rel + "  (新建文件请用 write_file)",

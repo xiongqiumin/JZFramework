@@ -213,8 +213,11 @@ private:
         check(contains(m_queryRes.text, "[done]"), "取消后再查: 状态转 done: " + m_queryRes.text);
         check(contains(m_queryRes.text, "exit="), "取消后再查: 带退出码");
         check(!contains(m_queryRes.text, "[running]"), "取消后再查: 不再是 running");
-        // 这条前面已经查过(游标在动) ⇒ 现在按增量: 没有新输出就别把老日志再贴一遍
-        check(contains(m_queryRes.text, "没有新增输出"), "取消后再查: 只报没有新增(不重复贴日志)");
+        // ⭐ 2026-10-14 改默认口径: **已结束**的运行默认回最后 tail 行(不再默认增量)。
+        //   模型这时问的是"跑完了吗/结果是什么", 回"没有新增输出"它读成"输出丢了"就会反复查(实测同 id 查 64 次)。
+        check(contains(m_queryRes.text, "bg_start"),
+              "取消后再查(已结束): 回最终日志而不是'没有新增': " + m_queryRes.text);
+        check(!contains(m_queryRes.text, "只看上次之后的新增"), "取消后再查(已结束): 不走增量模式");
 
         // 再停同一条: 已经不在跑了
         m_cancelRes = LastResult();
@@ -340,6 +343,39 @@ private:
         check(m_runRes.count == 1 && !m_runRes.ok,
               "被拒命令(后台): 只回一次包且失败, 实际 " + to_string(m_runRes.count) + " 次");
 
+        stepReplyCap();
+    }
+
+    // ---- 5.5 上下文阀: 超长回包只回**末尾** + 一行标记说明怎么拿全量 ----
+    // 与 terminal_query 的 32KB 回包上限同一口径(见 JZVirtualTerminal::setReplyMaxBytes)。
+    void stepReplyCap()
+    {
+        m_savedReplyMax = m_term.replyMaxBytes();
+        m_term.setReplyMaxBytes(256);   // 收紧到 256B, 好触发
+
+        m_runRes = LastResult();
+        // 头尾各一个哨兵: 阀只留末尾 ⇒ 头部 head_marker 不该出现, 尾部 tail_marker 必须在
+        m_run.call(makeCall("v1", R"({"command":"echo head_marker; seq 1 200; echo tail_marker","timeout_ms":20000})"));
+        waitResult(&m_runRes, 100, [this]() { stepReplyCapCheck(); });
+    }
+
+    void stepReplyCapCheck()
+    {
+        check(m_runRes.count == 1 && m_runRes.ok, "阀: 成功: " + m_runRes.text);
+        check(contains(m_runRes.text, "输出过长"), "阀: 触发时开头有显式标记: " + m_runRes.text.substr(0, 100));
+        check(contains(m_runRes.text, "terminal_query"), "阀: 标记指路 terminal_query(可恢复, 不是静默丢)");
+        check(contains(m_runRes.text, "run_id="), "阀: 标记里带 run_id(拿全量的凭据)");
+        check(contains(m_runRes.text, "tail_marker"), "阀: 保留末尾(错误/结果在尾部)");
+        check(!contains(m_runRes.text, "head_marker"), "阀: 头部被裁掉");
+        check(m_runRes.text.size() < 1024, "阀: 回包压到上限附近(实际 " + to_string(m_runRes.text.size()) + "B)");
+
+        // 被裁掉的头部仍能取回: 完整日志一直在运行记录里(这就是"可恢复"的含义)
+        m_queryRes = LastResult();
+        m_query.call(makeCall("v2", R"({"tail":0,"from_last":false})"));
+        check(m_queryRes.ok && contains(m_queryRes.text, "head_marker"),
+              "阀: query(tail=0) 能取回被裁掉的头部: " + m_queryRes.text.substr(0, 100));
+
+        m_term.setReplyMaxBytes(m_savedReplyMax);   // 还原, 不影响后续步骤
         stepFreshTerminal();
     }
 
@@ -377,6 +413,7 @@ private:
     LastResult m_cancel2Res;
     string m_ridBg;
     string m_incRunId;   // 增量查询那一段用的 run_id
+    size_t m_savedReplyMax = 32 * 1024;   // 上下文阀那一段原值(测完还原)
 };
 
 int main(int argc, char *argv[])

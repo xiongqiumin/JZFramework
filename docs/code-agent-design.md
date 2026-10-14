@@ -78,7 +78,7 @@
 | `ts_add_class` / `ts_add_function` / `ts_rename_class` / `ts_rename_function` / `ts_replace_function` / `ts_delete_class` / `ts_delete_function`（7 个符号级编辑） | **删** | `write_file`（整文件重写，主力）/ `modify_file`（old_str→new_str，精确块替换）/ 可选 `replace_all` |
 | `build_project` | **不给模型**（2026-10-14 定） | 编译由模型**在终端里跑** `tsc -p tsconfig.json`；宿主侧 API `buildProject()` 保留给评测宿主/面板编译按钮 |
 | `run_js` | **删**（同一日） | 运行由模型在终端里跑 `code_runtime`（产物目录，缺省入口 `main.js`）；`tsc`/`code_runtime` 以**短名**注册进终端（见 §3.5） |
-| `read_file` / `write_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `web_*` / `get_date_time` | **保留** | `terminal_*` 是**唯一执行面**；原来并存的 `command`（cmd.exe 那条）与终端规则不一致，待删（见 §3.5 待定） |
+| `read_file` / `write_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `web_*` / `get_date_time` | **保留** | `terminal_*` 是**唯一执行面**（2026-10-14 起 `command`/cmd.exe 那条也已从 code_agent 摘掉，见 §3.5） |
 | 路径权限校验（`DenyReason` / 可信目录） | **保留并抽出** | 这块实现值得留在工具库，不随 LSP 一起删 |
 
 ### 3.2 三条替代原则
@@ -161,18 +161,30 @@ terminal_cancel:     ok / 一行原因（没这条 / 已结束）
 **不做的事**
 
 - 不做流标签重渲染；不做"编译错误上下文"这类重要性挑拣；不替模型判断留头还是留尾；
-- 不提供 `error_context` 这种"加工开关"（已下线）；要少输出，模型自己 `| tail`；
-- 不把 `cwd` / `run_id` 塞进前台回包。
+- 不提供 `error_context` 这种"加工开关" —— **已于 2026-10-14 彻底删除**（`OutputFilter` 枚举 / `setFilterOutput` /
+  `isBuildCommand` / `isErrorLine` / `filterBuildOutput` / `truncateGeneric` 连同 `run()` 的 filter 参数一起删掉）；
+  要少输出，模型自己 `... | grep -i error | tail -20` —— `grep / head / tail / sort / uniq / wc / cut / sed / awk /
+  xargs / tee / diff` 全在程序白名单里（`JZVirtualTerminal.cpp` 的 `kShellCmds`），Git Bash 也自带
+  （实测：grep 3.0 + sed/awk/perl 有；`rg`(ripgrep)、`jq`、`python3` **没有**）；
+- 不把 `cwd` / `run_id` 塞进前台回包。**例外**：上下文阀触发时那一行标记里带 `run_id`（它是"去哪儿拿全量"的指路，
+  不带就等于让模型去重跑命令 —— 那正是要掐掉的环路）。
 
-**待定决策**（写完 §3.5 时的开放项）
+**已定决策**（2026-10-14 落地）
 
-1. **防爆阀默认值**：`500 行 / 32KB` 是否合适？还是干脆不设上下文阀、只留 8MB 内存阀（接受 `compressHistory()` 兜底）？
-2. **`terminal_query` 默认语义**：现在默认 `from_last=true`（增量）。建议改成默认**回最近 `tail=200` 行**（回答"现在怎么样了"），
-   增量降级为显式选项；并把"同参数 + 回包完全相同"的重复查询**取消** `isPollTool` 放宽。
-3. **`command` 工具（cmd.exe 那条）**：与终端两套规则（不认 `tsc`/`code_runtime` 短名，实测模型在它里面
-   `'tsc' is not recognized` 连试 18+ 次）⇒ 删掉它、只留 `terminal_run`，还是给它接同一套短名解析？
-4. **stdout/stderr 是否默认分开**：现在按到达顺序合并（"原样"）。若确实需要区分（如"程序 stdout 只允许有答案"的用例），
-   再加 `separate=true` 分两段返回（明确分段，而不是逐行标签）？
+1. **上下文阀 = 32KB**（`JZVirtualTerminal::setReplyMaxBytes`，默认 `32 * 1024`）：超了只回**末尾**，开头一行
+   `[输出过长: 只回末尾 32KB(本次共 N KB, 省略开头 M KB); 完整日志: terminal_query(run_id=…, tail=0) …]`。
+   与 `terminal_query` 已有的 32KB 回包上限**同一口径**；**不做**"按重要性挑行"。8MB 内存阀保留（防 OOM，两码事）。
+2. **`terminal_query` 默认口径按状态定**：还在跑 ⇒ 增量（轮询省 token，不把同一段日志反复灌进上下文）；
+   **已结束 ⇒ 回最后 `tail`(200) 行**（模型这时问的是"跑完了吗/结果是什么"，增量只会回"没有新增输出"，它读成
+   "输出丢了"就开始反复查 —— 实测同一个 run_id 查了 64 次）。显式 `from_last` 仍可强制。反复查同一份稳定回包会被
+   `JZLoopConfig::pollSameResult = 6`（同签名 + 同结果连续 6 次）兜住 ⇒ **不需要**再改循环检测（放宽阈值本来就只为
+   "结果在变"的真轮询留的）。
+3. **`command`（`JZShellTool`，Windows 上 `cmd /c`）从 code_agent 摘掉**：它与 `terminal_run` 是**两套 shell 规则**
+   （cmd 认 dir/echo，不认 bash 语法、不认 `tsc`/`code_runtime` 短名），实测模型在里面敲 `tsc` 拿到
+   `'tsc' is not recognized` 后连试 18+ 次、转而满盘找编译器。类保留在 agent_tool；
+   **agent_cli 仍注册着它**（同一产品面的同类问题，未动，待定）。
+4. **stdout/stderr 保持合并**（按到达顺序，"原样"）—— 暂无需要区分的用例；真遇到再加 `separate=true` 分两段
+   （明确分段，而不是逐行标签）。
 
 ---
 

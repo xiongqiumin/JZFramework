@@ -65,10 +65,6 @@ JZTerminalRunTool::JZTerminalRunTool(JZVirtualTerminal *term)
                                            "后台运行(默认 false): 启动成功就立即返回 run_id, 不等它结束、"
                                            "也不设超时 —— 起服务/常驻进程这类自己不退出的命令用它, "
                                            "之后用 terminal_query 查状态与日志、terminal_cancel 停掉"));
-    params.push_back(JZCodeTool::makeParam("error_context", ParamType::Boolean,
-                                           "输出过滤开关(**默认 false = 原样全量返回**)。"
-                                           "true 才做截断: 非编译命令超长保留头50+尾50行; "
-                                           "编译命令成功取尾部20行、失败取开头约100行错误(错误块完整)"));
     setToolDefine(makeDef("terminal_run",
                           "在沙箱终端执行一条 shell 命令(本地 code_agent 单用户终端)。"
                           "可以同时跑多条: 一条长任务不会堵住别的命令(每条各自一个 run_id)。\n"
@@ -104,11 +100,6 @@ void JZTerminalRunTool::call(const ToolCall &params)
         timeoutMs = 120000;
     }
 
-    // 输出过滤开关(默认开): 按次给(终端能同时跑多条, 用终端级开关会互相串)
-    JZVirtualTerminal::OutputFilter filter = p.get("error_context", false).asBool()
-                                                 ? JZVirtualTerminal::OutputFilter::On
-                                                 : JZVirtualTerminal::OutputFilter::Off;
-
     // 命令被拒时 run() 会**同步**回调一次(ok=false), 用它记一下, 免得下面再回一次结果。
     // ridPtr: run_id 要等 run() 返回才有, 而回调可能发生在 run() 里(同步那次), 所以放共享变量。
     auto fired = std::make_shared<bool>(false);
@@ -139,8 +130,8 @@ void JZTerminalRunTool::call(const ToolCall &params)
     };
 
     JZResult<string> started = background
-                                   ? m_term->runBackground(command, cb, filter)
-                                   : m_term->run(command, timeoutMs, cb, nullptr, false, filter);
+                                   ? m_term->runBackground(command, cb)
+                                   : m_term->run(command, timeoutMs, cb, nullptr, false);
     if (started.isError())
     {
         if (!*fired)
@@ -194,15 +185,16 @@ JZTerminalQueryTool::JZTerminalQueryTool(JZVirtualTerminal *term)
     params.push_back(JZCodeTool::makeParam("stream", ParamType::String,
                                            "按流过滤: stdout / stderr / all(默认)"));
     params.push_back(JZCodeTool::makeParam("from_last", ParamType::Boolean,
-                                           "默认 true = 只回**上次查询之后新增**的行(轮询查进度用, 省 token); "
-                                           "false = 看历史(回最后 tail 行, 不改变增量位置)"));
+                                           "省略时**按状态定**: 还在跑 = 只回上次之后新增的行(轮询省 token); "
+                                           "已结束 = 回最后 tail 行(看最终结果, 反复查也一样)。显式 true/false 可强制"));
     setToolDefine(makeDef("terminal_query",
                           "按 run_id 查一次运行的状态与日志。\n"
-                          "不带过滤条件时默认只回**自上次查询之后新增**的行(这条运行第一次查时回最近一段) ——\n"
-                          "反复查进度不会把同一段日志重复灌进上下文; 想看历史/从头看给 from_last=false。\n"
+                          "默认口径按**状态**定: 还在跑 -> 只回自上次查询之后新增的行(反复查进度不会把同一段日志\n"
+                          "反复灌进上下文); 已结束 -> 回最后 tail 行(一次拿到最终结果, 不必查第二遍)。\n"
+                          "想看历史/从头看: from_last=false; 想要全部: from_last=false 且 tail=0。\n"
                           "带 grep / stream 时按\"在整条日志里找\"处理(不受增量限制)。\n"
-                          "后台起的(background=true)和前台跑完的都能查 —— 这里给的是**完整日志**, "
-                          "不受 terminal_run 回包时的截断影响。\n"
+                          "后台起的(background=true)和前台跑完的都能查(前台那条的回包就是它自己那次输出, "
+                          "这里能反复看, 也能按 grep / stream / tail 挑)。\n"
                           "还在跑的: 用它可以反复查进度, 不用干等(轮询不算重复调用)。",
                           params, {}));
 }
@@ -231,8 +223,8 @@ void JZTerminalQueryTool::call(const ToolCall &params)
     string stream = str_toLower(p.get("stream", "").asString());
     if (stream == "all" || stream == "*")
         stream.clear();
-    // 默认"接着上次看": 轮询查进度时只回新增行, 不把同一段日志反复灌进上下文
-    const bool fromLast = p.get("from_last", true).asBool();
+    // from_last: 显式给了就以它为准; 没给时**按状态定**(见下面 runSnapshot 之后)
+    bool fromLast = p.get("from_last", true).asBool();
 
     JZVirtualTerminal::RunRecordInfo info;
     if (!m_term->runSnapshot(runId, info))
@@ -245,6 +237,14 @@ void JZTerminalQueryTool::call(const ToolCall &params)
         finish(params, false, "没有这个 run_id: " + runId + hint);
         return;
     }
+
+    // ⭐ 默认口径**按状态定**(2026-10-14 改):
+    //   还在跑 ⇒ 增量(轮询服务/长任务时只回新增行, 不把同一段日志反复灌进上下文);
+    //   已结束 ⇒ 回最后 tail 行 —— 模型这时候问的多半是"跑完了吗/结果是什么", 增量只会回
+    //            "没有新增输出", 它读成"输出丢了"就开始反复查(实测同一个 run_id 查了 64 次)。
+    //   显式传了 from_last 就完全按调用方的(增量游标逻辑不变)。
+    if (!p.isMember("from_last") && info.status != "running")
+        fromLast = false;
 
     string text;
     text += "[run_id] " + info.runId + "  [" + info.status + "]";

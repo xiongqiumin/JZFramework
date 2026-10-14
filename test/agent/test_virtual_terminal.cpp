@@ -381,10 +381,9 @@ private:
     bool runCmd(const string &command, int timeoutMs, const JZVirtualTerminal::RunCallback &cb, string &error,
                 string *runId = nullptr,
                 const std::function<void(const string &, const string &)> &onChunk = nullptr,
-                bool background = false,
-                JZVirtualTerminal::OutputFilter filter = JZVirtualTerminal::OutputFilter::Default)
+                bool background = false)
     {
-        JZResult<string> r = m_term.run(command, timeoutMs, cb, onChunk, background, filter);
+        JZResult<string> r = m_term.run(command, timeoutMs, cb, onChunk, background);
         if (r.isError())
         {
             error = r.errorMessage();
@@ -769,7 +768,23 @@ private:
                                       check(ok, "run 管道 | 命令正常: " + err);
                                       check(contains(out, "a"),
                                             "管道两端都跑通(grep...|head 同形态): " + out);
-                                      stepRunConcurrent();
+                                      // 2026-10-14: 输出过滤整套删掉了(回包就是原样输出), "要少看就自己管道过滤"
+                                      // 因此成了**契约** —— 这里坐实它真能跑: grep 在白名单里(Shell 档),
+                                      // Git Bash 也自带 GNU grep。用例挂了说明该契约的某个前提没了。
+                                      string e2;
+                                      bool s2 = runCmd("printf 'INFO ok\\nERROR boom\\nINFO fine\\n' | grep -i error",
+                                                       20000,
+                                                       [this](bool ok2, const string &out2, const string &err2)
+                                                       {
+                                                           check(ok2, "run 管道 grep 正常: " + err2);
+                                                           check(contains(out2, "ERROR boom") &&
+                                                                     !contains(out2, "INFO ok"),
+                                                                 "模型自己用 grep 过滤输出(只留命中行): " + out2);
+                                                           stepRunConcurrent();
+                                                       }, e2);
+                                      check(s2, "run 管道 grep 启动: " + e2);
+                                      if (!s2)
+                                          stepRunConcurrent();
                                   }, error);
         check(started, "run 管道命令启动: " + error);
         if (!started)

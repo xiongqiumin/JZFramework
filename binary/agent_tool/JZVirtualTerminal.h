@@ -78,16 +78,6 @@ public:
     // 命令结果回调: ok=false 时 error 有原因(output 可能是已拿到的部分)
     typedef std::function<void(bool ok, const std::string &output, const std::string &error)> RunCallback;
 
-    // 单次运行的输出过滤开关(见 setFilterOutput)。
-    // 为什么按次给而不是只留终端级开关: 一个终端能同时跑多条命令, 终端级开关会互相串 ——
-    // 后启动的那条会把前面那条的过滤行为改掉。
-    enum class OutputFilter
-    {
-        Default,   // 用终端设置(见 setFilterOutput)
-        On,
-        Off,
-    };
-
     // 后台/流式运行留下的逐行日志(供 terminal_query 拉取, 支持最近 N 行、按流/关键字过滤)
     struct RunLogLine
     {
@@ -203,13 +193,11 @@ public:
     // 扩展参数(均有默认值):
     //   onChunk  : 非空的逐块输出回调(流式)
     //   background: 兼容旧签名(启动即返回, 多路并发后已无实际区别)
-    //   filter   : 本次运行的输出过滤开关(见 OutputFilter)
     //   前台超时: 硬上限 15 分钟(见实现: timeoutMs>15min 或<=0 时归一到 15min 并按时强杀);
     //             后台(background)不受此限(本就不设定时器)。
     JZResult<std::string> run(const std::string &command, int timeoutMs, const RunCallback &cb,
                               const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
-                              bool background = false,
-                              OutputFilter filter = OutputFilter::Default);
+                              bool background = false);
 
     // 后台运行(2026-09-22): 起一条命令后**立即返回**, 不等它结束, 也不设超时 ——
     //   给"自己不退出"的长程任务用(起服务 / 常驻进程 / 长时间构建), 这类命令前台跑必然
@@ -222,8 +210,7 @@ public:
     //   之后按 run_id 查得到(状态/退出码/日志)。
     // ⚠ 生命期: 后台运行与前台共用并发上限(kMaxConcurrentRuns); 终端析构时会把它们一起杀掉。
     JZResult<std::string> runBackground(const std::string &command,
-                                        const RunCallback &cb = RunCallback(),
-                                        OutputFilter filter = OutputFilter::Default);
+                                        const RunCallback &cb = RunCallback());
 
     // 停一条命令: **必须带 runId**(在途运行的 id 见 activeRunIds() 或 run() 的返回值)。
     // 被杀的命令照样走它自己的 RunCallback(ok=false), 收尾只有一条路径。
@@ -234,16 +221,23 @@ public:
     std::string takeOutput();                        // 取所有在途运行的累积输出并清空
     std::string takeOutput(const std::string &runId);   // 取指定运行的累积输出并清空
 
-    // ==================== 输出过滤 ====================
-    // ⚠ **默认关**(2026-10-14 按用户要求改成"原样返回, 不加工"): 命令回包直接给本次运行的原始
-    //   合并输出, 不再从运行日志重渲染(那条路会给每行加 stdout:/stderr: 标签, 还按"编译/通用"
-    //   规则头尾截断)。打开时才做截断: 编译命令(build set 见 cpp isBuildCommand)走"错误上下文"
-    //   特殊处理(成功尾部 20 行 / 失败开头约 100 行错误且错误块完整); 其它命令超长保留头 50 +
-    //   尾 50 行、中间省略。完整日志仍可由 terminal_query 取。
-    // 模型可在 terminal_run 用 error_context=true 显式打开(默认 false = 原样全量)。
-    // 这是**终端级默认值**: 单次运行可以用 run() 的 filter 参数覆盖(见 OutputFilter)。
-    void setFilterOutput(bool on) { m_filterOutput = on; }
-    bool filterOutput() const { return m_filterOutput; }
+    // ==================== 输出: **不加工**(2026-10-14 起, 过滤整套删除) ====================
+    // 命令回包 = 本次运行的**原始合并输出**(stdout/stderr 按到达顺序), 没有"按重要性挑几行"、
+    //   没有逐行 stdout:/stderr: 标签、没有头尾截断 —— **过滤交给模型自己**:
+    //   grep / head / tail / sort / uniq / wc / sed / awk 都在程序白名单里(见 buildDefaultPrograms
+    //   的 Shell 段), Git Bash 也自带这些工具, 模型想少看就自己 `... | grep -i error | tail -20`。
+    // 为什么删: 工具替模型判断"哪几行重要"时, 模型把"没看到"读成"输出丢了" ⇒ 重跑命令 + 反复
+    //   terminal_query(实测 19 次重跑 + 64 次查询, 直接撞轮次上限)。
+    // 只剩一个**防 OOM 的字节阀**(kMaxRunOutputBytes, 超了从头部裁); 完整日志由 terminal_query 取。
+    //
+    // 两个"阀"分工不同, 但都**不做重要性挑拣**(挑拣是以前那套过滤, 已删):
+    //   · kMaxRunOutputBytes(8MB, **内存阀**): 累积输出超了就从头部丢, 防 OOM;
+    //   · replyMaxBytes(32KB, **上下文阀**, 见 setReplyMaxBytes): 回包超了只回**末尾**,
+    //     并在开头加**一行显式标记**(省略了多少字节 / 完整日志用什么取) —— 模型上下文比磁盘贵得多,
+    //     而"完整日志"始终在运行记录里 ⇒ 这条截断是**可恢复**的, 不是静默丢内容。
+    //     (与 terminal_query 的 32KB 回包上限同一口径, 免得两条路宽窄不一。)
+    void setReplyMaxBytes(size_t n) { m_replyMaxBytes = n; }   // 0 = 不限制(宿主/测试用)
+    size_t replyMaxBytes() const { return m_replyMaxBytes; }
 
     // ==================== 运行记录(后台/流式留下的日志) ====================
     bool runSnapshot(const std::string &runId, RunRecordInfo &out) const;
@@ -338,7 +332,6 @@ protected:
         JZProcess *proc = nullptr;
         JZTimer *timer = nullptr;           // 本次运行的超时定时器(timeoutMs<=0 则 null)
         bool timedOut = false;
-        bool filterOutput = true;           // 本次运行是否做输出截断
         std::string output;                 // 本次运行的累积输出(合并 stdout/stderr)
         bool outputTruncated = false;       // output 超过字节上限被裁过(见 takeOutput)
         int64_t startTime = 0;
@@ -351,7 +344,7 @@ protected:
     bool startRun(const std::string &command, int timeoutMs, const RunCallback &cb, std::string &error,
                   std::string *runId,
                   const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk,
-                  bool background, OutputFilter filter);
+                  bool background);
 
     RunTask *taskOf(const std::string &runId);
     const RunTask *taskOf(const std::string &runId) const;
@@ -392,8 +385,8 @@ protected:
 
     std::string m_shell;                // 见 shellProgram(): 构造时自动探测
     int m_recycleMs = 15 * 60 * 1000;
+    size_t m_replyMaxBytes = 32 * 1024; // 单次回包的字节上限(上下文阀, 见 setReplyMaxBytes)
     int m_runIdGen = 0;
-    bool m_filterOutput = false;        // 输出截断/错误上下文截取(默认**关**=原样返回, 见 setFilterOutput)
 
     // 运行记录(后台/流式): runId -> 记录, 发生顺序另用 m_runOrder 保序
     std::map<std::string, RunRecord> m_runs;

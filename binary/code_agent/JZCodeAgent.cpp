@@ -1506,14 +1506,10 @@ void JZCodeAgent::buildAgent()
     addTool(new JZSearchContextTool());   // 搜文本/正则(原 search_file, 已改名)
     addTool(new JZGetDateTimeTool());
 
-    // 让 shell 里能直接敲 tsc：把随包编译器所在目录加进 exe 搜索路径
-    // （它不一定在 exe 同目录，见 JZBundlePaths.h）。
-    string tscDir = jzFindBundleAsset("ts_compiler/tsc", true);
-    if (tscDir.empty())
-        tscDir = codeNormalizePath(jzApp->applicationDirPath()) + "/ts_compiler/tsc";
-    auto shell_tool = new JZShellTool();
-    shell_tool->setExeSearchPaths({ tscDir });
-    addTool(shell_tool);
+    // ⚠ 不再注册 `command`（JZShellTool，Windows 上是 `cmd /c`）：它和 terminal_run 是**两套 shell 规则** ——
+    //   cmd 认 dir/echo，却不认 bash 语法、也不认 tsc / code_runtime 这些随包短名，模型在里面敲 `tsc` 只会得到
+    //   "'tsc' 不是内部或外部命令"，接着就去满盘找编译器（实测连试 18+ 次、烧到轮次上限）。
+    //   执行面统一收敛到 terminal_run（bash + 短名 + 白名单审核），类本身保留在 agent_tool 供其它宿主按需注册。
 
     // ⚠ 不再给模型 build / run_js 工具（JZBuildProjectTool 与 JZCommandTool 的包装都保留但未注册）：
     //   编译与运行一律由模型**自己在终端里**做 —— 这正是 agent_cli 那条链一直以来的做法：

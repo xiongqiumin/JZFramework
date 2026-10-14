@@ -39,8 +39,8 @@ private:
     std::map<std::string, std::string> m_runs;
 };
 
-// terminal_query: 按 run_id 查一次运行的状态与日志(前台跑完的也能查 —— 取完整输出,
-// 不受 terminal_run 回包时的截断影响)。run_id 省略 = 最近一次运行。
+// terminal_query: 按 run_id 查一次运行的状态与日志(前台跑完的也能查 —— 取完整输出;
+// 输出已不做任何过滤/截断, 它只是"能反复看、能按 grep / stream / tail 挑")。run_id 省略 = 最近一次运行。
 // ⭐ 轮询类(见 JZAgentTool::isPollTool): 模型查后台任务进度会**反复**用同样的参数调它,
 //   那是正常用法, 不该被循环检测当打转打掉。
 class JZTerminalQueryTool : public JZTerminalToolBase

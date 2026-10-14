@@ -26,7 +26,8 @@
 //
 // 接入方式(构建时补, 见 binary/code_agent/runtime 与 binary/virtual_device 的 CMakeLists):
 //   m_onnxModule = std::make_unique<JZJSOnnxModule>(); m_onnxModule->initEngine(engine);
-class JZFRAMEWORK_API JZJSOnnxModule : public JZObject
+// ⚠ 同 JZJSCvModule.h: 共享源(不在 DLL 里) ⇒ 自己的类不带导出宏
+class JZJSOnnxModule : public JZObject
 {
 public:
     JZJSOnnxModule();                     // 定义在 .cpp: PIMPL

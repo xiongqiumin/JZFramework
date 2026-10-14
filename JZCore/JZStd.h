@@ -10,34 +10,37 @@
 #include "JZGlobal.h"
 
 //std::string
-std::string str_asprintf(const char *fmt, ...);
-std::string str_vasprintf(const char *fmt, va_list ap);
+// ⚠ 这一批是**自由函数**: 动态库模式下必须逐个带 JZFRAMEWORK_API(dllexport/dllimport),
+//   否则任何 exe 直接调它们就 LNK2019(类可以借类级导出, 自由函数没有这层保护)。
+//   全是 JZCore 里实现、被各模块/宿主共用的字符串工具, 导出面就是这一屏。
+JZFRAMEWORK_API std::string str_asprintf(const char *fmt, ...);
+JZFRAMEWORK_API std::string str_vasprintf(const char *fmt, va_list ap);
 
-bool str_startsWith(const std::string &str, const std::string &prefix, bool caseSensitive = true);
-bool str_endsWith(const std::string &str, const std::string &suffix, bool caseSensitive = true);
-bool str_contains(const std::string &str, const std::string &substr, bool caseSensitive = true);
-void str_chop(std::string &str, int n);
-std::string str_mid(const std::string &str, size_t pos, int len = -1);
-std::string str_left(const std::string& s, size_t n);
-std::string str_right(const std::string& s, size_t n);
-void str_replace(std::string &str, const std::string &oldstr, const std::string &newstr);
-void str_remove(std::string &str, const std::string &substr);
-void str_prepend(std::string& src, const std::string& prefix);
-void str_append(std::string& str, const std::string& other);
-std::string str_toLower(const std::string &str);
-std::string str_toUpper(const std::string &str);
-std::string str_trimmed(const std::string &str);
-std::string str_simplified(const std::string &str);
-int str_indexOf(const std::string &str, const std::string &substr, int pos = 0, bool caseSensitive = true);
-int str_lastIndexOf(const std::string &str, const std::string &substr, int pos = -1, bool caseSensitive = true);
-std::vector<std::string> str_split(const std::string &str, const std::string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);
-std::string str_join(const std::vector<std::string> &str_list, const std::string &sep);
+JZFRAMEWORK_API bool str_startsWith(const std::string &str, const std::string &prefix, bool caseSensitive = true);
+JZFRAMEWORK_API bool str_endsWith(const std::string &str, const std::string &suffix, bool caseSensitive = true);
+JZFRAMEWORK_API bool str_contains(const std::string &str, const std::string &substr, bool caseSensitive = true);
+JZFRAMEWORK_API void str_chop(std::string &str, int n);
+JZFRAMEWORK_API std::string str_mid(const std::string &str, size_t pos, int len = -1);
+JZFRAMEWORK_API std::string str_left(const std::string& s, size_t n);
+JZFRAMEWORK_API std::string str_right(const std::string& s, size_t n);
+JZFRAMEWORK_API void str_replace(std::string &str, const std::string &oldstr, const std::string &newstr);
+JZFRAMEWORK_API void str_remove(std::string &str, const std::string &substr);
+JZFRAMEWORK_API void str_prepend(std::string& src, const std::string& prefix);
+JZFRAMEWORK_API void str_append(std::string& str, const std::string& other);
+JZFRAMEWORK_API std::string str_toLower(const std::string &str);
+JZFRAMEWORK_API std::string str_toUpper(const std::string &str);
+JZFRAMEWORK_API std::string str_trimmed(const std::string &str);
+JZFRAMEWORK_API std::string str_simplified(const std::string &str);
+JZFRAMEWORK_API int str_indexOf(const std::string &str, const std::string &substr, int pos = 0, bool caseSensitive = true);
+JZFRAMEWORK_API int str_lastIndexOf(const std::string &str, const std::string &substr, int pos = -1, bool caseSensitive = true);
+JZFRAMEWORK_API std::vector<std::string> str_split(const std::string &str, const std::string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);
+JZFRAMEWORK_API std::string str_join(const std::vector<std::string> &str_list, const std::string &sep);
 
-int str_toInt(const std::string& str, bool* ok = nullptr,int base = 10);
-double str_toDouble(const std::string& str, bool* ok = nullptr);
+JZFRAMEWORK_API int str_toInt(const std::string& str, bool* ok = nullptr,int base = 10);
+JZFRAMEWORK_API double str_toDouble(const std::string& str, bool* ok = nullptr);
 
-std::string str_local_to_utf8(const std::string& local);
-std::string str_utf8_to_local(const std::string& local);
+JZFRAMEWORK_API std::string str_local_to_utf8(const std::string& local);
+JZFRAMEWORK_API std::string str_utf8_to_local(const std::string& local);
 // UTF-8 -> 控制台能正确显示的字节(与 JZLog 打印日志用的是同一条规则):
 //   · stdout 是真控制台 ⇒ 转成控制台的**输出代码页**(GetConsoleOutputCP; 中文 Windows 通常是 936/GBK)
 //   · stdout 被重定向/接管道(`>`、python 抓日志、mintty/Git-Bash) ⇒ 原样 UTF-8(接收方按 UTF-8 解)
@@ -45,18 +48,18 @@ std::string str_utf8_to_local(const std::string& local);
 // ⚠ 自己往控制台 printf 中文时**必须**用它包一层: 源码字面量是 UTF-8(见 CMake 的
 //   /source-charset:utf-8), 直接 printf 到 GBK 控制台就是"缃戠粶"这种乱码。
 //   注意与 str_utf8_to_local 不是一回事(那个固定转 CP_ACP, 是给 JZFile/JZDir 的 ANSI 文件 API 用的)。
-std::string str_utf8_to_console(const std::string& utf8);
+JZFRAMEWORK_API std::string str_utf8_to_console(const std::string& utf8);
 // 这段字节是不是合法 UTF-8(空串算合法)
-bool str_is_utf8(const std::string& str);
+JZFRAMEWORK_API bool str_is_utf8(const std::string& str);
 // 保证是 UTF-8: 已经是合法 UTF-8 就原样返回, 否则按本地编码转。
 // 用在**命令行参数**上: 传统 GBK 控制台给的是本地编码字节(要转), 而 PowerShell 7 /
 // UTF-8 控制台直接把 UTF-8 字节塞进 argv(再按本地编码转会变成乱码 —— 中文参数尤其明显)。
-std::string str_ensure_utf8(const std::string& str);
-std::wstring str_to_wstr(const std::string& str);
-std::string wstr_to_str(const std::wstring& str);
+JZFRAMEWORK_API std::string str_ensure_utf8(const std::string& str);
+JZFRAMEWORK_API std::wstring str_to_wstr(const std::string& str);
+JZFRAMEWORK_API std::string wstr_to_str(const std::wstring& str);
 
-std::string str_escape(const std::string& src);
-std::string str_unescape(const std::string& src);
+JZFRAMEWORK_API std::string str_escape(const std::string& src);
+JZFRAMEWORK_API std::string str_unescape(const std::string& src);
 
 //vector
 template<typename T>

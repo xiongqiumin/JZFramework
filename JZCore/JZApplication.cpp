@@ -18,7 +18,8 @@
 #include "JZWin32Thread.h"
 #endif
 
-JZApplication *jzApp = nullptr;
+// 定义侧也带导出属性(与头文件里 extern JZFRAMEWORK_API ... 对应, 见那里的说明)
+JZFRAMEWORK_API JZApplication *jzApp = nullptr;
 
 JZApplication* JZApplication::instance()
 {

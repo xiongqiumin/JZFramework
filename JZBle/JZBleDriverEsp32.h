@@ -25,7 +25,7 @@ struct ble_gatt_dsc;
 struct PeriphGatt;
 
 // 从机特征定义（GATT 表为服务端共享；订阅状态改为按连接记录，见 JZBLEPeripheralConnectEsp32::subs）
-struct PeriphCharInfo JZFRAMEWORK_API {
+struct JZFRAMEWORK_API PeriphCharInfo {
     std::string svcUuid;     // 所属 Service UUID 字符串
     uint16_t valHandle = 0;
     int properties = 0;

@@ -145,12 +145,15 @@ private:
 //     jzAttachVirtualProgramHost(&desk, &api);
 // ⚠ 只允许在主线程调用 (进程表只在主线程增删); 之后 HTTP 的 /api/programs 就能用了。
 //   不接 = 那些接口回 501, 容器其余部分 (截图/输入/窗口) 照常可用。
-void JZFRAMEWORK_API jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api);
+// ⚠ jz_virtual_process 是**静态库**(见 binary/virtual_device/CMakeLists.txt), 不是跨 DLL 边界的
+//   库 ⇒ 自己的自由函数不加 JZFRAMEWORK_API(动态库模式下那是 dllimport, 与定义同处一个 TU 会报
+//   "dll 链接不一致")。要跨模块用的框架侧函数才需要导出。
+void jzAttachVirtualProgramHost(JZVirtualDevice* desk, JZVirtualDeviceHttp* api);
 
 // 把"程序管理"也接给 computer use（CU 那一层不认识引擎, 见 JZComputerUse::setVirtualProgramHost）：
 // 于是容器里跑的脚本调 `cu.startProcess(path)` / `cu.launch({file,...})` 就能**再起一个程序** ——
 // 与 HTTP 的 /api/programs 是同一件事（同一套实现），只是入口在脚本里。
 // ⚠ 只在主线程调用; 不接 = 虚拟后端下 startProcess/launch 明确失败（其余照常）。
-void JZFRAMEWORK_API jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk);
+void jzAttachVirtualProgramHostToCu(JZVirtualDevice* desk);
 
 #endif // JZ_VIRTUAL_PROCESS_H_

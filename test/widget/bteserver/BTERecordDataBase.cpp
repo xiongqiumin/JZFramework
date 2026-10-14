@@ -5,8 +5,6 @@
 
 #include "Common.h"       // MAX_DEVICE_ITEM(通道数)
 
-#include "sqlite3.h"
-
 #include <cstdio>
 #include <cstring>
 
@@ -281,7 +279,7 @@ BTERecordDataBase::BTERecordDataBase()
 {
     recordId = USER_START_ID;
     m_transFlag = 0;
-    m_db = nullptr;
+    // m_db(JZSqlDatabase) 默认就是"未打开"状态, 不必显式清空
 }
 
 BTERecordDataBase::~BTERecordDataBase()
@@ -291,68 +289,63 @@ BTERecordDataBase::~BTERecordDataBase()
 
 bool BTERecordDataBase::open(const std::string& filepath)
 {
-    int nRes = sqlite3_open(filepath.c_str(), &m_db);
-    if (nRes == SQLITE_OK)
-    {
-        nRes = sqlite3_exec(m_db,
-            "create table if not exists record_table(id INTEGER PRIMARY KEY,data blob)", 0, 0, nullptr);
-        nRes = sqlite3_exec(m_db,
-            "create table if not exists recordinfo_table(id INTEGER PRIMARY KEY,data blob)", 0, 0, nullptr);
+    // 建表沿用旧口径(建表语句都带 if not exists); 失败也不致命, 由 isOpen()/后续读写表现。
+    bool ok = m_db.open(filepath);
+    if (!ok)
+        return false;
 
-        for (int i = 0; i < MAX_DEVICE_ITEM; ++i)
-        {
-            char sql[128];
-            snprintf(sql, sizeof(sql),
-                     "create table if not exists record_real_table_%d(id INTEGER PRIMARY KEY,data blob)", i);
-            nRes = sqlite3_exec(m_db, sql, 0, 0, nullptr);
-        }
+    ok = m_db.exec("create table if not exists record_table(id INTEGER PRIMARY KEY,data blob)");
+    ok = m_db.exec("create table if not exists recordinfo_table(id INTEGER PRIMARY KEY,data blob)") && ok;
+
+    for (int i = 0; i < MAX_DEVICE_ITEM; ++i)
+    {
+        char sql[128];
+        snprintf(sql, sizeof(sql),
+                 "create table if not exists record_real_table_%d(id INTEGER PRIMARY KEY,data blob)", i);
+        ok = m_db.exec(sql) && ok;
     }
+
     loadHistory();
-    return nRes == SQLITE_OK;
+    return ok;
 }
 
 void BTERecordDataBase::close()
 {
-    if (m_db)
-    {
-        sqlite3_close(m_db);
-        m_db = nullptr;
-    }
+    m_db.close();
 }
 
 void BTERecordDataBase::beginTransaction()
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
     if (m_transFlag == 0)
-        sqlite3_exec(m_db, "begin;", 0, 0, nullptr);
+        m_db.exec("begin;");
     m_transFlag++;
 }
 
 void BTERecordDataBase::endTransaction()
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
     m_transFlag--;
     if (m_transFlag == 0)
-        sqlite3_exec(m_db, "commit;", 0, 0, nullptr);
+        m_db.exec("commit;");
 }
 
 void BTERecordDataBase::loadHistory()
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
 
     recordHistory.clear();
 
-    sqlite3_stmt* stmt = nullptr;
-    const int result = sqlite3_prepare(m_db, "select * from recordinfo_table", -1, &stmt, 0);
-    if (result == SQLITE_OK)
+    JZSqlQuery q;
+    if (q.prepare(m_db, "select * from recordinfo_table"))
     {
-        while (sqlite3_step(stmt) == SQLITE_ROW)
+        while (q.step())
         {
-            const char* data = (const char*)sqlite3_column_blob(stmt, 1);
-            const int len = sqlite3_column_bytes(stmt, 1);
+            int len = 0;
+            const char* data = (const char*)q.columnBlob(1, &len);
             JZByteArray buffer(data, len);
 
             ByteReader r(buffer);
@@ -365,69 +358,61 @@ void BTERecordDataBase::loadHistory()
                 recordHistory[info.recordId] = info;
         }
     }
-    if (stmt)
-        sqlite3_finalize(stmt);
 
     recordId = recordHistory.empty() ? USER_START_ID : (recordHistory.rbegin()->first + 1);
 }
 
 void BTERecordDataBase::saveHistory(const BTERecordInfo& info)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
 
     char sql[128];
     snprintf(sql, sizeof(sql), "insert or replace into recordinfo_table values(%d,?)", info.recordId);
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare(m_db, sql, -1, &stmt, 0);
+    JZSqlQuery q;
+    if (!q.prepare(m_db, sql))
+        return;
 
     ByteWriter w;
     writeMagic(w);
     writeRecordInfo(w, info);
     const JZByteArray buffer = w.data();
 
-    sqlite3_bind_blob(stmt, 1, buffer.data(), buffer.size(), SQLITE_STATIC);
-    sqlite3_step(stmt);
-    if (stmt)
-        sqlite3_finalize(stmt);
+    // 封装的 bind(blob) 内部是 SQLITE_TRANSIENT(拷一份) ⇒ 比原来传 SQLITE_STATIC 更稳
+    q.bind(1, buffer.data(), (int)buffer.size());
+    q.step();
 }
 
 void BTERecordDataBase::newRealTimeRecord(int id)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
 
     char sql[128];
     snprintf(sql, sizeof(sql), "delete from record_real_table_%d", id);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+    m_db.exec(sql);
 }
 
 int BTERecordDataBase::getRowCount(int id)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return -1;
 
     char sql[128];
     snprintf(sql, sizeof(sql), "select count(*) from record_real_table_%d", id);
 
-    sqlite3_stmt* stmt = nullptr;
-    const int rc = sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK)
+    JZSqlQuery q;
+    if (!q.prepare(m_db, sql))
         return -1;
-    if (sqlite3_step(stmt) != SQLITE_ROW)
-    {
-        sqlite3_finalize(stmt);
+    if (!q.step())
         return -1;
-    }
-    const int count = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    return count;
+    return q.columnInt(0);
 }
 
 bool BTERecordDataBase::saveRealTimeRecord(int id, const BTERecord& record)
 {
-    if (!m_db || id < 0 || id >= MAX_DEVICE_ITEM)
+    if (!m_db.isOpen() || id < 0 || id >= MAX_DEVICE_ITEM)
         return false;
 
     const int start = getRowCount(id);
@@ -439,8 +424,9 @@ bool BTERecordDataBase::saveRealTimeRecord(int id, const BTERecord& record)
     char sql[128];
     snprintf(sql, sizeof(sql), "insert or replace into record_real_table_%d values(?,?)", id);
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare(m_db, sql, -1, &stmt, 0);
+    JZSqlQuery q;
+    if (!q.prepare(m_db, sql))
+        return false;
 
     for (int i = start; i < (int)record.dataList.size(); ++i)
     {
@@ -448,24 +434,19 @@ bool BTERecordDataBase::saveRealTimeRecord(int id, const BTERecord& record)
         writeDFData(w, record.dataList[i]);
         const JZByteArray buffer = w.data();
 
-        sqlite3_bind_int(stmt, 1, i);
-        sqlite3_bind_blob(stmt, 2, buffer.data(), buffer.size(), SQLITE_STATIC);
-        const int nRes = sqlite3_step(stmt);
-        sqlite3_reset(stmt);
-        if (nRes != SQLITE_DONE)
-        {
-            sqlite3_finalize(stmt);
+        q.bind(1, i);
+        q.bind(2, buffer.data(), (int)buffer.size());
+        q.step();
+        if (!q.isDone())          // 原语义: step 不是 DONE 即失败
             return false;
-        }
+        q.reset();                // 复用同一条 SQL: 复位游标(绑定会被下面重新覆盖)
     }
-    if (stmt)
-        sqlite3_finalize(stmt);
     return true;
 }
 
 bool BTERecordDataBase::loadRealTimeRecord(int id, BTERecord& record)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return false;
 
     record.dataList.clear();
@@ -473,14 +454,13 @@ bool BTERecordDataBase::loadRealTimeRecord(int id, BTERecord& record)
     char sql[128];
     snprintf(sql, sizeof(sql), "select * from record_real_table_%d", id);
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare(m_db, sql, -1, &stmt, 0);
-    if (stmt)
+    JZSqlQuery q;
+    if (q.prepare(m_db, sql))
     {
-        while (sqlite3_step(stmt) == SQLITE_ROW)
+        while (q.step())
         {
-            const char* data = (const char*)sqlite3_column_blob(stmt, 1);
-            const int len = sqlite3_column_bytes(stmt, 1);
+            int len = 0;
+            const char* data = (const char*)q.columnBlob(1, &len);
             JZByteArray buffer(data, len);
 
             ByteReader r(buffer);
@@ -489,7 +469,6 @@ bool BTERecordDataBase::loadRealTimeRecord(int id, BTERecord& record)
             if (r.ok())
                 record.dataList.push_back(dfData);
         }
-        sqlite3_finalize(stmt);
     }
 
     // 原版: 数量对不上就认为这份实时备份坏了, 清掉重来
@@ -503,7 +482,7 @@ bool BTERecordDataBase::loadRealTimeRecord(int id, BTERecord& record)
 
 void BTERecordDataBase::newRecord(const BTERecord& rec)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
 
     BTERecord newInfo;
@@ -517,29 +496,30 @@ void BTERecordDataBase::newRecord(const BTERecord& rec)
 
 void BTERecordDataBase::deleteRecord(int id)
 {
-    if (!m_db)
+    if (!m_db.isOpen())
         return;
 
     char sql[256];
     snprintf(sql, sizeof(sql), "delete from record_table where id = %d", id);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+    m_db.exec(sql);
 
     snprintf(sql, sizeof(sql), "delete from recordinfo_table where id = %d", id);
-    sqlite3_exec(m_db, sql, nullptr, nullptr, nullptr);
+    m_db.exec(sql);
 
     recordHistory.erase(id);
 }
 
 bool BTERecordDataBase::saveRecord(int id, const BTERecord& record)
 {
-    if (!m_db || id < USER_START_ID)
+    if (!m_db.isOpen() || id < USER_START_ID)
         return false;
 
     char sql[128];
     snprintf(sql, sizeof(sql), "insert or replace into record_table values(%d,?)", id);
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare(m_db, sql, -1, &stmt, 0);
+    JZSqlQuery q;
+    if (!q.prepare(m_db, sql))
+        return false;
 
     ByteWriter w;
     writeMagic(w);
@@ -548,30 +528,29 @@ bool BTERecordDataBase::saveRecord(int id, const BTERecord& record)
         writeDFData(w, record.dataList[i]);
     const JZByteArray buffer = w.data();
 
-    sqlite3_bind_blob(stmt, 1, buffer.data(), buffer.size(), SQLITE_STATIC);
-    const int nRes = sqlite3_step(stmt);
-    if (stmt)
-        sqlite3_finalize(stmt);
-
-    return nRes == SQLITE_DONE || nRes == SQLITE_OK || nRes == SQLITE_ROW;
+    q.bind(1, buffer.data(), (int)buffer.size());
+    q.step();
+    // 原语义: 只要不是"出错"就算成功 ⇒ 封装的 isDone()(DONE) 是它的严格子集
+    return q.isDone();
 }
 
 bool BTERecordDataBase::loadRecord(int id, BTERecord& record)
 {
-    if (!m_db || id < USER_START_ID)
+    if (!m_db.isOpen() || id < USER_START_ID)
         return false;
 
     char sql[128];
     snprintf(sql, sizeof(sql), "select * from record_table where id = %d", id);
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare(m_db, sql, -1, &stmt, 0);
+    JZSqlQuery q;
+    if (!q.prepare(m_db, sql))
+        return false;
 
     bool find = false;
-    if (stmt && sqlite3_step(stmt) == SQLITE_ROW)
+    if (q.step())
     {
-        const char* data = (const char*)sqlite3_column_blob(stmt, 1);
-        const int len = sqlite3_column_bytes(stmt, 1);
+        int len = 0;
+        const char* data = (const char*)q.columnBlob(1, &len);
         JZByteArray buffer(data, len);
 
         ByteReader r(buffer);
@@ -588,7 +567,5 @@ bool BTERecordDataBase::loadRecord(int id, BTERecord& record)
             find = r.ok();
         }
     }
-    if (stmt)
-        sqlite3_finalize(stmt);
     return find;
 }

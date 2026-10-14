@@ -10,11 +10,11 @@ namespace jsbind
 {
 // copy from pybind11
 template <size_t...>
-struct index_sequence JZFRAMEWORK_API
+struct index_sequence
 {
 };
 template <size_t N, size_t... S>
-struct make_index_sequence_impl JZFRAMEWORK_API : make_index_sequence_impl<N - 1, N - 1, S...>
+struct make_index_sequence_impl : make_index_sequence_impl<N - 1, N - 1, S...>
 {
 };
 template <size_t... S>
@@ -38,7 +38,7 @@ using remove_cvr_t = remove_cv_t<remove_reference_t<T>>;
 
 // 辅助判断：T 剥离 CVR 后是否为 std::string 或 jstring
 template <typename T>
-struct is_special_type JZFRAMEWORK_API
+struct is_special_type
 {
 private:
     // 剥离 T 的引用、const、volatile，得到裸类型
@@ -52,7 +52,7 @@ public:
 
 // 主模板：对特殊类型（string/Json::value）移除 CVR，其他类型保持不变
 template <typename T>
-struct remove_cvr_special JZFRAMEWORK_API
+struct remove_cvr_special
 {
     // 条件选择：若为特殊类型则返回剥离后的类型，否则返回原类型
     using type = std::conditional_t<is_special_type<T>::value,
@@ -67,7 +67,7 @@ using remove_cvr_special_t = typename remove_cvr_special<T>::type;
 
 /// Strip the class from a method type
 template <typename T>
-struct remove_class JZFRAMEWORK_API
+struct remove_class
 {
 };
 template <typename C, typename R, typename... A>
@@ -82,7 +82,7 @@ struct remove_class<R (C::*)(A...) const>
 };
 
 template <typename F>
-struct strip_function_object JZFRAMEWORK_API
+struct strip_function_object
 {
     // If you are encountering an
     // 'error: name followed by "::" must be a class or namespace name'
@@ -109,7 +109,7 @@ struct function_return<R(A...)>
 
 
 template <class T>
-struct ctypeid_of JZFRAMEWORK_API
+struct ctypeid_of
 {
     static std::string get()
     {

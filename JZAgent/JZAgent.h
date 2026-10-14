@@ -11,7 +11,7 @@
 #include "JZLoopDetect.h"
 #include "json/json.h"
 
-struct SkillDefine JZFRAMEWORK_API
+struct JZFRAMEWORK_API SkillDefine
 {
     std::string name;
     std::string tips;
@@ -128,7 +128,7 @@ private:
     void parseKind(const Json::Value& root);
 };
 
-struct LLMContext JZFRAMEWORK_API
+struct JZFRAMEWORK_API LLMContext
 {
     LLMContext();
     void clear();

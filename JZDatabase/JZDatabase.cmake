@@ -5,6 +5,9 @@ set(JZDATABASE_SOURCES
     "sqlite3.h"
     "JZKvDatabase.cpp"
     "JZKvDatabase.h"
+    # SQLite 的 C++ 封装(唯一 include sqlite3.h 的框架侧 .cpp; 使用方只用这两个类)
+    "JZSqlDatabase.cpp"
+    "JZSqlDatabase.h"
 )
 convert_to_abs_paths(JZDATABASE_SOURCES)
 

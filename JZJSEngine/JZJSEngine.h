@@ -54,7 +54,7 @@ struct JZFRAMEWORK_API JZAsyncResult
 
 // checkAndSetArgs 的结果载体: 把每个实参转换后填进对应成员, 调用方按 format 声明的类型直接读取。
 // 标量存值(int/double/bool)、类对象存裸指针(void* p)、string/Json/vector 存堆指针(由析构自动释放)。
-struct ArgResult JZFRAMEWORK_API
+struct JZFRAMEWORK_API ArgResult
 {
     enum Kind { kInvalid, kInt, kDouble, kBool, kPointer,
                 kString, kJson,

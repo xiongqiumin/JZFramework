@@ -30,7 +30,13 @@ target_include_directories(test_mg PRIVATE ${CMAKE_SOURCE_DIR}/JZNet)
 add_executable(test_mg_event test_mg_event.cpp ${CMAKE_SOURCE_DIR}/JZNet/mongoose.c)
 target_include_directories(test_mg_event PRIVATE ${CMAKE_SOURCE_DIR}/JZNet)
 
-add_executable(test_mg_postevent test_mg_postevent.cpp)
+# 与 test_mg / test_mg_event 同套路: 直接用 mongoose 的 C API(mg_mgr_* / mg_listen / mg_log_level 等),
+# 这些符号属于 JZNet 内部实现, 不该(也不必)出现在 JZFramework.dll 的导出面上 ⇒
+# **自带一份 mongoose.c**(JZFramework.dll 里那份仍然存在, 两者全局状态互不影响, 见上面 test_mg 的说明)。
+# ⚠ mg_log_level 是**数据符号**: 即使开了 WINDOWS_EXPORT_ALL_SYMBOLS 也需要使用方声明 dllimport,
+#   自带实现是这类"第三方数据全局量"最省事的解法。
+add_executable(test_mg_postevent test_mg_postevent.cpp ${CMAKE_SOURCE_DIR}/JZNet/mongoose.c)
+target_include_directories(test_mg_postevent PRIVATE ${CMAKE_SOURCE_DIR}/JZNet)
 target_link_libraries(test_mg_postevent JZFramework)
 
 # HTTP/HTTPS 代理测试: 验证 http 目标经代理转发、https 目标经代理 CONNECT 隧道

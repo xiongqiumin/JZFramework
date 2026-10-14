@@ -21,7 +21,7 @@ using JZSimSupportFn = std::function<bool(JZSimCmd)>;
 using JZSimRecvFn   = std::function<void(const JZSimPack&)>;
 
 // 一个已注册驱动(下行路由)的条目
-struct SimEntry JZFRAMEWORK_API { int token; JZSimSupportFn supportFn; JZSimRecvFn recvFn; };
+struct JZFRAMEWORK_API SimEntry { int token; JZSimSupportFn supportFn; JZSimRecvFn recvFn; };
 
 // 模拟器服务器: 内置一个 JZHttpServer, 去掉原来的外部网络连接(JZNetClient).
 // 外部通过 HTTP 接口控制模拟器(驱动 driver 收发、触发 Device 侧动作、读取状态),

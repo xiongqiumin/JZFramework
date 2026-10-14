@@ -102,7 +102,10 @@ protected:
     JZStyleSheetParser* m_styleSheet = nullptr;
 #endif
 };
-extern JZApplication *jzApp;
+// ⚠ 全局**变量**(不是函数): 动态库模式下同样要显式导出, 否则 exe 侧引用 jzApp
+//   会报 LNK2001 "无法解析的外部符号 class JZApplication * jzApp"
+//   (函数能靠类级导出属性, 变量只能自己带)。
+extern JZFRAMEWORK_API JZApplication *jzApp;
 
 #endif
 

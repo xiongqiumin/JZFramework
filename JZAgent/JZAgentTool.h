@@ -22,7 +22,7 @@ enum class ParamType
 };
 
 // 2. 参数 Schema 定义（符合 JSON Schema）
-struct ParamSchema JZFRAMEWORK_API
+struct JZFRAMEWORK_API ParamSchema
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &root);
@@ -47,7 +47,7 @@ struct ParamSchema JZFRAMEWORK_API
 };
 
 // 3. 工具调用请求（OpenAI 标准结构）
-struct ToolCall JZFRAMEWORK_API
+struct JZFRAMEWORK_API ToolCall
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &value);
@@ -61,7 +61,7 @@ struct ToolCall JZFRAMEWORK_API
     Json::Value params;
 };
 
-struct ToolCallResult JZFRAMEWORK_API
+struct JZFRAMEWORK_API ToolCallResult
 {
     ToolCallResult();
 
@@ -71,7 +71,7 @@ struct ToolCallResult JZFRAMEWORK_API
 };
 
 // 4. 工具定义（OpenAI 标准结构）
-struct ToolDefine JZFRAMEWORK_API
+struct JZFRAMEWORK_API ToolDefine
 {
     Json::Value toJson() const;
     bool fromJson(const Json::Value &root);

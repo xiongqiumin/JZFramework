@@ -52,14 +52,16 @@ protected:
 
     std::shared_ptr<JZDebugData> d;   
 };
-JZDebug jzDebug();
-JZDebug jzInfo();
-JZDebug jzWarning();
-JZDebug jzError();
-void jzDebug(const char *format, ...);
-void jzInfo(const char *format, ...);
-void jzWarning(const char *format, ...);
-void jzError(const char *format, ...);
+// ⚠ 这几个是**自由函数**: 动态库模式下必须带 JZFRAMEWORK_API(dllexport/dllimport),
+//   否则 exe 侧链接时报 LNK2019 "无法解析的外部符号 jzInfo"(它们没有类的导出属性可借)。
+JZFRAMEWORK_API JZDebug jzDebug();
+JZFRAMEWORK_API JZDebug jzInfo();
+JZFRAMEWORK_API JZDebug jzWarning();
+JZFRAMEWORK_API JZDebug jzError();
+JZFRAMEWORK_API void jzDebug(const char *format, ...);
+JZFRAMEWORK_API void jzInfo(const char *format, ...);
+JZFRAMEWORK_API void jzWarning(const char *format, ...);
+JZFRAMEWORK_API void jzError(const char *format, ...);
 
 template<class T>
 JZDebug operator<<(JZDebug d, const std::vector<T>& list)

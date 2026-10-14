@@ -108,14 +108,14 @@ typedef enum {
 
 /* This structure reduces the number of params in functions and so
 * optimizes the speed of execution (~ 37%). */
-typedef struct _sft JZFRAMEWORK_API {
+typedef struct JZFRAMEWORK_API _sft {
     int slave;
     int function;
     int t_id;
 } sft_t;
 
 class JZModbusContext;
-struct modbus_backend_t JZFRAMEWORK_API {
+struct JZFRAMEWORK_API modbus_backend_t {
     unsigned int backend_type;
     unsigned int header_length;
     unsigned int checksum_length;
@@ -133,7 +133,7 @@ struct modbus_backend_t JZFRAMEWORK_API {
         const uint8_t *rsp, int rsp_length);
 };
 
-struct MappingChanged JZFRAMEWORK_API
+struct JZFRAMEWORK_API MappingChanged
 {
     int addr;
     int nb;

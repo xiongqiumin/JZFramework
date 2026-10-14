@@ -24,7 +24,11 @@
 // 接入方式(构建时补, 见 binary/code_agent/runtime 与 binary/virtual_device 的 CMakeLists):
 //   m_cvModule = std::make_unique<JZJSCvModule>(); m_cvModule->initEngine(engine);
 class JZImage;                                // JZWidget 的 RGBA8888 图像(见 jsFromImage; 只此一处用它)
-class JZFRAMEWORK_API JZJSCvModule : public JZObject
+// ⚠ 本模块**不在 JZFramework.dll 里**(JZJSEngine.cmake 的源码清单没有它) —— 它是"谁需要谁编"的
+//   共享源(code_agent / code_runtime / code_agent_test / jz_virtual_process 各自编一份),
+//   所以自己的类**不能**带 JZFRAMEWORK_API(动态库模式下那是 dllimport, 会去 DLL 里找 vftable/构造器
+//   而 DLL 里根本没有)。JZComputerUse.h 同一规则。
+class JZJSCvModule : public JZObject
 {
 public:
     JZJSCvModule();                       // 定义在 .cpp: PIMPL(unique_ptr<Impl>) 需要完整类型

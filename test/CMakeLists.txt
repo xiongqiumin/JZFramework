@@ -1,3 +1,18 @@
+# ---------------------------------------------------------------------------
+# 测试 exe 的输出目录：统一到 <build>/test/bin/<CONFIG>（= 根 CMakeLists 的 JZ_TEST_BIN_DIR，
+# 那里的"非发布 exe"都往这儿放：binary/code_agent/test、code_agent/benchmark、agent_cli_test、
+# tools/jz_uic、tools/monitor 也是同一个目录）。
+#
+# 为什么这里可以(而 binary/ 里不行)：本目录以下**建的全是测试 exe**，没有"发布"要区分,
+# 所以用 CMAKE_RUNTIME_OUTPUT_DIRECTORY 一把收干净最省事, 也不必逐个列 target 名
+# (test/ 下的 target 会随测试增删, 写死一张表迟早漏)。
+# ⚠ binary/CMakeLists.txt 里禁的是"在 binary/ 那一层"用它 —— 那里发布 exe 与测试 exe 混在一棵子树,
+#   一收就再也分不开。两处口径不同, 别互相"统一"。
+# 注: 多配置生成器(VS)会自动再按配置分子目录 = <build>/test/bin/Debug|Release。
+#     改这里只影响"新的构建", 旧位置(<build>/test/<子目录>/<配置>/)的 exe 会变成历史残留, 可删。
+# ---------------------------------------------------------------------------
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}")
+
 add_subdirectory(net)
 add_subdirectory(co)
 add_subdirectory(core)

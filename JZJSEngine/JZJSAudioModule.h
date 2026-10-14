@@ -28,7 +28,8 @@ class JZAudioOutput;
  * 编入条件: HAS_JZAudio(JZFramework.cmake 里对 JZFramework 目标 PUBLIC 定义; 本机为 ON)。
  *   没编入时 available() 返回 false、调用抛 notBuilt —— 与 cv 对 OpenCV 的处理一致, 脚本好判定。
  */
-class JZFRAMEWORK_API JZJSAudioModule
+// ⚠ 同 JZJSCvModule.h: 共享源(不在 DLL 里) ⇒ 自己的类不带导出宏
+class JZJSAudioModule
 {
 public:
     JZJSAudioModule();

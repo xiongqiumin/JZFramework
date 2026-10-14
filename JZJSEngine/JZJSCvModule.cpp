@@ -17,6 +17,12 @@
 // ————————————————————————————————————————————————————————————————————————————
 #include "JZJSCvModule.h"
 #include "JZJSBind.h"                        // jsbind::createSelfFunction
+#include "JZImage.h"                         // 外部图像入口(jsFromImage): JZWidget 的 RGBA8888 图像
+                                             // (JZJSWidgetModule.cpp 同样这么引; JZWidget 的头是 PUBLIC 导出的)
+                                             // ⚠ 必须**无条件**引(不能只在下面 #if JZ_CU_OPENCV 里引):
+                                             //   两个分支都注册了 fromImage(jsFromImage), 而 jsbind 按签名
+                                             //   取 typeid(JZImage) ⇒ 类型不完整就 C2027(缺 OpenCV 的退化
+                                             //   构建正是这样: code_agent_test 编的是退化版)。
 #include <json/json.h>
 #include <map>
 #include <vector>
@@ -38,8 +44,6 @@ JZJSCvModule::~JZJSCvModule() = default;
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include "JZImage.h"                         // 外部图像入口(jsFromImage): JZWidget 的 RGBA8888 图像
-                                         // (JZJSWidgetModule.cpp 同样这么引; JZWidget 的头是 PUBLIC 导出的)
 // 传统算法补充(2026-10-03)用到的另外两个模块: 标定几何(RANSAC/LMEDS/findHomography)与
 // 光流(calcOpticalFlowFarneback)。链接上都是同一个 opencv_world 单库, 只是头文件要显式带进来。
 // ⚠ photo 模块在本机的 OpenCV 构建里是 **OFF**(BUILD_opencv_photo=OFF, 见 E:/libs/opencv-4.10.0),

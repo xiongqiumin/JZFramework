@@ -26,7 +26,10 @@
 using namespace std;
 
 // JZNet 定制版 mongoose 引用了此全局变量(已在 JZFramework 中定义, 这里仅声明)
-extern int JZNET_MAX_RECV;
+// 本测试自带一份 mongoose.c(见 net/CMakeLists.txt) ⇒ 这个全局量也要自带一份定义,
+// 跟 test_mg / test_mg_event 一样(mongoose.h 里是 extern 声明, 框架 DLL 里那份是**数据符号**,
+// 使用方不写 dllimport 就链接不到)。
+int JZNET_MAX_RECV = 3 * 1024 * 1024;
 
 // 与 test_jz_tcp_cpp 一致: 1KB 负载 + 行尾 '\n' 分包
 static const int kPayloadLen = 1024;

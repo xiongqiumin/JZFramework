@@ -8,3 +8,7 @@ set(MONITOR_SOURCES
 add_executable(JZMonitor ${MONITOR_SOURCES})
 target_include_directories(JZMonitor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(JZMonitor PRIVATE JZFramework)
+
+# 输出目录: 非发布 exe 统一到 <build>/test/bin/<配置>(根 CMakeLists 的 JZ_TEST_BIN_DIR)。
+set_target_properties(JZMonitor PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")

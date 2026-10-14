@@ -21,7 +21,7 @@ using JZAllocator = std::allocator<T>;
 可用于 std::vector 等容器, 例如 JZByteArray 内部缓冲区。
 */
 template <class T>
-class JZFRAMEWORK_API JZAllocator
+class JZAllocator
 {
 public:
     typedef T value_type;

@@ -7,6 +7,19 @@ if (MSVC)
     add_compile_options(/execution-charset:utf-8)
     add_compile_options(/source-charset:utf-8)
     add_compile_options(/bigobj)
+
+    # -----------------------------------------------------------------------
+    # 全局忽略的告警(整个工程 + 全部子目录; 要加一条就往下面那行里追加 /wdNNNN)
+    #
+    # C4251 / C4275: "导出类的成员 / 基类没有 dll 接口"(成员是 std::string / std::vector / std::map
+    #   这类 STL 类型时必然出现)。动态库构建(Windows 默认 JZFRAMEWORK_DYNAMIC=ON)下, 框架里几百个
+    #   导出类都会刷这两条 —— 编 DLL 时刷, 每个 include 这些头文件的 exe 也刷(⚠ /W3 起才报)。
+    #   **同一套工具集 + 同一个动态 CRT(/MD) + 同一配置**下, STL 布局一致 ⇒ 这两条只是提醒,
+    #   所以全局忽略(2026-10-14 定案: 不做 Pimpl, 把"必须同工具集重编"写成交付前提)。
+    #   ⚠ 想再看见它们: 注释掉下面这行重新 configure; 只想看某个文件: 在那文件里
+    #     先 #pragma warning(default:4251) / (default:4275)。
+    # -----------------------------------------------------------------------
+    add_compile_options(/wd4251 /wd4275)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -122,6 +135,21 @@ target_compile_definitions(JZFramework PRIVATE MG_TLS=MG_TLS_OPENSSL)
 
 
 option(BUILD_TEST "Build the JZFramework test suite" ON)
+
+# ---------------------------------------------------------------------------
+# 所有**非发布 exe**(测试 / 评测 / 开发工具) 的统一输出目录。
+#
+# 发布 exe 见 binary/CMakeLists.txt 末尾那张"发布清单" —— 它们统一在 <build>/binary/bin/<配置>。
+# 于是整个构建树里 exe 只有两个落点:
+#   · 发布:  <build>/binary/bin/<配置>
+#   · 其余:  <build>/test/bin/<配置>     ← 本变量(名字沿用 test/ 最早那个目录)
+#
+# 变量在**根目录**定义 ⇒ tools/ test/ binary/ 三个子树都看得到, 谁建"非发布 exe"谁就
+# set_target_properties(<t> PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")。
+# ⚠ 但别在 binary/ 那层改用 CMAKE_RUNTIME_OUTPUT_DIRECTORY: 那里发布 exe 与测试 exe 同在一棵
+#   子树, 一收就再也分不开(见 binary/CMakeLists.txt 开头的说明)。
+# ---------------------------------------------------------------------------
+set(JZ_TEST_BIN_DIR "${CMAKE_BINARY_DIR}/test/bin")
 
 # tools 要在 test/binary 之前: 构建期工具(如 jz_uic —— jz_add_ui 生成 C++ 代码用)得先存在,
 # 后面那些目录里的 jz_add_ui(...) 才拿得到它的目标(JZFramework.cmake 里会检查)。

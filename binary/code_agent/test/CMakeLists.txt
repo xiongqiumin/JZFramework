@@ -85,10 +85,17 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# 输出目录：本目录的 exe 是**测试**，刻意**不**指定 —— 就落在默认位置
-# <build>/binary/code_agent/test/<配置>/，不进发布目录(<build>/binary/bin/<配置>/,
+# 输出目录：本目录的 exe 是**测试**，与其它"非发布 exe"统一到 <build>/test/bin/<配置>
+# (根 CMakeLists 的 JZ_TEST_BIN_DIR) —— 不进发布目录(<build>/binary/bin/<配置>/,
 # 见 binary/CMakeLists.txt 的那张"发布清单")。
 # ⚠ 它们是"随包"跑 code_runtime / ts_compiler 的，而那些产物在发布目录里 ⇒
 #   main_test.cpp 的 resolveTsCompiler()/findRuntimeExe() 走 JZBundlePaths.h 沿上级目录
-#   找回发布目录，别把它们改回"只看 exe 同目录"。
+#   找回发布目录(<build>/test/bin/<配置> 往上同样能命中 <build>/binary/bin/<配置>)，
+#   别把它们改回"只看 exe 同目录"。
 # ---------------------------------------------------------------------------
+foreach(_t code_agent_test code_agent_lsp_test taskstore_test appcontainer_demo)
+    if(TARGET ${_t})
+        set_target_properties(${_t} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")
+    endif()
+endforeach()

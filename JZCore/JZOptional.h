@@ -6,7 +6,7 @@
 #include "JZGlobal.h"
 
 template <typename T>
-class JZFRAMEWORK_API JZOptional
+class JZOptional
 {
     static_assert(!std::is_reference<T>::value, "JZOptional does not support reference types");
     static_assert(!std::is_same<T, void>::value, "Use JZOptional<void> specialization for void");
@@ -175,6 +175,8 @@ private:
 };
 
 // void 特化: 仅声明, 成员实现见 JZOptional.cpp
+// ⚠ 它是**显式特化**(不再是模板实例化面), 成员在 .cpp 里 ⇒ 必须保留导出宏,
+//   否则 exe 里用 JZOptional<void> 会 LNK2019。
 template <>
 class JZFRAMEWORK_API JZOptional<void>
 {

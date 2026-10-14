@@ -4,8 +4,10 @@
 # 只有**要发布的那些** exe 列在文件末尾那张清单里（它们 + 随附的 js_wrapper / ts_compiler /
 # example / OpenCV 等 DLL 就是发版、拷机器要打包的一整套，见 tools/release/publish.py）。
 # 测试 / 评测 exe（binary/code_agent/test/、binary/code_agent/benchmark/、
-# binary/agent_cli/agent_cli_test/）**一概不做指定**：它们落在各自 CMakeLists 所在目录的
-# 默认位置（<build>/binary/<子目录>/<配置>/），既不混进发布目录，也不必为它们写"输出到哪"。
+# binary/agent_cli/agent_cli_test/）**不进这张表**：它们与 test/ 下的测试、tools/ 里的
+# 开发工具一起，统一输出到 <build>/test/bin/<配置>（根 CMakeLists 的 JZ_TEST_BIN_DIR，
+# 各自 CMakeLists 里显式 set_target_properties 一句）—— 整个构建树里 exe 只有
+# "发布目录"与"test/bin"两个落点。
 #
 # ⚠ 别改成 CMAKE_RUNTIME_OUTPUT_DIRECTORY：那个会把本目录下**所有** exe 一起扫进来，
 #   "发布"与"测试"就分不开了（那正是上一版的毛病）。

@@ -23,7 +23,9 @@
 #include <string>
 #include <vector>
 
-struct sqlite3;
+// SQLite 走框架自己的 C++ 封装(见 JZDatabase/JZSqlDatabase.h): 本文件(及其使用方)不再
+// include sqlite3.h, 也不直接调 sqlite3 的 C API(动态库下那些符号不导出)。
+#include "JZSqlDatabase.h"
 
 // BTEStepInfo(工步信息)
 struct BTEStepInfo
@@ -92,7 +94,7 @@ public:
 
     bool open(const std::string& filepath);
     void close();
-    bool isOpen() const { return m_db != nullptr; }
+    bool isOpen() const { return m_db.isOpen(); }
 
     void beginTransaction();
     void endTransaction();
@@ -115,7 +117,7 @@ private:
     void saveHistory(const BTERecordInfo& info);
     int  getRowCount(int id);
 
-    sqlite3* m_db = nullptr;
+    JZSqlDatabase m_db;                  // 记录库连接(打不开时 isOpen()==false)
     int      recordId = USER_START_ID;
     int      m_transFlag = 0;
 };

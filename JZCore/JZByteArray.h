@@ -67,11 +67,11 @@ private:
 JZ_DECLARE_METATYPE_INTERNAL(JZByteArray, JZMetaType::ByteArray);
 JZDebug operator<<(JZDebug d, const JZByteArray &bytes);
 
-JZByteArray str_toUtf8(const std::string &str);
-std::string str_fromUtf8(const JZByteArray &buffer);
+JZFRAMEWORK_API JZByteArray str_toUtf8(const std::string &str);
+JZFRAMEWORK_API std::string str_fromUtf8(const JZByteArray &buffer);
 
 //转换到本地编码, 输入和输出的字符串是utf8
-JZByteArray str_toLocal(const std::string &str);
-std::string str_fromLocal(const JZByteArray &buffer);
+JZFRAMEWORK_API JZByteArray str_toLocal(const std::string &str);
+JZFRAMEWORK_API std::string str_fromLocal(const JZByteArray &buffer);
 
 #endif // ! JZ_BYTE_ARRAY_H_

@@ -14,17 +14,72 @@ else()
 endif()
 
 # ==================== 静态/动态库切换 ====================
-# 默认静态库(零行为变化)。将来要编译成 DLL 时:
-#   * 打开 JZFRAMEWORK_DYNAMIC 选项(消费方也需定义它, 这里用 PUBLIC 自动传递);
-#   * 本框架作为 SHARED 库构建, CMake 会自动定义 JZFramework_EXPORTS,
+# 默认: **Windows 编动态库(DLL)**; 其它平台暂时仍静态(要动态给 -DJZFRAMEWORK_DYNAMIC=ON)。
+#   * 消费方也需定义 JZFRAMEWORK_DYNAMIC ⇒ 这里用 PUBLIC 自动传递(拿到 dllimport);
+#   * 本框架作为 SHARED 库构建, CMake 自动定义 JZFramework_EXPORTS,
 #     配合 JZGlobal.h 中的 JZFRAMEWORK_API 完成 dllexport / dllimport。
-option(JZFRAMEWORK_DYNAMIC "Build JZFramework as a shared library (DLL). Default OFF = static library." OFF)
+#   * 回静态库: -DJZFRAMEWORK_DYNAMIC=OFF (或直接改这里的默认值)。
+if(WIN32)
+    set(_jz_dynamic_default ON)
+else()
+    set(_jz_dynamic_default OFF)
+endif()
+option(JZFRAMEWORK_DYNAMIC
+       "Build JZFramework as a shared library (DLL). 默认: Windows=ON(动态), 其它平台=OFF(静态)."
+       ${_jz_dynamic_default})
+unset(_jz_dynamic_default)
 
 if(JZFRAMEWORK_DYNAMIC)
     add_library(JZFramework SHARED "")
     target_compile_definitions(JZFramework PUBLIC JZFRAMEWORK_DYNAMIC)
+
+    # 自动导出**全部函数符号**(CMake 生成 .def; 覆盖 quickjs 的 JS_*、mongoose 的 mg_*、jzco_*、
+    # jsoncpp / fromJSValue 的显式特化……这些"第三方或内部 C 接口被宿主/测试直接调用"的情形,
+    # 逐个补 JZFRAMEWORK_API 不现实)。
+    # ⚠ 官方限制: **数据符号**(全局变量, 如 jzApp / mg_log_level)仍必须在使用方声明处写
+    #   __declspec(dllimport) 才能链接 —— 所以 JZ 自己的全局变量照样要带 JZFRAMEWORK_API
+    #   (见 JZApplication.h 的 jzApp); 第三方头里的数据符号(如 mongoose 的 mg_log_level)
+    #   只能靠"那个测试自带一份 .c"(见 test/net/CMakeLists.txt 的 test_mg*)或给它加导出宏。
+    if(MSVC AND WIN32)
+        set_target_properties(JZFramework PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    endif()
+
+    # 注: 导出类带 std::string/std::vector 成员会刷 C4251/C4275(编 DLL 与使用方都刷)。
+    #     本工程已**全局**忽略这两条 —— 见根 CMakeLists.txt 的 MSVC 段(/wd4251 /wd4275),
+    #     那里也写了前提: 必须同一套工具集 + 同一动态 CRT(/MD) + 同配置重编。
+    #     第三方只拿 DLL + 头、用别的工具集编译时, 那条警告指出的 ABI 风险是真的(那时要源码级重编)。
+    # jsoncpp(vendored 1.9.7, 编在 JZJson 模块里, 是**第三方头**)自带导出开关:
+    #   建 DLL 侧 JSON_DLL_BUILD -> JSON_API = dllexport; 用方 JSON_DLL -> dllimport。
+    # 少了它, 任何 exe 只要直接碰 Json::Value(main.cpp/工具/评测都在碰)就 LNK2019。
+    target_compile_definitions(JZFramework PUBLIC JSON_DLL)
+    target_compile_definitions(JZFramework PRIVATE JSON_DLL_BUILD)
 else()
     add_library(JZFramework STATIC "")
+endif()
+
+# ---------------------------------------------------------------------------
+# 动态库的运行期落点(Windows): 没有 RPATH / LD_LIBRARY_PATH 那套 —— exe 旁边找不到
+# JZFramework.dll 会直接以 0xC0000135 起不来(连构建期工具 jz_uic 都会失败)。
+#
+# 本工程的 exe 只有两个落点(见根 CMakeLists 的 JZ_TEST_BIN_DIR 与 binary/CMakeLists.txt
+# 末尾的发布清单), 所以把 dll 复制到这两个目录就够, 不必逐个 exe 挂 POST_BUILD:
+#   · <build>/test/bin/<配置>    —— 测试 / 评测 / 开发工具
+#   · <build>/binary/bin/<配置>  —— 发布 exe
+# ⚠ add_custom_command(TARGET ...) 必须在**创建该 target 的目录**里调用, 这里正是根目录作用域。
+# ⚠ 目录此时可能还没建(exe 目标在后面的 add_subdirectory 里), 所以先 make_directory。
+# ---------------------------------------------------------------------------
+if(JZFRAMEWORK_DYNAMIC AND WIN32)
+    set(_jz_shared_dest_dirs
+        "${CMAKE_BINARY_DIR}/test/bin/$<CONFIG>"
+        "${CMAKE_BINARY_DIR}/binary/bin/$<CONFIG>")
+    foreach(_dir ${_jz_shared_dest_dirs})
+        add_custom_command(TARGET JZFramework POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:JZFramework>" "${_dir}"
+            COMMENT "Copy JZFramework runtime into ${_dir}")
+    endforeach()
+    unset(_jz_shared_dest_dirs)
 endif()
 
 # ==================== 模块依赖关系表 ====================
@@ -326,7 +381,14 @@ function(jz_add_resources TARGET_NAME)
     endforeach()
 
     add_library(${TARGET_NAME} STATIC ${OUT_CPPS})
-    target_link_libraries(${TARGET_NAME} PRIVATE JZFramework)
+    # ⚠ 这里**不要**写 target_link_libraries(${TARGET_NAME} PRIVATE JZFramework):
+    #   JZFramework 现在默认是动态库, 而资源库又会被它链进去(JZWidget.cmake / JZSimulator.cmake 里的
+    #   target_link_libraries(${JZ_MODULE_TARGET} [PUBLIC|PRIVATE] <资源库>)) ⇒ 两个 target 互相依赖 = 环,
+    #   CMake 在生成期直接报 "Cyclic dependencies are allowed only among static libraries"
+    #   (纯静态库时代能容忍环, 掺进动态库就不行)。
+    #   资源代码只用 JZCore 的**头**(JZResources.h), 符号(jzRegisterResource...)由最终链了
+    #   JZFramework 的 exe/dll 提供 ⇒ 给包含目录就够。
+    target_include_directories(${TARGET_NAME} PRIVATE "${JZFRAMEWORK_ROOT_DIR}/JZCore")
     # 生成的头文件(声明 jzres_xxx_init)加入接口包含目录, 供调用方 #include "jz_<name>_resources.h"
     target_include_directories(${TARGET_NAME} PUBLIC "${GEN_DIR}")
 endfunction()
@@ -372,7 +434,9 @@ function(jz_add_proto_json TARGET_NAME)
     endforeach()
 
     add_library(${TARGET_NAME} STATIC ${OUT_CPPS})
-    target_link_libraries(${TARGET_NAME} PRIVATE JZFramework)
+    # ⚠ 同 jz_add_resources: 不能链 JZFramework(本库会被 JZFramework 那侧链进去 ⇒ 环)。
+    #   生成代码只用到 JZCore/JZJson 的头, 符号由最终 exe/dll 提供。
+    target_include_directories(${TARGET_NAME} PRIVATE "${JZFRAMEWORK_ROOT_DIR}/JZCore")
     # 生成的头文件搜索路径 (供调用方 #include "<name>_pb.h")
     target_include_directories(${TARGET_NAME} PUBLIC "${GEN_DIR}")
     # JZJsonStream / json 头文件路径

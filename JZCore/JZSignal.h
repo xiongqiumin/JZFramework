@@ -42,14 +42,14 @@ namespace jzsignal
     };
 
     template<typename Lambda>
-    struct function_traits JZFRAMEWORK_API : function_traits<decltype(&Lambda::operator())> {};
+    struct function_traits : function_traits<decltype(&Lambda::operator())> {};
 
     /// Strip the class from a method type
-    template <typename T> struct remove_class JZFRAMEWORK_API {};
+    template <typename T> struct JZFRAMEWORK_API remove_class {};
     template <typename C, typename R, typename... A> struct remove_class<R(C::*)(A...)> { using type = R(A...); };
     template <typename C, typename R, typename... A> struct remove_class<R(C::*)(A...) const> { using type = R(A...); };
 
-    template <typename F> struct strip_function_object JZFRAMEWORK_API {
+    template <typename F> struct JZFRAMEWORK_API strip_function_object {
         // If you are encountering an
         // 'error: name followed by "::" must be a class or namespace name'
         // with the Intel compiler and a noexcept function here,
@@ -63,7 +63,7 @@ namespace jzsignal
 
     // 核心：检测 Derived 是否继承自 成员函数所属类（基于整合后的 function_traits）
     template<typename Derived, typename Func>
-    struct is_inherits_t JZFRAMEWORK_API {
+    struct is_inherits_t {
         // 从 Func 中萃取所属类（Base）
         using Base = function_class_t<Func>;
         // 检测继承关系：Base 是基类，Derived 是待检测的派生类
@@ -92,14 +92,14 @@ namespace jzsignal
 
     // 辅助工具：判断类型是否为非常量引用（T&）
     template <typename T>
-    struct is_const_lvalue_ref JZFRAMEWORK_API : std::false_type {};
+    struct is_const_lvalue_ref : std::false_type {};
 
     template <typename T>
     struct is_const_lvalue_ref<const T&> : std::true_type {};
 
     // 核心：判断单个类型是否合法（T/const T/const T&）
     template <typename T>
-    struct is_allowed_type JZFRAMEWORK_API {
+    struct is_allowed_type {
         // 规则拆解：
         // 1. 如果是引用类型 → 必须是 const T&
         // 2. 如果不是引用类型 → 无论是否 const 都合法（T/const T）
@@ -240,7 +240,7 @@ template<typename Enable, typename... Args>
 class JZSlotCallback;
 
 template<>
-class JZFRAMEWORK_API JZSlotCallback<void> : public JZBaseSlotCallback
+class JZSlotCallback<void> : public JZBaseSlotCallback
 {
 public:
     std::function<void(JZObject*)> memberFunc;
@@ -256,7 +256,7 @@ public:
 };
 
 template<typename... Args>
-class JZFRAMEWORK_API JZSlotCallback<std::enable_if_t<jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
+class JZSlotCallback<std::enable_if_t<jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -286,7 +286,7 @@ private:
 };
 
 template<typename... Args>
-class JZFRAMEWORK_API JZSlotCallback<std::enable_if_t<!jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
+class JZSlotCallback<std::enable_if_t<!jzsignal::IsAllDefined<Args...>::value>, Args...> : public JZBaseSlotCallback
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -321,7 +321,7 @@ public:
 
 //JZSLot
 template<typename... Args>
-class JZFRAMEWORK_API JZSlot
+class JZSlot
 {
 public:
     using MemberFunc = std::function<void(JZObject*, Args...)>;
@@ -359,7 +359,7 @@ public:
 
 //JZConnect
 template<typename... Args>
-class JZFRAMEWORK_API JZConnect
+class JZConnect
 {
 public:
     int id;
@@ -390,7 +390,7 @@ public:
 };
 
 template<typename... Args>
-class JZFRAMEWORK_API JZSignal : public JZBaseSignal
+class JZSignal : public JZBaseSignal
 {
 public:        
     JZSignal(JZObject *object)
@@ -445,7 +445,7 @@ public:
         if (!m_connects) return;
         for (int i = (int)m_connects->size() - 1; i >= 0; --i)
         {
-            if ((*m_connects)[i].recv == object) {
+            if ((*m_connects)[i]->recv.object() == object) {
                 m_connects->erase(m_connects->begin() + i);
             }
         }

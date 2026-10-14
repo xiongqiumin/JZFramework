@@ -22,7 +22,11 @@ class JZVirtualDevice;                     // 虚拟桌面后端 (见 setVirtual
 // 一个矩形: **物理像素**, 相对整块屏幕 / 整块虚拟桌面 (x,y = 左上角, w,h = 尺寸)。
 // ⚠ 2026-10-03 起**不再是归一化坐标**: 对外一律物理像素 (与截图、SendInput、UIA/MSAA 同口径),
 //   见下面类注释里的"坐标口径"。
-struct CuRect JZFRAMEWORK_API { double x = 0, y = 0, w = 0, h = 0; };
+// ⚠ 本目录是"随宿主编译的共享源"(code_agent / code_runtime / test_jscu / jz_virtual_process ...
+//   各自把 JZComputerUse.cpp 编进来), **不是**跨 DLL 边界的库 ⇒ 自己的类**不能**带
+//   JZFRAMEWORK_API: 动态库模式下它会展开成 dllimport, 于是"在本 TU 里定义它的静态成员"
+//   直接报 C2491(不允许 dllimport 静态数据成员的定义)。本文件里的类型一律不加导出宏。
+struct CuRect { double x = 0, y = 0, w = 0, h = 0; };
 
 // 外部真实桌面的 Computer Use 底层语义。
 // 只提供"基本语义"(切桌面/点击/按键/拖拽) + **感知** + "查找";
@@ -43,7 +47,7 @@ struct CuRect JZFRAMEWORK_API { double x = 0, y = 0, w = 0, h = 0; };
 //   ② 像素族(兜底) = matchImage / matchColor —— 默认**不编**(要启用就定义 JZ_CU_OPENCV=1);
 //   ③ OCR   (兜底) = matchText / ocrTexts —— 默认**不编**(要启用就定义 JZ_CU_OCR=1 + JZCv);
 // ②③ 都是"显式退化"路径: 没编入 / 没识别到一律返回"空 / 未找到", 绝不假装成功。
-class JZFRAMEWORK_API JZComputerUse {
+class JZComputerUse {
 public:
     enum class MouseBtn { Left, Right, Middle };
 

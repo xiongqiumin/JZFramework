@@ -8,7 +8,7 @@
 // 类似 Rust Mutex<T>：用 JZMutex 保护对指针的访问
 // lock() 返回 JZMutexPointerGuard，RAII 析构时通过 cleanup 回调统一解锁/清理
 template<typename T>
-class JZFRAMEWORK_API JZMutexPointerGuard
+class JZMutexPointerGuard
 {
 public:
     JZMutexPointerGuard(T* raw_ptr, std::function<void()> cleanup = nullptr)
@@ -55,7 +55,7 @@ private:
 
 // 裸指针版本
 template<typename T>
-class JZFRAMEWORK_API JZMutexRawPointer
+class JZMutexRawPointer
 {
 public:
     JZMutexRawPointer()
@@ -86,7 +86,7 @@ private:
 
 // shared_ptr 版本
 template<typename T>
-class JZFRAMEWORK_API JZMutexSharedPointer
+class JZMutexSharedPointer
 {
 public:
     JZMutexSharedPointer()
@@ -117,7 +117,7 @@ private:
 
 // weak_ptr 版本
 template<typename T>
-class JZFRAMEWORK_API JZMutexWeakPointer
+class JZMutexWeakPointer
 {
 public:
     JZMutexWeakPointer()

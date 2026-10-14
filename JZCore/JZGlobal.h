@@ -121,7 +121,9 @@ enum SplitBehavior
 };
 }
 
-void jzassert_log(const char *file, int line, const char *message);
-const char *jzVersion();
+// ⚠ 自由函数同样要显式导出(见 JZDebug.h 的说明): JZ_ASSERT 展开就会调 jzassert_log,
+//   任何 exe 只要用到 JZ_ASSERT 就依赖它的导出。
+JZFRAMEWORK_API void jzassert_log(const char *file, int line, const char *message);
+JZFRAMEWORK_API const char *jzVersion();
 
 #endif

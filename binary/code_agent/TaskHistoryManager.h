@@ -6,7 +6,9 @@
 
 #include "json/json.h"
 
-struct sqlite3;   // 前向声明：不把 SQLite 头文件暴露给任务管理的使用方
+// 任务库走框架自己的 SQLite 封装(见 JZDatabase/JZSqlDatabase.h):
+// 本文件(及其使用方)既不需要 sqlite3.h, 也不直接碰 sqlite3 的 C API。
+#include "JZSqlDatabase.h"
 
 // 一条历史任务（= 一段独立对话）的元数据。
 // 对话正文不在里面：它以 JSON 存进任务库的 conversations 表，这里只记 id / 标题 / 消息数等。
@@ -102,7 +104,7 @@ private:
     std::vector<HistoryEntry> m_visible; // 当前工程的任务（对外展示）
     int m_currentId = 0;                 // 当前任务 id（0 = 无）
     int m_version = 0;
-    sqlite3* m_db = nullptr;             // 任务库连接（打开失败时为 nullptr，功能降级为仅内存）
+    JZSqlDatabase m_db;                  // 任务库连接（打不开时 isOpen()==false，功能降级为仅内存）
 };
 
 #endif // !JZ_CODE_AGENT_TASKHISTORYMANAGER_H_

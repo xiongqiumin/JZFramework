@@ -20,12 +20,15 @@ target_link_libraries(code_agent_benchmark PRIVATE code_agent_core)
 # 评测要"调用运行时"（code_runtime 子进程），保证其先构建
 add_dependencies(code_agent_benchmark code_runtime)
 
-# 输出目录：本目录的 exe 是**评测**用的，刻意**不**指定 —— 就落在默认位置
-# <build>/binary/code_agent/benchmark/<配置>/，不进发布目录(<build>/binary/bin/<配置>/,
+# 输出目录：本目录的 exe 是**评测**用的，与其它"非发布 exe"统一到 <build>/test/bin/<配置>
+# (根 CMakeLists 的 JZ_TEST_BIN_DIR)，不进发布目录(<build>/binary/bin/<配置>/,
 # 见 binary/CMakeLists.txt 的那张"发布清单")。
 # ⚠ 它要的 code_runtime / ts_compiler 在发布目录里 ⇒ main.cpp 走 JZBundlePaths.h 沿上级目录
-#   把发布目录找回来；评测集 data/ 则由下面的 POST_BUILD 拷到 exe 旁边($<TARGET_FILE_DIR>)，
+#   把发布目录找回来(<build>/test/bin/<配置> 往上同样能命中 <build>/binary/bin/<配置>)；
+#   评测集 data/ 则由下面的 POST_BUILD 拷到 exe 旁边($<TARGET_FILE_DIR>)，
 #   所以随手改 exe 的输出目录都不会散架。
+set_target_properties(code_agent_benchmark PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")
 
 # 评测集（data/*.json）随构建拷贝到 exe 同目录（bin/data），运行期由
 # applicationDirPath()+"/data" 读取。

@@ -9,7 +9,8 @@
 #include <opencv2/core.hpp>   // 公共 API 直接用 cv::Mat —— 先直接用 OpenCV(内部类型仍不外泄)
 
 // 一行 OCR 结果: 文本框(轴对齐包围盒, 原图像素坐标) + 文字 + 置信度
-struct JZFRAMEWORK_API JZOCRResult
+// ⚠ 同 JZMat.h: JZCv 是静态单例模块, 自己的类型不带导出宏
+struct JZOCRResult
 {
     cv::Rect rect;
     std::string text;
@@ -31,7 +32,7 @@ struct JZFRAMEWORK_API JZOCRResult
 //   det : PP-OCRv6_small_det/inference.onnx
 //   rec : PP-OCRv6_small_rec/inference.onnx   字典: PP-OCRv6_small_rec/dict.txt
 //   cls : **没有** —— 所以 clsOnnx 传空, 不做 180° 纠正; 以后补上模型再传。
-class JZFRAMEWORK_API JZPaddleOCR
+class JZPaddleOCR
 {
 public:
     JZPaddleOCR();

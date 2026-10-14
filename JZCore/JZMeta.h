@@ -43,7 +43,7 @@ public:
 };
 
 template<class T>
-class JZFRAMEWORK_API JZMeta : public JZMetaBase
+class JZMeta : public JZMetaBase
 {
 public:
     virtual ~JZMeta()
@@ -82,7 +82,7 @@ protected:
 };
 
 template <class T>
-struct JZFRAMEWORK_API JZMetaTypeId
+struct JZMetaTypeId
 {
     enum { Defined = 0 };
     static int jz_metatype_id() 
@@ -93,7 +93,7 @@ struct JZFRAMEWORK_API JZMetaTypeId
 
 #define JZ_DECLARE_METATYPE_INTERNAL(TYPE,id)  \
     template <>                                \
-    struct JZFRAMEWORK_API JZMetaTypeId< TYPE >                \
+    struct JZMetaTypeId< TYPE >                \
     {                                          \
         enum { Defined = 1 };                  \
         static int jz_metatype_id()            \
@@ -104,7 +104,7 @@ struct JZFRAMEWORK_API JZMetaTypeId
 
 #define JZ_DECLARE_METATYPE(TYPE)                                   \
     template <>                                                     \
-    struct JZFRAMEWORK_API JZMetaTypeId< TYPE >                                     \
+    struct JZMetaTypeId< TYPE >                                     \
     {                                                               \
         enum { Defined = 1 };                                       \
         static int jz_metatype_id()                                 \

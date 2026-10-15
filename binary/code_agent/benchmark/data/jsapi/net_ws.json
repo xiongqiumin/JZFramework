@@ -1,6 +1,6 @@
 {
   "name": "jsapi_net_ws",
-  "purpose": "net 包 WebSocket 封装是否好学：ws.createServer({port}) 与 connection/message/send，客户端是运行期全局 WebSocket（onopen/onmessage，data 是字符串），服务端 socket 既是 EventEmitter 又能 WebSocket 风格；以及句柄收尾（监听中的服务与连接中的客户端都会吊住进程，做完要 close/unref）。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
+  "purpose": "net 包 WebSocket 封装是否好学：ws.createServer({port}) 与 connection/message/send，客户端是运行期全局 WebSocket（onopen/onmessage；文本帧的 data 是字符串，二进制帧才是字节），服务端 socket 既是 EventEmitter 又能 WebSocket 风格；以及句柄收尾（监听中的服务与连接中的客户端都会吊住进程，做完要 close/unref）。框架已抽成 main.ts（不可改）+ solution.ts（模型实现 solve），模型只处理网络逻辑、不解析输入。",
   "prompt": "用 TypeScript 完成（ws 是内置模块；WebSocket 客户端是运行期全局能力）。\n\n## 框架约定（务必遵守）\n- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取并解析输入、调用你的函数、输出结果。\n- 你只需在 src/solution.ts 中实现：\n    export async function solve(text: string, port: number): Promise<string>\n  框架会把已解析好的 text（输入文本）和 port（端口）传给你，并 console.log 你的返回值。\n- 你的 solve 返回一行标记字符串（不含换行）即可，**不要**自行读文件或 console.log（框架负责输出）。\n\n## 任务（在 solve 内部用 text、port 完成）\n1) 在 port 上起一个 WebSocket 服务：每条收到的消息原样发回；\n2) 用运行期的 WebSocket 客户端连 'ws://127.0.0.1:port'，打开后发送文本 text，收到回显后校验与 text 相同；\n3) 返回一行：WS=<回显文本的 md5>@<回显是否与 text 相同(1/0)>（用 '@' 连接，不要空格）。\n\n注意：程序要自己收尾 —— 监听中的服务、打开着的连接/套接字都会把进程留住，不收干净评测会等到超时（跑完即退出才拿得到结果）。",
   "maxAttempts": 3,
   "timeout": 30,

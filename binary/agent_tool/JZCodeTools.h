@@ -7,8 +7,6 @@
 #include <vector>
 
 #include "JZAgentTool.h"
-#include "JZProcess.h"
-#include "JZTimer.h"
 #include "JZCommandLineParser.h"
 #include "JZVirtualTerminalConfig.h"   // Zone / TrustedDir / ZoneConfig / JZVirtualTerminalConfig
 
@@ -248,94 +246,6 @@ private:
 
     std::string m_file;
     int m_maxBytes = 8192;
-};
-
-// ------------------------------------------------------------------
-// 进程运行器：管理工作区内的子进程（超时 kill + 输出回传）
-//   派生类只负责决定"启动什么程序"，结果的收集、超时终止与回传由这里统一处理，
-//   避免每个用到进程的工具各写一套。
-// ------------------------------------------------------------------
-class JZProcessRunner : public JZCodeTool
-{
-public:
-    virtual ~JZProcessRunner();
-
-    // 停止所有仍在运行的子进程（用户点"停止"或熔断时调用）
-    virtual void cancel(const std::string &id) override;
-
-protected:
-    struct Task
-    {
-        std::string id;
-        JZProcess *proc = nullptr;
-        JZTimer *timer = nullptr;
-        int64_t startTime = 0;
-        bool timeout = false;
-    };
-
-    // logText 是展示用的命令文本（与实际启动的命令行可能不同）
-    // emitCallLog 为 false 表示调用方已经发过 "call" 日志（避免上层重复计数）
-    bool runProcess(const ToolCall &call, const std::string &program,
-                    const std::vector<std::string> &args, const std::string &workDir,
-                    int timeoutMs, const std::string &logText, bool emitCallLog = true);
-
-    void onProcFinished(JZProcess *proc, const std::string &id,
-                        int exitCode, JZProcess::ExitStatus status);
-    void removeTask(JZProcess *proc);
-    
-    std::vector<Task> m_tasks;
-};
-
-// ------------------------------------------------------------------
-// 通用命令工具: 用 JZProcess 在工作区内执行一条外部命令
-//   - 命令由大模型在 command 参数里给出，也可以配一条默认命令
-//   - Windows 下统一通过 cmd /c 执行，因此支持 dir/echo 等内部命令，
-//     以及管道(|)、重定向(>)、&& 串联、.bat/.cmd 等写法
-//   - 支持 work_dir(限制在工作区内) 与 timeout，超时会被强制终止
-// ------------------------------------------------------------------
-class JZShellTool : public JZProcessRunner
-{
-public:
-    JZShellTool();
-
-    void setTimeOut(int timeout);
-
-    // 额外的 exe 搜索路径：会在执行命令前注入到 shell 的 PATH 最前面，
-    // 使得工作区内编译产物(如 build/Debug/demo.exe)或额外 SDK 目录下的程序
-    // 可被直接按名调用，而不必写全路径。
-    void setExeSearchPaths(const std::vector<std::string> &paths);
-
-    virtual void call(const ToolCall &params) override;
-
-private:
-    int m_timeoutMs = 120000;
-    std::vector<std::string> m_exeSearchPaths;   // 额外 exe 搜索目录
-};
-
-// ------------------------------------------------------------------
-// 固定命令工具: 执行 setup 时给定的命令（模型不能改命令本身）
-//   args 为 true 时，工具带一个可选 args 参数，其内容会追加到命令之后
-//   （"程序 + 参数"形态）；args 为空则原样执行命令。
-//   args 为 false 的工具不接受任何追加，行为与原版完全一致。
-//   ⚠ 2026-10-14: code_agent 侧已不再注册用它包出来的 run_js 工具（编译/运行统一收敛到终端里
-//     的 `tsc -p tsconfig.json` / `code_runtime`）；类本身保留给其它宿主按需使用。
-// ------------------------------------------------------------------
-class JZCommandTool : public JZProcessRunner
-{
-public:
-    JZCommandTool();
-
-    // args 为 true 时：为工具定义可选 args 参数，调用时追加到 command 后
-    void setup(const std::string& name, const std::string& desc,
-        const std::string& command, bool args, const std::string& defalut_work_dir = std::string());
-
-    virtual void call(const ToolCall& params) override;
-
-private:
-    std::string m_command;
-    std::string m_defaultWorkDir;
-    bool m_hasArgs = false;
-    int m_timeoutMs = 120000;
 };
 
 // ------------------------------------------------------------------

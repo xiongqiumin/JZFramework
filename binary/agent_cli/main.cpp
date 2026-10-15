@@ -74,7 +74,7 @@ static const char *kDefaultConfigJson = R"json({
         "enabled":          true,
         "window":           24,
         "repeat":           5,
-        "sameResult":       2,
+        "sameResult":       5,
         "pollRepeat":       16,
         "pollSameResult":   6,
         "lineRepeat":       6,

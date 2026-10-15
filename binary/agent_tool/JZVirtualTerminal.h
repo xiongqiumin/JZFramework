@@ -12,9 +12,8 @@
 #include "JZObject.h"
 #include "JZResult.h"       // run() 返回 JZResult<std::string>(成功=run_id)
 #include "JZShellParser.h"  // JZShell::Command(安全底线要用)
-
-class JZProcess;
-class JZTimer;
+#include "JZProcess.h"      // onRunFinished 用到 JZProcess::ExitStatus(嵌套类型, 前置声明不够)
+#include "JZTimer.h"
 
 // ---------------------------------------------------------------------------
 // JZVirtualTerminal —— 单台终端的执行面与审核面
@@ -33,8 +32,8 @@ class JZTimer;
 //   好处: 状态可序列化、可审计, `a && b` 能逐条审权限。代价: 交互式程序做不了。
 //
 // 并发(2026-09-21): 一个终端可以**同时跑多条命令** —— 每次 run() = 一条在途运行, 各带
-//   自己的 JZProcess + 超时定时器 + 输出 + 回调, 按 run_id 区分(做法同 JZProcessRunner
-//   的多任务列表)。以前是"终端只有一个 proc / 一条在途命令", 第二条只能等第一条结束
+//   自己的 JZProcess + 超时定时器 + 输出 + 回调, 按 run_id 区分(做法同进程运行器的
+//   多任务列表 —— 那个运行器已随 JZCommandTool/JZShellTool 一起删除)。以前是"终端只有一个 proc / 一条在途命令", 第二条只能等第一条结束
 //   (还会直接报错)。cwd 仍是终端级的: 每条命令按**启动那一刻**的 cwd 跑。
 // 本类不是 JZAgentTool —— 是否暴露、以什么名字暴露由上层决定
 // (本地 code_agent 直接持有; 远端 agent_node 经 JZTerminalRegistry 包成 MCP 工具)。

@@ -1506,12 +1506,12 @@ void JZCodeAgent::buildAgent()
     addTool(new JZSearchContextTool());   // 搜文本/正则(原 search_file, 已改名)
     addTool(new JZGetDateTimeTool());
 
-    // ⚠ 不再注册 `command`（JZShellTool，Windows 上是 `cmd /c`）：它和 terminal_run 是**两套 shell 规则** ——
+    // ⚠ 不给模型 `command` 工具：它（JZShellTool，Windows 上是 `cmd /c`）与 terminal_run 是**两套 shell 规则** ——
     //   cmd 认 dir/echo，却不认 bash 语法、也不认 tsc / code_runtime 这些随包短名，模型在里面敲 `tsc` 只会得到
     //   "'tsc' 不是内部或外部命令"，接着就去满盘找编译器（实测连试 18+ 次、烧到轮次上限）。
-    //   执行面统一收敛到 terminal_run（bash + 短名 + 白名单审核），类本身保留在 agent_tool 供其它宿主按需注册。
+    //   执行面统一收敛到 terminal_run（bash + 短名 + 白名单审核）。JZShellTool 已从 agent_tool 删除。
 
-    // ⚠ 不再给模型 build / run_js 工具（JZBuildProjectTool 与 JZCommandTool 的包装都保留但未注册）：
+    // ⚠ 不给模型 build / run_js 工具（JZBuildProjectTool 保留但未注册）：
     //   编译与运行一律由模型**自己在终端里**做 —— 这正是 agent_cli 那条链一直以来的做法：
     //     编译: `tsc -p tsconfig.json`（tsc 是终端短名，见 programPaths()/applyZoneConfig；产物到 outDir，缺省 build/）
     //     运行: `cd build && code_runtime`（code_runtime 也是短名；缺省入口 main.js，--debug 开调试）

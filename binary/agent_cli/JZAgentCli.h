@@ -118,7 +118,7 @@ struct JZCliConfig
     bool loopDetect = true;
     int loopWindow = 24;             // 工具: 只看最近 N 步工具调用(0=不限窗口)
     int loopRepeat = 5;              // 工具: 同签名重复 N 次 -> 中止
-    int loopSameResult = 2;          // 工具: 同签名且结果也相同 N 次 -> 中止
+    int loopSameResult = 5;          // 工具: 同签名且结果也相同 N 次 -> 中止
     // 轮询类工具(terminal_query / terminal_list): 同参数反复调用是正常用法(查后台任务进度),
     // 用上面的小阈值会误杀 ⇒ 单独放宽(见 JZLoopConfig::pollRepeat / pollSameResult)。
     int loopPollRepeat = 16;         // 轮询类工具: 同签名重复 N 次 -> 中止

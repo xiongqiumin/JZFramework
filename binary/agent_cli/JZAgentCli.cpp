@@ -12,20 +12,43 @@
 #include "JZVirtualTerminal.h"
 #include "json/json.h"
 #include "JZLog.h"              // JZLogManager / LogModule_Agent / LOG_INFO
+#include "JZUtf8Iterator.h"     // 验证输出按字符(码点)截断, 不切坏多字节字符
 
+#include <algorithm>            // std::min(日志摘要里取首行片段)
 #include <string>
 
 // 回合诊断日志: 把工具调用 / 思考 / 回复 / 输入 记进独立的 Agent 日志模块(模块 id = LogModule_Agent)。
 // 该模块不走 Console, 只有配置 logFile 才落盘到 <logFile目录>/Agent.log, 没配就不打印。
-// kMaxRoundLogLen 是单条记录上限, 避免长输出(命令回显 / 大段代码)把日志刷爆。
+//
+// 精简口径(骨架优先, 大文本只留摘要): 日志是给人**排查流程**看的, 不是模型上下文的备份 ——
+//   * 工具行: "<工具> args=<简写> => ok/fail <结果摘要>"。长结果一律折叠(只留头 + 尾 + 总长),
+//     read_file 成功更进一步只记大小(整份文件内容对排查没意义, 要看直接看文件)。
+//   * think/reply/input: 只记"单行摘要"(标签 + 字节数 + 首行片段), 不写全文 —— 长思考/长回复
+//     整段落盘会把日志刷成几万行, 真正要复读全文看的是对话历史 / 网页事件流, 不是日志。
 namespace {
-const int kMaxRoundLogLen = 2000;   // 单条记录上限(字符), 超长截断并标注剩余长度
-std::string logTrunc(const std::string &s)
+const int kToolResultBytes = 300;   // 工具结果摘要里保留的字节数(超出折叠成 头…尾)
+const int kTextPreviewBytes = 200;  // think/reply/input 摘要里保留的首行字节数
+
+// 单行化: 换行/制表符折叠成空格, 便于日志一条占一行
+std::string logOneLine(const std::string &s)
 {
-    if ((int)s.size() <= kMaxRoundLogLen)
-        return s;
-    return s.substr(0, kMaxRoundLogLen)
-           + "...[trunc " + std::to_string(s.size() - kMaxRoundLogLen) + "]";
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        out += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+    return out;
+}
+
+// 结果/文本摘要: 短就原样单行化; 长就给 "头…尾[共N字节]"。用于工具结果。
+std::string logSummary(const std::string &s, int keepBytes)
+{
+    if ((int)s.size() <= keepBytes)
+        return logOneLine(s);
+    int head = keepBytes / 2;
+    int tail = keepBytes - head;
+    return logOneLine(s.substr(0, head)) + " … "
+           + logOneLine(s.substr(s.size() - tail))
+           + "[共 " + std::to_string(s.size()) + " 字节]";
 }
 
 // Agent 模块日志。JZLog 多模块: 每个模块独立 type(Console/File/None), 互不干扰。
@@ -34,20 +57,14 @@ static void agentLog(const std::string &msg)
     JZLogManager::instance()->log(LogModule_Agent, LOG_INFO, msg);
 }
 
-// think/reply 日志: 每单元一条(一条 think / 一条 reply / 一条 tool_call / 一条 tool_result), 超长折叠头尾
-const size_t kMaxLine = 1200;   // 单条日志最大字节, 超出给总字节数 + 头 + 尾
-const size_t kHead = 500, kTail = 300;
-
-// 把一段待写缓冲格式化为单条日志: 太长则截断为"总字节数 + 头部 + 尾部"
-static std::string logChunk(const char *tag, const std::string &pending, size_t totalBytes)
+// think/reply/input 摘要: 标签 + "N 字节" + 首行片段(不写全文)
+static std::string logTextLine(const char *tag, const std::string &text)
 {
-    if (pending.size() <= kMaxLine)
-        return std::string(tag) + ": " + pending;
-    size_t skip = pending.size() - kHead - kTail;
-    return std::string(tag) + "[总 " + std::to_string(totalBytes) + " 字节, 本段 "
-         + std::to_string(pending.size()) + "]: " + pending.substr(0, kHead)
-         + "\n  …(省略 " + std::to_string(skip) + " 字节)…\n"
-         + pending.substr(pending.size() - kTail);
+    std::string head = text.substr(0, std::min<size_t>(text.size(), kTextPreviewBytes));
+    std::string line = std::string(tag) + "[" + std::to_string(text.size()) + " 字节] " + logOneLine(head);
+    if ((int)text.size() > kTextPreviewBytes)
+        line += " …";
+    return line;
 }
 }
 
@@ -100,6 +117,59 @@ static std::string bytesToText(const JZByteArray &data)
     if (data.size() <= 0 || !data.data())
         return std::string();
     return std::string(data.data(), data.size());
+}
+
+// UTF-8 边界工具: 验证输出可能是中文/多字节, 按**字节**切会把一个字切成半个(乱码)。
+// 统一走框架的 JZUtf8Iterator(前向码点迭代 + byteIndex), 不再自己数字节。
+//   utf8CountChars = 码点总数
+//   utf8CutAtChar  = 从头取 n 个码点的字节前缀(末尾不留半个字)
+//   utf8TailAtChar = 从尾取 n 个码点的字节后缀(开头不留半个字)
+//   utf8CutAtByteLimit = 按字节上限截, 但落点对齐到码点边界(预算是字节的地方用)
+static size_t utf8CountChars(const std::string &s)
+{
+    return (size_t)JZUtf8Iterator::countCodepoints(s);
+}
+
+// 第 n 个码点的字节起始下标(不足 n 个码点则返回全长)
+static int utf8CharByteOffset(const std::string &s, size_t chars)
+{
+    JZUtf8Iterator it(s);
+    int n = 0;
+    while (it.isValid() && (size_t)n < chars)
+    {
+        ++it;
+        n++;
+    }
+    return it.byteIndex();   // 走完第 n 个码点处 = 前 n 个码点的字节数
+}
+
+static std::string utf8CutAtChar(const std::string &s, size_t chars)
+{
+    return s.substr(0, (size_t)utf8CharByteOffset(s, chars));
+}
+
+// 按**字节上限**截断, 但落点对齐到码点边界(不留半个多字节字符)。
+// 用于"预算是字节"的地方(kMaxVerifyBytes): 直接截 substr(0, maxBytes) 会切坏中文。
+static std::string utf8CutAtByteLimit(const std::string &s, size_t maxBytes)
+{
+    if (s.size() <= maxBytes)
+        return s;
+    JZUtf8Iterator it(s);
+    int last = 0;                                  // 最后一个"起点 <= maxBytes"的码点字节下标
+    while (it.isValid() && (size_t)it.byteIndex() < maxBytes)
+    {
+        last = it.byteIndex();
+        ++it;
+    }
+    return s.substr(0, (size_t)last);
+}
+
+static std::string utf8TailAtChar(const std::string &s, size_t chars)
+{
+    size_t total = utf8CountChars(s);
+    if (total <= chars)
+        return s;
+    return s.substr((size_t)utf8CharByteOffset(s, total - chars));
 }
 
 // 临时目录(放验证命令的包装脚本用): TEMP/TMPDIR 都没有就退回当前目录。
@@ -272,14 +342,16 @@ void JZAgentCli::setupAgent()
     if (m_config.allowTerminal)
     {
         // 终端是这台机器上唯一的执行面: ls/cat/mkdir/rm/cp/mv/grep 都是 shell 命令,
-        // 由 terminal_run 覆盖; 这里只挂终端会话管理 + 一个通用 shell 工具。
+        // 由 terminal_run 覆盖; 这里只挂终端会话管理。
+        //   ⚠ 不再注册 `command`（JZShellTool，Windows 上是 cmd /c）：它和 terminal_run 是
+        //   两套 shell 规则（cmd 认 dir/echo 却不认 bash 语法、也不认 tsc/code_runtime 短名）,
+        //   模型在里面敲 `tsc` 只会得到 "'tsc' 不是内部或外部命令"。执行面统一收敛到 terminal_run。
         addTool(new JZTerminalRunTool(m_terminal));
         addTool(new JZTerminalQueryTool(m_terminal));
         addTool(new JZTerminalCancelTool(m_terminal));
         addTool(new JZTerminalOpenTool(m_terminal));
         addTool(new JZTerminalListTool(m_terminal));
         addTool(new JZTerminalCloseTool(m_terminal));
-        addTool(new JZShellTool());
     }
 
     if (m_config.allowFileTools)
@@ -347,7 +419,6 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  terminal_query  按 run_id 查一次运行的状态与日志(run_id 省略 = 最近一次运行; 后台起的、前台跑完的都能查)。\n";
         text += "  terminal_cancel 按 run_id 停掉一条还在跑的命令(run_id 省略 = 最近一条在跑的)。\n";
         text += "  terminal_open / terminal_list / terminal_close   多会话管理(单终端场景下可不用)。\n";
-        text += "  command         在工作区内跑一条外部命令(带超时; 工具名是 command, 不是 shell)。\n";
     }
     if (m_config.allowFileTools)
     {
@@ -1334,7 +1405,7 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
 
     // 多模态: 图片与文字同属这一条 user 消息(走 JZAgent 的 request(text, images) 重载, 与桌面版同一条路)。
     // 后续续跑/验证失败的喂回仍是纯文本 —— 图只在首轮给一次。
-    agentLog("input: " + logTrunc(memoryBlock + prompt));
+    agentLog(logTextLine("input", memoryBlock + prompt));
     if (images.empty())
         m_agent->request(memoryBlock + prompt);
     else
@@ -1515,9 +1586,10 @@ void JZAgentCli::runVerifyAsync(const std::string &cmd, int timeoutMs, const std
     {
         m_verifyOut += bytesToText(proc->readAllStandardOutput());
         m_verifyOut += bytesToText(proc->readAllStandardError());
-        // 累积上限: 验证输出几十 KB 足够定位问题, 别让它把内存/JSON 回包撑爆
+        // 累积上限: 验证输出几十 KB 足够定位问题, 别让它把内存/JSON 回包撑爆。
+        // 按字节上限裁、落点对齐字符边界(UTF-8 安全), 免得把多字节字符切成半个。
         if (m_verifyOut.size() > kMaxVerifyBytes * 2)
-            m_verifyOut.resize(kMaxVerifyBytes);
+            m_verifyOut = utf8CutAtByteLimit(m_verifyOut, kMaxVerifyBytes);
     };
     connect(&proc->sigReadyReadStandardOutput, collect);
     connect(&proc->sigReadyReadStandardError, collect);
@@ -1608,7 +1680,8 @@ void JZAgentCli::finishVerify(int exitCode)
     if (out.size() > kMaxVerifyBytes)
     {
         size_t total = out.size();
-        out = out.substr(0, kMaxVerifyBytes) + "\n...(验证输出已截断, 共 " +
+        // 按字节上限截、落点对齐字符边界(UTF-8 安全, 不留半个中文字)
+        out = utf8CutAtByteLimit(out, kMaxVerifyBytes) + "\n...(验证输出已截断, 共 " +
               std::to_string(total) + " 字节)";
     }
 
@@ -1621,16 +1694,19 @@ void JZAgentCli::finishVerify(int exitCode)
 // 喂回给模型的验证输出: 只留头尾(错误栈/断言通常在两端), 中间省略。
 // 完整输出可能几十 KB, 整段贴回上下文很容易把 token 预算顶爆(顶爆只能靠压缩救, 成功率更低);
 // 回包给界面/客户端的仍是完整输出(m_lastVerifyOutput)。
+// ⚠ 按**字符**而非字节切(头尾各 4096 字符): 验证输出常是中文, 按字节切会把多字节字符切成半个。
 static std::string clipForModel(const std::string &out)
 {
-    const size_t kHead = 4096;
-    const size_t kTail = 4096;
-    if (out.size() <= kHead + kTail)
+    const size_t kHeadChars = 4096;
+    const size_t kTailChars = 4096;
+    size_t totalChars = utf8CountChars(out);   // 按"字符"而非字节判断长度, 更贴近直觉
+    if (totalChars <= kHeadChars + kTailChars)
         return out;
-    std::string r = out.substr(0, kHead);
-    r += "\n...(中间省略 " + std::to_string(out.size() - kHead - kTail) + " 字节, 需要时用工具自己去看)...\n";
-    r += out.substr(out.size() - kTail);
-    return r;
+
+    std::string head = utf8CutAtChar(out, kHeadChars);
+    std::string tail = utf8TailAtChar(out, kTailChars);
+    size_t omitted = totalChars - kHeadChars - kTailChars;
+    return head + "\n...(中间省略 " + std::to_string(omitted) + " 字符, 需要时用工具自己去看)...\n" + tail;
 }
 
 void JZAgentCli::onLoopFinished()
@@ -1735,7 +1811,7 @@ void JZAgentCli::onVerifyDone(int exitCode, const std::string &out)
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
-    agentLog("input(continue): " + logTrunc(feedback));
+    agentLog(logTextLine("input(continue)", feedback));
     m_agent->request(feedback);   // 重新驱动 agent; 结束后再次进入 onLoopFinished
 }
 
@@ -2117,10 +2193,10 @@ std::vector<std::string> JZAgentCli::extractImages(const Json::Value &params, st
 
 void JZAgentCli::onReply(const std::string &text)
 {
-    // 回复开始 = 思考结束: 先把整条 think 落盘(一条 think 一条, 不切块), 超长折叠头尾
+    // 回复开始 = 思考结束: 先把整条 think 落盘(一条 think 一条), 只记摘要不写全文
     if (!m_thinkLogged && !m_accumThink.empty())
     {
-        agentLog(logChunk("think", m_accumThink, m_accumThink.size()));
+        agentLog(logTextLine("think", m_accumThink));
         m_thinkLogged = true;
     }
 
@@ -2174,8 +2250,16 @@ void JZAgentCli::onToolResult(const ToolCallResult &result)
             t.hasResult = true;
             t.ok = result.isOk;
             t.result = result.result;
-            agentLog("tool: " + t.name + " args=" + logTrunc(t.args)
-                     + " => " + std::string(t.ok ? "ok" : "fail") + " " + logTrunc(t.result));
+            // 结果摘要: 长结果只留头…尾(见文件头"精简口径")。
+            // read_file 成功更进一步 —— 结果就是整份文件内容, 对排查没意义(要看看文件本身),
+            // 只记大小; 失败时仍照常给摘要(错误信息是排查要看的)。
+            std::string resultLog;
+            if (t.name == "read_file" && t.ok)
+                resultLog = "<file content " + std::to_string(t.result.size()) + " bytes>";
+            else
+                resultLog = logSummary(t.result, kToolResultBytes);
+            agentLog("tool: " + t.name + " args=" + logSummary(t.args, kToolResultBytes)
+                     + " => " + std::string(t.ok ? "ok" : "fail") + " " + resultLog);
             break;
         }
     }
@@ -2314,7 +2398,7 @@ void JZAgentCli::scheduleErrorRetry(RetryMode mode)
         else
             m_errorRetries++;
         std::string retryPrompt = buildRetryPrompt(mode, code, err);
-        agentLog("input(retry/" + std::string(mode == RetryFix ? "fix" : "transient") + "): " + logTrunc(retryPrompt));
+        agentLog(logTextLine(("input(retry/" + std::string(mode == RetryFix ? "fix" : "transient") + ")").c_str(), retryPrompt));
         m_agent->request(retryPrompt);
     };
 
@@ -2330,7 +2414,7 @@ void JZAgentCli::onError(const std::string &err)
     m_failed = true;
     m_lastError = err;
     m_lastErrorCode = m_agent ? m_agent->errorCode() : JZAgent::NoError;
-    agentLog("error: " + logTrunc(err));
+    agentLog("error: " + logSummary(err, kToolResultBytes));
 
     RetryMode mode = classifyError(m_lastErrorCode, err);
     bool retryable = (mode == RetryTransient) ? (m_errorRetries < m_maxErrorRetries)
@@ -2355,14 +2439,14 @@ void JZAgentCli::onFinished()
     if (!m_loopActive)
         return;
 
-    // 本轮 LLM 生成结束: 整条落盘(一条 think / 一条 reply; think 若已写则不重复)
+    // 本轮 LLM 生成结束: 记 think / reply 摘要(一条一条; think 若已写则不重复)
     if (!m_thinkLogged && !m_accumThink.empty())
     {
-        agentLog(logChunk("think", m_accumThink, m_accumThink.size()));
+        agentLog(logTextLine("think", m_accumThink));
         m_thinkLogged = true;
     }
     if (!m_accumReply.empty())
-        agentLog(logChunk("reply", m_accumReply, m_accumReply.size()));
+        agentLog(logTextLine("reply", m_accumReply));
 
     // agent 报错: 在(分档的)重试预算内"接着发继续任务"/"让它改一版", 而不是直接判失败
     // (预算用完才走原流程: 有验证脚本就交给验证循环处理)

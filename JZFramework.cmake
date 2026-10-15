@@ -14,20 +14,20 @@ else()
 endif()
 
 # ==================== 静态/动态库切换 ====================
-# 默认: **Windows 编动态库(DLL)**; 其它平台暂时仍静态(要动态给 -DJZFRAMEWORK_DYNAMIC=ON)。
+# 默认: **全平台都编动态库**(Windows=DLL, Linux/macOS=.so/.dylib)。
 #   * 消费方也需定义 JZFRAMEWORK_DYNAMIC ⇒ 这里用 PUBLIC 自动传递(拿到 dllimport);
 #   * 本框架作为 SHARED 库构建, CMake 自动定义 JZFramework_EXPORTS,
 #     配合 JZGlobal.h 中的 JZFRAMEWORK_API 完成 dllexport / dllimport。
 #   * 回静态库: -DJZFRAMEWORK_DYNAMIC=OFF (或直接改这里的默认值)。
-if(WIN32)
-    set(_jz_dynamic_default ON)
-else()
-    set(_jz_dynamic_default OFF)
-endif()
+#
+# ⚠ 非 Windows 上切动态库的注意点:
+#   1) JZFRAMEWORK_API 在非 Windows 侧通常展开为空(见 JZGlobal.h), 所以切 .so 后
+#      符号默认全部可见 —— 不依赖 WINDOWS_EXPORT_ALL_SYMBOLS 那套。
+#   2) 运行期需要能让 exe 找到 .so: 下面用 RPATH(BUILD_RPATH/INSTALL_RPATH)解决, exe
+#      在 build 树里直接跑即可, 无需再设 LD_LIBRARY_PATH。
 option(JZFRAMEWORK_DYNAMIC
-       "Build JZFramework as a shared library (DLL). 默认: Windows=ON(动态), 其它平台=OFF(静态)."
-       ${_jz_dynamic_default})
-unset(_jz_dynamic_default)
+       "Build JZFramework as a shared library (DLL/.so/.dylib). 默认: 全平台 ON(动态)."
+       ON)
 
 if(JZFRAMEWORK_DYNAMIC)
     add_library(JZFramework SHARED "")
@@ -53,22 +53,38 @@ if(JZFRAMEWORK_DYNAMIC)
     # 少了它, 任何 exe 只要直接碰 Json::Value(main.cpp/工具/评测都在碰)就 LNK2019。
     target_compile_definitions(JZFramework PUBLIC JSON_DLL)
     target_compile_definitions(JZFramework PRIVATE JSON_DLL_BUILD)
+
+    # 非 Windows: 给 .so/.dylib 设好输出位置与 RPATH, 让 build 树里的 exe 直接能跑。
+    #   * 不设 VERSION/SOVERSION ⇒ 只产出**一个裸 libJZFramework.so**, 不生成
+    #     libJZFramework.so.<ver> 那串实体文件 + 软链(本工程直接跑 build 树, 不做 ABI 版本共存)。
+    #   * RPATH: 以 **exe 同目录($ORIGIN)** 为准 —— 配合下面 POST_BUILD 把 .so 复制到各 exe
+    #     目录, exe 在哪儿都能就地找到库(整个 build 树可整体挪走)。$ORIGIN/..、$ORIGIN/../..
+    #     作为兜底, 覆盖"库仍在 <build>/ 根"的情形。
+    if(NOT WIN32)
+        set_target_properties(JZFramework PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+        set(CMAKE_BUILD_RPATH "$ORIGIN" "$ORIGIN/.." "$ORIGIN/../.." "${CMAKE_BINARY_DIR}")
+        set(CMAKE_INSTALL_RPATH "$ORIGIN" "$ORIGIN/.." "$ORIGIN/../..")
+    endif()
 else()
     add_library(JZFramework STATIC "")
 endif()
 
 # ---------------------------------------------------------------------------
-# 动态库的运行期落点(Windows): 没有 RPATH / LD_LIBRARY_PATH 那套 —— exe 旁边找不到
-# JZFramework.dll 会直接以 0xC0000135 起不来(连构建期工具 jz_uic 都会失败)。
+# 动态库的运行期落点: 把 JZFramework 运行时(DLL/.so/.dylib)**复制到各 exe 目录**。
+#   * Windows: 没有 RPATH 那套 —— exe 旁边找不到 JZFramework.dll 会直接以 0xC0000135
+#     起不来(连构建期工具 jz_uic 都会失败), 复制是**唯一**可行办法。
+#   * 非 Windows: 上面的 RPATH 已经能让 exe 找到库($ORIGIN 等), 但复制一份到 exe 同目录
+#     仍然有价值 —— 单个 exe 目录可自包含地拷走运行, 且有 $ORIGIN 直命中(不经 RUNPATH 兜底)。
 #
 # 本工程的 exe 只有两个落点(见根 CMakeLists 的 JZ_TEST_BIN_DIR 与 binary/CMakeLists.txt
-# 末尾的发布清单), 所以把 dll 复制到这两个目录就够, 不必逐个 exe 挂 POST_BUILD:
+# 末尾的发布清单), 所以把库复制到这两个目录就够, 不必逐个 exe 挂 POST_BUILD:
 #   · <build>/test/bin/<配置>    —— 测试 / 评测 / 开发工具
 #   · <build>/binary/bin/<配置>  —— 发布 exe
 # ⚠ add_custom_command(TARGET ...) 必须在**创建该 target 的目录**里调用, 这里正是根目录作用域。
 # ⚠ 目录此时可能还没建(exe 目标在后面的 add_subdirectory 里), 所以先 make_directory。
 # ---------------------------------------------------------------------------
-if(JZFRAMEWORK_DYNAMIC AND WIN32)
+if(JZFRAMEWORK_DYNAMIC)
     set(_jz_shared_dest_dirs
         "${CMAKE_BINARY_DIR}/test/bin/$<CONFIG>"
         "${CMAKE_BINARY_DIR}/binary/bin/$<CONFIG>")

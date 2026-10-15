@@ -29,7 +29,13 @@ using namespace std;
 // 本测试自带一份 mongoose.c(见 net/CMakeLists.txt) ⇒ 这个全局量也要自带一份定义,
 // 跟 test_mg / test_mg_event 一样(mongoose.h 里是 extern 声明, 框架 DLL 里那份是**数据符号**,
 // 使用方不写 dllimport 就链接不到)。
+//
+// ⚠ 仅 Windows 需要自带定义: 那里 JZFramework 是 DLL, 数据符号不写 dllimport 链不到。
+//   非 Windows 上 JZFramework 是**静态库**, JZNetObject.cpp 里已有一份强定义, 本文件再定义
+//   一份就是 multiple definition(链接期报错)。故这里按平台收窄。
+#ifdef _WIN32
 int JZNET_MAX_RECV = 3 * 1024 * 1024;
+#endif
 
 // 与 test_jz_tcp_cpp 一致: 1KB 负载 + 行尾 '\n' 分包
 static const int kPayloadLen = 1024;

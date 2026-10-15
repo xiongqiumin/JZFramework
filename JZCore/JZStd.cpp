@@ -937,6 +937,13 @@ bool str_is_utf8(const string& str)
     return true;   // 非 Windows: 命令行/文件名本来就是 UTF-8 字节, 不做校验
 }
 
+string str_utf8_to_console(const string& utf8)
+{
+    // 非 Windows 下没有"控制台输出代码页"这回事: 终端本身就是 UTF-8,
+    // 原样透传即可(与 str_local_to_utf8 / str_utf8_to_local 同一口径)。
+    return utf8;
+}
+
 string str_ensure_utf8(const string& str)
 {
     return str;

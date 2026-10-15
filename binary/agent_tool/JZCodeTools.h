@@ -2,6 +2,7 @@
 #define JZ_CODE_TOOLS_H_
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -487,23 +488,39 @@ public:
     void setNetworkAccessManager(JZNetworkAccessManager *net);
 
     virtual void call(const ToolCall &params) override;
+    // 取消某次调用：只关掉**它自己**在途的请求，不碰别的调用
+    virtual void cancel(const std::string &id) override;
 
 private:
-    void runNextSearch(const ToolCall &call);       // 从候选队列取下一个源并请求
-    void failOverSearch(const ToolCall &call, const std::string &reason); // 切下一个候选源
-    void handleReply(JZNetworkReply *reply, const ToolCall &call);
-    void parseSearch(const std::string &body, const ToolCall &call);
+    // ⭐ 每次调用一份上下文 —— 本工具必须支持被并行调用。
+    //   "多源回退"天生是异步多步链（一个查询可能连试几个源）。以前把状态放在成员变量里，
+    //   并且"新调用会 close 掉上一次在途的请求"：模型一轮里同时发两个 web_search 时互相踩，
+    //   旧调用的回调因"reply 已被替换"直接 return ⇒ 那个调用的结果**永远不回**，
+    //   而 agent 会一直等它那一格(m_pendingTools) ⇒ 整轮静默停住（2026-10-15 实测）。
+    //   现在每调用一份 ctx，各自持有自己的候选队列与在途 reply，互不干扰。
+    struct SearchCall
+    {
+        int ctxId = 0;                     // 本工具内的自增号（不依赖 call.id —— 它可能为空）
+        ToolCall call;                     // 原样带着：回包必须用同一个 id
+        std::string query;                 // 本轮查询词（回退链多次请求共用）
+        int num = 5;                       // 本轮结果条数上限
+        std::vector<std::string> queue;    // 待尝试的候选源 URL（{q} 尚未展开）
+        std::string currentUrl;            // 当前在请求的源（错误定位用）
+        std::string errors;                // 各候选源失败原因累积
+        JZNetworkReply *reply = nullptr;   // 本调用在途的请求（由本 ctx 独占）
+    };
+
+    void runNextSearch(const std::shared_ptr<SearchCall> &ctx);       // 从候选队列取下一个源并请求
+    void failOverSearch(const std::shared_ptr<SearchCall> &ctx, const std::string &reason); // 切下一个候选源
+    void handleReply(const std::shared_ptr<SearchCall> &ctx, JZNetworkReply *reply);
+    void parseSearch(const std::shared_ptr<SearchCall> &ctx, const std::string &body);
+    void finishSearch(const std::shared_ptr<SearchCall> &ctx, bool ok, const std::string &text);
 
     JZNetworkAccessManager *m_net = nullptr;   // 非拥有，来自外部注入
-    JZNetworkReply *m_reply = nullptr;
     std::string m_searchUrlTemplate;   // 搜索接口模板；构造函数默认内置 kBingRssSearchUrl，可 setSearchUrlTemplate 覆盖
 
-    // 多源自动回退状态
-    std::vector<std::string> m_searchQueue;    // 待尝试的候选源 URL（{q} 尚未展开）
-    std::string m_searchQuery;                 // 本轮查询词（回退链多次请求共用）
-    int m_searchNum = 5;                       // 本轮结果条数上限
-    std::string m_lastSearchUrl;               // 当前在请求的源（错误定位用）
-    std::string m_searchErrors;                // 各候选源失败原因累积
+    std::map<int, std::shared_ptr<SearchCall>> m_calls;   // 在途调用：ctxId -> ctx
+    int m_ctxIdGen = 0;                                   // ctxId 自增（并行调用靠它区分）
 };
 
 // ------------------------------------------------------------------
@@ -522,12 +539,26 @@ public:
     void setNetworkAccessManager(JZNetworkAccessManager *net);
 
     virtual void call(const ToolCall &params) override;
+    // 取消某次调用：只关掉**它自己**在途的请求，不碰别的调用
+    virtual void cancel(const std::string &id) override;
 
 private:
-    void handleReply(JZNetworkReply *reply, const ToolCall &call, int maxChars);
+    // 与 web_search 同理：每次调用一份上下文，支持同一工具被并行调用
+    // (以前共享 m_reply 且"新调用取消上一次" ⇒ 一眼看去像串行工具, 并发就会互相踩)
+    struct FetchCall
+    {
+        int ctxId = 0;
+        ToolCall call;
+        int maxChars = 20000;
+        JZNetworkReply *reply = nullptr;
+    };
+
+    void handleReply(const std::shared_ptr<FetchCall> &ctx, JZNetworkReply *reply);
+    void finishFetch(const std::shared_ptr<FetchCall> &ctx, bool ok, const std::string &text);
 
     JZNetworkAccessManager *m_net = nullptr;   // 非拥有，来自外部注入
-    JZNetworkReply *m_reply = nullptr;
+    std::map<int, std::shared_ptr<FetchCall>> m_calls;
+    int m_ctxIdGen = 0;
 };
 
 #endif // !JZ_CODE_TOOLS_H_

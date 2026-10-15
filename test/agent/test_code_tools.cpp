@@ -10,18 +10,26 @@
 //   工具名与注册名一致(改名没漏) / 通配符与"文件名或路径任一命中" / 大小写不敏感 / 递归
 //   跳过生成目录(build)并在回包里说明 / max_results 上限提示 / 无匹配时的统计
 //   search_context 的文本·正则·file_filter·非法正则报错 / 参数缺失报错
+//   bash 风格路径翻译(整张 MSYS 挂载表)
+//   web_search / web_fetch 被**并行调用**时两次结果都要回来(回归: 旧实现共享成员状态, 并发互踩)
 // 期望输出: ALL PASS
 //
-// 注: 两个工具都是**同步**回包(finish 里直接 emit), 所以不需要事件循环与轮询。
+// 注: 搜索类工具都是**同步**回包(finish 里直接 emit), 不需要事件循环; 只有最后一组
+//     web_search/web_fetch 并行用例是异步的, 那一段自己跑 JZEventLoop 等结果。
 
 #include <stdio.h>
 
 #include <fstream>
+#include <map>
 #include <string>
 
 #include "JZApplication.h"
 #include "JZCodeTools.h"
 #include "JZDir.h"
+#include "JZEventLoop.h"
+#include "JZHttpServer.h"
+#include "JZNetworkAccessManager.h"
+#include "JZTimer.h"
 #include "json/json.h"
 
 using namespace std;
@@ -70,6 +78,44 @@ struct LastResult
     string text;
 };
 
+// 本地搜索源(返回 RSS): ⚠ 故意延迟 300ms 才回 - 这样两次调用**一定**重叠在途,
+// 才踩得到"并发调用互相取消/互相覆盖状态"那个坑(不等延迟就是这个 bug 的触发条件)。
+class SlowRssHandler : public JZHttpHandler
+{
+public:
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        string q = req.queryParam("q");
+        string body = "<rss><channel><item><title>" + q + "-TITLE</title>"
+                      "<link>http://127.0.0.1/x/" + q + "</link>"
+                      "<description>desc-" + q + "</description></item></channel></rss>";
+        slowRespond(client, body, "application/rss+xml");
+    }
+
+protected:
+    static void slowRespond(JZHttpServerClient *client, const string &body, const char *ctype)
+    {
+        string head = string("HTTP/1.1 200 OK\r\nContent-Type: ") + ctype +
+                      "\r\nContent-Length: " + to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+        const string resp = head + body;
+        // 定时器挂在 client 上: 连接断了就不会再发
+        JZTimer::singleShot(300, client, [client, resp]() {
+            client->response(JZByteArray(resp.data(), (int)resp.size()));
+        });
+    }
+};
+
+// 本地网页(给 web_fetch 用)
+class SlowPageHandler : public SlowRssHandler
+{
+public:
+    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
+    {
+        string tag = req.queryParam("tag");
+        slowRespond(client, "<html><body><p>PAGE-" + tag + "</p></body></html>", "text/html");
+    }
+};
+
 class CodeToolTest
 {
 public:
@@ -110,6 +156,7 @@ public:
         testSearchEdges();
         testTextClassifyEdges();
         testSkippedCountOnlyCountsScanned();
+        testWebToolsParallel();
 
         printf("\n%s: fail=%d\n", g_fail == 0 ? "ALL PASS" : "FAILED", g_fail);
         return g_fail;
@@ -358,6 +405,145 @@ private:
         check(codeLooksLikeBashPath("/tmp/x"), "/tmp/x 判为 bash 风格(报错时据此给提示)");
         check(!codeLooksLikeBashPath("C:/tmp/x"), "C:/tmp/x 不是 bash 风格");
         check(!codeLooksLikeBashPath("src/a.ts"), "相对路径不是 bash 风格");
+    }
+
+    // ---- web_search / web_fetch: 同一工具被**并行调用** ----
+    // 回归(2026-10-15 aime25 实测三连撞): 这两个工具以前把"本轮状态"放成员变量里
+    // (web_search 还会 close 掉"上一次"在途请求, web_fetch 同样)。模型一轮里同时发两个查询时
+    // 互相踩 ⇒ 前一个调用的结果**永远不回** ⇒ agent 侧 m_pendingTools 永久非空 ⇒ llmLoop 的
+    // 门卫永久挡住 ⇒ 整轮静默停住(日志不涨、CPU≈0、无任何报错)。现在每次调用一份 ctx,
+    // 两个结果都必须回来, 且取消其中一个不能连坐另一个。
+    struct Collector
+    {
+        std::map<string, LastResult> got;
+        size_t want = 0;
+        JZEventLoop *loop = nullptr;
+
+        void onResult(const ToolCallResult &r)
+        {
+            LastResult lr;
+            lr.count++;
+            lr.ok = r.isOk;
+            lr.text = r.result;
+            got[r.id] = lr;
+            if (loop && got.size() >= want)
+                loop->quit();
+        }
+    };
+
+    void testWebToolsParallel()
+    {
+        printf("\n--- web_search / web_fetch 并行调用(同一工具) ---\n");
+
+        const int port = 18777;
+        JZHttpServer server;
+        SlowRssHandler rss;
+        SlowPageHandler page;
+        server.addRoute("/search", &rss);
+        server.addRoute("/page", &page);
+        if (!server.listen("127.0.0.1", port))
+        {
+            check(false, "本地 HTTP 服务起不来(端口被占?)");
+            return;
+        }
+
+        JZNetworkAccessManager net;
+        const string base = "http://127.0.0.1:" + std::to_string(port);
+
+        // ---------- ① 两个 web_search 同时发 ----------
+        {
+            JZWebSearchTool tool;
+            tool.setNetworkAccessManager(&net);
+            tool.setSearchUrlTemplate(base + "/search?q={q}");
+
+            JZEventLoop loop;
+            Collector col;
+            col.want = 2;
+            col.loop = &loop;
+            connect(&tool.sigResult, [&col](const ToolCallResult &r) { col.onResult(r); });
+            JZTimer guard;
+            guard.setSingleShot(true);
+            connect(&guard.sigTimeout, [&loop]() { loop.quit(); });
+            guard.start(8000);
+
+            ToolCall s1 = makeCall("{\"query\":\"alpha\"}");
+            s1.id = "s1";
+            ToolCall s2 = makeCall("{\"query\":\"beta\"}");
+            s2.id = "s2";
+            tool.call(s1);
+            tool.call(s2);        // ⚠ 关键: 第二个在第一个还没回来时发出
+            if (col.got.size() < 2)
+                loop.exec();
+
+            check(col.got.size() == 2, "并行两个 web_search: 两个结果都回来了(旧实现会丢前一个)");
+            if (col.got.count("s1"))
+                check(contains(col.got["s1"].text, "alpha-TITLE"), "s1 回的是自己那次查询的内容");
+            if (col.got.count("s2"))
+                check(contains(col.got["s2"].text, "beta-TITLE"), "s2 回的是自己那次查询的内容");
+        }
+
+        // ---------- ② 取消其中一个, 不能连坐另一个 ----------
+        {
+            JZWebSearchTool tool;
+            tool.setNetworkAccessManager(&net);
+            tool.setSearchUrlTemplate(base + "/search?q={q}");
+
+            JZEventLoop loop;
+            Collector col;
+            col.want = 1;
+            col.loop = &loop;
+            connect(&tool.sigResult, [&col](const ToolCallResult &r) { col.onResult(r); });
+            JZTimer guard;
+            guard.setSingleShot(true);
+            connect(&guard.sigTimeout, [&loop]() { loop.quit(); });
+            guard.start(8000);
+
+            ToolCall s3 = makeCall("{\"query\":\"gone\"}");
+            s3.id = "s3";
+            ToolCall s4 = makeCall("{\"query\":\"kept\"}");
+            s4.id = "s4";
+            tool.call(s3);
+            tool.call(s4);
+            tool.cancel("s3");       // 只停 s3
+            if (col.got.size() < 1)
+                loop.exec();
+
+            check(col.got.count("s4") && !col.got.count("s3"),
+                  "取消 s3 不连坐: s4 照常回结果, s3 不再回");
+        }
+
+        // ---------- ③ 两个 web_fetch 同时抓 ----------
+        {
+            JZWebFetchTool tool;
+            tool.setNetworkAccessManager(&net);
+
+            JZEventLoop loop;
+            Collector col;
+            col.want = 2;
+            col.loop = &loop;
+            connect(&tool.sigResult, [&col](const ToolCallResult &r) { col.onResult(r); });
+            JZTimer guard;
+            guard.setSingleShot(true);
+            connect(&guard.sigTimeout, [&loop]() { loop.quit(); });
+            guard.start(8000);
+
+            ToolCall f1 = makeCall("{\"url\":\"" + base + "/page?tag=one\"}");
+            f1.id = "f1";
+            ToolCall f2 = makeCall("{\"url\":\"" + base + "/page?tag=two\"}");
+            f2.id = "f2";
+            tool.call(f1);
+            tool.call(f2);
+            if (col.got.size() < 2)
+                loop.exec();
+
+            check(col.got.size() == 2, "并行两个 web_fetch: 两个结果都回来了(旧实现会丢前一个)");
+            if (col.got.count("f1"))
+                check(contains(col.got["f1"].text, "PAGE-one"), "f1 抓的是自己那条链接");
+            if (col.got.count("f2"))
+                check(contains(col.got["f2"].text, "PAGE-two"), "f2 抓的是自己那条链接");
+        }
+
+        server.close();
     }
 
     string m_ws;

@@ -2339,40 +2339,62 @@ void JZWebSearchTool::call(const ToolCall &params)
         num = 20;
 
     // 组装候选源：配置了自定义模板就只用自定义源；否则用内置默认源（Bing RSS 优先）
-    m_searchQuery = query;
-    m_searchNum = num;
-    m_searchErrors.clear();
-    m_searchQueue.clear();
+    // ⚠ 这些状态放在**本次调用的 ctx** 里，不放成员变量 —— 同一工具会被并行调用(模型一轮里
+    //   可能同时发多个查询)，共享成员会互相覆盖(见头文件 SearchCall 的说明)。
+    auto ctx = std::make_shared<SearchCall>();
+    ctx->ctxId = ++m_ctxIdGen;
+    ctx->call = params;
+    ctx->query = query;
+    ctx->num = num;
     // 模板默认即内置 Bing RSS（构造时初始化），可被 setSearchUrlTemplate 覆盖
-    m_searchQueue.push_back(m_searchUrlTemplate);
+    ctx->queue.push_back(m_searchUrlTemplate);
+    m_calls[ctx->ctxId] = ctx;
 
-    runNextSearch(params);
+    runNextSearch(ctx);
 }
 
-void JZWebSearchTool::runNextSearch(const ToolCall &call)
+// 取消某次调用：只关掉它自己的在途请求（别的调用/别的源不受影响）
+void JZWebSearchTool::cancel(const std::string &id)
 {
-    if (m_searchQueue.empty())
+    for (auto it = m_calls.begin(); it != m_calls.end(); ++it)
     {
-        string detail = m_searchErrors.empty() ? string() : ("\n各源失败详情:\n" + m_searchErrors);
-        finish(call, false, "网络搜索失败: 候选搜索源均不可用。"
+        if (it->second->call.id != id)
+            continue;
+        auto ctx = it->second;
+        m_calls.erase(it);
+        if (ctx->reply)
+        {
+            auto reply = ctx->reply;
+            ctx->reply = nullptr;
+            reply->close();
+        }
+        return;
+    }
+    JZCodeTool::cancel(id);
+}
+
+void JZWebSearchTool::finishSearch(const std::shared_ptr<SearchCall> &ctx, bool ok, const std::string &text)
+{
+    finish(ctx->call, ok, text);
+    m_calls.erase(ctx->ctxId);   // 本次调用结束, 摘掉上下文
+}
+
+void JZWebSearchTool::runNextSearch(const std::shared_ptr<SearchCall> &ctx)
+{
+    if (ctx->queue.empty())
+    {
+        string detail = ctx->errors.empty() ? string() : ("\n各源失败详情:\n" + ctx->errors);
+        finishSearch(ctx, false, "网络搜索失败: 候选搜索源均不可用。"
                "若当前网络无法直连这些源，请在设置里配置可用的 webSearchUrl 模板（返回 JSON 或 RSS）。" + detail);
         return;
     }
 
-    string url = m_searchQueue.front();
-    m_searchQueue.erase(m_searchQueue.begin());
-    m_lastSearchUrl = url;
-
-    // 取消上一次仍在进行中的请求（其回调稍后到达时，会因 m_reply 已被替换而被忽略）
-    if (m_reply)
-    {
-        auto old = m_reply;
-        m_reply = nullptr;
-        old->close();
-    }
+    string url = ctx->queue.front();
+    ctx->queue.erase(ctx->queue.begin());
+    ctx->currentUrl = url;
 
     // 展开 {q} 占位符
-    string enc = urlEncodeQuery(m_searchQuery);
+    string enc = urlEncodeQuery(ctx->query);
     for (;;)
     {
         size_t pos = url.find("{q}");
@@ -2386,15 +2408,17 @@ void JZWebSearchTool::runNextSearch(const ToolCall &call)
 
     JZNetworkRequest req(url);
     req.setHeader(JZNetworkRequest::UserAgentHeader, kSearchUserAgent);
-    m_reply = m_net->get(req);
-    if (!m_reply)
+    JZNetworkReply *reply = m_net->get(req);
+    if (!reply)
     {
-        failOverSearch(call, m_lastSearchUrl + ": 创建网络请求失败");
+        failOverSearch(ctx, ctx->currentUrl + ": 创建网络请求失败");
         return;
     }
+    // 本调用独占这条请求：并行调用各有各的 ctx->reply，谁也不取消谁（旧实现是共享 m_reply +
+    // "新调用 close 掉上一次"，并发时会把对方的结果吃掉）
+    ctx->reply = reply;
 
     // 单源 15s 超时：超时按失败处理，自动切到下一个候选源
-    JZNetworkReply *reply = m_reply;
     // 重定向策略必须显式放宽：必应对 www.bing.com 的搜索请求会 **302 到 cn.bing.com(跨主机)**，
     // 默认策略是 SameOrigin(JZNetworkReply 构造)，**不会跟随** ⇒ 拿到的只是 302 的 HTML 占位页，
     // 而 parseSearch 只认 JSON / RSS ⇒ 一律判"返回内容无法识别" ⇒ 队列里只剩这一个源就报
@@ -2403,44 +2427,44 @@ void JZWebSearchTool::runNextSearch(const ToolCall &call)
     reply->setRedirectPolicy(JZNetworkReply::AllAllowed);
     reply->setMaxRedirects(5);
     reply->setTimeOut(15000);
-    connect(&reply->sigFinished, this, [this, reply, call]()
+    connect(&reply->sigFinished, this, [this, ctx, reply]()
     {
-        if (m_reply != reply)   // 已被新一轮 call 或取消请求取代，忽略旧回调
+        if (ctx->reply != reply)   // 本次调用已被取消 / 已换到下一个源：忽略这条旧回调
             return;
-        m_reply = nullptr;
-        handleReply(reply, call);
+        ctx->reply = nullptr;
+        handleReply(ctx, reply);
     });
 }
 
-void JZWebSearchTool::failOverSearch(const ToolCall &call, const string &reason)
+void JZWebSearchTool::failOverSearch(const std::shared_ptr<SearchCall> &ctx, const string &reason)
 {
-    if (!m_searchErrors.empty())
-        m_searchErrors += "\n";
-    m_searchErrors += reason;
-    runNextSearch(call);
+    if (!ctx->errors.empty())
+        ctx->errors += "\n";
+    ctx->errors += reason;
+    runNextSearch(ctx);
 }
 
-void JZWebSearchTool::handleReply(JZNetworkReply *reply, const ToolCall &call)
+void JZWebSearchTool::handleReply(const std::shared_ptr<SearchCall> &ctx, JZNetworkReply *reply)
 {
     JZNetworkReply::NetworkError err = reply->error();
     if (err != JZNetworkReply::NoError && err != JZNetworkReply::None)
     {
-        failOverSearch(call, m_lastSearchUrl + ": " + reply->errorString());
+        failOverSearch(ctx, ctx->currentUrl + ": " + reply->errorString());
         return;
     }
     int code = reply->httpStatusCode();
     if (code < 200 || code >= 300)
     {
         string extra = (code == 0) ? "（无法连接，请检查网络/代理设置）" : string();
-        failOverSearch(call, m_lastSearchUrl + ": HTTP " + to_string(code) + extra);
+        failOverSearch(ctx, ctx->currentUrl + ": HTTP " + to_string(code) + extra);
         return;
     }
 
     string body = str_fromUtf8(reply->readAll());
-    parseSearch(body, call);
+    parseSearch(ctx, body);
 }
 
-void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call)
+void JZWebSearchTool::parseSearch(const std::shared_ptr<SearchCall> &ctx, const string &body)
 {
     vector<string> results;
 
@@ -2465,7 +2489,7 @@ void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call)
             if (arr)
             {
                 collectJsonResults(*arr, results);
-                finish(call, true, formatSearchResults(results, m_searchNum));
+                finishSearch(ctx, true, formatSearchResults(results, ctx->num));
                 return;
             }
         }
@@ -2475,13 +2499,13 @@ void JZWebSearchTool::parseSearch(const string &body, const ToolCall &call)
     if (looksRssFeed(body))
     {
         collectRssResults(body, results);
-        finish(call, true, formatSearchResults(results, m_searchNum));
+        finishSearch(ctx, true, formatSearchResults(results, ctx->num));
         return;
     }
 
     // ---------- 无法识别（可能是登录页 / 验证码页 / 错误页）：回退下一个候选源 ----------
     string snippet = body.size() > 300 ? body.substr(0, 300) : body;
-    failOverSearch(call, m_lastSearchUrl + ": 返回内容无法识别（非 JSON/RSS，前 300 字符: " + snippet + "）");
+    failOverSearch(ctx, ctx->currentUrl + ": 返回内容无法识别（非 JSON/RSS，前 300 字符: " + snippet + "）");
 }
 
 // ==================== JZWebFetchTool ====================
@@ -2710,12 +2734,14 @@ void JZWebFetchTool::call(const ToolCall &params)
     if (maxChars < 500) maxChars = 500;
     if (maxChars > 200000) maxChars = 200000;
 
-    // 取消上一次仍在进行中的请求
-    if (m_reply)
-    {
-        m_reply->close();
-        m_reply = nullptr;
-    }
+    // 每次调用一份上下文（并行安全）。⚠ 以前这里是"取消上一次仍在进行中的请求"：
+    //   模型一轮里并发抓多个链接时，后一个会把前一个的请求 close 掉 ⇒ 前一个的结果丢了
+    //   ⇒ agent 一直等它 ⇒ 整轮停住。现在各调用各有各的 ctx/reply, 谁也不取消谁。
+    auto ctx = std::make_shared<FetchCall>();
+    ctx->ctxId = ++m_ctxIdGen;
+    ctx->call = params;
+    ctx->maxChars = maxChars;
+    m_calls[ctx->ctxId] = ctx;
 
     // 共享管理器必须由调用方注入（setNetworkAccessManager），未注入属于非法使用
     JZ_ASSERT(m_net);
@@ -2724,38 +2750,65 @@ void JZWebFetchTool::call(const ToolCall &params)
     req.setHeader(JZNetworkRequest::UserAgentHeader, "JZCodeAgent/1.0");
     req.setHeader(JZNetworkRequest::AcceptHeader, "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.8");
 
-    m_reply = m_net->get(req);
-    if (!m_reply)
+    JZNetworkReply *reply = m_net->get(req);
+    if (!reply)
     {
-        finish(params, false, "创建网络请求失败");
+        finishFetch(ctx, false, "创建网络请求失败");
         return;
     }
-    m_reply->setFollowRedirects(true);
-    m_reply->setRedirectPolicy(JZNetworkReply::AllAllowed);
-    m_reply->setMaxRedirects(5);
-    m_reply->setTimeOut(30000);
+    ctx->reply = reply;
+    reply->setFollowRedirects(true);
+    reply->setRedirectPolicy(JZNetworkReply::AllAllowed);
+    reply->setMaxRedirects(5);
+    reply->setTimeOut(30000);
 
-    JZNetworkReply *reply = m_reply;
-    connect(&reply->sigFinished, this, [this, reply, params, maxChars]()
+    connect(&reply->sigFinished, this, [this, ctx, reply]()
     {
-        if (m_reply == reply)
-            m_reply = nullptr;
-        handleReply(reply, params, maxChars);
+        if (ctx->reply != reply)   // 本次调用已被取消：忽略这条旧回调
+            return;
+        ctx->reply = nullptr;
+        handleReply(ctx, reply);
     });
 }
 
-void JZWebFetchTool::handleReply(JZNetworkReply *reply, const ToolCall &call, int maxChars)
+// 取消某次调用：只关掉它自己的在途请求
+void JZWebFetchTool::cancel(const std::string &id)
+{
+    for (auto it = m_calls.begin(); it != m_calls.end(); ++it)
+    {
+        if (it->second->call.id != id)
+            continue;
+        auto ctx = it->second;
+        m_calls.erase(it);
+        if (ctx->reply)
+        {
+            auto reply = ctx->reply;
+            ctx->reply = nullptr;
+            reply->close();
+        }
+        return;
+    }
+    JZCodeTool::cancel(id);
+}
+
+void JZWebFetchTool::finishFetch(const std::shared_ptr<FetchCall> &ctx, bool ok, const std::string &text)
+{
+    finish(ctx->call, ok, text);
+    m_calls.erase(ctx->ctxId);
+}
+
+void JZWebFetchTool::handleReply(const std::shared_ptr<FetchCall> &ctx, JZNetworkReply *reply)
 {
     JZNetworkReply::NetworkError err = reply->error();
     if (err != JZNetworkReply::NoError && err != JZNetworkReply::None)
     {
-        finish(call, false, "网页抓取失败: " + reply->errorString());
+        finishFetch(ctx, false, "网页抓取失败: " + reply->errorString());
         return;
     }
     int code = reply->httpStatusCode();
     if (code < 200 || code >= 300)
     {
-        finish(call, false, "网页返回 HTTP " + to_string(code) +
+        finishFetch(ctx, false, "网页返回 HTTP " + to_string(code) +
                (code == 0 ? "（无法连接，请检查网络/代理设置）" : string()));
         return;
     }
@@ -2775,7 +2828,7 @@ void JZWebFetchTool::handleReply(JZNetworkReply *reply, const ToolCall &call, in
                       mime.find("font/") == 0;
         if (binary)
         {
-            finish(call, false, "不支持抓取该类型的资源: " + mime);
+            finishFetch(ctx, false, "不支持抓取该类型的资源: " + mime);
             return;
         }
     }
@@ -2806,17 +2859,17 @@ void JZWebFetchTool::handleReply(JZNetworkReply *reply, const ToolCall &call, in
     if (isHtml)
         text = htmlToText(text);
 
-    if ((int)text.size() > maxChars)
-        text = text.substr(0, (size_t)maxChars);
+    if ((int)text.size() > ctx->maxChars)
+        text = text.substr(0, (size_t)ctx->maxChars);
 
     if (text.empty())
     {
-        finish(call, true, "页面未解析出可读文本内容（可能是纯脚本页面或需要登录）。");
+        finishFetch(ctx, true, "页面未解析出可读文本内容（可能是纯脚本页面或需要登录）。");
         return;
     }
 
-    string header = "网页正文（来自 " + call.params.get("url", "").asString() +
+    string header = "网页正文（来自 " + ctx->call.params.get("url", "").asString() +
                     "，约 " + to_string(text.size()) + " 字符）:\n";
-    finish(call, true, header + text);
+    finishFetch(ctx, true, header + text);
 }
 

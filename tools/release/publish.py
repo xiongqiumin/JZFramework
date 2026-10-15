@@ -83,22 +83,33 @@ def find_cmake():
     return shutil.which("cmake")
 
 
-def find_tsc(build_dir):
-    """优先用 build 下捆绑的 ts_compiler, 否则回退到 PATH 的 tsc。"""
-    cands = glob.glob(os.path.join(build_dir, "**",
-                                   "ts_compiler", "tsc", "tsc.exe"),
-                      recursive=True)
-    if cands:
-        return cands[0]
-    return shutil.which("tsc")
+def find_tsc(build_dir, config):
+    """随包 tsc(tsgo) 的**唯一正规位置**: <build>/binary/bin/<配置>/ts_compiler/tsc/tsc.exe。
+
+    ⚠ 只认这个位置, **不**递归扫全树、**不**回退 PATH 上的 tsc —— 路径不对就叫调用方报错:
+      · 递归 `**/ts_compiler/tsc/tsc.exe` 会命中**用例工作区里的拷贝**(build/_codex_bench/**),
+        取到哪一份纯看 glob 顺序, 静默用错编译器;
+      · PATH 上的 tsc 版本不一定是随包的 TS 7.0.2(tsgo), 用它编出的 dist 与部署侧给
+        ambient 打的补丁(package.py:patch_ambient_shims, 专治 tsgo 的 declare module 相对再导出)
+        语义可能不一致。
+    返回空串 = 没找到(调用方报错, 见 run_tsc)。
+    """
+    for cfg in (config, "Debug", "Release"):
+        c = os.path.join(build_dir, "binary", "bin", cfg,
+                         "ts_compiler", "tsc", "tsc.exe")
+        if os.path.isfile(c):
+            return c
+    return ""
 
 
-def run_tsc(build_dir):
+def run_tsc(build_dir, config):
     """tsc -b js_wrapper, 生成各包 dist(供 copy_jz_js 打包成部署的 js_wrapper 树)。"""
-    tsc = find_tsc(build_dir)
+    tsc = find_tsc(build_dir, config)
     if not tsc:
-        print("[publish] ERROR: tsc not found (no bundled ts_compiler under "
-              "build/, and tsc not on PATH)", file=sys.stderr)
+        print("[publish] ERROR: 随包 tsc 不在期望位置(路径不对就报错, 不再全树乱找/PATH 回退)。\n"
+              "  期望: {}/binary/bin/{}/ts_compiler/tsc/tsc.exe\n"
+              "  没有就把 ts_compiler 铺到发布目录(见 bundle_ts_compiler 的候选), "
+              "或显式指定编译器。".format(build_dir, config), file=sys.stderr)
         return 1
     wrap = os.path.join(REPO_ROOT, "JZJSEngine", "js_wrapper")
     cmd = [tsc, "-b", wrap]
@@ -127,27 +138,36 @@ def run_build(args):
     return rc
 
 
-def bundle_ts_compiler(src):
-    """code_agent 运行时依赖 <exe>/ts_compiler/tsc/tsc.exe(默认来自 E:/libs/ts_compiler)。
+def bundle_ts_compiler(src, config):
+    """code_agent 运行时依赖 <exe>/ts_compiler/tsc/tsc.exe(来自 E:/libs/ts_compiler)。
 
-    CMake 不负责拷贝它, 所以打包前若 bin/<config> 下缺 ts_compiler, 就从候选位置
-    拷一份进去(只拷一次, 已存在则跳过)。找不到仅告警, 不阻断打包。
+    CMake 不负责拷贝它, 所以打包前若 <src> 下缺 ts_compiler, 就从候选位置拷一份进去
+    (已存在则跳过)。⚠ **找不到就返回 False 让调用方报错中止打包** —— 没有编译器的
+    code_agent 包是废的(TS 全跑不了), 以前只打一行 WARN, 结果能打出"看起来正常、
+    装上去不能用"的 zip。
     """
     dst = os.path.join(src, "ts_compiler")
     if os.path.isdir(dst):
         return True
     candidates = [
         "E:/libs/ts_compiler",
-        os.path.join(REPO_ROOT, "build", "binary", "bin", "Debug", "ts_compiler"),
+        # 过渡: 老布局(exe 输出收敛到 binary/bin/<配置> 之前 ts_compiler 落在
+        # binary/code_agent/bin/<配置>/)。命中它说明发布目录还没铺编译器, 明确告警。
+        os.path.join(REPO_ROOT, "build", "binary", "code_agent", "bin", config,
+                     "ts_compiler"),
+        os.path.join(REPO_ROOT, "build", "binary", "bin", config, "ts_compiler"),
     ]
     for c in candidates:
         if os.path.isdir(c):
             shutil.copytree(c, dst)
             print("[publish] bundled ts_compiler <- {}".format(c))
+            if "code_agent" in c:
+                print("[publish] WARN: 用的是**老布局**目录 {}；建议把 ts_compiler 铺到"
+                      " {}".format(c, os.path.join(src, "ts_compiler")), file=sys.stderr)
             return True
-    print("[publish] WARN: ts_compiler not found (tried {}); code_agent TS "
-          "features need <exe>/ts_compiler/tsc/tsc.exe".format(candidates),
-          file=sys.stderr)
+    print("[publish] ERROR: 找不到 ts_compiler(试过 {}), 拒绝打出没有编译器的包。\n"
+          "  期望: {}/ts_compiler/tsc/tsc.exe (源默认 E:/libs/ts_compiler)".format(
+              candidates, src), file=sys.stderr)
     return False
 
 
@@ -299,7 +319,7 @@ def main():
 
     # 构建步骤(先于打包): 可选先编 JS dist, 再 cmake --build 出 code_agent。
     if args.build_js:
-        if run_tsc(args.build_dir) != 0:
+        if run_tsc(args.build_dir, args.config) != 0:
             print("[publish] ERROR: tsc build failed", file=sys.stderr)
             return 1
     if args.build:
@@ -336,7 +356,9 @@ def main():
         return 2
 
     # code_agent 运行时需要同目录下的 ts_compiler; 打包前补齐(若 CMake 没拷)。
-    bundle_ts_compiler(src)
+    # ⚠ 缺了就是**打包失败**(见 bundle_ts_compiler): 宁可不出包, 也不出"装了不能用"的包。
+    if not bundle_ts_compiler(src, args.config):
+        return 2
 
     os.makedirs(out_dir, exist_ok=True)
     print("[publish] packaging: {}  (top folder: {})".format(

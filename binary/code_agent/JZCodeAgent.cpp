@@ -1614,7 +1614,12 @@ std::string JZCodeAgent::buildSystemPrompt() const
             for (const auto &kv : progs)
                 text << "  " << kv.first << "    " << kv.second << "\n";
             text << "  · 编译: 终端里 `tsc -p tsconfig.json`(产物写到 tsconfig 的 outDir, 缺省 build/)\n";
-            text << "  · 运行: 终端里 `cd build && code_runtime`(在产物目录跑, 缺省入口 main.js; --debug 开调试)\n";
+            text << "  · 运行: 终端里 `cd build && code_runtime`(在产物目录跑, 缺省入口 main.js)\n";
+            // ⚠ 这里**不要**再提 `--debug`: 它开的是**常驻调试服务器**(默认 9222, 基于 JZMcpServer 的
+            //   HTTP/MCP 监听), 不是"运行程序的开关"。实测(2026-10-14, algo_max_subarray): 提示里写了
+            //   "--debug 开调试", 模型就照着一遍遍前台跑 `code_runtime --debug` —— 命令不自己退出、
+            //   撞 timeout 被杀, 换个写法又吃 "init: 找不到主入口", 同一个命令重试 33 次(另一轮 69 轮)
+            //   ⇒ 烧完 100 轮判失败。要调试由上层自己 background 起, 不需要教模型。
             text << "  ⚠ 编译/运行**也由宿主把关**(评测侧会自己编译并跑一遍)，但你自己能跑就跑一次 —— "
                     "工具链已由宿主提供: **不要**去找/装编译器或运行时(which/find tsc、npm i typescript 都是白费), "
                     "编译失败时先看报错指向的代码/声明问题。\n";

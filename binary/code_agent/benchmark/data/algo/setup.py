@@ -6,7 +6,7 @@ algo 评测集的生成器（"加载框架"）：⚠ 本目录原叫 algorithms,
 
 - cases.txt：一行一个算法用例，格式 `id|标题|难度`（仅 id 也行）。
 - 本脚本读取 cases.txt，为每个启用的题目生成一个 benchmark 可直接加载的用例 JSON
-  （data/algo/gen_<id>.json），其 setup 指向同目录 algo_setup.py、verify 指向 algo_verify.py。
+  （data/algo/algo_<id>.json），其 setup 指向同目录 algo_setup.py、verify 指向 algo_verify.py。
 - algo_setup.py / algo_verify.py 是同目录提交的"测试框架"：algo_setup 把测试输入（testdata.json）
   写进工程并注入评测脚手架；algo_verify 启动模型产物并用参考实现重算正确输出、比对 agent 写出的 result.json。
 
@@ -15,7 +15,7 @@ algo 评测集的生成器（"加载框架"）：⚠ 本目录原叫 algorithms,
 - 模型只需在 src/solution.ts 实现 `export function solve(input: any): any`（单个输入 -> 单个输出）；
 - 模型不读写任何文件、不处理输入，"单纯测算法能力"。
 
-运行：在 data/algo/ 下 `python setup.py`（生成后生成的用例会自动进 cases.jsonl 里那些 `algo/gen_*.json` 条目）。
+运行：在 data/algo/ 下 `python setup.py`（生成 `algo_<id>.json`；cases.jsonl 里那 8 条 `algo/algo_*.json` 就引用它们）。
 """
 import json
 import os
@@ -90,13 +90,19 @@ PROBLEMS = {
 
 IO_CONTRACT = (
     "你要在工程里实现一道算法题。框架约定（务必遵守）：\n"
-    "- 工程已提供 src/main.ts（评测框架，**禁止修改**）：它负责读取测试数据、调用你的函数、写出结果。\n"
+    "- 工程骨架（不要改目录结构）：src/main.ts = 评测框架（**禁止修改**）；src/solution.ts = 你要实现的文件；"
+    "tsconfig.json 在**工程根**。\n"
     "- 你只需在 src/solution.ts 中实现：\n"
     "    export function solve(input: any): any\n"
     "  框架会读取测试数据里的 inputs（每个用例一个输入），对每一项调用 solve(input)，把返回值按顺序收集并写入 "
-    "./result.json 的 outputs 数组（结构严格为 {\"outputs\":[...]}）。\n"
-    "- 你只需实现“单个输入 -> 单个输出”的映射，不需要读取或写出任何文件，也不要改动 main.ts。\n"
-    "- 框架会按参考实现重算每个用例的正确输出，并与你的 ./result.json 逐项精确比对；全部一致才通过。\n\n"
+    "result.json 的 outputs 数组（结构严格为 {\"outputs\":[...]}）。\n"
+    "- 你只需实现“单个输入 -> 单个输出”的映射：**不要去找/读测试数据，也不要自己读写任何文件**"
+    "（testdata.json 由框架铺好并读取；预期答案由框架用参考实现重算）。\n"
+    "- ⚠ result.json 由框架写进**运行目录**：官方跑法是 `cd build && code_runtime`，所以它在 `build/result.json`"
+    " —— **不在工程根**（在根 `cat result.json` 找不到是正常的，不要为此反复翻目录）。\n"
+    "- 自检一次就够：`tsc -p tsconfig.json`（产物到 build/）→ `cd build && code_runtime`；看到它跑完即可，"
+    "不要一遍遍重跑或换着法子找输出文件。\n"
+    "- 框架会按参考实现重算每个用例的正确输出，并与 result.json 逐项精确比对；全部一致才通过。\n\n"
     "具体题目（你的 solve 应实现）：\n"
 )
 
@@ -143,9 +149,9 @@ def main():
         return 1
     pids = parse_cases_txt(cases_txt)
 
-    # 清掉旧的 gen_*.json
+    # 清掉旧的用例 JSON（`algo_*.json`；`gen_*.json` 是改名前的历史命名, 一并清掉免得同一道题残留两份）
     for fn in os.listdir(HERE):
-        if fn.startswith("gen_") and fn.endswith(".json"):
+        if (fn.startswith("algo_") or fn.startswith("gen_")) and fn.endswith(".json"):
             try:
                 os.remove(os.path.join(HERE, fn))
             except Exception:
@@ -164,7 +170,7 @@ def main():
         with open(os.path.join(inputs_dir, pid + ".json"), "w", encoding="utf-8") as f:
             json.dump({"problem": pid, "inputs": inputs}, f, ensure_ascii=False)
         case = build_case_json(pid, meta, inputs)
-        out = os.path.join(HERE, "gen_%s.json" % pid)
+        out = os.path.join(HERE, "algo_%s.json" % pid)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(case, f, ensure_ascii=False, indent=2)
         count += 1

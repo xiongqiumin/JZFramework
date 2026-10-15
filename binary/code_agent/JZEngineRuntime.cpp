@@ -438,7 +438,9 @@ bool JZEngineRuntime::init(const string& projectDir, const string& entry)
     {
         m_lastError = "init: 找不到主入口: " + abs_entry +
                       (entry == "main.js"
-                           ? "（工程尚未打包/发布？运行根应是 main.js 所在的产物目录）"
+                           ? "（缺省入口是**运行根**下的 main.js —— 要在产物目录里跑: "
+                             "`cd build && code_runtime`; 还没编译就先跑 `tsc -p tsconfig.json`; "
+                             "或显式 `--entry <路径>`)"
                            : "（--entry 给的这份 js 不存在）");
         return false;
     }

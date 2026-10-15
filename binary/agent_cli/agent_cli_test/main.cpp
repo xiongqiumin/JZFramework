@@ -1601,10 +1601,23 @@ int main(int argc, char *argv[])
     // agent 侧只认配置, 不做探测。
     std::string tscPath = detectProgram("ts_compiler/tsc/tsc");
     std::string runtimePath = detectProgram("code_runtime");
-    if (!tscPath.empty())
-        cfg.programPaths["tsc"] = tscPath;
+    // ⚠ tsc 找不到就**报错退出**(2026-10-14): 以前是"探不到就不填映射", 结果是模型在终端里敲
+    //   `tsc` 变成 command not found(实测在一个用例里连试 18+ 次, 最后撞轮次上限), 用例白跑。
+    //   tsc 路径不对要在**开跑之前**炸掉。
+    //   (随包 tsc 的期望位置: <build>/binary/bin/<配置>/ts_compiler/tsc/tsc.exe)
+    if (tscPath.empty())
+    {
+        jzError().nospace()
+            << "找不到随包 tsc（找过 exe 同目录与 <build>/binary/bin/<配置>/ 里的 "
+               "ts_compiler/tsc/tsc.exe）。tsc 路径不对就报错: 请先构建/铺好 ts_compiler。";
+        return 2;
+    }
+    cfg.programPaths["tsc"] = tscPath;
     if (!runtimePath.empty())
         cfg.programPaths["code_runtime"] = runtimePath;
+    else
+        jzWarning().nospace() << "找不到 code_runtime（<build>/binary/bin/<配置>/）："
+                                 "模型跑程序与 ${runtime} 型验证都会失效。";
 
     // code_runtime 路径: 仅用于展开 verify 命令里的 ${runtime}(server 型用例); 探测不到就留空。
     std::string codeRuntime = runtimePath;

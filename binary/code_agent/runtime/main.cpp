@@ -171,12 +171,16 @@ int main(int argc, char *argv[])
         debugger->setEngine(nullptr); // 预留：控制 JS 用，暂未接入引擎
         if (debugger->start(debugPort))
         {
-            printf("[code_runtime] debug HTTP listening: http://127.0.0.1:%d/mcp\n", debugPort);
+            // ⚠ 这句要说清"它是什么": 调试模式启的是**常驻** HTTP/MCP 服务(不是"跑程序"的开关) ——
+            //   实测有人(模型)看到 --debug 就在前台跑它, 命令不退出 ⇒ 撞 timeout。
+            printf("[code_runtime] debug HTTP listening: http://127.0.0.1:%d/mcp"
+                   "  (常驻调试服务器: 与\"跑程序\"无关, 前台会一直运行)\n", debugPort);
             fflush(stdout);
         }
         else
         {
-            printf("[code_runtime] failed to start debug HTTP server\n");
+            printf("[code_runtime] failed to start debug HTTP server"
+                   " (端口 %d 可能已被占用; 用 --debug-port 换一个)\n", debugPort);
             fflush(stdout);
             delete debugger;
             debugger = nullptr;

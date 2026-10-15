@@ -233,7 +233,8 @@ def load_cases(data_dir: str) -> tuple:
     """读 cases.jsonl(=index.jsonl, 每行 {"file": "<相对用例 json>"}); 没有索引就把 *.json 全收。
 
     返回 (用例表, 索引里指向不存在文件的条目) —— 后者要报出来: 两边 harness 都会静默跳过它们
-    (仓库里现成的一例: 索引写 `algorithms/gen_*.json` 而目录已改名 `algo/`), 不报出来对比就失真。
+    (典型: 索引里的目录名/文件前缀跟磁盘上的用例文件对不上 —— 2026-10-15 已把算法用例统一成
+    `algo/algo_*.json`), 不报出来对比就失真。
     """
     cases = []
     skipped = []
@@ -834,8 +835,8 @@ def main(argv=None) -> int:
     if skipped:
         log("⚠ 索引里有 %d 条用例指向不存在的文件(两个 harness 都会跳过, 对比时两边一致): %s"
             % (len(skipped), ", ".join(skipped[:6]) + (" ..." if len(skipped) > 6 else "")))
-        log("  (仓库现状: cases.jsonl 写 `algorithms/gen_*.json`, 而目录已改名 `algo/` —— 要跑这些用例"
-            "得修数据索引与用例里的 `${data}/algorithms/...` 路径)")
+        log("  (典型原因: 索引里写的目录名/前缀与磁盘上的用例文件对不上 —— 要跑这些用例得先修"
+            " cases.jsonl 与用例里的 `${data}/...` 路径)")
     if not cases:
         log("[ERROR] 没加载到用例: %s" % data_dir)
         return 2

@@ -28,7 +28,9 @@
   一棵, 整棵删才干净)。删前做路径守卫: 只允许删"名字 = js_wrapper"的目录本身, 绝不碰它的
   父目录(<out>)与 <out> 下的其它任何东西。
 
-依赖: dist 由 `tsc -b js_wrapper` 生成(非 CMake target)。某包 dist 缺失时跳过并告警。
+依赖: dist 由 `tsc -b js_wrapper` 生成(非 CMake target)。**某包有 index.ts 却没 dist 时报错退出**
+(以前只告警 ⇒ "忘了跑 tsc / tsc 路径不对"会被静默放过去, 部署出的 js_wrapper 缺内容);
+只有空 types/ 的残留目录同样报错(见 find_packages)。
 """
 import argparse
 import os
@@ -71,24 +73,40 @@ def find_packages(wrap):
     另要求**有源码(index.ts)或有类型(types/)**: 只有 dist/ 的目录是"重命名/拆分后
     残留的陈旧产物"(典型: 历史上的 core/ 包被拆成 fs/path/process 之后只剩 dist/),
     它不是包, 不该打进部署(--js-wrapper 下 dist/ 已 gitignore, 这类目录本就不可复现)。
+
+    返回 (pkgs, errors): **errors 非空 = 调用方必须报错退出**。这类目录一旦放过去, 部署出来的
+    js_wrapper 会"看着有这个包、实际没有内容", 事后极难查(实测: 一个只有**空 types/** 的残留
+    `bytes/` 被打包铺进工程, 模型按名字找到它、读不到任何声明, 白烧 100 轮判定失败):
+      · 有 index.ts 却没 dist/ ⇒ 忘了跑 `tsc -b js_wrapper`(或 tsc 路径不对);
+      · 既无 index.ts、也无 dist/, 且 types/ 是**空的** ⇒ 改名/删除后残留的空壳目录。
     """
     pkgs = []
+    errors = []
     for name in sorted(os.listdir(wrap)):
         if name == SHARED_TYPES_DIR or name.startswith("."):
             continue
         d = os.path.join(wrap, name)
         if not os.path.isdir(d):
             continue
-        has_types = os.path.isdir(os.path.join(d, SHARED_TYPES_DIR))
+        types_dir = os.path.join(d, SHARED_TYPES_DIR)
+        has_types = os.path.isdir(types_dir)
         has_src = os.path.isfile(os.path.join(d, "index.ts"))
         has_dist = os.path.isdir(os.path.join(d, "dist"))
+
+        if has_types and not has_src and not has_dist and not os.listdir(types_dir):
+            errors.append(f"{name}/: 只有空的 types/ (无 index.ts / 无 dist/) -> 残留目录, 请删除")
+            continue
         if not (has_types or has_src):
             if has_dist:
                 print(f"[package.py] SKIP stale dist-only dir (no index.ts/types/): {name}")
             continue
+        if has_src and not has_dist:
+            errors.append(f"{name}/: 有 index.ts 却没有 dist/ -> 先跑 `tsc -b js_wrapper` "
+                          f"(检查 tsc 路径: <发布目录>/ts_compiler/tsc/tsc.exe)")
+            continue
         if has_types or has_dist:
             pkgs.append(name)
-    return pkgs
+    return pkgs, errors
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +223,18 @@ def main():
         print(f"[package.py] ERROR: --js-wrapper not found: {wrap}", file=sys.stderr)
         return 2
 
+    # ⚠ 先体检、后动手: 有问题的目录直接报错返回 —— 此时**还没删旧的部署树**、也还没拷任何东西,
+    #   失败是可重试的, 不留下"删了一半"的半棵树。
+    pkgs, errors = find_packages(wrap)
+    if errors:
+        print("[package.py] ERROR: js_wrapper 里有必须先处理的目录"
+              "(否则会带着它铺进部署树, 事后极难查):", file=sys.stderr)
+        for e in errors:
+            print("  - " + e, file=sys.stderr)
+        print("[package.py] (dist 由 `tsc -b js_wrapper` 生成; 随包 tsc 在 "
+              "<发布目录>/ts_compiler/tsc/tsc.exe)", file=sys.stderr)
+        return 3
+
     bundle = os.path.join(out, BUNDLE)
     os.makedirs(out, exist_ok=True)
     _clean_bundle(bundle)                 # 整棵重铺(见文件头"删除策略")
@@ -214,8 +244,6 @@ def main():
     copy_tree(os.path.join(wrap, SHARED_TYPES_DIR),
               os.path.join(bundle, SHARED_TYPES_DIR),
               "types:shared")
-
-    pkgs = find_packages(wrap)
     if not pkgs:
         print(f"[package.py] WARN: no package found under {wrap}")
 

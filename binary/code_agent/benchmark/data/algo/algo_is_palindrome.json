@@ -1,0 +1,11 @@
+{
+  "name": "algo_is_palindrome",
+  "purpose": "基础算法/数据结构：回文判断（easy）。用真实输入/输出比对评测（框架读输入+写结果，模型只实现 solve），而非 md5。",
+  "prompt": "你要在工程里实现一道算法题。框架约定（务必遵守）：\n- 工程骨架（不要改目录结构）：src/main.ts = 评测框架（**禁止修改**）；src/solution.ts = 你要实现的文件；tsconfig.json 在**工程根**。\n- 你只需在 src/solution.ts 中实现：\n    export function solve(input: any): any\n  框架会读取测试数据里的 inputs（每个用例一个输入），对每一项调用 solve(input)，把返回值按顺序收集并写入 result.json 的 outputs 数组（结构严格为 {\"outputs\":[...]}）。\n- 你只需实现“单个输入 -> 单个输出”的映射：**不要去找/读测试数据，也不要自己读写任何文件**（testdata.json 由框架铺好并读取；预期答案由框架用参考实现重算）。\n- ⚠ result.json 由框架写进**运行目录**：官方跑法是 `cd build && code_runtime`，所以它在 `build/result.json` —— **不在工程根**（在根 `cat result.json` 找不到是正常的，不要为此反复翻目录）。\n- 自检一次就够：`tsc -p tsconfig.json`（产物到 build/）→ `cd build && code_runtime`；看到它跑完即可，不要一遍遍重跑或换着法子找输出文件。\n- 框架会按参考实现重算每个用例的正确输出，并与 result.json 逐项精确比对；全部一致才通过。\n\n具体题目（你的 solve 应实现）：\nsolve(input) 接收一个字符串 input，若是回文（正读反读相同）返回 true，否则返回 false。",
+  "maxAttempts": 3,
+  "timeout": 30,
+  "setup": "algo_setup.py",
+  "input": "is_palindrome",
+  "verify": "python ${data}/algo/algo_verify.py --runtime ${runtime} --build ${build} --root ${root} --problem is_palindrome",
+  "retryHint": "上一次运行未通过输出比对。请确认：1) 在 src/solution.ts 实现 solve(input)（不要改 main.ts、不要读写文件）；2) 按题目 is_palindrome 的语义对“单个输入”计算并用 return 返回结果；3) 框架会自动收集所有用例的返回值并写入 result.json 的 outputs 数组，你无需处理多用例循环。"
+}

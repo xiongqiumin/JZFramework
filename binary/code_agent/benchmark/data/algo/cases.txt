@@ -1,5 +1,5 @@
 # 一行一个算法用例：格式 id|标题|难度（仅写 id 也行，标题/难度回退到 setup.py 的 PROBLEMS 默认）
-# 运行：在本目录 `python setup.py`，会生成 gen_<id>.json 供 benchmark 加载。
+# 运行：在本目录 `python setup.py`，会生成 algo_<id>.json 供 benchmark 加载（cases.jsonl 里那 8 条引用它）。
 bubble_sort|冒泡排序|easy
 reverse_array|数组反转|easy
 binary_search|二分查找|medium

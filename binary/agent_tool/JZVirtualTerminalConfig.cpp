@@ -4,8 +4,11 @@
 #include "JZStd.h"         // str_endsWith / str_chop / codeIsAbsPath
 #include "JZString.h"
 #include "JZCodeTools.h"   // codeNormalizePath / codeIsSubPath
+#include "JZFileInfo.h"    // codeGitRoot(): 判 <root>/usr/bin 是否存在
 
-#include <cstdlib>         // getenv(TMPDIR / TEMP)
+#include <cctype>          // isalpha / toupper
+#include <cstdlib>         // getenv(TEMP / TMP / TMPDIR / ProgramFiles / USERPROFILE)
+#include <cstring>         // strcmp
 
 using namespace std;
 
@@ -29,6 +32,8 @@ string zoneNormalizeRoot(const string &path)
         str_chop(r, 1);
     return r;
 }
+
+} // namespace
 
 // 系统临时目录。模型往临时目录扔东西是再正常不过的事(解压源码包、mktemp、中间产物),
 // 为它去配授信目录纯属折腾 —— 这里直接放行写, 不需要任何特殊权限。
@@ -72,44 +77,119 @@ const vector<string> &zoneTempDirs()
     return dirs;
 }
 
-#ifdef WIN32
-// Git Bash(MSYS)风格路径 → 真实 Windows 路径。**只用于权限判定**, 不改写真正执行的命令
-// (shell 自己就认这些写法)。实测 Git Bash: `/tmp` → `%TEMP%`(cygpath -w /tmp),
-// `/dev/null` → `\\.\NUL`, `/c/x` → `C:/x`。
-// 不翻的话, 模型写 `> /tmp/foo`(bash 里完全合法, 我们的提示词也让它用 /tmp)会被当成
-// "区域外"拒绝 —— 可它实际就落在系统临时目录里, 本来就该允许。
-string zoneMsysToWin(const string &p)
+// Git for Windows 的安装根(找不到返回空)。判定用 `<root>/usr/bin` 存在与否 —— 别的都不够硬。
+static string codeGitRoot()
 {
-    if (p.size() < 2 || p[0] != '/')
-        return p;
-
-    const vector<string> &temps = zoneTempDirs();
-    if (!temps.empty())
+    static const string root = []() -> string
     {
-        if (p == "/tmp")
-            return temps.front();
-        if (p.compare(0, 5, "/tmp/") == 0)
-            return temps.front() + p.substr(4);
+        auto ok = [](const string &p) { return !p.empty() && JZFileInfo(p + "/usr/bin").isDir(); };
+        const char *env = getenv("JZ_GIT_ROOT");
+        if (env && *env && ok(env))
+            return zoneNormalizeRoot(env);
+
+        const char *pf = getenv("ProgramFiles");
+        if (pf && *pf)
+        {
+            string c = string(pf) + "/Git";
+            if (ok(c))
+                return zoneNormalizeRoot(c);
+        }
+        const char *pf86 = getenv("ProgramFiles(x86)");
+        if (pf86 && *pf86)
+        {
+            string c = string(pf86) + "/Git";
+            if (ok(c))
+                return zoneNormalizeRoot(c);
+        }
+        for (const char *c : {"C:/Program Files/Git", "C:/Program Files (x86)/Git"})
+        {
+            if (ok(c))
+                return zoneNormalizeRoot(c);
+        }
+        return string();
+    }();
+    return root;
+}
+
+// 见头文件里的挂载表。tempDirs 给 /tmp 用(空则不翻 /tmp)。
+string codeBashPathToWindows(const string &input, const vector<string> &tempDirs)
+{
+#ifdef WIN32
+    const string &p = input;
+
+    // ~[/...] -> %USERPROFILE%(bash 里 HOME=/c/Users/<用户>) —— 先处理它: `~` 不以 '/' 开头
+    if (p == "~" || p.compare(0, 2, "~/") == 0)
+    {
+        const char *home = getenv("USERPROFILE");
+        if (home && *home)
+            return zoneNormalizeRoot(home) + p.substr(1);
+        return input;
     }
 
-    // 盘符挂载: /c/x → C:/x
-    if (p.size() >= 3 && p[2] == '/' && isalpha((unsigned char)p[1]))
+    if (p.size() < 2 || p[0] != '/')
+        return input;               // 空 / 相对路径 / 已是 C:/... —— 都不动
+
+    // /tmp[/...] -> 系统临时目录(与 bash 里 cygpath -w /tmp 一致)
+    if (!tempDirs.empty())
+    {
+        if (p == "/tmp")
+            return tempDirs.front();
+        if (p.compare(0, 5, "/tmp/") == 0)
+            return tempDirs.front() + p.substr(4);
+    }
+
+    // /cygdrive/c/... 与 /c[/...] -> C:/...
+    static const string kCyg = "/cygdrive/";
+    if (p.size() >= kCyg.size() + 2 && p.compare(0, kCyg.size(), kCyg) == 0 &&
+        isalpha((unsigned char)p[kCyg.size()]) && p[kCyg.size() + 1] == '/')
+        return string(1, (char)toupper((unsigned char)p[kCyg.size()])) + ":" + p.substr(kCyg.size() + 1);
+    if (isalpha((unsigned char)p[1]) && (p.size() == 2 || p[2] == '/'))
         return string(1, (char)toupper((unsigned char)p[1])) + ":" + p.substr(2);
 
-    return p;
-}
+    // Git 虚拟根: /usr... /bin /etc /var /home... -> <GitRoot>/...
+    const string git = codeGitRoot();
+    if (!git.empty())
+    {
+        static const char *kMounts[] = {"usr", "bin", "etc", "var", "home"};
+        for (const char *m : kMounts)
+        {
+            const string mm = string("/") + m;
+            const string real = (strcmp(m, "bin") == 0) ? "/usr/bin" : mm;   // /bin 是 /usr/bin 的软链
+            if (p == mm)
+                return git + real;
+            if (p.compare(0, mm.size() + 1, mm + "/") == 0)
+                return git + real + p.substr(mm.size());
+        }
+    }
+#else
+    (void)input;
+    (void)tempDirs;
 #endif
+    return input;                   // /dev/*、/proc/* 这类虚拟路径: 不翻
+}
 
-// 判定用的路径规范化: 统一分隔符 + (Windows 上)把 Git Bash 风格路径翻成真实 Windows 路径。
+bool codeLooksLikeBashPath(const string &input)
+{
+    return !input.empty() && input[0] == '/' && !(input.size() >= 2 && input[1] == ':');
+}
+
+// 判定用的路径规范化: 统一分隔符 + (Windows 上)把 bash 风格路径翻成真实 Windows 路径。
 // 凡是"拿路径定区域/定权限"的地方都走这里, 免得各处判断不一致。
+// ⚠ 与文件工具**共用同一份** codeBashPathToWindows(见头文件的挂载表): 不翻的话, 模型写
+//   `> /tmp/foo`(bash 里完全合法, 提示词也让它用 /tmp)会被当成"区域外"拒掉;
+//   而文件工具那边不翻, `/c/tmp/x` 就会被算成 `C:\c\tmp\x` 而恒"文件不存在"。
+// ⚠ 这只影响判定与工具, **不改写真正执行的命令**(shell 自己认这些写法)。
 string zoneCheckPath(const string &path)
 {
     string p = codeNormalizePath(path);
 #ifdef WIN32
-    p = zoneMsysToWin(p);
+    p = codeBashPathToWindows(p, zoneTempDirs());
 #endif
     return p;
 }
+
+namespace
+{
 
 bool zoneIsTempPath(const string &absPath)
 {

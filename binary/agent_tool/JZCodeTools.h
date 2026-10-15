@@ -29,6 +29,10 @@ class JZNetworkReply;
 // 不能单独用作沙箱依据。
 std::string codeNormalizePath(const std::string &path, bool *escaped = nullptr);
 
+// bash(MSYS/Git-Bash) 风格路径 -> Windows 路径的翻译在 **JZVirtualTerminalConfig.h**
+// （codeBashPathToWindows / codeLooksLikeBashPath / zoneTempDirs / zoneCheckPath）——
+// 权限判定与文件工具**共用那一份**, 免得再出现"终端里有效、文件工具里恒不存在"。
+
 // 判断路径是否指向文本文件（采样前缀做 UTF-8 合法性判定，空文件当作文本）
 bool isTextFile(const std::string &path);
 

@@ -488,8 +488,27 @@ void JZCodeTool::finish(const ToolCall &call, bool ok, const string &text, DenyR
     sigResult.emit(result);
 }
 
+// "文件不存在" 时补一句可操作提示: 翻译表在配置层(与权限判定共用, 见 JZVirtualTerminalConfig.h)。
+// 能翻的(如 `/c/...`、`/tmp/...`)把解析结果也报出来 —— 模型据此就能看懂路径语义;
+// 翻不了的(`/usr/...`、`/dev/...`)说明该换成什么写法。
+static std::string bashPathHint(const std::string &input)
+{
+    const string win = codeBashPathToWindows(input, zoneTempDirs());
+    if (win != input)
+        return "（Git Bash 路径, 已按映射解析为: " + win + "）";
+    if (codeLooksLikeBashPath(input))
+        return "（这是 bash 风格路径（如 `/usr/...`、`/dev/...`）：在 terminal_run 里有效, 文件工具按 "
+               "Windows/工作区路径解析 —— 换成 `C:/...` 或工作区相对路径再试）";
+    return string();
+}
+
 std::string JZCodeTool::fullPath(std::string path)
 {
+    // bash 风格路径(`~`、`/c/...`、`/tmp/...`、`/usr/...`)先按 Git Bash 的挂载表翻成真实 Windows
+    // 路径 —— 必须在"是不是绝对路径"之前翻: `~` 不以 '/' 开头、`/c/...` 会被当成"当前盘上的 \c\..."。
+    // 与权限判定(zoneCheckPath)共用同一份实现, 免得"终端里有效、文件工具里恒不存在"。
+    path = codeBashPathToWindows(path, zoneTempDirs());
+
     if (JZDir::isAbsolutePath(path))
         return JZFileInfo::weaklyCanonicalPath(path);
 
@@ -1025,7 +1044,7 @@ void JZReadFileTool::call(const ToolCall &params)
     }
     if (!info.exists() || !info.isFile())
     {
-        finish(params, false, "文件不存在: " + rel, DenyReason::NotFound);
+        finish(params, false, "文件不存在: " + rel + bashPathHint(rel), DenyReason::NotFound);
         return;
     }
     if (!isTextFile(abs))
@@ -1256,7 +1275,7 @@ void JZModifyFileTool::call(const ToolCall &params)
     }
     if (!info.exists())
     {
-        finish(params, false, "文件不存在: " + rel + "  (新建文件请用 write_file)",
+        finish(params, false, "文件不存在: " + rel + "  (新建文件请用 write_file)" + bashPathHint(rel),
                DenyReason::NotFound);
         return;
     }

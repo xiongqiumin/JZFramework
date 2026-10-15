@@ -101,6 +101,7 @@ public:
         check(m_file.toolName() == "search_file", "工具名 = search_file (找文件)");
         check(m_context.toolName() == "search_context", "工具名 = search_context (搜内容, 原 search_file 改名)");
 
+        testBashPathTranslate();
         testFindByName();
         testFindByPathPattern();
         testFindScopeAndOptions();
@@ -316,6 +317,47 @@ private:
         check(m_contextRes.ok && contains(m_contextRes.text, "src/a.ts:1:"), "过滤 *.ts 后仍能搜到");
         check(m_contextRes.text.find("被跳过") == string::npos,
               "被 file_filter 排除的大文件不该算进\"跳过\"统计(不然模型以为漏搜了相关文件)");
+    }
+
+    // ---- bash 风格路径翻译(纯函数) ----
+    // 模型在终端里用 pwd/ls 看到的是 MSYS 路径(`/c/...`、`/tmp/...`、`/usr/...`); 文件工具与
+    // 权限判定**共用配置层这一份**实现(见 JZVirtualTerminalConfig.h 里的挂载表)。不翻的后果:
+    // Windows 下按绝对路径处理 ⇒ `/c/tmp/x` 变成 `C:\c\tmp\x` ⇒ 恒"文件不存在", 模型据此认定
+    // "我的构建没产出"(其实 build/main.js 就在), 反复重跑烧到轮次上限。
+    void testBashPathTranslate()
+    {
+        printf("路径: bash 风格 -> Windows\n");
+        const vector<string> temps = {"C:/TempForTest"};
+#ifdef _WIN32
+        check(codeBashPathToWindows("/c/tmp/x/main.js") == "C:/tmp/x/main.js", "/c/... -> C:/...");
+        check(codeBashPathToWindows("/d/work") == "D:/work", "/d/work -> D:/work");
+        check(codeBashPathToWindows("/cygdrive/e/a/b") == "E:/a/b", "/cygdrive/e/... -> E:/...");
+        check(codeBashPathToWindows("/tmp/foo.log", temps) == "C:/TempForTest/foo.log",
+              "/tmp/... -> 系统临时目录(与 bash 里 cygpath -w /tmp 一致)");
+        check(codeBashPathToWindows("/tmp", temps) == "C:/TempForTest", "/tmp 本身也翻");
+
+        const string bin = codeBashPathToWindows("/bin/ls.exe");
+        check(bin == "/bin/ls.exe" || bin.find("/usr/bin/") != string::npos,
+              "/bin/... -> <GitRoot>/usr/bin/...(软链; 本机没装 Git 则原样)");
+        check(bin.rfind("B:", 0) != 0 && bin.rfind("b:", 0) != 0,
+              "首段多字符(/bin)不会被误当成盘符 B:");
+        const string etc = codeBashPathToWindows("/etc/profile");
+        check(etc == "/etc/profile" || etc.find("/etc/") != string::npos, "/etc/... -> <GitRoot>/etc/...");
+
+        const string tilde = codeBashPathToWindows("~/a.ts");
+        check(tilde == "~/a.ts" || tilde.find(':') == 1, "~/... 按 %USERPROFILE% 展开(没设变量时原样)");
+
+        check(codeBashPathToWindows("/dev/null") == "/dev/null",
+              "/dev/null 是虚拟设备(硬盘上没有): 不翻, 由报错提示兜");
+        check(codeBashPathToWindows("/proc/self/status") == "/proc/self/status", "/proc/* 伪文件系统: 不翻");
+#else
+        check(codeBashPathToWindows("/c/tmp/x") == "/c/tmp/x", "非 Windows 平台原样返回");
+#endif
+        check(codeBashPathToWindows("src/a.ts") == "src/a.ts", "相对路径原样返回");
+        check(codeBashPathToWindows("C:/x") == "C:/x", "已是 Windows 盘符路径: 原样返回");
+        check(codeLooksLikeBashPath("/tmp/x"), "/tmp/x 判为 bash 风格(报错时据此给提示)");
+        check(!codeLooksLikeBashPath("C:/tmp/x"), "C:/tmp/x 不是 bash 风格");
+        check(!codeLooksLikeBashPath("src/a.ts"), "相对路径不是 bash 风格");
     }
 
     string m_ws;

@@ -121,6 +121,37 @@ struct JZVirtualTerminalConfig
 
 const char *zoneText(Zone zone);
 
+// ---------------------------------------------------------------------------
+// bash(MSYS / Git-Bash) 风格路径 -> 真实 Windows 路径
+//
+// ⚠ **一处实现, 两处消费**: ① 权限判定(zoneCheckPath) ② 文件工具(JZCodeTool::fullPath 等)。
+//   以前只有 ① 有这张表、② 没有 —— 于是 `/c/tmp/x` 在终端里有效、在 read_file 里被算成
+//   `C:\c\tmp\x` 而恒"文件不存在"(实测模型据此认定"构建没产出", 反复重跑烧到轮次上限)。
+//
+// 表按 Git for Windows **实测**(`cygpath --windows`)写, 不是猜的:
+//   /            -> <GitRoot>(如 C:/Program Files/Git)
+//   /usr /usr/bin /usr/lib /usr/share  -> <GitRoot>/usr...
+//   /bin         -> <GitRoot>/usr/bin(软链到 /usr/bin)
+//   /etc /var    -> <GitRoot>/etc | <GitRoot>/var
+//   /home[/<u>]  -> <GitRoot>/home...  ⚠ 实测**不是** C:\Users; 只有 `~` 才走 %USERPROFILE%
+//   /tmp[/...]   -> 系统临时目录(TEMP/TMP/TMPDIR, 见 zoneTempDirs) = %TEMP%
+//   /c/...、/cygdrive/c/... -> C:/...
+//   /dev/*、/proc/* -> MSYS 虚拟设备/纯内存伪文件系统(硬盘上不存在) ⇒ 不翻, 报错时给提示
+// 翻不出来(如找不到 GitRoot)就原样返回 —— 宁可不翻, 也别编一个不存在的路径。
+// ---------------------------------------------------------------------------
+std::string codeBashPathToWindows(const std::string &input,
+                                  const std::vector<std::string> &tempDirs = std::vector<std::string>());
+
+// 看起来像 bash 风格绝对路径吗(`/...` 且非盘符写法)—— 报错时据此给可操作提示。
+bool codeLooksLikeBashPath(const std::string &input);
+
+// 系统临时目录(TEMP / TMP / TMPDIR / C:/Windows/Temp, 去重)—— Windows 上就是 bash 的 /tmp
+const std::vector<std::string> &zoneTempDirs();
+
+// 判定用的路径规范化: 统一分隔符 + (Windows 上)把 bash 风格路径翻成真实 Windows 路径。
+// 凡是"拿路径定区域/定权限"的地方都走这里, 免得各处判断不一致。
+std::string zoneCheckPath(const std::string &path);
+
 // 判定一个绝对路径属于哪个区域
 Zone zoneOfPath(const ZoneConfig &cfg, const std::string &absPath);
 

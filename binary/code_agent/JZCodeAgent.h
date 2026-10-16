@@ -12,6 +12,7 @@
 #include "JZCodeTools.h"
 #include "JZTsLangServer.h"
 #include "JZResult.h"
+#include "JZTimer.h"
 
 class JZVirtualTerminal;   // 执行/审核面（agent_tool/JZVirtualTerminal.h）
 

@@ -19,6 +19,10 @@
 //   --modelUrl / --modelName / --modelToken   大模型接入（缺省沿用仓库测试默认值）
 //   --tsc   宿主侧 tsc 全路径（也可走环境变量 JZ_TS_LSP；缺失则无法编译，退出 2）
 //   --tsgo  原生 tsgo(tsc) LSP 全路径（缺省同 --tsc，用于 TS 工具；可空）
+//   --http-port  输入 HTTP 服务端口（缺省 18080；并行跑两轮时第二轮必须换一个）
+//   --port-offset  用例端口基准的偏移量（缺省 0）：${port}=verifyPort+偏移，${port1}=再 +1。
+//                  同一台机器并行跑两轮评测时，第二轮传一个偏移（如 100），
+//                  两轮的模型监听端口/daemon 从站/verify 连接口就整体错开，不会互相抢端口。
 //   --no-color   关闭彩色输出（默认在支持 ANSI 的终端上自动开启）
 //
 // 退出码：0=全部用例通过；1=有失败；2=前置条件缺失（编译器 / 工程初始化失败）。
@@ -138,7 +142,10 @@ struct BenchmarkCase
     std::function<bool(const std::string &output)> check;
 
     // 重试时给模型的反馈（基于上一次实际输出 / 编译错误构造）
+    //   ⚠ 由 Benchmark::startCase 按本轮的端口偏移重新装配（retryHint 里的 ${port} 要展开），
+    //     加载期只保存原始模板 retryHint。
     std::function<std::string(const std::string &output, const std::string &buildError)> retry;
+    std::string retryHint;       // 重试提示模板（可含 ${port} 占位符，运行期展开）
 
     // 注入给本用例的输入（空串表示无需输入）；运行时由全局 HTTP 服务以 /input 暴露给 JS
     std::string input;
@@ -151,6 +158,9 @@ struct BenchmarkCase
     //   由 code_runtime 子进程直接判定（见 runCodeRuntime）：其输出原样作为反馈，并在报告里标 [CRASH]。
     // 注：验证程序自行负责启动模型生成的 server 并测试（如 python verify.py --runtime ${runtime} --build ${build} --port ${port}）。
     std::string verifyCmd;
+    // 本用例的"端口基准"：模板里的 ${port} 展开为 verifyPort + 端口偏移(--port-offset)，
+    // ${port1} = 再 +1。凡是"模型产物自己要监听的端口"（五子棋 / net_* 的 input / daemon 从站）
+    // 都必须写成 ${port} 而不是写死数字 —— 否则同一台机器上并行跑两轮评测时会互相抢端口。
     int verifyPort = 3900;
 
     // setup 准备脚本: 相对『用例 json 所在目录』的 .py 路径; initProject 之后、agent 开始前
@@ -335,9 +345,13 @@ public:
 
     void setCases(const std::vector<BenchmarkCase> &cases) { m_cases = cases; }
     void setDataDir(const std::string &dir) { m_dataDir = dir; }
+    void setPortOffset(int off) { m_portOffset = off; }   // 并行跑两轮时的端口错开量（见 m_portOffset）
     
     bool startHttpServer(int p)
     {
+        // ⚠ 这句曾经漏了: 形参 p 收进来却没用, 一律按成员缺省 18080 去 listen
+        //   ⇒ --http-port 完全不生效("同一台机器并行跑两轮评测"时第二个进程必因端口占用退出)。
+        m_httpPort = p;
         m_http = new JZHttpServer(this);
         m_httpHandler = new InputHttpHandler();
         m_httpHandler->getInput = [this]() { return currentInput(); };
@@ -387,7 +401,6 @@ protected:
     void startCase(size_t i)
     {
         m_case = m_cases[i];
-        setInput(m_case.input);   // 注入本用例输入，供全局 HTTP 服务的 /input 暴露给 JS
         m_result = CaseResult{};
         m_result.name = m_case.name;
         m_attempt = 0;
@@ -396,6 +409,16 @@ protected:
         // 每个用例一个独立临时工程，避免互相污染
         std::string root = JZPlatform::applicationTmpPath() + "/" + JZUuid::createUuid().toString() +"/bench_" + m_case.name;
         m_root = root;   // 提前设好: 下面的 webSearchUrl 模板要用 ${root}/${port}/${data} 展开
+
+        // 用例文本里指向"端口"的地方（prompt / input / 重试提示）统一按本轮端口偏移展开：
+        // 写死端口号会让同一台机器上并行跑的两轮抢同一个端口（模型的监听口 / daemon 从站 / verify 连接口）。
+        // ⚠ 必须放在 m_root 赋值之后 —— 同一套替换里还有 ${root}/${data}。
+        // ⚠ input 要就地展开（不能只在 setInput 里展开）：setup 脚本拿到的 --input 就是它，
+        //   而 net_* 的端口正是写在这段 input 文本里（"<文本> <端口>"）。
+        m_case.prompt = expandVerifyCmd(m_case.prompt);
+        m_case.input = expandVerifyCmd(m_case.input);
+        m_case.retry = makeRetry(m_case.retryHint);
+        setInput(m_case.input);   // 注入本用例输入，供全局 HTTP 服务的 /input 暴露给 JS
 
         // 本用例的网络搜索源(可选): 覆盖 CodeAgentConfig::webSearchUrl, 让 web_search 打本用例
         // 自己起的搜索服务(见 BenchmarkCase::webSearchUrl)。没给就置空 —— m_codeConfig 是跨用例
@@ -752,17 +775,38 @@ protected:
         m_daemon = nullptr;
     }
 
-    // 把 verify 命令模板里的占位符替换为实际路径/端口
+    // 把用例模板（verify / daemon / webSearchUrl / prompt / input / retryHint）里的占位符替换为实际值。
+    // 端口：${port} = 本用例端口基准(verifyPort) + 端口偏移(--port-offset)，${port1} = 再 +1。
+    //   偏移只为"同一台机器上并行跑两轮评测"存在：两轮的派生端口（含模型产物自己要监听的端口、
+    //   daemon 从站、verify 连接口）必须错开，否则第二轮起服务/绑端口必然撞上第一轮。
+    // ⚠ ${port1} 必须先替换：否则 ${port} 会先把 "${port1}" 的头部吃掉，变成 "39001" 这种数。
     std::string expandVerifyCmd(const std::string &tpl)
     {
         std::string s = tpl;
         str_replace(s, "${root}", m_root);
         str_replace(s, "${build}", m_root + "/build");
         str_replace(s, "${runtime}", m_codeRuntime);
-        str_replace(s, "${port}", std::to_string(m_case.verifyPort));
+        int basePort = m_case.verifyPort + m_portOffset;
+        str_replace(s, "${port1}", std::to_string(basePort + 1));
+        str_replace(s, "${port}", std::to_string(basePort));
         str_replace(s, "${bench}", JZPlatform::applicationDirPath());
         str_replace(s, "${data}", m_dataDir);   // 评测集（cases.jsonl 所在）目录，用于定位随用例发布的验证脚本
         return s;
+    }
+
+    // 装配"重试提示"闭包：提示模板里的端口占位符按本轮偏移展开后固定下来（与首次 prompt 同一套端口）。
+    std::function<std::string(const std::string &, const std::string &)> makeRetry(const std::string &rawHint)
+    {
+        std::string hint = expandVerifyCmd(rawHint);
+        return [hint](const std::string &output, const std::string &buildError) {
+            std::ostringstream ss;
+            ss << hint;
+            if (!buildError.empty())
+                ss << "\n编译错误：\n" << buildError;
+            else
+                ss << "\n上次实际输出：\n" << output;
+            return ss.str();
+        };
     }
 
     // 把 detectPythonInterpreter 返回的解释器串拆成 (程序, 前置参数) 并去掉外层引号,
@@ -1172,6 +1216,10 @@ protected:
     JZHttpServer *m_http = nullptr;
     InputHttpHandler *m_httpHandler = nullptr;
     int m_httpPort = 18080;
+    // 端口偏移(--port-offset)：加到用例端口基准(verifyPort)上，供 ${port}/${port1} 展开。
+    // 同一台机器上并行跑两轮评测时，第二轮必须给一个偏移(如 100)，否则模型的监听端口
+    // (3900/3911…)、daemon 从站端口、verify 连接口都会和第一轮撞。
+    int m_portOffset = 0;
     std::string m_input;          // 当前用例注入的输入（由 startCase 写入）
     std::mutex m_inputMutex;
     std::string m_httpPromptExtra; // startHttpServer 构造的"读取输入"约定，重建 agent 后需重新注入   
@@ -1387,18 +1435,10 @@ static bool parseCaseObject(const Json::Value &root, const std::string &src, Ben
                   : output.find(contains) != std::string::npos;
     };
 
-    std::string hint = root.isMember("retryHint") && root["retryHint"].isString()
-                           ? root["retryHint"].asString()
-                           : "上一次运行未通过，请根据反馈修正后重试。";
-    c.retry = [hint](const std::string &output, const std::string &buildError) {
-        std::ostringstream ss;
-        ss << hint;
-        if (!buildError.empty())
-            ss << "\n编译错误：\n" << buildError;
-        else
-            ss << "\n上次实际输出：\n" << output;
-        return ss.str();
-    };
+    // 只存原始模板：端口占位符要等运行期确定本轮的 --port-offset 之后再展开（见 Benchmark::makeRetry）
+    c.retryHint = root.isMember("retryHint") && root["retryHint"].isString()
+                      ? root["retryHint"].asString()
+                      : "上一次运行未通过，请根据反馈修正后重试。";
 
     if (c.prompt.empty())
     {
@@ -1623,6 +1663,7 @@ int main(int argc, char *argv[])
     std::string dataDir = JZPlatform::applicationDirPath() + "/data/benchmark";  // 评测集目录（可 --data 覆盖）
     std::string casesFilter;   // --cases：逗号分隔的用例名/通配符，仅跑匹配的（可多个）
     int httpPort = 18080;      // --http-port：输入 HTTP 服务监听端口（JS 用 fetch 读输入）
+    int portOffset = 0;        // --port-offset：用例端口基准的偏移量（并行跑两轮必须错开，如第二轮给 100）
     bool noColor = false;      // --no-color：关闭 ANSI 彩色输出（重定向时本就自动关闭）
     for (size_t i = 0; i < dataDir.size(); i++)
         if (dataDir[i] == '\\')
@@ -1637,6 +1678,7 @@ int main(int argc, char *argv[])
     parser.addOption("--data", &dataDir);
     parser.addOption("--cases", &casesFilter);
     parser.addOption("--http-port", &httpPort);
+    parser.addOption("--port-offset", &portOffset);
     parser.addOption("--no-color", &noColor);
     if (!parser.parse(argc, argv))
     {
@@ -1667,6 +1709,7 @@ int main(int argc, char *argv[])
 
     JZEventLoop loop;
     Benchmark bench(&loop, llm, code, codeRuntime);
+    bench.setPortOffset(portOffset);
 
     // 从评测集（--data 指向目录或 cases.jsonl 索引文件）加载用例；索引里的每个 file 引用一个用例 JSON
     std::vector<BenchmarkCase> cases;

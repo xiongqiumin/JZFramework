@@ -5,7 +5,8 @@
   "maxAttempts": 3,
   "timeout": 30,
   "setup": "net_setup.py",
-  "input": "jznet-ws 3914",
+  "verifyPort": 3914,
+  "input": "jznet-ws ${port}",
   "expect": {
     "contains": "283ccc4ce3b7558bd4d85bad4c26aede@1"
   },

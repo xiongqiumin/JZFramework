@@ -5,7 +5,8 @@
   "maxAttempts": 3,
   "timeout": 30,
   "setup": "net_setup.py",
-  "input": "jznet-udp 3913",
+  "verifyPort": 3913,
+  "input": "jznet-udp ${port}",
   "expect": {
     "contains": "6a7a6e65742d756470@127.0.0.1"
   },

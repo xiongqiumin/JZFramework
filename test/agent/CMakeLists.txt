@@ -39,3 +39,8 @@ add_executable(test_agent_compress test_agent_compress.cpp)
 target_link_libraries(test_agent_compress JZFramework)
 
 add_subdirectory(five_chess)
+
+# FDB-v3（NTU 的语音 agent 工具调用 benchmark）的**文本模式**跑批：
+# 去掉 LiveKit/VAD/STT/TTS，只留"输入文本 → agent 工具调用 → 输出文本"，
+# 结果落盘成上游 evaluate_*.py 认识的 result_<provider>.json。需要真实模型端点，不进 ctest。
+add_subdirectory(fdb_v3)

@@ -20,11 +20,11 @@ User Audio → Silero VAD → Whisper STT → LLM(tool calling) → OpenAI TTS �
 
 | 文件 | 作用 |
 |---|---|
-| `fdb_v3_text.cpp` | **C++ / JZAgent 版**跑批器（主力） |
+| `fdb_v3_text.cpp` | C++ / JZAgent 版跑批器（唯一实现） |
 | `CMakeLists.txt` | 目标 `fdb_v3_text`，产物 `build/test/bin/<CFG>/fdb_v3_text.exe` |
-| `text_agent.py` | Python 版 core（复用上游 `mock_apis.py`，便于快速改协议/对比） |
-| `run_text_benchmark.py` | Python 版跑批器（并发，字段与 C++ 版一致） |
-| `out/` | 结果（`out/<provider>/<example_id>/result_<provider>.json`） |
+| `make_table.py` | 结果目录 → 汇总表（Tool Sel / Arg / Resp / Pass@1 / Take-turn / Latency） |
+| `judge_proxy.py` | judge 的 model 名改写代理（让上游 `--use-llm` 走内网端点） |
+| `out/` | 跑批/评测产物（已 gitignore） |
 
 ## 编译 & 运行
 
@@ -155,10 +155,11 @@ python make_table.py --providers cpp_text --use-llm --out out\table_cpp_text.md
    （论文里 GPT-Realtime 是 0.876/0.600，Cascaded 0.803/0.450）。
 3. **Latency 列永远是 "-"**：它是"用户说完 → agent 出声"的音频时序，文本模式不存在这个量。
 
-## Python 版 vs C++ 版
+## 实现备注
 
-- 两版对应关系一致（同样的 12 个工具、同样的 system prompt、同样的 mock 返回值、同样的输出字段）。
-  实测同一 3 条场景，两版给出的工具与参数完全一致。
-- Python 版直接 `import` 上游 `mock_apis.py`（不复制）；C++ 版把那份假数据**照抄**进
-  `fdb_v3_text.cpp::mockApi()`，**上游改了 mock 数据要同步改这里**。
-- Python 版支持并发（`--workers`）；C++ 版串行（单 agent 单事件循环，简单可靠）。
+- **只保留 C++ 一份跑批实现**。早期有过一版等价的 Python 跑批（`text_agent.py` + `run_text_benchmark.py`，
+  直接 import 上游 `mock_apis.py`），已删除：两套实现要各自维护工具 schema、mock 返回值、产物字段映射，
+  长期必然漂移；删前用同一 3 条场景对照过，两版给出的工具与参数完全一致。
+- 上游 `mock_apis.py` 的假数据是**照抄**进 `fdb_v3_text.cpp::mockApi()` 的，
+  **上游改了 mock 数据要同步改这里**。
+- C++ 版串行（单 agent 单事件循环，简单可靠）。要并行就跑多个进程，用不同 `--provider` 或分片 `--ids`。

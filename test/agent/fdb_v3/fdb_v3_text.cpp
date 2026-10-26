@@ -36,7 +36,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <ctime>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -47,6 +46,7 @@
 #include "JZAgentTool.h"
 #include "JZApplication.h"
 #include "JZCommandLineParser.h"
+#include "JZDateTime.h"
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZEventLoop.h"
@@ -85,14 +85,11 @@ double nowSec()
     return duration<double>(system_clock::now().time_since_epoch()).count();
 }
 
+// ⚠ 别用 localtime_s/localtime_r/strftime：localtime_s 是 Windows 专有（Linux 上只有 localtime_r），
+//   写平台分支不划算 —— 直接用框架的 JZDateTime（跨平台，格式串是 Qt 风格 yyyy/MM/dd/HH/mm/ss）。
 std::string isoNow()
 {
-    std::time_t t = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
-    return std::string(buf);
+    return JZDateTime::currentDateTime().toString("yyyy-MM-ddTHH:mm:ss");
 }
 
 std::string toJson(const Json::Value &v, bool styled = false)

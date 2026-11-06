@@ -1,20 +1,6 @@
-:root {
-  /* 亮色主题 */
-  --bg: #f3f5f8;
-  --panel: #ffffff;
-  --panel-2: #f7f8fa;
-  --field: #ffffff;
-  --border: #e2e5ea;
-  --border-strong: #cbd2dc;
-  --text: #1f2328;
-  --muted: #6b7280;
-  --accent: #2f6fed;
-  --accent-2: #1f5bd0;
-  --ok: #1a7f37;
-  --fail: #cf222e;
-  --user: #2f6fed;
-  --shadow: 0 1px 2px rgba(31, 35, 40, .06);
-}
+/* 颜色/字号/间距等变量统一在 /ui/tokens.css(见 docs/web-ui-design.md),
+   这里只保留页面自己的布局与业务外观。
+   迁移期 tokens.css 末尾仍把这些老变量名映射到 --jz-*, 所以本文件暂时不用改用法。 */
 
 * { box-sizing: border-box; }
 .hidden { display: none; }

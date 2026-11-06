@@ -1,0 +1,47 @@
+/* 页面特例: 只有"组件给不了的布局"才写在这里; 颜色/圆角/间距全部来自 /ui/tokens.css */
+
+.wrap {
+  padding: var(--jz-sp-4) var(--jz-sp-5) 48px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--jz-sp-4);
+}
+
+/* KPI 卡片: 列数自适应, 手机上 2 列 */
+.kpis {
+  display: grid;
+  gap: var(--jz-sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.kpi .k { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+.kpi .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
+
+.sec {
+  margin: var(--jz-sp-2) 0 calc(var(--jz-sp-1) * -1);
+  font-size: var(--jz-fs-1);
+  letter-spacing: .5px;
+  color: var(--jz-muted);
+  font-weight: 600;
+}
+
+.logbar {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  margin-top: var(--jz-sp-2);
+}
+.logbar__name { font-weight: 600; }
+.logbar__hint { color: var(--jz-muted); font-size: var(--jz-fs-1); }
+
+#log { height: 48vh; }
+
+/* 手机上副标题默认被隐藏, 但这里的 #meta 是运行状态, 必须显示 */
+#meta { display: block; }
+
+tr[data-agent] { cursor: pointer; }
+
+@media (max-width: 640px) {
+  .wrap { padding: var(--jz-sp-3) var(--jz-sp-3) 40px; gap: var(--jz-sp-3); }
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  #log { height: 40vh; }
+}

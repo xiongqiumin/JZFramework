@@ -1,0 +1,546 @@
+/* ===========================================================================
+   jz-ui components —— 组件外观
+   依赖 tokens.css + base.css。约定:
+     - 只认 --jz-* 变量, 不写死颜色;
+     - 每个组件一个 .jz-* 前缀, 变体用 --xxx, 状态用 .is-xxx;
+     - 布局用 flex/grid + clamp, 不写死列数(三端共用一套);
+     - 触控目标 >= var(--jz-tap); hover 效果包在 @media (hover:hover) 里。
+   =========================================================================== */
+
+/* ===========================================================================
+   顶栏
+   =========================================================================== */
+.jz-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-3);
+  flex-wrap: wrap;
+  padding: var(--jz-sp-3) var(--jz-sp-4);
+  background: var(--jz-panel);
+  border-bottom: 1px solid var(--jz-border);
+  box-shadow: var(--jz-shadow-1);
+  position: relative;
+  z-index: var(--jz-z-topbar);
+}
+.jz-brand { display: flex; align-items: center; gap: var(--jz-sp-3); min-width: 0; }
+.jz-brand__logo {
+  display: grid;
+  place-items: center;
+  width: 36px; height: 36px;
+  flex: none;
+  border-radius: var(--jz-r-2);
+  background: var(--jz-accent);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.jz-brand__title { font-size: var(--jz-fs-3); font-weight: 600; }
+.jz-brand__sub { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+.jz-tools { display: flex; align-items: center; gap: var(--jz-sp-2); margin-left: auto; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .jz-topbar { padding: var(--jz-sp-2) var(--jz-sp-3); }
+  .jz-brand__sub { display: none; }        /* 手机上省空间 */
+}
+
+/* ===========================================================================
+   按钮
+   =========================================================================== */
+.jz-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--jz-sp-1);
+  min-height: 34px;
+  padding: 0 var(--jz-sp-3);
+  font: inherit;
+  font-size: var(--jz-fs-2);
+  color: var(--jz-text);
+  background: var(--jz-panel);
+  border: 1px solid var(--jz-border-strong);
+  border-radius: var(--jz-r-1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.jz-btn--primary {
+  background: var(--jz-accent);
+  border-color: var(--jz-accent);
+  color: #fff;
+}
+.jz-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--jz-muted);
+}
+.jz-btn--danger { color: var(--jz-fail); }
+.jz-btn--sm { min-height: 26px; padding: 0 var(--jz-sp-2); font-size: var(--jz-fs-1); }
+.jz-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (hover: hover) {
+  .jz-btn:hover:not(:disabled) { background: var(--jz-panel-2); }
+  .jz-btn--primary:hover:not(:disabled) { background: var(--jz-accent-2); }
+  .jz-btn--ghost:hover:not(:disabled) { background: var(--jz-panel-2); color: var(--jz-text); }
+  .jz-btn--danger:hover:not(:disabled) {
+    background: var(--jz-fail-weak);
+    border-color: var(--jz-fail);
+  }
+}
+/* 手指输入: 统一放大命中区 */
+@media (pointer: coarse) {
+  .jz-btn { min-height: var(--jz-tap); }
+  .jz-btn--sm { min-height: 32px; }
+}
+
+/* ===========================================================================
+   徽标
+   =========================================================================== */
+.jz-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jz-sp-1);
+  padding: 1px var(--jz-sp-2);
+  border-radius: 999px;
+  font-size: var(--jz-fs-1);
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--jz-muted);
+  background: var(--jz-panel-2);
+  border: 1px solid var(--jz-border);
+  white-space: nowrap;
+}
+.jz-badge--ok { color: var(--jz-ok); background: var(--jz-ok-weak); border-color: transparent; }
+.jz-badge--fail { color: var(--jz-fail); background: var(--jz-fail-weak); border-color: transparent; }
+.jz-badge--warn { color: var(--jz-warn); background: var(--jz-warn-weak); border-color: transparent; }
+.jz-badge--info { color: var(--jz-accent); background: var(--jz-accent-weak); border-color: transparent; }
+
+/* ===========================================================================
+   卡片
+   =========================================================================== */
+.jz-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--jz-panel);
+  border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2);
+  box-shadow: var(--jz-shadow-1);
+  overflow: hidden;
+}
+.jz-card__hd,
+.jz-card__bd,
+.jz-card__ft { padding: var(--jz-sp-3) var(--jz-sp-4); }
+.jz-card__hd {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  border-bottom: 1px solid var(--jz-border);
+  font-weight: 600;
+}
+.jz-card__bd { flex: 1; min-height: 0; }
+.jz-card__ft { border-top: 1px solid var(--jz-border); background: var(--jz-panel-2); }
+.jz-card--flat { box-shadow: none; }
+
+/* ===========================================================================
+   表格(手机端自动转卡片: td 要带 data-label)
+   =========================================================================== */
+.jz-table-wrap {
+  overflow: auto;
+  background: var(--jz-panel);
+  border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2);
+}
+.jz-table { width: 100%; border-collapse: collapse; }
+.jz-table th {
+  text-align: left;
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  font-size: var(--jz-fs-1);
+  font-weight: 600;
+  color: var(--jz-muted);
+  background: var(--jz-panel-2);
+  border-bottom: 1px solid var(--jz-border);
+  white-space: nowrap;
+}
+.jz-table td {
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  border-bottom: 1px solid var(--jz-border);
+  vertical-align: top;
+}
+.jz-table tr:last-child td { border-bottom: none; }
+.jz-table tr.is-sel { background: var(--jz-accent-weak); }
+.jz-table__num { text-align: right; font-variant-numeric: tabular-nums; }
+.jz-table__mono { font-family: var(--jz-mono); font-size: var(--jz-fs-1); }
+
+@media (hover: hover) {
+  .jz-table tbody tr:hover { background: var(--jz-panel-2); }
+  .jz-table tbody tr.is-sel:hover { background: var(--jz-accent-weak); }
+}
+
+@media (max-width: 640px) {
+  .jz-table-wrap { border: none; background: transparent; overflow: visible; }
+  .jz-table thead { display: none; }
+  .jz-table, .jz-table tbody, .jz-table tr, .jz-table td { display: block; width: 100%; }
+  .jz-table tr {
+    background: var(--jz-panel);
+    border: 1px solid var(--jz-border);
+    border-radius: var(--jz-r-2);
+    padding: var(--jz-sp-2) var(--jz-sp-3);
+    margin-bottom: var(--jz-sp-2);
+  }
+  .jz-table td {
+    display: flex;
+    gap: var(--jz-sp-2);
+    padding: 3px 0;
+    border: none;
+    text-align: left;
+  }
+  .jz-table td::before {
+    content: attr(data-label);
+    flex: none;
+    width: 76px;
+    color: var(--jz-muted);
+    font-size: var(--jz-fs-1);
+  }
+  .jz-table td:not([data-label])::before { display: none; }
+}
+
+/* ===========================================================================
+   表单 / 输入框
+   =========================================================================== */
+.jz-field { display: flex; flex-direction: column; gap: var(--jz-sp-1); min-width: 0; }
+.jz-field > label { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+.jz-field--row { flex-direction: row; align-items: center; gap: var(--jz-sp-2); }
+
+.jz-input,
+.jz-textarea {
+  width: 100%;
+  padding: 0 var(--jz-sp-3);
+  font: inherit;
+  font-size: var(--jz-fs-3);
+  color: var(--jz-text);
+  background: var(--jz-field);
+  border: 1px solid var(--jz-border-strong);
+  border-radius: var(--jz-r-1);
+  transition: border-color .12s, box-shadow .12s;
+}
+.jz-input { height: 36px; }
+.jz-textarea {
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  min-height: 76px;
+  max-height: 40dvh;
+  line-height: 1.55;
+  resize: vertical;
+}
+.jz-input:focus,
+.jz-textarea:focus {
+  outline: none;
+  border-color: var(--jz-accent);
+  box-shadow: 0 0 0 3px var(--jz-accent-weak);
+}
+.jz-input::placeholder,
+.jz-textarea::placeholder { color: var(--jz-muted); }
+.jz-input--err { border-color: var(--jz-fail); }
+
+@media (pointer: coarse) {
+  .jz-input { height: var(--jz-tap); }
+}
+
+/* ===========================================================================
+   输入区(composer) —— 一行验证命令 + 多行任务输入 + 右下角按钮
+   =========================================================================== */
+.jz-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jz-sp-2);
+  padding: var(--jz-sp-3) var(--jz-sp-4);
+  background: var(--jz-panel);
+  border-top: 1px solid var(--jz-border);
+}
+.jz-composer__field {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  min-width: 0;
+}
+.jz-composer__label {
+  flex: none;
+  font-size: var(--jz-fs-1);
+  color: var(--jz-muted);
+}
+.jz-composer__box { position: relative; min-width: 0; }
+.jz-composer__box .jz-textarea { padding-bottom: 40px; }   /* 给右下角按钮让位 */
+.jz-composer__actions {
+  position: absolute;
+  right: var(--jz-sp-2);
+  bottom: var(--jz-sp-2);
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+}
+.jz-composer__hint {
+  font-size: var(--jz-fs-1);
+  color: var(--jz-muted);
+}
+
+@media (max-width: 640px) {
+  .jz-composer { padding: var(--jz-sp-2) var(--jz-sp-3); }
+  .jz-composer__label { display: none; }           /* 手机上靠 placeholder 提示 */
+  .jz-composer__field .jz-input { height: var(--jz-tap); }
+  .jz-composer__box .jz-textarea { min-height: 64px; padding-bottom: 44px; }
+}
+
+/* ===========================================================================
+   对话: agent 回复浏览
+     .jz-chat 容器 + .jz-msg(一排消息) + .jz-bubble(气泡) + .jz-step(执行过程)
+   =========================================================================== */
+.jz-chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jz-sp-3);
+  padding: var(--jz-sp-4);
+  overflow: auto;
+  min-height: 0;
+}
+.jz-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jz-sp-1);
+  max-width: 88%;
+}
+.jz-msg--user { align-self: flex-end; align-items: flex-end; }
+.jz-msg--agent { align-self: flex-start; align-items: flex-start; }
+.jz-msg__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  font-size: var(--jz-fs-1);
+  color: var(--jz-muted);
+}
+.jz-bubble {
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  background: var(--jz-panel);
+  border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-3);
+  box-shadow: var(--jz-shadow-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.jz-msg--user .jz-bubble {
+  background: var(--jz-accent);
+  border-color: var(--jz-accent);
+  color: #fff;
+}
+/* 气泡里的代码/日志: 有自己的滚动窗口, 不要把整页撑长 */
+.jz-bubble pre,
+.jz-bubble .jz-log {
+  margin: var(--jz-sp-2) 0 0;
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  background: var(--jz-panel-2);
+  border-radius: var(--jz-r-1);
+  font-size: var(--jz-fs-1);
+  overflow: auto;
+  max-height: 280px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jz-msg--user .jz-bubble pre { background: rgba(255, 255, 255, .16); color: #fff; }
+/* 失败/提示行 */
+.jz-msg--error .jz-bubble {
+  background: var(--jz-fail-weak);
+  border-color: transparent;
+  color: var(--jz-fail);
+}
+
+@media (max-width: 640px) {
+  .jz-chat { padding: var(--jz-sp-2) var(--jz-sp-3); gap: var(--jz-sp-2); }
+  .jz-msg { max-width: 100%; }        /* 手机上正文优先, 不缩气泡 */
+}
+
+/* ---- 执行过程(时间线): thinking / tool_call / verify … ---- */
+.jz-step {
+  display: flex;
+  gap: var(--jz-sp-2);
+  padding: var(--jz-sp-1) 0;
+  font-size: var(--jz-fs-2);
+}
+.jz-step__dot {
+  flex: none;
+  width: 7px; height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--jz-border-strong);
+}
+.jz-step__tag {
+  flex: none;
+  min-width: 56px;
+  font-size: var(--jz-fs-1);
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: var(--jz-muted);
+}
+.jz-step__body {
+  flex: 1;
+  min-width: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jz-step--ok .jz-step__dot { background: var(--jz-ok); }
+.jz-step--fail .jz-step__dot { background: var(--jz-fail); }
+.jz-step--run .jz-step__dot {
+  background: var(--jz-accent);
+  animation: jz-pulse 1.2s ease-in-out infinite;
+}
+@keyframes jz-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
+/* ===========================================================================
+   日志块(等宽, 自己的滚动条; 有 data-autoscroll 时由 jz-ui.js 贴底)
+   =========================================================================== */
+.jz-log {
+  margin: 0;
+  padding: var(--jz-sp-3);
+  background: var(--jz-panel-2);
+  border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2);
+  font-family: var(--jz-mono);
+  font-size: var(--jz-fs-1);
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 48vh;
+  white-space: pre-wrap;
+  word-break: break-all;
+  tab-size: 4;
+}
+
+/* ===========================================================================
+   空状态: 一句话说明 + 可选一个动作(只有一个图标等于没说)
+   =========================================================================== */
+.jz-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  padding: var(--jz-sp-5) var(--jz-sp-4);
+  color: var(--jz-muted);
+  font-size: var(--jz-fs-2);
+  text-align: center;
+}
+
+/* ===========================================================================
+   弹窗: 直接用原生 <dialog>(自带焦点陷阱 / Esc / 顶层渲染),
+   这里只做外观; 打开方式: JzUI.dialog() / JzUI.confirm(), 或自己 dialog.showModal()。
+
+   结构:
+     <dialog class="jz-dialog">
+       <div class="jz-dialog__hd"><h2 class="jz-dialog__title">标题</h2><button class="jz-dialog__x">×</button></div>
+       <div class="jz-dialog__bd">内容</div>
+       <div class="jz-dialog__ft"><button class="jz-btn">取消</button><button class="jz-btn jz-btn--primary">确定</button></div>
+     </dialog>
+   =========================================================================== */
+.jz-dialog {
+  padding: 0;
+  border: 0;
+  width: min(92vw, 520px);
+  max-height: min(84dvh, 720px);
+  overflow: hidden;
+  background: var(--jz-panel);
+  color: var(--jz-text);
+  border-radius: var(--jz-r-3);
+  box-shadow: var(--jz-shadow-2);
+}
+.jz-dialog[open] { display: flex; flex-direction: column; }
+.jz-dialog--lg { width: min(94vw, 840px); }
+.jz-dialog::backdrop { background: rgba(31, 35, 40, .45); }
+
+.jz-dialog__hd {
+  display: flex;
+  align-items: center;
+  gap: var(--jz-sp-2);
+  padding: var(--jz-sp-3) var(--jz-sp-4);
+  border-bottom: 1px solid var(--jz-border);
+}
+.jz-dialog__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--jz-fs-3);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jz-dialog__x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px; height: 28px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--jz-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--jz-r-1);
+  cursor: pointer;
+}
+.jz-dialog__bd {
+  padding: var(--jz-sp-4);
+  overflow: auto;
+  min-height: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jz-dialog__ft {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--jz-sp-2);
+  padding: var(--jz-sp-3) var(--jz-sp-4);
+  background: var(--jz-panel-2);
+  border-top: 1px solid var(--jz-border);
+}
+
+@media (hover: hover) {
+  .jz-dialog__x:hover { background: var(--jz-panel-2); color: var(--jz-text); }
+}
+@media (max-width: 640px) {
+  .jz-dialog { width: calc(100vw - 24px); max-height: 86dvh; }
+  .jz-dialog__ft { flex-direction: row-reverse; }
+  .jz-dialog__ft .jz-btn { flex: 1; min-height: var(--jz-tap); }
+}
+
+/* ===========================================================================
+   Toast(由 jz-ui.js 注入 #jz-toasts)
+   =========================================================================== */
+#jz-toasts {
+  position: fixed;
+  left: 50%;
+  bottom: var(--jz-sp-5);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--jz-sp-2);
+  z-index: var(--jz-z-toast);
+  pointer-events: none;
+  width: max-content;
+  max-width: min(92vw, 520px);
+}
+.jz-toast {
+  padding: var(--jz-sp-2) var(--jz-sp-4);
+  background: var(--jz-text);
+  color: #fff;
+  border-radius: 999px;
+  box-shadow: var(--jz-shadow-2);
+  font-size: var(--jz-fs-2);
+  animation: jz-toast-in .16s ease-out;
+}
+.jz-toast--ok { background: var(--jz-ok); }
+.jz-toast--fail { background: var(--jz-fail); }
+.jz-toast--warn { background: var(--jz-warn); }
+@keyframes jz-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}

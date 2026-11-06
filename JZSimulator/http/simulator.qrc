@@ -4,6 +4,8 @@
         <file>index.html</file>
         <file>css/style.css</file>
         <file>js/app.js</file>
+        <!-- 统一视觉层(web/ui): 用 alias 指到仓库里的那一份, 不在本目录复制副本 -->
+        <file alias="ui/tokens.css">../../web/ui/tokens.css</file>
         <file>drivers/gpio.html</file>
         <file>drivers/ble.html</file>
         <file>drivers/wifi.html</file>

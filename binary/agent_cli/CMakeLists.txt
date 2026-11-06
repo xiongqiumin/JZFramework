@@ -27,6 +27,14 @@ add_custom_command(TARGET agent_cli POST_BUILD
         $<TARGET_FILE_DIR:agent_cli>/http
     COMMENT "copy agent_cli web ui (http/)")
 
+# 统一视觉层(web/ui: tokens/base/components + demo) —— 一份源, 每个 web 宿主各拷一份。
+# 页面里用 /ui/*.css 引用(静态目录根就是 http/)。
+add_custom_command(TARGET agent_cli POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${JZFRAMEWORK_ROOT_DIR}/web/ui
+        $<TARGET_FILE_DIR:agent_cli>/http/ui
+    COMMENT "copy shared web ui (web/ui -> http/ui)")
+
 # 测试用的大模型接入配置: 测试脚本**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
 # 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake); 已存在的不覆盖 ——
 # 换端点改的是 exe 目录那份, 不是仓库里的模板(test/test_llm.json)。

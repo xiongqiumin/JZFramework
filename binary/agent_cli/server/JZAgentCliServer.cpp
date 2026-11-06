@@ -17,6 +17,7 @@
 #include "JZJson.h"              // Json::Value / FastWriter
 
 #include <deque>
+#include <fstream>       // 管理台页面从磁盘读(server_web/index.html)
 #include <sstream>
 
 using namespace std;
@@ -703,6 +704,15 @@ void JZAgentCliServer::startHttp()
     m_http->addRoute("/api/agents/stop", new ApiAgentActionHandler(this, "stop"));
     m_http->addRoute("/api/agents/restart", new ApiAgentActionHandler(this, "restart"));
 
+    // 管理台页面资源: 全部来自 <exeDir>/server_web/ (CMake 从 server/web + web/ui 拷过来)
+    //   /app.css /app.js   页面自己的样式与脚本
+    //   /ui/*              共享视觉层(tokens/base/components/jz-ui.js)
+    // 目录缺失时 `/` 会回 500 并说明"缺 server_web/", 不会静默给出空白页。
+    JZHttpStaticFiles *webFiles = new JZHttpStaticFiles(dashboardDir());
+    m_http->addRoute("/app.css", webFiles);
+    m_http->addRoute("/app.js", webFiles);
+    m_http->addRoute("/ui/<path:path>", webFiles);
+
     // 后台网页(含兜底, 未知路径也返回 dashboard, 方便深链)
     m_http->addRoute("/", new DashboardHandler(this));
     m_http->addRoute("/<path:path>", new DashboardHandler(this));
@@ -963,205 +973,44 @@ void JZAgentCliServer::onDashboard(JZHttpServerClient *client, const JZHttpReque
         client->response(resp, req);
         return;
     }
-    respondText(client, req, 200, buildDashboardHtml(), "text/html; charset=utf-8");
+    // 页面从磁盘读(web/ -> <exeDir>/server_web/), 这里只做 token 校验 + 回文件
+    string html;
+    string loadError;
+    if (!loadDashboardHtml(html, loadError))
+    {
+        respondText(client, req, 500, loadError, "text/plain; charset=utf-8");
+        return;
+    }
+    respondText(client, req, 200, html, "text/html; charset=utf-8");
 }
 
 // ---------------------------------------------------------------------------
-// 后台网页(单文件 SPA, 内嵌; 轮询 /api/* 显示 agent 状态与日志)
+// 管理台网页: 从磁盘读, 不再内嵌 HTML/CSS/JS 字符串
+//   web/(src) --CMake--> <exeDir>/server_web/ , 这里按 dashboardDir() 去读
+//   好处: 改样式/脚本不用重编译; 现场能直接改文件排查(改坏了从包里重拷一份)。
 // ---------------------------------------------------------------------------
-string JZAgentCliServer::buildDashboardHtml() const
+string JZAgentCliServer::dashboardDir() const
 {
-    return R"JZSERVERHTML(<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JZAgentCliServer 管理台</title>
-<style>
-  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e9ef; --mut:#9aa3b2;
-          --grn:#3fb950; --red:#f85149; --yel:#d29922; --blu:#58a6ff; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex;
-           align-items:center; gap:14px; flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0; font-weight:600; }
-  .sub { color:var(--mut); font-size:12px; }
-  .wrap { padding:18px; }
-  .cards { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:12px 16px; min-width:140px; }
-  .card .k { color:var(--mut); font-size:12px; }
-  .card .v { font-size:20px; font-weight:600; margin-top:4px; }
-  table { width:100%; border-collapse:collapse; background:var(--panel);
-          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  th,td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); }
-  th { color:var(--mut); font-weight:600; font-size:12px; background:#11141a; }
-  tr:last-child td { border-bottom:none; }
-  tr.sel { background:#1c2733; cursor:pointer; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
-           border:1px solid var(--line); }
-  .badge.running { color:var(--grn); border-color:var(--grn); }
-  .badge.stopped { color:var(--mut); }
-  .badge.starting { color:var(--yel); border-color:var(--yel); }
-  button { background:#21262d; color:var(--fg); border:1px solid var(--line);
-           border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px; }
-  button:hover { border-color:var(--blu); }
-  button.danger:hover { border-color:var(--red); color:var(--red); }
-  .logbar { display:flex; align-items:center; gap:10px; margin:16px 0 8px; }
-  .logbar .name { font-weight:600; }
-  pre.log { background:#0b0d12; border:1px solid var(--line); border-radius:10px;
-            padding:12px; height:48vh; overflow:auto; white-space:pre-wrap;
-            word-break:break-all; font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
-  .empty { color:var(--mut); }
-</style>
-</head>
-<body>
-<header>
-  <h1>JZAgentCliServer 管理台</h1>
-  <span class="sub" id="meta"></span>
-</header>
-<div class="wrap">
-  <div class="cards" id="cards"></div>
-  <h3 class="sub" style="margin:0 0 8px">控制面(agent_cli 出站接入)</h3>
-  <table id="onlineTbl">
-    <thead><tr><th>agentId</th><th>名称</th><th>状态</th><th>节点</th><th>最近事件</th><th>工作区</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <h3 class="sub" style="margin:18px 0 8px">本机托管的 agent_cli 子进程</h3>
-  <table id="tbl">
-    <thead><tr><th>名称</th><th>状态</th><th>退出码</th><th>命令</th><th>日志行</th><th>操作</th></tr></thead>
-    <tbody></tbody>
-  </table>
-
-  <div class="logbar">
-    <span class="name" id="logName">未选择 agent</span>
-    <span class="sub">每 1.5s 刷新</span>
-    <button id="copyToken" style="margin-left:auto">复制带 token 的链接</button>
-  </div>
-  <pre class="log" id="log"><span class="empty">点上方某一行查看其日志</span></pre>
-</div>
-
-<script>
-const params = new URLSearchParams(location.search);
-const TOKEN = params.get('token') || '';
-const Q = TOKEN ? ('?token=' + encodeURIComponent(TOKEN)) : '';
-const api = (p) => '/api/' + p + (TOKEN ? (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : '');
-
-let selected = null;
-
-async function load() {
-  try {
-    const r = await fetch(api('status'));
-    if (!r.ok) { document.getElementById('meta').textContent = '未授权/错误 ' + r.status; return; }
-    const s = await r.json();
-    renderMeta(s);
-    renderCards(s);
-    renderOnline(s);
-    renderTable(s);
-  } catch (e) { document.getElementById('meta').textContent = '请求失败: ' + e; }
+    return JZPlatform::applicationDirPath() + "/server_web";
 }
 
-function renderMeta(s) {
-  const up = ((s.uptimeMs||0)/1000).toFixed(0);
-  const hub = s.hub || {};
-  document.getElementById('meta').textContent =
-    `frps=${s.frp.enabled?'开':'关'}  网页=http://${s.http.bind}:${s.http.port}` +
-    `  控制面=${hub.listening?('监听 '+hub.port):'关'}  在线 cli ${(s.online||[]).length}` +
-    `  子进程 ${s.agents.length}  运行 ${up}s`;
+bool JZAgentCliServer::loadDashboardHtml(string &html, string &error) const
+{
+    const string path = dashboardDir() + "/index.html";
+    ifstream ifs(path, ios::binary);
+    if (!ifs)
+    {
+        error = "读不到管理台页面: " + path + " (发布时要把 server_web/ 目录放在 exe 同目录)";
+        return false;
+    }
+    stringstream ss;
+    ss << ifs.rdbuf();
+    html = ss.str();
+    if (html.empty())
+    {
+        error = "管理台页面是空文件: " + path;
+        return false;
+    }
+    return true;
 }
 
-// 控制面上线的 cli: 一行一台, 节点列显示 node 在线数/总数
-function renderOnline(s) {
-  const tb = document.querySelector('#onlineTbl tbody');
-  const list = s.online || [];
-  if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="6" class="empty">还没有 cli 连上来(在 agent_cli 配置里填 server.host/port/token)</td></tr>';
-    return;
-  }
-  tb.innerHTML = list.map(a => {
-    const nodes = a.nodes || [];
-    const on = nodes.filter(n => n.online).length;
-    const state = a.busy ? `<span class="badge running">跑 ${esc(a.taskId||'')}</span>`
-                         : '<span class="badge stopped">空闲</span>';
-    const ev = a.lastEventType ? `${esc(a.lastEventType)}` : '<span class="empty">-</span>';
-    return `<tr><td>${esc(a.agentId)}</td><td>${esc(a.name)} <span class="empty">v${esc(a.version)}</span></td>` +
-           `<td>${state}</td>` +
-           `<td>${nodes.length? (on+'/'+nodes.length) : '<span class="empty">本地</span>'}</td>` +
-           `<td>${ev}</td><td class="empty">${esc(a.rootDir||'')}</td></tr>`;
-  }).join('');
-}
-
-function renderCards(s) {
-  const running = s.agents.filter(a=>a.running).length;
-  const cards = [
-    [' Agents', s.agents.length],
-    [' 运行中', running],
-    [' frps', s.frp.enabled ? ('监听 '+s.frp.bindPort) : '关'],
-    [' 运行时间', ((s.uptimeMs||0)/1000).toFixed(0)+'s'],
-  ];
-  document.getElementById('cards').innerHTML = cards.map(c=>
-    `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
-}
-
-function renderTable(s) {
-  const tb = document.querySelector('#tbl tbody');
-  tb.innerHTML = '';
-  s.agents.forEach(a => {
-    const tr = document.createElement('tr');
-    if (a.name === selected) tr.className = 'sel';
-    tr.innerHTML =
-      `<td>${esc(a.name)}</td>` +
-      `<td><span class="badge ${a.state}">${a.state}</span></td>` +
-      `<td>${a.exitCode}</td>` +
-      `<td class="empty">${esc((a.cmd)+' '+(a.args||[]).join(' '))}</td>` +
-      `<td>${a.logLines}</td>` +
-      `<td>
-         <button onclick="act('start','${esc(a.name)}',event)">启动</button>
-         <button onclick="act('stop','${esc(a.name)}',event)">停止</button>
-         <button class="danger" onclick="act('restart','${esc(a.name)}',event)">重启</button>
-       </td>`;
-    tr.onclick = (e) => { if (e.target.tagName==='BUTTON') return; selected = a.name; loadLog(); load(); };
-    tb.appendChild(tr);
-  });
-  if (selected && !s.agents.find(a=>a.name===selected)) { selected=null; }
-}
-
-async function act(action, name, e) {
-  e.stopPropagation();
-  const r = await fetch(api(`agents/${action}?name=${encodeURIComponent(name)}`), {method:'POST'});
-  const j = await r.json().catch(()=>({msg:''}));
-  load();
-  if (action!=='stop') setTimeout(loadLog, 600);
-}
-
-async function loadLog() {
-  if (!selected) return;
-  document.getElementById('logName').textContent = '日志: ' + selected;
-  try {
-    const r = await fetch(api(`agents/logs?name=${encodeURIComponent(selected)}&lines=300`));
-    if (!r.ok) { document.getElementById('log').textContent = '(无日志/未授权)'; return; }
-    const t = await r.text();
-    const pre = document.getElementById('log');
-    pre.textContent = t || '(空)';
-    pre.scrollTop = pre.scrollHeight;
-  } catch (e) { document.getElementById('log').textContent = '日志请求失败: ' + e; }
-}
-
-function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-document.getElementById('copyToken').onclick = () => {
-  const url = location.origin + '/?token=' + encodeURIComponent(TOKEN);
-  navigator.clipboard?.writeText(url);
-  document.getElementById('copyToken').textContent = '已复制';
-  setTimeout(()=>document.getElementById('copyToken').textContent='复制带 token 的链接', 1500);
-};
-
-load();
-setInterval(load, 2000);
-setInterval(() => { if (selected) loadLog(); }, 1500);
-</script>
-</body>
-</html>
-)JZSERVERHTML";
-}

@@ -1,0 +1,96 @@
+/* ===========================================================================
+   jz-ui tokens —— 视觉层唯一的"数值来源"
+   规则:
+     1. 只放变量, 不放选择器(除了 :root);
+     2. 组件只认 --jz-*; 页面不写死颜色/圆角/间距;
+     3. 目前只有浅色一种显示(不做暗色, 见 docs/web-ui-design.md §4.4)。
+   兼容: 末尾把老页面的变量名映射过来, 迁移完成后可整段删除。
+   =========================================================================== */
+:root {
+  color-scheme: light;
+
+  /* ---- 颜色 ---- */
+  --jz-bg: #f3f5f8;            /* 页面底色 */
+  --jz-panel: #ffffff;         /* 卡片/顶栏/表格 */
+  --jz-panel-2: #f7f8fa;       /* 次级面板(表头/嵌套块) */
+  --jz-field: #ffffff;         /* 输入框底 */
+  --jz-border: #e2e5ea;
+  --jz-border-strong: #cbd2dc;
+
+  --jz-text: #1f2328;
+  --jz-muted: #6b7280;
+
+  --jz-accent: #2f6fed;        /* 主色(按钮/链接/选中) */
+  --jz-accent-2: #1f5bd0;      /* 主色 hover */
+  --jz-accent-weak: #eaf1fe;   /* 主色浅底(选中行/标签) */
+
+  --jz-ok: #1a7f37;
+  --jz-ok-weak: #e8f5ec;
+  --jz-fail: #cf222e;
+  --jz-fail-weak: #fdeced;
+  --jz-warn: #9a6700;
+  --jz-warn-weak: #fff6e0;
+
+  /* ---- 间距(4px 基准) ---- */
+  --jz-sp-1: 4px;
+  --jz-sp-2: 8px;
+  --jz-sp-3: 12px;
+  --jz-sp-4: 16px;
+  --jz-sp-5: 24px;
+  --jz-sp-6: 32px;
+
+  /* ---- 圆角 ---- */
+  --jz-r-1: 6px;               /* 按钮/输入框 */
+  --jz-r-2: 10px;              /* 卡片/日志块 */
+  --jz-r-3: 14px;              /* 大容器/气泡 */
+
+  /* ---- 字号 ---- */
+  --jz-fs-1: 12px;             /* 辅助信息/表头 */
+  --jz-fs-2: 13px;             /* 次要正文 */
+  --jz-fs-3: 14px;             /* 正文 */
+  --jz-fs-4: 20px;             /* 页面标题 */
+
+  /* ---- 阴影 ---- */
+  --jz-shadow-1: 0 1px 2px rgba(31, 35, 40, .06);
+  --jz-shadow-2: 0 6px 24px rgba(31, 35, 40, .10);
+
+  /* ---- 触控 ---- */
+  --jz-tap: 44px;              /* 可点元素最小命中区(手机) */
+
+  /* ---- 字体 ---- */
+  --jz-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+             "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  --jz-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+             monospace;
+
+  /* ---- 层级 ---- */
+  --jz-z-topbar: 10;
+  --jz-z-toast: 1000;
+
+  /* =========================================================================
+     兼容映射(迁移期): agent_cli 控制台与 agent_cli_server 管理台的老变量名。
+     页面改完、老样式删净之后, 这一段整体删掉。
+     ========================================================================= */
+  --bg: var(--jz-bg);
+  --panel: var(--jz-panel);
+  --panel-2: var(--jz-panel-2);
+  --field: var(--jz-field);
+  --border: var(--jz-border);
+  --border-strong: var(--jz-border-strong);
+  --text: var(--jz-text);
+  --muted: var(--jz-muted);
+  --accent: var(--jz-accent);
+  --accent-2: var(--jz-accent-2);
+  --ok: var(--jz-ok);
+  --fail: var(--jz-fail);
+  --user: var(--jz-accent);
+  --shadow: var(--jz-shadow-1);
+  /* server 管理台 */
+  --line: var(--jz-border);
+  --fg: var(--jz-text);
+  --mut: var(--jz-muted);
+  --grn: var(--jz-ok);
+  --red: var(--jz-fail);
+  --yel: var(--jz-warn);
+  --blu: var(--jz-accent);
+}

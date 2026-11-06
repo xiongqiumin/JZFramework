@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jz-ui 组件总览</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="components.css">
+<style>
+  /* ---- 文档站布局: 左侧组件列表 + 右侧详情 ---- */
+  .doc {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: var(--jz-sp-5);
+    align-items: start;
+    /* 拉伸: 占满可用宽度(原先 max-width:1180px 在宽屏上两边留白太多) */
+    max-width: none;
+    margin: 0;
+    padding: var(--jz-sp-4) var(--jz-sp-5) 72px;
+  }
+
+  /* 宽屏: 左栏略加宽, 内容区跟着铺开 */
+  @media (min-width: 1440px) {
+    .doc {
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 32px;
+      padding: var(--jz-sp-5) 40px 88px;
+    }
+  }
+  .doc__nav {
+    position: sticky;
+    top: var(--jz-sp-4);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--jz-sp-2);
+    background: var(--jz-panel);
+    border: 1px solid var(--jz-border);
+    border-radius: var(--jz-r-2);
+    max-height: calc(100dvh - 120px);
+    overflow: auto;
+  }
+  .doc__nav-title {
+    padding: var(--jz-sp-1) var(--jz-sp-2) var(--jz-sp-2);
+    font-size: var(--jz-fs-1);
+    letter-spacing: 1px;
+    color: var(--jz-muted);
+  }
+  .doc__link {
+    display: block;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 var(--jz-sp-2);
+    font: inherit;
+    font-size: var(--jz-fs-2);
+    text-align: left;
+    color: var(--jz-text);
+    background: transparent;
+    border: 0;
+    border-radius: var(--jz-r-1);
+    cursor: pointer;
+  }
+  .doc__link.is-active {
+    background: var(--jz-accent-weak);
+    color: var(--jz-accent);
+    font-weight: 600;
+  }
+  .doc__nav-foot {
+    margin-top: var(--jz-sp-2);
+    padding: var(--jz-sp-2);
+    font-size: var(--jz-fs-1);
+    line-height: 1.6;
+    color: var(--jz-muted);
+    border-top: 1px solid var(--jz-border);
+  }
+
+  .doc__main { min-width: 0; }
+  .doc__panel { display: none; flex-direction: column; gap: var(--jz-sp-3); }
+  .doc__panel.is-active { display: flex; }
+  .doc__panel > h2 { font-size: var(--jz-fs-4); }
+  .doc__lead { color: var(--jz-muted); font-size: var(--jz-fs-2); }
+  .doc__body {
+    padding: var(--jz-sp-4);
+    background: var(--jz-panel);
+    border: 1px solid var(--jz-border);
+    border-radius: var(--jz-r-2);
+  }
+  .doc__body + .doc__body { margin-top: 0; }
+  .doc code {
+    padding: 1px 6px;
+    background: var(--jz-panel-2);
+    border-radius: 4px;
+    font-size: var(--jz-fs-1);
+  }
+  .doc__hint { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+
+  /* 颜色色块 */
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--jz-sp-2); }
+  .swatch { border: 1px solid var(--jz-border); border-radius: var(--jz-r-1); overflow: hidden; font-size: var(--jz-fs-1); }
+  .swatch i { display: block; height: 44px; }
+  .swatch span { display: block; padding: 6px 8px; color: var(--jz-muted); }
+
+  /* 对话示例需要固定高度, 否则 composer 会把页面顶长 */
+  .chatbox {
+    /* 拉伸: 跟着视口高度走(原固定 420px 在宽屏上显得很矮) */
+    height: clamp(360px, 56dvh, 720px);
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--jz-border);
+    border-radius: var(--jz-r-2);
+    overflow: hidden;
+    background: var(--jz-bg);
+  }
+  .chatbox .jz-chat { flex: 1; }
+
+  /* ---- 手机/窄屏: 左侧列表变成顶部横向 chips ---- */
+  @media (max-width: 900px) {
+    .doc { grid-template-columns: 1fr; gap: var(--jz-sp-3); padding: var(--jz-sp-3) var(--jz-sp-3) 56px; }
+    .doc__nav {
+      position: static;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      max-height: none;
+      overflow-x: auto;
+      padding: var(--jz-sp-2);
+    }
+    .doc__nav-title, .doc__nav-foot { display: none; }
+    .doc__link {
+      width: auto;
+      min-height: var(--jz-tap);
+      white-space: nowrap;
+      border: 1px solid var(--jz-border);
+      border-radius: 999px;
+      padding: 0 var(--jz-sp-3);
+    }
+    .doc__link.is-active { border-color: var(--jz-accent); }
+    .doc__body { padding: var(--jz-sp-3); }
+  }
+
+  @media (hover: hover) {
+    .doc__link:hover { background: var(--jz-panel-2); }
+    .doc__link.is-active:hover { background: var(--jz-accent-weak); }
+  }
+</style>
+</head>
+<body>
+<div class="jz-shell">
+
+  <header class="jz-topbar">
+    <div class="jz-brand">
+      <span class="jz-brand__logo">JZ</span>
+      <div>
+        <div class="jz-brand__title">jz-ui 组件总览</div>
+        <div class="jz-brand__sub">tokens / base / components · 浅色单主题 · 手机 / 平板 / 桌面</div>
+      </div>
+    </div>
+    <div class="jz-tools">
+      <span class="jz-badge jz-badge--ok">在线</span>
+      <button class="jz-btn jz-btn--ghost" onclick="JzUI.toast('已重置')">重置</button>
+      <button class="jz-btn jz-btn--primary" onclick="JzUI.toast('已保存', 'ok')">保存</button>
+    </div>
+  </header>
+
+  <div class="doc">
+
+    <!-- ================= 左: 组件列表 ================= -->
+    <aside class="doc__nav">
+      <div class="doc__nav-title">组件</div>
+      <nav id="nav" aria-label="组件列表">
+        <button class="doc__link is-active" data-panel="colors">颜色 tokens</button>
+        <button class="doc__link" data-panel="button">按钮</button>
+        <button class="doc__link" data-panel="badge">徽标</button>
+        <button class="doc__link" data-panel="card">卡片 · 栅格</button>
+        <button class="doc__link" data-panel="table">表格</button>
+        <button class="doc__link" data-panel="form">输入框 · 表单</button>
+        <button class="doc__link" data-panel="composer">输入区 composer</button>
+        <button class="doc__link" data-panel="chat">回复浏览 chat</button>
+        <button class="doc__link" data-panel="step">执行过程 step</button>
+        <button class="doc__link" data-panel="log">日志 · 空状态</button>
+        <button class="doc__link" data-panel="toast">提示 toast</button>
+        <button class="doc__link" data-panel="dialog">弹窗 dialog</button>
+      </nav>
+      <div class="doc__nav-foot">改 <code>tokens.css</code> 即全局生效；<br>组件只认 <code>--jz-*</code> 变量。</div>
+    </aside>
+
+    <!-- ================= 右: 详情 ================= -->
+    <main class="doc__main">
+
+      <section class="doc__panel is-active" data-panel="colors">
+        <h2>颜色 tokens</h2>
+        <p class="doc__lead">页面里不要写颜色字面量，全部引用变量；换主题只改 <code>tokens.css</code>。</p>
+        <div class="doc__body">
+          <div class="swatches">
+            <div class="swatch"><i style="background:var(--jz-bg)"></i><span>--jz-bg</span></div>
+            <div class="swatch"><i style="background:var(--jz-panel);border-bottom:1px solid var(--jz-border)"></i><span>--jz-panel</span></div>
+            <div class="swatch"><i style="background:var(--jz-panel-2)"></i><span>--jz-panel-2</span></div>
+            <div class="swatch"><i style="background:var(--jz-accent)"></i><span>--jz-accent</span></div>
+            <div class="swatch"><i style="background:var(--jz-accent-weak)"></i><span>--jz-accent-weak</span></div>
+            <div class="swatch"><i style="background:var(--jz-ok)"></i><span>--jz-ok</span></div>
+            <div class="swatch"><i style="background:var(--jz-warn)"></i><span>--jz-warn</span></div>
+            <div class="swatch"><i style="background:var(--jz-fail)"></i><span>--jz-fail</span></div>
+          </div>
+        </div>
+        <div class="doc__body">
+          <div class="jz-grid">
+            <div class="jz-card jz-card--flat">
+              <div class="jz-card__hd">间距 / 圆角</div>
+              <div class="jz-card__bd doc__hint"><code>--jz-sp-1..6</code> 4→32px · <code>--jz-r-1..3</code> 6/10/14px</div>
+            </div>
+            <div class="jz-card jz-card--flat">
+              <div class="jz-card__hd">字号 / 触控</div>
+              <div class="jz-card__bd doc__hint"><code>--jz-fs-1..4</code> 12/13/14/20px · <code>--jz-tap</code> 44px</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="button">
+        <h2>按钮</h2>
+        <p class="doc__lead"><code>.jz-btn</code> + 变体 <code>--primary/--ghost/--danger</code> + 尺寸 <code>--sm</code>。
+          手指设备上自动增高到 <code>--jz-tap</code>。</p>
+        <div class="doc__body jz-stack">
+          <div class="jz-row" style="flex-wrap:wrap">
+            <button class="jz-btn jz-btn--primary">主要</button>
+            <button class="jz-btn">次要</button>
+            <button class="jz-btn jz-btn--ghost">幽灵</button>
+            <button class="jz-btn jz-btn--danger">危险</button>
+            <button class="jz-btn jz-btn--sm">小号</button>
+            <button class="jz-btn" disabled>禁用</button>
+          </div>
+          <p class="doc__hint">hover 效果只在 <code>@media (hover:hover)</code> 里生效，手机上不会“粘住”。</p>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="badge">
+        <h2>徽标</h2>
+        <p class="doc__lead"><code>.jz-badge</code> + <code>--ok/--fail/--warn/--info</code>，默认是中性灰。</p>
+        <div class="doc__body jz-row" style="flex-wrap:wrap">
+          <span class="jz-badge">空闲</span>
+          <span class="jz-badge jz-badge--ok">通过</span>
+          <span class="jz-badge jz-badge--fail">失败</span>
+          <span class="jz-badge jz-badge--warn">超时</span>
+          <span class="jz-badge jz-badge--info">运行中</span>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="card">
+        <h2>卡片 · 栅格</h2>
+        <p class="doc__lead"><code>.jz-card</code>（<code>__hd/__bd/__ft</code>）+ <code>.jz-grid</code>，
+          列数由 <code>auto-fit + minmax(240px,1fr)</code> 决定，手机自动一列。</p>
+        <div class="jz-grid">
+          <div class="jz-card">
+            <div class="jz-card__hd">节点 nodeA <span class="jz-badge jz-badge--ok">在线</span></div>
+            <div class="jz-card__bd">10.0.0.7:7500 · linux-x64 · bash</div>
+            <div class="jz-card__ft"><button class="jz-btn jz-btn--sm">查看日志</button></div>
+          </div>
+          <div class="jz-card">
+            <div class="jz-card__hd">节点 nodeB <span class="jz-badge jz-badge--fail">离线</span></div>
+            <div class="jz-card__bd">10.0.0.8:7500 · 连不上（3s 无 helloAck）</div>
+            <div class="jz-card__ft"><button class="jz-btn jz-btn--sm">重连</button></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="table">
+        <h2>表格</h2>
+        <p class="doc__lead">桌面/平板：<code>.jz-table-wrap</code> 横滑 + 表头固定；手机（&lt;640px）：
+          每个 <code>td</code> 带 <code>data-label</code> 时**自动转成卡片**。</p>
+        <div class="jz-table-wrap">
+          <table class="jz-table">
+            <thead>
+              <tr><th>agentId</th><th>状态</th><th>节点</th><th class="jz-table__num">轮次</th></tr>
+            </thead>
+            <tbody>
+              <tr class="is-sel">
+                <td data-label="agentId">a1</td>
+                <td data-label="状态"><span class="jz-badge jz-badge--info">跑任务</span></td>
+                <td data-label="节点">2/2 在线</td>
+                <td data-label="轮次" class="jz-table__num">3</td>
+              </tr>
+              <tr>
+                <td data-label="agentId">a2</td>
+                <td data-label="状态"><span class="jz-badge">空闲</span></td>
+                <td data-label="节点">本地</td>
+                <td data-label="轮次" class="jz-table__num">0</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="doc__hint">把浏览器调到 &lt;640px 看卡片形态。</p>
+      </section>
+
+      <section class="doc__panel" data-panel="form">
+        <h2>输入框 · 表单</h2>
+        <p class="doc__lead"><code>.jz-field</code> + <code>.jz-input / .jz-textarea</code>；错误态加 <code>--err</code>。
+          触控设备上 input 自动 44px。</p>
+        <div class="doc__body jz-stack" style="max-width:560px">
+          <div class="jz-field">
+            <label for="d1">访问令牌</label>
+            <input id="d1" class="jz-input" placeholder="与 config.json 的 http.token 一致">
+          </div>
+          <div class="jz-field">
+            <label for="d2">验证命令（错误态）</label>
+            <input id="d2" class="jz-input jz-input--err" value="python3 verify.py">
+          </div>
+          <div class="jz-field">
+            <label for="d3">说明</label>
+            <textarea id="d3" class="jz-textarea" rows="3" placeholder="多行输入，最大高度 40dvh"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="composer">
+        <h2>输入区 composer</h2>
+        <p class="doc__lead">第一行验证命令、第二行多行输入、按钮浮在右下角（<code>.jz-composer__actions</code>）。
+          手机端隐藏标签、输入框增高，操作区不换行。</p>
+        <div class="doc__body" style="padding:0;overflow:hidden">
+          <div class="jz-composer">
+            <div class="jz-composer__field">
+              <span class="jz-composer__label">验证命令:</span>
+              <input class="jz-input" placeholder="留空 = 无验证；填了按退出码判定（0 通过）">
+            </div>
+            <div class="jz-composer__box">
+              <textarea class="jz-textarea" rows="3" placeholder="输入任务…（Enter 发送，Shift+Enter 换行）"></textarea>
+              <div class="jz-composer__actions">
+                <button class="jz-btn jz-btn--ghost jz-btn--sm">清空</button>
+                <button class="jz-btn jz-btn--primary">发送</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="doc__hint">结构：<code>.jz-composer &gt; __field + __box(+ __actions)</code>；
+          textarea 底部留 40px 给按钮，文字不会被压住。</p>
+      </section>
+
+      <section class="doc__panel" data-panel="chat">
+        <h2>回复浏览 chat</h2>
+        <p class="doc__lead">用户靠右（主色气泡），agent 靠左（白底气泡），失败用 <code>.jz-msg--error</code>；
+          气泡内 <code>pre</code> 自带滚动窗口。</p>
+        <div class="chatbox">
+          <div class="jz-chat">
+            <div class="jz-msg jz-msg--user">
+              <div class="jz-msg__meta"><span>你 · 14:02</span></div>
+              <div class="jz-bubble">把 nodeA 的 secret.txt 内容写到 nodeB 的 answer.txt</div>
+            </div>
+
+            <div class="jz-msg jz-msg--agent">
+              <div class="jz-msg__meta"><span>agent · 第 1 轮</span><span class="jz-badge jz-badge--info">执行中</span></div>
+              <div class="jz-bubble">
+                <div class="jz-step jz-step--run"><i class="jz-step__dot"></i><span class="jz-step__tag">THINK</span><span class="jz-step__body">先读 nodeA 的文件，再写入 nodeB…</span></div>
+                <div class="jz-step jz-step--ok"><i class="jz-step__dot"></i><span class="jz-step__tag">TOOL</span><span class="jz-step__body">remote_ssh(host=nodeA, command="cat secret.txt") → exit=0</span></div>
+                <div class="jz-step"><i class="jz-step__dot"></i><span class="jz-step__tag">REPLY</span><span class="jz-step__body">已读出 20 字节，正在写入 nodeB。</span></div>
+              </div>
+            </div>
+
+            <div class="jz-msg jz-msg--agent">
+              <div class="jz-msg__meta"><span>agent · 完成</span><span class="jz-badge jz-badge--ok">验证通过</span></div>
+              <div class="jz-bubble">已写入 nodeB 的 answer.txt，验证命令退出码 0。
+<pre>OK: JZ-494726970EBB4D2D</pre></div>
+            </div>
+
+            <div class="jz-msg jz-msg--error">
+              <div class="jz-msg__meta"><span>系统</span></div>
+              <div class="jz-bubble">验证失败：No such file (answer.txt)</div>
+            </div>
+          </div>
+          <div class="jz-composer">
+            <div class="jz-composer__field">
+              <span class="jz-composer__label">验证命令:</span>
+              <input class="jz-input" placeholder="留空 = 无验证">
+            </div>
+            <div class="jz-composer__box">
+              <textarea class="jz-textarea" rows="2" placeholder="输入任务…"></textarea>
+              <div class="jz-composer__actions">
+                <button class="jz-btn jz-btn--primary">发送</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="doc__hint">手机端 <code>.jz-msg{max-width:100%}</code>，正文优先，不缩气泡。</p>
+      </section>
+
+      <section class="doc__panel" data-panel="step">
+        <h2>执行过程 step</h2>
+        <p class="doc__lead"><code>.jz-step</code> = 圆点 + 标签 + 正文；状态 <code>--run</code>（脉冲）、
+          <code>--ok</code>、<code>--fail</code>。用户开了"减少动效"时脉冲会停。</p>
+        <div class="doc__body">
+          <div class="jz-step jz-step--run"><i class="jz-step__dot"></i><span class="jz-step__tag">THINK</span><span class="jz-step__body">正在分析失败输出…</span></div>
+          <div class="jz-step jz-step--ok"><i class="jz-step__dot"></i><span class="jz-step__tag">TOOL</span><span class="jz-step__body">read_file("answer.txt") → 20 字节</span></div>
+          <div class="jz-step"><i class="jz-step__dot"></i><span class="jz-step__tag">VERIFY</span><span class="jz-step__body">exit_code=1，第 2 轮重试</span></div>
+          <div class="jz-step jz-step--fail"><i class="jz-step__dot"></i><span class="jz-step__tag">ERROR</span><span class="jz-step__body">节点 nodeB 离线</span></div>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="log">
+        <h2>日志 · 空状态</h2>
+        <p class="doc__lead"><code>.jz-log</code> 等宽、自带滚动条；加 <code>data-autoscroll</code> 后
+          <code>jz-ui.js</code> 会在新内容到达时贴底（用户往上翻时不打断）。</p>
+        <div class="doc__body jz-stack">
+          <pre class="jz-log" data-autoscroll>[node nodeA] exit=0 128ms
+JZ-494726970EBB4D2D
+[verify] round=0 exit_code=0 passed=true</pre>
+          <div class="jz-empty">
+            还没有任务。提交一条后，这里会显示运行过程与验证结果。
+            <button class="jz-btn jz-btn--sm">新建任务</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="dialog">
+        <h2>弹窗 dialog</h2>
+        <p class="doc__lead">基于原生 <code>&lt;dialog&gt;</code> —— 焦点陷阱、<kbd>Esc</kbd>、顶层渲染都由浏览器负责，
+          我们只加外观。<code>JzUI.dialog()</code> 返回 <code>Promise&lt;value&gt;</code>，
+          <code>JzUI.confirm()</code> 返回 <code>Promise&lt;boolean&gt;</code>。</p>
+        <div class="doc__body jz-stack">
+          <div class="jz-row" style="flex-wrap:wrap">
+            <button class="jz-btn" onclick="demoDlg('plain')">普通弹窗</button>
+            <button class="jz-btn jz-btn--danger" onclick="demoDlg('confirm')">确认弹窗（危险）</button>
+            <button class="jz-btn" onclick="demoDlg('long')">长内容（可滚动）</button>
+            <button class="jz-btn" onclick="demoDlg('form')">带输入</button>
+          </div>
+          <p class="doc__hint">手机端宽度 <code>calc(100vw - 24px)</code>、按钮等分整行且 ≥44px；
+            点遮罩 / <kbd>Esc</kbd> 关闭；<code>closable:false</code> 可禁止右上角关闭。</p>
+        </div>
+        <div class="doc__body">
+          <p class="doc__hint" style="margin-bottom:8px">最简用法</p>
+          <pre class="jz-log">JzUI.confirm('删除后不可恢复，继续？', { danger: true })
+  .then(ok => JzUI.toast(ok ? '已删除' : '已取消', ok ? 'ok' : ''));
+
+JzUI.dialog({ title: '详情', size: 'lg', body: '&lt;p&gt;任意 HTML&lt;/p&gt;' });</pre>
+        </div>
+      </section>
+
+      <section class="doc__panel" data-panel="toast">
+        <h2>提示 toast</h2>
+        <p class="doc__lead"><code>JzUI.toast(text, kind)</code>，kind = <code>ok / fail / warn</code>；
+          同时最多 3 条，3s 自动消失，<code>aria-live="polite"</code>。</p>
+        <div class="doc__body jz-row" style="flex-wrap:wrap">
+          <button class="jz-btn" onclick="JzUI.toast('普通提示')">普通</button>
+          <button class="jz-btn" onclick="JzUI.toast('已保存', 'ok')">成功</button>
+          <button class="jz-btn" onclick="JzUI.toast('保存失败', 'fail')">失败</button>
+          <button class="jz-btn" onclick="JzUI.toast('连接不稳定', 'warn')">警告</button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script src="jz-ui.js"></script>
+<script>
+  // ---- 弹窗示例 ----
+  function demoDlg(kind) {
+    if (kind === 'confirm') {
+      JzUI.confirm('删除后不可恢复，确定删除 agent a1 的任务记录？',
+                   { title: '删除确认', okText: '删除', danger: true })
+        .then(function (ok) { JzUI.toast(ok ? '已删除' : '已取消', ok ? 'ok' : ''); });
+      return;
+    }
+
+    if (kind === 'long') {
+      var ps = '';
+      for (var i = 1; i <= 30; i++) ps += '<p>第 ' + i + ' 段：内容区自己滚动，弹窗高度不超过 84dvh。</p>';
+      JzUI.dialog({ title: '长内容（lg）', size: 'lg', body: ps });
+      return;
+    }
+
+    if (kind === 'form') {
+      var box = document.createElement('div');
+      box.innerHTML = '<div class="jz-field"><label for="dlgVerify">验证命令</label>' +
+                      '<input id="dlgVerify" class="jz-input" placeholder="留空 = 无验证"></div>';
+      var input = box.querySelector('#dlgVerify');
+      JzUI.dialog({
+        title: '新建任务',
+        body: box,
+        actions: [{ text: '取消', value: 'cancel' },
+                  { text: '提交', value: 'ok', kind: 'primary' }]
+      }).then(function (v) {
+        if (v !== 'ok') return;
+        JzUI.toast('已提交：' + (input.value || '(无验证命令)'), 'ok');
+      });
+      return;
+    }
+
+    JzUI.dialog({ title: '普通弹窗', body: '这是一段说明文字。\nEsc / 点遮罩 / 右上角 × 都能关。' });
+  }
+</script>
+<script>
+  // ---- 左侧列表切换右侧面板(带 hash 深链, 刷新后停在原处) ----
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('.doc__link'));
+    var panels = Array.prototype.slice.call(document.querySelectorAll('.doc__panel'));
+
+    function show(id) {
+      var hit = false;
+      links.forEach(function (l) {
+        var on = l.dataset.panel === id;
+        l.classList.toggle('is-active', on);
+        l.setAttribute('aria-current', on ? 'true' : 'false');
+        if (on) hit = true;
+      });
+      if (!hit) return false;
+      panels.forEach(function (p) {
+        p.classList.toggle('is-active', p.dataset.panel === id);
+      });
+      document.querySelector('.doc__main').scrollIntoView({ block: 'start' });
+      return true;
+    }
+
+    function fromHash() {
+      var id = (location.hash || '').replace('#', '');
+      return id && show(id) ? id : null;
+    }
+
+    links.forEach(function (l) {
+      l.addEventListener('click', function () {
+        var id = l.dataset.panel;
+        if (show(id)) location.hash = id;
+      });
+    });
+
+    window.addEventListener('hashchange', fromHash);
+    if (!fromHash()) show('colors');
+  })();
+</script>
+</body>
+</html>

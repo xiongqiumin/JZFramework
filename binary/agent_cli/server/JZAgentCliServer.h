@@ -130,7 +130,9 @@ private:
     Json::Value onlineAgentsJson() const;
     std::string resolveProgram(const JZCliServerAgentConfig &cfg) const;
     void appendLog(JZCliServerAgentInstance *inst, const std::string &chunk);
-    std::string buildDashboardHtml() const;
+    // 管理台网页的落盘目录(<exeDir>/server_web); 页面 CSS/JS 也从这里读
+    std::string dashboardDir() const;
+    bool loadDashboardHtml(std::string &html, std::string &error) const;
 
     JZCliServerConfig m_config;
     JZFrpServer *m_frpServer = nullptr;

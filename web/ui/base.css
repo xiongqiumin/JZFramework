@@ -1,0 +1,90 @@
+/* ===========================================================================
+   jz-ui base —— reset + 排版 + 布局原语
+   依赖 tokens.css; 只做"所有页面都该一致"的事, 不含任何业务组件。
+   =========================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--jz-bg);
+  color: var(--jz-text);
+  font-family: var(--jz-font);
+  font-size: var(--jz-fs-3);
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;   /* iOS 横屏不要自动放大字号 */
+}
+
+body { min-height: 100dvh; }        /* 100vh 在手机地址栏下会跳动 */
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; line-height: 1.3; }
+h1 { font-size: var(--jz-fs-4); }
+h2 { font-size: var(--jz-fs-3); }
+p  { margin: 0; }
+
+a { color: var(--jz-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre, kbd, samp { font-family: var(--jz-mono); }
+
+img, svg, video { max-width: 100%; height: auto; }
+
+::selection { background: var(--jz-accent-weak); }
+
+/* 键盘可见焦点(鼠标点击不显示) */
+:focus-visible {
+  outline: 2px solid var(--jz-accent);
+  outline-offset: 2px;
+  border-radius: var(--jz-r-1);
+}
+
+/* 细滚动条 */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--jz-border-strong);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: #adb6c2; background-clip: content-box; }
+
+.hidden { display: none !important; }
+
+/* 只给读屏 */
+.jz-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---- 布局原语 ---- */
+.jz-shell {                 /* 整页: 顶栏 + 主体 */
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+.jz-row { display: flex; align-items: center; gap: var(--jz-sp-2); }
+.jz-stack { display: flex; flex-direction: column; gap: var(--jz-sp-2); }
+.jz-grid {                  /* 卡片栅格: 列数自适应, 不写死 */
+  display: grid;
+  gap: var(--jz-sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.jz-grow { flex: 1; min-width: 0; min-height: 0; }
+.jz-scroll { overflow: auto; min-height: 0; }
+.jz-wrap {                  /* 页面内容宽度上限(与现有控制台一致) */
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* 动效: 用户要求减少时全关 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

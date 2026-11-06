@@ -29,7 +29,7 @@ using namespace std;
 // ===========================================================================
 // 默认配置(--init 写出的文本)。
 //   http.*     后台网页 / 管理 API 的监听地址与鉴权 token。
-//   frp.server.* frps 服务端配置(可选; 与 agent_cli 的 frp.client.* 对应)。
+//   frp.server.* frps 服务端配置(可选; 只给"现场自带 frpc"的部署用, 与 hub 无关)。
 //   agents[]   被管理的一系列 agent_cli(各作为一个子进程拉起并监管)。
 // ===========================================================================
 static const char *kDefaultConfigJson = R"json({

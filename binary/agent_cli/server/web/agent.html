@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agent 详情 · JZAgent 管理台</title>
-<link rel="stylesheet" href="/ui/tokens.css">
-<link rel="stylesheet" href="/ui/base.css">
-<link rel="stylesheet" href="/ui/components.css">
-<link rel="stylesheet" href="/app.css">
+<title>agent · JZAgent 管理台</title>
+<link rel="stylesheet" href="/ui/tokens.css?v=2">
+<link rel="stylesheet" href="/ui/base.css?v=2">
+<link rel="stylesheet" href="/ui/components.css?v=2">
+<link rel="stylesheet" href="/app.css?v=2">
 </head>
 <body data-page="agent">
 <header class="jz-topbar">
@@ -21,60 +21,64 @@
   <nav class="jz-tools" id="nav">
     <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">连接</a>
     <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">任务记录</a>
-    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">新建任务</a>
+    <button class="jz-btn jz-btn--sm" id="btnRefresh">刷新</button>
   </nav>
 </header>
 
-<div class="wrap">
-  <div class="detail-grid">
-    <section>
-      <h2 class="sec">状态</h2>
-      <div class="jz-card"><div class="jz-card__bd" id="infoBody">加载中…</div></div>
+<div class="wrap agent-wrap">
+  <!-- 菜单: 主界面是会话(输入+结果), 其余收到 tab 里 -->
+  <nav class="tabs" id="tabs">
+    <a class="tab is-on" href="#chat" data-tab="chat">会话</a>
+    <a class="tab" href="#tasks" data-tab="tasks">任务</a>
+    <a class="tab" href="#info" data-tab="info">信息</a>
+  </nav>
 
-      <h2 class="sec">节点</h2>
-      <div class="jz-table-wrap">
-        <table class="jz-table">
-          <thead><tr><th>节点</th><th>地址</th><th>状态</th><th>工作区</th></tr></thead>
-          <tbody id="nodeBody"></tbody>
-        </table>
+  <section class="pane" data-pane="chat">
+    <div class="feed" id="feed">
+      <div class="feed__empty">加载中…</div>
+    </div>
+
+    <div class="composer">
+      <textarea id="fPrompt" class="jz-textarea composer__ta" rows="2"
+        placeholder="输入任务，Ctrl+Enter 发送…"></textarea>
+      <div class="composer__row">
+        <input id="fVerify" class="jz-input" placeholder="验证命令（可选，退出码 0 = 通过）">
+        <button id="btnSubmit" class="jz-btn jz-btn--primary">发送</button>
       </div>
+      <div class="composer__hint" id="msg"></div>
+    </div>
+  </section>
 
-      <h2 class="sec">这个 agent 的任务 <a class="sec__more" id="allTasks" href="tasks">全部 →</a></h2>
-      <div class="jz-table-wrap">
-        <table class="jz-table">
-          <thead><tr><th>任务</th><th>状态</th><th>轮次</th><th>耗时</th><th>提交时间</th></tr></thead>
-          <tbody id="taskBody"></tbody>
-        </table>
-      </div>
-    </section>
+  <section class="pane hidden" data-pane="tasks">
+    <div class="jz-table-wrap">
+      <table class="jz-table">
+        <thead><tr><th>任务</th><th>状态</th><th>轮次</th><th>耗时</th><th>提交时间</th></tr></thead>
+        <tbody id="taskBody"></tbody>
+      </table>
+    </div>
+    <p class="logbar__hint"><a id="allTasks" href="tasks">在任务记录里看全部 →</a></p>
+  </section>
 
-    <aside>
-      <h2 class="sec">在这台 agent 上新建任务</h2>
-      <div class="jz-card"><div class="jz-card__bd jz-stack">
-        <div class="jz-field">
-          <label for="fPrompt">任务</label>
-          <textarea id="fPrompt" class="jz-textarea" rows="5" placeholder="要让这台 agent 做什么…"></textarea>
-        </div>
-        <div class="jz-field">
-          <label for="fVerify">验证命令（可选）</label>
-          <input id="fVerify" class="jz-input" placeholder="退出码 0 = 通过；留空 = 跑完即通过">
-        </div>
-        <div class="jz-row">
-          <button id="btnSubmit" class="jz-btn jz-btn--primary">提交</button>
-          <span class="logbar__hint" id="msg"></span>
-        </div>
-        <p class="logbar__hint" id="builtinNote" style="display:none">
-          这是 server 进程内置的 agent：任务在本机跑，工具里多了
-          <code>server_agents</code> / <code>server_task_submit</code> /
-          <code>server_task_query</code> / <code>server_agent_control</code>，
-          可以让它替你去指挥别的 agent。
-        </p>
-      </div></div>
-    </aside>
-  </div>
+  <section class="pane hidden" data-pane="info">
+    <div class="jz-card"><div class="jz-card__bd" id="infoBody">加载中…</div></div>
+
+    <h2 class="sec">节点</h2>
+    <div class="jz-table-wrap">
+      <table class="jz-table">
+        <thead><tr><th>节点</th><th>地址</th><th>状态</th><th>工作区</th></tr></thead>
+        <tbody id="nodeBody"></tbody>
+      </table>
+    </div>
+
+    <p class="logbar__hint" id="builtinNote" style="display:none">
+      这是 server 进程内置的 agent：任务在本机跑，工具里多了
+      <code>server_agents</code> / <code>server_task_submit</code> /
+      <code>server_task_query</code> / <code>server_agent_control</code>。
+    </p>
+  </section>
 </div>
 
-<script src="/ui/jz-ui.js"></script>
-<script src="/app.js"></script>
+<script src="/ui/jz-ui.js?v=2"></script>
+<script src="/app.js?v=2"></script>
 </body>
 </html>

@@ -935,8 +935,8 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 
 | 路径 | 页面 | 内容 |
 | --- | --- | --- |
-| `/` | `index.html` | **连接列表**：每个 agent 一行（状态点、agentId、名称/版本/模型、节点 x/y、工作区、当前任务），点整行进详情 |
-| `/agent?id=` | `agent.html` | **agent 详情**：状态卡（模型/工作区/当前任务/最近事件）+ 节点表 + 这台 agent 的任务（最近 20 条）+ 右侧"在这台上新建任务" |
+| `/` | `index.html` | **连接列表**：每个 agent 一张卡片（状态、agentId、名称/版本/模型、节点 x/y、工作区、最近任务），右侧「进入」按钮 + 「删除」 |
+| `/agent?id=` | `agent.html` | **以会话为主界面**：顶部 tab（会话 / 任务 / 信息）。会话 = 底部输入框 + 对话式结果（每条任务一对气泡：你问的 / 它回的，含状态与耗时）；任务 = 表格；信息 = 状态卡 + 节点表 |
 | `/tasks` | `tasks.html` | 全局任务记录（筛选 + `?id=` 详情） |
 | `/new` | `new.html` | 跨 agent 新建任务（agent 下拉） |
 
@@ -981,3 +981,35 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 - 内置 agent **不参与 verify 门控**：server 本机没有"产物"概念，任务结束即结束，`verify_rounds` 恒为 0；
 - 它只能"通过任务"影响远端 cli，读不到远端文件 —— 这是权限边界，不是缺失；
 - 内置 agent 忙时 `POST /api/tasks` 回 409（单实例，没有队列；需要队列就用远端 cli 的 `task.queues`）。
+
+**不做定时刷新**：列表 / 任务记录都改成「手动刷新（按钮）+ 改筛选自动拉一次」。
+原因：整页每 2s 重绘会把正在读的详情刷掉，表现为"一直闪"。
+唯一例外是会话页——**只在确实有任务 `running` 时才用 `setTimeout` 追一次**（跑完自动停，不是常驻定时器）。
+
+### 16.5 列表 = 「曾经连过的全部」（含离线）
+
+| 项 | 规则 |
+| --- | --- |
+| 档案 | `data/agents.json`（整文件重写）：`agentId/name/version/rootDir/modelName/firstSeen/lastSeen/connects` |
+| 接口 | `GET /api/status` 新增 `known[]`：**在线优先**，其次按 `lastSeen` 倒序；`online` 由 `m_connByAgent` 现算 |
+| 离线详情 | `GET /api/agent?id=` 依次查 在线 → 档案（`kind=offline`）→ 本机子进程；离线时详情页**禁用派活表单** |
+| 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连任务记录一起删（并重写 `tasks.jsonl`，否则追加文件会在重启时"复活"已删行） |
+| 心跳回收 | hub 每 5s 扫一次，`now - lastSeen > 20s` 判离线 —— 拔网线/休眠时 TCP 仍"通"，socket 的断开信号等不到 |
+
+首页不再放「新建任务」：派活是"进到某台 agent 里"的动作（`/agent?id=` 的表单预填 agentId）。
+
+**静态资源的缓存策略**（踩过一次）：`JZHttpStaticFiles` 默认 `max-age=3600`，改完页面而浏览器还跑着缓存里的旧 `app.js`，
+表现就是"HTML 是新的、脚本是旧的" → 会话区一直停在「加载中…」，从界面上完全看不出原因。现在：
+
+- 管理台对静态文件设 `setCacheMaxAge(0)`（`max-age=0` + ETag/Last-Modified，没变就 304）；
+- 页面里引用资源带版本号 `/app.css?v=2`、`/app.js?v=2` —— **改前端资源时要顺手 +1**；
+- `app.js` 里加了 4s 兜底提示：仍停在「加载中」就直说"可能是缓存，Ctrl+F5"。
+
+### 16.6 顺带修的两个 JZNetServer bug
+
+| 现象 | 根因 | 修法 |
+| --- | --- | --- |
+| cli 进程被杀后管理台一直显示"在线"，要等 20s 心跳超时才纠正 | `onClientDisconnect` 用 `socket->m_conn` 反查；而 `closeInternal()` 已先把 `m_conn` 复位成 `INVALID_NET_HANDLE`，`find(0)` 必然失败 → 早退 → `sigDisconnected` 不发 | 改为按 **socket 指针**反查 `m_clients`（连接数很小，O(n) 足够） |
+| 心跳回收调 `closeClient()` 直接把 server 崩掉 | `closeClient` 在找不到连接时先 `JZ_ASSERT`（只记日志、不中断），随后仍执行 `it->second`（`end()`）→ UB | 找不到直接 `return`（**关闭是幂等的**） |
+
+修完之后：杀 cli 后 4s 内列表就变"离线"（原来是永远在线），且 `closeClient` 可以安全地用于清理死连接。

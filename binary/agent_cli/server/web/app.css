@@ -78,6 +78,83 @@
 .conn__task { color: var(--jz-muted); font-size: var(--jz-fs-1); font-family: var(--jz-mono); }
 .conn__go { color: var(--jz-accent); font-size: var(--jz-fs-1); }
 
+/* 离线(曾经连过): 变淡但仍可点进去看历史; 悬停恢复, 表示"还能查" */
+.conn--off { opacity: .62; }
+.conn--off:hover { opacity: 1; border-color: var(--jz-border-strong); }
+.conn__main { text-decoration: none; color: inherit; }
+.conn__cnt { color: var(--jz-muted); font-size: var(--jz-fs-1); font-weight: 400; margin-left: 6px; }
+.conn__del { flex: 0 0 auto; }
+.conn__acts { flex: 0 0 auto; display: flex; align-items: center; gap: var(--jz-sp-2); padding-left: var(--jz-sp-2); }
+
+/* ---- agent 详情: 会话是主界面(输入 + 结果), 其余收进 tab ---- */
+.agent-wrap {
+  height: calc(100vh - 64px);
+  padding-bottom: var(--jz-sp-3);
+  gap: var(--jz-sp-2);
+  overflow: hidden;
+}
+.tabs {
+  display: flex; gap: 2px;
+  border-bottom: 1px solid var(--jz-border);
+  flex: 0 0 auto;
+}
+.tab {
+  padding: 8px 14px;
+  font-size: var(--jz-fs-2);
+  color: var(--jz-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab.is-on { color: var(--jz-accent); border-bottom-color: var(--jz-accent); font-weight: 600; }
+
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--jz-sp-2); overflow: auto; }
+.pane.hidden { display: none; }
+
+/* 会话流: 旧的在上、新的在下, 自己滚 */
+.feed {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: var(--jz-sp-3);
+  padding: var(--jz-sp-2) 2px;
+}
+.feed__empty { color: var(--jz-muted); font-size: var(--jz-fs-2); text-align: center; padding: 32px 0; }
+
+.msg { display: flex; flex-direction: column; gap: 4px; max-width: min(780px, 94%); }
+.msg--user { align-self: flex-end; align-items: flex-end; }
+.msg--agent { align-self: flex-start; }
+.msg__meta { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+.bubble {
+  padding: 8px 12px;
+  border-radius: var(--jz-r-3);
+  font-size: var(--jz-fs-3);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 用户气泡用主色实底: --jz-accent-weak 太淡, 在浅灰页面上几乎看不出是"我说的话" */
+.msg--user .bubble { background: var(--jz-accent); color: #fff; }
+.msg--agent .bubble { background: var(--jz-panel); border: 1px solid var(--jz-border); }
+.muted { color: var(--jz-muted); }
+
+/* 输入区固定在底部 */
+.composer {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: var(--jz-sp-2);
+  padding: var(--jz-sp-2);
+  border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2);
+  background: var(--jz-panel);
+}
+.composer__ta { resize: none; }
+.composer__row { display: flex; gap: var(--jz-sp-2); }
+.composer__row .jz-input { flex: 1; }
+.composer__hint { font-size: var(--jz-fs-1); color: var(--jz-muted); min-height: 1em; }
+
+@media (max-width: 640px) {
+  .agent-wrap { height: calc(100vh - 56px); }
+  .msg { max-width: 100%; }
+}
+
 /* agent 详情: 左信息 / 右派活 */
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--jz-sp-4); align-items: start; }
 .detail-grid section, .detail-grid aside { display: flex; flex-direction: column; gap: var(--jz-sp-2); min-width: 0; }

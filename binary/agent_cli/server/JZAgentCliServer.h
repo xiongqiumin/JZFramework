@@ -135,8 +135,10 @@ public:
     // 任务记录(server 侧历史, 落盘 tasks.jsonl)
     void onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 单个 agent 的详情(在线 cli / 内置 agent / 本地子进程三选一)
+    // 单个 agent 的详情(在线 / 离线但有记录 / 内置 agent / 本地子进程)
     void onApiAgentDetail(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 从"曾经连过"的列表里删掉一台(默认保留它的任务记录, withTasks=1 连记录一起删)
+    void onApiAgentForget(JZHttpServerClient *client, const JZHttpRequest &req);
     // 页面: web/<name>, 找不到回 404; onDashboard = servePage("index.html")
     void servePage(JZHttpServerClient *client, const JZHttpRequest &req, const std::string &name);
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
@@ -148,6 +150,9 @@ private:
     void startHub();                     // 起控制面(JZNetServer)
     void onHubPacket(uint64_t conn, JZNetPackPtr pack);
     void onHubDisconnected(uint64_t conn);
+    void dropAgent(uint64_t conn, const std::string &reason);   // 断开/心跳超时共用
+    void reapDeadAgents();                                      // 心跳回收(20s)
+    JZTimer *m_reapTimer = nullptr;
     void failPendingTasksOf(const std::string &agentId, const std::string &error);
     Json::Value onlineAgentsJson() const;
     std::string resolveProgram(const JZCliServerAgentConfig &cfg) const;
@@ -206,6 +211,7 @@ private:
 
     void loadTaskStore();
     void saveTaskRecord(const TaskRecord &r);       // 追加一行(JSONL, 后写覆盖先写)
+    void rewriteTaskStore();                        // 删除记录后整体重写(否则重启会被旧行复活)
     void recordCreate(const std::string &taskId, const std::string &agentId, const Json::Value &body);
     void recordEnd(const std::string &taskId, const Json::Value &result);
     void recordFail(const std::string &taskId, const std::string &status, const std::string &error);
@@ -213,6 +219,22 @@ private:
     TaskRecord *findTask(const std::string &taskId);
     Json::Value taskJson(const TaskRecord &r) const;
     Json::Value tasksJson(const std::string &agentId, const std::string &status, int limit) const;
+
+    // ---- 曾经连过的 agent(离线也留着, 列表要能回答"这台以前是什么") ----
+    // 只有 server 记得住: cli 离线后没有任何地方能报出自己的信息, 而管理台恰恰在
+    // "它已经掉线了"的时候最需要知道它原本是哪台、最后一次什么时候在。
+    struct KnownAgent
+    {
+        std::string agentId, name, version, rootDir, modelName;
+        long long firstSeen = 0, lastSeen = 0;
+        int connects = 0;
+    };
+    std::map<std::string, KnownAgent> m_known;
+    std::string m_agentFile;                 // <exeDir>/data/agents.json
+    void loadAgentStore();
+    void saveAgentStore();
+    void upsertKnown(const KnownAgent &info);
+    Json::Value knownAgentsJson() const;     // 含离线 + 内置 agent
 };
 
 #endif // !JZ_AGENT_CLI_SERVER_H_

@@ -129,6 +129,15 @@ private:
     JZAgentCliServer *m_s;
 };
 
+class ApiAgentForgetHandler : public JZHttpHandler
+{
+public:
+    explicit ApiAgentForgetHandler(JZAgentCliServer *s) : m_s(s) {}
+    void handle(JZHttpServerClient *c, const JZHttpRequest &r) override { m_s->onApiAgentForget(c, r); }
+private:
+    JZAgentCliServer *m_s;
+};
+
 // 静态页: 一个页面一个文件(server_web/<name>), 不再是一个页面塞所有东西
 class PageHandler : public JZHttpHandler
 {
@@ -382,6 +391,11 @@ void JZAgentCliServer::startHub()
         onHubDisconnected(conn);
     });
 
+    // 心跳回收定时器(5s 一次; 判定阈值 20s 见 reapDeadAgents)
+    m_reapTimer = new JZTimer(this);
+    connect(&m_reapTimer->sigTimeout, this, [this]() { reapDeadAgents(); });
+    m_reapTimer->start(5000);
+
     if (!m_hub->listen(m_config.hub.bind, m_config.hub.port))
         jzWarning() << "控制面监听失败:" << m_config.hub.bind << ":" << m_config.hub.port;
     else
@@ -431,6 +445,16 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         agent.lastSeen = now;
         m_onlineByConn[conn] = agent;
         m_connByAgent[agent.agentId] = conn;
+
+        // 记进"曾经连过"的档案(离线后列表仍然认得出这台)
+        KnownAgent known;
+        known.agentId = agent.agentId;
+        known.name = agent.name;
+        known.version = agent.version;
+        known.rootDir = agent.rootDir;
+        known.modelName = agent.modelName;
+        known.lastSeen = now;
+        upsertKnown(known);
 
         JZHubPackHelloAck ack;
         ack.ok = true;
@@ -509,7 +533,8 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
     }
 }
 
-void JZAgentCliServer::onHubDisconnected(uint64_t conn)
+// 一台 agent 下线(两条来路: socket 断开 / 心跳超时), 收口逻辑只写一份
+void JZAgentCliServer::dropAgent(uint64_t conn, const string &reason)
 {
     auto it = m_onlineByConn.find(conn);
     if (it == m_onlineByConn.end())
@@ -521,8 +546,8 @@ void JZAgentCliServer::onHubDisconnected(uint64_t conn)
     if (ai != m_connByAgent.end() && ai->second == conn)
         m_connByAgent.erase(ai);
 
-    jzWarning().noquote().nospace() << "cli 掉线: " << agentId;
-    failPendingTasksOf(agentId, "agent " + agentId + " 掉线, 任务结果未知");
+    jzWarning().noquote().nospace() << "cli 掉线: " << agentId << " (" << reason << ")";
+    failPendingTasksOf(agentId, "agent " + agentId + " " + reason + ", 任务结果未知");
 
     // 正在跑(异步模式没有提交方在等)的任务也要标死: 否则历史里会永远停在 running
     vector<string> running;
@@ -530,7 +555,30 @@ void JZAgentCliServer::onHubDisconnected(uint64_t conn)
         if (kv.second.agentId == agentId && kv.second.status == "running")
             running.push_back(kv.first);
     for (const auto &id : running)
-        recordFail(id, "lost", "agent " + agentId + " 掉线, 结果未知");
+        recordFail(id, "lost", "agent " + agentId + " " + reason + ", 结果未知");
+}
+
+void JZAgentCliServer::onHubDisconnected(uint64_t conn)
+{
+    dropAgent(conn, "连接断开");
+}
+
+// 心跳回收: 控制面不能只靠 socket 断开 —— 拔网线/休眠/被防火墙丢包时 TCP 还是"通"的,
+// 但对端早就不干活了。cli 每 5s 一次心跳, 超过 20s(4 次没到)就按掉线处理。
+void JZAgentCliServer::reapDeadAgents()
+{
+    const int64_t now = JZDateTime::currentMSecsSinceEpoch();
+    vector<uint64_t> dead;
+    for (const auto &kv : m_onlineByConn)
+        if (now - kv.second.lastSeen > 20000)
+            dead.push_back(kv.first);
+
+    for (uint64_t conn : dead)
+    {
+        dropAgent(conn, "心跳超时(>20s)");
+        if (m_hub)
+            m_hub->closeClient(conn);   // 顺手把死连接关掉, 免得一直占 fd(已断开时是 no-op)
+    }
 }
 
 void JZAgentCliServer::failPendingTasksOf(const string &agentId, const string &error)
@@ -680,6 +728,212 @@ void JZAgentCliServer::saveTaskRecord(const TaskRecord &r)
         return;
     }
     ofs << line;   // FastWriter 自带行尾
+}
+
+void JZAgentCliServer::rewriteTaskStore()
+{
+    if (m_taskFile.empty())
+        return;
+    ofstream ofs(m_taskFile, ios::binary | ios::trunc);
+    if (!ofs)
+    {
+        jzWarning() << "任务记录重写失败:" << m_taskFile;
+        return;
+    }
+    // 保持 JSONL: 每条一行, 与追加写同格式
+    for (const auto &id : m_taskOrder)
+    {
+        auto it = m_tasks.find(id);
+        if (it == m_tasks.end())
+            continue;
+        string line = Json::FastWriter().write(taskJson(it->second));
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+            line.pop_back();
+        ofs << line << "\n";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 曾经连过的 agent: agents.json(整文件重写, 数量很小)
+// ---------------------------------------------------------------------------
+void JZAgentCliServer::loadAgentStore()
+{
+    m_agentFile = JZPlatform::applicationDirPath() + "/data/agents.json";
+
+    ifstream ifs(m_agentFile, ios::binary);
+    if (!ifs)
+        return;
+
+    stringstream ss;
+    ss << ifs.rdbuf();
+    Json::Value root;
+    if (!parseJsonText(ss.str(), root) || !root.isArray())
+    {
+        jzWarning() << "agents.json 解析失败, 先忽略:" << m_agentFile;
+        return;
+    }
+
+    for (Json::ArrayIndex i = 0; i < root.size(); ++i)
+    {
+        const Json::Value &j = root[i];
+        KnownAgent a;
+        a.agentId = j.get("agentId", "").asString();
+        if (a.agentId.empty())
+            continue;
+        a.name = j.get("name", "").asString();
+        a.version = j.get("version", "").asString();
+        a.rootDir = j.get("rootDir", "").asString();
+        a.modelName = j.get("modelName", "").asString();
+        a.firstSeen = (long long)j.get("firstSeen", 0).asInt64();
+        a.lastSeen = (long long)j.get("lastSeen", 0).asInt64();
+        a.connects = j.get("connects", 0).asInt();
+        m_known[a.agentId] = a;
+    }
+    jzInfo().noquote().nospace() << "agent 记录: 载入 " << m_known.size() << " 台(含离线)";
+}
+
+void JZAgentCliServer::saveAgentStore()
+{
+    if (m_agentFile.empty())
+        return;
+    Json::Value arr(Json::arrayValue);
+    for (const auto &kv : m_known)
+    {
+        const KnownAgent &a = kv.second;
+        Json::Value j(Json::objectValue);
+        j["agentId"] = a.agentId;
+        j["name"] = a.name;
+        j["version"] = a.version;
+        j["rootDir"] = a.rootDir;
+        j["modelName"] = a.modelName;
+        j["firstSeen"] = (Json::Int64)a.firstSeen;
+        j["lastSeen"] = (Json::Int64)a.lastSeen;
+        j["connects"] = a.connects;
+        arr.append(j);
+    }
+    ofstream ofs(m_agentFile, ios::binary | ios::trunc);
+    if (!ofs)
+    {
+        jzWarning() << "agent 记录写不进去:" << m_agentFile;
+        return;
+    }
+    ofs << arr.toStyledString();
+}
+
+void JZAgentCliServer::upsertKnown(const KnownAgent &info)
+{
+    auto it = m_known.find(info.agentId);
+    if (it == m_known.end())
+    {
+        KnownAgent a = info;
+        if (a.firstSeen == 0)
+            a.firstSeen = a.lastSeen;
+        a.connects = 1;
+        m_known[a.agentId] = a;
+    }
+    else
+    {
+        KnownAgent &a = it->second;
+        if (a.firstSeen == 0)
+            a.firstSeen = info.firstSeen ? info.firstSeen : a.lastSeen;
+        if (!info.name.empty())
+            a.name = info.name;
+        if (!info.version.empty())
+            a.version = info.version;
+        if (!info.rootDir.empty())
+            a.rootDir = info.rootDir;
+        if (!info.modelName.empty())
+            a.modelName = info.modelName;
+        a.lastSeen = info.lastSeen;
+        a.connects = a.connects + 1;
+    }
+    saveAgentStore();
+}
+
+// 列表页要的: 全部见过的 agent, 在线/离线都在里面(在线优先, 其次按最近一次在线排序)
+Json::Value JZAgentCliServer::knownAgentsJson() const
+{
+    // Json::Value 的迭代器不是随机访问的, 不能直接 std::sort -> 先攒进 vector
+    std::vector<Json::Value> items;
+    items.reserve(m_known.size() + 1);
+
+    for (const auto &kv : m_known)
+    {
+        const KnownAgent &a = kv.second;
+        Json::Value j(Json::objectValue);
+        j["agentId"] = a.agentId;
+        j["name"] = a.name;
+        j["version"] = a.version;
+        j["rootDir"] = a.rootDir;
+        j["modelName"] = a.modelName;
+        j["firstSeen"] = (Json::Int64)a.firstSeen;
+        j["connects"] = a.connects;
+        j["builtin"] = false;
+
+        auto ci = m_connByAgent.find(a.agentId);
+        const bool online = (ci != m_connByAgent.end());
+        j["online"] = online;
+        j["lastSeen"] = (Json::Int64)a.lastSeen;
+        j["busy"] = false;
+        j["taskId"] = "";
+        j["round"] = 0;
+        j["lastEventType"] = "";
+        j["nodes"] = Json::Value(Json::arrayValue);
+
+        if (online)
+        {
+            auto oi = m_onlineByConn.find(ci->second);
+            if (oi != m_onlineByConn.end())
+            {
+                const JZCliServerOnlineAgent &o = oi->second;
+                j["busy"] = o.busy;
+                j["taskId"] = o.taskId;
+                j["round"] = o.round;
+                j["lastSeen"] = (Json::Int64)o.lastSeen;
+                j["lastEventType"] = o.lastEventType;
+                Json::Value nodes;
+                if (parseJsonText(o.nodes, nodes))
+                    j["nodes"] = nodes;
+            }
+        }
+        items.push_back(j);
+    }
+
+    // 内置 agent 永远在线, 也放进同一张表
+    if (m_selfAgent)
+    {
+        Json::Value j(Json::objectValue);
+        j["agentId"] = m_config.selfAgent.agentId;
+        j["name"] = m_config.selfAgent.name;
+        j["version"] = "builtin";
+        j["rootDir"] = m_selfAgent->config().rootDir;
+        j["modelName"] = m_config.selfAgent.modelName;
+        j["firstSeen"] = (Json::Int64)m_startTime;
+        j["connects"] = 1;
+        j["builtin"] = true;
+        j["online"] = true;
+        j["busy"] = m_selfAgent->busy();
+        j["taskId"] = m_selfAgent->taskId();
+        j["round"] = m_selfAgent->round();
+        j["lastSeen"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
+        j["lastEventType"] = m_selfAgent->lastEventType();
+        j["nodes"] = Json::Value(Json::arrayValue);
+        items.push_back(j);
+    }
+
+    std::sort(items.begin(), items.end(), [](const Json::Value &x, const Json::Value &y)
+    {
+        const bool xo = x.get("online", false).asBool();
+        const bool yo = y.get("online", false).asBool();
+        if (xo != yo)
+            return xo;   // 在线的排前面
+        return x.get("lastSeen", (Json::Int64)0).asInt64() > y.get("lastSeen", (Json::Int64)0).asInt64();
+    });
+
+    Json::Value arr(Json::arrayValue);
+    for (const auto &v : items)
+        arr.append(v);
+    return arr;
 }
 
 void JZAgentCliServer::recordCreate(const string &taskId, const string &agentId, const Json::Value &body)
@@ -859,6 +1113,33 @@ void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttp
         break;
     }
 
+    // 离线但有档案: 仍然给详情(列表页允许点进一台已经掉线的 agent)
+    if (!out.isMember("info"))
+    {
+        auto ki = m_known.find(id);
+        if (ki != m_known.end())
+        {
+            const KnownAgent &a = ki->second;
+            Json::Value j(Json::objectValue);
+            j["agentId"] = a.agentId;
+            j["name"] = a.name;
+            j["version"] = a.version;
+            j["rootDir"] = a.rootDir;
+            j["modelName"] = a.modelName;
+            j["online"] = false;
+            j["busy"] = false;
+            j["taskId"] = "";
+            j["round"] = 0;
+            j["lastSeen"] = (Json::Int64)a.lastSeen;
+            j["firstSeen"] = (Json::Int64)a.firstSeen;
+            j["connects"] = a.connects;
+            j["lastEventType"] = "";
+            j["nodes"] = Json::Value(Json::arrayValue);
+            out["kind"] = "offline";
+            out["info"] = j;
+        }
+    }
+
     if (!out.isMember("info"))
     {
         auto it = m_agents.find(id);
@@ -891,6 +1172,85 @@ void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttp
 
     out["tasks"] = tasksJson(id, "", 20);
     respondJson(client, req, 200, out);
+}
+
+// 删除一台 agent 的档案(只删"曾经连过"的记录; 默认保留历史任务)
+void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    string err;
+    if (!checkToken(req, err))
+    {
+        respondJson(client, req, 401, Json::Value(err));
+        return;
+    }
+
+    string id = req.queryParam("agentId");
+    if (id.empty())
+        id = req.queryParam("id");
+    if (id.empty())
+    {
+        respondJson(client, req, 400, Json::Value("缺少 agentId"));
+        return;
+    }
+    if (isSelfAgentId(id))
+    {
+        respondJson(client, req, 400,
+                    Json::Value("内置 agent 不能删除(它跟着 selfAgent.enabled 一起存在)"));
+        return;
+    }
+    if (m_connByAgent.find(id) != m_connByAgent.end())
+    {
+        // 在线就删会导致"列表没了但连接还在", 下一次心跳又冒出来
+        Json::Value e(Json::objectValue);
+        e["error"] = "这台 agent 还在线, 先停掉它(或等它掉线)再删";
+        e["online"] = true;
+        respondJson(client, req, 409, e);
+        return;
+    }
+
+    auto it = m_known.find(id);
+    if (it == m_known.end())
+    {
+        Json::Value e(Json::objectValue);
+        e["error"] = "列表里没有这台 agent";
+        respondJson(client, req, 404, e);
+        return;
+    }
+    m_known.erase(it);
+    saveAgentStore();
+
+    int removedTasks = 0;
+    if (req.queryParam("withTasks") == "1")
+    {
+        for (auto tit = m_tasks.begin(); tit != m_tasks.end(); )
+        {
+            if (tit->second.agentId == id)
+            {
+                tit = m_tasks.erase(tit);
+                ++removedTasks;
+            }
+            else
+            {
+                ++tit;
+            }
+        }
+        vector<string> keep;
+        keep.reserve(m_taskOrder.size());
+        for (const auto &tid : m_taskOrder)
+            if (m_tasks.find(tid) != m_tasks.end())
+                keep.push_back(tid);
+        m_taskOrder.swap(keep);
+        rewriteTaskStore();   // 追加式文件不重写的话, 重启会把删掉的行"复活"
+    }
+
+    Json::Value j(Json::objectValue);
+    j["ok"] = true;
+    j["agentId"] = id;
+    j["removedTasks"] = removedTasks;
+    j["note"] = removedTasks ? "已删除 agent 及其任务记录"
+                             : "只从列表移除; 任务记录保留(加 withTasks=1 可一并删除)";
+    jzInfo().noquote().nospace() << "agent 档案删除: " << id << "  tasks=" << removedTasks;
+    respondJson(client, req, 200, j);
 }
 
 void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest &req,
@@ -1212,8 +1572,9 @@ void JZAgentCliServer::startHttp()
 {
     m_http = new JZHttpServer(this);
 
-    // 任务记录(server 侧历史): 先载盘, 否则重启后历史全丢
+    // 任务记录 + agent 档案: 先载盘, 否则重启后历史全丢
     loadTaskStore();
+    loadAgentStore();
 
     // 管理 API(精确路由, 优先于兜底)
     m_http->addRoute("/api/status", new ApiStatusHandler(this));
@@ -1221,6 +1582,7 @@ void JZAgentCliServer::startHttp()
     m_http->addRoute("/api/tasks/detail", new ApiTaskDetailHandler(this));
     m_http->addRoute("/api/tasks", new ApiTasksHandler(this));
     m_http->addRoute("/api/agent", new ApiAgentDetailHandler(this));
+    m_http->addRoute("/api/agent/forget", new ApiAgentForgetHandler(this));
     m_http->addRoute("/api/agents", new ApiAgentsHandler(this));
     m_http->addRoute("/api/agents/logs", new ApiAgentLogsHandler(this));
     m_http->addRoute("/api/agents/start", new ApiAgentActionHandler(this, "start"));
@@ -1232,6 +1594,8 @@ void JZAgentCliServer::startHttp()
     //   /ui/*              共享视觉层(tokens/base/components/jz-ui.js)
     // 目录缺失时 `/` 会回 500 并说明"缺 server_web/", 不会静默给出空白页。
     JZHttpStaticFiles *webFiles = new JZHttpStaticFiles(dashboardDir());
+    // 管理台的页面每次构建都可能变: 让浏览器回源校验(ETag), 不要吃 1 小时缓存
+    webFiles->setCacheMaxAge(0);
     m_http->addRoute("/app.css", webFiles);
     m_http->addRoute("/app.js", webFiles);
     m_http->addRoute("/ui/<path:path>", webFiles);
@@ -1398,6 +1762,8 @@ void JZAgentCliServer::onApiStatus(JZHttpServerClient *client, const JZHttpReque
     j["agents"] = arr;
     // 控制面已上线的 cli(托管模式): 与"本机子进程"是两个来源, 分开列
     j["online"] = onlineAgentsJson();
+    // 曾经连过的全部(含离线): 列表页要能回答"这台以前在不在"
+    j["known"] = knownAgentsJson();
     respondJson(client, req, 200, j);
 }
 

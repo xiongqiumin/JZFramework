@@ -74,6 +74,10 @@ static std::string logTextLine(const char *tag, const std::string &text)
 
 #include "JZFrpClient.h"      // 内嵌 FRP 客户端(frpc, client 角色)
 #include "JZNet/JZNetPacket.h"  // JZNetPackInit(frpc 的 JZNetClient 依赖包注册)
+#include "JZAgentNodePacket.h"  // link 模式 node 的执行面协议(remote_ssh)
+#include "JZAgentHubPacket.h"   // 控制面: cli <-> server 的任务下发/上报
+#include "JZNodeLink.h"         // cli -> node 的连接与 remote_ssh 工具
+#include "JZHubLink.h"          // cli -> server 的控制面连接(managed 模式)
 
 #include <cstdio>
 #include <cstdlib>            // atoi(解析 "HTTP 402 ..." 里的状态码)
@@ -403,6 +407,185 @@ void JZAgentCli::setupAgent()
         m_memory->setup(memoryFilePath(), m_config.memoryMaxBytes);
         addTool(m_memory);
     }
+
+    if (!m_config.nodes.empty())
+    {
+        // 远端执行: 多台 node 在模型侧只暴露**一个** remote_ssh 工具(按 host 路由)。
+        // 反过来"每台 node 一个 MCP server"会让模型看到 node1__run / node2__run 一堆名字、
+        // 还要自己挑节点, 也不解决 session 误用 —— 路由收在 cli 侧最省心。
+        std::string list;
+        for (const JZCliNodeConfig &n : m_config.nodes)
+        {
+            list += "  - " + n.name + " (" + n.host + ":" + std::to_string(n.port) + ")"
+                    + (n.isDefault ? "  [默认]" : "") + "\n";
+        }
+
+        auto *ssh = new JZRemoteSshTool(
+            [this](const std::string &host) { return nodeLink(host); },
+            [this]() { return defaultNodeName(); },
+            list);
+        m_agent->addTool(ssh);
+        m_tools.push_back(ssh);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 远端节点(link 模式 agent_node)
+// ---------------------------------------------------------------------------
+void JZAgentCli::startNodes()
+{
+    if (m_config.nodes.empty())
+        return;
+
+    // 包类型要两端一致: 不注册的话收到的 execResult 会被当成 unknown packet 丢掉
+    JZAgentNodePacketInit();
+
+    for (const JZCliNodeConfig &nc : m_config.nodes)
+    {
+        JZNodeLink::Config cfg;
+        cfg.name = nc.name;
+        cfg.host = nc.host;
+        cfg.port = nc.port;
+        cfg.token = nc.token;
+        cfg.isDefault = nc.isDefault;
+
+        auto *link = new JZNodeLink(cfg, m_config.agentName, this);
+        m_nodeLinks.push_back(link);
+        link->connectToNode();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 控制面(managed 模式): 连 server
+// ---------------------------------------------------------------------------
+void JZAgentCli::startServerLink()
+{
+    if (!m_config.managed())
+        return;
+
+    JZAgentHubPacketInit();
+
+    JZHubLink::Config cfg;
+    cfg.agentId = m_config.server.agentId.empty() ? m_config.agentName : m_config.server.agentId;
+    cfg.name = m_config.agentName;
+    cfg.version = m_config.version;
+    cfg.rootDir = m_config.rootDir;
+    cfg.modelName = m_config.modelName;
+    cfg.host = m_config.server.host;
+    cfg.port = m_config.server.port;
+    cfg.token = m_config.server.token;
+
+    m_hub = new JZHubLink(cfg, this);
+    m_hub->setNodesProvider([this]() { return nodesJsonString(); });
+    m_hub->setTaskSubmitHandler([this](const std::string &taskId, const Json::Value &body)
+    {
+        onHubTaskSubmit(taskId, body);
+    });
+    m_hub->setTaskCancelHandler([this](const std::string &taskId) { onHubTaskCancel(taskId); });
+    m_hub->setResetHandler([this](const std::string &scope) { onHubReset(scope); });
+    m_hub->setStateHandler([this]()
+    {
+        if (!m_hub)
+            return;
+        if (m_hub->online())
+            jzInfo().noquote().nospace() << "控制面就绪(受 server 调度): " << m_config.server.host
+                                         << ":" << m_config.server.port;
+        else if (!m_hub->lastError().empty())
+            jzWarning().noquote().nospace() << "控制面不可用: " << m_hub->lastError();
+    });
+    m_hub->connectToServer();
+}
+
+bool JZAgentCli::hubOnline() const
+{
+    return m_hub && m_hub->online();
+}
+
+void JZAgentCli::onHubTaskSubmit(const std::string &taskId, const Json::Value &body)
+{
+    // 同一时刻只跑一个任务(与 HTTP 一致): 忙就立刻回失败, 不排队。
+    // ⚠ submitTask 的"忙/参数错"是**同步**回调的, 那时在跑的任务还没结束 ——
+    //   所以失败时要把 m_currentTaskId 恢复成上一个值, 否则在跑任务的事件会丢 id。
+    const std::string prev = m_currentTaskId;
+    m_currentTaskId = taskId;
+
+    const std::string tid = taskId;
+    submitTask(body, [this, tid, prev](const Json::Value &res)
+    {
+        if (m_hub)
+            m_hub->sendTaskEnd(tid, res);
+
+        const bool earlyFail = !res.isMember("status");   // 同步失败只带 error
+        m_currentTaskId = earlyFail ? prev : std::string();
+        if (m_hub)
+            m_hub->setTaskState(m_busy, m_loopRound, m_currentTaskId);
+    });
+}
+
+void JZAgentCli::onHubTaskCancel(const std::string &taskId)
+{
+    if (m_currentTaskId.empty() || (!taskId.empty() && taskId != m_currentTaskId))
+        return;   // 不是当前任务(迟到的取消), 忽略
+    cancelTask("任务已被 server 取消");
+}
+
+void JZAgentCli::onHubReset(const std::string &scope)
+{
+    if (scope == "task")
+        cancelTask("任务已被 server 重置");
+    else
+        resetSession(false);
+}
+
+Json::Value JZAgentCli::nodesJson() const
+{
+    // 节点状态只有一个出口: /info、控制面 hello/心跳、管理台都取这里, 免得三处口径不一。
+    Json::Value nodes(Json::arrayValue);
+    for (JZNodeLink *link : m_nodeLinks)
+    {
+        Json::Value item(Json::objectValue);
+        item["name"] = link->config().name;
+        item["target"] = link->config().host + ":" + std::to_string(link->config().port);
+        item["online"] = link->online();
+        item["busy"] = link->busy();
+        item["default"] = link->config().isDefault;
+        item["nodeName"] = link->nodeName();
+        item["rootDir"] = link->rootDir();
+        item["shell"] = link->shell();
+        item["error"] = link->lastError();
+        nodes.append(item);
+    }
+    return nodes;
+}
+
+std::string JZAgentCli::nodesJsonString() const
+{
+    std::string s = Json::FastWriter().write(nodesJson());
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+        s.pop_back();
+    return s;
+}
+
+JZNodeLink *JZAgentCli::nodeLink(const std::string &name) const
+{
+    const std::string want = name.empty() ? defaultNodeName() : name;
+    for (JZNodeLink *link : m_nodeLinks)
+    {
+        if (link->config().name == want)
+            return link;
+    }
+    return nullptr;
+}
+
+std::string JZAgentCli::defaultNodeName() const
+{
+    for (const JZCliNodeConfig &nc : m_config.nodes)
+    {
+        if (nc.isDefault)
+            return nc.name;
+    }
+    // 没标默认就用第一台(单节点场景下这是唯一选择)
+    return m_config.nodes.empty() ? std::string() : m_config.nodes.front().name;
 }
 
 string JZAgentCli::buildSystemPrompt() const
@@ -435,6 +618,14 @@ string JZAgentCli::buildSystemPrompt() const
     }
     if (m_config.memoryEnabled)
         text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";
+    if (!m_config.nodes.empty())
+    {
+        text += "  remote_ssh     在远端节点上执行 shell 命令(host 省略 = 默认节点)。"
+                "远端没有常驻 shell(cd/export 不跨命令), 远端改文件/拷文件都靠它。\n";
+        for (const JZCliNodeConfig &nc : m_config.nodes)
+            text += "    - node \"" + nc.name + "\"  " + nc.host + ":" + std::to_string(nc.port)
+                    + (nc.isDefault ? "  [默认]" : "") + "\n";
+    }
     text += "\nShell notes (important):\n";
     if (m_terminal && !m_terminal->shellProgram().empty())
     {
@@ -934,6 +1125,24 @@ Json::Value JZAgentCli::makeInfo() const
         }
         j["mcp"] = mcp;
     }
+
+    // 远端节点(link 模式 agent_node): 在线状态 + 节点自述。
+    // 没有网页面板、控制台日志又是缓冲的时候, `curl /info` 是唯一能确认
+    // "hello/helloAck 到底成没成、token 是否配错"的自检口子。
+    if (!m_config.nodes.empty())
+        j["nodes"] = nodesJson();
+
+    // 控制面(managed): 这台 cli 有没有被 server 接管 —— managed 下没有 HTTP,
+    // 这份信息主要经心跳回给 server 的管理台, 这里留着便于 --check 之外的现场自检。
+    if (m_config.managed())
+    {
+        Json::Value hub(Json::objectValue);
+        hub["target"] = m_config.server.host + ":" + std::to_string(m_config.server.port);
+        hub["agentId"] = m_config.server.agentId.empty() ? m_config.agentName : m_config.server.agentId;
+        hub["online"] = hubOnline();
+        hub["error"] = m_hub ? m_hub->lastError() : std::string("控制面未启动");
+        j["hub"] = hub;
+    }
     return j;   // 注意: 不含 modelToken, 别把凭据吐给网页
 }
 
@@ -1223,6 +1432,11 @@ void JZAgentCli::removeEventClient(JZHttpServerClient *client)
 
 void JZAgentCli::pushEvent(const std::string &type, const Json::Value &data)
 {
+    // 控制面(managed): 事件同时回传 server —— 它没有 SSE 通道, 这是唯一的实时出口。
+    // 放在"有没有 SSE 订阅者"之前: managed 模式下根本没有 HTTP, 订阅者永远是空的。
+    if (m_hub && !m_currentTaskId.empty())
+        m_hub->sendTaskEvent(m_currentTaskId, type, data);
+
     if (m_eventClients.empty())
         return;
 
@@ -1382,6 +1596,9 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     m_thinkLogged = false;
     m_toolSnaps.clear();
     m_busy = true;
+    // 控制面: 忙闲立刻上报一次(别等下一个 5s 心跳, 管理台要跟手)
+    if (m_hub)
+        m_hub->setTaskState(true, 0, m_currentTaskId);
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
@@ -1975,16 +2192,10 @@ void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
     }
 
     // 有任务在跑: 先给调用方一个明确结果(status:"cancelled"), 再停 agent
-    if (cancelRunning && m_loopActive)
-    {
-        m_loopActive = false;   // stop() 引发的 sigFinished 不再驱动验证循环
-        m_busy = false;
-        respondTask("cancelled", m_loopRound, m_accumReply, m_lastVerifyOutput, "任务已被重置");
-        endLoop();
-        taskCancelled = true;
-    }
-
-    resetSession(cancelRunning);
+    if (cancelRunning)
+        taskCancelled = cancelTask("任务已被重置");
+    else
+        resetSession(false);
 
     Json::Value d;
     d["scope"] = scope;
@@ -1996,6 +2207,27 @@ void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
     r["scope"] = scope;
     r["cancelled"] = taskCancelled;
     sendJson(client, 200, r);
+}
+
+bool JZAgentCli::cancelTask(const std::string &reason)
+{
+    if (!m_agent)
+        return false;
+
+    bool cancelled = false;
+    if (m_loopActive)
+    {
+        // 先给提交方一个明确结果(status:"cancelled"), 再停 agent ——
+        // stop() 引发的 sigFinished 不能再驱动验证循环(否则会白跑一轮)。
+        m_loopActive = false;
+        m_busy = false;
+        respondTask("cancelled", m_loopRound, m_accumReply, m_lastVerifyOutput, reason);
+        endLoop();
+        cancelled = true;
+    }
+
+    resetSession(true);
+    return cancelled;
 }
 
 void JZAgentCli::resetSession(bool cancelRunning)

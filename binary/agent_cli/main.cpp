@@ -99,6 +99,9 @@ static const char *kDefaultConfigJson = R"json({
         "extraFile":        ""
     },
 
+    "nodes": [],
+
+
     "terminal": {
         "rootDir":          "",
         "trustedDirs":      [],
@@ -124,6 +127,13 @@ static const char *kDefaultConfigJson = R"json({
     "mcp": {
         "enabled":          true,
         "servers":          []
+    },
+
+    "server": {
+        "host":             "",
+        "port":             8090,
+        "token":            "",
+        "agentId":          ""
     },
 
     "http": {
@@ -433,6 +443,51 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
         }
     }
 
+    // nodes(远端执行节点: link 模式的 agent_node)
+    //   ⚠ 静态列表: 启动时按它连好, 运行期不增删(连不上就标离线)。
+    //   多台 node 在模型侧只体现为**一个** remote_ssh 工具(按 host 路由), 见 JZAgentCli::startNodes。
+    const Json::Value *nodes = findConfigMember(root, "", "nodes", "nodes");
+    if (nodes && !nodes->isNull())
+    {
+        if (!nodes->isArray())
+        {
+            error = "nodes 必须是数组";
+            return false;
+        }
+        for (Json::ArrayIndex i = 0; i < nodes->size(); ++i)
+        {
+            const Json::Value &v = (*nodes)[i];
+            if (!v.isObject())
+            {
+                error = "nodes[" + to_string(i) + "] 必须是对象";
+                return false;
+            }
+            JZCliNodeConfig nc;
+            JZJsonStream ns(&v);
+            ns.readMemberDefault("name", nc.name, std::string());
+            ns.readMemberDefault("host", nc.host, std::string());
+            ns.readMemberDefault("port", nc.port, nc.port);
+            ns.readMemberDefault("token", nc.token, std::string());
+            ns.readMemberDefault("default", nc.isDefault, false);
+            if (nc.host.empty())
+            {
+                error = "nodes[" + to_string(i) + "].host 不能为空";
+                return false;
+            }
+            if (nc.name.empty())
+                nc.name = nc.host + ":" + to_string(nc.port);
+            if (nc.port <= 0 || nc.port > 65535)
+            {
+                error = "nodes[" + to_string(i) + "].port 不合法: " + to_string(nc.port);
+                return false;
+            }
+            config.nodes.push_back(nc);
+        }
+        // 只有一台时它就是默认; 多台都没标则按"第一台"处理(见 defaultNodeName)
+        if (config.nodes.size() == 1)
+            config.nodes[0].isDefault = true;
+    }
+
     // 日志(全局项, 不归终端)
     readConfigString(root, "", "logFile", "logFile", config.logFile);
 
@@ -466,6 +521,23 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
             if (proxy.localPort > 0 && proxy.remotePort > 0)
                 config.frp.client.proxies.push_back(proxy);
         }
+    }
+
+    // 控制面(managed 模式): server.host 非空即受 server 调度
+    //   ⚠ 这是**模式开关**, 不是可选项: managed 时不起 HTTP、不起 frp(见 startServerLink)。
+    readConfigString(root, "server", "host", "serverHost", config.server.host);
+    readConfigInt(root, "server", "port", "serverPort", config.server.port);
+    readConfigString(root, "server", "token", "serverToken", config.server.token);
+    readConfigString(root, "server", "agentId", "agentId", config.server.agentId);
+    if (config.managed())
+    {
+        if (config.server.port <= 0 || config.server.port > 65535)
+        {
+            error = "server.port 不合法: " + to_string(config.server.port);
+            return false;
+        }
+        if (config.server.agentId.empty())
+            config.server.agentId = config.agentName;
     }
 
     const Json::Value *dirs = findConfigMember(root, "terminal", "trustedDirs", "trustedDirs");
@@ -526,6 +598,13 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  模型      %s @ %s\n",
             config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
             config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
+
+    // 运行模式: server.host 非空 = managed。两种模式**互斥**, 不是叠加
+    if (config.managed())
+        fprintf(stderr, "  运行模式  managed(受 server 调度) -> %s:%d  agentId=%s  [不起 HTTP/frp]\n",
+                config.server.host.c_str(), config.server.port, config.server.agentId.c_str());
+    else
+        fprintf(stderr, "  运行模式  standalone(自带 HTTP + 可选 frp)\n");
 
     if (config.extraBody.isObject() && config.extraBody.size() > 0)
     {
@@ -610,6 +689,18 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
             config.allowPackageManager ? "开" : "关",
             config.allowNetwork ? "开" : "关",
             config.unrestricted ? "全部不检查" : "按区域分档");
+    // 远端节点(link 模式的 agent_node): 只有配了才会出现 remote_ssh 工具
+    if (config.nodes.empty())
+        fprintf(stderr, "  远端节点  (无; 纯本地执行)\n");
+    else
+    {
+        for (const JZCliNodeConfig &nc : config.nodes)
+        {
+            fprintf(stderr, "  远端节点  %s -> %s:%d%s%s\n", nc.name.c_str(), nc.host.c_str(), nc.port,
+                    nc.isDefault ? "  [默认]" : "",
+                    nc.token.empty() ? "  (无 token)" : "");
+        }
+    }
     // frp(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
     if (!config.frp.client.enabled)
         fprintf(stderr, "  FRP       关(仅 client 角色; 服务端在 JZAgentCliServer)\n");
@@ -730,17 +821,33 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // 就绪: 常驻等 POST /task(每提交一次 = 一轮; 会话跨轮延续, 上下文超预算自动压缩)。
-    //   "反复跑同一件事"由提交方驱动, 见文件头说明与 tools/agent_loop.py。
-    jzDebug("agent_cli 就绪(HTTP): http://%s:%d  token=%s",
-            config.httpBind.c_str(), config.httpPort,
-            config.httpToken.empty() ? "(无)" : "(已启用)");
     // MCP: 尽早发起 —— 远端工具只能在"首个任务之前"挂进 agent(见 JZAgentCli::startMcp),
-    // 放 startHttp 前面, 让连接流程(起子进程 / HTTP 往返)早一点跑完。
+    // 放在传输层之前, 让连接流程(起子进程 / HTTP 往返)早一点跑完。
     cli.startMcp();
 
-    cli.startHttp();
-    cli.startFrpc();     // client 角色 = frpc: 连到远端 frps 暴露本地服务(关着就不连)
+    // 远端节点(link 模式 agent_node): 异步连接, 断线自动重连; 没配就是纯本地执行
+    cli.startNodes();
+
+    // 两种模式**互斥**(docs/agent-hub-design.md §3.3):
+    //   managed    = 受 server 调度, 任务从控制面来, **不起 HTTP、不起 frp**;
+    //   standalone = 自带 HTTP(可选 frp), 提交方直接 POST /task。
+    if (config.managed())
+    {
+        jzDebug("agent_cli 就绪(managed): server=%s:%d  agentId=%s",
+                config.server.host.c_str(), config.server.port,
+                config.server.agentId.c_str());
+        if (config.frp.client.enabled)
+            jzWarning("managed 模式已禁用 frp: 控制面走 JZNet 出站连接, 不需要端口映射");
+        cli.startServerLink();
+    }
+    else
+    {
+        jzDebug("agent_cli 就绪(HTTP): http://%s:%d  token=%s",
+                config.httpBind.c_str(), config.httpPort,
+                config.httpToken.empty() ? "(无)" : "(已启用)");
+        cli.startHttp();
+        cli.startFrpc();     // client 角色 = frpc: 连到远端 frps 暴露本地服务(关着就不连)
+    }
 
     return app.exec();
 }

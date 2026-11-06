@@ -9,6 +9,8 @@
 #include "JZMcpServer.h"
 #include "JZMcpToolBridge.h"
 #include "JZDateTime.h"
+#include "JZNet/JZNetServer.h"
+#include "JZNet/JZNetPacket.h"
 #include "JZTerminalTools.h"
 #include "JZTerminalMcpTools.h"
 #include "JZTimer.h"
@@ -18,6 +20,35 @@ using namespace std;
 
 // 单次读文件的上限。工具自己还会按行裁剪, 这里只是避免把几百兆的东西读进内存。
 static const int kReadFileLimit = 8 * 1024 * 1024;
+
+// 一次 exec 回给 cli 的输出上限。协议单包上限是 256KB(MG_MAX_PACK_SIZE), 这里留出余量:
+// 头尾各留一半 + 一行显式标记 —— 与 terminal 的"上下文阀"同一个思路(可恢复的截断,
+// 而不是静默丢内容)。
+static const size_t kMaxExecOutputBytes = 120 * 1024;
+
+// 按字符边界裁(UTF-8 多字节字符不能被切成半个, 否则后续写进 JSON 会坏掉)
+static size_t utf8Boundary(const string &text, size_t pos)
+{
+    while (pos > 0 && pos < text.size() && ((unsigned char)text[pos] & 0xC0) == 0x80)
+        --pos;
+    return pos;
+}
+
+static string cutExecOutput(const string &text)
+{
+    if (text.size() <= kMaxExecOutputBytes)
+        return text;
+
+    size_t keep = kMaxExecOutputBytes / 2;
+    size_t headEnd = utf8Boundary(text, keep);
+    size_t tailStart = utf8Boundary(text, text.size() - keep);
+    string head = text.substr(0, headEnd);
+    string tail = text.substr(tailStart);
+    size_t dropped = tailStart - headEnd;
+
+    return head + "\n...[输出过长: 省略中间 " + to_string(dropped) + " 字节(共 " +
+           to_string(text.size()) + " 字节); 要全文请自己在命令里过滤或写到文件里再分段读]...\n" + tail;
+}
 
 // ==========================================================================
 // JZAgentNodeHost
@@ -97,23 +128,26 @@ JZAgentNode::~JZAgentNode()
     m_server = nullptr;
 }
 
+void JZAgentNode::normalizeConfig(JZNodeConfig &config)
+{
+    if (config.nodeName.empty())
+        config.nodeName = "agent_node";
+    if (config.rootDir.empty())
+        config.rootDir = JZDir::currentPath();
+
+    // 统一成 "/" 分隔的绝对路径: 区域判定是纯字符串前缀比较, 不规范化会对不上
+    config.rootDir = codeNormalizePath(config.rootDir);
+    if (config.rootDir.empty())
+        config.rootDir = codeNormalizePath(JZDir::currentPath());
+
+    for (TrustedDir &dir : config.trustedDirs)
+        dir.path = codeNormalizePath(dir.path);
+}
+
 void JZAgentNode::init(const JZNodeConfig &config)
 {
     m_config = config;
-
-    if (m_config.nodeName.empty())
-        m_config.nodeName = "agent_node";
-    if (m_config.rootDir.empty())
-        m_config.rootDir = JZDir::currentPath();
-
-    // 统一成 "/" 分隔的绝对路径: 区域判定是纯字符串前缀比较, 不规范化会对不上
-    m_config.rootDir = codeNormalizePath(m_config.rootDir);
-    if (m_config.rootDir.empty())
-        m_config.rootDir = codeNormalizePath(JZDir::currentPath());
-
-    for (TrustedDir &dir : m_config.trustedDirs)
-        dir.path = codeNormalizePath(dir.path);
-
+    normalizeConfig(m_config);
     m_host.refresh();
 
     m_server = new JZMcpServer(this);
@@ -377,4 +411,234 @@ bool JZAgentNode::runSnapshot(const std::string &runId, JZVirtualTerminal::RunRe
             return true;
     }
     return false;
+}
+
+// ==========================================================================
+// link 模式(配合 agent_cli): 不起 MCP, 只对外提供"执行一条命令"
+//
+// 角色固定: node 是 server(JZNetServer), cli 是 client(JZNetClient)。
+// 审核/执行完全复用 JZVirtualTerminal —— 与 mcp 模式是同一套策略, 不写第二套。
+// ==========================================================================
+
+void JZAgentNode::initLink(const JZNodeConfig &config)
+{
+    m_config = config;
+    normalizeConfig(m_config);
+    m_host.refresh();
+
+    // link 模式没有"多会话"概念: 一台终端, cwd 落在工作区根。
+    // (mcp 模式那套 terminal_open/close 是给模型自己管会话用的, remote_ssh 不需要。)
+    m_linkTerminal = new JZVirtualTerminal(this);
+    m_linkTerminal->setId("link");
+    m_linkTerminal->setTerminalConfig(m_host.toolTerminalConfig());
+    if (!m_config.shellProgram.empty())
+        m_linkTerminal->setShellProgram(m_config.shellProgram);
+    // 回包截断由本文件按协议包上限做(cutExecOutput); 这里关掉终端那层 32KB 上下文阀,
+    // 否则 120KB 的预算永远用不上。
+    m_linkTerminal->setReplyMaxBytes(0);
+
+    std::string dirError;
+    if (!m_linkTerminal->changeDir(m_config.rootDir, dirError))
+        jzWarning() << "link 模式设置工作目录失败:" << dirError;
+
+    jzInfo().noquote().nospace() << "agent_node(link) 就绪: name=" << m_config.nodeName
+                                 << " root=" << m_config.rootDir
+                                 << " shell=" << (m_linkTerminal->shellProgram().empty()
+                                                       ? string("auto")
+                                                       : m_linkTerminal->shellProgram())
+                                 << " 并发上限=" << m_config.maxConcurrent
+                                 << " 终端=" << (m_config.allowTerminal ? "开" : "关")
+                                 << " 包管理=" << (m_config.allowPackageManager ? "开" : "关")
+                                 << " 联网=" << (m_config.allowNetwork ? "开" : "关");
+}
+
+bool JZAgentNode::startLinkServer(std::string &error)
+{
+    if (m_linkServer)
+        return true;
+    if (m_config.token.empty())
+    {
+        error = "link 模式必须配 token(空 token 等于把这台机器的 shell 交给任何能连上端口的人)";
+        return false;
+    }
+
+    JZAgentNodePacketInit();
+
+    m_linkServer = new JZNetServer(this);
+    m_linkServer->setToken(m_config.token);
+
+    connect(&m_linkServer->sigAccept, this, [this]()
+    {
+        // 握手完成才会 emit sigAccept; 这里只把待处理队列排空(否则会一直堆着)
+        uint64_t conn = m_linkServer->nextPendingConnection();
+        if (conn != 0)
+            jzInfo().noquote().nospace() << "node(link) 收到 cli 连接: " << conn;
+    });
+    connect(&m_linkServer->sigPacketReceive, this, [this](uint64_t conn, JZNetPackPtr pack)
+    {
+        onLinkPacket(conn, pack);
+    });
+
+    if (!m_linkServer->listen(m_config.host, m_config.port))
+    {
+        error = "link 模式监听失败 " + m_config.host + ":" + std::to_string(m_config.port) +
+                "(端口被占用 / 地址不可用?)";
+        m_linkServer->deleteLater();
+        m_linkServer = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool JZAgentNode::linkListening() const
+{
+    return m_linkServer != nullptr && m_linkServer->isListening();
+}
+
+void JZAgentNode::sendLinkResult(uint64_t conn, const JZNodePackExecResult &result)
+{
+    if (!m_linkServer)
+        return;
+    m_linkServer->sendPacket(conn, &result);
+}
+
+void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
+{
+    if (!pack)
+        return;
+
+    const int type = pack->packetType();
+    if (type == NodePack_hello)
+    {
+        JZNodePackHello *hello = (JZNodePackHello *)pack.get();
+        JZNodePackHelloAck ack;
+        ack.ok = (m_linkTerminal != nullptr);
+        ack.error = ack.ok ? std::string() : std::string("节点未初始化执行终端");
+        ack.nodeName = m_config.nodeName;
+        ack.version = m_config.version;
+        ack.rootDir = m_config.rootDir;
+        ack.shell = m_linkTerminal ? m_linkTerminal->shellProgram() : std::string();
+        m_linkServer->sendPacket(conn, &ack);
+        jzInfo().noquote().nospace() << "cli 上线: id=" << hello->clientId << " v" << hello->cliVersion
+                                     << " conn=" << conn;
+        return;
+    }
+
+    if (type == NodePack_exec)
+    {
+        JZNodePackExec *exec = (JZNodePackExec *)pack.get();
+        runLinkExec(conn, exec->runId, exec->command, exec->cwd, exec->timeoutMs);
+        return;
+    }
+
+    if (type == NodePack_execCancel)
+    {
+        JZNodePackExecCancel *cancel = (JZNodePackExecCancel *)pack.get();
+        auto it = m_linkTermRuns.find(cancel->runId);
+        if (it != m_linkTermRuns.end() && m_linkTerminal)
+        {
+            jzInfo().nospace() << "取消执行: " << cancel->runId << " (终端 " << it->second << ")";
+            m_linkTerminal->cancel(it->second);
+        }
+        return;
+    }
+}
+
+void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
+                              const std::string &cwd, int timeoutMs)
+{
+    auto fail = [this, conn, &runId](const std::string &why)
+    {
+        JZNodePackExecResult res;
+        res.runId = runId;
+        res.ok = false;
+        res.error = why;
+        sendLinkResult(conn, res);
+    };
+
+    if (!m_config.allowTerminal)
+    {
+        fail("节点未开放终端(allowTerminal=false)");
+        return;
+    }
+    if (!m_linkTerminal)
+    {
+        fail("节点没有可用的执行终端");
+        return;
+    }
+    if (m_config.maxConcurrent > 0 &&
+        (int)m_linkTerminal->activeRunIds().size() >= m_config.maxConcurrent)
+    {
+        fail("节点忙: 并发上限 " + std::to_string(m_config.maxConcurrent) + " 条");
+        return;
+    }
+
+    // cwd: 空 = 终端当前目录(工作区根); 非空按 `cd <cwd> && <命令>` 交给终端 ——
+    // 终端的解析器本来就支持 `cd X && cmd`, 并且会按 X 重新审权限, 所以不用另开 API。
+    std::string cmd = command;
+    if (!cwd.empty())
+    {
+        if (cwd.find('"') != std::string::npos)
+        {
+            fail("cwd 不能含双引号");
+            return;
+        }
+        cmd = "cd \"" + cwd + "\" && " + command;
+    }
+
+    const int64_t startMs = JZDateTime::currentMSecsSinceEpoch();
+    m_linkRuns[runId] = conn;
+
+    // 终端自己也会生成 runId(用于 cancel/查询), 与协议里的 runId 不是同一个, 这里做映射
+    auto termRunId = std::make_shared<std::string>();
+    auto finished = std::make_shared<bool>(false);
+
+    auto cb = [this, conn, runId, startMs, termRunId, finished]
+              (bool ok, const std::string &output, const std::string &error)
+    {
+        if (*finished)
+            return;
+        *finished = true;
+
+        JZNodePackExecResult res;
+        res.runId = runId;
+        res.ok = ok;
+        res.durationMs = JZDateTime::currentMSecsSinceEpoch() - startMs;
+        res.output = cutExecOutput(output);
+        res.error = error;
+        if (m_linkTerminal)
+        {
+            res.cwd = m_linkTerminal->info().cwd;
+            JZVirtualTerminal::RunRecordInfo info;
+            if (!termRunId->empty() && m_linkTerminal->runSnapshot(*termRunId, info))
+            {
+                res.exitCode = info.exitCode;
+                res.timedOut = info.timedOut;
+                if (res.error.empty() && !info.error.empty())
+                    res.error = info.error;
+            }
+        }
+        m_linkRuns.erase(runId);
+        m_linkTermRuns.erase(runId);
+        sendLinkResult(conn, res);
+    };
+
+    JZResult<std::string> ret = m_linkTerminal->run(cmd, timeoutMs, cb);
+    if (ret.isOk())
+    {
+        *termRunId = ret.value();
+        m_linkTermRuns[runId] = ret.value();
+    }
+    else if (!*finished)
+    {
+        // 命令被拒/起不来(这种情况下 cb 通常已被同步调过一次, 用 finished 防重复回包)
+        *finished = true;
+        m_linkRuns.erase(runId);
+        JZNodePackExecResult res;
+        res.runId = runId;
+        res.ok = false;
+        res.error = ret.errorMessage();
+        res.cwd = m_linkTerminal->info().cwd;
+        sendLinkResult(conn, res);
+    }
 }

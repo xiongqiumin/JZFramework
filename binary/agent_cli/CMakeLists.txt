@@ -12,6 +12,10 @@ add_executable(agent_cli
     main.cpp
     JZAgentCli.h
     JZAgentCli.cpp
+    JZNodeLink.h
+    JZNodeLink.cpp
+    JZHubLink.h
+    JZHubLink.cpp
 )
 
 target_link_libraries(agent_cli PRIVATE JZFramework agent_tool)

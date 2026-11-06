@@ -38,6 +38,11 @@ static const char *kDefaultConfigJson = R"json({
         "port":   8088,
         "token":  ""
     },
+    "hub": {
+        "bind":  "0.0.0.0",
+        "port":  8090,
+        "token": ""
+    },
     "frp": {
         "server": {
             "enabled":  false,
@@ -182,6 +187,17 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
     readInt(root, "http", "port", "httpPort", config.http.port);
     readString(root, "http", "token", "httpToken", config.http.token);
 
+    // hub: 控制面(JZNet), agent_cli 出站连这里 —— 这才是"管远端 cli"的通道,
+    //      http.* 只是给人看的网页/API, 两者是两个端口。
+    readString(root, "hub", "bind", "hubBind", config.hub.bind);
+    readInt(root, "hub", "port", "hubPort", config.hub.port);
+    readString(root, "hub", "token", "hubToken", config.hub.token);
+    if (config.hub.port <= 0 || config.hub.port > 65535 || config.hub.port == config.http.port)
+    {
+        error = "hub.port 不合法(不能等于 http.port): " + to_string(config.hub.port);
+        return false;
+    }
+
     // frp 服务端(frps); 兼容旧平铺键 frpEnabled / frpBindPort / frpToken
     readBool(root, "frp", "server.enabled", "frpEnabled", config.frpEnabled);
     readInt(root, "frp", "server.bindPort", "frpBindPort", config.frpBindPort);
@@ -223,6 +239,10 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     // http 网页 / API
     fprintf(stderr, "  网页      http://%s:%d  token=%s\n", config.http.bind.c_str(),
             config.http.port, config.http.token.empty() ? "(无)" : "(已启用)");
+
+    // 控制面(agent_cli 出站连这里)
+    fprintf(stderr, "  控制面    hub(JZNet) %s:%d  token=%s\n", config.hub.bind.c_str(),
+            config.hub.port, config.hub.token.empty() ? "(无)" : "(已启用)");
 
     // frp 服务端
     if (!config.frpEnabled)
@@ -303,8 +323,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    jzDebug("JZAgentCliServer 就绪: http=%s:%d  frps=%s  agents=%d",
+    jzDebug("JZAgentCliServer 就绪: http=%s:%d  hub=%s:%d  frps=%s  agents=%d",
             config.http.bind.c_str(), config.http.port,
+            config.hub.bind.c_str(), config.hub.port,
             config.frpEnabled ? "开" : "关", (int)config.agents.size());
     server.start();   // frps(可选) + 后台网页/API + 拉起 enabled 的 agent
 

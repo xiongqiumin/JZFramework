@@ -5,11 +5,13 @@
 #include <string>
 #include <vector>
 
+#include "JZAgentNodePacket.h"   // link 模式: 与 agent_cli 的执行面协议
 #include "JZCodeTools.h"     // ICodeToolHost / JZVirtualTerminalConfig / TrustedDir
 #include "JZObject.h"
 #include "JZTerminalRegistry.h"   // JZTerminalRegistry: 会话 -> 终端 的注册表(本节点实现)
 
 class JZMcpServer;
+class JZNetServer;
 class JZAgentTool;
 class JZMcpTool;           // 直接挂进 MCP 的工具(不经过 agent_tool 包装)
 class JZVirtualTerminal;   // 执行/审核面, 见 agent_tool/JZVirtualTerminal.h
@@ -33,6 +35,16 @@ public:
     // 127.0.0.1; 跨机器访问请走 ssh 隧道之类的通道, 别直接把 39000 暴露出去。
     std::string host = "0.0.0.0";
     int port = 39000;
+
+    // ---- 运行模式(见 docs/agent-hub-design.md §6.1.2) ----
+    //   "mcp"(默认) = 单独当被控端 MCP server(行为与以前完全一致);
+    //   "link"      = 配合 agent_cli: **不起 MCP**, 只起 JZNetServer 供 cli 的 remote_ssh 调用。
+    // ⚠ 两种模式 node 都是 server 角色, cli 永远是 client —— 所以 node 必须能被 cli 连上。
+    std::string mode = "mcp";
+    // link 模式的握手口令(JZNetServer::setToken)。空 = 拒绝启动 link 模式(裸奔的执行口子)。
+    std::string token;
+    // link 模式同时允许几条命令在跑。设备上建议保持 1: 并跑几条编译只会互相拖死。
+    int maxConcurrent = 1;
 
     // 文件工具的根目录(相对路径按它拼接), 同时也是区域模型里的"工作区"(可读写)。
     // 为空时取进程当前工作目录。
@@ -129,6 +141,14 @@ public:
     // 建 server、注册工具、填 serverInfo。必须在 listen 之前调用。
     void init(const JZNodeConfig &config);
 
+    // link 模式: 只建"一台终端 + 执行口子", 不建 JZMcpServer、不注册 MCP 工具。
+    // (配合 agent_cli 时用; 见 JZNodeConfig::mode)
+    void initLink(const JZNodeConfig &config);
+
+    // link 模式: 起 JZNetServer 等 cli 连进来(token 为空时拒绝启动)。
+    bool startLinkServer(std::string &error);
+    bool linkListening() const;
+
     JZMcpServer *server() const { return m_server; }
     const JZNodeConfig &config() const { return m_config; }
     JZTerminalRegistry *terminalRegistry() { return this; }
@@ -148,6 +168,20 @@ protected:
     void addTool(JZMcpTool *tool);
 
     std::string buildInstructions() const;
+
+    // ---- link 模式 ----
+    // 把配置里的路径统一成 "/" 分隔的绝对路径(区域判定是纯字符串前缀比较)
+    void normalizeConfig(JZNodeConfig &config);
+    // 一条 exec 请求: 审核由终端做, 这里只负责拼 cwd 与回包
+    void runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
+                     const std::string &cwd, int timeoutMs);
+    void onLinkPacket(uint64_t conn, JZNetPackPtr pack);
+    void sendLinkResult(uint64_t conn, const JZNodePackExecResult &result);
+
+    JZNetServer *m_linkServer = nullptr;         // link 模式的 server 角色
+    JZVirtualTerminal *m_linkTerminal = nullptr; // link 模式唯一的执行终端(会话由节点自己管)
+    std::map<std::string, uint64_t> m_linkRuns;  // cli 的 runId -> 发起它的连接(cancel 时回包用)
+    std::map<std::string, std::string> m_linkTermRuns;   // cli 的 runId -> 终端的 runId(cancel 用)
 
     // 空闲回收: 起一个周期定时器扫会话(recycleSec <= 0 时不开)。
     // ⚠ JZVirtualTerminal 自己不管生命周期(它只把 recycleMs 存着给上层看),

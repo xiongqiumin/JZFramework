@@ -3,6 +3,10 @@
     JZAgent.cpp
 	JZAgentTool.h
 	JZAgentTool.cpp
+	JZAgentNodePacket.h
+	JZAgentNodePacket.cpp
+	JZAgentHubPacket.h
+	JZAgentHubPacket.cpp
 	JZMcpClient.h
 	JZMcpClient.cpp
 	JZLoopDetect.h

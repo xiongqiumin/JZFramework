@@ -30,6 +30,32 @@ add_test(NAME agent_cli.icon_find
          COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_find.py)
 set_tests_properties(agent_cli.icon_find PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
 
+#   test_remote_ssh_nodes.py —— 2 个 link 模式 agent_node + 1 个 agent_cli:
+#       模型只看到一个 remote_ssh 工具, 用它把 nodeA 的 secret.txt 搬到 nodeB 的 answer.txt。
+#       默认用内置的 **mock 模型**(OpenAI 兼容 + SSE, 固定回两次 tool_call + 一次收尾),
+#       所以不联网、秒级、可进快速回归; 断言是"逐字符相等"(内容随机), 且验证命令只读
+#       nodeB 的文件 ⇒ 必须真的经 remote_ssh 搬运。要验真模型: 加 --real-llm(慢)。
+#           ctest -C Release -R agent_cli.remote_ssh_nodes --output-on-failure
+add_test(NAME agent_cli.remote_ssh_nodes
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_remote_ssh_nodes.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-node $<TARGET_FILE:agent_node>)
+set_tests_properties(agent_cli.remote_ssh_nodes PROPERTIES
+                     TIMEOUT 300 LABELS "agent_cli" RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+
+#   test_hub_nodes.py —— server -> cli(managed) -> node 全链路:
+#       任务从 agent_cli_server 的 POST /api/tasks 提交, 经控制面(JZNet)下发给 cli,
+#       cli 再用 remote_ssh 把 nodeA 的 secret.txt 搬到 nodeB 的 answer.txt。
+#       顺带断言 managed 模式**不监听** http.port(与 standalone 互斥)。
+#           ctest -C Release -R agent_cli.hub_nodes --output-on-failure
+add_test(NAME agent_cli.hub_nodes
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_hub_nodes.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-node $<TARGET_FILE:agent_node>
+                 --agent-server $<TARGET_FILE:agent_cli_server>)
+set_tests_properties(agent_cli.hub_nodes PROPERTIES
+                     TIMEOUT 300 LABELS "agent_cli" RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+
 #   test_codex/test_codex_bench.py —— 用 **Codex SDK** 跑 benchmark 的同一批用例(与 agent_cli_test
 #       同套用例/工程骨架/验证命令), 用来和 agent_cli 的通过率做对比。真模型 + 真 Codex 回合 ⇒ 很慢,
 #       同样挂 llm 标签(不混进快速回归):

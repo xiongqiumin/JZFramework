@@ -38,8 +38,10 @@ static const char *kDefaultConfigJson =
     "{\n"
     "    \"nodeName\":           \"agent_node\",\n"
     "    \"version\":            \"1.0.0\",\n"
+    "    \"mode\":               \"mcp\",\n"
     "    \"host\":               \"0.0.0.0\",\n"
     "    \"port\":               7500,\n"
+    "    \"token\":              \"\",\n"
     "    \"rootDir\":            \"\",\n"
     "    \"trustedDirs\":        [],\n"
     "    \"allowTerminal\":      true,\n"
@@ -49,6 +51,7 @@ static const char *kDefaultConfigJson =
     "    \"unrestricted\":       false,\n"
     "    \"shellProgram\":       \"\",\n"
     "    \"maxSessions\":        8,\n"
+    "    \"maxConcurrent\":      1,\n"
     "    \"recycleSec\":         900,\n"
     "    \"logFile\":            \"\"\n"
     "}\n";
@@ -135,8 +138,10 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     JZJsonStream js(&root);
     js.readMemberDefault("nodeName", config.nodeName, config.nodeName);
     js.readMemberDefault("version", config.version, config.version);
+    js.readMemberDefault("mode", config.mode, config.mode);
     js.readMemberDefault("host", config.host, config.host);
     js.readMemberDefault("port", config.port, config.port);
+    js.readMemberDefault("token", config.token, config.token);
     js.readMemberDefault("rootDir", config.rootDir, config.rootDir);
     js.readMemberDefault("shellProgram", config.shellProgram, config.shellProgram);
     js.readMemberDefault("allowTerminal", config.allowTerminal, config.allowTerminal);
@@ -145,8 +150,10 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     js.readMemberDefault("allowNetwork", config.allowNetwork, config.allowNetwork);
     js.readMemberDefault("unrestricted", config.unrestricted, config.unrestricted);
     js.readMemberDefault("maxSessions", config.maxSessions, config.maxSessions);
+    js.readMemberDefault("maxConcurrent", config.maxConcurrent, config.maxConcurrent);
     js.readMemberDefault("recycleSec", config.recycleSec, config.recycleSec);
     js.readMemberDefault("logFile", config.logFile, config.logFile);
+    config.mode = str_toLower(config.mode);
 
     const Json::Value &arr = root["trustedDirs"];
     if (!arr.isNull())
@@ -204,7 +211,18 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
 
     jzInfo().noquote().nospace() << "配置文件: " << configPath;
     jzInfo().noquote().nospace() << "  节点名    " << config.nodeName << " v" << config.version;
-    jzInfo().noquote().nospace() << "  监听      " << config.host << ":" << config.port << "/mcp";
+    if (config.mode == "link")
+    {
+        jzInfo().noquote().nospace() << "  模式      link(配合 agent_cli; 不起 MCP)";
+        jzInfo().noquote().nospace() << "  监听      " << config.host << ":" << config.port
+                                     << "  (JZNet, token=" << (config.token.empty() ? "缺失!" : "已启用") << ")";
+        jzInfo().noquote().nospace() << "  并发      " << config.maxConcurrent << " 条";
+    }
+    else
+    {
+        jzInfo().noquote().nospace() << "  模式      mcp(单独作为被控端 MCP server)";
+        jzInfo().noquote().nospace() << "  监听      " << config.host << ":" << config.port << "/mcp";
+    }
     jzInfo().noquote().nospace() << "  工作区    " << (config.rootDir.empty()
         ? JZDir::currentPath() + "  (配置为空, 取进程当前目录)" : config.rootDir);
     jzInfo().noquote().nospace() << "  授信目录  " << (trusted.empty() ? string("(无)") : trusted);
@@ -312,17 +330,35 @@ int main(int argc, char *argv[])
     }
 
     JZAgentNode node;
-    node.init(config);
 
-    if (!node.server()->listenHttp(config.host, config.port))
+    if (config.mode == "link")
     {
-        jzError().nospace() << "监听失败 " << config.host << ":" << config.port << "(端口被占用 / 地址不可用?)";
-        return 1;
+        // link 模式: 配合 agent_cli —— **不起 MCP**, 只起 JZNetServer 供 remote_ssh 调用。
+        // 见 docs/agent-hub-design.md §6.1.2
+        node.initLink(config);
+        if (!node.startLinkServer(err))
+        {
+            jzError().nospace() << err;
+            return 1;
+        }
+        string showHost = (config.host == "0.0.0.0") ? string("<本机IP>") : config.host;
+        jzInfo().noquote().nospace() << "节点已就绪(link): " << showHost << ":" << config.port
+                                     << "   节点名=" << config.nodeName << "   (等 cli 连入)";
     }
+    else
+    {
+        node.init(config);
 
-    string showHost = (config.host == "0.0.0.0") ? string("<本机IP>") : config.host;
-    jzInfo().noquote().nospace() << "节点已就绪: http://" << showHost << ":" << config.port
-                                 << "/mcp   节点名=" << config.nodeName;
+        if (!node.server()->listenHttp(config.host, config.port))
+        {
+            jzError().nospace() << "监听失败 " << config.host << ":" << config.port << "(端口被占用 / 地址不可用?)";
+            return 1;
+        }
+
+        string showHost = (config.host == "0.0.0.0") ? string("<本机IP>") : config.host;
+        jzInfo().noquote().nospace() << "节点已就绪: http://" << showHost << ":" << config.port
+                                     << "/mcp   节点名=" << config.nodeName;
+    }
 
     return app.exec();
 }

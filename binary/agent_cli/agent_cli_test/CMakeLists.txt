@@ -17,6 +17,9 @@ set(AGENT_CLI_TEST_SOURCES
     main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.h
+    # JZAgentCli 依赖的传输层: node(执行面)与 server(控制面)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZNodeLink.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZHubLink.cpp
 )
 
 add_executable(agent_cli_test ${AGENT_CLI_TEST_SOURCES})

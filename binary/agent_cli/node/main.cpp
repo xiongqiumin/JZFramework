@@ -32,7 +32,7 @@
 
 using namespace std;
 
-// 默认配置(与 binary/agent_node/config.json 模板保持一致)。
+// 默认配置(与 binary/agent_cli/node/config.json 模板保持一致)。
 // --init 把它写出来; loadConfig 也是按这些字段读的。
 static const char *kDefaultConfigJson =
     "{\n"

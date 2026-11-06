@@ -19,8 +19,7 @@
 set(JZ_BINARY_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin")
 
 add_subdirectory(agent_tool)
-add_subdirectory(agent_node)
-add_subdirectory(agent_cli)
+add_subdirectory(agent_cli)   # 内含 node/: 远端被控端(agent_node)与 cli 同属一个二进制族
 add_subdirectory(frpc)
 
 # jzpdf: JZDocument 的 PDF 后端(PDFium)。需要 -DJZ_PDFIUM_DIR=... , 没给就自己跳过。

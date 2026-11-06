@@ -53,3 +53,6 @@ add_subdirectory(agent_cli_test)
 
 # JZAgentCliServer: FRP 服务端(frps) —— 与 agent_cli(client 角色 = frpc)配对
 add_subdirectory(server)
+
+# node/: 远端被控端(原 binary/agent_node) —— 与 cli 配对的另一半, 放在同一棵树里
+add_subdirectory(node)

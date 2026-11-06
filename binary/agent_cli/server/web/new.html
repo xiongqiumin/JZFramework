@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>新建任务 · JZAgent 管理台</title>
+<link rel="stylesheet" href="/ui/tokens.css">
+<link rel="stylesheet" href="/ui/base.css">
+<link rel="stylesheet" href="/ui/components.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-page="new">
+<header class="jz-topbar">
+  <div class="jz-brand">
+    <span class="jz-brand__logo">JZ</span>
+    <div>
+      <div class="jz-brand__title">新建任务</div>
+      <div class="jz-brand__sub" id="meta">提交后立刻返回 taskId，可在「任务记录」里看进度</div>
+    </div>
+  </div>
+  <nav class="jz-tools" id="nav">
+    <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">Agent</a>
+    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">任务记录</a>
+    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">新建任务</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div class="jz-card">
+    <div class="jz-card__bd jz-stack">
+      <div class="jz-field" style="max-width:320px">
+        <label for="fAgent">agent</label>
+        <select id="fAgent" class="jz-input"></select>
+      </div>
+
+      <div class="jz-field">
+        <label for="fPrompt">任务</label>
+        <textarea id="fPrompt" class="jz-textarea" rows="6" placeholder="要让 agent 做什么…"></textarea>
+      </div>
+
+      <div class="jz-field">
+        <label for="fVerify">验证命令（可选，退出码 0 = 通过；留空 = 跑完即通过）</label>
+        <input id="fVerify" class="jz-input" placeholder="例如：python verify.py / grep -q ok out.txt">
+      </div>
+
+      <div class="jz-row">
+        <button id="btnSubmit" class="jz-btn jz-btn--primary">提交任务</button>
+        <button id="btnReset" class="jz-btn jz-btn--ghost jz-btn--sm">清空</button>
+        <a class="jz-btn jz-btn--sm" href="tasks">看任务记录</a>
+        <span class="logbar__hint" id="msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="logbar__hint">
+    提交走的是 <code>POST /api/tasks</code>（<code>wait:false</code>），返回 202 + taskId；
+    cli 侧的队列数决定并发度，超出的任务会自动排队。
+  </p>
+</div>
+
+<script src="/ui/jz-ui.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

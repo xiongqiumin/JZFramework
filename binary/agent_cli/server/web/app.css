@@ -22,26 +22,66 @@
   letter-spacing: .5px;
   color: var(--jz-muted);
   font-weight: 600;
-}
-
-.logbar {
   display: flex;
   align-items: center;
   gap: var(--jz-sp-2);
-  margin-top: var(--jz-sp-2);
 }
-.logbar__name { font-weight: 600; }
+.sec__more { font-weight: 400; }
+
 .logbar__hint { color: var(--jz-muted); font-size: var(--jz-fs-1); }
 
-#log { height: 48vh; }
-
-/* 手机上副标题默认被隐藏, 但这里的 #meta 是运行状态, 必须显示 */
-#meta { display: block; }
-
-tr[data-agent] { cursor: pointer; }
-
+/* 手机上: 窄列(轮次/耗时/时间)直接隐藏, 只看任务+状态+内容 */
 @media (max-width: 640px) {
   .wrap { padding: var(--jz-sp-3) var(--jz-sp-3) 40px; gap: var(--jz-sp-3); }
   .kpis { grid-template-columns: repeat(2, 1fr); }
-  #log { height: 40vh; }
+  .jz-table td.hide-sm { display: none; }
 }
+
+/* 当前页高亮 */
+#nav a[aria-current="page"] {
+  border-color: var(--jz-accent);
+  color: var(--jz-accent);
+}
+
+/* 详情里的键值表 */
+.kv { display: flex; gap: var(--jz-sp-2); padding: 4px 0; font-size: var(--jz-fs-2); }
+.kv .k { flex: 0 0 110px; color: var(--jz-muted); }
+.kv .v { min-width: 0; word-break: break-all; }
+.kv pre { margin: 0; }
+
+/* 连接列表(远程连接式: 每个 agent 一行, 点进详情) */
+.conns { display: flex; flex-direction: column; gap: var(--jz-sp-2); }
+.conn {
+  display: flex; gap: var(--jz-sp-3); align-items: center;
+  padding: var(--jz-sp-3);
+  border: 1px solid var(--jz-border); border-radius: var(--jz-r-2);
+  background: var(--jz-panel); color: var(--jz-text);
+  text-decoration: none; box-shadow: var(--jz-shadow-1);
+  transition: border-color .12s;
+}
+.conn:hover { border-color: var(--jz-accent); }
+.conn--empty { display: block; color: var(--jz-muted); font-size: var(--jz-fs-2); line-height: 1.8; }
+.conn__mono {
+  flex: 0 0 40px; width: 40px; height: 40px;
+  border-radius: var(--jz-r-2); background: var(--jz-accent-weak); color: var(--jz-accent);
+  display: grid; place-items: center;
+  font-weight: 700; font-family: var(--jz-mono); font-size: var(--jz-fs-2);
+}
+.conn__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.conn__id { font-weight: 600; }
+.conn__sub { color: var(--jz-muted); font-size: var(--jz-fs-1); }
+.conn__path {
+  color: var(--jz-muted); font-size: var(--jz-fs-1); font-family: var(--jz-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.conn__side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.conn__task { color: var(--jz-muted); font-size: var(--jz-fs-1); font-family: var(--jz-mono); }
+.conn__go { color: var(--jz-accent); font-size: var(--jz-fs-1); }
+
+/* agent 详情: 左信息 / 右派活 */
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--jz-sp-4); align-items: start; }
+.detail-grid section, .detail-grid aside { display: flex; flex-direction: column; gap: var(--jz-sp-2); min-width: 0; }
+.back { color: var(--jz-muted); text-decoration: none; margin-right: 4px; }
+
+@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .conn__path { display: none; } .conn__go { display: none; } }

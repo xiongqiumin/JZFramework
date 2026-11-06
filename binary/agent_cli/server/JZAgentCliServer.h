@@ -12,6 +12,8 @@
 class JZFrpServer;
 class JZHttpServer;
 class JZProcess;
+#include "JZServerAgent.h"
+
 class JZTimer;
 class JZNetServer;
 class JZHttpServerClient;
@@ -87,6 +89,9 @@ struct JZCliServerConfig
 
     // 管理的一系列 agent_cli(各作为一个子进程拉起并监管)
     std::vector<JZCliServerAgentConfig> agents;
+
+    // server 自己那个 JZAgent(内置 agent, 跑在 server 进程内, agentId 默认 "server")
+    JZServerAgentConfig selfAgent;
 };
 
 // 单个被管理 agent 的运行实例(实现细节, 见 cpp)
@@ -108,6 +113,16 @@ public:
     bool stopAgent(const std::string &name);    // 优雅停止
     bool restartAgent(const std::string &name); // 重启
 
+    // ---- 给 server 内置 agent 的工具用(实现见 JZServerAgent.cpp) ----
+    Json::Value snapshotAgents() const { return onlineAgentsJson(); }
+    Json::Value snapshotTasks(const std::string &agentId, const std::string &status, int limit) const
+    {
+        return tasksJson(agentId, status, limit);
+    }
+    Json::Value snapshotTask(const std::string &taskId) const;   // 不存在返回 null
+    // 供工具调用: 与 POST /api/tasks 同一套逻辑, 但不等回包(waiter=nullptr)
+    int submitTaskForTool(const Json::Value &body, Json::Value &ack, std::string &error);
+
     // 路由处理器(供本类内 handler 子类调用, 需 public)
     void onApiStatus(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiAgents(JZHttpServerClient *client, const JZHttpRequest &req);
@@ -117,6 +132,13 @@ public:
     // 控制面: 提交/取消任务(body = POST /task 的字段 + agentId)
     void onApiTasks(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiTaskCancel(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 任务记录(server 侧历史, 落盘 tasks.jsonl)
+    void onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 单个 agent 的详情(在线 cli / 内置 agent / 本地子进程三选一)
+    void onApiAgentDetail(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 页面: web/<name>, 找不到回 404; onDashboard = servePage("index.html")
+    void servePage(JZHttpServerClient *client, const JZHttpRequest &req, const std::string &name);
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
 private:
@@ -155,6 +177,42 @@ private:
     std::map<std::string, uint64_t> m_connByAgent;        // agentId -> conn
     std::map<std::string, PendingTask> m_pendingTasks;    // taskId -> 等待回包的提交方
     int m_taskSeq = 0;
+
+    // ---- 内置 agent(server 自己跑的那个 JZAgent) ----
+    JZServerAgent *m_selfAgent = nullptr;
+    bool isSelfAgentId(const std::string &id) const;
+    void onSelfAgentEvent(const JZServerAgentEvent &ev);
+    // 任务下发核心: HTTP 与内置 agent 的工具共用。
+    //   waiter 非空 = 同步模式(调用方不要自己回包, 回包在 taskEnd/done 时发出)
+    //   返回 http 状态码; 202 = 已接受(异步), >=400 = 失败(ack 里有 error)
+    int submitTask(const Json::Value &body, JZHttpServerClient *waiter,
+                   Json::Value &ack, std::string &error);
+
+    // ---- 任务记录 ----
+    // 归属(见 docs/agent-hub-design.md §15): **server 是任务历史的主人**, cli 只知道
+    // "当前这一条"加上它自己内存里的 recent(重启即丢)。历史不在 server 落盘的话,
+    // cli 一重启, 提交方就再也查不到自己交过什么。
+    struct TaskRecord
+    {
+        std::string taskId, agentId, prompt, verifyCmd;
+        std::string status;        // running / success / failed / cancelled / lost
+        std::string error, reply, lastEventType;
+        int rounds = 0, round = 0;
+        long long startMs = 0, endMs = 0;
+    };
+    std::map<std::string, TaskRecord> m_tasks;      // taskId -> 记录
+    std::vector<std::string> m_taskOrder;           // 插入顺序(裁剪最老的)
+    std::string m_taskFile;                         // <exeDir>/data/tasks.jsonl
+
+    void loadTaskStore();
+    void saveTaskRecord(const TaskRecord &r);       // 追加一行(JSONL, 后写覆盖先写)
+    void recordCreate(const std::string &taskId, const std::string &agentId, const Json::Value &body);
+    void recordEnd(const std::string &taskId, const Json::Value &result);
+    void recordFail(const std::string &taskId, const std::string &status, const std::string &error);
+    void recordEvent(const std::string &taskId, const std::string &type);
+    TaskRecord *findTask(const std::string &taskId);
+    Json::Value taskJson(const TaskRecord &r) const;
+    Json::Value tasksJson(const std::string &agentId, const std::string &status, int limit) const;
 };
 
 #endif // !JZ_AGENT_CLI_SERVER_H_

@@ -3,51 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JZAgentCliServer 管理台</title>
-<!-- 统一视觉层(见 docs/web-ui-design.md): 变量/基线/组件; 颜色全部来自 tokens.css -->
+<title>连接 · JZAgent 管理台</title>
 <link rel="stylesheet" href="/ui/tokens.css">
 <link rel="stylesheet" href="/ui/base.css">
 <link rel="stylesheet" href="/ui/components.css">
 <link rel="stylesheet" href="/app.css">
 </head>
-<body>
+<body data-page="agents">
 <header class="jz-topbar">
   <div class="jz-brand">
     <span class="jz-brand__logo">JZ</span>
     <div>
-      <div class="jz-brand__title">JZAgentCliServer 管理台</div>
+      <div class="jz-brand__title">连接</div>
       <div class="jz-brand__sub" id="meta">加载中…</div>
     </div>
   </div>
-  <div class="jz-tools">
-    <button id="copyToken" class="jz-btn jz-btn--ghost jz-btn--sm">复制带 token 的链接</button>
-  </div>
+  <nav class="jz-tools" id="nav">
+    <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">连接</a>
+    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">任务记录</a>
+    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">新建任务</a>
+  </nav>
 </header>
 
 <div class="wrap">
   <div class="kpis" id="cards"></div>
 
-  <h2 class="sec">控制面（agent_cli 出站接入）</h2>
-  <div class="jz-table-wrap">
-    <table class="jz-table" id="onlineTbl">
-      <thead><tr><th>agentId</th><th>名称</th><th>状态</th><th>节点</th><th>最近事件</th><th>工作区</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <h2 class="sec">本机托管的 agent_cli 子进程</h2>
-  <div class="jz-table-wrap">
-    <table class="jz-table" id="tbl">
-      <thead><tr><th>名称</th><th>状态</th><th>退出码</th><th>命令</th><th>日志行</th><th>操作</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="logbar">
-    <span class="logbar__name" id="logName">未选择 agent</span>
-    <span class="logbar__hint">每 1.5s 刷新</span>
-  </div>
-  <pre class="jz-log" id="log" data-autoscroll>点上方某一行查看其日志</pre>
+  <h2 class="sec">agent（点一行进入详情）</h2>
+  <div class="conns" id="connList"></div>
 </div>
 
 <script src="/ui/jz-ui.js"></script>

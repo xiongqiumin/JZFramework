@@ -531,7 +531,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | 改动 | 文件 |
 | --- | --- |
 | `helloAck` 字段扩到上表 | `JZAgent/JZAgentNodePacket.{h,cpp}` |
-| 填字段（构建号、平台、主机名、盘空间、运行态） | `binary/agent_node/JZAgentNode.cpp`（`onLinkPacket` 的 hello 分支） |
+| 填字段（构建号、平台、主机名、盘空间、运行态） | `binary/agent_cli/node/JZAgentNode.cpp`（`onLinkPacket` 的 hello 分支） |
 | 存字段 + 暴露 getter | `binary/agent_cli/JZNodeLink.{h,cpp}` |
 | `helloAck` 后刷新工具描述 | `JZAgentCli::startNodes` 的回调里调 `JZRemoteSshTool::refreshNodeList()` |
 | 扩充 `/info` | `JZAgentCli::makeInfo` |
@@ -671,7 +671,7 @@ P0 只依赖后者，P2 只依赖前者 —— 这也是 P0 能先落地的原�
 | 任务入口 | cli `POST /task` | managed 下为 server `taskSubmit` | `JZAgentCli::submitTask`（复用，不改逻辑）+ server 新路由 |
 | 取消/重置 | `POST /reset` | `taskCancel` / `reset` 包 | `JZAgentCli::resetSession` 加一层包入口 |
 | **验证面** | 永远在 cli 本机跑（`runVerifyAsync` + `cwd=rootDir`） | **保持现状**：验证统一在 cli，不加 `verify_host`（§1.2）；跨机靠验证命令自己够到远端 | 无（刻意不改） |
-| node 角色 | 只有一种：MCP server（8 个工具） | 两种：`mcp`（同现状）/ `link`（无 MCP，只处理 `exec`） | `binary/agent_node/main.cpp`（按 `mode` 分支）、`JZAgentNode`（link 下不建 `JZMcpServer`） |
+| node 角色 | 只有一种：MCP server（8 个工具） | 两种：`mcp`（同现状）/ `link`（无 MCP，只处理 `exec`） | `binary/agent_cli/node/main.cpp`（按 `mode` 分支）、`JZAgentNode`（link 下不建 `JZMcpServer`） |
 | node 工具面 | 8 个工具（5 terminal + 3 file）直接进模型工具表 | cli 侧只挂 1 个 `remote_ssh`；`mcp` 模式的工具面不变 | `JZAgentCli::setupAgent`（按 `nodes[]` 决定是否加 `remote_ssh`） |
 | node 自述 | `helloAck` 只回 `nodeName/version/rootDir/shell`，模型只看得到 `name (host:port)` | 身份 + 能力位 + 运行态共 17 项，且刷新进 `remote_ssh` 描述（§6.6） | `JZAgentNodePacket`、`JZAgentNode::onLinkPacket`、`JZNodeLink`、`JZAgentCli::makeInfo` |
 | node 连接方式 | `mcp.servers[]` 静态、MCP over HTTP `/mcp` | `nodes[]` 静态、**JZNet（`NodePack_exec`）** | `JZAgentCli.h`（配置结构）、`loadConfig`、新增 `JZNodeLink` |
@@ -699,8 +699,8 @@ P0 只依赖后者，P2 只依赖前者 —— 这也是 P0 能先落地的原�
 | 文件 | 作用 |
 | --- | --- |
 | `JZAgent/JZAgentNodePacket.{h,cpp}` | 执行面协议：`NodePack_hello / helloAck / exec / execResult / execCancel` + `JZAgentNodePacketInit()`（幂等注册，必须在 `JZNetPackInit` 之后） |
-| `binary/agent_node/JZAgentNode.{h,cpp}` | `initLink()`（只建一台终端，**不建 JZMcpServer**）+ `startLinkServer()` + `onLinkPacket()` + `runLinkExec()` |
-| `binary/agent_node/main.cpp` | 按 `config.mode` 分支：`link` → `initLink/startLinkServer`；否则原 MCP 路径 |
+| `binary/agent_cli/node/JZAgentNode.{h,cpp}` | `initLink()`（只建一台终端，**不建 JZMcpServer**）+ `startLinkServer()` + `onLinkPacket()` + `runLinkExec()` |
+| `binary/agent_cli/node/main.cpp` | 按 `config.mode` 分支：`link` → `initLink/startLinkServer`；否则原 MCP 路径 |
 | `binary/agent_cli/JZNodeLink.{h,cpp}` | `JZNodeLink`（`JZNetClient` 连接 + 重连 + 单条在飞 + 超时收口）+ `JZRemoteSshTool` |
 | `binary/agent_cli/JZAgentCli.{h,cpp}` | `JZCliNodeConfig` / `nodes[]` / `startNodes()` / `nodeLink()` / `defaultNodeName()`；`setupAgent` 里按需注册 `remote_ssh`；`makeInfo` 输出 `nodes[]` 状态 |
 | `binary/agent_cli/main.cpp` | 解析 `nodes[]`、打印生效节点、启动时 `cli.startNodes()` |
@@ -869,3 +869,115 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 - A/B 同时提交 → 断言 `/info.queues` 里 **2 条 busy**（证明是两个 agent 并发，不是假并发）；
 - 全忙时提交 C → 断言 `pendingTasks=1`，且 C 最终 success；
 - 总耗时 3.1s（串行应为 4.5s）→ 并发成立；三条任务全 success。
+
+---
+
+## 15. 数据归属：server 存任务历史，cli 存执行状态（2026-11-06）
+
+### 15.1 一句话结论
+
+**server 是「任务历史」的主人，cli 是「任务执行」的主人。**
+所以 server 必须落盘，cli 不需要（也不该）存历史。
+
+| 数据 | 谁是权威 | 生命周期 | 放在哪 |
+| --- | --- | --- | --- |
+| 任务历史（谁在什么时候交了什么、结果如何） | **server** | 跨 cli 重启、跨 cli 更换、跨 server 重启都要在 | `<exeDir>/data/tasks.jsonl` |
+| 任务执行（当前这一条的上下文/队列/验证进程） | **cli** | 任务结束即弃；进程重启即丢 | cli 内存 |
+| agent 在线状态、节点、最近事件 | **cli 上报，server 缓存** | 心跳刷新，掉线即失效 | server 内存（`m_onlineByConn`） |
+
+### 15.2 为什么不能让 cli 存历史
+
+1. **cli 会重启**：升级、崩溃、客户手动重启都会丢；历史跟着丢等于没存。
+2. **cli 可能被替换**：同一台 agentId 换机器上线，历史应该延续，不能绑在某个进程里。
+3. **多队列 + 多 cli**：历史分散在 N 个进程里，前端要合并、要处理时钟差异，还得处理"某台永远不来了"。
+4. **验收/审计在提交方一侧**：谁有资格看历史，和"谁执行"是两件事 —— server 天然是那个收口点。
+
+反过来，**cli 也不该存全量历史**：它没有持久化层，硬加一个只会和 server 的记录打架。
+
+### 15.3 不一致怎么处理（四类，都有确定答案）
+
+| 场景 | 现象 | 规则 |
+| --- | --- | --- |
+| **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；`status=running` 的任务在下一次心跳对不上时标 `lost`（见下） |
+| **server 重启** | 内存里的 `m_pendingTasks` 全丢 | 载入 `tasks.jsonl` 时把 `running` 一律改 `lost`，`error="server 重启, 结果未知"` —— 不假装它还在跑 |
+| **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 把该 agent 名下 `running` 的记录标 `lost`；提交方（如果在等）回 502 |
+| **超时** | server 侧 `task_timeout_ms` 到点 | 标 `failed` + 原因，同时下发 `taskCancel`（历史里能看到"是超时，不是 cli 说失败"） |
+
+**判定口径**：`status` 以 **server 收到的 `taskEnd`** 为准；cli 本地 `recent` 只用于网页即时展示，不参与历史。
+一个例外要说清：没配 `verify_cmd` 时 cli 会把 agent 报错也判成 `success`（"没有验收项就没有可失败的东西"，
+见 `onLoopFinished` 注释），这种记录会**同时**有 `status=success` 和 `error=ConnectError` —— 看详情要两个字段一起看。
+
+### 15.4 存储形态
+
+- **JSONL 追加**：`taskCreate` 一行、`taskEnd`/失败 各一行；载入时按 `taskId` 后写覆盖先写（简单、崩溃安全、不用回写全文件）。
+- 内存里保留最近 **500** 条（超出按插入顺序淘汰），启动时全量载入。
+- 只存"提交方给的东西 + 结果"，不存每条 `taskEvent`（事件是流式的，存了会撑爆；只留 `last_event` 供排障）。
+
+### 15.5 接口与页面（多页，不再是一个页面塞所有东西）
+
+| 路径 | 作用 |
+| --- | --- |
+| `GET /` | **Agent 列表**：在线/忙闲/节点/当前任务/工作区 + 最近 5 条任务 |
+| `GET /tasks` | **任务记录**：按 agent / 状态筛选，点一行看详情（`?id=` 深链） |
+| `GET /new` | **新建任务**：选 agent、写任务、可选验证命令 |
+| `POST /api/tasks` | 新建任务；`wait` 默认 `true`（老行为，同步等结果），`false` → 立刻回 `202 {taskId}` |
+| `GET /api/tasks` | 历史列表：`agentId` / `status` / `limit`（默认 50，最大 500） |
+| `GET /api/tasks/detail?id=` | 单条详情 |
+| `POST /api/tasks/cancel` | 取消（cli 侧会按 taskId 找到对应队列） |
+
+> 网页一律用 `wait:false` + 轮询：否则"新建任务"页会一直转圈，也没法边跑边看别的任务。
+
+---
+
+## 16. 连接式页面 + server 内置 agent（2026-11-06）
+
+### 16.1 页面结构：从"一页塞所有"改成"连接列表 → 详情"
+
+| 路径 | 页面 | 内容 |
+| --- | --- | --- |
+| `/` | `index.html` | **连接列表**：每个 agent 一行（状态点、agentId、名称/版本/模型、节点 x/y、工作区、当前任务），点整行进详情 |
+| `/agent?id=` | `agent.html` | **agent 详情**：状态卡（模型/工作区/当前任务/最近事件）+ 节点表 + 这台 agent 的任务（最近 20 条）+ 右侧"在这台上新建任务" |
+| `/tasks` | `tasks.html` | 全局任务记录（筛选 + `?id=` 详情） |
+| `/new` | `new.html` | 跨 agent 新建任务（agent 下拉） |
+
+交互上刻意做成"远程连接管理器"：**列表回答"连哪台"，详情回答"这台在干什么"**。
+详情页的派活表单是预填 `agentId` 的 —— 不用在别处再选一遍机器。
+
+新增 API：`GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process}`。
+一个 agent 可能三种身份：控制面连上来的 cli、server 进程内置的 agent、server 拉起的本机子进程。
+
+### 16.2 为什么 server 自己也要有一个 agent
+
+管理动作（看集群、给某台派任务、查记录、启停本机子进程）**只有 server 知道**，远端 cli 的工具表里既没有也不该有（那是控制面权限，属主不是执行面）。
+
+所以 server 进程内直接跑一个 `JZAgent`（`JZServerAgent`），它：
+- 出现在 `/api/status` 的 `online[]` 里，`agentId` 默认 `server`，带 `builtin=true`；
+- 与远端 cli **走同一套接口**：`POST /api/tasks {agentId:"server"}`、`GET /api/agent?id=server`、任务记录同样落 `tasks.jsonl`；
+- 区别只在执行位置：任务在 server 进程内跑，不下发 hub。
+
+配置：
+
+```json
+"selfAgent": {
+  "enabled": true, "agentId": "server", "name": "server(内置)",
+  "rootDir": "...", "modelUrl": "...", "modelName": "...", "modelToken": "...",
+  "maxRounds": 30, "maxToken": 120000
+}
+```
+
+### 16.3 server 独有工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `server_agents` | 集群视图：在线 cli（忙闲/节点/工作区）+ 本机子进程 + 任务计数 |
+| `server_task_submit` | 把任务派给任意 agentId（**强制 `wait:false`**，工具里同步等会把自己卡死） |
+| `server_task_query` | 查任务记录（列表/单条，可按 agent/status 过滤） |
+| `server_agent_control` | 启停/重启 server 本机被监管的 `agents[]` 子进程 |
+
+本地执行面（`terminal_run/query/cancel`、`read_file`、`get_datetime`）与 cli 用的是同一份 `agent_tool` 实现，只是终端实例独立（`id="server"`）。
+
+### 16.4 已知边界
+
+- 内置 agent **不参与 verify 门控**：server 本机没有"产物"概念，任务结束即结束，`verify_rounds` 恒为 0；
+- 它只能"通过任务"影响远端 cli，读不到远端文件 —— 这是权限边界，不是缺失；
+- 内置 agent 忙时 `POST /api/tasks` 回 409（单实例，没有队列；需要队列就用远端 cli 的 `task.queues`）。

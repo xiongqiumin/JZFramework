@@ -227,6 +227,33 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
                 config.agents.push_back(ac);
         }
     }
+
+    // selfAgent: server 进程自己跑的那个 JZAgent(内置 agent, agentId 默认 "server")
+    //   与远端 cli 平级出现在 agent 列表里; 它多了几个"控制面"工具(见 JZServerAgent.cpp)。
+    const Json::Value *self = findMember(root, "", "selfAgent", "selfAgent");
+    if (self && self->isObject())
+    {
+        JZJsonStream as(self);
+        as.readMemberDefault("enabled", config.selfAgent.enabled, false);
+        as.readMemberDefault("agentId", config.selfAgent.agentId, string("server"));
+        as.readMemberDefault("name", config.selfAgent.name, string("server(内置)"));
+        as.readMemberDefault("rootDir", config.selfAgent.rootDir, string());
+        as.readMemberDefault("modelUrl", config.selfAgent.modelUrl, string());
+        as.readMemberDefault("modelName", config.selfAgent.modelName, string());
+        as.readMemberDefault("modelToken", config.selfAgent.modelToken, string());
+        as.readMemberDefault("netTimeout", config.selfAgent.netTimeout, 120000);
+        as.readMemberDefault("maxRounds", config.selfAgent.maxRounds, 40);
+        as.readMemberDefault("maxToken", config.selfAgent.maxToken, 100000);
+        as.readMemberDefault("systemExtra", config.selfAgent.systemExtra, string());
+
+        if (config.selfAgent.enabled && config.selfAgent.modelUrl.empty())
+        {
+            error = "selfAgent.enabled=true 但没配 selfAgent.modelUrl";
+            return false;
+        }
+        if (config.selfAgent.enabled && config.selfAgent.agentId.empty())
+            config.selfAgent.agentId = "server";
+    }
     return true;
 }
 

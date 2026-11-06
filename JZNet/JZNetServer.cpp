@@ -102,8 +102,9 @@ void JZNetServer::sendPacketToAllExclude(uint64_t c, const JZNetPack *pack)
 void JZNetServer::closeClient(uint64_t c)
 {
     auto it = m_clients.find(c);
-    JZ_ASSERT(it != m_clients.end());
-    
+    if (it == m_clients.end())
+        return;   // 已经断了: 关闭是幂等的(以前这里是 JZ_ASSERT + it->second, 找不到就是 UB)
+
     it->second->disconnectFromHost();
 }
 
@@ -111,10 +112,20 @@ void JZNetServer::onClientDisconnect()
 {
     JZNetClient *socket = (JZNetClient *)sender();
     socket->deleteLater();
-    
-    auto id = socket->m_conn;
-    auto it = m_clients.find(id);
-    if (it == m_clients.end())
+
+    // ⚠ 不能用 socket->m_conn 反查: closeInternal() 会先把 m_conn 复位成 INVALID_NET_HANDLE,
+    //   那时 find(0) 必然失败 ⇒ 早退 ⇒ sigDisconnected 不发 ⇒ 上层(管理台/控制面)永远以为
+    //   这台还在线, 直到心跳超时才纠正。改为按指针反查(连接数很小, O(n) 足够)。
+    uint64_t id = 0;
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it)
+    {
+        if (it->second == socket)
+        {
+            id = it->first;
+            break;
+        }
+    }
+    if (id == 0)
         return;
 
     removeHandInfo(id);

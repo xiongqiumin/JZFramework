@@ -160,7 +160,7 @@ void JZNodeLink::scheduleReconnect()
 }
 
 bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int timeoutMs,
-                      const ExecCallback &cb, std::string &error)
+                      const void *owner, const ExecCallback &cb, std::string &error)
 {
     if (command.empty())
     {
@@ -187,6 +187,7 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
     pending->runId = "n" + std::to_string(++m_runIdGen) + "-" + m_config.name;
     pending->cb = cb;
     pending->timeoutMs = timeoutMs;
+    pending->owner = owner;
 
     const string runId = pending->runId;
     JZTimer *timer = new JZTimer(this);
@@ -221,9 +222,9 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
     return true;
 }
 
-void JZNodeLink::cancelRunning()
+void JZNodeLink::cancelRunning(const void *owner)
 {
-    if (!m_pending)
+    if (!m_pending || (owner && m_pending->owner != owner))
         return;
     if (m_client)
     {
@@ -270,10 +271,11 @@ static ParamSchema makeSshParam(const string &name, ParamType type, const string
 
 JZRemoteSshTool::JZRemoteSshTool(std::function<JZNodeLink *(const std::string &)> resolver,
                                  std::function<std::string()> defaultHost,
-                                 const std::string &nodeList)
+                                 const std::string &nodeList, const void *owner)
     : m_resolver(resolver)
     , m_defaultHost(defaultHost)
     , m_nodeList(nodeList)
+    , m_owner(owner)
 {
     ToolDefine def;
     def.name = "remote_ssh";
@@ -348,7 +350,7 @@ void JZRemoteSshTool::call(const ToolCall &call)
     //   不能捕获 &call —— 那时 ToolCall 早就析构了。
     const string callId = call.id;
     string error;
-    bool started = link->exec(command, cwd, timeoutMs,
+    bool started = link->exec(command, cwd, timeoutMs, m_owner,
         [this, callId, link](const JZNodeLink::ExecResult &r)
         {
             ToolCallResult res;

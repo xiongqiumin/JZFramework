@@ -360,6 +360,7 @@ bool JZAgentCli::initWorkers(std::string &error)
     {
         auto *w = new JZAgentCli(this);
         w->m_isWorker = true;
+        w->m_master = this;
         w->m_queueName = "q" + std::to_string(i);
         // 事件统一汇总到 master(那里才有 SSE 订阅者与控制面连接)
         w->m_eventSink = [this, i](int, const std::string &type, const Json::Value &data)
@@ -369,6 +370,7 @@ bool JZAgentCli::initWorkers(std::string &error)
         // node 连接由 master 持有: worker 只借用(否则每队列都会各连一遍 node)
         w->m_nodeResolver = [this](const std::string &host) { return nodeLink(host); };
         w->m_defaultNodeFn = [this]() { return defaultNodeName(); };
+        w->m_nodeCancel = [this](const void *owner) { cancelNodeExec(owner); };
 
         if (!w->init(m_config, error))
         {
@@ -412,6 +414,7 @@ void JZAgentCli::dispatchTo(int q, const Json::Value &req, const std::string &ta
             m_workerTask[q].clear();
         if (respond)
             respond(res);
+        syncHubState();
         pumpQueue();   // 注意: respond 可能已经让调用方重新提交, 所以放在最后
     };
 
@@ -419,11 +422,12 @@ void JZAgentCli::dispatchTo(int q, const Json::Value &req, const std::string &ta
         runTask(req, cb);
     else
         w->runTask(req, cb);   // 直接跑引擎(不能再进调度, 否则递归)
+    syncHubState();
 }
 
 void JZAgentCli::pumpQueue()
 {
-    if (m_isWorker)
+    if (m_isWorker || m_cancelling)
         return;
     while (!m_pending.empty())
     {
@@ -621,7 +625,7 @@ void JZAgentCli::setupAgent()
         auto *ssh = new JZRemoteSshTool(
             [this](const std::string &host) { return m_nodeResolver ? m_nodeResolver(host) : nodeLink(host); },
             [this]() { return m_defaultNodeFn ? m_defaultNodeFn() : defaultNodeName(); },
-            list);
+            list, this);
         m_agent->addTool(ssh);
         m_tools.push_back(ssh);
     }
@@ -651,6 +655,18 @@ void JZAgentCli::startNodes()
         m_nodeLinks.push_back(link);
         link->connectToNode();
     }
+}
+
+void JZAgentCli::cancelNodeExec(const void *owner)
+{
+    if (m_nodeCancel)
+    {
+        m_nodeCancel(owner);
+        return;
+    }
+    for (JZNodeLink *link : m_nodeLinks)
+        if (link)
+            link->cancelRunning(owner);
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +715,25 @@ bool JZAgentCli::hubOnline() const
     return m_hub && m_hub->online();
 }
 
+void JZAgentCli::syncHubState()
+{
+    if (!m_hub || m_isWorker)
+        return;
+
+    int round = 0;
+    std::string taskId;
+    for (size_t i = 0; i < m_workers.size(); ++i)
+    {
+        if (!m_workers[i]->m_busy)
+            continue;
+        round = m_workers[i]->m_loopRound;
+        if (i < m_workerTask.size())
+            taskId = m_workerTask[i];
+        break;  // 协议仍是单 currentTask; busy 必须按所有队列聚合, 展示第一个在跑任务
+    }
+    m_hub->setTaskState(anyBusy(), round, taskId);
+}
+
 void JZAgentCli::onHubTaskSubmit(const std::string &taskId, const Json::Value &body)
 {
     // 同一时刻只跑一个任务(与 HTTP 一致): 忙就立刻回失败, 不排队。
@@ -715,8 +750,7 @@ void JZAgentCli::onHubTaskSubmit(const std::string &taskId, const Json::Value &b
 
         const bool earlyFail = !res.isMember("status");   // 同步失败只带 error
         m_currentTaskId = earlyFail ? prev : std::string();
-        if (m_hub)
-            m_hub->setTaskState(m_busy, m_loopRound, m_currentTaskId);
+        syncHubState();
     });
 }
 
@@ -744,13 +778,11 @@ void JZAgentCli::onHubTaskCancel(const std::string &taskId)
         r["last_verify_output"] = "";
         r["error"] = "任务在排队中被取消";
         if (t.respond)
-            t.respond(r);
-        if (m_hub)
-            m_hub->sendTaskEnd(taskId, r);
+            t.respond(r);   // managed 的 respond 已负责发送 taskEnd, 不能再发第二次
         return;
     }
 
-    // 再看各队列在跑的
+    // 再看各队列在跑的: 即使命中 q0 也只能停 q0, 不能走 master 的全局 reset
     for (size_t i = 0; i < m_workers.size(); ++i)
     {
         const std::string cur = (i < m_workerTask.size()) ? m_workerTask[i] : std::string();
@@ -758,7 +790,7 @@ void JZAgentCli::onHubTaskCancel(const std::string &taskId)
             continue;
         if (cur.empty() && !m_workers[i]->m_busy)
             continue;
-        m_workers[i]->cancelTask("任务已被 server 取消");
+        m_workers[i]->cancelLocalTask("任务已被 server 取消");
         return;
     }
 }
@@ -768,7 +800,7 @@ void JZAgentCli::onHubReset(const std::string &scope)
     if (scope == "task")
         cancelTask("任务已被 server 重置");
     else
-        resetSession(false);
+        resetHistory();
 }
 
 Json::Value JZAgentCli::nodesJson() const
@@ -1552,12 +1584,22 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
     });
 
     Json::Value d = makeInfo();
-    d["busy"] = (bool)m_busy;
+    d["busy"] = anyBusy();
     d["round"] = m_loopRound;
-    // 连接上来时已经闲着 + 留着上次结果: 带上, 让"断开期间跑完"的任务能在这边收尾
-    // (典型: 网页刷新时 /task 的连接被 abort, 任务其实继续跑完了 —— 见 onClientDestroyed)。
-    if (!m_busy && m_hasLastResult)
-        d["last_result"] = m_lastResult;
+    // 最近结果也按所有队列挑选, 不能只看 q0。
+    if (!anyBusy())
+    {
+        const JZAgentCli *latest = nullptr;
+        for (const JZAgentCli *w : m_workers)
+        {
+            if (!w->m_hasLastResult || w->m_history.empty())
+                continue;
+            if (!latest || w->m_history.back().endMs > latest->m_history.back().endMs)
+                latest = w;
+        }
+        if (latest)
+            d["last_result"] = latest->m_lastResult;
+    }
     d["recent"] = recentJson();      // 最近若干次请求与结果: 新开的网页靠它把历史卡片补回来
     Json::Value first;
     first["type"] = "hello";
@@ -1568,26 +1610,28 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
     std::string chunk = makeSseChunk(payload);
     client->write(chunk.data(), (int)chunk.size(), false);
 
-    // 正有任务在跑: 推一份当前状态快照, 让刚打开/刷新网页的人也能看到进行中的任务
-    // (prompt / 已累积的思考·回复 / 在途工具调用)。随后该任务的实时事件会接着这个快照续推。
-    if (m_busy)
+    // 每个在跑队列各推一份快照, queue 字段让界面不会把不同会话拼在一起。
+    const size_t kSnapCap = 6000;
+    auto tail = [&](const std::string &s) -> std::string {
+        return s.size() <= kSnapCap ? s : ("…(前面已省略)\n" + s.substr(s.size() - kSnapCap));
+    };
+    for (size_t i = 0; i < m_workers.size(); ++i)
     {
-        // 思考/回复可能跨多轮累积得很大, 快照只取尾部, 避免单帧过大(界面展示也只取尾部)
-        const size_t kSnapCap = 6000;
-        auto tail = [&](const std::string &s) -> std::string {
-            return s.size() <= kSnapCap ? s : ("…(前面已省略)\n" + s.substr(s.size() - kSnapCap));
-        };
+        const JZAgentCli *w = m_workers[i];
+        if (!w->m_busy)
+            continue;
 
         Json::Value s;
+        s["queue"] = (int)i;
         s["busy"] = true;
-        s["round"] = m_loopRound;
-        s["verify_cmd"] = m_verifyCmd;
-        s["prompt"] = m_currentPrompt;
-        s["reply"] = tail(m_accumReply);
-        s["think"] = tail(m_accumThink);
-        s["last_verify_output"] = m_lastVerifyOutput;
+        s["round"] = w->m_loopRound;
+        s["verify_cmd"] = w->m_verifyCmd;
+        s["prompt"] = w->m_currentPrompt;
+        s["reply"] = tail(w->m_accumReply);
+        s["think"] = tail(w->m_accumThink);
+        s["last_verify_output"] = w->m_lastVerifyOutput;
         Json::Value tools(Json::arrayValue);
-        for (const auto &t : m_toolSnaps)
+        for (const auto &t : w->m_toolSnaps)
         {
             Json::Value o;
             o["id"] = t.id;
@@ -1601,7 +1645,7 @@ void JZAgentCli::onEvents(JZHttpServerClient *client, const JZHttpRequest &req)
             tools.append(o);
         }
         s["tools"] = tools;
-        pushEvent("state", s);   // 广播给所有订阅者(含本连接)
+        emitLocalEvent("state", s);
     }
 }
 
@@ -1630,7 +1674,10 @@ void JZAgentCli::pushEvent(const std::string &type, const Json::Value &data)
     if (m_hub && !taskId.empty())
         m_hub->sendTaskEvent(taskId, type, data);
 
-    emitLocalEvent(type, data);
+    Json::Value local = data;
+    if (local.isObject())
+        local["queue"] = 0;
+    emitLocalEvent(type, local);
 }
 
 void JZAgentCli::emitLocalEvent(const std::string &type, const Json::Value &data)
@@ -1799,9 +1846,7 @@ void JZAgentCli::runTask(const Json::Value &req, std::function<void(const Json::
     m_thinkLogged = false;
     m_toolSnaps.clear();
     m_busy = true;
-    // 控制面: 忙闲立刻上报一次(别等下一个 5s 心跳, 管理台要跟手)
-    if (m_hub)
-        m_hub->setTaskState(true, 0, m_currentTaskId);
+    // 忙闲由 master 在 dispatchTo 里按全部队列汇总上报, 不能用 q0 的局部状态。
     m_failed = false;
     m_cancelled = false;
     m_lastError.clear();
@@ -2290,11 +2335,30 @@ void JZAgentCli::finishHistory(const std::string &status, int rounds, const std:
 
 Json::Value JZAgentCli::recentJson() const
 {
-    Json::Value arr(Json::arrayValue);
-    for (int i = (int)m_history.size() - 1; i >= 0; --i)   // 最近在前
+    struct HistoryRef
     {
-        const JZCliHistoryItem &it = m_history[i];
+        const JZCliHistoryItem *item;
+        int queue;
+    };
+    std::vector<HistoryRef> refs;
+    for (size_t q = 0; q < m_workers.size(); ++q)
+        for (const JZCliHistoryItem &it : m_workers[q]->m_history)
+            refs.push_back({&it, (int)q});
+
+    std::sort(refs.begin(), refs.end(), [](const HistoryRef &a, const HistoryRef &b)
+    {
+        if (a.item->startMs != b.item->startMs)
+            return a.item->startMs > b.item->startMs;
+        return a.queue < b.queue;
+    });
+
+    Json::Value arr(Json::arrayValue);
+    const int count = std::min((int)refs.size(), kHistoryMax);
+    for (int i = 0; i < count; ++i)   // 最近在前
+    {
+        const JZCliHistoryItem &it = *refs[i].item;
         Json::Value o;
+        o["queue"] = refs[i].queue;
         o["seq"] = it.seq;
         o["prompt"] = it.prompt;
         o["verify_cmd"] = it.verifyCmd;
@@ -2356,11 +2420,33 @@ void JZAgentCli::endLoop()
         }
     }
 
+    // remote_ssh 与本地终端同一收尾口径: 任务结束/取消后, 本队列发起的远端命令不能继续游离。
+    cancelNodeExec(this);
+
     m_loopActive = false;
     m_busy = false;
     m_pendingClient = nullptr;
     m_respond = nullptr;
     m_verifyCmd.clear();
+}
+
+void JZAgentCli::resetHistory()
+{
+    if (!m_isWorker)
+    {
+        for (JZAgentCli *w : m_workers)
+        {
+            w->m_history.clear();
+            w->m_hasLastResult = false;
+            w->m_lastResult = Json::nullValue;
+            w->resetSession(false);
+        }
+        return;
+    }
+    m_history.clear();
+    m_hasLastResult = false;
+    m_lastResult = Json::nullValue;
+    resetSession(false);
 }
 
 void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
@@ -2386,19 +2472,11 @@ void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
     bool cancelRunning = (scope == "task");
     bool taskCancelled = false;
 
-    // 清空历史: 连服务端记的"最近任务"一起清(否则网页一刷新它们又回来了)
-    if (scope == "history")
-    {
-        m_history.clear();
-        m_hasLastResult = false;
-        m_lastResult = Json::nullValue;
-    }
-
     // 有任务在跑: 先给调用方一个明确结果(status:"cancelled"), 再停 agent
     if (cancelRunning)
         taskCancelled = cancelTask("任务已被重置");
     else
-        resetSession(false);
+        resetHistory();
 
     Json::Value d;
     d["scope"] = scope;
@@ -2416,24 +2494,54 @@ bool JZAgentCli::cancelTask(const std::string &reason)
 {
     if (!m_agent)
         return false;
+    if (m_isWorker)
+        return cancelLocalTask(reason);
+    if (m_cancelling)
+        return false;
 
+    m_cancelling = true;
     bool cancelled = false;
 
-    // master(多队列): 清空排队, 并让每个队列各自收尾 —— 它们是独立会话, 各有自己的
-    // 验证进程与后台命令, 只停自己那一份是不够的。
-    if (!m_isWorker && m_workers.size() > 1)
+    // 排队任务也要走完生命周期: 每条都回一次 cancelled, 不能静默 clear 让 HTTP/server 永久等待。
+    std::deque<QueuedTask> pending;
+    pending.swap(m_pending);
+    for (QueuedTask &t : pending)
     {
-        m_pending.clear();
-        for (size_t i = 0; i < m_workers.size(); ++i)
+        Json::Value r;
+        r["status"] = "cancelled";
+        r["verify_rounds"] = 0;
+        r["agent_reply"] = "";
+        r["last_verify_output"] = "";
+        r["error"] = reason;
+        if (t.respond)
         {
-            JZAgentCli *w = m_workers[i];
-            if (w == this)
-                continue;
-            if (w->cancelTask(reason))
-                cancelled = true;
+            t.respond(r);
+            cancelled = true;
         }
     }
 
+    // 各队列只停自己的验证、终端、远端 exec 与会话。取消期间的回包回调不得重入 pumpQueue。
+    for (JZAgentCli *w : m_workers)
+        if (w->cancelLocalTask(reason))
+            cancelled = true;
+
+    m_cancelling = false;
+    return cancelled;
+}
+
+bool JZAgentCli::cancelLocalTask(const std::string &reason)
+{
+    if (!m_agent)
+        return false;
+
+    // 单任务取消也必须等 endLoop/resetSession 完整结束才能派下一条; 否则 respondTask 的
+    // 同步回调会先在原队列启动 pending, 随后又被本函数余下的 reset 清掉。全局 reset 已持闸时不重复接管。
+    JZAgentCli *master = m_isWorker ? m_master : this;
+    const bool ownGate = master && !master->m_cancelling;
+    if (ownGate)
+        master->m_cancelling = true;
+
+    bool cancelled = false;
     if (m_loopActive)
     {
         // 先给提交方一个明确结果(status:"cancelled"), 再停 agent ——
@@ -2446,6 +2554,11 @@ bool JZAgentCli::cancelTask(const std::string &reason)
     }
 
     resetSession(true);
+    if (ownGate)
+    {
+        master->m_cancelling = false;
+        master->pumpQueue();   // 现在才允许下一条进入刚清空的队列
+    }
     return cancelled;
 }
 

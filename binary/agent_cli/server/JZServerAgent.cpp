@@ -6,6 +6,8 @@
 #include "JZAgentCliServer.h"
 #include "JZCodeTools.h"
 #include "JZDateTime.h"
+#include "JZFile.h"
+#include "JZFileInfo.h"
 #include "JZPlatform.h"
 #include "JZTerminalTools.h"
 #include "JZVirtualTerminal.h"
@@ -185,6 +187,57 @@ private:
 };
 
 // ===========================================================================
+// 内置 agent 的工具宿主: 与 cli/node 一样, 用 ICodeToolHost 把区域配置送进通用工具。
+// ===========================================================================
+class JZServerAgentToolHost : public ICodeToolHost
+{
+public:
+    explicit JZServerAgentToolHost(const JZServerAgentConfig &cfg)
+    {
+        m_config.zone.workspace = codeNormalizePath(cfg.rootDir);
+        m_config.level = AccessLevel::Standard;
+        m_config.allowPackageManager = false;
+        m_config.allowNetwork = false;
+    }
+
+    const JZVirtualTerminalConfig &toolTerminalConfig() const override { return m_config; }
+
+    bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) override
+    {
+        JZFileInfo info(absPath);
+        if (!info.exists())
+        {
+            error = "文件不存在: " + absPath;
+            return false;
+        }
+        if (info.isDir())
+        {
+            error = "这是一个目录: " + absPath;
+            return false;
+        }
+        if (info.size() > 8 * 1024 * 1024)
+        {
+            error = "文件过大(>8MB): " + absPath;
+            return false;
+        }
+
+        JZFile file;
+        if (!file.open(absPath, "rb"))
+        {
+            error = "打开文件失败(权限?): " + absPath;
+            return false;
+        }
+        JZByteArray data = file.readAll();
+        file.close();
+        text.assign(data.data(), data.size());
+        return true;
+    }
+
+private:
+    JZVirtualTerminalConfig m_config;
+};
+
+// ===========================================================================
 // JZServerAgent
 // ===========================================================================
 JZServerAgent::JZServerAgent(JZObject *parent)
@@ -222,6 +275,8 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
 
     if (m_cfg.rootDir.empty())
         m_cfg.rootDir = JZPlatform::applicationDirPath();
+    m_cfg.rootDir = codeNormalizePath(m_cfg.rootDir);
+    m_toolHost.reset(new JZServerAgentToolHost(m_cfg));
     if (m_cfg.modelUrl.empty())
     {
         error = "selfAgent.modelUrl 为空";
@@ -254,10 +309,13 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
     // 本机执行面
     m_terminal = new JZVirtualTerminal(this);
     m_terminal->setId("server");
+    m_terminal->setTerminalConfig(m_toolHost->toolTerminalConfig());
     m_agent->addTool(new JZTerminalRunTool(m_terminal));
     m_agent->addTool(new JZTerminalQueryTool(m_terminal));
     m_agent->addTool(new JZTerminalCancelTool(m_terminal));
-    m_agent->addTool(new JZReadFileTool());
+    auto *readFile = new JZReadFileTool();
+    readFile->setHost(m_toolHost.get());
+    m_agent->addTool(readFile);
     m_agent->addTool(new JZGetDateTimeTool());
 
     // server 独有: 集群视图 / 派活 / 查记录 / 子进程监管
@@ -288,6 +346,7 @@ void JZServerAgent::submit(const string &taskId, const string &prompt, const str
     m_taskId = taskId;
     m_busy = true;
     m_failed = false;
+    m_cancelled = false;
     m_round = 0;
     m_reply.clear();
     m_error.clear();
@@ -309,8 +368,12 @@ void JZServerAgent::submit(const string &taskId, const string &prompt, const str
 
 void JZServerAgent::cancel()
 {
-    if (m_agent && m_busy)
-        m_agent->stop();
+    if (!m_agent || !m_busy)
+        return;
+    m_cancelled = true;
+    if (m_terminal)
+        m_terminal->cancelAll();   // stop() 只停止 Agent 等待, 本地进程要显式收尾
+    m_agent->stop();
 }
 
 void JZServerAgent::emitEvent(const string &type, const string &data)
@@ -372,9 +435,9 @@ void JZServerAgent::onFinished()
     Json::Value r(Json::objectValue);
     r["taskId"] = m_taskId;
     r["agentId"] = m_cfg.agentId;
-    r["status"] = m_failed ? "failed" : "success";
+    r["status"] = m_cancelled ? "cancelled" : (m_failed ? "failed" : "success");
     r["agent_reply"] = m_reply;
-    r["error"] = m_error;
+    r["error"] = m_cancelled && m_error.empty() ? string("任务已取消") : m_error;
     r["verify_rounds"] = 0;      // server agent 不跑 verify 门控
     r["rounds"] = m_round;
 

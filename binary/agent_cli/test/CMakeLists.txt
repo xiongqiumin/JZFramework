@@ -65,6 +65,21 @@ add_test(NAME agent_cli.task_queues
 set_tests_properties(agent_cli.task_queues PROPERTIES
                      TIMEOUT 180 LABELS "agent_cli" RUN_SERIAL TRUE)
 
+# 队列取消/多队列事件历史 + managed 异步任务生命周期(均用本机 mock, 快速回归)
+add_test(NAME agent_cli.task_cancel
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_task_cancel.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-node $<TARGET_FILE:agent_node>)
+set_tests_properties(agent_cli.task_cancel PROPERTIES
+                     TIMEOUT 120 LABELS "agent_cli" RUN_SERIAL TRUE)
+
+add_test(NAME agent_cli.server_tasks
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_server_tasks.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-server $<TARGET_FILE:agent_cli_server>)
+set_tests_properties(agent_cli.server_tasks PROPERTIES
+                     TIMEOUT 120 LABELS "agent_cli" RUN_SERIAL TRUE)
+
 #   test_codex/test_codex_bench.py —— 用 **Codex SDK** 跑 benchmark 的同一批用例(与 agent_cli_test
 #       同套用例/工程骨架/验证命令), 用来和 agent_cli 的通过率做对比。真模型 + 真 Codex 回合 ⇒ 很慢,
 #       同样挂 llm 标签(不混进快速回归):

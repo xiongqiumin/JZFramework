@@ -180,7 +180,7 @@ private:
     JZNetServer *m_hub = nullptr;
     std::map<uint64_t, JZCliServerOnlineAgent> m_onlineByConn;
     std::map<std::string, uint64_t> m_connByAgent;        // agentId -> conn
-    std::map<std::string, PendingTask> m_pendingTasks;    // taskId -> 等待回包的提交方
+    std::map<std::string, PendingTask> m_pendingTasks;    // taskId -> 在跑任务(client 可空, 均有超时)
     int m_taskSeq = 0;
 
     // ---- 内置 agent(server 自己跑的那个 JZAgent) ----

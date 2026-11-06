@@ -252,7 +252,7 @@ function renderNodes(info) {
   const nodes = info.nodes || [];
   document.getElementById('nodeBody').innerHTML = nodes.length ? nodes.map(n => `<tr>
       <td data-label="节点">${esc(n.name || '-')}</td>
-      <td data-label="地址">${esc(n.host || '-')}</td>
+      <td data-label="地址">${esc(n.target || '-')}</td>
       <td data-label="状态">${n.online ? '<span class="jz-badge jz-badge--ok">在线</span>'
                                        : '<span class="jz-badge">离线</span>'}</td>
       <td data-label="工作区" style="color:var(--jz-muted);font-size:var(--jz-fs-1)">${esc(n.rootDir || '-')}</td>

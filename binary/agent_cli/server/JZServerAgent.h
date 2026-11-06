@@ -16,6 +16,7 @@
 // 不做的: 它不参与 verify 门控(server 本机没有"产物"概念, 任务结束即结束)。
 // ---------------------------------------------------------------------------
 
+#include <memory>
 #include <string>
 
 #include "JZObject.h"
@@ -25,6 +26,7 @@
 class JZAgent;
 class JZVirtualTerminal;
 class JZAgentCliServer;
+class JZServerAgentToolHost;
 
 struct JZServerAgentConfig
 {
@@ -84,10 +86,12 @@ private:
     JZAgentCliServer *m_srv = nullptr;
     JZAgent *m_agent = nullptr;
     JZVirtualTerminal *m_terminal = nullptr;
+    std::unique_ptr<JZServerAgentToolHost> m_toolHost;
 
     bool m_busy = false;
     bool m_everRan = false;     // 第二次任务前要 reset(仅 Idle 允许)
     bool m_failed = false;
+    bool m_cancelled = false;
     int m_round = 0;
     std::string m_taskId;
     std::string m_reply;

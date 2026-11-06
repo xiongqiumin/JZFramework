@@ -430,7 +430,8 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         if (old != m_connByAgent.end() && old->second != conn)
         {
             const uint64_t oldConn = old->second;
-            m_onlineByConn.erase(oldConn);
+            // 先走统一下线收尾, 再关旧连接; 直接 erase 会让旧任务永远停在 running。
+            dropAgent(oldConn, "被同 agentId 的新连接替换");
             m_hub->closeClient(oldConn);
         }
 
@@ -601,7 +602,7 @@ void JZAgentCliServer::failPendingTasksOf(const string &agentId, const string &e
         Json::Value err;
         err["status"] = "failed";
         err["error"] = error;
-        recordFail(pt.taskId, "failed", error);
+        recordFail(pt.taskId, "lost", error);   // 对提交方是 502; 历史必须保留"结果未知"
         respondJsonAsync(pt.client, 502, err);
     }
 }
@@ -962,8 +963,8 @@ void JZAgentCliServer::recordCreate(const string &taskId, const string &agentId,
 void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result)
 {
     TaskRecord *r = findTask(taskId);
-    if (!r)
-        return;
+    if (!r || r->status != "running")
+        return;   // timeout/lost 等 server 终态不能被迟到的 taskEnd 覆盖
     r->status = result.get("status", "failed").asString();
     r->rounds = result.get("verify_rounds", 0).asInt();
     r->reply = result.get("agent_reply", "").asString();
@@ -1307,47 +1308,47 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
     if (timeoutMs < 1000) timeoutMs = 1000;
     if (timeoutMs > 24 * 3600 * 1000) timeoutMs = 24 * 3600 * 1000;
 
-    JZTimer *timer = nullptr;
+    // 所有在跑任务都登记超时; waiter 只是可选回包通道, 不能决定任务能否被取消/超时。
+    JZTimer *timer = new JZTimer(this);
+    timer->setSingleShot(true);
+    connect(&timer->sigTimeout, this, [this, taskId]()
+    {
+        auto pit = m_pendingTasks.find(taskId);
+        if (pit == m_pendingTasks.end())
+            return;
+        PendingTask pt2 = pit->second;
+        m_pendingTasks.erase(pit);
+
+        // 先落终态再取消: selfAgent.stop() 会同步发 done, 不能让这次 done 抢先写成 cancelled。
+        recordFail(taskId, "failed", "任务超时(server 侧)");
+        if (isSelfAgentId(pt2.agentId))
+        {
+            if (m_selfAgent)
+                m_selfAgent->cancel();
+        }
+        else
+        {
+            auto ai2 = m_connByAgent.find(pt2.agentId);
+            if (ai2 != m_connByAgent.end() && m_hub)
+            {
+                JZHubPackTaskCancel cancel;
+                cancel.taskId = taskId;
+                m_hub->sendPacket(ai2->second, &cancel);
+            }
+        }
+        if (pt2.timer)
+            pt2.timer->deleteLater();
+
+        Json::Value e(Json::objectValue);
+        e["status"] = "failed";
+        e["error"] = "任务超时(server 侧), 已请求 agent 取消";
+        e["taskId"] = taskId;
+        respondJsonAsync(pt2.client, 504, e);   // wait:false 时 client=null, 只落历史
+    });
+    timer->start(timeoutMs);
+
     if (waiter)
     {
-        timer = new JZTimer(this);
-        timer->setSingleShot(true);
-        connect(&timer->sigTimeout, this, [this, taskId]()
-        {
-            auto pit = m_pendingTasks.find(taskId);
-            if (pit == m_pendingTasks.end())
-                return;
-            PendingTask pt2 = pit->second;
-            m_pendingTasks.erase(pit);
-
-            // 先请它停掉, 免得后面继续跑一个没人收结果的任务
-            if (isSelfAgentId(pt2.agentId))
-            {
-                if (m_selfAgent)
-                    m_selfAgent->cancel();
-            }
-            else
-            {
-                auto ai2 = m_connByAgent.find(pt2.agentId);
-                if (ai2 != m_connByAgent.end() && m_hub)
-                {
-                    JZHubPackTaskCancel cancel;
-                    cancel.taskId = taskId;
-                    m_hub->sendPacket(ai2->second, &cancel);
-                }
-            }
-            if (pt2.timer)
-                pt2.timer->deleteLater();
-
-            Json::Value e(Json::objectValue);
-            e["status"] = "failed";
-            e["error"] = "任务超时(server 侧), 已请求 agent 取消";
-            e["taskId"] = taskId;
-            recordFail(taskId, "failed", "任务超时(server 侧)");
-            respondJsonAsync(pt2.client, 504, e);
-        });
-        timer->start(timeoutMs);
-
         // 提交方提前断开: 只丢回包通道, 任务照跑(cli 侧行为与 HTTP /task 一致)
         connect(static_cast<JZSignal<JZObject*>*>(&waiter->sigDestroyed), this, [this](JZObject *obj)
         {
@@ -1370,16 +1371,13 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         }
 
         recordCreate(taskId, agentId, body);
-        if (waiter)
-        {
-            PendingTask pt;
-            pt.taskId = taskId;
-            pt.agentId = agentId;
-            pt.client = waiter;
-            pt.startMs = JZDateTime::currentMSecsSinceEpoch();
-            pt.timer = timer;
-            m_pendingTasks[taskId] = pt;
-        }
+        PendingTask selfPending;
+        selfPending.taskId = taskId;
+        selfPending.agentId = agentId;
+        selfPending.client = waiter;
+        selfPending.startMs = JZDateTime::currentMSecsSinceEpoch();
+        selfPending.timer = timer;
+        m_pendingTasks[taskId] = selfPending;
         m_selfAgent->submit(taskId, body.get("prompt", "").asString(),
                             body.get("verify_cmd", "").asString());
         ack["taskId"] = taskId;
@@ -1417,16 +1415,13 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         payload.pop_back();
     submit.body = payload;
 
-    if (waiter)
-    {
-        PendingTask pt;
-        pt.taskId = taskId;
-        pt.agentId = agentId;
-        pt.client = waiter;
-        pt.startMs = JZDateTime::currentMSecsSinceEpoch();
-        pt.timer = timer;
-        m_pendingTasks[taskId] = pt;
-    }
+    PendingTask pending;
+    pending.taskId = taskId;
+    pending.agentId = agentId;
+    pending.client = waiter;
+    pending.startMs = JZDateTime::currentMSecsSinceEpoch();
+    pending.timer = timer;
+    m_pendingTasks[taskId] = pending;
 
     agent.busy = true;
     agent.taskId = taskId;

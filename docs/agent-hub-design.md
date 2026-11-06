@@ -3,10 +3,11 @@
 > 2026-11-06 成文。**状态：P0（node `link` + cli `nodes[]` + `remote_ssh`）、P1（模式互斥）、P2（控制通道）已落地；
 > P3 与 §6.6（node 自述）未实现**。
 >
-> **本文是这份架构唯一的文档**：目标与职责划分、协议、配置 schema、取舍与路线图，外加 P0 的实现记录（§12）。
+> **本文是这份架构唯一的文档**：目标与职责划分、协议、配置 schema、取舍与路线图，以及实现记录（§12 起）。
 > 部署/排障的细节以各程序的 `--init` 生成物和 `--check` 输出为准（它们永远与代码同步），本文只保留设计与目标。
 >
-> P1（cli 模式二选一）与 P2（JZNet 控制通道）仍是设计，与当前代码的差异逐条列在 §10。
+> P0/P1/P2、多队列与任务历史均已落地；2026-11-06 的取消/异步任务/多队列状态修正见 §17。
+> JZNet 大包（下行 `taskSubmit`、上行大 `taskEnd`）策略暂未定，保持现有实现，见 §4.4。
 
 ---
 
@@ -207,7 +208,7 @@ void JZAgentHubPacketInit();   // 两边启动时各调一次（在 JZNetPackIni
 | --- | --- | --- | --- |
 | cli→server | `hello` | `agentId, name, version, rootDir, modelName, mode, nodes[]` | 上线自报。`agentId` 必须与 server 配置里登记的一致 |
 | server→cli | `helloAck` | `serverTime, acceptTasks` | `acceptTasks=false` 时 cli 只上报不接任务（维护模式） |
-| cli→server | `heartbeat` | `busy, round, taskId, uptimeMs` | 5s 一次；15s 无心跳判离线 |
+| cli→server | `heartbeat` | `busy, round, taskId, uptimeMs` | 5s 一次；20s 无心跳判离线 |
 | server→cli | `taskSubmit` | `taskId` + `/task` 的全部字段（`prompt/images/verify_script/verify_cmd/verify_timeout/max_verify_rounds/max_retries/max_fix_retries/retry_delay_ms/use_memory`） | 语义与现有 `POST /task` **完全一致**，cli 直接复用 `submitTask()` |
 | server→cli | `taskCancel` | `taskId` | 等价 `POST /reset {"scope":"task"}` |
 | server→cli | `reset` | `scope`（`task` / `history`） | 等价现有 `/reset` |
@@ -233,7 +234,7 @@ packet 里换名字只会让两套 UI 对不上。
 | 参数 | 值 | 说明 |
 | --- | --- | --- |
 | 心跳间隔 | 5s | cli 主动发 `heartbeat` |
-| 判离线 | 15s | server 侧超过 3 个周期没收到即置 `offline`，管理台灰色 |
+| 判离线 | 20s | server 每 5s 扫描，超过 4 个周期没收到即置 `offline`，管理台灰色 |
 | 重连退避 | 1/2/4/8/…/30s 封顶 | cli 侧 `sigDisconnected` 后按序重试，成功后清零 |
 | 重连补发 | `hello` + 最新状态快照（`busy/round/taskId`） | 让 server 重建视图 |
 
@@ -245,20 +246,20 @@ packet 里换名字只会让两套 UI 对不上。
 
 ```
 提交方 ──POST /api/tasks{agentId, ...}──► server
-                                          │ 选 agentId（离线/忙 → 直接 4xx 拒绝）
+                                          │ 选 agentId（离线 → 4xx；忙闲交给 cli 队列）
                                           ▼
                                     taskSubmit ──► cli
-                                                   │ submitTask()（现有实现，不动）
+                                                   │ submitTask()（队列调度）
                                                    │ ├─ taskEvent(thinking/reply/tool_call/tool_result/verify)…
                                                    ▼
-                                              taskEnd ──► server（归档 + 推管理台 SSE）
+                                              taskEnd ──► server（归档）
                                                              │
-提交方 ◄────────────── 200（同步等待式）／或先返 202 + 订阅 SSE ───────────────┘
+提交方 ◄────────────── 200（同步等待式）／或先返 202 + 轮询任务记录 ───────────────┘
 ```
 
 - **任务在 cli 里跑**：LLM 调用、验证循环、重试预算、长期记忆全不动；server 只做转发与聚合。
-- server 的 `/api/tasks` 两种回包方式：同步等 `taskEnd`（保持现有 `/task` 手感）或先回 `202 {taskId}` 再走 SSE；
-  第一版建议**同步**，与现有提交方（`agent_loop.py`、benchmark）语义一致。
+- server 的 `/api/tasks` 两种回包方式：同步等 `taskEnd`（保持现有 `/task` 手感），或 `wait:false` 先回
+  `202 {taskId}` 再轮询任务记录。两种方式都登记同一个超时与取消生命周期；网页使用后者。
 
 `taskSubmit` 就是现有 `POST /task` 的请求体，`taskEnd` 就是它的回包（语义完全一致，便于 P2 直接复用）：
 
@@ -281,7 +282,7 @@ packet 里换名字只会让两套 UI 对不上。
 
 | 场景 | 消息 | cli 行为 |
 | --- | --- | --- |
-| 提交方主动取消 | `taskCancel{taskId}` | 等价 `/reset scope=task`：中止在途 LLM/验证，回 `taskEnd{status:"cancelled"}` |
+| 提交方主动取消 | `taskCancel{taskId}` | 只取消指定任务（排队或在跑），不影响其他队列；回一次 `taskEnd{status:"cancelled"}`。`/reset scope=task` 才是取消全部 |
 | 清会话（换新任务前） | `reset{scope:"history"}` | 只清对话历史，不动在途任务 |
 | server 判定卡死 | `taskCancel` + 记审计 | 同第一行 |
 
@@ -289,10 +290,10 @@ packet 里换名字只会让两套 UI 对不上。
 
 | 情况 | 处理 |
 | --- | --- |
-| cli 与 server 断连、任务仍在跑 | **任务继续跑完**（与现有"连接断开不杀任务"一致），`taskEnd` 缓存在 cli；重连后补发 |
+| cli 与 server 断连、任务仍在跑 | 任务继续在 cli 本地跑；server 把在途任务标 `lost`。当前不缓存、不重连补发 `taskEnd`（P3 对账候选） |
 | cli 进程被杀 | server 侧该连接断 → 标 offline；在途任务标记 `lost`，不重试（重试由提交方决定） |
 | server 重启 | cli 按退避重连；server 用 `hello` 重建视图；**不恢复**未完成任务（避免重复执行） |
-| 任务提交时 agent 忙 | 直接拒绝（`409 busy`），不排队 —— 排队会变成任务黑洞 |
+| 任务提交时 agent 忙 | server 不拦截，交给 cli：有空闲队列就执行，全忙按 `task.maxPending` 排队，排满才拒绝 |
 
 ---
 
@@ -377,7 +378,7 @@ node 用 `JZNetClient` 主动连 cli（或 server）的 `JZNetServer`，cli 把�
 
 ```
 remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
-  -> { exit_code, stdout, stderr, timed_out, duration_ms, cwd }
+  -> { exit_code, output, timed_out, duration_ms, cwd }
 ```
 
 | 参数 | 说明 |
@@ -387,7 +388,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | `cwd` | 工作目录（相对路径按该 node 的 `rootDir` 解析） |
 | `timeout_ms` | 超时，默认 120s，上限 15min（与本地 terminal 前台一致） |
 
-返回里带 `exit_code` 与分流后的 `stdout/stderr`：**没有常驻 shell**，`cd`/`export` 不跨命令
+返回里带 `exit_code` 与合并后的 `output`（stdout/stderr 合流）：**没有常驻 shell**，`cd`/`export` 不跨命令
 （与 node 现有语义一致，见 `JZAgentNode::buildInstructions`）。
 
 ### 6.3 为什么在 cli 侧收成一个工具
@@ -411,16 +412,16 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | --- | --- | --- |
 | cli→node | `NodePack_hello` | `clientId, cliVersion`（node 侧做日志/审计；不做路由） |
 | cli→node | `NodePack_exec` | `runId, command, cwd, timeoutMs` |
-| node→cli | `NodePack_execResult` | `runId, exitCode, stdout, stderr, timedOut, durationMs, cwd` |
-| cli→node | `NodePack_execCancel` | `runId`（任务被 `/reset` 或超时时发） |
-| node→cli | `NodePack_helloAck` | **node 自述**：身份 / 能力位 / 运行态，字段见 §6.6 |
-| node→cli | `NodePack_pong` | 连通性自检（管理台显示 online/offline） |
+| node→cli | `NodePack_execResult` | `runId, exitCode, output, timedOut, durationMs, cwd`（`output` 为 stdout/stderr 合流） |
+| cli→node | `NodePack_execCancel` | `runId`（任务取消、reset 或超时时发） |
+| node→cli | `NodePack_helloAck` | 当前为基础自述；完整身份 / 能力位 / 运行态设计见 §6.6（未实现） |
 
 实现要点：
 
-- **并发**：v1 每个 node **同时只跑 1 条 exec**（`maxConcurrent=1`），cli 侧排队 —— 设备上并跑几条编译只会互相拖死；
+- **并发**：v1 每个 node **同时只跑 1 条 exec**（`maxConcurrent=1`），cli 侧忙时直接拒绝、不排队；
 - **超时双保险**：cli 侧 timer 到点发 `execCancel` 并本地收口；node 侧也用 `timeoutMs` 兜底杀进程树；
-- **大输出**：单包上限 256KB ⇒ `execResult` 里 stdout/stderr 各按"头 8KB + 尾 8KB + `...[截断 N 字节]...`"裁剪；
+- **任务取消**：`endLoop()` 按发起队列的 owner 取消对应 `remote_ssh`，不误停其他队列共享连接上的命令；
+- **大输出**：`execResult.output` 超过 120KB 时按"头 60KB + 显式提示 + 尾 60KB"裁剪（UTF-8 边界）；
   确需全文就先 `tail`/重定向到文件再分段读（模型侧做法），不在协议层做分片——**第一版刻意保持简单**；
 - **token**：node 的 `JZNetServer::setToken` 与 cli 的 `JZNetClient::setToken` 一致；token 错的表现是
   "包解不开/断连"，所以 cli 侧要把 `hello/helloAck` 3s 超时报成"token 或端口不对"；
@@ -572,7 +573,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 {
   "server": { "host": "10.0.0.5", "port": 8090, "token": "t-a1", "agentId": "a1" },
   "nodes": [
-    { "name": "line1", "host": "127.0.0.1", "port": 7500, "token": "", "default": true }
+    { "name": "line1", "host": "127.0.0.1", "port": 7500, "token": "t-line1", "default": true }
   ],
   "llm": { "...": "不变" },
   "terminal": { "...": "不变（本地工作区/权限）" }
@@ -772,10 +773,10 @@ ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failur
 | 身份 | `agentId` 缺省取 `agentName`；同一 `agentId` 重连时旧连接被 `closeClient` 顶掉（管理台不会留两行） |
 | 心跳 | 5s 一次，带 `busy/round/taskId/nodes`；忙闲变化时**立刻**多发一次，不等到下个周期 |
 | 任务下发 | `POST /api/tasks {agentId, ...}`，body 与 `POST /task` **完全一致**（`task_timeout_ms` 只给 server 用，不下发语义） |
-| 忙 | agent 忙时 server 直接 `409`（带当前 `taskId/round`），**不排队** |
-| 回包 | cli 的 `respondTask` 结果经 `taskEnd` 回来，server 用它回 `200`（同步等待式，与 `POST /task` 手感一致） |
-| 取消 | `POST /api/tasks/cancel?taskId=` → `taskCancel` → cli 走 `cancelTask()`（与 `POST /reset` **同一条路**，含停验证进程/清后台命令）→ 提交方收到 `status:"cancelled"` |
-| 超时 | server 侧 timer 到点：先发 `taskCancel`，再给提交方 `504`（避免 cli 继续跑一个没人收结果的任务） |
+| 忙 | server 不因 `agent.busy` 拦截；cli 有空闲队列就执行，全忙按 `maxPending` 排队，排满拒绝 |
+| 回包 | `wait:true` 时 server 等 `taskEnd` 回 `200`；`wait:false` 立即回 `202+taskId`，结果落任务历史 |
+| 取消 | `POST /api/tasks/cancel?taskId=` → `taskCancel` → cli 只取消指定排队/在跑任务（含验证、本地后台命令与对应远端 exec）→ 回一次 `cancelled` |
+| 超时 | 同步与异步任务都有 server timer：先发 `taskCancel`、记 `failed`；同步提交方再收 `504`，异步只落历史 |
 | 掉线 | cli 断连 → 该 agent 的在飞任务立刻 `502`（结果未知，不重放）；任务本身在 cli 侧照跑 |
 | 事件 | cli 的每个 SSE 事件同时以 `taskEvent` 上行（`thinking/reply/tool_call/tool_result/verify/error/task_start/task_end`），server 存最近一条供 `/api/status` 展示 |
 | 单包上限 | 事件 >96KB、回包 >160KB 时换成 `{truncated,bytes,preview}`（**不硬切 JSON**，切坏会让 server 解析失败） |
@@ -785,7 +786,7 @@ ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failur
 - **没有 `logAppend`**：server 侧看不到 cli 的控制台日志；managed 模式下 cli 也没 HTTP，现场排障只能看 cli 自己落盘的 `Agent.log`。
 - **没有 agent 白名单**：server 不认识"预期上线名单"，任何拿到 `hub.token` 的 cli 都能连上（token 是全局单一口令）。per-agent token 见 §8，未实现。
 - **管理台没有事件流**：只有 `lastEventType`（最近一条），看不到任务过程；要看得加 SSE 转发。
-- **`/api/tasks` 是同步等待**：长任务会占着 HTTP 连接；提交方断开后任务照跑（与现有 `/task` 一致），但结果只留在 cli。
+- **大包策略未定**：下行大 `taskSubmit` 与上行大 `taskEnd` 的传输/截断语义保留现状，待单独设计（§4.4）。
 - **验证统一在 cli**（§1.2，已定）：不做 `verify_host`。跨机时验证命令必须自己够到远端，
   并且要防"假通过"（cli 上有陈旧同名文件会被误判 success）。全链路用例里 nodeA/nodeB 与 cli 同机，所以直接成立。
 
@@ -844,11 +845,11 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 
 | 面 | 多队列下的行为 |
 | --- | --- |
-| 事件 | worker 通过 `m_eventSink` 交给 master；SSE 帧里多一个 `queue` 下标，控制面按该队列的 `taskId` 上 `taskEvent` |
-| `/info` | 新增 `queues: [{queue, busy, round, taskId, prompt}]` 与 `pendingTasks`；`busy` 为"任一队列在跑" |
-| `/reset`（scope=task） | 清空排队 + 让**每个队列**各自收尾（各停自己的验证进程/后台命令） |
-| `taskCancel(taskId)` | 先查排队（命中就直接摘掉并回 `cancelled`），再按 `taskId` 定位队列取消 |
-| node（`remote_ssh`） | worker **不自己连** node（`m_nodeResolver` 借用 master 的连接），否则每个队列会各连一遍 |
+| 事件 | worker 通过 `m_eventSink` 交给 master；所有 SSE 帧（含 q0）都有 `queue` 下标，控制面按该队列的 `taskId` 上 `taskEvent` |
+| `/info` | `queues: [{queue, busy, round, taskId, prompt}]` 与 `pendingTasks`；hub 的 `busy` 也按所有队列聚合，SSE 快照逐队列发送 |
+| `/reset`（scope=task） | 排队任务逐条回一次 `cancelled`，再让每个队列各自收尾；取消期间禁止回包回调重入派发 |
+| `taskCancel(taskId)` | 先查排队（命中就摘掉并回一次 `cancelled`），再按 `taskId` 只取消对应队列，不能误停其他队列 |
+| node（`remote_ssh`） | worker **不自己连** node（借用 master 连接）；工具记录发起队列 owner，收尾只取消该 owner 的远端 exec |
 | MCP（`mcp.servers[]`） | **只挂在队列 0**：每个队列挂一套意味着 stdio MCP 会被拉起 N 次。需要每队列都有的工具，应改用 node/HTTP 形式 |
 | 长期记忆 | 各队列写同一个 `memory` 文件（追加语义，交错但不丢内容） |
 
@@ -857,7 +858,7 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 1. **并发写同一工作区**：两个队列可能同时改同一批文件，模型互相踩且不会报错 —— 队列数 >1 时应配独立工作区/子目录，或只让一个队列写本地；
 2. **资源**：每个队列一套 agent + 工具 + 终端；`queues=4` 就是 4 倍内存与 4 条并发 LLM 连接（服务端限流要跟上）；
 3. **不排队的情况**：`maxPending<=0` 时行为回到"忙就拒"，只是拒绝点从"第一个任务"变成"队列全满"；
-4. **历史列表**：多队列下 `recent` 只由 master 记录，队列内部不重复记（避免同一任务出现两次）。
+4. **历史列表**：各队列记录自己的执行历史，master 在 `/info.recent` 按开始时间聚合最近 20 条并附 `queue`，不会在接口里重复出现同一任务。
 
 ### 14.5 测试
 
@@ -869,6 +870,8 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 - A/B 同时提交 → 断言 `/info.queues` 里 **2 条 busy**（证明是两个 agent 并发，不是假并发）；
 - 全忙时提交 C → 断言 `pendingTasks=1`，且 C 最终 success；
 - 总耗时 3.1s（串行应为 4.5s）→ 并发成立；三条任务全 success。
+- `agent_cli.task_cancel` 额外覆盖 queues=1/2 的"在跑 + 排队" reset、worker SSE、recent 聚合，以及真实 node 进程取消。
+- `agent_cli.server_tasks` 覆盖 managed 排队/在跑任务的 `wait:false` 取消、多队列 busy、异步超时、迟到 `taskEnd` 与 chunked SSE reply 上行。
 
 ---
 
@@ -903,7 +906,8 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 把该 agent 名下 `running` 的记录标 `lost`；提交方（如果在等）回 502 |
 | **超时** | server 侧 `task_timeout_ms` 到点 | 标 `failed` + 原因，同时下发 `taskCancel`（历史里能看到"是超时，不是 cli 说失败"） |
 
-**判定口径**：`status` 以 **server 收到的 `taskEnd`** 为准；cli 本地 `recent` 只用于网页即时展示，不参与历史。
+**判定口径**：任务处于 `running` 时以 server 收到的 `taskEnd` 为准；`timeout/lost/cancelled` 等终态一旦形成，
+迟到的 `taskEnd` 不得覆盖。cli 本地 `recent` 只用于网页即时展示，不参与历史。
 一个例外要说清：没配 `verify_cmd` 时 cli 会把 agent 报错也判成 `success`（"没有验收项就没有可失败的东西"，
 见 `onLoopFinished` 注释），这种记录会**同时**有 `status=success` 和 `error=ConnectError` —— 看详情要两个字段一起看。
 
@@ -926,6 +930,7 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | `POST /api/tasks/cancel` | 取消（cli 侧会按 taskId 找到对应队列） |
 
 > 网页一律用 `wait:false` + 轮询：否则"新建任务"页会一直转圈，也没法边跑边看别的任务。
+> 同步与异步任务都进入 server 的在跑登记表，均有 `task_timeout_ms` 与取消能力；`client=null` 仅表示没有同步回包通道。
 
 ---
 
@@ -975,6 +980,7 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | `server_agent_control` | 启停/重启 server 本机被监管的 `agents[]` 子进程 |
 
 本地执行面（`terminal_run/query/cancel`、`read_file`、`get_datetime`）与 cli 用的是同一份 `agent_tool` 实现，只是终端实例独立（`id="server"`）。
+`selfAgent.rootDir` 通过独立 `ICodeToolHost` 同时喂给终端区域配置与 `read_file`，不是只写进提示词；取消时显式 `cancelAll()` 停本地进程，终态为 `cancelled`。
 
 ### 16.4 已知边界
 
@@ -1002,7 +1008,7 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 表现就是"HTML 是新的、脚本是旧的" → 会话区一直停在「加载中…」，从界面上完全看不出原因。现在：
 
 - 管理台对静态文件设 `setCacheMaxAge(0)`（`max-age=0` + ETag/Last-Modified，没变就 304）；
-- 页面里引用资源带版本号 `/app.css?v=2`、`/app.js?v=2` —— **改前端资源时要顺手 +1**；
+- 页面里引用资源带版本号 `/app.css?v=2`、`/app.js?v=3` —— **改前端资源时要顺手 +1**；
 - `app.js` 里加了 4s 兜底提示：仍停在「加载中」就直说"可能是缓存，Ctrl+F5"。
 
 ### 16.6 顺带修的两个 JZNetServer bug
@@ -1013,3 +1019,36 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | 心跳回收调 `closeClient()` 直接把 server 崩掉 | `closeClient` 在找不到连接时先 `JZ_ASSERT`（只记日志、不中断），随后仍执行 `it->second`（`end()`）→ UB | 找不到直接 `return`（**关闭是幂等的**） |
 
 修完之后：杀 cli 后 4s 内列表就变"离线"（原来是永远在线），且 `closeClient` 可以安全地用于清理死连接。
+
+---
+
+## 17. 生命周期修正与回归（2026-11-06）
+
+### 17.1 本轮修正
+
+- **cli 取消/reset**：单队列与多队列的排队任务都逐条回 `cancelled`；全局 reset 与单任务取消都在完整收尾前禁止重入派发。
+  单任务 `taskCancel` 只停目标队列，不再走 master 的全量 reset；排队取消不再重复发送 `taskEnd`。
+- **远端执行**：`JZRemoteSshTool` 固定记录所属队列 owner，`endLoop()` 经 `cancelNodeExec()` 只取消该 owner 的
+  `remote_ssh`，同时保留每个 node 单在飞与断线"结果未知、不重放"的语义。
+- **事件与多队列视图**：高频事件是否构造同时考虑本地 SSE、在线 hub 与 worker 的 `m_eventSink`；q0/q1+
+  都有 `queue` 标记。hub 忙闲按所有队列聚合，`recent` 与 SSE 快照覆盖全部队列。
+- **server 异步任务**：`wait:false` 与同步任务一样登记 `m_pendingTasks` 和超时定时器，公开取消 API 对两者一致。
+  `timeout/lost` 等终态不被迟到 `taskEnd` 覆盖；同 `agentId` 顶号先走旧连接的下线收尾。
+- **内置 agent**：`rootDir` 通过 `ICodeToolHost` 进入终端与文件工具权限检查；取消会停本地进程并回 `cancelled`。
+- **配置/UI**：`llm.maxTokens` 经既有 `llm.body` 通道映射为 `max_tokens`（显式 `body.max_tokens` 优先）；
+  管理台节点地址统一读取后端字段 `target`。
+
+### 17.2 本轮刻意不改
+
+下行大 `taskSubmit`、上行大 `taskEnd` 与 JZNet 单包/收发缓冲策略均保持原样，待单独决定；没有调整
+`MG_MAX_PACK_SIZE`、`JZNetPackManager::setMaxPackSize()` 或 `JZNetConfig.maxSendSize/maxRecvSize`。
+
+### 17.3 回归
+
+```powershell
+ctest --test-dir build -C Debug -R "agent_cli\.(task_cancel|server_tasks|task_queues|remote_ssh_nodes|hub_nodes)$" --output-on-failure
+```
+
+- `agent_cli.task_cancel`：单/多队列 reset、worker SSE 与 recent、真实 node sleep 进程取消；
+- `agent_cli.server_tasks`：managed 排队/在跑异步取消与重入、多队列 busy、异步超时、selfAgent 超时与权限、迟到终态、chunked SSE reply；
+- 原有 `task_queues`、`remote_ssh_nodes`、`hub_nodes` 一并回归。五项全部通过。

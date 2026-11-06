@@ -304,6 +304,11 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     const Json::Value *body = findConfigMember(root, "llm", "body", "extraBody");
     if (body && body->isObject())
         config.extraBody = *body;
+    // 模板里的 llm.maxTokens = OpenAI 输出 token 上限; 经既有 extraBody 通道发送, 不与
+    // llm.maxToken(整个上下文预算)混为一谈。llm.body.max_tokens 显式配置优先。
+    const Json::Value *maxTokens = findConfigMember(root, "llm", "maxTokens", "maxTokens");
+    if (maxTokens && maxTokens->isInt() && !config.extraBody.isMember("max_tokens"))
+        config.extraBody["max_tokens"] = *maxTokens;
 
     // loop(循环检测: 工具重复调用 + 思考/回复原地打转 -> 直接中止本轮)
     //   工具侧: 结果也相同 = 证据更强, 阈值更低; 结果不同可能只是合法轮询(等编译/等运行)。

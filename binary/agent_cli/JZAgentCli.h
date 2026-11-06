@@ -401,6 +401,8 @@ protected:
     int idleWorker() const;                   // 找一个空闲队列, 没有返回 -1
     void onWorkerEvent(int queue, const std::string &type, const Json::Value &data);
     void emitLocalEvent(const std::string &type, const Json::Value &data);   // 只推给 SSE 订阅者
+    void syncHubState();                            // 汇总所有队列的忙闲/当前任务并立即上报
+    void cancelNodeExec(const void *owner);          // 只取消指定队列发起的远端命令
 
     // 一次 MCP 连接结束(成功/失败都到这儿): 就绪则把它挂进 agent(登记远端工具),
     // 失败/挂不上则记日志并销毁这个 client。index = 它在 m_config.mcpServers 里的位置
@@ -439,8 +441,11 @@ protected:
     std::string buildRetryPrompt(RetryMode mode, JZAgent::AgentError code, const std::string &err) const;
     void scheduleErrorRetry(RetryMode mode);
 
-    // 有没有 SSE 订阅者: 没有就不必构造高频的流式事件(thinking/reply)JSON
-    bool hasEventConsumer() const { return !m_eventClients.empty(); }
+    // q0 看本地 SSE 或在线 hub; worker 看 master 的 eventSink(最终消费者由 master 统一分发)。
+    bool hasEventConsumer() const
+    {
+        return !m_eventClients.empty() || hubOnline() || (bool)m_eventSink;
+    }
 
     // HTTP 传输 + 验证脚本门控循环
     std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd) const;
@@ -463,9 +468,11 @@ protected:
                     const std::string &verifyOut, const std::string &err);
     bool checkToken(const JZHttpRequest &req) const;      // ?token= / Authorization: Bearer
     void resetSession(bool cancelRunning);                // 重置会话(可选先中止在途任务)
-    // 中止在途任务并复位会话(返回是否真的中止了一个任务)。HTTP 的 /reset 与控制面的
-    // taskCancel 走同一条路 —— 两条入口各写一套必然漏掉某处收尾(验证进程/后台命令)。
+    // master: 取消全部排队与在跑任务; worker: 只取消自己。单任务取消走 cancelLocalTask,
+    // 避免 q0 的 taskCancel 误停其他队列。
     bool cancelTask(const std::string &reason);
+    bool cancelLocalTask(const std::string &reason);
+    void resetHistory();
 
     // 控制面下发(由 JZHubLink 回调)
     void onHubTaskSubmit(const std::string &taskId, const Json::Value &body);
@@ -516,6 +523,7 @@ protected:
 
     // ---- 任务队列(task.queues) ----
     bool m_isWorker = false;                   // true = 只是队列的执行体(不碰 HTTP/控制面)
+    JZAgentCli *m_master = nullptr;             // worker 指向 master; 单任务取消也共用它做派发闸
     std::vector<JZAgentCli *> m_workers;       // [0] = this; 其余由 initWorkers() 建
     std::vector<std::string> m_workerTask;     // 每个队列正在跑的 taskId(空 = 空闲)
     struct QueuedTask
@@ -531,6 +539,8 @@ protected:
     // 节点路由: worker 自己不连 node, 用 master 的那批连接
     std::function<JZNodeLink *(const std::string &)> m_nodeResolver;
     std::function<std::string()> m_defaultNodeFn;
+    std::function<void(const void *)> m_nodeCancel;
+    bool m_cancelling = false;                      // master 持有: 全局/单任务取消收尾期间禁止重入派发
     // 控制面任务 id(server 生成)。非空 = 当前任务是 server 派下来的,
     // 事件流与回包都按它带回 server; HTTP 任务为空。
     std::string m_currentTaskId;

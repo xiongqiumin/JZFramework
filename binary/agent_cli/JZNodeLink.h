@@ -67,12 +67,13 @@ public:
     // 建立连接(异步; 失败只记状态, 由退避定时器继续重连)
     void connectToNode();
 
-    // 跑一条命令。返回 false = 没发起(离线 / 正忙 / 已经有同名 run), error 有原因。
+    // 跑一条命令。owner 标识发起它的任务队列, 取消时只停该队列的命令。
+    // 返回 false = 没发起(离线 / 正忙), error 有原因。
     bool exec(const std::string &command, const std::string &cwd, int timeoutMs,
-              const ExecCallback &cb, std::string &error);
+              const void *owner, const ExecCallback &cb, std::string &error);
 
-    // 取消当前在跑的命令(任务被重置时用)
-    void cancelRunning();
+    // 取消指定队列当前在跑的命令; owner=nullptr 表示不限队列。
+    void cancelRunning(const void *owner = nullptr);
 
 jz_signals:
     // 上线/掉线/重连都发一次(管理台与日志用)
@@ -107,6 +108,7 @@ protected:
         ExecCallback cb;
         JZTimer *timer = nullptr;
         int timeoutMs = 0;
+        const void *owner = nullptr;   // 发起队列; 仅做身份比较, 不解引用
     };
     std::unique_ptr<Pending> m_pending;
     int m_runIdGen = 0;
@@ -127,7 +129,7 @@ public:
     // nodeList: 写在工具描述里的节点清单(构造时生成, 运行期不变)
     JZRemoteSshTool(std::function<JZNodeLink *(const std::string &)> resolver,
                     std::function<std::string()> defaultHost,
-                    const std::string &nodeList);
+                    const std::string &nodeList, const void *owner);
 
     void call(const ToolCall &params) override;
 
@@ -135,6 +137,7 @@ private:
     std::function<JZNodeLink *(const std::string &)> m_resolver;
     std::function<std::string()> m_defaultHost;
     std::string m_nodeList;
+    const void *m_owner = nullptr;   // 所属任务队列(固定身份, 不是每轮状态)
 };
 
 #endif // !JZ_NODE_LINK_H_

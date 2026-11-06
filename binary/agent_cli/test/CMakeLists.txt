@@ -56,6 +56,15 @@ add_test(NAME agent_cli.hub_nodes
 set_tests_properties(agent_cli.hub_nodes PROPERTIES
                      TIMEOUT 300 LABELS "agent_cli" RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
 
+#   test_task_queues.py —— 多任务队列(task.queues): 每个队列一个独立 JZAgent,
+#       队列内串行、队列间并发、全忙排队。mock 模型每个请求睡 1.5s, 用耗时区分并发/串行。
+#           ctest -C Release -R agent_cli.task_queues --output-on-failure
+add_test(NAME agent_cli.task_queues
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_task_queues.py
+                 --agent-cli $<TARGET_FILE:agent_cli>)
+set_tests_properties(agent_cli.task_queues PROPERTIES
+                     TIMEOUT 180 LABELS "agent_cli" RUN_SERIAL TRUE)
+
 #   test_codex/test_codex_bench.py —— 用 **Codex SDK** 跑 benchmark 的同一批用例(与 agent_cli_test
 #       同套用例/工程骨架/验证命令), 用来和 agent_cli 的通过率做对比。真模型 + 真 Codex 回合 ⇒ 很慢,
 #       同样挂 llm 标签(不混进快速回归):

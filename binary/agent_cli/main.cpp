@@ -136,28 +136,16 @@ static const char *kDefaultConfigJson = R"json({
         "agentId":          ""
     },
 
+    "task": {
+        "queues":           1,
+        "maxPending":       32
+    },
+
     "http": {
         "bind":             "127.0.0.1",
         "port":             8080,
         "token":            "",
         "dir":              ""
-    },
-
-    "frp": {
-        "server": {
-            "enabled":      false,
-            "bindPort":     7000,
-            "token":        ""
-        },
-        "client": {
-            "enabled":      false,
-            "serverAddr":   "",
-            "serverPort":   7000,
-            "token":        "",
-            "proxies": [
-                { "name": "http", "localIp": "127.0.0.1", "localPort": 8080, "remotePort": 8080 }
-            ]
-        }
     }
 }
 )json";
@@ -220,8 +208,8 @@ static bool writeDefaultConfig(const string &path, string &error)
 static const Json::Value *findConfigMember(const Json::Value &root, const string &group,
                                           const string &name, const string &legacy)
 {
-    // 优先走分组: name 支持 "a.b.c" 多级嵌套(如 frp.client.enabled ->
-    //   root["frp"]["client"]["enabled"]); 单段名(如 http.bind)同样适用。
+    // 优先走分组: name 支持 "a.b.c" 多级嵌套(如 verify.maxRounds ->
+    //   root["verify"]["maxRounds"]); 单段名(如 http.bind)同样适用。
     if (!group.empty() && root.isMember(group) && root[group].isObject())
     {
         const Json::Value *cur = &root[group];
@@ -497,38 +485,23 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     readConfigString(root, "http", "token", "httpToken", config.httpToken);
     readConfigString(root, "http", "dir", "httpDir", config.httpDir);
 
-    // frp(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
-    //   本端连到远端 frps, 把本地服务经 proxy 暴露出去。
-    readConfigBool(root, "frp", "client.enabled", "frpClientEnabled", config.frp.client.enabled);
-    readConfigString(root, "frp", "client.serverAddr", "frpServerAddr", config.frp.client.serverAddr);
-    readConfigInt(root, "frp", "client.serverPort", "frpServerPort", config.frp.client.serverPort);
-    readConfigString(root, "frp", "client.token", "frpClientToken", config.frp.client.token);
-    const Json::Value *frpProxies = findConfigMember(root, "frp", "client.proxies", "frpProxies");
-    if (frpProxies && frpProxies->isArray())
-    {
-        for (Json::ArrayIndex i = 0; i < frpProxies->size(); ++i)
-        {
-            const Json::Value &p = (*frpProxies)[i];
-            if (!p.isObject())
-                continue;
-            JZCliFrpProxy proxy;
-            JZJsonStream ps(&p);
-            ps.readMemberDefault("name", proxy.name, std::string());
-            ps.readMemberDefault("localIp", proxy.localIp, std::string("127.0.0.1"));
-            ps.readMemberDefault("localPort", proxy.localPort, 0);
-            ps.readMemberDefault("remotePort", proxy.remotePort, 0);
-            // localIp 允许空(默认 127.0.0.1); 但端口必须有效才收
-            if (proxy.localPort > 0 && proxy.remotePort > 0)
-                config.frp.client.proxies.push_back(proxy);
-        }
-    }
-
     // 控制面(managed 模式): server.host 非空即受 server 调度
-    //   ⚠ 这是**模式开关**, 不是可选项: managed 时不起 HTTP、不起 frp(见 startServerLink)。
+    //   ⚠ 这是**模式开关**, 不是可选项: managed 时不起 HTTP(见 startServerLink)。
     readConfigString(root, "server", "host", "serverHost", config.server.host);
     readConfigInt(root, "server", "port", "serverPort", config.server.port);
     readConfigString(root, "server", "token", "serverToken", config.server.token);
     readConfigString(root, "server", "agentId", "agentId", config.server.agentId);
+
+    // 任务队列: 每个队列一个独立 JZAgent(独立会话), 队列内串行/队列间并发
+    readConfigInt(root, "task", "queues", "taskQueues", config.task.queues);
+    readConfigInt(root, "task", "maxPending", "taskMaxPending", config.task.maxPending);
+    if (config.task.queues < 1)
+        config.task.queues = 1;
+    if (config.task.queues > 32)
+    {
+        jzWarning() << "task.queues 过大(>32), 已按 32 处理";
+        config.task.queues = 32;
+    }
     if (config.managed())
     {
         if (config.server.port <= 0 || config.server.port > 65535)
@@ -601,10 +574,17 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
 
     // 运行模式: server.host 非空 = managed。两种模式**互斥**, 不是叠加
     if (config.managed())
-        fprintf(stderr, "  运行模式  managed(受 server 调度) -> %s:%d  agentId=%s  [不起 HTTP/frp]\n",
+        fprintf(stderr, "  运行模式  managed(受 server 调度) -> %s:%d  agentId=%s  [不起 HTTP]\n",
                 config.server.host.c_str(), config.server.port, config.server.agentId.c_str());
     else
-        fprintf(stderr, "  运行模式  standalone(自带 HTTP + 可选 frp)\n");
+        fprintf(stderr, "  运行模式  standalone(自带 HTTP)\n");
+
+    // 任务队列: 每个队列一个独立 JZAgent
+    if (config.task.queues <= 1)
+        fprintf(stderr, "  任务队列  1 个(单任务: 忙时按 max_pending 排队或拒绝)\n");
+    else
+        fprintf(stderr, "  任务队列  %d 个(每队列一个 JZAgent, 队列内串行/队列间并发; 排队上限 %d)\n",
+                config.task.queues, config.task.maxPending);
 
     if (config.extraBody.isObject() && config.extraBody.size() > 0)
     {
@@ -701,14 +681,6 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
                     nc.token.empty() ? "  (无 token)" : "");
         }
     }
-    // frp(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
-    if (!config.frp.client.enabled)
-        fprintf(stderr, "  FRP       关(仅 client 角色; 服务端在 JZAgentCliServer)\n");
-    else
-        fprintf(stderr, "  FRP 客户端  frpc -> %s:%d, 代理 %d 条\n",
-                config.frp.client.serverAddr.empty() ? "(未配 serverAddr)"
-                                                     : config.frp.client.serverAddr.c_str(),
-                config.frp.client.serverPort, (int)config.frp.client.proxies.size());
     string programs;
     for (const auto &kv : config.programPaths)
     {
@@ -786,7 +758,7 @@ int main(int argc, char *argv[])
     JZApplication app;
 
     // 日志: 多模块(JZLog 原生支持, addModule/setModuleConfig 按模块 id 独立配置 type)。
-    //  - General: 进程级信息(就绪 / frps 连接等), 默认开 Console —— agent_cli 的 stdout 被
+    //  - General: 进程级信息(就绪 / 控制面连接等), 默认开 Console —— agent_cli 的 stdout 被
     //    workflow.py 重定向到 runs/loop/agent_run.out.txt, 不污染真实控制台。
     //  - Agent:   每轮 LLM 回合诊断(think / reply / tool_call / tool_result / input / error),
     //    单独模块、不走 Console; 只有 config.logFile 非空才落盘到 <logFile目录>/Agent.log,
@@ -829,15 +801,13 @@ int main(int argc, char *argv[])
     cli.startNodes();
 
     // 两种模式**互斥**(docs/agent-hub-design.md §3.3):
-    //   managed    = 受 server 调度, 任务从控制面来, **不起 HTTP、不起 frp**;
-    //   standalone = 自带 HTTP(可选 frp), 提交方直接 POST /task。
+    //   managed    = 受 server 调度, 任务从控制面来, **不起 HTTP**;
+    //   standalone = 自带 HTTP, 提交方直接 POST /task。
     if (config.managed())
     {
         jzDebug("agent_cli 就绪(managed): server=%s:%d  agentId=%s",
                 config.server.host.c_str(), config.server.port,
                 config.server.agentId.c_str());
-        if (config.frp.client.enabled)
-            jzWarning("managed 模式已禁用 frp: 控制面走 JZNet 出站连接, 不需要端口映射");
         cli.startServerLink();
     }
     else
@@ -846,7 +816,6 @@ int main(int argc, char *argv[])
                 config.httpBind.c_str(), config.httpPort,
                 config.httpToken.empty() ? "(无)" : "(已启用)");
         cli.startHttp();
-        cli.startFrpc();     // client 角色 = frpc: 连到远端 frps 暴露本地服务(关着就不连)
     }
 
     return app.exec();

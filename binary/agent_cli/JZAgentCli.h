@@ -2,6 +2,7 @@
 #define JZ_AGENT_CLI_H_
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <string>
 #include <map>
@@ -19,39 +20,9 @@ class JZHttpServer;
 class JZHttpServerClient;
 class JZHttpRequest;
 class JZProcess;
-class JZFrpClient;
 class JZMcpClient;
 class JZNodeLink;
 class JZHubLink;
-
-// ---------------------------------------------------------------------------
-// FRP 内网穿透配置(client 角色 = frpc)
-//   ⚠ JZAgentCli 只承担"客户端"角色(frpc): 连到远端 frps, 把本机服务(如本机 HTTP
-//     任务接口)经代理暴露到远端 frps 的 remotePort 上。
-//   "服务端"角色(frps)由单独的 JZAgentCliServer(见 server/ 目录)承担。
-//   默认关; 需要时在 config.json 的 frp.client.* 打开。
-// ---------------------------------------------------------------------------
-struct JZCliFrpProxy
-{
-    std::string name;        // 代理名(远端 frps 侧标识)
-    std::string localIp;     // 本地服务地址(默认 127.0.0.1)
-    int localPort = 0;       // 本地服务端口
-    int remotePort = 0;      // 在 frps 上注册的对外端口
-};
-
-struct JZCliFrpClientConfig   // frpc: 本端连到远端 frps, 暴露本地服务
-{
-    bool enabled = false;
-    std::string serverAddr;   // 远端 frps 地址
-    int serverPort = 7000;    // 远端 frps 端口
-    std::string token;
-    std::vector<JZCliFrpProxy> proxies;
-};
-
-struct JZCliFrpConfig
-{
-    JZCliFrpClientConfig client;   // 客户端(frpc); 服务端(frps)在 JZAgentCliServer
-};
 
 // ---------------------------------------------------------------------------
 // MCP 客户端配置: 连一个外部 MCP 服务器, 把它的远端工具挂进本 agent 的工具表。
@@ -96,8 +67,8 @@ struct JZCliNodeConfig
 
 // ---------------------------------------------------------------------------
 // 控制面: 连 agent_cli_server(managed 模式, 见 docs/agent-hub-design.md §3)
-//   host 非空即 managed —— cli **出站**连 server, 所以内网机器不用 frp / 不用端口映射。
-//   managed 与 standalone **互斥**: managed 时不起 HTTP、不起 frp(配了也忽略)。
+//   host 非空即 managed —— cli **出站**连 server, 内网机器不需要端口映射。
+//   managed 与 standalone **互斥**: managed 时不起 HTTP, 任务只从控制面来。
 // ---------------------------------------------------------------------------
 struct JZCliServerLinkConfig
 {
@@ -105,6 +76,21 @@ struct JZCliServerLinkConfig
     int port = 8090;        // server 的 hub 端口(不是管理网页那个 8088)
     std::string token;      // 与 server 的 hub.token 一致(JZNet 握手口令)
     std::string agentId;    // server 侧登记的身份; 空 = 用 agentName
+};
+
+// ---------------------------------------------------------------------------
+// 任务队列(task.queues)
+//   queues = 队列数(**每个队列一个独立的 JZAgent + 一套工具**), 默认 1 = 现状。
+//   一个队列同一时刻只跑一个任务(会话上下文不能并行), 所以:
+//     · 提交时挑一个空闲队列; 全忙则进 master 的 FIFO 队列(master 排队, 顺序派发);
+//     · 全部在跑且排队数达到 maxPending ⇒ 直接拒绝(不让队列变成任务黑洞)。
+//   ⚠ 多个队列会**并发写同一个工作区**, 模型互相踩的风险由使用者承担(见 docs/web-ui 无关,
+//     见 docs/agent-hub-design.md §14).
+// ---------------------------------------------------------------------------
+struct JZCliTaskConfig
+{
+    int queues = 1;        // 队列数(每个队列一个 JZAgent); 1 = 单任务(旧行为)
+    int maxPending = 32;   // 全忙时最多排多少条; <=0 表示不排队(忙就拒)
 };
 
 // ---------------------------------------------------------------------------
@@ -224,15 +210,13 @@ struct JZCliConfig
     std::string httpToken;             // 非空则要求 ?token= 或 Authorization: Bearer(防裸奔)
     std::string httpDir;               // 网页静态目录; 空=exe 同目录/http
 
-    // ---- FRP 内网穿透(frps 服务端 + frpc 客户端; "server" 角色即 frps) ----
-    //   默认都关; 需要时打开 frp.server.enabled(本端当 frps 中转) 或 frp.client.enabled
-    //   (本端当 frpc 把本地服务暴露到远端 frps)。详见 JZCliFrpConfig。
-    JZCliFrpConfig frp;
+    // ---- 任务队列 ----
+    JZCliTaskConfig task;
 
     // ---- 控制面(managed 模式): 连 agent_cli_server ----
     JZCliServerLinkConfig server;
 
-    // managed = 受 server 控制: 不进 HTTP、不起 frp、任务只从控制面来
+    // managed = 受 server 控制: 不起 HTTP、任务只从控制面来
     bool managed() const { return !server.host.empty(); }
 };
 
@@ -330,7 +314,7 @@ public:
 
     // 起控制面(managed 模式): JZNetClient 连 server, 上报 hello/心跳, 收 taskSubmit/taskCancel/reset。
     // 必须在事件循环起来前调用; 未配置 server.host 时什么都不做(standalone)。
-    // ⚠ managed 下**不**调 startHttp()/startFrpc(): 任务只从控制面来, 对外不开 HTTP。
+    // ⚠ managed 下**不**调 startHttp(): 任务只从控制面来, 对外不开 HTTP。
     void startServerLink();
     bool hubOnline() const;
     JZHubLink *hub() const { return m_hub; }
@@ -341,11 +325,6 @@ public:
     Json::Value nodesJson() const;
     // host 省略时用哪台(配置里 default 的那台; 没标就是第一台)
     std::string defaultNodeName() const;
-
-    // 起 FRP 穿透(client 角色 = frpc): 按配置连到远端 frps, 把本地服务经代理暴露出去。
-    // 必须在事件循环起来前(建 HTTP 之后)调用; 内部创建 JZFrpClient 并异步连接。
-    // ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担, 本类只做客户端。
-    void startFrpc();
 
     // 起 MCP 客户端: 按配置(mcp.servers)逐个**异步**连接外部 MCP 服务器, 连上后把
     // 远端工具登记进 agent(见 JZMcpClient / JZAgent::addMcp)。
@@ -397,6 +376,13 @@ public:
     //   {status, verify_rounds, agent_reply, last_verify_output, error?}。
     void submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);
 
+    // ---- 任务队列(task.queues) ----
+    // 每个队列一个独立 JZAgent(独立会话/上下文), 队列内串行、队列间并发。
+    Json::Value queuesJson() const;          // /info 用: [{queue, busy, round, taskId}]
+    bool anyBusy() const;                    // 是否还有队列在跑(管理台/测试用)
+    int pendingCount() const;                // 排队中的任务数
+    int queueCount() const { return (int)m_workers.size(); }
+
     JZAgent *agent() const { return m_agent; }
 
     // 生效的程序映射(即配置里传进来的那份), 供宿主打印/自检
@@ -405,6 +391,16 @@ public:
 protected:
     void setupAgent();
     std::string buildSystemPrompt() const;
+
+    // ---- 任务队列 ----
+    bool initWorkers(std::string &error);     // queues>1: 建"工作实例"(每个一套 JZAgent + 工具)
+    void runTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);  // 引擎本体
+    void dispatchTo(int queue, const Json::Value &req, const std::string &taskId,
+                    std::function<void(const Json::Value &)> respond);
+    void pumpQueue();                         // 有队列空出来时派发排队任务
+    int idleWorker() const;                   // 找一个空闲队列, 没有返回 -1
+    void onWorkerEvent(int queue, const std::string &type, const Json::Value &data);
+    void emitLocalEvent(const std::string &type, const Json::Value &data);   // 只推给 SSE 订阅者
 
     // 一次 MCP 连接结束(成功/失败都到这儿): 就绪则把它挂进 agent(登记远端工具),
     // 失败/挂不上则记日志并销毁这个 client。index = 它在 m_config.mcpServers 里的位置
@@ -517,13 +513,28 @@ protected:
 
     // 控制面(managed 模式): 到 server 的连接。standalone 下为空。
     JZHubLink *m_hub = nullptr;
+
+    // ---- 任务队列(task.queues) ----
+    bool m_isWorker = false;                   // true = 只是队列的执行体(不碰 HTTP/控制面)
+    std::vector<JZAgentCli *> m_workers;       // [0] = this; 其余由 initWorkers() 建
+    std::vector<std::string> m_workerTask;     // 每个队列正在跑的 taskId(空 = 空闲)
+    struct QueuedTask
+    {
+        Json::Value req;
+        std::string taskId;
+        std::function<void(const Json::Value &)> respond;
+    };
+    std::deque<QueuedTask> m_pending;          // 全忙时排队(FIFO 派发)
+    std::string m_queueName = "q0";
+    // worker -> master 的事件出口(带队列下标); master 自己为 null
+    std::function<void(int, const std::string &, const Json::Value &)> m_eventSink;
+    // 节点路由: worker 自己不连 node, 用 master 的那批连接
+    std::function<JZNodeLink *(const std::string &)> m_nodeResolver;
+    std::function<std::string()> m_defaultNodeFn;
     // 控制面任务 id(server 生成)。非空 = 当前任务是 server 派下来的,
     // 事件流与回包都按它带回 server; HTTP 任务为空。
     std::string m_currentTaskId;
 
-    // FRP 穿透(client 角色 = frpc; 服务端 frps 在 JZAgentCliServer)
-    //   按配置创建 JZFrpClient, 连到远端 frps 暴露本地服务; 本对象的子对象。
-    JZFrpClient *m_frpClient = nullptr;
     JZHttpServerClient *m_pendingClient = nullptr;   // 当前在跑任务对应的 HTTP 连接(循环结束回包)
     bool m_loopActive = false;                       // 是否处于"提交→验证循环"模式
     int m_loopRound = 0;

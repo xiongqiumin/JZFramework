@@ -18,8 +18,8 @@
 
 | # | 约束 | 含义 |
 | --- | --- | --- |
-| 1 | cli 支持两种模式 | `standalone`（自带 HTTP，可选 frp）/ `managed`（受 server 控制） |
-| 2 | 两模式**互斥** | `managed` 时**不起 HTTP、不起 frp**；反过来 `standalone` 时不上报 server |
+| 1 | cli 支持两种模式 | `standalone`（自带 HTTP）/ `managed`（受 server 控制） |
+| 2 | 两模式**互斥** | `managed` 时**不起 HTTP**；反过来 `standalone` 时不上报 server |
 | 3 | server↔cli 走 **JZNetClient** | 用框架现成的 `JZNetClient`/`JZNetServer` + 自定义包，不自造协议 |
 | 4 | node **预配置、不动态** | 启动时按配置连好；运行期不增删节点；cli 侧暴露为**单个工具**（remote_ssh 语义） |
 | 5 | **执行面默认本地** | cli 不挂 node 时自己执行（`terminal_*` + 文件工具），node 是可选旁路 |
@@ -49,13 +49,39 @@
 ⚠ 一个必须提前说清的边界：**node 不需要外网**（它不连 LLM），但需要**被 cli 连上**（两种模式都是 server 角色，
 要入站可达）。若目标机器连入站也不通（只有出站权限），得改用反连（`connect:"dial"`）——见 §6.1.3。
 
-### 1.2 一条硬耦合：验证面必须跟执行面走
+### 1.2 验证面：统一在 cli 跑（2026-11-06 定）
 
-`runVerifyAsync` 现在用 `JZProcess` 在 **cli 本机** 起进程，`cwd = m_config.rootDir`（`JZAgentCli.cpp:1731`、`:1749`）。
-所以一旦"任务在 node 上执行、验证在 cli 本地跑"，**必然假失败**（本机没那些文件）。
+`runVerifyAsync` 用 `JZProcess` 在 **cli 本机** 起进程，`cwd = m_config.rootDir`。
 
-⇒ 规则：`/task` 增加 `verify_host`（默认 = 本次任务的执行 host；`local` 表示本机）。
-任务在 node 上执行时，验证命令也下发到同一 node 执行；否则不做远端执行。
+**决定：保持这样，不引入 `verify_host`。** 验证跑在哪台机器，取决于验证代码怎么写：
+读 cli 本地文件/本机进程的，本来就该在 cli；要看远端状态的，让验证命令自己够过去
+（`curl` 打 node 上的服务、共享盘、调 node 暴露的接口）。
+
+必须认下的两个后果：
+
+| 场景 | 后果 |
+| --- | --- |
+| `verify_cmd` 读的是 **node 本地路径** | ❌ 永远失败（`No such file`）→ 模型一直改、一直撞，白烧轮次 |
+| cli 本机恰好有**同名旧文件** | ⚠ **假通过**（比假失败危险得多）：任务没做成却判 `success`，直接污染通过率 |
+
+⇒ 写验证命令的硬要求：**验证读的那份东西，必须是本次任务真的产出的那份**。
+路径要能唯一定位到产物；跨机时用网络接口，或用带 `taskId`/随机串的唯一名，
+别让它能撞上本机旧文件。
+
+### 1.3 cli 不再内建 frpc（2026-11-06 移除）
+
+`agent_cli` 以前内嵌 `JZFrpClient`，把本机端口（如 8080）经 frps 暴露到外网。hub 上线后这条路只剩
+"让外部访问 agent 起的长驻服务"一个用途，而它属于**网络层**（WireGuard / Tailscale / `ssh -L` / 独立 frpc 进程），
+不该由执行代理兼职：
+
+- 控制类需求已由 hub 覆盖，且更安全（握手 token + agentId + 服务端审计/取消/超时）；
+- 让 cli 能主动对外暴露端口，等于把安全模型从"只要能出网"改成"还要保证暴露面可控"
+  —— 原实现连 `http.token` 为空都不拦，等于把 `/task`、`/reset`、`/terminal*` 交给任何能连上 frps 的人；
+- managed 明确"不起 HTTP"，同一个二进制里却留着"把 HTTP 打洞出去"的能力，配置与文档永远打架。
+
+⇒ 已删除：`JZCliFrpConfig` / `startFrpc()` / `m_frpClient` / `frp.client.*` 配置解析 / `--init` 模板里的 `frp` 段
+（模板里另有一段从未被读取的 `frp.server`，一并删掉）。`JZFrpClient` 模块本身保留（`binary/frpc` 等独立工具仍用）。
+`agent_cli_server` 的 `frp.server`（frps）**保留**，只服务于"现场自带 frpc"的部署，与本架构无关。
 
 **明确不做**：
 
@@ -85,13 +111,12 @@ server 与 node 都是 server 角色。这样内网机器不需要 frp、不需�
 ```
 (A) standalone（现状语义，保留）
    提交方/浏览器 ──HTTP──► cli :8080 ──► JZAgent ──► 本地工具 / remote_ssh(node)
-                                   └──(可选)frpc──► 外部 frps
 
 (B) managed（新增）
    server :8088（管理台/API）
         ▲  JZNetClient 出站连接（token）
         │
-      cli（无 HTTP、无 frp）──► JZAgent ──► 本地工具 / remote_ssh(node)
+      cli（无 HTTP）──► JZAgent ──► 本地工具 / remote_ssh(node)
 ```
 
 ### 3.1 模式判定
@@ -113,12 +138,9 @@ cli.startNodes();        // 两种模式都要：按 nodes[] 建 JZNetClient 连
                          //   nodes[] 为空 ⇒ 什么都不做，工具表里没有 remote_ssh
 
 if (config.managed())
-    cli.startServerLink();   // JZNetClient 连 server；不建 JZHttpServer、不建 JZFrpClient
+    cli.startServerLink();   // JZNetClient 连 server；不建 JZHttpServer
 else
-{
     cli.startHttp();         // POST /task + 网页控制台
-    cli.startFrpc();         // 可选
-}
 return app.exec();
 ```
 
@@ -128,7 +150,7 @@ return app.exec();
 | --- | --- | --- |
 | `JZHttpServer`（`/task` `/info` `/events` `/reset` `/terminal*`） | 起 | **不起** |
 | 网页控制台 `http/` 静态资源 | 起 | **不起** |
-| `JZFrpClient`（frpc） | 按配置 | **强制关**（配了也忽略并打 warning） |
+| `JZFrpClient`（frpc） | **已移除**（2026-11-06，见 §1.3） | 已移除 |
 | `JZNetClient`（连 server） | 不连 | 必连 |
 | 任务来源 | 外部 `POST /task` | server 的 `task_submit` |
 | 取消/重置 | `POST /reset` | `task_cancel` / `reset` 包 |
@@ -288,16 +310,21 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
 - 挂了 node 之后，本地工具**照旧存在**——本地与远端是同一个工具的两个目标，不是二选一。
   这也是"本地终端 + ssh"的自然模型，不需要再造概念。
 
-### 6.1.1 验证面跟随执行面（否则必然假失败）
+### 6.1.1 验证在哪跑（已定：统一在 cli）
 
 | 任务执行在 | `verify_cmd` 在哪跑 | 结果 |
 | --- | --- | --- |
-| local（默认） | cli 本地（现状 `runVerifyAsync`，`cwd=rootDir`） | 正常 |
-| node `line1` | **必须也在 `line1`**（走 `remote_ssh`） | 正常 |
-| node `line1` | cli 本地 | ❌ 本机没那些文件，验证永远失败 |
+| local（默认） | cli 本地（`runVerifyAsync`，`cwd=rootDir`） | 正常 |
+| node `line1`，验证只需本机/网络可达 | cli 本地 | 正常 |
+| node `line1`，验证要读 node 的**本地路径** | cli 本地 | ❌ 一直 `No such file` |
 
-⇒ `/task` 与 `taskSubmit` 都要带 `verify_host`（默认 = 执行 host）。**没有 `verify_host` 的远端执行不予支持**，
-宁可报错也不要"跑完改对了却判失败"。
+已决定**不加 `verify_host`**：验证统一在 cli 跑，"能不能用"由验证命令自己负责。
+
+- ✅ 成立：验证检查本机东西，或经网络访问远端（HTTP / DB / 共享盘）；
+- ❌ 不成立：验证直接读 node 上的本地路径；
+- ⚠ 更危险：cli 上有陈旧同名文件 → **假通过**（§1.2）。
+
+同理，`verify_script` 一直是"cli 工作区里选一个脚本"，跨机时它同样只在 cli 侧有意义。
 
 ### 6.1.2 node 的两种模式（2026-11-06 定）
 
@@ -552,18 +579,17 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 }
 ```
 
-`server.enabled=true`（或 `server.host` 非空）即 managed：**忽略** `http.*` 与 `frp.client.*`，
-启动时打一条 warning 说明"已按 managed 模式禁用本地 HTTP/frp"。
+`server.host` 非空即 managed：**忽略** `http.*`（受控模式不再对外开 HTTP）。
 
 `nodes[]` 每项对应一个 `link` 模式的 node（node 侧 `mode:"link"`、`host/port/token` 与这里一致）；
 url 不再是 `/mcp`，而是 `host:port` —— 走 JZNet，不是 HTTP。
 
 ### 7.3 cli `config.json`（standalone）
 
-`http.*` + 可选 `frp.client.*`，`nodes[]` 取代 `mcp.servers[]`。standalone 也可以挂 node
+`http.*` 即可，`nodes[]` 取代 `mcp.servers[]`。standalone 也可以挂 node
 （本地执行 + 远端执行并存），是否 managed 只影响控制面。
 
-cli 配置分组（两种模式共用，managed 下忽略 `http.*` 与 `frp.client.*`）：
+cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 | 分组 | 关键项 |
 | --- | --- |
@@ -576,7 +602,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*` 与 `frp.clie
 | `mcp` | `enabled / servers[]`（仅第三方 MCP server，不再用于 node） |
 | `nodes` | `[{name, host, port, token, default}]`（link 模式 node，静态） |
 | `http` | `bind / port / token / dir` |
-| `frp.client` | `enabled / serverAddr / serverPort / token / proxies[]` |
+
 | 顶层 | `agentName / version / logFile`（`logFile` 非空才有 `Agent.log`） |
 
 ### 7.4 兼容
@@ -619,7 +645,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*` 与 `frp.clie
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P0** ✅ 已落地 | node 加 `mode:"link"`（起 `JZNetServer` + `NodePack_exec`，**不起 MCP**）；cli 加 `nodes[]` + `remote_ssh` 工具（`nodes[]` 空则不注册） | `ctest -R agent_cli.remote_ssh_nodes`：2 台 link node + 1 个 cli，把 nodeA 的 secret 搬到 nodeB；`mcp` 模式行为不变 |
-| **P1** ✅ 已落地 | cli 模式二选一：`server.host` 非空判定 managed，managed 时不起 HTTP/frp | `ctest -R agent_cli.hub_nodes` 断言 cli 的 `http.port` **未被监听**；standalone 行为不变 |
+| **P1** ✅ 已落地 | cli 模式二选一：`server.host` 非空判定 managed，managed 时不起 HTTP | `ctest -R agent_cli.hub_nodes` 断言 cli 的 `http.port` **未被监听**；standalone 行为不变 |
 | **P2** ✅ 已落地 | 控制通道：`JZAgentHubPacket` + `startServerLink()` + server 侧 `JZNetServer`/注册表 + `hello/heartbeat/taskSubmit/taskCancel/reset/taskEvent/taskEnd` + `POST /api/tasks` | 内网 cli 不配 frp，server 能下发任务、看事件、取消任务（`agent_cli.hub_nodes` 全链路通过） |
 | **P3** | 收尾：`logAppend` 落盘、离线策略、审计 | 断电/重连/离线各场景行为可预期 |
 | **P4**（可选） | node 自述（§6.6）：身份/能力位/运行态 + 刷新 `remote_ssh` 描述 | `/info` 里有 `platform`、`diskFreeMB`；工具描述里出现"禁装包/禁联网" |
@@ -634,7 +660,8 @@ P0 只依赖后者，P2 只依赖前者 —— 这也是 P0 能先落地的原�
 ## 10. 与当前实现的差异（落地清单）
 
 > ⚠ 下表是 **P2 之前**的快照。P1/P2 已于 2026-11-06 落地（见 §13）：其中"server 管 agent / 控制通道 /
-> cli 模式 / 任务入口 / 取消重置"五行**已完成**；仍然成立的是 **验证面（`verify_host`）、node 自述、日志回传**。
+> cli 模式 / 任务入口 / 取消重置"五行**已完成**；仍然成立的是 **node 自述、日志回传**；
+> "验证面"一行**已定不改**（验证统一在 cli 跑，见 §1.2，不做 `verify_host`）。
 
 | 项 | 现状（v1） | 目标 | 要改的位置 |
 | --- | --- | --- | --- |
@@ -643,7 +670,7 @@ P0 只依赖后者，P2 只依赖前者 —— 这也是 P0 能先落地的原�
 | cli 模式 | 总是 `startHttp()`；frp 独立开关 | `managed` 时不起 HTTP/frp | `binary/agent_cli/main.cpp`、`JZAgentCli::init/startHttp` |
 | 任务入口 | cli `POST /task` | managed 下为 server `taskSubmit` | `JZAgentCli::submitTask`（复用，不改逻辑）+ server 新路由 |
 | 取消/重置 | `POST /reset` | `taskCancel` / `reset` 包 | `JZAgentCli::resetSession` 加一层包入口 |
-| **验证面** | 永远在 cli 本机跑（`runVerifyAsync` + `cwd=rootDir`） | `verify_host` 跟随执行 host；远端执行时验证也下发到 node | `JZAgentCli::runVerifyAsync` 增加"走 node"分支；`/task`/`taskSubmit` 加字段 |
+| **验证面** | 永远在 cli 本机跑（`runVerifyAsync` + `cwd=rootDir`） | **保持现状**：验证统一在 cli，不加 `verify_host`（§1.2）；跨机靠验证命令自己够到远端 | 无（刻意不改） |
 | node 角色 | 只有一种：MCP server（8 个工具） | 两种：`mcp`（同现状）/ `link`（无 MCP，只处理 `exec`） | `binary/agent_node/main.cpp`（按 `mode` 分支）、`JZAgentNode`（link 下不建 `JZMcpServer`） |
 | node 工具面 | 8 个工具（5 terminal + 3 file）直接进模型工具表 | cli 侧只挂 1 个 `remote_ssh`；`mcp` 模式的工具面不变 | `JZAgentCli::setupAgent`（按 `nodes[]` 决定是否加 `remote_ssh`） |
 | node 自述 | `helloAck` 只回 `nodeName/version/rootDir/shell`，模型只看得到 `name (host:port)` | 身份 + 能力位 + 运行态共 17 项，且刷新进 `remote_ssh` 描述（§6.6） | `JZAgentNodePacket`、`JZAgentNode::onLinkPacket`、`JZNodeLink`、`JZAgentCli::makeInfo` |
@@ -731,7 +758,7 @@ ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failur
 | `JZAgent/JZAgentHubPacket.{h,cpp}` | 控制面协议：`HubPack_hello / helloAck / heartbeat / taskSubmit / taskCancel / reset / taskEvent / taskEnd` + `JZAgentHubPacketInit()`（包号 `NetPack_user+101…`，与 node 的 `1000…` 不冲突） |
 | `binary/agent_cli/JZHubLink.{h,cpp}` | `JZHubLink`（`JZNetClient` 连接 + hello/心跳 + 重连退避 + 事件/回包上行 + 任务下行回调） |
 | `binary/agent_cli/JZAgentCli.{h,cpp}` | `JZCliServerLinkConfig` / `managed()` / `startServerLink()` / `onHubTaskSubmit·Cancel·Reset` / `cancelTask()` / `nodesJson()`；`pushEvent` 同时上行控制面；`makeInfo` 加 `hub` 段 |
-| `binary/agent_cli/main.cpp` | 解析 `server.*`；`--check` 打印运行模式；启动分支：managed → `startServerLink()`，standalone → `startHttp()+startFrpc()`；managed 下配了 frp 只打 warning |
+| `binary/agent_cli/main.cpp` | 解析 `server.*`；`--check` 打印运行模式；启动分支：managed → `startServerLink()`，standalone → `startHttp()` |
 | `binary/agent_cli/server/JZAgentCliServer.{h,cpp}` | `startHub()`（`JZNetServer`）+ 在线 cli 注册表 + `POST /api/tasks` / `POST /api/tasks/cancel` + `/api/status`、`/api/agents` 增加 `hub` 与 `online[]` + 管理台"控制面"表格 |
 | `binary/agent_cli/server/main.cpp` | 解析 `hub.*`（校验不与 `http.port` 撞）、默认配置模板、`--check` 打印 |
 | `binary/agent_cli/test/test_hub_nodes.py` | 全链路用例（见 13.4），ctest 名 `agent_cli.hub_nodes` |
@@ -740,7 +767,7 @@ ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failur
 
 | 项 | 实际行为 |
 | --- | --- |
-| 模式判定 | `server.host` 非空 ⇒ managed（**没有** `server.enabled`）；managed 下 `startHttp()`/`startFrpc()` 都不调用 |
+| 模式判定 | `server.host` 非空 ⇒ managed（**没有** `server.enabled`）；managed 下不调用 `startHttp()` |
 | 上线 | cli 连上后发 `hello`（含 `nodes` 清单），3s 内没收到 `helloAck` 就报"token 或端口不对"并断开重连 |
 | 身份 | `agentId` 缺省取 `agentName`；同一 `agentId` 重连时旧连接被 `closeClient` 顶掉（管理台不会留两行） |
 | 心跳 | 5s 一次，带 `busy/round/taskId/nodes`；忙闲变化时**立刻**多发一次，不等到下个周期 |
@@ -759,7 +786,8 @@ ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failur
 - **没有 agent 白名单**：server 不认识"预期上线名单"，任何拿到 `hub.token` 的 cli 都能连上（token 是全局单一口令）。per-agent token 见 §8，未实现。
 - **管理台没有事件流**：只有 `lastEventType`（最近一条），看不到任务过程；要看得加 SSE 转发。
 - **`/api/tasks` 是同步等待**：长任务会占着 HTTP 连接；提交方断开后任务照跑（与现有 `/task` 一致），但结果只留在 cli。
-- **验证面仍未跟随执行面**（§1.2 / §6.1.1）：`verify_cmd` 依旧在 cli 本机跑 —— 全链路用例里 nodeA/nodeB 与 cli 同机所以成立；真正跨机时必须加 `verify_host`。
+- **验证统一在 cli**（§1.2，已定）：不做 `verify_host`。跨机时验证命令必须自己够到远端，
+  并且要防"假通过"（cli 上有陈旧同名文件会被误判 success）。全链路用例里 nodeA/nodeB 与 cli 同机，所以直接成立。
 
 ### 13.4 测试
 
@@ -771,3 +799,73 @@ ctest --test-dir build -C Debug -R agent_cli.hub_nodes --output-on-failure
 - 断言：server 的 `online[]` 里有这台 cli 且它上报的两台 node 都 `online` → 任务 `status=success` →
   nodeB 的 `answer.txt` 与随机 secret 逐字符相等 → 有 `lastEventType`（事件上行通）→ cli 的 `http.port` **未被监听**（模式互斥）；
 - 全程 mock 模型，不联网，实测 **0.6s**；standalone 的 `agent_cli.remote_ssh_nodes` 依旧通过（未回归）。
+
+---
+
+## 14. 任务队列（`task.queues`，2026-11-06）
+
+### 14.1 配置与语义
+
+```json
+"task": { "queues": 2, "maxPending": 32 }
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `task.queues` | `1` | 队列数，**每个队列一个独立 `JZAgent`（独立会话/上下文）**；1 = 旧行为 |
+| `task.maxPending` | `32` | 全部队列都在跑时，最多排多少条；`<=0` = 不排队（忙就拒） |
+
+- **队列内串行**：一个 `JZAgent` 只有一条会话，同一队列同一时刻只跑一个任务；
+- **队列间并发**：不同队列互不影响，各跑各的；
+- **派发**：提交时挑第一个空闲队列；全忙则进 master 的 FIFO 队列，任一群列空出来就派一条；
+- **排满**：`maxPending` 到顶直接拒绝（`queue_full`，HTTP 侧回 429），不让队列变成任务黑洞。
+
+### 14.2 实现方式（为什么不是"一个 JZAgentCli 里塞 N 个会话"）
+
+每个队列是**一整个 `JZAgentCli` 实例**（`m_workers[i]`，`[0]` 就是 master 自己）：
+
+| 每个队列独占 | 说明 |
+| --- | --- |
+| `JZAgent`（会话/上下文/工具表） | 工具对象把 `sigResult` 连到自己的 agent，**不能共用** |
+| 一整套工具对象 + `JZVirtualTerminal` | 终端本来就按会话隔离；`endLoop()` 的 `cancelAll()` 只会清自己队列的后台命令 |
+| 验证状态（`m_verifyProc/m_verifyCb/m_verifyGen/m_verifyOut`） | 两个任务同时验证会互相覆盖，必须每队列一份 |
+| 重试/累积/回包状态 | 同上 |
+
+这样**引擎代码（提交→验证→重试）一行没改**，只是被实例化 N 份；`submitTask` 变成调度器：
+
+```cpp
+submitTask(req, respond)          // 调度: 找空闲队列 -> dispatchTo(q) ; 全忙 -> m_pending
+  └─ runTask(req, respond)        // 引擎本体(原 submitTask 的内容, 逐字未改)
+```
+
+master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、node 连接、MCP 连接、SSE 广播、历史。
+
+### 14.3 与其它模块的衔接
+
+| 面 | 多队列下的行为 |
+| --- | --- |
+| 事件 | worker 通过 `m_eventSink` 交给 master；SSE 帧里多一个 `queue` 下标，控制面按该队列的 `taskId` 上 `taskEvent` |
+| `/info` | 新增 `queues: [{queue, busy, round, taskId, prompt}]` 与 `pendingTasks`；`busy` 为"任一队列在跑" |
+| `/reset`（scope=task） | 清空排队 + 让**每个队列**各自收尾（各停自己的验证进程/后台命令） |
+| `taskCancel(taskId)` | 先查排队（命中就直接摘掉并回 `cancelled`），再按 `taskId` 定位队列取消 |
+| node（`remote_ssh`） | worker **不自己连** node（`m_nodeResolver` 借用 master 的连接），否则每个队列会各连一遍 |
+| MCP（`mcp.servers[]`） | **只挂在队列 0**：每个队列挂一套意味着 stdio MCP 会被拉起 N 次。需要每队列都有的工具，应改用 node/HTTP 形式 |
+| 长期记忆 | 各队列写同一个 `memory` 文件（追加语义，交错但不丢内容） |
+
+### 14.4 代价与风险（要认）
+
+1. **并发写同一工作区**：两个队列可能同时改同一批文件，模型互相踩且不会报错 —— 队列数 >1 时应配独立工作区/子目录，或只让一个队列写本地；
+2. **资源**：每个队列一套 agent + 工具 + 终端；`queues=4` 就是 4 倍内存与 4 条并发 LLM 连接（服务端限流要跟上）；
+3. **不排队的情况**：`maxPending<=0` 时行为回到"忙就拒"，只是拒绝点从"第一个任务"变成"队列全满"；
+4. **历史列表**：多队列下 `recent` 只由 master 记录，队列内部不重复记（避免同一任务出现两次）。
+
+### 14.5 测试
+
+```powershell
+ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
+```
+
+- mock 模型每个请求睡 1.5s；`queues=2`；
+- A/B 同时提交 → 断言 `/info.queues` 里 **2 条 busy**（证明是两个 agent 并发，不是假并发）；
+- 全忙时提交 C → 断言 `pendingTasks=1`，且 C 最终 success；
+- 总耗时 3.1s（串行应为 4.5s）→ 并发成立；三条任务全 success。

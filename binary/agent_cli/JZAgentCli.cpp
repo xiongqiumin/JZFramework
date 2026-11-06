@@ -72,7 +72,6 @@ static std::string logTextLine(const char *tag, const std::string &text)
 #include "JZHttpHandler.h"
 #include "JZHttpStaticFiles.h"
 
-#include "JZFrpClient.h"      // 内嵌 FRP 客户端(frpc, client 角色)
 #include "JZNet/JZNetPacket.h"  // JZNetPackInit(frpc 的 JZNetClient 依赖包注册)
 #include "JZAgentNodePacket.h"  // link 模式 node 的执行面协议(remote_ssh)
 #include "JZAgentHubPacket.h"   // 控制面: cli <-> server 的任务下发/上报
@@ -323,7 +322,205 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
     jzInfo() << "system prompt: " << sysPrompt.size() << " bytes"
              << ((m_config.systemExtra.empty() && m_config.systemExtraFile.empty())
                      ? "" : "（含宿主常驻说明 system.extra/extraFile）");
+
+    // 任务队列: queues>1 时再建 queues-1 个工作实例(每个一套 JZAgent + 工具 + 终端)。
+    // worker 自己不建 worker(m_isWorker), 也不碰 HTTP/控制面/MCP/node 连接。
+    if (!m_isWorker && m_config.task.queues > 1)
+    {
+        if (!initWorkers(error))
+            return false;
+    }
+    else
+    {
+        m_workers.clear();
+        m_workerTask.clear();
+        m_workers.push_back(this);
+        m_workerTask.push_back(std::string());
+    }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// 任务队列
+//   队列数 = 并发任务数; 队列内**串行**(一个 JZAgent 只有一条会话), 队列之间并行。
+//   选型说明: 每个队列是一整个 JZAgentCli 实例 —— 引擎(提交→验证→重试)一行不用改,
+//   代价是每个队列各有一台 JZVirtualTerminal(本来就按会话隔离)和一套工具对象。
+//   MCP 工具只在队列 0 上挂(startMcp 只有 master 调), 见 docs/agent-hub-design.md §14.
+// ---------------------------------------------------------------------------
+bool JZAgentCli::initWorkers(std::string &error)
+{
+    m_workers.clear();
+    m_workerTask.clear();
+    m_workers.push_back(this);           // 队列 0 = 本实例(它同时负责传输)
+    m_workerTask.push_back(std::string());
+    m_queueName = "q0";
+
+    const int n = m_config.task.queues;
+    for (int i = 1; i < n; ++i)
+    {
+        auto *w = new JZAgentCli(this);
+        w->m_isWorker = true;
+        w->m_queueName = "q" + std::to_string(i);
+        // 事件统一汇总到 master(那里才有 SSE 订阅者与控制面连接)
+        w->m_eventSink = [this, i](int, const std::string &type, const Json::Value &data)
+        {
+            onWorkerEvent(i, type, data);
+        };
+        // node 连接由 master 持有: worker 只借用(否则每队列都会各连一遍 node)
+        w->m_nodeResolver = [this](const std::string &host) { return nodeLink(host); };
+        w->m_defaultNodeFn = [this]() { return defaultNodeName(); };
+
+        if (!w->init(m_config, error))
+        {
+            error = "任务队列 " + std::to_string(i) + " 初始化失败: " + error;
+            w->deleteLater();
+            return false;
+        }
+        m_workers.push_back(w);
+        m_workerTask.push_back(std::string());
+    }
+
+    jzInfo() << "任务队列:" << n << " 个(每个独立 JZAgent + 工具; 队列内串行, 队列间并发)";
+    return true;
+}
+
+int JZAgentCli::idleWorker() const
+{
+    for (size_t i = 0; i < m_workers.size(); ++i)
+    {
+        if (m_workers[i]->m_busy)
+            continue;
+        if (i < m_workerTask.size() && !m_workerTask[i].empty())
+            continue;
+        return (int)i;
+    }
+    return -1;
+}
+
+void JZAgentCli::dispatchTo(int q, const Json::Value &req, const std::string &taskId,
+                            std::function<void(const Json::Value &)> respond)
+{
+    JZAgentCli *w = m_workers[q];
+    if (q < (int)m_workerTask.size())
+        m_workerTask[q] = taskId;
+    w->m_currentTaskId = taskId;
+
+    // 队列跑完 -> 清标记 + 看有没有排队的可派 + 把结果交给提交方
+    std::function<void(const Json::Value &)> cb = [this, q, respond](const Json::Value &res)
+    {
+        if (q < (int)m_workerTask.size())
+            m_workerTask[q].clear();
+        if (respond)
+            respond(res);
+        pumpQueue();   // 注意: respond 可能已经让调用方重新提交, 所以放在最后
+    };
+
+    if (w == this)
+        runTask(req, cb);
+    else
+        w->runTask(req, cb);   // 直接跑引擎(不能再进调度, 否则递归)
+}
+
+void JZAgentCli::pumpQueue()
+{
+    if (m_isWorker)
+        return;
+    while (!m_pending.empty())
+    {
+        const int q = idleWorker();
+        if (q < 0)
+            break;
+        QueuedTask t = m_pending.front();
+        m_pending.pop_front();
+        jzInfo() << "队列 " << q << " 取走排队任务(剩 " << m_pending.size() << " 条)";
+        dispatchTo(q, t.req, t.taskId, t.respond);
+    }
+}
+
+void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond)
+{
+    if (m_isWorker)
+    {
+        // 工作实例: 队列内串行由 master 保证, 这里直接进引擎
+        runTask(req, respond);
+        return;
+    }
+    if (m_workers.empty())
+    {
+        m_workers.push_back(this);
+        m_workerTask.push_back(std::string());
+    }
+
+    const int q = idleWorker();
+    const std::string taskId = m_currentTaskId;   // 控制面任务; HTTP 路径为空
+    if (q >= 0)
+    {
+        dispatchTo(q, req, taskId, respond);
+        return;
+    }
+
+    // 全忙: 排队。排队有上限 —— 无限排队就是"任务黑洞"(提交方以为排上了, 其实几小时后才跑)
+    const int cap = m_config.task.maxPending;
+    if (cap <= 0 || (int)m_pending.size() >= cap)
+    {
+        Json::Value e;
+        e["error"] = "所有任务队列都在跑, 且排队已满(" + std::to_string(m_pending.size()) + "/" +
+                     std::to_string(cap) + "), 稍后重试";
+        e["queue_full"] = true;
+        e["queues"] = (int)m_workers.size();
+        if (respond)
+            respond(e);
+        return;
+    }
+
+    QueuedTask t;
+    t.req = req;
+    t.taskId = taskId;
+    t.respond = respond;
+    m_pending.push_back(t);
+    jzInfo() << "所有队列忙, 任务排队: " << m_pending.size() << "/" << cap;
+}
+
+void JZAgentCli::onWorkerEvent(int q, const std::string &type, const Json::Value &data)
+{
+    // 队列事件 -> 本地 SSE(带队列号) + 控制面(带该队列的 taskId)
+    Json::Value d = data;
+    if (d.isObject())
+        d["queue"] = q;
+    emitLocalEvent(type, d);
+
+    const std::string taskId = (q >= 0 && q < (int)m_workerTask.size()) ? m_workerTask[q] : std::string();
+    if (m_hub && !taskId.empty())
+        m_hub->sendTaskEvent(taskId, type, data);
+}
+
+Json::Value JZAgentCli::queuesJson() const
+{
+    Json::Value arr(Json::arrayValue);
+    for (size_t i = 0; i < m_workers.size(); ++i)
+    {
+        Json::Value q(Json::objectValue);
+        q["queue"] = (int)i;
+        q["busy"] = (bool)m_workers[i]->m_busy;
+        q["round"] = m_workers[i]->m_loopRound;
+        q["taskId"] = (i < m_workerTask.size()) ? m_workerTask[i] : std::string();
+        q["prompt"] = m_workers[i]->m_currentPrompt;
+        arr.append(q);
+    }
+    return arr;
+}
+
+bool JZAgentCli::anyBusy() const
+{
+    for (JZAgentCli *w : m_workers)
+        if (w->m_busy)
+            return true;
+    return false;
+}
+
+int JZAgentCli::pendingCount() const
+{
+    return (int)m_pending.size();
 }
 
 void JZAgentCli::setupAgent()
@@ -420,9 +617,10 @@ void JZAgentCli::setupAgent()
                     + (n.isDefault ? "  [默认]" : "") + "\n";
         }
 
+        // worker 不自己连 node: 有 m_nodeResolver 时借用 master 的连接
         auto *ssh = new JZRemoteSshTool(
-            [this](const std::string &host) { return nodeLink(host); },
-            [this]() { return defaultNodeName(); },
+            [this](const std::string &host) { return m_nodeResolver ? m_nodeResolver(host) : nodeLink(host); },
+            [this]() { return m_defaultNodeFn ? m_defaultNodeFn() : defaultNodeName(); },
             list);
         m_agent->addTool(ssh);
         m_tools.push_back(ssh);
@@ -524,9 +722,45 @@ void JZAgentCli::onHubTaskSubmit(const std::string &taskId, const Json::Value &b
 
 void JZAgentCli::onHubTaskCancel(const std::string &taskId)
 {
-    if (m_currentTaskId.empty() || (!taskId.empty() && taskId != m_currentTaskId))
-        return;   // 不是当前任务(迟到的取消), 忽略
-    cancelTask("任务已被 server 取消");
+    if (m_isWorker)
+    {
+        if (m_currentTaskId.empty() || (!taskId.empty() && taskId != m_currentTaskId))
+            return;
+        cancelTask("任务已被 server 取消");
+        return;
+    }
+
+    // master: 先看还在排队的(直接摘掉并回 cancelled, 不浪费队列)
+    for (auto it = m_pending.begin(); it != m_pending.end(); ++it)
+    {
+        if (!taskId.empty() && it->taskId != taskId)
+            continue;
+        QueuedTask t = *it;
+        m_pending.erase(it);
+        Json::Value r;
+        r["status"] = "cancelled";
+        r["verify_rounds"] = 0;
+        r["agent_reply"] = "";
+        r["last_verify_output"] = "";
+        r["error"] = "任务在排队中被取消";
+        if (t.respond)
+            t.respond(r);
+        if (m_hub)
+            m_hub->sendTaskEnd(taskId, r);
+        return;
+    }
+
+    // 再看各队列在跑的
+    for (size_t i = 0; i < m_workers.size(); ++i)
+    {
+        const std::string cur = (i < m_workerTask.size()) ? m_workerTask[i] : std::string();
+        if (!taskId.empty() && cur != taskId)
+            continue;
+        if (cur.empty() && !m_workers[i]->m_busy)
+            continue;
+        m_workers[i]->cancelTask("任务已被 server 取消");
+        return;
+    }
 }
 
 void JZAgentCli::onHubReset(const std::string &scope)
@@ -883,57 +1117,6 @@ void JZAgentCli::startHttp()
         jzWarning() << "HttpServer 监听失败:" << m_config.httpBind << ":" << m_config.httpPort;
 }
 
-// ==========================================================================
-// FRP 内网穿透(client 角色 = frpc)
-//   本端连到配置里的远端 frps, 把本地服务(如本机 HTTP/admin 接口)通过代理暴露到
-//   远端 frps 的 remotePort 上 —— 这样在外网/其它机器上访问 <frps>:<remotePort>
-//   就能转发到本机的 <localIp>:<localPort>。
-//   ⚠ 服务端(frps)由 JZAgentCliServer(见 server/)承担; 这里只做客户端。
-//   frpc 靠 JZNetPack 收发包, 显式写上包类型注册(与 binary/frpc 的 jzfrpc 一致)。
-//   包类型其实在 JZApplication 构造(JZDriver::init -> JZNetPackInit, 内含 JZFrpPacketInit)
-//   时就注册好了 ⇒ 这里是第二次调 —— 两个入口都有 once 保护, 重复调用无害且不重复注册。
-// ==========================================================================
-void JZAgentCli::startFrpc()
-{
-    // frpc 客户端: 本端连到远端 frps, 把本地服务经代理暴露出去。
-    if (!m_config.frp.client.enabled)
-        return;
-
-    if (m_config.frp.client.serverAddr.empty())
-    {
-        jzWarning() << "frp.client 已启用但 serverAddr 为空, 跳过 frpc 启动";
-        return;
-    }
-    if (m_config.frp.client.proxies.empty())
-    {
-        jzWarning() << "frp.client 已启用但没有任何 proxy, 跳过 frpc 启动";
-        return;
-    }
-
-    JZFrpClientConfig cc;
-    cc.serverIp = m_config.frp.client.serverAddr;
-    cc.serverPort = m_config.frp.client.serverPort;
-    cc.token = m_config.frp.client.token;
-    for (const auto &p : m_config.frp.client.proxies)
-    {
-        if (p.localPort > 0 && p.remotePort > 0)
-            cc.addProxy(p.name.empty() ? ("proxy" + to_string(cc.proxyList.size()))
-                                        : p.name,
-                        p.localIp.empty() ? std::string("127.0.0.1") : p.localIp,
-                        p.localPort, p.remotePort);
-    }
-    if (cc.proxyList.empty())
-    {
-        jzWarning() << "frp.client 所有 proxy 的 localPort/remotePort 无效, 跳过 frpc 启动";
-        return;
-    }
-
-    m_frpClient = new JZFrpClient(this);
-    m_frpClient->setConfig(cc);
-    m_frpClient->connectToServer();   // 异步连接 + 内置 15s 重连, 不阻塞主线程
-    jzInfo() << "FrpClient(frpc) 已连接远端 frps:" << cc.serverIp << ":" << cc.serverPort
-             << "  代理数:" << cc.proxyList.size();
-}
 
 // ==========================================================================
 // MCP 客户端(把外部 MCP 服务器的工具挂进本 agent)
@@ -1103,6 +1286,9 @@ Json::Value JZAgentCli::makeInfo() const
     j["modelName"] = m_config.modelName;
     j["rootDir"] = m_config.rootDir;
     j["mcpInitDone"] = m_mcpInitDone;   // false = 还在连 MCP, 此时的 POST /task 会被拒绝
+    // 任务队列: 每个队列的忙闲/轮次/当前任务(queues==1 时数组只有一项, 与旧版等价)
+    j["queues"] = queuesJson();
+    j["pendingTasks"] = pendingCount();
     // 宿主常驻说明(system.extra / extraFile): 拼进 system prompt 一次, 之后每轮 /task 只叠加新消息 ——
     // 这里给出"从哪来 / 多大 / system prompt 总共多大", 便于自检(HTTP 模式默认不打 stdout)
     j["systemExtraFile"] = m_config.systemExtraFile;
@@ -1155,7 +1341,7 @@ void JZAgentCli::onInfo(JZHttpServerClient *client, const JZHttpRequest &req)
     }
 
     Json::Value j = makeInfo();
-    j["busy"] = (bool)m_busy;
+    j["busy"] = anyBusy();           // 多队列: 任一队列在跑就算忙
     j["round"] = m_loopRound;
     j["recent"] = recentJson();      // 最近若干次请求与结果(网页刚打开时靠它补回历史)
     sendJson(client, 200, j);
@@ -1432,11 +1618,23 @@ void JZAgentCli::removeEventClient(JZHttpServerClient *client)
 
 void JZAgentCli::pushEvent(const std::string &type, const Json::Value &data)
 {
-    // 控制面(managed): 事件同时回传 server —— 它没有 SSE 通道, 这是唯一的实时出口。
-    // 放在"有没有 SSE 订阅者"之前: managed 模式下根本没有 HTTP, 订阅者永远是空的。
-    if (m_hub && !m_currentTaskId.empty())
-        m_hub->sendTaskEvent(m_currentTaskId, type, data);
+    // 工作实例: 自己没有订阅者、也不连控制面, 事件统一交给 master(带上队列下标)
+    if (m_eventSink)
+    {
+        m_eventSink(0, type, data);
+        return;
+    }
 
+    // 队列 0: 控制面(managed) + 本地 SSE。taskId 用"本队列当前任务", 多队列时才不会串台。
+    const std::string taskId = m_workerTask.empty() ? std::string() : m_workerTask[0];
+    if (m_hub && !taskId.empty())
+        m_hub->sendTaskEvent(taskId, type, data);
+
+    emitLocalEvent(type, data);
+}
+
+void JZAgentCli::emitLocalEvent(const std::string &type, const Json::Value &data)
+{
     if (m_eventClients.empty())
         return;
 
@@ -1500,26 +1698,31 @@ void JZAgentCli::onTaskSubmit(JZHttpServerClient *client, const JZHttpRequest &r
         sendJson(client, 400, e);
         return;
     }
-    if (m_busy)
+    // 4) 交给调度: 有队列空闲就直接跑, 否则排队; 真的排满了 submitTask 会回 queue_full。
+    //    ⚠ 多队列下每个任务各有自己的回包连接, 不能再用单个 m_pendingClient:
+    //      用一个 shared 标记跟踪"这条连接还在不在", 断开后不再往野指针写。
+    auto alive = std::make_shared<bool>(true);
+    JZHttpServerClient *c = client;
+    connect(static_cast<JZSignal<JZObject*>*>(&client->sigDestroyed), this, [alive](JZObject *)
     {
-        Json::Value e; e["error"] = "a task is already running";
-        sendJson(client, 409, e);
-        return;
-    }
-
-    // 4) 进入任务循环, 结果经 HTTP 回包(200)
-    m_pendingClient = client;
-    connect(static_cast<JZSignal<JZObject*>*>(&client->sigDestroyed), this, &JZAgentCli::onClientDestroyed);
-    submitTask(root, [this, client](const Json::Value &j) {
-        sendJson(client, 200, j);
+        *alive = false;
+    });
+    submitTask(root, [this, c, alive](const Json::Value &j)
+    {
+        if (!*alive)
+            return;   // 提交方已断开: 任务照跑, 只是没人收结果(与 SSE 时代一致)
+        const bool full = j.isMember("queue_full") && j["queue_full"].asBool();
+        sendJson(c, full ? 429 : 200, j);
     });
 }
 
 // 任务提交核心: 由 HTTP(onTaskSubmit) 调用, 结果经 respond 回调回包。
-void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond)
+// 引擎本体: 一个队列内的"提交 → 验证 → 重试"循环。由 submitTask(调度)或 master 直接调用。
+void JZAgentCli::runTask(const Json::Value &req, std::function<void(const Json::Value &)> respond)
 {
     if (m_busy)
     {
+        // 队列内串行: 走到这里说明调度有 bug, 或者提交方绕过了 submitTask
         Json::Value e; e["error"] = "a task is already running";
         if (respond) respond(e);
         return;
@@ -2215,6 +2418,22 @@ bool JZAgentCli::cancelTask(const std::string &reason)
         return false;
 
     bool cancelled = false;
+
+    // master(多队列): 清空排队, 并让每个队列各自收尾 —— 它们是独立会话, 各有自己的
+    // 验证进程与后台命令, 只停自己那一份是不够的。
+    if (!m_isWorker && m_workers.size() > 1)
+    {
+        m_pending.clear();
+        for (size_t i = 0; i < m_workers.size(); ++i)
+        {
+            JZAgentCli *w = m_workers[i];
+            if (w == this)
+                continue;
+            if (w->cancelTask(reason))
+                cancelled = true;
+        }
+    }
+
     if (m_loopActive)
     {
         // 先给提交方一个明确结果(status:"cancelled"), 再停 agent ——

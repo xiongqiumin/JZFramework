@@ -15,8 +15,9 @@
 
 using namespace std;
 
-static const char *kDefaultModelUrl  = "http://172.17.160.147:8000/v1/chat/completions";
-static const char *kDefaultModelName = "/workspace/RedHatAI/Qwen3.6-35B-A3B-NVFP4";
+// 端点/模型名不入库(2026-11-09): 用 --modelUrl / --modelName 传入
+static const char *kDefaultModelUrl  = "";
+static const char *kDefaultModelName = "";
 
 // 64x64 纯红色 PNG 的 base64
 static const char *kRedPngBase64 =
@@ -33,6 +34,12 @@ int main(int argc, char *argv[])
         string arg = argv[i];
         if (arg == "--modelUrl" && i + 1 < argc)  model_url = argv[++i];
         else if (arg == "--modelName" && i + 1 < argc) model_name = argv[++i];
+    }
+
+    if (model_url.empty() || model_name.empty())
+    {
+        jzError() << "未配置 --modelUrl/--modelName（端点/模型名不入库）";
+        return 2;
     }
 
     JZApplication app;

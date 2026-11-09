@@ -70,9 +70,10 @@ public:
     }
 };
 
-// 真实大模型(vLLM OpenAI 兼容接口), 可用 --modelUrl / --modelName 覆盖, --no-llm 跳过
-static const char* kDefaultModelUrl  = "http://172.17.160.147:8000/v1/chat/completions";
-static const char* kDefaultModelName = "/workspace/RedHatAI/Qwen3.6-35B-A3B-NVFP4";
+// 真实大模型(vLLM OpenAI 兼容接口), 端点/模型名不入库(2026-11-09):
+// 用 --modelUrl / --modelName 传入, --no-llm 跳过
+static const char* kDefaultModelUrl  = "";
+static const char* kDefaultModelName = "";
 
 // ----------------------------------------------------------------------
 // stdio MCP 服务器: 一行一条 JSON-RPC, 响应写回 stdout
@@ -124,6 +125,11 @@ int main(int argc, char* argv[])
         if (arg == "--modelUrl" && i + 1 < argc)     model_url = argv[++i];
         else if (arg == "--modelName" && i + 1 < argc) model_name = argv[++i];
         else if (arg == "--no-llm")                  with_llm = false;
+    }
+    if (with_llm && (model_url.empty() || model_name.empty()))
+    {
+        jzError() << "未配置 --modelUrl/--modelName（端点/模型名不入库），或用 --no-llm 跳过真实大模型";
+        return 2;
     }
 
     JZApplication app;

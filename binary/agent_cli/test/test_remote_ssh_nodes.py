@@ -296,9 +296,9 @@ def main(argv=None) -> int:
     llm = read_llm_config(os.path.dirname(agent_cli))
     mock_server = None
     if args.real_llm:
-        model_url = args.model_url or os.environ.get("JZ_BENCH_MODEL_URL", "") or llm["url"]
-        model_name = args.model_name or os.environ.get("JZ_BENCH_MODEL_NAME", "") or llm["name"]
-        model_token = args.model_token or os.environ.get("JZ_BENCH_MODEL_TOKEN", "") or llm["token"]
+        model_url = args.model_url or llm["url"]
+        model_name = args.model_name or llm["name"]
+        model_token = args.model_token or llm["token"]
         if not model_url or not model_name:
             log("SKIP: --real-llm 但没配模型(%s)" % fwd(llm["path"]))
             return 77

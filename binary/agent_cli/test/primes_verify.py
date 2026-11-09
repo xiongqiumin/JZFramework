@@ -261,7 +261,7 @@ def main(argv=None) -> int:
         out("%s 已通过 %d 轮(>= %d 轮)且本轮 %.3fs <= %.3fs: 目标达成, 本轮之后结束循环"
             % (STOP_TAG, rnd, args.min_rounds, el, args.target_sec))
     else:
-        out("%s 下一轮: 继续用 `python %s <N>` 验证, 上一轮(N=%d)%.3fs —— 目标更快且结果依然正确"
+        out("%s 下一轮: 继续用 `python %s <N>` 验证, 上一轮(N=%d)%.3fs —— N 每轮随机, 目标: 结果依然正确"
             % (NEXT_TAG, args.program, n, el))
     return 0
 

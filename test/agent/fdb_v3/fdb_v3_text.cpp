@@ -19,8 +19,8 @@
 //   三个字段 —— 本程序把这三个填对，评测侧零改动（与 Python 版字段完全一致）。
 //
 // 用法：
-//   fdb_v3_text.exe --modelUrl http://192.168.111.123:8000/v1/chat/completions ^
-//                   --modelName ugreen-ai-model --modelToken <key> ^
+//   fdb_v3_text.exe --modelUrl http://<模型主机>:8000/v1/chat/completions ^
+//                   --modelName <模型名> --modelToken <key> ^
 //                   --benchmark C:/Users/7052/Desktop/tmp/fdb_v3_upstream/benchmark_data_v2.json ^
 //                   --provider cpp_text --limit 5
 //   然后（在 fdb_v3_upstream 目录，注意 PYTHONIOENCODING=utf-8，上游脚本会 print emoji）：
@@ -769,9 +769,9 @@ int main(int argc, char *argv[])
     JZEventLoop loop;
 
     JZAgentConfig cfg;
-    cfg.modelUrl = "http://192.168.111.123:8000/v1/chat/completions";
-    cfg.modelName = "ugreen-ai-model";
-    cfg.modelToken = "";
+    cfg.modelUrl = "";      // 端点/模型名不入库: 用 --modelUrl/--modelName 传入
+    cfg.modelName = "";
+    cfg.modelToken = "";    // 令牌不入库: 用 --modelToken 传入
     cfg.maxRounds = 40;
     cfg.maxToken = 200000;
 
@@ -794,6 +794,11 @@ int main(int argc, char *argv[])
     {
         jzError() << parser.errorString().c_str();
         parser.printHelp();
+        return 2;
+    }
+    if (cfg.modelUrl.empty() || cfg.modelName.empty())
+    {
+        jzError() << "必须提供 --modelUrl 与 --modelName（端点/模型名不入库，见用法注释）";
         return 2;
     }
     if (cfg.modelToken.empty())

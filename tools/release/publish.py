@@ -18,12 +18,19 @@ OpenSSH(scp/ssh) 推送到远端主机, 再在远端解压(可选执行部署命
     不支持在命令行直接写密码(OpenSSH 限制); 如需密码请自行用 sshpass,
     或在 ~/.ssh/config 里针对该主机配置好认证。
 
-本脚本无命令行参数: 所有配置写死在 parse_args() 里。直接运行即可:
+本脚本无命令行参数: 行为配置写在 parse_args() 里。直接运行即可:
   python tools/release/publish.py
 
+推送目标**不入库**(2026-11-09): 主机/账号/私钥路径/远端目录一律由环境变量提供,
+仓库里只留空值占位 —— 别把服务器 IP、root 账号、私钥路径写进源码再提交。
+  JZ_PUBLISH_HOST        远端主机(IP 或域名), 推送时必填
+  JZ_PUBLISH_USER        远端账号, 缺省 root
+  JZ_PUBLISH_PORT        SSH 端口, 缺省 22
+  JZ_PUBLISH_IDENTITY    私钥路径(pscp 用 .ppk, OpenSSH 用私钥文件), pscp 上传时必填
+  JZ_PUBLISH_REMOTE_DIR  远端目标目录, 缺省 /opt/jz/code_agent
+
 当前固定行为: 打包 Release, 打包前先 cmake --build(code_agent+code_runtime)
-并 `tsc -b js_wrapper`, 只产出本地 zip(不推送远端)。要推送远端, 改 parse_args()
-里的 NO_PUSH=False 并视情况填 IDENTITY/DEPLOY_CMD 即可。
+并 `tsc -b js_wrapper`。要只出本地 zip(不推送), 改 parse_args() 里的 no_push=True。
 """
 import argparse
 import fnmatch
@@ -37,10 +44,14 @@ import zipfile
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-DEFAULT_HOST = "120.77.183.99"
-DEFAULT_USER = "root"
-DEFAULT_PORT = 22
-DEFAULT_REMOTE_DIR = "/opt/jz/code_agent"
+# ⚠ 目标信息不入库: 这里只给"与具体服务器无关"的缺省值, 具体主机/账号/私钥走环境变量
+# (见模块 docstring)。仓库是公开的, 写死公网 IP + root + 私钥路径等于把资产清单送出去。
+_DEFAULT_USER = os.environ.get("JZ_PUBLISH_USER", "root")
+_DEFAULT_REMOTE_DIR = os.environ.get("JZ_PUBLISH_REMOTE_DIR", "/opt/jz/code_agent")
+try:
+    _DEFAULT_PORT = int(os.environ.get("JZ_PUBLISH_PORT") or 22)
+except ValueError:
+    _DEFAULT_PORT = 22
 DEFAULT_CONFIG = "Debug"
 
 # 默认排除: Debug/Release 下的 .ilk 是增量链接文件, .pdb 是调试符号,
@@ -246,19 +257,19 @@ def parse_args():
     """所有参数写死, 不接受命令行参数。改这里即可调整行为。
 
     当前固定: 打包 Release, 打包前先 cmake --build(code_agent+code_runtime) 并
-    `tsc -b js_wrapper`, 然后用 pscp(PuTTY) + .ppk 私钥上传 zip 到
-    /root/work/wwwroot/download, 不解压(NO_PUSH=False, NO_EXTRACT=True,
-    USE_PSCP=True)。改 IDENTITY/REMOTE_DIR/PACKAGE_NAME 调整位置。
+    `tsc -b js_wrapper`, 然后用 pscp(PuTTY) + .ppk 私钥上传 zip, 不解压
+    (no_push=False, no_extract=True, use_pscp=True)。上传目标由环境变量给
+    (JZ_PUBLISH_HOST/USER/PORT/IDENTITY/REMOTE_DIR), 见模块 docstring。
     """
     ns = argparse.Namespace()
     ns.config = "Release"
     ns.src = None                       # None -> <repo>/build/binary/bin/<config>
-    ns.host = DEFAULT_HOST              # 120.77.183.99
-    ns.port = DEFAULT_PORT              # 22
-    ns.user = DEFAULT_USER              # root
+    ns.host = os.environ.get("JZ_PUBLISH_HOST", "")    # 必填(不入库): 环境变量提供
+    ns.port = _DEFAULT_PORT             # 缺省 22
+    ns.user = _DEFAULT_USER             # 缺省 root
     ns.use_pscp = True                  # True -> 用 PuTTY pscp + .ppk 上传
-    ns.identity = r"F:\xiong\阿里云\xiongqiumin.ppk"   # PuTTY 格式私钥
-    ns.remote_dir = "/root/work/wwwroot/download"      # 远端目标目录(需已存在)
+    ns.identity = os.environ.get("JZ_PUBLISH_IDENTITY", "")   # 私钥路径(不入库)
+    ns.remote_dir = _DEFAULT_REMOTE_DIR                  # 远端目标目录(需已存在)
     ns.remote_name = None               # 压缩包顶层目录名(默认=config)
     ns.flat = False
     ns.package_name = None              # 默认 code_agent_<config>.zip
@@ -316,6 +327,21 @@ def main():
         print("  extract    : {}".format("no" if args.no_extract else "yes"))
         print("  deploy-cmd : {}".format(args.deploy_cmd))
         return 0
+
+    # 推送目标没配就**在编译之前**报错(别白编一遍再发现没 host)。
+    # 目标信息不入库: 缺了什么就让用户去设环境变量, 不在代码里留默认值。
+    if not args.no_push:
+        if not args.host:
+            print("[publish] ERROR: 未配置远端主机。推送目标不入库, 请先设环境变量:\n"
+                  "  JZ_PUBLISH_HOST=<ip 或域名>  JZ_PUBLISH_USER=<账号>  "
+                  "JZ_PUBLISH_IDENTITY=<私钥路径>\n"
+                  "  只打本地包不推送: 把 parse_args() 里的 ns.no_push 改成 True。",
+                  file=sys.stderr)
+            return 2
+        if args.use_pscp and not args.identity:
+            print("[publish] ERROR: pscp 上传必须给私钥(.ppk), 请设环境变量 "
+                  "JZ_PUBLISH_IDENTITY=<私钥路径>。", file=sys.stderr)
+            return 2
 
     # 构建步骤(先于打包): 可选先编 JS dist, 再 cmake --build 出 code_agent。
     if args.build_js:

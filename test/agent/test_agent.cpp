@@ -44,10 +44,10 @@ public:
 static JZAgentConfig loadConfig(int argc, char **argv)
 {
     JZAgentConfig cfg;
-    //cfg.modelUrl = "http://127.0.0.1:5003/compatible-mode/v1/chat/completions";
-    cfg.modelUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-    cfg.modelName = "qwen3.7-max-2026-06-08";
-    cfg.modelToken = "sk-c7cbd6d56e5049c69a640f9596c978d3";
+    // 端点/模型名不入库(2026-11-09): 全部经 --modelUrl/--modelName 传入
+    cfg.modelUrl = "";
+    cfg.modelName = "";
+    cfg.modelToken = "";    // 令牌不入库: 用 --modelToken 传入或环境变量(见 loadConfig 注释)
     cfg.rootPath  = "";
     cfg.maxRounds = 100;
 
@@ -390,7 +390,13 @@ int main(int argc, char *argv[])
     JZApplication app;
     JZEventLoop loop;
 
-    AgentTester tester(&loop, loadConfig(argc, argv));
+    JZAgentConfig cfg = loadConfig(argc, argv);
+    if (cfg.modelUrl.empty() || cfg.modelName.empty())
+    {
+        jzError() << "未配置 --modelUrl/--modelName（端点/模型名不入库）";
+        return 2;
+    }
+    AgentTester tester(&loop, cfg);
     tester.start();
 
     return loop.exec();

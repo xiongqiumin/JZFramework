@@ -106,7 +106,7 @@ python auto_code\game_play\game\hello\watch.py --ask-file ask.txt --with-screen 
 
 ⚠ **两处环境前提**（换机器先看）：① `virtual_device.exe` 必须与源码同版本
 （`cmake --build build --config Debug --target virtual_device`；旧 exe 会让容器里的 `cu.screenshot()` 打到**真桌面**）；
-② llm 要指**活着的**端点（本机 `http://192.168.111.1:8080/v1/chat/completions`，模型 `my_model`）。
+② llm 要指**活着的**端点（OpenAI 兼容 chat/completions；端点/模型名不入库，填在 run.json 的 llm 段）。
 
 ## 产物 / 归档 / 怎么看
 

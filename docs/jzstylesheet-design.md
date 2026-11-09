@@ -277,7 +277,7 @@ inline setStyle 只失效自身。
 覆盖度: 按"视觉呈现"口径约 **85%** 直接覆盖; 其余为布局/动画/行为, 属于框架其它机制的职责。
 该文件删去 flex 系与动画声明后, 其余规则基本可被 M1+M2 子集原样解析。
 
-### 9.2 http_server/style.css (ugreen-server, 工具页风格: 表单+日志+对话框, 1472 行)
+### 9.2 http_server/style.css (server, 工具页风格: 表单+日志+对话框, 1472 行)
 
 样本特征: 无变量、无动画、大量 inline style、传统布局 (float/calc) + 表单控件。
 元素映射: `.container`→JZWindow, `.config-card/.status/.note`→JZWidget+class, `select`→JZComboBox,

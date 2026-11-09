@@ -1,6 +1,6 @@
 """fake_repair_model.py —— **只为验证管道**的假"修复模型"（OpenAI 兼容 chat/completions）
 
-为什么需要它：真模型端点(172.17.160.147:8080)不是总在（GPU 机可能关着），
+为什么需要它：真模型端点(内网 GPU 机)不是总在，
 而"界面不匹配 → 升级模型 → 拿回当前路径 → 落 override"这条链**不该依赖它的可用性**。
 真模型要验的时候，用 run_repair_live.py --url <真端点>（或直接改 runs/current/repair.json）。
 

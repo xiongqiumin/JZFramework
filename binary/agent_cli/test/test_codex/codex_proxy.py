@@ -26,7 +26,7 @@ Codex 走的是 **Responses API**(`POST /v1/responses`), 而且**每一轮**都�
 用法
 ------------------------------------------------------------
 独立跑(调试用, 会把每轮的角色与 usage 打到日志):
-    python codex_proxy.py --upstream http://192.168.111.1:8080/v1/chat/completions
+    python codex_proxy.py --upstream http://<模型主机>:8080/v1/chat/completions
     # 打印出的 base_url(形如 http://127.0.0.1:PORT/v1)填进 Codex 的
     #   model_providers.<name>.base_url, 并且 model_providers.<name>.wire_api=responses
 
@@ -191,7 +191,7 @@ class CodexProxy:
           ② usage 对象里**还嵌着** input_tokens_details(嵌套花括号), 简单正则匹配不到。
         所以这里攒成"完整行"再 json.loads, 每行只认 data: 后面的 JSON。
 
-        ⚠ **usage 的位置**(实测 192.168.111.1:8080 的 /v1/responses, 2026-10-01):
+        ⚠ **usage 的位置**(实测内网 llama.cpp 端点的 /v1/responses, 2026-10-01):
           Responses API 的收尾事件是 `{"type":"response.completed","response":{...,"usage":{...}}}`,
           usage **嵌在 `response` 里, 顶层没有** ⇒ 原来只看 `obj["usage"]` ⇒ 统计恒为 0
           (而自检用的假上游当时发的是扁平结构, 所以自检 8/8 也没抓到这个 —— 已把自检改成真结构)。

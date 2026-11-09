@@ -56,9 +56,10 @@ sys.path.insert(0, HERE)
 from mcp import McpClient   # noqa: E402  （同目录的极简 MCP 客户端）
 
 # 感知后端（多模态 chat/completions）由**驱动**给探针 —— 探针与被测实现都不内置地址。
-# 默认是本机 llama.cpp 那个端点；换服务用 --vlm-url / 环境变量 JZ_VLM_URL、JZ_VLM_MODEL。
-VLM_URL = os.environ.get("JZ_VLM_URL", "http://172.17.160.147:8080/v1/chat/completions")
-VLM_MODEL = os.environ.get("JZ_VLM_MODEL", "my_model")
+# ⚠ 端点/模型名不入库(2026-11-09)：默认留空，用 --vlm-url/--vlm-model 或
+# 环境变量 JZ_VLM_URL、JZ_VLM_MODEL 提供；没给就跑无感知后端的路径。
+VLM_URL = os.environ.get("JZ_VLM_URL", "")
+VLM_MODEL = os.environ.get("JZ_VLM_MODEL", "")
 
 
 def bin_dir(cfg):

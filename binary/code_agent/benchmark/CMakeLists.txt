@@ -41,3 +41,12 @@ add_custom_command(TARGET code_agent_benchmark POST_BUILD
             "${CMAKE_CURRENT_SOURCE_DIR}/data"
             "$<TARGET_FILE_DIR:code_agent_benchmark>/data/benchmark"
     COMMENT "Copy benchmark evaluation set (data/*.json) into bin/<CONFIG>/data/benchmark")
+
+# 大模型接入: 与 agent_cli 共用同一份模板, "缺失才铺"到 exe 同目录(build/test/bin/<配置>)。
+# 端点/模型名/令牌都不入库 —— 换机器就改 exe 目录那份(已存在的不覆盖)。
+add_custom_command(TARGET code_agent_benchmark POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -Dsrc=${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/test/test_llm.json
+        -Ddst=$<TARGET_FILE_DIR:code_agent_benchmark>/test_llm.json
+        -P ${JZFRAMEWORK_ROOT_DIR}/cmake/copy_if_absent.cmake
+    COMMENT "Place test_llm.json next to code_agent_benchmark (sample if absent)")

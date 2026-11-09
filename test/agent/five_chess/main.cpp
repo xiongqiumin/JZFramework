@@ -27,8 +27,9 @@
 
 using namespace std;
 
-static const char *kDefaultModelUrl  = "http://172.17.160.147:8000/v1/chat/completions";
-static const char *kDefaultModelName = "/workspace/RedHatAI/Qwen3.6-35B-A3B-NVFP4";
+// 端点/模型名不入库(2026-11-09): 用 --modelUrl / --modelA / --modelB 传入
+static const char *kDefaultModelUrl  = "";
+static const char *kDefaultModelName = "";
 
 // ----------------------------------------------------------------------
 struct Options
@@ -481,6 +482,11 @@ int main(int argc, char *argv[])
     if (opt.mode != "single" && opt.mode != "dual")
     {
         jzError() << "未知的 --mode:" << opt.mode << "(可选 single / dual)";
+        return 1;
+    }
+    if (opt.modelUrl.empty() || opt.modelA.empty() || (opt.mode == "dual" && opt.modelB.empty()))
+    {
+        jzError() << "未配置 --modelUrl/--modelA(/--modelB)（端点/模型名不入库）";
         return 1;
     }
 

@@ -38,9 +38,10 @@ const runDir = jzApp.applicationDirPath();          // build/checks
 const taskDir = runDir + '/../..';                  // auto_code/computer_use
 const outDir = taskDir + '/runs/current';
 
-// 默认端点 = 与感知同一台 llama.cpp（可用 repair.json 覆盖/清空）
-const DEFAULT_URL = 'http://172.17.160.147:8080/v1/chat/completions';
-const DEFAULT_MODEL = 'my_model';
+// 端点/模型名不入库(2026-11-09)：默认留空，跑 L6 之前在
+// <outDir>/repair.json 里写 {"url": "http://<模型主机>:8080/v1/chat/completions", "model": "<模型名>"}
+const DEFAULT_URL = '';
+const DEFAULT_MODEL = '';
 
 const gates: Array<{ name: string; ok: boolean; detail: string }> = [];
 function gate(name: string, ok: boolean, detail?: string): void {
@@ -161,15 +162,21 @@ async function main(): Promise<void> {
     // ———— ⑥ 升级大模型：证据包 ⇒ 当前路径 ⇒ override ————
     const cfg = readJson(outDir + '/repair.json') || {};
     const url = cfg.url !== undefined ? cfg.url : DEFAULT_URL;
-    const res = await escalate(app, err, {
-        url, model: cfg.model || DEFAULT_MODEL,
-        path: '/main/btnOutput_v1', expect: 'ON', attempt: 3, maxAttempts: 3,
-        step: '打开电源', history: { retries: 2 },
-    });
-    gate('L6 升级模型：给出**当前布局树里存在**的新路径并写进 override',
-        res.applied && !!res.override && res.override.to === '/main/btnOutput',
-        'kind=' + (res.answer.kind || '?') + ' action=' + (res.answer.action || '?')
-        + ' newPath=' + (res.answer.newPath || '') + ' reason=' + (res.answer.reason || ''));
+    const model = cfg.model || DEFAULT_MODEL;
+    if (!url || !model) {
+        gate('L6 升级模型：给出**当前布局树里存在**的新路径并写进 override', false,
+            '未配置端点: 在 ' + outDir + '/repair.json 写 {"url":"http://<模型主机>:8080/v1/chat/completions","model":"<模型名>"}');
+    } else {
+        const res = await escalate(app, err, {
+            url, model,
+            path: '/main/btnOutput_v1', expect: 'ON', attempt: 3, maxAttempts: 3,
+            step: '打开电源', history: { retries: 2 },
+        });
+        gate('L6 升级模型：给出**当前布局树里存在**的新路径并写进 override',
+            res.applied && !!res.override && res.override.to === '/main/btnOutput',
+            'kind=' + (res.answer.kind || '?') + ' action=' + (res.answer.action || '?')
+            + ' newPath=' + (res.answer.newPath || '') + ' reason=' + (res.answer.reason || ''));
+    }
 
     // ———— ⑦ 修复后重试：能定位 ⇒ 点中 ⇒ 标签真的变了 ————
     const located = await app.has('/main/btnOutput_v1');

@@ -8,7 +8,7 @@ bool JZTxClient::syncSend(const JZByteArray& buffer)
 {
     // 4. 如果有数据则发送，否则跳过
     JZNetworkReply* reply = m_mgr->post(
-        JZNetworkRequest("http://192.168.111.1:5000/"),
+        JZNetworkRequest(url.c_str()),
         buffer
     );
     JZEventLoop loop;

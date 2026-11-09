@@ -12,7 +12,7 @@
     "round": 24,
     "date": "2026-09-29",
     "cfg": "Debug",
-    "perception": "VLM（llama.cpp 多模态端点，形如 http://172.17.160.147:8080/v1/chat/completions；由 run.py 经 probe.json 传给探针）",
+    "perception": "VLM（llama.cpp 多模态端点，形如 http://<模型主机>:8080/v1/chat/completions；由 run.py 经 probe.json 传给探针）",
     "regression": [
       { "case": "l0_plain", "seed": 0, "level": 0, "round": "round_019", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.957, "iou75": 1.0 } },
       { "case": "l1_random", "seed": 1, "level": 1, "round": "round_020", "pass": true, "metrics": { "detF1": 1.0, "textAcc": 1.0, "typeAcc": 1.0, "hierF1": 1.0, "iouMed": 0.992, "iou75": 1.0 } },

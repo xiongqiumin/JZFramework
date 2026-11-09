@@ -8,7 +8,7 @@
 
 用法:
   python auto_code/computer_use/checks/run_repair_live.py               # 假模型（不依赖 GPU 机）
-  python auto_code/computer_use/checks/run_repair_live.py --url http://172.17.160.147:8080/v1/chat/completions --model my_model
+  python auto_code/computer_use/checks/run_repair_live.py --url http://<模型主机>:8080/v1/chat/completions --model <模型名>
   python auto_code/computer_use/checks/run_repair_live.py --no-model    # 只验 L1~L5
 """
 import argparse

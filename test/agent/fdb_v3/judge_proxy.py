@@ -4,7 +4,7 @@
 把上游 gpt-4o judge 接到任意 OpenAI 兼容端点的小代理（只改写 model 名）。
 
 为什么需要：上游 evaluate_*.py 里 judge 的模型名写死 `model="gpt-4o"`，
-而本地 vllm 只认它自己 serve 的名字（`ugreen-ai-model`），直接指过去会 404。
+而本地 vllm 只认它自己 serve 的名字，直接指过去会 404。
 本代理在中间把 body 的 model 字段改写掉，其余原样转发，于是：
 
     set OPENAI_BASE_URL=http://127.0.0.1:18100/v1
@@ -15,8 +15,8 @@
 
 用法：
     python judge_proxy.py --listen 18100 ^
-        --target http://192.168.111.123:8000/v1/chat/completions ^
-        --model ugreen-ai-model --api-key <key>
+        --target http://<模型主机>:8000/v1/chat/completions ^
+        --model <模型名> --api-key <key>
 """
 
 import argparse
@@ -81,7 +81,7 @@ def main():
     global ARGS
     ap = argparse.ArgumentParser(description="OpenAI 兼容端点的 model 名改写代理")
     ap.add_argument("--listen", type=int, default=18100)
-    ap.add_argument("--target", required=True, help="例如 http://192.168.111.123:8000/v1/chat/completions")
+    ap.add_argument("--target", required=True, help="例如 http://<模型主机>:8000/v1/chat/completions")
     ap.add_argument("--model", required=True, help="目标端点认的模型名")
     ap.add_argument("--api-key", default="")
     ap.add_argument("--timeout", type=float, default=180.0)

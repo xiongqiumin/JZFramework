@@ -29,7 +29,7 @@
 用法:
     python test_loop_primes.py --agent-cli <构建出来的 agent_cli.exe>
     (模型配置读 **agent_cli.exe 同目录的 test_llm.json**: 本脚本不写死任何端点;
-     临时换端点可用 --model-url/--model-name/--model-token 或环境变量 JZ_BENCH_MODEL_*)
+     临时换端点用 --model-url/--model-name/--model-token 覆盖)
 """
 from __future__ import annotations
 
@@ -49,12 +49,14 @@ PRIMES_VERIFY = os.path.join(HERE, "primes_verify.py")            # 本用例的
 AGENT_LOOP = os.path.normpath(os.path.join(HERE, "..", "tools", "agent_loop.py"))   # 部署用的守护脚本
 LLM_JSON = "test_llm.json"          # 大模型接入配置: 放 agent_cli.exe 同目录(模板见同目录 test_llm.json)
 
-PROMPT = """在工作区根目录写/改进 solve.py: 一个单线程的 Python 程序, 运行 python solve.py <N> 打印一行两个整数 —— N 以内(含 N)的质数个数 与 质数之和, 空格分隔(例: python solve.py 10 应该输出 4 17)。
+PROMPT = """在工作区根目录写 solve.py: 一个单线程的 Python 程序, 运行 python solve.py <N> 打印一行两个整数 —— N 以内(含 N)的质数个数 与 质数之和, 空格分隔(例: python solve.py 10 应该输出 4 17)。
 要求:
 1. 只许单线程: 不要 import threading / multiprocessing / concurrent / _thread;
-2. 要快: N 在 100000 到 300000 之间时这条命令的用时必须 <= 1.0 秒; 每一轮都要比上一轮更快(上一轮用时见工作区里的 verify_result.json);
-3. 每一轮只做一个明确的小改进, 改完自己跑一遍确认(例: python solve.py 100000)输出的结果正确。
+2. 要快: N 在 100000 到 300000 之间时这条命令的用时必须 <= 1.0 秒(用筛法, 别对每个数试除);
+3. 结果必须对: 边界是"含 N 本身"(N 是质数也要算进去), 1 不是质数;
+4. 改完自己跑一遍确认(例: python solve.py 100000)输出的结果正确。
 工作区是空的(只有 solve.py 和上一轮留下的 verify_result.json), 不用探索目录; 自测一条命令就够。
+每一轮目标相同: 结果正确 + 1 秒内, 不要求比上一轮更快。
 """
 
 # "验证程序不碰版本控制"检查用的被测程序(埃氏筛, 必然通过)
@@ -296,16 +298,16 @@ def main(argv=None) -> int:
     agent_cli = find_agent_cli(args.agent_cli)
     python_exe = fwd(args.python)
 
-    # ---- 模型配置: 命令行 > 环境变量 > <agent_cli.exe 同目录>/test_llm.json ----
+    # ---- 模型配置: 命令行 > <agent_cli.exe 同目录>/test_llm.json ----
     llm = read_llm_config(os.path.dirname(agent_cli))
-    model_url = args.model_url or os.environ.get("JZ_BENCH_MODEL_URL", "") or llm["url"]
-    model_name = args.model_name or os.environ.get("JZ_BENCH_MODEL_NAME", "") or llm["name"]
-    model_token = args.model_token or os.environ.get("JZ_BENCH_MODEL_TOKEN", "") or llm["token"]
+    model_url = args.model_url or llm["url"]
+    model_name = args.model_name or llm["name"]
+    model_token = args.model_token or llm["token"]
     if not model_url or not model_name:
         raise SystemExit(
             "没配置模型。请在 %s 里写 "
             "{\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\",\"name\":\"模型名\"}} "
-            "(也可用 --model-url/--model-name 或环境变量 JZ_BENCH_MODEL_*)" % fwd(llm["path"]))
+            "(也可用 --model-url/--model-name 临时覆盖)" % fwd(llm["path"]))
 
     tmp = os.path.abspath(args.tmp) if args.tmp else tempfile.mkdtemp(prefix="jz_loop_primes_")
     ws = os.path.join(tmp, "ws")

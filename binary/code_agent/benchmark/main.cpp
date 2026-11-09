@@ -15,8 +15,10 @@
 // 第一个移植过去的用例 hello_world：要求模型"写一个函数，输出 hello world"，编译运行后检查 stdout 是否包含
 //   "hello world"（大小写不敏感）。外部验证用例用 verify 命令（详见 BenchmarkCase）。
 //
-// 配置（命令行 / 环境变量）：
-//   --modelUrl / --modelName / --modelToken   大模型接入（缺省沿用仓库测试默认值）
+// 配置：
+//   大模型接入：读 **exe 同目录的 test_llm.json**（与 agent_cli / agent_cli_test 同一份格式：
+//     { "llm": { "url": "...", "name": "...", "token": "..." } }），换机器/换端点只改这个 json；
+//     --modelUrl / --modelName / --modelToken 仅作临时覆盖（优先级高于 json）。
 //   --tsc   宿主侧 tsc 全路径（也可走环境变量 JZ_TS_LSP；缺失则无法编译，退出 2）
 //   --tsgo  原生 tsgo(tsc) LSP 全路径（缺省同 --tsc，用于 TS 工具；可空）
 //   --http-port  输入 HTTP 服务端口（缺省 18080；并行跑两轮时第二轮必须换一个）
@@ -1618,23 +1620,79 @@ static bool loadCases(const std::string &dataDir, std::vector<BenchmarkCase> &ou
     return false;
 }
 
+// ---- 大模型接入: 读 **exe 同目录的 test_llm.json**(与 agent_cli / agent_cli_test 同格式) ----
+// 端点/模型名/令牌**不入库**, 也不再用 JZ_BENCH_MODEL_* 环境变量: 换机器/换端点只改这一个 json。
+// 文件形如 { "llm": { "url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": "" } }
+// (顶层平铺写法也认)。取值规则与 agent_cli 的 config.json 一致: 先看 llm.<key>, 再回落顶层 <key>。
+static std::string llmConfigPath()
+{
+    std::string p = jzFindBundleAsset("test_llm.json");   // ① exe 同目录 ② 沿上级找回 <build>/binary/bin/<配置>
+    if (p.empty())
+        p = jzNormBundlePath(JZPlatform::applicationDirPath()) + "/test_llm.json";
+    return p;
+}
+
+// 读配置文件; 文件不存在/解析失败 -> found=false(交给主流程明确报错, 不猜端点)。
+static void loadLlmConfigFile(JZAgentConfig &cfg, const std::string &path, bool &found)
+{
+    found = false;
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in)
+        return;
+
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string text = ss.str();
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);                                // 去掉 UTF-8 BOM(记事本另存常见)
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(text, root) || !root.isObject())
+        return;
+    found = true;
+
+    const Json::Value &g = (root["llm"].isObject() ? root["llm"] : root);
+    auto str = [&g, &root](const char *key) -> std::string {
+        if (g[key].isString())    return g[key].asString();
+        if (root[key].isString()) return root[key].asString();
+        return std::string();
+    };
+    auto num = [&g, &root](const char *key, int def) -> int {
+        if (g[key].isInt())    return g[key].asInt();
+        if (root[key].isInt()) return root[key].asInt();
+        return def;
+    };
+
+    const std::string url = str("url");
+    const std::string name = str("name");
+    const std::string token = str("token");
+    if (!url.empty())   cfg.modelUrl = url;
+    if (!name.empty())  cfg.modelName = name;
+    if (!token.empty()) cfg.modelToken = token;
+    cfg.netTimeout = num("netTimeoutMs", cfg.netTimeout);
+    cfg.maxRounds = num("maxRounds", cfg.maxRounds);
+}
+
 // ⚠ 必须"填调用方的对象"(传引用进来), 不能自己建局部 cfg 再按值返回:
 //   parser.addOption 存的是**指针**, 局部对象在函数返回后已析构, 调用方 parse() 时
 //   会写进已经销毁的内存 —— 传 --modelUrl/--modelName 就 0xC0000005(实测)。
 static void loadLlmConfig(JZCommandLineParser &parser, JZAgentConfig &cfg)
 {
-    // 缺省沿用仓库 test/agent/test_agent.cpp 的接入；可用命令行 / 环境变量覆盖
-    cfg.modelUrl = "http://172.17.160.147:8080/v1/chat/completions";
-    cfg.modelName = "my_model";
+    // 缺省值: 端点/模型名留空, 真值来自 json —— 没配置就明确报错, 不静默连一个猜的地址。
+    cfg.modelUrl = "";
+    cfg.modelName = "";
     cfg.maxRounds = 100;
 
-    const char *eUrl = std::getenv("JZ_BENCH_MODEL_URL");
-    const char *eName = std::getenv("JZ_BENCH_MODEL_NAME");
-    const char *eToken = std::getenv("JZ_BENCH_MODEL_TOKEN");
-    if (eUrl) cfg.modelUrl = eUrl;
-    if (eName) cfg.modelName = eName;
-    if (eToken) cfg.modelToken = eToken;
+    const std::string path = llmConfigPath();
+    bool haveJson = false;
+    loadLlmConfigFile(cfg, path, haveJson);
+    if (haveJson && !cfg.modelName.empty())
+        jzInfo().nospace() << "[bench] 模型配置: " << path.c_str()
+                           << " (" << cfg.modelName.c_str() << ")";
 
+    // 命令行仅作**临时覆盖**(parse 在 json 之后执行, 所以它优先级更高)
     parser.addOption("--modelUrl", &cfg.modelUrl);
     parser.addOption("--modelName", &cfg.modelName);
     parser.addOption("--modelToken", &cfg.modelToken);
@@ -1689,6 +1747,13 @@ int main(int argc, char *argv[])
     // 打开 cmd 的虚拟终端模式（Win10+ 支持），之后 printf 的 ANSI 转义才会被当颜色解析；
     // 输出重定向到文件/管道时自动降级为纯文本。
     g_colorEnabled = !noColor && enableConsoleColor();
+    if (llm.modelUrl.empty() || llm.modelName.empty())
+    {
+        jzError().nospace() << "未配置模型: 请在 " << llmConfigPath().c_str()
+                            << " 里写 {\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\","
+                               "\"name\":\"模型名\"}}(也可用 --modelUrl/--modelName 临时覆盖)";
+        return 2;
+    }
     if (tscPath.empty() || !JZFileInfo::exists(tscPath))
     {
         jzError().nospace() << "未配置可用的宿主 tsc（--tsc 或环境变量 JZ_TS_LSP），无法编译工程。";

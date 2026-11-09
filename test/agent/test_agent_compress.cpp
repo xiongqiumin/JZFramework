@@ -50,8 +50,9 @@
 using namespace std;
 
 // ---- 当前设置(要改就改这里) ----
-static const char *kModelUrl = "http://172.17.160.147:8080/v1/chat/completions";
-static const char *kModelName = "qwen3.8-27b";
+// ⚠ 端点/模型名不入库(2026-11-09): 跑之前在这里填上本机端点, 或改回成带值再编译
+static const char *kModelUrl = "";
+static const char *kModelName = "";
 static const int kMaxToken = 150000;     // 上下文预算
 static const bool kThinkEnable = true;   // 与生产一致: 开着思考
 static const int kMaxErrorStreak = 5;    // 连续出错这么多轮才收手(免得空转刷屏)
@@ -187,6 +188,12 @@ public:
             return 1;
         }
         m_codeLines = countLines(m_code);
+
+        if (!*kModelUrl || !*kModelName)
+        {
+            jzError().nospace() << "未配置模型端点: 编辑本文件顶部的 kModelUrl/kModelName(端点/模型名不入库)";
+            return 1;
+        }
 
         JZAgentConfig cfg;
         cfg.modelUrl = kModelUrl;

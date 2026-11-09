@@ -1470,7 +1470,7 @@ static std::string detectProgram(const std::string &nameNoExt)
 // 报错还看不出是配置问题"。文件长这样(也接受平铺写法, 即 key 直接放顶层):
 //     { "llm": { "url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": "" } }
 // 取值规则与 agent_cli 的 config.json 一致: 先看 llm.<key>, 没有再回落顶层 <key>。
-// 优先级: 命令行 > 环境变量 > test_llm.json。
+// 优先级: 命令行 > test_llm.json。
 static std::string llmConfigPath()
 {
     JZDir dir(JZPlatform::applicationDirPath());     // 构造即把 '\' 归一成 '/'
@@ -1542,15 +1542,7 @@ static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg)
         jzInfo().nospace() << "[agent_cli_test] 模型配置: " << llmConfigPath()
                            << " (" << (cfg.modelName.empty() ? "?" : cfg.modelName.c_str()) << ")";
 
-    // ② 环境变量覆盖 (临时试另一台机器用, 不必改文件)
-    const char *eUrl = std::getenv("JZ_BENCH_MODEL_URL");
-    const char *eName = std::getenv("JZ_BENCH_MODEL_NAME");
-    const char *eToken = std::getenv("JZ_BENCH_MODEL_TOKEN");
-    if (eUrl) cfg.modelUrl = eUrl;
-    if (eName) cfg.modelName = eName;
-    if (eToken) cfg.modelToken = eToken;
-
-    // ③ 命令行最后落 (优先级最高)
+    // ② 命令行最后落 (临时试另一台机器用, 不必改文件; 优先级最高)
     parser.addOption("--modelUrl", &cfg.modelUrl);
     parser.addOption("--modelName", &cfg.modelName);
     parser.addOption("--modelToken", &cfg.modelToken);
@@ -1593,7 +1585,7 @@ int main(int argc, char *argv[])
         jzError().nospace()
             << "未配置模型。请在 " << llmConfigPath()
             << " 里写 {\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\",\"name\":\"模型名\"}}"
-               " (也可用 --modelUrl/--modelName 或环境变量 JZ_BENCH_MODEL_*)";
+               " (也可用 --modelUrl/--modelName 临时覆盖)";
         return 2;
     }
 

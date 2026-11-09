@@ -34,8 +34,8 @@ cmake --build build --config Debug --target fdb_v3_text
 # ① 真实数据目录（推荐）：100 个样本，每样本一份 metadata.json
 build\test\bin\Debug\fdb_v3_text.exe `
   --data-dir  C:\Users\7052\Desktop\tmp\fdb_v3_data_released `
-  --modelUrl  http://192.168.111.123:8000/v1/chat/completions `
-  --modelName ugreen-ai-model --modelToken <key> `
+  --modelUrl  http://<模型主机>:8000/v1/chat/completions `
+  --modelName <模型名> --modelToken <key> `
   --provider  cpp_text --limit 5        # 或 --ids travel_01 / --ids travel_01_62a885d5...
 
 # ② 仓库里的场景表（无音频时用）：结果写 <out>/<provider>/<scenario_id>/
@@ -87,13 +87,13 @@ python evaluate_pass_rate.py  --benchmark benchmark_data_v2.json `
    - `doc_number`: 期望 `P9-9-9-90011` ← 模型 `P-8-8-9-9-0-0-1-1`（用户就是一个字符一个字符念的）
    这类等价性只有走 gpt-4o judge（`--use-llm`）才判得对。语音链路里也一样，不是文本化造成的。
 2. **`--use-llm` 需要 `pip install openai` + 一个 OpenAI key**。想用内网 vllm 当 judge 的话：
-   上游 judge 里模型名写死 `gpt-4o`，而该 vllm 只认 `ugreen-ai-model`（`model gpt-4o` → 404），
+   上游 judge 里模型名写死 `gpt-4o`，而该 vllm 只认它自己 serve 的模型名（`model gpt-4o` → 404），
    需要在中间放一个把 `model` 字段改写的代理，再把 `OPENAI_BASE_URL` 指过去。
 3. **延迟类指标无意义**：`analyze_tool_latency.py` 读的是音频时序（`latency` / `perceived_total_latency`），
    文本模式没有 → 该报告为空，属预期。
 4. `state_rollback_test` 场景在语音链路里靠多轮打断/回滚触发，文本模式等价性弱，看工具调用即可。
 
-## 本次实测（2026-10-26，ugreen-ai-model @ vllm，c++ 版全量 100 条）
+## 本次实测（2026-10-26，内网 vllm 模型，c++ 版全量 100 条）
 
 **A. 真实数据目录（`--data-dir`，100 个样本，单轮）** ← 与官方口径一致
 - 100/100 `completed`，约 2 分钟（1~2s/样本）。
@@ -132,20 +132,20 @@ python make_table.py --results-dir C:\Users\7052\Desktop\tmp\fdb_v3_data_release
                      --min-count 50 --out out\table.md
 
 # 开 judge（Resp Qual / 语义 Arg Acc）：需 pip install openai + 一个能应答 gpt-4o 名字的端点
-python judge_proxy.py --listen 18100 --target http://192.168.111.123:8000/v1/chat/completions ^
-                      --model ugreen-ai-model --api-key <key>          # 另开一个窗口常驻
+python judge_proxy.py --listen 18100 --target http://<模型主机>:8000/v1/chat/completions ^
+                      --model <模型名> --api-key <key>          # 另开一个窗口常驻
 $env:OPENAI_BASE_URL='http://127.0.0.1:18100/v1'; $env:OPENAI_API_KEY='<key>'
 python make_table.py --providers cpp_text --use-llm --out out\table_cpp_text.md
 ```
 
-`judge_proxy.py` 只做一件事：上游 judge 把模型名写死 `gpt-4o`，而本地 vllm 只认 `ugreen-ai-model`，
+`judge_proxy.py` 只做一件事：上游 judge 把模型名写死 `gpt-4o`，而本地 vllm 只认它自己 serve 的模型名，
 代理把 body 的 `model` 改写后转发（纯标准库，非流式）。
 
 结果（cpp_text = 本目录 C++/JZAgent 文本链路，100 样本）：
 
 | 模型 | Tool Sel | Arg Acc | Resp Qual | Pass@1 | Take-turn | Latency |
 |---|---|---|---|---|---|---|
-| ugreen-ai-model（文本链路，judge 开） | **0.952** | 0.843 | 0.950 | **0.810** | 1.000 | -（无音频） |
+| 内网 vllm 模型（文本链路，judge 开） | **0.952** | 0.843 | 0.950 | **0.810** | 1.000 | -（无音频） |
 | 同上（judge 关，exact-match） | 0.952 | 0.528 | - | 0.460 | 1.000 | - |
 
 ⚠ 三条对比红线：

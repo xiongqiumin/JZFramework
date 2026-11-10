@@ -167,4 +167,75 @@ bool zoneResolvePath(const ZoneConfig &cfg, const std::string &cwd, const std::s
 bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const std::string &absPath,
                      int need, std::string &error);
 
+// ---------------------------------------------------------------------------
+// 命令策略类型(2026-11-09 从 JZCodeTools.h 挪到这里)
+//
+// 为什么挪: 审核现在归 **JZShell** 管(它自己执行、自己审), 而 JZShell.h 不能反向
+// 依赖 JZCodeTools.h(那个头里有 agent 工具宿主, 会成环)。这些是纯数据/纯枚举,
+// 放在这份"策略头"里两边都能用。
+// 名字保持不变, 现有调用点(JZCodeTools.h / JZVirtualTerminal.h)照样编译。
+// ---------------------------------------------------------------------------
+
+// 工具/命令拒绝原因（结构化）: 让上层区分"真的失败了"与"被策略拦了"
+enum class DenyReason
+{
+    None = 0,           // 非拒绝类失败
+    PathOutside,        // 路径越界，不在工作区/授信区内
+    AccessDenied,       // 区域策略不允许该操作(如区外只读 → 写被拒)
+    NotFound,           // 文件/目录/程序不存在
+    WriteDenied,        // 不允许写
+    CommandDenied,      // 命令被策略禁止
+    ProgramDenied,      // 程序不在允许执行的区域
+    EnvChange,          // 会修改环境 / 下载安装
+    EditFailed          // 编辑类失败(old_str 不匹配、匹配多处等)
+};
+
+// 拒绝原因的中文说明（用于日志与提示）
+const char *denyReasonText(DenyReason reason);
+
+// 外部程序白名单的分档。定位是"副作用管控", 不是安全边界。
+enum class CmdCategory
+{
+    Tool = 0,           // 编译/构建/测试：默认允许
+    Shell,              // 基础 shell / coreutils：默认允许
+    PackageManager,     // pip/npm/conda 等：默认拒绝，设置里可开
+    Network,            // curl/wget 等：默认拒绝，设置里可开
+    SystemAdmin,        // reg/sc/net/setx 等：永不放行
+    Dangerous           // dd/mkfs/sudo/shutdown/chown 等：永不放行
+};
+
+struct ProgramSpec
+{
+    std::string name;
+    std::vector<std::string> exeNames;      // 可执行文件全名（同时兼容有无 .exe）
+    CmdCategory category = CmdCategory::Tool;
+    std::vector<std::string> denyFlags;     // 禁止出现的参数（前缀匹配）
+    std::vector<std::string> denyModules;   // 配合 -m：挡掉 python -m pip 这类
+};
+
+// 显式指定的可信程序：用全路径直接定位，优先于在授信目录里按名搜索。
+struct TrustedProgram
+{
+    std::string name;   // 程序名（小写，与 ProgramSpec 的 name 对应）
+    std::string path;   // 可执行文件全路径
+};
+
+// 审核结论。JZVirtualTerminal::Decision/Verdict 现在是它的别名。
+enum class PolicyDecision
+{
+    Allow,
+    Deny,
+    Ask,           // 自动策略判不了, 需要人拍板(接 MCP input_required)
+};
+
+struct PolicyVerdict
+{
+    PolicyDecision decision = PolicyDecision::Deny;
+    DenyReason reason = DenyReason::None;
+    std::string detail;                      // 给人 / 给模型看的原因
+
+    bool allowed() const { return decision == PolicyDecision::Allow; }
+    bool needAsk() const { return decision == PolicyDecision::Ask; }
+};
+
 #endif // !JZ_VIRTUAL_TERMINAL_CONFIG_H_

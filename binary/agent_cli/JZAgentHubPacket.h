@@ -3,6 +3,8 @@
 
 #include "JZNet/JZNetPacket.h"
 
+// ⚠ 位置: 同 JZAgentNodePacket.h —— 只服务 agent_cli 这一族 exe, 不属于 JZFramework
+//   的导出面, 编进静态库 agent_cli_packet; 因此这里的类和函数**不带** JZFRAMEWORK_API。
 // ---------------------------------------------------------------------------
 // agent_cli <-> agent_cli_server 的控制面协议(cli 是 client, server 是 server)
 //
@@ -30,7 +32,7 @@ enum
 };
 
 // cli -> server: 上线
-class JZFRAMEWORK_API JZHubPackHello : public JZNetPack
+class JZHubPackHello : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -46,7 +48,7 @@ public:
 };
 
 // server -> cli: hello 的回应
-class JZFRAMEWORK_API JZHubPackHelloAck : public JZNetPack
+class JZHubPackHelloAck : public JZNetPack
 {
 public:
     JZHubPackHelloAck();
@@ -62,7 +64,7 @@ public:
 };
 
 // cli -> server: 心跳 + 状态快照
-class JZFRAMEWORK_API JZHubPackHeartbeat : public JZNetPack
+class JZHubPackHeartbeat : public JZNetPack
 {
 public:
     JZHubPackHeartbeat();
@@ -78,7 +80,7 @@ public:
 };
 
 // server -> cli: 提交任务；body 就是 POST /task 的请求体
-class JZFRAMEWORK_API JZHubPackTaskSubmit : public JZNetPack
+class JZHubPackTaskSubmit : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -90,7 +92,7 @@ public:
 };
 
 // server -> cli: 取消任务(等价 POST /reset scope=task)
-class JZFRAMEWORK_API JZHubPackTaskCancel : public JZNetPack
+class JZHubPackTaskCancel : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -101,7 +103,7 @@ public:
 };
 
 // server -> cli: 重置(scope = task / history)
-class JZFRAMEWORK_API JZHubPackReset : public JZNetPack
+class JZHubPackReset : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -112,7 +114,7 @@ public:
 };
 
 // cli -> server: 任务事件(type/data 与 SSE 的取值完全一致)
-class JZFRAMEWORK_API JZHubPackTaskEvent : public JZNetPack
+class JZHubPackTaskEvent : public JZNetPack
 {
 public:
     virtual int packetType() const;
@@ -125,7 +127,7 @@ public:
 };
 
 // cli -> server: 任务回包(与 POST /task 的回包一致)
-class JZFRAMEWORK_API JZHubPackTaskEnd : public JZNetPack
+class JZHubPackTaskEnd : public JZNetPack
 {
 public:
     virtual int packetType() const;

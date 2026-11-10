@@ -41,8 +41,9 @@ JZDebug operator<<(JZDebug d, const JZOptional<T>& opt)
 }
 
 // 特化：void 类型 (显式特化非模板, 定义见 JZDebugDetail.cpp, 此处仅声明)
+// ⚠ 定义在 .cpp 里 ⇒ 动态库模式下必须带 JZFRAMEWORK_API, 否则使用方 LNK2019。
 template<>
-JZDebug operator<<(JZDebug d, const JZOptional<void>& opt);
+JZFRAMEWORK_API JZDebug operator<<(JZDebug d, const JZOptional<void>& opt);
 
 #    endif
 #  endif
@@ -67,7 +68,7 @@ JZDebug operator<<(JZDebug d, const JZResult<T>& r)
 
 // 特化：void 类型 (显式特化非模板, 定义见 JZDebugDetail.cpp, 此处仅声明)
 template<>
-JZDebug operator<<(JZDebug d, const JZResult<void>& r);
+JZFRAMEWORK_API JZDebug operator<<(JZDebug d, const JZResult<void>& r);
 
 #    endif
 #  endif

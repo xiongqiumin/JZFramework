@@ -18,4 +18,4 @@ add_executable(agent_node
     JZAgentNode.cpp
 )
 
-target_link_libraries(agent_node PRIVATE JZFramework agent_tool)
+target_link_libraries(agent_node PRIVATE agent_cli_packet agent_tool)

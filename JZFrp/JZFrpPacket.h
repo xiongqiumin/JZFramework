@@ -56,6 +56,6 @@ public:
 };
 
 // 初始化 FRP 数据包管理器
-void JZFrpPacketInit();
+JZFRAMEWORK_API void JZFrpPacketInit();
 
 #endif // JZFRPPACKET_H_

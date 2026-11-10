@@ -9,10 +9,15 @@
 
 两种跑法:
   1. 默认 **mock 模型**(不联网、秒级、可进快速回归):
-     起一个假的 OpenAI 兼容服务, 按顺序回 3 轮 ——
+     起一个假的 OpenAI 兼容服务, 按顺序回 6 轮 ——
        ① tool_call remote_ssh(host=nodeA, command="cat secret.txt")
        ② tool_call remote_ssh(host=nodeB, command="printf '%s' '<内容>' > answer.txt")
-       ③ 最终回复 "done"
+       ③ tool_call remote_ssh(host=nodeB, command="printf 'one\\n' > bg.txt")
+       ④ tool_call remote_ssh(host=nodeB, background=true, command="sleep 5; 追写第二行")
+       ⑤ tool_call remote_ssh(action=query, run_id="nodeB:r3", incremental=true)
+       ⑥ tool_call remote_ssh(action=cancel, run_id="nodeB:r3")
+       ⑦ 最终回复 "done"
+     ③~⑥ 覆盖 background/query/cancel; 验证脚本断言 bg.txt 只剩第一行(证明后台真跑了、且被停掉)。
      它验证的是**本工程的链路**(协议 / 工具 / 验证循环), 不是模型能力。
   2. --real-llm: 用 <agent_cli 同目录>/test_llm.json 的真模型跑同一个任务(慢, 挂 llm 标签)。
 
@@ -126,6 +131,11 @@ def write_json(path: str, value: dict) -> None:
 class MockLlm(BaseHTTPRequestHandler):
     # 由 main 注入: [(kind, payload), ...]; kind = "tool" / "text"
     rounds: list = []
+    # 每轮对"上一条 tool 结果"的期望(任一命中即可; 空 = 不检查)。
+    # 这是硬断言: 期望落空就记进 failures, 用例最后一定会失败 —— 不用去读节点日志
+    # (日志有缓冲, 进程被杀时尾行可能根本落不了盘)。
+    expects: list = []
+    failures: list = []
     hits = 0
     lock = threading.Lock()
     protocol_version = "HTTP/1.1"     # 与真实服务一致; 响应带 Content-Length 才能复用连接
@@ -164,11 +174,33 @@ class MockLlm(BaseHTTPRequestHandler):
         if os.environ.get("JZ_MOCK_DEBUG"):
             log("  mock llm: POST %s (%d 字节, hdrs=%s)" % (self.path, len(raw),
                                                           dict(self.headers.items())))
+            try:
+                req = json.loads(raw.decode("utf-8"))
+                tools = [m for m in (req.get("messages") or []) if m.get("role") == "tool"]
+                if tools:
+                    log("  mock llm: 上一条 tool 结果 = " + (tools[-1].get("content") or "")[:300])
+            except Exception:                             # noqa: BLE001
+                pass
+
+        # 取会话里最后一条 tool 结果(用于下面"上一轮是否真的做成了"的断言)
+        last_tool = ""
+        try:
+            req = json.loads(raw.decode("utf-8"))
+            tools = [m for m in (req.get("messages") or []) if m.get("role") == "tool"]
+            if tools:
+                last_tool = tools[-1].get("content") or ""
+        except Exception:                                 # noqa: BLE001
+            pass
 
         with MockLlm.lock:
             idx = min(MockLlm.hits, len(MockLlm.rounds) - 1)
             MockLlm.hits += 1
             kind, payload = MockLlm.rounds[idx]
+            if idx < len(MockLlm.expects) and MockLlm.expects[idx]:
+                if not any(e in last_tool for e in MockLlm.expects[idx]):
+                    MockLlm.failures.append(
+                        "round %d 期望 tool 结果含 %r, 实际 = %r"
+                        % (idx, MockLlm.expects[idx], last_tool[:300]))
 
         # ⚠ agent_cli 开的是 **流式**(JZAgent::setStreamEnabled(true)): 响应必须是 SSE,
         #   否则 body 在 sigReadyRead 里就被当 SSE 消费掉, 到 onLLMRequest 只剩空包。
@@ -214,11 +246,34 @@ class MockLlm(BaseHTTPRequestHandler):
 
 def start_mock_llm(secret: str) -> tuple[ThreadingHTTPServer, str]:
     # nodeB 上用 printf 精确写入(不带换行), 内容就是 nodeA 那份 secret
+    # 第 3~6 轮覆盖 remote_ssh 的 background / query / cancel(与本地 terminal_run 同一套语义):
+    #   先同步写一行(bg.txt), 再后台跑"睡 5s 追写第二行" —— cancel 必须在第二行之前到达,
+    #   所以验证脚本断言 bg.txt == "one\n"(证明后台真的跑了、并且被停掉了)。
+    #   ⚠ 第一行必须用**同步**命令写: 后台那条从"启动"到 cancel 只有几十毫秒,
+    #     bash 还没起来就被杀掉, 连 printf 都来不及执行(踩过)。
+    #   nodeB 的 run 计数: 第 2 轮 nodeB:r1, 第 3 轮 nodeB:r2, 后台那条是 nodeB:r3。
     MockLlm.rounds = [
         ("tool", {"host": "nodeA", "command": "cat secret.txt"}),
         ("tool", {"host": "nodeB", "command": "printf '%%s' '%s' > answer.txt" % secret}),
-        ("text", "done: nodeA 的 secret.txt 已写入 nodeB 的 answer.txt"),
+        ("tool", {"host": "nodeB", "command": "printf 'one\\n' > bg.txt"}),
+        ("tool", {"host": "nodeB", "background": True,
+                  "command": "sleep 3; printf 'two\\n' >> bg.txt"}),
+        ("tool", {"action": "query", "run_id": "nodeB:r3", "incremental": True}),
+        # 省略 run_id: 与本地 terminal_query 同口径(该节点最近一次), 回包要带回实际的 id
+        ("tool", {"action": "query", "host": "nodeB"}),
+        ("tool", {"action": "cancel", "run_id": "nodeB:r3"}),
+        ("text", "done: secret 已搬运; 后台任务已启动、查询过、并已停止"),
     ]
+    # 每轮发出去之前, 检查"上一轮的工具调用真的做成了"(见 MockLlm.expects)
+    MockLlm.expects = [
+        None, None, None,
+        ["run_id=nodeB:r2 exit=0"],                    # 后台那条: 上一轮同步跑通了
+        ["已启动 run_id=nodeB:r3"],                    # query: 上一轮后台确实启动了
+        ["运行中", "已结束"],                           # 省略 run_id 的 query: 上一轮查到了状态
+        ["nodeB:r3 运行中"],                            # cancel: 省略 id 那次要回出实际的 run_id
+        ["已请求停止"],                                 # 收尾: 上一轮取消生效
+    ]
+    MockLlm.failures = []
     MockLlm.hits = 0
     # 直接让系统分配端口(port=0)再读回来 —— 避免"先探测再绑定"那一下的竞态/端口排除
     server = ThreadingHTTPServer(("127.0.0.1", 0), MockLlm)
@@ -340,17 +395,27 @@ def main(argv=None) -> int:
     verify_py = os.path.join(tmp, "verify_copy.py")
     with open(verify_py, "w", encoding="utf-8") as f:
         f.write(
-            "import sys\n"
+            "import os, sys\n"
             "a = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').strip()\n"
             "b = open(sys.argv[2], 'rb').read().decode('utf-8', 'replace').strip()\n"
             "if a != b:\n"
             "    print('MISMATCH: nodeA=%r nodeB=%r' % (a, b))\n"
             "    sys.exit(1)\n"
-            "print('OK: ' + b)\n"
+            # 后台任务: 第一行必须在(cancel 之前跑过), 第二行必须不在(cancel 之后不该再跑)
+            "p = sys.argv[3]\n"
+            "if not os.path.isfile(p):\n"
+            "    print('MISSING: 后台命令没有产出 %s' % p)\n"
+            "    sys.exit(1)\n"
+            "c = open(p, 'rb').read().decode('utf-8', 'replace')\n"
+            "if c != 'one\\n':\n"
+            "    print('BAD-BG: 期望 cancel 后只剩 one, 实际 %r' % c)\n"
+            "    sys.exit(1)\n"
+            "print('OK: ' + b + ' / bg stopped')\n"
         )
-    verify_cmd = '"%s" "%s" "%s" "%s"' % (fwd(args.python), fwd(verify_py),
-                                          fwd(os.path.join(ws_a, "secret.txt")),
-                                          fwd(os.path.join(ws_b, "answer.txt")))
+    verify_cmd = '"%s" "%s" "%s" "%s" "%s"' % (fwd(args.python), fwd(verify_py),
+                                              fwd(os.path.join(ws_a, "secret.txt")),
+                                              fwd(os.path.join(ws_b, "answer.txt")),
+                                              fwd(os.path.join(ws_b, "bg.txt")))
 
     cfg_cli = os.path.join(tmp, "cli.json")
     write_json(cfg_cli, {
@@ -445,7 +510,23 @@ def main(argv=None) -> int:
             log("FAIL: 内容搬对了, 但任务判定不是 success(验证命令可能没跑通)")
             return 1
 
-        log("PASS: nodeA 的 secret 已原样出现在 nodeB(answer.txt)")
+        # ---- background / query / cancel: 两条硬证据 ----
+        #  ① 每轮的 tool 结果都对(mock 侧断言, 见 MockLlm.expects);
+        #  ② 等过后台命令自己的 sleep 再读文件: 第二行不能出现, 否则说明 cancel 没杀掉进程。
+        if MockLlm.failures:
+            log("FAIL: 后台/查询/取消的工具结果不对:")
+            for f in MockLlm.failures:
+                log("  - " + f)
+            return 1
+
+        time.sleep(4.0)     # 后台命令里是 sleep 3: 等它过去
+        bg_path = os.path.join(ws_b, "bg.txt")
+        bg = open(bg_path, "rb").read().decode("utf-8", "replace") if os.path.isfile(bg_path) else ""
+        if bg != "one\n":
+            log("FAIL: 后台命令没有被停掉(期望只剩 'one\\n', 实际 %r)" % bg)
+            return 1
+
+        log("PASS: nodeA 的 secret 已原样出现在 nodeB(answer.txt); 后台已启动/查询/取消并确认停止")
         return 0
     finally:
         kill_all(procs)

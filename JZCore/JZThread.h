@@ -40,6 +40,14 @@ public:
 };
 
 class JZApplication;
+
+// ⚠ 这三个自由函数的声明要**先于** class JZThread 里的 friend 声明出现:
+//   friend 声明不带导出标记, 若它先出现, 后面的 JZFRAMEWORK_API 声明就会撞成
+//   C2375 "重定义;不同的链接"。放在这里(以及文件末尾)保持两处一致的 dllexport/dllimport。
+JZFRAMEWORK_API void runOnThread(JZThread *thread, const std::function<void()> &func);
+JZFRAMEWORK_API void runOnObject(JZObject *recv, const std::function<void()> &func);
+JZFRAMEWORK_API void runOnObject(JZObjectPointer recv, const std::function<void()> &func);
+
 class JZFRAMEWORK_API JZThread : public JZObject
 {
 public:    
@@ -75,7 +83,10 @@ protected:
     friend JZApplication;
     friend JZEventLoop;
     friend JZBaseSignal;
-    friend void runOnThread(JZThread* thread, const std::function<void()>& func);
+    // ⚠ 用 `::` 限定: 让这条 friend 引用**上面那条带 JZFRAMEWORK_API 的声明**,
+    //   而不是在类作用域里再声明一遍(否则使用方会看到一份没有 dllimport 的声明,
+    //   刷 C4273 "dll 链接不一致"; 用 `::` 就不会重复声明)。
+    friend void ::runOnThread(JZThread* thread, const std::function<void()>& func);
 
     struct TimerInfo 
     {
@@ -143,10 +154,11 @@ protected:
 };
 
 // 在thread线程执行
-void runOnThread(JZThread *thread, const std::function<void()> &func);
+// ⚠ 自由函数: 动态库模式下必须带 JZFRAMEWORK_API, 否则使用方 LNK2019。
+JZFRAMEWORK_API void runOnThread(JZThread *thread, const std::function<void()> &func);
 
 // 在recv所在线程执行, recv 删除后不会执行
-void runOnObject(JZObject *recv, const std::function<void()> &func);
-void runOnObject(JZObjectPointer recv, const std::function<void()> &func);
+JZFRAMEWORK_API void runOnObject(JZObject *recv, const std::function<void()> &func);
+JZFRAMEWORK_API void runOnObject(JZObjectPointer recv, const std::function<void()> &func);
 
 #endif // !JZ_THREAD_H_

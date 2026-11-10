@@ -161,7 +161,8 @@ def main(argv=None) -> int:
 
     cfg_server = os.path.join(tmp, "server.json")
     write_json(cfg_server, {
-        "http": {"bind": "127.0.0.1", "port": port_http, "token": ""},
+        # 本机回归不备证书: server 默认强制 HTTPS+mTLS, 这里显式关掉(仅测试)
+        "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": hub_token},
         "frp": {"server": {"enabled": False}},
         "agents": [],

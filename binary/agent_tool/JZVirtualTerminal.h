@@ -1,6 +1,7 @@
 #ifndef JZ_VIRTUAL_TERMINAL_H_
 #define JZ_VIRTUAL_TERMINAL_H_
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <map>
@@ -8,12 +9,12 @@
 #include <set>
 #include <vector>
 
-#include "JZCodeTools.h"   // JZVirtualTerminalConfig / TrustedProgram / DenyReason
+#include "JZCodeTools.h"     // JZVirtualTerminalConfig / TrustedProgram / DenyReason
 #include "JZObject.h"
-#include "JZResult.h"       // run() 返回 JZResult<std::string>(成功=run_id)
-#include "JZShellParser.h"  // JZShell::Command(安全底线要用)
-#include "JZProcess.h"      // onRunFinished 用到 JZProcess::ExitStatus(嵌套类型, 前置声明不够)
-#include "JZTimer.h"
+#include "JZResult.h"        // run() 返回 JZResult<std::string>(成功=run_id)
+#include "JZShell/JZShell.h"         // 执行器: 自研解释器(cwd/env/变量跨命令保留)
+#include "JZShell/JZShellAudit.h"   // 审核视图(由解释器自己的解析器产出, 只出结构不执行)
+#include "JZThread.h"        // 每终端一个执行线程(见类头)
 
 // ---------------------------------------------------------------------------
 // JZVirtualTerminal —— 单台终端的执行面与审核面
@@ -24,44 +25,47 @@
 // 都是"这一个终端"自己的状态。
 //
 // 为什么收成一个类: 任何"会碰这台机器"的动作都从这里走 —— 先审核, 再执行。
-// 三块职责: 审核(checkRead/checkWrite/checkExec 唯一入口) / 内建动作
-// (列目录/读/写/编辑/建目录/删/拷/移/cd) / 裸命令口子 run()(交给 shell)。
+// 两块职责: 审核(checkRead/checkWrite/checkExec) / 裸命令口子 run()(交给 shell)。
+// ⚠ 审核**引擎已搬走**(2026-11-09): 白名单/区域/危险参数/安全底线都在 JZShellPolicy 里,
+//   由本类的 JZShell 持有; 这里的 check*() 只是**转发**(`m_shellImpl->policy().xxx`),
+//   自身不再有 m_config / m_programs / m_trustedPrograms。为什么要搬: 谁执行谁审 ——
+//   JZShell 拿到的是展开后的 argv, 而且任何用 JZShell 的宿主(CLI/测试/远端)都自动受管。
+// 内建文件动作(ls/read/write/edit/mkdir/rm/cp/mv)已删除: 模型侧读写改文件走
+// JZReadFileTool/JZWriteFileTool/JZModifyFileTool(带行号/分段/唯一匹配), ls/cp/mv/rm
+// 走 terminal_run 交给 shell; 这里只留下 cwd 的读写入口(changeDir/printDir)。
 //
 // ⛔ 参数一律结构化, 绝不拼命令行字符串。
-// ⚠ 命令由我们解释(不挂常驻 shell): 每条命令一个 JZProcess, cwd/env 由我们维护。
-//   好处: 状态可序列化、可审计, `a && b` 能逐条审权限。代价: 交互式程序做不了。
+// 执行(2026-11-09): 底层换成 **JZShell(自研解释器)**, 且每个终端自带一个 **JZThread**:
 //
-// 并发(2026-09-21): 一个终端可以**同时跑多条命令** —— 每次 run() = 一条在途运行, 各带
-//   自己的 JZProcess + 超时定时器 + 输出 + 回调, 按 run_id 区分(做法同进程运行器的
-//   多任务列表 —— 那个运行器已随 JZCommandTool/JZShellTool 一起删除)。以前是"终端只有一个 proc / 一条在途命令", 第二条只能等第一条结束
-//   (还会直接报错)。cwd 仍是终端级的: 每条命令按**启动那一刻**的 cwd 跑。
+//     JZVirtualTerminal  ── 1:1 ──  JZThread  ── 1:1 ──  JZShell
+//
+//   因此这是一个**真有状态的 shell**: cwd / export / 变量 / 函数都在同一个解释器实例里,
+//   跨命令保留(`cd /tmp` 之后下一条就在 /tmp)。线程是惰性起来的: 第一次 run() 才
+//   `new JZThread + start + moveToThread`, 终端回收时 quit+wait。
+//
+//   为什么必须"一个 shell 一个线程":
+//     1) JZShell 不加锁, 只能被固定线程访问;
+//     2) JZProcess 的异步信号要在有事件循环的线程上派发 —— JZThread 就是那个循环。
+//
+// 并发(2026-11-09 收紧): **一个终端同时只能跑一条前台命令**。第二条直接报错(带正在跑的
+//   那条原文), 不排队 —— 排队会让调用方以为"已经在跑了", 而 cwd 还停在上一条中途。
+//   要并发就多开终端(上层 new 几个 JZVirtualTerminal, 各自一个线程)。
+//
 // 本类不是 JZAgentTool —— 是否暴露、以什么名字暴露由上层决定
 // (本地 code_agent 直接持有; 远端 agent_node 经 JZTerminalRegistry 包成 MCP 工具)。
 //
-// ⚠ 平台定位: 只跑 Linux。
-// ⚠ "都走 shell": 管道/重定向/串联不自己解析, 整条命令交给 /bin/sh -c。
-//   因此审核是命令级的(每段首 token 过白名单 + 重定向目标过写权限)。
+// ⚠ "都走 shell": 解析/展开/执行全在 JZShell 里; 这里的 JZShellParser 只做**审核**
+//   (先按结构过白名单/区域/危险参数, 再交给 JZShell 跑)。
 // ---------------------------------------------------------------------------
 class JZVirtualTerminal : public JZObject
 {
 public:
     // ---- 审核结论 ----
-    enum class Decision
-    {
-        Allow,
-        Deny,
-        Ask,           // 自动策略判不了, 需要人拍板(接 MCP input_required)
-    };
-
-    struct Verdict
-    {
-        Decision decision = Decision::Deny;
-        DenyReason reason = DenyReason::None;
-        std::string detail;                      // 给人 / 给模型看的原因
-
-        bool allowed() const { return decision == Decision::Allow; }
-        bool needAsk() const { return decision == Decision::Ask; }
-    };
+    // 类型本体在 JZVirtualTerminalConfig.h(PolicyDecision / PolicyVerdict), 引擎在
+    // JZShellPolicy.h。这里保留别名, 现有写法 `JZVirtualTerminal::Verdict` /
+    // `::Decision::Deny` 一行都不用改。
+    using Decision = PolicyDecision;
+    using Verdict = PolicyVerdict;
 
     // ---- 终端快照(给列表/状态用, 不暴露内部对象) ----
     // 注意状态是我们自己维护的(不是某个常驻 shell 的): cwd + 环境变量覆盖。
@@ -117,7 +121,7 @@ public:
     void setId(const std::string &id) { m_id = id; }
     std::string id() const { return m_id; }
 
-    // ==================== 策略(审核依据) ====================
+    // ==================== 策略(审核依据): 全部转发给 JZShellPolicy ====================
     // 终端配置: 目录边界 + 权限分档 + 命令策略(见 JZVirtualTerminalConfig.h)。
     // 换工作区时会把 cwd 拉回工作区根(旧 cwd 可能已经失效)
     void setTerminalConfig(const JZVirtualTerminalConfig &config);
@@ -127,9 +131,8 @@ public:
     void setTrustedPrograms(const std::vector<TrustedProgram> &programs);
     const std::map<std::string, std::string> &trustedPrograms() const;
 
-    // 查配置里的程序映射(JZVirtualTerminalConfig::programPaths):
-    // 返回该名字对应的可执行文件全路径, 没有则返回空串。
-    std::string programPath(const std::string &name) const;
+    // ⚠ 短名 -> 全路径(programPaths)已交给 JZShell 自己解析(见 JZShell::addProgramPath),
+    //   终端不再提供 programPath()/expandProgramPaths()。
 
     // 程序白名单。构造时会装一份默认表。
     void addProgram(const std::string &name, std::vector<std::string> exeNames, CmdCategory category,
@@ -146,7 +149,7 @@ public:
     void setShellProgram(const std::string &program);
     std::string shellProgram() const { return m_shell; }
 
-    // ==================== 审核: 唯一入口 ====================
+    // ==================== 审核: 唯一入口(转发到 JZShellPolicy) ====================
     Verdict checkRead(const std::string &path) const;
     Verdict checkWrite(const std::string &path) const;
     Verdict checkExec(const std::string &program) const;
@@ -169,61 +172,37 @@ public:
     void setRecycleMs(int ms) { m_recycleMs = ms; }
     int recycleMs() const { return m_recycleMs; }
 
-    // ==================== 动作(内建, 不经 shell; 内部先审核) ====================
-    bool listDir(const std::string &path, std::vector<std::string> &names, std::string &error);
-    bool readFile(const std::string &path, std::string &text, std::string &error);
-    bool writeFile(const std::string &path, const std::string &text, bool append, std::string &error);
-    // oldStr 为空 = 整文件覆盖; 否则精确替换, replaceAll=false 时要求唯一匹配
-    bool editFile(const std::string &path, const std::string &oldStr, const std::string &newStr,
-                  bool replaceAll, std::string &error);
-    bool makeDir(const std::string &path, std::string &error);
-    bool removePath(const std::string &path, bool recursive, std::string &error);
-    bool copyPath(const std::string &from, const std::string &to, std::string &error);
-    bool movePath(const std::string &from, const std::string &to, std::string &error);
+    // ==================== 终端目录(唯一的 cwd 入口) ====================
+    // 没有这两个就没有"终端 cwd": run() 的审核基准(base)与每条命令的
+    // setWorkingDirectory 都从这里取。内建文件动作已删除(见类头注释)。
     bool changeDir(const std::string &path, std::string &error);
     bool printDir(std::string &cwd) const;
 
     // ==================== 命令 ====================
-    // 语法由我们解析(不是 shell): 支持 && || ; 串联、| 管道、> >> < 重定向、通配符与变量展开。
-    // ⭐ 可以并发: 同一个终端同时跑多条命令, 每条各自一个进程/超时/输出/回调, 靠 runId 区分。
-    // run() 自己**不阻塞**(起完进程就返回, 结果走 cb)。
-    // 返回: 成功 = 本次运行的 run_id(供 terminal_query / cancel 引用); 失败 = 原因
-    // (命令被拒 / 起不来 —— 这时 cb 也会被同步调一次 ok=false)。
-    // 扩展参数(均有默认值):
-    //   onChunk  : 非空的逐块输出回调(流式)
-    //   background: 兼容旧签名(启动即返回, 多路并发后已无实际区别)
-    //   前台超时: 硬上限 15 分钟(见实现: timeoutMs>15min 或<=0 时归一到 15min 并按时强杀);
-    //             后台(background)不受此限(本就不设定时器)。
-    JZResult<std::string> run(const std::string &command, int timeoutMs, const RunCallback &cb,
-                              const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk = nullptr,
-                              bool background = false);
+    // 解析/展开/执行交给本终端自己的 JZShell(在 m_thread 上跑):
+    //   `&& || ; |` 管道、`> >> <` 重定向、通配符、变量/命令替换、if/for/while、函数、子 shell。
+    // ⭐ 单前台任务: 同一时刻只有一条命令。上一条没结束再调 → 直接报错(不排队)。
+    // run() 自己**不阻塞**: 投递给执行线程后立即返回 run_id, 结果走 cb(在终端线程回调)。
+    // 返回: 成功 = run_id(供 terminal_query / cancel 引用); 失败 = 原因
+    // (命令被拒 / 上一条还在跑 —— 这时 cb 也会被同步调一次 ok=false)。
+    // 超时: 透传给 JZShell 的**单条外部命令**超时; 前台硬上限 15 分钟,
+    //       <=0 或超限时归一到 15 分钟。
+    // ⚠ 没有 onChunk / background 参数: 解释器整条返回, 也没有后台任务。
+    JZResult<std::string> run(const std::string &command, int timeoutMs, const RunCallback &cb);
 
-    // 后台运行(2026-09-22): 起一条命令后**立即返回**, 不等它结束, 也不设超时 ——
-    //   给"自己不退出"的长程任务用(起服务 / 常驻进程 / 长时间构建), 这类命令前台跑必然
-    //   撞死在 timeout 上(超时还会把进程杀掉, 那正是以前"起服务"用例最大的坑)。
-    // 命令本身还是**普通命令**: 同样过审核、同样由本终端起进程、同样收输出 —— 区别只在
-    //   "我们不等它 / 不定时杀它", 进程始终在管理之下(不像 shell 的 `&` 那样脱离)。
-    // 返回: 成功 = run_id(之后用 runSnapshot(runId) 查状态与日志、cancel(runId) 停掉);
-    //       失败 = 命令被拒或起不来(这时不留记录, 也没有东西可查)。
-    // cb 可以为空: 没人对结果感兴趣时(纯"起个服务")照样收尾 —— 结果只写进运行记录,
-    //   之后按 run_id 查得到(状态/退出码/日志)。
-    // ⚠ 生命期: 后台运行与前台共用并发上限(kMaxConcurrentRuns); 终端析构时会把它们一起杀掉。
-    JZResult<std::string> runBackground(const std::string &command,
-                                        const RunCallback &cb = RunCallback());
-
-    // 停一条命令: **必须带 runId**(在途运行的 id 见 activeRunIds() 或 run() 的返回值)。
-    // 被杀的命令照样走它自己的 RunCallback(ok=false), 收尾只有一条路径。
-    bool cancel(const std::string &runId);
-    // 停掉本终端所有在跑的命令, 返回停掉了几条(各自照常收尾)。
-    int cancelAll();
-    std::vector<std::string> activeRunIds() const;   // 在途运行的 id(按启动先后)
-    std::string takeOutput();                        // 取所有在途运行的累积输出并清空
-    std::string takeOutput(const std::string &runId);   // 取指定运行的累积输出并清空
+    // 停掉**当前这一条**: 转成 JZShell::requestCancel()(协作式, 外部命令会被 kill)。
+    // 因为执行在独立线程上, 这条会真生效: 下一次 100ms 分片检查就感知到。
+    // 只有一条在跑, 所以不需要 run_id; 返回是否确实停了一条(0 条时 false)。
+    bool cancel();
+    // 有没有命令在跑(单前台任务, 所以是 0/1)。
+    bool isRunning() const { return !m_tasks.empty(); }
+    // 在跑的那条的 run_id, 空闲时为空串(给 terminal_query / 展示用)。
+    std::string activeRunId() const;
 
     // ==================== 输出: **不加工**(2026-10-14 起, 过滤整套删除) ====================
     // 命令回包 = 本次运行的**原始合并输出**(stdout/stderr 按到达顺序), 没有"按重要性挑几行"、
     //   没有逐行 stdout:/stderr: 标签、没有头尾截断 —— **过滤交给模型自己**:
-    //   grep / head / tail / sort / uniq / wc / sed / awk 都在程序白名单里(见 buildDefaultPrograms
+    //   grep / head / tail / sort / uniq / wc / sed / awk 都在程序白名单里(见 JZShellPolicy::buildDefaultPrograms
     //   的 Shell 段), Git Bash 也自带这些工具, 模型想少看就自己 `... | grep -i error | tail -20`。
     // 为什么删: 工具替模型判断"哪几行重要"时, 模型把"没看到"读成"输出丢了" ⇒ 重跑命令 + 反复
     //   terminal_query(实测 19 次重跑 + 64 次查询, 直接撞轮次上限)。
@@ -258,42 +237,19 @@ public:
     void setAuditCallback(const AuditCallback &cb) { m_audit = cb; }
 
 protected:
-    void buildDefaultPrograms();   // 装默认程序白名单(构造时调)
+    // 审核引擎的唯一入口: 解释器自带的那份 policy(见 JZShellPolicy.h)。
+    // m_shellImpl 在构造时就建好, 所以 check*() 不会因为"还没跑过命令"而空指针;
+    // ensureWorker() 只是把它 moveToThread 过去。
+    JZShellPolicy &policy();
+    const JZShellPolicy &policy() const;
 
-    // 应用配置里的程序映射(programPaths): 补白名单 + 记全路径。
-    // 每次 setTerminalConfig() 都会重跑一遍 —— 映射是动态的, 换了配置就换一套程序。
-    void applyProgramPaths();
+    // 程序映射不再改写命令串: 短名 -> 全路径由 JZShell::resolveProgram() 在解析程序时做,
+    // 白名单补登记在 ensureWorker() 里一次性完成。
 
-    // 审核通过后, 把命令里的"短程序名"换成配置里的全路径:
-    //   `tsc -p .` -> `D:/x/ts_compiler/tsc/tsc.exe -p .`
-    // 走 AST: JZShell::rewritePrograms() 按 Command::programPos/programLen 定位,
-    // 只动程序名那几个字符 —— 名字出现在参数里不会被误换。
-    // ⚠ 必须在审核**之后**调: 审核认的是短名(白名单按名字查), 换成全路径走的就是
-    //   路径审核(区外一律拒), 那是另一套判定。
-    std::string expandProgramPaths(const JZShell::Line &line, const std::string &command) const;
+    // ⚠ 不再有 pid 归属判定: 外部命令由 JZShell 自己起/收, 终端拿不到 pid ⇒ kill 一律拒,
+    //   停自己的命令统一走 cancel()(terminal_cancel)。
 
-    // `rm -rf /`、`dd of=/dev/sda` 这类: 单看程序名审不出来(rm/dd 本身在白名单里),
-    // 得看参数组合。返回 nullptr 表示用法没问题。
-    const char *dangerousArgReason(const std::string &program,
-                                   const std::vector<std::string> &args,
-                                   const std::string &base = std::string()) const;
-
-    // 安全底线: 即便 AccessLevel::Unrestricted(全部不检查)也始终生效, 命令原样交给
-    // shell 之前最后一道闸。覆盖两类永远不许的:
-    //   1) 特别危险的指令(关机 / 格式化磁盘 / 往块设备写 ...)
-    //   2) 删除工作区外的文件(rm / rmdir 的目标不在工作区树内 —— 含根目录本身)
-    // 返回 Allow 表示通过底线(其余检查在不限制档里本来就跳过)。
-    const char *criticalDangerReason(const std::string &program,
-                                     const std::vector<std::string> &args) const;
-    bool isDeleteCommand(const std::string &programLower) const;   // "rm"/"rmdir"...
-    bool isWithinWorkspace(const std::string &absPath) const;      // 相对工作区根
-    Verdict checkCriticalFloor(const JZShell::Command &cmd, const std::string &base) const;
-
-    // kill 的归属判定: pid 是本终端启动的进程(含它的子进程)才算数。
-    // 别人的进程 —— 包括 agent 自己 —— 一律不许 kill。
-    bool isOwnProcess(int pid) const;
-
-    // 一次运行的记录(后台/流式留下的日志)。stdout/stderr 分存, 可按流/关键字过滤。
+    // 一次运行的记录。stdout/stderr 分存, 可按流/关键字过滤。
     struct RunRecord
     {
         std::string runId;
@@ -328,30 +284,28 @@ protected:
     {
         std::string runId;
         std::string command;                // 原文(报错/输出过滤用)
-        JZProcess *proc = nullptr;
-        JZTimer *timer = nullptr;           // 本次运行的超时定时器(timeoutMs<=0 则 null)
-        bool timedOut = false;
         std::string output;                 // 本次运行的累积输出(合并 stdout/stderr)
-        bool outputTruncated = false;       // output 超过字节上限被裁过(见 takeOutput)
+        bool outputTruncated = false;       // output 超过字节上限被裁过
         int64_t startTime = 0;
         RunCallback cb;
-        std::function<void(const std::string &stream, const std::string &chunk)> onChunk;
     };
 
     // run() 的实现(审核 + 起进程): 失败时填 error 返回 false, 成功时回填 runId。
     // 拆出来是因为中间几十处 Deny 都是"填 error + return false", 包一层比逐处改成 JZResult 干净。
     bool startRun(const std::string &command, int timeoutMs, const RunCallback &cb, std::string &error,
-                  std::string *runId,
-                  const std::function<void(const std::string &stream, const std::string &chunk)> &onChunk,
-                  bool background);
+                  std::string *runId);
 
     RunTask *taskOf(const std::string &runId);
     const RunTask *taskOf(const std::string &runId) const;
     void eraseTask(const std::string &runId);
-    // 一次运行结束的收尾(唯一路径: 自然退出 / 超时被杀 / cancel 被杀)。
-    // 记结果 -> 摘任务 -> 回调, 全部按 runId 走。
-    void onRunFinished(const std::string &runId, JZProcess *proc, int exitCode,
-                       JZProcess::ExitStatus status, const std::string &command);
+    // 一次运行结束的收尾(唯一路径): 记结果 -> 摘任务 -> 回调, 全部按 runId 走。
+    // 由执行线程 post 回来, 在终端自己的线程上执行(不许在 worker 里直接调)。
+    void finishRun(const std::string &runId, int exitCode, const std::string &out,
+                   const std::string &err, bool canceled, const std::string &cwd);
+
+    // 惰性创建执行线程 + 把 JZShell moveToThread 过去; 回收/析构时 stopWorker()。
+    bool ensureWorker(std::string &error);
+    void stopWorker();
 
     void touch();                       // 刷新活跃时间 + 记审计
     // 把一块输出追加到该次运行(合并)与运行记录(逐行, 带流标签), 并按需推给它的流式回调
@@ -359,18 +313,7 @@ protected:
 
     void audit(const std::string &action, const Verdict &verdict, const std::string &detail);
 
-    // 把一个绝对路径按"读 or 写"审核, 通过则填 absPath
-    bool checkPath(const std::string &path, bool writeAccess,
-                   const std::string &action, std::string &absPath, std::string &error,
-                   const std::string &base = std::string());
-
-    JZVirtualTerminalConfig m_config;
-    std::map<std::string, std::string> m_trustedPrograms;   // 小写程序名 -> 全路径
-    std::map<std::string, ProgramSpec> m_programs;          // 小写程序名 -> 白名单项
-
-    // 本终端启动过的进程根 pid(用于 kill 的归属判定)。
-    // 不随进程退出清理: 超时被杀的只杀到 sh, 孙进程可能残留, 事后要能收拾掉。
-    std::set<int> m_ownPids;
+    // 审核引擎不在这里: 白名单/区域/可信程序都在 JZShell::policy() 里(见 JZShellPolicy.h)
 
     // ---- 单终端状态(原 Session 的字段提到这里) ----
     std::string m_id;                   // 会话 key(上层设)
@@ -381,8 +324,14 @@ protected:
     // ---- 在途运行(一次 run() 一条) ----
     // 每条各自一个 JZProcess + JZTimer, 所有权在终端(this), 结束/析构时 kill + 回收。
     std::vector<RunTask> m_tasks;
+    // 取消请求(主线程写, 执行线程读): 用来补 JZShell::exec 入口重置标志的那个窗口 ——
+    // "刚投递还没进 exec"时收到的取消不能丢。
+    std::atomic<bool> m_cancelPending{ false };
 
-    std::string m_shell;                // 见 shellProgram(): 构造时自动探测
+    std::string m_shell;                // 只作展示名(见 shellProgram()); 执行器是 m_shellImpl
+    JZThread *m_thread = nullptr;       // 本终端的执行线程(惰性创建, 回收时 quit+wait)
+    JZShell *m_shellImpl = nullptr;     // 本终端的解释器(审核引擎也在里面); 构造即建, 之后归 m_thread
+    bool m_shellAttached = false;       // 解释器是否已 moveToThread(m_thread) 并灌好初始状态
     int m_recycleMs = 15 * 60 * 1000;
     size_t m_replyMaxBytes = 32 * 1024; // 单次回包的字节上限(上下文阀, 见 setReplyMaxBytes)
     int m_runIdGen = 0;

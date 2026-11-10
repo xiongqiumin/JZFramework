@@ -57,12 +57,12 @@ int JZNodePackExec::packetType() const
 
 void JZNodePackExec::saveToStream(JZDataStream &s) const
 {
-    s << runId << command << cwd << timeoutMs;
+    s << runId << command << cwd << timeoutMs << background;
 }
 
 void JZNodePackExec::loadFromStream(JZDataStream &s)
 {
-    s >> runId >> command >> cwd >> timeoutMs;
+    s >> runId >> command >> cwd >> timeoutMs >> background;
 }
 
 // ---- execResult ----
@@ -81,12 +81,12 @@ int JZNodePackExecResult::packetType() const
 
 void JZNodePackExecResult::saveToStream(JZDataStream &s) const
 {
-    s << runId << ok << exitCode << timedOut << durationMs << cwd << output << error;
+    s << runId << ok << exitCode << timedOut << durationMs << cwd << output << error << started;
 }
 
 void JZNodePackExecResult::loadFromStream(JZDataStream &s)
 {
-    s >> runId >> ok >> exitCode >> timedOut >> durationMs >> cwd >> output >> error;
+    s >> runId >> ok >> exitCode >> timedOut >> durationMs >> cwd >> output >> error >> started;
 }
 
 // ---- execCancel ----
@@ -109,6 +109,48 @@ void JZNodePackExecCancel::loadFromStream(JZDataStream &s)
     s >> runId;
 }
 
+// ---- termQuery ----
+JZNodePackTermQuery::JZNodePackTermQuery()
+{
+}
+
+int JZNodePackTermQuery::packetType() const
+{
+    return NodePack_termQuery;
+}
+
+void JZNodePackTermQuery::saveToStream(JZDataStream &s) const
+{
+    s << runId << tail << grep << incremental;
+}
+
+void JZNodePackTermQuery::loadFromStream(JZDataStream &s)
+{
+    s >> runId >> tail >> grep >> incremental;
+}
+
+// ---- termQueryResult ----
+JZNodePackTermQueryResult::JZNodePackTermQueryResult()
+{
+}
+
+int JZNodePackTermQueryResult::packetType() const
+{
+    return NodePack_termQueryResult;
+}
+
+void JZNodePackTermQueryResult::saveToStream(JZDataStream &s) const
+{
+    s << runId << found << running << ok << background << timedOut << exitCode
+      << durationMs << totalLines << firstLine << readPos << text << error;
+}
+
+void JZNodePackTermQueryResult::loadFromStream(JZDataStream &s)
+{
+    s >> runId >> found >> running >> ok >> background >> timedOut >> exitCode
+      >> durationMs >> totalLines >> firstLine >> readPos >> text >> error;
+}
+
 void JZAgentNodePacketInit()
 {
     // 幂等 + 线程安全: 与 JZFrpPacketInit 同一个理由 —— 调用方可能重复初始化,
@@ -121,5 +163,7 @@ void JZAgentNodePacketInit()
         m->registPack<JZNodePackExec>(NodePack_exec);
         m->registPack<JZNodePackExecResult>(NodePack_execResult);
         m->registPack<JZNodePackExecCancel>(NodePack_execCancel);
+        m->registPack<JZNodePackTermQuery>(NodePack_termQuery);
+        m->registPack<JZNodePackTermQueryResult>(NodePack_termQueryResult);
     });
 }

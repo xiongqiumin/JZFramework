@@ -130,7 +130,7 @@ public:
 private:
     std::vector<JZChar> m_chars;
 };
-JZString operator+(const char* str1, const JZString& str2);
+JZFRAMEWORK_API JZString operator+(const char* str1, const JZString& str2);
 JZDebug operator<<(JZDebug d, const JZString& str);
 
 JZString jzstr_join(const std::vector<JZString>& list, const JZString& sep);

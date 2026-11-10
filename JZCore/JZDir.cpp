@@ -6,6 +6,7 @@
 #include "JZDebug.h"
 #include "JZString.h"
 #include "JZPlatform.h"
+#include "JZStd.h"        // str_to_wstr / wstr_to_str: 路径一律 UTF-8 <-> UTF-16
 
 #if JZ_OS == JZ_OS_WINDOWS
 #include <windows.h>
@@ -100,7 +101,8 @@ bool JZDir::setCurrentPath(const string &path)
         return false;
 
 #if JZ_OS == JZ_OS_WINDOWS
-    return SetCurrentDirectoryA(str_utf8_to_local(path).c_str()) != 0;
+    // 路径 UTF-8 -> UTF-16 直连宽字符 API(不经 ANSI/GBK 中转)
+    return SetCurrentDirectoryW(str_to_wstr(path).c_str()) != 0;
 #elif JZ_OS == JZ_OS_LINUX
     return ::chdir(path.c_str()) == 0;
 #else
@@ -111,9 +113,11 @@ bool JZDir::setCurrentPath(const string &path)
 string JZDir::currentPath()
 {
 #if JZ_OS == JZ_OS_WINDOWS
-    char buffer[512];
-    DWORD result = GetCurrentDirectoryA(512, buffer);
-    return str_local_to_utf8(buffer);
+    wchar_t buffer[1024];
+    DWORD result = GetCurrentDirectoryW(1024, buffer);
+    if (result == 0)
+        return string();
+    return wstr_to_str(wstring(buffer));
 #elif JZ_OS == JZ_OS_LINUX
     char* buffer = getcwd(nullptr, 0);
     if (buffer == nullptr)
@@ -138,7 +142,7 @@ JZDir::JZDir(const string &path)
 bool JZDir::dirExists(const string &path) const
 {
 #if JZ_OS == JZ_OS_WINDOWS
-    DWORD attr = GetFileAttributesA(str_utf8_to_local(path).c_str());
+    DWORD attr = GetFileAttributesW(str_to_wstr(path).c_str());
     return (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
 #elif JZ_OS == JZ_OS_LINUX
     struct stat st;
@@ -152,8 +156,7 @@ bool JZDir::dirExists(const string &path) const
 bool JZDir::createDir(const string &path) const
 {
 #if JZ_OS == JZ_OS_WINDOWS
-    string local_path = str_utf8_to_local(path);
-    return CreateDirectoryA(local_path.c_str(), NULL) != 0;
+    return CreateDirectoryW(str_to_wstr(path).c_str(), NULL) != 0;
 #elif JZ_OS == JZ_OS_LINUX
     return ::mkdir(path.c_str(), 0755) == 0;
 #else
@@ -234,8 +237,7 @@ bool JZDir::rmdir(const string &path)
     dir_path = JZFileInfo::weaklyCanonicalPath(dir_path);
 
 #if JZ_OS == JZ_OS_WINDOWS
-    string local_path = str_utf8_to_local(dir_path);
-    return RemoveDirectoryA(local_path.c_str()) == TRUE;
+    return RemoveDirectoryW(str_to_wstr(dir_path).c_str()) == TRUE;
 #elif JZ_OS == JZ_OS_LINUX
     return ::rmdir(dir_path.c_str()) == 0;
 #else
@@ -406,15 +408,17 @@ vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
     }
 
 #if JZ_OS == JZ_OS_WINDOWS
-    string searchPath = str_utf8_to_local(m_path) + "/*";
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
+    // 宽字符枚举: FindFirstFileA 会把 ANSI 表示不了的字符(emoji 等)变成 '?',
+    // 于是那些文件在 glob/ls 里直接"消失"(实测: 中文能列出, emoji 列不出)。
+    wstring searchPath = str_to_wstr(m_path) + L"/*";
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
 
     if (hFind == INVALID_HANDLE_VALUE) 
         return result;
 
     do {
-        string name = str_local_to_utf8(findData.cFileName);
+        string name = wstr_to_str(wstring(findData.cFileName));
         if ((filter & NoDotAndDotDot) && (name == "." || name == "..")) continue;
 
         string fullPath = m_path + "/" + name;
@@ -426,7 +430,7 @@ vector<JZFileInfo> JZDir::entryInfoList(int filter, int sort) const {
         else if ((filter & Dirs) && info.isDir()) {
             result.push_back(info);
         }
-    } while (FindNextFileA(hFind, &findData) != 0);
+    } while (FindNextFileW(hFind, &findData) != 0);
 
     FindClose(hFind);
     

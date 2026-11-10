@@ -372,7 +372,7 @@ void JZServerAgent::cancel()
         return;
     m_cancelled = true;
     if (m_terminal)
-        m_terminal->cancelAll();   // stop() 只停止 Agent 等待, 本地进程要显式收尾
+        m_terminal->cancel();   // stop() 只停止 Agent 等待, 在跑的那条命令要显式收尾
     m_agent->stop();
 }
 

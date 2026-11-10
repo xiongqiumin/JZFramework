@@ -61,26 +61,10 @@ enum class ToolOperator
 };
 
 // ------------------------------------------------------------------
-// 工具拒绝原因（结构化）
-//   只用来让上层(宿主)区分"真的失败了"与"被策略拦了"，
-//   从而对"反复被拦"这类卡死行为做统计与熔断。
-//   普通的调用错误(参数缺失、文件过大等)用 None，由"重复调用"那道闸兜住。
+// 工具拒绝原因（结构化）: DenyReason / denyReasonText 已挪到
+// JZVirtualTerminalConfig.h(与命令白名单放一起, 因为审核归 JZShell 管了)。
+// 本头已经 include 那一份, 这里的名字照常可用。
 // ------------------------------------------------------------------
-enum class DenyReason
-{
-    None = 0,           // 非拒绝类失败
-    PathOutside,        // 路径越界，不在工作区/授信区内
-    AccessDenied,       // 区域策略不允许该操作(如区外只读 → 写被拒)
-    NotFound,           // 文件/目录/程序不存在
-    WriteDenied,        // 不允许写   
-    CommandDenied,      // 命令被策略禁止
-    ProgramDenied,      // 程序不在允许执行的区域
-    EnvChange,          // 会修改环境 / 下载安装
-    EditFailed          // 编辑类失败(old_str 不匹配、匹配多处等)
-};
-
-// 拒绝原因的中文说明（用于日志与提示）
-const char *denyReasonText(DenyReason reason);
 
 // 工具宿主：工具唯一需要外部提供的东西。定义见本文件末尾（它要用到
 // JZVirtualTerminalConfig 这个类型）。
@@ -306,41 +290,10 @@ struct CommandSpec
 bool splitCommandStrict(const std::string &cmd, std::vector<std::string> &argv, std::string &error);
 
 // ------------------------------------------------------------------
-// 外部程序白名单
-//   定位是"副作用管控"：不让 agent 擅自安装东西、下载东西、改系统环境。
-//   不是安全边界 —— 白名单里有编译器/解释器就等于任意代码执行，拦不住，
-//   这里只做收敛与防误操作，真正的边界只能是沙箱。
+// 外部程序白名单: CmdCategory / ProgramSpec / TrustedProgram 也挪到了
+// JZVirtualTerminalConfig.h(审核归 JZShell 管, 白名单是它的一部分)。
+// 定位仍是"副作用管控", 不是安全边界。
 // ------------------------------------------------------------------
-enum class CmdCategory
-{
-    Tool = 0,           // 编译/构建/测试：默认允许
-    Shell,              // 基础 shell / coreutils（ls cat grep mkdir rm cp mv ...）：默认允许。
-                        //   单独一档是因为"命令都走 shell"之后，不认这些等于什么都跑不了 ——
-                        //   它们就是文件工具被删掉以后的替代品。名单两边通用：
-                        //   Linux 系统自带；Windows 由 Git Bash 提供（同名）。
-    PackageManager,     // pip/npm/conda 等：默认拒绝，设置里可开
-    Network,            // curl/wget 等：默认拒绝，设置里可开
-    SystemAdmin,        // reg/sc/net/setx 等：永不放行
-    Dangerous           // dd/mkfs/sudo/shutdown/chown 等破坏性或系统级命令：永不放行
-                        //   （动磁盘、改系统、提权、杀别人的进程 —— 手滑一次就是重装系统）
-};
-
-struct ProgramSpec
-{
-    std::string name;
-    std::vector<std::string> exeNames;      // 可执行文件全名（同时兼容有无 .exe）
-    CmdCategory category = CmdCategory::Tool;
-    std::vector<std::string> denyFlags;     // 禁止出现的参数（前缀匹配）
-    std::vector<std::string> denyModules;   // 配合 -m：挡掉 python -m pip 这类
-};
-
-// 显式指定的可信程序：用全路径直接定位，优先于在授信目录里按名搜索。
-// name 需与白名单 ProgramSpec 的 name 对应（如 cmake / python）。
-struct TrustedProgram
-{
-    std::string name;   // 程序名（小写，与 ProgramSpec 的 name 对应）
-    std::string path;   // 可执行文件全路径
-};
 
 // ------------------------------------------------------------------
 // 工具宿主接口

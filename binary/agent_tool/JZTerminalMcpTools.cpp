@@ -133,10 +133,6 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
         sigFinished.emit(id, mcpTextResult("command 不能为空", true));
         return;
     }
-    bool background = args.get("background", false).asBool();
-    bool stream = args.get("stream", false).asBool();
-    std::string streamFilter = args.get("stream_filter", "all").asString();
-    std::string grep = args.get("grep", "").asString();
     int timeoutMs = jIntArg(args, "timeout_ms", 120000);
     if (timeoutMs < 1000)
         timeoutMs = 120000;
@@ -148,26 +144,7 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
         sigFinished.emit(id, mcpTextResult(error, true));
         return;
     }
-    // ---- 后台模式: 启动即返回 run_id, 不流式 ----
-    if (background)
-    {
-        JZResult<std::string> started = term->run(command, timeoutMs,
-                                                  [](bool, const std::string &, const std::string &) {},
-                                                  nullptr, true);
-        if (started.isError())
-        {
-            sigFinished.emit(id, mcpTextResult(started.errorMessage(), true));
-            return;
-        }
-        std::string text = "已后台启动(只返回 id, 日志用 terminal_query 取)\nrun_id: " + started.value();
-        std::string cwd = cwdOf(term);
-        if (!cwd.empty())
-            text += "\n[cwd] " + cwd;
-        sigFinished.emit(id, mcpTextResult(text, false));
-        return;
-    }
-
-    // ---- 前台(可选流式) ----
+    // ---- 单前台任务: 没有后台模式, 也没有增量流式(JZShell 整条返回) ----
     // run_id 拿到的时间点比回调晚(命令被拒时回调会**同步**跑在 run() 里, 那时还没有 run_id),
     // 所以放共享变量里, 回调按它取值; fired 用来避免"同步回调 + 下面再回一次"发两遍结果。
     auto ridPtr = std::make_shared<std::string>();
@@ -177,12 +154,7 @@ void JZTerminalRunMcpTool::run(const Json::Value &id, const Json::Value &args)
                                               {
                                                   *fired = true;
                                                   onRunDone(id, ok, out, err, *ridPtr, term);
-                                              },
-                                              stream ? std::function<void(const std::string &, const std::string &)>(
-                                                  [this, id, streamFilter, grep](const std::string &stream, const std::string &chunk)
-                                                  { emitChunk(id, stream, chunk, streamFilter, grep); })
-                                                     : nullptr,
-                                              false);
+                                              });
     if (started.isError())
     {
         if (!*fired)
@@ -258,10 +230,7 @@ void JZTerminalRunMcpTool::cancel(const Json::Value &id)
         return;
 
     // 只停这一条(同会话里别的在跑命令不动)。run_id 为空(理论上不该有)就退回全停。
-    if (!runId.empty())
-        term->cancel(runId);
-    else
-        term->cancelAll();
+    term->cancel();
 }
 
 // ======================================================================
@@ -382,17 +351,12 @@ void JZTerminalQueryMcpTool::run(const Json::Value &id, const Json::Value &args)
     if (rec.status == "done")
         text += "  exit=" + std::to_string(rec.exitCode) + (rec.timedOut ? " (超时)" : "");
     text += "\n";
-    // 该会话还有别的命令在跑时一并列出: 并发下"我在等的那条"和"还在跑的别的条"很容易混
+    // 会话里还有一条在跑(单前台任务)时点明, 免得模型以为可以接着发下一条
     if (termPtr)
     {
-        std::vector<std::string> live = termPtr->activeRunIds();
+        std::string live = termPtr->activeRunId();
         if (!live.empty())
-        {
-            text += "该会话在跑 " + std::to_string(live.size()) + " 条:";
-            for (const std::string &rid : live)
-                text += " " + rid;
-            text += "\n";
-        }
+            text += "该会话还有一条在跑: " + live + "\n";
     }
     if (!rec.error.empty())
         text += "[结束] " + rec.error + "\n";

@@ -4,7 +4,7 @@
 # 只有**要发布的那些** exe 列在文件末尾那张清单里（它们 + 随附的 js_wrapper / ts_compiler /
 # example / OpenCV 等 DLL 就是发版、拷机器要打包的一整套，见 tools/release/publish.py）。
 # 测试 / 评测 exe（binary/code_agent/test/、binary/code_agent/benchmark/、
-# binary/agent_cli/agent_cli_test/）**不进这张表**：它们与 test/ 下的测试、tools/ 里的
+# binary/agent_cli/test/agent_cli_test.cpp）**不进这张表**：它们与 test/ 下的测试、tools/ 里的
 # 开发工具一起，统一输出到 <build>/test/bin/<配置>（根 CMakeLists 的 JZ_TEST_BIN_DIR，
 # 各自 CMakeLists 里显式 set_target_properties 一句）—— 整个构建树里 exe 只有
 # "发布目录"与"test/bin"两个落点。

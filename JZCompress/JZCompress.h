@@ -39,7 +39,7 @@ const char *jzCompressAlgorithmName(JZCompressAlgorithm algo);
 
 // ==================== 一次性（按块）压缩 / 解压 ====================
 // 整段输入 -> 整段输出。level 含义与具体算法相关：[-1=默认, 0=不压缩, 1..9=等级]。
-JZResult<JZByteArray> jzCompressBlock(const JZByteArray &in, JZCompressAlgorithm algo, int level = -1);
+JZFRAMEWORK_API JZResult<JZByteArray> jzCompressBlock(const JZByteArray &in, JZCompressAlgorithm algo, int level = -1);
 JZResult<JZByteArray> jzDecompressBlock(const JZByteArray &in, JZCompressAlgorithm algo);
 
 // 说明：对内存边界敏感的流式场景（如 raw deflate 的窗口/帧头处理）统一使用

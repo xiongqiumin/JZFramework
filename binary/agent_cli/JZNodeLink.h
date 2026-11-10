@@ -42,7 +42,9 @@ public:
 
     struct ExecResult
     {
+        std::string runId;         // 本次运行的 id(带节点前缀, 供 query/cancel 引用)
         bool ok = false;
+        bool started = false;      // true = 后台已启动(结果还没定, 用 query 取)
         int exitCode = -1;
         bool timedOut = false;
         int64_t durationMs = 0;
@@ -51,14 +53,34 @@ public:
         std::string error;
     };
 
+    // terminal_query 的远端版本: 状态与日志(节点侧已按 tail/grep/incremental 过滤)
+    struct QueryResult
+    {
+        std::string runId;         // 节点实际查的那条(省略 run_id 时由节点回填)
+        bool found = false;
+        bool running = false;
+        bool ok = false;
+        bool background = false;
+        bool timedOut = false;
+        int exitCode = -1;
+        int64_t durationMs = 0;
+        int64_t totalLines = 0;
+        int64_t firstLine = 0;
+        int64_t readPos = 0;
+        std::string text;
+        std::string error;
+    };
+
     typedef std::function<void(const ExecResult &)> ExecCallback;
+    typedef std::function<void(const QueryResult &)> QueryCallback;
 
     JZNodeLink(const Config &config, const std::string &clientId, JZObject *parent = nullptr);
     ~JZNodeLink() override;
 
     const Config &config() const { return m_config; }
     bool online() const { return m_online; }
-    bool busy() const { return m_pending != nullptr; }
+    // 前台在飞或还有后台命令没结束都算忙(后台也算占用并发额度, 见节点侧 maxConcurrent)
+    bool busy() const { return m_pending != nullptr || !m_bgRuns.empty(); }
     const std::string &lastError() const { return m_lastError; }
     const std::string &nodeName() const { return m_nodeName; }
     const std::string &rootDir() const { return m_rootDir; }
@@ -68,11 +90,20 @@ public:
     void connectToNode();
 
     // 跑一条命令。owner 标识发起它的任务队列, 取消时只停该队列的命令。
+    // background=true: 节点立刻回 started(结果待查), 之后用 query()/cancelRun()。
     // 返回 false = 没发起(离线 / 正忙), error 有原因。
-    bool exec(const std::string &command, const std::string &cwd, int timeoutMs,
+    bool exec(const std::string &command, const std::string &cwd, int timeoutMs, bool background,
               const void *owner, const ExecCallback &cb, std::string &error);
 
-    // 取消指定队列当前在跑的命令; owner=nullptr 表示不限队列。
+    // 按 runId 查一次状态与日志(等价本地 terminal_query; runId 是 exec 返回的那个)。
+    // 同一时刻只允许一条查询在飞(查询是毫秒级的 RPC, 没必要排一队)。
+    bool query(const std::string &runId, int tail, const std::string &grep, bool incremental,
+               const QueryCallback &cb, std::string &error);
+
+    // 停一条指定的运行(前台或后台)。返回 false = 没发出去(离线 / 已经结束)。
+    bool cancelRun(const std::string &runId, std::string &error);
+
+    // 取消指定队列当前在跑的命令(含后台); owner=nullptr 表示不限队列。
     void cancelRunning(const void *owner = nullptr);
 
 jz_signals:
@@ -84,6 +115,7 @@ protected:
     void onDisconnected();
     void onPacket(JZNetPackPtr pack);
     void finishPending(const ExecResult &result, bool notify);
+    void finishQuery(const QueryResult &result, bool notify);
     void scheduleReconnect();
 
     Config m_config;
@@ -92,6 +124,9 @@ protected:
     JZNetClient *m_client = nullptr;
     JZTimer *m_reconnectTimer = nullptr;
     int m_retryMs = 1000;         // 退避(1/2/4/…/30s)
+    // 连接代际: 每次 onConnected 自增。hello 的 3s 超时/日志都要先比对它 ——
+    // 否则旧连接的定时器可能在新连接刚建好时触发, 把新连接掐掉。
+    int m_connGen = 0;
 
     bool m_online = false;
     bool m_helloAcked = false;
@@ -111,6 +146,18 @@ protected:
         const void *owner = nullptr;   // 发起队列; 仅做身份比较, 不解引用
     };
     std::unique_ptr<Pending> m_pending;
+
+    // 后台运行: runId -> 发起队列。留着是为了 busy() 与按 owner 取消(节点侧在跑)。
+    std::map<std::string, const void *> m_bgRuns;
+
+    struct QueryPending
+    {
+        std::string runId;
+        QueryCallback cb;
+        JZTimer *timer = nullptr;
+    };
+    std::unique_ptr<QueryPending> m_query;
+
     int m_runIdGen = 0;
 };
 

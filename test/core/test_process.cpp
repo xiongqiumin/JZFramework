@@ -28,12 +28,22 @@ namespace {
     const char *kStdinEcho  = "sort";   // Windows 无 cat, sort 同样回显 stdin
     // Windows 无 sleep, 用 ping 制造 ~60s 长时进程 (随后被 terminate)
     std::string longRunCmd() { return "ping -n 60 127.0.0.1 > nul"; }
+    // 约 320KB 输出(8000 行 × 40 字节): 远超管道缓冲区, 用来验证"等待期间读管道"
+    std::string bigOutputCmd()
+    {
+        return "for /L %i in (1,1,8000) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    }
 #else
     const char *kShell      = "sh";
     const char *kShellFlag  = "-c";
     const char *kTmpDir     = "/tmp";
     const char *kStdinEcho  = "cat";
     std::string longRunCmd() { return "sleep 30"; }
+    std::string bigOutputCmd()
+    {
+        return "i=0; while [ $i -lt 8000 ]; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; "
+               "i=$((i+1)); done";
+    }
 #endif
 
 std::vector<std::string> shellArgs(const std::string &cmd)
@@ -227,6 +237,39 @@ bool process_waitForFinishedSync()
     return true;
 }
 
+// ---------- 10. 大量输出不死锁(等待期间必须持续读管道) ----------
+bool process_largeOutput()
+{
+    JZProcess p;
+    JZ_TEST_TRUE(p.start(kShell, shellArgs(bigOutputCmd())));
+    // 以前 waitForFinished() 只等不读: 子进程写满管道(几十 KB)就阻塞, 这里会超时
+    JZ_TEST_TRUE(p.waitForFinished(30000));
+    JZ_TEST_EQ(p.exitCode(), 0);
+    JZ_TEST_GE(p.readAllStandardOutput().size(), 200000);
+    return true;
+}
+
+// ---------- 11. 一个进程的输出直接接另一个进程的输入(两个进程并发) ----------
+bool process_outputToProcess()
+{
+    JZProcess consumer;
+    JZProcess producer;
+
+    // 顺序与 QProcess 一致: 先起下游, 再让上游接上去并启动
+    JZ_TEST_TRUE(consumer.start(kStdinEcho));
+    producer.setStandardOutputProcess(&consumer);
+    JZ_TEST_TRUE(producer.start(kShell, shellArgs(bigOutputCmd())));
+
+    JZ_TEST_TRUE(producer.waitForFinished(30000));
+    // 上游退出 ⇒ 下游 stdin 收到 EOF ⇒ 下游自己退出(说明 stdout 写端确实关掉了)
+    JZ_TEST_TRUE(consumer.waitForFinished(30000));
+
+    JZ_TEST_GE(consumer.readAllStandardOutput().size(), 200000);
+    // 已经接到下游了, 上游自己不再有 stdout 管道
+    JZ_TEST_EQ(producer.readAllStandardOutput().size(), 0);
+    return true;
+}
+
 } // namespace
 
 void test_JZProcess(JZTest *test)
@@ -241,6 +284,8 @@ void test_JZProcess(JZTest *test)
     suite->addTestCase("notFound", process_notFound);
     suite->addTestCase("accessors", process_accessors);
     suite->addTestCase("waitForFinishedSync", process_waitForFinishedSync);
+    suite->addTestCase("largeOutput", process_largeOutput);
+    suite->addTestCase("outputToProcess", process_outputToProcess);
     test->addSuite(suite);
 }
 

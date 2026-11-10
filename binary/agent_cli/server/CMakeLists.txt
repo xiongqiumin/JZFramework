@@ -15,7 +15,7 @@ add_executable(agent_cli_server
 )
 
 # agent_tool: server 内置 agent 复用同一份终端/文件工具(与 agent_cli 一致)
-target_link_libraries(agent_cli_server PRIVATE JZFramework agent_tool)
+target_link_libraries(agent_cli_server PRIVATE agent_cli_packet agent_tool)
 
 # 管理台网页: web/(index.html + app.css + app.js) 拷到 <exeDir>/server_web/,
 # 再把仓库唯一的视觉层 web/ui 拷进 server_web/ui —— 页面不再内嵌在 C++ 字符串里。

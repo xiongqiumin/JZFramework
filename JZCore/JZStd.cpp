@@ -631,6 +631,27 @@ string str_unescape(const string& src)
     return dst;
 }
 
+// UTF-8 合法性校验 —— 全工程**唯一**实现, 解码统一走 JZUtf8Iterator::decode
+// (以前 Windows 侧用 MultiByteToWideChar 校验、非 Windows 侧直接 return true,
+//  两边口径不同; 现在同一个判定, 且不依赖任何平台 API)。
+// 除"字节序列是否合法"外, 再剔掉: 过长编码(overlong)、UTF-16 代理项、超出 U+10FFFF。
+static bool jz_utf8_validate(const std::string &s)
+{
+    size_t i = 0;
+    while (i < s.size())
+    {
+        char32_t cp = 0;
+        int len = 0;
+        if (!JZUtf8Iterator::decode(s.data(), s.size(), i, cp, len))
+            return false;   // 非法首字节 / 续字节 / 截断
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) ||
+            (len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000))
+            return false;   // 过长编码 / 代理项 / 越界
+        i += static_cast<size_t>(len);
+    }
+    return true;
+}
+
 #ifdef _WIN32
 
 string str_local_to_utf8(const string &str)
@@ -675,11 +696,7 @@ string str_utf8_to_local(const string& utf8_str) {
 
 bool str_is_utf8(const string& str)
 {
-    if (str.empty())
-        return true;
-    // MB_ERR_INVALID_CHARS: 遇到非法序列就失败(不加这个标志 Windows 会静默替换成 '?')
-    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str.c_str(), (int)str.size(),
-                               nullptr, 0) > 0;
+    return jz_utf8_validate(str);
 }
 
 // UTF-8 -> 指定代码页(cp 用控制台自己的 CP, 而不是 CP_ACP —— 后者是系统 ANSI 代码页,
@@ -934,7 +951,7 @@ string str_utf8_to_local(const string& utf8_str)
 
 bool str_is_utf8(const string& str)
 {
-    return true;   // 非 Windows: 命令行/文件名本来就是 UTF-8 字节, 不做校验
+    return jz_utf8_validate(str);
 }
 
 string str_utf8_to_console(const string& utf8)

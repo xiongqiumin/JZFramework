@@ -340,6 +340,12 @@ public:
 
     ~Benchmark()
     {
+        // ⚠ agent 是裸 new 出来的(见 runCase), 必须在这里删: 它名下有 JZVirtualTerminal,
+        //   终端跑过命令就有一个 JZThread 挂在 jzApp 上。不删 ⇒ 退出时
+        //   JZApplication(66) 断言 m_threads.empty() 失败, 进程以 3 结束。
+        delete m_agent;
+        m_agent = nullptr;
+
         stopDaemon();          // 兜底: 异常退出时也别把 python 后台进程留在端口上
         m_httpThread.quit();
         m_httpThread.wait();
@@ -363,8 +369,6 @@ public:
             jzError().nospace() << "无法在端口 " << m_httpPort << " 启动输入 HTTP 服务";
             return false;
         }
-        printf("??\n");
-        jzDebug() << "??";
         jzDebug().nospace() << "[benchmark] 输入 HTTP 服务已启动: http://127.0.0.1:"
             << m_httpPort << "/input";
 
@@ -433,6 +437,9 @@ protected:
         // 所以每轮都必须显式复位, 否则上一个用例的轮次会漏给下一个)。
         m_codeConfig.llmConfig.maxRounds = (m_case.maxRounds > 0) ? m_case.maxRounds : m_llm.maxRounds;
 
+        // 每个用例一个全新的 agent(独立会话/终端)。上一个必须删干净, 否则每个用例
+        // 都留一个终端 + 一个 JZThread(jzApp 里) —— 多用例跑完会在退出断言。
+        delete m_agent;
         m_agent = new JZCodeAgent();
         m_agent->init(m_codeConfig);
 
@@ -1703,11 +1710,6 @@ static void loadLlmConfig(JZCommandLineParser &parser, JZAgentConfig &cfg)
 int main(int argc, char *argv[])
 {
     JZApplication app;
-
-    fprintf(stderr, "[bench] JZApplication constructed\n");
-    fflush(stderr);
-
-    printf("hello world\n");
 
     // 编译器 / LSP 路径
     // 缺省：环境变量 JZ_TS_LSP -> 否则同目录下的 tsc_shim.exe（本机 node 版 tsc 的包装）。

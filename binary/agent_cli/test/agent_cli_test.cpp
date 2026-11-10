@@ -66,6 +66,7 @@
 #include "JZNetworkReply.h"
 #include "JZNetworkRequest.h"
 #include "JZPlatform.h"
+#include "JZProcess.h"   // 本文件直接用 JZProcess(以前靠 JZVirtualTerminal.h 的间接包含)
 #include "JZTimer.h"
 #include "JZUuid.h"
 #include "JZStd.h"

@@ -805,8 +805,7 @@ def main(argv=None) -> int:
 
     data_dir = args.data
     if not data_dir:
-        cands = [os.path.join(build, "binary", "agent_cli", "agent_cli_test", cfg,
-                              "data", "agent_cli_test")
+        cands = [os.path.join(build, "test", "bin", cfg, "data", "agent_cli_test")
                  for cfg in ("Release", "Debug")]
         cands += [os.path.join(REPO_ROOT, "binary", "code_agent", "benchmark", "data")]
         for c in cands:

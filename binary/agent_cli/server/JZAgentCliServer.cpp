@@ -246,10 +246,47 @@ JZAgentCliServer::~JZAgentCliServer()
     m_agents.clear();
 }
 
+// 整文件读成文本(证书/私钥/CA 都是 PEM 文本); 读不到返回 false
+static bool readTextFile(const string &path, string &out)
+{
+    out.clear();
+    ifstream ifs(path, ios::binary);
+    if (!ifs)
+        return false;
+    stringstream ss;
+    ss << ifs.rdbuf();
+    out = ss.str();
+    return !out.empty();
+}
+
 bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
 {
-    (void)error;
     m_config = config;
+
+    // HTTPS 证书: 页面/API 默认走 TLS 且默认要求客户端证书, 所以这里先读进内存。
+    // 读不到直接失败(而不是退回明文 HTTP): 静默降级等于把"起停 agent + 下发任务"的执行权
+    // 暴露成裸 HTTP, 现场根本看不出来。
+    m_httpCertPem.clear();
+    m_httpKeyPem.clear();
+    m_httpCaPem.clear();
+    if (m_config.http.sslEnabled)
+    {
+        if (!readTextFile(m_config.http.certFile, m_httpCertPem))
+        {
+            error = "HTTPS 已启用, 但读不到服务器证书: " + m_config.http.certFile;
+            return false;
+        }
+        if (!readTextFile(m_config.http.keyFile, m_httpKeyPem))
+        {
+            error = "HTTPS 已启用, 但读不到服务器私钥: " + m_config.http.keyFile;
+            return false;
+        }
+        if (m_config.http.requireClientCert && !readTextFile(m_config.http.caFile, m_httpCaPem))
+        {
+            error = "HTTPS 要求校验客户端证书, 但读不到客户端 CA: " + m_config.http.caFile;
+            return false;
+        }
+    }
 
     // 为每个 agent 配置建实例(进程随 server 一起存活), 并连好信号
     for (const auto &ac : m_config.agents)
@@ -1041,12 +1078,6 @@ Json::Value JZAgentCliServer::tasksJson(const string &agentId, const string &sta
 
 void JZAgentCliServer::onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     const string agentId = req.queryParam("agentId");
     const string status = req.queryParam("status");
     int limit = atoi(req.queryParam("limit").c_str());
@@ -1061,12 +1092,6 @@ void JZAgentCliServer::onApiTaskList(JZHttpServerClient *client, const JZHttpReq
 
 void JZAgentCliServer::onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     TaskRecord *r = findTask(req.queryParam("id"));
     if (!r)
     {
@@ -1089,12 +1114,6 @@ Json::Value JZAgentCliServer::snapshotTask(const string &taskId) const
 // 单个 agent 的详情: 内置 agent / 在线 cli / 本机子进程, 三选一
 void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
 
     const string id = req.queryParam("id");
     if (id.empty())
@@ -1178,12 +1197,6 @@ void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttp
 // 删除一台 agent 的档案(只删"曾经连过"的记录; 默认保留历史任务)
 void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
 
     string id = req.queryParam("agentId");
     if (id.empty())
@@ -1257,13 +1270,6 @@ void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttp
 void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest &req,
                                  const std::string &name)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondText(client, req, 401, "需要 token: 访问 /?token=YOUR_TOKEN", "text/plain; charset=utf-8");
-        return;
-    }
-
     const string path = dashboardDir() + "/" + name;
     ifstream ifs(path, ios::binary);
     if (!ifs)
@@ -1480,12 +1486,6 @@ void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
 // ---------------------------------------------------------------------------
 void JZAgentCliServer::onApiTasks(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
 
     Json::Value body;
     if (!parseJsonText(string(req.body().data(), req.body().size()), body) || !body.isObject())
@@ -1508,12 +1508,6 @@ void JZAgentCliServer::onApiTasks(JZHttpServerClient *client, const JZHttpReques
 
 void JZAgentCliServer::onApiTaskCancel(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
 
     // 支持 ?taskId= 或 body {"taskId": "..."}
     string taskId = req.queryParam("taskId");
@@ -1567,6 +1561,23 @@ void JZAgentCliServer::startHttp()
 {
     m_http = new JZHttpServer(this);
 
+    // HTTPS: 证书在 init() 里已读进内存(读不到就不会走到这里)。
+    //   sslCa 非空 ⇒ mongoose 服务端用 SSL_VERIFY_PEER|FAIL_IF_NO_PEER_CERT, 即强制客户端证书;
+    //   只给 cert/key 不给 CA ⇒ 单向 TLS(仅加密, 不验客户端)。
+    if (m_config.http.sslEnabled)
+    {
+        JZSSLConfig ssl;
+        ssl.sslCert = m_httpCertPem;
+        ssl.sslKey = m_httpKeyPem;
+        if (m_config.http.requireClientCert)
+            ssl.sslCa = m_httpCaPem;
+        m_http->setSslConfig(ssl);
+    }
+    else
+    {
+        jzWarning() << "http.ssl.enabled=false: 管理台/API 将以明文 HTTP 暴露(仅限完全可信的隔离网络)";
+    }
+
     // 任务记录 + agent 档案: 先载盘, 否则重启后历史全丢
     loadTaskStore();
     loadAgentStore();
@@ -1607,8 +1618,11 @@ void JZAgentCliServer::startHttp()
     if (!m_http->listen(m_config.http.bind, m_config.http.port))
         jzWarning() << "管理网页监听失败:" << m_config.http.bind << ":" << m_config.http.port;
     else
-        jzInfo() << "管理网页已启动: http://" << m_config.http.bind << ":" << m_config.http.port
-                 << (m_config.http.token.empty() ? "" : "  (需 token)");
+        jzInfo() << "管理网页已启动: " << (m_config.http.sslEnabled ? "https://" : "http://")
+                 << m_config.http.bind << ":" << m_config.http.port
+                 << (m_config.http.sslEnabled
+                         ? (m_config.http.requireClientCert ? "  (需客户端证书)" : "  (单向 TLS)")
+                         : "  (明文!)");
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,38 +1724,10 @@ void JZAgentCliServer::appendLog(JZCliServerAgentInstance *inst, const string &c
 }
 
 // ---------------------------------------------------------------------------
-// token 校验
-// ---------------------------------------------------------------------------
-bool JZAgentCliServer::checkToken(const JZHttpRequest &req, string &err) const
-{
-    if (m_config.http.token.empty())
-        return true;
-    string t = req.queryParam("token");
-    if (t.empty())
-    {
-        string auth = req.header("Authorization");   // Authorization: Bearer <token>
-        if (auth.compare(0, 7, "Bearer ") == 0)
-            t = auth.substr(7);
-    }
-    if (t != m_config.http.token)
-    {
-        err = "token 错误/缺失";
-        return false;
-    }
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // 路由实现
 // ---------------------------------------------------------------------------
 void JZAgentCliServer::onApiStatus(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     Json::Value j;
     j["frp"]["enabled"] = m_config.frpEnabled;
     j["frp"]["bindPort"] = m_config.frpBindPort;
@@ -1764,12 +1750,6 @@ void JZAgentCliServer::onApiStatus(JZHttpServerClient *client, const JZHttpReque
 
 void JZAgentCliServer::onApiAgents(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     Json::Value j;
     Json::Value arr = Json::arrayValue;
     for (auto &kv : m_agents)
@@ -1781,12 +1761,6 @@ void JZAgentCliServer::onApiAgents(JZHttpServerClient *client, const JZHttpReque
 
 void JZAgentCliServer::onApiAgentLogs(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     string name = req.queryParam("name");
     auto it = m_agents.find(name);
     if (it == m_agents.end())
@@ -1815,12 +1789,6 @@ void JZAgentCliServer::onApiAgentLogs(JZHttpServerClient *client, const JZHttpRe
 void JZAgentCliServer::onApiAgentAction(JZHttpServerClient *client, const JZHttpRequest &req,
                                          const string &action)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        respondJson(client, req, 401, Json::Value(err));
-        return;
-    }
     string name = req.queryParam("name");
     bool ok = false;
     string msg;
@@ -1852,17 +1820,8 @@ void JZAgentCliServer::onApiAgentAction(JZHttpServerClient *client, const JZHttp
 
 void JZAgentCliServer::onDashboard(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    string err;
-    if (!checkToken(req, err))
-    {
-        JZHttpRespone resp;
-        resp.setStatusCode(401);
-        resp.setContentType("text/plain; charset=utf-8");
-        resp.setBody("需要 token: 访问 /?token=YOUR_TOKEN");
-        client->response(resp, req);
-        return;
-    }
-    // 页面从磁盘读(web/ -> <exeDir>/server_web/), 这里只做 token 校验 + 回文件
+    // 页面从磁盘读(web/ -> <exeDir>/server_web/), 这里只做读文件 + 回包。
+    // 鉴权在传输层: 默认 HTTPS + 强制客户端证书(mTLS), 没有 token 这一层。
     string html;
     string loadError;
     if (!loadDashboardHtml(html, loadError))

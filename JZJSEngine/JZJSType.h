@@ -104,7 +104,7 @@ struct JZFRAMEWORK_API CFunctionParam
     bool allowNull = false;
 };
 
-class CFunction
+class JZFRAMEWORK_API CFunction
 {
 public:
     CFunction();
@@ -302,32 +302,34 @@ T fromJSValue(JSContext* ctx, JSValueConst value)
     return fromJSValuePointer<T>(ctx, value, std::is_pointer<T>());
 }
 
+// ⚠ 下面这些是**模板显式特化**, 定义在 JZJSType.cpp 里(不是 header-only) ⇒ 动态库模式下
+//    必须带 JZFRAMEWORK_API, 否则使用方(fromJSValue<T>/toJSValue<T> 的调用点)链接期 LNK2019。
 template <>
-JSValue fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API JSValue fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
-bool fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API bool fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
-int fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API int fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
-double fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API double fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
-std::string fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API std::string fromJSValue(JSContext* ctx, JSValueConst value);
 
 template <>
-Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API Json::Value fromJSValue(JSContext* ctx, JSValueConst value);
 
 // 对象指针形参(控件方法的宿主/对象形参): 取 opaque 里那份 JZObjectPointer —— **借用**。
 // 类型号 JSType_objectPointer 由 initTypeMap 注册, "是否活着的对象指针"由 checkFunctionArg 校验。
 class JZObjectPointer;
 template <>
-JZObjectPointer* fromJSValue(JSContext* ctx, JSValueConst value);
+JZFRAMEWORK_API JZObjectPointer* fromJSValue(JSContext* ctx, JSValueConst value);
 
 // to js
-JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);
+JZFRAMEWORK_API JSValue createJSValue(JSContext* ctx, const std::string& ctypeid);
 
 template <class T>
 JSValue toJSValue(JSContext* ctx, const T& t);
@@ -405,25 +407,25 @@ JSValue toJSValue(JSContext* ctx, const T& t)
 }
 
 template <>
-JSValue toJSValue(JSContext* ctx, const JSValue& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const JSValue& value);
 
 template <>
-JSValue toJSValue(JSContext* ctx, const bool& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const bool& value);
 
 template <>
-JSValue toJSValue(JSContext* ctx, const int& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const int& value);
 
 template <>
-JSValue toJSValue(JSContext* ctx, const double& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const double& value);
 
 template <>
-JSValue toJSValue(JSContext* ctx, const std::string& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const std::string& value);
 
 template <>
-JSValue toJSValue(JSContext* ctx, const Json::Value& value);
+JZFRAMEWORK_API JSValue toJSValue(JSContext* ctx, const Json::Value& value);
 
 // checked
-bool js_check_ctypeid(JSContext* ctx, JSValueConst js_value, const std::string& ctypeid);
+JZFRAMEWORK_API bool js_check_ctypeid(JSContext* ctx, JSValueConst js_value, const std::string& ctypeid);
 
 template <class T>
 bool js_to_value(JSContext* ctx, JSValueConst js_value, T& value)
@@ -435,7 +437,7 @@ bool js_to_value(JSContext* ctx, JSValueConst js_value, T& value)
     return true;
 }
 
-bool js_has_prop(JSContext* ctx, JSValueConst js_value, const std::string& prop);
+JZFRAMEWORK_API bool js_has_prop(JSContext* ctx, JSValueConst js_value, const std::string& prop);
 
 template <class T>
 bool js_get_prop(JSContext* ctx, JSValueConst js_value, const char* prop, T& value)

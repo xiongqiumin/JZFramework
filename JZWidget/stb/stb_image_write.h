@@ -154,6 +154,28 @@ LICENSE
 #include <stdlib.h>
 
 // if STB_IMAGE_WRITE_STATIC causes problems, try defining STBIWDEF to 'inline' or 'static inline'
+// JZFramework 动态库模式: 这份实现编进 JZFramework.dll, 使用方(如 test_imageio 直接调
+// stbi_write_png)必须经 dllimport 拿到 —— 复用 stb 自己的 STBIWDEF 开关:
+//   构建侧(JZFramework_EXPORTS) -> dllexport; 使用方 -> dllimport。
+// 注意必须保留 extern "C"(STBIWDEF 原本就含它, 否则 C++ 里会是 C++ 名字修饰)。
+#ifndef STBIWDEF
+#if defined(_WIN32) && defined(JZFRAMEWORK_DYNAMIC) && !defined(STB_IMAGE_WRITE_STATIC)
+#ifdef __cplusplus
+#  ifdef JZFramework_EXPORTS
+#    define STBIWDEF  extern "C" __declspec(dllexport)
+#  else
+#    define STBIWDEF  extern "C" __declspec(dllimport)
+#  endif
+#else
+#  ifdef JZFramework_EXPORTS
+#    define STBIWDEF  extern __declspec(dllexport)
+#  else
+#    define STBIWDEF  extern __declspec(dllimport)
+#  endif
+#endif
+#endif
+#endif
+
 #ifndef STBIWDEF
 #ifdef STB_IMAGE_WRITE_STATIC
 #define STBIWDEF  static

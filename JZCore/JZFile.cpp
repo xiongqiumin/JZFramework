@@ -3,6 +3,7 @@
 #include "JZResources.h"
 #include "JZDebug.h"
 #include "JZPlatform.h"
+#include "JZStd.h"        // str_to_wstr: 路径一律 UTF-8 -> UTF-16 走宽字符 API
 #include "string.h"
 
 #if JZ_OS == JZ_OS_WINDOWS
@@ -16,8 +17,9 @@
 bool JZFile::remove(std::string filepath)
 {
 #if JZ_OS == JZ_OS_WINDOWS
-    std::string local_path = str_utf8_to_local(filepath);
-    return DeleteFileA(local_path.c_str()) == TRUE;
+    // 路径是 UTF-8: 直接转 UTF-16 交给宽字符 API, 不经 ANSI(GBK) 中转。
+    // 走 ANSI 的后果(实测): emoji / GBK 表示不了的字符一律"文件不存在"。
+    return DeleteFileW(str_to_wstr(filepath).c_str()) == TRUE;
 #elif JZ_OS == JZ_OS_LINUX
     return unlink(filepath.c_str()) == 0;
 #else
@@ -109,7 +111,7 @@ bool JZFile::rename(const std::string &from, const std::string &to, std::string 
     bool ok = false;
 #if JZ_OS == JZ_OS_WINDOWS
     // MOVEFILE_REPLACE_EXISTING: 目标已存在时覆盖；MOVEFILE_COPY_ALLOWED: 跨盘也能移动
-    ok = MoveFileExA(str_utf8_to_local(from).c_str(), str_utf8_to_local(to).c_str(),
+    ok = MoveFileExW(str_to_wstr(from).c_str(), str_to_wstr(to).c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) == TRUE;
 #elif JZ_OS == JZ_OS_LINUX
     ok = ::rename(from.c_str(), to.c_str()) == 0;
@@ -158,8 +160,12 @@ bool JZFile::open(std::string filepath, std::string mode)
         return m_res != nullptr;
     }
 
-#ifdef JZ_OS_NORMAL
-    m_fp = fopen(str_utf8_to_local(filepath).c_str(), mode.c_str());
+#if JZ_OS == JZ_OS_WINDOWS
+    // _wfopen: 路径与 mode 都要宽字符(mode 是纯 ASCII, 但签名要 wchar_t*)
+    m_fp = _wfopen(str_to_wstr(filepath).c_str(), str_to_wstr(mode).c_str());
+    return m_fp != nullptr;
+#elif JZ_OS == JZ_OS_LINUX
+    m_fp = fopen(filepath.c_str(), mode.c_str());
     return m_fp != nullptr;
 #else
     m_fp = JZPlatform::instance()->fopen(filepath.c_str(), mode.c_str());

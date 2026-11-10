@@ -25,8 +25,7 @@ namespace
 
     string defaultActiveRunId(JZVirtualTerminal *term)
     {
-        vector<string> ids = term->activeRunIds();
-        return ids.empty() ? string() : ids.back();
+        return term->activeRunId();
     }
 
     ToolDefine makeDef(const string &name, const string &desc,
@@ -47,8 +46,10 @@ namespace
 JZTerminalToolBase::JZTerminalToolBase(const std::string &name, JZVirtualTerminal *term)
     : m_term(term)
 {
-    setToolDefine(makeDef(name, "[deprecated] 本地终端命令工具。新链路请走 JZAgentNode 的 terminal_* 工具。",
-                          vector<ParamSchema>(), vector<string>()));
+    // 这里不再 setToolDefine: 每个派生类构造时都会定义自己的 description/参数,
+    // 基类再写一份只会被覆盖(以前那句"deprecated, 请走 agent_node"还会误导人 ——
+    // 这 6 个工具正是 code_agent / agent_cli 的本地主执行面)。
+    (void)name;
 }
 
 // ======================================================================
@@ -60,16 +61,12 @@ JZTerminalRunTool::JZTerminalRunTool(JZVirtualTerminal *term)
     vector<ParamSchema> params;
     params.push_back(JZCodeTool::makeParam("command", ParamType::String, "要执行的命令"));
     params.push_back(JZCodeTool::makeParam("timeout_ms", ParamType::Number,
-                                           "超时毫秒(默认 120000; 到点强杀。background=true 时忽略)"));
-    params.push_back(JZCodeTool::makeParam("background", ParamType::Boolean,
-                                           "后台运行(默认 false): 启动成功就立即返回 run_id, 不等它结束、"
-                                           "也不设超时 —— 起服务/常驻进程这类自己不退出的命令用它, "
-                                           "之后用 terminal_query 查状态与日志、terminal_cancel 停掉"));
+                                           "超时毫秒(默认 120000; 到点强杀)"));
     setToolDefine(makeDef("terminal_run",
                           "在沙箱终端执行一条 shell 命令(本地 code_agent 单用户终端)。"
-                          "可以同时跑多条: 一条长任务不会堵住别的命令(每条各自一个 run_id)。\n"
-                          "默认等命令自己退出才回结果(到 timeout_ms 强杀); "
-                          "background=true 时启动成功就返回 run_id, 不等它结束、不设超时。",
+                          "终端**有状态**: cd / export 会保留到下一条命令。\n"
+                          "同一时刻只能跑一条命令(单前台任务); 等它跑完再发下一条, "
+                          "长任务用 timeout_ms 控制。",
                           params, { "command" }));
 }
 
@@ -88,13 +85,10 @@ void JZTerminalRunTool::call(const ToolCall &params)
         finish(params, false, "command 不能为空");
         return;
     }
-    bool background = p.get("background", false).asBool();
     int timeoutMs = p.get("timeout_ms", 120000).asInt();
     // 参数被我们改写了就在回包里说一句 —— 静默改写会让模型以为"设了 500ms 就 500ms"
     string paramNote;
-    if (background && p.isMember("timeout_ms"))
-        paramNote = "\n[提示] background=true 时没有超时, timeout_ms 被忽略(要限时请前台跑)";
-    else if (!background && timeoutMs < 1000)
+    if (timeoutMs < 1000)
     {
         paramNote = "\n[提示] timeout_ms=" + to_string(timeoutMs) + " 太小, 已按 120000 ms 处理";
         timeoutMs = 120000;
@@ -129,9 +123,7 @@ void JZTerminalRunTool::call(const ToolCall &params)
         finish(params, ok, text);
     };
 
-    JZResult<string> started = background
-                                   ? m_term->runBackground(command, cb)
-                                   : m_term->run(command, timeoutMs, cb, nullptr, false);
+    JZResult<string> started = m_term->run(command, timeoutMs, cb);
     if (started.isError())
     {
         if (!*fired)
@@ -139,19 +131,7 @@ void JZTerminalRunTool::call(const ToolCall &params)
         return;
     }
 
-    // 后台: 启动成功就直接回 run_id。
-    // ⚠ 不记 m_runs: 这条 tool call 到此就结束了, 它的取消只能走 terminal_cancel(run_id) ——
-    //   JZCodeTool::cancel(id) 是按 tool call id 的, 那条路对后台任务没有意义。
-    if (background)
-    {
-        string text = "已后台启动(不等它结束, 不设超时)\n[run_id] " + started.value() +
-                      "\n用 terminal_query 查状态与日志(默认只回新增行), 用 terminal_cancel 停掉它";
-        text += paramNote;
-        finish(params, true, text);
-        return;
-    }
-
-    // 记下 run_id: 取消时按它精确停这一条(见 cancel)
+    // 记下 run_id(展示/查询用; 取消不需要它 —— 只有一条在跑)
     m_runs[params.id] = started.value();
     *ridPtr = started.value();
 }
@@ -164,9 +144,8 @@ void JZTerminalRunTool::cancel(const std::string &id)
     auto it = m_runs.find(id);
     if (it == m_runs.end())
         return;
-    string runId = it->second;
     m_runs.erase(it);
-    m_term->cancel(runId);
+    m_term->cancel();
 }
 
 // ======================================================================
@@ -426,7 +405,7 @@ void JZTerminalCancelTool::call(const ToolCall &params)
         }
     }
 
-    if (!m_term->cancel(runId))
+    if (!m_term->cancel())
     {
         finish(params, false, "这条已经不在跑了: " + runId +
                                   "(它可能已结束 —— 用 terminal_query 查它的结果)");
@@ -486,17 +465,15 @@ void JZTerminalListTool::call(const ToolCall &params)
         text += "空闲";
     text += "\n";
 
-    // 在跑的都列出来(run_id + 已跑多久 + 命令): 模型忘了 run_id 时不用靠 query 报错才拿到
-    vector<string> active = m_term->activeRunIds();
+    // 在跑的那一条(run_id + 已跑多久 + 命令): 模型忘了 run_id 时不用靠 query 报错才拿到
+    string active = m_term->activeRunId();
     if (!active.empty())
     {
         text += "  在跑:\n";
         int64_t now = JZPlatform::getTickCountMs();
-        for (size_t i = 0; i < active.size(); i++)
+        JZVirtualTerminal::RunRecordInfo rec;
+        if (m_term->runSnapshot(active, rec))
         {
-            JZVirtualTerminal::RunRecordInfo rec;
-            if (!m_term->runSnapshot(active[i], rec))
-                continue;
             string cmd = rec.command.size() > 60 ? rec.command.substr(0, 60) + "…" : rec.command;
             text += "    " + rec.runId + "  " + to_string((now - rec.startTime) / 1000) + "s  " + cmd +
                     "\n";

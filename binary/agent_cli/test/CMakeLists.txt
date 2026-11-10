@@ -80,6 +80,47 @@ add_test(NAME agent_cli.server_tasks
 set_tests_properties(agent_cli.server_tasks PROPERTIES
                      TIMEOUT 120 LABELS "agent_cli" RUN_SERIAL TRUE)
 
+# ---------------------------------------------------------------------------
+# agent_cli_test.cpp —— 评测程序(不是 ctest 条目): 用 code_agent/benchmark 的同一套用例
+#   评测 JZAgentCli 本体(submitTask + 验证脚本门控); 与 code_agent_benchmark 的区别
+#   见文件头注释。
+#       cd build/test/bin/<配置>
+#       agent_cli_test.exe --cases 'hello_*' --no-color
+#   输出到 <build>/test/bin/<配置>(不发布), 用例集与 test_llm.json 由下面 POST_BUILD 铺到旁边。
+# ---------------------------------------------------------------------------
+add_executable(agent_cli_test
+    agent_cli_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.h
+    # JZAgentCli 依赖的传输层: node(执行面)与 server(控制面)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZNodeLink.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZHubLink.cpp
+)
+target_include_directories(agent_cli_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+# agent_cli_packet: 两个协议包的**定义**(JZAgentNode/HubPacketInit)在静态库里, 见 ../CMakeLists.txt
+target_link_libraries(agent_cli_test PRIVATE agent_cli_packet agent_tool)
+
+set_target_properties(agent_cli_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")
+
+# 复用 code_agent/benchmark 的评测集(data/*.json), 随构建拷贝到 exe 同目录的 data/agent_cli_test
+# （运行期由 applicationDirPath()+"/data/agent_cli_test" 读取；可用 --data 覆盖）。
+add_custom_command(TARGET agent_cli_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../code_agent/benchmark/data"
+            "$<TARGET_FILE_DIR:agent_cli_test>/data/agent_cli_test"
+    COMMENT "Copy benchmark evaluation set next to agent_cli_test (data/agent_cli_test)")
+
+# 大模型接入配置: 测试**不写死**任何端点, 一律读 exe 同目录的 test_llm.json(模板就在本目录)。
+# 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake) —— 已经存在的**不覆盖**,
+# 因为那份才是本机实际在用的(换端点改的是它, 不是仓库里这份模板)。
+add_custom_command(TARGET agent_cli_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+            -Dsrc=${CMAKE_CURRENT_SOURCE_DIR}/test_llm.json
+            -Ddst=$<TARGET_FILE_DIR:agent_cli_test>/test_llm.json
+            -P ${JZFRAMEWORK_ROOT_DIR}/cmake/copy_if_absent.cmake
+    COMMENT "Place test_llm.json next to agent_cli_test (sample if absent)")
+
 #   test_codex/test_codex_bench.py —— 用 **Codex SDK** 跑 benchmark 的同一批用例(与 agent_cli_test
 #       同套用例/工程骨架/验证命令), 用来和 agent_cli 的通过率做对比。
 #       ⚠ 真模型 + 真 Codex 回合, 全量一轮动辄几十分钟, **不再注册 ctest**(2026-11-09 移除),

@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include "JZGlobal.h"
 
 namespace JZTestInternal {
     template<typename T>
@@ -13,8 +14,9 @@ namespace JZTestInternal {
         return oss.str();
     }
     
+    // 显式特化定义在 JZTestMacro.cpp 里 ⇒ 动态库模式下必须带 JZFRAMEWORK_API。
     template<>
-    std::string toString(const std::nullptr_t&);
+    JZFRAMEWORK_API std::string toString(const std::nullptr_t&);
 
     inline void throwAssertionFailure(const std::string& message, const char* file, int line) {
         std::ostringstream oss;

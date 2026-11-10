@@ -83,9 +83,15 @@ void JZTsLangServer::shutdown()
     m_docs.clear();
     if (m_proc)
     {
+        // ⚠ killProcess() 可能**同步**走到 onFinished -> handleProcessGone, 那里已经把
+        //   m_proc 置空并 deleteLater 了。所以杀完必须**再判一次**, 否则就是对着 nullptr
+        //   调 deleteLater()(实测直接 0xC0000005)。
         m_proc->killProcess();
-        m_proc->deleteLater();
-        m_proc = nullptr;
+        if (m_proc)
+        {
+            m_proc->deleteLater();
+            m_proc = nullptr;
+        }
     }
 }
 

@@ -11,8 +11,11 @@ target_link_libraries(test_image JZFramework)
 add_executable(test_agenttoolbridge test_agenttoolbridge.cpp)
 target_link_libraries(test_agenttoolbridge JZFramework agent_tool)
 
-add_executable(test_virtual_terminal test_virtual_terminal.cpp)
-target_link_libraries(test_virtual_terminal JZFramework agent_tool)
+# test_virtual_terminal 已删除(2026-11-10): 它是旧解释器时代的产物, 断言前提已不成立
+#   (最典型的一条: "单独一条 export 必须被拒, 因为变量不跨命令保留" —— 现在终端复用同一个
+#    JZShell, export 确实跨命令保留)。而且它的步骤链是"回调里直接调下一步", 没有重入保护:
+#   一旦某步的 run 卡住, 回调被反复触发 ⇒ 步骤按 2^n 递归, 一次运行能刷出 20 万条失败。
+#   终端行为的回归改由 ctest 里的 agent.test_code_tools / test_terminal_tools 覆盖。
 
 # terminal_run / terminal_query / terminal_cancel 三个工具类(终端 API 见上一条)
 add_executable(test_terminal_tools test_terminal_tools.cpp)

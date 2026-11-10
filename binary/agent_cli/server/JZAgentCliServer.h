@@ -28,11 +28,20 @@ class JZHttpRequest;
 // ---------------------------------------------------------------------------
 
 // 后台网页 / 管理 API 配置
+//   HTTPS 默认开启, 且默认要求客户端证书(双向认证 / mTLS): 管理台能停/起 agent、
+//   能往任意 agent 下发任务, 明文 HTTP 一旦被访问就等于把执行权交出去。
+//   只有显式 ssl.enabled=false 才会退回明文(启动时打警告)。
 struct JZCliServerHttpConfig
 {
     std::string bind = "127.0.0.1";
     int port = 8088;
-    std::string token;          // 非空则要求 ?token= 或 Authorization: Bearer(防裸奔)
+
+    // 鉴权只靠传输层: 默认 HTTPS + 强制客户端证书。不再有应用层 token。
+    bool sslEnabled = true;     // 是否用 TLS 提供网页 / API(默认开)
+    std::string certFile;       // 服务器证书链(PEM); 空 = <配置文件目录>/certs/server.crt
+    std::string keyFile;        // 服务器私钥(PEM);   空 = <配置文件目录>/certs/server.key
+    std::string caFile;         // 客户端 CA(PEM);    空 = <配置文件目录>/certs/ca.crt
+    bool requireClientCert = true;  // 是否校验客户端证书(需要 caFile; false = 单向 TLS)
 };
 
 // 被管理的一个 agent_cli 实例的配置
@@ -144,7 +153,6 @@ public:
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
 private:
-    bool checkToken(const JZHttpRequest &req, std::string &err) const;
     void startFrp();
     void startHttp();
     void startHub();                     // 起控制面(JZNetServer)
@@ -164,6 +172,11 @@ private:
     JZCliServerConfig m_config;
     JZFrpServer *m_frpServer = nullptr;
     JZHttpServer *m_http = nullptr;
+
+    // init() 时读入的 PEM 内容(证书文件读不到就直接启动失败, 不静默降级成明文 HTTP)
+    std::string m_httpCertPem;
+    std::string m_httpKeyPem;
+    std::string m_httpCaPem;
     std::map<std::string, JZCliServerAgentInstance*> m_agents;  // name -> 实例
     int64_t m_startTime = 0;
 
@@ -194,7 +207,7 @@ private:
                    Json::Value &ack, std::string &error);
 
     // ---- 任务记录 ----
-    // 归属(见 docs/agent-hub-design.md §15): **server 是任务历史的主人**, cli 只知道
+    // 归属(见 docs/agent-hub-design.md §10): **server 是任务历史的主人**, cli 只知道
     // "当前这一条"加上它自己内存里的 recent(重启即丢)。历史不在 server 落盘的话,
     // cli 一重启, 提交方就再也查不到自己交过什么。
     struct TaskRecord

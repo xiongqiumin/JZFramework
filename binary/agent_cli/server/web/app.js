@@ -5,10 +5,9 @@
      /new           新建任务(跨 agent)
    数据: /api/status(含 known, 离线也在列表里), /api/agent, /api/tasks。 */
 
-const TOKEN = new URLSearchParams(location.search).get('token') || '';
+// 鉴权在传输层(HTTPS + 客户端证书), 页面不再需要 token
 const PAGE = document.body.dataset.page || 'agents';
-const withToken = (p) => p + (TOKEN ? ((p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN)) : '');
-const api = (p) => withToken('/api/' + p);
+const api = (p) => '/api/' + p;
 
 // 页面级兜底: 有 #msg 的地方(会话页)直接把异常显示出来, 否则进 console。
 // 没有这个, 脚本一早抛错就只表现为"界面一直显示加载中", 从截图/截图式反馈根本看不出来。
@@ -48,7 +47,6 @@ const badge = (s) => `<span class="jz-badge ${BADGE[s] || ''}">${esc(s || '?')}<
 
 function fixNav() {
   document.querySelectorAll('#nav a').forEach(a => {
-    a.href = withToken(a.getAttribute('href'));
     if (a.dataset.nav === PAGE) a.setAttribute('aria-current', 'page');
   });
 }
@@ -65,7 +63,7 @@ function connCard(a) {
   const on = nodes.filter(n => n.online).length;
   const builtin = !!a.builtin;
   const online = a.online !== false;
-  const href = withToken('agent?id=' + encodeURIComponent(a.agentId));
+  const href = 'agent?id=' + encodeURIComponent(a.agentId);
 
   const state = !online
     ? '<span class="jz-badge">离线</span>'
@@ -262,7 +260,7 @@ function renderNodes(info) {
 
 function renderTaskTable(tasks) {
   document.getElementById('taskBody').innerHTML = tasks.length ? tasks.map(t => `<tr style="cursor:pointer"
-      onclick="location.href='${withToken('tasks?id=' + encodeURIComponent(t.taskId))}'">
+      onclick="location.href='tasks?id=${encodeURIComponent(t.taskId)}'">
       <td data-label="任务">${esc(t.taskId)}</td>
       <td data-label="状态">${badge(t.status)}</td>
       <td data-label="轮次" class="hide-sm">${t.verify_rounds || 0}</td>
@@ -329,7 +327,7 @@ async function loadAgentPage() {
     FEED_SIG = '';
     document.getElementById('title').textContent = id;
     document.getElementById('mono').textContent = id.slice(0, 2).toUpperCase();
-    document.getElementById('allTasks').href = withToken('tasks?agentId=' + encodeURIComponent(id));
+    document.getElementById('allTasks').href = 'tasks?agentId=' + encodeURIComponent(id);
     bindComposer();
   }
 
@@ -340,7 +338,7 @@ async function loadAgentPage() {
     document.getElementById('meta').textContent = '这台 agent 查不到（可能已被删除）';
     document.getElementById('feed').innerHTML =
       `<div class="feed__empty">server 上没有这台 agent 的记录。<br>
-       它的历史任务还在：<a href="${withToken('tasks?agentId=' + encodeURIComponent(id))}">任务记录</a></div>`;
+       它的历史任务还在：<a href="tasks?agentId=${encodeURIComponent(id)}">任务记录</a></div>`;
     document.getElementById('btnSubmit').disabled = true;
     AGENT_OFFLINE = true;
     return;
@@ -405,7 +403,7 @@ async function loadDetail(id) {
     body.innerHTML = `
       <div class="kv"><span class="k">taskId</span><span class="v">${esc(t.taskId)}</span></div>
       <div class="kv"><span class="k">agent</span><span class="v">
-        <a href="${withToken('agent?id=' + encodeURIComponent(t.agentId))}">${esc(t.agentId)}</a></span></div>
+        <a href="agent?id=${encodeURIComponent(t.agentId)}">${esc(t.agentId)}</a></span></div>
       <div class="kv"><span class="k">状态</span><span class="v">${badge(t.status)} ${esc(t.error || '')}</span></div>
       <div class="kv"><span class="k">轮次 / 耗时</span><span class="v">${t.verify_rounds || 0} 轮 · ${fmtCost(t)}</span></div>
       <div class="kv"><span class="k">提交 / 结束</span><span class="v">${fmtTime(t.start_ms)} → ${fmtTime(t.end_ms)}</span></div>
@@ -452,7 +450,7 @@ async function loadTasksPage() {
   document.querySelectorAll('#listBody tr[data-task]').forEach(tr => {
     tr.onclick = () => {
       const id = tr.dataset.task;
-      history.replaceState(null, '', withToken('tasks?id=' + encodeURIComponent(id)));
+      history.replaceState(null, '', 'tasks?id=' + encodeURIComponent(id));
       loadDetail(id);
     };
   });
@@ -500,7 +498,7 @@ async function loadNewPage() {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { msg.textContent = '失败(' + r.status + ')：' + (j.error || ''); return; }
       msg.textContent = '已提交：' + (j.taskId || '');
-      location.href = withToken('tasks?id=' + encodeURIComponent(j.taskId || ''));
+      location.href = 'tasks?id=' + encodeURIComponent(j.taskId || '');
     } catch (e) {
       msg.textContent = '请求失败：' + e;
     } finally {
@@ -538,7 +536,7 @@ if (PAGE === 'agents') {
   });
   document.getElementById('btnClose').onclick = () => {
     document.getElementById('detail').classList.add('hidden');
-    history.replaceState(null, '', withToken('tasks'));
+    history.replaceState(null, '', 'tasks');
   };
 } else if (PAGE === 'new') {
   loadNewPage();

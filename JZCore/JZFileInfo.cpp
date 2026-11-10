@@ -100,10 +100,13 @@ void JZFileInfo::setFile(const std::string &path)
     }
 
 #if JZ_OS == JZ_OS_WINDOWS || JZ_OS == JZ_OS_LINUX
-    struct stat st;
 #if JZ_OS == JZ_OS_WINDOWS
-    if (stat(str_utf8_to_local(path).c_str(), &st) == 0)
+    // 宽字符版: 路径 UTF-8 -> UTF-16, 不经 ANSI(GBK) 中转。
+    // 走 ANSI 的后果(实测): emoji / GBK 表示不了的字符一律"文件不存在"。
+    struct _stat64 st;
+    if (_wstat64(str_to_wstr(path).c_str(), &st) == 0)
 #else
+    struct stat st;
     if (stat(path.c_str(), &st) == 0)
 #endif
     {

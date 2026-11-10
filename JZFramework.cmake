@@ -33,16 +33,19 @@ if(JZFRAMEWORK_DYNAMIC)
     add_library(JZFramework SHARED "")
     target_compile_definitions(JZFramework PUBLIC JZFRAMEWORK_DYNAMIC)
 
-    # 自动导出**全部函数符号**(CMake 生成 .def; 覆盖 quickjs 的 JS_*、mongoose 的 mg_*、jzco_*、
-    # jsoncpp / fromJSValue 的显式特化……这些"第三方或内部 C 接口被宿主/测试直接调用"的情形,
-    # 逐个补 JZFRAMEWORK_API 不现实)。
-    # ⚠ 官方限制: **数据符号**(全局变量, 如 jzApp / mg_log_level)仍必须在使用方声明处写
-    #   __declspec(dllimport) 才能链接 —— 所以 JZ 自己的全局变量照样要带 JZFRAMEWORK_API
-    #   (见 JZApplication.h 的 jzApp); 第三方头里的数据符号(如 mongoose 的 mg_log_level)
-    #   只能靠"那个测试自带一份 .c"(见 test/net/CMakeLists.txt 的 test_mg*)或给它加导出宏。
-    if(MSVC AND WIN32)
-        set_target_properties(JZFramework PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-    endif()
+    # 导出面 = **只认显式导出标记**(2026-11-10 定案: 不再用 WINDOWS_EXPORT_ALL_SYMBOLS)。
+    #   曾开 WINDOWS_EXPORT_ALL_SYMBOLS(CMake 扫 .obj 生成 .def, 自动导出全部函数符号),
+    #   好处是第三方 C 符号(JS_* / mg_*)和模板显式特化不用逐个标注; 代价:
+    #     * vftable(??_7*)这类**数据符号**与类上的 dllexport 重复 ⇒ 每个多态类一条 LNK4197;
+    #     * 导出面不可控 —— 内部实现符号全进 DLL 导出表。
+    #   关掉之后的约定:
+    #     * 框架自己的类 / 自由函数 / 模板显式特化: 一律带 JZFRAMEWORK_API(漏了使用方 LNK2019);
+    #       ⚠ 数据符号(全局变量, 如 jzApp)在**使用方**也必须能看到 dllimport, 所以只能靠头文件里
+    #       的 JZFRAMEWORK_API, 不能靠 .def。
+    #     * jsoncpp(vendored): 下面两条 JSON_DLL / JSON_DLL_BUILD 负责;
+    #     * quickjs(JS_*): 用 quickjs 自己的 BUILDING_QJS_SHARED / USING_QJS_SHARED(见下);
+    #     * mongoose(mg_*): **不导出**(它是 JZNet 的内部实现)—— 需要直连 C API 的测试自带
+    #       一份 mongoose.c, 见 test/net/CMakeLists.txt 的 test_mg* 与那里的说明。
 
     # 注: 导出类带 std::string/std::vector 成员会刷 C4251/C4275(编 DLL 与使用方都刷)。
     #     本工程已**全局**忽略这两条 —— 见根 CMakeLists.txt 的 MSVC 段(/wd4251 /wd4275),
@@ -53,6 +56,14 @@ if(JZFRAMEWORK_DYNAMIC)
     # 少了它, 任何 exe 只要直接碰 Json::Value(main.cpp/工具/评测都在碰)就 LNK2019。
     target_compile_definitions(JZFramework PUBLIC JSON_DLL)
     target_compile_definitions(JZFramework PRIVATE JSON_DLL_BUILD)
+
+    # quickjs(源码编进 DLL)自带导出开关: quickjs.h 里的 JS_EXTERN 由
+    #   BUILDING_QJS_SHARED -> dllexport(建库侧) / USING_QJS_SHARED -> dllimport(使用方) 决定。
+    # 用 INTERFACE 而不是 PUBLIC: 建库侧**只**看到 BUILDING_QJS_SHARED。
+    # (两者同时可见时 quickjs.h 靠 #if/#elif 的先后也能选对, 但那是隐式依赖, 别赌。)
+    # 少了 BUILDING_QJS_SHARED: JS_* 不进导出表 -> 直接调 quickjs C API 的测试/test_jsengine LNK2019。
+    target_compile_definitions(JZFramework PRIVATE BUILDING_QJS_SHARED)
+    target_compile_definitions(JZFramework INTERFACE USING_QJS_SHARED)
 
     # 非 Windows: 给 .so/.dylib 设好输出位置与 RPATH, 让 build 树里的 exe 直接能跑。
     #   * 不设 VERSION/SOVERSION ⇒ 只产出**一个裸 libJZFramework.so**, 不生成

@@ -18,7 +18,26 @@ add_executable(agent_cli
     JZHubLink.cpp
 )
 
-target_link_libraries(agent_cli PRIVATE JZFramework agent_tool)
+# ---------------------------------------------------------------------------
+# agent_cli_packet —— 这一族的**线上协议**(执行面 + 控制面)共用静态库
+#
+# 为什么是静态库而不是放进 JZAgent 模块(以前就放在那儿):
+#   * 这两个协议只有 agent_cli / agent_node / agent_cli_server / agent_cli_test 用,
+#     框架(JZFramework.dll)里没有任何代码引用它们 ⇒ 放进去等于白占导出面;
+#   * 静态库直接编进各自 exe, 互不共享状态, 也就不需要 JZFRAMEWORK_API(见头文件里的说明)。
+# 内容: 包类(JZNetPack 派生) + 两个幂等注册函数 JZAgentNodePacketInit/JZAgentHubPacketInit。
+# ---------------------------------------------------------------------------
+add_library(agent_cli_packet STATIC
+    JZAgentHubPacket.h
+    JZAgentHubPacket.cpp
+    JZAgentNodePacket.h
+    JZAgentNodePacket.cpp
+)
+target_link_libraries(agent_cli_packet PUBLIC JZFramework)
+# PUBLIC: server/ node/ test/ 这几个子目录里的源文件都按裸名 include 这两个头。
+target_include_directories(agent_cli_packet PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(agent_cli PRIVATE agent_cli_packet agent_tool)
 
 # 拷贝网页静态资源(http/)到 exe 同目录, 使默认 httpDir(=exeDir/http) 能找到 index.html 等。
 add_custom_command(TARGET agent_cli POST_BUILD
@@ -46,10 +65,9 @@ add_custom_command(TARGET agent_cli POST_BUILD
     COMMENT "Place test_llm.json next to agent_cli (sample if absent)")
 
 # test: --loop 端到端等测试(见 test/CMakeLists.txt; 测试脚本与它的验证程序都放在那里)
+#   评测程序 agent_cli_test(复用 code_agent/benchmark 用例评测 JZAgentCli)也在 test/ 下面,
+#   由 test/CMakeLists.txt 自己 add_subdirectory —— 与其它测试脚本同一处管理。
 add_subdirectory(test)
-
-# agent_cli_test: 复用 code_agent/benchmark 用例评测 JZAgentCli(见 agent_cli_test/CMakeLists.txt)
-add_subdirectory(agent_cli_test)
 
 # JZAgentCliServer: FRP 服务端(frps) —— 与 agent_cli(client 角色 = frpc)配对
 add_subdirectory(server)

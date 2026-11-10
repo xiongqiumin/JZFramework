@@ -115,6 +115,6 @@ protected:
 
     std::map<int, CreatePackFunc> m_packFactory;
 };
-void JZNetPackInit();
+JZFRAMEWORK_API void JZNetPackInit();
 
 #endif // ! MG_PACKET_H_

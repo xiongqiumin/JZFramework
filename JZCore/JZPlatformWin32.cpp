@@ -5,17 +5,16 @@
 
 std::string win32_applicationFilePath()
 {
-    char buffer[MAX_PATH] = {0};
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string path = str_local_to_utf8(buffer);
-    return path;
+    wchar_t buffer[MAX_PATH] = {0};
+    GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    return wstr_to_str(std::wstring(buffer));
 }
 
 std::string win32_applicationDirPath()
 {
-    char buffer[MAX_PATH] = {0};
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string path = str_local_to_utf8(buffer);
+    wchar_t buffer[MAX_PATH] = {0};
+    GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    std::string path = wstr_to_str(std::wstring(buffer));
 
     size_t pos = path.find_last_of("\\/");
     if (pos != std::wstring::npos)

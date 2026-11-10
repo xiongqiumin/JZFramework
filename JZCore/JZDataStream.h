@@ -199,10 +199,13 @@ protected:
     int64_t m_maxSize;   // 写入上限(字节), <0 表示不限制
 };
 
-JZDataStream &operator<<(JZDataStream &s, const std::string &str);
-JZDataStream &operator>>(JZDataStream &s, std::string &str);
-JZDataStream &operator<<(JZDataStream &s, const JZByteArray &buffer);
-JZDataStream &operator>>(JZDataStream &s, JZByteArray &buffer);
+// ⚠ 这四个是**自由函数**(定义在 JZDataStream.cpp), 不随 class JZDataStream 导出 ——
+//   动态库模式下必须带 JZFRAMEWORK_API, 否则任何在 DLL 外做 `s << str` / `s >> str`
+//   的代码(如 binary/agent_cli 里的协议包)都会 LNK2019。
+JZFRAMEWORK_API JZDataStream &operator<<(JZDataStream &s, const std::string &str);
+JZFRAMEWORK_API JZDataStream &operator>>(JZDataStream &s, std::string &str);
+JZFRAMEWORK_API JZDataStream &operator<<(JZDataStream &s, const JZByteArray &buffer);
+JZFRAMEWORK_API JZDataStream &operator>>(JZDataStream &s, JZByteArray &buffer);
 
 // 容器长度字段: 统一以小端写入/读出, 与流当前配置的字节序无关。
 // 这样 size 头部在大小端流下完全一致, 且便于跨端/抓包排查。

@@ -123,93 +123,96 @@ typedef std::map<std::string,JZVariant> JZVariantMap;
 JZ_DECLARE_METATYPE_INTERNAL(JZVariantMap,  JZMetaType::VariantMap)
 JZ_DECLARE_METATYPE_INTERNAL(JZVariantList, JZMetaType::VariantList)
 
+// ⚠ 下面全部是**模板显式特化**, 定义在 JZVariant.cpp 里(非 header-only)。
+//   类本身带 JZFRAMEWORK_API 并不会顺带导出这些特化 ⇒ 动态库模式下必须逐个标注,
+//   否则使用方(JZSlot/JZSignal 里的 fromValue<T>/value<T>/valueRef<T> 调用点)链接期 LNK2019。
 // fromValue 特化声明
 template <>
-JZVariant JZVariant::fromValue(const bool &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const bool &t);
 template <>
-JZVariant JZVariant::fromValue(const int &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const int &t);
 template <>
-JZVariant JZVariant::fromValue(const int64_t &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const int64_t &t);
 template <>
-JZVariant JZVariant::fromValue(const float &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const float &t);
 template <>
-JZVariant JZVariant::fromValue(const double &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const double &t);
 template <>
-JZVariant JZVariant::fromValue(void *const &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(void *const &t);
 template <>
-JZVariant JZVariant::fromValue(const int16_t &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const int16_t &t);
 template <>
-JZVariant JZVariant::fromValue(const uint16_t &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const uint16_t &t);
 template <>
-JZVariant JZVariant::fromValue(const unsigned int &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const unsigned int &t);
 template <>
-JZVariant JZVariant::fromValue(const uint64_t &t);
+JZFRAMEWORK_API JZVariant JZVariant::fromValue(const uint64_t &t);
 
 // value 特化声明
 template <>
-bool JZVariant::value<bool>() const;
+JZFRAMEWORK_API bool JZVariant::value<bool>() const;
 template <>
-int JZVariant::value<int>() const;
+JZFRAMEWORK_API int JZVariant::value<int>() const;
 template <>
-int64_t JZVariant::value<int64_t>() const;
+JZFRAMEWORK_API int64_t JZVariant::value<int64_t>() const;
 template <>
-float JZVariant::value<float>() const;
+JZFRAMEWORK_API float JZVariant::value<float>() const;
 template <>
-double JZVariant::value<double>() const;
+JZFRAMEWORK_API double JZVariant::value<double>() const;
 template <>
-void *JZVariant::value<void *>() const;
+JZFRAMEWORK_API void *JZVariant::value<void *>() const;
 template <>
-int16_t JZVariant::value<int16_t>() const;
+JZFRAMEWORK_API int16_t JZVariant::value<int16_t>() const;
 template <>
-uint16_t JZVariant::value<uint16_t>() const;
+JZFRAMEWORK_API uint16_t JZVariant::value<uint16_t>() const;
 template <>
-unsigned int JZVariant::value<unsigned int>() const;
+JZFRAMEWORK_API unsigned int JZVariant::value<unsigned int>() const;
 template <>
-uint64_t JZVariant::value<uint64_t>() const;
+JZFRAMEWORK_API uint64_t JZVariant::value<uint64_t>() const;
 
 //==================== valueRef 非const 可读写版本声明 ====================
 template <>
-bool& JZVariant::valueRef<bool>();
+JZFRAMEWORK_API bool& JZVariant::valueRef<bool>();
 template <>
-int& JZVariant::valueRef<int>();
+JZFRAMEWORK_API int& JZVariant::valueRef<int>();
 template <>
-int64_t& JZVariant::valueRef<int64_t>();
+JZFRAMEWORK_API int64_t& JZVariant::valueRef<int64_t>();
 template <>
-float& JZVariant::valueRef<float>();
+JZFRAMEWORK_API float& JZVariant::valueRef<float>();
 template <>
-double& JZVariant::valueRef<double>();
+JZFRAMEWORK_API double& JZVariant::valueRef<double>();
 template <>
-void*& JZVariant::valueRef<void*>();
+JZFRAMEWORK_API void*& JZVariant::valueRef<void*>();
 template <>
-int16_t& JZVariant::valueRef<int16_t>();
+JZFRAMEWORK_API int16_t& JZVariant::valueRef<int16_t>();
 template <>
-uint16_t& JZVariant::valueRef<uint16_t>();
+JZFRAMEWORK_API uint16_t& JZVariant::valueRef<uint16_t>();
 template <>
-unsigned int& JZVariant::valueRef<unsigned int>();
+JZFRAMEWORK_API unsigned int& JZVariant::valueRef<unsigned int>();
 template <>
-uint64_t& JZVariant::valueRef<uint64_t>();
+JZFRAMEWORK_API uint64_t& JZVariant::valueRef<uint64_t>();
 
 //==================== valueRef const 只读版本声明 ====================
 template <>
-const bool& JZVariant::valueRef<bool>() const;
+JZFRAMEWORK_API const bool& JZVariant::valueRef<bool>() const;
 template <>
-const int& JZVariant::valueRef<int>() const;
+JZFRAMEWORK_API const int& JZVariant::valueRef<int>() const;
 template <>
-const int64_t& JZVariant::valueRef<int64_t>() const;
+JZFRAMEWORK_API const int64_t& JZVariant::valueRef<int64_t>() const;
 template <>
-const float& JZVariant::valueRef<float>() const;
+JZFRAMEWORK_API const float& JZVariant::valueRef<float>() const;
 template <>
-const double& JZVariant::valueRef<double>() const;
+JZFRAMEWORK_API const double& JZVariant::valueRef<double>() const;
 template <>
-void* const& JZVariant::valueRef<void*>() const;
+JZFRAMEWORK_API void* const& JZVariant::valueRef<void*>() const;
 template <>
-const int16_t& JZVariant::valueRef<int16_t>() const;
+JZFRAMEWORK_API const int16_t& JZVariant::valueRef<int16_t>() const;
 template <>
-const uint16_t& JZVariant::valueRef<uint16_t>() const;
+JZFRAMEWORK_API const uint16_t& JZVariant::valueRef<uint16_t>() const;
 template <>
-const unsigned int& JZVariant::valueRef<unsigned int>() const;
+JZFRAMEWORK_API const unsigned int& JZVariant::valueRef<unsigned int>() const;
 template <>
-const uint64_t& JZVariant::valueRef<uint64_t>() const;
+JZFRAMEWORK_API const uint64_t& JZVariant::valueRef<uint64_t>() const;
 
 JZDataStream& operator<<(JZDataStream& s, const JZVariant& vec);
 JZDataStream& operator>>(JZDataStream& s, JZVariant& vec);

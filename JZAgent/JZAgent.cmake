@@ -3,10 +3,8 @@
     JZAgent.cpp
 	JZAgentTool.h
 	JZAgentTool.cpp
-	JZAgentNodePacket.h
-	JZAgentNodePacket.cpp
-	JZAgentHubPacket.h
-	JZAgentHubPacket.cpp
+	# 注: JZAgentNodePacket / JZAgentHubPacket 已移到 binary/agent_cli/ ——
+	#     那两个协议只服务 agent_cli 这一族 exe, 不属于框架导出面。
 	JZMcpClient.h
 	JZMcpClient.cpp
 	JZLoopDetect.h

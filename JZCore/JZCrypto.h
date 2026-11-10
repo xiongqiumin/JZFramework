@@ -27,16 +27,17 @@ namespace JZCrypto
     };
 
     // 通用哈希入口: 按算法对内存数据求摘要
-    JZByteArray hash(HashAlgorithm algo, const char *buffer, int size);
-    JZByteArray hash(HashAlgorithm algo, const JZByteArray &buffer);
+    // ⚠ 命名空间里的自由函数不随类导出, 动态库模式下必须逐个带 JZFRAMEWORK_API。
+    JZFRAMEWORK_API JZByteArray hash(HashAlgorithm algo, const char *buffer, int size);
+    JZFRAMEWORK_API JZByteArray hash(HashAlgorithm algo, const JZByteArray &buffer);
 
     // 对文件求完整摘要(读取整个文件), 适合中小文件 / 需要完整校验的场景。
-    JZByteArray hashFile(HashAlgorithm algo, const std::string &path);
+    JZFRAMEWORK_API JZByteArray hashFile(HashAlgorithm algo, const std::string &path);
 
     // 对大文件快速求"内容指纹": 自动按文件大小在多个偏移处取样(首/中/尾),
     // 只读取少量数据, 不全读文件。注意: 这是快速指纹, 不是完整密码学摘要,
     // 不能用于防篡改完整性校验(未取样区域被改动不会被发现)。
-    JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path);
+    JZFRAMEWORK_API JZByteArray hashFileFast(HashAlgorithm algo, const std::string &path);
 
     // ---- 便捷别名(统一门面, 具体实现见 crypto/ 子文件) ----
     // 注: SHA-256 的 sha256() 自由函数已随 crypto/JZSha256.h 直接暴露(无需别名);

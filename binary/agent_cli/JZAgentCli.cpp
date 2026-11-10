@@ -345,7 +345,7 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
 //   队列数 = 并发任务数; 队列内**串行**(一个 JZAgent 只有一条会话), 队列之间并行。
 //   选型说明: 每个队列是一整个 JZAgentCli 实例 —— 引擎(提交→验证→重试)一行不用改,
 //   代价是每个队列各有一台 JZVirtualTerminal(本来就按会话隔离)和一套工具对象。
-//   MCP 工具只在队列 0 上挂(startMcp 只有 master 调), 见 docs/agent-hub-design.md §14.
+//   MCP 工具只在队列 0 上挂(startMcp 只有 master 调), 见 docs/agent-hub-design.md §9/§13.
 // ---------------------------------------------------------------------------
 bool JZAgentCli::initWorkers(std::string &error)
 {
@@ -886,8 +886,11 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";
     if (!m_config.nodes.empty())
     {
-        text += "  remote_ssh     在远端节点上执行 shell 命令(host 省略 = 默认节点)。"
-                "远端没有常驻 shell(cd/export 不跨命令), 远端改文件/拷文件都靠它。\n";
+        text += "  remote_ssh     远端节点上的 terminal(host 省略 = 默认节点)。action=run 跑命令"
+                "(background=true 立刻返回 run_id), action=query 按 run_id 查状态/日志, action=cancel 停掉;"
+                " run_id 带节点前缀(如 line1:r3)。\n"
+                "                 远端是**有状态的 shell**(cd/export 跨命令保留), 但节点单前台串行;"
+                " 远端改文件/拷文件都靠它。\n";
         for (const JZCliNodeConfig &nc : m_config.nodes)
             text += "    - node \"" + nc.name + "\"  " + nc.host + ":" + std::to_string(nc.port)
                     + (nc.isDefault ? "  [默认]" : "") + "\n";
@@ -1391,7 +1394,7 @@ void JZAgentCli::onTerminalList(JZHttpServerClient *client, const JZHttpRequest 
     int running = 0;
     if (m_terminal)
     {
-        running = (int)m_terminal->activeRunIds().size();
+        running = m_terminal->isRunning() ? 1 : 0;
         int64_t now = JZPlatform::getTickCountMs();
         std::vector<std::string> ids = m_terminal->runIds();   // 按发生先后
         // 新的在前, 最多 30 条(网页那一栏放不下更多; 逐条日志要单独取)
@@ -1511,10 +1514,10 @@ void JZAgentCli::onTerminalCancel(JZHttpServerClient *client, const JZHttpReques
     if (m_terminal)
     {
         if (!runId.empty())
-            ok = m_terminal->cancel(runId);
+            ok = m_terminal->cancel();
         else
         {
-            killed = m_terminal->cancelAll();   // 没指定 = 停所有在跑的(网页"全停")
+            killed = m_terminal->cancel() ? 1 : 0;   // 没指定 runId = 停当前那条(网页"全停")
             ok = (killed > 0);
         }
     }
@@ -2411,7 +2414,7 @@ void JZAgentCli::endLoop()
     // 残留(典型后果: 端口还占着, 下一个用例的服务起不来)。
     if (m_terminal)
     {
-        int killed = m_terminal->cancelAll();
+        int killed = m_terminal->cancel() ? 1 : 0;
         if (killed > 0)
         {
             Json::Value e;

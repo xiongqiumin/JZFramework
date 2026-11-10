@@ -3,6 +3,7 @@
 
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "JZAgentNodePacket.h"   // link 模式: 与 agent_cli 的执行面协议
@@ -172,16 +173,31 @@ protected:
     // ---- link 模式 ----
     // 把配置里的路径统一成 "/" 分隔的绝对路径(区域判定是纯字符串前缀比较)
     void normalizeConfig(JZNodeConfig &config);
-    // 一条 exec 请求: 审核由终端做, 这里只负责拼 cwd 与回包
+    // 一条 exec 请求: 审核由终端做, 这里只负责换 cwd 与回包
+    // background=true: 立刻回一条 started, 结束再补一条"结束"通知(不带 output, 日志用 query 取)
     void runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
-                     const std::string &cwd, int timeoutMs);
+                     const std::string &cwd, int timeoutMs, bool background);
+    // 按 runId 回一次运行快照(等价 terminal_query): tail/grep/incremental 都在节点侧过滤
+    void answerLinkQuery(uint64_t conn, const JZNodePackTermQuery &query);
+    // runId 映射会随运行条数增长; 超过上限时先淘汰已结束的(在跑的留着)
+    void pruneLinkRuns();
     void onLinkPacket(uint64_t conn, JZNetPackPtr pack);
     void sendLinkResult(uint64_t conn, const JZNodePackExecResult &result);
 
+    // 映射键: (连接, cli 的 runId)。**必须带连接** —— cli 的 runId 是它自己按
+    // "节点别名 + 序号"生成的, 两台 cli 连同一节点时会重名(都是 line1:r1);
+    // 只按 runId 存会让查询串台、cancel 打到别人的命令上。
+    typedef std::pair<uint64_t, std::string> LinkRunKey;
+    static LinkRunKey linkKey(uint64_t conn, const std::string &runId);
+    // 连接断开: 清掉这条连接的全部映射, 并停掉它正在跑的那条命令
+    void dropLinkRuns(uint64_t conn);
+
     JZNetServer *m_linkServer = nullptr;         // link 模式的 server 角色
     JZVirtualTerminal *m_linkTerminal = nullptr; // link 模式唯一的执行终端(会话由节点自己管)
-    std::map<std::string, uint64_t> m_linkRuns;  // cli 的 runId -> 发起它的连接(cancel 时回包用)
-    std::map<std::string, std::string> m_linkTermRuns;   // cli 的 runId -> 终端的 runId(cancel 用)
+    // (连接, cli 的 runId) -> 终端的 runId。**运行结束不删**: query 要能复查历史;
+    // cancel 靠 activeRunId 校验, 旧 runId 不会误停当前这条。
+    // 连接断开时整体清掉(见 dropLinkRuns), 所以 cli 重启后的同名 runId 不会撞上旧映射。
+    std::map<LinkRunKey, std::string> m_linkTermRuns;
 
     // 空闲回收: 起一个周期定时器扫会话(recycleSec <= 0 时不开)。
     // ⚠ JZVirtualTerminal 自己不管生命周期(它只把 recycleMs 存着给上层看),

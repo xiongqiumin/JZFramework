@@ -216,7 +216,8 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
         jzInfo().noquote().nospace() << "  模式      link(配合 agent_cli; 不起 MCP)";
         jzInfo().noquote().nospace() << "  监听      " << config.host << ":" << config.port
                                      << "  (JZNet, token=" << (config.token.empty() ? "缺失!" : "已启用") << ")";
-        jzInfo().noquote().nospace() << "  并发      " << config.maxConcurrent << " 条";
+        jzInfo().noquote().nospace() << "  并发      1 条(单终端串行; maxConcurrent="
+                                     << config.maxConcurrent << " 目前只是预留)";
     }
     else
     {

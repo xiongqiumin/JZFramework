@@ -1,13 +1,10 @@
 # Agent 控制面设计：server → cli → node
 
-> 2026-11-06 成文。**状态：P0（node `link` + cli `nodes[]` + `remote_ssh`）、P1（模式互斥）、P2（控制通道）已落地；
-> P3 与 §6.6（node 自述）未实现**。
+> **本文是这套架构唯一的文档**：目标与职责划分、协议、配置 schema、取舍、已知缺口与路线图。
+> 部署/排障细节以各程序的 `--init` 生成物和 `--check` 输出为准（它们永远与代码同步），这里只保留设计与现状。
 >
-> **本文是这份架构唯一的文档**：目标与职责划分、协议、配置 schema、取舍与路线图，以及实现记录（§12 起）。
-> 部署/排障的细节以各程序的 `--init` 生成物和 `--check` 输出为准（它们永远与代码同步），本文只保留设计与目标。
->
-> P0/P1/P2、多队列与任务历史均已落地；2026-11-06 的取消/异步任务/多队列状态修正见 §17。
-> JZNet 大包（下行 `taskSubmit`、上行大 `taskEnd`）策略暂未定，保持现有实现，见 §4.4。
+> 状态：P0（node `link` + cli `nodes[]` + `remote_ssh`）、P1（模式互斥）、P2（控制通道）、多队列、任务历史
+> 均已实现；**P3（日志回传等）与 node 自述（§6.6）未实现**。大包策略未定，见 §4.4。
 
 ---
 
@@ -26,12 +23,12 @@
 | 5 | **执行面默认本地** | cli 不挂 node 时自己执行（`terminal_*` + 文件工具），node 是可选旁路 |
 | 6 | **node 有两种模式，但角色固定** | `mcp`（起 `JZMcpServer`，行为同现状）/ `link`（起 `JZNetServer`，**不起 MCP**）；两种模式 node 都是 **server**，cli 永远是 **client** |
 
-### 1.1 node 保留，但它是可选层（2026-11-06 定）
+### 1.1 node 是可选层
 
 **主形态（默认）**：`server → cli ×N`，每台 cli 在**自己那台机器**上本地执行。
 分布式执行由"多台 cli"实现，不需要 node。
 
-**已决定保留 node**：因为现实里存在"**目标机器不能访问网络 / 装不了 cli**"的场景
+**保留 node 的理由**：现实里存在"**目标机器不能访问网络 / 装不了 cli**"的场景
 （产线设备、只读工控机、客户机器只允许放一个薄代理）。node 在这些位置是唯一可行的执行出口。
 
 判断什么时候该用 node（不是"要不要"，是"哪里用"）：
@@ -50,11 +47,11 @@
 ⚠ 一个必须提前说清的边界：**node 不需要外网**（它不连 LLM），但需要**被 cli 连上**（两种模式都是 server 角色，
 要入站可达）。若目标机器连入站也不通（只有出站权限），得改用反连（`connect:"dial"`）——见 §6.1.3。
 
-### 1.2 验证面：统一在 cli 跑（2026-11-06 定）
+### 1.2 验证面：统一在 cli 跑
 
 `runVerifyAsync` 用 `JZProcess` 在 **cli 本机** 起进程，`cwd = m_config.rootDir`。
 
-**决定：保持这样，不引入 `verify_host`。** 验证跑在哪台机器，取决于验证代码怎么写：
+**不引入 `verify_host`。** 验证跑在哪台机器，取决于验证代码怎么写：
 读 cli 本地文件/本机进程的，本来就该在 cli；要看远端状态的，让验证命令自己够过去
 （`curl` 打 node 上的服务、共享盘、调 node 暴露的接口）。
 
@@ -67,29 +64,16 @@
 
 ⇒ 写验证命令的硬要求：**验证读的那份东西，必须是本次任务真的产出的那份**。
 路径要能唯一定位到产物；跨机时用网络接口，或用带 `taskId`/随机串的唯一名，
-别让它能撞上本机旧文件。
+别让它能撞上本机旧文件。机器可执行的约束尚未做，见 §13。
 
-### 1.3 cli 不再内建 frpc（2026-11-06 移除）
-
-`agent_cli` 以前内嵌 `JZFrpClient`，把本机端口（如 8080）经 frps 暴露到外网。hub 上线后这条路只剩
-"让外部访问 agent 起的长驻服务"一个用途，而它属于**网络层**（WireGuard / Tailscale / `ssh -L` / 独立 frpc 进程），
-不该由执行代理兼职：
-
-- 控制类需求已由 hub 覆盖，且更安全（握手 token + agentId + 服务端审计/取消/超时）；
-- 让 cli 能主动对外暴露端口，等于把安全模型从"只要能出网"改成"还要保证暴露面可控"
-  —— 原实现连 `http.token` 为空都不拦，等于把 `/task`、`/reset`、`/terminal*` 交给任何能连上 frps 的人；
-- managed 明确"不起 HTTP"，同一个二进制里却留着"把 HTTP 打洞出去"的能力，配置与文档永远打架。
-
-⇒ 已删除：`JZCliFrpConfig` / `startFrpc()` / `m_frpClient` / `frp.client.*` 配置解析 / `--init` 模板里的 `frp` 段
-（模板里另有一段从未被读取的 `frp.server`，一并删掉）。`JZFrpClient` 模块本身保留（`binary/frpc` 等独立工具仍用）。
-`agent_cli_server` 的 `frp.server`（frps）**保留**，只服务于"现场自带 frpc"的部署，与本架构无关。
-
-**明确不做**：
+### 1.3 明确不做
 
 - ⛔ 不做运行期动态加/删 node（不搞"注册中心发现节点"）；
-- ⛔ 不做 server 侧的 agent 自动扩缩容 / 任务队列持久化（第一版只做"在线就派、离线就拒"）；
-- ⛔ 不在 node 上发明第二套协议（node 仍是执行面，不是控制面参与者）；
-- ⛔ 不在 cli 里加"多轮调度"（跑几轮/何时停归提交方，是既有约定）。
+- ⛔ 不做 server 侧的 agent 自动扩缩容 / 任务队列持久化（只做"在线就派、离线就拒"）；
+- ⛔ 不在 node 上发明第二套协议（node 是执行面，不是控制面参与者）；
+- ⛔ 不在 cli 里加"多轮调度"（跑几轮/何时停归提交方，是既有约定）；
+- ⛔ cli 不承担端口暴露/打洞（那属于网络层：WireGuard / Tailscale / `ssh -L` / 独立 frpc 进程）；
+- ⛔ 不做 `verify_host`（理由见 §1.2）。
 
 ---
 
@@ -97,7 +81,7 @@
 
 | 平面 | 协议 | 承载 | 谁发起 |
 | --- | --- | --- | --- |
-| **控制面** | JZNet（TCP + 握手 token + ChaCha20） | 注册 / 心跳 / 任务下发 / 取消 / 事件回传 / 日志回传 | **cli → server（出站，穿透 NAT）** |
+| **控制面** | JZNet（TCP + 握手 token + ChaCha20） | 注册 / 心跳 / 任务下发 / 取消 / 事件回传 | **cli → server（出站，穿透 NAT）** |
 | **任务面** | 同上（packet）或 cli 本地 HTTP（仅 standalone） | 提交一次任务、拿一次回包 | 提交方 / server |
 | **执行面（本地，默认）** | 进程内 `JZVirtualTerminal` + 文件工具 | `terminal_*` / `read_file`… | cli 自己 |
 | **执行面（远端，可选）** | **JZNet（`NodePack_exec`）**：node `link` 模式起 `JZNetServer`，cli 用 `JZNetClient` 连 | `remote_ssh` 一条命令 | **cli → node** |
@@ -110,11 +94,11 @@ server 与 node 都是 server 角色。这样内网机器不需要 frp、不需�
 ## 3. 两种运行模式
 
 ```
-(A) standalone（现状语义，保留）
+(A) standalone
    提交方/浏览器 ──HTTP──► cli :8080 ──► JZAgent ──► 本地工具 / remote_ssh(node)
 
-(B) managed（新增）
-   server :8088（管理台/API）
+(B) managed
+   server :8088（管理台/API，默认 HTTPS + 客户端证书）
         ▲  JZNetClient 出站连接（token）
         │
       cli（无 HTTP）──► JZAgent ──► 本地工具 / remote_ssh(node)
@@ -151,14 +135,13 @@ return app.exec();
 | --- | --- | --- |
 | `JZHttpServer`（`/task` `/info` `/events` `/reset` `/terminal*`） | 起 | **不起** |
 | 网页控制台 `http/` 静态资源 | 起 | **不起** |
-| `JZFrpClient`（frpc） | **已移除**（2026-11-06，见 §1.3） | 已移除 |
 | `JZNetClient`（连 server） | 不连 | 必连 |
-| 任务来源 | 外部 `POST /task` | server 的 `task_submit` |
-| 取消/重置 | `POST /reset` | `task_cancel` / `reset` 包 |
-| 诊断 | 网页 + curl | **只能靠 server 侧视图**（见 §11 未决问题 3） |
+| 任务来源 | 外部 `POST /task` | server 的 `taskSubmit` |
+| 取消/重置 | `POST /reset` | `taskCancel` / `reset` 包 |
+| 诊断 | 网页 + curl | **只能靠 server 侧视图**（见 §13） |
 
 ⚠ 这条最容易漏：`POST /reset` 是长程装置/评测脚本杀任务的正规手段（`agent_cli.py` 超时就靠它）。
-managed 模式下必须提供等价的 `task_cancel` 包，否则任务没法中断。
+managed 模式下必须有等价的 `taskCancel` 包，否则任务没法中断。
 
 ---
 
@@ -171,33 +154,38 @@ managed 模式下必须提供等价的 `task_cancel` 包，否则任务没法中
 - 客户端：`setToken()` → `connectToHost(ip, port)` → `sigConnected` → `sendPacket()` / `sigPacketReceive`；
 - 服务端：`setToken()` → `listen(port)` → `sigAccept` + `nextPendingConnection()` → `sigPacketReceive(connId, pack)` / `sendPacket(connId, pack)`；
 - 握手由框架内部完成：`JZNetPackHand(nonce)` → `JZNetPackHandRes`，双方用 `"JZ" + nonce + token` 派生 ChaCha20 密钥，
-  **之后的包都是加密的**（见 `JZNetClient.cpp:194-278`）。
+  **之后的包都是加密的**（见 `JZNet/JZNetClient.cpp:194-278`）。
 
 ⚠ **token 的校验语义要清楚**：握手只校验"客户端带没带 nonce"与服务端"有没有 token"是否一致
 （`hand->nonce.empty() != m_token.empty()`），**不比对 token 内容**。token 写错的表现不是明确报错，
-而是密钥不同 → 后续包解不开 → 连接被关。所以：
+而是密钥不同 → 后续包解不开 → 连接被关；token 为空则整条链路不加密、也不鉴权。所以：
 
-- 协议里必须有应用层 `hello` / `hello_ack`，**3 秒内没收到 `hello_ack` 就判定 token 错误**并给出明确日志；
-- 错误信息别只说"连接断开"，要提示"token 不匹配"这个最可能的原因。
+- 协议里必须有应用层 `hello` / `helloAck`，**3 秒内没收到 `hello_ack` 就判定 token 错误**并给出明确日志；
+- 错误信息别只说"连接断开"，要提示"token 不匹配"这个最可能的原因；
+- `hub.token` 与 node 的 `link` token 都必须非空（node 侧已硬性拒绝启动，server 侧见 §13）。
 
 ### 4.2 包类型
 
-从 `NetPack_user`(1000) 起，集中在一个头文件（仿 `JZFrpPacket.h` + `JZFrpPacketInit()`）：
+集中在一个头文件（仿 `JZFrpPacket.h` + `JZFrpPacketInit()`）。两套包号不冲突：
+
+- node 执行面 `NodePack_*`：`NetPack_user + 1` 起（1000…）；
+- server↔cli 控制面 `HubPack_*`：`NetPack_user + 101` 起（1101…）。
 
 ```cpp
 enum {
-    HubPack_hello = NetPack_user + 1,   // cli -> server
-    HubPack_helloAck,                   // server -> cli
-    HubPack_heartbeat,                  // cli -> server
-    HubPack_taskSubmit,                 // server -> cli
-    HubPack_taskCancel,                 // server -> cli
-    HubPack_reset,                      // server -> cli
-    HubPack_taskEvent,                  // cli -> server
-    HubPack_taskEnd,                    // cli -> server
-    HubPack_logAppend,                  // cli -> server
+    HubPack_hello = NetPack_user + 101,  // cli -> server
+    HubPack_helloAck,                    // server -> cli
+    HubPack_heartbeat,                   // cli -> server
+    HubPack_taskSubmit,                  // server -> cli
+    HubPack_taskCancel,                  // server -> cli
+    HubPack_reset,                       // server -> cli
+    HubPack_taskEvent,                   // cli -> server
+    HubPack_taskEnd,                     // cli -> server
 };
 void JZAgentHubPacketInit();   // 两边启动时各调一次（在 JZNetPackInit 之后）
 ```
+
+> `logAppend`（日志回传）属于 P3，**包与实现都还没有**，见 §13。
 
 ⚠ 注册时机：必须在 `JZNetPackInit()`（`JZApplication` 构造时已调用）**之后**
 `JZNetPackManager::instance()->registPack<T>(type)`，否则收到的是 "unknown packet"。
@@ -206,37 +194,41 @@ void JZAgentHubPacketInit();   // 两边启动时各调一次（在 JZNetPackIni
 
 | 方向 | 包 | 字段 | 说明 |
 | --- | --- | --- | --- |
-| cli→server | `hello` | `agentId, name, version, rootDir, modelName, mode, nodes[]` | 上线自报。`agentId` 必须与 server 配置里登记的一致 |
-| server→cli | `helloAck` | `serverTime, acceptTasks` | `acceptTasks=false` 时 cli 只上报不接任务（维护模式） |
-| cli→server | `heartbeat` | `busy, round, taskId, uptimeMs` | 5s 一次；20s 无心跳判离线 |
-| server→cli | `taskSubmit` | `taskId` + `/task` 的全部字段（`prompt/images/verify_script/verify_cmd/verify_timeout/max_verify_rounds/max_retries/max_fix_retries/retry_delay_ms/use_memory`） | 语义与现有 `POST /task` **完全一致**，cli 直接复用 `submitTask()` |
-| server→cli | `taskCancel` | `taskId` | 等价 `POST /reset {"scope":"task"}` |
-| server→cli | `reset` | `scope`（`task` / `history`） | 等价现有 `/reset` |
-| cli→server | `taskEvent` | `taskId, type, data` | **`type` 直接复用现有 SSE 的取值**：`thinking/reply/tool_call/tool_result/verify/error/terminal_cleanup` |
-| cli→server | `taskEnd` | `taskId` + 现有回包字段（`status/verify_rounds/retries/retries_transient/retries_fix/agent_reply/last_verify_output/error`） | 一次任务一次，务必送达（见 §5.3） |
-| cli→server | `logAppend` | `lines[]` | 控制台日志的增量（server 侧按 agentId 落盘，替代 v1 读子进程 stdout） |
+| cli→server | `hello` | `agentId, name, version, rootDir, modelName, nodes`（JSON 数组字符串） | 上线自报 + 节点清单 |
+| server→cli | `helloAck` | `ok, error, acceptTasks, serverTimeMs` | `ok=false` 断开重连；`acceptTasks=false` 时只上报不接任务（维护模式） |
+| cli→server | `heartbeat` | `busy, round, taskId, nodes` | 5s 一次；**节点上下线/忙闲靠它刷新**，不额外发包 |
+| server→cli | `taskSubmit` | `taskId` + `/task` 的全部字段（JSON 字符串） | 语义与 `POST /task` **完全一致**，cli 直接复用 `submitTask()` |
+| server→cli | `taskCancel` | `taskId` | 只取消**指定**任务（排队或在跑）；取消全部用 `reset{scope:"task"}` |
+| server→cli | `reset` | `scope`（`task` / `history`） | `task` = 取消全部任务；`history` = 只清对话历史 |
+| cli→server | `taskEvent` | `taskId, type, data` | **`type` 直接复用现有 SSE 的取值**：`thinking/reply/tool_call/tool_result/verify/error/task_start/task_end` |
+| cli→server | `taskEnd` | `taskId, result`（JSON） | 一次任务一次，务必送达（见 §5.3） |
 
 **不做第二套事件语义**：模型在干什么（think / tool_call / verify）这套词已经在 SSE 里定死了，
 packet 里换名字只会让两套 UI 对不上。
 
-### 4.4 大小与分片
+### 4.4 大小与截断
 
-- 单包上限 **256KB**（`MG_MAX_PACK_SIZE`，`JZNetPacket.h:11`）；
-- `tool_result` / `last_verify_output` / 长日志**很容易超**，这是本协议最容易踩的坑；
-- 规则：
-  - 单条消息序列化后 > 128KB ⇒ 拆成 `chunk {msgId, index, total, payload}`；
-  - 文本类内容先按"头 4KB + 尾 4KB + `...[截断 N 字节]...`"压缩再决定要不要分片
-    （UI 和模型都不需要中间那段几 MB 的编译日志）；
-  - 分片在接收侧按 `msgId` 重组，超时（10s）未收齐则丢弃并记一条 warning。
+- 单包上限 **256KB**（`MG_MAX_PACK_SIZE`，`JZNet/JZNetPacket.h`）；
+- **不做分片**：重组要状态机 + 超时，而收益只覆盖"想一次看几 MB 日志"这种 UI 和模型都不需要的场景。
+  要全文就先 `tail`/重定向到文件再分段读（模型侧做法）。
+- 上行（cli→server，`JZHubLink` 里的 `capText`）：
+  - `taskEvent.data` 超 **96KB**、`taskEnd.result` 超 **160KB** ⇒ 换成
+    `{truncated:true, bytes, preview:"<头 4KB>"}`；
+  - **不硬切 JSON**（切坏会让 server 解析失败）；
+  - 余量是给包头与键名留的，数值远低于 256KB。
+- 下行（server→cli）`taskSubmit` 目前**不裁**：`images` 里的 dataURL 可能把单包顶爆。
+  这是已知风险，处理方式未定，见 §13。
 
 ### 4.5 心跳、重连、离线
 
 | 参数 | 值 | 说明 |
 | --- | --- | --- |
-| 心跳间隔 | 5s | cli 主动发 `heartbeat` |
+| 心跳间隔 | 5s | cli 主动发 `heartbeat`；忙闲变化时立刻多发一次 |
 | 判离线 | 20s | server 每 5s 扫描，超过 4 个周期没收到即置 `offline`，管理台灰色 |
 | 重连退避 | 1/2/4/8/…/30s 封顶 | cli 侧 `sigDisconnected` 后按序重试，成功后清零 |
-| 重连补发 | `hello` + 最新状态快照（`busy/round/taskId`） | 让 server 重建视图 |
+| 重连补发 | `hello` + 最新状态快照（`busy/round/taskId/nodes`） | 让 server 重建视图 |
+
+⚠ 判定必须靠心跳而不是 TCP 断开：拔网线/休眠时 socket 仍"通"，断开信号等不到。
 
 ---
 
@@ -246,7 +238,7 @@ packet 里换名字只会让两套 UI 对不上。
 
 ```
 提交方 ──POST /api/tasks{agentId, ...}──► server
-                                          │ 选 agentId（离线 → 4xx；忙闲交给 cli 队列）
+                                          │ 选 agentId（离线 → 404；忙闲交给 cli 队列）
                                           ▼
                                     taskSubmit ──► cli
                                                    │ submitTask()（队列调度）
@@ -258,10 +250,11 @@ packet 里换名字只会让两套 UI 对不上。
 ```
 
 - **任务在 cli 里跑**：LLM 调用、验证循环、重试预算、长期记忆全不动；server 只做转发与聚合。
-- server 的 `/api/tasks` 两种回包方式：同步等 `taskEnd`（保持现有 `/task` 手感），或 `wait:false` 先回
-  `202 {taskId}` 再轮询任务记录。两种方式都登记同一个超时与取消生命周期；网页使用后者。
+- server 的 `/api/tasks` 两种回包方式：`wait:true`（默认，等 `taskEnd` 回 200），
+  `wait:false` 先回 `202 {taskId}` 再轮询任务记录。两种方式都登记同一个超时与取消生命周期；网页使用后者。
+- server 侧超时 `task_timeout_ms`（默认 900000 ms）：先发 `taskCancel`，同步提交方收 `504`，异步只落历史。
 
-`taskSubmit` 就是现有 `POST /task` 的请求体，`taskEnd` 就是它的回包（语义完全一致，便于 P2 直接复用）：
+`taskSubmit` 就是现有 `POST /task` 的请求体，`taskEnd` 就是它的回包（语义完全一致）：
 
 | 请求字段 | 说明 |
 | --- | --- |
@@ -271,6 +264,7 @@ packet 里换名字只会让两套 UI 对不上。
 | `verify_timeout` / `max_verify_rounds` | 覆盖配置里的 `verify.timeoutMs` / `verify.maxRounds` |
 | `max_retries` / `max_fix_retries` / `retry_delay_ms` | 覆盖 `llm.*` 的重试预算 |
 | `use_memory` | `false` = 本次不注入长期记忆 |
+| `wait` | 仅 server：`false` 立刻回 202 |
 
 | 回包字段 | 说明 |
 | --- | --- |
@@ -282,18 +276,23 @@ packet 里换名字只会让两套 UI 对不上。
 
 | 场景 | 消息 | cli 行为 |
 | --- | --- | --- |
-| 提交方主动取消 | `taskCancel{taskId}` | 只取消指定任务（排队或在跑），不影响其他队列；回一次 `taskEnd{status:"cancelled"}`。`/reset scope=task` 才是取消全部 |
+| 提交方主动取消 | `taskCancel{taskId}` | 只取消指定任务（排队或在跑，含验证、本地后台命令与对应远端 exec），不影响其他队列；回一次 `taskEnd{status:"cancelled"}` |
+| 取消全部 | `reset{scope:"task"}` | 排队任务逐条回 `cancelled`，各队列各自收尾 |
 | 清会话（换新任务前） | `reset{scope:"history"}` | 只清对话历史，不动在途任务 |
-| server 判定卡死 | `taskCancel` + 记审计 | 同第一行 |
+| server 判定卡死/超时 | `taskCancel` + 记审计 | 同第一行 |
+
+取消收尾期间**禁止重入派发**（否则排队任务会在收尾途中有被派出去）。
 
 ### 5.3 断线与崩溃
 
 | 情况 | 处理 |
 | --- | --- |
-| cli 与 server 断连、任务仍在跑 | 任务继续在 cli 本地跑；server 把在途任务标 `lost`。当前不缓存、不重连补发 `taskEnd`（P3 对账候选） |
-| cli 进程被杀 | server 侧该连接断 → 标 offline；在途任务标记 `lost`，不重试（重试由提交方决定） |
-| server 重启 | cli 按退避重连；server 用 `hello` 重建视图；**不恢复**未完成任务（避免重复执行） |
+| cli 与 server 断连、任务仍在跑 | 任务继续在 cli 本地跑；记录标 `lost`；同步提交方（还在等）回 502。当前不缓存、不重连补发 `taskEnd` |
+| cli 进程被杀 | server 侧该连接断 → 标 offline；在途任务标 `lost`，不重试（重试由提交方决定） |
+| server 重启 | cli 按退避重连；server 用 `hello` 重建视图；载入历史时把 `running` 一律改 `lost`，**不恢复**未完成任务（避免重复执行） |
 | 任务提交时 agent 忙 | server 不拦截，交给 cli：有空闲队列就执行，全忙按 `task.maxPending` 排队，排满才拒绝 |
+
+铁律：`timeout/lost/cancelled` 等终态一旦形成，迟到的 `taskEnd` 不得覆盖。
 
 ---
 
@@ -302,7 +301,7 @@ packet 里换名字只会让两套 UI 对不上。
 ### 6.1 定位
 
 node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不做决策、不连 LLM。
-`link` 模式下它只做"执行一条命令 + 权限审核"；`mcp` 模式下它就是现在那个被控端 MCP server。
+`link` 模式下它只做"执行一条命令 + 权限审核"；`mcp` 模式下它就是现成的被控端 MCP server。
 **不做运行期增删**：node 列表在 cli 启动时从配置读入并连好，运行期只允许"连不上 → 标 offline"。
 
 两条与"必要性"直接相关的规则：
@@ -311,15 +310,13 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
 - 挂了 node 之后，本地工具**照旧存在**——本地与远端是同一个工具的两个目标，不是二选一。
   这也是"本地终端 + ssh"的自然模型，不需要再造概念。
 
-### 6.1.1 验证在哪跑（已定：统一在 cli）
+#### 6.1.1 验证在哪跑（统一在 cli）
 
 | 任务执行在 | `verify_cmd` 在哪跑 | 结果 |
 | --- | --- | --- |
 | local（默认） | cli 本地（`runVerifyAsync`，`cwd=rootDir`） | 正常 |
-| node `line1`，验证只需本机/网络可达 | cli 本地 | 正常 |
-| node `line1`，验证要读 node 的**本地路径** | cli 本地 | ❌ 一直 `No such file` |
-
-已决定**不加 `verify_host`**：验证统一在 cli 跑，"能不能用"由验证命令自己负责。
+| node，验证只需本机/网络可达 | cli 本地 | 正常 |
+| node，验证要读 node 的**本地路径** | cli 本地 | ❌ 一直 `No such file` |
 
 - ✅ 成立：验证检查本机东西，或经网络访问远端（HTTP / DB / 共享盘）；
 - ❌ 不成立：验证直接读 node 上的本地路径；
@@ -327,7 +324,7 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
 
 同理，`verify_script` 一直是"cli 工作区里选一个脚本"，跨机时它同样只在 cli 侧有意义。
 
-### 6.1.2 node 的两种模式（2026-11-06 定）
+#### 6.1.2 node 的两种模式
 
 **角色是固定的：node 永远是 server，cli 永远是 client。**
 
@@ -336,8 +333,7 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
 | **`mcp`（默认，单独用）** | `JZMcpServer::listenHttp` ⇒ `/mcp`，工具面**与现状一致**（`terminal_*` + 文件工具） | `code_agent` / 任意 MCP 客户端 | 独立被控端，不改现有用法 |
 | **`link`（配合 cli）** | **不起 MCP**；起 `JZNetServer` + token，只处理 exec 包 | cli 的 `JZNetClient` | `remote_ssh` 的执行后端 |
 
-配置 `mode: "mcp" | "link"`，默认 `mcp`（向后兼容，现有部署升级后行为不变）。
-两种模式**只有一个在跑**，不会同时监听两个端口。
+配置 `mode: "mcp" | "link"`，默认 `mcp`（现有部署升级后行为不变）。两种模式**只有一个在跑**，不会同时监听两个端口。
 
 整条链路上只有 cli 是 client，另两端都是 server，这是刻意的对称：
 
@@ -348,7 +344,7 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
 ```
 
 - 好处一：cli 只需要"会连"，两端都不需要知道对方的地址（server 不用配 cli 的 IP，node 也不用配 cli 的 IP）；
-- 好处二：`link` 模式与 `mcp` 模式对 node 而言只是"换一个 server 实现"，审核/执行那套代码完全共用。
+- 好处二：`link` 与 `mcp` 对 node 而言只是"换一个 server 实现"，审核/执行那套代码完全共用。
 
 两条硬规则：
 
@@ -358,7 +354,7 @@ node 是**可选的远端执行代理**（§1.1）：装在目标机器上，不
   `node1__run` / `node2__run` 一堆名字，还得让模型自己挑；收到一个 `remote_ssh(host=...)` 后
   路由完全在 cli 内部完成，模型只看见一台"虚拟的 ssh"。
 
-### 6.1.3 连通性（node 能不能放在无网机器上）
+#### 6.1.3 连通性（node 能不能放在无网机器上）
 
 | 要求 | mcp 模式 | link 模式 |
 | --- | --- | --- |
@@ -377,19 +373,35 @@ node 用 `JZNetClient` 主动连 cli（或 server）的 `JZNetServer`，cli 把�
 模型侧只看到一个工具（多节点靠 `host` 参数路由）：
 
 ```
-remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
-  -> { exit_code, output, timed_out, duration_ms, cwd }
+remote_ssh(host?, action?, command?, cwd?, timeout_ms?, background?, run_id?, tail?, grep?, incremental?)
 ```
 
 | 参数 | 说明 |
 | --- | --- |
+| `action` | `run`（默认）/ `query` / `cancel`；同一个工具按动作分发 |
 | `host` | `nodes[]` 里的 `name`；空 = 唯一/默认节点 |
-| `command` | **整条交给 shell**（`\|`、`>`、`&&`、通配符、`$VAR` 都生效） |
-| `cwd` | 工作目录（相对路径按该 node 的 `rootDir` 解析） |
-| `timeout_ms` | 超时，默认 120s，上限 15min（与本地 terminal 前台一致） |
+| `command` | **整条交给 shell**（`\|`、`>`、`&&`、通配符、`$VAR` 都生效）；`action=run` 必填 |
+| `cwd` | 工作目录（相对路径按该 node 的会话目录解析）；节点侧走 `changeDir` 换目录，**不再拼进命令串**（拼串会把 `$()`/反引号带进 shell，绕过审核）。注意会话 cwd 是持久的 |
+| `timeout_ms` | 前台超时，默认 120s，上限 15min（与本地 terminal 前台一致）；后台不设 |
+| `background` | `run`：`true` = 节点**立刻回 `started`**（不等命令结束），之后用 `query` 取状态/日志。命令仍占着节点那唯一的前台终端 |
+| `run_id` | 由执行结果给出，**带节点前缀**（`line1:r3`），据此路由回节点；`cancel` 必填，`query` **可省略 = 该节点最近一次运行**（与本地 `terminal_query` 同口径） |
+| `tail` / `grep` / `incremental` | `query` 的过滤：最近 N 行 / 子串（不区分大小写）/ 只取上次之后新增 |
 
-返回里带 `exit_code` 与合并后的 `output`（stdout/stderr 合流）：**没有常驻 shell**，`cd`/`export` 不跨命令
-（与 node 现有语义一致，见 `JZAgentNode::buildInstructions`）。
+返回是**一段文本**（不是 JSON），模型直接读：
+
+```
+[node line1] run_id=line1:r1 exit=0 320ms  cwd=D:/line1
+<stdout/stderr 合流输出>
+
+[node line1] 已启动 run_id=line1:r2 (后台运行, 不设超时); 用 action=query 查日志/状态, action=cancel 停掉
+
+[node line1] line1:r2 运行中 [后台]  累计 3 行
+...
+```
+
+前台失败时首行变成 `失败(exit=1)` 或 `超时`，并附 `error` 原因。`query` 的游标推进在 node 侧
+（`advanceRunReadPos`），所以 `incremental=true` 轮询不会把同一段日志反复灌进上下文。
+**没有常驻 shell**，`cd`/`export` 不跨命令（与 node 现有语义一致，见 `JZAgentNode::buildInstructions`）。
 
 ### 6.3 为什么在 cli 侧收成一个工具
 
@@ -398,11 +410,12 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | 每个 node 一个 MCP server，工具直接挂进 agent | `node1__terminal_run`、`node2__terminal_open`… | 工具表爆炸；模型要自己挑节点；`terminal_open` 这类会话管理会被误用 |
 | **cli 注册一个 `remote_ssh`，内部按 host 路由** | 1 个工具 | 节点对模型不可见，挑选由人（配置的 default）或 `host` 参数决定 |
 
-`link` 模式下 node 只实现 `exec`，所以工具语义天然对齐；`mcp` 模式的工具面**保持不变**（给别的 MCP 客户端用，
-不为了这次改动做减法）。
+`link` 模式下 node 只实现 `exec`，所以工具语义天然对齐；`mcp` 模式的工具面**保持不变**（给别的 MCP 客户端用）。
 
-**代价（要认）**：link 模式失去 `background=true` 与流式日志（那是 `terminal_run` 的 MCP 进阶用法），
-长命令只能靠 `timeout_ms` + 事后 `tail`。若确实需要，后续加 `remote_ssh_bg` 或返回"最后 N 行"，**第一版不做**。
+**代价（要认）**：`background` / `query` / `cancel` 已经有（走同一个工具的 `action`），但**没有流式**：
+`terminal_run` 的 `stream=true` 靠 MCP 的逐块通知，JZNet 侧没接 `onChunk`，所以长命令只能
+"后台起 + `action=query` 轮询"。另外前台单次回包的 output 仍按 120KB 头尾裁剪（全文在节点运行记录里，
+用 `query` 取）。
 
 ### 6.4 cli→node 传输：JZNet（`NodePack_*`）
 
@@ -411,18 +424,26 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | 方向 | 包 | 字段 |
 | --- | --- | --- |
 | cli→node | `NodePack_hello` | `clientId, cliVersion`（node 侧做日志/审计；不做路由） |
-| cli→node | `NodePack_exec` | `runId, command, cwd, timeoutMs` |
-| node→cli | `NodePack_execResult` | `runId, exitCode, output, timedOut, durationMs, cwd`（`output` 为 stdout/stderr 合流） |
-| cli→node | `NodePack_execCancel` | `runId`（任务取消、reset 或超时时发） |
-| node→cli | `NodePack_helloAck` | 当前为基础自述；完整身份 / 能力位 / 运行态设计见 §6.6（未实现） |
+| cli→node | `NodePack_exec` | `runId, command, cwd, timeoutMs, background` |
+| node→cli | `NodePack_execResult` | `runId, ok, exitCode, timedOut, durationMs, cwd, output, error, started`（`output` 为 stdout/stderr 合流；`started=true` 表示后台已启动、不是最终结果） |
+| cli→node | `NodePack_execCancel` | `runId`（任务取消、reset、超时、或 `action=cancel`） |
+| cli→node | `NodePack_termQuery` | `runId, tail, grep, incremental`（等价 `terminal_query`；过滤在节点侧做） |
+| node→cli | `NodePack_termQueryResult` | `runId, found, running, ok, background, timedOut, exitCode, durationMs, totalLines, firstLine, readPos, text, error` |
+| node→cli | `NodePack_helloAck` | `ok, error, nodeName, version, rootDir, shell`（完整自述设计见 §6.6，未实现） |
 
 实现要点：
 
-- **并发**：v1 每个 node **同时只跑 1 条 exec**（`maxConcurrent=1`），cli 侧忙时直接拒绝、不排队；
+- **并发**：每个 node **同时只跑 1 条 exec**（单终端串行），cli 侧忙时直接拒绝、不排队；
+  `maxConcurrent` 目前只是预留字段，配几都不改变（后台命令也占这唯一的前台终端）；
 - **超时双保险**：cli 侧 timer 到点发 `execCancel` 并本地收口；node 侧也用 `timeoutMs` 兜底杀进程树；
 - **任务取消**：`endLoop()` 按发起队列的 owner 取消对应 `remote_ssh`，不误停其他队列共享连接上的命令；
-- **大输出**：`execResult.output` 超过 120KB 时按"头 60KB + 显式提示 + 尾 60KB"裁剪（UTF-8 边界）；
-  确需全文就先 `tail`/重定向到文件再分段读（模型侧做法），不在协议层做分片——**第一版刻意保持简单**；
+  node 侧只停 `activeRunId` 与 runId 映射一致的那条（旧 runId 一律忽略），避免误杀后来者；
+- **多 cli**：`(连接, runId)` 才是节点的映射键 —— cli 的 runId 是它自己按"节点别名+序号"生成的，
+  两台 cli 会重名（都是 `line1:r1`）。连接断开时清掉该连接的全部映射并停掉它在跑的命令；
+- **会话状态**：link 模式用的是 `JZVirtualTerminal` 的有状态解释器（`cd` / `export` 跨命令保留），
+  `cwd` 参数等价于先 `cd` 过去，之后一直生效；
+- **大输出**：`execResult.output` 超过 **120KB** 时按"头 60KB + 显式提示 + 尾 60KB"裁剪（按 UTF-8 边界），
+  确需全文就先 `tail`/重定向到文件再分段读，不在协议层做分片；
 - **token**：node 的 `JZNetServer::setToken` 与 cli 的 `JZNetClient::setToken` 一致；token 错的表现是
   "包解不开/断连"，所以 cli 侧要把 `hello/helloAck` 3s 超时报成"token 或端口不对"；
 - **重连**：`sigDisconnected` → 1/2/4/…/30s 退避重连；`nodes[]` 里标 offline，`remote_ssh` 调用直接报
@@ -445,18 +466,18 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 | --- | --- |
 | `mode` | `mcp`（默认，单独当 MCP server）/ `link`（**不起 MCP**，只起 `JZNetServer`） |
 | `token` | 仅 `link`：握手口令，**必填**（空 = 拒绝启动） |
-| `maxConcurrent` | 仅 `link`：同时允许几条 exec（默认 1，设备上别调大） |
+| `maxConcurrent` | 仅 `link`：**预留字段，当前版本不生效**。节点是一台终端串行（同时 1 条），后台命令也占这一条；要并行只能多开 node |
 
 其余字段（区域、命令策略、shell、会话回收、日志）两种模式完全一致。设计上的两条约束：
 
 - `allowTerminal/allowFileTools` 在 `link` 模式下不再影响"工具面"（没有 MCP 工具），但**仍作为执行策略**保留：
   `allowTerminal=false` 时 exec 一律拒绝；
-- `rootDir/trustedDirs/unrestricted` 等区域与命令策略**完全复用** `JZVirtualTerminalConfig`，link 与 mcp 两条路共用一套审核代码
-  （`JZAgentNodeHost::refresh` 已经是这个结构，不需要为 link 写第二套）。
+- `rootDir/trustedDirs/unrestricted` 等区域与命令策略**完全复用** `JZVirtualTerminalConfig`，link 与 mcp
+  两条路共用一套审核代码（`JZAgentNodeHost::refresh` 已经是这个结构，不需要为 link 写第二套）。
 
 ### 6.6 node 自述：`helloAck` 该带什么（设计，未实现）
 
-**只回一个 `nodeName` 不够。** cli 和模型要回答三类问题，缺任何一类都会导致"明明连上了却一直撞墙"：
+**只回 `nodeName/version/rootDir/shell` 不够。** cli 和模型要回答三类问题，缺任何一类都会导致"明明连上了却一直撞墙"：
 
 | 问题 | 缺了会怎样 |
 | --- | --- |
@@ -500,7 +521,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 
 `helloAck` 到了 cli 之后，**必须重设 `remote_ssh` 的工具描述**，否则这些字段只有人能看到。
 框架这边是支持的：`JZAgent::buildTools()` 每次请求都重新调 `tool->toolDefine().toJson()`
-（`JZAgent.cpp:628-634`），所以 `JZRemoteSshTool` 在 `helloAck` 后调一次 `setToolDefine()`，**下一轮 LLM 请求就生效**，
+（`JZAgent/JZAgent.cpp:628-634`），所以 `JZRemoteSshTool` 在 `helloAck` 后调一次 `setToolDefine()`，**下一轮 LLM 请求就生效**，
 不需要重启、不需要重建 agent。
 
 描述格式（每个节点一行，只写**限制**，全开时省略，避免描述变长）：
@@ -521,7 +542,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 
 #### 6.6.3 `/info` 的 `nodes[]`（人看的那份）
 
-在现有 `{name, target, online, busy, nodeName, rootDir, shell, error}` 基础上补齐上面全部字段，
+在现有 `{name, target, online, busy, default, nodeName, rootDir, shell, error}` 基础上补齐上面全部字段，
 并增加 `protoVersion`、`platform`、`hostName`、`version`（构建号）、三个能力位、`unrestricted`、
 `maxConcurrent`、`running`、`startTimeMs`、`diskFreeMB`。
 
@@ -531,7 +552,7 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 
 | 改动 | 文件 |
 | --- | --- |
-| `helloAck` 字段扩到上表 | `JZAgent/JZAgentNodePacket.{h,cpp}` |
+| `helloAck` 字段扩到上表 | `binary/agent_cli/JZAgentNodePacket.{h,cpp}` |
 | 填字段（构建号、平台、主机名、盘空间、运行态） | `binary/agent_cli/node/JZAgentNode.cpp`（`onLinkPacket` 的 hello 分支） |
 | 存字段 + 暴露 getter | `binary/agent_cli/JZNodeLink.{h,cpp}` |
 | `helloAck` 后刷新工具描述 | `JZAgentCli::startNodes` 的回调里调 `JZRemoteSshTool::refreshNodeList()` |
@@ -542,30 +563,55 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 
 ## 7. 配置（schema）
 
-> §7.1 / §7.2 已落地（P1/P2，2026-11-06）；§7.3 是 standalone（一直在跑）；
-> §6.5 的 node 配置一半是现状（`mcp`）/ 一半已落地（`link`）。
->
-> 实际生效的字段以实现为准（`--check` 打印的就是它）：server 侧是 `hub.bind/port/token`，
+> 实际生效的字段以实现为准（`--check` 打印的就是它）：server 侧是 `http.*` + `hub.bind/port/token`，
 > cli 侧是 `server.host/port/token/agentId`（**没有** `server.enabled`，`host` 非空即 managed）。
 
 ### 7.1 server `config.json`
 
 ```json
 {
-  "http":      { "bind": "0.0.0.0", "port": 8088, "token": "<管理台口令>" },
+  "http": {
+    "bind": "0.0.0.0", "port": 8088,
+    "ssl": {
+      "enabled": true, "requireClientCert": true,
+      "certFile": "certs/server.crt", "keyFile": "certs/server.key", "caFile": "certs/ca.crt"
+    }
+  },
   "hub":       { "bind": "0.0.0.0", "port": 8090, "token": "<控制通道口令>" },
   "frp":       { "server": { "enabled": false, "bindPort": 7000, "token": "" } },
-  "agents": [
-    { "agentId": "a1", "token": "t-a1", "name": "产线1号" }
-  ]
+  "agents":    [ { "name": "local1", "cmd": "agent_cli", "args": ["-c", "a1.json"], "dir": "" } ],
+  "selfAgent": { "enabled": true, "agentId": "server", "name": "server(内置)" }
 }
 ```
 
 | 字段 | 说明 |
 | --- | --- |
-| `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用 |
-| `hub.token` | 控制通道握手口令（全局；per-agent token 见 §8） |
-| `agents[]` | **v1 遗留**（本机子进程托管），与 hub 并存；hub 侧不靠它做白名单（见 §13.3 的已知缺口） |
+| `http.ssl.enabled` | **默认 true**：管理台/API 走 HTTPS（`JZHttpServer::setSslConfig`）。置 false 才退回明文 HTTP，启动时打警告 |
+| `http.ssl.requireClientCert` | **默认 true**：双向认证（服务端带 CA ⇒ mongoose `SSL_VERIFY_PEER\|FAIL_IF_NO_PEER_CERT`）。置 false = 单向 TLS |
+| `http.ssl.certFile` / `keyFile` / `caFile` | PEM 路径，相对路径按**配置文件所在目录**解析（默认 `certs/`）。缺文件 ⇒ `init()` 直接失败，**不会**静默降级成明文 |
+| `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用，不能与 `http.port` 相同 |
+| `hub.token` | 控制通道握手口令（全局单一口令） |
+| `agents[]` | server **本机**托管的 cli 子进程（`name/cmd/args/dir/enabled`），与 hub 并存；**不是** hub 白名单，也没有 per-agent token |
+| `frp.server.*` | frps 服务端，只服务于"现场自带 frpc"的部署，与本架构无关 |
+| `selfAgent` | server 进程内置的 agent，见 §11 |
+
+证书自备（浏览器/客户端要装同一 CA 签的客户端证书；用自签 CA 免得被公用 CA 拒）：
+
+```bash
+mkdir -p certs
+# 1) CA
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout certs/ca.key -out certs/ca.crt -subj "/CN=agent-cli-ca"
+# 2) 服务器证书(SAN 填实际访问的域名/IP; 否则浏览器按 IP 访问会报名字不符)
+openssl req -newkey rsa:2048 -nodes -keyout certs/server.key -out certs/server.csr -subj "/CN=agent-cli-server"
+openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
+  -days 3650 -out certs/server.crt -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1")
+# 3) 客户端证书(给管理员浏览器/脚本; 导入时连 ca.crt 一起装)
+openssl req -newkey rsa:2048 -nodes -keyout certs/client.key -out certs/client.csr -subj "/CN=agent-cli-admin"
+openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
+  -days 3650 -out certs/client.crt
+openssl pkcs12 -export -in certs/client.crt -inkey certs/client.key -out certs/client.p12
+```
 
 ### 7.2 cli `config.json`（managed）
 
@@ -583,25 +629,26 @@ remote_ssh(host: string, command: string, cwd?: string, timeout_ms?: number)
 `server.host` 非空即 managed：**忽略** `http.*`（受控模式不再对外开 HTTP）。
 
 `nodes[]` 每项对应一个 `link` 模式的 node（node 侧 `mode:"link"`、`host/port/token` 与这里一致）；
-url 不再是 `/mcp`，而是 `host:port` —— 走 JZNet，不是 HTTP。
+连接方式是 `host:port` + JZNet，不是 `/mcp`。只有一台时它就是默认；多台都没标 `default` 则按第一台。
 
 ### 7.3 cli `config.json`（standalone）
 
-`http.*` 即可，`nodes[]` 取代 `mcp.servers[]`。standalone 也可以挂 node
-（本地执行 + 远端执行并存），是否 managed 只影响控制面。
+`http.*` 即可，`nodes[]` 取代 `mcp.servers[]`。standalone 也可以挂 node（本地执行 + 远端执行并存），
+是否 managed 只影响控制面。
 
 cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 | 分组 | 关键项 |
 | --- | --- |
-| `llm` | `url / name / token / netTimeoutMs / maxRounds / maxToken / maxRetries / maxFixRetries / retryDelayMs / body` |
+| `llm` | `url / name / token / netTimeoutMs / maxRounds / maxToken / maxTokens / maxRetries / maxFixRetries / retryDelayMs / body` |
 | `terminal` | `rootDir / trustedDirs / shellProgram / programs / recycleSec / allowTerminal / allowFileTools / allowPackageManager / allowNetwork / unrestricted` |
 | `verify` | `maxRounds / timeoutMs` |
 | `memory` | `enabled / file / maxBytes` |
 | `system` | `extra / extraFile`（拼进 system prompt 一次） |
 | `network` | `enabled / searchUrl / proxyHost / proxyPort / proxyUser / proxyPassword` |
-| `mcp` | `enabled / servers[]`（仅第三方 MCP server，不再用于 node） |
+| `mcp` | `enabled / servers[]`（仅第三方 MCP server，不用于 node） |
 | `nodes` | `[{name, host, port, token, default}]`（link 模式 node，静态） |
+| `task` | `queues / maxPending`（见 §9） |
 | `http` | `bind / port / token / dir` |
 
 | 顶层 | `agentName / version / logFile`（`logFile` 非空才有 `Agent.log`） |
@@ -611,7 +658,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 - 旧 `mcp.servers[]` **保留可读**，但**只服务于第三方 MCP server**（不再是 node 的连接方式）。
   ⚠ 不做"旧 `http://node:7500/mcp` 自动转 `nodes[]`"：传输已经从 MCP 换成 JZNet，自动转会把 node 打成
   连不上的 `mcp` 模式——宁可启动时打一条 warning 说"node 请改用 `nodes[]` + node 侧 `mode:"link"`"，也不要静默错配。
-- 旧 `agents[]{cmd,args,dir}`（v1 本地托管）**保留**为一个独立模式 `type:"local"`，
+- 旧 `agents[]{cmd,args,dir}`（server 本机托管）**保留**为一个独立模式 `type:"local"`，
   避免现有部署一升级就全废；但它与本文的 managed 是两套，文档里分开写。
 
 ---
@@ -620,10 +667,9 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 | 面 | 机制 | 备注 |
 | --- | --- | --- |
-| 管理台 / API | `http.token`（`?token=` 或 `Authorization: Bearer`） | 与现状一致 |
-| 控制通道 | `hub.token`（握手派生密钥）+ `agentId` 身份 | token 不匹配表现是"包解不开"，靠 `hello` 超时给明确错误 |
-| per-agent 吊销 | `agents[].token` 覆盖全局：握手后首个 `hello` 校验 `agentId + token` | 推荐；单机泄漏不影响其它 agent |
-| node（`link`） | `token`（JZNet 握手）+ 默认只绑内网 | 无 token 时**拒绝启动** link 模式；`mcp` 模式仍是"无鉴权"，必须靠网络隔离 |
+| 管理台 / API | 传输层：HTTPS + **强制客户端证书**（`http.ssl.*`，默认开） | 已取消应用层 `http.token`；能连上 TLS 的前提是拿到 CA 签发的客户端证书。`ssl.enabled=false` 时等于无鉴权，只能靠网络隔离 |
+| 控制通道 | `hub.token`（握手派生密钥）+ agentId 身份 | token 不匹配表现是"包解不开"，靠 `hello` 超时给明确错误 |
+| node（`link`） | `token`（JZNet 握手）+ 默认只绑内网 | 无 token 时**拒绝启动**；`mcp` 模式仍是"无鉴权"，必须靠网络隔离 |
 | 模型侧 | node 的区域/白名单/危险命令策略照旧 | `unrestricted=true` 等于交出 shell，文档必须显著标注 |
 
 **node 侧的三层防线**（与 `mcp`/`link` 无关，两条路共用）：
@@ -637,175 +683,14 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 ⚠ 区域约束是**命令级**的（重定向目标写不了区外），程序自己做什么管不到（`rm -rf ~/x` 拦不住）。
 真正的边界只能是沙箱。
 
-审计：server 侧按 `taskId` 记录 `{agentId, 发起人, 起止时间, status, verify_rounds}`，落盘一份 JSONL。
+**审计口径**：server 按任务记录 `{agentId, taskId, prompt, status, verify_rounds, 起止时间, 错误}`，落 `data/tasks.jsonl`。
+⚠ 目前**没有"发起人"**：鉴权只在传输层（mTLS），也不记录客户端证书 CN，所以"谁交的"只能靠外部日志。
 
 ---
 
-## 9. 落地步骤
+## 9. 任务队列（`task.queues`）
 
-| 阶段 | 内容 | 验收 |
-| --- | --- | --- |
-| **P0** ✅ 已落地 | node 加 `mode:"link"`（起 `JZNetServer` + `NodePack_exec`，**不起 MCP**）；cli 加 `nodes[]` + `remote_ssh` 工具（`nodes[]` 空则不注册） | `ctest -R agent_cli.remote_ssh_nodes`：2 台 link node + 1 个 cli，把 nodeA 的 secret 搬到 nodeB；`mcp` 模式行为不变 |
-| **P1** ✅ 已落地 | cli 模式二选一：`server.host` 非空判定 managed，managed 时不起 HTTP | `ctest -R agent_cli.hub_nodes` 断言 cli 的 `http.port` **未被监听**；standalone 行为不变 |
-| **P2** ✅ 已落地 | 控制通道：`JZAgentHubPacket` + `startServerLink()` + server 侧 `JZNetServer`/注册表 + `hello/heartbeat/taskSubmit/taskCancel/reset/taskEvent/taskEnd` + `POST /api/tasks` | 内网 cli 不配 frp，server 能下发任务、看事件、取消任务（`agent_cli.hub_nodes` 全链路通过） |
-| **P3** | 收尾：`logAppend` 落盘、离线策略、审计 | 断电/重连/离线各场景行为可预期 |
-| **P4**（可选） | node 自述（§6.6）：身份/能力位/运行态 + 刷新 `remote_ssh` 描述 | `/info` 里有 `platform`、`diskFreeMB`；工具描述里出现"禁装包/禁联网" |
-
-包定义建议分两个文件，互不耦合：`JZAgentHubPacket`（server↔cli，控制面）与 `JZNodePacket`（cli↔node，执行面）。
-P0 只依赖后者，P2 只依赖前者 —— 这也是 P0 能先落地的原因。
-
-依赖关系：P0 与 P1 互不依赖，可并行；P2 依赖 P1（否则 managed 分支没有接收方）；P4 只依赖 P0。
-
----
-
-## 10. 与当前实现的差异（落地清单）
-
-> ⚠ 下表是 **P2 之前**的快照。P1/P2 已于 2026-11-06 落地（见 §13）：其中"server 管 agent / 控制通道 /
-> cli 模式 / 任务入口 / 取消重置"五行**已完成**；仍然成立的是 **node 自述、日志回传**；
-> "验证面"一行**已定不改**（验证统一在 cli 跑，见 §1.2，不做 `verify_host`）。
-
-| 项 | 现状（v1） | 目标 | 要改的位置 |
-| --- | --- | --- | --- |
-| server 管 agent | `JZProcess` 拉本机子进程，配置 `cmd/args/dir` | `JZNetServer` 等 cli 上线，配置 `agentId/token` | `binary/agent_cli/server/JZAgentCliServer.{h,cpp}`、`server/main.cpp` |
-| 控制通道 | 无（frp 只是端口转发） | `JZNetClient` + `HubPack_*` | 新增 `JZAgentHubPacket.{h,cpp}`；`JZAgentCli` 加 `startServerLink()` |
-| cli 模式 | 总是 `startHttp()`；frp 独立开关 | `managed` 时不起 HTTP/frp | `binary/agent_cli/main.cpp`、`JZAgentCli::init/startHttp` |
-| 任务入口 | cli `POST /task` | managed 下为 server `taskSubmit` | `JZAgentCli::submitTask`（复用，不改逻辑）+ server 新路由 |
-| 取消/重置 | `POST /reset` | `taskCancel` / `reset` 包 | `JZAgentCli::resetSession` 加一层包入口 |
-| **验证面** | 永远在 cli 本机跑（`runVerifyAsync` + `cwd=rootDir`） | **保持现状**：验证统一在 cli，不加 `verify_host`（§1.2）；跨机靠验证命令自己够到远端 | 无（刻意不改） |
-| node 角色 | 只有一种：MCP server（8 个工具） | 两种：`mcp`（同现状）/ `link`（无 MCP，只处理 `exec`） | `binary/agent_cli/node/main.cpp`（按 `mode` 分支）、`JZAgentNode`（link 下不建 `JZMcpServer`） |
-| node 工具面 | 8 个工具（5 terminal + 3 file）直接进模型工具表 | cli 侧只挂 1 个 `remote_ssh`；`mcp` 模式的工具面不变 | `JZAgentCli::setupAgent`（按 `nodes[]` 决定是否加 `remote_ssh`） |
-| node 自述 | `helloAck` 只回 `nodeName/version/rootDir/shell`，模型只看得到 `name (host:port)` | 身份 + 能力位 + 运行态共 17 项，且刷新进 `remote_ssh` 描述（§6.6） | `JZAgentNodePacket`、`JZAgentNode::onLinkPacket`、`JZNodeLink`、`JZAgentCli::makeInfo` |
-| node 连接方式 | `mcp.servers[]` 静态、MCP over HTTP `/mcp` | `nodes[]` 静态、**JZNet（`NodePack_exec`）** | `JZAgentCli.h`（配置结构）、`loadConfig`、新增 `JZNodeLink` |
-| 日志 | server 读子进程 stdout（3000 行环形缓冲） | `logAppend` 回传 + 按 agentId 落盘 | server 侧新存储；cli 侧 log hook |
-
----
-
-## 11. 未决问题
-
-1. **（已定，2026-11-06）node 传输 = JZNet**：配合 cli 时 node 走 `link` 模式（不起 MCP，`JZNetServer` + `NodePack_exec`）；
-   单独用仍是 `mcp` 模式，工具面不变。多节点由 cli 的 `nodes[]` + 一个 `remote_ssh` 承担，node 之间互不知情。
-2. **`remote_ssh` 粒度**：一个工具带 `host`（本文推荐），还是每台机器一个工具名？前者工具表干净，后者参数少。
-3. **managed 模式是否保留本地诊断端口**（只绑 `127.0.0.1` 的 `/info`、`/events`）？
-   完全不起的话，现场排障只能看 server 侧日志；起了又不满足"不对外起 HTTP"的字面要求（需明确"仅环回不算对外"）。
-4. **（已定，2026-11-06）node 保留**：目标是"无网/不能装 cli 的机器"的执行出口，`agent_node` 继续维护，
-   P0 的 `remote_ssh` 单工具照做。若后续出现"所有机器都能装 cli"的场景，只要保持 `nodes[]` 可空，
-   node 自然退化为不使用的可选层，无需专门删代码。
-
----
-
-## 12. 实现记录（P0，2026-11-06）
-
-### 12.1 文件
-
-| 文件 | 作用 |
-| --- | --- |
-| `JZAgent/JZAgentNodePacket.{h,cpp}` | 执行面协议：`NodePack_hello / helloAck / exec / execResult / execCancel` + `JZAgentNodePacketInit()`（幂等注册，必须在 `JZNetPackInit` 之后） |
-| `binary/agent_cli/node/JZAgentNode.{h,cpp}` | `initLink()`（只建一台终端，**不建 JZMcpServer**）+ `startLinkServer()` + `onLinkPacket()` + `runLinkExec()` |
-| `binary/agent_cli/node/main.cpp` | 按 `config.mode` 分支：`link` → `initLink/startLinkServer`；否则原 MCP 路径 |
-| `binary/agent_cli/JZNodeLink.{h,cpp}` | `JZNodeLink`（`JZNetClient` 连接 + 重连 + 单条在飞 + 超时收口）+ `JZRemoteSshTool` |
-| `binary/agent_cli/JZAgentCli.{h,cpp}` | `JZCliNodeConfig` / `nodes[]` / `startNodes()` / `nodeLink()` / `defaultNodeName()`；`setupAgent` 里按需注册 `remote_ssh`；`makeInfo` 输出 `nodes[]` 状态 |
-| `binary/agent_cli/main.cpp` | 解析 `nodes[]`、打印生效节点、启动时 `cli.startNodes()` |
-| `binary/agent_cli/test/test_remote_ssh_nodes.py` | 端到端用例（见 12.4） |
-
-### 12.2 实际行为（与 §6 有出入的地方以这里为准）
-
-- **并发**：每个 node 同时只跑 1 条 exec（`maxConcurrent` 默认 1），忙时 `remote_ssh` 直接回
-  "节点 X 正忙"；**不排队**（排队会变成任务黑洞）。
-- **输出裁剪**：`execResult` 的 output 超过 **120KB** 时按"头 60KB + 一行显式提示 + 尾 60KB"裁剪
-  （按 UTF-8 字符边界切，不会切坏多字节字符），远低于 256KB 的包上限。
-- **超时双保险**：cli 侧 timer 到点 → 发 `execCancel` + 本地收口；node 侧 `run(timeoutMs)` 到点杀进程树。
-  上限 15min（与本地 terminal 前台一致）。
-- **token 必填**：`link` 模式下 `token` 为空直接拒绝启动（否则等于把 shell 交给任何能连上端口的人）。
-- **cwd**：非空时拼成 `cd "<cwd>" && <command>` 交给终端 —— 终端的解析器本来就支持 `cd X && cmd`，
-  并且会按 X 重新审权限，所以没有为它新开 API；含双引号的 cwd 直接拒绝。
-- **/info**：`nodes[]` 每项给出 `{name, target, online, busy, nodeName, rootDir, shell, error}`，
-  控制台日志是缓冲的时候靠它自检（token 错的表现是 `online=false` + error 文案）。
-  v1 的自述只有这几个字段；扩到平台/能力位/运行态的完整设计见 §6.6（未实现）。
-- **重连**：`sigDisconnected` → 1/2/4/…/30s 退避；断线时在飞的 exec 以
-  "结果未知" 收口，不重放（远端可能已经执行过）。
-
-### 12.3 兼容
-
-- `mcp` 模式**一行没改**：工具面、`/mcp` 端点、现有 `code_agent` 用法全部照旧。
-- 旧 `mcp.servers[]` 仍可连第三方 MCP server，但**不会**被当成 node（传输不同，见 §7.4）。
-
-### 12.4 测试
-
-```powershell
-ctest --test-dir build -C Debug -R agent_cli.remote_ssh_nodes --output-on-failure
-```
-
-- 起 **2 台 link node**（各自 rootDir）+ **1 个 agent_cli**（`nodes[]` 两台），把 nodeA 的
-  `secret.txt` 搬到 nodeB 的 `answer.txt`；
-- 默认用**内置 mock 模型**（OpenAI 兼容 + **SSE**，固定回两次 `tool_call` + 一次收尾），
-  因此不联网、2 秒级、可进快速回归；`--real-llm` 才用真端点（慢）；
-- 断言：`/info` 里两台 node `online=true` → 任务 `status=success` → nodeB 文件内容与随机 secret
-  **逐字符相等** → 验证命令只读 nodeB 的文件（cli 本地工作区没有它），所以必须真的经 `remote_ssh` 搬运。
-
-⚠ 写 mock 时踩到的两个点（以后再加类似测试别再踩）：
-1. **agent_cli 是流式**（`JZAgent::setStreamEnabled(true)`），mock 必须回 **SSE**（`data: {...}\n\n`）；
-   回普通 JSON 会在 `sigReadyRead` 里被当 SSE 消费掉，到 `onLLMRequest` 只剩空 body（报 "json解析错误 ... body=[]"）。
-2. 请求体用 `Connection: close`、`Content-Length` 发送（不是 chunked），Python `http.server` 按
-   `Content-Length` 读即可。
-
----
-
-## 13. 实现记录（P1 / P2，2026-11-06）
-
-### 13.1 文件
-
-| 文件 | 作用 |
-| --- | --- |
-| `JZAgent/JZAgentHubPacket.{h,cpp}` | 控制面协议：`HubPack_hello / helloAck / heartbeat / taskSubmit / taskCancel / reset / taskEvent / taskEnd` + `JZAgentHubPacketInit()`（包号 `NetPack_user+101…`，与 node 的 `1000…` 不冲突） |
-| `binary/agent_cli/JZHubLink.{h,cpp}` | `JZHubLink`（`JZNetClient` 连接 + hello/心跳 + 重连退避 + 事件/回包上行 + 任务下行回调） |
-| `binary/agent_cli/JZAgentCli.{h,cpp}` | `JZCliServerLinkConfig` / `managed()` / `startServerLink()` / `onHubTaskSubmit·Cancel·Reset` / `cancelTask()` / `nodesJson()`；`pushEvent` 同时上行控制面；`makeInfo` 加 `hub` 段 |
-| `binary/agent_cli/main.cpp` | 解析 `server.*`；`--check` 打印运行模式；启动分支：managed → `startServerLink()`，standalone → `startHttp()` |
-| `binary/agent_cli/server/JZAgentCliServer.{h,cpp}` | `startHub()`（`JZNetServer`）+ 在线 cli 注册表 + `POST /api/tasks` / `POST /api/tasks/cancel` + `/api/status`、`/api/agents` 增加 `hub` 与 `online[]` + 管理台"控制面"表格 |
-| `binary/agent_cli/server/main.cpp` | 解析 `hub.*`（校验不与 `http.port` 撞）、默认配置模板、`--check` 打印 |
-| `binary/agent_cli/test/test_hub_nodes.py` | 全链路用例（见 13.4），ctest 名 `agent_cli.hub_nodes` |
-
-### 13.2 行为（以代码为准）
-
-| 项 | 实际行为 |
-| --- | --- |
-| 模式判定 | `server.host` 非空 ⇒ managed（**没有** `server.enabled`）；managed 下不调用 `startHttp()` |
-| 上线 | cli 连上后发 `hello`（含 `nodes` 清单），3s 内没收到 `helloAck` 就报"token 或端口不对"并断开重连 |
-| 身份 | `agentId` 缺省取 `agentName`；同一 `agentId` 重连时旧连接被 `closeClient` 顶掉（管理台不会留两行） |
-| 心跳 | 5s 一次，带 `busy/round/taskId/nodes`；忙闲变化时**立刻**多发一次，不等到下个周期 |
-| 任务下发 | `POST /api/tasks {agentId, ...}`，body 与 `POST /task` **完全一致**（`task_timeout_ms` 只给 server 用，不下发语义） |
-| 忙 | server 不因 `agent.busy` 拦截；cli 有空闲队列就执行，全忙按 `maxPending` 排队，排满拒绝 |
-| 回包 | `wait:true` 时 server 等 `taskEnd` 回 `200`；`wait:false` 立即回 `202+taskId`，结果落任务历史 |
-| 取消 | `POST /api/tasks/cancel?taskId=` → `taskCancel` → cli 只取消指定排队/在跑任务（含验证、本地后台命令与对应远端 exec）→ 回一次 `cancelled` |
-| 超时 | 同步与异步任务都有 server timer：先发 `taskCancel`、记 `failed`；同步提交方再收 `504`，异步只落历史 |
-| 掉线 | cli 断连 → 该 agent 的在飞任务立刻 `502`（结果未知，不重放）；任务本身在 cli 侧照跑 |
-| 事件 | cli 的每个 SSE 事件同时以 `taskEvent` 上行（`thinking/reply/tool_call/tool_result/verify/error/task_start/task_end`），server 存最近一条供 `/api/status` 展示 |
-| 单包上限 | 事件 >96KB、回包 >160KB 时换成 `{truncated,bytes,preview}`（**不硬切 JSON**，切坏会让 server 解析失败） |
-
-### 13.3 已知缺口（P3 待办）
-
-- **没有 `logAppend`**：server 侧看不到 cli 的控制台日志；managed 模式下 cli 也没 HTTP，现场排障只能看 cli 自己落盘的 `Agent.log`。
-- **没有 agent 白名单**：server 不认识"预期上线名单"，任何拿到 `hub.token` 的 cli 都能连上（token 是全局单一口令）。per-agent token 见 §8，未实现。
-- **管理台没有事件流**：只有 `lastEventType`（最近一条），看不到任务过程；要看得加 SSE 转发。
-- **大包策略未定**：下行大 `taskSubmit` 与上行大 `taskEnd` 的传输/截断语义保留现状，待单独设计（§4.4）。
-- **验证统一在 cli**（§1.2，已定）：不做 `verify_host`。跨机时验证命令必须自己够到远端，
-  并且要防"假通过"（cli 上有陈旧同名文件会被误判 success）。全链路用例里 nodeA/nodeB 与 cli 同机，所以直接成立。
-
-### 13.4 测试
-
-```powershell
-ctest --test-dir build -C Debug -R agent_cli.hub_nodes --output-on-failure
-```
-
-- 拓扑：2 台 link node + 1 个 managed cli + 1 个 server；任务从 **server** 的 `POST /api/tasks` 提交；
-- 断言：server 的 `online[]` 里有这台 cli 且它上报的两台 node 都 `online` → 任务 `status=success` →
-  nodeB 的 `answer.txt` 与随机 secret 逐字符相等 → 有 `lastEventType`（事件上行通）→ cli 的 `http.port` **未被监听**（模式互斥）；
-- 全程 mock 模型，不联网，实测 **0.6s**；standalone 的 `agent_cli.remote_ssh_nodes` 依旧通过（未回归）。
-
----
-
-## 14. 任务队列（`task.queues`，2026-11-06）
-
-### 14.1 配置与语义
+### 9.1 配置与语义
 
 ```json
 "task": { "queues": 2, "maxPending": 32 }
@@ -818,10 +703,10 @@ ctest --test-dir build -C Debug -R agent_cli.hub_nodes --output-on-failure
 
 - **队列内串行**：一个 `JZAgent` 只有一条会话，同一队列同一时刻只跑一个任务；
 - **队列间并发**：不同队列互不影响，各跑各的；
-- **派发**：提交时挑第一个空闲队列；全忙则进 master 的 FIFO 队列，任一群列空出来就派一条；
+- **派发**：提交时挑第一个空闲队列；全忙则进 master 的 FIFO 队列，任一队列空出来就派一条；
 - **排满**：`maxPending` 到顶直接拒绝（`queue_full`，HTTP 侧回 429），不让队列变成任务黑洞。
 
-### 14.2 实现方式（为什么不是"一个 JZAgentCli 里塞 N 个会话"）
+### 9.2 实现方式（为什么不是"一个 JZAgentCli 里塞 N 个会话"）
 
 每个队列是**一整个 `JZAgentCli` 实例**（`m_workers[i]`，`[0]` 就是 master 自己）：
 
@@ -841,7 +726,7 @@ submitTask(req, respond)          // 调度: 找空闲队列 -> dispatchTo(q) ; 
 
 master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、node 连接、MCP 连接、SSE 广播、历史。
 
-### 14.3 与其它模块的衔接
+### 9.3 与其它模块的衔接
 
 | 面 | 多队列下的行为 |
 | --- | --- |
@@ -850,37 +735,21 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 | `/reset`（scope=task） | 排队任务逐条回一次 `cancelled`，再让每个队列各自收尾；取消期间禁止回包回调重入派发 |
 | `taskCancel(taskId)` | 先查排队（命中就摘掉并回一次 `cancelled`），再按 `taskId` 只取消对应队列，不能误停其他队列 |
 | node（`remote_ssh`） | worker **不自己连** node（借用 master 连接）；工具记录发起队列 owner，收尾只取消该 owner 的远端 exec |
-| MCP（`mcp.servers[]`） | **只挂在队列 0**：每个队列挂一套意味着 stdio MCP 会被拉起 N 次。需要每队列都有的工具，应改用 node/HTTP 形式 |
+| MCP（`mcp.servers[]`） | **只挂在队列 0**（见 §13） |
 | 长期记忆 | 各队列写同一个 `memory` 文件（追加语义，交错但不丢内容） |
 
-### 14.4 代价与风险（要认）
+### 9.4 代价与风险（要认）
 
 1. **并发写同一工作区**：两个队列可能同时改同一批文件，模型互相踩且不会报错 —— 队列数 >1 时应配独立工作区/子目录，或只让一个队列写本地；
 2. **资源**：每个队列一套 agent + 工具 + 终端；`queues=4` 就是 4 倍内存与 4 条并发 LLM 连接（服务端限流要跟上）；
-3. **不排队的情况**：`maxPending<=0` 时行为回到"忙就拒"，只是拒绝点从"第一个任务"变成"队列全满"；
+3. **工具面不齐**：MCP 只在 q0，q1+ 的模型没有那批工具（§13）；
 4. **历史列表**：各队列记录自己的执行历史，master 在 `/info.recent` 按开始时间聚合最近 20 条并附 `queue`，不会在接口里重复出现同一任务。
-
-### 14.5 测试
-
-```powershell
-ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
-```
-
-- mock 模型每个请求睡 1.5s；`queues=2`；
-- A/B 同时提交 → 断言 `/info.queues` 里 **2 条 busy**（证明是两个 agent 并发，不是假并发）；
-- 全忙时提交 C → 断言 `pendingTasks=1`，且 C 最终 success；
-- 总耗时 3.1s（串行应为 4.5s）→ 并发成立；三条任务全 success。
-- `agent_cli.task_cancel` 额外覆盖 queues=1/2 的"在跑 + 排队" reset、worker SSE、recent 聚合，以及真实 node 进程取消。
-- `agent_cli.server_tasks` 覆盖 managed 排队/在跑任务的 `wait:false` 取消、多队列 busy、异步超时、迟到 `taskEnd` 与 chunked SSE reply 上行。
 
 ---
 
-## 15. 数据归属：server 存任务历史，cli 存执行状态（2026-11-06）
+## 10. 数据归属：server 存任务历史，cli 存执行状态
 
-### 15.1 一句话结论
-
-**server 是「任务历史」的主人，cli 是「任务执行」的主人。**
-所以 server 必须落盘，cli 不需要（也不该）存历史。
+**server 是「任务历史」的主人，cli 是「任务执行」的主人。** 所以 server 必须落盘，cli 不需要（也不该）存历史。
 
 | 数据 | 谁是权威 | 生命周期 | 放在哪 |
 | --- | --- | --- | --- |
@@ -888,21 +757,21 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | 任务执行（当前这一条的上下文/队列/验证进程） | **cli** | 任务结束即弃；进程重启即丢 | cli 内存 |
 | agent 在线状态、节点、最近事件 | **cli 上报，server 缓存** | 心跳刷新，掉线即失效 | server 内存（`m_onlineByConn`） |
 
-### 15.2 为什么不能让 cli 存历史
+为什么不让 cli 存历史：
 
-1. **cli 会重启**：升级、崩溃、客户手动重启都会丢；历史跟着丢等于没存。
-2. **cli 可能被替换**：同一台 agentId 换机器上线，历史应该延续，不能绑在某个进程里。
-3. **多队列 + 多 cli**：历史分散在 N 个进程里，前端要合并、要处理时钟差异，还得处理"某台永远不来了"。
-4. **验收/审计在提交方一侧**：谁有资格看历史，和"谁执行"是两件事 —— server 天然是那个收口点。
+1. **cli 会重启**：升级、崩溃、客户手动重启都会丢；
+2. **cli 可能被替换**：同一 agentId 换机器上线，历史应该延续；
+3. **多队列 + 多 cli**：历史分散在 N 个进程里，前端要合并、要处理时钟差异；
+4. **验收/审计在提交方一侧**：谁有资格看历史，和"谁执行"是两件事 —— server 天然是收口点。
 
 反过来，**cli 也不该存全量历史**：它没有持久化层，硬加一个只会和 server 的记录打架。
 
-### 15.3 不一致怎么处理（四类，都有确定答案）
+### 10.1 不一致怎么处理
 
 | 场景 | 现象 | 规则 |
 | --- | --- | --- |
-| **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；`status=running` 的任务在下一次心跳对不上时标 `lost`（见下） |
-| **server 重启** | 内存里的 `m_pendingTasks` 全丢 | 载入 `tasks.jsonl` 时把 `running` 一律改 `lost`，`error="server 重启, 结果未知"` —— 不假装它还在跑 |
+| **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；`running` 的任务在心跳/下线对不上时标 `lost` |
+| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把 `running` 一律改 `lost`，`error="server 重启, 结果未知"` |
 | **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 把该 agent 名下 `running` 的记录标 `lost`；提交方（如果在等）回 502 |
 | **超时** | server 侧 `task_timeout_ms` 到点 | 标 `failed` + 原因，同时下发 `taskCancel`（历史里能看到"是超时，不是 cli 说失败"） |
 
@@ -911,51 +780,49 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 一个例外要说清：没配 `verify_cmd` 时 cli 会把 agent 报错也判成 `success`（"没有验收项就没有可失败的东西"，
 见 `onLoopFinished` 注释），这种记录会**同时**有 `status=success` 和 `error=ConnectError` —— 看详情要两个字段一起看。
 
-### 15.4 存储形态
+### 10.2 存储形态
 
-- **JSONL 追加**：`taskCreate` 一行、`taskEnd`/失败 各一行；载入时按 `taskId` 后写覆盖先写（简单、崩溃安全、不用回写全文件）。
+- **JSONL 追加**：`taskCreate` 一行、`taskEnd`/失败 各一行；载入时按 `taskId` 后写覆盖先写（崩溃安全、不用回写全文件）。
 - 内存里保留最近 **500** 条（超出按插入顺序淘汰），启动时全量载入。
-- 只存"提交方给的东西 + 结果"，不存每条 `taskEvent`（事件是流式的，存了会撑爆；只留 `last_event` 供排障）。
+- 只存"提交方给的东西 + 结果"，不存每条 `taskEvent`（只留 `last_event` 供排障）。
+- ⚠ 文件本身**不轮转**（见 §13）。
 
-### 15.5 接口与页面（多页，不再是一个页面塞所有东西）
+### 10.3 接口
 
 | 路径 | 作用 |
 | --- | --- |
-| `GET /` | **Agent 列表**：在线/忙闲/节点/当前任务/工作区 + 最近 5 条任务 |
-| `GET /tasks` | **任务记录**：按 agent / 状态筛选，点一行看详情（`?id=` 深链） |
-| `GET /new` | **新建任务**：选 agent、写任务、可选验证命令 |
-| `POST /api/tasks` | 新建任务；`wait` 默认 `true`（老行为，同步等结果），`false` → 立刻回 `202 {taskId}` |
+| `POST /api/tasks` | 新建任务；`wait` 默认 `true`（同步等结果），`false` → 立刻回 `202 {taskId}` |
 | `GET /api/tasks` | 历史列表：`agentId` / `status` / `limit`（默认 50，最大 500） |
 | `GET /api/tasks/detail?id=` | 单条详情 |
-| `POST /api/tasks/cancel` | 取消（cli 侧会按 taskId 找到对应队列） |
+| `POST /api/tasks/cancel?taskId=` | 取消（cli 侧按 taskId 找到对应队列） |
 
 > 网页一律用 `wait:false` + 轮询：否则"新建任务"页会一直转圈，也没法边跑边看别的任务。
-> 同步与异步任务都进入 server 的在跑登记表，均有 `task_timeout_ms` 与取消能力；`client=null` 仅表示没有同步回包通道。
+> 同步与异步任务都进入 server 的在跑登记表，均有 `task_timeout_ms` 与取消能力。
 
 ---
 
-## 16. 连接式页面 + server 内置 agent（2026-11-06）
+## 11. 管理台与 server 内置 agent
 
-### 16.1 页面结构：从"一页塞所有"改成"连接列表 → 详情"
+### 11.1 页面结构：连接列表 → 详情
 
 | 路径 | 页面 | 内容 |
 | --- | --- | --- |
-| `/` | `index.html` | **连接列表**：每个 agent 一张卡片（状态、agentId、名称/版本/模型、节点 x/y、工作区、最近任务），右侧「进入」按钮 + 「删除」 |
-| `/agent?id=` | `agent.html` | **以会话为主界面**：顶部 tab（会话 / 任务 / 信息）。会话 = 底部输入框 + 对话式结果（每条任务一对气泡：你问的 / 它回的，含状态与耗时）；任务 = 表格；信息 = 状态卡 + 节点表 |
+| `/` | `index.html` | **连接列表**：每个 agent 一张卡片（状态、agentId、名称/版本/模型、节点 x/y、工作区、最近任务），右侧「进入」+「删除」 |
+| `/agent?id=` | `agent.html` | **以会话为主界面**：顶部 tab（会话 / 任务 / 信息）。会话 = 底部输入框 + 每任务一对气泡（问/答，含状态与耗时）；任务 = 表格；信息 = 状态卡 + 节点表 |
 | `/tasks` | `tasks.html` | 全局任务记录（筛选 + `?id=` 详情） |
 | `/new` | `new.html` | 跨 agent 新建任务（agent 下拉） |
 
 交互上刻意做成"远程连接管理器"：**列表回答"连哪台"，详情回答"这台在干什么"**。
-详情页的派活表单是预填 `agentId` 的 —— 不用在别处再选一遍机器。
+详情页的派活表单预填 `agentId`，不用在别处再选一遍机器。首页不放「新建任务」——派活是"进到某台 agent 里"的动作。
 
-新增 API：`GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process}`。
-一个 agent 可能三种身份：控制面连上来的 cli、server 进程内置的 agent、server 拉起的本机子进程。
+`GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process, offline}`。
 
-### 16.2 为什么 server 自己也要有一个 agent
+### 11.2 为什么 server 自己也要有一个 agent
 
 管理动作（看集群、给某台派任务、查记录、启停本机子进程）**只有 server 知道**，远端 cli 的工具表里既没有也不该有（那是控制面权限，属主不是执行面）。
 
-所以 server 进程内直接跑一个 `JZAgent`（`JZServerAgent`），它：
+所以 server 进程内直接跑一个 `JZAgent`（`JZServerAgent`）：
+
 - 出现在 `/api/status` 的 `online[]` 里，`agentId` 默认 `server`，带 `builtin=true`；
 - 与远端 cli **走同一套接口**：`POST /api/tasks {agentId:"server"}`、`GET /api/agent?id=server`、任务记录同样落 `tasks.jsonl`；
 - 区别只在执行位置：任务在 server 进程内跑，不下发 hub。
@@ -966,11 +833,11 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 "selfAgent": {
   "enabled": true, "agentId": "server", "name": "server(内置)",
   "rootDir": "...", "modelUrl": "...", "modelName": "...", "modelToken": "...",
-  "maxRounds": 30, "maxToken": 120000
+  "maxRounds": 40, "maxToken": 100000
 }
 ```
 
-### 16.3 server 独有工具
+### 11.3 server 独有工具
 
 | 工具 | 作用 |
 | --- | --- |
@@ -979,76 +846,152 @@ ctest --test-dir build -C Debug -R agent_cli.task_queues --output-on-failure
 | `server_task_query` | 查任务记录（列表/单条，可按 agent/status 过滤） |
 | `server_agent_control` | 启停/重启 server 本机被监管的 `agents[]` 子进程 |
 
-本地执行面（`terminal_run/query/cancel`、`read_file`、`get_datetime`）与 cli 用的是同一份 `agent_tool` 实现，只是终端实例独立（`id="server"`）。
-`selfAgent.rootDir` 通过独立 `ICodeToolHost` 同时喂给终端区域配置与 `read_file`，不是只写进提示词；取消时显式 `cancelAll()` 停本地进程，终态为 `cancelled`。
+本地执行面（`terminal_run/query/cancel`、`read_file`、`get_datetime`）与 cli 用的是同一份 `agent_tool` 实现，
+只是终端实例独立（`id="server"`）。`selfAgent.rootDir` 通过独立 `ICodeToolHost` 同时喂给终端区域配置与 `read_file`，
+不是只写进提示词；取消时显式 `cancelAll()` 停本地进程，终态为 `cancelled`。
 
-### 16.4 已知边界
+### 11.4 内置 agent 的边界
 
-- 内置 agent **不参与 verify 门控**：server 本机没有"产物"概念，任务结束即结束，`verify_rounds` 恒为 0；
-- 它只能"通过任务"影响远端 cli，读不到远端文件 —— 这是权限边界，不是缺失；
-- 内置 agent 忙时 `POST /api/tasks` 回 409（单实例，没有队列；需要队列就用远端 cli 的 `task.queues`）。
+- **不参与 verify 门控**：server 本机没有"产物"概念，任务结束即结束，`verify_rounds` 恒为 0；
+- 只能"通过任务"影响远端 cli，读不到远端文件 —— 这是权限边界，不是缺失；
+- 忙时 `POST /api/tasks` 回 409（单实例，没有队列；需要队列就用远端 cli 的 `task.queues`）。
+
+### 11.5 列表 = 「曾经连过的全部」（含离线）
+
+| 项 | 规则 |
+| --- | --- |
+| 档案 | `data/agents.json`（整文件重写）：`agentId/name/version/rootDir/modelName/firstSeen/lastSeen/connects` |
+| 接口 | `GET /api/status` 的 `known[]`：**在线优先**，其次按 `lastSeen` 倒序；`online` 由 `m_connByAgent` 现算 |
+| 离线详情 | `GET /api/agent?id=` 依次查 在线 → 档案（`kind=offline`）→ 本机子进程；离线时详情页**禁用派活表单** |
+| 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连任务记录一起删（并重写 `tasks.jsonl`，否则追加文件会在重启时"复活"已删行） |
+| 心跳回收 | hub 每 5s 扫一次，`now - lastSeen > 20s` 判离线 |
 
 **不做定时刷新**：列表 / 任务记录都改成「手动刷新（按钮）+ 改筛选自动拉一次」。
 原因：整页每 2s 重绘会把正在读的详情刷掉，表现为"一直闪"。
 唯一例外是会话页——**只在确实有任务 `running` 时才用 `setTimeout` 追一次**（跑完自动停，不是常驻定时器）。
 
-### 16.5 列表 = 「曾经连过的全部」（含离线）
+### 11.6 静态资源的缓存策略
 
-| 项 | 规则 |
-| --- | --- |
-| 档案 | `data/agents.json`（整文件重写）：`agentId/name/version/rootDir/modelName/firstSeen/lastSeen/connects` |
-| 接口 | `GET /api/status` 新增 `known[]`：**在线优先**，其次按 `lastSeen` 倒序；`online` 由 `m_connByAgent` 现算 |
-| 离线详情 | `GET /api/agent?id=` 依次查 在线 → 档案（`kind=offline`）→ 本机子进程；离线时详情页**禁用派活表单** |
-| 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连任务记录一起删（并重写 `tasks.jsonl`，否则追加文件会在重启时"复活"已删行） |
-| 心跳回收 | hub 每 5s 扫一次，`now - lastSeen > 20s` 判离线 —— 拔网线/休眠时 TCP 仍"通"，socket 的断开信号等不到 |
-
-首页不再放「新建任务」：派活是"进到某台 agent 里"的动作（`/agent?id=` 的表单预填 agentId）。
-
-**静态资源的缓存策略**（踩过一次）：`JZHttpStaticFiles` 默认 `max-age=3600`，改完页面而浏览器还跑着缓存里的旧 `app.js`，
+`JZHttpStaticFiles` 默认 `max-age=3600`，改完页面而浏览器还跑着缓存里的旧 `app.js`，
 表现就是"HTML 是新的、脚本是旧的" → 会话区一直停在「加载中…」，从界面上完全看不出原因。现在：
 
 - 管理台对静态文件设 `setCacheMaxAge(0)`（`max-age=0` + ETag/Last-Modified，没变就 304）；
 - 页面里引用资源带版本号 `/app.css?v=2`、`/app.js?v=3` —— **改前端资源时要顺手 +1**；
 - `app.js` 里加了 4s 兜底提示：仍停在「加载中」就直说"可能是缓存，Ctrl+F5"。
 
-### 16.6 顺带修的两个 JZNetServer bug
+---
 
-| 现象 | 根因 | 修法 |
+## 12. 路线图
+
+| 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| cli 进程被杀后管理台一直显示"在线"，要等 20s 心跳超时才纠正 | `onClientDisconnect` 用 `socket->m_conn` 反查；而 `closeInternal()` 已先把 `m_conn` 复位成 `INVALID_NET_HANDLE`，`find(0)` 必然失败 → 早退 → `sigDisconnected` 不发 | 改为按 **socket 指针**反查 `m_clients`（连接数很小，O(n) 足够） |
-| 心跳回收调 `closeClient()` 直接把 server 崩掉 | `closeClient` 在找不到连接时先 `JZ_ASSERT`（只记日志、不中断），随后仍执行 `it->second`（`end()`）→ UB | 找不到直接 `return`（**关闭是幂等的**） |
+| **P3** | `logAppend` 落盘、离线策略、审计补齐 | 断电/重连/离线各场景行为可预期；managed 现场能看日志 |
+| **P4**（可选） | node 自述（§6.6）：身份/能力位/运行态 + 刷新 `remote_ssh` 描述 | `/info` 里有 `platform`、`diskFreeMB`；工具描述里出现"禁装包/禁联网" |
 
-修完之后：杀 cli 后 4s 内列表就变"离线"（原来是永远在线），且 `closeClient` 可以安全地用于清理死连接。
+依赖关系：P3 与 P4 互不依赖。
 
 ---
 
-## 17. 生命周期修正与回归（2026-11-06）
+## 13. 已知缺口与未决
 
-### 17.1 本轮修正
+**功能缺口**
 
-- **cli 取消/reset**：单队列与多队列的排队任务都逐条回 `cancelled`；全局 reset 与单任务取消都在完整收尾前禁止重入派发。
-  单任务 `taskCancel` 只停目标队列，不再走 master 的全量 reset；排队取消不再重复发送 `taskEnd`。
-- **远端执行**：`JZRemoteSshTool` 固定记录所属队列 owner，`endLoop()` 经 `cancelNodeExec()` 只取消该 owner 的
-  `remote_ssh`，同时保留每个 node 单在飞与断线"结果未知、不重放"的语义。
-- **事件与多队列视图**：高频事件是否构造同时考虑本地 SSE、在线 hub 与 worker 的 `m_eventSink`；q0/q1+
-  都有 `queue` 标记。hub 忙闲按所有队列聚合，`recent` 与 SSE 快照覆盖全部队列。
-- **server 异步任务**：`wait:false` 与同步任务一样登记 `m_pendingTasks` 和超时定时器，公开取消 API 对两者一致。
-  `timeout/lost` 等终态不被迟到 `taskEnd` 覆盖；同 `agentId` 顶号先走旧连接的下线收尾。
-- **内置 agent**：`rootDir` 通过 `ICodeToolHost` 进入终端与文件工具权限检查；取消会停本地进程并回 `cancelled`。
-- **配置/UI**：`llm.maxTokens` 经既有 `llm.body` 通道映射为 `max_tokens`（显式 `body.max_tokens` 优先）；
-  管理台节点地址统一读取后端字段 `target`。
+- **没有 `logAppend`**：server 侧看不到 cli 的控制台日志；managed 模式下 cli 也没 HTTP，现场排障只能看 cli 自己落盘的 `Agent.log`。这是 managed 模式最该先补的一项。
+- **没有 agent 白名单 / per-agent token**：任何拿到 `hub.token` 的 cli 都能连上（全局单一口令）。
+- **管理台没有事件流**：只有 `lastEventType`（最近一条），看不到任务过程；要看得加 SSE 转发。
+- **MCP 只在队列 0**：`mcp.servers[]` 只挂 q0（每队列一套会让 stdio MCP 被拉起 N 次），q1+ 的模型工具面不齐。
+- **审计没有发起人**：只有 mTLS，不记客户端证书 CN，`tasks.jsonl` 里也没有 requester 字段（§8）。
+- **`tasks.jsonl` 不轮转**：内存 500 条，文件无限追加且启动全量载入，长期运行会变慢并占盘。
 
-### 17.2 本轮刻意不改
+**未决**
 
-下行大 `taskSubmit`、上行大 `taskEnd` 与 JZNet 单包/收发缓冲策略均保持原样，待单独决定；没有调整
-`MG_MAX_PACK_SIZE`、`JZNetPackManager::setMaxPackSize()` 或 `JZNetConfig.maxSendSize/maxRecvSize`。
+- **`hub.token` 为空仍可启动**：server 侧只打 `token=(无)` 就监听 `hub.bind`（默认 `0.0.0.0`），
+  等价把 `taskSubmit` 交给任何能连上 8090 的人。node 的 `link` 模式对空 token 是硬拒绝启动，两侧标准不一致。
+  倾向：空 token 拒绝启动（或强制绑回环）。
+- **大包策略**：下行 `taskSubmit`（`images` 的 dataURL）与上行大 `taskEnd` 的传输/截断语义目前靠 §4.4 的截断兜住一半，
+  下行没兜。要不要限制图片大小、要不要给下行也加裁剪，待单独定。
+- **managed 模式是否保留本地诊断端口**（只绑 `127.0.0.1` 的 `/info`、`/events`）？
+  完全不起的话，现场排障只能看 server 侧；起了又不满足"不对外起 HTTP"的字面要求（需明确"仅环回不算对外"）。
+- **§1.2 的"假通过"要不要机器化治理**：目前只有"写验证命令要小心"的口头约束。
+  可选做法：任务级唯一 workdir（`<rootDir>/runs/<taskId>`）后跑验证，或验证前校验产物 mtime/哈希。
+- **一个 node 被多台 cli 共享**的行为未定义：node 侧 `maxConcurrent` 是每连接还是全局？多 cli 同时打会串行阻塞，
+  审计里也只能靠 `clientId` 区分。
 
-### 17.3 回归
+---
+
+## 14. 实现记录
+
+### 14.1 文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `binary/agent_cli/JZAgentNodePacket.{h,cpp}` | 执行面协议：`NodePack_hello / helloAck / exec / execResult / execCancel` + `JZAgentNodePacketInit()`（幂等注册，必须在 `JZNetPackInit` 之后） |
+| `binary/agent_cli/JZAgentHubPacket.{h,cpp}` | 控制面协议：`HubPack_*` + `JZAgentHubPacketInit()`（包号 `NetPack_user+101…`，与 node 的 `1000…` 不冲突） |
+| `binary/agent_cli/node/JZAgentNode.{h,cpp}` | `initLink()`（只建一台终端，**不建 JZMcpServer**）+ `startLinkServer()` + `onLinkPacket()` + `runLinkExec()` |
+| `binary/agent_cli/node/main.cpp` | 按 `config.mode` 分支：`link` → `initLink/startLinkServer`；否则原 MCP 路径 |
+| `binary/agent_cli/JZNodeLink.{h,cpp}` | `JZNodeLink`（`JZNetClient` 连接 + 重连 + 单条在飞 + 超时收口）+ `JZRemoteSshTool` |
+| `binary/agent_cli/JZHubLink.{h,cpp}` | `JZHubLink`（`JZNetClient` 连接 + hello/心跳 + 重连退避 + 事件/回包上行 + 任务下行回调 + 包大小裁剪） |
+| `binary/agent_cli/JZAgentCli.{h,cpp}` | 配置结构 / `managed()` / `startNodes()` / `startServerLink()` / 多队列调度 / `nodesJson()` / `makeInfo` |
+| `binary/agent_cli/main.cpp` | 解析 `server.*` 与 `nodes[]`；`--check` 打印运行模式；standalone/managed 启动分支 |
+| `binary/agent_cli/server/JZAgentCliServer.{h,cpp}` | `startHub()`（`JZNetServer`）+ 在线注册表 + 任务记录/store + `/api/*` + 网页 |
+| `binary/agent_cli/server/JZServerAgent.{h,cpp}` | server 内置 agent（§11） |
+| `binary/agent_cli/server/main.cpp` | 解析 `http.*` / `hub.*` / `agents[]` / `selfAgent`，默认配置模板，`--check` |
+| `binary/agent_cli/server/web/*` | 管理台（`index/agent/tasks/new` + `app.js` + `app.css`），样式走 `web/ui` 的 jz-ui |
+
+### 14.2 行为要点（node / remote_ssh）
+
+- **并发**：每个 node 同时只跑 1 条 exec（`maxConcurrent` 默认 1），忙时 `remote_ssh` 直接回 "节点 X 正忙"；**不排队**（排队会变成任务黑洞）。后台命令也占这个额度。
+- **runId**：`<节点名>:r<序号>`（如 `line1:r3`），`query`/`cancel` 靠前缀路由回节点；节点侧维护
+  协议 runId → 终端 runId 的映射（上限 1024，超了先淘汰已结束的）。
+- **后台**：`background=true` 时节点调 `runBackground` 并立刻回 `started`；完成时**不再回包**
+  （不挂连接），状态/日志用 `action=query` 取。cli 侧把这些 runId 记进 `m_bgRuns`，`busy()` 计入、
+  任务收尾时按 owner 发 `execCancel`。
+- **查询**：同一时刻只允许一条查询在飞（10s 超时）。`tail`/`grep`/`incremental` 在节点侧过滤，
+  游标 `advanceRunReadPos` 也在节点侧推进，轮询不会重复灌同一段日志。三条与本地一致的硬规则：
+  省略 `run_id` = 该节点最近一次运行（回包里补上实际 id）；**带 `grep` 时不推进游标**
+  （否则被过滤掉的行下一轮就永远读不到）；回包按 **32KB** 截断并提示"还有 N 行未显示"
+  （运行记录窗口本身可到 4000 行 / 512KB，不裁会顶爆 256KB 单包）。
+- **输出裁剪**：`execResult.output` 超 **120KB** 时按"头 60KB + 一行显式提示 + 尾 60KB"裁剪（UTF-8 字符边界），远低于 256KB 包上限。
+- **超时双保险**：cli 侧 timer 到点 → 发 `execCancel` + 本地收口；node 侧 `run(timeoutMs)` 到点杀进程树。上限 15min。
+  后台没有执行超时，但"节点确认已启动"有 15s 超时（没确认就是结果未知，不重放）。
+- **token 必填**：`link` 模式下 `token` 为空直接拒绝启动（否则等于把 shell 交给任何能连上端口的人）。
+- **cwd**：非空时拼成 `cd "<cwd>" && <command>` —— 终端的解析器本来就支持 `cd X && cmd`，并按 X 重新审权限，所以没有为它新开 API；含双引号的 cwd 直接拒绝。
+- **`/info`**：`nodes[]` 每项给出 `{name, target, online, busy, default, nodeName, rootDir, shell, error}`，
+  控制台日志是缓冲的时候靠它自检（token 错的表现是 `online=false` + error 文案）。
+- **重连**：`sigDisconnected` → 1/2/4/…/30s 退避；断线时在飞的 exec 以"结果未知"收口，不重放（远端可能已经执行过）。
+- **控制面**：`agentId` 缺省取 `agentName`；同一 `agentId` 重连时旧连接被 `closeClient` 顶掉（管理台不会留两行）。
+- **server 侧**：`POST /api/tasks` body 与 `POST /task` 完全一致（`task_timeout_ms` 只给 server 用，不下发）；
+  离线 agent 回 404；请求不排队到离线机器。
+
+### 14.3 踩过的坑（以后再加类似功能别再踩）
+
+| 坑 | 现象 / 根因 | 做法 |
+| --- | --- | --- |
+| mock 模型必须回 SSE | agent_cli 是流式（`setStreamEnabled(true)`），回普通 JSON 会在 `sigReadyRead` 里被当 SSE 消费掉，到 `onLLMRequest` 只剩空 body（报 "json解析错误 ... body=[]"） | mock 回 `data: {...}\n\n` |
+| Python mock 的读法 | 请求体带 `Content-Length`、`Connection: close`（不是 chunked） | `http.server` 按 `Content-Length` 读 |
+| 静态资源缓存 | 见 §11.6 | `cacheMaxAge(0)` + `?v=N` |
+| `JZNetServer` 断开不通知 | `onClientDisconnect` 用 `socket->m_conn` 反查，而 `closeInternal()` 已先把它复位成 `INVALID_NET_HANDLE`，`find(0)` 必然失败 → 早退 → `sigDisconnected` 不发 | 改为按 **socket 指针**反查 `m_clients`（连接数很小，O(n) 足够） |
+| `closeClient()` 崩进程 | 找不到连接时先 `JZ_ASSERT`（只记日志、不中断），随后仍执行 `it->second`（`end()`）→ UB | 找不到直接 `return`（**关闭是幂等的**） |
+
+修完之后：杀 cli 后 4s 内列表就变"离线"，且 `closeClient` 可以安全地用于清理死连接。
+
+### 14.4 测试
 
 ```powershell
-ctest --test-dir build -C Debug -R "agent_cli\.(task_cancel|server_tasks|task_queues|remote_ssh_nodes|hub_nodes)$" --output-on-failure
+ctest --test-dir build -C Debug -R "agent_cli\.(remote_ssh_nodes|hub_nodes|task_queues|task_cancel|server_tasks)$" --output-on-failure
 ```
 
-- `agent_cli.task_cancel`：单/多队列 reset、worker SSE 与 recent、真实 node sleep 进程取消；
-- `agent_cli.server_tasks`：managed 排队/在跑异步取消与重入、多队列 busy、异步超时、selfAgent 超时与权限、迟到终态、chunked SSE reply；
-- 原有 `task_queues`、`remote_ssh_nodes`、`hub_nodes` 一并回归。五项全部通过。
+- `agent_cli.remote_ssh_nodes`：起 2 台 link node + 1 个 standalone cli，把 nodeA 的 secret 搬到 nodeB；
+  断言两台 node `online=true` → 任务 `success` → nodeB 文件内容与随机 secret **逐字符相等** →
+  验证命令只读 nodeB 的文件（cli 本地工作区没有它），所以必须真的经 `remote_ssh` 搬运。
+  同一用例还覆盖 `background`/`query`/`cancel`：同步写一行 → 后台上 `sleep 3` 再追写第二行 →
+  `query`（应看到"运行中"）→ `cancel`；**等过 3s 再读文件**，第二行不能出现（证明取消真杀了进程）。
+  mock 模型会检查每轮"上一条 tool 结果"是否含预期标记，落空即判失败（不依赖被缓冲的节点日志）。
+- `agent_cli.hub_nodes`：2 台 link node + 1 个 managed cli + 1 个 server；任务从 server 的 `POST /api/tasks` 提交；
+  断言 `online[]` 有该 cli 且两台 node 在线 → `success` → 有 `lastEventType` → cli 的 `http.port` **未被监听**（模式互斥）。
+- `agent_cli.task_queues`：mock 每个请求睡 1.5s，`queues=2`；A/B 同时提交 → `/info.queues` 两条 busy；
+  全忙提交 C → `pendingTasks=1` 且最终 success；总耗时 3.1s（串行应 4.5s）。
+- `agent_cli.task_cancel`：queues=1/2 的"在跑 + 排队"reset、worker SSE、recent 聚合、真实 node 进程取消。
+- `agent_cli.server_tasks`：managed 排队/在跑任务的 `wait:false` 取消、多队列 busy、异步超时、迟到 `taskEnd`、chunked SSE reply 上行。
+
+以上全部用内置 mock 模型，不联网，秒级。

@@ -7,8 +7,8 @@
 namespace JZCrypto
 {
     // 一次性计算 SHA-256 摘要(32 字节)
-    JZByteArray sha256(const void *data, size_t len);
-    JZByteArray sha256(const JZByteArray &data);
+    JZFRAMEWORK_API JZByteArray sha256(const void *data, size_t len);
+    JZFRAMEWORK_API JZByteArray sha256(const JZByteArray &data);
 
     // 增量式 SHA-256: 适合大文件 / 流式数据
     class JZFRAMEWORK_API JZSha256

@@ -14,14 +14,21 @@
 add_library(agent_tool STATIC
     JZCodeTools.h
     JZCodeTools.cpp
-    JZShellParser.h
-    JZShellParser.cpp
     JZVirtualTerminalConfig.h
     JZVirtualTerminalConfig.cpp
     JZMcpToolBridge.h
     JZMcpToolBridge.cpp
     JZVirtualTerminal.h
     JZVirtualTerminal.cpp
+    # JZShell 整个模块都在子目录里: 解释器(词法/语法/主体) + 审核解析器 + 策略 + 演示程序
+    JZShell/JZShell.h
+    JZShell/JZShellLex.cpp
+    JZShell/JZShellParser.cpp
+    JZShell/JZShell.cpp
+    JZShell/JZShellAudit.h
+    JZShell/JZShellPolicy.h
+    JZShell/JZShellPolicy.cpp
+    JZShell/JZShellMain.cpp
     JZTerminalTools.h
     JZTerminalTools.cpp
     JZTerminalMcpTools.h
@@ -30,3 +37,13 @@ add_library(agent_tool STATIC
 
 target_link_libraries(agent_tool PUBLIC JZFramework)
 target_include_directories(agent_tool PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# ---------------------------------------------------------------------------
+# jz_shell: JZShell(自研解释器) 的独立演示/自检 exe(非发布)
+#   落到 <build>/test/bin/<配置> 是"开发工具"的既定位置;
+#   不依赖 bash / PTY, 也不接 agent、不进 agent_tool 的对外接口。
+# ---------------------------------------------------------------------------
+add_executable(jz_shell JZShell/JZShellMain.cpp)
+target_link_libraries(jz_shell PRIVATE agent_tool)
+set_target_properties(jz_shell PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${JZ_TEST_BIN_DIR}/$<CONFIG>")

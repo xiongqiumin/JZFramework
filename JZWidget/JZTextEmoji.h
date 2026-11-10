@@ -16,17 +16,18 @@ struct JZFRAMEWORK_API JZTextEmojiRun {
 
 // 把一行文本切成文本段 / emoji 段, 并计算每段宽度。emoji 段命中内置图集时取位图宽,
 // 否则退回字体测宽 (降级)。测量与绘制都走这里, 二者宽度一致。
-std::vector<JZTextEmojiRun> jzSegmentTextEmoji(const std::string& line, const JZFont& font);
+// ⚠ 自由函数: 动态库模式下必须带 JZFRAMEWORK_API(使用方含 binary/code_agent 的 ChatView)。
+JZFRAMEWORK_API std::vector<JZTextEmojiRun> jzSegmentTextEmoji(const std::string& line, const JZFont& font);
 
 // 单个 emoji 序列的显示宽度: 命中内置图集取位图宽(=box), 否则退回字体测宽(降级)。
 // 供换行等需要单独测量 emoji 宽度的场景复用(与 jzSegmentTextEmoji 同口径)。
-int jzEmojiRunWidth(const std::string& seq, const JZFont& font);
+JZFRAMEWORK_API int jzEmojiRunWidth(const std::string& seq, const JZFont& font);
 
 // 整行 emoji 感知测宽 (段宽累加), 与 jzSegmentTextEmoji 同口径。供 JZFontMetrics::textWidth
 // 复用, 使 "测量宽度 == 显示宽度" (否则 emoji 按回退字体字形量会把宽度算窄, 导致换行/光标错位)。
-int jzSegmentTextEmojiWidth(const std::string& line, const JZFont& font);
+JZFRAMEWORK_API int jzSegmentTextEmojiWidth(const std::string& line, const JZFont& font);
 
 // 快速判断字符串是否含 emoji, 供 textWidth 跳过纯文本的分段开销。
-bool jzContainsEmoji(const std::string& text);
+JZFRAMEWORK_API bool jzContainsEmoji(const std::string& text);
 
 #endif // !JZ_TEXT_EMOJI_H_

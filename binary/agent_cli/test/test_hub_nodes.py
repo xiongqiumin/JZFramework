@@ -9,12 +9,12 @@
         └─ nodes[]: 两台 link 模式 agent_node(JZNetServer + token)   ← 执行面
              └─ 模型只看到一个 remote_ssh, 按 host 路由到 nodeA / nodeB
 
-任务从 **server** 提交:`POST /api/tasks {agentId, prompt, verify_cmd, ...}`,
+任务从 **server** 提交:`POST /api/tasks {agentId, message, returnImmediately?, verifyCmd, ...}`(A2A SendMessage),
 server 经控制面把任务下发给 cli, cli 用 remote_ssh 把 nodeA 的 secret 搬到 nodeB。
 
 断言(硬):
   1. server 的 /api/status 里能看到这台 cli 上线(online[]), 且它上报的两台 node 都 online;
-  2. server 提交任务返回 status == "success";
+  2. server 提交任务返回的 A2A Task 是 TASK_STATE_COMPLETED;
   3. nodeB 的 answer.txt 与 nodeA 的 secret.txt 逐字符相等;
   4. **cli 的 http.port 没有被监听** —— managed 与 standalone 互斥(不对外起 HTTP)。
 
@@ -164,7 +164,6 @@ def main(argv=None) -> int:
         # 本机回归不备证书: server 默认强制 HTTPS+mTLS, 这里显式关掉(仅测试)
         "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": hub_token},
-        "frp": {"server": {"enabled": False}},
         "agents": [],
     })
 
@@ -211,24 +210,32 @@ def main(argv=None) -> int:
         try:
             resp = http_json("http://127.0.0.1:%d/api/tasks" % port_http, {
                 "agentId": agent_id,
-                "prompt": PROMPT,
-                "verify_cmd": verify_cmd,
-                "verify_timeout": 120000,
-                "max_verify_rounds": 3,
-                "max_retries": 2,
-                "use_memory": False,
+                "message": {"role": "ROLE_USER", "parts": [{"text": PROMPT}]},
+                "verifyCmd": verify_cmd,
+                "verifyTimeout": 120000,
+                "maxVerifyRounds": 3,
+                "maxRetries": 2,
             }, args.task_timeout)
         except Exception as e:                            # noqa: BLE001
             log("FAIL: /api/tasks 请求失败: %r" % (e,))
             return 1
 
         cost = time.time() - started
-        log("任务回包(%.1fs): status=%s rounds=%s" %
-            (cost, resp.get("status"), resp.get("verify_rounds")))
-        log("  agent_reply: " + (resp.get("agent_reply") or "")[:300])
-        log("  verify_out : " + (resp.get("last_verify_output") or "")[:300])
-        if resp.get("error"):
-            log("  error      : " + str(resp.get("error"))[:300])
+        st = resp.get("status", {})
+        arts = resp.get("artifacts") or []
+        def art_text(artifact_id):
+            return "\n".join(
+                "".join(p.get("text", "") for p in (a.get("parts") or []))
+                for a in arts if a.get("artifactId") == artifact_id
+            )
+        status_msg = "".join(
+            p.get("text", "") for p in (st.get("message", {}).get("parts") or []))
+        log("任务回包(%.1fs): state=%s rounds=%s" %
+            (cost, st.get("state"), resp.get("metadata", {}).get("rounds")))
+        log("  reply      : " + art_text("reply")[:300])
+        log("  verify_out : " + art_text("verify")[:300])
+        if status_msg:
+            log("  status msg : " + status_msg[:300])
 
         answer_path = os.path.join(ws_b, "answer.txt")
         if not os.path.isfile(answer_path):
@@ -238,8 +245,8 @@ def main(argv=None) -> int:
         if got != secret:
             log("FAIL: 内容不一致 nodeB=%r 期望=%r" % (got, secret))
             return 1
-        if resp.get("status") != "success":
-            log("FAIL: 内容搬对了, 但任务判定不是 success(验证命令可能没跑通)")
+        if st.get("state") != "TASK_STATE_COMPLETED":
+            log("FAIL: 内容搬对了, 但 Task 不是 COMPLETED(验证命令可能没跑通)")
             return 1
 
         # 事件上行: server 侧应该看到 cli 推上来的事件(它没有 SSE, 这是唯一的实时出口)

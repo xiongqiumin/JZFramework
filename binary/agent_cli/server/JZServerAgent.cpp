@@ -51,7 +51,7 @@ public:
         ToolDefine def;
         def.name = "server_task_submit";
         def.description =
-            "把一条任务派给指定 agent(agentId 来自 server_agents), 立刻返回 taskId, 不等待结果。"
+            "把一条指令发给指定 agent(agentId 来自 server_agents), 立刻返回一个 A2A Task(id), 不等待结果。"
             "之后用 server_task_query 查进度/结果。这是『让我以外的那台机器干活』的唯一入口。";
         def.parameters.push_back(makeParam("agent_id", ParamType::String, "目标 agent 的 id"));
         def.parameters.push_back(makeParam("prompt", ParamType::String, "任务描述(给那个 agent 的模型看)"));
@@ -72,13 +72,21 @@ public:
             return;
         }
 
+        // 与网页/HTTP 同一套 A2A SendMessage 请求
         Json::Value body(Json::objectValue);
         body["agentId"] = agentId;
-        body["prompt"] = prompt;
+        Json::Value msg(Json::objectValue);
+        msg["role"] = "ROLE_USER";
+        Json::Value parts(Json::arrayValue);
+        Json::Value part(Json::objectValue);
+        part["text"] = prompt;
+        parts.append(part);
+        msg["parts"] = parts;
+        body["message"] = msg;
         const string verify = params.params.get("verify_cmd", "").asString();
         if (!verify.empty())
-            body["verify_cmd"] = verify;
-        body["wait"] = false;              // 工具里绝不能同步等: 会把 agent 自己卡死
+            body["verifyCmd"] = verify;
+        body["returnImmediately"] = true;   // 工具里绝不能同步等: 会把 agent 自己卡死
 
         Json::Value ack;
         string err;
@@ -104,11 +112,12 @@ public:
         ToolDefine def;
         def.name = "server_task_query";
         def.description =
-            "查任务记录。不给 task_id 时按时间倒序列出最近若干条(可按 agent_id / status 过滤);"
-            "给 task_id 时返回那一条的详情。status: running/success/failed/cancelled/lost。";
-        def.parameters.push_back(makeParam("task_id", ParamType::String, "任务 id(留空 = 列表)"));
+            "查 A2A Task。不给 task_id 时按时间倒序列出最近若干条(可按 agent_id / state 过滤);"
+            "给 task_id 时返回那一条的详情。state: TASK_STATE_SUBMITTED / WORKING / "
+            "COMPLETED / FAILED / CANCELED / UNSPECIFIED。结果在 artifacts 里, 过程在 metadata.events。";
+        def.parameters.push_back(makeParam("task_id", ParamType::String, "Task id(留空 = 列表)"));
         def.parameters.push_back(makeParam("agent_id", ParamType::String, "只看某个 agent(可选)"));
-        def.parameters.push_back(makeParam("status", ParamType::String, "只看某个状态(可选)"));
+        def.parameters.push_back(makeParam("state", ParamType::String, "只看某个 A2A TaskState(可选)"));
         def.parameters.push_back(makeParam("limit", ParamType::Number, "最多返回多少条, 默认 20"));
         setToolDefine(def);
     }
@@ -132,7 +141,7 @@ public:
         if (limit <= 0 || limit > 100)
             limit = 20;
         Json::Value list = m_srv->snapshotTasks(params.params.get("agent_id", "").asString(),
-                                                params.params.get("status", "").asString(), limit);
+                                                params.params.get("state", "").asString(), limit);
         finish(params, true, list.toStyledString());
     }
 

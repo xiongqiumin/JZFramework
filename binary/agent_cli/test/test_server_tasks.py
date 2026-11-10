@@ -21,6 +21,28 @@ from test_remote_ssh_nodes import (  # noqa: E402
     free_port, fwd, http_json, kill_all, log, start_proc, wait_tcp, write_json,
 )
 
+# server 对外只有一套 A2A Task 形状
+WORKING_STATES = {
+    "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING",
+    "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED",
+}
+
+
+def state(rec: dict) -> str:
+    return rec.get("status", {}).get("state", "")
+
+
+def status_text(rec: dict) -> str:
+    msg = rec.get("status", {}).get("message", {})
+    return "".join(p.get("text", "") for p in (msg.get("parts") or []))
+
+
+def artifact_text(rec: dict) -> str:
+    return "\n".join(
+        "".join(p.get("text", "") for p in (a.get("parts") or []))
+        for a in (rec.get("artifacts") or [])
+    )
+
 
 class ControlledLlm(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -112,24 +134,28 @@ def wait_status(port: int, task_id: str, wanted: set, timeout: float = 8.0) -> d
     last = {}
     while time.time() < deadline:
         last = detail(port, task_id)
-        if last.get("status") in wanted:
+        if state(last) in wanted:
             return last
         time.sleep(0.1)
-    raise AssertionError("任务状态未达到 %s: %s" % (wanted, last))
+    raise AssertionError("Task 状态未达到 %s: %s" % (wanted, last))
 
 
 def submit_async(port: int, prompt: str, timeout_ms: int = 15000, agent_id: str = "a1") -> str:
     r = http_json("http://127.0.0.1:%d/api/tasks" % port, {
-        "agentId": agent_id, "prompt": prompt, "wait": False,
-        "use_memory": False, "task_timeout_ms": timeout_ms,
+        "agentId": agent_id,
+        "message": {"role": "ROLE_USER", "parts": [{"text": prompt}]},
+        "returnImmediately": True,
+        "taskTimeoutMs": timeout_ms,
     }, 3.0)
-    assert r.get("status") == "running" and r.get("taskId"), r
-    return r["taskId"]
+    # 非阻塞 SendMessage 返回 in-progress Task: 远端 cli 通常还是 SUBMITTED,
+    # 内置 agent 会同步发出 start 事件, 回包可能已经是 WORKING —— 两者都合法。
+    assert state(r) in WORKING_STATES and r.get("id"), r
+    return r["id"]
 
 
 def cancel(port: int, task_id: str) -> None:
-    r = http_json("http://127.0.0.1:%d/api/tasks/cancel?taskId=%s" % (port, task_id), {}, 3.0)
-    assert r.get("ok") is True, r
+    r = http_json("http://127.0.0.1:%d/api/tasks/cancel?id=%s" % (port, task_id), {}, 3.0)
+    assert r.get("id") == task_id, r
 
 
 def main(argv=None) -> int:
@@ -167,7 +193,7 @@ def main(argv=None) -> int:
         # 本机回归不备证书: server 默认强制 HTTPS+mTLS, 这里显式关掉(仅测试)
         "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": token},
-        "frp": {"server": {"enabled": False}}, "agents": [],
+        "agents": [],
         "selfAgent": {"enabled": True, "agentId": "server", "rootDir": fwd(ws),
                       "modelUrl": model_url, "modelName": "mock"},
     })
@@ -186,23 +212,23 @@ def main(argv=None) -> int:
         b = submit_async(port_http, "TASK-B")
         c_running = submit_async(port_http, "TASK-C-RUNNING")
         cancel(port_http, a)
-        assert wait_status(port_http, a, {"cancelled"}).get("status") == "cancelled"
+        assert state(wait_status(port_http, a, {"TASK_STATE_CANCELED"})) == "TASK_STATE_CANCELED"
         deadline = time.time() + 4
         while time.time() < deadline:
             c_info = detail(port_http, c_running)
-            if c_info.get("last_event") == "task_start":
+            if c_info["metadata"]["lastEventType"] == "task_start":
                 break
             time.sleep(0.05)
-        assert c_info.get("last_event") == "task_start", c_info
+        assert c_info["metadata"]["lastEventType"] == "task_start", c_info
 
         # D 仍在排队时取消, 不能影响 B/C; 随后再取消正在运行的 C。
         queued = submit_async(port_http, "TASK-QUEUED")
         cancel(port_http, queued)
-        assert wait_status(port_http, queued, {"cancelled"}).get("status") == "cancelled"
-        assert detail(port_http, b).get("status") == "running"
+        assert state(wait_status(port_http, queued, {"TASK_STATE_CANCELED"})) == "TASK_STATE_CANCELED"
+        assert state(detail(port_http, b)) in WORKING_STATES
         cancel(port_http, c_running)
-        wait_status(port_http, c_running, {"cancelled"})
-        assert detail(port_http, b).get("status") == "running"
+        wait_status(port_http, c_running, {"TASK_STATE_CANCELED"})
+        assert state(detail(port_http, b)) in WORKING_STATES
 
         # B 独立在跑时控制面仍必须 busy。
         deadline = time.time() + 3
@@ -213,24 +239,24 @@ def main(argv=None) -> int:
             time.sleep(0.05)
         assert online.get("busy") is True, online
         cancel(port_http, b)
-        wait_status(port_http, b, {"cancelled"})
-        log("wait:false 排队/在跑取消无重入; 其他队列仍保持 busy")
+        wait_status(port_http, b, {"TASK_STATE_CANCELED"})
+        log("returnImmediately 排队/在跑取消无重入; 其他队列仍保持 busy")
 
-        # 异步任务也有 server 超时; 迟到 cancelled 不得覆盖 timeout 的 failed。
+        # 异步任务也有 server 超时; 迟到 canceled 不得覆盖 timeout 的 failed。
         c = submit_async(port_http, "TASK-C", timeout_ms=1000)
-        timeout_rec = wait_status(port_http, c, {"failed"}, timeout=5)
-        assert "超时" in timeout_rec.get("error", ""), timeout_rec
+        timeout_rec = wait_status(port_http, c, {"TASK_STATE_FAILED"}, timeout=5)
+        assert "超时" in status_text(timeout_rec), timeout_rec
         time.sleep(2.2)
-        assert detail(port_http, c).get("status") == "failed", detail(port_http, c)
-        log("wait:false 有 server 超时; 迟到 taskEnd 不覆盖终态")
+        assert state(detail(port_http, c)) == "TASK_STATE_FAILED", detail(port_http, c)
+        log("returnImmediately 有 server 超时; 迟到 taskEnd 不覆盖终态")
 
-        # selfAgent.stop() 会同步发 done; 超时时也必须先落 failed, 不能变成 cancelled。
+        # selfAgent.stop() 会同步发 done; 超时时也必须先落 failed, 不能变成 canceled。
         self_task = submit_async(port_http, "SELF-TIMEOUT", timeout_ms=1000, agent_id="server")
-        self_rec = wait_status(port_http, self_task, {"failed"}, timeout=5)
-        assert "超时" in self_rec.get("error", ""), self_rec
+        self_rec = wait_status(port_http, self_task, {"TASK_STATE_FAILED"}, timeout=5)
+        assert "超时" in status_text(self_rec), self_rec
         time.sleep(2.2)
-        assert detail(port_http, self_task).get("status") == "failed", detail(port_http, self_task)
-        log("selfAgent 超时终态保持 failed")
+        assert state(detail(port_http, self_task)) == "TASK_STATE_FAILED", detail(port_http, self_task)
+        log("selfAgent 超时终态保持 FAILED")
 
         # 相对路径必须按 selfAgent.rootDir 解析(区外只读本来就是允许的)。
         inside = os.path.join(ws, "inside.txt")
@@ -241,9 +267,10 @@ def main(argv=None) -> int:
         ControlledLlm.outside_command = ""
         ControlledLlm.outside_used = False
         self_read = submit_async(port_http, "PERMISSION-CASE", agent_id="server")
-        self_read_rec = wait_status(port_http, self_read, {"success", "failed"}, timeout=10)
-        assert self_read_rec.get("status") == "success", self_read_rec
-        assert self_read_rec.get("agent_reply") == "OUTSIDE_READ_OK", self_read_rec
+        self_read_rec = wait_status(
+            port_http, self_read, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, timeout=10)
+        assert state(self_read_rec) == "TASK_STATE_COMPLETED", self_read_rec
+        assert "OUTSIDE_READ_OK" in artifact_text(self_read_rec), self_read_rec
 
         # 终端的区域外写入必须被拒绝; 不能选系统临时目录(那里本来就允许读写)。
         escape = os.path.abspath("build/_self_agent_escape_%d.txt" % os.getpid())
@@ -254,8 +281,9 @@ def main(argv=None) -> int:
         ControlledLlm.outside_command = 'echo bad > "%s"' % fwd(escape)
         ControlledLlm.outside_used = False
         self_term = submit_async(port_http, "PERMISSION-CASE", agent_id="server")
-        self_term_rec = wait_status(port_http, self_term, {"success", "failed"}, timeout=10)
-        assert self_term_rec.get("status") == "success", self_term_rec
+        self_term_rec = wait_status(
+            port_http, self_term, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, timeout=10)
+        assert state(self_term_rec) == "TASK_STATE_COMPLETED", self_term_rec
         escaped = os.path.isfile(escape)
         if escaped:
             os.remove(escape)
@@ -275,7 +303,7 @@ def main(argv=None) -> int:
                 break
             time.sleep(0.05)
         assert seen_reply, online
-        assert wait_status(port_http, d, {"success"}).get("status") == "success"
+        assert state(wait_status(port_http, d, {"TASK_STATE_COMPLETED"})) == "TASK_STATE_COMPLETED"
         log("managed reply 事件上行正常")
 
         log("PASS: server 异步任务生命周期与事件回归")

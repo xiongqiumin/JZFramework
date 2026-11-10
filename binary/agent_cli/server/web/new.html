@@ -3,25 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>新建任务 · JZAgent 管理台</title>
+<title>下发指令 · JZAgent 管理台</title>
 <link rel="stylesheet" href="/ui/tokens.css?v=2">
 <link rel="stylesheet" href="/ui/base.css?v=2">
 <link rel="stylesheet" href="/ui/components.css?v=2">
-<link rel="stylesheet" href="/app.css?v=2">
+<link rel="stylesheet" href="/app.css?v=5">
 </head>
 <body data-page="new">
 <header class="jz-topbar">
   <div class="jz-brand">
     <span class="jz-brand__logo">JZ</span>
     <div>
-      <div class="jz-brand__title">新建任务</div>
-      <div class="jz-brand__sub" id="meta">提交后立刻返回 taskId，可在「任务记录」里看进度</div>
+      <div class="jz-brand__title">下发指令</div>
+      <div class="jz-brand__sub">SendMessage → 202 一个 Task，随后到 Task 详情看过程与产物</div>
     </div>
   </div>
   <nav class="jz-tools" id="nav">
     <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">Agent</a>
-    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">任务记录</a>
-    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">新建任务</a>
+    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">Task</a>
+    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">下发指令</a>
   </nav>
 </header>
 
@@ -29,36 +29,42 @@
   <div class="jz-card">
     <div class="jz-card__bd jz-stack">
       <div class="jz-field" style="max-width:320px">
-        <label for="fAgent">agent</label>
+        <label for="fAgent">agent（点名下发）</label>
         <select id="fAgent" class="jz-input"></select>
       </div>
 
       <div class="jz-field">
-        <label for="fPrompt">任务</label>
-        <textarea id="fPrompt" class="jz-textarea" rows="6" placeholder="要让 agent 做什么…"></textarea>
+        <label for="fPrompt">指令 Message</label>
+        <textarea id="fPrompt" class="jz-textarea" rows="6" placeholder="要让这台 agent 做什么…"></textarea>
       </div>
 
       <div class="jz-field">
         <label for="fVerify">验证命令（可选，退出码 0 = 通过；留空 = 跑完即通过）</label>
-        <input id="fVerify" class="jz-input" placeholder="例如：python verify.py / grep -q ok out.txt">
+        <input id="fVerify" class="jz-input" placeholder="例如：python verify.py">
+      </div>
+
+      <div class="jz-field">
+        <label for="fContext">contextId（可选；沿用同一 ID 会把多条 Task 串成一段会话）</label>
+        <input id="fContext" class="jz-input" placeholder="留空由 server 生成">
       </div>
 
       <div class="jz-row">
-        <button id="btnSubmit" class="jz-btn jz-btn--primary">提交任务</button>
+        <button id="btnSubmit" class="jz-btn jz-btn--primary">下发指令</button>
         <button id="btnReset" class="jz-btn jz-btn--ghost jz-btn--sm">清空</button>
-        <a class="jz-btn jz-btn--sm" href="tasks">看任务记录</a>
+        <a class="jz-btn jz-btn--sm" href="tasks">看 Task 记录</a>
         <span class="logbar__hint" id="msg"></span>
       </div>
     </div>
   </div>
 
   <p class="logbar__hint">
-    提交走的是 <code>POST /api/tasks</code>（<code>wait:false</code>），返回 202 + taskId；
-    cli 侧的队列数决定并发度，超出的任务会自动排队。
+    对应 A2A <code>SendMessage</code> + <code>returnImmediately:true</code>：立即返回一个
+    <code>Task{ id, status.state, contextId, ... }</code>，执行过程走 Task 详情里的 SSE 订阅。
+    想在同一上下文里追问，带上相同的 <code>contextId</code> 再下发一条 Message 即可（新 Task）。
   </p>
 </div>
 
 <script src="/ui/jz-ui.js?v=2"></script>
-<script src="/app.js?v=3"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

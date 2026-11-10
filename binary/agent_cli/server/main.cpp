@@ -1,6 +1,6 @@
 ﻿// JZAgentCliServer —— agent_cli 管理服务器
 //
-//   1) (可选) 跑 frps 服务端, 与 agent_cli 的 frpc client 配对做内网穿透;
+//   1) 控制面(hub): 等远端 cli 主动连进来, 点名下发 A2A Task;
 //   2) 管理一系列 JZAgentCli 实例: 每个作为一个子进程拉起并监管(启停/重启/状态);
 //   3) 收集各 agent 的 stdout/stderr 日志, 提供后台网页 + 管理 API 查询。
 //
@@ -32,8 +32,8 @@ using namespace std;
 //   http.ssl.* HTTPS 默认开启且默认校验客户端证书(mTLS); 证书路径相对配置文件目录。
 //              要跑起来必须先备好 certs/{server.crt,server.key,ca.crt}(生成方法见
 //              docs/agent-hub-design.md §7.1); 缺文件时 server 直接启动失败, 不会退回明文。
-//   frp.server.* frps 服务端配置(可选; 只给"现场自带 frpc"的部署用, 与 hub 无关)。
 //   agents[]   被管理的一系列 agent_cli(各作为一个子进程拉起并监管)。
+//   内网穿透不在本进程内: 需要时用独立的 jzfrps / jzfrpc 进程。
 // ===========================================================================
 static const char *kDefaultConfigJson = R"json({
     "http": {
@@ -51,13 +51,6 @@ static const char *kDefaultConfigJson = R"json({
         "bind":  "0.0.0.0",
         "port":  8090,
         "token": ""
-    },
-    "frp": {
-        "server": {
-            "enabled":  false,
-            "bindPort": 7000,
-            "token":    ""
-        }
     },
     "agents": [
         {
@@ -134,12 +127,12 @@ static bool writeDefaultConfig(const string &path, string &error)
 }
 
 // ---------------------------------------------------------------------------
-// 分层配置取值: 优先 "frp.server.<name>", 回落顶层 legacy("<legacy>")。
+// 分层配置取值: 优先 "<group>.<name>", 回落顶层 legacy("<legacy>")。
 // ---------------------------------------------------------------------------
 static const Json::Value *findMember(const Json::Value &root, const string &group,
                                      const string &name, const string &legacy)
 {
-    // name 支持 "a.b.c" 多级嵌套(如 frp.server.enabled -> root["frp"]["server"]["enabled"])
+    // name 支持 "a.b.c" 多级嵌套(如 http.ssl.enabled -> root["http"]["ssl"]["enabled"])
     if (!group.empty() && root.isMember(group) && root[group].isObject())
     {
         const Json::Value *cur = &root[group];
@@ -245,11 +238,6 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
         return false;
     }
 
-    // frp 服务端(frps); 兼容旧平铺键 frpEnabled / frpBindPort / frpToken
-    readBool(root, "frp", "server.enabled", "frpEnabled", config.frpEnabled);
-    readInt(root, "frp", "server.bindPort", "frpBindPort", config.frpBindPort);
-    readString(root, "frp", "server.token", "frpToken", config.frpToken);
-
     // agents[]: 被管理的一系列 agent_cli
     const Json::Value *agents = findMember(root, "", "agents", "agents");
     if (agents && agents->isArray())
@@ -308,7 +296,7 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
 {
     // 打到 stderr: stdout 留给将来扩展(如 ACP 通道)
     fprintf(stderr, "配置文件: %s\n", configPath.c_str());
-    fprintf(stderr, "  角色      agent_cli 管理服务器(frps 可选 + 后台网页 + agent 监管)\n");
+    fprintf(stderr, "  角色      agent_cli 管理服务器(控制面 + 后台网页 + agent 监管)\n");
 
     // http 网页 / API(鉴权 = mTLS 客户端证书, 没有 token)
     fprintf(stderr, "  网页      %s://%s:%d\n",
@@ -332,13 +320,6 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     fprintf(stderr, "  控制面    hub(JZNet) %s:%d  token=%s\n", config.hub.bind.c_str(),
             config.hub.port, config.hub.token.empty() ? "(无)" : "(已启用)");
 
-    // frp 服务端
-    if (!config.frpEnabled)
-        fprintf(stderr, "  FRP       关(设 frp.server.enabled=true 启动 frps)\n");
-    else
-        fprintf(stderr, "  FRP 服务端  frps 监听 %d, token=%s\n", config.frpBindPort,
-                config.frpToken.empty() ? "(无)" : "(已启用)");
-
     // agents
     if (config.agents.empty())
         fprintf(stderr, "  Agents    无(不管理任何 agent_cli)\n");
@@ -356,7 +337,7 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
 int main(int argc, char *argv[])
 {
     JZCommandLineParser parser;
-    parser.setDescription("JZAgentCliServer - FRP server (frps)\n");
+    parser.setDescription("JZAgentCliServer - agent_cli 管理服务器(控制面 + 管理台)\n");
 
     string cmdConfig;
     parser.addOption(JZCommandLineOption("--config", "-c",
@@ -411,11 +392,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    jzDebug("JZAgentCliServer 就绪: %s=%s:%d  hub=%s:%d  frps=%s  agents=%d",
+    jzDebug("JZAgentCliServer 就绪: %s=%s:%d  hub=%s:%d  agents=%d",
             config.http.sslEnabled ? "https" : "http", config.http.bind.c_str(), config.http.port,
-            config.hub.bind.c_str(), config.hub.port,
-            config.frpEnabled ? "开" : "关", (int)config.agents.size());
-    server.start();   // frps(可选) + 后台网页/API + 拉起 enabled 的 agent
+            config.hub.bind.c_str(), config.hub.port, (int)config.agents.size());
+    server.start();   // 控制面 + 后台网页/API + 拉起 enabled 的 agent
 
     return app.exec();
 }

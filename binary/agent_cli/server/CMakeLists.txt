@@ -1,10 +1,7 @@
 # ---------------------------------------------------------------------------
-# JZAgentCliServer —— FRP 服务端(frps)
-#
-# 作为 FRP 中转服务器运行(监听端口等远端 frpc 连入)。与 agent_cli(client 角色 =
-# frpc)配对: agent_cli 在私网机把本机 HTTP 端口经 frpc 暴露到这里的 frps。
-#
-# frps 实现来自 JZFramework 的 JZFrp 模块(JZFrpServer), 链接 JZFramework 即够。
+# JZAgentCliServer —— agent_cli 管理服务器
+#   控制面(hub) + 后台网页/管理 API + 本机 agent_cli 子进程监管。
+#   内网穿透由独立的 jzfrps / jzfrpc 进程负责, 不在本 target 内。
 # ---------------------------------------------------------------------------
 add_executable(agent_cli_server
     main.cpp

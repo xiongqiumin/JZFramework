@@ -80,6 +80,19 @@ add_test(NAME agent_cli.server_tasks
 set_tests_properties(agent_cli.server_tasks PROPERTIES
                      TIMEOUT 120 LABELS "agent_cli" RUN_SERIAL TRUE)
 
+#   test_a2a_flow.py —— A2A 形状的管理台全链路(假 LLM 固定回「任务已成功」):
+#       server -> cli(managed) -> 网页/API/SSE。断言 SendMessage(202 Task)、AgentCard、
+#       SubscribeToTask 首帧与终态帧、GetTask 的 state/history/artifacts/events、
+#       ListTasks 的 contextId 过滤、4 个静态页。完全离线、秒级、进快速回归。
+#           ctest -C Release -R agent_cli.a2a_flow --output-on-failure
+#       想手动开网页: python test_a2a_flow.py --agent-cli ... --agent-server ... --serve
+add_test(NAME agent_cli.a2a_flow
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_a2a_flow.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-server $<TARGET_FILE:agent_cli_server>)
+set_tests_properties(agent_cli.a2a_flow PROPERTIES
+                     TIMEOUT 180 LABELS "agent_cli" RUN_SERIAL TRUE)
+
 # ---------------------------------------------------------------------------
 # agent_cli_test.cpp —— 评测程序(不是 ctest 条目): 用 code_agent/benchmark 的同一套用例
 #   评测 JZAgentCli 本体(submitTask + 验证脚本门控); 与 code_agent_benchmark 的区别

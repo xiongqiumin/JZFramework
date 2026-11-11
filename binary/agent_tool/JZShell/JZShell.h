@@ -180,6 +180,11 @@ struct Token
         Heredoc, // heredoc 正文(`<< WORD` 之后整段收进来)
         Eof
     };
+    // 显式构造函数: MSVC 在 out.push_back({ Token::Op, "2>" }) 这类调用里
+    // 不接受用 initializer-list 隐式构造成员带默认初值的聚合体。给一条构造路径后,
+    // 这些调用与 Token{...} / 默认构造都保持原语义。
+    Token(Type t = Eof, const string &txt = string(), int ln = 0)
+        : type(t), text(txt), line(ln) {}
     Type type = Eof;
     string text;
     int line = 0;      // 所在行(从 1 开始): $LINENO / DEBUG trap 要用

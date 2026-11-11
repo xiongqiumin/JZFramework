@@ -9,7 +9,6 @@
 #include "JZNet/JZNetPacket.h"   // JZNetPackPtr(onHubPacket 的入参)
 #include "JZObject.h"
 
-class JZFrpServer;
 class JZHttpServer;
 class JZProcess;
 #include "JZServerAgent.h"
@@ -21,10 +20,11 @@ class JZHttpRequest;
 
 // ---------------------------------------------------------------------------
 // JZAgentCliServer —— agent_cli 管理服务器
-//   1) (可选) 跑 frps 服务端, 与 agent_cli 的 frpc client 配对做内网穿透;
+//   1) 控制面(hub): 等 cli 主动连进来, 点名下发 A2A Task;
 //   2) 管理一系列 JZAgentCli 实例: 每个作为一个子进程拉起并监管(启停/重启/状态);
 //   3) 收集各 agent 的 stdout/stderr 日志, 提供后台网页 + 管理 API 查询。
 //   网页/API 都在本类的 JZHttpServer 上; 端口由 config.http.* 控制。
+//   内网穿透不在本进程里做: 需要时用独立的 jzfrps / jzfrpc 进程。
 // ---------------------------------------------------------------------------
 
 // 后台网页 / 管理 API 配置
@@ -82,14 +82,9 @@ struct JZCliServerOnlineAgent
     bool acceptTasks = true;
 };
 
-// JZAgentCliServer 配置: frps 服务端 + 后台网页 + 被管理的一系列 agent_cli + 控制面
+// JZAgentCliServer 配置: 后台网页 + 被管理的一系列 agent_cli + 控制面
 struct JZCliServerConfig
 {
-    // frps 服务端(可选; 与 agent_cli 的 frpc client 配对做内网穿透)
-    bool frpEnabled = false;
-    int frpBindPort = 7000;
-    std::string frpToken;
-
     // 后台网页 / 管理 API
     JZCliServerHttpConfig http;
 
@@ -114,7 +109,7 @@ public:
 
     bool init(const JZCliServerConfig &config, std::string &error);
 
-    // 启动全部: frps(可选) + 后台网页/管理 API + 拉起所有 enabled 的 agent。事件循环前调用。
+    // 启动全部: 控制面 + 后台网页/管理 API + 拉起所有 enabled 的 agent。事件循环前调用。
     void start();
 
     // ---- 对外的 agent 管理(网页/API 调用) ----
@@ -124,9 +119,9 @@ public:
 
     // ---- 给 server 内置 agent 的工具用(实现见 JZServerAgent.cpp) ----
     Json::Value snapshotAgents() const { return onlineAgentsJson(); }
-    Json::Value snapshotTasks(const std::string &agentId, const std::string &status, int limit) const
+    Json::Value snapshotTasks(const std::string &agentId, const std::string &state, int limit) const
     {
-        return tasksJson(agentId, status, limit);
+        return tasksJson(agentId, state, limit);
     }
     Json::Value snapshotTask(const std::string &taskId) const;   // 不存在返回 null
     // 供工具调用: 与 POST /api/tasks 同一套逻辑, 但不等回包(waiter=nullptr)
@@ -144,6 +139,10 @@ public:
     // 任务记录(server 侧历史, 落盘 tasks.jsonl)
     void onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
+    // A2A: 订阅一个 Task 的状态/产物事件(SSE, 终态自动关流)
+    void onApiTaskSubscribe(JZHttpServerClient *client, const JZHttpRequest &req);
+    // A2A: AgentCard(能力自述), 供管理台回答"这台 agent 能干什么"
+    void onApiAgentCard(JZHttpServerClient *client, const JZHttpRequest &req);
     // 单个 agent 的详情(在线 / 离线但有记录 / 内置 agent / 本地子进程)
     void onApiAgentDetail(JZHttpServerClient *client, const JZHttpRequest &req);
     // 从"曾经连过"的列表里删掉一台(默认保留它的任务记录, withTasks=1 连记录一起删)
@@ -153,7 +152,6 @@ public:
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
 private:
-    void startFrp();
     void startHttp();
     void startHub();                     // 起控制面(JZNetServer)
     void onHubPacket(uint64_t conn, JZNetPackPtr pack);
@@ -170,7 +168,6 @@ private:
     bool loadDashboardHtml(std::string &html, std::string &error) const;
 
     JZCliServerConfig m_config;
-    JZFrpServer *m_frpServer = nullptr;
     JZHttpServer *m_http = nullptr;
 
     // init() 时读入的 PEM 内容(证书文件读不到就直接启动失败, 不静默降级成明文 HTTP)
@@ -210,28 +207,46 @@ private:
     // 归属(见 docs/agent-hub-design.md §10): **server 是任务历史的主人**, cli 只知道
     // "当前这一条"加上它自己内存里的 recent(重启即丢)。历史不在 server 落盘的话,
     // cli 一重启, 提交方就再也查不到自己交过什么。
+    // 只有一套模型: A2A v1.0 Task。内部字段名也用状态词本身, 不再存 running/success 那套。
     struct TaskRecord
     {
         std::string taskId, agentId, prompt, verifyCmd;
-        std::string status;        // running / success / failed / cancelled / lost
-        std::string error, reply, lastEventType;
+        std::string state;         // TASK_STATE_SUBMITTED / WORKING / COMPLETED / FAILED / CANCELED / REJECTED / UNSPECIFIED
+        std::string error;         // TaskStatus.message
+        std::string contextId;
+        std::string lastEventType;
         int rounds = 0, round = 0;
-        long long startMs = 0, endMs = 0;
+        long long startMs = 0, endMs = 0, statusMs = 0;
+        int eventSeq = 0;                          // 事件序号(断线重连可据此去重)
+        std::vector<std::string> events;           // 有界状态事件(JSON 字符串, 放 metadata.events)
+        std::vector<std::string> artifacts;        // A2A Artifact(JSON 字符串)
+        std::vector<std::string> history;          // A2A Message(JSON 字符串)
     };
     std::map<std::string, TaskRecord> m_tasks;      // taskId -> 记录
     std::vector<std::string> m_taskOrder;           // 插入顺序(裁剪最老的)
     std::string m_taskFile;                         // <exeDir>/data/tasks.jsonl
+
+    // GET /api/tasks/subscribe?id= 的订阅者: taskId -> 若干 SSE 连接
+    std::map<std::string, std::vector<JZHttpServerClient*> > m_taskStreams;
+    JZTimer *m_streamTimer = nullptr;
+    void removeTaskStream(JZHttpServerClient *client);
+    void broadcastTaskEvent(const std::string &taskId, const std::string &event,
+                            const std::string &payload);
+    Json::Value agentCardJson(const std::string &agentId) const;
 
     void loadTaskStore();
     void saveTaskRecord(const TaskRecord &r);       // 追加一行(JSONL, 后写覆盖先写)
     void rewriteTaskStore();                        // 删除记录后整体重写(否则重启会被旧行复活)
     void recordCreate(const std::string &taskId, const std::string &agentId, const Json::Value &body);
     void recordEnd(const std::string &taskId, const Json::Value &result);
-    void recordFail(const std::string &taskId, const std::string &status, const std::string &error);
-    void recordEvent(const std::string &taskId, const std::string &type);
+    void recordFail(const std::string &taskId, const std::string &state, const std::string &error);
+    void recordEvent(const std::string &taskId, const std::string &type, const std::string &data);
+    void appendTaskEvent(TaskRecord *r, const std::string &type, const Json::Value &data);
+    void finishTaskStreams(const std::string &taskId);
     TaskRecord *findTask(const std::string &taskId);
     Json::Value taskJson(const TaskRecord &r) const;
-    Json::Value tasksJson(const std::string &agentId, const std::string &status, int limit) const;
+    Json::Value tasksJson(const std::string &agentId, const std::string &state, int limit,
+                          const std::string &contextId = std::string()) const;
 
     // ---- 曾经连过的 agent(离线也留着, 列表要能回答"这台以前是什么") ----
     // 只有 server 记得住: cli 离线后没有任何地方能报出自己的信息, 而管理台恰恰在

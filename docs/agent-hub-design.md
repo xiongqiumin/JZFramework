@@ -582,7 +582,6 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
     }
   },
   "hub":       { "bind": "0.0.0.0", "port": 8090, "token": "<控制通道口令>" },
-  "frp":       { "server": { "enabled": false, "bindPort": 7000, "token": "" } },
   "agents":    [ { "name": "local1", "cmd": "agent_cli", "args": ["-c", "a1.json"], "dir": "" } ],
   "selfAgent": { "enabled": true, "agentId": "server", "name": "server(内置)" }
 }
@@ -596,8 +595,10 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 | `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用，不能与 `http.port` 相同 |
 | `hub.token` | 控制通道握手口令（全局单一口令） |
 | `agents[]` | server **本机**托管的 cli 子进程（`name/cmd/args/dir/enabled`），与 hub 并存；**不是** hub 白名单，也没有 per-agent token |
-| `frp.server.*` | frps 服务端，只服务于"现场自带 frpc"的部署，与本架构无关 |
 | `selfAgent` | server 进程内置的 agent，见 §11 |
+
+> server 进程**不再内嵌 frps**（2026-11-10 移除）；内网穿透需要时单独部署
+> `jzfrps` / `jzfrpc`，与本架构的控制面互不依赖。旧配置文件里残留的 `frp` 段会被忽略。
 
 证书自备（浏览器/客户端要装同一 CA 签的客户端证书；用自签 CA 免得被公用 CA 拒）：
 
@@ -774,34 +775,35 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 
 | 场景 | 现象 | 规则 |
 | --- | --- | --- |
-| **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；`running` 的任务在心跳/下线对不上时标 `lost` |
-| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把 `running` 一律改 `lost`，`error="server 重启, 结果未知"` |
-| **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 把该 agent 名下 `running` 的记录标 `lost`；提交方（如果在等）回 502 |
-| **超时** | server 侧 `task_timeout_ms` 到点 | 标 `failed` + 原因，同时下发 `taskCancel`（历史里能看到"是超时，不是 cli 说失败"） |
+| **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；非终态 Task 在心跳/下线对不上时标 `TASK_STATE_UNSPECIFIED` |
+| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把非终态一律改 `UNSPECIFIED`，`TaskStatus.message="server 重启, 结果未知"` |
+| **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 该 agent 名下非终态 Task 标 `UNSPECIFIED`；提交方（如果在等）回 502 + Task |
+| **超时** | server 侧 `taskTimeoutMs` 到点 | 标 `TASK_STATE_FAILED` + 原因，同时下发 `taskCancel` |
 
-**判定口径**：任务处于 `running` 时以 server 收到的 `taskEnd` 为准；`timeout/lost/cancelled` 等终态一旦形成，
-迟到的 `taskEnd` 不得覆盖。cli 本地 `recent` 只用于网页即时展示，不参与历史。
-一个例外要说清：没配 `verify_cmd` 时 cli 会把 agent 报错也判成 `success`（"没有验收项就没有可失败的东西"，
-见 `onLoopFinished` 注释），这种记录会**同时**有 `status=success` 和 `error=ConnectError` —— 看详情要两个字段一起看。
+**判定口径**：Task 处于 `SUBMITTED/WORKING/INPUT_REQUIRED/AUTH_REQUIRED` 时以 server 收到的 `taskEnd` 为准；
+`COMPLETED/FAILED/CANCELED/REJECTED/UNSPECIFIED` 一旦形成，迟到的 `taskEnd` 不得覆盖。
+没配 `verifyCmd` 时 cli 会把 agent 报错也判成 success（映射成 `COMPLETED`），此时 `TaskStatus.message` 仍带错误文本。
 
 ### 10.2 存储形态
 
-- **JSONL 追加**：`taskCreate` 一行、`taskEnd`/失败 各一行；载入时按 `taskId` 后写覆盖先写（崩溃安全、不用回写全文件）。
+- **JSONL 追加**：每行就是一个完整的 A2A `Task`（`id/contextId/status/artifacts/history/metadata`）；载入时按 `id` 后写覆盖先写。**旧格式行直接跳过**，不做兼容解析。
 - 内存里保留最近 **500** 条（超出按插入顺序淘汰），启动时全量载入。
-- 只存"提交方给的东西 + 结果"，不存每条 `taskEvent`（只留 `last_event` 供排障）。
+- 过程事件放 `metadata.events`（有界 200 条），每 20 条 + 终态各落盘一次。
 - ⚠ 文件本身**不轮转**（见 §13）。
 
-### 10.3 接口
+### 10.3 接口（只有 A2A 一套）
 
 | 路径 | 作用 |
 | --- | --- |
-| `POST /api/tasks` | 新建任务；`wait` 默认 `true`（同步等结果），`false` → 立刻回 `202 {taskId}` |
-| `GET /api/tasks` | 历史列表：`agentId` / `status` / `limit`（默认 50，最大 500） |
-| `GET /api/tasks/detail?id=` | 单条详情 |
-| `POST /api/tasks/cancel?taskId=` | 取消（cli 侧按 taskId 找到对应队列） |
+| `POST /api/tasks` | `SendMessage`：`{agentId, message:{role,parts}, contextId?, verifyCmd?, returnImmediately?, taskTimeoutMs?, ...}`。默认阻塞到终态；`returnImmediately:true` 立即回 `202` + 一个 A2A `Task`。cli 的 `/task` 载荷只在 server 边界转换一次 |
+| `GET /api/tasks` | `ListTasks`：`agentId` / `state` / `contextId` / `limit` → `{tasks[], nextPageToken, pageSize, totalSize}` |
+| `GET /api/tasks/detail?id=` | `GetTask`：一个 A2A `Task`；管理信息在 `metadata` |
+| `GET /api/tasks/subscribe?id=` | `SubscribeToTask`（SSE）：首帧当前 Task，随后 `status_update`/`artifact_update`，终态补完整 Task 后关流，15s 保活 |
+| `GET /api/agent/card?id=` | `AgentCard` |
+| `POST /api/tasks/cancel?id=` | `CancelTask`：幂等、不保证成功，返回更新后的 Task（状态不立即改） |
 
-> 网页一律用 `wait:false` + 轮询：否则"新建任务"页会一直转圈，也没法边跑边看别的任务。
-> 同步与异步任务都进入 server 的在跑登记表，均有 `task_timeout_ms` 与取消能力。
+> 网页一律 `returnImmediately:true`；Task 详情只走 SSE，断线由 `EventSource` 自动重连、首帧补当前状态，不再维护轮询兜底。
+> 多轮追问按 §3.4.3 的「同 `contextId` 新建 Task」实现，不改 hub 协议；结果放 `Artifact`，`Message` 只进 `history`。
 
 ---
 
@@ -809,15 +811,18 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 
 ### 11.1 页面结构：连接列表 → 详情
 
+管理台按 **A2A v1.0「点名一台 agent 下发指令 → 跟踪一个 Task」** 组织（2026-11-10 改造）：
+参照系是 agent 平台/协议（A2A 的 `SendMessage` / `Task` / `AgentCard`），不是 CI runner。
+
 | 路径 | 页面 | 内容 |
 | --- | --- | --- |
-| `/` | `index.html` | **连接列表**：每个 agent 一张卡片（状态、agentId、名称/版本/模型、节点 x/y、工作区、最近任务），右侧「进入」+「删除」 |
-| `/agent?id=` | `agent.html` | **以会话为主界面**：顶部 tab（会话 / 任务 / 信息）。会话 = 底部输入框 + 每任务一对气泡（问/答，含状态与耗时）；任务 = 表格；信息 = 状态卡 + 节点表 |
-| `/tasks` | `tasks.html` | 全局任务记录（筛选 + `?id=` 详情） |
-| `/new` | `new.html` | 跨 agent 新建任务（agent 下拉） |
+| `/` | `index.html` | **Agent 台账**（AgentCard 视图：名称/版本/模型/工作区/能力/忙闲）+「进行中 Task」区（可直达详情、可取消）。卡片上直接「下发指令」 |
+| `/new` | `new.html` | `SendMessage` 表单：点名 agent + 指令 + 可选验证命令 + 可选 `contextId`；提交后跳 `tasks?id=` |
+| `/tasks` | `tasks.html` | **Task 中心**（流程终点）：`ListTasks` 列表 + `GetTask`/`SubscribeToTask` 详情 = 状态头、事件时间线、Artifacts 产物区、History、取消、同 `contextId` 追问 |
+| `/agent?id=` | `agent.html` | 某台 agent 的台账：指令流 / Task 列表 / AgentCard（skills、capabilities、节点），输入框带 `contextId` 延续 |
 
-交互上刻意做成"远程连接管理器"：**列表回答"连哪台"，详情回答"这台在干什么"**。
-详情页的派活表单预填 `agentId`，不用在别处再选一遍机器。首页不放「新建任务」——派活是"进到某台 agent 里"的动作。
+一个 Task 一个稳定 URL（`tasks?id=`）；派活只有一份 `sendMessage()` 实现。会话按 `contextId`
+分组，追问按规范 3.4.3 生成同上下文的新 Task，而不是往运行中的 Task 里塞消息（不用改 hub 协议）。
 
 `GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process, offline}`。
 
@@ -846,7 +851,7 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 | 工具 | 作用 |
 | --- | --- |
 | `server_agents` | 集群视图：在线 cli（忙闲/节点/工作区）+ 本机子进程 + 任务计数 |
-| `server_task_submit` | 把任务派给任意 agentId（**强制 `wait:false`**，工具里同步等会把自己卡死） |
+| `server_task_submit` | 把指令发给任意 agentId（**强制 `returnImmediately:true`**，工具里同步等会把自己卡死） |
 | `server_task_query` | 查任务记录（列表/单条，可按 agent/status 过滤） |
 | `server_agent_control` | 启停/重启 server 本机被监管的 `agents[]` 子进程 |
 
@@ -870,9 +875,10 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 | 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连任务记录一起删（并重写 `tasks.jsonl`，否则追加文件会在重启时"复活"已删行） |
 | 心跳回收 | hub 每 5s 扫一次，`now - lastSeen > 20s` 判离线 |
 
-**不做定时刷新**：列表 / 任务记录都改成「手动刷新（按钮）+ 改筛选自动拉一次」。
-原因：整页每 2s 重绘会把正在读的详情刷掉，表现为"一直闪"。
-唯一例外是会话页——**只在确实有任务 `running` 时才用 `setTimeout` 追一次**（跑完自动停，不是常驻定时器）。
+**刷新口径按"数据还会不会变"分**：会变的（单个进行中 Task）只走 `GET /api/tasks/subscribe?id=` 的 SSE：
+首帧补当前快照，事件逐帧推，终态自动关流；断线由 `EventSource` 自动重连并补首帧，**不再维护第二套轮询**。
+不会变的（Agent 台账、历史列表）只「手动刷新 + 改筛选拉一次」。首页「进行中」是聚合视图、没有对应 SSE 端点，
+用 1.5s 条件跟随且只重绘该区块。页面隐藏时暂停跟随，不整页重绘（否则正在读的详情会被刷掉，表现为一直闪）。
 
 ### 11.6 静态资源的缓存策略
 
@@ -880,7 +886,7 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 表现就是"HTML 是新的、脚本是旧的" → 会话区一直停在「加载中…」，从界面上完全看不出原因。现在：
 
 - 管理台对静态文件设 `setCacheMaxAge(0)`（`max-age=0` + ETag/Last-Modified，没变就 304）；
-- 页面里引用资源带版本号 `/app.css?v=2`、`/app.js?v=3` —— **改前端资源时要顺手 +1**；
+- 页面里引用资源带版本号 `/app.css?v=5`、`/app.js?v=5` —— **改前端资源时要顺手 +1**；
 - `app.js` 里加了 4s 兜底提示：仍停在「加载中」就直说"可能是缓存，Ctrl+F5"。
 
 ---
@@ -902,7 +908,7 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 
 - **没有 `logAppend`**：server 侧看不到 cli 的控制台日志；managed 模式下 cli 也没 HTTP，现场排障只能看 cli 自己落盘的 `Agent.log`。这是 managed 模式最该先补的一项。
 - **没有 agent 白名单 / per-agent token**：任何拿到 `hub.token` 的 cli 都能连上（全局单一口令）。
-- **管理台没有事件流**：只有 `lastEventType`（最近一条），看不到任务过程；要看得加 SSE 转发。
+- ~~管理台没有事件流~~（2026-11-10 已补）：server 在 `Task.metadata.events` 保留有界事件序列（上限 200 条，每 20 条 + 终态落盘），并提供 `GET /api/tasks/subscribe?id=` 的 SSE 订阅。**仍未做**的是 cli 控制台日志的 `logAppend`，以及管理台按轮次展示完整工具输出/trace。
 - **MCP 只在队列 0**：`mcp.servers[]` 只挂 q0（每队列一套会让 stdio MCP 被拉起 N 次），q1+ 的模型工具面不齐。
 - **审计没有发起人**：只有 mTLS，不记客户端证书 CN，`tasks.jsonl` 里也没有 requester 字段（§8）。
 - **`tasks.jsonl` 不轮转**：内存 500 条，文件无限追加且启动全量载入，长期运行会变慢并占盘。
@@ -940,7 +946,9 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 | `binary/agent_cli/server/JZAgentCliServer.{h,cpp}` | `startHub()`（`JZNetServer`）+ 在线注册表 + 任务记录/store + `/api/*` + 网页 |
 | `binary/agent_cli/server/JZServerAgent.{h,cpp}` | server 内置 agent（§11） |
 | `binary/agent_cli/server/main.cpp` | 解析 `http.*` / `hub.*` / `agents[]` / `selfAgent`，默认配置模板，`--check` |
-| `binary/agent_cli/server/web/*` | 管理台（`index/agent/tasks/new` + `app.js` + `app.css`），样式走 `web/ui` 的 jz-ui |
+| `binary/agent_cli/server/web/*` | 管理台（A2A 形状：`index/agent/tasks/new` + `app.js` + `app.css`），样式走 `web/ui` 的 jz-ui |
+| `binary/agent_cli/test/fake_llm.py` | 固定返回「任务已成功」的假 LLM（OpenAI 兼容 SSE），离线跑全链路用 |
+| `binary/agent_cli/test/test_a2a_flow.py` | 一键自检：假 LLM → server → cli(managed) → 网页/API/SSE（`ctest -R agent_cli.a2a_flow`；`--serve` 可手动开网页） |
 
 ### 14.2 行为要点（node / remote_ssh）
 
@@ -996,6 +1004,6 @@ ctest --test-dir build -C Debug -R "agent_cli\.(remote_ssh_nodes|hub_nodes|task_
 - `agent_cli.task_queues`：mock 每个请求睡 1.5s，`queues=2`；A/B 同时提交 → `/info.queues` 两条 busy；
   全忙提交 C → `pendingTasks=1` 且最终 success；总耗时 3.1s（串行应 4.5s）。
 - `agent_cli.task_cancel`：queues=1/2 的"在跑 + 排队"reset、worker SSE、recent 聚合、真实 node 进程取消。
-- `agent_cli.server_tasks`：managed 排队/在跑任务的 `wait:false` 取消、多队列 busy、异步超时、迟到 `taskEnd`、chunked SSE reply 上行。
+- `agent_cli.server_tasks`：managed 排队/在跑任务的 `returnImmediately:true` 取消、多队列 busy、异步超时、迟到 `taskEnd`、chunked SSE reply 上行。
 
 以上全部用内置 mock 模型，不联网，秒级。

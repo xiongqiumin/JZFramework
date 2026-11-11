@@ -3,46 +3,51 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>任务记录 · JZAgent 管理台</title>
+<title>Task · JZAgent 管理台</title>
 <link rel="stylesheet" href="/ui/tokens.css?v=2">
 <link rel="stylesheet" href="/ui/base.css?v=2">
 <link rel="stylesheet" href="/ui/components.css?v=2">
-<link rel="stylesheet" href="/app.css?v=2">
+<link rel="stylesheet" href="/app.css?v=5">
 </head>
 <body data-page="tasks">
 <header class="jz-topbar">
   <div class="jz-brand">
     <span class="jz-brand__logo">JZ</span>
     <div>
-      <div class="jz-brand__title">任务记录</div>
+      <div class="jz-brand__title">Task</div>
       <div class="jz-brand__sub" id="meta">加载中…</div>
     </div>
   </div>
   <nav class="jz-tools" id="nav">
     <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">Agent</a>
-    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">任务记录</a>
-    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">新建任务</a>
+    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">Task</a>
+    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">下发指令</a>
   </nav>
 </header>
 
 <div class="wrap">
   <div class="jz-row" style="flex-wrap:wrap; align-items:flex-end">
-    <div class="jz-field" style="flex:0 0 180px">
+    <div class="jz-field" style="flex:0 0 160px">
       <label for="fAgent">agent</label>
       <select id="fAgent" class="jz-input"><option value="">全部</option></select>
     </div>
-    <div class="jz-field" style="flex:0 0 160px">
-      <label for="fStatus">状态</label>
-      <select id="fStatus" class="jz-input">
+    <div class="jz-field" style="flex:0 0 190px">
+      <label for="fState">state（A2A TaskState）</label>
+      <select id="fState" class="jz-input">
         <option value="">全部</option>
-        <option value="running">running</option>
-        <option value="success">success</option>
-        <option value="failed">failed</option>
-        <option value="cancelled">cancelled</option>
-        <option value="lost">lost</option>
+        <option value="TASK_STATE_SUBMITTED">SUBMITTED</option>
+        <option value="TASK_STATE_WORKING">WORKING</option>
+        <option value="TASK_STATE_COMPLETED">COMPLETED</option>
+        <option value="TASK_STATE_FAILED">FAILED</option>
+        <option value="TASK_STATE_CANCELED">CANCELED</option>
+        <option value="TASK_STATE_UNSPECIFIED">UNSPECIFIED</option>
       </select>
     </div>
-    <div class="jz-field" style="flex:0 0 120px">
+    <div class="jz-field" style="flex:0 0 200px">
+      <label for="fContext">contextId</label>
+      <input id="fContext" class="jz-input" placeholder="全部">
+    </div>
+    <div class="jz-field" style="flex:0 0 110px">
       <label for="fLimit">条数</label>
       <input id="fLimit" class="jz-input" type="number" value="50" min="1" max="500">
     </div>
@@ -53,19 +58,35 @@
   <div class="jz-table-wrap">
     <table class="jz-table">
       <thead><tr>
-        <th>任务</th><th>agent</th><th>状态</th><th>轮次</th><th>耗时</th><th>提交时间</th><th>任务内容</th>
+        <th>Task</th><th>agent</th><th>状态</th><th>最近事件</th><th>耗时</th><th>提交时间</th><th>指令</th>
       </tr></thead>
       <tbody id="listBody"></tbody>
     </table>
   </div>
 
   <section id="detail" class="hidden">
-    <h2 class="sec">任务详情 <button id="btnClose" class="jz-btn jz-btn--sm jz-btn--ghost">关闭</button></h2>
-    <div class="jz-card"><div class="jz-card__bd" id="detailBody"></div></div>
+    <h2 class="sec">Task 详情（GetTask / SubscribeToTask）
+      <button id="btnClose" class="jz-btn jz-btn--sm jz-btn--ghost">关闭</button></h2>
+    <div id="detailHead"></div>
+    <div class="jz-row" id="detailActs" style="flex-wrap:wrap"></div>
+    <div class="detail-cols">
+      <div>
+        <h2 class="sec">执行过程 / 事件</h2>
+        <div class="timeline" id="detailEvents"></div>
+        <h2 class="sec">交互 History</h2>
+        <div class="feed feed--flat" id="detailHistory"></div>
+        <h2 class="sec">字段</h2>
+        <div class="jz-card"><div class="jz-card__bd" id="detailBody"></div></div>
+      </div>
+      <div>
+        <h2 class="sec">产物 Artifacts</h2>
+        <div id="detailArtifacts"></div>
+      </div>
+    </div>
   </section>
 </div>
 
 <script src="/ui/jz-ui.js?v=2"></script>
-<script src="/app.js?v=3"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

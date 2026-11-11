@@ -247,7 +247,7 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
     // 请求会白跑一趟网络再被节点打回"节点忙"。
     if (!m_bgRuns.empty())
     {
-        error = "节点 " + m_config.name + " 正忙(有后台命令在跑, 用 action=query 等它结束)";
+        error = "节点 " + m_config.name + " 正忙(上一条命令还在跑, 等它结束再来)";
         return false;
     }
     if (timeoutMs <= 0)
@@ -477,55 +477,32 @@ JZRemoteSshTool::JZRemoteSshTool(std::function<JZNodeLink *(const std::string &)
     ToolDefine def;
     def.name = "remote_ssh";
     def.description =
-        "在一台远端节点上执行/管理 shell 命令(语义与本地 terminal_run 一致, 只是走网络)。\n"
-        "action:\n"
-        "  run(默认)  跑一条命令; background=true 时立刻返回 run_id(不等结束), 之后用 action=query 查、action=cancel 停。\n"
-        "  query      按 run_id 取状态与日志(可选 tail 最近 N 行 / grep 过滤 / incremental 只取新增)。\n"
-        "  cancel     按 run_id 停掉一条还在跑的命令。\n"
+        "在一台远端节点上执行一条 shell 命令(语义与本地 terminal_run 一致, 只是走网络)。\n"
         "命令**整条交给远端 shell**: 管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 语义工作。\n"
         "⚠ 远端是**有状态的 shell**: cd / export 会保留到下一条命令(文件当然也持久)。\n"
-        "   要进目录执行可以写 `cd <目录> && <命令>`, 也可以直接用 cwd 参数(它等价于先 cd 过去)。\n"
-        "⚠ 节点是**单前台串行**: 上一条没结束, 下一条直接报「节点忙」。background=true 只是让这一轮\n"
-        "   工具调用立刻返回 run_id, 命令仍然占着节点 —— 长驻服务别指望它, 用 background + query 轮询。\n"
-        "⚠ run_id 带节点前缀(如 line1:r3): query/cancel 靠它路由回对应节点。\n"
+        "⚠ 节点是**单前台串行**: 上一条没结束, 下一条直接报「节点忙」。\n"
+        "⚠ 没有后台/查询: 要跑常驻服务就在命令里写 `&` 并自己重定向"
+        "(`./server > server.log 2>&1 &`), 之后用 `cat server.log` / `tail -50 server.log` 看。\n"
         "可用节点:\n" + m_nodeList +
         "\nhost 省略 = 用默认节点。超时默认 120s(上限 15min), 超时会请求节点停止该命令。";
 
-    def.parameters.push_back(makeSshParam("action", ParamType::String, "run(默认) / query / cancel"));
     def.parameters.push_back(makeSshParam("host", ParamType::String, "节点名(见上方列表); 省略 = 默认节点"));
-    def.parameters.push_back(makeSshParam("command", ParamType::String, "要执行的完整 shell 命令(action=run)"));
+    def.parameters.push_back(makeSshParam("command", ParamType::String, "要执行的完整 shell 命令"));
     def.parameters.push_back(makeSshParam("cwd", ParamType::String,
                                           "工作目录(相对路径按该节点工作区解析); 省略 = 节点工作区根"));
     def.parameters.push_back(makeSshParam("timeout_ms", ParamType::Number, "超时毫秒数, 默认 120000, 上限 900000"));
-    def.parameters.push_back(makeSshParam("background", ParamType::Boolean,
-                                          "true = 后台运行, 立刻返回 run_id(不设超时); 结果用 action=query 取"));
-    def.parameters.push_back(makeSshParam("run_id", ParamType::String,
-                                          "action=query/cancel 的运行 id(执行结果里给出的那个); "
-                                          "query 时可省略 = 该节点最近一次运行"));
-    def.parameters.push_back(makeSshParam("tail", ParamType::Number, "action=query: 只取最近 N 行(0 = 全部)"));
-    def.parameters.push_back(makeSshParam("grep", ParamType::String, "action=query: 按子串过滤(不区分大小写)"));
-    def.parameters.push_back(makeSshParam("incremental", ParamType::Boolean,
-                                          "action=query: 只回上次查询之后新增的行(轮询查进度用)"));
-    // 不设 required: run 要 command、query/cancel 要 run_id, 按 action 分支校验,
-    // 统一标成必填会让另一条分支的调用方永远缺参数。
     setToolDefine(def);
 }
 
 static string formatRun(const string &node, const JZNodeLink::ExecResult &r)
 {
     string text = "[node " + node + "] ";
-    if (r.started)
-    {
-        // 后台: 已经启动了, 结果还没定
-        return text + "已启动 run_id=" + r.runId +
-               " (后台运行, 不设超时); 用 action=query 查日志/状态, action=cancel 停掉";
-    }
     if (r.ok)
-        text += "run_id=" + r.runId + " exit=0";
+        text += "exit=0";
     else if (r.timedOut)
-        text += "run_id=" + r.runId + " 超时";
+        text += "超时";
     else
-        text += "run_id=" + r.runId + " 失败" + (r.exitCode >= 0 ? ("(exit=" + to_string(r.exitCode) + ")") : string());
+        text += "失败" + (r.exitCode >= 0 ? ("(exit=" + to_string(r.exitCode) + ")") : string());
     if (r.durationMs > 0)
         text += " " + to_string(r.durationMs) + "ms";
     if (!r.cwd.empty())
@@ -537,39 +514,13 @@ static string formatRun(const string &node, const JZNodeLink::ExecResult &r)
     return text;
 }
 
-static string formatQuery(const string &node, const string &runId, const JZNodeLink::QueryResult &q)
-{
-    if (!q.found)
-        return "[node " + node + "] " + runId + " 查不到: " + q.error;
-
-    string text = "[node " + node + "] " + runId + " ";
-    if (q.running)
-        text += "运行中";
-    else if (q.ok)
-        text += "已结束 exit=0";
-    else if (q.timedOut)
-        text += "已结束 超时";
-    else
-        text += "已结束 失败" + (q.exitCode >= 0 ? ("(exit=" + to_string(q.exitCode) + ")") : string());
-    if (q.background)
-        text += " [后台]";
-    if (q.durationMs > 0)
-        text += " " + to_string(q.durationMs) + "ms";
-    text += "  累计 " + to_string(q.totalLines) + " 行";
-    if (!q.error.empty())
-        text += "  " + q.error;
-    text += "\n";
-    text += q.text.empty() ? string("(没有新增输出)") : q.text;
-    return text;
-}
-
 void JZRemoteSshTool::call(const ToolCall &call)
 {
     const string action = call.params.get("action", "run").asString();
+    (void)action;   // 只剩 run 一种动作(参数保留给旧调用方, 值不再影响行为)
     const string host = call.params.get("host", "").asString();
     const string command = call.params.get("command", "").asString();
     const string cwd = call.params.get("cwd", "").asString();
-    const string runId = call.params.get("run_id", "").asString();
     int timeoutMs = call.params.get("timeout_ms", 120000).asInt();
 
     // ⚠ 回调是异步的(要等远端回包), 所以 call.id 必须按值拷走,
@@ -592,75 +543,6 @@ void JZRemoteSshTool::call(const ToolCall &call)
         sigResult.emit(res);
     };
 
-    // ---- query / cancel: 按 run_id 路由回发起它的节点 ----
-    if (action == "query" || action == "cancel")
-    {
-        string node;
-        if (runId.empty())
-        {
-            // 与本地 terminal_query 对齐: 省略 run_id = 该节点最近一次运行。
-            // (cancel 不放开: 它只对后台任务有意义, 那种情况一定有 run_id)
-            if (action == "cancel")
-            {
-                fail("action=cancel 需要 run_id(后台启动时给出的那个)");
-                return;
-            }
-            node = host.empty() ? m_defaultHost() : host;
-            if (node.empty())
-            {
-                fail("省略 run_id 时要指定 host(或配置一个默认节点)");
-                return;
-            }
-        }
-        else
-        {
-            const size_t pos = runId.find(':');
-            if (pos == string::npos || pos == 0)
-            {
-                fail("run_id 要带节点前缀(形如 line1:r3): " + runId);
-                return;
-            }
-            node = runId.substr(0, pos);
-            if (!host.empty() && host != node)
-            {
-                fail("run_id 属于节点 " + node + ", 但你指定了 host=" + host);
-                return;
-            }
-        }
-        JZNodeLink *link = m_resolver(node);
-        if (!link)
-        {
-            fail("没有这个节点: \"" + node + "\"。\n" + m_nodeList);
-            return;
-        }
-
-        string error;
-        if (action == "cancel")
-        {
-            if (!link->cancelRun(runId, error))
-            {
-                fail(error);
-                return;
-            }
-            done("[node " + node + "] 已请求停止 " + runId + " (用 action=query 确认结果)", true);
-            return;
-        }
-
-        const int tail = call.params.get("tail", 0).asInt();
-        const string grep = call.params.get("grep", "").asString();
-        const bool incremental = call.params.get("incremental", false).asBool();
-        bool started = link->query(runId, tail, grep, incremental,
-            [this, node, done](const JZNodeLink::QueryResult &q)
-            {
-                // 省略 run_id 时节点会回它实际用的那个 id, 模型可以拿它继续查
-                done(formatQuery(node, q.runId, q), q.found);
-            },
-            error);
-        if (!started)
-            fail(error);
-        return;
-    }
-
     // ---- run ----
     if (command.empty())
     {
@@ -676,13 +558,14 @@ void JZRemoteSshTool::call(const ToolCall &call)
         return;
     }
 
-    const bool background = call.params.get("background", false).asBool();
+    // 不再有 background 参数: 后台靠命令里的 `&`(与本地终端同一套语义)
+    const bool background = false;
     const string nodeName = link->config().name;
     string error;
     bool started = link->exec(command, cwd, timeoutMs, background, m_owner,
         [this, done, nodeName](const JZNodeLink::ExecResult &r)
         {
-            done(formatRun(nodeName, r), r.ok || r.started);
+            done(formatRun(nodeName, r), r.ok);
         },
         error);
     if (!started)

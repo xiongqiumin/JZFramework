@@ -654,6 +654,8 @@ bool JZCodeAgent::initProject(const string &path, string &error)
         "    \"target\": \"ES2022\",\n"
         "    \"module\": \"esnext\",\n"
         "    \"moduleResolution\": \"bundler\",\n"
+        // 本运行时只支持 ESM: 一律按模块处理(否则没有 import/export 的文件里顶层 await 会报 TS1375)
+        "    \"moduleDetection\": \"force\",\n"
         "    \"lib\": [\"ES2025\"],\n"
         "    \"strict\": true,\n"
         "    \"skipLibCheck\": true,\n"
@@ -1494,7 +1496,7 @@ void JZCodeAgent::buildAgent()
         m_terminal->setId("default");   // 单用户终端的会话 id(供 terminal_open/list 展示)
     }
     addTool(new JZTerminalRunTool(m_terminal));
-    addTool(new JZTerminalQueryTool(m_terminal));
+
     addTool(new JZTerminalCancelTool(m_terminal));
     addTool(new JZTerminalOpenTool(m_terminal));
     addTool(new JZTerminalListTool(m_terminal));
@@ -1624,7 +1626,7 @@ std::string JZCodeAgent::buildSystemPrompt() const
                     "工具链已由宿主提供: **不要**去找/装编译器或运行时(which/find tsc、npm i typescript 都是白费), "
                     "编译失败时先看报错指向的代码/声明问题。\n";
             text << "  ⚠ 收尾口径: 改好代码 → `tsc -p tsconfig.json` 通过 → 跑一次 `cd build && code_runtime` 看到输出, "
-                    "就可以**结束本轮**(把结论说清即可)。不要再重跑同一条命令、也不要反复 terminal_query 去「确认」——"
+                    "就可以**结束本轮**(把结论说清即可)。不要再重跑同一条命令 ——"
                     "命令的 stdout 就在 terminal_run 的回包里, 判定由宿主自己做。\n";
         }
     }

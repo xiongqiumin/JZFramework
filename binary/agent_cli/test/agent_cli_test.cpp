@@ -352,6 +352,10 @@ static bool initProject(const std::string &root, const std::string &codeBinDir, 
         "    \"target\": \"ES2022\",\n"
         "    \"module\": \"esnext\",\n"
         "    \"moduleResolution\": \"bundler\",\n"
+        // 本运行时只支持 ESM: 一律按模块处理。
+        // 不加这条时, "没有 import/export 的文件"会被当成脚本, 顶层 await 报 TS1375
+        // (实测模型整文件重写 main.ts、丢掉 export 就会踩到, 每次白跑一轮)。
+        "    \"moduleDetection\": \"force\",\n"
         "    \"lib\": [\"ES2025\"],\n"
         "    \"strict\": true,\n"
         "    \"skipLibCheck\": true,\n"
@@ -468,9 +472,10 @@ public:
             m_loop->quit();
             return;
         }
-        // 每个用例一个独立临时工程根(避免互相污染)
-        m_baseRoot = JZPlatform::applicationTmpPath() + "/" + JZUuid::createUuid().toString() + "/agent_cli_test";
-        JZDir().mkpath(m_baseRoot);
+        // 每个用例一个**独立父目录**的临时工程根(避免互相污染)。
+        // ⚠ 以前是 <tmp>/<uuid>/agent_cli_test/case_N —— 所有用例是兄弟目录, agent 顺着 `..`
+        //   就能读到别的用例的 _input.txt(实测 case_8 读到了 hello 的输入, port 变 0, 整例重来)。
+        //   现在每例独占 <tmp>/<uuid>/proj, 见 startCase()。
         m_benchTimer.start();
         m_idx = 0;
         startCase(0);
@@ -480,11 +485,34 @@ protected:
     void startCase(size_t i)
     {
         m_case = m_cases[i];
-        setInput(m_case.input);
         m_result = CaseResult{};
         m_result.name = m_case.name;
 
-        std::string root = m_baseRoot + "/case_" + std::to_string(i);
+        // 每个用例独占一个 uuid 父目录: 上层只有随机名, 兄弟目录里没有别的用例
+        std::string caseDir = JZPlatform::applicationTmpPath() + "/" + JZUuid::createUuid().toString();
+        std::string root = caseDir + "/proj";
+        JZDir().mkpath(root);
+
+        // 输入里的占位符(如 `jznet-tcp ${port}`)必须在这里展开。
+        // ⚠ 以前只有 verify 命令展开, input 里留着字面量 "${port}" -> harness 解析出 port=0
+        //   (实测模型因此去别的用例/历史目录里找"真实端口", 靠猜和抄才跑通)。
+        m_case.input = expandVerifyCmd(m_case.input, root);
+
+        // 输入放**工程之外**: <uuid>/input/input.txt。
+        // 工程根里不该有输入文件 —— 模型会删它、会顺着 `..` 翻别人的, 而且"根和 build 各一份"
+        // 早晚不一致。input 目录在工程外, 属于"区外只读", 模型改不了也不会去改。
+        m_inputDir = caseDir + "/input";
+        JZDir().mkpath(m_inputDir);
+        if (!m_case.input.empty())
+        {
+            std::ofstream in(m_inputDir + "/input.txt", std::ios::binary);
+            if (in)
+            {
+                in << m_case.input;
+                in.close();
+            }
+        }
+        setInput(m_case.input);
 
         // 先铺好标准 TS 工程骨架(tsconfig outDir=build / rootDir=src), agent 只往 src/ 里写代码。
         // 骨架铺不成(拷 js_wrapper 失败等)就没什么可评测的, 直接判该用例失败。
@@ -531,6 +559,9 @@ protected:
 
         JZCliConfig cfg = m_config;
         cfg.rootDir = root;
+        // 输入文件(在工程外的输入目录)路径交给运行时: 见 net_harness/main.ts 与用例 prompt
+        if (!m_inputDir.empty())
+            cfg.env["JZ_CASE_INPUT"] = m_inputDir + "/input.txt";
         cfg.httpPort = m_cliPortBase + (int)i;   // 每用例一个端口, 便于起网页服务 + 订阅 /events
 
         JZAgentCli *cli = new JZAgentCli(this);
@@ -1054,6 +1085,11 @@ protected:
         args.push_back("--root");   args.push_back(root);
         args.push_back("--input");  args.push_back(c.input);
         args.push_back("--data");   args.push_back(dataDir);
+        // 输入目录在工程**之外**(见 startCase): setup 脚本把它写到那儿, 工程根保持干净
+        if (!m_inputDir.empty())
+        {
+            args.push_back("--input-dir"); args.push_back(m_inputDir);
+        }
         JZProcess proc;
         proc.setProcessChannelMode(JZProcess::MergedChannels);
         if (!proc.start(program, args))
@@ -1134,7 +1170,6 @@ protected:
 
     JZAgentCli *m_cli = nullptr;
     JZProcess *m_daemon = nullptr;   // 本用例的后台服务(daemon 字段拉起), finishCase() 时杀掉
-    std::string m_baseRoot;
     int64_t m_llmStartMs = 0;
 
     std::vector<BenchmarkCase> m_cases;
@@ -1172,6 +1207,7 @@ protected:
     int m_httpPort = 18090;
     std::string m_input;
     std::mutex m_inputMutex;
+    std::string m_inputDir;      // 本用例的输入目录(工程之外, 见 startCase)
     std::string m_httpPromptExtra;
     HttpThread m_httpThread;
 };

@@ -20,6 +20,7 @@
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZProcess.h"
+#include "JZThread.h"   // 后台任务线程(JZProcess 要求跑在 JZThread 上)
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -51,6 +52,53 @@ const char kPathSep = ';';
 #else
 const char kPathSep = ':';
 #endif
+
+// ---- Git Bash 的"参数路径转换" ----
+// MSYS 运行时在启动**原生程序**(tsc / code_runtime / node / cmd …)时, 会把参数里"像 POSIX 绝对路径"
+// 的那部分翻成 Windows 路径: `/c/tmp` -> `C:/tmp`、`/cygdrive/d/x` -> `D:/x`。
+// 模型在终端里就是这么写的(`tsc -p /c/tmp/x`), 所以 shell 层必须跟着翻 —— 否则原样传给原生程序,
+// 它根本不认识 `/c/...`(实测真 Node: argv 收到 "/c/tmp" 时 path.resolve 给 `C:\c\tmp`)。
+// ⚠ 只翻**盘符挂载**形式: `/usr`、`/etc`、正则里的 `/foo/`、URL 里的 `/api/x` 一律不动 ——
+//   MSYS 那种"全量转换"连 `cmd /c` 都会误伤(所以 Git Bash 里得写 `cmd //c`), 不学。
+// 关掉: `MSYS_NO_PATHCONV=1`(与 MSYS 同名, 便于对照)。
+bool driveMountToWin(const string &s, string &out)
+{
+    size_t i = 0;
+    if (s.compare(0, 10, "/cygdrive/") == 0)
+        i = 10;
+    else if (!s.empty() && s[0] == '/')
+        i = 1;
+    else
+        return false;
+
+    if (i + 1 >= s.size())
+        return false;
+    const char d = s[i];
+    if (!isalpha((unsigned char)d))
+        return false;
+    if (s[i + 1] != '/' && s[i + 1] != '\\')
+        return false;
+
+    out = string(1, (char)toupper((unsigned char)d)) + ":/" + s.substr(i + 2);
+    return true;
+}
+
+// `--out=/c/tmp/x` 这种带 '=' 的, 只翻 '=' 之后那段(前半是选项名)
+string convertBashPathArg(const string &a)
+{
+    if (a.empty())
+        return a;
+
+    string out;
+    if (driveMountToWin(a, out))
+        return out;
+
+    const size_t eq = a.find('=');
+    if (eq != string::npos && eq + 1 < a.size() && driveMountToWin(a.substr(eq + 1), out))
+        return a.substr(0, eq + 1) + out;
+
+    return a;
+}
 
 // ---- 动态变量用的两个时钟 ----
 // 单调钟: $SECONDS 不能因为系统时间被调整而跳变
@@ -148,6 +196,7 @@ string echoUnescape(const string &s)
         case 'b': out += '\b'; break;
         case 'f': out += '\f'; break;
         case 'v': out += '\v'; break;
+        case 'e': out += '\x1b'; break;   // ESC(bash 的 echo -e / printf 都认)
         case '\\': out += '\\'; break;
         case 'c': return out;
         case '0':
@@ -161,6 +210,68 @@ string echoUnescape(const string &s)
             out += (char)v;
             break;
         }
+        case 'x':
+        {
+            int v = 0, k = 0;
+            while (k < 2 && i + 1 < s.size() && isxdigit((unsigned char)s[i + 1]))
+            {
+                char h = s[++i];
+                v = v * 16 + (h <= '9' ? (h - '0') : (tolower((unsigned char)h) - 'a' + 10));
+                k++;
+            }
+            out += (char)v;
+            break;
+        }
+        default:
+            out += '\\';
+            out += n;
+            break;
+        }
+    }
+    return out;
+}
+
+// printf 的转义(格式串与 %b 共用): 与 echoUnescape 的区别是**也认不带 0 的八进制**
+// (`\101` = 'A'; bash 的 printf 就是这样, echo -e 才要求 `\0NNN`)。
+string printfUnescape(const string &s, bool *stop = nullptr)
+{
+    string out;
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        if (s[i] != '\\' || i + 1 >= s.size())
+        {
+            out += s[i];
+            continue;
+        }
+        char n = s[++i];
+        if (n >= '0' && n <= '7')
+        {
+            int v = n - '0', k = 1;
+            while (k < 3 && i + 1 < s.size() && s[i + 1] >= '0' && s[i + 1] <= '7')
+            {
+                v = v * 8 + (s[++i] - '0');
+                k++;
+            }
+            out += (char)v;
+            continue;
+        }
+        switch (n)
+        {
+        case 'n': out += '\n'; break;
+        case 't': out += '\t'; break;
+        case 'r': out += '\r'; break;
+        case 'a': out += '\a'; break;
+        case 'b': out += '\b'; break;
+        case 'f': out += '\f'; break;
+        case 'v': out += '\v'; break;
+        case 'e': out += '\x1b'; break;
+        case '\\': out += '\\'; break;
+        case '"': out += '"'; break;
+        case '\'': out += '\''; break;
+        case 'c':   // \c: 到此为止, 不再输出后面的内容
+            if (stop)
+                *stop = true;
+            return out;
         case 'x':
         {
             int v = 0, k = 0;
@@ -842,6 +953,12 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
     bool curGlob = false;
     bool sawQuote = false;
 
+    // 分字段用的分隔符: bash 按 IFS 切(默认 " \t\n"; 设为空串 = 不分词)。
+    // 未加引号的 `$a` 才走这里; 引号内 / 赋值右侧(splitFields=false)不受影响。
+    string ifs = " \t\n";
+    if (varIsSet("IFS"))
+        ifs = varValue("IFS");
+
     auto flush = [&]()
     {
         if (curStarted)
@@ -850,6 +967,19 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
             cur.clear();
             curStarted = false;
             curGlob = false;
+        }
+    };
+
+    // 字面量: 原样拼进当前字段, **不按 IFS 拆**(bash 只拆分变量/命令替换展开的结果,
+    // 不拆字面词 —— `echo a:b:c` 里 IFS=: 也是三个字符一个参数)
+    auto appendLit = [&](const string &s)
+    {
+        cur += s;
+        curStarted = true;
+        for (char c : s)
+        {
+            if (c == '*' || c == '?' || c == '[')
+                curGlob = true;
         }
     };
 
@@ -866,7 +996,7 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
         }
         for (char c : s)
         {
-            if (c == ' ' || c == '\t' || c == '\n')
+            if (!ifs.empty() && ifs.find(c) != string::npos)
             {
                 flush();
                 continue;
@@ -878,8 +1008,15 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
         }
     };
 
-    // 变量取值统一走 varValue(), 免得这里和 ${...} 求值两条规则漂移
-    auto lookup = [&](const string &name) -> string { return varValue(name); };
+    // 变量取值统一走 varValue(), 免得这里和 ${...} 求值两条规则漂移。
+    // `set -u` 下引用未定义变量要报错: 展开函数没有返回值通道, 先记到 m_expandError,
+    // 由 runSimple 收尾报出去(见那里对 m_expandError 的处理)。
+    auto lookup = [&](const string &name) -> string
+    {
+        if (m_nounset && m_expandError.empty() && !varIsSet(name))
+            m_expandError = name + ": unbound variable";
+        return varValue(name);
+    };
 
     // 直接落成一个独立字段: 用于 `${a[@]}` —— 一个元素一个字段, 不再按空格切分。
     // ⚠ 赋值右侧(splitFields=false)不能拆字段, 否则 `i=${a[0]}` 会被拆成 ["i=", "aa"]
@@ -948,6 +1085,11 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                     i = end;
                     continue;
                 }
+                if (raw[i] == '\\' && i + 1 < raw.size() && raw[i + 1] == '\n')
+                {
+                    i += 2;   // 双引号内的续行: 反斜杠+换行都删掉(bash 的行为)
+                    continue;
+                }
                 if (raw[i] == '\\' && i + 1 < raw.size() &&
                     (raw[i + 1] == '"' || raw[i + 1] == '\\' || raw[i + 1] == '$'))
                 {
@@ -966,42 +1108,59 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                             name += raw[j++];
                         if (j < raw.size())
                             j++;
-                        // 支持 ${VAR:-默认}
-                        size_t pos = name.find(":-");
-                        string def;
-                        if (pos != string::npos)
+                        // ${VAR:-word} / ${VAR:=word} / ${VAR:+word}: 引号里 `~` 不展开
+                        string dv;
+                        if (resolveDefaultOps(name, true, dv))
                         {
-                            def = name.substr(pos + 2);
-                            name = name.substr(0, pos);
+                            lit += dv;
+                            i = j;
+                            continue;
                         }
-                        else
                         {
                             // ${a[i]} / ${a[@]} / ${#a[@]} 等
                             vector<string> vals;
                             if (expandBraced(name, vals))
                             {
+                                // `${*:1:2}` / `${a[*]:..}` 在引号里是**一个字段**:
+                                // 用 IFS 首字符把元素连起来(与 `${a[*]}` 同口径)。
+                                // `${@:..}` / `${a[@]:..}` 才是"一个元素一个字段"。
+                                const bool starForm = name.compare(0, 2, "*:") == 0 ||
+                                                      name.find("[*]:") != string::npos;
+                                if (starForm && vals.size() > 1)
+                                {
+                                    string ifs = envVar("IFS");
+                                    const char sep = ifs.empty() ? ' ' : ifs[0];
+                                    string joined;
+                                    for (size_t k2 = 0; k2 < vals.size(); k2++)
+                                    {
+                                        if (k2)
+                                            joined += sep;
+                                        joined += vals[k2];
+                                    }
+                                    lit += joined;
+                                    i = j;
+                                    continue;
+                                }
                                 if (vals.size() <= 1)
                                 {
                                     lit += vals.empty() ? string() : vals[0];
                                 }
                                 else
                                 {
-                                    // "pre${a[@]}post": pre / 各元素 / post 各自成段(bash 语义)
-                                    if (!lit.empty())
-                                    {
-                                        append(lit, true);
-                                        lit.clear();
-                                    }
-                                    for (const string &pv : vals)
-                                        pushField(pv);
+                                    // "pre${a[@]}post": pre 贴到**首元素**、post 贴到**末元素**
+                                    // (以前 pre 自己单独成段, `"A:${a[@]:1:2}"` 会多出一个 "A:")
+                                    vals[0] = lit + vals[0];
+                                    lit.clear();
+                                    for (size_t k = 0; k + 1 < vals.size(); k++)
+                                        pushField(vals[k]);
+                                    lit = vals.back();
                                     quoteMulti = true;
                                 }
                                 i = j;
                                 continue;
                             }
                         }
-                        string v = lookup(name);
-                        lit += v.empty() ? def : v;
+                        lit += lookup(name);
                         i = j;
                         continue;
                     }
@@ -1011,8 +1170,28 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                         i = j + 1;
                         continue;
                     }
+                    // "$@": **一个位置参数一个字段**, 空参数也要保留(bash 语义)。
+                    // 以前是 lookup("@") 拼成一个串, `set -- "" a` 之后 "$@" 只剩一个参数。
+                    if (j < raw.size() && raw[j] == '@')
+                    {
+                        vector<string> ps;
+                        for (size_t k = 1; k < m_params.size(); k++)
+                            ps.push_back(m_params[k]);
+                        if (!ps.empty())
+                        {
+                            ps[0] = lit + ps[0];
+                            lit.clear();
+                            for (size_t k = 0; k + 1 < ps.size(); k++)
+                                pushField(ps[k]);
+                            lit = ps.back();   // 尾部文本拼到最后一个参数上
+                            quoteMulti = true;
+                        }
+                        i = j + 1;
+                        continue;
+                    }
                     if (j < raw.size() && ((raw[j] >= '0' && raw[j] <= '9') ||
-                                           raw[j] == '#' || raw[j] == '@' || raw[j] == '*'))
+                                           raw[j] == '#' || raw[j] == '*' ||
+                                           raw[j] == '!' || raw[j] == '$'))
                     {
                         lit += lookup(string(1, raw[j]));
                         i = j + 1;
@@ -1114,7 +1293,6 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
         {
             size_t j = i + 1;
             string name;
-            string def;
             if (j < raw.size() && raw[j] == '{')
             {
                 j++;
@@ -1122,13 +1300,14 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                     name += raw[j++];
                 if (j < raw.size())
                     j++;
-                size_t pos = name.find(":-");
-                if (pos != string::npos)
+                // 未加引号: ${VAR:-word} 里词首的 `~` 要展开
+                string dv;
+                if (resolveDefaultOps(name, false, dv))
                 {
-                    def = name.substr(pos + 2);
-                    name = name.substr(0, pos);
+                    append(dv, false);
+                    i = j;
+                    continue;
                 }
-                else
                 {
                     // ${a[i]} / ${a[@]} / ${a[*]} / ${#a} / ${#a[@]}
                     vector<string> vals;
@@ -1140,8 +1319,7 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                         continue;
                     }
                 }
-                string v = lookup(name);
-                append(v.empty() ? def : v, false);
+                append(lookup(name), false);
                 i = j;
                 continue;
             }
@@ -1152,7 +1330,8 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                 continue;
             }
             if (j < raw.size() && ((raw[j] >= '0' && raw[j] <= '9') ||
-                                   raw[j] == '#' || raw[j] == '@' || raw[j] == '*'))
+                                   raw[j] == '#' || raw[j] == '@' || raw[j] == '*' ||
+                                   raw[j] == '!' || raw[j] == '$'))
             {
                 append(lookup(string(1, raw[j])), false);
                 i = j + 1;
@@ -1166,7 +1345,7 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                 i = j;
                 continue;
             }
-            append("$", false);
+            appendLit("$");
             i++;
             continue;
         }
@@ -1177,15 +1356,19 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
         // 非 posix 模式: 任何"长得像赋值"的词(`echo foo=bar:~`)都展开;
         // posix 模式: 只有真正的赋值词(前缀赋值 / export 之类)才展开 —— bash 的差别就在这。
         const bool assignWord = tildeAssign || (!m_posix && isAssignmentWord(raw));
-        const bool tildeCtx = (i == 0) ||
-                              (assignWord && i > 0 && (raw[i - 1] == '=' || raw[i - 1] == ':'));
+        // 赋值词里只有**第一个** `=` 之后、以及其后的 `:` 之后才展开。
+        // 所以 `h=HOME=~` 的 `~` 保持原样(bash 同), 而 `foo=~:/x` 两个位置都算。
+        const size_t firstEq = raw.find('=');
+        const bool afterAssignEq = i > 0 && raw[i - 1] == '=' && firstEq != string::npos && firstEq + 1 == i;
+        const bool afterAssignColon = i > 0 && raw[i - 1] == ':' && firstEq != string::npos && i > firstEq;
+        const bool tildeCtx = (i == 0) || (assignWord && (afterAssignEq || afterAssignColon));
         if (c == '~' && tildeCtx)
         {
             // `~` / `~/x` -> HOME; `~user` 只在真能定位到该用户目录时展开, 否则原样保留;
             // `~+` = PWD, `~-` = OLDPWD
             size_t j = i + 1;
             bool esc = false;   // `~\chet` / `~"chet"`: 名字被引号/转义打断 -> 不展开
-            while (j < raw.size() && raw[j] != '/' && raw[j] != ' ' && raw[j] != '\t')
+            while (j < raw.size() && raw[j] != '/' && raw[j] != ' ' && raw[j] != '\t' && raw[j] != ':')
             {
                 if (raw[j] == '\\' || raw[j] == '"' || raw[j] == '\'')
                 {
@@ -1228,11 +1411,11 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
                 continue;
             }
             // 不展开: 原样吐一个 '~' 继续(后面的内容按普通字符处理)
-            append("~", false);
+            appendLit("~");
             i++;
             continue;
         }
-        append(string(1, c), false);
+        appendLit(string(1, c));
         i++;
     }
     flush();
@@ -1280,7 +1463,12 @@ vector<string> JZShell::expandWord(const Word &w, string *error, bool splitField
             }
         }
         if (hits.empty())
-            out.push_back(f.first);   // 没有匹配: bash 默认保留字面量
+        {
+            // 没有匹配: 默认保留字面量; `shopt -s nullglob` 时整个词消失
+            // (否则 `for f in *.log` 会拿一个叫 "*.log" 的假文件去处理)
+            if (!m_nullglob)
+                out.push_back(f.first);
+        }
         else
             out.insert(out.end(), hits.begin(), hits.end());
     }
@@ -1311,21 +1499,115 @@ string JZShell::expandPattern(const string &s)
 
 // ${...} 求值。expr 是花括号内的原文(不含 `${` `}`)。
 // 只处理**带下标/带 #** 的形式, 普通 `${VAR}` 交给调用方原有的 lookup 路径。
+// shell 内建共用的选项解析。以前 set / shopt / export / read / declare 各写一段
+// 几乎相同的 for 循环, 而且都不支持紧凑写法(`set -euo pipefail` 只认 -o)。
+size_t JZShell::parseBuiltinOptions(const vector<string> &args, size_t from,
+                                    const string &valueFlags,
+                                    std::map<string, std::pair<bool, string>> &opts)
+{
+    opts.clear();
+    size_t i = from;
+    while (i < args.size())
+    {
+        const string &a = args[i];
+        if (a == "--")
+        {
+            i++;
+            break;
+        }
+        if (a.size() < 2 || (a[0] != '-' && a[0] != '+'))
+            break;   // 第一个非选项就是操作数
+
+        if (a[1] == '-')
+        {
+            // 长选项: --name / --name=value
+            string nm = a.substr(2);
+            string val;
+            const size_t eq = nm.find('=');
+            if (eq != string::npos)
+            {
+                val = nm.substr(eq + 1);
+                nm = nm.substr(0, eq);
+            }
+            opts[nm] = std::make_pair(true, val);
+            i++;
+            continue;
+        }
+
+        const bool on = (a[0] == '-');
+        for (size_t k = 1; k < a.size(); k++)
+        {
+            const string nm(1, a[k]);
+            if (valueFlags.find(a[k]) != string::npos)
+            {
+                string val = a.substr(k + 1);       // `-opipefail` 这种贴着的写法
+                if (val.empty())
+                {
+                    if (i + 1 >= args.size())
+                    {
+                        opts[nm] = std::make_pair(on, string());
+                        return i + 1;
+                    }
+                    val = args[++i];                // `-o pipefail`
+                }
+                opts[nm] = std::make_pair(on, val);
+                break;                              // 值吃掉了簇里剩下的字符
+            }
+            opts[nm] = std::make_pair(on, string());
+        }
+        i++;
+    }
+    return i;
+}
+
+// `set -u` 用: 这个变量算不算"已定义"
+bool JZShell::varIsSet(const string &name)
+{
+    if (name.empty())
+        return false;
+    const char c0 = name[0];
+    if (name.size() == 1 &&
+        (c0 == '?' || c0 == '#' || c0 == '@' || c0 == '*' || c0 == '$' || c0 == '!' || c0 == '-'))
+        return true;
+    if (c0 >= '0' && c0 <= '9')
+        return true;   // 位置参数按"未设即空"处理, 不触发 -u(bash 也只看 $1.. 是否给出)
+    if (m_env.find(name) != m_env.end())
+        return true;
+    if (m_arrays.find(name) != m_arrays.end())
+        return true;
+    if (!envGet(name).empty())
+        return true;
+    bool found = false;
+    dynamicVar(name, found);
+    return found;
+}
+
 std::string JZShell::varValue(const string &name)
 {
     if (name == "?")
         return to_string(m_lastStatus);
     if (name == "$")
         return to_string(currentPid());   // `$$` 在子 shell 里**不变**(与 $BASHPID 的区别)
+    // `$!`: 最近一个后台任务的 pid。慢路径(内建/函数/管道 `&`)没有真进程, 留空。
+    if (name == "!")
+        return m_lastBgPid > 0 ? to_string(m_lastBgPid) : string();
     if (name == "#")
         return to_string(m_params.size() > 1 ? m_params.size() - 1 : 0);
     if (name == "@" || name == "*")
     {
+        // `"$*"` / `$*` 用 **IFS 首字符**连接(bash/POSIX 的行为; IFS=: 时是 a:b:c)。
+        // 未加引号的 `$*` 之后还会按 IFS 再拆, 所以恰好等价于逐个参数。
+        char sep = ' ';
+        if (varIsSet("IFS"))
+        {
+            const string ifs = varValue("IFS");
+            sep = ifs.empty() ? '\0' : ifs[0];   // IFS="" = 不插分隔符
+        }
         string all;
         for (size_t k = 1; k < m_params.size(); k++)
         {
-            if (!all.empty())
-                all += ' ';
+            if (k > 1 && sep != '\0')
+                all += sep;
             all += m_params[k];
         }
         return all;
@@ -1509,11 +1791,14 @@ std::string JZShell::dynamicVar(const string &name, bool &found) const
 
 void JZShell::syncFuncName()
 {
-    // $FUNCNAME[0] = 当前函数, [1] = 调用者 ... 栈底是 "main"(与 bash 一致)
+    // $FUNCNAME[0] = 当前函数, [1] = 调用者 ... 栈底是 "main"
+    // 顶层(不在任何函数里)时 bash 里这个数组是**空**的(`${#FUNCNAME[@]}` = 0,
+    // `$FUNCNAME` 展开成空串), 所以栈空了就不要再补 "main"。
     vector<string> v;
     for (size_t k = m_funcStack.size(); k > 0; k--)
         v.push_back(m_funcStack[k - 1]);
-    v.push_back("main");
+    if (!v.empty())
+        v.push_back("main");
     m_arrays["FUNCNAME"] = v;
 }
 
@@ -1581,6 +1866,8 @@ void JZShell::storeVar(const string &name, const string &value)
     }
     if (name == "BASHPID")
         return;             // 只读: bash 报 assignment error, 这里静默忽略
+    if (name == "FUNCNAME")
+        return;             // 由调用栈维护; bash 里赋值既不生效也不报错
 
     // `declare -i x` 之后: 赋值按算术处理(`x=1+2` -> 3)
     if (m_intVars.find(name) != m_intVars.end())
@@ -1593,6 +1880,138 @@ void JZShell::storeVar(const string &name, const string &value)
         }
     }
     m_env[name] = value;
+}
+
+// `${VAR:-word}` / `${VAR:=word}` / `${VAR:+word}`
+//   · word 外面那一层引号要去掉, 但引号里的 `~` **不**展开(bash 的 quoted 语义)
+//   · 未加引号时, word 词首的 `~` 展开; 只展开词首那一个
+//     (`${A:=~/bin:~/bin2}` 里第二个 ~ 保持原样, 与 bash 一致)
+bool JZShell::resolveDefaultOps(const string &expr, bool quoted, string &out)
+{
+    // 运算符必须**紧跟参数名**(名字后面可以带一个下标), 这条约束很重要:
+    // 否则 `${v/-/x}` 的替换模式里的 '-' 会被当成 `${v-...}`。
+    size_t k = 0;
+    while (k < expr.size() && (isalnum((unsigned char)expr[k]) || expr[k] == '_' ||
+                               expr[k] == '@' || expr[k] == '*' || expr[k] == '#' ||
+                               expr[k] == '?' || expr[k] == '$' || expr[k] == '!'))
+        k++;
+    if (k < expr.size() && expr[k] == '[')
+    {
+        const size_t rb = expr.find(']', k);
+        if (rb != string::npos)
+            k = rb + 1;
+    }
+    if (k == 0 || k >= expr.size())
+        return false;
+
+    // 带冒号的形式优先(`:-` 而不是 `-`)
+    static const char *kOps[] = {":-", ":=", ":+", "-", "=", "+", nullptr};
+    size_t pos = string::npos;
+    string op;
+    for (int i = 0; kOps[i]; i++)
+    {
+        const size_t p = expr.find(kOps[i], k);
+        if (p != k)
+            continue;                     // 不在名字紧后面 -> 不是这个表达式
+        if (pos == string::npos || op.size() < strlen(kOps[i]))
+        {
+            pos = p;
+            op = kOps[i];
+        }
+    }
+    if (pos == string::npos)
+        return false;
+
+    const string var = expr.substr(0, pos);
+    string word = expr.substr(pos + op.size());   // `:-` 吃两个字符, `+` 只吃一个
+
+    bool wordQuoted = quoted;
+    if (word.size() >= 2 && ((word.front() == '"' && word.back() == '"') ||
+                             (word.front() == '\'' && word.back() == '\'')))
+    {
+        word = word.substr(1, word.size() - 2);
+        wordQuoted = true;
+    }
+    if (!wordQuoted && !word.empty() && word[0] == '~')
+    {
+        size_t j = 1;
+        while (j < word.size() && word[j] != '/' && word[j] != ':')
+            j++;
+        const string user = word.substr(1, j - 1);
+        string home;
+        if (user.empty())
+            home = envVar("HOME");
+        else if (user == "+")
+            home = envVar("PWD");
+        else if (user == "-")
+            home = envVar("OLDPWD");
+        if (home.empty())
+            home = envGet("USERPROFILE");
+        for (char &c : home)
+        {
+            if (c == '\\')
+                c = '/';
+        }
+        if (!home.empty())
+            word = home + word.substr(j);
+    }
+
+    // word 里的 `$VAR` / `${VAR}` 也要展开(`${A:=~/bin:$XPATH}` 这种最常见)
+    {
+        string ex;
+        for (size_t i = 0; i < word.size();)
+        {
+            if (word[i] != '$')
+            {
+                ex += word[i++];
+                continue;
+            }
+            size_t j = i + 1;
+            string nm;
+            if (j < word.size() && word[j] == '{')
+            {
+                j++;
+                while (j < word.size() && word[j] != '}')
+                    nm += word[j++];
+                if (j < word.size())
+                    j++;
+            }
+            else if (j < word.size() && (isNameStart(word[j])))
+            {
+                while (j < word.size() && isNameChar(word[j]))
+                    nm += word[j++];
+            }
+            else
+            {
+                ex += word[i++];
+                continue;
+            }
+            ex += varValue(nm);
+            i = j;
+        }
+        word = ex;
+    }
+
+    const string cur = varValue(var);
+    const bool setNow = varIsSet(var);
+    const bool emptyNow = cur.empty();
+    const char kind = op.back();          // '-', '=' , '+'
+    const bool colon = op.size() == 2;    // `:op` 形式看"空", 无冒号只看"未设置"
+    if (kind == '-')
+        out = (colon ? emptyNow : !setNow) ? word : cur;
+    else if (kind == '=')
+    {
+        if (colon ? emptyNow : !setNow)
+        {
+            storeVar(var, word);
+            out = word;
+        }
+        else
+            out = cur;
+    }
+    else
+        out = (colon ? !emptyNow : setNow) ? word : string();
+    return true;
 }
 
 bool JZShell::expandBraced(const string &expr, vector<string> &out)
@@ -1609,6 +2028,117 @@ bool JZShell::expandBraced(const string &expr, vector<string> &out)
     }
     if (body.empty())
         return false;
+
+    // ---- ${a[@]:off:len} / ${@:off:len} / ${*:off:len} ----
+    // bash 是"先取元素列表, 再按元素切片"。以前 `${a[@]:1:2}` 会走到
+    // 标量 substring 分支(把 "[@]:1:2" 当成后缀运算), 结果整个展开成空串。
+    if (!count)
+    {
+        const size_t rb = body.find(']');
+        // 只认 `${@:..}` `${*:..}` `${a[@]:..}` `${a[*]:..}`;
+        // `${a[0]:1}` 是"元素 0 的子串", 不能走这里(留给下面的标量分支)
+        string nm, spec;
+        bool elemSlice = false;
+        bool charMode = false;   // `${a[1]:..}` = 元素内子串(按字符), 不是按元素切
+        if (body.compare(0, 2, "@:") == 0 || body.compare(0, 2, "*:") == 0)
+        {
+            elemSlice = true;
+            nm = body.substr(0, 1);
+            spec = body.substr(2);
+        }
+        else if (rb != string::npos && rb + 1 < body.size() && body[rb + 1] == ':' && rb >= 3)
+        {
+            const string cand = body.substr(0, rb + 1);   // 含结尾的 ']'
+            elemSlice = true;
+            nm = cand;
+            spec = body.substr(rb + 2);
+            charMode = !(cand.compare(cand.size() - 3, 3, "[@]") == 0 ||
+                         cand.compare(cand.size() - 3, 3, "[*]") == 0);
+        }
+        if (elemSlice)
+        {
+            vector<string> elems;
+            const size_t ab = nm.find('[');
+            if (ab == string::npos)
+            {
+                // ${@:...} / ${*:...}: m_params 里 [0] 是 $0, 正好对上 bash 的下标
+                elems = m_params;
+            }
+            else
+            {
+                const string b = nm.substr(0, ab);
+                const string ix = nm.substr(ab + 1, nm.size() - ab - 2);
+                auto ai = m_arrays.find(b);
+                if (charMode)
+                {
+                    string v;
+                    if (ai != m_arrays.end())
+                    {
+                        long long k = atoll(ix.c_str());
+                        if (k >= 0 && (size_t)k < ai->second.size())
+                            v = arrayElemValue(b, ai->second[(size_t)k]);
+                    }
+                    else if (ix == "0")
+                        v = varValue(b);
+                    elems.push_back(v);
+                }
+                else if (ai != m_arrays.end())
+                {
+                    // 切片里 @ 和 * 等价: 都是逐元素
+                    for (const string &v : ai->second)
+                        elems.push_back(arrayElemValue(b, v));
+                }
+            }
+
+            const size_t colon = spec.find(':');
+            const string offStr = colon == string::npos ? spec : spec.substr(0, colon);
+            const string lenStr = colon == string::npos ? string() : spec.substr(colon + 1);
+
+            auto toInt = [this](const string &s) -> long long
+            {
+                string t;
+                for (char c : s)
+                {
+                    if (!isspace((unsigned char)c))
+                        t += c;
+                }
+                if (t.empty())
+                    return 0;
+                long long v = 0;
+                if (arithEval(t, v, nullptr))
+                    return v;
+                return atoll(t.c_str());
+            };
+
+            const long long n = charMode ? (long long)elems[0].size() : (long long)elems.size();
+            long long off = toInt(offStr);
+            long long len = lenStr.empty() ? -1 : toInt(lenStr);
+            if (off < 0)
+                off += n;               // 负数从尾部算(`${@: -1}` 是最后一个)
+            if (off < 0)
+                off = 0;
+            if (off > n)
+                off = n;
+            long long take;
+            if (len < 0)
+                take = (len == -1) ? (n - off) : (n + len - off);   // 负长度=留尾部
+            else
+                take = len;
+            if (take < 0)
+                take = 0;
+            if (off + take > n)
+                take = n - off;
+
+            if (charMode)
+                out.push_back(elems[0].substr((size_t)off, (size_t)take));
+            else
+            {
+                for (long long k = 0; k < take; k++)
+                    out.push_back(elems[(size_t)(off + k)]);
+            }
+            return true;
+        }
+    }
 
     string base = body;
     string idx;
@@ -2328,10 +2858,17 @@ bool JZShell::captureCommand(const string &text, string &out, string *error)
 
     string savedCwd = m_cwd;
     map<string, string> savedEnv = m_env;
+    map<string, vector<string>> savedArrays = m_arrays;   // 数组也是变量: 子 shell 里的改动不回传
     int savedStatus = m_lastStatus;
     bool savedExiting = m_exiting;
     int savedExitCode = m_exitCode;
     int savedBashPid = m_bashPid;     // `$( )` 是子 shell: $BASHPID 变, $$ 不变
+    // 命令替换**不继承**父 shell 的 -e(bash 的行为: `set -e; echo $(false; echo ok)`
+    // 照样输出 ok); 里面自己写 `set -e` 仍然生效。退出时恢复父的状态。
+    const bool savedErrexit = m_errexit;
+    const bool savedInCond = m_inCond;
+    m_errexit = false;
+    m_inCond = false;
 
     m_bashPid++;
     bool ok = true;
@@ -2357,6 +2894,8 @@ bool JZShell::captureCommand(const string &text, string &out, string *error)
         else
         {
             StageResult r = runNode(node);
+            // `x=$(cmd)` 的退出码 = 这条命令替换的退出码(bash 的语义), 由赋值语句取用
+            m_lastCaptureStatus = r.status;
             if (r.failed)
             {
                 if (error)
@@ -2375,9 +2914,12 @@ bool JZShell::captureCommand(const string &text, string &out, string *error)
     m_bashPid = savedBashPid;
     m_cwd = savedCwd;
     m_env = savedEnv;
+    m_arrays = savedArrays;
     m_lastStatus = savedStatus;
     m_exiting = savedExiting;
     m_exitCode = savedExitCode;
+    m_errexit = savedErrexit;
+    m_inCond = savedInCond;
 
     // bash 会去掉结尾的换行
     while (!out.empty() && out.back() == '\n')
@@ -2410,6 +2952,31 @@ string JZShell::absolutePath(const string &p) const
         return normalizePath(in);
 #endif
     return normalizePath(joinPath(m_cwd, in));
+}
+
+string JZShell::resolveSpawnProgram(const string &name) const
+{
+    if (pathConvEnabled())
+    {
+        string conv;
+        if (driveMountToWin(name, conv))
+            return resolveProgram(conv);
+    }
+    return resolveProgram(name);
+}
+
+bool JZShell::pathConvEnabled() const
+{
+#ifdef _WIN32
+    // 与 MSYS 同名开关; 脚本里 `MSYS_NO_PATHCONV=1 cmd /c ...` 也能生效
+    auto it = m_env.find("MSYS_NO_PATHCONV");
+    if (it != m_env.end())
+        return it->second.empty();
+    const string fromOs = envGet("MSYS_NO_PATHCONV");
+    return fromOs.empty();
+#else
+    return false;
+#endif
 }
 
 string JZShell::resolveProgram(const string &name) const
@@ -2485,11 +3052,40 @@ void JZShell::flushDirect(StageResult &r)
     }
 }
 
+// 子进程环境: `export` 标记过的变量 + 本条命令的前缀赋值 + PATH(短名目录前插)。
+// 前台(runExternal)和后台(detach)共用一份, 否则 `export PORT=8080; ./server &`
+// 里服务读不到 PORT —— 前台能看到、后台看不到, 是最难查的那种不一致。
+std::map<std::string, std::string> JZShell::childEnv()
+{
+    std::map<std::string, std::string> env = m_childEnvExtra;
+    m_childEnvExtra.clear();
+    for (const std::string &nm : m_exported)
+    {
+        auto it = m_env.find(nm);
+        if (it != m_env.end())
+            env[nm] = it->second;
+    }
+    // 短名所在目录前插进 PATH: `timeout 8 code_runtime ...` 里内层名字只能靠 PATH 找
+    // (见 childPathValue 的注释)。前缀赋值 `PATH=x cmd` 给的 base 也要保留。
+    auto pit = env.find("PATH");
+    const string pathValue = childPathValue(pit == env.end() ? string() : pit->second);
+    if (!pathValue.empty())
+        env["PATH"] = pathValue;
+    return env;
+}
+
 JZShell::StageResult JZShell::runExternal(const string &program, const vector<string> &args,
                                           const string &stdinText, bool merged, bool inheritOutput)
 {
     StageResult r;
     vector<string> argv(args.begin() + 1, args.end());
+
+    // Git Bash 在启动原生程序时会翻参数里的盘符挂载路径(见 driveMountToWin)
+    if (pathConvEnabled())
+    {
+        for (string &a : argv)
+            a = convertBashPathArg(a);
+    }
 
     JZProcess proc;
     proc.setWorkingDirectory(m_cwd);
@@ -2498,6 +3094,13 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
     // 不会出现"整块 stdout 拼整块 stderr"那种错序。
     if (inheritOutput)
         proc.setOutputChannelMode(JZProcess::InheritOutputChannel);
+
+    // 子进程环境: `export` 标记过的变量 + 本条命令的前缀赋值(见 childEnv)。
+    {
+        std::map<std::string, std::string> env = childEnv();
+        if (!env.empty())
+            proc.setEnvironmentVariables(env);
+    }
     // 脚本是从 stdin 读进来的, 且我们没给这条命令喂输入 ⇒ 让它继承我们的 stdin,
     // 这样它能接着读脚本剩下的内容(bash 的行为)
     if (m_inheritStdin && stdinText.empty())
@@ -2517,6 +3120,29 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
     int timeout = m_timeoutMs > 0 ? m_timeoutMs : 0x7fffffff;
     const int kSliceMs = 100;
     int waited = 0;
+
+    // ⚠ 被杀之前子进程**已经产出的内容不能丢**: 以前超时/取消两条分支直接 return, 管道里的
+    //   输出(以及它调的 console.log)全被扔掉, 模型只看到一句"命令超时" —— 实测它据此断定
+    //   "服务没起来/程序没输出", 反复重跑同一条命令(五子棋那例烧了 2.26M token)。
+    //   真实终端里进程被 kill 前打印的东西是看得到的, 这里照做。
+    auto drainOutput = [&]()
+    {
+        if (inheritOutput)   // 继承模式: 子进程直接写我们的 fd, 没有管道可读
+            return;
+        JZByteArray out = proc.readAllStandardOutput();
+        r.out.assign(out.data(), out.size());
+        if (!merged)
+        {
+            JZByteArray err = proc.readAllStandardError();
+            if (err.size() > 0)
+            {
+                if (!r.out.empty() && r.out.back() != '\n')
+                    r.out += '\n';
+                r.out.append(err.data(), err.size());
+            }
+        }
+    };
+
     while (true)
     {
         if (proc.waitForFinished(kSliceMs))
@@ -2526,6 +3152,7 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
         {
             proc.killProcess();
             proc.waitForFinished(2000);
+            drainOutput();
             r.status = 130;
             r.err = "命令已被取消: " + args[0];
             return r;
@@ -2534,6 +3161,7 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
         {
             proc.killProcess();
             proc.waitForFinished(2000);
+            drainOutput();
             r.status = 124;
             r.err = "命令超时, 已被终止: " + args[0];
             return r;
@@ -2554,6 +3182,14 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
     return r;
 }
 
+namespace
+{
+// 定义在文件后部(内建分发表旁), 这里前置声明: type / command -v 也要用它判断"是不是内建"
+bool isBuiltinName(const std::string &n);
+// 语法保留字, 供 `type -t` 区分 keyword / builtin
+bool isReservedWord(const std::string &n);
+}
+
 JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string> &args,
                                          const string &stdinText, bool *handled)
 {
@@ -2570,14 +3206,15 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
         if (target.empty())
         {
             r.status = 1;
-            r.err = "cd: 没有指定目录, 且 HOME 为空";
+            r.err = errorPrefix(m_lineno, false) + "cd: HOME not set";
             return r;
         }
         string abs = absolutePath(target);
         if (!JZFileInfo(abs).isDir())
         {
             r.status = 1;
-            r.err = "cd: 不是目录: " + target;
+            // 与 bash 一致: `<script>: line N: cd: <path>: No such file or directory`
+            r.err = errorPrefix(m_lineno, false) + "cd: " + target + ": No such file or directory";
             return r;
         }
         const string old = m_cwd;
@@ -2594,7 +3231,10 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                 if (ch == '\\')
                     ch = '/';
             }
-            const bool abs = !s.empty() && s[0] == '/';
+            // 绝对路径: `/...` 或盘符形式 `C:/...`(以前只认前者, 于是 `cd C:/tmp` 会被当成相对路径
+            // 拼到 PWD 后面 —— 物理 cwd 是对的, 但 `pwd`/`$PWD` 给出垃圾值)
+            const bool abs = (!s.empty() && s[0] == '/') ||
+                             (s.size() > 2 && isalpha((unsigned char)s[0]) && s[1] == ':' && s[2] == '/');
             string work = abs ? s : (base + "/" + s);
             string drive;                        // `C:` 这类盘符要原样留着
             if (work.size() > 1 && work[1] == ':')
@@ -2654,18 +3294,21 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
     // shopt: 只认 extdebug(DEBUG trap 返回 2 时跳过命令); 其它开关一律当成功
     if (name == "shopt")
     {
-        bool set = false, unset = false;
-        for (size_t i = 1; i < args.size(); i++)
+        // 选项走共用解析:`shopt -su nullglob` 这种紧凑写法也认
+        std::map<string, std::pair<bool, string>> opts;
+        const size_t first = parseBuiltinOptions(args, 1, "", opts);
+        const bool set = opts.count("s") > 0 && opts["s"].first;
+        const bool unset = opts.count("u") > 0 && opts["u"].first;
+        for (size_t i = first; i < args.size(); i++)
         {
             const string &a = args[i];
-            if (a == "-s")
-                set = true;
-            else if (a == "-u")
-                unset = true;
-            else if (a == "extdebug" && (set || unset))
+            if (a == "extdebug" && (set || unset))
                 m_extdebug = set;
             else if (a == "lastpipe" && (set || unset))
                 m_lastpipe = set;
+            else if (a == "nullglob" && (set || unset))
+                m_nullglob = set;
+            // extglob / failglob 等: 我们的 glob 本来就是扩展语义, 静默接受
         }
         return r;
     }
@@ -2707,7 +3350,23 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
             if (intAttr)
                 m_intVars.insert(nm);
             if (eq != string::npos)
+            {
+                // 函数里的 typeset/declare 也是"局部变量"(bash): 记一份原值,
+                // 函数返回时由 runFunction 恢复(`typeset IFS=:` 不该泄漏到调用方)
+                if (!m_funcStack.empty())
+                {
+                    LocalSave ls;
+                    ls.name = nm;
+                    auto it = m_env.find(nm);
+                    if (it != m_env.end())
+                    {
+                        ls.had = true;
+                        ls.value = it->second;
+                    }
+                    m_locals.push_back(ls);
+                }
                 storeVar(nm, a.substr(eq + 1));
+            }
         }
         return r;
     }
@@ -2716,26 +3375,36 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
     // (posix 模式收窄 tilde 展开: 只有真正的赋值语句才在 '=' / ':' 之后展开)
     if (name == "set")
     {
-        for (size_t k = 1; k + 1 < args.size(); k++)
+        // 选项解析走共用实现: `set -euo pipefail` / `set +e` / `set -o posix` 都吃
+        std::map<string, std::pair<bool, string>> opts;
+        const size_t i = parseBuiltinOptions(args, 1, "oO", opts);
+        for (const auto &kv : opts)
         {
-            if (args[k] == "-o" && args[k + 1] == "posix")
-                m_posix = true;
-            else if (args[k] == "+o" && args[k + 1] == "posix")
-                m_posix = false;
-            else if (args[k] == "-o" && args[k + 1] == "pipefail")
-                m_pipefail = true;
-            else if (args[k] == "+o" && args[k + 1] == "pipefail")
-                m_pipefail = false;
-        }
-        size_t i = 1;
-        while (i < args.size() && (args[i].empty() || args[i][0] == '-' || args[i][0] == '+'))
-        {
-            if (args[i] == "--")
+            const bool on = kv.second.first;
+            const string &nm = kv.first;
+            if (nm == "e")
+                m_errexit = on;
+            else if (nm == "u")
+                m_nounset = on;
+            else if (nm == "x")
+                m_xtrace = on;
+            else if (nm == "o" || nm == "O")
             {
-                i++;
-                break;
+                const string &opt = kv.second.second;
+                if (opt == "posix")
+                    m_posix = on;
+                else if (opt == "pipefail")
+                    m_pipefail = on;
+                else if (opt == "errexit")
+                    m_errexit = on;
+                else if (opt == "nounset")
+                    m_nounset = on;
+                else if (opt == "xtrace")
+                    m_xtrace = on;
+                else if (opt == "lastpipe")
+                    m_lastpipe = on;
             }
-            i++;
+            // 其余开关(-f -n -v -C -H -B -m -b ...)对解释器没有影响, 静默接受
         }
         if (i < args.size())
         {
@@ -2760,7 +3429,7 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                 continue;
             return r;   // `exec > file` 这类只做重定向的, 交给外层
         }
-        string program = resolveProgram(argv[0]);
+        string program = resolveSpawnProgram(argv[0]);
         if (program.empty())
         {
             r.status = 127;
@@ -2768,6 +3437,11 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
             return r;
         }
         r = runExternal(program, argv, stdinText, false);
+        // bash 的 `exec cmd` 是**替换进程**: 后面的语句不再执行。
+        // 不置这个标志的话脚本会继续往下跑(实测 jzsh 包装器执行两遍:
+        // 一遍 -c 正确、一遍把 $0 当脚本打开 → "打不开脚本: bash5")。
+        m_exiting = true;
+        m_exitCode = r.status;
         return r;
     }
 
@@ -2867,33 +3541,152 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
         return r;
     }
 
-    // type / which: 能把程序解析出来就打印路径, 否则按找不到处理
+    // type / which: 函数 → "X is a function"; 别名 → "X is aliased to `...'";
+    // 内建 → "X is a shell builtin"; 否则打印解析出的路径; 都没有才 not found。
     if (name == "type" || name == "which")
     {
-        for (size_t i = 1; i < args.size(); i++)
+        // 开关: -t 只输出一个类别词(alias/keyword/function/builtin/file), -p 只输出路径,
+        // -a 把全部匹配都列出来; -P(强制走 PATH)、-f(不查函数) 忽略。
+        bool terse = false, pathOnly = false, listAll = false;
+        size_t ti = 1;
+        for (; ti < args.size(); ti++)
         {
-            string p = resolveProgram(args[i]);
-            if (p.empty())
+            const string &a = args[ti];
+            if (a == "--")
             {
-                r.out += args[i] + (name == "type" ? ": not found\n" : ": not found\n");
-                r.status = 1;
+                ti++;
+                break;
             }
-            else
+            if (a.size() < 2 || a[0] != '-')
+                break;
+            for (size_t k = 1; k < a.size(); k++)
             {
-                r.out += args[i] + " is " + p + "\n";
+                if (a[k] == 't')
+                    terse = true;
+                else if (a[k] == 'p')
+                    pathOnly = true;
+                else if (a[k] == 'a')
+                    listAll = true;
+            }
+        }
+        for (size_t i = ti; i < args.size(); i++)
+        {
+            const string &w = args[i];
+            const bool isFunc = (name == "type") && m_functions.find(w) != m_functions.end();
+            auto ait = (name == "type") ? m_aliases.find(w) : m_aliases.end();
+            const bool isAlias = ait != m_aliases.end();
+            // 内建要排在外部程序前面: 否则 `type echo` 会解析到 Git 的 echo.exe,
+            // 与 bash 的 "echo is a shell builtin" 不一致(模型据此判断能不能用内建语义)
+            const bool isBuiltin = isBuiltinName(w);
+            const bool isKw = isReservedWord(w);
+
+            if (terse)
+            {
+                if (isFunc)
+                    r.out += "function\n";
+                else if (isAlias)
+                    r.out += "alias\n";
+                else if (isBuiltin)
+                    r.out += "builtin\n";
+                else if (isKw)
+                    r.out += "keyword\n";
+                else if (!resolveProgram(w).empty())
+                    r.out += "file\n";
+                else
+                    r.status = 1;    // bash: 找不到时既不输出也非 0
+                continue;
+            }
+            if (pathOnly)
+            {
+                // bash 的 -p: 只有 PATH 里真能找到**文件**才输出路径, 函数/别名/内建/关键字
+                // 一律不输出(`type -p echo` 在 bash 里是空的)
+                const string p = (isFunc || isAlias || isBuiltin || isKw) ? string()
+                                                                        : resolveProgram(w);
+                if (p.empty())
+                    r.status = 1;
+                else
+                    r.out += p + "\n";
+                continue;
+            }
+
+            bool any = false;
+            if (isFunc)
+            {
+                r.out += w + " is a function\n";
+                any = true;
+                if (!listAll)
+                    continue;
+            }
+            if (isAlias)
+            {
+                r.out += w + " is aliased to `" + ait->second + "'\n";
+                any = true;
+                if (!listAll)
+                    continue;
+            }
+            if (isBuiltin)
+            {
+                r.out += w + " is a shell builtin\n";
+                any = true;
+                if (!listAll)
+                    continue;
+            }
+            if (isKw)
+            {
+                r.out += w + " is a shell keyword\n";
+                any = true;
+                if (!listAll)
+                    continue;
+            }
+            const string p = resolveProgram(w);
+            if (!p.empty())
+            {
+                r.out += w + " is " + p + "\n";
+                any = true;
+            }
+            if (!any)
+            {
+                r.status = 1;
+                r.out += w + ": not found\n";
             }
         }
         return r;
     }
 
-    // command: 忽略 -v/-p 之类的开关, 把剩下的当命令跑(不替换 shell)
+    // command: `-v`/`-V` 查解析结果(内建/函数/别名 → 名字, 外部 → 路径); 其余开关忽略,
+    // 把剩下的当命令跑(不替换 shell)
     if (name == "command")
     {
+        bool verbose = false;
         size_t i = 1;
         while (i < args.size() && !args[i].empty() && args[i][0] == '-')
+        {
+            if (args[i] == "-v" || args[i] == "-V")
+                verbose = true;
             i++;
+        }
         if (i >= args.size())
             return r;
+        if (verbose)
+        {
+            // 只要有一个找不到就非 0(bash 的 command -v 语义); 找不到的那个不输出
+            for (; i < args.size(); i++)
+            {
+                const string &w = args[i];
+                if (isBuiltinName(w) || m_functions.find(w) != m_functions.end() ||
+                    m_aliases.find(w) != m_aliases.end())
+                {
+                    r.out += w + "\n";
+                    continue;
+                }
+                const string p = resolveProgram(w);
+                if (p.empty())
+                    r.status = 1;
+                else
+                    r.out += p + "\n";
+            }
+            return r;
+        }
         vector<string> argv2(args.begin() + i, args.end());
         bool handled2 = false;
         if (m_functions.find(argv2[0]) != m_functions.end())
@@ -2901,7 +3694,7 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
         r = runBuiltin(argv2[0], argv2, stdinText, &handled2);
         if (handled2)
             return r;
-        string program = resolveProgram(argv2[0]);
+        string program = resolveSpawnProgram(argv2[0]);
         if (program.empty())
         {
             r.status = 127;
@@ -2918,6 +3711,14 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
         int n = (args.size() >= 2) ? atoi(args[1].c_str()) : 1;
         if (n < 0)
             n = 0;
+        const int avail = (int)m_params.size() - 1;   // 不含 $0
+        if (n > avail)
+        {
+            // bash: 超出范围时返回 1, 参数**不动**
+            r.status = 1;
+            r.err = errorPrefix(m_lineno, false) + "shift: " + to_string(n) + ": shift count out of range";
+            return r;
+        }
         while (n-- > 0 && m_params.size() > 1)
             m_params.erase(m_params.begin() + 1);
         return r;
@@ -2954,16 +3755,148 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
         return runNode(node);
     }
 
+    // let: 逐个求值算术表达式(支持赋值/自增), 状态 = 最后一个表达式的值非 0 ? 0 : 1
+    if (name == "let")
+    {
+        if (args.size() < 2)
+        {
+            r.status = 1;
+            return r;
+        }
+        int st = 0;
+        for (size_t i = 1; i < args.size(); i++)
+        {
+            string err;
+            long long one = 0;
+            if (!arithRun(args[i], one, &err))
+            {
+                r.status = 1;
+                r.err = errorPrefix(m_lineno, false) + "let: " +
+                        (err.empty() ? ("语法错误: " + args[i]) : err);
+                return r;
+            }
+            st = (one != 0) ? 0 : 1;
+        }
+        r.status = st;
+        return r;
+    }
+
+    // mapfile / readarray: 把输入按行读进数组(`mapfile -t arr < f`)
+    //   -t 去掉每行结尾换行(bash 里不加 -t 会连着换行一起存)
+    if (name == "mapfile" || name == "readarray")
+    {
+        bool stripNl = true;   // 我们只实现 -t 的语义, 默认按 -t 处理更符合预期
+        string arrName = "MAPFILE";
+        for (size_t i = 1; i < args.size(); i++)
+        {
+            if (args[i] == "-t")
+            {
+                stripNl = true;
+                continue;
+            }
+            if (!args[i].empty() && args[i][0] == '-')
+                continue;
+            arrName = args[i];
+        }
+        string data = stdinText;
+        if (data.empty())
+        {
+            data = m_inBuf;
+            m_inBuf.clear();
+        }
+        if (data.empty() && !m_stageIn.empty())
+        {
+            data = m_stageIn;
+            m_stageIn.clear();
+        }
+        vector<string> lines;
+        size_t pos = 0;
+        while (pos < data.size())
+        {
+            size_t nl = data.find('\n', pos);
+            if (nl == string::npos)
+            {
+                lines.push_back(data.substr(pos));
+                break;
+            }
+            string one = data.substr(pos, nl - pos);
+            if (!stripNl || !one.empty())
+                lines.push_back(one);
+            pos = nl + 1;
+        }
+        m_arrays[arrName] = lines;
+        m_env.erase(arrName);
+        (void)stripNl;
+        r.status = 0;
+        return r;
+    }
+
+    // readonly: 标记变量只读(可带初值/数组), 之后赋值报 `name: readonly variable`
+    if (name == "readonly")
+    {
+        bool intAttr = false;
+        for (size_t i = 1; i < args.size(); i++)
+        {
+            const string &a = args[i];
+            if (a == "-a" || a == "-A" || a == "-f" || a == "-p")
+                continue;
+            if (a == "-i")
+            {
+                intAttr = true;
+                continue;
+            }
+            if (a.empty() || a[0] == '-')
+                continue;   // 其它选项先忽略
+
+            const size_t eq = a.find('=');
+            string nm = (eq == string::npos) ? a : a.substr(0, eq);
+            string val = (eq == string::npos) ? string() : a.substr(eq + 1);
+
+            // `readonly a=(1 2)`: 数组形式 —— 括号里的元素按空白切
+            if (!val.empty() && val.front() == '(' && val.back() == ')')
+            {
+                vector<string> elems;
+                string cur;
+                for (size_t k = 1; k + 1 < val.size(); k++)
+                {
+                    if (val[k] == ' ' || val[k] == '\t')
+                    {
+                        if (!cur.empty())
+                        {
+                            elems.push_back(cur);
+                            cur.clear();
+                        }
+                        continue;
+                    }
+                    cur += val[k];
+                }
+                if (!cur.empty())
+                    elems.push_back(cur);
+                m_arrays[nm] = elems;
+                m_env.erase(nm);
+            }
+            else if (eq != string::npos)
+            {
+                if (intAttr)
+                    m_intVars.insert(nm);
+                storeVar(nm, val);
+            }
+            m_readonly.insert(nm);
+        }
+        r.status = 0;
+        return r;
+    }
+
     // read: 从标准输入取一行(整行给第一个变量, 其余置空; 简化版, 不做 IFS 逐字段)
     if (name == "read")
     {
-        vector<string> vars;
-        for (size_t i = 1; i < args.size(); i++)
-        {
-            if (!args[i].empty() && args[i][0] == '-')
-                continue;   // -r / -p prompt 之类先忽略
-            vars.push_back(args[i]);
-        }
+        // 选项走共用解析: `read -ra arr`(紧凑)也认; -r/-p 只吃掉, 不影响语义
+        std::map<string, std::pair<bool, string>> opts;
+        const size_t firstVar = parseBuiltinOptions(args, 1, "ap", opts);
+        string arrayName;
+        if (opts.count("a") > 0)
+            arrayName = opts["a"].second;
+        vector<string> vars(args.begin() + firstVar, args.end());
         // 管道/heredoc 的数据可能有多行: 一次只吃一行, 剩下的留在 m_inBuf 里,
         // 这样 `printf "1\n2\n3\n" | while read x; do ...; done` 能跑三轮。
         if (m_inBuf.empty())
@@ -3045,6 +3978,35 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                 body = body.substr(0, e + 1);
         }
 
+        // `read -a arr`: 整行切成字段全放进数组(IFS 为空时整体一个元素)
+        if (!arrayName.empty())
+        {
+            vector<string> parts;
+            if (ifs.empty())
+            {
+                if (!body.empty())
+                    parts.push_back(body);
+            }
+            else
+            {
+                size_t pos2 = 0;
+                while (pos2 < body.size())
+                {
+                    const size_t b2 = body.find_first_not_of(seps, pos2);
+                    if (b2 == string::npos)
+                        break;
+                    const size_t e2 = body.find_first_of(seps, b2);
+                    parts.push_back(body.substr(b2, e2 == string::npos ? string::npos : e2 - b2));
+                    if (e2 == string::npos)
+                        break;
+                    pos2 = e2 + 1;
+                }
+            }
+            m_arrays[arrayName] = parts;
+            m_env.erase(arrayName);
+            return r;
+        }
+
         if (vars.empty())
             storeVar("REPLY", body);
         else if (vars.size() == 1 || ifs.empty())
@@ -3085,7 +4047,7 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                 else
                 {
                     storeVar(vars[i], body.substr(b, e - b));
-                    pos = e;
+                    pos = e + 1;   // 吃掉这个分隔符: `IFS=: read a b <<< "x:y"` ⇒ b=y(不是 :y)
                 }
             }
         }
@@ -3126,12 +4088,23 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
 
     if (name == "export")
     {
-        for (size_t i = 1; i < args.size(); i++)
+        std::map<string, std::pair<bool, string>> opts;
+        const size_t first = parseBuiltinOptions(args, 1, "", opts);
+        const bool unexport = opts.count("n") > 0;
+        for (size_t i = first; i < args.size(); i++)
         {
-            size_t eq = args[i].find('=');
-            if (eq == string::npos)
-                continue;   // export NAME: 本实现里变量本来就在一张表里
-            m_env[args[i].substr(0, eq)] = args[i].substr(eq + 1);
+            const string &a = args[i];
+            const size_t eq = a.find('=');
+            const string nm = (eq == string::npos) ? a : a.substr(0, eq);
+            if (nm.empty())
+                continue;
+            if (eq != string::npos)
+                m_env[nm] = a.substr(eq + 1);
+            // 记下来: 只有**标记过**的变量才进子进程环境(`export NAME` 也算标记)
+            if (unexport)
+                m_exported.erase(nm);
+            else
+                m_exported.insert(nm);
         }
         return r;
     }
@@ -3252,9 +4225,41 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
             {
                 if (fmt[i] == '\\' && i + 1 < fmt.size())
                 {
-                    // 格式串里的反斜杠按 bash 的规则展开; 单字符转义就地处理,
-                    // 其余(\0NNN / \xHH)原样吐出
-                    char n = fmt[i + 1];
+                    // 格式串里的反斜杠按 bash 的规则展开: 单字符转义 + `\NNN`(八进制) +
+                    // `\xHH`。未知转义原样保留(与 bash 一致)。
+                    const char n = fmt[i + 1];
+                    if (n >= '0' && n <= '7')
+                    {
+                        int v = n - '0', k = 1;
+                        size_t p = i + 2;
+                        while (k < 3 && p < fmt.size() && fmt[p] >= '0' && fmt[p] <= '7')
+                        {
+                            v = v * 8 + (fmt[p] - '0');
+                            p++;
+                            k++;
+                        }
+                        out += (char)v;
+                        i = p - 1;
+                        continue;
+                    }
+                    if (n == 'x')
+                    {
+                        int v = 0, k = 0;
+                        size_t p = i + 2;
+                        while (k < 2 && p < fmt.size() && isxdigit((unsigned char)fmt[p]))
+                        {
+                            const char h = fmt[p];
+                            v = v * 16 + (h <= '9' ? (h - '0') : (tolower((unsigned char)h) - 'a' + 10));
+                            p++;
+                            k++;
+                        }
+                        if (k > 0)
+                        {
+                            out += (char)v;
+                            i = p - 1;
+                            continue;
+                        }
+                    }
                     switch (n)
                     {
                     case 'n': out += '\n'; break;
@@ -3264,6 +4269,7 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                     case 'b': out += '\b'; break;
                     case 'f': out += '\f'; break;
                     case 'v': out += '\v'; break;
+                    case 'e': out += '\x1b'; break;
                     case '\\': out += '\\'; break;
                     case '"': out += '"'; break;
                     case '\'': out += '\''; break;
@@ -3308,10 +4314,18 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                 const char conv = fmt[j];
                 const string v = (argi < args.size()) ? args[argi++] : string();
                 string piece;
+                bool bStop = false;   // %b 里的 `\c`: 到此为止(不再输出后面的内容)
                 switch (conv)
                 {
                 case 's': piece = v; break;
-                case 'b': piece = echoUnescape(v); break;      // %b: 参数里的转义也展开
+                case 'b':                                       // %b: 参数里的转义也展开
+                {
+                    bool stop = false;
+                    piece = printfUnescape(v, &stop);
+                    if (stop)
+                        bStop = true;
+                    break;
+                }
                 case 'c': piece = v.empty() ? string() : string(1, v[0]); break;
                 case 'd':
                 case 'i': piece = to_string(atoll(v.c_str())); break;
@@ -3376,6 +4390,15 @@ JZShell::StageResult JZShell::runBuiltin(const string &name, const vector<string
                     piece = left ? piece + pad : pad + piece;
                 }
                 out += piece;
+                if (bStop)
+                {
+                    // `printf '%b' 'a\cb'`: bash 输出 a 就停下(连结尾换行也不加)
+                    if (!varName.empty())
+                        storeVar(varName, out);
+                    else
+                        r.out = out;
+                    return r;
+                }
                 i = j;
             }
         } while (argi < args.size() && argi > before);
@@ -3642,6 +4665,32 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
         argv.insert(argv.end(), one.begin(), one.end());
     }
 
+    // 1.4) `set -u`: 展开期撞到未定义变量(存在 m_expandError 里)
+    if (!m_expandError.empty())
+    {
+        const string msg = m_expandError;
+        m_expandError.clear();
+        r.status = 1;
+        r.err = errorPrefix(m_lineno, false) + msg;
+        // `set -u` 命中在 bash 里是**致命**的(非交互 shell 直接退出), 不是只报一行
+        m_exiting = true;
+        m_exitCode = 1;
+        return r;
+    }
+
+    // 1.45) `set -x`: 执行前把命令打到 stderr(bash 的 `+ cmd args`)
+    if (m_xtrace && !argv.empty())
+    {
+        string trace = "+ ";
+        for (size_t k = 0; k < argv.size(); k++)
+        {
+            if (k)
+                trace += ' ';
+            trace += argv[k];
+        }
+        r.err += trace + "\n";
+    }
+
     // 1.5) 别名展开(只展开一次, 不递归): `alias ll='ls -l'` 之后 `ll x` -> `ls -l x`
     if (!argv.empty())
     {
@@ -3812,6 +4861,18 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
     {
         for (auto &kv : assigns)
         {
+            // 只读变量: bash 报一行错误、返回 1, 脚本继续往下跑
+            {
+                const string base = (!kv.first.empty() && kv.first.back() == '+')
+                                        ? kv.first.substr(0, kv.first.size() - 1)
+                                        : kv.first;
+                if (m_readonly.find(base) != m_readonly.end())
+                {
+                    r.status = 1;
+                    r.err = errorPrefix(m_lineno, false) + base + ": readonly variable";
+                    return r;
+                }
+            }
             // `foo+=two` 的变量名末尾带 '+': 追加而不是覆盖
             if (!kv.first.empty() && kv.first.back() == '+')
             {
@@ -3832,7 +4893,9 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
         }
         applyElemAssigns();
         applyArrayAssigns();
-        r.status = 0;
+        // 纯赋值语句: `x=$(false)` 的退出码是那条命令替换的(0 才能让 set -e 不退出)
+        r.status = m_lastCaptureStatus;
+        m_lastCaptureStatus = 0;
         return r;
     }
 
@@ -3875,7 +4938,9 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
         {
             vector<string> hv = expandWord(rd.target, nullptr);
             string text = hv.empty() ? string() : hv[0];
-            if (!text.empty() && text.back() != '\n')
+            // 空 here-string(`cmd <<<""`)也要给一行空行: bash 里 read 会把它读成空串,
+            // 以前 text 为空就直接不给输入, `read x` 读到 EOF ⇒ x 保留了旧值。
+            if (text.empty() || text.back() != '\n')
                 text += '\n';
             stdinData = text;
             continue;
@@ -3953,12 +5018,14 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
             }
             else
                 m_env[n] = varValue(n) + kv.second;
+            m_childEnvExtra[n] = m_env[n];   // 前缀赋值对这条命令的子进程可见
             continue;
         }
         auto it = m_env.find(kv.first);
         if (it != m_env.end())
             saved[kv.first] = it->second;
         m_env[kv.first] = kv.second;
+        m_childEnvExtra[kv.first] = kv.second;
     }
     applyElemAssigns();   // `x[i]=v cmd` 这种前缀形式
 
@@ -3989,7 +5056,7 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
         r = runBuiltin(argv[0], argv, stdinData, &handled);
     if (!handled)
     {
-        string program = resolveProgram(argv[0]);
+        string program = resolveSpawnProgram(argv[0]);
         if (program.empty())
         {
             r.status = 127;
@@ -4013,14 +5080,38 @@ JZShell::StageResult JZShell::runSimple(const SimpleCmd &cmd, const string &stdi
         }
     }
 
-    // 7) 恢复赋值前缀
-    for (auto &kv : assigns)
+    m_childEnvExtra.clear();   // 前缀赋值只对刚才那条命令有效
+
+    // POSIX: 特殊内建前面的赋值是**持久**的(bash 在 posix 模式下如此):
+    // `IFS=: export x` 之后 IFS 就是 ":"。非 posix 模式不做这条(bash 也一样)。
+    bool specialBuiltin = false;
+    if (m_posix && !argv.empty())
     {
-        auto it = saved.find(kv.first);
-        if (it != saved.end())
-            m_env[kv.first] = it->second;
-        else
-            m_env.erase(kv.first);
+        static const char *kSpecial[] = {
+            ":", ".", "break", "continue", "eval", "exec", "exit", "export",
+            "readonly", "return", "set", "shift", "times", "trap", "unset", nullptr
+        };
+        for (int si = 0; kSpecial[si] != nullptr; si++)
+        {
+            if (argv[0] == kSpecial[si])
+            {
+                specialBuiltin = true;
+                break;
+            }
+        }
+    }
+
+    // 7) 恢复赋值前缀
+    if (!specialBuiltin)
+    {
+        for (auto &kv : assigns)
+        {
+            auto it = saved.find(kv.first);
+            if (it != saved.end())
+                m_env[kv.first] = it->second;
+            else
+                m_env.erase(kv.first);
+        }
     }
 
     // 7.5) `>&2`: 标准输出改道到标准错误(没开真 fd, 就在出结果时挪一次)
@@ -4089,6 +5180,21 @@ bool isBuiltinName(const string &n)
     }
     return false;
 }
+
+// 语法保留字(`type -t if` → keyword)。不含 `time`/`coproc`: 它们当命令名时按普通词处理。
+bool isReservedWord(const string &n)
+{
+    static const char *kK[] = {
+        "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+        "case", "esac", "in", "function", "select", "{", "}", "!", "[[", "]]", nullptr
+    };
+    for (int i = 0; kK[i] != nullptr; i++)
+    {
+        if (n == kK[i])
+            return true;
+    }
+    return false;
+}
 } // namespace
 
 bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult &r)
@@ -4122,7 +5228,7 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
             m_aliases.find(progName) != m_aliases.end())
             return false;
 
-        const string prog = resolveProgram(progName);
+        const string prog = resolveSpawnProgram(progName);
         // 脚本文件由本解释器跑(没有真 stdout), 只能走字符串管道
         if (prog.empty() || looksLikeShellScript(prog))
             return false;
@@ -4146,6 +5252,12 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
         if (argv.empty())
             return false;
         plan[i].args.assign(argv.begin() + 1, argv.end());
+        // 真管道直连也是"启动原生程序": 参数里的盘符挂载路径同样要翻(见 driveMountToWin)
+        if (pathConvEnabled())
+        {
+            for (string &a : plan[i].args)
+                a = convertBashPathArg(a);
+        }
     }
 
     // ---- 起进程: 从下游往上游起(上游要拿到下游的 stdin 管道) ----
@@ -4155,6 +5267,24 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
     {
         procs[i].reset(new JZProcess());
         procs[i]->setWorkingDirectory(m_cwd);
+        // 真管道这条捷径也得带上 export 过的环境, 否则 `export X=1; env | grep X` 是空的
+        {
+            std::map<std::string, std::string> childEnv = m_childEnvExtra;
+            for (const std::string &nm : m_exported)
+            {
+                auto it = m_env.find(nm);
+                if (it != m_env.end())
+                    childEnv[nm] = it->second;
+            }
+            {
+                auto pit = childEnv.find("PATH");
+                const string pathValue = childPathValue(pit == childEnv.end() ? string() : pit->second);
+                if (!pathValue.empty())
+                    childEnv["PATH"] = pathValue;
+            }
+            if (!childEnv.empty())
+                procs[i]->setEnvironmentVariables(childEnv);
+        }
         if (i + 1 < (int)n)
             procs[i]->setStandardOutputProcess(procs[i + 1].get());
         if (!procs[i]->start(plan[i].program, plan[i].args))
@@ -4198,10 +5328,24 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
             break;
 
         waited += kSlice;
+        // 被杀前各段已产出的内容要带回去(见 runExternal 里 drainOutput 的说明)
+        auto drainAll = [&]()
+        {
+            for (size_t i = 0; i < n; i++)
+            {
+                JZByteArray o = procs[i]->readAllStandardOutput();
+                if (o.size() > 0)
+                    r.out.append(o.data(), o.size());
+                JZByteArray e = procs[i]->readAllStandardError();
+                if (e.size() > 0)
+                    r.out.append(e.data(), e.size());
+            }
+        };
         if (m_cancelRequested)
         {
             for (auto &p : procs)
                 p->killProcess();
+            drainAll();
             r.status = 130;
             r.err = "命令已被取消";
             return true;
@@ -4210,6 +5354,7 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
         {
             for (auto &p : procs)
                 p->killProcess();
+            drainAll();
             r.status = 124;
             r.err = "命令超时, 已被终止";
             return true;
@@ -4252,6 +5397,261 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
         }
     }
     return true;
+}
+
+// ==========================================================================
+// `cmd &` 后台
+//
+// 语义按 bash: 立即返回 0, 父 shell 不等它、不看它的退出码、不受 timeout 约束。
+// 输出**由命令自己决定**(和前台一样): `cmd > log 2>&1 &` 写那个文件,
+// `./server &` 没重定向 ⇒ 输出丢弃。因为父 shell 已经回包了, 那一路输出
+// 没有任何接收者(终端那次运行已经结束), 丢掉就是唯一的结果 —— bash 是把它们
+// 混进终端, 而这里没有"终端"可混。
+// ==========================================================================
+namespace
+{
+// 后台任务线程表。必须挂在**静态**上而不是 shell 实例上: 任务跑的时候终端可能已经
+// 被销毁了。只会从 exec 线程 push(每条命令行都是串行执行的), 所以不需要加锁。
+vector<JZTaskThread *> &bgThreads()
+{
+    static vector<JZTaskThread *> list;
+    return list;
+}
+} // namespace
+
+// 还有后台任务(`cmd &`)在跑吗? 进程退出前要问一句: 它们的线程还在跑,
+// 直接走 JZApplication 析构会命中 `JZ_ASSERT(m_threads.empty())`(实测 jz_shell 崩在
+// main 的 return 处: ~JZApplication → assert)。bash 的行为是"脚本结束就退出, 后台任务
+// 继续跑", 所以那里直接 _exit, 让系统收尾。
+bool JZShell::hasRunningBackgroundJobs()
+{
+    vector<JZTaskThread *> &ts = bgThreads();
+    for (JZTaskThread *t : ts)
+    {
+        if (t != nullptr && t->isRunning())
+            return true;
+    }
+    return false;
+}
+
+// 取出这条后台语句自己的输出重定向(Simple 的在 cmd.redirects, 复合命令的在 node 上)。
+// 只有 `>` `>>` `&>` `>&文件` 这几种能直接交给分离进程; 出现别的(输入重定向 /
+// heredoc / fd 复制)就返回 false, 让慢路径按完整语义跑。
+bool JZShell::backgroundOutputs(const NodePtr &n, string *outFile, bool *outAppend, string *errFile)
+{
+    *outFile = string();
+    *errFile = string();
+    *outAppend = false;
+    if (!n)
+        return true;
+    const vector<Redirect> &rds = (n->kind == Node::Simple) ? n->cmd.redirects : n->redirects;
+    bool merged = false;
+    for (const Redirect &rd : rds)
+    {
+        if (rd.op == "2>&1")
+        {
+            merged = true;
+            continue;
+        }
+        if (rd.op != ">" && rd.op != ">>" && rd.op != "&>" && rd.op != ">&")
+            return false;   // < / << / <<< / 2> / >&2 / 关闭 fd: 交给慢路径
+        vector<string> t = expandWord(rd.target, nullptr);
+        if (t.empty() || t[0].empty())
+            return false;
+        const string path = absolutePath(t[0]);
+        if (rd.op == ">" || rd.op == ">>")
+        {
+            *outFile = path;
+            *outAppend = (rd.op == ">>");
+        }
+        else
+        {
+            *outFile = path;
+            *errFile = path;   // `&>f` / `>&f`: 两路合并
+            *outAppend = false;
+        }
+    }
+    if (merged && !outFile->empty())
+        *errFile = *outFile;
+    return true;
+}
+
+// 快路径: `./server &` / `python app.py > log 2>&1 &` 这类纯外部命令 →
+// 直接起分离进程, 输出按命令自己的重定向接好(没重定向就是空设备), 拿到真实 pid。
+bool JZShell::spawnDetachedSimple(const NodePtr &n, const string &outFile, const string &errFile,
+                                  bool append, int *pid, string *notFound)
+{
+    if (!n || n->kind != Node::Simple)
+        return false;
+    const SimpleCmd &cmd = n->cmd;
+    // 赋值前缀(`FOO=1 cmd &`)会改状态, 交给慢路径
+    if (!cmd.assigns.empty() || !cmd.arrayAssigns.empty() || cmd.argv.empty())
+        return false;
+
+    vector<string> argv;
+    for (const Word &w : cmd.argv)
+    {
+        vector<string> one = expandWord(w, nullptr, true, true, false);
+        argv.insert(argv.end(), one.begin(), one.end());
+    }
+    if (argv.empty())
+        return false;
+
+    const string name = argv[0];
+    if (m_aliases.find(name) != m_aliases.end())
+        return false;
+    if (m_functions.find(name) != m_functions.end())
+        return false;
+    if (isBuiltinName(name))
+        return false;   // echo/cd/... 只能在本解释器里跑
+
+    const string program = resolveSpawnProgram(name);
+    if (program.empty())
+    {
+        // 命令根本不存在: 交给调用方在**父 shell** 里直接报出来。bash 也是这个信息
+        // (它由后台子进程打到 stderr; 我们这边没人接, 只能父 shell 代打)。
+        *notFound = name;
+        return false;
+    }
+    if (looksLikeShellScript(program))
+        return false;                       // 脚本要用本解释器跑, 不能直接 exec
+
+    vector<string> args(argv.begin() + 1, argv.end());
+    if (pathConvEnabled())                  // 与 runExternal 同一套路径转换
+    {
+        for (string &a : args)
+            a = convertBashPathArg(a);
+    }
+
+    // 与前台命令同一套设置: 工作目录 / 环境(export + PATH) / 三路 IO。
+    // 环境必须传, 否则 `export PORT=8080; ./server &` 里服务读不到 PORT。
+    // IO 必须在 start() 之前定好: 输出接文件的进程才不会占管道, 之后 detach 才安全。
+    JZProcess proc;
+    proc.setWorkingDirectory(m_cwd);
+    const JZProcess::FileOpenMode mode = append ? JZProcess::Append : JZProcess::Truncate;
+    if (outFile.empty())
+        proc.setStandardOutputNull();      // 没有重定向 = 丢弃
+    else
+        proc.setStandardOutputFile(outFile, mode);
+    if (errFile.empty())
+        proc.setStandardErrorNull();
+    else
+        proc.setStandardErrorFile(errFile, mode);
+    proc.setStandardInputNull();           // 后台任务不读 stdin
+    proc.setEnvironmentVariables(childEnv());
+    if (!proc.start(program, args))
+        return false;
+    if (pid)
+        *pid = proc.processId();
+    return proc.detach();                  // 纯应用层放手: 不等、不读、不回收
+}
+
+shared_ptr<JZShell> JZShell::forkForBackground()
+{
+    auto c = std::make_shared<JZShell>();
+    c->m_cwd = m_cwd;
+    c->m_env = m_env;
+    c->m_arrays = m_arrays;
+    c->m_pathDirs = m_pathDirs;
+    c->m_programPaths = m_programPaths;
+    c->m_aliases = m_aliases;
+    c->m_functions = m_functions;   // bash 的 fork: 函数、变量都带得过去
+    c->m_exported = m_exported;
+    c->m_intVars = m_intVars;
+    c->m_readonly = m_readonly;
+    c->m_params = m_params;
+    c->m_argv0 = m_argv0;
+    c->m_errMode = m_errMode;
+    c->m_errScript = m_errScript;
+    c->m_posix = m_posix;
+    c->m_errexit = m_errexit;
+    c->m_pipefail = m_pipefail;
+    c->m_nounset = m_nounset;
+    c->m_nullglob = m_nullglob;
+    c->m_timeoutMs = 0;             // 后台任务不受 timeout 约束(0 = 不超时)
+    c->m_bashPid = m_bashPid + 1;   // 子 shell 的 $BASHPID 变大($$ 不变)
+    // 不开直写: 子 shell 的输出就是没人要的(父 shell 已经回包了), 攒在 StageResult 里
+    // 丢掉即可; 语句自己的重定向(`{ ...; } > log &`)由 runNode 的常规路径落盘。
+    return c;
+}
+
+JZShell::StageResult JZShell::spawnBackground(const NodePtr &n)
+{
+    StageResult r;
+    ++m_bgCount;   // 只计数(不再打印 job 号: bash 脚本里 `cmd &` 是静默的, pid 用 $!)
+
+    // 顺手回收已经跑完的线程对象(它们的任务已经结束, join 立即返回)
+    {
+        vector<JZTaskThread *> &ts = bgThreads();
+        for (size_t i = 0; i < ts.size();)
+        {
+            if (!ts[i]->isRunning())
+            {
+                ts[i]->wait();
+                delete ts[i];
+                ts.erase(ts.begin() + static_cast<vector<JZTaskThread *>::difference_type>(i));
+            }
+            else
+                ++i;
+        }
+    }
+
+    // 输出方向由命令自己的重定向决定; 没有重定向 = 丢弃。
+    // `>`(Truncate) / `>>`(Append) 由 setStandardOutputFile 的 mode 表达, 不用在这里先清文件。
+    string outFile, errFile;
+    bool outAppend = false;
+    const bool simpleOut = backgroundOutputs(n, &outFile, &outAppend, &errFile);
+
+    int pid = 0;
+    string notFound;
+    if (simpleOut && spawnDetachedSimple(n, outFile, errFile, outAppend, &pid, &notFound))
+    {
+        m_lastBgPid = pid;
+        r.status = 0;
+        // bash 在脚本里 `cmd &` 什么都不打印(pid 用 $! 取) —— 输出保持干净
+        return r;
+    }
+
+    if (!notFound.empty())
+    {
+        // 命令根本不存在: 报错和 bash 一致(它由后台子进程打到 stderr, 我们这边没人接,
+        // 只能父 shell 代打)。退出码仍是 0 —— bash 里 `cmd &` 的 $? 只看 fork 成不成,
+        // `set -e` 也不会因为它退出。
+        r.status = 0;
+        r.err = errorPrefix(m_lineno, false) + notFound + ": command not found\n";
+        return r;
+    }
+
+    // 慢路径: 内建 / 函数 / 管道 / 复合命令 —— 复制一份 shell 状态放后台线程跑
+    // (bash 的 fork)。它自己的重定向照常生效, 其余输出没人要, 跑完丢掉。
+    auto child = forkForBackground();
+    // 交给子 shell 的节点必须清掉 background, 否则它自己又会去起一个后台任务(递归)
+    auto body = std::make_shared<Node>(*n);
+    body->background = false;
+
+    // ⚠ 必须用 JZTaskThread, 不能用裸 std::thread: JZProcess 建定时器时会校验
+    //   "当前线程是 JZApplication 登记的 JZThread", 裸线程直接 assert 崩掉(实测 FATAL)。
+    //   这些线程对象放静态表里(不在 shell 实例上), 终端被销毁也不会悬空。
+    auto *t = new JZTaskThread();
+    t->setTask([child, body]()
+    {
+        StageResult rr = child->runNode(body);   // 退出码不回传给父 shell
+        // 没被重定向掉的错误(语法错 / `cd` 失败 / 命令不存在…)按 bash 的做法打到 stderr:
+        // 后台任务的 stdout 没人要, 但这些"起不来"的信息丢了就完全无从查起。
+        if (!rr.err.empty())
+        {
+            string msg = rr.err;
+            if (msg.back() != '\n')
+                msg += '\n';
+            fwrite(msg.data(), 1, msg.size(), stderr);
+            fflush(stderr);
+        }
+    });
+    bgThreads().push_back(t);   // 先登记再 start: 线程可能瞬间就跑完
+    t->start();
+
+    r.status = 0;
+    return r;
 }
 
 JZShell::StageResult JZShell::runPipeline(const std::vector<NodePtr> &stages)
@@ -4372,7 +5772,7 @@ bool JZShell::prepareNodeInput(const NodePtr &n, StageResult &r)
         {
             vector<string> hv = expandWord(rd.target, nullptr);
             string text = hv.empty() ? string() : hv[0];
-            if (!text.empty() && text.back() != '\n')
+            if (text.empty() || text.back() != '\n')
                 text += '\n';
             m_stageIn = text;
             continue;
@@ -4467,6 +5867,11 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
     if (!n)
         return r;
 
+    // `cmd &`: 起后台任务后立刻返回 0(bash 的行为: 父 shell 不等, 也不看它的退出码)。
+    // 不在这里拦的话, `&` 就退化成"同步跑一遍", 常驻服务会一直卡到超时。
+    if (n->background)
+        return spawnBackground(n);
+
     if (++m_depth > 64)
     {
         m_depth--;
@@ -4550,18 +5955,29 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
 
     case Node::Subshell:
     {
+        // 子 shell 的状态一律不外泄(bash 的 fork 语义): cwd / env / 参数 / 退出标志,
+        // 还有 set -e —— `( set -e; false )` 不能让父 shell 也变成 errexit。
+        const bool savedErrexit = m_errexit;
+        const bool savedInCond = m_inCond;
         string savedCwd = m_cwd;
         map<string, string> savedEnv = m_env;
+        map<string, vector<string>> savedArrays = m_arrays;
         vector<string> savedParams = m_params;
         bool savedExiting = m_exiting;
         int savedBashPid = m_bashPid;
         m_bashPid++;                    // `( ... )` 也是子 shell: $BASHPID 要变
         r = runNode(n->body);
         m_bashPid = savedBashPid;
+        m_errexit = savedErrexit;
+        m_inCond = savedInCond;
         m_cwd = savedCwd;
         m_env = savedEnv;
+        m_arrays = savedArrays;
         m_params = savedParams;
         m_exiting = savedExiting;
+        // 子 shell 里 set -e 触发的"脚本中止"只结束它自己: 对父 shell 这就是一条
+        // 非零退出的普通命令(父 shell 若自己也开了 -e, 由上层按普通失败判断)
+        r.failed = false;
         break;
     }
 
@@ -4585,7 +6001,12 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
                     run = (status != 0);
             }
             if (!run)
+            {
+                // 短路 = 失败发生在 &&/|| 列表的**非末段**(`false && echo x`):
+                // bash 的 set -e 对这段豁免, 整条列表的失败不能让脚本退出
+                r.errexitExempt = true;
                 continue;
+            }
             StageResult s = runNode(n->parts[i]);
             if (s.failed)
             {
@@ -4603,11 +6024,25 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
                     r.out += '\n';   // 错误信息后面补一个换行, 免得和下一条输出粘在一起
             }
             r.status = status;
+            // `set -e`: 命令失败就中止整个脚本。豁免: && / || 链里**非末段**的命令
+            // (`false && echo x` 不能退出, 见 AndOr 分支的 errexitExempt) 以及 if/while 的条件。
+            // 不实现这条, agent 写的 `set -e` 等于没写。
+            const bool chained = (i < n->ops.size() &&
+                                  (n->ops[i] == "&&" || n->ops[i] == "||"));
+            if (m_errexit && !m_inCond && !chained && status != 0 && !s.failed &&
+                !s.errexitExempt)
+            {
+                m_exiting = true;
+                m_exitCode = status;
+                break;
+            }
             flushDirect(r);   // 直写模式: 每条语句结束就落 fd, 别攒到最后
             // `return` / `exit` 必须**立刻**跳出当前语句列表: 否则
             // `f() { if ...; then return 2; fi; return 0; }` 里后一个 return 会把
             // 状态覆盖回 0(DEBUG trap 的 return 2 正是踩到这个)
-            if (m_exiting || m_returning)
+            // `break` / `continue` 同理: 它们只置标志位, 若这里不跳出,
+            // `for i in 1 2 3; do continue; echo $i; done` 里的 echo 照样会执行。
+            if (m_exiting || m_returning || m_breakLevel > 0 || m_continueLevel > 0)
                 break;
         }
         break;
@@ -4618,7 +6053,11 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
         bool done = false;
         for (size_t i = 0; i < n->conds.size(); i++)
         {
+            // 条件里的失败不算 `set -e` 的触发点(`if false; then` 是正常的)
+            const bool savedCond = m_inCond;
+            m_inCond = true;
             StageResult c = runNode(n->conds[i]);
+            m_inCond = savedCond;
             if (c.failed) { r = c; done = true; break; }
             if (c.status == 0)
             {
@@ -4709,6 +6148,7 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
 
     case Node::While:
     {
+        r.status = 0;   // 循环一次都没跑: bash 的退出码是 0(`set -e` 下不能因此退出)
         int guard = 0;
         while (true)
         {
@@ -4719,7 +6159,10 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
                 r.failReason = "while 循环超过 100000 次, 已中止(防止把进程卡死)";
                 break;
             }
+            const bool savedCond = m_inCond;
+            m_inCond = true;
             StageResult c = runNode(n->cond);
+            m_inCond = savedCond;
             if (c.failed) { r = c; break; }
             // while: 条件非 0 就退出; until: 条件为 0 才退出
             if (n->until ? (c.status == 0) : (c.status != 0))
@@ -5047,6 +6490,14 @@ void JZShell::setEnvVar(const string &name, const string &value)
     m_env[name] = value;
 }
 
+void JZShell::addExportedEnv(const string &name, const string &value)
+{
+    if (name.empty())
+        return;
+    m_env[name] = value;
+    m_exported.insert(name);
+}
+
 void JZShell::unsetEnvVar(const string &name)
 {
     m_env.erase(name);
@@ -5070,6 +6521,51 @@ void JZShell::addPathDir(const string &dir)
 {
     if (!dir.empty())
         m_pathDirs.push_back(dir);
+}
+
+// 子进程的 PATH。
+// 为什么需要它: 短名 -> 全路径的映射(resolveProgram)只改写**命令行的第一个词**。
+//   `timeout 8 code_runtime --entry x` 的命令词是 timeout, 内层的 code_runtime 只是 argv,
+//   由 timeout 自己 execvp —— 它只看 PATH, 而 tsc / code_runtime 本来就不在 PATH 上
+//   (它们是 programPaths 里的短名), 于是 `failed to run command 'code_runtime'` + exit=127。
+// 把 m_pathDirs(Git 的 usr/bin、bin)与 programPaths 各自所在目录前插进子进程 PATH 之后,
+// timeout / xargs / env / find -exec 这类"包一层"的写法都能正常工作。
+string JZShell::childPathValue(const string &base) const
+{
+    vector<string> dirs;
+    auto push = [&dirs](const string &d)
+    {
+        if (d.empty())
+            return;
+        const string key = str_toLower(d);
+        for (const string &e : dirs)
+        {
+            if (str_toLower(e) == key)
+                return;
+        }
+        dirs.push_back(d);
+    };
+
+    for (const string &d : m_pathDirs)
+        push(d);
+    for (const auto &kv : m_programPaths)
+    {
+        const string &p = kv.second;
+        const size_t slash = p.find_last_of("/\\");
+        if (slash != string::npos && slash > 0)
+            push(p.substr(0, slash));
+    }
+    for (const string &d : splitChar(base.empty() ? envGet("PATH") : base, kPathSep))
+        push(d);
+
+    string out;
+    for (size_t i = 0; i < dirs.size(); i++)
+    {
+        if (i)
+            out += kPathSep;
+        out += dirs[i];
+    }
+    return out;
 }
 
 void JZShell::addProgramPath(const string &name, const string &fullPath)

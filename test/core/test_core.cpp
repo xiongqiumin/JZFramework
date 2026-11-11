@@ -1,4 +1,5 @@
 #include "JZTest.h"
+#include "JZCommandLineParser.h"
 #include "JZStd.h"
 #include "JZString.h"
 #include "JZRegExp.h"
@@ -720,8 +721,69 @@ bool jztimer_stop()
     return true;
 }
 
+// 命令行解析器: 紧凑短名(`-ab` == `-a -b`)与"短名取值吃掉簇剩余字符"
+bool jzcmdline_cluster()
+{
+    bool a = false, b = false;
+    std::string mode;
+    JZCommandLineParser p;
+    p.addOption("-a,--alpha", &a);
+    p.addOption("-b,--beta", &b);
+    p.addOption("-m,--mode", &mode);
+
+    // 1) 两个布尔位挤在一起
+    {
+        a = b = false;
+        mode.clear();
+        char arg0[] = "prog", arg1[] = "-ab";
+        char *argv[] = { arg0, arg1, nullptr };
+        JZ_TEST_TRUE(p.parse(2, argv));
+        JZ_TEST_TRUE(a);
+        JZ_TEST_TRUE(b);
+    }
+
+    // 2) 带值的短名把簇里**剩余字符**当自己的值(getopt 语义):
+    //    `-mbx` ⇒ -m 的值是 "bx"(不是 -m -b -x)
+    {
+        a = b = false;
+        mode.clear();
+        char arg0[] = "prog", arg1[] = "-mbx";
+        char *argv[] = { arg0, arg1, nullptr };
+        JZ_TEST_TRUE(p.parse(2, argv));
+        JZ_TEST_FALSE(b);
+        JZ_TEST_EQ(mode, std::string("bx"));
+    }
+
+    // 3) 带值的短名在簇末尾: `-am fast` => -a 置位, -m 吃下一个参数
+    {
+        a = b = false;
+        mode.clear();
+        char arg0[] = "prog", arg1[] = "-am", arg2[] = "fast";
+        char *argv[] = { arg0, arg1, arg2, nullptr };
+        JZ_TEST_TRUE(p.parse(3, argv));
+        JZ_TEST_TRUE(a);
+        JZ_TEST_EQ(mode, std::string("fast"));
+    }
+
+    // 4) 单个短名(回归: 不能被"拆簇"逻辑误伤)
+    {
+        a = b = false;
+        mode.clear();
+        char arg0[] = "prog", arg1[] = "-a";
+        char *argv[] = { arg0, arg1, nullptr };
+        JZ_TEST_TRUE(p.parse(2, argv));
+        JZ_TEST_TRUE(a);
+        JZ_TEST_FALSE(b);
+    }
+    return true;
+}
+
 void test_JZCore(JZTest *test)
 {
+    auto cmdSuite = std::make_shared<JZTestSuite>("JZCommandLineParser");
+    test->addSuite(cmdSuite);
+    cmdSuite->addTestCase("cluster_short_options", jzcmdline_cluster);
+
     auto stdSuite = std::make_shared<JZTestSuite>("JZStd");
     test->addSuite(stdSuite);
     stdSuite->addTestCase("str_basic", jzstd_str_basic);

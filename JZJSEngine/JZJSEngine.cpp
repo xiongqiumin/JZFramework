@@ -1,5 +1,12 @@
 ﻿#include "JZJSEngine.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>   // GetEnvironmentStringsW (process.env 枚举)
+#endif
+
 #include <assert.h>
 
 #include <algorithm>
@@ -1220,6 +1227,66 @@ void JZJSEngine::registConsole()
         registFunction(raw, "setExitCode", jsbind::createFunction([this](int code) { setProcessExitCode(code); }));
         registFunction(raw, "clearExitCode", jsbind::createFunction([this]() { clearProcessExitCode(); }));
 
+        // ---- process.env ----
+        // Node 里 process.env 就是进程环境(Node 代码到处在用: 读配置、读输入路径)。
+        // 这里做**读写穿透**: 读走进程环境, 写回也真写进进程环境(之后起的子进程能继承)。
+        // 已知差异: 只枚举"建对象那一刻"已存在的键; 脚本新加的键是普通属性, 不穿透。
+        registFunction(raw, "envGet", jsbind::createFunction([this](const string &name) -> JSValue {
+            if (name.empty())
+                return JS_UNDEFINED;
+            const char *v = std::getenv(name.c_str());
+            return (v == nullptr) ? JS_UNDEFINED : JS_NewString(m_ctx, v);
+        }));
+        registFunction(raw, "envSet", jsbind::createFunction([this](const string &name, const string &value) {
+            if (name.empty())
+                return;
+#ifdef _WIN32
+            _putenv_s(name.c_str(), value.c_str());
+#else
+            ::setenv(name.c_str(), value.c_str(), 1);
+#endif
+        }));
+        registFunction(raw, "envUnset", jsbind::createFunction([this](const string &name) {
+            if (name.empty())
+                return;
+#ifdef _WIN32
+            _putenv_s(name.c_str(), "");
+#else
+            ::unsetenv(name.c_str());
+#endif
+        }));
+        registFunction(raw, "envAll", jsbind::createFunction([this]() -> JSValue {
+            JSValue obj = JS_NewObject(m_ctx);
+#ifdef _WIN32
+            LPWCH cur = GetEnvironmentStringsW();
+            if (cur)
+            {
+                for (LPWCH p = cur; *p; p += wcslen(p) + 1)
+                {
+                    std::wstring entry(p);
+                    const size_t eq = entry.find(L'=');
+                    if (eq == std::wstring::npos || eq == 0)
+                        continue;   // `=C:=...` 这类驱动器当前目录项不算环境变量
+                    JS_SetPropertyStr(m_ctx, obj,
+                                      wstr_to_str(entry.substr(0, eq)).c_str(),
+                                      JS_NewString(m_ctx, wstr_to_str(entry.substr(eq + 1)).c_str()));
+                }
+                FreeEnvironmentStringsW(cur);
+            }
+#else
+            for (char **e = environ; e && *e; e++)
+            {
+                std::string entry(*e);
+                const size_t eq = entry.find('=');
+                if (eq == std::string::npos || eq == 0)
+                    continue;
+                JS_SetPropertyStr(m_ctx, obj, entry.substr(0, eq).c_str(),
+                                  JS_NewString(m_ctx, entry.substr(eq + 1).c_str()));
+            }
+#endif
+            return obj;
+        }));
+
         // __jz: 与其它模块同一套 get-or-create(谁建的谁写回, 复用的要放掉 getProperty 多出来的引用)
         JSValue jz = JS_GetPropertyStr(m_ctx, m_global, "__jz");
         bool jzFromGet = !JS_IsUndefined(jz);
@@ -1263,6 +1330,19 @@ void JZJSEngine::registConsole()
         // argv: 与 Node 同形([宿主 exe, 入口模块, ...宿主给的参数]); 数组本体由 C++ 侧建/维护,
         // 这里只是转发(见 js_wrapper/process 的 argv —— 两个入口拿到的是**同一个数组对象**)。
         argv: function () { return globalThis.process.argv; },
+        // env: 建一个"读写都穿透"的环境对象(见 C++ 侧 raw.envGet/envSet 的说明)
+        env: function () {
+            const obj = {};
+            const all = raw.envAll() || {};
+            for (const k of Object.keys(all)) {
+                Object.defineProperty(obj, k, {
+                    enumerable: true, configurable: true,
+                    get: function () { return raw.envGet(k); },
+                    set: function (v) { raw.envSet(k, String(v)); },
+                });
+            }
+            return obj;
+        },
         // exit(): 省略/null 时用 exitCode(设过)否则 0 —— 与 Node 一致
         exit: function (code) {
             let n;
@@ -1286,6 +1366,8 @@ void JZJSEngine::registConsole()
     const p = globalThis.process;
     if (p) {
         p.exit = api.exit;
+        // process.env(Node 代码到处在用: 读配置、读输入路径)
+        p.env = api.env();
         Object.defineProperty(p, 'exitCode', {
             enumerable: true, configurable: true,
             get: function () { return api.exitCode(); },

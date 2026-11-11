@@ -198,10 +198,8 @@ void JZAgentNode::init(const JZNodeConfig &config)
     if (m_config.allowTerminal)
     {
         // terminal 的 MCP 直出门面(不经过 agent_tool 包装):
-        //   terminal_run    —— 支持 stream(内联 SSE 流式日志)/ background(立即返回 run_id)
-        //   terminal_query  —— 取后台/历史运行日志(支持 tail / stream / grep 过滤)
+        //   terminal_run    —— 单前台任务, 回包就是输出(没有 run_id / query)
         addTool(new JZTerminalRunMcpTool(this));
-        addTool(new JZTerminalQueryMcpTool(this));
         addTool(new JZTerminalOpenMcpTool(this));
         addTool(new JZTerminalListMcpTool(this));
         addTool(new JZTerminalCloseMcpTool(this));
@@ -215,7 +213,7 @@ void JZAgentNode::init(const JZNodeConfig &config)
 
     jzInfo().noquote().nospace() << "agent_node 就绪: name=" << m_config.nodeName
                                  << " root=" << m_config.rootDir
-                                 << " shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram)
+                                 << " verify-shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram)
                                  << " 会话上限=" << m_config.maxSessions
                                  << " 空闲回收=" << (m_config.recycleSec > 0 ? to_string(m_config.recycleSec) + "s" : string("关"))
                                  << " 包管理=" << (m_config.allowPackageManager ? string("开") : string("关"))
@@ -261,7 +259,6 @@ string JZAgentNode::buildInstructions() const
                 "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
         text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
                 "**必须先 terminal_open** 拿到 session id 才能跑(节点不自动开默认会话)。\n";
-        text += "  terminal_query   取后台/历史运行的日志(见下方 background / 流式说明)。\n";
         if (m_config.maxSessions > 0)
         {
             text += "    会话上限 " + to_string(m_config.maxSessions) + " 个, 空闲 " +
@@ -281,13 +278,10 @@ string JZAgentNode::buildInstructions() const
     if (!m_config.allowTerminal)
         return text;
 
-    text += "terminal_run 的两种进阶用法:\n";
-    text += "  - 流式(stream=true): 长命令会边跑边把日志以 notifications/message 推过来"
-            "(POST 响应内联 SSE, 结束再给结果), 适合编译/跑测试这类慢慢出日志的命令。"
-            "可配 stream_filter(stdout/stderr/all) 与 grep 只推关心的行。\n";
-    text += "  - 后台(background=true): 命令在后台跑, 立刻返回 run_id(不流式、不带日志);"
-            "之后用 terminal_query 取日志。可配 tail(最近 N 行)、stream、grep 过滤。\n";
-    text += "    前台命令的结果末尾也会回一行 `[run_id]`, 可用 terminal_query 复查该次运行的完整/历史日志。\n\n";
+    text += "terminal_run 是**单前台任务**: 一次一条, 命令退出才回包(到 timeout 强杀)。\n";
+    text += "  - 要后台(常驻服务)就在命令末尾写 `&`, 并把输出重定向到文件"
+            "(`./srv > srv.log 2>&1 &`); 之后用 `cat srv.log` / `tail -50 srv.log` 看启动日志。\n";
+    text += "  - 没有 stream / background 参数, 也没有 run_id: 回包就是这条命令的输出。\n\n";
 
     // ⚠ 这段是这个节点最重要的一段说明: 模型的 shell 直觉在这里只有一部分成立。
     // ⚠ 终端已换成有状态解释器(JZVirtualTerminal 持有同一个 JZShell): cd/export 跨命令保留,
@@ -387,8 +381,6 @@ std::string JZAgentNode::open(const std::string &cwd, std::string &error)
     // JZVirtualTerminal 本身不含会话概念, 生命周期由本节点管。
     JZVirtualTerminal *t = new JZVirtualTerminal(this);
     t->setTerminalConfig(m_host.toolTerminalConfig());
-    if (!m_config.shellProgram.empty())
-        t->setShellProgram(m_config.shellProgram);
     if (m_config.recycleSec > 0)
         t->setRecycleMs(m_config.recycleSec * 1000);
 
@@ -427,16 +419,6 @@ std::vector<JZVirtualTerminal::SessionInfo> JZAgentNode::list()
     return out;
 }
 
-bool JZAgentNode::runSnapshot(const std::string &runId, JZVirtualTerminal::RunRecordInfo &out) const
-{
-    for (auto &kv : m_terminals)
-    {
-        if (kv.second->runSnapshot(runId, out))
-            return true;
-    }
-    return false;
-}
-
 // ==========================================================================
 // link 模式(配合 agent_cli): 不起 MCP, 只对外提供"执行一条命令"
 //
@@ -455,8 +437,6 @@ void JZAgentNode::initLink(const JZNodeConfig &config)
     m_linkTerminal = new JZVirtualTerminal(this);
     m_linkTerminal->setId("link");
     m_linkTerminal->setTerminalConfig(m_host.toolTerminalConfig());
-    if (!m_config.shellProgram.empty())
-        m_linkTerminal->setShellProgram(m_config.shellProgram);
     // 回包截断由本文件按协议包上限做(cutExecOutput); 这里关掉终端那层 32KB 上下文阀,
     // 否则 120KB 的预算永远用不上。
     m_linkTerminal->setReplyMaxBytes(0);
@@ -467,9 +447,7 @@ void JZAgentNode::initLink(const JZNodeConfig &config)
 
     jzInfo().noquote().nospace() << "agent_node(link) 就绪: name=" << m_config.nodeName
                                  << " root=" << m_config.rootDir
-                                 << " shell=" << (m_linkTerminal->shellProgram().empty()
-                                                       ? string("auto")
-                                                       : m_linkTerminal->shellProgram())
+                                 << " shell=jz_shell(内建)"
                                  << " 并发=1(单终端串行)"
                                  << " maxConcurrent=" << m_config.maxConcurrent
                                  << "(预留, 当前版本不生效)"
@@ -550,7 +528,8 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
         ack.nodeName = m_config.nodeName;
         ack.version = m_config.version;
         ack.rootDir = m_config.rootDir;
-        ack.shell = m_linkTerminal ? m_linkTerminal->shellProgram() : std::string();
+        // 终端用内建解释器, 没有可配的外部 shell; 这个字段保留给 cli 展示。
+        ack.shell = m_linkTerminal ? std::string("jz_shell") : std::string();
         m_linkServer->sendPacket(conn, &ack);
         jzInfo().noquote().nospace() << "cli 上线: id=" << hello->clientId << " v" << hello->cliVersion
                                      << " conn=" << conn;
@@ -566,33 +545,29 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
 
     if (type == NodePack_termQuery)
     {
+        // 协议包保留(旧版 cli 还会发), 但终端已经没有"运行记录"可查 —— 明确回一句,
+        // 免得对面等 10s 超时还以为是网络问题。
         JZNodePackTermQuery *query = (JZNodePackTermQuery *)pack.get();
-        answerLinkQuery(conn, *query);
+        JZNodePackTermQueryResult res;
+        res.runId = query->runId;
+        res.found = false;
+        res.error = "节点不保留运行记录(没有 run_id/terminal_query); 后台任务请写成 `> log 2>&1 &`, 再看日志文件";
+        m_linkServer->sendPacket(conn, &res);
         return;
     }
 
     if (type == NodePack_execCancel)
     {
         JZNodePackExecCancel *cancel = (JZNodePackExecCancel *)pack.get();
-        const LinkRunKey key = linkKey(conn, cancel->runId);
-        auto it = m_linkTermRuns.find(key);
-        if (it == m_linkTermRuns.end() || !m_linkTerminal)
+        if (!m_linkTerminal || m_activeLinkRun.conn != conn || m_activeLinkRun.runId != cancel->runId)
         {
             // 已结束(或不是这条连接发起的): 明确忽略。**绝不能**直接 cancel():
             // 终端只有一个前台任务, 那时在跑的很可能是别人/后来的命令。
-            jzInfo().nospace() << "取消: " << cancel->runId << " 已结束或不存在, 忽略";
+            jzInfo().nospace() << "取消: " << cancel->runId << " 不是当前在跑的那条, 忽略";
             return;
         }
 
-        const std::string active = m_linkTerminal->activeRunId();
-        if (active != it->second)
-        {
-            jzInfo().nospace() << "取消: " << cancel->runId << " 已结束(当前在跑 "
-                               << (active.empty() ? string("(空)") : active) << "), 忽略";
-            return;
-        }
-
-        jzInfo().nospace() << "取消执行: " << cancel->runId << " (终端 " << it->second << ")";
+        jzInfo().nospace() << "取消执行: " << cancel->runId;
         m_linkTerminal->cancel();
         return;
     }
@@ -600,31 +575,22 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
 
 JZAgentNode::LinkRunKey JZAgentNode::linkKey(uint64_t conn, const std::string &runId)
 {
-    return LinkRunKey(conn, runId);
+    LinkRunKey k;
+    k.conn = conn;
+    k.runId = runId;
+    return k;
 }
 
 void JZAgentNode::dropLinkRuns(uint64_t conn)
 {
-    std::vector<LinkRunKey> dead;
-    for (auto &kv : m_linkTermRuns)
+    if (m_activeLinkRun.conn != conn)
+        return;   // 在跑的不是这条连接的命令, 不动
+    if (m_linkTerminal && !m_activeLinkRun.runId.empty())
     {
-        if (kv.first.first == conn)
-            dead.push_back(kv.first);
+        jzInfo().nospace() << "停掉掉线 cli 的命令: " << m_activeLinkRun.runId;
+        m_linkTerminal->cancel();
     }
-
-    for (const LinkRunKey &key : dead)
-    {
-        auto it = m_linkTermRuns.find(key);
-        if (it == m_linkTermRuns.end())
-            continue;
-        // 只有"这条连接正在跑的那一条"才停: 共享终端上可能还有别的连接的命令
-        if (m_linkTerminal && m_linkTerminal->activeRunId() == it->second)
-        {
-            jzInfo().nospace() << "停掉掉线 cli 的命令: " << it->first.second;
-            m_linkTerminal->cancel();
-        }
-        m_linkTermRuns.erase(it);
-    }
+    m_activeLinkRun = LinkRunKey();
 }
 
 void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
@@ -653,7 +619,7 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
     // ⚠ maxConcurrent 是预留字段: 单终端串行是硬约束, 配几都不改变(见 docs §6.4)。
     if (m_linkTerminal->isRunning())
     {
-        fail("节点忙: 上一条命令还在跑(`" + m_linkTerminal->activeRunId() + "`), 等它结束再来");
+        fail("节点忙: 上一条命令还在跑, 等它结束再来");
         return;
     }
 
@@ -673,23 +639,23 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
     const int64_t startMs = JZDateTime::currentMSecsSinceEpoch();
     const LinkRunKey key = linkKey(conn, runId);
 
-    // 终端自己也会生成 runId(用于 cancel/查询), 与协议里的 runId 不是同一个, 这里做映射
-    auto termRunId = std::make_shared<std::string>();
     auto finished = std::make_shared<bool>(false);
 
-    auto cb = [this, conn, runId, startMs, termRunId, finished, background]
+    auto cb = [this, conn, runId, startMs, key, finished, background]
               (bool ok, const std::string &output, const std::string &error)
     {
         if (*finished)
             return;
         *finished = true;
 
-        // ⚠ 映射这里**不删**: query 还要靠它把协议 runId 翻译成终端 runId 去复查历史。
-        //   cancel 的安全性靠 activeRunId 校验(见 onLinkPacket), 不靠删映射。
+        // 这条跑完了: 若归属还是它, 清空(cancel 才能正确判定"没有在跑的")
+        if (m_activeLinkRun.conn == key.conn && m_activeLinkRun.runId == key.runId)
+            m_activeLinkRun = LinkRunKey();
+
         if (background)
         {
-            // 后台: 启动时已回过 started, 这里补一条"结束"通知(不带 output —— 全文在终端
-            // 运行记录里, 要就用 termQuery 取)。cli 靠它把 runId 从"在跑"集合里摘掉,
+            // 后台: 启动时已回过 started, 这里补一条"结束"通知(不带 output ——
+            // 输出在命令自己的重定向文件里)。cli 靠它把 runId 从"在跑"集合里摘掉,
             // 否则一条自己退出的后台命令会让它永远显示忙。
             jzInfo().noquote().nospace() << "后台运行结束 " << runId
                                          << (ok ? " (ok)" : (" (失败: " + error + ")"));
@@ -703,26 +669,14 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
             res.output = cutExecOutput(output);
         res.error = error;
         if (m_linkTerminal)
-        {
             res.cwd = m_linkTerminal->info().cwd;
-            JZVirtualTerminal::RunRecordInfo info;
-            if (!termRunId->empty() && m_linkTerminal->runSnapshot(*termRunId, info))
-            {
-                res.exitCode = info.exitCode;
-                res.timedOut = info.timedOut;
-                if (res.error.empty() && !info.error.empty())
-                    res.error = info.error;
-            }
-        }
         sendLinkResult(conn, res);
     };
 
-    JZResult<std::string> ret = m_linkTerminal->run(command, timeoutMs, cb);
+    JZResult<void> ret = m_linkTerminal->run(command, timeoutMs, cb);
     if (ret.isOk())
     {
-        *termRunId = ret.value();
-        m_linkTermRuns[key] = ret.value();
-        pruneLinkRuns();
+        m_activeLinkRun = key;   // cancel 归属
 
         if (background)
         {
@@ -750,179 +704,4 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
     }
 }
 
-// 按 runId 取一次运行快照(等价本地的 terminal_query)。
-// 过滤与游标推进都在节点侧做: 日志本来就在终端的运行记录里, 没必要整段搬过网络再让 cli 过滤。
-void JZAgentNode::answerLinkQuery(uint64_t conn, const JZNodePackTermQuery &query)
-{
-    JZNodePackTermQueryResult res;
-    res.runId = query.runId;
 
-    // 打点: 现场排障时"查询到底有没有到节点"是最难猜的一件事(测试也靠这行断言)
-    jzInfo().noquote().nospace() << "查询运行 "
-                                 << (query.runId.empty() ? string("(最近一次)") : query.runId)
-                                 << (query.incremental ? " (增量)" : "")
-                                 << (query.grep.empty() ? "" : (" grep=" + query.grep));
-
-    if (!m_linkTerminal)
-    {
-        res.found = false;
-        res.error = "节点没有可用的执行终端";
-        m_linkServer->sendPacket(conn, &res);
-        return;
-    }
-
-    // runId 省略 = **这条连接**最近一次运行(与本地 terminal_query 同一口径)。
-    // ⚠ 不能直接取 runIds().back(): 多台 cli 共享一台节点时, 那可能是别人的命令。
-    std::string termRunId;
-    if (query.runId.empty())
-    {
-        std::vector<std::string> ids = m_linkTerminal->runIds();
-        for (size_t i = ids.size(); i > 0 && termRunId.empty(); --i)
-        {
-            for (auto &kv : m_linkTermRuns)
-            {
-                if (kv.first.first == conn && kv.second == ids[i - 1])
-                {
-                    termRunId = ids[i - 1];
-                    break;
-                }
-            }
-        }
-    }
-    else
-    {
-        auto it = m_linkTermRuns.find(linkKey(conn, query.runId));
-        if (it != m_linkTermRuns.end())
-            termRunId = it->second;
-    }
-
-    JZVirtualTerminal::RunRecordInfo info;
-    if (termRunId.empty() || !m_linkTerminal->runSnapshot(termRunId, info))
-    {
-        res.found = false;
-        res.error = query.runId.empty()
-                        ? string("这个节点还没有运行过任何命令(没有可查的记录)")
-                        : string("节点上没有这条运行记录(可能已结束很久 / 节点重启过 / run_id 不对)");
-        m_linkServer->sendPacket(conn, &res);
-        return;
-    }
-
-    // 回给模型的 runId 用**协议 id**(带节点前缀): 省略查询时模型也要能拿到它再去查下一次
-    if (res.runId.empty())
-    {
-        for (auto &kv : m_linkTermRuns)
-        {
-            if (kv.first.first == conn && kv.second == termRunId)
-            {
-                res.runId = kv.first.second;
-                break;
-            }
-        }
-        if (res.runId.empty())
-            res.runId = termRunId;   // 极端情况(映射被淘汰): 至少别回空串
-    }
-
-    res.found = true;
-    res.running = (info.status == "running");
-    res.ok = (!res.running && !info.timedOut && info.exitCode == 0);
-    res.background = info.background;
-    res.timedOut = info.timedOut;
-    res.exitCode = info.exitCode;
-    res.durationMs = (info.endTime > 0 && info.startTime > 0) ? (info.endTime - info.startTime) : 0;
-    res.totalLines = (int64_t)info.totalLines;
-    res.error = info.error;
-
-    // 带 grep 的查询是"在整段日志里找东西"⇒ 按看历史处理, 不动增量游标(与本地一致),
-    // 否则被过滤掉的行下一轮就永远读不到了。
-    const bool incremental = query.incremental && query.grep.empty();
-
-    // 绝对行号 = firstLine + 下标; 增量查询从上次游标之后开始
-    size_t from = 0;
-    if (incremental && info.readPos > info.firstLine)
-        from = (size_t)(info.readPos - info.firstLine);
-    if (from > info.log.size())
-        from = info.log.size();
-
-    std::vector<std::string> lines;
-    for (size_t i = from; i < info.log.size(); ++i)
-    {
-        const std::string &line = info.log[i].text;
-        if (!query.grep.empty() && !containsNoCase(line, query.grep))
-            continue;
-        lines.push_back(line);
-    }
-    size_t tailDropped = 0;
-    if (query.tail > 0 && (int)lines.size() > query.tail)
-    {
-        tailDropped = lines.size() - (size_t)query.tail;
-        lines.erase(lines.begin(), lines.end() - query.tail);
-    }
-
-    res.firstLine = (int64_t)(info.firstLine + from + tailDropped);
-
-    // ⚠ 单包上限 256KB(MG_MAX_PACK_SIZE): 运行记录窗口本身可以有 4000 行 / 512KB,
-    //   不裁就会把连接打成畸形包, 同时把模型上下文灌爆。这里按本地 terminal_query 的
-    //   32KB 口径截断, 并明确告诉模型"还有多少行、怎么缩小范围"。
-    const size_t kMaxQueryBytes = 32 * 1024;
-    size_t emitted = 0;
-    for (size_t i = 0; i < lines.size(); ++i)
-    {
-        const std::string one = lines[i] + "\n";
-        if (res.text.size() + one.size() > kMaxQueryBytes)
-        {
-            if (emitted == 0)
-            {
-                // 单行就超过预算(压缩过的代码之类)。不推游标会永远卡在同一行,
-                // 这里明确跳过并告知 —— 要原文就用 grep/tail 定位后单独处理。
-                res.text += "…[本行超过 32KB, 已跳过; 要原文请用 grep/tail 缩小范围]";
-                ++emitted;
-            }
-            else
-            {
-                res.text += "…[还有 " + std::to_string(lines.size() - i) +
-                            " 行未显示: 用 tail 取最近 N 行, 或加 grep 缩小范围]";
-            }
-            break;
-        }
-        res.text += one;
-        ++emitted;
-    }
-    while (!res.text.empty() && res.text.back() == '\n')
-        res.text.pop_back();
-
-    if (incremental)
-    {
-        // 游标只推进到**真正发出去的最后一行**, 不能用 totalLines:
-        // 被 32KB 截断 / 被 tail 砍掉的行如果也跳过, 增量查询以后永远读不回来。
-        const size_t sentPos = (size_t)(info.firstLine + from + tailDropped + emitted);
-        m_linkTerminal->advanceRunReadPos(termRunId, sentPos);
-        res.readPos = (int64_t)sentPos;
-    }
-    else
-    {
-        res.readPos = (int64_t)info.readPos;
-    }
-
-    m_linkServer->sendPacket(conn, &res);
-}
-
-// runId -> 终端 runId 的映射只增不减会把长期运行的节点撑大; 超上限先淘汰已结束的,
-// 在跑的留着(否则 cancel/query 找不到)。
-void JZAgentNode::pruneLinkRuns()
-{
-    static const size_t kMaxLinkRuns = 1024;
-    if (m_linkTermRuns.size() <= kMaxLinkRuns)
-        return;
-
-    for (auto it = m_linkTermRuns.begin();
-         it != m_linkTermRuns.end() && m_linkTermRuns.size() > kMaxLinkRuns;)
-    {
-        JZVirtualTerminal::RunRecordInfo info;
-        if (m_linkTerminal && m_linkTerminal->runSnapshot(it->second, info) && info.status == "running")
-        {
-            ++it;
-            continue;
-        }
-        it = m_linkTermRuns.erase(it);
-    }
-}

@@ -550,17 +550,28 @@ vector<Token> lex(const string &s, string &error)
                 break;
             if (ch == '`')
             {
-                // 反引号命令替换: 内部原样取出, 转成 `$( ... )` 复用同一条展开路径
+                // 反引号命令替换: 内部原样取出, 转成 `$( ... )` 复用同一条展开路径。
+                // ⚠ 反引号有自己的转义层(bash 的规则): `\\` -> `\`, `` \` `` -> `` ` ``,
+                //   `\$` -> `$`, 以及**反斜杠+换行 = 续行(两个都删)**。这一层在单/双引号
+                //   判断之前生效, 所以 `echo 'foo\<换行>bar'` 里也会被吃掉。
                 size_t j = i + 1;
                 string inner;
                 while (j < s.size() && s[j] != '`')
                 {
-                    if (s[j] == '\\' && j + 1 < s.size() &&
-                        (s[j + 1] == '`' || s[j + 1] == '\\' || s[j + 1] == '$'))
+                    if (s[j] == '\\' && j + 1 < s.size())
                     {
-                        inner += s[j + 1];
-                        j += 2;
-                        continue;
+                        const char nx = s[j + 1];
+                        if (nx == '\n')
+                        {
+                            j += 2;      // 续行: 反斜杠和换行都删掉
+                            continue;
+                        }
+                        if (nx == '`' || nx == '\\' || nx == '$')
+                        {
+                            inner += nx;
+                            j += 2;
+                            continue;
+                        }
                     }
                     inner += s[j++];
                 }
@@ -584,6 +595,37 @@ vector<Token> lex(const string &s, string &error)
                 }
                 word.append(s, i, end - i);
                 i = end;
+                continue;
+            }
+            // ANSI-C 引号 `$'...'`: 整段原样收进词里(里面的 \' 不结束),
+            // 转义由展开阶段解码(见 ansiCUnescape)。不先拦的话, 这里的 ' 会被
+            // 当成普通单引号的开始, 一路找到文件末尾 ⇒ "unexpected EOF"。
+            if (ch == '$' && i + 1 < s.size() && s[i + 1] == '\'')
+            {
+                word += "$'";
+                i += 2;
+                bool closed = false;
+                while (i < s.size())
+                {
+                    if (s[i] == '\\' && i + 1 < s.size())
+                    {
+                        word += s[i++];
+                        word += s[i++];
+                        continue;
+                    }
+                    if (s[i] == '\'')
+                    {
+                        word += s[i++];
+                        closed = true;
+                        break;
+                    }
+                    word += s[i++];
+                }
+                if (!closed)
+                {
+                    error = "unexpected EOF while looking for matching `''";
+                    return vector<Token>();
+                }
                 continue;
             }
             if (ch == '\'')
@@ -626,12 +668,20 @@ vector<Token> lex(const string &s, string &error)
                         string inner;
                         while (j < s.size() && s[j] != '`')
                         {
-                            if (s[j] == '\\' && j + 1 < s.size() &&
-                                (s[j + 1] == '`' || s[j + 1] == '\\' || s[j + 1] == '$'))
+                            if (s[j] == '\\' && j + 1 < s.size())
                             {
-                                inner += s[j + 1];
-                                j += 2;
-                                continue;
+                                const char nx = s[j + 1];
+                                if (nx == '\n')
+                                {
+                                    j += 2;   // 反引号内的续行: 两个都删
+                                    continue;
+                                }
+                                if (nx == '`' || nx == '\\' || nx == '$')
+                                {
+                                    inner += nx;
+                                    j += 2;
+                                    continue;
+                                }
                             }
                             inner += s[j++];
                         }

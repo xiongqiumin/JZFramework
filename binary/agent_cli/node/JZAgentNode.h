@@ -122,7 +122,7 @@ private:
 // JZAgentNode —— 被控端节点: 把本机能力包成一个 MCP server
 //
 // 传输方式(HTTP)由 main.cpp 决定, 本类只负责"这台机器上有什么工具":
-//   终端(MCP 直出门面):  terminal_run / terminal_query / terminal_open / terminal_list / terminal_close
+//   终端(MCP 直出门面):  terminal_run / terminal_open / terminal_list / terminal_close
 //   文件:  read_file / write_file / modify_file
 // 文件操作(ls/cat/mkdir/rm/cp/mv/grep...)不单独做工具 —— 它们都是 shell 命令,
 // 由 terminal_run 覆盖; 只有 modify_file 留在我们这边(sed 不校验唯一匹配)。
@@ -160,7 +160,6 @@ public:
     std::string open(const std::string &cwd, std::string &error) override;
     bool close(const std::string &sessionId) override;
     std::vector<JZVirtualTerminal::SessionInfo> list() override;
-    bool runSnapshot(const std::string &runId, JZVirtualTerminal::RunRecordInfo &out) const override;
 
 protected:
     // 把 agent_tool 的一个工具经 bridge 挂进 MCP(接管 tool 所有权)
@@ -174,30 +173,26 @@ protected:
     // 把配置里的路径统一成 "/" 分隔的绝对路径(区域判定是纯字符串前缀比较)
     void normalizeConfig(JZNodeConfig &config);
     // 一条 exec 请求: 审核由终端做, 这里只负责换 cwd 与回包
-    // background=true: 立刻回一条 started, 结束再补一条"结束"通知(不带 output, 日志用 query 取)
+    // background=true: 立刻回一条 started, 结束再补一条"结束"通知(不带 output)
     void runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
                      const std::string &cwd, int timeoutMs, bool background);
-    // 按 runId 回一次运行快照(等价 terminal_query): tail/grep/incremental 都在节点侧过滤
-    void answerLinkQuery(uint64_t conn, const JZNodePackTermQuery &query);
-    // runId 映射会随运行条数增长; 超过上限时先淘汰已结束的(在跑的留着)
-    void pruneLinkRuns();
     void onLinkPacket(uint64_t conn, JZNetPackPtr pack);
     void sendLinkResult(uint64_t conn, const JZNodePackExecResult &result);
 
-    // 映射键: (连接, cli 的 runId)。**必须带连接** —— cli 的 runId 是它自己按
-    // "节点别名 + 序号"生成的, 两台 cli 连同一节点时会重名(都是 line1:r1);
-    // 只按 runId 存会让查询串台、cancel 打到别人的命令上。
-    typedef std::pair<uint64_t, std::string> LinkRunKey;
+    // cancel 归属判定: 单终端同一时刻只有一条命令, 记下"它是哪条连接、哪个 runId 起的"即可。
+    // 不记这个的话, 一条已结束的 runId 发来的 cancel 会误杀后来者。
+    struct LinkRunKey
+    {
+        uint64_t conn = 0;
+        std::string runId;
+    };
     static LinkRunKey linkKey(uint64_t conn, const std::string &runId);
-    // 连接断开: 清掉这条连接的全部映射, 并停掉它正在跑的那条命令
+    // 连接断开: 若正在跑的是这条连接起的命令, 停掉; 然后清空归属
     void dropLinkRuns(uint64_t conn);
 
     JZNetServer *m_linkServer = nullptr;         // link 模式的 server 角色
     JZVirtualTerminal *m_linkTerminal = nullptr; // link 模式唯一的执行终端(会话由节点自己管)
-    // (连接, cli 的 runId) -> 终端的 runId。**运行结束不删**: query 要能复查历史;
-    // cancel 靠 activeRunId 校验, 旧 runId 不会误停当前这条。
-    // 连接断开时整体清掉(见 dropLinkRuns), 所以 cli 重启后的同名 runId 不会撞上旧映射。
-    std::map<LinkRunKey, std::string> m_linkTermRuns;
+    LinkRunKey m_activeLinkRun;                  // 当前在跑的那条属于谁(空闲时 runId 为空)
 
     // 空闲回收: 起一个周期定时器扫会话(recycleSec <= 0 时不开)。
     // ⚠ JZVirtualTerminal 自己不管生命周期(它只把 recycleMs 存着给上层看),

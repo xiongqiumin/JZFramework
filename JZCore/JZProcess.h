@@ -5,6 +5,8 @@
 #include "JZThread.h"
 #include <vector>
 #include <string>
+#include <map>
+#include <cstdint>   // intptr_t: 跨平台的"句柄"(Windows HANDLE / POSIX fd)
 
 class JZProcessPrivate;
 
@@ -75,6 +77,15 @@ public:
     ~JZProcess();
 
     bool start(const std::string &program, const std::vector<std::string> &arguments = {});
+
+    // ---- 分离运行: 先 start(), 再 detach() 放手 ----
+    // start() 已经按 setStandardXxx* 建好了 IO(没设的才是管道), detach() 只做三件事:
+    //   停 timer、关进程句柄、把作业的 kill-on-close 摘掉(否则我们退出会把刚放手的进程带走)。
+    // 之后这个对象**不再跟踪**它: waitForFinished/readAll/exitCode 全部无意义, 只有
+    // processId() 还有效。⚠ 有托管管道时不允许 detach(那不是放手, 是剪管子)。
+    bool detach();
+    bool canDetach() const;
+    bool isDetached() const { return m_detached; }
     // 等待进程结束。等待期间**会持续读管道** —— 否则子进程写满管道缓冲区就卡死
     // (以前只 wait 不读, 输出稍大就死锁)。msecs < 0 = 无限等(QProcess 的约定)。
     bool waitForFinished(int msecs = 30000);
@@ -104,10 +115,57 @@ public:
     void setWorkingDirectory(const std::string &dir);
     std::string workingDirectory() const;
 
+    // 子进程的环境变量(覆盖/追加到本进程环境之上)。空 = 直接继承本进程环境。
+    // 用途: shell 的 `export FOO=bar` / `FOO=bar cmd` —— 变量只存在于解释器的表里,
+    // 不落到这里的话子进程根本看不见(实测 `export FOO=bar; env | grep FOO` 是空的)。
+    void setEnvironmentVariables(const std::map<std::string, std::string> &vars);
+    const std::map<std::string, std::string> &environmentVariables() const;
+
     // 上一次 start() 失败的原因（已按失败类型归类：工作目录不存在 / 找不到程序 / 拒绝访问 / 错误码 …）。
     // start() 成功时清空。⚠ 以前只回 bool，调用方只能猜，于是把"工作目录不存在"误报成"程序不存在"
     // （实测：run_js 在还没编译、build/ 尚未生成时启动，CreateProcess 回 ERROR_DIRECTORY 267）。
     std::string lastStartError() const;
+
+    // ---- 每一路的标准 IO 目标(与 QProcess 的 setStandardXxxFile 对齐) ----
+    // 一路只有一个"槽": 管道 / 文件 / 外部句柄 / 丢弃 / 转发我们的。后设的覆盖先设的。
+    // 只有 **Pipe**(默认) 才有管道: 设成其它目标后, 该路的 readAllXxx() 恒为空,
+    // 数据由目标自己接(文件、控制台、宿主给的句柄)。
+    struct ChannelTarget
+    {
+        enum Kind
+        {
+            Pipe = 0,   // 默认: 我们建管道并收集(可 readAll / waitForReadyRead)
+            File,       // 写/读到文件(不存在则建; Truncate 清空, Append 追加)
+            Handle,     // 直接用调用方给的句柄(Windows: HANDLE, POSIX: fd)
+            Null,       // 丢弃(Windows: NUL, POSIX: /dev/null)
+            Forward,    // 转发给我们自己的 fd 0/1/2(等于 Qt 的 ForwardedChannel)
+        };
+        Kind kind = Pipe;
+        std::string file;
+        bool append = false;
+        std::intptr_t handle = 0;
+    };
+    enum FileOpenMode
+    {
+        Truncate = 0,   // `> file`
+        Append = 1,     // `>> file`
+    };
+
+    void setStandardInputFile(const std::string &fileName);
+    void setStandardOutputFile(const std::string &fileName, FileOpenMode mode = Truncate);
+    void setStandardErrorFile(const std::string &fileName, FileOpenMode mode = Truncate);
+    // ⚠ 句柄是**借用**: JZProcess 不会关闭它(谁开的谁关)。要传给子进程必须可继承:
+    //   Windows 上我们启动时会替你补 HANDLE_FLAG_INHERIT; POSIX 上是 fd。
+    void setStandardInputHandle(std::intptr_t handle);
+    void setStandardOutputHandle(std::intptr_t handle);
+    void setStandardErrorHandle(std::intptr_t handle);
+    void setStandardInputNull();
+    void setStandardOutputNull();
+    void setStandardErrorNull();
+
+    const ChannelTarget &standardOutputTarget() const { return m_stdoutChan; }
+    const ChannelTarget &standardErrorTarget() const { return m_stderrChan; }
+    const ChannelTarget &standardInputTarget() const { return m_stdinChan; }
 
     void setProcessChannelMode(ProcessChannelMode mode);
     ProcessChannelMode processChannelMode() const;
@@ -162,7 +220,14 @@ private:
     ProcessChannel m_readChannel = StandardOutput;   // read()/readLine()/bytesAvailable() 看哪一路
     JZProcess *m_stdoutTarget = nullptr;             // 见 setStandardOutputProcess()
     InputChannelMode m_inputMode = ManagedInputChannel;   // 见 setInputChannelMode()
+    std::map<std::string, std::string> m_envVars;         // 见 setEnvironmentVariables()
     OutputChannelMode m_outputMode = ManagedOutputChannel;   // 见 setOutputChannelMode()
+    std::string m_program;                                  // start() 那次传进来的(program() 用)
+    std::vector<std::string> m_arguments;                   // 同上
+    ChannelTarget m_stdinChan;                              // 见 setStandardInputFile/Handle/Null
+    ChannelTarget m_stdoutChan;                             // 见 setStandardOutputFile/Handle/Null
+    ChannelTarget m_stderrChan;                             // 见 setStandardErrorFile/Handle/Null
+    bool m_detached = false;                                // 见 detach()
 };
 
 #endif

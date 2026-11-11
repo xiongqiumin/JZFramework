@@ -179,6 +179,9 @@ JZTerminalRunTool::execute(params)
 | `cancel` | kill 进程 | `m_shell->requestCancel()`（跨线程生效） |
 | `kill` 工具 | 按 `m_ownPids` 判归属 | JZShell 需要暴露外部命令的 pid，否则只能拒绝 |
 
+> 注（2026-11-11）：第 176/177 两行的文案**已删除**——提示词里不再解释"内建解释器支持哪些语法"，
+> 这类常识交给工具描述与报错反馈，避免把篇幅花在模型本来就会写的东西上。
+
 ## 7. 接口清单（要动的签名）
 
 **JZShell（新增，已部分完成）**
@@ -538,3 +541,230 @@ sh build/bench/run-matrix.sh jzshell /c/.../build/bench/jzsh $(cat /tmp/list.txt
 
 > 测量提醒：`PASS` 是"整份输出逐字节相同"，补一半语义仍然是 FAIL。
 > 判断是否有进展，除了 PASS 数，还要看 **`解析失败` 的用例数**（首轮 80 → 第二轮 10）。
+
+---
+
+# 第三部分：后台任务与进程化决策（2026-11-11）
+
+## 19. 结论
+
+**保留「进程内库调用 + 后台用线程」的现状，暂不把 JZShell 拆成独立 exe 走 IPC。**
+
+| 事项 | 结论 |
+|---|---|
+| JZShell 与 agent 的关系 | 继续同进程（lib 调用），不做 `--serve` 进程化 |
+| `cmd &` 的后台执行 | 外部命令 → 分离进程；函数/复合命令/管道/脚本 → **线程**（模拟 fork） |
+| 审核策略归属 | 路径判定只用终端的 `m_config`（静态 `checkReadIn/checkWriteIn`）；程序审调 shell 里的 policy（见 §29）|
+| 为什么线程可接受 | CLI 与 code_agent 都是常驻进程，线程生命周期跟随进程；不需要跨进程同步 |
+| 什么情况下才回头做 IPC | 需要「shell 崩溃不拖垮 agent」或「agent 重启后会话仍在」时（见 §27） |
+
+## 20. 背景：本来要解决什么
+
+`cmd &` 之前是"当分隔符、同步执行"，等于没有后台。补上之后有两种实现路线：
+
+- **路线 A（进程化）**：JZShell 编译成独立 exe，`JZVirtualTerminal` 通过 `JZLocalSocket` 通信；
+- **路线 B（当前采用）**：仍然库调用；后台任务按"能否直接 exec"分档，实在不能的用线程。
+
+## 21. 现在的实现：后台任务分两档
+
+| 写法 | 走哪条 | 有无线程 | pid |
+|---|---|---|---|
+| `./server &`、`python app.py &`（纯外部命令）| `JZProcess::start()` + `detach()` | 无 | 真实 pid |
+| `f1 &`（函数）、`{ ...; } &`（复合命令）、`a \| b &`、`./x.sh &`（脚本文件）| 复制一份 `JZShell` 状态 + `JZTaskThread` | 1 个 | 慢路径没有 pid |
+
+要点：
+
+- 输出的去向**由命令自己的重定向决定**：`cmd > log 2>&1 &` 写文件（边跑边写），没重定向就丢弃
+  （父 shell 已回包，那一路没有接收者）；
+- `nosuchcmd &` 与 bash 一致：**父 shell** 打 `command not found`，退出码仍是 0（不触发 `set -e`）；
+- 慢路径跑完把**没被重定向掉**的 stderr 打到进程 stderr（bash 的后台 stderr 也是终端）。
+
+## 22. 为什么后台不用"新拉一个 shell"
+
+bash 的标准做法是 `fork()`：子进程是**内存镜像副本**，函数表、变量、别名、cwd、选项全在。
+如果改成 `jz_shell -c "<原文>"`，等于 `fork+exec` 的语义：
+
+| 状态 | fork（bash 标准） | 新 shell 进程 |
+|---|---|---|
+| 函数 `f1` | ✅ | ❌ 找不到（除非 `export -f`）|
+| 未 export 的变量 `x=1; echo $x &` | ✅ 打印 1 | ❌ 空 |
+| 别名 / `set -e` / `shopt` | ✅ | ❌ 丢 |
+| cwd | ✅ | ⚠️ 要靠 `--cwd` 传 |
+
+`f1 &` 这种用例，函数体本身就是要执行的东西，新 shell 里根本不存在。Windows 没有 fork，
+`RtlCloneUserProcess` 是未文档化 API 不能上生产，所以**线程 + 状态副本**是"内存镜像复制"
+的等价替代（Git Bash 走的是 Cygwin 在用户态复制地址空间的 fork 模拟，代价是几十 MB 级拷贝）。
+
+## 23. 为什么暂不进程化（四个硬问题 + 一个前置风险）
+
+接口面其实很小——`JZVirtualTerminal.cpp` 对 `m_shellImpl` 只有 12 处调用，执行的唯一入口是
+`sh->exec(cmd)`。真正的成本在这四点：
+
+**P1（硬约束）`policy()` 不能跟着 shell 走。** `JZVirtualTerminal::checkRead/checkWrite`
+是给 `JZCodeTools` 的文件工具用的（判断路径能不能读写），它不经过 shell。policy 搬进 exe，
+文件工具就失去审核能力。→ **2026-11-11 已拆开：路径判定只用 config（静态函数），程序审仍调 shell，见 §29。**
+
+**P2（安全）`cwd` 不同步会让路径审核错位。** 现在 `checkExec(head, argv, base)` 的 base 来自
+终端自己的 `m_cwd`；进程化后 `cd` 发生在 shell 进程里，agent 用旧 cwd 判定 → 可能放行本该
+拒绝的 `rm x`。
+
+**P3 输出要改成流式。** 现在 `exec()` 一次性回包，而"超时被杀前保留已输出内容"依赖同一个
+对象里的缓冲；进程化后必须有 `{id,stream,data}` 流式回传，否则长命令在超时前什么都拿不到。
+
+**P4 exe 缺失 = 终端全废。** 现在 lib 永远不会缺；改成 exe 后打包遗漏/杀软拦截/路径不对，
+`terminal_run` 直接不可用，需要明确的降级策略。
+
+**前置风险：`JZLocalSocket` 还没测过。** 它 Windows 上走 `AF_UNIX`（Win10 1803+）或回退
+`127.0.0.1`，嵌入式还会退化成"进程内全局变量"，且没有粘包/断线/大消息的测试。
+
+## 24. 为什么线程方案在常驻进程里是合适的
+
+- `jz_shell`（CLI）和 `code_agent` 都是**常驻进程**，后台线程的生命周期跟着进程走，
+  不需要"跨进程存活"这种语义；
+- 线程方案让 `f1 &`、`{ ...; } &`、`a | b &` 全部可用，代价只有一条：
+  **进程退出时线程可能还在跑**（见 §25 的 `finish()`）；
+- 线程里跑外部命令必须用 `JZTaskThread`（`JZProcess` 建定时器时会校验当前线程是
+  `JZApplication` 登记的 `JZThread`，裸 `std::thread` 直接 assert 崩溃）。
+
+## 25. 已落实的实现要点
+
+| 位置 | 做法 |
+|---|---|
+| `JZProcess` | 每路 IO 一个 `ChannelTarget`（`Pipe/File/Handle/Null/Forward`），后设覆盖先设；`setStandardXxxFile(path, Truncate\|Append)` / `...Handle(intptr_t)`（借用，不关）/ `...Null()` |
+| `JZProcess::start()` | 尊重上述设置：设了文件/句柄/NUL 的那一路不建管道；**同名文件复用同一句柄**（否则 2>&1 两路各自从 0 写互相覆盖）|
+| `JZProcess::detach()` | 纯应用层放手：`killTimer` + 摘掉作业的 `KILL_ON_JOB_CLOSE` + 关句柄；有托管管道时 `canDetach()` 为 false |
+| 句柄继承 | `STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST`，只继承三个目标句柄（否则宿主的管道写端被继承，退出时等不到 EOF）|
+| `JZShell::spawnBackground` | 快路径 `start()+detach()`；慢路径 `forkForBackground()` + `JZTaskThread` |
+| `JZShellMain` | `finish(rc)`：还有后台任务在跑就 `fflush` 后 `_exit(rc)`（`~JZApplication` 断言线程表为空，不能正常析构）|
+| `exec` 内建 | 执行完置 `m_exiting/m_exitCode`（bash 的 exec 是替换进程，后面的语句不再执行）|
+
+## 26. 已知限制（写下来，免得以后争论）
+
+- **`wait` 是空操作**：`f1 &; wait; echo $?` 拿不到函数返回值（bash 是 5，我们是 0）。
+- **慢路径的后台任务不跨进程**：agent 退出即消失；`terminal_cancel` 也管不到（副本的
+  `m_cancelRequested` 是独立的）；它内部起的外部命令仍挂在带 `KILL_ON_JOB_CLOSE` 的作业上。
+- **脚本文件后台目前也走慢路径**（`./x.sh &` 应该是一个子进程，语义上更接近 bash，待优化）。
+- **`_exit` 绕过静态析构**：有后台任务在跑时进程直接退出，不做全局清理。
+- **函数后台的半成品语义**：`$!` 没有值、不能 kill —— 这也是"必要时可以砍掉 `f1 &`"的依据。
+
+## 27. 如果将来要进程化：路线
+
+前置：先补 `test_localsocket`，至少覆盖 echo 往返、4MB 单条消息（粘包）、客户端断开、
+服务端被杀、两客户端并发、Windows 强制走 `127.0.0.1` 回退。
+
+```
+阶段 0  test_localsocket（6 条）                       ← 没有它，后面都是空中楼阁
+阶段 1  抽 IJZShellBackend（exec/cancel/配置下发）
+        InProcBackend 包住现有 JZShell → 52 个用例仍须 12 PASS（零回归保险）
+阶段 2  OutProcBackend：LocalSocket + 流式输出 + cwd 回传
+        同一批用例逐条对比输出（不只看 PASS/FAIL）
+阶段 3  删 InProcBackend，JZShell 从 agent_tool 移出，编译成独立 exe 并纳入发布包
+```
+
+进程化时必须先回答：
+
+1. **policy 放哪**：A 只留 agent（能力等于现在，P2 的洞补不上）；B 两份 + 配置下发（正确但复杂）。
+2. **一终端一进程，还是一进程多会话**：前者最简单（`cwd/env` 天然隔离），后者要 `session_id` 路由。
+
+建议：把"审核下沉到执行层"当成**独立事项**，不要和进程化捆在一起——两个变量同时动，
+出问题无法定位。
+
+## 28. 回归基线（2026-11-11 实测）
+
+| 项 | 结果 | 说明 |
+|---|---|---|
+| bash-5.2 矩阵（48 个 target） | **PASS=12** | 直接以 `jz_shell.exe` 作为 `$THIS_SH`；`results/jzshell-v48.tsv` |
+| 逐例退出码扫描（48 个） | 无 rc≥128、无 FATAL | 唯一异常是 `run-func` 超时（用例自身卡住）|
+| `test_terminal_tools` | fail=32 | **既有失败**（stash 到父提交后对比一致，非本轮引入）|
+| `test_sharedmem` | ALL PASS | 含跨进程 attach |
+
+跑法（**不要把 `jzsh` 包装脚本加回来**：多一层 bash 会改变环境，`run-parser`/`run-lastpipe`
+会因此对不上期望）：
+
+```bash
+cd build/bench
+CAP=20 ./run-targets.sh <label>
+# run-targets.sh 自己读 targets.txt, 内部等价于:
+# ./run-matrix.sh <label> /c/.../build/test/bin/Debug/jz_shell.exe $(cat targets.txt)
+```
+
+## 29. 审核分层：一份 config + 一份 policy（2026-11-11）
+
+### 29.1 问题
+
+同一个 `JZShellPolicy` 之前被两件不相关的事共用：
+
+| 谁在问 | 问的是什么 | 走哪条路 |
+|---|---|---|
+| `JZCodeTools` 的文件工具 | 这个**路径**能不能读/写（目录边界、读写区域）| 不经过 shell |
+| 终端跑命令前 | 这个**程序/参数**能不能执行（白名单、危险参数、安全底线）| 经过 shell |
+
+前者只需要**配置**（zone / permissions），跟程序表、可信程序、危险参数毫无关系；
+后者才需要完整的 policy 引擎。
+
+### 29.2 现在的形态
+
+```
+JZVirtualTerminal
+ ├─ m_config        ← JZVirtualTerminalConfig（只做路径判定，见 checkReadIn/checkWriteIn）
+ └─ m_shellImpl     ← JZShell，唯一一份 JZShellPolicy，只给"执行前审"用
+```
+
+- **不放 policy 对象**：`JZVirtualTerminal` 只留 `m_config`；
+- 文件工具/路径判定走静态函数（不需要程序表）：
+
+  ```cpp
+  JZShellPolicy::checkReadIn(m_config, path);
+  JZShellPolicy::checkWriteIn(m_config, path);
+  ```
+
+- **程序/参数审核直接调 shell**：`policy()` 返回 `m_shellImpl->policy()`
+  （`checkExec` / `checkCriticalFloor` / `resolvePath` 都走它）；
+- `setTerminalConfig()` 同时做两件事：`m_config = config` + `policy().setConfig(config)`。
+
+### 29.3 验证
+
+| 项 | 结果 |
+|---|---|
+| `test_code_tools`（文件工具 + 审核）| ALL PASS (fail=0) |
+| `test_terminal_tools` | ALL PASS (fail=0)（已按"单前台、无 run_id"重写）|
+| 行为变化 | 无（入口审核仍在 `JZVirtualTerminal::run`，判定逻辑同一份）|
+
+### 29.4 还没做的
+
+`JZShell` 里那份 policy 目前**只有配置、没有调用点**（`m_policy` 仅出现于
+`setBaseCwd`）。等"审核下沉"（展开 argv 之后再审，覆盖 `$CMD` / alias / `rm *` /
+`eval` / `source` / `$( )`）落地时，调用点加在 `runSimple` 展开之后、`runExternal`
+之前——那时它才真正开始工作。
+
+### 29.5 顺带删掉的终端接口（同日）
+
+终端不再有"外部 shell"这一层（命令由内建 `JZShell` 直接解释），也不再自持程序表：
+
+| 删掉 | 替代 |
+|---|---|
+| `setShellProgram()` / `shellProgram()` | 无；固定内建解释器。`terminal.shellProgram` 只给 verify 脚本选解释器 |
+| `setTrustedPrograms()` / `trustedPrograms()` | `JZVirtualTerminalConfig::programPaths` |
+| `addProgram()` / `availablePrograms()` | 同上：`JZShellPolicy::setConfig()` 按 `programPaths` 补白名单 |
+
+`ack.shell` 与启动日志里的 shell 字段固定上报 `jz_shell(内建)`。
+
+### 29.6 删掉运行记录 / run_id / terminal_query（2026-11-11）
+
+终端本来就是**单前台任务**（一次只有一条命令），"运行记录 + run_id + 增量查询"这套是为
+早先的并发模型建的，此后一直空转。现在整条链路删掉：
+
+| 删掉 | 现在 |
+|---|---|
+| `terminal_query` 工具（本地 / MCP / remote_ssh 的 `action=query`）| 没有。要看日志就让命令自己重定向(`> log 2>&1 &`)再 `cat`/`read_file` |
+| `JZVirtualTerminal::run()` 返回的 run_id | 返回 `JZResult<void>`（成功 = 已开始）|
+| `runSnapshot` / `runIds` / `advanceRunReadPos` / `activeRunId` / `RunRecord` / `RunRecordInfo` | 全删；只留一份在途 `RunTask`（命令 + 累积输出 + 回调）|
+| `terminal_cancel` 的 `run_id` 参数 | 无参：停的就是当前那一条 |
+| `RunTask` 按 runId 查找 | 单任务，直接取"唯一那条" |
+| `NodePack_termQuery` | 协议包保留但节点只回一条"不再保留运行记录"，避免旧 cli 等 10s 超时 |
+
+上下文阀（32KB 只回末尾）的提示行也改了：不再指路 `terminal_query`，改成
+"自己 `| tail -50` 或重定向到文件再 read_file"（终端不再替你留全量日志）。
+
+`test_terminal_tools` 同步重写（原来一半用例在测 query/run_id）：现在覆盖
+前台回包、错误分支、`&` 后台、单前台互斥、cancel、上下文阀、全新终端 —— **ALL PASS**。

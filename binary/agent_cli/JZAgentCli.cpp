@@ -216,6 +216,7 @@ void JZCliToolHost::refresh()
         m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
         m_terminalConfig.allowNetwork = m_config->allowNetwork;
         m_terminalConfig.programPaths = m_config->programPaths;
+        m_terminalConfig.env = m_config->env;
     }
 }
 
@@ -532,8 +533,6 @@ void JZAgentCli::setupAgent()
     m_terminal = new JZVirtualTerminal(this);
     m_terminal->setId("default");
     m_terminal->setTerminalConfig(m_host.toolTerminalConfig());
-    if (!m_config.shellProgram.empty())
-        m_terminal->setShellProgram(m_config.shellProgram);
     if (m_config.recycleSec > 0)
         m_terminal->setRecycleMs(m_config.recycleSec * 1000);
 
@@ -552,7 +551,6 @@ void JZAgentCli::setupAgent()
         //   两套 shell 规则（cmd 认 dir/echo 却不认 bash 语法、也不认 tsc/code_runtime 短名）,
         //   模型在里面敲 `tsc` 只会得到 "'tsc' 不是内部或外部命令"。执行面统一收敛到 terminal_run。
         addTool(new JZTerminalRunTool(m_terminal));
-        addTool(new JZTerminalQueryTool(m_terminal));
         addTool(new JZTerminalCancelTool(m_terminal));
         addTool(new JZTerminalOpenTool(m_terminal));
         addTool(new JZTerminalListTool(m_terminal));
@@ -864,9 +862,8 @@ string JZAgentCli::buildSystemPrompt() const
     text += "Available tools:\n";
     if (m_config.allowTerminal)
     {
-        text += "  terminal_run    执行一条 shell 命令(命令整条交给 shell: 管道/重定向/串联/通配符/变量都生效; 同一会话可同时跑多条)。\n";
-        text += "  terminal_query  按 run_id 查一次运行的状态与日志(run_id 省略 = 最近一次运行; 后台起的、前台跑完的都能查)。\n";
-        text += "  terminal_cancel 按 run_id 停掉一条还在跑的命令(run_id 省略 = 最近一条在跑的)。\n";
+        text += "  terminal_run    执行一条 shell 命令(命令整条交给 shell: 管道/重定向/串联/通配符/变量都生效; 一次一条)。\n";
+        text += "  terminal_cancel 停掉当前正在跑的那条命令(单前台任务, 不需要参数)。\n";
         text += "  terminal_open / terminal_list / terminal_close   多会话管理(单终端场景下可不用)。\n";
     }
     if (m_config.allowFileTools)
@@ -886,9 +883,8 @@ string JZAgentCli::buildSystemPrompt() const
         text += "  memory         跨任务长期记忆: read / append / replace (" + memoryFilePath() + ")。\n";
     if (!m_config.nodes.empty())
     {
-        text += "  remote_ssh     远端节点上的 terminal(host 省略 = 默认节点)。action=run 跑命令"
-                "(background=true 立刻返回 run_id), action=query 按 run_id 查状态/日志, action=cancel 停掉;"
-                " run_id 带节点前缀(如 line1:r3)。\n"
+        text += "  remote_ssh     远端节点上的 terminal(host 省略 = 默认节点): 跑一条命令、同步返回输出。"
+                "后台写 `&` + 重定向, 之后 cat 日志。\n"
                 "                 远端是**有状态的 shell**(cd/export 跨命令保留), 但节点单前台串行;"
                 " 远端改文件/拷文件都靠它。\n";
         for (const JZCliNodeConfig &nc : m_config.nodes)
@@ -896,22 +892,6 @@ string JZAgentCli::buildSystemPrompt() const
                     + (nc.isDefault ? "  [默认]" : "") + "\n";
     }
     text += "\nShell notes (important):\n";
-    if (m_terminal && !m_terminal->shellProgram().empty())
-    {
-        // 把探测到的 shell 告诉模型: 是 bash 才敢用 bash 专有语法; 回退成 sh 时得写 POSIX,
-        // 否则模型会一直撞"语法错误"然后换做法(它自己意识不到解释器换了)。
-        const string shell = m_terminal->shellProgram();
-        const bool isBash = str_toLower(shell).find("bash") != string::npos;
-        text += "  - 命令交给 " + shell + " 解释("
-                + (isBash ? "bash: `[[ ]]`、数组、`local`、`source` 都能用"
-                          : "POSIX sh: 用 `[ ]` 而不是 `[[ ]]`, 用 `.` 而不是 `source`")
-                + ")。脚本自身看它的 shebang; 没有 shebang 时也按这个 shell 解释。\n";
-    }
-    text += "  - 每条命令都是一个新 shell: 要进目录执行写 `cd <dir> && <cmd>`; "
-            "单独的 `cd` 会被拒绝。cd/export 不跨命令保留。\n";
-    text += "  - heredoc、管道、`$( )`/反引号、进程替换都能用; 但审核只看**能静态解析出来的命令**"
-            "(白名单 / 区域权限 / 危险指令), 藏在 `$( )` 或 heredoc body 里的命令不审、按可信处理。\n";
-    text += "  - 不支持后台 `&`、nohup/setsid、for/while/if 复合语句。\n";
     // "起服务再测"怎么跑必须说清楚: 模型容易给服务器那条一个很长的 timeout_ms 然后前台干等 ——
     // 那条要挂满超时才回(中途取不到输出), 而且超时那一刻服务就被杀掉了。正确做法是 background=true。
     text += jzTerminalRunNotes();
@@ -1072,7 +1052,7 @@ private:
     JZAgentCli *m_cli;
 };
 
-// 路由处理器: 后台任务面板(GET /terminal, GET /terminal/log, POST /terminal/cancel)
+// 路由处理器: 终端面板(GET /terminal, POST /terminal/cancel)
 class TerminalListHandler : public JZHttpHandler
 {
 public:
@@ -1080,18 +1060,6 @@ public:
     void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
     {
         m_cli->onTerminalList(client, req);
-    }
-private:
-    JZAgentCli *m_cli;
-};
-
-class TerminalLogHandler : public JZHttpHandler
-{
-public:
-    explicit TerminalLogHandler(JZAgentCli *cli) : m_cli(cli) {}
-    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
-    {
-        m_cli->onTerminalLog(client, req);
     }
 private:
     JZAgentCli *m_cli;
@@ -1146,7 +1114,6 @@ void JZAgentCli::startHttp()
 
     // 后台任务面板(网页): 列运行 / 取日志 / 停一条 —— 人想"看看服务在打什么"时不用去问模型
     m_http->addRoute("/terminal", new TerminalListHandler(this));
-    m_http->addRoute("/terminal/log", new TerminalLogHandler(this));
     m_http->addRoute("/terminal/cancel", new TerminalCancelHandler(this));
     if (!m_http->listen(m_config.httpBind, m_config.httpPort))
         jzWarning() << "HttpServer 监听失败:" << m_config.httpBind << ":" << m_config.httpPort;
@@ -1390,104 +1357,17 @@ void JZAgentCli::onTerminalList(JZHttpServerClient *client, const JZHttpRequest 
         return;
     }
 
-    Json::Value arr(Json::arrayValue);
-    int running = 0;
+    // 单前台任务: 没有"运行记录"可列, 只回当前状态(网页那一栏据此显示是否在跑)
+    Json::Value r;
+    r["running"] = (m_terminal && m_terminal->isRunning()) ? 1 : 0;
+    r["runs"] = Json::Value(Json::arrayValue);
     if (m_terminal)
     {
-        running = m_terminal->isRunning() ? 1 : 0;
-        int64_t now = JZPlatform::getTickCountMs();
-        std::vector<std::string> ids = m_terminal->runIds();   // 按发生先后
-        // 新的在前, 最多 30 条(网页那一栏放不下更多; 逐条日志要单独取)
-        for (size_t i = ids.size(); i-- > 0 && arr.size() < 30;)
-        {
-            JZVirtualTerminal::RunRecordInfo info;
-            if (!m_terminal->runSnapshot(ids[i], info))
-                continue;
-            int64_t end = info.endTime > 0 ? info.endTime : now;
-            Json::Value o;
-            o["run_id"] = info.runId;
-            o["command"] = info.command;
-            o["status"] = info.status;
-            o["background"] = info.background;
-            o["pid"] = info.pid;
-            o["exit_code"] = info.exitCode;
-            o["timed_out"] = info.timedOut;
-            o["error"] = info.error;
-            o["elapsed_ms"] = (Json::Int64)(end - info.startTime);
-            o["lines"] = (Json::UInt)info.totalLines;
-            arr.append(o);
-        }
+        r["session"] = m_terminal->id();
+        std::string cwd;
+        if (m_terminal->printDir(cwd))
+            r["cwd"] = cwd;
     }
-
-    Json::Value r;
-    r["running"] = running;
-    r["runs"] = arr;
-    sendJson(client, 200, r);
-}
-
-void JZAgentCli::onTerminalLog(JZHttpServerClient *client, const JZHttpRequest &req)
-{
-    if (!checkToken(req))
-    {
-        sendJson(client, 401, Json::objectValue);
-        return;
-    }
-
-    std::string runId = req.queryParam("run_id");
-    JZVirtualTerminal::RunRecordInfo info;
-    if (!m_terminal || runId.empty() || !m_terminal->runSnapshot(runId, info))
-    {
-        Json::Value e;
-        e["error"] = "没有这个 run_id: " + runId;
-        sendJson(client, 404, e);
-        return;
-    }
-
-    int tail = atoi(req.queryParam("tail").c_str());
-    if (tail <= 0)
-        tail = 200;
-    std::string grep = req.queryParam("grep");
-    std::string stream = str_toLower(req.queryParam("stream"));
-    if (stream == "all")
-        stream.clear();
-
-    // 与模型侧的 terminal_query 同一套过滤, 但**不碰增量游标**(那是模型的读位置, 网页别去动它)
-    const size_t kMaxBytes = 64 * 1024;
-    std::string text;
-    size_t shown = 0;
-    size_t from = 0;
-    if (info.log.size() > (size_t)tail)
-        from = info.log.size() - (size_t)tail;
-    for (size_t i = from; i < info.log.size(); i++)
-    {
-        const JZVirtualTerminal::RunLogLine &l = info.log[i];
-        if (!stream.empty() && l.stream != stream)
-            continue;
-        if (!grep.empty() && l.text.find(grep) == std::string::npos)
-            continue;
-        std::string one = l.stream + "| " + l.text + "\n";
-        if (text.size() + one.size() > kMaxBytes)
-        {
-            text += "...(日志过大, 只显示到这里; 用 grep 缩小范围)\n";
-            break;
-        }
-        text += one;
-        shown++;
-    }
-
-    Json::Value r;
-    r["run_id"] = info.runId;
-    r["command"] = info.command;
-    r["status"] = info.status;
-    r["exit_code"] = info.exitCode;
-    r["timed_out"] = info.timedOut;
-    r["background"] = info.background;
-    r["pid"] = info.pid;
-    r["total_lines"] = (Json::UInt)info.totalLines;
-    r["shown"] = (Json::UInt)shown;
-    r["dropped"] = (Json::UInt)info.firstLine;    // 记录上限丢掉的更早行数
-    r["truncated"] = (from > 0);
-    r["text"] = text;
     sendJson(client, 200, r);
 }
 
@@ -1499,37 +1379,21 @@ void JZAgentCli::onTerminalCancel(JZHttpServerClient *client, const JZHttpReques
         return;
     }
 
-    std::string runId = req.queryParam("run_id");
-    if (runId.empty())
-    {
-        // 也允许 POST body: {"run_id":"xxx"}
-        Json::Value root;
-        Json::Reader reader;
-        if (reader.parse(std::string(req.body().data(), req.body().size()), root) && root.isObject())
-            runId = root.get("run_id", "").asString();
-    }
-
+    (void)req;
     bool ok = false;
     int killed = 0;
     if (m_terminal)
     {
-        if (!runId.empty())
-            ok = m_terminal->cancel();
-        else
-        {
-            killed = m_terminal->cancel() ? 1 : 0;   // 没指定 runId = 停当前那条(网页"全停")
-            ok = (killed > 0);
-        }
+        killed = m_terminal->cancel() ? 1 : 0;   // 单前台任务: 停的就是当前那条
+        ok = (killed > 0);
     }
 
     Json::Value r;
     r["ok"] = ok;
-    r["run_id"] = runId;
     r["killed"] = killed;
     if (ok)
     {
         Json::Value e;
-        e["run_id"] = runId;
         e["killed"] = killed;
         pushEvent("terminal_cancel", e);   // 其它开着的页面也刷新一下
     }
@@ -1996,7 +1860,8 @@ void JZAgentCli::runVerifyAsync(const std::string &cmd, int timeoutMs, const std
     //   解析跟 sh 完全不同(JZProcess 会给含空格的参数加引号), 拼进去轻则 cd 失败、
     //   重则整条命令被读错 —— 这也是旧 popen 那条链路的隐藏坑。
     // 解释器与旧 popen 保持一致: Windows = cmd.exe /c, POSIX = /bin/sh -c
-    // (配了 terminal.shellProgram 就用它, 好跟终端行为对齐)。
+    // (配了 terminal.shellProgram 就用它)。
+    // ⚠ 这条只给 verify 脚本用: 终端里的命令走内建 JZShell, 跟这个配置无关。
     std::string run = cmd + " 2>&1";
     std::string shell;
     std::vector<std::string> args;

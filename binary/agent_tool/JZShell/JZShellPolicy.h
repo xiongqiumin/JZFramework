@@ -56,6 +56,12 @@ public:
     // ==================== 审核: 唯一入口 ====================
     Verdict checkRead(const std::string &path) const;
     Verdict checkWrite(const std::string &path) const;
+    // 只要一份 config 就能判的"这个路径能不能读/写"(文件工具用)。
+    // 它不依赖程序白名单/可信程序, 所以宿主(如 JZVirtualTerminal)只存一份
+    // JZVirtualTerminalConfig 就够了, 不必为了文件审核再new一个 policy 对象;
+    // "执行前审"(checkExec/dangerousArg/安全底线)才需要 policy, 那份在 JZShell 里。
+    static Verdict checkReadIn(const JZVirtualTerminalConfig &cfg, const std::string &path);
+    static Verdict checkWriteIn(const JZVirtualTerminalConfig &cfg, const std::string &path);
     Verdict checkExec(const std::string &program) const;
     // base: 审核时解析相对路径用的基准目录, 空 = 用 baseCwd()(再空则工作区根)。
     // `cd X && cmd` 这种, shell 会真的 chdir 过去, 静态检查必须跟着走进去,

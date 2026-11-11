@@ -312,8 +312,8 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
 
     // loop(循环检测: 工具重复调用 + 思考/回复原地打转 -> 直接中止本轮)
     //   工具侧: 结果也相同 = 证据更强, 阈值更低; 结果不同可能只是合法轮询(等编译/等运行)。
-    //   轮询类工具(terminal_query/terminal_list)用 pollRepeat/pollSameResult 单独放宽 ——
-    //   提示词本身就教模型"用 terminal_query 反复查进度", 用主阈值会误杀。
+    //   轮询类工具(terminal_list)用 pollRepeat/pollSameResult 单独放宽 ——
+    //   反复看"终端在不在跑"是正常用法, 用主阈值会误杀。
     //   输出侧: 同一行刷屏 / 同一段反复 / 周期串复读。
     readConfigBool(root, "loop", "enabled", "loopDetect", config.loopDetect);
     readConfigInt(root, "loop", "window", "loopWindow", config.loopWindow);

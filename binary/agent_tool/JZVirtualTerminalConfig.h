@@ -110,6 +110,12 @@ struct JZVirtualTerminalConfig
     //   ⚠ 名字用小写, 与命令里写的名字一致; 路径必须是可执行文件本身(不是目录)。
     std::map<std::string, std::string> programPaths;
 
+    // ---- 基础环境变量(导出给子进程) ----
+    // 与脚本里的 `export FOO=bar` 等效: 之后每条外部命令都能看到。
+    // 典型用途: 把"评测输入文件路径"这类上下文交给运行时(`JZ_CASE_INPUT`),
+    // 免得把输入写进工程目录(模型会删、会顺着 `..` 翻别人的)。
+    std::map<std::string, std::string> env;
+
     // ---- 目录边界 ----
     ZoneConfig zone;
 

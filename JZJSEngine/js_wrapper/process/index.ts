@@ -34,7 +34,13 @@ export const argv: string[] = __jz.process.argv();
 /** 见文件头: 参数与退出码规则对齐 Node(校验在引擎侧同一份实现里) */
 export function exit(code?: number | string | null): void { __jz.process.exit(code); }
 
-const processObj: any = { cwd, execPath, platform, argv, exit };
+/**
+ * 进程环境(对齐 Node 的 process.env): 读走进程环境, **写也真写进进程环境**
+ * (之后起的子进程能继承)。已知差异: 只枚举初始化那一刻就存在的键, 脚本新加的键不穿透。
+ */
+export const env: { [key: string]: string | undefined } = __jz.process.env();
+
+const processObj: any = { cwd, execPath, platform, argv, exit, env };
 
 // exitCode: Node 里是**可读写属性**(不是函数) ⇒ 用访问器挂上去
 Object.defineProperty(processObj, 'exitCode', {

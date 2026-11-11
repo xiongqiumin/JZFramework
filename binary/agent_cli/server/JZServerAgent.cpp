@@ -258,7 +258,7 @@ string JZServerAgent::buildSystemPrompt() const
        << "你能做三类事:\n"
        << "1. 看集群: server_agents 列出在线 cli(忙闲/节点/工作区)与本机子进程;\n"
        << "2. 派活: server_task_submit 把任务发给某台 agent(异步), server_task_query 查进度和结果;\n"
-       << "3. 本机操作: terminal_run / terminal_query / terminal_cancel / read_file / get_datetime。\n\n"
+       << "3. 本机操作: terminal_run / terminal_cancel / read_file / get_datetime。\n\n"
        << "注意:\n"
        << "- 远端 agent 有它自己的工作区和权限, 你看不到它的文件, 只能通过任务把活交给它;\n"
        << "- 派任务后不要空转轮询: 用 server_task_query 有节奏地查, 或者先把 taskId 报给用户;\n"
@@ -311,7 +311,6 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
     m_terminal->setId("server");
     m_terminal->setTerminalConfig(m_toolHost->toolTerminalConfig());
     m_agent->addTool(new JZTerminalRunTool(m_terminal));
-    m_agent->addTool(new JZTerminalQueryTool(m_terminal));
     m_agent->addTool(new JZTerminalCancelTool(m_terminal));
     auto *readFile = new JZReadFileTool();
     readFile->setHost(m_toolHost.get());

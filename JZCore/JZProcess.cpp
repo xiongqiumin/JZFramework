@@ -58,7 +58,50 @@ static string winQuoteArg(const string &arg)
     return out;
 }
 
-static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+// 打开一个"可继承"的输出文件句柄; 路径为空 = 丢弃, 接到 NUL。
+static HANDLE openDetachedSink(const string &file, SECURITY_ATTRIBUTES *sa)
+{
+    const char *path = file.empty() ? "NUL" : file.c_str();
+    const DWORD access = file.empty() ? GENERIC_WRITE : FILE_APPEND_DATA;
+    const DWORD disposition = file.empty() ? OPEN_EXISTING : OPEN_ALWAYS;
+    return CreateFileA(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, sa, disposition,
+                       FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+// 子进程环境块(ANSI): 本进程环境打底, 再用 vars 覆盖 —— 与 createProcess 的语义一致
+// (`export FOO=bar; ./server &` 里 server 必须看得到 FOO)。
+static string buildEnvBlockAnsi(const map<string, string> &vars)
+{
+    map<string, string> merged;
+    LPCH cur = GetEnvironmentStringsA();
+    if (cur)
+    {
+        for (LPCH p = cur; *p; p += strlen(p) + 1)
+        {
+            const char *eq = strchr(p, '=');
+            if (eq && eq != p)   // 跳过 "=C:=..." 这类特殊项
+                merged[string(p, (size_t)(eq - p))] = string(eq + 1);
+        }
+        FreeEnvironmentStringsA(cur);
+    }
+    for (const auto &kv : vars)
+        merged[kv.first] = kv.second;
+    string block;
+    for (const auto &kv : merged)
+    {
+        block += kv.first;
+        block += '=';
+        block += kv.second;
+        block.push_back('\0');
+    }
+    block.push_back('\0');
+    return block;
+}
+
+static bool startDetachedProcess(const string &program, const vector<string> &arguments,
+                                 const string &workingDirectory, const string &outputFile,
+                                 const string &errorFile, const map<string, string> &env,
+                                 bool takeIo, int *pid)
 {
     // 与 createProcess 相同的引号规则(见 winQuoteArg)
     string programToken = program;
@@ -73,32 +116,93 @@ static bool startDetachedProcess(const string &program, const vector<string> &ar
     ZeroMemory(&si, sizeof(STARTUPINFO));
     si.cb = sizeof(STARTUPINFO);
 
-    // 分离进程: 不创建管道, bInheritHandles = FALSE
+    // takeIo = "接管 IO": 没给文件的那一路就是丢弃(接 NUL)。
+    const bool redirect = takeIo;
+    HANDLE hOut = nullptr;
+    HANDLE hErr = nullptr;
+    HANDLE hIn = nullptr;
+    if (redirect)
+    {
+        // 输出文件句柄必须**可继承**: 子进程直接往里写, 我们这边不读管道。
+        // 共享读: 宿主可以同时 tail/type 这个文件(后台任务的常规用法)。
+        SECURITY_ATTRIBUTES sa;
+        ZeroMemory(&sa, sizeof(sa));
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        hOut = openDetachedSink(outputFile, &sa);
+        if (hOut == INVALID_HANDLE_VALUE)
+        {
+            hOut = nullptr;
+            jzError() << "startDetached: CreateFile failed. file:" << outputFile
+                      << " err:" << (int)GetLastError();
+            return false;
+        }
+        if (errorFile == outputFile)
+            hErr = hOut;   // `2>&1` / `&>`: 同一个句柄, 两路顺序由内核保证
+        else
+        {
+            hErr = openDetachedSink(errorFile, &sa);
+            if (hErr == INVALID_HANDLE_VALUE)
+                hErr = nullptr;
+        }
+        // 后台任务的 stdin 是 /dev/null(bash 在没有作业控制时也是这么做的):
+        // 否则子进程可能读走宿主/父 shell 的输入。
+        hIn = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                          OPEN_EXISTING, 0, nullptr);
+        if (hIn == INVALID_HANDLE_VALUE)
+            hIn = nullptr;
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = hIn;
+        si.hStdOutput = hOut;
+        si.hStdError = hErr ? hErr : hOut;
+    }
+
+    // 分离进程: 不创建管道。接管 IO 时才继承句柄(要的就是那几个句柄)。
     const char *appName = JZDir::isAbsolutePath(program) ? program.c_str() : nullptr;
+    const BOOL inherit = redirect ? TRUE : FALSE;
+    const DWORD flags = redirect ? CREATE_NO_WINDOW : 0;
+    // 没设过环境变量就传 nullptr 直接继承(与 createProcess 一致)
+    const string envBlock = env.empty() ? string() : buildEnvBlockAnsi(env);
+    void *envPtr = envBlock.empty() ? nullptr : (void *)const_cast<char *>(envBlock.data());
     BOOL success;
     if (!workingDirectory.empty())
     {
         string work_dir = workingDirectory;
         str_replace(work_dir, "/", "\\");
-        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, FALSE, 0, nullptr,
-                                 work_dir.c_str(), &si, &pi);
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, inherit, flags,
+                                 envPtr, work_dir.c_str(), &si, &pi);
     }
     else
     {
-        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, FALSE, 0, nullptr,
-                                 nullptr, &si, &pi);
+        success = CreateProcessA(appName, const_cast<char *>(cmdLine.c_str()), nullptr, nullptr, inherit, flags,
+                                 envPtr, nullptr, &si, &pi);
     }
 
     if (!success)
     {
         jzError() << "startDetached: CreateProcess failed. program:" << program
                   << " wd:" << workingDirectory << " err:" << (int)GetLastError();
+        if (hOut)
+            CloseHandle(hOut);
+        if (hErr && hErr != hOut)
+            CloseHandle(hErr);
+        if (hIn)
+            CloseHandle(hIn);
         return false;
     }
+
+    if (pid)
+        *pid = (int)pi.dwProcessId;
 
     // 不保留句柄, 进程句柄随父子进程解绑
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    if (hOut)
+        CloseHandle(hOut);   // 子进程有自己的副本, 我们这份可以关了(它照样能写)
+    if (hErr && hErr != hOut)
+        CloseHandle(hErr);
+    if (hIn)
+        CloseHandle(hIn);
     return true;
 }
 
@@ -119,6 +223,82 @@ static string describeStartError(DWORD err, const string &program, const string 
     default:
         return "CreateProcess 失败（错误码 " + to_string((int)err) + "）: " + program
                + (workingDirectory.empty() ? string() : ("  wd=" + workingDirectory));
+    }
+}
+
+// 取到这一路要交给子进程的"子端"句柄(只处理非 Pipe 的目标)。
+// ownHandle: 我们打开的句柄(启动后要关掉父进程这份); 借用调用方的句柄时保持 INVALID。
+static bool openChannelSink(const JZProcess::ChannelTarget &t, bool isInput,
+                            HANDLE *childEnd, HANDLE *ownHandle, string &err)
+{
+    *ownHandle = INVALID_HANDLE_VALUE;
+    switch (t.kind)
+    {
+    case JZProcess::ChannelTarget::File:
+    {
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.lpSecurityDescriptor = nullptr;
+        sa.bInheritHandle = TRUE;
+        // ⚠ 追加必须用 FILE_APPEND_DATA: 只给 GENERIC_WRITE + OPEN_ALWAYS 的话,
+        //   文件指针停在 0, 新内容会**覆盖开头**(实测 `>> f` 把前面的行吃掉了)。
+        const DWORD access = isInput ? GENERIC_READ
+                                     : (t.append ? FILE_APPEND_DATA : GENERIC_WRITE);
+        const DWORD disp = isInput ? OPEN_EXISTING : (t.append ? OPEN_ALWAYS : CREATE_ALWAYS);
+        HANDLE h = CreateFileW(str_to_wstr(t.file).c_str(), access,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, disp,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            err = "打不开重定向文件: " + t.file + "（错误码 " + to_string((int)GetLastError()) + "）";
+            return false;
+        }
+        *childEnd = h;
+        *ownHandle = h;
+        return true;
+    }
+    case JZProcess::ChannelTarget::Null:
+    {
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.lpSecurityDescriptor = nullptr;
+        sa.bInheritHandle = TRUE;
+        HANDLE h = CreateFileW(L"NUL", isInput ? GENERIC_READ : GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            err = "打开 NUL 失败（错误码 " + to_string((int)GetLastError()) + "）";
+            return false;
+        }
+        *childEnd = h;
+        *ownHandle = h;
+        return true;
+    }
+    case JZProcess::ChannelTarget::Handle:
+    {
+        HANDLE h = (HANDLE)t.handle;
+        if (h == INVALID_HANDLE_VALUE || h == nullptr)
+        {
+            err = "标准 IO 句柄无效";
+            return false;
+        }
+        // 借用调用方的句柄: 不关它, 但必须可继承, 否则 CreateProcess 不会转交
+        SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        *childEnd = h;
+        return true;
+    }
+    case JZProcess::ChannelTarget::Forward:
+    {
+        HANDLE h = GetStdHandle(isInput ? STD_INPUT_HANDLE : STD_OUTPUT_HANDLE);
+        if (h != INVALID_HANDLE_VALUE && h != nullptr)
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        *childEnd = h;
+        return true;
+    }
+    case JZProcess::ChannelTarget::Pipe:
+    default:
+        err = "内部错误: Pipe 目标不该走 openChannelSink";
+        return false;
     }
 }
 
@@ -148,6 +328,11 @@ public:
     JZProcess::ProcessChannelMode channelMode;
     JZProcess::InputChannelMode inputMode = JZProcess::ManagedInputChannel;
     JZProcess::OutputChannelMode outputMode = JZProcess::ManagedOutputChannel;
+    std::map<std::string, std::string> envVars;   // 子进程环境覆盖(见 setEnvironmentVariables)
+    // 每一路的标准 IO 目标(见 JZProcess::ChannelTarget); start() 时从 JZProcess 拷过来
+    JZProcess::ChannelTarget stdinChan;
+    JZProcess::ChannelTarget stdoutChan;
+    JZProcess::ChannelTarget stderrChan;
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
@@ -243,6 +428,10 @@ bool JZProcessPrivate::createProcess()
     sa.bInheritHandle = TRUE;
 
     HANDLE hStdinRead = nullptr, hStdoutWrite = nullptr, hStderrWrite = nullptr;
+    // 交给子进程的"子端"句柄: 只有 Pipe 目标才来自管道, 其余来自文件 / 借用句柄 / NUL / 转发
+    HANDLE childIn = INVALID_HANDLE_VALUE, childOut = INVALID_HANDLE_VALUE, childErr = INVALID_HANDLE_VALUE;
+    // 我们自己打开、启动后要关掉的子端(借来的句柄不在此列, 谁开的谁关)
+    HANDLE ownIn = INVALID_HANDLE_VALUE, ownOut = INVALID_HANDLE_VALUE, ownErr = INVALID_HANDLE_VALUE;
 
     // 上游进程(`setStandardOutputProcess(下游)`): 标准输出直接写进下游的 stdin 管道,
     // 自己不再建 stdout 管道 —— 两个进程真正并发, 数据在管道里流动, 不经过我们的内存。
@@ -254,39 +443,99 @@ bool JZProcessPrivate::createProcess()
         return false;
     }
 
-    if (!CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0))
+    // ---- 标准输入 ----
+    if (inputMode == JZProcess::InheritInputChannel ||
+        stdinChan.kind == JZProcess::ChannelTarget::Forward)
     {
-        startError = "创建管道失败（错误码 " + to_string((int)GetLastError()) + "）";
-        return false;
+        // 继承模式: 子进程直接读**我们自己的** stdin(脚本从 stdin 读进来时, 里面起的命令
+        // 要接着读剩下那部分 —— bash 的行为)
+        childIn = GetStdHandle(STD_INPUT_HANDLE);
     }
-    // 继承模式: 不建 stdout/stderr 管道 —— 子进程直接写**我们自己的** fd 1 / fd 2
-    const bool inheritOut = (outputMode == JZProcess::InheritOutputChannel);
-    if (targetD == nullptr && !inheritOut && !CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0))
+    else if (stdinChan.kind == JZProcess::ChannelTarget::Pipe)
     {
-        CloseHandle(hStdinRead);
-        CloseHandle(hStdinWrite);
-        hStdinRead = hStdinWrite = INVALID_HANDLE_VALUE;
-        startError = "创建管道失败（错误码 " + to_string((int)GetLastError()) + "）";
+        if (!CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0))
+        {
+            startError = "创建管道失败（错误码 " + to_string((int)GetLastError()) + "）";
+            return false;
+        }
+        childIn = hStdinRead;
+    }
+    else if (!openChannelSink(stdinChan, /*isInput=*/true, &childIn, &ownIn, startError))
+    {
         return false;
     }
 
-    if (channelMode == JZProcess::SeparateChannels && !inheritOut)
+    // 继承模式: 不建 stdout/stderr 管道 —— 子进程直接写**我们自己的** fd 1 / fd 2
+    const bool inheritOut = (outputMode == JZProcess::InheritOutputChannel);
+    // ---- 标准输出 ----
+    if (targetD != nullptr)
     {
-        if (!CreatePipe(&hStderrRead, &hStderrWrite, &sa, 0))
+        childOut = INVALID_HANDLE_VALUE;   // 下面接下游的 stdin 写端
+    }
+    else if (inheritOut || stdoutChan.kind == JZProcess::ChannelTarget::Forward)
+    {
+        childOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (childOut != INVALID_HANDLE_VALUE && childOut != nullptr)
+            SetHandleInformation(childOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    }
+    else if (stdoutChan.kind == JZProcess::ChannelTarget::Pipe)
+    {
+        if (!CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0))
         {
             CloseHandle(hStdinRead);
             CloseHandle(hStdinWrite);
-            if (hStdoutRead != INVALID_HANDLE_VALUE)
-                CloseHandle(hStdoutRead);
-            if (hStdoutWrite != nullptr)
-                CloseHandle(hStdoutWrite);
-            hStdinRead = hStdinWrite = hStdoutRead = hStdoutWrite = INVALID_HANDLE_VALUE;
-            startError = "创建 stderr 管道失败（错误码 " + to_string((int)GetLastError()) + "）";
+            hStdinRead = hStdinWrite = INVALID_HANDLE_VALUE;
+            startError = "创建管道失败（错误码 " + to_string((int)GetLastError()) + "）";
+            return false;
+        }
+        childOut = hStdoutWrite;
+    }
+    else if (!openChannelSink(stdoutChan, /*isInput=*/false, &childOut, &ownOut, startError))
+    {
+        return false;
+    }
+
+    // ---- 标准错误 ----
+    if (channelMode == JZProcess::SeparateChannels)
+    {
+        if (inheritOut || stderrChan.kind == JZProcess::ChannelTarget::Forward)
+        {
+            childErr = GetStdHandle(STD_ERROR_HANDLE);
+            if (childErr != INVALID_HANDLE_VALUE && childErr != nullptr)
+                SetHandleInformation(childErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        }
+        else if (stderrChan.kind == JZProcess::ChannelTarget::Pipe)
+        {
+            if (!CreatePipe(&hStderrRead, &hStderrWrite, &sa, 0))
+            {
+                CloseHandle(hStdinRead);
+                CloseHandle(hStdinWrite);
+                if (hStdoutRead != INVALID_HANDLE_VALUE)
+                    CloseHandle(hStdoutRead);
+                if (hStdoutWrite != nullptr)
+                    CloseHandle(hStdoutWrite);
+                hStdinRead = hStdinWrite = hStdoutRead = hStdoutWrite = INVALID_HANDLE_VALUE;
+                startError = "创建 stderr 管道失败（错误码 " + to_string((int)GetLastError()) + "）";
+                return false;
+            }
+            childErr = hStderrWrite;
+        }
+        else if (stderrChan.kind == JZProcess::ChannelTarget::File &&
+                 stdoutChan.kind == JZProcess::ChannelTarget::File &&
+                 stderrChan.file == stdoutChan.file && stderrChan.append == stdoutChan.append)
+        {
+            // `> f 2>&1` / 两路同一个文件: **复用同一个句柄**, 否则两个独立文件指针
+            // 各自从 0 写, 互相覆盖(这就是手工实现 2>&1 最经典的坑)。
+            childErr = childOut;
+        }
+        else if (!openChannelSink(stderrChan, /*isInput=*/false, &childErr, &ownErr, startError))
+        {
             return false;
         }
     }
 
-    SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
+    if (hStdinWrite != INVALID_HANDLE_VALUE && hStdinWrite != nullptr)
+        SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
     if (hStdoutRead != INVALID_HANDLE_VALUE)
         SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0);
     if (channelMode == JZProcess::SeparateChannels)
@@ -298,11 +547,6 @@ bool JZProcessPrivate::createProcess()
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(STARTUPINFOW));
     si.cb = sizeof(STARTUPINFOW);
-    // 继承模式下子进程直接用**我们自己的** stdin(脚本从 stdin 读进来时, 里面起的命令
-    // 要接着读剩下那部分 —— bash 的行为)
-    si.hStdInput = (inputMode == JZProcess::InheritInputChannel)
-                       ? GetStdHandle(STD_INPUT_HANDLE)
-                       : hStdinRead;
     // 接了上游: 我们的 stdout 就是下游 stdin 管道的**写端**(子进程继承一份;
     // 启动后父进程再把自己的那份关掉, 这样上游一退出下游立刻收到 EOF)
     if (targetD != nullptr)
@@ -310,26 +554,12 @@ bool JZProcessPrivate::createProcess()
         // 下游启动时把它的 stdin 写端设成"不继承"了(怕别的子进程继承),
         // 这里要放开, 否则上游的子进程根本拿不到这个句柄。
         SetHandleInformation(targetD->hStdinWrite, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        childOut = targetD->hStdinWrite;
     }
-    HANDLE hStdoutToChild = (targetD != nullptr) ? targetD->hStdinWrite
-                            : (inheritOut ? GetStdHandle(STD_OUTPUT_HANDLE) : hStdoutWrite);
-    si.hStdOutput = hStdoutToChild;
-    if (inheritOut)
-    {
-        // 继承给子进程的句柄必须带 HANDLE_FLAG_INHERIT, 否则 CreateProcess 不会转交,
-        // 子进程拿到的 fd 1/2 就是空的。
-        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
-        if (hOut != INVALID_HANDLE_VALUE && hOut != nullptr)
-            SetHandleInformation(hOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        if (hErr != INVALID_HANDLE_VALUE && hErr != nullptr)
-            SetHandleInformation(hErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        si.hStdError = hErr;
-    }
-    else
-    {
-        si.hStdError = (channelMode == JZProcess::SeparateChannels) ? hStderrWrite : hStdoutToChild;
-    }
+    si.hStdInput = childIn;
+    si.hStdOutput = childOut;
+    // 合并通道(MergedChannels): stderr 直接接 stdout 的同一个句柄
+    si.hStdError = (channelMode == JZProcess::SeparateChannels) ? childErr : childOut;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
     if (!JZDir::isAbsolutePath(program) && !workingDirectory.empty())
@@ -378,6 +608,37 @@ bool JZProcessPrivate::createProcess()
     for (const auto &arg : arguments)
         cmdLine += " " + winQuoteArg(arg);
 
+    // 子进程环境块: 拷贝本进程环境 + 覆盖 envVars(UTF-16, 以 \0 分隔、双 \0 结尾)。
+    // 只有设过变量才建块, 否则传 nullptr 直接继承(保持原有行为)。
+    std::wstring wEnvBlock;
+    if (!envVars.empty())
+    {
+        std::map<std::wstring, std::wstring> env;
+        LPWCH cur = GetEnvironmentStringsW();
+        if (cur)
+        {
+            for (LPWCH p = cur; *p; p += wcslen(p) + 1)
+            {
+                std::wstring entry(p);
+                const size_t eq = entry.find(L'=');
+                if (eq == std::wstring::npos || eq == 0)
+                    continue;   // `=C:=...` 这类驱动器当前目录项, 不参与覆盖
+                env[entry.substr(0, eq)] = entry.substr(eq + 1);
+            }
+            FreeEnvironmentStringsW(cur);
+        }
+        for (const auto &kv : envVars)
+            env[str_to_wstr(kv.first)] = str_to_wstr(kv.second);
+        for (const auto &kv : env)
+        {
+            wEnvBlock += kv.first;
+            wEnvBlock += L'=';
+            wEnvBlock += kv.second;
+            wEnvBlock.push_back(L'\0');
+        }
+        wEnvBlock.push_back(L'\0');
+    }
+
     BOOL success;
     // 传入绝对路径作为 lpApplicationName, 可绕过部分 Hook 对命令行首 token 的重新解析
     const bool hasAppName = JZDir::isAbsolutePath(program);
@@ -392,44 +653,92 @@ bool JZProcessPrivate::createProcess()
         str_replace(work_dir, "/", "\\");
         wWorkDir = str_to_wstr(work_dir);
     }
-    success = CreateProcessW(hasAppName ? wAppName.c_str() : nullptr,
-                             wCmdLine.empty() ? nullptr : &wCmdLine[0],
-                             nullptr, nullptr, TRUE, 0, nullptr,
-                             wWorkDir.empty() ? nullptr : wWorkDir.c_str(), &si, &pi);
-
-    CloseHandle(hStdinRead);
-    hStdinRead = INVALID_HANDLE_VALUE;
-    if (inputMode == JZProcess::InheritInputChannel)
+    // 句柄继承要**精确到列表**: bInheritHandles=TRUE 会把我们所有可继承句柄都交给子进程,
+    // 包括宿主(PowerShell / agent)接在我们 stdout 上的那条管道写端 —— 那样宿主退出时
+    // 管道永远等不到 EOF, 会一直等到这个"后台"进程结束(实测 jz_shell 卡了 8.3 秒, 本应 0.3 秒)。
+    std::vector<HANDLE> inheritList;
+    HANDLE wanted[3] = { si.hStdInput, si.hStdOutput, si.hStdError };
+    for (HANDLE h : wanted)
     {
-        // 继承模式不用我们喂 stdin: 关掉写端(write() 变成 no-op, 子进程直接读我们的 stdin)
-        CloseHandle(hStdinWrite);
-        hStdinWrite = INVALID_HANDLE_VALUE;
+        if (h == nullptr || h == INVALID_HANDLE_VALUE)
+            continue;
+        bool dup = false;
+        for (HANDLE e : inheritList)
+            if (e == h)
+                dup = true;
+        if (!dup)
+            inheritList.push_back(h);
     }
 
-    if (hStdoutWrite != nullptr)
+    STARTUPINFOEXW six;
+    ZeroMemory(&six, sizeof(six));
+    six.StartupInfo = si;
+    six.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+    SIZE_T attrSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+    std::vector<char> attrBuf(attrSize ? attrSize : 1);
+    auto *attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)attrBuf.data();
+    bool attrOk = (attrSize > 0) && InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize);
+    if (attrOk && !inheritList.empty())
     {
-        CloseHandle(hStdoutWrite);
-        hStdoutWrite = INVALID_HANDLE_VALUE;
+        attrOk = UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                           inheritList.data(),
+                                           inheritList.size() * sizeof(HANDLE), nullptr, nullptr);
     }
-    if (channelMode == JZProcess::SeparateChannels && hStderrWrite != nullptr)
+    DWORD createFlags = wEnvBlock.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT;
+    LPVOID envPtr = wEnvBlock.empty() ? nullptr : (LPVOID)&wEnvBlock[0];
+    if (attrOk)
     {
-        CloseHandle(hStderrWrite);
+        six.lpAttributeList = attrs;
+        success = CreateProcessW(hasAppName ? wAppName.c_str() : nullptr,
+                                 wCmdLine.empty() ? nullptr : &wCmdLine[0],
+                                 nullptr, nullptr, TRUE, createFlags | EXTENDED_STARTUPINFO_PRESENT,
+                                 envPtr,
+                                 wWorkDir.empty() ? nullptr : wWorkDir.c_str(), &six.StartupInfo, &pi);
+        DeleteProcThreadAttributeList(attrs);
     }
+    else
+    {
+        // 老系统不支持属性列表: 退回"继承全部"(行为与以前一致, 只是可能多继承些句柄)
+        success = CreateProcessW(hasAppName ? wAppName.c_str() : nullptr,
+                                 wCmdLine.empty() ? nullptr : &wCmdLine[0],
+                                 nullptr, nullptr, TRUE, createFlags, envPtr,
+                                 wWorkDir.empty() ? nullptr : wWorkDir.c_str(), &si, &pi);
+    }
+
+    // 启动后关掉我们这一侧的"子端"副本: 子进程已经有自己的了。
+    // 顺便覆盖 File / Null / 转发 这几路(ownXxx 是我们打开/复制的, 必须关)。
+    auto closeHandleRef = [](HANDLE &h)
+    {
+        if (h != INVALID_HANDLE_VALUE && h != nullptr)
+        {
+            CloseHandle(h);
+            h = INVALID_HANDLE_VALUE;
+        }
+    };
+    closeHandleRef(hStdinRead);
+    if (inputMode == JZProcess::InheritInputChannel ||
+        stdinChan.kind != JZProcess::ChannelTarget::Pipe)
+    {
+        // 不给它喂 stdin(继承 / 文件 / 句柄 / NUL): write() 变成 no-op
+        closeHandleRef(hStdinWrite);
+    }
+    closeHandleRef(hStdoutWrite);
+    if (channelMode == JZProcess::SeparateChannels)
+        closeHandleRef(hStderrWrite);
+    closeHandleRef(ownIn);
+    closeHandleRef(ownOut);
+    closeHandleRef(ownErr);
 
     if (!success)
     {
         DWORD err = GetLastError();
         startError = describeStartError(err, program, workingDirectory);
         jzError() << "CreateProcess failed. program:" << program << " wd:" << workingDirectory << " err:" << (int)err;
-        CloseHandle(hStdinWrite);
-        if (hStdoutRead != INVALID_HANDLE_VALUE)
-            CloseHandle(hStdoutRead);
-        hStdinWrite = hStdoutRead = INVALID_HANDLE_VALUE;
+        closeHandleRef(hStdinWrite);
+        closeHandleRef(hStdoutRead);
         if (channelMode == JZProcess::SeparateChannels)
-        {
-            CloseHandle(hStderrRead);
-            hStderrRead = INVALID_HANDLE_VALUE;
-        }
+            closeHandleRef(hStderrRead);
         return false;
     }
 
@@ -472,6 +781,28 @@ bool JZProcessPrivate::createProcess()
         }
     }
 
+    return true;
+}
+
+// detach() 的平台实现(Windows): 停跟踪 + 摘掉作业的 kill-on-close + 关句柄。
+// 为什么必须先摘 kill-on-close: 每个进程都在一个"父进程退出就清空"的作业里,
+// 不摘的话我们(agent)退出时会把刚放手的后台进程一起带走 —— detach 就白做了。
+static bool detachImpl(JZProcessPrivate *d)
+{
+    if (d->hJob != INVALID_HANDLE_VALUE)
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+        ZeroMemory(&info, sizeof(info));
+        if (QueryInformationJobObject(d->hJob, JobObjectExtendedLimitInformation, &info, sizeof(info),
+                                      nullptr))
+        {
+            info.BasicLimitInformation.LimitFlags &= ~JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(d->hJob, JobObjectExtendedLimitInformation, &info, sizeof(info));
+        }
+        CloseHandle(d->hJob);
+        d->hJob = INVALID_HANDLE_VALUE;
+    }
+    d->closeHandles();   // 关 hProcess/hThread + 管道读端
     return true;
 }
 
@@ -701,24 +1032,65 @@ void JZProcessPrivate::closeWriteChannel()
 #include <poll.h>
 #include <string.h>     // strerror
 
-static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+// 把 fd 接到指定文件; 路径为空 = 丢弃, 接 /dev/null。
+static void dupDetachedSink(const string &file, int target, bool append)
 {
-    pid_t pid = ::fork();
-    if (pid == -1)
+    const char *path = file.empty() ? "/dev/null" : file.c_str();
+    int fd = file.empty() ? ::open(path, O_WRONLY)
+                          : ::open(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0644);
+    if (fd >= 0)
+    {
+        ::dup2(fd, target);
+        ::close(fd);
+    }
+}
+
+static bool startDetachedProcess(const string &program, const vector<string> &arguments,
+                                 const string &workingDirectory, const string &outputFile,
+                                 const string &errorFile, const map<string, string> &env,
+                                 bool takeIo, int *pid)
+{
+    // 用一根管道把"孙进程 pid"报回父进程(双重 fork 之后父进程看不到孙进程号)
+    int fds[2];
+    if (::pipe(fds) == -1)
+        return false;
+    ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t firstPid = ::fork();   // 不能叫 pid: 会遮住参数里的 int *pid
+    if (firstPid == -1)
         return false;
 
-    if (pid == 0)
+    if (firstPid == 0)
     {
+        ::close(fds[0]);
         // 子进程1: 再次 fork 后由孙进程 exec, 子进程1立即退出。
         // 孙进程被 init 收养, 不会成为当前进程的僵尸, 无需 wait 回收。
         pid_t child = ::fork();
         if (child == 0)
         {
+            ::setsid();   // 脱离控制终端(后台任务的标准做法)
+            ::close(fds[1]);
             if (!workingDirectory.empty())
             {
                 if (::chdir(workingDirectory.c_str()) == -1)
                     _exit(127);
             }
+
+            if (takeIo)
+            {
+                // 接管 IO: 没给文件的那一路就是丢弃
+                dupDetachedSink(outputFile, 1, true);
+                dupDetachedSink(errorFile, 2, true);
+                int dn = ::open("/dev/null", O_RDONLY);
+                if (dn >= 0)
+                {
+                    ::dup2(dn, 0);
+                    ::close(dn);
+                }
+            }
+            // 子进程环境覆盖: 已经是 fork 出来的孙进程, 改 environ 不影响父进程(同 createProcess)
+            for (const auto &kv : env)
+                ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
 
             vector<char *> argv;
             argv.push_back(const_cast<char *>(program.c_str()));
@@ -729,12 +1101,23 @@ static bool startDetachedProcess(const string &program, const vector<string> &ar
             ::execvp(program.c_str(), argv.data());
             _exit(127);
         }
+        int v = (int)child;
+        ssize_t n = ::write(fds[1], &v, sizeof(v));
+        (void)n;
         _exit(0);
     }
 
-    // 父进程: 回收子进程1, 孙进程由 init 接管
+    // 父进程: 读回孙进程 pid, 回收子进程1, 孙进程由 init 接管
+    ::close(fds[1]);
+    int grand = 0;
+    if (::read(fds[0], &grand, sizeof(grand)) != (ssize_t)sizeof(grand))
+        grand = 0;
+    ::close(fds[0]);
+
     int status;
-    ::waitpid(pid, &status, 0);
+    ::waitpid(firstPid, &status, 0);
+    if (pid)
+        *pid = grand;
     return true;
 }
 
@@ -763,6 +1146,7 @@ public:
     JZProcess::ProcessChannelMode channelMode;
     JZProcess::InputChannelMode inputMode = JZProcess::ManagedInputChannel;
     JZProcess::OutputChannelMode outputMode = JZProcess::ManagedOutputChannel;
+    std::map<std::string, std::string> envVars;   // 子进程环境覆盖(见 setEnvironmentVariables)
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
@@ -878,6 +1262,37 @@ bool JZProcessPrivate::createProcess()
         stderrCreated = true;
     }
 
+    // 文件 / NUL / 借来的句柄: 直接 dup2 到目标 fd(见 JZProcess::ChannelTarget)。
+    // Pipe / Forward 返回 0 表示"交给调用处的原有逻辑"。
+    auto dupSink = [](const JZProcess::ChannelTarget &t, int targetFd) -> int
+    {
+        int fd = -1;
+        switch (t.kind)
+        {
+        case JZProcess::ChannelTarget::File:
+            fd = ::open(t.file.c_str(),
+                        targetFd == STDIN_FILENO
+                            ? O_RDONLY
+                            : (O_WRONLY | O_CREAT | (t.append ? O_APPEND : O_TRUNC)),
+                        0644);
+            break;
+        case JZProcess::ChannelTarget::Null:
+            fd = ::open("/dev/null", targetFd == STDIN_FILENO ? O_RDONLY : O_WRONLY);
+            break;
+        case JZProcess::ChannelTarget::Handle:
+            fd = (int)t.handle;
+            break;
+        default:
+            return 0;
+        }
+        if (fd < 0)
+            return -1;
+        const int rc = ::dup2(fd, targetFd);
+        if (fd != (int)t.handle)
+            ::close(fd);   // 借来的句柄不关
+        return rc == -1 ? -1 : 0;
+    };
+
     pid = ::fork();
     if (pid == -1)
         goto cleanup_error;
@@ -892,7 +1307,18 @@ bool JZProcessPrivate::createProcess()
         ::close(errorPipe[0]);
 
         // 继承模式: 子进程直接用我们自己的 stdin(不 dup2), 脚本里的命令才能接着读
-        if (inputMode == JZProcess::ManagedInputChannel && ::dup2(stdinPipe[0], STDIN_FILENO) == -1)
+        if (stdinChan.kind != JZProcess::ChannelTarget::Pipe &&
+            stdinChan.kind != JZProcess::ChannelTarget::Forward)
+        {
+            if (dupSink(stdinChan, STDIN_FILENO) == -1)
+            {
+                int err = errno;
+                ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
+                (void)unused;
+                _exit(1);
+            }
+        }
+        else if (inputMode == JZProcess::ManagedInputChannel && ::dup2(stdinPipe[0], STDIN_FILENO) == -1)
         {
             int err = errno;
             ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
@@ -900,9 +1326,21 @@ bool JZProcessPrivate::createProcess()
             _exit(1);
         }
 
-        // 接了上游: 直接用下游的 stdin 管道; 否则用自己的 stdout 管道。
+        // stdout: 显式目标(文件/NUL/句柄)优先; 否则接了上游就用上游管道, 再否则自己的管道。
         // 继承模式: 什么都不做 —— fd 1 / 2 本来就是从我们这儿继承的(bash 的做法)。
-        if (!inheritOut && ::dup2(targetFd >= 0 ? targetFd : stdoutPipe[1], STDOUT_FILENO) == -1)
+        if (stdoutChan.kind != JZProcess::ChannelTarget::Pipe &&
+            stdoutChan.kind != JZProcess::ChannelTarget::Forward)
+        {
+            if (dupSink(stdoutChan, STDOUT_FILENO) == -1)
+            {
+                int err = errno;
+                ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
+                (void)unused;
+                _exit(1);
+            }
+        }
+        else if (!inheritOut &&
+                 ::dup2(targetFd >= 0 ? targetFd : stdoutPipe[1], STDOUT_FILENO) == -1)
         {
             int err = errno;
             ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
@@ -910,11 +1348,19 @@ bool JZProcessPrivate::createProcess()
             _exit(1);
         }
 
-        if (inheritOut)
+        // stderr: 显式目标 > 独立管道 > 跟 stdout 合并
+        if (stderrChan.kind != JZProcess::ChannelTarget::Pipe &&
+            stderrChan.kind != JZProcess::ChannelTarget::Forward)
         {
-            // fd 2 也已经继承好了, 不动它
+            if (dupSink(stderrChan, STDERR_FILENO) == -1)
+            {
+                int err = errno;
+                ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
+                (void)unused;
+                _exit(1);
+            }
         }
-        else if (stderrCreated)
+        else if (stderrCreated && !inheritOut)
         {
             if (::dup2(stderrPipe[1], STDERR_FILENO) == -1)
             {
@@ -924,7 +1370,7 @@ bool JZProcessPrivate::createProcess()
                 _exit(1);
             }
         }
-        else
+        else if (!inheritOut)
         {
             if (::dup2(targetFd >= 0 ? targetFd : stdoutPipe[1], STDERR_FILENO) == -1)
             {
@@ -963,6 +1409,11 @@ bool JZProcessPrivate::createProcess()
             argv.push_back(const_cast<char *>(arg.c_str()));
         }
         argv.push_back(nullptr);
+
+        // 子进程环境覆盖: 在 exec 之前写进本进程(子进程)的 environ, 随 execvp 传下去。
+        // 这里已经是 fork 出来的子进程, 改 environ 不影响父进程。
+        for (const auto &kv : envVars)
+            ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
 
         ::execvp(program.c_str(), argv.data());
 
@@ -1320,10 +1771,69 @@ void JZProcessPrivate::closeWriteChannel()
     }
 }
 
+// detach() 的平台实现(Linux): 停跟踪 + 关 fd, 但**必须有人 wait**,
+// 否则进程退出后留着僵尸(Windows 没这个概念, 关句柄就完事)。
+namespace
+{
+std::vector<pid_t> &zombieQueue()
+{
+    static std::vector<pid_t> q;
+    return q;
+}
+
+// 后台回收线程: 只 waitpid 我们自己登记的那些 pid, 间隔 200ms。
+// (用 waitpid(-1) 会把别的 JZProcess 的子进程抢走, 所以按 pid 收。)
+void startZombieReaper()
+{
+    static bool started = false;
+    if (started)
+        return;
+    started = true;
+    std::thread([]()
+    {
+        while (true)
+        {
+            JZThread::msleep(200);
+            for (size_t i = 0; i < zombieQueue().size();)
+            {
+                int st = 0;
+                pid_t r = ::waitpid(zombieQueue()[i], &st, WNOHANG);
+                if (r == zombieQueue()[i] || r == -1)   // -1: 已经被别人收走了
+                    zombieQueue().erase(zombieQueue().begin() + (long)i);
+                else
+                    ++i;
+            }
+        }
+    }).detach();
+}
+} // namespace
+
+static bool detachImpl(JZProcessPrivate *d)
+{
+    if (d->pid > 0)
+    {
+        startZombieReaper();
+        zombieQueue().push_back(d->pid);
+    }
+    d->closeHandles();
+    return true;
+}
+
 #else
 
-static bool startDetachedProcess(const string &program, const vector<string> &arguments, const string &workingDirectory)
+static bool startDetachedProcess(const string &program, const vector<string> &arguments,
+                                 const string &workingDirectory, const string &outputFile,
+                                 const string &errorFile, const map<string, string> &env,
+                                 bool takeIo, int *pid)
 {
+    (void)program;
+    (void)arguments;
+    (void)workingDirectory;
+    (void)outputFile;
+    (void)errorFile;
+    (void)env;
+    (void)takeIo;
+    (void)pid;
     return false;
 }
 
@@ -1405,6 +1915,12 @@ public:
     JZByteArray stderrBuffer;
 };
 
+static bool detachImpl(JZProcessPrivate *d)
+{
+    (void)d;
+    return false;   // 该平台不支持启动进程, 也就没有"放手"可言
+}
+
 #endif
 
 // ==================== JZProcess 公共部分 ====================
@@ -1431,7 +1947,110 @@ JZProcess::~JZProcess()
 
 bool JZProcess::startDetached(const string &program, const vector<string> &arguments, const string &workingDirectory)
 {
-    return startDetachedProcess(program, arguments, workingDirectory);
+    return startDetachedProcess(program, arguments, workingDirectory, string(), string(),
+                                map<string, string>(), /*takeIo=*/false, nullptr);
+}
+
+bool JZProcess::canDetach() const
+{
+    if (m_detached)
+        return true;
+    if (d_ptr->state != Running)
+        return false;
+    // 有托管管道就不能放手: 关掉读端之后, 子进程下一次写 stdout/stderr 会得到
+    // ERROR_BROKEN_PIPE(POSIX 上是 SIGPIPE), 那不是"分离", 是"剪管子"。
+    const bool outPipe = (m_outputMode == ManagedOutputChannel) &&
+                         (m_stdoutChan.kind == ChannelTarget::Pipe);
+    const bool errPipe = (m_outputMode == ManagedOutputChannel) &&
+                         (d_ptr->channelMode == SeparateChannels) &&
+                         (m_stderrChan.kind == ChannelTarget::Pipe);
+    return !outPipe && !errPipe;
+}
+
+bool JZProcess::detach()
+{
+    if (m_detached)
+        return true;
+    if (d_ptr->state != Running)
+    {
+        m_startError = "detach: 进程没有在运行(先 start)";
+        return false;
+    }
+    if (!canDetach())
+    {
+        m_startError = "detach: stdout/stderr 还接着管道 —— 先 setStandardOutputFile/Null "
+                       "再 start, 否则放手之后子进程一写就破管";
+        return false;
+    }
+
+    // 不再读它、也不再等它: 停掉读循环, 接下来 waitForFinished/readAll 都没有意义
+    killTimer(m_timerId);
+    m_timerId = INVALID_TIMER_ID;
+    if (!detachImpl(d_ptr))
+        return false;
+    d_ptr->state = NotRunning;   // 不再跟踪; pid 保留(processId() 还有效)
+    m_detached = true;
+    return true;
+}
+
+// ---- 每路标准 IO 的目标(后设的覆盖先设的) ----
+static void assignTarget(JZProcess::ChannelTarget &t, JZProcess::ChannelTarget::Kind kind)
+{
+    t = JZProcess::ChannelTarget();
+    t.kind = kind;
+}
+
+void JZProcess::setStandardInputFile(const string &fileName)
+{
+    assignTarget(m_stdinChan, ChannelTarget::File);
+    m_stdinChan.file = fileName;
+}
+
+void JZProcess::setStandardOutputFile(const string &fileName, FileOpenMode mode)
+{
+    assignTarget(m_stdoutChan, ChannelTarget::File);
+    m_stdoutChan.file = fileName;
+    m_stdoutChan.append = (mode == Append);
+}
+
+void JZProcess::setStandardErrorFile(const string &fileName, FileOpenMode mode)
+{
+    assignTarget(m_stderrChan, ChannelTarget::File);
+    m_stderrChan.file = fileName;
+    m_stderrChan.append = (mode == Append);
+}
+
+void JZProcess::setStandardInputHandle(std::intptr_t handle)
+{
+    assignTarget(m_stdinChan, ChannelTarget::Handle);
+    m_stdinChan.handle = handle;
+}
+
+void JZProcess::setStandardOutputHandle(std::intptr_t handle)
+{
+    assignTarget(m_stdoutChan, ChannelTarget::Handle);
+    m_stdoutChan.handle = handle;
+}
+
+void JZProcess::setStandardErrorHandle(std::intptr_t handle)
+{
+    assignTarget(m_stderrChan, ChannelTarget::Handle);
+    m_stderrChan.handle = handle;
+}
+
+void JZProcess::setStandardInputNull()
+{
+    assignTarget(m_stdinChan, ChannelTarget::Null);
+}
+
+void JZProcess::setStandardOutputNull()
+{
+    assignTarget(m_stdoutChan, ChannelTarget::Null);
+}
+
+void JZProcess::setStandardErrorNull()
+{
+    assignTarget(m_stderrChan, ChannelTarget::Null);
 }
 
 std::string JZProcess::lastStartError() const
@@ -1449,9 +2068,16 @@ bool JZProcess::start(const string &program, const vector<string> &arguments)
 
     d_ptr->program = program;
     d_ptr->arguments = arguments;
+    m_program = program;      // 与 detach() 共用一份"当前设置"
+    m_arguments = arguments;
     d_ptr->stdoutTarget = m_stdoutTarget;   // 见 setStandardOutputProcess()
     d_ptr->inputMode = m_inputMode;         // 见 setInputChannelMode()
     d_ptr->outputMode = m_outputMode;       // 见 setOutputChannelMode()
+    d_ptr->envVars = m_envVars;             // 见 setEnvironmentVariables()
+    d_ptr->stdinChan = m_stdinChan;         // 见 setStandardInputFile/Handle/Null
+    d_ptr->stdoutChan = m_stdoutChan;       // 见 setStandardOutputFile/Handle/Null
+    d_ptr->stderrChan = m_stderrChan;       // 见 setStandardErrorFile/Handle/Null
+    m_detached = false;
     d_ptr->state = Starting;
     d_ptr->exitCode = 0;
     d_ptr->exitStatus = NormalExit;
@@ -1676,6 +2302,16 @@ JZProcess::OutputChannelMode JZProcess::outputChannelMode() const
     return m_outputMode;
 }
 
+void JZProcess::setEnvironmentVariables(const std::map<std::string, std::string> &vars)
+{
+    m_envVars = vars;
+}
+
+const std::map<std::string, std::string> &JZProcess::environmentVariables() const
+{
+    return m_envVars;
+}
+
 JZProcess::InputChannelMode JZProcess::inputChannelMode() const
 {
     return m_inputMode;
@@ -1718,12 +2354,12 @@ JZProcess::ExitStatus JZProcess::exitStatus() const
 
 string JZProcess::program() const
 {
-    return d_ptr->program;
+    return m_program.empty() ? d_ptr->program : m_program;
 }
 
 vector<string> JZProcess::arguments() const
 {
-    return d_ptr->arguments;
+    return m_arguments.empty() ? d_ptr->arguments : m_arguments;
 }
 
 void JZProcess::closeWriteChannel()

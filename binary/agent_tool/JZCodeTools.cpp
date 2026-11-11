@@ -348,6 +348,11 @@ string jzTsRuntimeNotes()
     s += "  - 想查某个名字有哪些成员: 直接读工程里的 js_wrapper/<名字>/types/index.d.ts"
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
+    s += "  - ⭐ 路径写法分两层, 别混:\n";
+    s += "      终端(bash 风味): `/c/tmp/x` 能用 —— shell 会把它翻成 `C:/tmp/x` 再交给程序;\n";
+    s += "      **你的 TS/JS 代码里(以及 fs/path 的参数)必须写 `C:/tmp/x`** —— 运行时按 Node 语义, "
+         "`/c/tmp/x` 会被当成「当前盘根下的 c/tmp/x」(`C:\\c\\tmp\\x`), 找不到文件。\n";
+    s += "    反例: `fs.readFileSync('/c/tmp/a.txt')` ✗   `fs.readFileSync('C:/tmp/a.txt')` ✓\n";
     s += "  - 退出/保活(Node 的 handle ref 语义, 与 Node 一致): 打开着的套接字/服务端(监听中、连接中)、"
          "ref 着的定时器、跑着的 worker、连着的 modbus 连接、**在途的异步请求(fetch / modbus 读写的 promise "
          "还没结算)**都算「有事要等」, 进程不会退出(与真 Node 实测一致: 只发一个 fetch 不 await 也会等到回包); "
@@ -360,19 +365,18 @@ string jzTsRuntimeNotes()
 string jzTerminalRunNotes()
 {
     string s;
-    s += "terminal_run 两种模式: 默认**前台**(结果要等命令自己退出才回, 到 timeout_ms 强杀, 中途取不到输出); "
-         "background=true 时**后台**(启动成功就返回 run_id, 不等它结束、也不设超时)。\n";
-    s += "  - ⭐ 跑一个**会自己退出**的程序(如 `cd build && code_runtime`)只需一次前台 terminal_run: "
-         "它的 stdout/stderr **就在这次回包里**。不要重跑同一条命令, 也不要为它开 background。\n";
-    s += "  - terminal_query 是给「还要看更完整日志」用的, 不是「再取一次输出」: 同一个 run_id 反复查, "
-         "第二次起默认只回**上次查询之后的增量** —— 看到「日志 0 条 / 只返回上次查询之后的增量」就说明你已经拿到过了, "
-         "不要为此重跑命令或换 run_id 再查。\n";
-    s += "  - 起服务/常驻进程这类**自己不退出**的命令: 用 background=true 起, 拿返回的 run_id, "
-         "之后用 terminal_query 反复查状态与日志(可给 tail / grep); 用完了用 terminal_cancel 停掉。\n";
-    s += "  - 别再给服务器那条设一个很长的 timeout_ms 前台干等: 它必然以「命令超时, 已被强制终止」收尾, "
-         "而且超时那一刻服务就被杀掉了。\n";
-    s += "  - 要并发就在**同一条消息里发多个工具调用**; 分成两条消息发的话, 后一条要等前一条返回"
-         "(前台那条不结束就不回) —— 那就等于串行了。\n";
+    s += "terminal_run 默认**前台**: 命令要等自己退出才回包, 到 timeout_ms 强杀。"
+         "要后台(常驻服务)就在末尾加 `&`, 与标准 shell 一致: 立刻回包。\n";
+    s += "  - ⭐ 跑一个**会自己退出**的程序(如 `cd build && code_runtime`)只需一次前台调用: "
+         "它的 stdout/stderr **就在这次回包里**, 不要重跑同一条命令。\n";
+    s += "  - `cmd &`: 回包是 `[1] <pid>`, 输出**跟命令自己的重定向走**。要留日志就得自己写 "
+         "`./srv > log.txt 2>&1 &`, 之后 `cat`/`tail` 那个文件看启动日志; "
+         "**没写重定向的输出就是丢掉的**(父 shell 已回包, 没人接)。"
+         "后台任务不占 timeout、也不会自己结束; `$!` 就是那个 pid, "
+         "内建命令/函数/管道的 `&` 没有独立进程号。\n";
+    s += "  - 超时**被杀前**已经打印的内容会一并回给你(端口/报错都在里面) —— 想冒烟就把 timeout_ms 调小"
+         "(如 3000~5000), 别设个很大的值干等, 更别为同一件事反复重跑。\n";
+    s += "  - 常驻服务的日志别指望回包: 起完就 `> log 2>&1 &`, 之后用 read_file / cat 读那个文件。\n";
     return s;
 }
 

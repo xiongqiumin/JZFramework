@@ -104,6 +104,8 @@ set(JZCORE_SOURCES
     JZCircleBuffer.cpp
     JZCircleBuffer.h
 	JZMutexPointer.h
+    JZSharedMemory.h
+    JZSharedMemory.cpp
 )
 
 if(WIN32)

@@ -92,6 +92,9 @@ private:
     JZCommandLineOption parseOptionName(const std::string& name);
     CommandValue* getOptionValue(const std::string& name);
     bool valueToPosArg(const std::string& str, int posArgIndex);
+    // 把已解析出的字符串写进目标变量(STRING/ENUM/INT/DOUBLE 共用) ——
+    // 普通路径与"紧凑短选项(-abc)"路径都用这一份，避免两套赋值逻辑漂移。
+    bool assignOptionValue(CommandValue* cmd, const std::string& optName, const std::string& valueStr);
     void reportError(const std::string& error);
     std::string optionName(const CommandValue& value) const;
     void addArgumentValue(const CommandValue& value);

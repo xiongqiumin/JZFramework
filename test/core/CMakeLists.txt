@@ -21,6 +21,11 @@ add_executable(test_process
     test_process.cpp)
 target_link_libraries(test_process JZFramework)
 
+# JZSharedMemory 独立测试 (独立 exe): 含跨进程 attach(起自己当子进程)
+add_executable(test_sharedmem
+    test_sharedmem.cpp)
+target_link_libraries(test_sharedmem JZFramework)
+
 # ---- ctest 注册: 仅含通过判定的功能用例 (test_benchmark* 为无断言基准程序, 不注册) ----
 add_test(NAME core.test_core COMMAND test_core)
 set_tests_properties(core.test_core PROPERTIES TIMEOUT 600)

@@ -76,10 +76,12 @@ bool Parser::parseList(NodePtr &out, const set<string> &stops, string &error)
             ops.push_back(";");
             continue;
         }
-        // `cmd &` 后台: 没有作业控制, 这里只把 `&` 当作语句分隔符
-        // (同步执行, 不等价于 bash 的后台; 但语法上不再拒绝)
+        // `cmd &` 后台: 语法上等同于分隔符, 但给这一条打上 background 标记,
+        // 执行时由 spawnBackground 起(见 runNode 开头)。父 shell 立刻往下跑。
         if (acceptOp("&"))
         {
+            if (!parts.empty())
+                parts.back()->background = true;
             ops.push_back(";");
             continue;
         }
@@ -199,7 +201,9 @@ bool Parser::parsePipelineInner(NodePtr &out, string &error)
 
 bool Parser::parseCommand(NodePtr &out, string &error)
 {
-    if (looksLikeFunctionDef())
+    // `function name { ... }` / `function name() { ... }`(bash 扩展) 与 POSIX 的
+    // `name() { ... }` 都走 parseFunction()
+    if (isWord("function") || looksLikeFunctionDef())
         return parseFunction(out, error);
 
     // (( 算术命令 )) —— 状态 = (值 != 0) ? 0 : 1
@@ -762,13 +766,23 @@ bool Parser::parseCase(NodePtr &out, string &error)
     return true;
 }
 
-// 函数定义: name () { ... }   或   name () ( ... )
+// 函数定义: name () { ... } / name () ( ... ) / function name { ... }(bash 扩展)
 bool Parser::parseFunction(NodePtr &out, string &error)
 {
+    if (isWord("function"))
+        m_pos++;                // bash 的 `function` 关键字, 后面可以不带 `()`
+    if (peek().type != Token::Word)
+    {
+        error = syntaxNear();
+        return false;
+    }
     auto node = make_shared<Node>();
     node->kind = Node::Function;
     node->var = next().text;   // 函数名
-    m_pos += 2;                // 吃掉 ( ) 两个 token
+    // `()` 可省略(bash: `function name { ...; }`); 有就吃掉这两个 token
+    if (isOp("(") && m_pos + 1 < m_t.size() &&
+        m_t[m_pos + 1].type == Token::Op && m_t[m_pos + 1].text == ")")
+        m_pos += 2;
     while (isOp(";"))
         m_pos++;               // `f ()\n{ ... }`: 换行在词法里就是 ';'
 

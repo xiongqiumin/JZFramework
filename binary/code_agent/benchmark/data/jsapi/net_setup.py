@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--root", required=True, help="用例工程根目录")
     ap.add_argument("--input", default="", help="评测注入的输入文本，形如 '<文本> <端口>'")
     ap.add_argument("--data", default="")
+    ap.add_argument("--input-dir", default="", help="输入目录(工程之外)：给了就只写这里，工程根保持干净")
     args, _ = ap.parse_known_args()
 
     root = os.path.normpath(args.root)
@@ -45,19 +46,35 @@ def main():
     if not _copy("solution.ts", root, "src/solution.ts"):
         return 1
 
-    # 写输入文件（工程根 + build/，运行时 cwd 为 build/）
+    # 写输入文件。
+    #   · 给了 --input-dir(agent_cli_test 走这条): 只写到**工程之外**的输入目录，
+    #     工程根里不出现任何输入文件 —— 模型删不掉、也不会顺着 `..` 翻到别的用例的输入。
+    #   · 没给(benchmark 宿主): 保持老行为，工程根 + build/ 各写一份。
     text = args.input or ""
-    build_dir = os.path.join(root, "build")
-    try:
-        os.makedirs(build_dir, exist_ok=True)
-    except Exception:
-        pass
-    for p in (os.path.join(root, "_input.txt"), os.path.join(build_dir, "_input.txt")):
+    targets = []
+    if args.input_dir:
+        input_dir = os.path.normpath(args.input_dir)
+        try:
+            os.makedirs(input_dir, exist_ok=True)
+        except Exception as e:
+            print("[net_setup] 创建输入目录失败: %s" % e)
+            return 1
+        targets.append(os.path.join(input_dir, "input.txt"))
+    else:
+        build_dir = os.path.join(root, "build")
+        try:
+            os.makedirs(build_dir, exist_ok=True)
+        except Exception:
+            pass
+        targets.extend([os.path.join(root, "_input.txt"),
+                        os.path.join(build_dir, "_input.txt")])
+
+    for p in targets:
         try:
             with open(p, "w", encoding="utf-8") as f:
                 f.write(text)
         except Exception as e:
-            print("[net_setup] 写入 _input.txt 失败: %s" % e)
+            print("[net_setup] 写入输入文件失败: %s" % e)
             return 1
 
     print("[net_setup] 已注入 main.ts/solution.ts 并写入输入(len=%d)" % len(text))

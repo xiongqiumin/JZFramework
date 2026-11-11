@@ -498,6 +498,49 @@ bool JZCommandLineParser::parse(int argc, char** argv)
         size_t eqPos = arg.find('=');
 
         // ==============================
+        // 紧凑短选项: `-abc` 等价于 `-a -b -c`(getopt 的写法)
+        //   · 先按整体名字查一次 —— `-abc` 也可能本来就是个完整短名
+        //   · 查不到才按字符拆: 布尔位继续往后走; 需要取值的位把"簇里剩下的字符"
+        //     当作它的值, 剩下的为空就吃下一个 argv(`-euo pipefail` ⇒ -e -u -o pipefail)
+        // ==============================
+        if (arg.size() > 2 && arg[0] == '-' && arg[1] != '-' &&
+            arg.find('=') == std::string::npos && getOptionValue(arg) == nullptr)
+        {
+            for (size_t k = 1; k < arg.size(); k++)
+            {
+                const std::string one = std::string("-") + arg[k];
+                CommandValue *cv = getOptionValue(one);
+                if (cv == nullptr)
+                {
+                    reportError("unrecognized arguments: " + one);
+                    return false;
+                }
+                if (cv->type == CommandValue::BOOL)
+                {
+                    *static_cast<bool *>(cv->ptr) = true;
+                    cv->parsed = true;
+                    continue;
+                }
+                // 需要取值: 簇里剩下的字符就是值; 没有了就吃下一个 argv
+                std::string valueStr2 = arg.substr(k + 1);
+                if (valueStr2.empty())
+                {
+                    if (i + 1 >= argc)
+                    {
+                        reportError("missing value for option " + one);
+                        return false;
+                    }
+                    valueStr2 = argv[++i];
+                }
+                if (!assignOptionValue(cv, one, valueStr2))
+                    return false;
+                cv->parsed = true;
+                break;   // 值已经把后面的字符都吃掉了
+            }
+            continue;
+        }
+
+        // ==============================
         // 解析 = 格式：--key=val 或 -k=val
         // ==============================
         if (eqPos != std::string::npos)
@@ -559,68 +602,8 @@ bool JZCommandLineParser::parse(int argc, char** argv)
                 valueStr = argv[++i];
             }
 
-            switch (cmd->type)
-            {
-                case CommandValue::STRING:
-                    *static_cast<std::string*>(cmd->ptr) = str_ensure_utf8(valueStr);
-                    break;
-
-                case CommandValue::ENUM:
-                {
-                    bool matched = false;
-                    std::string utf8Val = str_ensure_utf8(valueStr);
-                    for (const auto& e : cmd->enumValues)
-                    {
-                        if (e == utf8Val)
-                        {
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if (!matched)
-                    {
-                        std::string allowed;
-                        for (size_t k = 0; k < cmd->enumValues.size(); k++)
-                        {
-                            if (k) allowed += ", ";
-                            allowed += cmd->enumValues[k];
-                        }
-                        reportError("option " + opt_name + " must be one of {" + allowed + "}, got \"" + valueStr + "\"");
-                        return false;
-                    }
-                    *static_cast<std::string*>(cmd->ptr) = utf8Val;
-                    break;
-                }
-
-                case CommandValue::INT:
-                {
-                    bool ok;
-                    int val = str_toInt(valueStr, &ok);
-                    if (!ok)
-                    {
-                        reportError("option " + opt_name + " requires an integer, got \"" + valueStr + "\"");
-                        return false;
-                    }
-                    *static_cast<int*>(cmd->ptr) = val;
-                    break;
-                }
-
-                case CommandValue::DOUBLE:
-                {
-                    bool ok;
-                    double val = str_toDouble(valueStr, &ok);
-                    if (!ok)
-                    {
-                        reportError("option " + opt_name + " requires an double, got \"" + valueStr + "\"");
-                        return false;
-                    }
-                    *static_cast<double*>(cmd->ptr) = val;
-                    break;
-                }
-
-                default:
-                    break;
-            }
+            if (!assignOptionValue(cmd, opt_name, valueStr))
+                return false;
 
             cmd->parsed = true;
         }
@@ -650,6 +633,72 @@ bool JZCommandLineParser::parse(int argc, char** argv)
     }
 
     return true;
+}
+
+// 把已解析出的字符串写进目标变量。普通路径与紧凑短选项路径共用这一份。
+bool JZCommandLineParser::assignOptionValue(CommandValue *cmd, const std::string &optName,
+                                            const std::string &valueStr)
+{
+    if (!cmd)
+        return false;
+
+    switch (cmd->type)
+    {
+    case CommandValue::STRING:
+        *static_cast<std::string *>(cmd->ptr) = str_ensure_utf8(valueStr);
+        return true;
+
+    case CommandValue::ENUM:
+    {
+        const std::string utf8Val = str_ensure_utf8(valueStr);
+        for (const auto &e : cmd->enumValues)
+        {
+            if (e == utf8Val)
+            {
+                *static_cast<std::string *>(cmd->ptr) = utf8Val;
+                return true;
+            }
+        }
+        std::string allowed;
+        for (size_t k = 0; k < cmd->enumValues.size(); k++)
+        {
+            if (k)
+                allowed += ", ";
+            allowed += cmd->enumValues[k];
+        }
+        reportError("option " + optName + " must be one of {" + allowed + "}, got \"" + valueStr + "\"");
+        return false;
+    }
+
+    case CommandValue::INT:
+    {
+        bool ok = false;
+        int val = str_toInt(valueStr, &ok);
+        if (!ok)
+        {
+            reportError("option " + optName + " requires an integer, got \"" + valueStr + "\"");
+            return false;
+        }
+        *static_cast<int *>(cmd->ptr) = val;
+        return true;
+    }
+
+    case CommandValue::DOUBLE:
+    {
+        bool ok = false;
+        double val = str_toDouble(valueStr, &ok);
+        if (!ok)
+        {
+            reportError("option " + optName + " requires an double, got \"" + valueStr + "\"");
+            return false;
+        }
+        *static_cast<double *>(cmd->ptr) = val;
+        return true;
+    }
+
+    default:
+        return true;
+    }
 }
 
 bool JZCommandLineParser::parseOptions(const std::string& options)

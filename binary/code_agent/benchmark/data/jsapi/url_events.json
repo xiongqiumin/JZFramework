@@ -1,7 +1,7 @@
 {
   "name": "jsapi_url_events",
   "purpose": "运行期全局（URL / URLSearchParams / EventEmitter）的语义是否与 Node 一致：URL 各字段与 searchParams 取值；EventEmitter 的 on/once/off/emit/listenerCount 计数语义。顺带考\"没有 import 的文件不能顶层 await\"这条 tsconfig 约束。",
-  "prompt": "用 TypeScript 完成（URL 解析与事件订阅都是运行期全局能力）。\n1) 读 ./_input.txt（pre 脚本已写入一段 URL 文本，去掉首尾空白后记作 T）；\n2) 解析 T，取出主机名、端口、路径，以及查询串里名为 x 的参数值；\n3) 做一遍订阅计数：同一个事件名上挂两个监听（其中一个只触发一次），先后触发两次；摘掉那个非一次性的监听后，再触发一次；记 total = 两个监听被调用的总次数，left = 此时该事件名上还剩的监听数；\n4) 打印一行：\nURL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<T 的 md5 小写十六进制>\n（各段用 '@' 连接，不要空格。）",
+  "prompt": "用 TypeScript 完成（URL 解析与事件订阅都是运行期全局能力）。\n1) 读 环境变量 JZ_CASE_INPUT 指向的输入文件（工程外的只读文件，路径用 process.env.JZ_CASE_INPUT 取）（pre 脚本已写入一段 URL 文本，去掉首尾空白后记作 T）；\n2) 解析 T，取出主机名、端口、路径，以及查询串里名为 x 的参数值；\n3) 做一遍订阅计数：同一个事件名上挂两个监听（其中一个只触发一次），先后触发两次；摘掉那个非一次性的监听后，再触发一次；记 total = 两个监听被调用的总次数，left = 此时该事件名上还剩的监听数；\n4) 打印一行：\nURL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<T 的 md5 小写十六进制>\n（各段用 '@' 连接，不要空格。）",
   "maxAttempts": 3,
   "timeout": 30,
   "setup": "write_input.py",
@@ -9,5 +9,5 @@
   "expect": {
     "contains": "example.com@8443@/a/b/c.html@plain@3@0@76bb443ebb5ff3da8fff6b94cb8b5a4a"
   },
-  "retryHint": "上一次运行的结果不对。要求：解析 ./_input.txt 里的 URL（主机名 / 端口 / 路径 / 查询串里的 x）；对一个事件名做\"两个监听（其中一个只触发一次）→ 触发两次 → 摘掉非一次性那个 → 再触发一次\"，记录总调用次数与剩余监听数；打印 URL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<md5(输入文本)>。"
+  "retryHint": "上一次运行的结果不对。要求：解析 环境变量 JZ_CASE_INPUT 指向的输入文件（工程外的只读文件，路径用 process.env.JZ_CASE_INPUT 取） 里的 URL（主机名 / 端口 / 路径 / 查询串里的 x）；对一个事件名做\"两个监听（其中一个只触发一次）→ 触发两次 → 摘掉非一次性那个 → 再触发一次\"，记录总调用次数与剩余监听数；打印 URL=<hostname>@<port>@<pathname>@<x>@<total>@<left>@<md5(输入文本)>。"
 }

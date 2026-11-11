@@ -51,7 +51,7 @@
 #include "JZRuntimeDebugger.h"
 #include "JZTimer.h"
 
-#include "JZCrashReport.h"
+// (JZCrashReport 不再用于 JS 异常: 见 onUnhandledException 处的说明)
 #include "JZDialog.h"
 #include "JZLabel.h"
 #include "JZPushButton.h"
@@ -259,32 +259,34 @@ int main(int argc, char *argv[])
         fflush(stdout);
     });
 
-    // ---- 未处理 JS 异常：生成 crash report + 弹窗；debug 版可"开始调试"启动服务 ----
-    bool crashReported = false;   // 保证未处理异常只处理一次
-    bool crashExit = false;       // 用户选择退出
+    // ---- 未处理 JS 异常：打 JS Exception 头 + 弹窗；debug 版可"开始调试"启动服务 ----
+    // ⚠ 这里**不能**走 JZCrashReport: 它输出 "Crash Report / Signal: 0 / Backtrace:",
+    //   那是"原生崩溃"的形状。agent 见到它会去追 mongoose/socket 的原生 bug, 而实际
+    //   往往只是 ReferenceError / TypeError —— 一个纯 JS 层的错。所以只陈述事实。
+    bool exceptionReported = false;   // 保证未处理异常只处理一次
+    bool crashExit = false;           // 用户选择退出
     bool keepAlive = (debugger != nullptr);   // 异常流程置 true 时保持进程存活（供调试）
 
-    auto reportCrash = [&](const string &tsError) -> string {
-        JZCrashReport r;
-        r.platform = "windows";
-        r.signal = 0;
-        r.msg = tsError;
-        r.stack = tsError;
-        string text = JZCrashReportManager::instance()->makeReport(r);
-        jzDebug("%s\n", text.c_str());
+    auto reportJsException = [&](const string &tsError) -> string {
+        string text = "==================== JS Exception ====================\n";
+        text += tsError;
+        if (text.back() != '\n')
+            text += '\n';
+        text += "======================================================\n";
+        jzDebug("%s", text.c_str());
         fflush(stdout);
         return text;
     };
 
     auto onUnhandledException = [&](const string &tsError) {
-        if (crashReported)
+        if (exceptionReported)
             return;
-        crashReported = true;
+        exceptionReported = true;
 
         string shown = tsError;
         if (shown.size() > 1500)
             shown = shown.substr(0, 1500) + "\n...(已截断)";
-        reportCrash(tsError);
+        reportJsException(tsError);
 
         if (debugMode)
         {
@@ -329,16 +331,17 @@ int main(int argc, char *argv[])
             // 非调试版：弹窗提示后退出
             if(jzApp->activeWindow())
             {
-                JZMessageBox::information(jzApp->activeWindow(), "运行时错误", shown)->exec();
+                JZMessageBox::information(jzApp->activeWindow(), "JS Exception", shown)->exec();
                 crashExit = true;
                 app.exit(1);
             }
             else
             {
-                jzError() << "运行时错误" << shown;
+                // 上面 reportJsException 已经把完整内容打到 stdout 了, 这里不再重复一遍
+                // (以前这里再来一次 jzError, 内容是同一份栈, 只是被转义成 \n 的一行)。
                 crashExit = true;
                 app.exit(1);
-            }                
+            }
         }
     };
     rt.setUnhandledExceptionHandler(onUnhandledException);

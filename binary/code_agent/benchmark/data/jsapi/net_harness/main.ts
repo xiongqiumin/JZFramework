@@ -12,9 +12,21 @@ import { solve } from "./solution";
 
 function readInputText(): string
 {
-    const candidates = ["./_input.txt", "../_input.txt", "./../_input.txt"];
+    // 输入不在工程里: 宿主把它放在工程**外面**的 <case>/input/input.txt。
+    //   cwd = 工程根   -> ../input/input.txt
+    //   cwd = build/   -> ../../input/input.txt
+    //   ./_input.txt   -> 兼容老宿主(benchmark 把输入写进工程根/build)
+    // ⚠ 别再试 "../_input.txt": 那会翻到别的用例的输入(实测因此把 port 解析成 0)。
+    const candidates = [
+        (process.env.JZ_CASE_INPUT || ""),
+        "../input/input.txt",
+        "../../input/input.txt",
+        "./_input.txt"
+    ];
     for (const p of candidates)
     {
+        if (!p)
+            continue;
         try
         {
             if (fs.existsSync(p))
@@ -41,10 +53,21 @@ function parseInput(raw: string): { text: string; port: number }
 
 async function main(): Promise<void>
 {
-    const { text, port } = parseInput(readInputText());
+    const raw = readInputText();
+    const { text, port } = parseInput(raw);
+    // 输入不对就明确报错, 不要带着 port=0 往下跑(那会变成一堆看不懂的 socket 错误)
+    if (!Number.isFinite(port) || port <= 0)
+        throw new Error("输入无效: _input.txt 内容为 <" + raw.slice(0, 80) + ">, 解析出的 port=" + port);
     const out = await solve(text, port);
     if (typeof out === "string")
         console.log(out.replace(/\r?\n/g, " "));
 }
 
-main();
+// 结果打印完就主动退出: 本用例考的是 net API 用法, "忘了 close/unref 句柄" 不该由超时来收场
+// (以前进程挂住 -> 终端 30s 超时被杀 -> 模型以为逻辑错了, 反复重试)。
+main().then(() => {
+    setTimeout(() => process.exit(0), 0);
+}).catch((e: any) => {
+    console.error("[harness] solve 失败: " + (e && e.stack ? e.stack : String(e)));
+    setTimeout(() => process.exit(1), 0);
+});

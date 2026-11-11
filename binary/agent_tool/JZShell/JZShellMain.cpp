@@ -46,6 +46,8 @@ struct Options
     bool check = false;       // 只做语法检查(--check): 给"定位解析失败"用, 不执行
     bool posix = false;       // `-o posix`
     bool extdebug = false;    // `-O extdebug`
+    bool errexit = false;     // `-e`: 与脚本里 `set -e` 等价(bash tests 用 `-ce` 调用)
+    bool nounset = false;     // `-u`: 引用未定义变量报错
 };
 
 void usage()
@@ -126,6 +128,21 @@ void printResult(const string &cmd, const JZShell::Result &r, bool quiet)
     if (!r.error.empty())
         printf("[error] %s\n", r.error.c_str());
     printf("[exit %d] [cwd %s]\n\n", r.exitCode, r.cwd.c_str());
+}
+
+// 退出前处理后台任务: 脚本里还有 `cmd &` 在跑就直接 _exit。
+// 为什么不能正常返回: ~JZApplication 里断言线程表为空, 而后台任务跑在自己的
+// JZTaskThread 上(实测崩在 main 的 return 处)。bash 的行为也是脚本一结束就退出,
+// 后台任务继续跑, 不等它。
+int finish(int rc)
+{
+    if (JZShell::hasRunningBackgroundJobs())
+    {
+        fflush(stdout);
+        fflush(stderr);
+        _exit(rc);
+    }
+    return rc;
 }
 
 bool runOne(JZShell &shell, const string &cmd, int *failCount, bool quiet)
@@ -233,6 +250,14 @@ int main(int argc, char **argv)
             else if (v == "extdebug")
                 opt.extdebug = true;
         }
+        else if (a == "-e" || a == "-u")
+        {
+            // 单独写(`jz_shell -e -c '...'`): 与合并写法等价
+            if (a == "-e")
+                opt.errexit = true;
+            else
+                opt.nounset = true;
+        }
         else if (a == "-h" || a == "--help")
         {
             usage();
@@ -241,12 +266,17 @@ int main(int argc, char **argv)
         else if (a.size() > 2 && a[0] == '-' && a[1] != '-')
         {
             // 合并的短选项: bash 允许 `-ce` / `-ec` / `-xec`(测试套件里就是这么调的)。
-            // 只看有没有 'c'(后面跟命令串), 其它开关(-e/-x/-u/-v/-n)接受不实现。
+            // 'c' = 后面跟命令串; 'e'/'u' 真的生效(等价 set -e / set -u);
+            // 其它(-x/-v/-n)只接受不实现。
             bool needCmd = false;
             for (size_t k = 1; k < a.size(); k++)
             {
                 if (a[k] == 'c')
                     needCmd = true;
+                else if (a[k] == 'e')
+                    opt.errexit = true;
+                else if (a[k] == 'u')
+                    opt.nounset = true;
             }
             if (needCmd)
             {
@@ -285,6 +315,11 @@ int main(int argc, char **argv)
     JZApplication app;   // JZProcess 用到 JZObject 的 timer 基础设施
     JZShell shell;
     shell.setCommandTimeoutMs(opt.timeoutMs);
+    // `-e` / `-u`: 与脚本里 `set -e` / `set -u` 等价(bash tests 用 `$THIS_SH -ce '...'`)
+    if (opt.errexit)
+        shell.setErrexit(true);
+    if (opt.nounset)
+        shell.setNounset(true);
     addGitToolDirs(shell);
     for (const string &d : opt.pathDirs)
         shell.addPathDir(d);
@@ -350,7 +385,7 @@ int main(int argc, char **argv)
         printResult(opt.script, r, opt.quiet);
         // 退出码要**原样**返回: 脚本里 `exit 14` ⇒ 进程状态 14(bash 的行为)。
         // 以前一律压成 1, `exit 142 | exit 14` 这类用例的返回值就对不上。
-        return r.ok ? 0 : (r.exitCode > 0 ? (r.exitCode & 0xff) : 1);
+        return finish(r.ok ? 0 : (r.exitCode > 0 ? (r.exitCode & 0xff) : 1));
     }
 
     // ---- 批量 ----
@@ -358,7 +393,7 @@ int main(int argc, char **argv)
     {
         for (const string &c : opt.commands)
             runOne(shell, c, &fail, opt.quiet);
-        return fail == 0 ? 0 : 1;
+        return finish(fail == 0 ? 0 : 1);
     }
 
     // ---- 从标准输入读一整段当脚本跑(bash 的行为: 没有参数时读 stdin) ----
@@ -401,7 +436,7 @@ int main(int argc, char **argv)
             if (!r.ok)
                 fail++;
         }
-        return fail == 0 ? 0 : 1;
+        return finish(fail == 0 ? 0 : 1);
     }
 
     // ---- 交互 ----
@@ -420,5 +455,5 @@ int main(int argc, char **argv)
             continue;
         runOne(shell, line, &fail, opt.quiet);
     }
-    return fail == 0 ? 0 : 1;
+    return finish(fail == 0 ? 0 : 1);
 }

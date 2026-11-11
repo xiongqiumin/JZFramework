@@ -24,35 +24,17 @@ protected:
 
 // terminal_run(本地版): 同 agent_node 的 terminal_run, 但直接在 code_agent 进程里跑,
 // 单用户终端、自动用默认会话, 不需要显式 open。
-// 可以并发: 同一个终端同时跑多条命令, 每次调用各自一个 run_id(取消按 run_id 精确停)。
-// background=true 时走 runBackground: 启动成功即返回 run_id, 不等命令结束、不设超时
-//   —— 起服务这类自己不退出的命令用它; 之后用 terminal_query 查、terminal_cancel 停。
+// ⭐ 单前台任务: 一次只有一条命令, 所以没有 run_id/并发/查询工具 ——
+//   回包就是这次运行的输出; 要后台就在命令里写 `&`(输出跟着命令自己的重定向走)。
 class JZTerminalRunTool : public JZTerminalToolBase
 {
 public:
     explicit JZTerminalRunTool(JZVirtualTerminal *term);
     void call(const ToolCall &params) override;
     void cancel(const std::string &id) override;
-
-private:
-    // 在跑的调用: tool call id -> run_id(用于 cancel 精确停那一条)
-    std::map<std::string, std::string> m_runs;
 };
 
-// terminal_query: 按 run_id 查一次运行的状态与日志(前台跑完的也能查 —— 取完整输出;
-// 输出已不做任何过滤/截断, 它只是"能反复看、能按 grep / stream / tail 挑")。run_id 省略 = 最近一次运行。
-// ⭐ 轮询类(见 JZAgentTool::isPollTool): 模型查后台任务进度会**反复**用同样的参数调它,
-//   那是正常用法, 不该被循环检测当打转打掉。
-class JZTerminalQueryTool : public JZTerminalToolBase
-{
-public:
-    explicit JZTerminalQueryTool(JZVirtualTerminal *term);
-    void call(const ToolCall &params) override;
-    bool isPollTool() const override { return true; }
-};
-
-// terminal_cancel: 按 run_id 停掉一条还在跑的命令(后台起的 long-running 任务靠它收尾)。
-// run_id 省略 = 最近一条在跑的。
+// terminal_cancel: 停掉当前正在跑的那条命令(单前台任务, 不需要参数)。
 class JZTerminalCancelTool : public JZTerminalToolBase
 {
 public:

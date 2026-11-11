@@ -129,12 +129,13 @@ vector<string> JZShellPolicy::availablePrograms() const
 // 审核: 唯一入口
 // ==========================================================================
 
-JZShellPolicy::Verdict JZShellPolicy::checkRead(const string &path) const
+JZShellPolicy::Verdict JZShellPolicy::checkReadIn(const JZVirtualTerminalConfig &cfg,
+                                                 const string &path)
 {
     Verdict v;
     string abs = codeNormalizePath(path);
     string error;
-    if (!zoneCheckAccess(m_config, abs, FileAccess::Read, error))
+    if (!zoneCheckAccess(cfg, abs, FileAccess::Read, error))
     {
         v.decision = Decision::Deny;
         v.reason = DenyReason::AccessDenied;
@@ -143,16 +144,22 @@ JZShellPolicy::Verdict JZShellPolicy::checkRead(const string &path) const
     }
 
     v.decision = Decision::Allow;
-    v.detail = string("区域: ") + zoneText(zoneOfPath(m_config.zone, abs));
+    v.detail = string("区域: ") + zoneText(zoneOfPath(cfg.zone, abs));
     return v;
 }
 
-JZShellPolicy::Verdict JZShellPolicy::checkWrite(const string &path) const
+JZShellPolicy::Verdict JZShellPolicy::checkRead(const string &path) const
+{
+    return checkReadIn(m_config, path);
+}
+
+JZShellPolicy::Verdict JZShellPolicy::checkWriteIn(const JZVirtualTerminalConfig &cfg,
+                                                  const string &path)
 {
     Verdict v;
     string abs = codeNormalizePath(path);
     string error;
-    if (!zoneCheckAccess(m_config, abs, FileAccess::Write, error))
+    if (!zoneCheckAccess(cfg, abs, FileAccess::Write, error))
     {
         v.decision = Decision::Deny;
         v.reason = DenyReason::WriteDenied;
@@ -161,8 +168,13 @@ JZShellPolicy::Verdict JZShellPolicy::checkWrite(const string &path) const
     }
 
     v.decision = Decision::Allow;
-    v.detail = string("可写, 区域: ") + zoneText(zoneOfPath(m_config.zone, abs));
+    v.detail = string("可写, 区域: ") + zoneText(zoneOfPath(cfg.zone, abs));
     return v;
+}
+
+JZShellPolicy::Verdict JZShellPolicy::checkWrite(const string &path) const
+{
+    return checkWriteIn(m_config, path);
 }
 
 JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program) const

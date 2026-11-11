@@ -16,18 +16,6 @@ namespace
         return string();
     }
 
-    // 省略 run_id 时用的默认值: 查历史取最近一次运行, 停命令取最近一条在跑的
-    string defaultRunId(JZVirtualTerminal *term)
-    {
-        vector<string> ids = term->runIds();
-        return ids.empty() ? string() : ids.back();
-    }
-
-    string defaultActiveRunId(JZVirtualTerminal *term)
-    {
-        return term->activeRunId();
-    }
-
     ToolDefine makeDef(const string &name, const string &desc,
                       const vector<ParamSchema> &params, const vector<string> &required)
     {
@@ -95,17 +83,13 @@ void JZTerminalRunTool::call(const ToolCall &params)
     }
 
     // 命令被拒时 run() 会**同步**回调一次(ok=false), 用它记一下, 免得下面再回一次结果。
-    // ridPtr: run_id 要等 run() 返回才有, 而回调可能发生在 run() 里(同步那次), 所以放共享变量。
     auto fired = std::make_shared<bool>(false);
-    auto ridPtr = std::make_shared<string>();
-    auto cb = [this, params, fired, ridPtr, paramNote](bool ok, const string &out, const string &err)
+    auto cb = [this, params, fired, paramNote](bool ok, const string &out, const string &err)
     {
-        // 后台任务: tool call 启动那一步已经回过包了, 进程结束时这次回调直接丢掉 ——
-        // 结果进运行记录, 由 terminal_query 去取(再 finish 一次就是重复回包)。
+        // 同步那次(命令被拒)已经回过包了: 再 finish 一次就是重复回包
         if (*fired)
             return;
         *fired = true;
-        m_runs.erase(params.id);
         string text = out;
         if (!err.empty())
         {
@@ -123,251 +107,22 @@ void JZTerminalRunTool::call(const ToolCall &params)
         finish(params, ok, text);
     };
 
-    JZResult<string> started = m_term->run(command, timeoutMs, cb);
+    JZResult<void> started = m_term->run(command, timeoutMs, cb);
     if (started.isError())
     {
         if (!*fired)
             finish(params, false, started.errorMessage());
         return;
     }
-
-    // 记下 run_id(展示/查询用; 取消不需要它 —— 只有一条在跑)
-    m_runs[params.id] = started.value();
-    *ridPtr = started.value();
 }
 
 void JZTerminalRunTool::cancel(const std::string &id)
 {
     if (!m_term)
         return;
-    // 只停这条调用对应的运行(同一终端里别的在跑命令不动)
-    auto it = m_runs.find(id);
-    if (it == m_runs.end())
-        return;
-    m_runs.erase(it);
+    // 单前台任务: 停的就是当前这一条(没有"别的在跑命令"可误伤)
+    (void)id;
     m_term->cancel();
-}
-
-// ======================================================================
-// JZTerminalQueryTool
-// ======================================================================
-JZTerminalQueryTool::JZTerminalQueryTool(JZVirtualTerminal *term)
-    : JZTerminalToolBase("terminal_query", term)
-{
-    vector<ParamSchema> params;
-    params.push_back(JZCodeTool::makeParam("run_id", ParamType::String,
-                                           "要查的运行 id(terminal_run 返回的 [run_id]); 省略 = 最近一次运行"));
-    params.push_back(JZCodeTool::makeParam("tail", ParamType::Number,
-                                           "最多回多少行(默认 200; 0 = 不限制, 仍受回包字节上限约束)"));
-    params.push_back(JZCodeTool::makeParam("grep", ParamType::String,
-                                           "只保留含该关键字的行(空 = 不过滤)"));
-    params.push_back(JZCodeTool::makeParam("stream", ParamType::String,
-                                           "按流过滤: stdout / stderr / all(默认)"));
-    params.push_back(JZCodeTool::makeParam("from_last", ParamType::Boolean,
-                                           "省略时**按状态定**: 还在跑 = 只回上次之后新增的行(轮询省 token); "
-                                           "已结束 = 回最后 tail 行(看最终结果, 反复查也一样)。显式 true/false 可强制"));
-    setToolDefine(makeDef("terminal_query",
-                          "按 run_id 查一次运行的状态与日志。\n"
-                          "默认口径按**状态**定: 还在跑 -> 只回自上次查询之后新增的行(反复查进度不会把同一段日志\n"
-                          "反复灌进上下文); 已结束 -> 回最后 tail 行(一次拿到最终结果, 不必查第二遍)。\n"
-                          "想看历史/从头看: from_last=false; 想要全部: from_last=false 且 tail=0。\n"
-                          "带 grep / stream 时按\"在整条日志里找\"处理(不受增量限制)。\n"
-                          "后台起的(background=true)和前台跑完的都能查(前台那条的回包就是它自己那次输出, "
-                          "这里能反复看, 也能按 grep / stream / tail 挑)。\n"
-                          "还在跑的: 用它可以反复查进度, 不用干等(轮询不算重复调用)。",
-                          params, {}));
-}
-
-void JZTerminalQueryTool::call(const ToolCall &params)
-{
-    if (!m_term)
-    {
-        finish(params, false, "终端未初始化");
-        return;
-    }
-
-    Json::Value p = params.params;
-    string runId = p.get("run_id", "").asString();
-    if (runId.empty())
-    {
-        runId = defaultRunId(m_term);
-        if (runId.empty())
-        {
-            finish(params, false, "这个终端还没有运行过任何命令(没有可查的 run_id)");
-            return;
-        }
-    }
-    int tail = p.get("tail", 200).asInt();
-    string grep = p.get("grep", "").asString();
-    string stream = str_toLower(p.get("stream", "").asString());
-    if (stream == "all" || stream == "*")
-        stream.clear();
-    // from_last: 显式给了就以它为准; 没给时**按状态定**(见下面 runSnapshot 之后)
-    bool fromLast = p.get("from_last", true).asBool();
-
-    JZVirtualTerminal::RunRecordInfo info;
-    if (!m_term->runSnapshot(runId, info))
-    {
-        // 顺手把可用的 id 给它: 后台任务跑久了, run_id 记错很常见
-        vector<string> ids = m_term->runIds();
-        string hint;
-        for (size_t i = ids.size() > 5 ? ids.size() - 5 : 0; i < ids.size(); i++)
-            hint += (hint.empty() ? " 最近的 run_id: " : ", ") + ids[i];
-        finish(params, false, "没有这个 run_id: " + runId + hint);
-        return;
-    }
-
-    // ⭐ 默认口径**按状态定**(2026-10-14 改):
-    //   还在跑 ⇒ 增量(轮询服务/长任务时只回新增行, 不把同一段日志反复灌进上下文);
-    //   已结束 ⇒ 回最后 tail 行 —— 模型这时候问的多半是"跑完了吗/结果是什么", 增量只会回
-    //            "没有新增输出", 它读成"输出丢了"就开始反复查(实测同一个 run_id 查了 64 次)。
-    //   显式传了 from_last 就完全按调用方的(增量游标逻辑不变)。
-    if (!p.isMember("from_last") && info.status != "running")
-        fromLast = false;
-
-    string text;
-    text += "[run_id] " + info.runId + "  [" + info.status + "]";
-    if (info.status == "running")
-    {
-        int64_t ms = JZPlatform::getTickCountMs() - info.startTime;
-        text += "  已运行 " + to_string(ms / 1000) + "s";
-    }
-    else
-    {
-        text += "  exit=" + to_string(info.exitCode);
-        if (info.timedOut)
-            text += " (超时被杀)";
-    }
-    if (info.background)
-        text += "  [后台]";
-    if (info.pid > 0)
-        text += "  pid=" + to_string(info.pid);
-    text += "\n[command] " + info.command;
-    if (!info.error.empty())
-        text += "\n[结果] " + info.error;
-
-    // ---- 选行: 先按流/关键字过滤, 再按模式切区间 ----
-    // abs = 该行在**整条运行**里的绝对行号(从第一行算起, 不受"记录上限丢头"影响) ——
-    // 增量游标就建在它上面, 所以跨查询对得上。
-    struct Pick
-    {
-        size_t abs;
-        const JZVirtualTerminal::RunLogLine *line;
-    };
-    vector<Pick> sel;
-    for (size_t i = 0; i < info.log.size(); i++)
-    {
-        const JZVirtualTerminal::RunLogLine &l = info.log[i];
-        if (!stream.empty() && l.stream != stream)
-            continue;
-        if (!grep.empty() && l.text.find(grep) == string::npos)
-            continue;
-        Pick k;
-        k.abs = info.firstLine + i;
-        k.line = &l;
-        sel.push_back(k);
-    }
-
-    // 增量模式 = 这条运行之前被查过(readPos > 0) **且没带过滤条件**。
-    // 带 grep/stream 的查询是"在整条日志里找东西"⇒ 按看历史处理, 并且不动增量游标。
-    const bool incremental = fromLast && info.readPos > 0 && grep.empty() && stream.empty();
-    size_t from = 0;
-    size_t to = sel.size();
-    if (incremental)
-    {
-        size_t cursor = info.readPos > info.firstLine ? info.readPos : info.firstLine;
-        from = sel.size();
-        for (size_t i = 0; i < sel.size(); i++)
-        {
-            if (sel[i].abs >= cursor)
-            {
-                from = i;
-                break;
-            }
-        }
-        to = (tail > 0 && sel.size() > from + (size_t)tail) ? from + (size_t)tail : sel.size();
-    }
-    else if (tail > 0 && sel.size() > (size_t)tail)
-    {
-        from = sel.size() - (size_t)tail;   // 只看最后 tail 行
-    }
-
-    // ---- 组装回包(带字节上限) ----
-    // 模型上下文比磁盘贵得多: 单次回包卡在 32KB, 超了就地停并告诉它还有多少行。
-    const size_t kMaxQueryBytes = 32 * 1024;
-    string body;
-    size_t shown = 0;
-    for (size_t i = from; i < to; i++)
-    {
-        string one = sel[i].line->stream + "| " + sel[i].line->text + "\n";
-        if (body.size() + one.size() > kMaxQueryBytes)
-            break;
-        body += one;
-        shown++;
-    }
-
-    text += "\n[日志 ";
-    if (shown == 0)
-        text += "0 行";
-    else
-        text += to_string(shown) + " 行(第 " + to_string(sel[from].abs + 1) + ".." +
-                to_string(sel[from + shown - 1].abs + 1) + " 行, 累计 " + to_string(info.totalLines) + " 行)";
-    if (!grep.empty())
-        text += ", grep=" + grep;
-    if (!stream.empty())
-        text += ", stream=" + stream;
-    if (incremental)
-        text += ", 只看上次之后的新增";
-    text += "]";
-
-    if (incremental)
-    {
-        if (from + shown < to)
-            text += "\n[还有 " + to_string(to - from - shown) + " 行未显示, 再查一次接着看]";
-        if (info.readPos > info.firstLine)
-            text += "\n[提示] 更早的 " + to_string(info.readPos - info.firstLine) +
-                    " 行没读到过, 已被记录上限丢弃(想要长日志请用 grep 缩小范围)";
-    }
-    else
-    {
-        if (from > 0)
-            text += "\n[更早的 " + to_string(from) + " 行未显示; 要全看: from_last=false 且 tail=0]";
-        if (info.firstLine > 0)
-            text += "\n[提示] 记录只留最近 " + to_string(info.log.size()) + " 行, 更早的 " +
-                    to_string(info.firstLine) + " 行已丢弃";
-    }
-
-    if (shown == 0)
-    {
-        if (incremental && info.status == "running")
-            text += "\n(暂无新增输出, 任务还在跑)";
-        else if (incremental)
-            text += "\n(没有新增输出, 任务已结束)";
-        else if (!grep.empty() || !stream.empty())
-            text += "\n(没有符合过滤条件的行)";
-        else
-            text += "\n(暂无输出" + (info.status == "running" ? string(", 还在跑") : string()) + ")";
-    }
-    else
-    {
-        text += "\n" + body;
-    }
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
-        text.pop_back();   // body 末尾多出来的换行去掉
-
-    // 游标前移: 只把**真正回给模型的行**记成已读 ⇒ 被 tail/字节上限截掉的下一轮还能拿到
-    if (incremental)
-    {
-        if (shown > 0)
-            m_term->advanceRunReadPos(runId, sel[from + shown - 1].abs + 1);
-    }
-    else if (fromLast)
-    {
-        // 第一次查(看的是最近一段): 记成"已看过最新的", 下一次开始就是增量
-        m_term->advanceRunReadPos(runId, info.totalLines);
-    }
-
-    finish(params, true, text);
 }
 
 // ======================================================================
@@ -376,13 +131,10 @@ void JZTerminalQueryTool::call(const ToolCall &params)
 JZTerminalCancelTool::JZTerminalCancelTool(JZVirtualTerminal *term)
     : JZTerminalToolBase("terminal_cancel", term)
 {
-    vector<ParamSchema> params;
-    params.push_back(JZCodeTool::makeParam("run_id", ParamType::String,
-                                           "要停的运行 id; 省略 = 最近一条在跑的"));
     setToolDefine(makeDef("terminal_cancel",
-                          "停掉一条还在跑的命令(后台起的 long-running 任务靠它收尾)。\n"
-                          "只停这一条, 同终端里别的在跑命令不受影响; 收尾结果用 terminal_query 查。",
-                          params, {}));
+                          "停掉当前正在跑的那条命令(单前台任务, 一次只有一条)。\n"
+                          "`cmd &` 起的后台进程不在前台任务里, 要停它用 `kill <pid>`。",
+                          {}, {}));
 }
 
 void JZTerminalCancelTool::call(const ToolCall &params)
@@ -393,26 +145,12 @@ void JZTerminalCancelTool::call(const ToolCall &params)
         return;
     }
 
-    Json::Value p = params.params;
-    string runId = p.get("run_id", "").asString();
-    if (runId.empty())
-    {
-        runId = defaultActiveRunId(m_term);
-        if (runId.empty())
-        {
-            finish(params, false, "没有在跑的命令(没有可停的 run_id)");
-            return;
-        }
-    }
-
     if (!m_term->cancel())
     {
-        finish(params, false, "这条已经不在跑了: " + runId +
-                                  "(它可能已结束 —— 用 terminal_query 查它的结果)");
+        finish(params, false, "当前没有在跑的命令");
         return;
     }
-    finish(params, true, "已请求停止 " + runId +
-                             " —— 进程被杀, 收尾结果(退出码/日志)用 terminal_query 查");
+    finish(params, true, "已请求停止当前命令 —— 下一次分片检查时杀掉进程");
 }
 
 // ======================================================================
@@ -464,40 +202,6 @@ void JZTerminalListTool::call(const ToolCall &params)
     else
         text += "空闲";
     text += "\n";
-
-    // 在跑的那一条(run_id + 已跑多久 + 命令): 模型忘了 run_id 时不用靠 query 报错才拿到
-    string active = m_term->activeRunId();
-    if (!active.empty())
-    {
-        text += "  在跑:\n";
-        int64_t now = JZPlatform::getTickCountMs();
-        JZVirtualTerminal::RunRecordInfo rec;
-        if (m_term->runSnapshot(active, rec))
-        {
-            string cmd = rec.command.size() > 60 ? rec.command.substr(0, 60) + "…" : rec.command;
-            text += "    " + rec.runId + "  " + to_string((now - rec.startTime) / 1000) + "s  " + cmd +
-                    "\n";
-        }
-    }
-
-    // 最近的历史(不管在不在跑): 查日志时挑 run_id 用
-    vector<string> all = m_term->runIds();
-    if (!all.empty())
-    {
-        text += "  最近运行:\n";
-        for (size_t i = all.size() > 5 ? all.size() - 5 : 0; i < all.size(); i++)
-        {
-            JZVirtualTerminal::RunRecordInfo rec;
-            if (!m_term->runSnapshot(all[i], rec))
-                continue;
-            text += "    " + rec.runId + "  [" + rec.status + "]";
-            if (rec.status != "running")
-                text += "  exit=" + to_string(rec.exitCode);
-            if (rec.background)
-                text += "  [后台]";
-            text += "\n";
-        }
-    }
     finish(params, true, text);
 }
 

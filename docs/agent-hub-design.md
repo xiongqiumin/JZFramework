@@ -373,7 +373,11 @@ node 用 `JZNetClient` 主动连 cli（或 server）的 `JZNetServer`，cli 把�
 模型侧只看到一个工具（多节点靠 `host` 参数路由）：
 
 ```
-remote_ssh(host?, action?, command?, cwd?, timeout_ms?, background?, run_id?, tail?, grep?, incremental?)
+remote_ssh(host?, command, cwd?, timeout_ms?)
+
+> ⚠ 2026-11-11：`action=query/cancel`、`background`、`run_id`、`tail/grep/incremental` 均已删除。
+> 现在只有"跑一条命令、同步回输出"；后台写 `&` + 重定向，之后 `cat` 日志。
+> 本节其余内容是当时的协议设计记录（`NodePack_termQuery` 包还留着，节点只回一句"不再保留运行记录"）。
 ```
 
 | 参数 | 说明 |
@@ -499,7 +503,7 @@ remote_ssh(host?, action?, command?, cwd?, timeout_ms?, background?, run_id?, ta
 | `platform` | string | 编译期 `win-x64` / `linux-x64` / `linux-arm64` / `darwin-arm64` | 人 / 模型 | 决定命令写法（`bash` vs `powershell`）、路径分隔符 |
 | `hostName` | string | `gethostname()` | 人 | 两台机器都叫 `line1` 时靠它区分；**只用于展示，不做路由** |
 | `rootDir` | string | 规范化后的工作区 | 人 / 模型 | `cwd` 语义；等于 `execResult.cwd` 的根 |
-| `shell` | string | 终端实际探测 | 人 / 模型 | 命令写法（`sh` / `bash` / `pwsh`） |
+| `shell` | string | 固定 `jz_shell` | 人 | 终端用**内建解释器**，不再探测外部 shell；命令写法按 POSIX sh 子集 |
 | `trustedDirs` | int | `trustedDirs.size()` | 人 / 模型(数量) | 只给**数量**不给路径：不泄露客户目录结构，但模型知道还有别的可写区 |
 | `allowTerminal` | bool | 配置 | 人 / 模型 | `false` ⇒ 这台什么都跑不了 |
 | `allowPackageManager` | bool | 配置 | 模型 | 禁 ⇒ 别试 `pip`/`npm`/`apt` |
@@ -641,7 +645,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 | 分组 | 关键项 |
 | --- | --- |
 | `llm` | `url / name / token / netTimeoutMs / maxRounds / maxToken / maxTokens / maxRetries / maxFixRetries / retryDelayMs / body` |
-| `terminal` | `rootDir / trustedDirs / shellProgram / programs / recycleSec / allowTerminal / allowFileTools / allowPackageManager / allowNetwork / unrestricted` |
+| `terminal` | `rootDir / trustedDirs / shellProgram(仅 verify 脚本选解释器; 终端命令走内建 JZShell) / programs / recycleSec / allowTerminal / allowFileTools / allowPackageManager / allowNetwork / unrestricted` |
 | `verify` | `maxRounds / timeoutMs` |
 | `memory` | `enabled / file / maxBytes` |
 | `system` | `extra / extraFile`（拼进 system prompt 一次） |

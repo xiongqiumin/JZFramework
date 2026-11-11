@@ -213,7 +213,7 @@ declare function btoa(data: string): string;
  *   exit("x") / exit({}) / exit(true)   -> TypeError ERR_INVALID_ARG_TYPE
  *   exitCode 是可读写属性(整数/整数串; null/undefined 清空), 脚本自然结束时它就是进程退出码。
  *
- * ⚠ 这里只有 cwd / argv / exit / exitCode; 其余成员(execPath / platform ...)在 '@jz/process' 模块里,
+ * ⚠ 这里只有 cwd / argv / env / exit / exitCode; 其余成员(execPath / platform ...)在 '@jz/process' 模块里,
  *   两个是同一套底层(行为一致), argv 更是**同一个数组对象**。
  *   已知差异: Node 的 exit 会立即终止当前帧, 这里当前同步帧会跑完。
  */
@@ -221,6 +221,11 @@ declare const process: {
     cwd(): string;
     /** 启动参数 = [宿主可执行文件, 入口模块, ...宿主给的参数](见 '@jz/process' 的 argv) */
     argv: string[];
+    /**
+     * 进程环境(对齐 Node 的 process.env): 读走进程环境, 写也真写进进程环境(子进程能继承)。
+     * 已知差异: 只枚举初始化那刻就存在的键, 脚本新加的键不穿透。
+     */
+    env: { [key: string]: string | undefined };
     /** 见上: 参数与退出码规则对齐 Node */
     exit(code?: number | string | null): void;
     exitCode: number | string | null | undefined;

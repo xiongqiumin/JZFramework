@@ -1,4 +1,5 @@
 #include "mongoose.h"
+#include <cstdlib>   // std::getenv: mg 日志开关(见 JZNET_MG_LOG)
 #include "JZNetObject.h"
 #include "JZTx.h"
 #include "JZApplication.h"
@@ -531,7 +532,13 @@ JZNetThread::JZNetThread(JZObject *parent)
     setObjectName("net_thread");
     setConfig(cfg);
 
-    mg_log_set(MG_LL_ERROR);
+    // mongoose 的日志直接写进程 stderr, 会被当成"脚本输出"混进 agent 的终端回包
+    // (`mongoose.c:783:mg_error ... socket error`), 模型只会把它误判成原生崩溃。
+    // 默认静音; 排查网络问题时设环境变量 JZNET_MG_LOG=1 再打开。
+    {
+        const char *mgLog = std::getenv("JZNET_MG_LOG");
+        mg_log_set((mgLog && *mgLog) ? MG_LL_ERROR : MG_LL_NONE);
+    }
     m_mgr = new mg_mgr();
     mg_mgr_init(m_mgr);
     m_mgr->dns4.url = g_netConfig.dns4.empty() ? "udp://223.5.5.5:53" : g_netConfig.dns4.c_str();   // IPv4 DNS, 为空用阿里云

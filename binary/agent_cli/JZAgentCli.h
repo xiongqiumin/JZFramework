@@ -134,7 +134,7 @@ struct JZCliConfig
     int loopWindow = 24;             // 工具: 只看最近 N 步工具调用(0=不限窗口)
     int loopRepeat = 5;              // 工具: 同签名重复 N 次 -> 中止
     int loopSameResult = 5;          // 工具: 同签名且结果也相同 N 次 -> 中止
-    // 轮询类工具(terminal_query / terminal_list): 同参数反复调用是正常用法(查后台任务进度),
+    // 轮询类工具(terminal_list): 同参数反复调用是正常用法(看终端是否在跑),
     // 用上面的小阈值会误杀 ⇒ 单独放宽(见 JZLoopConfig::pollRepeat / pollSameResult)。
     int loopPollRepeat = 16;         // 轮询类工具: 同签名重复 N 次 -> 中止
     int loopPollSameResult = 6;      // 轮询类工具: 同签名且结果也相同 N 次 -> 中止
@@ -203,6 +203,11 @@ struct JZCliConfig
     //   ⚠ 只认短名字: 写全路径走路径审核(区外拒), 需要就另外把它配进 rootDir/trustedDirs。
     //   由外部(配置文件 terminal.programs / 宿主代码)传入; 没登记的程序 agent 就用不了。
     std::map<std::string, std::string> programPaths;
+
+    // 注入给终端子进程的基础环境(导出): 如 JZ_CASE_INPUT = 本用例的输入文件路径。
+    // 输入不放在工程目录里(模型会删、会顺着 `..` 翻别人的), 而是放在工程外的输入目录,
+    // 由这个变量告诉运行时去哪儿读。
+    std::map<std::string, std::string> env;
 
     // ---- HTTP 传输 ----
     std::string httpBind = "127.0.0.1";
@@ -364,11 +369,9 @@ public:
     void removeEventClient(JZHttpServerClient *client);
 
     // 网页"后台任务"面板(给人看的, 不占模型的上下文):
-    //   GET  /terminal[?tail=]              -> {running, runs:[{run_id,command,status,...}]}
-    //   GET  /terminal/log?run_id=&tail=&grep=&stream= -> {run_id,status,text,...}
-    //   POST /terminal/cancel?run_id=...    -> {ok,run_id}  (run_id 省略 = 停所有在跑的)
+    //   GET  /terminal              -> {running, session, cwd}
+    //   POST /terminal/cancel              -> {ok,killed}  (单前台任务: 停当前那条)
     void onTerminalList(JZHttpServerClient *client, const JZHttpRequest &req);
-    void onTerminalLog(JZHttpServerClient *client, const JZHttpRequest &req);
     void onTerminalCancel(JZHttpServerClient *client, const JZHttpRequest &req);
 
     // 任务提交核心: 由 HTTP(onTaskSubmit) 调用, 解析 prompt / 验证脚本 / 轮次, 进入"提交→验证"循环。

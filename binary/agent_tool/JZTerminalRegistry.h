@@ -28,9 +28,6 @@ public:
 
     // 列出会话(id / cwd / 是否运行中)
     virtual std::vector<JZVirtualTerminal::SessionInfo> list() = 0;
-
-    // 跨所有终端按 run_id 取快照(terminal_query 用 run_id 查询时不需要知道会话)
-    virtual bool runSnapshot(const std::string &runId, JZVirtualTerminal::RunRecordInfo &out) const = 0;
 };
 
 #endif // !JZ_TERMINAL_REGISTRY_H_
